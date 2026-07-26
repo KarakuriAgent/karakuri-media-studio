@@ -181,101 +181,6 @@ export default function GenerateForm({
         ))}
       </div>
 
-      <Section
-        title="プロンプト"
-        right={
-          <button className="btn-ghost !py-1 text-xs" onClick={onOpenChat}>
-            Grokで生成
-          </button>
-        }
-      >
-        <div className="flex flex-col gap-3">
-          <div>
-            <label className="label">画像プロンプト</label>
-            <textarea
-              className="field h-28 resize-y"
-              value={form.imagePrompt}
-              disabled={disabled.imagePrompt}
-              placeholder={
-                disabled.imagePrompt
-                  ? '画像から動画モードでは使用しません'
-                  : '自然文 1 段落で詳細に'
-              }
-              onChange={(event) => patch({ imagePrompt: event.target.value })}
-            />
-            <FieldError message={fieldErrors.image_prompt} />
-          </div>
-          <div>
-            <label className="label">動画プロンプト</label>
-            <textarea
-              className="field h-28 resize-y"
-              value={form.videoPrompt}
-              disabled={disabled.videoPrompt}
-              placeholder={
-                disabled.videoPrompt
-                  ? '画像のみモードでは使用しません'
-                  : '1 段落 4〜8 文。動き・カメラ・音声を含める'
-              }
-              onChange={(event) => patch({ videoPrompt: event.target.value })}
-            />
-            <FieldError message={fieldErrors.video_prompt} />
-          </div>
-        </div>
-      </Section>
-
-      <Section
-        title="動画ネガティブ"
-        right={
-          <button
-            className="text-xs text-slate-400 hover:text-slate-200"
-            onClick={() => setShowAdvanced((value) => !value)}
-          >
-            {showAdvanced ? '閉じる' : '詳細設定'}
-          </button>
-        }
-      >
-        {showAdvanced && (
-          <div className="flex flex-col gap-2">
-            <select
-              className="field"
-              value={form.negativePreset}
-              disabled={disabled.negative}
-              onChange={(event) => {
-                const key = event.target.value
-                patch({
-                  negativePreset: key,
-                  negativePrompt:
-                    key === 'custom'
-                      ? form.negativePrompt
-                      : (negativePresets[key] ?? form.negativePrompt),
-                })
-              }}
-            >
-              {Object.keys(negativePresets).map((key) => (
-                <option key={key} value={key}>
-                  {NEGATIVE_PRESET_LABELS[key] ?? key}
-                </option>
-              ))}
-              <option value="custom">{NEGATIVE_PRESET_LABELS.custom}</option>
-            </select>
-            <textarea
-              className="field h-20 resize-y font-mono text-xs"
-              value={form.negativePrompt}
-              disabled={disabled.negative}
-              onChange={(event) =>
-                patch({ negativePrompt: event.target.value, negativePreset: 'custom' })
-              }
-            />
-          </div>
-        )}
-        {!showAdvanced && (
-          <p className="truncate text-xs text-slate-500">
-            {NEGATIVE_PRESET_LABELS[form.negativePreset] ?? form.negativePreset}:{' '}
-            {form.negativePrompt}
-          </p>
-        )}
-      </Section>
-
       {form.mode === 'i2v' && (
         <Section title="開始フレーム">
           <div
@@ -557,6 +462,101 @@ export default function GenerateForm({
             <FieldError message={fieldErrors.audio_path} />
           </div>
         </div>
+      </Section>
+
+      <Section
+        title="プロンプト"
+        right={
+          <button className="btn-ghost !py-1 text-xs" onClick={onOpenChat}>
+            Grokで生成
+          </button>
+        }
+      >
+        <div className="flex flex-col gap-3">
+          <div>
+            <label className="label">画像プロンプト</label>
+            <textarea
+              className="field h-28 resize-y"
+              value={form.imagePrompt}
+              disabled={disabled.imagePrompt}
+              placeholder={
+                disabled.imagePrompt
+                  ? '画像から動画モードでは使用しません'
+                  : '自然文 1 段落で詳細に'
+              }
+              onChange={(event) => patch({ imagePrompt: event.target.value })}
+            />
+            <FieldError message={fieldErrors.image_prompt} />
+          </div>
+          <div>
+            <label className="label">動画プロンプト</label>
+            <textarea
+              className="field h-28 resize-y"
+              value={form.videoPrompt}
+              disabled={disabled.videoPrompt}
+              placeholder={
+                disabled.videoPrompt
+                  ? '画像のみモードでは使用しません'
+                  : '1 段落 4〜8 文。動き・カメラ・音声を含める'
+              }
+              onChange={(event) => patch({ videoPrompt: event.target.value })}
+            />
+            <FieldError message={fieldErrors.video_prompt} />
+          </div>
+        </div>
+      </Section>
+
+      <Section
+        title="動画ネガティブ"
+        right={
+          <button
+            className="text-xs text-slate-400 hover:text-slate-200"
+            onClick={() => setShowAdvanced((value) => !value)}
+          >
+            {showAdvanced ? '閉じる' : '詳細設定'}
+          </button>
+        }
+      >
+        {showAdvanced && (
+          <div className="flex flex-col gap-2">
+            <select
+              className="field"
+              value={form.negativePreset}
+              disabled={disabled.negative}
+              onChange={(event) => {
+                const key = event.target.value
+                patch({
+                  negativePreset: key,
+                  negativePrompt:
+                    key === 'custom'
+                      ? form.negativePrompt
+                      : (negativePresets[key] ?? form.negativePrompt),
+                })
+              }}
+            >
+              {Object.keys(negativePresets).map((key) => (
+                <option key={key} value={key}>
+                  {NEGATIVE_PRESET_LABELS[key] ?? key}
+                </option>
+              ))}
+              <option value="custom">{NEGATIVE_PRESET_LABELS.custom}</option>
+            </select>
+            <textarea
+              className="field h-20 resize-y font-mono text-xs"
+              value={form.negativePrompt}
+              disabled={disabled.negative}
+              onChange={(event) =>
+                patch({ negativePrompt: event.target.value, negativePreset: 'custom' })
+              }
+            />
+          </div>
+        )}
+        {!showAdvanced && (
+          <p className="truncate text-xs text-slate-500">
+            {NEGATIVE_PRESET_LABELS[form.negativePreset] ?? form.negativePreset}:{' '}
+            {form.negativePrompt}
+          </p>
+        )}
       </Section>
 
       <Section title="出力設定">

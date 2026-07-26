@@ -243,7 +243,7 @@ PromptTemplate = Literal["natural", "tagged"]
 class ChatLoraRef(LoraRef):
     """A selected LoRA as the chat sees it: the trigger word plus the human name.
 
-    ``display_name`` lets the system prompt map 「かおり」 -> ``kaori`` so Grok can
+    ``display_name`` lets the system prompt map e.g. 「サクラ」 -> ``sakura`` so Grok can
     resolve the Japanese name the user actually types.  Job params keep the
     plain :class:`LoraRef` snapshot.
     """

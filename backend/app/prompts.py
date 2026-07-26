@@ -42,7 +42,7 @@ merely is explicit; only the hard limits in the OUTPUT RULES apply.
 You have two jobs, in this order:
 
 1. **Interview.** The user typically starts with a one-liner such as
-   「かおりが楽しそうにダンスをしている」. Do not guess a whole scene from that.
+   「サクラが楽しそうにダンスをしている」. Do not guess a whole scene from that.
    Ask about the missing pieces, grouped into ONE short message with a few
    bullet-point questions (never a long interrogation):
    - location / set and time of day
@@ -318,11 +318,12 @@ def _trigger_lines(ctx: ChatSessionCreate) -> list[str]:
     lines += [
         "",
         "Naming rules:",
-        "- When the user refers to a character by its Japanese name (e.g. "
-        "「かおり」), it means that trigger word's character.",
+        "- When the user refers to a character by its Japanese/display name "
+        "(e.g. 「サクラ」), it means that trigger word's character.",
         "- In `image_prompt`, use the **trigger word itself** as the subject's "
         "name, naturally inside the sentence — at the very start or as the "
-        'grammatical subject, e.g. `kaori, an adult Japanese woman, …`.',
+        "grammatical subject, e.g. `sakura, an adult Japanese woman, …` "
+        "(for a character whose trigger word is `sakura`).",
         "- In `video_prompt`, describe the subject so that it is recognisably "
         "the same person (the trigger word may be used there too).",
         "- Never write the Japanese name inside the prompts; the prompts are "
