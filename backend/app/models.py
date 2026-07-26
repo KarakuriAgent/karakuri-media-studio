@@ -1,6 +1,6 @@
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 JobMode = Literal["full", "i2v", "image_only"]
 JobStatus = Literal["queued", "prompting", "running", "done", "failed", "canceled"]
@@ -115,6 +115,113 @@ class Job(BaseModel):
     source_image: str | None = None
     audio_path: str | None = None
     error: str | None = None
+
+    # convenience for the SPA (derived from the paths above, see jobs._row_to_job)
+    image_url: str | None = None
+    video_url: str | None = None
+    last_frame_url: str | None = None
+
+
+# --------------------------------------------------------------------------
+# job API payloads (SPEC §9)
+# --------------------------------------------------------------------------
+
+def missing_job_fields(
+    mode: str,
+    *,
+    image_prompt: str | None,
+    video_prompt: str | None,
+    audio_path: str | None,
+    source_image: str | None,
+) -> list[str]:
+    """Per-mode required fields (SPEC §2 / §3.1). Empty list == valid."""
+    missing: list[str] = []
+    if mode in ("full", "i2v") and not (audio_path or "").strip():
+        missing.append("audio_path")
+    if mode == "i2v" and not (source_image or "").strip():
+        missing.append("source_image")
+    if mode in ("full", "image_only") and not (image_prompt or "").strip():
+        missing.append("image_prompt")
+    if mode in ("full", "i2v") and not (video_prompt or "").strip():
+        missing.append("video_prompt")
+    return missing
+
+
+class JobCreate(BaseModel):
+    """POST /api/jobs body."""
+
+    mode: JobMode = "full"
+
+    image_prompt: str = ""
+    video_prompt: str = ""
+    negative_prompt: str = DEFAULT_NEGATIVE_PROMPT
+
+    aspect_ratio: str = "4:3 (Standard)"
+    megapixels: float = 1.0
+
+    loras: list[LoraRef] = Field(default_factory=list)
+    trigger_text: str = ""
+
+    duration: float = 10.0
+    fps: int = 25
+
+    # absolute path inside assets/ or the "/assets/..." URL returned by the
+    # asset upload endpoints.
+    audio_path: str | None = None
+    source_image: str | None = None
+
+    seed: int | None = None  # None -> random (recorded in params)
+
+    chat_session_id: str | None = None
+    user_input: str | None = None
+
+    @model_validator(mode="after")
+    def _check_required(self) -> "JobCreate":
+        missing = missing_job_fields(
+            self.mode,
+            image_prompt=self.image_prompt,
+            video_prompt=self.video_prompt,
+            audio_path=self.audio_path,
+            source_image=self.source_image,
+        )
+        if missing:
+            raise ValueError(
+                f"mode '{self.mode}' requires: {', '.join(missing)}"
+            )
+        return self
+
+
+class JobRerun(BaseModel):
+    """POST /api/jobs/{id}/rerun body (all optional)."""
+
+    seed: int | None = None
+    randomize_seed: bool = True
+
+
+class JobContinue(BaseModel):
+    """POST /api/jobs/{id}/continue body (all optional overrides)."""
+
+    video_prompt: str | None = None
+    negative_prompt: str | None = None
+    aspect_ratio: str | None = None
+    megapixels: float | None = None
+    duration: float | None = None
+    fps: int | None = None
+    audio_path: str | None = None
+    seed: int | None = None
+    chat_session_id: str | None = None
+    user_input: str | None = None
+
+
+class JobProgress(BaseModel):
+    """Payload broadcast on WS /api/ws."""
+
+    type: Literal["job"] = "job"
+    job_id: str
+    status: JobStatus
+    node: str | None = None
+    progress: float | None = None
+    message: str | None = None
 
 
 class ChatMessage(BaseModel):
