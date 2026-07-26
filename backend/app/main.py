@@ -7,7 +7,7 @@ from fastapi.staticfiles import StaticFiles
 from .config import load_settings
 from .db import init_db
 from .paths import ASSETS_DIR, OUTPUTS_DIR, ensure_dirs
-from .routers import assets, health, loras, settings
+from .routers import assets, health, loras, options, settings
 
 
 @asynccontextmanager
@@ -32,6 +32,7 @@ app.include_router(health.router)
 app.include_router(settings.router)
 app.include_router(loras.router)
 app.include_router(assets.router)
+app.include_router(options.router)
 
 ensure_dirs()
 app.mount("/outputs", StaticFiles(directory=OUTPUTS_DIR), name="outputs")

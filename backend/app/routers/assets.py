@@ -45,7 +45,7 @@ async def _save(upload: UploadFile, kind: str, allowed: set[str]) -> Asset:
     return _as_asset(dest, kind)
 
 
-def _list(kind: str, allowed: set[str]) -> list[Asset]:
+def list_assets(kind: str, allowed: set[str]) -> list[Asset]:
     d = _kind_dir(kind)
     files = [p for p in d.iterdir() if p.is_file() and p.suffix.lower() in allowed]
     files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
@@ -59,7 +59,7 @@ async def upload_audio(file: UploadFile = File(...)) -> Asset:
 
 @router.get("/audio", response_model=list[Asset])
 async def list_audio() -> list[Asset]:
-    return _list("audio", AUDIO_EXT)
+    return list_assets("audio", AUDIO_EXT)
 
 
 @router.post("/image", response_model=Asset, status_code=201)
@@ -69,4 +69,4 @@ async def upload_image(file: UploadFile = File(...)) -> Asset:
 
 @router.get("/image", response_model=list[Asset])
 async def list_image() -> list[Asset]:
-    return _list("image", IMAGE_EXT)
+    return list_assets("image", IMAGE_EXT)

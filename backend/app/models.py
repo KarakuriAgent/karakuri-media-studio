@@ -50,6 +50,53 @@ class LoraUpdate(BaseModel):
     sort_order: int | None = None
 
 
+DEFAULT_NEGATIVE_PROMPT = "pc game, console game, video game, cartoon, childish, ugly"
+
+
+class LoraRef(BaseModel):
+    """One LoRA selected for a job (snapshot of the registry entry)."""
+
+    lora_name: str
+    trigger_word: str = ""
+    strength: float = 1.0
+
+
+class GenerationParams(BaseModel):
+    """Everything the workflow injector needs for one job (SPEC §3)."""
+
+    mode: JobMode = "full"
+    job_id: str = ""
+
+    aspect_ratio: str = "4:3 (Standard)"
+    megapixels: float = 1.0
+
+    loras: list[LoraRef] = Field(default_factory=list)
+    trigger_text: str = ""  # already-concatenated / user-edited trigger words
+
+    image_prompt: str = ""
+    video_prompt: str = ""
+    negative_prompt: str = DEFAULT_NEGATIVE_PROMPT
+
+    duration: float = 10.0
+    fps: int = 25
+
+    image_seed: int = 0
+    video_seeds: list[int] = Field(default_factory=list)
+
+    audio_name: str = ""  # file name on the ComfyUI input directory
+    start_image_name: str = ""  # mode B: file name on the ComfyUI input directory
+
+    filename_prefix: str | None = None  # explicit override
+
+    @property
+    def video_filename_prefix(self) -> str:
+        return self.filename_prefix or f"video/{self.job_id}"
+
+    @property
+    def image_filename_prefix(self) -> str:
+        return self.filename_prefix or f"images/{self.job_id}"
+
+
 class Job(BaseModel):
     id: str
     created_at: str
@@ -100,3 +147,17 @@ class Health(BaseModel):
     app: Literal["ok"] = "ok"
     comfyui: HealthStatus
     grok: HealthStatus
+
+
+class Options(BaseModel):
+    """Choices for the generation form (SPEC §9 GET /api/options)."""
+
+    comfy_connected: bool = False
+    comfy_error: str | None = None
+    comfy_url: str = ""
+    aspect_ratios: list[str] = Field(default_factory=list)
+    lora_files: list[str] = Field(default_factory=list)
+    loras: list[Lora] = Field(default_factory=list)
+    audio_assets: list["Asset"] = Field(default_factory=list)
+    image_assets: list["Asset"] = Field(default_factory=list)
+    negative_presets: dict[str, str] = Field(default_factory=dict)
