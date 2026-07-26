@@ -16,8 +16,12 @@ class Settings(BaseModel):
     grok_model: str = "grok-4.5"
     grok_workdir: str = ""
     # Agent mode (AGENT-MODE §3.4): extra CLI flags (tool permissions) and the
-    # longer timeout research / inspection turns need.
-    agent_grok_args: list[str] = Field(default_factory=list)
+    # longer timeout research / inspection turns need. `--permission-mode auto`
+    # is confirmed on grok 0.2.112 to enable file read/write (incl. viewing
+    # images) and web search in headless `-p` runs.
+    agent_grok_args: list[str] = Field(
+        default_factory=lambda: ["--permission-mode", "auto"]
+    )
     agent_grok_timeout: float = 300.0
     agent_max_plan_tasks: int = 5
     # {"<node_id>.<field>": "file.safetensors"} — only the entries that differ

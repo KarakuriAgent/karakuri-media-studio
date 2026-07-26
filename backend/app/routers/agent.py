@@ -56,11 +56,13 @@ async def create_session(payload: AgentSessionCreate) -> AgentSession:
     session_id = new_id()
     workdir = agent_store.session_dir(session_id)
     options = await get_options()
+    settings = load_settings()
     system = prompts.build_agent_system_prompt(
         payload,
         options,
         workdir=str(workdir),
-        max_tasks=load_settings().agent_max_plan_tasks or 5,
+        max_tasks=settings.agent_max_plan_tasks or 5,
+        tools_enabled=bool(settings.agent_grok_args),
     )
     session = AgentSession(
         id=session_id,

@@ -253,6 +253,10 @@ class GrokCliClient(LLMClient):
         if self.model:
             attempts.append([self.command, "--model", self.model, *extra, "-p", prompt])
         attempts.append([self.command, *extra, "-p", prompt])
+        if extra:
+            # The CLI is beta: tool-permission flags unknown to an older CLI
+            # must degrade to the plain (tool-less) run, not kill the turn.
+            attempts.append([self.command, "-p", prompt])
 
         last_failure = ""
         for argv in attempts:

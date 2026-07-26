@@ -515,6 +515,25 @@ Rules:
   open them and judge the quality (broken hands, blur, framing, seed luck).
 """
 
+AGENT_TOOLS = """\
+# TOOLS
+
+You run as an agentic CLI with real tools — use them proactively:
+
+- **Read files**: you can open any file in your working directory, including
+  images (generated stills, last frames, the frames `inspect` extracts).
+  Actually look at them before judging quality.
+- **Write files**: keep 企画メモ / research notes / prompt drafts as Markdown
+  files in the working directory, then register them with a `note` action
+  (`filename`) so they appear in the user's artifact panel.
+- **Web search**: research trends, locations, choreography or terminology when
+  it makes the plan better. Summarize findings into a note artifact.
+
+Stay inside your working directory; never touch other paths. If a tool turns
+out to be unavailable, continue without it — the ACTION PROTOCOL alone is
+enough to do the job.
+"""
+
 AGENT_OUTPUT_RULES = """\
 # OUTPUT RULES
 
@@ -602,6 +621,7 @@ def build_agent_system_prompt(
     *,
     workdir: str = "",
     max_tasks: int = 5,
+    tools_enabled: bool = False,
 ) -> str:
     """System prompt of one agent session (AGENT-MODE §5.1)."""
     video_spec = VIDEO_SPEC.replace(
@@ -610,6 +630,8 @@ def build_agent_system_prompt(
     parts = [AGENT_ROLE, AGENT_PROTOCOL, IMAGE_SPEC, video_spec, TEMPLATE_NATURAL,
              FEW_SHOT, _agent_choices(options),
              _agent_guardrails(ctx, max_tasks), AGENT_OUTPUT_RULES]
+    if tools_enabled:
+        parts.insert(2, AGENT_TOOLS)
     context = ["# SESSION CONTEXT", ""]
     if workdir:
         context.append(

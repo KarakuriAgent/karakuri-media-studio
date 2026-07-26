@@ -672,3 +672,33 @@ def test_agent_client_uses_the_session_workdir_and_extra_args(env, monkeypatch):
     assert argv[:3] == ["grok", "--model", "grok-4.5"]
     assert "--allow-tools" in argv
     assert env.cli.cwds[-1] == str(env.sessions / session["id"])
+
+
+def test_agent_default_settings_enable_tools(env):
+    """既定は --permission-mode auto（grok 0.2.112 実機確認済み、AGENT-MODE §3.4）。"""
+    session = start(env)
+    env.cli.answers = ["どんな雰囲気にしますか？"]
+    say(env, session["id"])
+    argv = env.cli.calls[-1]
+    index = argv.index("--permission-mode")
+    assert argv[index + 1] == "auto"
+    # ツールが使える構成なので TOOLS セクションがシステムプロンプトに入る
+    assert "# TOOLS" in env.cli.prompts[-1]
+
+
+async def test_agent_client_falls_back_to_plain_run_on_unknown_flag(monkeypatch):
+    """古い CLI が未知フラグで失敗しても素の -p 実行に落ちてターンは生きる。"""
+
+    async def fake_exec(argv, cwd, timeout):
+        if "--permission-mode" in argv:
+            return (2, "", "error: unexpected argument '--permission-mode'")
+        return (0, "こんにちは", "")
+
+    monkeypatch.setattr(grok, "_exec", fake_exec)
+    client = grok.GrokCliClient(
+        command="grok",
+        model="grok-4.5",
+        workdir=".",
+        extra_args=["--permission-mode", "auto"],
+    )
+    assert await client.complete("hi") == "こんにちは"
