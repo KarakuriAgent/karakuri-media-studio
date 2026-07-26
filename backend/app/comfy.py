@@ -186,12 +186,67 @@ async def queue_prompt(workflow: dict[str, Any], client_id: str) -> str:
 
 
 async def get_history(prompt_id: str) -> dict[str, Any]:
-    """GET /history/{prompt_id}; returns the entry for that id ({} while queued)."""
-    payload = _json(await _request("GET", f"{_api_prefix()}/history/{prompt_id}"))
+    """Job state in local ``/history`` entry shape ({} while queued).
+
+    Local ComfyUI: ``GET /history/{prompt_id}``.  Comfy Cloud has no history
+    endpoint (404: "Use /api/jobs/{prompt_id} instead"), so the cloud job
+    object is fetched and translated into the same shape.
+    """
+    if _api_prefix():
+        return await _get_cloud_job(prompt_id)
+    payload = _json(await _request("GET", f"/history/{prompt_id}"))
     if not isinstance(payload, dict):
         raise ComfyError("unexpected /history payload")
     entry = payload.get(prompt_id, payload if "outputs" in payload else {})
     return entry if isinstance(entry, dict) else {}
+
+
+# Comfy Cloud job statuses -> local history semantics
+_CLOUD_ERROR_STATUSES = {"failed", "cancelled", "canceled", "error"}
+
+
+async def _get_cloud_job(prompt_id: str) -> dict[str, Any]:
+    """GET /api/jobs/{prompt_id} (Comfy Cloud) -> local history entry shape."""
+    payload = _json(await _request("GET", f"/api/jobs/{prompt_id}"))
+    if not isinstance(payload, dict):
+        raise ComfyError("unexpected /api/jobs payload")
+    job = payload.get("job") if isinstance(payload.get("job"), dict) else payload
+    status = str(job.get("status") or "").lower()
+    outputs = job.get("outputs") if isinstance(job.get("outputs"), dict) else {}
+
+    if status in _CLOUD_ERROR_STATUSES:
+        message = (
+            job.get("error")
+            or job.get("error_message")
+            or job.get("status_message")
+            or f"Comfy Cloud job {status}"
+        )
+        return {
+            "status": {
+                "status_str": "error",
+                "completed": False,
+                "messages": [
+                    ["execution_error", {"exception_message": str(message)}]
+                ],
+            }
+        }
+    if status == "completed":
+        if not outputs:
+            raise ComfyError(
+                f"Comfy Cloud job {prompt_id} completed but returned no outputs"
+            )
+        return {
+            "status": {"status_str": "success", "completed": True, "messages": []},
+            "outputs": outputs,
+        }
+    # pending / in_progress (or unknown): keep polling
+    return {
+        "status": {
+            "status_str": status or "pending",
+            "completed": False,
+            "messages": [],
+        }
+    }
 
 
 async def download_view(
