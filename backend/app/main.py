@@ -9,7 +9,7 @@ from .config import load_settings
 from .db import init_db
 from .jobs import runner
 from .paths import ASSETS_DIR, OUTPUTS_DIR, ensure_dirs
-from .routers import assets, health, jobs, loras, options, settings
+from .routers import assets, chat, health, jobs, loras, options, settings
 
 
 @asynccontextmanager
@@ -39,6 +39,7 @@ app.include_router(settings.router)
 app.include_router(loras.router)
 app.include_router(assets.router)
 app.include_router(options.router)
+app.include_router(chat.router)
 app.include_router(jobs.router)
 app.include_router(ws.router)
 

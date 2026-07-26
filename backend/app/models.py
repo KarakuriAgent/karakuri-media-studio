@@ -237,6 +237,44 @@ class ChatSession(BaseModel):
     messages: list[ChatMessage] = Field(default_factory=list)
 
 
+PromptTemplate = Literal["natural", "tagged"]
+
+
+class ChatSessionCreate(BaseModel):
+    """POST /api/chat/sessions body: a snapshot of the generation form (§4.3)."""
+
+    mode: JobMode = "full"
+    loras: list[LoraRef] = Field(default_factory=list)
+    trigger_text: str = ""
+    duration: float = 10.0
+    image_prompt_draft: str = ""
+    video_prompt_draft: str = ""
+    prompt_template: PromptTemplate = "natural"
+    # mode B start frame (assets path or "/assets/..." URL); copied into the
+    # grok work dir so the CLI can look at it.
+    start_image_path: str | None = None
+
+
+class ChatSendMessage(BaseModel):
+    content: str
+
+
+class PromptResult(BaseModel):
+    """Final proposal parsed out of the Grok answer."""
+
+    image_prompt: str | None = None
+    video_prompt: str | None = None
+    notes: str | None = None
+
+
+class ChatReply(BaseModel):
+    """POST /api/chat/sessions/{id}/messages response."""
+
+    role: Literal["assistant"] = "assistant"
+    content: str
+    result: PromptResult | None = None
+
+
 class Asset(BaseModel):
     name: str
     kind: Literal["audio", "image"]

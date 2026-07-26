@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from .. import comfy
+from .. import comfy, grok
 from ..config import load_settings
 from ..models import Health, HealthStatus
 from ..workflow import WorkflowError, all_required_class_types
@@ -37,15 +37,6 @@ async def check_comfyui() -> HealthStatus:
 
 @router.get("/health", response_model=Health)
 async def health() -> Health:
-    settings = load_settings()
     comfyui = await check_comfyui()
-    # Grok connectivity lands in the Grok work package.
-    grok = HealthStatus(
-        status="not_implemented" if settings.grok_command else "not_configured",
-        detail=(
-            f"command={settings.grok_command}, model={settings.grok_model}"
-            if settings.grok_command
-            else "grok_command is empty"
-        ),
-    )
-    return Health(comfyui=comfyui, grok=grok)
+    grok_status = await grok.check_grok()
+    return Health(comfyui=comfyui, grok=grok_status)
