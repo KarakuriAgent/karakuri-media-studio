@@ -1,0 +1,1092 @@
+{
+  "75": {
+    "inputs": {
+      "filename_prefix": "video/LTX_2.3_i2v",
+      "format": "auto",
+      "codec": "auto",
+      "video-preview": "",
+      "video": [
+        "433:421",
+        0
+      ]
+    },
+    "class_type": "SaveVideo",
+    "_meta": {
+      "title": "ビデオを保存"
+    }
+  },
+  "366": {
+    "inputs": {
+      "aspect_ratio": "4:3 (Standard)",
+      "megapixels": 1,
+      "multiple": 8
+    },
+    "class_type": "ResolutionSelector",
+    "_meta": {
+      "title": "解像度セレクター"
+    }
+  },
+  "393": {
+    "inputs": {
+      "images": [
+        "365:8",
+        0
+      ]
+    },
+    "class_type": "PreviewImage",
+    "_meta": {
+      "title": "画像プレビュー"
+    }
+  },
+  "432": {
+    "inputs": {
+      "audio": "2ce700c624c3084d844dd2b2029daec095a997491722bf3dabdd985767704778.mp3"
+    },
+    "class_type": "LoadAudio",
+    "_meta": {
+      "title": "音声を読み込む"
+    }
+  },
+  "435": {
+    "inputs": {
+      "image": "b30be91f7026cc847f3c46a5ccb7acb1c38c2a79eeb491f2786a0c1c6250643c.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "画像を読み込む"
+    }
+  },
+  "365:6": {
+    "inputs": {
+      "text": [
+        "365:28",
+        0
+      ],
+      "clip": [
+        "365:11",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIPテキストエンコード（プロンプト）"
+    }
+  },
+  "365:5": {
+    "inputs": {
+      "width": [
+        "366",
+        0
+      ],
+      "height": [
+        "366",
+        1
+      ],
+      "batch_size": 1
+    },
+    "class_type": "EmptyLatentImage",
+    "_meta": {
+      "title": "空の潜在画像"
+    }
+  },
+  "365:3": {
+    "inputs": {
+      "seed": 37161083978622,
+      "steps": 8,
+      "cfg": 1,
+      "sampler_name": "euler",
+      "scheduler": "simple",
+      "denoise": 1,
+      "model": [
+        "365:22",
+        0
+      ],
+      "positive": [
+        "365:6",
+        0
+      ],
+      "negative": [
+        "365:13",
+        0
+      ],
+      "latent_image": [
+        "365:5",
+        0
+      ]
+    },
+    "class_type": "KSampler",
+    "_meta": {
+      "title": "Kサンプラー"
+    }
+  },
+  "365:8": {
+    "inputs": {
+      "samples": [
+        "365:3",
+        0
+      ],
+      "vae": [
+        "365:12",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAEデコード"
+    }
+  },
+  "365:10": {
+    "inputs": {
+      "unet_name": "redcraft23INT8INT4FP8_30Krea2.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "拡散モデルを読み込む"
+    }
+  },
+  "365:11": {
+    "inputs": {
+      "clip_name": "qwen3vl_4b_fp8_scaled.safetensors",
+      "type": "krea2",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "CLIPを読み込む"
+    }
+  },
+  "365:12": {
+    "inputs": {
+      "vae_name": "qwen_image_vae.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "VAEを読み込む"
+    }
+  },
+  "365:13": {
+    "inputs": {
+      "conditioning": [
+        "365:6",
+        0
+      ]
+    },
+    "class_type": "ConditioningZeroOut",
+    "_meta": {
+      "title": "条件付けゼロアウト"
+    }
+  },
+  "365:15": {
+    "inputs": {
+      "lora_name": "kohei06__yui__kaori.safetensors",
+      "strength_model": 1,
+      "model": [
+        "365:10",
+        0
+      ]
+    },
+    "class_type": "LoraLoaderModelOnly",
+    "_meta": {
+      "title": "LoRAローダーモデルのみ"
+    }
+  },
+  "365:16": {
+    "inputs": {
+      "prompt": [
+        "365:17",
+        0
+      ],
+      "max_length": 512,
+      "sampling_mode": "on",
+      "sampling_mode.temperature": 0.7,
+      "sampling_mode.top_k": 64,
+      "sampling_mode.top_p": 0.95,
+      "sampling_mode.min_p": 0.05,
+      "sampling_mode.repetition_penalty": 1.05,
+      "sampling_mode.seed": 0,
+      "sampling_mode.presence_penalty": 0,
+      "thinking": true,
+      "use_default_template": true,
+      "clip": [
+        "365:11",
+        0
+      ]
+    },
+    "class_type": "TextGenerate",
+    "_meta": {
+      "title": "TextGenerate"
+    }
+  },
+  "365:17": {
+    "inputs": {
+      "string_a": [
+        "365:18",
+        0
+      ],
+      "string_b": [
+        "365:19",
+        0
+      ],
+      "delimiter": ""
+    },
+    "class_type": "StringConcatenate",
+    "_meta": {
+      "title": "連結"
+    }
+  },
+  "365:18": {
+    "inputs": {
+      "value": "You are an expert prompt engineer for text-to-image models. Your task is to expand the user's prompt into a highly effective image-generation prompt.\n\nThink step by step about the request before writing the answer:\n- What is the subject and mood?\n- What visual styles, mediums, and lighting options would fit? Consider two or three alternatives and pick the one that best serves the caption.\n- What composition, framing, and grounded details will help the text-to-image model?\n\nThen output a single expanded prompt paragraph.\n\nFollow these rules strictly:\n1. **Faithfulness First:** Preserve all original subjects, actions, colors, and spatial relationships. Do not add new objects, props, characters, or animals unless the user clearly implies them.\n2. **Practical T2I Structure:** Write a prompt that a text-to-image model can parse cleanly. Group subjects with their own attributes and actions. Use grounded phrasing for poses, interactions, and spatial layout.\n3. **Style Planning Stays Internal:** Use your internal reasoning to choose style, medium, framing, and lighting. Do not emit planning tags or wrappers in the visible answer body.\n4. **Text Rendering:** If the user requests visible text, quotes, labels, or typography, specify the exact text clearly and wrap requested words in quotes.\n5. **Avoid Over-Specification:** Do not invent highly specific clothing, colors, materials, or scene details unless the input supports them.\n6. **Structure:** Write one cohesive paragraph after the thinking block. No bullets, JSON, or markdown.\n7. **Respect Existing Detail:** If the user's prompt is already detailed, lightly polish and finalize rather than heavily expanding — preserve their phrasing and direction.\n8. **Respect the Human Form:** Treat depictions of people with dignity. Assume clothing covers genitals and intimate anatomy.\n9. **Preserve User Medium:** When the user explicitly requests a medium (e.g. \"photo of\", \"photograph of\", \"illustration of\", \"painting of\", \"sketch of\", \"3D render of\"), honor it. Do not pivot to a different medium to avoid difficulty — match the user's stated intent.\n\nUser's Input:\n\n"
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "Text String (System Prompt)"
+    }
+  },
+  "365:19": {
+    "inputs": {
+      "value": "kaori, a single still frame from a Japanese adult video, adult woman in doggystyle sex on a rumpled hotel bed with white sheets, on all fours with hips raised and back arched, body tense as if enduring each thrust. She glances back over her shoulder toward the camera with a shy, pleasure-enduring expression — brows gently furrowed, eyes half-closed and averted with embarrassment, lips tightly parted as she bites back a moan, cheeks pink with shame and heat, a tear-glistened sheen at the corner of one eye, messy dark hair falling across her flushed face. A man behind her holds her waist, bodies connected mid-thrust, light sweat on her bare skin. Harsh practical bedroom lighting mixed with soft overhead fill, slightly clinical AV set atmosphere, realistic skin texture, intimate three-quarter rear medium shot focusing on her bashful strained face and arched back, shallow depth of field, candid erotic still photography, high detail"
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "Text String (User Prompt)"
+    }
+  },
+  "365:20": {
+    "inputs": {
+      "source": [
+        "365:21",
+        0
+      ]
+    },
+    "class_type": "PreviewAny",
+    "_meta": {
+      "title": "プレビュー任意"
+    }
+  },
+  "365:21": {
+    "inputs": {
+      "switch": [
+        "365:24",
+        0
+      ],
+      "on_false": [
+        "365:19",
+        0
+      ],
+      "on_true": [
+        "365:16",
+        0
+      ]
+    },
+    "class_type": "ComfySwitchNode",
+    "_meta": {
+      "title": "スイッチ"
+    }
+  },
+  "365:22": {
+    "inputs": {
+      "switch": [
+        "365:23",
+        0
+      ],
+      "on_false": [
+        "365:10",
+        0
+      ],
+      "on_true": [
+        "365:15",
+        0
+      ]
+    },
+    "class_type": "ComfySwitchNode",
+    "_meta": {
+      "title": "Switch (Model)"
+    }
+  },
+  "365:23": {
+    "inputs": {
+      "value": true
+    },
+    "class_type": "PrimitiveBoolean",
+    "_meta": {
+      "title": "Boolean (Enable LoRA?)"
+    }
+  },
+  "365:24": {
+    "inputs": {
+      "value": false
+    },
+    "class_type": "PrimitiveBoolean",
+    "_meta": {
+      "title": "Boolean (Refine Prompt?)"
+    }
+  },
+  "365:27": {
+    "inputs": {
+      "string_a": [
+        "365:20",
+        0
+      ],
+      "string_b": "muted minimalist sketch style",
+      "delimiter": ", "
+    },
+    "class_type": "StringConcatenate",
+    "_meta": {
+      "title": "Concatenate Text (LoRA Trigger Word)"
+    }
+  },
+  "365:28": {
+    "inputs": {
+      "switch": [
+        "365:23",
+        0
+      ],
+      "on_false": [
+        "365:20",
+        0
+      ],
+      "on_true": [
+        "365:27",
+        0
+      ]
+    },
+    "class_type": "ComfySwitchNode",
+    "_meta": {
+      "title": "スイッチ"
+    }
+  },
+  "365:391": {
+    "inputs": {
+      "wildcard_text": "{kaori, a single still frame from a Japanese adult video, adult woman in doggystyle sex on a rumpled hotel bed with white sheets, on all fours with hips raised high and back deeply arched mid-thrust. She looks back over her shoulder toward the camera with an orgasmic, overwhelmed expression — brows tightly knitted, watery half-lidded eyes rolled slightly upward, mouth open wide in a sharp moan, cheeks deep red, jaw slack, a thin strand of saliva at her lip, messy dark hair stuck to her sweaty forehead and neck. A man behind her grips her waist firmly, bodies pressed together, skin glossy with sweat. Harsh practical bedroom lighting mixed with soft overhead fill, slightly clinical AV set atmosphere, realistic skin texture, intimate three-quarter rear medium shot focusing on her climax face and the curve of her back, shallow depth of field, candid erotic still photography, high detail|kaori, a single still frame from a Japanese adult video, adult woman in doggystyle sex on a rumpled hotel bed with white sheets, on all fours with hips raised and back arched, body tense as if enduring each thrust. She glances back over her shoulder toward the camera with a shy, pleasure-enduring expression — brows gently furrowed, eyes half-closed and averted with embarrassment, lips tightly parted as she bites back a moan, cheeks pink with shame and heat, a tear-glistened sheen at the corner of one eye, messy dark hair falling across her flushed face. A man behind her holds her waist, bodies connected mid-thrust, light sweat on her bare skin. Harsh practical bedroom lighting mixed with soft overhead fill, slightly clinical AV set atmosphere, realistic skin texture, intimate three-quarter rear medium shot focusing on her bashful strained face and arched back, shallow depth of field, candid erotic still photography, high detail|kaori, a single still frame from a Japanese adult video, adult woman in missionary sex on a rumpled hotel bed, lying on her back with legs spread and knees pulled up, a man between her thighs mid-thrust. She looks toward the camera with an orgasmic overwhelmed expression — brows tightly knitted, watery half-lidded eyes rolling slightly upward, mouth open wide in a sharp moan, cheeks deep red, messy dark hair fanned across the white pillow. Hands gripping the sheets, body arched, skin glossy with sweat. Harsh practical bedroom lighting, slightly clinical AV set atmosphere, realistic skin texture, intimate high-angle medium shot focusing on her climax face and torso, shallow depth of field, candid erotic still photography, high detail|kaori, a single still frame from a Japanese adult video, adult woman in missionary sex on a rumpled hotel bed, lying on her back with legs open, a man between her thighs mid-thrust. She looks toward the camera with a shy pleasure-enduring expression — brows gently furrowed, eyes half-closed and averted with embarrassment, lips tightly parted as she bites back a moan, pink cheeks, a tear-glisten at one eye, messy dark hair on the pillow. Hands weakly gripping the sheets, body tense, light sweat on her skin. Harsh practical bedroom lighting, AV set atmosphere, realistic skin texture, intimate high-angle medium shot, shallow depth of field, candid erotic still photography, high detail|kaori, a single still frame from a Japanese adult video, adult woman riding cowgirl style on a hotel bed, straddling a man who lies beneath her, hips lowered mid-grind. She faces the camera with an orgasmic expression — brows knitted hard, watery half-lidded eyes unfocused, mouth open moaning, flushed sweaty face, messy dark hair clinging to her neck and shoulders. Hands braced on his chest, back slightly arched, skin glossy. Harsh practical bedroom lighting mixed with soft overhead fill, slightly clinical AV set atmosphere, realistic skin texture, intimate frontal medium shot focusing on her climax face and riding pose, shallow depth of field, candid erotic still photography, high detail|kaori, a single still frame from a Japanese adult video, adult woman riding cowgirl style on a hotel bed, straddling a man beneath her, hips paused mid-motion. She faces the camera with a shy enduring expression — brows gently furrowed, eyes half-closed and averted, lips pressed then parted as she holds back a moan, pink embarrassed cheeks, messy dark hair falling forward. Hands braced on his chest, body slightly tense, light sweat. Harsh practical bedroom lighting, AV set atmosphere, realistic skin texture, intimate frontal medium shot, shallow depth of field, candid erotic still photography, high detail|kaori, a single still frame from a Japanese adult video, adult woman in standing doggystyle sex bent over a hotel desk, hands braced on the surface, hips pushed back, a man standing behind her mid-thrust. She looks back over her shoulder toward the camera with an orgasmic expression — brows knitted, watery half-lidded eyes unfocused, mouth open moaning, flushed sweaty face, messy dark hair hanging down. Back arched, legs slightly parted, skin glossy. Harsh practical indoor lighting, slightly clinical AV set atmosphere, realistic skin texture, intimate three-quarter rear medium shot focusing on her climax face and bent pose, shallow depth of field, candid erotic still photography, high detail|kaori, a single still frame from a Japanese adult video, adult woman in standing doggystyle sex bent over a hotel desk, hands braced on the surface, hips pushed back, a man behind her mid-thrust. She glances back over her shoulder with a shy enduring expression — brows gently furrowed, eyes half-closed and averted, lips tightly parted biting back a moan, pink embarrassed cheeks, messy dark hair falling forward. Body tense, light sweat. Harsh practical indoor lighting, AV set atmosphere, realistic skin texture, intimate three-quarter rear medium shot, shallow depth of field, candid erotic still photography, high detail}",
+      "populated_text": "",
+      "mode": "populate",
+      "Select to add LoRA": "Select the LoRA to add to the text",
+      "Select to add Wildcard": "Select the Wildcard to add to the text",
+      "seed": 178598863755063,
+      "model": [
+        "365:22",
+        0
+      ],
+      "clip": [
+        "365:11",
+        0
+      ]
+    },
+    "class_type": "ImpactWildcardEncode",
+    "_meta": {
+      "title": "ImpactWildcardEncode"
+    }
+  },
+  "433:394": {
+    "inputs": {
+      "noise_seed": 42
+    },
+    "class_type": "RandomNoise",
+    "_meta": {
+      "title": "ランダムノイズ"
+    }
+  },
+  "433:395": {
+    "inputs": {
+      "noise_seed": 802131116486597
+    },
+    "class_type": "RandomNoise",
+    "_meta": {
+      "title": "ランダムノイズ"
+    }
+  },
+  "433:396": {
+    "inputs": {
+      "video_latent": [
+        "433:403",
+        0
+      ],
+      "audio_latent": [
+        "433:410",
+        1
+      ]
+    },
+    "class_type": "LTXVConcatAVLatent",
+    "_meta": {
+      "title": "LTXVConcatAVLatent"
+    }
+  },
+  "433:397": {
+    "inputs": {
+      "sampler_name": "euler"
+    },
+    "class_type": "KSamplerSelect",
+    "_meta": {
+      "title": "Kサンプラー選択"
+    }
+  },
+  "433:398": {
+    "inputs": {
+      "sigmas": "0.85, 0.7250, 0.4219, 0.0"
+    },
+    "class_type": "ManualSigmas",
+    "_meta": {
+      "title": "マニュアルシグマ"
+    }
+  },
+  "433:399": {
+    "inputs": {
+      "cfg": 1,
+      "model": [
+        "433:427",
+        0
+      ],
+      "positive": [
+        "433:401",
+        0
+      ],
+      "negative": [
+        "433:401",
+        1
+      ]
+    },
+    "class_type": "CFGGuider",
+    "_meta": {
+      "title": "CFGガイダー"
+    }
+  },
+  "433:400": {
+    "inputs": {
+      "noise": [
+        "433:395",
+        0
+      ],
+      "guider": [
+        "433:414",
+        0
+      ],
+      "sampler": [
+        "433:404",
+        0
+      ],
+      "sigmas": [
+        "433:409",
+        0
+      ],
+      "latent_image": [
+        "433:425",
+        0
+      ]
+    },
+    "class_type": "SamplerCustomAdvanced",
+    "_meta": {
+      "title": "カスタムサンプラー（高度）"
+    }
+  },
+  "433:401": {
+    "inputs": {
+      "positive": [
+        "433:408",
+        0
+      ],
+      "negative": [
+        "433:408",
+        1
+      ],
+      "latent": [
+        "433:410",
+        0
+      ]
+    },
+    "class_type": "LTXVCropGuides",
+    "_meta": {
+      "title": "LTXVCropGuides"
+    }
+  },
+  "433:402": {
+    "inputs": {
+      "samples": [
+        "433:410",
+        0
+      ],
+      "upscale_model": [
+        "433:426",
+        0
+      ],
+      "vae": [
+        "433:428",
+        2
+      ]
+    },
+    "class_type": "LTXVLatentUpsampler",
+    "_meta": {
+      "title": "LTXVLatentUpsampler"
+    }
+  },
+  "433:403": {
+    "inputs": {
+      "strength": 1,
+      "bypass": false,
+      "vae": [
+        "433:428",
+        2
+      ],
+      "image": [
+        "433:334",
+        0
+      ],
+      "latent": [
+        "433:402",
+        0
+      ]
+    },
+    "class_type": "LTXVImgToVideoInplace",
+    "_meta": {
+      "title": "LTXVImgToVideoInplace"
+    }
+  },
+  "433:404": {
+    "inputs": {
+      "sampler_name": "euler"
+    },
+    "class_type": "KSamplerSelect",
+    "_meta": {
+      "title": "Kサンプラー選択"
+    }
+  },
+  "433:406": {
+    "inputs": {
+      "samples": [
+        "433:412",
+        1
+      ],
+      "audio_vae": [
+        "433:335",
+        0
+      ]
+    },
+    "class_type": "LTXVAudioVAEDecode",
+    "_meta": {
+      "title": "LTXV オーディオVAEデコード"
+    }
+  },
+  "433:407": {
+    "inputs": {
+      "text": [
+        "433:430",
+        0
+      ],
+      "clip": [
+        "433:429",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIPテキストエンコード（プロンプト）"
+    }
+  },
+  "433:408": {
+    "inputs": {
+      "frame_rate": [
+        "433:420",
+        0
+      ],
+      "positive": [
+        "433:349",
+        1
+      ],
+      "negative": [
+        "433:349",
+        2
+      ]
+    },
+    "class_type": "LTXVConditioning",
+    "_meta": {
+      "title": "LTXV条件付け"
+    }
+  },
+  "433:409": {
+    "inputs": {
+      "sigmas": "1.0, 0.99375, 0.9875, 0.98125, 0.975, 0.909375, 0.725, 0.421875, 0.0"
+    },
+    "class_type": "ManualSigmas",
+    "_meta": {
+      "title": "マニュアルシグマ"
+    }
+  },
+  "433:410": {
+    "inputs": {
+      "av_latent": [
+        "433:400",
+        0
+      ]
+    },
+    "class_type": "LTXVSeparateAVLatent",
+    "_meta": {
+      "title": "LTXVSeparateAVLatent"
+    }
+  },
+  "433:411": {
+    "inputs": {
+      "noise": [
+        "433:394",
+        0
+      ],
+      "guider": [
+        "433:399",
+        0
+      ],
+      "sampler": [
+        "433:397",
+        0
+      ],
+      "sigmas": [
+        "433:398",
+        0
+      ],
+      "latent_image": [
+        "433:396",
+        0
+      ]
+    },
+    "class_type": "SamplerCustomAdvanced",
+    "_meta": {
+      "title": "カスタムサンプラー（高度）"
+    }
+  },
+  "433:412": {
+    "inputs": {
+      "av_latent": [
+        "433:411",
+        0
+      ]
+    },
+    "class_type": "LTXVSeparateAVLatent",
+    "_meta": {
+      "title": "LTXVSeparateAVLatent"
+    }
+  },
+  "433:413": {
+    "inputs": {
+      "text": "pc game, console game, video game, cartoon, childish, ugly",
+      "clip": [
+        "433:429",
+        0
+      ]
+    },
+    "class_type": "CLIPTextEncode",
+    "_meta": {
+      "title": "CLIPテキストエンコード（プロンプト）"
+    }
+  },
+  "433:414": {
+    "inputs": {
+      "cfg": 1,
+      "model": [
+        "433:349",
+        0
+      ],
+      "positive": [
+        "433:408",
+        0
+      ],
+      "negative": [
+        "433:408",
+        1
+      ]
+    },
+    "class_type": "CFGGuider",
+    "_meta": {
+      "title": "CFGガイダー"
+    }
+  },
+  "433:415": {
+    "inputs": {
+      "tile_size": 768,
+      "overlap": 64,
+      "temporal_size": 4096,
+      "temporal_overlap": 4,
+      "samples": [
+        "433:412",
+        0
+      ],
+      "vae": [
+        "433:428",
+        2
+      ]
+    },
+    "class_type": "VAEDecodeTiled",
+    "_meta": {
+      "title": "VAEデコード（タイル）"
+    }
+  },
+  "433:416": {
+    "inputs": {
+      "strength": 0.7,
+      "bypass": false,
+      "vae": [
+        "433:428",
+        2
+      ],
+      "image": [
+        "433:334",
+        0
+      ],
+      "latent": [
+        "433:423",
+        0
+      ]
+    },
+    "class_type": "LTXVImgToVideoInplace",
+    "_meta": {
+      "title": "LTXVImgToVideoInplace"
+    }
+  },
+  "433:330": {
+    "inputs": {
+      "value": [
+        "366",
+        0
+      ]
+    },
+    "class_type": "PrimitiveInt",
+    "_meta": {
+      "title": "Width"
+    }
+  },
+  "433:333": {
+    "inputs": {
+      "value": 0,
+      "width": [
+        "433:330",
+        0
+      ],
+      "height": [
+        "433:424",
+        0
+      ]
+    },
+    "class_type": "SolidMask",
+    "_meta": {
+      "title": "ソリッドマスク"
+    }
+  },
+  "433:335": {
+    "inputs": {
+      "ckpt_name": "sexgodPinkcherryLTX23_v16bDev.safetensors"
+    },
+    "class_type": "LTXVAudioVAELoader",
+    "_meta": {
+      "title": "LTXV オーディオVAEローダー"
+    }
+  },
+  "433:417": {
+    "inputs": {
+      "longer_edge": 1536,
+      "images": [
+        "433:431",
+        0
+      ]
+    },
+    "class_type": "ResizeImagesByLongerEdge",
+    "_meta": {
+      "title": "長辺で画像をリサイズ"
+    }
+  },
+  "433:334": {
+    "inputs": {
+      "img_compression": 18,
+      "image": [
+        "433:417",
+        0
+      ]
+    },
+    "class_type": "LTXVPreprocess",
+    "_meta": {
+      "title": "LTXVPreprocess"
+    }
+  },
+  "433:418": {
+    "inputs": {
+      "expression": "a/2",
+      "values.a": [
+        "433:424",
+        0
+      ]
+    },
+    "class_type": "ComfyMathExpression",
+    "_meta": {
+      "title": "数式"
+    }
+  },
+  "433:419": {
+    "inputs": {
+      "expression": "a/2",
+      "values.a": [
+        "433:330",
+        0
+      ]
+    },
+    "class_type": "ComfyMathExpression",
+    "_meta": {
+      "title": "数式"
+    }
+  },
+  "433:420": {
+    "inputs": {
+      "expression": "a",
+      "values.a": [
+        "433:422",
+        0
+      ]
+    },
+    "class_type": "ComfyMathExpression",
+    "_meta": {
+      "title": "数式"
+    }
+  },
+  "433:421": {
+    "inputs": {
+      "fps": [
+        "433:420",
+        0
+      ],
+      "bit_depth": 8,
+      "images": [
+        "433:415",
+        0
+      ],
+      "audio": [
+        "433:406",
+        0
+      ]
+    },
+    "class_type": "CreateVideo",
+    "_meta": {
+      "title": "動画を作成"
+    }
+  },
+  "433:331": {
+    "inputs": {
+      "value": 10
+    },
+    "class_type": "PrimitiveFloat",
+    "_meta": {
+      "title": "Duration"
+    }
+  },
+  "433:422": {
+    "inputs": {
+      "value": 25
+    },
+    "class_type": "PrimitiveInt",
+    "_meta": {
+      "title": "Frame Rate"
+    }
+  },
+  "433:423": {
+    "inputs": {
+      "width": [
+        "433:419",
+        1
+      ],
+      "height": [
+        "433:418",
+        1
+      ],
+      "length": [
+        "433:329",
+        1
+      ],
+      "batch_size": 1
+    },
+    "class_type": "EmptyLTXVLatentVideo",
+    "_meta": {
+      "title": "空のLTXV潜在ビデオ"
+    }
+  },
+  "433:329": {
+    "inputs": {
+      "expression": "a * b + 1",
+      "values.a": [
+        "433:331",
+        0
+      ],
+      "values.b": [
+        "433:422",
+        0
+      ]
+    },
+    "class_type": "ComfyMathExpression",
+    "_meta": {
+      "title": "数式"
+    }
+  },
+  "433:424": {
+    "inputs": {
+      "value": [
+        "366",
+        1
+      ]
+    },
+    "class_type": "PrimitiveInt",
+    "_meta": {
+      "title": "Height"
+    }
+  },
+  "433:425": {
+    "inputs": {
+      "video_latent": [
+        "433:416",
+        0
+      ],
+      "audio_latent": [
+        "433:348",
+        0
+      ]
+    },
+    "class_type": "LTXVConcatAVLatent",
+    "_meta": {
+      "title": "LTXVConcatAVLatent"
+    }
+  },
+  "433:426": {
+    "inputs": {
+      "model_name": "ltx-2.3-spatial-upscaler-x2-1.1.safetensors"
+    },
+    "class_type": "LatentUpscaleModelLoader",
+    "_meta": {
+      "title": "Latent アップスケールモデルを読み込む"
+    }
+  },
+  "433:427": {
+    "inputs": {
+      "lora_name": "ltx_2.3_22b_distilled_1.1_lora_dynamic_fro09_avg_rank_111_bf16.safetensors",
+      "strength_model": 0.5,
+      "model": [
+        "433:428",
+        0
+      ]
+    },
+    "class_type": "LoraLoaderModelOnly",
+    "_meta": {
+      "title": "LoRAローダーモデルのみ"
+    }
+  },
+  "433:428": {
+    "inputs": {
+      "ckpt_name": "sexgodPinkcherryLTX23_v16bDev.safetensors"
+    },
+    "class_type": "CheckpointLoaderSimple",
+    "_meta": {
+      "title": "チェックポイントを読み込む"
+    }
+  },
+  "433:429": {
+    "inputs": {
+      "text_encoder": "gemma_3_12B_it_fp4_mixed.safetensors",
+      "ckpt_name": "sexgodPinkcherryLTX23_v16bDev.safetensors",
+      "device": "default"
+    },
+    "class_type": "LTXAVTextEncoderLoader",
+    "_meta": {
+      "title": "LTXV オーディオテキストエンコーダーローダー"
+    }
+  },
+  "433:430": {
+    "inputs": {
+      "value": "adult Japanese woman in sex on a rumpled hotel bed. Starting from the given first frame, the thrusting becomes rapid and intense, short hard strokes in quick succession. Her whole body shakes with the pace, legs tremble, fingers dig into the sheets, and her back arches off the mattress. Her brows lock tight, watery eyes roll upward, mouth open wide as shaky high moans break between gasps. Heavy sweat on her flushed skin, messy dark hair stuck to her face and pillow. Static camera with stronger handheld tremble, tight focus on her climaxing face and torso under harsh practical lighting. Fast bed creaks, sharp body sounds, gasping breaths, and urgent moans continue through the continuous shot."
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "Prompt"
+    }
+  },
+  "433:431": {
+    "inputs": {
+      "resize_type": "scale dimensions",
+      "resize_type.width": [
+        "433:330",
+        0
+      ],
+      "resize_type.height": [
+        "433:424",
+        0
+      ],
+      "resize_type.crop": "center",
+      "scale_method": "lanczos",
+      "input": [
+        "365:8",
+        0
+      ]
+    },
+    "class_type": "ResizeImageMaskNode",
+    "_meta": {
+      "title": "画像/マスクのリサイズ"
+    }
+  },
+  "433:346": {
+    "inputs": {
+      "lora_name": "ltx-2.3-id-lora-talkvid-3k.safetensors",
+      "strength_model": 1,
+      "model": [
+        "433:427",
+        0
+      ]
+    },
+    "class_type": "LoraLoaderModelOnly",
+    "_meta": {
+      "title": "LoRAローダーモデルのみ"
+    }
+  },
+  "433:348": {
+    "inputs": {
+      "frames_number": [
+        "433:329",
+        1
+      ],
+      "frame_rate": [
+        "433:420",
+        1
+      ],
+      "batch_size": 1,
+      "audio_vae": [
+        "433:335",
+        0
+      ]
+    },
+    "class_type": "LTXVEmptyLatentAudio",
+    "_meta": {
+      "title": "LTXV 空のラテントオーディオ"
+    }
+  },
+  "433:349": {
+    "inputs": {
+      "identity_guidance_scale": 3,
+      "start_percent": 0,
+      "end_percent": 1,
+      "model": [
+        "433:346",
+        0
+      ],
+      "positive": [
+        "433:407",
+        0
+      ],
+      "negative": [
+        "433:413",
+        0
+      ],
+      "reference_audio": [
+        "432",
+        0
+      ],
+      "audio_vae": [
+        "433:335",
+        0
+      ]
+    },
+    "class_type": "LTXVReferenceAudio",
+    "_meta": {
+      "title": "LTXV Reference Audio (ID-LoRA)"
+    }
+  }
+}
