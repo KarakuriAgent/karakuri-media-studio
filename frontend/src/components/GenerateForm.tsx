@@ -1,0 +1,587 @@
+import { useRef, useState } from 'react'
+import { api } from '../api'
+import {
+  AUTHOR_NEGATIVE_PROMPT,
+  DEFAULT_NEGATIVE_PROMPT,
+  MODE_LABELS,
+  NEGATIVE_PRESET_LABELS,
+  disabledFields,
+  joinTriggers,
+  toSelected,
+  type FormState,
+  type SelectedLora,
+} from '../form'
+import type { Job, JobMode, Lora, Options } from '../types'
+import { Banner, FieldError } from './ui'
+
+const MODES: JobMode[] = ['full', 'i2v', 'image_only']
+
+interface Props {
+  form: FormState
+  patch: (patch: Partial<FormState>) => void
+  options: Options | null
+  optionsError: string | null
+  onReloadOptions: () => void
+  onOpenChat: () => void
+  onSubmit: () => void
+  submitting: boolean
+  fieldErrors: Record<string, string>
+  jobs: Job[]
+}
+
+function Section({
+  title,
+  children,
+  right,
+}: {
+  title: string
+  children: React.ReactNode
+  right?: React.ReactNode
+}) {
+  return (
+    <section className="card p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+          {title}
+        </h3>
+        {right}
+      </div>
+      {children}
+    </section>
+  )
+}
+
+export default function GenerateForm({
+  form,
+  patch,
+  options,
+  optionsError,
+  onReloadOptions,
+  onOpenChat,
+  onSubmit,
+  submitting,
+  fieldErrors,
+  jobs,
+}: Props) {
+  const disabled = disabledFields(form.mode)
+  const [uploadError, setUploadError] = useState<string | null>(null)
+  const [busyUpload, setBusyUpload] = useState(false)
+  const [showAdvanced, setShowAdvanced] = useState(false)
+  const imageInput = useRef<HTMLInputElement>(null)
+  const audioInput = useRef<HTMLInputElement>(null)
+
+  const availableLoras: Lora[] = options?.loras ?? []
+  const audioAssets = options?.audio_assets ?? []
+  const imageAssets = options?.image_assets ?? []
+  const aspectRatios = options?.aspect_ratios ?? []
+  const negativePresets = options?.negative_presets ?? {
+    current: DEFAULT_NEGATIVE_PROMPT,
+    author: AUTHOR_NEGATIVE_PROMPT,
+  }
+
+  const setLoras = (next: SelectedLora[]) => {
+    const changes: Partial<FormState> = { loras: next }
+    if (!form.triggerDirty) changes.triggerText = joinTriggers(next)
+    patch(changes)
+  }
+
+  const toggleLora = (lora: Lora) => {
+    const already = form.loras.some((item) => item.id === lora.id)
+    if (already) {
+      setLoras(form.loras.filter((item) => item.id !== lora.id))
+      return
+    }
+    const next = [...form.loras, toSelected(lora)]
+    const changes: Partial<FormState> = { loras: next }
+    if (!form.triggerDirty) changes.triggerText = joinTriggers(next)
+    // SPEC §7: first selected LoRA carrying a default audio wins.
+    if (!form.audioPath && lora.default_audio) changes.audioPath = lora.default_audio
+    patch(changes)
+  }
+
+  const upload = async (kind: 'image' | 'audio', file: File) => {
+    setUploadError(null)
+    setBusyUpload(true)
+    try {
+      const asset =
+        kind === 'image' ? await api.uploadImage(file) : await api.uploadAudio(file)
+      patch(kind === 'image' ? { sourceImage: asset.url } : { audioPath: asset.url })
+      onReloadOptions()
+    } catch (error) {
+      setUploadError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setBusyUpload(false)
+    }
+  }
+
+  /** Outputs live outside assets/, so copy the frame into assets via upload. */
+  const useLastFrame = async (job: Job) => {
+    if (!job.last_frame_url) return
+    setUploadError(null)
+    setBusyUpload(true)
+    try {
+      const response = await fetch(job.last_frame_url)
+      if (!response.ok) throw new Error(`ラストフレームを取得できません (${response.status})`)
+      const blob = await response.blob()
+      const file = new File([blob], `last_frame_${job.id}.png`, {
+        type: blob.type || 'image/png',
+      })
+      const asset = await api.uploadImage(file)
+      patch({ sourceImage: asset.url })
+      onReloadOptions()
+    } catch (error) {
+      setUploadError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setBusyUpload(false)
+    }
+  }
+
+  const lastFrameJobs = jobs.filter((job) => job.last_frame_url)
+
+  return (
+    <div className="flex flex-col gap-3">
+      {optionsError && (
+        <Banner tone="warn">
+          ComfyUI に接続できないため選択肢を取得できません（手入力で続行できます）:
+          {'\n'}
+          {optionsError}
+        </Banner>
+      )}
+
+      {/* mode tabs */}
+      <div className="flex gap-1 rounded-lg border border-ink-600 bg-ink-800 p-1">
+        {MODES.map((mode) => (
+          <button
+            key={mode}
+            onClick={() => patch({ mode })}
+            className={`flex-1 rounded-md px-2 py-1.5 text-xs font-medium transition-colors ${
+              form.mode === mode
+                ? 'bg-accent-500 text-white'
+                : 'text-slate-400 hover:bg-ink-700'
+            }`}
+          >
+            {MODE_LABELS[mode]}
+          </button>
+        ))}
+      </div>
+
+      <Section
+        title="プロンプト"
+        right={
+          <button className="btn-ghost !py-1 text-xs" onClick={onOpenChat}>
+            Grokで生成
+          </button>
+        }
+      >
+        <div className="flex flex-col gap-3">
+          <div>
+            <label className="label">画像プロンプト</label>
+            <textarea
+              className="field h-28 resize-y"
+              value={form.imagePrompt}
+              disabled={disabled.imagePrompt}
+              placeholder={
+                disabled.imagePrompt
+                  ? '画像から動画モードでは使用しません'
+                  : '自然文 1 段落で詳細に'
+              }
+              onChange={(event) => patch({ imagePrompt: event.target.value })}
+            />
+            <FieldError message={fieldErrors.image_prompt} />
+          </div>
+          <div>
+            <label className="label">動画プロンプト</label>
+            <textarea
+              className="field h-28 resize-y"
+              value={form.videoPrompt}
+              disabled={disabled.videoPrompt}
+              placeholder={
+                disabled.videoPrompt
+                  ? '画像のみモードでは使用しません'
+                  : '1 段落 4〜8 文。動き・カメラ・音声を含める'
+              }
+              onChange={(event) => patch({ videoPrompt: event.target.value })}
+            />
+            <FieldError message={fieldErrors.video_prompt} />
+          </div>
+        </div>
+      </Section>
+
+      <Section
+        title="動画ネガティブ"
+        right={
+          <button
+            className="text-xs text-slate-400 hover:text-slate-200"
+            onClick={() => setShowAdvanced((value) => !value)}
+          >
+            {showAdvanced ? '閉じる' : '詳細設定'}
+          </button>
+        }
+      >
+        {showAdvanced && (
+          <div className="flex flex-col gap-2">
+            <select
+              className="field"
+              value={form.negativePreset}
+              disabled={disabled.negative}
+              onChange={(event) => {
+                const key = event.target.value
+                patch({
+                  negativePreset: key,
+                  negativePrompt:
+                    key === 'custom'
+                      ? form.negativePrompt
+                      : (negativePresets[key] ?? form.negativePrompt),
+                })
+              }}
+            >
+              {Object.keys(negativePresets).map((key) => (
+                <option key={key} value={key}>
+                  {NEGATIVE_PRESET_LABELS[key] ?? key}
+                </option>
+              ))}
+              <option value="custom">{NEGATIVE_PRESET_LABELS.custom}</option>
+            </select>
+            <textarea
+              className="field h-20 resize-y font-mono text-xs"
+              value={form.negativePrompt}
+              disabled={disabled.negative}
+              onChange={(event) =>
+                patch({ negativePrompt: event.target.value, negativePreset: 'custom' })
+              }
+            />
+          </div>
+        )}
+        {!showAdvanced && (
+          <p className="truncate text-xs text-slate-500">
+            {NEGATIVE_PRESET_LABELS[form.negativePreset] ?? form.negativePreset}:{' '}
+            {form.negativePrompt}
+          </p>
+        )}
+      </Section>
+
+      {form.mode === 'i2v' && (
+        <Section title="開始フレーム">
+          <div className="flex flex-col gap-2">
+            <div className="flex items-center gap-2">
+              <input
+                ref={imageInput}
+                type="file"
+                accept="image/*"
+                className="hidden"
+                onChange={(event) => {
+                  const file = event.target.files?.[0]
+                  if (file) void upload('image', file)
+                  event.target.value = ''
+                }}
+              />
+              <button
+                className="btn-ghost text-xs"
+                disabled={busyUpload}
+                onClick={() => imageInput.current?.click()}
+              >
+                画像をアップロード
+              </button>
+              {form.sourceImage && (
+                <button
+                  className="btn-ghost text-xs"
+                  onClick={() => patch({ sourceImage: '' })}
+                >
+                  クリア
+                </button>
+              )}
+            </div>
+            <select
+              className="field"
+              value={form.sourceImage}
+              onChange={(event) => patch({ sourceImage: event.target.value })}
+            >
+              <option value="">（未選択）</option>
+              {form.sourceImage &&
+                !imageAssets.some((asset) => asset.url === form.sourceImage) && (
+                  <option value={form.sourceImage}>{form.sourceImage}</option>
+                )}
+              {imageAssets.map((asset) => (
+                <option key={asset.url} value={asset.url}>
+                  {asset.name}
+                </option>
+              ))}
+            </select>
+
+            {lastFrameJobs.length > 0 && (
+              <div>
+                <label className="label">履歴のラストフレームから選択</label>
+                <div className="flex gap-2 overflow-x-auto pb-1">
+                  {lastFrameJobs.slice(0, 24).map((job) => (
+                    <button
+                      key={job.id}
+                      title={job.id}
+                      disabled={busyUpload}
+                      className="shrink-0 rounded border border-ink-600 hover:border-accent-500"
+                      onClick={() => void useLastFrame(job)}
+                    >
+                      <img
+                        src={job.last_frame_url ?? ''}
+                        alt={job.id}
+                        className="h-16 w-24 rounded object-cover"
+                      />
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
+            {form.sourceImage && (
+              <img
+                src={form.sourceImage}
+                alt="開始フレーム"
+                className="max-h-40 w-fit rounded border border-ink-600 object-contain"
+              />
+            )}
+            <p className="text-[11px] text-slate-500">
+              履歴のラストフレームから続きを生成する場合は、履歴詳細の「続きを生成」を使ってください。
+            </p>
+            <FieldError message={fieldErrors.source_image} />
+          </div>
+        </Section>
+      )}
+
+      <Section title="解像度">
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className="label">アスペクト比</label>
+            {aspectRatios.length > 0 ? (
+              <select
+                className="field"
+                value={form.aspectRatio}
+                onChange={(event) => patch({ aspectRatio: event.target.value })}
+              >
+                {!aspectRatios.includes(form.aspectRatio) && (
+                  <option value={form.aspectRatio}>{form.aspectRatio}</option>
+                )}
+                {aspectRatios.map((ratio) => (
+                  <option key={ratio} value={ratio}>
+                    {ratio}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                className="field"
+                value={form.aspectRatio}
+                placeholder="4:3 (Standard)"
+                onChange={(event) => patch({ aspectRatio: event.target.value })}
+              />
+            )}
+          </div>
+          <div>
+            <label className="label">メガピクセル</label>
+            <input
+              className="field"
+              type="number"
+              step="0.05"
+              min="0.1"
+              value={form.megapixels}
+              onChange={(event) =>
+                patch({ megapixels: Number(event.target.value) || 0 })
+              }
+            />
+          </div>
+        </div>
+      </Section>
+
+      <Section title="LoRA">
+        <div
+          className={
+            disabled.loras ? 'pointer-events-none opacity-40' : undefined
+          }
+        >
+          <div className="flex flex-wrap gap-1.5">
+            {availableLoras.length === 0 && (
+              <p className="text-xs text-slate-500">
+                登録済み LoRA がありません（設定 → LoRA 管理で追加）
+              </p>
+            )}
+            {availableLoras.map((lora) => {
+              const active = form.loras.some((item) => item.id === lora.id)
+              return (
+                <button
+                  key={lora.id}
+                  className={`chip ${
+                    active
+                      ? 'border-accent-500 bg-accent-500/20 text-accent-400'
+                      : 'border-ink-500 bg-ink-700 text-slate-300 hover:bg-ink-600'
+                  }`}
+                  disabled={disabled.loras}
+                  onClick={() => toggleLora(lora)}
+                >
+                  {lora.display_name}
+                </button>
+              )
+            })}
+          </div>
+
+          {form.loras.length > 0 && (
+            <div className="mt-3 flex flex-col gap-2">
+              {form.loras.map((lora, index) => (
+                <div key={lora.id} className="flex items-center gap-2">
+                  <span className="w-24 shrink-0 truncate text-xs text-slate-300">
+                    {lora.display_name}
+                  </span>
+                  <input
+                    type="range"
+                    min="0"
+                    max="2"
+                    step="0.05"
+                    className="flex-1 accent-accent-500"
+                    value={lora.strength}
+                    disabled={disabled.loras}
+                    onChange={(event) => {
+                      const next = [...form.loras]
+                      next[index] = { ...lora, strength: Number(event.target.value) }
+                      patch({ loras: next })
+                    }}
+                  />
+                  <span className="w-10 text-right text-xs tabular-nums text-slate-400">
+                    {lora.strength.toFixed(2)}
+                  </span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          <div className="mt-3">
+            <div className="flex items-center justify-between">
+              <label className="label">トリガーワード（自動連結・編集可）</label>
+              {form.triggerDirty && (
+                <button
+                  className="mb-1 text-[11px] text-slate-400 hover:text-slate-200"
+                  onClick={() =>
+                    patch({
+                      triggerDirty: false,
+                      triggerText: joinTriggers(form.loras),
+                    })
+                  }
+                >
+                  自動連結に戻す
+                </button>
+              )}
+            </div>
+            <input
+              className="field"
+              value={form.triggerText}
+              disabled={disabled.trigger}
+              onChange={(event) =>
+                patch({ triggerText: event.target.value, triggerDirty: true })
+              }
+            />
+          </div>
+        </div>
+      </Section>
+
+      <Section title="リファレンス音声">
+        <div className={disabled.audio ? 'pointer-events-none opacity-40' : undefined}>
+          <div className="flex flex-col gap-2">
+            <select
+              className="field"
+              value={form.audioPath}
+              disabled={disabled.audio}
+              onChange={(event) => patch({ audioPath: event.target.value })}
+            >
+              <option value="">（未選択）</option>
+              {!audioAssets.some((asset) => asset.url === form.audioPath) &&
+                form.audioPath && (
+                  <option value={form.audioPath}>{form.audioPath}</option>
+                )}
+              {audioAssets.map((asset) => (
+                <option key={asset.url} value={asset.url}>
+                  {asset.name}
+                </option>
+              ))}
+            </select>
+            <div className="flex items-center gap-2">
+              <input
+                ref={audioInput}
+                type="file"
+                accept="audio/*"
+                className="hidden"
+                onChange={(event) => {
+                  const file = event.target.files?.[0]
+                  if (file) void upload('audio', file)
+                  event.target.value = ''
+                }}
+              />
+              <button
+                className="btn-ghost text-xs"
+                disabled={busyUpload || disabled.audio}
+                onClick={() => audioInput.current?.click()}
+              >
+                音声をアップロード
+              </button>
+              {form.audioPath && (
+                <audio className="h-8 flex-1" controls src={form.audioPath} />
+              )}
+            </div>
+            <FieldError message={fieldErrors.audio_path} />
+          </div>
+        </div>
+      </Section>
+
+      <Section title="出力設定">
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className="label">秒数（上限なし）</label>
+            <input
+              className="field"
+              type="number"
+              min="1"
+              step="1"
+              value={form.duration}
+              disabled={disabled.duration}
+              onChange={(event) => patch({ duration: Number(event.target.value) || 0 })}
+            />
+          </div>
+          <div>
+            <label className="label">fps</label>
+            <input
+              className="field"
+              type="number"
+              min="1"
+              step="1"
+              value={form.fps}
+              disabled={disabled.fps}
+              onChange={(event) => patch({ fps: Number(event.target.value) || 0 })}
+            />
+          </div>
+        </div>
+        <p className="mt-1 text-[11px] text-slate-500">
+          長尺は VRAM 次第で ComfyUI 側がエラーになることがあります。
+        </p>
+        <div className="mt-3 flex items-center gap-2">
+          <label className="flex items-center gap-2 text-xs text-slate-300">
+            <input
+              type="checkbox"
+              className="accent-accent-500"
+              checked={form.seedLocked}
+              onChange={(event) => patch({ seedLocked: event.target.checked })}
+            />
+            seed 固定
+          </label>
+          <input
+            className="field flex-1"
+            type="number"
+            min="0"
+            value={form.seed}
+            disabled={!form.seedLocked}
+            onChange={(event) => patch({ seed: Number(event.target.value) || 0 })}
+          />
+        </div>
+      </Section>
+
+      {uploadError && <Banner onClose={() => setUploadError(null)}>{uploadError}</Banner>}
+
+      <button className="btn-primary w-full py-2.5" onClick={onSubmit} disabled={submitting}>
+        {submitting ? '送信中…' : '実行'}
+      </button>
+    </div>
+  )
+}

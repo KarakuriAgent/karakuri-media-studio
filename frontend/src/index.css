@@ -1,0 +1,55 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+  }
+  body {
+    @apply bg-ink-900 text-slate-200 antialiased;
+    font-family: system-ui, -apple-system, 'Segoe UI', 'Noto Sans JP', sans-serif;
+  }
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply rounded bg-ink-500;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+}
+
+@layer components {
+  .field {
+    @apply w-full rounded-md border border-ink-500 bg-ink-800 px-3 py-2 text-sm text-slate-100
+      placeholder:text-slate-500 focus:border-accent-500 focus:outline-none
+      disabled:cursor-not-allowed disabled:opacity-40;
+  }
+  .label {
+    @apply mb-1 block text-xs font-medium tracking-wide text-slate-400;
+  }
+  .btn {
+    @apply inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-2 text-sm
+      font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40;
+  }
+  .btn-primary {
+    @apply btn bg-accent-500 text-white hover:bg-accent-600;
+  }
+  .btn-ghost {
+    @apply btn border border-ink-500 bg-ink-700 text-slate-300 hover:bg-ink-600;
+  }
+  .btn-danger {
+    @apply btn border border-red-900/60 bg-red-950/40 text-red-300 hover:bg-red-900/40;
+  }
+  .card {
+    @apply rounded-lg border border-ink-600 bg-ink-800;
+  }
+  .chip {
+    @apply inline-flex items-center gap-1 rounded-full border px-3 py-1 text-xs transition-colors;
+  }
+}
