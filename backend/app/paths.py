@@ -7,6 +7,8 @@ OUTPUTS_DIR = ROOT / "outputs"
 ASSETS_DIR = ROOT / "assets"
 RUNTIME_DIR = ROOT / "runtime"
 GROK_WORKDIR = RUNTIME_DIR / "grok-workdir"
+# One work dir per agent session (AGENT-MODE §5.2).
+AGENT_SESSIONS_DIR = RUNTIME_DIR / "agent-sessions"
 
 FRONTEND_DIST_DIR = ROOT / "frontend" / "dist"
 
@@ -16,5 +18,5 @@ WORKFLOW_TEMPLATE_PATH = ROOT / "video-gen.json"
 
 
 def ensure_dirs() -> None:
-    for d in (OUTPUTS_DIR, ASSETS_DIR, RUNTIME_DIR, GROK_WORKDIR):
+    for d in (OUTPUTS_DIR, ASSETS_DIR, RUNTIME_DIR, GROK_WORKDIR, AGENT_SESSIONS_DIR):
         d.mkdir(parents=True, exist_ok=True)

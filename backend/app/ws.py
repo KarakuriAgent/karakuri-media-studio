@@ -18,7 +18,7 @@ from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from .models import JobProgress
+from .models import AgentArtifact, AgentProgress, JobProgress
 
 log = logging.getLogger(__name__)
 
@@ -85,6 +85,41 @@ async def publish(
             "status": status,
             "node": node,
             "progress": progress,
+            "message": message,
+        }
+    await hub.broadcast(payload)
+
+
+async def publish_agent(
+    session_id: str,
+    status: str,
+    *,
+    task_id: str | None = None,
+    task_status: str | None = None,
+    job_id: str | None = None,
+    artifact: AgentArtifact | None = None,
+    message: str | None = None,
+) -> None:
+    """Broadcast one agent event (``type: "agent"``). Never raises."""
+    try:
+        payload = AgentProgress(
+            session_id=session_id,
+            status=status,  # type: ignore[arg-type]
+            task_id=task_id,
+            task_status=task_status,  # type: ignore[arg-type]
+            job_id=job_id,
+            artifact=artifact,
+            message=message,
+        ).model_dump()
+    except Exception:  # noqa: BLE001 - an unknown status must not break the loop
+        payload = {
+            "type": "agent",
+            "session_id": session_id,
+            "status": status,
+            "task_id": task_id,
+            "task_status": task_status,
+            "job_id": job_id,
+            "artifact": artifact.model_dump() if artifact else None,
             "message": message,
         }
     await hub.broadcast(payload)

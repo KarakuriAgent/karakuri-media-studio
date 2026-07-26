@@ -1,4 +1,10 @@
 import type {
+  AgentApprove,
+  AgentCheckinReply,
+  AgentReply,
+  AgentSession,
+  AgentSessionCreate,
+  AgentSessionSummary,
   Asset,
   ChatReply,
   ChatSession,
@@ -147,6 +153,26 @@ export const api = {
   getChatSession: (id: string) => request<ChatSession>(`/api/chat/sessions/${id}`),
   sendChatMessage: (id: string, content: string) =>
     json<ChatReply>('POST', `/api/chat/sessions/${id}/messages`, { content }),
+
+  // agent mode (AGENT-MODE §5.1)
+  createAgentSession: (payload: AgentSessionCreate) =>
+    json<AgentSession>('POST', '/api/agent/sessions', payload),
+  listAgentSessions: (limit = 50) =>
+    request<AgentSessionSummary[]>(`/api/agent/sessions?limit=${limit}`),
+  getAgentSession: (id: string) =>
+    request<AgentSession>(`/api/agent/sessions/${id}`),
+  deleteAgentSession: (id: string) =>
+    json<void>('DELETE', `/api/agent/sessions/${id}`),
+  sendAgentMessage: (id: string, content: string) =>
+    json<AgentReply>('POST', `/api/agent/sessions/${id}/messages`, { content }),
+  approveAgentPlan: (id: string, body: AgentApprove = {}) =>
+    json<AgentReply>('POST', `/api/agent/sessions/${id}/approve`, body),
+  replyAgentCheckin: (id: string, body: AgentCheckinReply) =>
+    json<AgentReply>('POST', `/api/agent/sessions/${id}/checkin`, body),
+  stopAgentSession: (id: string) =>
+    json<AgentSession>('POST', `/api/agent/sessions/${id}/stop`),
+  agentArtifactUrl: (id: string, name: string) =>
+    `/api/agent/sessions/${id}/artifacts/${name.split('/').map(encodeURIComponent).join('/')}`,
 }
 
 export function wsUrl(path = '/api/ws'): string {

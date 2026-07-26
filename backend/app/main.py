@@ -6,12 +6,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import ws
+from . import agent_runner, ws
 from .config import load_settings
 from .db import init_db
 from .jobs import runner
 from .paths import ASSETS_DIR, FRONTEND_DIST_DIR, OUTPUTS_DIR, ensure_dirs
 from .routers import (
+    agent,
     assets,
     chat,
     health,
@@ -32,6 +33,7 @@ async def lifespan(app: FastAPI):
     try:
         yield
     finally:
+        await agent_runner.stop_all()
         await runner.stop()
 
 
@@ -53,6 +55,7 @@ app.include_router(assets.router)
 app.include_router(options.router)
 app.include_router(chat.router)
 app.include_router(jobs.router)
+app.include_router(agent.router)
 app.include_router(ws.router)
 
 ensure_dirs()

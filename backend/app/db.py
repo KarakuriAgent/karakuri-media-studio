@@ -43,7 +43,21 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
   messages   TEXT NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS agent_sessions (
+  id           TEXT PRIMARY KEY,
+  created_at   TEXT NOT NULL,
+  title        TEXT NOT NULL DEFAULT '',
+  status       TEXT NOT NULL DEFAULT 'idle',
+  checkin_mode TEXT NOT NULL DEFAULT 'milestone',
+  auto_limit   INTEGER NOT NULL DEFAULT 5,
+  messages     TEXT NOT NULL DEFAULT '[]',
+  plan         TEXT NOT NULL DEFAULT '{}',
+  artifacts    TEXT NOT NULL DEFAULT '[]'
+);
+
 CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_sessions_created_at
+  ON agent_sessions(created_at DESC);
 """
 
 @asynccontextmanager

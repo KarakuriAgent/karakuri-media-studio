@@ -7,9 +7,17 @@ import HistoryGallery from './components/HistoryGallery'
 import JobDetail from './components/JobDetail'
 import ResultPane from './components/ResultPane'
 import SettingsPage from './components/SettingsPage'
+import AgentView from './components/agent/AgentView'
 import { Banner } from './components/ui'
 import { initialForm, type FormState } from './form'
-import type { Health, Job, JobCreate, JobProgress, Options } from './types'
+import type {
+  AgentProgress,
+  Health,
+  Job,
+  JobCreate,
+  JobProgress,
+  Options,
+} from './types'
 
 const ACTIVE_STATUSES = ['queued', 'prompting', 'running']
 
@@ -31,7 +39,8 @@ export default function App() {
   const [detailBusy, setDetailBusy] = useState(false)
   const [detailError, setDetailError] = useState<string | null>(null)
   const [chatOpen, setChatOpen] = useState(false)
-  const [view, setView] = useState<'main' | 'settings'>('main')
+  const [view, setView] = useState<'main' | 'agent' | 'settings'>('main')
+  const [agentEvent, setAgentEvent] = useState<AgentProgress | null>(null)
   const [chatSessionId, setChatSessionId] = useState<string | null>(null)
 
   const patch = useCallback(
@@ -122,7 +131,14 @@ export default function App() {
       socket.onerror = () => socket?.close()
       socket.onmessage = (event) => {
         try {
-          const payload = JSON.parse(event.data as string) as JobProgress
+          const frame = JSON.parse(event.data as string) as
+            | JobProgress
+            | AgentProgress
+          if (frame?.type === 'agent') {
+            setAgentEvent(frame)
+            return
+          }
+          const payload = frame as JobProgress
           if (payload?.type !== 'job') return
           setProgress((previous) => ({ ...previous, [payload.job_id]: payload }))
           if (!ACTIVE_STATUSES.includes(payload.status)) void reloadRef.current()
@@ -283,6 +299,8 @@ export default function App() {
         onRefresh={() => void loadHealth()}
         onOpenSettings={() => setView('settings')}
         wsConnected={wsConnected}
+        view={view}
+        onView={setView}
       />
 
       {errors.length > 0 && (
@@ -310,6 +328,8 @@ export default function App() {
           }}
         />
       )}
+
+      {view === 'agent' && <AgentView event={agentEvent} progress={progress} />}
 
       {view === 'main' && (
         <>

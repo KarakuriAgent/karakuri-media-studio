@@ -123,11 +123,12 @@ def _normalize(payload: object) -> dict[str, str | None] | None:
     return result
 
 
-def extract_result(text: str) -> dict[str, str | None] | None:
-    """Return ``{image_prompt, video_prompt, notes}`` from an answer, or None.
+def iter_json_objects(text: str):
+    """Yield every JSON value found in ``text``, best candidate first.
 
-    ```json fences win; otherwise the first balanced ``{…}`` block that parses
-    into a usable object is used.
+    ```json fences win, then any other fence, then the balanced ``{…}`` blocks.
+    Shared by the chat result parser and the agent action protocol
+    (AGENT-MODE §4).
     """
     for candidate in _candidates(text or ""):
         candidate = candidate.strip()
@@ -138,9 +139,14 @@ def extract_result(text: str) -> dict[str, str | None] | None:
                 continue
             candidate = inner
         try:
-            parsed = json.loads(candidate)
+            yield json.loads(candidate)
         except ValueError:
             continue
+
+
+def extract_result(text: str) -> dict[str, str | None] | None:
+    """Return ``{image_prompt, video_prompt, notes}`` from an answer, or None."""
+    for parsed in iter_json_objects(text):
         result = _normalize(parsed)
         if result is not None:
             return result
@@ -228,6 +234,7 @@ class GrokCliClient(LLMClient):
         model: str | None = None,
         workdir: str | Path | None = None,
         timeout: float = DEFAULT_TIMEOUT,
+        extra_args: list[str] | None = None,
     ) -> None:
         settings = load_settings()
         self.command = (command if command is not None else settings.grok_command) or "grok"
@@ -236,12 +243,16 @@ class GrokCliClient(LLMClient):
             workdir or settings.grok_workdir or GROK_WORKDIR
         )
         self.timeout = timeout
+        # Tool-permission flags for agent mode (AGENT-MODE §3.4). The CLI is
+        # beta, so the flags stay configurable instead of hard coded.
+        self.extra_args = list(extra_args or [])
 
     async def complete(self, prompt: str) -> str:
+        extra = self.extra_args
         attempts: list[list[str]] = []
         if self.model:
-            attempts.append([self.command, "--model", self.model, "-p", prompt])
-        attempts.append([self.command, "-p", prompt])
+            attempts.append([self.command, "--model", self.model, *extra, "-p", prompt])
+        attempts.append([self.command, *extra, "-p", prompt])
 
         last_failure = ""
         for argv in attempts:
@@ -280,6 +291,21 @@ class GrokCliClient(LLMClient):
 def get_client() -> LLMClient:
     """Factory: CLI by default; swap here for the API-key backed client."""
     return GrokCliClient()
+
+
+def get_agent_client(workdir: str | Path) -> LLMClient:
+    """Client for one agent session (AGENT-MODE §3.4 / §6).
+
+    Runs inside the session work dir with the longer agent timeout and the
+    configured tool-permission flags (empty by default -> same safe ``-p`` run
+    as the chat flow).
+    """
+    settings = load_settings()
+    return GrokCliClient(
+        workdir=workdir,
+        timeout=settings.agent_grok_timeout or DEFAULT_TIMEOUT,
+        extra_args=settings.agent_grok_args,
+    )
 
 
 async def check_grok() -> HealthStatus:

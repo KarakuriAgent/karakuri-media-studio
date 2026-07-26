@@ -15,6 +15,11 @@ class Settings(BaseModel):
     grok_command: str = "grok"
     grok_model: str = "grok-4.5"
     grok_workdir: str = ""
+    # Agent mode (AGENT-MODE §3.4): extra CLI flags (tool permissions) and the
+    # longer timeout research / inspection turns need.
+    agent_grok_args: list[str] = Field(default_factory=list)
+    agent_grok_timeout: float = 300.0
+    agent_max_plan_tasks: int = 5
     # {"<node_id>.<field>": "file.safetensors"} — only the entries that differ
     # from the workflow template are stored (SPEC §3.3).
     model_overrides: dict[str, str] = Field(default_factory=dict)
@@ -29,6 +34,9 @@ class SettingsUpdate(BaseModel):
     grok_model: str | None = None
     grok_workdir: str | None = None
     model_overrides: dict[str, str] | None = None
+    agent_grok_args: list[str] | None = None
+    agent_grok_timeout: float | None = None
+    agent_max_plan_tasks: int | None = None
 
 
 class ModelField(BaseModel):
@@ -336,6 +344,157 @@ class Health(BaseModel):
     app: Literal["ok"] = "ok"
     comfyui: HealthStatus
     grok: HealthStatus
+
+
+# --------------------------------------------------------------------------
+# agent mode (AGENT-MODE §4 / §5)
+# --------------------------------------------------------------------------
+
+AgentStatus = Literal[
+    "idle", "planning", "running", "waiting_checkin", "stopped", "done"
+]
+AgentCheckinMode = Literal["every_job", "milestone", "auto"]
+AgentActionName = Literal[
+    "plan", "run_task", "continue", "rerun", "inspect", "note", "checkin", "done"
+]
+AgentTaskStatus = Literal["pending", "running", "done", "failed", "skipped"]
+
+
+class AgentMessage(BaseModel):
+    """One entry of the制作記録 transcript (AGENT-MODE §4).
+
+    ``event`` は task_started / task_done / task_failed / inspect_result 等の
+    システムイベント、``checkin`` はユーザーへの確認吹き出し。
+    """
+
+    role: Literal["system", "user", "assistant", "event", "checkin"]
+    content: str
+    ts: str
+    kind: str | None = None  # event / checkin の種別
+    data: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentTask(BaseModel):
+    """One planned job. ``job`` is a validated :class:`JobCreate` snapshot."""
+
+    id: str = ""
+    label: str = ""
+    job: dict[str, Any] = Field(default_factory=dict)
+    status: AgentTaskStatus = "pending"
+    job_id: str | None = None
+    error: str | None = None
+    retries: int = 0
+
+
+class AgentPlan(BaseModel):
+    version: int = 0
+    notes: str = ""
+    approved: bool = False
+    tasks: list[AgentTask] = Field(default_factory=list)
+
+
+class AgentArtifact(BaseModel):
+    """成果物パネルの 1 カード（AGENT-MODE §1）。"""
+
+    kind: Literal["plan", "note", "research", "frame", "image", "video"]
+    title: str = ""
+    ts: str
+    name: str = ""  # workdir 相対のファイル名（外部成果物は空）
+    url: str | None = None
+    job_id: str | None = None
+    text: str | None = None
+
+
+class AgentSession(BaseModel):
+    id: str
+    created_at: str
+    title: str = ""
+    status: AgentStatus = "idle"
+    checkin_mode: AgentCheckinMode = "milestone"
+    auto_limit: int = 5
+    messages: list[AgentMessage] = Field(default_factory=list)
+    plan: AgentPlan = Field(default_factory=AgentPlan)
+    artifacts: list[AgentArtifact] = Field(default_factory=list)
+
+
+class AgentSessionSummary(BaseModel):
+    """GET /api/agent/sessions の一覧行（メッセージ本体は含めない）。"""
+
+    id: str
+    created_at: str
+    title: str = ""
+    status: AgentStatus = "idle"
+    checkin_mode: AgentCheckinMode = "milestone"
+    auto_limit: int = 5
+    message_count: int = 0
+    task_count: int = 0
+    artifact_count: int = 0
+
+
+class AgentSessionCreate(BaseModel):
+    """POST /api/agent/sessions body (AGENT-MODE §5.1)."""
+
+    title: str = ""
+    goal: str = ""
+    checkin_mode: AgentCheckinMode = "milestone"
+    auto_limit: int = Field(default=5, ge=1, le=50)
+
+
+class AgentSendMessage(BaseModel):
+    content: str
+
+
+class AgentApprove(BaseModel):
+    """POST .../approve body."""
+
+    approved: bool = True
+    note: str = ""
+
+
+class AgentCheckinReply(BaseModel):
+    """POST .../checkin body."""
+
+    content: str = ""
+    choice: str | None = None
+
+
+class AgentAction(BaseModel):
+    """Parsed action object (AGENT-MODE §4). Unused fields stay at defaults."""
+
+    action: AgentActionName
+    notes: str = ""
+    summary: str = ""
+    question: str = ""
+    options: list[str] = Field(default_factory=list)
+    tasks: list[AgentTask] = Field(default_factory=list)
+    task_id: str | None = None
+    job_id: str | None = None
+    interval: float = 1.0
+    title: str = ""
+    filename: str | None = None
+    content: str = ""
+    overrides: dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentReply(BaseModel):
+    """POST .../messages / approve / checkin のレスポンス。"""
+
+    content: str = ""
+    action: AgentAction | None = None
+    session: AgentSession
+
+
+class AgentProgress(BaseModel):
+    """Payload broadcast on WS /api/ws for agent sessions (AGENT-MODE §5.1)."""
+
+    type: Literal["agent"] = "agent"
+    session_id: str
+    status: AgentStatus
+    task_id: str | None = None
+    task_status: AgentTaskStatus | None = None
+    job_id: str | None = None
+    artifact: AgentArtifact | None = None
+    message: str | None = None
 
 
 class Options(BaseModel):

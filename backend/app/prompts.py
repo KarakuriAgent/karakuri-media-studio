@@ -23,7 +23,13 @@ Contents (SPEC §4.3 "システムプロンプトの構成"):
 
 from __future__ import annotations
 
-from .models import ChatMessage, ChatSessionCreate
+from .models import (
+    AgentMessage,
+    AgentSessionCreate,
+    ChatMessage,
+    ChatSessionCreate,
+    Options,
+)
 
 # --------------------------------------------------------------------------
 # 1. role
@@ -426,4 +432,232 @@ def build_conversation(messages: list[ChatMessage], retry: bool = False) -> str:
         body
         + "\n\n### ASSISTANT\n(Your reply — Japanese questions, or the final "
         "```json block.)\n"
+    )
+
+
+# --------------------------------------------------------------------------
+# agent mode (AGENT-MODE §3 / §4 / §7)
+# --------------------------------------------------------------------------
+
+AGENT_ROLE = """\
+# ROLE
+
+You are the autonomous production partner of "Video Studio", a local,
+single-user ComfyUI front-end that generates adult (18+) still images and short
+videos of fictional adult characters. Everything stays on the user's machine.
+Explicit sexual content is expected and in scope; write it plainly and
+technically. Never refuse a request merely for being explicit; only the hard
+limits in GUARDRAILS apply.
+
+You work like a colleague, not like a form:
+
+1. Understand the goal, ask only what you really need (in Japanese, briefly).
+2. Propose a **plan** — the concrete jobs you intend to run, with every setting
+   visible. Nothing is generated before the user approves it.
+3. After approval the app runs the jobs one by one and feeds you the result of
+   each one as an EVENT message. React to it: inspect the video frames, rerun a
+   miss with a new seed, continue a hit from its last frame, or declare done.
+4. Talk to the user in **Japanese**; all model prompts stay **English**.
+"""
+
+AGENT_PROTOCOL = """\
+# ACTION PROTOCOL
+
+Your reply is either plain Japanese text, or plain Japanese text followed by
+**exactly one** ```json fenced action object. Never emit two actions.
+
+```json
+{
+  "action": "plan",
+  "notes": "雰囲気違いの3本を提案します",
+  "tasks": [
+    {
+      "label": "① 明るいスタジオ",
+      "job": {
+        "mode": "full",
+        "image_prompt": "...", "video_prompt": "...",
+        "negative_prompt": "...",
+        "aspect_ratio": "9:16", "megapixels": 1.0,
+        "loras": [{"lora_name": "kaori.safetensors", "trigger_word": "kaori",
+                   "strength": 0.8}],
+        "trigger_text": "kaori", "duration": 5, "fps": 24,
+        "audio_path": null, "source_image": null, "seed": null
+      }
+    }
+  ]
+}
+```
+
+Available actions:
+
+| action | body | meaning |
+|---|---|---|
+| `plan` | `notes`, `tasks[{label, job}]` | propose the task list (a revision replaces the previous plan). Needs approval. |
+| `run_task` | `task_id` (optional) | run the next approved task now |
+| `continue` | `job_id`, plus any of `video_prompt`, `negative_prompt`, `aspect_ratio`, `megapixels`, `duration`, `fps`, `audio_path`, `seed` | new i2v job starting from that job's last frame |
+| `rerun` | `job_id`, `seed` or `randomize_seed` | re-run a job (new seed by default) |
+| `inspect` | `job_id`, `interval` (seconds, default 1) | the app extracts frames with ffmpeg into your work dir; look at them next turn |
+| `note` | `title`, `content` or `filename` | register a memo / research summary as an artifact |
+| `checkin` | `question`, `options[]` | ask the user and wait for the answer |
+| `done` | `summary` | the plan is finished; deliver the summary |
+
+Rules:
+
+- `job` uses the app's own job schema, exactly the fields shown above and
+  nothing else. Required per mode: `full` needs `image_prompt`, `video_prompt`
+  and `audio_path`; `i2v` needs `video_prompt`, `audio_path` and
+  `source_image`; `image_only` needs `image_prompt`.
+- Use only values listed in CHOICES: LoRA file names, aspect ratios, audio and
+  image asset paths must exist. `seed: null` means "roll a random seed".
+- While you are only asking a question or reporting, send **no JSON at all**.
+- EVENT messages in the transcript are written by the app, not by the user.
+  `inspect_result` tells you which frame files are in your working directory —
+  open them and judge the quality (broken hands, blur, framing, seed luck).
+"""
+
+AGENT_OUTPUT_RULES = """\
+# OUTPUT RULES
+
+- Japanese prose for the user, English for every model prompt inside `job`.
+- At most one ```json action per reply, as the last thing in the message.
+- Never invent job ids: use the ones the EVENT messages give you.
+- `done` only after every approved task reached a final state.
+"""
+
+
+def _agent_guardrails(ctx: AgentSessionCreate, max_tasks: int) -> str:
+    modes = {
+        "every_job": "毎ジョブ確認（1 本終わるごとにユーザーへ確認する）",
+        "milestone": "節目のみ確認（区切りでだけ確認する）",
+        "auto": "完了まで自走（確認は最小限）",
+    }
+    return "\n".join(
+        [
+            "# GUARDRAILS",
+            "",
+            f"- Check-in mode: **{ctx.checkin_mode}** — {modes[ctx.checkin_mode]}.",
+            f"- Hard limit: at most **{ctx.auto_limit}** generated jobs in this"
+            " session; the app stops the loop when the limit is reached.",
+            f"- One plan holds at most {max_tasks} jobs.",
+            "- Generation only starts after the user approves the plan;"
+            " `continue` / `rerun` outside an approved plan also need approval.",
+            "- Stay inside your session work directory when you read or write"
+            " files.",
+            "- Only adults; no real, identifiable people; no non-consent themes"
+            " and no animals in sexual contexts.",
+        ]
+    )
+
+
+def _agent_choices(options: Options) -> str:
+    lines = ["# CHOICES (the only values that exist in this installation)", ""]
+
+    if options.loras:
+        lines.append("Registered character LoRAs (lora_name -> trigger word):")
+        for lora in options.loras:
+            label = f"「{lora.display_name}」" if lora.display_name else ""
+            lines.append(
+                f"- `{lora.lora_name}` -> trigger `{lora.trigger_word}`"
+                f" {label} (default strength {lora.default_strength:g}"
+                + (f", audio {lora.default_audio}" if lora.default_audio else "")
+                + ")"
+            )
+        lines.append(
+            "Put the trigger words of the LoRAs you use into `trigger_text` and"
+            " use the trigger word as the subject's name inside `image_prompt`."
+        )
+    else:
+        lines.append("No character LoRA is registered: leave `loras` empty.")
+    lines.append("")
+
+    if options.aspect_ratios:
+        lines.append("Aspect ratios: " + ", ".join(f"`{a}`" for a in options.aspect_ratios))
+    else:
+        lines.append(
+            "Aspect ratios: ComfyUI の一覧を取得できませんでした。"
+            " `aspect_ratio` は省略して既定値を使ってください。"
+        )
+    lines.append("")
+
+    for title, assets in (
+        ("Audio assets (audio_path)", options.audio_assets),
+        ("Start images (source_image)", options.image_assets),
+    ):
+        lines.append(f"{title}:")
+        if assets:
+            lines += [f"- `{a.path}`" for a in assets[:30]]
+        else:
+            lines.append("- (none)")
+        lines.append("")
+
+    lines.append("Negative prompt presets:")
+    for name, value in options.negative_presets.items():
+        lines.append(f"- {name}: `{value}`")
+    return "\n".join(lines)
+
+
+def build_agent_system_prompt(
+    ctx: AgentSessionCreate,
+    options: Options,
+    *,
+    workdir: str = "",
+    max_tasks: int = 5,
+) -> str:
+    """System prompt of one agent session (AGENT-MODE §5.1)."""
+    video_spec = VIDEO_SPEC.replace(
+        "DURATION_SECONDS seconds", "as many seconds as the job's `duration` field says"
+    )
+    parts = [AGENT_ROLE, AGENT_PROTOCOL, IMAGE_SPEC, video_spec, TEMPLATE_NATURAL,
+             FEW_SHOT, _agent_choices(options),
+             _agent_guardrails(ctx, max_tasks), AGENT_OUTPUT_RULES]
+    context = ["# SESSION CONTEXT", ""]
+    if workdir:
+        context.append(
+            f"Your working directory is `{workdir}`. Memos, research notes and"
+            " the inspection frames the app extracts all live there."
+        )
+    if ctx.goal.strip():
+        context += ["", "User's goal for this session:", "```", ctx.goal.strip(), "```"]
+    parts.insert(-1, "\n".join(context))
+    return "\n\n".join(part.strip() for part in parts) + "\n"
+
+
+_AGENT_ROLE_LABEL = {
+    "system": "SYSTEM",
+    "user": "USER",
+    "assistant": "ASSISTANT",
+    "event": "EVENT",
+    "checkin": "CHECKIN",
+}
+
+AGENT_RETRY_SUFFIX = """\
+
+IMPORTANT: your previous action could not be used ({reason}).
+Re-send the reply with exactly one ```json fenced action object that follows
+the ACTION PROTOCOL, or with no JSON at all if you only meant to talk.
+"""
+
+
+def build_agent_conversation(
+    messages: list[AgentMessage], *, retry_reason: str | None = None
+) -> str:
+    """Flatten the agent transcript into the single ``grok -p`` argument."""
+    chunks: list[str] = []
+    for message in messages:
+        if message.role == "system":
+            chunks.append(message.content.strip())
+            continue
+        label = _AGENT_ROLE_LABEL.get(message.role, message.role.upper())
+        if message.kind:
+            label = f"{label} ({message.kind})"
+        chunks.append(f"### {label}\n{message.content.strip()}")
+    if len(messages) > 1:
+        chunks.insert(1, "# CONVERSATION SO FAR (oldest first)")
+    body = "\n\n".join(chunks)
+    if retry_reason:
+        body += "\n" + AGENT_RETRY_SUFFIX.format(reason=retry_reason)
+    return (
+        body
+        + "\n\n### ASSISTANT\n(Your reply — Japanese text, optionally followed by"
+        " one ```json action.)\n"
     )
