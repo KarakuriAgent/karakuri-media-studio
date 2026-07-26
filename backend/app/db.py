@@ -50,7 +50,7 @@ SEED_LORAS = [
     {
         "display_name": "かおり",
         "lora_name": "kohei06__yui__kaori.safetensors",
-        "trigger_word": "muted minimalist sketch style",
+        "trigger_word": "kaori",
         "default_strength": 1.0,
         "default_audio": None,
         "sort_order": 0,
@@ -74,6 +74,24 @@ async def init_db() -> None:
         await conn.executescript(SCHEMA)
         await conn.commit()
         await _seed_loras(conn)
+        await _fix_legacy_trigger_word(conn)
+
+
+# The first seed shipped the style tag left over from the original workflow as
+# kaori's trigger word; the real trigger is "kaori".  Repair existing databases
+# once, and only when the value is still that exact leftover (a value the user
+# has edited themselves is never touched).
+LEGACY_TRIGGER_WORD = "muted minimalist sketch style"
+
+
+async def _fix_legacy_trigger_word(conn: aiosqlite.Connection) -> None:
+    await conn.execute(
+        "UPDATE loras SET trigger_word = 'kaori'"
+        " WHERE lora_name = 'kohei06__yui__kaori.safetensors'"
+        " AND trigger_word = ?",
+        (LEGACY_TRIGGER_WORD,),
+    )
+    await conn.commit()
 
 
 async def _seed_loras(conn: aiosqlite.Connection) -> None:

@@ -64,7 +64,7 @@ ComfyUI 上の `video-gen.json` ワークフロー（画像生成 → i2v 動画
 | アスペクト比 | `366.inputs.aspect_ratio` | `4:3 (Standard)` | セレクト（選択肢は `/object_info` の ResolutionSelector 定義から動的取得） |
 | メガピクセル | `366.inputs.megapixels` | `1` | 数値（0.25〜2 目安） |
 | LoRA（複数可） | `365:15` を起点に動的生成（§3.4） | kaori 1 件 | アプリ内 LoRA 登録リストから複数選択。各 LoRA に強度スライダー |
-| LoRA トリガーワード | `365:27.inputs.string_b` | （プロンプト末尾に連結される文字列） | 選択した LoRA のトリガーワードを自動連結（編集可）。トリガーワードは LoRA 登録リストで管理 |
+| LoRA トリガーワード | `365:27.inputs.string_a` | （プロンプト先頭に連結される文字列） | 選択した LoRA のトリガーワードを自動連結（編集可）。トリガーワードは LoRA 登録リストで管理 |
 | リファレンス音声 | `432.inputs.audio` | mp3 ファイル名 | ファイルアップロード（`/upload/image` で送信 → ファイル名を注入） |
 | 秒数 (Duration) | `433:331.inputs.value` | `10` | 数値・**上限なし**（フレーム数 = 秒数 × fps + 1 は `433:329` が計算。長尺は VRAM 次第で ComfyUI 側エラーになり得ることを UI に注記） |
 | フレームレート | `433:422.inputs.value` | `25` | 数値（既定 25、通常は固定でよい） |
@@ -104,7 +104,9 @@ ComfyUI 上の `video-gen.json` ワークフロー（画像生成 → i2v 動画
 
 - ノード ID はアプリが採番（`app_lora_0`, `app_lora_1`, …）。`365:15` はテンプレートから削除
 - LoRA 0 件選択時は `365:23` (Enable LoRA?) を `false` にする（1 件以上で `true`）
-- トリガーワードは選択 LoRA の trigger_word を `", "` で連結して `365:27.inputs.string_b` に設定（UI で編集可）
+- トリガーワードは選択 LoRA の trigger_word を `", "` で連結（UI で編集可）し、`365:27`（StringConcatenate）で**画像プロンプトの先頭**に付与する: `string_a` = トリガーワード（リテラル）、`string_b` = プロンプトのリンク、`delimiter` = `", "`
+  - Grok がプロンプト本文中で既にトリガーワードを使っている場合は重複を避けるため、カンマ区切りの語単位で（大文字小文字無視・単語境界一致）未使用の語だけを付与する
+  - 付与すべき語が無い場合は `string_a` と `delimiter` を空にして素通し（先頭に `", "` が残らないようにする）
 - 注意: 動画側（LTX）は別モデルのため画像側にのみ適用される。人物の同一性は生成画像経由で動画に引き継がれる
 
 ---
@@ -140,7 +142,7 @@ Cookie ベースの非公式 API は規約リスクがあるため**使わない
 - Krea 2 公式ガイド（krea-ai/krea-2 `docs/prompting.md`）準拠: **自然文 1 段落・長く詳細なほど良い**。画像内に文字を描画する場合は対象語を引用符で囲む
 - Grok 用システムプロンプトは Krea 2 公式の LLM 拡張プロンプト（`docs/expansion.txt` — video-gen.json のノード `365:18` に同一物が組込済み）をベースに、本アプリの用途・LoRA トリガー・出力 JSON 形式に合わせて調整する
 - 構成順序（ワークフロー内の既存プロンプトをテンプレートとして踏襲）:
-  1. LoRA トリガーワード（LoRA 有効時。アプリが `365:27` で自動連結するため Grok 出力には含めない）
+  1. LoRA トリガーワード（LoRA 有効時。Grok には表示名→トリガーワードの対応表を渡し、`image_prompt` の被写体名としてトリガーワードを文中で使わせる。未使用の語だけをアプリが `365:27` で先頭に補完する）
   2. 媒体・様式の宣言（例: "a single still frame from …" のようなスタイル定義）
   3. 被写体・ポーズ・構図の具体描写
   4. 表情・感情のディテール
@@ -262,7 +264,7 @@ CREATE TABLE chat_sessions (
 - 設定画面に LoRA 管理タブ（追加/編集/削除/並び替え）。`lora_name` は ComfyUI の LoRA 一覧から選ばせて typo を防ぐ
 - ジョブの `params` には選択した LoRA の配列 `[{lora_name, trigger_word, strength}]` をスナップショットとして保存（後から登録リストを変更しても過去ジョブの再現性を保つ）
 - 複数 LoRA 選択時の既定リファレンス音声は、選択順で最初に `default_audio` を持つ LoRA の値を採用（手動変更可）
-- 初期データ: kaori（`kohei06__yui__kaori.safetensors` + 現行トリガーワード）
+- 初期データ: かおり（`kohei06__yui__kaori.safetensors` / trigger_word `kaori`）
 
 ---
 

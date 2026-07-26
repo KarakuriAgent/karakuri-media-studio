@@ -119,7 +119,8 @@ Order the paragraph like the workflow's own reference prompt:
    "high detail". A short quality prefix like "masterpiece, very aesthetic" is
    idiomatic for this checkpoint and optional.
 
-Do NOT put LoRA trigger words in `image_prompt` — the app prepends them.
+Use the character's LoRA trigger word as the subject's name when one is listed
+in CONTEXT (see the rules there).
 """
 
 # --------------------------------------------------------------------------
@@ -216,9 +217,9 @@ adult Japanese woman in sex on a rumpled hotel bed. Starting from the given firs
 
 ## Image prompts — RedCraft / Krea 2
 
-Example I1 (this app's own reference prompt; the trigger word "kaori" at the
-front is added by the app, so your output would start at "a single still
-frame…"):
+Example I1 (this app's own reference prompt; note how the character's trigger
+word "kaori" opens the paragraph as the subject's name — write it exactly like
+this when that character is selected):
 ```
 kaori, a single still frame from a Japanese adult video, adult woman in doggystyle sex on a rumpled hotel bed with white sheets, on all fours with hips raised and back arched, body tense as if enduring each thrust. She glances back over her shoulder toward the camera with a shy, pleasure-enduring expression — brows gently furrowed, eyes half-closed and averted with embarrassment, lips tightly parted as she bites back a moan, cheeks pink with shame and heat, a tear-glistened sheen at the corner of one eye, messy dark hair falling across her flushed face. A man behind her holds her waist, bodies connected mid-thrust, light sweat on her bare skin. Harsh practical bedroom lighting mixed with soft overhead fill, slightly clinical AV set atmosphere, realistic skin texture, intimate three-quarter rear medium shot focusing on her bashful strained face and arched back, shallow depth of field, candid erotic still photography, high detail
 ```
@@ -292,6 +293,46 @@ def _mode_rules(mode: str) -> str:
     )
 
 
+def _trigger_lines(ctx: ChatSessionCreate) -> list[str]:
+    """Character section: the 日本語名 -> trigger word table plus the naming rules."""
+    triggers = ctx.trigger_text.strip() or ", ".join(
+        lora.trigger_word.strip() for lora in ctx.loras if lora.trigger_word.strip()
+    )
+    if not triggers:
+        return ["No character LoRA is selected."]
+
+    lines = [f"Active character LoRA trigger words: `{triggers}`."]
+    mapping = [
+        (getattr(lora, "display_name", "").strip(), lora.trigger_word.strip())
+        for lora in ctx.loras
+        if lora.trigger_word.strip()
+    ]
+    named = [(name, trigger) for name, trigger in mapping if name]
+    if named:
+        lines.append("")
+        lines.append(
+            "Character names (the Japanese name the user says -> the name to "
+            "write in the prompts):"
+        )
+        lines += [f"- 「{name}」 -> trigger word `{trigger}`" for name, trigger in named]
+    lines += [
+        "",
+        "Naming rules:",
+        "- When the user refers to a character by its Japanese name (e.g. "
+        "「かおり」), it means that trigger word's character.",
+        "- In `image_prompt`, use the **trigger word itself** as the subject's "
+        "name, naturally inside the sentence — at the very start or as the "
+        'grammatical subject, e.g. `kaori, an adult Japanese woman, …`.',
+        "- In `video_prompt`, describe the subject so that it is recognisably "
+        "the same person (the trigger word may be used there too).",
+        "- Never write the Japanese name inside the prompts; the prompts are "
+        "English only.",
+        "- Do not worry about duplication: the app prepends only the trigger "
+        "words you did not use, so writing them yourself is safe and preferred.",
+    ]
+    return lines
+
+
 def _context_section(
     ctx: ChatSessionCreate, start_image_filename: str | None = None
 ) -> str:
@@ -302,18 +343,7 @@ def _context_section(
     if ctx.mode != "image_only":
         lines.append(f"Clip duration: {ctx.duration:g} seconds, one continuous shot.")
     if ctx.mode != "i2v":
-        triggers = ctx.trigger_text.strip() or ", ".join(
-            lora.trigger_word.strip() for lora in ctx.loras if lora.trigger_word.strip()
-        )
-        if triggers:
-            lines.append(
-                "Active character LoRA trigger words: "
-                f"`{triggers}`. The app prepends them to the image prompt "
-                "automatically — you MUST NOT repeat them in `image_prompt`, "
-                "but do keep the described character consistent with them."
-            )
-        else:
-            lines.append("No character LoRA is selected.")
+        lines += _trigger_lines(ctx)
 
     if ctx.mode == "i2v" and start_image_filename:
         lines.append(

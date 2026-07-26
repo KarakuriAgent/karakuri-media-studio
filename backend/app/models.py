@@ -240,11 +240,22 @@ class ChatSession(BaseModel):
 PromptTemplate = Literal["natural", "tagged"]
 
 
+class ChatLoraRef(LoraRef):
+    """A selected LoRA as the chat sees it: the trigger word plus the human name.
+
+    ``display_name`` lets the system prompt map 「かおり」 -> ``kaori`` so Grok can
+    resolve the Japanese name the user actually types.  Job params keep the
+    plain :class:`LoraRef` snapshot.
+    """
+
+    display_name: str = ""
+
+
 class ChatSessionCreate(BaseModel):
     """POST /api/chat/sessions body: a snapshot of the generation form (§4.3)."""
 
     mode: JobMode = "full"
-    loras: list[LoraRef] = Field(default_factory=list)
+    loras: list[ChatLoraRef] = Field(default_factory=list)
     trigger_text: str = ""
     duration: float = 10.0
     image_prompt_draft: str = ""

@@ -13,6 +13,7 @@ from __future__ import annotations
 import copy
 import json
 import math
+import re
 from typing import Any
 
 from .models import GenerationParams
@@ -32,6 +33,7 @@ N_IMG_VAE_DECODE = "365:8"
 N_IMG_UNET = "365:10"
 N_IMG_LORA = "365:15"
 N_IMG_PROMPT = "365:19"
+N_IMG_PROMPT_SOURCE = "365:20"
 N_IMG_LORA_SWITCH = "365:22"
 N_IMG_LORA_ENABLE = "365:23"
 N_IMG_REFINE_ENABLE = "365:24"
@@ -122,6 +124,60 @@ def _inject_frame_count(wf: Workflow, params: GenerationParams) -> None:
     """
     frames = ltx_frame_count(params.duration, params.fps)
     _set(wf, N_VID_FRAMES_EXPR, "expression", f"a * 0 + b * 0 + {frames}")
+
+
+def split_triggers(trigger_text: str) -> list[str]:
+    """Comma-separated trigger text -> deduplicated, stripped words."""
+    words: list[str] = []
+    seen: set[str] = set()
+    for part in trigger_text.split(","):
+        word = part.strip()
+        key = word.casefold()
+        if word and key not in seen:
+            seen.add(key)
+            words.append(word)
+    return words
+
+
+def _mentions(text: str, word: str) -> bool:
+    """True if ``word`` already appears in ``text`` (case-insensitive, whole word)."""
+    pattern = rf"(?<!\w){re.escape(word)}(?!\w)"
+    return re.search(pattern, text, re.IGNORECASE) is not None
+
+
+def missing_triggers(trigger_text: str, image_prompt: str) -> str:
+    """The trigger words that ``image_prompt`` does not already contain (§3.4).
+
+    Grok is now told to weave the trigger word into the prompt itself, so the
+    app only fills in what is missing; an empty result means "prepend nothing".
+    """
+    return ", ".join(
+        word for word in split_triggers(trigger_text)
+        if not _mentions(image_prompt, word)
+    )
+
+
+def _inject_triggers(wf: Workflow, params: GenerationParams) -> None:
+    """Prepend the missing trigger words to the image prompt via ``365:27``.
+
+    The template concatenates ``string_a`` (the prompt link) + ``string_b``
+    (the trigger literal); we swap the two so the trigger comes **first**, the
+    position the LoRA was trained with.  When nothing has to be prepended both
+    the literal and the delimiter are emptied so the prompt passes through
+    untouched — never with a leading ", ".
+    """
+    node = wf.get(N_IMG_TRIGGER_CONCAT)
+    if node is None:
+        return
+    inputs = node.setdefault("inputs", {})
+    source = next(
+        (inputs[field] for field in ("string_a", "string_b") if _is_link(inputs.get(field))),
+        [N_IMG_PROMPT_SOURCE, 0],
+    )
+    prefix = missing_triggers(params.trigger_text, params.image_prompt)
+    inputs["string_a"] = prefix
+    inputs["string_b"] = source
+    inputs["delimiter"] = ", " if prefix else ""
 
 
 def _build_lora_chain(wf: Workflow, params: GenerationParams) -> None:
@@ -259,7 +315,7 @@ def build_workflow(template: Workflow, params: GenerationParams) -> Workflow:
     _set(wf, N_IMG_PROMPT, "value", params.image_prompt)
     _set(wf, N_IMG_KSAMPLER, "seed", params.image_seed)
     _set(wf, N_IMG_REFINE_ENABLE, "value", False)  # local LLM refine off (§3.2)
-    _set(wf, N_IMG_TRIGGER_CONCAT, "string_b", params.trigger_text)
+    _inject_triggers(wf, params)
     if params.mode != "i2v":
         _build_lora_chain(wf, params)
 

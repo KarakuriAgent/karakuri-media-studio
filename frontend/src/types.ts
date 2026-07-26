@@ -143,9 +143,14 @@ export interface ChatReply {
   result: PromptResult | null
 }
 
+/** LoRA as the chat API takes it: the job snapshot plus the human name. */
+export interface ChatLoraRef extends LoraRef {
+  display_name: string
+}
+
 export interface ChatSessionCreate {
   mode: JobMode
-  loras: LoraRef[]
+  loras: ChatLoraRef[]
   trigger_text: string
   duration: number
   image_prompt_draft: string

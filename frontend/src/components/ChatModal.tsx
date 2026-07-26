@@ -27,11 +27,14 @@ export default function ChatModal({ form, patch, onClose, onSessionId }: Props) 
     try {
       const session = await api.createChatSession({
         mode: form.mode,
-        loras: form.loras.map(({ lora_name, trigger_word, strength }) => ({
-          lora_name,
-          trigger_word,
-          strength,
-        })),
+        loras: form.loras.map(
+          ({ lora_name, trigger_word, strength, display_name }) => ({
+            lora_name,
+            trigger_word,
+            strength,
+            display_name,
+          }),
+        ),
         trigger_text: form.triggerText,
         duration: form.duration,
         image_prompt_draft: form.imagePrompt,

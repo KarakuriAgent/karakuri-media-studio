@@ -12,6 +12,7 @@ from app.workflow import (
     build_workflow,
     load_template,
     ltx_frame_count,
+    missing_triggers,
     validate_workflow,
 )
 
@@ -28,7 +29,7 @@ def params(**overrides) -> GenerationParams:
         aspect_ratio="16:9 (Widescreen)",
         megapixels=1.5,
         loras=[LoraRef(lora_name="kaori.safetensors", trigger_word="kaori", strength=0.8)],
-        trigger_text="kaori, muted minimalist sketch style",
+        trigger_text="kaori",
         image_prompt="IMAGE PROMPT",
         video_prompt="VIDEO PROMPT",
         negative_prompt="NEGATIVE",
@@ -79,7 +80,10 @@ def test_image_side_injection(template, mode):
     assert wf["365:19"]["inputs"]["value"] == "IMAGE PROMPT"
     assert wf["365:3"]["inputs"]["seed"] == 1234
     assert wf["365:24"]["inputs"]["value"] is False
-    assert wf["365:27"]["inputs"]["string_b"] == "kaori, muted minimalist sketch style"
+    # trigger words come first, the prompt link second (§3.4)
+    assert wf["365:27"]["inputs"]["string_a"] == "kaori"
+    assert wf["365:27"]["inputs"]["string_b"] == ["365:20", 0]
+    assert wf["365:27"]["inputs"]["delimiter"] == ", "
 
 
 def test_single_seed_is_used_for_both_samplers(template):
@@ -177,6 +181,75 @@ def test_lora_chain_three(template):
         "l1.safetensors",
         "l2.safetensors",
     ]
+
+
+# --- trigger words (365:27, §3.4) ------------------------------------------
+
+def _concat(template, **overrides) -> dict:
+    return build_workflow(template, params(**overrides))["365:27"]["inputs"]
+
+
+def test_triggers_are_prepended_before_the_prompt(template):
+    inputs = _concat(
+        template, trigger_text="kaori, sketch style", image_prompt="a woman dancing"
+    )
+    assert inputs["string_a"] == "kaori, sketch style"
+    assert inputs["string_b"] == ["365:20", 0]
+    assert inputs["delimiter"] == ", "
+
+
+def test_triggers_already_in_the_prompt_are_dropped(template):
+    inputs = _concat(
+        template,
+        trigger_text="kaori, sketch style",
+        image_prompt="Kaori, an adult Japanese woman, dancing",
+    )
+    assert inputs["string_a"] == "sketch style"
+    assert inputs["delimiter"] == ", "
+
+
+def test_fully_covered_triggers_pass_the_prompt_through(template):
+    inputs = _concat(
+        template,
+        trigger_text="kaori, sketch style",
+        image_prompt="kaori in a SKETCH STYLE portrait",
+    )
+    assert inputs["string_a"] == ""
+    assert inputs["delimiter"] == ""
+    assert inputs["string_b"] == ["365:20", 0]
+
+
+@pytest.mark.parametrize(
+    "trigger_text, loras",
+    [("", []), ("   ,  ,", []), ("", [LoraRef(lora_name="a.safetensors")])],
+)
+def test_empty_triggers_never_produce_a_leading_comma(template, trigger_text, loras):
+    inputs = _concat(
+        template, trigger_text=trigger_text, loras=loras, image_prompt="a woman"
+    )
+    assert inputs["string_a"] == ""
+    assert inputs["delimiter"] == ""
+
+
+def test_partial_word_matches_do_not_count_as_present(template):
+    inputs = _concat(template, trigger_text="kaori", image_prompt="kaorina dances")
+    assert inputs["string_a"] == "kaori"
+
+
+@pytest.mark.parametrize(
+    "trigger_text, prompt, expected",
+    [
+        ("kaori", "", "kaori"),
+        ("kaori, kaori", "", "kaori"),  # duplicates collapse
+        ("  kaori ,  yui  ", "", "kaori, yui"),
+        ("kaori", "KAORI smiles", ""),
+        ("kaori", "kaori-chan smiles", ""),  # hyphen is a word boundary
+        ("sketch style", "a sketch style drawing", ""),
+        ("", "anything", ""),
+    ],
+)
+def test_missing_triggers(trigger_text, prompt, expected):
+    assert missing_triggers(trigger_text, prompt) == expected
 
 
 # --- frame count rounding --------------------------------------------------

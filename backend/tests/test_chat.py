@@ -122,6 +122,26 @@ def test_session_starts_with_a_system_message(env):
     assert "6 seconds" in system["content"]
 
 
+def test_display_names_are_mapped_to_trigger_words(env):
+    session = start(
+        env,
+        loras=[
+            {
+                "lora_name": "kohei06__yui__kaori.safetensors",
+                "trigger_word": "kaori",
+                "strength": 1.0,
+                "display_name": "かおり",
+            }
+        ],
+        trigger_text="kaori",
+    )
+    system = session["messages"][0]["content"]
+    assert "「かおり」 -> trigger word `kaori`" in system
+    # the old "never repeat the trigger words" rule is gone
+    assert "MUST NOT repeat them" not in system
+    assert "as the subject's name" in system
+
+
 def test_interview_then_final_json(env):
     session = start(env)
     env.cli.answers = [QUESTION_ANSWER, JSON_ANSWER]
