@@ -143,6 +143,13 @@ grok CLI は空の作業ディレクトリ（`runtime/grok-workdir/`）を cwd �
 | `grok_model` | 使用モデル | `grok-4.5` |
 | `grok_workdir` | grok CLI の作業ディレクトリ | `runtime/grok-workdir` |
 
+### Comfy Cloud を使う場合
+
+1. `comfy_url` に **`https://cloud.comfy.org`** を設定
+2. [Comfy Cloud の API キー発行ページ](https://docs.comfy.org/development/cloud/overview)でキーを作成し、`comfy_api_key` に設定
+
+アプリはホストが `comfy.org` のとき自動で Cloud 互換モードになります（エンドポイントに `/api` プレフィックス、認証は `X-API-Key` ヘッダー、`/view` の 302 署名 URL リダイレクト追従）。API アクセスは有料プラン（Standard 以上）が必要で、Free プランでは使えません。ワークフローが参照するモデル・LoRA・リファレンス音声は Cloud 側のストレージに存在している必要があります。
+
 ---
 
 ## ディレクトリ構成

@@ -463,7 +463,12 @@ async def _ws_progress(
 
     url = comfy.ws_url(client_id)
     try:
-        async with websockets.connect(url, max_size=None, open_timeout=10) as socket:
+        async with websockets.connect(
+            url,
+            max_size=None,
+            open_timeout=10,
+            additional_headers=comfy.ws_headers() or None,
+        ) as socket:
             async for raw in socket:
                 if isinstance(raw, (bytes, bytearray)):
                     continue  # binary preview frames

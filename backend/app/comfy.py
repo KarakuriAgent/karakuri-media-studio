@@ -33,7 +33,16 @@ def _base_url() -> str:
 
 def _headers() -> dict[str, str]:
     api_key = (load_settings().comfy_api_key or "").strip()
-    return {"Authorization": f"Bearer {api_key}"} if api_key else {}
+    if not api_key:
+        return {}
+    # Comfy Cloud expects X-API-Key; some self-hosted auth proxies expect Bearer.
+    return {"X-API-Key": api_key, "Authorization": f"Bearer {api_key}"}
+
+
+def _api_prefix() -> str:
+    """Comfy Cloud serves the compatible API under ``/api`` (local works bare)."""
+    host = _base_url().split("://", 1)[-1].split("/", 1)[0].lower()
+    return "/api" if host.endswith("comfy.org") else ""
 
 
 def _client(timeout: float) -> httpx.AsyncClient:
@@ -75,7 +84,7 @@ def _json(response: httpx.Response) -> Any:
 # --------------------------------------------------------------------------
 
 async def get_object_info(class_type: str | None = None) -> dict[str, Any]:
-    path = f"/object_info/{class_type}" if class_type else "/object_info"
+    path = _api_prefix() + (f"/object_info/{class_type}" if class_type else "/object_info")
     data = _json(await _request("GET", path))
     if not isinstance(data, dict):
         raise ComfyError("unexpected /object_info payload")
@@ -135,7 +144,11 @@ async def upload_file(path: str | Path, subfolder: str | None = None) -> str:
     files = {"image": (src.name, src.read_bytes(), content_type)}
     payload = _json(
         await _request(
-            "POST", "/upload/image", data=data, files=files, timeout=UPLOAD_TIMEOUT
+            "POST",
+            _api_prefix() + "/upload/image",
+            data=data,
+            files=files,
+            timeout=UPLOAD_TIMEOUT,
         )
     )
     name = payload.get("name") if isinstance(payload, dict) else None
@@ -149,7 +162,9 @@ async def queue_prompt(workflow: dict[str, Any], client_id: str) -> str:
     """POST /prompt and return the prompt_id."""
     payload = _json(
         await _request(
-            "POST", "/prompt", json={"prompt": workflow, "client_id": client_id}
+            "POST",
+            _api_prefix() + "/prompt",
+            json={"prompt": workflow, "client_id": client_id},
         )
     )
     prompt_id = payload.get("prompt_id") if isinstance(payload, dict) else None
@@ -160,7 +175,7 @@ async def queue_prompt(workflow: dict[str, Any], client_id: str) -> str:
 
 async def get_history(prompt_id: str) -> dict[str, Any]:
     """GET /history/{prompt_id}; returns the entry for that id ({} while queued)."""
-    payload = _json(await _request("GET", f"/history/{prompt_id}"))
+    payload = _json(await _request("GET", f"{_api_prefix()}/history/{prompt_id}"))
     if not isinstance(payload, dict):
         raise ComfyError("unexpected /history payload")
     entry = payload.get(prompt_id, payload if "outputs" in payload else {})
@@ -179,7 +194,11 @@ async def download_view(
     params = {"filename": filename, "subfolder": subfolder or "", "type": type_}
     try:
         async with _client(DOWNLOAD_TIMEOUT) as client:
-            async with client.stream("GET", "/view", params=params) as response:
+            # Comfy Cloud answers with a 302 to a signed URL; follow_redirects
+            # on the client covers both cloud and local.
+            async with client.stream(
+                "GET", _api_prefix() + "/view", params=params
+            ) as response:
                 response.raise_for_status()
                 with dest.open("wb") as fh:
                     async for chunk in response.aiter_bytes():
@@ -201,3 +220,8 @@ def ws_url(client_id: str) -> str:
     scheme = "wss" if base.startswith("https://") else "ws"
     host = base.split("://", 1)[-1]
     return f"{scheme}://{host}/ws?clientId={client_id}"
+
+
+def ws_headers() -> dict[str, str]:
+    """Auth headers for the progress WebSocket (needed by Comfy Cloud)."""
+    return _headers()
