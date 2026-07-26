@@ -92,6 +92,13 @@ async def get_object_info(class_type: str | None = None) -> dict[str, Any]:
 
 
 def combo_options(info: dict[str, Any], class_type: str, field: str) -> list[str]:
+    """Extract combo choices from an /object_info entry.
+
+    Known spec shapes across ComfyUI versions / Comfy Cloud:
+      classic:  [["a", "b"], {...}]
+      dict:     [{"options": ["a", "b"]}, {...}]
+      V3/cloud: ["COMBO", {"options": ["a", "b"]}]
+    """
     node = info.get(class_type)
     if not node:
         raise ComfyError(f"node class '{class_type}' is not available on ComfyUI")
@@ -101,10 +108,15 @@ def combo_options(info: dict[str, Any], class_type: str, field: str) -> list[str
     if not isinstance(spec, list) or not spec:
         raise ComfyError(f"{class_type}.{field} has no options in /object_info")
     options = spec[0]
-    if isinstance(options, dict):  # newer combo spec: {"options": [...]}
-        options = options.get("options", [])
+    config = spec[1] if len(spec) > 1 and isinstance(spec[1], dict) else {}
+    if isinstance(options, str):
+        options = config.get("options", config.get("values", config.get("choices")))
+    elif isinstance(options, dict):
+        options = options.get("options", options.get("values", []))
     if not isinstance(options, list):
-        raise ComfyError(f"{class_type}.{field} is not a combo input")
+        raise ComfyError(
+            f"{class_type}.{field} is not a combo input (spec: {str(spec)[:300]})"
+        )
     return [str(o) for o in options]
 
 
