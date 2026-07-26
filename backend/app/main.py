@@ -1,14 +1,16 @@
 from contextlib import asynccontextmanager
+from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
 from . import ws
 from .config import load_settings
 from .db import init_db
 from .jobs import runner
-from .paths import ASSETS_DIR, OUTPUTS_DIR, ensure_dirs
+from .paths import ASSETS_DIR, FRONTEND_DIST_DIR, OUTPUTS_DIR, ensure_dirs
 from .routers import assets, chat, health, jobs, loras, options, settings
 
 
@@ -46,3 +48,30 @@ app.include_router(ws.router)
 ensure_dirs()
 app.mount("/outputs", StaticFiles(directory=OUTPUTS_DIR), name="outputs")
 app.mount("/assets", StaticFiles(directory=ASSETS_DIR), name="assets")
+
+
+def _dist_file(rel_path: str) -> Path | None:
+    """Resolve `rel_path` inside frontend/dist, refusing anything that escapes it."""
+    candidate = (FRONTEND_DIST_DIR / rel_path).resolve()
+    root = FRONTEND_DIST_DIR.resolve()
+    if candidate != root and root not in candidate.parents:
+        return None
+    return candidate if candidate.is_file() else None
+
+
+# Production serving: when the frontend has been built, serve it as an SPA.
+# Registered last so /api, /outputs and /assets keep priority.
+if FRONTEND_DIST_DIR.is_dir():
+
+    @app.get("/{spa_path:path}", include_in_schema=False)
+    async def spa(spa_path: str) -> FileResponse:
+        # Unmatched API paths must stay a real 404, not the SPA shell.
+        if spa_path == "api" or spa_path.startswith("api/"):
+            raise HTTPException(status_code=404, detail="Not Found")
+        file = _dist_file(spa_path) if spa_path else None
+        if file is None:
+            index = FRONTEND_DIST_DIR / "index.html"
+            if not index.is_file():
+                raise HTTPException(status_code=404, detail="frontend is not built")
+            return FileResponse(index)
+        return FileResponse(file)

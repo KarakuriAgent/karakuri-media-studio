@@ -8,6 +8,8 @@ ASSETS_DIR = ROOT / "assets"
 RUNTIME_DIR = ROOT / "runtime"
 GROK_WORKDIR = RUNTIME_DIR / "grok-workdir"
 
+FRONTEND_DIST_DIR = ROOT / "frontend" / "dist"
+
 DB_PATH = ROOT / "app.db"
 CONFIG_PATH = RUNTIME_DIR / "config.json"
 WORKFLOW_TEMPLATE_PATH = ROOT / "video-gen.json"

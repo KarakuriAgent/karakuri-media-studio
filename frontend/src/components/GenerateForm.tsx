@@ -136,6 +136,22 @@ export default function GenerateForm({
     }
   }
 
+  const [dragOver, setDragOver] = useState(false)
+
+  /** SPEC §8: start frame accepts drag & drop of an image file. */
+  const onDropImage = (event: React.DragEvent) => {
+    event.preventDefault()
+    setDragOver(false)
+    const file = Array.from(event.dataTransfer.files).find((item) =>
+      item.type.startsWith('image/'),
+    )
+    if (!file) {
+      setUploadError('画像ファイルをドロップしてください')
+      return
+    }
+    void upload('image', file)
+  }
+
   const lastFrameJobs = jobs.filter((job) => job.last_frame_url)
 
   return (
@@ -262,7 +278,21 @@ export default function GenerateForm({
 
       {form.mode === 'i2v' && (
         <Section title="開始フレーム">
-          <div className="flex flex-col gap-2">
+          <div
+            className={`flex flex-col gap-2 rounded-lg border border-dashed p-2 transition-colors ${
+              dragOver ? 'border-accent-500 bg-accent-500/10' : 'border-ink-600'
+            }`}
+            onDragOver={(event) => {
+              event.preventDefault()
+              setDragOver(true)
+            }}
+            onDragLeave={(event) => {
+              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+                setDragOver(false)
+              }
+            }}
+            onDrop={onDropImage}
+          >
             <div className="flex items-center gap-2">
               <input
                 ref={imageInput}
@@ -282,6 +312,9 @@ export default function GenerateForm({
               >
                 画像をアップロード
               </button>
+              <span className="text-[11px] text-slate-500">
+                {busyUpload ? 'アップロード中…' : 'またはここに画像をドロップ'}
+              </span>
               {form.sourceImage && (
                 <button
                   className="btn-ghost text-xs"
