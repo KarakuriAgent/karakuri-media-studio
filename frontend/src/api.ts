@@ -8,6 +8,7 @@ import type {
   JobCreate,
   Lora,
   LoraPayload,
+  ModelFieldState,
   Options,
   Settings,
 } from './types'
@@ -116,6 +117,10 @@ export const api = {
   getSettings: () => request<Settings>('/api/settings'),
   putSettings: (patch: Partial<Settings>) =>
     json<Settings>('PUT', '/api/settings', patch),
+
+  listModels: () => request<ModelFieldState[]>('/api/models'),
+  putModels: (overrides: Record<string, string>) =>
+    json<ModelFieldState[]>('PUT', '/api/models', { overrides }),
 
   listLoras: () => request<Lora[]>('/api/loras'),
   createLora: (payload: LoraPayload) => json<Lora>('POST', '/api/loras', payload),

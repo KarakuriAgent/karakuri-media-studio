@@ -16,7 +16,7 @@ import math
 import re
 from typing import Any
 
-from .models import GenerationParams
+from .models import GenerationParams, ModelField
 from .paths import WORKFLOW_TEMPLATE_PATH
 
 Workflow = dict[str, dict[str, Any]]
@@ -50,6 +50,26 @@ N_VID_PROMPT = "433:430"
 N_VID_RESIZE = "433:431"
 
 LORA_NODE_PREFIX = "app_lora_"
+
+# --- model file inputs (SPEC §3.3) -----------------------------------------
+# (class_type, input field) pairs whose value is a model file name on the
+# ComfyUI host.  They are environment specific, so the template value is only a
+# default: the settings page can override any of them (see `model_fields`).
+MODEL_FIELDS: set[tuple[str, str]] = {
+    ("UNETLoader", "unet_name"),
+    ("CLIPLoader", "clip_name"),
+    ("VAELoader", "vae_name"),
+    ("CheckpointLoaderSimple", "ckpt_name"),
+    ("LTXVAudioVAELoader", "ckpt_name"),
+    ("LTXAVTextEncoderLoader", "text_encoder"),
+    ("LTXAVTextEncoderLoader", "ckpt_name"),
+    ("LatentUpscaleModelLoader", "model_name"),
+    ("LoraLoaderModelOnly", "lora_name"),
+}
+
+# `365:15` is replaced by the dynamic LoRA chain (§3.4), so its lora_name is
+# never submitted and must not be offered as a configurable model file.
+MODEL_FIELD_EXCLUDED_NODES = {N_IMG_LORA}
 
 # LTX latent temporal compression: the number of frames handed to
 # EmptyLTXVLatentVideo must satisfy frames == 8n + 1.
@@ -124,6 +144,57 @@ def _inject_frame_count(wf: Workflow, params: GenerationParams) -> None:
     """
     frames = ltx_frame_count(params.duration, params.fps)
     _set(wf, N_VID_FRAMES_EXPR, "expression", f"a * 0 + b * 0 + {frames}")
+
+
+def model_fields(template: Workflow) -> list[ModelField]:
+    """Every configurable model-file input of ``template`` (SPEC §3.3).
+
+    The template value becomes the *default*; :func:`apply_model_overrides`
+    replaces it with whatever the user configured on the settings page.
+    """
+    found: list[ModelField] = []
+    for node_id, node in template.items():
+        if not isinstance(node, dict) or node_id in MODEL_FIELD_EXCLUDED_NODES:
+            continue
+        class_type = node.get("class_type") or ""
+        inputs = node.get("inputs")
+        if not isinstance(inputs, dict):
+            continue
+        for field, value in inputs.items():
+            if (class_type, field) not in MODEL_FIELDS or _is_link(value):
+                continue
+            found.append(
+                ModelField(
+                    key=f"{node_id}.{field}",
+                    node_id=node_id,
+                    field=field,
+                    class_type=class_type,
+                    title=str((node.get("_meta") or {}).get("title") or ""),
+                    default="" if value is None else str(value),
+                )
+            )
+    return found
+
+
+def apply_model_overrides(wf: Workflow, overrides: dict[str, str] | None) -> None:
+    """Replace model file names in ``wf`` with the configured values.
+
+    Keys are ``"<node_id>.<field>"``.  Entries whose node did not survive the
+    mode-specific pruning (e.g. the image subgraph in mode B) and empty values
+    are silently ignored — the workflow keeps the template default.
+    """
+    for key, value in (overrides or {}).items():
+        if not value:
+            continue
+        node_id, _, field = key.rpartition(".")
+        if not node_id or not field:
+            continue
+        node = wf.get(node_id)
+        if node is None:
+            continue
+        inputs = node.get("inputs")
+        if isinstance(inputs, dict) and field in inputs and not _is_link(inputs[field]):
+            inputs[field] = value
 
 
 def split_triggers(trigger_text: str) -> list[str]:
@@ -271,8 +342,16 @@ def all_required_class_types(template: Workflow | None = None) -> set[str]:
 # main entry point
 # --------------------------------------------------------------------------
 
-def build_workflow(template: Workflow, params: GenerationParams) -> Workflow:
-    """Build the API JSON for one job. Pure: ``template`` is never mutated."""
+def build_workflow(
+    template: Workflow,
+    params: GenerationParams,
+    overrides: dict[str, str] | None = None,
+) -> Workflow:
+    """Build the API JSON for one job. Pure: ``template`` is never mutated.
+
+    ``overrides`` are the configured model file names (SPEC §3.3), keyed by
+    ``"<node_id>.<field>"``.
+    """
     wf: Workflow = copy.deepcopy(template)
 
     # §3.3: the orphan ImpactWildcardEncode is never submitted.
@@ -306,6 +385,11 @@ def build_workflow(template: Workflow, params: GenerationParams) -> Workflow:
             }
     else:  # pragma: no cover - guarded by the pydantic Literal
         raise WorkflowError(f"unknown mode: {params.mode}")
+
+    # --- configured model file names (§3.3) --------------------------------
+    # After the pruning so that keys pointing at dropped nodes are no-ops, and
+    # before the LoRA chain so a user-set `365:15.lora_name` cannot leak in.
+    apply_model_overrides(wf, overrides)
 
     # --- common injections (§3.1 / §3.2) -----------------------------------
     _set(wf, N_RESOLUTION, "aspect_ratio", params.aspect_ratio)

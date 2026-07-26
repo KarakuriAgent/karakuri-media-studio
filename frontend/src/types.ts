@@ -15,6 +15,20 @@ export interface Settings {
   grok_command: string
   grok_model: string
   grok_workdir: string
+  /** {"<node_id>.<field>": "file.safetensors"} — only non-default entries. */
+  model_overrides: Record<string, string>
+}
+
+/** One configurable model file of the workflow (GET /api/models). */
+export interface ModelFieldState {
+  key: string
+  node_id: string
+  field: string
+  class_type: string
+  title: string
+  default: string
+  value: string
+  overridden: boolean
 }
 
 export interface Lora {

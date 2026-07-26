@@ -9,10 +9,12 @@ from app.workflow import (
     LORA_NODE_PREFIX,
     WorkflowError,
     all_required_class_types,
+    apply_model_overrides,
     build_workflow,
     load_template,
     ltx_frame_count,
     missing_triggers,
+    model_fields,
     validate_workflow,
 )
 
@@ -326,3 +328,70 @@ def test_required_class_types(template):
         for node in build_workflow(template, params(mode=mode)).values()
     }
     assert built <= types
+
+
+# --- model file overrides (§3.3) -------------------------------------------
+
+def test_model_fields_extraction(template):
+    fields = {f.key: f for f in model_fields(template)}
+    assert set(fields) == {
+        "365:10.unet_name",
+        "365:11.clip_name",
+        "365:12.vae_name",
+        "433:335.ckpt_name",
+        "433:346.lora_name",
+        "433:426.model_name",
+        "433:427.lora_name",
+        "433:428.ckpt_name",
+        "433:429.text_encoder",
+        "433:429.ckpt_name",
+    }
+    # the dynamic LoRA chain replaces 365:15, so it is never configurable
+    assert "365:15.lora_name" not in fields
+
+    unet = fields["365:10.unet_name"]
+    assert (unet.node_id, unet.field, unet.class_type) == (
+        "365:10", "unet_name", "UNETLoader",
+    )
+    assert unet.default == template["365:10"]["inputs"]["unet_name"]
+    assert unet.title
+    assert all(f.default for f in fields.values())
+
+
+def test_apply_model_overrides_ignores_empty_and_unknown():
+    wf = {"a": {"class_type": "UNETLoader", "inputs": {"unet_name": "keep.safetensors"}}}
+    apply_model_overrides(wf, {"a.unet_name": "", "zz.unet_name": "x", "bogus": "y"})
+    assert wf["a"]["inputs"]["unet_name"] == "keep.safetensors"
+    apply_model_overrides(wf, None)
+    assert wf["a"]["inputs"]["unet_name"] == "keep.safetensors"
+
+
+def test_build_workflow_applies_overrides(template):
+    overrides = {
+        "365:10.unet_name": "custom-unet.safetensors",
+        "433:428.ckpt_name": "custom-ckpt.safetensors",
+    }
+    wf = build_workflow(template, params(mode="full"), overrides)
+    assert wf["365:10"]["inputs"]["unet_name"] == "custom-unet.safetensors"
+    assert wf["433:428"]["inputs"]["ckpt_name"] == "custom-ckpt.safetensors"
+    # the template keeps its own defaults
+    assert template["365:10"]["inputs"]["unet_name"] != "custom-unet.safetensors"
+
+
+def test_overrides_for_pruned_nodes_are_ignored(template):
+    # mode B drops the whole image subgraph: an override on 365:10 is a no-op
+    wf = build_workflow(template, params(mode="i2v"), {"365:10.unet_name": "x.safetensors"})
+    assert "365:10" not in wf
+    validate_workflow(wf)
+
+    # mode C drops the video graph
+    wf = build_workflow(
+        template, params(mode="image_only"), {"433:428.ckpt_name": "x.safetensors"}
+    )
+    assert "433:428" not in wf
+
+
+def test_dynamic_lora_chain_is_not_overridable(template):
+    wf = build_workflow(template, params(mode="full"), {"365:15.lora_name": "x.safetensors"})
+    assert "365:15" not in wf
+    assert wf[f"{LORA_NODE_PREFIX}0"]["inputs"]["lora_name"] == "kaori.safetensors"

@@ -31,6 +31,7 @@ from typing import Any
 import aiosqlite
 
 from . import comfy, ws
+from .config import load_settings
 from .db import get_db
 from .ids import new_id
 from .models import (
@@ -645,7 +646,9 @@ async def run_job(job_id: str) -> None:
             start_image_name = await comfy.upload_file(job.params["source_image"])
 
         workflow = build_workflow(
-            load_template(), _generation_params(job, audio_name, start_image_name)
+            load_template(),
+            _generation_params(job, audio_name, start_image_name),
+            load_settings().model_overrides,
         )
         await _update(job_id, workflow_json=json.dumps(workflow, ensure_ascii=False))
 

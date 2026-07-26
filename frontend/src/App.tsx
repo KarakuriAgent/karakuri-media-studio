@@ -6,7 +6,7 @@ import Header from './components/Header'
 import HistoryGallery from './components/HistoryGallery'
 import JobDetail from './components/JobDetail'
 import ResultPane from './components/ResultPane'
-import SettingsModal from './components/SettingsModal'
+import SettingsPage from './components/SettingsPage'
 import { Banner } from './components/ui'
 import { initialForm, type FormState } from './form'
 import type { Health, Job, JobCreate, JobProgress, Options } from './types'
@@ -31,7 +31,7 @@ export default function App() {
   const [detailBusy, setDetailBusy] = useState(false)
   const [detailError, setDetailError] = useState<string | null>(null)
   const [chatOpen, setChatOpen] = useState(false)
-  const [settingsOpen, setSettingsOpen] = useState(false)
+  const [view, setView] = useState<'main' | 'settings'>('main')
   const [chatSessionId, setChatSessionId] = useState<string | null>(null)
 
   const patch = useCallback(
@@ -263,7 +263,7 @@ export default function App() {
         health={health}
         checking={checkingHealth}
         onRefresh={() => void loadHealth()}
-        onOpenSettings={() => setSettingsOpen(true)}
+        onOpenSettings={() => setView('settings')}
         wsConnected={wsConnected}
       />
 
@@ -282,49 +282,64 @@ export default function App() {
         </div>
       )}
 
-      <main className="grid flex-1 grid-cols-1 gap-3 overflow-hidden p-3 lg:grid-cols-[minmax(340px,420px)_1fr]">
-        <div className="overflow-y-auto pr-1">
-          <GenerateForm
-            form={form}
-            patch={patch}
-            options={options}
-            optionsError={optionsError}
-            onReloadOptions={() => void loadOptions()}
-            onOpenChat={() => setChatOpen(true)}
-            onSubmit={() => void submit()}
-            submitting={submitting}
-            fieldErrors={fieldErrors}
-            jobs={jobs}
-          />
-        </div>
-        <div className="overflow-y-auto pr-1">
-          <ResultPane
-            job={activeJob}
-            progress={activeJob ? progress[activeJob.id] : undefined}
-            onContinue={(job) => void continueFrom(job)}
-            busy={detailBusy}
-            queue={queue}
-          />
-        </div>
-      </main>
-
-      <section className="h-56 shrink-0 border-t border-ink-700 bg-ink-800/60">
-        <HistoryGallery
-          jobs={jobs}
-          selectedId={activeJob?.id ?? null}
-          loading={loadingJobs}
-          onReload={() => void loadJobs()}
-          onSelect={(job) => {
-            void showJob(job)
-            setDetailError(null)
-            setDetailJob(job)
-            void api
-              .getJob(job.id)
-              .then(setDetailJob)
-              .catch((error: unknown) => pushError(error))
+      {view === 'settings' && (
+        <SettingsPage
+          options={options}
+          onBack={() => setView('main')}
+          onChanged={() => {
+            void loadOptions()
+            void loadHealth()
           }}
         />
-      </section>
+      )}
+
+      {view === 'main' && (
+        <>
+        <main className="grid flex-1 grid-cols-1 gap-3 overflow-hidden p-3 lg:grid-cols-[minmax(340px,420px)_1fr]">
+          <div className="overflow-y-auto pr-1">
+            <GenerateForm
+              form={form}
+              patch={patch}
+              options={options}
+              optionsError={optionsError}
+              onReloadOptions={() => void loadOptions()}
+              onOpenChat={() => setChatOpen(true)}
+              onSubmit={() => void submit()}
+              submitting={submitting}
+              fieldErrors={fieldErrors}
+              jobs={jobs}
+            />
+          </div>
+          <div className="overflow-y-auto pr-1">
+            <ResultPane
+              job={activeJob}
+              progress={activeJob ? progress[activeJob.id] : undefined}
+              onContinue={(job) => void continueFrom(job)}
+              busy={detailBusy}
+              queue={queue}
+            />
+          </div>
+        </main>
+
+        <section className="h-56 shrink-0 border-t border-ink-700 bg-ink-800/60">
+          <HistoryGallery
+            jobs={jobs}
+            selectedId={activeJob?.id ?? null}
+            loading={loadingJobs}
+            onReload={() => void loadJobs()}
+            onSelect={(job) => {
+              void showJob(job)
+              setDetailError(null)
+              setDetailJob(job)
+              void api
+                .getJob(job.id)
+                .then(setDetailJob)
+                .catch((error: unknown) => pushError(error))
+            }}
+          />
+        </section>
+        </>
+      )}
 
       {detailJob && (
         <JobDetail
@@ -347,16 +362,6 @@ export default function App() {
         />
       )}
 
-      {settingsOpen && (
-        <SettingsModal
-          options={options}
-          onClose={() => setSettingsOpen(false)}
-          onChanged={() => {
-            void loadOptions()
-            void loadHealth()
-          }}
-        />
-      )}
     </div>
   )
 }

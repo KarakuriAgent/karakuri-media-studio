@@ -1,25 +1,58 @@
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 JobMode = Literal["full", "i2v", "image_only"]
 JobStatus = Literal["queued", "prompting", "running", "done", "failed", "canceled"]
 
 
 class Settings(BaseModel):
+    # `model_overrides` would otherwise collide with pydantic's `model_` namespace.
+    model_config = ConfigDict(protected_namespaces=())
+
     comfy_url: str = "http://127.0.0.1:8188"
     comfy_api_key: str = ""
     grok_command: str = "grok"
     grok_model: str = "grok-4.5"
     grok_workdir: str = ""
+    # {"<node_id>.<field>": "file.safetensors"} — only the entries that differ
+    # from the workflow template are stored (SPEC §3.3).
+    model_overrides: dict[str, str] = Field(default_factory=dict)
 
 
 class SettingsUpdate(BaseModel):
+    model_config = ConfigDict(protected_namespaces=())
+
     comfy_url: str | None = None
     comfy_api_key: str | None = None
     grok_command: str | None = None
     grok_model: str | None = None
     grok_workdir: str | None = None
+    model_overrides: dict[str, str] | None = None
+
+
+class ModelField(BaseModel):
+    """One model-file input of the workflow template (SPEC §3.3)."""
+
+    key: str  # f"{node_id}.{field}"
+    node_id: str
+    field: str
+    class_type: str
+    title: str = ""
+    default: str = ""
+
+
+class ModelFieldState(ModelField):
+    """A :class:`ModelField` with the currently effective value applied."""
+
+    value: str = ""
+    overridden: bool = False
+
+
+class ModelOverridesUpdate(BaseModel):
+    """PUT /api/models body."""
+
+    overrides: dict[str, str] = Field(default_factory=dict)
 
 
 class Lora(BaseModel):

@@ -133,7 +133,8 @@ grok CLI は空の作業ディレクトリ（`runtime/grok-workdir/`）を cwd �
 
 ## 設定
 
-設定はヘッダーの「設定」から編集でき、`runtime/config.json` に保存されます。
+設定はヘッダーの「設定」から専用ページを開いて編集でき、`runtime/config.json` に保存されます。
+ページは「接続 / Grok」「LoRA 管理」「モデル」の 3 タブ構成です。
 
 | キー | 内容 | 既定 |
 |---|---|---|
@@ -142,6 +143,17 @@ grok CLI は空の作業ディレクトリ（`runtime/grok-workdir/`）を cwd �
 | `grok_command` | grok CLI のコマンド名 / パス | `grok` |
 | `grok_model` | 使用モデル | `grok-4.5` |
 | `grok_workdir` | grok CLI の作業ディレクトリ | `runtime/grok-workdir` |
+| `model_overrides` | モデルファイル名の上書き（`{"<node_id>.<field>": "<ファイル名>"}`） | `{}` |
+
+### モデルファイル名の上書き
+
+`video-gen.json` に書かれている UNET / CLIP / VAE / チェックポイント / テキストエンコーダ /
+アップスケーラ / distil LoRA / talkvid LoRA のファイル名は、作者の ComfyUI 環境のものです。
+自分の環境に別名のファイルしか無い場合は、設定ページの「モデル」タブで各行を書き換えてください。
+一覧はワークフローから自動抽出され、既定値（テンプレートの値）と現在値が並んで表示されます。
+変更した行はハイライトされ、[既定に戻す] でテンプレートの値へ戻せます。保存すると既定値と異なる
+エントリだけが `model_overrides` に記録され、ジョブ投入時にワークフローへ適用されます
+（モードによって削除されるノード宛の指定は自動的に無視されます）。
 
 ### Comfy Cloud を使う場合
 
@@ -156,7 +168,7 @@ grok CLI は空の作業ディレクトリ（`runtime/grok-workdir/`）を cwd �
 
 ```
 backend/            FastAPI アプリ
-  app/routers/      health / settings / loras / assets / options / chat / jobs
+  app/routers/      health / settings / loras / models_config / assets / options / chat / jobs
   app/comfy.py      ComfyUI クライアント（/object_info, /upload/image, /prompt, /ws, /history, /view）
   app/workflow.py   video-gen.json のモード別書き換え・LoRA チェーン動的注入
   app/grok.py       grok CLI 呼び出し（LLM クライアントは差し替え可能な抽象化）
@@ -178,6 +190,7 @@ GET  /api/health                       ComfyUI / Grok 疎通と custom node チ�
 GET  /api/options                      アスペクト比・LoRA ファイル一覧・アセット・ネガティブプリセット
 GET/PUT /api/settings                  設定の取得・更新
 GET/POST/PUT/DELETE /api/loras         アプリ内 LoRA 登録リスト
+GET/PUT /api/models                    ワークフローのモデルファイル名一覧・上書き
 POST/GET /api/chat/sessions[/{id}]     Grok チャット
 POST /api/jobs, GET /api/jobs?limit=…  ジョブ作成・履歴
 GET/DELETE /api/jobs/{id}              詳細・削除

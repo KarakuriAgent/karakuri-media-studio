@@ -89,6 +89,7 @@ ComfyUI 上の `video-gen.json` ワークフロー（画像生成 → i2v 動画
 - 動画側: checkpoint `sexgodPinkcherryLTX23_v16bDev`、distil LoRA (strength 0.5)、talkvid ID-LoRA + `LTXVReferenceAudio`（identity_guidance_scale 3）、2 段サンプリング（半解像度 → LatentUpsampler x2）、ManualSigmas
 - 動画ネガティブ `433:413` は既定固定だが、プリセット切替可能にする（現行値 / モデル作者版。`docs/prompt-samples.md` 参照）
 - `365:391` (ImpactWildcardEncode) は現状どこにも接続されていない孤立ノード → API 投入時に削除する
+- ただし**モデルファイル名は利用者の ComfyUI 環境依存**のため、設定ページ（`GET/PUT /api/models`）で上書き可能とする。既定値はワークフロー (`video-gen.json`) の値。対象は UNETLoader.unet_name / CLIPLoader.clip_name / VAELoader.vae_name / CheckpointLoaderSimple.ckpt_name / LTXVAudioVAELoader.ckpt_name / LTXAVTextEncoderLoader.text_encoder・ckpt_name / LatentUpscaleModelLoader.model_name / LoraLoaderModelOnly.lora_name（§3.4 で置換される `365:15` は除く）。上書きは `"<node_id>.<field>": "<ファイル名>"` の形で `config.json` の `model_overrides` に保存し、モード別プルーニング後に適用する（削除済みノード宛の指定は無視される）
 
 ### 3.4 複数 LoRA の動的注入
 
@@ -305,7 +306,10 @@ SPA 1 画面 + 履歴。ダークテーマの生成系ツールらしい見た�
 - LoRA 選択はチップ型マルチセレクト。選択するとトリガーワード連結欄（編集可）に反映
 - **モードに応じた項目の無効化**: モード B では画像プロンプト・LoRA・トリガーワードをグレーアウト（画像生成サブグラフを使わないため）。モード C では動画プロンプト・ネガティブ・リファレンス音声・秒数・fps をグレーアウト
 - 動画ネガティブはプリセット選択（現行値 / モデル作者版）+ 編集可（詳細設定アコーディオン内）
-- 設定画面: ComfyUI 接続先（URL / APIキー） / grok CLI 状態と**使用モデル（既定: grok-4.5、変更可）** / **LoRA 管理タブ**（表示名・ファイル名・トリガーワード・既定音声の CRUD）
+- 設定は**モーダルではなく専用ページ（フルページ）**。ヘッダーの [設定] で画面遷移し、ページ左上の [← 戻る] で生成画面に復帰する。3 タブ構成:
+  - **接続 / Grok**: ComfyUI 接続先（URL / APIキー） / grok CLI コマンドと**使用モデル（既定: grok-4.5、変更可）**
+  - **LoRA 管理**: 表示名・ファイル名・トリガーワード・既定強度・既定音声・並び順の CRUD
+  - **モデル**: ワークフローのモデルファイル名一覧（タイトル / ノード・フィールド / 既定値）をテーブル表示し、行ごとにテキスト入力で上書き。変更行はハイライト、[既定に戻す] で復帰、[保存] で一括 PUT。LoRA 行は `/api/options` の `lora_files` があれば datalist で補完（§3.3）
 
 ---
 
@@ -325,6 +329,8 @@ SPA 1 画面 + 履歴。ダークテーマの生成系ツールらしい見た�
 GET  /api/health                 … ComfyUI/Grok 疎通チェック
 GET  /api/options                … アスペクト比・ComfyUI上のLoRAファイル一覧等（object_info 由来）
 GET/POST/PUT/DELETE /api/loras   … アプリ内 LoRA 登録リストの CRUD
+GET  /api/models                 … ワークフローのモデルファイル名一覧（既定値+現在値）
+PUT  /api/models                 … モデルファイル名の上書き保存（既定値と同値/空は削除）
 POST /api/chat/sessions          … チャット開始（フォーム現在値をコンテキストとして渡す）
 POST /api/chat/sessions/{id}/messages … 発言送信 → Grok 応答（質問 or 最終JSON案）を返す
 GET  /api/chat/sessions/{id}     … 履歴取得
