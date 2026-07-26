@@ -31,6 +31,7 @@ export default function JobDetail({
         onClick={(event) => event.stopPropagation()}
       >
         <div className="flex items-center gap-2 border-b border-ink-600 px-4 py-3">
+          <h2 className="text-sm font-semibold text-slate-100">パラメータ詳細</h2>
           <StatusBadge status={job.status} />
           <span className="truncate font-mono text-xs text-slate-500">{job.id}</span>
           <button className="btn-ghost ml-auto !px-2 !py-1" onClick={onClose}>
@@ -42,27 +43,6 @@ export default function JobDetail({
           {error && <Banner>{error}</Banner>}
           {job.error && <Banner>{job.error}</Banner>}
 
-          {job.video_url && (
-            <video src={job.video_url} controls className="w-full rounded border border-ink-600" />
-          )}
-          {job.image_url && (
-            <img
-              src={job.image_url}
-              alt="生成画像"
-              className="w-full rounded border border-ink-600"
-            />
-          )}
-          {job.last_frame_url && (
-            <div>
-              <p className="label">ラストフレーム</p>
-              <img
-                src={job.last_frame_url}
-                alt="ラストフレーム"
-                className="w-full rounded border border-ink-600"
-              />
-            </div>
-          )}
-
           {job.image_prompt && (
             <PromptBlock label="画像プロンプト" text={job.image_prompt} />
           )}
@@ -71,6 +51,16 @@ export default function JobDetail({
           )}
           {job.user_input && (
             <PromptBlock label="最初の指示" text={job.user_input} />
+          )}
+          {job.grok_raw && (
+            <details className="rounded border border-ink-600 bg-ink-900 p-2">
+              <summary className="cursor-pointer text-xs text-slate-400">
+                Grok 生出力
+              </summary>
+              <div className="mt-2">
+                <PromptBlock label="grok_raw" text={job.grok_raw} />
+              </div>
+            </details>
           )}
 
           <div className="rounded border border-ink-600 bg-ink-900 p-2">

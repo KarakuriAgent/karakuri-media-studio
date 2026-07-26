@@ -154,14 +154,32 @@ export default function App() {
 
   // ---------------------------------------------------------------- actions
 
-  const showJob = async (job: Job) => {
-    setActiveJob(job)
-    try {
-      setActiveJob(await api.getJob(job.id))
-    } catch (error) {
-      pushError(error)
-    }
-  }
+  const showJob = useCallback(
+    async (job: Job) => {
+      setActiveJob(job)
+      try {
+        setActiveJob(await api.getJob(job.id))
+      } catch (error) {
+        pushError(error)
+      }
+    },
+    [pushError],
+  )
+
+  const selectJob = useCallback((job: Job) => void showJob(job), [showJob])
+
+  /** Toolbar "詳細": open the parameter drawer with a freshly fetched job. */
+  const openDetail = useCallback(
+    (job: Job) => {
+      setDetailError(null)
+      setDetailJob(job)
+      void api
+        .getJob(job.id)
+        .then(setDetailJob)
+        .catch((error: unknown) => pushError(error))
+    },
+    [pushError],
+  )
 
   const submit = async () => {
     setSubmitting(true)
@@ -295,8 +313,8 @@ export default function App() {
 
       {view === 'main' && (
         <>
-        <main className="grid flex-1 grid-cols-1 gap-3 overflow-hidden p-3 lg:grid-cols-[minmax(340px,420px)_1fr]">
-          <div className="overflow-y-auto pr-1">
+        <main className="flex min-h-0 flex-1 gap-3 overflow-hidden p-3">
+          <aside className="w-[380px] shrink-0 overflow-y-auto pr-1 lg:w-[400px]">
             <GenerateForm
               form={form}
               patch={patch}
@@ -309,35 +327,33 @@ export default function App() {
               fieldErrors={fieldErrors}
               jobs={jobs}
             />
-          </div>
-          <div className="overflow-y-auto pr-1">
-            <ResultPane
-              job={activeJob}
-              progress={activeJob ? progress[activeJob.id] : undefined}
-              onContinue={(job) => void continueFrom(job)}
-              busy={detailBusy}
-              queue={queue}
-            />
+          </aside>
+
+          <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
+            <div className="min-h-0 flex-1">
+              <ResultPane
+                job={activeJob}
+                progress={activeJob ? progress[activeJob.id] : undefined}
+                onRerun={(job) => void rerun(job)}
+                onContinue={(job) => void continueFrom(job)}
+                onDelete={(job) => void remove(job)}
+                onOpenDetail={(job) => openDetail(job)}
+                busy={detailBusy}
+                queue={queue}
+              />
+            </div>
+
+            <section className="h-36 shrink-0 rounded-lg border border-ink-700 bg-ink-800/60">
+              <HistoryGallery
+                jobs={jobs}
+                selectedId={activeJob?.id ?? null}
+                loading={loadingJobs}
+                onReload={() => void loadJobs()}
+                onSelect={selectJob}
+              />
+            </section>
           </div>
         </main>
-
-        <section className="h-56 shrink-0 border-t border-ink-700 bg-ink-800/60">
-          <HistoryGallery
-            jobs={jobs}
-            selectedId={activeJob?.id ?? null}
-            loading={loadingJobs}
-            onReload={() => void loadJobs()}
-            onSelect={(job) => {
-              void showJob(job)
-              setDetailError(null)
-              setDetailJob(job)
-              void api
-                .getJob(job.id)
-                .then(setDetailJob)
-                .catch((error: unknown) => pushError(error))
-            }}
-          />
-        </section>
         </>
       )}
 
