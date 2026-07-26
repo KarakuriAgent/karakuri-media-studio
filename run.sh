@@ -4,7 +4,7 @@
 #   ./run.sh          本番モード: frontend をビルドして FastAPI から SPA ごと配信
 #   ./run.sh --dev    開発モード: uvicorn --reload と vite dev を並行起動
 #
-# 環境変数:
+# 環境変数 (シェルから渡すか、リポジトリ直下の .env に KEY=VALUE で記述):
 #   HOST / PORT        バックエンドの待受 (既定 127.0.0.1 / 8000)
 #   PYTHON             venv 作成に使う python (既定 python3.12 → python3)
 set -euo pipefail
@@ -12,8 +12,17 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$ROOT"
 
+# .env があれば読み込む（既にシェルで設定済みの変数はそちらを優先）
+if [[ -f "$ROOT/.env" ]]; then
+  while IFS='=' read -r key value; do
+    [[ "$key" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] || continue
+    [[ -n "${!key:-}" ]] || export "$key=$value"
+  done < <(grep -E '^[A-Za-z_][A-Za-z0-9_]*=' "$ROOT/.env")
+fi
+
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-8000}"
+export HOST PORT  # vite.config.ts の dev プロキシが参照する
 VENV="$ROOT/.venv"
 
 DEV=0

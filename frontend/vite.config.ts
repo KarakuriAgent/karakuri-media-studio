@@ -1,7 +1,10 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
-const BACKEND = 'http://127.0.0.1:8000'
+// run.sh --dev が HOST/PORT を export するため、バックエンドのポート変更に追従する
+const BACKEND =
+  process.env.VITE_BACKEND_URL ??
+  `http://${process.env.HOST || '127.0.0.1'}:${process.env.PORT || '8000'}`
 
 export default defineConfig({
   plugins: [react()],
