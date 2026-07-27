@@ -305,34 +305,21 @@ export default function SettingsPage({
                   </div>
                   <div>
                     <label className="label">ファイル名 (lora_name)</label>
-                    {loraFiles.length > 0 ? (
-                      <select
-                        className="field"
-                        value={draft.lora_name}
-                        onChange={(event) =>
-                          setDraft({ ...draft, lora_name: event.target.value })
-                        }
-                      >
-                        <option value="">（選択）</option>
-                        {draft.lora_name && !loraFiles.includes(draft.lora_name) && (
-                          <option value={draft.lora_name}>{draft.lora_name}</option>
-                        )}
-                        {loraFiles.map((file) => (
-                          <option key={file} value={file}>
-                            {file}
-                          </option>
-                        ))}
-                      </select>
-                    ) : (
-                      <input
-                        className="field"
-                        placeholder="ComfyUI 未接続のため手入力"
-                        value={draft.lora_name}
-                        onChange={(event) =>
-                          setDraft({ ...draft, lora_name: event.target.value })
-                        }
-                      />
-                    )}
+                    {/* 手入力が基本。入力し始めると一覧から補完候補が出る。 */}
+                    <input
+                      className="field"
+                      list="lora-file-candidates"
+                      placeholder="例: my_lora.safetensors"
+                      value={draft.lora_name}
+                      onChange={(event) =>
+                        setDraft({ ...draft, lora_name: event.target.value })
+                      }
+                    />
+                    <datalist id="lora-file-candidates">
+                      {loraFiles.map((file) => (
+                        <option key={file} value={file} />
+                      ))}
+                    </datalist>
                   </div>
                   <div className="col-span-2">
                     <label className="label">トリガーワード</label>
