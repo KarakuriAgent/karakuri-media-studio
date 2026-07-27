@@ -68,6 +68,7 @@ async def publish(
     node: str | None = None,
     progress: float | None = None,
     message: str | None = None,
+    nsfw: bool | None = None,
 ) -> None:
     """Broadcast one job event. Never raises."""
     try:
@@ -77,6 +78,7 @@ async def publish(
             node=node,
             progress=progress,
             message=message,
+            nsfw=nsfw,
         ).model_dump()
     except Exception:  # noqa: BLE001 - unknown status must not break the job
         payload = {
@@ -86,6 +88,7 @@ async def publish(
             "node": node,
             "progress": progress,
             "message": message,
+            "nsfw": nsfw,
         }
     await hub.broadcast(payload)
 

@@ -1,6 +1,6 @@
 import type { Job } from '../types'
 import { PromptBlock } from './ResultPane'
-import { Banner, CopyButton, StatusBadge } from './ui'
+import { Banner, CopyButton, NsfwBadge, NsfwToggle, StatusBadge } from './ui'
 
 export default function JobDetail({
   job,
@@ -8,16 +8,20 @@ export default function JobDetail({
   onRerun,
   onContinue,
   onDelete,
+  onToggleNsfw,
   busy,
   error,
+  showNsfw,
 }: {
   job: Job
   onClose: () => void
   onRerun: (job: Job) => void
   onContinue: (job: Job) => void
   onDelete: (job: Job) => void
+  onToggleNsfw: (job: Job, nsfw: boolean) => void
   busy: boolean
   error: string | null
+  showNsfw: boolean
 }) {
   const params = job.params ?? {}
   const entries = Object.entries(params).filter(
@@ -33,6 +37,7 @@ export default function JobDetail({
         <div className="flex items-center gap-2 border-b border-ink-600 px-4 py-3">
           <h2 className="text-sm font-semibold text-slate-100">パラメータ詳細</h2>
           <StatusBadge status={job.status} />
+          {showNsfw && job.nsfw && <NsfwBadge />}
           <span className="truncate font-mono text-xs text-slate-500">{job.id}</span>
           <button className="btn-ghost ml-auto !px-2 !py-1" onClick={onClose}>
             ✕
@@ -107,6 +112,11 @@ export default function JobDetail({
           >
             続きを生成
           </button>
+          <NsfwToggle
+            nsfw={job.nsfw}
+            disabled={busy}
+            onToggle={(nsfw) => onToggleNsfw(job, nsfw)}
+          />
           <button
             className="btn-danger ml-auto text-xs"
             disabled={busy}

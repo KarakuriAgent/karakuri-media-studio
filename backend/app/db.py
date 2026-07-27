@@ -23,7 +23,9 @@ CREATE TABLE IF NOT EXISTS jobs (
   last_frame_path TEXT,
   source_image  TEXT,
   audio_path    TEXT,
-  error         TEXT
+  error         TEXT,
+  nsfw          INTEGER NOT NULL DEFAULT 0,
+  nsfw_source   TEXT NOT NULL DEFAULT ''
 );
 
 CREATE TABLE IF NOT EXISTS loras (
@@ -52,13 +54,30 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
   auto_limit   INTEGER NOT NULL DEFAULT 5,
   messages     TEXT NOT NULL DEFAULT '[]',
   plan         TEXT NOT NULL DEFAULT '{}',
-  artifacts    TEXT NOT NULL DEFAULT '[]'
+  artifacts    TEXT NOT NULL DEFAULT '[]',
+  nsfw         INTEGER NOT NULL DEFAULT 0,
+  nsfw_source  TEXT NOT NULL DEFAULT ''
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_agent_sessions_created_at
   ON agent_sessions(created_at DESC);
 """
+
+# 既存 DB に後から足したカラム: {テーブル: [(カラム名, 定義), …]}。
+# CREATE TABLE IF NOT EXISTS では既存テーブルに反映されないため、起動時に
+# PRAGMA table_info と比べて足りないものだけ ALTER TABLE で追加する。
+MIGRATIONS: dict[str, list[tuple[str, str]]] = {
+    "jobs": [
+        ("nsfw", "INTEGER NOT NULL DEFAULT 0"),
+        ("nsfw_source", "TEXT NOT NULL DEFAULT ''"),
+    ],
+    "agent_sessions": [
+        ("nsfw", "INTEGER NOT NULL DEFAULT 0"),
+        ("nsfw_source", "TEXT NOT NULL DEFAULT ''"),
+    ],
+}
+
 
 @asynccontextmanager
 async def get_db() -> AsyncIterator[aiosqlite.Connection]:
@@ -71,9 +90,22 @@ async def get_db() -> AsyncIterator[aiosqlite.Connection]:
         await conn.close()
 
 
+async def _migrate(conn: aiosqlite.Connection) -> None:
+    """Add the columns :data:`MIGRATIONS` lists but the existing DB lacks."""
+    for table, columns in MIGRATIONS.items():
+        async with conn.execute(f"PRAGMA table_info({table})") as cur:
+            existing = {row["name"] for row in await cur.fetchall()}
+        for name, definition in columns:
+            if name not in existing:
+                await conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN {name} {definition}"
+                )
+
+
 async def init_db() -> None:
     """Create tables. LoRA registrations are user data (managed in the settings
     screen), so nothing is seeded here."""
     async with get_db() as conn:
         await conn.executescript(SCHEMA)
+        await _migrate(conn)
         await conn.commit()

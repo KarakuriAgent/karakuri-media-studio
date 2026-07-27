@@ -18,6 +18,7 @@ from app import (
     db,
     grok,
     jobs,
+    nsfw,
 )
 from app.main import app
 from app.models import AgentSession, Settings
@@ -113,6 +114,11 @@ def sample_video(tmp_path_factory) -> Path:
     return dest
 
 
+async def _no_llm(text: str) -> None:
+    """NSFW 判定の LLM を使わない差し替え（scripted answer を消費させない）。"""
+    return None
+
+
 @pytest.fixture
 def env(tmp_path, monkeypatch, request):
     video = request.getfixturevalue("sample_video") if HAS_FFMPEG else None
@@ -132,6 +138,8 @@ def env(tmp_path, monkeypatch, request):
     monkeypatch.setattr(assets_router, "ASSETS_DIR", assets)
     monkeypatch.setattr(agent_store, "AGENT_SESSIONS_DIR", sessions)
     monkeypatch.setattr(agent_runner, "POLL_INTERVAL", 0.02)
+    # NSFW 自動判定は test_nsfw.py で検証する（ここでは Grok を呼ばせない）。
+    monkeypatch.setattr(nsfw, "classify", _no_llm)
     monkeypatch.setattr(
         config,
         "_settings",

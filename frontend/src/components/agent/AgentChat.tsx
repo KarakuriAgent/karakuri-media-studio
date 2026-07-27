@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { AgentMessage, AgentSession, JobProgress } from '../../types'
-import { Banner } from '../ui'
+import { Banner, NsfwBadge, NsfwToggle } from '../ui'
 import PlanCard from './PlanCard'
 import { AGENT_ACTIVE, AgentStatusBadge, CHECKIN_LABEL, eventIcon, shortTime } from './common'
 
@@ -21,6 +21,9 @@ interface Props {
   artifactCount: number
   /** 未読の新着成果物がある（狭幅ではボタンにバッジを出すだけ）。 */
   artifactBadge: boolean
+  onToggleNsfw: (nsfw: boolean) => void
+  /** NSFW 表示トグル（オンのときだけ 🔞 バッジを出す）。 */
+  showNsfw: boolean
 }
 
 /** The checkin that is still open: the last one, while the loop waits for it. */
@@ -150,6 +153,8 @@ export default function AgentChat({
   onOpenArtifacts,
   artifactCount,
   artifactBadge,
+  onToggleNsfw,
+  showNsfw,
 }: Props) {
   const [draft, setDraft] = useState('')
   const scroller = useRef<HTMLDivElement>(null)
@@ -184,11 +189,13 @@ export default function AgentChat({
           {session.title || '(無題)'}
         </span>
         <AgentStatusBadge status={session.status} />
+        {showNsfw && session.nsfw && <NsfwBadge />}
         <span className="text-[11px] text-slate-500">
           {CHECKIN_LABEL[session.checkin_mode]}
           {session.checkin_mode === 'auto' ? ` / 上限 ${session.auto_limit} 本` : ''}
         </span>
         <div className="ml-auto flex items-center gap-1.5">
+          <NsfwToggle nsfw={session.nsfw} disabled={busy} onToggle={onToggleNsfw} />
           <button
             className="btn-ghost relative !py-1 text-xs lg:hidden"
             onClick={onOpenArtifacts}

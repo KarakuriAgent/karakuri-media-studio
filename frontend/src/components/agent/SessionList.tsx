@@ -4,6 +4,7 @@ import type {
   AgentSessionCreate,
   AgentSessionSummary,
 } from '../../types'
+import { NsfwBadge, NsfwToggle } from '../ui'
 import { AgentStatusBadge, CHECKIN_LABEL, shortTime } from './common'
 
 interface Props {
@@ -17,6 +18,9 @@ interface Props {
   onSelect: (id: string) => void
   onDelete: (id: string) => void
   onCreate: (payload: AgentSessionCreate) => void
+  onToggleNsfw: (id: string, nsfw: boolean) => void
+  /** オンのときだけ 🔞 バッジを出す（オフのとき NSFW は渡ってこない）。 */
+  showNsfw: boolean
   /** Layout override: desktop column vs. mobile drawer (AGENT-MODE §1). */
   className?: string
 }
@@ -34,6 +38,8 @@ export default function SessionList({
   onSelect,
   onDelete,
   onCreate,
+  onToggleNsfw,
+  showNsfw,
   className = '',
 }: Props) {
   const [creating, setCreating] = useState(false)
@@ -188,6 +194,7 @@ export default function SessionList({
               </span>
               <span className="mt-1 flex items-center gap-1.5">
                 <AgentStatusBadge status={session.status} />
+                {showNsfw && session.nsfw && <NsfwBadge />}
                 <span className="text-[10px] text-slate-500">
                   {shortTime(session.created_at)}
                 </span>
@@ -197,12 +204,20 @@ export default function SessionList({
                 {CHECKIN_LABEL[session.checkin_mode]}
               </span>
             </button>
-            <button
-              className="mt-1 text-[10px] text-slate-600 opacity-0 transition-opacity hover:text-red-400 group-hover:opacity-100"
-              onClick={() => onDelete(session.id)}
-            >
-              削除
-            </button>
+            <div className="mt-1 flex items-center gap-2">
+              <NsfwToggle
+                nsfw={session.nsfw}
+                disabled={busy}
+                onToggle={(nsfw) => onToggleNsfw(session.id, nsfw)}
+                className="!px-1.5 !py-0.5 !text-[10px]"
+              />
+              <button
+                className="ml-auto text-[10px] text-slate-600 opacity-0 transition-opacity hover:text-red-400 group-hover:opacity-100"
+                onClick={() => onDelete(session.id)}
+              >
+                削除
+              </button>
+            </div>
           </div>
         ))}
       </div>

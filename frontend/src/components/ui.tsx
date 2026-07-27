@@ -97,6 +97,44 @@ export function StatusBadge({ status }: { status: string }) {
   )
 }
 
+/** NSFW 印（表示トグルがオンのときだけ現れる）。 */
+export function NsfwBadge({ className = '' }: { className?: string }) {
+  return (
+    <span
+      className={`chip !px-1.5 !py-0.5 border-pink-800 bg-pink-950/80 text-pink-300 ${className}`}
+      title="NSFW"
+    >
+      🔞
+    </span>
+  )
+}
+
+/** NSFW フラグの手動トグル（押すと即時反映）。 */
+export function NsfwToggle({
+  nsfw,
+  onToggle,
+  disabled,
+  className = '',
+}: {
+  nsfw: boolean
+  onToggle: (nsfw: boolean) => void
+  disabled?: boolean
+  className?: string
+}) {
+  return (
+    <button
+      className={`btn-ghost !py-1 text-xs ${
+        nsfw ? '!border-pink-700 !bg-pink-950/60 !text-pink-300' : ''
+      } ${className}`}
+      disabled={disabled}
+      title={nsfw ? 'NSFW 指定を外す' : 'NSFW として印を付ける'}
+      onClick={() => onToggle(!nsfw)}
+    >
+      🔞 NSFW
+    </button>
+  )
+}
+
 export function CopyButton({ text, label = 'コピー' }: { text: string; label?: string }) {
   const [copied, setCopied] = useState(false)
   return (

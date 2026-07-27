@@ -147,6 +147,9 @@ export const api = {
   continueJob: (id: string, body: Record<string, unknown> = {}) =>
     json<Job>('POST', `/api/jobs/${id}/continue`, body),
   deleteJob: (id: string) => json<void>('DELETE', `/api/jobs/${id}`),
+  /** NSFW フラグの手動トグル（manual として保存される）。 */
+  setJobNsfw: (id: string, nsfw: boolean) =>
+    json<Job>('POST', `/api/jobs/${id}/nsfw`, { nsfw }),
 
   createChatSession: (payload: ChatSessionCreate) =>
     json<ChatSession>('POST', '/api/chat/sessions', payload),
@@ -169,6 +172,8 @@ export const api = {
     json<AgentReply>('POST', `/api/agent/sessions/${id}/approve`, body),
   replyAgentCheckin: (id: string, body: AgentCheckinReply) =>
     json<AgentReply>('POST', `/api/agent/sessions/${id}/checkin`, body),
+  setAgentSessionNsfw: (id: string, nsfw: boolean) =>
+    json<AgentSession>('POST', `/api/agent/sessions/${id}/nsfw`, { nsfw }),
   stopAgentSession: (id: string) =>
     json<AgentSession>('POST', `/api/agent/sessions/${id}/stop`),
   agentArtifactUrl: (id: string, name: string) =>

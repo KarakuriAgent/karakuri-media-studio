@@ -9,7 +9,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Query
 from fastapi.responses import FileResponse
 
-from .. import agent_runner, agent_store, grok, prompts
+from .. import agent_runner, agent_store, grok, nsfw as nsfw_service, prompts
 from ..config import load_settings
 from ..ids import new_id
 from ..models import (
@@ -21,6 +21,7 @@ from ..models import (
     AgentSession,
     AgentSessionCreate,
     AgentSessionSummary,
+    NsfwUpdate,
 )
 from .options import get_options
 
@@ -80,7 +81,20 @@ async def create_session(payload: AgentSessionCreate) -> AgentSession:
             AgentMessage(role="system", content=system, ts=agent_store.now())
         ],
     )
-    return await agent_store.insert(session)
+    created = await agent_store.insert(session)
+    # NSFW 判定は goal をもとにバックグラウンドで（goal が空なら最初の発言時に判定）。
+    _classify_session(created, payload.goal)
+    return created
+
+
+def _classify_session(session: AgentSession, text: str) -> None:
+    """未判定のセッションだけ、テキストをもとに自動判定を仕掛ける（§4）。"""
+    if session.nsfw_source or not (text or "").strip():
+        return
+    nsfw_service.spawn(
+        nsfw_service.classify_session(session.id, text),
+        key=f"session:{session.id}",
+    )
 
 
 @router.get("/sessions", response_model=list[AgentSessionSummary])
@@ -93,6 +107,16 @@ async def list_sessions(
 
 @router.get("/sessions/{session_id}", response_model=AgentSession)
 async def get_session(session_id: str) -> AgentSession:
+    return await _require(session_id)
+
+
+@router.post("/sessions/{session_id}/nsfw", response_model=AgentSession)
+async def set_session_nsfw(session_id: str, payload: NsfwUpdate) -> AgentSession:
+    """NSFW フラグの手動トグル（manual として保存し、自動判定に上書きされない）。"""
+    await _require(session_id)
+    await agent_store.update(
+        session_id, nsfw=1 if payload.nsfw else 0, nsfw_source="manual"
+    )
     return await _require(session_id)
 
 
@@ -113,7 +137,8 @@ async def send_message(session_id: str, payload: AgentSendMessage) -> AgentReply
     content = (payload.content or "").strip()
     if not content:
         raise HTTPException(status_code=422, detail="content is empty")
-    await _require(session_id)
+    session = await _require(session_id)
+    _classify_session(session, content)
     if agent_runner.is_running(session_id):
         raise HTTPException(
             status_code=409, detail="実行中です。停止するか完了を待ってください"

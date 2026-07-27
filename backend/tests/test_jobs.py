@@ -9,7 +9,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from app import comfy, db, jobs
+from app import comfy, db, jobs, nsfw
 from app.main import app
 
 HAS_FFMPEG = shutil.which("ffmpeg") is not None
@@ -97,6 +97,11 @@ class FakeComfy:
         return f"ws://127.0.0.1:1/ws?clientId={client_id}"
 
 
+async def _no_llm(text: str) -> None:
+    """NSFW 判定の LLM を使わない差し替え（ヒューリスティックに落ちる）。"""
+    return None
+
+
 @pytest.fixture
 def env(tmp_path, monkeypatch, request):
     """Isolated DB / assets / outputs plus a mocked ComfyUI, wrapped in a client."""
@@ -114,6 +119,9 @@ def env(tmp_path, monkeypatch, request):
     monkeypatch.setattr(jobs, "ASSETS_DIR", assets)
     monkeypatch.setattr(jobs, "OUTPUTS_DIR", outputs)
     monkeypatch.setattr(jobs, "POLL_INTERVAL", 0.02)
+    # NSFW 自動判定は test_nsfw.py で検証する。ここでは Grok を呼ばせない
+    # （ヒューリスティックだけが走る）。
+    monkeypatch.setattr(nsfw, "classify", _no_llm)
 
     fake = FakeComfy(video)
     for name in ("upload_file", "queue_prompt", "get_history", "download_view", "ws_url"):
@@ -475,6 +483,7 @@ async def test_hub_broadcasts_and_drops_dead_sockets():
             "node": "365:3",
             "progress": 0.5,
             "message": "hi",
+            "nsfw": None,
         }
     ]
 

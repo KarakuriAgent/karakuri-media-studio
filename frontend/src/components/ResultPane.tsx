@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { Job, JobProgress } from '../types'
-import { Banner, CopyButton, StatusBadge } from './ui'
+import { Banner, CopyButton, NsfwBadge, NsfwToggle, StatusBadge } from './ui'
 
 interface Props {
   job: Job | null
@@ -9,8 +9,11 @@ interface Props {
   onContinue: (job: Job) => void
   onDelete: (job: Job) => void
   onOpenDetail: (job: Job) => void
+  onToggleNsfw: (job: Job, nsfw: boolean) => void
   busy: boolean
   queue: Job[]
+  /** NSFW 表示トグル（オンのときだけ 🔞 バッジを出す）。 */
+  showNsfw: boolean
 }
 
 type MediaKind = 'video' | 'image'
@@ -74,8 +77,10 @@ export default function ResultPane({
   onContinue,
   onDelete,
   onOpenDetail,
+  onToggleNsfw,
   busy,
   queue,
+  showNsfw,
 }: Props) {
   const media = useMemo(() => (job ? mediaOf(job) : []), [job])
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
@@ -223,6 +228,7 @@ export default function ResultPane({
           </span>
           <span className="text-xs text-slate-500">{formatTime(job.created_at)}</span>
           <span className="text-xs text-slate-600">{job.mode}</span>
+          {showNsfw && job.nsfw && <NsfwBadge />}
 
           <div className="ml-auto flex flex-wrap items-center gap-2">
             {current && (
@@ -249,6 +255,11 @@ export default function ResultPane({
             >
               続きを生成
             </button>
+            <NsfwToggle
+              nsfw={job.nsfw}
+              disabled={busy}
+              onToggle={(nsfw) => onToggleNsfw(job, nsfw)}
+            />
             <button className="btn-ghost !py-1 text-xs" onClick={() => onOpenDetail(job)}>
               詳細
             </button>

@@ -21,6 +21,17 @@ import type {
 
 const ACTIVE_STATUSES = ['queued', 'prompting', 'running']
 
+const SHOW_NSFW_KEY = 'showNsfw'
+
+/** 既定は非表示。localStorage に永続化する。 */
+function initialShowNsfw(): boolean {
+  try {
+    return window.localStorage.getItem(SHOW_NSFW_KEY) === '1'
+  } catch {
+    return false
+  }
+}
+
 export default function App() {
   const [form, setForm] = useState<FormState>(initialForm)
   const [health, setHealth] = useState<Health | null>(null)
@@ -42,11 +53,28 @@ export default function App() {
   const [view, setView] = useState<'main' | 'agent' | 'settings'>('main')
   const [agentEvent, setAgentEvent] = useState<AgentProgress | null>(null)
   const [chatSessionId, setChatSessionId] = useState<string | null>(null)
+  const [showNsfw, setShowNsfw] = useState(initialShowNsfw)
 
   const patch = useCallback(
     (changes: Partial<FormState>) => setForm((prev) => ({ ...prev, ...changes })),
     [],
   )
+
+  // ---------------------------------------------------------------- NSFW 表示
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(SHOW_NSFW_KEY, showNsfw ? '1' : '0')
+    } catch {
+      /* localStorage が使えない環境ではセッション内のみ有効 */
+    }
+  }, [showNsfw])
+
+  // 非表示に戻したら、開いている NSFW ジョブの選択も解除する。
+  useEffect(() => {
+    if (showNsfw) return
+    setActiveJob((current) => (current?.nsfw ? null : current))
+    setDetailJob((current) => (current?.nsfw ? null : current))
+  }, [showNsfw])
 
   const pushError = useCallback((error: unknown) => {
     const message =
@@ -141,7 +169,12 @@ export default function App() {
           const payload = frame as JobProgress
           if (payload?.type !== 'job') return
           setProgress((previous) => ({ ...previous, [payload.job_id]: payload }))
-          if (!ACTIVE_STATUSES.includes(payload.status)) void reloadRef.current()
+          // NSFW 判定が確定したフレームは一覧を取り直して反映する。
+          if (
+            payload.nsfw != null ||
+            !ACTIVE_STATUSES.includes(payload.status)
+          )
+            void reloadRef.current()
           setActiveJob((current) =>
             current && current.id === payload.job_id
               ? { ...current, status: payload.status }
@@ -289,7 +322,30 @@ export default function App() {
     }
   }
 
-  const queue = jobs.filter((job) => ACTIVE_STATUSES.includes(job.status))
+  /** NSFW フラグの手動トグル（manual として保存され、自動判定に上書きされない）。 */
+  const toggleNsfw = async (job: Job, nsfw: boolean) => {
+    try {
+      const next = await api.setJobNsfw(job.id, nsfw)
+      const flags = { nsfw: next.nsfw, nsfw_source: next.nsfw_source }
+      setJobs((previous) =>
+        previous.map((item) => (item.id === next.id ? { ...item, ...flags } : item)),
+      )
+      setActiveJob((current) =>
+        current?.id === next.id ? { ...current, ...flags } : current,
+      )
+      setDetailJob((current) =>
+        current?.id === next.id ? { ...current, ...flags } : current,
+      )
+    } catch (error) {
+      pushError(error)
+    }
+  }
+
+  // 表示トグルがオフのあいだは NSFW を一切渡さない。
+  const visibleJobs = showNsfw ? jobs : jobs.filter((job) => !job.nsfw)
+  const shownJob = !showNsfw && activeJob?.nsfw ? null : activeJob
+  const shownDetailJob = !showNsfw && detailJob?.nsfw ? null : detailJob
+  const queue = visibleJobs.filter((job) => ACTIVE_STATUSES.includes(job.status))
 
   return (
     <div className="flex h-full flex-col">
@@ -301,6 +357,8 @@ export default function App() {
         wsConnected={wsConnected}
         view={view}
         onView={setView}
+        showNsfw={showNsfw}
+        onShowNsfw={setShowNsfw}
       />
 
       {errors.length > 0 && (
@@ -329,7 +387,9 @@ export default function App() {
         />
       )}
 
-      {view === 'agent' && <AgentView event={agentEvent} progress={progress} />}
+      {view === 'agent' && (
+        <AgentView event={agentEvent} progress={progress} showNsfw={showNsfw} />
+      )}
 
       {view === 'main' && (
         <>
@@ -346,31 +406,34 @@ export default function App() {
               onSubmit={() => void submit()}
               submitting={submitting}
               fieldErrors={fieldErrors}
-              jobs={jobs}
+              jobs={visibleJobs}
             />
           </aside>
 
           <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
             <div className="min-h-[40vh] flex-1 lg:min-h-0">
               <ResultPane
-                job={activeJob}
-                progress={activeJob ? progress[activeJob.id] : undefined}
+                job={shownJob}
+                progress={shownJob ? progress[shownJob.id] : undefined}
                 onRerun={(job) => void rerun(job)}
                 onContinue={(job) => void continueFrom(job)}
                 onDelete={(job) => void remove(job)}
                 onOpenDetail={(job) => openDetail(job)}
+                onToggleNsfw={(job, nsfw) => void toggleNsfw(job, nsfw)}
                 busy={detailBusy}
                 queue={queue}
+                showNsfw={showNsfw}
               />
             </div>
 
             <section className="h-36 shrink-0 rounded-lg border border-ink-700 bg-ink-800/60">
               <HistoryGallery
-                jobs={jobs}
-                selectedId={activeJob?.id ?? null}
+                jobs={visibleJobs}
+                selectedId={shownJob?.id ?? null}
                 loading={loadingJobs}
                 onReload={() => void loadJobs()}
                 onSelect={selectJob}
+                showNsfw={showNsfw}
               />
             </section>
           </div>
@@ -378,15 +441,17 @@ export default function App() {
         </>
       )}
 
-      {detailJob && (
+      {shownDetailJob && (
         <JobDetail
-          job={detailJob}
+          job={shownDetailJob}
           busy={detailBusy}
           error={detailError}
           onClose={() => setDetailJob(null)}
           onRerun={(job) => void rerun(job)}
           onContinue={(job) => void continueFrom(job)}
           onDelete={(job) => void remove(job)}
+          onToggleNsfw={(job, nsfw) => void toggleNsfw(job, nsfw)}
+          showNsfw={showNsfw}
         />
       )}
 

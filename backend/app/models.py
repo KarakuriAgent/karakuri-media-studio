@@ -161,6 +161,10 @@ class Job(BaseModel):
     audio_path: str | None = None
     error: str | None = None
 
+    # NSFW フラグ: nsfw_source は '' = 未判定 / 'auto' / 'manual'
+    nsfw: bool = False
+    nsfw_source: str = ""
+
     # convenience for the SPA (derived from the paths above, see jobs._row_to_job)
     image_url: str | None = None
     video_url: str | None = None
@@ -220,6 +224,9 @@ class JobCreate(BaseModel):
     chat_session_id: str | None = None
     user_input: str | None = None
 
+    # 明示指定された NSFW フラグ（manual 扱い）。None なら自動判定に任せる。
+    nsfw: bool | None = None
+
     @model_validator(mode="after")
     def _check_required(self) -> "JobCreate":
         missing = missing_job_fields(
@@ -258,6 +265,12 @@ class JobContinue(BaseModel):
     user_input: str | None = None
 
 
+class NsfwUpdate(BaseModel):
+    """POST /api/jobs/{id}/nsfw と POST /api/agent/sessions/{id}/nsfw の body。"""
+
+    nsfw: bool
+
+
 class JobProgress(BaseModel):
     """Payload broadcast on WS /api/ws."""
 
@@ -267,6 +280,8 @@ class JobProgress(BaseModel):
     node: str | None = None
     progress: float | None = None
     message: str | None = None
+    # NSFW フラグが確定したときだけ入る（未指定は None）。
+    nsfw: bool | None = None
 
 
 class ChatMessage(BaseModel):
@@ -419,6 +434,9 @@ class AgentSession(BaseModel):
     messages: list[AgentMessage] = Field(default_factory=list)
     plan: AgentPlan = Field(default_factory=AgentPlan)
     artifacts: list[AgentArtifact] = Field(default_factory=list)
+    # NSFW フラグ（'' = 未判定 / 'auto' / 'manual'）
+    nsfw: bool = False
+    nsfw_source: str = ""
 
 
 class AgentSessionSummary(BaseModel):
@@ -433,6 +451,8 @@ class AgentSessionSummary(BaseModel):
     message_count: int = 0
     task_count: int = 0
     artifact_count: int = 0
+    nsfw: bool = False
+    nsfw_source: str = ""
 
 
 class AgentSessionCreate(BaseModel):

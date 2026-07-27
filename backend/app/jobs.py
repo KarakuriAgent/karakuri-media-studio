@@ -30,7 +30,7 @@ from typing import Any
 
 import aiosqlite
 
-from . import comfy, ws
+from . import comfy, nsfw as nsfw_service, ws
 from .config import load_settings
 from .db import get_db
 from .ids import new_id
@@ -232,12 +232,23 @@ def _validate(params: dict[str, Any]) -> None:
         )
 
 
+def _resolve_nsfw(explicit: bool | None, inherit: bool) -> tuple[bool | None, str]:
+    """明示指定は manual、継承は auto、未指定は判定待ち（'' + バックグラウンド判定）。"""
+    if explicit is not None:
+        return explicit, "manual"
+    if inherit:
+        return True, "auto"
+    return None, ""
+
+
 async def _insert_job(
     *,
     mode: str,
     params: dict[str, Any],
     user_input: str | None,
     chat_session_id: str | None,
+    nsfw: bool | None = None,
+    nsfw_source: str = "",
 ) -> Job:
     """Validate, persist a ``queued`` row and hand it to the worker."""
     _validate(params)
@@ -272,16 +283,19 @@ async def _insert_job(
         "source_image": params.get("source_image"),
         "audio_path": params.get("audio_path"),
         "error": None,
+        "nsfw": 1 if nsfw else 0,
+        "nsfw_source": nsfw_source if nsfw is not None else "",
     }
     async with get_db() as conn:
         await conn.execute(
             "INSERT INTO jobs (id, created_at, mode, status, user_input, image_prompt,"
             " video_prompt, grok_raw, params, workflow_json, comfy_prompt_id,"
-            " image_path, video_path, last_frame_path, source_image, audio_path, error)"
+            " image_path, video_path, last_frame_path, source_image, audio_path, error,"
+            " nsfw, nsfw_source)"
             " VALUES (:id, :created_at, :mode, :status, :user_input, :image_prompt,"
             " :video_prompt, :grok_raw, :params, :workflow_json, :comfy_prompt_id,"
             " :image_path, :video_path, :last_frame_path, :source_image, :audio_path,"
-            " :error)",
+            " :error, :nsfw, :nsfw_source)",
             row,
         )
         await conn.commit()
@@ -289,6 +303,19 @@ async def _insert_job(
     await _link_chat_session(chat_session_id, job_id)
     await ws.publish(job_id, "queued", message="queued")
     await runner.submit(job_id)
+
+    if nsfw is None:
+        # 判定は生成をブロックしない: 投げっぱなしで走らせる。
+        nsfw_service.spawn(
+            nsfw_service.classify_job(
+                job_id,
+                nsfw_service.job_text(
+                    params.get("image_prompt"), params.get("video_prompt"), user_input
+                ),
+                session_id=chat_session_id,
+            ),
+            key=f"job:{job_id}",
+        )
 
     job = await get_job(job_id)
     assert job is not None
@@ -314,17 +341,35 @@ def _params_from_create(payload: JobCreate) -> dict[str, Any]:
     return params
 
 
-async def create_job(payload: JobCreate) -> Job:
+async def create_job(payload: JobCreate, *, inherit_nsfw: bool = False) -> Job:
+    """``inherit_nsfw``: 呼び出し元（エージェントセッション等）が NSFW のとき True。"""
+    nsfw, source = _resolve_nsfw(payload.nsfw, inherit_nsfw)
     return await _insert_job(
         mode=payload.mode,
         params=_params_from_create(payload),
         user_input=payload.user_input,
         chat_session_id=payload.chat_session_id,
+        nsfw=nsfw,
+        nsfw_source=source,
     )
 
 
-async def rerun_job(job_id: str, payload: JobRerun) -> Job:
-    """New job from the stored *params* (rebuilt, not replayed from workflow_json)."""
+async def set_nsfw(job_id: str, nsfw: bool) -> Job | None:
+    """手動トグル: manual として保存し、WS で画面に伝える。"""
+    if await get_job(job_id, include_workflow=False) is None:
+        return None
+    await _update(job_id, nsfw=1 if nsfw else 0, nsfw_source="manual")
+    job = await get_job(job_id, include_workflow=False)
+    if job is not None:
+        await ws.publish(job_id, job.status, nsfw=job.nsfw)
+    return job
+
+
+async def rerun_job(job_id: str, payload: JobRerun, *, inherit_nsfw: bool = False) -> Job:
+    """New job from the stored *params* (rebuilt, not replayed from workflow_json).
+
+    NSFW フラグは元ジョブから継承する（継承時は判定をスキップ）。
+    """
     source = await get_job(job_id)
     if source is None:
         raise LookupError(job_id)
@@ -336,16 +381,24 @@ async def rerun_job(job_id: str, payload: JobRerun) -> Job:
         params.update(_seeds(None))
     else:
         params.update(_seeds(params.get("seed")))
+    nsfw, nsfw_source = _resolve_nsfw(None, source.nsfw or inherit_nsfw)
     return await _insert_job(
         mode=params.get("mode", source.mode),
         params=params,
         user_input=source.user_input,
         chat_session_id=None,
+        nsfw=nsfw,
+        nsfw_source=nsfw_source,
     )
 
 
-async def continue_job(job_id: str, payload: JobContinue) -> Job:
-    """Start a mode-B job from the last frame of ``job_id`` (SPEC §2)."""
+async def continue_job(
+    job_id: str, payload: JobContinue, *, inherit_nsfw: bool = False
+) -> Job:
+    """Start a mode-B job from the last frame of ``job_id`` (SPEC §2).
+
+    NSFW フラグは元ジョブから継承する（継承時は判定をスキップ）。
+    """
     source = await get_job(job_id)
     if source is None:
         raise LookupError(job_id)
@@ -381,11 +434,14 @@ async def continue_job(job_id: str, payload: JobContinue) -> Job:
         "continued_from": source.id,
     }
     params.update(_seeds(payload.seed))
+    nsfw, nsfw_source = _resolve_nsfw(None, source.nsfw or inherit_nsfw)
     return await _insert_job(
         mode="i2v",
         params=params,
         user_input=payload.user_input or source.user_input,
         chat_session_id=payload.chat_session_id,
+        nsfw=nsfw,
+        nsfw_source=nsfw_source,
     )
 
 

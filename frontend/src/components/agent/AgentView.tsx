@@ -17,9 +17,11 @@ interface Props {
   event: AgentProgress | null
   /** Job progress map shared with the generate view (`type: "job"` frames). */
   progress: Record<string, JobProgress>
+  /** オフのあいだは NSFW セッションを一覧から隠す。 */
+  showNsfw: boolean
 }
 
-export default function AgentView({ event, progress }: Props) {
+export default function AgentView({ event, progress, showNsfw }: Props) {
   const [sessions, setSessions] = useState<AgentSessionSummary[]>([])
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [session, setSession] = useState<AgentSession | null>(null)
@@ -213,9 +215,31 @@ export default function AgentView({ event, progress }: Props) {
       ),
     }))
 
+  /** NSFW フラグの手動トグル（開いているセッションにも即時反映する）。 */
+  const toggleNsfw = async (id: string, nsfw: boolean) => {
+    try {
+      const updated = await api.setAgentSessionNsfw(id, nsfw)
+      setSession((current) =>
+        current?.id === id
+          ? { ...current, nsfw: updated.nsfw, nsfw_source: updated.nsfw_source }
+          : current,
+      )
+      await loadSessions()
+    } catch (caught) {
+      fail(caught)
+    }
+  }
+
+  // 一覧からは NSFW を外す（開いているセッションは作業中なので表示を続ける）。
+  const visibleSessions = showNsfw
+    ? sessions
+    : sessions.filter((item) => !item.nsfw)
+
   const sessionListProps = {
-    sessions,
+    sessions: visibleSessions,
     activeId: sessionId,
+    showNsfw,
+    onToggleNsfw: (id: string, nsfw: boolean) => void toggleNsfw(id, nsfw),
     loading: loadingSessions,
     busy,
     onReload: () => void loadSessions(),
@@ -249,6 +273,8 @@ export default function AgentView({ event, progress }: Props) {
           onOpenArtifacts={openArtifacts}
           artifactCount={session.artifacts.length}
           artifactBadge={artifactBadge}
+          onToggleNsfw={(nsfw) => void toggleNsfw(session.id, nsfw)}
+          showNsfw={showNsfw}
         />
       ) : (
         <section className="flex min-h-0 min-w-0 flex-1 flex-col items-center justify-center gap-2 rounded-lg border border-ink-600 bg-ink-900 p-4 text-center">

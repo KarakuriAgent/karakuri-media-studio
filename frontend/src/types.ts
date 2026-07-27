@@ -75,6 +75,9 @@ export interface Job {
   source_image: string | null
   audio_path: string | null
   error: string | null
+  nsfw: boolean
+  /** '' = 未判定 / 'auto' = 自動判定 / 'manual' = 手動指定。 */
+  nsfw_source: string
   image_url: string | null
   video_url: string | null
   last_frame_url: string | null
@@ -96,6 +99,8 @@ export interface JobCreate {
   seed: number | null
   chat_session_id?: string | null
   user_input?: string | null
+  /** 明示指定（manual 扱い）。省略すると自動判定に任せる。 */
+  nsfw?: boolean | null
 }
 
 export interface JobProgress {
@@ -105,6 +110,8 @@ export interface JobProgress {
   node?: string | null
   progress?: number | null
   message?: string | null
+  /** NSFW フラグが確定したときだけ入る。 */
+  nsfw?: boolean | null
 }
 
 export interface HealthStatus {
@@ -243,6 +250,9 @@ export interface AgentSession {
   messages: AgentMessage[]
   plan: AgentPlan
   artifacts: AgentArtifact[]
+  nsfw: boolean
+  /** '' = 未判定 / 'auto' / 'manual'。 */
+  nsfw_source: string
 }
 
 export interface AgentSessionSummary {
@@ -255,6 +265,8 @@ export interface AgentSessionSummary {
   message_count: number
   task_count: number
   artifact_count: number
+  nsfw: boolean
+  nsfw_source: string
 }
 
 export interface AgentSessionCreate {

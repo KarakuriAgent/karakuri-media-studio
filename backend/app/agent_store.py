@@ -82,6 +82,8 @@ def _row_to_session(row) -> AgentSession:
             for a in _loads(row["artifacts"], [])
             if isinstance(a, dict)
         ],
+        nsfw=bool(row["nsfw"]),
+        nsfw_source=row["nsfw_source"] or "",
     )
 
 
@@ -95,7 +97,8 @@ async def insert(session: AgentSession) -> AgentSession:
     async with get_db() as conn:
         await conn.execute(
             "INSERT INTO agent_sessions (id, created_at, title, status, checkin_mode,"
-            " auto_limit, messages, plan, artifacts) VALUES (?,?,?,?,?,?,?,?,?)",
+            " auto_limit, messages, plan, artifacts, nsfw, nsfw_source)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
             (
                 session.id,
                 session.created_at,
@@ -106,6 +109,8 @@ async def insert(session: AgentSession) -> AgentSession:
                 _dump(session.messages),
                 _dump(session.plan),
                 _dump(session.artifacts),
+                1 if session.nsfw else 0,
+                session.nsfw_source,
             ),
         )
         await conn.commit()
@@ -142,6 +147,8 @@ async def list_sessions(limit: int = 50, offset: int = 0) -> list[AgentSessionSu
             message_count=len([m for m in s.messages if m.role != "system"]),
             task_count=len(s.plan.tasks),
             artifact_count=len(s.artifacts),
+            nsfw=s.nsfw,
+            nsfw_source=s.nsfw_source,
         )
         for s in sessions
     ]

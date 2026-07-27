@@ -68,6 +68,8 @@ export default function Header({
   wsConnected,
   view,
   onView,
+  showNsfw,
+  onShowNsfw,
 }: {
   health: Health | null
   checking: boolean
@@ -76,6 +78,8 @@ export default function Header({
   wsConnected: boolean
   view: 'main' | 'agent' | 'settings'
   onView: (view: 'main' | 'agent') => void
+  showNsfw: boolean
+  onShowNsfw: (show: boolean) => void
 }) {
   return (
     <header className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-ink-700 bg-ink-800/80 px-4 py-2.5 backdrop-blur">
@@ -97,6 +101,22 @@ export default function Header({
         </span>
       </div>
       <div className="ml-auto flex items-center gap-2">
+        <label
+          className={`chip cursor-pointer select-none !py-1 ${
+            showNsfw
+              ? 'border-accent-500 bg-accent-500/15 text-accent-400'
+              : 'border-ink-600 bg-ink-800 text-slate-400 hover:border-ink-500'
+          }`}
+          title="オフのあいだは NSFW の作品を一覧から隠します"
+        >
+          <input
+            type="checkbox"
+            className="h-3 w-3 accent-accent-500"
+            checked={showNsfw}
+            onChange={(event) => onShowNsfw(event.target.checked)}
+          />
+          🔞 NSFW表示
+        </label>
         <button className="btn-ghost" onClick={onRefresh} disabled={checking}>
           {checking ? '確認中…' : '接続状態を更新'}
         </button>

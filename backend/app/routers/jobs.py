@@ -3,7 +3,7 @@
 from fastapi import APIRouter, HTTPException, Query
 
 from .. import jobs as service
-from ..models import Job, JobContinue, JobCreate, JobRerun
+from ..models import Job, JobContinue, JobCreate, JobRerun, NsfwUpdate
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
@@ -41,6 +41,15 @@ async def get_job(job_id: str) -> Job:
 async def delete_job(job_id: str) -> None:
     if not await service.delete_job(job_id):
         raise HTTPException(status_code=404, detail="job not found")
+
+
+@router.post("/{job_id}/nsfw", response_model=Job)
+async def set_job_nsfw(job_id: str, payload: NsfwUpdate) -> Job:
+    """NSFW フラグの手動トグル（manual として保存し、自動判定に上書きされない）。"""
+    job = await service.set_nsfw(job_id, payload.nsfw)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    return job
 
 
 @router.post("/{job_id}/rerun", response_model=Job, status_code=201)

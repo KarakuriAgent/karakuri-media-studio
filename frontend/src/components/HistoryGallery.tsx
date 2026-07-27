@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 import type { Job } from '../types'
-import { StatusBadge } from './ui'
+import { NsfwBadge, StatusBadge } from './ui'
 
 const PENDING = ['queued', 'running', 'prompting']
 
@@ -23,12 +23,15 @@ export default function HistoryGallery({
   onSelect,
   onReload,
   loading,
+  showNsfw,
 }: {
   jobs: Job[]
   selectedId: string | null
   onSelect: (job: Job) => void
   onReload: () => void
   loading: boolean
+  /** オンのときだけ 🔞 バッジを出す（オフのとき NSFW は渡ってこない）。 */
+  showNsfw: boolean
 }) {
   const items = useRef<Record<string, HTMLButtonElement | null>>({})
 
@@ -115,11 +118,12 @@ export default function HistoryGallery({
                 </span>
               )}
 
-              {job.video_url && (
-                <span className="absolute right-1 top-1 rounded bg-black/60 px-1 text-[10px]">
-                  🎬
-                </span>
-              )}
+              <span className="absolute right-1 top-1 flex items-center gap-1">
+                {showNsfw && job.nsfw && <NsfwBadge />}
+                {job.video_url && (
+                  <span className="rounded bg-black/60 px-1 text-[10px]">🎬</span>
+                )}
+              </span>
               {(pending || failed) && (
                 <span className="absolute left-1 top-1">
                   <StatusBadge status={job.status} />

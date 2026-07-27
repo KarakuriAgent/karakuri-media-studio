@@ -289,6 +289,11 @@ async def _run_and_wait(
     return finished
 
 
+async def _session_nsfw(session_id: str) -> bool:
+    session = await load(session_id)
+    return bool(session and session.nsfw)
+
+
 async def execute_task(session_id: str, task: AgentTask) -> None:
     """Run one approved plan task, with a single automatic retry on failure."""
     task.status = "running"
@@ -299,7 +304,8 @@ async def execute_task(session_id: str, task: AgentTask) -> None:
         payload = JobCreate(**task.job).model_copy(
             update={"chat_session_id": session_id}
         )
-        job = await jobs.create_job(payload)
+        # NSFW セッションのジョブは判定を待たずにフラグを継承する。
+        job = await jobs.create_job(payload, inherit_nsfw=await _session_nsfw(session_id))
     except (jobs.JobValidationError, ValueError) as exc:
         task.status = "failed"
         task.error = str(exc)
@@ -637,15 +643,18 @@ async def _continue_or_rerun(session_id: str, action: AgentAction) -> None:
     """既存 jobs.py の continue / rerun をルーターを介さず内部呼び出しする。"""
     kind = action.action
     label = "続き生成" if kind == "continue" else "再生成"
+    inherit = await _session_nsfw(session_id)
     try:
         if kind == "continue":
             payload = JobContinue(
                 **action.overrides, chat_session_id=session_id
             )
-            job = await jobs.continue_job(action.job_id or "", payload)
+            job = await jobs.continue_job(
+                action.job_id or "", payload, inherit_nsfw=inherit
+            )
         else:
             job = await jobs.rerun_job(
-                action.job_id or "", JobRerun(**action.overrides)
+                action.job_id or "", JobRerun(**action.overrides), inherit_nsfw=inherit
             )
     except LookupError:
         await _event(
