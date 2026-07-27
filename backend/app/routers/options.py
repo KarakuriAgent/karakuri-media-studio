@@ -1,9 +1,9 @@
 from fastapi import APIRouter
 
-from .. import comfy
+from .. import comfy, lora_samples
 from ..config import load_settings
 from ..db import get_db
-from ..models import DEFAULT_NEGATIVE_PROMPT, Lora, Options
+from ..models import DEFAULT_NEGATIVE_PROMPT, Options
 from .assets import AUDIO_EXT, IMAGE_EXT, list_assets
 
 router = APIRouter(prefix="/api", tags=["options"])
@@ -33,7 +33,7 @@ async def get_options() -> Options:
     async with get_db() as conn:
         async with conn.execute("SELECT * FROM loras ORDER BY sort_order, id") as cur:
             rows = await cur.fetchall()
-    options.loras = [Lora(**dict(r)) for r in rows]
+    options.loras = [lora_samples.row_to_lora(r) for r in rows]
 
     try:
         info = await comfy.get_object_info()

@@ -19,6 +19,7 @@ from app import (
     db,
     grok,
     jobs,
+    lora_samples,
     nsfw,
 )
 from app.main import app
@@ -137,6 +138,7 @@ def env(tmp_path, monkeypatch, request):
     monkeypatch.setattr(jobs, "OUTPUTS_DIR", outputs)
     monkeypatch.setattr(jobs, "POLL_INTERVAL", 0.02)
     monkeypatch.setattr(assets_router, "ASSETS_DIR", assets)
+    monkeypatch.setattr(lora_samples, "ASSETS_DIR", assets)
     monkeypatch.setattr(agent_store, "AGENT_SESSIONS_DIR", sessions)
     monkeypatch.setattr(agent_runner, "POLL_INTERVAL", 0.02)
     # NSFW 自動判定は test_nsfw.py で検証する（ここでは Grok を呼ばせない）。
@@ -362,6 +364,49 @@ def test_session_starts_with_a_system_prompt_and_a_workdir(env):
     listing = env.client.get("/api/agent/sessions").json()
     assert [s["id"] for s in listing] == [session["id"]]
     assert listing[0]["task_count"] == 0
+
+
+def test_session_copies_lora_samples_into_the_workdir(env):
+    """LoRA のサンプル画像は workdir へコピーされ、参照指示が焼き込まれる。"""
+    lora = env.client.post(
+        "/api/loras",
+        json={
+            "display_name": "サクラ",
+            "lora_name": "sakura.safetensors",
+            "trigger_word": "sakura",
+        },
+    ).json()
+    uploaded = env.client.post(
+        f"/api/loras/{lora['id']}/samples",
+        files={"file": ("face.png", b"\x89PNG fake", "image/png")},
+    )
+    assert uploaded.status_code == 201, uploaded.text
+    assert len(uploaded.json()["sample_images"]) == 1
+
+    session = start(env)
+    workdir = env.sessions / session["id"]
+    copies = list((workdir / "lora_samples" / "sakura").glob("*.png"))
+    assert len(copies) == 1
+    assert copies[0].read_bytes() == b"\x89PNG fake"
+
+    system = session["messages"][0]["content"]
+    assert f"reference image: `lora_samples/sakura/{copies[0].name}`" in system
+    assert "compare the output" in system
+
+
+def test_session_without_samples_has_no_reference_section(env):
+    env.client.post(
+        "/api/loras",
+        json={
+            "display_name": "サクラ",
+            "lora_name": "sakura.safetensors",
+            "trigger_word": "sakura",
+        },
+    )
+    session = start(env)
+    system = session["messages"][0]["content"]
+    assert "reference image" not in system
+    assert not (env.sessions / session["id"] / "lora_samples").exists()
 
 
 def test_missing_session_is_404(env):

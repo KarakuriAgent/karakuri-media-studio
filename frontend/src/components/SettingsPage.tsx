@@ -138,6 +138,35 @@ export default function SettingsPage({
     }
   }
 
+  const uploadSample = async (lora: Lora, file: File) => {
+    setBusy(true)
+    setError(null)
+    try {
+      await api.uploadLoraSample(lora.id, file)
+      await reloadLoras()
+      onChanged()
+    } catch (caught) {
+      fail(caught)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const removeSample = async (lora: Lora, url: string) => {
+    const name = url.split('/').pop() ?? ''
+    setBusy(true)
+    setError(null)
+    try {
+      await api.deleteLoraSample(lora.id, name)
+      await reloadLoras()
+      onChanged()
+    } catch (caught) {
+      fail(caught)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const removeLora = async (lora: Lora) => {
     if (!window.confirm(`${lora.display_name} を削除しますか？`)) return
     setBusy(true)
@@ -260,6 +289,46 @@ export default function SettingsPage({
                         trigger: {lora.trigger_word} / strength: {lora.default_strength}
                         {lora.default_audio ? ` / audio: ${lora.default_audio}` : ''}
                       </p>
+                      {/* サンプル画像: エージェントモードで Grok が出力と見比べる基準 */}
+                      <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                        {lora.sample_images.map((url) => (
+                          <div key={url} className="group relative">
+                            <a href={url} target="_blank" rel="noreferrer">
+                              <img
+                                src={url}
+                                alt="サンプル"
+                                className="h-14 w-14 rounded border border-ink-600 object-cover"
+                              />
+                            </a>
+                            <button
+                              type="button"
+                              title="サンプルを削除"
+                              className="absolute -right-1.5 -top-1.5 hidden h-4 w-4 items-center justify-center rounded-full border border-ink-600 bg-ink-900 text-[10px] leading-none text-slate-300 hover:text-red-400 group-hover:flex"
+                              onClick={() => void removeSample(lora, url)}
+                              disabled={busy}
+                            >
+                              ×
+                            </button>
+                          </div>
+                        ))}
+                        <label
+                          className="flex h-14 w-14 cursor-pointer items-center justify-center rounded border border-dashed border-ink-600 text-lg text-slate-500 hover:border-accent-500 hover:text-accent-500"
+                          title="サンプル画像を追加"
+                        >
+                          ＋
+                          <input
+                            type="file"
+                            accept=".png,.jpg,.jpeg,.webp,.bmp"
+                            className="hidden"
+                            disabled={busy}
+                            onChange={(event) => {
+                              const file = event.target.files?.[0]
+                              event.target.value = ''
+                              if (file) void uploadSample(lora, file)
+                            }}
+                          />
+                        </label>
+                      </div>
                     </div>
                     <button
                       className="btn-ghost !py-1 text-xs"

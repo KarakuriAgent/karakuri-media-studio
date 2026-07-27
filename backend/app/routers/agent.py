@@ -66,12 +66,15 @@ async def create_session(payload: AgentSessionCreate) -> AgentSession:
     workdir = agent_store.session_dir(session_id)
     options = await get_options()
     settings = load_settings()
+    # LoRA のサンプル画像を workdir へ持ち込み、Grok が出力と見比べられるようにする
+    lora_samples = agent_store.copy_lora_samples(session_id, options.loras)
     system = prompts.build_agent_system_prompt(
         payload,
         options,
         workdir=str(workdir),
         max_tasks=settings.agent_max_plan_tasks or 5,
         tools_enabled=bool(settings.agent_grok_args),
+        lora_samples=lora_samples,
     )
     session = AgentSession(
         id=session_id,

@@ -35,7 +35,8 @@ CREATE TABLE IF NOT EXISTS loras (
   trigger_word  TEXT NOT NULL,
   default_strength REAL DEFAULT 1.0,
   default_audio TEXT,
-  sort_order    INTEGER DEFAULT 0
+  sort_order    INTEGER DEFAULT 0,
+  sample_images TEXT NOT NULL DEFAULT '[]'
 );
 
 CREATE TABLE IF NOT EXISTS chat_sessions (
@@ -75,6 +76,9 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
     "agent_sessions": [
         ("nsfw", "INTEGER NOT NULL DEFAULT 0"),
         ("nsfw_source", "TEXT NOT NULL DEFAULT ''"),
+    ],
+    "loras": [
+        ("sample_images", "TEXT NOT NULL DEFAULT '[]'"),
     ],
 }
 

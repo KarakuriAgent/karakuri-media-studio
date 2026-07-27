@@ -133,6 +133,10 @@ export const api = {
   updateLora: (id: number, payload: Partial<LoraPayload>) =>
     json<Lora>('PUT', `/api/loras/${id}`, payload),
   deleteLora: (id: number) => json<void>('DELETE', `/api/loras/${id}`),
+  uploadLoraSample: (id: number, file: File) =>
+    upload<Lora>(`/api/loras/${id}/samples`, file),
+  deleteLoraSample: (id: number, name: string) =>
+    json<Lora>('DELETE', `/api/loras/${id}/samples/${encodeURIComponent(name)}`),
 
   listAudio: () => request<Asset[]>('/api/assets/audio'),
   listImages: () => request<Asset[]>('/api/assets/image'),

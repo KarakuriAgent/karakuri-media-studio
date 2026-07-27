@@ -39,9 +39,11 @@ export interface Lora {
   default_strength: number
   default_audio: string | null
   sort_order: number
+  /** サンプル画像の URL（/assets/lora_samples/<id>/<file>）。専用APIで管理。 */
+  sample_images: string[]
 }
 
-export type LoraPayload = Omit<Lora, 'id'>
+export type LoraPayload = Omit<Lora, 'id' | 'sample_images'>
 
 export interface LoraRef {
   lora_name: string

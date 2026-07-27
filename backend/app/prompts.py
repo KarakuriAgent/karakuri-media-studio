@@ -587,8 +587,11 @@ def _agent_guardrails(ctx: AgentSessionCreate, max_tasks: int) -> str:
     )
 
 
-def _agent_choices(options: Options) -> str:
+def _agent_choices(
+    options: Options, lora_samples: dict[str, list[str]] | None = None
+) -> str:
     lines = ["# CHOICES (the only values that exist in this installation)", ""]
+    samples = lora_samples or {}
 
     if options.loras:
         lines.append("Registered character LoRAs (lora_name -> trigger word):")
@@ -600,10 +603,25 @@ def _agent_choices(options: Options) -> str:
                 + (f", audio {lora.default_audio}" if lora.default_audio else "")
                 + ")"
             )
+            for sample in samples.get(lora.lora_name, ()):
+                lines.append(f"  - reference image: `{sample}`")
         lines.append(
             "Put the trigger words of the LoRAs you use into `trigger_text` and"
             " use the trigger word as the subject's name inside `image_prompt`."
         )
+        if any(samples.values()):
+            lines += [
+                "",
+                "Reference images: the `lora_samples/…` paths above are sample"
+                " images of each character, copied into your working directory."
+                " They show what the character is supposed to look like. Open"
+                " and study them before planning, and after every generation"
+                " compare the output (generated stills, `inspect` frames)"
+                " against them — face, hairstyle, body proportions and overall"
+                " style must match the reference. If the output drifts from the"
+                " reference, adjust the prompt or LoRA strength and rerun"
+                " instead of accepting it.",
+            ]
     else:
         lines.append("No character LoRA is registered: leave `loras` empty.")
     lines.append("")
@@ -641,13 +659,14 @@ def build_agent_system_prompt(
     workdir: str = "",
     max_tasks: int = 5,
     tools_enabled: bool = False,
+    lora_samples: dict[str, list[str]] | None = None,
 ) -> str:
     """System prompt of one agent session (AGENT-MODE §5.1)."""
     video_spec = VIDEO_SPEC.replace(
         "DURATION_SECONDS seconds", "as many seconds as the job's `duration` field says"
     )
     parts = [AGENT_ROLE, AGENT_PROTOCOL, IMAGE_SPEC, video_spec, TEMPLATE_NATURAL,
-             FEW_SHOT, _agent_choices(options),
+             FEW_SHOT, _agent_choices(options, lora_samples),
              _agent_guardrails(ctx, max_tasks), AGENT_OUTPUT_RULES]
     if tools_enabled:
         parts.insert(2, AGENT_TOOLS)

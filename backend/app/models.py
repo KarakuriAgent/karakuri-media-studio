@@ -75,6 +75,9 @@ class Lora(BaseModel):
     default_strength: float = 1.0
     default_audio: str | None = None
     sort_order: int = 0
+    # サンプル画像の URL（/assets/lora_samples/<id>/<file>）。登録・削除は
+    # 専用エンドポイント経由のみで、Create / Update では触れない。
+    sample_images: list[str] = Field(default_factory=list)
 
 
 class LoraCreate(BaseModel):

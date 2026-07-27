@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from . import lora_samples
 from .db import get_db
 from .models import (
     AgentArtifact,
@@ -20,6 +21,7 @@ from .models import (
     AgentPlan,
     AgentSession,
     AgentSessionSummary,
+    Lora,
 )
 from .paths import AGENT_SESSIONS_DIR
 
@@ -37,6 +39,35 @@ def session_dir(session_id: str) -> Path:
     path = AGENT_SESSIONS_DIR / session_id
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def copy_lora_samples(session_id: str, loras: list[Lora]) -> dict[str, list[str]]:
+    """登録 LoRA のサンプル画像を workdir/lora_samples/ 配下へコピーする。
+
+    Grok CLI は自分の作業ディレクトリしか読めないので、セッション開始時に
+    参照用のサンプルを持ち込む。戻り値は ``{lora_name: [workdir 相対パス]}``
+    （サンプルの無い LoRA は含まない）で、システムプロンプトに焼き込む。
+    """
+    workdir = session_dir(session_id)
+    result: dict[str, list[str]] = {}
+    used: set[str] = set()
+    for lora in loras:
+        files = lora_samples.sample_paths(lora)
+        if not files:
+            continue
+        folder = lora_samples.safe_stem(lora.trigger_word, fallback="") or f"lora_{lora.id}"
+        if folder in used:
+            folder = f"{folder}_{lora.id}"
+        used.add(folder)
+        dest_dir = workdir / "lora_samples" / folder
+        dest_dir.mkdir(parents=True, exist_ok=True)
+        copied: list[str] = []
+        for source in files:
+            dest = dest_dir / source.name
+            shutil.copyfile(source, dest)
+            copied.append(str(dest.relative_to(workdir)))
+        result[lora.lora_name] = copied
+    return result
 
 
 def artifact_path(session_id: str, name: str) -> Path | None:
