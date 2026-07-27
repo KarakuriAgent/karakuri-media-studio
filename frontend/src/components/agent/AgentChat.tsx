@@ -14,6 +14,13 @@ interface Props {
   onApprove: () => void
   onCheckin: (answer: string) => void
   onStop: () => void
+  /** 狭幅のみ: セッション一覧ドロワーを開く。 */
+  onOpenSessions: () => void
+  /** 狭幅のみ: 成果物パネル（全画面オーバーレイ）を開く。 */
+  onOpenArtifacts: () => void
+  artifactCount: number
+  /** 未読の新着成果物がある（狭幅ではボタンにバッジを出すだけ）。 */
+  artifactBadge: boolean
 }
 
 /** The checkin that is still open: the last one, while the loop waits for it. */
@@ -80,7 +87,9 @@ function CheckinBubble({
             : 'border-ink-600 bg-ink-800 text-slate-400'
         }`}
       >
-        <p className="mb-2 whitespace-pre-wrap">⚠ {message.content}</p>
+        <p className="mb-2 whitespace-pre-wrap">
+          {message.kind === 'approval' ? '🛡 承認' : '⚠'} {message.content}
+        </p>
         <div className="flex flex-wrap gap-1.5">
           {options.map((option) => (
             <button
@@ -137,6 +146,10 @@ export default function AgentChat({
   onApprove,
   onCheckin,
   onStop,
+  onOpenSessions,
+  onOpenArtifacts,
+  artifactCount,
+  artifactBadge,
 }: Props) {
   const [draft, setDraft] = useState('')
   const scroller = useRef<HTMLDivElement>(null)
@@ -160,7 +173,14 @@ export default function AgentChat({
   return (
     <section className="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
       <div className="flex shrink-0 flex-wrap items-center gap-2 rounded-lg border border-ink-600 bg-ink-800 px-3 py-2">
-        <span className="truncate text-xs text-slate-200">
+        <button
+          className="btn-ghost !px-2 !py-1 text-xs lg:hidden"
+          onClick={onOpenSessions}
+          title="セッション一覧"
+        >
+          ☰
+        </button>
+        <span className="min-w-0 flex-1 truncate text-xs text-slate-200 lg:flex-none">
           {session.title || '(無題)'}
         </span>
         <AgentStatusBadge status={session.status} />
@@ -168,14 +188,28 @@ export default function AgentChat({
           {CHECKIN_LABEL[session.checkin_mode]}
           {session.checkin_mode === 'auto' ? ` / 上限 ${session.auto_limit} 本` : ''}
         </span>
-        <button
-          className="btn-ghost ml-auto !py-1 text-xs"
-          disabled={!stoppable}
-          title={stoppable ? '実行中のジョブは完了を待って中断します' : '実行中ではありません'}
-          onClick={onStop}
-        >
-          ⏹ 停止
-        </button>
+        <div className="ml-auto flex items-center gap-1.5">
+          <button
+            className="btn-ghost relative !py-1 text-xs lg:hidden"
+            onClick={onOpenArtifacts}
+            title="成果物パネルを開く"
+          >
+            成果物 ({artifactCount})
+            {artifactBadge && (
+              <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-accent-400" />
+            )}
+          </button>
+          <button
+            className="btn-ghost !py-1 text-xs"
+            disabled={!stoppable}
+            title={
+              stoppable ? '実行中のジョブは完了を待って中断します' : '実行中ではありません'
+            }
+            onClick={onStop}
+          >
+            ⏹ 停止
+          </button>
+        </div>
       </div>
 
       {error && <Banner onClose={onDismissError}>{error}</Banner>}

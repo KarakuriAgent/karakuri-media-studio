@@ -18,6 +18,15 @@ interface Props {
   onToggle: () => void
   /** Panel must be visible for auto-open to make sense. */
   onExpand: () => void
+  /** Layout override: desktop column vs. mobile full-screen overlay (§1). */
+  className?: string
+  /** Icon of the header toggle (mobile overlay closes instead of collapsing). */
+  toggleIcon?: string
+  /**
+   * Reveal the panel / open the viewer when an artifact arrives. Off for the
+   * mobile overlay so a new artifact never hijacks the screen (§1).
+   */
+  autoOpen?: boolean
 }
 
 /** Backend fills `url` for outputs; workdir files are served by name. */
@@ -33,6 +42,9 @@ export default function ArtifactPanel({
   collapsed,
   onToggle,
   onExpand,
+  className = '',
+  toggleIcon = '▶',
+  autoOpen = true,
 }: Props) {
   const [openIndex, setOpenIndex] = useState<number | null>(null)
   const seen = useRef<{ sessionId: string; count: number }>({ sessionId, count: 0 })
@@ -43,10 +55,8 @@ export default function ArtifactPanel({
     const previous = seen.current
     const fresh = previous.sessionId !== sessionId
     seen.current = { sessionId, count: artifacts.length }
-    if (fresh || artifacts.length <= previous.count) {
-      if (fresh) setOpenIndex(null)
-      return
-    }
+    if (fresh) setOpenIndex(null)
+    if (!autoOpen || fresh || artifacts.length <= previous.count) return
     onExpand()
     bottom.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
     const latest = artifacts[artifacts.length - 1]
@@ -57,7 +67,9 @@ export default function ArtifactPanel({
 
   if (collapsed) {
     return (
-      <aside className="flex w-10 shrink-0 flex-col items-center gap-2 rounded-lg border border-ink-700 bg-ink-800/60 py-2">
+      <aside
+        className={`flex w-10 shrink-0 flex-col items-center gap-2 rounded-lg border border-ink-700 bg-ink-800/60 py-2 ${className}`}
+      >
         <button
           className="btn-ghost !px-2 !py-1 text-xs"
           onClick={onToggle}
@@ -73,7 +85,9 @@ export default function ArtifactPanel({
   const open = openIndex != null ? artifacts[openIndex] : null
 
   return (
-    <aside className="flex w-72 shrink-0 flex-col rounded-lg border border-ink-700 bg-ink-800/60">
+    <aside
+      className={`flex w-72 shrink-0 flex-col rounded-lg border border-ink-700 bg-ink-800/60 ${className}`}
+    >
       <div className="flex items-center gap-2 border-b border-ink-700 px-3 py-2">
         <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-400">
           成果物
@@ -82,9 +96,9 @@ export default function ArtifactPanel({
         <button
           className="btn-ghost ml-auto !px-2 !py-1 text-xs"
           onClick={onToggle}
-          title="折りたたむ"
+          title={toggleIcon === '▶' ? '折りたたむ' : '閉じる'}
         >
-          ▶
+          {toggleIcon}
         </button>
       </div>
 

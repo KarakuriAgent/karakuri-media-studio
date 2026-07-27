@@ -477,7 +477,10 @@ class AgentAction(BaseModel):
     title: str = ""
     filename: str | None = None
     content: str = ""
+    kind: Literal["note", "research"] = "note"  # note アクションの成果物種別
     overrides: dict[str, Any] = Field(default_factory=dict)
+    # プラン外 continue / rerun がユーザー承認を得たか（Grok は指定できない）
+    approved: bool = False
 
 
 class AgentReply(BaseModel):

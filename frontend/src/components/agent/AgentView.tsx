@@ -28,6 +28,10 @@ export default function AgentView({ event, progress }: Props) {
   const [error, setError] = useState<string | null>(null)
   const [leftCollapsed, setLeftCollapsed] = useState(false)
   const [rightCollapsed, setRightCollapsed] = useState(false)
+  // 狭幅 (<lg) 用: 一覧はドロワー、成果物は全画面オーバーレイ（AGENT-MODE §1）
+  const [sessionsOpen, setSessionsOpen] = useState(false)
+  const [artifactsOpen, setArtifactsOpen] = useState(false)
+  const [artifactBadge, setArtifactBadge] = useState(false)
 
   const fail = useCallback((caught: unknown) => {
     setError(
@@ -95,10 +99,14 @@ export default function AgentView({ event, progress }: Props) {
     const goal = (payload.goal ?? '').trim()
     setBusy(true)
     setError(null)
+    setSessionsOpen(false)
     try {
-      // The goal is sent as the first message so it triggers the opening turn.
+      // `goal` is burnt into the system prompt (SESSION CONTEXT); the same text
+      // is then posted as the first message to trigger the opening Grok turn
+      // (the backend does not record it twice).
       const created = await api.createAgentSession({
         title: goal.slice(0, 40),
+        goal,
         checkin_mode: payload.checkin_mode,
         auto_limit: payload.auto_limit,
       })
@@ -170,6 +178,28 @@ export default function AgentView({ event, progress }: Props) {
 
   const expandArtifacts = useCallback(() => setRightCollapsed(false), [])
 
+  // 狭幅では新着成果物で勝手に開かず、ボタンのバッジで知らせるだけ（暴発防止）。
+  const seenArtifacts = useRef<{ id: string | null; count: number }>({
+    id: null,
+    count: 0,
+  })
+  useEffect(() => {
+    const previous = seenArtifacts.current
+    const count = session?.artifacts.length ?? 0
+    const id = session?.id ?? null
+    seenArtifacts.current = { id, count }
+    if (id !== previous.id) {
+      setArtifactBadge(false)
+      return
+    }
+    if (count > previous.count && !artifactsOpen) setArtifactBadge(true)
+  }, [session, artifactsOpen])
+
+  const openArtifacts = () => {
+    setArtifactBadge(false)
+    setArtifactsOpen(true)
+  }
+
   const pending = (session?.plan.tasks ?? [])
     .filter((task) => task.status === 'running')
     .map((task) => ({
@@ -183,19 +213,25 @@ export default function AgentView({ event, progress }: Props) {
       ),
     }))
 
+  const sessionListProps = {
+    sessions,
+    activeId: sessionId,
+    loading: loadingSessions,
+    busy,
+    onReload: () => void loadSessions(),
+    onDelete: (id: string) => void remove(id),
+    onCreate: (payload: AgentSessionCreate) => void create(payload),
+  }
+
   return (
     <main className="flex min-h-0 flex-1 gap-3 overflow-hidden p-3">
+      {/* デスクトップ: 3 カラムの左列（狭幅ではドロワーに退避する） */}
       <SessionList
-        sessions={sessions}
-        activeId={sessionId}
-        loading={loadingSessions}
-        busy={busy}
+        {...sessionListProps}
+        className="hidden lg:flex"
         collapsed={leftCollapsed}
         onToggle={() => setLeftCollapsed((value) => !value)}
-        onReload={() => void loadSessions()}
         onSelect={setSessionId}
-        onDelete={(id) => void remove(id)}
-        onCreate={(payload) => void create(payload)}
       />
 
       {session ? (
@@ -209,16 +245,26 @@ export default function AgentView({ event, progress }: Props) {
           onApprove={approve}
           onCheckin={checkin}
           onStop={stop}
+          onOpenSessions={() => setSessionsOpen(true)}
+          onOpenArtifacts={openArtifacts}
+          artifactCount={session.artifacts.length}
+          artifactBadge={artifactBadge}
         />
       ) : (
-        <section className="flex min-h-0 min-w-0 flex-1 flex-col items-center justify-center gap-2 rounded-lg border border-ink-600 bg-ink-900 text-center">
+        <section className="flex min-h-0 min-w-0 flex-1 flex-col items-center justify-center gap-2 rounded-lg border border-ink-600 bg-ink-900 p-4 text-center">
           <span className="text-4xl opacity-40">🤖</span>
           <p className="text-sm text-slate-500">
             エージェントに任せる作業をセッションとして始めます
           </p>
-          <p className="text-xs text-slate-600">
+          <p className="hidden text-xs text-slate-600 lg:block">
             左の「＋ 新規セッション」から最初の指示を入力してください
           </p>
+          <button
+            className="btn-primary mt-1 text-xs lg:hidden"
+            onClick={() => setSessionsOpen(true)}
+          >
+            セッション一覧を開く
+          </button>
         </section>
       )}
 
@@ -230,7 +276,45 @@ export default function AgentView({ event, progress }: Props) {
           collapsed={rightCollapsed}
           onToggle={() => setRightCollapsed((value) => !value)}
           onExpand={expandArtifacts}
+          className="hidden lg:flex"
         />
+      )}
+
+      {/* 狭幅: セッション一覧は左ドロワー（背景タップで閉じる） */}
+      {sessionsOpen && (
+        <div className="fixed inset-0 z-40 flex lg:hidden">
+          <div
+            className="absolute inset-0 bg-black/70"
+            onClick={() => setSessionsOpen(false)}
+          />
+          <SessionList
+            {...sessionListProps}
+            className="relative z-10 h-full !w-72 max-w-[85%] rounded-none border-y-0 border-l-0"
+            collapsed={false}
+            onToggle={() => setSessionsOpen(false)}
+            onSelect={(id) => {
+              setSessionId(id)
+              setSessionsOpen(false)
+            }}
+          />
+        </div>
+      )}
+
+      {/* 狭幅: 成果物パネルは全画面オーバーレイ（AGENT-MODE §1） */}
+      {session && artifactsOpen && (
+        <div className="fixed inset-0 z-40 flex bg-ink-900 p-2 lg:hidden">
+          <ArtifactPanel
+            sessionId={session.id}
+            artifacts={session.artifacts}
+            pending={pending}
+            collapsed={false}
+            onToggle={() => setArtifactsOpen(false)}
+            onExpand={() => setArtifactsOpen(true)}
+            className="!w-full"
+            toggleIcon="✕"
+            autoOpen={false}
+          />
+        </div>
       )}
     </main>
   )

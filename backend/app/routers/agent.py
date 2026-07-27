@@ -52,7 +52,12 @@ async def _reply(session_id: str, answer: str, action) -> AgentReply:
 
 @router.post("/sessions", response_model=AgentSession, status_code=201)
 async def create_session(payload: AgentSessionCreate) -> AgentSession:
-    """セッション開始: workdir を作り、options を焼き込んだシステムプロンプトを保存する。"""
+    """セッション開始: workdir を作り、options を焼き込んだシステムプロンプトを保存する。
+
+    ``goal`` はシステムプロンプトの SESSION CONTEXT に焼き込むだけで、最初の
+    Grok ターンは呼び出し側の ``POST .../messages`` が起動する（発言の二重記録を
+    避けるため、ここでは transcript に user 発言を作らない）。
+    """
     session_id = new_id()
     workdir = agent_store.session_dir(session_id)
     options = await get_options()
@@ -75,10 +80,6 @@ async def create_session(payload: AgentSessionCreate) -> AgentSession:
             AgentMessage(role="system", content=system, ts=agent_store.now())
         ],
     )
-    if payload.goal.strip():
-        session.messages.append(
-            AgentMessage(role="user", content=payload.goal.strip(), ts=agent_store.now())
-        )
     return await agent_store.insert(session)
 
 
@@ -178,7 +179,9 @@ async def checkin(session_id: str, payload: AgentCheckinReply) -> AgentReply:
         session_id,
         AgentMessage(role="user", content=answer, ts=agent_store.now()),
     )
-    await agent_runner.start_loop(session_id)
+    # 保留中のプラン外アクションは、承認されたときだけループが実行する（§2）。
+    pending = await agent_runner.resolve_checkin(session_id, answer)
+    await agent_runner.start_loop(session_id, pending)
     return await _reply(session_id, "", None)
 
 

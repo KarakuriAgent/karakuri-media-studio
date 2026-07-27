@@ -287,7 +287,11 @@ export interface AgentAction {
   title: string
   filename: string | null
   content: string
+  /** note アクションの成果物種別（リサーチまとめは research）。 */
+  kind: 'note' | 'research'
   overrides: Record<string, unknown>
+  /** プラン外 continue / rerun がユーザー承認済みか。 */
+  approved: boolean
 }
 
 export interface AgentReply {

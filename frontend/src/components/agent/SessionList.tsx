@@ -17,6 +17,8 @@ interface Props {
   onSelect: (id: string) => void
   onDelete: (id: string) => void
   onCreate: (payload: AgentSessionCreate) => void
+  /** Layout override: desktop column vs. mobile drawer (AGENT-MODE §1). */
+  className?: string
 }
 
 const MODES: AgentCheckinMode[] = ['every_job', 'milestone', 'auto']
@@ -32,6 +34,7 @@ export default function SessionList({
   onSelect,
   onDelete,
   onCreate,
+  className = '',
 }: Props) {
   const [creating, setCreating] = useState(false)
   const [goal, setGoal] = useState('')
@@ -40,7 +43,9 @@ export default function SessionList({
 
   if (collapsed) {
     return (
-      <aside className="flex w-10 shrink-0 flex-col items-center gap-2 rounded-lg border border-ink-700 bg-ink-800/60 py-2">
+      <aside
+        className={`flex w-10 shrink-0 flex-col items-center gap-2 rounded-lg border border-ink-700 bg-ink-800/60 py-2 ${className}`}
+      >
         <button className="btn-ghost !px-2 !py-1 text-xs" onClick={onToggle} title="セッション一覧を開く">
           ▶
         </button>
@@ -60,7 +65,9 @@ export default function SessionList({
   }
 
   return (
-    <aside className="flex w-64 shrink-0 flex-col rounded-lg border border-ink-700 bg-ink-800/60">
+    <aside
+      className={`flex w-64 shrink-0 flex-col rounded-lg border border-ink-700 bg-ink-800/60 ${className}`}
+    >
       <div className="flex items-center gap-2 border-b border-ink-700 px-3 py-2">
         <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-400">
           セッション

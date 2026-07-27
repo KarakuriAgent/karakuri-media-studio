@@ -333,8 +333,9 @@ export default function App() {
 
       {view === 'main' && (
         <>
-        <main className="flex min-h-0 flex-1 gap-3 overflow-hidden p-3">
-          <aside className="w-[380px] shrink-0 overflow-y-auto pr-1 lg:w-[400px]">
+        {/* 狭幅は縦積み 1 カラム（ページ縦スクロール）、lg 以上は従来の 2 カラム */}
+        <main className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3 lg:flex-row lg:overflow-hidden">
+          <aside className="w-full shrink-0 lg:w-[400px] lg:overflow-y-auto lg:pr-1">
             <GenerateForm
               form={form}
               patch={patch}
@@ -350,7 +351,7 @@ export default function App() {
           </aside>
 
           <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
-            <div className="min-h-0 flex-1">
+            <div className="min-h-[40vh] flex-1 lg:min-h-0">
               <ResultPane
                 job={activeJob}
                 progress={activeJob ? progress[activeJob.id] : undefined}

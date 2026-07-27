@@ -193,6 +193,8 @@ def parse_action(
         action.content = str(payload.get("content") or "")
         if not action.filename and not action.content.strip():
             raise ActionError("note には filename か content のどちらかが必要です")
+        # リサーチまとめは research 種別の成果物にする（既定は note）
+        action.kind = "research" if payload.get("kind") == "research" else "note"
     elif name == "checkin":
         question = str(payload.get("question") or payload.get("content") or "").strip()
         if not question:

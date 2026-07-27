@@ -78,7 +78,7 @@ export default function Header({
   onView: (view: 'main' | 'agent') => void
 }) {
   return (
-    <header className="flex items-center gap-3 border-b border-ink-700 bg-ink-800/80 px-4 py-2.5 backdrop-blur">
+    <header className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-ink-700 bg-ink-800/80 px-4 py-2.5 backdrop-blur">
       <h1 className="text-sm font-semibold tracking-wide text-slate-100">
         Video Studio
       </h1>

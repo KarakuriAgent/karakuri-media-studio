@@ -25,6 +25,8 @@ import logging
 from pathlib import Path
 from typing import Any
 
+from pydantic import ValidationError
+
 from . import agent_protocol, grok, jobs, prompts, ws
 from .agent_protocol import ActionError
 from .agent_store import (
@@ -443,7 +445,7 @@ async def _note(session_id: str, action: AgentAction) -> None:
     await add_artifact(
         session_id,
         AgentArtifact(
-            kind="note",
+            kind=action.kind,
             title=action.title or "メモ",
             ts=now(),
             name=name,
@@ -487,18 +489,116 @@ async def _apply_plan(session_id: str, action: AgentAction) -> None:
     await ws.publish_agent(session_id, "planning", message="plan proposed")
 
 
-async def _checkin(session_id: str, question: str, options: list[str]) -> None:
+async def _checkin(
+    session_id: str,
+    question: str,
+    options: list[str],
+    *,
+    kind: str = "checkin",
+    data: dict[str, Any] | None = None,
+) -> None:
     await append_message(
         session_id,
         AgentMessage(
             role="checkin",
-            kind="checkin",
+            kind=kind,
             content=question,
             ts=now(),
-            data={"options": options},
+            data={"options": options, **(data or {})},
         ),
     )
     await _set_status(session_id, "waiting_checkin", message=question)
+
+
+# --------------------------------------------------------------------------
+# プラン外アクションの承認ゲート (AGENT-MODE §2 / §7)
+# --------------------------------------------------------------------------
+
+APPROVAL_OPTIONS = ["実行する", "やめる"]
+_APPROVE_WORDS = (
+    "実行する", "実行", "はい", "ok", "okay", "yes", "承認", "お願い",
+    "進める", "進めて", "どうぞ", "いいよ", "やって",
+)
+_DECLINE_WORDS = (
+    "やめる", "やめて", "いいえ", "no", "中止", "キャンセル", "しない",
+    "止める", "スキップ", "不要",
+)
+
+
+def _action_label(action: AgentAction) -> str:
+    return "続き生成" if action.action == "continue" else "再生成"
+
+
+def pending_approval(session: AgentSession) -> tuple[int, AgentAction] | None:
+    """承認待ちで保留しているプラン外アクション（セッション JSON に永続化済み）。"""
+    for index in range(len(session.messages) - 1, -1, -1):
+        message = session.messages[index]
+        if message.role != "checkin":
+            continue
+        if message.kind != "approval" or message.data.get("resolved"):
+            return None
+        raw = message.data.get("action")
+        if not isinstance(raw, dict):
+            return None
+        try:
+            return index, AgentAction(**raw)
+        except ValidationError:
+            return None
+    return None
+
+
+def _is_approval(answer: str) -> bool:
+    """肯定的な回答だけを承認とみなす（判断できない返答は実行しない）。"""
+    text = answer.strip().lower()
+    if any(word in text for word in _DECLINE_WORDS):
+        return False
+    return any(word in text for word in _APPROVE_WORDS)
+
+
+async def _request_approval(session_id: str, action: AgentAction) -> None:
+    """プラン外の continue / rerun は実行前に承認待ちチェックインを立てる。"""
+    label = _action_label(action)
+    await _event(
+        session_id,
+        "approval_required",
+        f"プラン外の{label}（job {action.job_id}）は承認が必要です。"
+        "ユーザーの回答を待っています。",
+        job_id=action.job_id,
+    )
+    await _checkin(
+        session_id,
+        f"プラン外の{label}をリクエストしています（対象 job {action.job_id}）。"
+        "実行してよいですか？",
+        APPROVAL_OPTIONS,
+        kind="approval",
+        data={"action": action.model_dump(mode="json")},
+    )
+
+
+async def resolve_checkin(session_id: str, answer: str) -> AgentAction | None:
+    """チェックイン応答を処理し、承認されたプラン外アクションを返す。"""
+    session = await load(session_id)
+    if session is None:
+        return None
+    found = pending_approval(session)
+    if found is None:
+        return None
+    index, action = found
+    session.messages[index].data["resolved"] = True
+    await update(session_id, messages=session.messages)
+
+    if _is_approval(answer):
+        action.approved = True
+        return action
+    label = _action_label(action)
+    await _event(
+        session_id,
+        "action_skipped",
+        f"ユーザーの判断で{label}（job {action.job_id}）は実行しませんでした。"
+        "別の手を検討してください。",
+        job_id=action.job_id,
+    )
+    return None
 
 
 async def apply_action(session_id: str, action: AgentAction) -> bool:
@@ -521,6 +621,12 @@ async def apply_action(session_id: str, action: AgentAction) -> bool:
         await _inspect(session_id, action)
         return False
     if action.action in ("continue", "rerun"):
+        session = await load(session_id)
+        # 自走モードだけ即実行（auto_limit で保護済み）。他は承認必須（§2）。
+        auto = session is not None and session.checkin_mode == "auto"
+        if not action.approved and not auto:
+            await _request_approval(session_id, action)
+            return True
         await _continue_or_rerun(session_id, action)
         return False
     # run_task: 次の pending タスクはループが拾う

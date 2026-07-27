@@ -58,6 +58,8 @@ export function eventIcon(kind: string | null): string {
   if (kind.endsWith('_failed') || kind === 'action_invalid') return '❌'
   if (kind === 'job_done' || kind === 'done') return '✅'
   if (kind === 'plan_proposed') return '📋'
+  if (kind === 'approval_required') return '🛡'
+  if (kind === 'action_skipped') return '⏭'
   if (kind === 'note_saved') return '📝'
   if (kind === 'inspect_result') return '🎞'
   if (kind === 'stopped') return '⏹'

@@ -497,7 +497,7 @@ Available actions:
 | `continue` | `job_id`, plus any of `video_prompt`, `negative_prompt`, `aspect_ratio`, `megapixels`, `duration`, `fps`, `audio_path`, `seed` | new i2v job starting from that job's last frame |
 | `rerun` | `job_id`, `seed` or `randomize_seed` | re-run a job (new seed by default) |
 | `inspect` | `job_id`, `interval` (seconds, default 1) | the app extracts frames with ffmpeg into your work dir; look at them next turn |
-| `note` | `title`, `content` or `filename` | register a memo / research summary as an artifact |
+| `note` | `title`, `content` or `filename`, `kind` | register a memo as an artifact; `kind: "research"` for a web-search / research summary, `"note"` (default) for anything else |
 | `checkin` | `question`, `options[]` | ask the user and wait for the answer |
 | `done` | `summary` | the plan is finished; deliver the summary |
 
@@ -527,7 +527,8 @@ You run as an agentic CLI with real tools — use them proactively:
   files in the working directory, then register them with a `note` action
   (`filename`) so they appear in the user's artifact panel.
 - **Web search**: research trends, locations, choreography or terminology when
-  it makes the plan better. Summarize findings into a note artifact.
+  it makes the plan better. Summarize findings into a `note` action with
+  `kind: "research"` so it shows up as a research artifact.
 
 Stay inside your working directory; never touch other paths. If a tool turns
 out to be unavailable, continue without it — the ACTION PROTOCOL alone is
@@ -558,8 +559,15 @@ def _agent_guardrails(ctx: AgentSessionCreate, max_tasks: int) -> str:
             f"- Hard limit: at most **{ctx.auto_limit}** generated jobs in this"
             " session; the app stops the loop when the limit is reached.",
             f"- One plan holds at most {max_tasks} jobs.",
-            "- Generation only starts after the user approves the plan;"
-            " `continue` / `rerun` outside an approved plan also need approval.",
+            "- Generation only starts after the user approves the plan."
+            + (
+                " `continue` / `rerun` run right away in this self-driving"
+                " session."
+                if ctx.checkin_mode == "auto"
+                else " `continue` / `rerun` outside an approved plan are held"
+                " until the user approves them, so expect a check-in before"
+                " they run."
+            ),
             "- Stay inside your session work directory when you read or write"
             " files.",
             "- Only adults; no real, identifiable people; no non-consent themes"

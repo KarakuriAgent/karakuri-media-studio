@@ -20,7 +20,7 @@ from app import (
     jobs,
 )
 from app.main import app
-from app.models import Settings
+from app.models import AgentSession, Settings
 from app.routers import assets as assets_router
 
 HAS_FFMPEG = shutil.which("ffmpeg") is not None
@@ -346,8 +346,9 @@ def test_session_starts_with_a_system_prompt_and_a_workdir(env):
     assert str(env.audio) in system["content"]  # 選択肢を焼き込む
     assert "check-in mode" in system["content"].lower()
     assert (env.sessions / session["id"]).is_dir()
-    # goal はユーザー発言として記録される
-    assert session["messages"][1]["role"] == "user"
+    # goal はシステムプロンプトに焼き込まれる（発言は最初の /messages が作る）
+    assert "ダンス動画を作りたい" in system["content"]
+    assert len(session["messages"]) == 1
 
     listing = env.client.get("/api/agent/sessions").json()
     assert [s["id"] for s in listing] == [session["id"]]
@@ -570,6 +571,33 @@ def test_note_is_registered_as_an_artifact(env):
     assert "トレンドまとめ" in served.text
 
 
+def test_note_kind_research_becomes_a_research_artifact(env):
+    session = start(env)
+    env.cli.answers = [
+        action_answer(
+            {
+                "action": "note",
+                "title": "トレンド調査",
+                "kind": "research",
+                "content": "Web検索のまとめ",
+            },
+            "調べました。",
+        )
+    ]
+    reply = say(env, session["id"], "トレンドを調べて").json()
+    assert reply["action"]["kind"] == "research"
+    research = [a for a in reply["session"]["artifacts"] if a["kind"] == "research"]
+    assert research and research[0]["title"] == "トレンド調査"
+    assert env.client.get(research[0]["url"]).status_code == 200
+
+
+def test_note_defaults_to_the_note_kind(env):
+    action = agent_protocol.parse_action(
+        action_answer({"action": "note", "content": "メモ"})
+    )
+    assert action is not None and action.kind == "note"
+
+
 def test_artifact_path_traversal_is_refused(env, tmp_path):
     session = start(env)
     secret = tmp_path / "secret.txt"
@@ -592,12 +620,9 @@ def test_artifact_path_traversal_is_refused(env, tmp_path):
 
 @needs_ffmpeg
 def test_continue_reuses_the_existing_job_service(env):
-    session = start(env)
-    env.cli.answers = [plan_answer(env, 1), DONE_ANSWER]
-    say(env, session["id"])
-    env.client.post(f"/api/agent/sessions/{session['id']}/approve", json={})
-    done = wait_status(env, session["id"], ("done", "stopped", "idle"))
-    job_id = done["plan"]["tasks"][0]["job_id"]
+    # 自走モード: プラン外 continue も承認ゲートなしで走る
+    session = start(env, checkin_mode="auto")
+    job_id = _first_job(env, session["id"])
 
     env.cli.answers = [
         action_answer(
@@ -616,8 +641,90 @@ def test_continue_reuses_the_existing_job_service(env):
     assert chained[0]["video_prompt"] == "she keeps dancing"
 
 
-def test_rerun_of_an_unknown_job_is_reported(env):
+def _first_job(env, session_id: str) -> str:
+    """プランを 1 本走らせて job_id を返すヘルパ（continue / rerun の土台）。"""
+    env.cli.answers = [plan_answer(env, 1), DONE_ANSWER]
+    say(env, session_id)
+    env.client.post(f"/api/agent/sessions/{session_id}/approve", json={})
+    done = wait_status(env, session_id, ("done", "stopped", "idle"))
+    return done["plan"]["tasks"][0]["job_id"]
+
+
+@needs_ffmpeg
+def test_out_of_plan_continue_waits_for_approval(env):
+    """プラン外の continue は承認待ちになり、「実行する」で初めて走る（§2 / §7）。"""
     session = start(env)
+    job_id = _first_job(env, session["id"])
+    queued_before = len(env.comfy.queued)
+
+    env.cli.answers = [
+        action_answer({"action": "continue", "job_id": job_id}, "続きを作ります。"),
+    ]
+    say(env, session["id"], "続きを作って")
+    paused = wait_status(env, session["id"], ("waiting_checkin", "stopped", "done"))
+    assert paused["status"] == "waiting_checkin"
+    assert len(env.comfy.queued) == queued_before  # 承認前は投入しない
+    checkin = paused["messages"][-1]
+    assert checkin["role"] == "checkin" and checkin["kind"] == "approval"
+    assert checkin["data"]["options"] == ["実行する", "やめる"]
+    assert checkin["data"]["action"]["action"] == "continue"  # 保留アクションを永続化
+    assert "approval_required" in kinds(paused)
+
+    env.cli.answers = [DONE_ANSWER]
+    response = env.client.post(
+        f"/api/agent/sessions/{session['id']}/checkin", json={"choice": "実行する"}
+    )
+    assert response.status_code == 200, response.text
+    final = wait_status(env, session["id"], ("done", "stopped", "idle"))
+    assert len(env.comfy.queued) == queued_before + 1
+    chained = [
+        j
+        for j in env.client.get("/api/jobs").json()
+        if j["params"].get("continued_from") == job_id
+    ]
+    assert len(chained) == 1
+    assert "action_skipped" not in kinds(final)
+
+
+def test_declined_out_of_plan_rerun_is_skipped(env):
+    session = start(env)
+    job_id = _first_job(env, session["id"])
+    queued_before = len(env.comfy.queued)
+
+    env.cli.answers = [
+        action_answer({"action": "rerun", "job_id": job_id}, "やり直します。"),
+    ]
+    say(env, session["id"], "シードを引き直して")
+    wait_status(env, session["id"], ("waiting_checkin", "stopped", "done"))
+
+    env.cli.answers = [DONE_ANSWER]
+    env.client.post(
+        f"/api/agent/sessions/{session['id']}/checkin", json={"choice": "やめる"}
+    )
+    final = wait_status(env, session["id"], ("done", "stopped", "idle"))
+    assert "action_skipped" in kinds(final)
+    assert len(env.comfy.queued) == queued_before  # 1 本も追加されない
+    # 応答済みの承認は消費されるので、同じ保留が二度走ることはない
+    assert agent_runner.pending_approval(AgentSession(**final)) is None
+
+
+def test_auto_mode_runs_out_of_plan_rerun_immediately(env):
+    session = start(env, checkin_mode="auto", auto_limit=5)
+    job_id = _first_job(env, session["id"])
+    queued_before = len(env.comfy.queued)
+
+    env.cli.answers = [
+        action_answer({"action": "rerun", "job_id": job_id}, "やり直します。"),
+        DONE_ANSWER,
+    ]
+    say(env, session["id"], "シードを引き直して")
+    final = wait_status(env, session["id"], ("done", "stopped", "idle"))
+    assert len(env.comfy.queued) == queued_before + 1  # 自走モードは即実行
+    assert "approval_required" not in kinds(final)
+
+
+def test_rerun_of_an_unknown_job_is_reported(env):
+    session = start(env, checkin_mode="auto")
     env.cli.answers = [
         action_answer({"action": "rerun", "job_id": "nope"}, "やり直します。"),
         DONE_ANSWER,
