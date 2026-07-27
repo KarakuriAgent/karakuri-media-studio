@@ -30,7 +30,7 @@ export default function HistoryGallery({
   onSelect: (job: Job) => void
   onReload: () => void
   loading: boolean
-  /** オンのときだけ 🔞 バッジを出す（オフのとき NSFW は渡ってこない）。 */
+  /** オンのときだけ 🫣 バッジを出す（オフのとき NSFW は渡ってこない）。 */
   showNsfw: boolean
 }) {
   const items = useRef<Record<string, HTMLButtonElement | null>>({})

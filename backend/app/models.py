@@ -437,6 +437,8 @@ class AgentSession(BaseModel):
     # NSFW フラグ（'' = 未判定 / 'auto' / 'manual'）
     nsfw: bool = False
     nsfw_source: str = ""
+    # Grok ターンの実行中フラグ（agent_runner のインメモリ状態。DB には保存しない）
+    thinking: bool = False
 
 
 class AgentSessionSummary(BaseModel):
@@ -522,6 +524,8 @@ class AgentProgress(BaseModel):
     job_id: str | None = None
     artifact: AgentArtifact | None = None
     message: str | None = None
+    # Grok ターンが走っているか（None = この通知では変化なし）
+    thinking: bool | None = None
 
 
 class Options(BaseModel):

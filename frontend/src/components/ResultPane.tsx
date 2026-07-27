@@ -12,7 +12,7 @@ interface Props {
   onToggleNsfw: (job: Job, nsfw: boolean) => void
   busy: boolean
   queue: Job[]
-  /** NSFW 表示トグル（オンのときだけ 🔞 バッジを出す）。 */
+  /** NSFW 表示トグル（オンのときだけ 🫣 バッジを出す）。 */
   showNsfw: boolean
 }
 

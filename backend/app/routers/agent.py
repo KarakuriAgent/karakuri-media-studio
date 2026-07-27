@@ -32,6 +32,9 @@ async def _require(session_id: str) -> AgentSession:
     session = await agent_store.load(session_id)
     if session is None:
         raise HTTPException(status_code=404, detail="agent session not found")
+    # thinking は runner のインメモリ状態（DB には保存しない）。WS を取りこぼした
+    # ブラウザでもポーリングで「Grok が考えています…」を拾えるようにする。
+    session.thinking = agent_runner.is_thinking(session_id)
     return session
 
 
@@ -125,6 +128,7 @@ async def delete_session(session_id: str) -> None:
     await agent_runner.request_stop(session_id)
     if not await agent_store.delete(session_id):
         raise HTTPException(status_code=404, detail="agent session not found")
+    agent_runner.forget(session_id)
 
 
 # --------------------------------------------------------------------------
@@ -143,6 +147,10 @@ async def send_message(session_id: str, payload: AgentSendMessage) -> AgentReply
         raise HTTPException(
             status_code=409, detail="実行中です。停止するか完了を待ってください"
         )
+    if session.status == "waiting_checkin":
+        # チェックイン待ちのあいだのメイン入力は「チェックインへの自由回答」として
+        # 扱う（吹き出しからの応答と同じ経路に流し、状態がずれないようにする）。
+        return await _answer_checkin(session_id, content)
 
     await agent_runner.append_message(
         session_id,
@@ -162,6 +170,11 @@ async def approve(session_id: str, payload: AgentApprove | None = None) -> Agent
         raise HTTPException(status_code=422, detail="承認できるプランがありません")
     if agent_runner.is_running(session_id):
         raise HTTPException(status_code=409, detail="すでに実行中です")
+    if session.status == "waiting_checkin":
+        # 未応答のチェックインを飛び越えて再開すると状態がずれる（§2）。
+        raise HTTPException(
+            status_code=409, detail="先にチェックインに回答してください"
+        )
 
     if not body.approved:
         session.plan.approved = False
@@ -199,7 +212,11 @@ async def checkin(session_id: str, payload: AgentCheckinReply) -> AgentReply:
     answer = (payload.choice or payload.content or "").strip()
     if not answer:
         raise HTTPException(status_code=422, detail="content is empty")
+    return await _answer_checkin(session_id, answer)
 
+
+async def _answer_checkin(session_id: str, answer: str) -> AgentReply:
+    """チェックイン応答を記録し、ループを再開する（checkin / messages 共通）。"""
     await agent_runner.append_message(
         session_id,
         AgentMessage(role="user", content=answer, ts=agent_store.now()),

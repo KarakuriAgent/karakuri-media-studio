@@ -60,6 +60,26 @@ MAX_INSPECT_FRAMES = 8
 
 _loops: dict[str, asyncio.Task[None]] = {}
 _stop_requests: set[str] = set()
+# Grok ターンを実行中のセッション（「Grok が考えています…」の唯一の情報源）。
+# ブラウザ発の API 呼び出しだけでなく、ループが回すターンもここに入る。
+_thinking: set[str] = set()
+
+
+def is_thinking(session_id: str) -> bool:
+    """Grok ターンが走っているか（インメモリ。DB には保存しない）。"""
+    return session_id in _thinking
+
+
+async def _set_thinking(session_id: str, value: bool) -> None:
+    """thinking フラグを更新し、WS で通知する（取りこぼしはポーリングで拾える）。"""
+    if value:
+        _thinking.add(session_id)
+    else:
+        _thinking.discard(session_id)
+    session = await load(session_id)
+    await ws.publish_agent(
+        session_id, session.status if session else "idle", thinking=value
+    )
 
 
 # --------------------------------------------------------------------------
@@ -160,6 +180,17 @@ async def run_turn(session_id: str) -> tuple[str, AgentAction | None]:
     if session is None:
         raise LookupError(session_id)
 
+    # 「Grok が考えています…」はここが唯一の情報源。例外でも必ず解除する。
+    await _set_thinking(session_id, True)
+    try:
+        return await _run_turn(session_id, session)
+    finally:
+        await _set_thinking(session_id, False)
+
+
+async def _run_turn(
+    session_id: str, session: AgentSession
+) -> tuple[str, AgentAction | None]:
     client = grok.get_agent_client(session_dir(session_id))
     known = await known_lora_names() or None
     max_tasks = load_settings().agent_max_plan_tasks or agent_protocol.MAX_PLAN_TASKS
@@ -535,22 +566,31 @@ def _action_label(action: AgentAction) -> str:
     return "続き生成" if action.action == "continue" else "再生成"
 
 
-def pending_approval(session: AgentSession) -> tuple[int, AgentAction] | None:
-    """承認待ちで保留しているプラン外アクション（セッション JSON に永続化済み）。"""
+def last_open_checkin(session: AgentSession) -> int | None:
+    """まだ応答されていない最後のチェックイン（種別は問わない）の位置。"""
     for index in range(len(session.messages) - 1, -1, -1):
         message = session.messages[index]
         if message.role != "checkin":
             continue
-        if message.kind != "approval" or message.data.get("resolved"):
-            return None
-        raw = message.data.get("action")
-        if not isinstance(raw, dict):
-            return None
-        try:
-            return index, AgentAction(**raw)
-        except ValidationError:
-            return None
+        return None if message.data.get("resolved") else index
     return None
+
+
+def pending_approval(session: AgentSession) -> tuple[int, AgentAction] | None:
+    """承認待ちで保留しているプラン外アクション（セッション JSON に永続化済み）。"""
+    index = last_open_checkin(session)
+    if index is None:
+        return None
+    message = session.messages[index]
+    if message.kind != "approval":
+        return None
+    raw = message.data.get("action")
+    if not isinstance(raw, dict):
+        return None
+    try:
+        return index, AgentAction(**raw)
+    except ValidationError:
+        return None
 
 
 def _is_approval(answer: str) -> bool:
@@ -586,12 +626,16 @@ async def resolve_checkin(session_id: str, answer: str) -> AgentAction | None:
     session = await load(session_id)
     if session is None:
         return None
-    found = pending_approval(session)
-    if found is None:
+    index = last_open_checkin(session)
+    if index is None:
         return None
-    index, action = found
+    found = pending_approval(session)
+    # 応答済みマークは種別を問わず付ける（フロントの「応答済み」判定の根拠）。
     session.messages[index].data["resolved"] = True
     await update(session_id, messages=session.messages)
+    if found is None:
+        return None
+    _, action = found
 
     if _is_approval(answer):
         action.approved = True
@@ -682,6 +726,14 @@ def _limit_reason(session: AgentSession) -> str | None:
     return None
 
 
+def _stopping(session_id: str) -> bool:
+    """停止要求を 1 度だけ消費する。"""
+    if session_id not in _stop_requests:
+        return False
+    _stop_requests.discard(session_id)
+    return True
+
+
 async def _halt(session_id: str, reason: str) -> None:
     await _event(session_id, "stopped", reason)
     await _set_status(session_id, "stopped", message=reason)
@@ -692,8 +744,7 @@ async def _loop(session_id: str, action: AgentAction | None = None) -> None:
         session = await load(session_id)
         if session is None or session.status != "running":
             return
-        if session_id in _stop_requests:
-            _stop_requests.discard(session_id)
+        if _stopping(session_id):
             await _halt(session_id, "ユーザーの操作で停止しました。")
             return
 
@@ -710,8 +761,7 @@ async def _loop(session_id: str, action: AgentAction | None = None) -> None:
                 session = await load(session_id)
                 if session is None:
                     return
-                if session_id in _stop_requests:
-                    _stop_requests.discard(session_id)
+                if _stopping(session_id):
                     await _halt(session_id, "ユーザーの操作で停止しました。")
                     return
             if _turns(session) >= MAX_TURNS:
@@ -724,6 +774,11 @@ async def _loop(session_id: str, action: AgentAction | None = None) -> None:
                 _, action = await run_turn(session_id)
             except grok.LLMError as exc:
                 await _halt(session_id, f"Grok の呼び出しに失敗しました: {exc}")
+                return
+            # ターン中に停止を押されたら、返ってきたアクションは実行しない
+            # （新しいジョブを投入してしまわないため）。
+            if _stopping(session_id):
+                await _halt(session_id, "ユーザーの操作で停止しました。")
                 return
 
         if action is not None:
@@ -756,19 +811,31 @@ def is_running(session_id: str) -> bool:
 
 
 async def start_loop(session_id: str, action: AgentAction | None = None) -> None:
-    """Start (or restart) the execution loop of one session."""
+    """Start (or restart) the execution loop of one session.
+
+    二重起動防止: is_running() の判定とタスク登録の間で await しない（approve や
+    checkin の連打で 2 本走らないようにするため）。``status = running`` への遷移は
+    タスク側で行い、呼び出し元はそれが済むまで待ってから応答を返す。
+    """
     if is_running(session_id):
         return
     _stop_requests.discard(session_id)
-    await _set_status(session_id, "running", message="running")
-    loop_task = asyncio.create_task(
-        _guarded_loop(session_id, action), name=f"agent-loop-{session_id}"
+    started = asyncio.Event()
+    _loops[session_id] = asyncio.create_task(
+        _guarded_loop(session_id, action, started), name=f"agent-loop-{session_id}"
     )
-    _loops[session_id] = loop_task
+    await started.wait()
 
 
-async def _guarded_loop(session_id: str, action: AgentAction | None) -> None:
+async def _guarded_loop(
+    session_id: str, action: AgentAction | None, started: asyncio.Event | None = None
+) -> None:
     try:
+        try:
+            await _set_status(session_id, "running", message="running")
+        finally:
+            if started is not None:
+                started.set()
         await _loop(session_id, action)
     except asyncio.CancelledError:
         raise
@@ -777,6 +844,12 @@ async def _guarded_loop(session_id: str, action: AgentAction | None) -> None:
         await _halt(session_id, f"エージェントの実行中にエラーが発生しました: {exc}")
     finally:
         _loops.pop(session_id, None)
+
+
+def forget(session_id: str) -> None:
+    """セッション削除時にインメモリ状態（停止要求 / thinking）を落とす。"""
+    _stop_requests.discard(session_id)
+    _thinking.discard(session_id)
 
 
 async def request_stop(session_id: str) -> None:
@@ -792,6 +865,7 @@ async def stop_all() -> None:
     tasks = list(_loops.values())
     _loops.clear()
     _stop_requests.clear()
+    _thinking.clear()
     for task in tasks:
         task.cancel()
     for task in tasks:

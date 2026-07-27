@@ -19,7 +19,7 @@ interface Props {
   onDelete: (id: string) => void
   onCreate: (payload: AgentSessionCreate) => void
   onToggleNsfw: (id: string, nsfw: boolean) => void
-  /** オンのときだけ 🔞 バッジを出す（オフのとき NSFW は渡ってこない）。 */
+  /** オンのときだけ 🫣 バッジを出す（オフのとき NSFW は渡ってこない）。 */
   showNsfw: boolean
   /** Layout override: desktop column vs. mobile drawer (AGENT-MODE §1). */
   className?: string

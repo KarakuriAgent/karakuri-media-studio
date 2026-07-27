@@ -1,5 +1,6 @@
 """Agent mode tests (AGENT-MODE §4 / §5). Grok と ComfyUI は完全にモックする。"""
 
+import asyncio
 import json
 import shutil
 import subprocess
@@ -817,3 +818,235 @@ async def test_agent_client_falls_back_to_plain_run_on_unknown_flag(monkeypatch)
         extra_args=["--permission-mode", "auto"],
     )
     assert await client.complete("hi") == "こんにちは"
+
+
+# --------------------------------------------------------------------------
+# thinking フラグ（「Grok が考えています…」の情報源）
+# --------------------------------------------------------------------------
+
+def test_turn_marks_the_session_as_thinking(env, monkeypatch):
+    """run_turn の最中だけ thinking が立ち、終了時に必ず下がる。"""
+    session = start(env)
+    inner: list[bool] = []
+    inner_frames: list[bool | None] = []
+    base = env.cli
+
+    async def spy(argv, cwd, timeout):
+        inner.append(agent_runner.is_thinking(session["id"]))
+        return await base(argv, cwd, timeout)
+
+    monkeypatch.setattr(grok, "_exec", spy)
+    env.cli.answers = ["どんな雰囲気にしますか？"]
+    with env.client.websocket_connect("/api/ws") as socket:
+        assert say(env, session["id"]).status_code == 200
+        for _ in range(6):
+            message = socket.receive_json()
+            if message["type"] == "agent" and message["thinking"] is not None:
+                inner_frames.append(message["thinking"])
+            if inner_frames[-1:] == [False]:
+                break
+
+    assert inner == [True]  # ターン中は立っている
+    assert agent_runner.is_thinking(session["id"]) is False
+    assert inner_frames[:2] == [True, False]  # WS で立ち上がりと解除を通知
+
+
+def test_get_session_reports_the_thinking_flag(env):
+    session = start(env)
+    url = f"/api/agent/sessions/{session['id']}"
+    assert env.client.get(url).json()["thinking"] is False
+    agent_runner._thinking.add(session["id"])
+    try:
+        assert env.client.get(url).json()["thinking"] is True
+    finally:
+        agent_runner._thinking.discard(session["id"])
+    assert env.client.get(url).json()["thinking"] is False
+
+
+def test_thinking_is_cleared_when_the_turn_fails(env):
+    """LLMError で 502 になってもフラグは残さない（try/finally）。"""
+    session = start(env)
+    env.cli.answers = [grok.LLMError("grok CLI が失敗しました")]
+    response = say(env, session["id"])
+    assert response.status_code == 502
+    assert agent_runner.is_thinking(session["id"]) is False
+    assert env.client.get(f"/api/agent/sessions/{session['id']}").json()["thinking"] is False
+
+
+def test_llm_error_inside_the_loop_stops_the_session(env):
+    """ループ内の LLMError は running のまま固まらず stopped に落ちる。"""
+    session = start(env)
+    env.cli.answers = [plan_answer(env, 1), grok.LLMError("grok CLI が失敗しました")]
+    say(env, session["id"])
+    env.client.post(f"/api/agent/sessions/{session['id']}/approve", json={})
+
+    final = wait_status(env, session["id"], ("stopped", "done", "idle"))
+    assert final["status"] == "stopped"
+    assert "stopped" in kinds(final)
+    assert "Grok の呼び出しに失敗しました" in final["messages"][-1]["content"]
+    assert agent_runner.is_thinking(session["id"]) is False
+    assert final["thinking"] is False
+
+
+# --------------------------------------------------------------------------
+# 状態遷移 / 二重起動ガード
+# --------------------------------------------------------------------------
+
+def test_message_during_a_checkin_answers_it(env):
+    """チェックイン待ちのメイン入力は自由回答としてループを再開する。"""
+    session = start(env)
+    env.cli.answers = [plan_answer(env, 2), CHECKIN_ANSWER, DONE_ANSWER]
+    say(env, session["id"])
+    env.client.post(f"/api/agent/sessions/{session['id']}/approve", json={})
+    paused = wait_status(env, session["id"], ("waiting_checkin", "stopped", "done"))
+    assert paused["status"] == "waiting_checkin"
+
+    response = say(env, session["id"], "そのままで進めて")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["action"] is None  # チェックイン応答なので同期ターンは走らない
+    final = wait_status(env, session["id"], ("done", "stopped", "idle"))
+    assert final["status"] == "done"
+    assert len(env.comfy.queued) == 2
+    # 自由回答は 1 度だけ記録され、チェックインは応答済みになる
+    assert [m["content"] for m in final["messages"]].count("そのままで進めて") == 1
+    answered = [m for m in final["messages"] if m["role"] == "checkin"]
+    assert answered[-1]["data"]["resolved"] is True
+
+
+def test_message_during_a_checkin_can_approve_a_pending_action(env):
+    """メイン入力からの肯定回答でも保留中のプラン外アクションが走る。"""
+    session = start(env)
+    job_id = _first_job(env, session["id"])
+    queued_before = len(env.comfy.queued)
+    env.cli.answers = [
+        action_answer({"action": "rerun", "job_id": job_id}, "やり直します。"),
+    ]
+    say(env, session["id"], "シードを引き直して")
+    wait_status(env, session["id"], ("waiting_checkin", "stopped", "done"))
+
+    env.cli.answers = [DONE_ANSWER]
+    assert say(env, session["id"], "実行する").status_code == 200
+    final = wait_status(env, session["id"], ("done", "stopped", "idle"))
+    assert len(env.comfy.queued) == queued_before + 1
+    assert "action_skipped" not in kinds(final)
+
+
+def test_plain_checkin_is_marked_resolved(env):
+    """種別を問わず応答済みマークが付く（フロントの「応答済み」判定の根拠）。"""
+    session = start(env)
+    env.cli.answers = [plan_answer(env, 2), CHECKIN_ANSWER, DONE_ANSWER]
+    say(env, session["id"])
+    env.client.post(f"/api/agent/sessions/{session['id']}/approve", json={})
+    paused = wait_status(env, session["id"], ("waiting_checkin", "stopped", "done"))
+    assert paused["messages"][-1]["data"].get("resolved") is None
+
+    env.client.post(
+        f"/api/agent/sessions/{session['id']}/checkin", json={"choice": "そのまま"}
+    )
+    final = wait_status(env, session["id"], ("done", "stopped", "idle"))
+    checkins = [m for m in final["messages"] if m["role"] == "checkin"]
+    assert checkins[-1]["data"]["resolved"] is True
+
+
+def test_message_and_approve_are_409_while_the_loop_runs(env, monkeypatch):
+    session = start(env)
+    env.cli.answers = [plan_answer(env, 1)]
+    say(env, session["id"])
+    monkeypatch.setattr(agent_runner, "is_running", lambda _id: True)
+
+    assert say(env, session["id"], "追加で").status_code == 409
+    approve = env.client.post(f"/api/agent/sessions/{session['id']}/approve", json={})
+    assert approve.status_code == 409
+    assert "すでに実行中です" in approve.json()["detail"]
+
+
+def test_checkin_outside_a_checkin_is_409(env):
+    session = start(env)
+    response = env.client.post(
+        f"/api/agent/sessions/{session['id']}/checkin", json={"content": "はい"}
+    )
+    assert response.status_code == 409
+    assert "チェックイン待ちではありません" in response.json()["detail"]
+
+
+async def test_start_loop_never_runs_twice(env, monkeypatch):
+    """approve / checkin の連打でループが 2 本走らない（判定と登録の間で await しない）。"""
+    session = start(env)
+    runs: list[str] = []
+
+    async def fake_loop(session_id, action=None):
+        runs.append(session_id)
+        await asyncio.sleep(0.1)
+
+    monkeypatch.setattr(agent_runner, "_loop", fake_loop)
+    await asyncio.gather(
+        agent_runner.start_loop(session["id"]),
+        agent_runner.start_loop(session["id"]),
+        agent_runner.start_loop(session["id"]),
+    )
+    assert runs == [session["id"]]
+    assert agent_runner.is_running(session["id"]) is True
+    running = await agent_store.load(session["id"])
+    assert running is not None and running.status == "running"
+
+    await asyncio.sleep(0.2)
+    assert agent_runner.is_running(session["id"]) is False
+
+
+def test_stop_during_a_running_loop_ends_it(env):
+    """実行中の stop はジョブ完了を待って stopped に落ち、WS でも通知される。"""
+    session = start(env)
+    env.cli.answers = [plan_answer(env, 3)] + ["まだ考え中です。"] * 6
+    say(env, session["id"])
+    with env.client.websocket_connect("/api/ws") as socket:
+        env.client.post(f"/api/agent/sessions/{session['id']}/approve", json={})
+        wait_status(env, session["id"], ("running", "waiting_checkin", "done", "stopped"))
+        env.client.post(f"/api/agent/sessions/{session['id']}/stop")
+        final = wait_status(env, session["id"], ("stopped", "done", "idle"))
+        statuses = []
+        for _ in range(60):
+            message = socket.receive_json()
+            if message["type"] == "agent":
+                statuses.append(message["status"])
+                if message["status"] == "stopped":
+                    break
+    assert final["status"] == "stopped"
+    assert "stopped" in statuses
+    assert "ユーザーの操作で停止しました。" == final["messages"][-1]["content"]
+
+
+def test_approve_during_a_checkin_is_409(env):
+    """未応答のチェックインを飛び越えた再開は拒否する（状態ずれ防止）。"""
+    session = start(env)
+    env.cli.answers = [plan_answer(env, 2), CHECKIN_ANSWER]
+    say(env, session["id"])
+    env.client.post(f"/api/agent/sessions/{session['id']}/approve", json={})
+    wait_status(env, session["id"], ("waiting_checkin", "stopped", "done"))
+
+    response = env.client.post(f"/api/agent/sessions/{session['id']}/approve", json={})
+    assert response.status_code == 409
+    assert "チェックイン" in response.json()["detail"]
+
+
+def test_stop_during_a_turn_drops_the_returned_action(env, monkeypatch):
+    """ターン中に停止したら、返ってきたアクションは実行しない（新規投入を防ぐ）。"""
+    session = start(env)
+    env.cli.answers = [plan_answer(env, 1)]
+    say(env, session["id"])
+    queued_before = len(env.comfy.queued)
+
+    async def stopping_exec(argv, cwd, timeout):
+        # ターンの最中に ⏹ 停止が押された状況を再現する
+        await agent_runner.request_stop(session["id"])
+        return (0, action_answer({"action": "rerun", "job_id": "nope"}, "やり直します。"), "")
+
+    monkeypatch.setattr(grok, "_exec", stopping_exec)
+    env.client.post(f"/api/agent/sessions/{session['id']}/approve", json={})
+
+    final = wait_status(env, session["id"], ("stopped", "done", "idle"))
+    assert final["status"] == "stopped"
+    assert final["messages"][-1]["content"] == "ユーザーの操作で停止しました。"
+    # 破棄されたので rerun は試されない（試されていれば action_failed が出る）
+    assert "action_failed" not in kinds(final)
+    assert len(env.comfy.queued) == queued_before + 1  # プランの 1 本だけ

@@ -102,6 +102,7 @@ async def publish_agent(
     job_id: str | None = None,
     artifact: AgentArtifact | None = None,
     message: str | None = None,
+    thinking: bool | None = None,
 ) -> None:
     """Broadcast one agent event (``type: "agent"``). Never raises."""
     try:
@@ -113,6 +114,7 @@ async def publish_agent(
             job_id=job_id,
             artifact=artifact,
             message=message,
+            thinking=thinking,
         ).model_dump()
     except Exception:  # noqa: BLE001 - an unknown status must not break the loop
         payload = {
@@ -124,6 +126,7 @@ async def publish_agent(
             "job_id": job_id,
             "artifact": artifact.model_dump() if artifact else None,
             "message": message,
+            "thinking": thinking,
         }
     await hub.broadcast(payload)
 

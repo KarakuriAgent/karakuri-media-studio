@@ -3,6 +3,7 @@ import type { AgentMessage, AgentSession, JobProgress } from '../../types'
 import { Banner, NsfwBadge, NsfwToggle } from '../ui'
 import PlanCard from './PlanCard'
 import { AGENT_ACTIVE, AgentStatusBadge, CHECKIN_LABEL, eventIcon, shortTime } from './common'
+import { inputState, isCheckinAnswered, openCheckinIndex } from './logic'
 
 interface Props {
   session: AgentSession
@@ -22,17 +23,13 @@ interface Props {
   /** 未読の新着成果物がある（狭幅ではボタンにバッジを出すだけ）。 */
   artifactBadge: boolean
   onToggleNsfw: (nsfw: boolean) => void
-  /** NSFW 表示トグル（オンのときだけ 🔞 バッジを出す）。 */
+  /** NSFW 表示トグル（オンのときだけ 🫣 バッジを出す）。 */
   showNsfw: boolean
-}
-
-/** The checkin that is still open: the last one, while the loop waits for it. */
-function openCheckinIndex(session: AgentSession): number {
-  if (session.status !== 'waiting_checkin') return -1
-  for (let index = session.messages.length - 1; index >= 0; index -= 1) {
-    if (session.messages[index].role === 'checkin') return index
-  }
-  return -1
+  /**
+   * Grok ターンが走っている（このブラウザ発の呼び出し + バックエンドのループ）。
+   * `busy` と違い、承認後やジョブ完了後の自動ターンでも立つ。
+   */
+  thinking: boolean
 }
 
 function optionsOf(message: AgentMessage): string[] {
@@ -70,11 +67,14 @@ function EventRow({ message }: { message: AgentMessage }) {
 function CheckinBubble({
   message,
   open,
+  answered,
   busy,
   onAnswer,
 }: {
   message: AgentMessage
   open: boolean
+  /** 実際に回答されたか（未回答のまま終わったチェックインと区別する）。 */
+  answered: boolean
   busy: boolean
   onAnswer: (answer: string) => void
 }) {
@@ -133,7 +133,11 @@ function CheckinBubble({
             </button>
           </div>
         )}
-        {!open && <p className="mt-1 text-[11px] text-slate-600">応答済み</p>}
+        {!open && (
+          <p className="mt-1 text-[11px] text-slate-600">
+            {answered ? '応答済み' : '未応答のまま終了しました'}
+          </p>
+        )}
       </div>
     </div>
   )
@@ -155,6 +159,7 @@ export default function AgentChat({
   artifactBadge,
   onToggleNsfw,
   showNsfw,
+  thinking,
 }: Props) {
   const [draft, setDraft] = useState('')
   const scroller = useRef<HTMLDivElement>(null)
@@ -162,15 +167,16 @@ export default function AgentChat({
 
   useEffect(() => {
     scroller.current?.scrollTo({ top: scroller.current.scrollHeight })
-  }, [session.messages.length, busy])
+  }, [session.messages.length, thinking])
 
   const running = session.status === 'running'
   const openIndex = openCheckinIndex(session)
   const stoppable = AGENT_ACTIVE.includes(session.status)
+  const { disabled: inputDisabled, placeholder } = inputState(session, thinking)
 
   const send = () => {
     const content = draft.trim()
-    if (!content || busy) return
+    if (!content || inputDisabled) return
     setDraft('')
     onSend(content)
   }
@@ -248,6 +254,7 @@ export default function AgentChat({
                 key={index}
                 message={message}
                 open={index === openIndex}
+                answered={isCheckinAnswered(session, index)}
                 busy={busy}
                 onAnswer={onCheckin}
               />
@@ -266,7 +273,7 @@ export default function AgentChat({
           />
         )}
 
-        {busy && <p className="text-xs text-slate-500">Grok が考えています…</p>}
+        {thinking && <p className="text-xs text-slate-500">Grok が考えています…</p>}
       </div>
 
       <div className="flex shrink-0 gap-2">
@@ -274,8 +281,8 @@ export default function AgentChat({
           ref={input}
           className="field h-16 flex-1 resize-none"
           value={draft}
-          placeholder="指示を入力（Ctrl+Enter で送信）"
-          disabled={busy}
+          placeholder={placeholder}
+          disabled={inputDisabled}
           onChange={(event) => setDraft(event.target.value)}
           onKeyDown={(event) => {
             if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) {
@@ -286,7 +293,7 @@ export default function AgentChat({
         />
         <button
           className="btn-primary"
-          disabled={busy || !draft.trim()}
+          disabled={inputDisabled || !draft.trim()}
           onClick={send}
         >
           送信

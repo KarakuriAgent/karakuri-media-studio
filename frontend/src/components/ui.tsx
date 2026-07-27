@@ -104,7 +104,7 @@ export function NsfwBadge({ className = '' }: { className?: string }) {
       className={`chip !px-1.5 !py-0.5 border-pink-800 bg-pink-950/80 text-pink-300 ${className}`}
       title="NSFW"
     >
-      🔞
+      🫣
     </span>
   )
 }
@@ -130,7 +130,7 @@ export function NsfwToggle({
       title={nsfw ? 'NSFW 指定を外す' : 'NSFW として印を付ける'}
       onClick={() => onToggle(!nsfw)}
     >
-      🔞 NSFW
+      🫣 NSFW
     </button>
   )
 }

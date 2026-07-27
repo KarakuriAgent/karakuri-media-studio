@@ -11,6 +11,7 @@ import AgentChat from './AgentChat'
 import ArtifactPanel from './ArtifactPanel'
 import SessionList from './SessionList'
 import { AGENT_ACTIVE } from './common'
+import { isThinking, shouldReplaceSession } from './logic'
 
 interface Props {
   /** Latest `type: "agent"` WS frame (AGENT-MODE §5.1). */
@@ -35,6 +36,11 @@ export default function AgentView({ event, progress, showNsfw }: Props) {
   const [artifactsOpen, setArtifactsOpen] = useState(false)
   const [artifactBadge, setArtifactBadge] = useState(false)
 
+  /** 開いているセッション（レース判定用に ref でも持つ）。 */
+  const wanted = useRef<string | null>(null)
+  /** 最後に投げた取得の世代（古いレスポンスを捨てるための単調カウンタ）。 */
+  const generation = useRef(0)
+
   const fail = useCallback((caught: unknown) => {
     setError(
       caught instanceof ApiError ? formatDetail(caught.detail) : String(caught),
@@ -52,13 +58,40 @@ export default function AgentView({ event, progress, showNsfw }: Props) {
     }
   }, [fail])
 
+  /**
+   * 受け取ったセッションを反映する（連打時に古いレスポンスで巻き戻さない）。
+   * POST の応答は最新なので、進行中の GET はここで無効化する。
+   */
+  const applySession = useCallback((next: AgentSession) => {
+    generation.current += 1
+    if (wanted.current !== next.id) return
+    setSession((current) => (shouldReplaceSession(current, next) ? next : current))
+  }, [])
+
   /** Silent re-sync used by the WS handler and the polling safety net. */
-  const syncSession = useCallback(async (id: string) => {
-    try {
-      setSession(await api.getAgentSession(id))
-    } catch {
-      /* transient: the poller will try again */
-    }
+  const syncSession = useCallback(
+    async (id: string, report = false) => {
+      const mine = (generation.current += 1)
+      try {
+        const next = await api.getAgentSession(id)
+        // 追い抜かれた取得・別セッションへの切り替え後の到着は捨てる
+        if (mine !== generation.current || wanted.current !== id) return
+        setSession((current) =>
+          shouldReplaceSession(current, next) ? next : current,
+        )
+      } catch (caught) {
+        if (report) fail(caught)
+        /* transient: the poller will try again */
+      }
+    },
+    [fail],
+  )
+
+  /** セッションの切り替え（ref も同時に動かしてレース判定を狂わせない）。 */
+  const selectSession = useCallback((id: string | null) => {
+    wanted.current = id
+    generation.current += 1
+    setSessionId(id)
   }, [])
 
   useEffect(() => {
@@ -66,13 +99,14 @@ export default function AgentView({ event, progress, showNsfw }: Props) {
   }, [loadSessions])
 
   useEffect(() => {
+    wanted.current = sessionId
     if (!sessionId) {
       setSession(null)
       return
     }
     setError(null)
-    void api.getAgentSession(sessionId).then(setSession).catch(fail)
-  }, [sessionId, fail])
+    void syncSession(sessionId, true)
+  }, [sessionId, syncSession])
 
   // WS: agent frames for the open session refresh it (and the list metadata).
   const eventRef = useRef<AgentProgress | null>(null)
@@ -112,12 +146,12 @@ export default function AgentView({ event, progress, showNsfw }: Props) {
         checkin_mode: payload.checkin_mode,
         auto_limit: payload.auto_limit,
       })
-      setSessionId(created.id)
-      setSession(created)
+      selectSession(created.id)
+      applySession(created)
       await loadSessions()
       if (goal) {
         const reply = await api.sendAgentMessage(created.id, goal)
-        setSession(reply.session)
+        applySession(reply.session)
       }
     } catch (caught) {
       fail(caught)
@@ -131,7 +165,7 @@ export default function AgentView({ event, progress, showNsfw }: Props) {
     setBusy(true)
     setError(null)
     try {
-      setSession(await action())
+      applySession(await action())
     } catch (caught) {
       fail(caught)
       if (sessionId) await syncSession(sessionId)
@@ -169,7 +203,7 @@ export default function AgentView({ event, progress, showNsfw }: Props) {
     setBusy(true)
     try {
       await api.deleteAgentSession(id)
-      if (id === sessionId) setSessionId(null)
+      if (id === sessionId) selectSession(null)
       await loadSessions()
     } catch (caught) {
       fail(caught)
@@ -230,6 +264,12 @@ export default function AgentView({ event, progress, showNsfw }: Props) {
     }
   }
 
+  // 「Grok が考えています…」: busy（このブラウザ発）だけでなく、バックエンドの
+  // ループが回すターンも session.thinking / WS フレームで拾う。
+  const thinking = session
+    ? isThinking({ busy, session, frame: event })
+    : busy
+
   // 一覧からは NSFW を外す（開いているセッションは作業中なので表示を続ける）。
   const visibleSessions = showNsfw
     ? sessions
@@ -255,7 +295,7 @@ export default function AgentView({ event, progress, showNsfw }: Props) {
         className="hidden lg:flex"
         collapsed={leftCollapsed}
         onToggle={() => setLeftCollapsed((value) => !value)}
-        onSelect={setSessionId}
+        onSelect={selectSession}
       />
 
       {session ? (
@@ -275,6 +315,7 @@ export default function AgentView({ event, progress, showNsfw }: Props) {
           artifactBadge={artifactBadge}
           onToggleNsfw={(nsfw) => void toggleNsfw(session.id, nsfw)}
           showNsfw={showNsfw}
+          thinking={thinking}
         />
       ) : (
         <section className="flex min-h-0 min-w-0 flex-1 flex-col items-center justify-center gap-2 rounded-lg border border-ink-600 bg-ink-900 p-4 text-center">
@@ -319,7 +360,7 @@ export default function AgentView({ event, progress, showNsfw }: Props) {
             collapsed={false}
             onToggle={() => setSessionsOpen(false)}
             onSelect={(id) => {
-              setSessionId(id)
+              selectSession(id)
               setSessionsOpen(false)
             }}
           />

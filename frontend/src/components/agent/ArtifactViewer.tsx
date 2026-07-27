@@ -85,7 +85,6 @@ export default function ArtifactViewer({
         <video
           src={url ?? ''}
           controls
-          autoPlay
           className="max-h-full max-w-full"
           onClick={(event) => event.stopPropagation()}
         />

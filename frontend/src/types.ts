@@ -253,6 +253,8 @@ export interface AgentSession {
   nsfw: boolean
   /** '' = 未判定 / 'auto' / 'manual'。 */
   nsfw_source: string
+  /** Grok ターンの実行中フラグ（バックエンドのインメモリ状態）。 */
+  thinking: boolean
 }
 
 export interface AgentSessionSummary {
@@ -321,4 +323,6 @@ export interface AgentProgress {
   job_id: string | null
   artifact: AgentArtifact | null
   message: string | null
+  /** Grok ターンが走っているか（null = この通知では変化なし）。 */
+  thinking: boolean | null
 }

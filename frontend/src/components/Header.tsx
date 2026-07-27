@@ -115,7 +115,7 @@ export default function Header({
             checked={showNsfw}
             onChange={(event) => onShowNsfw(event.target.checked)}
           />
-          🔞 NSFW表示
+          🫣 NSFW表示
         </label>
         <button className="btn-ghost" onClick={onRefresh} disabled={checking}>
           {checking ? '確認中…' : '接続状態を更新'}
