@@ -1,0 +1,3 @@
+# イメージに必要なのは backend/requirements.txt だけ（コードはマウントで持ち込む）
+*
+!backend/requirements.txt

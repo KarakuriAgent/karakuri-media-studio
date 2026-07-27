@@ -63,6 +63,42 @@ cd frontend && npm install && npm run build && cd ..
 PYTHONPATH=backend .venv/bin/uvicorn app.main:app --port 8000
 ```
 
+### Docker (docker compose) で起動する
+
+```bash
+# 初回のみ: フロントエンドはホスト側でビルドしておく
+npm --prefix frontend install && npm --prefix frontend run build
+
+./compose.sh up -d --build   # 起動
+./compose.sh logs -f         # ログ
+./compose.sh down            # 停止
+```
+
+設計は「ランタイムだけコンテナ、データとワークスペースはローカル」です。
+`compose.sh` は `docker compose` の薄いラッパーで、以下を自動で行います。
+
+- **実体パスへの解決**: リポジトリ全体をホストと同じ絶対パスにマウントします。
+  `app.db` や `runtime/config.json`、ジョブ履歴には絶対パスが記録されている
+  ため、パスを揃えることで `./run.sh` 実行と Docker 実行を自由に行き来
+  できます（シンボリックリンク経由のディレクトリから叩いても大丈夫です）
+- **権限の引き継ぎ**: コンテナを `UID:GID`（ローカルユーザー）で動かすので、
+  生成されるファイル（`outputs/`・`app.db` など）の所有者は root ではなく
+  ローカルユーザーのままです
+
+補足:
+
+- grok CLI はホストの `~/.grok`（バイナリ＋サインイン状態）をマウントして
+  使います。**事前にホスト側で grok のインストールとサインイン**を済ませて
+  ください（コンテナ内での新規サインインは想定していません）
+- `HOST` / `PORT` は `run.sh` と同じく `.env` から読まれます
+  （既定 `127.0.0.1:8000`）
+- ComfyUI にローカルホストの URL（`http://127.0.0.1:8188` など）を使っている
+  場合、コンテナからは `127.0.0.1` がコンテナ自身を指すため届きません。
+  設定画面の ComfyUI URL を `http://host.docker.internal:8188` か LAN の IP に
+  変更してください（Comfy Cloud の場合はそのままで動きます）
+- `docker compose` を直接使う場合は、リポジトリの実体パスから
+  `UID=$(id -u) GID=$(id -g) docker compose up -d` のように実行してください
+
 テスト:
 
 ```bash

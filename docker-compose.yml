@@ -1,0 +1,42 @@
+# Video Studio を Docker で動かす。
+#
+#   docker compose up --build
+#
+# 設計:
+# - リポジトリ全体をホストと同じ絶対パス (${PWD}) にマウントする。
+#   app.db・runtime/config.json・ジョブ履歴には絶対パスが記録されているため、
+#   パスを揃えることでホスト実行 (./run.sh) と Docker 実行を行き来できる。
+# - `user:` にローカルユーザーの UID:GID を渡すので、コンテナが作るファイル
+#   （outputs/ や app.db など）の所有者はローカルユーザーのままになる。
+#   UID/GID が 1000 以外の場合は .env に UID=…/GID=… を書くか、
+#   `UID=$(id -u) GID=$(id -g) docker compose up` のように渡す。
+# - grok CLI はホストの ~/.grok（バイナリ＋サインイン状態）をそのまま
+#   マウントして使う。事前にホスト側で `grok` のサインインを済ませておくこと。
+# - フロントエンドのビルド (frontend/dist) はホスト側で行う:
+#   `npm --prefix frontend install && npm --prefix frontend run build`
+#
+# HOST / PORT は run.sh と同じく .env から読まれる（既定 127.0.0.1:8000）。
+services:
+  video-studio:
+    build:
+      context: .
+      # ビルドコンテナ内で DNS が引けない環境があるためホスト側のネットワークを使う
+      network: host
+    user: "${UID:-1000}:${GID:-1000}"
+    working_dir: ${PWD}
+    command: uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-8000}
+    environment:
+      HOME: /home/app
+      PYTHONPATH: ${PWD}/backend
+    ports:
+      - "${HOST:-127.0.0.1}:${PORT:-8000}:${PORT:-8000}"
+    volumes:
+      # ワークスペース＝データ（app.db / assets / outputs / runtime を含む）
+      - .:${PWD}
+      # grok CLI 本体とサインイン状態
+      - ${HOME}/.grok:/home/app/.grok
+    # ローカルの ComfyUI を使う場合に host.docker.internal で届くようにする
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    init: true
+    restart: unless-stopped
