@@ -1,7 +1,7 @@
 /**
  * エージェント画面の判定ロジック（純関数だけ。UI から切り離してテストする）。
  */
-import type { AgentProgress, AgentSession } from '../../types'
+import type { AgentArtifact, AgentProgress, AgentSession } from '../../types'
 import { AGENT_ACTIVE } from './common'
 
 /** 応答待ちのチェックイン（末尾の未応答チェックイン）。無ければ -1。 */
@@ -70,6 +70,103 @@ export function inputState(
     }
   }
   return { disabled: false, placeholder: '指示を入力（Ctrl+Enter で送信）' }
+}
+
+// ------------------------------------------------------------- 成果物カード
+
+/** 成果物 1 件（元配列の位置を持つ）。 */
+export interface ArtifactEntry {
+  index: number
+  artifact: AgentArtifact
+}
+
+/** 成果物パネルのカード 1 枚（フレーム検分だけ job ごとにまとまる）。 */
+export type ArtifactCard =
+  | { type: 'single'; key: string; index: number; artifact: AgentArtifact }
+  | {
+      type: 'frames'
+      key: string
+      jobId: string
+      title: string
+      ts: string
+      frames: ArtifactEntry[]
+    }
+
+/**
+ * フレームまとめカードのタイトル。
+ *
+ * バックエンドは 1 枚ずつ「<label> フレーム検分 <n>」で登録するので、
+ * 末尾の連番 / ファイル名を落として共通部分だけ使う（旧データも壊さない）。
+ */
+export function frameGroupTitle(frames: AgentArtifact[]): string {
+  const first = frames[0]
+  const base = (first?.title || '')
+    .replace(/\s*(\d+|frame_\d+\.png|last_frame\.png)$/i, '')
+    .trim()
+  const label = base || 'フレーム検分'
+  return `${label} (${frames.length}枚)`
+}
+
+/**
+ * 成果物をカードへ畳む。
+ *
+ * kind='frame' は job_id ごとに 1 枚のカードへまとめ（最初のフレームの位置に置く）、
+ * job_id を持たないフレームと他の種別はそのまま 1 件 1 カード。
+ */
+export function groupArtifacts(artifacts: AgentArtifact[]): ArtifactCard[] {
+  const cards: ArtifactCard[] = []
+  const byJob = new Map<string, ArtifactCard & { type: 'frames' }>()
+
+  artifacts.forEach((artifact, index) => {
+    if (artifact.kind === 'frame' && artifact.job_id) {
+      const existing = byJob.get(artifact.job_id)
+      if (existing) {
+        existing.frames.push({ index, artifact })
+        existing.title = frameGroupTitle(existing.frames.map((f) => f.artifact))
+        return
+      }
+      const card: ArtifactCard & { type: 'frames' } = {
+        type: 'frames',
+        key: `frames-${artifact.job_id}`,
+        jobId: artifact.job_id,
+        title: frameGroupTitle([artifact]),
+        ts: artifact.ts,
+        frames: [{ index, artifact }],
+      }
+      byJob.set(artifact.job_id, card)
+      cards.push(card)
+      return
+    }
+    cards.push({
+      type: 'single',
+      key: `${artifact.ts}-${index}`,
+      index,
+      artifact,
+    })
+  })
+
+  return cards
+}
+
+/**
+ * ダウンロード時のファイル名（成果物タイトルから作り、拡張子は URL のものを維持）。
+ */
+export function downloadName(title: string, url: string | null): string {
+  const path = (url ?? '').split('?')[0]
+  const original = path.slice(path.lastIndexOf('/') + 1)
+  const dot = original.lastIndexOf('.')
+  const extension = dot > 0 ? original.slice(dot) : ''
+  const base = (title || '')
+    // ファイル名に使えない文字を落とし、空白は _ に寄せる（日本語はそのまま）
+    .replace(/[\\/:*?"<>|]/g, '')
+    .trim()
+    .replace(/\s+/g, '_')
+    .replace(/^[._]+|[._]+$/g, '')
+    .slice(0, 80)
+  if (!base) return original || 'download'
+  return base.toLowerCase().endsWith(extension.toLowerCase())
+    ? base
+    : base + extension
 }
 
 /**

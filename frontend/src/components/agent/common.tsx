@@ -44,6 +44,16 @@ export const ARTIFACT_ICON: Record<AgentArtifact['kind'], string> = {
   frame: '🎞',
 }
 
+/** 種別チップの見出し（リンクカードは中身を見せないので種別だけ出す）。 */
+export const ARTIFACT_LABEL: Record<AgentArtifact['kind'], string> = {
+  plan: 'プラン',
+  research: 'リサーチ',
+  note: 'メモ',
+  image: '画像',
+  video: '動画',
+  frame: 'フレーム',
+}
+
 export const TASK_ICON: Record<AgentTaskStatus, string> = {
   pending: '☐',
   running: '⏳',
@@ -61,6 +71,7 @@ export function eventIcon(kind: string | null): string {
   if (kind === 'approval_required') return '🛡'
   if (kind === 'action_skipped') return '⏭'
   if (kind === 'note_saved') return '📝'
+  if (kind === 'artifact_renamed') return '🏷'
   if (kind === 'inspect_result') return '🎞'
   if (kind === 'stopped') return '⏹'
   return '⚙'

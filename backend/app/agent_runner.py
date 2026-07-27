@@ -403,6 +403,16 @@ async def extract_frames(
     return frames
 
 
+def task_label_of_job(session: AgentSession | None, job_id: str) -> str:
+    """そのジョブを生成したプランタスクの label（無ければ空文字）。"""
+    if session is None:
+        return ""
+    for task in session.plan.tasks:
+        if task.job_id == job_id:
+            return task.label or ""
+    return ""
+
+
 async def _inspect(session_id: str, action: AgentAction) -> None:
     job_id = action.job_id or ""
     job = await jobs.get_job(job_id, include_workflow=False)
@@ -434,12 +444,14 @@ async def _inspect(session_id: str, action: AgentAction) -> None:
 
     workdir = session_dir(session_id)
     names = [str(f.relative_to(workdir)) for f in frames]
-    for name in names:
+    # タイトルはタスクの label 基準（フロントは job_id ごとに 1 枚のカードへまとめる）
+    label = task_label_of_job(await load(session_id), job_id) or f"job {job_id}"
+    for index, name in enumerate(names, start=1):
         await add_artifact(
             session_id,
             AgentArtifact(
                 kind="frame",
-                title=f"{job_id} 検分 {Path(name).name}",
+                title=f"{label} フレーム検分 {index}",
                 ts=now(),
                 name=name,
                 url=f"/api/agent/sessions/{session_id}/artifacts/{name}",
@@ -495,6 +507,61 @@ async def _note(session_id: str, action: AgentAction) -> None:
     await _event(
         session_id, "note_saved", f"メモ「{action.title or 'メモ'}」を保存しました。",
         name=name,
+    )
+
+
+def _rename_targets(
+    session: AgentSession, action: AgentAction
+) -> list[AgentArtifact]:
+    """rename の対象成果物（name 一致 / job_id[+kind] 一致）。"""
+    if action.name:
+        wanted = action.name
+        base = Path(wanted).name
+        return [
+            artifact
+            for artifact in session.artifacts
+            if artifact.name and (artifact.name == wanted or Path(artifact.name).name == base)
+        ]
+    if not action.job_id:
+        return []
+    return [
+        artifact
+        for artifact in session.artifacts
+        if artifact.job_id == action.job_id
+        and (not action.artifact_kind or artifact.kind == action.artifact_kind)
+    ]
+
+
+async def _rename(session_id: str, action: AgentAction) -> None:
+    """成果物のタイトルを付け直す（承認不要。AGENT-MODE §4）。"""
+    session = await load(session_id)
+    if session is None:
+        return
+    targets = _rename_targets(session, action)
+    if not targets:
+        where = action.name or f"job {action.job_id}"
+        await _event(
+            session_id,
+            "action_failed",
+            f"リネーム対象の成果物が見つかりません（{where}）。"
+            "成果物の name か job_id を確認してください。",
+            job_id=action.job_id,
+        )
+        return
+
+    # フレーム検分のように複数枚ある場合は連番を添えて区別できるようにする
+    numbered = len(targets) > 1
+    for index, artifact in enumerate(targets, start=1):
+        artifact.title = f"{action.title} {index}" if numbered else action.title
+    await update(session_id, artifacts=session.artifacts)
+    for artifact in targets:
+        await ws.publish_agent(session_id, session.status, artifact=artifact)
+    await _event(
+        session_id,
+        "artifact_renamed",
+        f"成果物のタイトルを「{action.title}」に変更しました（{len(targets)} 件）。",
+        job_id=action.job_id,
+        title=action.title,
     )
 
 
@@ -666,6 +733,9 @@ async def apply_action(session_id: str, action: AgentAction) -> bool:
         return True
     if action.action == "note":
         await _note(session_id, action)
+        return False
+    if action.action == "rename":
+        await _rename(session_id, action)
         return False
     if action.action == "inspect":
         await _inspect(session_id, action)

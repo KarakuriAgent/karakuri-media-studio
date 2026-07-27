@@ -374,7 +374,8 @@ AgentStatus = Literal[
 ]
 AgentCheckinMode = Literal["every_job", "milestone", "auto"]
 AgentActionName = Literal[
-    "plan", "run_task", "continue", "rerun", "inspect", "note", "checkin", "done"
+    "plan", "run_task", "continue", "rerun", "inspect", "note", "rename",
+    "checkin", "done",
 ]
 AgentTaskStatus = Literal["pending", "running", "done", "failed", "skipped"]
 
@@ -500,6 +501,9 @@ class AgentAction(BaseModel):
     filename: str | None = None
     content: str = ""
     kind: Literal["note", "research"] = "note"  # note アクションの成果物種別
+    # rename アクション: 対象成果物の指定（name か job_id[+ artifact_kind]）
+    name: str | None = None
+    artifact_kind: str | None = None
     overrides: dict[str, Any] = Field(default_factory=dict)
     # プラン外 continue / rerun がユーザー承認を得たか（Grok は指定できない）
     approved: bool = False

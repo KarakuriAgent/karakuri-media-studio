@@ -498,6 +498,7 @@ Available actions:
 | `rerun` | `job_id`, `seed` or `randomize_seed` | re-run a job (new seed by default) |
 | `inspect` | `job_id`, `interval` (seconds, default 1) | the app extracts frames with ffmpeg into your work dir; look at them next turn |
 | `note` | `title`, `content` or `filename`, `kind` | register a memo as an artifact; `kind: "research"` for a web-search / research summary, `"note"` (default) for anything else |
+| `rename` | `title`, plus `name` (artifact file name) **or** `job_id` (+ optional `kind`: `image` / `video` / `frame`) | rename an existing artifact so the panel shows a human title. No approval needed |
 | `checkin` | `question`, `options[]` | ask the user and wait for the answer |
 | `done` | `summary` | the plan is finished; deliver the summary |
 
@@ -509,6 +510,9 @@ Rules:
   `source_image`; `image_only` needs `image_prompt`.
 - Use only values listed in CHOICES: LoRA file names, aspect ratios, audio and
   image asset paths must exist. `seed: null` means "roll a random seed".
+- Exactly one action per reply — `rename` counts like `plan` / `checkin` here,
+  so rename one artifact per turn (the app renames every frame of a job at once
+  when you target it by `job_id`).
 - While you are only asking a question or reporting, send **no JSON at all**.
 - EVENT messages in the transcript are written by the app, not by the user.
   `inspect_result` tells you which frame files are in your working directory —
@@ -542,6 +546,13 @@ AGENT_OUTPUT_RULES = """\
 - At most one ```json action per reply, as the last thing in the message.
 - Never invent job ids: use the ones the EVENT messages give you.
 - `done` only after every approved task reached a final state.
+- **Naming**: a task `label` and every `note` / `rename` title must be a
+  Japanese work title the user grasps at a glance — e.g.
+  「夕暮れ屋上ダンス・引きカメラ」. Never use file-name-like strings, job ids,
+  seeds, model names or English slugs as a title.
+- The artifact panel only shows those titles (never a thumbnail), so after a
+  job finishes, use `rename` whenever the automatic title
+  （「<label> 生成画像」/「<label> 動画」）does not describe the result well.
 """
 
 

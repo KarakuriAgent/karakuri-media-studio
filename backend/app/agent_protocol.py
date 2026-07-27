@@ -32,6 +32,7 @@ ACTION_NAMES = (
     "rerun",
     "inspect",
     "note",
+    "rename",
     "checkin",
     "done",
 )
@@ -156,7 +157,7 @@ def parse_action(
     if name not in ACTION_NAMES:
         raise ActionError(
             f"未知の action '{name}' です。使えるのは plan / run_task / continue /"
-            " rerun / inspect / note / checkin / done です"
+            " rerun / inspect / note / rename / checkin / done です"
         )
 
     action = AgentAction(action=name)  # type: ignore[arg-type]
@@ -195,6 +196,21 @@ def parse_action(
             raise ActionError("note には filename か content のどちらかが必要です")
         # リサーチまとめは research 種別の成果物にする（既定は note）
         action.kind = "research" if payload.get("kind") == "research" else "note"
+    elif name == "rename":
+        title = str(payload.get("title") or "").strip()
+        if not title:
+            raise ActionError("rename には新しい title（作品名）が必要です")
+        action.title = title
+        target = payload.get("name")
+        action.name = str(target) if target else None
+        job_id = payload.get("job_id")
+        action.job_id = str(job_id) if job_id else None
+        artifact_kind = payload.get("kind")
+        action.artifact_kind = str(artifact_kind) if artifact_kind else None
+        if not action.name and not action.job_id:
+            raise ActionError(
+                "rename には対象成果物の name（ファイル名）か job_id が必要です"
+            )
     elif name == "checkin":
         question = str(payload.get("question") or payload.get("content") or "").strip()
         if not question:

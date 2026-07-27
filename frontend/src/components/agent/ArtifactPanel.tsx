@@ -2,7 +2,9 @@ import { useEffect, useRef, useState } from 'react'
 import { api } from '../../api'
 import type { AgentArtifact } from '../../types'
 import ArtifactViewer from './ArtifactViewer'
-import { ARTIFACT_ICON, shortTime } from './common'
+import FrameGrid from './FrameGrid'
+import { ARTIFACT_ICON, ARTIFACT_LABEL, shortTime } from './common'
+import { groupArtifacts } from './logic'
 
 interface PendingTask {
   id: string
@@ -16,17 +18,12 @@ interface Props {
   pending: PendingTask[]
   collapsed: boolean
   onToggle: () => void
-  /** Panel must be visible for auto-open to make sense. */
+  /** 新着があればパネル自体は開く（ビューアは開かない）。 */
   onExpand: () => void
   /** Layout override: desktop column vs. mobile full-screen overlay (§1). */
   className?: string
   /** Icon of the header toggle (mobile overlay closes instead of collapsing). */
   toggleIcon?: string
-  /**
-   * Reveal the panel / open the viewer when an artifact arrives. Off for the
-   * mobile overlay so a new artifact never hijacks the screen (§1).
-   */
-  autoOpen?: boolean
 }
 
 /** Backend fills `url` for outputs; workdir files are served by name. */
@@ -35,6 +32,13 @@ function urlOf(sessionId: string, artifact: AgentArtifact): string | null {
   return artifact.name ? api.agentArtifactUrl(sessionId, artifact.name) : null
 }
 
+/**
+ * 成果物パネル（AGENT-MODE §1）。
+ *
+ * NSFW が混ざるアプリなので、カードはサムネイルを持たない「リンクカード」
+ * （アイコン + タイトル + 種別チップ + 時刻）。中身はタップして初めて見える。
+ * 新着でビューアを勝手に開くことはしない（パネルの展開とバッジだけで知らせる）。
+ */
 export default function ArtifactPanel({
   sessionId,
   artifacts,
@@ -44,25 +48,26 @@ export default function ArtifactPanel({
   onExpand,
   className = '',
   toggleIcon = '▶',
-  autoOpen = true,
 }: Props) {
+  /** 単体ビューアで開いている成果物（artifacts 配列の位置）。 */
   const [openIndex, setOpenIndex] = useState<number | null>(null)
+  /** フレーム検分のまとめカードで開いているグループ。 */
+  const [openFrames, setOpenFrames] = useState<string | null>(null)
   const seen = useRef<{ sessionId: string; count: number }>({ sessionId, count: 0 })
   const bottom = useRef<HTMLDivElement>(null)
 
-  // New artifact arrived (WS): reveal the panel and open media in the viewer.
+  // 新着（WS）ではパネルを開いて末尾までスクロールするだけに留める。
   useEffect(() => {
     const previous = seen.current
     const fresh = previous.sessionId !== sessionId
     seen.current = { sessionId, count: artifacts.length }
-    if (fresh) setOpenIndex(null)
-    if (!autoOpen || fresh || artifacts.length <= previous.count) return
+    if (fresh) {
+      setOpenIndex(null)
+      setOpenFrames(null)
+    }
+    if (fresh || artifacts.length <= previous.count) return
     onExpand()
     bottom.current?.scrollIntoView({ behavior: 'smooth', block: 'nearest' })
-    const latest = artifacts[artifacts.length - 1]
-    if (latest.kind === 'image' || latest.kind === 'video') {
-      setOpenIndex(artifacts.length - 1)
-    }
   }, [artifacts, sessionId, onExpand])
 
   if (collapsed) {
@@ -82,7 +87,11 @@ export default function ArtifactPanel({
     )
   }
 
+  const cards = groupArtifacts(artifacts)
   const open = openIndex != null ? artifacts[openIndex] : null
+  const frames = cards.find(
+    (card) => card.type === 'frames' && card.key === openFrames,
+  )
 
   return (
     <aside
@@ -109,34 +118,38 @@ export default function ArtifactPanel({
           </p>
         )}
 
-        {artifacts.map((artifact, index) => {
-          const url = urlOf(sessionId, artifact)
-          const thumb =
-            artifact.kind === 'image' || artifact.kind === 'frame' ? url : null
+        {cards.map((card) => {
+          const isFrames = card.type === 'frames'
+          const kind = isFrames ? 'frame' : card.artifact.kind
+          const title = isFrames
+            ? card.title
+            : card.artifact.title || card.artifact.name
+          const chip = isFrames
+            ? `${ARTIFACT_LABEL.frame} ${card.frames.length}`
+            : ARTIFACT_LABEL[kind]
           return (
             <button
-              key={`${artifact.ts}-${index}`}
-              className="flex w-full items-center gap-2 rounded-md border border-ink-600 bg-ink-800 p-1.5 text-left transition-colors hover:border-ink-500"
-              onClick={() => setOpenIndex(index)}
-              title={artifact.title || artifact.name}
+              key={card.key}
+              className="flex w-full items-center gap-2 rounded-md border border-ink-600 bg-ink-800 p-2 text-left transition-colors hover:border-accent-500"
+              onClick={() =>
+                isFrames ? setOpenFrames(card.key) : setOpenIndex(card.index)
+              }
+              title={title}
             >
-              <span className="flex h-10 w-14 shrink-0 items-center justify-center overflow-hidden rounded bg-ink-900 text-sm">
-                {thumb ? (
-                  <img
-                    src={thumb}
-                    alt={artifact.title}
-                    className="h-full w-full object-cover"
-                  />
-                ) : (
-                  ARTIFACT_ICON[artifact.kind]
-                )}
+              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-ink-900 text-sm">
+                {ARTIFACT_ICON[kind]}
               </span>
               <span className="min-w-0 flex-1">
                 <span className="block truncate text-xs text-slate-200">
-                  {ARTIFACT_ICON[artifact.kind]} {artifact.title || artifact.name}
+                  {title}
                 </span>
-                <span className="block text-[10px] text-slate-600">
-                  {shortTime(artifact.ts)}
+                <span className="mt-0.5 flex items-center gap-1.5">
+                  <span className="chip !border-ink-600 !bg-ink-900 !px-1.5 !py-0 text-[10px] text-slate-400">
+                    {chip}
+                  </span>
+                  <span className="text-[10px] text-slate-600">
+                    {shortTime(isFrames ? card.ts : card.artifact.ts)}
+                  </span>
                 </span>
               </span>
             </button>
@@ -170,6 +183,15 @@ export default function ArtifactPanel({
           artifact={open}
           url={urlOf(sessionId, open)}
           onClose={() => setOpenIndex(null)}
+        />
+      )}
+
+      {frames?.type === 'frames' && (
+        <FrameGrid
+          title={frames.title}
+          frames={frames.frames.map((entry) => entry.artifact)}
+          urlOf={(artifact) => urlOf(sessionId, artifact)}
+          onClose={() => setOpenFrames(null)}
         />
       )}
     </aside>

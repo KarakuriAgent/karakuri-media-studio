@@ -379,7 +379,6 @@ export default function AgentView({ event, progress, showNsfw }: Props) {
             onExpand={() => setArtifactsOpen(true)}
             className="!w-full"
             toggleIcon="✕"
-            autoOpen={false}
           />
         </div>
       )}

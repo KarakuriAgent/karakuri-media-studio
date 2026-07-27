@@ -2,13 +2,9 @@ import { useEffect, useState } from 'react'
 import type { AgentArtifact } from '../../types'
 import { Modal } from '../ui'
 import { ARTIFACT_ICON, formatTime } from './common'
+import { downloadName } from './logic'
 
 const MEDIA_KINDS: AgentArtifact['kind'][] = ['image', 'video', 'frame']
-
-function fileNameOf(url: string): string {
-  const clean = url.split('?')[0]
-  return clean.slice(clean.lastIndexOf('/') + 1) || 'download'
-}
 
 /** Text artifacts may live as a workdir file: fetch it on demand. */
 function useArtifactText(artifact: AgentArtifact, url: string | null): string {
@@ -67,7 +63,11 @@ export default function ArtifactViewer({
         </pre>
         {url && (
           <div className="mt-3">
-            <a className="btn-ghost !py-1 text-xs" href={url} download={fileNameOf(url)}>
+            <a
+              className="btn-ghost !py-1 text-xs"
+              href={url}
+              download={downloadName(artifact.title, url)}
+            >
               ダウンロード
             </a>
           </div>
@@ -105,7 +105,11 @@ export default function ArtifactViewer({
           {ARTIFACT_ICON[artifact.kind]} {artifact.title}
         </span>
         {url && (
-          <a className="btn-ghost !py-1 text-xs" href={url} download={fileNameOf(url)}>
+          <a
+            className="btn-ghost !py-1 text-xs"
+            href={url}
+            download={downloadName(artifact.title, url)}
+          >
             ダウンロード
           </a>
         )}

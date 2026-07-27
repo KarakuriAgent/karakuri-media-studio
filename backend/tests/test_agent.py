@@ -557,6 +557,9 @@ def test_inspect_extracts_frames_into_the_workdir(env):
     assert "inspect_result" in kinds(final)
     frame_artifacts = [a for a in final["artifacts"] if a["kind"] == "frame"]
     assert frame_artifacts
+    # タイトルはタスクの label 基準（フロントは job ごとに 1 カードへまとめる）
+    assert frame_artifacts[0]["title"] == "①1 フレーム検分 1"
+    assert all(a["job_id"] == job_id for a in frame_artifacts)
 
     # 成果物は workdir から配信される
     served = env.client.get(frame_artifacts[0]["url"])
@@ -605,6 +608,102 @@ def test_note_defaults_to_the_note_kind(env):
         action_answer({"action": "note", "content": "メモ"})
     )
     assert action is not None and action.kind == "note"
+
+
+def test_rename_updates_an_artifact_title_by_name(env):
+    session = start(env)
+    env.cli.answers = [
+        action_answer(
+            {"action": "note", "title": "メモ1", "content": "下書き"}, "書きました。"
+        ),
+        action_answer(
+            {
+                "action": "rename",
+                "name": "note_1.md",
+                "title": "夕暮れ屋上ダンス・企画メモ",
+            },
+            "名前を付け直します。",
+        ),
+    ]
+    say(env, session["id"], "メモして")
+    reply = say(env, session["id"], "名前を付けて").json()
+
+    assert reply["action"]["action"] == "rename"
+    notes = [a for a in reply["session"]["artifacts"] if a["kind"] == "note"]
+    assert notes and notes[0]["title"] == "夕暮れ屋上ダンス・企画メモ"
+    assert "artifact_renamed" in kinds(reply["session"])
+
+
+def test_rename_targets_a_jobs_artifacts_by_kind(env):
+    session = start(env)
+    env.cli.answers = [plan_answer(env, 1), DONE_ANSWER]
+    say(env, session["id"])
+    env.client.post(f"/api/agent/sessions/{session['id']}/approve", json={})
+    done = wait_status(env, session["id"], ("done", "stopped", "idle"))
+    job_id = done["plan"]["tasks"][0]["job_id"]
+    before = [a for a in done["artifacts"] if a["kind"] == "image"]
+    assert before
+
+    env.cli.answers = [
+        action_answer(
+            {
+                "action": "rename",
+                "job_id": job_id,
+                "kind": "image",
+                "title": "夕暮れ屋上ダンス・引きカメラ",
+            },
+            "名前を付け直します。",
+        )
+    ]
+    artifacts = say(env, session["id"], "名前を付けて").json()["session"]["artifacts"]
+    images = [a for a in artifacts if a["kind"] == "image"]
+    assert [a["title"] for a in images] == ["夕暮れ屋上ダンス・引きカメラ"]
+    # 他の種別は触らない
+    assert all(a["title"].startswith("プラン") for a in artifacts if a["kind"] == "plan")
+
+
+def test_rename_of_a_missing_artifact_is_reported(env):
+    session = start(env)
+    env.cli.answers = [
+        action_answer(
+            {"action": "rename", "name": "nope.md", "title": "新しい名前"},
+            "名前を付け直します。",
+        )
+    ]
+    reply = say(env, session["id"], "名前を付けて").json()
+    assert "action_failed" in kinds(reply["session"])
+    assert reply["session"]["artifacts"] == []
+
+
+def test_rename_without_a_target_or_title_is_rejected(env):
+    with pytest.raises(agent_protocol.ActionError, match="title"):
+        agent_protocol.parse_action(
+            action_answer({"action": "rename", "name": "note_1.md"})
+        )
+    with pytest.raises(agent_protocol.ActionError, match="job_id"):
+        agent_protocol.parse_action(
+            action_answer({"action": "rename", "title": "新しい名前"})
+        )
+
+
+def test_rename_publishes_the_updated_artifact_on_the_websocket(env):
+    session = start(env)
+    env.cli.answers = [
+        action_answer({"action": "note", "title": "メモ1", "content": "下書き"}),
+        action_answer(
+            {"action": "rename", "name": "note_1.md", "title": "夕暮れ屋上ダンス・企画メモ"}
+        ),
+    ]
+    say(env, session["id"], "メモして")
+    with env.client.websocket_connect("/api/ws") as socket:
+        say(env, session["id"], "名前を付けて")
+        titles = []
+        for _ in range(20):
+            message = socket.receive_json()
+            if message["type"] == "agent" and message.get("artifact"):
+                titles.append(message["artifact"]["title"])
+                break
+    assert titles == ["夕暮れ屋上ダンス・企画メモ"]
 
 
 def test_artifact_path_traversal_is_refused(env, tmp_path):

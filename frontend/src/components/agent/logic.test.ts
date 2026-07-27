@@ -1,13 +1,33 @@
 import { describe, expect, it } from 'vitest'
-import type { AgentProgress } from '../../types'
+import type { AgentArtifact, AgentProgress } from '../../types'
 import { message, session } from './fixtures'
 import {
+  downloadName,
+  frameGroupTitle,
+  groupArtifacts,
   inputState,
   isCheckinAnswered,
   isThinking,
   openCheckinIndex,
   shouldReplaceSession,
 } from './logic'
+
+function artifact(
+  kind: AgentArtifact['kind'],
+  title: string,
+  extra: Partial<AgentArtifact> = {},
+): AgentArtifact {
+  return {
+    kind,
+    title,
+    ts: '2026-07-27T00:00:00',
+    name: '',
+    url: null,
+    job_id: null,
+    text: null,
+    ...extra,
+  }
+}
 
 function frame(overrides: Partial<AgentProgress> = {}): AgentProgress {
   return {
@@ -174,5 +194,85 @@ describe('shouldReplaceSession', () => {
     expect(shouldReplaceSession(withArtifact, session({ messages: current.messages }))).toBe(
       false,
     )
+  })
+})
+
+describe('groupArtifacts', () => {
+  it('フレームは job ごとに 1 枚のカードへまとめる', () => {
+    const cards = groupArtifacts([
+      artifact('image', '① 明るいスタジオ 生成画像'),
+      artifact('frame', '① 明るいスタジオ フレーム検分 1', {
+        job_id: 'job-1',
+        name: 'inspect_job-1/frame_001.png',
+      }),
+      artifact('frame', '① 明るいスタジオ フレーム検分 2', {
+        job_id: 'job-1',
+        name: 'inspect_job-1/frame_002.png',
+      }),
+      artifact('video', '① 明るいスタジオ 動画'),
+    ])
+    expect(cards.map((card) => card.type)).toEqual(['single', 'frames', 'single'])
+    const group = cards[1]
+    if (group.type !== 'frames') throw new Error('frames card expected')
+    expect(group.jobId).toBe('job-1')
+    expect(group.frames.map((entry) => entry.index)).toEqual([1, 2])
+    expect(group.title).toBe('① 明るいスタジオ フレーム検分 (2枚)')
+  })
+
+  it('別 job のフレームは別カードになる', () => {
+    const cards = groupArtifacts([
+      artifact('frame', 'A フレーム検分 1', { job_id: 'job-1' }),
+      artifact('frame', 'B フレーム検分 1', { job_id: 'job-2' }),
+      artifact('frame', 'A フレーム検分 2', { job_id: 'job-1' }),
+    ])
+    expect(cards).toHaveLength(2)
+    expect(cards[0].type === 'frames' && cards[0].frames).toHaveLength(2)
+  })
+
+  it('job_id のないフレームは 1 件 1 カードのまま', () => {
+    const cards = groupArtifacts([artifact('frame', '検分 1'), artifact('frame', '検分 2')])
+    expect(cards.map((card) => card.type)).toEqual(['single', 'single'])
+  })
+
+  it('成果物が無ければカードも無い', () => {
+    expect(groupArtifacts([])).toEqual([])
+  })
+})
+
+describe('frameGroupTitle', () => {
+  it('末尾の連番を落として枚数を添える', () => {
+    expect(frameGroupTitle([artifact('frame', '夕暮れ屋上ダンス フレーム検分 3')])).toBe(
+      '夕暮れ屋上ダンス フレーム検分 (1枚)',
+    )
+  })
+
+  it('旧データのファイル名付きタイトルも畳める', () => {
+    expect(
+      frameGroupTitle([
+        artifact('frame', 'job-1 検分 frame_001.png'),
+        artifact('frame', 'job-1 検分 frame_002.png'),
+      ]),
+    ).toBe('job-1 検分 (2枚)')
+  })
+
+  it('タイトルが無ければ既定の見出しを使う', () => {
+    expect(frameGroupTitle([artifact('frame', '')])).toBe('フレーム検分 (1枚)')
+  })
+})
+
+describe('downloadName', () => {
+  it('タイトルから作り、拡張子は URL のものを維持する', () => {
+    expect(downloadName('夕暮れ屋上ダンス・引きカメラ', '/outputs/abc123.mp4')).toBe(
+      '夕暮れ屋上ダンス・引きカメラ.mp4',
+    )
+  })
+
+  it('ファイル名に使えない文字と空白を落とす', () => {
+    expect(downloadName('a/b:c d', '/outputs/x.png')).toBe('abc_d.png')
+  })
+
+  it('タイトルが無ければ URL 側のファイル名にする', () => {
+    expect(downloadName('', '/outputs/abc123.mp4')).toBe('abc123.mp4')
+    expect(downloadName('', null)).toBe('download')
   })
 })

@@ -260,7 +260,7 @@ async def _dispatch(session_id: str, action) -> None:
         if agent_runner.next_task(session) is not None:
             await agent_runner.start_loop(session_id)
         return
-    if action.action in ("plan", "checkin", "done", "note"):
+    if action.action in ("plan", "checkin", "done", "note", "rename"):
         await agent_runner.apply_action(session_id, action)
         return
     # 実行系アクションはバックグラウンドループに委ねる
