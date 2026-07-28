@@ -10,10 +10,12 @@ Contents (SPEC §4.3 "システムプロンプトの構成"):
 
 1. role — prompt engineer *and* interviewer,
 2. image prompt spec — Krea 2 official expansion rules (the very text embedded
-   in ``video-gen.json`` node ``365:18``), with rule 8 ("assume clothing covers
-   …") replaced by an adults-only rule because this app generates adult
-   content,
-3. video prompt spec — LTX 2.3, plus the two prompt templates,
+   in ``workflow/image/krea2/krea2_turbo.json`` node ``30:18``), with rule 8
+   ("assume clothing covers …") replaced by an adults-only rule because this app
+   generates adult content,
+3. video prompt spec — LTX 2.3, plus the two prompt templates and the selected
+   video workflow's own characteristics (generated from ``app.workflows``, so
+   the prompts, the UI and the job validator share one source of truth),
 4. few-shot examples taken from ``docs/prompt-samples.md`` (kept here as
    constants so the running app never reads the docs tree),
 5. the form context (mode, LoRA trigger words, duration, drafts),
@@ -29,6 +31,17 @@ from .models import (
     ChatMessage,
     ChatSessionCreate,
     Options,
+    missing_job_fields,
+    video_workflow_problem,
+)
+from .workflows import (
+    DEFAULT_VIDEO_WORKFLOW,
+    CatalogEntry,
+    WorkflowSpec,
+    WorkflowSpecError,
+    catalog_entry,
+    get_video_spec,
+    video_catalog,
 )
 
 # --------------------------------------------------------------------------
@@ -38,7 +51,7 @@ from .models import (
 ROLE = """\
 # ROLE
 
-You are the prompt engineer *and* interviewer of "Video Studio", a local,
+You are the prompt engineer *and* interviewer of "Karakuri Media Studio", a local,
 single-user ComfyUI front-end that generates adult (18+) still images and short
 videos of fictional adult characters. Everything stays on the user's machine.
 Explicit sexual content is expected and in scope; write it plainly and
@@ -81,7 +94,7 @@ Rules of engagement:
 # --------------------------------------------------------------------------
 
 IMAGE_SPEC = """\
-# IMAGE PROMPT SPEC — RedCraft / Krea 2 (text encoder: Qwen3-VL 4B)
+# IMAGE PROMPT SPEC — Krea 2 turbo (text encoder: Qwen3-VL 4B)
 
 Write ONE cohesive natural-language paragraph. Long and detailed is good;
 no bullets, no JSON, no markdown, no tag soup, no weight syntax like
@@ -134,7 +147,7 @@ in CONTEXT (see the rules there).
 # --------------------------------------------------------------------------
 
 VIDEO_SPEC = """\
-# VIDEO PROMPT SPEC — SexGod PinkCherry LTX 2.3, image-to-video (TE: Gemma-3 12B)
+# VIDEO PROMPT SPEC — LTX 2.3 22B (dev / distilled fp8), TE: Gemma-3 12B
 
 One flowing paragraph, **4–8 sentences**, one continuous shot (no cuts, no
 scene changes). It must cover, in roughly this order:
@@ -191,13 +204,135 @@ If nobody speaks, write `[SPEECH] (none)`.
 """
 
 # --------------------------------------------------------------------------
+# 3.5 workflow catalog (generated from app/workflows.py — 単一情報源)
+# --------------------------------------------------------------------------
+
+def _required_fields(mode: str, workflow_id: str) -> list[str]:
+    """Required job fields of one mode + workflow, straight from the validator.
+
+    :func:`app.models.missing_job_fields` is what ``POST /api/jobs`` and
+    ``agent_protocol.validate_job`` enforce, so asking it with an *empty* job
+    yields exactly the fields that are mandatory — the prompt rules can never
+    drift from the code that rejects a job.
+    """
+    return missing_job_fields(
+        mode,
+        image_prompt=None,
+        video_prompt=None,
+        audio_path=None,
+        source_image=None,
+        end_image=None,
+        reference_video=None,
+        video_workflow=workflow_id,
+    )
+
+
+def _fields_text(fields: list[str]) -> str:
+    return ", ".join(f"`{name}`" for name in fields) if fields else "(なし)"
+
+
+def _inputs_text(
+    pairs: tuple[tuple[str, str], ...], empty: str = "なし"
+) -> str:
+    if not pairs:
+        return empty
+    return ", ".join(f"`{field}`（{label}）" for field, label in pairs)
+
+
+def _catalog_entry_lines(entry: CatalogEntry) -> list[str]:
+    """One catalog bullet: what the workflow is, needs and expects."""
+    default = " **（既定）**" if entry.id == DEFAULT_VIDEO_WORKFLOW else ""
+    lines = [
+        f"- `{entry.id}` — {entry.label}{default}",
+        f"  - 用途: {entry.description}",
+        "  - 必要入力: "
+        + _inputs_text(entry.required_inputs, "なし（プロンプトだけで生成できる）"),
+    ]
+    if entry.optional_inputs:
+        lines.append("  - 任意入力: " + _inputs_text(entry.optional_inputs))
+    lines.append(f"  - 音声: {entry.audio}")
+    i2v = _fields_text(_required_fields("i2v", entry.id))
+    # the same helper POST /api/jobs uses, so "full is impossible" can never be
+    # claimed here while the API accepts it
+    if not video_workflow_problem("full", entry.id):
+        full = _fields_text(_required_fields("full", entry.id))
+        lines.append(
+            f'  - 必須フィールド: `mode: "i2v"` -> {i2v} /'
+            f' `mode: "full"` -> {full}'
+        )
+    else:
+        lines.append(
+            f'  - 必須フィールド: `mode: "i2v"` -> {i2v} /'
+            ' `mode: "full"` は使えない（生成した開始フレームを受け取れない'
+            "ワークフローなので、`continue` の行き先にもできない）"
+        )
+    if entry.prompt_hint:
+        lines.append(f"  - Writing `video_prompt`: {entry.prompt_hint}")
+    if entry.notes:
+        lines.append(f"  - Notes: {entry.notes}")
+    return lines
+
+
+def workflow_catalog_section() -> str:
+    """The `video_workflow` catalog embedded in the agent system prompt."""
+    lines = [
+        "# VIDEO WORKFLOWS (the `video_workflow` field of a job)",
+        "",
+        "Every video job runs exactly one of these ComfyUI graphs. Pick the one"
+        " whose",
+        "required inputs you actually have, and write `video_prompt` the way that",
+        "workflow wants it — where a workflow's own note and the generic VIDEO",
+        "PROMPT SPEC disagree, the workflow's note wins.",
+        "",
+    ]
+    for entry in video_catalog():
+        lines += _catalog_entry_lines(entry)
+    lines += [
+        "",
+        f"Omitting `video_workflow` selects `{DEFAULT_VIDEO_WORKFLOW}`.",
+        '`mode: "image_only"` runs no video stage at all, so `video_workflow` is'
+        " ignored there",
+        f"and only {_fields_text(_required_fields('image_only', DEFAULT_VIDEO_WORKFLOW))}"
+        " is required.",
+        "",
+        "アセットのパスは CHOICES に挙がっているものだけを使い、そのワークフローが"
+        "使わない入力は送らないこと（未知のフィールドはエラーになります）。",
+    ]
+    return "\n".join(lines)
+
+
+def _workflow_context_lines(workflow_id: str) -> list[str]:
+    """The selected video workflow, for the chat CONTEXT section (SPEC §4.3)."""
+    try:
+        spec = get_video_spec(workflow_id)
+    except WorkflowSpecError:
+        return []
+    entry = catalog_entry(spec)
+    lines = [
+        "",
+        f"Selected video workflow: **`{entry.id}`**（{entry.label}）",
+        f"- 用途: {entry.description}",
+        f"- 入力: {_inputs_text(entry.required_inputs, 'なし（プロンプトのみ）')}",
+        f"- 音声: {entry.audio}",
+    ]
+    if entry.prompt_hint:
+        lines += [
+            f"- How to write `video_prompt` for it: {entry.prompt_hint}",
+            "  This is authoritative: where it disagrees with the VIDEO PROMPT",
+            "  SPEC above, follow this. Interview the user accordingly (do not",
+            "  ask about things this workflow does not take from the prompt).",
+        ]
+    return lines
+
+
+# --------------------------------------------------------------------------
 # 4. few-shot examples (docs/prompt-samples.md)
 # --------------------------------------------------------------------------
 
 FEW_SHOT = """\
 # FEW-SHOT EXAMPLES (real prompts from the model authors' own galleries)
 
-## Video prompts — SexGod PinkCherry LTX 2.3 (author's own posts)
+## Video prompts — LTX 2.3 (model authors' own posts)
 
 Example V1 (dialogue + sound effects):
 ```
@@ -221,7 +356,7 @@ closing sound sentence):
 adult Japanese woman in sex on a rumpled hotel bed. Starting from the given first frame, the thrusting becomes rapid and intense, short hard strokes in quick succession. Her whole body shakes with the pace, legs tremble, fingers dig into the sheets, and her back arches off the mattress. Her brows lock tight, watery eyes roll upward, mouth open wide as shaky high moans break between gasps. Heavy sweat on her flushed skin, messy dark hair stuck to her face and pillow. Static camera with stronger handheld tremble, tight focus on her climaxing face and torso under harsh practical lighting. Fast bed creaks, sharp body sounds, gasping breaths, and urgent moans continue through the continuous shot.
 ```
 
-## Image prompts — RedCraft / Krea 2
+## Image prompts — Krea 2
 
 Example I1 (this app's own reference prompt; note how the character's trigger
 word "kaori" opens the paragraph as the subject's name — write it exactly like
@@ -277,14 +412,23 @@ OUTPUT_RULES = """\
 # assembly
 # --------------------------------------------------------------------------
 
-def _mode_rules(mode: str) -> str:
+def _mode_rules(mode: str, spec: WorkflowSpec | None = None) -> str:
     if mode == "i2v":
-        return (
-            "Mode: **i2v (image to video)** — the start frame already exists.\n"
-            "Produce `video_prompt` only; `image_prompt` MUST be `null`.\n"
+        # a video-only run: whether an image is even involved depends on the
+        # selected workflow (t2v and the reference-sheet IC-LoRA take none).
+        has_start_frame = spec is None or spec.accepts_start_image
+        detail = (
             "Interview only about motion, camera, sound and dialogue: the look\n"
-            "of the subject and the set is already fixed by the start frame,\n"
+            "of the subject and the set is already fixed by the given image,\n"
             "and the video prompt must not contradict it."
+            if has_start_frame
+            else "This workflow gets no start frame, so the video prompt has to\n"
+            "establish the subject, the set and the framing as well as the\n"
+            "motion — interview about the looks too."
+        )
+        return (
+            "Mode: **i2v (video only)** — no image is generated in this run.\n"
+            "Produce `video_prompt` only; `image_prompt` MUST be `null`.\n" + detail
         )
     if mode == "image_only":
         return (
@@ -343,12 +487,21 @@ def _trigger_lines(ctx: ChatSessionCreate) -> list[str]:
 def _context_section(
     ctx: ChatSessionCreate, start_image_filename: str | None = None
 ) -> str:
+    spec = None
+    if ctx.mode != "image_only":
+        try:
+            spec = get_video_spec(ctx.video_workflow)
+        except WorkflowSpecError:
+            spec = None
+
     lines = ["# CONTEXT (current state of the generation form)", ""]
-    lines.append(_mode_rules(ctx.mode))
+    lines.append(_mode_rules(ctx.mode, spec))
     lines.append("")
 
     if ctx.mode != "image_only":
         lines.append(f"Clip duration: {ctx.duration:g} seconds, one continuous shot.")
+        lines += _workflow_context_lines(ctx.video_workflow)
+        lines.append("")
     if ctx.mode != "i2v":
         lines += _trigger_lines(ctx)
 
@@ -442,7 +595,7 @@ def build_conversation(messages: list[ChatMessage], retry: bool = False) -> str:
 AGENT_ROLE = """\
 # ROLE
 
-You are the autonomous production partner of "Video Studio", a local,
+You are the autonomous production partner of "Karakuri Media Studio", a local,
 single-user ComfyUI front-end that generates adult (18+) still images and short
 videos of fictional adult characters. Everything stays on the user's machine.
 Explicit sexual content is expected and in scope; write it plainly and
@@ -475,13 +628,16 @@ Your reply is either plain Japanese text, or plain Japanese text followed by
       "label": "① 明るいスタジオ",
       "job": {
         "mode": "full",
+        "video_workflow": "ltx2_3_id_lora",
         "image_prompt": "...", "video_prompt": "...",
         "negative_prompt": "...",
         "aspect_ratio": "9:16", "megapixels": 1.0,
         "loras": [{"lora_name": "kaori.safetensors", "trigger_word": "kaori",
                    "strength": 0.8}],
         "trigger_text": "kaori", "duration": 5, "fps": 24,
-        "audio_path": null, "source_image": null, "seed": null
+        "audio_path": "/assets/audio/reference.mp3",
+        "source_image": null, "end_image": null, "reference_video": null,
+        "seed": null
       }
     }
   ]
@@ -494,7 +650,7 @@ Available actions:
 |---|---|---|
 | `plan` | `notes`, `tasks[{label, job}]` | propose the task list (a revision replaces the previous plan). Needs approval. |
 | `run_task` | `task_id` (optional) | run the next approved task now |
-| `continue` | `job_id`, plus any of `video_prompt`, `negative_prompt`, `aspect_ratio`, `megapixels`, `duration`, `fps`, `audio_path`, `seed` | new i2v job starting from that job's last frame |
+| `continue` | `job_id`, plus any of `video_workflow`, `video_prompt`, `negative_prompt`, `aspect_ratio`, `megapixels`, `duration`, `fps`, `audio_path`, `end_image`, `reference_video`, `seed` | new i2v job starting from that job's last frame |
 | `rerun` | `job_id`, `seed` or `randomize_seed` | re-run a job (new seed by default) |
 | `inspect` | `job_id`, `interval` (seconds, default 1) | the app extracts frames with ffmpeg into your work dir; look at them next turn |
 | `note` | `title`, `content` or `filename`, `kind` | register a memo as an artifact; `kind: "research"` for a web-search / research summary, `"note"` (default) for anything else |
@@ -505,11 +661,19 @@ Available actions:
 Rules:
 
 - `job` uses the app's own job schema, exactly the fields shown above and
-  nothing else. Required per mode: `full` needs `image_prompt`, `video_prompt`
-  and `audio_path`; `i2v` needs `video_prompt`, `audio_path` and
-  `source_image`; `image_only` needs `image_prompt`.
-- Use only values listed in CHOICES: LoRA file names, aspect ratios, audio and
-  image asset paths must exist. `seed: null` means "roll a random seed".
+  nothing else. `mode` picks the stages (`full` = image then video, `i2v` =
+  video only from assets you supply, `image_only` = a still and nothing else)
+  and `video_workflow` picks the video graph. **Which fields are required
+  follows from those two** — the VIDEO WORKFLOWS section lists the exact set per
+  workflow and per mode, so read it before you write a plan. Omit the inputs a
+  workflow does not use.
+- `continue` may switch `video_workflow` too, but only to a workflow that can
+  take a start frame (the ones marked `mode: "full"` -> …); anything else falls
+  back to the default. Supply the extra inputs that workflow needs (e.g.
+  `end_image` for flf2v), otherwise the continuation is rejected.
+- Use only values listed in CHOICES: LoRA file names, aspect ratios and the
+  audio / image / video asset paths must exist. `seed: null` means "roll a
+  random seed".
 - Exactly one action per reply — `rename` counts like `plan` / `checkin` here,
   so rename one artifact per turn (the app renames every frame of a job at once
   when you target it by `job_id`).
@@ -637,7 +801,8 @@ def _agent_choices(
 
     for title, assets in (
         ("Audio assets (audio_path)", options.audio_assets),
-        ("Start images (source_image)", options.image_assets),
+        ("Image assets (source_image / end_image)", options.image_assets),
+        ("Video assets (reference_video)", options.video_assets),
     ):
         lines.append(f"{title}:")
         if assets:
@@ -665,8 +830,9 @@ def build_agent_system_prompt(
     video_spec = VIDEO_SPEC.replace(
         "DURATION_SECONDS seconds", "as many seconds as the job's `duration` field says"
     )
-    parts = [AGENT_ROLE, AGENT_PROTOCOL, IMAGE_SPEC, video_spec, TEMPLATE_NATURAL,
-             FEW_SHOT, _agent_choices(options, lora_samples),
+    parts = [AGENT_ROLE, AGENT_PROTOCOL, workflow_catalog_section(), IMAGE_SPEC,
+             video_spec, TEMPLATE_NATURAL, FEW_SHOT,
+             _agent_choices(options, lora_samples),
              _agent_guardrails(ctx, max_tasks), AGENT_OUTPUT_RULES]
     if tools_enabled:
         parts.insert(2, AGENT_TOOLS)

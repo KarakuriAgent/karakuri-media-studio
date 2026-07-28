@@ -1,17 +1,19 @@
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
 import {
   AUTHOR_NEGATIVE_PROMPT,
   DEFAULT_NEGATIVE_PROMPT,
+  MODE_HINTS,
   MODE_LABELS,
   NEGATIVE_PRESET_LABELS,
   disabledFields,
   joinTriggers,
   toSelected,
+  workflowsForMode,
   type FormState,
   type SelectedLora,
 } from '../form'
-import type { Job, JobMode, Lora, Options } from '../types'
+import type { Asset, Job, JobMode, Lora, Options, WorkflowOption } from '../types'
 import { Banner, FieldError } from './ui'
 
 const MODES: JobMode[] = ['full', 'i2v', 'image_only']
@@ -51,6 +53,111 @@ function Section({
   )
 }
 
+/** Asset select + upload + preview, shared by every image / video input. */
+function AssetPicker({
+  kind,
+  value,
+  assets,
+  busy,
+  onPick,
+  onUpload,
+  children,
+}: {
+  kind: 'image' | 'video'
+  value: string
+  assets: Asset[]
+  busy: boolean
+  onPick: (url: string) => void
+  onUpload: (file: File) => void
+  children?: React.ReactNode
+}) {
+  const input = useRef<HTMLInputElement>(null)
+  const [dragOver, setDragOver] = useState(false)
+
+  const pickFile = (files: FileList | File[] | null) => {
+    const file = Array.from(files ?? []).find((item) =>
+      item.type.startsWith(`${kind}/`),
+    )
+    if (file) onUpload(file)
+  }
+
+  return (
+    <div
+      className={`flex flex-col gap-2 rounded-lg border border-dashed p-2 transition-colors ${
+        dragOver ? 'border-accent-500 bg-accent-500/10' : 'border-ink-600'
+      }`}
+      onDragOver={(event) => {
+        event.preventDefault()
+        setDragOver(true)
+      }}
+      onDragLeave={(event) => {
+        if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
+          setDragOver(false)
+        }
+      }}
+      onDrop={(event) => {
+        event.preventDefault()
+        setDragOver(false)
+        pickFile(event.dataTransfer.files)
+      }}
+    >
+      <div className="flex items-center gap-2">
+        <input
+          ref={input}
+          type="file"
+          accept={`${kind}/*`}
+          className="hidden"
+          onChange={(event) => {
+            pickFile(event.target.files)
+            event.target.value = ''
+          }}
+        />
+        <button
+          className="btn-ghost text-xs"
+          disabled={busy}
+          onClick={() => input.current?.click()}
+        >
+          {kind === 'image' ? '画像をアップロード' : '動画をアップロード'}
+        </button>
+        <span className="text-[11px] text-slate-500">
+          {busy ? 'アップロード中…' : 'またはここにドロップ'}
+        </span>
+        {value && (
+          <button className="btn-ghost text-xs" onClick={() => onPick('')}>
+            クリア
+          </button>
+        )}
+      </div>
+      <select
+        className="field"
+        value={value}
+        onChange={(event) => onPick(event.target.value)}
+      >
+        <option value="">（未選択）</option>
+        {value && !assets.some((asset) => asset.url === value) && (
+          <option value={value}>{value}</option>
+        )}
+        {assets.map((asset) => (
+          <option key={asset.url} value={asset.url}>
+            {asset.name}
+          </option>
+        ))}
+      </select>
+      {children}
+      {value && kind === 'image' && (
+        <img
+          src={value}
+          alt=""
+          className="max-h-40 w-fit rounded border border-ink-600 object-contain"
+        />
+      )}
+      {value && kind === 'video' && (
+        <video src={value} controls className="max-h-40 w-fit rounded border border-ink-600" />
+      )}
+    </div>
+  )
+}
+
 export default function GenerateForm({
   form,
   patch,
@@ -63,21 +170,35 @@ export default function GenerateForm({
   fieldErrors,
   jobs,
 }: Props) {
-  const disabled = disabledFields(form.mode)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [busyUpload, setBusyUpload] = useState(false)
   const [showAdvanced, setShowAdvanced] = useState(false)
-  const imageInput = useRef<HTMLInputElement>(null)
-  const audioInput = useRef<HTMLInputElement>(null)
 
   const availableLoras: Lora[] = options?.loras ?? []
   const audioAssets = options?.audio_assets ?? []
   const imageAssets = options?.image_assets ?? []
+  const videoAssets = options?.video_assets ?? []
   const aspectRatios = options?.aspect_ratios ?? []
+  const videoWorkflows: WorkflowOption[] = options?.video_workflows ?? []
   const negativePresets = options?.negative_presets ?? {
     current: DEFAULT_NEGATIVE_PROMPT,
     author: AUTHOR_NEGATIVE_PROMPT,
   }
+
+  const usable = workflowsForMode(form.mode, videoWorkflows)
+  const workflow =
+    videoWorkflows.find((item) => item.id === form.videoWorkflow) ?? null
+  const disabled = disabledFields(form.mode, workflow)
+
+  // Full generation needs a workflow that can take the generated still; switch
+  // away from e.g. t2v instead of letting the request 422.
+  useEffect(() => {
+    if (usable.length === 0) return
+    if (!usable.some((item) => item.id === form.videoWorkflow)) {
+      patch({ videoWorkflow: usable[0].id })
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.mode, form.videoWorkflow, videoWorkflows])
 
   const setLoras = (next: SelectedLora[]) => {
     const changes: Partial<FormState> = { loras: next }
@@ -99,13 +220,21 @@ export default function GenerateForm({
     patch(changes)
   }
 
-  const upload = async (kind: 'image' | 'audio', file: File) => {
+  const upload = async (
+    kind: 'image' | 'audio' | 'video',
+    file: File,
+    apply: (url: string) => Partial<FormState>,
+  ) => {
     setUploadError(null)
     setBusyUpload(true)
     try {
       const asset =
-        kind === 'image' ? await api.uploadImage(file) : await api.uploadAudio(file)
-      patch(kind === 'image' ? { sourceImage: asset.url } : { audioPath: asset.url })
+        kind === 'image'
+          ? await api.uploadImage(file)
+          : kind === 'audio'
+            ? await api.uploadAudio(file)
+            : await api.uploadVideo(file)
+      patch(apply(asset.url))
       onReloadOptions()
     } catch (error) {
       setUploadError(error instanceof Error ? error.message : String(error))
@@ -136,23 +265,8 @@ export default function GenerateForm({
     }
   }
 
-  const [dragOver, setDragOver] = useState(false)
-
-  /** SPEC §8: start frame accepts drag & drop of an image file. */
-  const onDropImage = (event: React.DragEvent) => {
-    event.preventDefault()
-    setDragOver(false)
-    const file = Array.from(event.dataTransfer.files).find((item) =>
-      item.type.startsWith('image/'),
-    )
-    if (!file) {
-      setUploadError('画像ファイルをドロップしてください')
-      return
-    }
-    void upload('image', file)
-  }
-
   const lastFrameJobs = jobs.filter((job) => job.last_frame_url)
+  const audioInput = useRef<HTMLInputElement>(null)
 
   return (
     <div className="flex flex-col gap-3">
@@ -170,6 +284,7 @@ export default function GenerateForm({
           <button
             key={mode}
             onClick={() => patch({ mode })}
+            title={MODE_HINTS[mode]}
             className={`flex-1 rounded-md px-2 py-1.5 text-xs font-medium transition-colors ${
               form.mode === mode
                 ? 'bg-accent-500 text-white'
@@ -181,71 +296,48 @@ export default function GenerateForm({
         ))}
       </div>
 
-      {form.mode === 'i2v' && (
-        <Section title="開始フレーム">
-          <div
-            className={`flex flex-col gap-2 rounded-lg border border-dashed p-2 transition-colors ${
-              dragOver ? 'border-accent-500 bg-accent-500/10' : 'border-ink-600'
-            }`}
-            onDragOver={(event) => {
-              event.preventDefault()
-              setDragOver(true)
-            }}
-            onDragLeave={(event) => {
-              if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
-                setDragOver(false)
-              }
-            }}
-            onDrop={onDropImage}
-          >
-            <div className="flex items-center gap-2">
-              <input
-                ref={imageInput}
-                type="file"
-                accept="image/*"
-                className="hidden"
-                onChange={(event) => {
-                  const file = event.target.files?.[0]
-                  if (file) void upload('image', file)
-                  event.target.value = ''
-                }}
-              />
-              <button
-                className="btn-ghost text-xs"
-                disabled={busyUpload}
-                onClick={() => imageInput.current?.click()}
-              >
-                画像をアップロード
-              </button>
-              <span className="text-[11px] text-slate-500">
-                {busyUpload ? 'アップロード中…' : 'またはここに画像をドロップ'}
-              </span>
-              {form.sourceImage && (
-                <button
-                  className="btn-ghost text-xs"
-                  onClick={() => patch({ sourceImage: '' })}
-                >
-                  クリア
-                </button>
-              )}
-            </div>
+      {form.mode !== 'image_only' && (
+        <Section title="動画ワークフロー">
+          {usable.length > 0 ? (
             <select
               className="field"
-              value={form.sourceImage}
-              onChange={(event) => patch({ sourceImage: event.target.value })}
+              value={form.videoWorkflow}
+              onChange={(event) => patch({ videoWorkflow: event.target.value })}
             >
-              <option value="">（未選択）</option>
-              {form.sourceImage &&
-                !imageAssets.some((asset) => asset.url === form.sourceImage) && (
-                  <option value={form.sourceImage}>{form.sourceImage}</option>
-                )}
-              {imageAssets.map((asset) => (
-                <option key={asset.url} value={asset.url}>
-                  {asset.name}
+              {usable.map((item) => (
+                <option key={item.id} value={item.id}>
+                  {item.label}
                 </option>
               ))}
             </select>
+          ) : (
+            <input
+              className="field"
+              value={form.videoWorkflow}
+              onChange={(event) => patch({ videoWorkflow: event.target.value })}
+            />
+          )}
+          {workflow?.notes && (
+            <p className="mt-1 text-[11px] text-slate-500">{workflow.notes}</p>
+          )}
+          {form.mode === 'full' && (
+            <p className="mt-1 text-[11px] text-slate-500">
+              フル生成では開始フレームを受け取れるワークフローのみ選べます。
+            </p>
+          )}
+        </Section>
+      )}
 
+      {!disabled.startImage && (
+        <Section title={workflow?.image_label ?? '開始フレーム'}>
+          <AssetPicker
+            kind="image"
+            value={form.sourceImage}
+            assets={imageAssets}
+            busy={busyUpload}
+            onPick={(url) => patch({ sourceImage: url })}
+            onUpload={(file) => void upload('image', file, (url) => ({ sourceImage: url }))}
+          >
             {lastFrameJobs.length > 0 && (
               <div>
                 <label className="label">履歴のラストフレームから選択</label>
@@ -268,18 +360,42 @@ export default function GenerateForm({
                 </div>
               </div>
             )}
-            {form.sourceImage && (
-              <img
-                src={form.sourceImage}
-                alt="開始フレーム"
-                className="max-h-40 w-fit rounded border border-ink-600 object-contain"
-              />
-            )}
-            <p className="text-[11px] text-slate-500">
-              履歴のラストフレームから続きを生成する場合は、履歴詳細の「続きを生成」を使ってください。
-            </p>
-            <FieldError message={fieldErrors.source_image} />
-          </div>
+          </AssetPicker>
+          <p className="mt-1 text-[11px] text-slate-500">
+            履歴のラストフレームから続きを生成する場合は、履歴詳細の「続きを生成」を使ってください。
+          </p>
+          <FieldError message={fieldErrors.source_image} />
+        </Section>
+      )}
+
+      {!disabled.endImage && (
+        <Section title="最後のフレーム">
+          <AssetPicker
+            kind="image"
+            value={form.endImage}
+            assets={imageAssets}
+            busy={busyUpload}
+            onPick={(url) => patch({ endImage: url })}
+            onUpload={(file) => void upload('image', file, (url) => ({ endImage: url }))}
+          />
+          <FieldError message={fieldErrors.end_image} />
+        </Section>
+      )}
+
+      {!disabled.referenceVideo && (
+        <Section title="参照動画（モーション転写）">
+          <AssetPicker
+            kind="video"
+            value={form.referenceVideo}
+            assets={videoAssets}
+            busy={busyUpload}
+            onPick={(url) => patch({ referenceVideo: url })}
+            onUpload={(file) => void upload('video', file, (url) => ({ referenceVideo: url }))}
+          />
+          <p className="mt-1 text-[11px] text-slate-500">
+            秒数の設定ぶんだけ先頭から切り出して深度を取り、モーションを転写します。
+          </p>
+          <FieldError message={fieldErrors.reference_video} />
         </Section>
       )}
 
@@ -325,6 +441,9 @@ export default function GenerateForm({
             />
           </div>
         </div>
+        <p className="mt-1 text-[11px] text-slate-500">
+          動画側の幅・高さはこの組み合わせから 8 の倍数で計算されます。
+        </p>
       </Section>
 
       <Section title="LoRA">
@@ -419,6 +538,11 @@ export default function GenerateForm({
       <Section title="リファレンス音声">
         <div className={disabled.audio ? 'pointer-events-none opacity-40' : undefined}>
           <div className="flex flex-col gap-2">
+            {disabled.audio && form.mode !== 'image_only' && (
+              <p className="text-[11px] text-slate-500">
+                このワークフローは音声を受け取りません（音声は動画と同時に生成されます）。
+              </p>
+            )}
             <select
               className="field"
               value={form.audioPath}
@@ -444,7 +568,7 @@ export default function GenerateForm({
                 className="hidden"
                 onChange={(event) => {
                   const file = event.target.files?.[0]
-                  if (file) void upload('audio', file)
+                  if (file) void upload('audio', file, (url) => ({ audioPath: url }))
                   event.target.value = ''
                 }}
               />
@@ -481,7 +605,7 @@ export default function GenerateForm({
               disabled={disabled.imagePrompt}
               placeholder={
                 disabled.imagePrompt
-                  ? '画像から動画モードでは使用しません'
+                  ? '動画生成モードでは使用しません'
                   : '自然文 1 段落で詳細に'
               }
               onChange={(event) => patch({ imagePrompt: event.target.value })}
@@ -545,6 +669,7 @@ export default function GenerateForm({
               className="field h-20 resize-y font-mono text-xs"
               value={form.negativePrompt}
               disabled={disabled.negative}
+              placeholder="空欄ならワークフロー既定のネガティブを使います"
               onChange={(event) =>
                 patch({ negativePrompt: event.target.value, negativePreset: 'custom' })
               }
@@ -554,7 +679,7 @@ export default function GenerateForm({
         {!showAdvanced && (
           <p className="truncate text-xs text-slate-500">
             {NEGATIVE_PRESET_LABELS[form.negativePreset] ?? form.negativePreset}:{' '}
-            {form.negativePrompt}
+            {form.negativePrompt || '（ワークフロー既定）'}
           </p>
         )}
       </Section>

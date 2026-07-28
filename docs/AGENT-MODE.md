@@ -62,14 +62,40 @@ Grok がチャットから生成設定一式を組み立て、複数の動画ジ
 エージェントが指定できるジョブ定義は既存の `JobCreate` スキーマ **そのもの**とする。
 つまり現行 UI で設定できる全項目が対象:
 
-`mode`（full / i2v / image_only）, `image_prompt`, `video_prompt`, `negative_prompt`,
-`aspect_ratio`, `megapixels`, `loras[]`（lora_name / trigger_word / strength）,
-`trigger_text`, `duration`, `fps`, `audio_path`, `source_image`, `seed`（固定 or 抽選）
+`mode`（full / i2v / image_only）, **`video_workflow`**, `image_prompt`, `video_prompt`,
+`negative_prompt`, `aspect_ratio`, `megapixels`,
+`loras[]`（lora_name / trigger_word / strength）, `trigger_text`, `duration`, `fps`,
+`audio_path`, `source_image`, **`end_image`**, **`reference_video`**, `seed`（固定 or 抽選）
 
-検証は既存の JobCreate バリデーション（LoRA 実在チェック・アセット解決を含む）を
-そのまま通す。不正ならフォーマットリマインダー付きで Grok に 1 回リトライ（§4.1 と同じ方式）。
+#### ワークフローカタログ（単一情報源）
 
-利用可能な選択肢（LoRA 一覧・トリガーワード・アスペクト比・音声/画像アセット・
+動画は 7 種のワークフローから選べる（SPEC §3）。どれを選ぶかで必要な入力が変わるため、
+システムプロンプトには `app/workflows.py` の `WorkflowSpec` から自動生成した
+**VIDEO WORKFLOWS セクション**を焼き込む。1 ワークフローぶんの内容:
+
+- ワークフロー ID（`video_workflow` に書く値）と表示名、既定かどうか
+- 用途（`description`）
+- 必要入力（`requires` → `source_image` / `audio_path` / `end_image` / `reference_video`。
+  ラベルはワークフローごとに違い、flf2v なら「最初のフレーム」、
+  リファレンスシート IC-LoRA なら「リファレンスシート画像」）
+- 音声の扱い（`audio_role`。音声入力を持たないワークフローは「モデルが生成する」と明記）
+- モード別の必須フィールド（`models.missing_job_fields` / `video_workflow_problem` から
+  生成するので、実際に 422 になる条件と常に一致する）。フル生成に使えないワークフローは
+  「`mode: "full"` は使えない」と出す
+- `video_prompt` の書き方（`prompt_hint`。flf2v は開始→終了フレームの遷移、
+  ic_lora_motion はカメラ・テンポを書かない、ia2v はセリフを書かない など）
+
+`description` / `prompt_hint` / `audio_role` の未記入は `validate_specs()`（ヘルスチェックと
+テスト）が検出するので、ワークフローを追加したらプロンプト側の追記漏れは起きない。
+
+検証は既存の JobCreate バリデーション（LoRA 実在チェック・全論理入力のアセット解決を含む）を
+そのまま通す。加えて `agent_protocol.validate_job` はプラン検証の段階で
+`missing_job_fields` を使ってワークフロー必須入力の不足を検出し、
+「video_workflow `ltx2_3_flf2v` を mode 'i2v' で使うには end_image が必要です」のように
+ワークフロー名込みで返す（実行時ではなく plan 時に弾く）。
+不正ならフォーマットリマインダー付きで Grok に 1 回リトライ（§4.1 と同じ方式）。
+
+利用可能な選択肢（LoRA 一覧・トリガーワード・アスペクト比・音声/画像/**動画**アセット・
 ネガティブプリセット = `GET /api/options` 相当）はシステムプロンプトに焼き込み、
 実在する値しか使えないようにする。
 
@@ -126,12 +152,15 @@ Grok CLI はステートレスなテキスト入出力なので、ツール呼�
       "label": "① 明るいスタジオ",
       "job": {
         "mode": "full",
+        "video_workflow": "ltx2_3_id_lora",
         "image_prompt": "...", "video_prompt": "...",
         "negative_prompt": "...",
         "aspect_ratio": "9:16", "megapixels": 1.0,
         "loras": [{"lora_name": "kaori.safetensors", "trigger_word": "kaori", "strength": 0.8}],
         "trigger_text": "kaori", "duration": 5, "fps": 24,
-        "audio_path": null, "source_image": null, "seed": null
+        "audio_path": "/assets/audio/reference.mp3",
+        "source_image": null, "end_image": null, "reference_video": null,
+        "seed": null
       }
     }
   ]
@@ -140,15 +169,20 @@ Grok CLI はステートレスなテキスト入出力なので、ツール呼�
 
 | action | 内容 | 承認 |
 |---|---|---|
-| `plan` | タスクリスト提案（新規 or 改訂版）。`job` は JobCreate と同一スキーマ | 実行開始に必要 |
+| `plan` | タスクリスト提案（新規 or 改訂版）。`job` は JobCreate と同一スキーマ（`video_workflow` 込み） | 実行開始に必要 |
 | `run_task` | 承認済みプラン内タスクの実行 / 自走モードでの実行 | プラン承認で包括承認 |
-| `continue` | 既存ジョブのラストフレームから続き生成（対象 job_id + video_prompt 等の差分） | プラン外なら必要 |
+| `continue` | 既存ジョブのラストフレームから続き生成（対象 job_id + `JobContinue` の差分項目 = `video_workflow` / `video_prompt` / `negative_prompt` / `aspect_ratio` / `megapixels` / `duration` / `fps` / `audio_path` / `end_image` / `reference_video` / `seed`） | プラン外なら必要 |
 | `rerun` | シード再抽選 / 修正版で再実行（対象 job_id + 差分） | プラン外なら必要 |
 | `inspect` | 動画のフレーム分解検分を依頼（対象 job_id, 間隔秒）。バックエンドが ffmpeg で展開し、次ターンで Grok がフレームを見る | 不要（自律） |
 | `note` | メモ / リサーチまとめの成果物登録（workdir ファイル or 本文） | 不要（自律） |
 | `rename` | 既存成果物のタイトル付け直し（`name` または `job_id` + `kind`, `title`）。対象が無ければ `action_failed` | 不要（自律） |
 | `checkin` | ユーザーへの確認（選択肢ボタン付き吹き出し）。応答まで次タスク保留 | ― |
 | `done` | プラン完了宣言 → 納品サマリ | ― |
+
+`continue` はラストフレームを開始フレームに使うので、`video_workflow` の切り替え先は
+**開始フレームを受け取れるワークフロー**（カタログで `mode: "full"` が使えると出ているもの）
+だけ。それ以外を指定した場合はアプリが既定ワークフローに戻す。切り替え先が要求する
+追加入力（flf2v の `end_image` 等）は同じアクションで渡す必要がある。
 
 1 返信 1 アクションの制約は `rename` も同じ（`plan` / `checkin` 等と同列）。
 タスクの `label` と `note` / `rename` のタイトルは、ユーザーがひと目で分かる

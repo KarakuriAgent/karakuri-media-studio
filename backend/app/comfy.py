@@ -141,7 +141,10 @@ async def get_lora_files() -> list[str]:
 # --------------------------------------------------------------------------
 
 async def upload_file(path: str | Path, subfolder: str | None = None) -> str:
-    """Upload an image *or audio* file to the ComfyUI input dir via /upload/image.
+    """Upload an image, *audio* or *video* file to the ComfyUI input dir.
+
+    ``/upload/image`` stores whatever it is given in the input directory, which
+    is where LoadImage / LoadAudio / LoadVideo look for their files.
 
     Returns the name to put into the workflow (``subfolder/name`` when the
     server stored it in a subfolder).

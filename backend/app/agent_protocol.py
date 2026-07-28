@@ -8,8 +8,11 @@ defined here as JSON objects carried by the answer:
 Extraction reuses :func:`app.grok.iter_json_objects` (```json fence first, then
 any fence, then balanced ``{…}`` blocks).  A ``plan`` task's ``job`` is the
 :class:`~app.models.JobCreate` schema itself and goes through the very same
-validation as ``POST /api/jobs`` (per-mode required fields, asset resolution)
-plus a LoRA-existence check against the choices burnt into the system prompt.
+validation as ``POST /api/jobs`` (per-mode *and* per-video-workflow required
+fields, asset resolution for every logical input) plus a LoRA-existence check
+against the choices burnt into the system prompt.  Workflow problems are
+reported before pydantic gets a chance, so the message names the workflow and
+its missing inputs instead of just the field.
 Anything invalid raises :class:`ActionError`, which the caller turns into one
 format-reminder retry (AGENT-MODE §3.1).
 """
@@ -23,7 +26,20 @@ from pydantic import ValidationError
 from . import grok
 from .ids import new_id
 from .jobs import JobValidationError, resolve_asset_path
-from .models import AgentAction, AgentTask, JobContinue, JobCreate
+from .models import (
+    AgentAction,
+    AgentTask,
+    JobContinue,
+    JobCreate,
+    missing_job_fields,
+    video_workflow_problem,
+)
+from .workflows import (
+    DEFAULT_VIDEO_WORKFLOW,
+    INPUT_FIELDS,
+    WorkflowSpecError,
+    video_specs,
+)
 
 ACTION_NAMES = (
     "plan",
@@ -73,6 +89,66 @@ def looks_like_action_attempt(text: str) -> bool:
 # job validation (jobs.py と同じ経路)
 # --------------------------------------------------------------------------
 
+def _text(value: Any) -> str | None:
+    return value if isinstance(value, str) else None
+
+
+def _workflow_detail(raw: dict[str, Any]) -> str | None:
+    """ワークフロー依存の問題を、pydantic の短い文言より前に説明する。
+
+    ``JobCreate`` 自身も同じ :func:`~app.models.missing_job_fields` で弾くが、
+    「mode 'full' requires: audio_path」だけでは Grok が原因（選んだワークフローの
+    必要入力）に気づけない。plan 検証の段階でワークフロー名込みのメッセージに
+    差し替え、システムプロンプトのカタログを見直させる。
+    """
+    mode = raw.get("mode", "full")
+    workflow = _text(raw.get("video_workflow")) or DEFAULT_VIDEO_WORKFLOW
+    if not isinstance(mode, str) or mode not in ("full", "i2v", "image_only"):
+        return None  # mode 自体の誤りは pydantic に任せる
+    if mode == "image_only":
+        return None  # 動画ステージを走らせないのでワークフローは無関係
+
+    known = ", ".join(f"`{spec.id}`" for spec in video_specs())
+    try:
+        problem = video_workflow_problem(mode, workflow)
+    except WorkflowSpecError as exc:
+        return f"{exc}（使えるのは {known} です）"
+    if problem:
+        return (
+            f"{problem} / `video_workflow` を full 対応のものに変えるか、"
+            '`mode` を "i2v" にしてください（使えるのは ' + known + "）"
+        )
+
+    try:
+        missing = missing_job_fields(
+            mode,
+            image_prompt=_text(raw.get("image_prompt")),
+            video_prompt=_text(raw.get("video_prompt")),
+            audio_path=_text(raw.get("audio_path")),
+            source_image=_text(raw.get("source_image")),
+            end_image=_text(raw.get("end_image")),
+            reference_video=_text(raw.get("reference_video")),
+            video_workflow=workflow,
+        )
+    except WorkflowSpecError as exc:
+        return str(exc)
+    if not missing:
+        return None
+    asset_fields = set(INPUT_FIELDS.values())
+    prompt_missing = [name for name in missing if name not in asset_fields]
+    asset_missing = [name for name in missing if name in asset_fields]
+    details = []
+    if prompt_missing:
+        details.append(f"mode '{mode}' には {', '.join(prompt_missing)} が必要です")
+    if asset_missing:
+        details.append(
+            f"video_workflow `{workflow}` を mode '{mode}' で使うには"
+            f" {', '.join(asset_missing)} が必要です"
+            "（VIDEO WORKFLOWS の必要入力を確認してください）"
+        )
+    return " / ".join(details)
+
+
 def validate_job(
     raw: Any, *, where: str, known_loras: set[str] | None = None
 ) -> JobCreate:
@@ -84,6 +160,9 @@ def validate_job(
         raise ActionError(
             f"{where}: 未知のフィールドがあります: {', '.join(sorted(unknown))}"
         )
+    detail = _workflow_detail(raw)
+    if detail:
+        raise ActionError(f"{where}: {detail}")
     try:
         payload = JobCreate(**raw)
     except ValidationError as exc:
@@ -99,12 +178,13 @@ def validate_job(
                 "（システムプロンプトの一覧にあるファイル名のみ使用できます）"
             )
 
-    # 実在しないアセットは 422 と同じ扱いにする（jobs.resolve_asset_path）
+    # 実在しないアセットは 422 と同じ扱いにする（jobs.resolve_asset_path）。
+    # 対象はマニフェストの論理入力すべて（開始画像・音声・最終フレーム・参照動画）。
     try:
-        if payload.audio_path:
-            resolve_asset_path(payload.audio_path, field="audio_path")
-        if payload.source_image:
-            resolve_asset_path(payload.source_image, field="source_image")
+        for field in INPUT_FIELDS.values():
+            value = getattr(payload, field, None)
+            if value:
+                resolve_asset_path(value, field=field)
     except JobValidationError as exc:
         raise ActionError(f"{where}: {exc}") from exc
     return payload

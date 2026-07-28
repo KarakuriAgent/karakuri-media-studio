@@ -24,7 +24,7 @@ amazing mutual masturbation scene with a woman wearing a choker chained to a nud
 
 ### 作者が実際に使っているネガティブプロンプト
 
-※ 現行の video-gen.json の値（`pc game, console game, ...`）とは異なる。品質系+音声系の否定語を含む:
+※ dev 系テンプレートの既定値（`pc game, console game, ...`）とは異なる。品質系+音声系の否定語を含む:
 ```
 blurry, oversaturated, pixelated, low resolution, grainy, distorted, noise, compression artifacts, jpeg artifacts, glitches, watermark, text, logo, signature, copyright, subtitles, distorted sound, saturated sound, loud
 ```
@@ -50,11 +50,10 @@ Wide range of colors, high Dynamic
 
 ## 手元ワークフロー内の実例
 
-`video-gen.json` 自体にも実運用サンプルが含まれる（こちらが最重要の参考元）:
+`workflow/` 配下のテンプレート自体にも実運用サンプルが残っている（こちらが最重要の参考元）:
 
-- 画像プロンプト: ノード `365:19`（トリガーワード先頭 + スタイル宣言 + 被写体/ポーズ + 表情 + 照明/質感 + カメラ/品質語）
-- 画像プロンプトのバリエーション8種: ノード `365:391`（ワイルドカード、体位×表情の組合せ）
-- 動画プロンプト: ノード `433:430`（"Starting from the given first frame" で開始フレームからの継続を宣言 + 動きの推移 + 表情 + カメラ + 音の描写で締める）
+- 画像プロンプト: `workflow/image/krea2/krea2_turbo.json` のノード `30:19`（トリガーワード先頭 + スタイル宣言 + 被写体/ポーズ + 表情 + 照明/質感 + カメラ/品質語）
+- 動画プロンプト: `workflow/video/ltx2.3/*.json` の各 `Prompt` ノード（i2v 系は "Starting from the given first frame" で開始フレームからの継続を宣言 + 動きの推移 + 表情 + カメラ + 音の描写で締める。ID-LoRA は `[VISUAL]` / `[SPEECH]` / `[SOUNDS]` のタグ形式）
 
 
 ## Krea 2 公式プロンプティングガイド（krea-ai/krea-2 docs/prompting.md）
@@ -62,7 +61,7 @@ Wide range of colors, high Dynamic
 - **自然文プロンプト推奨**。長く詳細なプロンプトが最良の結果を出すが、短くても高品質
 - 文字を描画したい場合は対象語を引用符で囲む
 - 公式サンプルの傾向: 「ショット種別/媒体 → 被写体+属性 → 細部（衣装・質感） → 照明 → 背景 → 構図/被写界深度」を1段落に。タグ羅列型（短句カンマ区切り）と完全文章型の両方が有効
-- **重要**: 公式の LLM 用プロンプト拡張システムプロンプト `docs/expansion.txt` は、video-gen.json のノード `365:18`（TextGenerate 用システムプロンプト）と同一。Grok 用システムプロンプトはこれをベースに調整する
+- **重要**: 公式の LLM 用プロンプト拡張システムプロンプトは、`workflow/image/krea2/krea2_turbo.json` のノード `30:18`（TextGenerate 用システムプロンプト）と同一。Grok 用システムプロンプトはこれをベースに調整する
 
 ### 公式サンプル（SFW・原文ママ、抜粋）
 
@@ -82,7 +81,7 @@ extreme close-up of a woman's face partially obscured by tousled dark brown hair
 - 照明・色調・質感・雰囲気でムードを確立
 - **セリフは引用符で囲み、必要なら言語とアクセントを指定**（例: in a british voice she says "…"）
 - 環境音・音楽・話し声・歌声も明示的に記述する
-- 技術制約: 幅・高さは 32 の倍数、フレーム数は 8n+1（video-gen.json は duration*fps+1 で対応済み）
+- 技術制約: 幅・高さは 32 の倍数、フレーム数は 8n+1（各動画テンプレートは duration*fps+1 で対応済み）
 
 ## LTX 2.3 ID LoRA（talkvid）+ リファレンス音声（comfy.org ワークフロー解説より）
 

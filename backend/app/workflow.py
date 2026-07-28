@@ -1,9 +1,16 @@
 """Workflow injection engine.
 
-Pure functions only (no I/O other than reading the template file explicitly via
-:func:`load_template`).  ``build_workflow`` takes the ``video-gen.json`` API-format
-template plus :class:`GenerationParams` and returns a new dict ready to be POSTed
-to ComfyUI ``/prompt``.
+Pure functions only: :func:`build_image_workflow` / :func:`build_video_workflow`
+take one API-format template from ``workflow/`` (see :mod:`app.workflows` for
+the templates and their injection manifests) plus a :class:`GenerationParams`
+and return a new dict ready to be POSTed to ComfyUI ``/prompt``.
+
+A job is one or two ComfyUI prompts (SPEC §2):
+
+* ``image_only`` — the image workflow only,
+* ``i2v``        — the selected video workflow only,
+* ``full``       — image workflow, then the generated still is uploaded and fed
+  to the selected video workflow as its start frame.
 
 See docs/SPEC.md §2 (modes), §3 (injection points / LoRA chain) and §10-3.
 """
@@ -11,43 +18,22 @@ See docs/SPEC.md §2 (modes), §3 (injection points / LoRA chain) and §10-3.
 from __future__ import annotations
 
 import copy
-import json
 import math
 import re
 from typing import Any
 
 from .models import GenerationParams, ModelField
-from .paths import WORKFLOW_TEMPLATE_PATH
-
-Workflow = dict[str, dict[str, Any]]
-
-# --- node ids referenced by the injector (see SPEC §3) ----------------------
-N_SAVE_VIDEO = "75"
-N_RESOLUTION = "366"
-N_PREVIEW_IMAGE = "393"
-N_LOAD_AUDIO = "432"
-N_LOAD_IMAGE = "435"
-
-N_IMG_KSAMPLER = "365:3"
-N_IMG_VAE_DECODE = "365:8"
-N_IMG_UNET = "365:10"
-N_IMG_LORA = "365:15"
-N_IMG_PROMPT = "365:19"
-N_IMG_PROMPT_SOURCE = "365:20"
-N_IMG_LORA_SWITCH = "365:22"
-N_IMG_LORA_ENABLE = "365:23"
-N_IMG_REFINE_ENABLE = "365:24"
-N_IMG_TRIGGER_CONCAT = "365:27"
-N_IMG_ORPHAN_WILDCARD = "365:391"
-
-N_VID_SEED_A = "433:394"
-N_VID_SEED_B = "433:395"
-N_VID_NEGATIVE = "433:413"
-N_VID_FRAMES_EXPR = "433:329"
-N_VID_DURATION = "433:331"
-N_VID_FPS = "433:422"
-N_VID_PROMPT = "433:430"
-N_VID_RESIZE = "433:431"
+from .workflows import (
+    SPECS,
+    Target,
+    Workflow,
+    WorkflowSpec,
+    WorkflowSpecError,
+    get_image_spec,
+    get_video_spec,
+    load_template,
+    validate_specs,
+)
 
 LORA_NODE_PREFIX = "app_lora_"
 
@@ -64,27 +50,22 @@ MODEL_FIELDS: set[tuple[str, str]] = {
     ("LTXAVTextEncoderLoader", "text_encoder"),
     ("LTXAVTextEncoderLoader", "ckpt_name"),
     ("LatentUpscaleModelLoader", "model_name"),
+    ("LoadMoGeModel", "model_name"),
     ("LoraLoaderModelOnly", "lora_name"),
+    ("LoraLoader", "lora_name"),
 }
-
-# `365:15` is replaced by the dynamic LoRA chain (§3.4), so its lora_name is
-# never submitted and must not be offered as a configurable model file.
-MODEL_FIELD_EXCLUDED_NODES = {N_IMG_LORA}
 
 # LTX latent temporal compression: the number of frames handed to
 # EmptyLTXVLatentVideo must satisfy frames == 8n + 1.
 LTX_FRAME_MULTIPLE = 8
 
+# ResolutionSelector rounds the computed edges to a multiple of 8
+# (comfy_extras/nodes_resolution.py).
+RESOLUTION_MULTIPLE = 8
+
 
 class WorkflowError(Exception):
     """Raised when the template is malformed or the built workflow is invalid."""
-
-
-def load_template(path: str | None = None) -> Workflow:
-    """Read the API-format workflow template from disk."""
-    p = path or WORKFLOW_TEMPLATE_PATH
-    with open(p, encoding="utf-8") as fh:
-        return json.load(fh)
 
 
 # --------------------------------------------------------------------------
@@ -102,22 +83,40 @@ def _is_link(value: Any) -> bool:
     )
 
 
-def _drop(wf: Workflow, node_ids: list[str]) -> None:
-    for node_id in node_ids:
-        wf.pop(node_id, None)
-
-
-def _drop_prefix(wf: Workflow, prefix: str, keep: set[str] | None = None) -> None:
-    keep = keep or set()
-    for node_id in [k for k in wf if k.startswith(prefix) and k not in keep]:
-        del wf[node_id]
-
-
 def _set(wf: Workflow, node_id: str, field: str, value: Any) -> None:
-    """Set ``inputs[field]`` if the node survived the mode-specific pruning."""
+    """Set ``inputs[field]`` if the node exists in the workflow."""
     node = wf.get(node_id)
     if node is not None:
         node.setdefault("inputs", {})[field] = value
+
+
+def _coerce(class_type: str, field: str, value: Any) -> Any:
+    """Match the input type the target node declares.
+
+    ``PrimitiveInt`` rejects a float and ``PrimitiveFloat`` a bool, so the
+    injected numbers are cast according to the node the manifest points at.
+    """
+    if class_type == "PrimitiveInt" and isinstance(value, (int, float)):
+        return int(round(float(value)))
+    if class_type == "PrimitiveFloat" and isinstance(value, (int, float)):
+        return float(value)
+    if class_type == "Video Slice" and field == "duration":
+        return float(value)
+    return value
+
+
+def _inject(wf: Workflow, spec: WorkflowSpec, name: str, value: Any) -> bool:
+    """Write ``value`` to the target ``name`` of ``spec``. False if unsupported."""
+    target = spec.target(name)
+    if target is None or not target.field:
+        return False
+    _set(wf, target.node_id, target.field, _coerce(target.class_type, target.field, value))
+    return True
+
+
+def _node(wf: Workflow, target: Target) -> dict[str, Any] | None:
+    node = wf.get(target.node_id)
+    return node if isinstance(node, dict) else None
 
 
 def ltx_frame_count(duration: float, fps: int) -> int:
@@ -132,62 +131,148 @@ def ltx_frame_count(duration: float, fps: int) -> int:
     return math.floor(raw / LTX_FRAME_MULTIPLE) * LTX_FRAME_MULTIPLE + 1
 
 
-def _inject_frame_count(wf: Workflow, params: GenerationParams) -> None:
-    """Pin ``433:329`` to the rounded frame count.
+def _inject_frame_count(wf: Workflow, spec: WorkflowSpec, params: GenerationParams) -> None:
+    """Pin the workflow's frame-count ``ComfyMathExpression`` to the rounded value.
 
-    Rather than trusting the expression evaluator of ``ComfyMathExpression`` to
-    provide ``floor()`` (it is a custom node whose grammar we cannot verify from
-    the API JSON alone), we compute the value in Python and rewrite the
-    expression as ``a * 0 + b * 0 + <frames>``.  The node keeps both of its
-    incoming links — so the graph stays structurally identical and its output
-    types are unchanged — while the value is exactly the 8n+1 count we want.
+    Rather than trusting the expression evaluator to provide ``floor()``, the
+    value is computed in Python and the expression rewritten as
+    ``a * 0 + b * 0 + <frames>``.  The node keeps all of its incoming links — so
+    the graph stays structurally identical and its output types are unchanged —
+    while the value is exactly the 8n+1 count we want.
     """
+    target = spec.target("frames_expr")
+    if target is None:
+        return
+    node = _node(wf, target)
+    if node is None:
+        return
     frames = ltx_frame_count(params.duration, params.fps)
-    _set(wf, N_VID_FRAMES_EXPR, "expression", f"a * 0 + b * 0 + {frames}")
+    inputs = node.setdefault("inputs", {})
+    zeroed = [f"{key.split('.', 1)[1]} * 0" for key in inputs if key.startswith("values.")]
+    inputs["expression"] = " + ".join([*zeroed, str(frames)])
 
 
-def model_fields(template: Workflow) -> list[ModelField]:
-    """Every configurable model-file input of ``template`` (SPEC §3.3).
+# --- resolution (SPEC §3.1) -------------------------------------------------
+# The image workflow has a ResolutionSelector node that takes the aspect ratio
+# and megapixel target directly; the LTX 2.3 templates want plain width /
+# height integers, so the same computation is done here (identical to
+# ComfyUI's comfy_extras/nodes_resolution.py).
+
+ASPECT_RATIOS: dict[str, tuple[int, int]] = {
+    "1:1 (Square)": (1, 1),
+    "2:3 (Portrait Photo)": (2, 3),
+    "3:2 (Photo)": (3, 2),
+    "3:4 (Portrait Standard)": (3, 4),
+    "4:3 (Standard)": (4, 3),
+    "9:16 (Portrait Widescreen)": (9, 16),
+    "16:9 (Widescreen)": (16, 9),
+    "21:9 (Ultrawide)": (21, 9),
+}
+
+_RATIO_RE = re.compile(r"^\s*(\d+)\s*:\s*(\d+)")
+
+
+def parse_aspect_ratio(aspect_ratio: str) -> tuple[int, int]:
+    """``"16:9 (Widescreen)"`` -> ``(16, 9)``.
+
+    Unknown labels are still accepted as long as they start with ``W:H`` so a
+    ComfyUI version that adds a ratio does not need an app update.
+    """
+    known = ASPECT_RATIOS.get(aspect_ratio)
+    if known:
+        return known
+    match = _RATIO_RE.match(aspect_ratio or "")
+    if not match:
+        raise WorkflowError(f"unsupported aspect ratio: {aspect_ratio!r}")
+    width, height = int(match.group(1)), int(match.group(2))
+    if width <= 0 or height <= 0:
+        raise WorkflowError(f"unsupported aspect ratio: {aspect_ratio!r}")
+    return width, height
+
+
+def resolution(
+    aspect_ratio: str, megapixels: float, multiple: int = RESOLUTION_MULTIPLE
+) -> tuple[int, int]:
+    """Width / height for an aspect ratio and a megapixel target.
+
+    Same formula as ComfyUI's ``ResolutionSelector`` (round each edge to the
+    nearest multiple of 8), so the video workflows land on the very resolution
+    the image workflow would have produced.
+    """
+    w_ratio, h_ratio = parse_aspect_ratio(aspect_ratio)
+    total_pixels = max(0.1, float(megapixels)) * 1024 * 1024
+    scale = math.sqrt(total_pixels / (w_ratio * h_ratio))
+    width = round(w_ratio * scale / multiple) * multiple
+    height = round(h_ratio * scale / multiple) * multiple
+    return max(multiple, width), max(multiple, height)
+
+
+# --- model file names (SPEC §3.3) ------------------------------------------
+
+def _scoped(workflow_id: str, node_id: str, field: str) -> str:
+    return f"{workflow_id}/{node_id}.{field}"
+
+
+def split_override_key(key: str) -> tuple[str, str, str]:
+    """``"krea2_turbo/30:10.unet_name"`` -> ``(workflow_id, node_id, field)``."""
+    workflow_id, _, rest = key.partition("/")
+    node_id, _, field = rest.rpartition(".")
+    return workflow_id, node_id, field
+
+
+def model_fields(specs: tuple[WorkflowSpec, ...] | None = None) -> list[ModelField]:
+    """Every configurable model-file input of every template (SPEC §3.3).
 
     The template value becomes the *default*; :func:`apply_model_overrides`
-    replaces it with whatever the user configured on the settings page.
+    replaces it with whatever the user configured on the settings page.  Keys are
+    scoped by workflow id because the same node id exists in several templates.
     """
     found: list[ModelField] = []
-    for node_id, node in template.items():
-        if not isinstance(node, dict) or node_id in MODEL_FIELD_EXCLUDED_NODES:
-            continue
-        class_type = node.get("class_type") or ""
-        inputs = node.get("inputs")
-        if not isinstance(inputs, dict):
-            continue
-        for field, value in inputs.items():
-            if (class_type, field) not in MODEL_FIELDS or _is_link(value):
+    for spec in specs if specs is not None else SPECS:
+        template = load_template(spec)
+        # the dynamic LoRA chain replaces these, so their names never ship
+        excluded = set(spec.lora_chain.placeholders) if spec.lora_chain else set()
+        for node_id, node in template.items():
+            if not isinstance(node, dict) or node_id in excluded:
                 continue
-            found.append(
-                ModelField(
-                    key=f"{node_id}.{field}",
-                    node_id=node_id,
-                    field=field,
-                    class_type=class_type,
-                    title=str((node.get("_meta") or {}).get("title") or ""),
-                    default="" if value is None else str(value),
+            class_type = node.get("class_type") or ""
+            inputs = node.get("inputs")
+            if not isinstance(inputs, dict):
+                continue
+            for field, value in inputs.items():
+                if (class_type, field) not in MODEL_FIELDS or _is_link(value):
+                    continue
+                found.append(
+                    ModelField(
+                        key=_scoped(spec.id, node_id, field),
+                        workflow_id=spec.id,
+                        workflow_label=spec.label,
+                        node_id=node_id,
+                        field=field,
+                        class_type=class_type,
+                        title=str((node.get("_meta") or {}).get("title") or ""),
+                        default="" if value is None else str(value),
+                    )
                 )
-            )
     return found
 
 
-def apply_model_overrides(wf: Workflow, overrides: dict[str, str] | None) -> None:
+def apply_model_overrides(
+    wf: Workflow, overrides: dict[str, str] | None, workflow_id: str
+) -> None:
     """Replace model file names in ``wf`` with the configured values.
 
-    Keys are ``"<node_id>.<field>"``.  Entries whose node did not survive the
-    mode-specific pruning (e.g. the image subgraph in mode B) and empty values
-    are silently ignored — the workflow keeps the template default.
+    Keys are ``"<workflow_id>/<node_id>.<field>"``.  Entries for another
+    workflow, for a node that is not in this template, and empty values are
+    silently ignored — the workflow keeps the template default.  (Keys left over
+    from the pre-``workflow/`` layout have no ``workflow_id`` prefix and are
+    therefore ignored as well, which is the intended migration path.)
     """
     for key, value in (overrides or {}).items():
         if not value:
             continue
-        node_id, _, field = key.rpartition(".")
-        if not node_id or not field:
+        scope, node_id, field = split_override_key(key)
+        if scope != workflow_id or not node_id or not field:
             continue
         node = wf.get(node_id)
         if node is None:
@@ -196,6 +281,8 @@ def apply_model_overrides(wf: Workflow, overrides: dict[str, str] | None) -> Non
         if isinstance(inputs, dict) and field in inputs and not _is_link(inputs[field]):
             inputs[field] = value
 
+
+# --- LoRA trigger words (SPEC §3.4) ----------------------------------------
 
 def split_triggers(trigger_text: str) -> list[str]:
     """Comma-separated trigger text -> deduplicated, stripped words."""
@@ -219,8 +306,8 @@ def _mentions(text: str, word: str) -> bool:
 def missing_triggers(trigger_text: str, image_prompt: str) -> str:
     """The trigger words that ``image_prompt`` does not already contain (§3.4).
 
-    Grok is now told to weave the trigger word into the prompt itself, so the
-    app only fills in what is missing; an empty result means "prepend nothing".
+    Grok is told to weave the trigger word into the prompt itself, so the app
+    only fills in what is missing; an empty result means "prepend nothing".
     """
     return ", ".join(
         word for word in split_triggers(trigger_text)
@@ -228,46 +315,41 @@ def missing_triggers(trigger_text: str, image_prompt: str) -> str:
     )
 
 
-def _inject_triggers(wf: Workflow, params: GenerationParams) -> None:
-    """Prepend the missing trigger words to the image prompt via ``365:27``.
+def _inject_triggers(wf: Workflow, spec: WorkflowSpec, params: GenerationParams) -> None:
+    """Prepend the missing trigger words to the image prompt.
 
-    The template concatenates ``string_a`` (the prompt link) + ``string_b``
-    (the trigger literal); we swap the two so the trigger comes **first**, the
-    position the LoRA was trained with.  When nothing has to be prepended both
-    the literal and the delimiter are emptied so the prompt passes through
-    untouched — never with a leading ", ".
+    The template concatenates ``string_a`` + ``string_b``; we put the trigger
+    literal into ``string_a`` and the prompt link into ``string_b`` so the
+    trigger comes **first**, the position the LoRA was trained with.  When
+    nothing has to be prepended the switch in front of the concatenation is
+    turned off so the prompt passes through untouched — never with a leading
+    ", ".
     """
-    node = wf.get(N_IMG_TRIGGER_CONCAT)
+    concat = spec.target("trigger_concat")
+    source = spec.target("prompt_source")
+    if concat is None or source is None:
+        return
+    node = _node(wf, concat)
     if node is None:
         return
-    inputs = node.setdefault("inputs", {})
-    source = next(
-        (inputs[field] for field in ("string_a", "string_b") if _is_link(inputs.get(field))),
-        [N_IMG_PROMPT_SOURCE, 0],
-    )
     prefix = missing_triggers(params.trigger_text, params.image_prompt)
+    inputs = node.setdefault("inputs", {})
     inputs["string_a"] = prefix
-    inputs["string_b"] = source
+    inputs["string_b"] = [source.node_id, 0]
     inputs["delimiter"] = ", " if prefix else ""
+    _inject(wf, spec, "trigger_switch", bool(prefix))
 
 
-def _build_lora_chain(wf: Workflow, params: GenerationParams) -> None:
-    """Replace the single ``365:15`` LoRA loader with a dynamic chain (§3.4)."""
-    _drop(wf, [N_IMG_LORA])
-    if N_IMG_LORA_SWITCH not in wf:
+def _build_lora_chain(wf: Workflow, spec: WorkflowSpec, params: GenerationParams) -> None:
+    """Replace the template's placeholder LoRA loaders with a dynamic chain (§3.4)."""
+    chain = spec.lora_chain
+    if chain is None:
         return
+    for node_id in chain.placeholders:
+        wf.pop(node_id, None)
 
-    loras = params.loras
-    _set(wf, N_IMG_LORA_ENABLE, "value", bool(loras))
-
-    if not loras:
-        # Nothing to chain: point the (disabled) on_true branch back at the UNET
-        # so the switch node still resolves to an existing node.
-        _set(wf, N_IMG_LORA_SWITCH, "on_true", [N_IMG_UNET, 0])
-        return
-
-    upstream = [N_IMG_UNET, 0]
-    for index, lora in enumerate(loras):
+    upstream: list[Any] = [chain.head, 0]
+    for index, lora in enumerate(params.loras):
         node_id = f"{LORA_NODE_PREFIX}{index}"
         wf[node_id] = {
             "class_type": "LoraLoaderModelOnly",
@@ -279,7 +361,7 @@ def _build_lora_chain(wf: Workflow, params: GenerationParams) -> None:
             },
         }
         upstream = [node_id, 0]
-    _set(wf, N_IMG_LORA_SWITCH, "on_true", upstream)
+    _set(wf, chain.consumer.node_id, chain.consumer.field, upstream)
 
 
 # --------------------------------------------------------------------------
@@ -289,9 +371,9 @@ def _build_lora_chain(wf: Workflow, params: GenerationParams) -> None:
 def validate_workflow(wf: Workflow) -> None:
     """Check that every link points at a node that exists in the workflow.
 
-    ComfyUI validates the whole submitted graph, so a dangling reference left
-    behind by the mode-specific pruning would fail the job only after it has
-    been queued.  ``build_workflow`` runs this before returning.
+    ComfyUI validates the whole submitted graph, so a dangling reference would
+    fail the job only after it has been queued.  The builders run this before
+    returning.
     """
     problems: list[str] = []
     for node_id, node in wf.items():
@@ -306,9 +388,7 @@ def validate_workflow(wf: Workflow) -> None:
             continue
         for field, value in inputs.items():
             if _is_link(value) and value[0] not in wf:
-                problems.append(
-                    f"{node_id}.{field} -> missing node '{value[0]}'"
-                )
+                problems.append(f"{node_id}.{field} -> missing node '{value[0]}'")
     if problems:
         raise WorkflowError("invalid workflow: " + "; ".join(sorted(problems)))
 
@@ -322,99 +402,120 @@ def required_class_types(wf: Workflow) -> set[str]:
     }
 
 
-def all_required_class_types(template: Workflow | None = None) -> set[str]:
-    """class_types that can appear in any submitted workflow.
+def all_required_class_types() -> set[str]:
+    """class_types that can appear in any submitted workflow (every template).
 
-    Derived from the template minus nodes we always delete, plus the classes the
-    injector introduces (``SaveImage`` for mode C, ``LoraLoaderModelOnly`` for
-    the dynamic chain — already in the template but listed for clarity).
+    ``LoraLoaderModelOnly`` is listed explicitly because the dynamic image-LoRA
+    chain introduces it even though the template placeholders are removed.
     """
-    tpl = template if template is not None else load_template()
-    types = required_class_types(tpl)
-    orphan = tpl.get(N_IMG_ORPHAN_WILDCARD, {}).get("class_type")
-    if orphan:
-        types.discard(orphan)
-    types.update({"SaveImage", "LoraLoaderModelOnly"})
+    types: set[str] = {"LoraLoaderModelOnly"}
+    for spec in SPECS:
+        types |= required_class_types(load_template(spec))
     return types
 
 
+def validate_manifests() -> None:
+    """Raise if any manifest no longer matches its template (SPEC §3)."""
+    problems = validate_specs(use_cache=False)
+    if problems:
+        raise WorkflowError("workflow manifest mismatch: " + "; ".join(problems))
+
+
 # --------------------------------------------------------------------------
-# main entry point
+# builders
 # --------------------------------------------------------------------------
 
-def build_workflow(
-    template: Workflow,
+def build_image_workflow(
     params: GenerationParams,
     overrides: dict[str, str] | None = None,
+    *,
+    spec: WorkflowSpec | None = None,
+    template: Workflow | None = None,
 ) -> Workflow:
-    """Build the API JSON for one job. Pure: ``template`` is never mutated.
+    """API JSON for the image stage. Pure: the template is never mutated."""
+    resolved = spec or get_image_spec(params.image_workflow)
+    wf: Workflow = copy.deepcopy(
+        template if template is not None else load_template(resolved)
+    )
 
-    ``overrides`` are the configured model file names (SPEC §3.3), keyed by
-    ``"<node_id>.<field>"``.
-    """
-    wf: Workflow = copy.deepcopy(template)
+    # After the (non-existent) pruning and before the LoRA chain so that a
+    # user-set placeholder lora_name cannot leak in.
+    apply_model_overrides(wf, overrides, resolved.id)
 
-    # §3.3: the orphan ImpactWildcardEncode is never submitted.
-    _drop(wf, [N_IMG_ORPHAN_WILDCARD])
-
-    # --- mode-specific topology (§2) --------------------------------------
-    if params.mode == "full":
-        # Mode A: image graph feeds the video graph; the unused LoadImage would
-        # fail validation because its file does not exist on the server.
-        _drop(wf, [N_LOAD_IMAGE])
-        _set(wf, N_VID_RESIZE, "input", [N_IMG_VAE_DECODE, 0])
-    elif params.mode == "i2v":
-        # Mode B: drop the whole image subgraph (366 is shared with the video
-        # resolution and stays) and feed LoadImage into the resize node.
-        _drop_prefix(wf, "365:")
-        _drop(wf, [N_PREVIEW_IMAGE])
-        _set(wf, N_VID_RESIZE, "input", [N_LOAD_IMAGE, 0])
-        _set(wf, N_LOAD_IMAGE, "image", params.start_image_name or "")
-    elif params.mode == "image_only":
-        # Mode C: drop the video graph and turn the preview into a real save.
-        _drop_prefix(wf, "433:")
-        _drop(wf, [N_SAVE_VIDEO, N_LOAD_AUDIO, N_LOAD_IMAGE])
-        if N_PREVIEW_IMAGE in wf:
-            wf[N_PREVIEW_IMAGE] = {
-                "class_type": "SaveImage",
-                "_meta": {"title": "Save Image"},
-                "inputs": {
-                    "filename_prefix": params.image_filename_prefix,
-                    "images": [N_IMG_VAE_DECODE, 0],
-                },
-            }
-    else:  # pragma: no cover - guarded by the pydantic Literal
-        raise WorkflowError(f"unknown mode: {params.mode}")
-
-    # --- configured model file names (§3.3) --------------------------------
-    # After the pruning so that keys pointing at dropped nodes are no-ops, and
-    # before the LoRA chain so a user-set `365:15.lora_name` cannot leak in.
-    apply_model_overrides(wf, overrides)
-
-    # --- common injections (§3.1 / §3.2) -----------------------------------
-    _set(wf, N_RESOLUTION, "aspect_ratio", params.aspect_ratio)
-    _set(wf, N_RESOLUTION, "megapixels", params.megapixels)
-
-    # image side
-    _set(wf, N_IMG_PROMPT, "value", params.image_prompt)
-    _set(wf, N_IMG_KSAMPLER, "seed", params.image_seed)
-    _set(wf, N_IMG_REFINE_ENABLE, "value", False)  # local LLM refine off (§3.2)
-    _inject_triggers(wf, params)
-    if params.mode != "i2v":
-        _build_lora_chain(wf, params)
-
-    # video side
-    _set(wf, N_VID_PROMPT, "value", params.video_prompt)
-    _set(wf, N_VID_NEGATIVE, "text", params.negative_prompt)
-    _set(wf, N_VID_DURATION, "value", params.duration)
-    _set(wf, N_VID_FPS, "value", params.fps)
-    _inject_frame_count(wf, params)
-    seeds = list(params.video_seeds)
-    if seeds:
-        _set(wf, N_VID_SEED_A, "noise_seed", seeds[0])
-        _set(wf, N_VID_SEED_B, "noise_seed", seeds[1] if len(seeds) > 1 else seeds[0])
-    _set(wf, N_LOAD_AUDIO, "audio", params.audio_name)
-    _set(wf, N_SAVE_VIDEO, "filename_prefix", params.video_filename_prefix)
+    _inject(wf, resolved, "aspect_ratio", params.aspect_ratio)
+    _inject(wf, resolved, "megapixels", float(params.megapixels))
+    _inject(wf, resolved, "prompt", params.image_prompt)
+    _inject(wf, resolved, "seed", params.image_seed)
+    for name, value in resolved.constants.items():
+        _inject(wf, resolved, name, value)
+    _inject_triggers(wf, resolved, params)
+    _build_lora_chain(wf, resolved, params)
+    _inject(wf, resolved, "save_prefix", params.image_filename_prefix)
 
     validate_workflow(wf)
     return wf
+
+
+def build_video_workflow(
+    params: GenerationParams,
+    overrides: dict[str, str] | None = None,
+    *,
+    spec: WorkflowSpec | None = None,
+    template: Workflow | None = None,
+) -> Workflow:
+    """API JSON for the video stage. Pure: the template is never mutated."""
+    resolved = spec or get_video_spec(params.video_workflow)
+    wf: Workflow = copy.deepcopy(
+        template if template is not None else load_template(resolved)
+    )
+
+    apply_model_overrides(wf, overrides, resolved.id)
+
+    _inject(wf, resolved, "prompt", params.video_prompt)
+    # An empty negative keeps the template's own default (SPEC §3.1).
+    if params.negative_prompt.strip():
+        _inject(wf, resolved, "negative", params.negative_prompt)
+
+    width, height = resolution(params.aspect_ratio, params.megapixels)
+    _inject(wf, resolved, "width", width)
+    _inject(wf, resolved, "height", height)
+    _inject(wf, resolved, "duration", params.duration)
+    _inject(wf, resolved, "fps", params.fps)
+    _inject_frame_count(wf, resolved, params)
+
+    seeds = list(params.video_seeds) or [0]
+    for index, target in enumerate(resolved.seeds):
+        _set(wf, target.node_id, target.field, seeds[index % len(seeds)])
+
+    _inject(wf, resolved, "image", params.start_image_name)
+    _inject(wf, resolved, "end_image", params.end_image_name)
+    _inject(wf, resolved, "audio", params.audio_name)
+    _inject(wf, resolved, "video", params.reference_video_name)
+    for name, value in resolved.constants.items():
+        _inject(wf, resolved, name, value)
+    _inject(wf, resolved, "save_prefix", params.video_filename_prefix)
+
+    validate_workflow(wf)
+    return wf
+
+
+def build_workflows(
+    params: GenerationParams, overrides: dict[str, str] | None = None
+) -> dict[str, Workflow]:
+    """Both stages of a job, keyed by stage name (``"image"`` / ``"video"``).
+
+    Used by the tests and by anything that wants to inspect a job without
+    running it; the job runner builds the stages one at a time because the video
+    stage needs the file name of the uploaded still.
+    """
+    stages: dict[str, Workflow] = {}
+    try:
+        if params.mode in ("full", "image_only"):
+            stages["image"] = build_image_workflow(params, overrides)
+        if params.mode in ("full", "i2v"):
+            stages["video"] = build_video_workflow(params, overrides)
+    except WorkflowSpecError as exc:
+        raise WorkflowError(str(exc)) from exc
+    if not stages:  # pragma: no cover - guarded by the pydantic Literal
+        raise WorkflowError(f"unknown mode: {params.mode}")
+    return stages

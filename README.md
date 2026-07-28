@@ -1,14 +1,18 @@
-# Video Studio
+# Karakuri Media Studio
 
-ComfyUI 上のワークフロー `video-gen.json`（画像生成 → i2v 動画生成）を Web UI から実行し、
+`workflow/` 配下の ComfyUI ワークフロー（画像: Krea 2 turbo / 動画: LTX 2.3 の 7 種）を Web UI から実行し、
 プロンプト作成を Grok に委譲、生成物と履歴をローカルに保存する個人利用向けの動画生成アプリです。
 
+![生成画面](docs/images/screen-image.png)
+
 - バックエンド: Python 3.12 + FastAPI + SQLite（`app.db`）
-- フロントエンド: React + Vite + Tailwind（ダークテーマの SPA 1 画面）
+- フロントエンド: React + Vite + Tailwind（ダークテーマの SPA。「生成」と「エージェント」の 2 ビュー + 設定ページ）
 - 生成本体: ComfyUI（ローカル / LAN 上の別 PC / Comfy Cloud）
 - プロンプト生成: Grok Build CLI（サブスクリプション認証、API キー不要）
 
-詳細な仕様は [`docs/SPEC.md`](docs/SPEC.md)、プロンプト実例は [`docs/prompt-samples.md`](docs/prompt-samples.md) を参照してください。
+詳細な仕様は [`docs/SPEC.md`](docs/SPEC.md)、エージェントモードの設計は
+[`docs/AGENT-MODE.md`](docs/AGENT-MODE.md)、プロンプト実例は
+[`docs/prompt-samples.md`](docs/prompt-samples.md) を参照してください。
 
 ---
 
@@ -17,19 +21,25 @@ ComfyUI 上のワークフロー `video-gen.json`（画像生成 → i2v 動画�
 | 依存 | 内容 |
 |---|---|
 | ComfyUI | 稼働中であること（既定 `http://127.0.0.1:8188`）。Comfy Cloud も可 |
-| custom nodes | ResolutionSelector / ComfySwitchNode / LTXV 系 / ComfyMath / ResizeImage 系など、`video-gen.json` が使うノード一式 |
-| モデル | 画像: `redcraft23INT8INT4FP8_30Krea2` / CLIP `qwen3vl_4b` / VAE `qwen_image_vae`、動画: `sexgodPinkcherryLTX23_v16bDev` + distil LoRA + talkvid ID-LoRA、および使用する人物 LoRA |
+| custom nodes | ResolutionSelector / ComfySwitchNode / LTXV 系 / ComfyMath / ResizeImage 系 / ResizeAndPadImage / MoGe 系 / LoadVideo / Video Slice など、`workflow/` 配下のワークフローが使うノード一式 |
+| モデル | 画像: `krea2_turbo_fp8_scaled` / CLIP `qwen3vl_4b_fp8_scaled` / VAE `qwen_image_vae`、動画: `ltx-2.3-22b-dev-fp8` と `ltx-2.3-22b-distilled-fp8` + distil LoRA / talkvid ID-LoRA / IC-LoRA、TE `gemma_3_12B_it_fp4_mixed`、および使用する人物 LoRA |
 | grok CLI | `curl -fsSL https://x.ai/cli/install.sh \| bash` でインストール後、一度 `grok` を起動してブラウザでサインイン（SuperGrok / X Premium+ のサブスクリプションで利用可） |
 | ffmpeg | 動画からのラストフレーム抽出に使用（`ffmpeg` が PATH にあること） |
 | Python | 3.12 以上 |
 | Node.js | 18 以上（npm 同梱） |
 
 不足している custom node は起動後 `GET /api/health`（ヘッダーの接続インジケーター）で検出され、
-実際に投入する JSON に含まれる class_type のみをチェックします。
+`workflow/` 配下の全テンプレートに含まれる class_type をチェックします。同時に各ワークフローの
+注入マニフェスト（ノード ID 直指定）がテンプレートと一致しているかも検証されます。
 
 ---
 
 ## セットアップと起動
+
+```bash
+git clone https://github.com/KarakuriAgent/karakuri-media-studio.git
+cd karakuri-media-studio
+```
 
 ```bash
 ./run.sh          # 本番: 依存を整えて frontend をビルドし、http://127.0.0.1:8000 で起動
@@ -98,12 +108,15 @@ npm --prefix frontend install && npm --prefix frontend run build
   変更してください（Comfy Cloud の場合はそのままで動きます）
 - `docker compose` を直接使う場合は、リポジトリの実体パスから
   `UID=$(id -u) GID=$(id -g) docker compose up -d` のように実行してください
+- サービス名は `media-studio` です（旧 `video-studio`）。アプリ名の変更に伴って
+  コンテナ名も変わるため、改名前に起動していた古いコンテナが残っている場合は
+  `docker rm -f <旧コンテナ名>` で片付けてください
 
 テスト:
 
 ```bash
-cd backend && ../.venv/bin/pytest        # バックエンド
-cd frontend && npx tsc --noEmit && npm run build   # フロントエンド
+cd backend && ../.venv/bin/pytest                  # バックエンド
+cd frontend && npm run build && npx vitest run     # フロントエンド（型チェック込み）
 ```
 
 ---
@@ -114,27 +127,65 @@ cd frontend && npx tsc --noEmit && npm run build   # フロントエンド
 
 | モード | 内容 |
 |---|---|
-| フル生成 (t2i → i2v) | 画像を生成し、そのままそれを開始フレームとして動画を生成 |
-| 画像から (i2v) | アップロード画像 / 過去生成のラストフレームを開始フレームに動画を生成。画像プロンプト・LoRA は無効化 |
-| 画像のみ | 画像生成だけを実行。開始フレーム候補を量産して良いものを「画像から」モードに渡す用途 |
+| フル生成 | 画像を生成し、その画像を開始フレームにして動画を生成（2 段実行） |
+| 動画生成 | 選択した動画ワークフローを単発実行。画像プロンプト・LoRA は無効化 |
+| 画像のみ | 画像生成だけを実行。開始フレーム候補を量産して良いものを「動画生成」モードに渡す用途 |
 
-左ペインでモードを選び、プロンプト・アスペクト比・メガピクセル・LoRA・リファレンス音声・
+左ペインでモードを選び、動画ワークフロー・プロンプト・アスペクト比・メガピクセル・LoRA・
+ワークフローが要求する入力（開始フレーム / 最後のフレーム / 音声 / 参照動画）・
 秒数 / fps / seed を設定して「実行」。進捗は WebSocket で右ペインにリアルタイム表示され、
 完了すると生成画像・動画・ラストフレームがプレビューされます。
 
 秒数に上限はありませんが、長尺は VRAM 次第で ComfyUI 側がエラーになります。
 
-### 開始フレームの指定（画像からモード）
+#### フル生成は 2 段実行
 
-- 画像ファイルを開始フレーム欄に**ドラッグ&ドロップ**すると自動アップロードされます
+フル生成はグラフを合体させず、**同一ジョブ ID のもとで 2 つの ComfyUI プロンプトを順に実行**します。
+
+1. 画像ワークフロー（krea2_turbo）を実行 → 生成画像を `outputs/{job_id}/image.png` に保存
+2. その画像を ComfyUI にアップロードし、選択した動画ワークフローの開始フレームに注入して実行
+3. 動画をダウンロードし、ffmpeg でラストフレームを抽出
+
+進捗は「画像生成 (1/2)」→「動画生成 (2/2)」と 1 ジョブとして表示されます。
+**画像は 1 段目の完了時点で確定保存される**ため、動画段が失敗しても生成画像は履歴に残り、
+そのまま「動画生成」モードの開始フレームとして再利用できます。
+
+### 動画ワークフローの選択
+
+動画は `workflow/video/ltx2.3/` の 7 種から**プルダウンで選択**します。
+選択に応じて、そのワークフローが必要とする入力の欄だけがフォームに現れます
+（音声を受け取らないワークフローでは音声欄が無効化され、「音声は動画と同時に生成されます」と表示）。
+
+| ワークフロー | 必要な入力 | 用途 |
+|---|---|---|
+| テキスト→動画 (t2v) | なし | テキストだけから動画を生成する。画面に写るものはすべてプロンプトで決まる |
+| 画像→動画 (i2v) | 開始フレーム | 開始フレーム画像から動画を生成する。被写体とセットは画像が決め、プロンプトは動きを担当 |
+| 画像+音声→動画 (ia2v) | 開始フレーム / 音声 | 渡した音声がそのままクリップの音声トラックになり、映像はその音に合わせて動く |
+| 画像+参照音声→動画・リップシンク (ID-LoRA) | 開始フレーム / リファレンス音声 | talkvid ID-LoRA で口の動きが揃った喋りの動画を生成。音声はモデルが生成し、リファレンス音声は声質とリップシンクの参照に使う |
+| 最初と最後のフレーム指定 (flf2v) | 最初のフレーム / 最後のフレーム画像 | 2 枚の画像の間の動きを補間する |
+| リファレンスシート (IC-LoRA) | リファレンスシート画像 | 複数カットを並べたリファレンスシートから動画を生成（Ingredients IC-LoRA）。画像は開始フレームではなく見た目の参照 |
+| 参照動画からモーション転写 (IC-LoRA + MoGe) | 開始フレーム / 参照動画 | 参照動画のカメラワークとモーションを MoGe 深度経由で転写。クリップの長さは参照動画から切り出す区間の長さになる |
+
+- 既定は **ID-LoRA**（リップシンク）です
+- フル生成モードのプルダウンには**開始フレームを受け取れるワークフローだけ**が並びます
+  （t2v とリファレンスシート IC-LoRA は対象外。モード切替時に自動で選び直されます）
+- ワークフローごとの正確な用途・音声の扱い・プロンプトの書き方は
+  `backend/app/workflows.py` の `WorkflowSpec` が単一の情報源で、Grok のシステムプロンプトにも
+  ここから自動生成したカタログが渡ります
+
+### 入力ファイルの指定
+
+- 画像ファイルを開始フレーム / 最後のフレーム欄に**ドラッグ&ドロップ**すると自動アップロードされます
 - 「画像をアップロード」ボタン、または登録済みアセットのセレクトからも選べます
 - 履歴のラストフレームのサムネイルをクリックすると、その画像が開始フレームになります
+- 音声・参照動画も同様にアップロードでき、`assets/` に保存されて再利用できます
 
 ### Grok チャットでプロンプト作成
 
 プロンプトは手動入力が基本ですが、「Grokで生成」ボタンでチャットモーダルを開けます。
 
-1. フォームの現在値（モード・選択 LoRA とトリガーワード・秒数・下書き）がコンテキストとして渡ります
+1. フォームの現在値（モード・選択中の動画ワークフローとその書き方の指針・選択 LoRA とトリガーワード・
+   秒数・下書き）がコンテキストとして渡ります
 2. 「サクラが楽しそうにダンスをしている」程度の指示（サクラ=登録済みキャラの表示名の例）を入力すると、Grok が場所・服装・照明・
    カメラ・表情・セリフ / 音などを**質問で聞き返します**（「おまかせ」と言えば Grok が補完）
 3. 情報が揃うと `image_prompt` / `video_prompt` の最終案が JSON で提示されます
@@ -144,11 +195,35 @@ cd frontend && npx tsc --noEmit && npm run build   # フロントエンド
 grok CLI は空の作業ディレクトリ（`runtime/grok-workdir/`）を cwd にして実行されるため、
 プロジェクトのファイルには触れません。
 
+### エージェントモード
+
+ヘッダーの「エージェント」タブは、Grok が**同僚のように制作を回すビュー**です。
+詳細な設計は [`docs/AGENT-MODE.md`](docs/AGENT-MODE.md) を参照してください。
+
+1. 「ダンス動画を 3 本」のような目標を伝えると、Grok が必要なことだけ質問して
+   **プラン**（何を何本・どのワークフローで・どの設定で）を提示します
+2. プランを**承認するまで一切生成しません**。承認するとバックエンドがジョブを 1 本ずつ実行し、
+   完了・失敗を Grok にイベントとして返します
+3. Grok は結果を見て次の一手を打ちます: 動画をフレーム分解して品質を検分（`inspect`）、
+   外れのシード再抽選（`rerun`）、当たりのラストフレームから続き生成（`continue`）、完了宣言（`done`）
+4. 節目での確認（チェックイン）や、上限本数を決めた自走を選べます。⏹ でいつでも停止できます
+
+エージェントには生成フォームと**同等の全項目**（`video_workflow` / `end_image` / `reference_video` を含む）と、
+`backend/app/workflows.py` から自動生成したワークフローカタログが渡るため、**7 種すべての動画ワークフロー**を
+使い分けて計画できます（`continue` でのワークフロー切替も可。ただし開始フレームを受け取れるワークフローのみ）。
+LoRA / アスペクト比 / アセットの選択肢も焼き込まれるので、実在しない値は指定できません。
+
+成果物は右の成果物パネルに時系列のリンクカード（プラン / リサーチ / メモ / 画像 / 動画 / 検分フレーム）として並び、
+サムネイルは出さないので NSFW が不意に表示されることはありません。
+セッションの作業場は `runtime/agent-sessions/<id>/` です。
+
 ### LoRA 管理
 
 設定画面の LoRA 管理タブで、人物 LoRA を登録（表示名 / ComfyUI 上のファイル名 / トリガーワード /
-既定強度 / 既定リファレンス音声 / 並び順）できます。ファイル名は ComfyUI の `/object_info` から
-取得した一覧から選ぶので typo が起きません。
+既定強度 / 既定リファレンス音声 / 並び順）できます。ファイル名は手入力ですが、ComfyUI の
+`/object_info` から取得した一覧が補完候補として出ます。
+**サンプル画像**も登録でき（`assets/lora_samples/<id>/`）、エージェントモードでは Grok が
+出力と見比べる基準として参照します。
 
 生成フォームではチップ型マルチセレクトで**複数の LoRA を同時適用**でき、各 LoRA に強度スライダーが付きます。
 トリガーワードは選択順に連結されてトリガー欄へ自動反映（編集可）。
@@ -159,11 +234,14 @@ grok CLI は空の作業ディレクトリ（`runtime/grok-workdir/`）を cwd �
 
 画面下部の履歴ギャラリーでサムネイルをクリックすると詳細が開きます。
 
-- **再実行**: 保存済みの `workflow_json` を使って同じ設定で再投入（seed はランダム化）
-- **続きを生成**: 動画のラストフレームを開始フレームにした「画像から」モードの新規ジョブを作成
+- **再実行**: 保存済みの `params` から同じ設定で再投入（seed はランダム化）
+- **続きを生成**: 動画のラストフレームを開始フレームにした「動画生成」モードの新規ジョブを作成
+  （元ジョブのワークフローが開始フレームを受け取れない場合は既定ワークフローに戻します）
 - **削除**: ジョブと成果物を削除
 
 履歴は無制限に保存され、削除は手動のみです。
+ジョブとエージェントセッションには NSFW フラグが付き（Grok による自動判定、手動上書き可）、
+ヘッダーの NSFW トグルがオフのあいだは履歴・ビューアから除外されます。
 
 ---
 
@@ -179,17 +257,45 @@ grok CLI は空の作業ディレクトリ（`runtime/grok-workdir/`）を cwd �
 | `grok_command` | grok CLI のコマンド名 / パス | `grok` |
 | `grok_model` | 使用モデル | `grok-4.5` |
 | `grok_workdir` | grok CLI の作業ディレクトリ | `runtime/grok-workdir` |
-| `model_overrides` | モデルファイル名の上書き（`{"<node_id>.<field>": "<ファイル名>"}`） | `{}` |
+| `model_overrides` | モデルファイル名の上書き（`{"<workflow_id>/<node_id>.<field>": "<ファイル名>"}`） | `{}` |
+| `agent_grok_args` | エージェントモードで grok CLI に渡す追加フラグ（ツール許可） | `["--permission-mode", "auto"]` |
+| `agent_grok_timeout` | エージェントの 1 ターンのタイムアウト秒（リサーチ・検分は長い） | `300` |
+| `agent_max_plan_tasks` | 1 プランに含められる最大ジョブ数 | `5` |
+
+設定ページで編集できるのは接続 / Grok / LoRA / モデルの項目です。`agent_*` は
+`PUT /api/settings` か `runtime/config.json` を直接編集して変更します。
 
 ### モデルファイル名の上書き
 
-`video-gen.json` に書かれている UNET / CLIP / VAE / チェックポイント / テキストエンコーダ /
-アップスケーラ / distil LoRA / talkvid LoRA のファイル名は、作者の ComfyUI 環境のものです。
+`workflow/` 配下の各ワークフローに書かれている UNET / CLIP / VAE / チェックポイント /
+テキストエンコーダ / アップスケーラ / distil LoRA / talkvid LoRA / IC-LoRA / MoGe のファイル名は、
+**Comfy Cloud 上で動作確認済みの構成**で、アプリはこれを既定値として使います。
 自分の環境に別名のファイルしか無い場合は、設定ページの「モデル」タブで各行を書き換えてください。
 一覧はワークフローから自動抽出され、既定値（テンプレートの値）と現在値が並んで表示されます。
 変更した行はハイライトされ、[既定に戻す] でテンプレートの値へ戻せます。保存すると既定値と異なる
 エントリだけが `model_overrides` に記録され、ジョブ投入時にワークフローへ適用されます
-（モードによって削除されるノード宛の指定は自動的に無視されます）。
+（キーはワークフロー ID でスコープされるため、テンプレート間で同じノード ID が衝突しません）。
+
+### Tips: ローカル ComfyUI で動かす場合のモデル設定
+
+テンプレートの既定モデル名は Comfy Cloud のストレージに合わせてあるため、ローカルの ComfyUI では
+ファイル名が違うことがあります。ノード ID はモデルのドロップダウンを変えただけでは変わりません
+（変わるのはノードの追加・削除・サブグラフの再構成をしたとき）。一方で `workflow/` の JSON は
+**API フォーマットなので ComfyUI の GUI には直接読み込めません**。そのため変更方法は次の 3 つです。
+
+1. **設定ページ「モデル」タブで上書きする（推奨・最も簡単）**: テンプレートを一切触らず、
+   環境差分だけが `model_overrides` に保存されます。リポジトリの更新（テンプレート差し替え）とも
+   衝突しません
+2. **ワークフロー JSON をテキストエディタで直接編集する**: モデルファイル名の文字列だけを
+   書き換える範囲ならノード ID は変わらないので安全です。既定値そのものが変わるので
+   上書き設定は不要になります
+3. **元の GUI 用ワークフロー（API エクスポートする前のもの）を持っている場合**は、GUI でモデルだけ
+   変更して API フォーマットに再エクスポートし、`workflow/` のファイルを差し替えても構いません。
+   ただしノードの追加・削除やサブグラフの編集をするとノード ID が変わり、アプリの注入マニフェスト
+   （ノード ID 直指定）と食い違います
+
+ID がズレた場合は起動時の検証と `GET /api/health`（ヘッダーの接続インジケーター）が検知して警告します。
+その場合は `backend/app/workflows.py` のマニフェストを新しいノード ID に合わせて直してください。
 
 ### Comfy Cloud を使う場合
 
@@ -204,35 +310,50 @@ grok CLI は空の作業ディレクトリ（`runtime/grok-workdir/`）を cwd �
 
 ```
 backend/            FastAPI アプリ
-  app/routers/      health / settings / loras / models_config / assets / options / chat / jobs
+  app/routers/      health / settings / loras / models_config / assets / options / chat / jobs / agent
   app/comfy.py      ComfyUI クライアント（/object_info, /upload/image, /prompt, /ws, /history, /view）
-  app/workflow.py   video-gen.json のモード別書き換え・LoRA チェーン動的注入
+  app/workflows.py  ワークフロー登録簿と注入マニフェスト（ノード ID 直指定）+ プロンプト用カタログ
+  app/workflow.py   テンプレートへのパラメータ注入・LoRA チェーン動的注入・解像度計算
   app/grok.py       grok CLI 呼び出し（LLM クライアントは差し替え可能な抽象化）
+  app/prompts.py    チャット / エージェントのシステムプロンプト
   app/jobs.py       asyncio ジョブキューと実行、成果物取得・ラストフレーム抽出
+  app/agent_*.py    エージェントのアクションプロトコル・実行ループ・セッション永続化
+  app/nsfw.py       ジョブ / セッションの NSFW 判定
   tests/            pytest
 frontend/           React + Vite + Tailwind の SPA（ビルド成果物は frontend/dist）
+  src/components/   GenerateForm / ResultPane / HistoryGallery / ChatModal / SettingsPage / agent/
 docs/SPEC.md        仕様書
-video-gen.json      ComfyUI ワークフロー（API フォーマット）テンプレート
-app.db              SQLite（jobs / loras / chat_sessions）
+docs/AGENT-MODE.md  エージェントモード設計書
+workflow/           ComfyUI ワークフロー（API フォーマット）テンプレート ※実行の正
+  image/krea2/      krea2_turbo.json（画像生成）
+  video/ltx2.3/     t2v / i2v / ia2v / id_lora / flf2v / ic_lora_image / ic_lora_motion
+app.db              SQLite（jobs / loras / chat_sessions / agent_sessions）
 outputs/            生成物（/outputs で静的配信）
-assets/             アップロードした画像・音声（/assets で静的配信）
-runtime/            config.json と grok 作業ディレクトリ
+assets/             アップロードした画像・音声・参照動画・LoRA サンプル（/assets で静的配信）
+runtime/            config.json / grok 作業ディレクトリ / agent-sessions/
 ```
 
 主な API（詳細は SPEC §9、起動後 `/docs` でも参照可）:
 
 ```
 GET  /api/health                       ComfyUI / Grok 疎通と custom node チェック
-GET  /api/options                      アスペクト比・LoRA ファイル一覧・アセット・ネガティブプリセット
+GET  /api/options                      動画/画像ワークフロー一覧（必要入力つき）・アスペクト比・
+                                       LoRA ファイル一覧・アセット・ネガティブプリセット
 GET/PUT /api/settings                  設定の取得・更新
 GET/POST/PUT/DELETE /api/loras         アプリ内 LoRA 登録リスト
+POST/DELETE /api/loras/{id}/samples    LoRA サンプル画像の登録・削除
 GET/PUT /api/models                    ワークフローのモデルファイル名一覧・上書き
 POST/GET /api/chat/sessions[/{id}]     Grok チャット
 POST /api/jobs, GET /api/jobs?limit=…  ジョブ作成・履歴
 GET/DELETE /api/jobs/{id}              詳細・削除
 POST /api/jobs/{id}/rerun|continue     再実行・ラストフレームから続き生成
-POST/GET /api/assets/audio|image       アセットのアップロード・一覧
-WS   /api/ws                           進捗配信
+POST /api/jobs/{id}/nsfw               NSFW フラグの手動指定
+POST/GET /api/assets/audio|image|video アセットのアップロード・一覧
+POST/GET/DELETE /api/agent/sessions[/{id}]        エージェントセッション
+POST /api/agent/sessions/{id}/messages|approve    発言・プラン承認
+POST /api/agent/sessions/{id}/checkin|stop|nsfw   チェックイン応答・停止・NSFW 指定
+GET  /api/agent/sessions/{id}/artifacts/{name}    成果物（メモ・検分フレーム）の配信
+WS   /api/ws                           進捗配信（ジョブ進捗 + エージェント状態）
 ```
 
 ---

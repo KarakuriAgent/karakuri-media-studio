@@ -5,9 +5,9 @@ from fastapi.testclient import TestClient
 
 from app import config
 from app.main import app
-from app.workflow import load_template, model_fields
+from app.workflow import model_fields
 
-UNET_KEY = "365:10.unet_name"
+UNET_KEY = "krea2_turbo/30:10.unet_name"
 
 
 @pytest.fixture
@@ -25,14 +25,16 @@ def by_key(rows: list[dict]) -> dict[str, dict]:
 
 def test_get_returns_defaults(client):
     rows = client.get("/api/models").json()
-    assert len(rows) == len(model_fields(load_template()))
+    assert len(rows) == len(model_fields())
     unet = by_key(rows)[UNET_KEY]
     assert unet["class_type"] == "UNETLoader"
-    assert unet["node_id"] == "365:10"
+    assert unet["node_id"] == "30:10"
+    assert unet["workflow_id"] == "krea2_turbo"
+    assert unet["workflow_label"]
     assert unet["field"] == "unet_name"
     assert unet["value"] == unet["default"] != ""
     assert unet["overridden"] is False
-    assert "365:15.lora_name" not in by_key(rows)
+    assert "krea2_turbo/30:61:62.lora_name" not in by_key(rows)
 
 
 def test_put_saves_override_and_persists(client):
@@ -52,7 +54,7 @@ def test_put_drops_default_valued_and_empty_entries(client):
     default = by_key(client.get("/api/models").json())[UNET_KEY]["default"]
     client.put("/api/models", json={"overrides": {UNET_KEY: "mine.safetensors"}})
 
-    other = "433:428.ckpt_name"
+    other = "tx2_3_i2v/320:316.ckpt_name"
     rows = client.put(
         "/api/models",
         json={"overrides": {UNET_KEY: default, other: "  "}},
@@ -70,5 +72,5 @@ def test_put_rejects_unknown_key(client):
 
 
 def test_put_rejects_the_dynamic_lora_node(client):
-    response = client.put("/api/models", json={"overrides": {"365:15.lora_name": "x"}})
+    response = client.put("/api/models", json={"overrides": {"krea2_turbo/30:61:62.lora_name": "x"}})
     assert response.status_code == 422

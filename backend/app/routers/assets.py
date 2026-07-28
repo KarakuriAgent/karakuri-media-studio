@@ -11,6 +11,8 @@ router = APIRouter(prefix="/api/assets", tags=["assets"])
 
 AUDIO_EXT = {".mp3", ".wav", ".flac", ".m4a", ".ogg", ".opus"}
 IMAGE_EXT = {".png", ".jpg", ".jpeg", ".webp", ".bmp"}
+# reference clips for the motion-transfer workflow (SPEC §3.1)
+VIDEO_EXT = {".mp4", ".webm", ".mkv", ".mov"}
 
 _SAFE = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -70,3 +72,13 @@ async def upload_image(file: UploadFile = File(...)) -> Asset:
 @router.get("/image", response_model=list[Asset])
 async def list_image() -> list[Asset]:
     return list_assets("image", IMAGE_EXT)
+
+
+@router.post("/video", response_model=Asset, status_code=201)
+async def upload_video(file: UploadFile = File(...)) -> Asset:
+    return await _save(file, "video", VIDEO_EXT)
+
+
+@router.get("/video", response_model=list[Asset])
+async def list_video() -> list[Asset]:
+    return list_assets("video", VIDEO_EXT)

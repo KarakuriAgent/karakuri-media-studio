@@ -15,13 +15,18 @@ export interface Settings {
   grok_command: string
   grok_model: string
   grok_workdir: string
-  /** {"<node_id>.<field>": "file.safetensors"} — only non-default entries. */
+  /**
+   * {"<workflow_id>/<node_id>.<field>": "file.safetensors"} — only non-default
+   * entries.
+   */
   model_overrides: Record<string, string>
 }
 
-/** One configurable model file of the workflow (GET /api/models). */
+/** One configurable model file of a workflow template (GET /api/models). */
 export interface ModelFieldState {
   key: string
+  workflow_id: string
+  workflow_label: string
   node_id: string
   field: string
   class_type: string
@@ -53,10 +58,25 @@ export interface LoraRef {
 
 export interface Asset {
   name: string
-  kind: 'audio' | 'image'
+  kind: 'audio' | 'image' | 'video'
   path: string
   url: string
   size: number
+}
+
+/** Logical inputs a video workflow can require (mirrors workflows.InputName). */
+export type WorkflowInput = 'image' | 'audio' | 'end_image' | 'video'
+
+/** One selectable workflow template (GET /api/options). */
+export interface WorkflowOption {
+  id: string
+  label: string
+  kind: 'image' | 'video'
+  notes: string
+  requires: WorkflowInput[]
+  supports: string[]
+  accepts_start_image: boolean
+  image_label: string
 }
 
 export interface Job {
@@ -87,6 +107,8 @@ export interface Job {
 
 export interface JobCreate {
   mode: JobMode
+  /** id of the video template to run (see /api/options video_workflows). */
+  video_workflow: string
   image_prompt: string
   video_prompt: string
   negative_prompt: string
@@ -98,6 +120,8 @@ export interface JobCreate {
   fps: number
   audio_path: string | null
   source_image: string | null
+  end_image: string | null
+  reference_video: string | null
   seed: number | null
   chat_session_id?: string | null
   user_input?: string | null
@@ -131,11 +155,15 @@ export interface Options {
   comfy_connected: boolean
   comfy_error: string | null
   comfy_url: string
+  image_workflows: WorkflowOption[]
+  video_workflows: WorkflowOption[]
+  default_video_workflow: string
   aspect_ratios: string[]
   lora_files: string[]
   loras: Lora[]
   audio_assets: Asset[]
   image_assets: Asset[]
+  video_assets: Asset[]
   negative_presets: Record<string, string>
 }
 
@@ -173,6 +201,8 @@ export interface ChatLoraRef extends LoraRef {
 
 export interface ChatSessionCreate {
   mode: JobMode
+  /** selected video template: its characteristics steer the video prompt. */
+  video_workflow: string
   loras: ChatLoraRef[]
   trigger_text: string
   duration: number

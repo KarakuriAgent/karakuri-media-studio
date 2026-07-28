@@ -6,14 +6,21 @@ FastAPI lifespan.
 
 Per job the runner:
 
-1. uploads the reference audio / start frame to ComfyUI (``/upload/image``),
-2. builds the API workflow from the job params (:mod:`app.workflow`),
+1. uploads the reference audio / input images / reference clip to ComfyUI
+   (``/upload/image``),
+2. builds the API workflow of the first stage from the job params
+   (:mod:`app.workflow`),
 3. queues it (``/prompt``) and follows the progress over the ComfyUI WebSocket,
    falling back to ``/history`` polling whenever the socket is unavailable,
 4. downloads the artefacts into ``outputs/{job_id}/`` and extracts the last
    frame with ffmpeg,
 5. records everything in the ``jobs`` table and broadcasts each transition to
    the browser over :mod:`app.ws`.
+
+``full`` mode chains **two** ComfyUI prompts under one job id (SPEC §2): the
+image workflow runs first, its still is downloaded and re-uploaded to the
+ComfyUI input directory, and the selected video workflow then uses it as the
+start frame.  Both graphs are stored in ``workflow_json``.
 """
 
 from __future__ import annotations
@@ -35,7 +42,6 @@ from .config import load_settings
 from .db import get_db
 from .ids import new_id
 from .models import (
-    DEFAULT_NEGATIVE_PROMPT,
     GenerationParams,
     Job,
     JobContinue,
@@ -43,9 +49,18 @@ from .models import (
     JobRerun,
     LoraRef,
     missing_job_fields,
+    video_workflow_problem,
 )
 from .paths import ASSETS_DIR, OUTPUTS_DIR
-from .workflow import build_workflow, load_template
+from .workflow import build_image_workflow, build_video_workflow
+from .workflows import (
+    DEFAULT_IMAGE_WORKFLOW,
+    DEFAULT_VIDEO_WORKFLOW,
+    WorkflowSpec,
+    WorkflowSpecError,
+    get_image_spec,
+    get_video_spec,
+)
 
 log = logging.getLogger(__name__)
 
@@ -58,10 +73,16 @@ SEED_MAX = 2**31 - 1
 # history["outputs"][node] keys that may hold produced files
 _FILE_LIST_KEYS = ("images", "videos", "gifs", "files", "audio", "video")
 
-N_PREVIEW_IMAGE = "393"
-N_SAVE_VIDEO = "75"
-
 VIDEO_EXTS = {".mp4", ".webm", ".mkv", ".mov", ".avi", ".gif"}
+
+# asset params that are uploaded to the ComfyUI input dir before a run, mapped to
+# the GenerationParams field that receives the stored file name
+_UPLOADS = {
+    "audio_path": "audio_name",
+    "source_image": "start_image_name",
+    "end_image": "end_image_name",
+    "reference_video": "reference_video_name",
+}
 
 
 class JobError(Exception):
@@ -219,17 +240,26 @@ def _seeds(seed: int | None) -> dict[str, Any]:
 
 
 def _validate(params: dict[str, Any]) -> None:
-    missing = missing_job_fields(
-        params.get("mode", ""),
-        image_prompt=params.get("image_prompt"),
-        video_prompt=params.get("video_prompt"),
-        audio_path=params.get("audio_path"),
-        source_image=params.get("source_image"),
-    )
-    if missing:
-        raise JobValidationError(
-            f"mode '{params.get('mode')}' requires: {', '.join(missing)}"
+    mode = params.get("mode", "")
+    video_workflow = params.get("video_workflow")
+    problem = video_workflow_problem(mode, video_workflow)
+    if problem:
+        raise JobValidationError(problem)
+    try:
+        missing = missing_job_fields(
+            mode,
+            image_prompt=params.get("image_prompt"),
+            video_prompt=params.get("video_prompt"),
+            audio_path=params.get("audio_path"),
+            source_image=params.get("source_image"),
+            end_image=params.get("end_image"),
+            reference_video=params.get("reference_video"),
+            video_workflow=video_workflow,
         )
+    except WorkflowSpecError as exc:
+        raise JobValidationError(str(exc)) from exc
+    if missing:
+        raise JobValidationError(f"mode '{mode}' requires: {', '.join(missing)}")
 
 
 def _resolve_nsfw(explicit: bool | None, inherit: bool) -> tuple[bool | None, str]:
@@ -254,14 +284,10 @@ async def _insert_job(
     _validate(params)
 
     # Fail fast on unusable asset paths (422 rather than a failed job).
-    audio_path = params.get("audio_path")
-    source_image = params.get("source_image")
-    if audio_path:
-        params["audio_path"] = str(resolve_asset_path(audio_path, field="audio_path"))
-    if source_image:
-        params["source_image"] = str(
-            resolve_asset_path(source_image, field="source_image")
-        )
+    for field in _UPLOADS:
+        value = params.get(field)
+        if value:
+            params[field] = str(resolve_asset_path(value, field=field))
 
     job_id = new_id()
     params["job_id"] = job_id
@@ -325,6 +351,8 @@ async def _insert_job(
 def _params_from_create(payload: JobCreate) -> dict[str, Any]:
     params: dict[str, Any] = {
         "mode": payload.mode,
+        "image_workflow": DEFAULT_IMAGE_WORKFLOW,
+        "video_workflow": payload.video_workflow,
         "aspect_ratio": payload.aspect_ratio,
         "megapixels": payload.megapixels,
         "loras": [lora.model_dump() for lora in payload.loras],
@@ -336,6 +364,8 @@ def _params_from_create(payload: JobCreate) -> dict[str, Any]:
         "fps": payload.fps,
         "audio_path": payload.audio_path,
         "source_image": payload.source_image,
+        "end_image": payload.end_image,
+        "reference_video": payload.reference_video,
     }
     params.update(_seeds(payload.seed))
     return params
@@ -392,6 +422,20 @@ async def rerun_job(job_id: str, payload: JobRerun, *, inherit_nsfw: bool = Fals
     )
 
 
+def _continuable_workflow(workflow_id: str | None) -> str:
+    """A video workflow that can start from a last frame (SPEC §2).
+
+    ``continue`` feeds a still into the video stage, so a workflow that cannot
+    take a start frame (t2v, the IC-LoRA reference sheet) falls back to the
+    default one instead of failing the request.
+    """
+    try:
+        spec = get_video_spec(workflow_id)
+    except WorkflowSpecError:
+        return DEFAULT_VIDEO_WORKFLOW
+    return spec.id if spec.accepts_start_image else DEFAULT_VIDEO_WORKFLOW
+
+
 async def continue_job(
     job_id: str, payload: JobContinue, *, inherit_nsfw: bool = False
 ) -> Job:
@@ -410,6 +454,9 @@ async def continue_job(
     prev = dict(source.params)
     params: dict[str, Any] = {
         "mode": "i2v",
+        "video_workflow": _continuable_workflow(
+            payload.video_workflow or prev.get("video_workflow")
+        ),
         "aspect_ratio": payload.aspect_ratio or prev.get("aspect_ratio", "4:3 (Standard)"),
         "megapixels": (
             payload.megapixels
@@ -420,17 +467,15 @@ async def continue_job(
         "trigger_text": prev.get("trigger_text", ""),
         "image_prompt": prev.get("image_prompt", ""),
         "video_prompt": payload.video_prompt or prev.get("video_prompt", ""),
-        "negative_prompt": (
-            payload.negative_prompt
-            or prev.get("negative_prompt")
-            or DEFAULT_NEGATIVE_PROMPT
-        ),
+        "negative_prompt": payload.negative_prompt or prev.get("negative_prompt") or "",
         "duration": (
             payload.duration if payload.duration is not None else prev.get("duration", 10.0)
         ),
         "fps": payload.fps if payload.fps is not None else prev.get("fps", 25),
         "audio_path": payload.audio_path or prev.get("audio_path"),
         "source_image": str(start_image),
+        "end_image": payload.end_image or prev.get("end_image"),
+        "reference_video": payload.reference_video or prev.get("reference_video"),
         "continued_from": source.id,
     }
     params.update(_seeds(payload.seed))
@@ -449,24 +494,26 @@ async def continue_job(
 # execution
 # --------------------------------------------------------------------------
 
-def _generation_params(job: Job, audio_name: str, start_image_name: str) -> GenerationParams:
+def _generation_params(job: Job, uploads: dict[str, str]) -> GenerationParams:
+    """The injector's view of a job. ``uploads`` maps param field -> ComfyUI name."""
     p = job.params
     return GenerationParams(
         mode=job.mode,
         job_id=job.id,
+        image_workflow=p.get("image_workflow") or DEFAULT_IMAGE_WORKFLOW,
+        video_workflow=p.get("video_workflow") or DEFAULT_VIDEO_WORKFLOW,
         aspect_ratio=p.get("aspect_ratio", "4:3 (Standard)"),
         megapixels=float(p.get("megapixels", 1.0)),
         loras=[LoraRef(**lora) for lora in p.get("loras", [])],
         trigger_text=p.get("trigger_text", ""),
         image_prompt=p.get("image_prompt", ""),
         video_prompt=p.get("video_prompt", ""),
-        negative_prompt=p.get("negative_prompt") or DEFAULT_NEGATIVE_PROMPT,
+        negative_prompt=p.get("negative_prompt") or "",
         duration=float(p.get("duration", 10.0)),
         fps=int(p.get("fps", 25)),
         image_seed=int(p.get("image_seed", 0)),
         video_seeds=[int(s) for s in p.get("video_seeds", [])],
-        audio_name=audio_name,
-        start_image_name=start_image_name,
+        **{field: uploads.get(field, "") for field in _UPLOADS.values()},
     )
 
 
@@ -640,53 +687,59 @@ async def extract_last_frame(video_path: Path, dest: Path) -> Path:
     raise JobError(f"ffmpeg could not extract the last frame: {last_error}")
 
 
-async def _download_outputs(job: Job, entry: dict[str, Any]) -> dict[str, Any]:
-    """Persist the artefacts of one job into ``outputs/{job_id}/`` (SPEC §6)."""
-    outputs = entry.get("outputs") or {}
-    job_dir = OUTPUTS_DIR / job.id
-    job_dir.mkdir(parents=True, exist_ok=True)
-    updates: dict[str, Any] = {}
+async def _download_artifact(
+    entry: dict[str, Any], node_id: str, dest_dir: Path, stem: str, kind: str
+) -> Path:
+    """Download the file ``node_id`` produced into ``dest_dir/stem<suffix>``."""
+    item = _pick_output(entry.get("outputs") or {}, node_id)
+    if item is None:
+        raise JobError(f"no {kind} output on node {node_id}")
+    suffix = Path(str(item["filename"])).suffix
+    if kind == "video" and suffix.lower() not in VIDEO_EXTS:
+        suffix = ".mp4"
+    if kind == "image" and not suffix:
+        suffix = ".png"
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    dest = dest_dir / f"{stem}{suffix}"
+    await comfy.download_view(
+        str(item["filename"]),
+        str(item.get("subfolder") or ""),
+        str(item.get("type") or "output"),
+        dest,
+    )
+    return dest
 
-    if job.mode in ("full", "image_only"):
-        item = _pick_output(outputs, N_PREVIEW_IMAGE)
-        if item is None:
-            raise JobError(f"no image output on node {N_PREVIEW_IMAGE}")
-        # Mode A previews live in the temp dir and vanish on restart -> save now.
-        default_type = "temp" if job.mode == "full" else "output"
-        suffix = Path(str(item["filename"])).suffix or ".png"
-        dest = job_dir / f"image{suffix}"
-        await comfy.download_view(
-            str(item["filename"]),
-            str(item.get("subfolder") or ""),
-            str(item.get("type") or default_type),
-            dest,
-        )
-        updates["image_path"] = str(dest)
 
-    if job.mode in ("full", "i2v"):
-        item = _pick_output(outputs, N_SAVE_VIDEO)
-        if item is None:
-            raise JobError(f"no video output on node {N_SAVE_VIDEO}")
-        suffix = Path(str(item["filename"])).suffix
-        if suffix.lower() not in VIDEO_EXTS:
-            suffix = ".mp4"
-        dest = job_dir / f"video{suffix}"
-        await comfy.download_view(
-            str(item["filename"]),
-            str(item.get("subfolder") or ""),
-            str(item.get("type") or "output"),
-            dest,
-        )
-        updates["video_path"] = str(dest)
-        updates["last_frame_path"] = str(
-            await extract_last_frame(dest, job_dir / "last_frame.png")
-        )
+async def _run_stage(
+    job_id: str,
+    stage: str,
+    spec: WorkflowSpec,
+    workflow: dict[str, Any],
+    stages: dict[str, Any],
+    label: str,
+) -> dict[str, Any]:
+    """Queue one ComfyUI prompt for ``job_id`` and wait for its ``/history`` entry.
 
-    return updates
+    The built graph is persisted before queueing so a failed run can still be
+    inspected, and again afterwards with the prompt id.
+    """
+    stages[stage] = {"workflow_id": spec.id, "prompt_id": None, "graph": workflow}
+    await _update(job_id, workflow_json=json.dumps(stages, ensure_ascii=False))
+
+    client_id = str(uuid.uuid4())
+    prompt_id = await comfy.queue_prompt(workflow, client_id)
+    stages[stage]["prompt_id"] = prompt_id
+    await _update(
+        job_id,
+        comfy_prompt_id=prompt_id,
+        workflow_json=json.dumps(stages, ensure_ascii=False),
+    )
+    await ws.publish(job_id, "running", message=f"{label}: queued on ComfyUI ({prompt_id})")
+    return await _wait_for_result(prompt_id, client_id, job_id)
 
 
 async def run_job(job_id: str) -> None:
-    """Execute one job end to end. Failures are recorded, never raised."""
+    """Execute one job end to end (1 or 2 stages). Failures are recorded, never raised."""
     job = await get_job(job_id)
     if job is None:
         log.warning("job %s disappeared before it could run", job_id)
@@ -694,27 +747,64 @@ async def run_job(job_id: str) -> None:
     try:
         await _set_status(job_id, "running", message="uploading assets")
 
-        audio_name = ""
-        if job.params.get("audio_path"):
-            audio_name = await comfy.upload_file(job.params["audio_path"])
-        start_image_name = ""
-        if job.params.get("source_image"):
-            start_image_name = await comfy.upload_file(job.params["source_image"])
+        uploads: dict[str, str] = {}
+        for field, param_name in _UPLOADS.items():
+            path = job.params.get(field)
+            if path:
+                uploads[param_name] = await comfy.upload_file(path)
 
-        workflow = build_workflow(
-            load_template(),
-            _generation_params(job, audio_name, start_image_name),
-            load_settings().model_overrides,
-        )
-        await _update(job_id, workflow_json=json.dumps(workflow, ensure_ascii=False))
+        params = _generation_params(job, uploads)
+        overrides = load_settings().model_overrides
+        job_dir = OUTPUTS_DIR / job.id
+        stages: dict[str, Any] = {}
+        updates: dict[str, Any] = {}
 
-        client_id = str(uuid.uuid4())
-        prompt_id = await comfy.queue_prompt(workflow, client_id)
-        await _update(job_id, comfy_prompt_id=prompt_id)
-        await ws.publish(job_id, "running", message=f"queued on ComfyUI ({prompt_id})")
+        two_stage = job.mode == "full"
+        if job.mode in ("full", "image_only"):
+            image_spec = get_image_spec(params.image_workflow)
+            label = "画像生成 (1/2)" if two_stage else "画像生成"
+            await ws.publish(job_id, "running", message=label)
+            entry = await _run_stage(
+                job_id,
+                "image",
+                image_spec,
+                build_image_workflow(params, overrides, spec=image_spec),
+                stages,
+                label,
+            )
+            image = await _download_artifact(
+                entry, image_spec.output_node, job_dir, "image", "image"
+            )
+            updates["image_path"] = str(image)
+            # Persist right away: if the video stage fails, the generated still is
+            # still worth showing (and re-usable as a start frame).
+            await _update(job_id, image_path=str(image))
+            if two_stage:
+                # The video stage reads the still from the ComfyUI input dir.
+                params = params.model_copy(
+                    update={"start_image_name": await comfy.upload_file(image)}
+                )
 
-        entry = await _wait_for_result(prompt_id, client_id, job_id)
-        updates = await _download_outputs(job, entry)
+        if job.mode in ("full", "i2v"):
+            video_spec = get_video_spec(params.video_workflow)
+            label = "動画生成 (2/2)" if two_stage else "動画生成"
+            await ws.publish(job_id, "running", message=label)
+            entry = await _run_stage(
+                job_id,
+                "video",
+                video_spec,
+                build_video_workflow(params, overrides, spec=video_spec),
+                stages,
+                label,
+            )
+            video = await _download_artifact(
+                entry, video_spec.output_node, job_dir, "video", "video"
+            )
+            updates["video_path"] = str(video)
+            updates["last_frame_path"] = str(
+                await extract_last_frame(video, job_dir / "last_frame.png")
+            )
+
         await _set_status(job_id, "done", message="done", error=None, **updates)
     except asyncio.CancelledError:
         await _set_status(job_id, "canceled", message="canceled", error="canceled")

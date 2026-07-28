@@ -1,4 +1,4 @@
-# Video Studio ランタイムイメージ
+# Karakuri Media Studio ランタイムイメージ
 #
 # アプリ本体はイメージに焼かず、docker-compose.yml がリポジトリ全体を
 # 「ホストと同じ絶対パス」にマウントして動かす（app.db や runtime/config.json に

@@ -14,7 +14,8 @@ FRONTEND_DIST_DIR = ROOT / "frontend" / "dist"
 
 DB_PATH = ROOT / "app.db"
 CONFIG_PATH = RUNTIME_DIR / "config.json"
-WORKFLOW_TEMPLATE_PATH = ROOT / "video-gen.json"
+# Folder of API-format ComfyUI templates (see app/workflows.py for the manifests).
+WORKFLOW_DIR = ROOT / "workflow"
 
 
 def ensure_dirs() -> None:

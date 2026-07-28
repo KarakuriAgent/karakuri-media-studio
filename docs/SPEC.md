@@ -1,7 +1,11 @@
-# Video Studio 仕様書（ドラフト v0.1）
+# Karakuri Media Studio 仕様書（ドラフト v0.2）
 
-ComfyUI 上の `video-gen.json` ワークフロー（画像生成 → i2v 動画生成）をバックエンドとして使う動画生成アプリの仕様。
+`workflow/` 配下の ComfyUI ワークフロー群（画像: Krea 2 turbo / 動画: LTX 2.3 の 7 種）をバックエンドとして使う動画生成アプリの仕様。
 プロンプト作成は Grok（サブスクリプション認証）に委譲し、実行・成果物管理・履歴保存を本アプリが担う。
+
+> v0.2 での変更: 単一の合体グラフ `video-gen.json` を廃止し、分離された複数テンプレートを
+> **注入マニフェスト**（ノード ID 直指定、`backend/app/workflows.py`）で駆動する方式に移行した。
+> フル生成は「画像ワークフロー → 生成画像をアップロード → 動画ワークフロー」の **2 ジョブ連結**になった。
 
 ---
 
@@ -24,8 +28,8 @@ ComfyUI 上の `video-gen.json` ワークフロー（画像生成 → i2v 動画
 
 1. ユーザーが UI で**画像・動画プロンプトを手動入力**（基本フロー）、または「Grokで生成」ボタンから**チャット画面**へ。チャットでは Grok が「何を作りたいか」を対話形式でヒアリングし、確定したプロンプト案をフォームに反映する（§4.3）
 2. 生成パラメータ（アスペクト比、LoRA、秒数など）を設定し「実行」
-3. `video-gen.json` をテンプレートとしてパラメータを注入し、ComfyUI `/prompt` API に投入
-4. WebSocket で進捗を UI に中継
+3. 選択したワークフローのテンプレートにパラメータを注入し、ComfyUI `/prompt` API に投入（フル生成は 2 段）
+4. WebSocket で進捗を UI に中継（フル生成は「画像生成 (1/2)」→「動画生成 (2/2)」の 2 段表示）
 5. 完了後、**生成画像・動画**を ComfyUI から取得、**ラストフレーム**を ffmpeg で抽出
 6. プロンプト・パラメータ・チャット履歴・成果物パスを SQLite に保存し、UI のギャラリー/履歴に表示
 
@@ -33,81 +37,137 @@ ComfyUI 上の `video-gen.json` ワークフロー（画像生成 → i2v 動画
 
 ## 2. 動作モード
 
-| モード | スタートフレーム | 実行されるサブグラフ |
-|---|---|---|
-| A: フル生成 (t2i → i2v) | ワークフロー内で画像生成 | 画像生成 (`365:*`) + 動画生成 (`433:*`) |
-| B: 画像読み込み (i2v) | アップロードした画像 / 過去生成のラストフレーム | `435` (LoadImage) + 動画生成 (`433:*`) |
-| C: 画像のみ生成 | ― | 画像生成 (`365:*`) のみ。スタートフレーム候補を量産して確認し、良いものをモード B に渡す使い方を想定 |
+ワークフローは画像と動画で分離しており、1 ジョブは **1 つまたは 2 つの ComfyUI プロンプト**で構成される。
 
-### モード B の配線変更
+| モード | 内部名 | 実行されるワークフロー | 開始フレーム |
+|---|---|---|---|
+| フル生成 | `full` | 画像ワークフロー → 選択した動画ワークフロー（2 段） | 1 段目の生成画像 |
+| 動画生成 | `i2v` | 選択した動画ワークフローのみ | ワークフローが要求する入力（アップロード / 履歴 / なし） |
+| 画像のみ | `image_only` | 画像ワークフローのみ | ― |
 
-ワークフロー上は `435` (LoadImage) が未配線。API 投入用 JSON をモードに応じてアプリ側で書き換える:
+### 2.1 フル生成の 2 ジョブ連結
 
-- **モード A**: 現状どおり `433:431` (ResizeImageMaskNode) の `input` = `["365:8", 0]`（生成画像の VAEDecode 出力）。**未使用の `435` (LoadImage) は JSON から削除**（ComfyUI は投入 JSON 内の全ノードを検証するため、存在しないファイル名を持つ孤立 LoadImage は投入エラーになる）
-- **モード B**: `433:431` の `input` を `["435", 0]` に付け替え、画像生成系ノード（`365:*` 全部と `393` PreviewImage。ただし `366` は動画解像度で共用のため残す）を JSON から削除。アップロード画像は ComfyUI `/upload/image` で input ディレクトリに送り、`435.inputs.image` にファイル名を設定
-- **モード C**: `433:*`, `75`, `432`, `435` を削除し、`393` (PreviewImage) を SaveImage（`filename_prefix = images/{job_id}`）に差し替えて画像を出力として確定させる
+旧方式のようにグラフを合体させず、同一 `job_id` のもとで順に実行する:
 
-補足: モード B では動画解像度は `366` (ResolutionSelector) の値を使う（読み込み画像は `433:431` で指定解像度に center crop リサイズされ、`433:417` で長辺 1536 に再リサイズ後 `LTXVPreprocess` に渡る）。
+1. 画像ワークフロー（krea2）を `/prompt` に投入 → 完了を待つ
+2. `SaveImage` の出力を `/view` でダウンロードし `outputs/{job_id}/image.png` に保存
+3. その画像を ComfyUI `/upload/image` で input ディレクトリへアップロード
+4. 選択した動画ワークフローの `LoadImage` にそのファイル名を注入して投入 → 完了を待つ
+5. 動画をダウンロードし、ffmpeg でラストフレームを抽出
 
-- ラストフレーム連鎖: 履歴の動画から「ラストフレームを開始フレームにして続きを生成」できる（モード B の入力にラストフレーム画像を渡すだけ）。
+- 進捗は 1 ジョブとして配信され、メッセージが「画像生成 (1/2)」→「動画生成 (2/2)」と切り替わる
+- `workflow_json` には **両方のグラフ**を `{"image": {...}, "video": {...}}` の形で保存する（各要素は `workflow_id` / `prompt_id` / `graph`）。再現性の担保はこれで行い、`rerun` は `params` から作り直す
+- フル生成で選べるのは**開始フレームを受け取れる動画ワークフローだけ**（`accepts_start_image`）。t2v と IC-LoRA リファレンスシートは対象外で、選択すると 422 になる
+
+### 2.2 動画ワークフロー（`workflow/video/ltx2.3/`）
+
+| id | 表示名 | ckpt | 必要入力 | フル生成可 |
+|---|---|---|---|---|
+| `ltx2_3_t2v` | テキスト→動画 (t2v) | dev-fp8 | なし | ✕ |
+| `tx2_3_i2v` | 画像→動画 (i2v) | dev-fp8 | 画像 | ○ |
+| `tx2_3_ia2v` | 画像+音声→動画 (ia2v) | dev-fp8 | 画像・音声 | ○ |
+| `ltx2_3_id_lora` | 画像+参照音声→動画・リップシンク (ID-LoRA) | dev-fp8 + talkvid ID-LoRA | 画像・音声 | ○（既定） |
+| `ltx2_3_flf2v` | 最初と最後のフレーム指定 (flf2v) | distilled-fp8 | 画像・最終フレーム画像 | ○ |
+| `ltx2_3_ic_lora_image` | リファレンスシート (IC-LoRA) | distilled-fp8 + ingredients IC-LoRA | リファレンスシート画像 | ✕ |
+| `ltx2_3_ic_lora_motion` | 参照動画からモーション転写 (IC-LoRA + MoGe) | distilled-fp8 + union-control IC-LoRA | 画像・参照動画 | ○ |
+
+- id はファイル名（拡張子なし）。`tx2_3_i2v` / `tx2_3_ia2v` の綴りは配布ファイル名そのまま
+- 既定は `ltx2_3_id_lora`（旧 `video-gen.json` の動画側と同じ構成なので、既存ジョブ・エージェントの計画がそのまま通る）
+- ラストフレーム連鎖: 履歴の動画から「ラストフレームを開始フレームにして続きを生成」できる。元ジョブの動画ワークフローが開始フレームを受け取れない場合は既定ワークフローにフォールバックする
 
 ---
 
 ## 3. ワークフロー解析とパラメータ注入ポイント
 
-`video-gen.json` は API フォーマット。書き換え対象ノードは以下。
+テンプレートは API フォーマット。各テンプレートの書き換え対象は **注入マニフェスト**
+（`backend/app/workflows.py` の `WorkflowSpec.inject`）で宣言する。
+
+### 3.0 なぜノード ID 直指定か
+
+`class_type` + タイトルでは特定できない: ポジ/ネガの `CLIPTextEncode` が同じタイトル
+「CLIPテキストエンコード（プロンプト）」、`RandomNoise` が 1 グラフに 2 個、`ComfyMathExpression`
+は「数式」が多数ある。そのためマニフェストは **ノード ID** を指定し、代わりに整合性チェックを持つ:
+
+- 起動時（`lifespan`）と `GET /api/health` で、マニフェストの各ノードが**実在し `class_type` が一致し
+  指定フィールドを持つ**ことを検証する（`validate_specs`）。不一致は起動ログとヘルスに出る
+- テストでも同じ検証を行う（`tests/test_workflow.py::test_every_manifest_matches_its_template`）
+- **ワークフロー JSON を差し替えたら、マニフェストも合わせて更新する**運用
 
 ### 3.1 ユーザーが UI から設定する項目
 
-| 項目 | ノード / フィールド | 現在値 | UI |
-|---|---|---|---|
-| アスペクト比 | `366.inputs.aspect_ratio` | `4:3 (Standard)` | セレクト（選択肢は `/object_info` の ResolutionSelector 定義から動的取得） |
-| メガピクセル | `366.inputs.megapixels` | `1` | 数値（0.25〜2 目安） |
-| LoRA（複数可） | `365:15` を起点に動的生成（§3.4） | ―（登録リストは空で開始） | アプリ内 LoRA 登録リストから複数選択。各 LoRA に強度スライダー |
-| LoRA トリガーワード | `365:27.inputs.string_a` | （プロンプト先頭に連結される文字列） | 選択した LoRA のトリガーワードを自動連結（編集可）。トリガーワードは LoRA 登録リストで管理 |
-| リファレンス音声 | `432.inputs.audio` | mp3 ファイル名 | ファイルアップロード（`/upload/image` で送信 → ファイル名を注入） |
-| 秒数 (Duration) | `433:331.inputs.value` | `10` | 数値・**上限なし**（フレーム数 = 秒数 × fps + 1 は `433:329` が計算。長尺は VRAM 次第で ComfyUI 側エラーになり得ることを UI に注記） |
-| フレームレート | `433:422.inputs.value` | `25` | 数値（既定 25、通常は固定でよい） |
-| 開始フレーム画像（モード B） | `435.inputs.image` | ― | 画像アップロード or 履歴から選択 |
-| 画像・動画プロンプト | `365:19` / `433:430` | ― | テキストエリア（手動入力が基本。Grok チャット §4.3 の結果を反映して編集も可） |
-| 動画ネガティブ | `433:413.inputs.text` | `pc game, …` | プリセット切替（現行値 / モデル作者版）+ 直接編集可 |
+| 項目 | 注入先（論理名 → ノード） | UI |
+|---|---|---|
+| 動画ワークフロー | ― | プルダウン（`/api/options` の `video_workflows`）。選択に応じて必要入力の欄が出る |
+| アスペクト比 / メガピクセル | 画像: `aspect_ratio` / `megapixels` → `49` (ResolutionSelector)。動画: アプリが幅・高さを計算して `width` / `height` に注入 | セレクト（選択肢は `/object_info` の ResolutionSelector から動的取得）+ 数値 |
+| LoRA（複数可） | 画像のみ。`lora_chain` を動的構築（§3.4） | アプリ内 LoRA 登録リストから複数選択＋強度スライダー |
+| LoRA トリガーワード | `trigger_concat` → `30:27` (StringConcatenate) / `trigger_switch` → `30:28` | 選択 LoRA のトリガーワードを自動連結（編集可） |
+| リファレンス音声 | `audio` → `276` (LoadAudio)。要求するワークフローのみ | アップロード（`/upload/image` で送信 → ファイル名を注入） |
+| 開始フレーム / 最終フレーム / 参照動画 | `image` / `end_image` / `video` | ワークフローの必要入力に応じて表示。画像は D&D・履歴のラストフレームからも選べる |
+| 秒数 (Duration) | `duration` | 数値・**上限なし**。長尺は VRAM 次第で ComfyUI 側エラーになり得ることを UI に注記 |
+| フレームレート | `fps` | 数値（既定 25） |
+| 画像・動画プロンプト | `prompt`（画像 `30:19` / 動画は各テンプレート） | テキストエリア（手動入力が基本。Grok チャット §4.3 の結果を反映して編集も可） |
+| 動画ネガティブ | `negative` | プリセット切替（ワークフロー既定 / 現行値 / モデル作者版）+ 直接編集可。**空欄ならテンプレート既定値のまま**（dev 系は `pc game, …`、distilled 系は品質ネガ） |
+
+#### 解像度の計算
+
+画像側は `49` (ResolutionSelector) にアスペクト比とメガピクセルをそのまま渡す。
+動画側の新テンプレートは幅・高さの `PrimitiveInt` 指定になったため、アプリが同じ式で計算する
+（ComfyUI `comfy_extras/nodes_resolution.py` と一致。各辺を 8 の倍数に丸め）:
+
+```
+scale  = sqrt(megapixels * 1024 * 1024 / (w_ratio * h_ratio))
+width  = round(w_ratio * scale / 8) * 8
+height = round(h_ratio * scale / 8) * 8
+```
+
+例外: `ltx2_3_ic_lora_image` は幅・高さがリファレンスシートのパディング結果
+（`722` ResizeAndPadImage の `target_width` / `target_height`）から決まるため、そこに注入する。
+潜在側の丸めは `EmptyLTXVLatentVideo` が行う。
+
+#### フレーム数
+
+各テンプレートの `ComfyMathExpression`（`a * b + 1` もしくは `a * b`）を、アプリが計算した
+`8n + 1` の定数に固定する。式は `a * 0 + b * 0 + <frames>` に書き換え、入力リンクは温存するので
+グラフ形状と出力型は変わらない。`ltx2_3_ic_lora_motion` はフレーム数が参照動画の長さで決まるため
+式の固定を行わず、代わりに秒数を `692` (Video Slice) の `duration` に注入する。
 
 ### 3.2 アプリが自動注入する項目
 
-| 項目 | ノード / フィールド | 方針 |
+| 項目 | 論理名 | 方針 |
 |---|---|---|
-| 画像プロンプト | `365:19.inputs.value` | フォームの確定値（手動 or Grok チャット反映後） |
-| 動画プロンプト | `433:430.inputs.value` | フォームの確定値（同上） |
-| 画像 seed | `365:3.inputs.seed` | 実行毎にランダム（固定オプションあり） |
-| 動画 noise seed | `433:394` / `433:395.inputs.noise_seed` | 実行毎にランダム（固定オプションあり） |
-| 出力プレフィックス | `75.inputs.filename_prefix` | `video/{job_id}` にして成果物とジョブを紐付け |
-| ローカル LLM リファイン | `365:24.inputs.value` | **false 固定**（プロンプト整形は Grok が担うため、ComfyUI 内蔵の TextGenerate リファインは使わない。UI に隠しオプションとして残す）。実装時に ComfySwitchNode が遅延評価か確認し、false でも `365:16` (TextGenerate) が実行される場合は `365:16`〜`365:18` をノードごと削除して `365:21` の `on_true` を `365:19` に付け替える |
+| 画像プロンプト / 動画プロンプト | `prompt` | フォームの確定値（手動 or Grok チャット反映後） |
+| 画像 seed | `seed` → `30:3` | 実行毎にランダム（固定オプションあり）。`params` に保存して再現可能 |
+| 動画 noise seed | `seeds`（低解像度パス + アップスケールパスの `RandomNoise`、IC-LoRA 系は `KSampler.seed`） | 同上。seed が 1 個しか渡らない場合は全サンプラーで共用 |
+| 出力プレフィックス | `save_prefix` | 画像 `images/{job_id}` / 動画 `video/{job_id}` にして成果物とジョブを紐付け |
+| ローカル LLM リファイン | `refine_enable` → `30:24` | **false 固定**（プロンプト整形は Grok が担う）。`ComfySwitchNode` は遅延評価（`check_lazy_status`）なので `30:16` (TextGenerate) は実行されない |
+| プロンプト拡張 | `prompt_enhance` → 各テンプレートの `Boolean (Enable Prompt Enhance)` | **false 固定**（同上）。IC-LoRA 系は false なのでスイッチのリテラル側 `on_false` にプロンプトを注入する |
 
 ### 3.3 固定（触らない）ノード
 
-- 画像側: UNET `redcraft23INT8INT4FP8_30Krea2` / CLIP `qwen3vl_4b` / VAE `qwen_image_vae`、KSampler 設定（euler / simple / 8 steps / CFG 1 — RedCraft Krea2 版の推奨値そのまま）
-- 動画側: checkpoint `sexgodPinkcherryLTX23_v16bDev`、distil LoRA (strength 0.5)、talkvid ID-LoRA + `LTXVReferenceAudio`（identity_guidance_scale 3）、2 段サンプリング（半解像度 → LatentUpsampler x2）、ManualSigmas
-- 動画ネガティブ `433:413` は既定固定だが、プリセット切替可能にする（現行値 / モデル作者版。`docs/prompt-samples.md` 参照）
-- `365:391` (ImpactWildcardEncode) は現状どこにも接続されていない孤立ノード → API 投入時に削除する
-- ただし**モデルファイル名は利用者の ComfyUI 環境依存**のため、設定ページ（`GET/PUT /api/models`）で上書き可能とする。既定値はワークフロー (`video-gen.json`) の値。対象は UNETLoader.unet_name / CLIPLoader.clip_name / VAELoader.vae_name / CheckpointLoaderSimple.ckpt_name / LTXVAudioVAELoader.ckpt_name / LTXAVTextEncoderLoader.text_encoder・ckpt_name / LatentUpscaleModelLoader.model_name / LoraLoaderModelOnly.lora_name（§3.4 で置換される `365:15` は除く）。上書きは `"<node_id>.<field>": "<ファイル名>"` の形で `config.json` の `model_overrides` に保存し、モード別プルーニング後に適用する（削除済みノード宛の指定は無視される）
+- 画像側: UNET `krea2_turbo_fp8_scaled` / CLIP `qwen3vl_4b_fp8_scaled` / VAE `qwen_image_vae`、KSampler 設定（euler / simple / 8 steps / CFG 1）
+- 動画側: checkpoint `ltx-2.3-22b-dev-fp8` または `ltx-2.3-22b-distilled-fp8`、distil LoRA (strength 0.5)、talkvid ID-LoRA + `LTXVReferenceAudio`（identity_guidance_scale 3）、IC-LoRA と MoGe、2 段サンプリング（半解像度 → LatentUpsampler x2）、ManualSigmas
+- **モデルファイル名は利用者の ComfyUI 環境依存**のため、設定ページ（`GET/PUT /api/models`）で上書き可能。既定値は各テンプレートの値。対象は UNETLoader.unet_name / CLIPLoader.clip_name / VAELoader.vae_name / CheckpointLoaderSimple.ckpt_name / LTXVAudioVAELoader.ckpt_name / LTXAVTextEncoderLoader.text_encoder・ckpt_name / LatentUpscaleModelLoader.model_name / LoadMoGeModel.model_name / LoraLoaderModelOnly.lora_name / LoraLoader.lora_name（§3.4 で置換される krea2 のプレースホルダは除く）
+- 上書きキーは**ワークフロー ID でスコープ**する: `"<workflow_id>/<node_id>.<field>": "<ファイル名>"`。テンプレート間で同じノード ID（例: `340:317` が ia2v と id_lora の両方にある）が衝突しないため。旧レイアウトの非スコープキーは無視される（マイグレーション不要）
 
 ### 3.4 複数 LoRA の動的注入
 
-人物 LoRA を複数同時に適用できるよう、`365:15`（LoraLoaderModelOnly 1 個固定）は使わず、アプリが API JSON 生成時に **LoRA チェーンを動的に構築**する:
+人物 LoRA を複数同時に適用できるよう、krea2 テンプレートが持つ 5 個の
+`LoraLoaderModelOnly`（strength 0 のプレースホルダ `30:61:*`）は使わず、アプリが API JSON 生成時に
+**LoRA チェーンを動的に構築**する:
 
 ```
-365:10 (UNETLoader)
-  → lora_0 (LoraLoaderModelOnly: 1個目, strength_model=各LoRAの強度)
-  → lora_1 (2個目)
-  → … 選択数ぶん連結
-  → 365:22 (Switch) の on_true 入力へ
+30:10 (UNETLoader)                       … lora_chain.head
+  → app_lora_0 (LoraLoaderModelOnly: 1個目, strength_model=各LoRAの強度)
+  → app_lora_1 (2個目)
+  → … 選択数ぶん連結（テンプレートのプレースホルダ数を超えてもよい）
+  → 30:3 (KSampler) の model 入力へ    … lora_chain.consumer
 ```
 
-- ノード ID はアプリが採番（`app_lora_0`, `app_lora_1`, …）。`365:15` はテンプレートから削除
-- LoRA 0 件選択時は `365:23` (Enable LoRA?) を `false` にする（1 件以上で `true`）
-- トリガーワードは選択 LoRA の trigger_word を `", "` で連結（UI で編集可）し、`365:27`（StringConcatenate）で**画像プロンプトの先頭**に付与する: `string_a` = トリガーワード（リテラル）、`string_b` = プロンプトのリンク、`delimiter` = `", "`
+- ノード ID はアプリが採番（`app_lora_0`, `app_lora_1`, …）。プレースホルダはテンプレートから削除
+- LoRA 0 件選択時は `30:3.model` が `30:10` を直接指す
+- トリガーワードは選択 LoRA の trigger_word を `", "` で連結（UI で編集可）し、`30:27`（StringConcatenate）で**画像プロンプトの先頭**に付与する: `string_a` = トリガーワード（リテラル）、`string_b` = プロンプトのリンク（`30:20`）、`delimiter` = `", "`
   - Grok がプロンプト本文中で既にトリガーワードを使っている場合は重複を避けるため、カンマ区切りの語単位で（大文字小文字無視・単語境界一致）未使用の語だけを付与する
-  - 付与すべき語が無い場合は `string_a` と `delimiter` を空にして素通し（先頭に `", "` が残らないようにする）
+  - 付与すべき語が無い場合は `string_a` と `delimiter` を空にし、さらに `30:28` (Switch) を `false` にして連結ノードを丸ごとバイパスする（先頭に `", "` が残らないようにする）
 - 注意: 動画側（LTX）は別モデルのため画像側にのみ適用される。人物の同一性は生成画像経由で動画に引き継がれる
 
 ---
@@ -135,13 +195,13 @@ Cookie ベースの非公式 API は規約リスクがあるため**使わない
 - 動画プロンプトは `<シーン種別> scene.` の宣言で始めるのが作者流（例: "voyeur style ... scene."）
 - **引用符 `"..."` で囲んだセリフはそのまま音声合成される**（英語のセリフ+話者の声質形容: "in a british voice she says …"）。セリフ機能を UI のオプションとして扱う
 - 音・声の描写（moaning, sigh, 効果音）を文中に散りばめる
-- 作者が実際に使うネガティブは品質系+音声系（blurry, …, distorted sound, saturated loud 等）で、現行 `video-gen.json` の値と異なる。**アプリからネガティブも選択可能にする**（既定は現行値、プリセットで作者版を用意）
+- 作者が実際に使うネガティブは品質系+音声系（blurry, …, distorted sound, saturated loud 等）で、テンプレート既定値と異なる。**アプリからネガティブも選択可能にする**（既定は現行値、プリセットで作者版を用意）
 - RedCraft 画像プロンプトは品質語プレフィックス（例: "masterpiece, very aesthetic"）+ 自然文 1 段落が実例でも主流
 
 **画像プロンプト（RedCraft 赤佬3.0 / Krea 2 ベース、TE は Qwen3-VL 4B）**
 
 - Krea 2 公式ガイド（krea-ai/krea-2 `docs/prompting.md`）準拠: **自然文 1 段落・長く詳細なほど良い**。画像内に文字を描画する場合は対象語を引用符で囲む
-- Grok 用システムプロンプトは Krea 2 公式の LLM 拡張プロンプト（`docs/expansion.txt` — video-gen.json のノード `365:18` に同一物が組込済み）をベースに、本アプリの用途・LoRA トリガー・出力 JSON 形式に合わせて調整する
+- Grok 用システムプロンプトは Krea 2 公式の LLM 拡張プロンプト（`workflow/image/krea2/krea2_turbo.json` のノード `30:18` に同一物が組込済み）をベースに、本アプリの用途・LoRA トリガー・出力 JSON 形式に合わせて調整する
 - 構成順序（ワークフロー内の既存プロンプトをテンプレートとして踏襲）:
   1. LoRA トリガーワード（LoRA 有効時。Grok には表示名→トリガーワードの対応表を渡し、`image_prompt` の被写体名としてトリガーワードを文中で使わせる。未使用の語だけをアプリが `365:27` で先頭に補完する）
   2. 媒体・様式の宣言（例: "a single still frame from …" のようなスタイル定義）
@@ -172,7 +232,7 @@ Cookie ベースの非公式 API は規約リスクがあるため**使わない
 
 フロー:
 
-1. フォームの「Grokで生成」ボタン → チャットパネル（モーダル）を開く。フォームの現在値（モード、選択 LoRA とトリガーワード、秒数、既存プロンプト下書き）がコンテキストとして自動で渡る
+1. フォームの「Grokで生成」ボタン → チャットパネル（モーダル）を開く。フォームの現在値（モード、**選択中の動画ワークフロー** `video_workflow`、選択 LoRA とトリガーワード、秒数、既存プロンプト下書き）がコンテキストとして自動で渡る
 2. ユーザーが作りたいものをひとこと入力（例: 「かおりが楽しそうにダンスをしている」）
 3. Grok は**不足情報を質問で聞き返す**よう指示されている: 場所・服装・時間帯/照明・カメラ（ショットスケール/動き）・表情/ムード・セリフや音・動きの展開など。ユーザーが「おまかせ」と言えば残りは Grok が補完
 4. 情報が揃ったら Grok が `image_prompt` / `video_prompt` の最終案を JSON で提示 → 「フォームに反映」ボタンでプロンプト欄へ挿入
@@ -181,10 +241,11 @@ Cookie ベースの非公式 API は規約リスクがあるため**使わない
 実装:
 
 - grok CLI のヘッドレス実行（`grok -p`）は 1 発呼び出しのため、**会話履歴はアプリ側で保持**し、毎ターン「システムプロンプト + 履歴全文 + 最新発言」を組み立てて渡す
-- システムプロンプトの構成: ①役割（プロンプトエンジニア兼インタビュアー）②各モデルのプロンプト仕様（§4.2）+ few-shot 実例（docs/prompt-samples.md）③ヒアリング項目チェックリスト ④最終出力は ```json フェンス内の `{image_prompt, video_prompt, notes}` のみ、というルール
+- システムプロンプトの構成: ①役割（プロンプトエンジニア兼インタビュアー）②各モデルのプロンプト仕様（§4.2）+ few-shot 実例（docs/prompt-samples.md）③ヒアリング項目チェックリスト ④選択中の動画ワークフローの特性（下記）⑤最終出力は ```json フェンス内の `{image_prompt, video_prompt, notes}` のみ、というルール
+- **ワークフロー特性の反映**: CONTEXT には選択中の `video_workflow` の用途・必要入力・音声の扱い・`video_prompt` の書き方を出す。文面は `app/workflows.py` の `WorkflowSpec`（`description` / `audio_role` / `prompt_hint`）から自動生成する単一情報源なので、ワークフローを追加したらマニフェスト側に書けばチャット・エージェント両方に反映される（未記入は `validate_specs()` = ヘルスチェックで検出）。例: flf2v なら開始→終了フレーム間の遷移を書かせる、t2v / リファレンスシート IC-LoRA なら開始フレーム前提にしない、ia2v なら渡した音声がそのまま音声トラックになるのでセリフをプロンプトに書かせない、ic_lora_motion ならカメラ・テンポは参照動画由来なので書かせない
 - 応答の判定: 応答に JSON フェンスがあれば「最終案の提示」、なければ「質問継続」として UI に表示
 - 十分詳細な初回入力なら Grok は質問を飛ばして即 JSON を返してよい（ワンショット生成はチャットの特殊ケースとして自然に実現）
-- モード B ではスタートフレーム画像を grok 作業ディレクトリにコピーし、CLI に読ませて内容を踏まえた `video_prompt` を作らせる（読めない場合はテキストのみでフォールバック）
+- モード B ではスタートフレーム画像を grok 作業ディレクトリにコピーし、CLI に読ませて内容を踏まえた `video_prompt` を作らせる（読めない場合はテキストのみでフォールバック）。ワークフローが開始フレームを取らない場合（t2v 等）はモード B でも「見た目もプロンプトで決める」指示に切り替わる
 - チャット履歴は `chat_sessions` に保存し、ジョブに紐付ける（後から「どういう指示で作ったか」を追える）
 
 ---
@@ -192,11 +253,11 @@ Cookie ベースの非公式 API は規約リスクがあるため**使わない
 ## 5. ComfyUI 連携
 
 - 接続先: `http://<comfy-host>:8188`（設定画面で URL 変更可）。実行環境はローカル / LAN 上の別 PC / Comfy Cloud のいずれでも動くよう、ComfyUI クライアントは「接続 URL + 任意の認証ヘッダー（API キー）」を設定できる抽象化された 1 モジュールにする
-- **Comfy Cloud**: `video-gen.json` は Comfy Cloud 上で動作確認済み（custom nodes・使用モデルとも問題なし）。実装時は Cloud 向けのエンドポイント URL と認証設定を設定画面から入力できるようにする
+- **Comfy Cloud**: Cloud 向けのエンドポイント URL と認証設定を設定画面から入力できる（ホストが `comfy.org` のとき自動で Cloud 互換モード）
 - 使用 API:
-  - `GET /object_info` … ResolutionSelector のアスペクト比選択肢、LoRA 一覧、LoadAudio/LoadImage の選択肢取得
-  - `POST /upload/image` … 開始フレーム画像・リファレンス音声のアップロード
-  - `POST /prompt` … ワークフロー投入（`client_id` を付与）
+  - `GET /object_info` … ResolutionSelector のアスペクト比選択肢、LoRA 一覧、class_type の存在確認
+  - `POST /upload/image` … 開始フレーム画像・リファレンス音声・参照動画、および**フル生成 1 段目の生成画像**のアップロード（ComfyUI はこのエンドポイントで input ディレクトリに任意ファイルを受ける）
+  - `POST /prompt` … ワークフロー投入（`client_id` を付与）。フル生成は 1 ジョブで 2 回投入する
   - `WS /ws?clientId=…` … 進捗（ノード実行状況・プレビュー）の受信
   - `GET /history/{prompt_id}` … 出力ファイル名の取得
   - `GET /view?filename=…&type=output` … 成果物ダウンロード
@@ -207,8 +268,8 @@ Cookie ベースの非公式 API は規約リスクがあるため**使わない
 
 | 成果物 | 取得方法 |
 |---|---|
-| 生成画像 | モード A: `393` PreviewImage の出力を history から取得し `/view?type=temp` でダウンロード（temp はキュー再起動で消えるため即時保存）。モード C: SaveImage 出力を `type=output` で取得。いずれも `outputs/` に恒久保存 |
-| 動画 | `75` SaveVideo の出力ファイルを `/view` でダウンロードし `outputs/{job_id}/video.mp4` に保存 |
+| 生成画像 | 画像ワークフローの `SaveImage`（`29`）の出力を history から取得し `/view` でダウンロードして `outputs/{job_id}/image.png` に保存（フル生成でも SaveImage なので `type=output`） |
+| 動画 | 動画ワークフローの `SaveVideo` の出力ファイルを `/view` でダウンロードし `outputs/{job_id}/video.mp4` に保存。出力ノード ID はワークフローごとに異なる（`75` / `341` / `68`）ためマニフェストの `output_node` を使う |
 | ラストフレーム | ダウンロードした動画から ffmpeg で抽出: `ffmpeg -sseof -0.5 -i video.mp4 -update 1 -q:v 1 last_frame.png`（次回生成の開始フレームに再利用可能） |
 
 ---
@@ -227,19 +288,20 @@ CREATE TABLE jobs (
   image_prompt  TEXT,                      -- Grok 生成（編集後の最終値）
   video_prompt  TEXT,
   grok_raw      TEXT,                      -- Grok の生レスポンス(JSON)
-  params        TEXT NOT NULL,             -- アスペクト比/MP/LoRA/秒数/fps/seed 等の JSON
-  workflow_json TEXT NOT NULL,             -- 実際に投入した API JSON（完全再現用）
+  params        TEXT NOT NULL,             -- ワークフローID/アスペクト比/MP/LoRA/秒数/fps/seed 等の JSON
+  workflow_json TEXT NOT NULL,             -- 投入した API JSON（{"image": …, "video": …} の段階別）
   comfy_prompt_id TEXT,
   image_path    TEXT,
   video_path    TEXT,
   last_frame_path TEXT,
-  source_image  TEXT,                      -- モードBの開始フレーム（アップロード元 or 参照した job id）
+  source_image  TEXT,                      -- 開始フレーム（アップロード元 or 参照した job id）
   audio_path    TEXT,                      -- リファレンス音声
   error         TEXT
 );
 ```
 
-- `workflow_json` を保存するため、任意の過去ジョブを完全再実行（re-run）できる
+- `params` には `video_workflow` / `image_workflow`（ワークフロー ID）と、`end_image` / `reference_video` も保存する
+- `workflow_json` を保存するため、任意の過去ジョブの投入内容をあとから完全に確認できる（`rerun` は `params` から作り直す）
 - リファレンス音声・アップロード画像は `assets/` に保存し再利用可能（名前を付けて管理）
 - **LoRA 登録リスト（アプリ内管理）**: 人物 LoRA を複数登録し、生成時に複数選択できる
 
@@ -278,9 +340,10 @@ SPA 1 画面 + 履歴。ダークテーマの生成系ツールらしい見た�
 │ ヘッダー: 接続状態(ComfyUI ● / Grok ●)   [設定]          │
 ├───────────────────────────┬────────────────────────────┤
 │ 左ペイン(入力)              │ 右ペイン(結果)               │
-│ ◦ モード切替 [フル生成|画像から|画像のみ]                  │
-│ ◦ 開始フレーム(モードB:      │ ◦ 進捗バー + 実行中ノード表示  │
-│    D&D / 履歴から選択)      │ ◦ 生成画像プレビュー          │
+│ ◦ モード切替 [フル生成|動画生成|画像のみ]                  │
+│ ◦ 動画ワークフロー(プルダウン)│ ◦ 進捗バー + 実行中ノード表示  │
+│ ◦ 開始フレーム/最終フレーム/  │ ◦ 生成画像プレビュー          │
+│    参照動画(D&D/履歴から選択) │                            │
 │ ◦ アスペクト比 / MP         │ ◦ 動画プレイヤー              │
 │ ◦ LoRA 複数選択(強度/トリガー)│ ◦ ラストフレーム              │
 │ ◦ リファレンス音声選択       │   [この画像で続きを生成]       │
@@ -304,12 +367,13 @@ SPA 1 画面 + 履歴。ダークテーマの生成系ツールらしい見た�
 - 進捗は ComfyUI の WS イベント（`executing` / `progress`）をそのまま％表示に変換
 - 実行中でもキュー追加可能（ジョブキュー表示）
 - LoRA 選択はチップ型マルチセレクト。選択するとトリガーワード連結欄（編集可）に反映
-- **モードに応じた項目の無効化**: モード B では画像プロンプト・LoRA・トリガーワードをグレーアウト（画像生成サブグラフを使わないため）。モード C では動画プロンプト・ネガティブ・リファレンス音声・秒数・fps をグレーアウト
-- 動画ネガティブはプリセット選択（現行値 / モデル作者版）+ 編集可（詳細設定アコーディオン内）
+- **モードとワークフローに応じた項目の無効化**: 動画生成モードでは画像プロンプト・LoRA・トリガーワードをグレーアウト（画像ワークフローを使わないため）。画像のみモードでは動画プロンプト・ネガティブ・リファレンス音声・秒数・fps をグレーアウト。さらに**選択した動画ワークフローのマニフェスト**に従って、音声を受け取らないワークフローでは音声欄を無効化し、必要な入力（最終フレーム / 参照動画）の欄だけを表示する
+- フル生成モードのプルダウンには開始フレームを受け取れるワークフローのみを出す（選択中のものが対象外になったら自動で切り替える）
+- 動画ネガティブはプリセット選択（ワークフロー既定 / 現行値 / モデル作者版）+ 編集可（詳細設定アコーディオン内）
 - 設定は**モーダルではなく専用ページ（フルページ）**。ヘッダーの [設定] で画面遷移し、ページ左上の [← 戻る] で生成画面に復帰する。3 タブ構成:
   - **接続 / Grok**: ComfyUI 接続先（URL / APIキー） / grok CLI コマンドと**使用モデル（既定: grok-4.5、変更可）**
   - **LoRA 管理**: 表示名・ファイル名・トリガーワード・既定強度・既定音声・並び順の CRUD
-  - **モデル**: ワークフローのモデルファイル名一覧（タイトル / ノード・フィールド / 既定値）をテーブル表示し、行ごとにテキスト入力で上書き。変更行はハイライト、[既定に戻す] で復帰、[保存] で一括 PUT。LoRA 行は `/api/options` の `lora_files` があれば datalist で補完（§3.3）
+  - **モデル**: 全ワークフローのモデルファイル名一覧（ワークフロー / タイトル / ノード・フィールド / 既定値）をテーブル表示し、行ごとにテキスト入力で上書き。変更行はハイライト、[既定に戻す] で復帰、[保存] で一括 PUT。LoRA 行は `/api/options` の `lora_files` があれば datalist で補完（§3.3）
 
 ---
 
@@ -327,20 +391,20 @@ SPA 1 画面 + 履歴。ダークテーマの生成系ツールらしい見た�
 
 ```
 GET  /api/health                 … ComfyUI/Grok 疎通チェック
-GET  /api/options                … アスペクト比・ComfyUI上のLoRAファイル一覧等（object_info 由来）
+GET  /api/options                … 動画/画像ワークフロー一覧（必要入力の宣言つき）・アスペクト比・LoRA一覧・アセット一覧
 GET/POST/PUT/DELETE /api/loras   … アプリ内 LoRA 登録リストの CRUD
-GET  /api/models                 … ワークフローのモデルファイル名一覧（既定値+現在値）
+GET  /api/models                 … 全ワークフローのモデルファイル名一覧（既定値+現在値、キーは workflow_id でスコープ）
 PUT  /api/models                 … モデルファイル名の上書き保存（既定値と同値/空は削除）
-POST /api/chat/sessions          … チャット開始（フォーム現在値をコンテキストとして渡す）
+POST /api/chat/sessions          … チャット開始（フォーム現在値をコンテキストとして渡す。`video_workflow` を含む）
 POST /api/chat/sessions/{id}/messages … 発言送信 → Grok 応答（質問 or 最終JSON案）を返す
 GET  /api/chat/sessions/{id}     … 履歴取得
 POST /api/jobs                   … ジョブ作成・実行（プロンプト確定値+パラメータ）
 GET  /api/jobs?limit=…           … 履歴一覧
 GET  /api/jobs/{id}              … 詳細
 POST /api/jobs/{id}/rerun        … 再実行（seed 変更オプション）
-POST /api/jobs/{id}/continue     … ラストフレームを開始フレームに新規ジョブ
+POST /api/jobs/{id}/continue     … ラストフレームを開始フレームに新規ジョブ（`video_workflow` / `end_image` / `reference_video` 等を差分指定可。開始フレームを取れないワークフローは既定に戻す）
 DELETE /api/jobs/{id}
-POST /api/assets/audio|image     … アセットアップロード
+POST /api/assets/audio|image|video … アセットアップロード（video は参照動画用）
 WS   /api/ws                     … 進捗配信
 GET  /outputs/…                  … 静的配信（画像/動画）
 ```
@@ -351,8 +415,9 @@ GET  /outputs/…                  … 静的配信（画像/動画）
 
 1. **Grok Build CLI 依存**: `grok` CLI のインストールとサブスクリプションでのサインインが前提。CLI はベータ段階のため出力形式・挙動が変わる可能性があり、LLM クライアントは抽象化して公式 API / ローカル LLM に差し替え可能に設計する。NSFW プロンプト生成を Grok が拒否した場合のリトライ指示（システムプロンプト側の調整）とエラー表示も用意する
 2. **コンテンツ**: 本アプリは成人向けコンテンツをローカル生成する個人利用ツール。生成物・プロンプトはすべてローカル保存のみで外部送信しない。LoRA は実在人物の無断利用を行わないこと（利用者責任）
-3. **ComfyUI 依存**: ResolutionSelector / ComfySwitchNode / LTXV 系 / ComfyMath / ResizeImage 系等の custom nodes が導入済みである前提（`ImpactWildcardEncode` は投入時に削除するため不要）。起動時に `/object_info` で、**投入 JSON に実際に含まれる class_type** の存在チェックを行い、不足があれば UI に警告
-4. モデル既定値（steps/CFG/sigmas 等）は配布ページ推奨値でワークフローに固定済みのため、アプリからは変更しない（上級者向けに将来開放余地あり）
+3. **ComfyUI 依存**: ResolutionSelector / ComfySwitchNode / LTXV 系 / ComfyMath / ResizeImage 系 / ResizeAndPadImage / MoGe 系 / LoadVideo / Video Slice 等の custom nodes が導入済みである前提。起動時と `/api/health` で `/object_info` に対し **`workflow/` 配下の全テンプレートに含まれる class_type** の存在チェックを行い、不足があれば UI に警告する（どのワークフローを使うか実行前には分からないため、集合は全テンプレート横断）。同時にマニフェストとテンプレートの整合性も検証する（§3.0）
+4. **プロンプト拡張ブランチのモデルファイル**: 各動画テンプレートは prompt enhance 用に `gemma-3-12b-it-abliterated_lora`（`LoraLoader`）を参照している。アプリは enhance を常に false にするので実行はされないが、ComfyUI は投入グラフ全体の入力を検証するためファイル自体は存在する必要がある。無い場合は設定ページの「モデル」タブで別名に差し替える
+5. モデル既定値（steps/CFG/sigmas 等）は配布ページ推奨値でワークフローに固定済みのため、アプリからは変更しない（上級者向けに将来開放余地あり）
 
 ## 11. 決定事項と残課題
 

@@ -3,25 +3,29 @@ from fastapi import APIRouter
 from .. import comfy, grok
 from ..config import load_settings
 from ..models import Health, HealthStatus
-from ..workflow import WorkflowError, all_required_class_types
+from ..workflow import WorkflowError, all_required_class_types, validate_manifests
 
 router = APIRouter(prefix="/api", tags=["health"])
 
 
 async def check_comfyui() -> HealthStatus:
-    """/object_info reachability + presence of every class_type we submit (§10-3)."""
+    """/object_info reachability + presence of every class_type we submit (§10-3).
+
+    The injection manifests are verified against the templates at the same time,
+    so a hand-edited ``workflow/*.json`` shows up here rather than as a failed
+    job (SPEC §3).
+    """
     settings = load_settings()
     if not settings.comfy_url:
         return HealthStatus(status="not_configured", detail="comfy_url is empty")
     try:
         info = await comfy.get_object_info()
+        validate_manifests()
         required = all_required_class_types()
     except comfy.ComfyError as exc:
         return HealthStatus(status="error", detail=str(exc))
     except (WorkflowError, OSError, ValueError) as exc:
-        return HealthStatus(
-            status="error", detail=f"workflow template unreadable: {exc}"
-        )
+        return HealthStatus(status="error", detail=f"workflow template: {exc}")
 
     missing = sorted(required - set(info))
     if missing:

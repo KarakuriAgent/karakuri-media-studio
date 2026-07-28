@@ -105,12 +105,23 @@ export default function App() {
       const next = await api.options()
       setOptions(next)
       setOptionsError(next.comfy_error)
-      setForm((previous) =>
-        next.aspect_ratios.length > 0 &&
-        !next.aspect_ratios.includes(previous.aspectRatio)
-          ? { ...previous, aspectRatio: next.aspect_ratios[0] }
-          : previous,
-      )
+      setForm((previous) => {
+        const changes: Partial<FormState> = {}
+        if (
+          next.aspect_ratios.length > 0 &&
+          !next.aspect_ratios.includes(previous.aspectRatio)
+        ) {
+          changes.aspectRatio = next.aspect_ratios[0]
+        }
+        if (
+          next.video_workflows.length > 0 &&
+          !next.video_workflows.some((item) => item.id === previous.videoWorkflow)
+        ) {
+          changes.videoWorkflow =
+            next.default_video_workflow || next.video_workflows[0].id
+        }
+        return Object.keys(changes).length > 0 ? { ...previous, ...changes } : previous
+      })
     } catch (error) {
       setOptionsError(
         error instanceof ApiError ? formatDetail(error.detail) : String(error),
@@ -234,8 +245,13 @@ export default function App() {
     setSubmitting(true)
     setFieldErrors({})
     try {
+      const workflow =
+        options?.video_workflows.find((item) => item.id === form.videoWorkflow) ?? null
+      const needs = (name: string) =>
+        form.mode !== 'image_only' && (workflow?.requires ?? []).includes(name as never)
       const payload: JobCreate = {
         mode: form.mode,
+        video_workflow: form.videoWorkflow,
         image_prompt: form.mode === 'i2v' ? '' : form.imagePrompt,
         video_prompt: form.mode === 'image_only' ? '' : form.videoPrompt,
         negative_prompt: form.negativePrompt,
@@ -252,8 +268,12 @@ export default function App() {
         trigger_text: form.mode === 'i2v' ? '' : form.triggerText,
         duration: form.duration,
         fps: form.fps,
-        audio_path: form.mode === 'image_only' ? null : form.audioPath || null,
-        source_image: form.mode === 'i2v' ? form.sourceImage || null : null,
+        audio_path: needs('audio') ? form.audioPath || null : null,
+        // in full mode the image stage produces the start frame
+        source_image:
+          form.mode === 'i2v' && needs('image') ? form.sourceImage || null : null,
+        end_image: needs('end_image') ? form.endImage || null : null,
+        reference_video: needs('video') ? form.referenceVideo || null : null,
         seed: form.seedLocked ? form.seed : null,
         chat_session_id: chatSessionId,
       }

@@ -25,6 +25,9 @@ from app import (
 from app.main import app
 from app.models import AgentSession, Settings
 from app.routers import assets as assets_router
+from app.workflows import DEFAULT_VIDEO_WORKFLOW, video_specs
+
+from conftest import fake_outputs
 
 HAS_FFMPEG = shutil.which("ffmpeg") is not None
 needs_ffmpeg = pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg is not installed")
@@ -66,10 +69,7 @@ class FakeComfy:
         self.queued: list[dict] = []
         self.history_calls = 0
         self.fail = False
-        self.outputs = {
-            "393": {"images": [{"filename": "img.png", "subfolder": "", "type": "temp"}]},
-            "75": {"videos": [{"filename": "vid.mp4", "subfolder": "", "type": "output"}]},
-        }
+        self.outputs = fake_outputs()
 
     async def upload_file(self, path, subfolder=None):
         self.uploads.append(str(path))
@@ -80,6 +80,17 @@ class FakeComfy:
             raise comfy.ComfyError("ComfyUI is down")
         self.queued.append(workflow)
         return f"prompt-{len(self.queued)}"
+
+    @property
+    def job_count(self) -> int:
+        """How many *jobs* were submitted (a full job is 2 ComfyUI prompts)."""
+        seen: set[str] = set()
+        for workflow in self.queued:
+            for node in workflow.values():
+                prefix = (node.get("inputs") or {}).get("filename_prefix")
+                if isinstance(prefix, str) and "/" in prefix:
+                    seen.add(prefix.split("/", 1)[1])
+        return len(seen)
 
     async def get_history(self, prompt_id):
         self.history_calls += 1
@@ -130,6 +141,7 @@ def env(tmp_path, monkeypatch, request):
     sessions = tmp_path / "agent-sessions"
     (assets / "audio").mkdir(parents=True)
     (assets / "image").mkdir(parents=True)
+    (assets / "video").mkdir(parents=True)
     outputs.mkdir()
     sessions.mkdir()
 
@@ -159,6 +171,11 @@ def env(tmp_path, monkeypatch, request):
 
     audio = assets / "audio" / "ref.mp3"
     audio.write_bytes(b"ID3")
+    # ワークフロー別の必要入力（end_image / reference_video）を試すための素材
+    image = assets / "image" / "frame.png"
+    image.write_bytes(b"\x89PNG fake")
+    clip = assets / "video" / "ref.mp4"
+    clip.write_bytes(b"\x00\x00\x00\x18ftypmp42")
 
     with TestClient(app) as client:
         yield type(
@@ -172,6 +189,8 @@ def env(tmp_path, monkeypatch, request):
                 "outputs": outputs,
                 "sessions": sessions,
                 "audio": audio,
+                "image": image,
+                "clip": clip,
             },
         )
 
@@ -313,6 +332,121 @@ def test_unknown_lora_is_rejected(env):
         )
 
 
+def _plan(env, **job_overrides) -> str:
+    payload = {
+        "action": "plan",
+        "tasks": [{"label": "x", "job": job_body(env, **job_overrides)}],
+    }
+    return action_answer(payload)
+
+
+# --- ワークフロー選択 (SPEC §3 / AGENT-MODE §3.1) ---------------------------
+
+def test_plan_can_select_another_video_workflow(env):
+    action = agent_protocol.parse_action(
+        _plan(
+            env,
+            mode="i2v",
+            video_workflow="ltx2_3_flf2v",
+            source_image=str(env.image),
+            end_image=str(env.image),
+            audio_path=None,
+        )
+    )
+    job = action.tasks[0].job
+    assert job["video_workflow"] == "ltx2_3_flf2v"
+    assert job["end_image"] == str(env.image)
+
+
+def test_motion_workflow_takes_a_reference_video(env):
+    action = agent_protocol.parse_action(
+        _plan(
+            env,
+            mode="full",
+            video_workflow="ltx2_3_ic_lora_motion",
+            reference_video=str(env.clip),
+            audio_path=None,
+        )
+    )
+    assert action.tasks[0].job["reference_video"] == str(env.clip)
+
+
+def test_a_missing_workflow_input_names_the_workflow(env):
+    """flf2v の end_image 不足は plan 検証で弾き、ワークフロー名込みで説明する。"""
+    with pytest.raises(agent_protocol.ActionError) as excinfo:
+        agent_protocol.parse_action(
+            _plan(
+                env,
+                mode="i2v",
+                video_workflow="ltx2_3_flf2v",
+                source_image=str(env.image),
+                audio_path=None,
+            )
+        )
+    message = str(excinfo.value)
+    assert "end_image" in message
+    assert "ltx2_3_flf2v" in message
+
+
+def test_a_missing_reference_video_is_reported(env):
+    with pytest.raises(agent_protocol.ActionError, match="reference_video"):
+        agent_protocol.parse_action(
+            _plan(env, video_workflow="ltx2_3_ic_lora_motion", audio_path=None)
+        )
+
+
+def test_the_default_workflow_still_requires_its_audio(env):
+    """既定 (ID-LoRA) の音声必須はワークフロー由来として報告される。"""
+    with pytest.raises(agent_protocol.ActionError) as excinfo:
+        agent_protocol.parse_action(_plan(env, audio_path=None))
+    assert "audio_path" in str(excinfo.value)
+    assert "ltx2_3_id_lora" in str(excinfo.value)
+
+
+def test_a_workflow_without_a_start_frame_cannot_run_in_full_mode(env):
+    with pytest.raises(agent_protocol.ActionError) as excinfo:
+        agent_protocol.parse_action(
+            _plan(env, mode="full", video_workflow="ltx2_3_t2v", audio_path=None)
+        )
+        # t2v は開始フレームを受け取れない -> full では使えない
+    assert "ltx2_3_t2v" in str(excinfo.value)
+
+
+def test_an_unknown_video_workflow_lists_the_real_ones(env):
+    with pytest.raises(agent_protocol.ActionError) as excinfo:
+        agent_protocol.parse_action(_plan(env, video_workflow="ghost_workflow"))
+    message = str(excinfo.value)
+    assert "ghost_workflow" in message
+    assert "ltx2_3_id_lora" in message
+
+
+@pytest.mark.parametrize(
+    "field, workflow",
+    [
+        ("end_image", "ltx2_3_flf2v"),
+        ("reference_video", "ltx2_3_ic_lora_motion"),
+    ],
+)
+def test_stray_workflow_assets_are_rejected(env, field, workflow):
+    """end_image / reference_video も assets 配下の実在チェックを通す。"""
+    overrides = {
+        "mode": "i2v",
+        "video_workflow": workflow,
+        "source_image": str(env.image),
+        "audio_path": None,
+        field: "/etc/passwd",
+    }
+    with pytest.raises(agent_protocol.ActionError, match=field):
+        agent_protocol.parse_action(_plan(env, **overrides))
+
+
+def test_image_only_ignores_the_video_workflow(env):
+    action = agent_protocol.parse_action(
+        _plan(env, mode="image_only", video_workflow="ltx2_3_t2v", audio_path=None)
+    )
+    assert action.tasks[0].job["mode"] == "image_only"
+
+
 def test_plan_over_the_task_limit_is_rejected(env):
     with pytest.raises(agent_protocol.ActionError, match="最大"):
         agent_protocol.parse_action(plan_answer(env, 3), max_tasks=2)
@@ -364,6 +498,28 @@ def test_session_starts_with_a_system_prompt_and_a_workdir(env):
     listing = env.client.get("/api/agent/sessions").json()
     assert [s["id"] for s in listing] == [session["id"]]
     assert listing[0]["task_count"] == 0
+
+
+def test_system_prompt_carries_the_workflow_catalog(env):
+    """全ワークフローの用途・必要入力・必須フィールドが焼き込まれる（§3.1）。"""
+    system = start(env)["messages"][0]["content"]
+    assert "# VIDEO WORKFLOWS" in system
+    for spec in video_specs():
+        assert f"`{spec.id}`" in system
+        assert spec.description in system
+        assert spec.prompt_hint in system
+    # ワークフロー別の必須フィールドは missing_job_fields 由来
+    assert "`video_prompt`, `source_image`, `end_image`" in system
+    assert f"selects `{DEFAULT_VIDEO_WORKFLOW}`" in system
+
+
+def test_system_prompt_lists_the_video_assets(env):
+    """reference_video に使える動画アセットも選択肢として出す。"""
+    system = start(env)["messages"][0]["content"]
+    assert "Video assets (reference_video)" in system
+    assert str(env.clip) in system
+    assert "Image assets (source_image / end_image)" in system
+    assert str(env.image) in system
 
 
 def test_session_copies_lora_samples_into_the_workdir(env):
@@ -456,7 +612,7 @@ def test_plan_approve_run_done(env):
     assert kinds(final) == [
         "plan_proposed", "job_started", "job_done", "done"
     ]
-    assert len(env.comfy.queued) == 1
+    assert env.comfy.job_count == 1
 
     # 生成物は成果物として登録され、ジョブはセッションに紐付く
     artifact_kinds = {a["kind"] for a in final["artifacts"]}
@@ -510,7 +666,7 @@ def test_checkin_pauses_and_the_reply_resumes_the_loop(env):
     assert paused["status"] == "waiting_checkin"
     assert paused["messages"][-1]["role"] == "checkin"
     assert paused["messages"][-1]["data"]["options"] == ["変える", "そのまま"]
-    assert len(env.comfy.queued) == 1  # 2 本目は保留
+    assert env.comfy.job_count == 1  # 2 本目は保留
 
     response = env.client.post(
         f"/api/agent/sessions/{session['id']}/checkin", json={"choice": "そのまま"}
@@ -518,7 +674,7 @@ def test_checkin_pauses_and_the_reply_resumes_the_loop(env):
     assert response.status_code == 200, response.text
     final = wait_status(env, session["id"], ("done", "stopped", "idle"))
     assert final["status"] == "done"
-    assert len(env.comfy.queued) == 2
+    assert env.comfy.job_count == 2
 
 
 def test_every_job_mode_checks_in_after_each_job(env):
@@ -529,7 +685,7 @@ def test_every_job_mode_checks_in_after_each_job(env):
 
     paused = wait_status(env, session["id"], ("waiting_checkin", "stopped", "done"))
     assert paused["status"] == "waiting_checkin"
-    assert len(env.comfy.queued) == 1
+    assert env.comfy.job_count == 1
 
 
 def test_checkin_on_a_running_session_is_409(env):
@@ -549,7 +705,7 @@ def test_stop_halts_a_waiting_session(env):
 
     stopped = env.client.post(f"/api/agent/sessions/{session['id']}/stop").json()
     assert stopped["status"] == "stopped"
-    assert len(env.comfy.queued) == 1
+    assert env.comfy.job_count == 1
 
 
 def test_auto_limit_stops_the_loop(env):
@@ -560,7 +716,7 @@ def test_auto_limit_stops_the_loop(env):
 
     final = wait_status(env, session["id"], ("stopped", "done", "idle"))
     assert final["status"] == "stopped"
-    assert len(env.comfy.queued) == 1
+    assert env.comfy.job_count == 1
     assert "上限" in final["messages"][-1]["content"]
     assert final["plan"]["tasks"][1]["status"] == "pending"
 
@@ -794,6 +950,35 @@ def test_continue_reuses_the_existing_job_service(env):
     assert chained[0]["video_prompt"] == "she keeps dancing"
 
 
+@needs_ffmpeg
+def test_continue_can_switch_the_video_workflow(env):
+    """continue でもワークフローと追加入力（end_image）を指定できる。"""
+    session = start(env, checkin_mode="auto")
+    job_id = _first_job(env, session["id"])
+
+    env.cli.answers = [
+        action_answer(
+            {
+                "action": "continue",
+                "job_id": job_id,
+                "video_workflow": "ltx2_3_flf2v",
+                "end_image": str(env.image),
+                "video_prompt": "she reaches the door",
+            },
+            "最後のフレームまで繋ぎます。",
+        ),
+        DONE_ANSWER,
+    ]
+    say(env, session["id"], "続きを作って")
+    wait_status(env, session["id"], ("done", "stopped", "idle"))
+
+    listing = env.client.get("/api/jobs").json()
+    chained = [j for j in listing if j["params"].get("continued_from") == job_id]
+    assert len(chained) == 1
+    assert chained[0]["params"]["video_workflow"] == "ltx2_3_flf2v"
+    assert chained[0]["params"]["end_image"] == str(env.image)
+
+
 def _first_job(env, session_id: str) -> str:
     """プランを 1 本走らせて job_id を返すヘルパ（continue / rerun の土台）。"""
     env.cli.answers = [plan_answer(env, 1), DONE_ANSWER]
@@ -808,7 +993,7 @@ def test_out_of_plan_continue_waits_for_approval(env):
     """プラン外の continue は承認待ちになり、「実行する」で初めて走る（§2 / §7）。"""
     session = start(env)
     job_id = _first_job(env, session["id"])
-    queued_before = len(env.comfy.queued)
+    queued_before = env.comfy.job_count
 
     env.cli.answers = [
         action_answer({"action": "continue", "job_id": job_id}, "続きを作ります。"),
@@ -816,7 +1001,7 @@ def test_out_of_plan_continue_waits_for_approval(env):
     say(env, session["id"], "続きを作って")
     paused = wait_status(env, session["id"], ("waiting_checkin", "stopped", "done"))
     assert paused["status"] == "waiting_checkin"
-    assert len(env.comfy.queued) == queued_before  # 承認前は投入しない
+    assert env.comfy.job_count == queued_before  # 承認前は投入しない
     checkin = paused["messages"][-1]
     assert checkin["role"] == "checkin" and checkin["kind"] == "approval"
     assert checkin["data"]["options"] == ["実行する", "やめる"]
@@ -829,7 +1014,7 @@ def test_out_of_plan_continue_waits_for_approval(env):
     )
     assert response.status_code == 200, response.text
     final = wait_status(env, session["id"], ("done", "stopped", "idle"))
-    assert len(env.comfy.queued) == queued_before + 1
+    assert env.comfy.job_count == queued_before + 1
     chained = [
         j
         for j in env.client.get("/api/jobs").json()
@@ -842,7 +1027,7 @@ def test_out_of_plan_continue_waits_for_approval(env):
 def test_declined_out_of_plan_rerun_is_skipped(env):
     session = start(env)
     job_id = _first_job(env, session["id"])
-    queued_before = len(env.comfy.queued)
+    queued_before = env.comfy.job_count
 
     env.cli.answers = [
         action_answer({"action": "rerun", "job_id": job_id}, "やり直します。"),
@@ -856,7 +1041,7 @@ def test_declined_out_of_plan_rerun_is_skipped(env):
     )
     final = wait_status(env, session["id"], ("done", "stopped", "idle"))
     assert "action_skipped" in kinds(final)
-    assert len(env.comfy.queued) == queued_before  # 1 本も追加されない
+    assert env.comfy.job_count == queued_before  # 1 本も追加されない
     # 応答済みの承認は消費されるので、同じ保留が二度走ることはない
     assert agent_runner.pending_approval(AgentSession(**final)) is None
 
@@ -864,7 +1049,7 @@ def test_declined_out_of_plan_rerun_is_skipped(env):
 def test_auto_mode_runs_out_of_plan_rerun_immediately(env):
     session = start(env, checkin_mode="auto", auto_limit=5)
     job_id = _first_job(env, session["id"])
-    queued_before = len(env.comfy.queued)
+    queued_before = env.comfy.job_count
 
     env.cli.answers = [
         action_answer({"action": "rerun", "job_id": job_id}, "やり直します。"),
@@ -872,7 +1057,7 @@ def test_auto_mode_runs_out_of_plan_rerun_immediately(env):
     ]
     say(env, session["id"], "シードを引き直して")
     final = wait_status(env, session["id"], ("done", "stopped", "idle"))
-    assert len(env.comfy.queued) == queued_before + 1  # 自走モードは即実行
+    assert env.comfy.job_count == queued_before + 1  # 自走モードは即実行
     assert "approval_required" not in kinds(final)
 
 
@@ -1051,7 +1236,7 @@ def test_message_during_a_checkin_answers_it(env):
     assert body["action"] is None  # チェックイン応答なので同期ターンは走らない
     final = wait_status(env, session["id"], ("done", "stopped", "idle"))
     assert final["status"] == "done"
-    assert len(env.comfy.queued) == 2
+    assert env.comfy.job_count == 2
     # 自由回答は 1 度だけ記録され、チェックインは応答済みになる
     assert [m["content"] for m in final["messages"]].count("そのままで進めて") == 1
     answered = [m for m in final["messages"] if m["role"] == "checkin"]
@@ -1062,7 +1247,7 @@ def test_message_during_a_checkin_can_approve_a_pending_action(env):
     """メイン入力からの肯定回答でも保留中のプラン外アクションが走る。"""
     session = start(env)
     job_id = _first_job(env, session["id"])
-    queued_before = len(env.comfy.queued)
+    queued_before = env.comfy.job_count
     env.cli.answers = [
         action_answer({"action": "rerun", "job_id": job_id}, "やり直します。"),
     ]
@@ -1072,7 +1257,7 @@ def test_message_during_a_checkin_can_approve_a_pending_action(env):
     env.cli.answers = [DONE_ANSWER]
     assert say(env, session["id"], "実行する").status_code == 200
     final = wait_status(env, session["id"], ("done", "stopped", "idle"))
-    assert len(env.comfy.queued) == queued_before + 1
+    assert env.comfy.job_count == queued_before + 1
     assert "action_skipped" not in kinds(final)
 
 
@@ -1178,7 +1363,7 @@ def test_stop_during_a_turn_drops_the_returned_action(env, monkeypatch):
     session = start(env)
     env.cli.answers = [plan_answer(env, 1)]
     say(env, session["id"])
-    queued_before = len(env.comfy.queued)
+    queued_before = env.comfy.job_count
 
     async def stopping_exec(argv, cwd, timeout):
         # ターンの最中に ⏹ 停止が押された状況を再現する
@@ -1193,4 +1378,4 @@ def test_stop_during_a_turn_drops_the_returned_action(env, monkeypatch):
     assert final["messages"][-1]["content"] == "ユーザーの操作で停止しました。"
     # 破棄されたので rerun は試されない（試されていれば action_failed が出る）
     assert "action_failed" not in kinds(final)
-    assert len(env.comfy.queued) == queued_before + 1  # プランの 1 本だけ
+    assert env.comfy.job_count == queued_before + 1  # プランの 1 本だけ

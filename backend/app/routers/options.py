@@ -3,12 +3,20 @@ from fastapi import APIRouter
 from .. import comfy, lora_samples
 from ..config import load_settings
 from ..db import get_db
-from ..models import DEFAULT_NEGATIVE_PROMPT, Options
-from .assets import AUDIO_EXT, IMAGE_EXT, list_assets
+from ..models import DEFAULT_NEGATIVE_PROMPT, Options, WorkflowOption
+from ..workflows import (
+    DEFAULT_VIDEO_WORKFLOW,
+    WorkflowSpec,
+    image_specs,
+    video_specs,
+)
+from .assets import AUDIO_EXT, IMAGE_EXT, VIDEO_EXT, list_assets
 
 router = APIRouter(prefix="/api", tags=["options"])
 
 NEGATIVE_PRESETS = {
+    # empty == keep whatever the selected template ships with (SPEC §3.1)
+    "template": "",
     "current": DEFAULT_NEGATIVE_PROMPT,
     "author": (
         "blurry, oversaturated, pixelated, low resolution, grainy, distorted, "
@@ -19,6 +27,19 @@ NEGATIVE_PRESETS = {
 }
 
 
+def _workflow_option(spec: WorkflowSpec) -> WorkflowOption:
+    return WorkflowOption(
+        id=spec.id,
+        label=spec.label,
+        kind=spec.kind,
+        notes=spec.notes,
+        requires=list(spec.requires),
+        supports=sorted(spec.inject),
+        accepts_start_image=spec.accepts_start_image,
+        image_label=spec.image_label,
+    )
+
+
 @router.get("/options", response_model=Options)
 async def get_options() -> Options:
     """Form choices. ComfyUI being down is reported inline, never as an HTTP error."""
@@ -27,7 +48,11 @@ async def get_options() -> Options:
         comfy_url=settings.comfy_url,
         audio_assets=list_assets("audio", AUDIO_EXT),
         image_assets=list_assets("image", IMAGE_EXT),
+        video_assets=list_assets("video", VIDEO_EXT),
         negative_presets=NEGATIVE_PRESETS,
+        image_workflows=[_workflow_option(spec) for spec in image_specs()],
+        video_workflows=[_workflow_option(spec) for spec in video_specs()],
+        default_video_workflow=DEFAULT_VIDEO_WORKFLOW,
     )
 
     async with get_db() as conn:

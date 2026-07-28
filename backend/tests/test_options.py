@@ -1,0 +1,89 @@
+"""GET /api/options: the form choices, including the workflow catalogue (SPEC §9)."""
+
+import pytest
+from fastapi.testclient import TestClient
+
+from app import comfy
+from app.main import app
+from app.routers import assets as assets_router
+from app.workflows import DEFAULT_VIDEO_WORKFLOW, video_specs
+
+
+@pytest.fixture
+def client(tmp_path, monkeypatch):
+    """ComfyUI is offline and assets live in a throwaway dir."""
+    monkeypatch.setattr(assets_router, "ASSETS_DIR", tmp_path / "assets")
+
+    async def offline():
+        raise comfy.ComfyError("ComfyUI is down")
+
+    monkeypatch.setattr(comfy, "get_object_info", lambda *a, **k: offline())
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+def test_workflow_catalogue_is_exposed(client):
+    options = client.get("/api/options").json()
+    # ComfyUI being down must not hide the workflow list (it is local data)
+    assert options["comfy_error"]
+    assert options["default_video_workflow"] == DEFAULT_VIDEO_WORKFLOW
+    assert [w["id"] for w in options["image_workflows"]] == ["krea2_turbo"]
+
+    videos = {w["id"]: w for w in options["video_workflows"]}
+    assert set(videos) == {spec.id for spec in video_specs()}
+    assert videos[DEFAULT_VIDEO_WORKFLOW]["accepts_start_image"] is True
+
+    t2v = videos["ltx2_3_t2v"]
+    assert t2v["requires"] == []
+    assert t2v["accepts_start_image"] is False
+    assert {"prompt", "negative", "width", "height", "duration", "fps"} <= set(
+        t2v["supports"]
+    )
+
+    flf2v = videos["ltx2_3_flf2v"]
+    assert flf2v["requires"] == ["image", "end_image"]
+    assert flf2v["image_label"] == "最初のフレーム"
+
+    motion = videos["ltx2_3_ic_lora_motion"]
+    assert motion["requires"] == ["image", "video"]
+    # the frame count follows the reference clip, so there is no expression to pin
+    assert "frames_expr" not in motion["supports"]
+
+    sheet = videos["ltx2_3_ic_lora_image"]
+    assert sheet["accepts_start_image"] is False
+    assert sheet["image_label"] == "リファレンスシート画像"
+
+
+def test_negative_presets_include_the_template_default(client):
+    presets = client.get("/api/options").json()["negative_presets"]
+    # an empty value means "keep whatever the template ships with" (SPEC §3.1)
+    assert presets["template"] == ""
+    assert presets["current"].startswith("pc game")
+
+
+def test_video_assets_are_listed(client, tmp_path):
+    clip = tmp_path / "assets" / "video" / "ref.mp4"
+    clip.parent.mkdir(parents=True, exist_ok=True)
+    clip.write_bytes(b"\x00\x00\x00 ftypmp42")
+    options = client.get("/api/options").json()
+    assert [a["name"] for a in options["video_assets"]] == ["ref.mp4"]
+    assert options["video_assets"][0]["kind"] == "video"
+
+
+def test_video_upload_endpoint(client):
+    created = client.post(
+        "/api/assets/video", files={"file": ("clip.mp4", b"data", "video/mp4")}
+    )
+    assert created.status_code == 201, created.text
+    asset = created.json()
+    assert asset["kind"] == "video"
+    assert asset["url"].startswith("/assets/video/")
+    assert [a["url"] for a in client.get("/api/assets/video").json()] == [asset["url"]]
+
+
+def test_video_upload_rejects_a_wrong_extension(client):
+    response = client.post(
+        "/api/assets/video", files={"file": ("clip.png", b"data", "image/png")}
+    )
+    assert response.status_code == 400
+    assert ".png" in response.text

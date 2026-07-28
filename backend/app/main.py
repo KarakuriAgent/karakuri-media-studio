@@ -1,3 +1,4 @@
+import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -22,6 +23,9 @@ from .routers import (
     options,
     settings,
 )
+from .workflows import validate_specs
+
+log = logging.getLogger(__name__)
 
 
 @asynccontextmanager
@@ -29,6 +33,11 @@ async def lifespan(app: FastAPI):
     ensure_dirs()
     await init_db()
     load_settings()
+    # A hand-edited workflow/*.json that no longer matches its manifest would
+    # otherwise only surface as a failed job (SPEC §3); surface it at startup
+    # and in GET /api/health instead.
+    for problem in validate_specs(use_cache=False):
+        log.error("workflow manifest mismatch: %s", problem)
     await runner.start()
     try:
         yield
@@ -37,7 +46,7 @@ async def lifespan(app: FastAPI):
         await runner.stop()
 
 
-app = FastAPI(title="Video Studio API", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="Karakuri Media Studio API", version="0.1.0", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

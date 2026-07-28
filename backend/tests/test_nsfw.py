@@ -13,6 +13,8 @@ from app.main import app
 from app.models import AgentSession, AgentTask, JobCreate, Settings
 from app.routers import agent as agent_router
 
+from conftest import fake_outputs
+
 HAS_FFMPEG = shutil.which("ffmpeg") is not None
 needs_ffmpeg = pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg is not installed")
 
@@ -40,10 +42,7 @@ class FakeComfy:
 
     def __init__(self, video: Path | None):
         self.video = video
-        self.outputs = {
-            "393": {"images": [{"filename": "img.png", "subfolder": "", "type": "temp"}]},
-            "75": {"videos": [{"filename": "vid.mp4", "subfolder": "", "type": "output"}]},
-        }
+        self.outputs = fake_outputs()
 
     async def upload_file(self, path, subfolder=None):
         return Path(path).name

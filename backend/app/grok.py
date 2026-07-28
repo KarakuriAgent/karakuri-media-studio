@@ -162,7 +162,10 @@ async def _exec(
 ) -> tuple[int, str, str]:
     """Run ``argv`` and return ``(returncode, stdout, stderr)``."""
     workdir = Path(cwd)
-    workdir.mkdir(parents=True, exist_ok=True)
+    try:
+        workdir.mkdir(parents=True, exist_ok=True)
+    except OSError as exc:
+        raise LLMError(f"grok 作業ディレクトリを作成できません: {workdir} ({exc})") from exc
     try:
         process = await asyncio.create_subprocess_exec(
             *argv,

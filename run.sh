@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Video Studio 起動スクリプト
+# Karakuri Media Studio 起動スクリプト
 #
 #   ./run.sh          本番モード: frontend をビルドして FastAPI から SPA ごと配信
 #   ./run.sh --dev    開発モード: uvicorn --reload と vite dev を並行起動

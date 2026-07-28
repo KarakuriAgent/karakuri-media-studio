@@ -12,6 +12,8 @@ from fastapi.testclient import TestClient
 from app import comfy, db, jobs, nsfw
 from app.main import app
 
+from conftest import fake_outputs
+
 HAS_FFMPEG = shutil.which("ffmpeg") is not None
 needs_ffmpeg = pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg is not installed")
 
@@ -50,10 +52,7 @@ class FakeComfy:
         self.history_calls = 0
         self.queue_error: Exception | None = None
         self.history_status = "success"
-        self.outputs = {
-            "393": {"images": [{"filename": "img.png", "subfolder": "", "type": "temp"}]},
-            "75": {"videos": [{"filename": "vid.mp4", "subfolder": "", "type": "output"}]},
-        }
+        self.outputs = fake_outputs()
 
     async def upload_file(self, path, subfolder=None):
         self.uploads.append(str(path))
@@ -131,6 +130,11 @@ def env(tmp_path, monkeypatch, request):
     audio.write_bytes(b"ID3")
     start_image = assets / "image" / "start.png"
     start_image.write_bytes(b"PNG")
+    end_image = assets / "image" / "end.png"
+    end_image.write_bytes(b"PNG")
+    (assets / "video").mkdir(parents=True, exist_ok=True)
+    reference_video = assets / "video" / "ref.mp4"
+    reference_video.write_bytes(b"\x00\x00\x00 ftypmp42")
 
     with TestClient(app) as client:
         yield type(
@@ -143,8 +147,18 @@ def env(tmp_path, monkeypatch, request):
                 "outputs": outputs,
                 "audio": audio,
                 "start_image": start_image,
+                "end_image": end_image,
+                "reference_video": reference_video,
             },
         )
+
+
+def graph_with(env, node_id: str) -> dict:
+    """The last submitted graph that contains ``node_id`` (one stage of a job)."""
+    for workflow in reversed(env.comfy.queued):
+        if node_id in workflow:
+            return workflow
+    raise AssertionError(f"no submitted workflow contains {node_id}")
 
 
 def full_body(env, **overrides) -> dict:
@@ -176,30 +190,41 @@ def wait_for(client, job_id, statuses=("done", "failed"), timeout=30.0) -> dict:
 # --------------------------------------------------------------------------
 
 @needs_ffmpeg
-def test_full_job_runs_to_done(env):
+def test_full_job_runs_two_chained_stages(env):
     response = env.client.post("/api/jobs", json=full_body(env))
     assert response.status_code == 201, response.text
     created = response.json()
     assert created["status"] == "queued"
     assert created["params"]["seed"] > 0  # random seed recorded for reproducibility
+    assert created["params"]["video_workflow"] == "ltx2_3_id_lora"
 
     job = wait_for(env.client, created["id"])
     assert job["status"] == "done", job["error"]
-    assert job["comfy_prompt_id"] == "prompt-1"
-    assert job["workflow_json"]  # the built API JSON is persisted
     assert Path(job["image_path"]).is_file()
     assert Path(job["video_path"]).is_file()
     assert Path(job["last_frame_path"]).is_file()
     assert job["video_url"] == f"/outputs/{job['id']}/video.mp4"
 
-    # both assets were pushed to the ComfyUI input dir
-    assert env.comfy.uploads == [str(env.audio)]
-    workflow = env.comfy.queued[0]
-    assert workflow["432"]["inputs"]["audio"] == "ref.mp3"
-    assert workflow["365:3"]["inputs"]["seed"] == job["params"]["seed"]
+    # SPEC §2: one job id, two ComfyUI prompts, both graphs persisted
+    assert len(env.comfy.queued) == 2
+    stages = job["workflow_json"]
+    assert sorted(stages) == ["image", "video"]
+    assert stages["image"]["workflow_id"] == "krea2_turbo"
+    assert stages["video"]["workflow_id"] == "ltx2_3_id_lora"
+    assert stages["image"]["prompt_id"] == "prompt-1"
+    assert stages["video"]["prompt_id"] == "prompt-2"
+    assert job["comfy_prompt_id"] == "prompt-2"
+
+    image_graph, video_graph = env.comfy.queued
+    assert image_graph["30:3"]["inputs"]["seed"] == job["params"]["seed"]
+    assert video_graph["276"]["inputs"]["audio"] == "ref.mp3"
+    # the generated still was uploaded and wired in as the start frame
+    assert env.comfy.uploads[0] == str(env.audio)
+    assert env.comfy.uploads[-1] == job["image_path"]
+    assert video_graph["269"]["inputs"]["image"] == Path(job["image_path"]).name
 
 
-def test_image_only_job_needs_no_audio_or_video(env):
+def test_image_only_job_runs_the_image_stage_only(env):
     body = {"mode": "image_only", "image_prompt": "just an image"}
     created = env.client.post("/api/jobs", json=body).json()
     job = wait_for(env.client, created["id"])
@@ -207,8 +232,77 @@ def test_image_only_job_needs_no_audio_or_video(env):
     assert Path(job["image_path"]).is_file()
     assert job["video_path"] is None
     assert job["last_frame_path"] is None
-    # mode C turns the preview node into a SaveImage (SPEC §2)
-    assert env.comfy.queued[0]["393"]["class_type"] == "SaveImage"
+    assert len(env.comfy.queued) == 1
+    assert env.comfy.queued[0]["29"]["class_type"] == "SaveImage"
+    assert list(job["workflow_json"]) == ["image"]
+
+
+def test_t2v_job_needs_no_input_assets(env):
+    created = env.client.post(
+        "/api/jobs",
+        json={
+            "mode": "i2v",
+            "video_workflow": "ltx2_3_t2v",
+            "video_prompt": "a machine assembles itself",
+        },
+    ).json()
+    job = wait_for(env.client, created["id"])
+    assert job["status"] == "done", job["error"]
+    assert len(env.comfy.queued) == 1
+    assert env.comfy.queued[0]["267:266"]["inputs"]["value"] == "a machine assembles itself"
+    assert list(job["workflow_json"]) == ["video"]
+
+
+def test_flf2v_job_uploads_both_frames(env):
+    created = env.client.post(
+        "/api/jobs",
+        json={
+            "mode": "i2v",
+            "video_workflow": "ltx2_3_flf2v",
+            "video_prompt": "the camera drops",
+            "source_image": str(env.start_image),
+            "end_image": str(env.end_image),
+        },
+    ).json()
+    job = wait_for(env.client, created["id"])
+    assert job["status"] == "done", job["error"]
+    workflow = env.comfy.queued[0]
+    assert workflow["31"]["inputs"]["image"] == "start.png"
+    assert workflow["39"]["inputs"]["image"] == "end.png"
+    assert str(env.end_image) in env.comfy.uploads
+
+
+def test_motion_job_uploads_the_reference_clip(env):
+    created = env.client.post(
+        "/api/jobs",
+        json={
+            "mode": "i2v",
+            "video_workflow": "ltx2_3_ic_lora_motion",
+            "video_prompt": "a slow dolly",
+            "source_image": str(env.start_image),
+            "reference_video": str(env.reference_video),
+            "duration": 4,
+        },
+    ).json()
+    job = wait_for(env.client, created["id"])
+    assert job["status"] == "done", job["error"]
+    workflow = env.comfy.queued[0]
+    assert workflow["199"]["inputs"]["file"] == "ref.mp4"
+    assert workflow["692"]["inputs"]["duration"] == 4.0
+
+
+def test_full_mode_rejects_a_workflow_without_a_start_frame(env):
+    response = env.client.post(
+        "/api/jobs", json=full_body(env, video_workflow="ltx2_3_t2v")
+    )
+    assert response.status_code == 422
+    assert "start frame" in response.text
+
+
+def test_unknown_video_workflow_is_422(env):
+    response = env.client.post("/api/jobs", json=full_body(env, video_workflow="nope"))
+    assert response.status_code == 422
+    assert "nope" in response.text
 
 
 def test_fixed_seed_is_used_verbatim(env):
@@ -327,11 +421,23 @@ def test_execution_error_from_history_marks_job_failed(env):
 
 
 def test_missing_video_output_marks_job_failed(env):
-    env.comfy.outputs = {"393": {"images": [{"filename": "i.png", "type": "temp"}]}}
+    env.comfy.outputs = {"29": {"images": [{"filename": "i.png", "type": "output"}]}}
     created = env.client.post("/api/jobs", json=full_body(env)).json()
     job = wait_for(env.client, created["id"])
     assert job["status"] == "failed"
     assert "no video output" in job["error"]
+    # the image stage still ran: its graph and its still are kept
+    assert list(job["workflow_json"]) == ["image", "video"]
+    assert Path(job["image_path"]).is_file()
+
+
+def test_missing_image_output_fails_before_the_video_stage(env):
+    env.comfy.outputs = {"341": {"videos": [{"filename": "v.mp4", "type": "output"}]}}
+    created = env.client.post("/api/jobs", json=full_body(env)).json()
+    job = wait_for(env.client, created["id"])
+    assert job["status"] == "failed"
+    assert "no image output" in job["error"]
+    assert len(env.comfy.queued) == 1  # the video stage was never queued
 
 
 def test_missing_ffmpeg_marks_job_failed(env, monkeypatch):
@@ -368,7 +474,7 @@ def test_rerun_rebuilds_with_new_seed(env):
     job = wait_for(env.client, random_run["id"])
     assert job["status"] == "done", job["error"]
     # rebuilt from params, not replayed from the stored workflow_json
-    assert env.comfy.queued[-1]["365:3"]["inputs"]["seed"] == job["params"]["seed"]
+    assert graph_with(env, "30:3")["30:3"]["inputs"]["seed"] == job["params"]["seed"]
 
     assert env.client.post("/api/jobs/nope/rerun", json={}).status_code == 404
 
@@ -396,8 +502,9 @@ def test_continue_chains_from_last_frame(env):
     job = wait_for(env.client, second["id"])
     assert job["status"] == "done", job["error"]
     workflow = env.comfy.queued[-1]
-    assert workflow["435"]["inputs"]["image"] == start.name
-    assert "365:19" not in workflow  # image subgraph pruned in mode B
+    assert workflow["269"]["inputs"]["image"] == start.name
+    assert "30:19" not in workflow  # the video stage runs on its own
+    assert list(job["workflow_json"]) == ["video"]
     assert str(start) in env.comfy.uploads
 
     # chaining once more works too

@@ -485,7 +485,7 @@ export default function SettingsPage({
           {tab === 'models' && (
             <div className="flex flex-col gap-3">
               <p className="text-xs text-slate-500">
-                ワークフロー (video-gen.json) のモデルファイル名を上書きします。空欄・既定値と同じ値は保存されません。
+                workflow/ 配下の各ワークフローのモデルファイル名を上書きします。空欄・既定値と同じ値は保存されません。
               </p>
               {loraFiles.length > 0 && (
                 <datalist id={LORA_DATALIST_ID}>
@@ -502,6 +502,7 @@ export default function SettingsPage({
                   <table className="w-full text-xs">
                     <thead className="text-left text-slate-500">
                       <tr className="border-b border-ink-600">
+                        <th className="p-2 font-medium">ワークフロー</th>
                         <th className="p-2 font-medium">ノード</th>
                         <th className="p-2 font-medium">既定値</th>
                         <th className="p-2 font-medium">使用する値</th>
@@ -518,6 +519,9 @@ export default function SettingsPage({
                             key={row.key}
                             className={changed ? 'bg-accent-500/10' : undefined}
                           >
+                            <td className="p-2 align-top text-slate-400">
+                              {row.workflow_label || row.workflow_id}
+                            </td>
                             <td className="p-2 align-top">
                               <p className="text-slate-200">{row.title || row.key}</p>
                               <p className="text-slate-600">

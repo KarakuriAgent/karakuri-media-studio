@@ -58,6 +58,8 @@ const FIELD_LABELS: Record<string, string> = {
   video_prompt: '動画プロンプト',
   audio_path: 'リファレンス音声',
   source_image: '開始フレーム',
+  end_image: '最後のフレーム',
+  reference_video: '参照動画',
 }
 
 /** Pull `mode 'x' requires: a, b` out of a 422 body into per-field messages. */
@@ -140,8 +142,10 @@ export const api = {
 
   listAudio: () => request<Asset[]>('/api/assets/audio'),
   listImages: () => request<Asset[]>('/api/assets/image'),
+  listVideos: () => request<Asset[]>('/api/assets/video'),
   uploadAudio: (file: File) => upload<Asset>('/api/assets/audio', file),
   uploadImage: (file: File) => upload<Asset>('/api/assets/image', file),
+  uploadVideo: (file: File) => upload<Asset>('/api/assets/video', file),
 
   listJobs: (limit = 60) => request<Job[]>(`/api/jobs?limit=${limit}`),
   getJob: (id: string) => request<Job>(`/api/jobs/${id}`),

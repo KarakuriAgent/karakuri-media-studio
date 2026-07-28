@@ -84,7 +84,7 @@ export default function Header({
   return (
     <header className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-ink-700 bg-ink-800/80 px-4 py-2.5 backdrop-blur">
       <h1 className="text-sm font-semibold tracking-wide text-slate-100">
-        Video Studio
+        Karakuri Media Studio
       </h1>
       <ViewTabs view={view} onView={onView} />
       <div className="ml-2 flex flex-wrap items-center gap-2">

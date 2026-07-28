@@ -27,6 +27,7 @@ export default function ChatModal({ form, patch, onClose, onSessionId }: Props) 
     try {
       const session = await api.createChatSession({
         mode: form.mode,
+        video_workflow: form.videoWorkflow,
         loras: form.loras.map(
           ({ lora_name, trigger_word, strength, display_name }) => ({
             lora_name,

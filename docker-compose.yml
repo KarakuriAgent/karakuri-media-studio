@@ -1,4 +1,4 @@
-# Video Studio を Docker で動かす。
+# Karakuri Media Studio を Docker で動かす。
 #
 #   docker compose up --build
 #
@@ -17,7 +17,7 @@
 #
 # HOST / PORT は run.sh と同じく .env から読まれる（既定 127.0.0.1:8000）。
 services:
-  video-studio:
+  media-studio:
     build:
       context: .
       # ビルドコンテナ内で DNS が引けない環境があるためホスト側のネットワークを使う
