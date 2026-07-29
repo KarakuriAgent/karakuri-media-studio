@@ -112,6 +112,9 @@ export default function HistoryGallery({
                 <span className="flex h-full w-full items-center justify-center text-[10px] text-slate-600">
                   {pending ? (
                     <span className="h-5 w-5 animate-spin rounded-full border-2 border-ink-500 border-t-accent-500" />
+                  ) : job.audio_output_url ? (
+                    // 音声ジョブには映像が無いのでサムネイルの代わりに 🎵 を出す
+                    <span className="text-2xl opacity-60">🎵</span>
                   ) : (
                     'サムネなし'
                   )}
@@ -122,6 +125,9 @@ export default function HistoryGallery({
                 {showNsfw && job.nsfw && <NsfwBadge />}
                 {job.video_url && (
                   <span className="rounded bg-black/60 px-1 text-[10px]">🎬</span>
+                )}
+                {job.audio_output_url && (
+                  <span className="rounded bg-black/60 px-1 text-[10px]">🎵</span>
                 )}
               </span>
               {(pending || failed) && (

@@ -49,6 +49,10 @@ AUTH_MARKERS = (
 )
 
 RESULT_KEYS = ("image_prompt", "video_prompt", "notes")
+#: mode 'audio' のセッションが返す追加キー（すべて文字列）。
+AUDIO_RESULT_KEYS = ("audio_prompt", "lyrics", "keyscale", "language")
+#: 数値で返る提案。文字列で来ても拾えるようにする（拾えなければ黙って捨てる）。
+AUDIO_INT_KEYS = ("bpm",)
 
 
 class LLMError(Exception):
@@ -104,12 +108,37 @@ def _candidates(text: str):
     yield from _brace_blocks(text)
 
 
-def _normalize(payload: object) -> dict[str, str | None] | None:
-    """Validate a parsed candidate as ``{image_prompt?, video_prompt?, notes?}``."""
+def _int_or_none(value: object) -> int | None:
+    """A numeric suggestion, or None when it is missing / unusable.
+
+    Unlike the string fields a bad ``bpm`` does not disqualify the whole
+    object: it is an optional extra, so it is simply dropped.
+    """
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        return int(round(value))
+    if isinstance(value, str):
+        try:
+            return int(round(float(value.strip())))
+        except ValueError:
+            return None
+    return None
+
+
+def _normalize(payload: object) -> dict[str, object] | None:
+    """Validate a parsed candidate as the final proposal object.
+
+    Image / video sessions answer with ``{image_prompt, video_prompt, notes}``
+    and audio ones with ``{audio_prompt, lyrics, …}``; both shapes go through
+    here, and an object carrying none of the three prompts is not ours.
+    """
     if not isinstance(payload, dict):
         return None
-    result: dict[str, str | None] = {}
-    for key in RESULT_KEYS:
+    result: dict[str, object] = {}
+    for key in (*RESULT_KEYS, *AUDIO_RESULT_KEYS):
         value = payload.get(key)
         if value is None:
             result[key] = None
@@ -117,9 +146,11 @@ def _normalize(payload: object) -> dict[str, str | None] | None:
             result[key] = value.strip() or None
         else:  # a wrong type means this is not our result object
             return None
+    for key in AUDIO_INT_KEYS:
+        result[key] = _int_or_none(payload.get(key))
     # A question may legitimately contain some other JSON; only accept the
     # object when it actually carries a prompt.
-    if not (result["image_prompt"] or result["video_prompt"]):
+    if not (result["image_prompt"] or result["video_prompt"] or result["audio_prompt"]):
         return None
     return result
 
@@ -145,8 +176,13 @@ def iter_json_objects(text: str):
             continue
 
 
-def extract_result(text: str) -> dict[str, str | None] | None:
-    """Return ``{image_prompt, video_prompt, notes}`` from an answer, or None."""
+def extract_result(text: str) -> dict[str, object] | None:
+    """Return the final proposal object of an answer, or None.
+
+    Image / video sessions yield ``{image_prompt, video_prompt, notes}``; audio
+    ones additionally fill ``audio_prompt`` / ``lyrics`` / ``bpm`` / ``keyscale``
+    / ``language`` (see :class:`app.models.PromptResult`).
+    """
     for parsed in iter_json_objects(text):
         result = _normalize(parsed)
         if result is not None:

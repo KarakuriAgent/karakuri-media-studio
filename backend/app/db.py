@@ -14,6 +14,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   user_input    TEXT,
   image_prompt  TEXT,
   video_prompt  TEXT,
+  audio_prompt  TEXT,
   grok_raw      TEXT,
   params        TEXT NOT NULL,
   workflow_json TEXT NOT NULL,
@@ -23,6 +24,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   last_frame_path TEXT,
   source_image  TEXT,
   audio_path    TEXT,
+  audio_output_path TEXT,
   error         TEXT,
   nsfw          INTEGER NOT NULL DEFAULT 0,
   nsfw_source   TEXT NOT NULL DEFAULT ''
@@ -37,7 +39,8 @@ CREATE TABLE IF NOT EXISTS loras (
   default_audio TEXT,
   sort_order    INTEGER DEFAULT 0,
   sample_images TEXT NOT NULL DEFAULT '[]',
-  target        TEXT NOT NULL DEFAULT 'image'
+  target        TEXT NOT NULL DEFAULT 'image',
+  family        TEXT NOT NULL DEFAULT 'krea2'
 );
 
 CREATE TABLE IF NOT EXISTS chat_sessions (
@@ -73,6 +76,11 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
     "jobs": [
         ("nsfw", "INTEGER NOT NULL DEFAULT 0"),
         ("nsfw_source", "TEXT NOT NULL DEFAULT ''"),
+        # 音声ジョブ（mode='audio'）。既存行はどちらも NULL のままでよい:
+        # audio_prompt は音声ジョブの指示、audio_output_path は生成された MP3。
+        # 入力のリファレンス音声を保持する audio_path とは別物。
+        ("audio_prompt", "TEXT"),
+        ("audio_output_path", "TEXT"),
     ],
     "agent_sessions": [
         ("nsfw", "INTEGER NOT NULL DEFAULT 0"),
@@ -80,9 +88,14 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
     ],
     "loras": [
         ("sample_images", "TEXT NOT NULL DEFAULT '[]'"),
-        # 'image' = krea2 画像ワークフロー用 / 'video' = LTX 2.3 動画ワークフロー用。
+        # 'image' = 画像ワークフロー用 / 'video' = LTX 2.3 動画ワークフロー用。
         # 既存レコードは画像用として登録されていたので既定値は 'image'。
         ("target", "TEXT NOT NULL DEFAULT 'image'"),
+        # 画像 LoRA のモデルファミリー（krea2 / anima / z-image / qwen-image）。
+        # 画像ワークフローが選択式になる前の既存行はすべて krea2 用なので、
+        # 既定値 'krea2' がそのままマイグレーション後の値になる。
+        # target='video' の行では無視される（動画は LTX 2.3 のみ）。
+        ("family", "TEXT NOT NULL DEFAULT 'krea2'"),
     ],
 }
 

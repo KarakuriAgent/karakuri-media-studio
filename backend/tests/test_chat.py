@@ -217,6 +217,12 @@ def test_json_without_a_fence_is_accepted(env):
         "image_prompt": "an image",
         "video_prompt": None,
         "notes": "n",
+        # 音声セッション用のフィールドは画像・動画のセッションでは常に null
+        "audio_prompt": None,
+        "lyrics": None,
+        "bpm": None,
+        "keyscale": None,
+        "language": None,
     }
 
 
@@ -441,7 +447,16 @@ def test_extract_result_rejects(text):
 
 def test_extract_result_normalizes_missing_keys():
     result = grok.extract_result('{"image_prompt": "a", "video_prompt": "  "}')
-    assert result == {"image_prompt": "a", "video_prompt": None, "notes": None}
+    assert result == {
+        "image_prompt": "a",
+        "video_prompt": None,
+        "notes": None,
+        "audio_prompt": None,
+        "lyrics": None,
+        "bpm": None,
+        "keyscale": None,
+        "language": None,
+    }
 
 
 def test_has_json_fence():
@@ -518,3 +533,171 @@ def test_json_answer_is_valid_json_fixture():
     """Guard the fixture itself so a broken sample cannot mask a real bug."""
     body = JSON_ANSWER.split("```json")[1].split("```")[0]
     assert set(json.loads(body)) == {"image_prompt", "video_prompt", "notes"}
+
+
+# --------------------------------------------------------------------------
+# 画像モデルごとのプロンプトガイド (SPEC §4.3)
+# --------------------------------------------------------------------------
+
+def test_the_image_prompt_spec_follows_the_selected_image_workflow():
+    krea2 = build_system_prompt(ChatSessionCreate(mode="image_only"))
+    assert "IMAGE PROMPT SPEC — Krea 2 turbo" in krea2
+    assert "IMAGE PROMPT SPEC — Anima" not in krea2
+    # Krea 2 keeps its own few-shot image examples
+    assert "FEW-SHOT EXAMPLES — image (Krea 2)" in krea2
+
+    anima = build_system_prompt(
+        ChatSessionCreate(mode="image_only", image_workflow="anima")
+    )
+    assert "IMAGE PROMPT SPEC — Anima" in anima
+    assert "IMAGE PROMPT SPEC — Krea 2 turbo" not in anima
+    assert "score_7" in anima
+    # the Krea 2 prose examples would teach the wrong style here
+    assert "FEW-SHOT EXAMPLES — image (Krea 2)" not in anima
+
+    z_image = build_system_prompt(
+        ChatSessionCreate(mode="image_only", image_workflow="z_image_turbo")
+    )
+    assert "IMAGE PROMPT SPEC — Tongyi Z-Image turbo" in z_image
+    assert "Never write a negative prompt" in z_image
+
+    qwen = build_system_prompt(
+        ChatSessionCreate(mode="image_only", image_workflow="qwen_image_edit_2511")
+    )
+    assert "IMAGE PROMPT SPEC — Qwen-Image Edit 2511" in qwen
+    assert "edit instruction" in qwen
+
+
+def test_the_selected_image_workflow_is_named_in_the_context():
+    system = build_system_prompt(
+        ChatSessionCreate(mode="image_only", image_workflow="qwen_image_edit_2511")
+    )
+    assert "Selected image workflow: **`qwen_image_edit_2511`**" in system
+    assert "model family `qwen-image`" in system
+    assert "`source_image`" in system
+
+
+def test_an_unknown_image_workflow_falls_back_to_the_default_spec():
+    system = build_system_prompt(
+        ChatSessionCreate(mode="image_only", image_workflow="nope")
+    )
+    assert "IMAGE PROMPT SPEC — Krea 2 turbo" in system
+
+
+def test_a_video_only_session_embeds_no_image_spec():
+    system = build_system_prompt(
+        ChatSessionCreate(mode="i2v", image_workflow="anima")
+    )
+    assert "IMAGE PROMPT SPEC" not in system
+    assert "FEW-SHOT EXAMPLES — video" in system
+
+
+# --------------------------------------------------------------------------
+# 音声モード（mode='audio'）のプロンプトジェネレータ
+# --------------------------------------------------------------------------
+
+AUDIO_JSON_ANSWER = """\
+できました。
+
+```json
+{
+  "audio_prompt": "dreamy city-pop ballad, female vocal, warm rhodes, brushed drums",
+  "lyrics": "[Verse 1]\\n最終列車が街を抜ける\\n\\n[Chorus - soaring]\\nもう一度だけ",
+  "bpm": 92,
+  "keyscale": "F# minor",
+  "language": "ja",
+  "notes": "しっとりめにしました"
+}
+```
+"""
+
+
+def test_audio_session_embeds_the_selected_models_guide(env):
+    ace = start(env, mode="audio", audio_workflow="ace_step1_5_xl_sft")
+    system = ace["messages"][0]["content"]
+    assert "AUDIO PROMPT SPEC — ACE-Step 1.5 XL" in system
+    assert "Stable Audio 3 Medium" not in system
+    # 音声の会話にシーン・カメラ・LoRA の話は出さない
+    assert "IMAGE PROMPT SPEC" not in system
+    assert "VIDEO PROMPT SPEC" not in system
+
+    sa3 = start(env, mode="audio", audio_workflow="stable_audio_3_medium_base")
+    system = sa3["messages"][0]["content"]
+    assert "AUDIO PROMPT SPEC — Stable Audio 3 Medium" in system
+    assert "ACE-Step 1.5 XL" not in system
+    # 歌えないモデルなので歌詞の相談をさせない
+    assert "このモデルは歌いません" in system
+
+
+def test_audio_session_context_carries_the_length_and_the_fields(env):
+    system = start(
+        env, mode="audio", audio_workflow="ace_step1_5_xl_sft", duration=90
+    )["messages"][0]["content"]
+    assert "**90 秒**" in system
+    assert "10〜600 秒" in system
+    assert "`lyrics`" in system and "`bpm`" in system and "`keyscale`" in system
+
+    sa3 = start(
+        env, mode="audio", audio_workflow="stable_audio_3_medium_base", duration=30
+    )["messages"][0]["content"]
+    assert "1〜380 秒" in sa3
+    assert "`audio_category`" in sa3
+
+
+def test_audio_session_embeds_the_drafts(env):
+    system = start(
+        env,
+        mode="audio",
+        audio_prompt_draft="lofi hip hop",
+        lyrics_draft="[Verse 1]\nドラフト",
+    )["messages"][0]["content"]
+    assert "lofi hip hop" in system
+    assert "[Verse 1]" in system
+
+
+def test_audio_session_ignores_a_lyrics_draft_the_model_cannot_use(env):
+    system = start(
+        env,
+        mode="audio",
+        audio_workflow="stable_audio_3_medium_base",
+        lyrics_draft="[Verse 1]\nドラフト",
+    )["messages"][0]["content"]
+    assert "Existing lyrics draft" not in system
+
+
+def test_audio_session_falls_back_to_the_default_workflow(env):
+    system = start(env, mode="audio", audio_workflow="nope")["messages"][0]["content"]
+    assert "AUDIO PROMPT SPEC — ACE-Step 1.5 XL" in system
+
+
+def test_audio_result_carries_the_prompt_lyrics_and_suggestions(env):
+    session = start(env, mode="audio")
+    env.cli.answers = [AUDIO_JSON_ANSWER]
+    reply = say(env, session["id"]).json()
+    result = reply["result"]
+    assert result["audio_prompt"].startswith("dreamy city-pop")
+    assert result["lyrics"].startswith("[Verse 1]")
+    assert result["bpm"] == 92
+    assert result["keyscale"] == "F# minor"
+    assert result["language"] == "ja"
+    assert result["notes"] == "しっとりめにしました"
+    # 画像・動画のフィールドは音声セッションでは常に null
+    assert result["image_prompt"] is None
+    assert result["video_prompt"] is None
+
+
+def test_audio_question_turn_returns_no_result(env):
+    session = start(env, mode="audio")
+    env.cli.answers = ["どんなジャンルにしますか？"]
+    assert say(env, session["id"]).json()["result"] is None
+
+
+def test_build_audio_system_prompt_is_used_by_build_system_prompt():
+    audio = build_system_prompt(
+        ChatSessionCreate(mode="audio", audio_workflow="ace_step1_5_xl_sft")
+    )
+    assert "# AUDIO PROMPT SPEC" in audio
+    # 画像・動画のセッションは今までどおり
+    image = build_system_prompt(ChatSessionCreate(mode="image_only"))
+    assert "# AUDIO PROMPT SPEC" not in image
+    assert "# IMAGE PROMPT SPEC" in image

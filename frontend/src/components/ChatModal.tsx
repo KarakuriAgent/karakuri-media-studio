@@ -1,17 +1,30 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, formatDetail, ApiError } from '../api'
-import type { FormState } from '../form'
-import type { ChatMessage, PromptResult, PromptTemplate } from '../types'
+import { audioSupports, type FormState } from '../form'
+import type {
+  ChatMessage,
+  Options,
+  PromptResult,
+  PromptTemplate,
+} from '../types'
 import { Banner, Modal } from './ui'
 
 interface Props {
   form: FormState
   patch: (patch: Partial<FormState>) => void
+  /** 音声モードで、選択中のワークフローが読むフィールドを知るために使う。 */
+  options: Options | null
   onClose: () => void
   onSessionId: (id: string | null) => void
 }
 
-export default function ChatModal({ form, patch, onClose, onSessionId }: Props) {
+export default function ChatModal({
+  form,
+  patch,
+  options,
+  onClose,
+  onSessionId,
+}: Props) {
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [messages, setMessages] = useState<ChatMessage[]>([])
   const [draft, setDraft] = useState('')
@@ -21,6 +34,11 @@ export default function ChatModal({ form, patch, onClose, onSessionId }: Props) 
   const [template, setTemplate] = useState<PromptTemplate>(form.promptTemplate)
   const scroller = useRef<HTMLDivElement>(null)
 
+  // 音声モードは会話の中身も反映先も別物（シーンもカメラも LoRA も無い）。
+  const audio = form.mode === 'audio'
+  const audioWorkflow =
+    options?.audio_workflows.find((item) => item.id === form.audioWorkflow) ?? null
+
   const startSession = async (promptTemplate: PromptTemplate) => {
     setBusy(true)
     setError(null)
@@ -28,6 +46,10 @@ export default function ChatModal({ form, patch, onClose, onSessionId }: Props) 
       const session = await api.createChatSession({
         mode: form.mode,
         video_workflow: form.videoWorkflow,
+        // decides which model family's IMAGE PROMPT SPEC the system prompt uses
+        image_workflow: form.imageWorkflow,
+        // …and which AUDIO PROMPT SPEC, in mode 'audio'
+        audio_workflow: form.audioWorkflow,
         loras: form.loras.map(
           ({ lora_name, trigger_word, strength, display_name }) => ({
             lora_name,
@@ -46,9 +68,11 @@ export default function ChatModal({ form, patch, onClose, onSessionId }: Props) 
           }),
         ),
         video_trigger_text: form.videoTriggerText,
-        duration: form.duration,
+        duration: audio ? form.audioDuration : form.duration,
         image_prompt_draft: form.imagePrompt,
         video_prompt_draft: form.videoPrompt,
+        audio_prompt_draft: form.audioPrompt,
+        lyrics_draft: form.lyrics,
         prompt_template: promptTemplate,
         start_image_path: form.mode === 'i2v' ? form.sourceImage || null : null,
       })
@@ -105,6 +129,21 @@ export default function ChatModal({ form, patch, onClose, onSessionId }: Props) 
     const changes: Partial<FormState> = {}
     if (result.image_prompt != null) changes.imagePrompt = result.image_prompt
     if (result.video_prompt != null) changes.videoPrompt = result.video_prompt
+    if (result.audio_prompt != null) changes.audioPrompt = result.audio_prompt
+    // モデル固有の提案は、選択中のワークフローが実際に読む項目だけ反映する
+    // （Stable Audio に歌詞やキーを書き込んでも使われないので入れない）。
+    if (result.lyrics != null && audioSupports(audioWorkflow, 'lyrics')) {
+      changes.lyrics = result.lyrics
+    }
+    if (result.bpm != null && audioSupports(audioWorkflow, 'bpm')) {
+      changes.bpm = result.bpm
+    }
+    if (result.keyscale != null && audioSupports(audioWorkflow, 'keyscale')) {
+      changes.keyscale = result.keyscale
+    }
+    if (result.language != null && audioSupports(audioWorkflow, 'language')) {
+      changes.language = result.language
+    }
     patch(changes)
     onClose()
   }
@@ -112,6 +151,7 @@ export default function ChatModal({ form, patch, onClose, onSessionId }: Props) 
   return (
     <Modal title="Grok プロンプト作成" onClose={onClose} wide>
       <div className="flex h-[70vh] flex-col gap-3">
+        {!audio && (
         <div className="flex items-center gap-2 text-xs">
           <span className="text-slate-400">プロンプトテンプレート</span>
           <div className="flex rounded-md border border-ink-600 bg-ink-800 p-0.5">
@@ -139,6 +179,7 @@ export default function ChatModal({ form, patch, onClose, onSessionId }: Props) 
             切り替えると会話をやり直します
           </span>
         </div>
+        )}
 
         {error && <Banner onClose={() => setError(null)}>{error}</Banner>}
 
@@ -148,8 +189,9 @@ export default function ChatModal({ form, patch, onClose, onSessionId }: Props) 
         >
           {messages.length === 0 && !busy && (
             <p className="text-xs text-slate-500">
-              作りたいものをひとこと入力してください（例: 「かおりが楽しそうにダンスをしている」）。
-              不足があれば Grok が質問で掘り下げます。
+              {audio
+                ? '作りたい音をひとこと入力してください（例: 「夜の街を歩くときの lo-fi な曲」）。不足があれば Grok が質問で掘り下げます。'
+                : '作りたいものをひとこと入力してください（例: 「かおりが楽しそうにダンスをしている」）。不足があれば Grok が質問で掘り下げます。'}
             </p>
           )}
           {messages.map((message, index) => (
@@ -192,6 +234,39 @@ export default function ChatModal({ form, patch, onClose, onSessionId }: Props) 
                     {result.video_prompt}
                   </p>
                 </div>
+              )}
+              {result.audio_prompt != null && (
+                <div>
+                  <p className="text-slate-400">音声プロンプト</p>
+                  <p className="whitespace-pre-wrap text-slate-200">
+                    {result.audio_prompt}
+                  </p>
+                </div>
+              )}
+              {result.lyrics != null && audioSupports(audioWorkflow, 'lyrics') && (
+                <div>
+                  <p className="text-slate-400">歌詞</p>
+                  <p className="whitespace-pre-wrap font-mono text-slate-200">
+                    {result.lyrics}
+                  </p>
+                </div>
+              )}
+              {audio && (result.bpm != null || result.keyscale || result.language) && (
+                <p className="text-slate-500">
+                  {[
+                    result.bpm != null && audioSupports(audioWorkflow, 'bpm')
+                      ? `BPM ${result.bpm}`
+                      : null,
+                    result.keyscale && audioSupports(audioWorkflow, 'keyscale')
+                      ? result.keyscale
+                      : null,
+                    result.language && audioSupports(audioWorkflow, 'language')
+                      ? `言語 ${result.language}`
+                      : null,
+                  ]
+                    .filter(Boolean)
+                    .join(' / ')}
+                </p>
               )}
               {result.notes && (
                 <p className="text-slate-500 whitespace-pre-wrap">{result.notes}</p>

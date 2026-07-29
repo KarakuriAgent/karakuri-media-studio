@@ -49,17 +49,23 @@ from .models import (
     JobCreate,
     JobRerun,
     LoraRef,
+    audio_lora_problem,
+    audio_workflow_problem,
+    image_lora_family_problem,
+    image_workflow_problem,
     missing_job_fields,
     video_lora_problem,
     video_workflow_problem,
 )
 from .paths import ASSETS_DIR, OUTPUTS_DIR
-from .workflow import build_image_workflow, build_video_workflow
+from .workflow import build_audio_workflow, build_image_workflow, build_video_workflow
 from .workflows import (
+    DEFAULT_AUDIO_WORKFLOW,
     DEFAULT_IMAGE_WORKFLOW,
     DEFAULT_VIDEO_WORKFLOW,
     WorkflowSpec,
     WorkflowSpecError,
+    get_audio_spec,
     get_image_spec,
     get_video_spec,
 )
@@ -185,6 +191,7 @@ def row_to_job(row: aiosqlite.Row, *, include_workflow: bool = True) -> Job:
     data["image_url"] = _output_url(data.get("image_path"))
     data["video_url"] = _output_url(data.get("video_path"))
     data["last_frame_url"] = _output_url(data.get("last_frame_path"))
+    data["audio_output_url"] = _output_url(data.get("audio_output_path"))
     return Job(**data)
 
 
@@ -256,14 +263,34 @@ async def _link_chat_session(chat_session_id: str | None, job_id: str) -> None:
 def _seeds(seed: int | None) -> dict[str, Any]:
     """Resolve the seed. A random one is recorded so the run stays reproducible."""
     value = int(seed) if seed is not None else random.randint(0, SEED_MAX)
-    return {"seed": value, "image_seed": value, "video_seeds": [value, value]}
+    return {
+        "seed": value,
+        "image_seed": value,
+        "video_seeds": [value, value],
+        "audio_seed": value,
+    }
 
 
 def _validate(params: dict[str, Any]) -> None:
     mode = params.get("mode", "")
     video_workflow = params.get("video_workflow")
-    problem = video_workflow_problem(mode, video_workflow) or video_lora_problem(
-        mode, video_workflow, params.get("video_loras") or []
+    image_workflow = params.get("image_workflow")
+    problem = (
+        image_workflow_problem(mode, image_workflow)
+        or video_workflow_problem(mode, video_workflow)
+        or audio_workflow_problem(
+            mode,
+            params.get("audio_workflow"),
+            duration=params.get("duration"),
+            audio_category=params.get("audio_category"),
+            keyscale=params.get("keyscale"),
+            language=params.get("language"),
+            bpm=params.get("bpm"),
+        )
+        or audio_lora_problem(
+            mode, params.get("loras") or [], params.get("video_loras") or []
+        )
+        or video_lora_problem(mode, video_workflow, params.get("video_loras") or [])
     )
     if problem:
         raise JobValidationError(problem)
@@ -277,11 +304,49 @@ def _validate(params: dict[str, Any]) -> None:
             end_image=params.get("end_image"),
             reference_video=params.get("reference_video"),
             video_workflow=video_workflow,
+            image_workflow=image_workflow,
+            audio_prompt=params.get("audio_prompt"),
         )
     except WorkflowSpecError as exc:
         raise JobValidationError(str(exc)) from exc
     if missing:
         raise JobValidationError(f"mode '{mode}' requires: {', '.join(missing)}")
+
+
+async def lora_families(names: list[str]) -> dict[str, str]:
+    """``{lora_name: family}`` for the image LoRAs the registry still knows.
+
+    Names that are not (or no longer) registered are simply absent, so a rerun
+    of an old job whose LoRA has since been deleted is not blocked by this.
+    """
+    if not names:
+        return {}
+    placeholders = ", ".join("?" for _ in names)
+    async with get_db() as conn:
+        async with conn.execute(
+            "SELECT lora_name, family FROM loras"
+            f" WHERE target = 'image' AND lora_name IN ({placeholders})",
+            names,
+        ) as cur:
+            rows = await cur.fetchall()
+    return {row["lora_name"]: row["family"] or "krea2" for row in rows}
+
+
+async def _validate_lora_families(params: dict[str, Any]) -> None:
+    """422 when an image LoRA was trained for another model family (SPEC §3.4)."""
+    names = [
+        str(lora.get("lora_name") or "")
+        for lora in params.get("loras") or []
+        if isinstance(lora, dict) and lora.get("lora_name")
+    ]
+    known = await lora_families(names)
+    problem = image_lora_family_problem(
+        params.get("mode", ""),
+        params.get("image_workflow"),
+        [known[name] for name in names if name in known],
+    )
+    if problem:
+        raise JobValidationError(problem)
 
 
 def _resolve_nsfw(explicit: bool | None, inherit: bool) -> tuple[bool | None, str]:
@@ -304,6 +369,7 @@ async def _insert_job(
 ) -> Job:
     """Validate, persist a ``queued`` row and hand it to the worker."""
     _validate(params)
+    await _validate_lora_families(params)
 
     # Fail fast on unusable asset paths (422 rather than a failed job).
     for field in _UPLOADS:
@@ -321,6 +387,7 @@ async def _insert_job(
         "user_input": user_input,
         "image_prompt": params.get("image_prompt") or None,
         "video_prompt": params.get("video_prompt") or None,
+        "audio_prompt": params.get("audio_prompt") or None,
         "grok_raw": None,
         "params": json.dumps(params, ensure_ascii=False),
         "workflow_json": "{}",
@@ -330,6 +397,7 @@ async def _insert_job(
         "last_frame_path": None,
         "source_image": params.get("source_image"),
         "audio_path": params.get("audio_path"),
+        "audio_output_path": None,
         "error": None,
         "nsfw": 1 if nsfw else 0,
         "nsfw_source": nsfw_source if nsfw is not None else "",
@@ -337,13 +405,14 @@ async def _insert_job(
     async with get_db() as conn:
         await conn.execute(
             "INSERT INTO jobs (id, created_at, mode, status, user_input, image_prompt,"
-            " video_prompt, grok_raw, params, workflow_json, comfy_prompt_id,"
-            " image_path, video_path, last_frame_path, source_image, audio_path, error,"
-            " nsfw, nsfw_source)"
+            " video_prompt, audio_prompt, grok_raw, params, workflow_json,"
+            " comfy_prompt_id, image_path, video_path, last_frame_path, source_image,"
+            " audio_path, audio_output_path, error, nsfw, nsfw_source)"
             " VALUES (:id, :created_at, :mode, :status, :user_input, :image_prompt,"
-            " :video_prompt, :grok_raw, :params, :workflow_json, :comfy_prompt_id,"
-            " :image_path, :video_path, :last_frame_path, :source_image, :audio_path,"
-            " :error, :nsfw, :nsfw_source)",
+            " :video_prompt, :audio_prompt, :grok_raw, :params, :workflow_json,"
+            " :comfy_prompt_id, :image_path, :video_path, :last_frame_path,"
+            " :source_image, :audio_path, :audio_output_path, :error, :nsfw,"
+            " :nsfw_source)",
             row,
         )
         await conn.commit()
@@ -358,7 +427,10 @@ async def _insert_job(
             nsfw_service.classify_job(
                 job_id,
                 nsfw_service.job_text(
-                    params.get("image_prompt"), params.get("video_prompt"), user_input
+                    params.get("image_prompt"),
+                    params.get("video_prompt"),
+                    user_input,
+                    params.get("audio_prompt"),
                 ),
                 session_id=chat_session_id,
             ),
@@ -373,8 +445,9 @@ async def _insert_job(
 def _params_from_create(payload: JobCreate) -> dict[str, Any]:
     params: dict[str, Any] = {
         "mode": payload.mode,
-        "image_workflow": DEFAULT_IMAGE_WORKFLOW,
+        "image_workflow": payload.image_workflow,
         "video_workflow": payload.video_workflow,
+        "audio_workflow": payload.audio_workflow,
         "aspect_ratio": payload.aspect_ratio,
         "megapixels": payload.megapixels,
         "loras": [lora.model_dump() for lora in payload.loras],
@@ -384,6 +457,14 @@ def _params_from_create(payload: JobCreate) -> dict[str, Any]:
         "image_prompt": payload.image_prompt,
         "video_prompt": payload.video_prompt,
         "negative_prompt": payload.negative_prompt,
+        # mode 'audio' only (kept in params for rerun / inspection)
+        "audio_prompt": payload.audio_prompt,
+        "lyrics": payload.lyrics,
+        "bpm": payload.bpm,
+        "keyscale": payload.keyscale,
+        "language": payload.language,
+        "audio_category": payload.audio_category,
+        "reprompt": payload.reprompt,
         "duration": payload.duration,
         "fps": payload.fps,
         "audio_path": payload.audio_path,
@@ -478,6 +559,8 @@ async def continue_job(
     prev = dict(source.params)
     params: dict[str, Any] = {
         "mode": "i2v",
+        # kept for the record only: a continuation never runs an image stage
+        "image_workflow": prev.get("image_workflow") or DEFAULT_IMAGE_WORKFLOW,
         "video_workflow": _continuable_workflow(
             payload.video_workflow or prev.get("video_workflow")
         ),
@@ -530,6 +613,7 @@ def _generation_params(job: Job, uploads: dict[str, str]) -> GenerationParams:
         job_id=job.id,
         image_workflow=p.get("image_workflow") or DEFAULT_IMAGE_WORKFLOW,
         video_workflow=p.get("video_workflow") or DEFAULT_VIDEO_WORKFLOW,
+        audio_workflow=p.get("audio_workflow") or DEFAULT_AUDIO_WORKFLOW,
         aspect_ratio=p.get("aspect_ratio", "4:3 (Standard)"),
         megapixels=float(p.get("megapixels", 1.0)),
         start_image_size=read_image_size(source_image) if source_image else None,
@@ -543,8 +627,17 @@ def _generation_params(job: Job, uploads: dict[str, str]) -> GenerationParams:
         negative_prompt=p.get("negative_prompt") or "",
         duration=float(p.get("duration", 10.0)),
         fps=int(p.get("fps", 25)),
+        # 音声ジョブ用（旧ジョブの params には無いので既定値のまま）
+        audio_prompt=p.get("audio_prompt", ""),
+        lyrics=p.get("lyrics", ""),
+        bpm=int(p.get("bpm", 120)),
+        keyscale=p.get("keyscale") or "C major",
+        language=p.get("language") or "en",
+        audio_category=p.get("audio_category") or "Music",
+        reprompt=bool(p.get("reprompt", False)),
         image_seed=int(p.get("image_seed", 0)),
         video_seeds=[int(s) for s in p.get("video_seeds", [])],
+        audio_seed=int(p.get("audio_seed", p.get("seed", 0) or 0)),
         **{field: uploads.get(field, "") for field in _UPLOADS.values()},
     )
 
@@ -731,6 +824,10 @@ async def _download_artifact(
         suffix = ".mp4"
     if kind == "image" and not suffix:
         suffix = ".png"
+    # SaveAudioMP3 always writes .mp3, but a template swapped for SaveAudio /
+    # SaveAudioOpus keeps its own extension; only a missing one is filled in.
+    if kind == "audio" and not suffix:
+        suffix = ".mp3"
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest = dest_dir / f"{stem}{suffix}"
     await comfy.download_view(
@@ -792,6 +889,24 @@ async def run_job(job_id: str) -> None:
         updates: dict[str, Any] = {}
 
         two_stage = job.mode == "full"
+        # 音声は独立した 1 ステージのジョブ: 画像・動画の分岐には一切入らない。
+        if job.mode == "audio":
+            audio_spec = get_audio_spec(params.audio_workflow)
+            label = "音声生成"
+            await ws.publish(job_id, "running", message=label)
+            entry = await _run_stage(
+                job_id,
+                "audio",
+                audio_spec,
+                build_audio_workflow(params, overrides, spec=audio_spec),
+                stages,
+                label,
+            )
+            track = await _download_artifact(
+                entry, audio_spec.output_node, job_dir, "audio", "audio"
+            )
+            updates["audio_output_path"] = str(track)
+
         if job.mode in ("full", "image_only"):
             image_spec = get_image_spec(params.image_workflow)
             label = "画像生成 (1/2)" if two_stage else "画像生成"

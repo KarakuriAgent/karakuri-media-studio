@@ -17,6 +17,10 @@ still runs one job at a time (SPEC §5).
 暴走防止: 連続 Grok ターン上限 (:data:`MAX_TURNS`)、セッションあたりの生成本数
 上限 (``auto_limit``)、同一タスクの自動リトライは 1 回まで。自走（auto）セッションは
 さらに 1 回のプラン提案で増やせる新規ジョブ数も制限する (:func:`plan_task_limits`)。
+
+生成本数の上限は「そこで打ち切る」のではなく「超える直前にユーザーへ確認する」
+（:func:`_request_limit_checkin`）。承認 1 回につき ``auto_limit`` 本ぶん枠が伸び、
+次の区切りでまた確認する。断られたらそこで停止する。
 """
 
 from __future__ import annotations
@@ -214,6 +218,20 @@ async def known_lora_names() -> dict[str, str]:
     return {row["lora_name"]: row["target"] or "image" for row in rows}
 
 
+async def known_lora_families() -> dict[str, str]:
+    """``{lora_name: family}`` of the **image** LoRAs (SPEC §3.4).
+
+    Video LoRAs have no family (LTX 2.3 is the only video model), so they are
+    left out and the family check never fires for ``video_loras``.
+    """
+    async with get_db() as conn:
+        async with conn.execute(
+            "SELECT lora_name, family FROM loras WHERE target = 'image'"
+        ) as cur:
+            rows = await cur.fetchall()
+    return {row["lora_name"]: row["family"] or "krea2" for row in rows}
+
+
 # --------------------------------------------------------------------------
 # one Grok turn
 # --------------------------------------------------------------------------
@@ -244,11 +262,16 @@ async def _run_turn(
 
     client = grok.get_agent_client(session_dir(session_id), on_activity)
     known = await known_lora_names() or None
+    families = await known_lora_families() or None
     max_tasks, done_tasks = plan_task_limits(session)
 
     def parse(text: str) -> AgentAction | None:
         return agent_protocol.parse_action(
-            text, known_loras=known, max_tasks=max_tasks, done_tasks=done_tasks
+            text,
+            known_loras=known,
+            known_families=families,
+            max_tasks=max_tasks,
+            done_tasks=done_tasks,
         )
 
     answer = await client.complete(prompts.build_agent_conversation(session.messages))
@@ -324,6 +347,14 @@ async def _register_job_artifacts(
                 url=job.video_url, job_id=job.id,
             ),
         )
+    if job.audio_output_url:
+        await add_artifact(
+            session_id,
+            AgentArtifact(
+                kind="audio", title=f"{label} 音声", ts=now(),
+                url=job.audio_output_url, job_id=job.id,
+            ),
+        )
 
 
 async def _run_and_wait(
@@ -353,11 +384,18 @@ async def _run_and_wait(
             f"{label} が完了しました (job {finished.id})。"
             f"{'動画: ' + finished.video_url + '。' if finished.video_url else ''}"
             f"{'画像: ' + finished.image_url + '。' if finished.image_url else ''}"
-            "必要なら inspect でフレームを確認してください。",
+            f"{'音声: ' + finished.audio_output_url + '。' if finished.audio_output_url else ''}"
+            # 音声ジョブには映像が無いので inspect（ffmpeg でのフレーム抽出）は使えない
+            + (
+                "音声ファイルは聴けないので、判断はプロンプトと設定から行ってください。"
+                if finished.mode == "audio"
+                else "必要なら inspect でフレームを確認してください。"
+            ),
             job_id=finished.id,
             task_id=task.id if task else None,
             video_url=finished.video_url,
             image_url=finished.image_url,
+            audio_url=finished.audio_output_url,
         )
     else:
         await _event(
@@ -673,6 +711,7 @@ APPROVAL_OPTIONS = ["実行する", "やめる"]
 _APPROVE_WORDS = (
     "実行する", "実行", "はい", "ok", "okay", "yes", "承認", "お願い",
     "進める", "進めて", "どうぞ", "いいよ", "やって",
+    "続ける", "続けて", "続行",
 )
 _DECLINE_WORDS = (
     "やめる", "やめて", "いいえ", "no", "中止", "キャンセル", "しない",
@@ -695,12 +734,16 @@ def last_open_checkin(session: AgentSession) -> int | None:
 
 
 def pending_approval(session: AgentSession) -> tuple[int, AgentAction] | None:
-    """承認待ちで保留しているプラン外アクション（セッション JSON に永続化済み）。"""
+    """承認待ちで保留しているアクション（セッション JSON に永続化済み）。
+
+    プラン外の continue / rerun（``approval``）と、生成本数の上限を超える直前で
+    止めたアクション（``limit``）の両方が対象。
+    """
     index = last_open_checkin(session)
     if index is None:
         return None
     message = session.messages[index]
-    if message.kind != "approval":
+    if message.kind not in ("approval", "limit"):
         return None
     raw = message.data.get("action")
     if not isinstance(raw, dict):
@@ -748,14 +791,22 @@ async def resolve_checkin(session_id: str, answer: str) -> AgentAction | None:
     if index is None:
         return None
     found = pending_approval(session)
+    message = session.messages[index]
+    approved = _is_approval(answer)
     # 応答済みマークは種別を問わず付ける（フロントの「応答済み」判定の根拠）。
-    session.messages[index].data["resolved"] = True
+    message.data["resolved"] = True
+    if message.kind == "limit":
+        # 上限の延長は承認済みチェックインの本数だけで決まる（唯一の情報源）。
+        message.data["approved"] = approved
     await update(session_id, messages=session.messages)
+    if message.kind == "limit" and not approved:
+        await _halt(session_id, _limit_stopped(session))
+        return None
     if found is None:
         return None
     _, action = found
 
-    if _is_approval(answer):
+    if approved:
         action.approved = True
         return action
     label = _action_label(action)
@@ -797,6 +848,10 @@ async def apply_action(session_id: str, action: AgentAction) -> bool:
         auto = session is not None and session.checkin_mode == "auto"
         if not action.approved and not auto:
             await _request_approval(session_id, action)
+            return True
+        if session is not None and over_limit(session):
+            # 承認済みでも上限を超える 1 本目は必ず確認を挟む。
+            await _request_limit_checkin(session_id, session, action)
             return True
         await _continue_or_rerun(session_id, action)
         return False
@@ -841,10 +896,56 @@ async def _continue_or_rerun(session_id: str, action: AgentAction) -> None:
 # loop
 # --------------------------------------------------------------------------
 
-def _limit_reason(session: AgentSession) -> str | None:
-    if generated_count(session) >= session.auto_limit:
-        return f"生成本数が上限（{session.auto_limit} 本）に達したため停止しました。"
-    return None
+LIMIT_OPTIONS = ["続ける", "止める"]
+
+
+def limit_grants(session: AgentSession) -> int:
+    """ユーザーが「上限を超えて続ける」を承認した回数。"""
+    return sum(
+        1
+        for m in session.messages
+        if m.role == "checkin" and m.kind == "limit" and m.data.get("approved") is True
+    )
+
+
+def effective_limit(session: AgentSession) -> int:
+    """いま許されている生成本数。承認 1 回につき作成時の設定値ぶん伸びる。"""
+    return session.auto_limit * (limit_grants(session) + 1)
+
+
+def over_limit(session: AgentSession) -> bool:
+    return generated_count(session) >= effective_limit(session)
+
+
+def _limit_stopped(session: AgentSession) -> str:
+    return f"生成本数が上限（{effective_limit(session)} 本）に達したため停止しました。"
+
+
+async def _request_limit_checkin(
+    session_id: str, session: AgentSession, action: AgentAction | None = None
+) -> None:
+    """上限を超える直前でユーザーに続行を確認する（停止はしない）。
+
+    ``action`` を渡すと、承認されたときにそのアクションをそのまま再開できる
+    （プラン外の continue / rerun 用）。プランのタスクはループが拾い直す。
+    """
+    limit = effective_limit(session)
+    await _event(
+        session_id,
+        "limit_reached",
+        f"生成本数が設定上限（{limit} 本）に達しました。"
+        "続行してよいかユーザーに確認しています。",
+        limit=limit,
+        generated=generated_count(session),
+    )
+    await _checkin(
+        session_id,
+        f"生成本数が設定上限（{limit} 本）に達しました。このまま生成を続けますか？"
+        f"（続ける場合、次はあと {session.auto_limit} 本ぶん進めてまた確認します）",
+        LIMIT_OPTIONS,
+        kind="limit",
+        data={"action": action.model_dump(mode="json")} if action else {},
+    )
 
 
 def _stopping(session_id: str) -> bool:
@@ -873,9 +974,9 @@ async def _loop(session_id: str, action: AgentAction | None = None) -> None:
         if action is None:
             task = next_task(session)
             if task is not None:
-                reason = _limit_reason(session)
-                if reason:
-                    await _halt(session_id, reason)
+                if over_limit(session):
+                    # 上限で打ち切らず、ユーザーに続行を確認する（承認で枠が伸びる）。
+                    await _request_limit_checkin(session_id, session)
                     return
                 await execute_task(session_id, task)
                 executed = True

@@ -5,8 +5,11 @@ from ..config import load_settings
 from ..db import get_db
 from ..models import DEFAULT_NEGATIVE_PROMPT, Options, WorkflowOption
 from ..workflows import (
+    DEFAULT_AUDIO_WORKFLOW,
+    DEFAULT_IMAGE_WORKFLOW,
     DEFAULT_VIDEO_WORKFLOW,
     WorkflowSpec,
+    audio_specs,
     image_specs,
     video_specs,
 )
@@ -32,11 +35,15 @@ def _workflow_option(spec: WorkflowSpec) -> WorkflowOption:
         id=spec.id,
         label=spec.label,
         kind=spec.kind,
+        family=spec.family,
         notes=spec.notes,
         requires=list(spec.requires),
         supports=sorted(spec.inject),
         accepts_start_image=spec.accepts_start_image,
         image_label=spec.image_label,
+        min_duration=spec.min_duration,
+        max_duration=spec.max_duration,
+        default_duration=spec.default_duration,
     )
 
 
@@ -52,7 +59,10 @@ async def get_options() -> Options:
         negative_presets=NEGATIVE_PRESETS,
         image_workflows=[_workflow_option(spec) for spec in image_specs()],
         video_workflows=[_workflow_option(spec) for spec in video_specs()],
+        audio_workflows=[_workflow_option(spec) for spec in audio_specs()],
         default_video_workflow=DEFAULT_VIDEO_WORKFLOW,
+        default_image_workflow=DEFAULT_IMAGE_WORKFLOW,
+        default_audio_workflow=DEFAULT_AUDIO_WORKFLOW,
     )
 
     async with get_db() as conn:

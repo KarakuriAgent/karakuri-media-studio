@@ -6,7 +6,8 @@ import {
   MODE_HINTS,
   MODE_LABELS,
   NEGATIVE_PRESET_LABELS,
-  disabledFields,
+  hiddenFields,
+  imageWorkflowNeedsSource,
   joinTriggers,
   lorasForTarget,
   toSelected,
@@ -15,9 +16,12 @@ import {
   type SelectedLora,
 } from '../form'
 import type { Asset, Job, JobMode, Lora, Options, WorkflowOption } from '../types'
-import { Banner, FieldError } from './ui'
+import AudioFields from './AudioFields'
+import { Banner, FieldError, Section } from './ui'
 
-const MODES: JobMode[] = ['full', 'i2v', 'image_only']
+// 音声も「モード」の一つ。ただし走るのは音声ワークフロー 1 本きりで、画像→動画の
+// 連結（full）とは繋がらない独立ジョブ。
+const MODES: JobMode[] = ['full', 'i2v', 'image_only', 'audio']
 
 interface Props {
   form: FormState
@@ -32,33 +36,10 @@ interface Props {
   jobs: Job[]
 }
 
-function Section({
-  title,
-  children,
-  right,
-}: {
-  title: string
-  children: React.ReactNode
-  right?: React.ReactNode
-}) {
-  return (
-    <section className="card p-3">
-      <div className="mb-2 flex items-center justify-between">
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400">
-          {title}
-        </h3>
-        {right}
-      </div>
-      {children}
-    </section>
-  )
-}
-
 /** LoRA chips + strength sliders + trigger words, shared by both stages. */
 function LoraPicker({
   loras,
   selected,
-  disabled,
   triggerText,
   triggerDirty,
   emptyHint,
@@ -69,7 +50,6 @@ function LoraPicker({
 }: {
   loras: Lora[]
   selected: SelectedLora[]
-  disabled: boolean
   triggerText: string
   triggerDirty: boolean
   emptyHint: string
@@ -79,7 +59,7 @@ function LoraPicker({
   onTriggerReset: () => void
 }) {
   return (
-    <div className={disabled ? 'pointer-events-none opacity-40' : undefined}>
+    <div>
       <div className="flex flex-wrap gap-1.5">
         {loras.length === 0 && <p className="text-xs text-slate-500">{emptyHint}</p>}
         {loras.map((lora) => {
@@ -92,7 +72,6 @@ function LoraPicker({
                   ? 'border-accent-500 bg-accent-500/20 text-accent-400'
                   : 'border-ink-500 bg-ink-700 text-slate-300 hover:bg-ink-600'
               }`}
-              disabled={disabled}
               onClick={() => onToggle(lora)}
             >
               {lora.display_name}
@@ -115,7 +94,6 @@ function LoraPicker({
                 step="0.05"
                 className="flex-1 accent-accent-500"
                 value={lora.strength}
-                disabled={disabled}
                 onChange={(event) => onStrength(index, Number(event.target.value))}
               />
               <span className="w-10 text-right text-xs tabular-nums text-slate-400">
@@ -141,7 +119,6 @@ function LoraPicker({
         <input
           className="field"
           value={triggerText}
-          disabled={disabled}
           onChange={(event) => onTrigger(event.target.value)}
         />
       </div>
@@ -271,13 +248,12 @@ export default function GenerateForm({
   const [showAdvanced, setShowAdvanced] = useState(false)
 
   const registeredLoras: Lora[] = options?.loras ?? []
-  const imageLoras = lorasForTarget(registeredLoras, 'image')
-  const videoLoras = lorasForTarget(registeredLoras, 'video')
   const audioAssets = options?.audio_assets ?? []
   const imageAssets = options?.image_assets ?? []
   const videoAssets = options?.video_assets ?? []
   const aspectRatios = options?.aspect_ratios ?? []
   const videoWorkflows: WorkflowOption[] = options?.video_workflows ?? []
+  const imageWorkflows: WorkflowOption[] = options?.image_workflows ?? []
   const negativePresets = options?.negative_presets ?? {
     current: DEFAULT_NEGATIVE_PROMPT,
     author: AUTHOR_NEGATIVE_PROMPT,
@@ -286,7 +262,21 @@ export default function GenerateForm({
   const usable = workflowsForMode(form.mode, videoWorkflows)
   const workflow =
     videoWorkflows.find((item) => item.id === form.videoWorkflow) ?? null
-  const disabled = disabledFields(form.mode, workflow)
+  const imageWorkflow =
+    imageWorkflows.find((item) => item.id === form.imageWorkflow) ?? null
+  // 使わない項目は無効化ではなく描画しない（値は FormState に残るので、
+  // 使うモードに戻せば入力はそのまま復元される）。
+  const hidden = hiddenFields(form.mode, workflow, imageWorkflow)
+  const imageEdits = form.mode !== 'i2v' && imageWorkflowNeedsSource(imageWorkflow)
+
+  // Image LoRAs are family-scoped: only the ones matching the selected image
+  // workflow can be used (the backend rejects the rest).
+  const imageLoras = lorasForTarget(
+    registeredLoras,
+    'image',
+    imageWorkflow?.family,
+  )
+  const videoLoras = lorasForTarget(registeredLoras, 'video')
 
   // Full generation needs a workflow that can take the generated still; switch
   // away from e.g. t2v instead of letting the request 422.
@@ -297,6 +287,20 @@ export default function GenerateForm({
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form.mode, form.videoWorkflow, videoWorkflows])
+
+  // Switching the image workflow can switch the model family: LoRAs of the old
+  // family would be rejected by the backend, so drop them from the selection.
+  useEffect(() => {
+    if (!imageWorkflow || form.loras.length === 0) return
+    const usableIds = new Set(imageLoras.map((item) => item.id))
+    const kept = form.loras.filter((item) => usableIds.has(item.id))
+    if (kept.length === form.loras.length) return
+    patch({
+      loras: kept,
+      ...(form.triggerDirty ? {} : { triggerText: joinTriggers(kept) }),
+    })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.imageWorkflow, imageLoras.length, form.loras])
 
   const toggleLora = (lora: Lora) => {
     const already = form.loras.some((item) => item.id === lora.id)
@@ -401,411 +405,477 @@ export default function GenerateForm({
         ))}
       </div>
 
-      {form.mode !== 'image_only' && (
-        <Section title="動画ワークフロー">
-          {usable.length > 0 ? (
-            <select
-              className="field"
-              value={form.videoWorkflow}
-              onChange={(event) => patch({ videoWorkflow: event.target.value })}
-            >
-              {usable.map((item) => (
-                <option key={item.id} value={item.id}>
-                  {item.label}
-                </option>
-              ))}
-            </select>
-          ) : (
-            <input
-              className="field"
-              value={form.videoWorkflow}
-              onChange={(event) => patch({ videoWorkflow: event.target.value })}
-            />
-          )}
-          {workflow?.notes && (
-            <p className="mt-1 text-[11px] text-slate-500">{workflow.notes}</p>
-          )}
-          {form.mode === 'full' && (
-            <p className="mt-1 text-[11px] text-slate-500">
-              フル生成では開始フレームを受け取れるワークフローのみ選べます。
-            </p>
-          )}
-        </Section>
+      {/* 音声モード: 音声ワークフロー 1 本きりの独立ジョブ（画像・動画とは無関係） */}
+      {form.mode === 'audio' && (
+        <AudioFields
+          form={form}
+          patch={patch}
+          options={options}
+          onOpenChat={onOpenChat}
+          fieldErrors={fieldErrors}
+        />
       )}
 
-      {!disabled.startImage && (
-        <Section title={workflow?.image_label ?? '開始フレーム'}>
-          <AssetPicker
-            kind="image"
-            value={form.sourceImage}
-            assets={imageAssets}
-            busy={busyUpload}
-            onPick={(url) => patch({ sourceImage: url })}
-            onUpload={(file) => void upload('image', file, (url) => ({ sourceImage: url }))}
-          >
-            {lastFrameJobs.length > 0 && (
-              <div>
-                <label className="label">履歴のラストフレームから選択</label>
-                <div className="flex gap-2 overflow-x-auto pb-1">
-                  {lastFrameJobs.slice(0, 24).map((job) => (
-                    <button
-                      key={job.id}
-                      title={job.id}
-                      disabled={busyUpload}
-                      className="shrink-0 rounded border border-ink-600 hover:border-accent-500"
-                      onClick={() => void useLastFrame(job)}
-                    >
-                      <img
-                        src={job.last_frame_url ?? ''}
-                        alt={job.id}
-                        className="h-16 w-24 rounded object-cover"
-                      />
-                    </button>
+      {/* 画像・動画のセクション一式（音声モードでは丸ごと出さない） */}
+      {form.mode !== 'audio' && (
+        <>
+          {form.mode !== 'image_only' && (
+            <Section title="動画ワークフロー">
+              {usable.length > 0 ? (
+                <select
+                  className="field"
+                  value={form.videoWorkflow}
+                  onChange={(event) => patch({ videoWorkflow: event.target.value })}
+                >
+                  {usable.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.label}
+                    </option>
                   ))}
+                </select>
+              ) : (
+                <input
+                  className="field"
+                  value={form.videoWorkflow}
+                  onChange={(event) => patch({ videoWorkflow: event.target.value })}
+                />
+              )}
+              {workflow?.notes && (
+                <p className="mt-1 text-[11px] text-slate-500">{workflow.notes}</p>
+              )}
+              {form.mode === 'full' && (
+                <p className="mt-1 text-[11px] text-slate-500">
+                  画像＋動画では開始フレームを受け取れるワークフローのみ選べます。
+                </p>
+              )}
+            </Section>
+          )}
+
+          {form.mode !== 'i2v' && (
+            <Section title="画像ワークフロー">
+              {imageWorkflows.length > 0 ? (
+                <select
+                  className="field"
+                  value={form.imageWorkflow}
+                  onChange={(event) => patch({ imageWorkflow: event.target.value })}
+                >
+                  {imageWorkflows.map((item) => (
+                    <option key={item.id} value={item.id}>
+                      {item.label}
+                    </option>
+                  ))}
+                </select>
+              ) : (
+                <input
+                  className="field"
+                  value={form.imageWorkflow}
+                  onChange={(event) => patch({ imageWorkflow: event.target.value })}
+                />
+              )}
+              {imageWorkflow?.notes && (
+                <p className="mt-1 text-[11px] text-slate-500">{imageWorkflow.notes}</p>
+              )}
+              {imageEdits && (
+                <p className="mt-1 text-[11px] text-amber-400">
+                  入力画像を編集するワークフローです。参照画像が必須で、解像度は入力画像から決まります。
+                </p>
+              )}
+              <p className="mt-1 text-[11px] text-slate-500">
+                モデルごとにプロンプトの書き方が異なります（Grokで生成 は選択中のモデルの流儀で書きます）。
+              </p>
+            </Section>
+          )}
+
+          {!hidden.startImage && (
+            <Section
+              title={
+                imageEdits
+                  ? (imageWorkflow?.image_label ?? '編集元画像')
+                  : (workflow?.image_label ?? '開始フレーム')
+              }
+            >
+              <AssetPicker
+                kind="image"
+                value={form.sourceImage}
+                assets={imageAssets}
+                busy={busyUpload}
+                onPick={(url) => patch({ sourceImage: url })}
+                onUpload={(file) => void upload('image', file, (url) => ({ sourceImage: url }))}
+              >
+                {lastFrameJobs.length > 0 && (
+                  <div>
+                    <label className="label">履歴のラストフレームから選択</label>
+                    <div className="flex gap-2 overflow-x-auto pb-1">
+                      {lastFrameJobs.slice(0, 24).map((job) => (
+                        <button
+                          key={job.id}
+                          title={job.id}
+                          disabled={busyUpload}
+                          className="shrink-0 rounded border border-ink-600 hover:border-accent-500"
+                          onClick={() => void useLastFrame(job)}
+                        >
+                          <img
+                            src={job.last_frame_url ?? ''}
+                            alt={job.id}
+                            className="h-16 w-24 rounded object-cover"
+                          />
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
+              </AssetPicker>
+              <p className="mt-1 text-[11px] text-slate-500">
+                履歴のラストフレームから続きを生成する場合は、履歴詳細の「続きを生成」を使ってください。
+              </p>
+              <FieldError message={fieldErrors.source_image} />
+            </Section>
+          )}
+
+          {!hidden.endImage && (
+            <Section title="最後のフレーム">
+              <AssetPicker
+                kind="image"
+                value={form.endImage}
+                assets={imageAssets}
+                busy={busyUpload}
+                onPick={(url) => patch({ endImage: url })}
+                onUpload={(file) => void upload('image', file, (url) => ({ endImage: url }))}
+              />
+              <FieldError message={fieldErrors.end_image} />
+            </Section>
+          )}
+
+          {!hidden.referenceVideo && (
+            <Section title="参照動画（モーション転写）">
+              <AssetPicker
+                kind="video"
+                value={form.referenceVideo}
+                assets={videoAssets}
+                busy={busyUpload}
+                onPick={(url) => patch({ referenceVideo: url })}
+                onUpload={(file) => void upload('video', file, (url) => ({ referenceVideo: url }))}
+              />
+              <p className="mt-1 text-[11px] text-slate-500">
+                秒数の設定ぶんだけ先頭から切り出して深度を取り、モーションを転写します。
+              </p>
+              <FieldError message={fieldErrors.reference_video} />
+            </Section>
+          )}
+
+          {!hidden.audio && (
+            <Section title="リファレンス音声">
+              <div className="flex flex-col gap-2">
+                <select
+                  className="field"
+                  value={form.audioPath}
+                  onChange={(event) => patch({ audioPath: event.target.value })}
+                >
+                  <option value="">（未選択）</option>
+                  {!audioAssets.some((asset) => asset.url === form.audioPath) &&
+                    form.audioPath && (
+                      <option value={form.audioPath}>{form.audioPath}</option>
+                    )}
+                  {audioAssets.map((asset) => (
+                    <option key={asset.url} value={asset.url}>
+                      {asset.name}
+                    </option>
+                  ))}
+                </select>
+                <div className="flex items-center gap-2">
+                  <input
+                    ref={audioInput}
+                    type="file"
+                    accept="audio/*"
+                    className="hidden"
+                    onChange={(event) => {
+                      const file = event.target.files?.[0]
+                      if (file) void upload('audio', file, (url) => ({ audioPath: url }))
+                      event.target.value = ''
+                    }}
+                  />
+                  <button
+                    className="btn-ghost text-xs"
+                    disabled={busyUpload}
+                    onClick={() => audioInput.current?.click()}
+                  >
+                    音声をアップロード
+                  </button>
+                  {form.audioPath && (
+                    <audio className="h-8 flex-1" controls src={form.audioPath} />
+                  )}
+                </div>
+                <FieldError message={fieldErrors.audio_path} />
+              </div>
+            </Section>
+          )}
+
+          {!hidden.videoLoras && (
+            <Section title="LoRA（動画）">
+              <LoraPicker
+                loras={videoLoras}
+                selected={form.videoLoras}
+                triggerText={form.videoTriggerText}
+                triggerDirty={form.videoTriggerDirty}
+                emptyHint="動画用の登録済み LoRA がありません（設定 → LoRA 管理で追加）"
+                onToggle={toggleVideoLora}
+                onStrength={(index, strength) => {
+                  const next = [...form.videoLoras]
+                  next[index] = { ...next[index], strength }
+                  patch({ videoLoras: next })
+                }}
+                onTrigger={(value) =>
+                  patch({ videoTriggerText: value, videoTriggerDirty: true })
+                }
+                onTriggerReset={() =>
+                  patch({
+                    videoTriggerDirty: false,
+                    videoTriggerText: joinTriggers(form.videoLoras),
+                  })
+                }
+              />
+              <p className="mt-2 text-[11px] text-slate-500">
+                動画ワークフロー（LTX 2.3）の既定 LoRA の後ろに直列で挿入され、
+                トリガーワードは動画プロンプトの先頭に付きます。
+              </p>
+            </Section>
+          )}
+
+          {!hidden.resolution && (
+            <Section title="解像度">
+              {imageEdits && (
+                <p className="mb-2 text-[11px] text-amber-400">
+                  選択中の画像ワークフローは入力画像から解像度を決めます。ここの設定は動画側にのみ効きます。
+                </p>
+              )}
+              <div className="grid grid-cols-2 gap-2">
+                <div>
+                  <label className="label">アスペクト比</label>
+                  {aspectRatios.length > 0 ? (
+                    <select
+                      className="field"
+                      value={form.aspectRatio}
+                      onChange={(event) => patch({ aspectRatio: event.target.value })}
+                    >
+                      {!aspectRatios.includes(form.aspectRatio) && (
+                        <option value={form.aspectRatio}>{form.aspectRatio}</option>
+                      )}
+                      {aspectRatios.map((ratio) => (
+                        <option key={ratio} value={ratio}>
+                          {ratio}
+                        </option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      className="field"
+                      value={form.aspectRatio}
+                      placeholder="4:3 (Standard)"
+                      onChange={(event) => patch({ aspectRatio: event.target.value })}
+                    />
+                  )}
+                </div>
+                <div>
+                  <label className="label">メガピクセル</label>
+                  <input
+                    className="field"
+                    type="number"
+                    step="0.05"
+                    min="0.1"
+                    value={form.megapixels}
+                    onChange={(event) =>
+                      patch({ megapixels: Number(event.target.value) || 0 })
+                    }
+                  />
                 </div>
               </div>
-            )}
-          </AssetPicker>
-          <p className="mt-1 text-[11px] text-slate-500">
-            履歴のラストフレームから続きを生成する場合は、履歴詳細の「続きを生成」を使ってください。
-          </p>
-          <FieldError message={fieldErrors.source_image} />
-        </Section>
-      )}
-
-      {!disabled.endImage && (
-        <Section title="最後のフレーム">
-          <AssetPicker
-            kind="image"
-            value={form.endImage}
-            assets={imageAssets}
-            busy={busyUpload}
-            onPick={(url) => patch({ endImage: url })}
-            onUpload={(file) => void upload('image', file, (url) => ({ endImage: url }))}
-          />
-          <FieldError message={fieldErrors.end_image} />
-        </Section>
-      )}
-
-      {!disabled.referenceVideo && (
-        <Section title="参照動画（モーション転写）">
-          <AssetPicker
-            kind="video"
-            value={form.referenceVideo}
-            assets={videoAssets}
-            busy={busyUpload}
-            onPick={(url) => patch({ referenceVideo: url })}
-            onUpload={(file) => void upload('video', file, (url) => ({ referenceVideo: url }))}
-          />
-          <p className="mt-1 text-[11px] text-slate-500">
-            秒数の設定ぶんだけ先頭から切り出して深度を取り、モーションを転写します。
-          </p>
-          <FieldError message={fieldErrors.reference_video} />
-        </Section>
-      )}
-
-      <Section title="リファレンス音声">
-        <div className={disabled.audio ? 'pointer-events-none opacity-40' : undefined}>
-          <div className="flex flex-col gap-2">
-            {disabled.audio && form.mode !== 'image_only' && (
-              <p className="text-[11px] text-slate-500">
-                このワークフローは音声を受け取りません（音声は動画と同時に生成されます）。
+              <p className="mt-1 text-[11px] text-slate-500">
+                動画側の幅・高さはこの組み合わせから 8 の倍数で計算されます。
+                開始フレーム画像を指定した場合、アスペクト比は画像に合わせて自動調整されます
+                （メガピクセルはそのまま有効。リファレンスシートを除く）。
               </p>
-            )}
-            <select
-              className="field"
-              value={form.audioPath}
-              disabled={disabled.audio}
-              onChange={(event) => patch({ audioPath: event.target.value })}
-            >
-              <option value="">（未選択）</option>
-              {!audioAssets.some((asset) => asset.url === form.audioPath) &&
-                form.audioPath && (
-                  <option value={form.audioPath}>{form.audioPath}</option>
-                )}
-              {audioAssets.map((asset) => (
-                <option key={asset.url} value={asset.url}>
-                  {asset.name}
-                </option>
-              ))}
-            </select>
-            <div className="flex items-center gap-2">
-              <input
-                ref={audioInput}
-                type="file"
-                accept="audio/*"
-                className="hidden"
-                onChange={(event) => {
-                  const file = event.target.files?.[0]
-                  if (file) void upload('audio', file, (url) => ({ audioPath: url }))
-                  event.target.value = ''
+            </Section>
+          )}
+
+          {!hidden.loras && (
+            <Section title="LoRA（画像）">
+              <LoraPicker
+                loras={imageLoras}
+                selected={form.loras}
+                triggerText={form.triggerText}
+                triggerDirty={form.triggerDirty}
+                emptyHint={`画像用の登録済み LoRA がありません${
+                  imageWorkflow ? `（${imageWorkflow.label} と同じファミリーのもの）` : ''
+                }（設定 → LoRA 管理で追加）`}
+                onToggle={toggleLora}
+                onStrength={(index, strength) => {
+                  const next = [...form.loras]
+                  next[index] = { ...next[index], strength }
+                  patch({ loras: next })
                 }}
+                onTrigger={(value) => patch({ triggerText: value, triggerDirty: true })}
+                onTriggerReset={() =>
+                  patch({ triggerDirty: false, triggerText: joinTriggers(form.loras) })
+                }
               />
-              <button
-                className="btn-ghost text-xs"
-                disabled={busyUpload || disabled.audio}
-                onClick={() => audioInput.current?.click()}
-              >
-                音声をアップロード
+              <p className="mt-2 text-[11px] text-slate-500">
+                選択中の画像ワークフロー（{imageWorkflow?.label ?? '—'}）に適用され、
+                トリガーワードは画像プロンプトの先頭に付きます。
+                モデルファミリーが一致する LoRA のみ表示されます。
+              </p>
+            </Section>
+          )}
+
+          <Section
+            title="プロンプト"
+            right={
+              <button className="btn-ghost !py-1 text-xs" onClick={onOpenChat}>
+                Grokで生成
               </button>
-              {form.audioPath && (
-                <audio className="h-8 flex-1" controls src={form.audioPath} />
+            }
+          >
+            <div className="flex flex-col gap-3">
+              {!hidden.imagePrompt && (
+                <div>
+                  <label className="label">画像プロンプト</label>
+                  <textarea
+                    className="field h-28 resize-y"
+                    value={form.imagePrompt}
+                    placeholder="自然文 1 段落で詳細に"
+                    onChange={(event) => patch({ imagePrompt: event.target.value })}
+                  />
+                  <FieldError message={fieldErrors.image_prompt} />
+                </div>
+              )}
+              {!hidden.videoPrompt && (
+                <div>
+                  <label className="label">動画プロンプト</label>
+                  <textarea
+                    className="field h-28 resize-y"
+                    value={form.videoPrompt}
+                    placeholder="1 段落 4〜8 文。動き・カメラ・音声を含める"
+                    onChange={(event) => patch({ videoPrompt: event.target.value })}
+                  />
+                  <FieldError message={fieldErrors.video_prompt} />
+                </div>
               )}
             </div>
-            <FieldError message={fieldErrors.audio_path} />
-          </div>
-        </div>
-      </Section>
+          </Section>
 
-      <Section title="LoRA（動画）">
-        <LoraPicker
-          loras={videoLoras}
-          selected={form.videoLoras}
-          disabled={disabled.videoLoras}
-          triggerText={form.videoTriggerText}
-          triggerDirty={form.videoTriggerDirty}
-          emptyHint="動画用の登録済み LoRA がありません（設定 → LoRA 管理で追加）"
-          onToggle={toggleVideoLora}
-          onStrength={(index, strength) => {
-            const next = [...form.videoLoras]
-            next[index] = { ...next[index], strength }
-            patch({ videoLoras: next })
-          }}
-          onTrigger={(value) =>
-            patch({ videoTriggerText: value, videoTriggerDirty: true })
-          }
-          onTriggerReset={() =>
-            patch({
-              videoTriggerDirty: false,
-              videoTriggerText: joinTriggers(form.videoLoras),
-            })
-          }
-        />
-        <p className="mt-2 text-[11px] text-slate-500">
-          動画ワークフロー（LTX 2.3）の既定 LoRA の後ろに直列で挿入され、
-          トリガーワードは動画プロンプトの先頭に付きます。
-        </p>
-      </Section>
-
-      <Section title="解像度">
-        <div className="grid grid-cols-2 gap-2">
-          <div>
-            <label className="label">アスペクト比</label>
-            {aspectRatios.length > 0 ? (
-              <select
-                className="field"
-                value={form.aspectRatio}
-                onChange={(event) => patch({ aspectRatio: event.target.value })}
-              >
-                {!aspectRatios.includes(form.aspectRatio) && (
-                  <option value={form.aspectRatio}>{form.aspectRatio}</option>
-                )}
-                {aspectRatios.map((ratio) => (
-                  <option key={ratio} value={ratio}>
-                    {ratio}
-                  </option>
-                ))}
-              </select>
-            ) : (
-              <input
-                className="field"
-                value={form.aspectRatio}
-                placeholder="4:3 (Standard)"
-                onChange={(event) => patch({ aspectRatio: event.target.value })}
-              />
-            )}
-          </div>
-          <div>
-            <label className="label">メガピクセル</label>
-            <input
-              className="field"
-              type="number"
-              step="0.05"
-              min="0.1"
-              value={form.megapixels}
-              onChange={(event) =>
-                patch({ megapixels: Number(event.target.value) || 0 })
+          {!hidden.negative && (
+            <Section
+              title="動画ネガティブ"
+              right={
+                <button
+                  className="text-xs text-slate-400 hover:text-slate-200"
+                  onClick={() => setShowAdvanced((value) => !value)}
+                >
+                  {showAdvanced ? '閉じる' : '詳細設定'}
+                </button>
               }
-            />
-          </div>
-        </div>
-        <p className="mt-1 text-[11px] text-slate-500">
-          動画側の幅・高さはこの組み合わせから 8 の倍数で計算されます。
-          開始フレーム画像を指定した場合、アスペクト比は画像に合わせて自動調整されます
-          （メガピクセルはそのまま有効。リファレンスシートを除く）。
-        </p>
-      </Section>
-
-      <Section title="LoRA（画像）">
-        <LoraPicker
-          loras={imageLoras}
-          selected={form.loras}
-          disabled={disabled.loras}
-          triggerText={form.triggerText}
-          triggerDirty={form.triggerDirty}
-          emptyHint="画像用の登録済み LoRA がありません（設定 → LoRA 管理で追加）"
-          onToggle={toggleLora}
-          onStrength={(index, strength) => {
-            const next = [...form.loras]
-            next[index] = { ...next[index], strength }
-            patch({ loras: next })
-          }}
-          onTrigger={(value) => patch({ triggerText: value, triggerDirty: true })}
-          onTriggerReset={() =>
-            patch({ triggerDirty: false, triggerText: joinTriggers(form.loras) })
-          }
-        />
-        <p className="mt-2 text-[11px] text-slate-500">
-          画像ワークフロー（Krea 2）に適用され、トリガーワードは画像プロンプトの先頭に付きます。
-        </p>
-      </Section>
-
-      <Section
-        title="プロンプト"
-        right={
-          <button className="btn-ghost !py-1 text-xs" onClick={onOpenChat}>
-            Grokで生成
-          </button>
-        }
-      >
-        <div className="flex flex-col gap-3">
-          <div>
-            <label className="label">画像プロンプト</label>
-            <textarea
-              className="field h-28 resize-y"
-              value={form.imagePrompt}
-              disabled={disabled.imagePrompt}
-              placeholder={
-                disabled.imagePrompt
-                  ? '動画生成モードでは使用しません'
-                  : '自然文 1 段落で詳細に'
-              }
-              onChange={(event) => patch({ imagePrompt: event.target.value })}
-            />
-            <FieldError message={fieldErrors.image_prompt} />
-          </div>
-          <div>
-            <label className="label">動画プロンプト</label>
-            <textarea
-              className="field h-28 resize-y"
-              value={form.videoPrompt}
-              disabled={disabled.videoPrompt}
-              placeholder={
-                disabled.videoPrompt
-                  ? '画像のみモードでは使用しません'
-                  : '1 段落 4〜8 文。動き・カメラ・音声を含める'
-              }
-              onChange={(event) => patch({ videoPrompt: event.target.value })}
-            />
-            <FieldError message={fieldErrors.video_prompt} />
-          </div>
-        </div>
-      </Section>
-
-      <Section
-        title="動画ネガティブ"
-        right={
-          <button
-            className="text-xs text-slate-400 hover:text-slate-200"
-            onClick={() => setShowAdvanced((value) => !value)}
-          >
-            {showAdvanced ? '閉じる' : '詳細設定'}
-          </button>
-        }
-      >
-        {showAdvanced && (
-          <div className="flex flex-col gap-2">
-            <select
-              className="field"
-              value={form.negativePreset}
-              disabled={disabled.negative}
-              onChange={(event) => {
-                const key = event.target.value
-                patch({
-                  negativePreset: key,
-                  negativePrompt:
-                    key === 'custom'
-                      ? form.negativePrompt
-                      : (negativePresets[key] ?? form.negativePrompt),
-                })
-              }}
             >
-              {Object.keys(negativePresets).map((key) => (
-                <option key={key} value={key}>
-                  {NEGATIVE_PRESET_LABELS[key] ?? key}
-                </option>
-              ))}
-              <option value="custom">{NEGATIVE_PRESET_LABELS.custom}</option>
-            </select>
-            <textarea
-              className="field h-20 resize-y font-mono text-xs"
-              value={form.negativePrompt}
-              disabled={disabled.negative}
-              placeholder="空欄ならワークフロー既定のネガティブを使います"
-              onChange={(event) =>
-                patch({ negativePrompt: event.target.value, negativePreset: 'custom' })
-              }
-            />
-          </div>
-        )}
-        {!showAdvanced && (
-          <p className="truncate text-xs text-slate-500">
-            {NEGATIVE_PRESET_LABELS[form.negativePreset] ?? form.negativePreset}:{' '}
-            {form.negativePrompt || '（ワークフロー既定）'}
-          </p>
-        )}
-      </Section>
+              {showAdvanced && (
+                <div className="flex flex-col gap-2">
+                  <select
+                    className="field"
+                    value={form.negativePreset}
+                    onChange={(event) => {
+                      const key = event.target.value
+                      patch({
+                        negativePreset: key,
+                        negativePrompt:
+                          key === 'custom'
+                            ? form.negativePrompt
+                            : (negativePresets[key] ?? form.negativePrompt),
+                      })
+                    }}
+                  >
+                    {Object.keys(negativePresets).map((key) => (
+                      <option key={key} value={key}>
+                        {NEGATIVE_PRESET_LABELS[key] ?? key}
+                      </option>
+                    ))}
+                    <option value="custom">{NEGATIVE_PRESET_LABELS.custom}</option>
+                  </select>
+                  <textarea
+                    className="field h-20 resize-y font-mono text-xs"
+                    value={form.negativePrompt}
+                    placeholder="空欄ならワークフロー既定のネガティブを使います"
+                    onChange={(event) =>
+                      patch({ negativePrompt: event.target.value, negativePreset: 'custom' })
+                    }
+                  />
+                </div>
+              )}
+              {!showAdvanced && (
+                <p className="truncate text-xs text-slate-500">
+                  {NEGATIVE_PRESET_LABELS[form.negativePreset] ?? form.negativePreset}:{' '}
+                  {form.negativePrompt || '（ワークフロー既定）'}
+                </p>
+              )}
+            </Section>
+          )}
 
-      <Section title="出力設定">
-        <div className="grid grid-cols-2 gap-2">
-          <div>
-            <label className="label">秒数（上限なし）</label>
-            <input
-              className="field"
-              type="number"
-              min="1"
-              step="1"
-              value={form.duration}
-              disabled={disabled.duration}
-              onChange={(event) => patch({ duration: Number(event.target.value) || 0 })}
-            />
-          </div>
-          <div>
-            <label className="label">fps</label>
-            <input
-              className="field"
-              type="number"
-              min="1"
-              step="1"
-              value={form.fps}
-              disabled={disabled.fps}
-              onChange={(event) => patch({ fps: Number(event.target.value) || 0 })}
-            />
-          </div>
-        </div>
-        <p className="mt-1 text-[11px] text-slate-500">
-          長尺は VRAM 次第で ComfyUI 側がエラーになることがあります。
-        </p>
-        <div className="mt-3 flex items-center gap-2">
-          <label className="flex items-center gap-2 text-xs text-slate-300">
-            <input
-              type="checkbox"
-              className="accent-accent-500"
-              checked={form.seedLocked}
-              onChange={(event) => patch({ seedLocked: event.target.checked })}
-            />
-            seed 固定
-          </label>
-          <input
-            className="field flex-1"
-            type="number"
-            min="0"
-            value={form.seed}
-            disabled={!form.seedLocked}
-            onChange={(event) => patch({ seed: Number(event.target.value) || 0 })}
-          />
-        </div>
-      </Section>
+          <Section title="出力設定">
+            {(!hidden.duration || !hidden.fps) && (
+              <>
+                <div className="grid grid-cols-2 gap-2">
+                  {!hidden.duration && (
+                    <div>
+                      <label className="label">秒数（上限なし）</label>
+                      <input
+                        className="field"
+                        type="number"
+                        min="1"
+                        step="1"
+                        value={form.duration}
+                        onChange={(event) =>
+                          patch({ duration: Number(event.target.value) || 0 })
+                        }
+                      />
+                    </div>
+                  )}
+                  {!hidden.fps && (
+                    <div>
+                      <label className="label">fps</label>
+                      <input
+                        className="field"
+                        type="number"
+                        min="1"
+                        step="1"
+                        value={form.fps}
+                        onChange={(event) => patch({ fps: Number(event.target.value) || 0 })}
+                      />
+                    </div>
+                  )}
+                </div>
+                <p className="mt-1 text-[11px] text-slate-500">
+                  長尺は VRAM 次第で ComfyUI 側がエラーになることがあります。
+                </p>
+              </>
+            )}
+            <div className="mt-3 flex items-center gap-2">
+              <label className="flex items-center gap-2 text-xs text-slate-300">
+                <input
+                  type="checkbox"
+                  className="accent-accent-500"
+                  checked={form.seedLocked}
+                  onChange={(event) => patch({ seedLocked: event.target.checked })}
+                />
+                seed 固定
+              </label>
+              <input
+                className="field flex-1"
+                type="number"
+                min="0"
+                value={form.seed}
+                disabled={!form.seedLocked}
+                onChange={(event) => patch({ seed: Number(event.target.value) || 0 })}
+              />
+            </div>
+          </Section>
+        </>
+      )}
 
       {uploadError && <Banner onClose={() => setUploadError(null)}>{uploadError}</Banner>}
 

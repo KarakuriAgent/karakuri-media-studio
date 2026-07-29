@@ -9,21 +9,24 @@ if str(BACKEND_DIR) not in sys.path:
 from app.workflows import SPECS  # noqa: E402
 
 
-def fake_outputs(image: str = "img.png", video: str = "vid.mp4") -> dict:
+def fake_outputs(
+    image: str = "img.png", video: str = "vid.mp4", audio: str = "track.mp3"
+) -> dict:
     """A ``/history`` ``outputs`` mapping covering every template's output node.
 
-    Each workflow saves through its own SaveImage / SaveVideo node id, so the
-    ComfyUI fakes answer for all of them and stay valid whichever workflow a
-    test selects.
+    Each workflow saves through its own SaveImage / SaveVideo / SaveAudioMP3
+    node id, so the ComfyUI fakes answer for all of them and stay valid
+    whichever workflow a test selects.
     """
+    key_and_file = {
+        "image": ("images", image),
+        "video": ("videos", video),
+        "audio": ("audio", audio),
+    }
     outputs: dict[str, dict] = {}
     for spec in SPECS:
-        if spec.kind == "image":
-            outputs[spec.output_node] = {
-                "images": [{"filename": image, "subfolder": "", "type": "output"}]
-            }
-        else:
-            outputs[spec.output_node] = {
-                "videos": [{"filename": video, "subfolder": "", "type": "output"}]
-            }
+        key, filename = key_and_file[spec.kind]
+        outputs[spec.output_node] = {
+            key: [{"filename": filename, "subfolder": "", "type": "output"}]
+        }
     return outputs

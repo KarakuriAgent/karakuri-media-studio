@@ -37,6 +37,7 @@ export const CHECKIN_LABEL: Record<string, string> = {
 
 export const ARTIFACT_ICON: Record<AgentArtifact['kind'], string> = {
   plan: '📋',
+  audio: '🎵',
   research: '🔍',
   note: '📝',
   image: '🖼',
@@ -47,6 +48,7 @@ export const ARTIFACT_ICON: Record<AgentArtifact['kind'], string> = {
 /** 種別チップの見出し（リンクカードは中身を見せないので種別だけ出す）。 */
 export const ARTIFACT_LABEL: Record<AgentArtifact['kind'], string> = {
   plan: 'プラン',
+  audio: '音声',
   research: 'リサーチ',
   note: 'メモ',
   image: '画像',
@@ -74,6 +76,7 @@ export function eventIcon(kind: string | null): string {
   if (kind === 'artifact_renamed') return '🏷'
   if (kind === 'inspect_result') return '🎞'
   if (kind === 'stopped') return '⏹'
+  if (kind === 'limit_reached') return '🚦'
   return '⚙'
 }
 

@@ -3,14 +3,25 @@ from typing import Any, Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .workflows import (
+    AUDIO_CATEGORIES,
+    BPM_RANGE,
+    KEYSCALES,
+    LANGUAGES,
+    DEFAULT_AUDIO_WORKFLOW,
+    DEFAULT_FAMILY,
     DEFAULT_IMAGE_WORKFLOW,
     DEFAULT_VIDEO_WORKFLOW,
     INPUT_FIELDS,
     WorkflowSpecError,
+    get_audio_spec,
+    get_image_spec,
     get_video_spec,
 )
 
-JobMode = Literal["full", "i2v", "image_only"]
+#: ``audio`` is a stand-alone mode: it runs one audio graph and is never
+#: chained with the image / video stages (which is why every ``mode in (...)``
+#: test below simply does not list it).
+JobMode = Literal["full", "i2v", "image_only", "audio"]
 JobStatus = Literal["queued", "prompting", "running", "done", "failed", "canceled"]
 
 
@@ -62,6 +73,8 @@ class ModelField(BaseModel):
     key: str  # f"{workflow_id}/{node_id}.{field}"
     workflow_id: str = ""
     workflow_label: str = ""
+    #: which stage the owning workflow belongs to (settings page grouping)
+    kind: Literal["image", "video", "audio"] = "image"
     node_id: str
     field: str
     class_type: str
@@ -82,8 +95,8 @@ class ModelOverridesUpdate(BaseModel):
     overrides: dict[str, str] = Field(default_factory=dict)
 
 
-#: どちらのワークフローに挿す LoRA か（SPEC §3.4）。'image' は Krea 2 の画像
-#: ワークフロー、'video' は LTX 2.3 の動画ワークフローに注入される。
+#: どちらのワークフローに挿す LoRA か（SPEC §3.4）。'image' は画像ワークフロー、
+#: 'video' は LTX 2.3 の動画ワークフローに注入される。
 LoraTarget = Literal["image", "video"]
 
 
@@ -96,6 +109,10 @@ class Lora(BaseModel):
     default_audio: str | None = None
     sort_order: int = 0
     target: LoraTarget = "image"
+    # どの画像モデルファミリー向けに学習された LoRA か（krea2 / anima /
+    # z-image / qwen-image）。同じファミリーの画像ワークフローでしか使えない。
+    # target='video' の行では無視される（動画は LTX 2.3 のみ）。
+    family: str = DEFAULT_FAMILY
     # サンプル画像の URL（/assets/lora_samples/<id>/<file>）。登録・削除は
     # 専用エンドポイント経由のみで、Create / Update では触れない。
     sample_images: list[str] = Field(default_factory=list)
@@ -109,6 +126,7 @@ class LoraCreate(BaseModel):
     default_audio: str | None = None
     sort_order: int = 0
     target: LoraTarget = "image"
+    family: str = DEFAULT_FAMILY
 
 
 class LoraUpdate(BaseModel):
@@ -119,6 +137,7 @@ class LoraUpdate(BaseModel):
     default_audio: str | None = None
     sort_order: int | None = None
     target: LoraTarget | None = None
+    family: str | None = None
 
 
 # Default of the LTX 2.3 "dev" templates (t2v / i2v / ia2v / id_lora).  An empty
@@ -143,6 +162,7 @@ class GenerationParams(BaseModel):
     # which templates to run (see app/workflows.py)
     image_workflow: str = DEFAULT_IMAGE_WORKFLOW
     video_workflow: str = DEFAULT_VIDEO_WORKFLOW
+    audio_workflow: str = DEFAULT_AUDIO_WORKFLOW
 
     aspect_ratio: str = "4:3 (Standard)"
     megapixels: float = 1.0
@@ -162,11 +182,27 @@ class GenerationParams(BaseModel):
     video_prompt: str = ""
     negative_prompt: str = DEFAULT_NEGATIVE_PROMPT
 
+    # `duration` is the clip length of the video stage **and** the track length
+    # of an audio job (both in seconds) — a job only ever runs one of them.
     duration: float = 10.0
     fps: int = 25
 
+    # --- audio job knobs (mode 'audio' only, see workflow.build_audio_workflow)
+    audio_prompt: str = ""
+    #: ACE-Step: the words to sing, with [verse] / [chorus] structure tags.
+    #: Empty == instrumental.
+    lyrics: str = ""
+    bpm: int = 120
+    keyscale: str = "C major"
+    language: str = "en"
+    #: Stable Audio: which built-in prompt template to use
+    audio_category: str = AUDIO_CATEGORIES[0]
+    #: Stable Audio: expand `audio_prompt` with the graph's own local LLM first
+    reprompt: bool = False
+
     image_seed: int = 0
     video_seeds: list[int] = Field(default_factory=list)
+    audio_seed: int = 0
 
     # file names on the ComfyUI input directory (uploaded by the job runner)
     audio_name: str = ""
@@ -184,6 +220,10 @@ class GenerationParams(BaseModel):
     def image_filename_prefix(self) -> str:
         return self.filename_prefix or f"images/{self.job_id}"
 
+    @property
+    def audio_filename_prefix(self) -> str:
+        return self.filename_prefix or f"audio/{self.job_id}"
+
 
 class Job(BaseModel):
     id: str
@@ -193,6 +233,8 @@ class Job(BaseModel):
     user_input: str | None = None
     image_prompt: str | None = None
     video_prompt: str | None = None
+    #: mode 'audio' only — what the audio model was asked to produce
+    audio_prompt: str | None = None
     grok_raw: str | None = None
     params: dict[str, Any] = Field(default_factory=dict)
     workflow_json: dict[str, Any] = Field(default_factory=dict)
@@ -201,7 +243,10 @@ class Job(BaseModel):
     video_path: str | None = None
     last_frame_path: str | None = None
     source_image: str | None = None
+    #: the *reference* audio a video job was given (an input, not a result)
     audio_path: str | None = None
+    #: the track a mode 'audio' job produced (an output)
+    audio_output_path: str | None = None
     error: str | None = None
 
     # NSFW フラグ: nsfw_source は '' = 未判定 / 'auto' / 'manual'
@@ -212,6 +257,7 @@ class Job(BaseModel):
     image_url: str | None = None
     video_url: str | None = None
     last_frame_url: str | None = None
+    audio_output_url: str | None = None
 
 
 # --------------------------------------------------------------------------
@@ -228,19 +274,39 @@ def missing_job_fields(
     end_image: str | None = None,
     reference_video: str | None = None,
     video_workflow: str | None = None,
+    image_workflow: str | None = None,
+    audio_prompt: str | None = None,
 ) -> list[str]:
-    """Required fields for a mode + video workflow (SPEC §2 / §3.1).
+    """Required fields for a mode + image / video workflow (SPEC §2 / §3.1).
 
-    The asset requirements come from the selected video workflow's manifest, so
-    e.g. t2v needs no start frame while flf2v needs two images.  In ``full``
-    mode the start frame is produced by the image stage and therefore not
-    required as an input.  Empty list == valid.
+    The asset requirements come from the selected workflows' manifests, so e.g.
+    t2v needs no start frame while flf2v needs two images.  In ``full`` mode the
+    *video* start frame is produced by the image stage and therefore not
+    required as an input — but an **editing** image workflow (qwen-image) still
+    needs its own ``source_image`` in every mode that runs the image stage.
+    Empty list == valid.
+
+    ``mode: "audio"`` is stand-alone: it runs one audio graph, needs nothing but
+    an ``audio_prompt`` and never touches the image / video requirements below.
     """
+    if mode == "audio":
+        return [] if (audio_prompt or "").strip() else ["audio_prompt"]
+
     missing: list[str] = []
     if mode in ("full", "image_only") and not (image_prompt or "").strip():
         missing.append("image_prompt")
     if mode in ("full", "i2v") and not (video_prompt or "").strip():
         missing.append("video_prompt")
+
+    if mode in ("full", "image_only"):
+        image_spec = get_image_spec(image_workflow)
+        for name in image_spec.requires:
+            field = INPUT_FIELDS[name]
+            if field not in missing and not (
+                {"image": source_image}.get(name) or ""
+            ).strip():
+                missing.append(field)
+
     if mode not in ("full", "i2v"):
         return missing
 
@@ -275,6 +341,110 @@ def video_workflow_problem(mode: str, video_workflow: str | None) -> str | None:
     return None
 
 
+def image_workflow_problem(mode: str, image_workflow: str | None) -> str | None:
+    """Why this image workflow cannot be used in this mode (None == fine).
+
+    Only the id itself is checked here; the assets it needs come out of
+    :func:`missing_job_fields` so the message lists every missing field at once.
+    """
+    if mode not in ("full", "image_only"):
+        return None
+    try:
+        get_image_spec(image_workflow)
+    except WorkflowSpecError as exc:
+        return str(exc)
+    return None
+
+
+def audio_workflow_problem(
+    mode: str,
+    audio_workflow: str | None,
+    *,
+    duration: float | None = None,
+    audio_category: str | None = None,
+    keyscale: str | None = None,
+    language: str | None = None,
+    bpm: int | None = None,
+) -> str | None:
+    """Why this audio job cannot run (None == fine).
+
+    Only ``mode: "audio"`` is checked: every other mode ignores the audio
+    fields entirely, so an unknown ``audio_workflow`` there is harmless.
+
+    ``keyscale`` / ``language`` / ``bpm`` are COMBO / INT widgets of
+    ``TextEncodeAceStepAudio1.5``: ComfyUI rejects the whole prompt when a
+    value is outside its declared set, so they are caught here (422) instead of
+    failing the job halfway through.
+    """
+    if mode != "audio":
+        return None
+    try:
+        spec = get_audio_spec(audio_workflow)
+    except WorkflowSpecError as exc:
+        return str(exc)
+    if duration is not None and not (
+        spec.min_duration <= float(duration) <= spec.max_duration
+    ):
+        return (
+            f"audio workflow '{spec.id}' supports a duration of"
+            f" {spec.min_duration:g}-{spec.max_duration:g} seconds,"
+            f" got {float(duration):g}"
+        )
+    if (
+        audio_category
+        and spec.supports("audio_category")
+        and audio_category not in AUDIO_CATEGORIES
+    ):
+        return (
+            f"unknown audio_category '{audio_category}';"
+            f" use one of {', '.join(AUDIO_CATEGORIES)}"
+        )
+    if keyscale and spec.supports("keyscale") and keyscale not in KEYSCALES:
+        return (
+            f"unknown keyscale '{keyscale}'; use \"<root> major\" or"
+            ' "<root> minor" (e.g. "C major", "F# minor")'
+        )
+    if language and spec.supports("language") and language not in LANGUAGES:
+        return (
+            f"unknown language '{language}'; use an ISO code from the model's"
+            " list (en, ja, zh, …) or 'unknown'"
+        )
+    if bpm is not None and spec.supports("bpm") and not BPM_RANGE[0] <= int(bpm) <= BPM_RANGE[1]:
+        return f"bpm must be between {BPM_RANGE[0]} and {BPM_RANGE[1]}, got {int(bpm)}"
+    return None
+
+
+def audio_lora_problem(mode: str, loras: list[Any], video_loras: list[Any]) -> str | None:
+    """Audio workflows carry no LoRA chain at all (None == fine)."""
+    if mode != "audio" or not (loras or video_loras):
+        return None
+    return "mode 'audio' runs no image or video stage, so LoRAs cannot be used"
+
+
+def image_lora_family_problem(
+    mode: str, image_workflow: str | None, families: list[str]
+) -> str | None:
+    """Why the picked image LoRAs do not fit the image workflow (None == fine).
+
+    ``families`` are the registry families of the LoRAs in ``loras`` (unknown /
+    unregistered ones are left out by the caller).  A LoRA trained for another
+    model family would be loaded but produce garbage, so it is rejected.
+    """
+    if not families or mode not in ("full", "image_only"):
+        return None
+    try:
+        spec = get_image_spec(image_workflow)
+    except WorkflowSpecError as exc:
+        return str(exc)
+    wrong = sorted({f for f in families if f != spec.family})
+    if wrong:
+        return (
+            f"image workflow '{spec.id}' takes {spec.family} LoRAs,"
+            f" but {', '.join(wrong)} LoRA(s) were selected"
+        )
+    return None
+
+
 def video_lora_problem(
     mode: str, video_workflow: str | None, video_loras: list[Any]
 ) -> str | None:
@@ -302,13 +472,27 @@ class JobCreate(BaseModel):
 
     mode: JobMode = "full"
 
-    # id of the video template to run (see app/workflows.py); the image template
-    # is currently the only one there is, hence no field for it.
+    # ids of the templates to run (see app/workflows.py)
     video_workflow: str = DEFAULT_VIDEO_WORKFLOW
+    image_workflow: str = DEFAULT_IMAGE_WORKFLOW
+    #: only used by `mode: "audio"`, ignored everywhere else
+    audio_workflow: str = DEFAULT_AUDIO_WORKFLOW
 
     image_prompt: str = ""
     video_prompt: str = ""
     negative_prompt: str = DEFAULT_NEGATIVE_PROMPT
+
+    # --- mode 'audio' only ------------------------------------------------
+    audio_prompt: str = ""
+    #: ACE-Step: the words to sing ([Verse] / [Chorus] …). Empty == instrumental.
+    lyrics: str = ""
+    bpm: int = 120
+    keyscale: str = "C major"
+    language: str = "en"
+    #: Stable Audio: Music / Instrument / SFX / One-shot
+    audio_category: str = AUDIO_CATEGORIES[0]
+    #: Stable Audio: expand the prompt with the graph's own local LLM first
+    reprompt: bool = False
 
     aspect_ratio: str = "4:3 (Standard)"
     megapixels: float = 1.0
@@ -340,8 +524,20 @@ class JobCreate(BaseModel):
 
     @model_validator(mode="after")
     def _check_required(self) -> "JobCreate":
-        problem = video_workflow_problem(self.mode, self.video_workflow) or (
-            video_lora_problem(self.mode, self.video_workflow, self.video_loras)
+        problem = (
+            image_workflow_problem(self.mode, self.image_workflow)
+            or video_workflow_problem(self.mode, self.video_workflow)
+            or audio_workflow_problem(
+                self.mode,
+                self.audio_workflow,
+                duration=self.duration,
+                audio_category=self.audio_category,
+                keyscale=self.keyscale,
+                language=self.language,
+                bpm=self.bpm,
+            )
+            or audio_lora_problem(self.mode, self.loras, self.video_loras)
+            or video_lora_problem(self.mode, self.video_workflow, self.video_loras)
         )
         if problem:
             raise ValueError(problem)
@@ -354,6 +550,8 @@ class JobCreate(BaseModel):
             end_image=self.end_image,
             reference_video=self.reference_video,
             video_workflow=self.video_workflow,
+            image_workflow=self.image_workflow,
+            audio_prompt=self.audio_prompt,
         )
         if missing:
             raise ValueError(
@@ -440,16 +638,24 @@ class ChatSessionCreate(BaseModel):
     """POST /api/chat/sessions body: a snapshot of the generation form (§4.3)."""
 
     mode: JobMode = "full"
-    # the video template the form has selected: its characteristics decide how
-    # `video_prompt` has to be written (SPEC §4.3).
+    # the templates the form has selected: their characteristics decide how the
+    # prompts have to be written (SPEC §4.3).  The image workflow's model family
+    # picks which IMAGE PROMPT SPEC the system prompt embeds.
     video_workflow: str = DEFAULT_VIDEO_WORKFLOW
+    image_workflow: str = DEFAULT_IMAGE_WORKFLOW
+    #: mode 'audio' のセッションで使う音声ワークフロー（そのモデルのプロンプト
+    #: ガイドが system prompt に埋め込まれる）
+    audio_workflow: str = DEFAULT_AUDIO_WORKFLOW
     loras: list[ChatLoraRef] = Field(default_factory=list)
     trigger_text: str = ""
     video_loras: list[ChatLoraRef] = Field(default_factory=list)
     video_trigger_text: str = ""
+    #: 動画のクリップ長 / 音声モードでは曲・音の長さ（どちらも秒）
     duration: float = 10.0
     image_prompt_draft: str = ""
     video_prompt_draft: str = ""
+    audio_prompt_draft: str = ""
+    lyrics_draft: str = ""
     prompt_template: PromptTemplate = "natural"
     # mode B start frame (assets path or "/assets/..." URL); copied into the
     # grok work dir so the CLI can look at it.
@@ -461,10 +667,21 @@ class ChatSendMessage(BaseModel):
 
 
 class PromptResult(BaseModel):
-    """Final proposal parsed out of the Grok answer."""
+    """Final proposal parsed out of the Grok answer.
+
+    ``mode: "audio"`` sessions fill the audio fields instead of the image /
+    video prompts; the numeric / COMBO ones are optional suggestions the form
+    only applies when the selected workflow actually has them.
+    """
 
     image_prompt: str | None = None
     video_prompt: str | None = None
+    audio_prompt: str | None = None
+    #: ACE-Step: the words to sing, with [Verse] / [Chorus] structure tags
+    lyrics: str | None = None
+    bpm: int | None = None
+    keyscale: str | None = None
+    language: str | None = None
     notes: str | None = None
 
 
@@ -546,7 +763,7 @@ class AgentPlan(BaseModel):
 class AgentArtifact(BaseModel):
     """成果物パネルの 1 カード（AGENT-MODE §1）。"""
 
-    kind: Literal["plan", "note", "research", "frame", "image", "video"]
+    kind: Literal["plan", "note", "research", "frame", "image", "video", "audio"]
     title: str = ""
     ts: str
     name: str = ""  # workdir 相対のファイル名（外部成果物は空）
@@ -681,7 +898,9 @@ class WorkflowOption(BaseModel):
 
     id: str
     label: str
-    kind: Literal["image", "video"]
+    kind: Literal["image", "video", "audio"]
+    #: model family — image LoRAs of another family cannot be used with it
+    family: str = DEFAULT_FAMILY
     notes: str = ""
     #: logical inputs the workflow needs: image / audio / end_image / video
     requires: list[str] = Field(default_factory=list)
@@ -691,6 +910,10 @@ class WorkflowOption(BaseModel):
     accepts_start_image: bool = False
     #: UI label of the primary image input
     image_label: str = "開始フレーム"
+    #: audio workflows: the clip length the model supports, in seconds
+    min_duration: float = 0.0
+    max_duration: float = 0.0
+    default_duration: float = 0.0
 
 
 class Options(BaseModel):
@@ -701,7 +924,14 @@ class Options(BaseModel):
     comfy_url: str = ""
     image_workflows: list[WorkflowOption] = Field(default_factory=list)
     video_workflows: list[WorkflowOption] = Field(default_factory=list)
+    audio_workflows: list[WorkflowOption] = Field(default_factory=list)
     default_video_workflow: str = DEFAULT_VIDEO_WORKFLOW
+    default_image_workflow: str = DEFAULT_IMAGE_WORKFLOW
+    default_audio_workflow: str = DEFAULT_AUDIO_WORKFLOW
+    #: the ACE-Step / Stable Audio COMBO choices, for the 音声 form
+    audio_categories: list[str] = Field(default_factory=lambda: list(AUDIO_CATEGORIES))
+    keyscales: list[str] = Field(default_factory=lambda: list(KEYSCALES))
+    languages: list[str] = Field(default_factory=lambda: list(LANGUAGES))
     aspect_ratios: list[str] = Field(default_factory=list)
     lora_files: list[str] = Field(default_factory=list)
     loras: list[Lora] = Field(default_factory=list)

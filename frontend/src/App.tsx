@@ -9,7 +9,13 @@ import ResultPane from './components/ResultPane'
 import SettingsPage from './components/SettingsPage'
 import AgentView from './components/agent/AgentView'
 import { Banner } from './components/ui'
-import { initialForm, type FormState } from './form'
+import {
+  audioJobPayload,
+  imageWorkflowNeedsSource,
+  initialForm,
+  validateForm,
+  type FormState,
+} from './form'
 import type {
   AgentProgress,
   Health,
@@ -119,6 +125,20 @@ export default function App() {
         ) {
           changes.videoWorkflow =
             next.default_video_workflow || next.video_workflows[0].id
+        }
+        if (
+          next.image_workflows.length > 0 &&
+          !next.image_workflows.some((item) => item.id === previous.imageWorkflow)
+        ) {
+          changes.imageWorkflow =
+            next.default_image_workflow || next.image_workflows[0].id
+        }
+        if (
+          next.audio_workflows.length > 0 &&
+          !next.audio_workflows.some((item) => item.id === previous.audioWorkflow)
+        ) {
+          changes.audioWorkflow =
+            next.default_audio_workflow || next.audio_workflows[0].id
         }
         return Object.keys(changes).length > 0 ? { ...previous, ...changes } : previous
       })
@@ -247,11 +267,35 @@ export default function App() {
     try {
       const workflow =
         options?.video_workflows.find((item) => item.id === form.videoWorkflow) ?? null
+      const imageWorkflow =
+        options?.image_workflows.find((item) => item.id === form.imageWorkflow) ??
+        null
+      const audioWorkflow =
+        options?.audio_workflows.find((item) => item.id === form.audioWorkflow) ??
+        null
+      const problems = validateForm(form, imageWorkflow, audioWorkflow)
+      if (Object.keys(problems).length > 0) {
+        setFieldErrors(problems)
+        return
+      }
+      // 音声は独立ジョブ: 画像・動画のフィールドは一切送らない。
+      if (form.mode === 'audio') {
+        const created = await api.createJob(audioJobPayload(form, audioWorkflow))
+        setChatSessionId(null)
+        setActiveJob(created)
+        await loadJobs()
+        return
+      }
       const needs = (name: string) =>
         form.mode !== 'image_only' && (workflow?.requires ?? []).includes(name as never)
+      // an editing image workflow takes the picture itself, in every mode that
+      // runs the image stage (including `full`)
+      const imageNeedsSource =
+        form.mode !== 'i2v' && imageWorkflowNeedsSource(imageWorkflow)
       const payload: JobCreate = {
         mode: form.mode,
         video_workflow: form.videoWorkflow,
+        image_workflow: form.imageWorkflow,
         image_prompt: form.mode === 'i2v' ? '' : form.imagePrompt,
         video_prompt: form.mode === 'image_only' ? '' : form.videoPrompt,
         negative_prompt: form.negativePrompt,
@@ -282,7 +326,9 @@ export default function App() {
         audio_path: needs('audio') ? form.audioPath || null : null,
         // in full mode the image stage produces the start frame
         source_image:
-          form.mode === 'i2v' && needs('image') ? form.sourceImage || null : null,
+          (form.mode === 'i2v' && needs('image')) || imageNeedsSource
+            ? form.sourceImage || null
+            : null,
         end_image: needs('end_image') ? form.endImage || null : null,
         reference_video: needs('video') ? form.referenceVideo || null : null,
         seed: form.seedLocked ? form.seed : null,
@@ -490,6 +536,7 @@ export default function App() {
         <ChatModal
           form={form}
           patch={patch}
+          options={options}
           onClose={() => setChatOpen(false)}
           onSessionId={setChatSessionId}
         />

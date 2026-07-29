@@ -31,13 +31,23 @@ from .models import (
     AgentTask,
     JobContinue,
     JobCreate,
+    audio_lora_problem,
+    audio_workflow_problem,
+    image_workflow_problem,
     missing_job_fields,
     video_workflow_problem,
 )
 from .workflows import (
+    AUDIO_CATEGORIES,
+    DEFAULT_AUDIO_WORKFLOW,
+    DEFAULT_IMAGE_WORKFLOW,
     DEFAULT_VIDEO_WORKFLOW,
     INPUT_FIELDS,
     WorkflowSpecError,
+    audio_specs,
+    get_audio_spec,
+    get_image_spec,
+    image_specs,
     video_specs,
 )
 
@@ -94,6 +104,96 @@ def _text(value: Any) -> str | None:
     return value if isinstance(value, str) else None
 
 
+def _image_workflow_detail(raw: dict[str, Any], mode: str) -> str | None:
+    """画像ワークフロー依存の問題（不明 ID / 編集系の入力画像不足）を説明する。"""
+    if mode not in ("full", "image_only"):
+        return None  # 画像ステージを走らせないので無関係
+    workflow = _text(raw.get("image_workflow")) or DEFAULT_IMAGE_WORKFLOW
+    known = ", ".join(f"`{spec.id}`" for spec in image_specs())
+    problem = image_workflow_problem(mode, workflow)
+    if problem:
+        return f"{problem}（使えるのは {known} です）"
+    spec = get_image_spec(workflow)
+    if "image" in spec.requires and not (_text(raw.get("source_image")) or "").strip():
+        return (
+            f"image_workflow `{spec.id}` は入力画像を編集するワークフローなので"
+            " `source_image` が必須です（mode が \"full\" でも画像ステージの入力に"
+            "なるので省略できません）。CHOICES の画像アセットから選ぶか、"
+            "テキストから生成したいなら他の image_workflow を選んでください"
+        )
+    return None
+
+
+#: fields that mean the model confused the audio schema with the image / video
+#: one.  An audio run ignores them, and a plan that shows a video prompt or a
+#: start frame on an audio task reads as if the two were chained — which they
+#: never are.  Purely numeric settings (`fps`, `megapixels`, …) are left out on
+#: purpose: they are noise, not a misunderstanding worth a retry.
+_NON_AUDIO_FIELDS = (
+    "image_prompt", "video_prompt", "loras", "video_loras",
+    "source_image", "end_image", "reference_video", "audio_path",
+)
+
+
+def _audio_workflow_detail(raw: dict[str, Any]) -> str | None:
+    """音声ジョブ固有の問題（不明なワークフロー / 範囲外の秒数 / 誤ったフィールド）。
+
+    音声は独立ジョブなので、画像・動画のフィールドを混ぜてきたら黙って捨てずに
+    指摘する（プランを読んだユーザーが「効いている」と誤解するのを防ぐ）。
+    """
+    workflow = _text(raw.get("audio_workflow")) or DEFAULT_AUDIO_WORKFLOW
+    known = ", ".join(f"`{spec.id}`" for spec in audio_specs())
+    try:
+        spec = get_audio_spec(workflow)
+    except WorkflowSpecError as exc:
+        return f"{exc}（使えるのは {known} です）"
+
+    stray = [
+        name for name in _NON_AUDIO_FIELDS if raw.get(name) not in (None, "", [], {})
+    ]
+    if stray:
+        return (
+            f"`mode: \"audio\"` は音声ワークフローだけを走らせる独立ジョブなので、"
+            f"{', '.join(f'`{name}`' for name in stray)} は使われません"
+            "（画像・動画と連結することはできません）。音声ジョブから外し、"
+            "画像や動画が必要なら別のタスクに分けてください"
+        )
+
+    problem = audio_workflow_problem(
+        "audio",
+        workflow,
+        duration=raw.get("duration"),
+        audio_category=_text(raw.get("audio_category")),
+        keyscale=_text(raw.get("keyscale")),
+        language=_text(raw.get("language")),
+        bpm=raw.get("bpm") if isinstance(raw.get("bpm"), int) else None,
+    )
+    if problem:
+        return problem
+    if lora_problem := audio_lora_problem(
+        "audio", raw.get("loras") or [], raw.get("video_loras") or []
+    ):
+        return lora_problem
+
+    if not (_text(raw.get("audio_prompt")) or "").strip():
+        return (
+            f"audio_workflow `{spec.id}` を走らせるには `audio_prompt`"
+            "（作りたい音の説明）が必要です"
+        )
+    if raw.get("lyrics") and not spec.supports("lyrics"):
+        return (
+            f"audio_workflow `{spec.id}` は歌詞を歌えません（`lyrics` は"
+            " ACE-Step だけの入力です）。歌モノにするなら"
+            f" `audio_workflow: \"{DEFAULT_AUDIO_WORKFLOW}\"` を使ってください"
+        )
+    if raw.get("audio_category") and not spec.supports("audio_category"):
+        return (
+            f"audio_workflow `{spec.id}` に `audio_category` はありません"
+            f"（{', '.join(AUDIO_CATEGORIES)} のカテゴリは Stable Audio 専用です）"
+        )
+    return None
+
+
 def _workflow_detail(raw: dict[str, Any]) -> str | None:
     """ワークフロー依存の問題を、pydantic の短い文言より前に説明する。
 
@@ -104,8 +204,14 @@ def _workflow_detail(raw: dict[str, Any]) -> str | None:
     """
     mode = raw.get("mode", "full")
     workflow = _text(raw.get("video_workflow")) or DEFAULT_VIDEO_WORKFLOW
+    if mode == "audio":
+        return _audio_workflow_detail(raw)
     if not isinstance(mode, str) or mode not in ("full", "i2v", "image_only"):
         return None  # mode 自体の誤りは pydantic に任せる
+
+    image_detail = _image_workflow_detail(raw, mode)
+    if image_detail:
+        return image_detail
     if mode == "image_only":
         return None  # 動画ステージを走らせないのでワークフローは無関係
 
@@ -130,6 +236,7 @@ def _workflow_detail(raw: dict[str, Any]) -> str | None:
             end_image=_text(raw.get("end_image")),
             reference_video=_text(raw.get("reference_video")),
             video_workflow=workflow,
+            image_workflow=_text(raw.get("image_workflow")),
         )
     except WorkflowSpecError as exc:
         return str(exc)
@@ -155,13 +262,20 @@ _FIELD_TARGET = {"loras": "image", "video_loras": "video"}
 
 
 def _check_loras(
-    payload: JobCreate, known_loras: dict[str, str], where: str
+    payload: JobCreate,
+    known_loras: dict[str, str],
+    where: str,
+    known_families: dict[str, str] | None = None,
 ) -> None:
     """Every referenced LoRA must exist *and* be registered for that stage.
 
     ``known_loras`` maps ``lora_name`` -> ``'image'`` / ``'video'`` (the registry
     column).  A画像用 LoRA in ``video_loras`` would silently be spliced into the
     LTX graph, so it is rejected with a message that names the right field.
+
+    ``known_families`` maps ``lora_name`` -> the image model family it was
+    trained for.  An image LoRA of another family than the job's
+    ``image_workflow`` would load but produce garbage, so it is rejected too.
     """
     for field, expected in _FIELD_TARGET.items():
         for lora in getattr(payload, field):
@@ -179,9 +293,26 @@ def _check_loras(
                     f" `{field}` には指定できません（`{other}` に入れてください）"
                 )
 
+    if not known_families or payload.mode not in ("full", "image_only"):
+        return
+    spec = get_image_spec(payload.image_workflow)
+    for lora in payload.loras:
+        family = known_families.get(lora.lora_name)
+        if family is not None and family != spec.family:
+            raise ActionError(
+                f"{where}: `{lora.lora_name}` は {family} 用の画像 LoRA なので"
+                f" image_workflow `{spec.id}`（{spec.family}）では使えません。"
+                f"{spec.family} 用の LoRA を選ぶか、image_workflow を"
+                f" {family} のものに変えてください"
+            )
+
 
 def validate_job(
-    raw: Any, *, where: str, known_loras: dict[str, str] | None = None
+    raw: Any,
+    *,
+    where: str,
+    known_loras: dict[str, str] | None = None,
+    known_families: dict[str, str] | None = None,
 ) -> JobCreate:
     """Validate one ``job`` object exactly like ``POST /api/jobs`` would."""
     if not isinstance(raw, dict):
@@ -200,7 +331,7 @@ def validate_job(
         raise ActionError(f"{where}: {_pydantic_detail(exc)}") from exc
 
     if known_loras is not None:
-        _check_loras(payload, known_loras, where)
+        _check_loras(payload, known_loras, where, known_families)
 
     # 実在しないアセットは 422 と同じ扱いにする（jobs.resolve_asset_path）。
     # 対象はマニフェストの論理入力すべて（開始画像・音声・最終フレーム・参照動画）。
@@ -224,6 +355,7 @@ def _tasks(
     max_tasks: int | None,
     done_tasks: int,
     known_loras: dict[str, str] | None,
+    known_families: dict[str, str] | None = None,
 ) -> list[AgentTask]:
     if not isinstance(raw, list) or not raw:
         raise ActionError("plan には tasks 配列（1 件以上）が必要です")
@@ -248,7 +380,12 @@ def _tasks(
         where = f"tasks[{index}]"
         if not isinstance(item, dict):
             raise ActionError(f"{where}: オブジェクトで指定してください")
-        job = validate_job(item.get("job"), where=where, known_loras=known_loras)
+        job = validate_job(
+            item.get("job"),
+            where=where,
+            known_loras=known_loras,
+            known_families=known_families,
+        )
         tasks.append(
             AgentTask(
                 id=new_id(),
@@ -270,6 +407,7 @@ def parse_action(
     text: str,
     *,
     known_loras: dict[str, str] | None = None,
+    known_families: dict[str, str] | None = None,
     max_tasks: int | None = None,
     done_tasks: int = 0,
 ) -> AgentAction | None:
@@ -301,6 +439,7 @@ def parse_action(
             max_tasks=max_tasks,
             done_tasks=done_tasks,
             known_loras=known_loras,
+            known_families=known_families,
         )
     elif name == "run_task":
         task_id = payload.get("task_id")

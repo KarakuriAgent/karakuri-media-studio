@@ -1,6 +1,8 @@
 // Mirrors backend/app/models.py
 
-export type JobMode = 'full' | 'i2v' | 'image_only'
+/** `audio` は独立モード: 音声ワークフローを 1 本だけ走らせ、画像→動画の連結
+ *  （full）とは一切繋がらない。 */
+export type JobMode = 'full' | 'i2v' | 'image_only' | 'audio'
 export type JobStatus =
   | 'queued'
   | 'prompting'
@@ -27,6 +29,8 @@ export interface ModelFieldState {
   key: string
   workflow_id: string
   workflow_label: string
+  /** which stage the owning workflow belongs to (settings page grouping). */
+  kind: 'image' | 'video' | 'audio'
   node_id: string
   field: string
   class_type: string
@@ -39,6 +43,9 @@ export interface ModelFieldState {
 /** Which stage a registered LoRA belongs to (mirrors models.LoraTarget). */
 export type LoraTarget = 'image' | 'video'
 
+/** Image model family a LoRA / image workflow belongs to (workflows.py). */
+export type ImageFamily = 'krea2' | 'anima' | 'z-image' | 'qwen-image'
+
 export interface Lora {
   id: number
   display_name: string
@@ -47,8 +54,13 @@ export interface Lora {
   default_strength: number
   default_audio: string | null
   sort_order: number
-  /** 'image' = Krea 2 の画像ワークフロー / 'video' = LTX 2.3 の動画ワークフロー。 */
+  /** 'image' = 画像ワークフロー / 'video' = LTX 2.3 の動画ワークフロー。 */
   target: LoraTarget
+  /**
+   * 学習元の画像モデルファミリー。同じ family の画像ワークフローでのみ使える。
+   * target='video' の行では無視される。
+   */
+  family: string
   /** サンプル画像の URL（/assets/lora_samples/<id>/<file>）。専用APIで管理。 */
   sample_images: string[]
 }
@@ -76,12 +88,18 @@ export type WorkflowInput = 'image' | 'audio' | 'end_image' | 'video'
 export interface WorkflowOption {
   id: string
   label: string
-  kind: 'image' | 'video'
+  kind: 'image' | 'video' | 'audio'
+  /** model family — image LoRAs of another family cannot be used with it. */
+  family: string
   notes: string
   requires: WorkflowInput[]
   supports: string[]
   accepts_start_image: boolean
   image_label: string
+  /** 音声ワークフローがサポートする長さ（秒）。それ以外では 0。 */
+  min_duration: number
+  max_duration: number
+  default_duration: number
 }
 
 export interface Job {
@@ -92,6 +110,8 @@ export interface Job {
   user_input: string | null
   image_prompt: string | null
   video_prompt: string | null
+  /** mode 'audio' のジョブが何を作ろうとしたか。 */
+  audio_prompt: string | null
   grok_raw: string | null
   params: Record<string, unknown>
   workflow_json: Record<string, unknown>
@@ -100,7 +120,10 @@ export interface Job {
   video_path: string | null
   last_frame_path: string | null
   source_image: string | null
+  /** 動画ジョブに渡した*入力*のリファレンス音声。 */
   audio_path: string | null
+  /** mode 'audio' のジョブが生成した音声ファイル（*出力*）。 */
+  audio_output_path: string | null
   error: string | null
   nsfw: boolean
   /** '' = 未判定 / 'auto' = 自動判定 / 'manual' = 手動指定。 */
@@ -108,12 +131,15 @@ export interface Job {
   image_url: string | null
   video_url: string | null
   last_frame_url: string | null
+  audio_output_url: string | null
 }
 
 export interface JobCreate {
   mode: JobMode
   /** id of the video template to run (see /api/options video_workflows). */
   video_workflow: string
+  /** id of the image template to run (see /api/options image_workflows). */
+  image_workflow: string
   image_prompt: string
   video_prompt: string
   negative_prompt: string
@@ -133,6 +159,34 @@ export interface JobCreate {
   chat_session_id?: string | null
   user_input?: string | null
   /** 明示指定（manual 扱い）。省略すると自動判定に任せる。 */
+  nsfw?: boolean | null
+}
+
+/**
+ * POST /api/jobs の body（`mode: 'audio'` の単独ジョブ）。
+ *
+ * 音声は画像→動画の連結とは無関係なので、JobCreate とは別の形。画像・動画側の
+ * フィールドを送るとバックエンドに拒否される。
+ */
+export interface AudioJobCreate {
+  mode: 'audio'
+  /** id of the audio template to run (see /api/options audio_workflows). */
+  audio_workflow: string
+  audio_prompt: string
+  /** 生成する長さ（秒）。ワークフローごとに上下限がある。 */
+  duration: number
+  seed: number | null
+  /** ACE-Step: 歌詞（[Verse] / [Chorus] の構造タグ付き）。空ならインスト。 */
+  lyrics?: string
+  bpm?: number
+  keyscale?: string
+  language?: string
+  /** Stable Audio: Music / Instrument / SFX / One-shot。 */
+  audio_category?: string
+  /** Stable Audio: 内蔵 LLM でプロンプトを展開してから流すか。 */
+  reprompt?: boolean
+  chat_session_id?: string | null
+  user_input?: string | null
   nsfw?: boolean | null
 }
 
@@ -164,7 +218,14 @@ export interface Options {
   comfy_url: string
   image_workflows: WorkflowOption[]
   video_workflows: WorkflowOption[]
+  audio_workflows: WorkflowOption[]
   default_video_workflow: string
+  default_image_workflow: string
+  default_audio_workflow: string
+  /** ACE-Step / Stable Audio の COMBO 選択肢（音声フォーム用）。 */
+  audio_categories: string[]
+  keyscales: string[]
+  languages: string[]
   aspect_ratios: string[]
   lora_files: string[]
   loras: Lora[]
@@ -192,6 +253,13 @@ export interface ChatSession {
 export interface PromptResult {
   image_prompt: string | null
   video_prompt: string | null
+  /** mode 'audio' のセッションが返す音の説明。 */
+  audio_prompt: string | null
+  /** ACE-Step: 構造タグ付きの歌詞。 */
+  lyrics: string | null
+  bpm: number | null
+  keyscale: string | null
+  language: string | null
   notes: string | null
 }
 
@@ -210,13 +278,20 @@ export interface ChatSessionCreate {
   mode: JobMode
   /** selected video template: its characteristics steer the video prompt. */
   video_workflow: string
+  /** selected image template: its model family steers the image prompt. */
+  image_workflow?: string
+  /** selected audio template: its guide steers the audio prompt (mode 'audio'). */
+  audio_workflow?: string
   loras: ChatLoraRef[]
   trigger_text: string
   video_loras?: ChatLoraRef[]
   video_trigger_text?: string
+  /** 動画のクリップ長 / 音声モードでは音の長さ（どちらも秒）。 */
   duration: number
   image_prompt_draft: string
   video_prompt_draft: string
+  audio_prompt_draft?: string
+  lyrics_draft?: string
   prompt_template: PromptTemplate
   start_image_path?: string | null
 }
@@ -278,7 +353,7 @@ export interface AgentPlan {
 }
 
 export interface AgentArtifact {
-  kind: 'plan' | 'note' | 'research' | 'frame' | 'image' | 'video'
+  kind: 'plan' | 'note' | 'research' | 'frame' | 'image' | 'video' | 'audio'
   title: string
   ts: string
   /** workdir 相対のファイル名（外部成果物は空）。 */

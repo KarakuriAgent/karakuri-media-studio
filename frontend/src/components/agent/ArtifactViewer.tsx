@@ -4,7 +4,7 @@ import { Modal } from '../ui'
 import { ARTIFACT_ICON, formatTime } from './common'
 import { downloadName } from './logic'
 
-const MEDIA_KINDS: AgentArtifact['kind'][] = ['image', 'video', 'frame']
+const MEDIA_KINDS: AgentArtifact['kind'][] = ['image', 'video', 'frame', 'audio']
 
 /** Text artifacts may live as a workdir file: fetch it on demand. */
 function useArtifactText(artifact: AgentArtifact, url: string | null): string {
@@ -86,6 +86,13 @@ export default function ArtifactViewer({
           src={url ?? ''}
           controls
           className="max-h-full max-w-full"
+          onClick={(event) => event.stopPropagation()}
+        />
+      ) : artifact.kind === 'audio' ? (
+        <audio
+          src={url ?? ''}
+          controls
+          className="w-full max-w-xl"
           onClick={(event) => event.stopPropagation()}
         />
       ) : (

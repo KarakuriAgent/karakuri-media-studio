@@ -16,7 +16,7 @@ interface Props {
   showNsfw: boolean
 }
 
-type MediaKind = 'video' | 'image'
+type MediaKind = 'video' | 'image' | 'audio'
 
 interface MediaItem {
   key: string
@@ -31,6 +31,16 @@ const ACTIVE_STATUSES = ['queued', 'prompting', 'running']
 
 function mediaOf(job: Job): MediaItem[] {
   const items: MediaItem[] = []
+  // 音声ジョブの成果物（サムネイルは存在しないので 🎵 が出る）
+  if (job.audio_output_url) {
+    items.push({
+      key: 'audio',
+      kind: 'audio',
+      label: '音声',
+      url: job.audio_output_url,
+      thumb: null,
+    })
+  }
   if (job.video_url) {
     items.push({
       key: 'video',
@@ -140,6 +150,12 @@ export default function ResultPane({
             className="max-h-full max-w-full"
           />
         )}
+        {job && current?.kind === 'audio' && (
+          <div className="flex w-full max-w-xl flex-col items-center gap-4 px-6">
+            <span className="text-5xl opacity-60">🎵</span>
+            <audio key={current.url} src={current.url} controls className="w-full" />
+          </div>
+        )}
         {job && current?.kind === 'image' && (
           <img
             key={current.url}
@@ -209,10 +225,11 @@ export default function ResultPane({
                 {item.thumb ? (
                   <img src={item.thumb} alt={item.label} className="h-full w-full object-cover" />
                 ) : (
-                  <span className="text-sm">🎬</span>
+                  <span className="text-sm">{item.kind === 'audio' ? '🎵' : '🎬'}</span>
                 )}
               </span>
               {item.kind === 'video' && <span>🎬</span>}
+              {item.kind === 'audio' && <span>🎵</span>}
               {item.label}
             </button>
           ))}
@@ -275,7 +292,8 @@ export default function ResultPane({
       )}
 
       {/* --------------------------------------------------------- prompts */}
-      {job && (job.image_prompt || job.video_prompt || job.user_input) && (
+      {job &&
+        (job.image_prompt || job.video_prompt || job.audio_prompt || job.user_input) && (
         <details className="shrink-0 rounded-lg border border-ink-600 bg-ink-800 px-3 py-2">
           <summary className="cursor-pointer text-xs text-slate-400">プロンプト</summary>
           <div className="mt-2 max-h-48 space-y-2 overflow-y-auto">
@@ -284,6 +302,9 @@ export default function ResultPane({
             )}
             {job.video_prompt && (
               <PromptBlock label="動画プロンプト" text={job.video_prompt} />
+            )}
+            {job.audio_prompt && (
+              <PromptBlock label="音声プロンプト" text={job.audio_prompt} />
             )}
             {job.user_input && <PromptBlock label="最初の指示" text={job.user_input} />}
           </div>

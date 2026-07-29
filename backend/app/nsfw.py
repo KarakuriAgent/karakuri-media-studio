@@ -152,10 +152,17 @@ async def classify_or_heuristic(text: str) -> tuple[bool, str]:
 
 
 def job_text(
-    image_prompt: str | None, video_prompt: str | None, user_input: str | None
+    image_prompt: str | None,
+    video_prompt: str | None,
+    user_input: str | None,
+    audio_prompt: str | None = None,
 ) -> str:
     """判定に渡すテキスト（ジョブの各プロンプトを連結）。"""
-    return "\n".join(part.strip() for part in (image_prompt, video_prompt, user_input) if part)
+    return "\n".join(
+        part.strip()
+        for part in (image_prompt, video_prompt, user_input, audio_prompt)
+        if part
+    )
 
 
 # --------------------------------------------------------------------------

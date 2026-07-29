@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react'
 import { api } from '../api'
+import { DEFAULT_FAMILY, FAMILY_LABELS, IMAGE_FAMILIES } from '../form'
 import type {
   Asset,
+  ImageFamily,
   Lora,
   LoraPayload,
   LoraTarget,
@@ -19,11 +21,20 @@ const EMPTY_LORA: LoraPayload = {
   default_audio: null,
   sort_order: 0,
   target: 'image',
+  family: DEFAULT_FAMILY,
 }
 
 const LORA_TARGET_LABELS: Record<LoraTarget, string> = {
-  image: '画像用（Krea 2）',
+  image: '画像用',
   video: '動画用（LTX 2.3）',
+}
+
+/** 一覧バッジ: 動画は LTX 固定、画像はモデルファミリーまで出す。 */
+function loraBadge(lora: Lora): string {
+  const target = lora.target ?? 'image'
+  if (target === 'video') return LORA_TARGET_LABELS.video
+  const family = lora.family ?? DEFAULT_FAMILY
+  return `画像用 / ${FAMILY_LABELS[family] ?? family}`
 }
 
 const TABS = [
@@ -35,6 +46,55 @@ const TABS = [
 type Tab = (typeof TABS)[number][0]
 
 const LORA_DATALIST_ID = 'model-lora-files'
+
+/** 「モデル」タブの大分類。 */
+const MODEL_KINDS = [
+  ['image', '画像'],
+  ['video', '動画'],
+  ['audio', '音声'],
+] as const
+
+interface ModelGroup {
+  id: string
+  label: string
+  kind: string
+  rows: ModelFieldState[]
+  /** 未保存の編集がある行数 */
+  changed: number
+  /** 既定値から変わっている行数（保存済みの上書きを含む） */
+  custom: number
+}
+
+/**
+ * ワークフローごとにまとめる（表示順は API の並び = workflows.SPECS の順）。
+ * 折りたたみが既定なので、中身が既定値から変わっていることをバッジで見せる。
+ */
+function groupModels(
+  rows: ModelFieldState[],
+  draft: Record<string, string>,
+): ModelGroup[] {
+  const groups = new Map<string, ModelGroup>()
+  for (const row of rows) {
+    const id = row.workflow_id || '(unknown)'
+    let group = groups.get(id)
+    if (!group) {
+      group = {
+        id,
+        label: row.workflow_label || id,
+        kind: row.kind ?? 'image',
+        rows: [],
+        changed: 0,
+        custom: 0,
+      }
+      groups.set(id, group)
+    }
+    group.rows.push(row)
+    const value = draft[row.key] ?? ''
+    if (value !== row.value) group.changed += 1
+    if (value !== row.default) group.custom += 1
+  }
+  return [...groups.values()]
+}
 
 export default function SettingsPage({
   options,
@@ -50,6 +110,8 @@ export default function SettingsPage({
   const [loras, setLoras] = useState<Lora[]>([])
   const [models, setModels] = useState<ModelFieldState[]>([])
   const [modelDraft, setModelDraft] = useState<Record<string, string>>({})
+  // ワークフローごとの折りたたみ状態（既定は閉じている）
+  const [openWorkflows, setOpenWorkflows] = useState<Record<string, boolean>>({})
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -192,6 +254,8 @@ export default function SettingsPage({
     setSettings((previous) => (previous ? { ...previous, ...patch } : previous))
 
   const modelsDirty = models.some((row) => (modelDraft[row.key] ?? '') !== row.value)
+  // 保存は全件置換 PUT なので、折りたたんでいても modelDraft は全行を持ち続ける。
+  const modelGroups = groupModels(models, modelDraft)
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -293,7 +357,7 @@ export default function SettingsPage({
                       <p className="truncate text-slate-200">{lora.display_name}</p>
                       <p className="truncate text-slate-500">
                         <span className="mr-1.5 rounded border border-ink-600 px-1 py-px text-[10px] text-slate-400">
-                          {LORA_TARGET_LABELS[lora.target ?? 'image']}
+                          {loraBadge(lora)}
                         </span>
                         {lora.lora_name}
                       </p>
@@ -354,6 +418,7 @@ export default function SettingsPage({
                           default_audio: lora.default_audio,
                           sort_order: lora.sort_order,
                           target: lora.target ?? 'image',
+                          family: lora.family ?? DEFAULT_FAMILY,
                         })
                       }}
                     >
@@ -403,7 +468,7 @@ export default function SettingsPage({
                       ))}
                     </datalist>
                   </div>
-                  <div className="col-span-2">
+                  <div>
                     <label className="label">対象ワークフロー</label>
                     <select
                       className="field"
@@ -415,16 +480,34 @@ export default function SettingsPage({
                         })
                       }
                     >
-                      {(['image', 'video'] as LoraTarget[]).map((value) => (
+                      {(['video', 'image'] as LoraTarget[]).map((value) => (
                         <option key={value} value={value}>
                           {LORA_TARGET_LABELS[value]}
                         </option>
                       ))}
                     </select>
-                    <p className="mt-1 text-[11px] text-slate-500">
-                      画像用は Krea 2 の画像生成に、動画用は LTX 2.3 の動画生成に挿入されます。
-                    </p>
                   </div>
+                  <div>
+                    <label className="label">モデルファミリー（画像用のみ）</label>
+                    <select
+                      className="field"
+                      value={draft.family}
+                      disabled={draft.target === 'video'}
+                      onChange={(event) =>
+                        setDraft({ ...draft, family: event.target.value })
+                      }
+                    >
+                      {IMAGE_FAMILIES.map((value: ImageFamily) => (
+                        <option key={value} value={value}>
+                          {FAMILY_LABELS[value] ?? value}
+                        </option>
+                      ))}
+                    </select>
+                  </div>
+                  <p className="col-span-2 -mt-1 text-[11px] text-slate-500">
+                    画像用 LoRA は同じモデルファミリーの画像ワークフローでのみ選択できます。
+                    動画用は LTX 2.3 の動画生成に挿入され、ファミリーは使いません。
+                  </p>
                   <div className="col-span-2">
                     <label className="label">トリガーワード</label>
                     <input
@@ -532,79 +615,127 @@ export default function SettingsPage({
               {models.length === 0 && (
                 <p className="text-xs text-slate-500">読み込み中…</p>
               )}
-              {models.length > 0 && (
-                <div className="card overflow-x-auto">
-                  <table className="w-full text-xs">
-                    <thead className="text-left text-slate-500">
-                      <tr className="border-b border-ink-600">
-                        <th className="p-2 font-medium">ワークフロー</th>
-                        <th className="p-2 font-medium">ノード</th>
-                        <th className="p-2 font-medium">既定値</th>
-                        <th className="p-2 font-medium">使用する値</th>
-                        <th className="p-2" />
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-ink-600">
-                      {models.map((row) => {
-                        const value = modelDraft[row.key] ?? ''
-                        const changed = value !== row.value
-                        const custom = value !== row.default
-                        return (
-                          <tr
-                            key={row.key}
-                            className={changed ? 'bg-accent-500/10' : undefined}
+              {MODEL_KINDS.map(([kind, kindLabel]) => {
+                const groups = modelGroups.filter((group) => group.kind === kind)
+                if (groups.length === 0) return null
+                return (
+                  <div key={kind} className="flex flex-col gap-2">
+                    <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+                      {kindLabel}
+                    </h4>
+                    {groups.map((group) => {
+                      const open = openWorkflows[group.id] ?? false
+                      return (
+                        <div key={group.id} className="card overflow-hidden">
+                          <button
+                            type="button"
+                            className="flex w-full items-center gap-2 p-2 text-left text-xs hover:bg-ink-700"
+                            onClick={() =>
+                              setOpenWorkflows((previous) => ({
+                                ...previous,
+                                [group.id]: !open,
+                              }))
+                            }
                           >
-                            <td className="p-2 align-top text-slate-400">
-                              {row.workflow_label || row.workflow_id}
-                            </td>
-                            <td className="p-2 align-top">
-                              <p className="text-slate-200">{row.title || row.key}</p>
-                              <p className="text-slate-600">
-                                {row.node_id}.{row.field} / {row.class_type}
-                              </p>
-                            </td>
-                            <td className="max-w-[16rem] break-all p-2 align-top text-slate-500">
-                              {row.default}
-                            </td>
-                            <td className="p-2 align-top">
-                              <input
-                                className="field"
-                                value={value}
-                                list={
-                                  row.class_type === 'LoraLoaderModelOnly' &&
-                                  loraFiles.length > 0
-                                    ? LORA_DATALIST_ID
-                                    : undefined
-                                }
-                                onChange={(event) =>
-                                  setModelDraft((previous) => ({
-                                    ...previous,
-                                    [row.key]: event.target.value,
-                                  }))
-                                }
-                              />
-                            </td>
-                            <td className="p-2 align-top">
-                              <button
-                                className="btn-ghost !py-1 text-xs"
-                                disabled={!custom}
-                                onClick={() =>
-                                  setModelDraft((previous) => ({
-                                    ...previous,
-                                    [row.key]: row.default,
-                                  }))
-                                }
-                              >
-                                既定に戻す
-                              </button>
-                            </td>
-                          </tr>
-                        )
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              )}
+                            <span className="w-3 text-slate-500">
+                              {open ? '▾' : '▸'}
+                            </span>
+                            <span className="text-slate-200">{group.label}</span>
+                            <span className="text-slate-600">
+                              {group.rows.length} 項目
+                            </span>
+                            {group.changed > 0 && (
+                              <span className="rounded border border-accent-500 px-1 py-px text-[10px] text-accent-400">
+                                未保存 {group.changed}
+                              </span>
+                            )}
+                            {group.custom > 0 && (
+                              <span className="rounded border border-ink-500 px-1 py-px text-[10px] text-slate-400">
+                                既定から変更 {group.custom}
+                              </span>
+                            )}
+                          </button>
+                          {open && (
+                            <div className="overflow-x-auto border-t border-ink-600">
+                              <table className="w-full text-xs">
+                                <thead className="text-left text-slate-500">
+                                  <tr className="border-b border-ink-600">
+                                    <th className="p-2 font-medium">ノード</th>
+                                    <th className="p-2 font-medium">既定値</th>
+                                    <th className="p-2 font-medium">使用する値</th>
+                                    <th className="p-2" />
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-ink-600">
+                                  {group.rows.map((row) => {
+                                    const value = modelDraft[row.key] ?? ''
+                                    const changed = value !== row.value
+                                    const custom = value !== row.default
+                                    return (
+                                      <tr
+                                        key={row.key}
+                                        className={
+                                          changed ? 'bg-accent-500/10' : undefined
+                                        }
+                                      >
+                                        <td className="p-2 align-top">
+                                          <p className="text-slate-200">
+                                            {row.title || row.key}
+                                          </p>
+                                          <p className="text-slate-600">
+                                            {row.node_id}.{row.field} /{' '}
+                                            {row.class_type}
+                                          </p>
+                                        </td>
+                                        <td className="max-w-[16rem] break-all p-2 align-top text-slate-500">
+                                          {row.default}
+                                        </td>
+                                        <td className="p-2 align-top">
+                                          <input
+                                            className="field"
+                                            value={value}
+                                            list={
+                                              row.class_type ===
+                                                'LoraLoaderModelOnly' &&
+                                              loraFiles.length > 0
+                                                ? LORA_DATALIST_ID
+                                                : undefined
+                                            }
+                                            onChange={(event) =>
+                                              setModelDraft((previous) => ({
+                                                ...previous,
+                                                [row.key]: event.target.value,
+                                              }))
+                                            }
+                                          />
+                                        </td>
+                                        <td className="p-2 align-top">
+                                          <button
+                                            className="btn-ghost !py-1 text-xs"
+                                            disabled={!custom}
+                                            onClick={() =>
+                                              setModelDraft((previous) => ({
+                                                ...previous,
+                                                [row.key]: row.default,
+                                              }))
+                                            }
+                                          >
+                                            既定に戻す
+                                          </button>
+                                        </td>
+                                      </tr>
+                                    )
+                                  })}
+                                </tbody>
+                              </table>
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                )
+              })}
               <button
                 className="btn-primary self-start"
                 onClick={() => void saveModels()}

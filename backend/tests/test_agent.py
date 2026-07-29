@@ -842,17 +842,55 @@ def test_stop_halts_a_waiting_session(env):
     assert env.comfy.job_count == 1
 
 
-def test_auto_limit_stops_the_loop(env):
+def _run_to_limit_checkin(env, tasks: int = 3):
+    """auto_limit=1 のセッションを 1 本生成させ、上限チェックインで止める。"""
     session = start(env, checkin_mode="auto", auto_limit=1)
-    env.cli.answers = [plan_answer(env, 2), "1本目ができました。次に進みます。"]
+    env.cli.answers = [plan_answer(env, tasks), "1本目ができました。次に進みます。"]
     say(env, session["id"])
     env.client.post(f"/api/agent/sessions/{session['id']}/approve", json={})
 
+    paused = wait_status(env, session["id"], ("waiting_checkin", "stopped", "done"))
+    assert paused["status"] == "waiting_checkin"
+    assert env.comfy.job_count == 1
+    assert "limit_reached" in kinds(paused)
+    assert "上限" in paused["messages"][-1]["content"]
+    assert paused["messages"][-1]["role"] == "checkin"
+    assert paused["plan"]["tasks"][1]["status"] == "pending"
+    return session
+
+
+def test_auto_limit_asks_before_going_over(env):
+    _run_to_limit_checkin(env)
+
+
+def test_auto_limit_checkin_approval_buys_another_round(env):
+    session = _run_to_limit_checkin(env)
+    env.cli.answers = ["2本目ができました。次に進みます。"]
+    env.client.post(
+        f"/api/agent/sessions/{session['id']}/checkin", json={"choice": "続ける"}
+    )
+
+    # 承認 1 回で auto_limit（1 本）ぶんだけ進み、次の上限でまた確認が入る。
+    again = wait_status(env, session["id"], ("waiting_checkin", "stopped", "done"))
+    assert again["status"] == "waiting_checkin"
+    assert env.comfy.job_count == 2
+    assert kinds(again).count("limit_reached") == 2
+    assert again["plan"]["tasks"][2]["status"] == "pending"
+
+
+def test_auto_limit_checkin_decline_stops_the_session(env):
+    session = _run_to_limit_checkin(env)
+    env.client.post(
+        f"/api/agent/sessions/{session['id']}/checkin", json={"choice": "止める"}
+    )
+
     final = wait_status(env, session["id"], ("stopped", "done", "idle"))
     assert final["status"] == "stopped"
-    assert env.comfy.job_count == 1
+    assert env.comfy.job_count == 1  # 追加生成なし
     assert "上限" in final["messages"][-1]["content"]
     assert final["plan"]["tasks"][1]["status"] == "pending"
+    # 断った直後に Grok ターンを回さない（scripted answer を消費していない）
+    assert not env.cli.answers
 
 
 def test_turn_limit_stops_the_loop(env, monkeypatch):
@@ -1664,3 +1702,135 @@ def test_activity_is_published_and_polled(env):
     asyncio.run(scenario())
     assert agent_runner.current_activity(session_id) is None
     assert env.client.get(f"/api/agent/sessions/{session_id}").json()["activity"] is None
+
+
+# --------------------------------------------------------------------------
+# 画像ワークフローの検証とカタログ (SPEC §3 / AGENT-MODE §3.1)
+# --------------------------------------------------------------------------
+
+KNOWN_FAMILIES = {"kaori.safetensors": "krea2", "hana.safetensors": "anima"}
+KNOWN_LORAS_WITH_ANIMA = {**KNOWN_LORAS, "hana.safetensors": "image"}
+
+
+def test_an_unknown_image_workflow_is_rejected(env):
+    answer = _plan_with(env, image_workflow="nope")
+    with pytest.raises(agent_protocol.ActionError, match="nope"):
+        agent_protocol.parse_action(answer)
+
+
+def test_the_editing_workflow_without_a_source_image_is_rejected(env):
+    for mode in ("full", "image_only"):
+        answer = _plan_with(
+            env, mode=mode, image_workflow="qwen_image_edit_2511"
+        )
+        with pytest.raises(agent_protocol.ActionError, match="source_image"):
+            agent_protocol.parse_action(answer)
+
+
+def test_the_editing_workflow_with_a_source_image_is_accepted(env):
+    answer = _plan_with(
+        env,
+        mode="image_only",
+        image_workflow="qwen_image_edit_2511",
+        source_image=str(env.image),
+        video_prompt="",
+        audio_path=None,
+    )
+    action = agent_protocol.parse_action(answer)
+    assert action is not None
+    assert action.tasks[0].job["image_workflow"] == "qwen_image_edit_2511"
+
+
+def test_an_image_lora_of_the_wrong_family_is_rejected(env):
+    answer = _plan_with(
+        env,
+        image_workflow="anima",
+        loras=[{"lora_name": "kaori.safetensors", "trigger_word": "kaori"}],
+    )
+    with pytest.raises(agent_protocol.ActionError, match="anima"):
+        agent_protocol.parse_action(
+            answer,
+            known_loras=KNOWN_LORAS_WITH_ANIMA,
+            known_families=KNOWN_FAMILIES,
+        )
+
+
+def test_an_image_lora_of_the_matching_family_is_accepted(env):
+    answer = _plan_with(
+        env,
+        image_workflow="anima",
+        loras=[{"lora_name": "hana.safetensors", "trigger_word": "hana"}],
+    )
+    action = agent_protocol.parse_action(
+        answer,
+        known_loras=KNOWN_LORAS_WITH_ANIMA,
+        known_families=KNOWN_FAMILIES,
+    )
+    assert action is not None
+
+
+def test_the_family_check_is_skipped_without_an_image_stage(env):
+    answer = _plan_with(
+        env,
+        mode="i2v",
+        image_prompt="",
+        source_image=str(env.image),
+        image_workflow="anima",
+        loras=[{"lora_name": "kaori.safetensors", "trigger_word": "kaori"}],
+    )
+    assert (
+        agent_protocol.parse_action(
+            answer,
+            known_loras=KNOWN_LORAS_WITH_ANIMA,
+            known_families=KNOWN_FAMILIES,
+        )
+        is not None
+    )
+
+
+def test_known_lora_families_only_covers_image_loras(env):
+    env.client.post(
+        "/api/loras",
+        json={"display_name": "ハナ", "lora_name": "hana.safetensors",
+              "trigger_word": "hana", "target": "image", "family": "anima"},
+    )
+    env.client.post(
+        "/api/loras",
+        json={"display_name": "スローモ", "lora_name": "motion.safetensors",
+              "trigger_word": "slowmo", "target": "video"},
+    )
+    families = asyncio.run(agent_runner.known_lora_families())
+    assert families == {"hana.safetensors": "anima"}
+
+
+def test_the_system_prompt_carries_the_image_workflow_catalog(env):
+    system = start(env)["messages"][0]["content"]
+    assert "# IMAGE WORKFLOWS (the `image_workflow` field of a job)" in system
+    for workflow_id in ("krea2_turbo", "anima", "z_image_turbo", "qwen_image_edit_2511"):
+        assert f"`{workflow_id}`" in system
+    # every family's guide is embedded, because the agent picks the workflow
+    for heading in (
+        "IMAGE PROMPT SPEC — Krea 2 turbo",
+        "IMAGE PROMPT SPEC — Anima",
+        "IMAGE PROMPT SPEC — Tongyi Z-Image turbo",
+        "IMAGE PROMPT SPEC — Qwen-Image Edit 2511",
+    ):
+        assert heading in system
+    assert '"image_workflow": "krea2_turbo"' in system
+
+
+def test_the_system_prompt_lists_each_image_loras_family(env):
+    env.client.post(
+        "/api/loras",
+        json={"display_name": "ハナ", "lora_name": "hana.safetensors",
+              "trigger_word": "hana", "target": "image", "family": "anima"},
+    )
+    system = start(env)["messages"][0]["content"]
+    assert "family `anima`" in system
+    assert "image_workflow` のファミリーと一致" in system
+
+
+def test_the_system_prompt_explains_attachments(env):
+    system = start(env)["messages"][0]["content"]
+    assert "[Attached files" in system
+    assert "attachments/" in system

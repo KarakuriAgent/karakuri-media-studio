@@ -783,3 +783,285 @@ def test_ws_endpoint_receives_job_events(env):
     assert statuses[0] == "queued"
     assert "running" in statuses
     assert statuses[-1] == "done"
+
+
+# --------------------------------------------------------------------------
+# image workflow selection (SPEC §3)
+# --------------------------------------------------------------------------
+
+def test_the_image_workflow_is_selectable(env):
+    response = env.client.post(
+        "/api/jobs",
+        json={
+            "mode": "image_only",
+            "image_workflow": "z_image_turbo",
+            "image_prompt": "an image",
+        },
+    )
+    assert response.status_code == 201, response.text
+    job = wait_for(env.client, response.json()["id"])
+    assert job["status"] == "done", job["error"]
+    assert job["params"]["image_workflow"] == "z_image_turbo"
+    assert job["workflow_json"]["image"]["workflow_id"] == "z_image_turbo"
+    # z-image has no ResolutionSelector: the app injects the computed edges
+    graph = graph_with(env, "57:13")
+    width, height = resolution("4:3 (Standard)", 1.0)
+    assert graph["57:13"]["inputs"]["width"] == width
+    assert graph["57:13"]["inputs"]["height"] == height
+
+
+def test_an_unknown_image_workflow_is_rejected(env):
+    response = env.client.post(
+        "/api/jobs",
+        json={
+            "mode": "image_only",
+            "image_workflow": "nope",
+            "image_prompt": "an image",
+        },
+    )
+    assert response.status_code == 422
+    assert "nope" in response.text
+
+
+def test_the_editing_workflow_requires_a_source_image(env):
+    for mode, extra in (("image_only", {}), ("full", {"video_prompt": "a video"})):
+        response = env.client.post(
+            "/api/jobs",
+            json={
+                "mode": mode,
+                "image_workflow": "qwen_image_edit_2511",
+                "image_prompt": "make the coat red",
+                "audio_path": str(env.audio),
+                **extra,
+            },
+        )
+        assert response.status_code == 422, (mode, response.text)
+        assert "source_image" in response.text
+
+
+def test_the_editing_workflow_uses_the_source_image_as_its_input(env):
+    response = env.client.post(
+        "/api/jobs",
+        json={
+            "mode": "image_only",
+            "image_workflow": "qwen_image_edit_2511",
+            "image_prompt": "make the coat red",
+            "source_image": str(env.start_image),
+        },
+    )
+    assert response.status_code == 201, response.text
+    job = wait_for(env.client, response.json()["id"])
+    assert job["status"] == "done", job["error"]
+    graph = graph_with(env, "41")
+    assert graph["41"]["inputs"]["image"] == env.start_image.name
+    assert graph["170:151"]["inputs"]["prompt"] == "make the coat red"
+
+
+@needs_ffmpeg
+def test_full_mode_edits_the_source_image_then_animates_it(env):
+    """qwen + full: source_image feeds the edit, the edited still the video."""
+    response = env.client.post(
+        "/api/jobs",
+        json=full_body(
+            env,
+            image_workflow="qwen_image_edit_2511",
+            source_image=str(env.start_image),
+        ),
+    )
+    assert response.status_code == 201, response.text
+    job = wait_for(env.client, response.json()["id"])
+    assert job["status"] == "done", job["error"]
+    image_graph = graph_with(env, "41")
+    assert image_graph["41"]["inputs"]["image"] == env.start_image.name
+    # the video stage starts from the *generated* still, not the input picture
+    video_graph = graph_with(env, "269")
+    assert video_graph["269"]["inputs"]["image"] == Path(job["image_path"]).name
+
+
+def _register_lora(env, name: str, family: str) -> dict:
+    return env.client.post(
+        "/api/loras",
+        json={
+            "display_name": name,
+            "lora_name": f"{name}.safetensors",
+            "trigger_word": name,
+            "target": "image",
+            "family": family,
+        },
+    ).json()
+
+
+def test_an_image_lora_of_another_family_is_rejected(env):
+    _register_lora(env, "kaori", "krea2")
+    response = env.client.post(
+        "/api/jobs",
+        json={
+            "mode": "image_only",
+            "image_workflow": "anima",
+            "image_prompt": "an image",
+            "loras": [{"lora_name": "kaori.safetensors", "trigger_word": "kaori"}],
+        },
+    )
+    assert response.status_code == 422
+    assert "krea2" in response.text and "anima" in response.text
+
+
+def test_an_image_lora_of_the_matching_family_is_accepted(env):
+    _register_lora(env, "hana", "anima")
+    response = env.client.post(
+        "/api/jobs",
+        json={
+            "mode": "image_only",
+            "image_workflow": "anima",
+            "image_prompt": "an image",
+            "loras": [{"lora_name": "hana.safetensors", "trigger_word": "hana"}],
+        },
+    )
+    assert response.status_code == 201, response.text
+    job = wait_for(env.client, response.json()["id"])
+    assert job["status"] == "done", job["error"]
+    graph = graph_with(env, "90:76")
+    assert graph["app_lora_0"]["inputs"]["lora_name"] == "hana.safetensors"
+
+
+def test_an_unregistered_lora_does_not_block_a_job(env):
+    """A deleted LoRA must not make old jobs unrerunnable (family unknown)."""
+    response = env.client.post(
+        "/api/jobs",
+        json={
+            "mode": "image_only",
+            "image_workflow": "anima",
+            "image_prompt": "an image",
+            "loras": [{"lora_name": "ghost.safetensors", "trigger_word": "g"}],
+        },
+    )
+    assert response.status_code == 201, response.text
+
+
+def test_the_artifact_picker_accepts_any_output_key():
+    """SaveImageAdvanced does not have to name its list ``images``.
+
+    ``_pick_output`` prefers the known keys and otherwise takes the first entry
+    with a ``filename``, so a node that reports its files under another key is
+    still downloadable.
+    """
+    known = {"195": {"images": [{"filename": "a.png"}]}}
+    assert jobs._pick_output(known, "195")["filename"] == "a.png"
+
+    unusual = {"195": {"result": [{"filename": "b.png", "subfolder": "x"}]}}
+    assert jobs._pick_output(unusual, "195")["filename"] == "b.png"
+
+    assert jobs._pick_output({"195": {"result": []}}, "195") is None
+    assert jobs._pick_output({}, "195") is None
+
+
+# --------------------------------------------------------------------------
+# 音声ジョブ（mode='audio'）— 独立ジョブなので画像・動画は一切走らない
+# --------------------------------------------------------------------------
+
+def test_audio_job_runs_one_stage_and_stores_the_track(env):
+    response = env.client.post(
+        "/api/jobs",
+        json={
+            "mode": "audio",
+            "audio_workflow": "ace_step1_5_xl_sft",
+            "audio_prompt": "warm neo-soul, rhodes piano, brushed drums",
+            "lyrics": "[Verse 1]\nthe last train hums",
+            "duration": 30,
+            "bpm": 92,
+            "keyscale": "F# minor",
+            "language": "ja",
+            "seed": 1234,
+        },
+    )
+    assert response.status_code == 201, response.text
+    job = wait_for(env.client, response.json()["id"])
+    assert job["status"] == "done", job["error"]
+
+    # 1 プロンプトだけ（画像ステージも動画ステージも走っていない）
+    assert len(env.comfy.queued) == 1
+    assert list(job["workflow_json"]) == ["audio"]
+    graph = env.comfy.queued[0]
+    assert graph["94"]["inputs"]["tags"].startswith("warm neo-soul")
+    assert graph["94"]["inputs"]["duration"] == 30
+    assert graph["98"]["inputs"]["seconds"] == 30.0
+    assert graph["109"]["inputs"]["value"] == 1234
+
+    # 成果物は audio_output_path/-url のみ。動画・画像・ラストフレームは無い。
+    assert job["audio_output_url"].endswith(".mp3")
+    assert job["video_url"] is None and job["image_url"] is None
+    assert job["last_frame_url"] is None
+    assert Path(job["audio_output_path"]).is_file()
+    # 入力側の audio_path（リファレンス音声）とは別枠のまま
+    assert job["audio_path"] is None
+    assert job["audio_prompt"].startswith("warm neo-soul")
+
+
+def test_stable_audio_job_runs(env):
+    response = env.client.post(
+        "/api/jobs",
+        json={
+            "mode": "audio",
+            "audio_workflow": "stable_audio_3_medium_base",
+            "audio_prompt": "glass shattering on concrete. Length: 2 seconds",
+            "audio_category": "SFX",
+            "reprompt": False,
+            "duration": 2,
+        },
+    )
+    assert response.status_code == 201, response.text
+    job = wait_for(env.client, response.json()["id"])
+    assert job["status"] == "done", job["error"]
+    graph = env.comfy.queued[0]
+    assert graph["52:43"]["inputs"]["choice"] == "SFX"
+    assert graph["52:36"]["inputs"]["value"] == 2.0
+    assert graph["52:35"]["inputs"]["value"] is False
+
+
+def test_audio_job_uploads_nothing(env):
+    """音声ジョブは ComfyUI の input ディレクトリに何も送らない。"""
+    response = env.client.post(
+        "/api/jobs",
+        json={"mode": "audio", "audio_prompt": "a lofi loop", "duration": 30},
+    )
+    assert response.status_code == 201, response.text
+    wait_for(env.client, response.json()["id"])
+    assert env.comfy.uploads == []
+
+
+def test_audio_job_rejects_an_out_of_range_duration(env):
+    response = env.client.post(
+        "/api/jobs",
+        json={"mode": "audio", "audio_prompt": "a lofi loop", "duration": 5},
+    )
+    assert response.status_code == 422
+    assert "10-600 seconds" in response.text
+
+
+def test_audio_job_can_be_rerun_with_a_new_seed(env):
+    created = env.client.post(
+        "/api/jobs",
+        json={"mode": "audio", "audio_prompt": "a lofi loop", "duration": 30,
+              "seed": 11},
+    )
+    job = wait_for(env.client, created.json()["id"])
+    assert job["status"] == "done", job["error"]
+
+    rerun = env.client.post(f"/api/jobs/{job['id']}/rerun", json={"seed": 22})
+    assert rerun.status_code == 201, rerun.text
+    again = wait_for(env.client, rerun.json()["id"])
+    assert again["status"] == "done", again["error"]
+    assert again["mode"] == "audio"
+    assert env.comfy.queued[-1]["109"]["inputs"]["value"] == 22
+
+
+def test_audio_job_cannot_be_continued(env):
+    """continue は動画のラストフレームからの続きなので、音声には行き先が無い。"""
+    created = env.client.post(
+        "/api/jobs",
+        json={"mode": "audio", "audio_prompt": "a lofi loop", "duration": 30},
+    )
+    job = wait_for(env.client, created.json()["id"])
+    response = env.client.post(f"/api/jobs/{job['id']}/continue", json={})
+    assert response.status_code == 422
+    assert "last frame" in response.text

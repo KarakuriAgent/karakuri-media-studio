@@ -10,7 +10,9 @@ A job is one or two ComfyUI prompts (SPEC §2):
 * ``image_only`` — the image workflow only,
 * ``i2v``        — the selected video workflow only,
 * ``full``       — image workflow, then the generated still is uploaded and fed
-  to the selected video workflow as its start frame.
+  to the selected video workflow as its start frame,
+* ``audio``      — the selected audio workflow only.  Stand-alone: it is never
+  chained with the image / video stages.
 
 See docs/SPEC.md §2 (modes), §3 (injection points / LoRA chain) and §10-3.
 """
@@ -30,6 +32,7 @@ from .workflows import (
     Workflow,
     WorkflowSpec,
     WorkflowSpecError,
+    get_audio_spec,
     get_image_spec,
     get_video_spec,
     load_template,
@@ -48,6 +51,9 @@ VIDEO_LORA_NODE_PREFIX = "app_video_lora_"
 MODEL_FIELDS: set[tuple[str, str]] = {
     ("UNETLoader", "unet_name"),
     ("CLIPLoader", "clip_name"),
+    # ACE-Step 1.5 loads two Qwen text encoders through one DualCLIPLoader
+    ("DualCLIPLoader", "clip_name1"),
+    ("DualCLIPLoader", "clip_name2"),
     ("VAELoader", "vae_name"),
     ("CheckpointLoaderSimple", "ckpt_name"),
     ("LTXVAudioVAELoader", "ckpt_name"),
@@ -94,17 +100,31 @@ def _set(wf: Workflow, node_id: str, field: str, value: Any) -> None:
         node.setdefault("inputs", {})[field] = value
 
 
+# Numeric inputs of ordinary (non-Primitive) nodes whose declared type the
+# injected value has to match.  ComfyUI validates INT / FLOAT strictly, so an
+# INT widget fed a float (or the other way round) fails the whole prompt.
+_INT_INPUTS: set[tuple[str, str]] = {
+    ("TextEncodeAceStepAudio1.5", "duration"),
+    ("TextEncodeAceStepAudio1.5", "bpm"),
+    ("CustomCombo", "index"),
+}
+_FLOAT_INPUTS: set[tuple[str, str]] = {
+    ("Video Slice", "duration"),
+    ("EmptyAceStep1.5LatentAudio", "seconds"),
+}
+
+
 def _coerce(class_type: str, field: str, value: Any) -> Any:
     """Match the input type the target node declares.
 
     ``PrimitiveInt`` rejects a float and ``PrimitiveFloat`` a bool, so the
     injected numbers are cast according to the node the manifest points at.
     """
-    if class_type == "PrimitiveInt" and isinstance(value, (int, float)):
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        return value
+    if class_type == "PrimitiveInt" or (class_type, field) in _INT_INPUTS:
         return int(round(float(value)))
-    if class_type == "PrimitiveFloat" and isinstance(value, (int, float)):
-        return float(value)
-    if class_type == "Video Slice" and field == "duration":
+    if class_type == "PrimitiveFloat" or (class_type, field) in _FLOAT_INPUTS:
         return float(value)
     return value
 
@@ -290,6 +310,7 @@ def model_fields(specs: tuple[WorkflowSpec, ...] | None = None) -> list[ModelFie
                         key=_scoped(spec.id, node_id, field),
                         workflow_id=spec.id,
                         workflow_label=spec.label,
+                        kind=spec.kind,
                         node_id=node_id,
                         field=field,
                         class_type=class_type,
@@ -524,6 +545,16 @@ def build_image_workflow(
 
     _inject(wf, resolved, "aspect_ratio", params.aspect_ratio)
     _inject(wf, resolved, "megapixels", float(params.megapixels))
+    # Templates without a ResolutionSelector (z-image) take plain integers, so
+    # the same computation ComfyUI's node does is done here (SPEC §3.1).
+    if resolved.supports("width") or resolved.supports("height"):
+        width, height = resolution(params.aspect_ratio, params.megapixels)
+        _inject(wf, resolved, "width", width)
+        _inject(wf, resolved, "height", height)
+    # Editing workflows (qwen-image) read the picture the job supplies in
+    # `source_image`; the job runner uploads it under `start_image_name` before
+    # the image stage runs, exactly like the video stage's start frame.
+    _inject(wf, resolved, "image", params.start_image_name)
     _inject(wf, resolved, "prompt", params.image_prompt)
     _inject(wf, resolved, "seed", params.image_seed)
     for name, value in resolved.constants.items():
@@ -590,10 +621,52 @@ def build_video_workflow(
     return wf
 
 
+def build_audio_workflow(
+    params: GenerationParams,
+    overrides: dict[str, str] | None = None,
+    *,
+    spec: WorkflowSpec | None = None,
+    template: Workflow | None = None,
+) -> Workflow:
+    """API JSON for a stand-alone audio job. Pure: the template is never mutated.
+
+    Audio is not part of the image / video chain: nothing here reads a start
+    frame, an aspect ratio or a LoRA list.  Model-specific knobs (``lyrics``,
+    ``bpm``, ``audio_category``, …) are injected through the same
+    :func:`_inject` as everything else, so a workflow whose manifest does not
+    declare one simply skips it.
+    """
+    resolved = spec or get_audio_spec(params.audio_workflow)
+    wf: Workflow = copy.deepcopy(
+        template if template is not None else load_template(resolved)
+    )
+
+    apply_model_overrides(wf, overrides, resolved.id)
+
+    _inject(wf, resolved, "prompt", params.audio_prompt)
+    _inject(wf, resolved, "lyrics", params.lyrics)
+    # ACE-Step wants the length twice (conditioning + empty latent); Stable
+    # Audio's latent reads the same PrimitiveFloat, so it only declares one.
+    _inject(wf, resolved, "duration", params.duration)
+    _inject(wf, resolved, "latent_seconds", params.duration)
+    _inject(wf, resolved, "bpm", params.bpm)
+    _inject(wf, resolved, "keyscale", params.keyscale)
+    _inject(wf, resolved, "language", params.language)
+    _inject(wf, resolved, "audio_category", params.audio_category)
+    _inject(wf, resolved, "reprompt", params.reprompt)
+    _inject(wf, resolved, "seed", params.audio_seed)
+    for name, value in resolved.constants.items():
+        _inject(wf, resolved, name, value)
+    _inject(wf, resolved, "save_prefix", params.audio_filename_prefix)
+
+    validate_workflow(wf)
+    return wf
+
+
 def build_workflows(
     params: GenerationParams, overrides: dict[str, str] | None = None
 ) -> dict[str, Workflow]:
-    """Both stages of a job, keyed by stage name (``"image"`` / ``"video"``).
+    """Every stage of a job, keyed by stage name (``image`` / ``video`` / ``audio``).
 
     Used by the tests and by anything that wants to inspect a job without
     running it; the job runner builds the stages one at a time because the video
@@ -601,6 +674,8 @@ def build_workflows(
     """
     stages: dict[str, Workflow] = {}
     try:
+        if params.mode == "audio":
+            stages["audio"] = build_audio_workflow(params, overrides)
         if params.mode in ("full", "image_only"):
             stages["image"] = build_image_workflow(params, overrides)
         if params.mode in ("full", "i2v"):

@@ -9,8 +9,12 @@ while Grok is explicitly told to talk to the user in **Japanese**.
 Contents (SPEC §4.3 "システムプロンプトの構成"):
 
 1. role — prompt engineer *and* interviewer,
-2. image prompt spec — Krea 2 official expansion rules (the very text embedded
-   in ``workflow/image/krea2/krea2_turbo.json`` node ``30:18``), with rule 8
+2. image prompt spec — one per model family (:data:`IMAGE_SPECS`), because the
+   four image workflows want incompatible prompt styles.  The chat embeds only
+   the family of the selected ``image_workflow``; the agent embeds all of them
+   because it picks the workflow itself.  The Krea 2 one is the official
+   expansion ruleset (the very text embedded in
+   ``workflow/image/krea2/krea2_turbo.json`` node ``30:18``), with rule 8
    ("assume clothing covers …") replaced by an adults-only rule because this app
    generates adult content,
 3. video prompt spec — LTX 2.3, plus the two prompt templates and the selected
@@ -35,12 +39,23 @@ from .models import (
     video_workflow_problem,
 )
 from .workflows import (
+    AUDIO_CATEGORIES,
+    BPM_RANGE,
+    DEFAULT_AUDIO_WORKFLOW,
+    DEFAULT_FAMILY,
+    DEFAULT_IMAGE_WORKFLOW,
     DEFAULT_VIDEO_WORKFLOW,
+    FAMILY_LABELS,
     CatalogEntry,
     WorkflowSpec,
     WorkflowSpecError,
+    audio_catalog,
     catalog_entry,
+    get_audio_spec,
+    get_image_spec,
     get_video_spec,
+    image_catalog,
+    image_families,
     video_catalog,
 )
 
@@ -141,6 +156,184 @@ Order the paragraph like the workflow's own reference prompt:
 Use the character's LoRA trigger word as the subject's name when one is listed
 in CONTEXT (see the rules there).
 """
+
+# --- per-family image prompt guides ---------------------------------------
+# Every image workflow in workflow/image/ belongs to a model family, and the
+# families do NOT want the same kind of prompt.  IMAGE_SPEC above stays the
+# Krea 2 one (it is the historical default and by far the most detailed); the
+# other three are summarized here from their primary sources:
+#
+# * anima    — https://huggingface.co/circlestone-labs/Anima (model card
+#              "Prompting" section: tags, natural language or both)
+# * z-image  — https://huggingface.co/Tongyi-MAI/Z-Image-Turbo plus the Tongyi
+#              team's own prompting note in discussion #8 of that repo
+# * qwen-image — https://huggingface.co/Qwen/Qwen-Image-Edit-2511 and the
+#              official edit-prompt rewriter system prompt in
+#              https://github.com/QwenLM/Qwen-Image
+#              (src/examples/tools/prompt_utils.py, ``polish_edit_prompt``)
+
+ANIMA_SPEC = """\
+# IMAGE PROMPT SPEC — Anima (anime base, TE: Qwen3 0.6B)
+
+Anima is an anime / illustration model trained on Danbooru-style **tags**,
+natural-language captions and mixtures of the two, so either style works and
+they may be combined in any order. Write `image_prompt` like this:
+
+1. **Lead with quality + safety tags**: `masterpiece, best quality, score_7,
+   safe, ` (use `explicit` instead of `safe` for adult content). These are the
+   two tag systems the model knows — the human-score one (`masterpiece`,
+   `best quality`, … `worst quality`) and the PonyV7 one (`score_9` … `score_1`).
+2. **Then the tag block, in this order**: meta / year (`year 2025`, `newest`,
+   `highres`) → subject count (`1girl`, `1boy`, `2girls`) → character → series →
+   artist → general tags (hair, eyes, clothing, pose, expression, setting,
+   framing). Order *inside* a section does not matter.
+3. **Tags are lowercase with spaces, not underscores** (only `score_1` … keep
+   theirs). Artist tags must be written with a leading `@`, e.g. `@artist name`
+   — without it the style barely applies.
+4. **Natural-language sentences are fine too**, alone or after the tags, and
+   should then be at least two sentences: name the character first, then
+   describe their appearance. Very short prompts give unpredictable results.
+5. **Do not aim for photorealism** and do not ask for long rendered text — the
+   model is anime-first and can only do single words / short phrases reliably.
+6. Prompt weighting works but needs stronger values than SDXL, e.g. `(chibi:2)`.
+7. The negative prompt is fixed in the template — never write one.
+8. **Adults only**: every depicted person is an adult with an unambiguously
+   adult body and adult face. Never write `loli`, `teen`, `child`,
+   `schoolgirl`, `young girl` or anything that could read as a minor.
+
+Example (tags):
+```
+masterpiece, best quality, score_7, explicit, year 2025, newest, highres, 1girl, solo, kaori, long black hair, hair between eyes, brown eyes, white blouse, pleated skirt, sitting on bed, looking at viewer, blush, parted lips, warm indoor lighting, upper body, depth of field
+```
+
+Example (tags + natural language):
+```
+masterpiece, best quality, safe, 1girl, solo. A young adult woman with long silver hair and blue eyes stands on a rooftop at golden hour, wearing a navy sailor uniform with a red ribbon. Wind lifts her hair as she looks back over her shoulder, the city skyline blurred behind her.
+```
+"""
+
+Z_IMAGE_SPEC = """\
+# IMAGE PROMPT SPEC — Tongyi Z-Image turbo (8 steps, distilled, TE: Qwen3 4B)
+
+Z-Image turbo is a photorealism-first, CFG-distilled model. It wants **long,
+dense natural language**, never tag soup:
+
+1. **One detailed descriptive paragraph.** Density is rewarded; tag lists are
+   not. No weight syntax, no bullets, no markdown.
+2. **Never write a negative prompt** — the turbo checkpoint runs without
+   classifier-free guidance, so a negative has nothing to act on. Express
+   exclusions positively instead ("plain seamless background", "bare walls").
+3. **Ground the whole frame**: subject and wardrobe, materials and props,
+   lighting, time of day, mood, background, and the camera (shot scale, lens,
+   angle, depth of field).
+4. **Text rendering is a strength** — it renders English *and* Chinese
+   accurately. When the picture should contain words, quote the exact string and
+   say where it sits and in what lettering style.
+5. The model follows instructions and world knowledge, not just literal
+   descriptions, so a prompt may name real places, styles or references.
+6. Keep it under roughly 1000 words; beyond that the text encoder truncates.
+7. **Adults only**: every depicted person is an adult (early twenties or older)
+   with an unambiguously adult body and face; never wording that reads as a
+   minor. Explicit anatomy may be described plainly when the user asks for it.
+
+Example:
+```
+A candid photorealistic portrait of an adult Japanese woman in a small evening kitchen, leaning against the counter with a chipped ceramic mug in both hands. She wears an oversized cream knit sweater and dark jeans, her black hair loosely tied with a few strands falling across her face, and she looks slightly off-camera with a tired, warm half-smile. Warm tungsten light from a single pendant lamp above the counter, cool blue dusk through the window behind her, steam curling from the mug. Visible skin texture and fine knit fibres, worn wooden countertop, a few dishes drying on a rack. Shot on a 50mm lens at eye level, medium close-up, shallow depth of field, muted amber and teal palette.
+```
+"""
+
+QWEN_IMAGE_SPEC = """\
+# IMAGE PROMPT SPEC — Qwen-Image Edit 2511 (image **editing**, TE: Qwen2.5-VL 7B)
+
+This workflow does not generate a picture from nothing: it edits the picture the
+job passes in `source_image`. `image_prompt` is therefore an **edit
+instruction**, not a scene description. A full scene paragraph here makes the
+model rebuild the image and lose the original — do not write one.
+
+1. **One direct imperative instruction**, naming the task (replace / add /
+   remove / restyle), the target, its position and its attributes.
+2. **Say explicitly what must stay** — this is the officially modelled pattern:
+   "…keep her face, hairstyle, pose and the background unchanged."
+3. **Be concrete, never vague**: not "add an animal" but "add a light-grey cat
+   sitting in the bottom-right corner, facing the camera".
+4. **Replacements**: "Replace Y with X", plus two or three visual features of X.
+5. **Text edits**: put the literal text in double quotes and keep the original
+   language and capitalisation — `Replace the sign text with "OPEN"`, adding
+   that font, size, colour and perspective stay as they are.
+6. **People**: require preservation of ethnicity, gender, age, hairstyle,
+   expression and outfit unless the user asked to change exactly that; describe
+   expression / makeup changes as natural and subtle.
+7. **Style transfer**: name the style with three to five concrete visual
+   features and put that clause last when other edits are requested too.
+8. **Never contradict yourself** ("remove all trees but keep the trees") and
+   keep the instruction under ~200 words.
+9. The output size follows the input picture, so never describe a framing or an
+   aspect ratio the source does not have.
+10. **Adults only**: never an instruction that would make a depicted person read
+    as a minor (de-aging, "make her look like a schoolgirl", …).
+
+Example (attribute edit):
+```
+Replace the woman's black coat with a cream oversized knit sweater, keeping her face, hairstyle, expression, pose and the street background exactly unchanged.
+```
+
+Example (text edit):
+```
+Replace the text on the shop sign with "MORNING LIGHT COFFEE", keeping the original font, size, colour and perspective unchanged, and leave the rest of the photo untouched.
+```
+"""
+
+#: family -> the prompt spec section to embed for it
+IMAGE_SPECS: dict[str, str] = {
+    "krea2": IMAGE_SPEC,
+    "anima": ANIMA_SPEC,
+    "z-image": Z_IMAGE_SPEC,
+    "qwen-image": QWEN_IMAGE_SPEC,
+}
+
+#: family -> the one-line reminder that goes into the IMAGE WORKFLOWS catalog
+IMAGE_PROMPT_HINTS: dict[str, str] = {
+    "krea2": (
+        "One long natural-language paragraph: medium/style, subject and pose,"
+        " expression, lighting and texture, camera and quality words."
+    ),
+    "anima": (
+        "Anime model: lead with `masterpiece, best quality, score_7, <safety>`,"
+        " then Danbooru-style lowercase tags (artist tags need a leading `@`);"
+        " natural-language sentences may be mixed in."
+    ),
+    "z-image": (
+        "One long, dense natural-language paragraph (photoreal, bilingual text"
+        " rendering). No tags, no negative prompt — this checkpoint runs"
+        " without CFG."
+    ),
+    "qwen-image": (
+        "An EDIT instruction for `source_image`, not a scene description:"
+        ' "change X to Y, keep everything else unchanged". Output size follows'
+        " the input picture."
+    ),
+}
+
+
+def image_spec_for(family: str) -> str:
+    """The IMAGE PROMPT SPEC section of one model family."""
+    return IMAGE_SPECS.get(family, IMAGE_SPEC)
+
+
+def image_prompt_guides_section() -> str:
+    """Every family's image prompt guide, for the agent system prompt.
+
+    Driven by :func:`app.workflows.image_families`, so adding a workflow folder
+    without a guide here is visible immediately (it falls back to the Krea 2
+    one rather than silently going missing).
+    """
+    header = (
+        "# IMAGE PROMPT GUIDES (one per model family — use the one that matches"
+        " the\n`image_workflow` of the job you are writing)"
+    )
+    return "\n\n".join(
+        [header, *(image_spec_for(family) for family in image_families())]
+    )
 
 # --------------------------------------------------------------------------
 # 3. video prompt spec
@@ -301,6 +494,82 @@ def workflow_catalog_section() -> str:
     return "\n".join(lines)
 
 
+def _image_catalog_entry_lines(entry: CatalogEntry) -> list[str]:
+    """One IMAGE WORKFLOWS bullet: what it is, what it needs, how to prompt it."""
+    default = " **（既定）**" if entry.id == DEFAULT_IMAGE_WORKFLOW else ""
+    family = FAMILY_LABELS.get(entry.family, entry.family)
+    lines = [
+        f"- `{entry.id}` — {entry.label}{default}",
+        f"  - モデルファミリー: `{entry.family}`（{family}）",
+        f"  - 用途: {entry.description}",
+        "  - 必要入力: "
+        + _inputs_text(entry.required_inputs, "なし（image_prompt だけで生成できる）"),
+    ]
+    hint = IMAGE_PROMPT_HINTS.get(entry.family)
+    if hint:
+        lines.append(f"  - Writing `image_prompt`: {hint}")
+    if entry.notes:
+        lines.append(f"  - Notes: {entry.notes}")
+    return lines
+
+
+def image_workflow_catalog_section() -> str:
+    """The `image_workflow` catalog embedded in the agent system prompt."""
+    lines = [
+        "# IMAGE WORKFLOWS (the `image_workflow` field of a job)",
+        "",
+        "Every job that runs an image stage (`mode` `full` or `image_only`) uses"
+        " one of",
+        "these ComfyUI graphs. They are **different models and want different"
+        " prompts** —",
+        "once you pick one, write `image_prompt` in that family's style"
+        " (the IMAGE PROMPT",
+        "GUIDES section right below has the full rules per family).",
+        "",
+    ]
+    for entry in image_catalog():
+        lines += _image_catalog_entry_lines(entry)
+    lines += [
+        "",
+        f"Omitting `image_workflow` selects `{DEFAULT_IMAGE_WORKFLOW}`."
+        ' `mode: "i2v"` runs no image',
+        "stage, so `image_workflow`, `image_prompt` and `loras` are ignored"
+        " there.",
+        "",
+        "画像用 LoRA は**モデルファミリー単位**で登録されています。選んだ"
+        " `image_workflow` と同じ",
+        "ファミリーの LoRA しか `loras` に入れられません（不一致のジョブは"
+        "拒否されます）。",
+    ]
+    return "\n".join(lines)
+
+
+def _image_workflow_context_lines(workflow_id: str) -> list[str]:
+    """The selected image workflow, for the chat CONTEXT section (SPEC §4.3)."""
+    try:
+        spec = get_image_spec(workflow_id)
+    except WorkflowSpecError:
+        return []
+    entry = catalog_entry(spec)
+    lines = [
+        "",
+        f"Selected image workflow: **`{entry.id}`**（{entry.label}）"
+        f" — model family `{entry.family}`",
+        f"- 用途: {entry.description}",
+    ]
+    if entry.required_inputs:
+        lines.append(f"- 必要入力: {_inputs_text(entry.required_inputs)}")
+    hint = IMAGE_PROMPT_HINTS.get(entry.family)
+    if hint:
+        lines += [
+            f"- How to write `image_prompt` for it: {hint}",
+            "  The IMAGE PROMPT SPEC above is the one for this model — follow"
+            " it, and",
+            "  interview the user accordingly.",
+        ]
+    return lines
+
+
 def _workflow_context_lines(workflow_id: str) -> list[str]:
     """The selected video workflow, for the chat CONTEXT section (SPEC §4.3)."""
     try:
@@ -326,11 +595,216 @@ def _workflow_context_lines(workflow_id: str) -> list[str]:
 
 
 # --------------------------------------------------------------------------
+# 3.7 audio prompt guides (agent mode only — the chat never writes audio jobs)
+# --------------------------------------------------------------------------
+# Summarized from each model's primary sources:
+#
+# * ACE-Step 1.5 — https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/Tutorial.md
+#   (caption dimensions, lyric structure tags, syllable / dynamics rules),
+#   https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/GRADIO_GUIDE.md
+#   (instrumental switch, auto language) and the README's "10 seconds to 10
+#   minutes (600s)" length spec.  The COMBO value sets (keyscale, language,
+#   timesignature) and the numeric bounds come from ComfyUI's own
+#   comfy_extras/nodes_ace.py, mirrored in app.workflows.
+#   NB: the node's `tags` input is inserted into the LLM prompt's `# Caption`
+#   section verbatim (comfy/text_encoders/ace15.py), so it is a *caption*, not
+#   a tag list — the official tutorial says either style works.
+# * Stable Audio 3 —
+#   https://github.com/Stability-AI/stable-audio-3/blob/main/docs/guides/prompting.md
+#   (Music = genre / instruments / mood / BPM; SFX = source / action /
+#   production; medium tops out at 6m20s = 380s) plus the per-category prompt
+#   templates embedded in ComfyUI's own stable_audio_3_medium template
+#   (docs.comfy.org/tutorials/audio/stable-audio/stable-audio-3), which is the
+#   very text this workflow's Enable_Reprompt branch feeds to its local LLM.
+#   Stability's guides document no negative prompt, and this template exposes
+#   none, so never write one.
+
+ACE_STEP_AUDIO_SPEC = """\
+# AUDIO PROMPT SPEC — ACE-Step 1.5 XL (`ace_step1_5_xl_sft`)
+
+This model writes **songs**: a full arrangement, with a singer when `lyrics`
+are given and an instrumental when they are not.
+
+`audio_prompt` is the track's **caption**. Comma-separated keywords and plain
+prose both work (the model is explicitly agnostic there) — what matters is that
+it is specific and that it agrees with the lyrics. Cover, roughly in this
+order: style / genre, mood and atmosphere, the instruments and how each one
+sounds, timbre and production style, tempo feel, and — when someone sings — the
+voice (gender, register, delivery).
+
+`lyrics` carries the words, with **capitalized structure tags** on their own
+lines: `[Intro]` `[Verse]` / `[Verse 1]` `[Pre-Chorus]` `[Chorus]` `[Bridge]`
+`[Outro]`, dynamics `[Build]` `[Drop]` `[Breakdown]`, instrumental sections
+`[Instrumental]` `[Guitar Solo]` `[Piano Interlude]`, and `[Fade Out]`.
+- One modifier per tag at most, joined with a single hyphen: `[Chorus - anthemic]`.
+- 6-10 syllables per line, kept even inside a section; blank line between sections.
+- CAPITALS raise the vocal intensity; backing vocals go in parentheses:
+  `We rise together (together)`.
+- **Instrumental**: leave the words out and write structure tags only, e.g.
+  `[Instrumental]` / `[Main Theme - piano]` / `[Outro - fade out]`, and set
+  `language` to `unknown`.
+
+Other fields: `bpm` ({bpm_min}-{bpm_max}), `keyscale` as `"<root> <major|minor>"`
+(`"C major"`, `"F# minor"` — never `"Am"`), `language` as an ISO code
+(`en`, `ja`, `zh`, …) or `unknown`. `duration` is the track length in seconds;
+the model is specified for 10-600s and is most reliable at 30-60s or 2-4min.
+
+Example:
+```
+"audio_prompt": "dreamy city-pop ballad, female vocal with a breathy low register, warm Rhodes electric piano, fretless bass, brushed drums with a laid-back pocket, analog tape saturation, nostalgic and bittersweet, slow build into a wide chorus"
+"lyrics": "[Verse 1]\\nThe last train hums below the rain\\nYour name still lights the window pane\\n\\n[Chorus - soaring]\\nWE BURN LIKE NEON IN THE DARK\\nStill holding on (holding on)"
+```
+"""
+
+STABLE_AUDIO_SPEC = """\
+# AUDIO PROMPT SPEC — Stable Audio 3 Medium (`stable_audio_3_medium_base`)
+
+General-purpose audio: sound effects, one-shots, single-instrument stems and
+**instrumental** music. It does not sing — a song with words needs ACE-Step.
+
+`audio_prompt` is one dense natural-language description of the sound, and
+`audio_category` picks which of the graph's built-in templates shapes it
+({categories}). Write it the way that category wants:
+
+- **Music** — `<genre/style> with <lead instruments>, <supporting layers>, and
+  <rhythm/percussion> creating <mood/energy>. BPM: X. Length: Y seconds` — one
+  flowing sentence, no semicolons, BPM and length spelled out at the end.
+- **Instrument** — the instrument, the playing technique, its timbre and
+  texture, the musical style, the room / production, then `BPM: X. Length: Y
+  seconds`. Loops 6-20s, stems 20-180s.
+- **SFX** — the sound source, its physical character (material: metal, wood,
+  glass, concrete), the space (indoor / outdoor, dry / reverberant, close /
+  distant), how it evolves over time and any movement, then
+  `Length: Y seconds`. Impacts 1-3s, mechanical actions 3-6s, ambiences 6-15s.
+- **One-shot** — the source, the kind of hit (pluck, slam, tap, stab), the
+  material and timbre, the production (dry / wet, close-mic'd), then
+  `Length: Y seconds` — 1-11s.
+
+Always keep `duration` and the `Length:` you wrote in the text the same number,
+and set it to what the sound actually needs — a 3-second door slam stretched to
+60 seconds comes back padded with silence or noise. The medium checkpoint
+supports up to 380 seconds.
+
+`reprompt: true` hands your description to the graph's own local LLM, which
+expands it with the official per-category template before it is encoded. Leave
+it **false** when you already wrote the full structured prompt yourself (the
+normal case here); set it true only for a deliberately terse one-liner.
+There is no negative prompt in this workflow — never write one.
+
+Examples:
+```
+"audio_category": "SFX", "audio_prompt": "Heavy rain hitting a corrugated metal roof during a thunderstorm, distant thunder rumbles, wide stereo field, realistic close ambience. Length: 45 seconds", "duration": 45
+"audio_category": "Music", "audio_prompt": "Jazz ballad with smooth saxophone lead, warm piano chords, upright bass, brushed drums, and soft strings that swing gently for a cozy late-evening mood. BPM: 85. Length: 120 seconds", "duration": 120
+```
+"""
+
+#: audio workflow id -> the AUDIO PROMPT SPEC section to embed for it
+AUDIO_SPECS: dict[str, str] = {
+    "ace_step1_5_xl_sft": ACE_STEP_AUDIO_SPEC,
+    "stable_audio_3_medium_base": STABLE_AUDIO_SPEC,
+}
+
+#: audio workflow id -> the one-line reminder in the AUDIO WORKFLOWS catalog
+AUDIO_PROMPT_HINTS: dict[str, str] = {
+    "ace_step1_5_xl_sft": (
+        "A caption of the track (style, mood, instruments, production, voice);"
+        " the words to sing go in `lyrics` with [Verse] / [Chorus] structure"
+        " tags. No lyrics == instrumental."
+    ),
+    "stable_audio_3_medium_base": (
+        "One dense sentence describing the sound itself, shaped by"
+        " `audio_category`, ending in `BPM: X. Length: Y seconds` (music) or"
+        " `Length: Y seconds` (SFX / one-shot). Never lyrics."
+    ),
+}
+
+
+def audio_spec_for(workflow_id: str) -> str:
+    """The AUDIO PROMPT SPEC section of one audio workflow (formatted)."""
+    template = AUDIO_SPECS.get(workflow_id, ACE_STEP_AUDIO_SPEC)
+    return (
+        template.replace("{bpm_min}", str(BPM_RANGE[0]))
+        .replace("{bpm_max}", str(BPM_RANGE[1]))
+        .replace("{categories}", " / ".join(AUDIO_CATEGORIES))
+    )
+
+
+def audio_prompt_guides_section() -> str:
+    """Every audio workflow's prompt guide, for the agent system prompt.
+
+    Driven by :func:`app.workflows.audio_catalog`, so a workflow added to
+    ``workflow/audio/`` without a guide here falls back to the ACE-Step one
+    rather than silently going missing.
+    """
+    header = (
+        "# AUDIO PROMPT GUIDES (one per audio model — use the one that matches"
+        " the\n`audio_workflow` of the job you are writing)"
+    )
+    return "\n\n".join(
+        [header, *(audio_spec_for(entry.id) for entry in audio_catalog())]
+    )
+
+
+def _audio_catalog_entry_lines(entry: CatalogEntry) -> list[str]:
+    """One AUDIO WORKFLOWS bullet: what it is, what it takes, how to prompt it."""
+    default = " **（既定）**" if entry.id == DEFAULT_AUDIO_WORKFLOW else ""
+    extra = [
+        name
+        for name in ("lyrics", "bpm", "keyscale", "language", "audio_category",
+                     "reprompt")
+        if name in entry.supports
+    ]
+    lines = [
+        f"- `{entry.id}` — {entry.label}{default}",
+        f"  - 用途: {entry.description}",
+        f"  - 必須フィールド: `mode: \"audio\"`, `audio_prompt`",
+        "  - 追加フィールド: "
+        + (", ".join(f"`{name}`" for name in extra) if extra else "なし"),
+        f"  - `duration`: {entry.min_duration:g}〜{entry.max_duration:g} 秒"
+        f"（省略時 {entry.default_duration:g} 秒。範囲外のジョブは拒否されます）",
+    ]
+    hint = AUDIO_PROMPT_HINTS.get(entry.id)
+    if hint:
+        lines.append(f"  - Writing `audio_prompt`: {hint}")
+    if entry.notes:
+        lines.append(f"  - Notes: {entry.notes}")
+    return lines
+
+
+def audio_workflow_catalog_section() -> str:
+    """The `audio_workflow` catalog embedded in the agent system prompt."""
+    lines = [
+        "# AUDIO WORKFLOWS (the `audio_workflow` field of a `mode: \"audio\"` job)",
+        "",
+        "音声は**独立したジョブ**です。`mode: \"audio\"` は音声ワークフローを 1 本",
+        "だけ走らせ、画像・動画のステージとは一切連結しません（`mode: \"full\"` の",
+        "音声トラックを差し替えることもできません）。動画と音声の両方が要るときは、",
+        "音声ジョブと動画ジョブを別のタスクとして並べてください。",
+        "",
+        "音声ジョブが読むのは `mode` / `audio_workflow` / `audio_prompt` /"
+        " `duration` /",
+        "`seed` と下の追加フィールドだけです。`image_prompt`・`video_prompt`・",
+        "`source_image`・`loras`・`video_loras` などを入れたジョブは拒否されます。",
+        "音声ワークフローに LoRA はありません。",
+        "",
+    ]
+    for entry in audio_catalog():
+        lines += _audio_catalog_entry_lines(entry)
+    lines += [
+        "",
+        f"`audio_workflow` を省略すると `{DEFAULT_AUDIO_WORKFLOW}` になります。",
+        "歌詞のある曲は ACE-Step、効果音・環境音・単発の楽器音・インストの短尺は",
+        "Stable Audio 3 が向いています。書き方は AUDIO PROMPT GUIDES を見ること。",
+    ]
+    return "\n".join(lines)
+
+
+# --------------------------------------------------------------------------
 # 4. few-shot examples (docs/prompt-samples.md)
 # --------------------------------------------------------------------------
 
-FEW_SHOT = """\
-# FEW-SHOT EXAMPLES (real prompts from the model authors' own galleries)
+FEW_SHOT_VIDEO = """\
+# FEW-SHOT EXAMPLES — video (real prompts from the model authors' own posts)
 
 ## Video prompts — LTX 2.3 (model authors' own posts)
 
@@ -356,7 +830,12 @@ closing sound sentence):
 adult Japanese woman in sex on a rumpled hotel bed. Starting from the given first frame, the thrusting becomes rapid and intense, short hard strokes in quick succession. Her whole body shakes with the pace, legs tremble, fingers dig into the sheets, and her back arches off the mattress. Her brows lock tight, watery eyes roll upward, mouth open wide as shaky high moans break between gasps. Heavy sweat on her flushed skin, messy dark hair stuck to her face and pillow. Static camera with stronger handheld tremble, tight focus on her climaxing face and torso under harsh practical lighting. Fast bed creaks, sharp body sounds, gasping breaths, and urgent moans continue through the continuous shot.
 ```
 
-## Image prompts — Krea 2
+"""
+
+# Krea 2 only: the other image families carry their own examples inside their
+# own IMAGE PROMPT SPEC section (their prompt styles are incompatible).
+FEW_SHOT_IMAGE_KREA2 = """\
+# FEW-SHOT EXAMPLES — image (Krea 2)
 
 Example I1 (this app's own reference prompt; note how the character's trigger
 word "kaori" opens the paragraph as the subject's name — write it exactly like
@@ -377,6 +856,174 @@ Example I3 (Krea 2 official sample, compact one-paragraph form):
 high-fashion editorial portrait of a young East Asian woman, short choppy platinum blonde bob with heavy bangs, looking over her bare shoulder to the right, lips playfully pursed, wearing a structured black top with an architectural protruding bust detail and thin straps, delicate gold hoop earrings, arm bent with hand resting on hip, warm skin tones, solid striking crimson red background, soft directional studio lighting, cinematic color palette, medium close-up shot
 ```
 """
+
+# --------------------------------------------------------------------------
+# 5.5 audio chat (mode 'audio' のプロンプトジェネレータ)
+# --------------------------------------------------------------------------
+
+AUDIO_ROLE = """\
+# ROLE
+
+You are the audio prompt engineer *and* interviewer of "Karakuri Media Studio",
+a local, single-user ComfyUI front-end. This session writes the prompt of ONE
+stand-alone audio job — a music track, a song, a sound effect or an ambience.
+Nothing here is chained with the image / video generators.
+
+You have two jobs, in this order:
+
+1. **Interview.** The user typically starts with a one-liner such as
+   「夜の街を歩くときのlo-fiな曲」. Do not guess the whole track from that. Ask
+   about the missing pieces in ONE short message with a few bullet points
+   (never a long interrogation), picking only the ones that matter for the
+   selected model (see CONTEXT):
+   - genre / style and the reference artists or era
+   - mood, energy and how it should develop over the length
+   - instrumentation and the production feel (analog / clean / lo-fi …)
+   - vocals: is there singing at all? language, gender, register, delivery
+   - what the song is about, and any words the user wants sung
+   - tempo (BPM) and key, if the user has a preference
+   For a sound effect ask instead about the source, the material, the space
+   (indoor / outdoor, close / distant) and how the sound evolves.
+   **Ask in Japanese**, concisely, and offer plausible default options so the
+   user can just pick one.
+2. **Write the prompt.** As soon as you have enough, output the final JSON
+   (see OUTPUT RULES).
+
+Rules of engagement:
+
+- If the user says 「おまかせ」 / "you decide", stop asking and fill in every
+  remaining detail yourself with concrete, tasteful choices.
+- If the first message is already detailed enough, skip the questions.
+- After a JSON proposal the conversation may continue (e.g. 「もっと静かに」).
+  Apply the change and output a **complete** updated JSON again — never a diff.
+- All conversational text is Japanese. `audio_prompt` is **English**.
+  `lyrics` are written in the language the song is sung in (the `language`
+  field), so Japanese lyrics stay Japanese.
+"""
+
+AUDIO_OUTPUT_RULES = """\
+# OUTPUT RULES
+
+- While you are still interviewing, reply with **plain Japanese text only** and
+  absolutely **no JSON and no code fences** — a fence is the app's signal that
+  the prompt is final.
+- When the prompt is ready, your whole reply is ONE ```json fenced block and
+  nothing else (no preamble, no trailing commentary):
+
+```json
+{
+  "audio_prompt": "...",
+  "lyrics": "...",
+  "bpm": 92,
+  "keyscale": "F# minor",
+  "language": "ja",
+  "notes": "..."
+}
+```
+
+- `audio_prompt` is the only required field. Use JSON `null` for anything the
+  selected workflow does not have (CONTEXT lists exactly which fields it reads)
+  — sending a field it ignores is harmless but pointless.
+- `lyrics` keeps its newlines and structure tags; every other string is one
+  single line. For an instrumental, either omit the words entirely or send only
+  structure tags such as `[Instrumental]`.
+- `bpm` is a plain number (no quotes, no "BPM:" prefix), `keyscale` is
+  `"<root> major"` / `"<root> minor"`, `language` an ISO code or `unknown`.
+- `notes` is a short Japanese note for the user (what you assumed, what could
+  be tweaked). It is never used as a model prompt.
+- Hard limits: no lyrics about real, identifiable people in sexual contexts, no
+  minors in sexual contexts, and no reproduction of copyrighted lyrics —
+  write original words.
+"""
+
+
+def _audio_context_section(ctx: ChatSessionCreate) -> str:
+    """CONTEXT of an audio session: the selected model and what it reads."""
+    try:
+        spec = get_audio_spec(ctx.audio_workflow)
+    except WorkflowSpecError:
+        spec = get_audio_spec(None)
+    entry = catalog_entry(spec)
+
+    knobs = {
+        "lyrics": "`lyrics`（歌詞。構造タグ付き）",
+        "bpm": f"`bpm`（{BPM_RANGE[0]}-{BPM_RANGE[1]}）",
+        "keyscale": "`keyscale`（例 `C major` / `F# minor`）",
+        "language": "`language`（ISO コード、または `unknown`）",
+        "audio_category": (
+            "`audio_category`（" + " / ".join(AUDIO_CATEGORIES) + "。"
+            "これはフォーム側で選ぶので JSON には入れない）"
+        ),
+    }
+    reads = [text for name, text in knobs.items() if entry.supports and name in entry.supports]
+
+    lines = [
+        "# CONTEXT (current state of the generation form)",
+        "",
+        "Mode: **audio** — one stand-alone audio job. No image and no video is",
+        "generated in this run, so never write an image or a video prompt.",
+        "",
+        f"Selected audio workflow: **`{entry.id}`**（{entry.label}）",
+        f"- 用途: {entry.description}",
+        f"- この JSON で埋められるのは: `audio_prompt`"
+        + ("、" + "、".join(reads) if reads else "")
+        + " です。",
+        f"- 長さ: **{ctx.duration:g} 秒**"
+        f"（このモデルの対応範囲は {entry.min_duration:g}〜{entry.max_duration:g} 秒）。"
+        "その尺に収まる構成で書くこと。",
+    ]
+    if entry.prompt_hint:
+        lines += [
+            f"- How to write `audio_prompt` for it: {entry.prompt_hint}",
+            "  The AUDIO PROMPT SPEC above is the one for this model — follow"
+            " it, and",
+            "  interview the user accordingly (do not ask about things this"
+            " model does not take).",
+        ]
+    if not spec.supports("lyrics"):
+        lines.append(
+            "- このモデルは歌いません。`lyrics` は `null` にし、歌詞の相談もしない"
+            "こと（歌モノが欲しいと言われたら、音声ワークフローを ACE-Step に"
+            "変えるようフォームで案内する）。"
+        )
+    if ctx.audio_prompt_draft.strip():
+        lines += [
+            "",
+            "Existing audio prompt draft (polish, do not discard):",
+            "```",
+            ctx.audio_prompt_draft.strip(),
+            "```",
+        ]
+    if ctx.lyrics_draft.strip() and spec.supports("lyrics"):
+        lines += [
+            "",
+            "Existing lyrics draft (polish, do not discard):",
+            "```",
+            ctx.lyrics_draft.strip(),
+            "```",
+        ]
+    return "\n".join(lines) + "\n"
+
+
+def build_audio_system_prompt(ctx: ChatSessionCreate) -> str:
+    """System prompt of a `mode: "audio"` chat session.
+
+    Only the *selected* workflow's guide is embedded: ACE-Step wants a track
+    caption plus structured lyrics and Stable Audio a single dense sentence, so
+    shipping both would just invite the model to mix them.
+    """
+    try:
+        workflow_id = get_audio_spec(ctx.audio_workflow).id
+    except WorkflowSpecError:
+        workflow_id = DEFAULT_AUDIO_WORKFLOW
+    parts = [
+        AUDIO_ROLE,
+        audio_spec_for(workflow_id),
+        _audio_context_section(ctx),
+        AUDIO_OUTPUT_RULES,
+    ]
+    return "\n\n".join(part.strip() for part in parts) + "\n"
+
 
 # --------------------------------------------------------------------------
 # 6. output rules
@@ -532,6 +1179,8 @@ def _context_section(
         lines += _video_trigger_lines(ctx)
         lines.append("")
     if ctx.mode != "i2v":
+        lines += _image_workflow_context_lines(ctx.image_workflow)
+        lines.append("")
         lines += _trigger_lines(ctx)
 
     if ctx.mode == "i2v" and start_image_filename:
@@ -565,10 +1214,23 @@ def _context_section(
 def build_system_prompt(
     ctx: ChatSessionCreate, start_image_filename: str | None = None
 ) -> str:
-    """Full system prompt for one chat session (SPEC §4.2 / §4.3)."""
+    """Full system prompt for one chat session (SPEC §4.2 / §4.3).
+
+    Only the *selected* image workflow's family guide is embedded — the models
+    want incompatible prompt styles, so shipping all four would be worse than
+    useless.  ``mode: "audio"`` is a different conversation altogether (no
+    scene, no camera, no LoRA) and gets its own prompt.
+    """
+    if ctx.mode == "audio":
+        return build_audio_system_prompt(ctx)
     parts = [ROLE]
+    family = ""
     if ctx.mode != "i2v":
-        parts.append(IMAGE_SPEC)
+        try:
+            family = get_image_spec(ctx.image_workflow).family
+        except WorkflowSpecError:
+            family = DEFAULT_FAMILY
+        parts.append(image_spec_for(family))
     if ctx.mode != "image_only":
         parts.append(
             VIDEO_SPEC.replace("DURATION_SECONDS", f"{ctx.duration:g}")
@@ -576,7 +1238,11 @@ def build_system_prompt(
         parts.append(
             TEMPLATE_TAGGED if ctx.prompt_template == "tagged" else TEMPLATE_NATURAL
         )
-    parts.append(FEW_SHOT)
+        parts.append(FEW_SHOT_VIDEO)
+    # The image examples are Krea 2 prose; the other families demand a different
+    # style and carry their own examples in their spec section.
+    if family == DEFAULT_FAMILY:
+        parts.append(FEW_SHOT_IMAGE_KREA2)
     parts.append(_context_section(ctx, start_image_filename))
     parts.append(OUTPUT_RULES)
     return "\n\n".join(part.strip() for part in parts) + "\n"
@@ -587,8 +1253,10 @@ _ROLE_LABEL = {"system": "SYSTEM", "user": "USER", "assistant": "ASSISTANT"}
 RETRY_SUFFIX = """\
 
 IMPORTANT: your previous answer could not be parsed. Re-send the final proposal
-as exactly one ```json fenced block containing only the object
-{"image_prompt": ..., "video_prompt": ..., "notes": ...} — no other text.
+as exactly one ```json fenced block containing only the object described in
+OUTPUT RULES — no other text. (Image / video sessions: {"image_prompt": ...,
+"video_prompt": ..., "notes": ...}; audio sessions: {"audio_prompt": ...,
+"lyrics": ..., "notes": ...}.)
 """
 
 
@@ -657,6 +1325,7 @@ Your reply is either plain Japanese text, or plain Japanese text followed by
       "label": "① 明るいスタジオ",
       "job": {
         "mode": "full",
+        "image_workflow": "krea2_turbo",
         "video_workflow": "ltx2_3_id_lora",
         "image_prompt": "...", "video_prompt": "...",
         "negative_prompt": "...",
@@ -671,6 +1340,16 @@ Your reply is either plain Japanese text, or plain Japanese text followed by
         "audio_path": "/assets/audio/reference.mp3",
         "source_image": null, "end_image": null, "reference_video": null,
         "seed": null
+      }
+    },
+    {
+      "label": "② 主題歌デモ（音声のみ）",
+      "job": {
+        "mode": "audio",
+        "audio_workflow": "ace_step1_5_xl_sft",
+        "audio_prompt": "...", "lyrics": "[Verse 1]\\n...",
+        "bpm": 92, "keyscale": "F# minor", "language": "ja",
+        "duration": 120, "seed": null
       }
     }
   ]
@@ -695,11 +1374,31 @@ Rules:
 
 - `job` uses the app's own job schema, exactly the fields shown above and
   nothing else. `mode` picks the stages (`full` = image then video, `i2v` =
-  video only from assets you supply, `image_only` = a still and nothing else)
-  and `video_workflow` picks the video graph. **Which fields are required
-  follows from those two** — the VIDEO WORKFLOWS section lists the exact set per
-  workflow and per mode, so read it before you write a plan. Omit the inputs a
+  video only from assets you supply, `image_only` = a still and nothing else,
+  `audio` = one audio track and nothing else), `image_workflow` picks the image
+  graph, `video_workflow` the video one and `audio_workflow` the audio one.
+  **Which fields are required follows from those** — the IMAGE WORKFLOWS,
+  VIDEO WORKFLOWS and AUDIO WORKFLOWS sections list the exact set per workflow
+  and per mode, so read them before you write a plan. Omit the inputs a
   workflow does not use.
+- `mode: "audio"` is a **stand-alone** job — a separate task, never a stage of
+  a `full` one, and it cannot supply or replace a video's soundtrack (LTX
+  generates its own, and `audio_path` takes a *file* you already have). Such a
+  job carries only `mode`, `audio_workflow`, `audio_prompt`, `duration`, `seed`
+  and its workflow's own extra fields (`lyrics`, `bpm`, `keyscale`,
+  `language`, `audio_category`, `reprompt`); adding `image_prompt`,
+  `video_prompt`, `source_image`, `loras` or `video_loras` to it is rejected.
+  There are no audio LoRAs.
+- `image_workflow` matters in `mode` `full` and `image_only` (it is ignored in
+  `i2v`). The image models are **not interchangeable**: each family wants its own
+  prompt style, so write `image_prompt` in the style of the workflow you picked
+  (see IMAGE PROMPT GUIDES). Two consequences to watch:
+  - `qwen_image_edit_2511` *edits* a picture, so `source_image` is REQUIRED —
+    including in `mode: "full"`, where it is the image stage's input and the
+    edited still then becomes the video's start frame — and `aspect_ratio` /
+    `megapixels` do nothing (the size follows the input picture).
+  - a `loras` entry must belong to the same model family as `image_workflow`;
+    CHOICES lists each image LoRA's family.
 - `continue` may switch `video_workflow` too, but only to a workflow that can
   take a start frame (the ones marked `mode: "full"` -> …); anything else falls
   back to the default. Supply the extra inputs that workflow needs (e.g.
@@ -771,8 +1470,12 @@ def _agent_guardrails(ctx: AgentSessionCreate, max_tasks: int) -> str:
         "# GUARDRAILS",
         "",
         f"- Check-in mode: **{ctx.checkin_mode}** — {modes[ctx.checkin_mode]}.",
-        f"- Hard limit: at most **{ctx.auto_limit}** generated jobs in this"
-        " session; the app stops the loop when the limit is reached.",
+        f"- Generation budget: **{ctx.auto_limit}** generated jobs per stretch."
+        " When the budget is used up the app itself asks the user whether to"
+        f" keep going; approval buys another {ctx.auto_limit} jobs and the"
+        " question comes back at the next milestone. Plan inside the budget"
+        " and never try to work around it — you cannot approve the extension"
+        " yourself.",
     ]
     # 1 プラン提案あたりの新規ジョブ数の上限は自走モードだけ。他のモードは
     # プラン承認とチェックインで必ず人間が挟まるので、プランの長さは自由。
@@ -811,12 +1514,16 @@ def _agent_choices(
     image_loras = [lora for lora in options.loras if lora.target != "video"]
     video_loras = [lora for lora in options.loras if lora.target == "video"]
 
-    def lora_lines(loras: list) -> None:
+    def lora_lines(loras: list, *, with_family: bool = False) -> None:
         for lora in loras:
             label = f"「{lora.display_name}」" if lora.display_name else ""
+            family = (
+                f", family `{lora.family}`" if with_family and lora.family else ""
+            )
             lines.append(
                 f"- `{lora.lora_name}` -> trigger `{lora.trigger_word}`"
                 f" {label} (default strength {lora.default_strength:g}"
+                + family
                 + (f", audio {lora.default_audio}" if lora.default_audio else "")
                 + ")"
             )
@@ -829,11 +1536,16 @@ def _agent_choices(
                 "画像用 LoRA — the `loras` field of a job"
                 " (lora_name -> trigger word):"
             )
-            lora_lines(image_loras)
+            lora_lines(image_loras, with_family=True)
             lines.append(
                 "Put the trigger words of the LoRAs you use into `trigger_text`"
                 " and use the trigger word as the subject's name inside"
                 " `image_prompt`."
+            )
+            lines.append(
+                "**`family` は必ず `image_workflow` のファミリーと一致させること**"
+                " — 別ファミリーの LoRA を入れたジョブは拒否されます"
+                "（IMAGE WORKFLOWS に各ワークフローのファミリーがあります）。"
             )
             lines.append("")
         else:
@@ -923,8 +1635,11 @@ def build_agent_system_prompt(
     video_spec = VIDEO_SPEC.replace(
         "DURATION_SECONDS seconds", "as many seconds as the job's `duration` field says"
     )
-    parts = [AGENT_ROLE, AGENT_PROTOCOL, workflow_catalog_section(), IMAGE_SPEC,
-             video_spec, TEMPLATE_NATURAL, FEW_SHOT,
+    parts = [AGENT_ROLE, AGENT_PROTOCOL,
+             image_workflow_catalog_section(), image_prompt_guides_section(),
+             workflow_catalog_section(),
+             audio_workflow_catalog_section(), audio_prompt_guides_section(),
+             video_spec, TEMPLATE_NATURAL, FEW_SHOT_VIDEO, FEW_SHOT_IMAGE_KREA2,
              _agent_choices(options, lora_samples),
              _agent_guardrails(ctx, max_tasks), AGENT_OUTPUT_RULES]
     if tools_enabled:
@@ -935,6 +1650,14 @@ def build_agent_system_prompt(
             f"Your working directory is `{workdir}`. Memos, research notes and"
             " the inspection frames the app extracts all live there."
         )
+    context += [
+        "",
+        "When the user attaches files, their message carries an"
+        " `[Attached files — …]` block listing workdir-relative paths under"
+        " `attachments/`. Open every listed file and read / look at it before"
+        " you answer — the attachment is part of the instruction, not"
+        " decoration.",
+    ]
     if ctx.goal.strip():
         context += ["", "User's goal for this session:", "```", ctx.goal.strip(), "```"]
     parts.insert(-1, "\n".join(context))

@@ -26,16 +26,22 @@ from app.workflow import (
     validate_workflow,
 )
 from app.workflows import (
+    ANIMA,
     DEFAULT_IMAGE_WORKFLOW,
     DEFAULT_VIDEO_WORKFLOW,
     GENERATED_AUDIO,
     INPUT_FIELDS,
+    QWEN_IMAGE_EDIT,
     SPECS,
     KREA2_TURBO,
     T,
     WorkflowSpecError,
+    Z_IMAGE_TURBO,
     catalog_entry,
     get_spec,
+    image_catalog,
+    image_families,
+    image_specs,
     load_template,
     validate_spec,
     validate_specs,
@@ -44,6 +50,7 @@ from app.workflows import (
 )
 
 VIDEO_IDS = [spec.id for spec in video_specs()]
+IMAGE_IDS = [spec.id for spec in image_specs()]
 
 
 def params(**overrides) -> GenerationParams:
@@ -234,6 +241,135 @@ def test_image_injection():
     assert value(wf, spec, "refine_enable") is False
     assert value(wf, spec, "save_prefix") == "images/01JOBID"
     validate_workflow(wf)
+
+
+# --------------------------------------------------------------------------
+# image stage: the other model families
+# --------------------------------------------------------------------------
+
+def test_every_image_manifest_validates():
+    for spec in image_specs():
+        assert validate_spec(spec) == [], spec.id
+
+
+def test_image_families_are_one_per_folder():
+    assert image_families() == ["krea2", "anima", "z-image", "qwen-image"]
+    assert [entry.family for entry in image_catalog()] == image_families()
+    # every image workflow documents itself for the Grok catalog
+    for entry in image_catalog():
+        assert entry.description.strip()
+
+
+def test_anima_injection():
+    wf = build_image_workflow(params(image_workflow="anima"), spec=ANIMA)
+    assert value(wf, ANIMA, "aspect_ratio") == "16:9 (Widescreen)"
+    assert value(wf, ANIMA, "megapixels") == 1.5
+    assert value(wf, ANIMA, "prompt") == "IMAGE PROMPT"
+    assert value(wf, ANIMA, "seed") == 1234
+    assert value(wf, ANIMA, "save_prefix") == "images/01JOBID"
+    # the negative prompt is left at the template default
+    assert wf["90:75"]["inputs"]["text"].startswith("worst quality")
+    validate_workflow(wf)
+
+
+def test_anima_lora_chain():
+    wf = build_image_workflow(
+        params(image_workflow="anima", loras=[LoraRef(lora_name="a.safetensors")]),
+        spec=ANIMA,
+    )
+    # the template placeholder is replaced by the dynamic chain
+    assert "90:83" not in wf
+    assert wf["app_lora_0"]["inputs"]["model"] == ["90:78", 0]
+    assert wf["90:76"]["inputs"]["model"] == ["app_lora_0", 0]
+
+    empty = build_image_workflow(
+        params(image_workflow="anima", loras=[]), spec=ANIMA
+    )
+    assert empty["90:76"]["inputs"]["model"] == ["90:78", 0]
+
+
+def test_z_image_computes_its_own_resolution():
+    """No ResolutionSelector in this graph: the app injects plain integers."""
+    wf = build_image_workflow(
+        params(image_workflow="z_image_turbo"), spec=Z_IMAGE_TURBO
+    )
+    width, height = resolution("16:9 (Widescreen)", 1.5)
+    assert value(wf, Z_IMAGE_TURBO, "width") == width
+    assert value(wf, Z_IMAGE_TURBO, "height") == height
+    assert value(wf, Z_IMAGE_TURBO, "prompt") == "IMAGE PROMPT"
+    assert value(wf, Z_IMAGE_TURBO, "seed") == 1234
+    assert value(wf, Z_IMAGE_TURBO, "save_prefix") == "images/01JOBID"
+    validate_workflow(wf)
+
+
+def test_z_image_lora_chain():
+    wf = build_image_workflow(
+        params(
+            image_workflow="z_image_turbo",
+            loras=[LoraRef(lora_name="a.safetensors")],
+        ),
+        spec=Z_IMAGE_TURBO,
+    )
+    assert "57:63" not in wf
+    assert wf["app_lora_0"]["inputs"]["model"] == ["57:28", 0]
+    assert wf["57:11"]["inputs"]["model"] == ["app_lora_0", 0]
+
+
+def test_qwen_edit_injection():
+    wf = build_image_workflow(
+        params(image_workflow="qwen_image_edit_2511"), spec=QWEN_IMAGE_EDIT
+    )
+    # the picture to edit comes from the uploaded source_image
+    assert value(wf, QWEN_IMAGE_EDIT, "image") == "start.png"
+    assert value(wf, QWEN_IMAGE_EDIT, "prompt") == "IMAGE PROMPT"
+    assert value(wf, QWEN_IMAGE_EDIT, "seed") == 1234
+    assert value(wf, QWEN_IMAGE_EDIT, "save_prefix") == "images/01JOBID"
+    # the size follows the input picture, so no aspect ratio is injected
+    assert not QWEN_IMAGE_EDIT.supports("aspect_ratio")
+    assert not QWEN_IMAGE_EDIT.supports("megapixels")
+    validate_workflow(wf)
+
+
+def test_qwen_edit_user_lora_applies_to_both_switch_branches():
+    """The 4-steps Lightning LoRA stays; the user chain goes in front of it."""
+    wf = build_image_workflow(
+        params(
+            image_workflow="qwen_image_edit_2511",
+            loras=[LoraRef(lora_name="a.safetensors", strength=0.6)],
+        ),
+        spec=QWEN_IMAGE_EDIT,
+    )
+    # the template's own Lightning loader is NOT a placeholder
+    assert wf["170:153"]["inputs"]["lora_name"].startswith("Qwen-Image-Edit-2511")
+    assert wf["app_lora_0"]["inputs"]["model"] == ["170:152", 0]
+    # both branches of the Switch (Model) read the user chain
+    assert wf["170:153"]["inputs"]["model"] == ["app_lora_0", 0]
+    assert wf["170:163"]["inputs"]["on_false"] == ["app_lora_0", 0]
+    assert wf["170:163"]["inputs"]["on_true"] == ["170:153", 0]
+    validate_workflow(wf)
+
+    empty = build_image_workflow(
+        params(image_workflow="qwen_image_edit_2511", loras=[]),
+        spec=QWEN_IMAGE_EDIT,
+    )
+    assert empty["170:153"]["inputs"]["model"] == ["170:152", 0]
+    assert empty["170:163"]["inputs"]["on_false"] == ["170:152", 0]
+
+
+def test_image_workflow_is_selected_by_id():
+    for workflow_id in IMAGE_IDS:
+        wf = build_image_workflow(params(image_workflow=workflow_id))
+        spec = get_spec(workflow_id, "image")
+        assert value(wf, spec, "prompt") == "IMAGE PROMPT"
+        validate_workflow(wf)
+
+
+def test_image_templates_are_not_mutated():
+    for workflow_id in IMAGE_IDS:
+        spec = get_spec(workflow_id)
+        snapshot = copy.deepcopy(load_template(spec))
+        build_image_workflow(params(image_workflow=workflow_id))
+        assert load_template(spec) == snapshot
 
 
 def test_explicit_filename_prefix_overrides():

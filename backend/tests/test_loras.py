@@ -63,11 +63,68 @@ async def test_an_existing_registry_is_migrated_to_image(tmp_path, monkeypatch):
         async with conn.execute("SELECT * FROM loras") as cur:
             rows = [dict(row) for row in await cur.fetchall()]
     assert [row["target"] for row in rows] == ["image"]
+    # 画像ワークフローが選択式になる前の行はすべて krea2 用だった
+    assert [row["family"] for row in rows] == ["krea2"]
     assert rows[0]["lora_name"] == "sakura.safetensors"
 
 
+async def test_a_registry_with_target_but_no_family_is_backfilled(tmp_path, monkeypatch):
+    """target 分割済み・family 追加前の DB も krea2 として引き継がれる。"""
+    import aiosqlite
+
+    path = tmp_path / "old.db"
+    monkeypatch.setattr(db, "DB_PATH", path)
+    async with aiosqlite.connect(path) as conn:
+        await conn.execute(
+            "CREATE TABLE loras (id INTEGER PRIMARY KEY, display_name TEXT NOT NULL,"
+            " lora_name TEXT NOT NULL, trigger_word TEXT NOT NULL,"
+            " default_strength REAL DEFAULT 1.0, default_audio TEXT,"
+            " sort_order INTEGER DEFAULT 0,"
+            " sample_images TEXT NOT NULL DEFAULT '[]',"
+            " target TEXT NOT NULL DEFAULT 'image')"
+        )
+        await conn.execute(
+            "INSERT INTO loras (display_name, lora_name, trigger_word, target)"
+            " VALUES ('サクラ', 'sakura.safetensors', 'sakura', 'image'),"
+            " ('スローモ', 'motion.safetensors', 'slowmo', 'video')"
+        )
+        await conn.commit()
+
+    await db.init_db()
+
+    async with db.get_db() as conn:
+        async with conn.execute("SELECT * FROM loras ORDER BY id") as cur:
+            rows = [dict(row) for row in await cur.fetchall()]
+    assert [row["family"] for row in rows] == ["krea2", "krea2"]
+    # …and the API reports the same
+    assert lora_samples.row_to_lora(rows[0]).family == "krea2"
+
+
 def test_a_lora_is_registered_for_the_image_stage_by_default(env):
-    assert create_lora(env)["target"] == "image"
+    created = create_lora(env)
+    assert created["target"] == "image"
+    assert created["family"] == "krea2"
+
+
+def test_a_lora_can_be_registered_for_another_image_family(env):
+    response = env.client.post(
+        "/api/loras",
+        json={**PAYLOAD, "display_name": "ハナ", "family": "anima"},
+    )
+    assert response.status_code == 201, response.text
+    lora = response.json()
+    assert lora["family"] == "anima"
+    assert env.client.get(f"/api/loras/{lora['id']}").json()["family"] == "anima"
+
+
+def test_the_family_can_be_changed(env):
+    lora = create_lora(env)
+    updated = env.client.put(f"/api/loras/{lora['id']}", json={"family": "z-image"})
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["family"] == "z-image"
+    # an update that does not mention the family keeps it
+    kept = env.client.put(f"/api/loras/{lora['id']}", json={"trigger_word": "x"})
+    assert kept.json()["family"] == "z-image"
 
 
 def test_a_video_lora_can_be_registered(env):

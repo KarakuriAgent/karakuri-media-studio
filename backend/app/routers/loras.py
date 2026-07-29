@@ -37,9 +37,9 @@ async def create_lora(payload: LoraCreate) -> Lora:
     async with get_db() as conn:
         cur = await conn.execute(
             "INSERT INTO loras (display_name, lora_name, trigger_word,"
-            " default_strength, default_audio, sort_order, target)"
+            " default_strength, default_audio, sort_order, target, family)"
             " VALUES (:display_name, :lora_name, :trigger_word,"
-            " :default_strength, :default_audio, :sort_order, :target)",
+            " :default_strength, :default_audio, :sort_order, :target, :family)",
             payload.model_dump(),
         )
         await conn.commit()

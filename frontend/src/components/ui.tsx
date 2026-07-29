@@ -38,6 +38,29 @@ export function Modal({
   )
 }
 
+/** 生成フォームの 1 ブロック（見出し + 任意の右肩ボタン）。 */
+export function Section({
+  title,
+  children,
+  right,
+}: {
+  title: string
+  children: ReactNode
+  right?: ReactNode
+}) {
+  return (
+    <section className="card p-3">
+      <div className="mb-2 flex items-center justify-between">
+        <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+          {title}
+        </h3>
+        {right}
+      </div>
+      {children}
+    </section>
+  )
+}
+
 export function Banner({
   tone = 'error',
   children,

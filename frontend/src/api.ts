@@ -7,6 +7,7 @@ import type {
   AgentSessionCreate,
   AgentSessionSummary,
   Asset,
+  AudioJobCreate,
   ChatReply,
   ChatSession,
   ChatSessionCreate,
@@ -57,6 +58,7 @@ export function formatDetail(detail: unknown): string {
 const FIELD_LABELS: Record<string, string> = {
   image_prompt: '画像プロンプト',
   video_prompt: '動画プロンプト',
+  audio_prompt: '音声プロンプト',
   audio_path: 'リファレンス音声',
   source_image: '開始フレーム',
   end_image: '最後のフレーム',
@@ -150,7 +152,8 @@ export const api = {
 
   listJobs: (limit = 60) => request<Job[]>(`/api/jobs?limit=${limit}`),
   getJob: (id: string) => request<Job>(`/api/jobs/${id}`),
-  createJob: (payload: JobCreate) => json<Job>('POST', '/api/jobs', payload),
+  createJob: (payload: JobCreate | AudioJobCreate) =>
+    json<Job>('POST', '/api/jobs', payload),
   rerunJob: (id: string) =>
     json<Job>('POST', `/api/jobs/${id}/rerun`, { randomize_seed: true }),
   continueJob: (id: string, body: Record<string, unknown> = {}) =>

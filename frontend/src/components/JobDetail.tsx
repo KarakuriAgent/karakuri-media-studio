@@ -25,7 +25,7 @@ export default function JobDetail({
 }) {
   const params = job.params ?? {}
   const entries = Object.entries(params).filter(
-    ([key]) => !['image_prompt', 'video_prompt'].includes(key),
+    ([key]) => !['image_prompt', 'video_prompt', 'audio_prompt'].includes(key),
   )
 
   return (
@@ -53,6 +53,9 @@ export default function JobDetail({
           )}
           {job.video_prompt && (
             <PromptBlock label="動画プロンプト" text={job.video_prompt} />
+          )}
+          {job.audio_prompt && (
+            <PromptBlock label="音声プロンプト" text={job.audio_prompt} />
           )}
           {job.user_input && (
             <PromptBlock label="最初の指示" text={job.user_input} />

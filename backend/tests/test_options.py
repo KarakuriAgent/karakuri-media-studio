@@ -27,7 +27,28 @@ def test_workflow_catalogue_is_exposed(client):
     # ComfyUI being down must not hide the workflow list (it is local data)
     assert options["comfy_error"]
     assert options["default_video_workflow"] == DEFAULT_VIDEO_WORKFLOW
-    assert [w["id"] for w in options["image_workflows"]] == ["krea2_turbo"]
+    assert options["default_image_workflow"] == "krea2_turbo"
+
+    images = {w["id"]: w for w in options["image_workflows"]}
+    assert list(images) == [
+        "krea2_turbo",
+        "anima",
+        "z_image_turbo",
+        "qwen_image_edit_2511",
+    ]
+    assert [w["family"] for w in options["image_workflows"]] == [
+        "krea2",
+        "anima",
+        "z-image",
+        "qwen-image",
+    ]
+    # the editing workflow is the only image one that needs an input picture
+    assert images["krea2_turbo"]["requires"] == []
+    assert images["qwen_image_edit_2511"]["requires"] == ["image"]
+    assert images["qwen_image_edit_2511"]["image_label"] == "編集元画像"
+    # …and the only one that does not take an aspect ratio / megapixel target
+    assert "aspect_ratio" not in images["qwen_image_edit_2511"]["supports"]
+    assert {"width", "height"} <= set(images["z_image_turbo"]["supports"])
 
     videos = {w["id"]: w for w in options["video_workflows"]}
     assert set(videos) == {spec.id for spec in video_specs()}
@@ -87,3 +108,42 @@ def test_video_upload_rejects_a_wrong_extension(client):
     )
     assert response.status_code == 400
     assert ".png" in response.text
+
+
+def test_audio_workflows_are_exposed(client):
+    options = client.get("/api/options").json()
+    assert options["default_audio_workflow"] == "ace_step1_5_xl_sft"
+
+    audio = {w["id"]: w for w in options["audio_workflows"]}
+    assert list(audio) == ["ace_step1_5_xl_sft", "stable_audio_3_medium_base"]
+    assert [w["family"] for w in options["audio_workflows"]] == [
+        "ace-step",
+        "stable-audio",
+    ]
+    # 音声は単体ジョブ: 入力アセットも開始フレームも取らない
+    assert all(w["requires"] == [] for w in audio.values())
+    assert all(w["accepts_start_image"] is False for w in audio.values())
+
+    ace = audio["ace_step1_5_xl_sft"]
+    assert {"prompt", "lyrics", "duration", "bpm", "keyscale", "language"} <= set(
+        ace["supports"]
+    )
+    assert (ace["min_duration"], ace["max_duration"]) == (10.0, 600.0)
+    assert ace["default_duration"] == 120.0
+
+    sa3 = audio["stable_audio_3_medium_base"]
+    assert {"audio_category", "reprompt"} <= set(sa3["supports"])
+    assert "lyrics" not in sa3["supports"]
+    assert (sa3["min_duration"], sa3["max_duration"]) == (1.0, 380.0)
+
+    # 音声は画像・動画のリストには混ざらない
+    assert all(w["kind"] == "image" for w in options["image_workflows"])
+    assert all(w["kind"] == "video" for w in options["video_workflows"])
+
+
+def test_audio_combo_choices_are_exposed(client):
+    """ComfyUI が落ちていてもローカル定義の選択肢は返る。"""
+    options = client.get("/api/options").json()
+    assert options["audio_categories"] == ["Music", "Instrument", "SFX", "One-shot"]
+    assert "C major" in options["keyscales"] and len(options["keyscales"]) == 34
+    assert options["languages"][-1] == "unknown"

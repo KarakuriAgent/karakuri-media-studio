@@ -262,6 +262,11 @@ async def _answer_checkin(
     )
     # 保留中のプラン外アクションは、承認されたときだけループが実行する（§2）。
     pending = await agent_runner.resolve_checkin(session_id, answer)
+    session = await agent_store.load(session_id)
+    if session is not None and session.status == "stopped":
+        # 生成本数の上限で続行を断られた等、応答そのものが停止を意味する場合は
+        # ループを再開しない。
+        return await _reply(session_id, "", None)
     await agent_runner.start_loop(session_id, pending)
     return await _reply(session_id, "", None)
 
