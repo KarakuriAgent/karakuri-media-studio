@@ -30,6 +30,7 @@ export function session(overrides: Partial<AgentSession> = {}): AgentSession {
     nsfw: false,
     nsfw_source: '',
     thinking: false,
+    activity: null,
     ...overrides,
   }
 }

@@ -443,21 +443,49 @@ def _mode_rules(mode: str, spec: WorkflowSpec | None = None) -> str:
     )
 
 
+def _joined_triggers(explicit: str, loras: list) -> str:
+    return explicit.strip() or ", ".join(
+        lora.trigger_word.strip() for lora in loras if lora.trigger_word.strip()
+    )
+
+
+def _named_triggers(loras: list) -> list[tuple[str, str]]:
+    return [
+        (getattr(lora, "display_name", "").strip(), lora.trigger_word.strip())
+        for lora in loras
+        if lora.trigger_word.strip() and getattr(lora, "display_name", "").strip()
+    ]
+
+
+def _video_trigger_lines(ctx: ChatSessionCreate) -> list[str]:
+    """The動画用 LoRA section: its trigger words belong in ``video_prompt``."""
+    triggers = _joined_triggers(ctx.video_trigger_text, ctx.video_loras)
+    if not triggers:
+        return []
+    lines = [
+        "",
+        f"Active **video** LoRA trigger words: `{triggers}`."
+        " These belong in `video_prompt` (the video LoRA is applied to the LTX"
+        " graph, not to the image one).",
+    ]
+    named = _named_triggers(ctx.video_loras)
+    if named:
+        lines += [f"- 「{name}」 -> trigger word `{trigger}`" for name, trigger in named]
+    lines.append(
+        "- Weave them into `video_prompt` naturally; the app prepends only the"
+        " ones you did not use."
+    )
+    return lines
+
+
 def _trigger_lines(ctx: ChatSessionCreate) -> list[str]:
     """Character section: the 日本語名 -> trigger word table plus the naming rules."""
-    triggers = ctx.trigger_text.strip() or ", ".join(
-        lora.trigger_word.strip() for lora in ctx.loras if lora.trigger_word.strip()
-    )
+    triggers = _joined_triggers(ctx.trigger_text, ctx.loras)
     if not triggers:
-        return ["No character LoRA is selected."]
+        return ["No image character LoRA is selected."]
 
-    lines = [f"Active character LoRA trigger words: `{triggers}`."]
-    mapping = [
-        (getattr(lora, "display_name", "").strip(), lora.trigger_word.strip())
-        for lora in ctx.loras
-        if lora.trigger_word.strip()
-    ]
-    named = [(name, trigger) for name, trigger in mapping if name]
+    lines = [f"Active **image** character LoRA trigger words: `{triggers}`."]
+    named = _named_triggers(ctx.loras)
     if named:
         lines.append("")
         lines.append(
@@ -501,6 +529,7 @@ def _context_section(
     if ctx.mode != "image_only":
         lines.append(f"Clip duration: {ctx.duration:g} seconds, one continuous shot.")
         lines += _workflow_context_lines(ctx.video_workflow)
+        lines += _video_trigger_lines(ctx)
         lines.append("")
     if ctx.mode != "i2v":
         lines += _trigger_lines(ctx)
@@ -634,7 +663,11 @@ Your reply is either plain Japanese text, or plain Japanese text followed by
         "aspect_ratio": "9:16", "megapixels": 1.0,
         "loras": [{"lora_name": "kaori.safetensors", "trigger_word": "kaori",
                    "strength": 0.8}],
-        "trigger_text": "kaori", "duration": 5, "fps": 24,
+        "trigger_text": "kaori",
+        "video_loras": [{"lora_name": "motion.safetensors",
+                         "trigger_word": "smooth motion", "strength": 1.0}],
+        "video_trigger_text": "smooth motion",
+        "duration": 5, "fps": 24,
         "audio_path": "/assets/audio/reference.mp3",
         "source_image": null, "end_image": null, "reference_video": null,
         "seed": null
@@ -674,6 +707,11 @@ Rules:
 - Use only values listed in CHOICES: LoRA file names, aspect ratios and the
   audio / image / video asset paths must exist. `seed: null` means "roll a
   random seed".
+- LoRAs come in two kinds and are **not** interchangeable: 画像用 goes into
+  `loras` (+ `trigger_text`, used by the image stage) and 動画用 into
+  `video_loras` (+ `video_trigger_text`, used by the LTX video stage). Leave
+  either list out when you do not need it, and never put video LoRAs in a
+  `mode: "image_only"` job.
 - Exactly one action per reply — `rename` counts like `plan` / `checkin` here,
   so rename one artifact per turn (the app renames every frame of a job at once
   when you target it by `job_id`).
@@ -757,9 +795,11 @@ def _agent_choices(
     lines = ["# CHOICES (the only values that exist in this installation)", ""]
     samples = lora_samples or {}
 
-    if options.loras:
-        lines.append("Registered character LoRAs (lora_name -> trigger word):")
-        for lora in options.loras:
+    image_loras = [lora for lora in options.loras if lora.target != "video"]
+    video_loras = [lora for lora in options.loras if lora.target == "video"]
+
+    def lora_lines(loras: list) -> None:
+        for lora in loras:
             label = f"「{lora.display_name}」" if lora.display_name else ""
             lines.append(
                 f"- `{lora.lora_name}` -> trigger `{lora.trigger_word}`"
@@ -769,9 +809,41 @@ def _agent_choices(
             )
             for sample in samples.get(lora.lora_name, ()):
                 lines.append(f"  - reference image: `{sample}`")
+
+    if options.loras:
+        if image_loras:
+            lines.append(
+                "画像用 LoRA — the `loras` field of a job"
+                " (lora_name -> trigger word):"
+            )
+            lora_lines(image_loras)
+            lines.append(
+                "Put the trigger words of the LoRAs you use into `trigger_text`"
+                " and use the trigger word as the subject's name inside"
+                " `image_prompt`."
+            )
+            lines.append("")
+        else:
+            lines += ["画像用 LoRA はありません: `loras` は空のままにしてください。", ""]
+
+        if video_loras:
+            lines.append(
+                "動画用 LoRA — the `video_loras` field of a job. These are"
+                " spliced into the LTX 2.3 graph (`mode` must be `full` or"
+                " `i2v`) (lora_name -> trigger word):"
+            )
+            lora_lines(video_loras)
+            lines.append(
+                "Put their trigger words into `video_trigger_text` and use them"
+                " inside `video_prompt`."
+            )
+        else:
+            lines.append(
+                "動画用 LoRA はありません: `video_loras` は空のままにしてください。"
+            )
         lines.append(
-            "Put the trigger words of the LoRAs you use into `trigger_text` and"
-            " use the trigger word as the subject's name inside `image_prompt`."
+            "画像用と動画用は入れ替えられません — 画像用を `video_loras` に、"
+            "動画用を `loras` に入れたジョブは拒否されます。"
         )
         if any(samples.values()):
             lines += [
@@ -787,7 +859,10 @@ def _agent_choices(
                 " instead of accepting it.",
             ]
     else:
-        lines.append("No character LoRA is registered: leave `loras` empty.")
+        lines.append(
+            "No character LoRA is registered: leave `loras` and `video_loras`"
+            " empty."
+        )
     lines.append("")
 
     if options.aspect_ratios:

@@ -513,6 +513,79 @@ def test_continue_chains_from_last_frame(env):
     assert wait_for(env.client, third["id"])["status"] == "done"
 
 
+VIDEO_LORA = {
+    "lora_name": "motion.safetensors",
+    "trigger_word": "slowmo",
+    "strength": 0.9,
+}
+
+
+@needs_ffmpeg
+def test_video_loras_are_snapshotted_and_injected(env):
+    created = env.client.post(
+        "/api/jobs",
+        json=full_body(env, video_loras=[VIDEO_LORA], video_trigger_text="slowmo"),
+    ).json()
+    assert created["params"]["video_loras"] == [VIDEO_LORA]
+    assert created["params"]["video_trigger_text"] == "slowmo"
+
+    job = wait_for(env.client, created["id"])
+    assert job["status"] == "done", job["error"]
+
+    # spliced into the video graph only…
+    video = graph_with(env, "340:346")
+    assert video["app_video_lora_0"]["inputs"]["lora_name"] == "motion.safetensors"
+    assert video["app_video_lora_0"]["inputs"]["strength_model"] == 0.9
+    assert video["340:346"]["inputs"]["model"] == ["app_video_lora_0", 0]
+    # …and the trigger word leads the video prompt
+    assert video["340:319"]["inputs"]["value"].startswith("slowmo, ")
+    # …never into the image graph
+    assert not [n for n in graph_with(env, "30:3") if n.startswith("app_video_lora_")]
+
+
+@needs_ffmpeg
+def test_rerun_keeps_the_video_loras(env):
+    first = env.client.post(
+        "/api/jobs", json=full_body(env, video_loras=[VIDEO_LORA])
+    ).json()
+    wait_for(env.client, first["id"])
+    again = env.client.post(f"/api/jobs/{first['id']}/rerun", json={}).json()
+    assert again["params"]["video_loras"] == [VIDEO_LORA]
+    assert wait_for(env.client, again["id"])["status"] == "done"
+
+
+@needs_ffmpeg
+def test_continue_keeps_the_video_loras(env):
+    first = env.client.post(
+        "/api/jobs", json=full_body(env, video_loras=[VIDEO_LORA])
+    ).json()
+    wait_for(env.client, first["id"])
+    second = env.client.post(f"/api/jobs/{first['id']}/continue", json={}).json()
+    assert second["params"]["video_loras"] == [VIDEO_LORA]
+
+
+def test_a_job_without_video_loras_still_loads(env):
+    """Params stored before the feature existed have no `video_loras` key."""
+    created = env.client.post("/api/jobs", json=full_body(env)).json()
+    assert created["params"]["video_loras"] == []
+    job = jobs.Job(**{**created, "params": {k: v for k, v in created["params"].items()
+                                            if k != "video_loras"}})
+    assert jobs._generation_params(job, {}).video_loras == []
+
+
+def test_video_loras_without_a_video_stage_are_422(env):
+    response = env.client.post(
+        "/api/jobs",
+        json={
+            "mode": "image_only",
+            "image_prompt": "an image",
+            "video_loras": [VIDEO_LORA],
+        },
+    )
+    assert response.status_code == 422
+    assert "video_loras" in response.text
+
+
 def test_continue_without_last_frame_is_422(env):
     created = env.client.post(
         "/api/jobs", json={"mode": "image_only", "image_prompt": "i"}

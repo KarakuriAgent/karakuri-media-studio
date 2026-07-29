@@ -99,8 +99,10 @@
 |---|---|---|
 | 動画ワークフロー | ― | プルダウン（`/api/options` の `video_workflows`）。選択に応じて必要入力の欄が出る |
 | アスペクト比 / メガピクセル | 画像: `aspect_ratio` / `megapixels` → `49` (ResolutionSelector)。動画: アプリが幅・高さを計算して `width` / `height` に注入 | セレクト（選択肢は `/object_info` の ResolutionSelector から動的取得）+ 数値 |
-| LoRA（複数可） | 画像のみ。`lora_chain` を動的構築（§3.4） | アプリ内 LoRA 登録リストから複数選択＋強度スライダー |
-| LoRA トリガーワード | `trigger_concat` → `30:27` (StringConcatenate) / `trigger_switch` → `30:28` | 選択 LoRA のトリガーワードを自動連結（編集可） |
+| LoRA（画像・複数可） | 画像ワークフローの `lora_chain` を動的構築（§3.4） | 「LoRA（画像）」セクション。登録 LoRA のうち `target = 'image'` のものを複数選択＋強度スライダー |
+| LoRA トリガーワード（画像） | `trigger_concat` → `30:27` (StringConcatenate) / `trigger_switch` → `30:28` | 選択 LoRA のトリガーワードを自動連結（編集可） |
+| LoRA（動画・複数可） | 動画ワークフローの `lora_chain` を動的構築（§3.4） | 「LoRA（動画）」セクション。登録 LoRA のうち `target = 'video'` のものを複数選択＋強度スライダー |
+| LoRA トリガーワード（動画） | 動画プロンプト文字列の先頭に前置 | 同上（自動連結・編集可） |
 | リファレンス音声 | `audio` → `276` (LoadAudio)。要求するワークフローのみ | アップロード（`/upload/image` で送信 → ファイル名を注入） |
 | 開始フレーム / 最終フレーム / 参照動画 | `image` / `end_image` / `video` | ワークフローの必要入力に応じて表示。画像は D&D・履歴のラストフレームからも選べる |
 | 秒数 (Duration) | `duration` | 数値・**上限なし**。長尺は VRAM 次第で ComfyUI 側エラーになり得ることを UI に注記 |
@@ -146,10 +148,16 @@ height = round(h_ratio * scale / 8) * 8
 
 - 画像側: UNET `krea2_turbo_fp8_scaled` / CLIP `qwen3vl_4b_fp8_scaled` / VAE `qwen_image_vae`、KSampler 設定（euler / simple / 8 steps / CFG 1）
 - 動画側: checkpoint `ltx-2.3-22b-dev-fp8` または `ltx-2.3-22b-distilled-fp8`、distil LoRA (strength 0.5)、talkvid ID-LoRA + `LTXVReferenceAudio`（identity_guidance_scale 3）、IC-LoRA と MoGe、2 段サンプリング（半解像度 → LatentUpsampler x2）、ManualSigmas
-- **モデルファイル名は利用者の ComfyUI 環境依存**のため、設定ページ（`GET/PUT /api/models`）で上書き可能。既定値は各テンプレートの値。対象は UNETLoader.unet_name / CLIPLoader.clip_name / VAELoader.vae_name / CheckpointLoaderSimple.ckpt_name / LTXVAudioVAELoader.ckpt_name / LTXAVTextEncoderLoader.text_encoder・ckpt_name / LatentUpscaleModelLoader.model_name / LoadMoGeModel.model_name / LoraLoaderModelOnly.lora_name / LoraLoader.lora_name（§3.4 で置換される krea2 のプレースホルダは除く）
+- **モデルファイル名は利用者の ComfyUI 環境依存**のため、設定ページ（`GET/PUT /api/models`）で上書き可能。既定値は各テンプレートの値。対象は UNETLoader.unet_name / CLIPLoader.clip_name / VAELoader.vae_name / CheckpointLoaderSimple.ckpt_name / LTXVAudioVAELoader.ckpt_name / LTXAVTextEncoderLoader.text_encoder・ckpt_name / LatentUpscaleModelLoader.model_name / LoadMoGeModel.model_name / LoraLoaderModelOnly.lora_name / LoraLoader.lora_name（§3.4 で置換される krea2 のプレースホルダは除く。LTX 側の固定 LoRA ノードはユーザー LoRA と共存するので上書き対象のまま）
 - 上書きキーは**ワークフロー ID でスコープ**する: `"<workflow_id>/<node_id>.<field>": "<ファイル名>"`。テンプレート間で同じノード ID（例: `340:317` が ia2v と id_lora の両方にある）が衝突しないため。旧レイアウトの非スコープキーは無視される（マイグレーション不要）
 
 ### 3.4 複数 LoRA の動的注入
+
+LoRA は**登録時に対象（`target`）を選ぶ**: `image` なら画像ワークフロー（Krea 2）、
+`video` なら動画ワークフロー（LTX 2.3）に注入される。ジョブは両者を別フィールドで持つ
+（`loras` / `trigger_text` と `video_loras` / `video_trigger_text`）。
+
+#### 3.4.1 画像 LoRA チェーン
 
 人物 LoRA を複数同時に適用できるよう、krea2 テンプレートが持つ 5 個の
 `LoraLoaderModelOnly`（strength 0 のプレースホルダ `30:61:*`）は使わず、アプリが API JSON 生成時に
@@ -160,7 +168,7 @@ height = round(h_ratio * scale / 8) * 8
   → app_lora_0 (LoraLoaderModelOnly: 1個目, strength_model=各LoRAの強度)
   → app_lora_1 (2個目)
   → … 選択数ぶん連結（テンプレートのプレースホルダ数を超えてもよい）
-  → 30:3 (KSampler) の model 入力へ    … lora_chain.consumer
+  → 30:3 (KSampler) の model 入力へ    … lora_chain.consumers
 ```
 
 - ノード ID はアプリが採番（`app_lora_0`, `app_lora_1`, …）。プレースホルダはテンプレートから削除
@@ -168,7 +176,35 @@ height = round(h_ratio * scale / 8) * 8
 - トリガーワードは選択 LoRA の trigger_word を `", "` で連結（UI で編集可）し、`30:27`（StringConcatenate）で**画像プロンプトの先頭**に付与する: `string_a` = トリガーワード（リテラル）、`string_b` = プロンプトのリンク（`30:20`）、`delimiter` = `", "`
   - Grok がプロンプト本文中で既にトリガーワードを使っている場合は重複を避けるため、カンマ区切りの語単位で（大文字小文字無視・単語境界一致）未使用の語だけを付与する
   - 付与すべき語が無い場合は `string_a` と `delimiter` を空にし、さらに `30:28` (Switch) を `false` にして連結ノードを丸ごとバイパスする（先頭に `", "` が残らないようにする）
-- 注意: 動画側（LTX）は別モデルのため画像側にのみ適用される。人物の同一性は生成画像経由で動画に引き継がれる
+
+#### 3.4.2 動画 LoRA チェーン
+
+LTX 2.3 の各テンプレートは動作に必須の固定 LoRA（distilled-1.1 / talkvid ID-LoRA /
+IC-LoRA）を持つので、ユーザー LoRA は**その後段**へ同じ仕組みで直列挿入する。
+`LoraChain` はプレースホルダを持たず、「`head` の MODEL 出力を読んでいた入力（`consumers`）を
+チェーン末尾に付け替える」という 1 本の辺の切り開きとして表現する:
+
+| ワークフロー | head（挿入位置の直前） | consumers（付け替える入力） |
+|---|---|---|
+| `ltx2_3_t2v` | `267:232` distill LoRA | `267:213` / `267:231` CFGGuider.model |
+| `tx2_3_i2v` | `320:285` distill LoRA | `320:282` / `320:314` CFGGuider.model |
+| `tx2_3_ia2v` | `340:293` distill LoRA | `340:290` / `340:315` CFGGuider.model |
+| `ltx2_3_id_lora` | `340:293` distill LoRA | `340:290` CFGGuider.model / `340:346` ID-LoRA.model |
+| `ltx2_3_flf2v` | `129:300` distill LoRA | `129:116` CFGGuider.model |
+| `ltx2_3_ic_lora_image` / `_motion` | `129:195` IC-LoRA | `129:704` KSampler.model |
+
+- ノード ID は `app_video_lora_0`, `app_video_lora_1`, … と採番する
+- 0 件選択時は consumers が `head` を直接指す（テンプレートと同一のグラフ）
+- テキストエンコーダ側の Gemma `LoraLoader` や `GetICLoRAParameters` は付け替えない
+  （MODEL 出力を使わない／IC-LoRA 自体のパラメータ取得に使うため）
+- 動画側テンプレートには StringConcatenate が無いので、トリガーワードは
+  `video_trigger_text`（空なら選択 LoRA の trigger_word 連結）のうち**動画プロンプトに
+  未出現の語だけ**をプロンプト文字列の先頭に前置する（判定は画像側と同じ単語境界一致）
+- マニフェスト検証（`GET /api/health`）は、consumers が実際に `head`（または画像側の
+  プレースホルダ）を読んでいるかまで確認する。読んでいなければ健全性エラーになる
+- `video_loras` は動画ステージが走るモード（`full` / `i2v`）でのみ有効。`image_only` や
+  `lora_chain` を持たないワークフローに指定するとジョブ作成が 422 で拒否される
+- 人物の同一性は、画像 LoRA → 生成画像 → 開始フレームという経路で動画にも引き継がれる
 
 ---
 
@@ -313,7 +349,9 @@ CREATE TABLE loras (
   trigger_word  TEXT NOT NULL,
   default_strength REAL DEFAULT 1.0,
   default_audio TEXT,                       -- 既定リファレンス音声（任意）
-  sort_order    INTEGER DEFAULT 0
+  sort_order    INTEGER DEFAULT 0,
+  sample_images TEXT NOT NULL DEFAULT '[]', -- サンプル画像ファイル名の JSON 配列
+  target        TEXT NOT NULL DEFAULT 'image'  -- 'image' = 画像WF / 'video' = 動画WF（§3.4）
 );
 
 CREATE TABLE chat_sessions (
@@ -324,8 +362,9 @@ CREATE TABLE chat_sessions (
 );
 ```
 
-- 設定画面に LoRA 管理タブ（追加/編集/削除/並び替え）。`lora_name` は ComfyUI の LoRA 一覧から選ばせて typo を防ぐ
-- ジョブの `params` には選択した LoRA の配列 `[{lora_name, trigger_word, strength}]` をスナップショットとして保存（後から登録リストを変更しても過去ジョブの再現性を保つ）
+- 設定画面に LoRA 管理タブ（追加/編集/削除/並び替え）。`lora_name` は手入力＋ComfyUI の LoRA 一覧からの補完候補（datalist）。**対象ワークフロー（画像用 / 動画用）を選んで登録**し、サンプル画像・トリガーワード・既定強度はどちらでも同じように登録できる
+- `target` は後から追加したカラムなので、既存レコードは `image`（従来どおり画像 LoRA）として移行される
+- ジョブの `params` には選択した LoRA の配列 `[{lora_name, trigger_word, strength}]` を**画像用 `loras` と動画用 `video_loras` に分けて**スナップショット保存（後から登録リストを変更しても過去ジョブの再現性を保つ）。`video_loras` / `video_trigger_text` を持たない古い params は空として読む
 - 複数 LoRA 選択時の既定リファレンス音声は、選択順で最初に `default_audio` を持つ LoRA の値を採用（手動変更可）
 - 初期データは持たない（LoRA は利用者の環境依存データのため、設定画面の LoRA 管理から登録する）
 
@@ -345,8 +384,9 @@ SPA 1 画面 + 履歴。ダークテーマの生成系ツールらしい見た�
 │ ◦ 開始フレーム/最終フレーム/  │ ◦ 生成画像プレビュー          │
 │    参照動画(D&D/履歴から選択) │                            │
 │ ◦ アスペクト比 / MP         │ ◦ 動画プレイヤー              │
-│ ◦ LoRA 複数選択(強度/トリガー)│ ◦ ラストフレーム              │
-│ ◦ リファレンス音声選択       │   [この画像で続きを生成]       │
+│ ◦ リファレンス音声選択       │ ◦ ラストフレーム              │
+│ ◦ LoRA(動画) 複数選択        │   [この画像で続きを生成]       │
+│ ◦ LoRA(画像) 複数選択        │                            │
 │ ◦ 画像プロンプト (textarea)  │ ◦ 使用プロンプト表示(コピー可)  │
 │ ◦ 動画プロンプト (textarea)  │                            │
 │   └ [Grokで生成] →チャットへ │                            │
@@ -366,13 +406,13 @@ SPA 1 画面 + 履歴。ダークテーマの生成系ツールらしい見た�
 
 - 進捗は ComfyUI の WS イベント（`executing` / `progress`）をそのまま％表示に変換
 - 実行中でもキュー追加可能（ジョブキュー表示）
-- LoRA 選択はチップ型マルチセレクト。選択するとトリガーワード連結欄（編集可）に反映
-- **モードとワークフローに応じた項目の無効化**: 動画生成モードでは画像プロンプト・LoRA・トリガーワードをグレーアウト（画像ワークフローを使わないため）。画像のみモードでは動画プロンプト・ネガティブ・リファレンス音声・秒数・fps をグレーアウト。さらに**選択した動画ワークフローのマニフェスト**に従って、音声を受け取らないワークフローでは音声欄を無効化し、必要な入力（最終フレーム / 参照動画）の欄だけを表示する
+- LoRA 選択はチップ型マルチセレクト（強度スライダー付き）。選択するとトリガーワード連結欄（編集可）に反映される。セクションは 2 つあり、**「LoRA（動画）」は動画設定群の中**（登録 `target = 'video'` のみ）、**「LoRA（画像）」は画像設定群の中**（`target = 'image'` のみ）に置く
+- **モードとワークフローに応じた項目の無効化**: 動画生成モードでは画像プロンプト・LoRA（画像）・トリガーワードをグレーアウト（画像ワークフローを使わないため。LoRA（動画）は有効のまま）。画像のみモードでは動画プロンプト・ネガティブ・リファレンス音声・秒数・fps・LoRA（動画）をグレーアウト。さらに**選択した動画ワークフローのマニフェスト**に従って、音声を受け取らないワークフローでは音声欄を無効化し、必要な入力（最終フレーム / 参照動画）の欄だけを表示する
 - フル生成モードのプルダウンには開始フレームを受け取れるワークフローのみを出す（選択中のものが対象外になったら自動で切り替える）
 - 動画ネガティブはプリセット選択（ワークフロー既定 / 現行値 / モデル作者版）+ 編集可（詳細設定アコーディオン内）
 - 設定は**モーダルではなく専用ページ（フルページ）**。ヘッダーの [設定] で画面遷移し、ページ左上の [← 戻る] で生成画面に復帰する。3 タブ構成:
   - **接続 / Grok**: ComfyUI 接続先（URL / APIキー） / grok CLI コマンドと**使用モデル（既定: grok-4.5、変更可）**
-  - **LoRA 管理**: 表示名・ファイル名・トリガーワード・既定強度・既定音声・並び順の CRUD
+  - **LoRA 管理**: 表示名・ファイル名・**対象ワークフロー（画像用 / 動画用）**・トリガーワード・既定強度・既定音声・並び順の CRUD とサンプル画像の登録
   - **モデル**: 全ワークフローのモデルファイル名一覧（ワークフロー / タイトル / ノード・フィールド / 既定値）をテーブル表示し、行ごとにテキスト入力で上書き。変更行はハイライト、[既定に戻す] で復帰、[保存] で一括 PUT。LoRA 行は `/api/options` の `lora_files` があれば datalist で補完（§3.3）
 
 ---

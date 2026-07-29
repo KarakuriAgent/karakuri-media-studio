@@ -35,6 +35,7 @@ async def _require(session_id: str) -> AgentSession:
     # thinking は runner のインメモリ状態（DB には保存しない）。WS を取りこぼした
     # ブラウザでもポーリングで「Grok が考えています…」を拾えるようにする。
     session.thinking = agent_runner.is_thinking(session_id)
+    session.activity = agent_runner.current_activity(session_id)
     return session
 
 

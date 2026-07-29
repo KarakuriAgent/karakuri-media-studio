@@ -11,6 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import (
+    acp,
     agent_protocol,
     agent_runner,
     agent_store,
@@ -158,7 +159,14 @@ def env(tmp_path, monkeypatch, request):
     monkeypatch.setattr(
         config,
         "_settings",
-        Settings(grok_command="grok", grok_model="grok-4.5", grok_workdir=str(tmp_path)),
+        Settings(
+            grok_command="grok",
+            grok_model="grok-4.5",
+            grok_workdir=str(tmp_path),
+            # ACP はプロセスを本当に起動するので、ここでは FakeCli の通る
+            # ワンショット実行に固定する（ACP 自体は test_acp.py で検証）。
+            agent_use_acp=False,
+        ),
     )
 
     fake_comfy = FakeComfy(video)
@@ -313,23 +321,61 @@ def test_plan_job_goes_through_the_existing_validation(env):
         agent_protocol.parse_action(action_answer(stray))
 
 
+KNOWN_LORAS = {"kaori.safetensors": "image", "motion.safetensors": "video"}
+
+
+def _plan_with(env, **job_overrides) -> str:
+    return action_answer(
+        {
+            "action": "plan",
+            "tasks": [{"label": "x", "job": job_body(env, **job_overrides)}],
+        }
+    )
+
+
 def test_unknown_lora_is_rejected(env):
-    payload = {
-        "action": "plan",
-        "tasks": [
-            {
-                "label": "x",
-                "job": job_body(
-                    env,
-                    loras=[{"lora_name": "ghost.safetensors", "trigger_word": "g"}],
-                ),
-            }
-        ],
-    }
+    answer = _plan_with(
+        env, loras=[{"lora_name": "ghost.safetensors", "trigger_word": "g"}]
+    )
     with pytest.raises(agent_protocol.ActionError, match="存在しない LoRA"):
-        agent_protocol.parse_action(
-            action_answer(payload), known_loras={"kaori.safetensors"}
-        )
+        agent_protocol.parse_action(answer, known_loras=KNOWN_LORAS)
+
+
+def test_an_unknown_video_lora_is_rejected(env):
+    answer = _plan_with(
+        env, video_loras=[{"lora_name": "ghost.safetensors", "trigger_word": "g"}]
+    )
+    with pytest.raises(agent_protocol.ActionError, match="存在しない LoRA"):
+        agent_protocol.parse_action(answer, known_loras=KNOWN_LORAS)
+
+
+def test_an_image_lora_cannot_be_used_as_a_video_lora(env):
+    answer = _plan_with(
+        env, video_loras=[{"lora_name": "kaori.safetensors", "trigger_word": "kaori"}]
+    )
+    with pytest.raises(agent_protocol.ActionError, match="`video_loras` には指定できません"):
+        agent_protocol.parse_action(answer, known_loras=KNOWN_LORAS)
+
+
+def test_a_video_lora_cannot_be_used_as_an_image_lora(env):
+    answer = _plan_with(
+        env, loras=[{"lora_name": "motion.safetensors", "trigger_word": "slowmo"}]
+    )
+    with pytest.raises(agent_protocol.ActionError, match="`loras` には指定できません"):
+        agent_protocol.parse_action(answer, known_loras=KNOWN_LORAS)
+
+
+def test_loras_matching_their_target_are_accepted(env):
+    answer = _plan_with(
+        env,
+        loras=[{"lora_name": "kaori.safetensors", "trigger_word": "kaori"}],
+        video_loras=[{"lora_name": "motion.safetensors", "trigger_word": "slowmo"}],
+    )
+    action = agent_protocol.parse_action(answer, known_loras=KNOWN_LORAS)
+    assert action is not None
+    job = action.tasks[0].job
+    assert job["loras"][0]["lora_name"] == "kaori.safetensors"
+    assert job["video_loras"][0]["lora_name"] == "motion.safetensors"
 
 
 def _plan(env, **job_overrides) -> str:
@@ -520,6 +566,43 @@ def test_system_prompt_lists_the_video_assets(env):
     assert str(env.clip) in system
     assert "Image assets (source_image / end_image)" in system
     assert str(env.image) in system
+
+
+def test_system_prompt_separates_image_and_video_loras(env):
+    for payload in (
+        {"display_name": "サクラ", "lora_name": "sakura.safetensors",
+         "trigger_word": "sakura"},
+        {"display_name": "スローモ", "lora_name": "motion.safetensors",
+         "trigger_word": "slowmo", "target": "video"},
+    ):
+        assert env.client.post("/api/loras", json=payload).status_code == 201
+
+    system = start(env)["messages"][0]["content"]
+    image_section = system.index("画像用 LoRA")
+    video_section = system.index("動画用 LoRA")
+    assert image_section < video_section
+    # each file name is listed under its own heading
+    assert 0 < system.index("`sakura.safetensors`") - image_section < (
+        video_section - image_section
+    )
+    assert system.index("`motion.safetensors`") > video_section
+    assert "`video_loras`" in system
+    assert "入れ替えられません" in system
+
+
+def test_system_prompt_says_which_lists_are_empty(env):
+    system = start(env)["messages"][0]["content"]
+    assert "leave `loras` and `video_loras`" in system
+
+
+def test_known_lora_names_carry_the_target(env):
+    env.client.post(
+        "/api/loras",
+        json={"display_name": "スローモ", "lora_name": "motion.safetensors",
+              "trigger_word": "slowmo", "target": "video"},
+    )
+    known = asyncio.run(agent_runner.known_lora_names())
+    assert known == {"motion.safetensors": "video"}
 
 
 def test_session_copies_lora_samples_into_the_workdir(env):
@@ -1108,6 +1191,7 @@ def test_agent_client_uses_the_session_workdir_and_extra_args(env, monkeypatch):
             grok_model="grok-4.5",
             agent_grok_args=["--allow-tools"],
             agent_grok_timeout=300.0,
+            agent_use_acp=False,
         ),
     )
     session = start(env)
@@ -1379,3 +1463,51 @@ def test_stop_during_a_turn_drops_the_returned_action(env, monkeypatch):
     # 破棄されたので rerun は試されない（試されていれば action_failed が出る）
     assert "action_failed" not in kinds(final)
     assert env.comfy.job_count == queued_before + 1  # プランの 1 本だけ
+
+
+# --------------------------------------------------------------------------
+# ACP（実行中ステータス）
+# --------------------------------------------------------------------------
+
+def test_agent_client_is_acp_by_default(env, monkeypatch):
+    """既定ではエージェントのターンを ACP（grok agent stdio）で回す。"""
+    monkeypatch.setattr(
+        config,
+        "_settings",
+        Settings(grok_command="grok", grok_model="grok-4.5", agent_grok_timeout=42.0),
+    )
+    client = grok.get_agent_client("/tmp/session-x")
+    assert isinstance(client, acp.AcpAgentClient)
+    assert client.argv() == ["grok", "agent", "-m", "grok-4.5", "stdio"]
+    assert client.timeout == 42.0
+    # ACP を開始できなければ従来のワンショットに落ちる
+    assert isinstance(client.fallback_client(), grok.GrokCliClient)
+
+
+def test_agent_client_can_be_forced_back_to_oneshot(env, monkeypatch):
+    monkeypatch.setattr(
+        config,
+        "_settings",
+        Settings(grok_command="grok", grok_model="grok-4.5", agent_use_acp=False),
+    )
+    assert isinstance(grok.get_agent_client("/tmp/session-x"), grok.GrokCliClient)
+
+
+def test_activity_is_published_and_polled(env):
+    """ACP のコールバックで activity が WS とセッション API に出る。"""
+    session = start(env)
+    session_id = session["id"]
+
+    async def scenario() -> None:
+        await agent_runner._set_thinking(session_id, True)
+        await agent_runner._set_activity(session_id, "ツール実行中: run_terminal_command")
+        assert agent_runner.current_activity(session_id) == "ツール実行中: run_terminal_command"
+        assert env.client.get(f"/api/agent/sessions/{session_id}").json()["activity"] == (
+            "ツール実行中: run_terminal_command"
+        )
+        # ターン終了で消える
+        await agent_runner._set_thinking(session_id, False)
+
+    asyncio.run(scenario())
+    assert agent_runner.current_activity(session_id) is None
+    assert env.client.get(f"/api/agent/sessions/{session_id}").json()["activity"] is None

@@ -64,8 +64,13 @@ Grok がチャットから生成設定一式を組み立て、複数の動画ジ
 
 `mode`（full / i2v / image_only）, **`video_workflow`**, `image_prompt`, `video_prompt`,
 `negative_prompt`, `aspect_ratio`, `megapixels`,
-`loras[]`（lora_name / trigger_word / strength）, `trigger_text`, `duration`, `fps`,
+`loras[]`（画像用 LoRA: lora_name / trigger_word / strength）, `trigger_text`,
+`video_loras[]`（動画用 LoRA・同形式）, `video_trigger_text`, `duration`, `fps`,
 `audio_path`, `source_image`, **`end_image`**, **`reference_video`**, `seed`（固定 or 抽選）
+
+LoRA は登録時の対象（SPEC §3.4）で振り分ける: 画像用は `loras`、動画用は `video_loras`。
+システムプロンプトの CHOICES は両者を別見出しで列挙し、取り違えたプラン
+（画像用を `video_loras` に入れる等）は検証エラーとして 1 回リトライさせる。
 
 #### ワークフローカタログ（単一情報源）
 
@@ -157,7 +162,10 @@ Grok CLI はステートレスなテキスト入出力なので、ツール呼�
         "negative_prompt": "...",
         "aspect_ratio": "9:16", "megapixels": 1.0,
         "loras": [{"lora_name": "kaori.safetensors", "trigger_word": "kaori", "strength": 0.8}],
-        "trigger_text": "kaori", "duration": 5, "fps": 24,
+        "trigger_text": "kaori",
+        "video_loras": [{"lora_name": "motion.safetensors", "trigger_word": "smooth motion", "strength": 1.0}],
+        "video_trigger_text": "smooth motion",
+        "duration": 5, "fps": 24,
         "audio_path": "/assets/audio/reference.mp3",
         "source_image": null, "end_image": null, "reference_video": null,
         "seed": null

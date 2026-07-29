@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { disabledFields, workflowsForMode } from './form'
-import type { WorkflowOption } from './types'
+import { disabledFields, lorasForTarget, workflowsForMode } from './form'
+import type { Lora, WorkflowOption } from './types'
 
 function workflow(overrides: Partial<WorkflowOption> = {}): WorkflowOption {
   return {
@@ -59,6 +59,17 @@ describe('disabledFields', () => {
     expect(disabled.loras).toBe(true)
     expect(disabled.trigger).toBe(true)
     expect(disabled.videoPrompt).toBe(false)
+    // the video LoRA chain lives in the LTX graph, which does run here
+    expect(disabled.videoLoras).toBe(false)
+    expect(disabled.videoTrigger).toBe(false)
+  })
+
+  it('keeps the video LoRAs available in every mode that renders video', () => {
+    for (const mode of ['full', 'i2v'] as const) {
+      expect(disabledFields(mode, ID_LORA).videoLoras).toBe(false)
+    }
+    expect(disabledFields('image_only', ID_LORA).videoLoras).toBe(true)
+    expect(disabledFields('image_only', ID_LORA).videoTrigger).toBe(true)
   })
 
   it('greys out the video side for an image-only job', () => {
@@ -99,5 +110,32 @@ describe('disabledFields', () => {
     expect(disabled.audio).toBe(true)
     expect(disabled.startImage).toBe(true)
     expect(disabled.duration).toBe(true)
+  })
+})
+
+describe('lorasForTarget', () => {
+  const lora = (id: number, target?: Lora['target']): Lora => ({
+    id,
+    display_name: `L${id}`,
+    lora_name: `l${id}.safetensors`,
+    trigger_word: `t${id}`,
+    default_strength: 1,
+    default_audio: null,
+    sort_order: 0,
+    target: target as Lora['target'],
+    sample_images: [],
+  })
+
+  const all = [lora(1, 'image'), lora(2, 'video'), lora(3, 'image')]
+
+  it('splits the registry by stage', () => {
+    expect(lorasForTarget(all, 'image').map((l) => l.id)).toEqual([1, 3])
+    expect(lorasForTarget(all, 'video').map((l) => l.id)).toEqual([2])
+  })
+
+  it('treats a target-less entry as an image LoRA', () => {
+    const legacy = [lora(9, undefined)]
+    expect(lorasForTarget(legacy, 'image')).toHaveLength(1)
+    expect(lorasForTarget(legacy, 'video')).toHaveLength(0)
   })
 })

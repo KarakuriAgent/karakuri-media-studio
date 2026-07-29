@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { AgentArtifact, AgentProgress } from '../../types'
 import { message, session } from './fixtures'
 import {
+  currentActivity,
   downloadName,
   frameGroupTitle,
   groupArtifacts,
@@ -40,6 +41,7 @@ function frame(overrides: Partial<AgentProgress> = {}): AgentProgress {
     artifact: null,
     message: null,
     thinking: null,
+    activity: null,
     ...overrides,
   }
 }
@@ -90,6 +92,42 @@ describe('isCheckinAnswered', () => {
       messages: [message('checkin', 'q'), message('event', '停止しました', { kind: 'stopped' })],
     })
     expect(isCheckinAnswered(state, 0)).toBe(false)
+  })
+})
+
+describe('currentActivity', () => {
+  it('WS フレームの activity を最優先で出す', () => {
+    expect(
+      currentActivity({
+        session: session({ status: 'running', thinking: true }),
+        frame: frame({ thinking: true, activity: 'ツール実行中: run_terminal_command' }),
+      }),
+    ).toBe('ツール実行中: run_terminal_command')
+  })
+
+  it('フレームが無ければセッションの activity（ポーリング）で補う', () => {
+    expect(
+      currentActivity({ session: session({ status: 'running', activity: '思考中' }) }),
+    ).toBe('思考中')
+  })
+
+  it('別セッションのフレームは無視する', () => {
+    expect(
+      currentActivity({
+        session: session({ status: 'running', activity: '思考中' }),
+        frame: frame({ session_id: 'other', activity: 'ツール実行中: ls' }),
+      }),
+    ).toBe('思考中')
+  })
+
+  it('ターン終了のフレーム（thinking=false）では活動を出さない', () => {
+    expect(
+      currentActivity({ session: session({ status: 'done' }), frame: frame({ thinking: false }) }),
+    ).toBeNull()
+  })
+
+  it('何も無ければ null', () => {
+    expect(currentActivity({ session: session(), frame: frame() })).toBeNull()
   })
 })
 

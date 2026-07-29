@@ -37,6 +37,15 @@ export default function ChatModal({ form, patch, onClose, onSessionId }: Props) 
           }),
         ),
         trigger_text: form.triggerText,
+        video_loras: form.videoLoras.map(
+          ({ lora_name, trigger_word, strength, display_name }) => ({
+            lora_name,
+            trigger_word,
+            strength,
+            display_name,
+          }),
+        ),
+        video_trigger_text: form.videoTriggerText,
         duration: form.duration,
         image_prompt_draft: form.imagePrompt,
         video_prompt_draft: form.videoPrompt,

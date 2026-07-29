@@ -266,6 +266,17 @@ export default function App() {
                 strength,
               })),
         trigger_text: form.mode === 'i2v' ? '' : form.triggerText,
+        // the video LoRA chain only exists when a video stage runs
+        video_loras:
+          form.mode === 'image_only'
+            ? []
+            : form.videoLoras.map(({ lora_name, trigger_word, strength }) => ({
+                lora_name,
+                trigger_word,
+                strength,
+              })),
+        video_trigger_text:
+          form.mode === 'image_only' ? '' : form.videoTriggerText,
         duration: form.duration,
         fps: form.fps,
         audio_path: needs('audio') ? form.audioPath || null : null,

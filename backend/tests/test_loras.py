@@ -38,6 +38,90 @@ def upload(env, lora_id: int, name: str = "face.png", body: bytes = b"img"):
     )
 
 
+async def test_an_existing_registry_is_migrated_to_image(tmp_path, monkeypatch):
+    """A DB written before the split keeps its rows, all of them 画像用."""
+    import aiosqlite
+
+    path = tmp_path / "old.db"
+    monkeypatch.setattr(db, "DB_PATH", path)
+    async with aiosqlite.connect(path) as conn:
+        await conn.execute(
+            "CREATE TABLE loras (id INTEGER PRIMARY KEY, display_name TEXT NOT NULL,"
+            " lora_name TEXT NOT NULL, trigger_word TEXT NOT NULL,"
+            " default_strength REAL DEFAULT 1.0, default_audio TEXT,"
+            " sort_order INTEGER DEFAULT 0)"
+        )
+        await conn.execute(
+            "INSERT INTO loras (display_name, lora_name, trigger_word)"
+            " VALUES ('サクラ', 'sakura.safetensors', 'sakura')"
+        )
+        await conn.commit()
+
+    await db.init_db()
+
+    async with db.get_db() as conn:
+        async with conn.execute("SELECT * FROM loras") as cur:
+            rows = [dict(row) for row in await cur.fetchall()]
+    assert [row["target"] for row in rows] == ["image"]
+    assert rows[0]["lora_name"] == "sakura.safetensors"
+
+
+def test_a_lora_is_registered_for_the_image_stage_by_default(env):
+    assert create_lora(env)["target"] == "image"
+
+
+def test_a_video_lora_can_be_registered(env):
+    response = env.client.post(
+        "/api/loras",
+        json={**PAYLOAD, "display_name": "スローモ", "target": "video"},
+    )
+    assert response.status_code == 201, response.text
+    lora = response.json()
+    assert lora["target"] == "video"
+    # …and it survives the round trip through the DB
+    assert env.client.get(f"/api/loras/{lora['id']}").json()["target"] == "video"
+
+
+def test_the_target_can_be_changed(env):
+    lora = create_lora(env)
+    updated = env.client.put(f"/api/loras/{lora['id']}", json={"target": "video"})
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["target"] == "video"
+    # an update that does not mention the target keeps it
+    kept = env.client.put(f"/api/loras/{lora['id']}", json={"trigger_word": "x"})
+    assert kept.json()["target"] == "video"
+
+
+def test_an_unknown_target_is_rejected(env):
+    response = env.client.post("/api/loras", json={**PAYLOAD, "target": "audio"})
+    assert response.status_code == 422
+
+
+def test_a_video_lora_keeps_samples_and_defaults(env):
+    lora = env.client.post(
+        "/api/loras",
+        json={**PAYLOAD, "target": "video", "default_strength": 0.7,
+              "trigger_word": "slowmo"},
+    ).json()
+    result = upload(env, lora["id"]).json()
+    assert len(result["sample_images"]) == 1
+    assert result["default_strength"] == 0.7
+    assert result["trigger_word"] == "slowmo"
+
+
+def test_options_exposes_the_target_so_the_form_can_filter(env):
+    create_lora(env)
+    env.client.post(
+        "/api/loras",
+        json={**PAYLOAD, "display_name": "スローモ", "target": "video"},
+    )
+    loras = env.client.get("/api/options").json()["loras"]
+    assert {lora["display_name"]: lora["target"] for lora in loras} == {
+        "サクラ": "image",
+        "スローモ": "video",
+    }
+
+
 def test_new_lora_has_no_samples(env):
     lora = create_lora(env)
     assert lora["sample_images"] == []

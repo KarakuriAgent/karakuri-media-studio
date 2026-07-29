@@ -62,16 +62,24 @@ def T(node_id: str, field: str, class_type: str) -> Target:
 
 @dataclass(frozen=True)
 class LoraChain:
-    """Where the dynamic image-LoRA chain is spliced into a template (SPEC §3.4).
+    """Where the dynamic user-LoRA chain is spliced into a template (SPEC §3.4).
 
-    ``placeholders`` are the template's own (strength 0) ``LoraLoaderModelOnly``
-    nodes; the app deletes them and rebuilds the chain from ``head`` to
-    ``consumer`` out of the LoRAs the user selected.
+    The chain is one edge of the graph, cut open: ``head`` is the node whose
+    ``MODEL`` output the chain starts from and ``consumers`` are the inputs that
+    used to read it directly and are re-pointed at the chain's tail.  With no
+    LoRA selected the consumers are wired straight back to ``head``, so the graph
+    is identical to the template.
+
+    ``placeholders`` are a template's own (strength 0) ``LoraLoaderModelOnly``
+    stubs, which the app deletes before rebuilding the chain.  Only the image
+    template has them; the LTX 2.3 templates splice in **after** their fixed
+    LoRA nodes (distill / ID-LoRA / IC-LoRA), which must stay, so their
+    ``placeholders`` is empty.
     """
 
     head: str
-    placeholders: tuple[str, ...]
-    consumer: Target
+    placeholders: tuple[str, ...] = ()
+    consumers: tuple[Target, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -113,7 +121,7 @@ class WorkflowSpec:
         yield from self.inject.values()
         yield from self.seeds
         if self.lora_chain is not None:
-            yield self.lora_chain.consumer
+            yield from self.lora_chain.consumers
 
     def supports(self, name: str) -> bool:
         return name in self.inject
@@ -153,7 +161,7 @@ KREA2_TURBO = WorkflowSpec(
     lora_chain=LoraChain(
         head="30:10",
         placeholders=("30:61:60", "30:61:58", "30:61:57", "30:61:55", "30:61:62"),
-        consumer=T("30:3", "model", "KSampler"),
+        consumers=(T("30:3", "model", "KSampler"),),
     ),
     constants={"refine_enable": False},
 )
@@ -162,6 +170,24 @@ KREA2_TURBO = WorkflowSpec(
 # --------------------------------------------------------------------------
 # video: workflow/video/ltx2.3/*.json
 # --------------------------------------------------------------------------
+#
+# Video LoRA chain (SPEC §3.4): every LTX template already carries fixed LoRA
+# nodes it cannot work without — the distilled-1.1 speed LoRA on the "dev"
+# graphs, the talkvid ID-LoRA, the ingredients / union-control IC-LoRAs.  The
+# user chain is therefore spliced in *after* the last of those on the path to
+# the sampler, and only the sampler-side consumers are re-pointed:
+#
+# * t2v / i2v / ia2v: head = the distill ``LoraLoaderModelOnly``, consumers =
+#   both ``CFGGuider.model`` inputs (the base and the upscale pass).  The Gemma
+#   ``LoraLoader`` hanging off the same output is a text-encoder LoRA whose
+#   MODEL output nothing reads, so it keeps the raw model.
+# * id_lora: head = the distill LoRA as well, consumers = the first
+#   ``CFGGuider`` *and* the talkvid ID-LoRA node, so the user LoRA applies to
+#   both passes while staying in front of the ID-LoRA / LTXVReferenceAudio.
+# * flf2v: head = the distill ``LoraLoaderModelOnly`` and the single
+#   ``CFGGuider`` is the consumer.
+# * ic_lora_*: head = the IC-LoRA node, consumer = ``KSampler.model``.  The
+#   ``GetICLoRAParameters`` branch keeps reading the IC-LoRA model directly.
 
 _DEV_NEGATIVE = "pc game, console game, video game, cartoon, childish, ugly"
 
@@ -196,6 +222,13 @@ LTX_T2V = WorkflowSpec(
     seeds=(
         T("267:216", "noise_seed", "RandomNoise"),
         T("267:237", "noise_seed", "RandomNoise"),
+    ),
+    lora_chain=LoraChain(
+        head="267:232",
+        consumers=(
+            T("267:213", "model", "CFGGuider"),
+            T("267:231", "model", "CFGGuider"),
+        ),
     ),
     constants={"prompt_enhance": False},
     notes="ltx-2.3-22b-dev-fp8 / 開始画像なし",
@@ -235,6 +268,13 @@ LTX_I2V = WorkflowSpec(
     seeds=(
         T("320:276", "noise_seed", "RandomNoise"),
         T("320:277", "noise_seed", "RandomNoise"),
+    ),
+    lora_chain=LoraChain(
+        head="320:285",
+        consumers=(
+            T("320:282", "model", "CFGGuider"),
+            T("320:314", "model", "CFGGuider"),
+        ),
     ),
     constants={"prompt_enhance": False},
     notes="ltx-2.3-22b-dev-fp8 / 音声は生成側で合成",
@@ -282,6 +322,13 @@ LTX_IA2V = WorkflowSpec(
         T("340:285", "noise_seed", "RandomNoise"),
         T("340:286", "noise_seed", "RandomNoise"),
     ),
+    lora_chain=LoraChain(
+        head="340:293",
+        consumers=(
+            T("340:290", "model", "CFGGuider"),
+            T("340:315", "model", "CFGGuider"),
+        ),
+    ),
     constants={"prompt_enhance": False},
     notes="ltx-2.3-22b-dev-fp8 / 音声をラテントに焼き込む",
 )
@@ -328,6 +375,14 @@ LTX_ID_LORA = WorkflowSpec(
         T("340:285", "noise_seed", "RandomNoise"),
         T("340:286", "noise_seed", "RandomNoise"),
     ),
+    lora_chain=LoraChain(
+        head="340:293",
+        consumers=(
+            T("340:290", "model", "CFGGuider"),
+            # the ID-LoRA -> LTXVReferenceAudio -> 2nd CFGGuider branch
+            T("340:346", "model", "LoraLoaderModelOnly"),
+        ),
+    ),
     notes="ltx-2.3-22b-dev-fp8 + talkvid ID-LoRA / LTXVReferenceAudio",
 )
 
@@ -363,7 +418,11 @@ LTX_FLF2V = WorkflowSpec(
         "save_prefix": T("68", "filename_prefix", "SaveVideo"),
     },
     seeds=(T("129:100", "noise_seed", "RandomNoise"),),
-    notes="ltx-2.3-22b-distilled-fp8",
+    lora_chain=LoraChain(
+        head="129:300",
+        consumers=(T("129:116", "model", "CFGGuider"),),
+    ),
+    notes="ltx-2.3-22b-dev-fp8 + distilled-1.1 LoRA",
 )
 
 LTX_IC_LORA_IMAGE = WorkflowSpec(
@@ -402,8 +461,12 @@ LTX_IC_LORA_IMAGE = WorkflowSpec(
         "save_prefix": T("68", "filename_prefix", "SaveVideo"),
     },
     seeds=(T("129:704", "seed", "KSampler"),),
+    lora_chain=LoraChain(
+        head="129:195",
+        consumers=(T("129:704", "model", "KSampler"),),
+    ),
     constants={"prompt_enhance": False},
-    notes="ltx-2.3-22b-distilled-fp8 + ingredients IC-LoRA",
+    notes="ltx-2.3-22b-dev-fp8 + distilled-1.1 LoRA + ingredients IC-LoRA",
 )
 
 LTX_IC_LORA_MOTION = WorkflowSpec(
@@ -441,8 +504,12 @@ LTX_IC_LORA_MOTION = WorkflowSpec(
         "save_prefix": T("68", "filename_prefix", "SaveVideo"),
     },
     seeds=(T("129:704", "seed", "KSampler"),),
+    lora_chain=LoraChain(
+        head="129:195",
+        consumers=(T("129:704", "model", "KSampler"),),
+    ),
     constants={"prompt_enhance": False},
-    notes="ltx-2.3-22b-distilled-fp8 + union-control IC-LoRA / MoGe 深度",
+    notes="ltx-2.3-22b-dev-fp8 + distilled-1.1 LoRA + union-control IC-LoRA / MoGe 深度",
 )
 
 
@@ -644,7 +711,25 @@ def validate_spec(spec: WorkflowSpec, template: Workflow | None = None) -> list[
 
     if spec.lora_chain is not None:
         chain = spec.lora_chain
-        check(chain.consumer, "lora_chain.consumer")
+        if not chain.consumers:
+            problems.append(f"{spec.id}.lora_chain: no consumers declared")
+        for index, consumer in enumerate(chain.consumers):
+            check(consumer, f"lora_chain.consumers[{index}]")
+            # the chain is spliced into an existing edge, so every consumer must
+            # currently read the head (directly or through the placeholders it
+            # replaces) — otherwise the manifest would silently rewire the graph
+            node = tpl.get(consumer.node_id)
+            link = (node.get("inputs") or {}).get(consumer.field) if isinstance(node, dict) else None
+            if not isinstance(link, list) or len(link) != 2:
+                problems.append(
+                    f"{spec.id}.lora_chain.consumers[{index}]:"
+                    f" {consumer.key} is not connected to a node"
+                )
+            elif link[0] != chain.head and link[0] not in chain.placeholders:
+                problems.append(
+                    f"{spec.id}.lora_chain.consumers[{index}]: {consumer.key} reads"
+                    f" {link[0]!r}, expected the chain head {chain.head!r}"
+                )
         if chain.head not in tpl:
             problems.append(
                 f"{spec.id}.lora_chain.head: node {chain.head!r} is missing"

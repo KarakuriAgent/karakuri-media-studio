@@ -8,6 +8,7 @@ import {
   NEGATIVE_PRESET_LABELS,
   disabledFields,
   joinTriggers,
+  lorasForTarget,
   toSelected,
   workflowsForMode,
   type FormState,
@@ -50,6 +51,101 @@ function Section({
       </div>
       {children}
     </section>
+  )
+}
+
+/** LoRA chips + strength sliders + trigger words, shared by both stages. */
+function LoraPicker({
+  loras,
+  selected,
+  disabled,
+  triggerText,
+  triggerDirty,
+  emptyHint,
+  onToggle,
+  onStrength,
+  onTrigger,
+  onTriggerReset,
+}: {
+  loras: Lora[]
+  selected: SelectedLora[]
+  disabled: boolean
+  triggerText: string
+  triggerDirty: boolean
+  emptyHint: string
+  onToggle: (lora: Lora) => void
+  onStrength: (index: number, strength: number) => void
+  onTrigger: (value: string) => void
+  onTriggerReset: () => void
+}) {
+  return (
+    <div className={disabled ? 'pointer-events-none opacity-40' : undefined}>
+      <div className="flex flex-wrap gap-1.5">
+        {loras.length === 0 && <p className="text-xs text-slate-500">{emptyHint}</p>}
+        {loras.map((lora) => {
+          const active = selected.some((item) => item.id === lora.id)
+          return (
+            <button
+              key={lora.id}
+              className={`chip ${
+                active
+                  ? 'border-accent-500 bg-accent-500/20 text-accent-400'
+                  : 'border-ink-500 bg-ink-700 text-slate-300 hover:bg-ink-600'
+              }`}
+              disabled={disabled}
+              onClick={() => onToggle(lora)}
+            >
+              {lora.display_name}
+            </button>
+          )
+        })}
+      </div>
+
+      {selected.length > 0 && (
+        <div className="mt-3 flex flex-col gap-2">
+          {selected.map((lora, index) => (
+            <div key={lora.id} className="flex items-center gap-2">
+              <span className="w-24 shrink-0 truncate text-xs text-slate-300">
+                {lora.display_name}
+              </span>
+              <input
+                type="range"
+                min="0"
+                max="2"
+                step="0.05"
+                className="flex-1 accent-accent-500"
+                value={lora.strength}
+                disabled={disabled}
+                onChange={(event) => onStrength(index, Number(event.target.value))}
+              />
+              <span className="w-10 text-right text-xs tabular-nums text-slate-400">
+                {lora.strength.toFixed(2)}
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+
+      <div className="mt-3">
+        <div className="flex items-center justify-between">
+          <label className="label">トリガーワード（自動連結・編集可）</label>
+          {triggerDirty && (
+            <button
+              className="mb-1 text-[11px] text-slate-400 hover:text-slate-200"
+              onClick={onTriggerReset}
+            >
+              自動連結に戻す
+            </button>
+          )}
+        </div>
+        <input
+          className="field"
+          value={triggerText}
+          disabled={disabled}
+          onChange={(event) => onTrigger(event.target.value)}
+        />
+      </div>
+    </div>
   )
 }
 
@@ -174,7 +270,9 @@ export default function GenerateForm({
   const [busyUpload, setBusyUpload] = useState(false)
   const [showAdvanced, setShowAdvanced] = useState(false)
 
-  const availableLoras: Lora[] = options?.loras ?? []
+  const registeredLoras: Lora[] = options?.loras ?? []
+  const imageLoras = lorasForTarget(registeredLoras, 'image')
+  const videoLoras = lorasForTarget(registeredLoras, 'video')
   const audioAssets = options?.audio_assets ?? []
   const imageAssets = options?.image_assets ?? []
   const videoAssets = options?.video_assets ?? []
@@ -200,23 +298,30 @@ export default function GenerateForm({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form.mode, form.videoWorkflow, videoWorkflows])
 
-  const setLoras = (next: SelectedLora[]) => {
-    const changes: Partial<FormState> = { loras: next }
-    if (!form.triggerDirty) changes.triggerText = joinTriggers(next)
-    patch(changes)
-  }
-
   const toggleLora = (lora: Lora) => {
     const already = form.loras.some((item) => item.id === lora.id)
-    if (already) {
-      setLoras(form.loras.filter((item) => item.id !== lora.id))
-      return
-    }
-    const next = [...form.loras, toSelected(lora)]
+    const next = already
+      ? form.loras.filter((item) => item.id !== lora.id)
+      : [...form.loras, toSelected(lora)]
     const changes: Partial<FormState> = { loras: next }
     if (!form.triggerDirty) changes.triggerText = joinTriggers(next)
     // SPEC §7: first selected LoRA carrying a default audio wins.
-    if (!form.audioPath && lora.default_audio) changes.audioPath = lora.default_audio
+    if (!already && !form.audioPath && lora.default_audio) {
+      changes.audioPath = lora.default_audio
+    }
+    patch(changes)
+  }
+
+  const toggleVideoLora = (lora: Lora) => {
+    const already = form.videoLoras.some((item) => item.id === lora.id)
+    const next = already
+      ? form.videoLoras.filter((item) => item.id !== lora.id)
+      : [...form.videoLoras, toSelected(lora)]
+    const changes: Partial<FormState> = { videoLoras: next }
+    if (!form.videoTriggerDirty) changes.videoTriggerText = joinTriggers(next)
+    if (!already && !form.audioPath && lora.default_audio) {
+      changes.audioPath = lora.default_audio
+    }
     patch(changes)
   }
 
@@ -399,142 +504,6 @@ export default function GenerateForm({
         </Section>
       )}
 
-      <Section title="解像度">
-        <div className="grid grid-cols-2 gap-2">
-          <div>
-            <label className="label">アスペクト比</label>
-            {aspectRatios.length > 0 ? (
-              <select
-                className="field"
-                value={form.aspectRatio}
-                onChange={(event) => patch({ aspectRatio: event.target.value })}
-              >
-                {!aspectRatios.includes(form.aspectRatio) && (
-                  <option value={form.aspectRatio}>{form.aspectRatio}</option>
-                )}
-                {aspectRatios.map((ratio) => (
-                  <option key={ratio} value={ratio}>
-                    {ratio}
-                  </option>
-                ))}
-              </select>
-            ) : (
-              <input
-                className="field"
-                value={form.aspectRatio}
-                placeholder="4:3 (Standard)"
-                onChange={(event) => patch({ aspectRatio: event.target.value })}
-              />
-            )}
-          </div>
-          <div>
-            <label className="label">メガピクセル</label>
-            <input
-              className="field"
-              type="number"
-              step="0.05"
-              min="0.1"
-              value={form.megapixels}
-              onChange={(event) =>
-                patch({ megapixels: Number(event.target.value) || 0 })
-              }
-            />
-          </div>
-        </div>
-        <p className="mt-1 text-[11px] text-slate-500">
-          動画側の幅・高さはこの組み合わせから 8 の倍数で計算されます。
-        </p>
-      </Section>
-
-      <Section title="LoRA">
-        <div
-          className={
-            disabled.loras ? 'pointer-events-none opacity-40' : undefined
-          }
-        >
-          <div className="flex flex-wrap gap-1.5">
-            {availableLoras.length === 0 && (
-              <p className="text-xs text-slate-500">
-                登録済み LoRA がありません（設定 → LoRA 管理で追加）
-              </p>
-            )}
-            {availableLoras.map((lora) => {
-              const active = form.loras.some((item) => item.id === lora.id)
-              return (
-                <button
-                  key={lora.id}
-                  className={`chip ${
-                    active
-                      ? 'border-accent-500 bg-accent-500/20 text-accent-400'
-                      : 'border-ink-500 bg-ink-700 text-slate-300 hover:bg-ink-600'
-                  }`}
-                  disabled={disabled.loras}
-                  onClick={() => toggleLora(lora)}
-                >
-                  {lora.display_name}
-                </button>
-              )
-            })}
-          </div>
-
-          {form.loras.length > 0 && (
-            <div className="mt-3 flex flex-col gap-2">
-              {form.loras.map((lora, index) => (
-                <div key={lora.id} className="flex items-center gap-2">
-                  <span className="w-24 shrink-0 truncate text-xs text-slate-300">
-                    {lora.display_name}
-                  </span>
-                  <input
-                    type="range"
-                    min="0"
-                    max="2"
-                    step="0.05"
-                    className="flex-1 accent-accent-500"
-                    value={lora.strength}
-                    disabled={disabled.loras}
-                    onChange={(event) => {
-                      const next = [...form.loras]
-                      next[index] = { ...lora, strength: Number(event.target.value) }
-                      patch({ loras: next })
-                    }}
-                  />
-                  <span className="w-10 text-right text-xs tabular-nums text-slate-400">
-                    {lora.strength.toFixed(2)}
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
-
-          <div className="mt-3">
-            <div className="flex items-center justify-between">
-              <label className="label">トリガーワード（自動連結・編集可）</label>
-              {form.triggerDirty && (
-                <button
-                  className="mb-1 text-[11px] text-slate-400 hover:text-slate-200"
-                  onClick={() =>
-                    patch({
-                      triggerDirty: false,
-                      triggerText: joinTriggers(form.loras),
-                    })
-                  }
-                >
-                  自動連結に戻す
-                </button>
-              )}
-            </div>
-            <input
-              className="field"
-              value={form.triggerText}
-              disabled={disabled.trigger}
-              onChange={(event) =>
-                patch({ triggerText: event.target.value, triggerDirty: true })
-              }
-            />
-          </div>
-        </div>
-      </Section>
-
       <Section title="リファレンス音声">
         <div className={disabled.audio ? 'pointer-events-none opacity-40' : undefined}>
           <div className="flex flex-col gap-2">
@@ -586,6 +555,107 @@ export default function GenerateForm({
             <FieldError message={fieldErrors.audio_path} />
           </div>
         </div>
+      </Section>
+
+      <Section title="LoRA（動画）">
+        <LoraPicker
+          loras={videoLoras}
+          selected={form.videoLoras}
+          disabled={disabled.videoLoras}
+          triggerText={form.videoTriggerText}
+          triggerDirty={form.videoTriggerDirty}
+          emptyHint="動画用の登録済み LoRA がありません（設定 → LoRA 管理で追加）"
+          onToggle={toggleVideoLora}
+          onStrength={(index, strength) => {
+            const next = [...form.videoLoras]
+            next[index] = { ...next[index], strength }
+            patch({ videoLoras: next })
+          }}
+          onTrigger={(value) =>
+            patch({ videoTriggerText: value, videoTriggerDirty: true })
+          }
+          onTriggerReset={() =>
+            patch({
+              videoTriggerDirty: false,
+              videoTriggerText: joinTriggers(form.videoLoras),
+            })
+          }
+        />
+        <p className="mt-2 text-[11px] text-slate-500">
+          動画ワークフロー（LTX 2.3）の既定 LoRA の後ろに直列で挿入され、
+          トリガーワードは動画プロンプトの先頭に付きます。
+        </p>
+      </Section>
+
+      <Section title="解像度">
+        <div className="grid grid-cols-2 gap-2">
+          <div>
+            <label className="label">アスペクト比</label>
+            {aspectRatios.length > 0 ? (
+              <select
+                className="field"
+                value={form.aspectRatio}
+                onChange={(event) => patch({ aspectRatio: event.target.value })}
+              >
+                {!aspectRatios.includes(form.aspectRatio) && (
+                  <option value={form.aspectRatio}>{form.aspectRatio}</option>
+                )}
+                {aspectRatios.map((ratio) => (
+                  <option key={ratio} value={ratio}>
+                    {ratio}
+                  </option>
+                ))}
+              </select>
+            ) : (
+              <input
+                className="field"
+                value={form.aspectRatio}
+                placeholder="4:3 (Standard)"
+                onChange={(event) => patch({ aspectRatio: event.target.value })}
+              />
+            )}
+          </div>
+          <div>
+            <label className="label">メガピクセル</label>
+            <input
+              className="field"
+              type="number"
+              step="0.05"
+              min="0.1"
+              value={form.megapixels}
+              onChange={(event) =>
+                patch({ megapixels: Number(event.target.value) || 0 })
+              }
+            />
+          </div>
+        </div>
+        <p className="mt-1 text-[11px] text-slate-500">
+          動画側の幅・高さはこの組み合わせから 8 の倍数で計算されます。
+        </p>
+      </Section>
+
+      <Section title="LoRA（画像）">
+        <LoraPicker
+          loras={imageLoras}
+          selected={form.loras}
+          disabled={disabled.loras}
+          triggerText={form.triggerText}
+          triggerDirty={form.triggerDirty}
+          emptyHint="画像用の登録済み LoRA がありません（設定 → LoRA 管理で追加）"
+          onToggle={toggleLora}
+          onStrength={(index, strength) => {
+            const next = [...form.loras]
+            next[index] = { ...next[index], strength }
+            patch({ loras: next })
+          }}
+          onTrigger={(value) => patch({ triggerText: value, triggerDirty: true })}
+          onTriggerReset={() =>
+            patch({ triggerDirty: false, triggerText: joinTriggers(form.loras) })
+          }
+        />
+        <p className="mt-2 text-[11px] text-slate-500">
+          画像ワークフロー（Krea 2）に適用され、トリガーワードは画像プロンプトの先頭に付きます。
+        </p>
       </Section>
 
       <Section

@@ -11,7 +11,7 @@ import AgentChat from './AgentChat'
 import ArtifactPanel from './ArtifactPanel'
 import SessionList from './SessionList'
 import { AGENT_ACTIVE } from './common'
-import { isThinking, shouldReplaceSession } from './logic'
+import { currentActivity, isThinking, shouldReplaceSession } from './logic'
 
 interface Props {
   /** Latest `type: "agent"` WS frame (AGENT-MODE §5.1). */
@@ -269,6 +269,8 @@ export default function AgentView({ event, progress, showNsfw }: Props) {
   const thinking = session
     ? isThinking({ busy, session, frame: event })
     : busy
+  // 実行中の活動（ACP から届く「思考中」「ツール実行中: …」）。
+  const activity = session ? currentActivity({ session, frame: event }) : null
 
   // 一覧からは NSFW を外す（開いているセッションは作業中なので表示を続ける）。
   const visibleSessions = showNsfw
@@ -316,6 +318,7 @@ export default function AgentView({ event, progress, showNsfw }: Props) {
           onToggleNsfw={(nsfw) => void toggleNsfw(session.id, nsfw)}
           showNsfw={showNsfw}
           thinking={thinking}
+          activity={activity}
         />
       ) : (
         <section className="flex min-h-0 min-w-0 flex-1 flex-col items-center justify-center gap-2 rounded-lg border border-ink-600 bg-ink-900 p-4 text-center">

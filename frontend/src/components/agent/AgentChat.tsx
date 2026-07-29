@@ -30,6 +30,8 @@ interface Props {
    * `busy` と違い、承認後やジョブ完了後の自動ターンでも立つ。
    */
   thinking: boolean
+  /** 実行中の活動（「ツール実行中: …」など）。無ければ null。 */
+  activity?: string | null
 }
 
 function optionsOf(message: AgentMessage): string[] {
@@ -160,6 +162,7 @@ export default function AgentChat({
   onToggleNsfw,
   showNsfw,
   thinking,
+  activity = null,
 }: Props) {
   const [draft, setDraft] = useState('')
   const scroller = useRef<HTMLDivElement>(null)
@@ -273,7 +276,11 @@ export default function AgentChat({
           />
         )}
 
-        {thinking && <p className="text-xs text-slate-500">Grok が考えています…</p>}
+        {thinking && (
+          <p className="text-xs text-slate-500">
+            {activity ? `Grok が作業しています… ${activity}` : 'Grok が考えています…'}
+          </p>
+        )}
       </div>
 
       <div className="flex shrink-0 gap-2">

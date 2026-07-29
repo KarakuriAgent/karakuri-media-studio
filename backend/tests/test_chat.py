@@ -123,6 +123,43 @@ def test_session_starts_with_a_system_message(env):
     assert "6 seconds" in system["content"]
 
 
+def test_video_loras_get_their_own_trigger_section(env):
+    session = start(
+        env,
+        video_loras=[
+            {
+                "lora_name": "motion.safetensors",
+                "trigger_word": "slowmo",
+                "strength": 1.0,
+                "display_name": "スローモ",
+            }
+        ],
+        video_trigger_text="slowmo",
+    )
+    system = session["messages"][0]["content"]
+    assert "Active **video** LoRA trigger words: `slowmo`." in system
+    assert "「スローモ」 -> trigger word `slowmo`" in system
+    assert "belong in `video_prompt`" in system
+
+
+def test_without_video_loras_there_is_no_video_trigger_section(env):
+    system = start(env)["messages"][0]["content"]
+    assert "**video** LoRA trigger words" not in system
+
+
+def test_an_image_only_session_never_mentions_video_loras(env):
+    system = start(
+        env,
+        mode="image_only",
+        video_loras=[
+            {"lora_name": "motion.safetensors", "trigger_word": "slowmo",
+             "strength": 1.0, "display_name": "スローモ"}
+        ],
+        video_trigger_text="slowmo",
+    )["messages"][0]["content"]
+    assert "**video** LoRA trigger words" not in system
+
+
 def test_display_names_are_mapped_to_trigger_words(env):
     session = start(
         env,

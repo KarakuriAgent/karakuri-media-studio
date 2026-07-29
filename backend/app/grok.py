@@ -23,6 +23,7 @@ import re
 from abc import ABC, abstractmethod
 from contextlib import suppress
 from pathlib import Path
+from typing import Any, Callable
 
 from .config import load_settings
 from .models import HealthStatus
@@ -300,18 +301,36 @@ def get_client() -> LLMClient:
     return GrokCliClient()
 
 
-def get_agent_client(workdir: str | Path) -> LLMClient:
+def get_agent_client(
+    workdir: str | Path,
+    on_activity: "Callable[[str | None], Any] | None" = None,
+) -> LLMClient:
     """Client for one agent session (AGENT-MODE §3.4 / §6).
 
     Runs inside the session work dir with the longer agent timeout and the
     configured tool-permission flags (empty by default -> same safe ``-p`` run
     as the chat flow).
+
+    ``agent_use_acp``（既定 True）のときは ``grok agent stdio``（ACP）で回し、
+    実行中の活動を ``on_activity`` に流す。ACP を開始できなければ内部で従来の
+    ワンショット実行へフォールバックする。
     """
     settings = load_settings()
-    return GrokCliClient(
+    timeout = settings.agent_grok_timeout or DEFAULT_TIMEOUT
+    oneshot = GrokCliClient(
         workdir=workdir,
-        timeout=settings.agent_grok_timeout or DEFAULT_TIMEOUT,
+        timeout=timeout,
         extra_args=settings.agent_grok_args,
+    )
+    if not settings.agent_use_acp:
+        return oneshot
+    from .acp import AcpAgentClient  # 循環インポートを避けるため遅延 import
+
+    return AcpAgentClient(
+        workdir=workdir,
+        timeout=timeout,
+        on_activity=on_activity,
+        fallback=oneshot,
     )
 
 

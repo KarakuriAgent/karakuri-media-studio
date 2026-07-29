@@ -49,6 +49,7 @@ from .models import (
     JobRerun,
     LoraRef,
     missing_job_fields,
+    video_lora_problem,
     video_workflow_problem,
 )
 from .paths import ASSETS_DIR, OUTPUTS_DIR
@@ -242,7 +243,9 @@ def _seeds(seed: int | None) -> dict[str, Any]:
 def _validate(params: dict[str, Any]) -> None:
     mode = params.get("mode", "")
     video_workflow = params.get("video_workflow")
-    problem = video_workflow_problem(mode, video_workflow)
+    problem = video_workflow_problem(mode, video_workflow) or video_lora_problem(
+        mode, video_workflow, params.get("video_loras") or []
+    )
     if problem:
         raise JobValidationError(problem)
     try:
@@ -357,6 +360,8 @@ def _params_from_create(payload: JobCreate) -> dict[str, Any]:
         "megapixels": payload.megapixels,
         "loras": [lora.model_dump() for lora in payload.loras],
         "trigger_text": payload.trigger_text,
+        "video_loras": [lora.model_dump() for lora in payload.video_loras],
+        "video_trigger_text": payload.video_trigger_text,
         "image_prompt": payload.image_prompt,
         "video_prompt": payload.video_prompt,
         "negative_prompt": payload.negative_prompt,
@@ -465,6 +470,8 @@ async def continue_job(
         ),
         "loras": prev.get("loras", []),
         "trigger_text": prev.get("trigger_text", ""),
+        "video_loras": prev.get("video_loras", []),
+        "video_trigger_text": prev.get("video_trigger_text", ""),
         "image_prompt": prev.get("image_prompt", ""),
         "video_prompt": payload.video_prompt or prev.get("video_prompt", ""),
         "negative_prompt": payload.negative_prompt or prev.get("negative_prompt") or "",
@@ -506,6 +513,9 @@ def _generation_params(job: Job, uploads: dict[str, str]) -> GenerationParams:
         megapixels=float(p.get("megapixels", 1.0)),
         loras=[LoraRef(**lora) for lora in p.get("loras", [])],
         trigger_text=p.get("trigger_text", ""),
+        # 旧ジョブの params には無いので既定は空（後方互換）
+        video_loras=[LoraRef(**lora) for lora in p.get("video_loras", [])],
+        video_trigger_text=p.get("video_trigger_text", ""),
         image_prompt=p.get("image_prompt", ""),
         video_prompt=p.get("video_prompt", ""),
         negative_prompt=p.get("negative_prompt") or "",

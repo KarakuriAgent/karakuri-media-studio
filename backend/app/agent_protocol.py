@@ -149,8 +149,38 @@ def _workflow_detail(raw: dict[str, Any]) -> str | None:
     return " / ".join(details)
 
 
+_TARGET_LABEL = {"image": "画像用", "video": "動画用"}
+_FIELD_TARGET = {"loras": "image", "video_loras": "video"}
+
+
+def _check_loras(
+    payload: JobCreate, known_loras: dict[str, str], where: str
+) -> None:
+    """Every referenced LoRA must exist *and* be registered for that stage.
+
+    ``known_loras`` maps ``lora_name`` -> ``'image'`` / ``'video'`` (the registry
+    column).  A画像用 LoRA in ``video_loras`` would silently be spliced into the
+    LTX graph, so it is rejected with a message that names the right field.
+    """
+    for field, expected in _FIELD_TARGET.items():
+        for lora in getattr(payload, field):
+            actual = known_loras.get(lora.lora_name)
+            if actual is None:
+                raise ActionError(
+                    f"{where}: 存在しない LoRA です: {lora.lora_name}"
+                    "（システムプロンプトの一覧にあるファイル名のみ使用できます）"
+                )
+            if actual != expected:
+                other = "video_loras" if expected == "image" else "loras"
+                raise ActionError(
+                    f"{where}: `{lora.lora_name}` は"
+                    f"{_TARGET_LABEL.get(actual, actual)} LoRA なので"
+                    f" `{field}` には指定できません（`{other}` に入れてください）"
+                )
+
+
 def validate_job(
-    raw: Any, *, where: str, known_loras: set[str] | None = None
+    raw: Any, *, where: str, known_loras: dict[str, str] | None = None
 ) -> JobCreate:
     """Validate one ``job`` object exactly like ``POST /api/jobs`` would."""
     if not isinstance(raw, dict):
@@ -169,14 +199,7 @@ def validate_job(
         raise ActionError(f"{where}: {_pydantic_detail(exc)}") from exc
 
     if known_loras is not None:
-        missing = [
-            lora.lora_name for lora in payload.loras if lora.lora_name not in known_loras
-        ]
-        if missing:
-            raise ActionError(
-                f"{where}: 存在しない LoRA です: {', '.join(missing)}"
-                "（システムプロンプトの一覧にあるファイル名のみ使用できます）"
-            )
+        _check_loras(payload, known_loras, where)
 
     # 実在しないアセットは 422 と同じ扱いにする（jobs.resolve_asset_path）。
     # 対象はマニフェストの論理入力すべて（開始画像・音声・最終フレーム・参照動画）。
@@ -194,7 +217,9 @@ def validate_job(
 # action parsing
 # --------------------------------------------------------------------------
 
-def _tasks(raw: Any, *, max_tasks: int, known_loras: set[str] | None) -> list[AgentTask]:
+def _tasks(
+    raw: Any, *, max_tasks: int, known_loras: dict[str, str] | None
+) -> list[AgentTask]:
     if not isinstance(raw, list) or not raw:
         raise ActionError("plan には tasks 配列（1 件以上）が必要です")
     if len(raw) > max_tasks:
@@ -225,7 +250,7 @@ def _overrides(payload: dict[str, Any], fields: tuple[str, ...]) -> dict[str, An
 def parse_action(
     text: str,
     *,
-    known_loras: set[str] | None = None,
+    known_loras: dict[str, str] | None = None,
     max_tasks: int = MAX_PLAN_TASKS,
 ) -> AgentAction | None:
     """Parse the (optional) action of one Grok answer. Raises :class:`ActionError`."""

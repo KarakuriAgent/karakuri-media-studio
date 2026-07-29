@@ -9,6 +9,7 @@ from app.models import GenerationParams, LoraRef, missing_job_fields, video_work
 from app.workflow import (
     ASPECT_RATIOS,
     LORA_NODE_PREFIX,
+    VIDEO_LORA_NODE_PREFIX,
     WorkflowError,
     all_required_class_types,
     apply_model_overrides,
@@ -30,6 +31,7 @@ from app.workflows import (
     INPUT_FIELDS,
     SPECS,
     KREA2_TURBO,
+    T,
     WorkflowSpecError,
     catalog_entry,
     get_spec,
@@ -181,6 +183,36 @@ def test_an_undocumented_workflow_is_a_manifest_problem():
     assert any("prompt_hint is empty" in p for p in problems)
 
 
+def test_a_lora_chain_consumer_that_does_not_read_the_head_is_reported():
+    """The chain is spliced into an existing edge, so the wiring is validated."""
+    spec = get_spec("ltx2_3_t2v")
+    stray = replace(
+        spec,
+        lora_chain=replace(
+            spec.lora_chain, consumers=(spec.lora_chain.consumers[0],), head="267:236"
+        ),
+    )
+    assert any("expected the chain head" in p for p in validate_spec(stray))
+
+    missing = replace(spec, lora_chain=replace(spec.lora_chain, head="nope"))
+    assert any("lora_chain.head" in p for p in validate_spec(missing))
+
+    empty = replace(spec, lora_chain=replace(spec.lora_chain, consumers=()))
+    assert any("no consumers" in p for p in validate_spec(empty))
+
+
+def test_a_lora_chain_consumer_of_the_wrong_type_is_reported():
+    spec = get_spec("ltx2_3_t2v")
+    retyped = replace(
+        spec,
+        lora_chain=replace(
+            spec.lora_chain,
+            consumers=(T("267:213", "model", "KSampler"),),
+        ),
+    )
+    assert any("267:213" in p for p in validate_spec(retyped))
+
+
 def test_an_audio_input_without_an_audio_role_is_reported():
     spec = replace(get_spec("ltx2_3_id_lora"), audio_role="")
     assert any("audio_role" in p for p in validate_spec(spec))
@@ -263,6 +295,122 @@ def test_lora_chain_can_exceed_the_template_placeholders():
     wf = build_image_workflow(params(loras=loras))
     assert len(_lora_nodes(wf)) == 7
     validate_workflow(wf)
+
+
+# --- video LoRA chain (§3.4) ------------------------------------------------
+
+def _video_lora_nodes(wf: dict) -> list[str]:
+    return sorted(n for n in wf if n.startswith(VIDEO_LORA_NODE_PREFIX))
+
+
+def _video(workflow_id: str, **overrides) -> dict:
+    spec = get_spec(workflow_id, "video")
+    return build_video_workflow(params(video_workflow=workflow_id, **overrides), spec=spec)
+
+
+@pytest.mark.parametrize("workflow_id", VIDEO_IDS)
+def test_every_video_workflow_declares_a_lora_chain(workflow_id):
+    assert get_spec(workflow_id, "video").lora_chain is not None
+
+
+@pytest.mark.parametrize("workflow_id", VIDEO_IDS)
+def test_no_video_lora_keeps_the_template_wiring(workflow_id):
+    spec = get_spec(workflow_id, "video")
+    wf = _video(workflow_id, video_loras=[])
+    template = load_template(spec)
+    assert _video_lora_nodes(wf) == []
+    for consumer in spec.lora_chain.consumers:
+        # unchanged except that a placeholder-free chain is normalised to head
+        assert wf[consumer.node_id]["inputs"][consumer.field] == [spec.lora_chain.head, 0]
+        assert (
+            template[consumer.node_id]["inputs"][consumer.field][0]
+            == spec.lora_chain.head
+        )
+    validate_workflow(wf)
+
+
+@pytest.mark.parametrize("workflow_id", VIDEO_IDS)
+def test_video_loras_are_chained_between_head_and_consumers(workflow_id):
+    spec = get_spec(workflow_id, "video")
+    loras = [
+        LoraRef(lora_name="v0.safetensors", strength=0.6),
+        LoraRef(lora_name="v1.safetensors", strength=1.2),
+    ]
+    wf = _video(workflow_id, video_loras=loras)
+
+    assert _video_lora_nodes(wf) == ["app_video_lora_0", "app_video_lora_1"]
+    first, second = wf["app_video_lora_0"], wf["app_video_lora_1"]
+    assert first["class_type"] == "LoraLoaderModelOnly"
+    assert first["inputs"] == {
+        "lora_name": "v0.safetensors",
+        "strength_model": 0.6,
+        "model": [spec.lora_chain.head, 0],
+    }
+    assert second["inputs"]["lora_name"] == "v1.safetensors"
+    assert second["inputs"]["strength_model"] == 1.2
+    assert second["inputs"]["model"] == ["app_video_lora_0", 0]
+    for consumer in spec.lora_chain.consumers:
+        assert wf[consumer.node_id]["inputs"][consumer.field] == ["app_video_lora_1", 0]
+    validate_workflow(wf)
+
+
+def test_the_video_chain_keeps_the_templates_fixed_loras():
+    """The distill / ID-LoRA nodes stay: the user chain is spliced after them."""
+    wf = _video("ltx2_3_id_lora", video_loras=[LoraRef(lora_name="v.safetensors")])
+    # distill LoRA (the head) still hangs off the checkpoint
+    assert wf["340:293"]["inputs"]["model"] == ["340:317", 0]
+    # …and the talkvid ID-LoRA now reads the user chain
+    assert wf["340:346"]["inputs"]["model"] == ["app_video_lora_0", 0]
+    assert wf["340:349"]["inputs"]["model"] == ["340:346", 0]
+
+
+def test_video_loras_do_not_leak_into_the_image_workflow():
+    wf = build_image_workflow(
+        params(loras=[], video_loras=[LoraRef(lora_name="v.safetensors")])
+    )
+    assert _video_lora_nodes(wf) == []
+
+
+def test_image_loras_do_not_leak_into_the_video_workflow():
+    wf = _video("ltx2_3_t2v", loras=[LoraRef(lora_name="i.safetensors")])
+    assert [n for n in wf if n.startswith(LORA_NODE_PREFIX)] == []
+
+
+# --- video trigger words (§3.4) --------------------------------------------
+
+def _video_prompt(workflow_id: str = "ltx2_3_t2v", **overrides) -> str:
+    spec = get_spec(workflow_id, "video")
+    wf = _video(workflow_id, **overrides)
+    return value(wf, spec, "prompt")
+
+
+def test_video_triggers_are_prepended_to_the_video_prompt():
+    got = _video_prompt(
+        video_trigger_text="slowmo, neon",
+        video_prompt="a woman dancing",
+    )
+    assert got == "slowmo, neon, a woman dancing"
+
+
+def test_video_triggers_already_present_are_not_repeated():
+    got = _video_prompt(
+        video_trigger_text="slowmo, neon",
+        video_prompt="SLOWMO shot of a woman dancing",
+    )
+    assert got == "neon, SLOWMO shot of a woman dancing"
+
+
+def test_video_triggers_default_to_the_selected_loras():
+    got = _video_prompt(
+        video_trigger_text="",
+        video_loras=[LoraRef(lora_name="v.safetensors", trigger_word="slowmo")],
+        video_prompt="a woman dancing",
+    )
+    assert got == "slowmo, a woman dancing"
+
+
+def test_no_video_trigger_leaves_the_prompt_untouched():
+    assert _video_prompt(video_prompt="a woman dancing") == "a woman dancing"
 
 
 # --- trigger words (30:27 / 30:28, §3.4) -----------------------------------

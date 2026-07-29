@@ -36,6 +36,9 @@ export interface ModelFieldState {
   overridden: boolean
 }
 
+/** Which stage a registered LoRA belongs to (mirrors models.LoraTarget). */
+export type LoraTarget = 'image' | 'video'
+
 export interface Lora {
   id: number
   display_name: string
@@ -44,6 +47,8 @@ export interface Lora {
   default_strength: number
   default_audio: string | null
   sort_order: number
+  /** 'image' = Krea 2 の画像ワークフロー / 'video' = LTX 2.3 の動画ワークフロー。 */
+  target: LoraTarget
   /** サンプル画像の URL（/assets/lora_samples/<id>/<file>）。専用APIで管理。 */
   sample_images: string[]
 }
@@ -116,6 +121,8 @@ export interface JobCreate {
   megapixels: number
   loras: LoraRef[]
   trigger_text: string
+  video_loras: LoraRef[]
+  video_trigger_text: string
   duration: number
   fps: number
   audio_path: string | null
@@ -205,6 +212,8 @@ export interface ChatSessionCreate {
   video_workflow: string
   loras: ChatLoraRef[]
   trigger_text: string
+  video_loras?: ChatLoraRef[]
+  video_trigger_text?: string
   duration: number
   image_prompt_draft: string
   video_prompt_draft: string
@@ -287,6 +296,8 @@ export interface AgentSession {
   nsfw_source: string
   /** Grok ターンの実行中フラグ（バックエンドのインメモリ状態）。 */
   thinking: boolean
+  /** 実行中の活動（「思考中」「ツール実行中: …」。未実行なら null）。 */
+  activity: string | null
 }
 
 export interface AgentSessionSummary {
@@ -357,4 +368,6 @@ export interface AgentProgress {
   message: string | null
   /** Grok ターンが走っているか（null = この通知では変化なし）。 */
   thinking: boolean | null
+  /** 実行中の活動テキスト（null = 変化なし / ターン終了）。 */
+  activity: string | null
 }

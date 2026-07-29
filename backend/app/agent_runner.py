@@ -63,11 +63,19 @@ _stop_requests: set[str] = set()
 # Grok ターンを実行中のセッション（「Grok が考えています…」の唯一の情報源）。
 # ブラウザ発の API 呼び出しだけでなく、ループが回すターンもここに入る。
 _thinking: set[str] = set()
+# ターン実行中の活動テキスト（「思考中」「ツール実行中: ls」…）。ACP クライアントの
+# コールバックで更新し、WS + ポーリングの両方で UI に届ける。
+_activity: dict[str, str] = {}
 
 
 def is_thinking(session_id: str) -> bool:
     """Grok ターンが走っているか（インメモリ。DB には保存しない）。"""
     return session_id in _thinking
+
+
+def current_activity(session_id: str) -> str | None:
+    """実行中の活動テキスト（インメモリ。DB には保存しない）。"""
+    return _activity.get(session_id)
 
 
 async def _set_thinking(session_id: str, value: bool) -> None:
@@ -76,9 +84,30 @@ async def _set_thinking(session_id: str, value: bool) -> None:
         _thinking.add(session_id)
     else:
         _thinking.discard(session_id)
+        _activity.pop(session_id, None)  # ターン終了で活動表示を消す
     session = await load(session_id)
     await ws.publish_agent(
-        session_id, session.status if session else "idle", thinking=value
+        session_id,
+        session.status if session else "idle",
+        thinking=value,
+        activity=_activity.get(session_id),
+    )
+
+
+async def _set_activity(session_id: str, activity: str | None) -> None:
+    """ACP から届いた活動を保存して WS で通知する。"""
+    if activity:
+        _activity[session_id] = activity
+    else:
+        _activity.pop(session_id, None)
+    if not is_thinking(session_id):
+        return  # ターン外の取りこぼし通知は無視する
+    session = await load(session_id)
+    await ws.publish_agent(
+        session_id,
+        session.status if session else "idle",
+        thinking=True,
+        activity=activity,
     )
 
 
@@ -159,11 +188,12 @@ async def _save_task(session_id: str, task: AgentTask) -> None:
     )
 
 
-async def known_lora_names() -> set[str]:
+async def known_lora_names() -> dict[str, str]:
+    """``{lora_name: target}`` — the registry as the plan validator sees it."""
     async with get_db() as conn:
-        async with conn.execute("SELECT lora_name FROM loras") as cur:
+        async with conn.execute("SELECT lora_name, target FROM loras") as cur:
             rows = await cur.fetchall()
-    return {row["lora_name"] for row in rows}
+    return {row["lora_name"]: row["target"] or "image" for row in rows}
 
 
 # --------------------------------------------------------------------------
@@ -191,7 +221,10 @@ async def run_turn(session_id: str) -> tuple[str, AgentAction | None]:
 async def _run_turn(
     session_id: str, session: AgentSession
 ) -> tuple[str, AgentAction | None]:
-    client = grok.get_agent_client(session_dir(session_id))
+    async def on_activity(activity: str | None) -> None:
+        await _set_activity(session_id, activity)
+
+    client = grok.get_agent_client(session_dir(session_id), on_activity)
     known = await known_lora_names() or None
     max_tasks = load_settings().agent_max_plan_tasks or agent_protocol.MAX_PLAN_TASKS
 
@@ -917,9 +950,10 @@ async def _guarded_loop(
 
 
 def forget(session_id: str) -> None:
-    """セッション削除時にインメモリ状態（停止要求 / thinking）を落とす。"""
+    """セッション削除時にインメモリ状態（停止要求 / thinking / activity）を落とす。"""
     _stop_requests.discard(session_id)
     _thinking.discard(session_id)
+    _activity.pop(session_id, None)
 
 
 async def request_stop(session_id: str) -> None:
@@ -936,6 +970,7 @@ async def stop_all() -> None:
     _loops.clear()
     _stop_requests.clear()
     _thinking.clear()
+    _activity.clear()
     for task in tasks:
         task.cancel()
     for task in tasks:

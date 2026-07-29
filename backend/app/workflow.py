@@ -22,9 +22,10 @@ import math
 import re
 from typing import Any
 
-from .models import GenerationParams, ModelField
+from .models import GenerationParams, LoraRef, ModelField
 from .workflows import (
     SPECS,
+    LoraChain,
     Target,
     Workflow,
     WorkflowSpec,
@@ -35,7 +36,10 @@ from .workflows import (
     validate_specs,
 )
 
+#: node id prefix of the image (Krea 2) LoRA chain
 LORA_NODE_PREFIX = "app_lora_"
+#: node id prefix of the video (LTX 2.3) LoRA chain
+VIDEO_LORA_NODE_PREFIX = "app_video_lora_"
 
 # --- model file inputs (SPEC §3.3) -----------------------------------------
 # (class_type, input field) pairs whose value is a model file name on the
@@ -340,17 +344,53 @@ def _inject_triggers(wf: Workflow, spec: WorkflowSpec, params: GenerationParams)
     _inject(wf, spec, "trigger_switch", bool(prefix))
 
 
-def _build_lora_chain(wf: Workflow, spec: WorkflowSpec, params: GenerationParams) -> None:
-    """Replace the template's placeholder LoRA loaders with a dynamic chain (§3.4)."""
-    chain = spec.lora_chain
+def video_trigger_text(params: GenerationParams) -> str:
+    """Trigger words of the video LoRAs (the user's edit wins, §3.4)."""
+    explicit = params.video_trigger_text.strip()
+    if explicit:
+        return explicit
+    return ", ".join(
+        lora.trigger_word.strip()
+        for lora in params.video_loras
+        if lora.trigger_word.strip()
+    )
+
+
+def prepend_triggers(trigger_text: str, prompt: str) -> str:
+    """``prompt`` with the trigger words it does not contain yet in front (§3.4).
+
+    The LTX templates have no StringConcatenate to switch on, so the video
+    prompt is prefixed here.  Nothing to add == the prompt is returned as is, so
+    a prompt that already names the character never grows a leading ", ".
+    """
+    missing = missing_triggers(trigger_text, prompt)
+    if not missing:
+        return prompt
+    return f"{missing}, {prompt}" if prompt.strip() else missing
+
+
+def _build_lora_chain(
+    wf: Workflow,
+    chain: LoraChain | None,
+    loras: list[LoraRef],
+    *,
+    prefix: str,
+) -> None:
+    """Splice a dynamic ``LoraLoaderModelOnly`` chain into ``chain`` (§3.4).
+
+    The template's own placeholder loaders (image workflow only) are deleted,
+    one node per selected LoRA is chained from ``chain.head``, and every
+    consumer is re-pointed at the tail.  With no LoRA selected the consumers go
+    straight back to the head, which is what the template already says.
+    """
     if chain is None:
         return
     for node_id in chain.placeholders:
         wf.pop(node_id, None)
 
     upstream: list[Any] = [chain.head, 0]
-    for index, lora in enumerate(params.loras):
-        node_id = f"{LORA_NODE_PREFIX}{index}"
+    for index, lora in enumerate(loras):
+        node_id = f"{prefix}{index}"
         wf[node_id] = {
             "class_type": "LoraLoaderModelOnly",
             "_meta": {"title": f"LoRA {index}: {lora.lora_name}"},
@@ -361,7 +401,8 @@ def _build_lora_chain(wf: Workflow, spec: WorkflowSpec, params: GenerationParams
             },
         }
         upstream = [node_id, 0]
-    _set(wf, chain.consumer.node_id, chain.consumer.field, upstream)
+    for consumer in chain.consumers:
+        _set(wf, consumer.node_id, consumer.field, upstream)
 
 
 # --------------------------------------------------------------------------
@@ -449,7 +490,9 @@ def build_image_workflow(
     for name, value in resolved.constants.items():
         _inject(wf, resolved, name, value)
     _inject_triggers(wf, resolved, params)
-    _build_lora_chain(wf, resolved, params)
+    _build_lora_chain(
+        wf, resolved.lora_chain, params.loras, prefix=LORA_NODE_PREFIX
+    )
     _inject(wf, resolved, "save_prefix", params.image_filename_prefix)
 
     validate_workflow(wf)
@@ -471,7 +514,13 @@ def build_video_workflow(
 
     apply_model_overrides(wf, overrides, resolved.id)
 
-    _inject(wf, resolved, "prompt", params.video_prompt)
+    # The video LoRA's trigger words go in front of the prompt (SPEC §3.4).
+    _inject(
+        wf,
+        resolved,
+        "prompt",
+        prepend_triggers(video_trigger_text(params), params.video_prompt),
+    )
     # An empty negative keeps the template's own default (SPEC §3.1).
     if params.negative_prompt.strip():
         _inject(wf, resolved, "negative", params.negative_prompt)
@@ -491,6 +540,9 @@ def build_video_workflow(
     _inject(wf, resolved, "end_image", params.end_image_name)
     _inject(wf, resolved, "audio", params.audio_name)
     _inject(wf, resolved, "video", params.reference_video_name)
+    _build_lora_chain(
+        wf, resolved.lora_chain, params.video_loras, prefix=VIDEO_LORA_NODE_PREFIX
+    )
     for name, value in resolved.constants.items():
         _inject(wf, resolved, name, value)
     _inject(wf, resolved, "save_prefix", params.video_filename_prefix)

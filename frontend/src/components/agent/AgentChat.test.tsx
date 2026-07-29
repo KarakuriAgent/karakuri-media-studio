@@ -6,7 +6,7 @@ import { message, session } from './fixtures'
 
 afterEach(cleanup)
 
-function show(overrides: Partial<AgentSession> = {}, props: { busy?: boolean; thinking?: boolean } = {}) {
+function show(overrides: Partial<AgentSession> = {}, props: { busy?: boolean; thinking?: boolean; activity?: string | null } = {}) {
   const onSend = vi.fn()
   const onCheckin = vi.fn()
   render(
@@ -15,6 +15,7 @@ function show(overrides: Partial<AgentSession> = {}, props: { busy?: boolean; th
       progress={{}}
       busy={props.busy ?? false}
       thinking={props.thinking ?? props.busy ?? false}
+      activity={props.activity ?? null}
       error={null}
       onDismissError={() => {}}
       onSend={onSend}
@@ -48,6 +49,22 @@ describe('AgentChat のインジケーター', () => {
   it('何も走っていなければ出ない', () => {
     show()
     expect(screen.queryByText(THINKING)).toBeNull()
+  })
+
+  it('ACP の活動が届いていればその内容を出す', () => {
+    show({ status: 'running', thinking: true }, {
+      thinking: true,
+      activity: 'ツール実行中: run_terminal_command',
+    })
+    expect(screen.queryByText(THINKING)).toBeNull()
+    expect(
+      screen.queryByText('Grok が作業しています… ツール実行中: run_terminal_command'),
+    ).not.toBeNull()
+  })
+
+  it('活動が無ければ従来の文言に戻す', () => {
+    show({ status: 'running', thinking: true }, { thinking: true, activity: null })
+    expect(screen.queryByText(THINKING)).not.toBeNull()
   })
 })
 

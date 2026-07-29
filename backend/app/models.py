@@ -32,6 +32,9 @@ class Settings(BaseModel):
     )
     agent_grok_timeout: float = 300.0
     agent_max_plan_tasks: int = 5
+    # エージェントのターンを ACP (`grok agent stdio`) で回すか。ACP だと実行中の
+    # 活動（思考 / ツール実行）を UI に出せる。False なら従来のワンショット実行。
+    agent_use_acp: bool = True
     # {"<workflow_id>/<node_id>.<field>": "file.safetensors"} — only the entries
     # that differ from the workflow template are stored (SPEC §3.3).  Unscoped
     # keys from an older layout are ignored.
@@ -50,6 +53,7 @@ class SettingsUpdate(BaseModel):
     agent_grok_args: list[str] | None = None
     agent_grok_timeout: float | None = None
     agent_max_plan_tasks: int | None = None
+    agent_use_acp: bool | None = None
 
 
 class ModelField(BaseModel):
@@ -78,6 +82,11 @@ class ModelOverridesUpdate(BaseModel):
     overrides: dict[str, str] = Field(default_factory=dict)
 
 
+#: どちらのワークフローに挿す LoRA か（SPEC §3.4）。'image' は Krea 2 の画像
+#: ワークフロー、'video' は LTX 2.3 の動画ワークフローに注入される。
+LoraTarget = Literal["image", "video"]
+
+
 class Lora(BaseModel):
     id: int
     display_name: str
@@ -86,6 +95,7 @@ class Lora(BaseModel):
     default_strength: float = 1.0
     default_audio: str | None = None
     sort_order: int = 0
+    target: LoraTarget = "image"
     # サンプル画像の URL（/assets/lora_samples/<id>/<file>）。登録・削除は
     # 専用エンドポイント経由のみで、Create / Update では触れない。
     sample_images: list[str] = Field(default_factory=list)
@@ -98,6 +108,7 @@ class LoraCreate(BaseModel):
     default_strength: float = 1.0
     default_audio: str | None = None
     sort_order: int = 0
+    target: LoraTarget = "image"
 
 
 class LoraUpdate(BaseModel):
@@ -107,6 +118,7 @@ class LoraUpdate(BaseModel):
     default_strength: float | None = None
     default_audio: str | None = None
     sort_order: int | None = None
+    target: LoraTarget | None = None
 
 
 # Default of the LTX 2.3 "dev" templates (t2v / i2v / ia2v / id_lora).  An empty
@@ -135,8 +147,13 @@ class GenerationParams(BaseModel):
     aspect_ratio: str = "4:3 (Standard)"
     megapixels: float = 1.0
 
+    # 画像ワークフロー（Krea 2）に挿す LoRA
     loras: list[LoraRef] = Field(default_factory=list)
     trigger_text: str = ""  # already-concatenated / user-edited trigger words
+    # 動画ワークフロー（LTX 2.3）に挿す LoRA。`video_trigger_text` が空なら
+    # `video_loras` のトリガーワードを連結したものが使われる。
+    video_loras: list[LoraRef] = Field(default_factory=list)
+    video_trigger_text: str = ""
 
     image_prompt: str = ""
     video_prompt: str = ""
@@ -255,6 +272,28 @@ def video_workflow_problem(mode: str, video_workflow: str | None) -> str | None:
     return None
 
 
+def video_lora_problem(
+    mode: str, video_workflow: str | None, video_loras: list[Any]
+) -> str | None:
+    """Why the selected workflow cannot take ``video_loras`` (None == fine).
+
+    A run without a video stage has nowhere to put them, and a template whose
+    manifest declares no ``lora_chain`` cannot be spliced — both are rejected
+    rather than silently dropping the LoRAs the user picked (SPEC §3.4).
+    """
+    if not video_loras:
+        return None
+    if mode not in ("full", "i2v"):
+        return f"mode '{mode}' runs no video stage, so video_loras cannot be used"
+    try:
+        spec = get_video_spec(video_workflow)
+    except WorkflowSpecError as exc:
+        return str(exc)
+    if spec.lora_chain is None:
+        return f"video workflow '{spec.id}' does not support video LoRAs"
+    return None
+
+
 class JobCreate(BaseModel):
     """POST /api/jobs body."""
 
@@ -271,8 +310,12 @@ class JobCreate(BaseModel):
     aspect_ratio: str = "4:3 (Standard)"
     megapixels: float = 1.0
 
+    # 画像ワークフロー用 LoRA（target='image' で登録したもの）
     loras: list[LoraRef] = Field(default_factory=list)
     trigger_text: str = ""
+    # 動画ワークフロー用 LoRA（target='video' で登録したもの）
+    video_loras: list[LoraRef] = Field(default_factory=list)
+    video_trigger_text: str = ""
 
     duration: float = 10.0
     fps: int = 25
@@ -294,7 +337,9 @@ class JobCreate(BaseModel):
 
     @model_validator(mode="after")
     def _check_required(self) -> "JobCreate":
-        problem = video_workflow_problem(self.mode, self.video_workflow)
+        problem = video_workflow_problem(self.mode, self.video_workflow) or (
+            video_lora_problem(self.mode, self.video_workflow, self.video_loras)
+        )
         if problem:
             raise ValueError(problem)
         missing = missing_job_fields(
@@ -397,6 +442,8 @@ class ChatSessionCreate(BaseModel):
     video_workflow: str = DEFAULT_VIDEO_WORKFLOW
     loras: list[ChatLoraRef] = Field(default_factory=list)
     trigger_text: str = ""
+    video_loras: list[ChatLoraRef] = Field(default_factory=list)
+    video_trigger_text: str = ""
     duration: float = 10.0
     image_prompt_draft: str = ""
     video_prompt_draft: str = ""
@@ -520,6 +567,8 @@ class AgentSession(BaseModel):
     nsfw_source: str = ""
     # Grok ターンの実行中フラグ（agent_runner のインメモリ状態。DB には保存しない）
     thinking: bool = False
+    # 実行中の活動（「思考中」「ツール実行中: …」。未実行なら None）
+    activity: str | None = None
 
 
 class AgentSessionSummary(BaseModel):
@@ -610,6 +659,8 @@ class AgentProgress(BaseModel):
     message: str | None = None
     # Grok ターンが走っているか（None = この通知では変化なし）
     thinking: bool | None = None
+    # 実行中の活動テキスト（None = この通知では変化なし / ターン終了）
+    activity: str | None = None
 
 
 class WorkflowOption(BaseModel):

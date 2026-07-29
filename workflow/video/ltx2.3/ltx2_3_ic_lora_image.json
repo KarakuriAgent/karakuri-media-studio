@@ -395,7 +395,7 @@
   },
   "129:127": {
     "inputs": {
-      "ckpt_name": "ltx-2.3-22b-distilled-fp8.safetensors"
+      "ckpt_name": "ltx-2.3-22b-dev-fp8.safetensors"
     },
     "class_type": "CheckpointLoaderSimple",
     "_meta": {
@@ -404,7 +404,7 @@
   },
   "129:126": {
     "inputs": {
-      "ckpt_name": "ltx-2.3-22b-distilled-fp8.safetensors"
+      "ckpt_name": "ltx-2.3-22b-dev-fp8.safetensors"
     },
     "class_type": "LTXVAudioVAELoader",
     "_meta": {
@@ -414,7 +414,7 @@
   "129:103": {
     "inputs": {
       "text_encoder": "gemma_3_12B_it_fp4_mixed.safetensors",
-      "ckpt_name": "ltx-2.3-22b-distilled-fp8.safetensors",
+      "ckpt_name": "ltx-2.3-22b-dev-fp8.safetensors",
       "device": "default"
     },
     "class_type": "LTXAVTextEncoderLoader",
@@ -427,7 +427,7 @@
       "lora_name": "ltx-2.3-22b-ic-lora-ingredients-0.9.safetensors",
       "strength_model": 1,
       "model": [
-        "129:127",
+        "129:300",
         0
       ]
     },
@@ -479,7 +479,7 @@
       "strength_model": 1,
       "strength_clip": 1,
       "model": [
-        "129:127",
+        "129:300",
         0
       ],
       "clip": [
@@ -595,6 +595,20 @@
     "class_type": "PrimitiveBoolean",
     "_meta": {
       "title": "ブール値"
+    }
+  },
+  "129:300": {
+    "inputs": {
+      "lora_name": "ltx_2.3_22b_distilled_1.1_lora_dynamic_fro09_avg_rank_111_bf16.safetensors",
+      "strength_model": 0.5,
+      "model": [
+        "129:127",
+        0
+      ]
+    },
+    "class_type": "LoraLoaderModelOnly",
+    "_meta": {
+      "title": "LTX Distilled 1.1 LoRA"
     }
   }
 }

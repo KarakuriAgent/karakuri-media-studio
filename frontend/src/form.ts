@@ -2,6 +2,7 @@ import type {
   JobMode,
   Lora,
   LoraRef,
+  LoraTarget,
   PromptTemplate,
   WorkflowOption,
 } from './types'
@@ -41,9 +42,14 @@ export interface FormState {
   negativePrompt: string
   aspectRatio: string
   megapixels: number
+  /** LoRAs of the image (Krea 2) stage — registered with target 'image'. */
   loras: SelectedLora[]
   triggerText: string
   triggerDirty: boolean
+  /** LoRAs of the video (LTX 2.3) stage — registered with target 'video'. */
+  videoLoras: SelectedLora[]
+  videoTriggerText: string
+  videoTriggerDirty: boolean
   audioPath: string
   sourceImage: string
   endImage: string
@@ -67,6 +73,9 @@ export const initialForm: FormState = {
   loras: [],
   triggerText: '',
   triggerDirty: false,
+  videoLoras: [],
+  videoTriggerText: '',
+  videoTriggerDirty: false,
   audioPath: '',
   sourceImage: '',
   endImage: '',
@@ -95,6 +104,11 @@ export function joinTriggers(loras: SelectedLora[]): string {
     .join(', ')
 }
 
+/** Registered LoRAs usable by one stage (SPEC §3.4). */
+export function lorasForTarget(loras: Lora[], target: LoraTarget): Lora[] {
+  return loras.filter((lora) => (lora.target ?? 'image') === target)
+}
+
 /** Which fields the selected mode + video workflow does not use (SPEC §8).
  *
  * The video side is driven by the workflow manifest: a workflow that declares no
@@ -109,8 +123,12 @@ export function disabledFields(mode: JobMode, workflow?: WorkflowOption | null) 
     video && (workflow?.supports ?? []).includes(name)
   return {
     imagePrompt: mode === 'i2v',
+    // the image LoRA chain only exists in the image workflow, the video one
+    // only in the LTX graph — so each follows its own stage
     loras: mode === 'i2v',
     trigger: mode === 'i2v',
+    videoLoras: !video,
+    videoTrigger: !video,
     videoPrompt: !video,
     negative: !video,
     audio: !requires('audio'),

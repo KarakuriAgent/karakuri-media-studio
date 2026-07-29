@@ -36,7 +36,8 @@ CREATE TABLE IF NOT EXISTS loras (
   default_strength REAL DEFAULT 1.0,
   default_audio TEXT,
   sort_order    INTEGER DEFAULT 0,
-  sample_images TEXT NOT NULL DEFAULT '[]'
+  sample_images TEXT NOT NULL DEFAULT '[]',
+  target        TEXT NOT NULL DEFAULT 'image'
 );
 
 CREATE TABLE IF NOT EXISTS chat_sessions (
@@ -79,6 +80,9 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
     ],
     "loras": [
         ("sample_images", "TEXT NOT NULL DEFAULT '[]'"),
+        # 'image' = krea2 画像ワークフロー用 / 'video' = LTX 2.3 動画ワークフロー用。
+        # 既存レコードは画像用として登録されていたので既定値は 'image'。
+        ("target", "TEXT NOT NULL DEFAULT 'image'"),
     ],
 }
 

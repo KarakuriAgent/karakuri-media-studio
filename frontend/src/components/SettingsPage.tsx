@@ -4,6 +4,7 @@ import type {
   Asset,
   Lora,
   LoraPayload,
+  LoraTarget,
   ModelFieldState,
   Options,
   Settings,
@@ -17,6 +18,12 @@ const EMPTY_LORA: LoraPayload = {
   default_strength: 1,
   default_audio: null,
   sort_order: 0,
+  target: 'image',
+}
+
+const LORA_TARGET_LABELS: Record<LoraTarget, string> = {
+  image: '画像用（Krea 2）',
+  video: '動画用（LTX 2.3）',
 }
 
 const TABS = [
@@ -284,7 +291,12 @@ export default function SettingsPage({
                   <div key={lora.id} className="flex items-center gap-2 p-2 text-xs">
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-slate-200">{lora.display_name}</p>
-                      <p className="truncate text-slate-500">{lora.lora_name}</p>
+                      <p className="truncate text-slate-500">
+                        <span className="mr-1.5 rounded border border-ink-600 px-1 py-px text-[10px] text-slate-400">
+                          {LORA_TARGET_LABELS[lora.target ?? 'image']}
+                        </span>
+                        {lora.lora_name}
+                      </p>
                       <p className="truncate text-slate-600">
                         trigger: {lora.trigger_word} / strength: {lora.default_strength}
                         {lora.default_audio ? ` / audio: ${lora.default_audio}` : ''}
@@ -341,6 +353,7 @@ export default function SettingsPage({
                           default_strength: lora.default_strength,
                           default_audio: lora.default_audio,
                           sort_order: lora.sort_order,
+                          target: lora.target ?? 'image',
                         })
                       }}
                     >
@@ -389,6 +402,28 @@ export default function SettingsPage({
                         <option key={file} value={file} />
                       ))}
                     </datalist>
+                  </div>
+                  <div className="col-span-2">
+                    <label className="label">対象ワークフロー</label>
+                    <select
+                      className="field"
+                      value={draft.target}
+                      onChange={(event) =>
+                        setDraft({
+                          ...draft,
+                          target: event.target.value as LoraTarget,
+                        })
+                      }
+                    >
+                      {(['image', 'video'] as LoraTarget[]).map((value) => (
+                        <option key={value} value={value}>
+                          {LORA_TARGET_LABELS[value]}
+                        </option>
+                      ))}
+                    </select>
+                    <p className="mt-1 text-[11px] text-slate-500">
+                      画像用は Krea 2 の画像生成に、動画用は LTX 2.3 の動画生成に挿入されます。
+                    </p>
                   </div>
                   <div className="col-span-2">
                     <label className="label">トリガーワード</label>

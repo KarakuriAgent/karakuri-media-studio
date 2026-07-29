@@ -52,6 +52,25 @@ export function isThinking({
   return AGENT_ACTIVE.includes(session.status) || session.status === 'planning'
 }
 
+/**
+ * 実行中の活動テキスト（「ツール実行中: run_terminal_command」など）。
+ *
+ * `isThinking` と同じ流儀で、WS フレーム（最新）とセッションの `activity`
+ * （ポーリングの取りこぼし補完）を統合する。無ければ null。
+ */
+export function currentActivity({
+  session,
+  frame,
+}: {
+  session: AgentSession
+  frame?: AgentProgress | null
+}): string | null {
+  if (frame && frame.session_id === session.id && frame.thinking !== false) {
+    if (frame.activity) return frame.activity
+  }
+  return session.activity || null
+}
+
 /** メイン入力欄の状態（ループ実行中は送信が 409 になるので触らせない）。 */
 export function inputState(
   session: AgentSession,
