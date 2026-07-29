@@ -36,7 +36,8 @@ Grok がチャットから生成設定一式を組み立て、複数の動画ジ
 - **セッション一覧**（折りたたみ可）: 過去のエージェントセッション。会話 = 制作記録
 - **チャット**: タスクリスト・チェックイン・短い作業ログが流れる。入力欄と ⏹ 停止ボタン
 - **成果物パネル**: セッションの成果物・中間成果物を時系列カードで一覧
-  （プラン / リサーチ / メモ / 生成画像 / 動画 / フレーム検分結果）。
+  （プラン / リサーチ / メモ / 生成画像 / 動画 / 音声 / フレーム検分結果）。
+  音声カードは開くと `<audio>` プレイヤーで再生する（テキスト表示ではない）。
   NSFW が混ざるので**カードはサムネイルを出さない「リンクカード」**
   （アイコン + タイトル + 種別チップ + 時刻）。中身は開くまで見えない。
   タップで大型ビューア（刷新済み ResultPane の部品を流用）またはテキストビューアが開く。
@@ -62,21 +63,27 @@ Grok がチャットから生成設定一式を組み立て、複数の動画ジ
 エージェントが指定できるジョブ定義は既存の `JobCreate` スキーマ **そのもの**とする。
 つまり現行 UI で設定できる全項目が対象:
 
-`mode`（full / i2v / image_only）, **`video_workflow`**, `image_prompt`, `video_prompt`,
+`mode`（full / i2v / image_only / audio）, **`image_workflow`**, **`video_workflow`**,
+**`audio_workflow`**, `image_prompt`, `video_prompt`,
 `negative_prompt`, `aspect_ratio`, `megapixels`,
 `loras[]`（画像用 LoRA: lora_name / trigger_word / strength）, `trigger_text`,
 `video_loras[]`（動画用 LoRA・同形式）, `video_trigger_text`, `duration`, `fps`,
-`audio_path`, `source_image`, **`end_image`**, **`reference_video`**, `seed`（固定 or 抽選）
+`audio_path`, `source_image`, **`end_image`**, **`reference_video`**, `seed`（固定 or 抽選）、
+および音声モード専用の **`audio_prompt`** / `lyrics` / `bpm` / `keyscale` / `language` /
+`audio_category` / `reprompt`
 
 LoRA は登録時の対象（SPEC §3.4）で振り分ける: 画像用は `loras`、動画用は `video_loras`。
 システムプロンプトの CHOICES は両者を別見出しで列挙し、取り違えたプラン
 （画像用を `video_loras` に入れる等）は検証エラーとして 1 回リトライさせる。
+画像 LoRA には**モデルファミリー**があり、CHOICES には LoRA ごとのファミリーも出す。
+選択した `image_workflow` と違うファミリーの LoRA を混ぜたプランは検証エラーになる。
 
 #### ワークフローカタログ（単一情報源）
 
-動画は 7 種のワークフローから選べる（SPEC §3）。どれを選ぶかで必要な入力が変わるため、
-システムプロンプトには `app/workflows.py` の `WorkflowSpec` から自動生成した
-**VIDEO WORKFLOWS セクション**を焼き込む。1 ワークフローぶんの内容:
+動画は 7 種、画像は 4 種、音声は 2 種のワークフローから選べる（SPEC §2.2〜§2.4）。
+どれを選ぶかで必要な入力が変わるため、システムプロンプトには `app/workflows.py` の
+`WorkflowSpec` から自動生成した **IMAGE WORKFLOWS / VIDEO WORKFLOWS / AUDIO WORKFLOWS
+セクション**を焼き込む。動画 1 ワークフローぶんの内容:
 
 - ワークフロー ID（`video_workflow` に書く値）と表示名、既定かどうか
 - 用途（`description`）
@@ -92,6 +99,12 @@ LoRA は登録時の対象（SPEC §3.4）で振り分ける: 画像用は `lora
 
 `description` / `prompt_hint` / `audio_role` の未記入は `validate_specs()`（ヘルスチェックと
 テスト）が検出するので、ワークフローを追加したらプロンプト側の追記漏れは起きない。
+
+画像カタログは各ワークフローのモデルファミリーと `image_prompt` の書き方（ファミリー別）を、
+音声カタログは秒数の対応範囲とそのモデルが読むフィールド（`lyrics` / `bpm` / `audio_category` 等）を
+同じ仕組みで出す。あわせて **IMAGE PROMPT GUIDES / AUDIO PROMPT SPEC**（モデル別の書き方、
+公式ドキュメント準拠）も全種ぶん焼き込む。エージェントは 1 セッションで複数のモデルを
+使い分けるため、チャット（SPEC §4.3）と違って選択中のものだけに絞らない。
 
 検証は既存の JobCreate バリデーション（LoRA 実在チェック・全論理入力のアセット解決を含む）を
 そのまま通す。加えて `agent_protocol.validate_job` はプラン検証の段階で
@@ -125,6 +138,8 @@ LoRA は登録時の対象（SPEC §3.4）で振り分ける: 画像用は `lora
 - **再生成**: 外れジョブのシード再抽選・プロンプト修正版の再実行
 - **画像先行**: image_only で開始フレーム候補を量産 → 検分で選抜 → 当たりを i2v へ
   （SPEC §2 モード C の使い方をエージェントが自動で回す）
+- **音声ジョブ**（`mode: "audio"`）は映像を持たないので `inspect` の対象外。完了イベントでも
+  「音声は聴けないので判断はプロンプトと設定から」と明示し、フレーム検分を促さない
 
 ### 3.4 Grok CLI のエージェント能力の解放
 
@@ -160,6 +175,7 @@ Grok CLI はステートレスなテキスト入出力なので、ツール呼�
       "label": "① 明るいスタジオ",
       "job": {
         "mode": "full",
+        "image_workflow": "krea2_turbo",
         "video_workflow": "ltx2_3_id_lora",
         "image_prompt": "...", "video_prompt": "...",
         "negative_prompt": "...",
@@ -173,10 +189,23 @@ Grok CLI はステートレスなテキスト入出力なので、ツール呼�
         "source_image": null, "end_image": null, "reference_video": null,
         "seed": null
       }
+    },
+    {
+      "label": "② 主題歌デモ（音声のみ）",
+      "job": {
+        "mode": "audio",
+        "audio_workflow": "ace_step1_5_xl_sft",
+        "audio_prompt": "...", "lyrics": "[Verse 1]\n...",
+        "bpm": 92, "keyscale": "F# minor", "language": "ja",
+        "duration": 120, "seed": null
+      }
     }
   ]
 }
 ```
+
+音声タスクは画像・動画のフィールド（`video_prompt` / `source_image` / `loras` 等）を持たない。
+書くと「音声は独立ジョブ」という検証エラーになり、1 回リトライさせる。
 
 | action | 内容 | 承認 |
 |---|---|---|
@@ -259,13 +288,19 @@ Grok ターンの実行中は `thinking` で通知する（WS フレームの `t
 - `AgentView.tsx` 新設（ヘッダーにビュー切替を追加: main / agent / settings）
 - 構成部品: `SessionList` / `AgentChat`（タスクリストカード・チェックイン吹き出し・
   作業ログ行・入力欄 + 停止）/ `ArtifactPanel`（成果物カード一覧 + ビューアオーバーレイ。
-  動画 / 画像ビューアは ResultPane の部品を抽出して共用）
+  動画 / 画像ビューアは ResultPane の部品を抽出して共用、音声は `<audio>` プレイヤー）
+- **ファイル添付**: `AgentChat` の入力欄と `SessionList` の新規セッションフォームの両方に
+  📎 ボタンを置く（チップ表示・拡張子検査・画像はサムネイル）。既存セッションでは即
+  `POST .../attachments` でアップロードし、セッション作成前は `File` のまま持って
+  作成直後にアップロードする。チェックイン待ちの回答にも添付できる（承認判定は本文のみを見る）
 - 既存の GenerateForm / ResultPane / HistoryGallery / ChatModal / SettingsPage は変更しない
 
 ## 7. ガードレール
 
 - 自走モードのみ 1 回のプラン提案で新規 5 ジョブまで（設定可。完了済みの再掲は除く）、
-  さらに自走モードは上限本数（`auto_limit`）必須
+  さらに自走モードは上限本数（`auto_limit`）必須。生成本数の上限自体はどのチェックイン
+  モードでも効き、達したら打ち切りではなく続行確認のチェックインを出す（§5.3）。
+  プランのタスクだけでなく `continue` / `rerun` も同じ枠で数える
 - 生成開始・プラン外アクション・削除は承認必須。実行前にプランカードで全設定が見える
 - 不正 JSON・実在しない LoRA / アセット指定は自動リトライ + ユーザーにも可視化
 - Grok CLI のシェル実行はセッション workdir 内に限定する設定で起動（CLI 側の許可設定に従う）
