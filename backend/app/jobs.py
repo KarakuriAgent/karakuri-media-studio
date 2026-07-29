@@ -36,6 +36,7 @@ from pathlib import Path
 from typing import Any
 
 import aiosqlite
+from PIL import Image
 
 from . import comfy, nsfw as nsfw_service, ws
 from .config import load_settings
@@ -120,6 +121,24 @@ def resolve_asset_path(value: str, *, field: str) -> Path:
     if not resolved.is_file():
         raise JobValidationError(f"{field} not found: {resolved}")
     return resolved
+
+
+def read_image_size(path: str | Path) -> tuple[int, int] | None:
+    """``(width, height)`` of an image file, or ``None`` if it cannot be read.
+
+    Only the header is decoded.  A failure is not fatal: the caller falls back
+    to the aspect-ratio preset.
+    """
+    try:
+        with Image.open(path) as image:
+            width, height = image.size
+    except (OSError, ValueError) as exc:
+        log.warning("could not read image size of %s: %s", path, exc)
+        return None
+    if width <= 0 or height <= 0:
+        log.warning("image %s reports a degenerate size %sx%s", path, width, height)
+        return None
+    return width, height
 
 
 def _output_url(path: str | None) -> str | None:
@@ -504,6 +523,8 @@ async def continue_job(
 def _generation_params(job: Job, uploads: dict[str, str]) -> GenerationParams:
     """The injector's view of a job. ``uploads`` maps param field -> ComfyUI name."""
     p = job.params
+    # 参照画像があれば、その実比で動画の幅・高さを決める（読めなければプリセット）。
+    source_image = p.get("source_image")
     return GenerationParams(
         mode=job.mode,
         job_id=job.id,
@@ -511,6 +532,7 @@ def _generation_params(job: Job, uploads: dict[str, str]) -> GenerationParams:
         video_workflow=p.get("video_workflow") or DEFAULT_VIDEO_WORKFLOW,
         aspect_ratio=p.get("aspect_ratio", "4:3 (Standard)"),
         megapixels=float(p.get("megapixels", 1.0)),
+        start_image_size=read_image_size(source_image) if source_image else None,
         loras=[LoraRef(**lora) for lora in p.get("loras", [])],
         trigger_text=p.get("trigger_text", ""),
         # 旧ジョブの params には無いので既定は空（後方互換）
@@ -791,8 +813,13 @@ async def run_job(job_id: str) -> None:
             await _update(job_id, image_path=str(image))
             if two_stage:
                 # The video stage reads the still from the ComfyUI input dir.
+                # That still already follows the aspect-ratio preset, so any size
+                # taken from `source_image` no longer applies.
                 params = params.model_copy(
-                    update={"start_image_name": await comfy.upload_file(image)}
+                    update={
+                        "start_image_name": await comfy.upload_file(image),
+                        "start_image_size": None,
+                    }
                 )
 
         if job.mode in ("full", "i2v"):

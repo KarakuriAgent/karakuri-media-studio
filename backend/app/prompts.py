@@ -707,6 +707,9 @@ Rules:
 - Use only values listed in CHOICES: LoRA file names, aspect ratios and the
   audio / image / video asset paths must exist. `seed: null` means "roll a
   random seed".
+- `aspect_ratio` is a preset for the image stage; when the job has a
+  `source_image` the video follows that image's real aspect ratio instead (so it
+  is never centre-cropped), and only `megapixels` still applies.
 - LoRAs come in two kinds and are **not** interchangeable: 画像用 goes into
   `loras` (+ `trigger_text`, used by the image stage) and 動画用 into
   `video_loras` (+ `video_trigger_text`, used by the LTX video stage). Leave
@@ -877,6 +880,11 @@ def _agent_choices(
 
     if options.aspect_ratios:
         lines.append("Aspect ratios: " + ", ".join(f"`{a}`" for a in options.aspect_ratios))
+        lines.append(
+            "When a job supplies `source_image`, the video keeps that image's own"
+            " aspect ratio (only `megapixels` still applies) so the start frame is"
+            " not cropped — `aspect_ratio` then only matters for the image stage."
+        )
     else:
         lines.append(
             "Aspect ratios: ComfyUI の一覧を取得できませんでした。"

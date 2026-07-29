@@ -21,6 +21,7 @@ from app.workflow import (
     model_fields,
     parse_aspect_ratio,
     resolution,
+    resolution_for_image,
     validate_manifests,
     validate_workflow,
 )
@@ -634,6 +635,85 @@ def test_resolution_is_always_a_multiple_of_eight(label):
     width, height = resolution(label, 1.3)
     assert width % 8 == 0 and height % 8 == 0
     assert width >= 8 and height >= 8
+
+
+# --- reference image drives the aspect ratio (SPEC §3.1) --------------------
+
+def test_resolution_for_image_matches_the_equivalent_ratio():
+    # 1920x1080 is 16:9, so it must land on the very same edges as the preset
+    assert resolution_for_image(1920, 1080, 1.0) == resolution("16:9 (Widescreen)", 1.0)
+
+
+@pytest.mark.parametrize(
+    "size", [(1920, 1080), (1000, 1500), (100, 1000), (1000, 100), (3, 4)]
+)
+def test_resolution_for_image_keeps_the_budget_and_the_grid(size):
+    width, height = resolution_for_image(*size, 1.0)
+    assert width % 8 == 0 and height % 8 == 0
+    assert width >= 8 and height >= 8
+    # same pixel budget (rounding to a multiple of 8 costs at most a few %)
+    assert abs(width * height - 1024 * 1024) / (1024 * 1024) < 0.1
+    # and the image's own ratio, within the rounding error
+    assert abs(width / height - size[0] / size[1]) < 0.1 * (size[0] / size[1])
+
+
+@pytest.mark.parametrize("size", [(0, 100), (100, 0), (-8, 8)])
+def test_resolution_for_image_rejects_a_degenerate_size(size):
+    with pytest.raises(WorkflowError):
+        resolution_for_image(*size, 1.0)
+
+
+@pytest.mark.parametrize(
+    "workflow_id", ["tx2_3_i2v", "tx2_3_ia2v", "ltx2_3_id_lora", "ltx2_3_flf2v",
+                    "ltx2_3_ic_lora_motion"]
+)
+def test_start_frame_size_overrides_the_aspect_ratio_preset(workflow_id):
+    spec = get_spec(workflow_id)
+    wf = build_video_workflow(
+        params(
+            mode="i2v",
+            video_workflow=workflow_id,
+            aspect_ratio="16:9 (Widescreen)",
+            megapixels=1.0,
+            start_image_size=(1000, 1500),
+        )
+    )
+    expected = resolution_for_image(1000, 1500, 1.0)
+    assert (value(wf, spec, "width"), value(wf, spec, "height")) == expected
+    # portrait image => portrait output, not the 16:9 preset
+    assert value(wf, spec, "height") > value(wf, spec, "width")
+
+
+def test_reference_sheet_ignores_the_start_frame_size():
+    """The IC-LoRA sheet sizes a ResizeAndPadImage target: preset only."""
+    spec = get_spec("ltx2_3_ic_lora_image")
+    wf = build_video_workflow(
+        params(
+            mode="i2v",
+            video_workflow="ltx2_3_ic_lora_image",
+            aspect_ratio="16:9 (Widescreen)",
+            megapixels=1.0,
+            start_image_size=(1000, 1500),
+        )
+    )
+    expected = resolution("16:9 (Widescreen)", 1.0)
+    assert (value(wf, spec, "width"), value(wf, spec, "height")) == expected
+
+
+def test_without_a_start_frame_size_the_preset_is_used():
+    """No readable reference image (or none at all) => unchanged behaviour."""
+    spec = get_spec("tx2_3_i2v")
+    wf = build_video_workflow(
+        params(
+            mode="i2v",
+            video_workflow="tx2_3_i2v",
+            aspect_ratio="16:9 (Widescreen)",
+            megapixels=1.0,
+            start_image_size=None,
+        )
+    )
+    expected = resolution("16:9 (Widescreen)", 1.0)
+    assert (value(wf, spec, "width"), value(wf, spec, "height")) == expected
 
 
 # --------------------------------------------------------------------------

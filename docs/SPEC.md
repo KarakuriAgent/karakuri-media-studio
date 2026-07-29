@@ -122,6 +122,13 @@ width  = round(w_ratio * scale / 8) * 8
 height = round(h_ratio * scale / 8) * 8
 ```
 
+参照画像（開始フレーム）を取るワークフロー（`accepts_start_image=True`）で `source_image` が
+指定されている場合は、`w_ratio:h_ratio` にプリセットではなく **参照画像の実寸比** を使う
+（メガピクセルの総画素数と 8 の倍数丸めはそのまま）。比が合わないとテンプレート内の
+`ResizeImageMaskNode`（crop=center）でセンタークロップされ画が切れるため。画像の寸法が
+読めなかった場合はプリセットにフォールバックする。`full` モードの 1 段目は生成画像が
+プリセット通りなので、2 段目もプリセットを使う。
+
 例外: `ltx2_3_ic_lora_image` は幅・高さがリファレンスシートのパディング結果
 （`722` ResizeAndPadImage の `target_width` / `target_height`）から決まるため、そこに注入する。
 潜在側の丸めは `EmptyLTXVLatentVideo` が行う。

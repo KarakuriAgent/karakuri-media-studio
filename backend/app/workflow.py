@@ -194,6 +194,17 @@ def parse_aspect_ratio(aspect_ratio: str) -> tuple[int, int]:
     return width, height
 
 
+def _fit_ratio(
+    w_ratio: float, h_ratio: float, megapixels: float, multiple: int
+) -> tuple[int, int]:
+    """Edges of ``w_ratio:h_ratio`` scaled to ``megapixels``, rounded to ``multiple``."""
+    total_pixels = max(0.1, float(megapixels)) * 1024 * 1024
+    scale = math.sqrt(total_pixels / (w_ratio * h_ratio))
+    width = round(w_ratio * scale / multiple) * multiple
+    height = round(h_ratio * scale / multiple) * multiple
+    return max(multiple, width), max(multiple, height)
+
+
 def resolution(
     aspect_ratio: str, megapixels: float, multiple: int = RESOLUTION_MULTIPLE
 ) -> tuple[int, int]:
@@ -204,11 +215,39 @@ def resolution(
     the image workflow would have produced.
     """
     w_ratio, h_ratio = parse_aspect_ratio(aspect_ratio)
-    total_pixels = max(0.1, float(megapixels)) * 1024 * 1024
-    scale = math.sqrt(total_pixels / (w_ratio * h_ratio))
-    width = round(w_ratio * scale / multiple) * multiple
-    height = round(h_ratio * scale / multiple) * multiple
-    return max(multiple, width), max(multiple, height)
+    return _fit_ratio(w_ratio, h_ratio, megapixels, multiple)
+
+
+def resolution_for_image(
+    image_width: int,
+    image_height: int,
+    megapixels: float,
+    multiple: int = RESOLUTION_MULTIPLE,
+) -> tuple[int, int]:
+    """Width / height following a reference image's own aspect ratio.
+
+    Keeps the megapixel budget the user asked for but takes the ratio from the
+    image, so the start frame is not centre-cropped by the workflow's
+    ``ResizeImageMaskNode``.  Extreme ratios are followed as-is.
+    """
+    if image_width <= 0 or image_height <= 0:
+        raise WorkflowError(f"invalid image size: {image_width}x{image_height}")
+    return _fit_ratio(image_width, image_height, megapixels, multiple)
+
+
+def video_resolution(spec: WorkflowSpec, params: GenerationParams) -> tuple[int, int]:
+    """Width / height of the video stage.
+
+    A workflow that takes a start frame follows the reference image's aspect
+    ratio whenever its size is known, in preference to the user's preset — the
+    template centre-crops anything that does not match.  Workflows without a
+    start frame (t2v, the IC-LoRA reference sheet, whose width / height feed a
+    ``ResizeAndPadImage`` target instead) always use the preset.
+    """
+    size = params.start_image_size
+    if spec.accepts_start_image and size:
+        return resolution_for_image(size[0], size[1], params.megapixels)
+    return resolution(params.aspect_ratio, params.megapixels)
 
 
 # --- model file names (SPEC §3.3) ------------------------------------------
@@ -525,7 +564,7 @@ def build_video_workflow(
     if params.negative_prompt.strip():
         _inject(wf, resolved, "negative", params.negative_prompt)
 
-    width, height = resolution(params.aspect_ratio, params.megapixels)
+    width, height = video_resolution(resolved, params)
     _inject(wf, resolved, "width", width)
     _inject(wf, resolved, "height", height)
     _inject(wf, resolved, "duration", params.duration)

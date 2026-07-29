@@ -631,6 +631,8 @@ export default function GenerateForm({
         </div>
         <p className="mt-1 text-[11px] text-slate-500">
           動画側の幅・高さはこの組み合わせから 8 の倍数で計算されます。
+          開始フレーム画像を指定した場合、アスペクト比は画像に合わせて自動調整されます
+          （メガピクセルはそのまま有効。リファレンスシートを除く）。
         </p>
       </Section>
 

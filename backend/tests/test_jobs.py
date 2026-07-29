@@ -8,9 +8,12 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from app import comfy, db, jobs, nsfw
 from app.main import app
+from app.workflow import resolution, resolution_for_image
+from app.workflows import get_video_spec
 
 from conftest import fake_outputs
 
@@ -270,6 +273,103 @@ def test_flf2v_job_uploads_both_frames(env):
     assert workflow["31"]["inputs"]["image"] == "start.png"
     assert workflow["39"]["inputs"]["image"] == "end.png"
     assert str(env.end_image) in env.comfy.uploads
+
+
+def _submitted_size(workflow: dict, workflow_id: str) -> tuple[int, int]:
+    spec = get_video_spec(workflow_id)
+    return tuple(
+        workflow[spec.inject[name].node_id]["inputs"][spec.inject[name].field]
+        for name in ("width", "height")
+    )
+
+
+def test_start_frame_sets_the_output_aspect_ratio(env):
+    """A portrait reference image beats the landscape preset (SPEC §3.1)."""
+    portrait = env.assets / "image" / "portrait.png"
+    Image.new("RGB", (1000, 1500), "black").save(portrait)
+
+    created = env.client.post(
+        "/api/jobs",
+        json={
+            "mode": "i2v",
+            "video_workflow": "tx2_3_i2v",
+            "video_prompt": "she turns around",
+            "source_image": str(portrait),
+            "aspect_ratio": "16:9 (Widescreen)",
+            "megapixels": 1.0,
+        },
+    ).json()
+    job = wait_for(env.client, created["id"])
+    assert job["status"] == "done", job["error"]
+    assert _submitted_size(env.comfy.queued[0], "tx2_3_i2v") == resolution_for_image(
+        1000, 1500, 1.0
+    )
+
+
+def test_unreadable_start_frame_falls_back_to_the_preset(env):
+    """`start.png` is not a real image: the preset must still be honoured."""
+    created = env.client.post(
+        "/api/jobs",
+        json={
+            "mode": "i2v",
+            "video_workflow": "tx2_3_i2v",
+            "video_prompt": "she turns around",
+            "source_image": str(env.start_image),
+            "aspect_ratio": "16:9 (Widescreen)",
+            "megapixels": 1.0,
+        },
+    ).json()
+    job = wait_for(env.client, created["id"])
+    assert job["status"] == "done", job["error"]
+    assert _submitted_size(env.comfy.queued[0], "tx2_3_i2v") == resolution(
+        "16:9 (Widescreen)", 1.0
+    )
+
+
+@needs_ffmpeg
+def test_full_mode_keeps_the_preset_for_the_generated_still(env):
+    """The still the image stage produces already follows the preset."""
+    portrait = env.assets / "image" / "portrait.png"
+    Image.new("RGB", (1000, 1500), "black").save(portrait)
+
+    created = env.client.post(
+        "/api/jobs",
+        json=full_body(
+            env,
+            video_workflow="tx2_3_i2v",
+            source_image=str(portrait),
+            aspect_ratio="16:9 (Widescreen)",
+            megapixels=1.0,
+        ),
+    ).json()
+    job = wait_for(env.client, created["id"])
+    assert job["status"] == "done", job["error"]
+    assert _submitted_size(env.comfy.queued[1], "tx2_3_i2v") == resolution(
+        "16:9 (Widescreen)", 1.0
+    )
+
+
+def test_reference_sheet_ignores_the_start_frame_size(env):
+    """The IC-LoRA sheet sizes a ResizeAndPadImage target: preset only."""
+    portrait = env.assets / "image" / "portrait.png"
+    Image.new("RGB", (1000, 1500), "black").save(portrait)
+
+    created = env.client.post(
+        "/api/jobs",
+        json={
+            "mode": "i2v",
+            "video_workflow": "ltx2_3_ic_lora_image",
+            "video_prompt": "a character sheet",
+            "source_image": str(portrait),
+            "aspect_ratio": "16:9 (Widescreen)",
+            "megapixels": 1.0,
+        },
+    ).json()
+    job = wait_for(env.client, created["id"])
+    assert job["status"] == "done", job["error"]
+    assert _submitted_size(env.comfy.queued[0], "ltx2_3_ic_lora_image") == resolution(
+        "16:9 (Widescreen)", 1.0
+    )
 
 
 def test_motion_job_uploads_the_reference_clip(env):

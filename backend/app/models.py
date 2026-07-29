@@ -146,6 +146,9 @@ class GenerationParams(BaseModel):
 
     aspect_ratio: str = "4:3 (Standard)"
     megapixels: float = 1.0
+    # 参照画像（開始フレーム）の実寸 (w, h)。分かっている場合、動画側の幅・高さは
+    # `aspect_ratio` プリセットではなくこの比から計算される（SPEC §3.1）。
+    start_image_size: tuple[int, int] | None = None
 
     # 画像ワークフロー（Krea 2）に挿す LoRA
     loras: list[LoraRef] = Field(default_factory=list)
