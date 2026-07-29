@@ -23,10 +23,10 @@ const ACTIVE_STATUSES = ['queued', 'prompting', 'running']
 
 const SHOW_NSFW_KEY = 'showNsfw'
 
-/** 既定は非表示。localStorage に永続化する。 */
+/** 既定は非表示。sessionStorage 保存なのでタブを閉じる（新しいアクセス）とオフに戻る。 */
 function initialShowNsfw(): boolean {
   try {
-    return window.localStorage.getItem(SHOW_NSFW_KEY) === '1'
+    return window.sessionStorage.getItem(SHOW_NSFW_KEY) === '1'
   } catch {
     return false
   }
@@ -63,9 +63,9 @@ export default function App() {
   // ---------------------------------------------------------------- NSFW 表示
   useEffect(() => {
     try {
-      window.localStorage.setItem(SHOW_NSFW_KEY, showNsfw ? '1' : '0')
+      window.sessionStorage.setItem(SHOW_NSFW_KEY, showNsfw ? '1' : '0')
     } catch {
-      /* localStorage が使えない環境ではセッション内のみ有効 */
+      /* sessionStorage が使えない環境ではメモリ上のみ有効 */
     }
   }, [showNsfw])
 
