@@ -1,13 +1,17 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { api } from '../../api'
 import type { AgentSession } from '../../types'
 import AgentChat from './AgentChat'
 import { message, session } from './fixtures'
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  vi.restoreAllMocks()
+})
 
 function show(overrides: Partial<AgentSession> = {}, props: { busy?: boolean; thinking?: boolean; activity?: string | null } = {}) {
-  const onSend = vi.fn()
+  const onSend = vi.fn<(content: string, attachments: string[]) => void>()
   const onCheckin = vi.fn()
   render(
     <AgentChat
@@ -88,6 +92,90 @@ describe('AgentChat の入力欄', () => {
       'チェックインに回答（Ctrl+Enter で送信）',
     ) as HTMLTextAreaElement
     expect(input.disabled).toBe(false)
+  })
+})
+
+describe('AgentChat のファイル添付', () => {
+  function attach(name = 'photo.png') {
+    const upload = vi
+      .spyOn(api, 'uploadAgentAttachment')
+      .mockResolvedValue({ name, path: `attachments/${name}` })
+    const picker = screen.getByTestId('agent-attachment-input') as HTMLInputElement
+    fireEvent.change(picker, {
+      target: { files: [new File(['x'], name, { type: 'image/png' })] },
+    })
+    return upload
+  }
+
+  it('選んだファイルは即アップロードしてチップに出る', async () => {
+    show()
+    attach()
+    expect(await screen.findByText('📎 photo.png')).not.toBeNull()
+  })
+
+  it('添付だけでも送信でき、パスが onSend に渡る', async () => {
+    const { onSend } = show()
+    attach()
+    await screen.findByText('📎 photo.png')
+
+    const button = screen.getByRole('button', { name: '送信' }) as HTMLButtonElement
+    expect(button.disabled).toBe(false)
+    fireEvent.click(button)
+    expect(onSend).toHaveBeenCalledWith('', ['attachments/photo.png'])
+    // 送信後はチップを片付ける
+    await waitFor(() => expect(screen.queryByText('📎 photo.png')).toBeNull())
+  })
+
+  it('本文と一緒に送ると両方渡る', async () => {
+    const { onSend } = show()
+    attach()
+    await screen.findByText('📎 photo.png')
+
+    fireEvent.change(screen.getByRole('textbox'), { target: { value: 'これ見て' } })
+    fireEvent.click(screen.getByRole('button', { name: '送信' }))
+    expect(onSend).toHaveBeenCalledWith('これ見て', ['attachments/photo.png'])
+  })
+
+  it('チップの ✕ で添付を外せる', async () => {
+    show()
+    attach()
+    fireEvent.click(await screen.findByRole('button', { name: 'photo.png を外す' }))
+    expect(screen.queryByText('📎 photo.png')).toBeNull()
+    expect((screen.getByRole('button', { name: '送信' }) as HTMLButtonElement).disabled).toBe(
+      true,
+    )
+  })
+
+  it('許可外の拡張子はアップロードせずエラーを出す', () => {
+    show()
+    const upload = vi.spyOn(api, 'uploadAgentAttachment')
+    fireEvent.change(screen.getByTestId('agent-attachment-input'), {
+      target: { files: [new File(['x'], 'evil.exe')] },
+    })
+    expect(upload).not.toHaveBeenCalled()
+    expect(screen.queryByText('この形式は添付できません: evil.exe')).not.toBeNull()
+  })
+
+  it('入力できない状態では添付ボタンも押せない', () => {
+    show({ status: 'running' })
+    expect(
+      (screen.getByRole('button', { name: 'ファイルを添付' }) as HTMLButtonElement)
+        .disabled,
+    ).toBe(true)
+  })
+
+  it('user メッセージの添付はバブルにファイル名を出す', () => {
+    show({
+      messages: [
+        message('user', '本文\n\n[Attached files]\n- attachments/photo.png', {
+          data: { attachments: ['attachments/photo.png'], text: '本文' },
+        }),
+      ],
+    })
+    expect(screen.queryByText('本文')).not.toBeNull()
+    // 定型文つきの content ではなくユーザー本文だけを出す
+    expect(screen.queryByText(/Attached files/)).toBeNull()
+    expect(screen.queryByText('photo.png')).not.toBeNull()
   })
 })
 

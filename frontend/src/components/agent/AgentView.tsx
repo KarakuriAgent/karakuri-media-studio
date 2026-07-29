@@ -131,7 +131,7 @@ export default function AgentView({ event, progress, showNsfw }: Props) {
 
   // ---------------------------------------------------------------- actions
 
-  const create = async (payload: AgentSessionCreate) => {
+  const create = async (payload: AgentSessionCreate, files: File[] = []) => {
     const goal = (payload.goal ?? '').trim()
     setBusy(true)
     setError(null)
@@ -149,8 +149,14 @@ export default function AgentView({ event, progress, showNsfw }: Props) {
       selectSession(created.id)
       applySession(created)
       await loadSessions()
-      if (goal) {
-        const reply = await api.sendAgentMessage(created.id, goal)
+      // 添付はセッションができてからでないと置き場所（workdir）が無いので、
+      // 作成後にアップロードして最初の発言に付ける。
+      const paths: string[] = []
+      for (const file of files) {
+        paths.push((await api.uploadAgentAttachment(created.id, file)).path)
+      }
+      if (goal || paths.length > 0) {
+        const reply = await api.sendAgentMessage(created.id, goal, paths)
         applySession(reply.session)
       }
     } catch (caught) {
@@ -175,9 +181,12 @@ export default function AgentView({ event, progress, showNsfw }: Props) {
     }
   }
 
-  const send = (content: string) => {
+  const send = (content: string, attachments: string[] = []) => {
     if (!sessionId) return
-    void run(async () => (await api.sendAgentMessage(sessionId, content)).session)
+    void run(
+      async () =>
+        (await api.sendAgentMessage(sessionId, content, attachments)).session,
+    )
   }
 
   const approve = () => {
@@ -286,7 +295,8 @@ export default function AgentView({ event, progress, showNsfw }: Props) {
     busy,
     onReload: () => void loadSessions(),
     onDelete: (id: string) => void remove(id),
-    onCreate: (payload: AgentSessionCreate) => void create(payload),
+    onCreate: (payload: AgentSessionCreate, files: File[]) =>
+      void create(payload, files),
   }
 
   return (

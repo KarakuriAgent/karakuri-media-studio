@@ -70,6 +70,32 @@ def copy_lora_samples(session_id: str, loras: list[Lora]) -> dict[str, list[str]
     return result
 
 
+ATTACHMENTS_DIR = "attachments"
+
+
+def attachments_dir(session_id: str) -> Path:
+    """``runtime/agent-sessions/<id>/attachments/`` (created on demand).
+
+    ユーザーが添付したファイルの置き場所。Grok CLI は workdir しか読めないので、
+    ここへ保存して workdir 相対パスを発言に埋め込む（lora_samples と同じ方式）。
+    """
+    path = session_dir(session_id) / ATTACHMENTS_DIR
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+def attachment_path(session_id: str, rel: str) -> Path | None:
+    """``attachments/<name>`` の実在ファイルだけを解決する（ほかは None）。"""
+    raw = (rel or "").strip()
+    if not raw.startswith(f"{ATTACHMENTS_DIR}/"):
+        return None
+    path = artifact_path(session_id, raw)
+    if path is None:
+        return None
+    root = (session_dir(session_id) / ATTACHMENTS_DIR).resolve()
+    return path if path.parent == root else None
+
+
 def artifact_path(session_id: str, name: str) -> Path | None:
     """Resolve ``name`` inside the session work dir, refusing anything outside."""
     raw = (name or "").strip()

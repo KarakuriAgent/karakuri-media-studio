@@ -1,5 +1,6 @@
 import type {
   AgentApprove,
+  AgentAttachment,
   AgentCheckinReply,
   AgentReply,
   AgentSession,
@@ -174,8 +175,14 @@ export const api = {
     request<AgentSession>(`/api/agent/sessions/${id}`),
   deleteAgentSession: (id: string) =>
     json<void>('DELETE', `/api/agent/sessions/${id}`),
-  sendAgentMessage: (id: string, content: string) =>
-    json<AgentReply>('POST', `/api/agent/sessions/${id}/messages`, { content }),
+  sendAgentMessage: (id: string, content: string, attachments: string[] = []) =>
+    json<AgentReply>('POST', `/api/agent/sessions/${id}/messages`, {
+      content,
+      attachments,
+    }),
+  /** 添付ファイルを workdir の attachments/ に置き、相対パスを受け取る。 */
+  uploadAgentAttachment: (id: string, file: File) =>
+    upload<AgentAttachment>(`/api/agent/sessions/${id}/attachments`, file),
   approveAgentPlan: (id: string, body: AgentApprove = {}) =>
     json<AgentReply>('POST', `/api/agent/sessions/${id}/approve`, body),
   replyAgentCheckin: (id: string, body: AgentCheckinReply) =>

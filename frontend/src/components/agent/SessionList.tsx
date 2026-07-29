@@ -1,10 +1,16 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import type {
   AgentCheckinMode,
   AgentSessionCreate,
   AgentSessionSummary,
 } from '../../types'
 import { NsfwBadge, NsfwToggle } from '../ui'
+import {
+  ATTACHMENT_ACCEPT,
+  AttachmentChip,
+  isAllowedAttachment,
+  rejectedMessage,
+} from './attachments'
 import { AgentStatusBadge, CHECKIN_LABEL, shortTime } from './common'
 
 interface Props {
@@ -17,7 +23,11 @@ interface Props {
   onReload: () => void
   onSelect: (id: string) => void
   onDelete: (id: string) => void
-  onCreate: (payload: AgentSessionCreate) => void
+  /**
+   * 新規セッション開始。``files`` はセッション作成後にアップロードして最初の
+   * 発言に添付する（作成前はアップロード先が無いので File のまま渡す）。
+   */
+  onCreate: (payload: AgentSessionCreate, files: File[]) => void
   onToggleNsfw: (id: string, nsfw: boolean) => void
   /** オンのときだけ 🫣 バッジを出す（オフのとき NSFW は渡ってこない）。 */
   showNsfw: boolean
@@ -46,6 +56,9 @@ export default function SessionList({
   const [goal, setGoal] = useState('')
   const [mode, setMode] = useState<AgentCheckinMode>('milestone')
   const [autoLimit, setAutoLimit] = useState(5)
+  const [files, setFiles] = useState<File[]>([])
+  const [attachError, setAttachError] = useState<string | null>(null)
+  const filePicker = useRef<HTMLInputElement>(null)
 
   if (collapsed) {
     return (
@@ -61,13 +74,29 @@ export default function SessionList({
   }
 
   const start = () => {
-    onCreate({
-      goal: goal.trim(),
-      checkin_mode: mode,
-      auto_limit: autoLimit,
-    })
+    onCreate(
+      {
+        goal: goal.trim(),
+        checkin_mode: mode,
+        auto_limit: autoLimit,
+      },
+      files,
+    )
     setGoal('')
+    setFiles([])
+    setAttachError(null)
     setCreating(false)
+  }
+
+  /** 作成前なので保持だけ（アップロードはセッション作成後に AgentView が行う）。 */
+  const pick = (picked: FileList | null) => {
+    const chosen = Array.from(picked ?? [])
+    if (chosen.length === 0) return
+    const rejected = chosen.filter((file) => !isAllowedAttachment(file.name))
+    setAttachError(rejected.length ? rejectedMessage(rejected.map((f) => f.name)) : null)
+    const allowed = chosen.filter((file) => isAllowedAttachment(file.name))
+    if (allowed.length > 0) setFiles((current) => [...current, ...allowed])
+    if (filePicker.current) filePicker.current.value = ''
   }
 
   return (
@@ -151,17 +180,56 @@ export default function SessionList({
                 />
               </div>
             )}
+            <div>
+              <input
+                ref={filePicker}
+                type="file"
+                multiple
+                hidden
+                accept={ATTACHMENT_ACCEPT}
+                data-testid="new-session-attachment-input"
+                onChange={(event) => pick(event.target.files)}
+              />
+              <button
+                className="btn-ghost w-full !py-1 text-xs"
+                title="ファイルを添付"
+                aria-label="ファイルを添付"
+                onClick={() => filePicker.current?.click()}
+              >
+                📎 ファイルを添付
+              </button>
+              {files.length > 0 && (
+                <div className="mt-1.5 flex flex-wrap gap-1">
+                  {files.map((file) => (
+                    <AttachmentChip
+                      key={`${file.name}:${file.size}:${file.lastModified}`}
+                      label={file.name}
+                      onRemove={() =>
+                        setFiles((current) => current.filter((other) => other !== file))
+                      }
+                    />
+                  ))}
+                </div>
+              )}
+              {attachError && (
+                <p className="mt-1 text-[11px] text-red-400">{attachError}</p>
+              )}
+            </div>
             <div className="flex gap-2">
               <button
                 className="btn-primary flex-1 !py-1.5 text-xs"
-                disabled={busy || !goal.trim()}
+                disabled={busy || (!goal.trim() && files.length === 0)}
                 onClick={start}
               >
                 開始
               </button>
               <button
                 className="btn-ghost !py-1.5 text-xs"
-                onClick={() => setCreating(false)}
+                onClick={() => {
+                  setFiles([])
+                  setAttachError(null)
+                  setCreating(false)
+                }}
               >
                 取消
               </button>

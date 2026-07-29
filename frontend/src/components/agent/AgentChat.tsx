@@ -1,7 +1,19 @@
 import { useEffect, useRef, useState } from 'react'
-import type { AgentMessage, AgentSession, JobProgress } from '../../types'
+import { api } from '../../api'
+import type {
+  AgentAttachment,
+  AgentMessage,
+  AgentSession,
+  JobProgress,
+} from '../../types'
 import { Banner, NsfwBadge, NsfwToggle } from '../ui'
 import PlanCard from './PlanCard'
+import {
+  ATTACHMENT_ACCEPT,
+  AttachmentChip,
+  isAllowedAttachment,
+  rejectedMessage,
+} from './attachments'
 import { AGENT_ACTIVE, AgentStatusBadge, CHECKIN_LABEL, eventIcon, shortTime } from './common'
 import { inputState, isCheckinAnswered, openCheckinIndex } from './logic'
 
@@ -11,7 +23,8 @@ interface Props {
   busy: boolean
   error: string | null
   onDismissError: () => void
-  onSend: (content: string) => void
+  /** 本文と添付（workdir 相対パス）。どちらか一方だけでも送信できる。 */
+  onSend: (content: string, attachments: string[]) => void
   onApprove: () => void
   onCheckin: (answer: string) => void
   onStop: () => void
@@ -39,16 +52,63 @@ function optionsOf(message: AgentMessage): string[] {
   return Array.isArray(options) ? options.filter((o): o is string => typeof o === 'string') : []
 }
 
-function Bubble({ message }: { message: AgentMessage }) {
+const IMAGE_RE = /\.(png|jpe?g|webp|bmp|gif)$/i
+
+/** 添付の workdir 相対パス（バックエンドが data に残したもの）。 */
+function attachmentsOf(message: AgentMessage): string[] {
+  const list = message.data?.attachments
+  return Array.isArray(list) ? list.filter((p): p is string => typeof p === 'string') : []
+}
+
+/**
+ * 吹き出しに出す本文。添付付きの発言は content に定型文が足されているので、
+ * data.text に控えてあるユーザー本文のほうを使う。
+ */
+function bubbleText(message: AgentMessage): string {
+  const text = message.data?.text
+  return typeof text === 'string' ? text : message.content
+}
+
+function baseName(path: string): string {
+  return path.split('/').pop() || path
+}
+
+function Bubble({ message, sessionId }: { message: AgentMessage; sessionId: string }) {
   const mine = message.role === 'user'
+  const attachments = attachmentsOf(message)
+  const text = mine ? bubbleText(message) : message.content
   return (
     <div className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>
       <div
-        className={`max-w-[80%] whitespace-pre-wrap rounded-lg px-3 py-2 text-sm ${
+        className={`max-w-[80%] rounded-lg px-3 py-2 text-sm ${
           mine ? 'bg-accent-500/20 text-slate-100' : 'bg-ink-700 text-slate-200'
         }`}
       >
-        {message.content}
+        {text && <p className="whitespace-pre-wrap">{text}</p>}
+        {attachments.length > 0 && (
+          <div className={`flex flex-wrap gap-1.5 ${text ? 'mt-2' : ''}`}>
+            {attachments.map((path) => {
+              const url = api.agentArtifactUrl(sessionId, path)
+              return (
+                <a
+                  key={path}
+                  href={url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="flex items-center gap-1.5 rounded border border-ink-600 bg-ink-800/70 px-1.5 py-1 text-[11px] text-slate-300 hover:text-slate-100"
+                  title={path}
+                >
+                  {IMAGE_RE.test(path) ? (
+                    <img src={url} alt="" className="h-8 w-8 rounded object-cover" />
+                  ) : (
+                    <span>📎</span>
+                  )}
+                  <span className="max-w-[12rem] truncate">{baseName(path)}</span>
+                </a>
+              )
+            })}
+          </div>
+        )}
       </div>
     </div>
   )
@@ -165,8 +225,12 @@ export default function AgentChat({
   activity = null,
 }: Props) {
   const [draft, setDraft] = useState('')
+  const [attachments, setAttachments] = useState<AgentAttachment[]>([])
+  const [uploading, setUploading] = useState(false)
+  const [uploadError, setUploadError] = useState<string | null>(null)
   const scroller = useRef<HTMLDivElement>(null)
   const input = useRef<HTMLTextAreaElement>(null)
+  const filePicker = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
     scroller.current?.scrollTo({ top: scroller.current.scrollHeight })
@@ -177,11 +241,40 @@ export default function AgentChat({
   const stoppable = AGENT_ACTIVE.includes(session.status)
   const { disabled: inputDisabled, placeholder } = inputState(session, thinking)
 
+  const sendable = (draft.trim().length > 0 || attachments.length > 0) && !uploading
+
   const send = () => {
+    if (!sendable || inputDisabled) return
     const content = draft.trim()
-    if (!content || inputDisabled) return
+    const paths = attachments.map((item) => item.path)
     setDraft('')
-    onSend(content)
+    setAttachments([])
+    onSend(content, paths)
+  }
+
+  /** 選んだファイルは即アップロードし、チップとして入力欄の上に並べる。 */
+  const pick = async (picked: FileList | null) => {
+    const files = Array.from(picked ?? [])
+    if (files.length === 0) return
+    const rejected = files.filter((file) => !isAllowedAttachment(file.name))
+    setUploadError(rejected.length ? rejectedMessage(rejected.map((f) => f.name)) : null)
+    const allowed = files.filter((file) => isAllowedAttachment(file.name))
+    if (allowed.length === 0) {
+      if (filePicker.current) filePicker.current.value = ''
+      return
+    }
+    setUploading(true)
+    try {
+      for (const file of allowed) {
+        const uploaded = await api.uploadAgentAttachment(session.id, file)
+        setAttachments((current) => [...current, uploaded])
+      }
+    } catch (caught) {
+      setUploadError(caught instanceof Error ? caught.message : String(caught))
+    } finally {
+      setUploading(false)
+      if (filePicker.current) filePicker.current.value = ''
+    }
   }
 
   return (
@@ -262,7 +355,7 @@ export default function AgentChat({
                 onAnswer={onCheckin}
               />
             )
-          return <Bubble key={index} message={message} />
+          return <Bubble key={index} message={message} sessionId={session.id} />
         })}
 
         {!running && session.plan.tasks.length > 0 && (
@@ -283,7 +376,49 @@ export default function AgentChat({
         )}
       </div>
 
+      {uploadError && (
+        <Banner onClose={() => setUploadError(null)}>{uploadError}</Banner>
+      )}
+
+      {(attachments.length > 0 || uploading) && (
+        <div className="flex shrink-0 flex-wrap items-center gap-1.5">
+          {attachments.map((item) => (
+            <AttachmentChip
+              key={item.path}
+              label={item.name}
+              title={item.path}
+              onRemove={() =>
+                setAttachments((current) =>
+                  current.filter((other) => other.path !== item.path),
+                )
+              }
+            />
+          ))}
+          {uploading && (
+            <span className="text-[11px] text-slate-500">アップロード中…</span>
+          )}
+        </div>
+      )}
+
       <div className="flex shrink-0 gap-2">
+        <input
+          ref={filePicker}
+          type="file"
+          multiple
+          hidden
+          accept={ATTACHMENT_ACCEPT}
+          data-testid="agent-attachment-input"
+          onChange={(event) => void pick(event.target.files)}
+        />
+        <button
+          className="btn-ghost !px-2"
+          disabled={inputDisabled || uploading}
+          title="ファイルを添付"
+          aria-label="ファイルを添付"
+          onClick={() => filePicker.current?.click()}
+        >
+          📎
+        </button>
         <textarea
           ref={input}
           className="field h-16 flex-1 resize-none"
@@ -300,7 +435,7 @@ export default function AgentChat({
         />
         <button
           className="btn-primary"
-          disabled={inputDisabled || !draft.trim()}
+          disabled={inputDisabled || !sendable}
           onClick={send}
         >
           送信

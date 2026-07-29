@@ -243,6 +243,13 @@ export type AgentActionName =
   | 'done'
 export type AgentTaskStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped'
 
+/** POST /api/agent/sessions/{id}/attachments のレスポンス。 */
+export interface AgentAttachment {
+  name: string
+  /** workdir 相対パス（`attachments/<name>`）。 */
+  path: string
+}
+
 export interface AgentMessage {
   role: 'system' | 'user' | 'assistant' | 'event' | 'checkin'
   content: string

@@ -598,6 +598,16 @@ class AgentSessionCreate(BaseModel):
 
 class AgentSendMessage(BaseModel):
     content: str
+    # 添付ファイルの workdir 相対パス（``attachments/<name>``）。本文が空でも
+    # 添付だけで送信できる。
+    attachments: list[str] = Field(default_factory=list)
+
+
+class AgentAttachment(BaseModel):
+    """POST .../attachments のレスポンス（workdir 相対パスを返す）。"""
+
+    name: str
+    path: str
 
 
 class AgentApprove(BaseModel):

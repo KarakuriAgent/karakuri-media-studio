@@ -6,14 +6,24 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException, Query
+from pathlib import Path
+
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 
-from .. import agent_runner, agent_store, grok, nsfw as nsfw_service, prompts
+from .. import (
+    agent_runner,
+    agent_store,
+    grok,
+    lora_samples,
+    nsfw as nsfw_service,
+    prompts,
+)
 from ..config import load_settings
 from ..ids import new_id
 from ..models import (
     AgentApprove,
+    AgentAttachment,
     AgentCheckinReply,
     AgentMessage,
     AgentReply,
@@ -23,9 +33,17 @@ from ..models import (
     AgentSessionSummary,
     NsfwUpdate,
 )
+from .assets import AUDIO_EXT, IMAGE_EXT, VIDEO_EXT
 from .options import get_options
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
+
+DOCUMENT_EXT = {".txt", ".md", ".json", ".csv", ".pdf"}
+ATTACHMENT_EXT = IMAGE_EXT | AUDIO_EXT | VIDEO_EXT | DOCUMENT_EXT
+
+# 添付は content に埋め込んで渡す（ACP のマルチモーダルブロックはワンショット
+# フォールバックで使えないため、workdir 相対パスの提示に統一する）。
+ATTACHMENT_HEADER = "[Attached files — open them from your working directory to inspect]"
 
 
 async def _require(session_id: str) -> AgentSession:
@@ -143,9 +161,12 @@ async def delete_session(session_id: str) -> None:
 async def send_message(session_id: str, payload: AgentSendMessage) -> AgentReply:
     """ユーザー発言 → Grok ターン → アクション解釈（必要なら実行ループ起動）。"""
     content = (payload.content or "").strip()
-    if not content:
+    if not content and not payload.attachments:
         raise HTTPException(status_code=422, detail="content is empty")
     session = await _require(session_id)
+    attachments = _verify_attachments(session_id, payload.attachments)
+    prompt = _with_attachments(content, attachments)
+    data = {"attachments": attachments, "text": content} if attachments else {}
     _classify_session(session, content)
     if agent_runner.is_running(session_id):
         raise HTTPException(
@@ -154,11 +175,11 @@ async def send_message(session_id: str, payload: AgentSendMessage) -> AgentReply
     if session.status == "waiting_checkin":
         # チェックイン待ちのあいだのメイン入力は「チェックインへの自由回答」として
         # 扱う（吹き出しからの応答と同じ経路に流し、状態がずれないようにする）。
-        return await _answer_checkin(session_id, content)
+        return await _answer_checkin(session_id, content, content=prompt, data=data)
 
     await agent_runner.append_message(
         session_id,
-        AgentMessage(role="user", content=content, ts=agent_store.now()),
+        AgentMessage(role="user", content=prompt, ts=agent_store.now(), data=data),
     )
     answer, action = await _turn(session_id)
     await _dispatch(session_id, action)
@@ -219,11 +240,25 @@ async def checkin(session_id: str, payload: AgentCheckinReply) -> AgentReply:
     return await _answer_checkin(session_id, answer)
 
 
-async def _answer_checkin(session_id: str, answer: str) -> AgentReply:
-    """チェックイン応答を記録し、ループを再開する（checkin / messages 共通）。"""
+async def _answer_checkin(
+    session_id: str,
+    answer: str,
+    content: str | None = None,
+    data: dict | None = None,
+) -> AgentReply:
+    """チェックイン応答を記録し、ループを再開する（checkin / messages 共通）。
+
+    ``answer`` は承認判定に使う素のユーザー文、``content`` は transcript に残す
+    本文（添付パスを追記したもの。省略時は ``answer``）。
+    """
     await agent_runner.append_message(
         session_id,
-        AgentMessage(role="user", content=answer, ts=agent_store.now()),
+        AgentMessage(
+            role="user",
+            content=content or answer,
+            ts=agent_store.now(),
+            data=data or {},
+        ),
     )
     # 保留中のプラン外アクションは、承認されたときだけループが実行する（§2）。
     pending = await agent_runner.resolve_checkin(session_id, answer)
@@ -237,6 +272,54 @@ async def stop(session_id: str) -> AgentSession:
     await _require(session_id)
     await agent_runner.request_stop(session_id)
     return await _require(session_id)
+
+
+# --------------------------------------------------------------------------
+# attachments
+# --------------------------------------------------------------------------
+
+@router.post(
+    "/sessions/{session_id}/attachments",
+    response_model=AgentAttachment,
+    status_code=201,
+)
+async def upload_attachment(
+    session_id: str, file: UploadFile = File(...)
+) -> AgentAttachment:
+    """添付ファイルを workdir の ``attachments/`` へ保存する（assets と同じ流儀）。"""
+    await _require(session_id)
+    original = Path(file.filename or "upload")
+    ext = original.suffix.lower()
+    if ext not in ATTACHMENT_EXT:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unsupported extension '{ext}' (allowed: {sorted(ATTACHMENT_EXT)})",
+        )
+    stem = lora_samples.safe_stem(original.stem, fallback="attachment")
+    dest = agent_store.attachments_dir(session_id) / f"{stem}_{new_id()}{ext}"
+    dest.write_bytes(await file.read())
+    return AgentAttachment(
+        name=dest.name, path=f"{agent_store.ATTACHMENTS_DIR}/{dest.name}"
+    )
+
+
+def _verify_attachments(session_id: str, paths: list[str]) -> list[str]:
+    """``attachments/`` 配下の実在ファイルだけを通す（それ以外は 400）。"""
+    verified: list[str] = []
+    for raw in paths:
+        if agent_store.attachment_path(session_id, raw) is None:
+            raise HTTPException(status_code=400, detail=f"unknown attachment '{raw}'")
+        verified.append(raw.strip())
+    return verified
+
+
+def _with_attachments(content: str, attachments: list[str]) -> str:
+    """本文のうしろに添付パスの一覧を足す（プロンプト側は content しか見ない）。"""
+    if not attachments:
+        return content
+    listing = "\n".join(f"- {path}" for path in attachments)
+    block = f"{ATTACHMENT_HEADER}\n{listing}"
+    return f"{content}\n\n{block}" if content else block
 
 
 # --------------------------------------------------------------------------

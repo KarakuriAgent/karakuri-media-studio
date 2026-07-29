@@ -1058,6 +1058,108 @@ def test_artifact_path_traversal_is_refused(env, tmp_path):
 
 
 # --------------------------------------------------------------------------
+# attachments
+# --------------------------------------------------------------------------
+
+def attach(env, session_id: str, name: str = "photo.png", body: bytes = b"\x89PNG"):
+    return env.client.post(
+        f"/api/agent/sessions/{session_id}/attachments",
+        files={"file": (name, body, "application/octet-stream")},
+    )
+
+
+def test_attachment_upload_lands_in_the_workdir(env):
+    session = start(env)
+    response = attach(env, session["id"], "my photo.png")
+    assert response.status_code == 201, response.text
+    body = response.json()
+
+    assert body["path"] == f"attachments/{body['name']}"
+    assert body["name"].startswith("my_photo_") and body["name"].endswith(".png")
+    saved = env.sessions / session["id"] / "attachments" / body["name"]
+    assert saved.read_bytes() == b"\x89PNG"
+    # 既存の artifacts 配信でそのままプレビューできる
+    served = env.client.get(
+        f"/api/agent/sessions/{session['id']}/artifacts/{body['path']}"
+    )
+    assert served.status_code == 200
+
+
+def test_attachment_upload_refuses_unknown_extensions(env):
+    session = start(env)
+    assert attach(env, session["id"], "evil.exe").status_code == 400
+
+
+def test_attachment_upload_on_a_missing_session_is_404(env):
+    assert attach(env, "nope").status_code == 404
+
+
+def test_message_embeds_attachment_paths_for_the_agent(env):
+    session = start(env)
+    uploaded = attach(env, session["id"]).json()
+    env.cli.answers = ["拝見しました。"]
+
+    response = env.client.post(
+        f"/api/agent/sessions/{session['id']}/messages",
+        json={"content": "この写真に寄せて", "attachments": [uploaded["path"]]},
+    )
+    assert response.status_code == 200, response.text
+
+    users = [m for m in response.json()["session"]["messages"] if m["role"] == "user"]
+    assert users[-1]["content"].startswith("この写真に寄せて")
+    assert uploaded["path"] in users[-1]["content"]
+    # UI 用: 添付とユーザー本文は data に分けて残す
+    assert users[-1]["data"]["attachments"] == [uploaded["path"]]
+    assert users[-1]["data"]["text"] == "この写真に寄せて"
+    # Grok へ渡すプロンプトにもパスが載る
+    assert uploaded["path"] in env.cli.prompts[-1]
+
+
+def test_message_can_be_attachments_only(env):
+    session = start(env)
+    uploaded = attach(env, session["id"], "notes.txt", b"hello").json()
+    env.cli.answers = ["読みました。"]
+
+    response = env.client.post(
+        f"/api/agent/sessions/{session['id']}/messages",
+        json={"content": "", "attachments": [uploaded["path"]]},
+    )
+    assert response.status_code == 200, response.text
+    users = [m for m in response.json()["session"]["messages"] if m["role"] == "user"]
+    assert users[-1]["content"].startswith(
+        "[Attached files — open them from your working directory to inspect]"
+    )
+    assert uploaded["path"] in users[-1]["content"]
+
+
+def test_message_without_content_or_attachments_is_refused(env):
+    session = start(env)
+    response = env.client.post(
+        f"/api/agent/sessions/{session['id']}/messages",
+        json={"content": "  ", "attachments": []},
+    )
+    assert response.status_code == 422
+
+
+def test_message_refuses_attachments_outside_the_attachments_dir(env):
+    session = start(env)
+    (env.sessions / session["id"] / "memo.md").write_text("ok", encoding="utf-8")
+    bad_paths = [
+        "attachments/../memo.md",
+        "attachments/nope.png",
+        "memo.md",
+        "/etc/passwd",
+    ]
+    for bad in bad_paths:
+        response = env.client.post(
+            f"/api/agent/sessions/{session['id']}/messages",
+            json={"content": "見て", "attachments": [bad]},
+        )
+        assert response.status_code == 400, bad
+    assert env.cli.calls == []
+
+
+# --------------------------------------------------------------------------
 # continue / rerun (既存 jobs.py の再利用)
 # --------------------------------------------------------------------------
 
