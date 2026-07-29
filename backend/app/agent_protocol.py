@@ -57,6 +57,7 @@ ACTION_NAMES = (
 CONTINUE_FIELDS = tuple(JobContinue.model_fields)
 RERUN_FIELDS = ("seed", "randomize_seed")
 
+# 自走（auto）セッションだけに効く「1 回のプラン提案あたりの新規ジョブ数」の既定値
 MAX_PLAN_TASKS = 5
 
 
@@ -218,12 +219,30 @@ def validate_job(
 # --------------------------------------------------------------------------
 
 def _tasks(
-    raw: Any, *, max_tasks: int, known_loras: dict[str, str] | None
+    raw: Any,
+    *,
+    max_tasks: int | None,
+    done_tasks: int,
+    known_loras: dict[str, str] | None,
 ) -> list[AgentTask]:
     if not isinstance(raw, list) or not raw:
         raise ActionError("plan には tasks 配列（1 件以上）が必要です")
-    if len(raw) > max_tasks:
-        raise ActionError(f"1 プランのジョブは最大 {max_tasks} 件です（{len(raw)} 件ありました）")
+    # 上限は「1 回のプラン提案で新しく走るジョブ数」。プラン改訂は前のプランを
+    # 丸ごと置き換える（agent_runner._apply_plan）ので、完了済みタスクの再掲分は
+    # 差し引いてから数える。``max_tasks=None`` は無制限（毎ジョブ確認 / 節目確認）。
+    if max_tasks is not None:
+        new_tasks = len(raw) - done_tasks
+        if new_tasks > max_tasks:
+            detail = (
+                f"（{len(raw)} 件中、完了済みの再掲 {done_tasks} 件を除いて"
+                f" {new_tasks} 件ありました）"
+                if done_tasks
+                else f"（{new_tasks} 件ありました）"
+            )
+            raise ActionError(
+                f"1 回のプラン提案で新しく走らせられるジョブは最大 {max_tasks} 件です"
+                + detail
+            )
     tasks: list[AgentTask] = []
     for index, item in enumerate(raw, start=1):
         where = f"tasks[{index}]"
@@ -251,9 +270,17 @@ def parse_action(
     text: str,
     *,
     known_loras: dict[str, str] | None = None,
-    max_tasks: int = MAX_PLAN_TASKS,
+    max_tasks: int | None = None,
+    done_tasks: int = 0,
 ) -> AgentAction | None:
-    """Parse the (optional) action of one Grok answer. Raises :class:`ActionError`."""
+    """Parse the (optional) action of one Grok answer. Raises :class:`ActionError`.
+
+    ``max_tasks`` limits how many **new** jobs one plan proposal may add
+    (``None`` = no limit); ``done_tasks`` is how many already finished tasks the
+    session's current plan holds, so a revision may re-list them for free.
+    Only the self-driving check-in mode passes a limit — see
+    :func:`app.agent_runner.plan_task_limits`.
+    """
     payload = find_action_payload(text)
     if payload is None:
         return None
@@ -270,7 +297,10 @@ def parse_action(
 
     if name == "plan":
         action.tasks = _tasks(
-            payload.get("tasks"), max_tasks=max_tasks, known_loras=known_loras
+            payload.get("tasks"),
+            max_tasks=max_tasks,
+            done_tasks=done_tasks,
+            known_loras=known_loras,
         )
     elif name == "run_task":
         task_id = payload.get("task_id")

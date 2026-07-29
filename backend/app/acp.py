@@ -59,6 +59,46 @@ class AcpUnavailable(Exception):
     """
 
 
+#: 1 回の read で受け取る最大バイト数（行の長さの上限ではない）。
+READ_CHUNK = 65536
+
+
+class _LineReader:
+    """``StreamReader`` を行単位で読む。1 行の長さに上限を設けない。
+
+    ``StreamReader.readline()`` は StreamReader の limit（``create_subprocess_exec``
+    の既定は 64KiB）を超える行で ``LimitOverrunError`` を投げる。大きな
+    ``session/update`` 通知でこれに当たるため、チャンク読み + 自前バッファで
+    改行を探す方式にしている。
+    """
+
+    def __init__(self, stream: asyncio.StreamReader) -> None:
+        self._stream = stream
+        self._buffer = bytearray()
+        self._eof = False
+
+    async def readline(self) -> bytes:
+        """次の 1 行（改行を含む）。EOF でバッファも空なら ``b""``。
+
+        EOF 時にバッファが残っていれば、改行が無くても最終行として返す。
+        """
+        while True:
+            index = self._buffer.find(b"\n")
+            if index >= 0:
+                line = bytes(self._buffer[: index + 1])
+                del self._buffer[: index + 1]
+                return line
+            if self._eof:
+                line = bytes(self._buffer)
+                self._buffer.clear()
+                return line
+            chunk = await self._stream.read(READ_CHUNK)
+            if not chunk:
+                self._eof = True
+                continue
+            self._buffer.extend(chunk)
+
+
 class _Turn:
     """1 ターン分の JSON-RPC 会話（プロセスは呼び出し側が管理する）。"""
 
@@ -66,6 +106,8 @@ class _Turn:
         self.process = process
         self._next_id = 0
         self.text_parts: list[str] = []
+        assert process.stdout is not None
+        self._lines = _LineReader(process.stdout)
 
     # ------------------------------------------------------------- transport
     def _write(self, message: dict[str, Any]) -> None:
@@ -95,10 +137,8 @@ class _Turn:
 
     async def read(self) -> dict[str, Any] | None:
         """次の JSON-RPC メッセージ。EOF なら ``None``。壊れた行は読み飛ばす。"""
-        stdout = self.process.stdout
-        assert stdout is not None
         while True:
-            line = await stdout.readline()
+            line = await self._lines.readline()
             if not line:
                 return None
             stripped = line.strip()
@@ -215,8 +255,9 @@ class AcpAgentClient(LLMClient):
         """stderr をログへ流す（溜まってパイプが詰まるのを防ぐ）。"""
         if stream is None:
             return
+        lines = _LineReader(stream)
         while True:
-            line = await stream.readline()
+            line = await lines.readline()
             if not line:
                 return
             log.debug("grok ACP stderr: %s", line.decode("utf-8", "replace").rstrip())
@@ -251,7 +292,18 @@ class AcpAgentClient(LLMClient):
         stop_reason: str | None = None
 
         while True:
-            message = await turn.read()
+            try:
+                message = await turn.read()
+            except Exception as exc:  # noqa: BLE001 - 読み取り失敗で 500 にしない
+                # プロンプト送信前なら「ACP が使えなかった」扱いにしてワンショット
+                # 実行へ回せる。送信後はターンが進んでいるので通常のエラーにする。
+                if prompt_id is None:
+                    raise AcpUnavailable(
+                        f"grok ACP の出力を読み取れませんでした: {exc}"
+                    ) from exc
+                raise LLMError(
+                    f"grok ACP エージェントの出力を読み取れませんでした: {exc}"
+                ) from exc
             if message is None:
                 if prompt_id is None:
                     raise AcpUnavailable("grok ACP エージェントが応答せずに終了しました")

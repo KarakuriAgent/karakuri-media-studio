@@ -24,7 +24,7 @@ from app import (
     nsfw,
 )
 from app.main import app
-from app.models import AgentSession, Settings
+from app.models import AgentPlan, AgentSession, AgentTask, Settings
 from app.routers import assets as assets_router
 from app.workflows import DEFAULT_VIDEO_WORKFLOW, video_specs
 
@@ -496,6 +496,57 @@ def test_image_only_ignores_the_video_workflow(env):
 def test_plan_over_the_task_limit_is_rejected(env):
     with pytest.raises(agent_protocol.ActionError, match="最大"):
         agent_protocol.parse_action(plan_answer(env, 3), max_tasks=2)
+
+
+def test_plan_is_unlimited_without_a_max(env):
+    """上限を渡さなければ（毎ジョブ確認 / 節目のみ確認）タスク数は自由。"""
+    action = agent_protocol.parse_action(plan_answer(env, 8))
+    assert len(action.tasks) == 8
+
+
+def test_completed_tasks_do_not_count_against_the_limit(env):
+    """完了済みタスクの再掲は新規ジョブとして数えない（改訂プランは全置き換え）。"""
+    action = agent_protocol.parse_action(plan_answer(env, 7), max_tasks=2, done_tasks=5)
+    assert len(action.tasks) == 7
+    with pytest.raises(agent_protocol.ActionError, match="完了済み"):
+        agent_protocol.parse_action(plan_answer(env, 8), max_tasks=2, done_tasks=5)
+
+
+@pytest.mark.parametrize(
+    "mode, expected",
+    [("every_job", (None, 0)), ("milestone", (None, 0)), ("auto", (5, 1))],
+)
+def test_plan_task_limits_apply_to_auto_only(mode, expected):
+    session = AgentSession(
+        id="s1",
+        created_at="2024-01-01T00:00:00Z",
+        checkin_mode=mode,
+        plan=AgentPlan(
+            tasks=[
+                AgentTask(id="t1", label="done", status="done"),
+                AgentTask(id="t2", label="pending"),
+            ]
+        ),
+    )
+    assert agent_runner.plan_task_limits(session) == expected
+
+
+def test_long_plan_passes_in_a_non_auto_session(env):
+    """節目のみ確認では上限なし（承認 + チェックインで人間が必ず挟まる）。"""
+    session = start(env, checkin_mode="milestone")
+    env.cli.answers = [plan_answer(env, 8)]
+    reply = say(env, session["id"]).json()
+    assert len(reply["action"]["tasks"]) == 8
+    assert reply["session"]["status"] == "planning"
+
+
+def test_auto_session_rejects_too_many_new_tasks(env):
+    """自走モードは 1 回のプラン提案で新規 5 件まで（既定）。"""
+    session = start(env, checkin_mode="auto", auto_limit=20)
+    env.cli.answers = [plan_answer(env, 6), plan_answer(env, 6)]
+    reply = say(env, session["id"]).json()
+    assert reply["action"] is None
+    assert "最大 5 件" in reply["session"]["messages"][-1]["content"]
 
 
 def test_unusable_action_triggers_one_retry(env):

@@ -15,7 +15,8 @@ queue — the loop only waits for the job row to reach a final state, so ComfyUI
 still runs one job at a time (SPEC §5).
 
 暴走防止: 連続 Grok ターン上限 (:data:`MAX_TURNS`)、セッションあたりの生成本数
-上限 (``auto_limit``)、同一タスクの自動リトライは 1 回まで。
+上限 (``auto_limit``)、同一タスクの自動リトライは 1 回まで。自走（auto）セッションは
+さらに 1 回のプラン提案で増やせる新規ジョブ数も制限する (:func:`plan_task_limits`)。
 """
 
 from __future__ import annotations
@@ -188,6 +189,23 @@ async def _save_task(session_id: str, task: AgentTask) -> None:
     )
 
 
+def plan_task_limits(session: AgentSession) -> tuple[int | None, int]:
+    """``(max new tasks per plan, already finished tasks)`` for this session.
+
+    ``every_job`` / ``milestone`` always put a human between the plan and the
+    generation (プラン承認 + チェックイン) so the plan size needs no cap: the
+    limit returns ``None``. Only ``auto`` (完了まで自走) is capped, and there it
+    counts the **new** jobs of one proposal — a revised plan replaces the whole
+    task list (:func:`_apply_plan`), so the finished tasks it re-lists are
+    subtracted. セッション全体の生成本数は別途 ``auto_limit`` が守る。
+    """
+    if session.checkin_mode != "auto":
+        return None, 0
+    max_tasks = load_settings().agent_max_plan_tasks or agent_protocol.MAX_PLAN_TASKS
+    done = sum(1 for task in session.plan.tasks if task.status == "done")
+    return max_tasks, done
+
+
 async def known_lora_names() -> dict[str, str]:
     """``{lora_name: target}`` — the registry as the plan validator sees it."""
     async with get_db() as conn:
@@ -226,11 +244,11 @@ async def _run_turn(
 
     client = grok.get_agent_client(session_dir(session_id), on_activity)
     known = await known_lora_names() or None
-    max_tasks = load_settings().agent_max_plan_tasks or agent_protocol.MAX_PLAN_TASKS
+    max_tasks, done_tasks = plan_task_limits(session)
 
     def parse(text: str) -> AgentAction | None:
         return agent_protocol.parse_action(
-            text, known_loras=known, max_tasks=max_tasks
+            text, known_loras=known, max_tasks=max_tasks, done_tasks=done_tasks
         )
 
     answer = await client.complete(prompts.build_agent_conversation(session.messages))

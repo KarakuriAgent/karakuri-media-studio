@@ -764,14 +764,24 @@ def _agent_guardrails(ctx: AgentSessionCreate, max_tasks: int) -> str:
         "milestone": "節目のみ確認（区切りでだけ確認する）",
         "auto": "完了まで自走（確認は最小限）",
     }
+    lines = [
+        "# GUARDRAILS",
+        "",
+        f"- Check-in mode: **{ctx.checkin_mode}** — {modes[ctx.checkin_mode]}.",
+        f"- Hard limit: at most **{ctx.auto_limit}** generated jobs in this"
+        " session; the app stops the loop when the limit is reached.",
+    ]
+    # 1 プラン提案あたりの新規ジョブ数の上限は自走モードだけ。他のモードは
+    # プラン承認とチェックインで必ず人間が挟まるので、プランの長さは自由。
+    if ctx.checkin_mode == "auto":
+        lines.append(
+            f"- One plan proposal may add at most {max_tasks} **new** jobs;"
+            " tasks that already finished and are only re-listed in a revised"
+            " plan do not count. Propose more in the next revision."
+        )
     return "\n".join(
         [
-            "# GUARDRAILS",
-            "",
-            f"- Check-in mode: **{ctx.checkin_mode}** — {modes[ctx.checkin_mode]}.",
-            f"- Hard limit: at most **{ctx.auto_limit}** generated jobs in this"
-            " session; the app stops the loop when the limit is reached.",
-            f"- One plan holds at most {max_tasks} jobs.",
+            *lines,
             "- Generation only starts after the user approves the plan."
             + (
                 " `continue` / `rerun` run right away in this self-driving"

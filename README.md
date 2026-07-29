@@ -260,7 +260,7 @@ LoRA / アスペクト比 / アセットの選択肢も焼き込まれるので�
 | `model_overrides` | モデルファイル名の上書き（`{"<workflow_id>/<node_id>.<field>": "<ファイル名>"}`） | `{}` |
 | `agent_grok_args` | エージェントモードで grok CLI に渡す追加フラグ（ツール許可） | `["--permission-mode", "auto"]` |
 | `agent_grok_timeout` | エージェントの 1 ターンのタイムアウト秒（リサーチ・検分は長い） | `300` |
-| `agent_max_plan_tasks` | 1 プランに含められる最大ジョブ数 | `5` |
+| `agent_max_plan_tasks` | 自走モードで 1 回のプラン提案に追加できる新規ジョブ数の上限（毎ジョブ確認 / 節目のみ確認では無制限） | `5` |
 
 設定ページで編集できるのは接続 / Grok / LoRA / モデルの項目です。`agent_*` は
 `PUT /api/settings` か `runtime/config.json` を直接編集して変更します。

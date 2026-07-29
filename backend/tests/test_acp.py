@@ -110,6 +110,43 @@ for line in sys.stdin:
     break
 '''
 
+#: 1 行が StreamReader の既定 limit（64KiB）を大きく超える通知を送るエージェント。
+HUGE_UPDATE_AGENT = r'''
+import json, sys
+
+BIG = "あ" * 200000  # UTF-8 で約 600KB、JSON 1 行に収まる
+
+def send(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    msg = json.loads(line)
+    method = msg.get("method")
+    if method == "initialize":
+        send({"jsonrpc": "2.0", "id": msg["id"], "result": {"protocolVersion": 1}})
+    elif method == "session/new":
+        send({"jsonrpc": "2.0", "id": msg["id"], "result": {"sessionId": "s1"}})
+    elif method == "session/prompt":
+        send({"jsonrpc": "2.0", "method": "session/update",
+              "params": {"sessionId": "s1", "update": {
+                  "sessionUpdate": "agent_thought_chunk",
+                  "content": {"type": "text", "text": BIG}}}})
+        send({"jsonrpc": "2.0", "method": "session/update",
+              "params": {"sessionId": "s1", "update": {
+                  "sessionUpdate": "agent_message_chunk",
+                  "content": {"type": "text", "text": BIG}}}})
+        send({"jsonrpc": "2.0", "method": "session/update",
+              "params": {"sessionId": "s1", "update": {
+                  "sessionUpdate": "agent_message_chunk",
+                  "content": {"type": "text", "text": "END"}}}})
+        send({"jsonrpc": "2.0", "id": msg["id"], "result": {"stopReason": "end_turn"}})
+        break
+'''
+
 #: 何も返さず居座る（タイムアウト検証用）。
 HANGING_AGENT = r'''
 import sys, time
@@ -195,6 +232,35 @@ async def test_permission_requests_are_auto_approved(tmp_path):
     answer = await client(tmp_path, PERMISSION_AGENT).complete("ls して")
     # allow を含む kind の最初の選択肢が選ばれる（reject が先頭でも拾わない）。
     assert answer == "選択=allow-always"
+
+
+@pytest.mark.asyncio
+async def test_huge_single_line_update_is_read_without_error(tmp_path):
+    """64KiB を大きく超える 1 行の通知でも欠けずに読める。
+
+    ``StreamReader.readline()`` のままだと LimitOverrunError で落ちていた箇所。
+    """
+    seen: list[str | None] = []
+    agent = client(tmp_path, HUGE_UPDATE_AGENT, on_activity=seen.append)
+
+    answer = await agent.complete("大きいのを返して")
+
+    assert answer == "あ" * 200000 + "END"
+    assert seen == [acp.ACTIVITY_THINKING, acp.ACTIVITY_ANSWERING, None]
+
+
+@pytest.mark.asyncio
+async def test_line_reader_splits_across_chunks_and_keeps_the_last_line(tmp_path):
+    """チャンク境界をまたぐ行を組み立て、EOF 時のバッファ残りも最終行として返す。"""
+    stream = asyncio.StreamReader()
+    payload = b"a" * 300000
+    stream.feed_data(payload + b"\n" + b"tail")
+    stream.feed_eof()
+
+    reader = acp._LineReader(stream)
+    assert await reader.readline() == payload + b"\n"
+    assert await reader.readline() == b"tail"
+    assert await reader.readline() == b""
 
 
 @pytest.mark.asyncio
