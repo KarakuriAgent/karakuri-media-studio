@@ -22,6 +22,11 @@ export interface Settings {
    * entries.
    */
   model_overrides: Record<string, string>
+  /**
+   * 同じキー形式の「そのスロットで選べるモデルファイル名」。2 件以上あるスロットは
+   * 生成フォームで実行時に選べる（SPEC §3.3）。
+   */
+  model_choices: Record<string, string[]>
 }
 
 /** One configurable model file of a workflow template (GET /api/models). */
@@ -38,6 +43,26 @@ export interface ModelFieldState {
   default: string
   value: string
   overridden: boolean
+  /** そのスロットで選べるモデルファイル名（設定ページで登録した候補）。 */
+  choices: string[]
+}
+
+/**
+ * 実行時に切り替えられるモデル 1 スロット（GET /api/options の model_slots）。
+ *
+ * `choices` は `default` を先頭に含む。候補が 2 件以上あるスロットだけが返る。
+ */
+export interface ModelSlot {
+  key: string
+  workflow_id: string
+  workflow_label: string
+  kind: 'image' | 'video' | 'audio'
+  node_id: string
+  field: string
+  class_type: string
+  label: string
+  default: string
+  choices: string[]
 }
 
 /** Which stage a registered LoRA belongs to (mirrors models.LoraTarget). */
@@ -156,6 +181,11 @@ export interface JobCreate {
   end_image: string | null
   reference_video: string | null
   seed: number | null
+  /**
+   * このジョブだけで使うモデルファイル名（キーは /api/options の model_slots の
+   * `key`、値はそのスロットの `choices` にあるもの）。空なら設定の既定値。
+   */
+  model_overrides?: Record<string, string>
   chat_session_id?: string | null
   user_input?: string | null
   /** 明示指定（manual 扱い）。省略すると自動判定に任せる。 */
@@ -185,6 +215,8 @@ export interface AudioJobCreate {
   audio_category?: string
   /** Stable Audio: 内蔵 LLM でプロンプトを展開してから流すか。 */
   reprompt?: boolean
+  /** このジョブだけで使うモデルファイル名（音声ワークフローのスロットのみ）。 */
+  model_overrides?: Record<string, string>
   chat_session_id?: string | null
   user_input?: string | null
   nsfw?: boolean | null
@@ -228,6 +260,10 @@ export interface Options {
   languages: string[]
   aspect_ratios: string[]
   lora_files: string[]
+  /** 実行時に切り替えられるモデルスロット（候補が 2 件以上あるものだけ）。 */
+  model_slots: ModelSlot[]
+  /** ComfyUI が持つモデルファイル一覧。キーは `"<class_type>.<field>"`。 */
+  model_files: Record<string, string[]>
   loras: Lora[]
   audio_assets: Asset[]
   image_assets: Asset[]

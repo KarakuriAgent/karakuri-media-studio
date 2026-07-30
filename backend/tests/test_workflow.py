@@ -19,9 +19,12 @@ from app.workflow import (
     ltx_frame_count,
     missing_triggers,
     model_fields,
+    model_slots,
     parse_aspect_ratio,
     resolution,
     resolution_for_image,
+    scoped_model_overrides,
+    selectable_model_slots,
     validate_manifests,
     validate_workflow,
 )
@@ -1031,6 +1034,53 @@ def test_no_old_style_model_names_leak_in():
     assert "redcraft" not in defaults
     assert "sexgod" not in defaults
     assert "pinkcherry" not in defaults
+
+
+UNET_SLOT = "krea2_turbo/30:10.unet_name"
+
+
+def test_model_slots_put_the_effective_default_in_front():
+    slots = {slot.key: slot for slot in model_slots()}
+    unet = slots[UNET_SLOT]
+    # 何も設定していなければ既定値 = テンプレートの値、候補はそれ 1 件だけ
+    assert unet.default == load_template(KREA2_TURBO)["30:10"]["inputs"]["unet_name"]
+    assert unet.choices == [unet.default]
+    assert unet.label
+
+    # 設定の上書きが既定値になり、候補リストの先頭に来る（重複はまとめる）
+    slots = {
+        slot.key: slot
+        for slot in model_slots(
+            {UNET_SLOT: "mine.safetensors"},
+            {UNET_SLOT: ["  ", "alt.safetensors", "mine.safetensors", "alt.safetensors"]},
+        )
+    }
+    unet = slots[UNET_SLOT]
+    assert unet.default == "mine.safetensors"
+    assert unet.choices == ["mine.safetensors", "alt.safetensors"]
+
+
+def test_selectable_model_slots_need_two_candidates():
+    # 候補を 1 件だけ、しかも既定値と同じにしても「選ぶ意味」は無い
+    default = load_template(KREA2_TURBO)["30:10"]["inputs"]["unet_name"]
+    assert selectable_model_slots({}, {UNET_SLOT: [default]}) == []
+    assert selectable_model_slots() == []
+
+    selectable = selectable_model_slots({}, {UNET_SLOT: ["alt.safetensors"]})
+    assert [slot.key for slot in selectable] == [UNET_SLOT]
+    assert selectable[0].choices == [default, "alt.safetensors"]
+
+
+def test_scoped_model_overrides_keeps_only_the_given_workflows():
+    overrides = {
+        UNET_SLOT: "a.safetensors",
+        "tx2_3_i2v/320:316.ckpt_name": "b.safetensors",
+        "ltx2_3_t2v/267:221.ckpt_name": "",  # 空値は落とす
+    }
+    assert scoped_model_overrides(overrides, ["tx2_3_i2v", "ltx2_3_t2v"]) == {
+        "tx2_3_i2v/320:316.ckpt_name": "b.safetensors"
+    }
+    assert scoped_model_overrides(None, ["krea2_turbo"]) == {}
 
 
 def test_apply_model_overrides_ignores_empty_unknown_and_other_workflows():

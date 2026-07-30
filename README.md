@@ -316,6 +316,7 @@ LoRA / アスペクト比 / アセットの選択肢も焼き込まれるので�
 | `grok_model` | 使用モデル | `grok-4.5` |
 | `grok_workdir` | grok CLI の作業ディレクトリ | `runtime/grok-workdir` |
 | `model_overrides` | モデルファイル名の上書き（`{"<workflow_id>/<node_id>.<field>": "<ファイル名>"}`） | `{}` |
+| `model_choices` | 実行時に選べるモデルの候補リスト（キーは同上、値はファイル名の配列） | `{}` |
 | `agent_grok_args` | エージェントモードで grok CLI に渡す追加フラグ（ツール許可） | `["--permission-mode", "auto"]` |
 | `agent_grok_timeout` | エージェントの 1 ターンのタイムアウト秒（リサーチ・検分は長い） | `300` |
 | `agent_max_plan_tasks` | 自走モードで 1 回のプラン提案に追加できる新規ジョブ数の上限（毎ジョブ確認 / 節目のみ確認では無制限） | `5` |
@@ -335,6 +336,19 @@ LoRA / アスペクト比 / アセットの選択肢も焼き込まれるので�
 変更した行はハイライトされ、[既定に戻す] でテンプレートの値へ戻せます。保存すると既定値と異なる
 エントリだけが `model_overrides` に記録され、ジョブ投入時にワークフローへ適用されます
 （キーはワークフロー ID でスコープされるため、テンプレート間で同じノード ID が衝突しません）。
+
+### 実行ごとのモデル切り替え
+
+同じ「モデル」タブの各行には**候補リスト**もあります。既定値とは別のファイル名を候補に足すと
+（候補の追加欄は ComfyUI から取得できたファイル一覧で補完されます）、そのスロットは
+
+- **生成フォーム**: ワークフローセレクトの下に「使用モデル: …」のセレクトが出て、実行ごとに選べる
+- **エージェントモード**: システムプロンプトに候補が焼き込まれ、Grok がジョブごとに指定できる
+
+ようになります。候補が既定値と合わせて 1 件しかないスロットには何も表示されません（従来どおり）。
+選択はジョブの `model_overrides` として保存され、実行時に設定の既定値の上に重ねられます。候補に
+無いファイル名や、そのジョブが走らせないワークフローのスロットを指定したジョブは 422 で拒否します。
+再実行は同じモデルを引き継ぎ、続き生成では動画ワークフローぶんの指定だけを引き継ぎます。
 
 ### Tips: ローカル ComfyUI で動かす場合のモデル設定
 
@@ -400,11 +414,12 @@ runtime/            config.json / grok 作業ディレクトリ / agent-sessions
 ```
 GET  /api/health                       ComfyUI / Grok 疎通と custom node チェック
 GET  /api/options                      画像/動画/音声ワークフロー一覧（必要入力つき）・アスペクト比・
-                                       LoRA ファイル一覧・アセット・ネガティブプリセット
+                                       LoRA ファイル一覧・アセット・ネガティブプリセット・
+                                       実行時に選べるモデルスロット（model_slots / model_files）
 GET/PUT /api/settings                  設定の取得・更新
 GET/POST/PUT/DELETE /api/loras         アプリ内 LoRA 登録リスト
 POST/DELETE /api/loras/{id}/samples    LoRA サンプル画像の登録・削除
-GET/PUT /api/models                    ワークフローのモデルファイル名一覧・上書き
+GET/PUT /api/models                    ワークフローのモデルファイル名一覧・上書き・候補リスト
 POST/GET /api/chat/sessions[/{id}]     Grok チャット
 POST /api/jobs, GET /api/jobs?limit=…  ジョブ作成・履歴
 GET/DELETE /api/jobs/{id}              詳細・削除

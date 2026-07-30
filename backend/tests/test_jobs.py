@@ -10,7 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from app import comfy, db, jobs, nsfw
+from app import comfy, config, db, jobs, nsfw
 from app.main import app
 from app.workflow import resolution, resolution_for_image
 from app.workflows import get_video_spec
@@ -684,6 +684,103 @@ def test_video_loras_without_a_video_stage_are_422(env):
     )
     assert response.status_code == 422
     assert "video_loras" in response.text
+
+
+# --------------------------------------------------------------------------
+# ジョブ単位のモデル切り替え（SPEC §3.3）
+# --------------------------------------------------------------------------
+
+IMAGE_SLOT = "krea2_turbo/30:10.unet_name"
+VIDEO_SLOT = "ltx2_3_id_lora/340:317.ckpt_name"
+
+
+def _register_choices(monkeypatch, choices: dict[str, list[str]]) -> None:
+    """設定の候補リストだけを差し替える（runtime/config.json は触らない）。"""
+    monkeypatch.setattr(
+        config,
+        "_settings",
+        config.load_settings().model_copy(update={"model_choices": choices}),
+    )
+
+
+def _image_job(env, **overrides) -> dict:
+    body = {"mode": "image_only", "image_prompt": "an image"}
+    body.update(overrides)
+    return env.client.post("/api/jobs", json=body)
+
+
+def test_a_job_can_pick_a_model_from_the_choices(env, monkeypatch):
+    _register_choices(monkeypatch, {IMAGE_SLOT: ["alt.safetensors"]})
+    response = _image_job(env, model_overrides={IMAGE_SLOT: "alt.safetensors"})
+    assert response.status_code == 201, response.text
+    job = wait_for(env.client, response.json()["id"])
+    assert job["status"] == "done", job["error"]
+    assert job["params"]["model_overrides"] == {IMAGE_SLOT: "alt.safetensors"}
+    # 設定の既定値ではなくジョブの指定がグラフに入る
+    assert graph_with(env, "30:10")["30:10"]["inputs"]["unet_name"] == "alt.safetensors"
+
+
+def test_a_model_outside_the_choices_is_422(env, monkeypatch):
+    _register_choices(monkeypatch, {IMAGE_SLOT: ["alt.safetensors"]})
+    response = _image_job(env, model_overrides={IMAGE_SLOT: "nope.safetensors"})
+    assert response.status_code == 422
+    assert "nope.safetensors" in response.text
+
+
+def test_the_configured_default_is_always_selectable(env, monkeypatch):
+    _register_choices(monkeypatch, {IMAGE_SLOT: ["alt.safetensors"]})
+    default = config.load_settings().model_overrides[IMAGE_SLOT]
+    assert _image_job(env, model_overrides={IMAGE_SLOT: default}).status_code == 201
+
+
+def test_a_slot_of_a_workflow_the_job_does_not_run_is_422(env, monkeypatch):
+    """画像のみのジョブは動画ステージを走らせないので、動画スロットは指定できない。"""
+    _register_choices(monkeypatch, {VIDEO_SLOT: ["alt.safetensors"]})
+    response = _image_job(env, model_overrides={VIDEO_SLOT: "alt.safetensors"})
+    assert response.status_code == 422
+    assert "ltx2_3_id_lora" in response.text
+
+
+def test_an_unknown_model_slot_is_422(env):
+    response = _image_job(env, model_overrides={"nope/1.unet_name": "a.safetensors"})
+    assert response.status_code == 422
+    assert "nope/1.unet_name" in response.text
+
+
+def test_a_slot_without_a_registered_choice_is_422(env):
+    """候補を登録していないスロットは、既定値以外にはできない。"""
+    response = _image_job(env, model_overrides={IMAGE_SLOT: "alt.safetensors"})
+    assert response.status_code == 422
+
+
+def test_rerun_keeps_the_job_model(env, monkeypatch):
+    _register_choices(monkeypatch, {IMAGE_SLOT: ["alt.safetensors"]})
+    first = _image_job(env, model_overrides={IMAGE_SLOT: "alt.safetensors"}).json()
+    wait_for(env.client, first["id"])
+    second = env.client.post(f"/api/jobs/{first['id']}/rerun", json={}).json()
+    assert second["params"]["model_overrides"] == {IMAGE_SLOT: "alt.safetensors"}
+
+
+@needs_ffmpeg
+def test_continue_keeps_only_the_video_slots(env, monkeypatch):
+    _register_choices(
+        monkeypatch,
+        {IMAGE_SLOT: ["alt-unet.safetensors"], VIDEO_SLOT: ["alt-ckpt.safetensors"]},
+    )
+    first = env.client.post(
+        "/api/jobs",
+        json=full_body(
+            env,
+            model_overrides={
+                IMAGE_SLOT: "alt-unet.safetensors",
+                VIDEO_SLOT: "alt-ckpt.safetensors",
+            },
+        ),
+    ).json()
+    wait_for(env.client, first["id"])
+    second = env.client.post(f"/api/jobs/{first['id']}/continue", json={}).json()
+    # 続き生成は動画ステージだけなので、画像スロットの指定は落ちる
+    assert second["params"]["model_overrides"] == {VIDEO_SLOT: "alt-ckpt.safetensors"}
 
 
 def test_continue_without_last_frame_is_422(env):

@@ -3,7 +3,7 @@
 import pytest
 from fastapi.testclient import TestClient
 
-from app import comfy
+from app import comfy, config
 from app.main import app
 from app.routers import assets as assets_router
 from app.workflows import DEFAULT_VIDEO_WORKFLOW, video_specs
@@ -139,6 +139,59 @@ def test_audio_workflows_are_exposed(client):
     # 音声は画像・動画のリストには混ざらない
     assert all(w["kind"] == "image" for w in options["image_workflows"])
     assert all(w["kind"] == "video" for w in options["video_workflows"])
+
+
+UNET_SLOT = "krea2_turbo/30:10.unet_name"
+
+
+def test_model_slots_only_list_the_switchable_ones(client, monkeypatch):
+    """候補が 2 件以上あるスロットだけがフォームのセレクトになる（SPEC §3.3）。"""
+    assert client.get("/api/options").json()["model_slots"] == []
+
+    monkeypatch.setattr(
+        config,
+        "_settings",
+        config.load_settings().model_copy(
+            update={"model_choices": {UNET_SLOT: ["alt.safetensors"]}}
+        ),
+    )
+    slots = client.get("/api/options").json()["model_slots"]
+    assert [slot["key"] for slot in slots] == [UNET_SLOT]
+    slot = slots[0]
+    assert slot["workflow_id"] == "krea2_turbo"
+    assert slot["kind"] == "image"
+    assert slot["choices"] == [slot["default"], "alt.safetensors"]
+    assert slot["label"]
+
+
+def test_model_files_are_empty_while_comfy_is_down(client):
+    assert client.get("/api/options").json()["model_files"] == {}
+
+
+def test_model_files_come_from_object_info(monkeypatch, tmp_path):
+    """設定ページの候補入力の datalist 用に class_type.field ごとに返る。"""
+    monkeypatch.setattr(assets_router, "ASSETS_DIR", tmp_path / "assets")
+
+    async def info():
+        return {
+            "UNETLoader": {
+                "input": {"required": {"unet_name": [["a.safetensors", "b.safetensors"]]}}
+            },
+            "ResolutionSelector": {
+                "input": {"required": {"aspect_ratio": [["1:1 (Square)"]]}}
+            },
+        }
+
+    monkeypatch.setattr(comfy, "get_object_info", lambda *a, **k: info())
+    with TestClient(app) as client:
+        options = client.get("/api/options").json()
+    assert options["comfy_connected"] is True
+    assert options["model_files"]["UNETLoader.unet_name"] == [
+        "a.safetensors",
+        "b.safetensors",
+    ]
+    # /object_info に無い class_type は黙って省く（エラーにしない）
+    assert "VAELoader.vae_name" not in options["model_files"]
 
 
 def test_audio_combo_choices_are_exposed(client):

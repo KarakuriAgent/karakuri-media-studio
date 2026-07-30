@@ -24,7 +24,7 @@ import math
 import re
 from typing import Any
 
-from .models import GenerationParams, LoraRef, ModelField
+from .models import GenerationParams, LoraRef, ModelField, ModelSlot
 from .workflows import (
     SPECS,
     LoraChain,
@@ -319,6 +319,74 @@ def model_fields(specs: tuple[WorkflowSpec, ...] | None = None) -> list[ModelFie
                     )
                 )
     return found
+
+
+def model_slots(
+    overrides: dict[str, str] | None = None,
+    choices: dict[str, list[str]] | None = None,
+    specs: tuple[WorkflowSpec, ...] | None = None,
+) -> list[ModelSlot]:
+    """Every model-file input as a *switchable slot* (SPEC §3.3).
+
+    ``default`` is the value a job uses when it says nothing (the settings
+    override, or the template value), and ``choices`` is the list the user
+    registered for that slot with the default in front.  A job's own
+    ``model_overrides`` may only pick from ``choices``.
+    """
+    slots: list[ModelSlot] = []
+    for field in model_fields(specs):
+        override = ((overrides or {}).get(field.key) or "").strip()
+        default = override or field.default
+        allowed = [default] if default else []
+        for name in (choices or {}).get(field.key) or ():
+            name = (name or "").strip()
+            if name and name not in allowed:
+                allowed.append(name)
+        slots.append(
+            ModelSlot(
+                key=field.key,
+                workflow_id=field.workflow_id,
+                workflow_label=field.workflow_label,
+                kind=field.kind,
+                node_id=field.node_id,
+                field=field.field,
+                class_type=field.class_type,
+                label=field.title,
+                default=default,
+                choices=allowed,
+            )
+        )
+    return slots
+
+
+def selectable_model_slots(
+    overrides: dict[str, str] | None = None,
+    choices: dict[str, list[str]] | None = None,
+    specs: tuple[WorkflowSpec, ...] | None = None,
+) -> list[ModelSlot]:
+    """The slots worth showing a picker for: 2 or more candidates (SPEC §3.3)."""
+    return [
+        slot
+        for slot in model_slots(overrides, choices, specs)
+        if len(slot.choices) > 1
+    ]
+
+
+def scoped_model_overrides(
+    overrides: dict[str, str] | None, workflow_ids: list[str] | set[str]
+) -> dict[str, str]:
+    """The entries of ``overrides`` that belong to one of ``workflow_ids``.
+
+    ``continue`` may switch the video workflow, in which case the source job's
+    per-job model picks no longer apply — they are dropped here rather than
+    failing the request.
+    """
+    allowed = set(workflow_ids)
+    return {
+        key: value
+        for key, value in (overrides or {}).items()
+        if value and split_override_key(key)[0] in allowed
+    }
 
 
 def apply_model_overrides(

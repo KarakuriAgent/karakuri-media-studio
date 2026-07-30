@@ -50,6 +50,10 @@ class Settings(BaseModel):
     # that differ from the workflow template are stored (SPEC §3.3).  Unscoped
     # keys from an older layout are ignored.
     model_overrides: dict[str, str] = Field(default_factory=dict)
+    # 同じキー形式で「そのスロットで選べるモデルファイル名」を持つ（SPEC §3.3）。
+    # 2 件以上あるスロットは生成フォーム / エージェントが実行時に選べるようになる。
+    # 候補が空のキーは保存しない。
+    model_choices: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class SettingsUpdate(BaseModel):
@@ -61,6 +65,7 @@ class SettingsUpdate(BaseModel):
     grok_model: str | None = None
     grok_workdir: str | None = None
     model_overrides: dict[str, str] | None = None
+    model_choices: dict[str, list[str]] | None = None
     agent_grok_args: list[str] | None = None
     agent_grok_timeout: float | None = None
     agent_max_plan_tasks: int | None = None
@@ -87,12 +92,40 @@ class ModelFieldState(ModelField):
 
     value: str = ""
     overridden: bool = False
+    #: そのスロットで選べるモデルファイル名（設定ページで登録した候補リスト）
+    choices: list[str] = Field(default_factory=list)
 
 
 class ModelOverridesUpdate(BaseModel):
-    """PUT /api/models body."""
+    """PUT /api/models body.
+
+    ``choices`` を省略（``None``）すると、保存済みの候補リストはそのまま残る
+    （既定値の上書きだけを送っていた旧クライアントとの後方互換）。
+    """
 
     overrides: dict[str, str] = Field(default_factory=dict)
+    choices: dict[str, list[str]] | None = None
+
+
+class ModelSlot(BaseModel):
+    """実行時に切り替えられるモデル 1 スロット（SPEC §3.3）。
+
+    ``default`` は現在の既定値（設定の上書き → 無ければテンプレートの値）、
+    ``choices`` はそのスロットで選べるファイル名（``default`` を先頭に含む）。
+    ジョブ単位の ``model_overrides`` はこの候補の中からしか選べない。
+    """
+
+    key: str  # f"{workflow_id}/{node_id}.{field}"
+    workflow_id: str = ""
+    workflow_label: str = ""
+    kind: Literal["image", "video", "audio"] = "image"
+    node_id: str
+    field: str
+    class_type: str
+    #: 表示用のラベル（テンプレートのノード名。空ならキーを出す）
+    label: str = ""
+    default: str = ""
+    choices: list[str] = Field(default_factory=list)
 
 
 #: どちらのワークフローに挿す LoRA か（SPEC §3.4）。'image' は画像ワークフロー、
@@ -445,6 +478,72 @@ def image_lora_family_problem(
     return None
 
 
+def job_workflow_ids(
+    mode: str,
+    *,
+    image_workflow: str | None = None,
+    video_workflow: str | None = None,
+    audio_workflow: str | None = None,
+) -> list[str]:
+    """このジョブが実際に走らせるワークフロー ID（SPEC §2）。
+
+    ジョブ単位のモデル指定（``model_overrides``）のスコープに使う: 走らせない
+    ワークフローのスロットを指定しても効かないので、ここに無い ID のキーは
+    :func:`model_override_problem` が拒否する。
+    """
+    if mode == "audio":
+        return [audio_workflow or DEFAULT_AUDIO_WORKFLOW]
+    ids: list[str] = []
+    if mode in ("full", "image_only"):
+        ids.append(image_workflow or DEFAULT_IMAGE_WORKFLOW)
+    if mode in ("full", "i2v"):
+        ids.append(video_workflow or DEFAULT_VIDEO_WORKFLOW)
+    return ids
+
+
+def model_override_problem(
+    overrides: Any,
+    slots: list[ModelSlot],
+    workflow_ids: list[str],
+) -> str | None:
+    """ジョブ単位のモデル指定が使えるか（None == 問題なし、SPEC §3.3）。
+
+    ``slots`` は :func:`app.workflow.model_slots` が返す全スロット（候補が 1 件
+    以下のものも含む）。不明なキー・このジョブが走らせないワークフローのキー・
+    候補リストに無い値は、黙って捨てずに拒否する（設定した本人は効いたと思って
+    しまうため）。
+    """
+    if not overrides:
+        return None
+    if not isinstance(overrides, dict):
+        return (
+            "model_overrides は"
+            ' {"<workflow_id>/<node_id>.<field>": "<ファイル名>"}'
+            " 形式のオブジェクトで指定してください"
+        )
+    by_key = {slot.key: slot for slot in slots}
+    for key, value in overrides.items():
+        slot = by_key.get(str(key))
+        if slot is None:
+            return f"不明なモデルスロットです: {key}"
+        if slot.workflow_id not in workflow_ids:
+            return (
+                f"モデルスロット `{key}` はワークフロー `{slot.workflow_id}` の"
+                f"ものなので、このジョブ（{', '.join(workflow_ids) or 'なし'}）では"
+                "指定できません"
+            )
+        name = str(value or "").strip()
+        if not name:
+            return f"モデルスロット `{key}` の値が空です"
+        if name not in slot.choices:
+            return (
+                f"モデルスロット `{key}` に `{name}` は使えません"
+                f"（使えるのは {', '.join(slot.choices)} です。"
+                "候補は設定ページの「モデル」タブで追加します）"
+            )
+    return None
+
+
 def video_lora_problem(
     mode: str, video_workflow: str | None, video_loras: list[Any]
 ) -> str | None:
@@ -469,6 +568,9 @@ def video_lora_problem(
 
 class JobCreate(BaseModel):
     """POST /api/jobs body."""
+
+    # `model_overrides` would otherwise collide with pydantic's `model_` namespace.
+    model_config = ConfigDict(protected_namespaces=())
 
     mode: JobMode = "full"
 
@@ -515,6 +617,11 @@ class JobCreate(BaseModel):
     reference_video: str | None = None
 
     seed: int | None = None  # None -> random (recorded in params)
+
+    # このジョブだけで使うモデルファイル名（SPEC §3.3）。キーは設定と同じ
+    # `"<workflow_id>/<node_id>.<field>"`、値は設定の候補リスト（`model_choices`）に
+    # あるファイル名。設定の `model_overrides` の上に重ねられる。
+    model_overrides: dict[str, str] = Field(default_factory=dict)
 
     chat_session_id: str | None = None
     user_input: str | None = None
@@ -570,6 +677,8 @@ class JobRerun(BaseModel):
 class JobContinue(BaseModel):
     """POST /api/jobs/{id}/continue body (all optional overrides)."""
 
+    model_config = ConfigDict(protected_namespaces=())
+
     video_workflow: str | None = None
     video_prompt: str | None = None
     negative_prompt: str | None = None
@@ -584,6 +693,9 @@ class JobContinue(BaseModel):
     end_image: str | None = None
     reference_video: str | None = None
     seed: int | None = None
+    # 続き生成で使うモデル（省略すると元ジョブの指定を引き継ぐ。切り替わった先の
+    # ワークフローに属さないキーは落とされる）
+    model_overrides: dict[str, str] | None = None
     chat_session_id: str | None = None
     user_input: str | None = None
 
@@ -919,6 +1031,8 @@ class WorkflowOption(BaseModel):
 class Options(BaseModel):
     """Choices for the generation form (SPEC §9 GET /api/options)."""
 
+    model_config = ConfigDict(protected_namespaces=())
+
     comfy_connected: bool = False
     comfy_error: str | None = None
     comfy_url: str = ""
@@ -934,6 +1048,11 @@ class Options(BaseModel):
     languages: list[str] = Field(default_factory=lambda: list(LANGUAGES))
     aspect_ratios: list[str] = Field(default_factory=list)
     lora_files: list[str] = Field(default_factory=list)
+    #: 実行時に切り替えられるモデルスロット（候補が 2 件以上あるものだけ、§3.3）
+    model_slots: list[ModelSlot] = Field(default_factory=list)
+    #: ComfyUI が持つモデルファイル一覧。キーは `"<class_type>.<field>"`
+    #: （設定ページの候補入力の datalist 補完用。取得できなかったものは入らない）
+    model_files: dict[str, list[str]] = Field(default_factory=dict)
     loras: list[Lora] = Field(default_factory=list)
     audio_assets: list["Asset"] = Field(default_factory=list)
     image_assets: list["Asset"] = Field(default_factory=list)

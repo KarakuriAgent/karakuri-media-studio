@@ -17,6 +17,7 @@ import {
 } from '../form'
 import type { Asset, Job, JobMode, Lora, Options, WorkflowOption } from '../types'
 import AudioFields from './AudioFields'
+import ModelPicker from './ModelPicker'
 import { Banner, FieldError, Section } from './ui'
 
 // 音声も「モード」の一つ。ただし走るのは音声ワークフロー 1 本きりで、画像→動画の
@@ -448,6 +449,12 @@ export default function GenerateForm({
                   画像＋動画では開始フレームを受け取れるワークフローのみ選べます。
                 </p>
               )}
+              <ModelPicker
+                slots={options?.model_slots}
+                workflowId={form.videoWorkflow}
+                form={form}
+                patch={patch}
+              />
             </Section>
           )}
 
@@ -483,6 +490,12 @@ export default function GenerateForm({
               <p className="mt-1 text-[11px] text-slate-500">
                 モデルごとにプロンプトの書き方が異なります（Grokで生成 は選択中のモデルの流儀で書きます）。
               </p>
+              <ModelPicker
+                slots={options?.model_slots}
+                workflowId={form.imageWorkflow}
+                form={form}
+                patch={patch}
+              />
             </Section>
           )}
 

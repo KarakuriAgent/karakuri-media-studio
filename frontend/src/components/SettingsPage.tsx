@@ -45,8 +45,6 @@ const TABS = [
 
 type Tab = (typeof TABS)[number][0]
 
-const LORA_DATALIST_ID = 'model-lora-files'
-
 /** 「モデル」タブの大分類。 */
 const MODEL_KINDS = [
   ['image', '画像'],
@@ -54,15 +52,39 @@ const MODEL_KINDS = [
   ['audio', '音声'],
 ] as const
 
+/** `"<class_type>.<field>"` ごとの datalist の id（DOM で使える文字に落とす）。 */
+function fileListId(name: string): string {
+  return `model-files-${name.replace(/[^\w.-]/g, '_')}`
+}
+
+/**
+ * ComfyUI から取れたモデルファイル一覧（`class_type.field` -> ファイル名）。
+ *
+ * LoRA だけは以前から `lora_files` で返しているので、`model_files` に無ければ
+ * そちらで補う（どちらも無い = ComfyUI に繋がっていない場合は自由入力のまま）。
+ */
+function modelFileMap(options: Options | null): Record<string, string[]> {
+  const files: Record<string, string[]> = { ...(options?.model_files ?? {}) }
+  const loraKey = 'LoraLoaderModelOnly.lora_name'
+  const loraFiles = options?.lora_files ?? []
+  if (!files[loraKey] && loraFiles.length > 0) files[loraKey] = loraFiles
+  return files
+}
+
 interface ModelGroup {
   id: string
   label: string
   kind: string
   rows: ModelFieldState[]
-  /** 未保存の編集がある行数 */
+  /** 未保存の編集がある行数（既定値・候補リストのどちらでも） */
   changed: number
   /** 既定値から変わっている行数（保存済みの上書きを含む） */
   custom: number
+}
+
+/** 候補リストが同じ内容か（順序も見る）。 */
+function sameChoices(a: string[], b: string[]): boolean {
+  return a.length === b.length && a.every((name, index) => name === b[index])
 }
 
 /**
@@ -72,6 +94,7 @@ interface ModelGroup {
 function groupModels(
   rows: ModelFieldState[],
   draft: Record<string, string>,
+  choices: Record<string, string[]>,
 ): ModelGroup[] {
   const groups = new Map<string, ModelGroup>()
   for (const row of rows) {
@@ -90,7 +113,12 @@ function groupModels(
     }
     group.rows.push(row)
     const value = draft[row.key] ?? ''
-    if (value !== row.value) group.changed += 1
+    if (
+      value !== row.value ||
+      !sameChoices(choices[row.key] ?? [], row.choices ?? [])
+    ) {
+      group.changed += 1
+    }
     if (value !== row.default) group.custom += 1
   }
   return [...groups.values()]
@@ -110,6 +138,9 @@ export default function SettingsPage({
   const [loras, setLoras] = useState<Lora[]>([])
   const [models, setModels] = useState<ModelFieldState[]>([])
   const [modelDraft, setModelDraft] = useState<Record<string, string>>({})
+  // スロットごとの候補リスト（編集中）と「候補に追加」入力欄の内容
+  const [choiceDraft, setChoiceDraft] = useState<Record<string, string[]>>({})
+  const [choiceInput, setChoiceInput] = useState<Record<string, string>>({})
   // ワークフローごとの折りたたみ状態（既定は閉じている）
   const [openWorkflows, setOpenWorkflows] = useState<Record<string, boolean>>({})
   const [error, setError] = useState<string | null>(null)
@@ -119,6 +150,7 @@ export default function SettingsPage({
   const [editingId, setEditingId] = useState<number | null>(null)
 
   const loraFiles: string[] = options?.lora_files ?? []
+  const modelFiles = modelFileMap(options)
   const audioAssets: Asset[] = options?.audio_assets ?? []
 
   const fail = (caught: unknown) =>
@@ -135,7 +167,29 @@ export default function SettingsPage({
   const applyModels = (rows: ModelFieldState[]) => {
     setModels(rows)
     setModelDraft(Object.fromEntries(rows.map((row) => [row.key, row.value])))
+    setChoiceDraft(
+      Object.fromEntries(rows.map((row) => [row.key, [...(row.choices ?? [])]])),
+    )
+    setChoiceInput({})
   }
+
+  /** 候補リストにファイル名を足す（重複・空欄は無視）。 */
+  const addChoice = (key: string) => {
+    const name = (choiceInput[key] ?? '').trim()
+    if (!name) return
+    setChoiceDraft((previous) => {
+      const current = previous[key] ?? []
+      if (current.includes(name)) return previous
+      return { ...previous, [key]: [...current, name] }
+    })
+    setChoiceInput((previous) => ({ ...previous, [key]: '' }))
+  }
+
+  const removeChoice = (key: string, name: string) =>
+    setChoiceDraft((previous) => ({
+      ...previous,
+      [key]: (previous[key] ?? []).filter((item) => item !== name),
+    }))
 
   useEffect(() => {
     void (async () => {
@@ -180,8 +234,8 @@ export default function SettingsPage({
     setBusy(true)
     setError(null)
     try {
-      applyModels(await api.putModels(modelDraft))
-      setNotice('モデル名を保存しました')
+      applyModels(await api.putModels(modelDraft, choiceDraft))
+      setNotice('モデル名と候補リストを保存しました')
       onChanged()
     } catch (caught) {
       fail(caught)
@@ -253,9 +307,13 @@ export default function SettingsPage({
   const update = (patch: Partial<Settings>) =>
     setSettings((previous) => (previous ? { ...previous, ...patch } : previous))
 
-  const modelsDirty = models.some((row) => (modelDraft[row.key] ?? '') !== row.value)
+  const modelsDirty = models.some(
+    (row) =>
+      (modelDraft[row.key] ?? '') !== row.value ||
+      !sameChoices(choiceDraft[row.key] ?? [], row.choices ?? []),
+  )
   // 保存は全件置換 PUT なので、折りたたんでいても modelDraft は全行を持ち続ける。
-  const modelGroups = groupModels(models, modelDraft)
+  const modelGroups = groupModels(models, modelDraft, choiceDraft)
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -605,13 +663,18 @@ export default function SettingsPage({
               <p className="text-xs text-slate-500">
                 workflow/ 配下の各ワークフローのモデルファイル名を上書きします。空欄・既定値と同じ値は保存されません。
               </p>
-              {loraFiles.length > 0 && (
-                <datalist id={LORA_DATALIST_ID}>
-                  {loraFiles.map((file) => (
+              <p className="text-xs text-slate-500">
+                候補リストに別のファイル名を足すと、そのスロットは生成フォーム（とエージェント）で
+                <strong className="text-slate-300">実行ごとに切り替えられる</strong>
+                ようになります（既定値と合わせて 2 件以上必要）。
+              </p>
+              {Object.entries(modelFiles).map(([name, files]) => (
+                <datalist key={name} id={fileListId(name)}>
+                  {files.map((file) => (
                     <option key={file} value={file} />
                   ))}
                 </datalist>
-              )}
+              ))}
               {models.length === 0 && (
                 <p className="text-xs text-slate-500">読み込み中…</p>
               )}
@@ -663,14 +726,25 @@ export default function SettingsPage({
                                     <th className="p-2 font-medium">ノード</th>
                                     <th className="p-2 font-medium">既定値</th>
                                     <th className="p-2 font-medium">使用する値</th>
+                                    <th className="p-2 font-medium">
+                                      候補リスト（実行時に選べる）
+                                    </th>
                                     <th className="p-2" />
                                   </tr>
                                 </thead>
                                 <tbody className="divide-y divide-ink-600">
                                   {group.rows.map((row) => {
                                     const value = modelDraft[row.key] ?? ''
-                                    const changed = value !== row.value
+                                    const choices = choiceDraft[row.key] ?? []
+                                    const changed =
+                                      value !== row.value ||
+                                      !sameChoices(choices, row.choices ?? [])
                                     const custom = value !== row.default
+                                    const listId = modelFiles[
+                                      `${row.class_type}.${row.field}`
+                                    ]
+                                      ? fileListId(`${row.class_type}.${row.field}`)
+                                      : undefined
                                     return (
                                       <tr
                                         key={row.key}
@@ -694,13 +768,7 @@ export default function SettingsPage({
                                           <input
                                             className="field"
                                             value={value}
-                                            list={
-                                              row.class_type ===
-                                                'LoraLoaderModelOnly' &&
-                                              loraFiles.length > 0
-                                                ? LORA_DATALIST_ID
-                                                : undefined
-                                            }
+                                            list={listId}
                                             onChange={(event) =>
                                               setModelDraft((previous) => ({
                                                 ...previous,
@@ -708,6 +776,59 @@ export default function SettingsPage({
                                               }))
                                             }
                                           />
+                                        </td>
+                                        <td className="min-w-[16rem] p-2 align-top">
+                                          {choices.length > 0 && (
+                                            <div className="mb-1 flex flex-wrap gap-1">
+                                              {choices.map((name) => (
+                                                <span
+                                                  key={name}
+                                                  className="chip border-ink-500 bg-ink-700 text-slate-300"
+                                                >
+                                                  <span className="max-w-[12rem] truncate">
+                                                    {name}
+                                                  </span>
+                                                  <button
+                                                    className="text-slate-500 hover:text-slate-200"
+                                                    title="候補から削除"
+                                                    onClick={() =>
+                                                      removeChoice(row.key, name)
+                                                    }
+                                                  >
+                                                    ×
+                                                  </button>
+                                                </span>
+                                              ))}
+                                            </div>
+                                          )}
+                                          <div className="flex gap-1">
+                                            <input
+                                              className="field"
+                                              placeholder="候補に追加するファイル名"
+                                              list={listId}
+                                              value={choiceInput[row.key] ?? ''}
+                                              onChange={(event) =>
+                                                setChoiceInput((previous) => ({
+                                                  ...previous,
+                                                  [row.key]: event.target.value,
+                                                }))
+                                              }
+                                              onKeyDown={(event) => {
+                                                if (event.key !== 'Enter') return
+                                                event.preventDefault()
+                                                addChoice(row.key)
+                                              }}
+                                            />
+                                            <button
+                                              className="btn-ghost !py-1 text-xs"
+                                              disabled={
+                                                !(choiceInput[row.key] ?? '').trim()
+                                              }
+                                              onClick={() => addChoice(row.key)}
+                                            >
+                                              追加
+                                            </button>
+                                          </div>
                                         </td>
                                         <td className="p-2 align-top">
                                           <button

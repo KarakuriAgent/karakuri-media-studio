@@ -130,8 +130,11 @@ export const api = {
     json<Settings>('PUT', '/api/settings', patch),
 
   listModels: () => request<ModelFieldState[]>('/api/models'),
-  putModels: (overrides: Record<string, string>) =>
-    json<ModelFieldState[]>('PUT', '/api/models', { overrides }),
+  /** `choices` を省略すると保存済みの候補リストはそのまま残る。 */
+  putModels: (
+    overrides: Record<string, string>,
+    choices?: Record<string, string[]>,
+  ) => json<ModelFieldState[]>('PUT', '/api/models', { overrides, choices }),
 
   listLoras: () => request<Lora[]>('/api/loras'),
   createLora: (payload: LoraPayload) => json<Lora>('POST', '/api/loras', payload),

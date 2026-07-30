@@ -9,6 +9,7 @@ import {
   type FormState,
 } from '../form'
 import type { Options, WorkflowOption } from '../types'
+import ModelPicker from './ModelPicker'
 import { FieldError, Section } from './ui'
 
 /**
@@ -92,6 +93,12 @@ export default function AudioFields({
         <p className="mt-1 text-[11px] text-slate-500">
           音声は単独で生成されます（画像・動画とは連結されません）。
         </p>
+        <ModelPicker
+          slots={options?.model_slots}
+          workflowId={form.audioWorkflow}
+          form={form}
+          patch={patch}
+        />
       </Section>
 
       <Section

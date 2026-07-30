@@ -53,12 +53,20 @@ from .models import (
     audio_workflow_problem,
     image_lora_family_problem,
     image_workflow_problem,
+    job_workflow_ids,
     missing_job_fields,
+    model_override_problem,
     video_lora_problem,
     video_workflow_problem,
 )
 from .paths import ASSETS_DIR, OUTPUTS_DIR
-from .workflow import build_audio_workflow, build_image_workflow, build_video_workflow
+from .workflow import (
+    build_audio_workflow,
+    build_image_workflow,
+    build_video_workflow,
+    model_slots,
+    scoped_model_overrides,
+)
 from .workflows import (
     DEFAULT_AUDIO_WORKFLOW,
     DEFAULT_IMAGE_WORKFLOW,
@@ -271,6 +279,24 @@ def _seeds(seed: int | None) -> dict[str, Any]:
     }
 
 
+def _model_override_problem(params: dict[str, Any]) -> str | None:
+    """ジョブ単位のモデル指定を設定の候補リストと突き合わせる（SPEC §3.3）。"""
+    requested = params.get("model_overrides")
+    if not requested:
+        return None
+    settings = load_settings()
+    return model_override_problem(
+        requested,
+        model_slots(settings.model_overrides, settings.model_choices),
+        job_workflow_ids(
+            params.get("mode", ""),
+            image_workflow=params.get("image_workflow"),
+            video_workflow=params.get("video_workflow"),
+            audio_workflow=params.get("audio_workflow"),
+        ),
+    )
+
+
 def _validate(params: dict[str, Any]) -> None:
     mode = params.get("mode", "")
     video_workflow = params.get("video_workflow")
@@ -291,6 +317,7 @@ def _validate(params: dict[str, Any]) -> None:
             mode, params.get("loras") or [], params.get("video_loras") or []
         )
         or video_lora_problem(mode, video_workflow, params.get("video_loras") or [])
+        or _model_override_problem(params)
     )
     if problem:
         raise JobValidationError(problem)
@@ -471,6 +498,8 @@ def _params_from_create(payload: JobCreate) -> dict[str, Any]:
         "source_image": payload.source_image,
         "end_image": payload.end_image,
         "reference_video": payload.reference_video,
+        # このジョブだけのモデル指定（設定の model_overrides の上に重ねる、§3.3）
+        "model_overrides": dict(payload.model_overrides),
     }
     params.update(_seeds(payload.seed))
     return params
@@ -557,13 +586,14 @@ async def continue_job(
     start_image = copy_into_assets(source.last_frame_path, "image")
 
     prev = dict(source.params)
+    video_workflow = _continuable_workflow(
+        payload.video_workflow or prev.get("video_workflow")
+    )
     params: dict[str, Any] = {
         "mode": "i2v",
         # kept for the record only: a continuation never runs an image stage
         "image_workflow": prev.get("image_workflow") or DEFAULT_IMAGE_WORKFLOW,
-        "video_workflow": _continuable_workflow(
-            payload.video_workflow or prev.get("video_workflow")
-        ),
+        "video_workflow": video_workflow,
         "aspect_ratio": payload.aspect_ratio or prev.get("aspect_ratio", "4:3 (Standard)"),
         "megapixels": (
             payload.megapixels
@@ -585,6 +615,14 @@ async def continue_job(
         "source_image": str(start_image),
         "end_image": payload.end_image or prev.get("end_image"),
         "reference_video": payload.reference_video or prev.get("reference_video"),
+        # 動画ステージだけを走らせるので、動画ワークフローのスロットだけ引き継ぐ
+        # （切り替えで既定ワークフローに戻された場合は元の指定が落ちる）
+        "model_overrides": scoped_model_overrides(
+            payload.model_overrides
+            if payload.model_overrides is not None
+            else prev.get("model_overrides"),
+            [video_workflow],
+        ),
         "continued_from": source.id,
     }
     params.update(_seeds(payload.seed))
@@ -883,7 +921,11 @@ async def run_job(job_id: str) -> None:
                 uploads[param_name] = await comfy.upload_file(path)
 
         params = _generation_params(job, uploads)
-        overrides = load_settings().model_overrides
+        # 設定の既定値の上にジョブ単位の指定を重ねる（SPEC §3.3）
+        overrides = {
+            **load_settings().model_overrides,
+            **(job.params.get("model_overrides") or {}),
+        }
         job_dir = OUTPUTS_DIR / job.id
         stages: dict[str, Any] = {}
         updates: dict[str, Any] = {}

@@ -69,6 +69,7 @@ Grok がチャットから生成設定一式を組み立て、複数の動画ジ
 `loras[]`（画像用 LoRA: lora_name / trigger_word / strength）, `trigger_text`,
 `video_loras[]`（動画用 LoRA・同形式）, `video_trigger_text`, `duration`, `fps`,
 `audio_path`, `source_image`, **`end_image`**, **`reference_video`**, `seed`（固定 or 抽選）、
+**`model_overrides`**（実行ごとのモデル切り替え）、
 および音声モード専用の **`audio_prompt`** / `lyrics` / `bpm` / `keyscale` / `language` /
 `audio_category` / `reprompt`
 
@@ -116,6 +117,29 @@ LoRA は登録時の対象（SPEC §3.4）で振り分ける: 画像用は `lora
 利用可能な選択肢（LoRA 一覧・トリガーワード・アスペクト比・音声/画像/**動画**アセット・
 ネガティブプリセット = `GET /api/options` 相当）はシステムプロンプトに焼き込み、
 実在する値しか使えないようにする。
+
+#### 使用モデルの切り替え（`model_overrides`）
+
+設定ページの「モデル」タブで**候補リスト**を 2 件以上登録したモデルスロット（SPEC §3.3）は、
+CHOICES の「使用モデルの切り替え」見出しにワークフローごとに列挙される:
+
+```
+- `krea2_turbo`（Krea 2 Turbo）:
+  - `krea2_turbo/30:10.unet_name`（Load Diffusion Model、既定 `base.safetensors`）: `base.safetensors`, `alt.safetensors`
+```
+
+エージェントはジョブに `model_overrides: {"<キー>": "<ファイル名>"}` を付けることで、
+その 1 回だけモデルを差し替えられる（同じ画で絵柄違いを比べる、ユーザーが特定チェックポイントを
+指定した、等）。省略すれば設定の既定値が使われる。検証は Web UI と同じ
+`models.model_override_problem` を通し、
+
+- 不明なキー
+- そのジョブが走らせないワークフローのキー（画像のみのジョブに動画スロット等）
+- 候補リスト（既定値を含む）に無いファイル名
+
+はプラン検証の段階で `ActionError` にしてフォーマットリマインダー付きで 1 回リトライさせる。
+候補が何も登録されていない環境では CHOICES に「切り替え候補は登録されていません」と出し、
+`model_overrides` を書かせない。`continue` アクションでも差分項目として指定できる。
 
 ### 3.2 複数実行
 

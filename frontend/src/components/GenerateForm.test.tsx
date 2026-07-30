@@ -41,6 +41,8 @@ const OPTIONS: Options = {
   languages: [],
   aspect_ratios: [],
   lora_files: [],
+  model_slots: [],
+  model_files: {},
   loras: [lora(1, 'サクラ', 'image'), lora(2, 'スローモ', 'video')],
   audio_assets: [],
   image_assets: [],
@@ -457,5 +459,64 @@ describe('GenerateForm は使わない項目を出さない', () => {
     show({ mode: 'i2v' })
     const video = screen.getByPlaceholderText(/1 段落 4〜8 文/) as HTMLTextAreaElement
     expect(video.disabled).toBe(false)
+  })
+})
+
+describe('GenerateForm の使用モデル選択（SPEC §3.3）', () => {
+  const IMAGE_SLOT = {
+    key: 'krea2_turbo/30:10.unet_name',
+    workflow_id: 'krea2_turbo',
+    workflow_label: 'Krea 2',
+    kind: 'image' as const,
+    node_id: '30:10',
+    field: 'unet_name',
+    class_type: 'UNETLoader',
+    label: 'Load Diffusion Model',
+    default: 'base.safetensors',
+    choices: ['base.safetensors', 'alt.safetensors'],
+  }
+
+  function showWithSlots(form: Partial<FormState> = {}) {
+    const patch = vi.fn()
+    render(
+      <GenerateForm
+        form={{ ...initialForm, imageWorkflow: 'krea2_turbo', ...form }}
+        patch={patch}
+        options={{ ...OPTIONS, model_slots: [IMAGE_SLOT] }}
+        optionsError={null}
+        onReloadOptions={() => {}}
+        onOpenChat={() => {}}
+        onSubmit={() => {}}
+        submitting={false}
+        fieldErrors={{}}
+        jobs={[]}
+      />,
+    )
+    return { patch }
+  }
+
+  it('候補のあるスロットだけセレクトを出し、選択を patch する', () => {
+    const { patch } = showWithSlots()
+    const select = screen.getByLabelText(
+      '使用モデル: Load Diffusion Model',
+    ) as HTMLSelectElement
+    expect([...select.options].map((option) => option.value)).toEqual([
+      'base.safetensors',
+      'alt.safetensors',
+    ])
+    fireEvent.change(select, { target: { value: 'alt.safetensors' } })
+    expect(patch).toHaveBeenCalledWith({
+      modelOverrides: { 'krea2_turbo/30:10.unet_name': 'alt.safetensors' },
+    })
+  })
+
+  it('候補が無ければ何も出さない', () => {
+    show()
+    expect(screen.queryByText(/使用モデル:/)).toBeNull()
+  })
+
+  it('画像ステージを走らせないモードでは画像側のセレクトを出さない', () => {
+    showWithSlots({ mode: 'i2v' })
+    expect(screen.queryByText(/使用モデル:/)).toBeNull()
   })
 })

@@ -4,6 +4,7 @@ from .. import comfy, lora_samples
 from ..config import load_settings
 from ..db import get_db
 from ..models import DEFAULT_NEGATIVE_PROMPT, Options, WorkflowOption
+from ..workflow import MODEL_FIELDS, selectable_model_slots
 from ..workflows import (
     DEFAULT_AUDIO_WORKFLOW,
     DEFAULT_IMAGE_WORKFLOW,
@@ -63,6 +64,10 @@ async def get_options() -> Options:
         default_video_workflow=DEFAULT_VIDEO_WORKFLOW,
         default_image_workflow=DEFAULT_IMAGE_WORKFLOW,
         default_audio_workflow=DEFAULT_AUDIO_WORKFLOW,
+        # 実行時に選べるモデル（候補が 2 件以上あるスロットだけ、SPEC §3.3）
+        model_slots=selectable_model_slots(
+            settings.model_overrides, settings.model_choices
+        ),
     )
 
     async with get_db() as conn:
@@ -86,6 +91,16 @@ async def get_options() -> Options:
             setattr(options, target, comfy.combo_options(info, class_type, field))
         except comfy.ComfyError as exc:
             errors.append(str(exc))
+    # 設定ページの候補入力の datalist 用。テンプレートが使う class_type が入って
+    # いない ComfyUI もあるので、取れなかったものは黙って省く（欠落は
+    # /api/health の custom node チェックが報告する）。
+    for class_type, field in sorted(MODEL_FIELDS):
+        try:
+            options.model_files[f"{class_type}.{field}"] = comfy.combo_options(
+                info, class_type, field
+            )
+        except comfy.ComfyError:
+            continue
     if errors:
         options.comfy_error = "; ".join(errors)
     return options

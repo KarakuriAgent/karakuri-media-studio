@@ -34,6 +34,7 @@ from .models import (
     AgentSessionCreate,
     ChatMessage,
     ChatSessionCreate,
+    ModelSlot,
     Options,
     missing_job_fields,
     video_workflow_problem,
@@ -1330,6 +1331,7 @@ Your reply is either plain Japanese text, or plain Japanese text followed by
         "image_prompt": "...", "video_prompt": "...",
         "negative_prompt": "...",
         "aspect_ratio": "9:16", "megapixels": 1.0,
+        "model_overrides": {"krea2_turbo/30:10.unet_name": "other.safetensors"},
         "loras": [{"lora_name": "kaori.safetensors", "trigger_word": "kaori",
                    "strength": 0.8}],
         "trigger_text": "kaori",
@@ -1362,7 +1364,7 @@ Available actions:
 |---|---|---|
 | `plan` | `notes`, `tasks[{label, job}]` | propose the task list (a revision replaces the previous plan). Needs approval. |
 | `run_task` | `task_id` (optional) | run the next approved task now |
-| `continue` | `job_id`, plus any of `video_workflow`, `video_prompt`, `negative_prompt`, `aspect_ratio`, `megapixels`, `duration`, `fps`, `audio_path`, `end_image`, `reference_video`, `seed` | new i2v job starting from that job's last frame |
+| `continue` | `job_id`, plus any of `video_workflow`, `video_prompt`, `negative_prompt`, `aspect_ratio`, `megapixels`, `duration`, `fps`, `audio_path`, `end_image`, `reference_video`, `seed`, `model_overrides` | new i2v job starting from that job's last frame |
 | `rerun` | `job_id`, `seed` or `randomize_seed` | re-run a job (new seed by default) |
 | `inspect` | `job_id`, `interval` (seconds, default 1) | the app extracts frames with ffmpeg into your work dir; look at them next turn |
 | `note` | `title`, `content` or `filename`, `kind` | register a memo as an artifact; `kind: "research"` for a web-search / research summary, `"note"` (default) for anything else |
@@ -1384,9 +1386,10 @@ Rules:
 - `mode: "audio"` is a **stand-alone** job — a separate task, never a stage of
   a `full` one, and it cannot supply or replace a video's soundtrack (LTX
   generates its own, and `audio_path` takes a *file* you already have). Such a
-  job carries only `mode`, `audio_workflow`, `audio_prompt`, `duration`, `seed`
-  and its workflow's own extra fields (`lyrics`, `bpm`, `keyscale`,
-  `language`, `audio_category`, `reprompt`); adding `image_prompt`,
+  job carries only `mode`, `audio_workflow`, `audio_prompt`, `duration`, `seed`,
+  its workflow's own extra fields (`lyrics`, `bpm`, `keyscale`,
+  `language`, `audio_category`, `reprompt`) and — if you switch a model —
+  `model_overrides`; adding `image_prompt`,
   `video_prompt`, `source_image`, `loras` or `video_loras` to it is rejected.
   There are no audio LoRAs.
 - `image_workflow` matters in `mode` `full` and `image_only` (it is ignored in
@@ -1406,6 +1409,11 @@ Rules:
 - Use only values listed in CHOICES: LoRA file names, aspect ratios and the
   audio / image / video asset paths must exist. `seed: null` means "roll a
   random seed".
+- `model_overrides` switches which model file a workflow loads for **this job
+  only** (CHOICES の「使用モデルの切り替え」に、キーと候補が出ています). Leave it
+  out to use the configured default; when you do set it, write only keys of the
+  workflows this job runs and only values from that slot's candidate list —
+  anything else is rejected. `continue` may carry it too.
 - `aspect_ratio` is a preset for the image stage; when the job has a
   `source_image` the video follows that image's real aspect ratio instead (so it
   is never centre-cropped), and only `megapixels` still applies.
@@ -1619,6 +1627,48 @@ def _agent_choices(
     lines.append("Negative prompt presets:")
     for name, value in options.negative_presets.items():
         lines.append(f"- {name}: `{value}`")
+    lines.append("")
+    lines.append(_model_choices_lines(options))
+    return "\n".join(lines)
+
+
+def _model_choices_lines(options: Options) -> str:
+    """The `model_overrides` catalogue: which model a job may switch (SPEC §3.3).
+
+    Only the slots the user registered two or more candidates for are listed
+    (``GET /api/options`` の ``model_slots``), so a session where nothing was
+    registered simply tells the agent to leave the field out.
+    """
+    if not options.model_slots:
+        return (
+            "使用モデルの切り替え候補は登録されていません:"
+            " `model_overrides` は指定しないでください（各ワークフローの既定モデルが"
+            "使われます）。"
+        )
+    lines = [
+        "使用モデルの切り替え（ジョブの `model_overrides`）— ワークフローごとに、"
+        "この環境で差し替えられるモデルスロットと候補です:",
+        "",
+    ]
+    grouped: dict[str, list[ModelSlot]] = {}
+    for slot in options.model_slots:
+        grouped.setdefault(slot.workflow_id, []).append(slot)
+    for workflow_id, slots in grouped.items():
+        lines.append(f"- `{workflow_id}`（{slots[0].workflow_label}）:")
+        for slot in slots:
+            label = slot.label or slot.class_type
+            names = ", ".join(f"`{name}`" for name in slot.choices)
+            lines.append(
+                f"  - `{slot.key}`（{label}、既定 `{slot.default}`）: {names}"
+            )
+    lines += [
+        "",
+        '`model_overrides` は `{"<キー>": "<ファイル名>"}` の形で、**そのジョブが'
+        "走らせるワークフローのキーだけ**を書くこと（`mode: \"full\"` なら画像と"
+        "動画の両方、`i2v` なら動画だけ、`audio` なら音声だけ）。値は上の候補から"
+        "選ぶ。省略すれば既定モデルが使われる（それが通常の選択で、切り替えるのは"
+        "ユーザーが指示したときか、同じ画で絵柄違いを比べたいときだけ）。",
+    ]
     return "\n".join(lines)
 
 

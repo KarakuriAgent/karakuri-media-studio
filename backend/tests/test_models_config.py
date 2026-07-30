@@ -74,3 +74,59 @@ def test_put_rejects_unknown_key(client):
 def test_put_rejects_the_dynamic_lora_node(client):
     response = client.put("/api/models", json={"overrides": {"krea2_turbo/30:61:62.lora_name": "x"}})
     assert response.status_code == 422
+
+
+# --------------------------------------------------------------------------
+# 候補リスト（実行時に選べるモデル、SPEC §3.3）
+# --------------------------------------------------------------------------
+
+def test_choices_are_saved_and_normalized(client):
+    rows = client.put(
+        "/api/models",
+        json={
+            "overrides": {},
+            # 空白・重複は落とす（順序はそのまま）
+            "choices": {UNET_KEY: ["b.safetensors", " ", "a.safetensors", "b.safetensors"]},
+        },
+    )
+    assert rows.status_code == 200, rows.text
+    assert by_key(rows.json())[UNET_KEY]["choices"] == [
+        "b.safetensors",
+        "a.safetensors",
+    ]
+    assert config.load_settings().model_choices == {
+        UNET_KEY: ["b.safetensors", "a.safetensors"]
+    }
+    # 次のリクエストでも返る
+    assert by_key(client.get("/api/models").json())[UNET_KEY]["choices"] == [
+        "b.safetensors",
+        "a.safetensors",
+    ]
+
+
+def test_an_empty_choice_list_is_not_stored(client):
+    client.put("/api/models", json={"overrides": {}, "choices": {UNET_KEY: ["a"]}})
+    rows = client.put(
+        "/api/models", json={"overrides": {}, "choices": {UNET_KEY: ["", "  "]}}
+    ).json()
+    assert by_key(rows)[UNET_KEY]["choices"] == []
+    assert config.load_settings().model_choices == {}
+
+
+def test_omitting_choices_keeps_the_stored_lists(client):
+    """既定値だけを送る旧クライアントが候補を消してしまわないこと。"""
+    client.put("/api/models", json={"overrides": {}, "choices": {UNET_KEY: ["a"]}})
+    rows = client.put(
+        "/api/models", json={"overrides": {UNET_KEY: "mine.safetensors"}}
+    ).json()
+    assert by_key(rows)[UNET_KEY]["choices"] == ["a"]
+    assert config.load_settings().model_choices == {UNET_KEY: ["a"]}
+
+
+def test_put_rejects_an_unknown_choice_key(client):
+    response = client.put(
+        "/api/models", json={"overrides": {}, "choices": {"nope.field": ["a"]}}
+    )
+    assert response.status_code == 422
+    assert "nope.field" in response.json()["detail"]
+    assert config.load_settings().model_choices == {}

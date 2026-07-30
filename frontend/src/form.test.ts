@@ -9,12 +9,15 @@ import {
   imageWorkflowNeedsSource,
   initialForm,
   isAudioJob,
+  jobModelOverrides,
+  jobWorkflowIds,
   lorasForTarget,
+  modelSlotsForJob,
   validateForm,
   workflowsForMode,
   type FormState,
 } from './form'
-import type { Lora, WorkflowOption } from './types'
+import type { Lora, ModelSlot, WorkflowOption } from './types'
 
 function workflow(overrides: Partial<WorkflowOption> = {}): WorkflowOption {
   return {
@@ -459,11 +462,136 @@ describe('audioJobPayload', () => {
     expect(payload.duration).toBe(180)
   })
 
+  it('carries the picked audio model, and only when it differs', () => {
+    const audioSlot: ModelSlot = {
+      key: `${ACE.id}/1.ckpt_name`,
+      workflow_id: ACE.id,
+      workflow_label: 'ACE-Step',
+      kind: 'audio',
+      node_id: '1',
+      field: 'ckpt_name',
+      class_type: 'CheckpointLoaderSimple',
+      label: 'Load Checkpoint',
+      default: 'ace.safetensors',
+      choices: ['ace.safetensors', 'ace-alt.safetensors'],
+    }
+    const picked = audioJobPayload(
+      audioForm({
+        audioWorkflow: ACE.id,
+        modelOverrides: { [audioSlot.key]: 'ace-alt.safetensors' },
+      }),
+      ACE,
+      [audioSlot],
+    )
+    expect(picked.model_overrides).toEqual({ [audioSlot.key]: 'ace-alt.safetensors' })
+    // 既定値のままなら送らない
+    expect(
+      audioJobPayload(audioForm({ audioWorkflow: ACE.id }), ACE, [audioSlot]),
+    ).not.toHaveProperty('model_overrides')
+  })
+
   it('passes an explicit seed only when it is locked', () => {
     expect(audioJobPayload(audioForm({ seedLocked: true, seed: 7 }), ACE).seed).toBe(7)
     expect(
       audioJobPayload(audioForm({ seedLocked: false, seed: 7 }), ACE).seed,
     ).toBeNull()
+  })
+})
+
+// ------------------------------------------- 実行時のモデル切り替え（SPEC §3.3）
+
+function slot(overrides: Partial<ModelSlot> = {}): ModelSlot {
+  return {
+    key: 'krea2_turbo/30:10.unet_name',
+    workflow_id: 'krea2_turbo',
+    workflow_label: 'Krea 2',
+    kind: 'image',
+    node_id: '30:10',
+    field: 'unet_name',
+    class_type: 'UNETLoader',
+    label: 'Load Diffusion Model',
+    default: 'base.safetensors',
+    choices: ['base.safetensors', 'alt.safetensors'],
+    ...overrides,
+  }
+}
+
+const IMAGE_SLOT = slot()
+const VIDEO_SLOT = slot({
+  key: 'id_lora/340:317.ckpt_name',
+  workflow_id: 'id_lora',
+  kind: 'video',
+  node_id: '340:317',
+  field: 'ckpt_name',
+  default: 'ltx.safetensors',
+  choices: ['ltx.safetensors', 'ltx-alt.safetensors'],
+})
+const SLOTS = [IMAGE_SLOT, VIDEO_SLOT]
+
+function modelForm(overrides: Partial<FormState> = {}): FormState {
+  return {
+    ...initialForm,
+    imageWorkflow: 'krea2_turbo',
+    videoWorkflow: 'id_lora',
+    ...overrides,
+  }
+}
+
+describe('jobWorkflowIds', () => {
+  it('lists the workflows the mode actually runs', () => {
+    expect(jobWorkflowIds(modelForm({ mode: 'full' }))).toEqual([
+      'krea2_turbo',
+      'id_lora',
+    ])
+    expect(jobWorkflowIds(modelForm({ mode: 'image_only' }))).toEqual(['krea2_turbo'])
+    expect(jobWorkflowIds(modelForm({ mode: 'i2v' }))).toEqual(['id_lora'])
+    expect(jobWorkflowIds(modelForm({ mode: 'audio' }))).toEqual([
+      initialForm.audioWorkflow,
+    ])
+  })
+})
+
+describe('modelSlotsForJob', () => {
+  it('keeps only the slots of the given workflows', () => {
+    expect(modelSlotsForJob(SLOTS, ['id_lora'])).toEqual([VIDEO_SLOT])
+    expect(modelSlotsForJob(SLOTS, [])).toEqual([])
+    expect(modelSlotsForJob(undefined, ['krea2_turbo'])).toEqual([])
+  })
+})
+
+describe('jobModelOverrides', () => {
+  it('sends the picked model only when it differs from the default', () => {
+    const form = modelForm({
+      mode: 'full',
+      modelOverrides: {
+        [IMAGE_SLOT.key]: 'alt.safetensors',
+        [VIDEO_SLOT.key]: VIDEO_SLOT.default,
+      },
+    })
+    expect(jobModelOverrides(form, SLOTS, jobWorkflowIds(form))).toEqual({
+      [IMAGE_SLOT.key]: 'alt.safetensors',
+    })
+  })
+
+  it('drops the slots of a workflow this mode does not run', () => {
+    const form = modelForm({
+      mode: 'image_only',
+      modelOverrides: {
+        [IMAGE_SLOT.key]: 'alt.safetensors',
+        [VIDEO_SLOT.key]: 'ltx-alt.safetensors',
+      },
+    })
+    expect(jobModelOverrides(form, SLOTS, jobWorkflowIds(form))).toEqual({
+      [IMAGE_SLOT.key]: 'alt.safetensors',
+    })
+  })
+
+  it('ignores a value that is no longer a candidate', () => {
+    const form = modelForm({
+      mode: 'image_only',
+      modelOverrides: { [IMAGE_SLOT.key]: 'removed.safetensors' },
+    })
+    expect(jobModelOverrides(form, SLOTS, jobWorkflowIds(form))).toEqual({})
   })
 })
 

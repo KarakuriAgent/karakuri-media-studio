@@ -24,6 +24,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from . import grok
+from .config import load_settings
 from .ids import new_id
 from .jobs import JobValidationError, resolve_asset_path
 from .models import (
@@ -34,9 +35,12 @@ from .models import (
     audio_lora_problem,
     audio_workflow_problem,
     image_workflow_problem,
+    job_workflow_ids,
     missing_job_fields,
+    model_override_problem,
     video_workflow_problem,
 )
+from .workflow import model_slots
 from .workflows import (
     AUDIO_CATEGORIES,
     DEFAULT_AUDIO_WORKFLOW,
@@ -194,6 +198,31 @@ def _audio_workflow_detail(raw: dict[str, Any]) -> str | None:
     return None
 
 
+def _model_override_detail(raw: dict[str, Any], mode: str) -> str | None:
+    """ジョブ単位のモデル指定（`model_overrides`）が候補に収まっているか（SPEC §3.3）。
+
+    Web UI と同じ :func:`~app.models.model_override_problem` を通すので、
+    「候補外のファイル名」「別ワークフローのキー」はプラン検証の段階で弾かれる。
+    """
+    requested = raw.get("model_overrides")
+    if not requested:
+        return None
+    settings = load_settings()
+    problem = model_override_problem(
+        requested,
+        model_slots(settings.model_overrides, settings.model_choices),
+        job_workflow_ids(
+            mode,
+            image_workflow=_text(raw.get("image_workflow")),
+            video_workflow=_text(raw.get("video_workflow")),
+            audio_workflow=_text(raw.get("audio_workflow")),
+        ),
+    )
+    if problem:
+        return f"{problem}（MODEL CHOICES の一覧を確認してください）"
+    return None
+
+
 def _workflow_detail(raw: dict[str, Any]) -> str | None:
     """ワークフロー依存の問題を、pydantic の短い文言より前に説明する。
 
@@ -205,9 +234,13 @@ def _workflow_detail(raw: dict[str, Any]) -> str | None:
     mode = raw.get("mode", "full")
     workflow = _text(raw.get("video_workflow")) or DEFAULT_VIDEO_WORKFLOW
     if mode == "audio":
-        return _audio_workflow_detail(raw)
+        return _audio_workflow_detail(raw) or _model_override_detail(raw, mode)
     if not isinstance(mode, str) or mode not in ("full", "i2v", "image_only"):
         return None  # mode 自体の誤りは pydantic に任せる
+
+    model_detail = _model_override_detail(raw, mode)
+    if model_detail:
+        return model_detail
 
     image_detail = _image_workflow_detail(raw, mode)
     if image_detail:

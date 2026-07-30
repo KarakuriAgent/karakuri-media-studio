@@ -13,6 +13,8 @@ import {
   audioJobPayload,
   imageWorkflowNeedsSource,
   initialForm,
+  jobModelOverrides,
+  jobWorkflowIds,
   validateForm,
   type FormState,
 } from './form'
@@ -280,7 +282,9 @@ export default function App() {
       }
       // 音声は独立ジョブ: 画像・動画のフィールドは一切送らない。
       if (form.mode === 'audio') {
-        const created = await api.createJob(audioJobPayload(form, audioWorkflow))
+        const created = await api.createJob(
+          audioJobPayload(form, audioWorkflow, options?.model_slots),
+        )
         setChatSessionId(null)
         setActiveJob(created)
         await loadJobs()
@@ -332,6 +336,12 @@ export default function App() {
         end_image: needs('end_image') ? form.endImage || null : null,
         reference_video: needs('video') ? form.referenceVideo || null : null,
         seed: form.seedLocked ? form.seed : null,
+        // 走らせるワークフローのスロットだけ（既定値のままのものは送らない）
+        model_overrides: jobModelOverrides(
+          form,
+          options?.model_slots,
+          jobWorkflowIds(form),
+        ),
         chat_session_id: chatSessionId,
       }
       const job = await api.createJob(payload)

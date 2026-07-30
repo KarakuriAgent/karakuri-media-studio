@@ -5,6 +5,7 @@ import type {
   Lora,
   LoraRef,
   LoraTarget,
+  ModelSlot,
   PromptTemplate,
   WorkflowOption,
 } from './types'
@@ -104,6 +105,12 @@ export interface FormState {
   seedLocked: boolean
   seed: number
   promptTemplate: PromptTemplate
+  /**
+   * 実行時に切り替えたモデル（キーは /api/options の model_slots の `key`）。
+   * 全ワークフローぶんを 1 つに持ち、送信時に走らせるワークフローのぶんだけ絞る
+   * （モードを行き来しても選択が消えない）。
+   */
+  modelOverrides: Record<string, string>
 
   // --- mode 'audio' -------------------------------------------------------
   // 音声はモードの一つだが、画像・動画とは連結されない独立ジョブ。モードを行き来
@@ -149,6 +156,7 @@ export const initialForm: FormState = {
   seedLocked: false,
   seed: 0,
   promptTemplate: 'natural',
+  modelOverrides: {},
   audioWorkflow: DEFAULT_AUDIO_WORKFLOW,
   audioPrompt: '',
   lyrics: '',
@@ -194,6 +202,44 @@ export function lorasForTarget(
     if (target !== 'image' || !family) return true
     return (lora.family ?? DEFAULT_FAMILY) === family
   })
+}
+
+// ------------------------------------------------- 実行時のモデル切り替え（§3.3）
+// 設定ページで候補を 2 件以上登録したスロットだけが /api/options の `model_slots`
+// に出る。フォームはそのうち「選択中のワークフローのもの」だけをセレクトで見せ、
+// 既定値と違う選択だけをジョブの `model_overrides` として送る。
+
+/** そのモードで実際に走らせるワークフロー ID（モデル選択のスコープ、SPEC §2）。 */
+export function jobWorkflowIds(form: FormState): string[] {
+  if (form.mode === 'audio') return [form.audioWorkflow]
+  const ids: string[] = []
+  if (form.mode !== 'i2v') ids.push(form.imageWorkflow)
+  if (form.mode !== 'image_only') ids.push(form.videoWorkflow)
+  return ids
+}
+
+/** 指定ワークフローに属する、実行時に選べるモデルスロット。 */
+export function modelSlotsForJob(
+  slots: ModelSlot[] | undefined,
+  workflowIds: string[],
+): ModelSlot[] {
+  return (slots ?? []).filter((slot) => workflowIds.includes(slot.workflow_id))
+}
+
+/** フォームの選択 → ジョブの `model_overrides`（既定値のままのものは送らない）。 */
+export function jobModelOverrides(
+  form: FormState,
+  slots: ModelSlot[] | undefined,
+  workflowIds: string[],
+): Record<string, string> {
+  const picked: Record<string, string> = {}
+  for (const slot of modelSlotsForJob(slots, workflowIds)) {
+    const value = form.modelOverrides[slot.key]
+    if (value && value !== slot.default && slot.choices.includes(value)) {
+      picked[slot.key] = value
+    }
+  }
+  return picked
 }
 
 /** True when the image workflow edits a given picture instead of generating one. */
@@ -244,6 +290,7 @@ export function clampToWorkflow(
 export function audioJobPayload(
   form: FormState,
   workflow?: WorkflowOption | null,
+  modelSlots?: ModelSlot[],
 ): AudioJobCreate {
   const payload: AudioJobCreate = {
     mode: 'audio',
@@ -252,6 +299,8 @@ export function audioJobPayload(
     duration: form.audioDuration,
     seed: form.seedLocked ? form.seed : null,
   }
+  const models = jobModelOverrides(form, modelSlots, [form.audioWorkflow])
+  if (Object.keys(models).length > 0) payload.model_overrides = models
   if (audioSupports(workflow, 'lyrics')) payload.lyrics = form.lyrics
   if (audioSupports(workflow, 'bpm')) payload.bpm = form.bpm
   if (audioSupports(workflow, 'keyscale')) payload.keyscale = form.keyscale

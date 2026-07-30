@@ -441,6 +441,71 @@ def test_a_missing_reference_video_is_reported(env):
         )
 
 
+# --------------------------------------------------------------------------
+# ジョブ単位のモデル切り替え（SPEC §3.3）
+# --------------------------------------------------------------------------
+
+IMAGE_SLOT = "krea2_turbo/30:10.unet_name"
+VIDEO_SLOT = "ltx2_3_id_lora/340:317.ckpt_name"
+
+
+def _register_choices(monkeypatch, choices: dict[str, list[str]]) -> None:
+    monkeypatch.setattr(
+        config,
+        "_settings",
+        config.load_settings().model_copy(update={"model_choices": choices}),
+    )
+
+
+def test_a_registered_model_choice_is_accepted(env, monkeypatch):
+    _register_choices(monkeypatch, {IMAGE_SLOT: ["alt.safetensors"]})
+    action = agent_protocol.parse_action(
+        _plan_with(env, model_overrides={IMAGE_SLOT: "alt.safetensors"})
+    )
+    assert action is not None
+    assert action.tasks[0].job["model_overrides"] == {IMAGE_SLOT: "alt.safetensors"}
+
+
+def test_a_model_outside_the_choices_is_rejected(env, monkeypatch):
+    _register_choices(monkeypatch, {IMAGE_SLOT: ["alt.safetensors"]})
+    with pytest.raises(agent_protocol.ActionError) as excinfo:
+        agent_protocol.parse_action(
+            _plan_with(env, model_overrides={IMAGE_SLOT: "ghost.safetensors"})
+        )
+    assert "ghost.safetensors" in str(excinfo.value)
+    assert "MODEL CHOICES" in str(excinfo.value)
+
+
+def test_a_model_slot_of_a_workflow_the_job_skips_is_rejected(env, monkeypatch):
+    """画像のみのジョブに動画スロットを混ぜたら、実行前に弾く。"""
+    _register_choices(monkeypatch, {VIDEO_SLOT: ["alt.safetensors"]})
+    with pytest.raises(agent_protocol.ActionError) as excinfo:
+        agent_protocol.parse_action(
+            _plan_with(
+                env,
+                mode="image_only",
+                video_prompt="",
+                audio_path=None,
+                model_overrides={VIDEO_SLOT: "alt.safetensors"},
+            )
+        )
+    assert "ltx2_3_id_lora" in str(excinfo.value)
+
+
+def test_system_prompt_lists_the_model_choices(env, monkeypatch):
+    _register_choices(monkeypatch, {IMAGE_SLOT: ["alt.safetensors"]})
+    system = start(env)["messages"][0]["content"]
+    assert "使用モデルの切り替え" in system
+    assert f"`{IMAGE_SLOT}`" in system
+    assert "`alt.safetensors`" in system
+
+
+def test_system_prompt_says_no_model_choice_is_registered(env):
+    system = start(env)["messages"][0]["content"]
+    assert "使用モデルの切り替え候補は登録されていません" in system
+    assert "`model_overrides` は指定しないでください" in system
+
+
 def test_the_default_workflow_still_requires_its_audio(env):
     """既定 (ID-LoRA) の音声必須はワークフロー由来として報告される。"""
     with pytest.raises(agent_protocol.ActionError) as excinfo:
