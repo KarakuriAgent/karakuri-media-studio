@@ -17,6 +17,11 @@ import {
 } from '../form'
 import type { Asset, Job, JobMode, Lora, Options, WorkflowOption } from '../types'
 import AudioFields from './AudioFields'
+import HistoryPickerModal, {
+  assetExtension,
+  type HistoryCandidate,
+  type HistoryKind,
+} from './HistoryPickerModal'
 import ModelPicker from './ModelPicker'
 import { Banner, FieldError, Section } from './ui'
 
@@ -34,7 +39,18 @@ interface Props {
   onSubmit: () => void
   submitting: boolean
   fieldErrors: Record<string, string>
+  /** NSFW フィルタ前の全ジョブ（履歴モーダルが自前でフィルタする） */
   jobs: Job[]
+  /** ヘッダーの NSFW 表示トグル（履歴モーダルの初期値） */
+  showNsfw: boolean
+}
+
+/** 履歴モーダルの選択先: どの種別を選び、どのフィールドへ入れるか。 */
+interface HistoryTarget {
+  kind: HistoryKind
+  /** モーダルのタイトルに使う欄名（「開始フレーム」など） */
+  title: string
+  apply: (url: string) => Partial<FormState>
 }
 
 /** LoRA chips + strength sliders + trigger words, shared by both stages. */
@@ -135,6 +151,7 @@ function AssetPicker({
   busy,
   onPick,
   onUpload,
+  onOpenHistory,
   children,
 }: {
   kind: 'image' | 'video'
@@ -143,6 +160,8 @@ function AssetPicker({
   busy: boolean
   onPick: (url: string) => void
   onUpload: (file: File) => void
+  /** 履歴から選ぶモーダルを開く（渡さなければボタンを出さない） */
+  onOpenHistory?: () => void
   children?: React.ReactNode
 }) {
   const input = useRef<HTMLInputElement>(null)
@@ -193,6 +212,11 @@ function AssetPicker({
         >
           {kind === 'image' ? '画像をアップロード' : '動画をアップロード'}
         </button>
+        {onOpenHistory && (
+          <button className="btn-ghost text-xs" disabled={busy} onClick={onOpenHistory}>
+            履歴から選択
+          </button>
+        )}
         <span className="text-[11px] text-slate-500">
           {busy ? 'アップロード中…' : 'またはここにドロップ'}
         </span>
@@ -243,10 +267,13 @@ export default function GenerateForm({
   submitting,
   fieldErrors,
   jobs,
+  showNsfw,
 }: Props) {
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [busyUpload, setBusyUpload] = useState(false)
   const [showAdvanced, setShowAdvanced] = useState(false)
+  // 履歴モーダルを開いている入力欄（null = 閉じている）
+  const [historyTarget, setHistoryTarget] = useState<HistoryTarget | null>(null)
 
   const registeredLoras: Lora[] = options?.loras ?? []
   const audioAssets = options?.audio_assets ?? []
@@ -269,6 +296,10 @@ export default function GenerateForm({
   // 使うモードに戻せば入力はそのまま復元される）。
   const hidden = hiddenFields(form.mode, workflow, imageWorkflow)
   const imageEdits = form.mode !== 'i2v' && imageWorkflowNeedsSource(imageWorkflow)
+  // 編集系の画像ワークフローでは入力画像そのもの、それ以外は動画の開始フレーム。
+  const startImageLabel = imageEdits
+    ? (imageWorkflow?.image_label ?? '編集元画像')
+    : (workflow?.image_label ?? '開始フレーム')
 
   // Image LoRAs are family-scoped: only the ones matching the selected image
   // workflow can be used (the backend rejects the rest).
@@ -353,20 +384,37 @@ export default function GenerateForm({
     }
   }
 
-  /** Outputs live outside assets/, so copy the frame into assets via upload. */
-  const useLastFrame = async (job: Job) => {
-    if (!job.last_frame_url) return
+  /**
+   * Outputs live outside assets/, so copy the picked one into assets via upload.
+   *
+   * 開始フレーム / 最後のフレーム / 参照動画 / リファレンス音声で共通。どの欄に
+   * 入れるかは開いたときの `historyTarget` が持っている。
+   */
+  const useFromHistory = async (
+    target: HistoryTarget,
+    candidate: HistoryCandidate,
+  ) => {
+    setHistoryTarget(null)
     setUploadError(null)
     setBusyUpload(true)
     try {
-      const response = await fetch(job.last_frame_url)
-      if (!response.ok) throw new Error(`ラストフレームを取得できません (${response.status})`)
+      const response = await fetch(candidate.url)
+      if (!response.ok) {
+        throw new Error(`履歴の${target.title}を取得できません (${response.status})`)
+      }
       const blob = await response.blob()
-      const file = new File([blob], `last_frame_${job.id}.png`, {
-        type: blob.type || 'image/png',
-      })
-      const asset = await api.uploadImage(file)
-      patch({ sourceImage: asset.url })
+      const name = `${candidate.source}_${candidate.job.id}${assetExtension(
+        candidate.url,
+        target.kind,
+      )}`
+      const file = new File([blob], name, { type: blob.type })
+      const asset =
+        target.kind === 'image'
+          ? await api.uploadImage(file)
+          : target.kind === 'video'
+            ? await api.uploadVideo(file)
+            : await api.uploadAudio(file)
+      patch(target.apply(asset.url))
       onReloadOptions()
     } catch (error) {
       setUploadError(error instanceof Error ? error.message : String(error))
@@ -375,7 +423,6 @@ export default function GenerateForm({
     }
   }
 
-  const lastFrameJobs = jobs.filter((job) => job.last_frame_url)
   const audioInput = useRef<HTMLInputElement>(null)
 
   return (
@@ -500,13 +547,7 @@ export default function GenerateForm({
           )}
 
           {!hidden.startImage && (
-            <Section
-              title={
-                imageEdits
-                  ? (imageWorkflow?.image_label ?? '編集元画像')
-                  : (workflow?.image_label ?? '開始フレーム')
-              }
-            >
+            <Section title={startImageLabel}>
               <AssetPicker
                 kind="image"
                 value={form.sourceImage}
@@ -514,30 +555,14 @@ export default function GenerateForm({
                 busy={busyUpload}
                 onPick={(url) => patch({ sourceImage: url })}
                 onUpload={(file) => void upload('image', file, (url) => ({ sourceImage: url }))}
-              >
-                {lastFrameJobs.length > 0 && (
-                  <div>
-                    <label className="label">履歴のラストフレームから選択</label>
-                    <div className="flex gap-2 overflow-x-auto pb-1">
-                      {lastFrameJobs.slice(0, 24).map((job) => (
-                        <button
-                          key={job.id}
-                          title={job.id}
-                          disabled={busyUpload}
-                          className="shrink-0 rounded border border-ink-600 hover:border-accent-500"
-                          onClick={() => void useLastFrame(job)}
-                        >
-                          <img
-                            src={job.last_frame_url ?? ''}
-                            alt={job.id}
-                            className="h-16 w-24 rounded object-cover"
-                          />
-                        </button>
-                      ))}
-                    </div>
-                  </div>
-                )}
-              </AssetPicker>
+                onOpenHistory={() =>
+                  setHistoryTarget({
+                    kind: 'image',
+                    title: startImageLabel,
+                    apply: (url) => ({ sourceImage: url }),
+                  })
+                }
+              />
               <p className="mt-1 text-[11px] text-slate-500">
                 履歴のラストフレームから続きを生成する場合は、履歴詳細の「続きを生成」を使ってください。
               </p>
@@ -554,6 +579,13 @@ export default function GenerateForm({
                 busy={busyUpload}
                 onPick={(url) => patch({ endImage: url })}
                 onUpload={(file) => void upload('image', file, (url) => ({ endImage: url }))}
+                onOpenHistory={() =>
+                  setHistoryTarget({
+                    kind: 'image',
+                    title: '最後のフレーム',
+                    apply: (url) => ({ endImage: url }),
+                  })
+                }
               />
               <FieldError message={fieldErrors.end_image} />
             </Section>
@@ -568,6 +600,13 @@ export default function GenerateForm({
                 busy={busyUpload}
                 onPick={(url) => patch({ referenceVideo: url })}
                 onUpload={(file) => void upload('video', file, (url) => ({ referenceVideo: url }))}
+                onOpenHistory={() =>
+                  setHistoryTarget({
+                    kind: 'video',
+                    title: '参照動画',
+                    apply: (url) => ({ referenceVideo: url }),
+                  })
+                }
               />
               <p className="mt-1 text-[11px] text-slate-500">
                 秒数の設定ぶんだけ先頭から切り出して深度を取り、モーションを転写します。
@@ -613,6 +652,19 @@ export default function GenerateForm({
                     onClick={() => audioInput.current?.click()}
                   >
                     音声をアップロード
+                  </button>
+                  <button
+                    className="btn-ghost text-xs"
+                    disabled={busyUpload}
+                    onClick={() =>
+                      setHistoryTarget({
+                        kind: 'audio',
+                        title: 'リファレンス音声',
+                        apply: (url) => ({ audioPath: url }),
+                      })
+                    }
+                  >
+                    履歴から選択
                   </button>
                   {form.audioPath && (
                     <audio className="h-8 flex-1" controls src={form.audioPath} />
@@ -895,6 +947,17 @@ export default function GenerateForm({
       <button className="btn-primary w-full py-2.5" onClick={onSubmit} disabled={submitting}>
         {submitting ? '送信中…' : '実行'}
       </button>
+
+      {historyTarget && (
+        <HistoryPickerModal
+          kind={historyTarget.kind}
+          title={`履歴から選択: ${historyTarget.title}`}
+          jobs={jobs}
+          showNsfw={showNsfw}
+          onSelect={(candidate) => void useFromHistory(historyTarget, candidate)}
+          onClose={() => setHistoryTarget(null)}
+        />
+      )}
     </div>
   )
 }

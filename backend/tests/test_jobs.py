@@ -694,12 +694,22 @@ IMAGE_SLOT = "krea2_turbo/30:10.unet_name"
 VIDEO_SLOT = "ltx2_3_id_lora/340:317.ckpt_name"
 
 
-def _register_choices(monkeypatch, choices: dict[str, list[str]]) -> None:
-    """設定の候補リストだけを差し替える（runtime/config.json は触らない）。"""
+def _register_choices(
+    monkeypatch,
+    choices: dict[str, list[str]],
+    overrides: dict[str, str] | None = None,
+) -> None:
+    """設定のモデル既定値と候補リストを差し替える。
+
+    実際の ``runtime/config.json`` の内容（利用者が登録した上書き / 候補）に
+    左右されないよう、どちらも明示的に置き換える（ファイルは書き換えない）。
+    """
     monkeypatch.setattr(
         config,
         "_settings",
-        config.load_settings().model_copy(update={"model_choices": choices}),
+        config.load_settings().model_copy(
+            update={"model_overrides": overrides or {}, "model_choices": choices}
+        ),
     )
 
 
@@ -728,9 +738,14 @@ def test_a_model_outside_the_choices_is_422(env, monkeypatch):
 
 
 def test_the_configured_default_is_always_selectable(env, monkeypatch):
-    _register_choices(monkeypatch, {IMAGE_SLOT: ["alt.safetensors"]})
-    default = config.load_settings().model_overrides[IMAGE_SLOT]
-    assert _image_job(env, model_overrides={IMAGE_SLOT: default}).status_code == 201
+    """設定の既定値は候補リストに書いていなくても選べる（候補の先頭に入る）。"""
+    _register_choices(
+        monkeypatch,
+        {IMAGE_SLOT: ["alt.safetensors"]},
+        overrides={IMAGE_SLOT: "configured.safetensors"},
+    )
+    response = _image_job(env, model_overrides={IMAGE_SLOT: "configured.safetensors"})
+    assert response.status_code == 201, response.text
 
 
 def test_a_slot_of_a_workflow_the_job_does_not_run_is_422(env, monkeypatch):
@@ -741,14 +756,16 @@ def test_a_slot_of_a_workflow_the_job_does_not_run_is_422(env, monkeypatch):
     assert "ltx2_3_id_lora" in response.text
 
 
-def test_an_unknown_model_slot_is_422(env):
+def test_an_unknown_model_slot_is_422(env, monkeypatch):
+    _register_choices(monkeypatch, {})
     response = _image_job(env, model_overrides={"nope/1.unet_name": "a.safetensors"})
     assert response.status_code == 422
     assert "nope/1.unet_name" in response.text
 
 
-def test_a_slot_without_a_registered_choice_is_422(env):
+def test_a_slot_without_a_registered_choice_is_422(env, monkeypatch):
     """候補を登録していないスロットは、既定値以外にはできない。"""
+    _register_choices(monkeypatch, {})
     response = _image_job(env, model_overrides={IMAGE_SLOT: "alt.safetensors"})
     assert response.status_code == 422
 

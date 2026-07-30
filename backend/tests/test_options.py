@@ -144,17 +144,23 @@ def test_audio_workflows_are_exposed(client):
 UNET_SLOT = "krea2_turbo/30:10.unet_name"
 
 
-def test_model_slots_only_list_the_switchable_ones(client, monkeypatch):
-    """候補が 2 件以上あるスロットだけがフォームのセレクトになる（SPEC §3.3）。"""
-    assert client.get("/api/options").json()["model_slots"] == []
-
+def _register_models(monkeypatch, choices: dict[str, list[str]]) -> None:
+    """モデルの既定値と候補リストを差し替える（実際の config.json には依存しない）。"""
     monkeypatch.setattr(
         config,
         "_settings",
         config.load_settings().model_copy(
-            update={"model_choices": {UNET_SLOT: ["alt.safetensors"]}}
+            update={"model_overrides": {}, "model_choices": choices}
         ),
     )
+
+
+def test_model_slots_only_list_the_switchable_ones(client, monkeypatch):
+    """候補が 2 件以上あるスロットだけがフォームのセレクトになる（SPEC §3.3）。"""
+    _register_models(monkeypatch, {})
+    assert client.get("/api/options").json()["model_slots"] == []
+
+    _register_models(monkeypatch, {UNET_SLOT: ["alt.safetensors"]})
     slots = client.get("/api/options").json()["model_slots"]
     assert [slot["key"] for slot in slots] == [UNET_SLOT]
     slot = slots[0]
@@ -164,7 +170,8 @@ def test_model_slots_only_list_the_switchable_ones(client, monkeypatch):
     assert slot["label"]
 
 
-def test_model_files_are_empty_while_comfy_is_down(client):
+def test_model_files_are_empty_while_comfy_is_down(client, monkeypatch):
+    _register_models(monkeypatch, {})
     assert client.get("/api/options").json()["model_files"] == {}
 
 

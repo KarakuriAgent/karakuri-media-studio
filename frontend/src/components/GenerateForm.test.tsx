@@ -1,7 +1,7 @@
 import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { initialForm, type FormState } from '../form'
-import type { Lora, Options } from '../types'
+import type { Job, Lora, Options } from '../types'
 import GenerateForm from './GenerateForm'
 
 afterEach(cleanup)
@@ -64,6 +64,7 @@ function show(form: Partial<FormState> = {}) {
       submitting={false}
       fieldErrors={{}}
       jobs={[]}
+      showNsfw={false}
     />,
   )
   return { patch }
@@ -100,6 +101,7 @@ describe('GenerateForm の LoRA セクション', () => {
         submitting={false}
         fieldErrors={{}}
         jobs={[]}
+        showNsfw={false}
       />,
     )
     expect(screen.getAllByText(/画像用の登録済み LoRA がありません/).length).toBe(1)
@@ -188,6 +190,7 @@ function showImages(form: Partial<FormState> = {}) {
       submitting={false}
       fieldErrors={{}}
       jobs={[]}
+      showNsfw={false}
     />,
   )
   return { patch }
@@ -286,6 +289,7 @@ function showAudio(form: Partial<FormState> = {}, options: Options | null = null
       submitting={false}
       fieldErrors={{}}
       jobs={[]}
+      showNsfw={false}
     />,
   )
   return { patch, onOpenChat }
@@ -428,6 +432,7 @@ describe('GenerateForm は使わない項目を出さない', () => {
         submitting={false}
         fieldErrors={{}}
         jobs={[]}
+        showNsfw={false}
       />,
     )
     expect(screen.queryByText('リファレンス音声')).toBeNull()
@@ -490,6 +495,7 @@ describe('GenerateForm の使用モデル選択（SPEC §3.3）', () => {
         submitting={false}
         fieldErrors={{}}
         jobs={[]}
+        showNsfw={false}
       />,
     )
     return { patch }
@@ -518,5 +524,122 @@ describe('GenerateForm の使用モデル選択（SPEC §3.3）', () => {
   it('画像ステージを走らせないモードでは画像側のセレクトを出さない', () => {
     showWithSlots({ mode: 'i2v' })
     expect(screen.queryByText(/使用モデル:/)).toBeNull()
+  })
+})
+
+describe('GenerateForm の「履歴から選択」', () => {
+  /** flf2v 相当: 開始フレーム・最後のフレーム・参照動画・音声をすべて要求する。 */
+  const EVERY_INPUT: Options['video_workflows'] = [
+    {
+      id: 'all_inputs',
+      label: 'すべての入力',
+      kind: 'video',
+      family: 'ltx2.3',
+      notes: '',
+      requires: ['image', 'end_image', 'video', 'audio'],
+      supports: ['prompt', 'negative', 'duration', 'fps'],
+      accepts_start_image: true,
+      image_label: '最初のフレーム',
+      min_duration: 0,
+      max_duration: 0,
+      default_duration: 0,
+    },
+  ]
+
+  const HISTORY_JOB: Job = {
+    id: 'j1',
+    created_at: '2026-07-30T10:00:00+00:00',
+    mode: 'full',
+    status: 'done',
+    user_input: null,
+    image_prompt: 'a still',
+    video_prompt: 'a clip',
+    audio_prompt: null,
+    grok_raw: null,
+    params: {},
+    workflow_json: {},
+    comfy_prompt_id: null,
+    image_path: null,
+    video_path: null,
+    last_frame_path: null,
+    source_image: null,
+    audio_path: null,
+    audio_output_path: null,
+    error: null,
+    nsfw: false,
+    nsfw_source: '',
+    image_url: '/outputs/j1/still.png',
+    video_url: '/outputs/j1/clip.mp4',
+    last_frame_url: '/outputs/j1/last.png',
+    audio_output_url: null,
+  }
+
+  function showInputs() {
+    render(
+      <GenerateForm
+        form={{ ...initialForm, mode: 'i2v', videoWorkflow: 'all_inputs' }}
+        patch={vi.fn()}
+        options={{ ...OPTIONS, video_workflows: EVERY_INPUT }}
+        optionsError={null}
+        onReloadOptions={() => {}}
+        onOpenChat={() => {}}
+        onSubmit={() => {}}
+        submitting={false}
+        fieldErrors={{}}
+        jobs={[HISTORY_JOB]}
+        showNsfw={false}
+      />,
+    )
+  }
+
+  it('画像・動画・音声の入力すべてにボタンを出す', () => {
+    showInputs()
+    for (const title of [
+      '最初のフレーム',
+      '最後のフレーム',
+      '参照動画（モーション転写）',
+      'リファレンス音声',
+    ]) {
+      expect(
+        within(section(title)).getByRole('button', { name: '履歴から選択' }),
+      ).toBeTruthy()
+    }
+  })
+
+  it('最後のフレームのボタンから画像候補のモーダルが開く', () => {
+    showInputs()
+    fireEvent.click(
+      within(section('最後のフレーム')).getByRole('button', { name: '履歴から選択' }),
+    )
+    expect(screen.getByText('履歴から選択: 最後のフレーム')).toBeTruthy()
+    // 画像入力なので生成画像とラストフレームの 2 件（動画は出ない）
+    expect(screen.getByText('2 件')).toBeTruthy()
+    expect(screen.getByText('ラストフレーム')).toBeTruthy()
+  })
+
+  it('参照動画のボタンからは動画候補だけが並ぶ', () => {
+    showInputs()
+    fireEvent.click(
+      within(section('参照動画（モーション転写）')).getByRole('button', {
+        name: '履歴から選択',
+      }),
+    )
+    expect(screen.getByText('履歴から選択: 参照動画')).toBeTruthy()
+    expect(screen.getByText('1 件')).toBeTruthy()
+    expect(screen.getByText('動画')).toBeTruthy()
+  })
+
+  it('リファレンス音声のボタンからは音声候補だけが並ぶ', () => {
+    showInputs()
+    fireEvent.click(
+      within(section('リファレンス音声')).getByRole('button', { name: '履歴から選択' }),
+    )
+    expect(screen.getByText('履歴から選択: リファレンス音声')).toBeTruthy()
+    expect(screen.getByText(/履歴に使える音声がまだありません/)).toBeTruthy()
+  })
+
+  it('インラインのサムネイル帯は出さない（モーダルに置き換えた）', () => {
+    showInputs()
+    expect(screen.queryByText('履歴のラストフレームから選択')).toBeNull()
   })
 })

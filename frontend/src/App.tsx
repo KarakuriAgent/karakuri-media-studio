@@ -493,7 +493,9 @@ export default function App() {
               onSubmit={() => void submit()}
               submitting={submitting}
               fieldErrors={fieldErrors}
-              jobs={visibleJobs}
+              // 履歴モーダルは自前で NSFW を切り替えるので、フィルタ前の全ジョブを渡す
+              jobs={jobs}
+              showNsfw={showNsfw}
             />
           </aside>
 

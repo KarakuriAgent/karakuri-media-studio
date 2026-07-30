@@ -5,11 +5,14 @@ export function Modal({
   onClose,
   children,
   wide,
+  closeOnBackdrop,
 }: {
   title: string
   onClose: () => void
   children: ReactNode
   wide?: boolean
+  /** 背景クリックでも閉じる（入力途中を失いうるモーダルでは付けない）。 */
+  closeOnBackdrop?: boolean
 }) {
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
@@ -20,11 +23,16 @@ export function Modal({
   }, [onClose])
 
   return (
-    <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-4">
+    <div
+      className="fixed inset-0 z-40 flex items-center justify-center bg-black/70 p-4"
+      onClick={closeOnBackdrop ? onClose : undefined}
+    >
       <div
         className={`card flex max-h-[90vh] w-full flex-col overflow-hidden shadow-2xl ${
           wide ? 'max-w-4xl' : 'max-w-2xl'
         }`}
+        // パネル内のクリックが背景まで抜けて閉じてしまわないようにする
+        onClick={(event) => event.stopPropagation()}
       >
         <div className="flex items-center justify-between border-b border-ink-600 px-4 py-3">
           <h2 className="text-sm font-semibold text-slate-100">{title}</h2>
