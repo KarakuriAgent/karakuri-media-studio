@@ -16,7 +16,11 @@ def load_settings() -> Settings:
     if _settings is None:
         if CONFIG_PATH.exists():
             data = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-            _settings = _defaults().model_copy(update=data)
+            # 廃止したキー（旧 comfy_models_dir など）が残っていても捨てる:
+            # model_copy はモデルに無い名前もそのまま持ってしまうため。
+            _settings = _defaults().model_copy(update={
+                k: v for k, v in data.items() if k in Settings.model_fields
+            })
         else:
             _settings = _defaults()
     return _settings

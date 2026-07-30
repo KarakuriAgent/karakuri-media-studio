@@ -28,6 +28,9 @@ services:
     environment:
       HOME: /home/app
       PYTHONPATH: ${PWD}/backend
+      # 不足モデルの自動ダウンロード先（SPEC §3.3）。未設定なら空文字を渡し、
+      # 機能ごと無効になる（下の volumes のダミーパスは渡さない）。
+      COMFY_MODELS_DIR: ${COMFY_MODELS_DIR:-}
     ports:
       - "${HOST:-127.0.0.1}:${PORT:-8000}:${PORT:-8000}"
     volumes:
@@ -35,6 +38,12 @@ services:
       - .:${PWD}
       # grok CLI 本体とサインイン状態
       - ${HOME}/.grok:/home/app/.grok
+      # 不足モデルの自動ダウンロード先（SPEC §3.3）: ホストの ComfyUI models
+      # ディレクトリを**同一絶対パス**でマウントする。アプリは環境変数の値を
+      # そのまま開くので、コンテナ内でも同じパスで見えている必要がある。
+      # .env に COMFY_MODELS_DIR=/path/to/ComfyUI/models を書く。未設定のときは
+      # 無害なダミーパスがマウントされるだけ（機能は UI ごと出ない）。
+      - ${COMFY_MODELS_DIR:-/tmp/karakuri-no-models-dir}:${COMFY_MODELS_DIR:-/tmp/karakuri-no-models-dir}
     # ローカルの ComfyUI を使う場合に host.docker.internal で届くようにする
     extra_hosts:
       - "host.docker.internal:host-gateway"

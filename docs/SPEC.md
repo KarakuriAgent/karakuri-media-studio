@@ -248,6 +248,30 @@ Stable Audio の `reprompt`（内蔵 LLM でのプロンプト展開）だけは
 - **モデルファイル名は利用者の ComfyUI 環境依存**のため、設定ページ（`GET/PUT /api/models`）で上書き可能。既定値は各テンプレートの値。対象は UNETLoader.unet_name / CLIPLoader.clip_name / CLIPVisionLoader.clip_name / VAELoader.vae_name / CheckpointLoaderSimple.ckpt_name / LTXVAudioVAELoader.ckpt_name / LTXAVTextEncoderLoader.text_encoder・ckpt_name / LatentUpscaleModelLoader.model_name / LoadMoGeModel.model_name / LoraLoaderModelOnly.lora_name / LoraLoader.lora_name（§3.4 で削除される画像テンプレートのプレースホルダは除く。LTX 側の固定 LoRA ノードや qwen-image の Lightning LoRA はユーザー LoRA と共存するので上書き対象のまま）
 - 上書きキーは**ワークフロー ID でスコープ**する: `"<workflow_id>/<node_id>.<field>": "<ファイル名>"`。テンプレート間で同じノード ID（例: `340:317` が ia2v と id_lora の両方にある）が衝突しないため。旧レイアウトの非スコープキーは無視される（マイグレーション不要）
 - **実行ごとのモデル切り替え**: 同じキー形式で「そのスロットで選べるファイル名」を設定に持てる（`Settings.model_choices`、`GET/PUT /api/models` で読み書き）。既定値（`model_overrides` → 無ければテンプレート値）と合わせて **2 件以上**になったスロットは *switchable* とみなし、`GET /api/options` の `model_slots`（キー・ラベル・既定値・候補一覧）に出す。ジョブは `model_overrides`（`JobCreate` / `JobContinue` のフィールド）で 1 回ぶんだけ差し替えられ、実行時に設定の既定値の上へマージされる（`jobs.run_job`）。検証（`models.model_override_problem`、Web UI とエージェントで共通）は「キーが `model_fields()` に存在」「そのジョブが走らせるワークフロー（`models.job_workflow_ids`）に属する」「値が候補（既定値を含む）に入っている」を満たさないものを 422 で拒否する。再実行は params ごと引き継ぎ、続き生成は動画ワークフローぶんのキーだけを引き継ぐ（`workflow.scoped_model_overrides`）
+- **不足モデルの自動ダウンロード**: ComfyUI 本体にも Comfy Cloud にもモデル取得 API は無いので、**バックエンドが自分でダウンロードして** ComfyUI の models ディレクトリ（**環境変数 `COMFY_MODELS_DIR`**）へ直接置く（ComfyUI はフォルダの mtime を見て一覧を作り直すので再起動は不要）。設定ページは「その行の値が `GET /api/options` の `model_files` の該当リストに無い」ことを不足の判定に使い、**未検出**バッジ・URL 入力欄・[DL] ボタンを出す（`model_files` が空＝ComfyUI 未接続のときは判定しない）
+  - 置き場所は `class_type`＋入力フィールドから決める（`workflow.MODEL_SUBFOLDERS` → `ModelField.subfolder`）: checkpoints = CheckpointLoaderSimple.ckpt_name / LTXVAudioVAELoader.ckpt_name / LTXAVTextEncoderLoader.ckpt_name、diffusion_models = UNETLoader.unet_name、text_encoders = CLIPLoader.clip_name / DualCLIPLoader.clip_name1・clip_name2 / LTXAVTextEncoderLoader.text_encoder、clip_vision = CLIPVisionLoader.clip_name、vae = VAELoader.vae_name、loras = LoraLoader.lora_name / LoraLoaderModelOnly.lora_name、latent_upscale_models = LatentUpscaleModelLoader.model_name、geometry_estimation = LoadMoGeModel.model_name。未知のローダーは空（＝ UI で入力させる。当てずっぽうに置いても ComfyUI からは見えない）
+  - `POST /api/models/download` は保存先を検証（`..` / 絶対パス / パス区切りを拒否し、`resolve()` 後に models ディレクトリ配下であることを確認）してからバックグラウンドタスクを起こす。httpx のストリームをチャンクで `<ファイル名>.part` に書き、完走したときだけ本来の名前に `rename` する（失敗・中断時は `.part` を削除）。進捗は WS `/api/ws` に `type: "model_download"` として流れる。同じファイル名の同時ダウンロードは 409
+  - 認証は URL のホストで出し分ける: huggingface.co / hf.co（サブドメイン含む）は `Settings.hf_token`、civitai.com は `Settings.civitai_api_key` を `Authorization: Bearer …` として付ける（未設定なら付けない）。**リダイレクトは httpx に任せず自分で追う**（最大 10 ホップ、相対 `Location` は urljoin で解決、301/302/303/307/308 を GET のまま追う）: クライアント既定ヘッダに認証を載せると転送先の別ホストにトークンが漏れるため、ホップごとに URL を再検証して認証ヘッダを計算し直し、そのリクエストにだけ渡す（HF → `*.hf.co` の CDN には付き、無関係なホストには付かない）。URL はファイル名ごとに `Settings.model_download_urls` へ保存する（同じファイルが複数スロットに出るため、キーはスロットではなくファイル名）
+  - 保存先は**環境変数 `COMFY_MODELS_DIR` だけ**が決める（設定 `runtime/config.json` には持たない）。UI からパスを入れられても、Docker で同じ絶対パスをマウントしていなければ書けないため。`.env` に書けば `run.sh`（ホスト実行、`.env` を読んで `export`）と `docker compose`（同一パスのマウント＋`environment:` で受け渡し）の双方に効く。設定に残すのは `hf_token` / `civitai_api_key` / `model_download_urls` だけで、旧バージョンが書いた `comfy_models_dir` キーは読み込み時に捨てる
+  - `GET /api/models/dir-status` が `{configured, exists, writable, path}` を返す。`configured` は環境変数が設定されているか。**未設定なら機能ごと無効**で、UI はダウンロード関連（接続タブのブロック、モデルタブの列）を一切出さず警告も出さない（Comfy Cloud 利用などでは正常な状態）。設定済みなのに `exists=false`（Docker でマウントしていない等）／`writable=false` のときは表示したうえで理由を出す
+
+#### ローカル ComfyUI でモデル名が違うときの直し方
+
+テンプレートの既定モデル名は Comfy Cloud のストレージに合わせてあるため、ローカルの ComfyUI では
+ファイル名が違うことがある。ノード ID はモデルのドロップダウンを変えただけでは変わらない
+（変わるのはノードの追加・削除・サブグラフの再構成をしたとき）。一方で `workflow/` の JSON は
+**API フォーマットなので ComfyUI の GUI には直接読み込めない**。直し方は 3 つ:
+
+1. **設定ページ「モデル」タブで上書きする（推奨）**: テンプレートを一切触らず、環境差分だけが
+   `model_overrides` に保存される。リポジトリの更新（テンプレート差し替え）とも衝突しない
+2. **ワークフロー JSON をテキストエディタで直接編集する**: モデルファイル名の文字列だけを
+   書き換える範囲ならノード ID は変わらないので安全。既定値そのものが変わるので上書き設定は不要になる
+3. **元の GUI 用ワークフロー（API エクスポート前のもの）を持っている場合**は、GUI でモデルだけ変更して
+   API フォーマットに再エクスポートし `workflow/` のファイルを差し替えてもよい。ただしノードの追加・削除や
+   サブグラフの編集をするとノード ID が変わり、注入マニフェスト（ノード ID 直指定）と食い違う
+
+ID がズレた場合は起動時の検証と `GET /api/health` が検知して警告するので、`backend/app/workflows.py` の
+マニフェストを新しいノード ID に合わせて直す（§3.0）。
 
 ### 3.4 複数 LoRA の動的注入
 
@@ -431,7 +455,7 @@ Cookie ベースの非公式 API は規約リスクがあるため**使わない
 ## 5. ComfyUI 連携
 
 - 接続先: `http://<comfy-host>:8188`（設定画面で URL 変更可）。実行環境はローカル / LAN 上の別 PC / Comfy Cloud のいずれでも動くよう、ComfyUI クライアントは「接続 URL + 任意の認証ヘッダー（API キー）」を設定できる抽象化された 1 モジュールにする
-- **Comfy Cloud**: Cloud 向けのエンドポイント URL と認証設定を設定画面から入力できる（ホストが `comfy.org` のとき自動で Cloud 互換モード）
+- **Comfy Cloud**: Cloud 向けのエンドポイント URL と認証設定を設定画面から入力できる（ホストが `comfy.org` のとき自動で Cloud 互換モード）。使い方は「`comfy_url` に `https://cloud.comfy.org`」＋「[API キー発行ページ](https://docs.comfy.org/development/cloud/overview) で作ったキーを `comfy_api_key` に設定」の 2 手順。Cloud 互換モードではエンドポイントに `/api` プレフィックスが付き、認証は `X-API-Key` ヘッダー、`/view` は 302 署名 URL リダイレクトを追う。API アクセスは有料プラン（Standard 以上）が必要で Free では使えない。ワークフローが参照するモデル・LoRA・リファレンス音声は Cloud 側のストレージに存在している必要がある（ファイルシステムに届かないので §3.3 の自動ダウンロードは使えない）
 - 使用 API:
   - `GET /object_info` … ResolutionSelector のアスペクト比選択肢、LoRA 一覧、class_type の存在確認
   - `POST /upload/image` … 開始フレーム画像・リファレンス音声・参照動画、および**`full` 1 段目の生成画像**のアップロード（ComfyUI はこのエンドポイントで input ディレクトリに任意ファイルを受ける）
@@ -625,9 +649,9 @@ SPA 1 画面 + 履歴。ダークテーマの生成系ツールらしい見た�
 - LoRA チェーンを持たないワークフロー（wan_dancer）では LoRA（動画）セクションを出さない（挿せないため。指定したジョブはバックエンドが 422 にする）
 - 動画ネガティブはプリセット選択（ワークフロー既定 / 現行値 / モデル作者版）+ 編集可（詳細設定アコーディオン内）
 - 設定は**モーダルではなく専用ページ（フルページ）**。ヘッダーの [設定] で画面遷移し、ページ左上の [← 戻る] で生成画面に復帰する。3 タブ構成:
-  - **接続 / Grok**: ComfyUI 接続先（URL / APIキー） / grok CLI コマンドと**使用モデル（既定: grok-4.5、変更可）**
+  - **接続 / Grok**: ComfyUI 接続先（URL / APIキー） / grok CLI コマンドと**使用モデル（既定: grok-4.5、変更可）**  / **モデル自動ダウンロード**のブロック（`dir-status` の `configured=true` のときだけ表示。保存先パスは環境変数由来なので読み取り専用で見せ、「書き込み可 ✓」「パスが見つかりません」等の状態と、**Hugging Face トークン**・**Civitai APIキー**（どちらも `type="password"`）を並べる。`configured=false` のときはブロックごと出さない、§3.3）
   - **LoRA 管理**: 表示名・ファイル名・**対象ワークフロー（画像用 / 動画用）**・**モデルファミリー（画像用のみ）**・トリガーワード・既定強度・既定音声・並び順の CRUD とサンプル画像の登録。一覧のバッジには対象とファミリーを出す
-  - **モデル**: 全ワークフローのモデルファイル名一覧を **画像 / 動画 / 音声の大分類 → ワークフローごとの折りたたみ**（既定は閉じ、見出しに項目数・未保存件数・既定から変更した件数のバッジ）に整理し、行ごとにテキスト入力で上書き。変更行はハイライト、[既定に戻す] で復帰、[保存] で全行を一括 PUT。各行にはさらに**候補リスト**（チップ + 追加/削除）があり、既定値と合わせて 2 件以上にすると生成フォーム / エージェントが実行ごとに選べるようになる。既定値入力・候補追加入力はどちらも `/api/options` の `model_files`（`"<class_type>.<field>"` ごとの ComfyUI ファイル一覧。LoRA は従来の `lora_files` で補う）があれば datalist で補完（§3.3）
+  - **モデル**: 全ワークフローのモデルファイル名一覧を **画像 / 動画 / 音声の大分類 → ワークフローごとの折りたたみ**（既定は閉じ、見出しに項目数・未保存件数・既定から変更した件数のバッジ）に整理し、行ごとにテキスト入力で上書き。変更行はハイライト、[既定に戻す] で復帰、[保存] で全行を一括 PUT。各行にはさらに**候補リスト**（チップ + 追加/削除）があり、既定値と合わせて 2 件以上にすると生成フォーム / エージェントが実行ごとに選べるようになる。既定値入力・候補追加入力はどちらも `/api/options` の `model_files`（`"<class_type>.<field>"` ごとの ComfyUI ファイル一覧。LoRA は従来の `lora_files` で補う）があれば datalist で補完。さらに各行には**不足モデルのダウンロード**の UI がある: 値が `model_files` の該当リストに無ければ**未検出**バッジ、URL 入力欄（`model_download_urls`。キーはファイル名なので同じファイルを使う行では共有）と [DL] ボタン、進行中は進捗バーと取得済みバイト数（WS の `model_download` を購読）。`COMFY_MODELS_DIR` が未設定（`dir-status` の `configured=false`。Comfy Cloud 利用などでは正常な状態）のあいだは URL 欄・[DL] 列そのものを描画せず、タブ上部の警告も出さずに「使うなら `.env` に `COMFY_MODELS_DIR` を設定して再起動」の案内だけ添える。設定済みで `exists`／`writable` が false のときは列を出したうえで [DL] を disabled にし、`title` とタブ上部に理由を出す（§3.3）
 - **実行ごとのモデル切り替え**: 選択中のワークフローに候補が 2 件以上あるスロットがあれば、そのワークフローセレクトの直下に「使用モデル: <ノード名>」のセレクトを出す（画像 / 動画 / 音声それぞれのセクション内）。候補が 1 件以下のスロットは何も出さない。送信時は**走らせるワークフローのぶんだけ**、かつ既定値と違う選択だけを `params.model_overrides` に載せる（§3.3）
 - ヘッダーの NSFW 表示トグルは `sessionStorage` に保持する（既定オフ。タブを開き直すと必ずオフに戻る）
 
@@ -656,6 +680,9 @@ PATCH  /api/library/{id}         … 表示名 / NSFW フラグ / タグの変�
 DELETE /api/library/{id}         … 登録解除（ファイルも削除）
 GET  /api/models                 … 全ワークフローのモデルファイル名一覧（既定値+現在値+候補リスト、キーは workflow_id でスコープ）
 PUT  /api/models                 … モデルファイル名の上書きと候補リストの保存（既定値と同値/空は削除、候補が空のキーは削除。`choices` 省略時は保存済みの候補を保持）
+GET  /api/models/dir-status      … ComfyUI の models ディレクトリの状態（configured / exists / writable / path、§3.3）
+GET  /api/models/downloads       … 進行中と直近のモデルダウンロード一覧
+POST /api/models/download        … 不足モデルのダウンロード開始（filename / url / subfolder。保存先を検証して 400、二重実行は 409。進捗は WS、§3.3）
 POST /api/chat/sessions          … チャット開始（フォーム現在値をコンテキストとして渡す。`video_workflow` / `image_workflow` / `audio_workflow` を含む）
 POST /api/chat/sessions/{id}/messages … 発言送信 → Grok 応答（質問 or 最終JSON案）を返す
 GET  /api/chat/sessions/{id}     … 履歴取得
@@ -667,8 +694,42 @@ POST /api/jobs/{id}/continue     … ラストフレームを開始フレーム�
 DELETE /api/jobs/{id}
 POST /api/assets/audio|image|video … アセットアップロード（video は参照動画用）
 GET  /library/…                  … 静的配信（ライブラリの素材、§7.2）
-WS   /api/ws                     … 進捗配信（`type: "job"` / `"agent"` / `"library"`）
+WS   /api/ws                     … 進捗配信（`type: "job"` / `"agent"` / `"library"` / `"model_download"`）
 GET  /outputs/…                  … 静的配信（画像/動画/音声）
+```
+
+### ディレクトリ構成
+
+```
+backend/            FastAPI アプリ
+  app/routers/      health / settings / loras / models_config / model_download / assets / options / chat / jobs / agent
+  app/comfy.py      ComfyUI クライアント（/object_info, /upload/image, /prompt, /ws, /history, /view）
+  app/workflows.py  ワークフロー登録簿と注入マニフェスト（ノード ID 直指定）+ プロンプト用カタログ
+  app/workflow.py   テンプレートへのパラメータ注入・LoRA チェーン動的注入・解像度計算
+  app/grok.py       grok CLI 呼び出し（LLM クライアントは差し替え可能な抽象化）
+  app/prompts.py    チャット / エージェントのシステムプロンプト
+  app/jobs.py       asyncio ジョブキューと実行、成果物取得・ラストフレーム抽出
+  app/agent_*.py    エージェントのアクションプロトコル・実行ループ・セッション永続化
+  app/library.py    ライブラリ（取っておく素材）の保存・目録
+  app/autotag.py    ライブラリ素材の日本語タグ・表示名の自動生成（Grok）
+  app/nsfw.py       ジョブ / セッションの NSFW 判定
+  app/model_download.py  不足モデルのダウンロード（models ディレクトリへ直接保存）
+  tests/            pytest
+frontend/           React + Vite + Tailwind の SPA（ビルド成果物は frontend/dist）
+  src/components/   GenerateForm / AudioFields / ResultPane / HistoryGallery / ChatModal /
+                    SettingsPage / agent/
+docs/SPEC.md        仕様書
+docs/AGENT-MODE.md  エージェントモード設計書
+workflow/           ComfyUI ワークフロー（API フォーマット）テンプレート ※実行の正
+  image/            krea2/ anima/ z-image/ qwen-image/（モデルファミリーごと）
+  video/ltx2.3/     t2v / i2v / ia2v / id_lora / flf2v / ic_lora_image / ic_lora_motion
+  video/wan/        wan_dancer（画像+音声→ダンス動画）
+  audio/            ace_step1_5_xl_sft.json / stable_audio_3_medium_base.json
+app.db              SQLite（jobs / loras / library / chat_sessions / agent_sessions）
+outputs/            生成物（/outputs で静的配信）
+assets/             アップロードした画像・音声・参照動画・LoRA サンプル（/assets で静的配信）
+library/            ライブラリ（取っておいた素材。image/ video/ audio/、/library で静的配信）
+runtime/            config.json / grok 作業ディレクトリ / agent-sessions/
 ```
 
 ---
@@ -678,7 +739,7 @@ GET  /outputs/…                  … 静的配信（画像/動画/音声）
 1. **Grok Build CLI 依存**: `grok` CLI のインストールとサブスクリプションでのサインインが前提。CLI はベータ段階のため出力形式・挙動が変わる可能性があり、LLM クライアントは抽象化して公式 API / ローカル LLM に差し替え可能に設計する。NSFW プロンプト生成を Grok が拒否した場合のリトライ指示（システムプロンプト側の調整）とエラー表示も用意する
 2. **コンテンツ**: 本アプリは成人向けコンテンツをローカル生成する個人利用ツール。生成物・プロンプトはすべてローカル保存のみで外部送信しない。LoRA は実在人物の無断利用を行わないこと（利用者責任）
 3. **ComfyUI 依存**: ResolutionSelector / ComfySwitchNode / CustomCombo / LTXV 系 / ComfyMath / ResizeImage 系 / ResizeAndPadImage / MoGe 系 / LoadVideo / Video Slice 等の custom nodes が導入済みである前提。起動時と `/api/health` で `/object_info` に対し **`workflow/` 配下の全テンプレートに含まれる class_type** の存在チェックを行い、不足があれば UI に警告する（どのワークフローを使うか実行前には分からないため、集合は全テンプレート横断）。同時にマニフェストとテンプレートの整合性も検証する（§3.0）
-4. **プロンプト拡張ブランチのモデルファイル**: 各動画テンプレートは prompt enhance 用に `gemma-3-12b-it-abliterated_lora`（`LoraLoader`）を参照している。アプリは enhance を常に false にするので実行はされないが、ComfyUI は投入グラフ全体の入力を検証するためファイル自体は存在する必要がある。無い場合は設定ページの「モデル」タブで別名に差し替える
+4. **プロンプト拡張ブランチのモデルファイル**: 各動画テンプレートは prompt enhance 用に `gemma-3-12b-it-abliterated_lora`（`LoraLoader`）を参照している。アプリは enhance を常に false にするので実行はされないが、ComfyUI は投入グラフ全体の入力を検証するためファイル自体は存在する必要がある。無い場合は設定ページの「モデル」タブで別名に差し替えるか、同タブの [DL] でダウンロードする（§3.3）
 5. モデル既定値（steps/CFG/sigmas 等）は配布ページ推奨値でワークフローに固定済みのため、アプリからは変更しない（上級者向けに将来開放余地あり）
 
 ## 11. 決定事項と残課題

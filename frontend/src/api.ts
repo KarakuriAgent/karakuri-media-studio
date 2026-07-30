@@ -21,7 +21,9 @@ import type {
   LibrarySource,
   Lora,
   LoraPayload,
+  ModelDownload,
   ModelFieldState,
+  ModelsDirStatus,
   Options,
   Settings,
 } from './types'
@@ -156,6 +158,16 @@ export const api = {
     overrides: Record<string, string>,
     choices?: Record<string, string[]>,
   ) => json<ModelFieldState[]>('PUT', '/api/models', { overrides, choices }),
+
+  // 不足モデルのダウンロード（SPEC §3.3）。進捗は WS の `model_download` で届く。
+  modelsDirStatus: () => request<ModelsDirStatus>('/api/models/dir-status'),
+  listModelDownloads: () => request<ModelDownload[]>('/api/models/downloads'),
+  downloadModel: (filename: string, url: string, subfolder: string) =>
+    json<ModelDownload>('POST', '/api/models/download', {
+      filename,
+      url,
+      subfolder,
+    }),
 
   listLoras: () => request<Lora[]>('/api/loras'),
   createLora: (payload: LoraPayload) => json<Lora>('POST', '/api/loras', payload),

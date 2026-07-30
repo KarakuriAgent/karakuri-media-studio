@@ -66,6 +66,33 @@ MODEL_FIELDS: set[tuple[str, str]] = {
     ("LoraLoader", "lora_name"),
 }
 
+# 不足モデルをダウンロードするときの既定の置き場所（SPEC §3.3）。値は ComfyUI 側の
+# ローダーが `folder_paths.get_filename_list(...)` に渡すフォルダ名そのもので、
+# models ディレクトリ（環境変数 COMFY_MODELS_DIR）からの相対パスになる。
+# 未知のローダーは「当てずっぽうで checkpoints に置く」と ComfyUI から見えない
+# ファイルが増えるだけなので、空を返して UI に入力させる。
+MODEL_SUBFOLDERS: dict[tuple[str, str], str] = {
+    ("CheckpointLoaderSimple", "ckpt_name"): "checkpoints",
+    ("UNETLoader", "unet_name"): "diffusion_models",
+    # GGUF 版ローダーはテンプレートには出てこないが置き場所は同じ
+    ("UnetLoaderGGUF", "unet_name"): "diffusion_models",
+    ("CLIPLoader", "clip_name"): "text_encoders",
+    ("DualCLIPLoader", "clip_name1"): "text_encoders",
+    ("DualCLIPLoader", "clip_name2"): "text_encoders",
+    ("CLIPVisionLoader", "clip_name"): "clip_vision",
+    ("VAELoader", "vae_name"): "vae",
+    ("LoraLoader", "lora_name"): "loras",
+    ("LoraLoaderModelOnly", "lora_name"): "loras",
+    # LTX 2.3 の音声 VAE / テキストエンコーダは checkpoints と text_encoders を
+    # 見る（comfy_extras/nodes_lt_audio.py）
+    ("LTXVAudioVAELoader", "ckpt_name"): "checkpoints",
+    ("LTXAVTextEncoderLoader", "text_encoder"): "text_encoders",
+    ("LTXAVTextEncoderLoader", "ckpt_name"): "checkpoints",
+    # 空間アップスケーラと MoGe は専用フォルダ（nodes_hunyuan.py / nodes_moge.py）
+    ("LatentUpscaleModelLoader", "model_name"): "latent_upscale_models",
+    ("LoadMoGeModel", "model_name"): "geometry_estimation",
+}
+
 # LTX latent temporal compression: the number of frames handed to
 # EmptyLTXVLatentVideo must satisfy frames == 8n + 1.
 LTX_FRAME_MULTIPLE = 8
@@ -315,6 +342,14 @@ def split_override_key(key: str) -> tuple[str, str, str]:
     return workflow_id, node_id, field
 
 
+def model_subfolder(class_type: str, field: str) -> str:
+    """そのモデル入力の既定の置き場所（models ディレクトリ相対、SPEC §3.3）。
+
+    未知のローダーでは空文字を返す（UI で置き場所を入力してもらう）。
+    """
+    return MODEL_SUBFOLDERS.get((class_type, field), "")
+
+
 def model_fields(specs: tuple[WorkflowSpec, ...] | None = None) -> list[ModelField]:
     """Every configurable model-file input of every template (SPEC §3.3).
 
@@ -348,6 +383,7 @@ def model_fields(specs: tuple[WorkflowSpec, ...] | None = None) -> list[ModelFie
                         class_type=class_type,
                         title=str((node.get("_meta") or {}).get("title") or ""),
                         default="" if value is None else str(value),
+                        subfolder=model_subfolder(class_type, field),
                     )
                 )
     return found

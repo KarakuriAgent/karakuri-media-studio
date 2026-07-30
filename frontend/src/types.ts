@@ -27,6 +27,44 @@ export interface Settings {
    * 生成フォームで実行時に選べる（SPEC §3.3）。
    */
   model_choices: Record<string, string[]>
+  /**
+   * gated リポジトリ用の Hugging Face トークン（不足モデルのダウンロード、SPEC §3.3）。
+   * 保存先の models ディレクトリは設定ではなく環境変数 `COMFY_MODELS_DIR` が決める。
+   */
+  hf_token: string
+  civitai_api_key: string
+  /** `{"<ファイル名>": "<ダウンロード URL>"}`（キーはファイル名なので行を跨いで共有）。 */
+  model_download_urls: Record<string, string>
+}
+
+/**
+ * GET /api/models/dir-status: models ディレクトリに書けるか（SPEC §3.3）。
+ *
+ * `configured` は環境変数 `COMFY_MODELS_DIR` が設定されているか。false なら
+ * 機能ごと無効で、UI はダウンロード関連を一切出さない。
+ */
+export interface ModelsDirStatus {
+  configured: boolean
+  exists: boolean
+  writable: boolean
+  path: string
+}
+
+/** WS /api/ws のモデルダウンロード進捗（`total` は不明なら null）。 */
+export interface ModelDownloadProgress {
+  type: 'model_download'
+  filename: string
+  status: 'downloading' | 'done' | 'error'
+  received: number
+  total: number | null
+  error: string | null
+}
+
+/** GET /api/models/downloads の 1 件（進捗＋保存先）。 */
+export interface ModelDownload extends ModelDownloadProgress {
+  subfolder: string
+  url: string
+  path: string
 }
 
 /** One configurable model file of a workflow template (GET /api/models). */
@@ -41,6 +79,8 @@ export interface ModelFieldState {
   class_type: string
   title: string
   default: string
+  /** ダウンロードの既定の置き場所（models ディレクトリ相対。未知のローダーは空）。 */
+  subfolder: string
   value: string
   overridden: boolean
   /** そのスロットで選べるモデルファイル名（設定ページで登録した候補）。 */

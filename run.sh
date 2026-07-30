@@ -7,6 +7,9 @@
 # 環境変数 (シェルから渡すか、リポジトリ直下の .env に KEY=VALUE で記述):
 #   HOST / PORT        バックエンドの待受 (既定 127.0.0.1 / 8000)
 #   PYTHON             venv 作成に使う python (既定 python3.12 → python3)
+#   COMFY_MODELS_DIR   ComfyUI の models ディレクトリ (不足モデルの自動ダウンロード
+#                      先。未設定ならその機能ごと UI に出ない。値はクォート無しの
+#                      絶対パスで書く)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

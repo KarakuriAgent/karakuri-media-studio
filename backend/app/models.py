@@ -54,6 +54,16 @@ class Settings(BaseModel):
     # 2 件以上あるスロットは生成フォーム / エージェントが実行時に選べるようになる。
     # 候補が空のキーは保存しない。
     model_choices: dict[str, list[str]] = Field(default_factory=dict)
+    # 不足モデルの自動ダウンロード（SPEC §3.3）。保存先の models ディレクトリは
+    # **環境変数 COMFY_MODELS_DIR だけ**が決める（設定には持たない）: Docker では
+    # 同じパスをマウントしていないと書けないので、UI からパスを入れられても
+    # 意味がないため。ここに置くのは認証情報と URL だけ。
+    #: gated / クローズドなリポジトリ用の Hugging Face トークン
+    hf_token: str = ""
+    civitai_api_key: str = ""
+    #: {"<ファイル名>": "<ダウンロード URL>"}。同じファイルが複数スロットに出る
+    #: ので、スロットキーではなくファイル名で持つ。
+    model_download_urls: dict[str, str] = Field(default_factory=dict)
 
 
 class SettingsUpdate(BaseModel):
@@ -66,6 +76,9 @@ class SettingsUpdate(BaseModel):
     grok_workdir: str | None = None
     model_overrides: dict[str, str] | None = None
     model_choices: dict[str, list[str]] | None = None
+    hf_token: str | None = None
+    civitai_api_key: str | None = None
+    model_download_urls: dict[str, str] | None = None
     agent_grok_args: list[str] | None = None
     agent_grok_timeout: float | None = None
     agent_max_plan_tasks: int | None = None
@@ -85,6 +98,10 @@ class ModelField(BaseModel):
     class_type: str
     title: str = ""
     default: str = ""
+    #: 不足していたときにダウンロードする既定の置き場所（models ディレクトリ
+    #: からの相対パス、例 ``"diffusion_models"``）。ローダーが未知で決められない
+    #: ときは空になり、UI で入力させる（SPEC §3.3）。
+    subfolder: str = ""
 
 
 class ModelFieldState(ModelField):
@@ -126,6 +143,62 @@ class ModelSlot(BaseModel):
     label: str = ""
     default: str = ""
     choices: list[str] = Field(default_factory=list)
+
+
+# --------------------------------------------------------------------------
+# 不足モデルの自動ダウンロード（SPEC §3.3）
+# --------------------------------------------------------------------------
+
+class ModelsDirStatus(BaseModel):
+    """``GET /api/models/dir-status``: models ディレクトリに書けるか。
+
+    保存先は環境変数 ``COMFY_MODELS_DIR`` だけで決まる。**未設定なら機能ごと
+    無効**で、UI はダウンロード関連を一切出さない（Comfy Cloud 利用などでは
+    それが正常な状態）。設定されているのに書けない場合（Docker でホストの
+    models ディレクトリを同じ絶対パスにマウントしていない等）は ``exists`` /
+    ``writable`` が false になり、UI はボタンを無効化して理由を出す。
+    """
+
+    #: 環境変数 ``COMFY_MODELS_DIR`` が設定されているか
+    configured: bool = False
+    exists: bool = False
+    writable: bool = False
+    path: str = ""
+
+
+class ModelDownloadRequest(BaseModel):
+    """``POST /api/models/download`` のボディ。
+
+    ``subfolder`` は models ディレクトリからの相対パス（``ModelField.subfolder``
+    をそのまま送ればよい）。空なら models ディレクトリ直下に置く。
+    """
+
+    filename: str
+    url: str
+    subfolder: str = ""
+
+
+class ModelDownloadProgress(BaseModel):
+    """WS /api/ws に流すダウンロードの進捗（``type: "model_download"``）。
+
+    ``total`` は ``Content-Length`` が返らないサーバーでは ``None`` になる。
+    """
+
+    type: Literal["model_download"] = "model_download"
+    filename: str
+    status: Literal["downloading", "done", "error"] = "downloading"
+    received: int = 0
+    total: int | None = None
+    error: str | None = None
+
+
+class ModelDownload(ModelDownloadProgress):
+    """``GET /api/models/downloads`` の 1 件（進捗＋保存先）。"""
+
+    subfolder: str = ""
+    url: str = ""
+    #: 保存先の絶対パス（検証済み）
+    path: str = ""
 
 
 #: どちらのワークフローに挿す LoRA か（SPEC §3.4）。'image' は画像ワークフロー、

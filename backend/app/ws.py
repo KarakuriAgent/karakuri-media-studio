@@ -24,6 +24,8 @@ from .models import (
     JobProgress,
     LibraryItem,
     LibraryProgress,
+    ModelDownload,
+    ModelDownloadProgress,
 )
 
 log = logging.getLogger(__name__)
@@ -156,6 +158,31 @@ async def publish_library(item: LibraryItem) -> None:
             "kind": item.kind,
             "name": item.name,
             "tags": list(item.tags),
+        }
+    await hub.broadcast(payload)
+
+
+async def publish_model_download(state: ModelDownload) -> None:
+    """不足モデルのダウンロード進捗を配信（``type: "model_download"``、SPEC §3.3）。
+
+    Never raises: 通知に失敗してもダウンロードは続ける。
+    """
+    try:
+        payload = ModelDownloadProgress(
+            filename=state.filename,
+            status=state.status,
+            received=state.received,
+            total=state.total,
+            error=state.error,
+        ).model_dump()
+    except Exception:  # noqa: BLE001 - 通知の失敗でダウンロードを壊さない
+        payload = {
+            "type": "model_download",
+            "filename": state.filename,
+            "status": state.status,
+            "received": state.received,
+            "total": state.total,
+            "error": state.error,
         }
     await hub.broadcast(payload)
 

@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { api } from '../api'
+import { api, wsUrl } from '../api'
 import { DEFAULT_FAMILY, FAMILY_LABELS, IMAGE_FAMILIES } from '../form'
 import type {
   Asset,
@@ -7,7 +7,9 @@ import type {
   Lora,
   LoraPayload,
   LoraTarget,
+  ModelDownloadProgress,
   ModelFieldState,
+  ModelsDirStatus,
   Options,
   Settings,
 } from '../types'
@@ -69,6 +71,56 @@ function modelFileMap(options: Options | null): Record<string, string[]> {
   const loraFiles = options?.lora_files ?? []
   if (!files[loraKey] && loraFiles.length > 0) files[loraKey] = loraFiles
   return files
+}
+
+/**
+ * その値が ComfyUI に無い（= 不足している）か（SPEC §3.3）。
+ *
+ * 一覧そのものが取れていない（ComfyUI に繋がっていない・その class_type が
+ * 入っていない）ときは判定できないので「不足していない」として扱う。
+ */
+function isMissing(
+  row: ModelFieldState,
+  files: Record<string, string[]>,
+  value: string,
+): boolean {
+  const installed = files[`${row.class_type}.${row.field}`]
+  if (!installed || installed.length === 0) return false
+  return Boolean(value) && !installed.includes(value)
+}
+
+/**
+ * models ディレクトリの状態を「使えるか」と表示文言にする（SPEC §3.3）。
+ *
+ * `configured` が false（環境変数 `COMFY_MODELS_DIR` 未設定）のときは呼び出し側が
+ * ダウンロード関連の UI ごと出さないので、この文言は使われない。
+ */
+function dirStatusMessage(status: ModelsDirStatus | null): {
+  ok: boolean
+  text: string
+} {
+  if (!status) return { ok: false, text: '確認中…' }
+  if (!status.configured) {
+    return { ok: false, text: 'COMFY_MODELS_DIR が設定されていません' }
+  }
+  if (!status.exists) {
+    return {
+      ok: false,
+      text: `パスが見つかりません: ${status.path}（Docker の場合は同じ絶対パスがコンテナにマウントされているか確認してください）`,
+    }
+  }
+  if (!status.writable) {
+    return { ok: false, text: `書き込み権限がありません: ${status.path}` }
+  }
+  return { ok: true, text: `このマシン / コンテナから書き込み可 ✓（${status.path}）` }
+}
+
+/** 進捗表示用のバイト数（GB / MB / KB）。 */
+function formatBytes(bytes: number): string {
+  if (bytes >= 1024 ** 3) return `${(bytes / 1024 ** 3).toFixed(2)} GB`
+  if (bytes >= 1024 ** 2) return `${(bytes / 1024 ** 2).toFixed(1)} MB`
+  if (bytes >= 1024) return `${(bytes / 1024).toFixed(0)} KB`
+  return `${bytes} B`
 }
 
 interface ModelGroup {
@@ -143,6 +195,13 @@ export default function SettingsPage({
   const [choiceInput, setChoiceInput] = useState<Record<string, string>>({})
   // ワークフローごとの折りたたみ状態（既定は閉じている）
   const [openWorkflows, setOpenWorkflows] = useState<Record<string, boolean>>({})
+  // 不足モデルのダウンロード（SPEC §3.3）: models ディレクトリの状態、
+  // ファイル名ごとの URL（行を跨いで共有）、ファイル名ごとの進捗
+  const [dirStatus, setDirStatus] = useState<ModelsDirStatus | null>(null)
+  const [urlDraft, setUrlDraft] = useState<Record<string, string>>({})
+  const [downloads, setDownloads] = useState<
+    Record<string, ModelDownloadProgress>
+  >({})
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -191,10 +250,20 @@ export default function SettingsPage({
       [key]: (previous[key] ?? []).filter((item) => item !== name),
     }))
 
+  const reloadDirStatus = async () => {
+    try {
+      setDirStatus(await api.modelsDirStatus())
+    } catch (caught) {
+      fail(caught)
+    }
+  }
+
   useEffect(() => {
     void (async () => {
       try {
-        setSettings(await api.getSettings())
+        const loaded = await api.getSettings()
+        setSettings(loaded)
+        setUrlDraft({ ...loaded.model_download_urls })
       } catch (caught) {
         fail(caught)
       }
@@ -203,8 +272,36 @@ export default function SettingsPage({
       } catch (caught) {
         fail(caught)
       }
+      await reloadDirStatus()
+      try {
+        // 開き直したときに進行中のダウンロードを拾い直す（WS の取りこぼし対策）
+        const running = await api.listModelDownloads()
+        setDownloads(
+          Object.fromEntries(running.map((item) => [item.filename, item])),
+        )
+      } catch (caught) {
+        fail(caught)
+      }
       await reloadLoras()
     })()
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
+
+  // ダウンロードの進捗（WS /api/ws の `model_download`、SPEC §3.3）。
+  // 完了したら ComfyUI のファイル一覧を取り直して「未検出」バッジを消す。
+  useEffect(() => {
+    const socket = new WebSocket(wsUrl())
+    socket.onmessage = (event) => {
+      try {
+        const frame = JSON.parse(event.data as string) as ModelDownloadProgress
+        if (frame?.type !== 'model_download') return
+        setDownloads((previous) => ({ ...previous, [frame.filename]: frame }))
+        if (frame.status === 'done') onChanged()
+      } catch {
+        /* 壊れたフレームは無視する */
+      }
+    }
+    return () => socket.close()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -219,10 +316,39 @@ export default function SettingsPage({
           comfy_api_key: settings.comfy_api_key,
           grok_model: settings.grok_model,
           grok_command: settings.grok_command,
+          hf_token: settings.hf_token,
+          civitai_api_key: settings.civitai_api_key,
         }),
       )
       setNotice('設定を保存しました')
+      // models ディレクトリを変えたかもしれないので状態を取り直す
+      await reloadDirStatus()
       onChanged()
+    } catch (caught) {
+      fail(caught)
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  /**
+   * 1 ファイルのダウンロードを開始する（SPEC §3.3）。
+   *
+   * URL は次回のために設定 (`model_download_urls`) へ保存してから投げる。
+   */
+  const startDownload = async (row: ModelFieldState, filename: string) => {
+    const url = (urlDraft[filename] ?? '').trim()
+    if (!url) return
+    setBusy(true)
+    setError(null)
+    try {
+      const saved = await api.putSettings({
+        model_download_urls: { ...urlDraft, [filename]: url },
+      })
+      setSettings(saved)
+      const started = await api.downloadModel(filename, url, row.subfolder)
+      setDownloads((previous) => ({ ...previous, [filename]: started }))
+      setNotice(`${filename} のダウンロードを開始しました`)
     } catch (caught) {
       fail(caught)
     } finally {
@@ -314,6 +440,10 @@ export default function SettingsPage({
   )
   // 保存は全件置換 PUT なので、折りたたんでいても modelDraft は全行を持ち続ける。
   const modelGroups = groupModels(models, modelDraft, choiceDraft)
+  // models ディレクトリが未設定なら（Comfy Cloud 接続などでは普通のこと）
+  // ダウンロード列そのものを出さない。設定済みなら、使えない状態でも出して
+  // 理由を見せる（SPEC §3.3）。
+  const showDownload = dirStatus?.configured === true
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -371,6 +501,68 @@ export default function SettingsPage({
                       }
                     />
                   </div>
+                  {/* 不足モデルの自動ダウンロード（SPEC §3.3）。保存先は環境変数
+                      COMFY_MODELS_DIR だけが決めるので、未設定ならブロックごと
+                      出さない（Comfy Cloud 利用などでは正常な状態）。 */}
+                  {showDownload && (
+                    <div className="card flex flex-col gap-2 p-3">
+                      <h4 className="text-xs font-semibold text-slate-300">
+                        モデル自動ダウンロード
+                      </h4>
+                      <div>
+                        <label className="label">
+                          保存先（環境変数 COMFY_MODELS_DIR）
+                        </label>
+                        <input
+                          className="field"
+                          value={dirStatus?.path ?? ''}
+                          readOnly
+                        />
+                        <p
+                          className={`mt-1 text-[11px] ${
+                            dirStatusMessage(dirStatus).ok
+                              ? 'text-emerald-400'
+                              : 'text-amber-400'
+                          }`}
+                        >
+                          {dirStatusMessage(dirStatus).text}
+                        </p>
+                        <p className="mt-1 text-[11px] text-slate-500">
+                          パスは .env の COMFY_MODELS_DIR で決まります（変更したら再起動）。
+                          「モデル」タブの [DL] はここへ直接ファイルを置きます（ComfyUI の
+                          再起動は不要）。
+                        </p>
+                      </div>
+                      <div className="grid grid-cols-2 gap-2">
+                        <div>
+                          <label className="label">
+                            Hugging Face トークン（gated モデル用・任意）
+                          </label>
+                          <input
+                            className="field"
+                            type="password"
+                            autoComplete="off"
+                            value={settings.hf_token}
+                            onChange={(event) =>
+                              update({ hf_token: event.target.value })
+                            }
+                          />
+                        </div>
+                        <div>
+                          <label className="label">Civitai APIキー（任意）</label>
+                          <input
+                            className="field"
+                            type="password"
+                            autoComplete="off"
+                            value={settings.civitai_api_key}
+                            onChange={(event) =>
+                              update({ civitai_api_key: event.target.value })
+                            }
+                          />
+                        </div>
+                      </div>
+                    </div>
+                  )}
                   <div className="grid grid-cols-2 gap-2">
                     <div>
                       <label className="label">grok コマンド</label>
@@ -668,6 +860,33 @@ export default function SettingsPage({
                 <strong className="text-slate-300">実行ごとに切り替えられる</strong>
                 ようになります（既定値と合わせて 2 件以上必要）。
               </p>
+              <p className="text-xs text-slate-500">
+                ComfyUI のファイル一覧に無いファイル名には
+                <span className="mx-1 rounded border border-amber-500 px-1 py-px text-[10px] text-amber-400">
+                  未検出
+                </span>
+                が付きます。
+                {showDownload ? (
+                  <>
+                    ダウンロード URL を入れて [DL] を押すと、「接続 / Grok」タブで設定した
+                    models ディレクトリの所定の場所へ保存します（URL はファイル名ごとに
+                    設定へ保存され、同じファイルを使う他のワークフローの行にも共有されます）。
+                  </>
+                ) : (
+                  // 環境変数が無い（Comfy Cloud 利用など）のは正常な状態なので
+                  // 警告は出さず、使いたい人向けの案内だけ添える。
+                  <>
+                    自動ダウンロードを使う場合は .env に COMFY_MODELS_DIR
+                    （ComfyUI の models ディレクトリ）を設定して再起動してください。
+                  </>
+                )}
+              </p>
+              {/* 設定したのに使えない（見つからない / 書けない）ときだけ警告する */}
+              {showDownload && !dirStatusMessage(dirStatus).ok && (
+                <p className="text-xs text-amber-400">
+                  {dirStatusMessage(dirStatus).text}
+                </p>
+              )}
               {Object.entries(modelFiles).map(([name, files]) => (
                 <datalist key={name} id={fileListId(name)}>
                   {files.map((file) => (
@@ -729,6 +948,11 @@ export default function SettingsPage({
                                     <th className="p-2 font-medium">
                                       候補リスト（実行時に選べる）
                                     </th>
+                                    {showDownload && (
+                                      <th className="p-2 font-medium">
+                                        ダウンロード（不足時）
+                                      </th>
+                                    )}
                                     <th className="p-2" />
                                   </tr>
                                 </thead>
@@ -745,6 +969,15 @@ export default function SettingsPage({
                                     ]
                                       ? fileListId(`${row.class_type}.${row.field}`)
                                       : undefined
+                                    // 不足モデルのダウンロード（SPEC §3.3）。URL と
+                                    // 進捗はファイル名で持つので、同じファイルを使う
+                                    // 別のワークフローの行にも同じものが出る。
+                                    const missing = isMissing(row, modelFiles, value)
+                                    const progress = downloads[value]
+                                    const downloading =
+                                      progress?.status === 'downloading'
+                                    const dirReady = dirStatusMessage(dirStatus).ok
+                                    const url = (urlDraft[value] ?? '').trim()
                                     return (
                                       <tr
                                         key={row.key}
@@ -776,6 +1009,14 @@ export default function SettingsPage({
                                               }))
                                             }
                                           />
+                                          {missing && (
+                                            <span
+                                              className="mt-1 inline-block rounded border border-amber-500 px-1 py-px text-[10px] text-amber-400"
+                                              title="ComfyUI のファイル一覧に見つかりません"
+                                            >
+                                              未検出
+                                            </span>
+                                          )}
                                         </td>
                                         <td className="min-w-[16rem] p-2 align-top">
                                           {choices.length > 0 && (
@@ -830,6 +1071,82 @@ export default function SettingsPage({
                                             </button>
                                           </div>
                                         </td>
+                                        {showDownload && (
+                                          <td className="min-w-[16rem] p-2 align-top">
+                                            <div className="flex gap-1">
+                                              <input
+                                                className="field"
+                                                placeholder="ダウンロード URL（Hugging Face / Civitai など）"
+                                                value={urlDraft[value] ?? ''}
+                                                disabled={!value}
+                                                onChange={(event) =>
+                                                  setUrlDraft((previous) => ({
+                                                    ...previous,
+                                                    [value]: event.target.value,
+                                                  }))
+                                                }
+                                              />
+                                              <button
+                                                className="btn-ghost !py-1 text-xs"
+                                                disabled={
+                                                  busy ||
+                                                  downloading ||
+                                                  !dirReady ||
+                                                  !value ||
+                                                  !url
+                                                }
+                                                title={
+                                                  dirReady
+                                                    ? `${row.subfolder || 'models 直下'} に保存します`
+                                                    : dirStatusMessage(dirStatus).text
+                                                }
+                                                onClick={() =>
+                                                  void startDownload(row, value)
+                                                }
+                                              >
+                                                DL
+                                              </button>
+                                            </div>
+                                            <p className="mt-1 text-[10px] text-slate-600">
+                                              保存先: {row.subfolder || 'models 直下'}
+                                            </p>
+                                            {progress && (
+                                              <div className="mt-1">
+                                                {downloading && (
+                                                  <div className="h-1 overflow-hidden rounded bg-ink-700">
+                                                    <div
+                                                      className="h-full bg-accent-500"
+                                                      style={{
+                                                        width: progress.total
+                                                          ? `${Math.min(100, (progress.received / progress.total) * 100)}%`
+                                                          : '100%',
+                                                      }}
+                                                    />
+                                                  </div>
+                                                )}
+                                                <p
+                                                  className={`text-[10px] ${
+                                                    progress.status === 'error'
+                                                      ? 'text-red-400'
+                                                      : progress.status === 'done'
+                                                        ? 'text-emerald-400'
+                                                        : 'text-slate-500'
+                                                  }`}
+                                                >
+                                                  {progress.status === 'error'
+                                                    ? `失敗: ${progress.error ?? ''}`
+                                                    : progress.status === 'done'
+                                                      ? `完了（${formatBytes(progress.received)}）`
+                                                      : `${formatBytes(progress.received)}${
+                                                          progress.total
+                                                            ? ` / ${formatBytes(progress.total)}`
+                                                            : ''
+                                                        } 取得中…`}
+                                                </p>
+                                              </div>
+                                            )}
+                                          </td>
+                                        )}
                                         <td className="p-2 align-top">
                                           <button
                                             className="btn-ghost !py-1 text-xs"

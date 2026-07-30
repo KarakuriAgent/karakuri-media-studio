@@ -26,6 +26,7 @@ from .routers import (
     jobs,
     library,
     loras,
+    model_download,
     models_config,
     options,
     settings,
@@ -67,6 +68,7 @@ app.include_router(health.router)
 app.include_router(settings.router)
 app.include_router(loras.router)
 app.include_router(models_config.router)
+app.include_router(model_download.router)
 app.include_router(library.router)
 app.include_router(assets.router)
 app.include_router(options.router)
