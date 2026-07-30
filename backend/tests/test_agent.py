@@ -15,12 +15,15 @@ from app import (
     agent_protocol,
     agent_runner,
     agent_store,
+    autotag,
     comfy,
     config,
     db,
     grok,
     jobs,
+    library,
     lora_samples,
+    prompts,
     nsfw,
 )
 from app.main import app
@@ -133,6 +136,11 @@ async def _no_llm(text: str) -> None:
     return None
 
 
+async def _no_description(text: str) -> tuple[str, list[str]]:
+    """タグ自動生成の LLM を使わない差し替え。"""
+    return "", []
+
+
 @pytest.fixture
 def env(tmp_path, monkeypatch, request):
     video = request.getfixturevalue("sample_video") if HAS_FFMPEG else None
@@ -140,13 +148,17 @@ def env(tmp_path, monkeypatch, request):
     assets = tmp_path / "assets"
     outputs = tmp_path / "outputs"
     sessions = tmp_path / "agent-sessions"
+    lib = tmp_path / "library"
     (assets / "audio").mkdir(parents=True)
     (assets / "image").mkdir(parents=True)
     (assets / "video").mkdir(parents=True)
     outputs.mkdir()
     sessions.mkdir()
+    lib.mkdir()
 
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.db")
+    monkeypatch.setattr(library, "LIBRARY_DIR", lib)
+    monkeypatch.setattr(jobs, "LIBRARY_DIR", lib)
     monkeypatch.setattr(jobs, "ASSETS_DIR", assets)
     monkeypatch.setattr(jobs, "OUTPUTS_DIR", outputs)
     monkeypatch.setattr(jobs, "POLL_INTERVAL", 0.02)
@@ -156,6 +168,9 @@ def env(tmp_path, monkeypatch, request):
     monkeypatch.setattr(agent_runner, "POLL_INTERVAL", 0.02)
     # NSFW 自動判定は test_nsfw.py で検証する（ここでは Grok を呼ばせない）。
     monkeypatch.setattr(nsfw, "classify", _no_llm)
+    # ライブラリのタグ自動生成も同様（test_autotag.py で検証する）。scripted な
+    # 答えを背景タスクに横取りされないよう、既定では何も返さない。
+    monkeypatch.setattr(autotag, "describe", _no_description)
     monkeypatch.setattr(
         config,
         "_settings",
@@ -196,6 +211,7 @@ def env(tmp_path, monkeypatch, request):
                 "assets": assets,
                 "outputs": outputs,
                 "sessions": sessions,
+                "library": lib,
                 "audio": audio,
                 "image": image,
                 "clip": clip,
@@ -1899,3 +1915,320 @@ def test_the_system_prompt_explains_attachments(env):
     system = start(env)["messages"][0]["content"]
     assert "[Attached files" in system
     assert "attachments/" in system
+
+
+# --------------------------------------------------------------------------
+# ライブラリ（SPEC §7.2）
+# --------------------------------------------------------------------------
+
+def test_library_action_keeps_a_job_output(env):
+    session = start(env)
+    env.cli.answers = [plan_answer(env, 1), DONE_ANSWER]
+    say(env, session["id"])
+    env.client.post(f"/api/agent/sessions/{session['id']}/approve", json={})
+    done = wait_status(env, session["id"], ("done", "stopped", "idle"))
+    job_id = done["plan"]["tasks"][0]["job_id"]
+
+    env.cli.answers = [
+        action_answer(
+            {
+                "action": "library",
+                "job_id": job_id,
+                "source": "image",
+                "title": "夕暮れ屋上ダンス・決め絵",
+            },
+            "取っておきます。",
+        )
+    ]
+    reply = say(env, session["id"], "この画像を残して").json()
+    assert reply["action"]["action"] == "library"
+    assert "library_added" in kinds(reply["session"])
+
+    items = env.client.get("/api/library").json()["items"]
+    assert [item["name"] for item in items] == ["夕暮れ屋上ダンス・決め絵"]
+    assert items[0]["source_job_id"] == job_id
+    # 実体は library/ にコピーされ、次のジョブの入力に使える
+    assert Path(items[0]["path"]).is_file()
+    assert jobs.resolve_asset_path(items[0]["path"], field="source_image").is_file()
+
+
+def test_library_action_reports_a_missing_output(env):
+    session = start(env)
+    env.cli.answers = [
+        action_answer(
+            {"action": "library", "job_id": "ghost", "source": "image"},
+            "取っておきます。",
+        )
+    ]
+    reply = say(env, session["id"], "残して").json()
+    assert "action_failed" in kinds(reply["session"])
+    assert env.client.get("/api/library").json()["items"] == []
+
+
+def test_library_action_needs_a_job_and_a_known_source(env):
+    with pytest.raises(agent_protocol.ActionError, match="job_id"):
+        agent_protocol.parse_action(action_answer({"action": "library"}))
+    with pytest.raises(agent_protocol.ActionError, match="source"):
+        agent_protocol.parse_action(
+            action_answer({"action": "library", "job_id": "j1", "source": "thumbnail"})
+        )
+
+
+def test_system_prompt_lists_the_library(env):
+    """CHOICES にライブラリのパスが出て、入力に使えると分かる（SPEC §7.2）。"""
+    created = env.client.post(
+        "/api/library/image", files={"file": ("ref.png", b"PNG", "image/png")}
+    )
+    assert created.status_code == 201, created.text
+    item = created.json()
+
+    system = start(env)["messages"][0]["content"]
+    assert "Library（取っておいた素材" in system
+    assert item["path"] in system
+    assert "ref.png" in system
+    assert "source_image / end_image" in system
+
+
+def test_system_prompt_says_the_library_is_empty(env):
+    system = start(env)["messages"][0]["content"]
+    assert "Library（取っておいた素材" in system
+    assert "- (none)" in system
+
+
+def test_a_plan_can_use_a_library_path_as_an_input(env):
+    """ライブラリのパスは assets と同じようにジョブ入力として検証を通る。"""
+    item = env.client.post(
+        "/api/library/image", files={"file": ("start.png", b"PNG", "image/png")}
+    ).json()
+    action = agent_protocol.parse_action(
+        _plan_with(env, mode="i2v", source_image=item["path"])
+    )
+    assert action is not None
+    assert action.tasks[0].job["source_image"] == item["path"]
+
+    # /library/... の URL でも同じく通る
+    by_url = agent_protocol.parse_action(
+        _plan_with(env, mode="i2v", source_image=item["url"])
+    )
+    assert by_url is not None
+
+
+def add_to_library(env, kind: str, name: str, tags: str = "") -> dict:
+    created = env.client.post(
+        f"/api/library/{kind}",
+        files={"file": (name, b"DATA", "application/octet-stream")},
+        data={"tags": tags},
+    )
+    assert created.status_code == 201, created.text
+    return created.json()
+
+
+def test_library_action_can_attach_tags(env):
+    session = start(env)
+    env.cli.answers = [plan_answer(env, 1), DONE_ANSWER]
+    say(env, session["id"])
+    env.client.post(f"/api/agent/sessions/{session['id']}/approve", json={})
+    done = wait_status(env, session["id"], ("done", "stopped", "idle"))
+    job_id = done["plan"]["tasks"][0]["job_id"]
+
+    env.cli.answers = [
+        action_answer(
+            {
+                "action": "library",
+                "job_id": job_id,
+                "source": "image",
+                "title": "決め絵",
+                "tags": ["キャラ", "サクラ"],
+            },
+            "取っておきます。",
+        )
+    ]
+    say(env, session["id"], "残して")
+    assert env.client.get("/api/library").json()["items"][0]["tags"] == [
+        "キャラ",
+        "サクラ",
+    ]
+
+
+def test_library_search_returns_matches_as_an_event(env):
+    picture = add_to_library(env, "image", "sakura.png", "キャラ")
+    add_to_library(env, "image", "haikei.png", "背景")
+
+    session = start(env)
+    env.cli.answers = [
+        action_answer(
+            {"action": "library_search", "q": "sakura"}, "探します。"
+        )
+    ]
+    reply = say(env, session["id"], "サクラの素材ある？").json()
+    assert reply["action"]["action"] == "library_search"
+
+    events = [
+        m for m in reply["session"]["messages"] if m["kind"] == "library_search_result"
+    ]
+    assert len(events) == 1
+    text = events[0]["content"]
+    assert picture["path"] in text
+    assert "haikei.png" not in text
+    assert "1 件中 1〜1 件目" in text
+    assert events[0]["data"]["total"] == 1
+
+
+def test_library_search_can_filter_by_tag_and_kind(env):
+    add_to_library(env, "image", "a.png", "夜景")
+    track = add_to_library(env, "audio", "b.mp3", "夜景")
+
+    session = start(env)
+    env.cli.answers = [
+        action_answer(
+            {"action": "library_search", "tag": "夜景", "kind": "audio"}, "探します。"
+        )
+    ]
+    reply = say(env, session["id"], "夜景の音は？").json()
+    text = [
+        m for m in reply["session"]["messages"] if m["kind"] == "library_search_result"
+    ][0]["content"]
+    assert track["path"] in text
+    assert "a.png" not in text
+
+
+def test_library_search_tells_how_to_get_the_next_page(env):
+    total = agent_runner.LIBRARY_SEARCH_LIMIT + 5
+    for index in range(total):
+        add_to_library(env, "image", f"pic{index}.png")
+
+    session = start(env)
+    env.cli.answers = [action_answer({"action": "library_search"}, "探します。")]
+    reply = say(env, session["id"], "全部見せて").json()
+    event = [
+        m for m in reply["session"]["messages"] if m["kind"] == "library_search_result"
+    ][0]
+    assert f"{total} 件中 1〜{agent_runner.LIBRARY_SEARCH_LIMIT} 件目" in event["content"]
+    assert "まだ 5 件あります" in event["content"]
+    assert f'"offset": {agent_runner.LIBRARY_SEARCH_LIMIT}' in event["content"]
+    assert event["data"]["returned"] == agent_runner.LIBRARY_SEARCH_LIMIT
+
+    # 続きを offset で取りに行ける
+    env.cli.answers = [
+        action_answer(
+            {"action": "library_search", "offset": agent_runner.LIBRARY_SEARCH_LIMIT},
+            "続きです。",
+        )
+    ]
+    reply = say(env, session["id"], "続き").json()
+    latest = [
+        m for m in reply["session"]["messages"] if m["kind"] == "library_search_result"
+    ][-1]
+    assert f"{total} 件中 {agent_runner.LIBRARY_SEARCH_LIMIT + 1}〜{total} 件目" in (
+        latest["content"]
+    )
+    assert "まだ" not in latest["content"]
+
+
+def test_library_search_reports_no_match(env):
+    add_to_library(env, "image", "a.png")
+    session = start(env)
+    env.cli.answers = [
+        action_answer({"action": "library_search", "q": "ghost"}, "探します。")
+    ]
+    reply = say(env, session["id"], "探して").json()
+    text = [
+        m for m in reply["session"]["messages"] if m["kind"] == "library_search_result"
+    ][0]["content"]
+    assert "該当なし" in text
+
+
+def test_library_search_rejects_an_unknown_kind(env):
+    with pytest.raises(agent_protocol.ActionError, match="kind"):
+        agent_protocol.parse_action(
+            action_answer({"action": "library_search", "kind": "model"})
+        )
+    # 条件なし（全件の 1 ページ目）は許す
+    action = agent_protocol.parse_action(action_answer({"action": "library_search"}))
+    assert action is not None
+    assert (action.query, action.tag, action.library_kind, action.offset) == (
+        "",
+        None,
+        None,
+        0,
+    )
+
+
+def test_system_prompt_shows_tags_and_points_at_the_search(env):
+    add_to_library(env, "image", "sakura.png", "キャラ,立ち絵")
+    system = start(env)["messages"][0]["content"]
+    assert "[キャラ, 立ち絵]" in system
+    assert "library_search" in system
+    assert "上の一覧が現時点の全件です" in system
+
+
+def test_system_prompt_says_how_many_entries_are_hidden(env):
+    hidden = 3
+    for index in range(prompts.LIBRARY_PROMPT_LIMIT + hidden):
+        add_to_library(env, "image", f"pic{index}.png")
+    system = start(env)["messages"][0]["content"]
+    assert f"ここに出していない素材が {hidden} 件あります" in system
+    assert f"…ほか {hidden} 件" in system
+    assert f"image（source_image / end_image、全 {prompts.LIBRARY_PROMPT_LIMIT + hidden} 件）" in system
+
+
+def test_library_action_reports_an_already_registered_output(env):
+    """二重登録はエラーではなく「もう棚にある」という案内にする（SPEC §7.2）。"""
+    session = start(env)
+    env.cli.answers = [plan_answer(env, 1), DONE_ANSWER]
+    say(env, session["id"])
+    env.client.post(f"/api/agent/sessions/{session['id']}/approve", json={})
+    done = wait_status(env, session["id"], ("done", "stopped", "idle"))
+    job_id = done["plan"]["tasks"][0]["job_id"]
+
+    keep = action_answer(
+        {"action": "library", "job_id": job_id, "source": "image", "title": "決め絵"},
+        "取っておきます。",
+    )
+    env.cli.answers = [keep]
+    say(env, session["id"], "残して")
+
+    env.cli.answers = [keep]
+    reply = say(env, session["id"], "もう一度残して").json()
+    assert "library_exists" in kinds(reply["session"])
+    assert "action_failed" not in kinds(reply["session"])
+    event = [m for m in reply["session"]["messages"] if m["kind"] == "library_exists"][0]
+    assert "既にライブラリにあります" in event["content"]
+    assert "決め絵" in event["content"]
+    # コピーは増えない
+    assert len(env.client.get("/api/library").json()["items"]) == 1
+
+
+def test_library_action_asks_grok_for_japanese_tags(env, monkeypatch):
+    """エージェントが tags を書かなければ、背景で日本語タグが付く（SPEC §7.2）。"""
+    async def describe(text: str) -> tuple[str, list[str]]:
+        return "夕暮れ屋上のダンス", ["女性", "屋上", "夕暮れ"]
+
+    monkeypatch.setattr(autotag, "describe", describe)
+
+    session = start(env)
+    env.cli.answers = [plan_answer(env, 1), DONE_ANSWER]
+    say(env, session["id"])
+    env.client.post(f"/api/agent/sessions/{session['id']}/approve", json={})
+    done = wait_status(env, session["id"], ("done", "stopped", "idle"))
+    job_id = done["plan"]["tasks"][0]["job_id"]
+
+    env.cli.answers = [
+        action_answer(
+            {"action": "library", "job_id": job_id, "source": "image"},
+            "取っておきます。",
+        )
+    ]
+    say(env, session["id"], "残して")
+
+    deadline = time.time() + 5.0
+    item = {}
+    while time.time() < deadline:
+        rows = env.client.get("/api/library").json()["items"]
+        if rows and rows[0]["tags"]:
+            item = rows[0]
+            break
+        time.sleep(0.05)
+    assert item.get("tags") == ["女性", "屋上", "夕暮れ"]
+    # title を書かなかったので表示名も日本語に置き換わる
+    assert item["name"] == "夕暮れ屋上のダンス"

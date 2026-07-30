@@ -4,6 +4,7 @@ import type { Job } from '../types'
 import HistoryPickerModal, {
   assetExtension,
   historyCandidates,
+  jobText,
 } from './HistoryPickerModal'
 
 afterEach(cleanup)
@@ -108,11 +109,50 @@ describe('historyCandidates', () => {
     ).toEqual(['img1', 'nsfw1'])
   })
 
+  it('query でジョブの文言を絞り込む', () => {
+    const picked = historyCandidates([FULL, IMAGE_ONLY], 'image', false, 'dance')
+    // FULL は video_prompt が "a dance clip"
+    expect(picked.map((item) => item.job.id)).toEqual(['full1', 'full1'])
+    // 大文字小文字は無視する
+    expect(
+      historyCandidates([FULL, IMAGE_ONLY], 'image', false, 'PORTRAIT').map(
+        (item) => item.job.id,
+      ),
+    ).toEqual(['img1'])
+    // 空白だけの query は絞り込まない
+    expect(historyCandidates([FULL, IMAGE_ONLY], 'image', false, '  ')).toHaveLength(3)
+    expect(historyCandidates([FULL, IMAGE_ONLY], 'image', false, 'ghost')).toEqual([])
+  })
+
+  it('NSFW フィルタと検索は両方かかる', () => {
+    const spicy = job({
+      id: 'nsfw2',
+      image_prompt: 'a spicy dance',
+      image_url: '/outputs/nsfw2/x.png',
+      nsfw: true,
+    })
+    expect(
+      historyCandidates([FULL, spicy], 'image', false, 'dance').map((i) => i.job.id),
+    ).toEqual(['full1', 'full1'])
+    expect(
+      historyCandidates([FULL, spicy], 'image', true, 'spicy').map((i) => i.job.id),
+    ).toEqual(['nsfw2'])
+  })
+
   it('渡された順（API の新しい順）を保つ', () => {
     const older = job({ id: 'old', image_url: '/outputs/old/x.png' })
     expect(
       historyCandidates([IMAGE_ONLY, older], 'image', false).map((i) => i.job.id),
     ).toEqual(['img1', 'old'])
+  })
+})
+
+describe('jobText', () => {
+  it('動画 → 画像 → 音声 → 最初の指示 → id の順に拾う', () => {
+    expect(jobText(FULL)).toBe('a dance clip')
+    expect(jobText(IMAGE_ONLY)).toBe('a portrait')
+    expect(jobText(AUDIO)).toBe('a lofi loop')
+    expect(jobText(job({ id: 'bare' }))).toBe('bare')
   })
 })
 
@@ -156,6 +196,20 @@ describe('HistoryPickerModal', () => {
     expect(onSelect).toHaveBeenCalledWith(
       expect.objectContaining({ url: '/outputs/img1/still.png', source: 'image' }),
     )
+  })
+
+  it('検索ボックスでプロンプトから絞り込む', () => {
+    show({ showNsfw: true })
+    expect(screen.getByText('2 件')).toBeTruthy()
+    fireEvent.change(screen.getByLabelText('履歴を検索'), {
+      target: { value: 'spicy' },
+    })
+    expect(screen.getByText('1 件')).toBeTruthy()
+    expect(screen.queryByTitle('a portrait')).toBeNull()
+    fireEvent.change(screen.getByLabelText('履歴を検索'), {
+      target: { value: 'ghost' },
+    })
+    expect(screen.getByText('検索に一致する生成物がありません。')).toBeTruthy()
   })
 
   it('NSFW 表示はモーダル内で切り替えられる', () => {

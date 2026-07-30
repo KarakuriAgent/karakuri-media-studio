@@ -64,7 +64,23 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
   nsfw_source  TEXT NOT NULL DEFAULT ''
 );
 
+-- ライブラリ（SPEC §7.2）: 履歴とは別に取っておく素材の目録。ファイル実体は
+-- library/{kind}/ に置き、/library で静的配信される。
+CREATE TABLE IF NOT EXISTS library (
+  id            TEXT PRIMARY KEY,
+  created_at    TEXT NOT NULL,
+  kind          TEXT NOT NULL,
+  name          TEXT NOT NULL,
+  path          TEXT NOT NULL,
+  nsfw          INTEGER NOT NULL DEFAULT 0,
+  nsfw_source   TEXT NOT NULL DEFAULT '',
+  source_job_id TEXT,
+  source        TEXT,                       -- 元ジョブのどの出力か（image/last_frame/video/audio）
+  tags          TEXT NOT NULL DEFAULT '[]'
+);
+
 CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_library_created_at ON library(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_agent_sessions_created_at
   ON agent_sessions(created_at DESC);
 """
@@ -85,6 +101,15 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
     "agent_sessions": [
         ("nsfw", "INTEGER NOT NULL DEFAULT 0"),
         ("nsfw_source", "TEXT NOT NULL DEFAULT ''"),
+    ],
+    "library": [
+        # 分類タグ（JSON 配列。loras.sample_images と同じ持ち方）。ライブラリを
+        # 後から追加したときの既存行は空配列になる。
+        ("tags", "TEXT NOT NULL DEFAULT '[]'"),
+        # 元ジョブのどの出力か。source_job_id だけでは生成画像とラストフレームを
+        # 区別できないため後から追加した。既存行は NULL（＝どの出力か不明）で、
+        # 重複判定の対象にしない。
+        ("source", "TEXT"),
     ],
     "loras": [
         ("sample_images", "TEXT NOT NULL DEFAULT '[]'"),

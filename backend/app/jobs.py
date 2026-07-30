@@ -59,7 +59,7 @@ from .models import (
     video_lora_problem,
     video_workflow_problem,
 )
-from .paths import ASSETS_DIR, OUTPUTS_DIR
+from .paths import ASSETS_DIR, LIBRARY_DIR, OUTPUTS_DIR
 from .workflow import (
     build_audio_workflow,
     build_image_workflow,
@@ -117,21 +117,41 @@ def _now() -> str:
 # assets
 # --------------------------------------------------------------------------
 
+def _input_roots() -> dict[str, Path]:
+    """ジョブの入力に使えるファイルの置き場: URL の接頭辞 -> 実ディレクトリ。
+
+    アップロードした素材（``assets/``）と、取っておいた素材（``library/``、
+    SPEC §7.2）。テストが差し替えられるようモジュール変数をその場で読む。
+    """
+    return {"/assets/": ASSETS_DIR, "/library/": LIBRARY_DIR}
+
+
 def resolve_asset_path(value: str, *, field: str) -> Path:
-    """Accept an absolute path inside ``assets/`` or an ``/assets/...`` URL."""
+    """Accept a path or URL inside ``assets/`` or ``library/``.
+
+    ``"/assets/…"`` / ``"/library/…"`` URLs and absolute paths are both taken;
+    a bare relative path keeps meaning ``assets/`` (that is what the upload
+    endpoints have always returned).
+    """
     raw = (value or "").strip()
     if not raw:
         raise JobValidationError(f"{field} is empty")
-    if raw.startswith("/assets/"):
-        candidate = ASSETS_DIR / raw[len("/assets/"):]
-    else:
+    roots = _input_roots()
+    candidate: Path | None = None
+    for prefix, directory in roots.items():
+        if raw.startswith(prefix):
+            candidate = directory / raw[len(prefix):]
+            break
+    if candidate is None:
         candidate = Path(raw)
         if not candidate.is_absolute():
             candidate = ASSETS_DIR / raw
-    root = ASSETS_DIR.resolve()
+    allowed = [directory.resolve() for directory in roots.values()]
     resolved = candidate.resolve()
-    if root not in resolved.parents:
-        raise JobValidationError(f"{field} must point inside {root}")
+    if not any(root in resolved.parents for root in allowed):
+        raise JobValidationError(
+            f"{field} must point inside {' or '.join(str(root) for root in allowed)}"
+        )
     if not resolved.is_file():
         raise JobValidationError(f"{field} not found: {resolved}")
     return resolved

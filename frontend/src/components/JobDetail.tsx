@@ -1,4 +1,5 @@
-import type { Job } from '../types'
+import type { Job, LibraryItem } from '../types'
+import LibraryAddButton, { isInLibrary, librarySourcesOf } from './LibraryAddButton'
 import { PromptBlock } from './ResultPane'
 import { Banner, CopyButton, NsfwBadge, NsfwToggle, StatusBadge } from './ui'
 
@@ -12,6 +13,8 @@ export default function JobDetail({
   busy,
   error,
   showNsfw,
+  onLibraryChanged,
+  library,
 }: {
   job: Job
   onClose: () => void
@@ -22,8 +25,14 @@ export default function JobDetail({
   busy: boolean
   error: string | null
   showNsfw: boolean
+  /** ライブラリに登録したあと、選択肢を取り直してもらう。 */
+  onLibraryChanged?: () => void
+  /** 登録済みかどうかの判定に使う（`/api/options` の library）。 */
+  library?: LibraryItem[]
 }) {
   const params = job.params ?? {}
+  // 出力ごとに「取っておく」ボタンを出す（SPEC §7.2）
+  const librarySources = librarySourcesOf(job)
   const entries = Object.entries(params).filter(
     ([key]) => !['image_prompt', 'video_prompt', 'audio_prompt'].includes(key),
   )
@@ -97,6 +106,27 @@ export default function JobDetail({
               ))}
             </dl>
           </div>
+
+          {librarySources.length > 0 && (
+            <div className="rounded border border-ink-600 bg-ink-900 p-2">
+              <p className="mb-1 text-xs text-slate-400">ライブラリ</p>
+              <p className="mb-2 text-[11px] text-slate-600">
+                取っておくと、履歴を消したあとも入力素材として選べます。
+              </p>
+              <div className="flex flex-wrap gap-2">
+                {librarySources.map(({ source, label }) => (
+                  <LibraryAddButton
+                    key={source}
+                    job={job}
+                    source={source}
+                    label={label}
+                    registered={isInLibrary(library, job, source)}
+                    onAdded={onLibraryChanged}
+                  />
+                ))}
+              </div>
+            </div>
+          )}
         </div>
 
         <div className="flex flex-wrap gap-2 border-t border-ink-600 p-3">

@@ -425,7 +425,7 @@ Cookie ベースの非公式 API は規約リスクがあるため**使わない
 
 ## 7. データ永続化
 
-SQLite（`app.db`）+ ファイルストア（`outputs/`）。
+SQLite（`app.db`）+ ファイルストア（`outputs/` = 生成物、`assets/` = アップロード、`library/` = 取っておく素材 §7.2）。
 
 ```sql
 CREATE TABLE jobs (
@@ -488,6 +488,56 @@ CREATE TABLE chat_sessions (
 - 複数 LoRA 選択時の既定リファレンス音声は、選択順で最初に `default_audio` を持つ LoRA の値を採用（手動変更可）
 - 初期データは持たない（LoRA は利用者の環境依存データのため、設定画面の LoRA 管理から登録する）
 
+### 7.2 ライブラリ（取っておく素材）
+
+履歴（ジョブ）は生成の記録なので、消せば成果物も消える。**ライブラリ**はそこから「残す」と決めたものと、
+手元からアップロードしたものを集めた棚で、ジョブとは独立に生き続け、次の生成の入力素材として選べる。
+
+```sql
+CREATE TABLE library (
+  id            TEXT PRIMARY KEY,          -- ULID
+  created_at    TEXT NOT NULL,
+  kind          TEXT NOT NULL,             -- 'image' | 'video' | 'audio'
+  name          TEXT NOT NULL,             -- 表示名（既定はファイル名 / 元ジョブのプロンプト。変更可）
+  path          TEXT NOT NULL,             -- library/{kind}/… の絶対パス
+  nsfw          INTEGER NOT NULL DEFAULT 0,
+  nsfw_source   TEXT NOT NULL DEFAULT '',  -- '' / 'auto'（元ジョブから継承） / 'manual'
+  source_job_id TEXT,                      -- 生成物から登録した場合の元ジョブ（アップロードは NULL）
+  tags          TEXT NOT NULL DEFAULT '[]' -- 分類タグの JSON 配列（後から足したカラム）
+);
+```
+
+- ファイル実体は **`library/{kind}/`**（`paths.LIBRARY_DIR`）に置き、`/library` の静的マウントで配信する。
+  受け付ける拡張子は `assets/` と同じホワイトリスト（`library.ALLOWED_EXT`）
+- 登録経路は 2 つ: **アップロード**（`POST /api/library/{kind}`）と、**生成物から**
+  （`POST /api/library/from-job`、`source` は `image` / `last_frame` / `video` / `audio`）。後者は
+  `outputs/` から **コピー**するので元のジョブを消しても残り、NSFW フラグは元ジョブから引き継ぐ（`auto`）
+- **二重登録の検知**: 同じ `source_job_id` × 同じ `source` が既にあるときはコピーを増やさず
+  **409**（`{message, item}` で既存アイテムを添える）を返す。`source_job_id` だけでは生成画像と
+  ラストフレームを区別できないため `source` カラムを持つ。`source` を足す前の行は NULL なので
+  重複判定の対象外（既存データを壊さない）。アップロードは元ジョブが無いので常に別の 1 件になる
+- **日本語タグ・表示名の自動生成**: from-job 登録で `tags`（および `name`）を指定しなかったときは、
+  NSFW 自動判定（§9 `app/nsfw.py`）と同じ形で **Grok にワンショットで尋ねて背景で書き戻す**
+  （`app/autotag.py`）。既定の表示名は英語プロンプトの先頭なので、日本語の短い作品名と 3〜5 個の
+  日本語タグに置き換えて探しやすくする。指定済みの項目は上書きしない。Grok が使えなければ静かに
+  諦める（タグ無しのまま。ログのみ）。反映できたら WS（`type: "library"`）で画面に伝え、開いている
+  ライブラリモーダルは一覧を読み直す。アップロードした素材はプロンプトが無いので対象外
+- **ジョブの入力として使える**: `source_image` / `end_image` / `reference_video` / `audio_path` は
+  `library/` 配下の絶対パスと `/library/…` URL を受け付ける（`jobs.resolve_asset_path`。従来の
+  `assets/` も引き続き有効なので、LoRA の `default_audio` など既存の値は壊れない）
+- **タグ**: 各素材に分類タグを付けられる（登録時 / `PATCH` で編集）。前後の空白・空・重複（大文字小文字
+  無視）は保存時に落とし、順序は書いたまま。1 タグ 40 文字まで（`library.normalize_tags`）
+- **検索とページング**: `GET /api/library` は `kind`（種別）/ `q`（表示名とタグへの部分一致、
+  大文字小文字無視）/ `tag`（完全一致）/ `limit`（既定 50、最大 200）/ `offset` を取り、
+  `{items, total, limit, offset, tags}` を返す。`total` は**絞り込み後の総件数**なので
+  「まだ何件あるか」が分かり、`tags` は補完用の全タグ一覧。`kind` だけ SQL で絞り、`q` / `tag` は
+  Python 側で判定する（タグは 1 カラムに JSON 配列で持っており、LIKE では誤検出しやすいため。
+  個人利用の規模なら読み切ってから絞るほうが確実）
+- フォーム / エージェント用に `GET /api/options` の `library` には全件が入る。表示名・NSFW・タグは
+  `PATCH /api/library/{id}`、登録解除は `DELETE /api/library/{id}`（ファイルも消す）
+- DB とファイル操作は `app/library.py` に集約し、ルーターとエージェント（`library` /
+  `library_search` アクション）が共用する
+
 ---
 
 ## 8. UI 仕様
@@ -530,7 +580,10 @@ SPA 1 画面 + 履歴。ダークテーマの生成系ツールらしい見た�
 
 - 進捗は ComfyUI の WS イベント（`executing` / `progress`）をそのまま％表示に変換
 - 実行中でもキュー追加可能（ジョブキュー表示）
-- **入力リソースは「履歴から選択」で過去の生成物を再利用できる**: 開始フレーム / 編集元画像・最後のフレーム・参照動画・リファレンス音声の各欄に [履歴から選択] ボタンを置き、押すと候補一覧のモーダル（`HistoryPickerModal`）が開く。候補は完了ジョブのみを新しい順に並べ、欄の種別で絞る（画像欄 = 生成画像とラストフレームの両方（ラベルで区別）、動画欄 = 生成動画、音声欄 = 音声ジョブの出力）。生成物は `outputs/` にあって `assets/` の外なので、選ぶと fetch → `POST /api/assets/{kind}` で assets へコピーしてから欄に入れる。モーダル内には独自の「🫣 NSFW表示」チェックボックスがあり、初期値はヘッダーのグローバルトグルに従うが、ここでの切り替えは `sessionStorage` に残さない（この画面かぎり）。オフのあいだは NSFW ジョブを一覧に出さない。Esc / 背景クリックで閉じる
+- **入力リソースは「ライブラリから選択」「履歴から選択」で使い回せる**: 開始フレーム / 編集元画像・最後のフレーム・参照動画・リファレンス音声の各欄に 2 つのボタンを置く。[ライブラリから選択] は取っておいた素材の一覧（`LibraryPickerModal`、§7.2）で、選ぶと `/library/…` URL をそのまま欄に入れる（配信済みなのでコピーしない）。モーダル内から素材のアップロード追加・リネーム・タグ編集・削除もできる。一覧は `GET /api/library` から 50 件ずつ読み、**検索ボックス（名前・タグの部分一致）とタグチップでの絞り込み**、[さらに表示] での continue 読み込みに対応する（絞り込みとページングはサーバー側）
+- **リファレンス音声はライブラリに一本化**: `assets/audio` のプルダウンは廃止し、[ライブラリから選択] / [履歴から選択] / [アップロード]（アップロードはそのままライブラリ登録）と、選択中の名前 + プレビューだけを出す。LoRA の `default_audio` などが指す従来の `/assets/…` も入力としては引き続き有効
+- **生成物のライブラリ登録**: 結果ペイン（表示中の成果物 1 件）と履歴詳細（その job が持つ出力すべて）に [☆ ライブラリに登録] を置く（`LibraryAddButton`）。既に登録済みのものは `/api/options` の library から判定して押す前から [★ 登録済みです] を出し、押してしまった場合も 409 を失敗扱いにせず同じ表示にする（§7.2）
+- [履歴から選択] は過去ジョブの出力から選ぶ（`HistoryPickerModal`）。**検索ボックス**でジョブの文言（動画 / 画像 / 音声プロンプト → 最初の指示）に部分一致するものだけに絞れる（ジョブは全件フロントにあるのでクライアント側で絞る）。候補は完了ジョブのみを新しい順に並べ、欄の種別で絞る（画像欄 = 生成画像とラストフレームの両方（ラベルで区別）、動画欄 = 生成動画、音声欄 = 音声ジョブの出力）。生成物は `outputs/` にあって `assets/` の外なので、選ぶと fetch → `POST /api/assets/{kind}` で assets へコピーしてから欄に入れる。モーダル内には独自の「🫣 NSFW表示」チェックボックスがあり、初期値はヘッダーのグローバルトグルに従うが、ここでの切り替えは `sessionStorage` に残さない（この画面かぎり）。オフのあいだは NSFW ジョブを一覧に出さない。Esc / 背景クリックで閉じる
 - LoRA 選択はチップ型マルチセレクト（強度スライダー付き）。選択するとトリガーワード連結欄（編集可）に反映される。セクションは 2 つあり、**「LoRA（動画）」は動画設定群の中**（登録 `target = 'video'` のみ）、**「LoRA（画像）」は画像設定群の中**（`target = 'image'` かつ選択中の画像ワークフローと同じファミリーのみ）に置く
 - **モードとワークフローに応じた項目の非表示**（`form.hiddenFields`）: 使わない項目はグレーアウトではなく**その欄ごと表示しない**。ただし値は `FormState` に残るので、その項目を使うモード / ワークフローへ戻せば入力内容が復元される
   - 動画生成モードでは画像ワークフロー・画像プロンプト・LoRA（画像）・トリガーワードを出さない（LoRA（動画）は出す）。画像のみモードでは動画ワークフロー・動画プロンプト・ネガティブ・リファレンス音声・秒数・fps・LoRA（動画）を出さない
@@ -562,8 +615,13 @@ SPA 1 画面 + 履歴。ダークテーマの生成系ツールらしい見た�
 
 ```
 GET  /api/health                 … ComfyUI/Grok 疎通チェック
-GET  /api/options                … 画像/動画/音声ワークフロー一覧（必要入力・露出しているつまみ・秒数レンジつき）・アスペクト比・LoRA一覧・アセット一覧・実行時に選べるモデルスロット（model_slots）と ComfyUI のモデルファイル一覧（model_files）
+GET  /api/options                … 画像/動画/音声ワークフロー一覧（必要入力・露出しているつまみ・秒数レンジつき）・アスペクト比・LoRA一覧・アセット一覧・ライブラリ一覧（library, §7.2）・実行時に選べるモデルスロット（model_slots）と ComfyUI のモデルファイル一覧（model_files）
 GET/POST/PUT/DELETE /api/loras   … アプリ内 LoRA 登録リストの CRUD
+GET  /api/library                … ライブラリ検索（kind / q / tag / limit / offset → items + total + tags、§7.2）
+POST /api/library/{kind}         … ファイルをアップロードして登録
+POST /api/library/from-job       … ジョブの出力（image / last_frame / video / audio）を登録
+PATCH  /api/library/{id}         … 表示名 / NSFW フラグ / タグの変更
+DELETE /api/library/{id}         … 登録解除（ファイルも削除）
 GET  /api/models                 … 全ワークフローのモデルファイル名一覧（既定値+現在値+候補リスト、キーは workflow_id でスコープ）
 PUT  /api/models                 … モデルファイル名の上書きと候補リストの保存（既定値と同値/空は削除、候補が空のキーは削除。`choices` 省略時は保存済みの候補を保持）
 POST /api/chat/sessions          … チャット開始（フォーム現在値をコンテキストとして渡す。`video_workflow` / `image_workflow` / `audio_workflow` を含む）
@@ -576,7 +634,8 @@ POST /api/jobs/{id}/rerun        … 再実行（seed 変更オプション）
 POST /api/jobs/{id}/continue     … ラストフレームを開始フレームに新規ジョブ（`video_workflow` / `end_image` / `reference_video` / `model_overrides` 等を差分指定可。開始フレームを取れないワークフローは既定に戻す）
 DELETE /api/jobs/{id}
 POST /api/assets/audio|image|video … アセットアップロード（video は参照動画用）
-WS   /api/ws                     … 進捗配信
+GET  /library/…                  … 静的配信（ライブラリの素材、§7.2）
+WS   /api/ws                     … 進捗配信（`type: "job"` / `"agent"` / `"library"`）
 GET  /outputs/…                  … 静的配信（画像/動画/音声）
 ```
 

@@ -24,6 +24,7 @@ import type {
   Job,
   JobCreate,
   JobProgress,
+  LibraryProgress,
   Options,
 } from './types'
 
@@ -62,6 +63,8 @@ export default function App() {
   const [agentEvent, setAgentEvent] = useState<AgentProgress | null>(null)
   const [chatSessionId, setChatSessionId] = useState<string | null>(null)
   const [showNsfw, setShowNsfw] = useState(initialShowNsfw)
+  // ライブラリが変わるたびに増える。開いているモーダルの読み直しに使う。
+  const [libraryVersion, setLibraryVersion] = useState(0)
 
   const patch = useCallback(
     (changes: Partial<FormState>) => setForm((prev) => ({ ...prev, ...changes })),
@@ -176,6 +179,8 @@ export default function App() {
 
   const reloadRef = useRef(loadJobs)
   reloadRef.current = loadJobs
+  const loadOptionsRef = useRef(loadOptions)
+  loadOptionsRef.current = loadOptions
 
   useEffect(() => {
     let socket: WebSocket | null = null
@@ -195,8 +200,16 @@ export default function App() {
           const frame = JSON.parse(event.data as string) as
             | JobProgress
             | AgentProgress
+            | LibraryProgress
           if (frame?.type === 'agent') {
             setAgentEvent(frame)
+            return
+          }
+          // ライブラリの自動タグ生成が終わった: 選択肢を取り直し、開いている
+          // モーダルにも読み直させる（SPEC §7.2）。
+          if (frame?.type === 'library') {
+            setLibraryVersion((previous) => previous + 1)
+            void loadOptionsRef.current()
             return
           }
           const payload = frame as JobProgress
@@ -496,6 +509,7 @@ export default function App() {
               // 履歴モーダルは自前で NSFW を切り替えるので、フィルタ前の全ジョブを渡す
               jobs={jobs}
               showNsfw={showNsfw}
+              libraryVersion={libraryVersion}
             />
           </aside>
 
@@ -512,6 +526,8 @@ export default function App() {
                 busy={detailBusy}
                 queue={queue}
                 showNsfw={showNsfw}
+                onLibraryChanged={() => void loadOptions()}
+                library={options?.library}
               />
             </div>
 
@@ -541,6 +557,8 @@ export default function App() {
           onDelete={(job) => void remove(job)}
           onToggleNsfw={(job, nsfw) => void toggleNsfw(job, nsfw)}
           showNsfw={showNsfw}
+          onLibraryChanged={() => void loadOptions()}
+          library={options?.library}
         />
       )}
 

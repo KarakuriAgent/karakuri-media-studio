@@ -46,6 +46,17 @@ export function assetExtension(url: string, kind: HistoryKind): string {
   return ALLOWED_EXT[kind].includes(ext) ? ext : FALLBACK_EXT[kind]
 }
 
+/** ジョブが何を作ろうとしたか（タイルの説明・ツールチップ・検索対象）。 */
+export function jobText(job: Job): string {
+  return (
+    job.video_prompt ??
+    job.image_prompt ??
+    job.audio_prompt ??
+    job.user_input ??
+    job.id
+  )
+}
+
 /** そのジョブのサムネイルに使える画像（動画はラストフレームで代用）。 */
 function thumbOf(job: Job): string | null {
   return job.last_frame_url ?? job.image_url ?? null
@@ -56,17 +67,21 @@ function thumbOf(job: Job): string | null {
  *
  * 画像入力には生成画像とラストフレームの両方が使えるので、1 ジョブから 2 件
  * 出ることがある（ラベルで区別する）。`showNsfw` がオフのあいだは NSFW の
- * ジョブを一覧に出さない。
+ * ジョブを一覧に出さない。`query` を渡すと、そのジョブの文言（プロンプト等）に
+ * 部分一致するものだけを残す。
  */
 export function historyCandidates(
   jobs: Job[],
   kind: HistoryKind,
   showNsfw: boolean,
+  query = '',
 ): HistoryCandidate[] {
+  const needle = query.trim().toLowerCase()
   const candidates: HistoryCandidate[] = []
   for (const job of jobs) {
     if (job.status !== 'done') continue
     if (job.nsfw && !showNsfw) continue
+    if (needle && !jobText(job).toLowerCase().includes(needle)) continue
     const add = (
       source: HistoryCandidate['source'],
       label: string,
@@ -93,17 +108,6 @@ const EMPTY_HINT: Record<HistoryKind, string> = {
   image: '履歴に使える画像がまだありません（生成画像・動画のラストフレーム）。',
   video: '履歴に使える動画がまだありません。',
   audio: '履歴に使える音声がまだありません（音声モードで生成したもの）。',
-}
-
-/** ジョブが何を作ろうとしたか（タイルの説明とツールチップ）。 */
-function jobText(job: Job): string {
-  return (
-    job.video_prompt ??
-    job.image_prompt ??
-    job.audio_prompt ??
-    job.user_input ??
-    job.id
-  )
 }
 
 function timestamp(job: Job): string {
@@ -135,11 +139,20 @@ export default function HistoryPickerModal({
   onClose: () => void
 }) {
   const [nsfw, setNsfw] = useState(showNsfw)
-  const candidates = historyCandidates(jobs, kind, nsfw)
+  const [query, setQuery] = useState('')
+  const candidates = historyCandidates(jobs, kind, nsfw, query)
 
   return (
     <Modal title={title} onClose={onClose} closeOnBackdrop wide>
-      <div className="mb-3 flex items-center gap-2">
+      <div className="mb-3 flex flex-wrap items-center gap-2">
+        <input
+          className="field max-w-[16rem] flex-1"
+          type="search"
+          aria-label="履歴を検索"
+          placeholder="プロンプトで検索"
+          value={query}
+          onChange={(event) => setQuery(event.target.value)}
+        />
         <span className="text-xs text-slate-500">{candidates.length} 件</span>
         <label
           className={`chip ml-auto cursor-pointer select-none !py-1 ${
@@ -160,7 +173,9 @@ export default function HistoryPickerModal({
       </div>
 
       {candidates.length === 0 ? (
-        <p className="py-6 text-center text-xs text-slate-500">{EMPTY_HINT[kind]}</p>
+        <p className="py-6 text-center text-xs text-slate-500">
+          {query.trim() ? '検索に一致する生成物がありません。' : EMPTY_HINT[kind]}
+        </p>
       ) : (
         <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
           {candidates.map((candidate) => (

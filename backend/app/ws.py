@@ -18,7 +18,13 @@ from typing import Any
 
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
-from .models import AgentArtifact, AgentProgress, JobProgress
+from .models import (
+    AgentArtifact,
+    AgentProgress,
+    JobProgress,
+    LibraryItem,
+    LibraryProgress,
+)
 
 log = logging.getLogger(__name__)
 
@@ -130,6 +136,26 @@ async def publish_agent(
             "message": message,
             "thinking": thinking,
             "activity": activity,
+        }
+    await hub.broadcast(payload)
+
+
+async def publish_library(item: LibraryItem) -> None:
+    """Broadcast one library update (``type: "library"``). Never raises.
+
+    自動タグ生成のように、登録のあとから内容が変わったことを画面に伝える。
+    """
+    try:
+        payload = LibraryProgress(
+            item_id=item.id, kind=item.kind, name=item.name, tags=item.tags
+        ).model_dump()
+    except Exception:  # noqa: BLE001 - 通知の失敗で登録を壊さない
+        payload = {
+            "type": "library",
+            "item_id": item.id,
+            "kind": item.kind,
+            "name": item.name,
+            "tags": list(item.tags),
         }
     await hub.broadcast(payload)
 

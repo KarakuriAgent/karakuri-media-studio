@@ -1,8 +1,22 @@
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { api } from '../api'
 import { initialForm, type FormState } from '../form'
-import type { Job, Lora, Options } from '../types'
+import type { Job, LibraryItem, LibraryQuery, Lora, Options } from '../types'
 import GenerateForm from './GenerateForm'
+
+// ライブラリのモーダルは自分で GET /api/library を叩くので、素材はここから返す。
+vi.mock('../api', () => ({
+  api: {
+    listLibrary: vi.fn(),
+    uploadToLibrary: vi.fn(),
+    updateLibraryItem: vi.fn(),
+    deleteLibraryItem: vi.fn(),
+    uploadImage: vi.fn(),
+    uploadVideo: vi.fn(),
+    uploadAudio: vi.fn(),
+  },
+}))
 
 afterEach(cleanup)
 
@@ -41,6 +55,7 @@ const OPTIONS: Options = {
   languages: [],
   aspect_ratios: [],
   lora_files: [],
+  library: [],
   model_slots: [],
   model_files: {},
   loras: [lora(1, 'サクラ', 'image'), lora(2, 'スローモ', 'video')],
@@ -641,5 +656,139 @@ describe('GenerateForm の「履歴から選択」', () => {
   it('インラインのサムネイル帯は出さない（モーダルに置き換えた）', () => {
     showInputs()
     expect(screen.queryByText('履歴のラストフレームから選択')).toBeNull()
+  })
+})
+
+describe('GenerateForm の「ライブラリから選択」', () => {
+  const EVERY_INPUT: Options['video_workflows'] = [
+    {
+      id: 'all_inputs',
+      label: 'すべての入力',
+      kind: 'video',
+      family: 'ltx2.3',
+      notes: '',
+      requires: ['image', 'end_image', 'video', 'audio'],
+      supports: ['prompt', 'negative', 'duration', 'fps'],
+      accepts_start_image: true,
+      image_label: '最初のフレーム',
+      min_duration: 0,
+      max_duration: 0,
+      default_duration: 0,
+    },
+  ]
+
+  const LIB: LibraryItem[] = [
+    {
+      id: 'l1',
+      created_at: '2026-07-30T10:00:00+00:00',
+      kind: 'image',
+      name: '決めポーズ',
+      path: '/repo/library/image/pose.png',
+      url: '/library/image/pose.png',
+      nsfw: false,
+      nsfw_source: '',
+      source_job_id: null,
+      source: null,
+      tags: [],
+    },
+    {
+      id: 'l2',
+      created_at: '2026-07-30T10:00:00+00:00',
+      kind: 'audio',
+      name: 'テーマ曲',
+      path: '/repo/library/audio/bgm.mp3',
+      url: '/library/audio/bgm.mp3',
+      nsfw: false,
+      nsfw_source: '',
+      source_job_id: null,
+      source: null,
+      tags: [],
+    },
+  ]
+
+  function showInputs(form: Partial<FormState> = {}) {
+    // モーダルは kind で絞って取りに来るので、その通りに返す
+    vi.mocked(api.listLibrary).mockImplementation(async (query: LibraryQuery = {}) => {
+      const items = LIB.filter((item) => item.kind === query.kind)
+      return { items, total: items.length, limit: 50, offset: 0, tags: [] }
+    })
+    const patch = vi.fn()
+    render(
+      <GenerateForm
+        form={{ ...initialForm, mode: 'i2v', videoWorkflow: 'all_inputs', ...form }}
+        patch={patch}
+        options={{ ...OPTIONS, video_workflows: EVERY_INPUT, library: LIB }}
+        optionsError={null}
+        onReloadOptions={() => {}}
+        onOpenChat={() => {}}
+        onSubmit={() => {}}
+        submitting={false}
+        fieldErrors={{}}
+        jobs={[]}
+        showNsfw={false}
+      />,
+    )
+    return { patch }
+  }
+
+  it('画像・動画・音声の入力すべてにボタンを出す', () => {
+    showInputs()
+    for (const title of [
+      '最初のフレーム',
+      '最後のフレーム',
+      '参照動画（モーション転写）',
+      'リファレンス音声',
+    ]) {
+      expect(
+        within(section(title)).getByRole('button', { name: 'ライブラリから選択' }),
+      ).toBeTruthy()
+    }
+  })
+
+  it('選ぶとコピーせずライブラリの URL をそのままフォームに入れる', async () => {
+    const { patch } = showInputs()
+    fireEvent.click(
+      within(section('最後のフレーム')).getByRole('button', {
+        name: 'ライブラリから選択',
+      }),
+    )
+    expect(screen.getByText('ライブラリから選択: 最後のフレーム')).toBeTruthy()
+    fireEvent.click(await screen.findByText('決めポーズ'))
+    expect(patch).toHaveBeenCalledWith({ endImage: '/library/image/pose.png' })
+  })
+
+  it('音声欄では音声の素材だけを取りに行く', async () => {
+    showInputs()
+    fireEvent.click(
+      within(section('リファレンス音声')).getByRole('button', {
+        name: 'ライブラリから選択',
+      }),
+    )
+    await waitFor(() =>
+      expect(api.listLibrary).toHaveBeenCalledWith(
+        expect.objectContaining({ kind: 'audio' }),
+      ),
+    )
+    expect(await screen.findByText('テーマ曲')).toBeTruthy()
+    expect(screen.queryByText('決めポーズ')).toBeNull()
+  })
+
+  it('リファレンス音声はアセットのプルダウンを出さず、選択中を名前で見せる', () => {
+    // 旧 UI（assets/audio のセレクト）は廃止した
+    const { patch } = showInputs({ audioPath: '/library/audio/bgm.mp3' })
+    expect(within(section('リファレンス音声')).queryByRole('combobox')).toBeNull()
+    expect(within(section('リファレンス音声')).getByText('テーマ曲')).toBeTruthy()
+    fireEvent.click(
+      within(section('リファレンス音声')).getByRole('button', { name: 'クリア' }),
+    )
+    expect(patch).toHaveBeenCalledWith({ audioPath: '' })
+  })
+
+  it('LoRA 由来の assets URL もそのまま表示できる（後方互換）', () => {
+    showInputs({ audioPath: '/assets/audio/legacy.mp3' })
+    // ライブラリにもアセット一覧にも無ければ、値そのものを出す
+    expect(
+      within(section('リファレンス音声')).getByText('/assets/audio/legacy.mp3'),
+    ).toBeTruthy()
   })
 })

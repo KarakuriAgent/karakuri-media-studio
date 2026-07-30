@@ -5,6 +5,9 @@ ROOT = Path(__file__).resolve().parents[2]
 
 OUTPUTS_DIR = ROOT / "outputs"
 ASSETS_DIR = ROOT / "assets"
+# 手元に取っておく素材（ライブラリ、SPEC §7.2）。生成物やアップロードのうち
+# 「残すと決めたもの」だけがここに入り、DB の library テーブルが目録になる。
+LIBRARY_DIR = ROOT / "library"
 RUNTIME_DIR = ROOT / "runtime"
 GROK_WORKDIR = RUNTIME_DIR / "grok-workdir"
 # One work dir per agent session (AGENT-MODE §5.2).
@@ -19,5 +22,12 @@ WORKFLOW_DIR = ROOT / "workflow"
 
 
 def ensure_dirs() -> None:
-    for d in (OUTPUTS_DIR, ASSETS_DIR, RUNTIME_DIR, GROK_WORKDIR, AGENT_SESSIONS_DIR):
+    for d in (
+        OUTPUTS_DIR,
+        ASSETS_DIR,
+        LIBRARY_DIR,
+        RUNTIME_DIR,
+        GROK_WORKDIR,
+        AGENT_SESSIONS_DIR,
+    ):
         d.mkdir(parents=True, exist_ok=True)

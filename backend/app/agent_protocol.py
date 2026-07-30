@@ -24,6 +24,7 @@ from typing import Any
 from pydantic import ValidationError
 
 from . import grok
+from . import library as library_service
 from .config import load_settings
 from .ids import new_id
 from .jobs import JobValidationError, resolve_asset_path
@@ -63,6 +64,8 @@ ACTION_NAMES = (
     "inspect",
     "note",
     "rename",
+    "library",
+    "library_search",
     "checkin",
     "done",
 )
@@ -73,6 +76,9 @@ RERUN_FIELDS = ("seed", "randomize_seed")
 
 # 自走（auto）セッションだけに効く「1 回のプラン提案あたりの新規ジョブ数」の既定値
 MAX_PLAN_TASKS = 5
+
+# library アクションが取っておけるジョブ出力（app.library.SOURCES と同じ区分）
+LIBRARY_SOURCES = tuple(library_service.SOURCES)
 
 
 class ActionError(Exception):
@@ -518,6 +524,38 @@ def parse_action(
             raise ActionError(
                 "rename には対象成果物の name（ファイル名）か job_id が必要です"
             )
+    elif name == "library":
+        job_id = payload.get("job_id")
+        if not job_id:
+            raise ActionError("library には対象の job_id が必要です")
+        action.job_id = str(job_id)
+        source = str(payload.get("source") or "").strip()
+        if source not in LIBRARY_SOURCES:
+            raise ActionError(
+                "library の source は"
+                f" {' / '.join(LIBRARY_SOURCES)} のいずれかで指定してください"
+            )
+        action.source = source
+        action.title = str(payload.get("title") or "").strip()
+        action.tags = library_service.normalize_tags(payload.get("tags"))
+    elif name == "library_search":
+        action.query = str(payload.get("q") or payload.get("query") or "").strip()
+        tag = str(payload.get("tag") or "").strip()
+        action.tag = tag or None
+        kind = str(payload.get("kind") or "").strip()
+        if kind and kind not in library_service.KINDS:
+            raise ActionError(
+                "library_search の kind は"
+                f" {' / '.join(library_service.KINDS)} のいずれか"
+                "（省略すると全種別）で指定してください"
+            )
+        action.library_kind = kind or None
+        try:
+            action.offset = max(0, int(payload.get("offset") or 0))
+        except (TypeError, ValueError) as exc:
+            raise ActionError(
+                "library_search の offset は 0 以上の整数で指定してください"
+            ) from exc
     elif name == "checkin":
         question = str(payload.get("question") or payload.get("content") or "").strip()
         if not question:

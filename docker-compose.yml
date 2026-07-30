@@ -31,7 +31,7 @@ services:
     ports:
       - "${HOST:-127.0.0.1}:${PORT:-8000}:${PORT:-8000}"
     volumes:
-      # ワークスペース＝データ（app.db / assets / outputs / runtime を含む）
+      # ワークスペース＝データ（app.db / assets / library / outputs / runtime を含む）
       - .:${PWD}
       # grok CLI 本体とサインイン状態
       - ${HOME}/.grok:/home/app/.grok

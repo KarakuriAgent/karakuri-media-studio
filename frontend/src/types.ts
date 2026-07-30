@@ -106,6 +106,58 @@ export interface Asset {
   size: number
 }
 
+// ------------------------------------------------------------------ library
+// SPEC §7.2 — 履歴とは別に取っておく素材の棚（backend/app/library.py）。
+
+/** ライブラリに入れられる素材の種別。 */
+export type LibraryKind = 'image' | 'video' | 'audio'
+
+/** ジョブのどの出力を登録するか（ResultPane のタブと同じ区分）。 */
+export type LibrarySource = 'image' | 'last_frame' | 'video' | 'audio'
+
+export interface LibraryItem {
+  id: string
+  created_at: string
+  kind: LibraryKind
+  /** 表示名（あとから変更できる）。 */
+  name: string
+  /** ファイルの絶対パス（ジョブの入力にはこれか `url` を指定できる）。 */
+  path: string
+  /** `/library/<kind>/<file>`（静的配信 URL）。 */
+  url: string
+  nsfw: boolean
+  /** '' = 未判定 / 'auto' = 元ジョブから継承 / 'manual' = 手動指定。 */
+  nsfw_source: string
+  /** 生成物から登録した場合の元ジョブ id。 */
+  source_job_id: string | null
+  /** 元ジョブのどの出力か（重複登録の判定に使う。アップロード・旧行は null）。 */
+  source: LibrarySource | null
+  /** 分類タグ（検索・絞り込み用）。 */
+  tags: string[]
+}
+
+/** GET /api/library のレスポンス（絞り込み結果の 1 ページ）。 */
+export interface LibraryPage {
+  items: LibraryItem[]
+  /** 絞り込み条件に合う総件数（このページの件数ではない）。 */
+  total: number
+  limit: number
+  offset: number
+  /** ライブラリに登録されている全タグ（絞り込みの補完用）。 */
+  tags: string[]
+}
+
+/** GET /api/library のクエリ。 */
+export interface LibraryQuery {
+  kind?: LibraryKind
+  /** 名前・タグへの部分一致。 */
+  q?: string
+  /** タグの完全一致。 */
+  tag?: string
+  limit?: number
+  offset?: number
+}
+
 /** Logical inputs a video workflow can require (mirrors workflows.InputName). */
 export type WorkflowInput = 'image' | 'audio' | 'end_image' | 'video'
 
@@ -222,6 +274,15 @@ export interface AudioJobCreate {
   nsfw?: boolean | null
 }
 
+/** WS /api/ws のライブラリ更新（自動タグ生成の反映など）。 */
+export interface LibraryProgress {
+  type: 'library'
+  item_id: string
+  kind: LibraryKind
+  name: string
+  tags: string[]
+}
+
 export interface JobProgress {
   type: 'job'
   job_id: string
@@ -268,6 +329,8 @@ export interface Options {
   audio_assets: Asset[]
   image_assets: Asset[]
   video_assets: Asset[]
+  /** ライブラリの全件（新しい順）。NSFW のフィルタは表示側で行う。 */
+  library: LibraryItem[]
   negative_presets: Record<string, string>
 }
 

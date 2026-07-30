@@ -6,5 +6,6 @@ dist/
 app.db
 outputs/
 assets/
+library/
 runtime/
 .env

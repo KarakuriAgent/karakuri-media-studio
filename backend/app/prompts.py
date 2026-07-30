@@ -1369,6 +1369,8 @@ Available actions:
 | `inspect` | `job_id`, `interval` (seconds, default 1) | the app extracts frames with ffmpeg into your work dir; look at them next turn |
 | `note` | `title`, `content` or `filename`, `kind` | register a memo as an artifact; `kind: "research"` for a web-search / research summary, `"note"` (default) for anything else |
 | `rename` | `title`, plus `name` (artifact file name) **or** `job_id` (+ optional `kind`: `image` / `video` / `frame`) | rename an existing artifact so the panel shows a human title. No approval needed |
+| `library` | `job_id`, `source` (`image` / `last_frame` / `video` / `audio`), optional `title`, optional `tags[]` | keep that output in the user's library so later jobs (and later sessions) can use it as an input. No approval needed |
+| `library_search` | any of `q` (name / tag substring), `tag` (exact), `kind` (`image` / `video` / `audio`), `offset` | search the **whole** library, not just what CHOICES lists; the result arrives next turn as an EVENT with the paths and how many are left. No approval needed |
 | `checkin` | `question`, `options[]` | ask the user and wait for the answer |
 | `done` | `summary` | the plan is finished; deliver the summary |
 
@@ -1409,6 +1411,18 @@ Rules:
 - Use only values listed in CHOICES: LoRA file names, aspect ratios and the
   audio / image / video asset paths must exist. `seed: null` means "roll a
   random seed".
+- **Library**: CHOICES lists the material the user decided to keep. Its `path`
+  goes straight into `source_image` / `end_image` / `reference_video` /
+  `audio_path`, exactly like an asset path — prefer it over a plain asset when
+  both would do, since the library is what the user curated. When an output is
+  worth reusing later (a good start frame, a reference clip), keep it with the
+  `library` action (add `tags` so it can be found again); it survives the
+  deletion of its job.
+- CHOICES only shows the newest entries per kind and says how many are hidden.
+  **Never conclude that the library holds only what you can see** — use
+  `library_search` to look through all of it by name, tag or kind, and follow
+  its `offset` hint to page through. Search first when the user refers to
+  material you cannot find in CHOICES.
 - `model_overrides` switches which model file a workflow loads for **this job
   only** (CHOICES の「使用モデルの切り替え」に、キーと候補が出ています). Leave it
   out to use the configured default; when you do set it, write only keys of the
@@ -1422,9 +1436,9 @@ Rules:
   `video_loras` (+ `video_trigger_text`, used by the LTX video stage). Leave
   either list out when you do not need it, and never put video LoRAs in a
   `mode: "image_only"` job.
-- Exactly one action per reply — `rename` counts like `plan` / `checkin` here,
-  so rename one artifact per turn (the app renames every frame of a job at once
-  when you target it by `job_id`).
+- Exactly one action per reply — `rename`, `library` and `library_search` count
+  like `plan` / `checkin` here, so rename, keep or search one thing per turn
+  (the app renames every frame of a job at once when you target it by `job_id`).
 - While you are only asking a question or reporting, send **no JSON at all**.
 - EVENT messages in the transcript are written by the app, not by the user.
   `inspect_result` tells you which frame files are in your working directory —
@@ -1624,11 +1638,78 @@ def _agent_choices(
             lines.append("- (none)")
         lines.append("")
 
+    lines.append(_library_lines(options))
+    lines.append("")
+
     lines.append("Negative prompt presets:")
     for name, value in options.negative_presets.items():
         lines.append(f"- {name}: `{value}`")
     lines.append("")
     lines.append(_model_choices_lines(options))
+    return "\n".join(lines)
+
+
+#: CHOICES に載せるライブラリの件数（種別ごと。古いものは省く）
+LIBRARY_PROMPT_LIMIT = 50
+
+_LIBRARY_FIELDS = {
+    "image": "source_image / end_image",
+    "video": "reference_video",
+    "audio": "audio_path",
+}
+
+
+def _library_lines(options: Options) -> str:
+    """ライブラリの目録（SPEC §7.2）。ジョブの入力にそのまま書けるパスを出す。
+
+    履歴の生成物と手元のアップロードのうち、利用者が「残す」と決めたものだけが
+    入っている棚なので、素材を選ぶときはアセット一覧よりこちらを先に見せる。
+
+    ここに載るのは種別ごとの新しい :data:`LIBRARY_PROMPT_LIMIT` 件だけ。省略した
+    ぶんが**あること**と、``library_search`` で取りに行けることを必ず明示する
+    （「50 件しか無い」と誤解させないため）。
+    """
+    lines = [
+        "Library（取っておいた素材、`path` をそのままジョブの入力に書けます）:",
+    ]
+    if not options.library:
+        lines += [
+            "- (none)",
+            "",
+            "まだ何も登録されていません。`library` アクションで生成物を取っておけます。",
+        ]
+        return "\n".join(lines)
+    hidden = 0
+    for kind, field in _LIBRARY_FIELDS.items():
+        items = [item for item in options.library if item.kind == kind]
+        lines.append(f"- {kind}（{field}、全 {len(items)} 件）:")
+        if not items:
+            lines.append("  - (none)")
+            continue
+        for item in items[:LIBRARY_PROMPT_LIMIT]:
+            tags = f" [{', '.join(item.tags)}]" if item.tags else ""
+            nsfw = " 🫣NSFW" if item.nsfw else ""
+            lines.append(f"  - `{item.path}` — 「{item.name}」{tags}{nsfw}")
+        if len(items) > LIBRARY_PROMPT_LIMIT:
+            rest = len(items) - LIBRARY_PROMPT_LIMIT
+            hidden += rest
+            lines.append(
+                f"  - …ほか {rest} 件（ここに載るのは新しい"
+                f" {LIBRARY_PROMPT_LIMIT} 件だけ。`library_search` で辿れます）"
+            )
+    lines.append("")
+    lines.append(
+        "`[…]` は分類タグです。"
+        + (
+            f"上の一覧は種別ごとに新しい {LIBRARY_PROMPT_LIMIT} 件までで、"
+            f"ここに出していない素材が {hidden} 件あります。"
+            if hidden
+            else "上の一覧が現時点の全件です。"
+        )
+        + " 名前やタグで探すとき、古いものを見たいときは `library_search`"
+        " アクション（`q` / `tag` / `kind` / `offset`）を使ってください"
+        "——**ライブラリ全体が対象**で、結果は次のターンに EVENT として届きます。"
+    )
     return "\n".join(lines)
 
 

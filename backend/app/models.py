@@ -813,6 +813,84 @@ class Asset(BaseModel):
     size: int
 
 
+# --------------------------------------------------------------------------
+# library (SPEC §7.2)
+# --------------------------------------------------------------------------
+
+#: ライブラリに入れられる素材の種別（そのまま library/<kind>/ の置き場になる）
+LibraryKind = Literal["image", "video", "audio"]
+
+#: ジョブのどの出力をライブラリに入れるか（ResultPane のタブと同じ区分）
+LibrarySource = Literal["image", "last_frame", "video", "audio"]
+
+
+class LibraryItem(BaseModel):
+    """ライブラリの 1 件（履歴とは独立に取っておく素材）。"""
+
+    id: str
+    created_at: str
+    kind: LibraryKind
+    #: 表示名（既定はファイル名 / ジョブのプロンプト。あとから変更できる）
+    name: str
+    #: ファイルの絶対パス（ジョブの入力にはこれか ``url`` を指定できる）
+    path: str
+    #: ``/library/<kind>/<file>``（静的配信 URL）
+    url: str
+    nsfw: bool = False
+    #: '' = 未判定 / 'auto' = 元ジョブから継承 / 'manual' = 手動指定
+    nsfw_source: str = ""
+    #: 生成物から登録した場合の元ジョブ id（アップロードなら None）
+    source_job_id: str | None = None
+    #: 元ジョブのどの出力か（重複登録の判定に使う。アップロード・旧行は None）
+    source: LibrarySource | None = None
+    #: 分類タグ（検索・絞り込み用。順序は登録したまま）
+    tags: list[str] = Field(default_factory=list)
+
+
+class LibraryFromJob(BaseModel):
+    """POST /api/library/from-job body（生成物をライブラリに入れる）。"""
+
+    job_id: str
+    source: LibrarySource
+    #: 表示名（空ならジョブのプロンプトから決める）
+    name: str = ""
+    tags: list[str] = Field(default_factory=list)
+
+
+class LibraryUpdate(BaseModel):
+    """PATCH /api/library/{id} body（指定した項目だけ変える）。"""
+
+    name: str | None = None
+    nsfw: bool | None = None
+    tags: list[str] | None = None
+
+
+class LibraryProgress(BaseModel):
+    """WS /api/ws に流すライブラリの更新（自動タグ生成の反映など、SPEC §7.2）。"""
+
+    type: Literal["library"] = "library"
+    item_id: str
+    kind: LibraryKind
+    name: str
+    tags: list[str] = Field(default_factory=list)
+
+
+class LibraryPage(BaseModel):
+    """GET /api/library のレスポンス（絞り込み結果の 1 ページ）。
+
+    ``total`` は絞り込み後の総件数なので、``items`` を数えるだけでは分からない
+    「まだ何件あるか」がクライアント（と、エージェントの検索）に伝わる。
+    """
+
+    items: list[LibraryItem] = Field(default_factory=list)
+    #: 絞り込み条件に合う総件数（このページの件数ではない）
+    total: int = 0
+    limit: int = 0
+    offset: int = 0
+    #: ライブラリに登録されている全タグ（絞り込み UI の補完用）
+    tags: list[str] = Field(default_factory=list)
+
+
 class HealthStatus(BaseModel):
     status: Literal["ok", "not_configured", "not_implemented", "error"]
     detail: str | None = None
@@ -834,7 +912,7 @@ AgentStatus = Literal[
 AgentCheckinMode = Literal["every_job", "milestone", "auto"]
 AgentActionName = Literal[
     "plan", "run_task", "continue", "rerun", "inspect", "note", "rename",
-    "checkin", "done",
+    "library", "library_search", "checkin", "done",
 ]
 AgentTaskStatus = Literal["pending", "running", "done", "failed", "skipped"]
 
@@ -975,6 +1053,16 @@ class AgentAction(BaseModel):
     # rename アクション: 対象成果物の指定（name か job_id[+ artifact_kind]）
     name: str | None = None
     artifact_kind: str | None = None
+    # library アクション: ジョブのどの出力を取っておくか（SPEC §7.2）
+    source: str | None = None
+    # library / library_search アクション: 付けるタグ / 絞り込み条件
+    tags: list[str] = Field(default_factory=list)
+    query: str = ""
+    tag: str | None = None
+    #: 検索対象の素材種別（'image' / 'video' / 'audio'。None は全種別）
+    library_kind: str | None = None
+    #: 検索結果の読み出し位置（ページング）
+    offset: int = 0
     overrides: dict[str, Any] = Field(default_factory=dict)
     # プラン外 continue / rerun がユーザー承認を得たか（Grok は指定できない）
     approved: bool = False
@@ -1057,4 +1145,7 @@ class Options(BaseModel):
     audio_assets: list["Asset"] = Field(default_factory=list)
     image_assets: list["Asset"] = Field(default_factory=list)
     video_assets: list["Asset"] = Field(default_factory=list)
+    #: ライブラリの全件（新しい順）。入力欄の「ライブラリから選択」と、
+    #: エージェントの CHOICES がここを読む（SPEC §7.2）。
+    library: list["LibraryItem"] = Field(default_factory=list)
     negative_presets: dict[str, str] = Field(default_factory=dict)

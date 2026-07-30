@@ -225,7 +225,36 @@ cd frontend && npm run build && npx vitest run     # フロントエンド（型
   開き、欄の種別に合うものだけが新しい順に並びます（画像欄には生成画像とラストフレームの両方、
   動画欄には生成動画、音声欄には音声ジョブの出力）。選ぶと `assets/` にコピーされて欄に入ります。
   モーダル内の「🫣 NSFW表示」チェックボックスで NSFW の作品を出し入れできます（初期値はヘッダーの
-  トグルに従い、ここでの変更はこの画面かぎりで保存されません）
+  トグルに従い、ここでの変更はこの画面かぎりで保存されません）。検索ボックスにプロンプトの一部を
+  入れると、その文言を含むジョブの生成物だけに絞れます
+- **[ライブラリから選択]** は、取っておいた素材から選びます（次項）
+- リファレンス音声は**ライブラリに一本化**されています。[ライブラリから選択] /
+  [履歴から選択] / [アップロード]（アップロードするとライブラリにも登録されます）で指定します
+
+### ライブラリ（取っておく素材）
+
+履歴は生成の記録なので、ジョブを消すと成果物も消えます。**ライブラリ**は履歴とは別に、
+「これは残す」と決めた画像・動画・音声を置いておく棚です（実体は `library/{image,video,audio}/`、
+目録は SQLite の `library` テーブル）。
+
+- **生成物から登録**: 結果ペインの [☆ ライブラリに登録]（表示中の成果物）と、
+  履歴詳細の「ライブラリ」欄（そのジョブが持つ生成画像 / ラストフレーム / 動画 / 音声を個別に）。
+  `outputs/` からコピーするので、**元のジョブを削除しても残ります**。NSFW フラグは元ジョブから
+  引き継ぎます。同じ出力を二度登録しようとすると増やさずに [★ 登録済みです] になります
+  （既に登録済みのものは押す前からそう表示されます）
+- **日本語タグの自動生成**: 生成物を登録するとき、タグを指定していなければ Grok がプロンプトから
+  **日本語の短いタグを 3〜5 個**考えて背景で付けます（表示名も、英語プロンプトのままなら読みやすい
+  日本語の作品名に置き換えます）。自分で名前やタグを指定した場合はそのままです。Grok が使えない
+  ときはタグ無しのまま静かに諦めます（生成や登録は妨げません）
+- **アップロードで追加**: 各入力欄の [ライブラリから選択] を開いた先の [アップロードして追加]、
+  またはリファレンス音声の [アップロード]
+- **入力素材として使う**: [ライブラリから選択] で開始フレーム / 編集元画像・最後のフレーム・
+  参照動画・リファレンス音声に指定できます。モーダルの中で表示名の変更・削除もできます
+- **タグ・検索**: 各素材にタグを付けられます（タイルの [タグ] ボタン、カンマ区切り）。一覧の
+  検索ボックスは**名前とタグの部分一致**、その下のタグチップは**そのタグだけ**に絞り込みます。
+  50 件ずつ読み込み、続きは [さらに表示] で足せます（絞り込み・ページングはサーバー側）
+- **NSFW**: 履歴モーダルと同じで、モーダル内の「🫣 NSFW表示」で出し入れします（この画面かぎり）
+- **エージェント**もライブラリを使えます（後述の「エージェントモード」）
 
 ### Grok チャットでプロンプト作成
 
@@ -266,6 +295,12 @@ grok CLI は空の作業ディレクトリ（`runtime/grok-workdir/`）を cwd �
 （`continue` でのワークフロー切替も可。ただし開始フレームを受け取れるワークフローのみ）。
 LoRA / アスペクト比 / アセットの選択肢も焼き込まれるので、実在しない値は指定できません。
 画像 LoRA は生成フォームと同じくモデルファミリーの一致が必須で、不一致のプランは検証で弾かれます。
+
+**ライブラリ**も使えます: 取っておいた素材が種別ごと（新しい 50 件まで、タグ付き）で焼き込まれ、
+その `path` をそのまま入力に指定できます。50 件に収まらない場合は総件数と「あと N 件ある」ことが
+併記され、`library_search` アクション（名前・タグ・種別で絞り込み、50 件ずつページング）で
+ライブラリ全体を検索できます。良い生成物は Grok 自身が `library` アクションでタグ付きで
+取っておけます（ジョブを消しても残ります）。
 
 成果物は右の成果物パネルに時系列のリンクカード（プラン / リサーチ / メモ / 画像 / 動画 / 音声 / 検分フレーム）
 として並び、サムネイルは出さないので NSFW が不意に表示されることはありません
@@ -397,6 +432,8 @@ backend/            FastAPI アプリ
   app/prompts.py    チャット / エージェントのシステムプロンプト
   app/jobs.py       asyncio ジョブキューと実行、成果物取得・ラストフレーム抽出
   app/agent_*.py    エージェントのアクションプロトコル・実行ループ・セッション永続化
+  app/library.py    ライブラリ（取っておく素材）の保存・目録
+  app/autotag.py    ライブラリ素材の日本語タグ・表示名の自動生成（Grok）
   app/nsfw.py       ジョブ / セッションの NSFW 判定
   tests/            pytest
 frontend/           React + Vite + Tailwind の SPA（ビルド成果物は frontend/dist）
@@ -408,9 +445,10 @@ workflow/           ComfyUI ワークフロー（API フォーマット）テン
   image/            krea2/ anima/ z-image/ qwen-image/（モデルファミリーごと）
   video/ltx2.3/     t2v / i2v / ia2v / id_lora / flf2v / ic_lora_image / ic_lora_motion
   audio/            ace_step1_5_xl_sft.json / stable_audio_3_medium_base.json
-app.db              SQLite（jobs / loras / chat_sessions / agent_sessions）
+app.db              SQLite（jobs / loras / library / chat_sessions / agent_sessions）
 outputs/            生成物（/outputs で静的配信）
 assets/             アップロードした画像・音声・参照動画・LoRA サンプル（/assets で静的配信）
+library/            ライブラリ（取っておいた素材。image/ video/ audio/、/library で静的配信）
 runtime/            config.json / grok 作業ディレクトリ / agent-sessions/
 ```
 
@@ -419,12 +457,16 @@ runtime/            config.json / grok 作業ディレクトリ / agent-sessions
 ```
 GET  /api/health                       ComfyUI / Grok 疎通と custom node チェック
 GET  /api/options                      画像/動画/音声ワークフロー一覧（必要入力つき）・アスペクト比・
-                                       LoRA ファイル一覧・アセット・ネガティブプリセット・
+                                       LoRA ファイル一覧・アセット・ライブラリ・ネガティブプリセット・
                                        実行時に選べるモデルスロット（model_slots / model_files）
 GET/PUT /api/settings                  設定の取得・更新
 GET/POST/PUT/DELETE /api/loras         アプリ内 LoRA 登録リスト
 POST/DELETE /api/loras/{id}/samples    LoRA サンプル画像の登録・削除
 GET/PUT /api/models                    ワークフローのモデルファイル名一覧・上書き・候補リスト
+GET  /api/library                      ライブラリ検索（kind / q / tag / limit / offset）
+POST /api/library/{kind}               ファイルをアップロードしてライブラリに追加
+POST /api/library/from-job             ジョブの出力をライブラリに登録
+PATCH/DELETE /api/library/{id}         表示名・NSFW・タグの変更 / 登録解除（ファイルも削除）
 POST/GET /api/chat/sessions[/{id}]     Grok チャット
 POST /api/jobs, GET /api/jobs?limit=…  ジョブ作成・履歴
 GET/DELETE /api/jobs/{id}              詳細・削除
@@ -436,7 +478,7 @@ POST /api/agent/sessions/{id}/messages|approve    発言・プラン承認
 POST /api/agent/sessions/{id}/checkin|stop|nsfw   チェックイン応答・停止・NSFW 指定
 POST /api/agent/sessions/{id}/attachments         ファイル添付（workdir の attachments/ へ保存）
 GET  /api/agent/sessions/{id}/artifacts/{name}    成果物（メモ・検分フレーム）の配信
-WS   /api/ws                           進捗配信（ジョブ進捗 + エージェント状態）
+WS   /api/ws                           進捗配信（ジョブ進捗 + エージェント状態 + ライブラリ更新）
 ```
 
 ---

@@ -14,6 +14,11 @@ import type {
   Health,
   Job,
   JobCreate,
+  LibraryItem,
+  LibraryKind,
+  LibraryPage,
+  LibraryQuery,
+  LibrarySource,
   Lora,
   LoraPayload,
   ModelFieldState,
@@ -33,9 +38,20 @@ export class ApiError extends Error {
   }
 }
 
-/** FastAPI returns either `{detail: "..."}` or `{detail: [{loc, msg}, ...]}`. */
+/**
+ * FastAPI returns `{detail: "..."}`, `{detail: [{loc, msg}, ...]}` or, for the
+ * errors that carry data（ライブラリの二重登録など）, `{detail: {message, …}}`.
+ */
 export function formatDetail(detail: unknown): string {
   if (typeof detail === 'string') return detail
+  if (
+    detail &&
+    typeof detail === 'object' &&
+    !Array.isArray(detail) &&
+    typeof (detail as { message?: unknown }).message === 'string'
+  ) {
+    return (detail as { message: string }).message
+  }
   if (Array.isArray(detail)) {
     return detail
       .map((d) => {
@@ -115,9 +131,14 @@ function json<T>(method: string, path: string, body?: unknown): Promise<T> {
   })
 }
 
-function upload<T>(path: string, file: File): Promise<T> {
+function upload<T>(
+  path: string,
+  file: File,
+  fields: Record<string, string> = {},
+): Promise<T> {
   const data = new FormData()
   data.append('file', file)
+  for (const [key, value] of Object.entries(fields)) data.append(key, value)
   return request<T>(path, { method: 'POST', body: data })
 }
 
@@ -145,6 +166,37 @@ export const api = {
     upload<Lora>(`/api/loras/${id}/samples`, file),
   deleteLoraSample: (id: number, name: string) =>
     json<Lora>('DELETE', `/api/loras/${id}/samples/${encodeURIComponent(name)}`),
+
+  // ライブラリ（SPEC §7.2）。一覧は /api/options にも入っているので、フォームは
+  // そちらを使い、ここは登録・更新・削除のために使う。
+  listLibrary: (query: LibraryQuery = {}) => {
+    const params = new URLSearchParams()
+    for (const [key, value] of Object.entries(query)) {
+      if (value !== undefined && value !== '') params.set(key, String(value))
+    }
+    const search = params.toString()
+    return request<LibraryPage>(`/api/library${search ? `?${search}` : ''}`)
+  },
+  uploadToLibrary: (kind: LibraryKind, file: File, tags: string[] = []) =>
+    upload<LibraryItem>(`/api/library/${kind}`, file, { tags: tags.join(',') }),
+  /** ジョブの出力をライブラリに取っておく（NSFW は元ジョブを引き継ぐ）。 */
+  addJobToLibrary: (
+    jobId: string,
+    source: LibrarySource,
+    name = '',
+    tags: string[] = [],
+  ) =>
+    json<LibraryItem>('POST', '/api/library/from-job', {
+      job_id: jobId,
+      source,
+      name,
+      tags,
+    }),
+  updateLibraryItem: (
+    id: string,
+    patch: { name?: string; nsfw?: boolean; tags?: string[] },
+  ) => json<LibraryItem>('PATCH', `/api/library/${id}`, patch),
+  deleteLibraryItem: (id: string) => json<void>('DELETE', `/api/library/${id}`),
 
   listAudio: () => request<Asset[]>('/api/assets/audio'),
   listImages: () => request<Asset[]>('/api/assets/image'),

@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from .. import comfy, lora_samples
+from .. import comfy, library, lora_samples
 from ..config import load_settings
 from ..db import get_db
 from ..models import DEFAULT_NEGATIVE_PROMPT, Options, WorkflowOption
@@ -74,6 +74,9 @@ async def get_options() -> Options:
         async with conn.execute("SELECT * FROM loras ORDER BY sort_order, id") as cur:
             rows = await cur.fetchall()
     options.loras = [lora_samples.row_to_lora(r) for r in rows]
+    # ライブラリ（SPEC §7.2）: 入力欄の「ライブラリから選択」とエージェントの
+    # CHOICES が読む。フォーム側の NSFW フィルタはモーダルの中で行う。
+    options.library = await library.list_items()
 
     try:
         info = await comfy.get_object_info()

@@ -22,6 +22,7 @@ import HistoryPickerModal, {
   type HistoryCandidate,
   type HistoryKind,
 } from './HistoryPickerModal'
+import LibraryPickerModal from './LibraryPickerModal'
 import ModelPicker from './ModelPicker'
 import { Banner, FieldError, Section } from './ui'
 
@@ -43,10 +44,16 @@ interface Props {
   jobs: Job[]
   /** ヘッダーの NSFW 表示トグル（履歴モーダルの初期値） */
   showNsfw: boolean
+  /** ライブラリが変わるたびに増える値（開いているモーダルを読み直させる） */
+  libraryVersion?: number
 }
 
-/** 履歴モーダルの選択先: どの種別を選び、どのフィールドへ入れるか。 */
-interface HistoryTarget {
+/**
+ * 選択モーダル（履歴 / ライブラリ）の選択先: どの種別を選び、どの欄へ入れるか。
+ *
+ * 履歴とライブラリで種別の区分は同じ（image / video / audio）なので共用する。
+ */
+interface PickerTarget {
   kind: HistoryKind
   /** モーダルのタイトルに使う欄名（「開始フレーム」など） */
   title: string
@@ -152,6 +159,7 @@ function AssetPicker({
   onPick,
   onUpload,
   onOpenHistory,
+  onOpenLibrary,
   children,
 }: {
   kind: 'image' | 'video'
@@ -162,6 +170,8 @@ function AssetPicker({
   onUpload: (file: File) => void
   /** 履歴から選ぶモーダルを開く（渡さなければボタンを出さない） */
   onOpenHistory?: () => void
+  /** ライブラリから選ぶモーダルを開く（同上） */
+  onOpenLibrary?: () => void
   children?: React.ReactNode
 }) {
   const input = useRef<HTMLInputElement>(null)
@@ -212,6 +222,11 @@ function AssetPicker({
         >
           {kind === 'image' ? '画像をアップロード' : '動画をアップロード'}
         </button>
+        {onOpenLibrary && (
+          <button className="btn-ghost text-xs" disabled={busy} onClick={onOpenLibrary}>
+            ライブラリから選択
+          </button>
+        )}
         {onOpenHistory && (
           <button className="btn-ghost text-xs" disabled={busy} onClick={onOpenHistory}>
             履歴から選択
@@ -268,16 +283,19 @@ export default function GenerateForm({
   fieldErrors,
   jobs,
   showNsfw,
+  libraryVersion,
 }: Props) {
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [busyUpload, setBusyUpload] = useState(false)
   const [showAdvanced, setShowAdvanced] = useState(false)
-  // 履歴モーダルを開いている入力欄（null = 閉じている）
-  const [historyTarget, setHistoryTarget] = useState<HistoryTarget | null>(null)
+  // 履歴 / ライブラリのモーダルを開いている入力欄（null = 閉じている）
+  const [historyTarget, setHistoryTarget] = useState<PickerTarget | null>(null)
+  const [libraryTarget, setLibraryTarget] = useState<PickerTarget | null>(null)
 
   const registeredLoras: Lora[] = options?.loras ?? []
   const audioAssets = options?.audio_assets ?? []
   const imageAssets = options?.image_assets ?? []
+  const library = options?.library ?? []
   const videoAssets = options?.video_assets ?? []
   const aspectRatios = options?.aspect_ratios ?? []
   const videoWorkflows: WorkflowOption[] = options?.video_workflows ?? []
@@ -391,7 +409,7 @@ export default function GenerateForm({
    * 入れるかは開いたときの `historyTarget` が持っている。
    */
   const useFromHistory = async (
-    target: HistoryTarget,
+    target: PickerTarget,
     candidate: HistoryCandidate,
   ) => {
     setHistoryTarget(null)
@@ -422,6 +440,31 @@ export default function GenerateForm({
       setBusyUpload(false)
     }
   }
+
+  /** ライブラリに追加して、そのまま欄に入れる（リファレンス音声のアップロード）。 */
+  const uploadToLibrary = async (
+    kind: 'image' | 'video' | 'audio',
+    file: File,
+    field: keyof FormState,
+  ) => {
+    setUploadError(null)
+    setBusyUpload(true)
+    try {
+      const item = await api.uploadToLibrary(kind, file)
+      patch({ [field]: item.url } as Partial<FormState>)
+      onReloadOptions()
+    } catch (error) {
+      setUploadError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setBusyUpload(false)
+    }
+  }
+
+  /** 選択中のリファレンス音声の表示名（ライブラリ → アセット → 生の値の順）。 */
+  const audioLabel =
+    library.find((item) => item.url === form.audioPath)?.name ??
+    audioAssets.find((asset) => asset.url === form.audioPath)?.name ??
+    form.audioPath
 
   const audioInput = useRef<HTMLInputElement>(null)
 
@@ -562,6 +605,13 @@ export default function GenerateForm({
                     apply: (url) => ({ sourceImage: url }),
                   })
                 }
+                onOpenLibrary={() =>
+                  setLibraryTarget({
+                    kind: 'image',
+                    title: startImageLabel,
+                    apply: (url) => ({ sourceImage: url }),
+                  })
+                }
               />
               <p className="mt-1 text-[11px] text-slate-500">
                 履歴のラストフレームから続きを生成する場合は、履歴詳細の「続きを生成」を使ってください。
@@ -581,6 +631,13 @@ export default function GenerateForm({
                 onUpload={(file) => void upload('image', file, (url) => ({ endImage: url }))}
                 onOpenHistory={() =>
                   setHistoryTarget({
+                    kind: 'image',
+                    title: '最後のフレーム',
+                    apply: (url) => ({ endImage: url }),
+                  })
+                }
+                onOpenLibrary={() =>
+                  setLibraryTarget({
                     kind: 'image',
                     title: '最後のフレーム',
                     apply: (url) => ({ endImage: url }),
@@ -607,6 +664,13 @@ export default function GenerateForm({
                     apply: (url) => ({ referenceVideo: url }),
                   })
                 }
+                onOpenLibrary={() =>
+                  setLibraryTarget({
+                    kind: 'video',
+                    title: '参照動画',
+                    apply: (url) => ({ referenceVideo: url }),
+                  })
+                }
               />
               <p className="mt-1 text-[11px] text-slate-500">
                 秒数の設定ぶんだけ先頭から切り出して深度を取り、モーションを転写します。
@@ -617,24 +681,10 @@ export default function GenerateForm({
 
           {!hidden.audio && (
             <Section title="リファレンス音声">
+              {/* 音声の一覧はライブラリに一本化した（SPEC §7.2）。アップロードも
+                  そのままライブラリ登録になるので、選んだものは次回も残る。 */}
               <div className="flex flex-col gap-2">
-                <select
-                  className="field"
-                  value={form.audioPath}
-                  onChange={(event) => patch({ audioPath: event.target.value })}
-                >
-                  <option value="">（未選択）</option>
-                  {!audioAssets.some((asset) => asset.url === form.audioPath) &&
-                    form.audioPath && (
-                      <option value={form.audioPath}>{form.audioPath}</option>
-                    )}
-                  {audioAssets.map((asset) => (
-                    <option key={asset.url} value={asset.url}>
-                      {asset.name}
-                    </option>
-                  ))}
-                </select>
-                <div className="flex items-center gap-2">
+                <div className="flex flex-wrap items-center gap-2">
                   <input
                     ref={audioInput}
                     type="file"
@@ -642,16 +692,22 @@ export default function GenerateForm({
                     className="hidden"
                     onChange={(event) => {
                       const file = event.target.files?.[0]
-                      if (file) void upload('audio', file, (url) => ({ audioPath: url }))
                       event.target.value = ''
+                      if (file) void uploadToLibrary('audio', file, 'audioPath')
                     }}
                   />
                   <button
                     className="btn-ghost text-xs"
                     disabled={busyUpload}
-                    onClick={() => audioInput.current?.click()}
+                    onClick={() =>
+                      setLibraryTarget({
+                        kind: 'audio',
+                        title: 'リファレンス音声',
+                        apply: (url) => ({ audioPath: url }),
+                      })
+                    }
                   >
-                    音声をアップロード
+                    ライブラリから選択
                   </button>
                   <button
                     className="btn-ghost text-xs"
@@ -666,10 +722,35 @@ export default function GenerateForm({
                   >
                     履歴から選択
                   </button>
+                  <button
+                    className="btn-ghost text-xs"
+                    disabled={busyUpload}
+                    onClick={() => audioInput.current?.click()}
+                  >
+                    {busyUpload ? 'アップロード中…' : 'アップロード'}
+                  </button>
                   {form.audioPath && (
-                    <audio className="h-8 flex-1" controls src={form.audioPath} />
+                    <button
+                      className="btn-ghost text-xs"
+                      onClick={() => patch({ audioPath: '' })}
+                    >
+                      クリア
+                    </button>
                   )}
                 </div>
+                {form.audioPath ? (
+                  <div className="flex items-center gap-2">
+                    <span
+                      className="max-w-[12rem] truncate text-xs text-slate-300"
+                      title={form.audioPath}
+                    >
+                      {audioLabel}
+                    </span>
+                    <audio className="h-8 flex-1" controls src={form.audioPath} />
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-slate-500">（未選択）</p>
+                )}
                 <FieldError message={fieldErrors.audio_path} />
               </div>
             </Section>
@@ -956,6 +1037,22 @@ export default function GenerateForm({
           showNsfw={showNsfw}
           onSelect={(candidate) => void useFromHistory(historyTarget, candidate)}
           onClose={() => setHistoryTarget(null)}
+        />
+      )}
+
+      {libraryTarget && (
+        <LibraryPickerModal
+          kind={libraryTarget.kind}
+          title={`ライブラリから選択: ${libraryTarget.title}`}
+          showNsfw={showNsfw}
+          reloadKey={libraryVersion}
+          // ライブラリのファイルは /library で配信済みなので、コピーせず URL を入れる
+          onSelect={(item) => {
+            patch(libraryTarget.apply(item.url))
+            setLibraryTarget(null)
+          }}
+          onClose={() => setLibraryTarget(null)}
+          onChanged={onReloadOptions}
         />
       )}
     </div>

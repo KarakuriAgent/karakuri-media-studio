@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
-import type { Job, JobProgress } from '../types'
+import type { Job, JobProgress, LibraryItem, LibrarySource } from '../types'
+import LibraryAddButton, { isInLibrary } from './LibraryAddButton'
 import { Banner, CopyButton, NsfwBadge, NsfwToggle, StatusBadge } from './ui'
 
 interface Props {
@@ -14,6 +15,10 @@ interface Props {
   queue: Job[]
   /** NSFW 表示トグル（オンのときだけ 🫣 バッジを出す）。 */
   showNsfw: boolean
+  /** ライブラリに登録したあと、選択肢を取り直してもらう。 */
+  onLibraryChanged?: () => void
+  /** 登録済みかどうかの判定に使う（`/api/options` の library）。 */
+  library?: LibraryItem[]
 }
 
 type MediaKind = 'video' | 'image' | 'audio'
@@ -91,6 +96,8 @@ export default function ResultPane({
   busy,
   queue,
   showNsfw,
+  onLibraryChanged,
+  library,
 }: Props) {
   const media = useMemo(() => (job ? mediaOf(job) : []), [job])
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
@@ -256,6 +263,17 @@ export default function ResultPane({
               >
                 ダウンロード
               </a>
+            )}
+            {/* 表示中の成果物をライブラリへ（SPEC §7.2）。タブの key が
+                そのまま登録元の区分になる。 */}
+            {current && (
+              <LibraryAddButton
+                key={current.key}
+                job={job}
+                source={current.key as LibrarySource}
+                registered={isInLibrary(library, job, current.key as LibrarySource)}
+                onAdded={onLibraryChanged}
+              />
             )}
             <button
               className="btn-ghost !py-1 text-xs"

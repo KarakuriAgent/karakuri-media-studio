@@ -32,7 +32,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from . import agent_protocol, grok, jobs, prompts, ws
+from . import agent_protocol, autotag, grok, jobs, library, prompts, ws
 from .agent_protocol import ActionError
 from .agent_store import (
     load,
@@ -654,6 +654,126 @@ async def _rename(session_id: str, action: AgentAction) -> None:
     )
 
 
+async def _library(session_id: str, action: AgentAction) -> None:
+    """ジョブの出力をライブラリに取っておく（承認不要。SPEC §7.2）。
+
+    ライブラリはジョブを消しても残る棚なので、あとで素材として使い回せる。
+    """
+    job = await jobs.get_job(action.job_id or "", include_workflow=False)
+    if job is None:
+        await _event(
+            session_id,
+            "action_failed",
+            f"ライブラリ登録の対象 job {action.job_id} が見つかりません。",
+            job_id=action.job_id,
+        )
+        return
+    try:
+        item = await library.add_from_job(
+            job, action.source or "", action.title, action.tags
+        )
+    except library.LibraryDuplicate as exc:
+        # 二重登録はエラーではなく「もう棚にある」という案内にする。
+        await _event(
+            session_id,
+            "library_exists",
+            f"その出力は既にライブラリにあります（名前: 「{exc.item.name}」、"
+            f"{exc.item.path}）。そのまま入力に使えます。",
+            job_id=job.id,
+            library_id=exc.item.id,
+            path=exc.item.path,
+        )
+        return
+    except library.LibraryError as exc:
+        await _event(
+            session_id,
+            "action_failed",
+            f"ライブラリに登録できませんでした: {exc}",
+            job_id=action.job_id,
+            error=str(exc),
+        )
+        return
+    # 表示名とタグを明示しなかったぶんは Grok に考えさせる（SPEC §7.2）
+    autotag.spawn_for(item, job, named=bool(action.title))
+    tags = f" タグ: {', '.join(item.tags)}。" if item.tags else ""
+    await _event(
+        session_id,
+        "library_added",
+        f"「{item.name}」をライブラリに登録しました（{item.path}）。{tags}"
+        "以降のジョブの入力にこのパスを使えます。",
+        job_id=job.id,
+        library_id=item.id,
+        path=item.path,
+    )
+
+
+#: library_search が 1 回で返す件数（続きは offset で辿らせる）
+LIBRARY_SEARCH_LIMIT = 50
+
+
+def _library_line(item) -> str:
+    tags = f" [{', '.join(item.tags)}]" if item.tags else ""
+    nsfw = " 🫣NSFW" if item.nsfw else ""
+    return f"- `{item.path}` — 「{item.name}」（{item.kind}）{tags}{nsfw}"
+
+
+def _library_search_text(
+    items: list, total: int, offset: int, criteria: str
+) -> str:
+    """検索結果を、そのまま次のターンで読める 1 通のイベント本文にする。"""
+    if not items:
+        return (
+            f"ライブラリ検索（{criteria}）: 該当なし（全 {total} 件中 {offset} 件目以降）。"
+            "条件を緩めるか、CHOICES の一覧から選んでください。"
+        )
+    shown = offset + len(items)
+    lines = [
+        f"ライブラリ検索（{criteria}）: {total} 件中 {offset + 1}〜{shown} 件目。",
+        "",
+        *[_library_line(item) for item in items],
+    ]
+    if shown < total:
+        lines += [
+            "",
+            f"まだ {total - shown} 件あります。続きは"
+            f' `{{"action": "library_search", "offset": {shown}, …}}`'
+            "（同じ絞り込み条件のまま）で取得してください。",
+        ]
+    return "\n".join(lines)
+
+
+async def _library_search(session_id: str, action: AgentAction) -> None:
+    """ライブラリを絞り込んで結果をイベントに残す（承認不要。SPEC §7.2）。
+
+    CHOICES に焼き込めるのは種別ごとの新しい 50 件だけなので、それ以前のものや
+    タグ・名前での絞り込みはこのアクションで取りに来てもらう。
+    """
+    items, total = await library.search_items(
+        kind=action.library_kind,
+        query=action.query,
+        tag=action.tag,
+        limit=LIBRARY_SEARCH_LIMIT,
+        offset=action.offset,
+    )
+    criteria = ", ".join(
+        part
+        for part in (
+            f"q={action.query!r}" if action.query else "",
+            f"tag={action.tag!r}" if action.tag else "",
+            f"kind={action.library_kind}" if action.library_kind else "",
+        )
+        if part
+    ) or "絞り込みなし"
+    await _event(
+        session_id,
+        "library_search_result",
+        _library_search_text(items, total, action.offset, criteria),
+        total=total,
+        offset=action.offset,
+        returned=len(items),
+    )
+
+
 async def _apply_plan(session_id: str, action: AgentAction) -> None:
     session = await load(session_id)
     if session is None:
@@ -838,6 +958,12 @@ async def apply_action(session_id: str, action: AgentAction) -> bool:
         return False
     if action.action == "rename":
         await _rename(session_id, action)
+        return False
+    if action.action == "library":
+        await _library(session_id, action)
+        return False
+    if action.action == "library_search":
+        await _library_search(session_id, action)
         return False
     if action.action == "inspect":
         await _inspect(session_id, action)

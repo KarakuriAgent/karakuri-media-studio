@@ -11,13 +11,20 @@ from . import agent_runner, ws
 from .config import load_settings
 from .db import init_db
 from .jobs import runner
-from .paths import ASSETS_DIR, FRONTEND_DIST_DIR, OUTPUTS_DIR, ensure_dirs
+from .paths import (
+    ASSETS_DIR,
+    FRONTEND_DIST_DIR,
+    LIBRARY_DIR,
+    OUTPUTS_DIR,
+    ensure_dirs,
+)
 from .routers import (
     agent,
     assets,
     chat,
     health,
     jobs,
+    library,
     loras,
     models_config,
     options,
@@ -60,6 +67,7 @@ app.include_router(health.router)
 app.include_router(settings.router)
 app.include_router(loras.router)
 app.include_router(models_config.router)
+app.include_router(library.router)
 app.include_router(assets.router)
 app.include_router(options.router)
 app.include_router(chat.router)
@@ -70,6 +78,7 @@ app.include_router(ws.router)
 ensure_dirs()
 app.mount("/outputs", StaticFiles(directory=OUTPUTS_DIR), name="outputs")
 app.mount("/assets", StaticFiles(directory=ASSETS_DIR), name="assets")
+app.mount("/library", StaticFiles(directory=LIBRARY_DIR), name="library")
 
 
 def _dist_file(rel_path: str) -> Path | None:
@@ -82,7 +91,7 @@ def _dist_file(rel_path: str) -> Path | None:
 
 
 # Production serving: when the frontend has been built, serve it as an SPA.
-# Registered last so /api, /outputs and /assets keep priority.
+# Registered last so /api, /outputs, /assets and /library keep priority.
 if FRONTEND_DIST_DIR.is_dir():
 
     @app.get("/{spa_path:path}", include_in_schema=False)
