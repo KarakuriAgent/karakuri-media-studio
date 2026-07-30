@@ -38,7 +38,7 @@ from typing import Any
 import aiosqlite
 from PIL import Image
 
-from . import comfy, nsfw as nsfw_service, ws
+from . import comfy, nsfw as nsfw_service, runpod, ws
 from .config import load_settings
 from .db import get_db
 from .ids import new_id
@@ -1028,6 +1028,13 @@ async def run_job(job_id: str) -> None:
         log.warning("job %s disappeared before it could run", job_id)
         return
     try:
+        # ComfyUI が RunPod の Pod にある構成では、投入の前に Pod を起こす
+        # （SPEC §5.1）。無効なら何もしないので、無条件に通してよい。起動待ちの
+        # 進捗は同じジョブの WS メッセージとして流れる。
+        await runpod.ensure_pod_running(
+            lambda text: ws.publish(job_id, "running", message=text)
+        )
+
         await _set_status(job_id, "running", message="uploading assets")
 
         uploads: dict[str, str] = {}
@@ -1120,7 +1127,12 @@ async def run_job(job_id: str) -> None:
         await _set_status(job_id, "canceled", message="canceled", error="canceled")
         raise
     except Exception as exc:  # noqa: BLE001 - any failure marks the job failed (§5)
-        detail = str(exc) if isinstance(exc, JobError) else f"{type(exc).__name__}: {exc}"
+        # RunPod の起動失敗は文言がそのままユーザー向けなので、型名を前置しない。
+        detail = (
+            str(exc)
+            if isinstance(exc, (JobError, runpod.RunPodError))
+            else f"{type(exc).__name__}: {exc}"
+        )
         log.exception("job %s failed", job_id)
         await _set_status(job_id, "failed", message=detail, error=detail)
 

@@ -156,6 +156,42 @@ CHOICES の「使用モデルの切り替え」見出しにワークフローご
 候補が何も登録されていない環境では CHOICES に「切り替え候補は登録されていません」と出し、
 `model_overrides` を書かせない。`continue` アクションでも差分項目として指定できる。
 
+#### モデル・LoRA の取得元ページ（MODEL SOURCES）
+
+LoRA もモデルも、**どう使うか**（トリガーワード・推奨 strength・推奨 steps / CFG /
+sampler・作例プロンプト）は配布ページに書いてある。設定に取得元 URL
+（`Settings.model_download_urls`、SPEC §3.3）が登録されているファイルについては、
+その URL を**配布ページ URL に変換**して CHOICES の直後に `# MODEL SOURCES`
+セクションとして焼き込み、Grok が web 閲覧で自分で調べられるようにする
+（LoRA 一覧・モデル候補と同じくコンテキスト注入。専用アクションは増やさない）:
+
+```
+# MODEL SOURCES (どこから来たモデルか / 使い方の調べ先)
+
+LoRA:
+- `sakura.safetensors`「サクラ」 — 画像用（family `krea2`）
+  - page: https://civitai.com/models/123?modelVersionId=456
+  - download: https://civitai.com/api/download/models/456
+モデルファイル:
+- `base.safetensors` — `krea2_turbo`: Load Diffusion Model
+  - page: https://huggingface.co/org/repo
+  - download: https://huggingface.co/org/repo/resolve/main/base.safetensors
+```
+
+- 対象は LoRA 一覧（`loras` テーブル）とモデルスロット全部
+  （`model_overrides` / `model_choices` / テンプレート既定 = `workflow.model_slots`）のうち、
+  取得元 URL が登録されているものだけ。1 件も無ければセクションごと出さない
+- 変換（`app/model_sources.py`）は HF が文字列処理のみ、Civitai は
+  `https://civitai.com/api/v1/model-versions/<versionId>` を 1 回だけ叩いて modelId を引く
+  （結果は `Settings.model_page_urls` にキャッシュ。SPEC §3.3）。**解決に失敗しても
+  セッション作成は止めず**、そのファイルは `download:` だけになる
+- `page` が無い＝調べ先が分からないだけなので、既定の設定のまま使ってよいと明示する。
+  ページの記述と CHOICES が食い違うときは **CHOICES が正**（この環境に実在する値）
+- 注意: `download:` は設定に登録されたダウンロード URL をそのまま出すので、
+  **private / gated リポジトリの URL やクエリ付きの URL がそのまま Grok に渡る**。
+  トークン自体（`hf_token` / `civitai_api_key`）は決してプロンプトに載せないが、
+  URL を見られたくない環境では取得元 URL を登録しない運用にすること
+
 #### ライブラリの素材（SPEC §7.2）
 
 利用者が「取っておく」と決めた画像・動画・音声は**ライブラリ**に入っており、ジョブを削除しても

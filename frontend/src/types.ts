@@ -35,6 +35,17 @@ export interface Settings {
   civitai_api_key: string
   /** `{"<ファイル名>": "<ダウンロード URL>"}`（キーはファイル名なので行を跨いで共有）。 */
   model_download_urls: Record<string, string>
+  /**
+   * ComfyUI が RunPod の Pod にある構成での自動起動（SPEC §5.1）。有効なとき、
+   * ジョブ投入の直前に `comfy_url` の疎通を確かめ、落ちていれば Pod を作って待つ。
+   */
+  runpod_enabled: boolean
+  runpod_api_key: string
+  runpod_template_id: string
+  /** RunPod の gpuTypeId（例: `NVIDIA RTX A6000`）。 */
+  runpod_gpu_type: string
+  /** /workspace にマウントする Network Volume の ID。 */
+  runpod_network_volume_id: string
 }
 
 /**

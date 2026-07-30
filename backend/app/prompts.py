@@ -35,6 +35,7 @@ from .models import (
     ChatMessage,
     ChatSessionCreate,
     ModelSlot,
+    ModelSource,
     Options,
     missing_job_fields,
     video_workflow_problem,
@@ -1786,6 +1787,47 @@ def _model_choices_lines(options: Options) -> str:
     return "\n".join(lines)
 
 
+def _model_sources_lines(sources: list[ModelSource]) -> str:
+    """MODEL SOURCES: 登録済みモデル・LoRA の配布ページ（AGENT-MODE §3.1）。
+
+    ``page`` は Web 閲覧で開ける配布ページ（Hugging Face のリポジトリ /
+    Civitai のモデルページ）。エージェントはここでトリガーワード・推奨設定・
+    作例プロンプトを自分で調べられる。解決できなかったものは ``download`` だけを
+    出す（Civitai の API が引けなかった場合など）。
+    """
+    lines = [
+        "# MODEL SOURCES (どこから来たモデルか / 使い方の調べ先)",
+        "",
+        "この環境に登録されている LoRA・モデルファイルの取得元です。`page` は"
+        "配布ページなので、**Web 閲覧で開いて**トリガーワード・推奨設定"
+        "（strength / steps / CFG / sampler / 解像度）・作例プロンプトを調べ、"
+        "プランと `image_prompt` / `video_prompt` に反映してください"
+        "（特に見慣れない LoRA を初めて使うときは、思い込みで書かずに必ず調べる）。"
+        "`page` が無いものはダウンロード URL しか登録されていないので、"
+        "調べられなければ既定の設定のまま使ってかまいません。",
+        "",
+    ]
+    for title, kind in (("LoRA:", "lora"), ("モデルファイル:", "model")):
+        items = [source for source in sources if source.kind == kind]
+        if not items:
+            continue
+        lines.append(title)
+        for source in items:
+            label = f"「{source.label}」" if source.label else ""
+            usage = f" — {', '.join(source.usage)}" if source.usage else ""
+            lines.append(f"- `{source.filename}`{label}{usage}")
+            if source.page_url:
+                lines.append(f"  - page: {source.page_url}")
+            lines.append(f"  - download: {source.download_url}")
+        lines.append("")
+    lines.append(
+        "ここに出ていないファイルは取得元が登録されていないだけで、使えないという"
+        "意味ではありません。ページの記述と CHOICES が食い違うときは"
+        "**CHOICES が正**です（この環境に実在する値だけが書いてあります）。"
+    )
+    return "\n".join(lines)
+
+
 def build_agent_system_prompt(
     ctx: AgentSessionCreate,
     options: Options,
@@ -1794,6 +1836,7 @@ def build_agent_system_prompt(
     max_tasks: int = 5,
     tools_enabled: bool = False,
     lora_samples: dict[str, list[str]] | None = None,
+    model_sources: list[ModelSource] | None = None,
 ) -> str:
     """System prompt of one agent session (AGENT-MODE §5.1)."""
     video_spec = VIDEO_SPEC.replace(
@@ -1806,6 +1849,9 @@ def build_agent_system_prompt(
              video_spec, TEMPLATE_NATURAL, FEW_SHOT_VIDEO, FEW_SHOT_IMAGE_KREA2,
              _agent_choices(options, lora_samples),
              _agent_guardrails(ctx, max_tasks), AGENT_OUTPUT_RULES]
+    # 取得元が 1 件も登録されていない環境ではセクションごと出さない
+    if model_sources:
+        parts.insert(-2, _model_sources_lines(model_sources))
     if tools_enabled:
         parts.insert(2, AGENT_TOOLS)
     context = ["# SESSION CONTEXT", ""]

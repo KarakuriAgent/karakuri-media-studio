@@ -113,6 +113,25 @@ Comfy Cloud 接続では ComfyUI のファイルシステムに届かないた�
 
 ---
 
+## ComfyUI を RunPod で動かす（オプトイン）
+
+手元に GPU が無い / 大きいモデルを回したい場合、ComfyUI を **RunPod の Pod
+（GPU 時間貸し）**に置けます。ジョブを実行したときに ComfyUI へ繋がらなければ
+アプリが Pod を立ち上げ、繋がるまで待ってから投入します。使い終わった Pod は
+Pod 自身の watchdog がアイドル 10 分で terminate するので、消し忘れで課金が
+続くことはありません。
+
+1. `deploy/runpod/` のイメージをビルドして push し、RunPod にテンプレートを登録する
+2. 設定 →「接続 / Grok」で **RunPod の Pod を自動起動する** をオンにし、
+   API キー / テンプレート ID / GPU 種別 / Network Volume ID を入れる
+3. ComfyUI URL には Pod の Cloudflare Tunnel のホスト名を入れる
+
+イメージのビルド、Network Volume、Cloudflare Tunnel、テンプレート登録までの
+手順は [`deploy/runpod/README.md`](deploy/runpod/README.md) にまとめてあります。
+設計上の決め事は SPEC §5.1 を参照してください。
+
+---
+
 ## 使い方
 
 左ペインでモードとワークフローを選び、プロンプトや必要な入力を埋めて「実行」。進捗は
@@ -198,6 +217,7 @@ Stable Audio 3 Medium（効果音・環境音・単一楽器）の 2 種です�
 | `grok_command` / `grok_model` | grok CLI のコマンドと使用モデル | `grok` / `grok-4.5` |
 | `hf_token` / `civitai_api_key` | モデルダウンロード用のトークン | 空 |
 | `model_overrides` / `model_choices` | モデルファイル名の上書きと、実行ごとに選べる候補リスト | `{}` |
+| `runpod_*` | RunPod Pod の自動起動（有効化 / APIキー / テンプレート ID / GPU 種別 / Network Volume ID） | 無効 |
 | `agent_*` | エージェントの CLI フラグ・タイムアウト・自走上限（設定ページには出ません） | SPEC 参照 |
 
 **モデルタブ**では、各ワークフローのモデルファイル名を環境に合わせて上書きできます

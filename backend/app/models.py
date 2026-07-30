@@ -64,6 +64,23 @@ class Settings(BaseModel):
     #: {"<ファイル名>": "<ダウンロード URL>"}。同じファイルが複数スロットに出る
     #: ので、スロットキーではなくファイル名で持つ。
     model_download_urls: dict[str, str] = Field(default_factory=dict)
+    #: {"<ダウンロード URL>": "<配布ページ URL>"} — エージェントに渡す「調べに行ける
+    #: ページ」の解決結果キャッシュ（app.model_sources）。Civitai は versionId から
+    #: modelId を API で引かないとページが分からないので、一度引いた結果を残す。
+    #: 設定画面からは触らない（`SettingsUpdate` に無い）自動生成のキャッシュ。
+    model_page_urls: dict[str, str] = Field(default_factory=dict)
+    # RunPod の Pod で ComfyUI を動かす場合の自動起動（SPEC §5.1）。有効なときだけ、
+    # ジョブ投入の直前に `comfy_url` の疎通を確かめ、落ちていれば Pod を立ち上げる。
+    #: 自動起動を使うか（false ならジョブは従来どおり `comfy_url` に直接投げる）
+    runpod_enabled: bool = False
+    #: RunPod の REST API キー（https://rest.runpod.io/v1 に Bearer で送る）
+    runpod_api_key: str = ""
+    #: 起動する Pod テンプレートの ID（deploy/runpod/ のイメージを登録したもの）
+    runpod_template_id: str = ""
+    #: 確保する GPU の種類（RunPod の gpuTypeId。例 "NVIDIA RTX A6000"）
+    runpod_gpu_type: str = "NVIDIA RTX A6000"
+    #: /workspace にマウントする Network Volume の ID（ComfyUI 本体とモデルの置き場）
+    runpod_network_volume_id: str = ""
 
 
 class SettingsUpdate(BaseModel):
@@ -79,6 +96,11 @@ class SettingsUpdate(BaseModel):
     hf_token: str | None = None
     civitai_api_key: str | None = None
     model_download_urls: dict[str, str] | None = None
+    runpod_enabled: bool | None = None
+    runpod_api_key: str | None = None
+    runpod_template_id: str | None = None
+    runpod_gpu_type: str | None = None
+    runpod_network_volume_id: str | None = None
     agent_grok_args: list[str] | None = None
     agent_grok_timeout: float | None = None
     agent_max_plan_tasks: int | None = None
@@ -199,6 +221,31 @@ class ModelDownload(ModelDownloadProgress):
     url: str = ""
     #: 保存先の絶対パス（検証済み）
     path: str = ""
+
+
+class ModelSource(BaseModel):
+    """1 ファイルの取得元（エージェントに渡す「調べに行けるページ」、AGENT-MODE §3.1）。
+
+    ``model_download_urls`` に登録されたダウンロード URL を、そのまま渡しても
+    調べ物には使えないので、可能なら配布ページ（Hugging Face のリポジトリページ /
+    Civitai のモデルページ）へ変換したものを ``page_url`` に入れる。変換できな
+    かったときは空で、エージェントにはダウンロード URL だけが見える。
+    """
+
+    filename: str
+    #: 'lora' = LoRA レジストリの行 / 'model' = ワークフローのモデルスロット
+    kind: Literal["lora", "model"] = "model"
+    #: 表示名（LoRA の display_name。モデルファイルでは空）
+    label: str = ""
+    #: 何に使われているか（LoRA なら「画像用（family krea2）」、モデルなら
+    #: 「<workflow_id>: <ノード名>」。プロンプトにそのまま出す）
+    usage: list[str] = Field(default_factory=list)
+    #: 設定に登録されているダウンロード URL
+    download_url: str = ""
+    #: 使い方を調べに行ける配布ページ（解決できなければ空）
+    page_url: str = ""
+    #: 'huggingface' / 'civitai' / ''（それ以外・不明）
+    host: str = ""
 
 
 #: どちらのワークフローに挿す LoRA か（SPEC §3.4）。'image' は画像ワークフロー、

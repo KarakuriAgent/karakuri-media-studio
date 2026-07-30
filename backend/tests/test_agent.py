@@ -23,6 +23,7 @@ from app import (
     jobs,
     library,
     lora_samples,
+    model_sources,
     prompts,
     nsfw,
 )
@@ -520,6 +521,65 @@ def test_system_prompt_says_no_model_choice_is_registered(env):
     system = start(env)["messages"][0]["content"]
     assert "使用モデルの切り替え候補は登録されていません" in system
     assert "`model_overrides` は指定しないでください" in system
+
+
+# --------------------------------------------------------------------------
+# 取得元ページ（AGENT-MODE §3.1）
+# --------------------------------------------------------------------------
+
+HF_LORA_URL = "https://huggingface.co/org/sakura-lora/resolve/main/sakura.safetensors"
+
+
+def _register_urls(monkeypatch, urls: dict[str, str]) -> None:
+    monkeypatch.setattr(
+        config,
+        "_settings",
+        config.load_settings().model_copy(update={"model_download_urls": urls}),
+    )
+
+
+def test_system_prompt_lists_the_source_page_of_a_lora(env, monkeypatch):
+    """LoRA の取得元 URL は「調べに行ける配布ページ」として焼き込む。"""
+    assert env.client.post(
+        "/api/loras",
+        json={"display_name": "サクラ", "lora_name": "sakura.safetensors",
+              "trigger_word": "sakura"},
+    ).status_code == 201
+    _register_urls(monkeypatch, {"sakura.safetensors": HF_LORA_URL})
+
+    system = start(env)["messages"][0]["content"]
+    assert "# MODEL SOURCES" in system
+    assert "page: https://huggingface.co/org/sakura-lora" in system
+    assert f"download: {HF_LORA_URL}" in system
+    assert "トリガーワード" in system
+
+
+def test_system_prompt_has_no_sources_section_without_urls(env):
+    assert "# MODEL SOURCES" not in start(env)["messages"][0]["content"]
+
+
+def test_a_source_without_a_known_page_shows_only_the_download_url(env, monkeypatch):
+    url = "https://example.com/files/sakura.safetensors"
+    assert env.client.post(
+        "/api/loras",
+        json={"display_name": "サクラ", "lora_name": "sakura.safetensors",
+              "trigger_word": "sakura"},
+    ).status_code == 201
+    _register_urls(monkeypatch, {"sakura.safetensors": url})
+
+    system = start(env)["messages"][0]["content"]
+    assert f"download: {url}" in system
+    assert "page: " not in system
+
+
+def test_a_session_still_starts_when_the_sources_cannot_be_resolved(env, monkeypatch):
+    """取得元の解決（Civitai API）が落ちてもセッション作成は止めない。"""
+    async def boom(options):
+        raise RuntimeError("civitai down")
+
+    monkeypatch.setattr(model_sources, "collect", boom)
+    system = start(env)["messages"][0]["content"]
+    assert "# MODEL SOURCES" not in system
 
 
 def test_the_default_workflow_still_requires_its_audio(env):

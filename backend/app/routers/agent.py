@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
@@ -16,6 +17,7 @@ from .. import (
     agent_store,
     grok,
     lora_samples,
+    model_sources,
     nsfw as nsfw_service,
     prompts,
 )
@@ -35,6 +37,8 @@ from ..models import (
 )
 from .assets import AUDIO_EXT, IMAGE_EXT, VIDEO_EXT
 from .options import get_options
+
+log = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/agent", tags=["agent"])
 
@@ -87,6 +91,13 @@ async def create_session(payload: AgentSessionCreate) -> AgentSession:
     settings = load_settings()
     # LoRA のサンプル画像を workdir へ持ち込み、Grok が出力と見比べられるようにする
     lora_samples = agent_store.copy_lora_samples(session_id, options.loras)
+    # 登録済みモデル・LoRA の配布ページ（AGENT-MODE §3.1）。Civitai の解決は
+    # ネットワーク越しなので、落ちてもセッション作成は止めない。
+    try:
+        sources = await model_sources.collect(options)
+    except Exception:  # noqa: BLE001 - 調べ先が無いだけでセッションは作れる
+        log.warning("model sources unavailable", exc_info=True)
+        sources = []
     system = prompts.build_agent_system_prompt(
         payload,
         options,
@@ -94,6 +105,7 @@ async def create_session(payload: AgentSessionCreate) -> AgentSession:
         max_tasks=settings.agent_max_plan_tasks or 5,
         tools_enabled=bool(settings.agent_grok_args),
         lora_samples=lora_samples,
+        model_sources=sources,
     )
     session = AgentSession(
         id=session_id,

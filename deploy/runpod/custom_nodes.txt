@@ -1,0 +1,26 @@
+# ComfyUI に追加で入れる custom node の一覧（entrypoint.sh が読む）。
+#
+# 行の形式:  <git-url> <commit-ish>
+#   git-url   … clone する URL
+#   commit-ish… checkout するコミットハッシュ or タグ（**必ず固定する**。
+#               ブランチ名を書くと Pod を作り直すたびに中身が変わってしまう）
+#
+# 空行と '#' から始まる行は無視される。clone 先は
+# /workspace/ComfyUI/custom_nodes/<リポジトリ名> で、既にあるものは飛ばす
+# （＝ 2 回目以降の起動では何もしない）。requirements.txt があれば pip install する。
+#
+# --------------------------------------------------------------------------
+# 既定では空。
+#
+# workflow/ のテンプレートが使うノード（ResolutionSelector / CustomCombo /
+# ComfySwitchNode / LTXV 系 / MoGe 系 / LatentUpscaleModelLoader /
+# ResizeImagesByLongerEdge / WanDancer 系 / Video Slice など）は、Dockerfile で
+# 固定している ComfyUI のバージョンに **本体同梱（comfy_extras）として入っている**
+# ことを前提にしている。COMFYUI_REF を古いタグに下げる場合や、自分で足した
+# ワークフローが外部のノードを要求する場合だけここに書き足す。
+#
+# 足りないノードがあるかどうかは、アプリのヘッダーの接続インジケーター
+# （GET /api/health）が「missing custom nodes on ComfyUI: …」として教えてくれる。
+#
+# 例:
+#   https://github.com/ltdrdata/ComfyUI-Manager.git  3a1b2c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b

@@ -134,6 +134,15 @@ interface ModelGroup {
   custom: number
 }
 
+/** 取得元 URL の対応表が同じ内容か（無駄な PUT を避けるため）。 */
+function sameUrls(
+  a: Record<string, string>,
+  b: Record<string, string>,
+): boolean {
+  const keys = Object.keys(a)
+  return keys.length === Object.keys(b).length && keys.every((k) => a[k] === b[k])
+}
+
 /** 候補リストが同じ内容か（順序も見る）。 */
 function sameChoices(a: string[], b: string[]): boolean {
   return a.length === b.length && a.every((name, index) => name === b[index])
@@ -199,6 +208,8 @@ export default function SettingsPage({
   // ファイル名ごとの URL（行を跨いで共有）、ファイル名ごとの進捗
   const [dirStatus, setDirStatus] = useState<ModelsDirStatus | null>(null)
   const [urlDraft, setUrlDraft] = useState<Record<string, string>>({})
+  // 検出済みの行で URL 入力欄を開いているファイル名（既定は閉じている）
+  const [urlOpen, setUrlOpen] = useState<Record<string, boolean>>({})
   const [downloads, setDownloads] = useState<
     Record<string, ModelDownloadProgress>
   >({})
@@ -207,6 +218,10 @@ export default function SettingsPage({
   const [busy, setBusy] = useState(false)
   const [draft, setDraft] = useState<LoraPayload>(EMPTY_LORA)
   const [editingId, setEditingId] = useState<number | null>(null)
+  // LoRA フォームの取得元 URL（LoRA 本体と同時に model_download_urls へ保存する）と、
+  // 編集を始めたときのファイル名（ファイル名を変えたら旧キーを消すため）
+  const [draftUrl, setDraftUrl] = useState('')
+  const [editingLoraName, setEditingLoraName] = useState('')
 
   const loraFiles: string[] = options?.lora_files ?? []
   const modelFiles = modelFileMap(options)
@@ -318,6 +333,11 @@ export default function SettingsPage({
           grok_command: settings.grok_command,
           hf_token: settings.hf_token,
           civitai_api_key: settings.civitai_api_key,
+          runpod_enabled: settings.runpod_enabled,
+          runpod_api_key: settings.runpod_api_key,
+          runpod_template_id: settings.runpod_template_id,
+          runpod_gpu_type: settings.runpod_gpu_type,
+          runpod_network_volume_id: settings.runpod_network_volume_id,
         }),
       )
       setNotice('設定を保存しました')
@@ -356,6 +376,38 @@ export default function SettingsPage({
     }
   }
 
+  /**
+   * 取得元 URL だけを設定へ保存する（ダウンロードはしない、SPEC §3.3）。
+   *
+   * 手元に在るモデルでも、RunPod の Pod 用マニフェスト
+   * (deploy/runpod/gen_models_manifest.py) が `model_download_urls` を見るので
+   * 事前に登録できるようにしてある。空欄で保存したらキーごと消す。
+   */
+  const saveDownloadUrl = async (filename: string) => {
+    if (!filename) return
+    const url = (urlDraft[filename] ?? '').trim()
+    const next = { ...(settings?.model_download_urls ?? {}) }
+    if (url) next[filename] = url
+    else delete next[filename]
+    setBusy(true)
+    setError(null)
+    try {
+      const saved = await api.putSettings({ model_download_urls: next })
+      setSettings(saved)
+      // 他の行の編集中の下書きは消さず、このファイルの分だけ揃える
+      setUrlDraft((previous) => ({ ...previous, [filename]: url }))
+      setNotice(
+        url
+          ? `${filename} の取得元 URL を保存しました`
+          : `${filename} の取得元 URL を解除しました`,
+      )
+    } catch (caught) {
+      fail(caught)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const saveModels = async () => {
     setBusy(true)
     setError(null)
@@ -370,14 +422,43 @@ export default function SettingsPage({
     }
   }
 
+  /** LoRA フォームを空に戻す（追加モード）。 */
+  const resetLoraForm = () => {
+    setDraft(EMPTY_LORA)
+    setEditingId(null)
+    setDraftUrl('')
+    setEditingLoraName('')
+  }
+
   const submitLora = async () => {
     setBusy(true)
     setError(null)
     try {
       if (editingId == null) await api.createLora(draft)
       else await api.updateLora(editingId, draft)
-      setDraft(EMPTY_LORA)
-      setEditingId(null)
+      // 取得元 URL は LoRA 本体と同時に保存する（キーはファイル名）。ファイル名を
+      // 変えた場合は旧キーを消してから新しいキーに移す。
+      const url = draftUrl.trim()
+      const current = settings?.model_download_urls ?? {}
+      const next = { ...current }
+      if (editingLoraName && editingLoraName !== draft.lora_name) {
+        delete next[editingLoraName]
+      }
+      if (url) next[draft.lora_name] = url
+      else delete next[draft.lora_name]
+      if (!sameUrls(next, current)) {
+        const saved = await api.putSettings({ model_download_urls: next })
+        setSettings(saved)
+        // モデルタブの編集中の下書きは消さず、触ったキーだけ揃える
+        setUrlDraft((previous) => ({
+          ...previous,
+          [draft.lora_name]: url,
+          ...(editingLoraName && editingLoraName !== draft.lora_name
+            ? { [editingLoraName]: '' }
+            : {}),
+        }))
+      }
+      resetLoraForm()
       await reloadLoras()
       onChanged()
     } catch (caught) {
@@ -563,6 +644,81 @@ export default function SettingsPage({
                       </div>
                     </div>
                   )}
+                  {/* ComfyUI を RunPod の Pod で動かす構成の自動起動（SPEC §5.1）。
+                      ジョブ投入の直前に疎通を確かめ、落ちていれば Pod を作って待つ。
+                      Pod の停止はイメージ側の watchdog が行う。 */}
+                  <div className="card flex flex-col gap-2 p-3">
+                    <label className="flex items-center gap-2 text-xs font-semibold text-slate-300">
+                      <input
+                        type="checkbox"
+                        checked={settings.runpod_enabled}
+                        onChange={(event) =>
+                          update({ runpod_enabled: event.target.checked })
+                        }
+                      />
+                      RunPod の Pod を自動起動する
+                    </label>
+                    <p className="text-[11px] text-slate-500">
+                      ComfyUI が落ちているとき、ジョブ実行の直前に RunPod で Pod を
+                      立ち上げます（起動待ちは最大 15 分）。ComfyUI URL には Pod の
+                      Cloudflare Tunnel のホスト名を入れてください。イメージと手順は
+                      deploy/runpod/README.md を参照。
+                    </p>
+                    {settings.runpod_enabled && (
+                      <>
+                        <div>
+                          <label className="label">RunPod APIキー</label>
+                          <input
+                            className="field"
+                            type="password"
+                            autoComplete="off"
+                            value={settings.runpod_api_key}
+                            onChange={(event) =>
+                              update({ runpod_api_key: event.target.value })
+                            }
+                          />
+                        </div>
+                        <div className="grid grid-cols-2 gap-2">
+                          <div>
+                            <label className="label">テンプレート ID</label>
+                            <input
+                              className="field"
+                              value={settings.runpod_template_id}
+                              onChange={(event) =>
+                                update({ runpod_template_id: event.target.value })
+                              }
+                            />
+                          </div>
+                          <div>
+                            <label className="label">
+                              GPU 種別（gpuTypeId）
+                            </label>
+                            <input
+                              className="field"
+                              value={settings.runpod_gpu_type}
+                              onChange={(event) =>
+                                update({ runpod_gpu_type: event.target.value })
+                              }
+                            />
+                          </div>
+                        </div>
+                        <div>
+                          <label className="label">
+                            Network Volume ID（任意）
+                          </label>
+                          <input
+                            className="field"
+                            value={settings.runpod_network_volume_id}
+                            onChange={(event) =>
+                              update({
+                                runpod_network_volume_id: event.target.value,
+                              })
+                            }
+                          />
+                        </div>
+                      </>
+                    )}
+                  </div>
                   <div className="grid grid-cols-2 gap-2">
                     <div>
                       <label className="label">grok コマンド</label>
@@ -601,7 +757,14 @@ export default function SettingsPage({
                 {loras.length === 0 && (
                   <p className="p-3 text-xs text-slate-500">登録がありません</p>
                 )}
-                {loras.map((lora) => (
+                {loras.map((lora) => {
+                  // 取得元 URL はモデルタブと同じ `model_download_urls`（キーは
+                  // ファイル名 = lora_name）に入れる。Pod 用のモデル一覧
+                  // (deploy/runpod/gen_models_manifest.py) がこれを見る。登録・編集は
+                  // 下のフォームで行うので、一覧では印だけ出す。
+                  const savedUrl =
+                    settings?.model_download_urls?.[lora.lora_name] ?? ''
+                  return (
                   <div key={lora.id} className="flex items-center gap-2 p-2 text-xs">
                     <div className="min-w-0 flex-1">
                       <p className="truncate text-slate-200">{lora.display_name}</p>
@@ -610,6 +773,14 @@ export default function SettingsPage({
                           {loraBadge(lora)}
                         </span>
                         {lora.lora_name}
+                        {savedUrl && (
+                          <span
+                            className="ml-1.5 text-accent-400"
+                            title={`取得元 URL: ${savedUrl}`}
+                          >
+                            URL ✓
+                          </span>
+                        )}
                       </p>
                       <p className="truncate text-slate-600">
                         trigger: {lora.trigger_word} / strength: {lora.default_strength}
@@ -660,6 +831,8 @@ export default function SettingsPage({
                       className="btn-ghost !py-1 text-xs"
                       onClick={() => {
                         setEditingId(lora.id)
+                        setDraftUrl(savedUrl)
+                        setEditingLoraName(lora.lora_name)
                         setDraft({
                           display_name: lora.display_name,
                           lora_name: lora.lora_name,
@@ -682,7 +855,8 @@ export default function SettingsPage({
                       削除
                     </button>
                   </div>
-                ))}
+                  )
+                })}
               </div>
 
               <div className="card p-3">
@@ -825,6 +999,22 @@ export default function SettingsPage({
                       }
                     />
                   </div>
+                  {/* 取得元 URL: モデルタブと同じ model_download_urls（キーは
+                      ファイル名）に、LoRA の保存と同時に書き込む。 */}
+                  <div className="col-span-2">
+                    <label className="label">取得元 URL（任意）</label>
+                    <input
+                      className="field"
+                      placeholder="ダウンロード URL（Hugging Face / Civitai など）"
+                      value={draftUrl}
+                      onChange={(event) => setDraftUrl(event.target.value)}
+                    />
+                    <p className="mt-1 text-[11px] text-slate-500">
+                      ここではダウンロードしません。RunPod の Pod へ持っていくモデル一覧
+                      （deploy/runpod/gen_models_manifest.py）に使われます。空欄で保存すると
+                      登録を解除します。
+                    </p>
+                  </div>
                 </div>
                 <div className="mt-3 flex gap-2">
                   <button
@@ -835,13 +1025,7 @@ export default function SettingsPage({
                     {editingId == null ? '追加' : '更新'}
                   </button>
                   {editingId != null && (
-                    <button
-                      className="btn-ghost text-xs"
-                      onClick={() => {
-                        setEditingId(null)
-                        setDraft(EMPTY_LORA)
-                      }}
-                    >
+                    <button className="btn-ghost text-xs" onClick={resetLoraForm}>
                       キャンセル
                     </button>
                   )}
@@ -865,19 +1049,24 @@ export default function SettingsPage({
                 <span className="mx-1 rounded border border-amber-500 px-1 py-px text-[10px] text-amber-400">
                   未検出
                 </span>
-                が付きます。
+                が付きます。取得元 URL は行ごとに登録でき（ファイル名ごとに設定へ保存され、
+                同じファイルを使う他のワークフローの行にも共有されます）、RunPod の Pod へ
+                持っていくモデル一覧にも使われます。検出済みの行では [取得元 URL] を開くと
+                入力でき、空欄で保存すると登録解除です。
+              </p>
+              <p className="text-xs text-slate-500">
                 {showDownload ? (
                   <>
-                    ダウンロード URL を入れて [DL] を押すと、「接続 / Grok」タブで設定した
-                    models ディレクトリの所定の場所へ保存します（URL はファイル名ごとに
-                    設定へ保存され、同じファイルを使う他のワークフローの行にも共有されます）。
+                    [DL] を押すと「接続 / Grok」タブで設定した models ディレクトリの
+                    所定の場所へ実ファイルをダウンロードします。
                   </>
                 ) : (
                   // 環境変数が無い（Comfy Cloud 利用など）のは正常な状態なので
                   // 警告は出さず、使いたい人向けの案内だけ添える。
                   <>
                     自動ダウンロードを使う場合は .env に COMFY_MODELS_DIR
-                    （ComfyUI の models ディレクトリ）を設定して再起動してください。
+                    （ComfyUI の models ディレクトリ）を設定して再起動してください
+                    （未設定でも取得元 URL の登録はできます）。
                   </>
                 )}
               </p>
@@ -948,11 +1137,12 @@ export default function SettingsPage({
                                     <th className="p-2 font-medium">
                                       候補リスト（実行時に選べる）
                                     </th>
-                                    {showDownload && (
-                                      <th className="p-2 font-medium">
-                                        ダウンロード（不足時）
-                                      </th>
-                                    )}
+                                    {/* 取得元 URL の登録は COMFY_MODELS_DIR と無関係に
+                                        使える（Pod 用のモデル一覧に要るため）。実際の
+                                        ダウンロードだけが dir の状態に縛られる。 */}
+                                    <th className="p-2 font-medium">
+                                      取得元 URL / ダウンロード
+                                    </th>
                                     <th className="p-2" />
                                   </tr>
                                 </thead>
@@ -978,6 +1168,12 @@ export default function SettingsPage({
                                       progress?.status === 'downloading'
                                     const dirReady = dirStatusMessage(dirStatus).ok
                                     const url = (urlDraft[value] ?? '').trim()
+                                    // 検出済みの行でも取得元 URL は登録できる（Pod 用の
+                                    // マニフェスト向け）。表がうるさくならないよう、
+                                    // 既定では畳んでおく。
+                                    const savedUrl =
+                                      settings?.model_download_urls?.[value] ?? ''
+                                    const urlShown = urlOpen[value] ?? false
                                     return (
                                       <tr
                                         key={row.key}
@@ -1071,45 +1267,88 @@ export default function SettingsPage({
                                             </button>
                                           </div>
                                         </td>
-                                        {showDownload && (
-                                          <td className="min-w-[16rem] p-2 align-top">
-                                            <div className="flex gap-1">
-                                              <input
-                                                className="field"
-                                                placeholder="ダウンロード URL（Hugging Face / Civitai など）"
-                                                value={urlDraft[value] ?? ''}
-                                                disabled={!value}
-                                                onChange={(event) =>
-                                                  setUrlDraft((previous) => ({
-                                                    ...previous,
-                                                    [value]: event.target.value,
-                                                  }))
-                                                }
-                                              />
+                                        <td className="min-w-[16rem] p-2 align-top">
+                                            {/* 未検出の行は URL 欄をそのまま出す。
+                                                検出済みの行は [取得元 URL] で開いた
+                                                ときだけ出す。[DL] は models
+                                                ディレクトリが使えるときだけ描画し、
+                                                それ以外では URL 登録だけにする。 */}
+                                            {!missing && (
                                               <button
-                                                className="btn-ghost !py-1 text-xs"
-                                                disabled={
-                                                  busy ||
-                                                  downloading ||
-                                                  !dirReady ||
-                                                  !value ||
-                                                  !url
-                                                }
+                                                type="button"
+                                                className={`text-xs underline decoration-dotted underline-offset-2 hover:text-slate-200 disabled:opacity-40 ${
+                                                  savedUrl
+                                                    ? 'text-accent-400'
+                                                    : 'text-slate-500'
+                                                }`}
+                                                disabled={!value}
                                                 title={
-                                                  dirReady
-                                                    ? `${row.subfolder || 'models 直下'} に保存します`
-                                                    : dirStatusMessage(dirStatus).text
+                                                  savedUrl
+                                                    ? `取得元 URL: ${savedUrl}`
+                                                    : '取得元 URL を登録する（RunPod の Pod へ持っていくモデル一覧に使われます）'
                                                 }
                                                 onClick={() =>
-                                                  void startDownload(row, value)
+                                                  setUrlOpen((previous) => ({
+                                                    ...previous,
+                                                    [value]: !urlShown,
+                                                  }))
                                                 }
                                               >
-                                                DL
+                                                {urlShown ? '▾' : '▸'} 取得元 URL
+                                                {savedUrl ? ' ✓' : ''}
                                               </button>
-                                            </div>
-                                            <p className="mt-1 text-[10px] text-slate-600">
-                                              保存先: {row.subfolder || 'models 直下'}
-                                            </p>
+                                            )}
+                                            {(missing || urlShown) && (
+                                              <div
+                                                className={`flex gap-1 ${missing ? '' : 'mt-1'}`}
+                                              >
+                                                <input
+                                                  className="field"
+                                                  placeholder="ダウンロード URL（Hugging Face / Civitai など）"
+                                                  value={urlDraft[value] ?? ''}
+                                                  disabled={!value}
+                                                  onChange={(event) =>
+                                                    setUrlDraft((previous) => ({
+                                                      ...previous,
+                                                      [value]: event.target.value,
+                                                    }))
+                                                  }
+                                                />
+                                                {missing && dirReady ? (
+                                                  <button
+                                                    className="btn-ghost !py-1 text-xs"
+                                                    disabled={
+                                                      busy ||
+                                                      downloading ||
+                                                      !value ||
+                                                      !url
+                                                    }
+                                                    title={`${row.subfolder || 'models 直下'} に保存します`}
+                                                    onClick={() =>
+                                                      void startDownload(row, value)
+                                                    }
+                                                  >
+                                                    DL
+                                                  </button>
+                                                ) : (
+                                                  <button
+                                                    className="btn-ghost !py-1 text-xs"
+                                                    disabled={busy || url === savedUrl}
+                                                    title="ダウンロードはせず、取得元 URL だけ設定に保存します（空欄で保存すると登録を解除）"
+                                                    onClick={() =>
+                                                      void saveDownloadUrl(value)
+                                                    }
+                                                  >
+                                                    URL保存
+                                                  </button>
+                                                )}
+                                              </div>
+                                            )}
+                                            {missing && dirReady && (
+                                              <p className="mt-1 text-[10px] text-slate-600">
+                                                保存先: {row.subfolder || 'models 直下'}
+                                              </p>
+                                            )}
                                             {progress && (
                                               <div className="mt-1">
                                                 {downloading && (
@@ -1146,7 +1385,6 @@ export default function SettingsPage({
                                               </div>
                                             )}
                                           </td>
-                                        )}
                                         <td className="p-2 align-top">
                                           <button
                                             className="btn-ghost !py-1 text-xs"

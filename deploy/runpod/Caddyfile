@@ -1,0 +1,38 @@
+# ComfyUI の前に立てる認証つきリバースプロキシ（deploy/runpod/README.md）。
+#
+# ComfyUI 自身は 127.0.0.1:8188 でしか待ち受けない（entrypoint.sh の --listen）。
+# 外に出るのはこの :8189 だけで、Cloudflare Tunnel はここに繋ぐ。
+#
+# 認証はアプリ側 backend/app/comfy.py の _headers() が送る 2 つのヘッダに合わせる:
+#   Authorization: Bearer <COMFY_API_KEY>
+#   X-API-Key: <COMFY_API_KEY>
+# どちらか一方が一致すれば通す。COMFY_API_KEY が空なら認証しない（ローカル検証用）。
+
+{
+	admin off
+	auto_https off
+	# ComfyUI のログは ComfyUI 側に出るので、ここはアクセス失敗だけ見えれば良い
+	log {
+		level ERROR
+	}
+}
+
+:8189 {
+	# CEL 式マッチャ。「キーが設定されていて、かつ Authorization も X-API-Key も
+	# 一致しない」リクエストだけを弾く。
+	@unauthorized expression <<CEL
+		{env.COMFY_API_KEY} != ""
+		&& {http.request.header.Authorization} != "Bearer " + {env.COMFY_API_KEY}
+		&& {http.request.header.X-Api-Key} != {env.COMFY_API_KEY}
+		CEL
+
+	respond @unauthorized "unauthorized" 401 {
+		close
+	}
+
+	# WebSocket（/ws）は reverse_proxy が自動でアップグレードを通す。
+	# 数十分かかる生成があるのでタイムアウトは設けない（Caddy の既定も無制限）。
+	reverse_proxy 127.0.0.1:8188 {
+		flush_interval -1
+	}
+}

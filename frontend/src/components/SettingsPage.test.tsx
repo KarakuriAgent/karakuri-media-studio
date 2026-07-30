@@ -1,7 +1,13 @@
-import { cleanup, render, screen, waitFor } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { api } from '../api'
-import type { ModelFieldState, ModelsDirStatus, Options, Settings } from '../types'
+import type {
+  Lora,
+  ModelFieldState,
+  ModelsDirStatus,
+  Options,
+  Settings,
+} from '../types'
 import SettingsPage from './SettingsPage'
 
 vi.mock('../api', async () => {
@@ -14,6 +20,9 @@ vi.mock('../api', async () => {
       listLoras: vi.fn(),
       modelsDirStatus: vi.fn(),
       listModelDownloads: vi.fn(),
+      putSettings: vi.fn(),
+      createLora: vi.fn(),
+      updateLora: vi.fn(),
     },
   }
 })
@@ -23,6 +32,9 @@ const listModels = vi.mocked(api.listModels)
 const listLoras = vi.mocked(api.listLoras)
 const modelsDirStatus = vi.mocked(api.modelsDirStatus)
 const listModelDownloads = vi.mocked(api.listModelDownloads)
+const putSettings = vi.mocked(api.putSettings)
+const createLora = vi.mocked(api.createLora)
+const updateLora = vi.mocked(api.updateLora)
 
 afterEach(cleanup)
 
@@ -44,6 +56,11 @@ function settings(): Settings {
     hf_token: '',
     civitai_api_key: '',
     model_download_urls: {},
+    runpod_enabled: false,
+    runpod_api_key: '',
+    runpod_template_id: '',
+    runpod_gpu_type: 'NVIDIA RTX A6000',
+    runpod_network_volume_id: '',
   }
 }
 
@@ -65,22 +82,42 @@ function modelRow(): ModelFieldState {
   }
 }
 
+function loraRow(): Lora {
+  return {
+    id: 1,
+    display_name: 'かおり',
+    lora_name: 'kaori-krea2.safetensors',
+    trigger_word: 'kaori',
+    default_strength: 1,
+    default_audio: null,
+    sort_order: 0,
+    target: 'image',
+    family: 'krea2',
+    sample_images: [],
+  }
+}
+
 function dirStatus(overrides: Partial<ModelsDirStatus> = {}): ModelsDirStatus {
   return { configured: false, exists: false, writable: false, path: '', ...overrides }
 }
 
+/** ComfyUI のファイル一覧に無い = その行が「未検出」になる options。 */
+function missingOptions(): Options {
+  return {
+    model_files: { 'UNETLoader.unet_name': ['other.safetensors'] },
+  } as unknown as Options
+}
+
 /** 設定ページを描画し、dir-status を読み終えるまで待つ。 */
-async function openSettings() {
-  render(
-    <SettingsPage options={{} as Options} onBack={() => {}} onChanged={() => {}} />,
-  )
+async function openSettings(options: Options = {} as Options) {
+  render(<SettingsPage options={options} onBack={() => {}} onChanged={() => {}} />)
   await waitFor(() => expect(modelsDirStatus).toHaveBeenCalled())
   await waitFor(() => screen.getByText('ComfyUI URL'))
 }
 
 /** モデルタブを開いて、1 件だけあるワークフローの折りたたみも開く。 */
-async function openModelsTab() {
-  await openSettings()
+async function openModelsTab(options: Options = {} as Options) {
+  await openSettings(options)
   screen.getByRole('button', { name: 'モデル' }).click()
   await waitFor(() => screen.getByText(/Krea 2 Turbo/))
   screen.getByText(/Krea 2 Turbo/).click()
@@ -120,27 +157,321 @@ describe('SettingsPage: 不足モデルのダウンロード UI（COMFY_MODELS_D
     expect(screen.getByText(/書き込み可/)).toBeTruthy()
   })
 
-  it('環境変数が無ければモデルタブの DL 列を出さず、警告も出さない', async () => {
+  it('環境変数が無ければ [DL] を出さず URL 登録だけにする、警告も出さない', async () => {
     modelsDirStatus.mockResolvedValue(dirStatus())
-    await openModelsTab()
+    await openModelsTab(missingOptions())
 
-    expect(screen.queryByText('ダウンロード（不足時）')).toBeNull()
+    // URL の登録は環境変数と無関係に使えるので列そのものは出す
+    expect(screen.getByText('取得元 URL / ダウンロード')).toBeTruthy()
+    expect(screen.getByPlaceholderText(/ダウンロード URL/)).toBeTruthy()
+    // ダウンロードできない環境ではボタンごと出さない（押せない [DL] を残さない）
     expect(screen.queryByRole('button', { name: 'DL' })).toBeNull()
-    expect(screen.queryByText(/COMFY_MODELS_DIR が設定されていません/)).toBeNull()
+    expect(screen.queryByText(/保存先:/)).toBeNull()
+    expect(screen.getByRole('button', { name: 'URL保存' })).toBeTruthy()
+    // タブ上部の警告は出さない（Comfy Cloud 利用などでは正常な状態のため）
+    expect(
+      screen.queryByText(
+        (text) => text.trim() === 'COMFY_MODELS_DIR が設定されていません',
+      ),
+    ).toBeNull()
     // 代わりに設定方法の案内だけを控えめに出す
     expect(screen.getByText(/自動ダウンロードを使う場合は/)).toBeTruthy()
   })
 
-  it('環境変数があればモデルタブに DL 列を出す（使えない状態なら理由つきで無効）', async () => {
+  it('環境変数があってもディレクトリが使えなければ [DL] を出さない（警告は出す）', async () => {
     modelsDirStatus.mockResolvedValue(
       dirStatus({ configured: true, path: '/comfy/models' }),
     )
+    await openModelsTab(missingOptions())
+
+    expect(screen.getByText('取得元 URL / ダウンロード')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'DL' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'URL保存' })).toBeTruthy()
+    // 設定したのに使えない状態なので、こちらは理由を出す
+    expect(screen.getByText(/パスが見つかりません/)).toBeTruthy()
+  })
+
+  it('未検出の行は URL 欄と [DL] をそのまま出す（開閉ボタンは挟まない）', async () => {
+    modelsDirStatus.mockResolvedValue(
+      dirStatus({ configured: true, exists: true, writable: true, path: '/comfy/models' }),
+    )
+    await openModelsTab(missingOptions())
+
+    // 行に付く「未検出」バッジ（タブ上部の説明文にも同じ語が出るので title で引く）
+    expect(screen.getByTitle('ComfyUI のファイル一覧に見つかりません')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /取得元 URL/ })).toBeNull()
+    expect(
+      screen.getByPlaceholderText(/ダウンロード URL/) as HTMLInputElement,
+    ).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'DL' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'URL保存' })).toBeNull()
+  })
+})
+
+describe('SettingsPage: 検出済みモデルの取得元 URL 登録', () => {
+  beforeEach(() => {
+    vi.stubGlobal('WebSocket', FakeSocket)
+    getSettings.mockResolvedValue(settings())
+    listModels.mockResolvedValue([modelRow()])
+    listLoras.mockResolvedValue([])
+    listModelDownloads.mockResolvedValue([])
+    putSettings.mockReset()
+    modelsDirStatus.mockResolvedValue(
+      dirStatus({ configured: true, exists: true, writable: true, path: '/comfy/models' }),
+    )
+  })
+
+  /** 検出済みの行の [取得元 URL] を押して URL 欄を開く。 */
+  async function openUrlEditor() {
+    await openModelsTab()
+    const toggle = screen.getByRole('button', { name: /取得元 URL/ })
+    expect(screen.queryByPlaceholderText(/ダウンロード URL/)).toBeNull()
+    toggle.click()
+    await waitFor(() => screen.getByPlaceholderText(/ダウンロード URL/))
+    return screen.getByPlaceholderText(/ダウンロード URL/) as HTMLInputElement
+  }
+
+  it('検出済みの行は既定で URL 欄を畳んでおり、開くと [URL保存] が出る', async () => {
     await openModelsTab()
 
-    expect(screen.getByText('ダウンロード（不足時）')).toBeTruthy()
-    const button = screen.getByRole('button', { name: 'DL' })
-    expect(button.hasAttribute('disabled')).toBe(true)
-    expect(button.getAttribute('title')).toMatch(/パスが見つかりません/)
-    expect(screen.getByText(/パスが見つかりません/)).toBeTruthy()
+    expect(screen.queryByTitle('ComfyUI のファイル一覧に見つかりません')).toBeNull()
+    expect(screen.queryByRole('button', { name: 'DL' })).toBeNull()
+    expect(screen.getByRole('button', { name: /取得元 URL/ })).toBeTruthy()
+    expect(screen.queryByPlaceholderText(/ダウンロード URL/)).toBeNull()
+
+    screen.getByRole('button', { name: /取得元 URL/ }).click()
+    await waitFor(() => screen.getByPlaceholderText(/ダウンロード URL/))
+    expect(screen.getByRole('button', { name: 'URL保存' })).toBeTruthy()
+    // ダウンロードはさせない
+    expect(screen.queryByRole('button', { name: 'DL' })).toBeNull()
+  })
+
+  it('URL を入れて保存すると model_download_urls に載る', async () => {
+    putSettings.mockResolvedValue({
+      ...settings(),
+      model_download_urls: {
+        'krea2_turbo_fp8_scaled.safetensors': 'https://example.com/a.safetensors',
+      },
+    })
+    const input = await openUrlEditor()
+
+    fireEvent.change(input, {
+      target: { value: 'https://example.com/a.safetensors' },
+    })
+    screen.getByRole('button', { name: 'URL保存' }).click()
+
+    await waitFor(() => expect(putSettings).toHaveBeenCalled())
+    expect(putSettings.mock.calls[0][0]).toEqual({
+      model_download_urls: {
+        'krea2_turbo_fp8_scaled.safetensors': 'https://example.com/a.safetensors',
+      },
+    })
+    await waitFor(() => screen.getByText(/取得元 URL を保存しました/))
+    // 登録済みは開閉ボタンの表示で分かる
+    expect(screen.getByRole('button', { name: /取得元 URL ✓/ })).toBeTruthy()
+  })
+
+  it('空欄で保存すると登録が解除される（キーが消える）', async () => {
+    getSettings.mockResolvedValue({
+      ...settings(),
+      model_download_urls: {
+        'krea2_turbo_fp8_scaled.safetensors': 'https://example.com/a.safetensors',
+        'other.safetensors': 'https://example.com/b.safetensors',
+      },
+    })
+    putSettings.mockResolvedValue({
+      ...settings(),
+      model_download_urls: {
+        'other.safetensors': 'https://example.com/b.safetensors',
+      },
+    })
+    await openModelsTab()
+    // 登録済みなので印が付いている
+    const toggle = screen.getByRole('button', { name: /取得元 URL ✓/ })
+    toggle.click()
+    const input = (await waitFor(() =>
+      screen.getByPlaceholderText(/ダウンロード URL/),
+    )) as HTMLInputElement
+    expect(input.value).toBe('https://example.com/a.safetensors')
+
+    fireEvent.change(input, { target: { value: '' } })
+    screen.getByRole('button', { name: 'URL保存' }).click()
+
+    await waitFor(() => expect(putSettings).toHaveBeenCalled())
+    expect(putSettings.mock.calls[0][0]).toEqual({
+      model_download_urls: { 'other.safetensors': 'https://example.com/b.safetensors' },
+    })
+    await waitFor(() => screen.getByText(/取得元 URL を解除しました/))
+    expect(screen.queryByRole('button', { name: /取得元 URL ✓/ })).toBeNull()
+  })
+
+  it('COMFY_MODELS_DIR 未設定でも取得元 URL は登録できる', async () => {
+    // Comfy Cloud 接続などでローカルの models ディレクトリが無い環境
+    modelsDirStatus.mockResolvedValue(dirStatus())
+    putSettings.mockResolvedValue({
+      ...settings(),
+      model_download_urls: {
+        'krea2_turbo_fp8_scaled.safetensors': 'https://example.com/a.safetensors',
+      },
+    })
+    const input = await openUrlEditor()
+
+    fireEvent.change(input, {
+      target: { value: 'https://example.com/a.safetensors' },
+    })
+    const save = screen.getByRole('button', { name: 'URL保存' })
+    expect(save.hasAttribute('disabled')).toBe(false)
+    save.click()
+
+    await waitFor(() => expect(putSettings).toHaveBeenCalled())
+    expect(putSettings.mock.calls[0][0]).toEqual({
+      model_download_urls: {
+        'krea2_turbo_fp8_scaled.safetensors': 'https://example.com/a.safetensors',
+      },
+    })
+  })
+
+  it('変更が無いあいだ [URL保存] は押せない', async () => {
+    await openUrlEditor()
+
+    expect(
+      screen.getByRole('button', { name: 'URL保存' }).hasAttribute('disabled'),
+    ).toBe(true)
+  })
+})
+
+describe('SettingsPage: LoRA フォームの取得元 URL', () => {
+  const URL_A = 'https://example.com/kaori.safetensors'
+
+  beforeEach(() => {
+    vi.stubGlobal('WebSocket', FakeSocket)
+    getSettings.mockResolvedValue(settings())
+    listModels.mockResolvedValue([modelRow()])
+    listLoras.mockResolvedValue([loraRow()])
+    listModelDownloads.mockResolvedValue([])
+    putSettings.mockReset()
+    createLora.mockReset()
+    updateLora.mockReset()
+    modelsDirStatus.mockResolvedValue(dirStatus())
+  })
+
+  /** LoRA タブを開く（1 件だけ登録がある状態）。 */
+  async function openLorasTab() {
+    await openSettings()
+    screen.getByRole('button', { name: 'LoRA 管理' }).click()
+    await waitFor(() => screen.getByText('かおり'))
+  }
+
+  /** 一覧の [編集] を押してフォームに読み込む。 */
+  async function startEditing() {
+    await openLorasTab()
+    screen.getByRole('button', { name: '編集' }).click()
+    await waitFor(() => screen.getByText(/LoRA を編集/))
+    return screen.getByPlaceholderText(/ダウンロード URL/) as HTMLInputElement
+  }
+
+  it('URL 欄はフォームの一部で、行ごとの開閉ボタンは無い', async () => {
+    await openLorasTab()
+
+    expect(screen.getByText('取得元 URL（任意）')).toBeTruthy()
+    expect(screen.getByPlaceholderText(/ダウンロード URL/)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /取得元 URL/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'URL保存' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'DL' })).toBeNull()
+  })
+
+  it('追加時に URL を入れると LoRA 作成と一緒に model_download_urls へ載る', async () => {
+    putSettings.mockResolvedValue({
+      ...settings(),
+      model_download_urls: { 'mizuki.safetensors': URL_A },
+    })
+    await openLorasTab()
+
+    // フォーム先頭のテキスト入力が「表示名」（label は htmlFor を持たないので順で引く）
+    const [displayName] = screen.getAllByRole('textbox') as HTMLInputElement[]
+    fireEvent.change(displayName, { target: { value: 'みずき' } })
+    fireEvent.change(screen.getByPlaceholderText('例: my_lora.safetensors'), {
+      target: { value: 'mizuki.safetensors' },
+    })
+    fireEvent.change(screen.getByPlaceholderText(/ダウンロード URL/), {
+      target: { value: URL_A },
+    })
+    screen.getByRole('button', { name: '追加' }).click()
+
+    await waitFor(() => expect(createLora).toHaveBeenCalled())
+    await waitFor(() => expect(putSettings).toHaveBeenCalled())
+    expect(putSettings.mock.calls[0][0]).toEqual({
+      model_download_urls: { 'mizuki.safetensors': URL_A },
+    })
+  })
+
+  it('編集フォームには登録済み URL がプリフィルされ、一覧には印が出る', async () => {
+    getSettings.mockResolvedValue({
+      ...settings(),
+      model_download_urls: { 'kaori-krea2.safetensors': URL_A },
+    })
+    const input = await startEditing()
+
+    expect(input.value).toBe(URL_A)
+    expect(screen.getByTitle(`取得元 URL: ${URL_A}`)).toBeTruthy()
+  })
+
+  it('URL を空欄にして更新すると登録が解除される（キーが消える）', async () => {
+    getSettings.mockResolvedValue({
+      ...settings(),
+      model_download_urls: {
+        'kaori-krea2.safetensors': URL_A,
+        'other.safetensors': 'https://example.com/b.safetensors',
+      },
+    })
+    putSettings.mockResolvedValue({
+      ...settings(),
+      model_download_urls: { 'other.safetensors': 'https://example.com/b.safetensors' },
+    })
+    const input = await startEditing()
+
+    fireEvent.change(input, { target: { value: '' } })
+    screen.getByRole('button', { name: '更新' }).click()
+
+    await waitFor(() => expect(updateLora).toHaveBeenCalled())
+    await waitFor(() => expect(putSettings).toHaveBeenCalled())
+    expect(putSettings.mock.calls[0][0]).toEqual({
+      model_download_urls: { 'other.safetensors': 'https://example.com/b.safetensors' },
+    })
+  })
+
+  it('ファイル名を変えて更新すると旧キーから新キーへ移る', async () => {
+    getSettings.mockResolvedValue({
+      ...settings(),
+      model_download_urls: { 'kaori-krea2.safetensors': URL_A },
+    })
+    putSettings.mockResolvedValue({
+      ...settings(),
+      model_download_urls: { 'kaori-v2.safetensors': URL_A },
+    })
+    await startEditing()
+
+    fireEvent.change(screen.getByPlaceholderText('例: my_lora.safetensors'), {
+      target: { value: 'kaori-v2.safetensors' },
+    })
+    screen.getByRole('button', { name: '更新' }).click()
+
+    await waitFor(() => expect(putSettings).toHaveBeenCalled())
+    expect(putSettings.mock.calls[0][0]).toEqual({
+      model_download_urls: { 'kaori-v2.safetensors': URL_A },
+    })
+  })
+
+  it('URL に変更が無ければ設定は PUT しない', async () => {
+    getSettings.mockResolvedValue({
+      ...settings(),
+      model_download_urls: { 'kaori-krea2.safetensors': URL_A },
+    })
+    await startEditing()
+
+    screen.getByRole('button', { name: '更新' }).click()
+
+    await waitFor(() => expect(updateLora).toHaveBeenCalled())
+    expect(putSettings).not.toHaveBeenCalled()
   })
 })
