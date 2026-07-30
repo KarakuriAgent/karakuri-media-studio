@@ -448,12 +448,29 @@ def _video(workflow_id: str, **overrides) -> dict:
     return build_video_workflow(params(video_workflow=workflow_id, **overrides), spec=spec)
 
 
-@pytest.mark.parametrize("workflow_id", VIDEO_IDS)
-def test_every_video_workflow_declares_a_lora_chain(workflow_id):
-    assert get_spec(workflow_id, "video").lora_chain is not None
+#: LoRA チェーンを持つ動画ワークフロー。Wan 系は差せる場所が無いので対象外
+#: （動画 LoRA を指定したジョブは 422、フォームは欄ごと出さない）。
+LORA_VIDEO_IDS = [
+    workflow_id
+    for workflow_id in VIDEO_IDS
+    if get_spec(workflow_id, "video").lora_chain is not None
+]
 
 
-@pytest.mark.parametrize("workflow_id", VIDEO_IDS)
+def test_the_ltx_workflows_declare_a_lora_chain():
+    assert LORA_VIDEO_IDS == [
+        workflow_id
+        for workflow_id in VIDEO_IDS
+        if get_spec(workflow_id, "video").family == "ltx2.3"
+    ]
+
+
+def test_wan_dancer_has_no_lora_chain():
+    """テンプレートに挿せる場所が無いことを明示（フォームも欄を出さない）。"""
+    assert get_spec("wan_dancer", "video").lora_chain is None
+
+
+@pytest.mark.parametrize("workflow_id", LORA_VIDEO_IDS)
 def test_no_video_lora_keeps_the_template_wiring(workflow_id):
     spec = get_spec(workflow_id, "video")
     wf = _video(workflow_id, video_loras=[])
@@ -469,7 +486,7 @@ def test_no_video_lora_keeps_the_template_wiring(workflow_id):
     validate_workflow(wf)
 
 
-@pytest.mark.parametrize("workflow_id", VIDEO_IDS)
+@pytest.mark.parametrize("workflow_id", LORA_VIDEO_IDS)
 def test_video_loras_are_chained_between_head_and_consumers(workflow_id):
     spec = get_spec(workflow_id, "video")
     loras = [
@@ -637,12 +654,15 @@ def test_video_injection(workflow_id):
     assert value(wf, spec, "prompt") == "VIDEO PROMPT"
     assert value(wf, spec, "negative") == "NEGATIVE"
     assert value(wf, spec, "save_prefix") == "video/01JOBID"
-    assert value(wf, spec, "fps") == 25
     # 1.5 MP @ 16:9 -> the same numbers ResolutionSelector would produce
     assert (value(wf, spec, "width"), value(wf, spec, "height")) == resolution(
         "16:9 (Widescreen)", 1.5
     )
-    assert value(wf, spec, "duration") == pytest.approx(8)
+    # fps / 秒数を持たないワークフロー（wan_dancer は尺を選択式で持つ）もある
+    if spec.supports("fps"):
+        assert value(wf, spec, "fps") == 25
+    if spec.supports("duration"):
+        assert value(wf, spec, "duration") == pytest.approx(8)
     # prompt enhancement is always off (Grok writes the prompt)
     if spec.supports("prompt_enhance"):
         assert value(wf, spec, "prompt_enhance") is False
@@ -723,7 +743,7 @@ def test_ltx_frame_count(duration, fps, expected):
 def test_frame_expression_is_pinned(workflow_id):
     spec = get_spec(workflow_id)
     if not spec.supports("frames_expr"):
-        pytest.skip(f"{workflow_id} derives its length from the reference clip")
+        pytest.skip(f"{workflow_id} pins no frame-count expression")
     node_id = spec.inject["frames_expr"].node_id
     template_inputs = load_template(spec)[node_id]["inputs"]
     wf = build_video_workflow(params(video_workflow=workflow_id, duration=10, fps=25))
@@ -1134,3 +1154,108 @@ def test_dynamic_lora_chain_is_not_overridable():
     )
     assert placeholder not in wf
     assert wf[f"{LORA_NODE_PREFIX}0"]["inputs"]["lora_name"] == "kaori.safetensors"
+
+
+# --------------------------------------------------------------------------
+# 選択式フィールド（SPEC §3.1）と wan_dancer
+# --------------------------------------------------------------------------
+
+WAN = get_spec("wan_dancer", "video")
+
+
+def _select_target(name: str):
+    return WAN.selects[name].target
+
+
+def _wan(**overrides) -> dict:
+    return build_video_workflow(params(video_workflow="wan_dancer", **overrides))
+
+
+def test_only_wan_declares_selects():
+    """既存ワークフローには選択項目が無い（挙動不変）。"""
+    assert {
+        spec.id for spec in SPECS if spec.selects
+    } == {"wan_dancer"}
+    assert set(WAN.selects) == {"dance_style", "motion_amplitude", "duration"}
+
+
+def test_selects_write_both_the_choice_and_its_index():
+    """CustomCombo が読むのは番号側なので、文字列と番号の両方を入れる。"""
+    wf = _wan(selects={"dance_style": "Street Dance 街舞"})
+    node = wf[_select_target("dance_style").node_id]["inputs"]
+    assert node["choice"] == "Street Dance 街舞"
+    assert node["index"] == 2  # 0 始まり
+    assert isinstance(node["index"], int)
+
+
+def test_unset_selects_fall_back_to_the_declared_default():
+    wf = _wan()
+    assert wf[_select_target("dance_style").node_id]["inputs"]["choice"] == "K-Pop 韩舞"
+    assert wf[_select_target("dance_style").node_id]["inputs"]["index"] == 1
+    amplitude = wf[_select_target("motion_amplitude").node_id]["inputs"]
+    assert (amplitude["choice"], amplitude["index"]) == ("medium 中等", 1)
+
+
+def test_an_unknown_select_value_falls_back_instead_of_breaking_the_graph():
+    """API 検証をすり抜けた値でも、テンプレートの選択肢の外は入れない。"""
+    wf = _wan(selects={"dance_style": "Tango", "nope": "x"})
+    assert wf[_select_target("dance_style").node_id]["inputs"]["choice"] == "K-Pop 韩舞"
+
+
+def test_the_duration_select_also_sets_the_audio_trim():
+    """尺はコンボと TrimAudioDuration の両方に入る（音声が 25 秒で切れない）。"""
+    wf = _wan(selects={"duration": "20"})
+    combo = wf[_select_target("duration").node_id]["inputs"]
+    assert (combo["choice"], combo["index"]) == ("20", 3)
+    trim = WAN.selects["duration"].numeric_target
+    assert trim is not None
+    assert wf[trim.node_id]["inputs"][trim.field] == 20.0
+    # テンプレートの 25 秒固定を確かに置き換えている
+    assert load_template(WAN)[trim.node_id]["inputs"][trim.field] == 25
+
+
+def test_round_up_maps_an_audio_length_to_a_choice():
+    duration = WAN.selects["duration"]
+    assert duration.round_up(0.5) == "5"
+    assert duration.round_up(5.0) == "5"
+    assert duration.round_up(5.2) == "10"
+    assert duration.round_up(28.0) == "30"
+    # 選択肢の上限で止める（曲が長くても 30 秒）
+    assert duration.round_up(300.0) == "30"
+
+
+def test_wan_keeps_the_template_prompt_when_none_is_given():
+    """プロンプトを選択肢から組み立てるので、空の video_prompt では潰さない。"""
+    template_string = load_template(WAN)[WAN.inject["prompt"].node_id]["inputs"]["string"]
+    wf = _wan(video_prompt="  ")
+    assert wf[WAN.inject["prompt"].node_id]["inputs"]["string"] == template_string
+    assert "<dance style>" in template_string
+    # 書かれていれば入る
+    written = _wan(video_prompt="一个人正在跳舞，舞蹈种类是<dance style>")
+    assert (
+        written[WAN.inject["prompt"].node_id]["inputs"]["string"]
+        == "一个人正在跳舞，舞蹈种类是<dance style>"
+    )
+
+
+def test_ltx_still_receives_an_empty_prompt():
+    """prompt_required なワークフローの挙動は変えない。"""
+    spec = get_spec("ltx2_3_id_lora", "video")
+    wf = build_video_workflow(params(video_workflow=spec.id, video_prompt=""))
+    assert value(wf, spec, "prompt") == ""
+
+
+def test_wan_takes_the_start_image_and_the_audio():
+    wf = _wan()
+    assert wf[WAN.inject["image"].node_id]["inputs"]["image"] == "start.png"
+    assert wf[WAN.inject["audio"].node_id]["inputs"]["audio"] == "ref.mp3"
+    assert wf[WAN.output_node]["inputs"]["filename_prefix"] == "video/01JOBID"
+
+
+def test_wan_model_files_are_configurable():
+    """CLIPVision も含めてモデル上書きの対象に入っている（SPEC §3.3）。"""
+    keys = {field.key: field for field in model_fields((WAN,))}
+    assert "wan_dancer/696:479.clip_name" in keys
+    assert keys["wan_dancer/696:479.clip_name"].class_type == "CLIPVisionLoader"
+    for node_id, field in (("696:475", "unet_name"), ("696:478", "vae_name")):
+        assert f"wan_dancer/{node_id}.{field}" in keys

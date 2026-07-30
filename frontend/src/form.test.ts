@@ -10,6 +10,7 @@ import {
   initialForm,
   isAudioJob,
   jobModelOverrides,
+  jobSelects,
   jobWorkflowIds,
   lorasForTarget,
   modelSlotsForJob,
@@ -17,7 +18,7 @@ import {
   workflowsForMode,
   type FormState,
 } from './form'
-import type { Lora, ModelSlot, WorkflowOption } from './types'
+import type { Lora, ModelSlot, WorkflowOption, WorkflowSelect } from './types'
 
 function workflow(overrides: Partial<WorkflowOption> = {}): WorkflowOption {
   return {
@@ -30,6 +31,9 @@ function workflow(overrides: Partial<WorkflowOption> = {}): WorkflowOption {
     supports: ['prompt', 'negative', 'width', 'height', 'duration', 'fps'],
     accepts_start_image: false,
     image_label: '開始フレーム',
+    selects: [],
+    prompt_required: true,
+    accepts_video_loras: true,
     min_duration: 0,
     max_duration: 0,
     default_duration: 0,
@@ -186,6 +190,9 @@ const QWEN = workflow({
   requires: ['image'],
   supports: ['image', 'prompt', 'seed'],
   image_label: '編集元画像',
+  selects: [],
+  prompt_required: true,
+  accepts_video_loras: true,
 })
 
 describe('image LoRA families', () => {
@@ -608,5 +615,81 @@ describe('MODE_LABELS', () => {
   it('names the chained mode 画像＋動画 and lists audio as a mode', () => {
     expect(MODE_LABELS.full).toBe('画像＋動画')
     expect(MODE_LABELS.audio).toBe('音声')
+  })
+})
+
+// -------------------------------------------- 選択式フィールド（SPEC §3.1）
+
+function select(overrides: Partial<WorkflowSelect> = {}): WorkflowSelect {
+  return {
+    name: 'dance_style',
+    label: '踊りの種類',
+    choices: ['K-Pop 韩舞', 'Street Dance 街舞'],
+    default: 'K-Pop 韩舞',
+    auto: false,
+    hint: '',
+    ...overrides,
+  }
+}
+
+const DANCE = select()
+const LENGTH = select({
+  name: 'duration',
+  label: '尺（秒）',
+  choices: ['5', '10', '15'],
+  default: '15',
+  auto: true,
+})
+const WAN = workflow({
+  id: 'wan_dancer',
+  requires: ['image', 'audio'],
+  accepts_start_image: true,
+  prompt_required: false,
+  accepts_video_loras: false,
+  selects: [DANCE, LENGTH],
+})
+
+describe('jobSelects', () => {
+  it('宣言された項目の選んだ値だけを送る', () => {
+    const form = {
+      ...initialForm,
+      selects: { dance_style: 'Street Dance 街舞', duration: '10' },
+    }
+    expect(jobSelects(form, WAN)).toEqual({
+      dance_style: 'Street Dance 街舞',
+      duration: '10',
+    })
+  })
+
+  it('未指定（空文字）は送らない — 既定値や自動決定に任せる', () => {
+    const form = { ...initialForm, selects: { dance_style: '', duration: '' } }
+    expect(jobSelects(form, WAN)).toEqual({})
+  })
+
+  it('ワークフローが宣言していない項目と選択肢外の値は落とす', () => {
+    const form = {
+      ...initialForm,
+      selects: { dance_style: 'Tango', motion_amplitude: 'high 高' },
+    }
+    expect(jobSelects(form, WAN)).toEqual({})
+    // 選択式を持たないワークフローには何も送らない
+    expect(
+      jobSelects({ ...initialForm, selects: { dance_style: 'K-Pop 韩舞' } }, ID_LORA),
+    ).toEqual({})
+    expect(jobSelects({ ...initialForm, selects: {} }, null)).toEqual({})
+  })
+})
+
+describe('hiddenFields と LoRA チェーン', () => {
+  it('LoRA チェーンを持たないワークフローでは動画 LoRA 欄を出さない', () => {
+    const hidden = hiddenFields('i2v', WAN)
+    expect(hidden.videoLoras).toBe(true)
+    expect(hidden.videoTrigger).toBe(true)
+    // 従来のワークフローは今までどおり出す
+    expect(hiddenFields('i2v', ID_LORA).videoLoras).toBe(false)
+  })
+
+  it('選択肢が未取得（/api/options 前）でも欄は消さない', () => {
+    expect(hiddenFields('i2v', null).videoLoras).toBe(false)
   })
 })

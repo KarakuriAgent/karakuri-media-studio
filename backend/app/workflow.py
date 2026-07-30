@@ -59,6 +59,7 @@ MODEL_FIELDS: set[tuple[str, str]] = {
     ("LTXVAudioVAELoader", "ckpt_name"),
     ("LTXAVTextEncoderLoader", "text_encoder"),
     ("LTXAVTextEncoderLoader", "ckpt_name"),
+    ("CLIPVisionLoader", "clip_name"),
     ("LatentUpscaleModelLoader", "model_name"),
     ("LoadMoGeModel", "model_name"),
     ("LoraLoaderModelOnly", "lora_name"),
@@ -136,6 +137,37 @@ def _inject(wf: Workflow, spec: WorkflowSpec, name: str, value: Any) -> bool:
         return False
     _set(wf, target.node_id, target.field, _coerce(target.class_type, target.field, value))
     return True
+
+
+def _inject_selects(wf: Workflow, spec: WorkflowSpec, params: GenerationParams) -> None:
+    """Write the picked value of every selectable field (SPEC §3.1).
+
+    ``CustomCombo`` は選んだ文字列と 0 始まりの番号を持ち、**グラフが読むのは
+    番号側**（``choice`` は表示用）なので両方書く。``numeric_target`` があれば
+    同じ値を数値としても入れる（wan_dancer の尺は音声のトリム長も決める）。
+    不明・リスト外の値は既定値に落とす（検証は :func:`app.models.select_problem`
+    が済ませているので、ここは最後の砦）。
+    """
+    for name, select in spec.selects.items():
+        choice = (params.selects.get(name) or "").strip()
+        if choice not in select.choices:
+            choice = select.fallback
+        if not choice:
+            continue
+        _set(wf, select.target.node_id, select.target.field, choice)
+        if select.index_field:
+            _set(wf, select.target.node_id, select.index_field, select.index_of(choice))
+        if select.numeric_target is not None:
+            try:
+                value: Any = float(choice)
+            except ValueError:
+                continue
+            _set(
+                wf,
+                select.numeric_target.node_id,
+                select.numeric_target.field,
+                _coerce(select.numeric_target.class_type, select.numeric_target.field, value),
+            )
 
 
 def _node(wf: Workflow, target: Target) -> dict[str, Any] | None:
@@ -653,12 +685,15 @@ def build_video_workflow(
     apply_model_overrides(wf, overrides, resolved.id)
 
     # The video LoRA's trigger words go in front of the prompt (SPEC §3.4).
-    _inject(
-        wf,
-        resolved,
-        "prompt",
-        prepend_triggers(video_trigger_text(params), params.video_prompt),
-    )
+    # プロンプトをコンボから組み立てるワークフロー（wan_dancer）では、空の
+    # `video_prompt` でテンプレートの既定文を潰さない。
+    if params.video_prompt.strip() or resolved.prompt_required:
+        _inject(
+            wf,
+            resolved,
+            "prompt",
+            prepend_triggers(video_trigger_text(params), params.video_prompt),
+        )
     # An empty negative keeps the template's own default (SPEC §3.1).
     if params.negative_prompt.strip():
         _inject(wf, resolved, "negative", params.negative_prompt)
@@ -681,6 +716,7 @@ def build_video_workflow(
     _build_lora_chain(
         wf, resolved.lora_chain, params.video_loras, prefix=VIDEO_LORA_NODE_PREFIX
     )
+    _inject_selects(wf, resolved, params)
     for name, value in resolved.constants.items():
         _inject(wf, resolved, name, value)
     _inject(wf, resolved, "save_prefix", params.video_filename_prefix)

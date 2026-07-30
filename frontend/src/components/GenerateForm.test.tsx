@@ -163,6 +163,9 @@ const IMAGE_WORKFLOWS: Options['image_workflows'] = [
     supports: ['aspect_ratio', 'megapixels', 'prompt', 'seed'],
     accepts_start_image: false,
     image_label: '開始フレーム',
+    selects: [],
+    prompt_required: true,
+    accepts_video_loras: true,
     min_duration: 0,
     max_duration: 0,
     default_duration: 0,
@@ -177,6 +180,9 @@ const IMAGE_WORKFLOWS: Options['image_workflows'] = [
     supports: ['image', 'prompt', 'seed'],
     accepts_start_image: false,
     image_label: '編集元画像',
+    selects: [],
+    prompt_required: true,
+    accepts_video_loras: true,
     min_duration: 0,
     max_duration: 0,
     default_duration: 0,
@@ -261,6 +267,9 @@ const AUDIO_WORKFLOWS: Options['audio_workflows'] = [
     supports: ['prompt', 'lyrics', 'duration', 'bpm', 'keyscale', 'language', 'seed'],
     accepts_start_image: false,
     image_label: '開始フレーム',
+    selects: [],
+    prompt_required: true,
+    accepts_video_loras: true,
     min_duration: 10,
     max_duration: 600,
     default_duration: 120,
@@ -275,6 +284,9 @@ const AUDIO_WORKFLOWS: Options['audio_workflows'] = [
     supports: ['prompt', 'duration', 'audio_category', 'reprompt', 'seed'],
     accepts_start_image: false,
     image_label: '開始フレーム',
+    selects: [],
+    prompt_required: true,
+    accepts_video_loras: true,
     min_duration: 1,
     max_duration: 380,
     default_duration: 60,
@@ -429,6 +441,9 @@ describe('GenerateForm は使わない項目を出さない', () => {
           supports: ['prompt', 'negative', 'duration', 'fps'],
           accepts_start_image: false,
           image_label: '開始フレーム',
+          selects: [],
+          prompt_required: true,
+          accepts_video_loras: true,
           min_duration: 0,
           max_duration: 0,
           default_duration: 0,
@@ -555,6 +570,9 @@ describe('GenerateForm の「履歴から選択」', () => {
       supports: ['prompt', 'negative', 'duration', 'fps'],
       accepts_start_image: true,
       image_label: '最初のフレーム',
+      selects: [],
+      prompt_required: true,
+      accepts_video_loras: true,
       min_duration: 0,
       max_duration: 0,
       default_duration: 0,
@@ -671,6 +689,9 @@ describe('GenerateForm の「ライブラリから選択」', () => {
       supports: ['prompt', 'negative', 'duration', 'fps'],
       accepts_start_image: true,
       image_label: '最初のフレーム',
+      selects: [],
+      prompt_required: true,
+      accepts_video_loras: true,
       min_duration: 0,
       max_duration: 0,
       default_duration: 0,
@@ -789,6 +810,105 @@ describe('GenerateForm の「ライブラリから選択」', () => {
     // ライブラリにもアセット一覧にも無ければ、値そのものを出す
     expect(
       within(section('リファレンス音声')).getByText('/assets/audio/legacy.mp3'),
+    ).toBeTruthy()
+  })
+})
+
+describe('GenerateForm の選択式フィールド（SPEC §3.1）', () => {
+  const WAN: Options['video_workflows'][number] = {
+    id: 'wan_dancer',
+    label: '画像+音声→ダンス動画 (Wan Dancer)',
+    kind: 'video',
+    family: 'wan',
+    notes: '',
+    requires: ['image', 'audio'],
+    supports: ['prompt', 'negative', 'width', 'height'],
+    accepts_start_image: true,
+    image_label: '開始フレーム',
+    selects: [
+      {
+        name: 'dance_style',
+        label: '踊りの種類',
+        choices: ['K-Pop 韩舞', 'Street Dance 街舞'],
+        default: 'K-Pop 韩舞',
+        auto: false,
+        hint: 'プロンプトの <dance style> に入る踊りの種類。',
+      },
+      {
+        name: 'duration',
+        label: '尺（秒）',
+        choices: ['5', '10', '15'],
+        default: '15',
+        auto: true,
+        hint: '省略すると音声の長さに合わせて決める。',
+      },
+    ],
+    prompt_required: false,
+    accepts_video_loras: false,
+    min_duration: 0,
+    max_duration: 0,
+    default_duration: 0,
+  }
+
+  function showWan(form: Partial<FormState> = {}) {
+    const patch = vi.fn()
+    render(
+      <GenerateForm
+        form={{ ...initialForm, mode: 'i2v', videoWorkflow: 'wan_dancer', ...form }}
+        patch={patch}
+        options={{ ...OPTIONS, video_workflows: [WAN] }}
+        optionsError={null}
+        onReloadOptions={() => {}}
+        onOpenChat={() => {}}
+        onSubmit={() => {}}
+        submitting={false}
+        fieldErrors={{}}
+        jobs={[]}
+        showNsfw={false}
+      />,
+    )
+    return { patch }
+  }
+
+  it('宣言された選択肢をセレクトとして出し、選択を patch する', () => {
+    const { patch } = showWan()
+    const dance = screen.getByLabelText('踊りの種類') as HTMLSelectElement
+    expect([...dance.options].map((option) => option.value)).toEqual([
+      '',
+      'K-Pop 韩舞',
+      'Street Dance 街舞',
+    ])
+    // 未指定は「既定（…）」と出す
+    expect(dance.options[0].textContent).toContain('既定（K-Pop 韩舞）')
+    fireEvent.change(dance, { target: { value: 'Street Dance 街舞' } })
+    expect(patch).toHaveBeenCalledWith({
+      selects: { dance_style: 'Street Dance 街舞' },
+    })
+  })
+
+  it('自動決定できる項目には「自動」を既定オプションとして置く', () => {
+    showWan()
+    const length = screen.getByLabelText('尺（秒）') as HTMLSelectElement
+    expect(length.value).toBe('')
+    expect(length.options[0].textContent).toContain('自動')
+    expect(screen.getByText(/省略すると音声の長さに合わせて決める/)).toBeTruthy()
+  })
+
+  it('選択式を持たないワークフローでは何も出さない', () => {
+    show()
+    expect(screen.queryByLabelText('踊りの種類')).toBeNull()
+  })
+
+  it('LoRA チェーンが無いので動画 LoRA のセクションを出さない', () => {
+    showWan()
+    expect(screen.queryByText('LoRA（動画）')).toBeNull()
+  })
+
+  it('動画プロンプトを任意と示す', () => {
+    showWan()
+    expect(screen.getByText('（任意）')).toBeTruthy()
+    expect(
+      screen.getByPlaceholderText(/選択項目からプロンプトが組み立てられます/),
     ).toBeTruthy()
   })
 })

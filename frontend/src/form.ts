@@ -8,6 +8,7 @@ import type {
   ModelSlot,
   PromptTemplate,
   WorkflowOption,
+  WorkflowSelect,
 } from './types'
 
 /** Fallback while /api/options has not answered yet (backend default). */
@@ -106,6 +107,12 @@ export interface FormState {
   seed: number
   promptTemplate: PromptTemplate
   /**
+   * ワークフローが宣言する選択式フィールドの値（論理名 -> 選んだ文字列）。
+   * 空文字は「未指定」= 既定値 / 自動。ワークフローを行き来しても選択が消えない
+   * よう、全ワークフローぶんを 1 つのマップに持つ（送信時に絞る）。
+   */
+  selects: Record<string, string>
+  /**
    * 実行時に切り替えたモデル（キーは /api/options の model_slots の `key`）。
    * 全ワークフローぶんを 1 つに持ち、送信時に走らせるワークフローのぶんだけ絞る
    * （モードを行き来しても選択が消えない）。
@@ -156,6 +163,7 @@ export const initialForm: FormState = {
   seedLocked: false,
   seed: 0,
   promptTemplate: 'natural',
+  selects: {},
   modelOverrides: {},
   audioWorkflow: DEFAULT_AUDIO_WORKFLOW,
   audioPrompt: '',
@@ -202,6 +210,37 @@ export function lorasForTarget(
     if (target !== 'image' || !family) return true
     return (lora.family ?? DEFAULT_FAMILY) === family
   })
+}
+
+// ----------------------------------------------- 選択式フィールド（SPEC §3.1）
+// 自由記述ではなく決まった選択肢で挙動が決まるワークフロー（wan_dancer の踊りの
+// 種類・動きの大きさ・尺）向け。フォームは workflow.selects をそのまま select と
+// して描き、送信時はそのワークフローが宣言している名前だけを送る。
+
+/** 選択中のワークフローが宣言している選択式フィールド。 */
+export function workflowSelects(
+  workflow?: WorkflowOption | null,
+): WorkflowSelect[] {
+  return workflow?.selects ?? []
+}
+
+/**
+ * フォームの選択 → ジョブの `selects`。
+ *
+ * 未指定（空文字）は送らない: `auto` の項目はバックエンドが入力から決め、それ以外
+ * はワークフローの既定値になる。選択肢から外れた値も送らない（ワークフローを
+ * 切り替えた直後の持ち越しで 422 にしない）。
+ */
+export function jobSelects(
+  form: FormState,
+  workflow?: WorkflowOption | null,
+): Record<string, string> {
+  const picked: Record<string, string> = {}
+  for (const select of workflowSelects(workflow)) {
+    const value = form.selects[select.name]
+    if (value && select.choices.includes(value)) picked[select.name] = value
+  }
+  return picked
 }
 
 // ------------------------------------------------- 実行時のモデル切り替え（§3.3）
@@ -350,8 +389,9 @@ export function hiddenFields(
     // only in the LTX graph — so each follows its own stage
     loras: !image,
     trigger: !image,
-    videoLoras: !video,
-    videoTrigger: !video,
+    // LoRA チェーンを持たないワークフロー（Wan 系）には挿せないので出さない
+    videoLoras: !video || !(workflow?.accepts_video_loras ?? true),
+    videoTrigger: !video || !(workflow?.accepts_video_loras ?? true),
     videoPrompt: !video,
     negative: !video,
     audio: !requires('audio'),

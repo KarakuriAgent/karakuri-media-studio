@@ -65,6 +65,89 @@ def T(node_id: str, field: str, class_type: str) -> Target:
     return Target(node_id, field, class_type)
 
 
+#: 選択式フィールドの「自動決定」の種類。``audio_duration`` は入力音声の実長から
+#: 決める（wan_dancer の尺）。空文字は自動なし（既定値をそのまま使う）。
+AutoSource = Literal["", "audio_duration"]
+
+
+def _is_number(value: str) -> bool:
+    try:
+        float(value)
+    except ValueError:
+        return False
+    return True
+
+
+@dataclass(frozen=True)
+class SelectSpec:
+    """One *selectable* injection point: the app offers a fixed list of strings.
+
+    テンプレートが自由記述ではなくコンボボックスで挙動を決めるワークフロー
+    （wan_dancer の踊りの種類など）のための汎用の仕組み。宣言すると
+
+    * 生成フォームがこのリストからの ``select`` を自動で描画し、
+    * ジョブは ``selects`` にその値を持ち（リスト外は 422）、
+    * エージェントのカタログにも選択肢が載る。
+
+    ComfyUI の ``CustomCombo`` は選んだ文字列（``choice``）と 0 始まりの番号
+    （``index``）の両方を持ち、**グラフが読むのは番号側**（``choice`` は表示用）。
+    そのため :attr:`index_field` にも同じ選択の番号を書き込む。
+
+    ``numeric_target`` は「選んだ値を数値としても別のノードに入れる」場合に使う
+    （wan_dancer の尺はコンボと ``TrimAudioDuration`` の両方に入れないと、音声だけ
+    25 秒で切られる）。
+    """
+
+    #: UI の見出し（日本語）
+    label: str
+    #: 選べる値。**テンプレートの option と同じ文字列**であること
+    choices: tuple[str, ...]
+    #: 選んだ文字列を書き込む先（``CustomCombo.choice`` など）
+    target: Target
+    #: 未指定のときに使う値（空なら ``choices[0]``）
+    default: str = ""
+    #: 選択の番号を書き込むフィールド（``CustomCombo`` は必須。空なら書かない）
+    index_field: str = "index"
+    #: 選んだ値を数値としても入れる先（``float`` に変換して書き込む）
+    numeric_target: Target | None = None
+    #: 未指定のときの自動決定（:data:`AutoSource`）
+    auto: AutoSource = ""
+    #: UI とエージェント向けの一言（省略時の挙動など）
+    hint: str = ""
+
+    @property
+    def fallback(self) -> str:
+        """未指定・不正な値のときに使う値。"""
+        if self.default and self.default in self.choices:
+            return self.default
+        return self.choices[0] if self.choices else ""
+
+    def round_up(self, value: float) -> str:
+        """``value`` 以上で最小の（数値として読める）選択肢。無ければ最大のもの。
+
+        wan_dancer の尺を音声の実長から決めるのに使う: 曲が途中で切れないよう
+        切り上げ、選択肢の上限で止める。
+        """
+        numeric = sorted(
+            (float(choice), choice)
+            for choice in self.choices
+            if _is_number(choice)
+        )
+        if not numeric:
+            return self.fallback
+        for threshold, choice in numeric:
+            if value <= threshold + 1e-6:
+                return choice
+        return numeric[-1][1]
+
+    def index_of(self, choice: str) -> int:
+        """``choice`` の 0 始まりの番号（不明なら既定値の番号）。"""
+        try:
+            return self.choices.index(choice)
+        except ValueError:
+            return self.choices.index(self.fallback) if self.fallback in self.choices else 0
+
+
 @dataclass(frozen=True)
 class LoraChain:
     """Where the dynamic user-LoRA chain is spliced into a template (SPEC §3.4).
@@ -99,6 +182,7 @@ FAMILY_LABELS: dict[str, str] = {
     "z-image": "Z-Image",
     "qwen-image": "Qwen-Image Edit",
     "ltx2.3": "LTX 2.3",
+    "wan": "Wan 2.2",
     "ace-step": "ACE-Step 1.5",
     "stable-audio": "Stable Audio 3",
 }
@@ -149,6 +233,12 @@ class WorkflowSpec:
     seeds: tuple[Target, ...] = ()
     #: extra targets keyed by logical name that are always forced to a constant
     constants: dict[str, Any] = field(default_factory=dict)
+    #: 選択式フィールド（論理名 -> :class:`SelectSpec`）。宣言のないワークフロー
+    #: では空なので、フォームにもジョブにも何も増えない。
+    selects: dict[str, SelectSpec] = field(default_factory=dict)
+    #: ``video_prompt`` が必須か。プロンプトをコンボから組み立てるワークフロー
+    #: （wan_dancer）は False で、書かれた場合だけ注入する。
+    prompt_required: bool = True
 
     @property
     def path(self):
@@ -157,8 +247,15 @@ class WorkflowSpec:
     def targets(self) -> Iterable[Target]:
         yield from self.inject.values()
         yield from self.seeds
+        for select in self.selects.values():
+            yield select.target
+            if select.numeric_target is not None:
+                yield select.numeric_target
         if self.lora_chain is not None:
             yield from self.lora_chain.consumers
+
+    def select(self, name: str) -> SelectSpec | None:
+        return self.selects.get(name)
 
     def supports(self, name: str) -> bool:
         return name in self.inject
@@ -657,6 +754,101 @@ LTX_IC_LORA_MOTION = WorkflowSpec(
 )
 
 
+
+# --------------------------------------------------------------------------
+# video: workflow/video/wan/*.json
+# --------------------------------------------------------------------------
+
+#: 尺の選択肢（テンプレートの Duration コンボと同じ並び）。番号がそのまま
+#: WanDancerPadKeyframesList の num_segments（= 5 秒単位のセグメント数）になる。
+WAN_DURATIONS: tuple[str, ...] = ("5", "10", "15", "20", "25", "30")
+
+WAN_DANCER = WorkflowSpec(
+    id="wan_dancer",
+    label="画像+音声→ダンス動画 (Wan Dancer)",
+    kind="video",
+    family="wan",
+    relpath="video/wan/wan_dancer.json",
+    output_node="699",
+    requires=("image", "audio"),
+    description=(
+        "開始フレーム画像と音楽ファイルから、その曲に合わせて踊る動画を生成する"
+        "（Wan 2.2 WanDancerVideo）。渡した音声がそのままクリップの音声トラックに"
+        "なり、映像はビートに合わせて踊る。プロンプトは自由記述ではなく"
+        "「踊りの種類」「動きの大きさ」の選択で決まり、尺は音声の長さに自動で"
+        "合わせる（5〜30 秒）。"
+    ),
+    audio_role=(
+        "指定した音声ファイルがクリップの音声トラックそのものになる"
+        "（`audio_path` 必須）。踊りはこの曲に合わせて付くので、"
+        "リズムのはっきりした曲を渡す。尺も既定ではこの音声の長さに合わせる。"
+    ),
+    prompt_hint=(
+        "This workflow builds its own Chinese prompt from the `dance_style` and"
+        " `motion_amplitude` selections, so **`video_prompt` is optional** —"
+        " leave it out unless the user asked for something the two selections"
+        " cannot express. When you do set it, write the Wan-style Chinese"
+        " template string; keep the `<dance style>` placeholder in it if you"
+        " want the selected dance to be substituted"
+        ' (e.g. "一个人正在跳舞，舞蹈种类是<dance style>，在霓虹灯的舞台上").'
+    ),
+    accepts_start_image=True,
+    image_label="開始フレーム",
+    prompt_required=False,
+    inject={
+        # Global 側のテンプレ文（<dance style> が選択値に置換される）
+        "prompt": T("696:685", "string", "StringReplace"),
+        "negative": T("696:629", "text", "CLIPTextEncode"),
+        "width": T("696:398", "value", "PrimitiveInt"),
+        "height": T("696:400", "value", "PrimitiveInt"),
+        "image": T("547", "image", "LoadImage"),
+        "audio": T("548", "audio", "LoadAudio"),
+        "save_prefix": T("699", "filename_prefix", "SaveVideo"),
+    },
+    selects={
+        "dance_style": SelectSpec(
+            label="踊りの種類",
+            choices=(
+                "Chinese Classic Dance 古典舞",
+                "K-Pop 韩舞",
+                "Street Dance 街舞",
+                "Latin Dance 拉丁舞",
+                "Tap Dance 踢踏舞",
+            ),
+            target=T("696:695", "choice", "CustomCombo"),
+            default="K-Pop 韩舞",
+            hint="プロンプトの <dance style> に入る踊りの種類。",
+        ),
+        "motion_amplitude": SelectSpec(
+            label="動きの大きさ",
+            choices=("low 低", "medium 中等", "high 高", "max 最大"),
+            target=T("696:694", "choice", "CustomCombo"),
+            default="medium 中等",
+            hint="大きいほど激しく動くが、破綻もしやすい。",
+        ),
+        "duration": SelectSpec(
+            label="尺（秒）",
+            choices=WAN_DURATIONS,
+            target=T("696:700", "choice", "CustomCombo"),
+            # 音声の長さが測れなかったときの落としどころ（真ん中）
+            default="15",
+            # 音声もこの秒数で切る（既定の 25 秒固定だと曲が途中で切れる）
+            numeric_target=T("696:494", "duration", "TrimAudioDuration"),
+            auto="audio_duration",
+            hint="省略すると音声の長さに合わせて 5〜30 秒から自動で決める。",
+        ),
+    },
+    seeds=(
+        T("696:654", "noise_seed", "RandomNoise"),
+        T("696:667", "noise_seed", "SamplerCustom"),
+    ),
+    notes=(
+        "wan2.2 global/local の 2 段 UNet + lightx2v LoRA / 既定 720x1280 /"
+        " ユーザー LoRA を挿すチェーンは持たない"
+    ),
+)
+
+
 # --------------------------------------------------------------------------
 # audio: workflow/audio/*.json
 # --------------------------------------------------------------------------
@@ -796,6 +988,7 @@ SPECS: tuple[WorkflowSpec, ...] = (
     LTX_FLF2V,
     LTX_IC_LORA_IMAGE,
     LTX_IC_LORA_MOTION,
+    WAN_DANCER,
     ACE_STEP_1_5,
     STABLE_AUDIO_3,
 )
@@ -906,6 +1099,9 @@ class CatalogEntry:
     min_duration: float = 0.0
     max_duration: float = 0.0
     default_duration: float = 0.0
+    #: 選択式フィールド ``(論理名, 見出し, 選択肢, 既定値, 自動か, 一言)``。
+    #: 宣言のないワークフローでは空なので、カタログにも何も出ない（SPEC §3.1）。
+    selects: tuple[tuple[str, str, tuple[str, ...], str, bool, str], ...] = ()
 
     @property
     def required_fields(self) -> tuple[str, ...]:
@@ -937,6 +1133,17 @@ def catalog_entry(spec: WorkflowSpec) -> CatalogEntry:
         min_duration=spec.min_duration,
         max_duration=spec.max_duration,
         default_duration=spec.default_duration,
+        selects=tuple(
+            (
+                name,
+                select.label,
+                select.choices,
+                select.fallback,
+                bool(select.auto),
+                select.hint,
+            )
+            for name, select in spec.selects.items()
+        ),
     )
 
 
@@ -1027,6 +1234,39 @@ def validate_spec(spec: WorkflowSpec, template: Workflow | None = None) -> list[
         check(target, name)
     for index, target in enumerate(spec.seeds):
         check(target, f"seeds[{index}]")
+
+    for name, select in spec.selects.items():
+        check(select.target, f"selects[{name}]")
+        if select.numeric_target is not None:
+            check(select.numeric_target, f"selects[{name}].numeric_target")
+        if not select.choices:
+            problems.append(f"{spec.id}.selects[{name}]: no choices declared")
+        if not select.label.strip():
+            problems.append(f"{spec.id}.selects[{name}]: label is empty")
+        if select.default and select.default not in select.choices:
+            problems.append(
+                f"{spec.id}.selects[{name}]: default {select.default!r} is not"
+                " one of the choices"
+            )
+        node = tpl.get(select.target.node_id)
+        inputs = (node.get("inputs") or {}) if isinstance(node, dict) else {}
+        if select.index_field and select.index_field not in inputs:
+            problems.append(
+                f"{spec.id}.selects[{name}]: {select.target.node_id}"
+                f".{select.index_field} does not exist"
+            )
+        # テンプレートの option と選択肢がずれていると、番号を書いても別の値が
+        # 選ばれる（グラフは番号で n 行目を引く）。option を持つノードだけ確認する。
+        options = [
+            str(value)
+            for key, value in inputs.items()
+            if key.startswith("option") and str(value).strip()
+        ]
+        if options and list(select.choices) != options:
+            problems.append(
+                f"{spec.id}.selects[{name}]: choices {list(select.choices)!r} do"
+                f" not match the template options {options!r}"
+            )
 
     if spec.lora_chain is not None:
         chain = spec.lora_chain

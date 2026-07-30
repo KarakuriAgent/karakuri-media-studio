@@ -14,6 +14,7 @@ import {
   imageWorkflowNeedsSource,
   initialForm,
   jobModelOverrides,
+  jobSelects,
   jobWorkflowIds,
   validateForm,
   type FormState,
@@ -349,6 +350,8 @@ export default function App() {
         end_image: needs('end_image') ? form.endImage || null : null,
         reference_video: needs('video') ? form.referenceVideo || null : null,
         seed: form.seedLocked ? form.seed : null,
+        // 選択中のワークフローが宣言している選択項目だけ（未指定は送らない）
+        selects: jobSelects(form, workflow),
         // 走らせるワークフローのスロットだけ（既定値のままのものは送らない）
         model_overrides: jobModelOverrides(
           form,

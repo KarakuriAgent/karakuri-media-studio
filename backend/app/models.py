@@ -233,6 +233,10 @@ class GenerationParams(BaseModel):
     #: Stable Audio: expand `audio_prompt` with the graph's own local LLM first
     reprompt: bool = False
 
+    #: 選択式フィールドの値（論理名 -> 選んだ文字列。SPEC §3.1）。宣言のない
+    #: ワークフローでは常に空。
+    selects: dict[str, str] = Field(default_factory=dict)
+
     image_seed: int = 0
     video_seeds: list[int] = Field(default_factory=list)
     audio_seed: int = 0
@@ -328,7 +332,13 @@ def missing_job_fields(
     missing: list[str] = []
     if mode in ("full", "image_only") and not (image_prompt or "").strip():
         missing.append("image_prompt")
-    if mode in ("full", "i2v") and not (video_prompt or "").strip():
+    # プロンプトを選択肢から組み立てるワークフロー（wan_dancer）では video_prompt
+    # は任意。書かれた場合だけテンプレートに注入される（SPEC §3.1）。
+    if (
+        mode in ("full", "i2v")
+        and not (video_prompt or "").strip()
+        and get_video_spec(video_workflow).prompt_required
+    ):
         missing.append("video_prompt")
 
     if mode in ("full", "image_only"):
@@ -356,6 +366,43 @@ def missing_job_fields(
         if not (provided.get(name) or "").strip():
             missing.append(INPUT_FIELDS[name])
     return missing
+
+
+def select_problem(
+    mode: str,
+    video_workflow: str | None,
+    selects: Any,
+) -> str | None:
+    """選択式フィールドの指定が使えるか（None == 問題なし、SPEC §3.1）。
+
+    宣言のない名前と、選択肢に無い値を拒否する。動画ステージを走らせないモード
+    では何も見ない（選択式は今のところ動画ワークフローだけの仕組み）。
+    """
+    if not selects:
+        return None
+    if not isinstance(selects, dict):
+        return "selects は {\"<名前>\": \"<選んだ値>\"} 形式のオブジェクトで指定してください"
+    if mode not in ("full", "i2v"):
+        return f"mode '{mode}' は動画ステージを走らせないので selects は指定できません"
+    try:
+        spec = get_video_spec(video_workflow)
+    except WorkflowSpecError as exc:
+        return str(exc)
+    for name, value in selects.items():
+        select = spec.select(str(name))
+        if select is None:
+            known = ", ".join(f"`{key}`" for key in spec.selects) or "なし"
+            return (
+                f"video_workflow `{spec.id}` に選択項目 `{name}` はありません"
+                f"（使えるのは {known}）"
+            )
+        if str(value) not in select.choices:
+            return (
+                f"`{name}` に {value!r} は使えません（使えるのは "
+                + ", ".join(f"{choice!r}" for choice in select.choices)
+                + "）"
+            )
+    return None
 
 
 def video_workflow_problem(mode: str, video_workflow: str | None) -> str | None:
@@ -617,6 +664,11 @@ class JobCreate(BaseModel):
     reference_video: str | None = None
 
     seed: int | None = None  # None -> random (recorded in params)
+
+    # 選択式フィールドの値（`GET /api/options` の workflow の `selects` にある
+    # 論理名 -> 選んだ文字列）。省略した項目はワークフローの既定値、`auto` を
+    # 宣言している項目（wan_dancer の尺）は入力から自動で決まる（SPEC §3.1）。
+    selects: dict[str, str] = Field(default_factory=dict)
 
     # このジョブだけで使うモデルファイル名（SPEC §3.3）。キーは設定と同じ
     # `"<workflow_id>/<node_id>.<field>"`、値は設定の候補リスト（`model_choices`）に
@@ -1093,6 +1145,20 @@ class AgentProgress(BaseModel):
     activity: str | None = None
 
 
+class WorkflowSelect(BaseModel):
+    """One selectable field of a workflow (SPEC §3.1 / §8)。フォームが select を描く。"""
+
+    #: 論理名（ジョブの `selects` のキー）
+    name: str
+    label: str
+    choices: list[str] = Field(default_factory=list)
+    #: 未指定のときに使われる値
+    default: str = ""
+    #: True なら「自動」を選べる（未指定で入力から決まる。wan_dancer の尺）
+    auto: bool = False
+    hint: str = ""
+
+
 class WorkflowOption(BaseModel):
     """One selectable workflow template (SPEC §3 / §8)."""
 
@@ -1110,6 +1176,12 @@ class WorkflowOption(BaseModel):
     accepts_start_image: bool = False
     #: UI label of the primary image input
     image_label: str = "開始フレーム"
+    #: 選択式フィールド（無いワークフローでは空）
+    selects: list[WorkflowSelect] = Field(default_factory=list)
+    #: `video_prompt` が必須か（False ならプロンプト欄は任意扱い）
+    prompt_required: bool = True
+    #: 動画用 LoRA を挿せるか（テンプレートに LoRA チェーンがあるか）
+    accepts_video_loras: bool = False
     #: audio workflows: the clip length the model supports, in seconds
     min_duration: float = 0.0
     max_duration: float = 0.0

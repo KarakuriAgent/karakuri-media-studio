@@ -3,7 +3,12 @@ from fastapi import APIRouter
 from .. import comfy, library, lora_samples
 from ..config import load_settings
 from ..db import get_db
-from ..models import DEFAULT_NEGATIVE_PROMPT, Options, WorkflowOption
+from ..models import (
+    DEFAULT_NEGATIVE_PROMPT,
+    Options,
+    WorkflowOption,
+    WorkflowSelect,
+)
 from ..workflow import MODEL_FIELDS, selectable_model_slots
 from ..workflows import (
     DEFAULT_AUDIO_WORKFLOW,
@@ -45,6 +50,19 @@ def _workflow_option(spec: WorkflowSpec) -> WorkflowOption:
         min_duration=spec.min_duration,
         max_duration=spec.max_duration,
         default_duration=spec.default_duration,
+        selects=[
+            WorkflowSelect(
+                name=name,
+                label=select.label,
+                choices=list(select.choices),
+                default=select.fallback,
+                auto=bool(select.auto),
+                hint=select.hint,
+            )
+            for name, select in spec.selects.items()
+        ],
+        prompt_required=spec.prompt_required,
+        accepts_video_loras=spec.lora_chain is not None,
     )
 
 

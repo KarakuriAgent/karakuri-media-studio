@@ -24,6 +24,7 @@ import HistoryPickerModal, {
 } from './HistoryPickerModal'
 import LibraryPickerModal from './LibraryPickerModal'
 import ModelPicker from './ModelPicker'
+import WorkflowSelects from './WorkflowSelects'
 import { Banner, FieldError, Section } from './ui'
 
 // 音声も「モード」の一つ。ただし走るのは音声ワークフロー 1 本きりで、画像→動画の
@@ -314,6 +315,8 @@ export default function GenerateForm({
   // 使うモードに戻せば入力はそのまま復元される）。
   const hidden = hiddenFields(form.mode, workflow, imageWorkflow)
   const imageEdits = form.mode !== 'i2v' && imageWorkflowNeedsSource(imageWorkflow)
+  // プロンプトを選択項目から組み立てるワークフロー（wan_dancer）では任意入力。
+  const promptOptional = workflow?.prompt_required === false
   // 編集系の画像ワークフローでは入力画像そのもの、それ以外は動画の開始フレーム。
   const startImageLabel = imageEdits
     ? (imageWorkflow?.image_label ?? '編集元画像')
@@ -539,6 +542,9 @@ export default function GenerateForm({
                   画像＋動画では開始フレームを受け取れるワークフローのみ選べます。
                 </p>
               )}
+              {/* ワークフローが宣言した選択式フィールド（wan_dancer の踊りの
+                  種類・動きの大きさ・尺。§3.1） */}
+              <WorkflowSelects workflow={workflow} form={form} patch={patch} />
               <ModelPicker
                 slots={options?.model_slots}
                 workflowId={form.videoWorkflow}
@@ -895,11 +901,22 @@ export default function GenerateForm({
               )}
               {!hidden.videoPrompt && (
                 <div>
-                  <label className="label">動画プロンプト</label>
+                  <label className="label">
+                    動画プロンプト
+                    {promptOptional && (
+                      <span className="ml-1 font-normal text-slate-500">
+                        （任意）
+                      </span>
+                    )}
+                  </label>
                   <textarea
                     className="field h-28 resize-y"
                     value={form.videoPrompt}
-                    placeholder="1 段落 4〜8 文。動き・カメラ・音声を含める"
+                    placeholder={
+                      promptOptional
+                        ? '空欄でよい（選択項目からプロンプトが組み立てられます）'
+                        : '1 段落 4〜8 文。動き・カメラ・音声を含める'
+                    }
                     onChange={(event) => patch({ videoPrompt: event.target.value })}
                   />
                   <FieldError message={fieldErrors.video_prompt} />

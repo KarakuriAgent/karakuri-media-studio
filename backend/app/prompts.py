@@ -460,10 +460,35 @@ def _catalog_entry_lines(entry: CatalogEntry) -> list[str]:
             ' `mode: "full"` は使えない（生成した開始フレームを受け取れない'
             "ワークフローなので、`continue` の行き先にもできない）"
         )
+    lines += _select_lines(entry)
     if entry.prompt_hint:
         lines.append(f"  - Writing `video_prompt`: {entry.prompt_hint}")
     if entry.notes:
         lines.append(f"  - Notes: {entry.notes}")
+    return lines
+
+
+def _select_lines(entry: CatalogEntry) -> list[str]:
+    """選択式フィールドの案内（宣言していないワークフローでは何も出ない、§3.1）。
+
+    自由記述ではなく決まった選択肢で挙動が決まるワークフロー（wan_dancer）向け。
+    ジョブの ``selects`` に書ける名前と、その値をそのまま列挙する。
+    """
+    if not entry.selects:
+        return []
+    lines = [
+        "  - 選択項目（ジョブの `selects` に"
+        ' `{"<名前>": "<選んだ値>"}` の形で書く。以下の文字列のみ使用可）:'
+    ]
+    for name, label, choices, default, auto, hint in entry.selects:
+        values = ", ".join(f"`{choice}`" for choice in choices)
+        note = f" {hint}" if hint else ""
+        fallback = (
+            "省略すると入力から自動で決まる"
+            if auto
+            else f"省略すると `{default}`"
+        )
+        lines.append(f"    - `{name}`（{label}）: {values} — {fallback}。{note}")
     return lines
 
 
@@ -1332,6 +1357,7 @@ Your reply is either plain Japanese text, or plain Japanese text followed by
         "negative_prompt": "...",
         "aspect_ratio": "9:16", "megapixels": 1.0,
         "model_overrides": {"krea2_turbo/30:10.unet_name": "other.safetensors"},
+        "selects": {"dance_style": "K-Pop 韩舞"},
         "loras": [{"lora_name": "kaori.safetensors", "trigger_word": "kaori",
                    "strength": 0.8}],
         "trigger_text": "kaori",
@@ -1423,6 +1449,13 @@ Rules:
   `library_search` to look through all of it by name, tag or kind, and follow
   its `offset` hint to page through. Search first when the user refers to
   material you cannot find in CHOICES.
+- `selects` carries the fixed-choice knobs a workflow declares (VIDEO WORKFLOWS
+  lists them per workflow with their exact strings — `wan_dancer` picks its dance
+  style, motion amplitude and length that way). Only write names that workflow
+  declares, only the listed strings, and leave out what you do not need: an
+  omitted knob falls back to its default, and one marked "省略すると入力から自動で
+  決まる" is worked out from the job's own inputs (the clip length follows the
+  audio file). Workflows without selectable knobs take no `selects` at all.
 - `model_overrides` switches which model file a workflow loads for **this job
   only** (CHOICES の「使用モデルの切り替え」に、キーと候補が出ています). Leave it
   out to use the configured default; when you do set it, write only keys of the

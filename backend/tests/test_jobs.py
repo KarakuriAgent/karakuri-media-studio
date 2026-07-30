@@ -1179,3 +1179,198 @@ def test_audio_job_cannot_be_continued(env):
     response = env.client.post(f"/api/jobs/{job['id']}/continue", json={})
     assert response.status_code == 422
     assert "last frame" in response.text
+
+
+# --------------------------------------------------------------------------
+# 選択式フィールドと尺の自動決定（SPEC §3.1、wan_dancer）
+# --------------------------------------------------------------------------
+
+def wan_body(env, **overrides) -> dict:
+    body = {
+        "mode": "i2v",
+        "video_workflow": "wan_dancer",
+        "source_image": str(env.start_image),
+        "audio_path": str(env.audio),
+    }
+    body.update(overrides)
+    return body
+
+
+def _no_probe(*_args, **_kwargs):
+    """ffprobe を使わない差し替え（長さ不明）。"""
+
+    async def unknown():
+        return None
+
+    return unknown()
+
+
+def _probe(seconds: float):
+    async def measured(*_args, **_kwargs):
+        return seconds
+
+    return measured
+
+
+def test_wan_needs_no_video_prompt(env, monkeypatch):
+    monkeypatch.setattr(jobs, "probe_media_duration", _no_probe)
+    response = env.client.post("/api/jobs", json=wan_body(env))
+    assert response.status_code == 201, response.text
+    job = wait_for(env.client, response.json()["id"])
+    assert job["status"] == "done", job["error"]
+    # テンプレートのテンプレ文がそのまま残る
+    graph = graph_with(env, "696:685")
+    assert "<dance style>" in graph["696:685"]["inputs"]["string"]
+
+
+def test_ltx_still_requires_a_video_prompt(env):
+    response = env.client.post(
+        "/api/jobs",
+        json={
+            "mode": "i2v",
+            "source_image": str(env.start_image),
+            "audio_path": str(env.audio),
+        },
+    )
+    assert response.status_code == 422
+    assert "video_prompt" in response.text
+
+
+def test_selects_are_injected_and_recorded(env, monkeypatch):
+    monkeypatch.setattr(jobs, "probe_media_duration", _no_probe)
+    response = env.client.post(
+        "/api/jobs",
+        json=wan_body(
+            env,
+            selects={"dance_style": "Latin Dance 拉丁舞", "motion_amplitude": "high 高"},
+        ),
+    )
+    assert response.status_code == 201, response.text
+    job = wait_for(env.client, response.json()["id"])
+    assert job["status"] == "done", job["error"]
+    assert job["params"]["selects"]["dance_style"] == "Latin Dance 拉丁舞"
+    graph = graph_with(env, "696:695")
+    assert graph["696:695"]["inputs"]["choice"] == "Latin Dance 拉丁舞"
+    assert graph["696:695"]["inputs"]["index"] == 3
+    assert graph["696:694"]["inputs"]["index"] == 2
+
+
+def test_a_value_outside_the_choices_is_422(env):
+    response = env.client.post(
+        "/api/jobs", json=wan_body(env, selects={"dance_style": "Tango"})
+    )
+    assert response.status_code == 422
+    assert "Tango" in response.text
+
+
+def test_an_unknown_select_name_is_422(env):
+    response = env.client.post("/api/jobs", json=wan_body(env, selects={"tempo": "fast"}))
+    assert response.status_code == 422
+    assert "tempo" in response.text
+
+
+def test_selects_on_a_workflow_without_them_is_422(env):
+    response = env.client.post(
+        "/api/jobs",
+        json=full_body(env, mode="i2v", source_image=str(env.start_image),
+                       selects={"dance_style": "K-Pop 韩舞"}),
+    )
+    assert response.status_code == 422
+    assert "dance_style" in response.text
+
+
+def test_the_duration_follows_the_audio_length(env, monkeypatch):
+    """未指定の尺は音声の実長から切り上げて決まる（25 秒固定にしない）。"""
+    monkeypatch.setattr(jobs, "probe_media_duration", _probe(12.3))
+    created = env.client.post("/api/jobs", json=wan_body(env))
+    assert created.status_code == 201, created.text
+    job = wait_for(env.client, created.json()["id"])
+    assert job["status"] == "done", job["error"]
+    # 12.3 秒 -> 15（実長以上で最小の選択肢）
+    assert job["params"]["selects"]["duration"] == "15"
+    graph = graph_with(env, "696:700")
+    assert graph["696:700"]["inputs"]["choice"] == "15"
+    assert graph["696:700"]["inputs"]["index"] == 2
+    assert graph["696:494"]["inputs"]["duration"] == 15.0
+
+
+def test_a_long_track_is_capped_at_the_longest_choice(env, monkeypatch):
+    monkeypatch.setattr(jobs, "probe_media_duration", _probe(210.0))
+    created = env.client.post("/api/jobs", json=wan_body(env))
+    job = wait_for(env.client, created.json()["id"])
+    assert job["params"]["selects"]["duration"] == "30"
+
+
+def test_an_explicit_duration_wins_over_the_audio_length(env, monkeypatch):
+    monkeypatch.setattr(jobs, "probe_media_duration", _probe(28.0))
+    created = env.client.post(
+        "/api/jobs", json=wan_body(env, selects={"duration": "10"})
+    )
+    job = wait_for(env.client, created.json()["id"])
+    assert job["params"]["selects"]["duration"] == "10"
+    assert graph_with(env, "696:494")["696:494"]["inputs"]["duration"] == 10.0
+
+
+def test_an_unmeasurable_track_keeps_the_declared_default(env, monkeypatch):
+    """ffprobe が無い環境でも登録は通り、既定の尺で走る。"""
+    monkeypatch.setattr(jobs, "probe_media_duration", _no_probe)
+    created = env.client.post("/api/jobs", json=wan_body(env))
+    assert created.status_code == 201, created.text
+    job = wait_for(env.client, created.json()["id"])
+    assert job["status"] == "done", job["error"]
+    assert "duration" not in job["params"]["selects"]
+    assert graph_with(env, "696:700")["696:700"]["inputs"]["choice"] == "15"
+
+
+def test_rerun_keeps_the_resolved_duration(env, monkeypatch):
+    monkeypatch.setattr(jobs, "probe_media_duration", _probe(7.0))
+    first = env.client.post("/api/jobs", json=wan_body(env)).json()
+    wait_for(env.client, first["id"])
+    assert first["params"]["selects"]["duration"] == "10"
+
+    # 2 回目は測り直さない（同じ尺で再現する）
+    monkeypatch.setattr(jobs, "probe_media_duration", _probe(30.0))
+    second = env.client.post(f"/api/jobs/{first['id']}/rerun", json={}).json()
+    assert second["params"]["selects"]["duration"] == "10"
+
+
+def test_video_loras_are_rejected_for_a_workflow_without_a_chain(env):
+    response = env.client.post(
+        "/api/jobs", json=wan_body(env, video_loras=[VIDEO_LORA])
+    )
+    assert response.status_code == 422
+    assert "wan_dancer" in response.text
+
+
+@needs_ffmpeg
+def test_continue_drops_the_selects_of_another_workflow(env, monkeypatch):
+    monkeypatch.setattr(jobs, "probe_media_duration", _probe(10.0))
+    first = env.client.post(
+        "/api/jobs", json=wan_body(env, selects={"dance_style": "K-Pop 韩舞"})
+    ).json()
+    wait_for(env.client, first["id"])
+    # 既定（LTX）へ続き生成すると、wan の選択項目は意味が無いので落ちる
+    second = env.client.post(
+        f"/api/jobs/{first['id']}/continue",
+        json={"video_workflow": "ltx2_3_id_lora", "video_prompt": "a clip"},
+    )
+    assert second.status_code == 201, second.text
+    assert second.json()["params"]["selects"] == {}
+
+
+async def test_probe_media_duration_reads_a_real_file(sample_video):
+    """ffprobe が使える環境では実長を返す（1 秒のテスト動画）。"""
+    seconds = await jobs.probe_media_duration(sample_video)
+    assert seconds is not None
+    assert 0.5 < seconds < 2.0
+
+
+async def test_probe_media_duration_survives_a_missing_binary(tmp_path, monkeypatch):
+    monkeypatch.setattr(jobs, "FFPROBE", "definitely-not-ffprobe")
+    assert await jobs.probe_media_duration(tmp_path / "nope.mp3") is None
+
+
+async def test_probe_media_duration_survives_an_unreadable_file(tmp_path):
+    broken = tmp_path / "broken.mp3"
+    broken.write_bytes(b"not audio")
+    assert await jobs.probe_media_duration(broken) is None

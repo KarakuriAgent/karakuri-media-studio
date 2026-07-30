@@ -56,6 +56,7 @@ from .models import (
     job_workflow_ids,
     missing_job_fields,
     model_override_problem,
+    select_problem,
     video_lora_problem,
     video_workflow_problem,
 )
@@ -84,6 +85,7 @@ log = logging.getLogger(__name__)
 POLL_INTERVAL = 1.0
 JOB_TIMEOUT = 6 * 60 * 60.0
 FFMPEG = "ffmpeg"
+FFPROBE = "ffprobe"
 SEED_MAX = 2**31 - 1
 
 # history["outputs"][node] keys that may hold produced files
@@ -155,6 +157,41 @@ def resolve_asset_path(value: str, *, field: str) -> Path:
     if not resolved.is_file():
         raise JobValidationError(f"{field} not found: {resolved}")
     return resolved
+
+
+async def probe_media_duration(path: str | Path) -> float | None:
+    """Length of an audio / video file in seconds via ffprobe (None if unknown).
+
+    ワークフローの尺を入力音声に合わせるのに使う（SPEC §3.1）。ffprobe が無い・
+    読めないのは致命的ではないので、そのときは None を返して呼び出し側が既定値に
+    落ちる。
+    """
+    try:
+        process = await asyncio.create_subprocess_exec(
+            FFPROBE,
+            "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            str(path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except (OSError, ValueError) as exc:
+        log.info("ffprobe を実行できませんでした（%s の長さは既定値にします）: %s", path, exc)
+        return None
+    stdout, stderr = await process.communicate()
+    if process.returncode != 0:
+        log.info(
+            "ffprobe が %s の長さを読めませんでした: %s",
+            path,
+            stderr.decode("utf-8", "replace").strip()[:200],
+        )
+        return None
+    try:
+        seconds = float(stdout.decode("utf-8", "replace").strip())
+    except ValueError:
+        return None
+    return seconds if seconds > 0 else None
 
 
 def read_image_size(path: str | Path) -> tuple[int, int] | None:
@@ -337,6 +374,7 @@ def _validate(params: dict[str, Any]) -> None:
             mode, params.get("loras") or [], params.get("video_loras") or []
         )
         or video_lora_problem(mode, video_workflow, params.get("video_loras") or [])
+        or select_problem(mode, video_workflow, params.get("selects"))
         or _model_override_problem(params)
     )
     if problem:
@@ -405,6 +443,37 @@ def _resolve_nsfw(explicit: bool | None, inherit: bool) -> tuple[bool | None, st
     return None, ""
 
 
+async def _resolve_auto_selects(params: dict[str, Any]) -> None:
+    """``auto`` を宣言した選択項目を入力から決める（未指定のときだけ、SPEC §3.1）。
+
+    今のところ ``audio_duration``（入力音声の実長を選択肢に切り上げ）だけ。決めた
+    値は params に残すので、再実行しても同じ尺で走る。測れなければ何もしない
+    （ワークフローの既定値が使われる）。
+    """
+    mode = params.get("mode", "")
+    if mode not in ("full", "i2v"):
+        return
+    try:
+        spec = get_video_spec(params.get("video_workflow"))
+    except WorkflowSpecError:
+        return  # 不正なワークフロー id は _validate が既に弾いている
+    selects = dict(params.get("selects") or {})
+    for name, select in spec.selects.items():
+        if select.auto != "audio_duration" or selects.get(name):
+            continue
+        audio = params.get("audio_path")
+        seconds = await probe_media_duration(audio) if audio else None
+        if seconds is None:
+            continue
+        selects[name] = select.round_up(seconds)
+        log.info(
+            "job の %s を音声の長さ %.1f 秒から %s に決めました",
+            name, seconds, selects[name],
+        )
+    if selects:
+        params["selects"] = selects
+
+
 async def _insert_job(
     *,
     mode: str,
@@ -423,6 +492,8 @@ async def _insert_job(
         value = params.get(field)
         if value:
             params[field] = str(resolve_asset_path(value, field=field))
+    # 尺などの「自動」項目は、入力ファイルが確定したここで決める（SPEC §3.1）。
+    await _resolve_auto_selects(params)
 
     job_id = new_id()
     params["job_id"] = job_id
@@ -518,6 +589,8 @@ def _params_from_create(payload: JobCreate) -> dict[str, Any]:
         "source_image": payload.source_image,
         "end_image": payload.end_image,
         "reference_video": payload.reference_video,
+        # 選択式フィールドの値（ワークフローが宣言したものだけ、§3.1）
+        "selects": dict(payload.selects),
         # このジョブだけのモデル指定（設定の model_overrides の上に重ねる、§3.3）
         "model_overrides": dict(payload.model_overrides),
     }
@@ -590,6 +663,22 @@ def _continuable_workflow(workflow_id: str | None) -> str:
     return spec.id if spec.accepts_start_image else DEFAULT_VIDEO_WORKFLOW
 
 
+def _carried_selects(workflow_id: str, previous: Any) -> dict[str, str]:
+    """``previous`` のうち、``workflow_id`` が宣言している選択項目だけ。"""
+    if not isinstance(previous, dict):
+        return {}
+    try:
+        spec = get_video_spec(workflow_id)
+    except WorkflowSpecError:
+        return {}
+    return {
+        str(name): str(value)
+        for name, value in previous.items()
+        if (select := spec.select(str(name))) is not None
+        and str(value) in select.choices
+    }
+
+
 async def continue_job(
     job_id: str, payload: JobContinue, *, inherit_nsfw: bool = False
 ) -> Job:
@@ -635,6 +724,9 @@ async def continue_job(
         "source_image": str(start_image),
         "end_image": payload.end_image or prev.get("end_image"),
         "reference_video": payload.reference_video or prev.get("reference_video"),
+        # 選択項目は切り替え先が宣言しているものだけ引き継ぐ（別ワークフローの
+        # 選択肢は意味が違うので落とす）
+        "selects": _carried_selects(video_workflow, prev.get("selects")),
         # 動画ステージだけを走らせるので、動画ワークフローのスロットだけ引き継ぐ
         # （切り替えで既定ワークフローに戻された場合は元の指定が落ちる）
         "model_overrides": scoped_model_overrides(
@@ -693,6 +785,10 @@ def _generation_params(job: Job, uploads: dict[str, str]) -> GenerationParams:
         language=p.get("language") or "en",
         audio_category=p.get("audio_category") or "Music",
         reprompt=bool(p.get("reprompt", False)),
+        # 旧ジョブの params には無いので既定は空（後方互換）
+        selects={
+            str(name): str(value) for name, value in (p.get("selects") or {}).items()
+        },
         image_seed=int(p.get("image_seed", 0)),
         video_seeds=[int(s) for s in p.get("video_seeds", [])],
         audio_seed=int(p.get("audio_seed", p.get("seed", 0) or 0)),

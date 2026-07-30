@@ -161,6 +161,24 @@ export interface LibraryQuery {
 /** Logical inputs a video workflow can require (mirrors workflows.InputName). */
 export type WorkflowInput = 'image' | 'audio' | 'end_image' | 'video'
 
+/**
+ * ワークフローが宣言する選択式フィールド（GET /api/options）。
+ *
+ * 自由記述ではなく決まった選択肢で挙動が決まるワークフロー（wan_dancer の
+ * 踊りの種類・動きの大きさ・尺）用。宣言のないワークフローでは空配列。
+ */
+export interface WorkflowSelect {
+  /** ジョブの `selects` のキー。 */
+  name: string
+  label: string
+  choices: string[]
+  /** 未指定のときに使われる値。 */
+  default: string
+  /** true なら「自動」を選べる（未指定なら入力から決まる）。 */
+  auto: boolean
+  hint: string
+}
+
 /** One selectable workflow template (GET /api/options). */
 export interface WorkflowOption {
   id: string
@@ -173,6 +191,12 @@ export interface WorkflowOption {
   supports: string[]
   accepts_start_image: boolean
   image_label: string
+  /** 選択式フィールド（無いワークフローでは空）。 */
+  selects: WorkflowSelect[]
+  /** `video_prompt` が必須か（false なら任意）。 */
+  prompt_required: boolean
+  /** 動画用 LoRA を挿せるか（テンプレートに LoRA チェーンがあるか）。 */
+  accepts_video_loras: boolean
   /** 音声ワークフローがサポートする長さ（秒）。それ以外では 0。 */
   min_duration: number
   max_duration: number
@@ -233,6 +257,11 @@ export interface JobCreate {
   end_image: string | null
   reference_video: string | null
   seed: number | null
+  /**
+   * ワークフローが宣言する選択式フィールドの値（論理名 -> 選んだ文字列）。
+   * 省略した項目は既定値、`auto` の項目は入力から自動で決まる。
+   */
+  selects?: Record<string, string>
   /**
    * このジョブだけで使うモデルファイル名（キーは /api/options の model_slots の
    * `key`、値はそのスロットの `choices` にあるもの）。空なら設定の既定値。

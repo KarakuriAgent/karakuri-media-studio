@@ -69,6 +69,7 @@ Grok がチャットから生成設定一式を組み立て、複数の動画ジ
 `loras[]`（画像用 LoRA: lora_name / trigger_word / strength）, `trigger_text`,
 `video_loras[]`（動画用 LoRA・同形式）, `video_trigger_text`, `duration`, `fps`,
 `audio_path`, `source_image`, **`end_image`**, **`reference_video`**, `seed`（固定 or 抽選）、
+**`selects`**（ワークフローが宣言する選択式フィールド）、
 **`model_overrides`**（実行ごとのモデル切り替え）、
 および音声モード専用の **`audio_prompt`** / `lyrics` / `bpm` / `keyscale` / `language` /
 `audio_category` / `reprompt`
@@ -81,7 +82,7 @@ LoRA は登録時の対象（SPEC §3.4）で振り分ける: 画像用は `lora
 
 #### ワークフローカタログ（単一情報源）
 
-動画は 7 種、画像は 4 種、音声は 2 種のワークフローから選べる（SPEC §2.2〜§2.4）。
+動画は 8 種、画像は 4 種、音声は 2 種のワークフローから選べる（SPEC §2.2〜§2.4）。
 どれを選ぶかで必要な入力が変わるため、システムプロンプトには `app/workflows.py` の
 `WorkflowSpec` から自動生成した **IMAGE WORKFLOWS / VIDEO WORKFLOWS / AUDIO WORKFLOWS
 セクション**を焼き込む。動画 1 ワークフローぶんの内容:
@@ -96,7 +97,21 @@ LoRA は登録時の対象（SPEC §3.4）で振り分ける: 画像用は `lora
   生成するので、実際に 422 になる条件と常に一致する）。フル生成に使えないワークフローは
   「`mode: "full"` は使えない」と出す
 - `video_prompt` の書き方（`prompt_hint`。flf2v は開始→終了フレームの遷移、
-  ic_lora_motion はカメラ・テンポを書かない、ia2v はセリフを書かない など）
+  ic_lora_motion はカメラ・テンポを書かない、ia2v はセリフを書かない など）。
+  `wan_dancer` のようにプロンプトを選択肢から組み立てるワークフローは
+  **`video_prompt` 自体が任意**（`prompt_required=False`）で、必須フィールドの一覧にも出てこない
+- **選択式フィールド**（`selects`、SPEC §3.1）。自由記述ではなく決まった選択肢で挙動が決まる
+  ワークフローでは、論理名・見出し・選択肢の文字列・既定値をそのまま列挙する:
+
+```
+  - 選択項目（ジョブの `selects` に `{"<名前>": "<選んだ値>"}` の形で書く。以下の文字列のみ使用可）:
+    - `dance_style`（踊りの種類）: `Chinese Classic Dance 古典舞`, `K-Pop 韩舞`, … — 省略すると `K-Pop 韩舞`。
+    - `duration`（尺（秒））: `5`, `10`, `15`, `20`, `25`, `30` — 省略すると入力から自動で決まる。
+```
+
+  検証は Web UI と同じ `models.select_problem` を通し、宣言外の名前・選択肢外の値は
+  プラン検証の段階で弾いて 1 回リトライさせる。`省略すると入力から自動で決まる` と出ている項目
+  （wan_dancer の尺）は書かないのが正解で、バックエンドが入力音声の長さから決める
 
 `description` / `prompt_hint` / `audio_role` の未記入は `validate_specs()`（ヘルスチェックと
 テスト）が検出するので、ワークフローを追加したらプロンプト側の追記漏れは起きない。

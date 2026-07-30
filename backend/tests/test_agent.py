@@ -2232,3 +2232,74 @@ def test_library_action_asks_grok_for_japanese_tags(env, monkeypatch):
     assert item.get("tags") == ["女性", "屋上", "夕暮れ"]
     # title を書かなかったので表示名も日本語に置き換わる
     assert item["name"] == "夕暮れ屋上のダンス"
+
+
+# --------------------------------------------------------------------------
+# 選択式フィールド（SPEC §3.1、wan_dancer）
+# --------------------------------------------------------------------------
+
+def test_system_prompt_lists_the_selectable_fields(env):
+    system = start(env)["messages"][0]["content"]
+    assert "`wan_dancer`" in system
+    assert "選択項目（ジョブの `selects`" in system
+    assert "`dance_style`（踊りの種類）" in system
+    assert "`K-Pop 韩舞`" in system
+    # 尺は省略できることが分かる
+    assert "省略すると入力から自動で決まる" in system
+    # 選択式を持たないワークフローには何も出ない
+    id_lora = system.index("`ltx2_3_id_lora`")
+    assert "選択項目" not in system[id_lora : system.index("`ltx2_3_flf2v`")]
+
+
+def test_a_plan_can_pick_the_selectable_fields(env):
+    action = agent_protocol.parse_action(
+        _plan_with(
+            env,
+            mode="i2v",
+            video_workflow="wan_dancer",
+            video_prompt="",
+            source_image=str(env.image),
+            selects={"dance_style": "Street Dance 街舞", "duration": "20"},
+        )
+    )
+    assert action is not None
+    assert action.tasks[0].job["selects"] == {
+        "dance_style": "Street Dance 街舞",
+        "duration": "20",
+    }
+
+
+def test_wan_dancer_needs_no_video_prompt_in_a_plan(env):
+    """プロンプトを選択肢から組み立てるので、無くても検証を通る。"""
+    action = agent_protocol.parse_action(
+        _plan_with(
+            env,
+            mode="i2v",
+            video_workflow="wan_dancer",
+            video_prompt="",
+            source_image=str(env.image),
+        )
+    )
+    assert action is not None
+    assert action.tasks[0].job["video_prompt"] == ""
+
+
+def test_a_value_outside_the_choices_is_rejected(env):
+    with pytest.raises(agent_protocol.ActionError) as excinfo:
+        agent_protocol.parse_action(
+            _plan_with(
+                env,
+                mode="i2v",
+                video_workflow="wan_dancer",
+                video_prompt="",
+                source_image=str(env.image),
+                selects={"dance_style": "Tango"},
+            )
+        )
+    assert "Tango" in str(excinfo.value)
+
+
+def test_selects_on_a_workflow_without_them_is_rejected(env):
+    with pytest.raises(agent_protocol.ActionError) as excinfo:
+        agent_protocol.parse_action(_plan(env, selects={"dance_style": "K-Pop 韩舞"}))
+    assert "dance_style" in str(excinfo.value)

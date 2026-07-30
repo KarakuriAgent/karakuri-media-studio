@@ -39,6 +39,7 @@ from .models import (
     job_workflow_ids,
     missing_job_fields,
     model_override_problem,
+    select_problem,
     video_workflow_problem,
 )
 from .workflow import model_slots
@@ -229,6 +230,18 @@ def _model_override_detail(raw: dict[str, Any], mode: str) -> str | None:
     return None
 
 
+def _select_detail(raw: dict[str, Any], mode: str) -> str | None:
+    """選択式フィールドの指定が使えるか（SPEC §3.1）。
+
+    Web UI と同じ :func:`~app.models.select_problem` を通すので、選択肢外の値も
+    宣言していない名前もプラン検証の段階で弾ける（実行時ではなく plan 時）。
+    """
+    problem = select_problem(mode, _text(raw.get("video_workflow")), raw.get("selects"))
+    if problem:
+        return f"{problem}（VIDEO WORKFLOWS の選択項目を確認してください）"
+    return None
+
+
 def _workflow_detail(raw: dict[str, Any]) -> str | None:
     """ワークフロー依存の問題を、pydantic の短い文言より前に説明する。
 
@@ -240,13 +253,17 @@ def _workflow_detail(raw: dict[str, Any]) -> str | None:
     mode = raw.get("mode", "full")
     workflow = _text(raw.get("video_workflow")) or DEFAULT_VIDEO_WORKFLOW
     if mode == "audio":
-        return _audio_workflow_detail(raw) or _model_override_detail(raw, mode)
+        return (
+            _audio_workflow_detail(raw)
+            or _select_detail(raw, mode)
+            or _model_override_detail(raw, mode)
+        )
     if not isinstance(mode, str) or mode not in ("full", "i2v", "image_only"):
         return None  # mode 自体の誤りは pydantic に任せる
 
-    model_detail = _model_override_detail(raw, mode)
-    if model_detail:
-        return model_detail
+    detail = _select_detail(raw, mode) or _model_override_detail(raw, mode)
+    if detail:
+        return detail
 
     image_detail = _image_workflow_detail(raw, mode)
     if image_detail:
