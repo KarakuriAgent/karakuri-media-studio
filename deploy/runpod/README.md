@@ -82,8 +82,23 @@ python3 deploy/runpod/gen_models_manifest.py > models.local.txt
 # `# TODO url` の行のうち、使うものだけ URL を埋める
 ```
 
-これを Network Volume の直下（`/workspace/models.local.txt`）に置きます。Pod を
-起動した状態で、次のどちらかで送ります。
+これを Network Volume の直下（`/workspace/models.local.txt`）に置きます。手軽なのは
+**テンプレートの環境変数で渡す**方法です。Pod にログインする手段が無くても使えます。
+
+```bash
+# 手元（リポジトリのルート）
+base64 -w0 models.local.txt
+```
+
+出てきた 1 行を、テンプレートの Environment Variables に `MODELS_LOCAL_B64` として
+入れます。起動のたびに `entrypoint.sh` がデコードして `/workspace/models.local.txt`
+に書き出します（**毎回上書き**するので、テンプレート側の値が常に正になります）。
+デコードに失敗したときは既存のファイルを残したまま読み飛ばし、起動は続きます。
+イメージは公開レジストリに置きますが、テンプレートの環境変数は非公開なので、
+個人ごとのモデル URL をイメージに焼かずに済みます。
+
+Pod に入れる手段があるなら、ファイルを直接置いても構いません。Pod を起動した
+状態で、次のどちらかで送ります。
 
 ```bash
 # 手元
@@ -132,7 +147,7 @@ docker build --build-arg COMFYUI_REF=v0.3.68 -t <user>/karakuri-comfyui:latest .
 
 RunPod のコンソール → **Storage** → **Network Volume** で作ります。
 
-- リージョンは、使いたい GPU（RTX 5090 / A6000）の在庫があるところ
+- リージョンは、使いたい GPU（RTX PRO 6000 Blackwell / RTX 5090）の在庫があるところ
 - 容量はモデルの合計 + 100 GB 程度（LTX 2.3 系を一式入れるなら 500 GB〜）
 - Pod には `/workspace` としてマウントされます
 
@@ -188,6 +203,7 @@ RunPod のコンソール → **Templates** → **New Template**。
 | `IDLE_TIMEOUT_MINUTES` | 任意 | アイドルで終了するまでの分数（既定 `10`） |
 | `STARTUP_GRACE_MINUTES` | 任意 | 起動直後に絶対に終了しない分数（既定 `15`。初回のモデル取得ぶん） |
 | `COMFY_ARGS` | 任意 | ComfyUI に足す起動引数（例 `--highvram`） |
+| `MODELS_LOCAL_B64` | 任意 | `models.local.txt` を `base64 -w0` した値（手順 1）。起動時に `/workspace/models.local.txt` へ書き出される |
 
 `RUNPOD_POD_ID` は RunPod が自動で入れるので、自分で設定する必要はありません。
 
@@ -207,7 +223,7 @@ Karakuri Media Studio の **設定 → 接続 / Grok** で:
 | **RunPod の Pod を自動起動する** | オン |
 | RunPod APIキー | RunPod → Settings → API Keys で発行したもの |
 | テンプレート ID | 手順 5 で控えたもの |
-| GPU 種別 | `NVIDIA RTX A6000` / `NVIDIA GeForce RTX 5090` など（RunPod の gpuTypeId をそのまま） |
+| GPU 種別 | `NVIDIA RTX PRO 6000 Blackwell Workstation Edition` / `NVIDIA GeForce RTX 5090` など（RunPod の gpuTypeId をそのまま） |
 | Network Volume ID | 手順 3 で作ったボリュームの ID |
 
 これで、ジョブを実行したときに ComfyUI へ繋がらなければ Pod が作られ、繋がるまで

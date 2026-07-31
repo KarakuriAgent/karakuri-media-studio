@@ -86,6 +86,23 @@ if [ -f "${HERE}/models.txt" ]; then
 	manifests+=("${HERE}/models.txt")
 fi
 LOCAL_MANIFEST="${LOCAL_MANIFEST:-${WORKSPACE}/models.local.txt}"
+
+# Pod にファイルを送る手段（ssh / runpodctl / Jupyter）が無いこともあるので、
+# テンプレートの環境変数からも渡せるようにしてある。MODELS_LOCAL_B64 が入って
+# いれば、それを base64 デコードしたものが models.local.txt になる（テンプレート
+# 側を常に正とするので毎回上書き）。個人ごとの URL をイメージに焼かずに済む。
+if [ -n "${MODELS_LOCAL_B64:-}" ]; then
+	tmp_manifest="${LOCAL_MANIFEST}.tmp.$$"
+	# デコードに失敗したときに既存のマニフェストを壊さないよう、一時ファイル経由で置く
+	if printf '%s' "${MODELS_LOCAL_B64}" | base64 -d >"${tmp_manifest}" 2>/dev/null; then
+		mv "${tmp_manifest}" "${LOCAL_MANIFEST}"
+		log "wrote ${LOCAL_MANIFEST} from MODELS_LOCAL_B64"
+	else
+		rm -f "${tmp_manifest}"
+		log "MODELS_LOCAL_B64 を base64 デコードできませんでした: 無視します" >&2
+	fi
+fi
+
 if [ -f "${LOCAL_MANIFEST}" ]; then
 	log "using local model manifest ${LOCAL_MANIFEST}"
 	manifests+=("${LOCAL_MANIFEST}")
