@@ -3,13 +3,16 @@
 # 設計の要点:
 #   * CUDA 12.8 ランタイム + PyTorch cu128。RTX PRO 6000 Blackwell・RTX 5090 (sm_120) と A6000 (sm_86) の
 #     いずれでも動く組み合わせはこれ（Blackwell 系は cu128 より前のビルドでは動かない）。
-#   * **ComfyUI 本体とカスタムノードとモデルはイメージに焼かない**。Network Volume
-#     (/workspace) へ初回起動時に置き、以降の Pod はそれを再利用する。イメージを
-#     数十 GB にせずに済み、モデルを足すのに再ビルドが要らない。
+#   * **ComfyUI 本体とカスタムノードとモデルはイメージに焼かない**。ComfyUI と
+#     カスタムノードは初回起動時に Network Volume (/workspace) へ置き、以降の Pod
+#     はそれを再利用する。モデルはアプリの設定ページの [DL] / [全DL] から
+#     model_api.py 経由で入れる（起動時の一括ダウンロードは行わない）。
 #   * Python の依存は /opt/venv（イメージ側）に入れる。pip のキャッシュだけ
 #     /workspace に置くので、2 回目以降の起動は「入っているものを確認するだけ」で
 #     ほぼ一瞬で終わる。
-#   * 外に出るポートは caddy の 8189 だけ。ComfyUI は 127.0.0.1:8188 に閉じる。
+#   * 外に出るポートは caddy の 8189 だけ。ComfyUI は 127.0.0.1:8188、モデルの
+#     ダウンロード API（model_api.py）は 127.0.0.1:8190 に閉じ、caddy が同じ認証で
+#     /studio/models/* だけを通す。
 
 # caddy は公式イメージからバイナリだけ借りる（apt リポジトリを足すより確実）
 FROM caddy:2.10-alpine AS caddy
@@ -81,9 +84,9 @@ RUN python3.12 -m venv /opt/venv \
 RUN pip install --no-cache-dir httpx requests
 
 WORKDIR /opt/runpod
-COPY entrypoint.sh download_models.py watchdog.py ./
-COPY Caddyfile custom_nodes.txt models.txt ./
-RUN chmod +x entrypoint.sh download_models.py watchdog.py
+COPY entrypoint.sh download_models.py watchdog.py model_api.py ./
+COPY Caddyfile custom_nodes.txt ./
+RUN chmod +x entrypoint.sh watchdog.py model_api.py
 
 # 認証つきプロキシだけを公開する（ComfyUI の 8188 は外に出さない）
 EXPOSE 8189

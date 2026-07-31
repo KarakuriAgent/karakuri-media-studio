@@ -707,8 +707,14 @@ def _register_choices(
     monkeypatch.setattr(
         config,
         "_settings",
+        # どちらも接続先ごとに持つ（SPEC §5）。テストは既定の 'local' 環境。
         config.load_settings().model_copy(
-            update={"model_overrides": overrides or {}, "model_choices": choices}
+            update={
+                # 接続先も固定する（実際の config.json に左右されないため）
+                "comfy_target": "local",
+                "model_overrides": {"local": overrides or {}},
+                "model_choices": {"local": choices},
+            }
         ),
     )
 

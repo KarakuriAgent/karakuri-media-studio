@@ -246,15 +246,20 @@ Stable Audio の `reprompt`（内蔵 LLM でのプロンプト展開）だけは
 - 音声側: ACE-Step `acestep_v1.5_xl_sft_bf16` + `qwen_0.6b_ace15` / `qwen_4b_ace15` + `ace_1.5_vae`、Stable Audio `stable_audio_3_medium_base` + `t5gemma_b_b_ul2` / `qwen3.5_2b_bf16`、およびサンプラー設定
 - 動画側: checkpoint `ltx-2.3-22b-dev-fp8` または `ltx-2.3-22b-distilled-fp8`、distil LoRA (strength 0.5)、talkvid ID-LoRA + `LTXVReferenceAudio`（identity_guidance_scale 3）、IC-LoRA と MoGe、2 段サンプリング（半解像度 → LatentUpsampler x2）、ManualSigmas
 - **モデルファイル名は利用者の ComfyUI 環境依存**のため、設定ページ（`GET/PUT /api/models`）で上書き可能。既定値は各テンプレートの値。対象は UNETLoader.unet_name / CLIPLoader.clip_name / CLIPVisionLoader.clip_name / VAELoader.vae_name / CheckpointLoaderSimple.ckpt_name / LTXVAudioVAELoader.ckpt_name / LTXAVTextEncoderLoader.text_encoder・ckpt_name / LatentUpscaleModelLoader.model_name / LoadMoGeModel.model_name / LoraLoaderModelOnly.lora_name / LoraLoader.lora_name（§3.4 で削除される画像テンプレートのプレースホルダは除く。LTX 側の固定 LoRA ノードや qwen-image の Lightning LoRA はユーザー LoRA と共存するので上書き対象のまま）
+- **モデルの指定は接続先ごと**（SPEC §5）: `Settings.model_overrides` / `model_choices` は `{"<comfy_target>": {"<スロットキー>": …}}` の 2 段で持つ。どのファイルが在るかは ComfyUI の環境ごとに違うため。`GET/PUT /api/models` は `?target=`（PUT はボディの `target`）で対象環境を選び、省略すると現在の接続先。**書き込みは選んだ環境だけ**で他の環境の指定は残る。ジョブ実行・`/api/options` の `model_slots`・エージェントの検証はすべて「現在の接続先」の値（`Settings.overrides_for()` / `choices_for()`）を使う。接続先を分ける前の設定（1 組だけ）は読み込み時に**3 環境すべてへ複製**される（`config._per_target`）: 分けた瞬間に指定が消えて既定モデルで走り出すのを避けるため
 - 上書きキーは**ワークフロー ID でスコープ**する: `"<workflow_id>/<node_id>.<field>": "<ファイル名>"`。テンプレート間で同じノード ID（例: `340:317` が ia2v と id_lora の両方にある）が衝突しないため。旧レイアウトの非スコープキーは無視される（マイグレーション不要）
 - **実行ごとのモデル切り替え**: 同じキー形式で「そのスロットで選べるファイル名」を設定に持てる（`Settings.model_choices`、`GET/PUT /api/models` で読み書き）。既定値（`model_overrides` → 無ければテンプレート値）と合わせて **2 件以上**になったスロットは *switchable* とみなし、`GET /api/options` の `model_slots`（キー・ラベル・既定値・候補一覧）に出す。ジョブは `model_overrides`（`JobCreate` / `JobContinue` のフィールド）で 1 回ぶんだけ差し替えられ、実行時に設定の既定値の上へマージされる（`jobs.run_job`）。検証（`models.model_override_problem`、Web UI とエージェントで共通）は「キーが `model_fields()` に存在」「そのジョブが走らせるワークフロー（`models.job_workflow_ids`）に属する」「値が候補（既定値を含む）に入っている」を満たさないものを 422 で拒否する。再実行は params ごと引き継ぎ、続き生成は動画ワークフローぶんのキーだけを引き継ぐ（`workflow.scoped_model_overrides`）
-- **不足モデルの自動ダウンロード**: ComfyUI 本体にも Comfy Cloud にもモデル取得 API は無いので、**バックエンドが自分でダウンロードして** ComfyUI の models ディレクトリ（**環境変数 `COMFY_MODELS_DIR`**）へ直接置く（ComfyUI はフォルダの mtime を見て一覧を作り直すので再起動は不要）。設定ページは「その行の値が `GET /api/options` の `model_files` の該当リストに無い」ことを不足の判定に使い、**未検出**バッジ・URL 入力欄・[DL] ボタンを出す（`model_files` が空＝ComfyUI 未接続のときは判定しない）
+- **不足モデルの自動ダウンロード**: ComfyUI 本体にも Comfy Cloud にもモデル取得 API は無いので、**落とし先の環境に合わせて**取ってくる（`POST /api/models/download` の `target`、省略時は現在の接続先）。設定ページは「その行の値が `GET /api/options` の `model_files` の該当リストに無い」ことを不足の判定に使い、**未検出**バッジ・URL 入力欄・[DL] ボタンを出す（`model_files` が空＝ComfyUI 未接続のときは判定しない）
+  - `local` … バックエンドが自分でダウンロードして ComfyUI の models ディレクトリ（**環境変数 `COMFY_MODELS_DIR`**）へ直接置く（ComfyUI はフォルダの mtime を見て一覧を作り直すので再起動は不要）
+  - `runpod` … Pod の中で動く小さな API（`deploy/runpod/model_api.py`、`127.0.0.1:8190`。caddy が ComfyUI と同じ認証で `/studio/models/*` だけを通す）に `POST /download` で依頼し、`GET /downloads` を 2 秒ごとにポーリングして**ローカルと同じ WS フレーム**に変換して流す。アプリを再起動しても Pod 側は走り続けるので、`GET /api/models/downloads?target=runpod` は Pod の一覧を取り込んで見張りを再開する。Pod が古いイメージ（この API を持たない）なら 404 を「イメージを作り直してください」という 400 にして返す
+  - `comfy_cloud` … ファイルシステムに触れないので 400（モデルは Comfy Cloud 側の管理）
+  - **一括ダウンロード**（[全DL]、`POST /api/models/download-all`）: 選んだ環境の `/object_info` と比べて未検出、かつ `model_download_urls` に URL があるものをまとめて開始する。対象はワークフローの各スロットの実効値・候補リストと、その環境の LoRA 登録。URL が無いものは `missing_urls` として返して UI が知らせる。ComfyUI に繋がらないときは 400（何が足りないか判定できないため）
   - 置き場所は `class_type`＋入力フィールドから決める（`workflow.MODEL_SUBFOLDERS` → `ModelField.subfolder`）: checkpoints = CheckpointLoaderSimple.ckpt_name / LTXVAudioVAELoader.ckpt_name / LTXAVTextEncoderLoader.ckpt_name、diffusion_models = UNETLoader.unet_name、text_encoders = CLIPLoader.clip_name / DualCLIPLoader.clip_name1・clip_name2 / LTXAVTextEncoderLoader.text_encoder、clip_vision = CLIPVisionLoader.clip_name、vae = VAELoader.vae_name、loras = LoraLoader.lora_name / LoraLoaderModelOnly.lora_name、latent_upscale_models = LatentUpscaleModelLoader.model_name、geometry_estimation = LoadMoGeModel.model_name。未知のローダーは空（＝ UI で入力させる。当てずっぽうに置いても ComfyUI からは見えない）
   - `POST /api/models/download` は保存先を検証（`..` / 絶対パス / パス区切りを拒否し、`resolve()` 後に models ディレクトリ配下であることを確認）してからバックグラウンドタスクを起こす。httpx のストリームをチャンクで `<ファイル名>.part` に書き、完走したときだけ本来の名前に `rename` する（失敗・中断時は `.part` を削除）。進捗は WS `/api/ws` に `type: "model_download"` として流れる。同じファイル名の同時ダウンロードは 409
   - 認証は URL のホストで出し分ける: huggingface.co / hf.co（サブドメイン含む）は `Settings.hf_token`、civitai.com は `Settings.civitai_api_key` を `Authorization: Bearer …` として付ける（未設定なら付けない）。**リダイレクトは httpx に任せず自分で追う**（最大 10 ホップ、相対 `Location` は urljoin で解決、301/302/303/307/308 を GET のまま追う）: クライアント既定ヘッダに認証を載せると転送先の別ホストにトークンが漏れるため、ホップごとに URL を再検証して認証ヘッダを計算し直し、そのリクエストにだけ渡す（HF → `*.hf.co` の CDN には付き、無関係なホストには付かない）。URL はファイル名ごとに `Settings.model_download_urls` へ保存する（同じファイルが複数スロットに出るため、キーはスロットではなくファイル名）
   - 保存先は**環境変数 `COMFY_MODELS_DIR` だけ**が決める（設定 `runtime/config.json` には持たない）。UI からパスを入れられても、Docker で同じ絶対パスをマウントしていなければ書けないため。`.env` に書けば `run.sh`（ホスト実行、`.env` を読んで `export`）と `docker compose`（同一パスのマウント＋`environment:` で受け渡し）の双方に効く。設定に残すのは `hf_token` / `civitai_api_key` / `model_download_urls` だけで、旧バージョンが書いた `comfy_models_dir` キーは読み込み時に捨てる
   - **取得元ページ（エージェント用）**: 登録した URL はダウンロード用の直リンクなので、そのままではエージェントが使い方を調べられない。`app/model_sources.py` が配布ページ URL に変換し、エージェントのシステムプロンプトへ焼き込む（AGENT-MODE §3.1）。Hugging Face は `…/resolve|blob|raw|tree/<rev>/<path>` から `https://huggingface.co/<org>/<repo>` を切り出すだけ（`datasets/` 名前空間も対応。`cdn-lfs.hf.co` 等の CDN 直リンクはリポジトリ名が読めないので変換しない）。Civitai の `…/api/download/models/<versionId>` は modelId を含まないので `https://civitai.com/api/v1/model-versions/<versionId>` を 1 回だけ叩いて引き、`https://civitai.com/models/<modelId>?modelVersionId=<versionId>` を組み立てる（認証は `model_download.auth_headers` と共通）。結果は `Settings.model_page_urls`（ダウンロード URL → ページ URL）にキャッシュするので 2 回目以降は API を叩かない。失敗しても例外は投げず、ページ URL 無し（＝ダウンロード URL だけ）として扱う。`model_page_urls` は自動生成のキャッシュなので `SettingsUpdate` には無く、設定ページからは触らない
-  - `GET /api/models/dir-status` が `{configured, exists, writable, path}` を返す。`configured` は環境変数が設定されているか。**未設定なら機能ごと無効**で、UI はダウンロード関連（接続タブのブロック、モデルタブの列）を一切出さず警告も出さない（Comfy Cloud 利用などでは正常な状態）。設定済みなのに `exists=false`（Docker でマウントしていない等）／`writable=false` のときは表示したうえで理由を出す
+  - `GET /api/models/dir-status` が `{configured, exists, writable, path}` を返す。これは**ローカルに落とすときだけ**の話（RunPod では Pod 側の models ディレクトリに置く）。**UI はこの状態でダウンロード機能を隠さない**: [DL] / [全DL] は常に出し、落とせない事情（`COMFY_MODELS_DIR` 未設定・存在しない・書けない）は押したときの 400 の本文で知らせる。ローカルを選んでいるあいだは同じ理由をタブ上部の警告にも出す（`comfy_cloud` を選んだときだけダウンロード関連を出さない）
 
 #### ローカル ComfyUI でモデル名が違うときの直し方
 
@@ -455,8 +460,8 @@ Cookie ベースの非公式 API は規約リスクがあるため**使わない
 
 ## 5. ComfyUI 連携
 
-- 接続先: `http://<comfy-host>:8188`（設定画面で URL 変更可）。実行環境はローカル / LAN 上の別 PC / Comfy Cloud のいずれでも動くよう、ComfyUI クライアントは「接続 URL + 任意の認証ヘッダー（API キー）」を設定できる抽象化された 1 モジュールにする
-- **Comfy Cloud**: Cloud 向けのエンドポイント URL と認証設定を設定画面から入力できる（ホストが `comfy.org` のとき自動で Cloud 互換モード）。使い方は「`comfy_url` に `https://cloud.comfy.org`」＋「[API キー発行ページ](https://docs.comfy.org/development/cloud/overview) で作ったキーを `comfy_api_key` に設定」の 2 手順。Cloud 互換モードではエンドポイントに `/api` プレフィックスが付き、認証は `X-API-Key` ヘッダー、`/view` は 302 署名 URL リダイレクトを追う。API アクセスは有料プラン（Standard 以上）が必要で Free では使えない。ワークフローが参照するモデル・LoRA・リファレンス音声は Cloud 側のストレージに存在している必要がある（ファイルシステムに届かないので §3.3 の自動ダウンロードは使えない）
+- 接続先: **ComfyCloud / RunPod / ローカルの 3 プロファイル**を設定に持ち、`comfy_target`（`comfy_cloud` / `runpod` / `local`）がそのどれを使うかを決める。各プロファイルは URL と（ローカル以外は）API キーを持つ（ComfyCloud は URL 固定 `COMFY_CLOUD_URL = https://cloud.comfy.org` で `comfy_cloud_api_key` のみ、RunPod は `runpod_comfy_url` / `runpod_comfy_api_key`、ローカルは `local_comfy_url`）、ComfyUI クライアントはリクエストのたびに `Settings.active_comfy_url()` / `active_comfy_api_key()` で解決する（設定変更・接続先の切り替えが再起動なしで効く）。切り替えは設定ページの「ComfyUI 接続先」と**生成フォーム最上部のプルダウン**の両方から行え、どちらも `PUT /api/settings` の `comfy_target` に保存されるので次回起動時も前回の選択が使われる。旧レイアウト（単一の `comfy_url` / `comfy_api_key`）の設定ファイルは読み込み時に移行する（`runpod_enabled` なら RunPod、`comfy.org` ホストか API キー付きなら ComfyCloud、それ以外はローカル。API キーは URL を引き取ったプロファイルへ）
+- **Comfy Cloud**: Cloud 向けのエンドポイント URL と認証設定を設定画面から入力できる（ホストが `comfy.org` のとき自動で Cloud 互換モード）。エンドポイントは `https://cloud.comfy.org` 固定（設定項目にはしない）で、使い方は「[API キー発行ページ](https://docs.comfy.org/development/cloud/overview) で作ったキーを `comfy_cloud_api_key` に設定」＋「接続先を ComfyCloud にする」の 2 手順。Cloud 互換モードではエンドポイントに `/api` プレフィックスが付き、認証は `X-API-Key` ヘッダー、`/view` は 302 署名 URL リダイレクトを追う。API アクセスは有料プラン（Standard 以上）が必要で Free では使えない。ワークフローが参照するモデル・LoRA・リファレンス音声は Cloud 側のストレージに存在している必要がある（ファイルシステムに届かないので §3.3 の自動ダウンロードは使えない）
 - 使用 API:
   - `GET /object_info` … ResolutionSelector のアスペクト比選択肢、LoRA 一覧、class_type の存在確認
   - `POST /upload/image` … 開始フレーム画像・リファレンス音声・参照動画、および**`full` 1 段目の生成画像**のアップロード（ComfyUI はこのエンドポイントで input ディレクトリに任意ファイルを受ける）
@@ -464,6 +469,8 @@ Cookie ベースの非公式 API は規約リスクがあるため**使わない
   - `WS /ws?clientId=…` … 進捗（ノード実行状況・プレビュー）の受信
   - `GET /history/{prompt_id}` … 出力ファイル名の取得
   - `GET /view?filename=…&type=output` … 成果物ダウンロード
+- **環境ごとのデータ**: モデルの指定（§3.3）と **LoRA 登録**は接続先ごとに持つ。LoRA は `loras.comfy_target` 列（`NULL` = 全環境で出す）で分け、`GET /api/loras?target=` と `/api/options` は「その環境のもの + 共通（`NULL`）」を返す。接続先を分ける前の登録行は `NULL` のまま＝どの環境でも見えるので、既存の登録が消えたように見えることはない。新規登録は設定ページで選んでいる環境に紐づく。取得元 URL（`model_download_urls`）だけは**環境共通**（同じファイルはどの環境でも同じ場所から落とすため）
+- **接続エラーの見せ方**: `ComfyError` は「ComfyUI に届いていない失敗」を `unreachable`（接続不可・タイムアウトと 502/503/504/52x/530 などゲートウェイ系ステータス）として持つ。エラー本文が HTML のときは `<title>` だけを拾って畳み、**生 HTML を UI に流さない**（Pod 停止中の Cloudflare Tunnel は数 KB のエラーページを返すため）。読み取り系エンドポイント（`/api/options` の `comfy_error`、`/api/health` の detail）は `comfy.display_error()` を通し、接続先が RunPod の到達不能を「RunPod の ComfyUI が起動していません。ジョブを投入すると自動で Pod を起動します」（`runpod_enabled` が無効なら「設定画面から Pod を起動するか URL を確認してください」）に言い換える。到達したうえでの失敗（400 など）は言い換えない。ジョブの失敗理由は言い換えない（実行中に落ちた場合に「投入すれば自動起動」は当たらないため）
 - 同時実行は 1 ジョブ（ComfyUI 側キューに任せるが、アプリ側でもジョブキューを持ち順次投入）
 - タイムアウト・ComfyUI 未起動・ノード不足（custom nodes 未導入）はジョブを failed にして UI に理由を表示
 
@@ -475,8 +482,10 @@ ComfyUI を **RunPod の Pod（GPU 時間貸し）**に置く構成では、使�
 
 - 設定は `runpod_enabled` / `runpod_api_key` / `runpod_template_id` /
   `runpod_gpu_type` / `runpod_network_volume_id` の 5 つ（`GET/PUT /api/settings`）。
-  接続先そのものは従来どおり `comfy_url` / `comfy_api_key` で、Pod 側は
-  Cloudflare Tunnel で固定ホスト名を持つので**起動のたびに設定を書き換えなくてよい**
+  接続先そのものは RunPod プロファイル（`runpod_comfy_url` / `runpod_comfy_api_key`）で、
+  Pod 側は Cloudflare Tunnel で固定ホスト名を持つので**起動のたびに設定を書き換えなくてよい**。
+  自動起動が働くのは **`comfy_target == "runpod"` かつ `runpod_enabled`** のときだけ
+  （他の接続先を選んでいるあいだは Pod を作らない）
 - `jobs.run_job` はワークフロー投入の前に `runpod.ensure_pod_running()` を呼ぶ。
   無効なとき・既に疎通しているときは何もしないので、実行経路に無条件に置ける
 - 疎通確認は `comfy.get_object_info()`（§5 の `/object_info`）をそのまま使う。
@@ -485,7 +494,7 @@ ComfyUI を **RunPod の Pod（GPU 時間貸し）**に置く構成では、使�
   `networkVolumeId` / `cloudType: "COMMUNITY"` を投げて Pod を 1 つ作る
 - **GPU が確保できない等のエラーはそのままジョブの失敗理由にする**（別の GPU や
   SECURE クラウドへ勝手に振り替えると、意図しない課金が黙って起きるため）
-- 作成後は `comfy_url` に繋がるまでポーリング（全体 15 分。初回は Network Volume への
+- 作成後は `runpod_comfy_url` に繋がるまでポーリング（全体 15 分。初回は Network Volume への
   モデル配置があるため長め）。繋がらないままならタイムアウトでエラーにする
 - 起動処理は `asyncio.Lock` で **single-flight**。同時に走ったジョブはロックを
   取った時点でもう一度疎通を確かめるので、Pod が 2 つ作られることはない
@@ -672,6 +681,7 @@ SPA 1 画面 + 履歴。ダークテーマの生成系ツールらしい見た�
 - **生成物のライブラリ登録**: 結果ペイン（表示中の成果物 1 件）と履歴詳細（その job が持つ出力すべて）に [☆ ライブラリに登録] を置く（`LibraryAddButton`）。既に登録済みのものは `/api/options` の library から判定して押す前から [★ 登録済みです] を出し、押してしまった場合も 409 を失敗扱いにせず同じ表示にする（§7.2）
 - [履歴から選択] は過去ジョブの出力から選ぶ（`HistoryPickerModal`）。**検索ボックス**でジョブの文言（動画 / 画像 / 音声プロンプト → 最初の指示）に部分一致するものだけに絞れる（ジョブは全件フロントにあるのでクライアント側で絞る）。候補は完了ジョブのみを新しい順に並べ、欄の種別で絞る（画像欄 = 生成画像とラストフレームの両方（ラベルで区別）、動画欄 = 生成動画、音声欄 = 音声ジョブの出力）。生成物は `outputs/` にあって `assets/` の外なので、選ぶと fetch → `POST /api/assets/{kind}` で assets へコピーしてから欄に入れる。モーダル内には独自の「🫣 NSFW表示」チェックボックスがあり、初期値はヘッダーのグローバルトグルに従うが、ここでの切り替えは `sessionStorage` に残さない（この画面かぎり）。オフのあいだは NSFW ジョブを一覧に出さない。Esc / 背景クリックで閉じる
 - LoRA 選択はチップ型マルチセレクト（強度スライダー付き）。選択するとトリガーワード連結欄（編集可）に反映される。セクションは 2 つあり、**「LoRA（動画）」は動画設定群の中**（登録 `target = 'video'` のみ）、**「LoRA（画像）」は画像設定群の中**（`target = 'image'` かつ選択中の画像ワークフローと同じファミリーのみ）に置く
+- **接続先プルダウン**（§5）: フォーム最上部に「接続先」（ComfyCloud / RunPod / ローカル）を置く。値は `GET /api/settings` の `comfy_target` 由来で、変えると即 `PUT /api/settings` に保存し、選択肢（`/api/options`）と `/api/health` を取り直す（ComfyUI が変われば使えるモデル・LoRA も変わるため）。設定を読み込むまでは無効化しておく
 - **モードとワークフローに応じた項目の非表示**（`form.hiddenFields`）: 使わない項目はグレーアウトではなく**その欄ごと表示しない**。ただし値は `FormState` に残るので、その項目を使うモード / ワークフローへ戻せば入力内容が復元される
   - 動画生成モードでは画像ワークフロー・画像プロンプト・LoRA（画像）・トリガーワードを出さない（LoRA（動画）は出す）。画像のみモードでは動画ワークフロー・動画プロンプト・ネガティブ・リファレンス音声・秒数・fps・LoRA（動画）を出さない
   - **選択した動画ワークフローのマニフェスト**に従い、音声入力を持たないワークフローでは音声欄を出さず、必要な入力（最終フレーム / 参照動画）の欄だけを出す
@@ -682,9 +692,10 @@ SPA 1 画面 + 履歴。ダークテーマの生成系ツールらしい見た�
 - LoRA チェーンを持たないワークフロー（wan_dancer）では LoRA（動画）セクションを出さない（挿せないため。指定したジョブはバックエンドが 422 にする）
 - 動画ネガティブはプリセット選択（ワークフロー既定 / 現行値 / モデル作者版）+ 編集可（詳細設定アコーディオン内）
 - 設定は**モーダルではなく専用ページ（フルページ）**。ヘッダーの [設定] で画面遷移し、ページ左上の [← 戻る] で生成画面に復帰する。3 タブ構成:
-  - **接続 / Grok**: ComfyUI 接続先（URL / APIキー） / grok CLI コマンドと**使用モデル（既定: grok-4.5、変更可）**  / **モデル自動ダウンロード**のブロック（`dir-status` の `configured=true` のときだけ表示。保存先パスは環境変数由来なので読み取り専用で見せ、「書き込み可 ✓」「パスが見つかりません」等の状態と、**Hugging Face トークン**・**Civitai APIキー**（どちらも `type="password"`）を並べる。`configured=false` のときはブロックごと出さない、§3.3）
-  - **LoRA 管理**: 表示名・ファイル名・**対象ワークフロー（画像用 / 動画用）**・**モデルファミリー（画像用のみ）**・トリガーワード・既定強度・既定音声・並び順・**取得元 URL（任意）**の CRUD とサンプル画像の登録。一覧のバッジには対象とファミリーを出し、取得元 URL が登録済みなら `URL ✓`（title に URL）を添える。取得元 URL は LoRA 本体と同じ [追加] / [更新] で保存し、保存先はモデルタブと同じ `model_download_urls`（キーは `lora_name`）。**空欄で保存するとキーを消し**、**ファイル名を変えた場合は旧キーを消して新キーへ移す**（URL に変化が無ければ設定は PUT しない）。ここではダウンロードせず、`deploy/runpod/gen_models_manifest.py` が Pod 用のモデル一覧に `loras/<lora_name>` として載せるために使う
-  - **モデル**: 全ワークフローのモデルファイル名一覧を **画像 / 動画 / 音声の大分類 → ワークフローごとの折りたたみ**（既定は閉じ、見出しに項目数・未保存件数・既定から変更した件数のバッジ）に整理し、行ごとにテキスト入力で上書き。変更行はハイライト、[既定に戻す] で復帰、[保存] で全行を一括 PUT。各行にはさらに**候補リスト**（チップ + 追加/削除）があり、既定値と合わせて 2 件以上にすると生成フォーム / エージェントが実行ごとに選べるようになる。既定値入力・候補追加入力はどちらも `/api/options` の `model_files`（`"<class_type>.<field>"` ごとの ComfyUI ファイル一覧。LoRA は従来の `lora_files` で補う）があれば datalist で補完。さらに各行には**不足モデルのダウンロード**の UI がある: 値が `model_files` の該当リストに無ければ**未検出**バッジ、URL 入力欄（`model_download_urls`。キーはファイル名なので同じファイルを使う行では共有）と [DL] ボタン、進行中は進捗バーと取得済みバイト数（WS の `model_download` を購読）。**取得元 URL の登録・編集は `COMFY_MODELS_DIR` の有無に関係なく常に使える**（Comfy Cloud 接続でも Pod 用のマニフェストに URL が要るため）が、実ダウンロード（[DL]）だけは `dir-status` が使える状態のときに限る: `configured=false`（Comfy Cloud 利用などでは正常な状態）や `exists`／`writable` が false のときは **[DL] と「保存先: …」を描画せず**（押せないボタンを残さない）、未検出の行も「未検出バッジ + URL 欄 + [URL保存]」だけにする。タブ上部の警告は `configured=true` のときだけ出す。未設定のあいだは代わりに「使うなら `.env` に `COMFY_MODELS_DIR` を設定して再起動（未設定でも URL 登録はできる）」の案内を添える（§3.3）。**検出済みの行**でも取得元 URL は登録できる（手元には在るが RunPod の Pod には無いモデルを `deploy/runpod/gen_models_manifest.py` の自動 DL 一覧に載せるため）: 表がうるさくならないよう既定は畳んでおき、[▸ 取得元 URL]（登録済みならアクセント色 + ✓）を押すと URL 欄と [URL保存] が開く。[URL保存] はダウンロードせず `model_download_urls` だけを PUT し、**空欄で保存するとそのファイル名のキーを消す**（登録解除）
+  - **接続 / Grok**: 「ComfyUI 接続先」（[接続先] のプルダウン + ComfyCloud / RunPod / ローカルのサブセクション。RunPod のサブセクションには Pod の ComfyUI URL・APIキーに続けて §5.1 の自動起動の設定を置く） / grok CLI コマンドと**使用モデル（既定: grok-4.5、変更可）**  / **モデル自動ダウンロード**のブロック（常に表示。ローカルの保存先パスは環境変数由来なので読み取り専用で見せ、「書き込み可 ✓」「パスが見つかりません」等の状態と、**Hugging Face トークン**・**Civitai APIキー**（どちらも `type="password"`。RunPod へ落とすときは Pod 側の環境変数が使われる）を並べる、§3.3）
+  - **LoRA 管理**: 表示名・ファイル名・**対象ワークフロー（画像用 / 動画用）**・**モデルファミリー（画像用のみ）**・トリガーワード・既定強度・既定音声・並び順・**取得元 URL（任意）**の CRUD とサンプル画像の登録。一覧のバッジには対象とファミリーを出し、取得元 URL が登録済みなら `URL ✓`（title に URL）を添える。取得元 URL は LoRA 本体と同じ [追加] / [更新] で保存し、保存先はモデルタブと同じ `model_download_urls`（キーは `lora_name`）。**空欄で保存するとキーを消し**、**ファイル名を変えた場合は旧キーを消して新キーへ移す**（URL に変化が無ければ設定は PUT しない）。ここではダウンロードせず、モデルタブと同じく [DL] / [全DL]（§3.3）の取得元として使う
+  - **モデル** / **LoRA 管理**: どちらもタブの先頭に [対象の接続先]（ComfyCloud / RunPod / ローカル。現在の接続先には「（現在の接続先）」を添える）のプルダウンを置き、選んだ環境の登録を読み書きする（初期値は現在の接続先。繋いでいない環境も整理できるよう、接続先そのものとは独立に切り替えられる。切り替えると未保存の編集は捨てて読み直す、§5）
+  - **モデル**: 全ワークフローのモデルファイル名一覧を **画像 / 動画 / 音声の大分類 → ワークフローごとの折りたたみ**（既定は閉じ、見出しに項目数・未保存件数・既定から変更した件数のバッジ）に整理し、行ごとにテキスト入力で上書き。変更行はハイライト、[既定に戻す] で復帰、[保存] で全行を一括 PUT。各行にはさらに**候補リスト**（チップ + 追加/削除）があり、既定値と合わせて 2 件以上にすると生成フォーム / エージェントが実行ごとに選べるようになる。既定値入力・候補追加入力はどちらも `/api/options` の `model_files`（`"<class_type>.<field>"` ごとの ComfyUI ファイル一覧。LoRA は従来の `lora_files` で補う）があれば datalist で補完。さらに各行には**不足モデルのダウンロード**の UI がある: 値が `model_files` の該当リストに無ければ**未検出**バッジ、URL 入力欄（`model_download_urls`。キーはファイル名なので同じファイルを使う行では共有）と [DL] ボタン、進行中は進捗バーと取得済みバイト数（WS の `model_download` を購読）。**取得元 URL の登録・編集は環境や `COMFY_MODELS_DIR` の有無に関係なく常に使える**（いま繋いでいない環境ぶんの URL も先に登録しておけるため）。[DL] と、タブ上部の **[全DL]**（未検出かつ URL 登録済みを一括開始）は `comfy_cloud` 以外で常に出し、落とせない事情は押したときの 400 で知らせる（ローカル選択中は `dir-status` の理由をタブ上部の警告にも出す、§3.3）。**未検出バッジは「いま繋いでいる環境」を編集しているときだけ**出す（`model_files` は接続中の ComfyUI のものなので、他の環境の在庫は分からない）。バッジが出ない行でも [取得元 URL] を開けば [URL保存] と [DL] が並ぶ。**検出済みの行**でも取得元 URL は登録できる（手元には在るが RunPod の Pod には無いモデルを、あとで [DL] / [全DL] で入れるため）: 表がうるさくならないよう既定は畳んでおき、[▸ 取得元 URL]（登録済みならアクセント色 + ✓）を押すと URL 欄と [URL保存] が開く。[URL保存] はダウンロードせず `model_download_urls` だけを PUT し、**空欄で保存するとそのファイル名のキーを消す**（登録解除）
 - **実行ごとのモデル切り替え**: 選択中のワークフローに候補が 2 件以上あるスロットがあれば、そのワークフローセレクトの直下に「使用モデル: <ノード名>」のセレクトを出す（画像 / 動画 / 音声それぞれのセクション内）。候補が 1 件以下のスロットは何も出さない。送信時は**走らせるワークフローのぶんだけ**、かつ既定値と違う選択だけを `params.model_overrides` に載せる（§3.3）
 - ヘッダーの NSFW 表示トグルは `sessionStorage` に保持する（既定オフ。タブを開き直すと必ずオフに戻る）
 
@@ -705,17 +716,18 @@ SPA 1 画面 + 履歴。ダークテーマの生成系ツールらしい見た�
 ```
 GET  /api/health                 … ComfyUI/Grok 疎通チェック
 GET  /api/options                … 画像/動画/音声ワークフロー一覧（必要入力・露出しているつまみ・秒数レンジつき）・アスペクト比・LoRA一覧・アセット一覧・ライブラリ一覧（library, §7.2）・実行時に選べるモデルスロット（model_slots）と ComfyUI のモデルファイル一覧（model_files）
-GET/POST/PUT/DELETE /api/loras   … アプリ内 LoRA 登録リストの CRUD
+GET/POST/PUT/DELETE /api/loras   … アプリ内 LoRA 登録リストの CRUD（GET は `?target=` でその接続先のもの + 共通行、POST は `comfy_target` で紐づけ先を指定、§5）
 GET  /api/library                … ライブラリ検索（kind / q / tag / limit / offset → items + total + tags、§7.2）
 POST /api/library/{kind}         … ファイルをアップロードして登録
 POST /api/library/from-job       … ジョブの出力（image / last_frame / video / audio）を登録
 PATCH  /api/library/{id}         … 表示名 / NSFW フラグ / タグの変更
 DELETE /api/library/{id}         … 登録解除（ファイルも削除）
-GET  /api/models                 … 全ワークフローのモデルファイル名一覧（既定値+現在値+候補リスト、キーは workflow_id でスコープ）
-PUT  /api/models                 … モデルファイル名の上書きと候補リストの保存（既定値と同値/空は削除、候補が空のキーは削除。`choices` 省略時は保存済みの候補を保持）
-GET  /api/models/dir-status      … ComfyUI の models ディレクトリの状態（configured / exists / writable / path、§3.3）
+GET  /api/models                 … 全ワークフローのモデルファイル名一覧（既定値+現在値+候補リスト、キーは workflow_id でスコープ。`?target=` でその接続先のもの、省略時は現在の接続先）
+PUT  /api/models                 … モデルファイル名の上書きと候補リストの保存（既定値と同値/空は削除、候補が空のキーは削除。`choices` 省略時は保存済みの候補を保持。`target` の環境だけを書き換える）
+GET  /api/models/dir-status      … ローカルの models ディレクトリの状態（configured / exists / writable / path、§3.3）
 GET  /api/models/downloads       … 進行中と直近のモデルダウンロード一覧
-POST /api/models/download        … 不足モデルのダウンロード開始（filename / url / subfolder。保存先を検証して 400、二重実行は 409。進捗は WS、§3.3）
+POST /api/models/download        … 不足モデルのダウンロード開始（filename / url / subfolder / target。local は自前・runpod は Pod の API へ・comfy_cloud は 400。保存先を検証して 400、二重実行は 409。進捗は WS、§3.3）
+POST /api/models/download-all    … 未検出かつ取得元 URL 登録済みを一括開始（target。started / missing_urls / errors を返す、§3.3）
 POST /api/chat/sessions          … チャット開始（フォーム現在値をコンテキストとして渡す。`video_workflow` / `image_workflow` / `audio_workflow` を含む）
 POST /api/chat/sessions/{id}/messages … 発言送信 → Grok 応答（質問 or 最終JSON案）を返す
 GET  /api/chat/sessions/{id}     … 履歴取得

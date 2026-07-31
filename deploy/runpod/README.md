@@ -16,7 +16,8 @@ Karakuri Media Studio のバックエンド（ComfyUI）を **RunPod の Pod（G
 - **起動**はアプリがやります（設定で有効にすると、ジョブ実行の直前に Pod を作る）
 - **停止**は Pod の中の `watchdog.py` がやります（アプリが落ちていても課金が止まる）
 - ComfyUI 本体・カスタムノード・モデルは**イメージに焼かず** Network Volume に置くので、
-  モデルを足すのにイメージの再ビルドは要りません
+  モデルを足すのにイメージの再ビルドは要りません（モデルはアプリの設定ページの
+  [DL] / [全DL] から Pod のダウンロード API 経由で入れます）
 
 ---
 
@@ -25,102 +26,50 @@ Karakuri Media Studio のバックエンド（ComfyUI）を **RunPod の Pod（G
 | ファイル | 役割 |
 |---|---|
 | `Dockerfile` | CUDA 12.8 + PyTorch cu128 + caddy + cloudflared のランタイム |
-| `entrypoint.sh` | 冪等な起動処理（clone → custom nodes → モデル → 各プロセス起動） |
+| `entrypoint.sh` | 冪等な起動処理（clone → custom nodes → 各プロセス起動） |
 | `custom_nodes.txt` | 追加で入れる custom node（`<git-url> <commit>`）。既定は空 |
-| `models.txt` | 必要なモデル（`<subfolder>/<filename> <url>`） |
-| `gen_models_manifest.py` | `workflow/` と設定から `models.txt` を作り直すスクリプト |
-| `download_models.py` | マニフェスト（複数可）を読んで不足ぶんだけ落とす |
-| `Caddyfile` | `:8189` の認証つきリバースプロキシ |
+| `download_models.py` | 1 ファイルを落とす処理（`model_api.py` が使う。レジューム・再試行つき） |
+| `Caddyfile` | `:8189` の認証つきリバースプロキシ（`/studio/models/*` だけ DL API へ） |
 | `watchdog.py` | アイドルが続いたら自分の Pod を terminate |
+| `model_api.py` | アプリの [DL] / [全DL] を受けるモデルダウンロード API（`127.0.0.1:8190`） |
 
 ---
 
-## 1. モデルの URL を埋める
+## モデルの入れ方
 
-`models.txt` は `workflow/` のテンプレートから自動生成してあります。取得元が確実に
-分かっているものだけ URL が入っていて、それ以外は次の形で残っています。
+**起動時の一括ダウンロードは行いません。** Pod を上げたら、アプリの
+**設定 → モデル / LoRA 管理**で [対象の接続先] を **RunPod** にして、行ごとの
+**[DL]** か上部の **[全DL]**（未検出かつ取得元 URL 登録済みを一括）を押してください。
+Pod の中のダウンロード API（`model_api.py`）が `/workspace/ComfyUI/models` の所定の
+場所に置き、進捗はアプリの設定画面にそのまま出ます。Network Volume に残るので、
+Pod を作り直しても入れ直しは要りません。
 
-```
-# TODO url
-# diffusion_models/krea2_turbo_fp8_scaled.safetensors <url>
-```
+- 取得元 URL は設定ページで登録します（モデルタブの [取得元 URL]、LoRA は登録
+  フォームの「取得元 URL」欄）。キーはファイル名なので、同じファイルを使う行では
+  共有されます
+- 置き場所（`diffusion_models` / `loras` など）はローダーの種類から決まります
+  （`backend/app/workflow.py` の `MODEL_SUBFOLDERS`）
+- Hugging Face の gated リポジトリや Civitai の要ログインファイルには、**テンプレートの
+  環境変数** `HF_TOKEN` / `CIVITAI_API_KEY` が使われます（アプリ側の設定は Pod には
+  渡りません）
 
-**使うワークフローのぶんだけ**、コメントを外して直リンクを書いてください（全部を
-揃える必要はありません）。行の形式は `<subfolder>/<filename> <url>` で、`subfolder`
-は `/workspace/ComfyUI/models` からの相対パスです。保存名は行に書いたファイル名に
-なるので、配布元のファイル名が違っていても構いません。
-
-ワークフローを差し替えて必要なモデルが変わったら、リポジトリのルートで作り直せます。
-
-```bash
-python3 deploy/runpod/gen_models_manifest.py > deploy/runpod/models.txt
-```
-
-（`gen_models_manifest.py` は `backend/app/workflow.py` の `MODEL_SUBFOLDERS` を
-そのまま使うので、置き場所の対応表はアプリ側と必ず一致します。既に書いた URL は
-スクリプト内の `KNOWN_URLS` に足しておくと、次回の生成でも残ります。）
-
-生成には、テンプレートの既定値だけでなく**アプリの設定でモデルを差し替えたもの・
-候補として登録したもの**（設定 → モデル）も入ります。その行のコメントには
-`（設定で指定）` が付きます。URL は `KNOWN_URLS` → 設定の「モデルのダウンロード URL」
-の順で探し、どちらにも無ければ `# TODO url` になります。
-
-さらに、**設定 → LoRA 管理に登録した人物 LoRA**（DB の `loras` テーブル）も
-`loras/<ファイル名>` として入ります（コメントは `LoRA「表示名」`）。URL は LoRA の
-登録・編集フォームの「取得元 URL」欄に入れたものが使われます。
-
-### モデル構成を変えたときの反映
-
-設定でモデルを差し替えた／候補を足したときは、**イメージを作り直さなくても**
-Network Volume 側のマニフェストで足せます。`entrypoint.sh` は焼き込みの
-`models.txt` に加えて、**`/workspace/models.local.txt` があればそれも**読みます
-（両方処理し、すでに置いてあるファイルは飛ばします）。
-
-```bash
-# 手元で（リポジトリのルート）
-python3 deploy/runpod/gen_models_manifest.py > models.local.txt
-# `# TODO url` の行のうち、使うものだけ URL を埋める
-```
-
-これを Network Volume の直下（`/workspace/models.local.txt`）に置きます。手軽なのは
-**テンプレートの環境変数で渡す**方法です。Pod にログインする手段が無くても使えます。
-
-```bash
-# 手元（リポジトリのルート）
-base64 -w0 models.local.txt
-```
-
-出てきた 1 行を、テンプレートの Environment Variables に `MODELS_LOCAL_B64` として
-入れます。起動のたびに `entrypoint.sh` がデコードして `/workspace/models.local.txt`
-に書き出します（**毎回上書き**するので、テンプレート側の値が常に正になります）。
-デコードに失敗したときは既存のファイルを残したまま読み飛ばし、起動は続きます。
-イメージは公開レジストリに置きますが、テンプレートの環境変数は非公開なので、
-個人ごとのモデル URL をイメージに焼かずに済みます。
-
-Pod に入れる手段があるなら、ファイルを直接置いても構いません。Pod を起動した
-状態で、次のどちらかで送ります。
+> **配布 URL の無いモデル（自作 LoRA など）はダウンロードできません。**
+> 手元にしか無い LoRA / チェックポイントは**ボリュームに直接アップロード**して
+> ください。置き場所は `/workspace/ComfyUI/models/loras/`（LoRA の場合）などです。
+> `runpodctl send` / `receive` か、Jupyter のファイルブラウザからのアップロードが
+> 手軽です。ファイル名はアプリの設定に入れた名前と**完全に一致**させてください
+> （ComfyUI はこの名前で探します）。
 
 ```bash
 # 手元
-runpodctl send models.local.txt
+runpodctl send my_lora.safetensors
 # Pod の web ターミナル / Jupyter
-runpodctl receive <コード>        # /workspace に置く
+runpodctl receive <コード>        # /workspace/ComfyUI/models/loras に置く
 ```
-
-Jupyter を有効にしたテンプレートなら、ファイルブラウザから `/workspace` に
-ドラッグ＆ドロップするだけでも構いません。次の起動から反映されます。
-
-> **配布 URL の無いモデル（自作 LoRA など）はダウンロードできません。**
-> マニフェストに書けるのは直リンクのあるファイルだけなので、手元にしか無い
-> LoRA / チェックポイントは**ボリュームに直接アップロード**してください。
-> 置き場所は `/workspace/ComfyUI/models/loras/`（LoRA の場合。他は `models.txt`
-> の `<subfolder>` と同じ）です。`runpodctl send` / `receive` か、Jupyter の
-> ファイルブラウザからのアップロードが手軽です。ファイル名はアプリの設定に
-> 入れた名前と**完全に一致**させてください（ComfyUI はこの名前で探します）。
 
 ---
 
-## 2. イメージをビルドして push
+## 1. イメージをビルドして push
 
 RunPod からは公開レジストリ（Docker Hub / GHCR など）が見える必要があります。
 
@@ -138,13 +87,12 @@ ComfyUI のバージョンは既定で `master`（起動のたびに最新へ追
 docker build --build-arg COMFYUI_REF=v0.27.0 -t <user>/karakuri-comfyui:latest .
 ```
 
-> `models.txt` と `custom_nodes.txt` はイメージに入るので、内容を変えたら
-> **ビルドし直して push** してください。モデルを足すだけなら、ビルドの代わりに
-> `/workspace/models.local.txt`（手順 1）でも足せます。
+> `custom_nodes.txt` はイメージに入るので、内容を変えたら**ビルドし直して push**
+> してください。モデルを足すだけならビルドは不要です（設定ページの [DL] / [全DL]）。
 
 ---
 
-## 3. Network Volume を作る
+## 2. Network Volume を作る
 
 RunPod のコンソール → **Storage** → **Network Volume** で作ります。
 
@@ -153,14 +101,15 @@ RunPod のコンソール → **Storage** → **Network Volume** で作ります
 - Pod には `/workspace` としてマウントされます
 
 ここに ComfyUI 本体・カスタムノード・モデルが置かれ、Pod を作り直しても残ります。
-初回だけモデルのダウンロードで時間がかかり、2 回目以降は数十秒で上がります。
+初回だけ ComfyUI とカスタムノードの用意に時間がかかり、2 回目以降は数十秒で上がります
+（モデルは設定ページの [DL] / [全DL] で入れます）。
 
 ---
 
-## 4. Cloudflare Tunnel を作る
+## 3. Cloudflare Tunnel を作る
 
 Pod は起動のたびに IP が変わるので、**固定のホスト名**をトンネルで用意します。
-（アプリ側の `comfy_url` を毎回書き換えなくて済みます。）
+（アプリ側の `runpod_comfy_url` を毎回書き換えなくて済みます。）
 
 1. Cloudflare にドメインを 1 つ載せておく（無料プランで可）
 2. Cloudflare Zero Trust → **Networks** → **Tunnels** → **Create a tunnel**
@@ -177,11 +126,11 @@ Pod が落ちている間はトンネルも切れるので、Cloudflare が 502 
 （アプリはそれを「ComfyUI が落ちている」と判断して Pod を起動します）。
 
 > トンネルを使わない場合は、RunPod のポート公開（`8189/http`）でも動きます。
-> ただし Pod ごとに URL が変わるので、そのつど設定の `comfy_url` を直してください。
+> ただし Pod ごとに URL が変わるので、そのつど設定の `runpod_comfy_url` を直してください。
 
 ---
 
-## 5. テンプレートを登録する
+## 4. テンプレートを登録する
 
 RunPod のコンソール → **Templates** → **New Template**。
 
@@ -196,15 +145,14 @@ RunPod のコンソール → **Templates** → **New Template**。
 
 | 変数 | 必須 | 内容 |
 |---|---|---|
-| `COMFY_API_KEY` | 推奨 | プロキシの API キー。アプリの `comfy_api_key` と同じ値。空にすると**誰でも ComfyUI を叩ける**ので、トンネルで公開するなら必ず設定する |
-| `CF_TUNNEL_TOKEN` | ○ | 手順 4 で控えたトンネルのトークン |
-| `HF_TOKEN` | 任意 | gated な Hugging Face リポジトリからモデルを落とす場合 |
-| `CIVITAI_API_KEY` | 任意 | 要ログインの Civitai ファイルを落とす場合 |
+| `COMFY_API_KEY` | 推奨 | プロキシの API キー。アプリの `runpod_comfy_api_key` と同じ値。空にすると**誰でも ComfyUI を叩ける**ので、トンネルで公開するなら必ず設定する |
+| `CF_TUNNEL_TOKEN` | ○ | 手順 3 で控えたトンネルのトークン |
+| `HF_TOKEN` | 任意 | gated な Hugging Face リポジトリからモデルを落とす場合（[DL] / [全DL] が使う） |
+| `CIVITAI_API_KEY` | 任意 | 要ログインの Civitai ファイルを落とす場合（同上） |
 | `RUNPOD_API_KEY` | ○ | watchdog が自分を terminate するのに使う |
 | `IDLE_TIMEOUT_MINUTES` | 任意 | アイドルで終了するまでの分数（既定 `10`） |
 | `STARTUP_GRACE_MINUTES` | 任意 | 起動直後に絶対に終了しない分数（既定 `15`。初回のモデル取得ぶん） |
 | `COMFY_ARGS` | 任意 | ComfyUI に足す起動引数（例 `--highvram`） |
-| `MODELS_LOCAL_B64` | 任意 | `models.local.txt` を `base64 -w0` した値（手順 1）。起動時に `/workspace/models.local.txt` へ書き出される |
 
 `RUNPOD_POD_ID` は RunPod が自動で入れるので、自分で設定する必要はありません。
 
@@ -213,19 +161,19 @@ RunPod のコンソール → **Templates** → **New Template**。
 
 ---
 
-## 6. アプリ側の設定
+## 5. アプリ側の設定
 
-Karakuri Media Studio の **設定 → 接続 / Grok** で:
+Karakuri Media Studio の **設定 → 接続 / Grok** の「ComfyUI 接続先」→ **RunPod** で:
 
 | 項目 | 値 |
 |---|---|
-| ComfyUI URL | `https://comfy.example.com`（手順 4 のホスト名） |
-| ComfyUI APIキー | テンプレートの `COMFY_API_KEY` と同じ値 |
+| RunPod ComfyUI URL | `https://comfy.example.com`（手順 3 のホスト名） |
+| RunPod ComfyUI APIキー | テンプレートの `COMFY_API_KEY` と同じ値 |
 | **RunPod の Pod を自動起動する** | オン |
 | RunPod APIキー | RunPod → Settings → API Keys で発行したもの |
-| テンプレート ID | 手順 5 で控えたもの |
+| テンプレート ID | 手順 4 で控えたもの |
 | GPU 種別 | `NVIDIA RTX PRO 6000 Blackwell Workstation Edition` / `NVIDIA GeForce RTX 5090` など（RunPod の gpuTypeId をそのまま） |
-| Network Volume ID | 手順 3 で作ったボリュームの ID |
+| Network Volume ID | 手順 2 で作ったボリュームの ID |
 
 これで、ジョブを実行したときに ComfyUI へ繋がらなければ Pod が作られ、繋がるまで
 待ってから（最大 15 分）ワークフローが投入されます。待っている間は生成画面に
@@ -234,6 +182,34 @@ Karakuri Media Studio の **設定 → 接続 / Grok** で:
 GPU が確保できないときは**そのままエラーになります**（勝手に別の GPU や
 SECURE クラウドへ振り替えると、意図しない課金になるため）。設定の GPU 種別を
 変えて再実行してください。
+
+モデルの指定・LoRA 登録は**接続先ごと**に保存されます（設定ページの「モデル」
+「LoRA 管理」タブの [対象の接続先] で切り替え）。RunPod を選んでいるあいだの
+[DL] / [全DL] は、下の Pod 側 API 経由で **Pod の** models ディレクトリに落ちます。
+
+---
+
+## モデルのダウンロード API（Pod 側）
+
+設定ページの [DL] / [全DL] は、Pod の中で動く小さな API（`model_api.py`、
+`127.0.0.1:8190`）に依頼します。公開しているのは caddy 経由の
+`/studio/models/*` だけで、**認証は ComfyUI と同じ `COMFY_API_KEY`** です。
+
+| メソッド | パス | 内容 |
+|---|---|---|
+| POST | `/studio/models/download` | `{"filename", "url", "subfolder"}` を受けて取得を開始（すぐ返る） |
+| GET | `/studio/models/downloads` | 進行中・直近の完了 / 失敗の一覧 |
+
+実体は `download_models.py`（`.part` への追記と `Range` レジューム、リダイレクト
+ごとの認証、指数バックオフの再試行）なので、数十 GB のファイルでも途中で切られた
+ぶんは続きから取り直します。`HF_TOKEN` / `CIVITAI_API_KEY` は Pod の環境変数を
+そのまま使います。
+
+> **この API を使うにはイメージの作り直しが必要です。** 既存の Pod / テンプレートの
+> ままだと `/studio/models/*` が 404 になり、アプリは「Pod のダウンロード API が
+> ありません」と出します。手順 1 のビルドと push をやり直し、テンプレートのイメージ
+> タグを更新（同じ `:latest` なら Pod を作り直すだけ）してください。Network Volume の
+> 中身（ComfyUI 本体・モデル）はそのまま使えます。
 
 ---
 
@@ -251,7 +227,7 @@ curl -i -H 'X-API-Key: secret' http://127.0.0.1:8189/system_stats
 ```
 
 Pod のログ（RunPod のコンソール）には、`[entrypoint]` / `[models]` /
-`[watchdog]` のプレフィックスで各段階の進み具合が出ます。
+`[watchdog]` / `[model-api]` のプレフィックスで各段階の進み具合が出ます。
 
 ---
 
@@ -259,9 +235,11 @@ Pod のログ（RunPod のコンソール）には、`[entrypoint]` / `[models]`
 
 | 症状 | 原因と対処 |
 |---|---|
-| 15 分待ってもアプリが繋がらない | Pod のログで ComfyUI が上がっているか確認。初回はモデルの取得で 15 分を超えることがあるので、その場合はもう一度実行すれば続きから進む（`.part` は消えて落とし直しになる点に注意） |
-| ジョブが「ファイルが見つからない」で失敗する | `models.txt` の `# TODO url` が埋まっていない。埋めてイメージを push し直す |
+| 15 分待ってもアプリが繋がらない | Pod のログで ComfyUI が上がっているか確認。初回は ComfyUI とカスタムノードの用意に時間がかかる |
+| ジョブが「ファイルが見つからない」で失敗する | そのモデルが Pod に入っていない。設定 → モデル / LoRA 管理を [対象の接続先] = RunPod にして [DL] / [全DL] で入れる（取得元 URL の登録が要る） |
 | 「missing custom nodes on ComfyUI」が出る | そのノードは本体に入っていない。`custom_nodes.txt` に `<git-url> <commit>` を足して push し直す |
 | Pod が消えない | `RUNPOD_API_KEY` がテンプレートの環境変数に入っているか。ログの `[watchdog]` に理由が出る |
 | Pod がすぐ消える | `IDLE_TIMEOUT_MINUTES` を伸ばす。ComfyUI に繋がらない間はカウントしないので、「生成中なのに消える」ことは起きない |
-| 401 が返る | アプリの `comfy_api_key` とテンプレートの `COMFY_API_KEY` が違う |
+| 401 が返る | アプリの `runpod_comfy_api_key` とテンプレートの `COMFY_API_KEY` が違う |
+| [DL] が「Pod のダウンロード API がありません」で失敗する | Pod が古いイメージで動いている。手順 1 をやり直して Pod を作り直す |
+| [全DL] が「不足しているモデルを判定できません」で失敗する | Pod が起動していない（判定に Pod の `/object_info` を使う）。ジョブを 1 本投げて自動起動させるか、RunPod のコンソールから起動する |

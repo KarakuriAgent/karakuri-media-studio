@@ -7,19 +7,31 @@ from fastapi import APIRouter, File, HTTPException, UploadFile
 from .. import lora_samples
 from ..db import get_db
 from ..ids import new_id
-from ..models import Lora, LoraCreate, LoraUpdate
+from ..config import load_settings
+from ..models import ComfyTarget, Lora, LoraCreate, LoraUpdate
 
 router = APIRouter(prefix="/api/loras", tags=["loras"])
 
+#: 接続先で絞る WHERE 句（NULL = 環境を問わず出す行、SPEC §5）
+_TARGET_WHERE = "WHERE comfy_target IS NULL OR comfy_target = ?"
 
-@router.get("", response_model=list[Lora])
-async def list_loras() -> list[Lora]:
+
+async def loras_for(target: ComfyTarget | None = None) -> list[Lora]:
+    """その接続先で使える LoRA（``None`` なら現在の接続先。共通行を必ず含む）。"""
+    chosen = target or load_settings().comfy_target
     async with get_db() as conn:
         async with conn.execute(
-            "SELECT * FROM loras ORDER BY sort_order, id"
+            f"SELECT * FROM loras {_TARGET_WHERE} ORDER BY sort_order, id",
+            (chosen,),
         ) as cur:
             rows = await cur.fetchall()
     return [lora_samples.row_to_lora(r) for r in rows]
+
+
+@router.get("", response_model=list[Lora])
+async def list_loras(target: ComfyTarget | None = None) -> list[Lora]:
+    """その接続先の LoRA 登録（``target`` 省略時は現在の接続先）。"""
+    return await loras_for(target)
 
 
 @router.get("/{lora_id}", response_model=Lora)
@@ -37,9 +49,11 @@ async def create_lora(payload: LoraCreate) -> Lora:
     async with get_db() as conn:
         cur = await conn.execute(
             "INSERT INTO loras (display_name, lora_name, trigger_word,"
-            " default_strength, default_audio, sort_order, target, family)"
+            " default_strength, default_audio, sort_order, target, family,"
+            " comfy_target)"
             " VALUES (:display_name, :lora_name, :trigger_word,"
-            " :default_strength, :default_audio, :sort_order, :target, :family)",
+            " :default_strength, :default_audio, :sort_order, :target, :family,"
+            " :comfy_target)",
             payload.model_dump(),
         )
         await conn.commit()

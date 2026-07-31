@@ -21,12 +21,14 @@ import {
 } from './form'
 import type {
   AgentProgress,
+  ComfyTarget,
   Health,
   Job,
   JobCreate,
   JobProgress,
   LibraryProgress,
   Options,
+  Settings,
 } from './types'
 
 const ACTIVE_STATUSES = ['queued', 'prompting', 'running']
@@ -48,6 +50,9 @@ export default function App() {
   const [checkingHealth, setCheckingHealth] = useState(false)
   const [options, setOptions] = useState<Options | null>(null)
   const [optionsError, setOptionsError] = useState<string | null>(null)
+  // 生成フォームの接続先プルダウン用（SPEC §5）。実体はサーバー側の設定なので、
+  // 設定ページで変えたときも読み直して揃える。
+  const [settings, setSettings] = useState<Settings | null>(null)
   const [jobs, setJobs] = useState<Job[]>([])
   const [loadingJobs, setLoadingJobs] = useState(false)
   const [activeJob, setActiveJob] = useState<Job | null>(null)
@@ -155,6 +160,31 @@ export default function App() {
     }
   }, [])
 
+  const loadSettings = useCallback(async () => {
+    try {
+      setSettings(await api.getSettings())
+    } catch (error) {
+      pushError(error)
+    }
+  }, [pushError])
+
+  /**
+   * 接続先を切り替える（SPEC §5）。サーバー側の設定に保存し、選択肢と接続状態を
+   * 取り直す（ComfyUI が変われば使えるモデル・LoRA も変わるため）。
+   */
+  const changeComfyTarget = useCallback(
+    async (target: ComfyTarget) => {
+      try {
+        setSettings(await api.putSettings({ comfy_target: target }))
+      } catch (error) {
+        pushError(error)
+        return
+      }
+      await Promise.all([loadOptions(), loadHealth()])
+    },
+    [loadHealth, loadOptions, pushError],
+  )
+
   const loadJobs = useCallback(async () => {
     setLoadingJobs(true)
     try {
@@ -174,7 +204,8 @@ export default function App() {
     void loadHealth()
     void loadOptions()
     void loadJobs()
-  }, [loadHealth, loadOptions, loadJobs])
+    void loadSettings()
+  }, [loadHealth, loadOptions, loadJobs, loadSettings])
 
   // ------------------------------------------------------------------- WS
 
@@ -486,6 +517,7 @@ export default function App() {
           onChanged={() => {
             void loadOptions()
             void loadHealth()
+            void loadSettings()
           }}
         />
       )}
@@ -509,6 +541,8 @@ export default function App() {
               onSubmit={() => void submit()}
               submitting={submitting}
               fieldErrors={fieldErrors}
+              comfyTarget={settings?.comfy_target ?? null}
+              onComfyTarget={(target) => void changeComfyTarget(target)}
               // 履歴モーダルは自前で NSFW を切り替えるので、フィルタ前の全ジョブを渡す
               jobs={jobs}
               showNsfw={showNsfw}

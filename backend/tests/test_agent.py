@@ -470,7 +470,10 @@ def _register_choices(monkeypatch, choices: dict[str, list[str]]) -> None:
     monkeypatch.setattr(
         config,
         "_settings",
-        config.load_settings().model_copy(update={"model_choices": choices}),
+        # 候補リストは接続先ごと（SPEC §5）。既定の 'local' 環境に入れる。
+        config.load_settings().model_copy(
+            update={"comfy_target": "local", "model_choices": {"local": choices}}
+        ),
     )
 
 

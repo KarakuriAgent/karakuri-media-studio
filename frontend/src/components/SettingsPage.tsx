@@ -1,8 +1,15 @@
 import { useEffect, useState } from 'react'
 import { api, wsUrl } from '../api'
-import { DEFAULT_FAMILY, FAMILY_LABELS, IMAGE_FAMILIES } from '../form'
+import {
+  COMFY_TARGETS,
+  COMFY_TARGET_LABELS,
+  DEFAULT_FAMILY,
+  FAMILY_LABELS,
+  IMAGE_FAMILIES,
+} from '../form'
 import type {
   Asset,
+  ComfyTarget,
   ImageFamily,
   Lora,
   LoraPayload,
@@ -196,6 +203,9 @@ export default function SettingsPage({
 }) {
   const [tab, setTab] = useState<Tab>('connection')
   const [settings, setSettings] = useState<Settings | null>(null)
+  // モデル / LoRA タブの編集対象の環境（SPEC §5）。初期値は現在の接続先だが、
+  // 繋いでいない環境の登録も整理できるよう独立して切り替えられる。
+  const [envTarget, setEnvTarget] = useState<ComfyTarget | null>(null)
   const [loras, setLoras] = useState<Lora[]>([])
   const [models, setModels] = useState<ModelFieldState[]>([])
   const [modelDraft, setModelDraft] = useState<Record<string, string>>({})
@@ -230,9 +240,9 @@ export default function SettingsPage({
   const fail = (caught: unknown) =>
     setError(caught instanceof Error ? caught.message : String(caught))
 
-  const reloadLoras = async () => {
+  const reloadLoras = async (target = envTarget) => {
     try {
-      setLoras(await api.listLoras())
+      setLoras(await api.listLoras(target ?? undefined))
     } catch (caught) {
       fail(caught)
     }
@@ -273,34 +283,55 @@ export default function SettingsPage({
     }
   }
 
+  /** モデル一覧・LoRA 一覧・進行中のダウンロードを、その環境のものに揃える。 */
+  const loadForTarget = async (target: ComfyTarget) => {
+    try {
+      applyModels(await api.listModels(target))
+    } catch (caught) {
+      fail(caught)
+    }
+    try {
+      // 開き直したときに進行中のダウンロードを拾い直す（WS の取りこぼし対策。
+      // RunPod では Pod 側で走っているものもここで入る）
+      const running = await api.listModelDownloads(target)
+      setDownloads(
+        Object.fromEntries(running.map((item) => [item.filename, item])),
+      )
+    } catch (caught) {
+      fail(caught)
+    }
+    await reloadLoras(target)
+  }
+
   useEffect(() => {
     void (async () => {
+      let target: ComfyTarget = 'local'
       try {
         const loaded = await api.getSettings()
         setSettings(loaded)
         setUrlDraft({ ...loaded.model_download_urls })
+        target = loaded.comfy_target
       } catch (caught) {
         fail(caught)
       }
-      try {
-        applyModels(await api.listModels())
-      } catch (caught) {
-        fail(caught)
-      }
+      setEnvTarget(target)
       await reloadDirStatus()
-      try {
-        // 開き直したときに進行中のダウンロードを拾い直す（WS の取りこぼし対策）
-        const running = await api.listModelDownloads()
-        setDownloads(
-          Object.fromEntries(running.map((item) => [item.filename, item])),
-        )
-      } catch (caught) {
-        fail(caught)
-      }
-      await reloadLoras()
+      await loadForTarget(target)
     })()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
+
+  /** モデル / LoRA の編集対象の環境を切り替える（未保存の編集は捨てる）。 */
+  const changeEnvTarget = async (target: ComfyTarget) => {
+    setEnvTarget(target)
+    resetLoraForm()
+    setBusy(true)
+    try {
+      await loadForTarget(target)
+    } finally {
+      setBusy(false)
+    }
+  }
 
   // ダウンロードの進捗（WS /api/ws の `model_download`、SPEC §3.3）。
   // 完了したら ComfyUI のファイル一覧を取り直して「未検出」バッジを消す。
@@ -327,8 +358,11 @@ export default function SettingsPage({
     try {
       setSettings(
         await api.putSettings({
-          comfy_url: settings.comfy_url,
-          comfy_api_key: settings.comfy_api_key,
+          comfy_target: settings.comfy_target,
+          local_comfy_url: settings.local_comfy_url,
+          runpod_comfy_url: settings.runpod_comfy_url,
+          runpod_comfy_api_key: settings.runpod_comfy_api_key,
+          comfy_cloud_api_key: settings.comfy_cloud_api_key,
           grok_model: settings.grok_model,
           grok_command: settings.grok_command,
           hf_token: settings.hf_token,
@@ -366,7 +400,12 @@ export default function SettingsPage({
         model_download_urls: { ...urlDraft, [filename]: url },
       })
       setSettings(saved)
-      const started = await api.downloadModel(filename, url, row.subfolder)
+      const started = await api.downloadModel(
+        filename,
+        url,
+        row.subfolder,
+        envTarget ?? undefined,
+      )
       setDownloads((previous) => ({ ...previous, [filename]: started }))
       setNotice(`${filename} のダウンロードを開始しました`)
     } catch (caught) {
@@ -379,9 +418,9 @@ export default function SettingsPage({
   /**
    * 取得元 URL だけを設定へ保存する（ダウンロードはしない、SPEC §3.3）。
    *
-   * 手元に在るモデルでも、RunPod の Pod 用マニフェスト
-   * (deploy/runpod/gen_models_manifest.py) が `model_download_urls` を見るので
-   * 事前に登録できるようにしてある。空欄で保存したらキーごと消す。
+   * 手元に在るモデルでも、あとで別の環境（RunPod の Pod など）へ [DL] / [全DL]
+   * で入れるときに要るので、事前に登録できるようにしてある。空欄で保存したら
+   * キーごと消す。
    */
   const saveDownloadUrl = async (filename: string) => {
     if (!filename) return
@@ -408,11 +447,48 @@ export default function SettingsPage({
     }
   }
 
+  /**
+   * 未検出かつ取得元 URL 登録済みのモデルをまとめて落とす（SPEC §3.3）。
+   *
+   * 何が足りないかは**サーバーが選んだ環境の ComfyUI に聞いて**決めるので、
+   * その ComfyUI（RunPod なら Pod）が起動している必要がある。
+   */
+  const startAllDownloads = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      const result = await api.downloadAllModels(envTarget ?? undefined)
+      setDownloads((previous) => ({
+        ...previous,
+        ...Object.fromEntries(result.started.map((item) => [item.filename, item])),
+      }))
+      const notes = [`${result.started.length} 件のダウンロードを開始しました`]
+      if (result.missing_urls.length > 0) {
+        notes.push(
+          `取得元 URL が未登録: ${result.missing_urls.join(', ')}`,
+        )
+      }
+      const failures = Object.entries(result.errors)
+      if (failures.length > 0) {
+        notes.push(
+          ...failures.map(([name, message]) => `${name}: ${message}`),
+        )
+      }
+      setNotice(notes.join(' / '))
+    } catch (caught) {
+      fail(caught)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const saveModels = async () => {
     setBusy(true)
     setError(null)
     try {
-      applyModels(await api.putModels(modelDraft, choiceDraft))
+      applyModels(
+        await api.putModels(modelDraft, choiceDraft, envTarget ?? undefined),
+      )
       setNotice('モデル名と候補リストを保存しました')
       onChanged()
     } catch (caught) {
@@ -434,8 +510,12 @@ export default function SettingsPage({
     setBusy(true)
     setError(null)
     try {
-      if (editingId == null) await api.createLora(draft)
-      else await api.updateLora(editingId, draft)
+      // 新規登録は編集中の環境に紐づける（既存行の環境は変えない）
+      if (editingId == null) {
+        await api.createLora({ ...draft, comfy_target: envTarget })
+      } else {
+        await api.updateLora(editingId, draft)
+      }
       // 取得元 URL は LoRA 本体と同時に保存する（キーはファイル名）。ファイル名を
       // 変えた場合は旧キーを消してから新しいキーに移す。
       const url = draftUrl.trim()
@@ -514,6 +594,35 @@ export default function SettingsPage({
   const update = (patch: Partial<Settings>) =>
     setSettings((previous) => (previous ? { ...previous, ...patch } : previous))
 
+  /** モデル / LoRA タブの先頭に置く環境プルダウン（SPEC §5）。 */
+  const envPicker = (hint: string) => (
+    <div className="card flex flex-wrap items-center gap-2 p-2">
+      <label className="text-xs text-slate-400" htmlFor="settings-env">
+        対象の接続先
+      </label>
+      <select
+        id="settings-env"
+        className="field max-w-[14rem]"
+        value={envTarget ?? 'local'}
+        disabled={envTarget == null || busy}
+        onChange={(event) =>
+          void changeEnvTarget(event.target.value as ComfyTarget)
+        }
+      >
+        {COMFY_TARGETS.map((target) => (
+          <option key={target} value={target}>
+            {COMFY_TARGET_LABELS[target]}
+            {target === settings?.comfy_target ? '（現在の接続先）' : ''}
+          </option>
+        ))}
+      </select>
+      <p className="text-[11px] text-slate-500">{hint}</p>
+    </div>
+  )
+
+  // いま繋いでいる環境を編集しているか（未検出バッジの判定に使う）
+  const connectedEnv = envTarget != null && envTarget === settings?.comfy_target
+
   const modelsDirty = models.some(
     (row) =>
       (modelDraft[row.key] ?? '') !== row.value ||
@@ -521,10 +630,10 @@ export default function SettingsPage({
   )
   // 保存は全件置換 PUT なので、折りたたんでいても modelDraft は全行を持ち続ける。
   const modelGroups = groupModels(models, modelDraft, choiceDraft)
-  // models ディレクトリが未設定なら（Comfy Cloud 接続などでは普通のこと）
-  // ダウンロード列そのものを出さない。設定済みなら、使えない状態でも出して
-  // 理由を見せる（SPEC §3.3）。
-  const showDownload = dirStatus?.configured === true
+  // ダウンロード UI を出すか（SPEC §3.3）。ローカル / RunPod では常に出し、
+  // 落とせない事情（COMFY_MODELS_DIR 未設定・Pod 停止中）は押したときに
+  // エラーで知らせる。ComfyCloud だけはファイルを置けないので出さない。
+  const showDownload = envTarget !== 'comfy_cloud'
 
   return (
     <div className="flex h-full flex-col overflow-hidden">
@@ -564,35 +673,198 @@ export default function SettingsPage({
               {!settings && <p className="text-xs text-slate-500">読み込み中…</p>}
               {settings && (
                 <>
-                  <div>
-                    <label className="label">ComfyUI URL</label>
-                    <input
-                      className="field"
-                      value={settings.comfy_url}
-                      onChange={(event) => update({ comfy_url: event.target.value })}
-                    />
+                  {/* ComfyUI の接続先（SPEC §5）。3 プロファイル分の接続情報を
+                      ここに置き、「接続先」がそのどれを使うかを決める。生成
+                      フォーム上部のプルダウンは同じ値を書き換える。 */}
+                  <div className="card flex flex-col gap-3 p-3">
+                    <h4 className="text-xs font-semibold text-slate-300">
+                      ComfyUI 接続先
+                    </h4>
+                    <div>
+                      <label className="label">接続先</label>
+                      <select
+                        className="field"
+                        value={settings.comfy_target}
+                        onChange={(event) =>
+                          update({
+                            comfy_target: event.target.value as ComfyTarget,
+                          })
+                        }
+                      >
+                        {COMFY_TARGETS.map((target) => (
+                          <option key={target} value={target}>
+                            {COMFY_TARGET_LABELS[target]}
+                          </option>
+                        ))}
+                      </select>
+                      <p className="mt-1 text-[11px] text-slate-500">
+                        生成フォーム上部のプルダウンと同じ設定です。ジョブは選んだ
+                        接続先の ComfyUI に投げられます（保存すると次回起動時も
+                        この選択が使われます）。
+                      </p>
+                    </div>
+
+                    <div className="rounded-lg border border-ink-600 p-2">
+                      <h5 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                        ComfyCloud
+                      </h5>
+                      <div className="flex flex-col gap-2">
+                        <div>
+                          <label className="label">ComfyCloud APIキー</label>
+                          <input
+                            className="field"
+                            type="password"
+                            autoComplete="off"
+                            value={settings.comfy_cloud_api_key}
+                            onChange={(event) =>
+                              update({ comfy_cloud_api_key: event.target.value })
+                            }
+                          />
+                          <p className="mt-1 text-[11px] text-slate-500">
+                            接続先は https://cloud.comfy.org 固定です。API アクセスは
+                            Standard 以上のプランが必要です。
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* ComfyUI を RunPod の Pod で動かす構成（SPEC §5.1）。
+                        自動起動を有効にすると、接続先が RunPod のときだけ、
+                        ジョブ投入の直前に疎通を確かめて落ちていれば Pod を作って
+                        待つ。Pod の停止はイメージ側の watchdog が行う。 */}
+                    <div className="rounded-lg border border-ink-600 p-2">
+                      <h5 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                        RunPod
+                      </h5>
+                      <div className="flex flex-col gap-2">
+                        <div>
+                          <label className="label">RunPod ComfyUI URL</label>
+                          <input
+                            className="field"
+                            placeholder="https://<Cloudflare Tunnel のホスト名>"
+                            value={settings.runpod_comfy_url}
+                            onChange={(event) =>
+                              update({ runpod_comfy_url: event.target.value })
+                            }
+                          />
+                        </div>
+                        <div>
+                          <label className="label">
+                            RunPod ComfyUI APIキー（任意）
+                          </label>
+                          <input
+                            className="field"
+                            type="password"
+                            autoComplete="off"
+                            value={settings.runpod_comfy_api_key}
+                            onChange={(event) =>
+                              update({ runpod_comfy_api_key: event.target.value })
+                            }
+                          />
+                        </div>
+                        <label className="flex items-center gap-2 text-xs font-semibold text-slate-300">
+                          <input
+                            type="checkbox"
+                            checked={settings.runpod_enabled}
+                            onChange={(event) =>
+                              update({ runpod_enabled: event.target.checked })
+                            }
+                          />
+                          RunPod の Pod を自動起動する
+                        </label>
+                        <p className="text-[11px] text-slate-500">
+                          接続先が RunPod のとき、ComfyUI が落ちていればジョブ実行の
+                          直前に Pod を立ち上げます（起動待ちは最大 15 分）。上の URL
+                          には Pod の Cloudflare Tunnel のホスト名を入れてください。
+                          イメージと手順は deploy/runpod/README.md を参照。
+                        </p>
+                        {settings.runpod_enabled && (
+                          <>
+                            <div>
+                              <label className="label">RunPod APIキー</label>
+                              <input
+                                className="field"
+                                type="password"
+                                autoComplete="off"
+                                value={settings.runpod_api_key}
+                                onChange={(event) =>
+                                  update({ runpod_api_key: event.target.value })
+                                }
+                              />
+                            </div>
+                            <div className="grid grid-cols-2 gap-2">
+                              <div>
+                                <label className="label">テンプレート ID</label>
+                                <input
+                                  className="field"
+                                  value={settings.runpod_template_id}
+                                  onChange={(event) =>
+                                    update({
+                                      runpod_template_id: event.target.value,
+                                    })
+                                  }
+                                />
+                              </div>
+                              <div>
+                                <label className="label">GPU 種別（gpuTypeId）</label>
+                                <input
+                                  className="field"
+                                  value={settings.runpod_gpu_type}
+                                  onChange={(event) =>
+                                    update({ runpod_gpu_type: event.target.value })
+                                  }
+                                />
+                              </div>
+                            </div>
+                            <div>
+                              <label className="label">
+                                Network Volume ID（任意）
+                              </label>
+                              <input
+                                className="field"
+                                value={settings.runpod_network_volume_id}
+                                onChange={(event) =>
+                                  update({
+                                    runpod_network_volume_id: event.target.value,
+                                  })
+                                }
+                              />
+                            </div>
+                          </>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="rounded-lg border border-ink-600 p-2">
+                      <h5 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                        ローカル
+                      </h5>
+                      <div>
+                        <label className="label">ローカル ComfyUI URL</label>
+                        <input
+                          className="field"
+                          placeholder="http://127.0.0.1:8188"
+                          value={settings.local_comfy_url}
+                          onChange={(event) =>
+                            update({ local_comfy_url: event.target.value })
+                          }
+                        />
+                        <p className="mt-1 text-[11px] text-slate-500">
+                          同じマシン / LAN の ComfyUI。API キーは使いません。
+                        </p>
+                      </div>
+                    </div>
                   </div>
-                  <div>
-                    <label className="label">ComfyUI APIキー（任意）</label>
-                    <input
-                      className="field"
-                      value={settings.comfy_api_key}
-                      onChange={(event) =>
-                        update({ comfy_api_key: event.target.value })
-                      }
-                    />
-                  </div>
-                  {/* 不足モデルの自動ダウンロード（SPEC §3.3）。保存先は環境変数
-                      COMFY_MODELS_DIR だけが決めるので、未設定ならブロックごと
-                      出さない（Comfy Cloud 利用などでは正常な状態）。 */}
-                  {showDownload && (
-                    <div className="card flex flex-col gap-2 p-3">
+                  {/* 不足モデルの自動ダウンロード（SPEC §3.3）。トークンは
+                      ローカルにも RunPod の Pod にも要るので常に出す。保存先の
+                      環境変数はローカルに落とすときだけ関係する。 */}
+                  <div className="card flex flex-col gap-2 p-3">
                       <h4 className="text-xs font-semibold text-slate-300">
                         モデル自動ダウンロード
                       </h4>
                       <div>
                         <label className="label">
-                          保存先（環境変数 COMFY_MODELS_DIR）
+                          ローカルの保存先（環境変数 COMFY_MODELS_DIR）
                         </label>
                         <input
                           className="field"
@@ -610,8 +882,10 @@ export default function SettingsPage({
                         </p>
                         <p className="mt-1 text-[11px] text-slate-500">
                           パスは .env の COMFY_MODELS_DIR で決まります（変更したら再起動）。
-                          「モデル」タブの [DL] はここへ直接ファイルを置きます（ComfyUI の
-                          再起動は不要）。
+                          「モデル」タブの [DL] は、接続先が<strong className="text-slate-300">
+                          ローカル</strong>ならここへ直接置き、
+                          <strong className="text-slate-300">RunPod</strong> なら Pod 側の
+                          models ディレクトリへ落とします（どちらも ComfyUI の再起動は不要）。
                         </p>
                       </div>
                       <div className="grid grid-cols-2 gap-2">
@@ -642,82 +916,6 @@ export default function SettingsPage({
                           />
                         </div>
                       </div>
-                    </div>
-                  )}
-                  {/* ComfyUI を RunPod の Pod で動かす構成の自動起動（SPEC §5.1）。
-                      ジョブ投入の直前に疎通を確かめ、落ちていれば Pod を作って待つ。
-                      Pod の停止はイメージ側の watchdog が行う。 */}
-                  <div className="card flex flex-col gap-2 p-3">
-                    <label className="flex items-center gap-2 text-xs font-semibold text-slate-300">
-                      <input
-                        type="checkbox"
-                        checked={settings.runpod_enabled}
-                        onChange={(event) =>
-                          update({ runpod_enabled: event.target.checked })
-                        }
-                      />
-                      RunPod の Pod を自動起動する
-                    </label>
-                    <p className="text-[11px] text-slate-500">
-                      ComfyUI が落ちているとき、ジョブ実行の直前に RunPod で Pod を
-                      立ち上げます（起動待ちは最大 15 分）。ComfyUI URL には Pod の
-                      Cloudflare Tunnel のホスト名を入れてください。イメージと手順は
-                      deploy/runpod/README.md を参照。
-                    </p>
-                    {settings.runpod_enabled && (
-                      <>
-                        <div>
-                          <label className="label">RunPod APIキー</label>
-                          <input
-                            className="field"
-                            type="password"
-                            autoComplete="off"
-                            value={settings.runpod_api_key}
-                            onChange={(event) =>
-                              update({ runpod_api_key: event.target.value })
-                            }
-                          />
-                        </div>
-                        <div className="grid grid-cols-2 gap-2">
-                          <div>
-                            <label className="label">テンプレート ID</label>
-                            <input
-                              className="field"
-                              value={settings.runpod_template_id}
-                              onChange={(event) =>
-                                update({ runpod_template_id: event.target.value })
-                              }
-                            />
-                          </div>
-                          <div>
-                            <label className="label">
-                              GPU 種別（gpuTypeId）
-                            </label>
-                            <input
-                              className="field"
-                              value={settings.runpod_gpu_type}
-                              onChange={(event) =>
-                                update({ runpod_gpu_type: event.target.value })
-                              }
-                            />
-                          </div>
-                        </div>
-                        <div>
-                          <label className="label">
-                            Network Volume ID（任意）
-                          </label>
-                          <input
-                            className="field"
-                            value={settings.runpod_network_volume_id}
-                            onChange={(event) =>
-                              update({
-                                runpod_network_volume_id: event.target.value,
-                              })
-                            }
-                          />
-                        </div>
-                      </>
-                    )}
                   </div>
                   <div className="grid grid-cols-2 gap-2">
                     <div>
@@ -753,15 +951,17 @@ export default function SettingsPage({
 
           {tab === 'loras' && (
             <div className="flex flex-col gap-4">
+              {envPicker(
+                'LoRA 登録は接続先ごとです。ここで追加したものは選んだ環境の生成フォームにだけ出ます（接続先を分ける前の登録は全環境に出ます）。',
+              )}
               <div className="card divide-y divide-ink-600">
                 {loras.length === 0 && (
                   <p className="p-3 text-xs text-slate-500">登録がありません</p>
                 )}
                 {loras.map((lora) => {
                   // 取得元 URL はモデルタブと同じ `model_download_urls`（キーは
-                  // ファイル名 = lora_name）に入れる。Pod 用のモデル一覧
-                  // (deploy/runpod/gen_models_manifest.py) がこれを見る。登録・編集は
-                  // 下のフォームで行うので、一覧では印だけ出す。
+                  // ファイル名 = lora_name）に入れる。[DL] / [全DL] がこれを見る。
+                  // 登録・編集は下のフォームで行うので、一覧では印だけ出す。
                   const savedUrl =
                     settings?.model_download_urls?.[lora.lora_name] ?? ''
                   return (
@@ -1010,9 +1210,8 @@ export default function SettingsPage({
                       onChange={(event) => setDraftUrl(event.target.value)}
                     />
                     <p className="mt-1 text-[11px] text-slate-500">
-                      ここではダウンロードしません。RunPod の Pod へ持っていくモデル一覧
-                      （deploy/runpod/gen_models_manifest.py）に使われます。空欄で保存すると
-                      登録を解除します。
+                      ここではダウンロードしません。モデルタブと同じ取得元 URL の登録で、
+                      [DL] / [全DL] のときに使われます。空欄で保存すると登録を解除します。
                     </p>
                   </div>
                 </div>
@@ -1036,6 +1235,9 @@ export default function SettingsPage({
 
           {tab === 'models' && (
             <div className="flex flex-col gap-3">
+              {envPicker(
+                'モデルの指定と候補リストは接続先ごとに保存されます（環境によって入っているファイルが違うため）。',
+              )}
               <p className="text-xs text-slate-500">
                 workflow/ 配下の各ワークフローのモデルファイル名を上書きします。空欄・既定値と同じ値は保存されません。
               </p>
@@ -1054,24 +1256,33 @@ export default function SettingsPage({
                 持っていくモデル一覧にも使われます。検出済みの行では [取得元 URL] を開くと
                 入力でき、空欄で保存すると登録解除です。
               </p>
-              <p className="text-xs text-slate-500">
-                {showDownload ? (
-                  <>
-                    [DL] を押すと「接続 / Grok」タブで設定した models ディレクトリの
-                    所定の場所へ実ファイルをダウンロードします。
-                  </>
-                ) : (
-                  // 環境変数が無い（Comfy Cloud 利用など）のは正常な状態なので
-                  // 警告は出さず、使いたい人向けの案内だけ添える。
-                  <>
-                    自動ダウンロードを使う場合は .env に COMFY_MODELS_DIR
-                    （ComfyUI の models ディレクトリ）を設定して再起動してください
-                    （未設定でも取得元 URL の登録はできます）。
-                  </>
-                )}
-              </p>
-              {/* 設定したのに使えない（見つからない / 書けない）ときだけ警告する */}
-              {showDownload && !dirStatusMessage(dirStatus).ok && (
+              {showDownload ? (
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    className="btn-ghost text-xs"
+                    onClick={() => void startAllDownloads()}
+                    disabled={busy}
+                    title="未検出かつ取得元 URL が登録済みのモデルをまとめて落とします"
+                  >
+                    全DL
+                  </button>
+                  <p className="text-xs text-slate-500">
+                    [DL] は{COMFY_TARGET_LABELS[envTarget ?? 'local']}の models
+                    ディレクトリへ実ファイルを落とします
+                    {envTarget === 'runpod'
+                      ? '（Pod が起動している必要があります）'
+                      : '（保存先は .env の COMFY_MODELS_DIR）'}
+                    。[全DL] は未検出かつ取得元 URL 登録済みのものを一括で開始します。
+                  </p>
+                </div>
+              ) : (
+                <p className="text-xs text-slate-500">
+                  ComfyCloud のモデルは Comfy Cloud 側の管理なので、ここからは
+                  ダウンロードできません（取得元 URL の登録はできます）。
+                </p>
+              )}
+              {/* ローカルに落とすときだけ関係する保存先の警告 */}
+              {showDownload && envTarget !== 'runpod' && !dirStatusMessage(dirStatus).ok && (
                 <p className="text-xs text-amber-400">
                   {dirStatusMessage(dirStatus).text}
                 </p>
@@ -1162,15 +1373,18 @@ export default function SettingsPage({
                                     // 不足モデルのダウンロード（SPEC §3.3）。URL と
                                     // 進捗はファイル名で持つので、同じファイルを使う
                                     // 別のワークフローの行にも同じものが出る。
-                                    const missing = isMissing(row, modelFiles, value)
+                                    // 「未検出」は options（= いま繋いでいる ComfyUI）の
+                                    // ファイル一覧で決まるので、別の環境を編集して
+                                    // いるあいだは判定しない（他所の在庫は分からない）。
+                                    const missing =
+                                      connectedEnv && isMissing(row, modelFiles, value)
                                     const progress = downloads[value]
                                     const downloading =
                                       progress?.status === 'downloading'
-                                    const dirReady = dirStatusMessage(dirStatus).ok
                                     const url = (urlDraft[value] ?? '').trim()
-                                    // 検出済みの行でも取得元 URL は登録できる（Pod 用の
-                                    // マニフェスト向け）。表がうるさくならないよう、
-                                    // 既定では畳んでおく。
+                                    // 検出済みの行でも取得元 URL は登録できる（別の
+                                    // 環境へ [DL] するときに要る）。表がうるさく
+                                    // ならないよう、既定では畳んでおく。
                                     const savedUrl =
                                       settings?.model_download_urls?.[value] ?? ''
                                     const urlShown = urlOpen[value] ?? false
@@ -1268,11 +1482,12 @@ export default function SettingsPage({
                                           </div>
                                         </td>
                                         <td className="min-w-[16rem] p-2 align-top">
-                                            {/* 未検出の行は URL 欄をそのまま出す。
-                                                検出済みの行は [取得元 URL] で開いた
-                                                ときだけ出す。[DL] は models
-                                                ディレクトリが使えるときだけ描画し、
-                                                それ以外では URL 登録だけにする。 */}
+                                            {/* 未検出の行は URL 欄と [DL] をそのまま
+                                                出す。検出済みの行は [取得元 URL] で
+                                                開いたときだけ出し、[URL保存] だけに
+                                                する。落とせない事情（保存先が無い・
+                                                Pod が停止中）は押したときに理由が
+                                                返るので、ボタンは隠さない。 */}
                                             {!missing && (
                                               <button
                                                 type="button"
@@ -1285,7 +1500,7 @@ export default function SettingsPage({
                                                 title={
                                                   savedUrl
                                                     ? `取得元 URL: ${savedUrl}`
-                                                    : '取得元 URL を登録する（RunPod の Pod へ持っていくモデル一覧に使われます）'
+                                                    : '取得元 URL を登録する（[DL] / [全DL] のときに使われます）'
                                                 }
                                                 onClick={() =>
                                                   setUrlOpen((previous) => ({
@@ -1314,23 +1529,7 @@ export default function SettingsPage({
                                                     }))
                                                   }
                                                 />
-                                                {missing && dirReady ? (
-                                                  <button
-                                                    className="btn-ghost !py-1 text-xs"
-                                                    disabled={
-                                                      busy ||
-                                                      downloading ||
-                                                      !value ||
-                                                      !url
-                                                    }
-                                                    title={`${row.subfolder || 'models 直下'} に保存します`}
-                                                    onClick={() =>
-                                                      void startDownload(row, value)
-                                                    }
-                                                  >
-                                                    DL
-                                                  </button>
-                                                ) : (
+                                                {!missing && (
                                                   <button
                                                     className="btn-ghost !py-1 text-xs"
                                                     disabled={busy || url === savedUrl}
@@ -1342,9 +1541,26 @@ export default function SettingsPage({
                                                     URL保存
                                                   </button>
                                                 )}
+                                                {showDownload && (
+                                                  <button
+                                                    className="btn-ghost !py-1 text-xs"
+                                                    disabled={
+                                                      busy ||
+                                                      downloading ||
+                                                      !value ||
+                                                      !url
+                                                    }
+                                                    title={`${COMFY_TARGET_LABELS[envTarget ?? 'local']}の ${row.subfolder || 'models 直下'} に保存します`}
+                                                    onClick={() =>
+                                                      void startDownload(row, value)
+                                                    }
+                                                  >
+                                                    DL
+                                                  </button>
+                                                )}
                                               </div>
                                             )}
-                                            {missing && dirReady && (
+                                            {missing && showDownload && (
                                               <p className="mt-1 text-[10px] text-slate-600">
                                                 保存先: {row.subfolder || 'models 直下'}
                                               </p>

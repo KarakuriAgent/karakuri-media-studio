@@ -240,7 +240,7 @@ def test_collect_lists_a_registered_candidate(settings, monkeypatch):
         config,
         "_settings",
         Settings(
-            model_choices={slot.key: ["alt.safetensors"]},
+            model_choices={"local": {slot.key: ["alt.safetensors"]}},
             model_download_urls={"alt.safetensors": HF_URL},
         ),
     )

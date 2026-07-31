@@ -11,22 +11,38 @@ export type JobStatus =
   | 'failed'
   | 'canceled'
 
+/**
+ * ComfyUI の接続先プロファイル（SPEC §5）。設定には 3 つ分の接続情報を持ち、
+ * `Settings.comfy_target` が「今どれを使うか」を決める。
+ */
+export type ComfyTarget = 'local' | 'runpod' | 'comfy_cloud'
+
 export interface Settings {
-  comfy_url: string
-  comfy_api_key: string
+  /** 現在の接続先（生成フォームのプルダウンがこれだけを書き換える）。 */
+  comfy_target: ComfyTarget
+  /** ローカル（同じマシン / LAN）の ComfyUI。API キーは使わない。 */
+  local_comfy_url: string
+  /** RunPod の Pod 上の ComfyUI（Cloudflare Tunnel の固定ホスト名）。 */
+  runpod_comfy_url: string
+  /** Pod の ComfyUI を認証付きで公開している場合のキー（不要なら空）。 */
+  runpod_comfy_api_key: string
+  /** ComfyCloud の API キー（URL は `https://cloud.comfy.org` 固定）。 */
+  comfy_cloud_api_key: string
   grok_command: string
   grok_model: string
   grok_workdir: string
   /**
-   * {"<workflow_id>/<node_id>.<field>": "file.safetensors"} — only non-default
-   * entries.
+   * 接続先ごとのモデル指定（SPEC §3.3 / §5）。
+   * `{"local": {"<workflow_id>/<node_id>.<field>": "file.safetensors"}, …}` で、
+   * テンプレート既定と違うものだけが入る。設定ページは `GET/PUT /api/models`
+   * （`?target=`）を使うので、ここを直接触るのは移行の確認用。
    */
-  model_overrides: Record<string, string>
+  model_overrides: Partial<Record<ComfyTarget, Record<string, string>>>
   /**
-   * 同じキー形式の「そのスロットで選べるモデルファイル名」。2 件以上あるスロットは
-   * 生成フォームで実行時に選べる（SPEC §3.3）。
+   * 同じキー形式の「そのスロットで選べるモデルファイル名」を接続先ごとに持つ。
+   * 2 件以上あるスロットは生成フォームで実行時に選べる（SPEC §3.3）。
    */
-  model_choices: Record<string, string[]>
+  model_choices: Partial<Record<ComfyTarget, Record<string, string[]>>>
   /**
    * gated リポジトリ用の Hugging Face トークン（不足モデルのダウンロード、SPEC §3.3）。
    * 保存先の models ディレクトリは設定ではなく環境変数 `COMFY_MODELS_DIR` が決める。
@@ -36,13 +52,14 @@ export interface Settings {
   /** `{"<ファイル名>": "<ダウンロード URL>"}`（キーはファイル名なので行を跨いで共有）。 */
   model_download_urls: Record<string, string>
   /**
-   * ComfyUI が RunPod の Pod にある構成での自動起動（SPEC §5.1）。有効なとき、
-   * ジョブ投入の直前に `comfy_url` の疎通を確かめ、落ちていれば Pod を作って待つ。
+   * ComfyUI が RunPod の Pod にある構成での自動起動（SPEC §5.1）。接続先が
+   * `runpod` で、かつ有効なとき、ジョブ投入の直前に `runpod_comfy_url` の疎通を
+   * 確かめ、落ちていれば Pod を作って待つ。
    */
   runpod_enabled: boolean
   runpod_api_key: string
   runpod_template_id: string
-  /** RunPod の gpuTypeId（例: `NVIDIA RTX A6000`）。 */
+  /** RunPod の gpuTypeId（例: `NVIDIA RTX PRO 6000 Blackwell Workstation Edition`）。 */
   runpod_gpu_type: string
   /** /workspace にマウントする Network Volume の ID。 */
   runpod_network_volume_id: string
@@ -76,6 +93,16 @@ export interface ModelDownload extends ModelDownloadProgress {
   subfolder: string
   url: string
   path: string
+}
+
+/** POST /api/models/download-all のレスポンス（不足モデルの一括取得）。 */
+export interface ModelDownloadAllResult {
+  /** 開始したダウンロード（進捗は WS の `model_download` で届く）。 */
+  started: ModelDownload[]
+  /** 未検出だが取得元 URL が無くて開始できなかったファイル名。 */
+  missing_urls: string[]
+  /** 開始できなかった理由（ファイル名 -> メッセージ）。 */
+  errors: Record<string, string>
 }
 
 /** One configurable model file of a workflow template (GET /api/models). */
@@ -139,6 +166,11 @@ export interface Lora {
   family: string
   /** サンプル画像の URL（/assets/lora_samples/<id>/<file>）。専用APIで管理。 */
   sample_images: string[]
+  /**
+   * 置いてある接続先環境（SPEC §5）。`null` は「環境を問わず出す」で、接続先を
+   * 分ける前に登録された行がこれになる。
+   */
+  comfy_target?: ComfyTarget | null
 }
 
 export type LoraPayload = Omit<Lora, 'id' | 'sample_images'>
@@ -388,6 +420,8 @@ export interface Health {
 export interface Options {
   comfy_connected: boolean
   comfy_error: string | null
+  /** いま使っている接続先プロファイルと、その URL（表示用）。 */
+  comfy_target: ComfyTarget
   comfy_url: string
   image_workflows: WorkflowOption[]
   video_workflows: WorkflowOption[]

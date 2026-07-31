@@ -7,8 +7,10 @@
 #   1. /workspace/ComfyUI を COMFYUI_REF に合わせる（無ければ clone。ブランチ名なら
 #      起動のたびに最新へ追従し、タグ・ハッシュならそこに固定される）
 #   2. custom_nodes.txt のうち、まだ無いものだけ clone + checkout + pip install
-#   3. models.txt のうち、まだ無いものだけダウンロード
-#   4. caddy（:8189、認証つき）→ cloudflared → watchdog → ComfyUI の順に起動
+#   3. models ディレクトリを用意する（モデル自体はアプリの [DL] / [全DL] から
+#      Pod のダウンロード API 経由で入れる）
+#   4. caddy（:8189、認証つき）→ cloudflared → watchdog → モデル DL API → ComfyUI
+#      の順に起動
 #
 # ComfyUI は 127.0.0.1:8188 でしか待ち受けない。外に見えるのは caddy の 8189 だけ。
 
@@ -109,46 +111,13 @@ install_custom_nodes() {
 install_custom_nodes
 
 # --------------------------------------------------------------------------
-# 3. モデル
+# 3. モデルの置き場所
 # --------------------------------------------------------------------------
+# 起動時の一括ダウンロードは行わない: モデルはアプリの設定ページ（モデル / LoRA
+# タブの [DL] / [全DL]）から、Pod のダウンロード API 経由で必要なものだけ落とす
+# （deploy/runpod/model_api.py）。Network Volume に残るので、2 回目以降の Pod は
+# ここで何もしなくてよい。
 mkdir -p "${MODELS_DIR}"
-# イメージに焼いた models.txt に加えて、Network Volume に置いた
-# models.local.txt（手元の設定から作ったもの）も読む。イメージを作り直さずに
-# モデル構成を変えられる（deploy/runpod/README.md）。
-manifests=()
-if [ -f "${HERE}/models.txt" ]; then
-	manifests+=("${HERE}/models.txt")
-fi
-LOCAL_MANIFEST="${LOCAL_MANIFEST:-${WORKSPACE}/models.local.txt}"
-
-# Pod にファイルを送る手段（ssh / runpodctl / Jupyter）が無いこともあるので、
-# テンプレートの環境変数からも渡せるようにしてある。MODELS_LOCAL_B64 が入って
-# いれば、それを base64 デコードしたものが models.local.txt になる（テンプレート
-# 側を常に正とするので毎回上書き）。個人ごとの URL をイメージに焼かずに済む。
-if [ -n "${MODELS_LOCAL_B64:-}" ]; then
-	tmp_manifest="${LOCAL_MANIFEST}.tmp.$$"
-	# デコードに失敗したときに既存のマニフェストを壊さないよう、一時ファイル経由で置く
-	if printf '%s' "${MODELS_LOCAL_B64}" | base64 -d >"${tmp_manifest}" 2>/dev/null; then
-		mv "${tmp_manifest}" "${LOCAL_MANIFEST}"
-		log "wrote ${LOCAL_MANIFEST} from MODELS_LOCAL_B64"
-	else
-		rm -f "${tmp_manifest}"
-		log "MODELS_LOCAL_B64 を base64 デコードできませんでした: 無視します" >&2
-	fi
-fi
-
-if [ -f "${LOCAL_MANIFEST}" ]; then
-	log "using local model manifest ${LOCAL_MANIFEST}"
-	manifests+=("${LOCAL_MANIFEST}")
-fi
-if [ "${#manifests[@]}" -gt 0 ]; then
-	log "checking models in ${MODELS_DIR}"
-	# 1 件落とせなくても Pod は上げる（使わないワークフローのモデルかもしれない。
-	# 実際に足りなければジョブが ComfyUI 側のエラーで失敗し、UI に理由が出る）。
-	# すでに置いてあるファイルは飛ばすので、両方に出ている行は 1 度しか落ちない。
-	python3 "${HERE}/download_models.py" "${manifests[@]}" "${MODELS_DIR}" ||
-		log "一部のモデルを取得できませんでした（上のログを参照）"
-fi
 
 # --------------------------------------------------------------------------
 # 4. 各プロセスの起動
@@ -185,6 +154,12 @@ fi
 # watchdog: アイドルが続いたら自分の Pod を terminate する
 log "starting idle watchdog"
 COMFY_URL="http://127.0.0.1:${COMFY_PORT}" python3 "${HERE}/watchdog.py" &
+pids+=("$!")
+
+# モデル DL API: アプリの [DL] / [全DL] がここに依頼する（公開は caddy の
+# /studio/models/* 経由だけ）。HF_TOKEN / CIVITAI_API_KEY はそのまま渡る。
+log "starting model download API on 127.0.0.1:${MODEL_API_PORT:-8190}"
+MODELS_DIR="${MODELS_DIR}" python3 "${HERE}/model_api.py" &
 pids+=("$!")
 
 # ComfyUI: 外には出さない（公開は caddy 経由だけ）

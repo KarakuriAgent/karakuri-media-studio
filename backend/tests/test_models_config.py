@@ -47,7 +47,7 @@ def test_put_saves_override_and_persists(client):
 
     # persisted for the next request (and for the job runner)
     assert by_key(client.get("/api/models").json())[UNET_KEY]["value"] == "mine.safetensors"
-    assert config.load_settings().model_overrides == {UNET_KEY: "mine.safetensors"}
+    assert config.load_settings().overrides_for() == {UNET_KEY: "mine.safetensors"}
 
 
 def test_put_drops_default_valued_and_empty_entries(client):
@@ -61,14 +61,14 @@ def test_put_drops_default_valued_and_empty_entries(client):
     ).json()
     assert by_key(rows)[UNET_KEY]["overridden"] is False
     assert by_key(rows)[UNET_KEY]["value"] == default
-    assert config.load_settings().model_overrides == {}
+    assert config.load_settings().overrides_for() == {}
 
 
 def test_put_rejects_unknown_key(client):
     response = client.put("/api/models", json={"overrides": {"nope.field": "x"}})
     assert response.status_code == 422
     assert "nope.field" in response.json()["detail"]
-    assert config.load_settings().model_overrides == {}
+    assert config.load_settings().overrides_for() == {}
 
 
 def test_put_rejects_the_dynamic_lora_node(client):
@@ -94,7 +94,7 @@ def test_choices_are_saved_and_normalized(client):
         "b.safetensors",
         "a.safetensors",
     ]
-    assert config.load_settings().model_choices == {
+    assert config.load_settings().choices_for() == {
         UNET_KEY: ["b.safetensors", "a.safetensors"]
     }
     # 次のリクエストでも返る
@@ -110,7 +110,7 @@ def test_an_empty_choice_list_is_not_stored(client):
         "/api/models", json={"overrides": {}, "choices": {UNET_KEY: ["", "  "]}}
     ).json()
     assert by_key(rows)[UNET_KEY]["choices"] == []
-    assert config.load_settings().model_choices == {}
+    assert config.load_settings().choices_for() == {}
 
 
 def test_omitting_choices_keeps_the_stored_lists(client):
@@ -120,7 +120,7 @@ def test_omitting_choices_keeps_the_stored_lists(client):
         "/api/models", json={"overrides": {UNET_KEY: "mine.safetensors"}}
     ).json()
     assert by_key(rows)[UNET_KEY]["choices"] == ["a"]
-    assert config.load_settings().model_choices == {UNET_KEY: ["a"]}
+    assert config.load_settings().choices_for() == {UNET_KEY: ["a"]}
 
 
 def test_put_rejects_an_unknown_choice_key(client):
@@ -129,4 +129,4 @@ def test_put_rejects_an_unknown_choice_key(client):
     )
     assert response.status_code == 422
     assert "nope.field" in response.json()["detail"]
-    assert config.load_settings().model_choices == {}
+    assert config.load_settings().choices_for() == {}

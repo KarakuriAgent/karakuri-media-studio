@@ -2,6 +2,8 @@ import { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
 import {
   AUTHOR_NEGATIVE_PROMPT,
+  COMFY_TARGETS,
+  COMFY_TARGET_LABELS,
   DEFAULT_NEGATIVE_PROMPT,
   MODE_HINTS,
   MODE_LABELS,
@@ -15,7 +17,15 @@ import {
   type FormState,
   type SelectedLora,
 } from '../form'
-import type { Asset, Job, JobMode, Lora, Options, WorkflowOption } from '../types'
+import type {
+  Asset,
+  ComfyTarget,
+  Job,
+  JobMode,
+  Lora,
+  Options,
+  WorkflowOption,
+} from '../types'
 import AudioFields from './AudioFields'
 import HistoryPickerModal, {
   assetExtension,
@@ -41,6 +51,13 @@ interface Props {
   onSubmit: () => void
   submitting: boolean
   fieldErrors: Record<string, string>
+  /**
+   * ComfyUI の接続先（`GET /api/settings` の `comfy_target`、SPEC §5）。設定を
+   * 読み込む前は null で、プルダウンは無効になる。
+   */
+  comfyTarget: ComfyTarget | null
+  /** 接続先を変える（App が `PUT /api/settings` で保存する） */
+  onComfyTarget: (target: ComfyTarget) => void
   /** NSFW フィルタ前の全ジョブ（履歴モーダルが自前でフィルタする） */
   jobs: Job[]
   /** ヘッダーの NSFW 表示トグル（履歴モーダルの初期値） */
@@ -282,6 +299,8 @@ export default function GenerateForm({
   onSubmit,
   submitting,
   fieldErrors,
+  comfyTarget,
+  onComfyTarget,
   jobs,
   showNsfw,
   libraryVersion,
@@ -473,6 +492,27 @@ export default function GenerateForm({
 
   return (
     <div className="flex flex-col gap-3">
+      {/* ComfyUI の接続先（SPEC §5）。選択はサーバー側の設定に保存されるので、
+          次に開いたときも前回の接続先が使われる。詳しい接続情報は設定ページ。 */}
+      <div className="flex items-center gap-2">
+        <label className="shrink-0 text-xs text-slate-400" htmlFor="comfy-target">
+          接続先
+        </label>
+        <select
+          id="comfy-target"
+          className="field"
+          value={comfyTarget ?? 'local'}
+          disabled={comfyTarget == null}
+          onChange={(event) => onComfyTarget(event.target.value as ComfyTarget)}
+        >
+          {COMFY_TARGETS.map((target) => (
+            <option key={target} value={target}>
+              {COMFY_TARGET_LABELS[target]}
+            </option>
+          ))}
+        </select>
+      </div>
+
       {optionsError && (
         <Banner tone="warn">
           ComfyUI に接続できないため選択肢を取得できません（手入力で続行できます）:

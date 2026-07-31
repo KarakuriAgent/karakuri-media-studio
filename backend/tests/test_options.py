@@ -149,8 +149,14 @@ def _register_models(monkeypatch, choices: dict[str, list[str]]) -> None:
     monkeypatch.setattr(
         config,
         "_settings",
+        # モデル指定は接続先ごとに持つ（SPEC §5）。テストは既定の 'local' 環境。
         config.load_settings().model_copy(
-            update={"model_overrides": {}, "model_choices": choices}
+            update={
+                # 接続先も固定する（実際の config.json が RunPod でも同じ結果に）
+                "comfy_target": "local",
+                "model_overrides": {"local": {}},
+                "model_choices": {"local": choices},
+            }
         ),
     )
 

@@ -125,7 +125,8 @@ Pod 自身の watchdog がアイドル 10 分で terminate するので、消し
    `ghcr.io/karakuriagent/karakuri-comfyui:latest` をそのまま使えばビルド不要）
 2. 設定 →「接続 / Grok」で **RunPod の Pod を自動起動する** をオンにし、
    API キー / テンプレート ID / GPU 種別 / Network Volume ID を入れる
-3. ComfyUI URL には Pod の Cloudflare Tunnel のホスト名を入れる
+3. RunPod ComfyUI URL には Pod の Cloudflare Tunnel のホスト名を入れ、接続先を
+   **RunPod** にする（自動起動は接続先が RunPod のときだけ働きます）
 
 セットアップ手順は
 [`docs/RUNPOD-QUICKSTART.md`](docs/RUNPOD-QUICKSTART.md)（公開イメージを
@@ -215,22 +216,39 @@ Stable Audio 3 Medium（効果音・環境音・単一楽器）の 2 種です�
 
 | キー | 内容 | 既定 |
 |---|---|---|
-| `comfy_url` | ComfyUI の接続先 URL | `http://127.0.0.1:8188` |
-| `comfy_api_key` | 認証ヘッダー用 API キー（Comfy Cloud など） | 空 |
+| `comfy_target` | 使う接続先（`comfy_cloud` / `runpod` / `local`）。生成フォーム上部のプルダウンと同じ値 | `local` |
+| `local_comfy_url` | ローカル / LAN の ComfyUI の URL（API キーなし） | `http://127.0.0.1:8188` |
+| `runpod_comfy_url` / `runpod_comfy_api_key` | RunPod の Pod 上の ComfyUI の URL と API キー（任意） | 空 |
+| `comfy_cloud_api_key` | ComfyCloud の API キー（エンドポイントは `https://cloud.comfy.org` 固定） | 空 |
 | `grok_command` / `grok_model` | grok CLI のコマンドと使用モデル | `grok` / `grok-4.5` |
 | `hf_token` / `civitai_api_key` | モデルダウンロード用のトークン | 空 |
-| `model_overrides` / `model_choices` | モデルファイル名の上書きと、実行ごとに選べる候補リスト | `{}` |
+| `model_overrides` / `model_choices` | **接続先ごと**のモデルファイル名の上書きと、実行ごとに選べる候補リスト | `{}` |
 | `runpod_*` | RunPod Pod の自動起動（有効化 / APIキー / テンプレート ID / GPU 種別 / Network Volume ID） | 無効 |
 | `agent_*` | エージェントの CLI フラグ・タイムアウト・自走上限（設定ページには出ません） | SPEC 参照 |
 
-**モデルタブ**では、各ワークフローのモデルファイル名を環境に合わせて上書きできます
-（既定値はテンプレートの値＝ Comfy Cloud で動作確認済みの構成）。同じ行の**候補リスト**に
-別のファイル名を足すと、そのスロットは生成フォームとエージェントで**実行ごとに切り替え**られる
-ようになります。詳細は SPEC §3.3。
+**モデルタブ**と**LoRA 管理タブ**の先頭には [対象の接続先] のプルダウンがあり、
+**モデルの指定と LoRA 登録は接続先ごとに保存されます**（環境によって入っているファイルが
+違うため）。既定値はテンプレートの値（＝ Comfy Cloud で動作確認済みの構成）で、同じ行の
+**候補リスト**に別のファイル名を足すと、そのスロットは生成フォームとエージェントで
+**実行ごとに切り替え**られるようになります。詳細は SPEC §3.3。
 
-**Comfy Cloud** を使う場合は `comfy_url` に `https://cloud.comfy.org`、`comfy_api_key` に
-[発行したキー](https://docs.comfy.org/development/cloud/overview)を設定します（API アクセスは
-Standard 以上のプランが必要）。
+不足しているモデル（**未検出**バッジ）は行の [DL]、まとめてなら [全DL] で落とせます。
+落とし先は選んでいる接続先で、**ローカル**なら `.env` の `COMFY_MODELS_DIR`、**RunPod**なら
+Pod 側の models ディレクトリです（RunPod は Pod のダウンロード API を使うので、
+`deploy/runpod` のイメージを作り直す必要があります。Pod 起動時の一括ダウンロードは
+行いません）。ComfyCloud はモデルが Comfy Cloud 側の
+管理なのでダウンロードできません。
+
+**接続先**は ComfyCloud / RunPod / ローカルの 3 プロファイルを設定に持ち、「接続 / Grok」
+タブの「ComfyUI 接続先」でそれぞれの URL・API キーを登録します。実際にどれを使うかは
+同じ場所の [接続先] か、**生成フォーム最上部のプルダウン**で切り替えます（サーバー側の
+設定に保存されるので、次回起動時も前回の選択が使われます）。
+
+**Comfy Cloud** を使う場合は ComfyCloud の APIキーに
+[発行したキー](https://docs.comfy.org/development/cloud/overview)を入れて接続先を ComfyCloud に
+します（エンドポイントは `https://cloud.comfy.org` 固定。API アクセスは Standard 以上のプランが
+必要）。旧バージョンの `comfy_url` / `comfy_api_key` は、初回読み込み
+時にどれか 1 つのプロファイルへ自動で移されます。
 
 ---
 
@@ -238,7 +256,8 @@ Standard 以上のプランが必要）。
 
 | 症状 | 対処 |
 |---|---|
-| ヘッダーの接続インジケーターが赤い | ComfyUI が起動しているか、`comfy_url` が正しいか確認。Docker からは `127.0.0.1` が届かないので `host.docker.internal` か LAN IP に |
+| RunPod 接続で「ComfyUI が起動していません」と出る | Pod を落としている間は正常な表示。自動起動が有効ならジョブ投入時に Pod が立ち上がります（モデル名は手入力でも続行可） |
+| ヘッダーの接続インジケーターが赤い | ComfyUI が起動しているか、選んでいる接続先の URL が正しいか確認。Docker からは `127.0.0.1` が届かないので `host.docker.internal` か LAN IP に |
 | ジョブが「ファイルが見つからない」で失敗する | モデルのファイル名が環境と違う可能性。設定の「モデル」タブで上書きするか、[DL] で取得（SPEC §3.3） |
 | custom node 不足・ノード ID ズレの警告が出る | 不足ノードを ComfyUI に導入。テンプレートを差し替えた場合は `backend/app/workflows.py` のマニフェストを合わせる（SPEC §3.0） |
 | Grok が応答しない / 認証エラー | ホスト側で `grok` を一度起動してサインイン。Docker では `~/.grok` のマウントが必要 |

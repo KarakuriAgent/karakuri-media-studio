@@ -1,5 +1,6 @@
 import type {
   AudioJobCreate,
+  ComfyTarget,
   ImageFamily,
   JobMode,
   Lora,
@@ -15,6 +16,18 @@ import type {
 export const DEFAULT_VIDEO_WORKFLOW = 'ltx2_3_id_lora'
 export const DEFAULT_IMAGE_WORKFLOW = 'krea2_turbo'
 export const DEFAULT_AUDIO_WORKFLOW = 'ace_step1_5_xl_sft'
+
+/**
+ * ComfyUI の接続先プロファイル（SPEC §5）。設定画面のサブセクションと生成
+ * フォーム上部のプルダウンで共通に使う並び順・表示名。
+ */
+export const COMFY_TARGETS: ComfyTarget[] = ['comfy_cloud', 'runpod', 'local']
+
+export const COMFY_TARGET_LABELS: Record<ComfyTarget, string> = {
+  comfy_cloud: 'ComfyCloud',
+  runpod: 'RunPod',
+  local: 'ローカル',
+}
 
 /** バックエンド workflows.AUDIO_CATEGORIES（/api/options が来るまでの控え）。 */
 export const AUDIO_CATEGORIES = ['Music', 'Instrument', 'SFX', 'One-shot']

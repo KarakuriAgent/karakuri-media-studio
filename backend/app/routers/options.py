@@ -1,8 +1,7 @@
 from fastapi import APIRouter
 
-from .. import comfy, library, lora_samples
+from .. import comfy, library
 from ..config import load_settings
-from ..db import get_db
 from ..models import (
     DEFAULT_NEGATIVE_PROMPT,
     Options,
@@ -20,6 +19,7 @@ from ..workflows import (
     video_specs,
 )
 from .assets import AUDIO_EXT, IMAGE_EXT, VIDEO_EXT, list_assets
+from .loras import loras_for
 
 router = APIRouter(prefix="/api", tags=["options"])
 
@@ -71,7 +71,8 @@ async def get_options() -> Options:
     """Form choices. ComfyUI being down is reported inline, never as an HTTP error."""
     settings = load_settings()
     options = Options(
-        comfy_url=settings.comfy_url,
+        comfy_target=settings.comfy_target,
+        comfy_url=settings.active_comfy_url(),
         audio_assets=list_assets("audio", AUDIO_EXT),
         image_assets=list_assets("image", IMAGE_EXT),
         video_assets=list_assets("video", VIDEO_EXT),
@@ -84,14 +85,13 @@ async def get_options() -> Options:
         default_audio_workflow=DEFAULT_AUDIO_WORKFLOW,
         # 実行時に選べるモデル（候補が 2 件以上あるスロットだけ、SPEC §3.3）
         model_slots=selectable_model_slots(
-            settings.model_overrides, settings.model_choices
+            settings.overrides_for(), settings.choices_for()
         ),
     )
 
-    async with get_db() as conn:
-        async with conn.execute("SELECT * FROM loras ORDER BY sort_order, id") as cur:
-            rows = await cur.fetchall()
-    options.loras = [lora_samples.row_to_lora(r) for r in rows]
+    # LoRA 登録は接続先ごと（共通行を含む、SPEC §5）: 生成フォームには現在の
+    # 接続先で使えるものだけを出す。
+    options.loras = await loras_for()
     # ライブラリ（SPEC §7.2）: 入力欄の「ライブラリから選択」とエージェントの
     # CHOICES が読む。フォーム側の NSFW フィルタはモーダルの中で行う。
     options.library = await library.list_items()
@@ -99,7 +99,8 @@ async def get_options() -> Options:
     try:
         info = await comfy.get_object_info()
     except comfy.ComfyError as exc:
-        options.comfy_error = str(exc)
+        # 接続先に合わせた案内に置き換える（RunPod の Pod 停止中など、SPEC §5.1）
+        options.comfy_error = comfy.display_error(exc)
         return options
 
     options.comfy_connected = True

@@ -22,7 +22,8 @@ def settings(monkeypatch, tmp_path):
     """RunPod 自動起動が有効な設定（保存先は使い捨て）。"""
     monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.json")
     loaded = Settings(
-        comfy_url="https://comfy.example.com",
+        comfy_target="runpod",
+        runpod_comfy_url="https://comfy.example.com",
         runpod_enabled=True,
         runpod_api_key="rp-key",
         runpod_template_id="tmpl-1",
@@ -109,6 +110,17 @@ def test_disabled_settings_do_nothing(settings, fake_api, monkeypatch):
 
     assert fake_api.calls == []
     # 疎通確認すらしない（設定が無効なら経路ごと素通り）
+    assert seen == []
+
+
+def test_other_targets_do_nothing(settings, fake_api, monkeypatch):
+    """接続先がローカル / ComfyCloud のあいだは Pod を作らない（SPEC §5.1）。"""
+    settings.comfy_target = "local"
+    seen = reachability(monkeypatch, [False])
+
+    asyncio.run(runpod.ensure_pod_running())
+
+    assert fake_api.calls == []
     assert seen == []
 
 

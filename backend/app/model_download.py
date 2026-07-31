@@ -256,6 +256,12 @@ def start(filename: str, url: str, subfolder: str = "") -> ModelDownload:
     address = check_url(url)
 
     status = dir_status()
+    if not status.configured:
+        raise DownloadError(
+            f"ローカルの保存先が設定されていません: .env の {MODELS_DIR_ENV} に"
+            " ComfyUI の models ディレクトリを指定してアプリを再起動してください"
+            "（Docker では同じ絶対パスをコンテナにマウントする必要があります）"
+        )
     if not status.exists:
         raise DownloadError(
             "ComfyUI の models ディレクトリが見つかりません"
@@ -288,3 +294,151 @@ def start(filename: str, url: str, subfolder: str = "") -> ModelDownload:
 def downloads() -> list[ModelDownload]:
     """進行中のものと、直近の完了 / 失敗（``GET /api/models/downloads``）。"""
     return list(_downloads.values())
+
+
+# --------------------------------------------------------------------------
+# RunPod の Pod へ落とす（SPEC §3.3 / §5.1）
+# --------------------------------------------------------------------------
+#
+# Pod の models ディレクトリはこのアプリのファイルシステムに無いので、Pod の中で
+# 動く小さな API（``deploy/runpod/model_api.py``、Caddy が ComfyUI と同じ認証で
+# ``/studio/models/*`` を通す）に依頼する。進捗はそこをポーリングして、ローカルと
+# **同じ WS フレーム**（``type: "model_download"``）で流すので、UI は落とし先が
+# どちらでも同じ表示になる。
+
+#: Pod 側 API のパス接頭辞（Caddyfile のルーティングと合わせる）
+POD_API_PREFIX = "/studio/models"
+#: 進捗ポーリングの間隔（秒）
+POD_POLL_INTERVAL = 2.0
+POD_TIMEOUT = 60.0
+#: ポーリングが連続で失敗したら諦める回数（Pod が落ちた・トンネルが切れた）
+POD_MAX_FAILURES = 5
+
+
+def _pod_endpoint() -> tuple[str, dict[str, str]]:
+    """Pod のダウンロード API のベース URL と認証ヘッダ。
+
+    接続先の選択（``comfy_target``）に関わらず **RunPod プロファイル**を使う:
+    設定ページでは「いま繋いでいない環境」のモデルも整理できるため。
+    """
+    settings = load_settings()
+    url = (settings.runpod_comfy_url or "").strip()
+    if not url:
+        raise DownloadError(
+            "RunPod ComfyUI URL が設定されていません（設定 → 接続 / Grok）"
+        )
+    key = (settings.runpod_comfy_api_key or "").strip()
+    headers = (
+        {"X-API-Key": key, "Authorization": f"Bearer {key}"} if key else {}
+    )
+    return url.rstrip("/") + POD_API_PREFIX, headers
+
+
+async def _pod_request(method: str, path: str, payload: dict | None = None):
+    base, headers = _pod_endpoint()
+    try:
+        async with httpx.AsyncClient(
+            timeout=POD_TIMEOUT, follow_redirects=True
+        ) as client:
+            response = await client.request(
+                method, f"{base}{path}", headers=headers, json=payload
+            )
+    except httpx.HTTPError as exc:
+        raise DownloadError(
+            f"RunPod の Pod に接続できません（Pod は起動していますか）: {exc}"
+        ) from exc
+    if response.status_code == 404:
+        raise DownloadError(
+            "Pod のダウンロード API がありません。deploy/runpod のイメージを"
+            "作り直して Pod を起動し直してください（README を参照）"
+        )
+    if response.status_code >= 400:
+        raise DownloadError(
+            f"Pod のダウンロード API が失敗しました: HTTP {response.status_code}"
+            f" {response.text[:300]}"
+        )
+    try:
+        return response.json()
+    except ValueError as exc:
+        raise DownloadError(f"Pod の応答が JSON ではありません: {exc}") from exc
+
+
+def _to_state(payload: dict) -> ModelDownload:
+    """Pod の状態 JSON を :class:`ModelDownload` にする（未知のキーは捨てる）。"""
+    fields = set(ModelDownload.model_fields) - {"type"}
+    return ModelDownload(**{k: v for k, v in payload.items() if k in fields})
+
+
+async def _watch_remote(name: str) -> None:
+    """1 件ぶんの進捗を Pod から拾って WS に流す（完了・失敗で終わる）。"""
+    failures = 0
+    while True:
+        await asyncio.sleep(POD_POLL_INTERVAL)
+        try:
+            payload = await _pod_request("GET", "/downloads")
+            failures = 0
+        except DownloadError as exc:
+            failures += 1
+            if failures < POD_MAX_FAILURES:
+                continue
+            state = _downloads.get(name)
+            if state is not None and state.status == "downloading":
+                state.status = "error"
+                state.error = f"Pod の進捗を取得できません: {exc}"
+                await ws.publish_model_download(state)
+            return
+        remote = next(
+            (item for item in payload if item.get("filename") == name), None
+        )
+        if remote is None:
+            # Pod 側が再起動して状態を失った（残っていれば必ず出てくる）
+            state = _downloads.get(name)
+            if state is not None and state.status == "downloading":
+                state.status = "error"
+                state.error = "Pod 側にダウンロードの記録がありません"
+                await ws.publish_model_download(state)
+            return
+        state = _to_state(remote)
+        _downloads[name] = state
+        await ws.publish_model_download(state)
+        if state.status != "downloading":
+            return
+
+
+def _track_remote(state: ModelDownload) -> ModelDownload:
+    """Pod 側の 1 件を手元の一覧に載せ、進捗の見張りを始める。"""
+    _downloads[state.filename] = state
+    if state.status == "downloading" and state.filename not in _tasks:
+        task = asyncio.create_task(_watch_remote(state.filename))
+        _tasks[state.filename] = task
+        task.add_done_callback(lambda finished, key=state.filename: _tasks.pop(key, None))
+    return state
+
+
+async def start_remote(filename: str, url: str, subfolder: str = "") -> ModelDownload:
+    """Pod にダウンロードを依頼し、その状態を返す（すぐ返る）。"""
+    name = _check_name(filename, "ファイル名")
+    address = check_url(url)
+    payload = await _pod_request(
+        "POST",
+        "/download",
+        {"filename": name, "url": address, "subfolder": (subfolder or "").strip()},
+    )
+    if not isinstance(payload, dict):
+        raise DownloadError(f"Pod の応答が不正です: {payload!r}")
+    if payload.get("error") and payload.get("status") == "error":
+        raise DownloadError(str(payload["error"]))
+    return _track_remote(_to_state(payload))
+
+
+async def remote_downloads() -> list[ModelDownload]:
+    """Pod 側の一覧を取り込んで返す（進行中のものは見張りを再開する）。
+
+    アプリを再起動しても Pod のダウンロードは走り続けるので、設定ページを開き
+    直したときにここで拾い直す。
+    """
+    payload = await _pod_request("GET", "/downloads")
+    states = [_to_state(item) for item in payload if isinstance(item, dict)]
+    for state in states:
+        _track_remote(state)
+    return states

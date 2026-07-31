@@ -183,7 +183,7 @@ def _model_usage(options: Options) -> dict[str, list[str]]:
     """
     settings = load_settings()
     usage: dict[str, list[str]] = {}
-    for slot in model_slots(settings.model_overrides, settings.model_choices):
+    for slot in model_slots(settings.overrides_for(), settings.choices_for()):
         where = f"`{slot.workflow_id}`: {slot.label or slot.class_type}"
         for name in slot.choices:
             entries = usage.setdefault(name, [])

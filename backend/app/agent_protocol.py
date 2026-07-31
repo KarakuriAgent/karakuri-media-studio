@@ -217,7 +217,7 @@ def _model_override_detail(raw: dict[str, Any], mode: str) -> str | None:
     settings = load_settings()
     problem = model_override_problem(
         requested,
-        model_slots(settings.model_overrides, settings.model_choices),
+        model_slots(settings.overrides_for(), settings.choices_for()),
         job_workflow_ids(
             mode,
             image_workflow=_text(raw.get("image_workflow")),

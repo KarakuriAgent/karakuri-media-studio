@@ -26,13 +26,28 @@
 		&& {http.request.header.X-Api-Key} != {env.COMFY_API_KEY}
 		CEL
 
-	respond @unauthorized "unauthorized" 401 {
-		close
-	}
+	# route で囲って**書いた順**に評価させる（Caddyfile の既定はディレクティブ
+	# ごとの決まった順序なので、認証より先にプロキシが走らないよう明示する）。
+	route {
+		respond @unauthorized "unauthorized" 401 {
+			close
+		}
 
-	# WebSocket（/ws）は reverse_proxy が自動でアップグレードを通す。
-	# 数十分かかる生成があるのでタイムアウトは設けない（Caddy の既定も無制限）。
-	reverse_proxy 127.0.0.1:8188 {
-		flush_interval -1
+		# モデルのダウンロード API（deploy/runpod/model_api.py、:8190）。ComfyUI
+		# とは別プロセスなので、パスで振り分ける。handle_path が接頭辞
+		# /studio/models を落とすので、向こうには /download / /downloads として
+		# 届く。認証は上の respond が済ませている。
+		handle_path /studio/models/* {
+			reverse_proxy 127.0.0.1:8190 {
+				flush_interval -1
+			}
+		}
+
+		# 残りはすべて ComfyUI へ。WebSocket（/ws）は reverse_proxy が自動で
+		# アップグレードを通す。数十分かかる生成があるのでタイムアウトは設けない
+		# （Caddy の既定も無制限）。
+		reverse_proxy 127.0.0.1:8188 {
+			flush_interval -1
+		}
 	}
 }

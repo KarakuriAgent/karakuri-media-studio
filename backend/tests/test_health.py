@@ -14,7 +14,7 @@ REQUIRED = sorted(all_required_class_types())
 @pytest.fixture
 def client(tmp_path, monkeypatch):
     monkeypatch.setattr(config, "CONFIG_PATH", tmp_path / "config.json")
-    monkeypatch.setattr(config, "_settings", Settings(comfy_url="http://comfy:8188"))
+    monkeypatch.setattr(config, "_settings", Settings(local_comfy_url="http://comfy:8188"))
 
     async def grok_ok() -> HealthStatus:
         return HealthStatus(status="ok")
@@ -82,5 +82,5 @@ def test_a_manifest_mismatch_is_reported(client, monkeypatch):
 
 
 def test_not_configured_without_a_comfy_url(client, monkeypatch):
-    monkeypatch.setattr(config, "_settings", Settings(comfy_url=""))
+    monkeypatch.setattr(config, "_settings", Settings(local_comfy_url=""))
     assert client.get("/api/health").json()["comfyui"]["status"] == "not_configured"

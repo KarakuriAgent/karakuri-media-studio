@@ -196,8 +196,10 @@ def test_a_stale_models_dir_key_in_config_json_is_dropped(tmp_path, monkeypatch)
     monkeypatch.setattr(config, "_settings", None)
     try:
         settings = config.load_settings()
-        assert settings.comfy_url == "http://x"
+        # 旧 comfy_url は接続先プロファイルへ移る（SPEC §5）
+        assert settings.local_comfy_url == "http://x"
         assert "comfy_models_dir" not in settings.model_dump()
+        assert "comfy_url" not in settings.model_dump()
     finally:
         config._settings = None
 

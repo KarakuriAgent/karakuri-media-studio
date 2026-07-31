@@ -24,13 +24,33 @@ from .workflows import (
 JobMode = Literal["full", "i2v", "image_only", "audio"]
 JobStatus = Literal["queued", "prompting", "running", "done", "failed", "canceled"]
 
+#: ComfyUI の接続先プロファイル（SPEC §5）。設定には 3 つ分の接続情報を持ち、
+#: ``Settings.comfy_target`` が「今どれを使うか」を決める。生成フォームの
+#: プルダウンはこの値だけを書き換える。
+ComfyTarget = Literal["local", "runpod", "comfy_cloud"]
+
+#: ComfyCloud のエンドポイント（固定。設定項目にはしない）。ホストが
+#: ``comfy.org`` なので :func:`app.comfy._api_prefix` が Cloud 互換モードに入る。
+COMFY_CLOUD_URL = "https://cloud.comfy.org"
+
 
 class Settings(BaseModel):
     # `model_overrides` would otherwise collide with pydantic's `model_` namespace.
     model_config = ConfigDict(protected_namespaces=())
 
-    comfy_url: str = "http://127.0.0.1:8188"
-    comfy_api_key: str = ""
+    # --- ComfyUI の接続先（SPEC §5）-------------------------------------
+    #: 現在の接続先。旧レイアウト（単一の `comfy_url` / `comfy_api_key`）からの
+    #: 移行は `app.config.load_settings` が読み込み時に行う。
+    comfy_target: ComfyTarget = "local"
+    #: ローカル（同じマシン / LAN）の ComfyUI。API キーは使わない。
+    local_comfy_url: str = "http://127.0.0.1:8188"
+    #: RunPod の Pod 上の ComfyUI（Cloudflare Tunnel の固定ホスト名）。
+    #: 自動起動の設定は下の `runpod_*` 群。
+    runpod_comfy_url: str = ""
+    #: Pod の ComfyUI を認証付きで公開している場合のキー（不要なら空のまま）
+    runpod_comfy_api_key: str = ""
+    #: ComfyCloud の API キー（URL は `COMFY_CLOUD_URL` 固定なので設定に持たない）
+    comfy_cloud_api_key: str = ""
     grok_command: str = "grok"
     grok_model: str = "grok-4.5"
     grok_workdir: str = ""
@@ -46,14 +66,19 @@ class Settings(BaseModel):
     # エージェントのターンを ACP (`grok agent stdio`) で回すか。ACP だと実行中の
     # 活動（思考 / ツール実行）を UI に出せる。False なら従来のワンショット実行。
     agent_use_acp: bool = True
-    # {"<workflow_id>/<node_id>.<field>": "file.safetensors"} — only the entries
-    # that differ from the workflow template are stored (SPEC §3.3).  Unscoped
-    # keys from an older layout are ignored.
-    model_overrides: dict[str, str] = Field(default_factory=dict)
-    # 同じキー形式で「そのスロットで選べるモデルファイル名」を持つ（SPEC §3.3）。
-    # 2 件以上あるスロットは生成フォーム / エージェントが実行時に選べるようになる。
-    # 候補が空のキーは保存しない。
-    model_choices: dict[str, list[str]] = Field(default_factory=dict)
+    # モデルの指定は**接続先ごと**に持つ（SPEC §3.3 / §5）: どのファイルが在るかは
+    # ComfyUI の環境ごとに違うので、ローカルで使うファイル名を Pod や ComfyCloud に
+    # 押し付けても意味がない。キーは接続先、値は従来と同じ形。
+    # {"local": {"<workflow_id>/<node_id>.<field>": "file.safetensors"}, …} で、
+    # ワークフローのテンプレート既定と違うものだけを保存する。旧レイアウト（接続先の
+    # 無い 1 組だけ）は読み込み時に 3 環境へ複製される（app.config._migrated）。
+    model_overrides: dict[ComfyTarget, dict[str, str]] = Field(default_factory=dict)
+    # 同じキー形式で「そのスロットで選べるモデルファイル名」を接続先ごとに持つ
+    # （SPEC §3.3）。2 件以上あるスロットは生成フォーム / エージェントが実行時に
+    # 選べるようになる。候補が空のキーは保存しない。
+    model_choices: dict[ComfyTarget, dict[str, list[str]]] = Field(
+        default_factory=dict
+    )
     # 不足モデルの自動ダウンロード（SPEC §3.3）。保存先の models ディレクトリは
     # **環境変数 COMFY_MODELS_DIR だけ**が決める（設定には持たない）: Docker では
     # 同じパスをマウントしていないと書けないので、UI からパスを入れられても
@@ -69,30 +94,61 @@ class Settings(BaseModel):
     #: modelId を API で引かないとページが分からないので、一度引いた結果を残す。
     #: 設定画面からは触らない（`SettingsUpdate` に無い）自動生成のキャッシュ。
     model_page_urls: dict[str, str] = Field(default_factory=dict)
-    # RunPod の Pod で ComfyUI を動かす場合の自動起動（SPEC §5.1）。有効なときだけ、
-    # ジョブ投入の直前に `comfy_url` の疎通を確かめ、落ちていれば Pod を立ち上げる。
-    #: 自動起動を使うか（false ならジョブは従来どおり `comfy_url` に直接投げる）
+    # RunPod の Pod で ComfyUI を動かす場合の自動起動（SPEC §5.1）。接続先が
+    # `runpod` で、かつ有効なときだけ、ジョブ投入の直前に `runpod_comfy_url` の
+    # 疎通を確かめ、落ちていれば Pod を立ち上げる。
+    #: 自動起動を使うか（false ならジョブは `runpod_comfy_url` に直接投げる）
     runpod_enabled: bool = False
     #: RunPod の REST API キー（https://rest.runpod.io/v1 に Bearer で送る）
     runpod_api_key: str = ""
     #: 起動する Pod テンプレートの ID（deploy/runpod/ のイメージを登録したもの）
     runpod_template_id: str = ""
-    #: 確保する GPU の種類（RunPod の gpuTypeId。例 "NVIDIA RTX A6000"）
-    runpod_gpu_type: str = "NVIDIA RTX A6000"
+    #: 確保する GPU の種類（RunPod の gpuTypeId。例 "NVIDIA RTX PRO 6000 Blackwell Workstation Edition"）
+    runpod_gpu_type: str = "NVIDIA RTX PRO 6000 Blackwell Workstation Edition"
     #: /workspace にマウントする Network Volume の ID（ComfyUI 本体とモデルの置き場）
     runpod_network_volume_id: str = ""
+
+    def active_comfy_url(self) -> str:
+        """いま使う ComfyUI の URL（`comfy_target` のプロファイルのもの）。"""
+        if self.comfy_target == "comfy_cloud":
+            return COMFY_CLOUD_URL
+        if self.comfy_target == "runpod":
+            return self.runpod_comfy_url
+        return self.local_comfy_url
+
+    def active_comfy_api_key(self) -> str:
+        """いま使う API キー（ローカルは常にキー無し）。"""
+        if self.comfy_target == "comfy_cloud":
+            return self.comfy_cloud_api_key
+        if self.comfy_target == "runpod":
+            return self.runpod_comfy_api_key
+        return ""
+
+    def overrides_for(self, target: "ComfyTarget | None" = None) -> dict[str, str]:
+        """その接続先のモデル指定（省略すると現在の接続先、SPEC §3.3）。"""
+        return dict(self.model_overrides.get(target or self.comfy_target) or {})
+
+    def choices_for(
+        self, target: "ComfyTarget | None" = None
+    ) -> dict[str, list[str]]:
+        """その接続先の候補リスト（省略すると現在の接続先）。"""
+        stored = self.model_choices.get(target or self.comfy_target) or {}
+        return {key: list(names) for key, names in stored.items()}
 
 
 class SettingsUpdate(BaseModel):
     model_config = ConfigDict(protected_namespaces=())
 
-    comfy_url: str | None = None
-    comfy_api_key: str | None = None
+    comfy_target: ComfyTarget | None = None
+    local_comfy_url: str | None = None
+    runpod_comfy_url: str | None = None
+    runpod_comfy_api_key: str | None = None
+    comfy_cloud_api_key: str | None = None
     grok_command: str | None = None
     grok_model: str | None = None
     grok_workdir: str | None = None
-    model_overrides: dict[str, str] | None = None
-    model_choices: dict[str, list[str]] | None = None
+    model_overrides: dict[ComfyTarget, dict[str, str]] | None = None
+    model_choices: dict[ComfyTarget, dict[str, list[str]]] | None = None
     hf_token: str | None = None
     civitai_api_key: str | None = None
     model_download_urls: dict[str, str] | None = None
@@ -140,10 +196,14 @@ class ModelOverridesUpdate(BaseModel):
 
     ``choices`` を省略（``None``）すると、保存済みの候補リストはそのまま残る
     （既定値の上書きだけを送っていた旧クライアントとの後方互換）。
+
+    ``target`` は書き込む接続先（省略すると現在の接続先）。設定ページの環境
+    プルダウンで選んだ環境の指定だけを差し替え、他の環境はそのまま残る。
     """
 
     overrides: dict[str, str] = Field(default_factory=dict)
     choices: dict[str, list[str]] | None = None
+    target: ComfyTarget | None = None
 
 
 class ModelSlot(BaseModel):
@@ -174,11 +234,11 @@ class ModelSlot(BaseModel):
 class ModelsDirStatus(BaseModel):
     """``GET /api/models/dir-status``: models ディレクトリに書けるか。
 
-    保存先は環境変数 ``COMFY_MODELS_DIR`` だけで決まる。**未設定なら機能ごと
-    無効**で、UI はダウンロード関連を一切出さない（Comfy Cloud 利用などでは
-    それが正常な状態）。設定されているのに書けない場合（Docker でホストの
-    models ディレクトリを同じ絶対パスにマウントしていない等）は ``exists`` /
-    ``writable`` が false になり、UI はボタンを無効化して理由を出す。
+    保存先は環境変数 ``COMFY_MODELS_DIR`` だけで決まる（**ローカル接続のときだけ
+    使う**: RunPod では Pod 側の models ディレクトリに落とすので関係ない）。
+    UI はこの状態でダウンロード欄を隠したりはせず、押されたときに 400 の理由を
+    出す。設定されているのに書けない場合（Docker でホストの models ディレクトリを
+    同じ絶対パスにマウントしていない等）は ``exists`` / ``writable`` が false。
     """
 
     #: 環境変数 ``COMFY_MODELS_DIR`` が設定されているか
@@ -193,11 +253,37 @@ class ModelDownloadRequest(BaseModel):
 
     ``subfolder`` は models ディレクトリからの相対パス（``ModelField.subfolder``
     をそのまま送ればよい）。空なら models ディレクトリ直下に置く。
+
+    ``target`` は落とす先の環境（省略すると現在の接続先）。``local`` はこのアプリが
+    自分で落とし、``runpod`` は Pod のダウンロード API に依頼する（SPEC §3.3）。
+    ``comfy_cloud`` はファイルシステムに触れないので 400 になる。
     """
 
     filename: str
     url: str
     subfolder: str = ""
+    target: ComfyTarget | None = None
+
+
+class ModelDownloadAllRequest(BaseModel):
+    """``POST /api/models/download-all`` のボディ（不足モデルの一括取得）。
+
+    「未検出（ComfyUI のファイル一覧に無い）かつ取得元 URL が登録済み」のものを
+    まとめて開始する。すでに走っているものは飛ばす。
+    """
+
+    target: ComfyTarget | None = None
+
+
+class ModelDownloadAllResult(BaseModel):
+    """``POST /api/models/download-all`` のレスポンス。"""
+
+    #: 開始したダウンロード（進捗は WS の ``model_download`` で流れる）
+    started: list["ModelDownload"] = Field(default_factory=list)
+    #: 未検出だが取得元 URL が無くて開始できなかったファイル名
+    missing_urls: list[str] = Field(default_factory=list)
+    #: 開始できなかった理由（ファイル名 -> メッセージ）
+    errors: dict[str, str] = Field(default_factory=dict)
 
 
 class ModelDownloadProgress(BaseModel):
@@ -266,6 +352,10 @@ class Lora(BaseModel):
     # z-image / qwen-image）。同じファミリーの画像ワークフローでしか使えない。
     # target='video' の行では無視される（動画は LTX 2.3 のみ）。
     family: str = DEFAULT_FAMILY
+    # どの接続先環境に置いてある LoRA か（SPEC §5）。``None`` は「環境を問わず出す」
+    # で、接続先を分ける前に登録された行がこれになる。生成フォームには
+    # 「現在の接続先のもの + 共通（None）」だけが出る。
+    comfy_target: ComfyTarget | None = None
     # サンプル画像の URL（/assets/lora_samples/<id>/<file>）。登録・削除は
     # 専用エンドポイント経由のみで、Create / Update では触れない。
     sample_images: list[str] = Field(default_factory=list)
@@ -280,6 +370,8 @@ class LoraCreate(BaseModel):
     sort_order: int = 0
     target: LoraTarget = "image"
     family: str = DEFAULT_FAMILY
+    #: 置いてある接続先環境（``None`` = 全環境で出す）
+    comfy_target: ComfyTarget | None = None
 
 
 class LoraUpdate(BaseModel):
@@ -291,6 +383,7 @@ class LoraUpdate(BaseModel):
     sort_order: int | None = None
     target: LoraTarget | None = None
     family: str | None = None
+    comfy_target: ComfyTarget | None = None
 
 
 # Default of the LTX 2.3 "dev" templates (t2v / i2v / ia2v / id_lora).  An empty
@@ -1315,6 +1408,8 @@ class Options(BaseModel):
 
     comfy_connected: bool = False
     comfy_error: str | None = None
+    #: いま使っている接続先プロファイルと、その URL（表示用）
+    comfy_target: ComfyTarget = "local"
     comfy_url: str = ""
     image_workflows: list[WorkflowOption] = Field(default_factory=list)
     video_workflows: list[WorkflowOption] = Field(default_factory=list)

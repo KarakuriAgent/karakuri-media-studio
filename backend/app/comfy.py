@@ -1,19 +1,23 @@
 """ComfyUI HTTP client (SPEC §5).
 
 The connection target is read from the settings on **every** request so that a
-change in the settings screen takes effect without restarting the app.  All
-transport / protocol failures are wrapped in :class:`ComfyError`.
+change in the settings screen (or of the 接続先 dropdown in the generation form)
+takes effect without restarting the app: which of the ComfyCloud / RunPod /
+local profiles is used comes from ``Settings.comfy_target``.  All transport /
+protocol failures are wrapped in :class:`ComfyError`.
 """
 
 from __future__ import annotations
 
 import mimetypes
+import re
 from pathlib import Path
 from typing import Any
 
 import httpx
 
 from .config import load_settings
+from .models import ComfyTarget
 
 DEFAULT_TIMEOUT = 30.0
 UPLOAD_TIMEOUT = 300.0
@@ -21,33 +25,111 @@ DOWNLOAD_TIMEOUT = 600.0
 
 
 class ComfyError(Exception):
-    """Any failure while talking to ComfyUI (connection, timeout, HTTP status)."""
+    """Any failure while talking to ComfyUI (connection, timeout, HTTP status).
+
+    ``unreachable`` は「ComfyUI 自体に届いていない」失敗（接続不可・タイムアウト
+    と、リバースプロキシ / Cloudflare Tunnel が返すゲートウェイ系ステータス）。
+    :func:`display_error` がこれを見て、接続先に合わせた案内文に置き換える。
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        status_code: int | None = None,
+        unreachable: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.unreachable = unreachable
 
 
-def _base_url() -> str:
-    url = (load_settings().comfy_url or "").strip()
+#: ComfyUI へ届く前に潰れたことを表すステータス（Cloudflare Tunnel の 5xx を含む。
+#: 530 = Origin DNS error / 1033 tunnel error、52x = origin unreachable）
+UNREACHABLE_STATUSES = frozenset({502, 503, 504, 520, 521, 522, 523, 524, 530})
+
+
+def _body_excerpt(response: httpx.Response) -> str:
+    """エラー本文の抜粋。HTML はページごと出さない（UI に生 HTML を流さない）。
+
+    Pod が落ちているときの Cloudflare Tunnel は数 KB のエラーページを返すので、
+    そのまま連結すると UI のバナーがページ 1 枚分の HTML で埋まる。HTML と分かる
+    ものは `<title>` だけを拾い、無ければ種別だけを書く。
+    """
+    text = (response.text or "").strip()
+    content_type = response.headers.get("content-type", "").lower()
+    if not ("html" in content_type or text[:200].lstrip().lower().startswith(
+        ("<!doctype html", "<html")
+    )):
+        return text[:500]
+    match = re.search(r"<title[^>]*>(.*?)</title>", text[:4000], re.I | re.S)
+    title = " ".join(match.group(1).split())[:120] if match else ""
+    return f"({title})" if title else "(HTML エラーページ)"
+
+
+def display_error(exc: ComfyError) -> str:
+    """UI に出す文言（接続先に合わせた案内。SPEC §5 / §5.1）。
+
+    RunPod 運用では「Pod を落としているあいだは繋がらない」のが普通の状態なので、
+    Cloudflare Tunnel の生のエラーではなく、次に何をすればよいかを出す。
+    """
+    if not exc.unreachable:
+        return str(exc)
+    settings = load_settings()
+    if settings.comfy_target != "runpod":
+        return str(exc)
+    if settings.runpod_enabled:
+        return (
+            "RunPod の ComfyUI が起動していません。ジョブを投入すると自動で Pod を"
+            "起動します（モデル名などは手入力でも続行できます）。"
+        )
+    return (
+        "RunPod の ComfyUI に接続できません。設定画面から Pod を起動するか、"
+        "RunPod ComfyUI URL を確認してください。"
+    )
+
+
+def profile(target: ComfyTarget | None = None) -> tuple[str, str]:
+    """その接続先の (URL, API キー)。``None`` なら現在の接続先。
+
+    ``target`` を渡せるのは、設定ページが「いま繋いでいない環境」を相手にする
+    ことがあるため（不足モデルの一括判定など、SPEC §3.3 / §5）。
+    """
+    settings = load_settings()
+    if target is None or target == settings.comfy_target:
+        return settings.active_comfy_url(), settings.active_comfy_api_key()
+    switched = settings.model_copy(update={"comfy_target": target})
+    return switched.active_comfy_url(), switched.active_comfy_api_key()
+
+
+def _base_url(target: ComfyTarget | None = None) -> str:
+    url = (profile(target)[0] or "").strip()
     if not url:
-        raise ComfyError("comfy_url is not configured")
+        chosen = target or load_settings().comfy_target
+        raise ComfyError(f"ComfyUI URL is not configured for target '{chosen}'")
     return url.rstrip("/")
 
 
-def _headers() -> dict[str, str]:
-    api_key = (load_settings().comfy_api_key or "").strip()
+def _headers(target: ComfyTarget | None = None) -> dict[str, str]:
+    api_key = (profile(target)[1] or "").strip()
     if not api_key:
         return {}
     # Comfy Cloud expects X-API-Key; some self-hosted auth proxies expect Bearer.
     return {"X-API-Key": api_key, "Authorization": f"Bearer {api_key}"}
 
 
-def _api_prefix() -> str:
+def _api_prefix(target: ComfyTarget | None = None) -> str:
     """Comfy Cloud serves the compatible API under ``/api`` (local works bare)."""
-    host = _base_url().split("://", 1)[-1].split("/", 1)[0].lower()
+    host = _base_url(target).split("://", 1)[-1].split("/", 1)[0].lower()
     return "/api" if host.endswith("comfy.org") else ""
 
 
-def _client(timeout: float) -> httpx.AsyncClient:
+def _client(timeout: float, target: ComfyTarget | None = None) -> httpx.AsyncClient:
     return httpx.AsyncClient(
-        base_url=_base_url(), headers=_headers(), timeout=timeout, follow_redirects=True
+        base_url=_base_url(target),
+        headers=_headers(target),
+        timeout=timeout,
+        follow_redirects=True,
     )
 
 
@@ -56,20 +138,27 @@ async def _request(
     path: str,
     *,
     timeout: float = DEFAULT_TIMEOUT,
+    target: ComfyTarget | None = None,
     **kwargs: Any,
 ) -> httpx.Response:
     try:
-        async with _client(timeout) as client:
+        async with _client(timeout, target) as client:
             response = await client.request(method, path, **kwargs)
             response.raise_for_status()
             return response
     except httpx.HTTPStatusError as exc:
-        body = exc.response.text[:500]
+        status = exc.response.status_code
+        body = _body_excerpt(exc.response)
         raise ComfyError(
-            f"ComfyUI {method} {path} failed: HTTP {exc.response.status_code} {body}"
+            f"ComfyUI {method} {path} failed: HTTP {status} {body}".rstrip(),
+            status_code=status,
+            unreachable=status in UNREACHABLE_STATUSES,
         ) from exc
     except httpx.HTTPError as exc:
-        raise ComfyError(f"ComfyUI {method} {path} failed: {exc}") from exc
+        # 接続不可・タイムアウト: そもそも ComfyUI に届いていない
+        raise ComfyError(
+            f"ComfyUI {method} {path} failed: {exc}", unreachable=True
+        ) from exc
 
 
 def _json(response: httpx.Response) -> Any:
@@ -83,9 +172,14 @@ def _json(response: httpx.Response) -> Any:
 # object_info
 # --------------------------------------------------------------------------
 
-async def get_object_info(class_type: str | None = None) -> dict[str, Any]:
-    path = _api_prefix() + (f"/object_info/{class_type}" if class_type else "/object_info")
-    data = _json(await _request("GET", path))
+async def get_object_info(
+    class_type: str | None = None, *, target: ComfyTarget | None = None
+) -> dict[str, Any]:
+    """``/object_info``（``target`` を渡すと、その接続先の ComfyUI に聞く）。"""
+    path = _api_prefix(target) + (
+        f"/object_info/{class_type}" if class_type else "/object_info"
+    )
+    data = _json(await _request("GET", path, target=target))
     if not isinstance(data, dict):
         raise ComfyError("unexpected /object_info payload")
     return data
@@ -274,11 +368,17 @@ async def download_view(
                     async for chunk in response.aiter_bytes():
                         fh.write(chunk)
     except httpx.HTTPStatusError as exc:
+        # ボディはストリームなので読まない（本文は元から出していない）
+        status = exc.response.status_code
         raise ComfyError(
-            f"ComfyUI /view {filename} failed: HTTP {exc.response.status_code}"
+            f"ComfyUI /view {filename} failed: HTTP {status}",
+            status_code=status,
+            unreachable=status in UNREACHABLE_STATUSES,
         ) from exc
     except httpx.HTTPError as exc:
-        raise ComfyError(f"ComfyUI /view {filename} failed: {exc}") from exc
+        raise ComfyError(
+            f"ComfyUI /view {filename} failed: {exc}", unreachable=True
+        ) from exc
     except OSError as exc:
         raise ComfyError(f"could not write {dest}: {exc}") from exc
     return dest

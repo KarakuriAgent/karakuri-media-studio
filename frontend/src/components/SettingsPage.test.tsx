@@ -21,6 +21,9 @@ vi.mock('../api', async () => {
       modelsDirStatus: vi.fn(),
       listModelDownloads: vi.fn(),
       putSettings: vi.fn(),
+      putModels: vi.fn(),
+      downloadModel: vi.fn(),
+      downloadAllModels: vi.fn(),
       createLora: vi.fn(),
       updateLora: vi.fn(),
     },
@@ -33,6 +36,9 @@ const listLoras = vi.mocked(api.listLoras)
 const modelsDirStatus = vi.mocked(api.modelsDirStatus)
 const listModelDownloads = vi.mocked(api.listModelDownloads)
 const putSettings = vi.mocked(api.putSettings)
+const putModels = vi.mocked(api.putModels)
+const downloadModel = vi.mocked(api.downloadModel)
+const downloadAllModels = vi.mocked(api.downloadAllModels)
 const createLora = vi.mocked(api.createLora)
 const updateLora = vi.mocked(api.updateLora)
 
@@ -46,8 +52,11 @@ class FakeSocket {
 
 function settings(): Settings {
   return {
-    comfy_url: 'http://127.0.0.1:8188',
-    comfy_api_key: '',
+    comfy_target: 'local',
+    local_comfy_url: 'http://127.0.0.1:8188',
+    runpod_comfy_url: '',
+    runpod_comfy_api_key: '',
+    comfy_cloud_api_key: '',
     grok_command: 'grok',
     grok_model: 'grok-4.5',
     grok_workdir: '/repo/runtime/grok-workdir',
@@ -112,7 +121,7 @@ function missingOptions(): Options {
 async function openSettings(options: Options = {} as Options) {
   render(<SettingsPage options={options} onBack={() => {}} onChanged={() => {}} />)
   await waitFor(() => expect(modelsDirStatus).toHaveBeenCalled())
-  await waitFor(() => screen.getByText('ComfyUI URL'))
+  await waitFor(() => screen.getByText('ComfyUI 接続先'))
 }
 
 /** モデルタブを開いて、1 件だけあるワークフローの折りたたみも開く。 */
@@ -124,6 +133,216 @@ async function openModelsTab(options: Options = {} as Options) {
   await waitFor(() => screen.getByText('ノード'))
 }
 
+describe('SettingsPage: 環境ごとのモデル / LoRA（SPEC §5）', () => {
+  beforeEach(() => {
+    vi.stubGlobal('WebSocket', FakeSocket)
+    getSettings.mockResolvedValue({ ...settings(), comfy_target: 'runpod' })
+    listModels.mockResolvedValue([modelRow()])
+    listLoras.mockResolvedValue([loraRow()])
+    listModelDownloads.mockResolvedValue([])
+    modelsDirStatus.mockResolvedValue(dirStatus())
+    listModels.mockClear()
+    listLoras.mockClear()
+    putModels.mockReset()
+    createLora.mockReset()
+    downloadModel.mockReset()
+    downloadAllModels.mockReset()
+  })
+
+  it('初期値は現在の接続先で、その環境のモデル / LoRA を読む', async () => {
+    await openSettings()
+
+    expect(listModels).toHaveBeenCalledWith('runpod')
+    expect(listLoras).toHaveBeenCalledWith('runpod')
+    expect(listModelDownloads).toHaveBeenCalledWith('runpod')
+    screen.getByRole('button', { name: 'モデル' }).click()
+    await waitFor(() => screen.getByLabelText('対象の接続先'))
+    const select = screen.getByLabelText('対象の接続先') as HTMLSelectElement
+    expect(select.value).toBe('runpod')
+    // 現在の接続先が分かるように印を付ける
+    expect(
+      [...select.options].find((option) => option.value === 'runpod')?.text,
+    ).toContain('現在の接続先')
+  })
+
+  it('環境を切り替えるとその環境の一覧を読み直す', async () => {
+    await openSettings()
+    screen.getByRole('button', { name: 'モデル' }).click()
+    await waitFor(() => screen.getByLabelText('対象の接続先'))
+    listModels.mockClear()
+    listLoras.mockClear()
+
+    fireEvent.change(screen.getByLabelText('対象の接続先'), {
+      target: { value: 'local' },
+    })
+
+    await waitFor(() => expect(listModels).toHaveBeenCalledWith('local'))
+    expect(listLoras).toHaveBeenCalledWith('local')
+  })
+
+  it('モデルの保存は選んだ環境あてに送る', async () => {
+    putModels.mockResolvedValue([modelRow()])
+    await openModelsTab()
+
+    const input = screen.getAllByDisplayValue(
+      'krea2_turbo_fp8_scaled.safetensors',
+    )[0]
+    fireEvent.change(input, { target: { value: 'mine.safetensors' } })
+    screen.getByRole('button', { name: '保存' }).click()
+
+    await waitFor(() => expect(putModels).toHaveBeenCalled())
+    expect(putModels.mock.calls[0][2]).toBe('runpod')
+  })
+
+  it('LoRA の新規登録は選んだ環境に紐づける', async () => {
+    await openSettings()
+    screen.getByRole('button', { name: 'LoRA 管理' }).click()
+    await waitFor(() => screen.getByText('かおり'))
+
+    const [displayName] = screen.getAllByRole('textbox') as HTMLInputElement[]
+    fireEvent.change(displayName, { target: { value: 'みずき' } })
+    fireEvent.change(screen.getByPlaceholderText('例: my_lora.safetensors'), {
+      target: { value: 'mizuki.safetensors' },
+    })
+    screen.getByRole('button', { name: '追加' }).click()
+
+    await waitFor(() => expect(createLora).toHaveBeenCalled())
+    expect(createLora.mock.calls[0][0]).toMatchObject({
+      lora_name: 'mizuki.safetensors',
+      comfy_target: 'runpod',
+    })
+  })
+
+  it('[DL] は選んだ環境に落とす（RunPod なら Pod へ）', async () => {
+    putSettings.mockResolvedValue(settings())
+    await openModelsTab(missingOptions())
+
+    fireEvent.change(screen.getByPlaceholderText(/ダウンロード URL/), {
+      target: { value: 'https://example.com/a.safetensors' },
+    })
+    screen.getByRole('button', { name: 'DL' }).click()
+
+    await waitFor(() => expect(downloadModel).toHaveBeenCalled())
+    expect(downloadModel.mock.calls[0]).toEqual([
+      'krea2_turbo_fp8_scaled.safetensors',
+      'https://example.com/a.safetensors',
+      'diffusion_models',
+      'runpod',
+    ])
+  })
+
+  it('[全DL] は選んだ環境の不足モデルを一括で開始する', async () => {
+    downloadAllModels.mockResolvedValue({
+      started: [],
+      missing_urls: ['other.safetensors'],
+      errors: {},
+    })
+    await openModelsTab(missingOptions())
+
+    screen.getByRole('button', { name: '全DL' }).click()
+
+    await waitFor(() => expect(downloadAllModels).toHaveBeenCalledWith('runpod'))
+    await waitFor(() => screen.getByText(/取得元 URL が未登録/))
+  })
+
+  it('繋いでいない環境を編集しているあいだは「未検出」を判定しない', async () => {
+    // options のファイル一覧は「いま繋いでいる ComfyUI」のものなので、別環境の
+    // 在庫は分からない（勝手に未検出と決めつけない）
+    await openModelsTab(missingOptions())
+    expect(screen.getByTitle('ComfyUI のファイル一覧に見つかりません')).toBeTruthy()
+
+    fireEvent.change(screen.getByLabelText('対象の接続先'), {
+      target: { value: 'local' },
+    })
+
+    await waitFor(() =>
+      expect(
+        screen.queryByTitle('ComfyUI のファイル一覧に見つかりません'),
+      ).toBeNull(),
+    )
+  })
+
+  it('ComfyCloud を選ぶとダウンロード関連は出さない', async () => {
+    await openModelsTab()
+    fireEvent.change(screen.getByLabelText('対象の接続先'), {
+      target: { value: 'comfy_cloud' },
+    })
+
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: '全DL' })).toBeNull(),
+    )
+    expect(screen.getByText(/Comfy Cloud 側の管理/)).toBeTruthy()
+  })
+})
+
+describe('SettingsPage: ComfyUI 接続先（3 プロファイル）', () => {
+  beforeEach(() => {
+    vi.stubGlobal('WebSocket', FakeSocket)
+    getSettings.mockResolvedValue(settings())
+    listModels.mockResolvedValue([modelRow()])
+    listLoras.mockResolvedValue([])
+    listModelDownloads.mockResolvedValue([])
+    modelsDirStatus.mockResolvedValue(dirStatus())
+    putSettings.mockReset()
+  })
+
+  it('接続先の選択と、プロファイルごとの接続情報を出す', async () => {
+    await openSettings()
+
+    const select = screen.getByDisplayValue('ローカル') as HTMLSelectElement
+    expect(
+      [...select.options].map((option) => [option.value, option.text]),
+    ).toEqual([
+      ['comfy_cloud', 'ComfyCloud'],
+      ['runpod', 'RunPod'],
+      ['local', 'ローカル'],
+    ])
+    // ComfyCloud はエンドポイント固定なので APIキーだけ（URL 欄は出さない）
+    expect(screen.getByText('ComfyCloud APIキー')).toBeTruthy()
+    expect(screen.getByText(/https:\/\/cloud\.comfy\.org 固定/)).toBeTruthy()
+    expect(screen.getByText('RunPod ComfyUI URL')).toBeTruthy()
+    expect(screen.getByText('RunPod ComfyUI APIキー（任意）')).toBeTruthy()
+    expect(screen.getByText('ローカル ComfyUI URL')).toBeTruthy()
+    // 自動起動の詳細はチェックを入れるまで畳んでおく
+    expect(screen.queryByText('テンプレート ID')).toBeNull()
+  })
+
+  it('接続先とプロファイルを編集して保存すると設定に載る', async () => {
+    putSettings.mockResolvedValue({
+      ...settings(),
+      comfy_target: 'comfy_cloud',
+      comfy_cloud_api_key: 'k',
+    })
+    await openSettings()
+
+    fireEvent.change(screen.getByDisplayValue('ローカル'), {
+      target: { value: 'comfy_cloud' },
+    })
+    fireEvent.change(screen.getByPlaceholderText('https://<Cloudflare Tunnel のホスト名>'), {
+      target: { value: 'https://pod.example.com' },
+    })
+    screen.getByRole('button', { name: '保存' }).click()
+
+    await waitFor(() => expect(putSettings).toHaveBeenCalled())
+    const sent = putSettings.mock.calls[0][0]
+    expect(sent.comfy_target).toBe('comfy_cloud')
+    expect(sent.runpod_comfy_url).toBe('https://pod.example.com')
+    // 他のプロファイルも一緒に保存される（切り替えてすぐ使えるように）
+    expect(sent.local_comfy_url).toBe('http://127.0.0.1:8188')
+    expect(sent.comfy_cloud_api_key).toBe('')
+  })
+
+  it('自動起動を有効にすると RunPod の起動設定が出る', async () => {
+    await openSettings()
+
+    screen.getByRole('checkbox').click()
+
+    await waitFor(() => screen.getByText('テンプレート ID'))
+    expect(screen.getByText('RunPod APIキー')).toBeTruthy()
+    expect(screen.getByText('GPU 種別（gpuTypeId）')).toBeTruthy()
+  })
+})
+
 describe('SettingsPage: 不足モデルのダウンロード UI（COMFY_MODELS_DIR ゲート）', () => {
   beforeEach(() => {
     vi.stubGlobal('WebSocket', FakeSocket)
@@ -133,14 +352,16 @@ describe('SettingsPage: 不足モデルのダウンロード UI（COMFY_MODELS_D
     listModelDownloads.mockResolvedValue([])
   })
 
-  it('環境変数が無ければ接続タブのダウンロード関連ブロックを出さない', async () => {
+  it('環境変数が無くてもトークン欄と保存先の状態を出す（機能は隠さない）', async () => {
+    // RunPod へ落とすときにもトークンは要るので、COMFY_MODELS_DIR の有無で
+    // ブロックごと隠したりはしない（押したときに理由を出す方式）。
     modelsDirStatus.mockResolvedValue(dirStatus())
     await openSettings()
 
-    expect(screen.queryByText('モデル自動ダウンロード')).toBeNull()
-    expect(screen.queryByText(/Hugging Face トークン/)).toBeNull()
-    expect(screen.queryByText(/Civitai/)).toBeNull()
-    expect(screen.queryByText(/COMFY_MODELS_DIR が設定されていません/)).toBeNull()
+    expect(screen.getByText('モデル自動ダウンロード')).toBeTruthy()
+    expect(screen.getByText(/Hugging Face トークン/)).toBeTruthy()
+    expect(screen.getByText('Civitai APIキー（任意）')).toBeTruthy()
+    expect(screen.getByText(/COMFY_MODELS_DIR が設定されていません/)).toBeTruthy()
   })
 
   it('環境変数があれば保存先（読み取り専用）とトークン欄を出す', async () => {
@@ -157,37 +378,26 @@ describe('SettingsPage: 不足モデルのダウンロード UI（COMFY_MODELS_D
     expect(screen.getByText(/書き込み可/)).toBeTruthy()
   })
 
-  it('環境変数が無ければ [DL] を出さず URL 登録だけにする、警告も出さない', async () => {
+  it('環境変数が無くても [DL] と [全DL] は出す（理由は警告で添える）', async () => {
     modelsDirStatus.mockResolvedValue(dirStatus())
     await openModelsTab(missingOptions())
 
-    // URL の登録は環境変数と無関係に使えるので列そのものは出す
     expect(screen.getByText('取得元 URL / ダウンロード')).toBeTruthy()
     expect(screen.getByPlaceholderText(/ダウンロード URL/)).toBeTruthy()
-    // ダウンロードできない環境ではボタンごと出さない（押せない [DL] を残さない）
-    expect(screen.queryByRole('button', { name: 'DL' })).toBeNull()
-    expect(screen.queryByText(/保存先:/)).toBeNull()
-    expect(screen.getByRole('button', { name: 'URL保存' })).toBeTruthy()
-    // タブ上部の警告は出さない（Comfy Cloud 利用などでは正常な状態のため）
-    expect(
-      screen.queryByText(
-        (text) => text.trim() === 'COMFY_MODELS_DIR が設定されていません',
-      ),
-    ).toBeNull()
-    // 代わりに設定方法の案内だけを控えめに出す
-    expect(screen.getByText(/自動ダウンロードを使う場合は/)).toBeTruthy()
+    // 押せば 400 の理由が返るので、ボタンは隠さない
+    expect(screen.getByRole('button', { name: 'DL' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: '全DL' })).toBeTruthy()
+    expect(screen.getByText(/COMFY_MODELS_DIR が設定されていません/)).toBeTruthy()
   })
 
-  it('環境変数があってもディレクトリが使えなければ [DL] を出さない（警告は出す）', async () => {
+  it('ディレクトリが使えなくても [DL] は出し、理由を警告に出す', async () => {
     modelsDirStatus.mockResolvedValue(
       dirStatus({ configured: true, path: '/comfy/models' }),
     )
     await openModelsTab(missingOptions())
 
     expect(screen.getByText('取得元 URL / ダウンロード')).toBeTruthy()
-    expect(screen.queryByRole('button', { name: 'DL' })).toBeNull()
-    expect(screen.getByRole('button', { name: 'URL保存' })).toBeTruthy()
-    // 設定したのに使えない状態なので、こちらは理由を出す
+    expect(screen.getByRole('button', { name: 'DL' })).toBeTruthy()
     expect(screen.getByText(/パスが見つかりません/)).toBeTruthy()
   })
 
@@ -242,8 +452,8 @@ describe('SettingsPage: 検出済みモデルの取得元 URL 登録', () => {
     screen.getByRole('button', { name: /取得元 URL/ }).click()
     await waitFor(() => screen.getByPlaceholderText(/ダウンロード URL/))
     expect(screen.getByRole('button', { name: 'URL保存' })).toBeTruthy()
-    // ダウンロードはさせない
-    expect(screen.queryByRole('button', { name: 'DL' })).toBeNull()
+    // 検出済みでも、開いたなら落とし直せる（[DL] も並ぶ）
+    expect(screen.getByRole('button', { name: 'DL' })).toBeTruthy()
   })
 
   it('URL を入れて保存すると model_download_urls に載る', async () => {

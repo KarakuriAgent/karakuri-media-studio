@@ -11,6 +11,7 @@ import type {
   ChatReply,
   ChatSession,
   ChatSessionCreate,
+  ComfyTarget,
   Health,
   Job,
   JobCreate,
@@ -22,6 +23,7 @@ import type {
   Lora,
   LoraPayload,
   ModelDownload,
+  ModelDownloadAllResult,
   ModelFieldState,
   ModelsDirStatus,
   Options,
@@ -152,24 +154,43 @@ export const api = {
   putSettings: (patch: Partial<Settings>) =>
     json<Settings>('PUT', '/api/settings', patch),
 
-  listModels: () => request<ModelFieldState[]>('/api/models'),
+  // モデル指定と LoRA 登録は接続先ごと（SPEC §5）。`target` を省略すると
+  // サーバーが現在の接続先を使う。設定ページは編集中の環境を明示的に渡す。
+  listModels: (target?: ComfyTarget) =>
+    request<ModelFieldState[]>(`/api/models${target ? `?target=${target}` : ''}`),
   /** `choices` を省略すると保存済みの候補リストはそのまま残る。 */
   putModels: (
     overrides: Record<string, string>,
     choices?: Record<string, string[]>,
-  ) => json<ModelFieldState[]>('PUT', '/api/models', { overrides, choices }),
+    target?: ComfyTarget,
+  ) =>
+    json<ModelFieldState[]>('PUT', '/api/models', { overrides, choices, target }),
 
   // 不足モデルのダウンロード（SPEC §3.3）。進捗は WS の `model_download` で届く。
+  // 落とし先は `target`: ローカルはこのアプリが、RunPod は Pod の API が落とす。
   modelsDirStatus: () => request<ModelsDirStatus>('/api/models/dir-status'),
-  listModelDownloads: () => request<ModelDownload[]>('/api/models/downloads'),
-  downloadModel: (filename: string, url: string, subfolder: string) =>
+  listModelDownloads: (target?: ComfyTarget) =>
+    request<ModelDownload[]>(
+      `/api/models/downloads${target ? `?target=${target}` : ''}`,
+    ),
+  downloadModel: (
+    filename: string,
+    url: string,
+    subfolder: string,
+    target?: ComfyTarget,
+  ) =>
     json<ModelDownload>('POST', '/api/models/download', {
       filename,
       url,
       subfolder,
+      target,
     }),
+  /** 未検出かつ取得元 URL 登録済みのモデルをまとめて落とす。 */
+  downloadAllModels: (target?: ComfyTarget) =>
+    json<ModelDownloadAllResult>('POST', '/api/models/download-all', { target }),
 
-  listLoras: () => request<Lora[]>('/api/loras'),
+  listLoras: (target?: ComfyTarget) =>
+    request<Lora[]>(`/api/loras${target ? `?target=${target}` : ''}`),
   createLora: (payload: LoraPayload) => json<Lora>('POST', '/api/loras', payload),
   updateLora: (id: number, payload: Partial<LoraPayload>) =>
     json<Lora>('PUT', `/api/loras/${id}`, payload),

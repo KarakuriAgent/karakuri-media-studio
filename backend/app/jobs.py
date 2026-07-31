@@ -344,7 +344,7 @@ def _model_override_problem(params: dict[str, Any]) -> str | None:
     settings = load_settings()
     return model_override_problem(
         requested,
-        model_slots(settings.model_overrides, settings.model_choices),
+        model_slots(settings.overrides_for(), settings.choices_for()),
         job_workflow_ids(
             params.get("mode", ""),
             image_workflow=params.get("image_workflow"),
@@ -1046,7 +1046,7 @@ async def run_job(job_id: str) -> None:
         params = _generation_params(job, uploads)
         # 設定の既定値の上にジョブ単位の指定を重ねる（SPEC §3.3）
         overrides = {
-            **load_settings().model_overrides,
+            **load_settings().overrides_for(),
             **(job.params.get("model_overrides") or {}),
         }
         job_dir = OUTPUTS_DIR / job.id
@@ -1128,6 +1128,9 @@ async def run_job(job_id: str) -> None:
         raise
     except Exception as exc:  # noqa: BLE001 - any failure marks the job failed (§5)
         # RunPod の起動失敗は文言がそのままユーザー向けなので、型名を前置しない。
+        # （ComfyUI 側のエラー本文は comfy._body_excerpt が短く畳んでいる。ジョブ
+        #  実行中の失敗に「投入すれば自動起動します」の案内は当たらないので、
+        #  display_error による言い換えは読み取り系エンドポイントだけに留める）
         detail = (
             str(exc)
             if isinstance(exc, (JobError, runpod.RunPodError))

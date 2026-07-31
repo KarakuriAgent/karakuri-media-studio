@@ -40,7 +40,8 @@ CREATE TABLE IF NOT EXISTS loras (
   sort_order    INTEGER DEFAULT 0,
   sample_images TEXT NOT NULL DEFAULT '[]',
   target        TEXT NOT NULL DEFAULT 'image',
-  family        TEXT NOT NULL DEFAULT 'krea2'
+  family        TEXT NOT NULL DEFAULT 'krea2',
+  comfy_target  TEXT                        -- 置いてある接続先（NULL = 全環境共通）
 );
 
 CREATE TABLE IF NOT EXISTS chat_sessions (
@@ -121,6 +122,11 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         # 既定値 'krea2' がそのままマイグレーション後の値になる。
         # target='video' の行では無視される（動画は LTX 2.3 のみ）。
         ("family", "TEXT NOT NULL DEFAULT 'krea2'"),
+        # どの接続先環境（ComfyCloud / RunPod / ローカル）に置いてある LoRA か。
+        # 既定は NULL = 「全環境で出す」: 接続先を分ける前に登録した行がどの環境の
+        # ものか分からないので、勝手に 1 環境へ寄せず今までどおり全部で見せる
+        # （環境を絞りたければ設定ページで選び直せる）。
+        ("comfy_target", "TEXT"),
     ],
 }
 

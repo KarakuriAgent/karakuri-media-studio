@@ -16,14 +16,18 @@ async def check_comfyui() -> HealthStatus:
     job (SPEC §3).
     """
     settings = load_settings()
-    if not settings.comfy_url:
-        return HealthStatus(status="not_configured", detail="comfy_url is empty")
+    url = settings.active_comfy_url()
+    if not url:
+        return HealthStatus(
+            status="not_configured",
+            detail=f"接続先 '{settings.comfy_target}' の ComfyUI URL が未設定です",
+        )
     try:
         info = await comfy.get_object_info()
         validate_manifests()
         required = all_required_class_types()
     except comfy.ComfyError as exc:
-        return HealthStatus(status="error", detail=str(exc))
+        return HealthStatus(status="error", detail=comfy.display_error(exc))
     except (WorkflowError, OSError, ValueError) as exc:
         return HealthStatus(status="error", detail=f"workflow template: {exc}")
 
@@ -35,7 +39,7 @@ async def check_comfyui() -> HealthStatus:
         )
     return HealthStatus(
         status="ok",
-        detail=f"{settings.comfy_url} ({len(required)} node classes verified)",
+        detail=f"{url} ({len(required)} node classes verified)",
     )
 
 

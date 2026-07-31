@@ -1,5 +1,9 @@
-#!/usr/bin/env python3
-"""``models.txt`` に並んだモデルのうち、まだ無いものだけを落とす。
+"""Pod の中で 1 ファイルを落とすダウンローダ（``model_api.py`` が使う）。
+
+アプリの設定ページの [DL] / [全DL] が Pod のダウンロード API を叩き、その API
+（``model_api.py``）がここの :func:`download` を呼ぶ。起動時の一括ダウンロード
+（マニフェスト ``models.txt``）は廃止したので、公開しているのはこの関数と
+補助だけで、コマンドラインからは使わない。
 
 流儀はアプリ側の ``backend/app/model_download.py`` に揃えてある:
 
@@ -22,14 +26,8 @@
 - ``Range`` に 206 で応えないサーバ相手なら ``.part`` を捨てて頭から書き直す
 - 恒久的な失敗（401/403/404 など）だけは ``.part`` を残さず消す
 
-使い方::
-
-    python3 download_models.py models.txt [models.local.txt ...] /workspace/ComfyUI/models
-
-最後の引数が置き場所で、その手前が読むマニフェスト（複数可）。同じ行が複数の
-マニフェストに出ていても、すでにあるファイルは飛ばすので二重に落ちることはない。
-
-1 件でも失敗したら終了コード 1（ただし残りの行は最後まで試す）。
+呼び出し側（``model_api.py``）は、置き場所の検証（models ディレクトリの外に
+出ない・パス区切りを含まない）と、状態の保持・公開を受け持つ。
 """
 
 from __future__ import annotations
@@ -37,10 +35,15 @@ from __future__ import annotations
 import os
 import sys
 import time
+from collections.abc import Callable
 from pathlib import Path
 from urllib.parse import urljoin, urlparse
 
 import httpx
+
+#: 進捗コールバック（受信済みバイト数, 分かっていれば全体のバイト数）。
+#: ``model_api.py`` が Pod の進捗 API に流すために使う（CLI では使わない）。
+ProgressCallback = Callable[[int, int], None]
 
 TIMEOUT = httpx.Timeout(connect=30.0, read=120.0, write=120.0, pool=30.0)
 CHUNK_SIZE = 4 * 1024 * 1024
@@ -145,7 +148,13 @@ def _open(client: httpx.Client, url: str, offset: int) -> httpx.Response:
     raise DownloadError(f"リダイレクトが {MAX_REDIRECTS} 回を超えました: {url}")
 
 
-def _fetch(client: httpx.Client, url: str, part: Path, expected: int) -> int:
+def _fetch(
+    client: httpx.Client,
+    url: str,
+    part: Path,
+    expected: int,
+    on_progress: ProgressCallback | None = None,
+) -> int:
     """``.part`` を（あれば続きから）埋める 1 回分の試行。全体のバイト数を返す。
 
     やり直せば直りそうな失敗は ``DownloadError``、直らない失敗は
@@ -172,11 +181,15 @@ def _fetch(client: httpx.Client, url: str, part: Path, expected: int) -> int:
                 f"配信元のサイズが変わりました（{expected} → {total}）: {url}"
             )
         received = offset if resume else 0
+        if on_progress is not None:
+            on_progress(received, total)
         last = time.monotonic()
         with part.open("ab" if resume else "wb") as sink:
             for chunk in res.iter_bytes(CHUNK_SIZE):
                 sink.write(chunk)
                 received += len(chunk)
+                if on_progress is not None:
+                    on_progress(received, total)
                 now = time.monotonic()
                 if now - last >= PROGRESS_INTERVAL:
                     last = now
@@ -189,8 +202,14 @@ def _fetch(client: httpx.Client, url: str, part: Path, expected: int) -> int:
     return total
 
 
-def download(url: str, target: Path) -> None:
-    """1 件落として ``target`` に置く（既にあれば呼ばれない）。"""
+def download(
+    url: str, target: Path, on_progress: ProgressCallback | None = None
+) -> None:
+    """1 件落として ``target`` に置く（既にあるファイルは呼び側が飛ばす）。
+
+    ``on_progress`` を渡すとチャンクごとに進捗が届く（``model_api.py`` 用。
+    再試行で頭から取り直したときは受信済みバイト数も戻る）。
+    """
     part = target.with_name(target.name + PART_SUFFIX)
     target.parent.mkdir(parents=True, exist_ok=True)
     expected = 0
@@ -199,7 +218,7 @@ def download(url: str, target: Path) -> None:
     with httpx.Client(timeout=TIMEOUT, follow_redirects=False) as client:
         for attempt in range(1, MAX_ATTEMPTS + 1):
             try:
-                total = _fetch(client, url, part, expected)
+                total = _fetch(client, url, part, expected, on_progress)
                 expected = total or expected
                 size = part.stat().st_size
                 if expected and size != expected:
@@ -222,72 +241,3 @@ def download(url: str, target: Path) -> None:
             else:
                 break
     part.replace(target)
-
-
-def parse(manifest: Path) -> list[tuple[str, str]]:
-    """``<subfolder>/<filename> <url>`` の行を読む（空行・``#`` は無視）。"""
-    entries: list[tuple[str, str]] = []
-    for number, raw in enumerate(manifest.read_text(encoding="utf-8").splitlines(), 1):
-        line = raw.strip()
-        if not line or line.startswith("#"):
-            continue
-        parts = line.split()
-        if len(parts) != 2:
-            raise DownloadError(f"{manifest}:{number}: 行の形式が違います: {raw}")
-        relative, url = parts
-        if relative.startswith("/") or ".." in Path(relative).parts:
-            raise DownloadError(f"{manifest}:{number}: 置き場所が不正です: {relative}")
-        entries.append((relative, url))
-    return entries
-
-
-def main(argv: list[str]) -> int:
-    if len(argv) < 3:
-        print(
-            f"usage: {argv[0]} <models.txt> [<models.txt> ...] <models-dir>",
-            file=sys.stderr,
-        )
-        return 2
-    manifests, root = [Path(a) for a in argv[1:-1]], Path(argv[-1])
-    for manifest in manifests:
-        if not manifest.is_file():
-            print(f"manifest not found: {manifest}", file=sys.stderr)
-            return 2
-
-    entries: list[tuple[str, str]] = []
-    for manifest in manifests:
-        entries.extend(parse(manifest))
-
-    failed = 0
-    for relative, url in entries:
-        target = root / relative
-        if target.exists():
-            continue
-        print(f"[models] downloading {relative}", flush=True)
-        try:
-            download(url, target)
-        except Exception as exc:  # noqa: BLE001 - 1 件の失敗で他を諦めない
-            failed += 1
-            part = target.with_name(target.name + PART_SUFFIX)
-            if isinstance(exc, PermanentDownloadError):
-                # 待っても直らないので、途中まで書いたものを残す意味がない
-                part.unlink(missing_ok=True)
-            elif part.exists():
-                # 次回の起動で ``Range`` の続きから貰えるよう残しておく
-                print(
-                    f"[models] keeping {part.name} ({_human(part.stat().st_size)})"
-                    " for resume",
-                    flush=True,
-                )
-            print(f"[models] FAILED {relative}: {exc}", file=sys.stderr, flush=True)
-        else:
-            print(f"[models] done {relative}", flush=True)
-
-    if failed:
-        print(f"[models] {failed} file(s) failed", file=sys.stderr)
-        return 1
-    return 0
-
-
-if __name__ == "__main__":
-    raise SystemExit(main(sys.argv))

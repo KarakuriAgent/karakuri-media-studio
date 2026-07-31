@@ -5,8 +5,8 @@
 RunPod で動かすまでの手順です。イメージのビルド・push・GitHub の作業は一切
 ありません。
 
-イメージを自分で変えたい人（`Dockerfile` / `entrypoint.sh` / 同梱の既定モデル一覧
-`models.txt` / `custom_nodes.txt` をいじりたい人）は fork したうえで
+イメージを自分で変えたい人（`Dockerfile` / `entrypoint.sh` / `custom_nodes.txt` を
+いじりたい人）は fork したうえで
 [`deploy/runpod/README.md`](../deploy/runpod/README.md) のフル手順を参照して
 ください（Actions の workflow は同梱済みで、push すれば自分の GHCR にビルドされます）。
 
@@ -79,9 +79,8 @@ Templates → **New Template**。
 | `COMFY_API_KEY` | ○ | アプリ ↔ Pod の合言葉。自分で決めた長いランダム文字列（アプリ側にも同じ値を入れる） |
 | `CF_TUNNEL_TOKEN` | ○ | 手順 2 で控えたトンネルトークン |
 | `RUNPOD_API_KEY` | ○ | 手順 2 の API キー（watchdog が Pod を消すのに使う） |
-| `HF_TOKEN` | 任意 | 手順 2 参照 |
-| `CIVITAI_API_KEY` | 任意 | 手順 2 参照 |
-| `MODELS_LOCAL_B64` | 任意 | 手順 6 で入れる |
+| `HF_TOKEN` | 任意 | 手順 2 参照（モデルの [DL] / [全DL] が使う） |
+| `CIVITAI_API_KEY` | 任意 | 手順 2 参照（同上） |
 
 控えるもの: 保存後に表示される**テンプレート ID**。
 
@@ -89,46 +88,49 @@ Templates → **New Template**。
 
 設定 → 接続 / Grok:
 
+「ComfyUI 接続先」で **接続先 = RunPod** にして:
+
 | 項目 | 値 |
 |---|---|
-| ComfyUI URL | `https://comfy.自分のドメイン`（手順 2 のホスト名） |
-| ComfyUI APIキー | テンプレートの `COMFY_API_KEY` と同じ値 |
+| RunPod ComfyUI URL | `https://comfy.自分のドメイン`（手順 2 のホスト名） |
+| RunPod ComfyUI APIキー | テンプレートの `COMFY_API_KEY` と同じ値 |
 | RunPod の Pod を自動起動する | オン |
 | RunPod APIキー | 手順 2 の API キー |
 | テンプレート ID | 手順 4 で控えたもの |
 | GPU 種別 | RunPod の gpuTypeId を**一字一句そのまま**（例 `NVIDIA GeForce RTX 5090`）。綴りが違うと Pod 作成に失敗する |
 | Network Volume ID | 手順 3 で控えたもの |
 
-## 6. 自分のモデル構成を Pod に伝える
+## 6. モデルを Pod に入れる
 
-アプリの設定でモデル・LoRA と**取得元 URL** を登録したら、リポジトリのルートで:
+アプリの設定でモデル・LoRA と**取得元 URL** を登録したら、設定ページの
+**モデル** / **LoRA 管理**タブで [対象の接続先] を **RunPod** にして:
 
-```bash
-python3 deploy/runpod/gen_models_manifest.py > models.local.txt
-base64 -w0 models.local.txt        # 出力された文字列をコピー
-```
+- 行ごとの **[DL]**、またはタブ上部の **[全DL]**（未検出かつ取得元 URL 登録済みを
+  まとめて開始）を押す
+- Pod の中のダウンロード API が Network Volume に落とし、進捗はそのまま設定画面に
+  出ます（アプリを閉じても Pod 側は走り続け、開き直すと進捗を拾い直します）
 
-この文字列をテンプレートの環境変数 **`MODELS_LOCAL_B64`** に貼ります。Pod は起動の
-たびにこれをデコードして `/workspace/models.local.txt` に展開し、不足しているモデル
-だけダウンロードします。
+Pod が起動していないと落とせないので、先に何か 1 本ジョブを流して Pod を上げておくか
+（自動起動）、RunPod のコンソールから起動しておいてください。
 
-- ローカルでは何もダウンロードされません（一覧表を作るだけ）。実際の DL は Pod が
-  Network Volume に対して行います
-- モデル・LoRA を追加したら、この手順をもう一度（再生成 → base64 → env 更新）。
-  イメージの再ビルドは不要です
+- モデル・LoRA を足したときも同じ操作だけです。イメージの再ビルドや環境変数の
+  更新は要りません
 - 配布 URL の無い自作モデルはダウンロードできないので、Pod に入れる手段
-  （`runpodctl` 等）でボリュームへ直接置きます（[`deploy/runpod/README.md`](../deploy/runpod/README.md) 手順 1 参照）
+  （`runpodctl` 等）でボリュームへ直接置きます（[`deploy/runpod/README.md`](../deploy/runpod/README.md) の「モデルの入れ方」参照）
 
 ## 7. 最初のジョブを流す
 
 アプリで何か生成を実行すると、Pod が作られて初回セットアップ（ComfyUI 本体 +
-モデル一括ダウンロード）が走ります。**初回だけ 30 分〜数時間**かかります。
+カスタムノード）が走ります。**初回だけ 10〜15 分**かかります。
 
-> **節約のコツ**: ダウンロード工程は GPU を使わないので、初回だけアプリ設定の
-> GPU 種別を同じデータセンターの安い GPU（RTX A4000 など）にしておき、
-> セットアップ完走後に本命の GPU へ戻すと GPU 代を節約できます。
-ダウンロード済みのファイルは Volume に残るので、途中で Pod が消えても再実行すれば
-続きから進みます。2 回目以降の起動は数十秒〜数分です。
+モデルは手順 6 の [DL] / [全DL] で入れます（数十 GB あるので時間がかかります）。
+
+> **節約のコツ**: ダウンロード工程は GPU を使わないので、モデルを入れるあいだだけ
+> アプリ設定の GPU 種別を同じデータセンターの安い GPU（RTX A4000 など）にしておき、
+> 完了後に本命の GPU へ戻すと GPU 代を節約できます。
+
+ダウンロード済みのファイルは Volume に残るので、途中で Pod が消えても続きから
+やり直せます。2 回目以降の起動は数十秒〜数分です。
 
 以降は**アプリで生成ボタンを押すだけ**です。アイドルが続けば Pod は自動で消え、
 課金は止まります。

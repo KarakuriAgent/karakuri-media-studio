@@ -2,7 +2,14 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { api } from '../api'
 import { initialForm, type FormState } from '../form'
-import type { Job, LibraryItem, LibraryQuery, Lora, Options } from '../types'
+import type {
+  ComfyTarget,
+  Job,
+  LibraryItem,
+  LibraryQuery,
+  Lora,
+  Options,
+} from '../types'
 import GenerateForm from './GenerateForm'
 
 // ライブラリのモーダルは自分で GET /api/library を叩くので、素材はここから返す。
@@ -43,6 +50,7 @@ function lora(
 const OPTIONS: Options = {
   comfy_connected: true,
   comfy_error: null,
+  comfy_target: 'local',
   comfy_url: '',
   image_workflows: [],
   video_workflows: [],
@@ -65,8 +73,12 @@ const OPTIONS: Options = {
   negative_presets: {},
 }
 
-function show(form: Partial<FormState> = {}) {
+function show(
+  form: Partial<FormState> = {},
+  comfyTarget: ComfyTarget | null = 'local',
+) {
   const patch = vi.fn()
+  const onComfyTarget = vi.fn()
   render(
     <GenerateForm
       form={{ ...initialForm, ...form }}
@@ -78,11 +90,13 @@ function show(form: Partial<FormState> = {}) {
       onSubmit={() => {}}
       submitting={false}
       fieldErrors={{}}
+      comfyTarget={comfyTarget}
+      onComfyTarget={onComfyTarget}
       jobs={[]}
       showNsfw={false}
     />,
   )
-  return { patch }
+  return { patch, onComfyTarget }
 }
 
 /** The <section> whose heading is `title`. */
@@ -92,6 +106,39 @@ function section(title: string): HTMLElement {
   if (!element) throw new Error(`no section for ${title}`)
   return element
 }
+
+describe('GenerateForm の接続先プルダウン', () => {
+  it('3 つの接続先を出し、現在の選択を反映する', () => {
+    show({}, 'runpod')
+    const select = screen.getByLabelText('接続先') as HTMLSelectElement
+
+    expect(
+      [...select.options].map((option) => [option.value, option.text]),
+    ).toEqual([
+      ['comfy_cloud', 'ComfyCloud'],
+      ['runpod', 'RunPod'],
+      ['local', 'ローカル'],
+    ])
+    expect(select.value).toBe('runpod')
+  })
+
+  it('選び直すと保存を頼む（サーバー側の設定に載る）', () => {
+    const { onComfyTarget } = show()
+    const select = screen.getByLabelText('接続先') as HTMLSelectElement
+
+    fireEvent.change(select, { target: { value: 'comfy_cloud' } })
+
+    expect(onComfyTarget).toHaveBeenCalledWith('comfy_cloud')
+  })
+
+  it('設定を読み込むまでは触れない', () => {
+    show({}, null)
+
+    expect((screen.getByLabelText('接続先') as HTMLSelectElement).disabled).toBe(
+      true,
+    )
+  })
+})
 
 describe('GenerateForm の LoRA セクション', () => {
   it('画像用と動画用をそれぞれの対象で絞り込む', () => {
@@ -115,6 +162,8 @@ describe('GenerateForm の LoRA セクション', () => {
         onSubmit={() => {}}
         submitting={false}
         fieldErrors={{}}
+        comfyTarget="local"
+        onComfyTarget={() => {}}
         jobs={[]}
         showNsfw={false}
       />,
@@ -210,6 +259,8 @@ function showImages(form: Partial<FormState> = {}) {
       onSubmit={() => {}}
       submitting={false}
       fieldErrors={{}}
+      comfyTarget="local"
+      onComfyTarget={() => {}}
       jobs={[]}
       showNsfw={false}
     />,
@@ -315,6 +366,8 @@ function showAudio(form: Partial<FormState> = {}, options: Options | null = null
       onSubmit={() => {}}
       submitting={false}
       fieldErrors={{}}
+      comfyTarget="local"
+      onComfyTarget={() => {}}
       jobs={[]}
       showNsfw={false}
     />,
@@ -461,6 +514,8 @@ describe('GenerateForm は使わない項目を出さない', () => {
         onSubmit={() => {}}
         submitting={false}
         fieldErrors={{}}
+        comfyTarget="local"
+        onComfyTarget={() => {}}
         jobs={[]}
         showNsfw={false}
       />,
@@ -524,6 +579,8 @@ describe('GenerateForm の使用モデル選択（SPEC §3.3）', () => {
         onSubmit={() => {}}
         submitting={false}
         fieldErrors={{}}
+        comfyTarget="local"
+        onComfyTarget={() => {}}
         jobs={[]}
         showNsfw={false}
       />,
@@ -619,6 +676,8 @@ describe('GenerateForm の「履歴から選択」', () => {
         onSubmit={() => {}}
         submitting={false}
         fieldErrors={{}}
+        comfyTarget="local"
+        onComfyTarget={() => {}}
         jobs={[HISTORY_JOB]}
         showNsfw={false}
       />,
@@ -745,6 +804,8 @@ describe('GenerateForm の「ライブラリから選択」', () => {
         onSubmit={() => {}}
         submitting={false}
         fieldErrors={{}}
+        comfyTarget="local"
+        onComfyTarget={() => {}}
         jobs={[]}
         showNsfw={false}
       />,
@@ -863,6 +924,8 @@ describe('GenerateForm の選択式フィールド（SPEC §3.1）', () => {
         onSubmit={() => {}}
         submitting={false}
         fieldErrors={{}}
+        comfyTarget="local"
+        onComfyTarget={() => {}}
         jobs={[]}
         showNsfw={false}
       />,

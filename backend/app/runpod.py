@@ -4,9 +4,11 @@ ComfyUI を RunPod の Pod（GPU 時間貸し）に置くと、使っていな�
 おきたい。落ちている状態でジョブを投げても ComfyUI には届かないので、**ジョブの
 投入直前に疎通を確かめ、通らなければ Pod を立ち上げて待つ**のがこのモジュール。
 
-- 疎通確認は :mod:`app.comfy` をそのまま使う（設定の ``comfy_url`` /
-  ``comfy_api_key`` が唯一の接続情報。Pod 側は Cloudflare Tunnel で固定ホスト名を
-  持つので、起動のたびにアプリの設定を書き換える必要はない）
+- 接続先が ``runpod``（設定の ``comfy_target``）のときだけ働く。他のプロファイル
+  （ローカル / ComfyCloud）を選んでいるあいだは Pod を作らない
+- 疎通確認は :mod:`app.comfy` をそのまま使う（設定の ``runpod_comfy_url`` が
+  接続先。Pod 側は Cloudflare Tunnel で固定ホスト名を持つので、起動のたびに
+  アプリの設定を書き換える必要はない）
 - Pod の作成は RunPod REST API（``https://rest.runpod.io/v1/pods``）。GPU が確保
   できない等のエラーは**そのままユーザー向けのエラーにする**（別の GPU や別の
   クラウドへ勝手に振り替えると、想定より高い課金が黙って起きるため）
@@ -147,7 +149,7 @@ async def get_pod(pod_id: str) -> dict[str, Any] | None:
 # --------------------------------------------------------------------------
 
 async def comfy_reachable() -> bool:
-    """``comfy_url`` の ComfyUI に届くか（``/object_info` の到達性）。"""
+    """``runpod_comfy_url`` の ComfyUI に届くか（``/object_info` の到達性）。"""
     try:
         await comfy.get_object_info()
     except comfy.ComfyError:
@@ -167,11 +169,11 @@ async def _notify(on_progress: ProgressCallback | None, message: str) -> None:
 async def ensure_pod_running(on_progress: ProgressCallback | None = None) -> None:
     """ComfyUI に繋がる状態にして戻る。繋がらないままなら :class:`RunPodError`。
 
-    設定で無効なとき、および既に疎通しているときは何もしない（このため、ジョブの
-    実行経路に無条件に置いてよい）。
+    接続先が RunPod でないとき、設定で無効なとき、および既に疎通しているときは
+    何もしない（このため、ジョブの実行経路に無条件に置いてよい）。
     """
     settings = load_settings()
-    if not settings.runpod_enabled:
+    if settings.comfy_target != "runpod" or not settings.runpod_enabled:
         return
 
     global _pod_id
@@ -208,7 +210,7 @@ async def ensure_pod_running(on_progress: ProgressCallback | None = None) -> Non
             detail = f"（Pod {pod_id} の状態: {pod.get('desiredStatus') or '不明'}）"
         raise RunPodError(
             f"RunPod の Pod を起動しましたが、{int(BOOT_TIMEOUT // 60)} 分以内に "
-            f"ComfyUI ({settings.comfy_url}) へ接続できませんでした{detail}。"
+            f"ComfyUI ({settings.runpod_comfy_url}) へ接続できませんでした{detail}。"
             " Pod のログと Cloudflare Tunnel の設定を確認してください。"
         )
 
