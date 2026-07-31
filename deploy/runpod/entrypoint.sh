@@ -32,12 +32,38 @@ log() { printf '[entrypoint] %s\n' "$*"; }
 # --------------------------------------------------------------------------
 mkdir -p "${WORKSPACE}" "${PIP_CACHE_DIR}" "${HF_HOME}"
 
+# COMFYUI_REF（タグ・ブランチ・コミットハッシュのいずれでも来る）が指すコミットを
+# 返す。ローカルに無い ref なら解決できないので、その場合は空文字（＝要 fetch）。
+resolve_ref() {
+	git -C "${COMFY_DIR}" rev-parse --verify --quiet "${COMFYUI_REF}^{commit}" || true
+}
+
 if [ ! -d "${COMFY_DIR}/.git" ]; then
 	log "cloning ComfyUI ${COMFYUI_REF} into ${COMFY_DIR}"
 	git clone --filter=blob:none "${COMFYUI_REPO}" "${COMFY_DIR}"
 	git -C "${COMFY_DIR}" checkout --detach "${COMFYUI_REF}"
 else
-	log "ComfyUI already present ($(git -C "${COMFY_DIR}" rev-parse --short HEAD))"
+	# すでに置いてある clone を COMFYUI_REF に追従させる。Network Volume は Pod を
+	# 作り直しても残るので、これが無いと古い ref のまま動き続けてしまう。
+	head_commit="$(git -C "${COMFY_DIR}" rev-parse HEAD)"
+	want_commit="$(resolve_ref)"
+	if [ "${want_commit}" != "${head_commit}" ]; then
+		# ローカルに無い ref かもしれないので取り直す（--filter=blob:none で
+		# clone してあるぶん、追加取得は軽い）。タグも取る。
+		log "updating ComfyUI to ${COMFYUI_REF} (currently $(git -C "${COMFY_DIR}" rev-parse --short HEAD))"
+		git -C "${COMFY_DIR}" fetch --tags --force origin
+		want_commit="$(resolve_ref)"
+		if [ -z "${want_commit}" ]; then
+			log "COMFYUI_REF=${COMFYUI_REF} を解決できませんでした" >&2
+			exit 1
+		fi
+		# ComfyUI 本体はアプリから見れば使い捨てのランタイムなので、作業ツリーが
+		# 入れ替わるのは想定どおり（ローカル変更があって失敗したら set -e で落ちる）
+		git -C "${COMFY_DIR}" checkout --detach "${want_commit}"
+		log "ComfyUI updated to $(git -C "${COMFY_DIR}" rev-parse --short HEAD)"
+	else
+		log "ComfyUI already present ($(git -C "${COMFY_DIR}" rev-parse --short HEAD))"
+	fi
 fi
 
 log "installing ComfyUI requirements"

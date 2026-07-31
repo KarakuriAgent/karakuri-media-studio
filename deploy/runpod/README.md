@@ -134,7 +134,7 @@ docker push <user>/karakuri-comfyui:latest
 ComfyUI のバージョンはビルド引数で固定します（既定はタグ指定）。
 
 ```bash
-docker build --build-arg COMFYUI_REF=v0.3.68 -t <user>/karakuri-comfyui:latest .
+docker build --build-arg COMFYUI_REF=6c62ca0b6bbee7ef293ca475f7904065af5bfb42 -t <user>/karakuri-comfyui:latest .
 ```
 
 > `models.txt` と `custom_nodes.txt` はイメージに入るので、内容を変えたら
