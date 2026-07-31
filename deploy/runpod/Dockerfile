@@ -19,7 +19,11 @@ FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
 ARG DEBIAN_FRONTEND=noninteractive
 # ComfyUI のバージョン。タグ or コミットハッシュで固定する（README 参照）。
 ARG COMFYUI_REF=v0.3.68
+# torch 系 3 つは**必ず同じリリース列で固定**する。バラすと torchaudio /
+# torchvision が別の torch 向けビルドになり、import 時に undefined symbol で落ちる
 ARG TORCH_VERSION=2.8.0
+ARG TORCHVISION_VERSION=0.23.0
+ARG TORCHAUDIO_VERSION=2.8.0
 ARG TORCH_INDEX=https://download.pytorch.org/whl/cu128
 
 ENV PYTHONUNBUFFERED=1 \
@@ -54,11 +58,21 @@ RUN curl -fsSL -o /tmp/cloudflared.deb \
 
 COPY --from=caddy /usr/bin/caddy /usr/bin/caddy
 
+# 起動時の pip install（ComfyUI 本体・カスタムノードの requirements）が torch 系を
+# 別バージョンに入れ替えないよう、制約ファイルで釘を刺しておく
+RUN mkdir -p /opt/runpod \
+    && printf 'torch==%s\ntorchvision==%s\ntorchaudio==%s\n' \
+        "${TORCH_VERSION}" "${TORCHVISION_VERSION}" "${TORCHAUDIO_VERSION}" \
+        > /opt/runpod/constraints.txt
+ENV PIP_CONSTRAINT=/opt/runpod/constraints.txt
+
 # PyTorch を先に入れておく（一番大きいレイヤなので、他の変更で焼き直さない）
 RUN python3.12 -m venv /opt/venv \
     && pip install --no-cache-dir --upgrade pip wheel \
     && pip install --no-cache-dir --index-url ${TORCH_INDEX} \
-        torch==${TORCH_VERSION} torchvision torchaudio
+        torch==${TORCH_VERSION} \
+        torchvision==${TORCHVISION_VERSION} \
+        torchaudio==${TORCHAUDIO_VERSION}
 
 # 起動スクリプトが使う分だけ（ComfyUI 本体の依存は初回起動時に入る）。
 # requests は ComfyUI の requirements.txt に無いのに server.py が import する
