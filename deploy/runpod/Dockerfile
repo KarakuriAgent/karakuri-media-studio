@@ -17,9 +17,9 @@ FROM caddy:2.10-alpine AS caddy
 FROM nvidia/cuda:12.8.1-cudnn-runtime-ubuntu24.04
 
 ARG DEBIAN_FRONTEND=noninteractive
-# ComfyUI のバージョン。タグ or コミットハッシュで固定する（README 参照）。
-# 現在はローカル開発環境と同じコミット（v0.27.0 の 15 コミット先）に合わせてある。
-ARG COMFYUI_REF=6c62ca0b6bbee7ef293ca475f7904065af5bfb42
+# ComfyUI のバージョン。既定は master（起動のたびに最新へ追従する）。
+# 再現性を固定したいときは、タグやコミットハッシュを指定する（README 参照）。
+ARG COMFYUI_REF=master
 # torch 系 3 つは**必ず同じリリース列で固定**する。バラすと torchaudio /
 # torchvision が別の torch 向けビルドになり、import 時に undefined symbol で落ちる
 ARG TORCH_VERSION=2.8.0

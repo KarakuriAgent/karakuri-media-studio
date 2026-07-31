@@ -4,7 +4,8 @@
 # 何度走らせても同じ結果になるように書いてある（冪等）: すでに置いてあるものは
 # 触らないので、2 回目以降の Pod は数十秒で ComfyUI が上がる。
 #
-#   1. /workspace/ComfyUI が無ければ clone（バージョンは COMFYUI_REF で固定）
+#   1. /workspace/ComfyUI を COMFYUI_REF に合わせる（無ければ clone。ブランチ名なら
+#      起動のたびに最新へ追従し、タグ・ハッシュならそこに固定される）
 #   2. custom_nodes.txt のうち、まだ無いものだけ clone + checkout + pip install
 #   3. models.txt のうち、まだ無いものだけダウンロード
 #   4. caddy（:8189、認証つき）→ cloudflared → watchdog → ComfyUI の順に起動
@@ -32,10 +33,14 @@ log() { printf '[entrypoint] %s\n' "$*"; }
 # --------------------------------------------------------------------------
 mkdir -p "${WORKSPACE}" "${PIP_CACHE_DIR}" "${HF_HOME}"
 
-# COMFYUI_REF（タグ・ブランチ・コミットハッシュのいずれでも来る）が指すコミットを
-# 返す。ローカルに無い ref なら解決できないので、その場合は空文字（＝要 fetch）。
+# COMFYUI_REF（ブランチ・タグ・コミットハッシュのいずれでも来る）が指すコミットを
+# 返す。ブランチ名で来たときに clone 時点のコミットへ固定されないよう、まず
+# origin/<ref>（＝fetch したての先端）を見て、無ければタグ・ハッシュとして解決する。
+# どちらでも解決できなければ空文字。
 resolve_ref() {
-	git -C "${COMFY_DIR}" rev-parse --verify --quiet "${COMFYUI_REF}^{commit}" || true
+	git -C "${COMFY_DIR}" rev-parse --verify --quiet "refs/remotes/origin/${COMFYUI_REF}^{commit}" ||
+		git -C "${COMFY_DIR}" rev-parse --verify --quiet "${COMFYUI_REF}^{commit}" ||
+		true
 }
 
 if [ ! -d "${COMFY_DIR}/.git" ]; then
@@ -44,25 +49,28 @@ if [ ! -d "${COMFY_DIR}/.git" ]; then
 	git -C "${COMFY_DIR}" checkout --detach "${COMFYUI_REF}"
 else
 	# すでに置いてある clone を COMFYUI_REF に追従させる。Network Volume は Pod を
-	# 作り直しても残るので、これが無いと古い ref のまま動き続けてしまう。
+	# 作り直しても残るので、これが無いと古いコミットのまま動き続けてしまう。
+	# COMFYUI_REF がブランチのときは「起動のたびに最新へ」なので、毎回取り直す
+	# （--filter=blob:none で clone してあるぶん、追加取得は軽い）。タグも取る。
+	log "fetching ComfyUI updates from origin (${COMFYUI_REF})"
+	if ! git -C "${COMFY_DIR}" fetch --tags --force origin; then
+		# ネットワークが死んでいるだけかもしれない。手元の clone で起動は続けられる。
+		log "警告: origin から取得できませんでした: 手元の clone のまま起動します" >&2
+	fi
+
 	head_commit="$(git -C "${COMFY_DIR}" rev-parse HEAD)"
 	want_commit="$(resolve_ref)"
-	if [ "${want_commit}" != "${head_commit}" ]; then
-		# ローカルに無い ref かもしれないので取り直す（--filter=blob:none で
-		# clone してあるぶん、追加取得は軽い）。タグも取る。
-		log "updating ComfyUI to ${COMFYUI_REF} (currently $(git -C "${COMFY_DIR}" rev-parse --short HEAD))"
-		git -C "${COMFY_DIR}" fetch --tags --force origin
-		want_commit="$(resolve_ref)"
-		if [ -z "${want_commit}" ]; then
-			log "COMFYUI_REF=${COMFYUI_REF} を解決できませんでした" >&2
-			exit 1
-		fi
+	if [ -z "${want_commit}" ]; then
+		# fetch も解決も失敗した状態。clone はあるので、古いままでも起動はする。
+		log "警告: COMFYUI_REF=${COMFYUI_REF} を解決できませんでした: 現在の $(git -C "${COMFY_DIR}" rev-parse --short HEAD) のまま起動します" >&2
+	elif [ "${want_commit}" != "${head_commit}" ]; then
 		# ComfyUI 本体はアプリから見れば使い捨てのランタイムなので、作業ツリーが
 		# 入れ替わるのは想定どおり（ローカル変更があって失敗したら set -e で落ちる）
+		log "updating ComfyUI to ${COMFYUI_REF} (currently $(git -C "${COMFY_DIR}" rev-parse --short HEAD))"
 		git -C "${COMFY_DIR}" checkout --detach "${want_commit}"
 		log "ComfyUI updated to $(git -C "${COMFY_DIR}" rev-parse --short HEAD)"
 	else
-		log "ComfyUI already present ($(git -C "${COMFY_DIR}" rev-parse --short HEAD))"
+		log "ComfyUI already present and up to date ($(git -C "${COMFY_DIR}" rev-parse --short HEAD))"
 	fi
 fi
 
