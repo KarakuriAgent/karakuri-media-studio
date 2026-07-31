@@ -1,0 +1,44 @@
+# deploy/runpod/ の ComfyUI ランタイムイメージを GHCR にビルド & push する。
+# RunPod の Pod がこのイメージを pull する（deploy/runpod/README.md 手順 2）。
+name: build-comfyui-image
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "deploy/runpod/**"
+      - ".github/workflows/build-comfyui-image.yml"
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      # CUDA ベースイメージが大きいので、ランナーの不要物を先に消して確保する
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+          df -h /
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: deploy/runpod
+          push: true
+          tags: |
+            ghcr.io/karakuriagent/karakuri-comfyui:latest
+            ghcr.io/karakuriagent/karakuri-comfyui:${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
