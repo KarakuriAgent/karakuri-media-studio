@@ -121,13 +121,16 @@ Comfy Cloud 接続では ComfyUI のファイルシステムに届かないた�
 Pod 自身の watchdog がアイドル 10 分で terminate するので、消し忘れで課金が
 続くことはありません。
 
-1. `deploy/runpod/` のイメージをビルドして push し、RunPod にテンプレートを登録する
+1. RunPod に Network Volume とテンプレートを登録する（イメージは公開済みの
+   `ghcr.io/karakuriagent/karakuri-comfyui:latest` をそのまま使えばビルド不要）
 2. 設定 →「接続 / Grok」で **RunPod の Pod を自動起動する** をオンにし、
    API キー / テンプレート ID / GPU 種別 / Network Volume ID を入れる
 3. ComfyUI URL には Pod の Cloudflare Tunnel のホスト名を入れる
 
-イメージのビルド、Network Volume、Cloudflare Tunnel、テンプレート登録までの
-手順は [`deploy/runpod/README.md`](deploy/runpod/README.md) にまとめてあります。
+セットアップ手順は
+[`docs/RUNPOD-QUICKSTART.md`](docs/RUNPOD-QUICKSTART.md)（公開イメージを
+そのまま使う人向け）にまとめてあります。イメージを自分で変えたい場合の
+ビルド・push を含むフル手順は [`deploy/runpod/README.md`](deploy/runpod/README.md)、
 設計上の決め事は SPEC §5.1 を参照してください。
 
 ---
