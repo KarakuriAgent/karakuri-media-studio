@@ -1,8 +1,8 @@
 # RunPod の Pod で ComfyUI を動かすためのイメージ（deploy/runpod/README.md）。
 #
 # 設計の要点:
-#   * CUDA 12.8 ランタイム + PyTorch cu128。RTX 5090 (sm_120) と A6000 (sm_86) の
-#     両方で動く組み合わせはこれ（5090 は cu128 より前のビルドでは動かない）。
+#   * CUDA 12.8 ランタイム + PyTorch cu128。RTX PRO 6000 Blackwell・RTX 5090 (sm_120) と A6000 (sm_86) の
+#     いずれでも動く組み合わせはこれ（Blackwell 系は cu128 より前のビルドでは動かない）。
 #   * **ComfyUI 本体とカスタムノードとモデルはイメージに焼かない**。Network Volume
 #     (/workspace) へ初回起動時に置き、以降の Pod はそれを再利用する。イメージを
 #     数十 GB にせずに済み、モデルを足すのに再ビルドが要らない。
@@ -60,8 +60,10 @@ RUN python3.12 -m venv /opt/venv \
     && pip install --no-cache-dir --index-url ${TORCH_INDEX} \
         torch==${TORCH_VERSION} torchvision torchaudio
 
-# 起動スクリプトが使う分だけ（ComfyUI 本体の依存は初回起動時に入る）
-RUN pip install --no-cache-dir httpx
+# 起動スクリプトが使う分だけ（ComfyUI 本体の依存は初回起動時に入る）。
+# requests は ComfyUI の requirements.txt に無いのに server.py が import する
+# （frontend_management 経由）ため、無いと起動直後に落ちる。
+RUN pip install --no-cache-dir httpx requests
 
 WORKDIR /opt/runpod
 COPY entrypoint.sh download_models.py watchdog.py ./
