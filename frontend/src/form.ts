@@ -7,6 +7,7 @@ import type {
   LoraRef,
   LoraTarget,
   ModelSlot,
+  Options,
   PromptTemplate,
   WorkflowOption,
   WorkflowSelect,
@@ -367,6 +368,234 @@ export function audioJobPayload(
 /** 音声ジョブか（履歴・結果表示の出し分け用）。 */
 export function isAudioJob(job: { mode: string }): boolean {
   return job.mode === 'audio'
+}
+
+// ------------------------------------------------- 過去ジョブからのフォーム復元
+// ジョブの `params`（POST /api/jobs の内容そのもの）を FormState へ戻す。「再実行」
+// がサーバー側で同じ params を投げ直すのに対し、こちらは*フォームに書き戻して*
+// 手直ししてから流し直すための入口。params に無いキーには触らないので、呼び出し側
+// は `{ ...initialForm, ...patch }` として当てれば「そのジョブそのまま」になる。
+
+/** :func:`formStateFromParams` の結果（当てる差分と、引き当てられなかった LoRA）。 */
+export interface RestoredForm {
+  patch: Partial<FormState>
+  /** 登録簿に無くなっていて復元できなかった LoRA のファイル名。 */
+  missingLoras: string[]
+}
+
+const JOB_MODES: JobMode[] = ['full', 'i2v', 'image_only', 'audio']
+
+function asString(value: unknown): string | undefined {
+  return typeof value === 'string' ? value : undefined
+}
+
+function asNumber(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isFinite(value) ? value : undefined
+}
+
+function asBoolean(value: unknown): boolean | undefined {
+  return typeof value === 'boolean' ? value : undefined
+}
+
+/** `{名前: 文字列}` だけを取り出す（数値や null が混ざった行は落とす）。 */
+function asStringMap(value: unknown): Record<string, string> | undefined {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return
+  const picked: Record<string, string> = {}
+  for (const [key, item] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof item === 'string') picked[key] = item
+  }
+  return picked
+}
+
+/**
+ * 選択肢に残っている ID だけを通す。
+ *
+ * 消えたワークフロー / アスペクト比をそのまま入れるとセレクトが空表示になり、送信
+ * しても 422 になるだけなので、その場合は復元せず初期値のままにする（選択肢が
+ * まだ来ていない = 空配列なら、判断できないので素通しする）。
+ */
+function knownId(id: string | undefined, choices: string[] | undefined): string | undefined {
+  if (id === undefined) return
+  if (!choices || choices.length === 0) return id
+  return choices.includes(id) ? id : undefined
+}
+
+/**
+ * params の LoRA 参照（`{lora_name, trigger_word, strength}`）を登録簿と突き合わせて
+ * :type:`SelectedLora` に戻す。強度とトリガー語はジョブに記録された値を優先する
+ * （登録簿の既定値をあとから変えていても、そのジョブの再現を壊さない）。
+ */
+function restoreLoras(
+  raw: unknown,
+  registry: Lora[],
+  target: LoraTarget,
+  missing: string[],
+): SelectedLora[] | undefined {
+  if (!Array.isArray(raw)) return
+  const restored: SelectedLora[] = []
+  for (const item of raw) {
+    if (typeof item !== 'object' || item === null) continue
+    const ref = item as Record<string, unknown>
+    const name = asString(ref.lora_name)
+    if (!name) continue
+    const known =
+      registry.find(
+        (lora) => lora.lora_name === name && (lora.target ?? 'image') === target,
+      ) ?? registry.find((lora) => lora.lora_name === name)
+    if (!known) {
+      missing.push(name)
+      continue
+    }
+    restored.push({
+      id: known.id,
+      display_name: known.display_name,
+      lora_name: name,
+      trigger_word: asString(ref.trigger_word) ?? known.trigger_word,
+      strength: asNumber(ref.strength) ?? known.default_strength ?? 1,
+    })
+  }
+  return restored
+}
+
+/** 復元したネガティブがどのプリセットと一致するか（どれとも違えば 'custom'）。 */
+function negativePresetOf(prompt: string, options: Options | null): string {
+  const presets = options?.negative_presets ?? {
+    current: DEFAULT_NEGATIVE_PROMPT,
+    author: AUTHOR_NEGATIVE_PROMPT,
+  }
+  const hit = Object.entries(presets).find(([, value]) => value === prompt)
+  return hit ? hit[0] : 'custom'
+}
+
+/**
+ * ジョブの `params` → フォームに当てる差分。
+ *
+ * `params` に無いキーは差分にも入らない（呼び出し側で `initialForm` に重ねる前提）。
+ * 復元できなかった LoRA は差分から外し、名前だけ `missingLoras` で返す。
+ */
+export function formStateFromParams(
+  params: Record<string, unknown>,
+  options: Options | null,
+): RestoredForm {
+  const changes: Partial<FormState> = {}
+  const missingLoras: string[] = []
+
+  const mode = JOB_MODES.find((item) => item === params.mode)
+  if (mode) changes.mode = mode
+  const effectiveMode = mode ?? initialForm.mode
+
+  // --- ワークフロー / 解像度 ------------------------------------------------
+  const ids = (workflows?: WorkflowOption[]) => workflows?.map((item) => item.id)
+  const imageWorkflow = knownId(
+    asString(params.image_workflow),
+    ids(options?.image_workflows),
+  )
+  if (imageWorkflow) changes.imageWorkflow = imageWorkflow
+  const videoWorkflow = knownId(
+    asString(params.video_workflow),
+    ids(options?.video_workflows),
+  )
+  if (videoWorkflow) changes.videoWorkflow = videoWorkflow
+  const audioWorkflow = knownId(
+    asString(params.audio_workflow),
+    ids(options?.audio_workflows),
+  )
+  if (audioWorkflow) changes.audioWorkflow = audioWorkflow
+  const aspectRatio = knownId(asString(params.aspect_ratio), options?.aspect_ratios)
+  if (aspectRatio) changes.aspectRatio = aspectRatio
+  const megapixels = asNumber(params.megapixels)
+  if (megapixels !== undefined) changes.megapixels = megapixels
+
+  // --- プロンプト ----------------------------------------------------------
+  const imagePrompt = asString(params.image_prompt)
+  if (imagePrompt !== undefined) changes.imagePrompt = imagePrompt
+  const videoPrompt = asString(params.video_prompt)
+  if (videoPrompt !== undefined) changes.videoPrompt = videoPrompt
+  const negativePrompt = asString(params.negative_prompt)
+  if (negativePrompt !== undefined) {
+    changes.negativePrompt = negativePrompt
+    changes.negativePreset = negativePresetOf(negativePrompt, options)
+  }
+
+  // --- LoRA チェーンとトリガー語 -------------------------------------------
+  // トリガー語は LoRA から自動生成されるが、ジョブに残っている文面が自動生成と
+  // 違うなら手で直したもの。dirty を立てて、あとで LoRA を触っても消させない。
+  const registry = options?.loras ?? []
+  const loras = restoreLoras(params.loras, registry, 'image', missingLoras)
+  if (loras) changes.loras = loras
+  const triggerText = asString(params.trigger_text)
+  if (triggerText !== undefined) {
+    changes.triggerText = triggerText
+    changes.triggerDirty = triggerText !== joinTriggers(loras ?? initialForm.loras)
+  }
+  const videoLoras = restoreLoras(params.video_loras, registry, 'video', missingLoras)
+  if (videoLoras) changes.videoLoras = videoLoras
+  const videoTriggerText = asString(params.video_trigger_text)
+  if (videoTriggerText !== undefined) {
+    changes.videoTriggerText = videoTriggerText
+    changes.videoTriggerDirty =
+      videoTriggerText !== joinTriggers(videoLoras ?? initialForm.videoLoras)
+  }
+
+  // --- 入力素材 ------------------------------------------------------------
+  // 音声ジョブの params には画像・動画側の入力は入らないが、入っていても mode が
+  // 使わないだけなので、あるものはそのまま戻す。
+  const audioPath = asString(params.audio_path)
+  if (audioPath !== undefined) changes.audioPath = audioPath
+  const sourceImage = asString(params.source_image)
+  if (sourceImage !== undefined) changes.sourceImage = sourceImage
+  const endImage = asString(params.end_image)
+  if (endImage !== undefined) changes.endImage = endImage
+  const referenceVideo = asString(params.reference_video)
+  if (referenceVideo !== undefined) changes.referenceVideo = referenceVideo
+
+  // --- 尺 ------------------------------------------------------------------
+  // params の `duration` は 1 つきりだが、フォームは動画と音声で別のつまみを持つ。
+  const duration = asNumber(params.duration)
+  if (duration !== undefined) {
+    if (effectiveMode === 'audio') changes.audioDuration = duration
+    else changes.duration = duration
+  }
+  const fps = asNumber(params.fps)
+  if (fps !== undefined) changes.fps = fps
+
+  // --- 音声固有 ------------------------------------------------------------
+  const audioPrompt = asString(params.audio_prompt)
+  if (audioPrompt !== undefined) changes.audioPrompt = audioPrompt
+  const lyrics = asString(params.lyrics)
+  if (lyrics !== undefined) changes.lyrics = lyrics
+  const bpm = asNumber(params.bpm)
+  if (bpm !== undefined) changes.bpm = bpm
+  const keyscale = asString(params.keyscale)
+  if (keyscale !== undefined) changes.keyscale = keyscale
+  const language = asString(params.language)
+  if (language !== undefined) changes.language = language
+  const audioCategory = asString(params.audio_category)
+  if (audioCategory !== undefined) changes.audioCategory = audioCategory
+  const reprompt = asBoolean(params.reprompt)
+  if (reprompt !== undefined) changes.reprompt = reprompt
+
+  // --- 選択式 / モデル指定 --------------------------------------------------
+  const selects = asStringMap(params.selects)
+  if (selects) changes.selects = selects
+  const modelOverrides = asStringMap(params.model_overrides)
+  if (modelOverrides) changes.modelOverrides = modelOverrides
+
+  // --- シード --------------------------------------------------------------
+  // 「再実行（シード再抽選）」と違い、復元は同じ絵が出る状態を戻すのが趣旨なので
+  // 固定にする。ランダム実行だったジョブも実際に使われた値が記録されている。
+  const videoSeeds = Array.isArray(params.video_seeds) ? params.video_seeds : []
+  const seed =
+    asNumber(params.seed) ??
+    asNumber(params.image_seed) ??
+    asNumber(params.audio_seed) ??
+    asNumber(videoSeeds[0])
+  if (seed !== undefined) {
+    changes.seed = seed
+    changes.seedLocked = true
+  }
+
+  return { patch: changes, missingLoras }
 }
 
 /** Which fields the selected mode + workflows do not use (SPEC §8).

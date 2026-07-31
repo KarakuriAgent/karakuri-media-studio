@@ -11,6 +11,7 @@ import AgentView from './components/agent/AgentView'
 import { Banner } from './components/ui'
 import {
   audioJobPayload,
+  formStateFromParams,
   imageWorkflowNeedsSource,
   initialForm,
   jobModelOverrides,
@@ -69,6 +70,8 @@ export default function App() {
   const [agentEvent, setAgentEvent] = useState<AgentProgress | null>(null)
   const [chatSessionId, setChatSessionId] = useState<string | null>(null)
   const [showNsfw, setShowNsfw] = useState(initialShowNsfw)
+  // エラーではない一言（パラメータ復元で LoRA を落としたとき等）。
+  const [notice, setNotice] = useState<string | null>(null)
   // ライブラリが変わるたびに増える。開いているモーダルの読み直しに使う。
   const [libraryVersion, setLibraryVersion] = useState(0)
 
@@ -439,6 +442,28 @@ export default function App() {
     }
   }
 
+  /**
+   * 過去ジョブの params をフォームへ書き戻す（手直ししてから流し直すための入口）。
+   *
+   * 差分ではなく初期値の上に重ねる: そのジョブに無かった項目まで前の入力が残ると
+   * 「復元したのに違うものが出る」ので、丸ごとそのジョブの状態にする。
+   */
+  const restoreParams = (job: Job) => {
+    const { patch: changes, missingLoras } = formStateFromParams(
+      job.params ?? {},
+      options,
+    )
+    setForm({ ...initialForm, ...changes })
+    setFieldErrors({})
+    setNotice(
+      missingLoras.length > 0
+        ? `登録簿に無い LoRA をスキップしました: ${missingLoras.join(', ')}`
+        : null,
+    )
+    // フォームを見せたいので、開いていれば詳細ドロワーを閉じる。
+    setDetailJob(null)
+  }
+
   const remove = async (job: Job) => {
     if (!window.confirm('このジョブを削除しますか？')) return
     setDetailBusy(true)
@@ -494,6 +519,14 @@ export default function App() {
         showNsfw={showNsfw}
         onShowNsfw={setShowNsfw}
       />
+
+      {notice && (
+        <div className="px-4 py-2">
+          <Banner tone="warn" onClose={() => setNotice(null)}>
+            {notice}
+          </Banner>
+        </div>
+      )}
 
       {errors.length > 0 && (
         <div className="flex flex-col gap-1 px-4 py-2">
@@ -556,6 +589,7 @@ export default function App() {
                 job={shownJob}
                 progress={shownJob ? progress[shownJob.id] : undefined}
                 onRerun={(job) => void rerun(job)}
+                onRestoreParams={restoreParams}
                 onContinue={(job) => void continueFrom(job)}
                 onDelete={(job) => void remove(job)}
                 onOpenDetail={(job) => openDetail(job)}
@@ -590,6 +624,7 @@ export default function App() {
           error={detailError}
           onClose={() => setDetailJob(null)}
           onRerun={(job) => void rerun(job)}
+          onRestoreParams={restoreParams}
           onContinue={(job) => void continueFrom(job)}
           onDelete={(job) => void remove(job)}
           onToggleNsfw={(job, nsfw) => void toggleNsfw(job, nsfw)}

@@ -7,6 +7,7 @@ export default function JobDetail({
   job,
   onClose,
   onRerun,
+  onRestoreParams,
   onContinue,
   onDelete,
   onToggleNsfw,
@@ -19,6 +20,8 @@ export default function JobDetail({
   job: Job
   onClose: () => void
   onRerun: (job: Job) => void
+  /** ジョブの生成パラメータを生成フォームへ書き戻す。 */
+  onRestoreParams: (job: Job) => void
   onContinue: (job: Job) => void
   onDelete: (job: Job) => void
   onToggleNsfw: (job: Job, nsfw: boolean) => void
@@ -136,6 +139,13 @@ export default function JobDetail({
             onClick={() => onRerun(job)}
           >
             再実行（シード再抽選）
+          </button>
+          <button
+            className="btn-ghost text-xs"
+            title="このジョブの設定をフォームに書き戻します"
+            onClick={() => onRestoreParams(job)}
+          >
+            パラメータを復元
           </button>
           <button
             className="btn-ghost text-xs"

@@ -1,9 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import {
+  AUTHOR_NEGATIVE_PROMPT,
+  DEFAULT_NEGATIVE_PROMPT,
   MODE_LABELS,
   audioJobPayload,
   audioSupports,
   clampToWorkflow,
+  formStateFromParams,
   hiddenFields,
   durationRange,
   imageWorkflowNeedsSource,
@@ -18,7 +21,13 @@ import {
   workflowsForMode,
   type FormState,
 } from './form'
-import type { Lora, ModelSlot, WorkflowOption, WorkflowSelect } from './types'
+import type {
+  Lora,
+  ModelSlot,
+  Options,
+  WorkflowOption,
+  WorkflowSelect,
+} from './types'
 
 function workflow(overrides: Partial<WorkflowOption> = {}): WorkflowOption {
   return {
@@ -691,5 +700,361 @@ describe('hiddenFields と LoRA チェーン', () => {
 
   it('選択肢が未取得（/api/options 前）でも欄は消さない', () => {
     expect(hiddenFields('i2v', null).videoLoras).toBe(false)
+  })
+})
+
+// ------------------------------------------- 過去ジョブからのフォーム復元
+// job.params（POST /api/jobs の内容そのもの）→ FormState。
+
+function registered(overrides: Partial<Lora> = {}): Lora {
+  return {
+    id: 1,
+    display_name: 'サクラ',
+    lora_name: 'sakura.safetensors',
+    trigger_word: 'sakura',
+    default_strength: 1,
+    default_audio: null,
+    sort_order: 0,
+    target: 'image',
+    family: 'krea2',
+    sample_images: [],
+    ...overrides,
+  }
+}
+
+const SAKURA = registered()
+const SLOWMO = registered({
+  id: 2,
+  display_name: 'スローモ',
+  lora_name: 'slowmo.safetensors',
+  trigger_word: 'slowmo',
+  target: 'video',
+  default_strength: 0.8,
+})
+
+function restoreOptions(overrides: Partial<Options> = {}): Options {
+  return {
+    comfy_connected: true,
+    comfy_error: null,
+    comfy_target: 'local',
+    comfy_url: '',
+    image_workflows: [KREA2, ANIMA, QWEN],
+    video_workflows: [T2V, I2V, ID_LORA, WAN],
+    audio_workflows: [ACE, SA3],
+    default_video_workflow: ID_LORA.id,
+    default_image_workflow: KREA2.id,
+    default_audio_workflow: ACE.id,
+    audio_categories: [],
+    keyscales: [],
+    languages: [],
+    aspect_ratios: ['4:3 (Standard)', '16:9 (Wide)'],
+    lora_files: [],
+    model_slots: [],
+    model_files: {},
+    loras: [SAKURA, SLOWMO],
+    audio_assets: [],
+    image_assets: [],
+    video_assets: [],
+    library: [],
+    negative_presets: {
+      current: DEFAULT_NEGATIVE_PROMPT,
+      author: AUTHOR_NEGATIVE_PROMPT,
+    },
+    ...overrides,
+  }
+}
+
+const OPTIONS = restoreOptions()
+
+/** 復元は初期値の上に重ねて使うので、テストも完成した FormState で見る。 */
+function restored(
+  params: Record<string, unknown>,
+  options: Options | null = OPTIONS,
+): FormState {
+  return { ...initialForm, ...formStateFromParams(params, options).patch }
+}
+
+describe('formStateFromParams — 画像＋動画ジョブ', () => {
+  const params = {
+    mode: 'full',
+    image_workflow: KREA2.id,
+    video_workflow: ID_LORA.id,
+    aspect_ratio: '16:9 (Wide)',
+    megapixels: 2,
+    image_prompt: 'a cat',
+    video_prompt: 'the cat walks',
+    negative_prompt: AUTHOR_NEGATIVE_PROMPT,
+    loras: [],
+    trigger_text: '',
+    video_loras: [],
+    video_trigger_text: '',
+    duration: 8,
+    fps: 30,
+    audio_path: '/assets/audio/a.wav',
+    source_image: '',
+    end_image: '',
+    reference_video: '',
+    selects: { dance_style: 'Street Dance 街舞' },
+    model_overrides: { 'krea2_turbo/30:10.unet_name': 'alt.safetensors' },
+    seed: 4242,
+    image_seed: 4242,
+    video_seeds: [4242, 4242],
+    audio_seed: 4242,
+  }
+
+  it('そのジョブを再現できるフォーム状態に戻す', () => {
+    expect(restored(params)).toMatchObject({
+      mode: 'full',
+      imageWorkflow: KREA2.id,
+      videoWorkflow: ID_LORA.id,
+      aspectRatio: '16:9 (Wide)',
+      megapixels: 2,
+      imagePrompt: 'a cat',
+      videoPrompt: 'the cat walks',
+      negativePrompt: AUTHOR_NEGATIVE_PROMPT,
+      duration: 8,
+      fps: 30,
+      audioPath: '/assets/audio/a.wav',
+      selects: { dance_style: 'Street Dance 街舞' },
+      modelOverrides: { 'krea2_turbo/30:10.unet_name': 'alt.safetensors' },
+    })
+  })
+
+  it('動画ジョブの尺は動画側のつまみに入る（音声側は初期値のまま）', () => {
+    const form = restored(params)
+    expect(form.duration).toBe(8)
+    expect(form.audioDuration).toBe(initialForm.audioDuration)
+  })
+
+  it('params に無い項目は初期値のまま', () => {
+    const form = restored({ mode: 'full', image_prompt: 'a cat' })
+    expect(form.videoPrompt).toBe(initialForm.videoPrompt)
+    expect(form.fps).toBe(initialForm.fps)
+    expect(form.seedLocked).toBe(false)
+    expect(form.seed).toBe(initialForm.seed)
+  })
+
+  it('選択肢から消えたワークフロー / アスペクト比は復元しない', () => {
+    const form = restored({
+      mode: 'full',
+      image_workflow: 'retired_workflow',
+      aspect_ratio: '1:1 (Square)',
+    })
+    expect(form.imageWorkflow).toBe(initialForm.imageWorkflow)
+    expect(form.aspectRatio).toBe(initialForm.aspectRatio)
+  })
+
+  it('選択肢が未取得なら記録どおりに戻す', () => {
+    const form = restored({ image_workflow: 'krea2_turbo', aspect_ratio: '1:1' }, null)
+    expect(form.imageWorkflow).toBe('krea2_turbo')
+    expect(form.aspectRatio).toBe('1:1')
+  })
+})
+
+describe('formStateFromParams — 動画のみ / 音声ジョブ', () => {
+  it('i2v の入力素材を戻す', () => {
+    const form = restored({
+      mode: 'i2v',
+      video_workflow: I2V.id,
+      video_prompt: 'pan right',
+      source_image: '/assets/image/start.png',
+      end_image: '/assets/image/end.png',
+      reference_video: '/assets/video/ref.mp4',
+      duration: 5,
+      fps: 24,
+    })
+    expect(form).toMatchObject({
+      mode: 'i2v',
+      videoWorkflow: I2V.id,
+      sourceImage: '/assets/image/start.png',
+      endImage: '/assets/image/end.png',
+      referenceVideo: '/assets/video/ref.mp4',
+      duration: 5,
+      fps: 24,
+    })
+  })
+
+  it('音声ジョブの尺は audioDuration に入る（動画側は初期値のまま）', () => {
+    const form = restored({
+      mode: 'audio',
+      audio_workflow: ACE.id,
+      audio_prompt: 'a warm lofi loop',
+      lyrics: '[Verse 1]\nhello',
+      duration: 180,
+      bpm: 92,
+      keyscale: 'F# minor',
+      language: 'ja',
+      audio_category: 'SFX',
+      reprompt: true,
+      audio_seed: 7,
+      seed: 7,
+    })
+    expect(form).toMatchObject({
+      mode: 'audio',
+      audioWorkflow: ACE.id,
+      audioPrompt: 'a warm lofi loop',
+      lyrics: '[Verse 1]\nhello',
+      audioDuration: 180,
+      bpm: 92,
+      keyscale: 'F# minor',
+      language: 'ja',
+      audioCategory: 'SFX',
+      reprompt: true,
+      seed: 7,
+      seedLocked: true,
+    })
+    expect(form.duration).toBe(initialForm.duration)
+  })
+})
+
+describe('formStateFromParams — LoRA の再水和', () => {
+  it('登録簿から id と表示名を引き当て、強度はジョブの値を使う', () => {
+    const { patch, missingLoras } = formStateFromParams(
+      {
+        mode: 'full',
+        loras: [
+          { lora_name: SAKURA.lora_name, trigger_word: 'sakura', strength: 0.65 },
+        ],
+        video_loras: [
+          { lora_name: SLOWMO.lora_name, trigger_word: 'slowmo', strength: 1 },
+        ],
+      },
+      OPTIONS,
+    )
+    expect(missingLoras).toEqual([])
+    expect(patch.loras).toEqual([
+      {
+        id: SAKURA.id,
+        display_name: SAKURA.display_name,
+        lora_name: SAKURA.lora_name,
+        trigger_word: 'sakura',
+        strength: 0.65,
+      },
+    ])
+    expect(patch.videoLoras).toEqual([
+      {
+        id: SLOWMO.id,
+        display_name: SLOWMO.display_name,
+        lora_name: SLOWMO.lora_name,
+        trigger_word: 'slowmo',
+        strength: 1,
+      },
+    ])
+  })
+
+  it('登録簿に無い LoRA は落として名前を返す', () => {
+    const { patch, missingLoras } = formStateFromParams(
+      {
+        mode: 'full',
+        loras: [
+          { lora_name: 'gone.safetensors', trigger_word: 'gone', strength: 1 },
+          { lora_name: SAKURA.lora_name, trigger_word: 'sakura', strength: 1 },
+        ],
+        video_loras: [
+          { lora_name: 'also-gone.safetensors', trigger_word: '', strength: 1 },
+        ],
+      },
+      OPTIONS,
+    )
+    expect(missingLoras).toEqual(['gone.safetensors', 'also-gone.safetensors'])
+    expect(patch.loras?.map((l) => l.lora_name)).toEqual([SAKURA.lora_name])
+    expect(patch.videoLoras).toEqual([])
+  })
+
+  it('自動生成と同じトリガー語なら dirty にしない', () => {
+    const form = restored({
+      mode: 'full',
+      loras: [{ lora_name: SAKURA.lora_name, trigger_word: 'sakura', strength: 1 }],
+      trigger_text: 'sakura',
+      video_loras: [],
+      video_trigger_text: '',
+    })
+    expect(form.triggerText).toBe('sakura')
+    expect(form.triggerDirty).toBe(false)
+    expect(form.videoTriggerDirty).toBe(false)
+  })
+
+  it('手で書き換えたトリガー語は dirty にして LoRA 操作で消させない', () => {
+    const form = restored({
+      mode: 'full',
+      loras: [{ lora_name: SAKURA.lora_name, trigger_word: 'sakura', strength: 1 }],
+      trigger_text: 'sakura, best quality',
+      video_loras: [{ lora_name: SLOWMO.lora_name, trigger_word: 'slowmo', strength: 1 }],
+      video_trigger_text: '',
+    })
+    expect(form.triggerDirty).toBe(true)
+    expect(form.videoTriggerText).toBe('')
+    expect(form.videoTriggerDirty).toBe(true)
+  })
+})
+
+describe('formStateFromParams — ネガティブのプリセット判定', () => {
+  it('プリセットと一致すればその名前を選ぶ', () => {
+    expect(restored({ negative_prompt: DEFAULT_NEGATIVE_PROMPT }).negativePreset).toBe(
+      'current',
+    )
+    expect(restored({ negative_prompt: AUTHOR_NEGATIVE_PROMPT }).negativePreset).toBe(
+      'author',
+    )
+  })
+
+  it('サーバーが返すプリセット（template 等）も見る', () => {
+    const options = restoreOptions({
+      negative_presets: { template: 'worst quality', current: DEFAULT_NEGATIVE_PROMPT },
+    })
+    expect(restored({ negative_prompt: 'worst quality' }, options).negativePreset).toBe(
+      'template',
+    )
+  })
+
+  it('どれとも違えば custom', () => {
+    const form = restored({ negative_prompt: 'blurry, extra fingers' })
+    expect(form.negativePreset).toBe('custom')
+    expect(form.negativePrompt).toBe('blurry, extra fingers')
+  })
+})
+
+describe('formStateFromParams — シード', () => {
+  it('記録されたシードを固定状態で戻す（再実行と違い同じ絵を狙う）', () => {
+    const form = restored({ mode: 'full', seed: 12345 })
+    expect(form.seed).toBe(12345)
+    expect(form.seedLocked).toBe(true)
+  })
+
+  it('seed が無ければ段階ごとの記録から拾う', () => {
+    expect(restored({ mode: 'full', video_seeds: [99, 99] })).toMatchObject({
+      seed: 99,
+      seedLocked: true,
+    })
+    expect(restored({ mode: 'audio', audio_seed: 5 })).toMatchObject({
+      seed: 5,
+      seedLocked: true,
+    })
+  })
+
+  it('シードの記録が無ければ固定しない', () => {
+    const form = restored({ mode: 'full' })
+    expect(form.seedLocked).toBe(false)
+  })
+})
+
+describe('formStateFromParams — 壊れた params', () => {
+  it('型の合わない値は無視して初期値のままにする', () => {
+    const form = restored({
+      mode: 'nonsense',
+      megapixels: 'big',
+      fps: null,
+      selects: ['not', 'a', 'map'],
+      model_overrides: { ok: 'a.safetensors', bad: 3 },
+      loras: 'nope',
+      seed: 'x',
+    })
+    expect(form.mode).toBe(initialForm.mode)
+    expect(form.megapixels).toBe(initialForm.megapixels)
+    expect(form.fps).toBe(initialForm.fps)
+    expect(form.selects).toEqual({})
+    expect(form.modelOverrides).toEqual({ ok: 'a.safetensors' })
+    expect(form.loras).toEqual([])
+    expect(form.seedLocked).toBe(false)
   })
 })

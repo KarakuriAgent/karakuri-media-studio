@@ -7,6 +7,8 @@ interface Props {
   job: Job | null
   progress: JobProgress | undefined
   onRerun: (job: Job) => void
+  /** ジョブの生成パラメータを左のフォームへ書き戻す。 */
+  onRestoreParams: (job: Job) => void
   onContinue: (job: Job) => void
   onDelete: (job: Job) => void
   onOpenDetail: (job: Job) => void
@@ -89,6 +91,7 @@ export default function ResultPane({
   job,
   progress,
   onRerun,
+  onRestoreParams,
   onContinue,
   onDelete,
   onOpenDetail,
@@ -281,6 +284,13 @@ export default function ResultPane({
               onClick={() => onRerun(job)}
             >
               再実行（シード再抽選）
+            </button>
+            <button
+              className="btn-ghost !py-1 text-xs"
+              title="このジョブの設定をフォームに書き戻します"
+              onClick={() => onRestoreParams(job)}
+            >
+              パラメータを復元
             </button>
             <button
               className="btn-ghost !py-1 text-xs"
