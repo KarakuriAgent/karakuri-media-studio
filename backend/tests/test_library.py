@@ -1,12 +1,15 @@
 """ライブラリ API（SPEC §7.2）: 登録・一覧・更新・削除とジョブ入力への利用。"""
 
 import asyncio
+import io
 import json
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from PIL import Image
 
-from app import autotag, comfy, db, jobs, library
+from app import autotag, comfy, db, jobs, library, sheets
 from app.main import app
 from app.routers import assets as assets_router
 
@@ -45,11 +48,23 @@ def env(tmp_path, monkeypatch):
         )
 
 
-def upload(env, kind: str, name: str, data: bytes = b"data", tags: str | None = None):
+def upload(
+    env,
+    kind: str,
+    name: str,
+    data: bytes = b"data",
+    tags: str | None = None,
+    category: str | None = None,
+):
+    form = {}
+    if tags is not None:
+        form["tags"] = tags
+    if category is not None:
+        form["category"] = category
     return env.client.post(
         f"/api/library/{kind}",
         files={"file": (name, data, "application/octet-stream")},
-        data={"tags": tags} if tags is not None else None,
+        data=form or None,
     )
 
 
@@ -359,6 +374,7 @@ def test_json_payload_shape_is_stable(env):
         "source_job_id",
         "source",
         "tags",
+        "category",
     }
     assert json.loads(json.dumps(item)) == item
 
@@ -585,3 +601,272 @@ def test_a_duplicate_can_be_registered_again_after_deleting_it(env):
         ).status_code
         == 201
     )
+
+
+# --------------------------------------------------------------------------
+# カテゴリ（分類）
+# --------------------------------------------------------------------------
+
+def test_upload_without_a_category_is_uncategorized(env):
+    assert upload(env, "image", "ref.png").json()["category"] is None
+    # 空文字も「未分類」（フォームの既定値がそのまま届くため）
+    assert upload(env, "image", "ref2.png", category="").json()["category"] is None
+
+
+def test_upload_accepts_a_category(env):
+    item = upload(env, "image", "sakura.png", category="character").json()
+    assert item["category"] == "character"
+    assert items(env)[0]["category"] == "character"
+
+
+def test_upload_rejects_an_unknown_category(env):
+    response = upload(env, "image", "ref.png", category="monster")
+    assert response.status_code == 400
+    assert "monster" in response.text
+    # 弾かれたときはファイルも残さない
+    assert items(env) == []
+    assert not (env.library / "image").exists()
+
+
+def test_from_job_accepts_a_category(env):
+    make_job(env, image_path="still.png")
+    item = env.client.post(
+        "/api/library/from-job",
+        json={"job_id": "job1", "source": "image", "category": "background"},
+    ).json()
+    assert item["category"] == "background"
+
+
+def test_from_job_without_a_category_is_uncategorized(env):
+    make_job(env, image_path="still.png")
+    item = env.client.post(
+        "/api/library/from-job", json={"job_id": "job1", "source": "image"}
+    ).json()
+    assert item["category"] is None
+
+
+def test_from_job_rejects_an_unknown_category(env):
+    make_job(env, image_path="still.png")
+    response = env.client.post(
+        "/api/library/from-job",
+        json={"job_id": "job1", "source": "image", "category": "monster"},
+    )
+    assert response.status_code == 400
+    assert items(env) == []
+
+
+def test_patch_changes_the_category_and_can_clear_it(env):
+    item = upload(env, "image", "ref.png", category="prop").json()
+    changed = env.client.patch(
+        f"/api/library/{item['id']}", json={"category": "character"}
+    ).json()
+    assert changed["category"] == "character"
+
+    # 'none' は「未分類に戻す」の明示指定（tags の空リストと同じ考え方、§7.2）
+    cleared = env.client.patch(
+        f"/api/library/{item['id']}", json={"category": "none"}
+    ).json()
+    assert cleared["category"] is None
+
+    # category を送らなければ触らない（「変更なし」と「未分類」を区別する）
+    back = env.client.patch(
+        f"/api/library/{item['id']}", json={"category": "prop"}
+    ).json()
+    assert back["category"] == "prop"
+    assert env.client.patch(
+        f"/api/library/{item['id']}", json={"name": "小道具"}
+    ).json() == {**back, "name": "小道具"}
+
+
+def test_patch_rejects_an_unknown_category(env):
+    item = upload(env, "image", "ref.png", category="prop").json()
+    response = env.client.patch(
+        f"/api/library/{item['id']}", json={"category": "monster"}
+    )
+    assert response.status_code == 400
+    # 弾かれたら元のまま
+    assert items(env)[0]["category"] == "prop"
+
+
+def test_category_filter_selects_one_category_or_the_uncategorized(env):
+    hero = upload(env, "image", "hero.png", category="character").json()
+    scene = upload(env, "image", "scene.png", category="background").json()
+    sword = upload(env, "image", "sword.png", category="prop").json()
+    stray = upload(env, "image", "stray.png").json()
+
+    # 未指定なら全件
+    assert len(items(env)) == 4
+    assert ids(items(env, category="character")) == [hero["id"]]
+    assert ids(items(env, category="background")) == [scene["id"]]
+    assert ids(items(env, category="prop")) == [sword["id"]]
+    # 'none' は未分類だけ（カラムを足す前の NULL 行もここに入る）
+    assert ids(items(env, category="none")) == [stray["id"]]
+
+
+def test_category_filter_combines_with_kind_and_query(env):
+    picture = upload(env, "image", "sakura.png", category="character").json()
+    upload(env, "audio", "sakura.mp3", category="character")
+    upload(env, "image", "other.png", category="character")
+    assert ids(items(env, category="character", kind="image", q="sakura")) == [
+        picture["id"]
+    ]
+
+
+def test_category_filter_rejects_an_unknown_value(env):
+    assert env.client.get("/api/library", params={"category": "monster"}).status_code == 400
+
+
+def test_old_rows_without_a_category_are_uncategorized(env):
+    """category カラムを足す前の行（NULL）はそのまま未分類として扱う（§7.2）。"""
+    item = upload(env, "image", "ref.png", category="character").json()
+
+    async def clear_category():
+        async with db.get_db() as conn:
+            await conn.execute(
+                "UPDATE library SET category = NULL WHERE id = ?", (item["id"],)
+            )
+            await conn.commit()
+
+    asyncio.run(clear_category())
+    assert items(env)[0]["category"] is None
+    assert ids(items(env, category="none")) == [item["id"]]
+
+
+def test_check_category_normalizes_the_uncategorized_forms(env):
+    assert library.check_category("character") == "character"
+    assert library.check_category(" prop ") == "prop"
+    assert library.check_category(library.UNCATEGORIZED) is None
+    assert library.check_category("") is None
+    assert library.check_category(None) is None
+    with pytest.raises(library.LibraryError):
+        library.check_category("monster")
+
+
+# --------------------------------------------------------------------------
+# リファレンスシートの合成（POST /api/library/sheet、SPEC §7.2）
+# --------------------------------------------------------------------------
+
+def png(width: int = 64, height: int = 64, color=(255, 0, 0)) -> bytes:
+    """テスト用のべた塗り画像（アップロードする中身）。"""
+    buffer = io.BytesIO()
+    Image.new("RGB", (width, height), color).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def material(env, name: str, category: str | None = None, color=(255, 0, 0)) -> dict:
+    return upload(env, "image", name, png(color=color), category=category).json()
+
+
+def make_sheet(env, item_ids: list[str], **body):
+    return env.client.post(
+        "/api/library/sheet", json={"item_ids": item_ids, **body}
+    )
+
+
+def test_sheet_registers_a_composed_image(env):
+    hero = material(env, "hero.png", "character")
+    sword = material(env, "sword.png", "prop")
+
+    response = make_sheet(env, [hero["id"], sword["id"]])
+    assert response.status_code == 201, response.text
+    sheet = response.json()
+    assert sheet["kind"] == "image"
+    # シートはキャラクターの見た目をまとめたもの。探せるようにタグも付ける
+    assert sheet["category"] == "character"
+    assert sheet["tags"] == [library.SHEET_TAG]
+    assert sheet["source"] == "sheet"
+    assert sheet["source_job_id"] is None
+    assert hero["name"] in sheet["name"]
+
+    # 実体は library/image/ にあり、指定どおりの大きさの PNG
+    path = Path(sheet["path"])
+    assert path.parent == env.library / "image"
+    with Image.open(path) as image:
+        assert image.size == (sheets.DEFAULT_WIDTH, sheets.DEFAULT_HEIGHT)
+    # ふつうの素材として棚にも並ぶ
+    assert sheet["id"] in ids(items(env))
+
+
+def test_sheet_takes_the_requested_size(env):
+    hero = material(env, "hero.png", "character")
+    sheet = make_sheet(env, [hero["id"]], width=640, height=1136).json()
+    with Image.open(sheet["path"]) as image:
+        assert image.size == (640, 1136)
+
+
+def test_sheet_uses_a_given_name(env):
+    hero = material(env, "hero.png", "character")
+    sheet = make_sheet(env, [hero["id"]], name="サクラのシート").json()
+    assert sheet["name"] == "サクラのシート"
+
+
+def test_sheet_inherits_nsfw_from_any_material(env):
+    hero = material(env, "hero.png", "character")
+    spicy = material(env, "spicy.png", "prop")
+    env.client.patch(f"/api/library/{spicy['id']}", json={"nsfw": True})
+
+    sheet = make_sheet(env, [hero["id"], spicy["id"]]).json()
+    assert sheet["nsfw"] is True
+    # 素材から引き継いだ判定なので manual ではなく auto
+    assert sheet["nsfw_source"] == "auto"
+
+
+def test_sheet_without_an_nsfw_material_is_safe(env):
+    hero = material(env, "hero.png", "character")
+    sheet = make_sheet(env, [hero["id"]]).json()
+    assert sheet["nsfw"] is False
+    assert sheet["nsfw_source"] == ""
+
+
+def test_sheet_rejects_an_empty_selection(env):
+    response = make_sheet(env, [])
+    assert response.status_code == 400
+    assert items(env) == []
+
+
+def test_sheet_rejects_too_many_materials(env):
+    picked = [
+        material(env, f"{index}.png", "prop")["id"]
+        for index in range(sheets.MAX_ITEMS + 1)
+    ]
+    response = make_sheet(env, picked)
+    assert response.status_code == 400
+    # 素材はそのまま、シートは増えない
+    assert len(items(env)) == sheets.MAX_ITEMS + 1
+
+
+def test_sheet_rejects_an_unknown_id(env):
+    hero = material(env, "hero.png", "character")
+    response = make_sheet(env, [hero["id"], "missing"])
+    assert response.status_code == 400
+    assert "missing" in response.text
+
+
+def test_sheet_rejects_a_material_that_is_not_an_image(env):
+    hero = material(env, "hero.png", "character")
+    track = upload(env, "audio", "bgm.mp3").json()
+    response = make_sheet(env, [hero["id"], track["id"]])
+    assert response.status_code == 400
+
+
+def test_sheet_rejects_a_size_that_is_too_large(env):
+    hero = material(env, "hero.png", "character")
+    response = make_sheet(env, [hero["id"]], width=sheets.MAX_EDGE + 8, height=720)
+    assert response.status_code == 400
+
+
+def test_sheet_rejects_a_broken_image(env):
+    broken = upload(env, "image", "broken.png", b"not an image").json()
+    response = make_sheet(env, [broken["id"]])
+    assert response.status_code == 400
+    # 壊れたシートを棚に置き去りにしない
+    assert ids(items(env)) == [broken["id"]]
+
+
+def test_sheet_can_be_used_as_a_job_input(env):
+    """出来上がったシートは、そのまま source_image に指定できる（§7.2）。"""
+    hero = material(env, "hero.png", "character")
+    sheet = make_sheet(env, [hero["id"]]).json()
+    assert jobs.resolve_asset_path(
+        sheet["url"], field="source_image"
+    ) == Path(sheet["path"])

@@ -77,7 +77,8 @@ CREATE TABLE IF NOT EXISTS library (
   nsfw_source   TEXT NOT NULL DEFAULT '',
   source_job_id TEXT,
   source        TEXT,                       -- 元ジョブのどの出力か（image/last_frame/video/audio）
-  tags          TEXT NOT NULL DEFAULT '[]'
+  tags          TEXT NOT NULL DEFAULT '[]',
+  category      TEXT                        -- 分類（character/background/prop。NULL = 未分類）
 );
 
 CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at DESC);
@@ -111,6 +112,9 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         # 区別できないため後から追加した。既存行は NULL（＝どの出力か不明）で、
         # 重複判定の対象にしない。
         ("source", "TEXT"),
+        # 素材の分類（character / background / prop）。既存行は NULL＝未分類の
+        # ままでよい（タグと違って 1 件に 1 つだけ持つ、棚の仕切りにあたる値）。
+        ("category", "TEXT"),
     ],
     "loras": [
         ("sample_images", "TEXT NOT NULL DEFAULT '[]'"),

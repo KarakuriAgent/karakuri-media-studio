@@ -57,6 +57,7 @@ function libraryItem(overrides: Partial<LibraryItem> = {}): LibraryItem {
     source_job_id: 'j1',
     source: 'image',
     tags: [],
+    category: null,
     ...overrides,
   }
 }
@@ -112,7 +113,10 @@ describe('LibraryAddButton', () => {
 
     const button = screen.getByRole('button', { name: '☆ ライブラリに登録' })
     fireEvent.click(button)
-    await waitFor(() => expect(addJobToLibrary).toHaveBeenCalledWith('j1', 'image'))
+    // カテゴリを触らなければ未分類（'none'）で登録する
+    await waitFor(() =>
+      expect(addJobToLibrary).toHaveBeenCalledWith('j1', 'image', '', [], 'none'),
+    )
     expect(await screen.findByRole('button', { name: '★ 登録しました' })).toBeTruthy()
     expect(onAdded).toHaveBeenCalled()
   })
@@ -151,6 +155,30 @@ describe('LibraryAddButton', () => {
     expect(failed.getAttribute('title')).toBe('job has no 動画')
     // 直せる可能性があるので押し直せる
     expect(failed.hasAttribute('disabled')).toBe(false)
+  })
+
+  it('選んだカテゴリを付けて登録する', async () => {
+    addJobToLibrary.mockResolvedValue(libraryItem({ category: 'character' }))
+    render(<LibraryAddButton job={job()} source="image" />)
+
+    const select = screen.getByLabelText('登録するカテゴリ') as HTMLSelectElement
+    // 既定は未分類
+    expect(select.value).toBe('none')
+    fireEvent.change(select, { target: { value: 'character' } })
+    fireEvent.click(screen.getByRole('button', { name: '☆ ライブラリに登録' }))
+
+    await waitFor(() =>
+      expect(addJobToLibrary).toHaveBeenCalledWith(
+        'j1',
+        'image',
+        '',
+        [],
+        'character',
+      ),
+    )
+    // 登録し終わったら分類はライブラリ側で変えるものなので、選択欄は引っ込める
+    expect(await screen.findByRole('button', { name: '★ 登録しました' })).toBeTruthy()
+    expect(screen.queryByLabelText('登録するカテゴリ')).toBeNull()
   })
 
   it('登録済みと分かっているときは押す前からそう出す', () => {

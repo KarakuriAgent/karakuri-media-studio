@@ -19,6 +19,7 @@ vi.mock('../api', () => ({
     uploadToLibrary: vi.fn(),
     updateLibraryItem: vi.fn(),
     deleteLibraryItem: vi.fn(),
+    createLibrarySheet: vi.fn(),
     uploadImage: vi.fn(),
     uploadVideo: vi.fn(),
     uploadAudio: vi.fn(),
@@ -770,6 +771,7 @@ describe('GenerateForm の「ライブラリから選択」', () => {
       source_job_id: null,
       source: null,
       tags: [],
+      category: null,
     },
     {
       id: 'l2',
@@ -783,6 +785,7 @@ describe('GenerateForm の「ライブラリから選択」', () => {
       source_job_id: null,
       source: null,
       tags: [],
+      category: null,
     },
   ]
 
@@ -973,5 +976,161 @@ describe('GenerateForm の選択式フィールド（SPEC §3.1）', () => {
     expect(
       screen.getByPlaceholderText(/選択項目からプロンプトが組み立てられます/),
     ).toBeTruthy()
+  })
+})
+
+
+describe('GenerateForm のリファレンスシート合成（SPEC §7.2）', () => {
+  const SHEET_WORKFLOW: Options['video_workflows'][number] = {
+    id: 'ltx2_3_ic_lora_image',
+    label: 'リファレンスシート (IC-LoRA)',
+    kind: 'video',
+    family: 'ltx2.3',
+    notes: '',
+    requires: ['image'],
+    supports: ['prompt', 'negative', 'duration', 'fps'],
+    // シートは開始フレームではないので false
+    accepts_start_image: false,
+    image_label: 'リファレンスシート画像',
+    selects: [],
+    prompt_required: true,
+    accepts_video_loras: true,
+    min_duration: 0,
+    max_duration: 0,
+    default_duration: 0,
+  }
+
+  const PLAIN: Options['video_workflows'][number] = {
+    ...SHEET_WORKFLOW,
+    id: 'ltx2_3_i2v',
+    label: 'i2v',
+    accepts_start_image: true,
+    image_label: '開始フレーム',
+  }
+
+  const MATERIALS: LibraryItem[] = [
+    {
+      id: 'l1',
+      created_at: '2026-07-30T10:00:00+00:00',
+      kind: 'image',
+      name: 'サクラ',
+      path: '/repo/library/image/hero.png',
+      url: '/library/image/hero.png',
+      nsfw: false,
+      nsfw_source: '',
+      source_job_id: null,
+      source: null,
+      tags: [],
+      category: 'character',
+    },
+    {
+      id: 'l2',
+      created_at: '2026-07-30T10:00:00+00:00',
+      kind: 'image',
+      name: '刀',
+      path: '/repo/library/image/sword.png',
+      url: '/library/image/sword.png',
+      nsfw: false,
+      nsfw_source: '',
+      source_job_id: null,
+      source: null,
+      tags: [],
+      category: 'prop',
+    },
+  ]
+
+  function showSheetForm(form: Partial<FormState> = {}) {
+    vi.mocked(api.listLibrary).mockResolvedValue({
+      items: MATERIALS,
+      total: MATERIALS.length,
+      limit: 50,
+      offset: 0,
+      tags: [],
+    })
+    const patch = vi.fn()
+    render(
+      <GenerateForm
+        form={{
+          ...initialForm,
+          mode: 'i2v',
+          videoWorkflow: 'ltx2_3_ic_lora_image',
+          ...form,
+        }}
+        patch={patch}
+        options={{
+          ...OPTIONS,
+          video_workflows: [SHEET_WORKFLOW, PLAIN],
+          aspect_ratios: ['16:9 (Widescreen)', '9:16 (Portrait Widescreen)'],
+        }}
+        optionsError={null}
+        onReloadOptions={() => {}}
+        onOpenChat={() => {}}
+        onSubmit={() => {}}
+        submitting={false}
+        fieldErrors={{}}
+        comfyTarget="local"
+        onComfyTarget={() => {}}
+        jobs={[]}
+        showNsfw={false}
+      />,
+    )
+    return { patch }
+  }
+
+  it('シートを取るワークフローのときだけ [ライブラリから作成] を出す', () => {
+    showSheetForm()
+    expect(
+      within(section('リファレンスシート画像')).getByRole('button', {
+        name: 'ライブラリから作成',
+      }),
+    ).toBeTruthy()
+
+    cleanup()
+    showSheetForm({ videoWorkflow: 'ltx2_3_i2v' })
+    expect(
+      within(section('開始フレーム')).queryByRole('button', {
+        name: 'ライブラリから作成',
+      }),
+    ).toBeNull()
+  })
+
+  it('選んだ素材からシートを作り、そのまま画像欄に入れる', async () => {
+    vi.mocked(api.createLibrarySheet).mockResolvedValue({
+      ...MATERIALS[0],
+      id: 'l9',
+      name: 'リファレンスシート（サクラほか1件）',
+      url: '/library/image/sheet_l9.png',
+      source: 'sheet',
+      tags: ['reference-sheet'],
+    })
+    const { patch } = showSheetForm({ aspectRatio: '9:16 (Portrait Widescreen)' })
+
+    fireEvent.click(
+      within(section('リファレンスシート画像')).getByRole('button', {
+        name: 'ライブラリから作成',
+      }),
+    )
+    expect(screen.getByText('ライブラリから作成: リファレンスシート')).toBeTruthy()
+
+    fireEvent.click(await screen.findByText('サクラ'))
+    fireEvent.click(await screen.findByText('刀'))
+    fireEvent.click(screen.getByRole('button', { name: 'この順で作成' }))
+
+    // シートの大きさは選択中のアスペクト比から（9:16 → 長辺 1280）
+    await waitFor(() =>
+      expect(api.createLibrarySheet).toHaveBeenCalledWith(['l1', 'l2'], {
+        width: 720,
+        height: 1280,
+      }),
+    )
+    await waitFor(() =>
+      expect(patch).toHaveBeenCalledWith({
+        sourceImage: '/library/image/sheet_l9.png',
+      }),
+    )
+    // 作り終わったらモーダルは閉じる
+    await waitFor(() =>
+      expect(screen.queryByText('ライブラリから作成: リファレンスシート')).toBeNull(),
+    )
   })
 })

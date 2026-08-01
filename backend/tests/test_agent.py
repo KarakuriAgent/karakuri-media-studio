@@ -1,6 +1,7 @@
 """Agent mode tests (AGENT-MODE §4 / §5). Grok と ComfyUI は完全にモックする。"""
 
 import asyncio
+import io
 import json
 import shutil
 import subprocess
@@ -9,6 +10,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from PIL import Image
 
 from app import (
     acp,
@@ -26,6 +28,7 @@ from app import (
     model_sources,
     prompts,
     nsfw,
+    sheets,
 )
 from app.main import app
 from app.models import AgentPlan, AgentSession, AgentTask, Settings
@@ -2295,6 +2298,285 @@ def test_library_action_asks_grok_for_japanese_tags(env, monkeypatch):
     assert item.get("tags") == ["女性", "屋上", "夕暮れ"]
     # title を書かなかったので表示名も日本語に置き換わる
     assert item["name"] == "夕暮れ屋上のダンス"
+
+
+# --------------------------------------------------------------------------
+# ライブラリの分類とリファレンスシート（SPEC §7.2、AGENT-MODE §3.1）
+# --------------------------------------------------------------------------
+
+def png_bytes(color=(255, 0, 0)) -> bytes:
+    """テスト用のべた塗り PNG（シート合成は本物の画像を要求する）。"""
+    buffer = io.BytesIO()
+    Image.new("RGB", (64, 64), color).save(buffer, format="PNG")
+    return buffer.getvalue()
+
+
+def material(env, name: str, category: str = "") -> dict:
+    """分類つきの画像素材を棚に置く（category が空なら未分類）。"""
+    created = env.client.post(
+        "/api/library/image",
+        files={"file": (name, png_bytes(), "image/png")},
+        data={"category": category},
+    )
+    assert created.status_code == 201, created.text
+    return created.json()
+
+
+def event_of(reply: dict, kind: str) -> dict:
+    return [m for m in reply["session"]["messages"] if m["kind"] == kind][-1]
+
+
+def library_ids(env) -> list[str]:
+    return [item["id"] for item in env.client.get("/api/library").json()["items"]]
+
+
+def run_action(env, payload: dict, said: str = "お願い") -> dict:
+    """アクション 1 つを走らせて返信 JSON を返す（セッションは使い捨て）。"""
+    session = start(env)
+    env.cli.answers = [action_answer(payload, "やります。")]
+    return say(env, session["id"], said).json()
+
+
+def test_library_search_can_filter_by_category(env):
+    hero = material(env, "hero.png", "character")
+    material(env, "room.png", "background")
+
+    reply = run_action(
+        env, {"action": "library_search", "category": "character"}, "キャラ素材ある？"
+    )
+    assert reply["action"]["category"] == "character"
+    text = event_of(reply, "library_search_result")["content"]
+    assert hero["path"] in text
+    assert "room.png" not in text
+    # 絞り込み条件も本文に出るので、同じ条件で offset を進められる
+    assert "category=character" in text
+
+
+def test_library_search_can_ask_for_the_uncategorized(env):
+    plain = material(env, "plain.png")
+    material(env, "hero.png", "character")
+
+    reply = run_action(
+        env,
+        {"action": "library_search", "category": library.UNCATEGORIZED},
+        "分類していない素材は？",
+    )
+    text = event_of(reply, "library_search_result")["content"]
+    assert plain["path"] in text
+    assert "hero.png" not in text
+
+
+def test_library_search_shows_the_category_of_every_hit(env):
+    material(env, "hero.png", "character")
+    material(env, "plain.png")
+
+    reply = run_action(env, {"action": "library_search"}, "全部見せて")
+    text = event_of(reply, "library_search_result")["content"]
+    assert "（image / character）" in text
+    # 未分類も明示値で書いておく（そのまま category にコピーできる）
+    assert f"（image / {library.UNCATEGORIZED}）" in text
+
+
+def test_library_search_rejects_an_unknown_category(env):
+    with pytest.raises(agent_protocol.ActionError, match="category"):
+        agent_protocol.parse_action(
+            action_answer({"action": "library_search", "category": "monster"})
+        )
+    # 省略は「分類で絞らない」
+    action = agent_protocol.parse_action(action_answer({"action": "library_search"}))
+    assert action is not None and action.category is None
+
+
+def test_library_action_can_set_a_category(env):
+    session = start(env)
+    env.cli.answers = [plan_answer(env, 1), DONE_ANSWER]
+    say(env, session["id"])
+    env.client.post(f"/api/agent/sessions/{session['id']}/approve", json={})
+    done = wait_status(env, session["id"], ("done", "stopped", "idle"))
+    job_id = done["plan"]["tasks"][0]["job_id"]
+
+    env.cli.answers = [
+        action_answer(
+            {
+                "action": "library",
+                "job_id": job_id,
+                "source": "image",
+                "title": "サクラ・正面",
+                "category": "character",
+            },
+            "取っておきます。",
+        )
+    ]
+    reply = say(env, session["id"], "キャラとして残して").json()
+    assert env.client.get("/api/library").json()["items"][0]["category"] == "character"
+    assert "分類: character" in event_of(reply, "library_added")["content"]
+
+
+def test_library_action_rejects_an_unknown_category(env):
+    with pytest.raises(agent_protocol.ActionError, match="category"):
+        agent_protocol.parse_action(
+            action_answer(
+                {
+                    "action": "library",
+                    "job_id": "j1",
+                    "source": "image",
+                    "category": "monster",
+                }
+            )
+        )
+
+
+def test_library_sheet_composes_a_sheet_from_the_library(env):
+    hero = material(env, "hero.png", "character")
+    sword = material(env, "sword.png", "prop")
+
+    reply = run_action(
+        env,
+        {
+            "action": "library_sheet",
+            "item_ids": [hero["id"], sword["id"]],
+            "name": "サクラのシート",
+        },
+        "シートを作って",
+    )
+    assert reply["action"]["action"] == "library_sheet"
+
+    event = event_of(reply, "library_sheet_added")
+    rows = env.client.get("/api/library").json()["items"]
+    sheet = [row for row in rows if row["id"] == event["data"]["library_id"]][0]
+    assert sheet["name"] == "サクラのシート"
+    assert sheet["category"] == "character"
+    assert sheet["tags"] == [library.SHEET_TAG]
+
+    # id・パス・URL をそのまま返す（次のターンで書き写せる）
+    assert (event["data"]["path"], event["data"]["url"]) == (sheet["path"], sheet["url"])
+    assert event["data"]["item_ids"] == [hero["id"], sword["id"]]
+    for shown in (sheet["id"], sheet["path"], sheet["url"], "ltx2_3_ic_lora_image"):
+        assert shown in event["content"]
+
+    # 出来上がったシートはそのまま次のジョブの source_image に使える
+    assert jobs.resolve_asset_path(sheet["path"], field="source_image").is_file()
+
+
+def test_library_sheet_takes_the_requested_size(env):
+    hero = material(env, "hero.png", "character")
+    reply = run_action(
+        env,
+        {
+            "action": "library_sheet",
+            "item_ids": [hero["id"]],
+            "width": 640,
+            "height": 1136,
+        },
+        "縦のシートで",
+    )
+    with Image.open(event_of(reply, "library_sheet_added")["data"]["path"]) as image:
+        assert image.size == (640, 1136)
+
+
+def test_library_sheet_falls_back_to_the_default_size(env):
+    hero = material(env, "hero.png", "character")
+    reply = run_action(
+        env, {"action": "library_sheet", "item_ids": [hero["id"]]}, "シート"
+    )
+    with Image.open(event_of(reply, "library_sheet_added")["data"]["path"]) as image:
+        assert image.size == (sheets.DEFAULT_WIDTH, sheets.DEFAULT_HEIGHT)
+
+
+def test_library_sheet_reports_an_unknown_id(env):
+    hero = material(env, "hero.png", "character")
+    reply = run_action(
+        env,
+        {"action": "library_sheet", "item_ids": [hero["id"], "ghost"]},
+        "シートを作って",
+    )
+    assert "library_sheet_added" not in kinds(reply["session"])
+    assert "ghost" in event_of(reply, "action_failed")["content"]
+    # 素材はそのまま、壊れたシートは棚に残らない
+    assert library_ids(env) == [hero["id"]]
+
+
+def test_library_sheet_reports_a_material_that_is_not_an_image(env):
+    hero = material(env, "hero.png", "character")
+    track = add_to_library(env, "audio", "bgm.mp3")
+    reply = run_action(
+        env,
+        {"action": "library_sheet", "item_ids": [hero["id"], track["id"]]},
+        "シートを作って",
+    )
+    assert "action_failed" in kinds(reply["session"])
+    assert sorted(library_ids(env)) == sorted([hero["id"], track["id"]])
+
+
+def test_library_sheet_reports_a_canvas_that_is_too_large(env):
+    hero = material(env, "hero.png", "character")
+    reply = run_action(
+        env,
+        {
+            "action": "library_sheet",
+            "item_ids": [hero["id"]],
+            "width": sheets.MAX_EDGE + 8,
+            "height": 720,
+        },
+        "巨大なシート",
+    )
+    assert "action_failed" in kinds(reply["session"])
+    assert library_ids(env) == [hero["id"]]
+
+
+def test_library_sheet_reports_too_many_materials(env):
+    picked = [
+        material(env, f"{index}.png", "prop")["id"]
+        for index in range(sheets.MAX_ITEMS + 1)
+    ]
+    reply = run_action(
+        env, {"action": "library_sheet", "item_ids": picked}, "全部でシート"
+    )
+    assert "action_failed" in kinds(reply["session"])
+    assert len(library_ids(env)) == sheets.MAX_ITEMS + 1
+
+
+def test_library_sheet_needs_item_ids(env):
+    for payload in (
+        {"action": "library_sheet"},
+        {"action": "library_sheet", "item_ids": []},
+        {"action": "library_sheet", "item_ids": ["  "]},
+        {"action": "library_sheet", "item_ids": "abc"},
+    ):
+        with pytest.raises(agent_protocol.ActionError, match="item_ids"):
+            agent_protocol.parse_action(action_answer(payload))
+
+
+def test_library_sheet_keeps_the_given_order_and_defaults(env):
+    action = agent_protocol.parse_action(
+        action_answer({"action": "library_sheet", "item_ids": ["b", "a"]})
+    )
+    assert action is not None
+    # 並び順はレイアウトそのものなので、勝手に整列しない
+    assert action.item_ids == ["b", "a"]
+    assert (action.title, action.width, action.height) == ("", None, None)
+
+
+def test_library_sheet_rejects_a_size_that_is_not_a_number(env):
+    with pytest.raises(agent_protocol.ActionError, match="width"):
+        agent_protocol.parse_action(
+            action_answer(
+                {"action": "library_sheet", "item_ids": ["a"], "width": "おおきめ"}
+            )
+        )
+
+
+def test_system_prompt_explains_the_character_sheet_flow(env):
+    material(env, "hero.png", "character")
+    system = start(env)["messages"][0]["content"]
+    # 棚の分類が見え、アクションの表にシート合成が載っている
+    assert "（character）" in system
+    assert "`library_sheet`" in system
+    assert "`category`" in system
+    # IC-LoRA の 2 部構成プロンプトまで案内する
+    assert "Reference sheet:" in system
+    assert "Generated video:" in system
+    assert "ltx2_3_ic_lora_image" in system
 
 
 # --------------------------------------------------------------------------

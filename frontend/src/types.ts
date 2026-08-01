@@ -198,6 +198,25 @@ export type LibraryKind = 'image' | 'video' | 'audio'
 /** ジョブのどの出力を登録するか（ResultPane のタブと同じ区分）。 */
 export type LibrarySource = 'image' | 'last_frame' | 'video' | 'audio'
 
+/**
+ * 素材の出どころ（`LibraryItem.source`）。
+ *
+ * ジョブの出力 4 種に加えて、アプリ内で合成したリファレンスシート（`'sheet'`、
+ * SPEC §7.2）を取る。from-job で指定できるのは `LibrarySource` のほうだけ。
+ */
+export type LibraryOrigin = LibrarySource | 'sheet'
+
+/** 素材の分類（棚の仕切り。1 件に 1 つだけ。null = 未分類）。 */
+export type LibraryCategory = 'character' | 'background' | 'prop'
+
+/**
+ * カテゴリとして送れる値（SPEC §7.2）。
+ *
+ * API は「指定なし」（絞り込まない / 変更しない）と「未分類そのもの」を区別する
+ * ので、未分類は値なしではなく `'none'` で送る（DB では NULL）。
+ */
+export type LibraryCategoryValue = LibraryCategory | 'none'
+
 export interface LibraryItem {
   id: string
   created_at: string
@@ -213,10 +232,15 @@ export interface LibraryItem {
   nsfw_source: string
   /** 生成物から登録した場合の元ジョブ id。 */
   source_job_id: string | null
-  /** 元ジョブのどの出力か（重複登録の判定に使う。アップロード・旧行は null）。 */
-  source: LibrarySource | null
+  /**
+   * 元ジョブのどの出力か（重複登録の判定に使う。アップロード・旧行は null）。
+   * 合成したリファレンスシートは `'sheet'`（元ジョブを持たない）。
+   */
+  source: LibraryOrigin | null
   /** 分類タグ（検索・絞り込み用）。 */
   tags: string[]
+  /** 素材の分類（null = 未分類。カラムを足す前の行も null）。 */
+  category: LibraryCategory | null
 }
 
 /** GET /api/library のレスポンス（絞り込み結果の 1 ページ）。 */
@@ -230,9 +254,22 @@ export interface LibraryPage {
   tags: string[]
 }
 
+/** POST /api/library/sheet の body（リファレンスシートの合成、SPEC §7.2）。 */
+export interface LibrarySheetRequest {
+  /** 載せる素材の id（すべて image。**並び順に意味がある**）。 */
+  item_ids: string[]
+  /** 表示名（省略すると素材の名前から決まる）。 */
+  name?: string
+  /** シートの大きさ（省略すると 1280x720）。 */
+  width?: number
+  height?: number
+}
+
 /** GET /api/library のクエリ。 */
 export interface LibraryQuery {
   kind?: LibraryKind
+  /** 分類（省略 = 全件 / `'none'` = 未分類のみ）。 */
+  category?: LibraryCategoryValue
   /** 名前・タグへの部分一致。 */
   q?: string
   /** タグの完全一致。 */

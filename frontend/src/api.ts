@@ -15,10 +15,12 @@ import type {
   Health,
   Job,
   JobCreate,
+  LibraryCategoryValue,
   LibraryItem,
   LibraryKind,
   LibraryPage,
   LibraryQuery,
+  LibrarySheetRequest,
   LibrarySource,
   Lora,
   LoraPayload,
@@ -210,24 +212,55 @@ export const api = {
     const search = params.toString()
     return request<LibraryPage>(`/api/library${search ? `?${search}` : ''}`)
   },
-  uploadToLibrary: (kind: LibraryKind, file: File, tags: string[] = []) =>
-    upload<LibraryItem>(`/api/library/${kind}`, file, { tags: tags.join(',') }),
+  /** `category` を省くと未分類で登録される。 */
+  uploadToLibrary: (
+    kind: LibraryKind,
+    file: File,
+    tags: string[] = [],
+    category: LibraryCategoryValue = 'none',
+  ) =>
+    upload<LibraryItem>(`/api/library/${kind}`, file, {
+      tags: tags.join(','),
+      category,
+    }),
   /** ジョブの出力をライブラリに取っておく（NSFW は元ジョブを引き継ぐ）。 */
   addJobToLibrary: (
     jobId: string,
     source: LibrarySource,
     name = '',
     tags: string[] = [],
+    category: LibraryCategoryValue = 'none',
   ) =>
     json<LibraryItem>('POST', '/api/library/from-job', {
       job_id: jobId,
       source,
       name,
       tags,
+      category,
     }),
+  /**
+   * 選んだ画像素材を 1 枚のリファレンスシートに合成して登録する（SPEC §7.2）。
+   *
+   * `itemIds` の**並び順に意味がある**（左上から置く）。返るのは出来上がった
+   * シートの LibraryItem で、そのまま画像欄（`source_image`）に指定できる。
+   */
+  createLibrarySheet: (
+    itemIds: string[],
+    options: Omit<LibrarySheetRequest, 'item_ids'> = {},
+  ) =>
+    json<LibraryItem>('POST', '/api/library/sheet', {
+      item_ids: itemIds,
+      ...options,
+    }),
+  /** 送った項目だけ変える。`category: 'none'` は未分類に戻す指定（SPEC §7.2）。 */
   updateLibraryItem: (
     id: string,
-    patch: { name?: string; nsfw?: boolean; tags?: string[] },
+    patch: {
+      name?: string
+      nsfw?: boolean
+      tags?: string[]
+      category?: LibraryCategoryValue
+    },
   ) => json<LibraryItem>('PATCH', `/api/library/${id}`, patch),
   deleteLibraryItem: (id: string) => json<void>('DELETE', `/api/library/${id}`),
 

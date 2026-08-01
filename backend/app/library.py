@@ -21,9 +21,17 @@ import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import sheets
 from .db import get_db
 from .ids import new_id
-from .models import Job, LibraryItem, LibraryKind, LibrarySource
+from .models import (
+    Job,
+    LibraryCategory,
+    LibraryItem,
+    LibraryKind,
+    LibraryOrigin,
+    LibrarySource,
+)
 from .paths import LIBRARY_DIR
 
 #: 種別ごとに受け付ける拡張子（routers/assets.py と同じホワイトリスト）
@@ -34,6 +42,13 @@ ALLOWED_EXT: dict[str, set[str]] = {
 }
 
 KINDS: tuple[str, ...] = ("image", "video", "audio")
+
+#: 素材の分類（棚の仕切り。1 件に 1 つだけ持つ）。これ以外は未分類（DB は NULL）
+CATEGORIES: tuple[str, ...] = ("character", "background", "prop")
+
+#: 「未分類」を表す明示値。DB には NULL で入るが、API では「指定なし」（絞り込ま
+#: ない / 変更しない）と区別する必要があるため、未分類そのものはこの文字列で送る
+UNCATEGORIZED = "none"
 
 #: ジョブの出力 -> (Job の属性, ライブラリの種別, 表示名の接尾辞)
 SOURCES: dict[str, tuple[str, LibraryKind, str]] = {
@@ -91,6 +106,26 @@ def check_kind(kind: str) -> LibraryKind:
     return kind  # type: ignore[return-value]
 
 
+def check_category(value: object) -> LibraryCategory | None:
+    """カテゴリの値を検証して正規化する（未分類は None）。
+
+    空文字と :data:`UNCATEGORIZED`（``"none"``）は「未分類」なので None に寄せる。
+    「指定なし」との区別は呼び出し側の責任: このカラムを触るかどうかは値が None
+    かどうかで決めるので、``check_category`` を通す前に判断する。
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    if not text or text == UNCATEGORIZED:
+        return None
+    if text not in CATEGORIES:
+        raise LibraryError(
+            f"unknown category '{text}'"
+            f" (allowed: {', '.join(CATEGORIES)}, {UNCATEGORIZED})"
+        )
+    return text  # type: ignore[return-value]
+
+
 def check_extension(kind: str, suffix: str) -> str:
     ext = suffix.lower()
     if ext not in ALLOWED_EXT[kind]:
@@ -145,9 +180,11 @@ def row_to_item(row) -> LibraryItem:
         nsfw=bool(data["nsfw"]),
         nsfw_source=data["nsfw_source"] or "",
         source_job_id=data["source_job_id"],
-        # source / tags は後から足したカラム。古い行では NULL のことがある
+        # source / tags / category は後から足したカラム。古い行では NULL のことが
+        # ある（category の NULL はそのまま「未分類」の意味になる）
         source=data.get("source") or None,
         tags=_load_tags(data.get("tags")),
+        category=data.get("category") or None,
     )
 
 
@@ -161,16 +198,34 @@ def matches(item: LibraryItem, query: str) -> bool:
     return any(needle in tag.casefold() for tag in item.tags)
 
 
-async def list_items(kind: str | None = None) -> list[LibraryItem]:
-    """登録済みの素材すべて（新しい順）。``kind`` を渡すとその種別だけ。"""
+async def list_items(
+    kind: str | None = None, category: str | None = None
+) -> list[LibraryItem]:
+    """登録済みの素材すべて（新しい順）。``kind`` を渡すとその種別だけ。
+
+    ``category`` も同じく絞り込み条件で、None なら分類で絞らない。未分類だけ見たい
+    ときは :data:`UNCATEGORIZED`（``"none"``）を渡す（DB では NULL だが、None は
+    「絞り込まない」に使ってしまっているため）。
+    """
     query = "SELECT * FROM library"
-    params: tuple[str, ...] = ()
+    conditions: list[str] = []
+    params: list[str] = []
     if kind is not None:
-        query += " WHERE kind = ?"
-        params = (check_kind(kind),)
+        conditions.append("kind = ?")
+        params.append(check_kind(kind))
+    if category is not None:
+        resolved = check_category(category)
+        if resolved is None:
+            # 未分類。カラムを足す前の行は NULL、フォームの空送信は '' になりうる
+            conditions.append("(category IS NULL OR category = '')")
+        else:
+            conditions.append("category = ?")
+            params.append(resolved)
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
     query += " ORDER BY created_at DESC, id DESC"
     async with get_db() as conn:
-        async with conn.execute(query, params) as cur:
+        async with conn.execute(query, tuple(params)) as cur:
             rows = await cur.fetchall()
     return [row_to_item(row) for row in rows]
 
@@ -178,6 +233,7 @@ async def list_items(kind: str | None = None) -> list[LibraryItem]:
 async def search_items(
     *,
     kind: str | None = None,
+    category: str | None = None,
     query: str = "",
     tag: str | None = None,
     limit: int | None = DEFAULT_LIMIT,
@@ -185,12 +241,15 @@ async def search_items(
 ) -> tuple[list[LibraryItem], int]:
     """絞り込んだ素材の 1 ページと、絞り込み後の総件数。
 
-    ``kind`` だけ SQL で絞り、``query``（名前・タグへの部分一致）と ``tag``
-    （完全一致）は Python 側で判定する: タグは JSON 配列で 1 カラムに持っている
-    ので SQL の LIKE では誤検出しやすく、個人利用の規模（数千件）なら読み切って
-    から絞るほうが確実で読みやすい。
+    ``kind`` と ``category``（どちらも 1 カラムの値）だけ SQL で絞り、``query``
+    （名前・タグへの部分一致）と ``tag``（完全一致）は Python 側で判定する: タグは
+    JSON 配列で 1 カラムに持っているので SQL の LIKE では誤検出しやすく、個人利用
+    の規模（数千件）なら読み切ってから絞るほうが確実で読みやすい。
+
+    ``category`` は None なら分類で絞らない。未分類だけを見たいときは
+    :data:`UNCATEGORIZED` を渡す。
     """
-    items = await list_items(kind)
+    items = await list_items(kind, category)
     wanted = (tag or "").strip().casefold()
     if wanted:
         items = [
@@ -231,15 +290,17 @@ async def _insert(
     nsfw: bool,
     nsfw_source: str,
     source_job_id: str | None,
-    source: str | None,
+    source: LibraryOrigin | str | None,
     tags: list[str],
+    #: 分類（省略時は未分類。後から足したカラムなので既定値を持たせておく）
+    category: LibraryCategory | None = None,
 ) -> LibraryItem:
     item_id = new_id()
     async with get_db() as conn:
         await conn.execute(
             "INSERT INTO library (id, created_at, kind, name, path, nsfw,"
-            " nsfw_source, source_job_id, source, tags)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " nsfw_source, source_job_id, source, tags, category)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 item_id,
                 _now(),
@@ -251,6 +312,7 @@ async def _insert(
                 source_job_id,
                 source,
                 json.dumps(tags, ensure_ascii=False),
+                category,
             ),
         )
         await conn.commit()
@@ -260,10 +322,18 @@ async def _insert(
 
 
 async def add_upload(
-    kind: str, filename: str, data: bytes, tags: object = None
+    kind: str,
+    filename: str,
+    data: bytes,
+    tags: object = None,
+    category: object = None,
 ) -> LibraryItem:
-    """アップロードされたファイルを ``library/{kind}/`` に保存して登録する。"""
+    """アップロードされたファイルを ``library/{kind}/`` に保存して登録する。
+
+    ``category`` を省く（または空 / ``"none"``）と未分類になる。
+    """
     resolved = check_kind(kind)
+    resolved_category = check_category(category)
     original = Path(filename or "upload")
     ext = check_extension(resolved, original.suffix)
     dest = kind_dir(resolved) / f"{safe_stem(original.stem)}_{new_id()}{ext}"
@@ -277,6 +347,7 @@ async def add_upload(
         source_job_id=None,
         source=None,
         tags=normalize_tags(tags),
+        category=resolved_category,
     )
 
 
@@ -316,13 +387,18 @@ async def find_from_job(job_id: str, source: str) -> LibraryItem | None:
 
 
 async def add_from_job(
-    job: Job, source: str, name: str = "", tags: object = None
+    job: Job,
+    source: str,
+    name: str = "",
+    tags: object = None,
+    category: object = None,
 ) -> LibraryItem:
     """ジョブの出力をライブラリへコピーして登録する（NSFW は元ジョブを引き継ぐ）。
 
     同じジョブの同じ出力が既に棚にあるなら、コピーを増やさず
-    :class:`LibraryDuplicate` で既存のアイテムを返す。
+    :class:`LibraryDuplicate` で既存のアイテムを返す。``category`` を省くと未分類。
     """
+    resolved_category = check_category(category)
     origin = job_output(job, source)
     existing = await find_from_job(job.id, source)
     if existing is not None:
@@ -341,6 +417,72 @@ async def add_from_job(
         source_job_id=job.id,
         source=source,
         tags=normalize_tags(tags),
+        category=resolved_category,
+    )
+
+
+#: 合成したリファレンスシートに必ず付けるタグ（あとから棚で見つけやすくする）
+SHEET_TAG = "reference-sheet"
+
+#: シートの ``source``（ジョブ出力ではなくアプリ内で合成したもの）
+SHEET_SOURCE: LibraryOrigin = "sheet"
+
+
+def sheet_name(items: list[LibraryItem]) -> str:
+    """シートの既定の表示名（先頭の素材の名前 + 残りの枚数）。"""
+    head = items[0].name if items else "リファレンスシート"
+    rest = f"ほか{len(items) - 1}件" if len(items) > 1 else ""
+    return f"リファレンスシート（{head}{rest}）"
+
+
+async def add_sheet(
+    item_ids: list[str],
+    name: str = "",
+    width: int = sheets.DEFAULT_WIDTH,
+    height: int = sheets.DEFAULT_HEIGHT,
+) -> LibraryItem:
+    """選んだ画像素材を 1 枚のリファレンスシートに合成して登録する（SPEC §7.2）。
+
+    ``item_ids`` の**並び順に意味がある**（:func:`app.sheets.plan_layout` の規則で
+    左上から詰める）。素材のカテゴリで大小のパネルが決まるので、ここではカテゴリを
+    そのまま渡すだけ。
+
+    出来上がったシートは ``library/image/`` に置き、ふつうの素材として登録する:
+    キャラクターの見た目をまとめたものなので分類は ``character``、タグには
+    :data:`SHEET_TAG` を付け、``source`` は :data:`SHEET_SOURCE`。素材のどれかが
+    NSFW ならシートも NSFW（引き継ぎなので ``nsfw_source`` は 'auto'）。
+
+    枚数・大きさ・種別が合わなければ :class:`LibraryError`（ルーターは 400）。
+    """
+    items: list[LibraryItem] = []
+    for item_id in item_ids:
+        item = await get_item(item_id)
+        if item is None:
+            raise LibraryError(f"library item not found: {item_id}")
+        if item.kind != "image":
+            raise LibraryError(f"「{item.name}」は画像ではありません（{item.kind}）")
+        items.append(item)
+    try:
+        sheets.check_count(len(items))
+        data = sheets.render_sheet(
+            [(Path(item.path), item.category) for item in items], width, height
+        )
+    except sheets.SheetError as exc:
+        raise LibraryError(str(exc)) from exc
+    dest = kind_dir("image") / f"sheet_{new_id()}.png"
+    dest.write_bytes(data)
+    nsfw = any(item.nsfw for item in items)
+    return await _insert(
+        kind="image",
+        name=(name.strip() or sheet_name(items)),
+        path=dest,
+        nsfw=nsfw,
+        # 素材から引き継いだ判定なので、手動指定ではなく auto 扱い（from-job と同じ）
+        nsfw_source="auto" if nsfw else "",
+        source_job_id=None,
+        source=SHEET_SOURCE,
+        tags=[SHEET_TAG],
+        category="character",
     )
 
 
@@ -350,8 +492,14 @@ async def update_item(
     name: str | None = None,
     nsfw: bool | None = None,
     tags: list[str] | None = None,
+    category: str | None = None,
 ) -> LibraryItem | None:
-    """表示名 / NSFW フラグ / タグを変える（None の項目はそのまま）。"""
+    """表示名 / NSFW フラグ / タグ / 分類を変える（None の項目はそのまま）。
+
+    ``category`` だけは「未分類に戻す」も指定できる必要があるので、値なし（None）
+    ではなく :data:`UNCATEGORIZED`（``"none"``）や空文字で伝える。None はほかの
+    項目と同じく「変更しない」。
+    """
     fields: dict[str, object] = {}
     if name is not None:
         cleaned = name.strip()
@@ -360,6 +508,9 @@ async def update_item(
     if tags is not None:
         # 空リストは「タグを全部外す」なので、name と違って弾かない。
         fields["tags"] = json.dumps(normalize_tags(tags), ensure_ascii=False)
+    if category is not None:
+        # 'none' / '' は未分類（NULL）に戻す指定。tags の空リストと同じ扱い。
+        fields["category"] = check_category(category)
     if nsfw is not None:
         fields["nsfw"] = 1 if nsfw else 0
         fields["nsfw_source"] = "manual"

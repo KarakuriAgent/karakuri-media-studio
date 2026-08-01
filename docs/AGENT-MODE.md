@@ -200,7 +200,7 @@ LoRA:
 ```
 Library（取っておいた素材、`path` をそのままジョブの入力に書けます）:
 - image（source_image / end_image、全 62 件）:
-  - `/…/library/image/pose_01H….png` — 「決めポーズ」 [キャラ, 立ち絵]
+  - `/…/library/image/pose_01H….png` — 「決めポーズ」（character） [キャラ, 立ち絵]
   - …ほか 12 件（ここに載るのは新しい 50 件だけ。`library_search` で辿れます）
 - video（reference_video、全 0 件）:
   - (none)
@@ -216,27 +216,51 @@ Library（取っておいた素材、`path` をそのままジョブの入力に
 **総件数**と「ここに出していない素材が N 件ある」ことを必ず併記し、`library_search` アクションで
 全体を検索できると明示する。これがないと「ライブラリには 50 件しか無い」と誤解したまま話が進む。
 
-`library_search` は名前・タグの部分一致（`q`）、タグの完全一致（`tag`）、種別（`kind`）で
-ライブラリ全体を検索し、1 回 50 件（`agent_runner.LIBRARY_SEARCH_LIMIT`）を
+`library_search` は名前・タグの部分一致（`q`）、タグの完全一致（`tag`）、種別（`kind`）、
+分類（`category`）でライブラリ全体を検索し、1 回 50 件（`agent_runner.LIBRARY_SEARCH_LIMIT`）を
 `library_search_result` イベントとして返す。本文には該当総件数と「〜件目まで表示」が入り、
 続きがあるときは次に投げる `offset` 付きの JSON をそのまま示す:
 
 ```
-ライブラリ検索（q='サクラ'）: 62 件中 1〜50 件目。
+ライブラリ検索（q='サクラ', category=character）: 62 件中 1〜50 件目。
 
-- `/…/library/image/pose_01H….png` — 「決めポーズ」（image） [キャラ, 立ち絵]
+- `/…/library/image/pose_01H….png` — 「決めポーズ」（image / character） [キャラ, 立ち絵]
 …
 まだ 12 件あります。続きは `{"action": "library_search", "offset": 50, …}`（同じ絞り込み条件のまま）で取得してください。
 ```
 
+検索結果の行には**必ず分類を出す**（未分類は明示値 `none`）。そのままコピーすれば次の
+`library_search` の `category` に書けるし、リファレンスシートでどのパネルが大きくなるかも読める。
+
 逆に、生成した中で後々使えそうなもの（良い開始フレーム、参照クリップ）は `library` アクションで
-自分から棚に入れられる。`tags` を付けておくと後で `library_search` で見つけやすい。登録すると
+自分から棚に入れられる。`tags` を付けておくと後で `library_search` で見つけやすく、
+`category`（`character` / `background` / `prop` / `none`）を付けておくとシート合成で効く。登録すると
 `library_added` イベントが制作記録に残り、`path` がそのまま次のジョブに使える。
 
 同じ出力を二度取っておこうとした場合はコピーを増やさず、`library_exists` イベントで
 「既にライブラリにあります（名前: …、パス）」と返す（エラーではないのでリトライさせない）。
 `tags` / `title` を書かなかった場合は、登録後にバックエンドが Grok へ別途問い合わせて**日本語の
 短い表示名とタグ**を背景で付ける（SPEC §7.2 の自動生成。エージェント自身は何もしなくてよい）。
+
+#### キャラクターシートの作成（`library_sheet`、SPEC §7.2）
+
+`library_sheet` は棚の画像素材（1〜8 枚）を 1 枚のリファレンスシートに合成し、そのまま
+ライブラリに登録する（`POST /api/library/sheet` と同じ `library.add_sheet`）。ペイロードは
+`{item_ids, name?, width?, height?}` で、**`item_ids` の並び順に意味がある**（左上から詰め、
+`category='character'` の素材だけ大きいパネルになる）。成功すると `library_sheet_added` イベントに
+シートの **id・パス・URL** と枚数が入り、そのパスを次のジョブの `source_image` に書ける。
+存在しない id・画像以外・0 枚・上限超過・大きすぎるキャンバスなどは `library.LibraryError` を
+`action_failed` イベントに変換して返す（ルーターの 400 と同じ判定）。承認は不要（`library` と同じ即時アクション）。
+
+プロンプトでは、キャラクターシート / IC-LoRA 動画を頼まれたときの手順をこう指示している:
+
+1. `library_search`（`category: "character"` → `prop` / `background`）で既にある素材を探す
+2. 足りないぶんだけ `mode: "image_only"` のジョブで作り、`library` + `category` で棚に入れる
+3. `library_sheet` に**並べたい順**で id を渡す。主役は先頭かつ `character`（大きいパネルほど
+   忠実に再現される）、`width` / `height` は作る動画と同じ縦横比にする
+4. `mode: "i2v"` + `video_workflow: "ltx2_3_ic_lora_image"` でそのシートを `source_image` に指定。
+   シートは開始フレームではなく見た目の参照なので、`video_prompt` は
+   `Reference sheet: <各パネルの説明> / Generated video: <動画の内容>` の 2 部構成で書く
 
 ### 3.2 複数実行
 
@@ -337,8 +361,9 @@ Grok CLI はステートレスなテキスト入出力なので、ツール呼�
 | `inspect` | 動画のフレーム分解検分を依頼（対象 job_id, 間隔秒）。バックエンドが ffmpeg で展開し、次ターンで Grok がフレームを見る | 不要（自律） |
 | `note` | メモ / リサーチまとめの成果物登録（workdir ファイル or 本文） | 不要（自律） |
 | `rename` | 既存成果物のタイトル付け直し（`name` または `job_id` + `kind`, `title`）。対象が無ければ `action_failed` | 不要（自律） |
-| `library` | ジョブの出力をライブラリに取っておく（`job_id` + `source`: `image` / `last_frame` / `video` / `audio`、任意の `title` / `tags[]`）。SPEC §7.2。既に同じ出力が登録済みなら `library_exists`（エラーではなく案内）、対象が無ければ `action_failed` | 不要（自律） |
-| `library_search` | ライブラリ**全体**を絞り込む（`q` = 名前・タグの部分一致 / `tag` = 完全一致 / `kind` / `offset`）。結果は `library_search_result` イベントとして次ターンに届く | 不要（自律） |
+| `library` | ジョブの出力をライブラリに取っておく（`job_id` + `source`: `image` / `last_frame` / `video` / `audio`、任意の `title` / `tags[]` / `category`: `character` / `background` / `prop` / `none`）。SPEC §7.2。既に同じ出力が登録済みなら `library_exists`（エラーではなく案内）、対象が無ければ `action_failed` | 不要（自律） |
+| `library_search` | ライブラリ**全体**を絞り込む（`q` = 名前・タグの部分一致 / `tag` = 完全一致 / `kind` / `category` / `offset`）。結果は `library_search_result` イベントとして次ターンに届く | 不要（自律） |
+| `library_sheet` | 棚の画像素材を 1 枚のリファレンスシートに合成して登録する（`item_ids[]` = 並べる順の 1〜8 件、任意の `name` / `width` / `height`）。SPEC §7.2。成功すると `library_sheet_added` イベントにシートの id・パス・URL が入り、そのまま `ltx2_3_ic_lora_image` の `source_image` に使える。組めない指定は `action_failed` | 不要（自律） |
 | `checkin` | ユーザーへの確認（選択肢ボタン付き吹き出し）。応答まで次タスク保留 | ― |
 | `done` | プラン完了宣言 → 納品サマリ | ― |
 
@@ -347,9 +372,10 @@ Grok CLI はステートレスなテキスト入出力なので、ツール呼�
 だけ。それ以外を指定した場合はアプリが既定ワークフローに戻す。切り替え先が要求する
 追加入力（flf2v の `end_image` 等）は同じアクションで渡す必要がある。
 
-1 返信 1 アクションの制約は `rename` / `library` / `library_search` も同じ（`plan` / `checkin` 等と同列）。
+1 返信 1 アクションの制約は `rename` / `library` / `library_search` / `library_sheet` も同じ
+（`plan` / `checkin` 等と同列）。
 生成を伴わない即時アクション（`plan` / `checkin` / `done` / `note` / `rename` / `library` /
-`library_search`）は
+`library_search` / `library_sheet`）は
 発言リクエストの中で処理し、実行系（`run_task` / `continue` / `rerun` / `inspect`）だけを
 バックグラウンドループに委ねる（`routers/agent._dispatch`）。
 タスクの `label` と `note` / `rename` のタイトルは、ユーザーがひと目で分かる

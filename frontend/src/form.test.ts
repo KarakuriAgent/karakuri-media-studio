@@ -17,6 +17,8 @@ import {
   jobWorkflowIds,
   lorasForTarget,
   modelSlotsForJob,
+  needsReferenceSheet,
+  sheetSize,
   validateForm,
   workflowsForMode,
   type FormState,
@@ -1056,5 +1058,32 @@ describe('formStateFromParams — 壊れた params', () => {
     expect(form.modelOverrides).toEqual({ ok: 'a.safetensors' })
     expect(form.loras).toEqual([])
     expect(form.seedLocked).toBe(false)
+  })
+})
+
+
+describe('リファレンスシート（SPEC §7.2）', () => {
+  it('シートを入力に取る動画ワークフローだけを見分ける', () => {
+    expect(needsReferenceSheet(workflow({ id: 'ltx2_3_ic_lora_image' }))).toBe(true)
+    expect(needsReferenceSheet(T2V)).toBe(false)
+    expect(needsReferenceSheet(null)).toBe(false)
+    expect(needsReferenceSheet(undefined)).toBe(false)
+  })
+
+  it('アスペクト比のプリセットから、長辺 1280px のシートの大きさを決める', () => {
+    expect(sheetSize('16:9 (Widescreen)')).toEqual({ width: 1280, height: 720 })
+    expect(sheetSize('9:16 (Portrait Widescreen)')).toEqual({
+      width: 720,
+      height: 1280,
+    })
+    expect(sheetSize('1:1 (Square)')).toEqual({ width: 1280, height: 1280 })
+    // 8 の倍数に丸める（4:3 → 1280x960）
+    expect(sheetSize('4:3 (Standard)')).toEqual({ width: 1280, height: 960 })
+  })
+
+  it('読めないアスペクト比は既定の 1280x720 にする', () => {
+    expect(sheetSize('')).toEqual({ width: 1280, height: 720 })
+    expect(sheetSize('わからない')).toEqual({ width: 1280, height: 720 })
+    expect(sheetSize('0:0')).toEqual({ width: 1280, height: 720 })
   })
 })

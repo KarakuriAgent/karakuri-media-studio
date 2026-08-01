@@ -32,7 +32,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from . import agent_protocol, autotag, grok, jobs, library, prompts, ws
+from . import agent_protocol, autotag, grok, jobs, library, prompts, sheets, ws
 from .agent_protocol import ActionError
 from .agent_store import (
     load,
@@ -670,7 +670,7 @@ async def _library(session_id: str, action: AgentAction) -> None:
         return
     try:
         item = await library.add_from_job(
-            job, action.source or "", action.title, action.tags
+            job, action.source or "", action.title, action.tags, action.category
         )
     except library.LibraryDuplicate as exc:
         # 二重登録はエラーではなく「もう棚にある」という案内にする。
@@ -696,10 +696,11 @@ async def _library(session_id: str, action: AgentAction) -> None:
     # 表示名とタグを明示しなかったぶんは Grok に考えさせる（SPEC §7.2）
     autotag.spawn_for(item, job, named=bool(action.title))
     tags = f" タグ: {', '.join(item.tags)}。" if item.tags else ""
+    category = f" 分類: {item.category}。" if item.category else ""
     await _event(
         session_id,
         "library_added",
-        f"「{item.name}」をライブラリに登録しました（{item.path}）。{tags}"
+        f"「{item.name}」をライブラリに登録しました（{item.path}）。{tags}{category}"
         "以降のジョブの入力にこのパスを使えます。",
         job_id=job.id,
         library_id=item.id,
@@ -714,7 +715,10 @@ LIBRARY_SEARCH_LIMIT = 50
 def _library_line(item) -> str:
     tags = f" [{', '.join(item.tags)}]" if item.tags else ""
     nsfw = " 🫣NSFW" if item.nsfw else ""
-    return f"- `{item.path}` — 「{item.name}」（{item.kind}）{tags}{nsfw}"
+    # 分類は必ず出す。未分類のものは明示値（'none'）で書いておくと、そのまま
+    # library_search の絞り込み条件として書き写せる（SPEC §7.2）
+    category = item.category or library.UNCATEGORIZED
+    return f"- `{item.path}` — 「{item.name}」（{item.kind} / {category}）{tags}{nsfw}"
 
 
 def _library_search_text(
@@ -748,19 +752,30 @@ async def _library_search(session_id: str, action: AgentAction) -> None:
     CHOICES に焼き込めるのは種別ごとの新しい 50 件だけなので、それ以前のものや
     タグ・名前での絞り込みはこのアクションで取りに来てもらう。
     """
-    items, total = await library.search_items(
-        kind=action.library_kind,
-        query=action.query,
-        tag=action.tag,
-        limit=LIBRARY_SEARCH_LIMIT,
-        offset=action.offset,
-    )
+    try:
+        items, total = await library.search_items(
+            kind=action.library_kind,
+            category=action.category,
+            query=action.query,
+            tag=action.tag,
+            limit=LIBRARY_SEARCH_LIMIT,
+            offset=action.offset,
+        )
+    except library.LibraryError as exc:
+        await _event(
+            session_id,
+            "action_failed",
+            f"ライブラリを検索できませんでした: {exc}",
+            error=str(exc),
+        )
+        return
     criteria = ", ".join(
         part
         for part in (
             f"q={action.query!r}" if action.query else "",
             f"tag={action.tag!r}" if action.tag else "",
             f"kind={action.library_kind}" if action.library_kind else "",
+            f"category={action.category}" if action.category else "",
         )
         if part
     ) or "絞り込みなし"
@@ -771,6 +786,43 @@ async def _library_search(session_id: str, action: AgentAction) -> None:
         total=total,
         offset=action.offset,
         returned=len(items),
+    )
+
+
+async def _library_sheet(session_id: str, action: AgentAction) -> None:
+    """ライブラリの画像素材を 1 枚のリファレンスシートに合成する（承認不要。SPEC §7.2）。
+
+    `ltx2_3_ic_lora_image` が参照入力に取る「複数パネルを並べた 1 枚」を組み立てる。
+    ``item_ids`` の**並び順に意味がある**（左上から詰め、``character`` の素材だけ
+    大きいパネルになる）。出来上がったシートはふつうの素材として棚に残るので、
+    そのまま次のジョブの `source_image` に書ける。
+    """
+    try:
+        item = await library.add_sheet(
+            action.item_ids,
+            action.title,
+            action.width or sheets.DEFAULT_WIDTH,
+            action.height or sheets.DEFAULT_HEIGHT,
+        )
+    except library.LibraryError as exc:
+        await _event(
+            session_id,
+            "action_failed",
+            f"リファレンスシートを作れませんでした: {exc}",
+            error=str(exc),
+        )
+        return
+    await _event(
+        session_id,
+        "library_sheet_added",
+        f"リファレンスシート「{item.name}」を作ってライブラリに登録しました"
+        f"（id: {item.id}、{item.path}、URL: {item.url}）。"
+        f"{len(action.item_ids)} 枚を指定の順に並べています。"
+        " このパスを `ltx2_3_ic_lora_image` の `source_image` に指定してください。",
+        library_id=item.id,
+        path=item.path,
+        url=item.url,
+        item_ids=action.item_ids,
     )
 
 
@@ -964,6 +1016,9 @@ async def apply_action(session_id: str, action: AgentAction) -> bool:
         return False
     if action.action == "library_search":
         await _library_search(session_id, action)
+        return False
+    if action.action == "library_sheet":
+        await _library_sheet(session_id, action)
         return False
     if action.action == "inspect":
         await _inspect(session_id, action)

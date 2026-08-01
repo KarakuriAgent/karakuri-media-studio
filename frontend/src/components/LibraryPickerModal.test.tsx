@@ -32,6 +32,7 @@ function item(overrides: Partial<LibraryItem> = {}): LibraryItem {
     source_job_id: null,
     source: null,
     tags: ['キャラ'],
+    category: null,
     ...overrides,
   }
 }
@@ -138,6 +139,69 @@ describe('LibraryPickerModal', () => {
     await waitFor(() => expect(lastQuery().tag).toBe('キャラ'))
     fireEvent.click(screen.getByRole('button', { name: 'キャラ' }))
     await waitFor(() => expect(lastQuery().tag).toBeUndefined())
+  })
+
+  it('カテゴリのプルダウンで絞り込む（未分類も選べる）', async () => {
+    show()
+    await waitFor(() => expect(listLibrary).toHaveBeenCalled())
+    // 既定は「すべてのカテゴリ」なので分類では絞らない
+    expect(lastQuery().category).toBeUndefined()
+
+    const select = screen.getByLabelText('カテゴリで絞り込み')
+    fireEvent.change(select, { target: { value: 'character' } })
+    await waitFor(() => expect(lastQuery().category).toBe('character'))
+    expect(lastQuery().offset).toBe(0)
+
+    fireEvent.change(select, { target: { value: 'none' } })
+    await waitFor(() => expect(lastQuery().category).toBe('none'))
+
+    fireEvent.change(select, { target: { value: '' } })
+    await waitFor(() => expect(lastQuery().category).toBeUndefined())
+  })
+
+  it('タイルのプルダウンでカテゴリを変える（未分類にも戻せる）', async () => {
+    listLibrary.mockResolvedValue(pageOf([item({ category: 'prop' })]))
+    const { onChanged } = show()
+    const select = (await screen.findByLabelText(
+      '「決めポーズ」のカテゴリ',
+    )) as HTMLSelectElement
+    expect(select.value).toBe('prop')
+
+    updateLibraryItem.mockResolvedValue(item({ category: 'character' }))
+    fireEvent.change(select, { target: { value: 'character' } })
+    await waitFor(() =>
+      expect(updateLibraryItem).toHaveBeenCalledWith('l1', {
+        category: 'character',
+      }),
+    )
+    expect(onChanged).toHaveBeenCalled()
+
+    // 'none' は「未分類に戻す」の明示指定
+    fireEvent.change(select, { target: { value: 'none' } })
+    await waitFor(() =>
+      expect(updateLibraryItem).toHaveBeenLastCalledWith('l1', {
+        category: 'none',
+      }),
+    )
+  })
+
+  it('分類で絞り込みながら足したものは、そのカテゴリで登録する', async () => {
+    show()
+    await waitFor(() => expect(listLibrary).toHaveBeenCalled())
+    fireEvent.change(screen.getByLabelText('カテゴリで絞り込み'), {
+      target: { value: 'background' },
+    })
+    const file = new File(['x'], 'bg.png', { type: 'image/png' })
+    const input = document.querySelector('input[type=file]') as HTMLInputElement
+    fireEvent.change(input, { target: { files: [file] } })
+    await waitFor(() =>
+      expect(api.uploadToLibrary).toHaveBeenCalledWith(
+        'image',
+        file,
+        [],
+        'background',
+      ),
+    )
   })
 
   it('選ぶとその素材を返す', async () => {

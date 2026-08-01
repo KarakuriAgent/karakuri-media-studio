@@ -1088,6 +1088,16 @@ LibraryKind = Literal["image", "video", "audio"]
 #: ジョブのどの出力をライブラリに入れるか（ResultPane のタブと同じ区分）
 LibrarySource = Literal["image", "last_frame", "video", "audio"]
 
+#: 素材の出どころ（``LibraryItem.source``）。ジョブの出力 4 種に、アプリ内で
+#: 合成したリファレンスシート（'sheet'、SPEC §7.2）を足したもの。from-job で
+#: 指定できるのは :data:`LibrarySource` のほうだけ
+LibraryOrigin = Literal["image", "last_frame", "video", "audio", "sheet"]
+
+#: 素材の分類（棚の仕切り）。None は「未分類」で、DB では NULL。
+#: 後段のキャラクターシート合成で character は大パネル、background / prop は
+#: 小パネルに割り当てる（SPEC §7.2）。
+LibraryCategory = Literal["character", "background", "prop"]
+
 
 class LibraryItem(BaseModel):
     """ライブラリの 1 件（履歴とは独立に取っておく素材）。"""
@@ -1106,10 +1116,13 @@ class LibraryItem(BaseModel):
     nsfw_source: str = ""
     #: 生成物から登録した場合の元ジョブ id（アップロードなら None）
     source_job_id: str | None = None
-    #: 元ジョブのどの出力か（重複登録の判定に使う。アップロード・旧行は None）
-    source: LibrarySource | None = None
+    #: 元ジョブのどの出力か（重複登録の判定に使う。アップロード・旧行は None）。
+    #: 合成したリファレンスシートは 'sheet'（元ジョブを持たない）
+    source: LibraryOrigin | None = None
     #: 分類タグ（検索・絞り込み用。順序は登録したまま）
     tags: list[str] = Field(default_factory=list)
+    #: 素材の分類（None = 未分類。アップロード時に指定しなければ未分類）
+    category: LibraryCategory | None = None
 
 
 class LibraryFromJob(BaseModel):
@@ -1120,6 +1133,8 @@ class LibraryFromJob(BaseModel):
     #: 表示名（空ならジョブのプロンプトから決める）
     name: str = ""
     tags: list[str] = Field(default_factory=list)
+    #: 分類（省略・空・'none' なら未分類。不正な値は 400。:mod:`app.library` で検証）
+    category: str | None = None
 
 
 class LibraryUpdate(BaseModel):
@@ -1128,6 +1143,26 @@ class LibraryUpdate(BaseModel):
     name: str | None = None
     nsfw: bool | None = None
     tags: list[str] | None = None
+    #: 分類。None（未送信）= 変えない / 'none'（または空文字）= 未分類に戻す /
+    #: それ以外は :data:`LibraryCategory` の値（不正なら 400）。他の項目と同じく
+    #: 「None = 変更なし」を守るため、未分類は値なしではなく明示の 'none' で送る
+    category: str | None = None
+
+
+class LibrarySheet(BaseModel):
+    """POST /api/library/sheet body（素材を 1 枚のリファレンスシートに合成する）。
+
+    ``item_ids`` の**並び順に意味がある**（左上から順に置く。SPEC §7.2）。枚数・
+    大きさの検証は :mod:`app.sheets` が行い、外れていれば 400。
+    """
+
+    #: 載せる素材の id（すべて kind='image'。並べる順序）
+    item_ids: list[str] = Field(default_factory=list)
+    #: 表示名（空なら素材の名前から決める）
+    name: str = ""
+    #: シートの大きさ（省略すると 1280x720。出力動画と同じ縦横比が望ましい）
+    width: int | None = None
+    height: int | None = None
 
 
 class LibraryProgress(BaseModel):
@@ -1177,7 +1212,7 @@ AgentStatus = Literal[
 AgentCheckinMode = Literal["every_job", "milestone", "auto"]
 AgentActionName = Literal[
     "plan", "run_task", "continue", "rerun", "inspect", "note", "rename",
-    "library", "library_search", "checkin", "done",
+    "library", "library_search", "library_sheet", "checkin", "done",
 ]
 AgentTaskStatus = Literal["pending", "running", "done", "failed", "skipped"]
 
@@ -1326,8 +1361,16 @@ class AgentAction(BaseModel):
     tag: str | None = None
     #: 検索対象の素材種別（'image' / 'video' / 'audio'。None は全種別）
     library_kind: str | None = None
+    #: 素材の分類（'character' / 'background' / 'prop' / 'none' = 未分類）。
+    #: library では登録時の分類、library_search では絞り込み条件。None は
+    #: 「指定なし」= 未分類のまま登録する / 分類で絞らない（SPEC §7.2）
+    category: str | None = None
     #: 検索結果の読み出し位置（ページング）
     offset: int = 0
+    # library_sheet アクション: シートに載せる素材の id（並べる順）と大きさ
+    item_ids: list[str] = Field(default_factory=list)
+    width: int | None = None
+    height: int | None = None
     overrides: dict[str, Any] = Field(default_factory=dict)
     # プラン外 continue / rerun がユーザー承認を得たか（Grok は指定できない）
     approved: bool = False

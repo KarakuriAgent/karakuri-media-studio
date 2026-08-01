@@ -366,7 +366,8 @@ async def _dispatch(session_id: str, action) -> None:
         return
     # 生成を伴わない即時アクションはこのリクエストの中で片付ける
     if action.action in (
-        "plan", "checkin", "done", "note", "rename", "library", "library_search",
+        "plan", "checkin", "done", "note", "rename",
+        "library", "library_search", "library_sheet",
     ):
         await agent_runner.apply_action(session_id, action)
         return

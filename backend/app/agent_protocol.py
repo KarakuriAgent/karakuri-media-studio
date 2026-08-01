@@ -67,6 +67,7 @@ ACTION_NAMES = (
     "rename",
     "library",
     "library_search",
+    "library_sheet",
     "checkin",
     "done",
 )
@@ -80,6 +81,9 @@ MAX_PLAN_TASKS = 5
 
 # library アクションが取っておけるジョブ出力（app.library.SOURCES と同じ区分）
 LIBRARY_SOURCES = tuple(library_service.SOURCES)
+
+# library / library_search が書ける分類（未分類は明示値 'none'。SPEC §7.2）
+LIBRARY_CATEGORIES = (*library_service.CATEGORIES, library_service.UNCATEGORIZED)
 
 
 class ActionError(Exception):
@@ -459,6 +463,39 @@ def _overrides(payload: dict[str, Any], fields: tuple[str, ...]) -> dict[str, An
     return {k: source[k] for k in fields if k in source and source[k] is not None}
 
 
+def _category(payload: dict[str, Any], where: str) -> str | None:
+    """``category`` の指定（省略は None = 分類しない / 分類で絞らない）。
+
+    ``"none"``（:data:`app.library.UNCATEGORIZED`）は「未分類」という**明示の値**
+    なので None には潰さない: ``library`` では未分類のまま登録し、
+    ``library_search`` では未分類だけに絞る条件になる。
+    """
+    value = str(payload.get("category") or "").strip()
+    if not value:
+        return None
+    if value not in LIBRARY_CATEGORIES:
+        raise ActionError(
+            f"{where} の category は {' / '.join(LIBRARY_CATEGORIES)} のいずれか"
+            "（省略すると分類なし）で指定してください"
+        )
+    return value
+
+
+def _sheet_size(value: Any, field: str) -> int | None:
+    """``library_sheet`` のキャンバス指定（省略は None = 既定サイズ）。
+
+    範囲（正の値・上限）の判定は :mod:`app.sheets` に任せ、ここは型だけ見る。
+    """
+    if value in (None, ""):
+        return None
+    try:
+        return int(value)
+    except (TypeError, ValueError) as exc:
+        raise ActionError(
+            f"library_sheet の {field} はピクセル数（整数）で指定してください"
+        ) from exc
+
+
 def parse_action(
     text: str,
     *,
@@ -482,8 +519,8 @@ def parse_action(
     name = str(payload.get("action") or "").strip()
     if name not in ACTION_NAMES:
         raise ActionError(
-            f"未知の action '{name}' です。使えるのは plan / run_task / continue /"
-            " rerun / inspect / note / rename / checkin / done です"
+            f"未知の action '{name}' です。使えるのは"
+            f" {' / '.join(ACTION_NAMES)} です"
         )
 
     action = AgentAction(action=name)  # type: ignore[arg-type]
@@ -555,6 +592,7 @@ def parse_action(
         action.source = source
         action.title = str(payload.get("title") or "").strip()
         action.tags = library_service.normalize_tags(payload.get("tags"))
+        action.category = _category(payload, "library")
     elif name == "library_search":
         action.query = str(payload.get("q") or payload.get("query") or "").strip()
         tag = str(payload.get("tag") or "").strip()
@@ -567,12 +605,29 @@ def parse_action(
                 "（省略すると全種別）で指定してください"
             )
         action.library_kind = kind or None
+        action.category = _category(payload, "library_search")
         try:
             action.offset = max(0, int(payload.get("offset") or 0))
         except (TypeError, ValueError) as exc:
             raise ActionError(
                 "library_search の offset は 0 以上の整数で指定してください"
             ) from exc
+    elif name == "library_sheet":
+        raw_ids = payload.get("item_ids")
+        item_ids = (
+            [str(x).strip() for x in raw_ids if str(x).strip()]
+            if isinstance(raw_ids, list)
+            else []
+        )
+        if not item_ids:
+            raise ActionError(
+                "library_sheet には item_ids（シートに載せるライブラリ素材の id を、"
+                "並べる順に 1 件以上）が必要です"
+            )
+        action.item_ids = item_ids
+        action.title = str(payload.get("name") or payload.get("title") or "").strip()
+        action.width = _sheet_size(payload.get("width"), "width")
+        action.height = _sheet_size(payload.get("height"), "height")
     elif name == "checkin":
         question = str(payload.get("question") or payload.get("content") or "").strip()
         if not question:

@@ -1,6 +1,13 @@
 import { useState } from 'react'
 import { ApiError, api, formatDetail } from '../api'
-import type { Job, LibraryItem, LibrarySource } from '../types'
+import type {
+  Job,
+  LibraryCategory,
+  LibraryCategoryValue,
+  LibraryItem,
+  LibrarySource,
+} from '../types'
+import { CATEGORY_LABELS, UNCATEGORIZED } from './LibraryPickerModal'
 
 /** その出力が既にライブラリにあるか（`/api/options` の library から判定）。 */
 export function isInLibrary(
@@ -49,12 +56,14 @@ export default function LibraryAddButton({
     'idle' | 'busy' | 'done' | 'exists' | 'failed'
   >('idle')
   const [error, setError] = useState<string | null>(null)
+  // 登録と同時に付ける分類。既定は未分類（あとからライブラリで変えられる）。
+  const [category, setCategory] = useState<LibraryCategoryValue>(UNCATEGORIZED)
 
   const add = async () => {
     setState('busy')
     setError(null)
     try {
-      await api.addJobToLibrary(job.id, source)
+      await api.addJobToLibrary(job.id, source, '', [], category)
       setState('done')
       onAdded?.()
       window.setTimeout(() => setState('idle'), 2000)
@@ -84,15 +93,35 @@ export default function LibraryAddButton({
             : `☆ ライブラリに登録${label ? `: ${label}` : ''}`
 
   return (
-    <button
-      className={`btn-ghost !py-1 text-xs ${
-        shown === 'failed' ? '!text-red-300' : ''
-      } ${shown === 'exists' ? '!text-slate-500' : ''}`}
-      disabled={shown === 'busy' || shown === 'exists'}
-      title={error ?? 'ライブラリに入れると、履歴を消しても素材として残ります'}
-      onClick={() => void add()}
-    >
-      {text}
-    </button>
+    <span className="inline-flex items-center gap-1">
+      <button
+        className={`btn-ghost !py-1 text-xs ${
+          shown === 'failed' ? '!text-red-300' : ''
+        } ${shown === 'exists' ? '!text-slate-500' : ''}`}
+        disabled={shown === 'busy' || shown === 'exists'}
+        title={error ?? 'ライブラリに入れると、履歴を消しても素材として残ります'}
+        onClick={() => void add()}
+      >
+        {text}
+      </button>
+      {/* 登録済み・登録直後は分類を変える先がライブラリ側なので出さない */}
+      {(shown === 'idle' || shown === 'failed') && (
+        <select
+          className="field w-auto !py-1 text-xs"
+          aria-label="登録するカテゴリ"
+          value={category}
+          onChange={(event) =>
+            setCategory(event.target.value as LibraryCategoryValue)
+          }
+        >
+          <option value={UNCATEGORIZED}>未分類</option>
+          {(Object.keys(CATEGORY_LABELS) as LibraryCategory[]).map((value) => (
+            <option key={value} value={value}>
+              {CATEGORY_LABELS[value]}
+            </option>
+          ))}
+        </select>
+      )}
+    </span>
   )
 }

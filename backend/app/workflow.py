@@ -322,11 +322,18 @@ def video_resolution(spec: WorkflowSpec, params: GenerationParams) -> tuple[int,
     template centre-crops anything that does not match.  Workflows without a
     start frame (t2v, the IC-LoRA reference sheet, whose width / height feed a
     ``ResizeAndPadImage`` target instead) always use the preset.
+
+    Both edges are rounded to ``spec.resolution_multiple`` rather than the
+    image-side default of 8: the LTX latent grid is 32px, and the union-control
+    IC-LoRA encodes the reference clip at half resolution, so it needs 64.
     """
     size = params.start_image_size
+    multiple = spec.resolution_multiple
     if spec.accepts_start_image and size:
-        return resolution_for_image(size[0], size[1], params.megapixels)
-    return resolution(params.aspect_ratio, params.megapixels)
+        return resolution_for_image(
+            size[0], size[1], params.megapixels, multiple=multiple
+        )
+    return resolution(params.aspect_ratio, params.megapixels, multiple=multiple)
 
 
 # --- model file names (SPEC §3.3) ------------------------------------------

@@ -228,6 +228,11 @@ class WorkflowSpec:
     accepts_start_image: bool = False
     #: UI label of the primary image input
     image_label: str = "開始フレーム"
+    #: 動画の幅・高さを丸める単位。LTX の latent は 32px 単位なので、32 の倍数で
+    #: ないと端が数 px 欠ける。さらに union-control IC-LoRA は参照動画を 0.5 倍
+    #: 解像度で latent エンコードするため、その半分（= 元の 64 の倍数）でないと
+    #: latent の形が合わずに実行時に落ちる。
+    resolution_multiple: int = 8
     lora_chain: LoraChain | None = None
     notes: str = ""
     seeds: tuple[Target, ...] = ()
@@ -443,6 +448,7 @@ LTX_T2V = WorkflowSpec(
         ' with "Starting from the given first frame".'
     ),
     accepts_start_image=False,
+    resolution_multiple=32,
     inject={
         "prompt": T("267:266", "value", "PrimitiveStringMultiline"),
         "negative": T("267:247", "text", "CLIPTextEncode"),
@@ -489,6 +495,7 @@ LTX_I2V = WorkflowSpec(
     ),
     accepts_start_image=True,
     image_label="開始フレーム",
+    resolution_multiple=32,
     inject={
         "prompt": T("320:319", "value", "PrimitiveStringMultiline"),
         "negative": T("320:313", "text", "CLIPTextEncode"),
@@ -542,6 +549,7 @@ LTX_IA2V = WorkflowSpec(
     ),
     accepts_start_image=True,
     image_label="開始フレーム",
+    resolution_multiple=32,
     inject={
         "prompt": T("340:319", "value", "PrimitiveStringMultiline"),
         "negative": T("340:314", "text", "CLIPTextEncode"),
@@ -597,6 +605,7 @@ LTX_ID_LORA = WorkflowSpec(
     ),
     accepts_start_image=True,
     image_label="開始フレーム",
+    resolution_multiple=32,
     inject={
         "prompt": T("340:319", "value", "PrimitiveStringMultiline"),
         "negative": T("340:314", "text", "CLIPTextEncode"),
@@ -644,6 +653,7 @@ LTX_FLF2V = WorkflowSpec(
     ),
     accepts_start_image=True,
     image_label="最初のフレーム",
+    resolution_multiple=32,
     inject={
         "prompt": T("129:128", "text", "CLIPTextEncode"),
         "negative": T("129:112", "text", "CLIPTextEncode"),
@@ -679,13 +689,18 @@ LTX_IC_LORA_IMAGE = WorkflowSpec(
     ),
     prompt_hint=(
         "The image input is a multi-panel reference sheet, not a first frame: it"
-        " only fixes how the character and the props look. Describe the whole"
-        " shot from scratch (subject, set, framing and motion, as in t2v) and"
-        ' never write "Starting from the given first frame".'
+        " only fixes how the character and the props look. Write the prompt in"
+        ' the two parts this IC-LoRA expects. Start with "Reference sheet:"'
+        " followed by one short clause per panel, in the order the panels are"
+        " laid out (left to right, top to bottom), naming what each panel shows"
+        ' — then "Generated video:" followed by the shot itself (subject, set,'
+        " framing, motion and audio, written from scratch as in t2v). Never"
+        ' write "Starting from the given first frame".'
     ),
     # the image is a multi-panel reference sheet, not a first frame
     accepts_start_image=False,
     image_label="リファレンスシート画像",
+    resolution_multiple=32,
     inject={
         # prompt enhance is disabled, so the literal on_false branch is used
         "prompt": T("129:211", "on_false", "ComfySwitchNode"),
@@ -731,6 +746,7 @@ LTX_IC_LORA_MOTION = WorkflowSpec(
     ),
     accepts_start_image=True,
     image_label="開始フレーム",
+    resolution_multiple=64,
     inject={
         "prompt": T("129:211", "on_false", "ComfySwitchNode"),
         "negative": T("129:112", "text", "CLIPTextEncode"),

@@ -599,7 +599,8 @@ CREATE TABLE library (
   nsfw          INTEGER NOT NULL DEFAULT 0,
   nsfw_source   TEXT NOT NULL DEFAULT '',  -- '' / 'auto'（元ジョブから継承） / 'manual'
   source_job_id TEXT,                      -- 生成物から登録した場合の元ジョブ（アップロードは NULL）
-  tags          TEXT NOT NULL DEFAULT '[]' -- 分類タグの JSON 配列（後から足したカラム）
+  tags          TEXT NOT NULL DEFAULT '[]',-- 分類タグの JSON 配列（後から足したカラム）
+  category      TEXT                       -- 分類（'character'|'background'|'prop'。NULL = 未分類）
 );
 ```
 
@@ -623,16 +624,54 @@ CREATE TABLE library (
   `assets/` も引き続き有効なので、LoRA の `default_audio` など既存の値は壊れない）
 - **タグ**: 各素材に分類タグを付けられる（登録時 / `PATCH` で編集）。前後の空白・空・重複（大文字小文字
   無視）は保存時に落とし、順序は書いたまま。1 タグ 40 文字まで（`library.normalize_tags`）
-- **検索とページング**: `GET /api/library` は `kind`（種別）/ `q`（表示名とタグへの部分一致、
-  大文字小文字無視）/ `tag`（完全一致）/ `limit`（既定 50、最大 200）/ `offset` を取り、
+- **カテゴリ（分類）**: タグとは別に、各素材は **1 つだけ**分類を持つ（棚の仕切り）。値は
+  `character`（キャラクター）/ `background`（背景）/ `prop`（小物）で、それ以外は**未分類**
+  （DB は NULL、カラムを足す前の既存行もそのまま未分類になる）。登録時（アップロード・from-job）に
+  指定でき、`PATCH` で変更できる。不正な値は **400**（`library.check_category`）。
+  API では「指定なし」と「未分類そのもの」を区別する必要があるため、**未分類は明示値
+  `none`**（`library.UNCATEGORIZED`、空文字も同義）で表す: `PATCH` で `category` を送らなければ
+  変更なし、`"none"` を送ると未分類に戻す（`tags: []` と同じ考え方）。この分類は後段の
+  キャラクターシート合成で `character` を大パネル、`background` / `prop` を小パネルに割り当てる
+- **リファレンスシートの合成**（`POST /api/library/sheet`、`app/sheets.py`）: 棚の画像素材を選ぶと、
+  IC-LoRA の動画ワークフロー（`ltx2_3_ic_lora_image`）が参照入力に取る「複数パネルを並べた 1 枚」を
+  自動で組み立てる。body は `{item_ids, name?, width?, height?}` で、**`item_ids` の並び順に意味がある**
+  （左上から詰める）。1〜8 枚（`sheets.MAX_ITEMS`）、すべて `kind='image'`。存在しない id・画像以外・
+  0 枚・上限超過・大きすぎるキャンバス（1 辺 4096px 超）・読めない画像は **400**。
+  出来上がったシートは `library/image/` に置いてふつうの素材として登録する（`kind='image'` /
+  `category='character'` / タグ `reference-sheet` / `source='sheet'`）。素材のどれかが NSFW ならシートも
+  NSFW（引き継ぎなので `nsfw_source='auto'`）。そのまま `source_image` に指定できる
+
+  レイアウト規則（決定的。`sheets.plan_layout` に純粋な計算として切り出してあり、描画はそれに従うだけ）:
+  1. 背景は**黒**。パネルは**カテゴリで大小 2 種**に分かれる（`character` = 主役 / `background`・`prop`・
+     未分類 = 脇役）。Lightricks のモデルカードいわく「大きいパネルほど精密に再現される」ため
+  2. 片方の群しか無ければ、キャンバス全体を 1 つの格子に切って並べる
+  3. 両方あればキャンバスを**左右に分割**し、左を主役・右を脇役に割り当てる。分割位置は重み
+     （主役 1 件 = 2、脇役 1 件 = 1）の比で決めるので、**主役のパネルは必ず脇役より広くなる**
+  4. 各領域の格子は「セルの縦横比がキャンバスの縦横比にいちばん近くなる」列数を選ぶ（同点なら
+     キャンバスの向きに合わせる）。行は上から、列は左から、指定された順に埋める
+  5. 各パネルの中では縦横比を保って内側に収め（contain、周囲に 8px の余白）、小さい素材は
+     lanczos で拡大する。テキストラベルは入れない（モデルカードの指定）
+
+  既定のシートサイズは 1280x720 だが、**出力動画と同じ縦横比**にするのが望ましい（ワークフローの
+  `ResizeAndPadImage` が黒でパディングするので、比が合っていれば余白が出ない）。プロンプトは
+  `Reference sheet: … / Generated video: …` の 2 部構成で書く（`WorkflowSpec.prompt_hint`、§3.1）
+- **検索とページング**: `GET /api/library` は `kind`（種別）/ `category`（分類。未指定なら全件、
+  `none` で未分類のみ）/ `q`（表示名とタグへの部分一致、大文字小文字無視）/ `tag`（完全一致）/
+  `limit`（既定 50、最大 200）/ `offset` を取り、
   `{items, total, limit, offset, tags}` を返す。`total` は**絞り込み後の総件数**なので
-  「まだ何件あるか」が分かり、`tags` は補完用の全タグ一覧。`kind` だけ SQL で絞り、`q` / `tag` は
-  Python 側で判定する（タグは 1 カラムに JSON 配列で持っており、LIKE では誤検出しやすいため。
-  個人利用の規模なら読み切ってから絞るほうが確実）
-- フォーム / エージェント用に `GET /api/options` の `library` には全件が入る。表示名・NSFW・タグは
-  `PATCH /api/library/{id}`、登録解除は `DELETE /api/library/{id}`（ファイルも消す）
+  「まだ何件あるか」が分かり、`tags` は補完用の全タグ一覧。`kind` と `category` だけ SQL で絞り、
+  `q` / `tag` は Python 側で判定する（タグは 1 カラムに JSON 配列で持っており、LIKE では誤検出
+  しやすいため。個人利用の規模なら読み切ってから絞るほうが確実）
+- フォーム / エージェント用に `GET /api/options` の `library` には全件が入る。表示名・NSFW・タグ・
+  カテゴリは `PATCH /api/library/{id}`、登録解除は `DELETE /api/library/{id}`（ファイルも消す）
 - DB とファイル操作は `app/library.py` に集約し、ルーターとエージェント（`library` /
-  `library_search` アクション）が共用する
+  `library_search` / `library_sheet` アクション）が共用する
+- **エージェントからも同じ棚を使える**（AGENT-MODE §3.1）: `library` は登録時に `category` を、
+  `library_search` は絞り込みに `kind` / `category` を取り、検索結果の各行には分類を
+  `（image / character）`（未分類は `none`）の形で出す。`library_sheet` は `add_sheet` をそのまま
+  呼ぶアクションで、成功すると `library_sheet_added` イベントにシートの id・パス・URL が入り、
+  そのパスを `ltx2_3_ic_lora_image` の `source_image` に指定して動画化する流れまでを
+  システムプロンプトで指示している（承認不要の即時アクション）
 
 ---
 
@@ -676,9 +715,10 @@ SPA 1 画面 + 履歴。ダークテーマの生成系ツールらしい見た�
 
 - 進捗は ComfyUI の WS イベント（`executing` / `progress`）をそのまま％表示に変換
 - 実行中でもキュー追加可能（ジョブキュー表示）
-- **入力リソースは「ライブラリから選択」「履歴から選択」で使い回せる**: 開始フレーム / 編集元画像・最後のフレーム・参照動画・リファレンス音声の各欄に 2 つのボタンを置く。[ライブラリから選択] は取っておいた素材の一覧（`LibraryPickerModal`、§7.2）で、選ぶと `/library/…` URL をそのまま欄に入れる（配信済みなのでコピーしない）。モーダル内から素材のアップロード追加・リネーム・タグ編集・削除もできる。一覧は `GET /api/library` から 50 件ずつ読み、**検索ボックス（名前・タグの部分一致）とタグチップでの絞り込み**、[さらに表示] での continue 読み込みに対応する（絞り込みとページングはサーバー側）
+- **入力リソースは「ライブラリから選択」「履歴から選択」で使い回せる**: 開始フレーム / 編集元画像・最後のフレーム・参照動画・リファレンス音声の各欄に 2 つのボタンを置く。[ライブラリから選択] は取っておいた素材の一覧（`LibraryPickerModal`、§7.2）で、選ぶと `/library/…` URL をそのまま欄に入れる（配信済みなのでコピーしない）。モーダル内から素材のアップロード追加・リネーム・タグ編集・削除もできる。一覧は `GET /api/library` から 50 件ずつ読み、**検索ボックス（名前・タグの部分一致）・カテゴリのプルダウン（すべて / キャラクター / 背景 / 小物 / 未分類）・タグチップでの絞り込み**、[さらに表示] での continue 読み込みに対応する（絞り込みとページングはサーバー側）。素材ごとのカテゴリはタイル下のプルダウンでその場で変えられ、モーダルからのアップロードには絞り込み中のカテゴリがそのまま付く
+- **リファレンスシートを「ライブラリから作成」**: リファレンスシートを入力に取る動画ワークフロー（`ltx2_3_ic_lora_image`）を選んでいるときだけ、画像欄に [ライブラリから作成] を足す（`SheetBuilderModal`）。押すと `LibraryPickerModal` の複数選択モード（タイルに選択順のバッジが出る）で画像素材を **2〜8 枚**選べ、[この順で作成] で `POST /api/library/sheet`（§7.2）を呼ぶ。シートの大きさは選択中のアスペクト比から長辺 1280px で決める（`form.sheetSize`。プリセットが読めなければ 1280x720）。出来上がったシートはそのまま画像欄に入り、ライブラリにも残る。作成中はボタンを [作成中…] にし、失敗はモーダル内にそのまま出す
 - **リファレンス音声はライブラリに一本化**: `assets/audio` のプルダウンは廃止し、[ライブラリから選択] / [履歴から選択] / [アップロード]（アップロードはそのままライブラリ登録）と、選択中の名前 + プレビューだけを出す。LoRA の `default_audio` などが指す従来の `/assets/…` も入力としては引き続き有効
-- **生成物のライブラリ登録**: 結果ペイン（表示中の成果物 1 件）と履歴詳細（その job が持つ出力すべて）に [☆ ライブラリに登録] を置く（`LibraryAddButton`）。既に登録済みのものは `/api/options` の library から判定して押す前から [★ 登録済みです] を出し、押してしまった場合も 409 を失敗扱いにせず同じ表示にする（§7.2）
+- **生成物のライブラリ登録**: 結果ペイン（表示中の成果物 1 件）と履歴詳細（その job が持つ出力すべて）に [☆ ライブラリに登録] を置く（`LibraryAddButton`）。既に登録済みのものは `/api/options` の library から判定して押す前から [★ 登録済みです] を出し、押してしまった場合も 409 を失敗扱いにせず同じ表示にする（§7.2）。ボタンの隣にカテゴリのプルダウン（既定は未分類）を置き、登録と同時に分類できる
 - [履歴から選択] は過去ジョブの出力から選ぶ（`HistoryPickerModal`）。**検索ボックス**でジョブの文言（動画 / 画像 / 音声プロンプト → 最初の指示）に部分一致するものだけに絞れる（ジョブは全件フロントにあるのでクライアント側で絞る）。候補は完了ジョブのみを新しい順に並べ、欄の種別で絞る（画像欄 = 生成画像とラストフレームの両方（ラベルで区別）、動画欄 = 生成動画、音声欄 = 音声ジョブの出力）。生成物は `outputs/` にあって `assets/` の外なので、選ぶと fetch → `POST /api/assets/{kind}` で assets へコピーしてから欄に入れる。モーダル内には独自の「🫣 NSFW表示」チェックボックスがあり、初期値はヘッダーのグローバルトグルに従うが、ここでの切り替えは `sessionStorage` に残さない（この画面かぎり）。オフのあいだは NSFW ジョブを一覧に出さない。Esc / 背景クリックで閉じる
 - LoRA 選択はチップ型マルチセレクト（強度スライダー付き）。選択するとトリガーワード連結欄（編集可）に反映される。セクションは 2 つあり、**「LoRA（動画）」は動画設定群の中**（登録 `target = 'video'` のみ）、**「LoRA（画像）」は画像設定群の中**（`target = 'image'` かつ選択中の画像ワークフローと同じファミリーのみ）に置く
 - **接続先プルダウン**（§5）: フォーム最上部に「接続先」（ComfyCloud / RunPod / ローカル）を置く。値は `GET /api/settings` の `comfy_target` 由来で、変えると即 `PUT /api/settings` に保存し、選択肢（`/api/options`）と `/api/health` を取り直す（ComfyUI が変われば使えるモデル・LoRA も変わるため）。設定を読み込むまでは無効化しておく
@@ -717,10 +757,11 @@ SPA 1 画面 + 履歴。ダークテーマの生成系ツールらしい見た�
 GET  /api/health                 … ComfyUI/Grok 疎通チェック
 GET  /api/options                … 画像/動画/音声ワークフロー一覧（必要入力・露出しているつまみ・秒数レンジつき）・アスペクト比・LoRA一覧・アセット一覧・ライブラリ一覧（library, §7.2）・実行時に選べるモデルスロット（model_slots）と ComfyUI のモデルファイル一覧（model_files）
 GET/POST/PUT/DELETE /api/loras   … アプリ内 LoRA 登録リストの CRUD（GET は `?target=` でその接続先のもの + 共通行、POST は `comfy_target` で紐づけ先を指定、§5）
-GET  /api/library                … ライブラリ検索（kind / q / tag / limit / offset → items + total + tags、§7.2）
+GET  /api/library                … ライブラリ検索（kind / category / q / tag / limit / offset → items + total + tags、§7.2）
 POST /api/library/{kind}         … ファイルをアップロードして登録
 POST /api/library/from-job       … ジョブの出力（image / last_frame / video / audio）を登録
-PATCH  /api/library/{id}         … 表示名 / NSFW フラグ / タグの変更
+POST /api/library/sheet          … 画像素材を 1 枚のリファレンスシートに合成して登録（item_ids の順に配置、§7.2）
+PATCH  /api/library/{id}         … 表示名 / NSFW フラグ / タグ / カテゴリの変更
 DELETE /api/library/{id}         … 登録解除（ファイルも削除）
 GET  /api/models                 … 全ワークフローのモデルファイル名一覧（既定値+現在値+候補リスト、キーは workflow_id でスコープ。`?target=` でその接続先のもの、省略時は現在の接続先）
 PUT  /api/models                 … モデルファイル名の上書きと候補リストの保存（既定値と同値/空は削除、候補が空のキーは削除。`choices` 省略時は保存済みの候補を保持。`target` の環境だけを書き換える）

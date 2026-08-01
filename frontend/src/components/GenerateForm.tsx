@@ -12,6 +12,8 @@ import {
   imageWorkflowNeedsSource,
   joinTriggers,
   lorasForTarget,
+  needsReferenceSheet,
+  sheetSize,
   toSelected,
   workflowsForMode,
   type FormState,
@@ -34,6 +36,7 @@ import HistoryPickerModal, {
 } from './HistoryPickerModal'
 import LibraryPickerModal from './LibraryPickerModal'
 import ModelPicker from './ModelPicker'
+import SheetBuilderModal from './SheetBuilderModal'
 import WorkflowSelects from './WorkflowSelects'
 import { Banner, FieldError, Section } from './ui'
 
@@ -178,6 +181,7 @@ function AssetPicker({
   onUpload,
   onOpenHistory,
   onOpenLibrary,
+  onOpenSheet,
   children,
 }: {
   kind: 'image' | 'video'
@@ -190,6 +194,8 @@ function AssetPicker({
   onOpenHistory?: () => void
   /** ライブラリから選ぶモーダルを開く（同上） */
   onOpenLibrary?: () => void
+  /** ライブラリの素材からリファレンスシートを合成する（同上、SPEC §7.2） */
+  onOpenSheet?: () => void
   children?: React.ReactNode
 }) {
   const input = useRef<HTMLInputElement>(null)
@@ -243,6 +249,11 @@ function AssetPicker({
         {onOpenLibrary && (
           <button className="btn-ghost text-xs" disabled={busy} onClick={onOpenLibrary}>
             ライブラリから選択
+          </button>
+        )}
+        {onOpenSheet && (
+          <button className="btn-ghost text-xs" disabled={busy} onClick={onOpenSheet}>
+            ライブラリから作成
           </button>
         )}
         {onOpenHistory && (
@@ -311,6 +322,8 @@ export default function GenerateForm({
   // 履歴 / ライブラリのモーダルを開いている入力欄（null = 閉じている）
   const [historyTarget, setHistoryTarget] = useState<PickerTarget | null>(null)
   const [libraryTarget, setLibraryTarget] = useState<PickerTarget | null>(null)
+  // リファレンスシートの合成モーダル（IC-LoRA の画像欄でだけ開ける）
+  const [buildingSheet, setBuildingSheet] = useState(false)
 
   const registeredLoras: Lora[] = options?.loras ?? []
   const audioAssets = options?.audio_assets ?? []
@@ -340,6 +353,10 @@ export default function GenerateForm({
   const startImageLabel = imageEdits
     ? (imageWorkflow?.image_label ?? '編集元画像')
     : (workflow?.image_label ?? '開始フレーム')
+  // 画像欄がリファレンスシート（IC-LoRA）なら、ライブラリの素材から合成できる。
+  // 画像を編集するワークフローのときの欄は別物（編集元画像）なので出さない。
+  const sheetInput =
+    form.mode !== 'image_only' && !imageEdits && needsReferenceSheet(workflow)
 
   // Image LoRAs are family-scoped: only the ones matching the selected image
   // workflow can be used (the backend rejects the rest).
@@ -658,10 +675,18 @@ export default function GenerateForm({
                     apply: (url) => ({ sourceImage: url }),
                   })
                 }
+                onOpenSheet={sheetInput ? () => setBuildingSheet(true) : undefined}
               />
-              <p className="mt-1 text-[11px] text-slate-500">
-                履歴のラストフレームから続きを生成する場合は、履歴詳細の「続きを生成」を使ってください。
-              </p>
+              {sheetInput ? (
+                <p className="mt-1 text-[11px] text-slate-500">
+                  [ライブラリから作成] で、棚の素材を並べたリファレンスシートをその場で合成できます
+                  （キャラクターは大きいパネルになります）。
+                </p>
+              ) : (
+                <p className="mt-1 text-[11px] text-slate-500">
+                  履歴のラストフレームから続きを生成する場合は、履歴詳細の「続きを生成」を使ってください。
+                </p>
+              )}
               <FieldError message={fieldErrors.source_image} />
             </Section>
           )}
@@ -1094,6 +1119,22 @@ export default function GenerateForm({
           showNsfw={showNsfw}
           onSelect={(candidate) => void useFromHistory(historyTarget, candidate)}
           onClose={() => setHistoryTarget(null)}
+        />
+      )}
+
+      {buildingSheet && (
+        <SheetBuilderModal
+          showNsfw={showNsfw}
+          // シートは出力動画と同じ縦横比にしておく（ワークフローが黒で
+          // パディングするので、比が合っていれば余白が出ない）。
+          {...sheetSize(form.aspectRatio)}
+          reloadKey={libraryVersion}
+          onCreated={(item) => {
+            patch({ sourceImage: item.url })
+            setBuildingSheet(false)
+          }}
+          onClose={() => setBuildingSheet(false)}
+          onChanged={onReloadOptions}
         />
       )}
 

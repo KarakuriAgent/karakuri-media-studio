@@ -302,7 +302,7 @@ def test_start_frame_sets_the_output_aspect_ratio(env):
     job = wait_for(env.client, created["id"])
     assert job["status"] == "done", job["error"]
     assert _submitted_size(env.comfy.queued[0], "tx2_3_i2v") == resolution_for_image(
-        1000, 1500, 1.0
+        1000, 1500, 1.0, multiple=get_video_spec("tx2_3_i2v").resolution_multiple
     )
 
 
@@ -322,7 +322,7 @@ def test_unreadable_start_frame_falls_back_to_the_preset(env):
     job = wait_for(env.client, created["id"])
     assert job["status"] == "done", job["error"]
     assert _submitted_size(env.comfy.queued[0], "tx2_3_i2v") == resolution(
-        "16:9 (Widescreen)", 1.0
+        "16:9 (Widescreen)", 1.0, multiple=get_video_spec("tx2_3_i2v").resolution_multiple
     )
 
 
@@ -345,7 +345,7 @@ def test_full_mode_keeps_the_preset_for_the_generated_still(env):
     job = wait_for(env.client, created["id"])
     assert job["status"] == "done", job["error"]
     assert _submitted_size(env.comfy.queued[1], "tx2_3_i2v") == resolution(
-        "16:9 (Widescreen)", 1.0
+        "16:9 (Widescreen)", 1.0, multiple=get_video_spec("tx2_3_i2v").resolution_multiple
     )
 
 
@@ -368,7 +368,9 @@ def test_reference_sheet_ignores_the_start_frame_size(env):
     job = wait_for(env.client, created["id"])
     assert job["status"] == "done", job["error"]
     assert _submitted_size(env.comfy.queued[0], "ltx2_3_ic_lora_image") == resolution(
-        "16:9 (Widescreen)", 1.0
+        "16:9 (Widescreen)",
+        1.0,
+        multiple=get_video_spec("ltx2_3_ic_lora_image").resolution_multiple,
     )
 
 

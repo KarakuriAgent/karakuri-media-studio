@@ -1,7 +1,22 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { api } from '../api'
-import type { LibraryItem, LibraryKind } from '../types'
+import type {
+  LibraryCategory,
+  LibraryCategoryValue,
+  LibraryItem,
+  LibraryKind,
+} from '../types'
 import { Banner, Modal, NsfwBadge } from './ui'
+
+/** カテゴリの表示名（プルダウンの並び順もこの通り。SPEC §7.2）。 */
+export const CATEGORY_LABELS: Record<LibraryCategory, string> = {
+  character: 'キャラクター',
+  background: '背景',
+  prop: '小物',
+}
+
+/** 「未分類」を表す明示値（サーバーでは NULL。「指定なし」と区別する）。 */
+export const UNCATEGORIZED = 'none'
 
 /**
  * 表示する素材（`showNsfw` がオフなら NSFW を隠す）。
@@ -60,6 +75,8 @@ export default function LibraryPickerModal({
   onClose,
   onChanged,
   reloadKey,
+  selectedIds,
+  footer,
 }: {
   kind: LibraryKind
   title: string
@@ -71,9 +88,20 @@ export default function LibraryPickerModal({
   onChanged: () => void
   /** 値が変わると一覧を読み直す（自動タグ生成の WS 通知で使う） */
   reloadKey?: number
+  /**
+   * 複数選択モード（リファレンスシートの合成、SPEC §7.2）: 選択中の id を
+   * **選んだ順**で渡すと、タイルに順番のバッジが出る。`onSelect` は 1 件を
+   * 選ぶたびに呼ばれるので、選択の出し入れとモーダルを閉じるかどうかは
+   * 呼び出し側が決める（渡さなければ従来どおりの単発選択）。
+   */
+  selectedIds?: string[]
+  /** 一覧の下に足す操作列（複数選択モードの [この順で作成] など） */
+  footer?: React.ReactNode
 }) {
   const [nsfw, setNsfw] = useState(showNsfw)
   const [query, setQuery] = useState('')
+  // '' = すべて（分類で絞らない）。'none' は未分類だけ。
+  const [category, setCategory] = useState<LibraryCategoryValue | ''>('')
   const [tag, setTag] = useState<string | null>(null)
   const [items, setItems] = useState<LibraryItem[]>([])
   const [knownTags, setKnownTags] = useState<string[]>([])
@@ -90,6 +118,7 @@ export default function LibraryPickerModal({
       try {
         const page = await api.listLibrary({
           kind,
+          category: category || undefined,
           q: query.trim(),
           tag: tag ?? undefined,
           limit: PAGE_SIZE,
@@ -106,7 +135,7 @@ export default function LibraryPickerModal({
         setBusy(false)
       }
     },
-    [kind, query, tag],
+    [kind, category, query, tag],
   )
 
   // 検索条件が変わったら先頭から読み直す（入力中は少し待ってから投げる）。
@@ -141,6 +170,11 @@ export default function LibraryPickerModal({
     void mutate(() => api.updateLibraryItem(item.id, { name }))
   }
 
+  /** タイルのプルダウンで分類を変える（'none' は未分類に戻す指定）。 */
+  const setItemCategory = (item: LibraryItem, value: LibraryCategoryValue) => {
+    void mutate(() => api.updateLibraryItem(item.id, { category: value }))
+  }
+
   const editTags = (item: LibraryItem) => {
     const answer = window.prompt(
       'タグ（カンマ区切り。空にすると全部外します）',
@@ -153,6 +187,10 @@ export default function LibraryPickerModal({
       .filter(Boolean)
     void mutate(() => api.updateLibraryItem(item.id, { tags }))
   }
+
+  /** 複数選択モードでの選択順（1 始まり。選んでいなければ 0）。 */
+  const orderOf = (item: LibraryItem) =>
+    selectedIds ? selectedIds.indexOf(item.id) + 1 : 0
 
   const visible = libraryItemsOf(items, kind, nsfw)
   const hiddenByNsfw = items.length - visible.length
@@ -169,6 +207,22 @@ export default function LibraryPickerModal({
           value={query}
           onChange={(event) => setQuery(event.target.value)}
         />
+        <select
+          className="field w-auto"
+          aria-label="カテゴリで絞り込み"
+          value={category}
+          onChange={(event) =>
+            setCategory(event.target.value as LibraryCategoryValue | '')
+          }
+        >
+          <option value="">すべてのカテゴリ</option>
+          {(Object.keys(CATEGORY_LABELS) as LibraryCategory[]).map((value) => (
+            <option key={value} value={value}>
+              {CATEGORY_LABELS[value]}
+            </option>
+          ))}
+          <option value={UNCATEGORIZED}>未分類</option>
+        </select>
         <input
           ref={input}
           type="file"
@@ -177,7 +231,13 @@ export default function LibraryPickerModal({
           onChange={(event) => {
             const file = event.target.files?.[0]
             event.target.value = ''
-            if (file) void mutate(() => api.uploadToLibrary(kind, file))
+            // 絞り込み中のカテゴリをそのまま付ける（「キャラクター」を見ながら
+            // 足したものはキャラクター。すべて / 未分類のときは未分類）。
+            if (file) {
+              void mutate(() =>
+                api.uploadToLibrary(kind, file, [], category || UNCATEGORIZED),
+              )
+            }
           }}
         />
         <button
@@ -235,7 +295,7 @@ export default function LibraryPickerModal({
         <p className="py-6 text-center text-xs text-slate-500">
           {busy
             ? '読み込み中…'
-            : query.trim() || tag
+            : query.trim() || tag || category
               ? '条件に合う素材がありません。'
               : EMPTY_HINT[kind]}
         </p>
@@ -244,7 +304,9 @@ export default function LibraryPickerModal({
           {visible.map((item) => (
             <div
               key={item.id}
-              className="overflow-hidden rounded-md border border-ink-600 bg-ink-900"
+              className={`overflow-hidden rounded-md border bg-ink-900 ${
+                orderOf(item) > 0 ? 'border-accent-500' : 'border-ink-600'
+              }`}
             >
               <button
                 className="block w-full text-left transition-colors hover:opacity-80"
@@ -258,6 +320,14 @@ export default function LibraryPickerModal({
                   ) : (
                     <span className="text-2xl opacity-60">
                       {item.kind === 'audio' ? '🎵' : '🎬'}
+                    </span>
+                  )}
+                  {orderOf(item) > 0 && (
+                    <span
+                      className="absolute left-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-accent-500 text-[11px] font-medium text-white"
+                      aria-label={`「${item.name}」の選択順`}
+                    >
+                      {orderOf(item)}
                     </span>
                   )}
                   {nsfw && item.nsfw && (
@@ -276,6 +346,29 @@ export default function LibraryPickerModal({
                 )}
                 <p className="px-1.5 text-[10px] text-slate-600">{timestamp(item)}</p>
               </button>
+              <div className="px-1 pb-1">
+                <select
+                  className="field mb-1 w-full !px-1.5 !py-0.5 !text-[10px]"
+                  aria-label={`「${item.name}」のカテゴリ`}
+                  value={item.category ?? UNCATEGORIZED}
+                  disabled={busy}
+                  onChange={(event) =>
+                    setItemCategory(
+                      item,
+                      event.target.value as LibraryCategoryValue,
+                    )
+                  }
+                >
+                  <option value={UNCATEGORIZED}>未分類</option>
+                  {(Object.keys(CATEGORY_LABELS) as LibraryCategory[]).map(
+                    (value) => (
+                      <option key={value} value={value}>
+                        {CATEGORY_LABELS[value]}
+                      </option>
+                    ),
+                  )}
+                </select>
+              </div>
               <div className="flex gap-1 px-1 pb-1">
                 <button
                   className="btn-ghost !px-1.5 !py-0.5 text-[10px]"
@@ -303,6 +396,8 @@ export default function LibraryPickerModal({
           ))}
         </div>
       )}
+
+      {footer}
 
       {more && (
         <button

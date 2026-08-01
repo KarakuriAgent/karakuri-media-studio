@@ -302,6 +302,44 @@ export function imageWorkflowNeedsSource(
   return (workflow?.requires ?? []).includes('image' as never)
 }
 
+// -------------------------------------------------- リファレンスシート（§7.2）
+
+/** リファレンスシート 1 枚を参照入力に取る動画ワークフロー（IC-LoRA）。 */
+export const REFERENCE_SHEET_WORKFLOW = 'ltx2_3_ic_lora_image'
+
+/** シートの長辺（px）。バックエンドの既定 1280x720 と同じ大きさに揃える。 */
+export const SHEET_LONG_EDGE = 1280
+
+/** シートに載せられる枚数（バックエンドの `sheets.MAX_ITEMS` に合わせる）。 */
+export const SHEET_MIN_ITEMS = 2
+export const SHEET_MAX_ITEMS = 8
+
+/** 画像欄がリファレンスシートか（この動画ワークフローのときだけ合成できる）。 */
+export function needsReferenceSheet(
+  workflow?: WorkflowOption | null,
+): boolean {
+  return workflow?.id === REFERENCE_SHEET_WORKFLOW
+}
+
+/**
+ * アスペクト比プリセットから合成するシートの大きさを決める。
+ *
+ * シートは出力動画と同じ縦横比が望ましい（ワークフローの `ResizeAndPadImage` が
+ * 黒でパディングするので、比が合っていれば余白が出ない）。プリセットは
+ * `"16:9 (Widescreen)"` の形なので先頭の `W:H` だけ読み、長辺を
+ * :data:`SHEET_LONG_EDGE` にして 8 の倍数に丸める。読めない値のときは既定の
+ * 1280x720（メガピクセルは見ない: シートは参照用で、動画の解像度とは別物）。
+ */
+export function sheetSize(aspectRatio: string): { width: number; height: number } {
+  const match = /^\s*(\d+)\s*:\s*(\d+)/.exec(aspectRatio || '')
+  const ratioWidth = Number(match?.[1] ?? 16)
+  const ratioHeight = Number(match?.[2] ?? 9)
+  if (!ratioWidth || !ratioHeight) return { width: SHEET_LONG_EDGE, height: 720 }
+  const scale = SHEET_LONG_EDGE / Math.max(ratioWidth, ratioHeight)
+  const round8 = (value: number) => Math.max(8, Math.round((value * scale) / 8) * 8)
+  return { width: round8(ratioWidth), height: round8(ratioHeight) }
+}
+
 // --------------------------------------------------------------- audio mode
 // 音声はモードタブの一つだが、走るワークフローは 1 本きりで画像・動画とは連結
 // しない。どのつまみを出すかはワークフローのマニフェスト（`supports`）が決める。

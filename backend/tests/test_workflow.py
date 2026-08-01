@@ -27,6 +27,7 @@ from app.workflow import (
     selectable_model_slots,
     validate_manifests,
     validate_workflow,
+    video_resolution,
 )
 from app.workflows import (
     ANIMA,
@@ -654,9 +655,9 @@ def test_video_injection(workflow_id):
     assert value(wf, spec, "prompt") == "VIDEO PROMPT"
     assert value(wf, spec, "negative") == "NEGATIVE"
     assert value(wf, spec, "save_prefix") == "video/01JOBID"
-    # 1.5 MP @ 16:9 -> the same numbers ResolutionSelector would produce
+    # 1.5 MP @ 16:9, rounded to the grid the workflow's latents need
     assert (value(wf, spec, "width"), value(wf, spec, "height")) == resolution(
-        "16:9 (Widescreen)", 1.5
+        "16:9 (Widescreen)", 1.5, multiple=spec.resolution_multiple
     )
     # fps / 秒数を持たないワークフロー（wan_dancer は尺を選択式で持つ）もある
     if spec.supports("fps"):
@@ -822,6 +823,60 @@ def test_resolution_for_image_rejects_a_degenerate_size(size):
         resolution_for_image(*size, 1.0)
 
 
+# --- the video grid is per workflow (LTX latent = 32px, ref 0.5x = 64px) ----
+
+def test_union_control_ic_lora_rounds_both_edges_to_64():
+    """1920x1060 @1.0MP used to give 1376x760, which crashes the 0.5x ref encode."""
+    spec = get_spec("ltx2_3_ic_lora_motion")
+    width, height = video_resolution(
+        spec,
+        params(
+            mode="i2v",
+            video_workflow="ltx2_3_ic_lora_motion",
+            megapixels=1.0,
+            start_image_size=(1920, 1060),
+        ),
+    )
+    assert width % 64 == 0 and height % 64 == 0
+
+
+@pytest.mark.parametrize(
+    "size", [(1920, 1060), (1920, 1080), (1000, 1500), (100, 1000), None]
+)
+def test_ltx_video_edges_follow_the_latent_grid(size):
+    """Every LTX workflow lands on its own multiple, start frame or preset."""
+    for spec in video_specs():
+        if spec.family != "ltx2.3":
+            continue
+        width, height = video_resolution(
+            spec,
+            params(
+                mode="i2v",
+                video_workflow=spec.id,
+                megapixels=1.0,
+                start_image_size=size,
+            ),
+        )
+        multiple = spec.resolution_multiple
+        assert multiple % 32 == 0, spec.id
+        assert width % multiple == 0 and height % multiple == 0, spec.id
+
+
+def test_i2v_rounds_both_edges_to_32():
+    spec = get_spec("tx2_3_i2v")
+    assert spec.resolution_multiple == 32
+    width, height = video_resolution(
+        spec,
+        params(
+            mode="i2v",
+            video_workflow="tx2_3_i2v",
+            megapixels=1.0,
+            start_image_size=(1920, 1060),
+        ),
+    )
+    assert width % 32 == 0 and height % 32 == 0
+
+
 @pytest.mark.parametrize(
     "workflow_id", ["tx2_3_i2v", "tx2_3_ia2v", "ltx2_3_id_lora", "ltx2_3_flf2v",
                     "ltx2_3_ic_lora_motion"]
@@ -837,7 +892,9 @@ def test_start_frame_size_overrides_the_aspect_ratio_preset(workflow_id):
             start_image_size=(1000, 1500),
         )
     )
-    expected = resolution_for_image(1000, 1500, 1.0)
+    expected = resolution_for_image(
+        1000, 1500, 1.0, multiple=spec.resolution_multiple
+    )
     assert (value(wf, spec, "width"), value(wf, spec, "height")) == expected
     # portrait image => portrait output, not the 16:9 preset
     assert value(wf, spec, "height") > value(wf, spec, "width")
@@ -855,7 +912,7 @@ def test_reference_sheet_ignores_the_start_frame_size():
             start_image_size=(1000, 1500),
         )
     )
-    expected = resolution("16:9 (Widescreen)", 1.0)
+    expected = resolution("16:9 (Widescreen)", 1.0, multiple=spec.resolution_multiple)
     assert (value(wf, spec, "width"), value(wf, spec, "height")) == expected
 
 
@@ -871,7 +928,7 @@ def test_without_a_start_frame_size_the_preset_is_used():
             start_image_size=None,
         )
     )
-    expected = resolution("16:9 (Widescreen)", 1.0)
+    expected = resolution("16:9 (Widescreen)", 1.0, multiple=spec.resolution_multiple)
     assert (value(wf, spec, "width"), value(wf, spec, "height")) == expected
 
 

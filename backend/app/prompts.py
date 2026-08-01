@@ -1396,8 +1396,9 @@ Available actions:
 | `inspect` | `job_id`, `interval` (seconds, default 1) | the app extracts frames with ffmpeg into your work dir; look at them next turn |
 | `note` | `title`, `content` or `filename`, `kind` | register a memo as an artifact; `kind: "research"` for a web-search / research summary, `"note"` (default) for anything else |
 | `rename` | `title`, plus `name` (artifact file name) **or** `job_id` (+ optional `kind`: `image` / `video` / `frame`) | rename an existing artifact so the panel shows a human title. No approval needed |
-| `library` | `job_id`, `source` (`image` / `last_frame` / `video` / `audio`), optional `title`, optional `tags[]` | keep that output in the user's library so later jobs (and later sessions) can use it as an input. No approval needed |
-| `library_search` | any of `q` (name / tag substring), `tag` (exact), `kind` (`image` / `video` / `audio`), `offset` | search the **whole** library, not just what CHOICES lists; the result arrives next turn as an EVENT with the paths and how many are left. No approval needed |
+| `library` | `job_id`, `source` (`image` / `last_frame` / `video` / `audio`), optional `title`, optional `tags[]`, optional `category` (`character` / `background` / `prop` / `none`) | keep that output in the user's library so later jobs (and later sessions) can use it as an input. No approval needed |
+| `library_search` | any of `q` (name / tag substring), `tag` (exact), `kind` (`image` / `video` / `audio`), `category` (`character` / `background` / `prop` / `none` = uncategorized), `offset` | search the **whole** library, not just what CHOICES lists; the result arrives next turn as an EVENT with the paths, categories and how many are left. No approval needed |
+| `library_sheet` | `item_ids[]` (library ids, 1–8, **in the order they should be laid out**), optional `name`, optional `width` / `height` | compose those library images into one black-background reference sheet and keep it in the library; its id, path and URL arrive next turn as an EVENT. No approval needed |
 | `checkin` | `question`, `options[]` | ask the user and wait for the answer |
 | `done` | `summary` | the plan is finished; deliver the summary |
 
@@ -1450,6 +1451,28 @@ Rules:
   `library_search` to look through all of it by name, tag or kind, and follow
   its `offset` hint to page through. Search first when the user refers to
   material you cannot find in CHOICES.
+- **Library categories**: besides free tags, every entry carries at most one
+  category — `character`, `background` or `prop` — or none at all, written
+  `none`. Search results show it as `(kind / category)`. Narrow a search with
+  `library_search`'s `category`, and label what you keep with the `library`
+  action's `category`; a category is what decides how big that material gets on
+  a reference sheet, so an unlabelled character is a waste.
+- **Character sheets and IC-LoRA video** (the way to keep one character looking
+  the same across shots) — work in this order:
+  1. `library_search` with `category: "character"` (then `prop` / `background`)
+     for material that already exists. Do not regenerate what the user curated.
+  2. for what is missing, plan `mode: "image_only"` jobs — other angles or
+     expressions of the character, a prop, the set — and keep each result with
+     `library` + the matching `category`.
+  3. `library_sheet` with those ids in layout order. `character` entries get the
+     big panels and **the bigger a panel is, the more faithfully the model
+     reproduces it**, so put the hero first and label it `character`; give
+     `width` / `height` the aspect ratio of the video you are about to make.
+  4. plan a `mode: "i2v"` job with `video_workflow: "ltx2_3_ic_lora_image"` and
+     the sheet's path as `source_image`. The sheet is a look reference, **not** a
+     first frame, so write `video_prompt` in the two parts that workflow expects:
+     `Reference sheet:` + one short clause per panel in layout order, then
+     `Generated video:` + the shot itself (subject, set, framing, motion, audio).
 - `selects` carries the fixed-choice knobs a workflow declares (VIDEO WORKFLOWS
   lists them per workflow with their exact strings — `wan_dancer` picks its dance
   style, motion amplitude and length that way). Only write names that workflow
@@ -1470,9 +1493,10 @@ Rules:
   `video_loras` (+ `video_trigger_text`, used by the LTX video stage). Leave
   either list out when you do not need it, and never put video LoRAs in a
   `mode: "image_only"` job.
-- Exactly one action per reply — `rename`, `library` and `library_search` count
-  like `plan` / `checkin` here, so rename, keep or search one thing per turn
-  (the app renames every frame of a job at once when you target it by `job_id`).
+- Exactly one action per reply — `rename`, `library`, `library_search` and
+  `library_sheet` count like `plan` / `checkin` here, so rename, keep, search or
+  compose one thing per turn (the app renames every frame of a job at once when
+  you target it by `job_id`).
 - While you are only asking a question or reporting, send **no JSON at all**.
 - EVENT messages in the transcript are written by the app, not by the user.
   `inspect_result` tells you which frame files are in your working directory —
@@ -1723,7 +1747,8 @@ def _library_lines(options: Options) -> str:
         for item in items[:LIBRARY_PROMPT_LIMIT]:
             tags = f" [{', '.join(item.tags)}]" if item.tags else ""
             nsfw = " 🫣NSFW" if item.nsfw else ""
-            lines.append(f"  - `{item.path}` — 「{item.name}」{tags}{nsfw}")
+            category = f"（{item.category}）" if item.category else ""
+            lines.append(f"  - `{item.path}` — 「{item.name}」{category}{tags}{nsfw}")
         if len(items) > LIBRARY_PROMPT_LIMIT:
             rest = len(items) - LIBRARY_PROMPT_LIMIT
             hidden += rest
@@ -1733,15 +1758,19 @@ def _library_lines(options: Options) -> str:
             )
     lines.append("")
     lines.append(
-        "`[…]` は分類タグです。"
-        + (
+        "`（…）` は分類（`character` / `background` / `prop`。無いものは未分類 ="
+        " `none`）、`[…]` は自由なタグです。分類は `library_search` の `category`"
+        "で絞り込めて、リファレンスシート（`library_sheet`）のパネルの大小を決めます。"
+    )
+    lines.append(
+        (
             f"上の一覧は種別ごとに新しい {LIBRARY_PROMPT_LIMIT} 件までで、"
             f"ここに出していない素材が {hidden} 件あります。"
             if hidden
             else "上の一覧が現時点の全件です。"
         )
         + " 名前やタグで探すとき、古いものを見たいときは `library_search`"
-        " アクション（`q` / `tag` / `kind` / `offset`）を使ってください"
+        " アクション（`q` / `tag` / `kind` / `category` / `offset`）を使ってください"
         "——**ライブラリ全体が対象**で、結果は次のターンに EVENT として届きます。"
     )
     return "\n".join(lines)
