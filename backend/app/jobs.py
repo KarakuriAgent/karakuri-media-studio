@@ -294,10 +294,11 @@ async def _set_status(
     status: str,
     *,
     message: str | None = None,
+    progress: float | None = None,
     **fields: Any,
 ) -> None:
     await _update(job_id, status=status, **fields)
-    await ws.publish(job_id, status, message=message)
+    await ws.publish(job_id, status, message=message, progress=progress)
 
 
 async def delete_job(job_id: str) -> bool:
@@ -834,16 +835,104 @@ def _history_error(entry: dict[str, Any]) -> str | None:
     )
 
 
+class OverallProgress:
+    """ジョブ全体（1〜2 ステージ）を通した 0..1 の進捗（SPEC §9）。
+
+    ComfyUI の ``progress`` イベントはノードごとに 0→100% を繰り返すので、その
+    ままでは進捗バーが何度も巻き戻る。ここでは「通過したノード数 + 実行中ノード
+    の端数」をワークフローのノード総数で割って 1 ステージ分の割合に直し、さらに
+    ``(stage_index + 割合) / total_stages`` で全ステージを通した値にする。ノード
+    の重みはすべて等しいものとして扱う（実時間は事前に分からないため）。
+
+    値は単調非減少: キャッシュ済みノードの通知やイベントの前後関係で計算値が下
+    がっても、いちど出した値より小さくは配信しない。
+    """
+
+    def __init__(self, total_stages: int = 1) -> None:
+        self.total_stages = max(int(total_stages), 1)
+        self._stage_index = 0
+        self._total_nodes = 0
+        self._done: set[str] = set()
+        self._current: str | None = None
+        self._fraction = 0.0
+        self._value = 0.0
+
+    @property
+    def value(self) -> float:
+        """最後に配信した全体進捗（0..1）。"""
+        return self._value
+
+    def start_stage(self, index: int, total_nodes: int) -> float:
+        """``index`` 番目のステージ（``total_nodes`` ノード）の開始を記録する。"""
+        self._stage_index = max(int(index), 0)
+        self._total_nodes = max(int(total_nodes or 0), 0)
+        self._done = set()
+        self._current = None
+        self._fraction = 0.0
+        return self._bump(self._stage_index / self.total_stages)
+
+    def node_started(self, node: str) -> float:
+        """``executing`` — 直前のノードを完了扱いにして ``node`` に移る。"""
+        node = str(node)
+        if self._current is not None and self._current != node:
+            self._done.add(self._current)
+        # 実行中のノードは端数側で数えるので、完了集合からは外しておく。
+        self._done.discard(node)
+        self._current = node
+        self._fraction = 0.0
+        return self._recompute()
+
+    def node_progress(self, node: str | None, value: float, maximum: float) -> float:
+        """``progress`` — 実行中ノードの ``value/max`` を端数として取り込む。"""
+        if node is not None and str(node) != self._current:
+            self.node_started(node)
+        self._fraction = min(1.0, max(0.0, value / maximum)) if maximum else 0.0
+        return self._recompute()
+
+    def nodes_cached(self, nodes: Any) -> float:
+        """``execution_cached`` — 実行がスキップされたノードを完了扱いにする。"""
+        if isinstance(nodes, (list, tuple, set)):
+            self._done.update(str(node) for node in nodes)
+            if self._current is not None:
+                self._done.discard(self._current)
+        return self._recompute()
+
+    def stage_finished(self) -> float:
+        """このステージの終端（``executing`` の node=None など）まで進める。"""
+        self._current = None
+        self._fraction = 0.0
+        return self._bump((self._stage_index + 1) / self.total_stages)
+
+    def _recompute(self) -> float:
+        if not self._total_nodes:
+            return self._value
+        ratio = min(1.0, (len(self._done) + self._fraction) / self._total_nodes)
+        return self._bump((self._stage_index + ratio) / self.total_stages)
+
+    def _bump(self, value: float) -> float:
+        self._value = min(1.0, max(self._value, value))
+        return self._value
+
+
 async def _ws_progress(
-    client_id: str, prompt_id: str, job_id: str, finished: asyncio.Event
+    client_id: str,
+    prompt_id: str,
+    job_id: str,
+    finished: asyncio.Event,
+    overall: OverallProgress | None = None,
 ) -> None:
-    """Relay ComfyUI ``executing`` / ``progress`` events. Never raises."""
+    """Relay ComfyUI ``executing`` / ``progress`` events. Never raises.
+
+    配信する ``progress`` はノード単位ではなくワークフロー全体を通した割合
+    （:class:`OverallProgress`）。
+    """
     try:
         import websockets
     except ImportError:  # pragma: no cover - dependency is pinned
         log.warning("websockets is not installed; falling back to history polling")
         return
 
+    overall = overall or OverallProgress()
     url = comfy.ws_url(client_id)
     try:
         async with websockets.connect(
@@ -870,24 +959,43 @@ async def _ws_progress(
                     continue
 
                 if kind == "progress":
-                    maximum = data.get("max") or 0
-                    value = data.get("value") or 0
+                    node = str(data.get("node") or "") or None
                     await ws.publish(
                         job_id,
                         "running",
-                        node=str(data.get("node") or "") or None,
-                        progress=(value / maximum) if maximum else None,
+                        node=node,
+                        progress=overall.node_progress(
+                            node, data.get("value") or 0, data.get("max") or 0
+                        ),
                     )
                 elif kind == "executing":
                     node = data.get("node")
                     if node is None:
+                        await ws.publish(
+                            job_id, "running", progress=overall.stage_finished()
+                        )
                         finished.set()
                         return
-                    await ws.publish(job_id, "running", node=str(node))
+                    await ws.publish(
+                        job_id,
+                        "running",
+                        node=str(node),
+                        progress=overall.node_started(node),
+                    )
+                elif kind == "execution_cached":
+                    # キャッシュ再利用で実行されないノードも「通過済み」に数える。
+                    await ws.publish(
+                        job_id,
+                        "running",
+                        progress=overall.nodes_cached(data.get("nodes")),
+                    )
                 elif kind in ("execution_error", "execution_interrupted"):
                     finished.set()
                     return
                 elif kind == "execution_success":
+                    await ws.publish(
+                        job_id, "running", progress=overall.stage_finished()
+                    )
                     finished.set()
                     return
     except asyncio.CancelledError:
@@ -896,14 +1004,21 @@ async def _ws_progress(
         log.info("ComfyUI progress socket unavailable (%s); polling instead", exc)
 
 
-async def _wait_for_result(prompt_id: str, client_id: str, job_id: str) -> dict[str, Any]:
+async def _wait_for_result(
+    prompt_id: str,
+    client_id: str,
+    job_id: str,
+    overall: OverallProgress | None = None,
+) -> dict[str, Any]:
     """Wait for the prompt to finish; returns the ``/history`` entry.
 
     The WebSocket only speeds things up / feeds the progress bar — completion is
     always confirmed through ``/history`` so a dropped socket cannot stall a job.
     """
     finished = asyncio.Event()
-    watcher = asyncio.create_task(_ws_progress(client_id, prompt_id, job_id, finished))
+    watcher = asyncio.create_task(
+        _ws_progress(client_id, prompt_id, job_id, finished, overall)
+    )
     loop = asyncio.get_running_loop()
     deadline = loop.time() + JOB_TIMEOUT
     try:
@@ -1000,12 +1115,19 @@ async def _run_stage(
     workflow: dict[str, Any],
     stages: dict[str, Any],
     label: str,
+    overall: OverallProgress | None = None,
+    stage_index: int = 0,
 ) -> dict[str, Any]:
     """Queue one ComfyUI prompt for ``job_id`` and wait for its ``/history`` entry.
 
     The built graph is persisted before queueing so a failed run can still be
     inspected, and again afterwards with the prompt id.
+
+    ``overall`` を渡すと、このステージのノード総数（``len(workflow)``）を分母に
+    した全体進捗が WS に流れる。
     """
+    overall = overall or OverallProgress()
+    overall.start_stage(stage_index, len(workflow))
     stages[stage] = {"workflow_id": spec.id, "prompt_id": None, "graph": workflow}
     await _update(job_id, workflow_json=json.dumps(stages, ensure_ascii=False))
 
@@ -1017,8 +1139,13 @@ async def _run_stage(
         comfy_prompt_id=prompt_id,
         workflow_json=json.dumps(stages, ensure_ascii=False),
     )
-    await ws.publish(job_id, "running", message=f"{label}: queued on ComfyUI ({prompt_id})")
-    return await _wait_for_result(prompt_id, client_id, job_id)
+    await ws.publish(
+        job_id,
+        "running",
+        message=f"{label}: queued on ComfyUI ({prompt_id})",
+        progress=overall.value,
+    )
+    return await _wait_for_result(prompt_id, client_id, job_id, overall)
 
 
 async def run_job(job_id: str) -> None:
@@ -1054,11 +1181,13 @@ async def run_job(job_id: str) -> None:
         updates: dict[str, Any] = {}
 
         two_stage = job.mode == "full"
+        # 進捗はジョブ全体で 0→100%。2 ステージなら画像が 0〜50%、動画が 50〜100%。
+        overall = OverallProgress(2 if two_stage else 1)
         # 音声は独立した 1 ステージのジョブ: 画像・動画の分岐には一切入らない。
         if job.mode == "audio":
             audio_spec = get_audio_spec(params.audio_workflow)
             label = "音声生成"
-            await ws.publish(job_id, "running", message=label)
+            await ws.publish(job_id, "running", message=label, progress=overall.value)
             entry = await _run_stage(
                 job_id,
                 "audio",
@@ -1066,6 +1195,8 @@ async def run_job(job_id: str) -> None:
                 build_audio_workflow(params, overrides, spec=audio_spec),
                 stages,
                 label,
+                overall,
+                0,
             )
             track = await _download_artifact(
                 entry, audio_spec.output_node, job_dir, "audio", "audio"
@@ -1075,7 +1206,7 @@ async def run_job(job_id: str) -> None:
         if job.mode in ("full", "image_only"):
             image_spec = get_image_spec(params.image_workflow)
             label = "画像生成 (1/2)" if two_stage else "画像生成"
-            await ws.publish(job_id, "running", message=label)
+            await ws.publish(job_id, "running", message=label, progress=overall.value)
             entry = await _run_stage(
                 job_id,
                 "image",
@@ -1083,6 +1214,8 @@ async def run_job(job_id: str) -> None:
                 build_image_workflow(params, overrides, spec=image_spec),
                 stages,
                 label,
+                overall,
+                0,
             )
             image = await _download_artifact(
                 entry, image_spec.output_node, job_dir, "image", "image"
@@ -1105,7 +1238,7 @@ async def run_job(job_id: str) -> None:
         if job.mode in ("full", "i2v"):
             video_spec = get_video_spec(params.video_workflow)
             label = "動画生成 (2/2)" if two_stage else "動画生成"
-            await ws.publish(job_id, "running", message=label)
+            await ws.publish(job_id, "running", message=label, progress=overall.value)
             entry = await _run_stage(
                 job_id,
                 "video",
@@ -1113,6 +1246,8 @@ async def run_job(job_id: str) -> None:
                 build_video_workflow(params, overrides, spec=video_spec),
                 stages,
                 label,
+                overall,
+                1 if two_stage else 0,
             )
             video = await _download_artifact(
                 entry, video_spec.output_node, job_dir, "video", "video"
@@ -1122,7 +1257,9 @@ async def run_job(job_id: str) -> None:
                 await extract_last_frame(video, job_dir / "last_frame.png")
             )
 
-        await _set_status(job_id, "done", message="done", error=None, **updates)
+        await _set_status(
+            job_id, "done", message="done", progress=1.0, error=None, **updates
+        )
     except asyncio.CancelledError:
         await _set_status(job_id, "canceled", message="canceled", error="canceled")
         raise

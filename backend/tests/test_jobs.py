@@ -850,6 +850,112 @@ async def test_ws_progress_survives_a_dead_socket(monkeypatch):
     assert not finished.is_set()
 
 
+def test_overall_progress_counts_executed_nodes():
+    """executing で通過したノード数と実行中ノードの端数で全体進捗が決まる。"""
+    overall = jobs.OverallProgress()
+    overall.start_stage(0, 4)
+    assert overall.value == 0.0
+
+    assert overall.node_started("1") == 0.0  # 0 完了 + 端数 0
+    assert overall.node_progress("1", 5, 10) == pytest.approx(0.5 / 4)
+    assert overall.node_started("2") == pytest.approx(1 / 4)
+    # node 指定つきの progress は executing を待たずに次のノードへ進める
+    assert overall.node_progress("3", 1, 2) == pytest.approx(2.5 / 4)
+    assert overall.stage_finished() == 1.0
+
+
+def test_overall_progress_counts_cached_nodes():
+    """execution_cached のノードは実行済み扱い。"""
+    overall = jobs.OverallProgress()
+    overall.start_stage(0, 5)
+    assert overall.nodes_cached(["1", "2", 3]) == pytest.approx(3 / 5)
+    assert overall.node_started("4") == pytest.approx(3 / 5)
+    assert overall.node_progress("4", 1, 2) == pytest.approx(3.5 / 5)
+    # 実行中のノードがキャッシュ通知に含まれても二重には数えない
+    assert overall.nodes_cached(["4"]) == pytest.approx(3.5 / 5)
+
+
+def test_overall_progress_never_goes_backwards():
+    overall = jobs.OverallProgress()
+    overall.start_stage(0, 4)
+    overall.node_started("1")
+    assert overall.node_progress("1", 9, 10) == pytest.approx(0.9 / 4)
+    # 同じノードの value が巻き戻っても配信値は下がらない
+    assert overall.node_progress("1", 1, 10) == pytest.approx(0.9 / 4)
+    assert overall.node_progress(None, 0, 0) == pytest.approx(0.9 / 4)
+    # ノード総数が分からないステージでも直前の値を保つ
+    overall_unknown = jobs.OverallProgress()
+    overall_unknown.start_stage(0, 0)
+    assert overall_unknown.node_started("1") == 0.0
+
+
+def test_overall_progress_maps_two_stages_to_halves():
+    """2 ステージなら stage1 が 0〜50%、stage2 が 50〜100%。"""
+    overall = jobs.OverallProgress(2)
+    overall.start_stage(0, 2)
+    assert overall.node_started("1") == 0.0
+    assert overall.node_progress("1", 1, 2) == pytest.approx(0.125)
+    assert overall.stage_finished() == pytest.approx(0.5)
+
+    overall.start_stage(1, 4)
+    assert overall.value == pytest.approx(0.5)
+    assert overall.node_started("10") == pytest.approx(0.5)
+    assert overall.node_progress("10", 1, 2) == pytest.approx(0.5625)
+    assert overall.node_started("11") == pytest.approx(0.625)
+    assert overall.stage_finished() == 1.0
+
+
+async def test_ws_progress_publishes_overall_progress(monkeypatch):
+    """ComfyUI のイベント列がワークフロー全体を通した進捗に変換される。"""
+    import websockets
+
+    frames = [
+        '{"type": "execution_cached", "data": {"prompt_id": "pid", "nodes": ["1"]}}',
+        '{"type": "executing", "data": {"prompt_id": "pid", "node": "2"}}',
+        '{"type": "progress", "data": {"prompt_id": "pid", "node": "2",'
+        ' "value": 5, "max": 10}}',
+        '{"type": "progress", "data": {"prompt_id": "other", "node": "9",'
+        ' "value": 1, "max": 1}}',  # 別プロンプトは無視
+        '{"type": "executing", "data": {"prompt_id": "pid", "node": null}}',
+    ]
+
+    class FakeSocket:
+        async def __aiter__(self):
+            for frame in frames:
+                yield frame
+
+    class FakeConnect:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return FakeSocket()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(websockets, "connect", FakeConnect)
+    published: list[tuple[str | None, float | None]] = []
+
+    async def fake_publish(job_id, status, *, node=None, progress=None, **kwargs):
+        published.append((node, progress))
+
+    monkeypatch.setattr(jobs.ws, "publish", fake_publish)
+
+    finished = asyncio.Event()
+    overall = jobs.OverallProgress()
+    overall.start_stage(0, 4)
+    await jobs._ws_progress("cid", "pid", "job", finished, overall)
+
+    assert finished.is_set()
+    assert published == [
+        (None, pytest.approx(0.25)),  # execution_cached: 1/4
+        ("2", pytest.approx(0.25)),  # executing node 2
+        ("2", pytest.approx(0.375)),  # 1 完了 + 0.5 ノード / 4
+        (None, 1.0),  # executing node=None → ステージ完了
+    ]
+
+
 async def test_hub_broadcasts_and_drops_dead_sockets():
     from app.ws import Hub, hub, publish
 

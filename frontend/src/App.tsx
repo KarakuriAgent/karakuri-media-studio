@@ -249,7 +249,18 @@ export default function App() {
           }
           const payload = frame as JobProgress
           if (payload?.type !== 'job') return
-          setProgress((previous) => ({ ...previous, [payload.job_id]: payload }))
+          // progress を持たないフレーム（メッセージだけの通知など）でバーが 0%
+          // に落ちないよう、直前の値を引き継いでからマージする。
+          setProgress((previous) => {
+            const before = previous[payload.job_id]
+            return {
+              ...previous,
+              [payload.job_id]: {
+                ...payload,
+                progress: payload.progress ?? before?.progress ?? null,
+              },
+            }
+          })
           // NSFW 判定が確定したフレームは一覧を取り直して反映する。
           if (
             payload.nsfw != null ||
