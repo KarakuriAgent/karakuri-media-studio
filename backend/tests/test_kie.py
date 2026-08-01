@@ -84,9 +84,10 @@ class FakeKie:
 
     @staticmethod
     def kind(url: str) -> str:
-        if "createTask" in url:
+        # 旧専用系（Veo）は別のパスだが、テストからは同じ「作る / 見に行く」
+        if "createTask" in url or "/veo/generate" in url:
             return "create"
-        if "recordInfo" in url:
+        if "recordInfo" in url or "record-info" in url:
             return "record"
         if "credit" in url:
             return "credit"
@@ -384,7 +385,7 @@ def test_an_error_envelope_is_reported_with_its_hint(fake_kie):
 
 def test_an_unknown_api_family_is_refused():
     with pytest.raises(kie.KieError):
-        kie.task_api("veo")
+        kie.task_api("suno")
 
 
 # --------------------------------------------------------------------------
@@ -754,3 +755,231 @@ def test_an_unverified_backend_is_refused_at_creation(client, monkeypatch, tmp_p
     )
     assert created.status_code == 422
     assert "使えません" in created.json()["detail"]
+
+
+# --------------------------------------------------------------------------
+# Veo 3.1（旧専用系 API、issue #17）
+# --------------------------------------------------------------------------
+
+VEO_FAST = workflows.BY_ID["veo3_1_fast"]
+VEO_QUALITY = workflows.BY_ID["veo3_1_quality"]
+
+
+def veo_record(flag: int, urls=(), **extra) -> FakeResponse:
+    """``/veo/record-info`` の応答（成果物は ``response.resultUrls``）。"""
+    data = {"taskId": "veo-1", "successFlag": flag, **extra}
+    if urls:
+        data["response"] = {"resultUrls": list(urls)}
+    return FakeResponse(envelope(data))
+
+
+def _video_params(**overrides) -> GenerationParams:
+    base = dict(
+        mode="i2v",
+        job_id="job-veo",
+        video_workflow=VEO_FAST.id,
+        video_prompt="A medium shot of a woman on a rooftop.",
+    )
+    base.update(overrides)
+    return _params(**base)
+
+
+def test_veo_uses_its_own_endpoints():
+    api = kie.task_api("veo")
+    assert api.create_url.endswith("/api/v1/veo/generate")
+    assert api.record_url.endswith("/api/v1/veo/record-info")
+    assert VEO_FAST.kie.model == "veo3_fast"
+    assert VEO_QUALITY.kie.model == "veo3"
+    assert VEO_FAST.kie.api == "veo" and VEO_QUALITY.kie.api == "veo"
+
+
+def test_a_start_frame_becomes_one_image_url():
+    request = kie.build_request(
+        VEO_FAST, _video_params(), {"image": "https://files.kie.ai/start.png"}
+    )
+    body = kie.task_api(request.api).create_body(request.model, request.input)
+
+    assert body["model"] == "veo3_fast"
+    assert body["imageUrls"] == ["https://files.kie.ai/start.png"]
+    # 1 枚は開始フレーム扱い（旧 API では TEXT_2_VIDEO のまま）
+    assert body["generationType"] == "TEXT_2_VIDEO"
+    assert body["prompt"].startswith("A medium shot")
+    # 既定値がドキュメント内で食い違うので明示して送る
+    assert body["enableTranslation"] is True
+    # 選択式の既定値。尺は数値で送る（選択肢は文字列で届く）
+    assert body["aspect_ratio"] == "16:9"
+    assert body["resolution"] == "720p"
+    assert body["duration"] == 8
+
+
+def test_first_and_last_frames_become_two_image_urls():
+    """flf2v 相当: 2 枚目が最後のフレーム（並びに意味がある）。"""
+    request = kie.build_request(
+        VEO_QUALITY,
+        _video_params(
+            video_workflow=VEO_QUALITY.id,
+            selects={"aspect_ratio": "9:16", "duration": "6", "resolution": "1080p"},
+        ),
+        {
+            "image": "https://files.kie.ai/first.png",
+            "end_image": "https://files.kie.ai/last.png",
+        },
+    )
+    body = kie.task_api(request.api).create_body(request.model, request.input)
+
+    assert body["imageUrls"] == [
+        "https://files.kie.ai/first.png",
+        "https://files.kie.ai/last.png",
+    ]
+    assert body["generationType"] == "FIRST_AND_LAST_FRAMES_2_VIDEO"
+    assert body["aspect_ratio"] == "9:16"
+    assert body["duration"] == 6
+    assert body["resolution"] == "1080p"
+
+
+def test_without_an_image_veo_is_text_to_video():
+    request = kie.build_request(VEO_FAST, _video_params(), {})
+    body = kie.task_api(request.api).create_body(request.model, request.input)
+    assert "imageUrls" not in body
+    assert body["generationType"] == "TEXT_2_VIDEO"
+
+
+def test_veo_polls_until_the_success_flag_flips(fake_kie):
+    """``successFlag`` 0 = 生成中 / 1 = 成功（Market 系の state 語彙ではない）。"""
+    fake_kie.answer("create", FakeResponse(envelope({"taskId": "veo-1"})))
+    fake_kie.answer(
+        "record",
+        veo_record(0),
+        veo_record(0),
+        veo_record(1, ("https://cdn.kie.ai/veo.mp4",)),
+    )
+    labels: list[str] = []
+
+    async def run():
+        task_id = await kie.create_task(
+            "veo3_fast", {"prompt": "a rooftop"}, api=kie.VEO
+        )
+        return await kie.wait_for_task(
+            task_id, api=kie.VEO, on_progress=lambda state: _collect(labels, state)
+        )
+
+    state = asyncio.run(run())
+
+    assert state.phase == "success"
+    assert state.result_urls == ("https://cdn.kie.ai/veo.mp4",)
+    # 生成中は 1 語しかないので、進捗は 1 度だけ流れる
+    assert labels == ["generating"]
+    # ボディは平ら（input で包まない）
+    assert fake_kie.sent("create")[0]["json"]["prompt"] == "a rooftop"
+    assert fake_kie.sent("record")[0]["params"] == {"taskId": "veo-1"}
+
+
+def test_a_failed_veo_task_reports_the_reason(fake_kie):
+    fake_kie.answer(
+        "record",
+        veo_record(2, errorMessage="rejected by Flow", errorCode=422),
+    )
+
+    with pytest.raises(kie.KieError) as caught:
+        asyncio.run(kie.wait_for_task("veo-1", api=kie.VEO))
+
+    assert "rejected by Flow" in str(caught.value)
+    assert "受け付けられませんでした" in str(caught.value)
+
+
+def test_a_veo_success_without_urls_is_an_error(fake_kie):
+    fake_kie.answer("record", veo_record(1))
+    with pytest.raises(kie.KieError) as caught:
+        asyncio.run(kie.wait_for_task("veo-1", api=kie.VEO))
+    assert "成果物 URL" in str(caught.value)
+
+
+def test_a_full_job_feeds_the_generated_image_to_veo(client, fake_kie, job_env,
+                                                     monkeypatch):
+    """full モード: 1 段目の画像が Veo の開始フレーム（imageUrls）になる。"""
+    # 落としてくるのは偽のバイト列なので、ffmpeg は通さない
+    async def fake_last_frame(video, dest):
+        dest.write_bytes(b"png")
+        return dest
+
+    monkeypatch.setattr(jobs, "extract_last_frame", fake_last_frame)
+    fake_kie.answer(
+        "create",
+        FakeResponse(envelope({"taskId": "task-img"})),
+        FakeResponse(envelope({"taskId": "task-veo"})),
+    )
+    fake_kie.answer(
+        "record",
+        success(["https://cdn.kie.ai/out.png"], credits=8),
+        veo_record(1, ("https://cdn.kie.ai/out.mp4",)),
+    )
+    fake_kie.answer(
+        "upload", FakeResponse(envelope({"fileUrl": "https://files.kie.ai/start.png"}))
+    )
+
+    created = client.post(
+        "/api/jobs",
+        json={
+            "mode": "full",
+            "image_workflow": STUB_IMAGE.id,
+            "video_workflow": VEO_FAST.id,
+            "image_prompt": "a cat on a roof",
+            "video_prompt": "The cat stretches and yawns.",
+        },
+    )
+    assert created.status_code == 201, created.text
+    job = wait_for(client, created.json()["id"])
+
+    assert job["status"] == "done", job["error"]
+    assert (job_env / job["id"] / "video.mp4").is_file()
+    # 2 段目は 1 段目の成果物をアップロードして開始フレームに使う
+    stage = job["workflow_json"]["video"]
+    assert stage["task_id"] == "task-veo"
+    assert stage["request"]["api"] == "veo"
+    assert stage["request"]["input"]["imageUrls"] == ["https://files.kie.ai/start.png"]
+    body = fake_kie.sent("create")[1]["json"]
+    assert body["model"] == "veo3_fast"
+    assert body["generationType"] == "TEXT_2_VIDEO"
+
+
+def test_veo_is_offered_as_a_video_workflow(client, monkeypatch):
+    mark_available(monkeypatch)
+    body = client.get("/api/options").json()
+    veo = [wf for wf in body["video_workflows"] if wf["id"] == VEO_FAST.id][0]
+    # 画像は必須ではないが受け取れる（フォームは supports を見て欄を出す）
+    assert veo["requires"] == []
+    assert set(veo["supports"]) == {"prompt", "image", "end_image"}
+    assert veo["accepts_start_image"] is True
+    assert [select["name"] for select in veo["selects"]] == [
+        "aspect_ratio",
+        "duration",
+        "resolution",
+    ]
+
+
+def test_the_veo_guide_is_injected_only_when_veo_is_selected():
+    """モデル固有のガイドは選択中のワークフローの分だけ（SPEC §4.3）。"""
+    from app.models import ChatSessionCreate
+    from app.prompts import build_system_prompt
+
+    veo = build_system_prompt(
+        ChatSessionCreate(mode="i2v", video_workflow=VEO_FAST.id)
+    )
+    assert "VIDEO PROMPT SPEC — Google Veo 3.1" in veo
+    # 否定語の扱い・音声・カメラワークの要点が入っていること
+    assert "Negative: cartoon, blurry" in veo
+    assert "(no subtitles)" in veo
+
+    ltx = build_system_prompt(ChatSessionCreate(mode="i2v"))
+    assert "Google Veo 3.1" not in ltx
+
+
+def test_the_agent_prompt_lists_the_guide_once_per_available_model(monkeypatch):
+    from app.prompts import video_prompt_guides_section
+
+    assert video_prompt_guides_section() == ""  # kie が使えないうちは節ごと出ない
+
+    mark_available(monkeypatch)
+    section = video_prompt_guides_section()
+    # Fast と Quality は同じガイドなので 1 回だけ載る
+    assert section.count("VIDEO PROMPT SPEC — Google Veo 3.1") == 1

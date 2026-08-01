@@ -64,6 +64,14 @@ const FLF2V = workflow({
   requires: ['image', 'end_image'],
   accepts_start_image: true,
 })
+// Veo（kie.ai）: 画像も最後のフレームも必須ではないが、渡せる
+const VEO = workflow({
+  id: 'veo3_1_fast',
+  requires: [],
+  accepts_start_image: true,
+  supports: ['prompt', 'image', 'end_image'],
+  backend: 'kie',
+})
 const MOTION = workflow({
   id: 'motion',
   requires: ['image', 'video'],
@@ -139,6 +147,15 @@ describe('hiddenFields', () => {
     expect(hiddenFields('i2v', I2V).endImage).toBe(true)
     expect(hiddenFields('i2v', MOTION).referenceVideo).toBe(false)
     expect(hiddenFields('i2v', FLF2V).referenceVideo).toBe(true)
+  })
+
+  it('offers the optional image inputs of a workflow that only accepts them', () => {
+    // Veo は画像なしでも生成できるが、渡せる以上フォームには出す
+    expect(hiddenFields('i2v', VEO).startImage).toBe(false)
+    expect(hiddenFields('i2v', VEO).endImage).toBe(false)
+    // 尺・fps は API 側の選択式なので、汎用の数値欄は出さない
+    expect(hiddenFields('i2v', VEO).duration).toBe(true)
+    expect(hiddenFields('i2v', VEO).fps).toBe(true)
   })
 
   it('treats a not-yet-loaded workflow as offering nothing', () => {

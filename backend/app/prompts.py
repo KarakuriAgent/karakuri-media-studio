@@ -622,6 +622,92 @@ def _workflow_context_lines(workflow_id: str) -> list[str]:
 
 
 # --------------------------------------------------------------------------
+# 3.6a per-workflow video prompt guides（選んだワークフローの分だけ埋め込む）
+# --------------------------------------------------------------------------
+# VIDEO SPEC は LTX 2.3 のもの。外部 API のモデルは書き方も守備範囲も違うので、
+# 画像 / 音声と同じ流儀で「モデルごとのガイド」を持ち、チャットでは**選択中の
+# ワークフローの分だけ**注入する（両方渡すと混ざる）。
+#
+# Veo 3.1 — https://docs.kie.ai/veo3-api/generate-veo-3-video.md と
+# https://ai.google.dev/gemini-api/docs/veo（プロンプト構成・音声・否定表現）
+
+VEO_VIDEO_GUIDE = """\
+# VIDEO PROMPT SPEC — Google Veo 3.1 (kie.ai, `veo3_1_fast` / `veo3_1_quality`)
+
+Veo generates **picture and sound together** in one 4-8 second take. It is not
+LTX: where this section and the VIDEO PROMPT SPEC above disagree, this one wins.
+
+Write `video_prompt` as 3-6 English sentences (100-150 words), in this order:
+
+1. **Composition / shot** — shot size and angle (medium close-up, low-angle
+   wide shot), and the format if it matters.
+2. **Subject** — who / what, described concretely (age range, build, hair,
+   wardrobe, distinguishing details).
+3. **Action** — one continuous action, in the order it happens.
+4. **Scene** — where, when, weather, set dressing.
+5. **Camera motion** — exactly **one** (slow push-in, handheld follow, static
+   lock-off). Two moves in one clip is the most common way to break a shot.
+6. **Lens / focus** — 35mm, shallow depth of field, rack focus to the hands.
+7. **Style and light** — film stock / grade, key light direction, mood.
+
+Sound is part of the prompt, not an afterthought:
+
+- **Ambience and SFX**: name them (`distant traffic hum, rain on the window,
+  the shutter clacks once`).
+- **Dialogue**: put the line in quotes, say who speaks and how —
+  `The man says in a low voice: "We are not done here."` One or two short lines
+  is all that fits in 8 seconds.
+- Add `(no subtitles)` when the shot must not carry burnt-in captions.
+
+Hard rules:
+
+- **Never write a negative inside the description** ("no cars", "without
+  text"): Veo tends to render exactly what you name. Put unwanted elements at
+  the very end as `Negative: cartoon, blurry, distorted hands, text, watermark`.
+- **One clip = one scene = one camera move.** Cuts, "then", and "meanwhile"
+  belong in separate jobs.
+- With a start frame, do **not** re-describe what the picture already shows —
+  write how it moves, what happens next, and how it sounds.
+- Duration, aspect ratio and resolution are job fields (`selects`), never
+  sentences in the prompt.
+"""
+
+#: workflow id -> そのモデル専用の VIDEO PROMPT SPEC（無いワークフローは
+#: 汎用の :data:`VIDEO_SPEC` のまま）
+VIDEO_SPECS: dict[str, str] = {
+    "veo3_1_fast": VEO_VIDEO_GUIDE,
+    "veo3_1_quality": VEO_VIDEO_GUIDE,
+}
+
+
+def video_guide_for(workflow_id: str) -> str:
+    """選んだ動画ワークフロー専用のガイド（無ければ空文字）。"""
+    return VIDEO_SPECS.get(workflow_id, "")
+
+
+def video_prompt_guides_section() -> str:
+    """モデル固有のガイドをまとめた節（エージェントのプロンプト用）。
+
+    :func:`app.workflows.video_catalog` から引くので、使えないバックエンドの
+    ワークフロー（キー未設定の kie.ai など）のガイドは出ない。1 つも無ければ
+    節ごと出さない。
+    """
+    guides: list[str] = []
+    for entry in video_catalog():
+        guide = video_guide_for(entry.id)
+        if guide and guide not in guides:
+            guides.append(guide)
+    if not guides:
+        return ""
+    header = (
+        "# VIDEO PROMPT GUIDES (model-specific — use the one that matches the"
+        "\n`video_workflow` of the job you are writing; it overrides the generic"
+        "\nVIDEO PROMPT SPEC)"
+    )
+    return "\n\n".join([header, *guides])
+
+
+# --------------------------------------------------------------------------
 # 3.7 audio prompt guides (agent mode only — the chat never writes audio jobs)
 # --------------------------------------------------------------------------
 # Summarized from each model's primary sources:
@@ -1266,6 +1352,14 @@ def build_system_prompt(
             TEMPLATE_TAGGED if ctx.prompt_template == "tagged" else TEMPLATE_NATURAL
         )
         parts.append(FEW_SHOT_VIDEO)
+        # 選択中の動画ワークフローがモデル固有のガイドを持つなら、そのぶんだけ
+        # 足す（両方のモデルの流儀を渡すと混ざるので選択中の 1 本きり）。
+        try:
+            guide = video_guide_for(get_video_spec(ctx.video_workflow).id)
+        except WorkflowSpecError:
+            guide = ""
+        if guide:
+            parts.append(guide)
     # The image examples are Krea 2 prose; the other families demand a different
     # style and carry their own examples in their spec section.
     if family == DEFAULT_FAMILY:
@@ -1873,11 +1967,13 @@ def build_agent_system_prompt(
     )
     parts = [AGENT_ROLE, AGENT_PROTOCOL,
              image_workflow_catalog_section(), image_prompt_guides_section(),
-             workflow_catalog_section(),
+             workflow_catalog_section(), video_prompt_guides_section(),
              audio_workflow_catalog_section(), audio_prompt_guides_section(),
              video_spec, TEMPLATE_NATURAL, FEW_SHOT_VIDEO, FEW_SHOT_IMAGE_KREA2,
              _agent_choices(options, lora_samples),
              _agent_guardrails(ctx, max_tasks), AGENT_OUTPUT_RULES]
+    # 中身の無い節（使えるモデルにガイドが 1 つも無いとき）は落とす
+    parts = [part for part in parts if part.strip()]
     # 取得元が 1 件も登録されていない環境ではセクションごと出さない
     if model_sources:
         parts.insert(-2, _model_sources_lines(model_sources))

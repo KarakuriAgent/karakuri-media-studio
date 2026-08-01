@@ -192,6 +192,7 @@ FAMILY_LABELS: dict[str, str] = {
     "wan": "Wan 2.2",
     "ace-step": "ACE-Step 1.5",
     "stable-audio": "Stable Audio 3",
+    "veo": "Veo 3.1",
 }
 
 #: LoRA registrations default to this family (the only image workflow that
@@ -244,6 +245,10 @@ class KieTask:
     fields: dict[str, str] = field(default_factory=dict)
     #: 常に同じ値で入れる ``input`` のキー（モデル固有の固定オプション）
     constants: dict[str, Any] = field(default_factory=dict)
+    #: **配列で渡す** ``input`` のキー。同じキーに複数の論理名を割り当てられる
+    #: ようになり、値は :attr:`fields` の宣言順に並ぶ（Veo の ``imageUrls`` は
+    #: 「1 枚目 = 開始フレーム / 2 枚目 = 最終フレーム」の順序が意味を持つ）。
+    list_keys: tuple[str, ...] = ()
     #: API 系統（既定は Market 系の統一 API）
     api: KieApi = "market"
     #: 1 タスクの概算クレジット（0 = 不明。実消費は ``creditsConsumed`` を記録する）
@@ -336,6 +341,22 @@ class WorkflowSpec:
         if name in self.inject:
             return True
         return self.kie is not None and name in self.kie.fields
+
+    def supported_names(self) -> tuple[str, ...]:
+        """このワークフローが受け取る論理名（フォームとカタログが読む）。
+
+        :meth:`supports` の一覧版。ComfyUI は :attr:`inject`、kie.ai は
+        :attr:`KieTask.fields` が受け取り口なので、両方を同じ語彙で見せる
+        （``select:`` 付きは選択式として別に案内するので外す）。
+        """
+        names = set(self.inject)
+        if self.kie is not None:
+            names |= {
+                name
+                for name in self.kie.fields
+                if not name.startswith(KIE_SELECT_PREFIX)
+            }
+        return tuple(sorted(names))
 
     def target(self, name: str) -> Target | None:
         return self.inject.get(name)
@@ -938,6 +959,129 @@ WAN_DANCER = WorkflowSpec(
 
 
 # --------------------------------------------------------------------------
+# video: kie.ai（Google Veo 3.1、SPEC §5.2 / issue #17）
+# --------------------------------------------------------------------------
+#
+# ここから下はテンプレートを持たない**外部 API のワークフロー**。ComfyUI の
+# グラフの代わりに :class:`KieTask` が「どのモデルに何を渡すか」を宣言し、実際の
+# 組み立ては :mod:`app.kie` が行う。Veo は kie.ai の**旧専用系 API**
+# （``/api/v1/veo/generate``）で、モデル名は 3.1 になっても旧名のまま
+# （``veo3`` = Quality / ``veo3_fast`` = Fast）。
+#
+# 入力画像は 1 枚なら開始フレーム、2 枚なら「最初と最後のフレーム」になる
+# （``generationType`` は :class:`app.kie.VeoTaskApi` が枚数から決める）。
+# 音声はモデルが映像と一緒に生成するので、音声入力は取らない。
+
+#: Veo の縦横比（``Auto`` は 1080p/4K が使えないので出さない）
+VEO_ASPECT_RATIOS: tuple[str, ...] = ("16:9", "9:16")
+#: Veo の尺（秒）。1080p は 8 秒生成のときだけ用意される。
+VEO_DURATIONS: tuple[str, ...] = ("4", "6", "8")
+#: 生成解像度（4K は生成後の追加取得なので今は出さない）
+VEO_RESOLUTIONS: tuple[str, ...] = ("720p", "1080p")
+
+#: プロンプトの書き方（Fast / Quality で同じ。モデルの違いは品質と値段だけ）
+VEO_PROMPT_HINT = (
+    "One shot, one scene, one camera move. Write 3-6 English sentences"
+    " (100-150 words) in this order: composition / shot size, subject, action,"
+    " scene, **one** camera motion, lens & focus, style & light."
+    " Veo generates the **sound with the picture**: name the ambience and the"
+    " sound effects, and put spoken lines in quotes with the speaker and the"
+    " delivery (`The woman says softly: \"...\"`) — 1-2 short lines fit in"
+    " 8 seconds. Add `(no subtitles)` when no burnt-in captions are wanted."
+    " Never write what you do *not* want inside the description; list it after"
+    " the description as `Negative: cartoon, blurry, distorted hands, text,"
+    " watermark`. With a start frame, do not re-describe what the picture"
+    " already shows — write how it moves, what happens next and how it sounds."
+)
+
+#: 画像入力の説明（カタログ・フォームの案内に使う共通文）
+_VEO_INPUTS = (
+    "画像は任意で、1 枚渡すと開始フレーム、`end_image` も一緒に渡すと"
+    "「最初と最後のフレーム」の補間（flf2v）になる。"
+)
+
+
+def _veo_spec(
+    spec_id: str, label: str, model: str, credits: float, description: str
+) -> WorkflowSpec:
+    """Veo の 1 モデル分のマニフェスト（Fast / Quality は宣言が同じ）。"""
+    return WorkflowSpec(
+        id=spec_id,
+        label=label,
+        kind="video",
+        family="veo",
+        backend="kie",
+        description=description,
+        prompt_hint=VEO_PROMPT_HINT,
+        accepts_start_image=True,
+        image_label="開始フレーム（任意）",
+        kie=KieTask(
+            model=model,
+            api="veo",
+            fields={
+                "prompt": "prompt",
+                # 宣言順がそのまま imageUrls の並び（1 枚目 = 開始フレーム）
+                "image": "imageUrls",
+                "end_image": "imageUrls",
+                f"{KIE_SELECT_PREFIX}aspect_ratio": "aspect_ratio",
+                f"{KIE_SELECT_PREFIX}duration": "duration",
+                f"{KIE_SELECT_PREFIX}resolution": "resolution",
+            },
+            # 既定値がドキュメント内で食い違うので明示する（英語プロンプトを
+            # そのまま使わせたいので翻訳は有効のままでよい）
+            constants={"enableTranslation": True},
+            list_keys=("imageUrls",),
+            credits=credits,
+        ),
+        selects={
+            "aspect_ratio": SelectSpec(
+                label="縦横比",
+                choices=VEO_ASPECT_RATIOS,
+                default="16:9",
+                hint="16:9 は横長、9:16 は縦長。",
+            ),
+            "duration": SelectSpec(
+                label="尺（秒）",
+                choices=VEO_DURATIONS,
+                default="8",
+                hint="1080p は 8 秒のときだけ生成できる。",
+            ),
+            "resolution": SelectSpec(
+                label="解像度",
+                choices=VEO_RESOLUTIONS,
+                default="720p",
+                hint="1080p は尺 8 秒のときのみ。",
+            ),
+        },
+        notes=(
+            "kie.ai 経由 / 音声つき / SynthID 透かしが必ず入る /"
+            " 生成後の 1080P・4K 追加取得と延長（extend）は未対応"
+        ),
+    )
+
+
+VEO3_1_FAST = _veo_spec(
+    "veo3_1_fast",
+    "Veo 3.1 Fast（音声つき・外部 API）",
+    "veo3_fast",
+    60.0,
+    "kie.ai 経由の Google Veo 3.1 Fast。音声（環境音・効果音・セリフ）まで"
+    "モデルが同時に生成する 4〜8 秒のクリップで、ふだんの試し撮り・量産用。"
+    f"{_VEO_INPUTS}外部 API なので LoRA は使えない。",
+)
+
+VEO3_1_QUALITY = _veo_spec(
+    "veo3_1_quality",
+    "Veo 3.1 Quality（音声つき・外部 API）",
+    "veo3",
+    250.0,
+    "kie.ai 経由の Google Veo 3.1（Quality）。Fast と同じ使い方で品質が高く、"
+    "そのぶん高価（Fast の約 4 倍）。本番に載せるカットだけに使う。"
+    f"{_VEO_INPUTS}外部 API なので LoRA は使えない。",
+)
+
+
+# --------------------------------------------------------------------------
 # audio: workflow/audio/*.json
 # --------------------------------------------------------------------------
 #
@@ -1077,6 +1221,8 @@ SPECS: tuple[WorkflowSpec, ...] = (
     LTX_IC_LORA_IMAGE,
     LTX_IC_LORA_MOTION,
     WAN_DANCER,
+    VEO3_1_FAST,
+    VEO3_1_QUALITY,
     ACE_STEP_1_5,
     STABLE_AUDIO_3,
 )
@@ -1251,7 +1397,7 @@ def catalog_entry(spec: WorkflowSpec) -> CatalogEntry:
         audio=spec.audio_role or GENERATED_AUDIO,
         prompt_hint=spec.prompt_hint,
         notes=spec.notes,
-        supports=tuple(sorted(spec.inject)),
+        supports=spec.supported_names(),
         min_duration=spec.min_duration,
         max_duration=spec.max_duration,
         default_duration=spec.default_duration,

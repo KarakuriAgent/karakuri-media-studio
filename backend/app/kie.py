@@ -14,8 +14,8 @@ kie.ai の性質と、それがこのモジュールの形を決めている理�
 - **API が 2 系統ある**: 新しい Market 系（``/api/v1/jobs/*``、``model`` を body で
   指定する統一 API）と、Veo / Suno の旧専用系（モデル別のパス・別のステータス語彙）。
   ポーリングループ自体は同じなので、**エンドポイントとステータスの読み方だけを
-  :class:`TaskApi` で差し替えられる**ようにしてある（子 issue #17 / #20 が
-  ``VeoTaskApi`` / ``SunoTaskApi`` を足す想定）
+  :class:`TaskApi` で差し替えられる**ようにしてある（Veo は
+  :class:`VeoTaskApi`、Suno は子 issue #20 で足す想定）
 - **``resultJson`` は JSON 文字列**なので二重パースが要る（:func:`parse_result_json`）
 - **成果物は 14 日で消える**（モデルによっては 24 時間）。完了を検知したら
   その場でダウンロードして自前ストレージに落とす
@@ -322,11 +322,85 @@ class TaskApi:
         return TaskState(phase, state or "waiting", credits=credits)  # type: ignore[arg-type]
 
 
+class VeoTaskApi(TaskApi):
+    """Google Veo の旧専用系（``/api/v1/veo/*``、SPEC §5.2 / issue #17）。
+
+    Market 系との違いは 3 つだけで、あとは :func:`wait_for_task` の共通ループに
+    そのまま乗る:
+
+    - **ボディが平ら**: ``{"model": …, "input": {…}}`` ではなく、パラメータを
+      そのまま並べる（``prompt`` / ``imageUrls`` / ``aspect_ratio`` …）
+    - **``generationType`` は渡した画像の枚数で決まる**: 2 枚なら
+      「最初と最後のフレーム」、0〜1 枚なら通常生成（1 枚は開始フレーム扱い）。
+      マニフェスト側で固定したいときは ``constants`` に書けばそれが勝つ
+    - **状態が ``successFlag``**: 0 = 生成中 / 1 = 成功 / 2, 3 = 失敗。成果物は
+      ``response.resultUrls`` に入る
+    """
+
+    name = "veo"
+    create_url = f"{API_BASE}/api/v1/veo/generate"
+    record_url = f"{API_BASE}/api/v1/veo/record-info"
+
+    #: 画像 2 枚（最初 + 最後のフレーム）のときの生成種別
+    FLF_TYPE = "FIRST_AND_LAST_FRAMES_2_VIDEO"
+    #: それ以外（画像なし = t2v、1 枚 = 開始フレーム）の生成種別
+    DEFAULT_TYPE = "TEXT_2_VIDEO"
+    #: 数値で送るキー（選択式フィールドの値は文字列で届く）
+    NUMERIC_KEYS = ("duration", "seeds")
+    #: ``successFlag`` -> :data:`TaskPhase`
+    FLAGS: dict[int, TaskPhase] = {0: "running", 1: "success", 2: "fail", 3: "fail"}
+
+    def create_body(self, model: str, task_input: dict[str, Any]) -> dict[str, Any]:
+        body: dict[str, Any] = {"model": model, **task_input}
+        for key in self.NUMERIC_KEYS:
+            value = body.get(key)
+            if isinstance(value, str) and value.strip().isdigit():
+                body[key] = int(value)
+        urls = body.get("imageUrls")
+        count = len(urls) if isinstance(urls, (list, tuple)) else 0
+        body.setdefault(
+            "generationType", self.FLF_TYPE if count >= 2 else self.DEFAULT_TYPE
+        )
+        return body
+
+    def read_state(self, data: Any) -> TaskState:
+        if not isinstance(data, dict):
+            raise KieError(f"kie.ai の record-info が想定と違います: {str(data)[:200]}")
+        try:
+            flag = int(data.get("successFlag"))  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            flag = -1
+        phase = self.FLAGS.get(flag, "waiting")
+        credits = _credits(data)
+        if phase == "success":
+            response = parse_result_json(data.get("response"))
+            urls = _urls(response.get("resultUrls") or data.get("resultUrls"))
+            if not urls:
+                raise KieError("kie.ai がタスクの成果物 URL を返しませんでした")
+            return TaskState("success", "success", urls, credits)
+        if phase == "fail":
+            reason = str(data.get("errorMessage") or data.get("failMsg") or "").strip()
+            code = data.get("errorCode")
+            hint = ERROR_HINTS.get(int(code)) if str(code).isdigit() else None
+            return TaskState(
+                "fail",
+                "fail",
+                error=" ".join(
+                    part for part in (reason, f"（{hint}）" if hint else "") if part
+                )
+                or "kie.ai がタスクの失敗を報告しました",
+            )
+        # 生成中は 0 しか返ってこない（キュー待ちと生成中の区別は無い）
+        return TaskState(phase, "generating" if flag == 0 else "waiting", credits=credits)
+
+
 #: 既定の系統（Kling / Seedance などの Market 系モデル）
 MARKET = TaskApi()
+#: Veo 3.1（旧専用系）
+VEO = VeoTaskApi()
 
-#: 系統名 -> 実装。子 issue が ``veo`` / ``suno`` をここに登録する。
-TASK_APIS: dict[str, TaskApi] = {MARKET.name: MARKET}
+#: 系統名 -> 実装。``suno`` は子 issue #20 でここに加わる。
+TASK_APIS: dict[str, TaskApi] = {MARKET.name: MARKET, VEO.name: VEO}
 
 
 def task_api(name: str) -> TaskApi:
@@ -597,6 +671,10 @@ def task_input(
 
     値が空のものは**送らない**: 外部 API は空文字や 0 を「そう指定された」と解釈
     することがあるので、指定していないものはキーごと落とすほうが安全。
+
+    :attr:`app.workflows.KieTask.list_keys` に挙げたキーは**配列**になり、同じ
+    キーに複数の論理名を宣言できる（Veo の ``imageUrls`` は 1 枚目が開始フレーム、
+    2 枚目が最終フレーム）。並びは宣言順で、空の値はそこでも落ちる。
     """
     task = spec.kie
     if task is None:
@@ -607,7 +685,10 @@ def task_input(
         value = values.get(name)
         if value is None or value == "":
             continue
-        payload[key] = value
+        if key in task.list_keys:
+            payload.setdefault(key, []).append(value)
+        else:
+            payload[key] = value
     return payload
 
 

@@ -122,6 +122,9 @@ def test_unknown_workflow_id():
 def test_ids_are_unique_and_files_exist():
     assert len({spec.id for spec in SPECS}) == len(SPECS)
     for spec in SPECS:
+        # 外部 API（kie.ai）のワークフローはテンプレートを持たない（SPEC §5.2）
+        if spec.backend != "comfyui":
+            continue
         assert spec.path.is_file(), spec.path
     assert get_spec(DEFAULT_IMAGE_WORKFLOW).kind == "image"
     assert get_spec(DEFAULT_VIDEO_WORKFLOW).kind == "video"
@@ -1229,9 +1232,15 @@ def _wan(**overrides) -> dict:
 
 
 def test_only_wan_declares_selects():
-    """既存ワークフローには選択項目が無い（挙動不変）。"""
+    """ComfyUI 側で選択項目を持つのは wan_dancer だけ（挙動不変）。
+
+    kie.ai のワークフロー（Veo）は縦横比・尺・解像度を選択式で持つが、これは
+    グラフではなく API のパラメータなので ComfyUI の注入には関係しない。
+    """
     assert {
-        spec.id for spec in SPECS if spec.selects
+        spec.id
+        for spec in SPECS
+        if spec.selects and spec.backend == "comfyui"
     } == {"wan_dancer"}
     assert set(WAN.selects) == {"dance_style", "motion_amplitude", "duration"}
 

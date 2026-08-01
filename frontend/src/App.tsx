@@ -351,6 +351,10 @@ export default function App() {
       }
       const needs = (name: string) =>
         form.mode !== 'image_only' && (workflow?.requires ?? []).includes(name as never)
+      // 任意入力（Veo の開始フレーム・最後のフレーム）も、選ばれていれば送る
+      const accepts = (name: string) =>
+        needs(name) ||
+        (form.mode !== 'image_only' && (workflow?.supports ?? []).includes(name))
       // an editing image workflow takes the picture itself, in every mode that
       // runs the image stage (including `full`)
       const imageNeedsSource =
@@ -389,10 +393,10 @@ export default function App() {
         audio_path: needs('audio') ? form.audioPath || null : null,
         // in full mode the image stage produces the start frame
         source_image:
-          (form.mode === 'i2v' && needs('image')) || imageNeedsSource
+          (form.mode === 'i2v' && accepts('image')) || imageNeedsSource
             ? form.sourceImage || null
             : null,
-        end_image: needs('end_image') ? form.endImage || null : null,
+        end_image: accepts('end_image') ? form.endImage || null : null,
         reference_video: needs('video') ? form.referenceVideo || null : null,
         seed: form.seedLocked ? form.seed : null,
         // 選択中のワークフローが宣言している選択項目だけ（未指定は送らない）

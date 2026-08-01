@@ -662,6 +662,9 @@ export function hiddenFields(
     video && (workflow?.requires ?? []).includes(name as never)
   const supports = (name: string) =>
     video && (workflow?.supports ?? []).includes(name)
+  // 必須ではないが受け取れる入力（Veo の開始フレーム・最後のフレームは任意）も
+  // 欄は出す — 出さないと渡す手立てが無くなる。
+  const accepts = (name: string) => requires(name) || supports(name)
   const imageNeedsSource = image && imageWorkflowNeedsSource(imageWorkflow)
   return {
     imagePrompt: !image,
@@ -680,8 +683,8 @@ export function hiddenFields(
     // in full mode the video's start frame comes from the image stage, but an
     // editing image workflow still needs its own input picture in every mode
     // that runs the image stage
-    startImage: !((mode === 'i2v' && requires('image')) || imageNeedsSource),
-    endImage: !requires('end_image'),
+    startImage: !((mode === 'i2v' && accepts('image')) || imageNeedsSource),
+    endImage: !accepts('end_image'),
     referenceVideo: !requires('video'),
     // an editing workflow derives the size from its input picture; with no video
     // stage to size, the aspect ratio / megapixels then do nothing at all
