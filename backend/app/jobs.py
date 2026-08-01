@@ -66,6 +66,7 @@ from .models import (
     job_workflow_ids,
     missing_job_fields,
     model_override_problem,
+    prompt_length_problem,
     select_problem,
     video_lora_problem,
     video_workflow_problem,
@@ -455,6 +456,7 @@ def _validate(params: dict[str, Any]) -> None:
         )
         or video_lora_problem(mode, video_workflow, params.get("video_loras") or [])
         or select_problem(mode, video_workflow, params.get("selects"))
+        or prompt_length_problem(mode, video_workflow, params.get("video_prompt"))
         or _model_override_problem(params)
         or _backend_problem(params)
     )

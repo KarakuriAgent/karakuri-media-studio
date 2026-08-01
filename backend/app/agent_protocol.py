@@ -39,6 +39,7 @@ from .models import (
     job_workflow_ids,
     missing_job_fields,
     model_override_problem,
+    prompt_length_problem,
     select_problem,
     video_workflow_problem,
 )
@@ -285,6 +286,10 @@ def _workflow_detail(raw: dict[str, Any]) -> str | None:
             f"{problem} / `video_workflow` を full 対応のものに変えるか、"
             '`mode` を "i2v" にしてください（使えるのは ' + known + "）"
         )
+
+    length = prompt_length_problem(mode, workflow, _text(raw.get("video_prompt")))
+    if length:
+        return f"{length}。`video_prompt` を短く書き直してください"
 
     try:
         missing = missing_job_fields(

@@ -91,6 +91,7 @@
 | `wan_dancer` | 画像+音声→ダンス動画 (Wan Dancer) | wan2.2 global/local 2 段 + lightx2v | 画像・音声 | ○ |
 | `veo3_1_fast` | Veo 3.1 Fast（音声つき・外部 API） | kie.ai `veo3_fast` | なし（画像・最終フレーム画像は任意） | ○ |
 | `veo3_1_quality` | Veo 3.1 Quality（音声つき・外部 API） | kie.ai `veo3` | なし（画像・最終フレーム画像は任意） | ○ |
+| `kling3_video` | Kling 3.0（音声つき・外部 API） | kie.ai `kling-3.0/video` | なし（画像・最終フレーム画像は任意） | ○ |
 
 - id はファイル名（拡張子なし）。`tx2_3_i2v` / `tx2_3_ia2v` の綴りは配布ファイル名そのまま
 - **`wan_dancer`（`workflow/video/wan/`、family `wan`）** は LTX 系とは作りが違う: 渡した曲に合わせて踊る映像を作り、
@@ -106,6 +107,20 @@
   生成後の 1080P / 4K 追加取得と延長（extend）は未対応。
   `full`（画像→動画）は **ComfyUI の画像ワークフローと組み合わせられる**（§2.1 / §5.2）:
   1 段目の生成画像が kie の File Upload API 経由で開始フレームになる
+- **`kling3_video`（family `kling`、backend `kie`）** も外部 API のワークフロー（§5.2）で、Veo と違い
+  **Market 系の統一 API**（`POST /api/v1/jobs/createTask`、パラメータは `input` の中）。t2v / i2v はモデルが
+  分かれておらず、画像を渡すかどうかだけで決まる（1 枚 = 開始フレーム、2 枚 = 開始 + 最終フレーム）。
+  人物の動き・実写寄りの絵に強く、**尺は 3〜15 秒**と長い。選択式フィールド（§3.1）は
+  `mode`（`std` 720p / `pro` 1080p（既定）/ `4K`）・`duration`・`aspect_ratio`（16:9 / 9:16 / 1:1、
+  画像を渡したときは画像の縦横比が優先される）・`sound`（`true` で環境音・効果音・セリフを同時生成。
+  日本語セリフはリップシンクつき）。
+  **`duration` は文字列で送る**（`"5"`。Veo の `duration` は整数なので型が逆）、**`sound` は真偽値**で送る
+  （選択式の値は文字列で届くので `KieTask.bool_keys` で `bool` に直す）。
+  `negative_prompt` / `cfg` / `camera_control` / `seed` は kie.ai 経由の Kling には**存在しない**ので、
+  すべてプロンプト本文で指定する。**`video_prompt` は 500 文字まで**で、超えたジョブは投入時に 422
+  （`models.prompt_length_problem`、マニフェストの `max_prompt_chars`）。マルチショット（`multi_shots` /
+  `multi_prompt`）と Elements（`kling_elements`、キャラ参照）、Turbo 系（`kling/v3-turbo-*`）は未対応。
+  ユーザー LoRA は使えず、`full` は Veo と同じく ComfyUI の画像ワークフローと組み合わせられる
 - 既定は `ltx2_3_id_lora`（旧 `video-gen.json` の動画側と同じ構成なので、既存ジョブ・エージェントの計画がそのまま通る）
 - ラストフレーム連鎖: 履歴の動画から「ラストフレームを開始フレームにして続きを生成」できる。元ジョブの動画ワークフローが開始フレームを受け取れない場合は既定ワークフローにフォールバックする
 
@@ -579,6 +594,10 @@ ComfyUI と並ぶ **2 つめの生成バックエンド**として、外部 API 
   （2 枚 = `FIRST_AND_LAST_FRAMES_2_VIDEO`、0〜1 枚 = `TEXT_2_VIDEO`）。`enableTranslation` は
   既定値が docs 内で食い違うので**明示して送る**。マニフェストの `KieTask.list_keys` に挙げたキーは
   配列になり、同じキーに複数の論理入力を宣言できる（`imageUrls` は宣言順 = 開始フレーム, 最終フレーム）
+- **Kling は Market 系のまま**（`api: "market"`、モデル `kling-3.0/video`）。`input` に入る値の**型はモデルごとに違う**
+  ので、マニフェスト側で宣言して合わせる: `KieTask.list_keys`（配列 = `image_urls`）と
+  `KieTask.bool_keys`（真偽値 = `sound`）。選択式フィールドの値はすべて文字列で届くため、
+  型を直さないと API に弾かれる。逆に Kling の `duration` は**文字列のまま**送るのが正しい（§2.2）
 - **成果物は即ダウンロード**: kie 側の URL は 14 日（モデルによっては 24 時間）で
   失効するので、完了を検知したその場で `outputs/{job_id}/` に落とす（§6 と同じ置き場・
   同じ命名で、ラストフレーム抽出も同じ）

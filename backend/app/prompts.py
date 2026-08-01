@@ -672,11 +672,62 @@ Hard rules:
   sentences in the prompt.
 """
 
+# Kling 3.0 — https://docs.kie.ai/market/kling/kling-3-0.md と
+# https://blog.fal.ai/kling-3-0-prompting-guide/（構成順・アイデンティティ固定・音声）
+
+KLING_VIDEO_GUIDE = """\
+# VIDEO PROMPT SPEC — Kling 3.0 (kie.ai, `kling3_video`)
+
+Kling is a motion model: it is strongest on people, physical action and
+photoreal footage, and it takes 3-15 second takes. Where this section and the
+generic VIDEO PROMPT SPEC above disagree, this one wins.
+
+**Hard limit: `video_prompt` must be at most 500 characters.** The job is
+rejected before it is queued if it is longer, so write one dense English
+paragraph — no lists, no repetition, no restating the job fields.
+
+Write it in this order:
+
+1. **Camera first** — open with the move (`Slow dolly push forward,`
+   `Handheld follow behind her,` `Locked-off wide shot,`). Exactly **one**
+   move per clip.
+2. **Scene / subject** — pin the identity in the first clause (age, build,
+   hair, wardrobe: `a woman in her 30s, short black bob, grey wool coat`).
+   Refer back to her with the **same words** every time; pronouns and synonyms
+   are the main cause of the character drifting mid-shot.
+3. **Action** — one continuous action, in the order it happens.
+4. **Mood / lighting** — time of day, key light, weather.
+5. **Style** — film stock, grade, lens character.
+
+With a start frame (`image`), the picture is the anchor: write **only what
+changes** — how the subject starts moving, where the camera goes, what happens
+next. Never re-describe the composition that is already in the picture.
+
+With `sound: true` (the `sound` select):
+
+- Label the speaker before the line and describe the voice:
+  `Woman (raspy, low voice): "We are out of time."` Japanese dialogue is
+  supported and lip-synced.
+- Name the ambience and the effects you want (`rain on glass, distant sirens`).
+- Keep it to one or two short lines — a 5 second take holds very little speech.
+
+There is **no `negative_prompt`, no `cfg`, no seed and no camera-control
+parameter** on this model. Everything is the prompt text: write what you *do*
+want, and put the few things to suppress inline in the same sentence style
+(`no text overlays, no camera shake`). Avoid words that summon what you are
+trying to avoid.
+
+Duration, mode (std / pro / 4K), aspect ratio and sound are job fields
+(`selects`), never sentences in the prompt. Multi-shot prompts and Elements
+(`@character` references) are not wired up yet — one shot per job.
+"""
+
 #: workflow id -> そのモデル専用の VIDEO PROMPT SPEC（無いワークフローは
 #: 汎用の :data:`VIDEO_SPEC` のまま）
 VIDEO_SPECS: dict[str, str] = {
     "veo3_1_fast": VEO_VIDEO_GUIDE,
     "veo3_1_quality": VEO_VIDEO_GUIDE,
+    "kling3_video": KLING_VIDEO_GUIDE,
 }
 
 

@@ -626,6 +626,31 @@ def select_problem(
     return None
 
 
+def prompt_length_problem(
+    mode: str, video_workflow: str | None, video_prompt: str | None
+) -> str | None:
+    """``video_prompt`` がそのモデルの長さの上限に収まるか（None == 問題なし）。
+
+    外部 API には**プロンプトの文字数制限**があるものがあり（Kling 3.0 は 500
+    文字）、超えたリクエストは 422 で弾かれる。走らせてから失敗させると
+    クレジットこそ減らないが待ち時間が無駄になるので、投入前にここで落とす。
+    上限を宣言していないワークフロー（``max_prompt_chars == 0``）は素通し。
+    """
+    if mode not in ("full", "i2v") or not video_prompt:
+        return None
+    try:
+        spec = get_video_spec(video_workflow)
+    except WorkflowSpecError as exc:
+        return str(exc)
+    limit = spec.max_prompt_chars
+    if limit and len(video_prompt) > limit:
+        return (
+            f"video workflow '{spec.id}' は video_prompt を {limit} 文字までしか"
+            f"受け取れません（今は {len(video_prompt)} 文字）"
+        )
+    return None
+
+
 def video_workflow_problem(mode: str, video_workflow: str | None) -> str | None:
     """Why this workflow cannot be used in this mode (None == fine)."""
     if mode not in ("full", "i2v"):
@@ -918,6 +943,9 @@ class JobCreate(BaseModel):
             )
             or audio_lora_problem(self.mode, self.loras, self.video_loras)
             or video_lora_problem(self.mode, self.video_workflow, self.video_loras)
+            or prompt_length_problem(
+                self.mode, self.video_workflow, self.video_prompt
+            )
         )
         if problem:
             raise ValueError(problem)

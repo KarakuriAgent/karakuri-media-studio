@@ -664,6 +664,18 @@ def task_values(
     return values
 
 
+#: 「真」と読む文字列（選択式フィールドの値は文字列で届く）
+_TRUTHY = frozenset({"true", "1", "yes", "on"})
+
+
+def _as_bool(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in _TRUTHY
+    return bool(value)
+
+
 def task_input(
     spec: WorkflowSpec, params: GenerationParams, uploads: dict[str, str]
 ) -> dict[str, Any]:
@@ -675,6 +687,10 @@ def task_input(
     :attr:`app.workflows.KieTask.list_keys` に挙げたキーは**配列**になり、同じ
     キーに複数の論理名を宣言できる（Veo の ``imageUrls`` は 1 枚目が開始フレーム、
     2 枚目が最終フレーム）。並びは宣言順で、空の値はそこでも落ちる。
+
+    :attr:`app.workflows.KieTask.bool_keys` に挙げたキーは **``bool``** になる
+    （選択式フィールドの値は文字列で届くので、Kling の ``sound`` のように JSON の
+    型が決まっているものはここで直す）。
     """
     task = spec.kie
     if task is None:
@@ -687,6 +703,8 @@ def task_input(
             continue
         if key in task.list_keys:
             payload.setdefault(key, []).append(value)
+        elif key in task.bool_keys:
+            payload[key] = _as_bool(value)
         else:
             payload[key] = value
     return payload

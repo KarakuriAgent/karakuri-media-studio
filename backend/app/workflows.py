@@ -193,6 +193,7 @@ FAMILY_LABELS: dict[str, str] = {
     "ace-step": "ACE-Step 1.5",
     "stable-audio": "Stable Audio 3",
     "veo": "Veo 3.1",
+    "kling": "Kling 3.0",
 }
 
 #: LoRA registrations default to this family (the only image workflow that
@@ -249,6 +250,10 @@ class KieTask:
     #: ようになり、値は :attr:`fields` の宣言順に並ぶ（Veo の ``imageUrls`` は
     #: 「1 枚目 = 開始フレーム / 2 枚目 = 最終フレーム」の順序が意味を持つ）。
     list_keys: tuple[str, ...] = ()
+    #: **真偽値で渡す** ``input`` のキー。選択式フィールドの値は文字列で届くので
+    #: （``"true"`` / ``"false"``）、ここに挙げたキーだけ ``bool`` に直してから
+    #: 送る（Kling の ``sound``）。JSON の型が違うと API に弾かれる。
+    bool_keys: tuple[str, ...] = ()
     #: API 系統（既定は Market 系の統一 API）
     api: KieApi = "market"
     #: 1 タスクの概算クレジット（0 = 不明。実消費は ``creditsConsumed`` を記録する）
@@ -285,6 +290,10 @@ class WorkflowSpec:
     #: how to write ``video_prompt`` for this workflow (English, it goes
     #: straight into the LLM prompts).  Required for video workflows.
     prompt_hint: str = ""
+    #: プロンプトの長さの上限（文字数、0 = 上限なし）。外部 API は長すぎる
+    #: プロンプトを 422 で弾く（Kling 3.0 は 500 文字）ので、ジョブを投入する
+    #: 前に :func:`app.models.prompt_length_problem` で落とす。
+    max_prompt_chars: int = 0
     #: audio workflows only: the clip length the model supports, in seconds.
     #: ``duration`` outside ``[min_duration, max_duration]`` is rejected before
     #: the job is queued (0.0 == no limit declared).
@@ -1082,6 +1091,124 @@ VEO3_1_QUALITY = _veo_spec(
 
 
 # --------------------------------------------------------------------------
+# video: kie.ai（Kling 3.0、SPEC §5.2 / issue #18）
+# --------------------------------------------------------------------------
+#
+# Kling は Veo と違って **Market 系（統一 API）** なので、系統は既定の
+# ``market`` のまま（``POST /api/v1/jobs/createTask`` に ``{"model", "input"}``）。
+# t2v / i2v はモデルが分かれておらず、``image_urls`` を入れるかどうかだけで
+# 決まる（1 枚 = 開始フレーム、2 枚 = 開始 + 最終フレーム）。
+#
+# 注意すべき癖が 2 つある:
+#
+# - **``duration`` は文字列**（``"3"``〜``"15"``）。Veo の ``duration`` は整数
+#   なので、同じ「尺」でも型が逆になる。選択式フィールドの値は文字列で届くので
+#   ここでは何も変換しない（Market 系の ``create_body`` も素通し）
+# - **``sound`` は真偽値**。選択式の文字列を :attr:`KieTask.bool_keys` で
+#   ``bool`` に直してから送る
+#
+# ``negative_prompt`` / ``cfg`` / ``camera_control`` / ``seed`` は kie.ai 経由の
+# Kling には無いので宣言しない（すべてプロンプト本文で制御する）。マルチショット
+# （``multi_shots`` / ``multi_prompt``）と Elements（``kling_elements``）は第 2 段。
+
+#: Kling の生成モード（解像度と値段が変わる）
+KLING_MODES: tuple[str, ...] = ("std", "pro", "4K")
+#: Kling の尺（秒）。**API には文字列で渡す**（``"3"``〜``"15"``）。
+KLING_DURATIONS: tuple[str, ...] = tuple(str(second) for second in range(3, 16))
+#: Kling の縦横比（画像を渡したときは画像に従うので無視される）
+KLING_ASPECT_RATIOS: tuple[str, ...] = ("16:9", "9:16", "1:1")
+#: ネイティブ音声の ON / OFF（``sound`` は真偽値なので :attr:`KieTask.bool_keys`）
+KLING_SOUND: tuple[str, ...] = ("false", "true")
+
+#: プロンプトの長さの上限（kie.ai の Kling 3.0）
+KLING_MAX_PROMPT_CHARS = 500
+
+KLING_PROMPT_HINT = (
+    "**Hard limit: 500 characters** — the API rejects anything longer, so write"
+    " one dense paragraph, not an essay. Order: **camera move first**, then"
+    " scene / subject, action, mood & lighting, style."
+    " Start with the camera (`Slow dolly push forward, ...`) and use exactly one"
+    " move. Fix the subject's identity (age, hair, wardrobe) in the first"
+    " clause and refer back to it with the *same* words — pronouns and synonyms"
+    " make the character drift. One scene, one action."
+    " With a start frame, treat the picture as the anchor: write only how it"
+    " starts moving and what changes, never re-describe the composition."
+    " With `sound` on, label the speaker before the line and describe the voice"
+    " (`Woman (raspy, low voice): \"...\"`); Japanese dialogue is lip-synced."
+    " There is no negative prompt parameter: write what you do want, and put"
+    " unwanted elements as `no text overlays, no camera shake` inside the text."
+)
+
+KLING3_VIDEO = WorkflowSpec(
+    id="kling3_video",
+    label="Kling 3.0（音声つき・外部 API）",
+    kind="video",
+    family="kling",
+    backend="kie",
+    description=(
+        "kie.ai 経由の Kling 3.0（t2v / i2v 統合）。人物の動きと実写寄りの絵に強く、"
+        "3〜15 秒と尺が長い。`sound` を on にすると環境音・効果音・セリフ"
+        "（日本語のリップシンクつき）まで同時に生成する。画像は任意で、1 枚渡すと"
+        "開始フレーム、`end_image` も渡すと開始 + 最終フレームの補間になる。"
+        "**プロンプトは 500 文字まで**。外部 API なので LoRA は使えない。"
+    ),
+    prompt_hint=KLING_PROMPT_HINT,
+    max_prompt_chars=KLING_MAX_PROMPT_CHARS,
+    accepts_start_image=True,
+    image_label="開始フレーム（任意）",
+    kie=KieTask(
+        model="kling-3.0/video",
+        # Market 系（統一 API）なので系統は既定のまま
+        fields={
+            "prompt": "prompt",
+            # 宣言順がそのまま image_urls の並び（1 枚目 = 開始フレーム）
+            "image": "image_urls",
+            "end_image": "image_urls",
+            f"{KIE_SELECT_PREFIX}mode": "mode",
+            f"{KIE_SELECT_PREFIX}duration": "duration",
+            f"{KIE_SELECT_PREFIX}aspect_ratio": "aspect_ratio",
+            f"{KIE_SELECT_PREFIX}sound": "sound",
+        },
+        list_keys=("image_urls",),
+        bool_keys=("sound",),
+        # pro / 5 秒 / 音声なしの概算（$0.09/秒 = 90 credits）
+        credits=90.0,
+    ),
+    selects={
+        "mode": SelectSpec(
+            label="モード",
+            choices=KLING_MODES,
+            default="pro",
+            hint="std は 720p、pro は 1080p、4K は 4K（pro の約 4 倍の値段）。",
+        ),
+        "duration": SelectSpec(
+            label="尺（秒）",
+            choices=KLING_DURATIONS,
+            default="5",
+            hint="3〜15 秒。長いほど比例して高い。",
+        ),
+        "aspect_ratio": SelectSpec(
+            label="縦横比",
+            choices=KLING_ASPECT_RATIOS,
+            default="16:9",
+            hint="開始フレーム画像を渡したときは画像の縦横比が優先される。",
+        ),
+        "sound": SelectSpec(
+            label="音声を生成",
+            choices=KLING_SOUND,
+            default="false",
+            hint="true で環境音・効果音・セリフを同時生成（そのぶん高い）。",
+        ),
+    },
+    notes=(
+        "kie.ai 経由 / プロンプトは 500 文字まで / ネガティブプロンプト・seed・"
+        "カメラ制御パラメータは無い（本文で指定） /"
+        " マルチショットと Elements（キャラ参照）は未対応"
+    ),
+)
+
+
+# --------------------------------------------------------------------------
 # audio: workflow/audio/*.json
 # --------------------------------------------------------------------------
 #
@@ -1223,6 +1350,7 @@ SPECS: tuple[WorkflowSpec, ...] = (
     WAN_DANCER,
     VEO3_1_FAST,
     VEO3_1_QUALITY,
+    KLING3_VIDEO,
     ACE_STEP_1_5,
     STABLE_AUDIO_3,
 )
@@ -1551,6 +1679,14 @@ def validate_external_spec(spec: WorkflowSpec) -> list[str]:
             )
         if not str(key).strip():
             problems.append(f"{spec.id}.kie.fields[{name}]: empty input key")
+    declared = set(spec.kie.fields.values())
+    for group, keys in (("list_keys", spec.kie.list_keys), ("bool_keys", spec.kie.bool_keys)):
+        for key in keys:
+            if key not in declared:
+                problems.append(
+                    f"{spec.id}.kie.{group}: {key!r} is not one of the declared"
+                    " input keys"
+                )
     return problems
 
 

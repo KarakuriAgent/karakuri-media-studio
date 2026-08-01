@@ -1066,3 +1066,218 @@ def test_a_full_job_bridges_comfyui_images_into_veo(client, fake_kie, comfy_env,
     messages = [event.get("message") or "" for event in events]
     assert any("画像生成 (1/2)" in message for message in messages)
     assert any("動画生成 (2/2)" in message for message in messages)
+
+
+# --------------------------------------------------------------------------
+# Kling 3.0（Market 系の統一 API、issue #18）
+# --------------------------------------------------------------------------
+
+KLING = workflows.BY_ID["kling3_video"]
+
+
+def _kling_params(**overrides) -> GenerationParams:
+    base = dict(
+        mode="i2v",
+        job_id="job-kling",
+        video_workflow=KLING.id,
+        video_prompt="Slow dolly push forward, a woman in a grey coat turns.",
+    )
+    base.update(overrides)
+    return _params(**base)
+
+
+def test_kling_rides_on_the_market_api():
+    """Veo と違って専用系ではないので、既定の統一 API のまま。"""
+    assert KLING.kie.api == "market"
+    assert KLING.kie.model == "kling-3.0/video"
+    api = kie.task_api(KLING.kie.api)
+    assert api.create_url.endswith("/api/v1/jobs/createTask")
+    assert api.record_url.endswith("/api/v1/jobs/recordInfo")
+
+
+def test_a_start_frame_becomes_one_kling_image_url():
+    request = kie.build_request(
+        KLING, _kling_params(), {"image": "https://files.kie.ai/start.png"}
+    )
+    body = kie.task_api(request.api).create_body(request.model, request.input)
+
+    # Market 系はパラメータを input で包む
+    assert set(body) == {"model", "input"}
+    assert body["model"] == "kling-3.0/video"
+    task_input = body["input"]
+    assert task_input["image_urls"] == ["https://files.kie.ai/start.png"]
+    assert task_input["prompt"].startswith("Slow dolly push forward")
+    assert task_input["mode"] == "pro"
+    assert task_input["aspect_ratio"] == "16:9"
+    # **duration は文字列**（Veo の int と逆）
+    assert task_input["duration"] == "5"
+    assert isinstance(task_input["duration"], str)
+    # sound は真偽値（選択式の文字列を bool に直して送る）
+    assert task_input["sound"] is False
+    # kie.ai 経由の Kling には無いパラメータは宣言していない
+    for absent in ("negative_prompt", "cfg", "camera_control", "seed"):
+        assert absent not in task_input
+
+
+def test_kling_takes_a_first_and_last_frame():
+    """2 枚目は最終フレーム（``image_urls`` の並びに意味がある）。"""
+    request = kie.build_request(
+        KLING,
+        _kling_params(
+            selects={
+                "mode": "4K",
+                "duration": "12",
+                "aspect_ratio": "9:16",
+                "sound": "true",
+            }
+        ),
+        {
+            "image": "https://files.kie.ai/first.png",
+            "end_image": "https://files.kie.ai/last.png",
+        },
+    )
+    task_input = request.input
+
+    assert task_input["image_urls"] == [
+        "https://files.kie.ai/first.png",
+        "https://files.kie.ai/last.png",
+    ]
+    assert task_input["mode"] == "4K"
+    assert task_input["duration"] == "12"
+    assert task_input["aspect_ratio"] == "9:16"
+    assert task_input["sound"] is True
+
+
+def test_without_an_image_kling_is_text_to_video():
+    task_input = kie.build_request(KLING, _kling_params(), {}).input
+    assert "image_urls" not in task_input
+    assert task_input["prompt"]
+
+
+def test_kling_rejects_a_prompt_over_the_character_limit(client, monkeypatch):
+    """500 文字の上限は投入前に落とす（走らせてから 422 を食わない）。"""
+    from app.models import prompt_length_problem
+
+    mark_available(monkeypatch)
+    limit = workflows.KLING_MAX_PROMPT_CHARS
+    assert limit == 500
+
+    created = client.post(
+        "/api/jobs",
+        json={
+            "mode": "i2v",
+            "video_workflow": KLING.id,
+            "video_prompt": "a" * (limit + 1),
+        },
+    )
+    assert created.status_code == 422
+    assert "500 文字" in created.text
+
+    # ちょうど上限までは通る（数え方が 1 ずれていないこと）
+    assert prompt_length_problem("i2v", KLING.id, "a" * limit) is None
+    # 上限を宣言していないワークフロー（ComfyUI 側）は素通し
+    assert (
+        prompt_length_problem(
+            "i2v", workflows.DEFAULT_VIDEO_WORKFLOW, "a" * (limit + 1)
+        )
+        is None
+    )
+
+
+def test_kling_is_offered_as_a_video_workflow(client, monkeypatch):
+    mark_available(monkeypatch)
+    body = client.get("/api/options").json()
+    kling = [wf for wf in body["video_workflows"] if wf["id"] == KLING.id][0]
+
+    assert kling["requires"] == []
+    assert set(kling["supports"]) == {"prompt", "image", "end_image"}
+    assert kling["accepts_start_image"] is True
+    assert kling["backend"] == "kie"
+    selects = {select["name"]: select for select in kling["selects"]}
+    assert list(selects) == ["mode", "duration", "aspect_ratio", "sound"]
+    assert selects["mode"]["choices"] == ["std", "pro", "4K"]
+    assert selects["mode"]["default"] == "pro"
+    assert selects["duration"]["choices"][0] == "3"
+    assert selects["duration"]["choices"][-1] == "15"
+    assert selects["duration"]["default"] == "5"
+    assert selects["sound"]["choices"] == ["false", "true"]
+    assert selects["sound"]["default"] == "false"
+
+
+def test_the_kling_guide_is_injected_only_when_kling_is_selected():
+    from app.models import ChatSessionCreate
+    from app.prompts import build_system_prompt
+
+    kling = build_system_prompt(
+        ChatSessionCreate(mode="i2v", video_workflow=KLING.id)
+    )
+    assert "VIDEO PROMPT SPEC — Kling 3.0" in kling
+    # 500 字・カメラ先頭・ネガティブが無いこと・音声の書き方が入っている
+    assert "500 characters" in kling
+    assert "Camera first" in kling
+    assert "no `negative_prompt`" in kling
+    assert "lip-synced" in kling
+
+    veo = build_system_prompt(
+        ChatSessionCreate(mode="i2v", video_workflow=VEO_FAST.id)
+    )
+    assert "Kling 3.0" not in veo
+
+
+def test_the_agent_prompt_carries_the_kling_guide(monkeypatch):
+    from app.prompts import video_prompt_guides_section
+
+    mark_available(monkeypatch)
+    section = video_prompt_guides_section()
+    assert section.count("VIDEO PROMPT SPEC — Kling 3.0") == 1
+
+
+def test_a_full_job_bridges_comfyui_images_into_kling(client, fake_kie, comfy_env,
+                                                      job_env, monkeypatch):
+    """本命の使い方: ローカルで画像を作り、その画像を Kling に渡して動画にする。"""
+    async def fake_last_frame(video, dest):
+        dest.write_bytes(b"png")
+        return dest
+
+    monkeypatch.setattr(jobs, "extract_last_frame", fake_last_frame)
+    fake_kie.answer("create", FakeResponse(envelope({"taskId": "task-kling"})))
+    fake_kie.answer("record", success(["https://cdn.kie.ai/out.mp4"], credits=90))
+    fake_kie.answer(
+        "upload", FakeResponse(envelope({"fileUrl": "https://files.kie.ai/gen.png"}))
+    )
+
+    created = client.post(
+        "/api/jobs",
+        json={
+            "mode": "full",
+            "image_workflow": workflows.DEFAULT_IMAGE_WORKFLOW,  # ComfyUI
+            "video_workflow": KLING.id,  # kie.ai
+            "image_prompt": "a cat on a roof",
+            "video_prompt": "Slow dolly in, the cat stretches and yawns.",
+            "selects": {"duration": "10", "sound": "true"},
+        },
+    )
+    assert created.status_code == 201, created.text
+    job = wait_for(client, created.json()["id"])
+    assert job["status"] == "done", job["error"]
+
+    stages = job["workflow_json"]
+    assert len(comfy_env.queued) == 1
+    assert stages["image"]["workflow_id"] == workflows.DEFAULT_IMAGE_WORKFLOW
+    assert stages["video"]["backend"] == "kie"
+    assert stages["video"]["task_id"] == "task-kling"
+    assert stages["video"]["request"]["api"] == "market"
+
+    # 1 段目の静止画を kie に上げ直して開始フレームにしている
+    task_input = stages["video"]["request"]["input"]
+    assert task_input["image_urls"] == ["https://files.kie.ai/gen.png"]
+    assert task_input["duration"] == "10"
+    assert task_input["sound"] is True
+
+    body = fake_kie.sent("create")[0]["json"]
+    assert body["model"] == "kling-3.0/video"
+    assert body["input"]["image_urls"] == ["https://files.kie.ai/gen.png"]
+
+    assert (job_env / job["id"] / "image.png").is_file()
+    assert (job_env / job["id"] / "video.mp4").is_file()
+    assert job["credits_consumed"] == 90
