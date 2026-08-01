@@ -816,6 +816,55 @@ the ambience and the effects you want; multimodal references (reference images
 / videos / audio) are not wired up yet.
 """
 
+# Grok Imagine video-1.5 — https://docs.x.ai/developers/model-capabilities/video/generation
+# と二次のプロンプトガイド（逐次レンダリング・1 クリップ 1 アクション・音声指定・
+# カメラ語彙）https://github.com/thoxakihiko/grok-imagine-prompt-1.5-guide
+
+GROK_IMAGINE_VIDEO_GUIDE = """\
+# VIDEO PROMPT SPEC — Grok Imagine video-1.5 (Grok Build CLI, `grok_imagine_video`)
+
+Grok Imagine makes one short take (1-10 seconds) with **native audio** —
+ambience, effects and spoken lines come out of the same model. Where this
+section and the generic VIDEO PROMPT SPEC above disagree, this one wins.
+
+Write `video_prompt` as one short English paragraph (2-4 sentences) built from
+five elements in this order: **subject → motion → camera → audio → duration
+feel**.
+
+1. **With a start frame (`image`), write only what CHANGES.** The picture
+   already fixes composition, framing, wardrobe, lighting and style; restating
+   them fights the image and drifts the look. Open with the motion instead
+   (`She turns her head toward the window and smiles.`).
+2. **The model renders sequentially**: whatever you write first is what the
+   clip opens with. Put the action that must be seen at the very front, and
+   keep it to **one clip, one action** — "then", "after that" and cuts belong
+   in separate jobs.
+3. **Camera**: use the concrete vocabulary — `locked static shot`,
+   `slow push-in`, `camera drifts gently to the left`,
+   `tracking shot alongside her`, `handheld tracking shot following him`,
+   `slow pan out`. Exactly one move. Abstract words (`cinematic`, `epic`,
+   `dynamic`) do nothing. **Saying nothing about the camera gives a static
+   camera, which is the safest default** for a short take.
+4. **Audio is part of the prompt.** Name the sounds (`footsteps on gravel`,
+   `rain drumming on a tin roof`); a closing `Sound: ...` block works too.
+   Vague labels (`city sounds`) come out muddy — give the material and the
+   space instead (`traffic muffled through glass`). Spoken lines go in quotes,
+   short, with the voice quality: `in a low, raspy voice: "We are done here."`
+   Lip-sync needs a face toward the camera, the mouth inside the frame and a
+   line short enough to fit the clip.
+5. **Intensity comes from strong verbs plus adverbs**:
+   `the wave crashes down with tremendous force` lands, `the wave crests` does
+   not. Do not pile adjectives on the subject instead.
+
+Duration, resolution and aspect ratio are job fields (`selects`), never
+sentences in the prompt — and they are only *wishes* passed inside the CLI
+instruction, so do not demand exact numbers in the text. There is no negative
+prompt and no seed: write what you do want. Real people, celebrities and
+trademarks are refused by moderation, and every take draws on the same daily
+Grok subscription quota as the chat (roughly 10 videos a day), so plan large
+batches over several days.
+"""
+
 #: workflow id -> そのモデル専用の VIDEO PROMPT SPEC（無いワークフローは
 #: 汎用の :data:`VIDEO_SPEC` のまま）
 VIDEO_SPECS: dict[str, str] = {
@@ -824,6 +873,7 @@ VIDEO_SPECS: dict[str, str] = {
     "kling3_video": KLING_VIDEO_GUIDE,
     "seedance2": SEEDANCE_VIDEO_GUIDE,
     "seedance2_mini": SEEDANCE_VIDEO_GUIDE,
+    "grok_imagine_video": GROK_IMAGINE_VIDEO_GUIDE,
 }
 
 

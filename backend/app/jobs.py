@@ -405,11 +405,15 @@ def stage_specs(mode: str, params: dict[str, Any]) -> list[tuple[str, WorkflowSp
 
 #: バックエンドをまたぐ 2 段ジョブのうち、橋渡しを実装してある向き（SPEC §5.2）。
 #: 渡すものは常に「1 段目の静止画」で、渡し方だけが 2 段目のバックエンドで変わる:
-#: ComfyUI なら :func:`comfy.upload_file`、kie.ai なら File Upload API で公開 URL。
-#: どちらも 1 段目の成果物がローカルのファイルであれば済むので、Grok CLI の画像も
-#: そのまま両方へ渡せる。逆（kie の画像 → …）は kie の画像ワークフローが入ってから。
+#: ComfyUI なら :func:`comfy.upload_file`、kie.ai なら File Upload API で公開 URL、
+#: Grok Build CLI なら :func:`grok_media.stage_input`（作業ディレクトリへコピーして
+#: 指示文でファイル名を参照）。どれも 1 段目の成果物がローカルのファイルであれば
+#: 済むので、画像ワークフローを持つバックエンド（ComfyUI / Grok CLI）から
+#: すべての向きが張れる。``kie`` から始まる向きは kie.ai の画像ワークフローが
+#: 入ってから（今は 1 段目に選べるものが無い）。
 _STAGE_BRIDGES: frozenset[tuple[str, str]] = frozenset({
     ("comfyui", "kie"),
+    ("comfyui", "grok_cli"),
     ("grok_cli", "comfyui"),
     ("grok_cli", "kie"),
 })
@@ -1436,11 +1440,29 @@ async def _run_kie_stage(
 _GROK_START_PROGRESS = 0.1
 
 
+def _grok_inputs(spec: WorkflowSpec, params_dict: dict[str, Any]) -> dict[str, str]:
+    """CLI に渡す入力ファイル ``{論理名: ローカルのパス}``（SPEC §5.2）。
+
+    kie.ai の :func:`_kie_uploads` にあたる下ごしらえ。CLI はローカルのファイルを
+    そのまま読めるので、公開 URL にする必要はなく、パスを渡すだけでよい（作業
+    ディレクトリへのコピーは :func:`grok_media.stage_input` が行う）。
+    """
+    inputs: dict[str, str] = {}
+    for name, field in INPUT_FIELDS.items():
+        if not spec.supports(name):
+            continue
+        path = params_dict.get(field)
+        if path:
+            inputs[name] = str(path)
+    return inputs
+
+
 async def _run_grok_cli_stage(
     job_id: str,
     stage: str,
     spec: WorkflowSpec,
     params: GenerationParams,
+    params_dict: dict[str, Any],
     stages: dict[str, Any],
     label: str,
     overall: OverallProgress,
@@ -1457,7 +1479,9 @@ async def _run_grok_cli_stage(
     overall.start_stage(stage_index, 0)
     kind, stem, _ = _STAGE_ARTIFACTS[stage]
     dest = job_dir / f"{stem}{'.png' if kind == 'image' else '.mp4'}"
-    request = grok_media.build_request(spec, params, dest)
+    request = grok_media.build_request(
+        spec, params, dest, _grok_inputs(spec, params_dict)
+    )
     stages[stage] = {
         "workflow_id": spec.id,
         "backend": "grok_cli",
@@ -1504,11 +1528,13 @@ async def _run_job_stages(job: Job) -> dict[str, Any]:
     ステージ間の橋渡しは「1 段目の静止画を 2 段目の開始フレームにする」1 点だけ
     で、渡し方だけが 2 段目のバックエンドで変わる: ComfyUI なら input ディレクトリ
     へ再アップロード、kie.ai なら File Upload API で公開 URL にしてから
-    ``imageUrls`` に入れる（受け取り側は :func:`_kie_uploads`）。Grok CLI の画像は
-    ``outputs/`` に直接書かれるので、``source_image`` を差し替えるだけで
-    ComfyUI にも kie にも渡せる（ComfyUI 側の再アップロードは、その段の
-    :func:`_prepare_comfy` が差し替え後のパスを見て行う）。実装済みの向きは
-    :data:`_STAGE_BRIDGES`（投入時に :func:`_backend_problem` が弾く）。
+    ``imageUrls`` に入れる（受け取り側は :func:`_kie_uploads`）、Grok Build CLI なら
+    作業ディレクトリへコピーして指示文でファイル名を参照する（受け取り側は
+    :func:`_grok_inputs`）。1 段目の成果物はどれも ``outputs/`` のローカル
+    ファイルなので、``source_image`` を差し替えるだけでどのバックエンドにも
+    渡せる（ComfyUI 側の再アップロードは、その段の :func:`_prepare_comfy` が
+    差し替え後のパスを見て行う）。実装済みの向きは :data:`_STAGE_BRIDGES`
+    （投入時に :func:`_backend_problem` が弾く）。
 
     消費クレジットは kie のステージの分だけ合算して履歴に残す（失敗したタスクは
     kie 側で返金されるので数えない）。
@@ -1557,8 +1583,8 @@ async def _run_job_stages(job: Job) -> dict[str, Any]:
             extras.extend(str(path) for path in downloaded[1:])
         elif spec.backend == "grok_cli":
             saved = await _run_grok_cli_stage(
-                job_id, stage, spec, _generation_params(job, {}), stages, label,
-                overall, index, job_dir,
+                job_id, stage, spec, _generation_params(job, {}), job.params,
+                stages, label, overall, index, job_dir,
             )
         else:
             raise JobError(

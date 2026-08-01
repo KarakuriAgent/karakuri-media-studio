@@ -279,10 +279,15 @@ class GrokCliTask:
     :class:`KieTask` のような「キーの対応表」は持たない。宣言するのは「どの論理値を
     指示文に織り込むか」と「何が出てくるか」の 2 つだけで、指示文の組み立ては
     :func:`app.grok_media.build_request` が行う。
+
+    入力ファイル（``image``）を宣言すると、そのファイルは**作業ディレクトリへ
+    コピー**され、指示文がファイル名で参照する（開始フレーム、issue #22）。
     """
 
-    #: 指示文に織り込む論理値（:data:`KIE_VALUES` と同じ語彙）。解像度・縦横比は
-    #: プロンプト経由の**希望**であって、厳密な制御は保証されない（issue #21）。
+    #: 指示文に織り込む論理値（:data:`KIE_VALUES` と同じ語彙）。``select:<名前>``
+    #: の形で :class:`SelectSpec` の値も織り込める（動画の尺・解像度・縦横比）。
+    #: 解像度・縦横比はプロンプト経由の**希望**であって、厳密な制御は保証されない
+    #: （issue #21）。
     values: tuple[str, ...] = ("prompt", "aspect_ratio")
     #: 生成物の種類（``image`` / ``video``）
     media: Literal["image", "video"] = "image"
@@ -388,19 +393,18 @@ class WorkflowSpec:
         """このワークフローが受け取る論理名（フォームとカタログが読む）。
 
         :meth:`supports` の一覧版。ComfyUI は :attr:`inject`、kie.ai は
-        :attr:`KieTask.fields` が受け取り口なので、両方を同じ語彙で見せる
-        （``select:`` 付きは選択式として別に案内するので外す）。
+        :attr:`KieTask.fields`、Grok Build CLI は :attr:`GrokCliTask.values` が
+        受け取り口なので、すべて同じ語彙で見せる（``select:`` 付きは選択式として
+        別に案内するので外す）。
         """
         names = set(self.inject)
         if self.kie is not None:
-            names |= {
-                name
-                for name in self.kie.fields
-                if not name.startswith(KIE_SELECT_PREFIX)
-            }
+            names |= set(self.kie.fields)
         if self.grok is not None:
             names |= set(self.grok.values)
-        return tuple(sorted(names))
+        return tuple(
+            sorted(name for name in names if not name.startswith(KIE_SELECT_PREFIX))
+        )
 
     def target(self, name: str) -> Target | None:
         return self.inject.get(name)
@@ -1456,6 +1460,117 @@ SEEDANCE2_MINI = _seedance_spec(
 
 
 # --------------------------------------------------------------------------
+# video: Grok Build CLI（サブスク枠、SPEC §5.3 / issue #22）
+# --------------------------------------------------------------------------
+#
+# 画像版（:data:`GROK_IMAGINE`）と同じ CLI ラッパーを ``media="video"`` で使う
+# 動画ワークフロー。渡せるのは自然文の指示だけなので、尺・解像度・縦横比はすべて
+# **指示文に織り込む希望**であって、外部 API の ``input`` のような保証は無い。
+#
+# 画像版との違いは 3 つ:
+#
+# - **開始フレームを取れる**（i2v）。渡された画像は grok のメディア作業ディレクトリ
+#   へコピーされ、指示文がファイル名で参照する（:func:`app.grok_media.stage_input`）
+# - **音声も同時に生成する**（環境音・効果音・セリフ）。ia2v のような音声入力は
+#   無いので、鳴らしたい音はプロンプト本文に書く
+# - **尺・解像度・縦横比が選択式フィールド**（§3.1）。CLI が受け取るのは文字列
+#   なので型変換（kie の ``int_keys`` / ``bool_keys``）にあたるものは要らない
+#
+# 上限は **10 秒 / 720p** から始める: モデル（video-1.5）の API は 15 秒 / 1080p
+# まで受けるが、CLI 経由は「up to 10 seconds at 720p」という報道しか無く、一次情報
+# が無い。実機で 15 秒が通ることを確かめたら選択肢を広げる。
+# 枠は Chat / Imagine / Build 横断の共有プールで、動画の目安は ~10 本/日
+# （SuperGrok、時期・地域で変動）。
+
+#: Grok Imagine 動画の尺（秒）。CLI 経由の上限は未確定なので 10 秒から始める。
+GROK_VIDEO_DURATIONS: tuple[str, ...] = tuple(str(second) for second in range(1, 11))
+#: Grok Imagine 動画の解像度（CLI 経由は 720p まで、という報道に合わせる）
+GROK_VIDEO_RESOLUTIONS: tuple[str, ...] = ("480p", "720p")
+#: Grok Imagine 動画の縦横比（開始フレームを渡したときは画像の比が優先される）
+GROK_VIDEO_ASPECT_RATIOS: tuple[str, ...] = ("16:9", "9:16", "1:1")
+
+GROK_IMAGINE_VIDEO_PROMPT_HINT = (
+    "One short English paragraph (2-4 sentences) covering subject → motion →"
+    " camera → audio. **With a start frame, describe only what CHANGES** — the"
+    " picture already carries composition, lighting and style, so re-describing"
+    " it fights the image. The model renders sequentially, so the action you"
+    " write first is the action the clip opens with; **one clip, one action**."
+    " Name the sounds you want (`footsteps on gravel`, `muffled through"
+    " glass`), and put spoken lines in quotes with the voice quality"
+    " (`in a low, raspy voice: \"...\"`). Use concrete camera words"
+    " (`locked static shot`, `slow push-in`, `tracking shot alongside`) —"
+    " abstract ones (`cinematic`, `epic`) do nothing, and saying nothing about"
+    " the camera gives a still one, which is the safest default. Intensity"
+    " comes from strong verbs with adverbs (`crashing down with tremendous"
+    " force`), never from adjectives piled on the subject."
+)
+
+GROK_IMAGINE_VIDEO = WorkflowSpec(
+    id="grok_imagine_video",
+    label="Grok Imagine 動画（サブスク CLI）",
+    kind="video",
+    family="grok-imagine",
+    backend="grok_cli",
+    description=(
+        "Video through the official Grok Build CLI, on the SuperGrok / X"
+        " Premium+ **subscription** quota (no metered API). One take of 1-10"
+        " seconds with **native audio** (ambience, effects and spoken lines)"
+        " generated together with the picture — there is no audio input, so"
+        " write the sound into `video_prompt`. The start frame (`source_image`)"
+        " is optional: with one it works as image-to-video (the picture is"
+        " copied next to the CLI and referenced by name), without one as"
+        " text-to-video, so it can be used for `mode: \"i2v\"` and as the second"
+        " stage of `mode: \"full\"`. Duration, resolution and aspect ratio are"
+        " job fields (`selects`) that are passed as *wishes* inside the"
+        " instruction, so they are not guaranteed exactly. The model refuses"
+        " real people, celebrities and trademarks, and the daily quota is"
+        " shared with Grok chat. LoRAs cannot be used."
+    ),
+    prompt_hint=GROK_IMAGINE_VIDEO_PROMPT_HINT,
+    accepts_start_image=True,
+    image_label="開始フレーム（任意）",
+    grok=GrokCliTask(
+        values=(
+            "prompt",
+            "image",
+            f"{KIE_SELECT_PREFIX}duration",
+            f"{KIE_SELECT_PREFIX}resolution",
+            f"{KIE_SELECT_PREFIX}aspect_ratio",
+        ),
+        media="video",
+    ),
+    selects={
+        "duration": SelectSpec(
+            label="尺（秒）",
+            choices=GROK_VIDEO_DURATIONS,
+            default="6",
+            hint="1〜10 秒。指示文に書く希望なので、実際の尺はぶれることがある。",
+        ),
+        "resolution": SelectSpec(
+            label="解像度",
+            choices=GROK_VIDEO_RESOLUTIONS,
+            default="720p",
+            hint="CLI 経由は 720p までという報道に合わせている（希望として渡す）。",
+        ),
+        "aspect_ratio": SelectSpec(
+            label="縦横比",
+            choices=GROK_VIDEO_ASPECT_RATIOS,
+            default="16:9",
+            hint="開始フレーム画像を渡したときは画像の縦横比が優先される。",
+        ),
+    },
+    notes=(
+        "Grok Build CLI（サブスク枠）/ 音声（環境音・効果音・セリフ）はモデルが"
+        "映像と同時に生成する（音声入力は無い） / 尺・解像度・縦横比は"
+        "プロンプト経由の希望 / LoRA 不可 / 実在人物・著名人・商標は"
+        "モデレーションで弾かれる / 枠は Chat と共有（動画の目安 10 本/日）/"
+        " 尺の上限 10 秒・720p は CLI 経由の報道値なので、実機検証で 15 秒・"
+        "1080p まで広げる可能性がある"
+    ),
+)
+
+
+# --------------------------------------------------------------------------
 # audio: workflow/audio/*.json
 # --------------------------------------------------------------------------
 #
@@ -1704,6 +1819,7 @@ SPECS: tuple[WorkflowSpec, ...] = (
     KLING3_VIDEO,
     SEEDANCE2,
     SEEDANCE2_MINI,
+    GROK_IMAGINE_VIDEO,
     ACE_STEP_1_5,
     STABLE_AUDIO_3,
     SUNO_V5,
@@ -1994,20 +2110,21 @@ def _validate_grok_spec(spec: WorkflowSpec) -> list[str]:
     """Grok Build CLI で走るワークフローの宣言そのものの検証（SPEC §5.2）。
 
     CLI は自然文しか受け取らないので、見るのは「タスク宣言があるか」「織り込む
-    論理値が既知の語彙か」「プロンプトを受け取るか」だけ。
+    論理値が既知の語彙か」「プロンプトを受け取るか」だけ。``select:<名前>`` は
+    kie.ai と同じ流儀で、宣言した選択式フィールドが本当に在るかを見る。
     """
     problems: list[str] = []
     if spec.kie is not None:
         problems.append(f"{spec.id}: backend 'grok_cli' but a KieTask is declared")
     if spec.grok is None:
         return [*problems, f"{spec.id}: backend 'grok_cli' but no GrokCliTask declared"]
-    if spec.selects:
-        # 選択式は「API の input のキー」を前提にした仕組みで、指示文には載せない。
-        problems.append(f"{spec.id}: backend 'grok_cli' has no selectable fields")
     if "prompt" not in spec.grok.values:
         problems.append(f"{spec.id}.grok.values: 'prompt' is required")
     for name in spec.grok.values:
-        if name not in KIE_VALUES:
+        if name.startswith(KIE_SELECT_PREFIX):
+            if name[len(KIE_SELECT_PREFIX):] not in spec.selects:
+                problems.append(f"{spec.id}.grok.values[{name}]: no such select")
+        elif name not in KIE_VALUES:
             problems.append(
                 f"{spec.id}.grok.values: unknown value {name!r}"
                 f" (known: {', '.join(sorted(KIE_VALUES))})"

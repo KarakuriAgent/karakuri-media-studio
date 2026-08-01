@@ -1,4 +1,4 @@
-"""Grok Build CLI 経由の画像生成（SPEC §5.2 / issue #21）。
+"""Grok Build CLI 経由の画像生成（SPEC §5.2 / issue #21）と動画生成（issue #22）。
 
 CLI は一切起動しない: :func:`app.grok_media._exec` を偽物に差し替え、「終了コード /
 標準出力 / ファイルを置いたかどうか」を組み合わせて 4 段構えの判定を確かめる。
@@ -17,9 +17,10 @@ from app import backends, config, db, grok_media, jobs, nsfw, workflows
 from app.backends import BackendStatus
 from app.main import app
 from app.models import GenerationParams, Settings
-from app.workflows import GROK_IMAGINE
+from app.workflows import GROK_IMAGINE, GROK_IMAGINE_VIDEO
 
 PROMPT = "A fisherman mending a net on a pier at dawn"
+VIDEO_PROMPT = "He pulls the net taut; gulls cry over the water."
 
 
 # --------------------------------------------------------------------------
@@ -678,11 +679,354 @@ def test_a_full_job_bridges_the_image_into_kie(client, job_env, media_env,
     ]
 
 
-def test_the_reverse_bridge_is_still_refused(client, job_env, monkeypatch):
-    """ComfyUI の画像 → Grok CLI の動画、のような未実装の向きは 422（§5.2）。"""
-    assert ("comfyui", "grok_cli") not in jobs._STAGE_BRIDGES
+def test_the_implemented_bridges_are_declared(client, job_env, monkeypatch):
+    """画像を持つバックエンドからの向きは実装済み、``kie`` 始まりはまだ（§5.2）。"""
     assert ("grok_cli", "comfyui") in jobs._STAGE_BRIDGES
     assert ("grok_cli", "kie") in jobs._STAGE_BRIDGES
+    assert ("comfyui", "grok_cli") in jobs._STAGE_BRIDGES
+    assert ("kie", "grok_cli") not in jobs._STAGE_BRIDGES
+
+
+# --------------------------------------------------------------------------
+# 動画（issue #22）: 指示文
+# --------------------------------------------------------------------------
+
+def video_request(dest: Path, **overrides) -> grok_media.MediaRequest:
+    values = dict(
+        media="video",
+        prompt=VIDEO_PROMPT,
+        dest=dest,
+        aspect_ratio="16:9",
+        duration="6",
+        resolution="720p",
+    )
+    values.update(overrides)
+    return grok_media.MediaRequest(**values)
+
+
+def saves_video(argv, cwd):
+    dest = dest_of(argv)
+    dest.write_bytes(b"\x00\x00\x00\x18ftypmp42 generated")
+    return answer(f"OK {dest}")
+
+
+def video_params(**overrides) -> GenerationParams:
+    values = dict(
+        mode="i2v",
+        job_id="job-1",
+        video_workflow=GROK_IMAGINE_VIDEO.id,
+        video_prompt=VIDEO_PROMPT,
+    )
+    values.update(overrides)
+    return GenerationParams(**values)
+
+
+def test_the_video_instruction_asks_for_mp4_with_a_length_and_a_resolution(tmp_path):
+    text = video_request(tmp_path / "video.mp4").instruction
+
+    assert "Generate one video" in text
+    assert "as MP4" in text
+    assert "about 6 seconds" in text
+    assert "Resolution: 720p" in text
+    assert "Aspect ratio: 16:9" in text
+    # 動画の解像度は選択式なので、megapixels 由来の実寸は書かない
+    assert "pixels" not in text
+    assert f"`OK {tmp_path / 'video.mp4'}`" in text
+
+
+def test_the_start_frame_is_referenced_by_file_name(tmp_path):
+    frame = tmp_path / "inputs" / "job-9-portrait.png"
+    request = video_request(tmp_path / "video.mp4", start_image=frame)
+    text = request.instruction
+
+    assert "`job-9-portrait.png`" in text
+    assert str(frame) in text
+    # i2v の中心原則（変化するものだけを書かせる）を指示文でも念押しする
+    assert "CHANGES over time" in text
+    # 開始フレームの行を保存先と取り違えない（合図の宛先は生成物のパス）
+    assert dest_of(grok_media._argv(request)) == tmp_path / "video.mp4"
+
+
+# --------------------------------------------------------------------------
+# 動画: マニフェストからのリクエスト組み立てと開始フレームの受け渡し
+# --------------------------------------------------------------------------
+
+def test_the_video_request_is_built_from_the_manifest(media_env, tmp_path):
+    request = grok_media.build_request(
+        GROK_IMAGINE_VIDEO, video_params(), tmp_path / "job-1" / "video.mp4"
+    )
+
+    assert request.media == "video"
+    assert request.prompt == VIDEO_PROMPT
+    # 選択式フィールドの既定（マニフェスト）がそのまま希望になる
+    assert request.duration == "6"
+    assert request.resolution == "720p"
+    assert request.aspect_ratio == "16:9"
+    assert (request.width, request.height) == (0, 0)
+    assert request.start_image is None
+
+
+def test_the_chosen_selects_win(media_env, tmp_path):
+    params = video_params(
+        selects={"duration": "3", "resolution": "480p", "aspect_ratio": "9:16"}
+    )
+
+    request = grok_media.build_request(
+        GROK_IMAGINE_VIDEO, params, tmp_path / "job-1" / "video.mp4"
+    )
+
+    assert (request.duration, request.resolution) == ("3", "480p")
+    assert "about 3 seconds" in request.instruction
+    assert "Resolution: 480p" in request.instruction
+    assert "Aspect ratio: 9:16" in request.instruction
+
+
+def test_the_start_frame_is_copied_into_the_grok_workdir(media_env, tmp_path):
+    """CLI にはパスではなく**手元のファイル**を渡す（SPEC §5.2 / issue #22）。"""
+    frame = tmp_path / "assets" / "portrait.png"
+    frame.parent.mkdir()
+    frame.write_bytes(b"\x89PNG start frame")
+
+    request = grok_media.build_request(
+        GROK_IMAGINE_VIDEO,
+        video_params(),
+        tmp_path / "job-7" / "video.mp4",
+        {"image": str(frame)},
+    )
+
+    copied = media_env / grok_media.INPUTS_RELPATH / "job-7-portrait.png"
+    assert request.start_image == copied
+    assert copied.read_bytes() == b"\x89PNG start frame"
+    assert "`job-7-portrait.png`" in request.instruction
+
+
+def test_a_missing_start_frame_is_reported(media_env, tmp_path):
+    with pytest.raises(grok_media.GrokMediaError) as caught:
+        grok_media.build_request(
+            GROK_IMAGINE_VIDEO,
+            video_params(),
+            tmp_path / "job-1" / "video.mp4",
+            {"image": str(tmp_path / "gone.png")},
+        )
+
+    assert "見つかりません" in str(caught.value)
+
+
+# --------------------------------------------------------------------------
+# 動画: 成否の判定とクォータ（画像と同じ土台が効いていること）
+# --------------------------------------------------------------------------
+
+def test_a_video_left_in_generated_media_is_recovered(media_env, tmp_path,
+                                                      monkeypatch):
+    """④ の保険は拡張子で切り替わる（動画のときにサムネイルの png を拾わない）。"""
+    def saves_in_the_default_place(argv, cwd):
+        folder = cwd / grok_media.GENERATED_MEDIA_RELPATH
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "thumb.png").write_bytes(b"\x89PNG thumbnail")
+        (folder / "grok-video-1.mp4").write_bytes(b"mp4 recovered")
+        return answer("Saved the video.")
+
+    dest = tmp_path / "video.mp4"
+
+    saved = run(video_request(dest), FakeCli(saves_in_the_default_place), monkeypatch)
+
+    assert saved == dest
+    assert dest.read_bytes() == b"mp4 recovered"
+
+
+def test_a_used_up_video_quota_is_not_retried(media_env, tmp_path, monkeypatch):
+    cli = FakeCli(lambda argv, cwd: answer("FAILED daily video quota reached"))
+
+    with pytest.raises(grok_media.GrokQuotaError) as caught:
+        run(video_request(tmp_path / "video.mp4"), cli, monkeypatch)
+
+    assert "サブスク枠" in str(caught.value)
+    assert cli.runs == 1
+
+
+# --------------------------------------------------------------------------
+# 動画: ジョブ実行（i2v と full 連結）
+# --------------------------------------------------------------------------
+
+async def _fake_last_frame(video, dest):
+    dest.write_bytes(b"\x89PNG last frame")
+    return dest
+
+
+def test_an_i2v_job_runs_end_to_end(client, job_env, media_env, tmp_path,
+                                    monkeypatch):
+    monkeypatch.setattr(jobs, "extract_last_frame", _fake_last_frame)
+    cli = FakeCli(saves_video)
+    monkeypatch.setattr(grok_media, "_exec", cli)
+    # 入力画像は登録済みのアセットから選ぶ（ジョブ投入時に置き場を検証される）
+    frame = tmp_path / "assets" / "image" / "start.png"
+    frame.write_bytes(b"\x89PNG start")
+
+    created = client.post(
+        "/api/jobs",
+        json={
+            "mode": "i2v",
+            "video_workflow": GROK_IMAGINE_VIDEO.id,
+            "video_prompt": VIDEO_PROMPT,
+            "source_image": str(frame),
+            "selects": {"duration": "8", "resolution": "480p"},
+        },
+    )
+    assert created.status_code == 201, created.text
+    job = wait_for(client, created.json()["id"])
+
+    assert job["status"] == "done", job["error"]
+    saved = job_env / job["id"] / "video.mp4"
+    assert saved.is_file()
+    assert job["video_url"] == f"/outputs/{job['id']}/video.mp4"
+    # 生成後のラストフレーム抽出は既存フローのまま効く（ラストフレーム連鎖）
+    assert job["last_frame_url"] == f"/outputs/{job['id']}/last_frame.png"
+
+    stage = job["workflow_json"]["video"]
+    assert stage["backend"] == "grok_cli"
+    assert stage["workflow_id"] == GROK_IMAGINE_VIDEO.id
+    assert stage["request"]["media"] == "video"
+    assert stage["request"]["duration"] == "8"
+    assert stage["request"]["resolution"] == "480p"
+    # 開始フレームは作業ディレクトリにコピーされ、指示文が名前で参照する
+    copied = media_env / grok_media.INPUTS_RELPATH / f"{job['id']}-start.png"
+    assert stage["request"]["start_image"] == str(copied)
+    assert copied.is_file()
+    assert f"`{copied.name}`" in stage["request"]["instruction"]
+    assert "about 8 seconds" in stage["request"]["instruction"]
+    assert dest_of(cli.calls[0][0]) == saved
+
+
+def test_video_loras_are_refused(client, job_env, tmp_path):
+    frame = tmp_path / "assets" / "image" / "start.png"
+    frame.write_bytes(b"\x89PNG start")
+
+    created = client.post(
+        "/api/jobs",
+        json={
+            "mode": "i2v",
+            "video_workflow": GROK_IMAGINE_VIDEO.id,
+            "video_prompt": VIDEO_PROMPT,
+            "source_image": str(frame),
+            "video_loras": [{"lora_name": "x.safetensors", "strength": 1.0}],
+        },
+    )
+
+    assert created.status_code == 422
+    assert "does not support video LoRAs" in created.text
+
+
+def test_a_full_job_bridges_a_comfyui_image_into_the_grok_video(
+    client, job_env, media_env, comfy_env, monkeypatch
+):
+    """本命の使い方: ローカルの ComfyUI で画像を作り、サブスク枠で動かす。"""
+    monkeypatch.setattr(jobs, "extract_last_frame", _fake_last_frame)
+    monkeypatch.setattr(grok_media, "_exec", FakeCli(saves_video))
+
+    created = client.post(
+        "/api/jobs",
+        json={
+            "mode": "full",
+            "image_workflow": workflows.DEFAULT_IMAGE_WORKFLOW,  # ComfyUI
+            "video_workflow": GROK_IMAGINE_VIDEO.id,  # Grok Build CLI
+            "image_prompt": PROMPT,
+            "video_prompt": VIDEO_PROMPT,
+        },
+    )
+    assert created.status_code == 201, created.text
+    job = wait_for(client, created.json()["id"])
+    assert job["status"] == "done", job["error"]
+
+    image = job_env / job["id"] / "image.png"
+    assert image.is_file()
+    assert (job_env / job["id"] / "video.mp4").is_file()
+    assert job["workflow_json"]["image"]["prompt_id"] == "prompt-1"
+    stage = job["workflow_json"]["video"]
+    assert stage["backend"] == "grok_cli"
+    # 1 段目の生成画像を grok の作業ディレクトリへコピーして開始フレームにしている
+    copied = media_env / grok_media.INPUTS_RELPATH / f"{job['id']}-image.png"
+    assert stage["request"]["start_image"] == str(copied)
+    assert copied.read_bytes() == image.read_bytes()
+
+
+def test_a_full_job_runs_both_stages_on_the_cli(client, job_env, media_env,
+                                                monkeypatch):
+    """同じバックエンドの 2 段（Grok の画像 → Grok の動画）も通る。"""
+    monkeypatch.setattr(jobs, "extract_last_frame", _fake_last_frame)
+    cli = FakeCli(saves_and_reports, saves_video)
+    monkeypatch.setattr(grok_media, "_exec", cli)
+
+    created = client.post(
+        "/api/jobs",
+        json={
+            "mode": "full",
+            "image_workflow": GROK_IMAGINE.id,
+            "video_workflow": GROK_IMAGINE_VIDEO.id,
+            "image_prompt": PROMPT,
+            "video_prompt": VIDEO_PROMPT,
+        },
+    )
+    assert created.status_code == 201, created.text
+    job = wait_for(client, created.json()["id"])
+    assert job["status"] == "done", job["error"]
+
+    stages = job["workflow_json"]
+    assert stages["image"]["backend"] == "grok_cli"
+    assert stages["video"]["backend"] == "grok_cli"
+    image = job_env / job["id"] / "image.png"
+    copied = media_env / grok_media.INPUTS_RELPATH / f"{job['id']}-image.png"
+    assert stages["video"]["request"]["start_image"] == str(copied)
+    assert copied.read_bytes() == image.read_bytes()
+    assert cli.runs == 2
+
+
+# --------------------------------------------------------------------------
+# 動画: 選択肢の出し分けとガイド
+# --------------------------------------------------------------------------
+
+def test_options_hide_the_video_workflow_until_the_cli_is_verified(client,
+                                                                   monkeypatch):
+    body = client.get("/api/options").json()
+    assert GROK_IMAGINE_VIDEO.id not in [wf["id"] for wf in body["video_workflows"]]
+
+    mark_available(monkeypatch)
+    listed = {
+        wf["id"]: wf for wf in client.get("/api/options").json()["video_workflows"]
+    }
+    assert GROK_IMAGINE_VIDEO.id in listed
+    entry = listed[GROK_IMAGINE_VIDEO.id]
+    assert entry["backend"] == "grok_cli"
+    assert entry["family"] == "grok-imagine"
+    assert entry["accepts_start_image"] is True
+    assert entry["accepts_video_loras"] is False
+    # 選択式は select: を外した論理名では出さない（フォームは selects を読む）
+    assert set(entry["supports"]) == {"prompt", "image"}
+    assert [select["name"] for select in entry["selects"]] == [
+        "duration",
+        "resolution",
+        "aspect_ratio",
+    ]
+    assert [select["default"] for select in entry["selects"]] == [
+        "6",
+        "720p",
+        "16:9",
+    ]
+
+
+def test_the_video_guide_is_listed_only_when_the_backend_is_available(monkeypatch):
+    from app.prompts import video_prompt_guides_section
+
+    assert "Grok Imagine video-1.5" not in video_prompt_guides_section()
+
+    mark_available(monkeypatch)
+    section = video_prompt_guides_section()
+    assert "VIDEO PROMPT SPEC — Grok Imagine video-1.5" in section
+    # 要点（変化するものだけ・逐次レンダリング・1 クリップ 1 アクション・音・カメラ）
+    assert "write only what CHANGES" in section
+    assert "renders sequentially" in section
+    assert "one clip, one action" in section
+    assert "locked static shot" in section
+    assert "traffic muffled through glass" in section
 
 
 # --------------------------------------------------------------------------
@@ -694,6 +1038,33 @@ def test_the_manifest_is_valid():
     assert GROK_IMAGINE.backend == "grok_cli"
     assert GROK_IMAGINE.lora_chain is None
     assert GROK_IMAGINE.kie is None
+
+
+def test_the_video_manifest_is_valid():
+    assert workflows.validate_external_spec(GROK_IMAGINE_VIDEO) == []
+    assert GROK_IMAGINE_VIDEO.backend == "grok_cli"
+    assert GROK_IMAGINE_VIDEO.grok.media == "video"
+    assert GROK_IMAGINE_VIDEO.lora_chain is None
+    assert GROK_IMAGINE_VIDEO.kie is None
+    assert GROK_IMAGINE_VIDEO.accepts_start_image
+
+
+def test_a_select_that_does_not_exist_is_reported():
+    broken = workflows.WorkflowSpec(
+        id="broken_grok_video",
+        label="壊れた宣言",
+        kind="video",
+        backend="grok_cli",
+        description="テスト用。",
+        prompt_hint="テスト用。",
+        grok=workflows.GrokCliTask(
+            values=("prompt", "select:duration"), media="video"
+        ),
+    )
+    assert any(
+        "no such select" in problem
+        for problem in workflows.validate_external_spec(broken)
+    )
 
 
 def test_a_manifest_without_a_task_is_reported():

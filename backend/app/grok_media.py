@@ -2,7 +2,10 @@
 
 ComfyUI・kie.ai と並ぶ **3 つめの生成バックエンド**。xAI の従量課金 API
 （``XAI_API_KEY``）ではなく、**SuperGrok / X Premium+ のサブスクリプション枠**で
-動く公式 CLI（``grok``）をヘッドレスで叩き、Grok Imagine に画像を作らせる。
+動く公式 CLI（``grok``）をヘッドレスで叩き、Grok Imagine に画像（issue #21）と
+動画（issue #22）を作らせる。生成物の種類はマニフェストの
+:attr:`app.workflows.GrokCliTask.media` 1 つで切り替わり、指示文の組み立て以外
+（実行・4 段判定・リトライ・クォータの言い換え）は画像と動画で共通。
 :mod:`app.grok` がプロンプト作成のためのチャットに使っているのと同じコマンドだが、
 用途がまったく違うのでここに分けてある:
 
@@ -47,7 +50,7 @@ from .config import load_settings
 from .grok import LLMError, iter_json_objects, looks_like_auth_error
 from .models import GenerationParams
 from .paths import GROK_MEDIA_WORKDIR
-from .workflows import WorkflowSpec
+from .workflows import INPUT_FIELDS, KIE_SELECT_PREFIX, WorkflowSpec
 
 log = logging.getLogger(__name__)
 
@@ -65,6 +68,10 @@ API_KEY_ENV = "XAI_API_KEY"
 AUTH_RELPATH = Path(".grok") / "auth.json"
 #: CLI が既定で生成物を置くディレクトリ（作業ディレクトリからの相対）
 GENERATED_MEDIA_RELPATH = Path(".grok") / "generated-media"
+#: 入力ファイル（動画の開始フレームなど）を置くディレクトリ（作業ディレクトリ
+#: からの相対）。CLI はサンドボックスの外を読めるとは限らないので、渡したい
+#: ファイルは**作業ディレクトリの中へコピーしてから**指示文で参照する（issue #22）
+INPUTS_RELPATH = Path("inputs")
 
 #: 合図（この 2 つだけを出せ、と指示する）
 OK_MARKER = "OK "
@@ -141,16 +148,16 @@ async def _exec(
 # --------------------------------------------------------------------------
 
 #: 生成の指示。**出力の約束事**（合図だけを出せ）を最後に置くのは、直前の指示ほど
-#: 守られやすいため。解像度・縦横比は「希望」であって保証されない（issue #21）。
+#: 守られやすいため。解像度・縦横比・尺は「希望」であって保証されない（issue #21）。
 INSTRUCTION = """\
 Generate one {media} with your built-in Grok Imagine media generation tool.
-
+{source}
 ## {media_upper} PROMPT
 {prompt}
 
 ## REQUIREMENTS
 - Aspect ratio: {aspect}{size}.
-- Save the finished {media} as {fmt} to this exact absolute path:
+{extra}- Save the finished {media} as {fmt} to this exact absolute path:
   {dest}
 - Create the parent directory if it is missing, and overwrite any existing file.
 - Never ask for confirmation, and do not stop before the file exists on disk.
@@ -159,6 +166,17 @@ Generate one {media} with your built-in Grok Imagine media generation tool.
 Print one single line and nothing else:
 - `OK {dest}` once the file exists at that path.
 - `FAILED <one-line reason>` if you could not produce it.
+"""
+
+#: 開始フレーム（i2v）の渡し方。画像は作業ディレクトリの中にコピーしてあるので、
+#: **ファイル名で参照させる**（issue #22）。「変化するものだけを書く」という
+#: video-1.5 の原則もここで念を押す（プロンプト本文は変化の記述に専念させる）。
+START_FRAME = """
+## START FRAME
+The image file `{name}` in this working directory ({path}) is the FIRST FRAME of
+the {media}: read it and start from exactly that picture. Keep its composition,
+framing, subject, wardrobe and lighting — the prompt below describes only what
+CHANGES over time.
 """
 
 
@@ -177,6 +195,12 @@ class MediaRequest:
     #: 希望する解像度（0 なら指示に書かない）
     width: int = 0
     height: int = 0
+    #: 希望する尺（秒。動画だけ。空なら指示に書かない）
+    duration: str = ""
+    #: 希望する解像度の呼び名（``"720p"``。動画だけ。空なら指示に書かない）
+    resolution: str = ""
+    #: 開始フレーム（**作業ディレクトリへコピー済み**の絶対パス、issue #22）
+    start_image: Path | None = None
 
     @property
     def suffixes(self) -> frozenset[str]:
@@ -190,12 +214,26 @@ class MediaRequest:
             if self.width > 0 and self.height > 0
             else ""
         )
+        extra = ""
+        if self.duration:
+            extra += f"- Length: about {self.duration} seconds of footage.\n"
+        if self.resolution:
+            extra += f"- Resolution: {self.resolution} (as close as the tool allows).\n"
+        source = ""
+        if self.start_image is not None:
+            source = START_FRAME.format(
+                name=self.start_image.name,
+                path=self.start_image,
+                media=self.media,
+            )
         return INSTRUCTION.format(
             media=self.media,
             media_upper=self.media.upper(),
             prompt=self.prompt.strip() or "(no prompt given)",
             aspect=self.aspect_ratio.strip() or "as you see fit",
             size=size,
+            extra=extra,
+            source=source,
             fmt="PNG" if self.media == "image" else "MP4",
             dest=self.dest,
         )
@@ -207,42 +245,113 @@ class MediaRequest:
             "aspect_ratio": self.aspect_ratio,
             "width": self.width,
             "height": self.height,
+            "duration": self.duration,
+            "resolution": self.resolution,
+            "start_image": str(self.start_image) if self.start_image else "",
             "dest": str(self.dest),
             "instruction": self.instruction,
         }
 
 
+def stage_input(source: str | Path, *, prefix: str = "") -> Path:
+    """入力ファイルを grok の作業ディレクトリへコピーし、その絶対パスを返す。
+
+    CLI に渡せるのは自然文だけなので、ファイルは**指示文から参照できる場所**に
+    無ければならない（SPEC §4.1 のモード B と同じ受け渡し方）。コピー先は
+    ``<作業ディレクトリ>/inputs/<prefix>-<元のファイル名>`` で、``prefix``
+    （ジョブ id）を付けるのは同じ名前の開始フレームを取り違えないため。
+    """
+    path = Path(source)
+    if not path.is_file():
+        raise GrokMediaError(f"入力ファイルが見つかりません: {path}")
+    folder = workdir() / INPUTS_RELPATH
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        dest = folder / (f"{prefix}-{path.name}" if prefix else path.name)
+        if path.resolve() != dest.resolve():
+            shutil.copy2(path, dest)
+    except OSError as exc:
+        raise GrokMediaError(
+            f"{path} を grok の作業ディレクトリに置けませんでした: {exc}"
+        ) from exc
+    return dest
+
+
+def request_values(
+    spec: WorkflowSpec, params: GenerationParams, inputs: dict[str, str]
+) -> dict[str, str]:
+    """宣言された論理名 -> 指示文に織り込む値（kie の ``task_values`` にあたる層）。
+
+    ``select:<名前>`` は選ばれた値（未指定ならマニフェストの既定）に、入力ファイル
+    （``image``）は ``inputs`` の**ローカルパス**に解決する。宣言していないものは
+    ここにも入らないので、指示文にも出ない。
+    """
+    task = spec.grok
+    values: dict[str, str] = {}
+    if task is None:
+        return values
+    for name in task.values:
+        if name.startswith(KIE_SELECT_PREFIX):
+            plain = name[len(KIE_SELECT_PREFIX):]
+            select = spec.select(plain)
+            if select is not None:
+                values[plain] = params.selects.get(plain) or select.fallback
+        elif name == "aspect_ratio":
+            values["aspect_ratio"] = params.aspect_ratio
+        elif name in INPUT_FIELDS:
+            path = inputs.get(name, "")
+            if path:
+                values[name] = path
+    return values
+
+
 def build_request(
-    spec: WorkflowSpec, params: GenerationParams, dest: Path
+    spec: WorkflowSpec,
+    params: GenerationParams,
+    dest: Path,
+    inputs: dict[str, str] | None = None,
 ) -> MediaRequest:
     """マニフェスト + ジョブのパラメータ -> 1 回分の生成。
 
     ComfyUI の :mod:`app.workflow`、kie.ai の :func:`app.kie.build_request` に
     あたる層。CLI にはグラフも ``input`` も無いので、宣言された論理値
     （:attr:`app.workflows.GrokCliTask.values`）を**指示文に織り込む**だけ。
+
+    ``inputs`` は論理入力名（``image``）-> **ローカルのパス**。kie.ai が公開 URL に
+    上げ直すところで、こちらは作業ディレクトリへのコピー（:func:`stage_input`）に
+    なる。コピーはここで行うので、この関数はファイルを触る（issue #22）。
     """
     task = spec.grok
     if task is None:
         raise GrokMediaError(f"workflow '{spec.id}' に grok_cli のタスク宣言がありません")
+    dest = Path(dest)
+    values = request_values(spec, params, inputs or {})
     prompt = params.image_prompt if task.media == "image" else params.video_prompt
-    aspect_ratio = params.aspect_ratio if "aspect_ratio" in task.values else ""
+    aspect_ratio = values.get("aspect_ratio", "")
     width = height = 0
-    if aspect_ratio:
+    if aspect_ratio and task.media == "image":
         # 解像度そのものは指定できないが、希望として書いておくと効くことがある
         # （厳密な制御は保証されない、issue #21）。ComfyUI 側と同じ計算を使う。
+        # 動画は解像度が選択式（480p / 720p）なので、この計算は使わない。
         from .workflow import WorkflowError, resolution
 
         try:
             width, height = resolution(aspect_ratio, params.megapixels)
         except WorkflowError:
             width = height = 0
+    start_image = values.get("image", "")
     return MediaRequest(
         media=task.media,
         prompt=prompt,
-        dest=Path(dest),
+        dest=dest,
         aspect_ratio=aspect_ratio,
         width=width,
         height=height,
+        duration=values.get("duration", ""),
+        resolution=values.get("resolution", ""),
+        start_image=(
+            stage_input(start_image, prefix=dest.parent.name) if start_image else None
+        ),
     )
 
 

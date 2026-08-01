@@ -94,6 +94,7 @@
 | `kling3_video` | Kling 3.0（音声つき・外部 API） | kie.ai `kling-3.0/video` | なし（画像・最終フレーム画像は任意） | ○ |
 | `seedance2` | Seedance 2.0（音声つき・外部 API） | kie.ai `bytedance/seedance-2` | なし（画像・最終フレーム画像は任意） | ○ |
 | `seedance2_mini` | Seedance 2.0 Mini（音声つき・外部 API） | kie.ai `bytedance/seedance-2-mini` | なし（画像・最終フレーム画像は任意） | ○ |
+| `grok_imagine_video` | Grok Imagine 動画（サブスク CLI） | Grok Build CLI `video-1.5` | なし（開始フレーム画像は任意） | ○ |
 
 - id はファイル名（拡張子なし）。`tx2_3_i2v` / `tx2_3_ia2v` の綴りは配布ファイル名そのまま
 - **`wan_dancer`（`workflow/video/wan/`、family `wan`）** は LTX 系とは作りが違う: 渡した曲に合わせて踊る映像を作り、
@@ -139,6 +140,19 @@
   Seedance 2.5 は kie.ai 未提供（Coming Soon）だが、モデル名はマニフェストの宣言なので**エントリを 1 つ足すだけ**で通る。
   成果物 URL は約 24 時間で失効する（完了時に即ダウンロードするので影響なし、§5.2）。
   ユーザー LoRA は使えず、`full` は Veo / Kling と同じく ComfyUI の画像ワークフローと組み合わせられる
+- **`grok_imagine_video`（family `grok-imagine`、backend `grok_cli`）** は画像版 `grok_imagine` と同じ
+  **サブスク枠の CLI**（§5.3）で走る動画ワークフロー。1〜10 秒の 1 カットを**ネイティブ音声つき**
+  （環境音・効果音・セリフ）で生成する。音声入力は無いので鳴らしたい音は `video_prompt` に書く。
+  開始フレームは任意で、渡すと i2v（画像を **grok のメディア作業ディレクトリへコピー**し、指示文が
+  ファイル名で参照する。kie の File Upload API にあたる橋渡しが `grok_media.stage_input`）、
+  渡さなければ t2v。選択式フィールド（§3.1）は `duration`（1〜10、既定 6）・`resolution`
+  （480p / 720p（既定））・`aspect_ratio`（16:9（既定）/ 9:16 / 1:1）で、いずれも API の `input` ではなく
+  **指示文に織り込む希望**なので厳密には保証されない。尺 10 秒・720p までという上限は CLI 経由の
+  報道値（モデル自体の API は 15 秒 / 1080p まで）で、実機検証がとれたら `SelectSpec` の選択肢を広げる。
+  ユーザー LoRA は使えず（グラフが無い）、指定したジョブは 422。`full` は **ComfyUI の画像**とも
+  **`grok_imagine` の画像**とも組み合わせられる（`jobs._STAGE_BRIDGES` の `comfyui → grok_cli`、
+  同一バックエンドの 2 段は橋渡し不要）。生成後のラストフレーム抽出・ラストフレーム連鎖は他の
+  動画ワークフローと同じ。枠切れは §5.3 のとおり「時間をおいて」の案内になる（動画の目安 10 本/日）
 - 既定は `ltx2_3_id_lora`（旧 `video-gen.json` の動画側と同じ構成なので、既存ジョブ・エージェントの計画がそのまま通る）
 - ラストフレーム連鎖: 履歴の動画から「ラストフレームを開始フレームにして続きを生成」できる。元ジョブの動画ワークフローが開始フレームを受け取れない場合は既定ワークフローにフォールバックする
 
@@ -671,9 +685,10 @@ ComfyUI と並ぶ **2 つめの生成バックエンド**として、外部 API 
 
 3 つめの生成バックエンド（`backend/app/grok_media.py`、backend 名 `grok_cli`）。
 xAI の従量課金 API ではなく、**SuperGrok / X Premium+ のサブスクリプション枠**で動く
-公式 CLI をヘッドレス実行し、Grok Imagine に画像を作らせる（§2.3 の `grok_imagine`）。
-プロンプト作成に使っている CLI 統合（§4.1）と**コマンド名だけを共有**し、実行のしかたは
-分けてある。
+公式 CLI をヘッドレス実行し、Grok Imagine に画像（§2.3 の `grok_imagine`）と
+動画（§2.2 の `grok_imagine_video`）を作らせる。プロンプト作成に使っている CLI 統合（§4.1）と
+**コマンド名だけを共有**し、実行のしかたは分けてある。画像と動画の違いはマニフェストの
+`GrokCliTask.media` と指示文の組み立てだけで、実行・成否判定・リトライ・クォータの言い換えは共通。
 
 - **呼び出し**: `grok -p "<指示>" --always-approve --output-format json --no-auto-update`。
   `--always-approve` が無いとツール実行の承認待ちでハングする
@@ -684,7 +699,13 @@ xAI の従量課金 API ではなく、**SuperGrok / X Premium+ のサブスク�
   フォールバックしうるため、サブスク枠で回す約束を守る（§4.1）
 - **指示は定型テンプレート**: プロンプト本文 + 「`outputs/{job_id}/image.png` に PNG で
   保存し、成功したら `OK <絶対パス>`、失敗したら `FAILED <理由>` とだけ出力せよ」。
-  縦横比・解像度も指示文に織り込むが、**厳密な制御は保証されない**（プロンプト経由の希望）
+  縦横比・解像度も指示文に織り込むが、**厳密な制御は保証されない**（プロンプト経由の希望）。
+  動画（`grok_imagine_video`）は同じテンプレートの MP4 版で、尺・解像度（選択式フィールド、§3.1）が
+  requirements の行として増える。音声はモデルが映像と同時に生成するので指示は要らない
+- **入力ファイルの受け渡し**: CLI に渡せるのは自然文だけなので、開始フレーム画像は
+  `<作業ディレクトリ>/inputs/<job_id>-<元のファイル名>` へコピーし（`grok_media.stage_input`）、
+  指示文がそのファイル名で参照する（「この画像を開始フレームに。プロンプトは変化するものだけ」）。
+  kie.ai の File Upload API にあたる下ごしらえで、ジョブ側の入口は `jobs._grok_inputs`
 - **成否の判定は 4 段構え**: ① 終了コード ② JSON 出力の `text` から合図
   （`OK` / `FAILED`）③ **指定パスにファイルが実在しサイズ > 0**（「作った」と言って
   置かないことがあるので、言葉ではなくファイルを信じる）④ 無ければ作業ディレクトリの
@@ -694,23 +715,26 @@ xAI の従量課金 API ではなく、**SuperGrok / X Premium+ のサブスク�
   **1 回だけやり直す**（モデレーションの誤検知や一時的な失敗があるため）。ただし
   クォータ枯渇（rate limit / quota 系の文言）は `GrokQuotaError` として「時間をおいて」の
   案内に変換し、やり直さない。枠は Chat / Imagine / Build 横断の共有プールで、
-  目安は画像 ~40 枚/日（SuperGrok、時期・地域で変動）
+  目安は画像 ~40 枚/日・動画 ~10 本/日（SuperGrok、時期・地域で変動）
 - **可用性の判定**: 起動時・設定保存時の確認は**サブスク枠を使わない軽いもの**に留める
   （`grok` コマンドが実行できること + `~/.grok/auth.json` が在ること）。実際に通るかどうかは
   設定ページの「接続確認」＝ `POST /api/grok/check` で 1 ターン回して確かめ、結果を
-  `app.backends` のキャッシュに預ける。確認できるまで `grok_imagine` は
+  `app.backends` のキャッシュに預ける。確認できるまで `grok_imagine` / `grok_imagine_video` は
   `GET /api/options` にもエージェントのカタログにも出ず、投入しようとしても 422
 - **`full` モードの橋渡し**: 成果物は最初から `outputs/{job_id}/` に書かれるローカル
   ファイルなので、`source_image` を差し替えるだけで 2 段目に渡せる。実装済みの向きは
-  `grok_cli → comfyui`（ComfyUI の input へ再アップロード）と `grok_cli → kie`
-  （File Upload API で公開 URL）の 2 つ（`jobs._STAGE_BRIDGES`）
+  `grok_cli → comfyui`（ComfyUI の input へ再アップロード）・`grok_cli → kie`
+  （File Upload API で公開 URL）・`comfyui → grok_cli`（作業ディレクトリへコピーして指示文で参照）の
+  3 つ（`jobs._STAGE_BRIDGES`）。`grok_cli → grok_cli`（Grok の画像 → Grok の動画）は同一
+  バックエンドなので橋渡しの宣言は要らない
 - **LoRA は使えない**: グラフが無いので差し込む場所がない。指定したジョブは 422
 - **投入内容の保存**: `workflow_json` に段階別で
   `{"backend": "grok_cli", "request": {"media": …, "prompt": …, "dest": …, "instruction": …}}`
   を残す（何を頼んだかがそのまま再現できる）
 - **モデレーション**: 実在人物・著名人・商標は弾かれる（2026 年 1 月以降、誤検知が増えている）。
-  厳密な制御が要るようになったら `api.x.ai` 直（`POST /v1/images/generations`）へ
-  切り替えられるよう、生成の入口は `MediaRequest` 1 つに絞ってある
+  厳密な制御が要るようになったら `api.x.ai` 直（画像は `POST /v1/images/generations`、
+  動画は `POST /v1/videos/generations` の非同期ポーリング）へ切り替えられるよう、生成の入口は
+  `MediaRequest` 1 つに絞ってある
 
 ## 6. 成果物の取得
 
