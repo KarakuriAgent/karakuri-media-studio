@@ -676,6 +676,18 @@ def _as_bool(value: Any) -> bool:
     return bool(value)
 
 
+def _as_int(value: Any) -> Any:
+    """整数で送るキーの値（数として読めなければそのまま = API に判断させる）。"""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, int):
+        return value
+    try:
+        return int(str(value).strip())
+    except (TypeError, ValueError):
+        return value
+
+
 def task_input(
     spec: WorkflowSpec, params: GenerationParams, uploads: dict[str, str]
 ) -> dict[str, Any]:
@@ -688,9 +700,10 @@ def task_input(
     キーに複数の論理名を宣言できる（Veo の ``imageUrls`` は 1 枚目が開始フレーム、
     2 枚目が最終フレーム）。並びは宣言順で、空の値はそこでも落ちる。
 
-    :attr:`app.workflows.KieTask.bool_keys` に挙げたキーは **``bool``** になる
-    （選択式フィールドの値は文字列で届くので、Kling の ``sound`` のように JSON の
-    型が決まっているものはここで直す）。
+    :attr:`app.workflows.KieTask.bool_keys` に挙げたキーは **``bool``** に、
+    :attr:`app.workflows.KieTask.int_keys` に挙げたキーは **``int``** になる
+    （選択式フィールドの値は文字列で届くので、Kling の ``sound`` や Seedance の
+    ``duration`` のように JSON の型が決まっているものはここで直す）。
     """
     task = spec.kie
     if task is None:
@@ -705,6 +718,8 @@ def task_input(
             payload.setdefault(key, []).append(value)
         elif key in task.bool_keys:
             payload[key] = _as_bool(value)
+        elif key in task.int_keys:
+            payload[key] = _as_int(value)
         else:
             payload[key] = value
     return payload

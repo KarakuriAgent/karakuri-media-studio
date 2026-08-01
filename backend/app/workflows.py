@@ -194,6 +194,7 @@ FAMILY_LABELS: dict[str, str] = {
     "stable-audio": "Stable Audio 3",
     "veo": "Veo 3.1",
     "kling": "Kling 3.0",
+    "seedance": "Seedance 2",
 }
 
 #: LoRA registrations default to this family (the only image workflow that
@@ -254,6 +255,10 @@ class KieTask:
     #: （``"true"`` / ``"false"``）、ここに挙げたキーだけ ``bool`` に直してから
     #: 送る（Kling の ``sound``）。JSON の型が違うと API に弾かれる。
     bool_keys: tuple[str, ...] = ()
+    #: **整数で渡す** ``input`` のキー。同じ「尺」でもモデルごとに型が違う
+    #: （Kling の ``duration`` は文字列、Seedance の ``duration`` は int）ので、
+    #: 選択式フィールドの文字列を ``int`` に直すキーをここで宣言する。
+    int_keys: tuple[str, ...] = ()
     #: API 系統（既定は Market 系の統一 API）
     api: KieApi = "market"
     #: 1 タスクの概算クレジット（0 = 不明。実消費は ``creditsConsumed`` を記録する）
@@ -1209,6 +1214,170 @@ KLING3_VIDEO = WorkflowSpec(
 
 
 # --------------------------------------------------------------------------
+# video: kie.ai（ByteDance Seedance 2、SPEC §5.2 / issue #19）
+# --------------------------------------------------------------------------
+#
+# Seedance も Kling と同じ **Market 系（統一 API）** なので系統は既定の ``market``
+# のまま。バリアント（2.0 / 2.0 Mini）の違いは**モデル名と使える解像度だけ**で、
+# 宣言の形はまったく同じなので :func:`_seedance_spec` で 1 つにまとめてある。
+# 2.5 が kie.ai に来たら（今は Coming Soon）エントリを 1 行足すだけでよい。
+#
+# Kling との違いで気をつける点:
+#
+# - **開始 / 最終フレームはキーが別**（``first_frame_url`` / ``last_frame_url``）。
+#   Kling の ``image_urls`` のような 1 つの配列ではないので :attr:`KieTask.list_keys`
+#   は使わず、論理入力ごとに別のキーを宣言する
+# - **``duration`` は整数**（4〜15）。Kling は文字列なので型が逆で、選択式の値は
+#   文字列で届くため :attr:`KieTask.int_keys` で ``int`` に直してから送る
+# - **``generate_audio`` は真偽値**で、しかも**既定が true**（Kling の ``sound`` は
+#   既定 false）
+#
+# 2 系に seed / camera_fixed は無い（カメラ固定も再現性もプロンプト側の仕事）。
+# マルチモーダル参照（``reference_image_urls`` / ``reference_video_urls`` /
+# ``reference_audio_urls``）は第 2 段。参照モードを持たないので、API 側の
+# 「先頭フレーム / 先頭+末尾 / 参照」の 3 モード排他は自然に満たされる。
+
+#: Seedance 2.0 の解像度（Mini は 720p まで）
+SEEDANCE_RESOLUTIONS: tuple[str, ...] = ("480p", "720p", "1080p", "4k")
+#: Seedance 2.0 Mini の解像度
+SEEDANCE_MINI_RESOLUTIONS: tuple[str, ...] = ("480p", "720p")
+#: Seedance の尺（秒）。**API には整数で渡す**（:attr:`KieTask.int_keys`）。
+SEEDANCE_DURATIONS: tuple[str, ...] = tuple(str(second) for second in range(4, 16))
+#: Seedance の縦横比（``adaptive`` は入力画像に追従する）
+SEEDANCE_ASPECT_RATIOS: tuple[str, ...] = (
+    "16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "adaptive",
+)
+#: ネイティブ音声の ON / OFF（**既定は ON**）
+SEEDANCE_AUDIO: tuple[str, ...] = ("false", "true")
+
+#: プロンプトの長さの上限（kie.ai の Seedance 2 系）
+SEEDANCE_MAX_PROMPT_CHARS = 20000
+
+#: プロンプトの書き方（バリアント間で同じ。違うのは品質と値段と最大解像度だけ）
+SEEDANCE_PROMPT_HINT = (
+    "Write like a director: one dense English paragraph of 60-100 words in the"
+    " order **subject (concrete looks) → action (verb + intensity) → setting"
+    " (light, atmosphere) → camera (exactly one move) → style → what to avoid**."
+    " The **lighting sentence matters most** (golden hour, rim light, neon"
+    " spill, backlit silhouette) — piles of vague adjectives (amazing, epic,"
+    ' bare "cinematic") make the result worse.'
+    " Pick **one** camera move out of push-in / pull-out / pan / tracking /"
+    " orbit / aerial / handheld / fixed and give it a rhythm word (slow,"
+    " smooth, gentle); keep **the subject's motion and the camera's motion in"
+    " separate sentences**. For characters, end with a short negative clause"
+    ' such as "avoid jitter and bent limbs". With a start frame, do not'
+    " re-describe what the picture already shows — write how it moves."
+)
+
+#: 画像入力の説明（カタログ・フォームの案内に使う共通文）
+_SEEDANCE_INPUTS = (
+    "画像は任意で、1 枚渡すと開始フレーム（`first_frame_url`）、`end_image` も"
+    "渡すと最終フレーム（`last_frame_url`）になる。"
+)
+
+
+def _seedance_spec(
+    spec_id: str,
+    label: str,
+    model: str,
+    resolutions: tuple[str, ...],
+    credits: float,
+    description: str,
+) -> WorkflowSpec:
+    """Seedance 2 系の 1 バリアント分のマニフェスト。
+
+    バリアント間で違うのは **モデル名と解像度の選択肢と値段だけ**なので、
+    2.5 や Fast を足すときもここを呼ぶエントリを 1 つ書けば済む。
+    """
+    return WorkflowSpec(
+        id=spec_id,
+        label=label,
+        kind="video",
+        family="seedance",
+        backend="kie",
+        description=description,
+        prompt_hint=SEEDANCE_PROMPT_HINT,
+        max_prompt_chars=SEEDANCE_MAX_PROMPT_CHARS,
+        accepts_start_image=True,
+        image_label="開始フレーム（任意）",
+        kie=KieTask(
+            model=model,
+            # Market 系（統一 API）なので系統は既定のまま
+            fields={
+                "prompt": "prompt",
+                # Kling と違い開始 / 最終フレームはキーが別（配列ではない）
+                "image": "first_frame_url",
+                "end_image": "last_frame_url",
+                f"{KIE_SELECT_PREFIX}resolution": "resolution",
+                f"{KIE_SELECT_PREFIX}duration": "duration",
+                f"{KIE_SELECT_PREFIX}aspect_ratio": "aspect_ratio",
+                f"{KIE_SELECT_PREFIX}generate_audio": "generate_audio",
+            },
+            bool_keys=("generate_audio",),
+            int_keys=("duration",),
+            credits=credits,
+        ),
+        selects={
+            "resolution": SelectSpec(
+                label="解像度",
+                choices=resolutions,
+                default="720p",
+                hint="高いほど比例して高価（秒単価で課金される）。",
+            ),
+            "duration": SelectSpec(
+                label="尺（秒）",
+                choices=SEEDANCE_DURATIONS,
+                default="5",
+                hint="4〜15 秒。長いほど比例して高い。",
+            ),
+            "aspect_ratio": SelectSpec(
+                label="縦横比",
+                choices=SEEDANCE_ASPECT_RATIOS,
+                default="16:9",
+                hint="adaptive は開始フレーム画像の縦横比に合わせる。",
+            ),
+            "generate_audio": SelectSpec(
+                label="音声を生成",
+                choices=SEEDANCE_AUDIO,
+                default="true",
+                hint="既定で ON。false にすると無音の映像だけを作る。",
+            ),
+        },
+        notes=(
+            "kie.ai 経由 / ネイティブ音声つき（既定 ON） / seed・カメラ固定の"
+            "パラメータは無い（本文で指定） / マルチモーダル参照（参照画像・"
+            "参照動画・参照音声）は未対応 / 成果物 URL は約 24 時間で失効"
+        ),
+    )
+
+
+SEEDANCE2 = _seedance_spec(
+    "seedance2",
+    "Seedance 2.0（音声つき・外部 API）",
+    "bytedance/seedance-2",
+    SEEDANCE_RESOLUTIONS,
+    # 720p / 5 秒の概算（$0.06/秒 = 60 credits）
+    60.0,
+    "kie.ai 経由の ByteDance Seedance 2.0。映像と音声を同時に生成する 4〜15 秒の"
+    "クリップで、**4K まで**出せる 2 系の本命。720p で試作して 1080p / 4K で"
+    f"仕上げる使い方を想定している。{_SEEDANCE_INPUTS}"
+    "外部 API なので LoRA は使えない。",
+)
+
+SEEDANCE2_MINI = _seedance_spec(
+    "seedance2_mini",
+    "Seedance 2.0 Mini（音声つき・外部 API）",
+    "bytedance/seedance-2-mini",
+    SEEDANCE_MINI_RESOLUTIONS,
+    # 720p / 5 秒の概算（$0.04/秒 = 40 credits）
+    40.0,
+    "kie.ai 経由の ByteDance Seedance 2.0 Mini。2.0 と同じ使い方で最安・"
+    "720p まで。試作と大量出し用で、決まったカットを 2.0 で作り直す。"
+    f"{_SEEDANCE_INPUTS}外部 API なので LoRA は使えない。",
+)
+
+
+# --------------------------------------------------------------------------
 # audio: workflow/audio/*.json
 # --------------------------------------------------------------------------
 #
@@ -1351,6 +1520,8 @@ SPECS: tuple[WorkflowSpec, ...] = (
     VEO3_1_FAST,
     VEO3_1_QUALITY,
     KLING3_VIDEO,
+    SEEDANCE2,
+    SEEDANCE2_MINI,
     ACE_STEP_1_5,
     STABLE_AUDIO_3,
 )
@@ -1680,7 +1851,11 @@ def validate_external_spec(spec: WorkflowSpec) -> list[str]:
         if not str(key).strip():
             problems.append(f"{spec.id}.kie.fields[{name}]: empty input key")
     declared = set(spec.kie.fields.values())
-    for group, keys in (("list_keys", spec.kie.list_keys), ("bool_keys", spec.kie.bool_keys)):
+    for group, keys in (
+        ("list_keys", spec.kie.list_keys),
+        ("bool_keys", spec.kie.bool_keys),
+        ("int_keys", spec.kie.int_keys),
+    ):
         for key in keys:
             if key not in declared:
                 problems.append(

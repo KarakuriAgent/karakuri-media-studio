@@ -1281,3 +1281,231 @@ def test_a_full_job_bridges_comfyui_images_into_kling(client, fake_kie, comfy_en
     assert (job_env / job["id"] / "image.png").is_file()
     assert (job_env / job["id"] / "video.mp4").is_file()
     assert job["credits_consumed"] == 90
+
+
+# --------------------------------------------------------------------------
+# Seedance 2 系（Market 系の統一 API、issue #19）
+# --------------------------------------------------------------------------
+
+SEEDANCE = workflows.BY_ID["seedance2"]
+SEEDANCE_MINI = workflows.BY_ID["seedance2_mini"]
+
+
+def _seedance_params(**overrides) -> GenerationParams:
+    base = dict(
+        mode="i2v",
+        job_id="job-seedance",
+        video_workflow=SEEDANCE.id,
+        video_prompt=(
+            "A woman in a grey wool coat walks briskly along a wet quay."
+            " Golden hour backlight rims her hair. Slow tracking shot beside"
+            " her. 35mm film grain. Avoid jitter and bent limbs."
+        ),
+    )
+    base.update(overrides)
+    return _params(**base)
+
+
+def test_seedance_rides_on_the_market_api():
+    """Kling と同じ Market 系。モデル名はマニフェスト側の宣言だけで決まる。"""
+    for spec, model in (
+        (SEEDANCE, "bytedance/seedance-2"),
+        (SEEDANCE_MINI, "bytedance/seedance-2-mini"),
+    ):
+        assert spec.kie.api == "market"
+        assert spec.kie.model == model
+        api = kie.task_api(spec.kie.api)
+        assert api.create_url.endswith("/api/v1/jobs/createTask")
+        assert api.record_url.endswith("/api/v1/jobs/recordInfo")
+
+
+def test_a_start_frame_becomes_the_seedance_first_frame_url():
+    request = kie.build_request(
+        SEEDANCE, _seedance_params(), {"image": "https://files.kie.ai/start.png"}
+    )
+    body = kie.task_api(request.api).create_body(request.model, request.input)
+
+    assert set(body) == {"model", "input"}
+    assert body["model"] == "bytedance/seedance-2"
+    task_input = body["input"]
+    # Kling の image_urls と違い、開始 / 最終フレームはキーが別（配列ではない）
+    assert task_input["first_frame_url"] == "https://files.kie.ai/start.png"
+    assert "last_frame_url" not in task_input
+    assert "image_urls" not in task_input
+    assert task_input["resolution"] == "720p"
+    assert task_input["aspect_ratio"] == "16:9"
+    # duration は **整数**（Kling の文字列と型が逆）
+    assert task_input["duration"] == 5
+    assert isinstance(task_input["duration"], int)
+    # 音声は既定 ON、真偽値で送る
+    assert task_input["generate_audio"] is True
+    # 2 系に無いパラメータは宣言していない
+    for absent in ("seed", "camera_fixed", "negative_prompt"):
+        assert absent not in task_input
+
+
+def test_seedance_takes_a_first_and_a_last_frame():
+    request = kie.build_request(
+        SEEDANCE,
+        _seedance_params(
+            selects={
+                "resolution": "4k",
+                "duration": "15",
+                "aspect_ratio": "adaptive",
+                "generate_audio": "false",
+            }
+        ),
+        {
+            "image": "https://files.kie.ai/first.png",
+            "end_image": "https://files.kie.ai/last.png",
+        },
+    )
+    task_input = request.input
+
+    assert task_input["first_frame_url"] == "https://files.kie.ai/first.png"
+    assert task_input["last_frame_url"] == "https://files.kie.ai/last.png"
+    assert task_input["resolution"] == "4k"
+    assert task_input["duration"] == 15
+    assert task_input["aspect_ratio"] == "adaptive"
+    assert task_input["generate_audio"] is False
+
+
+def test_without_an_image_seedance_is_text_to_video():
+    task_input = kie.build_request(SEEDANCE, _seedance_params(), {}).input
+    assert "first_frame_url" not in task_input
+    assert "last_frame_url" not in task_input
+    assert task_input["prompt"]
+
+
+def test_the_mini_variant_only_differs_by_model_and_resolution():
+    """2.5 追加時にエントリ 1 つで済む構造か（宣言の形は同じ）。"""
+    assert SEEDANCE_MINI.kie.fields == SEEDANCE.kie.fields
+    assert SEEDANCE_MINI.kie.int_keys == SEEDANCE.kie.int_keys == ("duration",)
+    assert SEEDANCE_MINI.kie.bool_keys == SEEDANCE.kie.bool_keys
+    assert SEEDANCE_MINI.prompt_hint == SEEDANCE.prompt_hint
+    assert SEEDANCE.selects["resolution"].choices == ("480p", "720p", "1080p", "4k")
+    assert SEEDANCE_MINI.selects["resolution"].choices == ("480p", "720p")
+
+    task_input = kie.build_request(SEEDANCE_MINI, _seedance_params(), {}).input
+    assert task_input["duration"] == 5
+    body = kie.task_api("market").create_body(
+        SEEDANCE_MINI.kie.model, task_input
+    )
+    assert body["model"] == "bytedance/seedance-2-mini"
+
+
+def test_both_seedance_variants_are_offered_as_video_workflows(client, monkeypatch):
+    mark_available(monkeypatch)
+    body = client.get("/api/options").json()
+    offered = {
+        wf["id"]: wf
+        for wf in body["video_workflows"]
+        if wf["id"] in (SEEDANCE.id, SEEDANCE_MINI.id)
+    }
+    assert set(offered) == {SEEDANCE.id, SEEDANCE_MINI.id}
+
+    for spec_id, resolutions in (
+        (SEEDANCE.id, ["480p", "720p", "1080p", "4k"]),
+        (SEEDANCE_MINI.id, ["480p", "720p"]),
+    ):
+        entry = offered[spec_id]
+        assert entry["requires"] == []
+        assert set(entry["supports"]) == {"prompt", "image", "end_image"}
+        assert entry["accepts_start_image"] is True
+        assert entry["backend"] == "kie"
+        selects = {select["name"]: select for select in entry["selects"]}
+        assert list(selects) == [
+            "resolution", "duration", "aspect_ratio", "generate_audio"
+        ]
+        assert selects["resolution"]["choices"] == resolutions
+        assert selects["resolution"]["default"] == "720p"
+        assert selects["duration"]["choices"][0] == "4"
+        assert selects["duration"]["choices"][-1] == "15"
+        assert selects["duration"]["default"] == "5"
+        assert selects["aspect_ratio"]["choices"][-1] == "adaptive"
+        assert selects["generate_audio"]["default"] == "true"
+
+
+def test_the_seedance_guide_is_injected_only_when_seedance_is_selected():
+    from app.models import ChatSessionCreate
+    from app.prompts import build_system_prompt
+
+    for spec_id in (SEEDANCE.id, SEEDANCE_MINI.id):
+        prompt = build_system_prompt(
+            ChatSessionCreate(mode="i2v", video_workflow=spec_id)
+        )
+        assert "VIDEO PROMPT SPEC — ByteDance Seedance 2" in prompt
+        # 6 要素フォーミュラ・照明・カメラ 1 つ・動きの文の分離・負例
+        assert "60-100 words" in prompt
+        assert "lighting sentence is the single biggest lever" in prompt
+        assert "separate sentences" in prompt
+        assert "avoid jitter and bent limbs" in prompt
+
+    kling = build_system_prompt(
+        ChatSessionCreate(mode="i2v", video_workflow=KLING.id)
+    )
+    assert "Seedance 2" not in kling
+
+
+def test_the_agent_prompt_carries_the_seedance_guide_once(monkeypatch):
+    """2 バリアントで同じガイドなので、節には 1 回しか出ない。"""
+    from app.prompts import video_prompt_guides_section
+
+    mark_available(monkeypatch)
+    section = video_prompt_guides_section()
+    assert section.count("VIDEO PROMPT SPEC — ByteDance Seedance 2") == 1
+
+
+def test_a_full_job_bridges_comfyui_images_into_seedance(client, fake_kie, comfy_env,
+                                                         job_env, monkeypatch):
+    """ローカルで画像を作り、その画像を Seedance に渡して動画にする。"""
+    async def fake_last_frame(video, dest):
+        dest.write_bytes(b"png")
+        return dest
+
+    monkeypatch.setattr(jobs, "extract_last_frame", fake_last_frame)
+    fake_kie.answer("create", FakeResponse(envelope({"taskId": "task-seedance"})))
+    fake_kie.answer("record", success(["https://cdn.kie.ai/out.mp4"], credits=120))
+    fake_kie.answer(
+        "upload", FakeResponse(envelope({"fileUrl": "https://files.kie.ai/gen.png"}))
+    )
+
+    created = client.post(
+        "/api/jobs",
+        json={
+            "mode": "full",
+            "image_workflow": workflows.DEFAULT_IMAGE_WORKFLOW,  # ComfyUI
+            "video_workflow": SEEDANCE.id,  # kie.ai
+            "image_prompt": "a cat on a roof",
+            "video_prompt": (
+                "The tabby cat stretches slowly on the warm tin roof."
+                " Slow push-in. Avoid jitter and bent limbs."
+            ),
+            "selects": {"duration": "10", "resolution": "1080p"},
+        },
+    )
+    assert created.status_code == 201, created.text
+    job = wait_for(client, created.json()["id"])
+    assert job["status"] == "done", job["error"]
+
+    stages = job["workflow_json"]
+    assert len(comfy_env.queued) == 1
+    assert stages["image"]["workflow_id"] == workflows.DEFAULT_IMAGE_WORKFLOW
+    assert stages["video"]["backend"] == "kie"
+    assert stages["video"]["task_id"] == "task-seedance"
+    assert stages["video"]["request"]["api"] == "market"
+
+    # 1 段目の静止画を kie に上げ直して開始フレームにしている
+    task_input = stages["video"]["request"]["input"]
+    assert task_input["first_frame_url"] == "https://files.kie.ai/gen.png"
+    assert task_input["duration"] == 10
+    assert task_input["resolution"] == "1080p"
+    assert task_input["generate_audio"] is True
+
+    body = fake_kie.sent("create")[0]["json"]
+    assert body["model"] == "bytedance/seedance-2"
+    assert body["input"]["first_frame_url"] == "https://files.kie.ai/gen.png"
+
+    assert (job_env / job["id"] / "image.png").is_file()
+    assert (job_env / job["id"] / "video.mp4").is_file()
+    assert job["credits_consumed"] == 120

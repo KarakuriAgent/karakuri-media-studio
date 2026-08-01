@@ -722,12 +722,70 @@ Duration, mode (std / pro / 4K), aspect ratio and sound are job fields
 (`@character` references) are not wired up yet — one shot per job.
 """
 
+# Seedance 2 — https://docs.kie.ai/market/bytedance/seedance-2.md と
+# 公式プロンプトガイドの解説（6 要素フォーミュラ・照明・カメラ 8 種・マルチショット）
+# https://help.apiyi.com/en/seedance-2-0-prompt-guide-video-generation-camera-style-tips-en.html
+
+SEEDANCE_VIDEO_GUIDE = """\
+# VIDEO PROMPT SPEC — ByteDance Seedance 2 (kie.ai, `seedance2` / `seedance2_mini`)
+
+Seedance generates picture and **native audio together** in one 4-15 second
+take. Where this section and the generic VIDEO PROMPT SPEC above disagree, this
+one wins.
+
+**Write like a director, not like a tag list.** One dense English paragraph of
+**60-100 words** built from six elements, in this order:
+
+`[subject — concrete looks] + [action — verb + intensity] + [setting — light,
+atmosphere] + camera [exactly one move] + [style] + avoid [what to exclude]`
+
+1. **Subject** — age, build, hair, wardrobe, distinguishing details. Name them
+   once and reuse the *same* words; synonyms and pronouns make the character
+   drift.
+2. **Action** — one continuous action with an intensity (`walks briskly`,
+   `slumps slowly`), in the order it happens.
+3. **Setting and light** — **the lighting sentence is the single biggest lever
+   on quality**: name it concretely (`golden hour backlight`, `hard rim light
+   from a neon sign`, `soft overcast window light`, `backlit silhouette`).
+   Piles of vague adjectives (`amazing`, `epic`, a bare `cinematic`) make the
+   result *worse* — cut them.
+4. **Camera** — exactly **one** move out of push-in / pull-out / pan /
+   tracking / orbit / aerial / handheld / fixed, with a rhythm word (`slow`,
+   `smooth`, `gentle`). Two moves in one clip is the usual way to break a shot.
+   **Keep the subject's motion and the camera's motion in separate sentences**
+   — mixing them in one sentence is what produces sliding, warped movement.
+5. **Style** — film stock, grade, lens character.
+6. **Avoid** — a short closing clause. For anything with people, always include
+   **`avoid jitter and bent limbs`**.
+
+Multi-shot is what Seedance 2 is good at, but keep it deliberate: label the
+shots in time order (`Shot 1: … Shot 2: …`) and write each one as **camera →
+action → spatial relation → sound**, repeating the subject's description
+verbatim in every shot so the character stays the same person.
+
+With a start frame (`image`), the picture is the anchor: write only how it
+starts moving and what happens next, never re-describe the composition. With
+`end_image` as well, describe the *transition* that lands exactly on that last
+frame.
+
+There is **no seed, no `camera_fixed` and no negative-prompt parameter** on
+Seedance 2: a locked-off camera is `fixed camera, no camera movement` in the
+text, and everything unwanted goes in the closing `avoid …` clause.
+
+Resolution, duration, aspect ratio and audio on/off are job fields (`selects`),
+never sentences in the prompt. `generate_audio` is **on by default**, so name
+the ambience and the effects you want; multimodal references (reference images
+/ videos / audio) are not wired up yet.
+"""
+
 #: workflow id -> そのモデル専用の VIDEO PROMPT SPEC（無いワークフローは
 #: 汎用の :data:`VIDEO_SPEC` のまま）
 VIDEO_SPECS: dict[str, str] = {
     "veo3_1_fast": VEO_VIDEO_GUIDE,
     "veo3_1_quality": VEO_VIDEO_GUIDE,
     "kling3_video": KLING_VIDEO_GUIDE,
+    "seedance2": SEEDANCE_VIDEO_GUIDE,
+    "seedance2_mini": SEEDANCE_VIDEO_GUIDE,
 }
 
 

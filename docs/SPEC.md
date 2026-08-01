@@ -92,6 +92,8 @@
 | `veo3_1_fast` | Veo 3.1 Fast（音声つき・外部 API） | kie.ai `veo3_fast` | なし（画像・最終フレーム画像は任意） | ○ |
 | `veo3_1_quality` | Veo 3.1 Quality（音声つき・外部 API） | kie.ai `veo3` | なし（画像・最終フレーム画像は任意） | ○ |
 | `kling3_video` | Kling 3.0（音声つき・外部 API） | kie.ai `kling-3.0/video` | なし（画像・最終フレーム画像は任意） | ○ |
+| `seedance2` | Seedance 2.0（音声つき・外部 API） | kie.ai `bytedance/seedance-2` | なし（画像・最終フレーム画像は任意） | ○ |
+| `seedance2_mini` | Seedance 2.0 Mini（音声つき・外部 API） | kie.ai `bytedance/seedance-2-mini` | なし（画像・最終フレーム画像は任意） | ○ |
 
 - id はファイル名（拡張子なし）。`tx2_3_i2v` / `tx2_3_ia2v` の綴りは配布ファイル名そのまま
 - **`wan_dancer`（`workflow/video/wan/`、family `wan`）** は LTX 系とは作りが違う: 渡した曲に合わせて踊る映像を作り、
@@ -121,6 +123,22 @@
   （`models.prompt_length_problem`、マニフェストの `max_prompt_chars`）。マルチショット（`multi_shots` /
   `multi_prompt`）と Elements（`kling_elements`、キャラ参照）、Turbo 系（`kling/v3-turbo-*`）は未対応。
   ユーザー LoRA は使えず、`full` は Veo と同じく ComfyUI の画像ワークフローと組み合わせられる
+- **`seedance2` / `seedance2_mini`（family `seedance`、backend `kie`）** も外部 API のワークフロー（§5.2）で、
+  Kling と同じ **Market 系の統一 API**。映像と**ネイティブ音声を同時に生成**する 4〜15 秒のクリップで、
+  2.0 は **4K まで**（720p で試作 → 1080p / 4K で仕上げ）、Mini は 720p までの最安バリアント（試作・大量出し）。
+  選択式フィールド（§3.1）は `resolution`（2.0: 480p / 720p（既定）/ 1080p / 4k、Mini: 480p / 720p）・
+  `duration`（4〜15、既定 5）・`aspect_ratio`（16:9（既定）/ 9:16 / 1:1 / 4:3 / 3:4 / 21:9 / `adaptive` =
+  入力画像に追従）・`generate_audio`（**既定 true**）。
+  **開始 / 最終フレームはキーが別**（`first_frame_url` / `last_frame_url`）なので、Kling の `image_urls` のような
+  配列（`KieTask.list_keys`）ではなく論理入力ごとに別キーを宣言する。**`duration` は整数で送る**
+  （Kling の文字列と型が逆なので `KieTask.int_keys` で `int` に直す）、**`generate_audio` は真偽値**
+  （`KieTask.bool_keys`）。
+  2 系に **`seed` / `camera_fixed` は無い**ので、カメラ固定も再現性もプロンプト本文で指定する。
+  マルチモーダル参照（`reference_image_urls` / `reference_video_urls` / `reference_audio_urls`）と 2.0 Fast は未対応で、
+  参照モードを持たないため API 側の「先頭フレーム / 先頭+末尾 / 参照」の 3 モード排他は自然に満たされる。
+  Seedance 2.5 は kie.ai 未提供（Coming Soon）だが、モデル名はマニフェストの宣言なので**エントリを 1 つ足すだけ**で通る。
+  成果物 URL は約 24 時間で失効する（完了時に即ダウンロードするので影響なし、§5.2）。
+  ユーザー LoRA は使えず、`full` は Veo / Kling と同じく ComfyUI の画像ワークフローと組み合わせられる
 - 既定は `ltx2_3_id_lora`（旧 `video-gen.json` の動画側と同じ構成なので、既存ジョブ・エージェントの計画がそのまま通る）
 - ラストフレーム連鎖: 履歴の動画から「ラストフレームを開始フレームにして続きを生成」できる。元ジョブの動画ワークフローが開始フレームを受け取れない場合は既定ワークフローにフォールバックする
 
@@ -598,6 +616,10 @@ ComfyUI と並ぶ **2 つめの生成バックエンド**として、外部 API 
   ので、マニフェスト側で宣言して合わせる: `KieTask.list_keys`（配列 = `image_urls`）と
   `KieTask.bool_keys`（真偽値 = `sound`）。選択式フィールドの値はすべて文字列で届くため、
   型を直さないと API に弾かれる。逆に Kling の `duration` は**文字列のまま**送るのが正しい（§2.2）
+- **Seedance 2 系も Market 系のまま**（`api: "market"`、モデル `bytedance/seedance-2` / `-mini`）。型の宣言は
+  `KieTask.int_keys`（整数 = `duration`）と `KieTask.bool_keys`（真偽値 = `generate_audio`）。開始 / 最終フレームは
+  `first_frame_url` / `last_frame_url` と**キーが別**なので `list_keys` は使わない。バリアントの違いは
+  **モデル名と解像度の選択肢と値段だけ**なので、マニフェストは 1 つのファクトリから作る（2.5 追加はエントリ 1 行）
 - **成果物は即ダウンロード**: kie 側の URL は 14 日（モデルによっては 24 時間）で
   失効するので、完了を検知したその場で `outputs/{job_id}/` に落とす（§6 と同じ置き場・
   同じ命名で、ラストフレーム抽出も同じ）
