@@ -48,7 +48,7 @@ from typing import Any
 import aiosqlite
 from PIL import Image
 
-from . import comfy, kie, nsfw as nsfw_service, runpod, ws
+from . import comfy, grok_media, kie, nsfw as nsfw_service, runpod, ws
 from .config import load_settings
 from .db import get_db
 from .ids import new_id
@@ -62,6 +62,7 @@ from .models import (
     audio_lora_problem,
     audio_workflow_problem,
     image_lora_family_problem,
+    image_lora_problem,
     image_workflow_problem,
     job_workflow_ids,
     missing_job_fields,
@@ -403,10 +404,15 @@ def stage_specs(mode: str, params: dict[str, Any]) -> list[tuple[str, WorkflowSp
 
 
 #: バックエンドをまたぐ 2 段ジョブのうち、橋渡しを実装してある向き（SPEC §5.2）。
-#: ComfyUI で作った静止画は :func:`kie.upload_file` で公開 URL にできるので
-#: 「ローカルで画像 → 外部 API で動画化」が通る。逆（kie の画像 → ComfyUI の動画）は
-#: kie の画像ワークフローが入ってから実装する。
-_STAGE_BRIDGES: frozenset[tuple[str, str]] = frozenset({("comfyui", "kie")})
+#: 渡すものは常に「1 段目の静止画」で、渡し方だけが 2 段目のバックエンドで変わる:
+#: ComfyUI なら :func:`comfy.upload_file`、kie.ai なら File Upload API で公開 URL。
+#: どちらも 1 段目の成果物がローカルのファイルであれば済むので、Grok CLI の画像も
+#: そのまま両方へ渡せる。逆（kie の画像 → …）は kie の画像ワークフローが入ってから。
+_STAGE_BRIDGES: frozenset[tuple[str, str]] = frozenset({
+    ("comfyui", "kie"),
+    ("grok_cli", "comfyui"),
+    ("grok_cli", "kie"),
+})
 
 
 def job_backends(mode: str, params: dict[str, Any]) -> list[str]:
@@ -473,6 +479,7 @@ def _validate(params: dict[str, Any]) -> None:
         or audio_lora_problem(
             mode, params.get("loras") or [], params.get("video_loras") or []
         )
+        or image_lora_problem(mode, image_workflow, params.get("loras") or [])
         or video_lora_problem(mode, video_workflow, params.get("video_loras") or [])
         or select_problem(
             mode,
@@ -1421,6 +1428,62 @@ async def _run_kie_stage(
     return state
 
 
+# --------------------------------------------------------------------------
+# Grok Build CLI バックエンド（SPEC §5.2 / issue #21）
+# --------------------------------------------------------------------------
+
+#: CLI のステージは内訳が取れないので、投入直後に出す進捗の目安
+_GROK_START_PROGRESS = 0.1
+
+
+async def _run_grok_cli_stage(
+    job_id: str,
+    stage: str,
+    spec: WorkflowSpec,
+    params: GenerationParams,
+    stages: dict[str, Any],
+    label: str,
+    overall: OverallProgress,
+    stage_index: int,
+    job_dir: Path,
+) -> Path:
+    """Grok Build CLI に 1 ステージ分を作らせ、成果物のパスを返す。
+
+    ComfyUI の :func:`_run_stage`、kie.ai の :func:`_run_kie_stage` と同じ役回り。
+    CLI は成果物を**直接ローカルに書く**ので、置き場（``outputs/{job_id}/``）を
+    そのまま指示文に渡せばダウンロードの段は要らない。投入した指示文は先に
+    ``workflow_json`` へ書いておく（失敗しても何を頼んだか分かる）。
+    """
+    overall.start_stage(stage_index, 0)
+    kind, stem, _ = _STAGE_ARTIFACTS[stage]
+    dest = job_dir / f"{stem}{'.png' if kind == 'image' else '.mp4'}"
+    request = grok_media.build_request(spec, params, dest)
+    stages[stage] = {
+        "workflow_id": spec.id,
+        "backend": "grok_cli",
+        "request": request.as_dict(),
+    }
+    await _update(job_id, workflow_json=json.dumps(stages, ensure_ascii=False))
+    await ws.publish(
+        job_id,
+        "running",
+        message=f"{label}: Grok CLI に指示しました",
+        progress=overall.stage_fraction(_GROK_START_PROGRESS),
+    )
+
+    async def relay(text: str) -> None:
+        await ws.publish(
+            job_id,
+            "running",
+            message=f"{label}: {text}",
+            progress=overall.stage_fraction(0.5),
+        )
+
+    saved = await grok_media.generate(request, on_progress=relay)
+    await ws.publish(job_id, "running", progress=overall.stage_finished())
+    return saved
+
+
 #: ステージ名 -> 進捗メッセージの見出し（バックエンドが変わっても同じ表示）
 _STAGE_LABELS = {"image": "画像生成", "video": "動画生成", "audio": "音声生成"}
 
@@ -1441,7 +1504,10 @@ async def _run_job_stages(job: Job) -> dict[str, Any]:
     ステージ間の橋渡しは「1 段目の静止画を 2 段目の開始フレームにする」1 点だけ
     で、渡し方だけが 2 段目のバックエンドで変わる: ComfyUI なら input ディレクトリ
     へ再アップロード、kie.ai なら File Upload API で公開 URL にしてから
-    ``imageUrls`` に入れる（受け取り側は :func:`_kie_uploads`）。実装済みの向きは
+    ``imageUrls`` に入れる（受け取り側は :func:`_kie_uploads`）。Grok CLI の画像は
+    ``outputs/`` に直接書かれるので、``source_image`` を差し替えるだけで
+    ComfyUI にも kie にも渡せる（ComfyUI 側の再アップロードは、その段の
+    :func:`_prepare_comfy` が差し替え後のパスを見て行う）。実装済みの向きは
     :data:`_STAGE_BRIDGES`（投入時に :func:`_backend_problem` が弾く）。
 
     消費クレジットは kie のステージの分だけ合算して履歴に残す（失敗したタスクは
@@ -1489,6 +1555,11 @@ async def _run_job_stages(job: Job) -> dict[str, Any]:
             # 1 回の呼び出しで複数返すモデル（Suno は 1 リクエスト 2 曲）。
             # 2 つめ以降は列に入らないので extra_outputs に積む（§6）。
             extras.extend(str(path) for path in downloaded[1:])
+        elif spec.backend == "grok_cli":
+            saved = await _run_grok_cli_stage(
+                job_id, stage, spec, _generation_params(job, {}), stages, label,
+                overall, index, job_dir,
+            )
         else:
             raise JobError(
                 f"生成バックエンド '{spec.backend}' はまだ実装されていません"
@@ -1507,7 +1578,7 @@ async def _run_job_stages(job: Job) -> dict[str, Any]:
             # 2 段目はこの静止画を開始フレームとして読む。kie は job.params の
             # パスから File Upload API に載せるので、パスを差し替えるだけでよい。
             job.params["source_image"] = str(saved)
-            if all_stages[index + 1][1].backend == "comfyui":
+            if all_stages[index + 1][1].backend == "comfyui" and comfy_params:
                 # ComfyUI は input ディレクトリのファイル名で受け取る。生成した
                 # 静止画は既にアスペクト比プリセットに従っているので、
                 # `source_image` 由来の実寸はもう当たらない。
@@ -1553,7 +1624,13 @@ async def run_job(job_id: str) -> None:
             str(exc)
             if isinstance(
                 exc,
-                (JobError, JobValidationError, runpod.RunPodError, kie.KieError),
+                (
+                    JobError,
+                    JobValidationError,
+                    runpod.RunPodError,
+                    kie.KieError,
+                    grok_media.GrokMediaError,
+                ),
             )
             else f"{type(exc).__name__}: {exc}"
         )

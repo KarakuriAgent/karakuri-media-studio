@@ -9,6 +9,7 @@ import {
 } from '../form'
 import type {
   Asset,
+  BackendInfo,
   ComfyTarget,
   ImageFamily,
   Lora,
@@ -228,6 +229,8 @@ export default function SettingsPage({
   const [notice, setNotice] = useState<string | null>(null)
   /** kie.ai の接続確認の結果（SPEC §5.2）。 */
   const [kieState, setKieState] = useState<KieCredits | null>(null)
+  /** Grok Build CLI（サブスク枠の生成バックエンド）の接続確認の結果（§5.2）。 */
+  const [grokState, setGrokState] = useState<BackendInfo | null>(null)
   const [busy, setBusy] = useState(false)
   const [draft, setDraft] = useState<LoraPayload>(EMPTY_LORA)
   const [editingId, setEditingId] = useState<number | null>(null)
@@ -617,6 +620,19 @@ export default function SettingsPage({
     }
   }
 
+  const checkGrok = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      setGrokState(await api.grokCheck())
+      onChanged()
+    } catch (caught) {
+      fail(caught)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   /** モデル / LoRA タブの先頭に置く環境プルダウン（SPEC §5）。 */
   const envPicker = (hint: string) => (
     <div className="card flex flex-wrap items-center gap-2 p-2">
@@ -791,6 +807,42 @@ export default function SettingsPage({
                                 : kieState.configured
                                   ? `残クレジット ${kieState.credits ?? '?'}（1 credit = $0.005）`
                                   : 'APIキーが未設定です'}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Grok Build CLI（サブスク枠の生成バックエンド、SPEC §5.2）。
+                        API キーは使わず、CLI にサインイン済みかどうかだけで決まる。
+                        通ることを確認できたときだけ Grok Imagine のワークフローが
+                        生成フォームとエージェントの選択肢に出る。 */}
+                    <div className="rounded-lg border border-ink-600 p-2">
+                      <h5 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                        Grok Imagine（サブスク CLI）
+                      </h5>
+                      <div className="flex flex-col gap-2">
+                        <p className="text-[11px] text-slate-500">
+                          SuperGrok / X Premium+ のサブスクリプション枠で画像を生成
+                          します。API キーは不要で、サーバー側で
+                          <code className="mx-1">grok --device-auth</code>
+                          を実行してサインインしておいてください（認証情報は
+                          ~/.grok/auth.json）。接続確認が通ったときだけワークフローが
+                          選択肢に出ます。
+                        </p>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            className="btn-ghost"
+                            disabled={busy}
+                            onClick={() => void checkGrok()}
+                          >
+                            接続確認
+                          </button>
+                          {grokState && (
+                            <span className="text-[11px] text-slate-400">
+                              {grokState.available
+                                ? `使えます: ${grokState.detail}`
+                                : `使えません: ${grokState.detail}`}
                             </span>
                           )}
                         </div>

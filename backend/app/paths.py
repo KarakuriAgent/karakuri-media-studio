@@ -10,6 +10,11 @@ ASSETS_DIR = ROOT / "assets"
 LIBRARY_DIR = ROOT / "library"
 RUNTIME_DIR = ROOT / "runtime"
 GROK_WORKDIR = RUNTIME_DIR / "grok-workdir"
+# Grok Build CLI をメディア生成に使うときの作業ディレクトリ（SPEC §5.2）。
+# プロンプト用（GROK_WORKDIR）とは分ける: メディア生成は CLI が
+# `.grok/generated-media/` にファイルを書き散らすので、チャットのセッションと
+# 同じ場所で走らせると取り違える。
+GROK_MEDIA_WORKDIR = RUNTIME_DIR / "grok-media-workdir"
 # One work dir per agent session (AGENT-MODE §5.2).
 AGENT_SESSIONS_DIR = RUNTIME_DIR / "agent-sessions"
 
@@ -28,6 +33,7 @@ def ensure_dirs() -> None:
         LIBRARY_DIR,
         RUNTIME_DIR,
         GROK_WORKDIR,
+        GROK_MEDIA_WORKDIR,
         AGENT_SESSIONS_DIR,
     ):
         d.mkdir(parents=True, exist_ok=True)

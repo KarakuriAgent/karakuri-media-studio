@@ -8,6 +8,7 @@ import type {
   AgentSessionSummary,
   Asset,
   AudioJobCreate,
+  BackendInfo,
   ChatReply,
   ChatSession,
   ChatSessionCreate,
@@ -157,6 +158,9 @@ export const api = {
 
   /** kie.ai のキーを確かめ直す（選択肢に出すかどうかが決まる）。 */
   kieCheck: () => request<KieCredits>('/api/kie/check', { method: 'POST' }),
+
+  /** Grok Build CLI（サブスク枠）を実際に 1 ターン回して確かめる（SPEC §5.2）。 */
+  grokCheck: () => request<BackendInfo>('/api/grok/check', { method: 'POST' }),
   options: () => request<Options>('/api/options'),
 
   getSettings: () => request<Settings>('/api/settings'),

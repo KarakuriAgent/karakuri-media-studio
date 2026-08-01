@@ -197,9 +197,17 @@ def extract_result(text: str) -> dict[str, object] | None:
 # --------------------------------------------------------------------------
 
 async def _exec(
-    argv: list[str], cwd: str | Path, timeout: float
+    argv: list[str],
+    cwd: str | Path,
+    timeout: float,
+    env: dict[str, str] | None = None,
 ) -> tuple[int, str, str]:
-    """Run ``argv`` and return ``(returncode, stdout, stderr)``."""
+    """Run ``argv`` and return ``(returncode, stdout, stderr)``.
+
+    ``env`` replaces the inherited environment when given.  Media generation
+    (:mod:`app.grok_media`) uses it to drop ``XAI_API_KEY`` so that the CLI can
+    never silently fall back to the metered API (SPEC §4.1).
+    """
     workdir = Path(cwd)
     try:
         workdir.mkdir(parents=True, exist_ok=True)
@@ -209,6 +217,7 @@ async def _exec(
         process = await asyncio.create_subprocess_exec(
             *argv,
             cwd=str(workdir),
+            env=env,
             stdin=asyncio.subprocess.DEVNULL,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,

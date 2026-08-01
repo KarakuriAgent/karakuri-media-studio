@@ -34,7 +34,8 @@ WorkflowKind = Literal["image", "video", "audio"]
 
 #: どのエンジンがこのワークフローを実行するか（SPEC §5 / §5.2）。``comfyui`` は
 #: ``workflow/*.json`` のテンプレートを自前の ComfyUI に投げる従来の経路、``kie``
-#: は外部 API アグリゲータ kie.ai にタスクを投げる経路。``grok_cli`` /
+#: は外部 API アグリゲータ kie.ai にタスクを投げる経路、``grok_cli`` は Grok Build
+#: CLI をサブスク枠でヘッドレス実行する経路（:mod:`app.grok_media`）。
 #: ``codex_cli``（サブスク CLI 経由の生成）は将来の枠で、まだ実装は無い。
 WorkflowBackend = Literal["comfyui", "kie", "grok_cli", "codex_cli"]
 
@@ -188,6 +189,7 @@ FAMILY_LABELS: dict[str, str] = {
     "anima": "Anima",
     "z-image": "Z-Image",
     "qwen-image": "Qwen-Image Edit",
+    "grok-imagine": "Grok Imagine",
     "ltx2.3": "LTX 2.3",
     "wan": "Wan 2.2",
     "ace-step": "ACE-Step 1.5",
@@ -270,6 +272,23 @@ class KieTask:
 
 
 @dataclass(frozen=True)
+class GrokCliTask:
+    """Grok Build CLI（サブスク枠）で 1 ワークフローを実行するための宣言（§5.2）。
+
+    CLI にはグラフも ``input`` も無く、渡せるのは**自然文の指示だけ**なので、
+    :class:`KieTask` のような「キーの対応表」は持たない。宣言するのは「どの論理値を
+    指示文に織り込むか」と「何が出てくるか」の 2 つだけで、指示文の組み立ては
+    :func:`app.grok_media.build_request` が行う。
+    """
+
+    #: 指示文に織り込む論理値（:data:`KIE_VALUES` と同じ語彙）。解像度・縦横比は
+    #: プロンプト経由の**希望**であって、厳密な制御は保証されない（issue #21）。
+    values: tuple[str, ...] = ("prompt", "aspect_ratio")
+    #: 生成物の種類（``image`` / ``video``）
+    media: Literal["image", "video"] = "image"
+
+
+@dataclass(frozen=True)
 class WorkflowSpec:
     id: str
     label: str
@@ -284,6 +303,8 @@ class WorkflowSpec:
     backend: WorkflowBackend = "comfyui"
     #: ``backend == "kie"`` のときのタスク宣言（それ以外では ``None``）
     kie: KieTask | None = None
+    #: ``backend == "grok_cli"`` のときのタスク宣言（それ以外では ``None``）
+    grok: GrokCliTask | None = None
     #: model family (= the ``workflow/<kind>/<folder>`` name).  Image LoRAs are
     #: only offered for the family of the selected image workflow; the video
     #: templates all share the ``ltx2.3`` family and ignore it.
@@ -353,12 +374,15 @@ class WorkflowSpec:
         """このワークフローが論理名 ``name`` の値を受け取るか。
 
         バックエンドごとに「受け取り口」の持ち方が違う（ComfyUI は
-        :attr:`inject`、kie.ai は :attr:`KieTask.fields`）ので、呼び出し側は
-        どちらかを知らずに済むようここで吸収する。
+        :attr:`inject`、kie.ai は :attr:`KieTask.fields`、Grok Build CLI は
+        :attr:`GrokCliTask.values`）ので、呼び出し側はどちらかを知らずに済むよう
+        ここで吸収する。
         """
         if name in self.inject:
             return True
-        return self.kie is not None and name in self.kie.fields
+        if self.kie is not None and name in self.kie.fields:
+            return True
+        return self.grok is not None and name in self.grok.values
 
     def supported_names(self) -> tuple[str, ...]:
         """このワークフローが受け取る論理名（フォームとカタログが読む）。
@@ -374,6 +398,8 @@ class WorkflowSpec:
                 for name in self.kie.fields
                 if not name.startswith(KIE_SELECT_PREFIX)
             }
+        if self.grok is not None:
+            names |= set(self.grok.values)
         return tuple(sorted(names))
 
     def target(self, name: str) -> Target | None:
@@ -514,6 +540,54 @@ QWEN_IMAGE_EDIT = WorkflowSpec(
         ),
     ),
     notes="qwen_image_edit_2511 + Lightning 4steps LoRA / 解像度は入力画像から自動",
+)
+
+
+# --------------------------------------------------------------------------
+# image: Grok Build CLI（サブスク枠、SPEC §5.2 / issue #21）
+# --------------------------------------------------------------------------
+#
+# xAI の従量課金 API ではなく、SuperGrok / X Premium+ のサブスクリプションで動く
+# 公式 CLI をヘッドレス実行して Grok Imagine に描かせる（:mod:`app.grok_media`）。
+# ComfyUI / kie.ai と違って渡せるのは**自然文の指示だけ**なので、解像度・縦横比は
+# 指示文に織り込む「希望」であって厳密な制御は保証されない。
+#
+# 枠は Chat / Imagine / Build 横断の共有プールで、目安は画像 ~40 枚/日
+# （SuperGrok、時期・地域で変動）。使い切ったときは :class:`app.grok_media.
+# GrokQuotaError` として「時間をおいて」の案内に変換する。
+
+GROK_IMAGINE_PROMPT_HINT = (
+    "One natural-language description, not a tag list. Order: subject → style /"
+    " medium → environment → lighting → mood → technical (lens, framing)."
+    " **The first 20-30 words carry the most weight**, so put the subject and"
+    " the look there. Name the light source and its quality, and use concrete"
+    " material words. Never write what you do not want (`no blur` is ignored) —"
+    " say the positive form instead (`sharp focus`)."
+)
+
+GROK_IMAGINE = WorkflowSpec(
+    id="grok_imagine",
+    label="Grok Imagine（サブスク CLI）",
+    kind="image",
+    family="grok-imagine",
+    backend="grok_cli",
+    description=(
+        "Text-to-image through the official Grok Build CLI, on the SuperGrok /"
+        " X Premium+ **subscription** quota (no metered API). Same shape as the"
+        " local text-to-image workflows: `image_prompt` only, usable for"
+        " `mode: \"image_only\"` and as the first stage of `mode: \"full\"`."
+        " `aspect_ratio` is passed as a wish inside the instruction, so the"
+        " exact resolution is not guaranteed. The model refuses real people,"
+        " celebrities and trademarks, and the daily quota is shared with Grok"
+        " chat. LoRAs cannot be used."
+    ),
+    prompt_hint=GROK_IMAGINE_PROMPT_HINT,
+    grok=GrokCliTask(values=("prompt", "aspect_ratio"), media="image"),
+    notes=(
+        "Grok Build CLI（サブスク枠）/ 縦横比・解像度はプロンプト経由の希望 /"
+        " LoRA 不可 / 実在人物・著名人・商標はモデレーションで弾かれる /"
+        " 枠は Chat と共有（目安 40 枚/日）"
+    ),
 )
 
 
@@ -1616,6 +1690,7 @@ SPECS: tuple[WorkflowSpec, ...] = (
     ANIMA,
     Z_IMAGE_TURBO,
     QWEN_IMAGE_EDIT,
+    GROK_IMAGINE,
     LTX_T2V,
     LTX_I2V,
     LTX_IA2V,
@@ -1915,6 +1990,38 @@ def _validate_common(spec: WorkflowSpec) -> list[str]:
     return problems
 
 
+def _validate_grok_spec(spec: WorkflowSpec) -> list[str]:
+    """Grok Build CLI で走るワークフローの宣言そのものの検証（SPEC §5.2）。
+
+    CLI は自然文しか受け取らないので、見るのは「タスク宣言があるか」「織り込む
+    論理値が既知の語彙か」「プロンプトを受け取るか」だけ。
+    """
+    problems: list[str] = []
+    if spec.kie is not None:
+        problems.append(f"{spec.id}: backend 'grok_cli' but a KieTask is declared")
+    if spec.grok is None:
+        return [*problems, f"{spec.id}: backend 'grok_cli' but no GrokCliTask declared"]
+    if spec.selects:
+        # 選択式は「API の input のキー」を前提にした仕組みで、指示文には載せない。
+        problems.append(f"{spec.id}: backend 'grok_cli' has no selectable fields")
+    if "prompt" not in spec.grok.values:
+        problems.append(f"{spec.id}.grok.values: 'prompt' is required")
+    for name in spec.grok.values:
+        if name not in KIE_VALUES:
+            problems.append(
+                f"{spec.id}.grok.values: unknown value {name!r}"
+                f" (known: {', '.join(sorted(KIE_VALUES))})"
+            )
+    if spec.grok.media not in ("image", "video"):
+        problems.append(f"{spec.id}.grok.media: {spec.grok.media!r} is not a media kind")
+    elif spec.grok.media != spec.kind:
+        problems.append(
+            f"{spec.id}.grok.media: {spec.grok.media!r} does not match kind"
+            f" {spec.kind!r}"
+        )
+    return problems
+
+
 def validate_external_spec(spec: WorkflowSpec) -> list[str]:
     """テンプレートを持たないワークフロー（kie.ai など）のマニフェスト検証。
 
@@ -1939,6 +2046,12 @@ def validate_external_spec(spec: WorkflowSpec) -> list[str]:
                 " one of the choices"
             )
 
+    if spec.backend == "grok_cli":
+        return problems + _validate_grok_spec(spec)
+    if spec.grok is not None:
+        problems.append(
+            f"{spec.id}: declares a GrokCliTask but its backend is {spec.backend!r}"
+        )
     if spec.backend != "kie":
         problems.append(f"{spec.id}: backend {spec.backend!r} is not implemented yet")
         return problems
@@ -1983,6 +2096,8 @@ def validate_spec(spec: WorkflowSpec, template: Workflow | None = None) -> list[
         return validate_external_spec(spec)
     if spec.kie is not None:
         return [f"{spec.id}: declares a KieTask but its backend is 'comfyui'"]
+    if spec.grok is not None:
+        return [f"{spec.id}: declares a GrokCliTask but its backend is 'comfyui'"]
     problems: list[str] = []
     try:
         tpl = template if template is not None else load_template(spec)

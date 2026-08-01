@@ -153,6 +153,7 @@
 | `anima` | Anima | `anima` | なし | text-to-image、アニメ・イラスト系（`ResolutionSelector`） |
 | `z_image_turbo` | Z-Image turbo | `z-image` | なし | text-to-image、8 steps 蒸留。ResolutionSelector が無いのでアプリが幅・高さを計算して注入 |
 | `qwen_image_edit_2511` | Qwen-Image Edit 2511 | `qwen-image` | 画像（編集元画像） | **編集系**。`source_image` 必須で、出力解像度は入力画像から決まる（`aspect_ratio` / `megapixels` は無視） |
+| `grok_imagine` | Grok Imagine（サブスク CLI） | `grok-imagine` | なし | text-to-image。**バックエンドは `grok_cli`**（§5.3）で、ローカル GPU は使わない。縦横比・解像度はプロンプト経由の希望で、LoRA は使えない |
 
 - 既定は `krea2_turbo`（選択式になる前の唯一の画像ワークフロー）
 - `qwen_image_edit_2511` は画像ステージが走るモード（`full` / `image_only`）で必ず `source_image` を要求する。
@@ -598,11 +599,12 @@ ComfyUI と並ぶ **2 つめの生成バックエンド**として、外部 API 
 - **ディスパッチはステージ単位**: `jobs._run_job_stages` がステージごとにそのマニフェストの
   `backend` を見て実行経路を選ぶ（ジョブ単位ではない）。成果物の置き場・jobs 行の列・WS の
   進捗表示はバックエンドに依らず共通なので、履歴・ライブラリ・UI からは区別が付かない
-- **バックエンドをまたぐ 2 段**（`jobs._STAGE_BRIDGES`）: 実装してあるのは
-  **ComfyUI の画像 → kie.ai の動画**の向きだけ。1 段目の静止画を File Upload API で
-  公開 URL にして 2 段目の `imageUrls` に入れる（§2.1）。逆向き（kie.ai の画像 →
-  ComfyUI の動画）は kie の画像ワークフローが入ってから実装するので、それまでは
-  投入時に 422 で断る。ComfyUI の下ごしらえ（RunPod の Pod 起動・入力ファイルの
+- **バックエンドをまたぐ 2 段**（`jobs._STAGE_BRIDGES`）: 渡すものは常に「1 段目の
+  静止画」で、渡し方だけが 2 段目のバックエンドで変わる（ComfyUI は input への
+  アップロード、kie.ai は File Upload API で公開 URL にして `imageUrls` へ、§2.1）。
+  実装してあるのは **ComfyUI の画像 → kie.ai の動画**と、**Grok CLI の画像 →
+  ComfyUI / kie.ai の動画**（§5.3）。逆向き（kie.ai の画像 → …）は kie の画像
+  ワークフローが入ってから実装するので、それまでは投入時に 422 で断る。ComfyUI の下ごしらえ（RunPod の Pod 起動・入力ファイルの
   アップロード）は**最初の ComfyUI ステージの直前に 1 度だけ**行うので、1 段目から
   kie のジョブでは ComfyUI に一切触らない
 - **可用性の判定（`backend/app/backends.py`）**: 外部バックエンドは
@@ -664,6 +666,51 @@ ComfyUI と並ぶ **2 つめの生成バックエンド**として、外部 API 
   `params` から作り直す
 - モデル名・価格は**マニフェストと設定にだけ**書く（kie.ai は上流の都合でモデルが
   増減し、価格も改定されるため、コードにハードコードしない）
+
+### 5.3 Grok Build CLI（サブスク枠の生成バックエンド）
+
+3 つめの生成バックエンド（`backend/app/grok_media.py`、backend 名 `grok_cli`）。
+xAI の従量課金 API ではなく、**SuperGrok / X Premium+ のサブスクリプション枠**で動く
+公式 CLI をヘッドレス実行し、Grok Imagine に画像を作らせる（§2.3 の `grok_imagine`）。
+プロンプト作成に使っている CLI 統合（§4.1）と**コマンド名だけを共有**し、実行のしかたは
+分けてある。
+
+- **呼び出し**: `grok -p "<指示>" --always-approve --output-format json --no-auto-update`。
+  `--always-approve` が無いとツール実行の承認待ちでハングする
+- **作業ディレクトリを分ける**: `runtime/grok-media-workdir/`（設定 `grok_media_workdir`）。
+  CLI は生成物を既定で `.grok/generated-media/` に書き散らすので、チャット用の
+  `runtime/grok-workdir/` と同居させない
+- **`XAI_API_KEY` は env から必ず外す**。残っていると CLI が API 直叩き（従量課金）に
+  フォールバックしうるため、サブスク枠で回す約束を守る（§4.1）
+- **指示は定型テンプレート**: プロンプト本文 + 「`outputs/{job_id}/image.png` に PNG で
+  保存し、成功したら `OK <絶対パス>`、失敗したら `FAILED <理由>` とだけ出力せよ」。
+  縦横比・解像度も指示文に織り込むが、**厳密な制御は保証されない**（プロンプト経由の希望）
+- **成否の判定は 4 段構え**: ① 終了コード ② JSON 出力の `text` から合図
+  （`OK` / `FAILED`）③ **指定パスにファイルが実在しサイズ > 0**（「作った」と言って
+  置かないことがあるので、言葉ではなくファイルを信じる）④ 無ければ作業ディレクトリの
+  `.grok/generated-media/` を mtime 順で探す保険。前回の残りを拾わないよう、実行前に
+  出力先を消し、`.grok/generated-media/` は実行開始より新しいものだけ見る
+- **タイムアウトとリトライ**: 1 回あたり `grok_media_timeout`（既定 300 秒）。失敗したら
+  **1 回だけやり直す**（モデレーションの誤検知や一時的な失敗があるため）。ただし
+  クォータ枯渇（rate limit / quota 系の文言）は `GrokQuotaError` として「時間をおいて」の
+  案内に変換し、やり直さない。枠は Chat / Imagine / Build 横断の共有プールで、
+  目安は画像 ~40 枚/日（SuperGrok、時期・地域で変動）
+- **可用性の判定**: 起動時・設定保存時の確認は**サブスク枠を使わない軽いもの**に留める
+  （`grok` コマンドが実行できること + `~/.grok/auth.json` が在ること）。実際に通るかどうかは
+  設定ページの「接続確認」＝ `POST /api/grok/check` で 1 ターン回して確かめ、結果を
+  `app.backends` のキャッシュに預ける。確認できるまで `grok_imagine` は
+  `GET /api/options` にもエージェントのカタログにも出ず、投入しようとしても 422
+- **`full` モードの橋渡し**: 成果物は最初から `outputs/{job_id}/` に書かれるローカル
+  ファイルなので、`source_image` を差し替えるだけで 2 段目に渡せる。実装済みの向きは
+  `grok_cli → comfyui`（ComfyUI の input へ再アップロード）と `grok_cli → kie`
+  （File Upload API で公開 URL）の 2 つ（`jobs._STAGE_BRIDGES`）
+- **LoRA は使えない**: グラフが無いので差し込む場所がない。指定したジョブは 422
+- **投入内容の保存**: `workflow_json` に段階別で
+  `{"backend": "grok_cli", "request": {"media": …, "prompt": …, "dest": …, "instruction": …}}`
+  を残す（何を頼んだかがそのまま再現できる）
+- **モデレーション**: 実在人物・著名人・商標は弾かれる（2026 年 1 月以降、誤検知が増えている）。
+  厳密な制御が要るようになったら `api.x.ai` 直（`POST /v1/images/generations`）へ
+  切り替えられるよう、生成の入口は `MediaRequest` 1 つに絞ってある
 
 ## 6. 成果物の取得
 
@@ -917,6 +964,7 @@ SPA 1 画面 + 履歴。ダークテーマの生成系ツールらしい見た�
 GET  /api/health                 … ComfyUI/Grok/kie.ai 疎通チェック
 GET  /api/kie/credits            … kie.ai の残クレジット（1 credit = $0.005、§5.2）
 POST /api/kie/check              … kie.ai の API キーを確認し直す（選択肢の出し分けに反映、§5.2）
+POST /api/grok/check             … Grok Build CLI を 1 ターン回して確認する（選択肢の出し分けに反映、§5.3）
 GET  /api/options                … 画像/動画/音声ワークフロー一覧（必要入力・露出しているつまみ・秒数レンジつき）・アスペクト比・LoRA一覧・アセット一覧・ライブラリ一覧（library, §7.2）・実行時に選べるモデルスロット（model_slots）と ComfyUI のモデルファイル一覧（model_files）・生成バックエンドの可用性（backends, §5.2）
 GET/POST/PUT/DELETE /api/loras   … アプリ内 LoRA 登録リストの CRUD（GET は `?target=` でその接続先のもの + 共通行、POST は `comfy_target` で紐づけ先を指定、§5）
 GET  /api/library                … ライブラリ検索（kind / category / q / tag / limit / offset → items + total + tags、§7.2）
@@ -950,13 +998,14 @@ GET  /outputs/…                  … 静的配信（画像/動画/音声）
 
 ```
 backend/            FastAPI アプリ
-  app/routers/      health / settings / loras / models_config / model_download / assets / options / chat / jobs / kie / agent
+  app/routers/      health / settings / loras / models_config / model_download / assets / options / chat / jobs / kie / grok / agent
   app/comfy.py      ComfyUI クライアント（/object_info, /upload/image, /prompt, /ws, /history, /view）
   app/kie.py        kie.ai クライアント（createTask / recordInfo ポーリング・ファイルアップロード・成果物 DL、§5.2）
   app/backends.py   生成バックエンドの可用性判定とキャッシュ（§5.2）
   app/workflows.py  ワークフロー登録簿と注入マニフェスト（ノード ID 直指定）+ プロンプト用カタログ
   app/workflow.py   テンプレートへのパラメータ注入・LoRA チェーン動的注入・解像度計算
   app/grok.py       grok CLI 呼び出し（LLM クライアントは差し替え可能な抽象化）
+  app/grok_media.py grok CLI 経由のメディア生成（サブスク枠、4 段構えの成否判定、§5.3）
   app/prompts.py    チャット / エージェントのシステムプロンプト
   app/jobs.py       asyncio ジョブキューと実行、成果物取得・ラストフレーム抽出
   app/agent_*.py    エージェントのアクションプロトコル・実行ループ・セッション永続化
@@ -980,7 +1029,7 @@ app.db              SQLite（jobs / loras / library / chat_sessions / agent_sess
 outputs/            生成物（/outputs で静的配信）
 assets/             アップロードした画像・音声・参照動画・LoRA サンプル（/assets で静的配信）
 library/            ライブラリ（取っておいた素材。image/ video/ audio/、/library で静的配信）
-runtime/            config.json / grok 作業ディレクトリ / agent-sessions/
+runtime/            config.json / grok 作業ディレクトリ（プロンプト用・メディア生成用）/ agent-sessions/
 ```
 
 ---

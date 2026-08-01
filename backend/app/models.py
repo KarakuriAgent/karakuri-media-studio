@@ -58,6 +58,13 @@ class Settings(BaseModel):
     grok_command: str = "grok"
     grok_model: str = "grok-4.5"
     grok_workdir: str = ""
+    #: Grok Build CLI をメディア生成に使うときの作業ディレクトリ（SPEC §5.2）。
+    #: 空なら `runtime/grok-media-workdir`。プロンプト用の `grok_workdir` とは
+    #: 分ける（CLI が `.grok/generated-media/` に書き散らすため）。
+    grok_media_workdir: str = ""
+    #: 1 枚（1 本）の生成に許す秒数。エージェントが画像生成ツールを回して
+    #: ファイルを保存し終えるまでなので、チャットより長めに取る。
+    grok_media_timeout: float = 300.0
     # Agent mode (AGENT-MODE §3.4): extra CLI flags (tool permissions) and the
     # longer timeout research / inspection turns need. `--permission-mode auto`
     # is confirmed on grok 0.2.112 to enable file read/write (incl. viewing
@@ -152,6 +159,8 @@ class SettingsUpdate(BaseModel):
     grok_command: str | None = None
     grok_model: str | None = None
     grok_workdir: str | None = None
+    grok_media_workdir: str | None = None
+    grok_media_timeout: float | None = None
     model_overrides: dict[ComfyTarget, dict[str, str]] | None = None
     model_choices: dict[ComfyTarget, dict[str, list[str]]] | None = None
     hf_token: str | None = None
@@ -767,6 +776,26 @@ def audio_lora_problem(mode: str, loras: list[Any], video_loras: list[Any]) -> s
     if mode != "audio" or not (loras or video_loras):
         return None
     return "mode 'audio' runs no image or video stage, so LoRAs cannot be used"
+
+
+def image_lora_problem(
+    mode: str, image_workflow: str | None, loras: list[Any]
+) -> str | None:
+    """Why the selected image workflow cannot take ``loras`` at all (None == fine).
+
+    外部バックエンド（Grok Build CLI など）のワークフローにはグラフが無く、LoRA を
+    差し込む場所そのものが無い。指定を黙って捨てるのではなく 422 で断る（動画側の
+    :func:`video_lora_problem` と同じ流儀、SPEC §3.4）。
+    """
+    if not loras or mode not in ("full", "image_only"):
+        return None
+    try:
+        spec = get_image_spec(image_workflow)
+    except WorkflowSpecError as exc:
+        return str(exc)
+    if spec.lora_chain is None:
+        return f"image workflow '{spec.id}' does not support LoRAs"
+    return None
 
 
 def image_lora_family_problem(

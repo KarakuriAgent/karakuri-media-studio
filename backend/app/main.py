@@ -23,6 +23,7 @@ from .routers import (
     agent,
     assets,
     chat,
+    grok,
     health,
     jobs,
     kie,
@@ -82,6 +83,7 @@ app.include_router(options.router)
 app.include_router(chat.router)
 app.include_router(jobs.router)
 app.include_router(kie.router)
+app.include_router(grok.router)
 app.include_router(agent.router)
 app.include_router(ws.router)
 

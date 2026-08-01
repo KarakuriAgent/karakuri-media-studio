@@ -285,12 +285,45 @@ Replace the text on the shop sign with "MORNING LIGHT COFFEE", keeping the origi
 ```
 """
 
+GROK_IMAGINE_SPEC = """\
+# IMAGE PROMPT SPEC — Grok Imagine (via the Grok Build CLI, subscription quota)
+
+Grok Imagine is driven through the official CLI, so `image_prompt` is passed as
+plain natural language inside an instruction — there is no negative prompt, no
+weight syntax and no exact resolution control.
+
+1. **Write natural sentences, not a tag list.** Order: subject → style / medium
+   → environment → lighting → mood → technical (lens, framing, finish).
+2. **The first 20-30 words carry the most weight.** Put the subject and the look
+   there; details added at the end influence the picture much less.
+3. **Name the light**: where it comes from and what quality it has ("soft window
+   light from the left, shallow depth of field"). Material words land well
+   ("matte-black ceramic", "brushed steel", "raw linen").
+4. **Never write what you do not want** — negations are ignored. Say the
+   positive form instead: `sharp focus` rather than `no blur`, `plain seamless
+   background` rather than `no clutter`.
+5. **Aspect ratio and resolution are wishes, not settings**: the app writes the
+   ratio into the instruction, but the model may not follow it exactly. Do not
+   demand pixel dimensions in the prompt text.
+6. **Moderation is strict**: real people, celebrities, trademarks and logos are
+   refused (false positives are common). Describe an invented person by their
+   features instead of naming anyone.
+7. **Adults only**: every depicted person is an adult with an unambiguously
+   adult body and face.
+
+Example:
+```
+A weathered fisherman mending a net on a wooden pier at dawn, documentary photograph, muted colour, salt-worn timber and coiled rope around him, low sun raking from the left through sea haze, quiet and patient mood, 35mm lens at chest height, sharp focus on his hands, soft falloff into the harbour behind.
+```
+"""
+
 #: family -> the prompt spec section to embed for it
 IMAGE_SPECS: dict[str, str] = {
     "krea2": IMAGE_SPEC,
     "anima": ANIMA_SPEC,
     "z-image": Z_IMAGE_SPEC,
     "qwen-image": QWEN_IMAGE_SPEC,
+    "grok-imagine": GROK_IMAGINE_SPEC,
 }
 
 #: family -> the one-line reminder that goes into the IMAGE WORKFLOWS catalog
@@ -313,6 +346,11 @@ IMAGE_PROMPT_HINTS: dict[str, str] = {
         "An EDIT instruction for `source_image`, not a scene description:"
         ' "change X to Y, keep everything else unchanged". Output size follows'
         " the input picture."
+    ),
+    "grok-imagine": (
+        "Natural sentences, subject and style in the first 20-30 words, then"
+        " environment, lighting, mood, camera. No negatives (write the positive"
+        " form), no exact resolution — the ratio is only a wish."
     ),
 }
 

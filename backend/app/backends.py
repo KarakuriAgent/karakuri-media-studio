@@ -60,12 +60,13 @@ _lock = asyncio.Lock()
 def _checks() -> dict[str, BackendCheck]:
     """バックエンド名 -> 確認する関数。
 
-    :mod:`app.kie` は :mod:`app.workflows` を import するので、循環を避けて
-    呼ばれた時点で読み込む（モジュールの import 自体はキャッシュされる）。
+    :mod:`app.kie` / :mod:`app.grok_media` は :mod:`app.workflows` を import する
+    ので、循環を避けて呼ばれた時点で読み込む（モジュールの import 自体は
+    キャッシュされる）。
     """
-    from . import kie
+    from . import grok_media, kie
 
-    return {"kie": kie.check_backend}
+    return {"kie": kie.check_backend, "grok_cli": grok_media.check_backend}
 
 
 def _unimplemented(name: str) -> BackendStatus:
@@ -112,6 +113,17 @@ async def ensure(name: str) -> BackendStatus:
     if name == "comfyui" or name in _status:
         return status(name)
     return await refresh(name)
+
+
+def store(result: BackendStatus) -> None:
+    """確認の結果を外から入れる（普段の確認より重い「接続確認」用）。
+
+    grok_cli は起動のたびに CLI を回すとサブスク枠を消費するので、常時の確認は
+    軽いもの（コマンドと認証ファイルの存在）に留め、実行チェックは設定ページの
+    ボタンから行う。その結果をここに預けて選択肢の出し分けに反映させる。
+    """
+    _status[result.backend] = result
+    log.info("backend %s: %s (%s)", result.backend, result.state, result.detail)
 
 
 async def refresh_all() -> list[BackendStatus]:
