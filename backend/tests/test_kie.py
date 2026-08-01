@@ -1210,15 +1210,375 @@ def test_kling_rejects_a_prompt_over_the_character_limit(client, monkeypatch):
     )
 
 
+# ------------------------------------------ マルチショット / Elements（issue #26）
+# 平坦な値ではない**構造化パラメータ**の 2 つ: ショット割り（文と秒数の組が最大
+# 5 つ）と Elements（名前つきの参照画像の束を `@要素名` で呼ぶ）。
+
+async def _fake_last_frame(video, dest):
+    """成果物はダミーの中身なので、ラストフレーム抽出（ffmpeg）だけ差し替える。"""
+    dest.write_bytes(b"png")
+    return dest
+
+
+_SHOTS = [
+    {"prompt": "Slow dolly push forward, she steps off the tram.", "duration": 4},
+    {"prompt": "Low tracking shot, she pushes through the door.", "duration": 6},
+]
+
+
+def test_multi_shots_replace_the_top_level_prompt():
+    """``multi_prompt`` を送るときトップレベルの ``prompt`` は送らない。"""
+    request = kie.build_request(KLING, _kling_params(multi_shots=_SHOTS), {})
+    task_input = request.input
+
+    assert task_input["multi_shots"] is True
+    assert task_input["multi_prompt"] == _SHOTS
+    # duration は **整数**（Kling のトップレベル duration は文字列なので型が違う）
+    assert all(isinstance(shot["duration"], int) for shot in task_input["multi_prompt"])
+    assert "prompt" not in task_input
+    # 単発のときは逆に multi_* が一切載らない
+    single = kie.build_request(KLING, _kling_params(), {}).input
+    assert "multi_shots" not in single and "multi_prompt" not in single
+    assert single["prompt"]
+
+
+def test_multi_shots_turn_the_sound_on_by_default():
+    """ショット割りは音つき前提の機能なので、既定が false から true に変わる。"""
+    assert KLING.selects["sound"].fallback == "false"
+
+    shots = kie.build_request(KLING, _kling_params(multi_shots=_SHOTS), {}).input
+    assert shots["sound"] is True
+    # 明示指定はそのまま尊重する（既定の入れ替えは「未指定のとき」だけ）
+    muted = kie.build_request(
+        KLING, _kling_params(multi_shots=_SHOTS, selects={"sound": "false"}), {}
+    ).input
+    assert muted["sound"] is False
+
+
+def test_multi_shots_are_checked_before_the_job_is_queued(client, monkeypatch):
+    from app.models import multi_shot_problem
+
+    mark_available(monkeypatch)
+    ok = [{"prompt": "She turns.", "duration": 5}]
+    assert multi_shot_problem("i2v", KLING.id, ok) is None
+    # ちょうど上限まで（5 ショット / 1 秒 / 12 秒）は通る
+    assert multi_shot_problem("i2v", KLING.id, ok * 5) is None
+    assert (
+        multi_shot_problem("i2v", KLING.id, [{"prompt": "x", "duration": 1}]) is None
+    )
+    assert (
+        multi_shot_problem("i2v", KLING.id, [{"prompt": "x", "duration": 12}]) is None
+    )
+
+    assert "5 ショットまでです" in (multi_shot_problem("i2v", KLING.id, ok * 6) or "")
+    assert "1〜12 秒" in (
+        multi_shot_problem("i2v", KLING.id, [{"prompt": "x", "duration": 13}]) or ""
+    )
+    assert "整数の秒数" in (
+        multi_shot_problem("i2v", KLING.id, [{"prompt": "x", "duration": "auto"}]) or ""
+    )
+    # 1 ショットのプロンプトも 500 文字まで
+    long_shot = [{"prompt": "a" * 501, "duration": 5}]
+    assert "500 文字" in (multi_shot_problem("i2v", KLING.id, long_shot) or "")
+    # 宣言していないワークフローには渡せない
+    assert "対応していません" in (
+        multi_shot_problem("i2v", SEEDANCE.id, ok) or ""
+    )
+
+    # API も同じ理由で断る。`video_prompt` はショットがあるので要らない
+    answer = client.post(
+        "/api/jobs",
+        json={"mode": "i2v", "video_workflow": KLING.id, "multi_shots": ok * 6},
+    )
+    assert answer.status_code == 422
+    assert "5 ショットまでです" in answer.text
+
+
+def test_a_multi_shot_job_needs_no_video_prompt(client, fake_kie, job_env, monkeypatch):
+    """本文はショット側にあるので、トップレベルの必須チェックから外れる。"""
+    monkeypatch.setattr(jobs, "extract_last_frame", _fake_last_frame)
+    fake_kie.answer("create", FakeResponse(envelope({"taskId": "task-shots"})))
+    fake_kie.answer("record", success(["https://cdn.kie.ai/out.mp4"], credits=120))
+
+    created = client.post(
+        "/api/jobs",
+        json={"mode": "i2v", "video_workflow": KLING.id, "multi_shots": _SHOTS},
+    )
+    assert created.status_code == 201, created.text
+    job = wait_for(client, created.json()["id"])
+    assert job["status"] == "done", job["error"]
+
+    task_input = job["workflow_json"]["video"]["request"]["input"]
+    assert task_input["multi_shots"] is True
+    assert [shot["duration"] for shot in task_input["multi_prompt"]] == [4, 6]
+    assert "prompt" not in task_input
+    # 再実行できるよう params にも残る
+    assert len(job["params"]["multi_shots"]) == 2
+
+
+def test_an_element_reference_costs_thirty_seven_characters():
+    """``@要素名`` は見た目の長さではなく 37 文字として上限を消費する。"""
+    from app.models import prompt_chars, prompt_length_problem
+
+    assert prompt_chars("@kaori walks.", 37) == 37 + len(" walks.")
+    # Elements を持たないモデルでは補正しない
+    assert prompt_chars("@kaori walks.", 0) == len("@kaori walks.")
+
+    # 見た目 470 文字でも `@kaori`（6 -> 37）の分で 501 文字になり弾かれる
+    text = "@kaori " + "a" * 463
+    assert len(text) == 470
+    problem = prompt_length_problem("i2v", KLING.id, text)
+    assert problem is not None
+    assert "501 文字" in problem and "37 文字として数えます" in problem
+    # 1 文字短ければ通る
+    assert prompt_length_problem("i2v", KLING.id, text[:-1]) is None
+
+
+def test_elements_must_match_the_at_references(client, monkeypatch):
+    from app.models import elements_problem
+
+    mark_available(monkeypatch)
+    element = {
+        "name": "kaori",
+        "description": "the woman in the grey coat",
+        "images": ["/library/image/a.png", "/library/image/b.png"],
+    }
+    base = dict(mode="i2v", video_workflow=KLING.id)
+
+    assert (
+        elements_problem(
+            **base, elements=[element], video_prompt="@kaori steps off the tram."
+        )
+        is None
+    )
+    # 宣言していない `@名前` は拒否（黙って 37 文字を食われるより気づかせる）
+    assert "対応する要素が" in (
+        elements_problem(
+            **base, elements=[element], video_prompt="@akira steps off the tram."
+        )
+        or ""
+    )
+    # 要素が 1 つも無いのに参照しているときも同じ
+    assert "対応する要素が" in (
+        elements_problem(**base, elements=[], video_prompt="@kaori waits.") or ""
+    )
+    # 逆に「宣言したが参照していない」は素材を先に用意しただけなので通す
+    assert elements_problem(**base, elements=[element], video_prompt="She waits.") is None
+    # マルチショットの本文の `@名前` も同じように見る
+    assert "対応する要素が" in (
+        elements_problem(
+            **base, elements=[element], shots=[{"prompt": "@akira waits.", "duration": 4}]
+        )
+        or ""
+    )
+    # Elements を持たないモデルでは `@` はただの文字
+    assert (
+        elements_problem(
+            mode="i2v", video_workflow=SEEDANCE.id, elements=[], video_prompt="a@b"
+        )
+        is None
+    )
+    assert "対応していません" in (
+        elements_problem(
+            mode="i2v", video_workflow=SEEDANCE.id, elements=[element]
+        )
+        or ""
+    )
+
+    answer = client.post(
+        "/api/jobs",
+        json={
+            "mode": "i2v",
+            "video_workflow": KLING.id,
+            "video_prompt": "@akira steps off the tram.",
+            "kling_elements": [element],
+        },
+    )
+    assert answer.status_code == 422
+    assert "`@akira`" in answer.text
+
+
+def test_the_shape_of_an_element_is_checked_too(monkeypatch):
+    from app.models import elements_problem
+
+    def problem(**overrides):
+        element = {
+            "name": "kaori",
+            "images": ["/library/image/a.png", "/library/image/b.png"],
+        }
+        element.update(overrides)
+        return elements_problem("i2v", KLING.id, [element]) or ""
+
+    assert problem() == ""
+    assert "2〜4 枚です" in problem(images=["/library/image/a.png"])
+    assert "2〜4 枚です" in problem(
+        images=[f"/library/image/{n}.png" for n in range(5)]
+    )
+    assert "拡張子" in problem(images=["/library/image/a.png", "/library/video/b.mp4"])
+    assert "name がありません" in problem(name="  ")
+    assert "`@kaori san` として書けません" in problem(name="kaori san")
+    # 4 要素目、と名前の重複
+    many = [
+        {"name": f"e{index}", "images": ["/a.png", "/b.png"]} for index in range(4)
+    ]
+    assert "3 要素までです" in (elements_problem("i2v", KLING.id, many) or "")
+    twice = [{"name": "kaori", "images": ["/a.png", "/b.png"]}] * 2
+    assert "重複しています" in (elements_problem("i2v", KLING.id, twice) or "")
+
+
+def test_element_images_become_element_input_urls(
+    client, fake_kie, job_env, monkeypatch
+):
+    """要素ごとの参照画像が 1 枚ずつ上がり、API の形に組み直される。"""
+    monkeypatch.setattr(jobs, "extract_last_frame", _fake_last_frame)
+    fake_kie.answer("create", FakeResponse(envelope({"taskId": "task-elem"})))
+    fake_kie.answer("record", success(["https://cdn.kie.ai/out.mp4"], credits=120))
+    fake_kie.answer(
+        "upload",
+        FakeResponse(envelope({"fileUrl": "https://files.kie.ai/ref0.png"})),
+        FakeResponse(envelope({"fileUrl": "https://files.kie.ai/ref1.png"})),
+    )
+    images = _reference_assets(job_env)
+
+    created = client.post(
+        "/api/jobs",
+        json={
+            "mode": "i2v",
+            "video_workflow": KLING.id,
+            "video_prompt": "Slow dolly push forward, @kaori steps off the tram.",
+            "kling_elements": [
+                {"name": "kaori", "description": "grey coat", "images": images},
+            ],
+        },
+    )
+    assert created.status_code == 201, created.text
+    job = wait_for(client, created.json()["id"])
+    assert job["status"] == "done", job["error"]
+
+    task_input = job["workflow_json"]["video"]["request"]["input"]
+    assert task_input["kling_elements"] == [
+        {
+            "name": "kaori",
+            "description": "grey coat",
+            "element_input_urls": [
+                "https://files.kie.ai/ref0.png",
+                "https://files.kie.ai/ref1.png",
+            ],
+        }
+    ]
+    # 参照画像は params にも残る（再実行で同じ素材を使う）
+    assert len(job["params"]["kling_elements"][0]["images"]) == 2
+
+    # 続き生成では本文の `@kaori` だけが残らないよう、要素も一緒に引き継ぐ
+    fake_kie.answer("create", FakeResponse(envelope({"taskId": "task-cont"})))
+    fake_kie.answer("record", success(["https://cdn.kie.ai/out2.mp4"], credits=120))
+    fake_kie.answer(
+        "upload",
+        *[FakeResponse(envelope({"fileUrl": "https://files.kie.ai/again.png"}))] * 4,
+    )
+    carried = client.post(f"/api/jobs/{job['id']}/continue", json={})
+    assert carried.status_code == 201, carried.text
+    assert carried.json()["params"]["kling_elements"][0]["name"] == "kaori"
+
+    # 要素を受け取れないワークフローに切り替えたときは落とす
+    switched = client.post(
+        f"/api/jobs/{job['id']}/continue", json={"video_workflow": SEEDANCE.id}
+    )
+    assert switched.status_code == 201, switched.text
+    assert switched.json()["params"]["kling_elements"] == []
+
+
+def test_the_agent_plan_validation_knows_the_kling_rules(client, job_env):
+    """プランでも同じ理由で断る（投入前に気づかせる、SPEC §4.3）。"""
+    from app.agent_protocol import ActionError, validate_job
+
+    images = _reference_assets(job_env)
+    base = {"mode": "i2v", "video_workflow": KLING.id}
+
+    payload = validate_job(
+        {
+            **base,
+            "multi_shots": _SHOTS,
+            "kling_elements": [{"name": "kaori", "images": images}],
+        },
+        where="tasks[0].job",
+    )
+    assert len(payload.multi_shots) == 2
+    assert payload.kling_elements[0].name == "kaori"
+
+    with pytest.raises(ActionError, match="5 ショットまでです"):
+        validate_job({**base, "multi_shots": _SHOTS * 3}, where="tasks[0].job")
+    with pytest.raises(ActionError, match="対応していません"):
+        validate_job(
+            {**base, "video_workflow": SEEDANCE.id, "multi_shots": _SHOTS},
+            where="tasks[0].job",
+        )
+    with pytest.raises(ActionError, match="対応する要素が"):
+        validate_job(
+            {**base, "video_prompt": "@akira waits."}, where="tasks[0].job"
+        )
+    with pytest.raises(ActionError, match="not found"):
+        validate_job(
+            {
+                **base,
+                "video_prompt": "@kaori waits.",
+                "kling_elements": [
+                    {"name": "kaori", "images": ["/assets/image/missing.png", images[0]]}
+                ],
+            },
+            where="tasks[0].job",
+        )
+
+
+def test_the_kling_guide_explains_the_second_stage_features():
+    from app.models import ChatSessionCreate
+    from app.prompts import build_system_prompt
+    from app.workflows import catalog_entry
+
+    prompt = build_system_prompt(
+        ChatSessionCreate(mode="i2v", video_workflow=KLING.id)
+    )
+    assert "## Multi-shot (`multi_shots`)" in prompt
+    assert "## Elements (`kling_elements`)" in prompt
+    assert "37 characters" in prompt
+
+    # カタログ側にも上限が出る（エージェントが件数を推測しなくてよい）
+    from app.prompts import _catalog_entry_lines
+
+    catalog = "\n".join(_catalog_entry_lines(catalog_entry(KLING)))
+    assert "`multi_shots`（最大 5 ショット" in catalog
+    assert "1 参照が 37 文字" in catalog
+    # 宣言のないワークフローには行そのものが出ない
+    other = "\n".join(_catalog_entry_lines(catalog_entry(SEEDANCE)))
+    assert "マルチショット" not in other and "Elements" not in other
+
+
 def test_kling_is_offered_as_a_video_workflow(client, monkeypatch):
     mark_available(monkeypatch)
     body = client.get("/api/options").json()
     kling = [wf for wf in body["video_workflows"] if wf["id"] == KLING.id][0]
 
     assert kling["requires"] == []
-    assert set(kling["supports"]) == {"prompt", "image", "end_image"}
+    assert set(kling["supports"]) == {
+        "prompt", "image", "end_image",
+        # 構造化パラメータ（マルチショット・Elements、issue #26）
+        "multi_shots", "multi_prompt", "kling_elements",
+    }
     assert kling["accepts_start_image"] is True
     assert kling["backend"] == "kie"
+    # フォームが行数・秒数・残り文字数を出せるだけの宣言が載る（SPEC §3.1）
+    assert kling["max_prompt_chars"] == 500
+    assert kling["multi_shot"] == {
+        "max_shots": 5, "min_duration": 1, "max_duration": 12,
+    }
+    assert kling["elements"] == {
+        "max_elements": 3, "min_images": 2, "max_images": 4,
+        "reference_chars": 37,
+    }
+    # 宣言のないワークフローでは欄そのものが出ない
+    seedance = [wf for wf in body["video_workflows"] if wf["id"] == SEEDANCE.id][0]
+    assert seedance["multi_shot"] is None
+    assert seedance["elements"] is None
     selects = {select["name"]: select for select in kling["selects"]}
     assert list(selects) == ["mode", "duration", "aspect_ratio", "sound"]
     assert selects["mode"]["choices"] == ["std", "pro", "4K"]

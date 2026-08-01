@@ -17,7 +17,11 @@ import {
   jobWorkflowIds,
   lorasForTarget,
   modelSlotsForJob,
+  elementsLimits,
+  multiShotLimits,
   needsReferenceSheet,
+  newShot,
+  promptChars,
   referenceFields,
   sheetSize,
   toggleReference,
@@ -26,6 +30,7 @@ import {
   type FormState,
 } from './form'
 import type {
+  KlingElement,
   Lora,
   ModelSlot,
   Options,
@@ -406,6 +411,253 @@ describe('マルチモーダル参照', () => {
     ])
     expect(patch.referenceVideos).toEqual([])
     expect(patch.referenceAudios).toBeUndefined()
+  })
+})
+
+// ------------------------- ショット割り / Elements（SPEC §3.1、Kling 3.0）
+
+// Kling 3.0（kie.ai）: 500 文字の上限つきで、マルチショットと Elements を持つ。
+const KLING = workflow({
+  id: 'kling3_video',
+  requires: [],
+  accepts_start_image: true,
+  supports: ['prompt', 'image', 'end_image'],
+  max_prompt_chars: 500,
+  multi_shot: { max_shots: 5, min_duration: 1, max_duration: 12 },
+  elements: {
+    max_elements: 3,
+    min_images: 2,
+    max_images: 4,
+    reference_chars: 37,
+  },
+  backend: 'kie',
+})
+
+const IMAGES = ['/library/image/a.png', '/library/image/b.png']
+
+function klingForm(overrides: Partial<FormState> = {}): FormState {
+  return { ...initialForm, mode: 'i2v', videoWorkflow: KLING.id, ...overrides }
+}
+
+describe('マルチショット', () => {
+  it('宣言のあるワークフローで動画ステージが走るときだけ欄を出す', () => {
+    expect(multiShotLimits(KLING)?.max_shots).toBe(5)
+    expect(multiShotLimits(VEO)).toBeNull()
+    expect(multiShotLimits(null)).toBeNull()
+
+    expect(hiddenFields('i2v', KLING).multiShots).toBe(false)
+    expect(hiddenFields('full', KLING).multiShots).toBe(false)
+    // 動画ステージを走らせない mode にはショットの概念が無い
+    expect(hiddenFields('image_only', KLING).multiShots).toBe(true)
+    expect(hiddenFields('i2v', VEO).multiShots).toBe(true)
+  })
+
+  it('追加するショットの秒数は宣言の範囲に収まる', () => {
+    expect(newShot({ max_shots: 5, min_duration: 1, max_duration: 12 })).toEqual({
+      prompt: '',
+      duration: 5,
+    })
+    // 範囲が 5 秒を含まないときは端に寄せる
+    expect(
+      newShot({ max_shots: 5, min_duration: 1, max_duration: 3 }).duration,
+    ).toBe(3)
+    expect(
+      newShot({ max_shots: 5, min_duration: 8, max_duration: 12 }).duration,
+    ).toBe(8)
+  })
+
+  it('件数・秒数・1 ショットの長さを送る前に断る', () => {
+    const shot = { prompt: 'She turns.', duration: 5 }
+    expect(validateForm(klingForm({ multiShots: [shot] }), null, null, KLING)).toEqual(
+      {},
+    )
+    // ちょうど 5 ショットまでは通る
+    expect(
+      validateForm(
+        klingForm({ multiShots: Array(5).fill(shot) }),
+        null,
+        null,
+        KLING,
+      ),
+    ).toEqual({})
+
+    expect(
+      validateForm(
+        klingForm({ multiShots: Array(6).fill(shot) }),
+        null,
+        null,
+        KLING,
+      ).multi_shots,
+    ).toContain('5 個までです')
+    expect(
+      validateForm(
+        klingForm({ multiShots: [{ ...shot, duration: 13 }] }),
+        null,
+        null,
+        KLING,
+      )['multi_shots.0'],
+    ).toContain('1〜12 秒')
+    expect(
+      validateForm(
+        klingForm({ multiShots: [{ ...shot, prompt: '  ' }] }),
+        null,
+        null,
+        KLING,
+      )['multi_shots.0'],
+    ).toContain('プロンプトを入力')
+    expect(
+      validateForm(
+        klingForm({ multiShots: [{ ...shot, prompt: 'a'.repeat(501) }] }),
+        null,
+        null,
+        KLING,
+      )['multi_shots.0'],
+    ).toContain('500 文字までです')
+  })
+
+  it('過去ジョブの params から復元する', () => {
+    const { patch } = formStateFromParams(
+      {
+        multi_shots: [
+          { prompt: 'Shot 1', duration: 4 },
+          // 形の違う行は落とす
+          { duration: 5 },
+        ],
+      },
+      null,
+    )
+    expect(patch.multiShots).toEqual([{ prompt: 'Shot 1', duration: 4 }])
+    expect(formStateFromParams({ multi_shots: 'nope' }, null).patch.multiShots)
+      .toBeUndefined()
+  })
+})
+
+describe('Elements', () => {
+  it('`@要素名` は 37 文字として数える', () => {
+    expect(promptChars('@kaori walks.', 37)).toBe(37 + ' walks.'.length)
+    // Elements を持たないモデルでは補正しない
+    expect(promptChars('@kaori walks.', 0)).toBe('@kaori walks.'.length)
+    expect(promptChars('', 37)).toBe(0)
+
+    // 見た目 470 文字でも `@kaori`（6 -> 37）の分で 501 文字になり弾かれる
+    const declared = [{ name: 'kaori', description: '', images: IMAGES }]
+    const text = '@kaori ' + 'a'.repeat(463)
+    expect(text.length).toBe(470)
+    expect(
+      validateForm(
+        klingForm({ videoPrompt: text, klingElements: declared }),
+        null,
+        null,
+        KLING,
+      ).video_prompt,
+    ).toContain('501 文字')
+    expect(
+      validateForm(
+        klingForm({ videoPrompt: text.slice(0, -1), klingElements: declared }),
+        null,
+        null,
+        KLING,
+      ),
+    ).toEqual({})
+  })
+
+  it('宣言していない `@名前` を送る前に断る', () => {
+    const element = { name: 'kaori', description: '', images: IMAGES }
+    expect(elementsLimits(KLING)?.max_elements).toBe(3)
+    expect(elementsLimits(VEO)).toBeNull()
+
+    expect(
+      validateForm(
+        klingForm({ klingElements: [element], videoPrompt: '@kaori waits.' }),
+        null,
+        null,
+        KLING,
+      ),
+    ).toEqual({})
+    expect(
+      validateForm(
+        klingForm({ klingElements: [element], videoPrompt: '@akira waits.' }),
+        null,
+        null,
+        KLING,
+      ).kling_elements,
+    ).toContain('`@akira`')
+    // ショットの本文の `@名前` も同じように見る
+    expect(
+      validateForm(
+        klingForm({
+          klingElements: [element],
+          multiShots: [{ prompt: '@akira waits.', duration: 4 }],
+        }),
+        null,
+        null,
+        KLING,
+      ).kling_elements,
+    ).toContain('`@akira`')
+    // 宣言したが参照していないのは、素材を先に用意しただけなので通す
+    expect(
+      validateForm(
+        klingForm({ klingElements: [element], videoPrompt: 'She waits.' }),
+        null,
+        null,
+        KLING,
+      ),
+    ).toEqual({})
+  })
+
+  it('要素の形（名前・枚数・重複）も送る前に見る', () => {
+    const check = (element: Partial<KlingElement>) =>
+      validateForm(
+        klingForm({
+          klingElements: [
+            { name: 'kaori', description: '', images: IMAGES, ...element },
+          ],
+        }),
+        null,
+        null,
+        KLING,
+      )['kling_elements.0']
+
+    expect(check({})).toBeUndefined()
+    expect(check({ name: '  ' })).toContain('要素名を入力')
+    expect(check({ name: 'kaori san' })).toContain('書けません')
+    expect(check({ images: IMAGES.slice(0, 1) })).toContain('2〜4 枚')
+    expect(check({ images: [...IMAGES, ...IMAGES, '/library/image/e.png'] }))
+      .toContain('2〜4 枚')
+
+    const two = [
+      { name: 'kaori', description: '', images: IMAGES },
+      { name: 'kaori', description: '', images: IMAGES },
+    ]
+    expect(
+      validateForm(klingForm({ klingElements: two }), null, null, KLING)[
+        'kling_elements.1'
+      ],
+    ).toContain('重複しています')
+    expect(
+      validateForm(
+        klingForm({ klingElements: [...two, ...two] }),
+        null,
+        null,
+        KLING,
+      ).kling_elements,
+    ).toContain('3 要素までです')
+  })
+
+  it('過去ジョブの params から復元する', () => {
+    const { patch } = formStateFromParams(
+      {
+        kling_elements: [
+          { name: 'kaori', description: 'grey coat', images: IMAGES },
+          // 名前の無い行は落とす
+          { images: IMAGES },
+        ],
+      },
+      null,
+    )
+    expect(patch.klingElements).toEqual([
+      { name: 'kaori', description: 'grey coat', images: IMAGES },
+    ])
   })
 })
 

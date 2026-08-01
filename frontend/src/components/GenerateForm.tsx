@@ -10,9 +10,14 @@ import {
   NEGATIVE_PRESET_LABELS,
   hiddenFields,
   imageWorkflowNeedsSource,
+  elementsLimits,
   joinTriggers,
   lorasForTarget,
+  multiShotLimits,
   needsReferenceSheet,
+  newElement,
+  newShot,
+  promptChars,
   referenceFields,
   sheetSize,
   toSelected,
@@ -27,8 +32,10 @@ import type {
   ComfyTarget,
   Job,
   JobMode,
+  KlingElement,
   LibraryItem,
   Lora,
+  MultiShot,
   Options,
   WorkflowOption,
 } from '../types'
@@ -89,6 +96,11 @@ interface PickerTarget {
    * 複数選べるよう開いたままになる。
    */
   reference?: ReferenceField
+  /**
+   * Elements の何番目の要素の参照画像を選んでいるか（SPEC §3.1）。参照素材と
+   * 同じく**選択の出し入れ**になり、ライブラリのモーダルは開いたままになる。
+   */
+  element?: { index: number; limit: number }
 }
 
 /** LoRA chips + strength sliders + trigger words, shared by both stages. */
@@ -440,6 +452,9 @@ export default function GenerateForm({
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [busyUpload, setBusyUpload] = useState(false)
   const [showAdvanced, setShowAdvanced] = useState(false)
+  // 構造化パラメータは行が増えてフォームが伸びるので、既定は畳んでおく（§8）
+  const [showShots, setShowShots] = useState(false)
+  const [showElements, setShowElements] = useState(false)
   // 履歴 / ライブラリのモーダルを開いている入力欄（null = 閉じている）
   const [historyTarget, setHistoryTarget] = useState<PickerTarget | null>(null)
   const [libraryTarget, setLibraryTarget] = useState<PickerTarget | null>(null)
@@ -486,6 +501,35 @@ export default function GenerateForm({
     patch({
       [item.field]: toggleReference(form[item.field], url),
     } as Partial<FormState>)
+  }
+  // ショット割り / Elements（Kling 3.0、SPEC §3.1）。宣言の無いワークフローや
+  // 動画ステージを走らせない mode では null なので、セクションごと出ない。
+  const shotLimits = hidden.multiShots ? null : multiShotLimits(workflow)
+  const elementLimits = hidden.elements ? null : elementsLimits(workflow)
+  /** ``@要素名`` の消費ぶんを含めた残り文字数（上限の宣言が無ければ null）。 */
+  const charsLeft = (text: string) => {
+    const limit = workflow?.max_prompt_chars ?? 0
+    if (!limit) return null
+    return limit - promptChars(text, elementLimits?.reference_chars ?? 0)
+  }
+  const patchShot = (index: number, change: Partial<MultiShot>) =>
+    patch({
+      multiShots: form.multiShots.map((shot, at) =>
+        at === index ? { ...shot, ...change } : shot,
+      ),
+    })
+  const patchElement = (index: number, change: Partial<KlingElement>) =>
+    patch({
+      klingElements: form.klingElements.map((element, at) =>
+        at === index ? { ...element, ...change } : element,
+      ),
+    })
+  const toggleElementImage = (index: number, url: string) => {
+    const images = form.klingElements[index]?.images ?? []
+    if (!images.includes(url) && images.length >= (elementLimits?.max_images ?? 0)) {
+      return
+    }
+    patchElement(index, { images: toggleReference(images, url) })
   }
   // 画像欄がリファレンスシート（IC-LoRA）なら、ライブラリの素材から合成できる。
   // 画像を編集するワークフローのときの欄は別物（編集元画像）なので出さない。
@@ -605,8 +649,9 @@ export default function GenerateForm({
           : target.kind === 'video'
             ? await api.uploadVideo(file)
             : await api.uploadAudio(file)
-      // 参照素材の欄は入れ替えではなく積み上げ（選んだ順が API に渡る順）
+      // 参照素材 / Elements の欄は入れ替えではなく積み上げ（選んだ順 = API の順）
       if (target.reference) addReference(target.reference, asset.url)
+      else if (target.element) toggleElementImage(target.element.index, asset.url)
       else patch(target.apply(asset.url))
       onReloadOptions()
     } catch (error) {
@@ -1176,11 +1221,282 @@ export default function GenerateForm({
                     }
                     onChange={(event) => patch({ videoPrompt: event.target.value })}
                   />
-                  <FieldError message={fieldErrors.video_prompt} />
+                  <div className="flex items-center gap-2">
+                    <FieldError message={fieldErrors.video_prompt} />
+                    {charsLeft(form.videoPrompt) !== null && (
+                      <span
+                        className={`ml-auto text-[11px] tabular-nums ${
+                          charsLeft(form.videoPrompt)! < 0
+                            ? 'text-rose-400'
+                            : 'text-slate-500'
+                        }`}
+                      >
+                        残り {charsLeft(form.videoPrompt)} 文字
+                      </span>
+                    )}
+                  </div>
                 </div>
               )}
             </div>
           </Section>
+
+          {shotLimits && (
+            <Section
+              title="マルチショット"
+              right={
+                <button
+                  className="text-xs text-slate-400 hover:text-slate-200"
+                  onClick={() => setShowShots((value) => !value)}
+                >
+                  {showShots
+                    ? '閉じる'
+                    : `開く（${form.multiShots.length} / ${shotLimits.max_shots} ショット）`}
+                </button>
+              }
+            >
+              {showShots && (
+                <div className="flex flex-col gap-2">
+                  <p className="text-[11px] text-slate-500">
+                    1 本の動画をショット割りで作ります。1 ショットでも入れると
+                    上の動画プロンプトは送られません（本文はショット側）。各ショットは
+                    {shotLimits.min_duration}〜{shotLimits.max_duration} 秒、
+                    カメラ → 動作 → 位置 → 音の順で、人物の言い回しは全ショットで
+                    揃えてください。音声は既定で ON になります。
+                  </p>
+                  {form.multiShots.map((shot, index) => (
+                    <div
+                      key={index}
+                      className="flex flex-col gap-1 rounded-lg border border-dashed border-ink-600 p-2"
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-slate-300">
+                          Shot {index + 1}
+                        </span>
+                        {charsLeft(shot.prompt) !== null && (
+                          <span
+                            className={`text-[11px] tabular-nums ${
+                              charsLeft(shot.prompt)! < 0
+                                ? 'text-rose-400'
+                                : 'text-slate-500'
+                            }`}
+                          >
+                            残り {charsLeft(shot.prompt)} 文字
+                          </span>
+                        )}
+                        <label className="ml-auto text-[11px] text-slate-500">
+                          秒数
+                        </label>
+                        <input
+                          type="number"
+                          className="field w-20 !py-1 text-xs"
+                          min={shotLimits.min_duration}
+                          max={shotLimits.max_duration}
+                          value={shot.duration}
+                          aria-label={`Shot ${index + 1} の秒数`}
+                          onChange={(event) =>
+                            patchShot(index, {
+                              duration: Number(event.target.value),
+                            })
+                          }
+                        />
+                        <button
+                          className="btn-ghost text-xs"
+                          onClick={() =>
+                            patch({
+                              multiShots: form.multiShots.filter(
+                                (_, at) => at !== index,
+                              ),
+                            })
+                          }
+                        >
+                          削除
+                        </button>
+                      </div>
+                      <textarea
+                        className="field h-20 resize-y"
+                        value={shot.prompt}
+                        aria-label={`Shot ${index + 1} のプロンプト`}
+                        placeholder="カメラの動き、動作、画面内の位置、音"
+                        onChange={(event) =>
+                          patchShot(index, { prompt: event.target.value })
+                        }
+                      />
+                      <FieldError message={fieldErrors[`multi_shots.${index}`]} />
+                    </div>
+                  ))}
+                  <button
+                    className="btn-ghost self-start text-xs"
+                    disabled={form.multiShots.length >= shotLimits.max_shots}
+                    onClick={() =>
+                      patch({
+                        multiShots: [...form.multiShots, newShot(shotLimits)],
+                      })
+                    }
+                  >
+                    ショットを追加
+                  </button>
+                  <FieldError message={fieldErrors.multi_shots} />
+                </div>
+              )}
+            </Section>
+          )}
+
+          {elementLimits && (
+            <Section
+              title="Elements（@要素名 でのキャラ固定）"
+              right={
+                <button
+                  className="text-xs text-slate-400 hover:text-slate-200"
+                  onClick={() => setShowElements((value) => !value)}
+                >
+                  {showElements
+                    ? '閉じる'
+                    : `開く（${form.klingElements.length} / ${elementLimits.max_elements} 要素）`}
+                </button>
+              }
+            >
+              {showElements && (
+                <div className="flex flex-col gap-2">
+                  <p className="text-[11px] text-slate-500">
+                    参照画像 {elementLimits.min_images}〜{elementLimits.max_images}{' '}
+                    枚に名前を付けておくと、プロンプト本文から `@要素名` で呼べます。
+                    <strong className="text-slate-400">
+                      1 参照が {elementLimits.reference_chars} 文字
+                    </strong>
+                    を消費し、宣言していない `@名前` は送信前に弾かれます。
+                  </p>
+                  {form.klingElements.map((element, index) => (
+                    <div
+                      key={index}
+                      className="flex flex-col gap-1 rounded-lg border border-dashed border-ink-600 p-2"
+                    >
+                      <div className="flex items-center gap-2">
+                        <input
+                          className="field w-32 !py-1 text-xs"
+                          value={element.name}
+                          aria-label={`要素 ${index + 1} の名前`}
+                          placeholder="kaori"
+                          onChange={(event) =>
+                            patchElement(index, { name: event.target.value })
+                          }
+                        />
+                        <input
+                          className="field flex-1 !py-1 text-xs"
+                          value={element.description}
+                          aria-label={`要素 ${index + 1} の説明`}
+                          placeholder="灰色のコートの女性"
+                          onChange={(event) =>
+                            patchElement(index, {
+                              description: event.target.value,
+                            })
+                          }
+                        />
+                        <button
+                          className="btn-ghost text-xs"
+                          onClick={() =>
+                            patch({
+                              klingElements: form.klingElements.filter(
+                                (_, at) => at !== index,
+                              ),
+                            })
+                          }
+                        >
+                          削除
+                        </button>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <span className="text-[11px] tabular-nums text-slate-500">
+                          {element.images.length} / {elementLimits.max_images} 枚
+                        </span>
+                        <button
+                          className="btn-ghost text-xs"
+                          disabled={busyUpload}
+                          onClick={() =>
+                            setLibraryTarget({
+                              kind: 'image',
+                              title: `要素 ${index + 1} の参照画像`,
+                              element: {
+                                index,
+                                limit: elementLimits.max_images,
+                              },
+                              apply: () => ({}),
+                            })
+                          }
+                        >
+                          ライブラリから選択
+                        </button>
+                        <button
+                          className="btn-ghost text-xs"
+                          disabled={
+                            busyUpload ||
+                            element.images.length >= elementLimits.max_images
+                          }
+                          onClick={() =>
+                            setHistoryTarget({
+                              kind: 'image',
+                              title: `要素 ${index + 1} の参照画像`,
+                              element: {
+                                index,
+                                limit: elementLimits.max_images,
+                              },
+                              apply: () => ({}),
+                            })
+                          }
+                        >
+                          履歴から選択
+                        </button>
+                      </div>
+                      {element.images.length > 0 && (
+                        <ul className="flex flex-col gap-1">
+                          {element.images.map((url) => (
+                            <li key={url} className="flex items-center gap-2">
+                              <img
+                                src={url}
+                                alt=""
+                                className="h-10 w-10 shrink-0 rounded border border-ink-600 object-cover"
+                              />
+                              <span className="flex-1 truncate text-[11px] text-slate-400">
+                                {url}
+                              </span>
+                              <button
+                                className="btn-ghost text-xs"
+                                onClick={() =>
+                                  patchElement(index, {
+                                    images: element.images.filter(
+                                      (one) => one !== url,
+                                    ),
+                                  })
+                                }
+                              >
+                                外す
+                              </button>
+                            </li>
+                          ))}
+                        </ul>
+                      )}
+                      <FieldError
+                        message={fieldErrors[`kling_elements.${index}`]}
+                      />
+                    </div>
+                  ))}
+                  <button
+                    className="btn-ghost self-start text-xs"
+                    disabled={
+                      form.klingElements.length >= elementLimits.max_elements
+                    }
+                    onClick={() =>
+                      patch({
+                        klingElements: [...form.klingElements, newElement()],
+                      })
+                    }
+                  >
+                    要素を追加
+                  </button>
+                  <FieldError message={fieldErrors.kling_elements} />
+                </div>
+              )}
+            </Section>
+          )}
 
           {!hidden.negative && (
             <Section
@@ -1340,14 +1656,24 @@ export default function GenerateForm({
           selectedIds={
             libraryTarget.reference
               ? selectedLibraryIds(library, form[libraryTarget.reference.field])
-              : undefined
+              : libraryTarget.element
+                ? selectedLibraryIds(
+                    library,
+                    form.klingElements[libraryTarget.element.index]?.images ?? [],
+                  )
+                : undefined
           }
           footer={
-            libraryTarget.reference && (
+            (libraryTarget.reference || libraryTarget.element) && (
               <div className="mt-3 flex items-center gap-2">
                 <span className="text-xs text-slate-400">
-                  {form[libraryTarget.reference.field].length} /{' '}
-                  {libraryTarget.reference.limit} 件
+                  {libraryTarget.reference
+                    ? form[libraryTarget.reference.field].length
+                    : (form.klingElements[libraryTarget.element!.index]?.images
+                        .length ?? 0)}{' '}
+                  /{' '}
+                  {libraryTarget.reference?.limit ?? libraryTarget.element!.limit}{' '}
+                  件
                 </span>
                 <button
                   className="btn-primary ml-auto !py-1 text-xs"
@@ -1362,6 +1688,10 @@ export default function GenerateForm({
           onSelect={(item) => {
             if (libraryTarget.reference) {
               toggleRef(libraryTarget.reference, item.url)
+              return
+            }
+            if (libraryTarget.element) {
+              toggleElementImage(libraryTarget.element.index, item.url)
               return
             }
             patch(libraryTarget.apply(item.url))

@@ -1,9 +1,13 @@
 import type {
   AudioJobCreate,
   ComfyTarget,
+  ElementsLimits,
   ImageFamily,
   JobMode,
+  KlingElement,
   LibraryKind,
+  MultiShot,
+  MultiShotLimits,
   Lora,
   LoraRef,
   LoraTarget,
@@ -124,6 +128,13 @@ export interface FormState {
   referenceImages: string[]
   referenceVideos: string[]
   referenceAudios: string[]
+  /**
+   * ショット割り（SPEC §3.1）。1 行でも入っていれば `videoPrompt` の代わりに
+   * これが本文になり、トップレベルのプロンプトは送られない。
+   */
+  multiShots: MultiShot[]
+  /** Elements（`@要素名` で呼ぶ参照画像の束、SPEC §3.1）。 */
+  klingElements: KlingElement[]
   duration: number
   fps: number
   seedLocked: boolean
@@ -186,6 +197,8 @@ export const initialForm: FormState = {
   referenceImages: [],
   referenceVideos: [],
   referenceAudios: [],
+  multiShots: [],
+  klingElements: [],
   duration: 10,
   fps: 25,
   seedLocked: false,
@@ -395,6 +408,64 @@ export function toggleReference(current: string[], url: string): string[] {
     : [...current, url]
 }
 
+// ------------------------------- ショット割り / Elements（SPEC §3.1、Kling 3.0）
+// 平坦な値ではない**構造化パラメータ**。どちらもワークフローの宣言
+// （`multi_shot` / `elements`）がある場合だけフォームに欄が出る。
+
+/** 選択中のワークフローのショット割りの上限（宣言が無ければ null）。 */
+export function multiShotLimits(
+  workflow?: WorkflowOption | null,
+): MultiShotLimits | null {
+  return workflow?.multi_shot ?? null
+}
+
+/** 選択中のワークフローの Elements の上限（宣言が無ければ null）。 */
+export function elementsLimits(
+  workflow?: WorkflowOption | null,
+): ElementsLimits | null {
+  return workflow?.elements ?? null
+}
+
+/**
+ * プロンプト中の `@要素名`（mirrors models.ELEMENT_REFERENCE）。
+ * Python の `\w` に合わせて、英数字・アンダースコア・ハイフンのほか日本語も拾う。
+ */
+const ELEMENT_REFERENCE = /@([\p{L}\p{M}\p{N}_-]+)/gu
+
+/** 本文が呼んでいる `@要素名`（出てきた順、重複そのまま）。 */
+export function elementReferences(text: string): string[] {
+  return [...text.matchAll(ELEMENT_REFERENCE)].map((match) => match[1])
+}
+
+/**
+ * API がその本文を何文字と数えるか（SPEC §3.1）。
+ *
+ * Elements を持つモデルでは **`@要素名` 1 回が `referenceChars` 文字**として
+ * 上限を消費するので、見た目の長さのままでは 500 文字の判定が合わない。
+ */
+export function promptChars(text: string, referenceChars = 0): number {
+  if (!text) return 0
+  if (referenceChars <= 0) return [...text].length
+  let counted = [...text].length
+  for (const match of text.matchAll(ELEMENT_REFERENCE)) {
+    counted += referenceChars - [...match[0]].length
+  }
+  return counted
+}
+
+/** 新しいショット 1 行（尺は宣言の範囲に収まる無難な既定）。 */
+export function newShot(limits: MultiShotLimits): MultiShot {
+  return {
+    prompt: '',
+    duration: Math.min(Math.max(5, limits.min_duration), limits.max_duration),
+  }
+}
+
+/** 新しい要素 1 つ。 */
+export function newElement(): KlingElement {
+  return { name: '', description: '', images: [] }
+}
+
 // -------------------------------------------------- リファレンスシート（§7.2）
 
 /** リファレンスシート 1 枚を参照入力に取る動画ワークフロー（IC-LoRA）。 */
@@ -538,6 +609,41 @@ function asBoolean(value: unknown): boolean | undefined {
 function asStringList(value: unknown): string[] | undefined {
   if (!Array.isArray(value)) return
   return value.filter((item): item is string => typeof item === 'string')
+}
+
+/** 過去ジョブの params からショット割りを復元する（形が違えば復元しない）。 */
+function asMultiShots(value: unknown): MultiShot[] | undefined {
+  if (!Array.isArray(value)) return
+  return value.flatMap((item) => {
+    if (typeof item !== 'object' || item === null) return []
+    const shot = item as Record<string, unknown>
+    if (typeof shot.prompt !== 'string') return []
+    const duration = Number(shot.duration)
+    return [
+      {
+        prompt: shot.prompt,
+        duration: Number.isFinite(duration) ? duration : 5,
+      },
+    ]
+  })
+}
+
+/** 過去ジョブの params から Elements を復元する。 */
+function asElements(value: unknown): KlingElement[] | undefined {
+  if (!Array.isArray(value)) return
+  return value.flatMap((item) => {
+    if (typeof item !== 'object' || item === null) return []
+    const element = item as Record<string, unknown>
+    if (typeof element.name !== 'string') return []
+    return [
+      {
+        name: element.name,
+        description:
+          typeof element.description === 'string' ? element.description : '',
+        images: asStringList(element.images) ?? [],
+      },
+    ]
+  })
 }
 
 /** `{名前: 文字列}` だけを取り出す（数値や null が混ざった行は落とす）。 */
@@ -696,6 +802,11 @@ export function formStateFromParams(
     const paths = asStringList(params[item.name])
     if (paths) changes[item.field] = paths
   }
+  // ショット割り / Elements（構造化パラメータ、SPEC §3.1）。古いジョブには無い。
+  const shots = asMultiShots(params.multi_shots)
+  if (shots) changes.multiShots = shots
+  const elements = asElements(params.kling_elements)
+  if (elements) changes.klingElements = elements
 
   // --- 尺 ------------------------------------------------------------------
   // params の `duration` は 1 つきりだが、フォームは動画と音声で別のつまみを持つ。
@@ -801,6 +912,10 @@ export function hiddenFields(
     // マルチモーダル参照は「開始フレームの代わり」なので、開始フレームを渡せる
     // mode（= i2v）でだけ意味がある。full は画像ステージが開始フレームを作る。
     references: !(mode === 'i2v' && referenceFields(workflow).length > 0),
+    // ショット割り / Elements は動画ステージのパラメータなので、それが走る
+    // mode（full / i2v）で、宣言のあるワークフローのときだけ出す。
+    multiShots: !(video && multiShotLimits(workflow) !== null),
+    elements: !(video && elementsLimits(workflow) !== null),
     // an editing workflow derives the size from its input picture; with no video
     // stage to size, the aspect ratio / megapixels then do nothing at all
     resolution: mode === 'audio' || (mode === 'image_only' && imageNeedsSource),
@@ -863,6 +978,88 @@ export function validateForm(
         } 件）。`
       }
     }
+  }
+  // ショット割り / Elements（SPEC §3.1）。バックエンドが 422 で断るのと同じ
+  // 理由を、送る前にその場で見せる。
+  const runsVideo = form.mode === 'full' || form.mode === 'i2v'
+  const shots = runsVideo ? form.multiShots : []
+  const elements = runsVideo ? form.klingElements : []
+  const shotLimits = multiShotLimits(videoWorkflow)
+  const elementLimits = elementsLimits(videoWorkflow)
+  const cost = elementLimits?.reference_chars ?? 0
+  const maxChars = videoWorkflow?.max_prompt_chars ?? 0
+
+  if (shots.length > 0 && shotLimits) {
+    if (shots.length > shotLimits.max_shots) {
+      errors.multi_shots = `ショットは ${shotLimits.max_shots} 個までです（今は ${shots.length} 個）。`
+    }
+    shots.forEach((shot, index) => {
+      const where = `multi_shots.${index}`
+      if (!shot.prompt.trim()) {
+        errors[where] = `${index + 1} ショット目のプロンプトを入力してください。`
+      } else if (maxChars && promptChars(shot.prompt, cost) > maxChars) {
+        errors[where] =
+          `${index + 1} ショット目は ${maxChars} 文字までです（今は ${promptChars(
+            shot.prompt,
+            cost,
+          )} 文字）。`
+      } else if (
+        !Number.isInteger(shot.duration) ||
+        shot.duration < shotLimits.min_duration ||
+        shot.duration > shotLimits.max_duration
+      ) {
+        errors[where] =
+          `${index + 1} ショット目の秒数は ${shotLimits.min_duration}〜${shotLimits.max_duration} 秒の整数です。`
+      }
+    })
+  }
+  if (elementLimits) {
+    if (elements.length > elementLimits.max_elements) {
+      errors.kling_elements = `Elements は ${elementLimits.max_elements} 要素までです（今は ${elements.length} 要素）。`
+    }
+    const names: string[] = []
+    elements.forEach((element, index) => {
+      const where = `kling_elements.${index}`
+      const name = element.name.trim()
+      if (!name) {
+        errors[where] = `${index + 1} 個目の要素名を入力してください。`
+      } else if (elementReferences(`@${name}`).join('') !== name) {
+        errors[where] =
+          `要素名「${name}」は \`@${name}\` として書けません（英数字・アンダースコア・ハイフン・日本語のみ、空白は不可）。`
+      } else if (names.includes(name)) {
+        errors[where] = `要素名「${name}」が重複しています。`
+      } else if (
+        element.images.length < elementLimits.min_images ||
+        element.images.length > elementLimits.max_images
+      ) {
+        errors[where] =
+          `要素「${name}」の参照画像は ${elementLimits.min_images}〜${elementLimits.max_images} 枚です（今は ${element.images.length} 枚）。`
+      }
+      if (name) names.push(name)
+    })
+    // 宣言していない `@名前` は文字として渡り、しかも文字数だけ消費してしまう
+    const bodies = shots.length > 0 ? shots.map((shot) => shot.prompt) : []
+    if (runsVideo) bodies.push(form.videoPrompt)
+    for (const reference of bodies.flatMap(elementReferences)) {
+      if (!names.includes(reference)) {
+        errors.kling_elements =
+          `プロンプトの \`@${reference}\` に対応する要素がありません（Elements に追加するか、\`@\` を外してください）。`
+        break
+      }
+    }
+  }
+  // ショット割りを使っているときは本文がショット側にあるので、トップレベルの
+  // プロンプトの長さだけをここで見る（ショット側は上のループで見ている）。
+  if (
+    runsVideo &&
+    maxChars &&
+    form.videoPrompt &&
+    promptChars(form.videoPrompt, cost) > maxChars
+  ) {
+    errors.video_prompt = `動画プロンプトは ${maxChars} 文字までです（今は ${promptChars(
+      form.videoPrompt,
+      cost,
+    )} 文字${cost ? '、`@要素名` 1 つは ' + cost + ' 文字' : ''}）。`
   }
   return errors
 }

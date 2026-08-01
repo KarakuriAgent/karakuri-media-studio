@@ -1349,3 +1349,202 @@ describe('GenerateForm のマルチモーダル参照', () => {
     )
   })
 })
+
+// --------------------------- マルチショット / Elements（SPEC §3.1 / §8、Kling）
+// 行が増えて縦に伸びるので、どちらも既定は折りたたみ。
+
+describe('GenerateForm のマルチショットと Elements', () => {
+  const KLING: Options['video_workflows'][number] = {
+    id: 'kling3_video',
+    label: 'Kling 3.0',
+    kind: 'video',
+    family: 'kling',
+    notes: '',
+    requires: [],
+    supports: ['prompt', 'image', 'end_image'],
+    max_prompt_chars: 500,
+    multi_shot: { max_shots: 5, min_duration: 1, max_duration: 12 },
+    elements: {
+      max_elements: 3,
+      min_images: 2,
+      max_images: 4,
+      reference_chars: 37,
+    },
+    accepts_start_image: true,
+    image_label: '開始フレーム（任意）',
+    selects: [],
+    prompt_required: true,
+    accepts_video_loras: false,
+    backend: 'kie',
+    min_duration: 0,
+    max_duration: 0,
+    default_duration: 0,
+  }
+
+  const PLAIN: Options['video_workflows'][number] = {
+    ...KLING,
+    id: 'veo3_1_fast',
+    label: 'Veo 3.1 Fast',
+    family: 'veo',
+    max_prompt_chars: 0,
+    multi_shot: null,
+    elements: null,
+  }
+
+  const ELEMENT_IMAGES: LibraryItem[] = ['e1', 'e2'].map((id, index) => ({
+    id,
+    created_at: '2026-08-01T10:00:00+00:00',
+    kind: 'image' as const,
+    name: `要素${index + 1}`,
+    path: `/repo/library/image/el${index}.png`,
+    url: `/library/image/el${index}.png`,
+    nsfw: false,
+    nsfw_source: '',
+    source_job_id: null,
+    source: null,
+    tags: [],
+    category: null,
+  }))
+
+  const SHOTS = 'マルチショット'
+  const ELEMENTS = 'Elements（@要素名 でのキャラ固定）'
+
+  function showKlingForm(form: Partial<FormState> = {}) {
+    vi.mocked(api.listLibrary).mockResolvedValue({
+      items: ELEMENT_IMAGES,
+      total: ELEMENT_IMAGES.length,
+      limit: 50,
+      offset: 0,
+      tags: [],
+    })
+    const patch = vi.fn()
+    render(
+      <GenerateForm
+        form={{
+          ...initialForm,
+          mode: 'i2v',
+          videoWorkflow: 'kling3_video',
+          ...form,
+        }}
+        patch={patch}
+        options={{ ...OPTIONS, video_workflows: [KLING, PLAIN] }}
+        optionsError={null}
+        onReloadOptions={() => {}}
+        onOpenChat={() => {}}
+        onSubmit={() => {}}
+        submitting={false}
+        fieldErrors={{}}
+        comfyTarget="local"
+        onComfyTarget={() => {}}
+        jobs={[]}
+        showNsfw={false}
+      />,
+    )
+    return { patch }
+  }
+
+  it('宣言しているワークフローのときだけ、畳んだ状態で出す', () => {
+    showKlingForm()
+    expect(screen.getByText('開く（0 / 5 ショット）')).toBeTruthy()
+    expect(screen.getByText('開く（0 / 3 要素）')).toBeTruthy()
+    // 畳んでいるあいだは中身を描かない
+    expect(screen.queryByRole('button', { name: 'ショットを追加' })).toBeNull()
+
+    cleanup()
+    showKlingForm({ videoWorkflow: 'veo3_1_fast' })
+    expect(screen.queryByText(SHOTS)).toBeNull()
+    expect(screen.queryByText(ELEMENTS)).toBeNull()
+  })
+
+  it('ショットを追加・編集・削除できる', () => {
+    const { patch } = showKlingForm({
+      multiShots: [{ prompt: 'Shot 1', duration: 4 }],
+    })
+    fireEvent.click(screen.getByText('開く（1 / 5 ショット）'))
+
+    fireEvent.click(screen.getByRole('button', { name: 'ショットを追加' }))
+    expect(patch).toHaveBeenCalledWith({
+      multiShots: [
+        { prompt: 'Shot 1', duration: 4 },
+        { prompt: '', duration: 5 },
+      ],
+    })
+
+    fireEvent.change(screen.getByLabelText('Shot 1 の秒数'), {
+      target: { value: '9' },
+    })
+    expect(patch).toHaveBeenCalledWith({
+      multiShots: [{ prompt: 'Shot 1', duration: 9 }],
+    })
+
+    fireEvent.click(within(section(SHOTS)).getByRole('button', { name: '削除' }))
+    expect(patch).toHaveBeenCalledWith({ multiShots: [] })
+  })
+
+  it('上限に達したら追加できない', () => {
+    showKlingForm({
+      multiShots: Array(5).fill({ prompt: 'x', duration: 4 }),
+    })
+    fireEvent.click(screen.getByText('開く（5 / 5 ショット）'))
+    expect(
+      screen.getByRole('button', { name: 'ショットを追加' }),
+    ).toHaveProperty('disabled', true)
+  })
+
+  it('`@要素名` を 37 文字として残り文字数を出す', () => {
+    showKlingForm({ videoPrompt: '@kaori walks.' })
+    // 500 - (37 + " walks.".length)
+    expect(screen.getByText('残り 456 文字')).toBeTruthy()
+  })
+
+  it('要素の参照画像はライブラリから複数選べる', async () => {
+    const { patch } = showKlingForm({
+      klingElements: [{ name: 'kaori', description: '', images: [] }],
+    })
+    fireEvent.click(screen.getByText('開く（1 / 3 要素）'))
+    expect(within(section(ELEMENTS)).getByText('0 / 4 枚')).toBeTruthy()
+
+    fireEvent.click(
+      within(section(ELEMENTS)).getByRole('button', {
+        name: 'ライブラリから選択',
+      }),
+    )
+    expect(screen.getByText('ライブラリから選択: 要素 1 の参照画像')).toBeTruthy()
+
+    fireEvent.click(await screen.findByText('要素1'))
+    expect(patch).toHaveBeenCalledWith({
+      klingElements: [
+        { name: 'kaori', description: '', images: ['/library/image/el0.png'] },
+      ],
+    })
+    // 続けて選べるようモーダルは開いたまま
+    expect(screen.getByText('ライブラリから選択: 要素 1 の参照画像')).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: '選択を終える' }))
+    await waitFor(() =>
+      expect(
+        screen.queryByText('ライブラリから選択: 要素 1 の参照画像'),
+      ).toBeNull(),
+    )
+  })
+
+  it('要素を追加・削除できる', () => {
+    const { patch } = showKlingForm()
+    fireEvent.click(screen.getByText('開く（0 / 3 要素）'))
+    fireEvent.click(screen.getByRole('button', { name: '要素を追加' }))
+    expect(patch).toHaveBeenCalledWith({
+      klingElements: [{ name: '', description: '', images: [] }],
+    })
+
+    cleanup()
+    const second = showKlingForm({
+      klingElements: [
+        { name: 'kaori', description: '', images: ['/library/image/el0.png'] },
+      ],
+    })
+    fireEvent.click(screen.getByText('開く（1 / 3 要素）'))
+    fireEvent.click(within(section(ELEMENTS)).getByRole('button', { name: '外す' }))
+    expect(second.patch).toHaveBeenCalledWith({
+      klingElements: [{ name: 'kaori', description: '', images: [] }],
+    })
+  })
+})

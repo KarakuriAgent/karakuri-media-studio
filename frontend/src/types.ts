@@ -297,6 +297,41 @@ export type ReferenceInput =
   | 'reference_audios'
 
 /**
+ * ショット割りの 1 ショット（mirrors models.MultiShot、SPEC §3.1）。
+ * 平坦な値ではなく**構造化されたリスト**でジョブに載る。
+ */
+export interface MultiShot {
+  prompt: string
+  /** そのショットの尺（秒、整数）。 */
+  duration: number
+}
+
+/** Elements の 1 要素（mirrors models.ElementInput、SPEC §3.1）。 */
+export interface KlingElement {
+  /** プロンプト中で `@要素名` として呼ぶ名前。 */
+  name: string
+  description: string
+  /** 参照画像（枚数の範囲はワークフローの宣言による）。 */
+  images: string[]
+}
+
+/** ショット割りの上限（mirrors models.MultiShotOption）。 */
+export interface MultiShotLimits {
+  max_shots: number
+  min_duration: number
+  max_duration: number
+}
+
+/** Elements の上限（mirrors models.ElementsOption）。 */
+export interface ElementsLimits {
+  max_elements: number
+  min_images: number
+  max_images: number
+  /** `@要素名` 1 参照が消費する文字数。 */
+  reference_chars: number
+}
+
+/**
  * ワークフローが宣言する選択式フィールド（GET /api/options）。
  *
  * 自由記述ではなく決まった選択肢で挙動が決まるワークフロー（wan_dancer の
@@ -328,6 +363,14 @@ export interface WorkflowOption {
    * Seedance 2 系のマルチモーダル参照だけが宣言する。古いレスポンスには無い。
    */
   multi_inputs?: Partial<Record<ReferenceInput, number>>
+  /**
+   * ショット割り / Elements の宣言（SPEC §3.1）。対応していないワークフロー
+   * では null で、フォームはそのセクションを出さない。古いレスポンスには無い。
+   */
+  multi_shot?: MultiShotLimits | null
+  elements?: ElementsLimits | null
+  /** プロンプトの文字数上限（0 / 未定義 = 上限なし）。 */
+  max_prompt_chars?: number
   supports: string[]
   accepts_start_image: boolean
   image_label: string
@@ -412,6 +455,13 @@ export interface JobCreate {
   reference_images?: string[]
   reference_videos?: string[]
   reference_audios?: string[]
+  /**
+   * ショット割りと Elements（SPEC §3.1）。宣言しているワークフロー
+   * （Kling 3.0）でだけ使える。`multi_shots` があるときは `video_prompt` は
+   * 送られない（本文はショット側にある）。
+   */
+  multi_shots?: MultiShot[]
+  kling_elements?: KlingElement[]
   seed: number | null
   /**
    * ワークフローが宣言する選択式フィールドの値（論理名 -> 選んだ文字列）。

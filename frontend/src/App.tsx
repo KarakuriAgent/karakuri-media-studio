@@ -360,6 +360,8 @@ export default function App() {
       // runs the image stage (including `full`)
       const imageNeedsSource =
         form.mode !== 'i2v' && imageWorkflowNeedsSource(imageWorkflow)
+      // ショット割り / Elements は動画ステージのパラメータ（SPEC §3.1）
+      const runsVideo = form.mode === 'full' || form.mode === 'i2v'
       const payload: JobCreate = {
         mode: form.mode,
         video_workflow: form.videoWorkflow,
@@ -407,6 +409,12 @@ export default function App() {
             form[item.field],
           ]),
         ),
+        // ショット割り / Elements（SPEC §3.1）: 宣言のあるワークフローを動画
+        // ステージで走らせるときだけ送る（そうでなければ空 = 送らないのと同じ）。
+        multi_shots:
+          runsVideo && workflow?.multi_shot ? form.multiShots : [],
+        kling_elements:
+          runsVideo && workflow?.elements ? form.klingElements : [],
         seed: form.seedLocked ? form.seed : null,
         // そのモードで走るワークフローが宣言している選択項目だけ（未指定は送らない）
         selects: jobSelects(

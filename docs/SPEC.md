@@ -124,8 +124,13 @@
   （選択式の値は文字列で届くので `KieTask.bool_keys` で `bool` に直す）。
   `negative_prompt` / `cfg` / `camera_control` / `seed` は kie.ai 経由の Kling には**存在しない**ので、
   すべてプロンプト本文で指定する。**`video_prompt` は 500 文字まで**で、超えたジョブは投入時に 422
-  （`models.prompt_length_problem`、マニフェストの `max_prompt_chars`）。マルチショット（`multi_shots` /
-  `multi_prompt`）と Elements（`kling_elements`、キャラ参照）、Turbo 系（`kling/v3-turbo-*`）は未対応。
+  （`models.prompt_length_problem`、マニフェストの `max_prompt_chars`）。
+  **マルチショット**（`multi_shots` / `multi_prompt`、最大 5 ショット・各 1〜12 秒）と
+  **Elements**（`kling_elements`、最大 3 要素・各 2〜4 枚の参照画像を `@要素名` で呼ぶ）に対応する（§3.1）。
+  マルチショットのときはトップレベルの `prompt` を送らず（本文はショット側）、`sound` の既定が
+  **true に入れ替わる**（`MultiShotSpec.select_defaults`）。`@要素名` 1 参照は**プロンプトの 37 文字**を
+  消費するので、500 文字の判定はこの補正込みで数える（`models.prompt_chars`）。
+  Turbo 系（`kling/v3-turbo-*`）は未対応。
   ユーザー LoRA は使えず、`full` は Veo と同じく ComfyUI の画像ワークフローと組み合わせられる
 - **`seedance2` / `seedance2_fast` / `seedance2_mini`（family `seedance`、backend `kie`）** も外部 API の
   ワークフロー（§5.2）で、Kling と同じ **Market 系の統一 API**。映像と**ネイティブ音声を同時に生成**する
@@ -263,6 +268,8 @@ LoRA チェーンも持たない（テンプレートに LoRA ノードが無い
 | リファレンス音声 | `audio` → `276` (LoadAudio)。要求するワークフローのみ | アップロード（`/upload/image` で送信 → ファイル名を注入） |
 | 開始フレーム / 最終フレーム / 参照動画 | `image` / `end_image` / `video` | ワークフローの必要入力に応じて表示。画像は D&D・履歴のラストフレームからも選べる |
 | マルチモーダル参照（参照画像 / 参照動画 / 参照音声） | `reference_images` / `reference_videos` / `reference_audios`（複数ファイル → URL の配列） | 宣言のあるワークフロー（Seedance 2 系）で `mode: "i2v"` のときだけ表示。1 欄が複数ファイルを持ち、選んだ順が API に渡る配列の順序になる。**開始フレーム / 最終フレームとは排他**（下記） |
+| マルチショット | `multi_shots` / `multi_prompt`（構造化リスト） | 宣言のあるワークフロー（Kling 3.0）で動画ステージが走るときだけ表示。折りたたみセクションで、ショット行（プロンプト + 秒数）の追加・削除（下記） |
+| Elements | `kling_elements`（構造化リスト） | 同上。折りたたみセクションで、要素（名前 + 説明 + 参照画像の複数選択）の追加・削除（下記） |
 | 秒数 (Duration) | `duration` | 数値・**上限なし**。長尺は VRAM 次第で ComfyUI 側エラーになり得ることを UI に注記。`duration` を持たないワークフロー（wan_dancer は尺を選択式で持つ）では欄ごと出さない |
 | 選択式フィールド | ワークフローの `selects`（論理名 → CustomCombo 等） | 宣言のあるワークフローだけ、ワークフローセレクトの直下にプルダウンが並ぶ（下記） |
 | フレームレート | `fps` | 数値（既定 25） |
@@ -286,6 +293,40 @@ LoRA チェーンも持たない（テンプレートに LoRA ノードが無い
 との組み合わせは投入前に 422 で断る。検証は Web UI（`form.validateForm` + `jobs._validate`）・
 API（`JobCreate` の検証）・エージェント（`agent_protocol._workflow_detail`）の 3 経路で同じ関数を通る。
 素材のサイズ・解像度・尺の細かい制約は外部 API の判断に任せ、失敗理由をそのまま見せる。
+
+#### 構造化パラメータ: マルチショット（`WorkflowSpec.multi_shot`）と Elements（`WorkflowSpec.elements`）
+
+ジョブの params は「名前 → 平坦な値」が中心だが、Kling 3.0 のこの 2 つだけは**中身に構造がある**。
+JSON 文字列で持つと検証もフォームも書けないので、**型付きのリスト**（`models.MultiShot` /
+`models.ElementInput`）として `JobCreate` / `GenerationParams` / params に持つ。
+
+**マルチショット**（`MultiShotSpec(max_shots, min_duration, max_duration, select_defaults)`）:
+
+- ジョブは `multi_shots: [{"prompt": "…", "duration": <int>}]` を持つ。1 件でもあれば
+  `input` には `multi_shots: true` と `multi_prompt`（配列）が入り、**トップレベルの `prompt` は
+  送らない**（`kie.task_values`）。`video_prompt` はそのぶん必須チェックからも外れる
+  （`models.missing_job_fields`）
+- `select_defaults`（Kling は `{"sound": "true"}`）は「マルチショットのときだけ既定が変わる選択式」。
+  **明示指定があればそちらが勝つ**ので、音を切りたいジョブは `selects` で `false` を書けばよい
+- 件数（≤ `max_shots`）・1 ショットの尺（`min_duration`〜`max_duration` の整数）・1 ショットの
+  本文の長さ（ワークフローの `max_prompt_chars`）は投入前に `models.multi_shot_problem` が見る
+
+**Elements**（`ElementsSpec(max_elements, min_images, max_images, reference_chars)`）:
+
+- ジョブは `kling_elements: [{"name", "description", "images": [パス]}]` を持つ。`images` は
+  投入時に `jobs._kie_uploads` が 1 枚ずつ File Upload API に上げ、API の形
+  `{"name", "description", "element_input_urls": [URL]}` に組み直す
+- プロンプト本文からは `@要素名` で呼ぶ。**`@要素名` 1 参照が `reference_chars`（37）文字**を
+  消費するので、文字数の判定はこの補正込みで数える（`models.prompt_chars`。素の `len()` では
+  500 文字の上限が合わない）
+- **宣言していない `@名前` は 422**（`models.elements_problem`）。黙って通すとモデルには文字として
+  渡り、しかも 37 文字を食うので気づけない。逆に**宣言したが参照していない**要素は、素材を先に
+  用意しただけかもしれないので何も言わない。要素名の重複・空白入り・枚数・拡張子も同時に見る
+
+どちらも検証は Web UI（`form.validateForm` + `jobs._validate`）・API（`JobCreate` の検証）・
+エージェント（`agent_protocol._workflow_detail`）の 3 経路で同じ関数を通る。上限は
+`GET /api/options` の `multi_shot` / `elements` / `max_prompt_chars` としてフォームにも渡り、
+宣言のないワークフローではセクションそのものが出ない。
 
 #### 選択式フィールド（`WorkflowSpec.selects`）
 
@@ -695,8 +736,11 @@ ComfyUI と並ぶ **2 つめの生成バックエンド**として、外部 API 
   配列になり、同じキーに複数の論理入力を宣言できる（`imageUrls` は宣言順 = 開始フレーム, 最終フレーム）
 - **Kling は Market 系のまま**（`api: "market"`、モデル `kling-3.0/video`）。`input` に入る値の**型はモデルごとに違う**
   ので、マニフェスト側で宣言して合わせる: `KieTask.list_keys`（配列 = `image_urls`）と
-  `KieTask.bool_keys`（真偽値 = `sound`）。選択式フィールドの値はすべて文字列で届くため、
-  型を直さないと API に弾かれる。逆に Kling の `duration` は**文字列のまま**送るのが正しい（§2.2）
+  `KieTask.bool_keys`（真偽値 = `sound` / `multi_shots`）。選択式フィールドの値はすべて文字列で届くため、
+  型を直さないと API に弾かれる。逆に Kling の `duration` は**文字列のまま**送るのが正しい（§2.2）。
+  マルチショットの `multi_prompt` と Elements の `kling_elements` は**辞書の配列**で、前者は
+  `kie.task_values`（本文はショット側なので `prompt` は落ちる）、後者は `jobs._kie_uploads`
+  （参照画像を 1 枚ずつ上げて `element_input_urls` にする）が組み立てたものがそのまま入る（§3.1）
 - **Seedance 2 系も Market 系のまま**（`api: "market"`、モデル `bytedance/seedance-2` / `-fast` / `-mini`）。型の宣言は
   `KieTask.int_keys`（整数 = `duration`）と `KieTask.bool_keys`（真偽値 = `generate_audio` / `nsfw_checker`）。開始 / 最終フレームは
   `first_frame_url` / `last_frame_url` と**キーが別**なので `list_keys` は使わない。マルチモーダル参照は
@@ -890,7 +934,7 @@ CREATE TABLE jobs (
 );
 ```
 
-- `params` には `video_workflow` / `image_workflow` / `audio_workflow`（ワークフロー ID）と、`end_image` / `reference_video` / `reference_images` / `reference_videos` / `reference_audios`、音声モードの `audio_prompt` / `lyrics` / `negative_tags` / `bpm` / `keyscale` / `language` / `audio_category` / `reprompt` / `audio_seed` も保存する
+- `params` には `video_workflow` / `image_workflow` / `audio_workflow`（ワークフロー ID）と、`end_image` / `reference_video` / `reference_images` / `reference_videos` / `reference_audios` / `multi_shots` / `kling_elements`、音声モードの `audio_prompt` / `lyrics` / `negative_tags` / `bpm` / `keyscale` / `language` / `audio_category` / `reprompt` / `audio_seed` も保存する
 - 後から足したカラム（`nsfw` / `nsfw_source` / `audio_prompt` / `audio_output_path` / `credits_consumed` / `extra_outputs` など）は起動時に `PRAGMA table_info` と突き合わせて不足分だけ `ALTER TABLE` する（`db.MIGRATIONS`）
 - `workflow_json` を保存するため、任意の過去ジョブの投入内容をあとから完全に確認できる（`rerun` は `params` から作り直す）
 - リファレンス音声・アップロード画像は `assets/` に保存し再利用可能（名前を付けて管理）
@@ -1059,6 +1103,7 @@ SPA 1 画面 + 履歴。ダークテーマの生成系ツールらしい見た�
 - **入力リソースは「ライブラリから選択」「履歴から選択」で使い回せる**: 開始フレーム / 編集元画像・最後のフレーム・参照動画・リファレンス音声の各欄に 2 つのボタンを置く。[ライブラリから選択] は取っておいた素材の一覧（`LibraryPickerModal`、§7.2）で、選ぶと `/library/…` URL をそのまま欄に入れる（配信済みなのでコピーしない）。モーダル内から素材のアップロード追加・リネーム・タグ編集・削除もできる。一覧は `GET /api/library` から 50 件ずつ読み、**検索ボックス（名前・タグの部分一致）・カテゴリのプルダウン（すべて / キャラクター / 背景 / 小物 / 未分類）・タグチップでの絞り込み**、[さらに表示] での continue 読み込みに対応する（絞り込みとページングはサーバー側）。素材ごとのカテゴリはタイル下のプルダウンでその場で変えられ、モーダルからのアップロードには絞り込み中のカテゴリがそのまま付く
 - **リファレンスシートを「ライブラリから作成」**: リファレンスシートを入力に取る動画ワークフロー（`ltx2_3_ic_lora_image`）を選んでいるときだけ、画像欄に [ライブラリから作成] を足す（`SheetBuilderModal`）。押すと `LibraryPickerModal` の複数選択モード（タイルに選択順のバッジが出る）で画像素材を **2〜8 枚**選べ、[この順で作成] で `POST /api/library/sheet`（§7.2）を呼ぶ。シートの大きさは選択中のアスペクト比から長辺 1280px で決める（`form.sheetSize`。プリセットが読めなければ 1280x720）。出来上がったシートはそのまま画像欄に入り、ライブラリにも残る。作成中はボタンを [作成中…] にし、失敗はモーダル内にそのまま出す
 - **マルチモーダル参照の欄**（Seedance 2 系、§2.2 / §3.1）: 参照入力を宣言しているワークフローを `mode: "i2v"` で選んだときだけ「マルチモーダル参照（開始フレームとは排他）」セクションを出す。参照画像 / 参照動画 / 参照音声の欄がそれぞれ「n / 上限 件」と [アップロード] [ライブラリから選択] [履歴から選択] を持ち、選んだ素材は**選んだ順**に番号つきで積み上がる（並び順がそのまま API に渡る配列の順序）。各行の [外す] で個別に取り消せる。ライブラリのモーダルは複数選択モード（`LibraryPickerModal` の `selectedIds`）で開き、選ぶたびに欄へ出し入れしてモーダルは開いたまま、[選択を終える] で閉じる。上限に達したら追加の操作を無効化する。開始フレーム / 最後のフレームと同時に入っている場合と `mode: "full"` の場合は、送信前にフォームがその場でエラーを出す（バックエンドの 422 と同じ理由、`form.validateForm`）
+- **マルチショット / Elements の欄**（Kling 3.0、§2.2 / §3.1）: 宣言のあるワークフローで動画ステージが走るときだけ、「マルチショット」「Elements（@要素名 でのキャラ固定）」の 2 セクションを出す。行が増えて縦に伸びるので**どちらも既定は折りたたみ**で、見出しの右肩は [開く（n / 上限 ショット）] / [閉じる]。マルチショットは Shot ごとにプロンプトのテキストエリアと秒数の数値欄を持ち、[ショットを追加] / [削除] で増減する（上限に達したら追加を無効化）。Elements は要素ごとに名前・説明の入力と参照画像の欄を持ち、画像は [ライブラリから選択]（複数選択モード。参照素材と同じく選ぶたびに出し入れしてモーダルは開いたまま）/ [履歴から選択] で入れて [外す] で取り消す。動画プロンプトと各ショットには**残り文字数**を出し、`@要素名` は 37 文字として数える（0 を切ると赤）。件数・秒数・文字数・宣言していない `@名前` は送信前にフォームがその場でエラーを出す（バックエンドの 422 と同じ理由、`form.validateForm`）
 - **リファレンス音声はライブラリに一本化**: `assets/audio` のプルダウンは廃止し、[ライブラリから選択] / [履歴から選択] / [アップロード]（アップロードはそのままライブラリ登録）と、選択中の名前 + プレビューだけを出す。LoRA の `default_audio` などが指す従来の `/assets/…` も入力としては引き続き有効
 - **生成物のライブラリ登録**: 結果ペイン（表示中の成果物 1 件）と履歴詳細（その job が持つ出力すべて）に [☆ ライブラリに登録] を置く（`LibraryAddButton`）。既に登録済みのものは `/api/options` の library から判定して押す前から [★ 登録済みです] を出し、押してしまった場合も 409 を失敗扱いにせず同じ表示にする（§7.2）。ボタンの隣にカテゴリのプルダウン（既定は未分類）を置き、登録と同時に分類できる
 - [履歴から選択] は過去ジョブの出力から選ぶ（`HistoryPickerModal`）。**検索ボックス**でジョブの文言（動画 / 画像 / 音声プロンプト → 最初の指示）に部分一致するものだけに絞れる（ジョブは全件フロントにあるのでクライアント側で絞る）。候補は完了ジョブのみを新しい順に並べ、欄の種別で絞る（画像欄 = 生成画像とラストフレームの両方（ラベルで区別）、動画欄 = 生成動画、音声欄 = 音声ジョブの出力）。生成物は `outputs/` にあって `assets/` の外なので、選ぶと fetch → `POST /api/assets/{kind}` で assets へコピーしてから欄に入れる。モーダル内には独自の「🫣 NSFW表示」チェックボックスがあり、初期値はヘッダーのグローバルトグルに従うが、ここでの切り替えは `sessionStorage` に残さない（この画面かぎり）。オフのあいだは NSFW ジョブを一覧に出さない。Esc / 背景クリックで閉じる
@@ -1118,7 +1163,7 @@ POST /api/models/download-all    … 未検出かつ取得元 URL 登録済み�
 POST /api/chat/sessions          … チャット開始（フォーム現在値をコンテキストとして渡す。`video_workflow` / `image_workflow` / `audio_workflow` を含む）
 POST /api/chat/sessions/{id}/messages … 発言送信 → Grok 応答（質問 or 最終JSON案）を返す
 GET  /api/chat/sessions/{id}     … 履歴取得
-POST /api/jobs                   … ジョブ作成・実行（プロンプト確定値+パラメータ。`selects` で選択式フィールド §3.1、`model_overrides` でそのジョブだけモデルを差し替え可 §3.3、`reference_images` / `reference_videos` / `reference_audios` でマルチモーダル参照 §3.1）
+POST /api/jobs                   … ジョブ作成・実行（プロンプト確定値+パラメータ。`selects` で選択式フィールド §3.1、`model_overrides` でそのジョブだけモデルを差し替え可 §3.3、`reference_images` / `reference_videos` / `reference_audios` でマルチモーダル参照、`multi_shots` / `kling_elements` でマルチショット・Elements §3.1）
 GET  /api/jobs?limit=…           … 履歴一覧
 GET  /api/jobs/{id}              … 詳細
 POST /api/jobs/{id}/rerun        … 再実行（seed 変更オプション）

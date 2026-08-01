@@ -37,8 +37,12 @@ from .models import (
     audio_workflow_problem,
     image_workflow_problem,
     job_workflow_ids,
+    elements_of,
+    elements_problem,
     missing_job_fields,
     model_override_problem,
+    multi_shot_problem,
+    multi_shots_of,
     prompt_length_problem,
     reference_materials,
     reference_problem,
@@ -152,6 +156,7 @@ _NON_AUDIO_FIELDS = (
     "image_prompt", "video_prompt", "loras", "video_loras",
     "source_image", "end_image", "reference_video", "audio_path",
     "reference_images", "reference_videos", "reference_audios",
+    "multi_shots", "kling_elements",
 )
 
 
@@ -332,6 +337,18 @@ def _workflow_detail(raw: dict[str, Any]) -> str | None:
     if references:
         return references
 
+    # ショット割りと Elements（Kling）: 件数・尺・`@要素名` の対応まで見る。
+    shots = multi_shots_of(raw)
+    structured = multi_shot_problem(mode, workflow, shots) or elements_problem(
+        mode,
+        workflow,
+        elements_of(raw),
+        video_prompt=_text(raw.get("video_prompt")),
+        shots=shots,
+    )
+    if structured:
+        return structured
+
     try:
         missing = missing_job_fields(
             mode,
@@ -343,6 +360,7 @@ def _workflow_detail(raw: dict[str, Any]) -> str | None:
             reference_video=_text(raw.get("reference_video")),
             video_workflow=workflow,
             image_workflow=_text(raw.get("image_workflow")),
+            multi_shots=shots,
         )
     except WorkflowSpecError as exc:
         return str(exc)
@@ -451,6 +469,11 @@ def validate_job(
             for item in getattr(payload, field, None) or []:
                 if item:
                     resolve_asset_path(item, field=field)
+        # Elements の参照画像も同じ扱い（SPEC §3.1）
+        for element in payload.kling_elements:
+            for item in element.images:
+                if item:
+                    resolve_asset_path(item, field="kling_elements")
     except JobValidationError as exc:
         raise ActionError(f"{where}: {exc}") from exc
     return payload

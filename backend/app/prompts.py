@@ -540,6 +540,24 @@ def _catalog_entry_lines(entry: CatalogEntry) -> list[str]:
             + "。指定するときは `mode: \"i2v\"` で、`source_image` /"
             " `end_image` を書かないこと（同時指定のジョブは拒否されます）"
         )
+    if entry.multi_shot is not None:
+        lines.append(
+            "  - マルチショット: `multi_shots`（最大"
+            f" {entry.multi_shot.max_shots} ショット、各"
+            f" `{{prompt, duration}}` で duration は"
+            f" {entry.multi_shot.min_duration}〜{entry.multi_shot.max_duration}"
+            " 秒の整数）。指定したときは `video_prompt` を書かない"
+            "（本文はショット側にあり、API にも送られません）"
+        )
+    if entry.elements is not None:
+        lines.append(
+            "  - Elements: `kling_elements`（最大"
+            f" {entry.elements.max_elements} 要素、各 `{{name, description,"
+            f" images}}` で画像は {entry.elements.min_images}〜"
+            f"{entry.elements.max_images} 枚）。本文からは `@要素名` で呼び、"
+            f"**1 参照が {entry.elements.reference_chars} 文字**を消費する"
+            "（宣言していない `@名前` は拒否されます）"
+        )
     lines.append(f"  - 音声: {entry.audio}")
     i2v = _fields_text(_required_fields("i2v", entry.id))
     # the same helper POST /api/jobs uses, so "full is impossible" can never be
@@ -814,8 +832,58 @@ want, and put the few things to suppress inline in the same sentence style
 trying to avoid.
 
 Duration, mode (std / pro / 4K), aspect ratio and sound are job fields
-(`selects`), never sentences in the prompt. Multi-shot prompts and Elements
-(`@character` references) are not wired up yet — one shot per job.
+(`selects`), never sentences in the prompt.
+
+## Multi-shot (`multi_shots`)
+
+One Kling job can be **up to 5 consecutive shots** instead of one take. Send
+`multi_shots` as a list and leave `video_prompt` empty — the top-level prompt is
+not sent at all when shots are present:
+
+```json
+"multi_shots": [
+  {"prompt": "Shot 1 …", "duration": 4},
+  {"prompt": "Shot 2 …", "duration": 5}
+]
+```
+
+- Each shot is **1-12 seconds** (integer) and its `prompt` obeys the same
+  **500 character** limit, on its own.
+- Write every shot in the same order as a single take: **camera move → action →
+  position in the scene → sound**. `Shot 2: Low tracking shot, she pushes
+  through the door and steps into the rain, now framed from the left, sound:
+  rain on metal.`
+- Keep the identity wording **identical in every shot** (same age, hair,
+  wardrobe words); this is the only thing holding the character together across
+  the cuts. Same for the location and the light.
+- `sound` defaults to **true** for a multi-shot job, so name the ambience per
+  shot.
+- Shots are cuts, not one long move: do not carry a camera move across two
+  shots, give each one its own.
+
+## Elements (`kling_elements`)
+
+Up to **3 named elements**, each with **2-4 reference images**, pin a recurring
+cast member or prop:
+
+```json
+"kling_elements": [
+  {"name": "kaori", "description": "the woman in the grey coat",
+   "images": ["/library/image/kaori_a.png", "/library/image/kaori_b.png"]}
+]
+```
+
+Call them from the text with `@name` (`Slow dolly push forward, @kaori steps off
+the tram …`). Two rules that matter:
+
+- **One `@name` costs 37 characters** of the 500, whatever its length — three
+  references eat over a fifth of the prompt. Name elements briefly and refer to
+  them once per shot, then use ordinary pronouns.
+- **`@name` must match a declared element.** A reference to an element you did
+  not declare is rejected before the job is queued.
+
+Elements work with multi-shot (`@name` inside each shot's `prompt`) and with a
+start frame.
 """
 
 # Seedance 2 — https://docs.kie.ai/market/bytedance/seedance-2.md と
@@ -1962,6 +2030,21 @@ Rules:
   reference audio sets the mood; with them in play, write `video_prompt` about
   the direction only, not about what the material already shows. Leave the
   lists out entirely when you are not using them.
+- `multi_shots` cuts one job into **several consecutive shots** (Kling only —
+  VIDEO WORKFLOWS says how many and how long). It is a list of
+  `{"prompt": "…", "duration": <int seconds>}`; when you use it, **leave
+  `video_prompt` empty** — the top-level prompt is not sent. Every shot's
+  `prompt` obeys the model's own character limit on its own, and the identity
+  wording must be repeated verbatim in each shot or the character drifts across
+  the cuts. Use it for a short sequence that must stay one continuous scene; use
+  separate tasks when the shots are independent.
+- `kling_elements` are named casts you refer to with `@name` in the prompt text
+  (Kling only): a list of `{"name": "…", "description": "…", "images": [asset /
+  library paths]}`. VIDEO WORKFLOWS says how many elements and how many pictures
+  each takes. **Every `@name` in the text must be a declared element** (an
+  undeclared one is rejected) and **each `@name` costs 37 characters** of the
+  prompt limit, so refer to an element once per shot and use pronouns after
+  that. Leave the list out entirely when you are not using it.
 - `aspect_ratio` is a preset for the image stage; when the job has a
   `source_image` the video follows that image's real aspect ratio instead (so it
   is never centre-cropped), and only `megapixels` still applies.

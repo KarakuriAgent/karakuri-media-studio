@@ -780,9 +780,16 @@ def task_values(
 
     ComfyUI 側の :mod:`app.workflow` にあたる「注入する値を決める」層。実際の
     キー名は :class:`app.workflows.KieTask` が決めるので、ここはモデルに依らない。
+
+    **ショット割り**（:class:`app.workflows.MultiShotSpec`）を指定したジョブでは、
+    本文はショット側にあるので ``prompt`` を空にして送らず、代わりに
+    ``multi_shots``（真偽値）と ``multi_prompt``（配列）を立てる。このとき
+    :attr:`~app.workflows.MultiShotSpec.select_defaults` に挙げた選択式は
+    **明示指定が無ければ**そちらの既定に入れ替わる（Kling の ``sound``）。
     """
+    shots = _multi_prompt(spec, params)
     values: dict[str, Any] = {
-        "prompt": _prompt(spec, params),
+        "prompt": "" if shots else _prompt(spec, params),
         "negative_prompt": params.negative_prompt,
         "aspect_ratio": params.aspect_ratio,
         "duration": params.duration,
@@ -792,12 +799,38 @@ def task_values(
         "bpm": params.bpm,
         "language": params.language,
         "negative_tags": params.negative_tags,
+        # ショット割り（指定が無ければどちらも落ちる）
+        "multi_shots": True if shots else None,
+        "multi_prompt": shots,
     }
+    overrides = (
+        spec.multi_shot.select_defaults if shots and spec.multi_shot else {}
+    )
     for name, select in spec.selects.items():
-        chosen = params.selects.get(name) or select.fallback
+        chosen = (
+            params.selects.get(name) or overrides.get(name) or select.fallback
+        )
         values[f"{KIE_SELECT_PREFIX}{name}"] = chosen
     values.update(uploads)
     return values
+
+
+def _multi_prompt(
+    spec: WorkflowSpec, params: GenerationParams
+) -> list[dict[str, Any]]:
+    """``multi_prompt`` に載せるショットの配列（指定が無ければ空）。
+
+    件数・尺・長さは投入前に :func:`app.models.multi_shot_problem` が見ているので、
+    ここは形を整えるだけ（``duration`` は API 仕様どおり**整数**）。
+    """
+    if spec.multi_shot is None:
+        return []
+    shots: list[dict[str, Any]] = []
+    for shot in params.multi_shots:
+        text = shot.prompt.strip()
+        if text:
+            shots.append({"prompt": text, "duration": int(shot.duration)})
+    return shots
 
 
 #: 「真」と読む文字列（選択式フィールドの値は文字列で届く）
@@ -864,6 +897,10 @@ def task_input(
     そのまま配列として入る（:attr:`~app.workflows.KieTask.list_keys` は「別々の
     論理名を 1 つの配列に並べる」ための宣言で、こちらとは別の機構）。空のリストは
     「指定なし」なのでキーごと落ちる。
+
+    ショット割りの ``multi_prompt`` と Elements の ``kling_elements``（Kling）は
+    **辞書の配列**で、どちらも組み立て済みの値がそのまま入る
+    （:func:`task_values` と :func:`app.jobs._kie_uploads`）。
     """
     task = spec.kie
     if task is None:

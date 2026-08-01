@@ -233,6 +233,14 @@ KIE_VALUES: frozenset[str] = frozenset({
     "reference_images",
     "reference_videos",
     "reference_audios",
+    # マルチショット（:class:`MultiShotSpec`、Kling）。``multi_shots`` は
+    # 「ショット割りで作る」の真偽値、``multi_prompt`` は
+    # ``[{"prompt": ..., "duration": ...}]`` の配列（§3.1）。
+    "multi_shots",
+    "multi_prompt",
+    # Elements（:class:`ElementsSpec`、Kling）。参照画像を要素にまとめ、
+    # プロンプト中の ``@要素名`` で呼び出す（§3.1）。
+    "kling_elements",
 })
 
 #: ``select:<名前>`` の接頭辞
@@ -325,6 +333,47 @@ class CodexCliTask:
 
 
 @dataclass(frozen=True)
+class MultiShotSpec:
+    """**ショット割り**で 1 本の動画を作れるモデルの宣言（SPEC §3.1、Kling 3.0）。
+
+    宣言のあるワークフローでは、ジョブは 1 本の ``video_prompt`` の代わりに
+    ``multi_shots``（``[{"prompt": ..., "duration": ...}]``）を持てる。指定が
+    あれば ``input`` には ``multi_shots: true`` と ``multi_prompt`` の配列が入り、
+    **トップレベルの ``prompt`` は送らない**（API 仕様どおり、ショットの文だけで
+    決まる）。件数・1 ショットの長さ・1 ショットのプロンプト長は投入前に
+    :func:`app.models.multi_shot_problem` が見る。
+    """
+
+    #: 1 ジョブで並べられるショット数
+    max_shots: int = 5
+    #: 1 ショットの尺（秒、整数）
+    min_duration: int = 1
+    max_duration: int = 12
+    #: マルチショットのときだけ既定が変わる選択式（名前 -> 値）。Kling は
+    #: ``sound`` が既定 true になる（ショット割りは音つき前提の機能）。
+    select_defaults: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class ElementsSpec:
+    """**Elements**（参照画像を名前つきの要素にまとめる）の宣言（§3.1、Kling 3.0）。
+
+    1 要素 = 名前 + 説明 + 参照画像 2〜4 枚で、プロンプト本文からは ``@要素名``
+    で呼び出す。**``@要素名`` 1 回はプロンプトの文字数を
+    :attr:`reference_chars` 文字消費する**（実際の文字数ではない）ので、500 文字
+    の上限を数えるときはこの補正を掛ける（:func:`app.models.prompt_chars`）。
+    """
+
+    #: 1 ジョブで宣言できる要素の数
+    max_elements: int = 3
+    #: 1 要素に付ける参照画像の枚数
+    min_images: int = 2
+    max_images: int = 4
+    #: ``@要素名`` 1 参照がプロンプトの上限から消費する文字数
+    reference_chars: int = 37
+
+
+@dataclass(frozen=True)
 class WorkflowSpec:
     id: str
     label: str
@@ -354,6 +403,10 @@ class WorkflowSpec:
     #: （:func:`app.models.reference_problem`）。名前は
     #: :data:`MULTI_INPUT_FIELDS` のキー。
     multi_inputs: dict[str, int] = field(default_factory=dict)
+    #: **ショット割り**の宣言（``None`` = 1 ジョブ 1 ショットのみ、SPEC §3.1）
+    multi_shot: MultiShotSpec | None = None
+    #: **Elements**（``@要素名`` で呼ぶ参照画像の束）の宣言（``None`` = 非対応）
+    elements: ElementsSpec | None = None
     #: what the workflow is for, in one or two Japanese sentences.  This is the
     #: single source of the catalog embedded in the Grok system prompts
     #: (:func:`video_catalog`), so keep it factual and short.
@@ -1323,8 +1376,20 @@ VEO3_1_QUALITY = _veo_spec(
 #   ``bool`` に直してから送る
 #
 # ``negative_prompt`` / ``cfg`` / ``camera_control`` / ``seed`` は kie.ai 経由の
-# Kling には無いので宣言しない（すべてプロンプト本文で制御する）。マルチショット
-# （``multi_shots`` / ``multi_prompt``）と Elements（``kling_elements``）は第 2 段。
+# Kling には無いので宣言しない（すべてプロンプト本文で制御する）。
+#
+# 第 2 段で足した 2 つの構造化パラメータ:
+#
+# - **マルチショット**（:class:`MultiShotSpec`）。``multi_shots: true`` と
+#   ``multi_prompt: [{"prompt", "duration"}]`` の組で、1 タスクに最大 5 ショット。
+#   このとき**トップレベルの ``prompt`` は送らない**（:func:`app.kie.task_values`）。
+#   ``sound`` の既定も true に変わる
+# - **Elements**（:class:`ElementsSpec`）。``kling_elements`` は
+#   ``[{"name", "description", "element_input_urls"}]`` で、参照画像は
+#   :func:`app.jobs._kie_uploads` が 1 枚ずつ URL 化する。プロンプトからは
+#   ``@要素名`` で呼び、**1 参照が 37 文字**を消費する
+#
+# Turbo 系（``kling/v3-turbo-text-to-video`` / ``-image-to-video``）は未対応。
 
 #: Kling の生成モード（解像度と値段が変わる）
 KLING_MODES: tuple[str, ...] = ("std", "pro", "4K")
@@ -1335,8 +1400,23 @@ KLING_ASPECT_RATIOS: tuple[str, ...] = ("16:9", "9:16", "1:1")
 #: ネイティブ音声の ON / OFF（``sound`` は真偽値なので :attr:`KieTask.bool_keys`）
 KLING_SOUND: tuple[str, ...] = ("false", "true")
 
-#: プロンプトの長さの上限（kie.ai の Kling 3.0）
+#: プロンプトの長さの上限（kie.ai の Kling 3.0）。マルチショットの 1 ショットも
+#: 同じ上限（``multi_prompt[].prompt`` も 500 文字まで）。
 KLING_MAX_PROMPT_CHARS = 500
+
+#: マルチショット（``multi_shots`` / ``multi_prompt``）の宣言
+KLING_MULTI_SHOT = MultiShotSpec(
+    max_shots=5,
+    min_duration=1,
+    max_duration=12,
+    # ショット割りは音つき前提の機能なので、明示指定が無ければ音声を出す
+    select_defaults={"sound": "true"},
+)
+
+#: Elements（``kling_elements``）の宣言
+KLING_ELEMENTS = ElementsSpec(
+    max_elements=3, min_images=2, max_images=4, reference_chars=37
+)
 
 KLING_PROMPT_HINT = (
     "**Hard limit: 500 characters** — the API rejects anything longer, so write"
@@ -1352,6 +1432,12 @@ KLING_PROMPT_HINT = (
     " (`Woman (raspy, low voice): \"...\"`); Japanese dialogue is lip-synced."
     " There is no negative prompt parameter: write what you do want, and put"
     " unwanted elements as `no text overlays, no camera shake` inside the text."
+    " For a **multi-shot** job (`multi_shots`, up to 5 shots of 1-12 seconds)"
+    " write one such paragraph **per shot** and leave `video_prompt` empty; each"
+    " shot still starts with its camera move and repeats the identity wording."
+    " **Elements** (`kling_elements`, up to 3, each with 2-4 reference images)"
+    " are named casts you call with `@name` in the text — one `@name` costs"
+    " **37 characters** of the 500, and a name you did not declare is rejected."
 )
 
 KLING3_VIDEO = WorkflowSpec(
@@ -1365,12 +1451,16 @@ KLING3_VIDEO = WorkflowSpec(
         "3〜15 秒と尺が長い。`sound` を on にすると環境音・効果音・セリフ"
         "（日本語のリップシンクつき）まで同時に生成する。画像は任意で、1 枚渡すと"
         "開始フレーム、`end_image` も渡すと開始 + 最終フレームの補間になる。"
-        "**プロンプトは 500 文字まで**。外部 API なので LoRA は使えない。"
+        "**プロンプトは 500 文字まで**。`multi_shots` で最大 5 ショットの"
+        "ショット割り（各 1〜12 秒）、`kling_elements` で `@要素名` 参照の"
+        "キャラクター固定ができる。外部 API なので LoRA は使えない。"
     ),
     prompt_hint=KLING_PROMPT_HINT,
     max_prompt_chars=KLING_MAX_PROMPT_CHARS,
     accepts_start_image=True,
     image_label="開始フレーム（任意）",
+    multi_shot=KLING_MULTI_SHOT,
+    elements=KLING_ELEMENTS,
     kie=KieTask(
         model="kling-3.0/video",
         # Market 系（統一 API）なので系統は既定のまま
@@ -1379,13 +1469,18 @@ KLING3_VIDEO = WorkflowSpec(
             # 宣言順がそのまま image_urls の並び（1 枚目 = 開始フレーム）
             "image": "image_urls",
             "end_image": "image_urls",
+            # ショット割り（指定があるときだけ入り、prompt のほうが落ちる）
+            "multi_shots": "multi_shots",
+            "multi_prompt": "multi_prompt",
+            # Elements（参照画像は _kie_uploads が element_input_urls に直す）
+            "kling_elements": "kling_elements",
             f"{KIE_SELECT_PREFIX}mode": "mode",
             f"{KIE_SELECT_PREFIX}duration": "duration",
             f"{KIE_SELECT_PREFIX}aspect_ratio": "aspect_ratio",
             f"{KIE_SELECT_PREFIX}sound": "sound",
         },
         list_keys=("image_urls",),
-        bool_keys=("sound",),
+        bool_keys=("sound", "multi_shots"),
         # pro / 5 秒 / 音声なしの概算（$0.09/秒 = 90 credits）
         credits=90.0,
     ),
@@ -1417,8 +1512,9 @@ KLING3_VIDEO = WorkflowSpec(
     },
     notes=(
         "kie.ai 経由 / プロンプトは 500 文字まで / ネガティブプロンプト・seed・"
-        "カメラ制御パラメータは無い（本文で指定） /"
-        " マルチショットと Elements（キャラ参照）は未対応"
+        "カメラ制御パラメータは無い（本文で指定） / マルチショットは最大 5 ショット"
+        "（各 1〜12 秒、指定時は音声が既定 ON） / Elements は最大 3 要素"
+        "（各 2〜4 枚、`@要素名` 1 参照 = 37 文字） / Turbo 系は未対応"
     ),
 )
 
@@ -2195,6 +2291,10 @@ class CatalogEntry:
     #: ``(JobCreate field, 日本語ラベル, 件数の上限)`` of the multi-file reference
     #: inputs it accepts (empty for every workflow without a reference mode)
     reference_inputs: tuple[tuple[str, str, int], ...]
+    #: ショット割りの宣言（``None`` = 1 ジョブ 1 ショット、§3.1）
+    multi_shot: "MultiShotSpec | None"
+    #: Elements（``@要素名`` の参照画像）の宣言（``None`` = 非対応、§3.1）
+    elements: "ElementsSpec | None"
     #: can it be the second stage of a full (image -> video) job, and therefore
     #: also the target of a ``continue``?
     accepts_start_image: bool
@@ -2241,6 +2341,8 @@ def catalog_entry(spec: WorkflowSpec) -> CatalogEntry:
             for name, limit in spec.multi_inputs.items()
             if name in MULTI_INPUT_FIELDS
         ),
+        multi_shot=spec.multi_shot,
+        elements=spec.elements,
         accepts_start_image=spec.accepts_start_image,
         audio=spec.audio_role or GENERATED_AUDIO,
         prompt_hint=spec.prompt_hint,
@@ -2352,6 +2454,27 @@ def _validate_common(spec: WorkflowSpec) -> list[str]:
             )
         if limit < 1:
             problems.append(f"{spec.id}.multi_inputs[{name}]: limit must be >= 1")
+    # ショット割り / Elements: 受け取り口があり、上限が正で筋が通っているか
+    if spec.multi_shot is not None:
+        for name in ("multi_shots", "multi_prompt"):
+            if not spec.supports(name):
+                problems.append(f"{spec.id}.multi_shot: no {name} injection point")
+        if spec.multi_shot.max_shots < 1:
+            problems.append(f"{spec.id}.multi_shot: max_shots must be >= 1")
+        if spec.multi_shot.min_duration > spec.multi_shot.max_duration:
+            problems.append(f"{spec.id}.multi_shot: duration range is inverted")
+        for name in spec.multi_shot.select_defaults:
+            if spec.select(name) is None:
+                problems.append(
+                    f"{spec.id}.multi_shot.select_defaults[{name}]: unknown select"
+                )
+    if spec.elements is not None:
+        if not spec.supports("kling_elements"):
+            problems.append(f"{spec.id}.elements: no kling_elements injection point")
+        if spec.elements.max_elements < 1:
+            problems.append(f"{spec.id}.elements: max_elements must be >= 1")
+        if not 1 <= spec.elements.min_images <= spec.elements.max_images:
+            problems.append(f"{spec.id}.elements: image count range is inverted")
     if spec.kind == "audio" and (spec.accepts_start_image or spec.supports("image")):
         problems.append(f"{spec.id}: an audio workflow takes no image input")
     # 長さを一切宣言しないのは「このモデルには尺の指定が無い」（Suno）の意味で、

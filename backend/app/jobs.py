@@ -59,14 +59,19 @@ from .models import (
     JobCreate,
     JobRerun,
     LoraRef,
+    MultiShot,
     audio_lora_problem,
     audio_workflow_problem,
+    elements_of,
+    elements_problem,
     image_lora_family_problem,
     image_lora_problem,
     image_workflow_problem,
     job_workflow_ids,
     missing_job_fields,
     model_override_problem,
+    multi_shot_problem,
+    multi_shots_of,
     prompt_length_problem,
     reference_materials,
     reference_problem,
@@ -507,6 +512,14 @@ def _validate(params: dict[str, Any]) -> None:
             source_image=params.get("source_image"),
             end_image=params.get("end_image"),
         )
+        or multi_shot_problem(mode, video_workflow, multi_shots_of(params))
+        or elements_problem(
+            mode,
+            video_workflow,
+            elements_of(params),
+            video_prompt=params.get("video_prompt"),
+            shots=multi_shots_of(params),
+        )
         or _model_override_problem(params)
         or _backend_problem(params)
     )
@@ -524,6 +537,7 @@ def _validate(params: dict[str, Any]) -> None:
             video_workflow=video_workflow,
             image_workflow=image_workflow,
             audio_prompt=params.get("audio_prompt"),
+            multi_shots=multi_shots_of(params),
         )
     except WorkflowSpecError as exc:
         raise JobValidationError(str(exc)) from exc
@@ -635,6 +649,21 @@ async def _insert_job(
                 for item in values
                 if str(item).strip()
             ]
+    # Elements の参照画像も同じ規則で解決する（SPEC §3.1）。要素ごとに 2〜4 枚で、
+    # 並び順はそのまま element_input_urls の順序になる。
+    elements = params.get("kling_elements")
+    if isinstance(elements, (list, tuple)) and elements:
+        params["kling_elements"] = [
+            {
+                **element,
+                "images": [
+                    str(resolve_asset_path(str(path), field="kling_elements"))
+                    for path in element.get("images") or []
+                    if str(path).strip()
+                ],
+            }
+            for element in elements
+        ]
     # 尺などの「自動」項目は、入力ファイルが確定したここで決める（SPEC §3.1）。
     await _resolve_auto_selects(params)
 
@@ -737,6 +766,11 @@ def _params_from_create(payload: JobCreate) -> dict[str, Any]:
         "reference_images": list(payload.reference_images),
         "reference_videos": list(payload.reference_videos),
         "reference_audios": list(payload.reference_audios),
+        # ショット割りと Elements（宣言しているワークフローだけが読む、§3.1）
+        "multi_shots": [shot.model_dump() for shot in payload.multi_shots],
+        "kling_elements": [
+            element.model_dump() for element in payload.kling_elements
+        ],
         # 選択式フィールドの値（ワークフローが宣言したものだけ、§3.1）
         "selects": dict(payload.selects),
         # このジョブだけのモデル指定（設定の model_overrides の上に重ねる、§3.3）
@@ -872,6 +906,19 @@ async def continue_job(
         "source_image": str(start_image),
         "end_image": payload.end_image or prev.get("end_image"),
         "reference_video": payload.reference_video or prev.get("reference_video"),
+        # ショット割り / Elements も切り替え先が宣言しているときだけ引き継ぐ
+        # （§3.1）。`video_prompt` の `@要素名` だけが残ると 422 になるので、
+        # 本文と一緒に運ぶ。
+        "multi_shots": (
+            list(prev.get("multi_shots") or [])
+            if get_video_spec(video_workflow).multi_shot is not None
+            else []
+        ),
+        "kling_elements": (
+            list(prev.get("kling_elements") or [])
+            if get_video_spec(video_workflow).elements is not None
+            else []
+        ),
         # 選択項目は切り替え先が宣言しているものだけ引き継ぐ（別ワークフローの
         # 選択肢は意味が違うので落とす）
         "selects": _carried_selects(video_workflow, prev.get("selects")),
@@ -923,6 +970,8 @@ def _generation_params(job: Job, uploads: dict[str, str]) -> GenerationParams:
         image_prompt=p.get("image_prompt", ""),
         video_prompt=p.get("video_prompt", ""),
         negative_prompt=p.get("negative_prompt") or "",
+        # ショット割り（旧ジョブの params には無いので既定は空、SPEC §3.1）
+        multi_shots=[MultiShot(**shot) for shot in multi_shots_of(p)],
         duration=float(p.get("duration", 10.0)),
         fps=int(p.get("fps", 25)),
         # 音声ジョブ用（旧ジョブの params には無いので既定値のまま）
@@ -1420,6 +1469,24 @@ async def _kie_uploads(spec: WorkflowSpec, params_dict: dict[str, Any]) -> dict[
         uploads[name] = [
             await kie.upload_file(str(path)) for path in paths if str(path).strip()
         ]
+    # Elements（Kling）: 要素ごとに参照画像 2〜4 枚を上げ、API の形
+    # ``{"name", "description", "element_input_urls"}`` に組み直す（§3.1）。
+    spec_elements = spec.elements
+    if spec_elements is not None and spec.supports("kling_elements"):
+        built: list[dict[str, Any]] = []
+        for element in params_dict.get("kling_elements") or []:
+            urls = [
+                await kie.upload_file(str(path))
+                for path in element.get("images") or []
+                if str(path).strip()
+            ]
+            built.append({
+                "name": str(element.get("name") or ""),
+                "description": str(element.get("description") or ""),
+                "element_input_urls": urls,
+            })
+        if built:
+            uploads["kling_elements"] = built
     return uploads
 
 

@@ -5,6 +5,8 @@ from ..config import load_settings
 from ..models import (
     DEFAULT_NEGATIVE_PROMPT,
     BackendInfo,
+    ElementsOption,
+    MultiShotOption,
     Options,
     WorkflowOption,
     WorkflowSelect,
@@ -46,6 +48,26 @@ def _workflow_option(spec: WorkflowSpec) -> WorkflowOption:
         notes=spec.notes,
         requires=list(spec.requires),
         multi_inputs=dict(spec.multi_inputs),
+        multi_shot=(
+            MultiShotOption(
+                max_shots=spec.multi_shot.max_shots,
+                min_duration=spec.multi_shot.min_duration,
+                max_duration=spec.multi_shot.max_duration,
+            )
+            if spec.multi_shot is not None
+            else None
+        ),
+        elements=(
+            ElementsOption(
+                max_elements=spec.elements.max_elements,
+                min_images=spec.elements.min_images,
+                max_images=spec.elements.max_images,
+                reference_chars=spec.elements.reference_chars,
+            )
+            if spec.elements is not None
+            else None
+        ),
+        max_prompt_chars=spec.max_prompt_chars,
         supports=list(spec.supported_names()),
         accepts_start_image=spec.accepts_start_image,
         image_label=spec.image_label,

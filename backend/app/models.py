@@ -1,3 +1,4 @@
+import re
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -426,6 +427,36 @@ class LoraRef(BaseModel):
     strength: float = 1.0
 
 
+class MultiShot(BaseModel):
+    """ショット割りの 1 ショット（SPEC §3.1、`WorkflowSpec.multi_shot`）。
+
+    ジョブの params は平坦な値が中心だが、ショットは「文と秒数の組が順番に
+    並ぶ」ものなので、JSON 文字列ではなく**型付きのリスト**で持つ（そのまま
+    ``multi_prompt`` の要素になる）。
+    """
+
+    #: そのショットの本文（1 ショットもモデルの文字数上限に収まること）
+    prompt: str = ""
+    #: そのショットの尺（秒、**整数**）
+    duration: int = 5
+
+
+class ElementInput(BaseModel):
+    """Elements の 1 要素（SPEC §3.1、`WorkflowSpec.elements`）。
+
+    :attr:`images` はローカル素材のパス / URL で、投入時に 1 枚ずつ File Upload
+    API に上がって ``element_input_urls`` になる（:func:`app.jobs._kie_uploads`）。
+    プロンプト本文からは ``@要素名`` で呼ぶ。
+    """
+
+    #: プロンプト中の ``@要素名`` で使う名前
+    name: str = ""
+    #: 何を固定したいのかの説明（モデルに渡る）
+    description: str = ""
+    #: 参照画像（枚数の範囲はワークフローの宣言による）
+    images: list[str] = Field(default_factory=list)
+
+
 class GenerationParams(BaseModel):
     """Everything the workflow injector needs for one job (SPEC §3)."""
 
@@ -454,6 +485,10 @@ class GenerationParams(BaseModel):
     image_prompt: str = ""
     video_prompt: str = ""
     negative_prompt: str = DEFAULT_NEGATIVE_PROMPT
+
+    #: ショット割り（SPEC §3.1）。空でなければ ``video_prompt`` の代わりに
+    #: これがそのまま ``multi_prompt`` になり、トップレベルの本文は送られない。
+    multi_shots: list[MultiShot] = Field(default_factory=list)
 
     # `duration` is the clip length of the video stage **and** the track length
     # of an audio job (both in seconds) — a job only ever runs one of them.
@@ -567,6 +602,7 @@ def missing_job_fields(
     video_workflow: str | None = None,
     image_workflow: str | None = None,
     audio_prompt: str | None = None,
+    multi_shots: list[dict[str, Any]] | None = None,
 ) -> list[str]:
     """Required fields for a mode + image / video workflow (SPEC §2 / §3.1).
 
@@ -588,9 +624,12 @@ def missing_job_fields(
         missing.append("image_prompt")
     # プロンプトを選択肢から組み立てるワークフロー（wan_dancer）では video_prompt
     # は任意。書かれた場合だけテンプレートに注入される（SPEC §3.1）。
+    # ショット割り（`multi_shots`）を渡したジョブでは本文がショット側にあるので、
+    # トップレベルの `video_prompt` は要らない（API にも送らない）。
     if (
         mode in ("full", "i2v")
         and not (video_prompt or "").strip()
+        and not (multi_shots or [])
         and get_video_spec(video_workflow).prompt_required
     ):
         missing.append("video_prompt")
@@ -681,6 +720,52 @@ def select_problem(
     return None
 
 
+#: プロンプト中の Elements 参照（``@要素名``）。名前に使えるのは英数字・
+#: アンダースコア・ハイフンと（``\w`` が拾う）日本語などの文字。
+ELEMENT_REFERENCE = re.compile(r"@([\w-]+)")
+
+
+def element_references(text: str | None) -> list[str]:
+    """プロンプト本文が呼んでいる ``@要素名``（出てきた順、重複そのまま）。"""
+    return ELEMENT_REFERENCE.findall(text or "")
+
+
+def prompt_chars(text: str | None, reference_chars: int = 0) -> int:
+    """API がそのプロンプトを何文字と数えるか（SPEC §3.1）。
+
+    Elements を持つモデル（Kling）では **``@要素名`` 1 回が
+    :attr:`app.workflows.ElementsSpec.reference_chars` 文字**として上限を消費する
+    ので、見た目の長さのままでは 500 文字の判定が合わない。
+    ``reference_chars == 0``（Elements 非対応）なら単純な文字数。
+    """
+    if not text:
+        return 0
+    if reference_chars <= 0:
+        return len(text)
+    return len(text) + sum(
+        reference_chars - len(match.group(0))
+        for match in ELEMENT_REFERENCE.finditer(text)
+    )
+
+
+def _length_problem(spec: WorkflowSpec, where: str, text: str | None) -> str | None:
+    """1 本のプロンプトが上限に収まるか（``@要素名`` の補正込み）。"""
+    limit = spec.max_prompt_chars
+    if not limit or not text:
+        return None
+    cost = spec.elements.reference_chars if spec.elements else 0
+    counted = prompt_chars(text, cost)
+    if counted <= limit:
+        return None
+    note = ""
+    if cost and counted != len(text):
+        note = f"、`@要素名` 1 つを {cost} 文字として数えます"
+    return (
+        f"video workflow '{spec.id}' は {where} を {limit} 文字までしか"
+        f"受け取れません（今は {counted} 文字{note}）"
+    )
+
+
 def prompt_length_problem(
     mode: str, video_workflow: str | None, video_prompt: str | None
 ) -> str | None:
@@ -690,6 +775,9 @@ def prompt_length_problem(
     文字）、超えたリクエストは 422 で弾かれる。走らせてから失敗させると
     クレジットこそ減らないが待ち時間が無駄になるので、投入前にここで落とす。
     上限を宣言していないワークフロー（``max_prompt_chars == 0``）は素通し。
+
+    Elements を持つモデルでは ``@要素名`` の消費文字数を補正して数える
+    （:func:`prompt_chars`）。
     """
     if mode not in ("full", "i2v") or not video_prompt:
         return None
@@ -697,12 +785,184 @@ def prompt_length_problem(
         spec = get_video_spec(video_workflow)
     except WorkflowSpecError as exc:
         return str(exc)
-    limit = spec.max_prompt_chars
-    if limit and len(video_prompt) > limit:
+    return _length_problem(spec, "video_prompt", video_prompt)
+
+
+def multi_shots_of(params: Any) -> list[dict[str, Any]]:
+    """``multi_shots`` を ``[{"prompt", "duration"}]`` に正規化する。
+
+    ``params`` は :class:`JobCreate` でもジョブの ``params`` 辞書でもよい
+    （前者は :class:`MultiShot` のリスト、後者は同じ形の素の辞書で入っている）。
+    """
+    raw = params.get("multi_shots") if isinstance(params, dict) else getattr(
+        params, "multi_shots", None
+    )
+    if not isinstance(raw, (list, tuple)):
+        return []
+    shots: list[dict[str, Any]] = []
+    for item in raw:
+        if isinstance(item, MultiShot):
+            shots.append(item.model_dump())
+        elif isinstance(item, dict):
+            shots.append(dict(item))
+        else:
+            shots.append({"prompt": str(item), "duration": 0})
+    return shots
+
+
+def multi_shot_problem(
+    mode: str, video_workflow: str | None, shots: list[dict[str, Any]]
+) -> str | None:
+    """ショット割りの指定が使えるか（None == 問題なし、SPEC §3.1）。
+
+    宣言のないワークフローに渡す・件数超過・1 ショットの尺が範囲外・1 ショットの
+    本文が長すぎる、のいずれも API 側では 422 になるので、投入前にここで落とす。
+    ``multi_shots`` があるときトップレベルの ``video_prompt`` は送られない
+    （:func:`app.kie.task_values`）ので、空でも「必須項目が無い」とは言わない
+    （:func:`missing_job_fields`）。
+    """
+    if not shots:
+        return None
+    if mode not in ("full", "i2v"):
+        return f"mode '{mode}' は動画ステージを走らせないので、`multi_shots` は使えません"
+    try:
+        spec = get_video_spec(video_workflow)
+    except WorkflowSpecError as exc:
+        return str(exc)
+    declared = spec.multi_shot
+    if declared is None:
         return (
-            f"video workflow '{spec.id}' は video_prompt を {limit} 文字までしか"
-            f"受け取れません（今は {len(video_prompt)} 文字）"
+            f"video workflow '{spec.id}' はマルチショット（`multi_shots`）に"
+            "対応していません"
         )
+    if len(shots) > declared.max_shots:
+        return (
+            f"video workflow '{spec.id}' のマルチショットは"
+            f" {declared.max_shots} ショットまでです（今は {len(shots)} ショット）"
+        )
+    for index, shot in enumerate(shots, start=1):
+        text = str(shot.get("prompt") or "").strip()
+        if not text:
+            return f"`multi_shots` の {index} ショット目に prompt がありません"
+        length = _length_problem(spec, f"multi_shots[{index - 1}].prompt", text)
+        if length:
+            return length
+        raw = shot.get("duration")
+        try:
+            seconds = int(raw)
+        except (TypeError, ValueError):
+            return (
+                f"`multi_shots` の {index} ショット目の duration は整数の秒数です"
+                f"（今は {raw!r}）"
+            )
+        if not declared.min_duration <= seconds <= declared.max_duration:
+            return (
+                f"`multi_shots` の {index} ショット目の duration は"
+                f" {declared.min_duration}〜{declared.max_duration} 秒です"
+                f"（今は {seconds} 秒）"
+            )
+    return None
+
+
+def elements_of(params: Any) -> list[dict[str, Any]]:
+    """``kling_elements`` を ``[{"name", "description", "images"}]`` に正規化する。"""
+    raw = params.get("kling_elements") if isinstance(params, dict) else getattr(
+        params, "kling_elements", None
+    )
+    if not isinstance(raw, (list, tuple)):
+        return []
+    elements: list[dict[str, Any]] = []
+    for item in raw:
+        if isinstance(item, ElementInput):
+            elements.append(item.model_dump())
+        elif isinstance(item, dict):
+            elements.append(dict(item))
+    return elements
+
+
+def elements_problem(
+    mode: str,
+    video_workflow: str | None,
+    elements: list[dict[str, Any]],
+    *,
+    video_prompt: str | None = None,
+    shots: list[dict[str, Any]] | None = None,
+) -> str | None:
+    """Elements の指定とプロンプト中の ``@要素名`` が噛み合うか（SPEC §3.1）。
+
+    - 宣言のないワークフローに渡す / 要素数・画像枚数が範囲外 / 名前が空・重複 /
+      画像の拡張子が違う → 投入前に落とす（API 側の 422 と同じ理由）
+    - **プロンプトが呼んでいる ``@要素名`` が宣言されていない**ときも落とす。
+      未宣言の ``@`` はモデルに文字として渡り、しかも 37 文字を消費してしまう
+      ので、黙って通すより気づかせるほうがよい。逆に**呼ばれていない要素**は
+      素材を先に用意しただけかもしれないので何も言わない
+    """
+    prompts = [text for text in [video_prompt] if text]
+    prompts += [str(shot.get("prompt") or "") for shot in (shots or [])]
+    if not elements and not any(element_references(text) for text in prompts):
+        return None
+    if mode not in ("full", "i2v"):
+        return (
+            f"mode '{mode}' は動画ステージを走らせないので、`kling_elements` は"
+            "使えません"
+        )
+    try:
+        spec = get_video_spec(video_workflow)
+    except WorkflowSpecError as exc:
+        return str(exc)
+    declared = spec.elements
+    if declared is None:
+        if not elements:
+            return None  # Elements を持たないモデルの `@` はただの文字
+        return (
+            f"video workflow '{spec.id}' は Elements（`kling_elements`）に"
+            "対応していません"
+        )
+    if len(elements) > declared.max_elements:
+        return (
+            f"video workflow '{spec.id}' の Elements は"
+            f" {declared.max_elements} 要素までです（今は {len(elements)} 要素）"
+        )
+    allowed = MULTI_INPUT_EXTS["reference_images"]
+    names: list[str] = []
+    for index, element in enumerate(elements, start=1):
+        name = str(element.get("name") or "").strip()
+        if not name:
+            return f"`kling_elements` の {index} 個目に name がありません"
+        if element_references(f"@{name}") != [name]:
+            return (
+                f"要素名 '{name}' はプロンプト中で `@{name}` として書けません"
+                "（英数字・アンダースコア・ハイフン・日本語のみ、空白は不可）"
+            )
+        if name in names:
+            return f"要素名 '{name}' が重複しています（`@要素名` で区別できません）"
+        names.append(name)
+        images = [
+            str(path).strip()
+            for path in (element.get("images") or [])
+            if str(path).strip()
+        ]
+        if not declared.min_images <= len(images) <= declared.max_images:
+            return (
+                f"要素 '{name}' の参照画像は"
+                f" {declared.min_images}〜{declared.max_images} 枚です"
+                f"（今は {len(images)} 枚）"
+            )
+        for path in images:
+            suffix = path[path.rfind("."):].lower() if "." in path else ""
+            if suffix not in allowed:
+                return (
+                    f"要素 '{name}' の参照画像に使えない拡張子です: {path}"
+                    f"（{', '.join(sorted(allowed))} のいずれか）"
+                )
+    for text in prompts:
+        for reference in element_references(text):
+            if reference not in names:
+                known = "・".join(f"@{name}" for name in names) or "なし"
+                return (
+                    f"プロンプトの `@{reference}` に対応する要素が"
+                    f" `kling_elements` にありません（宣言済み: {known}）"
+                )
     return None
 
 
@@ -1094,6 +1354,12 @@ class JobCreate(BaseModel):
     #: ムード・曲調のよりどころにする参照音声
     reference_audios: list[str] = Field(default_factory=list)
 
+    #: ショット割り（SPEC §3.1）。宣言しているワークフロー（Kling 3.0）でのみ
+    #: 使え、指定すると ``video_prompt`` の代わりにこれが本文になる。
+    multi_shots: list[MultiShot] = Field(default_factory=list)
+    #: Elements（``@要素名`` で呼ぶ参照画像の束、SPEC §3.1）
+    kling_elements: list[ElementInput] = Field(default_factory=list)
+
     seed: int | None = None  # None -> random (recorded in params)
 
     # 選択式フィールドの値（`GET /api/options` の workflow の `selects` にある
@@ -1138,6 +1404,16 @@ class JobCreate(BaseModel):
                 source_image=self.source_image,
                 end_image=self.end_image,
             )
+            or multi_shot_problem(
+                self.mode, self.video_workflow, multi_shots_of(self)
+            )
+            or elements_problem(
+                self.mode,
+                self.video_workflow,
+                elements_of(self),
+                video_prompt=self.video_prompt,
+                shots=multi_shots_of(self),
+            )
         )
         if problem:
             raise ValueError(problem)
@@ -1152,6 +1428,7 @@ class JobCreate(BaseModel):
             video_workflow=self.video_workflow,
             image_workflow=self.image_workflow,
             audio_prompt=self.audio_prompt,
+            multi_shots=multi_shots_of(self),
         )
         if missing:
             raise ValueError(
@@ -1672,6 +1949,25 @@ class WorkflowSelect(BaseModel):
     hint: str = ""
 
 
+class MultiShotOption(BaseModel):
+    """ショット割りの上限（`GET /api/options`、SPEC §3.1）。フォームの行数・
+    秒数のバリデーションはこの値を見る。"""
+
+    max_shots: int
+    min_duration: int
+    max_duration: int
+
+
+class ElementsOption(BaseModel):
+    """Elements の上限（`GET /api/options`、SPEC §3.1）。"""
+
+    max_elements: int
+    min_images: int
+    max_images: int
+    #: ``@要素名`` 1 参照が消費する文字数（フォームの残り文字数表示に使う）
+    reference_chars: int
+
+
 class WorkflowOption(BaseModel):
     """One selectable workflow template (SPEC §3 / §8)."""
 
@@ -1686,6 +1982,12 @@ class WorkflowOption(BaseModel):
     #: 複数ファイルで渡せる参照入力（論理名 -> 件数の上限、SPEC §3.1）。宣言の
     #: ないワークフローでは空で、フォームは参照欄そのものを出さない。
     multi_inputs: dict[str, int] = Field(default_factory=dict)
+    #: ショット割りの宣言（対応していないワークフローでは None、SPEC §3.1）
+    multi_shot: MultiShotOption | None = None
+    #: Elements の宣言（対応していないワークフローでは None、SPEC §3.1）
+    elements: ElementsOption | None = None
+    #: プロンプトの文字数上限（0 = 上限なし）。フォームの残り文字数表示に使う。
+    max_prompt_chars: int = 0
     #: logical knobs the workflow exposes (prompt, negative, duration, fps, …)
     supports: list[str] = Field(default_factory=list)
     #: can it be the second stage of a full (image -> video) job?
