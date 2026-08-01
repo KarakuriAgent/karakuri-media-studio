@@ -38,6 +38,8 @@ services:
       - .:${PWD}
       # grok CLI 本体とサインイン状態
       - ${HOME}/.grok:/home/app/.grok
+      # codex CLI のサインイン状態（本体はイメージ側、Dockerfile 参照）
+      - ${HOME}/.codex:/home/app/.codex
       # 不足モデルの自動ダウンロード先（SPEC §3.3）: ホストの ComfyUI models
       # ディレクトリを**同一絶対パス**でマウントする。アプリは環境変数の値を
       # そのまま開くので、コンテナ内でも同じパスで見えている必要がある。
