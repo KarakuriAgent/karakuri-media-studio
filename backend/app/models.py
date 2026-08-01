@@ -737,6 +737,41 @@ def select_problem(
                 + ", ".join(f"{choice!r}" for choice in select.choices)
                 + "）"
             )
+    return select_requires_problem(stages, selects)
+
+
+def select_requires_problem(
+    stages: list[tuple[str, WorkflowSpec]], selects: dict[str, Any]
+) -> str | None:
+    """選択式どうしの相関（:attr:`app.workflows.WorkflowSpec.select_requires`）。
+
+    「その項目は相手がこの値のときしか効かない」という宣言を投入前に見る。
+    **既定のままなら何も言わない**（指定していないのだから無視されても困らない）。
+    Suno の ``duration`` は ``model`` が ``V5_5`` のときしか効かず、他のモデルでは
+    **API が黙って無視する**ので、気づかないまま違う長さの曲を待つより 422 で
+    断るほうが親切、という判断。
+    """
+    for _, spec in stages:
+        for name, (other, needed) in spec.select_requires.items():
+            select = spec.select(name)
+            if select is None:
+                continue
+            value = str(selects.get(name) or "").strip()
+            if not value or value == select.fallback:
+                continue  # 指定していない（＝既定のまま）ものは相関を見ない
+            partner = spec.select(other)
+            chosen = str(selects.get(other) or "").strip() or (
+                partner.fallback if partner is not None else ""
+            )
+            if chosen == needed:
+                continue
+            other_label = partner.label if partner is not None else other
+            return (
+                f"`{name}`（{select.label}）は{other_label}（`{other}`）が"
+                f" {needed!r} のときだけ効きます（今は {chosen!r}）。"
+                f"`{other}` を {needed!r} にするか、`{name}` を"
+                f" {select.fallback!r} に戻してください"
+            )
     return None
 
 
@@ -2072,6 +2107,11 @@ class WorkflowOption(BaseModel):
     #: 素材参照生成は 8 秒固定なので ``{"duration": "8"}``。フォームは参照素材が
     #: 選ばれている間だけこの値を要求する（バックエンドの 422 と同じ理由）。
     reference_selects: dict[str, str] = Field(default_factory=dict)
+    #: 選択式どうしの相関（名前 -> `[相手の名前, 相手に必要な値]`、SPEC §3.1）。
+    #: Suno の `duration` は `model` が `V5_5` のときだけ効くので
+    #: `{"duration": ["model", "V5_5"]}`。フォームは既定以外を選んだときだけ
+    #: その場でエラーを出す（バックエンドの 422 と同じ理由）。
+    select_requires: dict[str, list[str]] = Field(default_factory=dict)
     #: ショット割りの宣言（対応していないワークフローでは None、SPEC §3.1）
     multi_shot: MultiShotOption | None = None
     #: Elements の宣言（対応していないワークフローでは None、SPEC §3.1）

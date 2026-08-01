@@ -1,5 +1,6 @@
 import { workflowSelects, type FormState } from '../form'
 import type { WorkflowOption } from '../types'
+import { FieldError } from './ui'
 
 /** `auto` を宣言した項目に出る「おまかせ」の選択肢（値は未指定 = 空文字）。 */
 export const AUTO_LABEL = '自動（入力に合わせる）'
@@ -15,10 +16,13 @@ export default function WorkflowSelects({
   workflow,
   form,
   patch,
+  errors,
 }: {
   workflow: WorkflowOption | null | undefined
   form: FormState
   patch: (patch: Partial<FormState>) => void
+  /** 選択式ごとのエラー（相関の宣言に反したとき。SPEC §3.1）。 */
+  errors?: Record<string, string>
 }) {
   const selects = workflowSelects(workflow)
   if (selects.length === 0) return null
@@ -52,6 +56,7 @@ export default function WorkflowSelects({
             {select.hint && (
               <p className="mt-1 text-[11px] text-slate-500">{select.hint}</p>
             )}
+            <FieldError message={errors?.[select.name]} />
           </div>
         )
       })}

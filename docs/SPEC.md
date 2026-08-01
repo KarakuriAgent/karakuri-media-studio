@@ -215,7 +215,7 @@ LoRA チェーンも持たない（テンプレートに LoRA ノードが無い
 |---|---|---|---|---|
 | `ace_step1_5_xl_sft` | ACE-Step 1.5 XL（音楽・歌もの） | `ace-step` | 10 / 120 / 600 | `lyrics`（空でインスト）・`bpm`（10-300）・`keyscale`・`language` |
 | `stable_audio_3_medium_base` | Stable Audio 3 Medium（効果音・環境音・音楽） | `stable-audio` | 1 / 60 / 380 | `audio_category`（Music / Instrument / SFX / One-shot）・`reprompt`（内蔵 LLM でのプロンプト展開） |
-| `suno_v5` | Suno V5（歌もの・外部 API、kie.ai `V5` / `V5_5` / `V4_5PLUS`） | `suno` | 指定なし（モデルが決める） | `lyrics`（空でインスト）・`negative_tags`・選択式 `model` / `vocal_gender` / `style_weight` / `weirdness` / `audio_weight` |
+| `suno_v5` | Suno V5（歌もの・外部 API、kie.ai `V5` / `V5_5` / `V4_5PLUS`） | `suno` | 選択式 `duration`（auto + 代表値。**V5_5 のときだけ**） | `lyrics`（空でインスト）・`negative_tags`・選択式 `model` / `duration` / `vocal_gender` / `style_weight` / `weirdness` / `audio_weight` |
 
 - 既定は `ace_step1_5_xl_sft`
 - ジョブの必須項目は `audio_prompt` のみ。`duration` がワークフローの範囲外、`keyscale` / `language` /
@@ -237,11 +237,18 @@ LoRA チェーンも持たない（テンプレートに LoRA ノードが無い
   `audio_weight`（→ `audioWeight`、音づくりの効き）。選択肢は `auto` + 0.25 刻み（`0` / `0.25` / `0.5` /
   `0.75` / `1`）で、**`auto`（既定）はキーごと送らない**（0 を送ると「0 を指定した」になってしまうため。
   `vocal_gender` の `auto` と同じ流儀で、`KieTask.float_keys` が数として読めない値を落とす）。
+  **尺**（`duration`）も選択式で、`auto`（既定 = Suno におまかせ）+ 代表値（30 / 60 / 90 / 120 / 180 / 240 /
+  300 / 360 秒）。API は 10〜360 の任意の整数を取るが細かく刻んでも意味が薄いので代表値だけ出し、
+  `auto` は `KieTask.int_keys` が数として読めない値を落とすのでキーごと送らない。**`duration` は
+  `model` が `V5_5` のときしか効かず、他のバージョンでは API が黙って無視する**ので、
+  `WorkflowSpec.select_requires`（§3.1 の選択式どうしの相関）で `model: "V5_5"` を要求し、
+  違うモデルで明示指定したジョブは投入前に 422 で断る（気づかないまま違う長さの曲を待つより親切という判断）。
+  数値の長さ（`min/default/max_duration`）は宣言しない（= 0）ので、フォームは秒数の数値欄を出さず
+  プルダウンだけを出し、`duration` の範囲検証も飛ばす。
   `personaId` / `personaModel`（ペルソナ作成 API とセット）と `model` の `V4_5ALL` は未対応。
-  **ACE-Step 固有の `bpm` / `keyscale` / `language` と尺の指定は無い**（Suno の API にパラメータが無い）。
+  延長 / カバー / ボーカル分離 / WAV 変換などの周辺エンドポイントも未対応（必要になったら個別に）。
+  **ACE-Step 固有の `bpm` / `keyscale` / `language` の指定は無い**（Suno の API にパラメータが無い）。
   フォームはそれらの入力を出さず、エージェントが指定してきたらプラン検証で 422 にして書き場所（スタイル文・歌詞そのもの）へ誘導する。
-  尺は `min/default/max_duration` を宣言しない（= 0）ことで「長さの指定が無いモデル」を表し、`duration` の範囲検証も飛ばす
-  （kie.ai の `duration` は V5_5 + customMode でしか効かないので、モデルを選び直すと黙って無視される項目になるため未対応）。
   **1 リクエストで 2 曲返る**ので、`outputs/{job_id}/audio.mp3` と `audio_2.mp3` の両方を保存する（§6）
 
 ---
@@ -270,7 +277,7 @@ LoRA チェーンも持たない（テンプレートに LoRA ノードが無い
 | 画像ワークフロー | ― | プルダウン（`/api/options` の `image_workflows`）。画像ステージが走るモードでのみ表示 |
 | 音声ワークフロー | ― | プルダウン（`/api/options` の `audio_workflows`）。`mode: "audio"` でのみ表示 |
 | アスペクト比 / メガピクセル | 画像: `aspect_ratio` / `megapixels` → ResolutionSelector（krea2 は `49`、anima は `91`）。z-image と動画: アプリが幅・高さを計算して `width` / `height` に注入。qwen-image-edit は入力画像から決まるので注入しない | セレクト（選択肢は `/object_info` の ResolutionSelector から動的取得）+ 数値 |
-| 音声プロンプト・歌詞・除外タグ・BPM・キー・言語・カテゴリ・展開 | `prompt` / `lyrics` / `negative_tags` / `bpm` / `keyscale` / `language` / `audio_category` / `reprompt` | `mode: "audio"` のみ。選択中の音声ワークフローが露出しているつまみだけ表示（長さを宣言しないモデル（Suno）では秒数欄も出ない）。選択式フィールド（§3.1）も音声ワークフローの宣言に従って描画する |
+| 音声プロンプト・歌詞・除外タグ・BPM・キー・言語・カテゴリ・展開 | `prompt` / `lyrics` / `negative_tags` / `bpm` / `keyscale` / `language` / `audio_category` / `reprompt` | `mode: "audio"` のみ。選択中の音声ワークフローが露出しているつまみだけ表示（数値の長さを宣言しないモデル（Suno）では秒数欄も出ない。Suno の尺は選択式のプルダウン）。選択式フィールド（§3.1）も音声ワークフローの宣言に従って描画する |
 | LoRA（画像・複数可） | 画像ワークフローの `lora_chain` を動的構築（§3.4） | 「LoRA（画像）」セクション。登録 LoRA のうち `target = 'image'` かつ**選択中の画像ワークフローと同じファミリー**のものを複数選択＋強度スライダー |
 | LoRA トリガーワード（画像） | `trigger_concat` → `30:27` (StringConcatenate) / `trigger_switch` → `30:28`。この 2 つを持つのは krea2 テンプレートだけで、他の画像ワークフローには自動前置の口が無い（トリガーワードは `image_prompt` 本文に書く） | 選択 LoRA のトリガーワードを自動連結（編集可） |
 | LoRA（動画・複数可） | 動画ワークフローの `lora_chain` を動的構築（§3.4） | 「LoRA（動画）」セクション。登録 LoRA のうち `target = 'video'` のものを複数選択＋強度スライダー |
@@ -371,6 +378,12 @@ JSON 文字列で持つと検証もフォームも書けないので、**型付�
   ffprobe）を選択肢に切り上げて決める（上限は最大の選択肢）。決めた値は params に残るので
   再実行でも同じ尺になる。ffprobe が無い・読めない場合は宣言した既定値に落ちる（登録は止めない）
 - UI は `auto` の項目に「自動（入力に合わせる）」、それ以外に「既定（<値>）」を先頭の選択肢として置く
+- **選択式どうしの相関**（`WorkflowSpec.select_requires`、名前 → `(相手の名前, 相手に必要な値)`）:
+  「その項目は相手がこの値のときしか効かない」ことの宣言。Suno の `duration` は `model` が `V5_5` の
+  ときしか効かず、**他のバージョンでは API が黙って無視する**ので、`{"duration": ("model", "V5_5")}` と
+  宣言して**既定以外を明示指定したジョブだけ**を 422 で断る（`models.select_requires_problem`。
+  既定のままなら無視されても困らないので何も言わない）。検証は Web UI（`form.selectRequiresErrors`）・
+  API・エージェントの 3 経路で同じ理由になり、フォームはその選択式の直下にエラーを出す
 
 #### 解像度の計算
 

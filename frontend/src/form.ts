@@ -922,6 +922,36 @@ export function hiddenFields(
   }
 }
 
+/**
+ * 選択式どうしの相関のエラー（`WorkflowOption.select_requires`、SPEC §3.1）。
+ *
+ * 「その項目は相手がこの値のときしか効かない」という宣言を、送る前に同じ理由で
+ * 見せる（バックエンドの 422 と同じ、`models.select_requires_problem`）。
+ * **既定のままなら何も言わない**: 指定していないものが無視されても困らない。
+ */
+export function selectRequiresErrors(
+  form: FormState,
+  workflow?: WorkflowOption | null,
+): Record<string, string> {
+  const errors: Record<string, string> = {}
+  const declared = workflow?.select_requires ?? {}
+  for (const [name, requirement] of Object.entries(declared)) {
+    const [other, needed] = requirement
+    const select = workflow?.selects.find((item) => item.name === name)
+    if (!select) continue
+    const value = form.selects[name]
+    if (!value || value === select.default) continue
+    const partner = workflow?.selects.find((item) => item.name === other)
+    const chosen = form.selects[other] || partner?.default || ''
+    if (chosen === needed) continue
+    errors[name] =
+      `${select.label}は${partner?.label ?? other}が ${needed} のときだけ` +
+      `効きます（今は ${chosen}）。${partner?.label ?? other}を ${needed} に` +
+      `するか、${select.label}を ${select.default} に戻してください。`
+  }
+  return errors
+}
+
 /** Field errors the form can catch before POSTing (SPEC §8). */
 export function validateForm(
   form: FormState,
@@ -946,6 +976,7 @@ export function validateForm(
     if (audioSupports(audioWorkflow, 'bpm') && (form.bpm < 10 || form.bpm > 300)) {
       errors.bpm = 'BPM は 10〜300 で指定してください。'
     }
+    Object.assign(errors, selectRequiresErrors(form, audioWorkflow))
     return errors
   }
   if (

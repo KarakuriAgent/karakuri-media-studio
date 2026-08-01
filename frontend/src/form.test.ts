@@ -750,6 +750,14 @@ const SUNO = workflow({
       hint: '',
     },
     {
+      name: 'duration',
+      label: '尺（秒）',
+      choices: ['auto', '30', '60', '120', '180', '240', '300', '360'],
+      default: 'auto',
+      auto: false,
+      hint: '',
+    },
+    {
       name: 'vocal_gender',
       label: 'ボーカルの性別',
       choices: ['auto', 'm', 'f'],
@@ -758,6 +766,8 @@ const SUNO = workflow({
       hint: '',
     },
   ],
+  // 尺は V5_5 のときだけ効く（他のモデルでは API が黙って無視する）
+  select_requires: { duration: ['model', 'V5_5'] },
 })
 
 function audioForm(overrides: Partial<FormState> = {}): FormState {
@@ -931,6 +941,36 @@ describe('audioJobPayload', () => {
     expect(payload).not.toHaveProperty('bpm')
     expect(payload).not.toHaveProperty('keyscale')
     expect(payload).not.toHaveProperty('language')
+  })
+
+  it('尺は V5_5 のときだけ指定できる（他のモデルでは黙って無視される）', () => {
+    const form = audioForm({
+      audioWorkflow: SUNO.id,
+      selects: { model: 'V5', duration: '120' },
+    })
+    expect(validateForm(form, null, SUNO).duration).toContain(
+      'モデルが V5_5 のときだけ効きます',
+    )
+
+    // V5_5 なら通る
+    expect(
+      validateForm(
+        { ...form, selects: { model: 'V5_5', duration: '120' } }, null, SUNO,
+      ),
+    ).toEqual({})
+    // 既定（auto / 未指定）のままならモデルは何でもよい
+    expect(
+      validateForm({ ...form, selects: { model: 'V5' } }, null, SUNO),
+    ).toEqual({})
+    expect(
+      validateForm(
+        { ...form, selects: { model: 'V4_5PLUS', duration: 'auto' } }, null, SUNO,
+      ),
+    ).toEqual({})
+    // モデル未指定なら既定（V5）で判定する
+    expect(
+      validateForm({ ...form, selects: { duration: '60' } }, null, SUNO).duration,
+    ).toContain('V5_5')
   })
 
   it('leaves the negative tags and the selects out for ACE-Step', () => {

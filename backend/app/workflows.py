@@ -414,6 +414,13 @@ class WorkflowSpec:
     #: ままなら黙って通り、**違う値を明示指定したジョブだけ** 422 で断る
     #: （:func:`app.models.reference_problem`）。
     reference_selects: dict[str, str] = field(default_factory=dict)
+    #: **選択式どうしの相関**（名前 -> ``(相手の名前, 相手に必要な値)``、§3.1）。
+    #: 「その項目は相手がこの値のときしか効かない」ことの宣言で、既定以外を
+    #: 選んでいるのに相手が違う値なら投入前に 422 にする
+    #: （:func:`app.models.select_problem`）。Suno の ``duration`` は
+    #: ``model`` が ``V5_5`` のときしか効かず、**他のモデルでは黙って無視される**
+    #: ので、気づかずに指定してしまうのを防ぐ。
+    select_requires: dict[str, tuple[str, str]] = field(default_factory=dict)
     #: **ショット割り**の宣言（``None`` = 1 ジョブ 1 ショットのみ、SPEC §3.1）
     multi_shot: MultiShotSpec | None = None
     #: **Elements**（``@要素名`` で呼ぶ参照画像の束）の宣言（``None`` = 非対応）
@@ -2066,9 +2073,12 @@ BPM_RANGE: tuple[int, int] = (10, 300)
 # プラン検証で弾かれる（:func:`app.agent_protocol._audio_workflow_detail`）。
 # テンポやキーは style の文中に、歌詞の言語は歌詞そのもので決まる。
 #
-# 尺（`duration`）も宣言しない: kie.ai の `duration` は **V5_5 + customMode で
-# しか効かない**ので、モデルを選び直すと黙って無視される項目になる。上下限を
-# 0 のままにしてあるので、フォームは長さの入力自体を出さない（§2.4）。
+# 尺（`duration`）は **選択式**（`auto` + 代表値）で持つ: kie.ai の `duration` は
+# **V5_5 + customMode でしか効かず、他のモデルでは黙って無視される**ので、
+# `WorkflowSpec.select_requires` で `model` が `V5_5` であることを要求し、違う
+# モデルで明示指定したジョブは投入前に 422 にする（黙って無視されるより、その場で
+# 断るほうが親切）。数値入力（`min_duration` / `max_duration`）にはしない: 上下限を
+# 0 のままにしてフォームの長さ入力は出さず、選択式のプルダウンだけを出す（§2.4）。
 #
 # 1 リクエストで**2 曲**返るのが Suno の標準。両方 `outputs/{job_id}/` に落とす
 # （`audio.mp3` / `audio_2.mp3`、:func:`app.kie.download_results`）。
@@ -2079,6 +2089,15 @@ SUNO_MODELS: tuple[str, ...] = ("V5", "V5_5", "V4_5PLUS")
 #: ボーカルの性別ヒント。``auto`` は「指定しない」で、キーごと落とされる
 #: （:attr:`app.kie.SunoTaskApi.VOCAL_GENDERS`）。
 SUNO_VOCAL_GENDERS: tuple[str, ...] = ("auto", "m", "f")
+
+#: 尺（秒）。API は 10〜360 の任意の整数を取るが、細かく刻んでも意味が薄いので
+#: 代表値だけ出す。``auto``（= 指定しない）が既定で、キーごと落とされる
+#: （:attr:`KieTask.int_keys`）。**V5_5 でしか効かない**（:attr:`SUNO_DURATION_MODEL`）。
+SUNO_DURATIONS: tuple[str, ...] = (
+    "auto", "30", "60", "90", "120", "180", "240", "300", "360",
+)
+#: `duration` が効く唯一のモデルバージョン
+SUNO_DURATION_MODEL = "V5_5"
 
 #: 0〜1 の重みづけ（`styleWeight` / `weirdnessConstraint` / `audioWeight`）。
 #: API は小数を取るので選択式では 0.25 刻みだけ出し、``auto``（= 指定しない）を
@@ -2100,8 +2119,11 @@ SUNO_V5 = WorkflowSpec(
         " comma separated, sound only (genre, tempo, instruments, vocal,"
         " production) — and `lyrics` are the words, with `[Verse]` /"
         " `[Chorus]` structure tags. No lyrics == instrumental. Every request"
-        " returns **two takes**. There is no bpm / key / language / length"
-        " knob: write those into the style, or pick another model."
+        " returns **two takes**. There is no bpm / key / language knob: write"
+        " those into the style, or pick another model. The track **length**"
+        f" (`duration`) only works on model `{SUNO_DURATION_MODEL}` — on any"
+        " other version it is silently ignored, so a job that sets it with a"
+        " different model is refused."
     ),
     prompt_hint=(
         "The **style**, not a story: English, comma separated, and only things"
@@ -2111,7 +2133,11 @@ SUNO_V5 = WorkflowSpec(
         " `lyrics`, and anything to keep out belongs in `negative_tags`."
     ),
     max_prompt_chars=SUNO_MAX_PROMPT_CHARS,
-    # 尺は API 側で指定できない（V5_5 のみの機能）ので上下限を宣言しない。
+    # 尺は選択式で持つので、数値入力の上下限は宣言しない（フォームは長さの
+    # 入力欄を出さず、`duration` のプルダウンだけを出す）。
+    # `duration` は V5_5 でしか効かず、他のモデルでは黙って無視されるので、
+    # 明示指定と model の組み合わせを投入前に見る（models.select_problem）。
+    select_requires={"duration": ("model", SUNO_DURATION_MODEL)},
     kie=KieTask(
         model="V5",
         api="suno",
@@ -2121,6 +2147,7 @@ SUNO_V5 = WorkflowSpec(
             "lyrics": "prompt",
             "negative_tags": "negativeTags",
             f"{KIE_SELECT_PREFIX}model": "model",
+            f"{KIE_SELECT_PREFIX}duration": "duration",
             f"{KIE_SELECT_PREFIX}vocal_gender": "vocalGender",
             f"{KIE_SELECT_PREFIX}style_weight": "styleWeight",
             f"{KIE_SELECT_PREFIX}weirdness": "weirdnessConstraint",
@@ -2129,6 +2156,8 @@ SUNO_V5 = WorkflowSpec(
         # 0〜1 の重みづけは小数で送る。``auto`` は数として読めないので
         # キーごと落ちる（= kie.ai 側の既定に任せる）
         float_keys=("styleWeight", "weirdnessConstraint", "audioWeight"),
+        # 尺は整数の秒。``auto`` は数として読めないのでキーごと落ちる
+        int_keys=("duration",),
         # customMode=true = style と歌詞を自分で書くモード（false は説明文
         # 500 字だけのおまかせ生成なので、このアプリの使い方には合わない）
         constants={"customMode": True},
@@ -2141,6 +2170,13 @@ SUNO_V5 = WorkflowSpec(
             choices=SUNO_MODELS,
             default="V5",
             hint="V5 が既定。V5_5 は最新、V4_5PLUS は旧世代。価格は同じ。",
+        ),
+        "duration": SelectSpec(
+            label="尺（秒）",
+            choices=SUNO_DURATIONS,
+            default="auto",
+            hint=f"{SUNO_DURATION_MODEL} を選んだときだけ効く（他のモデルでは"
+            "指定できない）。auto は Suno におまかせ（だいたい 3 分前後）。",
         ),
         "vocal_gender": SelectSpec(
             label="ボーカルの性別",
@@ -2172,7 +2208,9 @@ SUNO_V5 = WorkflowSpec(
     },
     notes=(
         "kie.ai 経由 / 1 回で 2 曲返る（両方保存される） / 歌詞なしでインスト"
-        " / bpm・キー・言語・尺の指定は無い（スタイル文に書く） / 除外したい"
+        f" / 尺は {SUNO_DURATION_MODEL} を選んだときだけ指定できる"
+        "（他のモデルでは auto のまま） / bpm・キー・言語の指定は無い"
+        "（スタイル文に書く） / 除外したい"
         "要素は「除外タグ」へ / スタイル・奇抜さ・サウンドの効きは 0〜1 の"
         "重みづけ（auto で kie.ai の既定） / タイトルは歌詞かスタイルから自動 /"
         " 成果物 URL は 14 日で失効"
@@ -2362,6 +2400,9 @@ class CatalogEntry:
     #: 参照素材を使うときに固定される選択式（``(名前, 値)``、§3.1）。Veo の
     #: 素材参照生成は 8 秒しか作れないので ``(("duration", "8"),)``。
     reference_selects: tuple[tuple[str, str], ...]
+    #: 選択式どうしの相関（``(名前, 相手の名前, 相手に必要な値)``、§3.1）。
+    #: Suno の ``duration`` は ``model`` が ``V5_5`` のときしか効かない。
+    select_requires: tuple[tuple[str, str, str], ...]
     #: ショット割りの宣言（``None`` = 1 ジョブ 1 ショット、§3.1）
     multi_shot: "MultiShotSpec | None"
     #: Elements（``@要素名`` の参照画像）の宣言（``None`` = 非対応、§3.1）
@@ -2413,6 +2454,10 @@ def catalog_entry(spec: WorkflowSpec) -> CatalogEntry:
             if name in MULTI_INPUT_FIELDS
         ),
         reference_selects=tuple(spec.reference_selects.items()),
+        select_requires=tuple(
+            (name, other, needed)
+            for name, (other, needed) in spec.select_requires.items()
+        ),
         multi_shot=spec.multi_shot,
         elements=spec.elements,
         accepts_start_image=spec.accepts_start_image,
@@ -2538,6 +2583,17 @@ def _validate_common(spec: WorkflowSpec) -> list[str]:
         elif value not in select.choices:
             problems.append(
                 f"{spec.id}.reference_selects[{name}]: {value!r} is not a choice"
+            )
+    # 選択式どうしの相関: 両方の名前が実在し、要求する値が相手の選択肢にあるか
+    for name, requirement in spec.select_requires.items():
+        other, needed = requirement
+        for key in (name, other):
+            if spec.select(key) is None:
+                problems.append(f"{spec.id}.select_requires[{name}]: unknown select {key}")
+        partner = spec.select(other)
+        if partner is not None and needed not in partner.choices:
+            problems.append(
+                f"{spec.id}.select_requires[{name}]: {needed!r} is not a choice of {other}"
             )
     # ショット割り / Elements: 受け取り口があり、上限が正で筋が通っているか
     if spec.multi_shot is not None:

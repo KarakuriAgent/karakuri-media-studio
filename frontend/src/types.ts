@@ -382,6 +382,12 @@ export interface WorkflowOption {
    */
   reference_selects?: Record<string, string>
   /**
+   * 選択式どうしの相関（名前 -> `[相手の名前, 相手に必要な値]`、SPEC §3.1）。
+   * Suno の `duration` は `model` が `V5_5` のときだけ効き、他のモデルでは
+   * API が黙って無視するので、既定以外を選んだら送る前にエラーにする。
+   */
+  select_requires?: Record<string, [string, string] | string[]>
+  /**
    * ショット割り / Elements の宣言（SPEC §3.1）。対応していないワークフロー
    * では null で、フォームはそのセクションを出さない。古いレスポンスには無い。
    */

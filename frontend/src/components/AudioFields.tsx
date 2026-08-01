@@ -100,7 +100,12 @@ export default function AudioFields({
         </p>
         {/* ワークフローが宣言した選択式フィールド（Suno のモデル・
             ボーカルの性別。§3.1） */}
-        <WorkflowSelects workflow={workflow} form={form} patch={patch} />
+        <WorkflowSelects
+          workflow={workflow}
+          form={form}
+          patch={patch}
+          errors={fieldErrors}
+        />
         <ModelPicker
           slots={options?.model_slots}
           workflowId={form.audioWorkflow}

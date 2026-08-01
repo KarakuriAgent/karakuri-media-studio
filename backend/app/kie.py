@@ -1017,16 +1017,21 @@ def _as_bool(value: Any) -> bool:
     return bool(value)
 
 
-def _as_int(value: Any) -> Any:
-    """整数で送るキーの値（数として読めなければそのまま = API に判断させる）。"""
+def _as_int(value: Any) -> int | None:
+    """整数で送るキーの値（数として読めなければ ``None`` = キーごと落とす）。
+
+    :func:`_as_float` と同じ流儀。選択式フィールドの「指定しない」（``"auto"``）を
+    ここで吸収する（Suno の ``duration``）。型が決まっているキーに数でないものを
+    送っても API に弾かれるだけなので、落とすほうが正しい。
+    """
     if isinstance(value, bool):
-        return value
+        return None
     if isinstance(value, int):
         return value
     try:
         return int(str(value).strip())
     except (TypeError, ValueError):
-        return value
+        return None
 
 
 def _as_float(value: Any) -> float | None:
@@ -1061,8 +1066,9 @@ def task_input(
     :attr:`app.workflows.KieTask.float_keys` に挙げたキーは **``float``** になる
     （選択式フィールドの値は文字列で届くので、Kling の ``sound`` や Seedance の
     ``duration`` のように JSON の型が決まっているものはここで直す）。
-    ``float_keys`` だけは**数として読めない値をキーごと落とす**ので、Suno の
-    ``styleWeight`` などの「auto = 指定しない」がそのまま表現できる。
+    数のキー（``int_keys`` / ``float_keys``）は**数として読めない値をキーごと
+    落とす**ので、Suno の ``styleWeight`` や ``duration`` の「auto = 指定しない」が
+    そのまま表現できる。
 
     複数ファイルの論理入力（:data:`app.workflows.MULTI_INPUT_FIELDS`、Seedance の
     ``reference_images`` など）は ``uploads`` から **URL のリスト**で届くので、
@@ -1097,10 +1103,12 @@ def task_input(
         elif key in task.bool_keys:
             payload[key] = _as_bool(value)
         elif key in task.int_keys:
-            payload[key] = _as_int(value)
+            whole = _as_int(value)
+            # "auto"（＝指定しない）はキーごと落とす
+            if whole is not None:
+                payload[key] = whole
         elif key in task.float_keys:
             number = _as_float(value)
-            # "auto"（＝指定しない）はキーごと落とす
             if number is not None:
                 payload[key] = number
         else:

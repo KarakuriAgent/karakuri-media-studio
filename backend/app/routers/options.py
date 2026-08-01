@@ -49,6 +49,10 @@ def _workflow_option(spec: WorkflowSpec) -> WorkflowOption:
         requires=list(spec.requires),
         multi_inputs=dict(spec.multi_inputs),
         reference_selects=dict(spec.reference_selects),
+        select_requires={
+            name: [other, needed]
+            for name, (other, needed) in spec.select_requires.items()
+        },
         multi_shot=(
             MultiShotOption(
                 max_shots=spec.multi_shot.max_shots,

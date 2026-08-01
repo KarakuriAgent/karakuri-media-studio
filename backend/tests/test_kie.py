@@ -2618,6 +2618,73 @@ def test_one_weight_can_be_set_while_the_others_stay_auto():
     assert "audioWeight" not in body
 
 
+def test_the_track_length_is_sent_as_a_whole_number(fake_kie):
+    """``duration`` は秒の**整数**（選択肢は文字列で届く）。"""
+    request = kie.build_request(
+        SUNO, _suno_params(selects={"model": "V5_5", "duration": "120"}), {}
+    )
+    body = kie.task_api(request.api).create_body(request.model, request.input)
+
+    assert body["duration"] == 120
+    assert isinstance(body["duration"], int)
+
+
+def test_an_auto_length_is_dropped_from_the_body():
+    """``auto`` は「指定しない」（Suno におまかせ）なのでキーごと落ちる。"""
+    request = kie.build_request(SUNO, _suno_params(), {})
+    body = kie.task_api(request.api).create_body(request.model, request.input)
+    assert "duration" not in body
+
+    # 音声ジョブの数値の尺（ACE-Step 用の `duration`）とは別物なので、
+    # 選択式が auto のあいだは何秒のジョブでも送らない
+    request = kie.build_request(SUNO, _suno_params(duration=45.0), {})
+    body = kie.task_api(request.api).create_body(request.model, request.input)
+    assert "duration" not in body
+
+
+def test_the_length_can_only_be_set_on_v5_5(client, job_env):
+    """他のモデルでは API が黙って無視するので、投入前に 422 で断る。"""
+    body = {
+        "mode": "audio",
+        "audio_workflow": SUNO.id,
+        "audio_prompt": STYLE,
+        "lyrics": LYRICS,
+        "selects": {"model": "V5", "duration": "120"},
+    }
+    answer = client.post("/api/jobs", json=body)
+    assert answer.status_code == 422
+    assert "'V5_5' のときだけ効きます" in answer.text
+
+    # V5_5 なら通る
+    body["selects"] = {"model": "V5_5", "duration": "120"}
+    assert client.post("/api/jobs", json=body).status_code == 201
+    # auto（既定のまま）ならモデルは何でもよい
+    body["selects"] = {"model": "V5", "duration": "auto"}
+    assert client.post("/api/jobs", json=body).status_code == 201
+    body["selects"] = {"model": "V4_5PLUS"}
+    assert client.post("/api/jobs", json=body).status_code == 201
+
+
+def test_the_agent_cannot_set_the_length_on_another_model(monkeypatch):
+    """エージェントの計画も同じ検証を通る（SPEC §3.1）。"""
+    from app import agent_protocol
+
+    mark_available(monkeypatch)
+    base = {
+        "mode": "audio",
+        "audio_workflow": SUNO.id,
+        "audio_prompt": STYLE,
+    }
+    with pytest.raises(agent_protocol.ActionError) as caught:
+        agent_protocol.validate_job(
+            {**base, "selects": {"model": "V5", "duration": "300"}}, where="task 1"
+        )
+    assert "V5_5" in str(caught.value)
+    agent_protocol.validate_job(
+        {**base, "selects": {"model": "V5_5", "duration": "300"}}, where="task 1"
+    )
+
+
 def test_suno_polls_through_its_own_status_words(fake_kie):
     """``PENDING -> TEXT_SUCCESS -> FIRST_SUCCESS -> SUCCESS``（独自の語彙）。"""
     fake_kie.answer("create", FakeResponse(envelope({"taskId": "suno-1"})))
@@ -2778,14 +2845,21 @@ def test_suno_is_offered_as_an_audio_workflow(client, monkeypatch):
 
     assert entry["backend"] == "kie"
     assert set(entry["supports"]) == {"prompt", "lyrics", "negative_tags"}
-    # 尺のパラメータが無いので長さは宣言しない（フォームは秒数欄を出さない）
+    # 尺は選択式で持つので、数値の長さは宣言しない（フォームは秒数欄を出さない）
     assert entry["max_duration"] == 0
     selects = {select["name"]: select for select in entry["selects"]}
     assert list(selects) == [
-        "model", "vocal_gender", "style_weight", "weirdness", "audio_weight",
+        "model", "duration", "vocal_gender", "style_weight", "weirdness",
+        "audio_weight",
     ]
     assert selects["model"]["choices"] == ["V5", "V5_5", "V4_5PLUS"]
     assert selects["model"]["default"] == "V5"
+    # 尺は代表値だけ + auto（= Suno におまかせ）。V5_5 のときしか効かない
+    assert selects["duration"]["choices"] == [
+        "auto", "30", "60", "90", "120", "180", "240", "300", "360",
+    ]
+    assert selects["duration"]["default"] == "auto"
+    assert entry["select_requires"] == {"duration": ["model", "V5_5"]}
     assert selects["vocal_gender"]["choices"] == ["auto", "m", "f"]
     # 0〜1 の重みづけは 0.25 刻み + auto（= 指定しない）が既定
     for name in ("style_weight", "weirdness", "audio_weight"):
