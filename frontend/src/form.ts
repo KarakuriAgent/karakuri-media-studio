@@ -3,12 +3,14 @@ import type {
   ComfyTarget,
   ImageFamily,
   JobMode,
+  LibraryKind,
   Lora,
   LoraRef,
   LoraTarget,
   ModelSlot,
   Options,
   PromptTemplate,
+  ReferenceInput,
   WorkflowOption,
   WorkflowSelect,
 } from './types'
@@ -115,6 +117,13 @@ export interface FormState {
   sourceImage: string
   endImage: string
   referenceVideo: string
+  /**
+   * マルチモーダル参照（SPEC §3.1）。選んだ順がそのまま外部 API に渡る配列の
+   * 順序になる。開始フレームとは排他なので、両方に値があるとフォームが弾く。
+   */
+  referenceImages: string[]
+  referenceVideos: string[]
+  referenceAudios: string[]
   duration: number
   fps: number
   seedLocked: boolean
@@ -174,6 +183,9 @@ export const initialForm: FormState = {
   sourceImage: '',
   endImage: '',
   referenceVideo: '',
+  referenceImages: [],
+  referenceVideos: [],
+  referenceAudios: [],
   duration: 10,
   fps: 25,
   seedLocked: false,
@@ -310,6 +322,77 @@ export function imageWorkflowNeedsSource(
   workflow?: WorkflowOption | null,
 ): boolean {
   return (workflow?.requires ?? []).includes('image' as never)
+}
+
+// --------------------------------------------- マルチモーダル参照（SPEC §3.1）
+// 1 つの欄が**複数ファイル**を持つ参照入力（Seedance 2 系の参照画像・参照動画・
+// 参照音声）。どの欄をいくつまで出すかはワークフローの `multi_inputs` が決め、
+// **開始フレーム（`source_image` / `end_image`）とは排他**。
+
+/** 参照入力 1 つ分の見せ方（論理名 = ジョブのフィールド名）。 */
+export interface ReferenceField {
+  /** ジョブのフィールド名（= バックエンドの論理名）。 */
+  name: ReferenceInput
+  /** FormState 側の持ち場。 */
+  field: 'referenceImages' | 'referenceVideos' | 'referenceAudios'
+  /** 選択モーダル・アップロードの種別。 */
+  kind: LibraryKind
+  label: string
+  hint: string
+  /** そのワークフローが受け取れる件数。 */
+  limit: number
+}
+
+/** 宣言の順序（フォームに出す順番でもある）。 */
+const REFERENCE_FIELDS: Omit<ReferenceField, 'limit'>[] = [
+  {
+    name: 'reference_images',
+    field: 'referenceImages',
+    kind: 'image',
+    label: '参照画像',
+    hint: '見た目の一貫性のよりどころ（同じ顔・同じ衣装・同じ小物）。',
+  },
+  {
+    name: 'reference_videos',
+    field: 'referenceVideos',
+    kind: 'video',
+    label: '参照動画',
+    hint: '動きのお手本（リズム・カメラの振る舞い）。1 本 2〜15 秒、合計 15 秒まで。',
+  },
+  {
+    name: 'reference_audios',
+    field: 'referenceAudios',
+    kind: 'audio',
+    label: '参照音声',
+    hint: 'ムード・曲調のよりどころ。1 本 2〜15 秒、合計 15 秒まで。',
+  },
+]
+
+/** 選択中のワークフローが受け取る参照入力（宣言が無ければ空）。 */
+export function referenceFields(
+  workflow?: WorkflowOption | null,
+): ReferenceField[] {
+  const declared = workflow?.multi_inputs ?? {}
+  return REFERENCE_FIELDS.flatMap((item) => {
+    const limit = declared[item.name]
+    return limit ? [{ ...item, limit }] : []
+  })
+}
+
+/** いまフォームに入っている参照素材の合計件数。 */
+export function referenceCount(form: FormState): number {
+  return (
+    form.referenceImages.length +
+    form.referenceVideos.length +
+    form.referenceAudios.length
+  )
+}
+
+/** 参照素材の出し入れ（すでに入っていれば外す。並び順 = 選んだ順）。 */
+export function toggleReference(current: string[], url: string): string[] {
+  return current.includes(url)
+    ? current.filter((item) => item !== url)
+    : [...current, url]
 }
 
 // -------------------------------------------------- リファレンスシート（§7.2）
@@ -449,6 +532,12 @@ function asNumber(value: unknown): number | undefined {
 
 function asBoolean(value: unknown): boolean | undefined {
   return typeof value === 'boolean' ? value : undefined
+}
+
+/** 文字列だけの配列を取り出す（それ以外が来たら復元しない）。 */
+function asStringList(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return
+  return value.filter((item): item is string => typeof item === 'string')
 }
 
 /** `{名前: 文字列}` だけを取り出す（数値や null が混ざった行は落とす）。 */
@@ -602,6 +691,11 @@ export function formStateFromParams(
   if (endImage !== undefined) changes.endImage = endImage
   const referenceVideo = asString(params.reference_video)
   if (referenceVideo !== undefined) changes.referenceVideo = referenceVideo
+  // マルチモーダル参照（複数ファイル、SPEC §3.1）。古いジョブの params には無い。
+  for (const item of REFERENCE_FIELDS) {
+    const paths = asStringList(params[item.name])
+    if (paths) changes[item.field] = paths
+  }
 
   // --- 尺 ------------------------------------------------------------------
   // params の `duration` は 1 つきりだが、フォームは動画と音声で別のつまみを持つ。
@@ -704,6 +798,9 @@ export function hiddenFields(
     startImage: !((mode === 'i2v' && accepts('image')) || imageNeedsSource),
     endImage: !accepts('end_image'),
     referenceVideo: !requires('video'),
+    // マルチモーダル参照は「開始フレームの代わり」なので、開始フレームを渡せる
+    // mode（= i2v）でだけ意味がある。full は画像ステージが開始フレームを作る。
+    references: !(mode === 'i2v' && referenceFields(workflow).length > 0),
     // an editing workflow derives the size from its input picture; with no video
     // stage to size, the aspect ratio / megapixels then do nothing at all
     resolution: mode === 'audio' || (mode === 'image_only' && imageNeedsSource),
@@ -715,6 +812,7 @@ export function validateForm(
   form: FormState,
   imageWorkflow?: WorkflowOption | null,
   audioWorkflow?: WorkflowOption | null,
+  videoWorkflow?: WorkflowOption | null,
 ): Record<string, string> {
   const errors: Record<string, string> = {}
   if (form.mode === 'audio') {
@@ -743,6 +841,28 @@ export function validateForm(
     errors.source_image =
       `${imageWorkflow?.label ?? '選択中の画像ワークフロー'}は入力画像を編集する` +
       'ワークフローです。参照画像を選択してください。'
+  }
+  // マルチモーダル参照（SPEC §3.1）: 先頭フレームと排他で、件数にも上限がある。
+  // どちらもバックエンドが 422 で断るので、送る前に同じ理由をその場で見せる。
+  const references = referenceFields(videoWorkflow)
+  const used = references.filter((item) => form[item.field].length > 0)
+  if (used.length > 0) {
+    if (form.mode !== 'i2v') {
+      errors.references =
+        '参照素材は「動画生成」モードでだけ使えます（画像＋動画は生成した静止画が' +
+        '開始フレームになるため、参照素材とは併用できません）。'
+    } else if (form.sourceImage || form.endImage) {
+      errors.references =
+        '開始フレーム / 最後のフレームと参照素材は同時に指定できません' +
+        '（外部 API 側で排他のモードです）。どちらかを外してください。'
+    }
+    for (const item of used) {
+      if (form[item.field].length > item.limit) {
+        errors[item.name] = `${item.label}は ${item.limit} 件までです（今は ${
+          form[item.field].length
+        } 件）。`
+      }
+    }
   }
   return errors
 }

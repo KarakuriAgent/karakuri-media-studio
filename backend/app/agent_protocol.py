@@ -40,6 +40,8 @@ from .models import (
     missing_job_fields,
     model_override_problem,
     prompt_length_problem,
+    reference_materials,
+    reference_problem,
     select_problem,
     video_workflow_problem,
 )
@@ -50,6 +52,7 @@ from .workflows import (
     DEFAULT_IMAGE_WORKFLOW,
     DEFAULT_VIDEO_WORKFLOW,
     INPUT_FIELDS,
+    MULTI_INPUT_FIELDS,
     WorkflowSpecError,
     audio_specs,
     get_audio_spec,
@@ -148,6 +151,7 @@ def _image_workflow_detail(raw: dict[str, Any], mode: str) -> str | None:
 _NON_AUDIO_FIELDS = (
     "image_prompt", "video_prompt", "loras", "video_loras",
     "source_image", "end_image", "reference_video", "audio_path",
+    "reference_images", "reference_videos", "reference_audios",
 )
 
 
@@ -316,6 +320,18 @@ def _workflow_detail(raw: dict[str, Any]) -> str | None:
     if length:
         return f"{length}。`video_prompt` を短く書き直してください"
 
+    # マルチモーダル参照（Seedance 2 系）: 先頭フレームとは排他で、件数にも上限が
+    # ある。VIDEO WORKFLOWS の説明に戻れるよう、理由をそのまま返す。
+    references = reference_problem(
+        mode,
+        workflow,
+        reference_materials(raw),
+        source_image=_text(raw.get("source_image")),
+        end_image=_text(raw.get("end_image")),
+    )
+    if references:
+        return references
+
     try:
         missing = missing_job_fields(
             mode,
@@ -430,6 +446,11 @@ def validate_job(
             value = getattr(payload, field, None)
             if value:
                 resolve_asset_path(value, field=field)
+        # 参照素材は 1 フィールドに複数（SPEC §3.1）
+        for field in MULTI_INPUT_FIELDS.values():
+            for item in getattr(payload, field, None) or []:
+                if item:
+                    resolve_asset_path(item, field=field)
     except JobValidationError as exc:
         raise ActionError(f"{where}: {exc}") from exc
     return payload

@@ -92,8 +92,9 @@
 | `veo3_1_fast` | Veo 3.1 Fast（音声つき・外部 API） | kie.ai `veo3_fast` | なし（画像・最終フレーム画像は任意） | ○ |
 | `veo3_1_quality` | Veo 3.1 Quality（音声つき・外部 API） | kie.ai `veo3` | なし（画像・最終フレーム画像は任意） | ○ |
 | `kling3_video` | Kling 3.0（音声つき・外部 API） | kie.ai `kling-3.0/video` | なし（画像・最終フレーム画像は任意） | ○ |
-| `seedance2` | Seedance 2.0（音声つき・外部 API） | kie.ai `bytedance/seedance-2` | なし（画像・最終フレーム画像は任意） | ○ |
-| `seedance2_mini` | Seedance 2.0 Mini（音声つき・外部 API） | kie.ai `bytedance/seedance-2-mini` | なし（画像・最終フレーム画像は任意） | ○ |
+| `seedance2` | Seedance 2.0（音声つき・外部 API） | kie.ai `bytedance/seedance-2` | なし（画像・最終フレーム画像・参照素材は任意） | ○ |
+| `seedance2_fast` | Seedance 2.0 Fast（音声つき・外部 API） | kie.ai `bytedance/seedance-2-fast` | なし（画像・最終フレーム画像・参照素材は任意） | ○ |
+| `seedance2_mini` | Seedance 2.0 Mini（音声つき・外部 API） | kie.ai `bytedance/seedance-2-mini` | なし（画像・最終フレーム画像・参照素材は任意） | ○ |
 | `grok_imagine_video` | Grok Imagine 動画（サブスク CLI） | Grok Build CLI `video-1.5` | なし（開始フレーム画像は任意） | ○ |
 
 - id はファイル名（拡張子なし）。`tx2_3_i2v` / `tx2_3_ia2v` の綴りは配布ファイル名そのまま
@@ -126,10 +127,12 @@
   （`models.prompt_length_problem`、マニフェストの `max_prompt_chars`）。マルチショット（`multi_shots` /
   `multi_prompt`）と Elements（`kling_elements`、キャラ参照）、Turbo 系（`kling/v3-turbo-*`）は未対応。
   ユーザー LoRA は使えず、`full` は Veo と同じく ComfyUI の画像ワークフローと組み合わせられる
-- **`seedance2` / `seedance2_mini`（family `seedance`、backend `kie`）** も外部 API のワークフロー（§5.2）で、
-  Kling と同じ **Market 系の統一 API**。映像と**ネイティブ音声を同時に生成**する 4〜15 秒のクリップで、
-  2.0 は **4K まで**（720p で試作 → 1080p / 4K で仕上げ）、Mini は 720p までの最安バリアント（試作・大量出し）。
-  選択式フィールド（§3.1）は `resolution`（2.0: 480p / 720p（既定）/ 1080p / 4k、Mini: 480p / 720p）・
+- **`seedance2` / `seedance2_fast` / `seedance2_mini`（family `seedance`、backend `kie`）** も外部 API の
+  ワークフロー（§5.2）で、Kling と同じ **Market 系の統一 API**。映像と**ネイティブ音声を同時に生成**する
+  4〜15 秒のクリップで、2.0 は **4K まで**（720p で試作 → 1080p / 4K で仕上げ）、Fast は 720p までで待ち時間が短い
+  試行錯誤用、Mini は 720p までの最安バリアント（大量出し）。3 バリアントの違いは**モデル名と解像度の選択肢と
+  値段だけ**なので、宣言は `workflows._seedance_spec` 1 つを呼ぶエントリで済む。
+  選択式フィールド（§3.1）は `resolution`（2.0: 480p / 720p（既定）/ 1080p / 4k、Fast / Mini: 480p / 720p）・
   `duration`（4〜15、既定 5）・`aspect_ratio`（16:9（既定）/ 9:16 / 1:1 / 4:3 / 3:4 / 21:9 / `adaptive` =
   入力画像に追従）・`generate_audio`（**既定 true**）・`nsfw_checker`（**既定 false** = kie.ai 側の
   NSFW フィルタ無効。`true` にするとフィルタが有効になり、際どい生成が弾かれる）。
@@ -140,8 +143,15 @@
   2 系に **`seed` / `camera_fixed` は無い**ので、カメラ固定も再現性もプロンプト本文で指定する。
   `web_search`（t2v のときだけ効く真偽値）は未対応: i2v では黙って無視される項目になるので、
   モードで出し分ける仕組みができるまで宣言しない。
-  マルチモーダル参照（`reference_image_urls` / `reference_video_urls` / `reference_audio_urls`）と 2.0 Fast は未対応で、
-  参照モードを持たないため API 側の「先頭フレーム / 先頭+末尾 / 参照」の 3 モード排他は自然に満たされる。
+  **マルチモーダル参照**（`reference_images` 最大 9 枚 / `reference_videos` 最大 3 本 / `reference_audios` 最大 3 本、
+  §3.1）に対応する。参照画像は**見た目の一貫性**（同じ顔・衣装・小物）、参照動画は**動きのお手本**、
+  参照音声は**ムード**のよりどころで、渡した素材は 1 本ずつ File Upload API で URL 化され
+  `reference_image_urls` / `reference_video_urls` / `reference_audio_urls` の**配列**として `input` に入る。
+  **先頭フレーム（`source_image` / `end_image`）と参照モードは API 側で相互排他**なので、
+  同時指定のジョブは投入前に 422（`models.reference_problem`）。`mode: "full"` は画像ステージが開始フレームを
+  作る＝先頭フレームモードなので、参照素材とは組み合わせられない（同じく 422）。件数の上限と拡張子だけ
+  投入前に見て、素材のサイズ・解像度・尺（画像 ≤30MB・300〜6000px・AR 0.4〜2.5 / 動画・音声は各 2〜15 秒・
+  合計 15 秒）は kie.ai 側の判断に任せ、失敗理由（`failMsg`）をそのまま見せる。
   Seedance 2.5 は kie.ai 未提供（Coming Soon）だが、モデル名はマニフェストの宣言なので**エントリを 1 つ足すだけ**で通る。
   成果物 URL は約 24 時間で失効する（完了時に即ダウンロードするので影響なし、§5.2）。
   ユーザー LoRA は使えず、`full` は Veo / Kling と同じく ComfyUI の画像ワークフローと組み合わせられる
@@ -252,11 +262,30 @@ LoRA チェーンも持たない（テンプレートに LoRA ノードが無い
 | LoRA トリガーワード（動画） | 動画プロンプト文字列の先頭に前置 | 同上（自動連結・編集可） |
 | リファレンス音声 | `audio` → `276` (LoadAudio)。要求するワークフローのみ | アップロード（`/upload/image` で送信 → ファイル名を注入） |
 | 開始フレーム / 最終フレーム / 参照動画 | `image` / `end_image` / `video` | ワークフローの必要入力に応じて表示。画像は D&D・履歴のラストフレームからも選べる |
+| マルチモーダル参照（参照画像 / 参照動画 / 参照音声） | `reference_images` / `reference_videos` / `reference_audios`（複数ファイル → URL の配列） | 宣言のあるワークフロー（Seedance 2 系）で `mode: "i2v"` のときだけ表示。1 欄が複数ファイルを持ち、選んだ順が API に渡る配列の順序になる。**開始フレーム / 最終フレームとは排他**（下記） |
 | 秒数 (Duration) | `duration` | 数値・**上限なし**。長尺は VRAM 次第で ComfyUI 側エラーになり得ることを UI に注記。`duration` を持たないワークフロー（wan_dancer は尺を選択式で持つ）では欄ごと出さない |
 | 選択式フィールド | ワークフローの `selects`（論理名 → CustomCombo 等） | 宣言のあるワークフローだけ、ワークフローセレクトの直下にプルダウンが並ぶ（下記） |
 | フレームレート | `fps` | 数値（既定 25） |
 | 画像・動画プロンプト | `prompt`（画像 `30:19` / 動画は各テンプレート） | テキストエリア（手動入力が基本。Grok チャット §4.3 の結果を反映して編集も可） |
 | 動画ネガティブ | `negative` | プリセット切替（ワークフロー既定 / 現行値 / モデル作者版）+ 直接編集可。**空欄ならテンプレート既定値のまま**（dev 系は `pc game, …`、distilled 系は品質ネガ） |
+
+#### 複数ファイルの参照入力（`WorkflowSpec.multi_inputs`）
+
+1 つの入力欄が**複数のファイル**を持つ論理入力の仕組み（Seedance 2 系のマルチモーダル参照、§2.2）。
+`multi_inputs = {"reference_images": 9, ...}` をマニフェストに宣言すると、
+
+- ジョブは `reference_images` / `reference_videos` / `reference_audios`（`workflows.MULTI_INPUT_FIELDS`）に
+  **パスの配列**を持ち、`jobs._kie_uploads` が 1 本ずつ File Upload API に上げて **URL の配列**にしてから
+  `KieTask.fields` が指すキー（`reference_image_urls` など）に入れる。並び順は指定した順のまま
+  （`KieTask.list_keys` は「別々の論理名を 1 つの配列に並べる」ための別の機構で、こちらとは無関係）
+- 生成フォームは宣言のある欄だけを出し（`form.referenceFields`）、件数と上限を表示する
+- 宣言のないワークフローに渡す・上限を超える・拡張子が違う場合は 422（`models.reference_problem`）
+
+**参照モードと先頭フレームモードは相互排他**（外部 API 側の制約）なので、`reference_*` と
+`source_image` / `end_image` の同時指定、および `mode: "full"`（画像ステージの出力が開始フレームになる）
+との組み合わせは投入前に 422 で断る。検証は Web UI（`form.validateForm` + `jobs._validate`）・
+API（`JobCreate` の検証）・エージェント（`agent_protocol._workflow_detail`）の 3 経路で同じ関数を通る。
+素材のサイズ・解像度・尺の細かい制約は外部 API の判断に任せ、失敗理由をそのまま見せる。
 
 #### 選択式フィールド（`WorkflowSpec.selects`）
 
@@ -668,10 +697,12 @@ ComfyUI と並ぶ **2 つめの生成バックエンド**として、外部 API 
   ので、マニフェスト側で宣言して合わせる: `KieTask.list_keys`（配列 = `image_urls`）と
   `KieTask.bool_keys`（真偽値 = `sound`）。選択式フィールドの値はすべて文字列で届くため、
   型を直さないと API に弾かれる。逆に Kling の `duration` は**文字列のまま**送るのが正しい（§2.2）
-- **Seedance 2 系も Market 系のまま**（`api: "market"`、モデル `bytedance/seedance-2` / `-mini`）。型の宣言は
+- **Seedance 2 系も Market 系のまま**（`api: "market"`、モデル `bytedance/seedance-2` / `-fast` / `-mini`）。型の宣言は
   `KieTask.int_keys`（整数 = `duration`）と `KieTask.bool_keys`（真偽値 = `generate_audio` / `nsfw_checker`）。開始 / 最終フレームは
-  `first_frame_url` / `last_frame_url` と**キーが別**なので `list_keys` は使わない。バリアントの違いは
-  **モデル名と解像度の選択肢と値段だけ**なので、マニフェストは 1 つのファクトリから作る（2.5 追加はエントリ 1 行）
+  `first_frame_url` / `last_frame_url` と**キーが別**なので `list_keys` は使わない。マルチモーダル参照は
+  `WorkflowSpec.multi_inputs`（§3.1）の「複数ファイル → URL の配列」で、`jobs._kie_uploads` が 1 本ずつ上げて
+  `reference_image_urls` などに配列で入れる。バリアントの違いは
+  **モデル名と解像度の選択肢と値段だけ**なので、マニフェストは 1 つのファクトリから作る（2.5 追加はエントリ 1 つ）
 - **Suno は旧専用系**（`api: "suno"`、`app.kie.SunoTaskApi`）。エンドポイントは
   `POST /api/v1/generate` と `GET /api/v1/generate/record-info?taskId=`、状態語は
   `PENDING → TEXT_SUCCESS → FIRST_SUCCESS → SUCCESS`（中間の 2 つは「まだ待つ」だが進捗として出す。
@@ -859,7 +890,7 @@ CREATE TABLE jobs (
 );
 ```
 
-- `params` には `video_workflow` / `image_workflow` / `audio_workflow`（ワークフロー ID）と、`end_image` / `reference_video`、音声モードの `audio_prompt` / `lyrics` / `negative_tags` / `bpm` / `keyscale` / `language` / `audio_category` / `reprompt` / `audio_seed` も保存する
+- `params` には `video_workflow` / `image_workflow` / `audio_workflow`（ワークフロー ID）と、`end_image` / `reference_video` / `reference_images` / `reference_videos` / `reference_audios`、音声モードの `audio_prompt` / `lyrics` / `negative_tags` / `bpm` / `keyscale` / `language` / `audio_category` / `reprompt` / `audio_seed` も保存する
 - 後から足したカラム（`nsfw` / `nsfw_source` / `audio_prompt` / `audio_output_path` / `credits_consumed` / `extra_outputs` など）は起動時に `PRAGMA table_info` と突き合わせて不足分だけ `ALTER TABLE` する（`db.MIGRATIONS`）
 - `workflow_json` を保存するため、任意の過去ジョブの投入内容をあとから完全に確認できる（`rerun` は `params` から作り直す）
 - リファレンス音声・アップロード画像は `assets/` に保存し再利用可能（名前を付けて管理）
@@ -929,7 +960,7 @@ CREATE TABLE library (
   日本語タグに置き換えて探しやすくする。指定済みの項目は上書きしない。Grok が使えなければ静かに
   諦める（タグ無しのまま。ログのみ）。反映できたら WS（`type: "library"`）で画面に伝え、開いている
   ライブラリモーダルは一覧を読み直す。アップロードした素材はプロンプトが無いので対象外
-- **ジョブの入力として使える**: `source_image` / `end_image` / `reference_video` / `audio_path` は
+- **ジョブの入力として使える**: `source_image` / `end_image` / `reference_video` / `audio_path` / `reference_images` ほかの参照素材は
   `library/` 配下の絶対パスと `/library/…` URL を受け付ける（`jobs.resolve_asset_path`。従来の
   `assets/` も引き続き有効なので、LoRA の `default_audio` など既存の値は壊れない）
 - **タグ**: 各素材に分類タグを付けられる（登録時 / `PATCH` で編集）。前後の空白・空・重複（大文字小文字
@@ -1027,6 +1058,7 @@ SPA 1 画面 + 履歴。ダークテーマの生成系ツールらしい見た�
 - 実行中でもキュー追加可能（ジョブキュー表示）
 - **入力リソースは「ライブラリから選択」「履歴から選択」で使い回せる**: 開始フレーム / 編集元画像・最後のフレーム・参照動画・リファレンス音声の各欄に 2 つのボタンを置く。[ライブラリから選択] は取っておいた素材の一覧（`LibraryPickerModal`、§7.2）で、選ぶと `/library/…` URL をそのまま欄に入れる（配信済みなのでコピーしない）。モーダル内から素材のアップロード追加・リネーム・タグ編集・削除もできる。一覧は `GET /api/library` から 50 件ずつ読み、**検索ボックス（名前・タグの部分一致）・カテゴリのプルダウン（すべて / キャラクター / 背景 / 小物 / 未分類）・タグチップでの絞り込み**、[さらに表示] での continue 読み込みに対応する（絞り込みとページングはサーバー側）。素材ごとのカテゴリはタイル下のプルダウンでその場で変えられ、モーダルからのアップロードには絞り込み中のカテゴリがそのまま付く
 - **リファレンスシートを「ライブラリから作成」**: リファレンスシートを入力に取る動画ワークフロー（`ltx2_3_ic_lora_image`）を選んでいるときだけ、画像欄に [ライブラリから作成] を足す（`SheetBuilderModal`）。押すと `LibraryPickerModal` の複数選択モード（タイルに選択順のバッジが出る）で画像素材を **2〜8 枚**選べ、[この順で作成] で `POST /api/library/sheet`（§7.2）を呼ぶ。シートの大きさは選択中のアスペクト比から長辺 1280px で決める（`form.sheetSize`。プリセットが読めなければ 1280x720）。出来上がったシートはそのまま画像欄に入り、ライブラリにも残る。作成中はボタンを [作成中…] にし、失敗はモーダル内にそのまま出す
+- **マルチモーダル参照の欄**（Seedance 2 系、§2.2 / §3.1）: 参照入力を宣言しているワークフローを `mode: "i2v"` で選んだときだけ「マルチモーダル参照（開始フレームとは排他）」セクションを出す。参照画像 / 参照動画 / 参照音声の欄がそれぞれ「n / 上限 件」と [アップロード] [ライブラリから選択] [履歴から選択] を持ち、選んだ素材は**選んだ順**に番号つきで積み上がる（並び順がそのまま API に渡る配列の順序）。各行の [外す] で個別に取り消せる。ライブラリのモーダルは複数選択モード（`LibraryPickerModal` の `selectedIds`）で開き、選ぶたびに欄へ出し入れしてモーダルは開いたまま、[選択を終える] で閉じる。上限に達したら追加の操作を無効化する。開始フレーム / 最後のフレームと同時に入っている場合と `mode: "full"` の場合は、送信前にフォームがその場でエラーを出す（バックエンドの 422 と同じ理由、`form.validateForm`）
 - **リファレンス音声はライブラリに一本化**: `assets/audio` のプルダウンは廃止し、[ライブラリから選択] / [履歴から選択] / [アップロード]（アップロードはそのままライブラリ登録）と、選択中の名前 + プレビューだけを出す。LoRA の `default_audio` などが指す従来の `/assets/…` も入力としては引き続き有効
 - **生成物のライブラリ登録**: 結果ペイン（表示中の成果物 1 件）と履歴詳細（その job が持つ出力すべて）に [☆ ライブラリに登録] を置く（`LibraryAddButton`）。既に登録済みのものは `/api/options` の library から判定して押す前から [★ 登録済みです] を出し、押してしまった場合も 409 を失敗扱いにせず同じ表示にする（§7.2）。ボタンの隣にカテゴリのプルダウン（既定は未分類）を置き、登録と同時に分類できる
 - [履歴から選択] は過去ジョブの出力から選ぶ（`HistoryPickerModal`）。**検索ボックス**でジョブの文言（動画 / 画像 / 音声プロンプト → 最初の指示）に部分一致するものだけに絞れる（ジョブは全件フロントにあるのでクライアント側で絞る）。候補は完了ジョブのみを新しい順に並べ、欄の種別で絞る（画像欄 = 生成画像とラストフレームの両方（ラベルで区別）、動画欄 = 生成動画、音声欄 = 音声ジョブの出力）。生成物は `outputs/` にあって `assets/` の外なので、選ぶと fetch → `POST /api/assets/{kind}` で assets へコピーしてから欄に入れる。モーダル内には独自の「🫣 NSFW表示」チェックボックスがあり、初期値はヘッダーのグローバルトグルに従うが、ここでの切り替えは `sessionStorage` に残さない（この画面かぎり）。オフのあいだは NSFW ジョブを一覧に出さない。Esc / 背景クリックで閉じる
@@ -1086,7 +1118,7 @@ POST /api/models/download-all    … 未検出かつ取得元 URL 登録済み�
 POST /api/chat/sessions          … チャット開始（フォーム現在値をコンテキストとして渡す。`video_workflow` / `image_workflow` / `audio_workflow` を含む）
 POST /api/chat/sessions/{id}/messages … 発言送信 → Grok 応答（質問 or 最終JSON案）を返す
 GET  /api/chat/sessions/{id}     … 履歴取得
-POST /api/jobs                   … ジョブ作成・実行（プロンプト確定値+パラメータ。`selects` で選択式フィールド §3.1、`model_overrides` でそのジョブだけモデルを差し替え可 §3.3）
+POST /api/jobs                   … ジョブ作成・実行（プロンプト確定値+パラメータ。`selects` で選択式フィールド §3.1、`model_overrides` でそのジョブだけモデルを差し替え可 §3.3、`reference_images` / `reference_videos` / `reference_audios` でマルチモーダル参照 §3.1）
 GET  /api/jobs?limit=…           … 履歴一覧
 GET  /api/jobs/{id}              … 詳細
 POST /api/jobs/{id}/rerun        … 再実行（seed 変更オプション）

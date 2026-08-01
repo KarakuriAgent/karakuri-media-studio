@@ -13,10 +13,13 @@ import {
   joinTriggers,
   lorasForTarget,
   needsReferenceSheet,
+  referenceFields,
   sheetSize,
   toSelected,
+  toggleReference,
   workflowsForMode,
   type FormState,
+  type ReferenceField,
   type SelectedLora,
 } from '../form'
 import type {
@@ -24,6 +27,7 @@ import type {
   ComfyTarget,
   Job,
   JobMode,
+  LibraryItem,
   Lora,
   Options,
   WorkflowOption,
@@ -79,6 +83,12 @@ interface PickerTarget {
   /** モーダルのタイトルに使う欄名（「開始フレーム」など） */
   title: string
   apply: (url: string) => Partial<FormState>
+  /**
+   * 参照素材の欄から開いたときの宣言（マルチモーダル参照、SPEC §3.1）。
+   * 単発の入れ替えではなく**選択の出し入れ**になり、ライブラリのモーダルは
+   * 複数選べるよう開いたままになる。
+   */
+  reference?: ReferenceField
 }
 
 /** LoRA chips + strength sliders + trigger words, shared by both stages. */
@@ -300,6 +310,117 @@ function AssetPicker({
   )
 }
 
+/**
+ * 選んである URL に対応するライブラリ id（**選んだ順**）。
+ *
+ * フォームは URL で持つが、ライブラリの複数選択モードは id で選択状態を描くので
+ * ここで引き当てる。ライブラリ以外（アップロード・履歴）から入れた素材は id を
+ * 持たないので、単に選択済みバッジが付かないだけで済む。
+ */
+export function selectedLibraryIds(
+  library: LibraryItem[],
+  urls: string[],
+): string[] {
+  return urls.flatMap((url) => {
+    const hit = library.find((item) => item.url === url)
+    return hit ? [hit.id] : []
+  })
+}
+
+/**
+ * 複数ファイルを取る参照入力 1 欄（マルチモーダル参照、SPEC §3.1 / §8）。
+ *
+ * 1 本きりの :func:`AssetPicker` と違い、選んだものが**順番つきで積み上がる**
+ * （並び順がそのまま外部 API に渡る配列の順序）。上限に達したら追加の操作を
+ * 無効にして、送る前に件数で 422 にならないようにする。
+ */
+function ReferencePicker({
+  item,
+  values,
+  busy,
+  onUpload,
+  onOpenLibrary,
+  onOpenHistory,
+  onRemove,
+}: {
+  item: ReferenceField
+  values: string[]
+  busy: boolean
+  onUpload: (file: File) => void
+  onOpenLibrary: () => void
+  onOpenHistory: () => void
+  onRemove: (url: string) => void
+}) {
+  const input = useRef<HTMLInputElement>(null)
+  const full = values.length >= item.limit
+
+  return (
+    <div className="flex flex-col gap-2 rounded-lg border border-dashed border-ink-600 p-2">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-xs text-slate-300">{item.label}</span>
+        <span className="text-[11px] tabular-nums text-slate-500">
+          {values.length} / {item.limit} 件
+        </span>
+        <input
+          ref={input}
+          type="file"
+          accept={`${item.kind}/*`}
+          className="hidden"
+          onChange={(event) => {
+            const file = event.target.files?.[0]
+            event.target.value = ''
+            if (file) onUpload(file)
+          }}
+        />
+        <button
+          className="btn-ghost ml-auto text-xs"
+          disabled={busy || full}
+          onClick={() => input.current?.click()}
+        >
+          アップロード
+        </button>
+        <button
+          className="btn-ghost text-xs"
+          disabled={busy}
+          onClick={onOpenLibrary}
+        >
+          ライブラリから選択
+        </button>
+        <button
+          className="btn-ghost text-xs"
+          disabled={busy || full}
+          onClick={onOpenHistory}
+        >
+          履歴から選択
+        </button>
+      </div>
+      <p className="text-[11px] text-slate-500">{item.hint}</p>
+      {values.length > 0 && (
+        <ul className="flex flex-col gap-1">
+          {values.map((url, index) => (
+            <li key={url} className="flex items-center gap-2">
+              <span className="w-5 shrink-0 text-[11px] tabular-nums text-slate-500">
+                {index + 1}.
+              </span>
+              {item.kind === 'image' && (
+                <img
+                  src={url}
+                  alt=""
+                  className="h-10 w-10 shrink-0 rounded border border-ink-600 object-cover"
+                />
+              )}
+              <span className="flex-1 truncate text-[11px] text-slate-400">{url}</span>
+              <button className="btn-ghost text-xs" onClick={() => onRemove(url)}>
+                外す
+              </button>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  )
+}
+
 export default function GenerateForm({
   form,
   patch,
@@ -353,6 +474,19 @@ export default function GenerateForm({
   const startImageLabel = imageEdits
     ? (imageWorkflow?.image_label ?? '編集元画像')
     : (workflow?.image_label ?? '開始フレーム')
+  // マルチモーダル参照（Seedance 2 系）。宣言の無いワークフローでは空なので、
+  // 参照素材のセクションそのものが出ない。
+  const references = hidden.references ? [] : referenceFields(workflow)
+  const addReference = (item: ReferenceField, url: string) => {
+    if (form[item.field].includes(url) || form[item.field].length >= item.limit) return
+    patch({ [item.field]: [...form[item.field], url] } as Partial<FormState>)
+  }
+  const toggleRef = (item: ReferenceField, url: string) => {
+    if (!form[item.field].includes(url) && form[item.field].length >= item.limit) return
+    patch({
+      [item.field]: toggleReference(form[item.field], url),
+    } as Partial<FormState>)
+  }
   // 画像欄がリファレンスシート（IC-LoRA）なら、ライブラリの素材から合成できる。
   // 画像を編集するワークフローのときの欄は別物（編集元画像）なので出さない。
   const sheetInput =
@@ -471,7 +605,9 @@ export default function GenerateForm({
           : target.kind === 'video'
             ? await api.uploadVideo(file)
             : await api.uploadAudio(file)
-      patch(target.apply(asset.url))
+      // 参照素材の欄は入れ替えではなく積み上げ（選んだ順が API に渡る順）
+      if (target.reference) addReference(target.reference, asset.url)
+      else patch(target.apply(asset.url))
       onReloadOptions()
     } catch (error) {
       setUploadError(error instanceof Error ? error.message : String(error))
@@ -754,6 +890,55 @@ export default function GenerateForm({
                 秒数の設定ぶんだけ先頭から切り出して深度を取り、モーションを転写します。
               </p>
               <FieldError message={fieldErrors.reference_video} />
+            </Section>
+          )}
+
+          {references.length > 0 && (
+            <Section title="マルチモーダル参照（開始フレームとは排他）">
+              <p className="mb-2 text-[11px] text-slate-500">
+                素材から一貫性・動き・ムードを引き継ぎます。開始フレームと同時には
+                使えません（外部 API 側で排他のモードです）。プロンプトは素材の
+                説明ではなく、演出の指示に集中して書いてください。
+              </p>
+              <div className="flex flex-col gap-2">
+                {references.map((item) => (
+                  <div key={item.name}>
+                    <ReferencePicker
+                      item={item}
+                      values={form[item.field]}
+                      busy={busyUpload}
+                      onUpload={(file) =>
+                        void upload(item.kind, file, (url) => ({
+                          [item.field]: [...form[item.field], url],
+                        }) as Partial<FormState>)
+                      }
+                      onOpenLibrary={() =>
+                        setLibraryTarget({
+                          kind: item.kind,
+                          title: item.label,
+                          reference: item,
+                          apply: (url) => ({ [item.field]: [url] }) as Partial<FormState>,
+                        })
+                      }
+                      onOpenHistory={() =>
+                        setHistoryTarget({
+                          kind: item.kind,
+                          title: item.label,
+                          reference: item,
+                          apply: (url) => ({ [item.field]: [url] }) as Partial<FormState>,
+                        })
+                      }
+                      onRemove={(url) =>
+                        patch({
+                          [item.field]: form[item.field].filter((one) => one !== url),
+                        } as Partial<FormState>)
+                      }
+                    />
+                    <FieldError message={fieldErrors[item.name]} />
+                  </div>
+                ))}
+              </div>
+              <FieldError message={fieldErrors.references} />
             </Section>
           )}
 
@@ -1151,8 +1336,34 @@ export default function GenerateForm({
           title={`ライブラリから選択: ${libraryTarget.title}`}
           showNsfw={showNsfw}
           reloadKey={libraryVersion}
+          // 参照素材は複数選べるので、選択の出し入れができるようモーダルは開いたまま
+          selectedIds={
+            libraryTarget.reference
+              ? selectedLibraryIds(library, form[libraryTarget.reference.field])
+              : undefined
+          }
+          footer={
+            libraryTarget.reference && (
+              <div className="mt-3 flex items-center gap-2">
+                <span className="text-xs text-slate-400">
+                  {form[libraryTarget.reference.field].length} /{' '}
+                  {libraryTarget.reference.limit} 件
+                </span>
+                <button
+                  className="btn-primary ml-auto !py-1 text-xs"
+                  onClick={() => setLibraryTarget(null)}
+                >
+                  選択を終える
+                </button>
+              </div>
+            )
+          }
           // ライブラリのファイルは /library で配信済みなので、コピーせず URL を入れる
           onSelect={(item) => {
+            if (libraryTarget.reference) {
+              toggleRef(libraryTarget.reference, item.url)
+              return
+            }
             patch(libraryTarget.apply(item.url))
             setLibraryTarget(null)
           }}

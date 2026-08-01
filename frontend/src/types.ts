@@ -288,6 +288,15 @@ export interface LibraryQuery {
 export type WorkflowInput = 'image' | 'audio' | 'end_image' | 'video'
 
 /**
+ * 複数ファイルで渡す参照入力（mirrors workflows.MULTI_INPUT_FIELDS）。
+ * 論理名とジョブのフィールド名は同じ。
+ */
+export type ReferenceInput =
+  | 'reference_images'
+  | 'reference_videos'
+  | 'reference_audios'
+
+/**
  * ワークフローが宣言する選択式フィールド（GET /api/options）。
  *
  * 自由記述ではなく決まった選択肢で挙動が決まるワークフロー（wan_dancer の
@@ -314,6 +323,11 @@ export interface WorkflowOption {
   family: string
   notes: string
   requires: WorkflowInput[]
+  /**
+   * 複数ファイルで渡せる参照入力（論理名 -> 件数の上限、SPEC §3.1）。
+   * Seedance 2 系のマルチモーダル参照だけが宣言する。古いレスポンスには無い。
+   */
+  multi_inputs?: Partial<Record<ReferenceInput, number>>
   supports: string[]
   accepts_start_image: boolean
   image_label: string
@@ -391,6 +405,13 @@ export interface JobCreate {
   source_image: string | null
   end_image: string | null
   reference_video: string | null
+  /**
+   * マルチモーダル参照（SPEC §3.1）。宣言しているワークフロー（Seedance 2 系）
+   * でだけ使え、開始フレーム（`source_image` / `end_image`）とは排他。
+   */
+  reference_images?: string[]
+  reference_videos?: string[]
+  reference_audios?: string[]
   seed: number | null
   /**
    * ワークフローが宣言する選択式フィールドの値（論理名 -> 選んだ文字列）。

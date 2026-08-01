@@ -17,6 +17,7 @@ import {
   jobModelOverrides,
   jobSelects,
   jobWorkflowIds,
+  referenceFields,
   validateForm,
   type FormState,
 } from './form'
@@ -334,7 +335,7 @@ export default function App() {
       const audioWorkflow =
         options?.audio_workflows.find((item) => item.id === form.audioWorkflow) ??
         null
-      const problems = validateForm(form, imageWorkflow, audioWorkflow)
+      const problems = validateForm(form, imageWorkflow, audioWorkflow, workflow)
       if (Object.keys(problems).length > 0) {
         setFieldErrors(problems)
         return
@@ -398,6 +399,14 @@ export default function App() {
             : null,
         end_image: accepts('end_image') ? form.endImage || null : null,
         reference_video: needs('video') ? form.referenceVideo || null : null,
+        // マルチモーダル参照（SPEC §3.1）: そのワークフローが宣言している欄だけを
+        // 送る（宣言していないワークフローに渡すと 422 になる）。
+        ...Object.fromEntries(
+          referenceFields(form.mode === 'i2v' ? workflow : null).map((item) => [
+            item.name,
+            form[item.field],
+          ]),
+        ),
         seed: form.seedLocked ? form.seed : null,
         // そのモードで走るワークフローが宣言している選択項目だけ（未指定は送らない）
         selects: jobSelects(

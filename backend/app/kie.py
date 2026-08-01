@@ -774,7 +774,7 @@ def _seed(spec: WorkflowSpec, params: GenerationParams) -> int:
 
 
 def task_values(
-    spec: WorkflowSpec, params: GenerationParams, uploads: dict[str, str]
+    spec: WorkflowSpec, params: GenerationParams, uploads: dict[str, Any]
 ) -> dict[str, Any]:
     """論理名 -> 値。``uploads`` は論理入力名（``image`` など）-> 公開 URL。
 
@@ -840,7 +840,7 @@ def _as_float(value: Any) -> float | None:
 
 
 def task_input(
-    spec: WorkflowSpec, params: GenerationParams, uploads: dict[str, str]
+    spec: WorkflowSpec, params: GenerationParams, uploads: dict[str, Any]
 ) -> dict[str, Any]:
     """``createTask`` の ``input``（マニフェストが宣言したキーだけ）。
 
@@ -858,6 +858,12 @@ def task_input(
     ``duration`` のように JSON の型が決まっているものはここで直す）。
     ``float_keys`` だけは**数として読めない値をキーごと落とす**ので、Suno の
     ``styleWeight`` などの「auto = 指定しない」がそのまま表現できる。
+
+    複数ファイルの論理入力（:data:`app.workflows.MULTI_INPUT_FIELDS`、Seedance の
+    ``reference_images`` など）は ``uploads`` から **URL のリスト**で届くので、
+    そのまま配列として入る（:attr:`~app.workflows.KieTask.list_keys` は「別々の
+    論理名を 1 つの配列に並べる」ための宣言で、こちらとは別の機構）。空のリストは
+    「指定なし」なのでキーごと落ちる。
     """
     task = spec.kie
     if task is None:
@@ -866,7 +872,7 @@ def task_input(
     payload: dict[str, Any] = dict(task.constants)
     for name, key in task.fields.items():
         value = values.get(name)
-        if value is None or value == "":
+        if value is None or value == "" or value == []:
             continue
         if key in task.list_keys:
             payload.setdefault(key, []).append(value)
@@ -897,7 +903,7 @@ class TaskRequest:
 
 
 def build_request(
-    spec: WorkflowSpec, params: GenerationParams, uploads: dict[str, str]
+    spec: WorkflowSpec, params: GenerationParams, uploads: dict[str, Any]
 ) -> TaskRequest:
     """マニフェスト + ジョブのパラメータ -> 投入するリクエスト。"""
     task = spec.kie

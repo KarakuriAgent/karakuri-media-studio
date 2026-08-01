@@ -18,7 +18,9 @@ import {
   lorasForTarget,
   modelSlotsForJob,
   needsReferenceSheet,
+  referenceFields,
   sheetSize,
+  toggleReference,
   validateForm,
   workflowsForMode,
   type FormState,
@@ -296,6 +298,114 @@ describe('editing image workflows', () => {
     expect(validateForm(form, KREA2)).toEqual({})
     // no image stage -> nothing to validate
     expect(validateForm({ ...form, mode: 'i2v' }, QWEN)).toEqual({})
+  })
+})
+
+// ------------------------------------------- マルチモーダル参照（SPEC §3.1）
+
+// Seedance 2（kie.ai）: 開始フレームも参照素材も受け取れるが、**排他**。
+const SEEDANCE = workflow({
+  id: 'seedance2',
+  requires: [],
+  accepts_start_image: true,
+  supports: [
+    'prompt',
+    'image',
+    'end_image',
+    'reference_images',
+    'reference_videos',
+    'reference_audios',
+  ],
+  multi_inputs: {
+    reference_images: 9,
+    reference_videos: 3,
+    reference_audios: 3,
+  },
+  backend: 'kie',
+})
+
+describe('マルチモーダル参照', () => {
+  it('宣言しているワークフローの欄だけを、宣言順で出す', () => {
+    expect(referenceFields(SEEDANCE).map((item) => item.name)).toEqual([
+      'reference_images',
+      'reference_videos',
+      'reference_audios',
+    ])
+    expect(referenceFields(SEEDANCE)[0].limit).toBe(9)
+    expect(referenceFields(SEEDANCE)[1].field).toBe('referenceVideos')
+    // 宣言のないワークフローには欄そのものが無い
+    expect(referenceFields(VEO)).toEqual([])
+    expect(referenceFields(null)).toEqual([])
+  })
+
+  it('開始フレームを渡せる mode（i2v）でだけ欄を出す', () => {
+    expect(hiddenFields('i2v', SEEDANCE).references).toBe(false)
+    // full は画像ステージが開始フレームを作るので参照モードにできない
+    expect(hiddenFields('full', SEEDANCE).references).toBe(true)
+    expect(hiddenFields('i2v', VEO).references).toBe(true)
+  })
+
+  it('選んだ順に積み上げ、もう一度選ぶと外す', () => {
+    expect(toggleReference([], 'a')).toEqual(['a'])
+    expect(toggleReference(['a'], 'b')).toEqual(['a', 'b'])
+    expect(toggleReference(['a', 'b'], 'a')).toEqual(['b'])
+  })
+
+  it('開始フレームとの同時指定を送る前に断る', () => {
+    const form: FormState = {
+      ...initialForm,
+      mode: 'i2v',
+      referenceImages: ['/library/image/a.png'],
+    }
+    expect(validateForm(form, null, null, SEEDANCE)).toEqual({})
+
+    const withStart = { ...form, sourceImage: '/assets/image/start.png' }
+    expect(validateForm(withStart, null, null, SEEDANCE).references).toContain(
+      '同時に指定できません',
+    )
+    const withEnd = { ...form, endImage: '/assets/image/end.png' }
+    expect(validateForm(withEnd, null, null, SEEDANCE).references).toContain(
+      '同時に指定できません',
+    )
+  })
+
+  it('full モードでの参照指定と件数超過を断る', () => {
+    const form: FormState = {
+      ...initialForm,
+      mode: 'full',
+      imagePrompt: 'a cat',
+      referenceImages: ['/library/image/a.png'],
+    }
+    expect(validateForm(form, KREA2, null, SEEDANCE).references).toContain(
+      '動画生成',
+    )
+
+    const tooMany: FormState = {
+      ...initialForm,
+      mode: 'i2v',
+      referenceVideos: ['a', 'b', 'c', 'd'].map((n) => `/library/video/${n}.mp4`),
+    }
+    expect(
+      validateForm(tooMany, null, null, SEEDANCE).reference_videos,
+    ).toContain('3 件までです')
+  })
+
+  it('過去ジョブの params から参照素材を復元する', () => {
+    const { patch } = formStateFromParams(
+      {
+        reference_images: ['/library/image/a.png', '/library/image/b.png'],
+        reference_videos: [],
+        // 文字列以外が混ざった行は復元しない
+        reference_audios: 'nope',
+      },
+      null,
+    )
+    expect(patch.referenceImages).toEqual([
+      '/library/image/a.png',
+      '/library/image/b.png',
+    ])
+    expect(patch.referenceVideos).toEqual([])
+    expect(patch.referenceAudios).toBeUndefined()
   })
 })
 

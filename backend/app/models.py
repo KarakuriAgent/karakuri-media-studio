@@ -12,6 +12,9 @@ from .workflows import (
     DEFAULT_IMAGE_WORKFLOW,
     DEFAULT_VIDEO_WORKFLOW,
     INPUT_FIELDS,
+    MULTI_INPUT_EXTS,
+    MULTI_INPUT_FIELDS,
+    MULTI_INPUT_LABELS,
     WorkflowSpec,
     WorkflowSpecError,
     get_audio_spec,
@@ -703,6 +706,102 @@ def prompt_length_problem(
     return None
 
 
+def reference_materials(params: Any) -> dict[str, list[str]]:
+    """``{論理名: パスのリスト}``（空のものは落とす）。
+
+    ``params`` は :class:`JobCreate` でもジョブの ``params`` 辞書でもよい
+    （どちらも :data:`app.workflows.MULTI_INPUT_FIELDS` の名前で持っている）。
+    """
+    def value_of(key: str) -> Any:
+        if isinstance(params, dict):
+            return params.get(key)
+        return getattr(params, key, None)
+
+    picked: dict[str, list[str]] = {}
+    for name, field_name in MULTI_INPUT_FIELDS.items():
+        raw = value_of(field_name)
+        if not isinstance(raw, (list, tuple)):
+            continue
+        paths = [str(item).strip() for item in raw if str(item).strip()]
+        if paths:
+            picked[name] = paths
+    return picked
+
+
+def reference_problem(
+    mode: str,
+    video_workflow: str | None,
+    references: dict[str, list[str]],
+    *,
+    source_image: str | None = None,
+    end_image: str | None = None,
+) -> str | None:
+    """マルチモーダル参照が使える組み合わせか（None == 問題なし、SPEC §3.1）。
+
+    Seedance 2 の参照モード（``reference_image_urls`` ほか）は、API 側で
+    **先頭フレーム i2v（``first_frame_url`` / ``last_frame_url``）と相互排他**。
+    走らせてから 422 を食らうと待ち時間が無駄なので、投入前にここで落とす。
+    ``full`` は画像ステージが開始フレームを作る = 先頭フレームモードなので、
+    参照素材とは組み合わせられない。
+
+    件数の上限（:attr:`app.workflows.WorkflowSpec.multi_inputs`）と拡張子だけ
+    ここで見る。サイズ・解像度・尺の細かい制約は外部 API の判断に任せ、失敗
+    メッセージをそのまま見せる。
+    """
+    if not references:
+        return None
+    names = "・".join(f"`{MULTI_INPUT_FIELDS[name]}`" for name in references)
+    if mode not in ("full", "i2v"):
+        return (
+            f"mode '{mode}' は動画ステージを走らせないので、参照素材"
+            f"（{names}）は使えません"
+        )
+    try:
+        spec = get_video_spec(video_workflow)
+    except WorkflowSpecError as exc:
+        return str(exc)
+    for name, paths in references.items():
+        limit = spec.multi_inputs.get(name)
+        if limit is None:
+            return (
+                f"video workflow '{spec.id}' は{MULTI_INPUT_LABELS[name]}"
+                f"（`{MULTI_INPUT_FIELDS[name]}`）を受け取れません"
+            )
+        if len(paths) > limit:
+            return (
+                f"video workflow '{spec.id}' の{MULTI_INPUT_LABELS[name]}は"
+                f" {limit} 件までです"
+                f"（今は {len(paths)} 件）"
+            )
+        allowed = MULTI_INPUT_EXTS.get(name, frozenset())
+        for path in paths:
+            suffix = path[path.rfind("."):].lower() if "." in path else ""
+            if suffix not in allowed:
+                return (
+                    f"{MULTI_INPUT_LABELS[name]}に使えない拡張子です: {path}"
+                    f"（{', '.join(sorted(allowed))} のいずれか）"
+                )
+    if mode == "full":
+        return (
+            f"mode 'full' は画像ステージが作った静止画を開始フレームにするので、"
+            f"参照素材（{names}）とは同時に使えません"
+            "（参照素材だけで作るなら mode を \"i2v\" にし、開始フレームから作るなら"
+            "参照素材を外してください）"
+        )
+    given = [
+        INPUT_FIELDS[name]
+        for name, value in (("image", source_image), ("end_image", end_image))
+        if (value or "").strip()
+    ]
+    if given:
+        return (
+            f"video workflow '{spec.id}' では先頭フレーム"
+            f"（{', '.join(f'`{name}`' for name in given)}）と参照素材"
+            f"（{names}）は同時に指定できません（API 側で排他のモードです）"
+        )
+    return None
+
+
 def video_workflow_problem(mode: str, video_workflow: str | None) -> str | None:
     """Why this workflow cannot be used in this mode (None == fine)."""
     if mode not in ("full", "i2v"):
@@ -985,6 +1084,16 @@ class JobCreate(BaseModel):
     end_image: str | None = None
     reference_video: str | None = None
 
+    # マルチモーダル参照（SPEC §3.1）。1 つのフィールドが**複数ファイル**を持ち、
+    # 外部 API には URL の配列で渡る。宣言しているワークフロー（Seedance 2 系）で
+    # のみ使え、**先頭フレーム（`source_image` / `end_image`）とは排他**。
+    #: 一貫性のよりどころにする参照画像（最大枚数はワークフロー宣言による）
+    reference_images: list[str] = Field(default_factory=list)
+    #: 動きのお手本にする参照動画
+    reference_videos: list[str] = Field(default_factory=list)
+    #: ムード・曲調のよりどころにする参照音声
+    reference_audios: list[str] = Field(default_factory=list)
+
     seed: int | None = None  # None -> random (recorded in params)
 
     # 選択式フィールドの値（`GET /api/options` の workflow の `selects` にある
@@ -1021,6 +1130,13 @@ class JobCreate(BaseModel):
             or video_lora_problem(self.mode, self.video_workflow, self.video_loras)
             or prompt_length_problem(
                 self.mode, self.video_workflow, self.video_prompt
+            )
+            or reference_problem(
+                self.mode,
+                self.video_workflow,
+                reference_materials(self),
+                source_image=self.source_image,
+                end_image=self.end_image,
             )
         )
         if problem:
@@ -1567,6 +1683,9 @@ class WorkflowOption(BaseModel):
     notes: str = ""
     #: logical inputs the workflow needs: image / audio / end_image / video
     requires: list[str] = Field(default_factory=list)
+    #: 複数ファイルで渡せる参照入力（論理名 -> 件数の上限、SPEC §3.1）。宣言の
+    #: ないワークフローでは空で、フォームは参照欄そのものを出さない。
+    multi_inputs: dict[str, int] = Field(default_factory=dict)
     #: logical knobs the workflow exposes (prompt, negative, duration, fps, …)
     supports: list[str] = Field(default_factory=list)
     #: can it be the second stage of a full (image -> video) job?

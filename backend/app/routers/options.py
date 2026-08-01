@@ -45,6 +45,7 @@ def _workflow_option(spec: WorkflowSpec) -> WorkflowOption:
         family=spec.family,
         notes=spec.notes,
         requires=list(spec.requires),
+        multi_inputs=dict(spec.multi_inputs),
         supports=list(spec.supported_names()),
         accepts_start_image=spec.accepts_start_image,
         image_label=spec.image_label,

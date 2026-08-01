@@ -530,6 +530,16 @@ def _catalog_entry_lines(entry: CatalogEntry) -> list[str]:
     ]
     if entry.optional_inputs:
         lines.append("  - 任意入力: " + _inputs_text(entry.optional_inputs))
+    if entry.reference_inputs:
+        lines.append(
+            "  - 参照素材（複数指定・**開始フレームとは排他**）: "
+            + ", ".join(
+                f"`{field}`（{label}・最大 {limit} 件）"
+                for field, label, limit in entry.reference_inputs
+            )
+            + "。指定するときは `mode: \"i2v\"` で、`source_image` /"
+            " `end_image` を書かないこと（同時指定のジョブは拒否されます）"
+        )
     lines.append(f"  - 音声: {entry.audio}")
     i2v = _fields_text(_required_fields("i2v", entry.id))
     # the same helper POST /api/jobs uses, so "full is impossible" can never be
@@ -813,7 +823,7 @@ Duration, mode (std / pro / 4K), aspect ratio and sound are job fields
 # https://help.apiyi.com/en/seedance-2-0-prompt-guide-video-generation-camera-style-tips-en.html
 
 SEEDANCE_VIDEO_GUIDE = """\
-# VIDEO PROMPT SPEC — ByteDance Seedance 2 (kie.ai, `seedance2` / `seedance2_mini`)
+# VIDEO PROMPT SPEC — ByteDance Seedance 2 (kie.ai, `seedance2` / `seedance2_fast` / `seedance2_mini`)
 
 Seedance generates picture and **native audio together** in one 4-15 second
 take. Where this section and the generic VIDEO PROMPT SPEC above disagree, this
@@ -861,8 +871,31 @@ text, and everything unwanted goes in the closing `avoid …` clause.
 Resolution, duration, aspect ratio, audio on/off and the NSFW checker are job
 fields (`selects`), never sentences in the prompt. `generate_audio` is **on by
 default**, so name the ambience and the effects you want; `nsfw_checker` is
-**off by default** (kie.ai's own filter stays disabled). Multimodal references
-(reference images / videos / audio) are not wired up yet.
+**off by default** (kie.ai's own filter stays disabled).
+
+## Reference mode (multimodal references)
+
+Instead of a start frame you can hand Seedance material to work from:
+
+- `reference_images` (up to 9) — **identity and consistency**: the same face,
+  the same wardrobe, the same prop across shots. This is how a character stays
+  the same person from job to job.
+- `reference_videos` (up to 3) — **the motion to imitate**: rhythm, pacing,
+  camera behaviour. Each clip 2-15 seconds, 15 seconds in total.
+- `reference_audios` (up to 3) — **mood and musical feel**. Each clip 2-15
+  seconds, 15 seconds in total.
+
+**Reference mode and the start-frame mode are mutually exclusive**: a job with
+`reference_*` must be `mode: "i2v"` and carry neither `source_image` nor
+`end_image` (`mode: "full"` produces a start frame, so it is out too). The app
+rejects such a job before it is queued.
+
+With references, **do not describe what the material already shows** — no
+re-listing the face, the wardrobe or the camera move of the reference clip.
+Spend the whole prompt on direction instead: what happens, in what order, in
+which light, with which single camera move, and the closing `avoid …` clause.
+Refer to the material in words the model can attach (`the woman from the
+reference images`), not by file name.
 """
 
 # Grok Imagine video-1.5 — https://docs.x.ai/developers/model-capabilities/video/generation
@@ -921,6 +954,7 @@ VIDEO_SPECS: dict[str, str] = {
     "veo3_1_quality": VEO_VIDEO_GUIDE,
     "kling3_video": KLING_VIDEO_GUIDE,
     "seedance2": SEEDANCE_VIDEO_GUIDE,
+    "seedance2_fast": SEEDANCE_VIDEO_GUIDE,
     "seedance2_mini": SEEDANCE_VIDEO_GUIDE,
     "grok_imagine_video": GROK_IMAGINE_VIDEO_GUIDE,
 }
@@ -1800,6 +1834,7 @@ Your reply is either plain Japanese text, or plain Japanese text followed by
         "duration": 5, "fps": 24,
         "audio_path": "/assets/audio/reference.mp3",
         "source_image": null, "end_image": null, "reference_video": null,
+        "reference_images": [], "reference_videos": [], "reference_audios": [],
         "seed": null
       }
     },
@@ -1917,6 +1952,16 @@ Rules:
   out to use the configured default; when you do set it, write only keys of the
   workflows this job runs and only values from that slot's candidate list —
   anything else is rejected. `continue` may carry it too.
+- `reference_images` / `reference_videos` / `reference_audios` are the
+  **multimodal reference** inputs (Seedance 2 only — VIDEO WORKFLOWS says which
+  workflow takes them and how many of each). They take **lists** of asset /
+  library paths, and they are **exclusive with the start-frame mode**: use them
+  in `mode: "i2v"` with no `source_image` and no `end_image`, never in
+  `mode: "full"` (whose image stage *is* the start frame). Reference images pin
+  identity and consistency, a reference video is the motion to imitate,
+  reference audio sets the mood; with them in play, write `video_prompt` about
+  the direction only, not about what the material already shows. Leave the
+  lists out entirely when you are not using them.
 - `aspect_ratio` is a preset for the image stage; when the job has a
   `source_image` the video follows that image's real aspect ratio instead (so it
   is never centre-cropped), and only `megapixels` still applies.

@@ -228,6 +228,11 @@ KIE_VALUES: frozenset[str] = frozenset({
     "end_image",
     "audio",
     "video",
+    # **複数**の入力ファイル（:data:`MULTI_INPUT_FIELDS`）。1 つの論理名が
+    # ファイルのリストを持ち、URL の**配列**として ``input`` に入る（§5.2）。
+    "reference_images",
+    "reference_videos",
+    "reference_audios",
 })
 
 #: ``select:<名前>`` の接頭辞
@@ -343,6 +348,12 @@ class WorkflowSpec:
     #: templates all share the ``ltx2.3`` family and ignore it.
     family: str = DEFAULT_FAMILY
     requires: tuple[InputName, ...] = ()
+    #: **複数ファイル**を配列で受け取る論理入力（論理名 -> 受け取れる件数の上限、
+    #: SPEC §3.1）。Seedance のマルチモーダル参照（参照画像 9 枚 / 参照動画 3 本 /
+    #: 参照音声 3 本）用で、宣言のないワークフローに参照素材を渡すと 422 になる
+    #: （:func:`app.models.reference_problem`）。名前は
+    #: :data:`MULTI_INPUT_FIELDS` のキー。
+    multi_inputs: dict[str, int] = field(default_factory=dict)
     #: what the workflow is for, in one or two Japanese sentences.  This is the
     #: single source of the catalog embedded in the Grok system prompts
     #: (:func:`video_catalog`), so keep it factual and short.
@@ -1417,9 +1428,9 @@ KLING3_VIDEO = WorkflowSpec(
 # --------------------------------------------------------------------------
 #
 # Seedance も Kling と同じ **Market 系（統一 API）** なので系統は既定の ``market``
-# のまま。バリアント（2.0 / 2.0 Mini）の違いは**モデル名と使える解像度だけ**で、
-# 宣言の形はまったく同じなので :func:`_seedance_spec` で 1 つにまとめてある。
-# 2.5 が kie.ai に来たら（今は Coming Soon）エントリを 1 行足すだけでよい。
+# のまま。バリアント（2.0 / 2.0 Fast / 2.0 Mini）の違いは**モデル名と使える解像度
+# だけ**で、宣言の形はまったく同じなので :func:`_seedance_spec` で 1 つにまとめて
+# ある。2.5 が kie.ai に来たら（今は Coming Soon）エントリを 1 つ足すだけでよい。
 #
 # Kling との違いで気をつける点:
 #
@@ -1432,12 +1443,18 @@ KLING3_VIDEO = WorkflowSpec(
 #   既定 false）
 #
 # 2 系に seed / camera_fixed は無い（カメラ固定も再現性もプロンプト側の仕事）。
-# マルチモーダル参照（``reference_image_urls`` / ``reference_video_urls`` /
-# ``reference_audio_urls``）は第 2 段。参照モードを持たないので、API 側の
-# 「先頭フレーム / 先頭+末尾 / 参照」の 3 モード排他は自然に満たされる。
+#
+# **マルチモーダル参照**（``reference_image_urls`` / ``reference_video_urls`` /
+# ``reference_audio_urls``）は :attr:`WorkflowSpec.multi_inputs` で宣言する
+# 「複数ファイル -> URL の配列」の入力。API 側では
+# **「先頭フレーム i2v」と「参照モード」が相互排他**なので、両方を指定したジョブは
+# 投入前に 422 で断る（:func:`app.models.reference_problem`）。``full`` は画像
+# ステージが開始フレームを作る = 先頭フレームモードなので、参照素材とは組めない。
 
 #: Seedance 2.0 の解像度（Mini は 720p まで）
 SEEDANCE_RESOLUTIONS: tuple[str, ...] = ("480p", "720p", "1080p", "4k")
+#: Seedance 2.0 Fast の解像度（Mini と同じく 720p まで）
+SEEDANCE_FAST_RESOLUTIONS: tuple[str, ...] = ("480p", "720p")
 #: Seedance 2.0 Mini の解像度
 SEEDANCE_MINI_RESOLUTIONS: tuple[str, ...] = ("480p", "720p")
 #: Seedance の尺（秒）。**API には整数で渡す**（:attr:`KieTask.int_keys`）。
@@ -1450,6 +1467,13 @@ SEEDANCE_ASPECT_RATIOS: tuple[str, ...] = (
 SEEDANCE_AUDIO: tuple[str, ...] = ("false", "true")
 #: kie.ai 側の NSFW フィルタの ON / OFF（**既定は OFF**）
 SEEDANCE_NSFW_CHECKER: tuple[str, ...] = ("false", "true")
+
+#: マルチモーダル参照で受け取れる件数（論理名 -> 上限）。API 側の上限そのまま。
+SEEDANCE_MULTI_INPUTS: dict[str, int] = {
+    "reference_images": 9,
+    "reference_videos": 3,
+    "reference_audios": 3,
+}
 
 #: プロンプトの長さの上限（kie.ai の Seedance 2 系）
 SEEDANCE_MAX_PROMPT_CHARS = 20000
@@ -1468,12 +1492,24 @@ SEEDANCE_PROMPT_HINT = (
     " separate sentences**. For characters, end with a short negative clause"
     ' such as "avoid jitter and bent limbs". With a start frame, do not'
     " re-describe what the picture already shows — write how it moves."
+    " **In reference mode** (`reference_images` / `reference_videos` /"
+    " `reference_audios`, which cannot be combined with a start frame) the"
+    " material carries the look: reference images pin **identity and"
+    " consistency** (the same face, wardrobe, prop across shots), a reference"
+    " video is the **motion to imitate** (rhythm, camera behaviour), reference"
+    " audio sets the **mood / musical feel**. Then do not describe what the"
+    " references already show — spend the text on direction: what happens, in"
+    " what order, in which light, with which single camera move."
 )
 
 #: 画像入力の説明（カタログ・フォームの案内に使う共通文）
 _SEEDANCE_INPUTS = (
     "画像は任意で、1 枚渡すと開始フレーム（`first_frame_url`）、`end_image` も"
     "渡すと最終フレーム（`last_frame_url`）になる。"
+    "そのかわりに **マルチモーダル参照**（`reference_images` 最大 9 枚 /"
+    " `reference_videos` 最大 3 本 / `reference_audios` 最大 3 本）を渡すと、"
+    "一貫性・動きのお手本・ムードを素材で指定できる。"
+    "**開始フレームと参照素材は排他**（同時に指定したジョブは拒否される）。"
 )
 
 
@@ -1501,6 +1537,7 @@ def _seedance_spec(
         max_prompt_chars=SEEDANCE_MAX_PROMPT_CHARS,
         accepts_start_image=True,
         image_label="開始フレーム（任意）",
+        multi_inputs=dict(SEEDANCE_MULTI_INPUTS),
         kie=KieTask(
             model=model,
             # Market 系（統一 API）なので系統は既定のまま
@@ -1509,6 +1546,11 @@ def _seedance_spec(
                 # Kling と違い開始 / 最終フレームはキーが別（配列ではない）
                 "image": "first_frame_url",
                 "end_image": "last_frame_url",
+                # マルチモーダル参照: 複数ファイル -> URL の配列（開始フレームとは
+                # 排他なので、実際に両方が入ることはない）
+                "reference_images": "reference_image_urls",
+                "reference_videos": "reference_video_urls",
+                "reference_audios": "reference_audio_urls",
                 f"{KIE_SELECT_PREFIX}resolution": "resolution",
                 f"{KIE_SELECT_PREFIX}duration": "duration",
                 f"{KIE_SELECT_PREFIX}aspect_ratio": "aspect_ratio",
@@ -1554,8 +1596,9 @@ def _seedance_spec(
         },
         notes=(
             "kie.ai 経由 / ネイティブ音声つき（既定 ON） / seed・カメラ固定の"
-            "パラメータは無い（本文で指定） / マルチモーダル参照（参照画像・"
-            "参照動画・参照音声）は未対応 / 成果物 URL は約 24 時間で失効"
+            "パラメータは無い（本文で指定） / マルチモーダル参照（参照画像 9 枚・"
+            "参照動画 3 本・参照音声 3 本）は開始フレームと排他 /"
+            " 成果物 URL は約 24 時間で失効"
         ),
     )
 
@@ -1571,6 +1614,18 @@ SEEDANCE2 = _seedance_spec(
     "クリップで、**4K まで**出せる 2 系の本命。720p で試作して 1080p / 4K で"
     f"仕上げる使い方を想定している。{_SEEDANCE_INPUTS}"
     "外部 API なので LoRA は使えない。",
+)
+
+SEEDANCE2_FAST = _seedance_spec(
+    "seedance2_fast",
+    "Seedance 2.0 Fast（音声つき・外部 API）",
+    "bytedance/seedance-2-fast",
+    SEEDANCE_FAST_RESOLUTIONS,
+    # 720p / 5 秒の概算（$0.05/秒 = 50 credits）
+    50.0,
+    "kie.ai 経由の ByteDance Seedance 2.0 Fast。2.0 と同じ使い方で待ち時間が短く、"
+    "480p / 720p まで。数を出して当たりを探す段階向けで、決まったカットは"
+    f"2.0 で作り直す。{_SEEDANCE_INPUTS}外部 API なので LoRA は使えない。",
 )
 
 SEEDANCE2_MINI = _seedance_spec(
@@ -1980,6 +2035,7 @@ SPECS: tuple[WorkflowSpec, ...] = (
     VEO3_1_QUALITY,
     KLING3_VIDEO,
     SEEDANCE2,
+    SEEDANCE2_FAST,
     SEEDANCE2_MINI,
     GROK_IMAGINE_VIDEO,
     ACE_STEP_1_5,
@@ -2009,6 +2065,30 @@ INPUT_LABELS: dict[str, str] = {
     "audio": "音声ファイル",
     "end_image": "最後のフレーム画像",
     "video": "参照動画",
+}
+
+#: **複数ファイル**の論理入力 -> それを運ぶ JobCreate / params のフィールド名。
+#: :data:`INPUT_FIELDS` の複数版で、値は 1 本のパスではなく**パスのリスト**。
+#: 受け取れる件数の上限はワークフローごと（:attr:`WorkflowSpec.multi_inputs`）。
+MULTI_INPUT_FIELDS: dict[str, str] = {
+    "reference_images": "reference_images",
+    "reference_videos": "reference_videos",
+    "reference_audios": "reference_audios",
+}
+
+#: 日本語ラベル（フォームの見出し・422 のメッセージ）
+MULTI_INPUT_LABELS: dict[str, str] = {
+    "reference_images": "参照画像",
+    "reference_videos": "参照動画（参照モード）",
+    "reference_audios": "参照音声",
+}
+
+#: 参照素材として受け付ける拡張子（投入前の軽い検証。大きさ・解像度・尺の細かい
+#: 制約は外部 API 側の判断に任せ、失敗メッセージをそのまま見せる）。
+MULTI_INPUT_EXTS: dict[str, frozenset[str]] = {
+    "reference_images": frozenset({".png", ".jpg", ".jpeg", ".webp", ".bmp"}),
+    "reference_videos": frozenset({".mp4", ".webm", ".mkv", ".mov"}),
+    "reference_audios": frozenset({".mp3", ".wav", ".flac", ".m4a", ".ogg", ".opus"}),
 }
 
 #: audio handling of a workflow that has no audio input at all
@@ -2112,6 +2192,9 @@ class CatalogEntry:
     required_inputs: tuple[tuple[str, str], ...]
     #: ``(JobCreate field, 日本語ラベル)`` of inputs it accepts but does not need
     optional_inputs: tuple[tuple[str, str], ...]
+    #: ``(JobCreate field, 日本語ラベル, 件数の上限)`` of the multi-file reference
+    #: inputs it accepts (empty for every workflow without a reference mode)
+    reference_inputs: tuple[tuple[str, str, int], ...]
     #: can it be the second stage of a full (image -> video) job, and therefore
     #: also the target of a ``continue``?
     accepts_start_image: bool
@@ -2152,6 +2235,11 @@ def catalog_entry(spec: WorkflowSpec) -> CatalogEntry:
         ),
         optional_inputs=tuple(
             (INPUT_FIELDS[name], input_label(spec, name)) for name in optional
+        ),
+        reference_inputs=tuple(
+            (MULTI_INPUT_FIELDS[name], MULTI_INPUT_LABELS[name], limit)
+            for name, limit in spec.multi_inputs.items()
+            if name in MULTI_INPUT_FIELDS
         ),
         accepts_start_image=spec.accepts_start_image,
         audio=spec.audio_role or GENERATED_AUDIO,
@@ -2251,6 +2339,19 @@ def _validate_common(spec: WorkflowSpec) -> list[str]:
             problems.append(f"{spec.id}: requires {name!r} but has no injection point")
     if spec.accepts_start_image and not spec.supports("image"):
         problems.append(f"{spec.id}: accepts_start_image but has no image input")
+    # 複数ファイルの参照入力: 名前が語彙にあり、受け取り口があり、上限が正か
+    for name, limit in spec.multi_inputs.items():
+        if name not in MULTI_INPUT_FIELDS:
+            problems.append(
+                f"{spec.id}.multi_inputs[{name}]: unknown input"
+                f" (known: {', '.join(sorted(MULTI_INPUT_FIELDS))})"
+            )
+        elif not spec.supports(name):
+            problems.append(
+                f"{spec.id}.multi_inputs[{name}]: no injection point"
+            )
+        if limit < 1:
+            problems.append(f"{spec.id}.multi_inputs[{name}]: limit must be >= 1")
     if spec.kind == "audio" and (spec.accepts_start_image or spec.supports("image")):
         problems.append(f"{spec.id}: an audio workflow takes no image input")
     # 長さを一切宣言しないのは「このモデルには尺の指定が無い」（Suno）の意味で、

@@ -1314,6 +1314,7 @@ def test_a_full_job_bridges_comfyui_images_into_kling(client, fake_kie, comfy_en
 # --------------------------------------------------------------------------
 
 SEEDANCE = workflows.BY_ID["seedance2"]
+SEEDANCE_FAST = workflows.BY_ID["seedance2_fast"]
 SEEDANCE_MINI = workflows.BY_ID["seedance2_mini"]
 
 
@@ -1407,6 +1408,58 @@ def test_without_an_image_seedance_is_text_to_video():
     assert task_input["prompt"]
 
 
+def test_reference_material_goes_in_as_arrays_of_urls():
+    """マルチモーダル参照は 1 フィールド = URL の配列（issue #26 B）。"""
+    request = kie.build_request(
+        SEEDANCE,
+        _seedance_params(),
+        {
+            "reference_images": [
+                "https://files.kie.ai/ref1.png",
+                "https://files.kie.ai/ref2.png",
+            ],
+            "reference_videos": ["https://files.kie.ai/move.mp4"],
+            "reference_audios": ["https://files.kie.ai/mood.mp3"],
+        },
+    )
+    body = kie.task_api(request.api).create_body(request.model, request.input)
+    task_input = body["input"]
+
+    # 並びは params の順そのまま（Veo の list_keys とは別の機構）
+    assert task_input["reference_image_urls"] == [
+        "https://files.kie.ai/ref1.png",
+        "https://files.kie.ai/ref2.png",
+    ]
+    assert task_input["reference_video_urls"] == ["https://files.kie.ai/move.mp4"]
+    assert task_input["reference_audio_urls"] == ["https://files.kie.ai/mood.mp3"]
+    # 参照モードでは先頭フレームのキーは出ない（投入前に排他を弾いている）
+    assert "first_frame_url" not in task_input
+    assert "last_frame_url" not in task_input
+
+
+def test_empty_reference_lists_are_not_sent():
+    """空のリストは「指定なし」なのでキーごと落ちる。"""
+    task_input = kie.build_request(
+        SEEDANCE,
+        _seedance_params(),
+        {"reference_images": [], "reference_videos": [], "reference_audios": []},
+    ).input
+    for absent in (
+        "reference_image_urls", "reference_video_urls", "reference_audio_urls"
+    ):
+        assert absent not in task_input
+
+
+def test_the_seedance_variants_declare_the_same_reference_limits():
+    """上限は API 側の値そのまま（9 / 3 / 3）で、3 バリアント共通。"""
+    for spec in (SEEDANCE, SEEDANCE_FAST, SEEDANCE_MINI):
+        assert spec.multi_inputs == {
+            "reference_images": 9,
+            "reference_videos": 3,
+            "reference_audios": 3,
+        }
+
+
 def test_the_mini_variant_only_differs_by_model_and_resolution():
     """2.5 追加時にエントリ 1 つで済む構造か（宣言の形は同じ）。"""
     assert SEEDANCE_MINI.kie.fields == SEEDANCE.kie.fields
@@ -1424,23 +1477,30 @@ def test_the_mini_variant_only_differs_by_model_and_resolution():
     assert body["model"] == "bytedance/seedance-2-mini"
 
 
-def test_both_seedance_variants_are_offered_as_video_workflows(client, monkeypatch):
+def test_every_seedance_variant_is_offered_as_a_video_workflow(client, monkeypatch):
     mark_available(monkeypatch)
     body = client.get("/api/options").json()
-    offered = {
-        wf["id"]: wf
-        for wf in body["video_workflows"]
-        if wf["id"] in (SEEDANCE.id, SEEDANCE_MINI.id)
-    }
-    assert set(offered) == {SEEDANCE.id, SEEDANCE_MINI.id}
+    variants = (SEEDANCE.id, SEEDANCE_FAST.id, SEEDANCE_MINI.id)
+    offered = {wf["id"]: wf for wf in body["video_workflows"] if wf["id"] in variants}
+    assert set(offered) == set(variants)
 
     for spec_id, resolutions in (
         (SEEDANCE.id, ["480p", "720p", "1080p", "4k"]),
+        (SEEDANCE_FAST.id, ["480p", "720p"]),
         (SEEDANCE_MINI.id, ["480p", "720p"]),
     ):
         entry = offered[spec_id]
         assert entry["requires"] == []
-        assert set(entry["supports"]) == {"prompt", "image", "end_image"}
+        assert set(entry["supports"]) == {
+            "prompt", "image", "end_image",
+            "reference_images", "reference_videos", "reference_audios",
+        }
+        # フォームが参照欄を出すのに要る件数の上限（SPEC §3.1 / §8）
+        assert entry["multi_inputs"] == {
+            "reference_images": 9,
+            "reference_videos": 3,
+            "reference_audios": 3,
+        }
         assert entry["accepts_start_image"] is True
         assert entry["backend"] == "kie"
         selects = {select["name"]: select for select in entry["selects"]}
@@ -1464,11 +1524,15 @@ def test_the_seedance_guide_is_injected_only_when_seedance_is_selected():
     from app.models import ChatSessionCreate
     from app.prompts import build_system_prompt
 
-    for spec_id in (SEEDANCE.id, SEEDANCE_MINI.id):
+    for spec_id in (SEEDANCE.id, SEEDANCE_FAST.id, SEEDANCE_MINI.id):
         prompt = build_system_prompt(
             ChatSessionCreate(mode="i2v", video_workflow=spec_id)
         )
         assert "VIDEO PROMPT SPEC — ByteDance Seedance 2" in prompt
+        # 参照モードの書き方（一貫性 / 動きのお手本 / ムード）と排他の注意
+        assert "identity and consistency" in prompt
+        assert "the motion to imitate" in prompt
+        assert "mutually exclusive" in prompt
         # 6 要素フォーミュラ・照明・カメラ 1 つ・動きの文の分離・負例
         assert "60-100 words" in prompt
         assert "lighting sentence is the single biggest lever" in prompt
@@ -1543,6 +1607,170 @@ def test_a_full_job_bridges_comfyui_images_into_seedance(client, fake_kie, comfy
     assert (job_env / job["id"] / "image.png").is_file()
     assert (job_env / job["id"] / "video.mp4").is_file()
     assert job["credits_consumed"] == 120
+
+
+def _reference_assets(job_env, count: int = 2) -> list[str]:
+    """``assets/image/`` に参照画像を置き、ジョブに書ける URL を返す。"""
+    directory = job_env.parent / "assets" / "image"
+    urls = []
+    for index in range(count):
+        (directory / f"ref{index}.png").write_bytes(b"png")
+        urls.append(f"/assets/image/ref{index}.png")
+    return urls
+
+
+def test_reference_material_travels_from_the_job_to_the_task_input(
+    client, fake_kie, job_env, monkeypatch
+):
+    """ローカルのファイルが 1 本ずつ上がり、URL の配列で input に載る。"""
+    async def fake_last_frame(video, dest):
+        dest.write_bytes(b"png")
+        return dest
+
+    monkeypatch.setattr(jobs, "extract_last_frame", fake_last_frame)
+    fake_kie.answer("create", FakeResponse(envelope({"taskId": "task-ref"})))
+    fake_kie.answer("record", success(["https://cdn.kie.ai/out.mp4"], credits=70))
+    fake_kie.answer(
+        "upload",
+        FakeResponse(envelope({"fileUrl": "https://files.kie.ai/ref0.png"})),
+        FakeResponse(envelope({"fileUrl": "https://files.kie.ai/ref1.png"})),
+    )
+    references = _reference_assets(job_env)
+
+    created = client.post(
+        "/api/jobs",
+        json={
+            "mode": "i2v",
+            "video_workflow": SEEDANCE.id,
+            "video_prompt": (
+                "She steps out of the doorway into the rain and looks up."
+                " Slow push-in. Avoid jitter and bent limbs."
+            ),
+            "reference_images": references,
+        },
+    )
+    assert created.status_code == 201, created.text
+    job = wait_for(client, created.json()["id"])
+    assert job["status"] == "done", job["error"]
+
+    task_input = job["workflow_json"]["video"]["request"]["input"]
+    assert task_input["reference_image_urls"] == [
+        "https://files.kie.ai/ref0.png",
+        "https://files.kie.ai/ref1.png",
+    ]
+    assert "first_frame_url" not in task_input
+    # 参照素材はジョブの params にも残る（再実行で同じ素材を使う）
+    assert len(job["params"]["reference_images"]) == 2
+
+
+def test_a_start_frame_and_reference_material_are_mutually_exclusive(client, job_env):
+    references = _reference_assets(job_env, 1)
+    (job_env.parent / "assets" / "image" / "start.png").write_bytes(b"png")
+
+    answer = client.post(
+        "/api/jobs",
+        json={
+            "mode": "i2v",
+            "video_workflow": SEEDANCE.id,
+            "video_prompt": "She turns toward the window.",
+            "source_image": "/assets/image/start.png",
+            "reference_images": references,
+        },
+    )
+    assert answer.status_code == 422
+    assert "同時に指定できません" in answer.text
+
+
+def test_full_mode_cannot_use_reference_material(client, job_env):
+    references = _reference_assets(job_env, 1)
+
+    answer = client.post(
+        "/api/jobs",
+        json={
+            "mode": "full",
+            "image_workflow": workflows.DEFAULT_IMAGE_WORKFLOW,
+            "video_workflow": SEEDANCE.id,
+            "image_prompt": "a cat on a roof",
+            "video_prompt": "The cat stretches slowly.",
+            "reference_images": references,
+        },
+    )
+    assert answer.status_code == 422
+    assert "mode 'full'" in answer.text
+
+
+def test_too_much_reference_material_is_rejected(client, job_env):
+    references = _reference_assets(job_env, 10)
+
+    answer = client.post(
+        "/api/jobs",
+        json={
+            "mode": "i2v",
+            "video_workflow": SEEDANCE.id,
+            "video_prompt": "She walks along the quay.",
+            "reference_images": references,
+        },
+    )
+    assert answer.status_code == 422
+    assert "9 件までです" in answer.text
+
+
+def test_a_workflow_without_a_reference_mode_rejects_the_material(client, job_env):
+    references = _reference_assets(job_env, 1)
+
+    answer = client.post(
+        "/api/jobs",
+        json={
+            "mode": "i2v",
+            "video_workflow": KLING.id,
+            "video_prompt": "She walks along the quay.",
+            "reference_images": references,
+        },
+    )
+    assert answer.status_code == 422
+    assert "受け取れません" in answer.text
+
+
+def test_the_agent_plan_validation_knows_the_reference_rules(client, job_env):
+    """プランでも同じ理由で断る（投入前に気づかせる、SPEC §4.3）。"""
+    from app.agent_protocol import ActionError, validate_job
+
+    references = _reference_assets(job_env, 1)
+    base = {
+        "mode": "i2v",
+        "video_workflow": SEEDANCE.id,
+        "video_prompt": "She walks along the quay.",
+    }
+
+    # 参照素材だけなら通る
+    payload = validate_job(
+        {**base, "reference_images": references}, where="tasks[0].job"
+    )
+    assert payload.reference_images == references
+
+    with pytest.raises(ActionError, match="同時に指定できません"):
+        validate_job(
+            {
+                **base,
+                "source_image": references[0],
+                "reference_images": references,
+            },
+            where="tasks[0].job",
+        )
+    with pytest.raises(ActionError, match="9 件までです"):
+        validate_job(
+            {**base, "reference_images": references * 10}, where="tasks[0].job"
+        )
+    with pytest.raises(ActionError, match="受け取れません"):
+        validate_job(
+            {**base, "video_workflow": KLING.id, "reference_images": references},
+            where="tasks[0].job",
+        )
+    with pytest.raises(ActionError, match="not found"):
+        validate_job(
+            {**base, "reference_images": ["/assets/image/missing.png"]},
+            where="tasks[0].job",
+        )
 
 
 # --------------------------------------------------------------------------

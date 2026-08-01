@@ -68,6 +68,8 @@ from .models import (
     missing_job_fields,
     model_override_problem,
     prompt_length_problem,
+    reference_materials,
+    reference_problem,
     select_problem,
     video_lora_problem,
     video_workflow_problem,
@@ -85,6 +87,7 @@ from .workflows import (
     DEFAULT_IMAGE_WORKFLOW,
     DEFAULT_VIDEO_WORKFLOW,
     INPUT_FIELDS,
+    MULTI_INPUT_FIELDS,
     WorkflowSpec,
     WorkflowSpecError,
     backend_available,
@@ -497,6 +500,13 @@ def _validate(params: dict[str, Any]) -> None:
             image_workflow=image_workflow,
         )
         or prompt_length_problem(mode, video_workflow, params.get("video_prompt"))
+        or reference_problem(
+            mode,
+            video_workflow,
+            reference_materials(params),
+            source_image=params.get("source_image"),
+            end_image=params.get("end_image"),
+        )
         or _model_override_problem(params)
         or _backend_problem(params)
     )
@@ -615,6 +625,16 @@ async def _insert_job(
         value = params.get(field)
         if value:
             params[field] = str(resolve_asset_path(value, field=field))
+    # 参照素材は 1 フィールドに複数ファイル（SPEC §3.1）。1 本ずつ同じ規則で解決し、
+    # 並び順はそのまま（外部 API に渡す配列の順序になる）。
+    for field in MULTI_INPUT_FIELDS.values():
+        values = params.get(field)
+        if isinstance(values, (list, tuple)) and values:
+            params[field] = [
+                str(resolve_asset_path(str(item), field=field))
+                for item in values
+                if str(item).strip()
+            ]
     # 尺などの「自動」項目は、入力ファイルが確定したここで決める（SPEC §3.1）。
     await _resolve_auto_selects(params)
 
@@ -713,6 +733,10 @@ def _params_from_create(payload: JobCreate) -> dict[str, Any]:
         "source_image": payload.source_image,
         "end_image": payload.end_image,
         "reference_video": payload.reference_video,
+        # マルチモーダル参照（宣言しているワークフローだけが読む、SPEC §3.1）
+        "reference_images": list(payload.reference_images),
+        "reference_videos": list(payload.reference_videos),
+        "reference_audios": list(payload.reference_audios),
         # 選択式フィールドの値（ワークフローが宣言したものだけ、§3.1）
         "selects": dict(payload.selects),
         # このジョブだけのモデル指定（設定の model_overrides の上に重ねる、§3.3）
@@ -1369,19 +1393,33 @@ _STAGE_ARTIFACTS = {
 }
 
 
-async def _kie_uploads(spec: WorkflowSpec, params_dict: dict[str, Any]) -> dict[str, str]:
+async def _kie_uploads(spec: WorkflowSpec, params_dict: dict[str, Any]) -> dict[str, Any]:
     """入力ファイルを kie に置いて ``{論理名: 公開 URL}`` にする。
 
     外部モデルは入力画像・音声を**公開 URL でしか**受け取らないので、ComfyUI の
     ``/upload/image`` にあたる下ごしらえがここ（SPEC §5.2）。
+
+    複数ファイルの論理入力（:data:`app.workflows.MULTI_INPUT_FIELDS`、Seedance の
+    マルチモーダル参照）だけは値が **URL のリスト**になる: 1 本ずつ上げて、
+    params に並んでいた順のまま並べる（:func:`app.kie.task_input` がそれを
+    ``input`` の配列にする）。
     """
-    uploads: dict[str, str] = {}
+    uploads: dict[str, Any] = {}
     for name, field in INPUT_FIELDS.items():
         if not spec.supports(name):
             continue
         path = params_dict.get(field)
         if path:
             uploads[name] = await kie.upload_file(path)
+    for name, field in MULTI_INPUT_FIELDS.items():
+        if not spec.supports(name):
+            continue
+        paths = params_dict.get(field)
+        if not isinstance(paths, (list, tuple)) or not paths:
+            continue
+        uploads[name] = [
+            await kie.upload_file(str(path)) for path in paths if str(path).strip()
+        ]
     return uploads
 
 

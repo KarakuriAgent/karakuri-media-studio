@@ -1200,3 +1200,152 @@ describe('GenerateForm のリファレンスシート合成（SPEC §7.2）', ()
     )
   })
 })
+
+// ------------------------------------------- マルチモーダル参照（SPEC §3.1 / §8）
+// Seedance 2 の参照モード: 1 欄が複数ファイルを持ち、開始フレームとは排他。
+
+describe('GenerateForm のマルチモーダル参照', () => {
+  const SEEDANCE: Options['video_workflows'][number] = {
+    id: 'seedance2',
+    label: 'Seedance 2.0',
+    kind: 'video',
+    family: 'seedance',
+    notes: '',
+    requires: [],
+    supports: [
+      'prompt',
+      'image',
+      'end_image',
+      'reference_images',
+      'reference_videos',
+      'reference_audios',
+    ],
+    multi_inputs: {
+      reference_images: 9,
+      reference_videos: 3,
+      reference_audios: 3,
+    },
+    accepts_start_image: true,
+    image_label: '開始フレーム（任意）',
+    selects: [],
+    prompt_required: true,
+    accepts_video_loras: false,
+    backend: 'kie',
+    min_duration: 0,
+    max_duration: 0,
+    default_duration: 0,
+  }
+
+  const VEO: Options['video_workflows'][number] = {
+    ...SEEDANCE,
+    id: 'veo3_1_fast',
+    label: 'Veo 3.1 Fast',
+    family: 'veo',
+    supports: ['prompt', 'image', 'end_image'],
+    multi_inputs: {},
+  }
+
+  const REFERENCES: LibraryItem[] = ['l1', 'l2'].map((id, index) => ({
+    id,
+    created_at: '2026-08-01T10:00:00+00:00',
+    kind: 'image' as const,
+    name: `参照${index + 1}`,
+    path: `/repo/library/image/ref${index}.png`,
+    url: `/library/image/ref${index}.png`,
+    nsfw: false,
+    nsfw_source: '',
+    source_job_id: null,
+    source: null,
+    tags: [],
+    category: null,
+  }))
+
+  const TITLE = 'マルチモーダル参照（開始フレームとは排他）'
+
+  function showReferenceForm(form: Partial<FormState> = {}) {
+    vi.mocked(api.listLibrary).mockResolvedValue({
+      items: REFERENCES,
+      total: REFERENCES.length,
+      limit: 50,
+      offset: 0,
+      tags: [],
+    })
+    const patch = vi.fn()
+    render(
+      <GenerateForm
+        form={{
+          ...initialForm,
+          mode: 'i2v',
+          videoWorkflow: 'seedance2',
+          ...form,
+        }}
+        patch={patch}
+        options={{ ...OPTIONS, video_workflows: [SEEDANCE, VEO] }}
+        optionsError={null}
+        onReloadOptions={() => {}}
+        onOpenChat={() => {}}
+        onSubmit={() => {}}
+        submitting={false}
+        fieldErrors={{}}
+        comfyTarget="local"
+        onComfyTarget={() => {}}
+        jobs={[]}
+        showNsfw={false}
+      />,
+    )
+    return { patch }
+  }
+
+  it('宣言しているワークフローのときだけ、宣言した欄と上限を出す', () => {
+    showReferenceForm()
+    const panel = section(TITLE)
+    expect(within(panel).getByText('参照画像')).toBeTruthy()
+    expect(within(panel).getByText('0 / 9 件')).toBeTruthy()
+    // 参照動画・参照音声は 3 件まで
+    expect(within(panel).getAllByText('0 / 3 件')).toHaveLength(2)
+    expect(within(panel).getByText('参照音声')).toBeTruthy()
+
+    cleanup()
+    showReferenceForm({ videoWorkflow: 'veo3_1_fast' })
+    expect(screen.queryByText(TITLE)).toBeNull()
+  })
+
+  it('画像＋動画モードでは参照欄そのものを出さない', () => {
+    showReferenceForm({ mode: 'full' })
+    expect(screen.queryByText(TITLE)).toBeNull()
+  })
+
+  it('選んだ素材が順番つきで積み上がり、外せる', () => {
+    const { patch } = showReferenceForm({
+      referenceImages: ['/library/image/ref0.png'],
+    })
+    const panel = section(TITLE)
+    expect(within(panel).getByText('1 / 9 件')).toBeTruthy()
+    expect(within(panel).getByText('/library/image/ref0.png')).toBeTruthy()
+
+    fireEvent.click(within(panel).getAllByRole('button', { name: '外す' })[0])
+    expect(patch).toHaveBeenCalledWith({ referenceImages: [] })
+  })
+
+  it('ライブラリからは複数選べ、選ぶたびに欄へ足していく', async () => {
+    const { patch } = showReferenceForm()
+    fireEvent.click(
+      within(section(TITLE)).getAllByRole('button', {
+        name: 'ライブラリから選択',
+      })[0],
+    )
+    expect(screen.getByText('ライブラリから選択: 参照画像')).toBeTruthy()
+
+    fireEvent.click(await screen.findByText('参照1'))
+    expect(patch).toHaveBeenCalledWith({
+      referenceImages: ['/library/image/ref0.png'],
+    })
+    // 1 件選んでもモーダルは開いたまま（続けて選べる）
+    expect(screen.getByText('ライブラリから選択: 参照画像')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: '選択を終える' }))
+    await waitFor(() =>
+      expect(screen.queryByText('ライブラリから選択: 参照画像')).toBeNull(),
+    )
+  })
+})
