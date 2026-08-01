@@ -725,20 +725,20 @@ def test_a_failed_kie_task_fails_the_job(client, fake_kie, job_env):
     assert job["credits_consumed"] is None
 
 
-def test_backends_may_not_be_mixed_in_one_job(client, job_env):
-    """画像は kie・動画は ComfyUI、のような 2 段は今は受け付けない。"""
+def test_an_unimplemented_bridge_is_refused(client, job_env):
+    """kie で画像 → ComfyUI で動画、の受け渡しはまだ実装していない（§5.2）。"""
     created = client.post(
         "/api/jobs",
         json={
             "mode": "full",
-            "image_workflow": workflows.DEFAULT_IMAGE_WORKFLOW,  # ComfyUI
-            "video_workflow": STUB_VIDEO.id,  # kie.ai
+            "image_workflow": STUB_IMAGE.id,  # kie.ai
+            "video_workflow": "tx2_3_i2v",  # ComfyUI
             "image_prompt": "a cat",
             "video_prompt": "it walks",
         },
     )
     assert created.status_code == 422
-    assert "バックエンド" in created.json()["detail"]
+    assert "受け渡し" in created.json()["detail"]
 
 
 def test_an_unverified_backend_is_refused_at_creation(client, monkeypatch, tmp_path):
@@ -983,3 +983,86 @@ def test_the_agent_prompt_lists_the_guide_once_per_available_model(monkeypatch):
     section = video_prompt_guides_section()
     # Fast と Quality は同じガイドなので 1 回だけ載る
     assert section.count("VIDEO PROMPT SPEC — Google Veo 3.1") == 1
+
+
+# --------------------------------------------------------------------------
+# バックエンドをまたぐ full ジョブ（ComfyUI 画像 → kie 動画、SPEC §5.2）
+# --------------------------------------------------------------------------
+
+@pytest.fixture
+def comfy_env(monkeypatch):
+    """ComfyUI を偽物に差し替える（画像ステージだけをローカルで走らせる）。"""
+    from app import comfy
+    from test_jobs import FakeComfy
+
+    fake = FakeComfy(None)
+    for name in ("upload_file", "queue_prompt", "get_history", "download_view",
+                 "ws_url"):
+        monkeypatch.setattr(comfy, name, getattr(fake, name))
+    monkeypatch.setattr(jobs, "POLL_INTERVAL", 0.02)
+    return fake
+
+
+def test_a_full_job_bridges_comfyui_images_into_veo(client, fake_kie, comfy_env,
+                                                    job_env, monkeypatch):
+    """本命の使い方: ローカルで画像を作り、その画像を Veo に渡して動画にする。"""
+    async def fake_last_frame(video, dest):
+        dest.write_bytes(b"png")
+        return dest
+
+    monkeypatch.setattr(jobs, "extract_last_frame", fake_last_frame)
+    fake_kie.answer("create", FakeResponse(envelope({"taskId": "task-veo"})))
+    fake_kie.answer("record", veo_record(1, ("https://cdn.kie.ai/out.mp4",)))
+    fake_kie.answer(
+        "upload", FakeResponse(envelope({"fileUrl": "https://files.kie.ai/gen.png"}))
+    )
+    events: list[dict] = []
+
+    with client.websocket_connect("/api/ws") as socket:
+        created = client.post(
+            "/api/jobs",
+            json={
+                "mode": "full",
+                "image_workflow": workflows.DEFAULT_IMAGE_WORKFLOW,  # ComfyUI
+                "video_workflow": VEO_FAST.id,  # kie.ai
+                "image_prompt": "a cat on a roof",
+                "video_prompt": "The cat stretches and yawns.",
+            },
+        )
+        assert created.status_code == 201, created.text
+        for _ in range(40):
+            event = socket.receive_json()
+            events.append(event)
+            if event["status"] in ("done", "failed"):
+                break
+
+    job = wait_for(client, created.json()["id"])
+    assert job["status"] == "done", job["error"]
+
+    # 1 段目は ComfyUI のグラフ、2 段目は kie のタスク
+    assert len(comfy_env.queued) == 1
+    stages = job["workflow_json"]
+    assert stages["image"]["prompt_id"] == "prompt-1"
+    assert stages["image"]["workflow_id"] == workflows.DEFAULT_IMAGE_WORKFLOW
+    assert stages["video"]["backend"] == "kie"
+    assert stages["video"]["task_id"] == "task-veo"
+
+    # 1 段目の静止画を kie にアップロードし直して開始フレームにしている
+    uploaded = fake_kie.sent("upload")[0]["json"]["fileName"]
+    assert uploaded == "image.png"
+    assert stages["video"]["request"]["input"]["imageUrls"] == [
+        "https://files.kie.ai/gen.png"
+    ]
+    # ComfyUI 側には生成画像を上げ直していない（2 段目は ComfyUI を使わない）
+    assert str(job_env / job["id"] / "image.png") not in comfy_env.uploads
+
+    # 成果物は両方とも outputs/{job_id}/ に揃う
+    assert (job_env / job["id"] / "image.png").is_file()
+    assert (job_env / job["id"] / "video.mp4").is_file()
+    assert job["image_url"] and job["video_url"]
+    assert job["credits_consumed"] is None  # Veo はクレジットを返さない応答
+
+    # 進捗は 2 段表示のまま
+    messages = [event.get("message") or "" for event in events]
+    assert any("画像生成 (1/2)" in message for message in messages)
+    assert any("動画生成 (2/2)" in message for message in messages)
