@@ -28,6 +28,12 @@ export interface Settings {
   runpod_comfy_api_key: string
   /** ComfyCloud の API キー（URL は `https://cloud.comfy.org` 固定）。 */
   comfy_cloud_api_key: string
+  /**
+   * kie.ai（外部生成バックエンド、SPEC §5.2）の API キー。空のときだけ環境変数
+   * `KIE_API_KEY` に落ちる。キーが有効だと確認できたときだけ kie 系ワークフローが
+   * 選択肢に出る。
+   */
+  kie_api_key: string
   grok_command: string
   grok_model: string
   grok_workdir: string
@@ -317,6 +323,8 @@ export interface WorkflowOption {
   prompt_required: boolean
   /** 動画用 LoRA を挿せるか（テンプレートに LoRA チェーンがあるか）。 */
   accepts_video_loras: boolean
+  /** 実行エンジン（`comfyui` / `kie`、SPEC §5.2）。省略時は `comfyui`。 */
+  backend?: string
   /** 音声ワークフローがサポートする長さ（秒）。それ以外では 0。 */
   min_duration: number
   max_duration: number
@@ -452,6 +460,24 @@ export interface Health {
   app: 'ok'
   comfyui: HealthStatus
   grok: HealthStatus
+  /** 外部生成バックエンド kie.ai（未設定は not_configured、SPEC §5.2）。 */
+  kie: HealthStatus
+}
+
+/** 生成バックエンドの可用性（`GET /api/options` の `backends`、SPEC §5.2）。 */
+export interface BackendInfo {
+  backend: string
+  status: 'ok' | 'not_configured' | 'error'
+  detail: string
+  /** false のバックエンドのワークフローは一覧に載らない。 */
+  available: boolean
+}
+
+/** GET /api/kie/credits — kie.ai の残クレジット（1 credit = $0.005）。 */
+export interface KieCredits {
+  configured: boolean
+  credits: number | null
+  error: string | null
 }
 
 export interface Options {
@@ -463,6 +489,8 @@ export interface Options {
   image_workflows: WorkflowOption[]
   video_workflows: WorkflowOption[]
   audio_workflows: WorkflowOption[]
+  /** 生成バックエンドの可用性（使えないものはワークフロー一覧に載らない）。 */
+  backends?: BackendInfo[]
   default_video_workflow: string
   default_image_workflow: string
   default_audio_workflow: string

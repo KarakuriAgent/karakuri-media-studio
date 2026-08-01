@@ -13,6 +13,7 @@ import type {
   ChatSessionCreate,
   ComfyTarget,
   Health,
+  KieCredits,
   Job,
   JobCreate,
   LibraryCategoryValue,
@@ -150,6 +151,12 @@ function upload<T>(
 
 export const api = {
   health: () => request<Health>('/api/health'),
+
+  /** kie.ai の残クレジット（SPEC §5.2）。 */
+  kieCredits: () => request<KieCredits>('/api/kie/credits'),
+
+  /** kie.ai のキーを確かめ直す（選択肢に出すかどうかが決まる）。 */
+  kieCheck: () => request<KieCredits>('/api/kie/check', { method: 'POST' }),
   options: () => request<Options>('/api/options'),
 
   getSettings: () => request<Settings>('/api/settings'),

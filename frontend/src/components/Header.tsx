@@ -90,6 +90,11 @@ export default function Header({
       <div className="ml-2 flex flex-wrap items-center gap-2">
         <Indicator name="ComfyUI" status={health?.comfyui} />
         <Indicator name="Grok" status={health?.grok} />
+        {/* kie.ai は使う人だけの機能なので、キーを入れている環境だけ出す
+            （未設定のままの環境に「未設定」の橙ランプを常設しない、SPEC §5.2）。 */}
+        {health?.kie && health.kie.status !== 'not_configured' && (
+          <Indicator name="kie.ai" status={health.kie} />
+        )}
         <span
           className="flex items-center gap-1.5 rounded-md border border-ink-600 bg-ink-800 px-2 py-1 text-xs"
           title="進捗配信 WebSocket"

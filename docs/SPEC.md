@@ -51,6 +51,9 @@
 | 画像のみ | `image_only` | 選択した画像ワークフローのみ | ― |
 | 音声 | `audio` | 選択した音声ワークフローのみ（独立ジョブ） | ― |
 
+モードはワークフローの**実行エンジンとは独立**で、選んだワークフローが kie.ai の
+ものなら同じモードのまま外部 API で実行される（§5.2）。
+
 `audio` は他の 3 モードと連結しない独立モード。画像・動画のフィールド（`video_workflow` /
 `source_image` / `loras` など）は一切使わず、指定すると 422 で拒否される（§2.4）。
 
@@ -508,6 +511,57 @@ Pod 側のイメージ（Dockerfile / entrypoint / 認証つき Caddy プロキ�
 モデルの取得は §3.3 と同じ流儀（`.part` に書いて完走時のみ rename、リダイレクトを
 自分で追い、ホストごとに `HF_TOKEN` / `CIVITAI_API_KEY` を出し分け）で実装してある。
 
+### 5.2 kie.ai（外部生成バックエンド）
+
+ComfyUI と並ぶ **2 つめの生成バックエンド**として、外部 API アグリゲータ
+[kie.ai](https://docs.kie.ai/) を使える（`backend/app/kie.py`）。自前の GPU では
+動かないモデル（Veo / Kling / Seedance / Suno など）をそのまま同じフォーム・同じ
+履歴で扱うための共通基盤で、個別モデルの対応はこの上に載せる。
+
+- **バックエンド軸**: ワークフローのマニフェスト（§3 / §4.3）が `backend`
+  （`comfyui` / `kie`、将来 `grok_cli` / `codex_cli`）を宣言する。ComfyUI 用は
+  `workflow/*.json` のテンプレート + 注入マニフェスト、kie 用はテンプレートの代わりに
+  `KieTask`（`model` と「論理名 → `input` のキー」の対応、固定値、概算クレジット）を持つ。
+  論理名は ComfyUI の注入マニフェストと同じ語彙（`prompt` / `image` / `duration` /
+  `select:<名前>` …）なので、`description` / `prompt_hint` から生成される
+  UI・エージェントのカタログの作り方は §4.3 のまま変わらない
+- **1 ジョブ = 1 バックエンド**: ステージごとにバックエンドを混ぜること（画像は kie、
+  動画は ComfyUI）は 422 で断る。`jobs.run_job` はジョブのマニフェストを見て
+  ComfyUI 経路 / kie 経路のどちらかを選ぶ
+- **可用性の判定（`backend/app/backends.py`）**: 外部バックエンドは
+  **認証情報が入っていて、実際に通ることを確認できたときだけ**選択肢に出る。
+  確認は軽いヘルスチェック（kie.ai は残クレジット照会 `GET /api/v1/chat/credit`）で、
+  結果はプロセス内にキャッシュし、**起動時**と**設定保存時**（`PUT /api/settings`）と
+  `POST /api/kie/check` で取り直す。未設定・確認失敗のあいだは
+  `GET /api/options` のワークフロー一覧にもエージェントのカタログにも一切出ず、
+  投入しようとしても 422。状態は `/api/options` の `backends` と `/api/health` の
+  `kie` に出る（`ok` / `not_configured` / `error`）。新しいバックエンドを足すときは
+  「確認する関数」を 1 つ登録するだけでこの出し分けに乗る
+- **API キー**: 設定の `kie_api_key`（設定ページの「kie.ai」欄）が一次で、空のときだけ
+  環境変数 `KIE_API_KEY` に落ちる
+- **実行の流れ**: 入力ファイルは File Upload API（`https://kieai.redpandaai.co/api/file-base64-upload`）で
+  公開 URL にしてから `input` に入れる（外部モデルは base64 直指定を受け付けない）→
+  `POST /api/v1/jobs/createTask`（Market 系の統一 API）で `taskId` を得る →
+  `GET /api/v1/jobs/recordInfo` を **10 秒間隔**でポーリング（`429` は**指数バックオフ**で
+  最大 30 秒。webhook はローカル運用では受け取れないので使わない）→ `success` で
+  `resultUrls` を取り出す。`resultJson` は **JSON 文字列なので二重パースが要る**
+- **エンドポイントとステータスの読み方は差し替え可能**（`kie.TaskApi`）。Kling /
+  Seedance は Market 系だが、Veo（`successFlag`）と Suno（`PENDING → … → SUCCESS`）は
+  旧専用系でパスもステータス語彙も違うため、ポーリングループは共通のまま系統だけを差し替える
+- **成果物は即ダウンロード**: kie 側の URL は 14 日（モデルによっては 24 時間）で
+  失効するので、完了を検知したその場で `outputs/{job_id}/` に落とす（§6 と同じ置き場・
+  同じ命名で、ラストフレーム抽出も同じ）
+- **進捗**: 既存の WS `type: "job"`（`status: "running"` + `message`）に
+  「外部 API 生成中（キュー待ち / 生成中）」として中継する。新しいメッセージ種別は増やさない
+- **課金**: クレジット制（1 credit = $0.005）。成功したタスクの `creditsConsumed` を
+  `jobs.credits_consumed` に記録する（**失敗したタスクは kie 側で返金される**ので記録しない）。
+  残クレジットは `GET /api/kie/credits`
+- **投入内容の保存**: `workflow_json` に段階別で `{"backend": "kie", "task_id": …,
+  "request": {"model": …, "api": …, "input": {…}}}` を残す。`rerun` は今までどおり
+  `params` から作り直す
+- モデル名・価格は**マニフェストと設定にだけ**書く（kie.ai は上流の都合でモデルが
+  増減し、価格も改定されるため、コードにハードコードしない）
+
 ## 6. 成果物の取得
 
 | 成果物 | 取得方法 |
@@ -545,12 +599,13 @@ CREATE TABLE jobs (
   audio_output_path TEXT,                  -- mode 'audio' が生成した mp3（出力）
   error         TEXT,
   nsfw          INTEGER NOT NULL DEFAULT 0,
-  nsfw_source   TEXT NOT NULL DEFAULT ''   -- 判定の出所（auto / manual）
+  nsfw_source   TEXT NOT NULL DEFAULT '',  -- 判定の出所（auto / manual）
+  credits_consumed REAL                     -- kie.ai が消費したクレジット（§5.2。ComfyUI は NULL）
 );
 ```
 
 - `params` には `video_workflow` / `image_workflow` / `audio_workflow`（ワークフロー ID）と、`end_image` / `reference_video`、音声モードの `audio_prompt` / `lyrics` / `bpm` / `keyscale` / `language` / `audio_category` / `reprompt` / `audio_seed` も保存する
-- 後から足したカラム（`nsfw` / `nsfw_source` / `audio_prompt` / `audio_output_path` など）は起動時に `PRAGMA table_info` と突き合わせて不足分だけ `ALTER TABLE` する（`db.MIGRATIONS`）
+- 後から足したカラム（`nsfw` / `nsfw_source` / `audio_prompt` / `audio_output_path` / `credits_consumed` など）は起動時に `PRAGMA table_info` と突き合わせて不足分だけ `ALTER TABLE` する（`db.MIGRATIONS`）
 - `workflow_json` を保存するため、任意の過去ジョブの投入内容をあとから完全に確認できる（`rerun` は `params` から作り直す）
 - リファレンス音声・アップロード画像は `assets/` に保存し再利用可能（名前を付けて管理）
 - **LoRA 登録リスト（アプリ内管理）**: 人物 LoRA を複数登録し、生成時に複数選択できる
@@ -754,8 +809,10 @@ SPA 1 画面 + 履歴。ダークテーマの生成系ツールらしい見た�
 ### バックエンド API（概要）
 
 ```
-GET  /api/health                 … ComfyUI/Grok 疎通チェック
-GET  /api/options                … 画像/動画/音声ワークフロー一覧（必要入力・露出しているつまみ・秒数レンジつき）・アスペクト比・LoRA一覧・アセット一覧・ライブラリ一覧（library, §7.2）・実行時に選べるモデルスロット（model_slots）と ComfyUI のモデルファイル一覧（model_files）
+GET  /api/health                 … ComfyUI/Grok/kie.ai 疎通チェック
+GET  /api/kie/credits            … kie.ai の残クレジット（1 credit = $0.005、§5.2）
+POST /api/kie/check              … kie.ai の API キーを確認し直す（選択肢の出し分けに反映、§5.2）
+GET  /api/options                … 画像/動画/音声ワークフロー一覧（必要入力・露出しているつまみ・秒数レンジつき）・アスペクト比・LoRA一覧・アセット一覧・ライブラリ一覧（library, §7.2）・実行時に選べるモデルスロット（model_slots）と ComfyUI のモデルファイル一覧（model_files）・生成バックエンドの可用性（backends, §5.2）
 GET/POST/PUT/DELETE /api/loras   … アプリ内 LoRA 登録リストの CRUD（GET は `?target=` でその接続先のもの + 共通行、POST は `comfy_target` で紐づけ先を指定、§5）
 GET  /api/library                … ライブラリ検索（kind / category / q / tag / limit / offset → items + total + tags、§7.2）
 POST /api/library/{kind}         … ファイルをアップロードして登録
@@ -788,8 +845,10 @@ GET  /outputs/…                  … 静的配信（画像/動画/音声）
 
 ```
 backend/            FastAPI アプリ
-  app/routers/      health / settings / loras / models_config / model_download / assets / options / chat / jobs / agent
+  app/routers/      health / settings / loras / models_config / model_download / assets / options / chat / jobs / kie / agent
   app/comfy.py      ComfyUI クライアント（/object_info, /upload/image, /prompt, /ws, /history, /view）
+  app/kie.py        kie.ai クライアント（createTask / recordInfo ポーリング・ファイルアップロード・成果物 DL、§5.2）
+  app/backends.py   生成バックエンドの可用性判定とキャッシュ（§5.2）
   app/workflows.py  ワークフロー登録簿と注入マニフェスト（ノード ID 直指定）+ プロンプト用カタログ
   app/workflow.py   テンプレートへのパラメータ注入・LoRA チェーン動的注入・解像度計算
   app/grok.py       grok CLI 呼び出し（LLM クライアントは差し替え可能な抽象化）

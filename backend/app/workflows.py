@@ -32,6 +32,12 @@ Workflow = dict[str, dict[str, Any]]
 
 WorkflowKind = Literal["image", "video", "audio"]
 
+#: どのエンジンがこのワークフローを実行するか（SPEC §5 / §5.2）。``comfyui`` は
+#: ``workflow/*.json`` のテンプレートを自前の ComfyUI に投げる従来の経路、``kie``
+#: は外部 API アグリゲータ kie.ai にタスクを投げる経路。``grok_cli`` /
+#: ``codex_cli``（サブスク CLI 経由の生成）は将来の枠で、まだ実装は無い。
+WorkflowBackend = Literal["comfyui", "kie", "grok_cli", "codex_cli"]
+
 #: Logical names of the assets a video workflow can require.  ``image`` is the
 #: primary image input (start frame, first frame or reference sheet depending on
 #: the workflow), ``audio`` a reference audio track, ``end_image`` the closing
@@ -102,8 +108,9 @@ class SelectSpec:
     label: str
     #: 選べる値。**テンプレートの option と同じ文字列**であること
     choices: tuple[str, ...]
-    #: 選んだ文字列を書き込む先（``CustomCombo.choice`` など）
-    target: Target
+    #: 選んだ文字列を書き込む先（``CustomCombo.choice`` など）。ComfyUI 以外の
+    #: バックエンドではグラフが無いので ``None``（値は API の入力に直接入る）。
+    target: Target | None = None
     #: 未指定のときに使う値（空なら ``choices[0]``）
     default: str = ""
     #: 選択の番号を書き込むフィールド（``CustomCombo`` は必須。空なら書かない）
@@ -192,16 +199,72 @@ FAMILY_LABELS: dict[str, str] = {
 DEFAULT_FAMILY = "krea2"
 
 
+#: kie.ai のタスク入力（``input``）に流し込める論理名。ComfyUI マニフェストの
+#: ``inject`` と同じ語彙にしてあるので、同じワークフローを両バックエンドで書いても
+#: 意味がずれない。``select:<名前>`` の形で :class:`SelectSpec` の値も渡せる。
+KIE_VALUES: frozenset[str] = frozenset({
+    "prompt",
+    "negative_prompt",
+    "aspect_ratio",
+    "duration",
+    "fps",
+    "seed",
+    "lyrics",
+    "bpm",
+    "language",
+    # 入力ファイル: File Upload API で公開 URL にしてから入れる（§5.2）
+    "image",
+    "end_image",
+    "audio",
+    "video",
+})
+
+#: ``select:<名前>`` の接頭辞
+KIE_SELECT_PREFIX = "select:"
+
+#: kie.ai の API 系統。``market`` が統一 API（``/api/v1/jobs/*``）、``veo`` /
+#: ``suno`` はモデル別の旧専用系（子 issue #17 / #20 で :class:`app.kie.TaskApi`
+#: の実装を足す）。
+KieApi = Literal["market", "veo", "suno"]
+
+
+@dataclass(frozen=True)
+class KieTask:
+    """kie.ai のタスクとして 1 ワークフローを実行するための宣言（SPEC §5.2）。
+
+    ComfyUI の :class:`Target` 群にあたるもの。「どのモデルに」「どの論理値を
+    ``input`` のどのキーで」渡すかだけを持ち、実際の組み立ては
+    :func:`app.kie.task_input` が行う。モデル名も価格もここ（＝マニフェスト）に
+    書くので、kie.ai 側でモデルが増減してもコードは触らない。
+    """
+
+    #: ``createTask`` の ``model``（例 ``"google/veo3.1"``）
+    model: str
+    #: 論理名（:data:`KIE_VALUES` か ``select:<名前>``）-> ``input`` のキー
+    fields: dict[str, str] = field(default_factory=dict)
+    #: 常に同じ値で入れる ``input`` のキー（モデル固有の固定オプション）
+    constants: dict[str, Any] = field(default_factory=dict)
+    #: API 系統（既定は Market 系の統一 API）
+    api: KieApi = "market"
+    #: 1 タスクの概算クレジット（0 = 不明。実消費は ``creditsConsumed`` を記録する）
+    credits: float = 0.0
+
+
 @dataclass(frozen=True)
 class WorkflowSpec:
     id: str
     label: str
     kind: WorkflowKind
-    relpath: str
+    #: ``workflow/`` からの相対パス（``backend`` が ``comfyui`` のときだけ意味を持つ）
+    relpath: str = ""
     #: logical name -> injection target
-    inject: dict[str, Target]
+    inject: dict[str, Target] = field(default_factory=dict)
     #: node id that produces the artefact the job runner downloads
-    output_node: str
+    output_node: str = ""
+    #: このワークフローを実行するエンジン（SPEC §5.2）。既定は従来どおり ComfyUI。
+    backend: WorkflowBackend = "comfyui"
+    #: ``backend == "kie"`` のときのタスク宣言（それ以外では ``None``）
+    kie: KieTask | None = None
     #: model family (= the ``workflow/<kind>/<folder>`` name).  Image LoRAs are
     #: only offered for the family of the selected image workflow; the video
     #: templates all share the ``ltx2.3`` family and ignore it.
@@ -253,7 +316,8 @@ class WorkflowSpec:
         yield from self.inject.values()
         yield from self.seeds
         for select in self.selects.values():
-            yield select.target
+            if select.target is not None:
+                yield select.target
             if select.numeric_target is not None:
                 yield select.numeric_target
         if self.lora_chain is not None:
@@ -263,7 +327,15 @@ class WorkflowSpec:
         return self.selects.get(name)
 
     def supports(self, name: str) -> bool:
-        return name in self.inject
+        """このワークフローが論理名 ``name`` の値を受け取るか。
+
+        バックエンドごとに「受け取り口」の持ち方が違う（ComfyUI は
+        :attr:`inject`、kie.ai は :attr:`KieTask.fields`）ので、呼び出し側は
+        どちらかを知らずに済むようここで吸収する。
+        """
+        if name in self.inject:
+            return True
+        return self.kie is not None and name in self.kie.fields
 
     def target(self, name: str) -> Target | None:
         return self.inject.get(name)
@@ -1045,16 +1117,50 @@ def input_label(spec: WorkflowSpec, name: str) -> str:
     return spec.image_label if name == "image" else INPUT_LABELS.get(name, name)
 
 
+def backend_available(backend: str) -> bool:
+    """そのバックエンドが今この環境で使えるか（SPEC §5.2）。
+
+    判定そのものは :mod:`app.backends`（認証確認とそのキャッシュ）が持つ。
+    そちらはこのモジュールを import するので、循環を避けて関数の中で読み込む。
+    """
+    from . import backends
+
+    return backends.available(backend)
+
+
+def comfy_specs() -> tuple[WorkflowSpec, ...]:
+    """``workflow/*.json`` のテンプレートを持つワークフローだけ。
+
+    テンプレートを読むもの（モデルスロットの列挙、custom node の存在確認、
+    マニフェスト検証）は外部バックエンドのワークフローを見てはいけない。
+    """
+    return tuple(spec for spec in SPECS if spec.backend == "comfyui")
+
+
+def selectable_specs(kind: WorkflowKind) -> list[WorkflowSpec]:
+    """UI・エージェントに出す ``kind`` のワークフロー（使えるものだけ）。
+
+    :func:`get_spec` は使えないバックエンドのものも返す（過去ジョブの再実行や
+    履歴の表示で id を引けなくなると困るため）。ここで絞るのは「これから選べる
+    もの」の一覧だけ。
+    """
+    return [
+        spec
+        for spec in SPECS
+        if spec.kind == kind and backend_available(spec.backend)
+    ]
+
+
 def image_specs() -> list[WorkflowSpec]:
-    return [spec for spec in SPECS if spec.kind == "image"]
+    return selectable_specs("image")
 
 
 def video_specs() -> list[WorkflowSpec]:
-    return [spec for spec in SPECS if spec.kind == "video"]
+    return selectable_specs("video")
 
 
 def audio_specs() -> list[WorkflowSpec]:
-    return [spec for spec in SPECS if spec.kind == "audio"]
+    return selectable_specs("audio")
 
 
 def get_spec(workflow_id: str, kind: WorkflowKind | None = None) -> WorkflowSpec:
@@ -1221,8 +1327,93 @@ def clear_cache() -> None:
 # manifest validation
 # --------------------------------------------------------------------------
 
+def _validate_common(spec: WorkflowSpec) -> list[str]:
+    """バックエンドに依らない決まりごと（カタログに出せる説明があるか等）。"""
+    problems: list[str] = []
+    # the catalog embedded in the Grok system prompts is generated from these,
+    # so a new workflow must document itself (SPEC §4.3 / AGENT-MODE §3.1)
+    if not spec.description.strip():
+        problems.append(f"{spec.id}: description is empty")
+    if spec.kind in ("video", "audio") and not spec.prompt_hint.strip():
+        problems.append(f"{spec.id}: prompt_hint is empty")
+    if spec.audio_role and not spec.supports("audio"):
+        problems.append(f"{spec.id}: has an audio_role but no audio input")
+    if spec.supports("audio") and not spec.audio_role.strip():
+        problems.append(f"{spec.id}: has an audio input but no audio_role")
+    for name in spec.requires:
+        if not spec.supports(name):
+            problems.append(f"{spec.id}: requires {name!r} but has no injection point")
+    if spec.accepts_start_image and not spec.supports("image"):
+        problems.append(f"{spec.id}: accepts_start_image but has no image input")
+    if spec.kind == "audio" and (spec.accepts_start_image or spec.supports("image")):
+        problems.append(f"{spec.id}: an audio workflow takes no image input")
+    if spec.kind == "audio" and not (
+        0 < spec.min_duration <= spec.default_duration <= spec.max_duration
+    ):
+        problems.append(
+            f"{spec.id}: min/default/max duration must be ordered and positive"
+            f" (got {spec.min_duration} / {spec.default_duration}"
+            f" / {spec.max_duration})"
+        )
+    return problems
+
+
+def validate_external_spec(spec: WorkflowSpec) -> list[str]:
+    """テンプレートを持たないワークフロー（kie.ai など）のマニフェスト検証。
+
+    ComfyUI 側は「宣言したノードが本当にテンプレートに在るか」を見るが、外部 API
+    にはグラフが無いので、代わりに**宣言そのものの筋が通っているか**を見る:
+    タスク宣言があるか、渡す論理名が :data:`KIE_VALUES` の語彙か、``requires`` に
+    書いた入力を本当に受け取れるか。
+    """
+    problems = _validate_common(spec)
+    if spec.relpath or spec.inject or spec.output_node:
+        problems.append(
+            f"{spec.id}: backend {spec.backend!r} does not use a ComfyUI template"
+        )
+    if spec.lora_chain is not None:
+        problems.append(f"{spec.id}: backend {spec.backend!r} has no LoRA chain")
+    for name, select in spec.selects.items():
+        if not select.choices:
+            problems.append(f"{spec.id}.selects[{name}]: no choices declared")
+        if select.default and select.default not in select.choices:
+            problems.append(
+                f"{spec.id}.selects[{name}]: default {select.default!r} is not"
+                " one of the choices"
+            )
+
+    if spec.backend != "kie":
+        problems.append(f"{spec.id}: backend {spec.backend!r} is not implemented yet")
+        return problems
+    if spec.kie is None:
+        problems.append(f"{spec.id}: backend 'kie' but no KieTask declared")
+        return problems
+    if not spec.kie.model.strip():
+        problems.append(f"{spec.id}.kie: model is empty")
+    if not spec.kie.fields:
+        problems.append(f"{spec.id}.kie: no input fields declared")
+    for name, key in spec.kie.fields.items():
+        if name.startswith(KIE_SELECT_PREFIX):
+            if name[len(KIE_SELECT_PREFIX):] not in spec.selects:
+                problems.append(
+                    f"{spec.id}.kie.fields[{name}]: no such select"
+                )
+        elif name not in KIE_VALUES:
+            problems.append(
+                f"{spec.id}.kie.fields[{name}]: unknown value"
+                f" (known: {', '.join(sorted(KIE_VALUES))})"
+            )
+        if not str(key).strip():
+            problems.append(f"{spec.id}.kie.fields[{name}]: empty input key")
+    return problems
+
+
 def validate_spec(spec: WorkflowSpec, template: Workflow | None = None) -> list[str]:
     """Problems found in ``spec`` against its template (empty list == fine)."""
+    if spec.backend != "comfyui":
+        return validate_external_spec(spec)
+    if spec.kie is not None:
+        return [f"{spec.id}: declares a KieTask but its backend is 'comfyui'"]
     problems: list[str] = []
     try:
         tpl = template if template is not None else load_template(spec)
@@ -1252,6 +1443,9 @@ def validate_spec(spec: WorkflowSpec, template: Workflow | None = None) -> list[
         check(target, f"seeds[{index}]")
 
     for name, select in spec.selects.items():
+        if select.target is None:
+            problems.append(f"{spec.id}.selects[{name}]: no injection target")
+            continue
         check(select.target, f"selects[{name}]")
         if select.numeric_target is not None:
             check(select.numeric_target, f"selects[{name}].numeric_target")
@@ -1324,41 +1518,16 @@ def validate_spec(spec: WorkflowSpec, template: Workflow | None = None) -> list[
     if spec.output_node not in tpl:
         problems.append(f"{spec.id}.output_node: node {spec.output_node!r} is missing")
 
-    for name in spec.requires:
-        if name not in spec.inject:
-            problems.append(f"{spec.id}: requires {name!r} but has no injection point")
-    if spec.accepts_start_image and "image" not in spec.inject:
-        problems.append(f"{spec.id}: accepts_start_image but has no image input")
-
-    # the catalog embedded in the Grok system prompts is generated from these,
-    # so a new workflow must document itself (SPEC §4.3 / AGENT-MODE §3.1)
-    if not spec.description.strip():
-        problems.append(f"{spec.id}: description is empty")
-    if spec.kind == "video" and not spec.prompt_hint.strip():
-        problems.append(f"{spec.id}: prompt_hint is empty")
-    if spec.audio_role and "audio" not in spec.inject:
-        problems.append(f"{spec.id}: has an audio_role but no audio input")
-    if "audio" in spec.inject and not spec.audio_role.strip():
-        problems.append(f"{spec.id}: has an audio input but no audio_role")
+    problems += _validate_common(spec)
 
     # audio workflows are stand-alone one-stage graphs: they take no picture,
     # produce no start frame and declare the clip length the model supports
     if spec.kind == "audio":
-        if not spec.prompt_hint.strip():
-            problems.append(f"{spec.id}: prompt_hint is empty")
-        if spec.accepts_start_image or "image" in spec.inject:
-            problems.append(f"{spec.id}: an audio workflow takes no image input")
         if spec.lora_chain is not None:
             problems.append(f"{spec.id}: audio workflows have no LoRA chain")
         for name in ("prompt", "duration", "seed", "save_prefix"):
             if name not in spec.inject:
                 problems.append(f"{spec.id}: audio workflow has no {name!r} target")
-        if not 0 < spec.min_duration <= spec.default_duration <= spec.max_duration:
-            problems.append(
-                f"{spec.id}: min/default/max duration must be ordered and positive"
-                f" (got {spec.min_duration} / {spec.default_duration}"
-                f" / {spec.max_duration})"
-            )
 
     return problems
 
@@ -1367,6 +1536,10 @@ def validate_specs(*, use_cache: bool = True) -> list[str]:
     """Validate every manifest. Used by the health check and the test suite."""
     problems: list[str] = []
     for spec in SPECS:
+        if spec.backend != "comfyui":
+            # テンプレートを持たないので、宣言そのものだけを見る（SPEC §5.2）
+            problems += validate_external_spec(spec)
+            continue
         try:
             template = load_template(spec, use_cache=use_cache)
         except (OSError, ValueError, WorkflowSpecError) as exc:

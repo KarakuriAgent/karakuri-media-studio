@@ -21,6 +21,13 @@ Per job the runner:
 image workflow runs first, its still is downloaded and re-uploaded to the
 ComfyUI input directory, and the selected video workflow then uses it as the
 start frame.  Both graphs are stored in ``workflow_json``.
+
+**バックエンド（SPEC §5.2）**: ジョブが走らせるステージのマニフェストは
+``backend``（``comfyui`` / ``kie``）を宣言していて、:func:`run_job` はそれを見て
+実行経路を選ぶ。ComfyUI の経路（:func:`_run_comfy_job`）は上のとおりで、kie.ai の
+経路（:func:`_run_kie_job`）はグラフの代わりにタスクを 1 つ投げてポーリングする。
+どちらの経路も「``outputs/{job_id}/`` に成果物を置き、jobs 行を更新し、WS に
+進捗を流す」ところは共通なので、履歴・ライブラリ・UI からは区別なく扱える。
 """
 
 from __future__ import annotations
@@ -38,7 +45,7 @@ from typing import Any
 import aiosqlite
 from PIL import Image
 
-from . import comfy, nsfw as nsfw_service, runpod, ws
+from . import comfy, kie, nsfw as nsfw_service, runpod, ws
 from .config import load_settings
 from .db import get_db
 from .ids import new_id
@@ -72,8 +79,10 @@ from .workflows import (
     DEFAULT_AUDIO_WORKFLOW,
     DEFAULT_IMAGE_WORKFLOW,
     DEFAULT_VIDEO_WORKFLOW,
+    INPUT_FIELDS,
     WorkflowSpec,
     WorkflowSpecError,
+    backend_available,
     get_audio_spec,
     get_image_spec,
     get_video_spec,
@@ -355,6 +364,63 @@ def _model_override_problem(params: dict[str, Any]) -> str | None:
     )
 
 
+def stage_specs(mode: str, params: dict[str, Any]) -> list[tuple[str, WorkflowSpec]]:
+    """このジョブが走らせるステージ ``(名前, マニフェスト)`` を順番に（SPEC §2）。
+
+    ``full`` だけが 2 段（画像 → 動画）。``audio`` は独立した 1 段。
+    """
+    stages: list[tuple[str, WorkflowSpec]] = []
+    if mode == "audio":
+        stages.append(("audio", get_audio_spec(params.get("audio_workflow"))))
+    if mode in ("full", "image_only"):
+        stages.append(("image", get_image_spec(params.get("image_workflow"))))
+    if mode in ("full", "i2v"):
+        stages.append(("video", get_video_spec(params.get("video_workflow"))))
+    return stages
+
+
+def job_backend(mode: str, params: dict[str, Any]) -> str:
+    """このジョブを実行するバックエンド（SPEC §5.2）。
+
+    2 段ジョブで別々のバックエンドを混ぜるのは今は不可（画像を kie で作って動画を
+    ComfyUI で、のような橋渡しは成果物の受け渡しが別問題なので、必要になった時点で
+    設計する）。
+    """
+    backends = {spec.backend for _, spec in stage_specs(mode, params)}
+    if len(backends) > 1:
+        raise JobValidationError(
+            "1 つのジョブで生成バックエンドを混ぜることはできません"
+            f"（{', '.join(sorted(backends))}）"
+        )
+    return backends.pop() if backends else "comfyui"
+
+
+def _backend_problem(params: dict[str, Any]) -> str | None:
+    """バックエンドの都合でこのジョブが走れない理由（None == 問題なし、§5.2）。
+
+    投入してから失敗させるのではなく、422 でその場で断る: 認証が確認できていない
+    バックエンドと、1 ジョブでのバックエンド混在。
+    """
+    mode = params.get("mode", "")
+    try:
+        stages = stage_specs(mode, params)
+    except WorkflowSpecError:
+        return None  # 不正なワークフロー id は他の検証が拾う
+    used = {spec.backend for _, spec in stages}
+    if len(used) > 1:
+        return (
+            "1 つのジョブで生成バックエンドを混ぜることはできません"
+            f"（{', '.join(sorted(used))}）"
+        )
+    for _, spec in stages:
+        if not backend_available(spec.backend):
+            return (
+                f"workflow '{spec.id}' の生成バックエンド '{spec.backend}' は"
+                "今この環境では使えません（API キーを設定して接続を確認してください）"
+            )
+    return None
+
+
 def _validate(params: dict[str, Any]) -> None:
     mode = params.get("mode", "")
     video_workflow = params.get("video_workflow")
@@ -377,6 +443,7 @@ def _validate(params: dict[str, Any]) -> None:
         or video_lora_problem(mode, video_workflow, params.get("video_loras") or [])
         or select_problem(mode, video_workflow, params.get("selects"))
         or _model_override_problem(params)
+        or _backend_problem(params)
     )
     if problem:
         raise JobValidationError(problem)
@@ -897,6 +964,16 @@ class OverallProgress:
                 self._done.discard(self._current)
         return self._recompute()
 
+    def stage_fraction(self, fraction: float) -> float:
+        """内訳の分からないステージ用: このステージの進み具合を直接与える。
+
+        外部 API（kie.ai）は「キュー待ち / 生成中」しか教えてくれないので、
+        ノード数からは計算できない。粗い目安を入れて進捗バーを進める。
+        """
+        return self._bump(
+            (self._stage_index + min(1.0, max(0.0, fraction))) / self.total_stages
+        )
+
     def stage_finished(self) -> float:
         """このステージの終端（``executing`` の node=None など）まで進める。"""
         self._current = None
@@ -1148,115 +1225,273 @@ async def _run_stage(
     return await _wait_for_result(prompt_id, client_id, job_id, overall)
 
 
+async def _run_comfy_job(job: Job) -> dict[str, Any]:
+    """ComfyUI で 1〜2 ステージを実行し、jobs 行に書く更新をまとめて返す。"""
+    job_id = job.id
+    # ComfyUI が RunPod の Pod にある構成では、投入の前に Pod を起こす
+    # （SPEC §5.1）。無効なら何もしないので、無条件に通してよい。起動待ちの
+    # 進捗は同じジョブの WS メッセージとして流れる。
+    await runpod.ensure_pod_running(
+        lambda text: ws.publish(job_id, "running", message=text)
+    )
+
+    await _set_status(job_id, "running", message="uploading assets")
+
+    uploads: dict[str, str] = {}
+    for field, param_name in _UPLOADS.items():
+        path = job.params.get(field)
+        if path:
+            uploads[param_name] = await comfy.upload_file(path)
+
+    params = _generation_params(job, uploads)
+    # 設定の既定値の上にジョブ単位の指定を重ねる（SPEC §3.3）
+    overrides = {
+        **load_settings().overrides_for(),
+        **(job.params.get("model_overrides") or {}),
+    }
+    job_dir = OUTPUTS_DIR / job.id
+    stages: dict[str, Any] = {}
+    updates: dict[str, Any] = {}
+
+    two_stage = job.mode == "full"
+    # 進捗はジョブ全体で 0→100%。2 ステージなら画像が 0〜50%、動画が 50〜100%。
+    overall = OverallProgress(2 if two_stage else 1)
+    # 音声は独立した 1 ステージのジョブ: 画像・動画の分岐には一切入らない。
+    if job.mode == "audio":
+        audio_spec = get_audio_spec(params.audio_workflow)
+        label = "音声生成"
+        await ws.publish(job_id, "running", message=label, progress=overall.value)
+        entry = await _run_stage(
+            job_id,
+            "audio",
+            audio_spec,
+            build_audio_workflow(params, overrides, spec=audio_spec),
+            stages,
+            label,
+            overall,
+            0,
+        )
+        track = await _download_artifact(
+            entry, audio_spec.output_node, job_dir, "audio", "audio"
+        )
+        updates["audio_output_path"] = str(track)
+
+    if job.mode in ("full", "image_only"):
+        image_spec = get_image_spec(params.image_workflow)
+        label = "画像生成 (1/2)" if two_stage else "画像生成"
+        await ws.publish(job_id, "running", message=label, progress=overall.value)
+        entry = await _run_stage(
+            job_id,
+            "image",
+            image_spec,
+            build_image_workflow(params, overrides, spec=image_spec),
+            stages,
+            label,
+            overall,
+            0,
+        )
+        image = await _download_artifact(
+            entry, image_spec.output_node, job_dir, "image", "image"
+        )
+        updates["image_path"] = str(image)
+        # Persist right away: if the video stage fails, the generated still is
+        # still worth showing (and re-usable as a start frame).
+        await _update(job_id, image_path=str(image))
+        if two_stage:
+            # The video stage reads the still from the ComfyUI input dir.
+            # That still already follows the aspect-ratio preset, so any size
+            # taken from `source_image` no longer applies.
+            params = params.model_copy(
+                update={
+                    "start_image_name": await comfy.upload_file(image),
+                    "start_image_size": None,
+                }
+            )
+
+    if job.mode in ("full", "i2v"):
+        video_spec = get_video_spec(params.video_workflow)
+        label = "動画生成 (2/2)" if two_stage else "動画生成"
+        await ws.publish(job_id, "running", message=label, progress=overall.value)
+        entry = await _run_stage(
+            job_id,
+            "video",
+            video_spec,
+            build_video_workflow(params, overrides, spec=video_spec),
+            stages,
+            label,
+            overall,
+            1 if two_stage else 0,
+        )
+        video = await _download_artifact(
+            entry, video_spec.output_node, job_dir, "video", "video"
+        )
+        updates["video_path"] = str(video)
+        updates["last_frame_path"] = str(
+            await extract_last_frame(video, job_dir / "last_frame.png")
+        )
+
+    return updates
+
+
+# --------------------------------------------------------------------------
+# kie.ai バックエンド（SPEC §5.2）
+# --------------------------------------------------------------------------
+
+#: kie.ai の状態語 -> そのステージの進捗の目安（内訳が取れないので粗い刻み）
+_KIE_PROGRESS = {"waiting": 0.05, "queuing": 0.15, "generating": 0.5}
+
+#: 状態語の日本語（WS のメッセージに添える）
+_KIE_LABELS = {
+    "waiting": "受付待ち",
+    "queuing": "キュー待ち",
+    "generating": "生成中",
+}
+
+#: ステージ名 -> (成果物の種類, outputs/ に置くときのファイル名, jobs の列)
+_KIE_ARTIFACTS = {
+    "image": ("image", "image", "image_path"),
+    "video": ("video", "video", "video_path"),
+    "audio": ("audio", "audio", "audio_output_path"),
+}
+
+
+async def _kie_uploads(spec: WorkflowSpec, params_dict: dict[str, Any]) -> dict[str, str]:
+    """入力ファイルを kie に置いて ``{論理名: 公開 URL}`` にする。
+
+    外部モデルは入力画像・音声を**公開 URL でしか**受け取らないので、ComfyUI の
+    ``/upload/image`` にあたる下ごしらえがここ（SPEC §5.2）。
+    """
+    uploads: dict[str, str] = {}
+    for name, field in INPUT_FIELDS.items():
+        if not spec.supports(name):
+            continue
+        path = params_dict.get(field)
+        if path:
+            uploads[name] = await kie.upload_file(path)
+    return uploads
+
+
+async def _run_kie_stage(
+    job_id: str,
+    stage: str,
+    spec: WorkflowSpec,
+    params: GenerationParams,
+    params_dict: dict[str, Any],
+    stages: dict[str, Any],
+    label: str,
+    overall: OverallProgress,
+    stage_index: int,
+) -> kie.TaskState:
+    """kie.ai にタスクを 1 つ投げ、仕上がるまで待つ。
+
+    ComfyUI の :func:`_run_stage` と同じ役回り: 投入した内容を先に
+    ``workflow_json`` へ書いてから投げる（失敗しても何を送ったか分かる）。
+    """
+    overall.start_stage(stage_index, 0)
+    uploads = await _kie_uploads(spec, params_dict)
+    request = kie.build_request(spec, params, uploads)
+    stages[stage] = {
+        "workflow_id": spec.id,
+        "backend": "kie",
+        "task_id": None,
+        "request": request.as_dict(),
+    }
+    await _update(job_id, workflow_json=json.dumps(stages, ensure_ascii=False))
+
+    api = kie.task_api(request.api)
+    task_id = await kie.create_task(request.model, request.input, api=api)
+    stages[stage]["task_id"] = task_id
+    await _update(job_id, workflow_json=json.dumps(stages, ensure_ascii=False))
+    await ws.publish(
+        job_id,
+        "running",
+        message=f"{label}: kie.ai に投入しました ({task_id})",
+        progress=overall.stage_fraction(_KIE_PROGRESS["waiting"]),
+    )
+
+    async def relay(state: kie.TaskState) -> None:
+        text = _KIE_LABELS.get(state.label, state.label)
+        await ws.publish(
+            job_id,
+            "running",
+            message=f"{label}: 外部 API 生成中 ({text})",
+            progress=overall.stage_fraction(_KIE_PROGRESS.get(state.label, 0.5)),
+        )
+
+    state = await kie.wait_for_task(task_id, api=api, on_progress=relay)
+    await ws.publish(job_id, "running", progress=overall.stage_finished())
+    return state
+
+
+async def _run_kie_job(job: Job) -> dict[str, Any]:
+    """kie.ai で 1〜2 ステージを実行し、jobs 行に書く更新をまとめて返す。
+
+    成果物 URL は 14 日（モデルによっては 24 時間）で消えるので、完了を検知したら
+    その場で ``outputs/{job_id}/`` に落とす。消費クレジットは合算して履歴に残す
+    （失敗したタスクは kie 側で返金されるので数えない）。
+    """
+    job_id = job.id
+    await _set_status(job_id, "running", message="kie.ai に送信しています")
+
+    params = _generation_params(job, {})
+    job_dir = OUTPUTS_DIR / job.id
+    stages: dict[str, Any] = {}
+    updates: dict[str, Any] = {}
+    spent = 0.0
+    charged = False
+
+    all_stages = stage_specs(job.mode, job.params)
+    total = len(all_stages)
+    overall = OverallProgress(total)
+    for index, (stage, spec) in enumerate(all_stages):
+        kind, stem, column = _KIE_ARTIFACTS[stage]
+        label = f"{spec.label}"
+        if total > 1:
+            label = f"{label} ({index + 1}/{total})"
+        await ws.publish(job_id, "running", message=label, progress=overall.value)
+        state = await _run_kie_stage(
+            job_id, stage, spec, params, job.params, stages, label, overall, index
+        )
+        if state.credits is not None:
+            spent += state.credits
+            charged = True
+        saved = await kie.download_results(state, job_dir, stem, kind)
+        updates[column] = str(saved[0])
+        # 途中で落ちても手元に残るよう、ステージごとに確定させる。
+        await _update(job_id, **{column: str(saved[0])})
+        if stage == "video":
+            updates["last_frame_path"] = str(
+                await extract_last_frame(saved[0], job_dir / "last_frame.png")
+            )
+        if stage == "image" and job.mode == "full":
+            # 2 段目（動画）はこの画像を開始フレームとして読むので、公開 URL に
+            # し直して次のステージへ渡す。
+            job.params["source_image"] = str(saved[0])
+
+    if charged:
+        updates["credits_consumed"] = spent
+    return updates
+
+
 async def run_job(job_id: str) -> None:
-    """Execute one job end to end (1 or 2 stages). Failures are recorded, never raised."""
+    """Execute one job end to end. Failures are recorded, never raised.
+
+    どのバックエンドで走らせるかはジョブが選んだワークフローのマニフェストが
+    決める（SPEC §5.2）。失敗の記録・キャンセルの扱いはバックエンドに依らず
+    共通なので、ここだけが jobs 行の終端を書く。
+    """
     job = await get_job(job_id)
     if job is None:
         log.warning("job %s disappeared before it could run", job_id)
         return
     try:
-        # ComfyUI が RunPod の Pod にある構成では、投入の前に Pod を起こす
-        # （SPEC §5.1）。無効なら何もしないので、無条件に通してよい。起動待ちの
-        # 進捗は同じジョブの WS メッセージとして流れる。
-        await runpod.ensure_pod_running(
-            lambda text: ws.publish(job_id, "running", message=text)
-        )
-
-        await _set_status(job_id, "running", message="uploading assets")
-
-        uploads: dict[str, str] = {}
-        for field, param_name in _UPLOADS.items():
-            path = job.params.get(field)
-            if path:
-                uploads[param_name] = await comfy.upload_file(path)
-
-        params = _generation_params(job, uploads)
-        # 設定の既定値の上にジョブ単位の指定を重ねる（SPEC §3.3）
-        overrides = {
-            **load_settings().overrides_for(),
-            **(job.params.get("model_overrides") or {}),
-        }
-        job_dir = OUTPUTS_DIR / job.id
-        stages: dict[str, Any] = {}
-        updates: dict[str, Any] = {}
-
-        two_stage = job.mode == "full"
-        # 進捗はジョブ全体で 0→100%。2 ステージなら画像が 0〜50%、動画が 50〜100%。
-        overall = OverallProgress(2 if two_stage else 1)
-        # 音声は独立した 1 ステージのジョブ: 画像・動画の分岐には一切入らない。
-        if job.mode == "audio":
-            audio_spec = get_audio_spec(params.audio_workflow)
-            label = "音声生成"
-            await ws.publish(job_id, "running", message=label, progress=overall.value)
-            entry = await _run_stage(
-                job_id,
-                "audio",
-                audio_spec,
-                build_audio_workflow(params, overrides, spec=audio_spec),
-                stages,
-                label,
-                overall,
-                0,
-            )
-            track = await _download_artifact(
-                entry, audio_spec.output_node, job_dir, "audio", "audio"
-            )
-            updates["audio_output_path"] = str(track)
-
-        if job.mode in ("full", "image_only"):
-            image_spec = get_image_spec(params.image_workflow)
-            label = "画像生成 (1/2)" if two_stage else "画像生成"
-            await ws.publish(job_id, "running", message=label, progress=overall.value)
-            entry = await _run_stage(
-                job_id,
-                "image",
-                image_spec,
-                build_image_workflow(params, overrides, spec=image_spec),
-                stages,
-                label,
-                overall,
-                0,
-            )
-            image = await _download_artifact(
-                entry, image_spec.output_node, job_dir, "image", "image"
-            )
-            updates["image_path"] = str(image)
-            # Persist right away: if the video stage fails, the generated still is
-            # still worth showing (and re-usable as a start frame).
-            await _update(job_id, image_path=str(image))
-            if two_stage:
-                # The video stage reads the still from the ComfyUI input dir.
-                # That still already follows the aspect-ratio preset, so any size
-                # taken from `source_image` no longer applies.
-                params = params.model_copy(
-                    update={
-                        "start_image_name": await comfy.upload_file(image),
-                        "start_image_size": None,
-                    }
-                )
-
-        if job.mode in ("full", "i2v"):
-            video_spec = get_video_spec(params.video_workflow)
-            label = "動画生成 (2/2)" if two_stage else "動画生成"
-            await ws.publish(job_id, "running", message=label, progress=overall.value)
-            entry = await _run_stage(
-                job_id,
-                "video",
-                video_spec,
-                build_video_workflow(params, overrides, spec=video_spec),
-                stages,
-                label,
-                overall,
-                1 if two_stage else 0,
-            )
-            video = await _download_artifact(
-                entry, video_spec.output_node, job_dir, "video", "video"
-            )
-            updates["video_path"] = str(video)
-            updates["last_frame_path"] = str(
-                await extract_last_frame(video, job_dir / "last_frame.png")
-            )
-
+        backend = job_backend(job.mode, job.params)
+        if backend == "kie":
+            updates = await _run_kie_job(job)
+        elif backend == "comfyui":
+            updates = await _run_comfy_job(job)
+        else:
+            raise JobError(f"生成バックエンド '{backend}' はまだ実装されていません")
         await _set_status(
             job_id, "done", message="done", progress=1.0, error=None, **updates
         )
@@ -1270,7 +1505,10 @@ async def run_job(job_id: str) -> None:
         #  display_error による言い換えは読み取り系エンドポイントだけに留める）
         detail = (
             str(exc)
-            if isinstance(exc, (JobError, runpod.RunPodError))
+            if isinstance(
+                exc,
+                (JobError, JobValidationError, runpod.RunPodError, kie.KieError),
+            )
             else f"{type(exc).__name__}: {exc}"
         )
         log.exception("job %s failed", job_id)

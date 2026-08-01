@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from .. import comfy, grok
+from .. import comfy, grok, kie
 from ..config import load_settings
 from ..models import Health, HealthStatus
 from ..workflow import WorkflowError, all_required_class_types, validate_manifests
@@ -47,4 +47,7 @@ async def check_comfyui() -> HealthStatus:
 async def health() -> Health:
     comfyui = await check_comfyui()
     grok_status = await grok.check_grok()
-    return Health(comfyui=comfyui, grok=grok_status)
+    # 外部生成バックエンド（SPEC §5.2）。キー未設定は not_configured で、
+    # 異常ではない（kie 系ワークフローが選択肢に出ないだけ）。
+    kie_status = await kie.check_kie()
+    return Health(comfyui=comfyui, grok=grok_status, kie=kie_status)

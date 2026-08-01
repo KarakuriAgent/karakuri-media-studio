@@ -57,6 +57,7 @@ function settings(): Settings {
     runpod_comfy_url: '',
     runpod_comfy_api_key: '',
     comfy_cloud_api_key: '',
+    kie_api_key: '',
     grok_command: 'grok',
     grok_model: 'grok-4.5',
     grok_workdir: '/repo/runtime/grok-workdir',

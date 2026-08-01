@@ -51,6 +51,10 @@ class Settings(BaseModel):
     runpod_comfy_api_key: str = ""
     #: ComfyCloud の API キー（URL は `COMFY_CLOUD_URL` 固定なので設定に持たない）
     comfy_cloud_api_key: str = ""
+    #: kie.ai（外部生成バックエンド、SPEC §5.2）の API キー。環境変数
+    #: ``KIE_API_KEY`` が設定されていればそちらが優先される。空のあいだは
+    #: kie 系ワークフローが選択肢に出ない。
+    kie_api_key: str = ""
     grok_command: str = "grok"
     grok_model: str = "grok-4.5"
     grok_workdir: str = ""
@@ -144,6 +148,7 @@ class SettingsUpdate(BaseModel):
     runpod_comfy_url: str | None = None
     runpod_comfy_api_key: str | None = None
     comfy_cloud_api_key: str | None = None
+    kie_api_key: str | None = None
     grok_command: str | None = None
     grok_model: str | None = None
     grok_workdir: str | None = None
@@ -498,6 +503,9 @@ class Job(BaseModel):
     #: the track a mode 'audio' job produced (an output)
     audio_output_path: str | None = None
     error: str | None = None
+    #: 外部バックエンド（kie.ai）のジョブが消費したクレジット。ComfyUI のジョブと
+    #: 失敗したジョブ（kie は自動返金）では None のまま（SPEC §5.2）。
+    credits_consumed: float | None = None
 
     # NSFW フラグ: nsfw_source は '' = 未判定 / 'auto' / 'manual'
     nsfw: bool = False
@@ -1200,6 +1208,33 @@ class Health(BaseModel):
     app: Literal["ok"] = "ok"
     comfyui: HealthStatus
     grok: HealthStatus
+    #: 外部生成バックエンド kie.ai（キー未設定は not_configured、SPEC §5.2）
+    kie: HealthStatus = Field(
+        default_factory=lambda: HealthStatus(status="not_configured")
+    )
+
+
+class BackendInfo(BaseModel):
+    """生成バックエンドの可用性（SPEC §5.2）。
+
+    ``available`` が false のバックエンドのワークフローは選択肢に出ない。
+    """
+
+    backend: str
+    status: Literal["ok", "not_configured", "error"]
+    detail: str = ""
+    available: bool = False
+
+
+class KieCredits(BaseModel):
+    """GET /api/kie/credits — 残クレジット照会（SPEC §5.2）。"""
+
+    #: API キーがあるか（false なら kie 系ワークフローは選択肢に出ない）
+    configured: bool = False
+    #: 残クレジット（1 credit = $0.005）。取得できなければ None
+    credits: float | None = None
+    #: 照会に失敗した理由（成功時は None）
+    error: str | None = None
 
 
 # --------------------------------------------------------------------------
@@ -1438,6 +1473,8 @@ class WorkflowOption(BaseModel):
     prompt_required: bool = True
     #: 動画用 LoRA を挿せるか（テンプレートに LoRA チェーンがあるか）
     accepts_video_loras: bool = False
+    #: 実行エンジン（``comfyui`` / ``kie``、SPEC §5.2）。UI のバッジ用。
+    backend: str = "comfyui"
     #: audio workflows: the clip length the model supports, in seconds
     min_duration: float = 0.0
     max_duration: float = 0.0
@@ -1478,4 +1515,7 @@ class Options(BaseModel):
     #: ライブラリの全件（新しい順）。入力欄の「ライブラリから選択」と、
     #: エージェントの CHOICES がここを読む（SPEC §7.2）。
     library: list["LibraryItem"] = Field(default_factory=list)
+    #: 生成バックエンドの可用性（SPEC §5.2）。使えないバックエンドのワークフローは
+    #: 上のリストに載らないので、その理由をここで見せる。
+    backends: list["BackendInfo"] = Field(default_factory=list)
     negative_presets: dict[str, str] = Field(default_factory=dict)

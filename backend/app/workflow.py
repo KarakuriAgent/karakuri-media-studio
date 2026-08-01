@@ -26,12 +26,12 @@ from typing import Any
 
 from .models import GenerationParams, LoraRef, ModelField, ModelSlot
 from .workflows import (
-    SPECS,
     LoraChain,
     Target,
     Workflow,
     WorkflowSpec,
     WorkflowSpecError,
+    comfy_specs,
     get_audio_spec,
     get_image_spec,
     get_video_spec,
@@ -179,7 +179,9 @@ def _inject_selects(wf: Workflow, spec: WorkflowSpec, params: GenerationParams) 
         choice = (params.selects.get(name) or "").strip()
         if choice not in select.choices:
             choice = select.fallback
-        if not choice:
+        # 注入先が無いのは ComfyUI 以外のバックエンドの宣言（グラフに書く先が
+        # 無い）。ここは ComfyUI のグラフを組む関数なので何もしない。
+        if not choice or select.target is None:
             continue
         _set(wf, select.target.node_id, select.target.field, choice)
         if select.index_field:
@@ -365,7 +367,7 @@ def model_fields(specs: tuple[WorkflowSpec, ...] | None = None) -> list[ModelFie
     scoped by workflow id because the same node id exists in several templates.
     """
     found: list[ModelField] = []
-    for spec in specs if specs is not None else SPECS:
+    for spec in specs if specs is not None else comfy_specs():
         template = load_template(spec)
         # the dynamic LoRA chain replaces these, so their names never ship
         excluded = set(spec.lora_chain.placeholders) if spec.lora_chain else set()
@@ -653,7 +655,7 @@ def all_required_class_types() -> set[str]:
     chain introduces it even though the template placeholders are removed.
     """
     types: set[str] = {"LoraLoaderModelOnly"}
-    for spec in SPECS:
+    for spec in comfy_specs():
         types |= required_class_types(load_template(spec))
     return types
 

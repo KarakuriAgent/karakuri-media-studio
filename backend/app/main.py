@@ -1,3 +1,4 @@
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -7,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import agent_runner, ws
+from . import agent_runner, backends, ws
 from .config import load_settings
 from .db import init_db
 from .jobs import runner
@@ -24,6 +25,7 @@ from .routers import (
     chat,
     health,
     jobs,
+    kie,
     library,
     loras,
     model_download,
@@ -46,10 +48,15 @@ async def lifespan(app: FastAPI):
     # and in GET /api/health instead.
     for problem in validate_specs(use_cache=False):
         log.error("workflow manifest mismatch: %s", problem)
+    # 外部生成バックエンドの認証確認（SPEC §5.2）。確認できたものだけが
+    # /api/options の選択肢に出るので、起動のたびに取り直す。ネットワーク待ちで
+    # 起動を止めないよう、投げっぱなしで走らせる。
+    startup_checks = asyncio.create_task(backends.refresh_all())
     await runner.start()
     try:
         yield
     finally:
+        startup_checks.cancel()
         await agent_runner.stop_all()
         await runner.stop()
 
@@ -74,6 +81,7 @@ app.include_router(assets.router)
 app.include_router(options.router)
 app.include_router(chat.router)
 app.include_router(jobs.router)
+app.include_router(kie.router)
 app.include_router(agent.router)
 app.include_router(ws.router)
 

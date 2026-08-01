@@ -18,6 +18,7 @@ import type {
   ModelFieldState,
   ModelsDirStatus,
   Options,
+  KieCredits,
   Settings,
 } from '../types'
 import { Banner } from './ui'
@@ -225,6 +226,8 @@ export default function SettingsPage({
   >({})
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  /** kie.ai の接続確認の結果（SPEC §5.2）。 */
+  const [kieState, setKieState] = useState<KieCredits | null>(null)
   const [busy, setBusy] = useState(false)
   const [draft, setDraft] = useState<LoraPayload>(EMPTY_LORA)
   const [editingId, setEditingId] = useState<number | null>(null)
@@ -363,6 +366,7 @@ export default function SettingsPage({
           runpod_comfy_url: settings.runpod_comfy_url,
           runpod_comfy_api_key: settings.runpod_comfy_api_key,
           comfy_cloud_api_key: settings.comfy_cloud_api_key,
+          kie_api_key: settings.kie_api_key,
           grok_model: settings.grok_model,
           grok_command: settings.grok_command,
           hf_token: settings.hf_token,
@@ -594,6 +598,25 @@ export default function SettingsPage({
   const update = (patch: Partial<Settings>) =>
     setSettings((previous) => (previous ? { ...previous, ...patch } : previous))
 
+  /**
+   * kie.ai のキーを確かめる（SPEC §5.2）。
+   *
+   * 確認が通ったバックエンドのワークフローだけが生成フォームとエージェントの
+   * 選択肢に出るので、キーを入れ替えたらここで確かめてから保存する。
+   */
+  const checkKie = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      setKieState(await api.kieCheck())
+      onChanged()
+    } catch (caught) {
+      fail(caught)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   /** モデル / LoRA タブの先頭に置く環境プルダウン（SPEC §5）。 */
   const envPicker = (hint: string) => (
     <div className="card flex flex-wrap items-center gap-2 p-2">
@@ -724,6 +747,52 @@ export default function SettingsPage({
                             接続先は https://cloud.comfy.org 固定です。API アクセスは
                             Standard 以上のプランが必要です。
                           </p>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* 外部生成バックエンド kie.ai（SPEC §5.2）。キーが有効だと
+                        確認できたときだけ、kie 系のワークフローが生成フォームと
+                        エージェントの選択肢に出る。 */}
+                    <div className="rounded-lg border border-ink-600 p-2">
+                      <h5 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                        kie.ai（外部生成バックエンド）
+                      </h5>
+                      <div className="flex flex-col gap-2">
+                        <div>
+                          <label className="label">kie.ai APIキー</label>
+                          <input
+                            className="field"
+                            type="password"
+                            autoComplete="off"
+                            value={settings.kie_api_key}
+                            onChange={(event) =>
+                              update({ kie_api_key: event.target.value })
+                            }
+                          />
+                          <p className="mt-1 text-[11px] text-slate-500">
+                            https://kie.ai/api-key で発行したキー。保存すると有効性を
+                            確認し、通ったときだけ kie のワークフローが選択肢に出ます
+                            （空欄なら環境変数 KIE_API_KEY を使います）。
+                          </p>
+                        </div>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            className="btn-ghost"
+                            disabled={busy}
+                            onClick={() => void checkKie()}
+                          >
+                            接続確認
+                          </button>
+                          {kieState && (
+                            <span className="text-[11px] text-slate-400">
+                              {kieState.error
+                                ? `エラー: ${kieState.error}`
+                                : kieState.configured
+                                  ? `残クレジット ${kieState.credits ?? '?'}（1 credit = $0.005）`
+                                  : 'APIキーが未設定です'}
+                            </span>
+                          )}
                         </div>
                       </div>
                     </div>

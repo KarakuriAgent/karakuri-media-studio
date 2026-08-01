@@ -27,7 +27,8 @@ CREATE TABLE IF NOT EXISTS jobs (
   audio_output_path TEXT,
   error         TEXT,
   nsfw          INTEGER NOT NULL DEFAULT 0,
-  nsfw_source   TEXT NOT NULL DEFAULT ''
+  nsfw_source   TEXT NOT NULL DEFAULT '',
+  credits_consumed REAL                     -- kie.ai が消費したクレジット（§5.2）
 );
 
 CREATE TABLE IF NOT EXISTS loras (
@@ -99,6 +100,9 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         # 入力のリファレンス音声を保持する audio_path とは別物。
         ("audio_prompt", "TEXT"),
         ("audio_output_path", "TEXT"),
+        # 外部バックエンド（kie.ai）のジョブが消費したクレジット（SPEC §5.2）。
+        # ComfyUI のジョブは自前 GPU なので NULL のままでよい。
+        ("credits_consumed", "REAL"),
     ],
     "agent_sessions": [
         ("nsfw", "INTEGER NOT NULL DEFAULT 0"),
