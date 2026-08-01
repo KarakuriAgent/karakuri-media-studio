@@ -978,6 +978,19 @@ export function validateForm(
         } 件）。`
       }
     }
+    // 参照素材のときだけ固定される設定（Veo の素材参照生成は 8 秒しか作れない）。
+    for (const [name, fixed] of Object.entries(
+      videoWorkflow?.reference_selects ?? {},
+    )) {
+      const chosen = form.selects[name]
+      if (chosen && chosen !== fixed) {
+        const label =
+          videoWorkflow?.selects.find((item) => item.name === name)?.label ?? name
+        errors.references =
+          `参照素材を使うときの${label}は ${fixed} 固定です（今は ${chosen}）。` +
+          `${label}を ${fixed} にするか、参照素材を外してください。`
+      }
+    }
   }
   // ショット割り / Elements（SPEC §3.1）。バックエンドが 422 で断るのと同じ
   // 理由を、送る前にその場で見せる。
@@ -1064,11 +1077,15 @@ export function validateForm(
   return errors
 }
 
+// 追加操作（veo_extend / veo_1080p）はフォームから選べないが、履歴の表示には
+// 出るのでラベルだけ持つ（SPEC §5.2）。
 export const MODE_LABELS: Record<JobMode, string> = {
   full: '画像＋動画',
   i2v: '動画生成',
   image_only: '画像のみ',
   audio: '音声',
+  veo_extend: '動画の延長',
+  veo_1080p: '1080P 取得',
 }
 
 export const MODE_HINTS: Record<JobMode, string> = {
@@ -1076,6 +1093,8 @@ export const MODE_HINTS: Record<JobMode, string> = {
   i2v: '選択した動画ワークフローを単発実行',
   image_only: '画像のみ生成',
   audio: '音声のみ生成（画像・動画とは連結しない単独実行）',
+  veo_extend: '生成済みの Veo 動画に +7 秒を継ぎ足す（履歴から実行）',
+  veo_1080p: '生成済みの Veo 動画の 1080P 版を取得する（履歴から実行）',
 }
 
 /** Workflows that can be used in `mode` (full needs a start-frame input). */

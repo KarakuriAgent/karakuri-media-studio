@@ -1,8 +1,21 @@
 // Mirrors backend/app/models.py
 
 /** `audio` は独立モード: 音声ワークフローを 1 本だけ走らせ、画像→動画の連結
- *  （full）とは一切繋がらない。 */
-export type JobMode = 'full' | 'i2v' | 'image_only' | 'audio'
+ *  （full）とは一切繋がらない。
+ *
+ *  `veo_extend` / `veo_1080p` は**フォームから選ぶモードではない**: 生成済みの
+ *  Veo ジョブに履歴から掛ける追加操作で、新しいジョブ 1 本として履歴に並ぶ
+ *  （SPEC §5.2）。生成フォームのモード選択には出さない。 */
+export type JobMode =
+  | 'full'
+  | 'i2v'
+  | 'image_only'
+  | 'audio'
+  | 'veo_extend'
+  | 'veo_1080p'
+
+/** 生成済みジョブに追加で掛けられる操作（`Job.followups` の要素）。 */
+export type JobFollowup = 'veo_extend' | 'veo_1080p'
 export type JobStatus =
   | 'queued'
   | 'prompting'
@@ -364,6 +377,11 @@ export interface WorkflowOption {
    */
   multi_inputs?: Partial<Record<ReferenceInput, number>>
   /**
+   * 参照素材を使っているあいだ固定される選択式（名前 -> 値、SPEC §3.1）。
+   * Veo の素材参照生成は 8 秒しか作れないので `{ duration: '8' }`。
+   */
+  reference_selects?: Record<string, string>
+  /**
    * ショット割り / Elements の宣言（SPEC §3.1）。対応していないワークフロー
    * では null で、フォームはそのセクションを出さない。古いレスポンスには無い。
    */
@@ -425,6 +443,11 @@ export interface Job {
   extra_outputs?: string[]
   /** `extra_outputs` の URL（同じ並び）。 */
   extra_output_urls?: string[]
+  /**
+   * このジョブの成果物に追加で掛けられる kie.ai の操作（SPEC §5.2）。
+   * 履歴の「延長」「1080P を取得」はここを見て出す。古いレスポンスには無い。
+   */
+  followups?: JobFollowup[]
 }
 
 export interface JobCreate {

@@ -53,6 +53,8 @@ from .config import load_settings
 from .db import get_db
 from .ids import new_id
 from .models import (
+    FOLLOWUP_FAMILY,
+    FOLLOWUP_MODES,
     GenerationParams,
     Job,
     JobContinue,
@@ -60,10 +62,13 @@ from .models import (
     JobRerun,
     LoraRef,
     MultiShot,
+    VeoExtend,
+    VeoUpscale,
     audio_lora_problem,
     audio_workflow_problem,
     elements_of,
     elements_problem,
+    followup_problem,
     image_lora_family_problem,
     image_lora_problem,
     image_workflow_problem,
@@ -285,10 +290,78 @@ def _loads_paths(value: Any) -> list[str]:
     return [str(item) for item in parsed if isinstance(item, str) and item]
 
 
+def _kie_task_id(workflow: dict[str, Any], stage: str = "video") -> str:
+    """そのステージが kie.ai に投げたタスクの ID（無ければ空文字、SPEC §5.2）。
+
+    追加操作（延長・1080P 取得）は成果物のファイルではなく **kie.ai 側のタスク**を
+    指して頼むので、``workflow_json`` に残した ``task_id`` が入口になる。
+    """
+    entry = workflow.get(stage)
+    if not isinstance(entry, dict) or entry.get("backend") != "kie":
+        return ""
+    return str(entry.get("task_id") or "")
+
+
+def job_followups(
+    mode: str,
+    status: str,
+    params: dict[str, Any],
+    workflow: dict[str, Any],
+    video_path: Any,
+) -> list[str]:
+    """このジョブに追加で掛けられる操作（:data:`app.models.FOLLOWUP_MODES` の一部）。
+
+    履歴の UI はここを見て「延長」「1080P を取得」を出す（SPEC §5.2 / issue #26）。
+    出す条件は 3 つ:
+
+    - **成果物のある終わった動画ジョブ**で、kie.ai の ``task_id`` が残っていること
+      （追加操作は元タスクに対して頼むので、これが無いと何も掛けられない）
+    - モデルが Veo で、延長 API がそのモデルを受けること
+      （:data:`app.kie.VEO_EXTEND_MODELS`）
+    - 1080P は **720p で生成したぶんだけ**（1080p / 4k で生成済みなら意味がなく、
+      アップスケール済みの動画はそもそも延長もできないので ``veo_1080p`` の
+      ジョブ自体は追加操作を持たない）
+    """
+    if status != "done" or not video_path:
+        return []
+    # 1080P 取得のジョブは新しい taskId を持たない（元タスクの別バージョンを
+    # 取っただけ）ので、そこからさらに追加操作は掛けられない。
+    if mode not in ("full", "i2v", "veo_extend"):
+        return []
+    if not _kie_task_id(workflow):
+        return []
+    try:
+        spec = get_video_spec(params.get("video_workflow"))
+    except WorkflowSpecError:
+        return []
+    if spec.backend != "kie" or spec.family != FOLLOWUP_FAMILY or spec.kie is None:
+        return []
+    found: list[str] = []
+    if spec.kie.model in kie.VEO_EXTEND_MODELS:
+        found.append("veo_extend")
+    selects = params.get("selects")
+    select = spec.select("resolution")
+    chosen = (selects or {}).get("resolution") if isinstance(selects, dict) else None
+    resolution = str(chosen or (select.fallback if select is not None else ""))
+    if resolution not in ("1080p", "4k"):
+        found.append("veo_1080p")
+    return found
+
+
 def row_to_job(row: aiosqlite.Row, *, include_workflow: bool = True) -> Job:
     data = dict(row)
     data["params"] = _loads(data.get("params"))
-    data["workflow_json"] = _loads(data.get("workflow_json")) if include_workflow else {}
+    workflow = _loads(data.get("workflow_json"))
+    # 一覧では workflow_json を返さないが、追加操作の可否はその中の task_id で
+    # 決まるので、落とす前にここで判定する。
+    data["followups"] = job_followups(
+        str(data.get("mode") or ""),
+        str(data.get("status") or ""),
+        data["params"],
+        workflow,
+        data.get("video_path"),
+    )
+    data["workflow_json"] = workflow if include_workflow else {}
     data["image_url"] = _output_url(data.get("image_path"))
     data["video_url"] = _output_url(data.get("video_path"))
     data["last_frame_url"] = _output_url(data.get("last_frame_path"))
@@ -400,13 +473,17 @@ def stage_specs(mode: str, params: dict[str, Any]) -> list[tuple[str, WorkflowSp
     """このジョブが走らせるステージ ``(名前, マニフェスト)`` を順番に（SPEC §2）。
 
     ``full`` だけが 2 段（画像 → 動画）。``audio`` は独立した 1 段。
+
+    追加操作（:data:`app.models.FOLLOWUP_MODES`）も動画ステージ 1 段として数える:
+    走らせるのはタスクの生成ではなく元タスクへの追加依頼だが、置き場も列も進捗も
+    ふつうの動画ステージと同じなので、バックエンドの判定も同じ経路に乗せる。
     """
     stages: list[tuple[str, WorkflowSpec]] = []
     if mode == "audio":
         stages.append(("audio", get_audio_spec(params.get("audio_workflow"))))
     if mode in ("full", "image_only"):
         stages.append(("image", get_image_spec(params.get("image_workflow"))))
-    if mode in ("full", "i2v"):
+    if mode in ("full", "i2v") or mode in FOLLOWUP_MODES:
         stages.append(("video", get_video_spec(params.get("video_workflow"))))
     return stages
 
@@ -511,6 +588,7 @@ def _validate(params: dict[str, Any]) -> None:
             reference_materials(params),
             source_image=params.get("source_image"),
             end_image=params.get("end_image"),
+            selects=params.get("selects"),
         )
         or multi_shot_problem(mode, video_workflow, multi_shots_of(params))
         or elements_problem(
@@ -520,6 +598,7 @@ def _validate(params: dict[str, Any]) -> None:
             video_prompt=params.get("video_prompt"),
             shots=multi_shots_of(params),
         )
+        or followup_problem(mode, video_workflow, params.get("source_task_id"))
         or _model_override_problem(params)
         or _backend_problem(params)
     )
@@ -939,6 +1018,93 @@ async def continue_job(
         params=params,
         user_input=payload.user_input or source.user_input,
         chat_session_id=payload.chat_session_id,
+        nsfw=nsfw,
+        nsfw_source=nsfw_source,
+    )
+
+
+# --------------------------------------------------------------------------
+# 生成済みジョブへの追加操作（Veo、SPEC §5.2 / issue #26）
+# --------------------------------------------------------------------------
+#
+# 「ラストフレームから続きを生成」（:func:`continue_job`）が**別のクリップを新しく
+# 作る**のに対し、ここは **kie.ai 側に残っている元タスクそのもの**に仕事を足す:
+# 延長は元動画に +7 秒を継いだ 1 本を、1080P 取得は同じ動画の高解像度版を返す。
+# どちらも新しいジョブ 1 本として履歴に並ぶので、進捗・ライブラリ・NSFW の扱いは
+# ふつうの生成と変わらない。
+
+async def _followup_params(job_id: str, mode: str) -> tuple[Job, dict[str, Any]]:
+    """追加操作のジョブの共通パラメータ（元ジョブと ``params``）。
+
+    引き継ぐのは「どのモデルの・どのタスクに対する操作か」だけで、プロンプトや
+    入力ファイルは持たない（元タスクを指すだけなので要らない）。``selects`` は
+    記録と、次の追加操作の判定（解像度）のために元ジョブのものを写す。
+    """
+    source = await get_job(job_id)
+    if source is None:
+        raise LookupError(job_id)
+    if mode not in source.followups:
+        raise JobValidationError(
+            f"ジョブ {source.id} には '{mode}' の追加操作を掛けられません"
+            "（kie.ai の Veo で生成し終えたジョブからだけ実行できます）"
+        )
+    prev = dict(source.params)
+    params: dict[str, Any] = {
+        "mode": mode,
+        "image_workflow": prev.get("image_workflow") or DEFAULT_IMAGE_WORKFLOW,
+        "video_workflow": prev.get("video_workflow") or DEFAULT_VIDEO_WORKFLOW,
+        "selects": dict(prev.get("selects") or {}),
+        # 追加操作の入口（kie.ai に投げた元タスク）
+        "source_task_id": _kie_task_id(source.workflow_json),
+        "continued_from": source.id,
+    }
+    return source, params
+
+
+async def veo_extend_job(
+    job_id: str, payload: VeoExtend, *, inherit_nsfw: bool = False
+) -> Job:
+    """元動画に **+7 秒**を継ぎ足すジョブを作る（``POST /veo/extend``）。"""
+    source, params = await _followup_params(job_id, "veo_extend")
+    prompt = (payload.prompt or "").strip()
+    if not prompt:
+        raise JobValidationError("mode 'veo_extend' requires: video_prompt")
+    spec = get_video_spec(params["video_workflow"])
+    try:
+        # 生成時のモデル名は延長 API では通らない（書式が違う）ので、投入前に
+        # 引けることを確かめておく。
+        kie.extend_model(spec.kie.model if spec.kie else "")
+    except kie.KieError as exc:
+        raise JobValidationError(str(exc)) from exc
+    params["video_prompt"] = prompt
+    if payload.seeds is not None:
+        params["veo_seeds"] = int(payload.seeds)
+    if (payload.watermark or "").strip():
+        params["veo_watermark"] = str(payload.watermark).strip()
+    nsfw, nsfw_source = _resolve_nsfw(None, source.nsfw or inherit_nsfw)
+    return await _insert_job(
+        mode="veo_extend",
+        params=params,
+        user_input=source.user_input,
+        chat_session_id=None,
+        nsfw=nsfw,
+        nsfw_source=nsfw_source,
+    )
+
+
+async def veo_1080p_job(
+    job_id: str, payload: VeoUpscale, *, inherit_nsfw: bool = False
+) -> Job:
+    """720p で作った動画の **1080P 版**を取りに行くジョブを作る（5 credits）。"""
+    source, params = await _followup_params(job_id, "veo_1080p")
+    if payload.index is not None:
+        params["veo_index"] = int(payload.index)
+    nsfw, nsfw_source = _resolve_nsfw(None, source.nsfw or inherit_nsfw)
+    return await _insert_job(
+        mode="veo_1080p",
+        params=params,
+        user_input=source.user_input,
+        chat_session_id=None,
         nsfw=nsfw,
         nsfw_source=nsfw_source,
     )
@@ -1542,6 +1708,111 @@ async def _run_kie_stage(
     return state
 
 
+async def _run_kie_followup_stage(
+    job_id: str,
+    stage: str,
+    mode: str,
+    spec: WorkflowSpec,
+    params_dict: dict[str, Any],
+    stages: dict[str, Any],
+    label: str,
+    overall: OverallProgress,
+    stage_index: int,
+) -> kie.TaskState:
+    """生成済みタスクへの追加操作を 1 つ実行する（SPEC §5.2 / issue #26）。
+
+    :func:`_run_kie_stage` と同じ役回りで、違うのは「何を頼むか」だけ:
+
+    - ``veo_extend``: 元タスクに **+7 秒**を継ぐ新しいタスクを作って待つ
+      （成果物は元動画を含む通し = ``fullResultUrls``）
+    - ``veo_1080p``: タスクは作らず、**1080P 版が用意されるまで取りに行く**
+      （生成完了の 1〜3 分後にできるので、待ちは :mod:`app.kie` 側でリトライ）
+
+    どちらも投げた内容を先に ``workflow_json`` へ書く（失敗しても何を頼んだか
+    分かる）。返した :class:`app.kie.TaskState` の扱いは通常の kie ステージと
+    まったく同じなので、ダウンロード・ラストフレーム抽出は共通のまま。
+    """
+    overall.start_stage(stage_index, 0)
+    source_task_id = str(params_dict.get("source_task_id") or "")
+    entry: dict[str, Any] = {
+        "workflow_id": spec.id,
+        "backend": "kie",
+        "followup": mode,
+        "source_task_id": source_task_id,
+        "task_id": None,
+    }
+    stages[stage] = entry
+
+    if mode == "veo_1080p":
+        index = params_dict.get("veo_index")
+        entry["request"] = {
+            "api": "veo_1080p",
+            "taskId": source_task_id,
+            "index": index,
+        }
+        await _update(job_id, workflow_json=json.dumps(stages, ensure_ascii=False))
+        await ws.publish(
+            job_id,
+            "running",
+            message=f"{label}: 1080P 版を要求しました ({source_task_id})",
+            progress=overall.stage_fraction(_KIE_PROGRESS["waiting"]),
+        )
+
+        async def on_wait(attempt: int, attempts: int) -> None:
+            await ws.publish(
+                job_id,
+                "running",
+                message=f"{label}: 1080P 版の準備待ち ({attempt}/{attempts})",
+                progress=overall.stage_fraction(
+                    min(0.9, attempt / max(attempts, 1))
+                ),
+            )
+
+        url = await kie.get_1080p_video(
+            source_task_id,
+            index=int(index) if index is not None else None,
+            on_wait=on_wait,
+        )
+        await ws.publish(job_id, "running", progress=overall.stage_finished())
+        # 消費クレジットは 1080P 取得の応答には入らないので記録しない
+        # （タスクを作らないので recordInfo の creditsConsumed も動かない）。
+        return kie.TaskState("success", "success", (url,))
+
+    model = kie.extend_model(spec.kie.model if spec.kie else "")
+    task_input = kie.extend_input(
+        source_task_id,
+        str(params_dict.get("video_prompt") or ""),
+        seeds=params_dict.get("veo_seeds"),
+        watermark=params_dict.get("veo_watermark"),
+    )
+    api = kie.task_api(kie.VEO_EXTEND.name)
+    entry["request"] = {"model": model, "api": api.name, "input": dict(task_input)}
+    await _update(job_id, workflow_json=json.dumps(stages, ensure_ascii=False))
+
+    task_id = await kie.create_task(model, task_input, api=api)
+    entry["task_id"] = task_id
+    await _update(job_id, workflow_json=json.dumps(stages, ensure_ascii=False))
+    await ws.publish(
+        job_id,
+        "running",
+        message=f"{label}: kie.ai に延長を投入しました ({task_id})",
+        progress=overall.stage_fraction(_KIE_PROGRESS["waiting"]),
+    )
+
+    async def relay(state: kie.TaskState) -> None:
+        text = _KIE_LABELS.get(state.label, state.label)
+        await ws.publish(
+            job_id,
+            "running",
+            message=f"{label}: 外部 API で延長中 ({text})",
+            progress=overall.stage_fraction(_KIE_PROGRESS.get(state.label, 0.5)),
+        )
+
+    state = await kie.wait_for_task(task_id, api=api, on_progress=relay)
+    await ws.publish(job_id, "running", progress=overall.stage_finished())
+    return state
+
+
 # --------------------------------------------------------------------------
 # Grok Build CLI バックエンド（SPEC §5.2 / issue #21）
 # --------------------------------------------------------------------------
@@ -1729,10 +2000,18 @@ async def _run_job_stages(job: Job) -> dict[str, Any]:
                 overall, index, job_dir,
             )
         elif spec.backend == "kie":
-            state = await _run_kie_stage(
-                job_id, stage, spec, _generation_params(job, {}), job.params,
-                stages, label, overall, index,
-            )
+            # 生成済みタスクへの追加操作（延長・1080P 取得）は入力の下ごしらえも
+            # マニフェストの組み立ても要らないので、投げ方だけを分ける（§5.2）。
+            if job.mode in FOLLOWUP_MODES:
+                state = await _run_kie_followup_stage(
+                    job_id, stage, job.mode, spec, job.params,
+                    stages, label, overall, index,
+                )
+            else:
+                state = await _run_kie_stage(
+                    job_id, stage, spec, _generation_params(job, {}), job.params,
+                    stages, label, overall, index,
+                )
             if state.credits is not None:
                 spent += state.credits
                 charged = True

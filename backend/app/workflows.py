@@ -268,6 +268,12 @@ class KieTask:
     fields: dict[str, str] = field(default_factory=dict)
     #: 常に同じ値で入れる ``input`` のキー（モデル固有の固定オプション）
     constants: dict[str, Any] = field(default_factory=dict)
+    #: **参照素材（:attr:`WorkflowSpec.multi_inputs`）が入っているときだけ**足す
+    #: 固定値。Veo の素材参照生成は ``generationType`` を ``REFERENCE_2_VIDEO``
+    #: に切り替える必要があるが、参照画像は開始 / 最終フレームと同じ
+    #: ``imageUrls`` に載るので**枚数からは区別が付かない**。値そのものは
+    #: :attr:`constants` より後に入るので、固定値を上書きできる。
+    reference_constants: dict[str, Any] = field(default_factory=dict)
     #: **配列で渡す** ``input`` のキー。同じキーに複数の論理名を割り当てられる
     #: ようになり、値は :attr:`fields` の宣言順に並ぶ（Veo の ``imageUrls`` は
     #: 「1 枚目 = 開始フレーム / 2 枚目 = 最終フレーム」の順序が意味を持つ）。
@@ -403,6 +409,11 @@ class WorkflowSpec:
     #: （:func:`app.models.reference_problem`）。名前は
     #: :data:`MULTI_INPUT_FIELDS` のキー。
     multi_inputs: dict[str, int] = field(default_factory=dict)
+    #: **参照素材を使うときに固定される選択式の値**（名前 -> 値、SPEC §3.1）。
+    #: Veo の素材参照生成は 8 秒しか作れないので ``{"duration": "8"}``。既定の
+    #: ままなら黙って通り、**違う値を明示指定したジョブだけ** 422 で断る
+    #: （:func:`app.models.reference_problem`）。
+    reference_selects: dict[str, str] = field(default_factory=dict)
     #: **ショット割り**の宣言（``None`` = 1 ジョブ 1 ショットのみ、SPEC §3.1）
     multi_shot: MultiShotSpec | None = None
     #: **Elements**（``@要素名`` で呼ぶ参照画像の束）の宣言（``None`` = 非対応）
@@ -1244,11 +1255,25 @@ WAN_DANCER = WorkflowSpec(
 # 入力画像は 1 枚なら開始フレーム、2 枚なら「最初と最後のフレーム」になる
 # （``generationType`` は :class:`app.kie.VeoTaskApi` が枚数から決める）。
 # 音声はモデルが映像と一緒に生成するので、音声入力は取らない。
+#
+# **素材参照生成**（``REFERENCE_2_VIDEO``、issue #26）は同じ ``imageUrls`` に
+# 参照画像を 1〜3 枚載せる別モードで、枚数からは区別が付かないので
+# :attr:`KieTask.reference_constants` で ``generationType`` を切り替える。
+# API 側の制約が強く（**Fast / Lite のみ・8 秒固定**・開始 / 最終フレームとは
+# 排他）、Quality では使えないので **Fast のマニフェストだけが宣言する**。
+# 尺の固定は :attr:`WorkflowSpec.reference_selects` に書いて、違う尺を明示指定
+# したジョブを投入前に断る（:func:`app.models.reference_problem`）。
 
 #: Veo の縦横比（``Auto`` は 1080p/4K が使えないので出さない）
 VEO_ASPECT_RATIOS: tuple[str, ...] = ("16:9", "9:16")
 #: Veo の尺（秒）。1080p は 8 秒生成のときだけ用意される。
 VEO_DURATIONS: tuple[str, ...] = ("4", "6", "8")
+#: 素材参照生成の ``generationType``（参照画像が入っているときだけ送る）
+VEO_REFERENCE_TYPE = "REFERENCE_2_VIDEO"
+#: 素材参照生成で受け取れる参照画像の枚数（API の上限そのまま）
+VEO_REFERENCE_IMAGES = 3
+#: 素材参照生成で固定される尺（API 側が 8 秒しか作れない）
+VEO_REFERENCE_DURATION = "8"
 #: 生成解像度。``4k`` は generate API 自体が受け取る（生成後の追加取得
 #: （``POST /veo/get-4k-video``）とは別の経路）。ただし 8 秒生成のときだけで、
 #: しかも高価なので既定にはしない。
@@ -1267,6 +1292,10 @@ VEO_PROMPT_HINT = (
     " the description as `Negative: cartoon, blurry, distorted hands, text,"
     " watermark`. With a start frame, do not re-describe what the picture"
     " already shows — write how it moves, what happens next and how it sounds."
+    " **In reference mode** (`reference_images`, 1-3 stills that cannot be"
+    " combined with a start frame) the pictures carry identity and look: do not"
+    " describe what they already show — spend the text on what happens, in"
+    " which light, with which single camera move, and how it sounds."
 )
 
 #: 画像入力の説明（カタログ・フォームの案内に使う共通文）
@@ -1275,11 +1304,28 @@ _VEO_INPUTS = (
     "「最初と最後のフレーム」の補間（flf2v）になる。"
 )
 
+#: 素材参照生成の説明（宣言しているバリアントにだけ足す）
+_VEO_REFERENCE_INPUTS = (
+    f"そのかわりに **参照画像**（`reference_images` 最大 {VEO_REFERENCE_IMAGES} 枚）"
+    "を渡すと、人物・衣装・小道具の見た目を素材で指定できる（素材参照生成）。"
+    f"**開始フレームとは排他**で、尺は {VEO_REFERENCE_DURATION} 秒固定。"
+)
+
 
 def _veo_spec(
-    spec_id: str, label: str, model: str, credits: float, description: str
+    spec_id: str,
+    label: str,
+    model: str,
+    credits: float,
+    description: str,
+    *,
+    references: bool = False,
 ) -> WorkflowSpec:
-    """Veo の 1 モデル分のマニフェスト（Fast / Quality は宣言が同じ）。"""
+    """Veo の 1 モデル分のマニフェスト（Fast / Quality は宣言がほぼ同じ）。
+
+    ``references`` を立てたバリアントだけが**素材参照生成**
+    （``REFERENCE_2_VIDEO``）を宣言する（API 側で Fast / Lite のみ）。
+    """
     return WorkflowSpec(
         id=spec_id,
         label=label,
@@ -1290,6 +1336,12 @@ def _veo_spec(
         prompt_hint=VEO_PROMPT_HINT,
         accepts_start_image=True,
         image_label="開始フレーム（任意）",
+        multi_inputs=(
+            {"reference_images": VEO_REFERENCE_IMAGES} if references else {}
+        ),
+        reference_selects=(
+            {"duration": VEO_REFERENCE_DURATION} if references else {}
+        ),
         kie=KieTask(
             model=model,
             api="veo",
@@ -1298,6 +1350,9 @@ def _veo_spec(
                 # 宣言順がそのまま imageUrls の並び（1 枚目 = 開始フレーム）
                 "image": "imageUrls",
                 "end_image": "imageUrls",
+                # 素材参照生成の参照画像も同じ配列（開始フレームとは排他なので、
+                # 実際に両方が入ることはない）
+                **({"reference_images": "imageUrls"} if references else {}),
                 f"{KIE_SELECT_PREFIX}aspect_ratio": "aspect_ratio",
                 f"{KIE_SELECT_PREFIX}duration": "duration",
                 f"{KIE_SELECT_PREFIX}resolution": "resolution",
@@ -1305,6 +1360,11 @@ def _veo_spec(
             # 既定値がドキュメント内で食い違うので明示する（英語プロンプトを
             # そのまま使わせたいので翻訳は有効のままでよい）
             constants={"enableTranslation": True},
+            # 参照画像が入っているときだけ素材参照生成に切り替える（枚数からは
+            # 「最初と最後のフレーム」と区別が付かない）
+            reference_constants=(
+                {"generationType": VEO_REFERENCE_TYPE} if references else {}
+            ),
             list_keys=("imageUrls",),
             credits=credits,
         ),
@@ -1332,7 +1392,14 @@ def _veo_spec(
         notes=(
             "kie.ai 経由 / 音声つき / SynthID 透かしが必ず入る /"
             " 4k は生成時に選べる（8 秒のときのみ・高価） /"
-            " 生成後の 1080P・4K 追加取得と延長（extend）は未対応"
+            " 生成後に履歴から +7 秒の延長と 1080P 版の取得ができる /"
+            " 4K の追加取得（get-4k-video）は未対応"
+            + (
+                f" / 参照画像 {VEO_REFERENCE_IMAGES} 枚までの素材参照生成"
+                f"（開始フレームとは排他・{VEO_REFERENCE_DURATION} 秒固定）"
+                if references
+                else " / 素材参照生成（reference_images）は Fast のみ"
+            )
         ),
     )
 
@@ -1344,7 +1411,8 @@ VEO3_1_FAST = _veo_spec(
     60.0,
     "kie.ai 経由の Google Veo 3.1 Fast。音声（環境音・効果音・セリフ）まで"
     "モデルが同時に生成する 4〜8 秒のクリップで、ふだんの試し撮り・量産用。"
-    f"{_VEO_INPUTS}外部 API なので LoRA は使えない。",
+    f"{_VEO_INPUTS}{_VEO_REFERENCE_INPUTS}外部 API なので LoRA は使えない。",
+    references=True,
 )
 
 VEO3_1_QUALITY = _veo_spec(
@@ -2291,6 +2359,9 @@ class CatalogEntry:
     #: ``(JobCreate field, 日本語ラベル, 件数の上限)`` of the multi-file reference
     #: inputs it accepts (empty for every workflow without a reference mode)
     reference_inputs: tuple[tuple[str, str, int], ...]
+    #: 参照素材を使うときに固定される選択式（``(名前, 値)``、§3.1）。Veo の
+    #: 素材参照生成は 8 秒しか作れないので ``(("duration", "8"),)``。
+    reference_selects: tuple[tuple[str, str], ...]
     #: ショット割りの宣言（``None`` = 1 ジョブ 1 ショット、§3.1）
     multi_shot: "MultiShotSpec | None"
     #: Elements（``@要素名`` の参照画像）の宣言（``None`` = 非対応、§3.1）
@@ -2341,6 +2412,7 @@ def catalog_entry(spec: WorkflowSpec) -> CatalogEntry:
             for name, limit in spec.multi_inputs.items()
             if name in MULTI_INPUT_FIELDS
         ),
+        reference_selects=tuple(spec.reference_selects.items()),
         multi_shot=spec.multi_shot,
         elements=spec.elements,
         accepts_start_image=spec.accepts_start_image,
@@ -2454,6 +2526,19 @@ def _validate_common(spec: WorkflowSpec) -> list[str]:
             )
         if limit < 1:
             problems.append(f"{spec.id}.multi_inputs[{name}]: limit must be >= 1")
+    # 参照素材のときに固定される選択式: 参照入力を持ち、名前と値が実在するか
+    for name, value in spec.reference_selects.items():
+        if not spec.multi_inputs:
+            problems.append(
+                f"{spec.id}.reference_selects[{name}]: no reference inputs"
+            )
+        select = spec.select(name)
+        if select is None:
+            problems.append(f"{spec.id}.reference_selects[{name}]: unknown select")
+        elif value not in select.choices:
+            problems.append(
+                f"{spec.id}.reference_selects[{name}]: {value!r} is not a choice"
+            )
     # ショット割り / Elements: 受け取り口があり、上限が正で筋が通っているか
     if spec.multi_shot is not None:
         for name in ("multi_shots", "multi_prompt"):

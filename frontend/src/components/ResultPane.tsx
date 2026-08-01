@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { Job, JobProgress, LibraryItem, LibrarySource } from '../types'
 import LibraryAddButton, { isInLibrary } from './LibraryAddButton'
+import VeoActions from './VeoActions'
 import { Banner, CopyButton, NsfwBadge, NsfwToggle, StatusBadge } from './ui'
 
 interface Props {
@@ -10,6 +11,9 @@ interface Props {
   /** ジョブの生成パラメータを左のフォームへ書き戻す。 */
   onRestoreParams: (job: Job) => void
   onContinue: (job: Job) => void
+  /** Veo の追加操作（SPEC §5.2）: 元動画に +7 秒 / 1080P 版の取得。 */
+  onExtend: (job: Job, prompt: string) => void
+  onUpscale: (job: Job) => void
   onDelete: (job: Job) => void
   onOpenDetail: (job: Job) => void
   onToggleNsfw: (job: Job, nsfw: boolean) => void
@@ -107,6 +111,8 @@ export default function ResultPane({
   onRerun,
   onRestoreParams,
   onContinue,
+  onExtend,
+  onUpscale,
   onDelete,
   onOpenDetail,
   onToggleNsfw,
@@ -314,6 +320,13 @@ export default function ResultPane({
             >
               続きを生成
             </button>
+            {/* Veo の生成済み動画にだけ出る追加操作（SPEC §5.2） */}
+            <VeoActions
+              job={job}
+              busy={busy}
+              onExtend={onExtend}
+              onUpscale={onUpscale}
+            />
             <NsfwToggle
               nsfw={job.nsfw}
               disabled={busy}

@@ -539,6 +539,15 @@ def _catalog_entry_lines(entry: CatalogEntry) -> list[str]:
             )
             + "。指定するときは `mode: \"i2v\"` で、`source_image` /"
             " `end_image` を書かないこと（同時指定のジョブは拒否されます）"
+            + (
+                "。参照素材を使うときは "
+                + "・".join(
+                    f"`{name}` は {value!r} 固定"
+                    for name, value in entry.reference_selects
+                )
+                if entry.reference_selects
+                else ""
+            )
         )
     if entry.multi_shot is not None:
         lines.append(

@@ -48,7 +48,7 @@ import httpx
 from .backends import BackendStatus
 from .config import load_settings
 from .models import GenerationParams, HealthStatus
-from .workflows import KIE_SELECT_PREFIX, WorkflowSpec
+from .workflows import KIE_SELECT_PREFIX, MULTI_INPUT_FIELDS, WorkflowSpec
 
 log = logging.getLogger(__name__)
 
@@ -83,6 +83,16 @@ MAX_POLL_INTERVAL = 30.0
 BACKOFF_FACTOR = 2.0
 #: 1 タスクの全体タイムアウト（秒）
 TASK_TIMEOUT = 60 * 60.0
+
+#: Veo の **1080P 版の取得**（``GET /api/v1/veo/get-1080p-video``、5 credits）。
+#: 生成そのものは 720p で終わっていて、1080P はその 1〜3 分後に別途用意される。
+VEO_1080P_URL = f"{API_BASE}/api/v1/veo/get-1080p-video"
+#: 1080P の準備待ちで再試行する間隔（秒）と回数（既定で約 5 分粘る）
+P1080_INTERVAL = 25.0
+P1080_ATTEMPTS = 12
+#: 「まだ準備できていない」と読むコード（これ以外は素直に失敗させる）。
+#: 生成失敗（501）やクレジット不足（402）を待っても状況は変わらない。
+P1080_NOT_READY = (404, 422, 425)
 
 #: 生成物の種類ごとの既定拡張子（URL から読み取れないとき）
 DEFAULT_SUFFIX = {"image": ".png", "video": ".mp4", "audio": ".mp3"}
@@ -338,7 +348,10 @@ class VeoTaskApi(TaskApi):
       そのまま並べる（``prompt`` / ``imageUrls`` / ``aspect_ratio`` …）
     - **``generationType`` は渡した画像の枚数で決まる**: 2 枚なら
       「最初と最後のフレーム」、0〜1 枚なら通常生成（1 枚は開始フレーム扱い）。
-      マニフェスト側で固定したいときは ``constants`` に書けばそれが勝つ
+      マニフェスト側で固定したいときは ``constants``（常に）か
+      ``reference_constants``（参照素材があるときだけ）に書けばそれが勝つ。
+      素材参照生成（``REFERENCE_2_VIDEO``、参照画像 1〜3 枚）は後者を使う:
+      枚数だけでは「最初と最後のフレーム」と区別が付かないため
     - **状態が ``successFlag``**: 0 = 生成中 / 1 = 成功 / 2, 3 = 失敗。成果物は
       ``response.resultUrls`` に入る
     """
@@ -353,21 +366,37 @@ class VeoTaskApi(TaskApi):
     DEFAULT_TYPE = "TEXT_2_VIDEO"
     #: 数値で送るキー（選択式フィールドの値は文字列で届く）
     NUMERIC_KEYS = ("duration", "seeds")
+    #: 成果物 URL を探すキー（前から順に見る）
+    RESULT_KEYS = ("resultUrls",)
     #: ``successFlag`` -> :data:`TaskPhase`
     FLAGS: dict[int, TaskPhase] = {0: "running", 1: "success", 2: "fail", 3: "fail"}
 
-    def create_body(self, model: str, task_input: dict[str, Any]) -> dict[str, Any]:
+    def flat_body(self, model: str, task_input: dict[str, Any]) -> dict[str, Any]:
+        """``model`` + パラメータを平らに並べたボディ（数値のキーだけ直す）。"""
         body: dict[str, Any] = {"model": model, **task_input}
         for key in self.NUMERIC_KEYS:
             value = body.get(key)
             if isinstance(value, str) and value.strip().isdigit():
                 body[key] = int(value)
+        return body
+
+    def create_body(self, model: str, task_input: dict[str, Any]) -> dict[str, Any]:
+        body = self.flat_body(model, task_input)
         urls = body.get("imageUrls")
         count = len(urls) if isinstance(urls, (list, tuple)) else 0
         body.setdefault(
             "generationType", self.FLF_TYPE if count >= 2 else self.DEFAULT_TYPE
         )
         return body
+
+    def _result_urls(self, data: dict[str, Any]) -> tuple[str, ...]:
+        """成功した record-info から成果物 URL を拾う（:attr:`RESULT_KEYS` 順）。"""
+        response = parse_result_json(data.get("response"))
+        for key in self.RESULT_KEYS:
+            urls = _urls(response.get(key) or data.get(key))
+            if urls:
+                return urls
+        return ()
 
     def read_state(self, data: Any) -> TaskState:
         if not isinstance(data, dict):
@@ -379,8 +408,7 @@ class VeoTaskApi(TaskApi):
         phase = self.FLAGS.get(flag, "waiting")
         credits = _credits(data)
         if phase == "success":
-            response = parse_result_json(data.get("response"))
-            urls = _urls(response.get("resultUrls") or data.get("resultUrls"))
+            urls = self._result_urls(data)
             if not urls:
                 raise KieError("kie.ai がタスクの成果物 URL を返しませんでした")
             return TaskState("success", "success", urls, credits)
@@ -398,6 +426,32 @@ class VeoTaskApi(TaskApi):
             )
         # 生成中は 0 しか返ってこない（キュー待ちと生成中の区別は無い）
         return TaskState(phase, "generating" if flag == 0 else "waiting", credits=credits)
+
+
+class VeoExtendTaskApi(VeoTaskApi):
+    """Veo の**動画延長**（``POST /api/v1/veo/extend``、issue #26 / SPEC §5.2）。
+
+    生成済みのタスクの動画そのものに **+7 秒**を継ぎ足す操作で、「ラストフレーム
+    から続きを作る」（:func:`app.jobs.continue_job`）とは別物: 新しいクリップでは
+    なく、元動画を含む 1 本の長い動画が返る。
+
+    生成（:class:`VeoTaskApi`）との違いは 3 つだけで、照会は同じ
+    ``record-info`` に乗る:
+
+    - **投げるのは ``taskId`` と ``prompt``**（元動画とその続きの指示）。画像も
+      縦横比も尺も無いので ``generationType`` は付けない
+    - **``model`` の書式が違う**: 生成は ``veo3_fast`` / ``veo3`` なのに対し、
+      延長は ``fast`` / ``quality`` / ``lite``（:data:`VEO_EXTEND_MODELS`）
+    - **成果物は ``fullResultUrls``**（元動画 + 継ぎ足した分の通し）。
+      ``resultUrls`` には足した分だけが入ることがあるので通しを先に見る
+    """
+
+    name = "veo_extend"
+    create_url = f"{API_BASE}/api/v1/veo/extend"
+    RESULT_KEYS = ("fullResultUrls", "resultUrls")
+
+    def create_body(self, model: str, task_input: dict[str, Any]) -> dict[str, Any]:
+        return self.flat_body(model, task_input)
 
 
 class SunoTaskApi(TaskApi):
@@ -527,6 +581,8 @@ class SunoTaskApi(TaskApi):
 MARKET = TaskApi()
 #: Veo 3.1（旧専用系）
 VEO = VeoTaskApi()
+#: Veo 3.1 の動画延長（生成済みタスクへの +7 秒）
+VEO_EXTEND = VeoExtendTaskApi()
 #: Suno V5 系（旧専用系）
 SUNO = SunoTaskApi()
 
@@ -534,6 +590,7 @@ SUNO = SunoTaskApi()
 TASK_APIS: dict[str, TaskApi] = {
     MARKET.name: MARKET,
     VEO.name: VEO,
+    VEO_EXTEND.name: VEO_EXTEND,
     SUNO.name: SUNO,
 }
 
@@ -620,6 +677,121 @@ async def wait_for_task(
             raise KieError(
                 f"kie.ai のタスク {task_id} が {limit:.0f} 秒以内に終わりませんでした"
             )
+
+
+# --------------------------------------------------------------------------
+# 生成済みタスクへの追加操作（Veo、SPEC §5.2 / issue #26）
+# --------------------------------------------------------------------------
+#
+# どちらも「もう一度生成し直す」のではなく、**kie.ai に残っている元タスクに対して
+# 追加の仕事を頼む**操作なので、入力は元ジョブの ``taskId`` だけでよい
+# （:mod:`app.jobs` が ``workflow_json`` から引く）。
+
+#: 生成時の ``model`` -> **延長 API の ``model``**。同じモデルでも書式が違う
+#: （生成は ``veo3_fast`` / ``veo3``、延長は ``fast`` / ``quality`` / ``lite``）
+#: ので、マニフェストのモデル名からここで引き直す。
+VEO_EXTEND_MODELS: dict[str, str] = {
+    "veo3_fast": "fast",
+    "veo3": "quality",
+    "veo3_lite": "lite",
+}
+
+
+def extend_model(model: str) -> str:
+    """生成時のモデル名を延長 API の ``model`` に直す。"""
+    extend = VEO_EXTEND_MODELS.get(model.strip())
+    if extend is None:
+        known = ", ".join(sorted(VEO_EXTEND_MODELS))
+        raise KieError(
+            f"Veo のモデル '{model}' は動画の延長に対応していません（{known} のみ）"
+        )
+    return extend
+
+
+def extend_input(
+    task_id: str,
+    prompt: str,
+    *,
+    seeds: int | None = None,
+    watermark: str | None = None,
+) -> dict[str, Any]:
+    """``POST /api/v1/veo/extend`` に載せるパラメータ（``model`` 以外）。"""
+    body: dict[str, Any] = {"taskId": task_id, "prompt": prompt}
+    if seeds is not None:
+        body["seeds"] = int(seeds)
+    if (watermark or "").strip():
+        body["watermark"] = str(watermark).strip()
+    return body
+
+
+def _first_url(data: Any) -> str:
+    """1080P 取得の応答から動画の URL を 1 つ拾う（無ければ空文字）。"""
+    if isinstance(data, str):
+        return data if data.startswith("http") else ""
+    if not isinstance(data, dict):
+        return ""
+    sources: list[dict[str, Any]] = [data]
+    response = parse_result_json(data.get("response"))
+    if response:
+        sources.append(response)
+    for source in sources:
+        for key in ("resultUrls", "resultUrl", "result_urls", "videoUrl", "url"):
+            urls = _urls(source.get(key))
+            if urls:
+                return urls[0]
+    return ""
+
+
+#: 1080P の準備待ちを知らせるコールバック（``(試行回数, 上限)``）
+WaitCallback = Callable[[int, int], Awaitable[None]]
+
+
+async def get_1080p_video(
+    task_id: str,
+    *,
+    index: int | None = None,
+    interval: float = P1080_INTERVAL,
+    attempts: int = P1080_ATTEMPTS,
+    on_wait: WaitCallback | None = None,
+) -> str:
+    """720p で生成し終わったタスクの **1080P 版の URL**（5 credits）。
+
+    1080P は生成の完了から **1〜3 分ほど遅れて**用意されるので、まだのあいだは
+    kie.ai が 404 / 422 を返す。それを失敗にせず :data:`P1080_INTERVAL` 間隔で
+    待ち直すのがこの関数の仕事（:data:`P1080_NOT_READY` 以外のコードは
+    「待っても変わらない失敗」なのでそのまま投げる）。
+
+    ``index`` は 1 タスクが複数本返したときの何本目か（省略すると kie.ai の既定）。
+    """
+    params: dict[str, str] = {"taskId": task_id}
+    if index is not None:
+        params["index"] = str(index)
+    last = ""
+    for attempt in range(1, attempts + 1):
+        try:
+            data = await _request("GET", VEO_1080P_URL, params=params)
+        except KieRateLimited as exc:
+            last = str(exc)
+        except KieError as exc:
+            if exc.status_code not in P1080_NOT_READY:
+                raise
+            last = str(exc)
+        else:
+            url = _first_url(data)
+            if url:
+                return url
+            last = f"kie.ai が 1080P の URL を返しませんでした: {str(data)[:200]}"
+        if attempt < attempts:
+            log.info(
+                "kie: 1080p for %s not ready yet (%d/%d); retrying in %.0fs",
+                task_id, attempt, attempts, interval,
+            )
+            if on_wait is not None:
+                await on_wait(attempt, attempts)
+            await asyncio.sleep(interval)
+    raise KieError(
+        f"kie.ai のタスク {task_id} の 1080P 版が用意されませんでした: {last}"
+    )
 
 
 # --------------------------------------------------------------------------
@@ -895,8 +1067,13 @@ def task_input(
     複数ファイルの論理入力（:data:`app.workflows.MULTI_INPUT_FIELDS`、Seedance の
     ``reference_images`` など）は ``uploads`` から **URL のリスト**で届くので、
     そのまま配列として入る（:attr:`~app.workflows.KieTask.list_keys` は「別々の
-    論理名を 1 つの配列に並べる」ための宣言で、こちらとは別の機構）。空のリストは
-    「指定なし」なのでキーごと落ちる。
+    論理名を 1 つの配列に並べる」ための宣言で、こちらとは別の機構）。両方が同じ
+    キーに向いているとき（Veo の参照画像は開始フレームと同じ ``imageUrls``）は
+    リストを**そのまま並べに継ぐ**。空のリストは「指定なし」なのでキーごと落ちる。
+
+    :attr:`~app.workflows.KieTask.reference_constants` は「**参照素材が入って
+    いるときだけ**足す固定値」で、Veo の ``generationType``
+    （``REFERENCE_2_VIDEO``）のように枚数からは決められない切り替えに使う。
 
     ショット割りの ``multi_prompt`` と Elements の ``kling_elements``（Kling）は
     **辞書の配列**で、どちらも組み立て済みの値がそのまま入る
@@ -912,7 +1089,11 @@ def task_input(
         if value is None or value == "" or value == []:
             continue
         if key in task.list_keys:
-            payload.setdefault(key, []).append(value)
+            slot = payload.setdefault(key, [])
+            if isinstance(value, list):
+                slot.extend(value)
+            else:
+                slot.append(value)
         elif key in task.bool_keys:
             payload[key] = _as_bool(value)
         elif key in task.int_keys:
@@ -924,6 +1105,12 @@ def task_input(
                 payload[key] = number
         else:
             payload[key] = value
+    # 参照素材が入っているときだけの固定値（Veo の generationType）。枚数からは
+    # 決められない切り替えなので、マニフェストの宣言をここで上書きとして足す。
+    if task.reference_constants and any(
+        values.get(name) for name in MULTI_INPUT_FIELDS
+    ):
+        payload.update(task.reference_constants)
     return payload
 
 

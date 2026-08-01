@@ -461,6 +461,28 @@ export default function App() {
     }
   }
 
+  /**
+   * Veo の追加操作（SPEC §5.2）: どちらも新しいジョブになるので、続き生成と
+   * まったく同じ扱い（作ったジョブに切り替えて履歴を取り直す）。
+   */
+  const runFollowup = async (start: () => Promise<Job>) => {
+    setDetailBusy(true)
+    setDetailError(null)
+    try {
+      const next = await start()
+      setActiveJob(next)
+      setDetailJob(null)
+      await loadJobs()
+    } catch (error) {
+      const message =
+        error instanceof ApiError ? formatDetail(error.detail) : String(error)
+      setDetailError(message)
+      pushError(error)
+    } finally {
+      setDetailBusy(false)
+    }
+  }
+
   const rerun = async (job: Job) => {
     setDetailBusy(true)
     setDetailError(null)
@@ -627,6 +649,10 @@ export default function App() {
                 onRerun={(job) => void rerun(job)}
                 onRestoreParams={restoreParams}
                 onContinue={(job) => void continueFrom(job)}
+                onExtend={(job, prompt) =>
+                  void runFollowup(() => api.extendVeoJob(job.id, prompt))
+                }
+                onUpscale={(job) => void runFollowup(() => api.upscaleVeoJob(job.id))}
                 onDelete={(job) => void remove(job)}
                 onOpenDetail={(job) => openDetail(job)}
                 onToggleNsfw={(job, nsfw) => void toggleNsfw(job, nsfw)}

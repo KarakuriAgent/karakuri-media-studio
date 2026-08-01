@@ -395,6 +395,49 @@ describe('マルチモーダル参照', () => {
     ).toContain('3 件までです')
   })
 
+  it('参照素材のときだけ固定される設定を送る前に断る（Veo は 8 秒固定）', () => {
+    // Veo 3.1 Fast の素材参照生成: 参照画像 3 枚まで・尺は 8 秒しか作れない
+    const veoRef = workflow({
+      id: 'veo3_1_fast',
+      accepts_start_image: true,
+      supports: ['prompt', 'image', 'end_image', 'reference_images'],
+      multi_inputs: { reference_images: 3 },
+      reference_selects: { duration: '8' },
+      selects: [
+        {
+          name: 'duration',
+          label: '尺（秒）',
+          choices: ['4', '6', '8'],
+          default: '8',
+          auto: false,
+          hint: '',
+        },
+      ],
+      backend: 'kie',
+    })
+    const form: FormState = {
+      ...initialForm,
+      mode: 'i2v',
+      referenceImages: ['/library/image/a.png'],
+    }
+    // 未指定と 8 秒はどちらも通る（既定がそのまま固定値）
+    expect(validateForm(form, null, null, veoRef)).toEqual({})
+    expect(
+      validateForm({ ...form, selects: { duration: '8' } }, null, null, veoRef),
+    ).toEqual({})
+
+    const short = { ...form, selects: { duration: '4' } }
+    expect(validateForm(short, null, null, veoRef).references).toContain(
+      '尺（秒）は 8 固定です',
+    )
+    // 参照素材を使っていなければ 4 秒でも通る
+    expect(
+      validateForm(
+        { ...short, referenceImages: [] }, null, null, veoRef,
+      ),
+    ).toEqual({})
+  })
+
   it('過去ジョブの params から参照素材を復元する', () => {
     const { patch } = formStateFromParams(
       {

@@ -333,6 +333,7 @@ def _workflow_detail(raw: dict[str, Any]) -> str | None:
         reference_materials(raw),
         source_image=_text(raw.get("source_image")),
         end_image=_text(raw.get("end_image")),
+        selects=raw.get("selects"),
     )
     if references:
         return references

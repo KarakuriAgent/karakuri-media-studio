@@ -89,9 +89,14 @@ class FakeKie:
         # （`/api/v1/generate/record-info`）ので、record を先に見分ける。
         if "recordInfo" in url or "record-info" in url:
             return "record"
+        # 生成済みタスクへの追加操作（issue #26）。延長は新しいタスクを作るので
+        # create と同じ扱い、1080P 取得はタスクを作らないので独立した種別。
+        if "get-1080p-video" in url:
+            return "veo_1080p"
         if (
             "createTask" in url
             or url.endswith("/veo/generate")
+            or url.endswith("/veo/extend")
             or url.endswith("/api/v1/generate")
         ):
             return "create"
@@ -970,7 +975,12 @@ def test_veo_is_offered_as_a_video_workflow(client, monkeypatch):
     veo = [wf for wf in body["video_workflows"] if wf["id"] == VEO_FAST.id][0]
     # 画像は必須ではないが受け取れる（フォームは supports を見て欄を出す）
     assert veo["requires"] == []
-    assert set(veo["supports"]) == {"prompt", "image", "end_image"}
+    # Fast は素材参照生成（REFERENCE_2_VIDEO）も受け取る
+    assert set(veo["supports"]) == {
+        "prompt", "image", "end_image", "reference_images",
+    }
+    assert veo["multi_inputs"] == {"reference_images": 3}
+    assert veo["reference_selects"] == {"duration": "8"}
     assert veo["accepts_start_image"] is True
     assert [select["name"] for select in veo["selects"]] == [
         "aspect_ratio",
@@ -1009,6 +1019,341 @@ def test_the_agent_prompt_lists_the_guide_once_per_available_model(monkeypatch):
     section = video_prompt_guides_section()
     # Fast と Quality は同じガイドなので 1 回だけ載る
     assert section.count("VIDEO PROMPT SPEC — Google Veo 3.1") == 1
+
+
+# --------------------------------------------------------------------------
+# Veo の素材参照生成（REFERENCE_2_VIDEO、issue #26）
+# --------------------------------------------------------------------------
+
+def _veo_job(client, fake_kie, monkeypatch, **overrides):
+    """Veo の動画ジョブを 1 本走らせて、終わったジョブを返す。"""
+    async def fake_last_frame(video, dest):
+        dest.write_bytes(b"png")
+        return dest
+
+    monkeypatch.setattr(jobs, "extract_last_frame", fake_last_frame)
+    fake_kie.answer("create", FakeResponse(envelope({"taskId": "veo-1"})))
+    fake_kie.answer(
+        "record", veo_record(1, ("https://cdn.kie.ai/veo.mp4",), creditsConsumed=60)
+    )
+    payload = {
+        "mode": "i2v",
+        "video_workflow": VEO_FAST.id,
+        "video_prompt": "A medium shot of a woman on a rooftop at dusk.",
+    }
+    payload.update(overrides)
+    created = client.post("/api/jobs", json=payload)
+    assert created.status_code == 201, created.text
+    return wait_for(client, created.json()["id"])
+
+
+def test_veo_reference_images_switch_the_generation_type(
+    client, fake_kie, job_env, monkeypatch
+):
+    """参照画像は開始フレームと同じ ``imageUrls`` に載るが、種別が変わる。"""
+    fake_kie.answer(
+        "upload",
+        FakeResponse(envelope({"fileUrl": "https://files.kie.ai/ref0.png"})),
+        FakeResponse(envelope({"fileUrl": "https://files.kie.ai/ref1.png"})),
+    )
+    job = _veo_job(
+        client, fake_kie, monkeypatch,
+        reference_images=_reference_assets(job_env),
+    )
+    assert job["status"] == "done", job["error"]
+
+    task_input = job["workflow_json"]["video"]["request"]["input"]
+    assert task_input["imageUrls"] == [
+        "https://files.kie.ai/ref0.png",
+        "https://files.kie.ai/ref1.png",
+    ]
+    # 枚数だけでは flf2v と区別が付かないので、宣言した固定値で切り替える
+    assert task_input["generationType"] == "REFERENCE_2_VIDEO"
+    assert fake_kie.sent("create")[0]["json"]["generationType"] == "REFERENCE_2_VIDEO"
+
+
+def test_veo_without_references_keeps_the_usual_generation_type(
+    client, fake_kie, job_env, monkeypatch
+):
+    job = _veo_job(client, fake_kie, monkeypatch)
+    assert job["status"] == "done", job["error"]
+    assert "generationType" not in job["workflow_json"]["video"]["request"]["input"]
+    assert fake_kie.sent("create")[0]["json"]["generationType"] == "TEXT_2_VIDEO"
+
+
+def test_veo_reference_images_are_exclusive_with_a_start_frame(client, job_env):
+    references = _reference_assets(job_env, 1)
+    (job_env.parent / "assets" / "image" / "start.png").write_bytes(b"png")
+
+    answer = client.post(
+        "/api/jobs",
+        json={
+            "mode": "i2v",
+            "video_workflow": VEO_FAST.id,
+            "video_prompt": "She turns toward the window.",
+            "source_image": "/assets/image/start.png",
+            "reference_images": references,
+        },
+    )
+    assert answer.status_code == 422
+    assert "同時に指定できません" in answer.text
+
+
+def test_veo_reference_mode_is_fixed_to_eight_seconds(client, job_env):
+    """参照素材のときの尺は API 側で 8 秒固定なので、他を選んだら 422。"""
+    references = _reference_assets(job_env, 1)
+    body = {
+        "mode": "i2v",
+        "video_workflow": VEO_FAST.id,
+        "video_prompt": "She turns toward the window.",
+        "reference_images": references,
+        "selects": {"duration": "4"},
+    }
+    answer = client.post("/api/jobs", json=body)
+    assert answer.status_code == 422
+    assert "'8' 固定" in answer.text
+
+    # 8 秒を明示指定するのはもちろん通る（未指定も既定が 8 なので通る）
+    body["selects"] = {"duration": "8"}
+    assert client.post("/api/jobs", json=body).status_code == 201
+
+
+def test_veo_quality_does_not_take_reference_images(client, job_env):
+    """素材参照生成は Fast / Lite のみ（Quality は宣言しない）。"""
+    answer = client.post(
+        "/api/jobs",
+        json={
+            "mode": "i2v",
+            "video_workflow": VEO_QUALITY.id,
+            "video_prompt": "She turns toward the window.",
+            "reference_images": _reference_assets(job_env, 1),
+        },
+    )
+    assert answer.status_code == 422
+    assert "受け取れません" in answer.text
+
+
+def test_too_many_veo_reference_images_are_rejected(client, job_env):
+    answer = client.post(
+        "/api/jobs",
+        json={
+            "mode": "i2v",
+            "video_workflow": VEO_FAST.id,
+            "video_prompt": "She turns toward the window.",
+            "reference_images": _reference_assets(job_env, 4),
+        },
+    )
+    assert answer.status_code == 422
+    assert "3 件までです" in answer.text
+
+
+# --------------------------------------------------------------------------
+# Veo の追加操作: 延長と 1080P 取得（issue #26）
+# --------------------------------------------------------------------------
+
+def test_the_extend_api_has_its_own_endpoint_and_model_names():
+    api = kie.task_api("veo_extend")
+    assert api.create_url.endswith("/api/v1/veo/extend")
+    # 照会は生成と同じ record-info に乗る
+    assert api.record_url == kie.VEO.record_url
+    # model の書式は生成と違う（veo3_fast -> fast）
+    assert kie.extend_model("veo3_fast") == "fast"
+    assert kie.extend_model("veo3") == "quality"
+    assert kie.extend_model("veo3_lite") == "lite"
+    with pytest.raises(kie.KieError):
+        kie.extend_model("kling-3.0/video")
+
+
+def test_the_extend_body_is_flat_and_carries_the_source_task():
+    body = kie.VEO_EXTEND.create_body(
+        "fast", kie.extend_input("veo-1", "She keeps walking.", seeds=12345)
+    )
+    assert body == {
+        "model": "fast",
+        "taskId": "veo-1",
+        "prompt": "She keeps walking.",
+        "seeds": 12345,
+    }
+    # 生成と違って generationType は付けない（画像を渡さないので意味がない）
+    assert "generationType" not in body
+    # 任意のものは指定したときだけ載る
+    assert "seeds" not in kie.extend_input("veo-1", "x")
+    assert kie.extend_input("veo-1", "x", watermark=" mine ")["watermark"] == "mine"
+
+
+def test_an_extended_task_returns_the_whole_video():
+    """延長の成果物は「元動画 + 7 秒」の通し（``fullResultUrls``）。"""
+    state = kie.VEO_EXTEND.read_state({
+        "successFlag": 1,
+        "response": {
+            "resultUrls": ["https://cdn.kie.ai/tail.mp4"],
+            "fullResultUrls": ["https://cdn.kie.ai/full.mp4"],
+        },
+    })
+    assert state.result_urls == ("https://cdn.kie.ai/full.mp4",)
+    # 通しが無ければ従来どおり resultUrls を使う
+    state = kie.VEO_EXTEND.read_state({
+        "successFlag": 1,
+        "response": {"resultUrls": ["https://cdn.kie.ai/tail.mp4"]},
+    })
+    assert state.result_urls == ("https://cdn.kie.ai/tail.mp4",)
+
+
+def test_1080p_is_retried_until_it_is_ready(fake_kie):
+    """1080P は生成の 1〜3 分後にできるので、未準備は失敗にしない。"""
+    waited: list[tuple[int, int]] = []
+
+    async def on_wait(attempt, attempts):
+        waited.append((attempt, attempts))
+
+    fake_kie.answer(
+        "veo_1080p",
+        FakeResponse(status=422, text="not ready"),
+        FakeResponse(envelope({"code": 404}), status=404),
+        FakeResponse(envelope({"resultUrls": ["https://cdn.kie.ai/1080.mp4"]})),
+    )
+
+    url = asyncio.run(
+        kie.get_1080p_video("veo-1", index=0, interval=0.0, on_wait=on_wait)
+    )
+
+    assert url == "https://cdn.kie.ai/1080.mp4"
+    assert waited == [(1, kie.P1080_ATTEMPTS), (2, kie.P1080_ATTEMPTS)]
+    assert fake_kie.sent("veo_1080p")[0]["params"] == {"taskId": "veo-1", "index": "0"}
+
+
+def test_1080p_gives_up_after_the_last_attempt(fake_kie):
+    fake_kie.answer("veo_1080p", FakeResponse(status=422, text="not ready"))
+    with pytest.raises(kie.KieError) as caught:
+        asyncio.run(kie.get_1080p_video("veo-1", interval=0.0, attempts=3))
+    assert "1080P 版が用意されませんでした" in str(caught.value)
+    assert len(fake_kie.sent("veo_1080p")) == 3
+
+
+def test_a_failure_that_will_not_change_is_not_retried(fake_kie):
+    """クレジット不足のような「待っても変わらない」失敗はそのまま投げる。"""
+    fake_kie.answer("veo_1080p", FakeResponse(status=402, text="no credits"))
+    with pytest.raises(kie.KieError) as caught:
+        asyncio.run(kie.get_1080p_video("veo-1", interval=0.0))
+    assert "クレジットが不足" in str(caught.value)
+    assert len(fake_kie.sent("veo_1080p")) == 1
+
+
+def test_a_finished_veo_job_offers_both_follow_ups(client, fake_kie, job_env,
+                                                   monkeypatch):
+    job = _veo_job(client, fake_kie, monkeypatch)
+    assert job["status"] == "done", job["error"]
+    assert job["followups"] == ["veo_extend", "veo_1080p"]
+    # 一覧（workflow_json を返さない経路）でも同じ判定が出る
+    listed = [row for row in client.get("/api/jobs").json() if row["id"] == job["id"]]
+    assert listed[0]["followups"] == ["veo_extend", "veo_1080p"]
+
+
+def test_a_1080p_generation_is_not_offered_the_1080p_follow_up(
+    client, fake_kie, job_env, monkeypatch
+):
+    job = _veo_job(client, fake_kie, monkeypatch, selects={"resolution": "1080p"})
+    assert job["followups"] == ["veo_extend"]
+
+
+def test_a_comfyui_job_has_no_follow_ups(client, fake_kie, job_env, monkeypatch):
+    """kie のタスク ID が無いジョブには何も掛けられない。"""
+    from app.jobs import job_followups
+
+    assert job_followups("i2v", "done", {"video_workflow": VEO_FAST.id}, {}, "v.mp4") == []
+    assert job_followups(
+        "i2v", "failed", {"video_workflow": VEO_FAST.id},
+        {"video": {"backend": "kie", "task_id": "veo-1"}}, "v.mp4",
+    ) == []
+
+
+def test_extending_a_veo_job_runs_a_new_job(client, fake_kie, job_env, monkeypatch):
+    source = _veo_job(client, fake_kie, monkeypatch)
+    fake_kie.answer("create", FakeResponse(envelope({"taskId": "veo-2"})))
+    fake_kie.answer(
+        "record",
+        FakeResponse(envelope({
+            "successFlag": 1,
+            "response": {"fullResultUrls": ["https://cdn.kie.ai/full.mp4"]},
+            "creditsConsumed": 30,
+        })),
+    )
+
+    created = client.post(
+        f"/api/jobs/{source['id']}/veo/extend",
+        json={"prompt": "She keeps walking toward the edge."},
+    )
+    assert created.status_code == 201, created.text
+    job = wait_for(client, created.json()["id"])
+
+    assert job["status"] == "done", job["error"]
+    assert job["mode"] == "veo_extend"
+    assert job["params"]["continued_from"] == source["id"]
+    stage = job["workflow_json"]["video"]
+    assert stage["followup"] == "veo_extend"
+    assert stage["source_task_id"] == "veo-1"
+    assert stage["task_id"] == "veo-2"
+    # 延長 API は model の書式が違い、body は平ら
+    body = fake_kie.sent("create")[-1]["json"]
+    assert body["model"] == "fast"
+    assert body["taskId"] == "veo-1"
+    assert body["prompt"] == "She keeps walking toward the edge."
+    assert (job_env / job["id"] / "video.mp4").is_file()
+    assert job["credits_consumed"] == 30
+    # 延長した動画にはさらに延長も 1080P も掛けられる
+    assert job["followups"] == ["veo_extend", "veo_1080p"]
+
+
+def test_extending_needs_a_prompt(client, fake_kie, job_env, monkeypatch):
+    source = _veo_job(client, fake_kie, monkeypatch)
+    answer = client.post(f"/api/jobs/{source['id']}/veo/extend", json={"prompt": " "})
+    assert answer.status_code == 422
+    assert "video_prompt" in answer.text
+
+
+def test_fetching_1080p_runs_a_new_job(client, fake_kie, job_env, monkeypatch):
+    source = _veo_job(client, fake_kie, monkeypatch)
+    fake_kie.answer(
+        "veo_1080p",
+        FakeResponse(envelope({"resultUrls": ["https://cdn.kie.ai/1080.mp4"]})),
+    )
+
+    created = client.post(f"/api/jobs/{source['id']}/veo/1080p", json={})
+    assert created.status_code == 201, created.text
+    job = wait_for(client, created.json()["id"])
+
+    assert job["status"] == "done", job["error"]
+    assert job["mode"] == "veo_1080p"
+    stage = job["workflow_json"]["video"]
+    assert stage["followup"] == "veo_1080p"
+    assert stage["source_task_id"] == "veo-1"
+    # タスクは作らないので task_id は空のまま
+    assert stage["task_id"] is None
+    assert (job_env / job["id"] / "video.mp4").is_file()
+    # アップスケール済みの動画には追加操作を掛けられない（延長は API 側で不可）
+    assert job["followups"] == []
+
+
+def test_a_follow_up_on_a_job_that_cannot_take_one_is_rejected(client, job_env):
+    created = client.post(
+        "/api/jobs",
+        json={
+            "mode": "i2v",
+            "video_workflow": VEO_FAST.id,
+            "video_prompt": "She turns toward the window.",
+        },
+    )
+    # まだ走り終わっていない（成果物も task_id も無い）ジョブには掛けられない
+    answer = client.post(
+        f"/api/jobs/{created.json()['id']}/veo/extend", json={"prompt": "more"}
+    )
+    assert answer.status_code == 422
+    assert "追加操作" in answer.text
+
+
+def test_a_follow_up_on_an_unknown_job_is_404(client):
+    answer = client.post("/api/jobs/nope/veo/1080p", json={})
+    assert answer.status_code == 404
 
 
 # --------------------------------------------------------------------------

@@ -26,8 +26,24 @@ from .workflows import (
 #: ``audio`` is a stand-alone mode: it runs one audio graph and is never
 #: chained with the image / video stages (which is why every ``mode in (...)``
 #: test below simply does not list it).
-JobMode = Literal["full", "i2v", "image_only", "audio"]
+#:
+#: ``veo_extend`` / ``veo_1080p`` は**フォームから選ぶモードではない**（SPEC §2）:
+#: 生成済みの Veo ジョブに対して履歴から掛ける追加操作で、kie.ai に残っている
+#: 元タスクの ``taskId`` を使う。ジョブ 1 本として履歴・進捗・ライブラリに乗せる
+#: ためにモードとして持つが、生成フォームの選択肢にもエージェントの計画にも
+#: 出さない（:data:`FOLLOWUP_MODES`）。
+JobMode = Literal[
+    "full", "i2v", "image_only", "audio", "veo_extend", "veo_1080p"
+]
 JobStatus = Literal["queued", "prompting", "running", "done", "failed", "canceled"]
+
+#: 生成済みジョブへの追加操作のモード（`veo_extend` = +7 秒の延長 /
+#: `veo_1080p` = 1080P 版の取得）。どちらも新しく生成し直すのではなく、
+#: kie.ai 側に残っている元タスクに追加の仕事を頼む（SPEC §5.2 / issue #26）。
+FOLLOWUP_MODES: tuple[str, ...] = ("veo_extend", "veo_1080p")
+
+#: 追加操作を掛けられるモデルファミリー（今は Veo だけ）
+FOLLOWUP_FAMILY = "veo"
 
 #: ComfyUI の接続先プロファイル（SPEC §5）。設定には 3 つ分の接続情報を持ち、
 #: ``Settings.comfy_target`` が「今どれを使うか」を決める。生成フォームの
@@ -584,6 +600,10 @@ class Job(BaseModel):
     audio_output_url: str | None = None
     #: URLs of :attr:`extra_outputs`, in the same order
     extra_output_urls: list[str] = Field(default_factory=list)
+    #: このジョブの成果物に**追加で掛けられる kie.ai の操作**（SPEC §5.2）。
+    #: :data:`FOLLOWUP_MODES` の部分集合で、履歴の UI はここを見てボタンを
+    #: 出す（判定は :func:`app.jobs.job_followups`）。空 = 何もできない。
+    followups: list[str] = Field(default_factory=list)
 
 
 # --------------------------------------------------------------------------
@@ -995,6 +1015,7 @@ def reference_problem(
     *,
     source_image: str | None = None,
     end_image: str | None = None,
+    selects: Any = None,
 ) -> str | None:
     """マルチモーダル参照が使える組み合わせか（None == 問題なし、SPEC §3.1）。
 
@@ -1007,6 +1028,11 @@ def reference_problem(
     件数の上限（:attr:`app.workflows.WorkflowSpec.multi_inputs`）と拡張子だけ
     ここで見る。サイズ・解像度・尺の細かい制約は外部 API の判断に任せ、失敗
     メッセージをそのまま見せる。
+
+    参照モードでしか作れない設定がある場合
+    （:attr:`~app.workflows.WorkflowSpec.reference_selects`、Veo の素材参照生成は
+    8 秒固定）は ``selects`` の明示指定だけを見て断る: 未指定ならその選択式の
+    既定がそのまま固定値と同じなので、黙って通してよい。
     """
     if not references:
         return None
@@ -1041,6 +1067,15 @@ def reference_problem(
                     f"{MULTI_INPUT_LABELS[name]}に使えない拡張子です: {path}"
                     f"（{', '.join(sorted(allowed))} のいずれか）"
                 )
+    chosen = selects if isinstance(selects, dict) else {}
+    for name, fixed in spec.reference_selects.items():
+        value = str(chosen.get(name) or "").strip()
+        if value and value != fixed:
+            label = (select.label if (select := spec.select(name)) else name)
+            return (
+                f"video workflow '{spec.id}' の参照素材モードでは{label}"
+                f"（`{name}`）は {fixed!r} 固定です（今は {value!r}）"
+            )
     if mode == "full":
         return (
             f"mode 'full' は画像ステージが作った静止画を開始フレームにするので、"
@@ -1058,6 +1093,34 @@ def reference_problem(
             f"video workflow '{spec.id}' では先頭フレーム"
             f"（{', '.join(f'`{name}`' for name in given)}）と参照素材"
             f"（{names}）は同時に指定できません（API 側で排他のモードです）"
+        )
+    return None
+
+
+def followup_problem(
+    mode: str, video_workflow: str | None, source_task_id: str | None
+) -> str | None:
+    """追加操作のジョブが成り立つか（None == 問題なし、SPEC §5.2 / issue #26）。
+
+    :data:`FOLLOWUP_MODES` のジョブは新しく生成するのではなく、**kie.ai 側に
+    残っている元タスク**に仕事を足す。だから必要なのは「元ジョブの ``taskId``」と
+    「そのモデルが追加操作を持っていること」の 2 つだけで、プロンプト・入力
+    ファイル・選択式はどれも要らない（:func:`missing_job_fields` も素通しする）。
+    """
+    if mode not in FOLLOWUP_MODES:
+        return None
+    if not (source_task_id or "").strip():
+        return (
+            f"mode '{mode}' には元ジョブの kie.ai タスク ID が要ります"
+            "（外部 API に投入した記録が残っているジョブからだけ実行できます）"
+        )
+    try:
+        spec = get_video_spec(video_workflow)
+    except WorkflowSpecError as exc:
+        return str(exc)
+    if spec.backend != "kie" or spec.family != FOLLOWUP_FAMILY:
+        return (
+            f"video workflow '{spec.id}' に mode '{mode}' の追加操作はありません"
         )
     return None
 
@@ -1403,6 +1466,7 @@ class JobCreate(BaseModel):
                 reference_materials(self),
                 source_image=self.source_image,
                 end_image=self.end_image,
+                selects=self.selects,
             )
             or multi_shot_problem(
                 self.mode, self.video_workflow, multi_shots_of(self)
@@ -1468,6 +1532,28 @@ class JobContinue(BaseModel):
     model_overrides: dict[str, str] | None = None
     chat_session_id: str | None = None
     user_input: str | None = None
+
+
+class VeoExtend(BaseModel):
+    """``POST /api/jobs/{id}/veo/extend`` の body（SPEC §5.2 / issue #26）。
+
+    元動画の**続き 7 秒**をどう作るかの指示だけを取る。元タスクの ``taskId`` は
+    ジョブの ``workflow_json`` から引くので送らない。
+    """
+
+    #: 続きの指示（Veo の通常のプロンプトと同じ書き方）
+    prompt: str = ""
+    #: 再現性のためのシード（kie.ai の仕様どおり 10000〜99999）
+    seeds: int | None = Field(default=None, ge=10000, le=99999)
+    #: 焼き込む透かしのテキスト（省略 = 入れない）
+    watermark: str | None = None
+
+
+class VeoUpscale(BaseModel):
+    """``POST /api/jobs/{id}/veo/1080p`` の body（SPEC §5.2 / issue #26）。"""
+
+    #: 1 タスクが複数本返したときの何本目か（省略 = kie.ai の既定）
+    index: int | None = Field(default=None, ge=0)
 
 
 class NsfwUpdate(BaseModel):
@@ -1982,6 +2068,10 @@ class WorkflowOption(BaseModel):
     #: 複数ファイルで渡せる参照入力（論理名 -> 件数の上限、SPEC §3.1）。宣言の
     #: ないワークフローでは空で、フォームは参照欄そのものを出さない。
     multi_inputs: dict[str, int] = Field(default_factory=dict)
+    #: 参照素材を使うときに固定される選択式（名前 -> 値、SPEC §3.1）。Veo の
+    #: 素材参照生成は 8 秒固定なので ``{"duration": "8"}``。フォームは参照素材が
+    #: 選ばれている間だけこの値を要求する（バックエンドの 422 と同じ理由）。
+    reference_selects: dict[str, str] = Field(default_factory=dict)
     #: ショット割りの宣言（対応していないワークフローでは None、SPEC §3.1）
     multi_shot: MultiShotOption | None = None
     #: Elements の宣言（対応していないワークフローでは None、SPEC §3.1）

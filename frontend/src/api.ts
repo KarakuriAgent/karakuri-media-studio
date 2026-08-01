@@ -293,6 +293,14 @@ export const api = {
     json<Job>('POST', `/api/jobs/${id}/rerun`, { randomize_seed: true }),
   continueJob: (id: string, body: Record<string, unknown> = {}) =>
     json<Job>('POST', `/api/jobs/${id}/continue`, body),
+  /**
+   * Veo の動画に +7 秒を継ぎ足す（SPEC §5.2）。続き生成（continueJob）と違い、
+   * 元動画そのものを延長した 1 本が返る。
+   */
+  extendVeoJob: (id: string, prompt: string) =>
+    json<Job>('POST', `/api/jobs/${id}/veo/extend`, { prompt }),
+  /** 720p で作った Veo の動画の 1080P 版を取りに行く（5 credits）。 */
+  upscaleVeoJob: (id: string) => json<Job>('POST', `/api/jobs/${id}/veo/1080p`, {}),
   deleteJob: (id: string) => json<void>('DELETE', `/api/jobs/${id}`),
   /** NSFW フラグの手動トグル（manual として保存される）。 */
   setJobNsfw: (id: string, nsfw: boolean) =>

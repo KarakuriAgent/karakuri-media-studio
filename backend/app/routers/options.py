@@ -48,6 +48,7 @@ def _workflow_option(spec: WorkflowSpec) -> WorkflowOption:
         notes=spec.notes,
         requires=list(spec.requires),
         multi_inputs=dict(spec.multi_inputs),
+        reference_selects=dict(spec.reference_selects),
         multi_shot=(
             MultiShotOption(
                 max_shots=spec.multi_shot.max_shots,

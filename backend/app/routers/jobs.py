@@ -3,7 +3,15 @@
 from fastapi import APIRouter, HTTPException, Query
 
 from .. import jobs as service
-from ..models import Job, JobContinue, JobCreate, JobRerun, NsfwUpdate
+from ..models import (
+    Job,
+    JobContinue,
+    JobCreate,
+    JobRerun,
+    NsfwUpdate,
+    VeoExtend,
+    VeoUpscale,
+)
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
 
@@ -68,6 +76,32 @@ async def continue_job(job_id: str, payload: JobContinue | None = None) -> Job:
     """Start a mode-B job from this job's last frame (SPEC §2)."""
     try:
         return await service.continue_job(job_id, payload or JobContinue())
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="job not found") from exc
+    except service.JobValidationError as exc:
+        raise _validation_error(exc) from exc
+
+
+@router.post("/{job_id}/veo/extend", response_model=Job, status_code=201)
+async def veo_extend(job_id: str, payload: VeoExtend) -> Job:
+    """Veo の動画に **+7 秒**を継ぎ足すジョブを作る（SPEC §5.2 / issue #26）。
+
+    ラストフレームからの続き生成（``/continue``）と違い、元動画そのものを
+    延長した 1 本が返る。掛けられるジョブかどうかは ``Job.followups`` に出る。
+    """
+    try:
+        return await service.veo_extend_job(job_id, payload)
+    except LookupError as exc:
+        raise HTTPException(status_code=404, detail="job not found") from exc
+    except service.JobValidationError as exc:
+        raise _validation_error(exc) from exc
+
+
+@router.post("/{job_id}/veo/1080p", response_model=Job, status_code=201)
+async def veo_1080p(job_id: str, payload: VeoUpscale | None = None) -> Job:
+    """720p で生成した Veo の動画の **1080P 版**を取りに行く（5 credits）。"""
+    try:
+        return await service.veo_1080p_job(job_id, payload or VeoUpscale())
     except LookupError as exc:
         raise HTTPException(status_code=404, detail="job not found") from exc
     except service.JobValidationError as exc:
