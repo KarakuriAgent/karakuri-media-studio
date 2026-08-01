@@ -15,7 +15,7 @@ kie.ai の性質と、それがこのモジュールの形を決めている理�
   指定する統一 API）と、Veo / Suno の旧専用系（モデル別のパス・別のステータス語彙）。
   ポーリングループ自体は同じなので、**エンドポイントとステータスの読み方だけを
   :class:`TaskApi` で差し替えられる**ようにしてある（Veo は
-  :class:`VeoTaskApi`、Suno は子 issue #20 で足す想定）
+  :class:`VeoTaskApi`、Suno は :class:`SunoTaskApi`）
 - **``resultJson`` は JSON 文字列**なので二重パースが要る（:func:`parse_result_json`）
 - **成果物は 14 日で消える**（モデルによっては 24 時間）。完了を検知したら
   その場でダウンロードして自前ストレージに落とす
@@ -61,6 +61,12 @@ UPLOAD_PATH = "images/karakuri-media-studio"
 
 #: API キーの環境変数名（設定が空のときのフォールバック）
 API_KEY_ENV = "KIE_API_KEY"
+
+#: Suno の ``callBackUrl`` に入れるダミー（:class:`SunoTaskApi`）。スキーマ上は
+#: 必須だが、ローカル運用では webhook を受けられないので届かない URL を入れて
+#: ポーリングで結果を拾う。kie.ai はコールバックの配送失敗でタスクを失敗には
+#: しないが、もしこの運用が通らなくなったら SPEC §5.2 の注記を見直すこと。
+CALLBACK_URL = "https://localhost/unused-callback"
 
 REQUEST_TIMEOUT = 60.0
 #: 認証確認（残クレジット照会）のタイムアウト。設定保存のたびに待たされないよう短め。
@@ -394,13 +400,142 @@ class VeoTaskApi(TaskApi):
         return TaskState(phase, "generating" if flag == 0 else "waiting", credits=credits)
 
 
+class SunoTaskApi(TaskApi):
+    """Suno の旧専用系（``/api/v1/generate*``、SPEC §5.2 / issue #20）。
+
+    音声の外部ワークフローで唯一の系統。Market 系との違いは 4 つ:
+
+    - **ボディが平ら**（Veo と同じ）: ``model`` / ``customMode`` /
+      ``instrumental`` / ``prompt`` / ``style`` / ``title`` … をそのまま並べる。
+      ``model`` はモデル名ではなく**バージョン**（``V5`` / ``V5_5`` /
+      ``V4_5PLUS``）なので、マニフェストの選択式フィールドで上書きできる
+    - **``callBackUrl`` がスキーマ上必須**。ローカル運用では webhook を受けられ
+      ないので :data:`CALLBACK_URL` のダミーを必ず入れ、結果はポーリングで拾う
+      （kie.ai 側はコールバックの失敗をタスクの失敗にはしない）
+    - **``instrumental`` と ``title`` は他の入力から決まる**: 歌詞
+      （``prompt``）が空ならインスト、``title`` は customMode で必須なので
+      歌詞かスタイルの頭から作る（フォームに項目を増やさない、:meth:`_title`）
+    - **状態語が独自**: ``PENDING → TEXT_SUCCESS → FIRST_SUCCESS → SUCCESS``。
+      成果物は ``response.sunoData[]`` に**2 曲**入る（1 リクエストで 2
+      バリエーションが標準なので、両方とも回収して保存する）
+    """
+
+    name = "suno"
+    create_url = f"{API_BASE}/api/v1/generate"
+    record_url = f"{API_BASE}/api/v1/generate/record-info"
+
+    #: 状態語 -> :data:`TaskPhase`。中間状態（歌詞ができた / 1 曲目ができた）は
+    #: 「まだ待つ」だが、進捗として UI に出したいので running で区別する。
+    STATES: dict[str, TaskPhase] = {
+        "PENDING": "waiting",
+        "TEXT_SUCCESS": "running",
+        "FIRST_SUCCESS": "running",
+        "SUCCESS": "success",
+        "CREATE_TASK_FAILED": "fail",
+        "GENERATE_AUDIO_FAILED": "fail",
+        "CALLBACK_EXCEPTION": "fail",
+        "SENSITIVE_WORD_ERROR": "fail",
+    }
+    #: 上の表に無い状態語でも、これで終わるものは失敗として扱う（kie.ai は
+    #: モデルの追加とともに ``*_FAILED`` / ``*_ERROR`` を増やしてくる）
+    FAIL_SUFFIXES = ("_FAILED", "_ERROR")
+    #: ``sunoData[]`` の 1 曲から音声 URL を拾うキー（前から順に見る）
+    AUDIO_KEYS = ("audioUrl", "audio_url", "sourceAudioUrl", "source_audio_url")
+    #: ``vocalGender`` に送ってよい値（それ以外＝「おまかせ」はキーごと落とす）
+    VOCAL_GENDERS = ("m", "f")
+    #: ``title`` の上限（customMode で必須。超えると 422）
+    MAX_TITLE = 80
+
+    def create_body(self, model: str, task_input: dict[str, Any]) -> dict[str, Any]:
+        body: dict[str, Any] = {"model": model, **task_input}
+        # 歌詞が無ければインスト（``prompt`` は歌詞本文なので空なら送らない）
+        body.setdefault("instrumental", not str(body.get("prompt") or "").strip())
+        # customMode=true では title が必須。専用の入力欄は作らず、歌詞 →
+        # スタイルの順に頭を借りる。
+        if not str(body.get("title") or "").strip():
+            body["title"] = self._title(body)
+        if body.get("vocalGender") not in self.VOCAL_GENDERS:
+            body.pop("vocalGender", None)
+        body.setdefault("callBackUrl", CALLBACK_URL)
+        return body
+
+    def _title(self, body: dict[str, Any]) -> str:
+        """曲名（歌詞の最初の 1 行 → スタイルの最初の要素 → ``Untitled``）。
+
+        歌詞側は ``[Verse 1]`` のような構造タグの行を飛ばして最初の歌い出しを
+        使う。どちらも空（インストでスタイルも空）のときだけ既定値になる。
+        """
+        for line in str(body.get("prompt") or "").splitlines():
+            text = line.strip()
+            if text and not (text.startswith("[") and text.endswith("]")):
+                return text[: self.MAX_TITLE]
+        style = str(body.get("style") or "")
+        head = style.replace("\n", ",").split(",")[0].strip()
+        return head[: self.MAX_TITLE] or "Untitled"
+
+    def _phase(self, status: str) -> TaskPhase:
+        phase = self.STATES.get(status)
+        if phase is not None:
+            return phase
+        return "fail" if status.endswith(self.FAIL_SUFFIXES) else "waiting"
+
+    def _audio_urls(self, response: dict[str, Any]) -> tuple[str, ...]:
+        """``response.sunoData[]`` の音声 URL（**返ってきた全曲**）。"""
+        tracks = response.get("sunoData") or response.get("suno_data")
+        if not isinstance(tracks, (list, tuple)):
+            return ()
+        urls: list[str] = []
+        for track in tracks:
+            if not isinstance(track, dict):
+                continue
+            for key in self.AUDIO_KEYS:
+                url = track.get(key)
+                if isinstance(url, str) and url.startswith("http"):
+                    urls.append(url)
+                    break
+        return tuple(urls)
+
+    def read_state(self, data: Any) -> TaskState:
+        if not isinstance(data, dict):
+            raise KieError(f"kie.ai の record-info が想定と違います: {str(data)[:200]}")
+        status = str(data.get("status") or "").strip().upper()
+        phase = self._phase(status)
+        credits = _credits(data)
+        if phase == "success":
+            urls = self._audio_urls(parse_result_json(data.get("response")))
+            if not urls:
+                raise KieError("kie.ai がタスクの成果物 URL を返しませんでした")
+            return TaskState("success", status, urls, credits)
+        if phase == "fail":
+            reason = str(data.get("errorMessage") or data.get("msg") or "").strip()
+            code = data.get("errorCode")
+            hint = ERROR_HINTS.get(int(code)) if str(code).isdigit() else None
+            return TaskState(
+                "fail",
+                status,
+                error=" ".join(
+                    part
+                    for part in (reason or status, f"（{hint}）" if hint else "")
+                    if part
+                )
+                or "kie.ai がタスクの失敗を報告しました",
+            )
+        return TaskState(phase, status or "PENDING", credits=credits)
+
+
 #: 既定の系統（Kling / Seedance などの Market 系モデル）
 MARKET = TaskApi()
 #: Veo 3.1（旧専用系）
 VEO = VeoTaskApi()
+#: Suno V5 系（旧専用系）
+SUNO = SunoTaskApi()
 
-#: 系統名 -> 実装。``suno`` は子 issue #20 でここに加わる。
-TASK_APIS: dict[str, TaskApi] = {MARKET.name: MARKET, VEO.name: VEO}
+#: 系統名 -> 実装
+TASK_APIS: dict[str, TaskApi] = {
+    MARKET.name: MARKET,
+    VEO.name: VEO,
+    SUNO.name: SUNO,
+}
 
 
 def task_api(name: str) -> TaskApi:
@@ -656,6 +791,7 @@ def task_values(
         "lyrics": params.lyrics,
         "bpm": params.bpm,
         "language": params.language,
+        "negative_tags": params.negative_tags,
     }
     for name, select in spec.selects.items():
         chosen = params.selects.get(name) or select.fallback

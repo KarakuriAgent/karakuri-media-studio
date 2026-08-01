@@ -446,6 +446,10 @@ class GenerationParams(BaseModel):
     bpm: int = 120
     keyscale: str = "C major"
     language: str = "en"
+    #: Suno: styles to keep out of the track (`negativeTags`). Nothing to do
+    #: with the image / video `negative_prompt` — this one is a comma separated
+    #: list of *sounds*, and only Suno reads it.
+    negative_tags: str = ""
     #: Stable Audio: which built-in prompt template to use
     audio_category: str = AUDIO_CATEGORIES[0]
     #: Stable Audio: expand `audio_prompt` with the graph's own local LLM first
@@ -502,6 +506,11 @@ class Job(BaseModel):
     audio_path: str | None = None
     #: the track a mode 'audio' job produced (an output)
     audio_output_path: str | None = None
+    #: outputs that do not fit the columns above, in the order the backend
+    #: produced them.  One generation can return several takes (Suno answers
+    #: every request with **two songs**); the first one goes in the column for
+    #: its stage and the rest live here (SPEC §6).
+    extra_outputs: list[str] = Field(default_factory=list)
     error: str | None = None
     #: 外部バックエンド（kie.ai）のジョブが消費したクレジット。ComfyUI のジョブと
     #: 失敗したジョブ（kie は自動返金）では None のまま（SPEC §5.2）。
@@ -516,6 +525,8 @@ class Job(BaseModel):
     video_url: str | None = None
     last_frame_url: str | None = None
     audio_output_url: str | None = None
+    #: URLs of :attr:`extra_outputs`, in the same order
+    extra_output_urls: list[str] = Field(default_factory=list)
 
 
 # --------------------------------------------------------------------------
@@ -593,20 +604,29 @@ def select_problem(
     mode: str,
     video_workflow: str | None,
     selects: Any,
+    *,
+    audio_workflow: str | None = None,
 ) -> str | None:
     """選択式フィールドの指定が使えるか（None == 問題なし、SPEC §3.1）。
 
-    宣言のない名前と、選択肢に無い値を拒否する。動画ステージを走らせないモード
-    では何も見ない（選択式は今のところ動画ワークフローだけの仕組み）。
+    宣言のない名前と、選択肢に無い値を拒否する。見るのは**そのモードで実際に
+    走るワークフロー**の宣言で、``audio`` なら音声ワークフロー（Suno の
+    `model` / `vocal_gender`）、それ以外は動画ワークフロー。画像だけのモードは
+    選択式を持つワークフローが無いので指定できない。
     """
     if not selects:
         return None
     if not isinstance(selects, dict):
         return "selects は {\"<名前>\": \"<選んだ値>\"} 形式のオブジェクトで指定してください"
-    if mode not in ("full", "i2v"):
+    if mode not in ("full", "i2v", "audio"):
         return f"mode '{mode}' は動画ステージを走らせないので selects は指定できません"
+    field = "audio_workflow" if mode == "audio" else "video_workflow"
     try:
-        spec = get_video_spec(video_workflow)
+        spec = (
+            get_audio_spec(audio_workflow)
+            if mode == "audio"
+            else get_video_spec(video_workflow)
+        )
     except WorkflowSpecError as exc:
         return str(exc)
     for name, value in selects.items():
@@ -614,7 +634,7 @@ def select_problem(
         if select is None:
             known = ", ".join(f"`{key}`" for key in spec.selects) or "なし"
             return (
-                f"video_workflow `{spec.id}` に選択項目 `{name}` はありません"
+                f"{field} `{spec.id}` に選択項目 `{name}` はありません"
                 f"（使えるのは {known}）"
             )
         if str(value) not in select.choices:
@@ -700,7 +720,9 @@ def audio_workflow_problem(
     ``keyscale`` / ``language`` / ``bpm`` are COMBO / INT widgets of
     ``TextEncodeAceStepAudio1.5``: ComfyUI rejects the whole prompt when a
     value is outside its declared set, so they are caught here (422) instead of
-    failing the job halfway through.
+    failing the job halfway through.  A workflow that declares no length at all
+    (``max_duration == 0``, e.g. Suno, whose API has no length parameter) skips
+    the range check: the model decides how long the track is.
     """
     if mode != "audio":
         return None
@@ -708,7 +730,7 @@ def audio_workflow_problem(
         spec = get_audio_spec(audio_workflow)
     except WorkflowSpecError as exc:
         return str(exc)
-    if duration is not None and not (
+    if duration is not None and spec.max_duration > 0 and not (
         spec.min_duration <= float(duration) <= spec.max_duration
     ):
         return (
@@ -884,6 +906,8 @@ class JobCreate(BaseModel):
     bpm: int = 120
     keyscale: str = "C major"
     language: str = "en"
+    #: Suno: styles to keep out of the track (`negativeTags`)
+    negative_tags: str = ""
     #: Stable Audio: Music / Instrument / SFX / One-shot
     audio_category: str = AUDIO_CATEGORIES[0]
     #: Stable Audio: expand the prompt with the graph's own local LLM first
@@ -1095,6 +1119,8 @@ class PromptResult(BaseModel):
     bpm: int | None = None
     keyscale: str | None = None
     language: str | None = None
+    #: Suno: styles to keep out of the track (`negativeTags`)
+    negative_tags: str | None = None
     notes: str | None = None
 
 

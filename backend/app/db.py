@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   source_image  TEXT,
   audio_path    TEXT,
   audio_output_path TEXT,
+  extra_outputs TEXT,                       -- 主成果物に収まらない出力（JSON 配列）
   error         TEXT,
   nsfw          INTEGER NOT NULL DEFAULT 0,
   nsfw_source   TEXT NOT NULL DEFAULT '',
@@ -100,6 +101,10 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         # 入力のリファレンス音声を保持する audio_path とは別物。
         ("audio_prompt", "TEXT"),
         ("audio_output_path", "TEXT"),
+        # 主成果物（image_path / video_path / audio_output_path）に収まらない
+        # 追加の出力のパス（JSON 配列）。1 回の生成で複数返すモデル（Suno は
+        # 1 リクエストで 2 曲）のため。既存行は NULL = 追加成果物なし。
+        ("extra_outputs", "TEXT"),
         # 外部バックエンド（kie.ai）のジョブが消費したクレジット（SPEC §5.2）。
         # ComfyUI のジョブは自前 GPU なので NULL のままでよい。
         ("credits_consumed", "REAL"),

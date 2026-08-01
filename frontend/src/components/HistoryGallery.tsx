@@ -127,7 +127,12 @@ export default function HistoryGallery({
                   <span className="rounded bg-black/60 px-1 text-[10px]">🎬</span>
                 )}
                 {job.audio_output_url && (
-                  <span className="rounded bg-black/60 px-1 text-[10px]">🎵</span>
+                  <span className="rounded bg-black/60 px-1 text-[10px]">
+                    {/* 1 回の生成で複数返るモデル（Suno は 2 曲）は本数を出す */}
+                    🎵{(job.extra_output_urls?.length ?? 0) > 0
+                      ? `×${(job.extra_output_urls?.length ?? 0) + 1}`
+                      : ''}
+                  </span>
                 )}
               </span>
               {(pending || failed) && (

@@ -50,7 +50,9 @@ AUTH_MARKERS = (
 
 RESULT_KEYS = ("image_prompt", "video_prompt", "notes")
 #: mode 'audio' のセッションが返す追加キー（すべて文字列）。
-AUDIO_RESULT_KEYS = ("audio_prompt", "lyrics", "keyscale", "language")
+AUDIO_RESULT_KEYS = (
+    "audio_prompt", "lyrics", "keyscale", "language", "negative_tags",
+)
 #: 数値で返る提案。文字列で来ても拾えるようにする（拾えなければ黙って捨てる）。
 AUDIO_INT_KEYS = ("bpm",)
 
@@ -181,7 +183,7 @@ def extract_result(text: str) -> dict[str, object] | None:
 
     Image / video sessions yield ``{image_prompt, video_prompt, notes}``; audio
     ones additionally fill ``audio_prompt`` / ``lyrics`` / ``bpm`` / ``keyscale``
-    / ``language`` (see :class:`app.models.PromptResult`).
+    / ``language`` / ``negative_tags`` (see :class:`app.models.PromptResult`).
     """
     for parsed in iter_json_objects(text):
         result = _normalize(parsed)

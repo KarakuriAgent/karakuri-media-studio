@@ -144,6 +144,12 @@ export default function ChatModal({
     if (result.language != null && audioSupports(audioWorkflow, 'language')) {
       changes.language = result.language
     }
+    if (
+      result.negative_tags != null &&
+      audioSupports(audioWorkflow, 'negative_tags')
+    ) {
+      changes.negativeTags = result.negative_tags
+    }
     patch(changes)
     onClose()
   }
@@ -251,6 +257,15 @@ export default function ChatModal({
                   </p>
                 </div>
               )}
+              {result.negative_tags != null &&
+                audioSupports(audioWorkflow, 'negative_tags') && (
+                  <div>
+                    <p className="text-slate-400">除外タグ</p>
+                    <p className="whitespace-pre-wrap text-slate-200">
+                      {result.negative_tags}
+                    </p>
+                  </div>
+                )}
               {audio && (result.bpm != null || result.keyscale || result.language) && (
                 <p className="text-slate-500">
                   {[

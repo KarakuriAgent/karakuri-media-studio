@@ -139,8 +139,10 @@ export interface FormState {
   /** id of the selected audio workflow template. */
   audioWorkflow: string
   audioPrompt: string
-  /** ACE-Step の歌詞。空ならインストゥルメンタル。 */
+  /** ACE-Step / Suno の歌詞。空ならインストゥルメンタル。 */
   lyrics: string
+  /** Suno: 曲に入れたくない要素（英語のカンマ区切り）。 */
+  negativeTags: string
   /** 音声の長さ（秒）。ワークフローごとに上下限が違う。 */
   audioDuration: number
   bpm: number
@@ -182,6 +184,7 @@ export const initialForm: FormState = {
   audioWorkflow: DEFAULT_AUDIO_WORKFLOW,
   audioPrompt: '',
   lyrics: '',
+  negativeTags: '',
   audioDuration: 120,
   bpm: 120,
   keyscale: 'C major',
@@ -392,7 +395,13 @@ export function audioJobPayload(
   }
   const models = jobModelOverrides(form, modelSlots, [form.audioWorkflow])
   if (Object.keys(models).length > 0) payload.model_overrides = models
+  // 選択式フィールド（Suno のモデル・ボーカル性別。§3.1）
+  const selects = jobSelects(form, workflow)
+  if (Object.keys(selects).length > 0) payload.selects = selects
   if (audioSupports(workflow, 'lyrics')) payload.lyrics = form.lyrics
+  if (audioSupports(workflow, 'negative_tags')) {
+    payload.negative_tags = form.negativeTags
+  }
   if (audioSupports(workflow, 'bpm')) payload.bpm = form.bpm
   if (audioSupports(workflow, 'keyscale')) payload.keyscale = form.keyscale
   if (audioSupports(workflow, 'language')) payload.language = form.language
@@ -602,6 +611,8 @@ export function formStateFromParams(
   if (audioPrompt !== undefined) changes.audioPrompt = audioPrompt
   const lyrics = asString(params.lyrics)
   if (lyrics !== undefined) changes.lyrics = lyrics
+  const negativeTags = asString(params.negative_tags)
+  if (negativeTags !== undefined) changes.negativeTags = negativeTags
   const bpm = asNumber(params.bpm)
   if (bpm !== undefined) changes.bpm = bpm
   const keyscale = asString(params.keyscale)

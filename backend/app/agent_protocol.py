@@ -151,6 +151,16 @@ _NON_AUDIO_FIELDS = (
 )
 
 
+#: ACE-Step 1.5 だけが読むつまみ -> 読まないモデルに渡されたときの案内。
+#: Suno のように API 側にそのパラメータが無いモデルでは、値を渡しても効かない
+#: ので拒否して書き場所（スタイル文・歌詞そのもの）へ誘導する。
+_ACE_ONLY_FIELDS: dict[str, str] = {
+    "bpm": "テンポは `audio_prompt` のスタイル文に書いてください（例 `120 BPM`）",
+    "keyscale": "キーは `audio_prompt` のスタイル文に書いてください（例 `F# minor`）",
+    "language": "歌詞の言語は `lyrics` に書いた言語がそのまま歌われます",
+}
+
+
 def _audio_workflow_detail(raw: dict[str, Any]) -> str | None:
     """音声ジョブ固有の問題（不明なワークフロー / 範囲外の秒数 / 誤ったフィールド）。
 
@@ -207,6 +217,14 @@ def _audio_workflow_detail(raw: dict[str, Any]) -> str | None:
             f"audio_workflow `{spec.id}` に `audio_category` はありません"
             f"（{', '.join(AUDIO_CATEGORIES)} のカテゴリは Stable Audio 専用です）"
         )
+    # ACE-Step にしかないつまみ。読まないモデル（Suno にはテンポもキーも歌詞の
+    # 言語もパラメータが無い）に渡されたら黙って捨てず、書き場所を案内する。
+    for name in _ACE_ONLY_FIELDS:
+        if raw.get(name) and not spec.supports(name):
+            return (
+                f"audio_workflow `{spec.id}` に `{name}` はありません"
+                f"（{_ACE_ONLY_FIELDS[name]}）"
+            )
     return None
 
 
@@ -241,9 +259,15 @@ def _select_detail(raw: dict[str, Any], mode: str) -> str | None:
     Web UI と同じ :func:`~app.models.select_problem` を通すので、選択肢外の値も
     宣言していない名前もプラン検証の段階で弾ける（実行時ではなく plan 時）。
     """
-    problem = select_problem(mode, _text(raw.get("video_workflow")), raw.get("selects"))
+    problem = select_problem(
+        mode,
+        _text(raw.get("video_workflow")),
+        raw.get("selects"),
+        audio_workflow=_text(raw.get("audio_workflow")),
+    )
     if problem:
-        return f"{problem}（VIDEO WORKFLOWS の選択項目を確認してください）"
+        catalog = "AUDIO WORKFLOWS" if mode == "audio" else "VIDEO WORKFLOWS"
+        return f"{problem}（{catalog} の選択項目を確認してください）"
     return None
 
 

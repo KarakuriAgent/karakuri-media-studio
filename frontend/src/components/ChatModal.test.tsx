@@ -62,6 +62,7 @@ function result(overrides: Partial<PromptResult> = {}): PromptResult {
     video_prompt: null,
     audio_prompt: null,
     lyrics: null,
+    negative_tags: null,
     bpm: null,
     keyscale: null,
     language: null,

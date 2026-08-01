@@ -195,6 +195,7 @@ FAMILY_LABELS: dict[str, str] = {
     "veo": "Veo 3.1",
     "kling": "Kling 3.0",
     "seedance": "Seedance 2",
+    "suno": "Suno V5",
 }
 
 #: LoRA registrations default to this family (the only image workflow that
@@ -215,6 +216,9 @@ KIE_VALUES: frozenset[str] = frozenset({
     "lyrics",
     "bpm",
     "language",
+    # 音声の「除外したい要素」（Suno の negativeTags）。画像・動画の
+    # `negative_prompt` とは別物なので混ぜない（§2.4）。
+    "negative_tags",
     # 入力ファイル: File Upload API で公開 URL にしてから入れる（§5.2）
     "image",
     "end_image",
@@ -226,8 +230,8 @@ KIE_VALUES: frozenset[str] = frozenset({
 KIE_SELECT_PREFIX = "select:"
 
 #: kie.ai の API 系統。``market`` が統一 API（``/api/v1/jobs/*``）、``veo`` /
-#: ``suno`` はモデル別の旧専用系（子 issue #17 / #20 で :class:`app.kie.TaskApi`
-#: の実装を足す）。
+#: ``suno`` はモデル別の旧専用系（:class:`app.kie.VeoTaskApi` /
+#: :class:`app.kie.SunoTaskApi`）。
 KieApi = Literal["market", "veo", "suno"]
 
 
@@ -1504,6 +1508,109 @@ LANGUAGES: tuple[str, ...] = (
 BPM_RANGE: tuple[int, int] = (10, 300)
 
 
+# --------------------------------------------------------------------------
+# audio: kie.ai（Suno V5 系、SPEC §5.2 / issue #20）
+# --------------------------------------------------------------------------
+#
+# ACE-Step / Stable Audio と同じ**独立した音声ジョブ**（LoRA なし・画像や動画と
+# 連結しない）で、走らせる先が自前の ComfyUI ではなく kie.ai というだけ。ただし
+# Suno は Market 系ではなく**旧専用系**（:class:`app.kie.SunoTaskApi`）なので、
+# マニフェスト側で気をつける点が 3 つある:
+#
+# - **``model`` はモデル名ではなくバージョン**（`V5` / `V5_5` / `V4_5PLUS`）。
+#   選択式フィールドにしてあり、選んだ値が :attr:`KieTask.model` の既定を上書き
+#   する（平置きボディなので ``input`` の ``model`` がそのまま勝つ）
+# - **`customMode` は常に true**（スタイルと歌詞を自分で書くのがこのアプリの
+#   使い方）。true では `style` / `title` が必須なので、`title` は
+#   :meth:`app.kie.SunoTaskApi._title` が歌詞かスタイルの頭から作る
+# - **`instrumental` は歌詞の有無から決まる**ので宣言しない（ACE-Step と同じ
+#   「歌詞を空にすればインスト」の操作感になる）
+#
+# ACE-Step にあって Suno に無いつまみ（`bpm` / `keyscale` / `language`）は
+# **宣言しない**: フォームはそのぶんの入力を出さず、エージェントが指定してきたら
+# プラン検証で弾かれる（:func:`app.agent_protocol._audio_workflow_detail`）。
+# テンポやキーは style の文中に、歌詞の言語は歌詞そのもので決まる。
+#
+# 尺（`duration`）も宣言しない: kie.ai の `duration` は **V5_5 + customMode で
+# しか効かない**ので、モデルを選び直すと黙って無視される項目になる。上下限を
+# 0 のままにしてあるので、フォームは長さの入力自体を出さない（§2.4）。
+#
+# 1 リクエストで**2 曲**返るのが Suno の標準。両方 `outputs/{job_id}/` に落とす
+# （`audio.mp3` / `audio_2.mp3`、:func:`app.kie.download_results`）。
+
+#: Suno のモデルバージョン（kie.ai の `model`）
+SUNO_MODELS: tuple[str, ...] = ("V5", "V5_5", "V4_5PLUS")
+
+#: ボーカルの性別ヒント。``auto`` は「指定しない」で、キーごと落とされる
+#: （:attr:`app.kie.SunoTaskApi.VOCAL_GENDERS`）。
+SUNO_VOCAL_GENDERS: tuple[str, ...] = ("auto", "m", "f")
+
+#: `style` の上限（kie.ai の customMode）。歌詞（`prompt`）は 5,000 字まで。
+SUNO_MAX_PROMPT_CHARS = 1000
+
+SUNO_V5 = WorkflowSpec(
+    id="suno_v5",
+    label="Suno V5（歌もの・外部 API）",
+    kind="audio",
+    family="suno",
+    backend="kie",
+    description=(
+        "Song generation with **Suno V5** (external API): the strongest option"
+        " for songs with real vocals. `audio_prompt` is the *style* — English,"
+        " comma separated, sound only (genre, tempo, instruments, vocal,"
+        " production) — and `lyrics` are the words, with `[Verse]` /"
+        " `[Chorus]` structure tags. No lyrics == instrumental. Every request"
+        " returns **two takes**. There is no bpm / key / language / length"
+        " knob: write those into the style, or pick another model."
+    ),
+    prompt_hint=(
+        "The **style**, not a story: English, comma separated, and only things"
+        " you can hear — genre, tempo feel, the main instruments, the vocal"
+        " (gender, register, delivery) and the production / mood. 120-300"
+        " characters is the sweet spot. What the song is *about* belongs in"
+        " `lyrics`, and anything to keep out belongs in `negative_tags`."
+    ),
+    max_prompt_chars=SUNO_MAX_PROMPT_CHARS,
+    # 尺は API 側で指定できない（V5_5 のみの機能）ので上下限を宣言しない。
+    kie=KieTask(
+        model="V5",
+        api="suno",
+        fields={
+            # audio_prompt -> style（曲の「音」の記述）、lyrics -> prompt（歌詞）
+            "prompt": "style",
+            "lyrics": "prompt",
+            "negative_tags": "negativeTags",
+            f"{KIE_SELECT_PREFIX}model": "model",
+            f"{KIE_SELECT_PREFIX}vocal_gender": "vocalGender",
+        },
+        # customMode=true = style と歌詞を自分で書くモード（false は説明文
+        # 500 字だけのおまかせ生成なので、このアプリの使い方には合わない）
+        constants={"customMode": True},
+        # 12 credits ≒ $0.06（2 曲ぶん）。バージョンによる価格差は無い。
+        credits=12.0,
+    ),
+    selects={
+        "model": SelectSpec(
+            label="モデル",
+            choices=SUNO_MODELS,
+            default="V5",
+            hint="V5 が既定。V5_5 は最新、V4_5PLUS は旧世代。価格は同じ。",
+        ),
+        "vocal_gender": SelectSpec(
+            label="ボーカルの性別",
+            choices=SUNO_VOCAL_GENDERS,
+            default="auto",
+            hint="確率的なヒント（m = 男性 / f = 女性）。auto は指定しない。",
+        ),
+    },
+    notes=(
+        "kie.ai 経由 / 1 回で 2 曲返る（両方保存される） / 歌詞なしでインスト"
+        " / bpm・キー・言語・尺の指定は無い（スタイル文に書く） / 除外したい"
+        "要素は「除外タグ」へ / 成果物 URL は 14 日で失効"
+    ),
+)
+
+
 SPECS: tuple[WorkflowSpec, ...] = (
     KREA2_TURBO,
     ANIMA,
@@ -1524,6 +1631,7 @@ SPECS: tuple[WorkflowSpec, ...] = (
     SEEDANCE2_MINI,
     ACE_STEP_1_5,
     STABLE_AUDIO_3,
+    SUNO_V5,
 )
 
 BY_ID: dict[str, WorkflowSpec] = {spec.id: spec for spec in SPECS}
@@ -1792,7 +1900,11 @@ def _validate_common(spec: WorkflowSpec) -> list[str]:
         problems.append(f"{spec.id}: accepts_start_image but has no image input")
     if spec.kind == "audio" and (spec.accepts_start_image or spec.supports("image")):
         problems.append(f"{spec.id}: an audio workflow takes no image input")
-    if spec.kind == "audio" and not (
+    # 長さを一切宣言しないのは「このモデルには尺の指定が無い」（Suno）の意味で、
+    # そのときだけ 0 / 0 / 0 を許す。中途半端に片方だけ 0 なのは宣言漏れ。
+    if spec.kind == "audio" and any(
+        (spec.min_duration, spec.default_duration, spec.max_duration)
+    ) and not (
         0 < spec.min_duration <= spec.default_duration <= spec.max_duration
     ):
         problems.append(

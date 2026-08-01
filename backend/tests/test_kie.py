@@ -84,11 +84,17 @@ class FakeKie:
 
     @staticmethod
     def kind(url: str) -> str:
-        # 旧専用系（Veo）は別のパスだが、テストからは同じ「作る / 見に行く」
-        if "createTask" in url or "/veo/generate" in url:
-            return "create"
+        # 旧専用系（Veo / Suno）は別のパスだが、テストからは同じ
+        # 「作る / 見に行く」。Suno は record-info が生成 URL の下にぶら下がる
+        # （`/api/v1/generate/record-info`）ので、record を先に見分ける。
         if "recordInfo" in url or "record-info" in url:
             return "record"
+        if (
+            "createTask" in url
+            or url.endswith("/veo/generate")
+            or url.endswith("/api/v1/generate")
+        ):
+            return "create"
         if "credit" in url:
             return "credit"
         if "file-base64-upload" in url:
@@ -385,7 +391,7 @@ def test_an_error_envelope_is_reported_with_its_hint(fake_kie):
 
 def test_an_unknown_api_family_is_refused():
     with pytest.raises(kie.KieError):
-        kie.task_api("suno")
+        kie.task_api("udio")
 
 
 # --------------------------------------------------------------------------
@@ -1509,3 +1515,298 @@ def test_a_full_job_bridges_comfyui_images_into_seedance(client, fake_kie, comfy
     assert (job_env / job["id"] / "image.png").is_file()
     assert (job_env / job["id"] / "video.mp4").is_file()
     assert job["credits_consumed"] == 120
+
+
+# --------------------------------------------------------------------------
+# Suno V5 系（旧専用系 API、issue #20）
+# --------------------------------------------------------------------------
+
+SUNO = workflows.BY_ID["suno_v5"]
+
+STYLE = (
+    "dreamy Japanese city-pop, 92 BPM, breathy female vocal, warm Rhodes"
+    " electric piano, fretless bass, brushed drums, analog tape saturation"
+)
+LYRICS = "[Verse 1]\nさいごの電車が 雨をぬけて\n\n[Chorus]\nネオンのように\n\n[End]"
+
+
+def suno_record(status: str, urls=(), **extra) -> FakeResponse:
+    """``/generate/record-info`` の応答（成果物は ``response.sunoData[]``）。"""
+    data = {"taskId": "suno-1", "status": status, **extra}
+    if urls:
+        data["response"] = {
+            "sunoData": [
+                {"id": f"t{index}", "audioUrl": url, "duration": 180.0}
+                for index, url in enumerate(urls)
+            ]
+        }
+    return FakeResponse(envelope(data))
+
+
+def _suno_params(**overrides) -> GenerationParams:
+    base = dict(
+        mode="audio",
+        job_id="job-suno",
+        audio_workflow=SUNO.id,
+        audio_prompt=STYLE,
+        lyrics=LYRICS,
+    )
+    base.update(overrides)
+    return _params(**base)
+
+
+def test_suno_uses_its_own_endpoints():
+    api = kie.task_api("suno")
+    assert api.create_url.endswith("/api/v1/generate")
+    assert api.record_url.endswith("/api/v1/generate/record-info")
+    assert SUNO.kie.api == "suno"
+    assert SUNO.kie.model == "V5"
+    assert SUNO.backend == "kie" and SUNO.kind == "audio"
+
+
+def test_the_style_and_the_lyrics_land_in_the_right_keys():
+    request = kie.build_request(SUNO, _suno_params(), {})
+    body = kie.task_api(request.api).create_body(request.model, request.input)
+
+    # ボディは平ら（input で包まない）
+    assert body["model"] == "V5"
+    assert body["customMode"] is True
+    # audio_prompt -> style（音の記述）、lyrics -> prompt（歌う言葉）
+    assert body["style"] == STYLE
+    assert body["prompt"] == LYRICS
+    assert body["instrumental"] is False
+    # title は customMode の必須項目。歌詞の最初の「歌う行」から作る
+    assert body["title"] == "さいごの電車が 雨をぬけて"
+    # webhook は受け取れないのでダミーを入れてポーリングする
+    assert body["callBackUrl"] == kie.CALLBACK_URL
+    # 「おまかせ」のボーカル性別はキーごと落とす
+    assert "vocalGender" not in body
+    # Suno に無いつまみは宣言していない
+    for absent in ("bpm", "keyscale", "language", "duration", "negativeTags"):
+        assert absent not in body
+
+
+def test_no_lyrics_means_an_instrumental():
+    body = kie.task_api("suno").create_body(
+        SUNO.kie.model, kie.build_request(SUNO, _suno_params(lyrics=""), {}).input
+    )
+    assert body["instrumental"] is True
+    assert "prompt" not in body  # 空の値はキーごと落ちる
+    # 歌詞が無いのでタイトルはスタイルの頭から
+    assert body["title"] == "dreamy Japanese city-pop"
+
+
+def test_the_model_version_and_the_vocal_gender_are_selects():
+    request = kie.build_request(
+        SUNO,
+        _suno_params(
+            selects={"model": "V5_5", "vocal_gender": "f"},
+            negative_tags="distorted guitar, screaming",
+        ),
+        {},
+    )
+    body = kie.task_api(request.api).create_body(request.model, request.input)
+
+    # 選択したバージョンがマニフェストの既定（V5）を上書きする
+    assert body["model"] == "V5_5"
+    assert body["vocalGender"] == "f"
+    assert body["negativeTags"] == "distorted guitar, screaming"
+
+
+def test_suno_polls_through_its_own_status_words(fake_kie):
+    """``PENDING -> TEXT_SUCCESS -> FIRST_SUCCESS -> SUCCESS``（独自の語彙）。"""
+    fake_kie.answer("create", FakeResponse(envelope({"taskId": "suno-1"})))
+    fake_kie.answer(
+        "record",
+        suno_record("PENDING"),
+        suno_record("TEXT_SUCCESS"),
+        suno_record("FIRST_SUCCESS"),
+        suno_record(
+            "SUCCESS",
+            ("https://cdn.kie.ai/a.mp3", "https://cdn.kie.ai/b.mp3"),
+            creditsConsumed=12,
+        ),
+    )
+    labels: list[str] = []
+
+    async def run():
+        task_id = await kie.create_task("V5", {"style": STYLE}, api=kie.SUNO)
+        return await kie.wait_for_task(
+            task_id, api=kie.SUNO, on_progress=lambda state: _collect(labels, state)
+        )
+
+    state = asyncio.run(run())
+
+    assert state.phase == "success"
+    # 1 リクエストで 2 曲。**両方**回収する
+    assert state.result_urls == (
+        "https://cdn.kie.ai/a.mp3",
+        "https://cdn.kie.ai/b.mp3",
+    )
+    assert state.credits == 12.0
+    assert labels == ["PENDING", "TEXT_SUCCESS", "FIRST_SUCCESS"]
+    assert fake_kie.sent("record")[0]["params"] == {"taskId": "suno-1"}
+
+
+def test_a_failed_suno_task_reports_the_reason(fake_kie):
+    fake_kie.answer(
+        "record",
+        suno_record("SENSITIVE_WORD_ERROR", errorMessage="lyrics were rejected"),
+    )
+    with pytest.raises(kie.KieError) as caught:
+        asyncio.run(kie.wait_for_task("suno-1", api=kie.SUNO))
+    assert "lyrics were rejected" in str(caught.value)
+
+
+def test_an_unknown_failure_status_is_still_a_failure(fake_kie):
+    """kie.ai は ``*_FAILED`` / ``*_ERROR`` を増やしてくるので待ち続けない。"""
+    fake_kie.answer("record", suno_record("GENERATE_AUDIO_FAILED"))
+    with pytest.raises(kie.KieError) as caught:
+        asyncio.run(kie.wait_for_task("suno-1", api=kie.SUNO))
+    assert "GENERATE_AUDIO_FAILED" in str(caught.value)
+
+    fake_kie.answer("record", suno_record("SOMETHING_NEW_FAILED"))
+    with pytest.raises(kie.KieError):
+        asyncio.run(kie.wait_for_task("suno-1", api=kie.SUNO))
+
+
+def test_a_suno_success_without_urls_is_an_error(fake_kie):
+    fake_kie.answer("record", suno_record("SUCCESS"))
+    with pytest.raises(kie.KieError) as caught:
+        asyncio.run(kie.wait_for_task("suno-1", api=kie.SUNO))
+    assert "成果物 URL" in str(caught.value)
+
+
+def test_an_audio_job_saves_both_takes(client, fake_kie, job_env):
+    """1 リクエスト 2 曲。1 曲目が列に入り、2 曲目は extra_outputs へ（§6）。"""
+    fake_kie.answer("create", FakeResponse(envelope({"taskId": "task-suno"})))
+    fake_kie.answer(
+        "record",
+        suno_record(
+            "SUCCESS",
+            ("https://cdn.kie.ai/a.mp3", "https://cdn.kie.ai/b.mp3"),
+            creditsConsumed=12,
+        ),
+    )
+
+    created = client.post(
+        "/api/jobs",
+        json={
+            "mode": "audio",
+            "audio_workflow": SUNO.id,
+            "audio_prompt": STYLE,
+            "lyrics": LYRICS,
+            "negative_tags": "distorted guitar",
+            "selects": {"model": "V5_5", "vocal_gender": "f"},
+        },
+    )
+    assert created.status_code == 201, created.text
+    job = wait_for(client, created.json()["id"])
+    assert job["status"] == "done", job["error"]
+
+    directory = job_env / job["id"]
+    assert (directory / "audio.mp3").is_file()
+    assert (directory / "audio_2.mp3").is_file()
+    assert job["audio_output_url"].endswith("/audio.mp3")
+    assert [url.rsplit("/", 1)[-1] for url in job["extra_output_urls"]] == [
+        "audio_2.mp3"
+    ]
+    assert job["credits_consumed"] == 12
+
+    stage = job["workflow_json"]["audio"]
+    assert stage["backend"] == "kie" and stage["request"]["api"] == "suno"
+    body = fake_kie.sent("create")[0]["json"]
+    assert body["model"] == "V5_5"
+    assert body["style"] == STYLE
+    assert body["prompt"] == LYRICS
+    assert body["negativeTags"] == "distorted guitar"
+    assert body["vocalGender"] == "f"
+    assert body["customMode"] is True
+    assert body["instrumental"] is False
+
+
+def test_ace_step_only_knobs_are_refused_for_suno():
+    """モデルが読まないフィールドは黙って捨てず、プラン検証で断る（§2.4）。"""
+    from app import agent_protocol
+
+    for name, value in (("bpm", 92), ("keyscale", "F# minor"), ("language", "ja")):
+        with pytest.raises(agent_protocol.ActionError, match=name):
+            agent_protocol.validate_job(
+                {
+                    "mode": "audio",
+                    "audio_workflow": SUNO.id,
+                    "audio_prompt": STYLE,
+                    name: value,
+                },
+                where="task 1",
+            )
+
+    # 宣言してあるものは通る（歌詞・除外タグ・選択式）
+    agent_protocol.validate_job(
+        {
+            "mode": "audio",
+            "audio_workflow": SUNO.id,
+            "audio_prompt": STYLE,
+            "lyrics": LYRICS,
+            "negative_tags": "screaming",
+            "selects": {"model": "V5_5"},
+        },
+        where="task 1",
+    )
+    # 宣言していない選択肢は 422（選択式の検証も音声ワークフローを見る）
+    with pytest.raises(agent_protocol.ActionError, match="resolution"):
+        agent_protocol.validate_job(
+            {
+                "mode": "audio",
+                "audio_workflow": SUNO.id,
+                "audio_prompt": STYLE,
+                "selects": {"resolution": "1080p"},
+            },
+            where="task 1",
+        )
+
+
+def test_suno_is_offered_as_an_audio_workflow(client, monkeypatch):
+    mark_available(monkeypatch)
+    body = client.get("/api/options").json()
+    entry = [wf for wf in body["audio_workflows"] if wf["id"] == SUNO.id][0]
+
+    assert entry["backend"] == "kie"
+    assert set(entry["supports"]) == {"prompt", "lyrics", "negative_tags"}
+    # 尺のパラメータが無いので長さは宣言しない（フォームは秒数欄を出さない）
+    assert entry["max_duration"] == 0
+    selects = {select["name"]: select for select in entry["selects"]}
+    assert list(selects) == ["model", "vocal_gender"]
+    assert selects["model"]["choices"] == ["V5", "V5_5", "V4_5PLUS"]
+    assert selects["model"]["default"] == "V5"
+    assert selects["vocal_gender"]["choices"] == ["auto", "m", "f"]
+
+
+def test_the_suno_guide_is_injected_only_when_suno_is_selected():
+    from app.models import ChatSessionCreate
+    from app.prompts import build_system_prompt
+
+    prompt = build_system_prompt(
+        ChatSessionCreate(mode="audio", audio_workflow=SUNO.id)
+    )
+    assert "AUDIO PROMPT SPEC — Suno V5" in prompt
+    # style の作法・メタタグ・日本語歌詞・除外タグの行き先
+    assert "120-300 characters" in prompt
+    assert "[Pre-Chorus]" in prompt
+    assert "Japanese lyrics just work" in prompt
+    assert "negative_tags" in prompt
+
+    ace = build_system_prompt(ChatSessionCreate(mode="audio"))
+    assert "Suno V5" not in ace
+
+
+def test_the_agent_prompt_carries_the_suno_guide(monkeypatch):
+    from app.prompts import audio_prompt_guides_section, audio_workflow_catalog_section
+
+    mark_available(monkeypatch)
+    assert audio_prompt_guides_section().count("AUDIO PROMPT SPEC — Suno V5") == 1
+    catalog = audio_workflow_catalog_section()
+    assert f"`{SUNO.id}`" in catalog
+    # 尺が無いことと選択肢がカタログに出ている
+    assert "長さの指定がありません" in catalog
+    assert "`vocal_gender`" in catalog

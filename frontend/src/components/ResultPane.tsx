@@ -36,6 +36,9 @@ interface MediaItem {
 
 const ACTIVE_STATUSES = ['queued', 'prompting', 'running']
 
+/** ライブラリに登録できる出力（`extra_*` は列を持たないので登録できない）。 */
+const LIBRARY_SOURCES: LibrarySource[] = ['image', 'last_frame', 'video', 'audio']
+
 function mediaOf(job: Job): MediaItem[] {
   const items: MediaItem[] = []
   // 音声ジョブの成果物（サムネイルは存在しないので 🎵 が出る）
@@ -45,6 +48,17 @@ function mediaOf(job: Job): MediaItem[] {
       kind: 'audio',
       label: '音声',
       url: job.audio_output_url,
+      thumb: null,
+    })
+  }
+  // 1 回の生成で複数返ったぶん（Suno は 1 リクエストで 2 曲）。列に入るのは
+  // 1 つめだけなので、残りはここでタブとして並べる（SPEC §6）。
+  for (const [index, url] of (job.extra_output_urls ?? []).entries()) {
+    items.push({
+      key: `extra_${index}`,
+      kind: job.audio_output_url ? 'audio' : 'video',
+      label: job.audio_output_url ? `音声 ${index + 2}` : `動画 ${index + 2}`,
+      url,
       thumb: null,
     })
   }
@@ -269,7 +283,7 @@ export default function ResultPane({
             )}
             {/* 表示中の成果物をライブラリへ（SPEC §7.2）。タブの key が
                 そのまま登録元の区分になる。 */}
-            {current && (
+            {current && LIBRARY_SOURCES.includes(current.key as LibrarySource) && (
               <LibraryAddButton
                 key={current.key}
                 job={job}

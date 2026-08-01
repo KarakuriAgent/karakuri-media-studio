@@ -324,6 +324,37 @@ const SA3 = workflow({
   default_duration: 60,
 })
 
+/** Suno は kie.ai 経由の音声ワークフロー（選択式つき・尺の宣言なし）。 */
+const SUNO = workflow({
+  id: 'suno_v5',
+  label: 'Suno V5',
+  kind: 'audio',
+  family: 'suno',
+  backend: 'kie',
+  supports: ['prompt', 'lyrics', 'negative_tags'],
+  min_duration: 0,
+  max_duration: 0,
+  default_duration: 0,
+  selects: [
+    {
+      name: 'model',
+      label: 'モデル',
+      choices: ['V5', 'V5_5', 'V4_5PLUS'],
+      default: 'V5',
+      auto: false,
+      hint: '',
+    },
+    {
+      name: 'vocal_gender',
+      label: 'ボーカルの性別',
+      choices: ['auto', 'm', 'f'],
+      default: 'auto',
+      auto: false,
+      hint: '',
+    },
+  ],
+})
+
 function audioForm(overrides: Partial<FormState> = {}): FormState {
   return {
     ...initialForm,
@@ -470,6 +501,45 @@ describe('audioJobPayload', () => {
     expect(payload).not.toHaveProperty('lyrics')
     expect(payload).not.toHaveProperty('bpm')
     expect(payload).not.toHaveProperty('keyscale')
+  })
+
+  it('sends the style, the lyrics, the negative tags and the selects (Suno)', () => {
+    const payload = audioJobPayload(
+      audioForm({
+        audioWorkflow: SUNO.id,
+        lyrics: '[Verse 1]\nhello',
+        negativeTags: 'screaming, distorted guitar',
+        bpm: 92,
+        keyscale: 'F# minor',
+        selects: { model: 'V5_5', vocal_gender: 'f' },
+      }),
+      SUNO,
+    )
+    expect(payload).toMatchObject({
+      audio_workflow: SUNO.id,
+      audio_prompt: 'a warm lofi loop',
+      lyrics: '[Verse 1]\nhello',
+      negative_tags: 'screaming, distorted guitar',
+      selects: { model: 'V5_5', vocal_gender: 'f' },
+    })
+    // Suno が読まないつまみは送らない（ACE-Step 専用）
+    expect(payload).not.toHaveProperty('bpm')
+    expect(payload).not.toHaveProperty('keyscale')
+    expect(payload).not.toHaveProperty('language')
+  })
+
+  it('leaves the negative tags and the selects out for ACE-Step', () => {
+    const payload = audioJobPayload(
+      audioForm({
+        audioWorkflow: ACE.id,
+        negativeTags: 'screaming',
+        selects: { model: 'V5_5' },
+        audioDuration: 120,
+      }),
+      ACE,
+    )
+    expect(payload).not.toHaveProperty('negative_tags')
+    expect(payload).not.toHaveProperty('selects')
   })
 
   it('never carries image / video fields', () => {

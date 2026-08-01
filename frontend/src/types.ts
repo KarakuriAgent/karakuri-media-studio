@@ -361,6 +361,13 @@ export interface Job {
   video_url: string | null
   last_frame_url: string | null
   audio_output_url: string | null
+  /**
+   * 主成果物の列に収まらない出力（Suno は 1 リクエストで 2 曲返るので 2 曲目
+   * 以降がここに入る）。古いレスポンスには無いので任意。
+   */
+  extra_outputs?: string[]
+  /** `extra_outputs` の URL（同じ並び）。 */
+  extra_output_urls?: string[]
 }
 
 export interface JobCreate {
@@ -420,6 +427,10 @@ export interface AudioJobCreate {
   bpm?: number
   keyscale?: string
   language?: string
+  /** Suno: 曲に入れたくない要素（`negativeTags`）。 */
+  negative_tags?: string
+  /** ワークフローが宣言する選択式フィールド（Suno のモデル・ボーカル性別）。 */
+  selects?: Record<string, string>
   /** Stable Audio: Music / Instrument / SFX / One-shot。 */
   audio_category?: string
   /** Stable Audio: 内蔵 LLM でプロンプトを展開してから流すか。 */
@@ -538,6 +549,8 @@ export interface PromptResult {
   bpm: number | null
   keyscale: string | null
   language: string | null
+  /** Suno: 曲に入れたくない要素（`negativeTags`）。 */
+  negative_tags: string | null
   notes: string | null
 }
 

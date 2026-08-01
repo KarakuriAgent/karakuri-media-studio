@@ -262,6 +262,20 @@ def _loads(value: Any) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
+def _loads_paths(value: Any) -> list[str]:
+    """``extra_outputs`` 列（JSON 配列の文字列）をパスの並びにする。"""
+    if isinstance(value, list):
+        parsed: Any = value
+    else:
+        try:
+            parsed = json.loads(value or "[]")
+        except (TypeError, ValueError):
+            return []
+    if not isinstance(parsed, list):
+        return []
+    return [str(item) for item in parsed if isinstance(item, str) and item]
+
+
 def row_to_job(row: aiosqlite.Row, *, include_workflow: bool = True) -> Job:
     data = dict(row)
     data["params"] = _loads(data.get("params"))
@@ -270,6 +284,11 @@ def row_to_job(row: aiosqlite.Row, *, include_workflow: bool = True) -> Job:
     data["video_url"] = _output_url(data.get("video_path"))
     data["last_frame_url"] = _output_url(data.get("last_frame_path"))
     data["audio_output_url"] = _output_url(data.get("audio_output_path"))
+    # 主成果物に収まらない出力（Suno の 2 曲目など）。列は JSON 配列の文字列。
+    data["extra_outputs"] = _loads_paths(data.get("extra_outputs"))
+    data["extra_output_urls"] = [
+        url for url in map(_output_url, data["extra_outputs"]) if url
+    ]
     return Job(**data)
 
 
@@ -455,7 +474,12 @@ def _validate(params: dict[str, Any]) -> None:
             mode, params.get("loras") or [], params.get("video_loras") or []
         )
         or video_lora_problem(mode, video_workflow, params.get("video_loras") or [])
-        or select_problem(mode, video_workflow, params.get("selects"))
+        or select_problem(
+            mode,
+            video_workflow,
+            params.get("selects"),
+            audio_workflow=params.get("audio_workflow"),
+        )
         or prompt_length_problem(mode, video_workflow, params.get("video_prompt"))
         or _model_override_problem(params)
         or _backend_problem(params)
@@ -664,6 +688,7 @@ def _params_from_create(payload: JobCreate) -> dict[str, Any]:
         "bpm": payload.bpm,
         "keyscale": payload.keyscale,
         "language": payload.language,
+        "negative_tags": payload.negative_tags,
         "audio_category": payload.audio_category,
         "reprompt": payload.reprompt,
         "duration": payload.duration,
@@ -866,6 +891,7 @@ def _generation_params(job: Job, uploads: dict[str, str]) -> GenerationParams:
         bpm=int(p.get("bpm", 120)),
         keyscale=p.get("keyscale") or "C major",
         language=p.get("language") or "en",
+        negative_tags=p.get("negative_tags") or "",
         audio_category=p.get("audio_category") or "Music",
         reprompt=bool(p.get("reprompt", False)),
         # 旧ジョブの params には無いので既定は空（後方互換）
@@ -1297,14 +1323,25 @@ async def _run_comfy_stage(
 # kie.ai バックエンド（SPEC §5.2）
 # --------------------------------------------------------------------------
 
-#: kie.ai の状態語 -> そのステージの進捗の目安（内訳が取れないので粗い刻み）
-_KIE_PROGRESS = {"waiting": 0.05, "queuing": 0.15, "generating": 0.5}
+#: kie.ai の状態語 -> そのステージの進捗の目安（内訳が取れないので粗い刻み）。
+#: 大文字のものは Suno の旧専用系（歌詞 -> 1 曲目 -> 全曲の 3 段階が取れる）。
+_KIE_PROGRESS = {
+    "waiting": 0.05,
+    "queuing": 0.15,
+    "generating": 0.5,
+    "PENDING": 0.05,
+    "TEXT_SUCCESS": 0.3,
+    "FIRST_SUCCESS": 0.7,
+}
 
 #: 状態語の日本語（WS のメッセージに添える）
 _KIE_LABELS = {
     "waiting": "受付待ち",
     "queuing": "キュー待ち",
     "generating": "生成中",
+    "PENDING": "受付待ち",
+    "TEXT_SUCCESS": "歌詞ができました",
+    "FIRST_SUCCESS": "1 曲目ができました",
 }
 
 #: ステージ名 -> (成果物の種類, outputs/ に置くときのファイル名, jobs の列)。
@@ -1414,6 +1451,8 @@ async def _run_job_stages(job: Job) -> dict[str, Any]:
     job_dir = OUTPUTS_DIR / job.id
     stages: dict[str, Any] = {}
     updates: dict[str, Any] = {}
+    #: 主成果物（jobs の列）に収まらない追加の成果物（Suno の 2 曲目など、§6）
+    extras: list[str] = []
     spent = 0.0
     charged = False
     # ComfyUI の下ごしらえ（Pod 起動・入力のアップロード）は最初に必要になった
@@ -1445,7 +1484,11 @@ async def _run_job_stages(job: Job) -> dict[str, Any]:
                 spent += state.credits
                 charged = True
             kind, stem, _ = _STAGE_ARTIFACTS[stage]
-            saved = (await kie.download_results(state, job_dir, stem, kind))[0]
+            downloaded = await kie.download_results(state, job_dir, stem, kind)
+            saved = downloaded[0]
+            # 1 回の呼び出しで複数返すモデル（Suno は 1 リクエスト 2 曲）。
+            # 2 つめ以降は列に入らないので extra_outputs に積む（§6）。
+            extras.extend(str(path) for path in downloaded[1:])
         else:
             raise JobError(
                 f"生成バックエンド '{spec.backend}' はまだ実装されていません"
@@ -1477,6 +1520,8 @@ async def _run_job_stages(job: Job) -> dict[str, Any]:
 
     if charged:
         updates["credits_consumed"] = spent
+    if extras:
+        updates["extra_outputs"] = json.dumps(extras, ensure_ascii=False)
     return updates
 
 

@@ -223,6 +223,7 @@ def test_json_without_a_fence_is_accepted(env):
         "bpm": None,
         "keyscale": None,
         "language": None,
+        "negative_tags": None,
     }
 
 
@@ -456,6 +457,7 @@ def test_extract_result_normalizes_missing_keys():
         "bpm": None,
         "keyscale": None,
         "language": None,
+        "negative_tags": None,
     }
 
 

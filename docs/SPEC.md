@@ -169,6 +169,7 @@ LoRA チェーンも持たない（テンプレートに LoRA ノードが無い
 |---|---|---|---|---|
 | `ace_step1_5_xl_sft` | ACE-Step 1.5 XL（音楽・歌もの） | `ace-step` | 10 / 120 / 600 | `lyrics`（空でインスト）・`bpm`（10-300）・`keyscale`・`language` |
 | `stable_audio_3_medium_base` | Stable Audio 3 Medium（効果音・環境音・音楽） | `stable-audio` | 1 / 60 / 380 | `audio_category`（Music / Instrument / SFX / One-shot）・`reprompt`（内蔵 LLM でのプロンプト展開） |
+| `suno_v5` | Suno V5（歌もの・外部 API、kie.ai `V5` / `V5_5` / `V4_5PLUS`） | `suno` | 指定なし（モデルが決める） | `lyrics`（空でインスト）・`negative_tags`・選択式 `model` / `vocal_gender` |
 
 - 既定は `ace_step1_5_xl_sft`
 - ジョブの必須項目は `audio_prompt` のみ。`duration` がワークフローの範囲外、`keyscale` / `language` /
@@ -178,6 +179,19 @@ LoRA チェーンも持たない（テンプレートに LoRA ノードが無い
 - 秒数の上下限・COMBO 値の一覧は `backend/app/workflows.py`（`min_duration` / `max_duration` /
   `KEYSCALES` / `LANGUAGES` / `BPM_RANGE` / `AUDIO_CATEGORIES`）が単一の情報源で、
   フォーム・Grok カタログ・バリデータが同じ集合を見る
+- **`suno_v5`（family `suno`、backend `kie`）** だけは外部 API のワークフロー（§5.2）で、走らせ先が
+  ComfyUI ではなく kie.ai というだけ。独立ジョブ・LoRA 不可という音声の流儀はそのまま。
+  フィールドの対応は **`audio_prompt` → `style`**（曲の「音」の記述。英語・カンマ区切り・120〜300 字が目安）と
+  **`lyrics` → `prompt`**（歌う言葉。`[Verse]` / `[Chorus]` の構造タグつき。**空ならインスト** = `instrumental: true`）で、
+  `customMode` は常に true。true で必須の `title` は**歌詞の最初の歌う行（無ければスタイルの先頭）から自動生成**する
+  （専用の入力欄は作らない）。除外したい要素は歌詞ではなく `negative_tags`（→ `negativeTags`）へ書く。
+  選択式フィールド（§3.1）は `model`（`V5`（既定）/ `V5_5` / `V4_5PLUS`。選んだ値がマニフェストの既定を上書きする）と
+  `vocal_gender`（`auto`（既定・キーごと送らない）/ `m` / `f`）。
+  **ACE-Step 固有の `bpm` / `keyscale` / `language` と尺の指定は無い**（Suno の API にパラメータが無い）。
+  フォームはそれらの入力を出さず、エージェントが指定してきたらプラン検証で 422 にして書き場所（スタイル文・歌詞そのもの）へ誘導する。
+  尺は `min/default/max_duration` を宣言しない（= 0）ことで「長さの指定が無いモデル」を表し、`duration` の範囲検証も飛ばす
+  （kie.ai の `duration` は V5_5 + customMode でしか効かないので、モデルを選び直すと黙って無視される項目になるため未対応）。
+  **1 リクエストで 2 曲返る**ので、`outputs/{job_id}/audio.mp3` と `audio_2.mp3` の両方を保存する（§6）
 
 ---
 
@@ -205,7 +219,7 @@ LoRA チェーンも持たない（テンプレートに LoRA ノードが無い
 | 画像ワークフロー | ― | プルダウン（`/api/options` の `image_workflows`）。画像ステージが走るモードでのみ表示 |
 | 音声ワークフロー | ― | プルダウン（`/api/options` の `audio_workflows`）。`mode: "audio"` でのみ表示 |
 | アスペクト比 / メガピクセル | 画像: `aspect_ratio` / `megapixels` → ResolutionSelector（krea2 は `49`、anima は `91`）。z-image と動画: アプリが幅・高さを計算して `width` / `height` に注入。qwen-image-edit は入力画像から決まるので注入しない | セレクト（選択肢は `/object_info` の ResolutionSelector から動的取得）+ 数値 |
-| 音声プロンプト・歌詞・BPM・キー・言語・カテゴリ・展開 | `prompt` / `lyrics` / `bpm` / `keyscale` / `language` / `audio_category` / `reprompt` | `mode: "audio"` のみ。選択中の音声ワークフローが露出しているつまみだけ表示 |
+| 音声プロンプト・歌詞・除外タグ・BPM・キー・言語・カテゴリ・展開 | `prompt` / `lyrics` / `negative_tags` / `bpm` / `keyscale` / `language` / `audio_category` / `reprompt` | `mode: "audio"` のみ。選択中の音声ワークフローが露出しているつまみだけ表示（長さを宣言しないモデル（Suno）では秒数欄も出ない）。選択式フィールド（§3.1）も音声ワークフローの宣言に従って描画する |
 | LoRA（画像・複数可） | 画像ワークフローの `lora_chain` を動的構築（§3.4） | 「LoRA（画像）」セクション。登録 LoRA のうち `target = 'image'` かつ**選択中の画像ワークフローと同じファミリー**のものを複数選択＋強度スライダー |
 | LoRA トリガーワード（画像） | `trigger_concat` → `30:27` (StringConcatenate) / `trigger_switch` → `30:28`。この 2 つを持つのは krea2 テンプレートだけで、他の画像ワークフローには自動前置の口が無い（トリガーワードは `image_prompt` 本文に書く） | 選択 LoRA のトリガーワードを自動連結（編集可） |
 | LoRA（動画・複数可） | 動画ワークフローの `lora_chain` を動的構築（§3.4） | 「LoRA（動画）」セクション。登録 LoRA のうち `target = 'video'` のものを複数選択＋強度スライダー |
@@ -475,8 +489,9 @@ Cookie ベースの非公式 API は規約リスクがあるため**使わない
 
 **音声プロンプト（`mode: "audio"`）**
 
-`prompts.ACE_STEP_AUDIO_SPEC` / `STABLE_AUDIO_SPEC` を、選択中の音声ワークフローに応じて埋め込む
-（出典は ACE-Step 1.5 と Stable Audio 3 の公式ドキュメント、および ComfyUI の各ノード実装）:
+`prompts.ACE_STEP_AUDIO_SPEC` / `STABLE_AUDIO_SPEC` / `SUNO_AUDIO_SPEC` を、選択中の音声ワークフローに
+応じて埋め込む（出典は ACE-Step 1.5 と Stable Audio 3 の公式ドキュメント、ComfyUI の各ノード実装、
+および kie.ai の Suno API ドキュメントと Suno のメタタグガイド）:
 
 - **ACE-Step 1.5**: `audio_prompt` は曲そのものの**キャプション**（ジャンル・雰囲気・楽器と音色・
   プロダクション・テンポ感・ボーカルの声質）。歌詞は `audio_prompt` ではなく `lyrics` に、
@@ -484,6 +499,11 @@ Cookie ベースの非公式 API は規約リスクがあるため**使わない
 - **Stable Audio 3**: 音そのものを説明する短い自然文 1 つ（音楽ならジャンル・楽器・ムード・テンポ、
   効果音なら音源・素材・空間）。歌わないので歌詞は書かない。ネガティブプロンプトは公式にも
   テンプレートにも存在しないので書かない
+- **Suno V5**: `audio_prompt` は曲の**スタイル**（英語・カンマ区切り・「音」の記述だけ。ジャンル / テンポ /
+  主要楽器 / ボーカル / プロダクション、実用 120〜300 字）。曲の内容・ストーリーは書かない。歌詞は `lyrics` に
+  `[Intro]` `[Verse 1]` `[Chorus]` `[Bridge]` `[Outro]` `[End]` の構造タグつきで（**日本語歌詞はそのまま日本語で歌われ、
+  タグとスタイルは英語のまま**。確実に終わらせたいときは末尾 `[End]`）。除外したい要素は歌詞ではなく `negative_tags` へ。
+  `bpm` / `keyscale` / `language` / 尺は無い（テンポとキーはスタイル文に書く）。タイトルは自動生成なので書かせない
 - カテゴリ（`audio_category`）は Grok ではなくフォームで選ぶ
 
 ### 4.3 チャット型プロンプト作成フロー
@@ -502,7 +522,7 @@ Cookie ベースの非公式 API は規約リスクがあるため**使わない
 
 - grok CLI のヘッドレス実行（`grok -p`）は 1 発呼び出しのため、**会話履歴はアプリ側で保持**し、毎ターン「システムプロンプト + 履歴全文 + 最新発言」を組み立てて渡す
 - システムプロンプトの構成: ①役割（プロンプトエンジニア兼インタビュアー）②各モデルのプロンプト仕様（§4.2。画像は選択中ワークフローのファミリーのものだけ）+ few-shot 実例（docs/prompt-samples.md）③ヒアリング項目チェックリスト ④選択中の画像・動画ワークフローの特性（下記）⑤最終出力は ```json フェンス内の `{image_prompt, video_prompt, notes}` のみ、というルール
-- `mode: "audio"` では専用のシステムプロンプト（`build_audio_system_prompt`）に切り替わる: 選択中の音声ワークフローの仕様とそのモデルが読むフィールドだけを提示し、出力は `{audio_prompt, lyrics, bpm, keyscale, language, notes}`。画像・動画のプロンプトは書かせない。フォーム側も、選択中のワークフローが持たないつまみ（Stable Audio の `lyrics` など）は反映しない
+- `mode: "audio"` では専用のシステムプロンプト（`build_audio_system_prompt`）に切り替わる: 選択中の音声ワークフローの仕様とそのモデルが読むフィールドだけを提示し、出力は `{audio_prompt, lyrics, bpm, keyscale, language, negative_tags, notes}`。画像・動画のプロンプトは書かせない。フォーム側も、選択中のワークフローが持たないつまみ（Stable Audio の `lyrics` など）は反映しない
 - **ワークフロー特性の反映**: CONTEXT には選択中の `video_workflow` の用途・必要入力・音声の扱い・`video_prompt` の書き方と、`image_workflow` の用途・ファミリー・必要入力・`image_prompt` の書き方を出す。文面は `app/workflows.py` の `WorkflowSpec`（`description` / `audio_role` / `prompt_hint`）から自動生成する単一情報源なので、ワークフローを追加したらマニフェスト側に書けばチャット・エージェント両方に反映される（未記入は `validate_specs()` = ヘルスチェックで検出）。例: flf2v なら開始→終了フレーム間の遷移を書かせる、t2v / リファレンスシート IC-LoRA なら開始フレーム前提にしない、ia2v なら渡した音声がそのまま音声トラックになるのでセリフをプロンプトに書かせない、ic_lora_motion ならカメラ・テンポは参照動画由来なので書かせない
 - 応答の判定: 応答に JSON フェンスがあれば「最終案の提示」、なければ「質問継続」として UI に表示
 - 十分詳細な初回入力なら Grok は質問を飛ばして即 JSON を返してよい（ワンショット生成はチャットの特殊ケースとして自然に実現）
@@ -620,6 +640,17 @@ ComfyUI と並ぶ **2 つめの生成バックエンド**として、外部 API 
   `KieTask.int_keys`（整数 = `duration`）と `KieTask.bool_keys`（真偽値 = `generate_audio`）。開始 / 最終フレームは
   `first_frame_url` / `last_frame_url` と**キーが別**なので `list_keys` は使わない。バリアントの違いは
   **モデル名と解像度の選択肢と値段だけ**なので、マニフェストは 1 つのファクトリから作る（2.5 追加はエントリ 1 行）
+- **Suno は旧専用系**（`api: "suno"`、`app.kie.SunoTaskApi`）。エンドポイントは
+  `POST /api/v1/generate` と `GET /api/v1/generate/record-info?taskId=`、状態語は
+  `PENDING → TEXT_SUCCESS → FIRST_SUCCESS → SUCCESS`（中間の 2 つは「まだ待つ」だが進捗として出す。
+  `GENERATE_AUDIO_FAILED` / `SENSITIVE_WORD_ERROR` などの `*_FAILED` / `*_ERROR` は失敗）。
+  Veo と同じくボディは平らで、`model` は**モデル名ではなくバージョン**（`V5` / `V5_5` / `V4_5PLUS`）。
+  `instrumental`（歌詞の有無）と `title`（歌詞かスタイルの頭）は他の入力から決まるので `create_body` が組み立てる。
+  **`callBackUrl` はスキーマ上必須**だが、ローカル運用では webhook を受けられないのでダミー
+  （`kie.CALLBACK_URL` = `https://localhost/unused-callback`）を固定で入れ、結果はポーリングで拾う。
+  kie.ai はコールバックの配送失敗をタスクの失敗にはしない前提で、**もしこの運用が通らなくなったらここを見直す**
+  （その場合はトンネル経由の webhook か、kie.ai 側の設定が要る）。
+  成果物は `response.sunoData[]` に**2 曲**入るので `audioUrl` を**全曲**回収する
 - **成果物は即ダウンロード**: kie 側の URL は 14 日（モデルによっては 24 時間）で
   失効するので、完了を検知したその場で `outputs/{job_id}/` に落とす（§6 と同じ置き場・
   同じ命名で、ラストフレーム抽出も同じ）
@@ -641,6 +672,7 @@ ComfyUI と並ぶ **2 つめの生成バックエンド**として、外部 API 
 | 生成画像 | 画像ワークフローの `SaveImage` / `SaveImageAdvanced` の出力を history から取得し `/view` でダウンロードして `outputs/{job_id}/image.png` に保存。出力ノード ID はワークフローごとに異なる（`29` / `46` / `9` / `195`）ためマニフェストの `output_node` を使う |
 | 動画 | 動画ワークフローの `SaveVideo` の出力ファイルを `/view` でダウンロードし `outputs/{job_id}/video.mp4` に保存。出力ノード ID はワークフローごとに異なる（`75` / `341` / `68`）ためマニフェストの `output_node` を使う |
 | 音声 | 音声ワークフローの `SaveAudioMP3`（`107` / `19`）の出力を `outputs/{job_id}/audio.mp3` に保存し `jobs.audio_output_path` に記録する |
+| 追加の成果物 | 1 回の生成で複数返るモデル（Suno は 1 リクエストで **2 曲**）の 2 つめ以降を `outputs/{job_id}/audio_2.mp3` … に保存し、パスの JSON 配列を `jobs.extra_outputs` に記録する（API では `extra_output_urls` として返り、結果パネルのタブと履歴のバッジに出る）。主成果物の列（`image_path` / `video_path` / `audio_output_path`）に入るのは常に 1 つめ |
 | ラストフレーム | ダウンロードした動画から ffmpeg で抽出: `ffmpeg -sseof -0.5 -i video.mp4 -update 1 -q:v 1 last_frame.png`（次回生成の開始フレームに再利用可能） |
 
 ---
@@ -669,6 +701,7 @@ CREATE TABLE jobs (
   source_image  TEXT,                      -- 開始フレーム（アップロード元 or 参照した job id）
   audio_path    TEXT,                      -- リファレンス音声（入力）
   audio_output_path TEXT,                  -- mode 'audio' が生成した mp3（出力）
+  extra_outputs TEXT,                      -- 主成果物に収まらない出力のパス（JSON 配列、§6）
   error         TEXT,
   nsfw          INTEGER NOT NULL DEFAULT 0,
   nsfw_source   TEXT NOT NULL DEFAULT '',  -- 判定の出所（auto / manual）
@@ -676,8 +709,8 @@ CREATE TABLE jobs (
 );
 ```
 
-- `params` には `video_workflow` / `image_workflow` / `audio_workflow`（ワークフロー ID）と、`end_image` / `reference_video`、音声モードの `audio_prompt` / `lyrics` / `bpm` / `keyscale` / `language` / `audio_category` / `reprompt` / `audio_seed` も保存する
-- 後から足したカラム（`nsfw` / `nsfw_source` / `audio_prompt` / `audio_output_path` / `credits_consumed` など）は起動時に `PRAGMA table_info` と突き合わせて不足分だけ `ALTER TABLE` する（`db.MIGRATIONS`）
+- `params` には `video_workflow` / `image_workflow` / `audio_workflow`（ワークフロー ID）と、`end_image` / `reference_video`、音声モードの `audio_prompt` / `lyrics` / `negative_tags` / `bpm` / `keyscale` / `language` / `audio_category` / `reprompt` / `audio_seed` も保存する
+- 後から足したカラム（`nsfw` / `nsfw_source` / `audio_prompt` / `audio_output_path` / `credits_consumed` / `extra_outputs` など）は起動時に `PRAGMA table_info` と突き合わせて不足分だけ `ALTER TABLE` する（`db.MIGRATIONS`）
 - `workflow_json` を保存するため、任意の過去ジョブの投入内容をあとから完全に確認できる（`rerun` は `params` から作り直す）
 - リファレンス音声・アップロード画像は `assets/` に保存し再利用可能（名前を付けて管理）
 - **LoRA 登録リスト（アプリ内管理）**: 人物 LoRA を複数登録し、生成時に複数選択できる
@@ -980,7 +1013,7 @@ runtime/            config.json / grok 作業ディレクトリ / agent-sessions
 11. 画像ワークフロー: **選択式**（krea2 / anima / z-image / qwen-image-edit）。`image_prompt` の
     仕様はファミリーごとに別物として扱う（§2.3 / §4.2）
 12. 画像 LoRA: **モデルファミリーで仕分け**、`image_workflow` と一致するものだけ使用可（§3.4）
-13. 音声生成: **独立モード**（画像・動画とは連結しない）。ACE-Step 1.5 と Stable Audio 3、出力は mp3（§2.4）
+13. 音声生成: **独立モード**（画像・動画とは連結しない）。ACE-Step 1.5 / Stable Audio 3（ComfyUI）と Suno V5（kie.ai、1 回 2 曲）、出力は mp3（§2.4）
 14. 未使用項目: **グレーアウトではなく非表示**（値はフォーム状態として保持）（§8）
 
 残課題: なし（実装着手可能）

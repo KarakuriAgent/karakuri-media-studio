@@ -920,10 +920,65 @@ Examples:
 ```
 """
 
+# Suno V5 — https://docs.kie.ai/suno-api/generate-music（customMode / style /
+# prompt = 歌詞 / negativeTags / vocalGender、1 リクエスト 2 曲）と
+# https://openmusicprompt.com/blog/suno-ai-metatags-guide（メタタグの作法）。
+
+SUNO_AUDIO_SPEC = """\
+# AUDIO PROMPT SPEC — Suno V5 (`suno_v5`, external API)
+
+The strongest option for **songs with real vocals**. Two fields do all the
+work, and they must not be mixed up:
+
+`audio_prompt` is the **style** — what the track *sounds* like, never what it
+is about. English, comma separated, and only audible things, in this order:
+genre, tempo feel / BPM, the main instruments, the vocal (gender, register,
+delivery) and the production / mood. **120-300 characters** is the sweet spot;
+past that the model starts averaging your ideas together. Do not name real
+artists (the request is rejected as an imitation) and do not put the story,
+the lyrics or anything you want *excluded* in here.
+
+`lyrics` carries the words, with **structure tags on their own line right
+before each section**: `[Intro]` `[Verse 1]` `[Pre-Chorus]` `[Chorus]`
+`[Bridge]` `[Outro]` `[End]`. Performance tags (`[Build Up]`, `[Whispered]`,
+`[Guitar Solo]`) work best at **1-3 words**; a final `[End]` is what reliably
+makes the song stop instead of fading into filler.
+- **Japanese lyrics just work**: write them in Japanese and they are sung in
+  Japanese, while the tags and `audio_prompt` stay **English**
+  (`J-pop, upbeat, female vocals, …`). Rewrite kanji the model is likely to
+  misread in hiragana.
+- **No lyrics == instrumental** — leave the field empty and the request is sent
+  with `instrumental: true`.
+- The **title is derived automatically** from the first sung line (or, for an
+  instrumental, the head of the style), so never write one.
+
+`negative_tags` is where everything you want kept *out* goes — comma separated
+sounds, same vocabulary as the style (`heavy metal, screaming, distorted
+guitar`). Writing exclusions into the style or the lyrics makes the model
+produce them instead.
+
+There is **no bpm, keyscale, language or length field** on this model: tempo
+and key belong in the style text (`92 BPM, F# minor feel`), the language is
+whatever the lyrics are written in, and the model decides the length. The
+`selects` knobs are `model` (`V5` default / `V5_5` / `V4_5PLUS`) and
+`vocal_gender` (`auto` / `m` / `f`, a probabilistic hint).
+Every request comes back as **two takes** of the same song, and both are saved.
+Contradictions break the take, so keep the mood words and the tempo consistent
+("slow jazz" with "140 BPM" produces neither).
+
+Example:
+```
+"audio_prompt": "dreamy Japanese city-pop, 92 BPM, breathy female vocal in a low register, warm Rhodes electric piano, fretless bass, brushed drums with a laid-back pocket, analog tape saturation, nostalgic and bittersweet"
+"lyrics": "[Verse 1]\\nさいごの電車が 雨をぬけて\\n\\n[Chorus - soaring]\\nネオンのように もえている\\n\\n[End]"
+"negative_tags": "distorted guitar, screaming, heavy drums"
+```
+"""
+
 #: audio workflow id -> the AUDIO PROMPT SPEC section to embed for it
 AUDIO_SPECS: dict[str, str] = {
     "ace_step1_5_xl_sft": ACE_STEP_AUDIO_SPEC,
     "stable_audio_3_medium_base": STABLE_AUDIO_SPEC,
+    "suno_v5": SUNO_AUDIO_SPEC,
 }
 
 #: audio workflow id -> the one-line reminder in the AUDIO WORKFLOWS catalog
@@ -937,6 +992,13 @@ AUDIO_PROMPT_HINTS: dict[str, str] = {
         "One dense sentence describing the sound itself, shaped by"
         " `audio_category`, ending in `BPM: X. Length: Y seconds` (music) or"
         " `Length: Y seconds` (SFX / one-shot). Never lyrics."
+    ),
+    "suno_v5": (
+        "The *style* only: English, comma separated, audible things (genre,"
+        " tempo, instruments, vocal, production), 120-300 characters. The words"
+        " go in `lyrics` with [Verse] / [Chorus] tags (Japanese lyrics stay"
+        " Japanese, tags stay English), and anything to keep out goes in"
+        " `negative_tags`. No lyrics == instrumental."
     ),
 }
 
@@ -972,19 +1034,28 @@ def _audio_catalog_entry_lines(entry: CatalogEntry) -> list[str]:
     default = " **（既定）**" if entry.id == DEFAULT_AUDIO_WORKFLOW else ""
     extra = [
         name
-        for name in ("lyrics", "bpm", "keyscale", "language", "audio_category",
-                     "reprompt")
+        for name in ("lyrics", "bpm", "keyscale", "language", "negative_tags",
+                     "audio_category", "reprompt")
         if name in entry.supports
     ]
+    # 尺を宣言しないモデル（Suno は API に長さのパラメータが無い）は、
+    # 「0〜0 秒」と書くより指定できないと言うほうが誤解が無い。
+    length = (
+        f"  - `duration`: {entry.min_duration:g}〜{entry.max_duration:g} 秒"
+        f"（省略時 {entry.default_duration:g} 秒。範囲外のジョブは拒否されます）"
+        if entry.max_duration > 0
+        else "  - `duration`: このモデルには長さの指定がありません"
+        "（書いても無視されるので省略してください）"
+    )
     lines = [
         f"- `{entry.id}` — {entry.label}{default}",
         f"  - 用途: {entry.description}",
         f"  - 必須フィールド: `mode: \"audio\"`, `audio_prompt`",
         "  - 追加フィールド: "
         + (", ".join(f"`{name}`" for name in extra) if extra else "なし"),
-        f"  - `duration`: {entry.min_duration:g}〜{entry.max_duration:g} 秒"
-        f"（省略時 {entry.default_duration:g} 秒。範囲外のジョブは拒否されます）",
+        length,
     ]
+    lines += _select_lines(entry)
     hint = AUDIO_PROMPT_HINTS.get(entry.id)
     if hint:
         lines.append(f"  - Writing `audio_prompt`: {hint}")
@@ -1120,7 +1191,8 @@ Rules of engagement:
   Apply the change and output a **complete** updated JSON again — never a diff.
 - All conversational text is Japanese. `audio_prompt` is **English**.
   `lyrics` are written in the language the song is sung in (the `language`
-  field), so Japanese lyrics stay Japanese.
+  field when the model has one, otherwise simply the language you write them
+  in), so Japanese lyrics stay Japanese.
 """
 
 AUDIO_OUTPUT_RULES = """\
@@ -1139,6 +1211,7 @@ AUDIO_OUTPUT_RULES = """\
   "bpm": 92,
   "keyscale": "F# minor",
   "language": "ja",
+  "negative_tags": "...",
   "notes": "..."
 }
 ```
@@ -1151,6 +1224,9 @@ AUDIO_OUTPUT_RULES = """\
   structure tags such as `[Instrumental]`.
 - `bpm` is a plain number (no quotes, no "BPM:" prefix), `keyscale` is
   `"<root> major"` / `"<root> minor"`, `language` an ISO code or `unknown`.
+- `negative_tags` (Suno only) is a comma separated list of **sounds to keep
+  out**, written like the style — never a sentence, and never the same words as
+  `audio_prompt`. There is no title field: it is derived from the lyrics.
 - `notes` is a short Japanese note for the user (what you assumed, what could
   be tweaked). It is never used as a model prompt.
 - Hard limits: no lyrics about real, identifiable people in sexual contexts, no
@@ -1172,6 +1248,10 @@ def _audio_context_section(ctx: ChatSessionCreate) -> str:
         "bpm": f"`bpm`（{BPM_RANGE[0]}-{BPM_RANGE[1]}）",
         "keyscale": "`keyscale`（例 `C major` / `F# minor`）",
         "language": "`language`（ISO コード、または `unknown`）",
+        "negative_tags": (
+            "`negative_tags`（曲に**入れたくない**要素。スタイルと同じ書き方で"
+            "英語のカンマ区切り）"
+        ),
         "audio_category": (
             "`audio_category`（" + " / ".join(AUDIO_CATEGORIES) + "。"
             "これはフォーム側で選ぶので JSON には入れない）"
@@ -1190,9 +1270,16 @@ def _audio_context_section(ctx: ChatSessionCreate) -> str:
         f"- この JSON で埋められるのは: `audio_prompt`"
         + ("、" + "、".join(reads) if reads else "")
         + " です。",
-        f"- 長さ: **{ctx.duration:g} 秒**"
-        f"（このモデルの対応範囲は {entry.min_duration:g}〜{entry.max_duration:g} 秒）。"
-        "その尺に収まる構成で書くこと。",
+        (
+            f"- 長さ: **{ctx.duration:g} 秒**"
+            f"（このモデルの対応範囲は {entry.min_duration:g}〜"
+            f"{entry.max_duration:g} 秒）。その尺に収まる構成で書くこと。"
+            if entry.max_duration > 0
+            # 長さのパラメータを持たないモデル（Suno）。フォームの秒数は
+            # 使われないので、尺の話に引きずられないよう明示する。
+            else "- 長さ: このモデルには指定できない（尺はモデルが決める）。"
+            "曲の構成だけを考えること。"
+        ),
     ]
     if entry.prompt_hint:
         lines += [

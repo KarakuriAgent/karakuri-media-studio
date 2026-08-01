@@ -10,6 +10,7 @@ import {
 } from '../form'
 import type { Options, WorkflowOption } from '../types'
 import ModelPicker from './ModelPicker'
+import WorkflowSelects from './WorkflowSelects'
 import { FieldError, Section } from './ui'
 
 /**
@@ -37,6 +38,10 @@ export default function AudioFields({
   const range = durationRange(workflow)
 
   const hasLyrics = audioSupports(workflow, 'lyrics')
+  const hasNegativeTags = audioSupports(workflow, 'negative_tags')
+  // 長さを宣言しないモデル（Suno は API に尺のパラメータが無い）では、効かない
+  // つまみを見せないよう秒数の入力ごと隠す（§2.4）。
+  const hasDuration = workflow == null || workflow.max_duration > 0
   const hasBpm = audioSupports(workflow, 'bpm')
   const hasKeyscale = audioSupports(workflow, 'keyscale')
   const hasLanguage = audioSupports(workflow, 'language')
@@ -93,6 +98,9 @@ export default function AudioFields({
         <p className="mt-1 text-[11px] text-slate-500">
           音声は単独で生成されます（画像・動画とは連結されません）。
         </p>
+        {/* ワークフローが宣言した選択式フィールド（Suno のモデル・
+            ボーカルの性別。§3.1） */}
+        <WorkflowSelects workflow={workflow} form={form} patch={patch} />
         <ModelPicker
           slots={options?.model_slots}
           workflowId={form.audioWorkflow}
@@ -148,6 +156,22 @@ export default function AudioFields({
         </Section>
       )}
 
+      {hasNegativeTags && (
+        <Section title="除外タグ（任意）">
+          <input
+            className="field"
+            aria-label="除外タグ"
+            value={form.negativeTags}
+            placeholder="distorted guitar, screaming, heavy drums"
+            onChange={(event) => patch({ negativeTags: event.target.value })}
+          />
+          <p className="mt-1 text-[11px] text-slate-500">
+            曲に入れたくない要素を英語のカンマ区切りで。プロンプトや歌詞に
+            「〜なし」と書くと逆効果なので、こちらに書きます。
+          </p>
+        </Section>
+      )}
+
       {hasCategory && (
         <Section title="カテゴリ">
           <select
@@ -169,30 +193,32 @@ export default function AudioFields({
       )}
 
       <Section title="出力設定">
-        <div className={hasBpm ? 'grid grid-cols-2 gap-2' : undefined}>
-          <div>
-            <label className="label" htmlFor="audio-duration">
-              長さ（秒）
-              {range && (
-                <span className="ml-1 text-slate-600">
-                  {range.min}〜{range.max}
-                </span>
-              )}
-            </label>
-            <input
-              id="audio-duration"
-              className="field"
-              type="number"
-              min={range?.min ?? 1}
-              max={range?.max ?? undefined}
-              step="1"
-              value={form.audioDuration}
-              onChange={(event) =>
-                patch({ audioDuration: Number(event.target.value) || 0 })
-              }
-            />
-            <FieldError message={fieldErrors.duration} />
-          </div>
+        <div className={hasBpm && hasDuration ? 'grid grid-cols-2 gap-2' : undefined}>
+          {hasDuration && (
+            <div>
+              <label className="label" htmlFor="audio-duration">
+                長さ（秒）
+                {range && (
+                  <span className="ml-1 text-slate-600">
+                    {range.min}〜{range.max}
+                  </span>
+                )}
+              </label>
+              <input
+                id="audio-duration"
+                className="field"
+                type="number"
+                min={range?.min ?? 1}
+                max={range?.max ?? undefined}
+                step="1"
+                value={form.audioDuration}
+                onChange={(event) =>
+                  patch({ audioDuration: Number(event.target.value) || 0 })
+                }
+              />
+              <FieldError message={fieldErrors.duration} />
+            </div>
+          )}
           {hasBpm && (
             <div>
               <label className="label" htmlFor="audio-bpm">
