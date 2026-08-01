@@ -843,6 +843,22 @@ def test_first_and_last_frames_become_two_image_urls():
     assert body["resolution"] == "1080p"
 
 
+def test_veo_can_be_generated_straight_at_4k():
+    """``4k`` は generate API が受ける値（8 秒生成のときのみ・高価）。"""
+    request = kie.build_request(
+        VEO_QUALITY,
+        _video_params(
+            video_workflow=VEO_QUALITY.id,
+            selects={"resolution": "4k", "duration": "8"},
+        ),
+        {},
+    )
+    body = kie.task_api(request.api).create_body(request.model, request.input)
+
+    assert body["resolution"] == "4k"
+    assert body["duration"] == 8
+
+
 def test_without_an_image_veo_is_text_to_video():
     request = kie.build_request(VEO_FAST, _video_params(), {})
     body = kie.task_api(request.api).create_body(request.model, request.input)
@@ -961,6 +977,10 @@ def test_veo_is_offered_as_a_video_workflow(client, monkeypatch):
         "duration",
         "resolution",
     ]
+    resolution = [s for s in veo["selects"] if s["name"] == "resolution"][0]
+    # 4k は generate API が直接受ける（生成後の追加取得とは別の経路）
+    assert resolution["choices"] == ["720p", "1080p", "4k"]
+    assert resolution["default"] == "720p"
 
 
 def test_the_veo_guide_is_injected_only_when_veo_is_selected():
@@ -1345,6 +1365,8 @@ def test_a_start_frame_becomes_the_seedance_first_frame_url():
     assert isinstance(task_input["duration"], int)
     # 音声は既定 ON、真偽値で送る
     assert task_input["generate_audio"] is True
+    # NSFW チェックは既定 OFF（真偽値で送る。false でも省略はしない）
+    assert task_input["nsfw_checker"] is False
     # 2 系に無いパラメータは宣言していない
     for absent in ("seed", "camera_fixed", "negative_prompt"):
         assert absent not in task_input
@@ -1359,6 +1381,7 @@ def test_seedance_takes_a_first_and_a_last_frame():
                 "duration": "15",
                 "aspect_ratio": "adaptive",
                 "generate_audio": "false",
+                "nsfw_checker": "true",
             }
         ),
         {
@@ -1374,6 +1397,7 @@ def test_seedance_takes_a_first_and_a_last_frame():
     assert task_input["duration"] == 15
     assert task_input["aspect_ratio"] == "adaptive"
     assert task_input["generate_audio"] is False
+    assert task_input["nsfw_checker"] is True
 
 
 def test_without_an_image_seedance_is_text_to_video():
@@ -1421,7 +1445,8 @@ def test_both_seedance_variants_are_offered_as_video_workflows(client, monkeypat
         assert entry["backend"] == "kie"
         selects = {select["name"]: select for select in entry["selects"]}
         assert list(selects) == [
-            "resolution", "duration", "aspect_ratio", "generate_audio"
+            "resolution", "duration", "aspect_ratio", "generate_audio",
+            "nsfw_checker",
         ]
         assert selects["resolution"]["choices"] == resolutions
         assert selects["resolution"]["default"] == "720p"
@@ -1430,6 +1455,9 @@ def test_both_seedance_variants_are_offered_as_video_workflows(client, monkeypat
         assert selects["duration"]["default"] == "5"
         assert selects["aspect_ratio"]["choices"][-1] == "adaptive"
         assert selects["generate_audio"]["default"] == "true"
+        # NSFW チェックは既定 OFF（フィルタ無効）
+        assert selects["nsfw_checker"]["choices"] == ["false", "true"]
+        assert selects["nsfw_checker"]["default"] == "false"
 
 
 def test_the_seedance_guide_is_injected_only_when_seedance_is_selected():
@@ -1613,6 +1641,50 @@ def test_the_model_version_and_the_vocal_gender_are_selects():
     assert body["negativeTags"] == "distorted guitar, screaming"
 
 
+def test_the_weights_are_sent_as_numbers():
+    """``styleWeight`` などは 0〜1 の**小数**（選択肢は文字列で届く）。"""
+    request = kie.build_request(
+        SUNO,
+        _suno_params(
+            selects={
+                "style_weight": "0.75",
+                "weirdness": "0",
+                "audio_weight": "1",
+            }
+        ),
+        {},
+    )
+    body = kie.task_api(request.api).create_body(request.model, request.input)
+
+    assert body["styleWeight"] == 0.75
+    assert body["weirdnessConstraint"] == 0.0
+    assert body["audioWeight"] == 1.0
+    for key in ("styleWeight", "weirdnessConstraint", "audioWeight"):
+        assert isinstance(body[key], float)
+
+
+def test_auto_weights_are_dropped_from_the_body():
+    """``auto`` は「指定しない」（0 を送ると「0 を指定した」になってしまう）。"""
+    request = kie.build_request(SUNO, _suno_params(), {})
+    body = kie.task_api(request.api).create_body(request.model, request.input)
+
+    for key in ("styleWeight", "weirdnessConstraint", "audioWeight"):
+        assert key not in body
+    # vocal_gender の auto と同じ流儀（キーごと落ちる）
+    assert "vocalGender" not in body
+
+
+def test_one_weight_can_be_set_while_the_others_stay_auto():
+    request = kie.build_request(
+        SUNO, _suno_params(selects={"weirdness": "0.5"}), {}
+    )
+    body = kie.task_api(request.api).create_body(request.model, request.input)
+
+    assert body["weirdnessConstraint"] == 0.5
+    assert "styleWeight" not in body
+    assert "audioWeight" not in body
+
+
 def test_suno_polls_through_its_own_status_words(fake_kie):
     """``PENDING -> TEXT_SUCCESS -> FIRST_SUCCESS -> SUCCESS``（独自の語彙）。"""
     fake_kie.answer("create", FakeResponse(envelope({"taskId": "suno-1"})))
@@ -1776,10 +1848,16 @@ def test_suno_is_offered_as_an_audio_workflow(client, monkeypatch):
     # 尺のパラメータが無いので長さは宣言しない（フォームは秒数欄を出さない）
     assert entry["max_duration"] == 0
     selects = {select["name"]: select for select in entry["selects"]}
-    assert list(selects) == ["model", "vocal_gender"]
+    assert list(selects) == [
+        "model", "vocal_gender", "style_weight", "weirdness", "audio_weight",
+    ]
     assert selects["model"]["choices"] == ["V5", "V5_5", "V4_5PLUS"]
     assert selects["model"]["default"] == "V5"
     assert selects["vocal_gender"]["choices"] == ["auto", "m", "f"]
+    # 0〜1 の重みづけは 0.25 刻み + auto（= 指定しない）が既定
+    for name in ("style_weight", "weirdness", "audio_weight"):
+        assert selects[name]["choices"] == ["auto", "0", "0.25", "0.5", "0.75", "1"]
+        assert selects[name]["default"] == "auto"
 
 
 def test_the_suno_guide_is_injected_only_when_suno_is_selected():

@@ -267,6 +267,11 @@ class KieTask:
     #: （Kling の ``duration`` は文字列、Seedance の ``duration`` は int）ので、
     #: 選択式フィールドの文字列を ``int`` に直すキーをここで宣言する。
     int_keys: tuple[str, ...] = ()
+    #: **小数で渡す** ``input`` のキー（Suno の ``styleWeight`` など 0〜1 の
+    #: つまみ）。選択式フィールドの文字列を ``float`` に直してから送り、
+    #: **数として読めない値（``"auto"`` = 指定しない）はキーごと落とす**。
+    #: 「未指定」を送らないことに意味がある（0 は「0 を指定した」になる）。
+    float_keys: tuple[str, ...] = ()
     #: API 系統（既定は Market 系の統一 API）
     api: KieApi = "market"
     #: 1 タスクの概算クレジット（0 = 不明。実消費は ``creditsConsumed`` を記録する）
@@ -1180,8 +1185,10 @@ WAN_DANCER = WorkflowSpec(
 VEO_ASPECT_RATIOS: tuple[str, ...] = ("16:9", "9:16")
 #: Veo の尺（秒）。1080p は 8 秒生成のときだけ用意される。
 VEO_DURATIONS: tuple[str, ...] = ("4", "6", "8")
-#: 生成解像度（4K は生成後の追加取得なので今は出さない）
-VEO_RESOLUTIONS: tuple[str, ...] = ("720p", "1080p")
+#: 生成解像度。``4k`` は generate API 自体が受け取る（生成後の追加取得
+#: （``POST /veo/get-4k-video``）とは別の経路）。ただし 8 秒生成のときだけで、
+#: しかも高価なので既定にはしない。
+VEO_RESOLUTIONS: tuple[str, ...] = ("720p", "1080p", "4k")
 
 #: プロンプトの書き方（Fast / Quality で同じ。モデルの違いは品質と値段だけ）
 VEO_PROMPT_HINT = (
@@ -1254,11 +1261,13 @@ def _veo_spec(
                 label="解像度",
                 choices=VEO_RESOLUTIONS,
                 default="720p",
-                hint="1080p は尺 8 秒のときのみ。",
+                hint="1080p・4k は尺 8 秒のときのみ。4k は高価なので"
+                "仕上げのカットだけに使う。",
             ),
         },
         notes=(
             "kie.ai 経由 / 音声つき / SynthID 透かしが必ず入る /"
+            " 4k は生成時に選べる（8 秒のときのみ・高価） /"
             " 生成後の 1080P・4K 追加取得と延長（extend）は未対応"
         ),
     )
@@ -1439,6 +1448,8 @@ SEEDANCE_ASPECT_RATIOS: tuple[str, ...] = (
 )
 #: ネイティブ音声の ON / OFF（**既定は ON**）
 SEEDANCE_AUDIO: tuple[str, ...] = ("false", "true")
+#: kie.ai 側の NSFW フィルタの ON / OFF（**既定は OFF**）
+SEEDANCE_NSFW_CHECKER: tuple[str, ...] = ("false", "true")
 
 #: プロンプトの長さの上限（kie.ai の Seedance 2 系）
 SEEDANCE_MAX_PROMPT_CHARS = 20000
@@ -1502,8 +1513,9 @@ def _seedance_spec(
                 f"{KIE_SELECT_PREFIX}duration": "duration",
                 f"{KIE_SELECT_PREFIX}aspect_ratio": "aspect_ratio",
                 f"{KIE_SELECT_PREFIX}generate_audio": "generate_audio",
+                f"{KIE_SELECT_PREFIX}nsfw_checker": "nsfw_checker",
             },
-            bool_keys=("generate_audio",),
+            bool_keys=("generate_audio", "nsfw_checker"),
             int_keys=("duration",),
             credits=credits,
         ),
@@ -1531,6 +1543,13 @@ def _seedance_spec(
                 choices=SEEDANCE_AUDIO,
                 default="true",
                 hint="既定で ON。false にすると無音の映像だけを作る。",
+            ),
+            "nsfw_checker": SelectSpec(
+                label="NSFW チェック",
+                choices=SEEDANCE_NSFW_CHECKER,
+                default="false",
+                hint="false で kie.ai 側のフィルタ無効（既定）。true にすると"
+                "フィルタが有効になり、際どい生成が弾かれる。",
             ),
         },
         notes=(
@@ -1842,6 +1861,11 @@ SUNO_MODELS: tuple[str, ...] = ("V5", "V5_5", "V4_5PLUS")
 #: （:attr:`app.kie.SunoTaskApi.VOCAL_GENDERS`）。
 SUNO_VOCAL_GENDERS: tuple[str, ...] = ("auto", "m", "f")
 
+#: 0〜1 の重みづけ（`styleWeight` / `weirdnessConstraint` / `audioWeight`）。
+#: API は小数を取るので選択式では 0.25 刻みだけ出し、``auto``（= 指定しない）を
+#: 既定にしてキーごと落とす（:attr:`KieTask.float_keys`）。
+SUNO_WEIGHTS: tuple[str, ...] = ("auto", "0", "0.25", "0.5", "0.75", "1")
+
 #: `style` の上限（kie.ai の customMode）。歌詞（`prompt`）は 5,000 字まで。
 SUNO_MAX_PROMPT_CHARS = 1000
 
@@ -1879,7 +1903,13 @@ SUNO_V5 = WorkflowSpec(
             "negative_tags": "negativeTags",
             f"{KIE_SELECT_PREFIX}model": "model",
             f"{KIE_SELECT_PREFIX}vocal_gender": "vocalGender",
+            f"{KIE_SELECT_PREFIX}style_weight": "styleWeight",
+            f"{KIE_SELECT_PREFIX}weirdness": "weirdnessConstraint",
+            f"{KIE_SELECT_PREFIX}audio_weight": "audioWeight",
         },
+        # 0〜1 の重みづけは小数で送る。``auto`` は数として読めないので
+        # キーごと落ちる（= kie.ai 側の既定に任せる）
+        float_keys=("styleWeight", "weirdnessConstraint", "audioWeight"),
         # customMode=true = style と歌詞を自分で書くモード（false は説明文
         # 500 字だけのおまかせ生成なので、このアプリの使い方には合わない）
         constants={"customMode": True},
@@ -1899,11 +1929,34 @@ SUNO_V5 = WorkflowSpec(
             default="auto",
             hint="確率的なヒント（m = 男性 / f = 女性）。auto は指定しない。",
         ),
+        "style_weight": SelectSpec(
+            label="スタイルの効き",
+            choices=SUNO_WEIGHTS,
+            default="auto",
+            hint="スタイル文にどれだけ忠実にするか（0〜1）。高いほど指定どおり、"
+            "低いほど自由。auto は指定しない（kie.ai の既定）。",
+        ),
+        "weirdness": SelectSpec(
+            label="奇抜さ",
+            choices=SUNO_WEIGHTS,
+            default="auto",
+            hint="実験的な展開をどれだけ許すか（0〜1）。高いほど奇抜。"
+            "auto は指定しない（kie.ai の既定）。",
+        ),
+        "audio_weight": SelectSpec(
+            label="サウンドの効き",
+            choices=SUNO_WEIGHTS,
+            default="auto",
+            hint="音づくり（編曲・音色）にどれだけ寄せるか（0〜1）。"
+            "auto は指定しない（kie.ai の既定）。",
+        ),
     },
     notes=(
         "kie.ai 経由 / 1 回で 2 曲返る（両方保存される） / 歌詞なしでインスト"
         " / bpm・キー・言語・尺の指定は無い（スタイル文に書く） / 除外したい"
-        "要素は「除外タグ」へ / 成果物 URL は 14 日で失効"
+        "要素は「除外タグ」へ / スタイル・奇抜さ・サウンドの効きは 0〜1 の"
+        "重みづけ（auto で kie.ai の既定） / タイトルは歌詞かスタイルから自動 /"
+        " 成果物 URL は 14 日で失効"
     ),
 )
 

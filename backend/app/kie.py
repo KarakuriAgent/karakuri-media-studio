@@ -824,6 +824,21 @@ def _as_int(value: Any) -> Any:
         return value
 
 
+def _as_float(value: Any) -> float | None:
+    """小数で送るキーの値（数として読めなければ ``None`` = キーごと落とす）。
+
+    選択式フィールドの「指定しない」（``"auto"``）をここで吸収する: 0 を送ると
+    「0 を指定した」になってしまうつまみ（Suno の重みづけ）があるので、
+    未指定はキーそのものを送らないのが正しい。
+    """
+    if isinstance(value, bool):
+        return None
+    try:
+        return float(str(value).strip())
+    except (TypeError, ValueError):
+        return None
+
+
 def task_input(
     spec: WorkflowSpec, params: GenerationParams, uploads: dict[str, str]
 ) -> dict[str, Any]:
@@ -837,9 +852,12 @@ def task_input(
     2 枚目が最終フレーム）。並びは宣言順で、空の値はそこでも落ちる。
 
     :attr:`app.workflows.KieTask.bool_keys` に挙げたキーは **``bool``** に、
-    :attr:`app.workflows.KieTask.int_keys` に挙げたキーは **``int``** になる
+    :attr:`app.workflows.KieTask.int_keys` に挙げたキーは **``int``** に、
+    :attr:`app.workflows.KieTask.float_keys` に挙げたキーは **``float``** になる
     （選択式フィールドの値は文字列で届くので、Kling の ``sound`` や Seedance の
     ``duration`` のように JSON の型が決まっているものはここで直す）。
+    ``float_keys`` だけは**数として読めない値をキーごと落とす**ので、Suno の
+    ``styleWeight`` などの「auto = 指定しない」がそのまま表現できる。
     """
     task = spec.kie
     if task is None:
@@ -856,6 +874,11 @@ def task_input(
             payload[key] = _as_bool(value)
         elif key in task.int_keys:
             payload[key] = _as_int(value)
+        elif key in task.float_keys:
+            number = _as_float(value)
+            # "auto"（＝指定しない）はキーごと落とす
+            if number is not None:
+                payload[key] = number
         else:
             payload[key] = value
     return payload

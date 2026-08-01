@@ -754,7 +754,8 @@ Hard rules:
 - With a start frame, do **not** re-describe what the picture already shows —
   write how it moves, what happens next, and how it sounds.
 - Duration, aspect ratio and resolution are job fields (`selects`), never
-  sentences in the prompt.
+  sentences in the prompt. `resolution` also offers `4k`, but only for 8 second
+  clips and at a much higher price — keep `720p` unless the shot is final.
 """
 
 # Kling 3.0 — https://docs.kie.ai/market/kling/kling-3-0.md と
@@ -857,10 +858,11 @@ There is **no seed, no `camera_fixed` and no negative-prompt parameter** on
 Seedance 2: a locked-off camera is `fixed camera, no camera movement` in the
 text, and everything unwanted goes in the closing `avoid …` clause.
 
-Resolution, duration, aspect ratio and audio on/off are job fields (`selects`),
-never sentences in the prompt. `generate_audio` is **on by default**, so name
-the ambience and the effects you want; multimodal references (reference images
-/ videos / audio) are not wired up yet.
+Resolution, duration, aspect ratio, audio on/off and the NSFW checker are job
+fields (`selects`), never sentences in the prompt. `generate_audio` is **on by
+default**, so name the ambience and the effects you want; `nsfw_checker` is
+**off by default** (kie.ai's own filter stays disabled). Multimodal references
+(reference images / videos / audio) are not wired up yet.
 """
 
 # Grok Imagine video-1.5 — https://docs.x.ai/developers/model-capabilities/video/generation
@@ -1095,8 +1097,13 @@ produce them instead.
 There is **no bpm, keyscale, language or length field** on this model: tempo
 and key belong in the style text (`92 BPM, F# minor feel`), the language is
 whatever the lyrics are written in, and the model decides the length. The
-`selects` knobs are `model` (`V5` default / `V5_5` / `V4_5PLUS`) and
-`vocal_gender` (`auto` / `m` / `f`, a probabilistic hint).
+`selects` knobs are `model` (`V5` default / `V5_5` / `V4_5PLUS`),
+`vocal_gender` (`auto` / `m` / `f`, a probabilistic hint) and three 0-1
+weights — `style_weight` (how literally the style text is followed),
+`weirdness` (how experimental the arrangement may get) and `audio_weight`
+(how much the sound design drives the take). All three default to `auto`,
+which sends nothing and leaves the model's own balance alone. The title is
+derived from the lyrics or the style; there is no title field.
 Every request comes back as **two takes** of the same song, and both are saved.
 Contradictions break the take, so keep the mood words and the tempo consistent
 ("slow jazz" with "140 BPM" produces neither).

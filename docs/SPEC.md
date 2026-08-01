@@ -103,11 +103,13 @@
   動画 LoRA を指定したジョブは 422 になり、フォームは LoRA（動画）欄を出さない
 - **`veo3_1_fast` / `veo3_1_quality`（family `veo`、backend `kie`）** はテンプレートを持たない**外部 API**の
   ワークフロー（§5.2）。映像と**音声（環境音・効果音・セリフ）を同時に生成**し、尺 4/6/8 秒・縦横比 16:9 / 9:16・
-  解像度 720p / 1080p を**選択式フィールド**（§3.1）で選ぶ。画像は任意で、1 枚なら開始フレーム、
+  解像度 720p（既定）/ 1080p / 4k を**選択式フィールド**（§3.1）で選ぶ（`resolution` は generate API が
+  そのまま受け取る値で、**1080p・4k は尺 8 秒のときだけ**。4k は高価なので仕上げのカットだけに使う）。画像は任意で、1 枚なら開始フレーム、
   最終フレーム画像も渡すと flf2v 相当（`imageUrls` 2 枚）になる。`generationType` は渡した枚数から自動で決まる。
   ユーザー LoRA・`fps`・自前の解像度指定は使えない。Fast は日常の量産、Quality は本番カット用（約 4 倍の値段）。
   プロンプトの書き方は Grok 側にモデル専用ガイド（`prompts.VIDEO_SPECS`）を注入する。
-  生成後の 1080P / 4K 追加取得と延長（extend）は未対応。
+  生成後の 1080P / 4K 追加取得（`GET /veo/get-1080p-video` / `POST /veo/get-4k-video`）と延長（extend）は未対応。
+  `seeds`（10000〜99999 の再現性シード）と `watermark` も未対応（選択式に馴染まない任意入力なので見送り）。
   `full`（画像→動画）は **ComfyUI の画像ワークフローと組み合わせられる**（§2.1 / §5.2）:
   1 段目の生成画像が kie の File Upload API 経由で開始フレームになる
 - **`kling3_video`（family `kling`、backend `kie`）** も外部 API のワークフロー（§5.2）で、Veo と違い
@@ -129,12 +131,15 @@
   2.0 は **4K まで**（720p で試作 → 1080p / 4K で仕上げ）、Mini は 720p までの最安バリアント（試作・大量出し）。
   選択式フィールド（§3.1）は `resolution`（2.0: 480p / 720p（既定）/ 1080p / 4k、Mini: 480p / 720p）・
   `duration`（4〜15、既定 5）・`aspect_ratio`（16:9（既定）/ 9:16 / 1:1 / 4:3 / 3:4 / 21:9 / `adaptive` =
-  入力画像に追従）・`generate_audio`（**既定 true**）。
+  入力画像に追従）・`generate_audio`（**既定 true**）・`nsfw_checker`（**既定 false** = kie.ai 側の
+  NSFW フィルタ無効。`true` にするとフィルタが有効になり、際どい生成が弾かれる）。
   **開始 / 最終フレームはキーが別**（`first_frame_url` / `last_frame_url`）なので、Kling の `image_urls` のような
   配列（`KieTask.list_keys`）ではなく論理入力ごとに別キーを宣言する。**`duration` は整数で送る**
-  （Kling の文字列と型が逆なので `KieTask.int_keys` で `int` に直す）、**`generate_audio` は真偽値**
+  （Kling の文字列と型が逆なので `KieTask.int_keys` で `int` に直す）、**`generate_audio` / `nsfw_checker` は真偽値**
   （`KieTask.bool_keys`）。
   2 系に **`seed` / `camera_fixed` は無い**ので、カメラ固定も再現性もプロンプト本文で指定する。
+  `web_search`（t2v のときだけ効く真偽値）は未対応: i2v では黙って無視される項目になるので、
+  モードで出し分ける仕組みができるまで宣言しない。
   マルチモーダル参照（`reference_image_urls` / `reference_video_urls` / `reference_audio_urls`）と 2.0 Fast は未対応で、
   参照モードを持たないため API 側の「先頭フレーム / 先頭+末尾 / 参照」の 3 モード排他は自然に満たされる。
   Seedance 2.5 は kie.ai 未提供（Coming Soon）だが、モデル名はマニフェストの宣言なので**エントリを 1 つ足すだけ**で通る。
@@ -185,7 +190,7 @@ LoRA チェーンも持たない（テンプレートに LoRA ノードが無い
 |---|---|---|---|---|
 | `ace_step1_5_xl_sft` | ACE-Step 1.5 XL（音楽・歌もの） | `ace-step` | 10 / 120 / 600 | `lyrics`（空でインスト）・`bpm`（10-300）・`keyscale`・`language` |
 | `stable_audio_3_medium_base` | Stable Audio 3 Medium（効果音・環境音・音楽） | `stable-audio` | 1 / 60 / 380 | `audio_category`（Music / Instrument / SFX / One-shot）・`reprompt`（内蔵 LLM でのプロンプト展開） |
-| `suno_v5` | Suno V5（歌もの・外部 API、kie.ai `V5` / `V5_5` / `V4_5PLUS`） | `suno` | 指定なし（モデルが決める） | `lyrics`（空でインスト）・`negative_tags`・選択式 `model` / `vocal_gender` |
+| `suno_v5` | Suno V5（歌もの・外部 API、kie.ai `V5` / `V5_5` / `V4_5PLUS`） | `suno` | 指定なし（モデルが決める） | `lyrics`（空でインスト）・`negative_tags`・選択式 `model` / `vocal_gender` / `style_weight` / `weirdness` / `audio_weight` |
 
 - 既定は `ace_step1_5_xl_sft`
 - ジョブの必須項目は `audio_prompt` のみ。`duration` がワークフローの範囲外、`keyscale` / `language` /
@@ -202,7 +207,12 @@ LoRA チェーンも持たない（テンプレートに LoRA ノードが無い
   `customMode` は常に true。true で必須の `title` は**歌詞の最初の歌う行（無ければスタイルの先頭）から自動生成**する
   （専用の入力欄は作らない）。除外したい要素は歌詞ではなく `negative_tags`（→ `negativeTags`）へ書く。
   選択式フィールド（§3.1）は `model`（`V5`（既定）/ `V5_5` / `V4_5PLUS`。選んだ値がマニフェストの既定を上書きする）と
-  `vocal_gender`（`auto`（既定・キーごと送らない）/ `m` / `f`）。
+  `vocal_gender`（`auto`（既定・キーごと送らない）/ `m` / `f`）、および 0〜1 の重みづけ 3 つ
+  — `style_weight`（→ `styleWeight`、スタイル文への忠実さ）・`weirdness`（→ `weirdnessConstraint`、奇抜さ）・
+  `audio_weight`（→ `audioWeight`、音づくりの効き）。選択肢は `auto` + 0.25 刻み（`0` / `0.25` / `0.5` /
+  `0.75` / `1`）で、**`auto`（既定）はキーごと送らない**（0 を送ると「0 を指定した」になってしまうため。
+  `vocal_gender` の `auto` と同じ流儀で、`KieTask.float_keys` が数として読めない値を落とす）。
+  `personaId` / `personaModel`（ペルソナ作成 API とセット）と `model` の `V4_5ALL` は未対応。
   **ACE-Step 固有の `bpm` / `keyscale` / `language` と尺の指定は無い**（Suno の API にパラメータが無い）。
   フォームはそれらの入力を出さず、エージェントが指定してきたらプラン検証で 422 にして書き場所（スタイル文・歌詞そのもの）へ誘導する。
   尺は `min/default/max_duration` を宣言しない（= 0）ことで「長さの指定が無いモデル」を表し、`duration` の範囲検証も飛ばす
@@ -659,7 +669,7 @@ ComfyUI と並ぶ **2 つめの生成バックエンド**として、外部 API 
   `KieTask.bool_keys`（真偽値 = `sound`）。選択式フィールドの値はすべて文字列で届くため、
   型を直さないと API に弾かれる。逆に Kling の `duration` は**文字列のまま**送るのが正しい（§2.2）
 - **Seedance 2 系も Market 系のまま**（`api: "market"`、モデル `bytedance/seedance-2` / `-mini`）。型の宣言は
-  `KieTask.int_keys`（整数 = `duration`）と `KieTask.bool_keys`（真偽値 = `generate_audio`）。開始 / 最終フレームは
+  `KieTask.int_keys`（整数 = `duration`）と `KieTask.bool_keys`（真偽値 = `generate_audio` / `nsfw_checker`）。開始 / 最終フレームは
   `first_frame_url` / `last_frame_url` と**キーが別**なので `list_keys` は使わない。バリアントの違いは
   **モデル名と解像度の選択肢と値段だけ**なので、マニフェストは 1 つのファクトリから作る（2.5 追加はエントリ 1 行）
 - **Suno は旧専用系**（`api: "suno"`、`app.kie.SunoTaskApi`）。エンドポイントは
@@ -667,7 +677,11 @@ ComfyUI と並ぶ **2 つめの生成バックエンド**として、外部 API 
   `PENDING → TEXT_SUCCESS → FIRST_SUCCESS → SUCCESS`（中間の 2 つは「まだ待つ」だが進捗として出す。
   `GENERATE_AUDIO_FAILED` / `SENSITIVE_WORD_ERROR` などの `*_FAILED` / `*_ERROR` は失敗）。
   Veo と同じくボディは平らで、`model` は**モデル名ではなくバージョン**（`V5` / `V5_5` / `V4_5PLUS`）。
-  `instrumental`（歌詞の有無）と `title`（歌詞かスタイルの頭）は他の入力から決まるので `create_body` が組み立てる。
+  `instrumental`（歌詞の有無）と `title`（歌詞かスタイルの頭）は他の入力から決まるので `create_body` が組み立てる
+  （`title` を明示指定する入力欄は作らない: ジョブのフィールドを 1 つ増やすと API・フォーム・エージェント
+  プロトコル・履歴まで波及するのに対し、自動生成で実害が出ていないため）。
+  0〜1 の重みづけ（`styleWeight` / `weirdnessConstraint` / `audioWeight`）は `KieTask.float_keys` で
+  `float` に直して送り、**数として読めない値（`auto` = 指定しない）はキーごと落とす**。
   **`callBackUrl` はスキーマ上必須**だが、ローカル運用では webhook を受けられないのでダミー
   （`kie.CALLBACK_URL` = `https://localhost/unused-callback`）を固定で入れ、結果はポーリングで拾う。
   kie.ai はコールバックの配送失敗をタスクの失敗にはしない前提で、**もしこの運用が通らなくなったらここを見直す**
