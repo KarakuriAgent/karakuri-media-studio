@@ -399,8 +399,12 @@ export default function App() {
         end_image: accepts('end_image') ? form.endImage || null : null,
         reference_video: needs('video') ? form.referenceVideo || null : null,
         seed: form.seedLocked ? form.seed : null,
-        // 選択中のワークフローが宣言している選択項目だけ（未指定は送らない）
-        selects: jobSelects(form, workflow),
+        // そのモードで走るワークフローが宣言している選択項目だけ（未指定は送らない）
+        selects: jobSelects(
+          form,
+          form.mode === 'image_only' ? null : workflow,
+          form.mode === 'i2v' ? null : imageWorkflow,
+        ),
         // 走らせるワークフローのスロットだけ（既定値のままのものは送らない）
         model_overrides: jobModelOverrides(
           form,

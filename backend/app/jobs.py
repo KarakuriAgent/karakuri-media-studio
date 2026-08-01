@@ -48,7 +48,7 @@ from typing import Any
 import aiosqlite
 from PIL import Image
 
-from . import comfy, grok_media, kie, nsfw as nsfw_service, runpod, ws
+from . import codex_media, comfy, grok_media, kie, nsfw as nsfw_service, runpod, ws
 from .config import load_settings
 from .db import get_db
 from .ids import new_id
@@ -408,14 +408,18 @@ def stage_specs(mode: str, params: dict[str, Any]) -> list[tuple[str, WorkflowSp
 #: ComfyUI なら :func:`comfy.upload_file`、kie.ai なら File Upload API で公開 URL、
 #: Grok Build CLI なら :func:`grok_media.stage_input`（作業ディレクトリへコピーして
 #: 指示文でファイル名を参照）。どれも 1 段目の成果物がローカルのファイルであれば
-#: 済むので、画像ワークフローを持つバックエンド（ComfyUI / Grok CLI）から
-#: すべての向きが張れる。``kie`` から始まる向きは kie.ai の画像ワークフローが
-#: 入ってから（今は 1 段目に選べるものが無い）。
+#: 済むので、画像ワークフローを持つバックエンド（ComfyUI / Grok CLI / Codex CLI）
+#: から**すべての向き**が張れる。``codex_cli`` は画像しか作れない（§5.4）ので
+#: 1 段目にしか現れず、``* → codex_cli`` の向きは宣言しない。``kie`` から始まる
+#: 向きは kie.ai の画像ワークフローが入ってから（今は 1 段目に選べるものが無い）。
 _STAGE_BRIDGES: frozenset[tuple[str, str]] = frozenset({
     ("comfyui", "kie"),
     ("comfyui", "grok_cli"),
     ("grok_cli", "comfyui"),
     ("grok_cli", "kie"),
+    ("codex_cli", "comfyui"),
+    ("codex_cli", "kie"),
+    ("codex_cli", "grok_cli"),
 })
 
 
@@ -490,6 +494,7 @@ def _validate(params: dict[str, Any]) -> None:
             video_workflow,
             params.get("selects"),
             audio_workflow=params.get("audio_workflow"),
+            image_workflow=image_workflow,
         )
         or prompt_length_problem(mode, video_workflow, params.get("video_prompt"))
         or _model_override_problem(params)
@@ -1508,6 +1513,57 @@ async def _run_grok_cli_stage(
     return saved
 
 
+# --------------------------------------------------------------------------
+# Codex CLI バックエンド（SPEC §5.4 / issue #23）
+# --------------------------------------------------------------------------
+
+async def _run_codex_cli_stage(
+    job_id: str,
+    stage: str,
+    spec: WorkflowSpec,
+    params: GenerationParams,
+    stages: dict[str, Any],
+    label: str,
+    overall: OverallProgress,
+    stage_index: int,
+    job_dir: Path,
+) -> Path:
+    """Codex CLI に 1 ステージ分を描かせ、成果物のパスを返す。
+
+    :func:`_run_grok_cli_stage` と同じ役回り（CLI が成果物を直接
+    ``outputs/{job_id}/`` に書くので、ダウンロードの段は要らない）。gpt-image-2 は
+    画像しか作れないので入力ファイルの下ごしらえも無い。
+    """
+    overall.start_stage(stage_index, 0)
+    _, stem, _ = _STAGE_ARTIFACTS[stage]
+    dest = job_dir / f"{stem}.png"
+    request = codex_media.build_request(spec, params, dest)
+    stages[stage] = {
+        "workflow_id": spec.id,
+        "backend": "codex_cli",
+        "request": request.as_dict(),
+    }
+    await _update(job_id, workflow_json=json.dumps(stages, ensure_ascii=False))
+    await ws.publish(
+        job_id,
+        "running",
+        message=f"{label}: Codex CLI に指示しました",
+        progress=overall.stage_fraction(_GROK_START_PROGRESS),
+    )
+
+    async def relay(text: str) -> None:
+        await ws.publish(
+            job_id,
+            "running",
+            message=f"{label}: {text}",
+            progress=overall.stage_fraction(0.5),
+        )
+
+    saved = await codex_media.generate(request, on_progress=relay)
+    await ws.publish(job_id, "running", progress=overall.stage_finished())
+    return saved
+
+
 #: ステージ名 -> 進捗メッセージの見出し（バックエンドが変わっても同じ表示）
 _STAGE_LABELS = {"image": "画像生成", "video": "動画生成", "audio": "音声生成"}
 
@@ -1586,6 +1642,11 @@ async def _run_job_stages(job: Job) -> dict[str, Any]:
                 job_id, stage, spec, _generation_params(job, {}), job.params,
                 stages, label, overall, index, job_dir,
             )
+        elif spec.backend == "codex_cli":
+            saved = await _run_codex_cli_stage(
+                job_id, stage, spec, _generation_params(job, {}),
+                stages, label, overall, index, job_dir,
+            )
         else:
             raise JobError(
                 f"生成バックエンド '{spec.backend}' はまだ実装されていません"
@@ -1656,6 +1717,7 @@ async def run_job(job_id: str) -> None:
                     runpod.RunPodError,
                     kie.KieError,
                     grok_media.GrokMediaError,
+                    codex_media.CodexMediaError,
                 ),
             )
             else f"{type(exc).__name__}: {exc}"

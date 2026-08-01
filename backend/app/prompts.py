@@ -317,6 +317,46 @@ A weathered fisherman mending a net on a wooden pier at dawn, documentary photog
 ```
 """
 
+GPT_IMAGE2_SPEC = """\
+# IMAGE PROMPT SPEC — gpt-image-2 (via the Codex CLI, ChatGPT subscription)
+
+gpt-image-2 is driven through the official Codex CLI, so `image_prompt` is
+passed as plain natural language inside an instruction. It follows written
+instructions closely and renders text better than any other model in this app,
+so be explicit rather than evocative. There is no negative prompt and no weight
+syntax; the size and the quality are job fields (`selects`), not prompt text.
+
+1. **Structure the description in this order**: background / scene → subject →
+   important details → constraints. Say what the image is *for* (advertisement,
+   UI mock-up, book cover, product shot) — the intended use steers composition.
+2. **Split a complex request into labelled sections** ("Background:",
+   "Foreground:", "Text:", "Style:") instead of one long run-on sentence. The
+   model reads structure well.
+3. **Text rendering is the strength**: put every string that must appear in
+   double quotes, verbatim, and give its font style, size, colour and position
+   ("the headline \\"MORNING LIGHT\\" in bold condensed sans-serif, centred in the
+   upper third, warm cream on dark green"). Then say **"do not add any other
+   text"** — unrequested extra lettering is the usual failure.
+4. **Name the medium**: `photo`, `watercolour illustration`, `3D render`,
+   `flat vector`. For photography write **`photorealistic`** outright, plus the
+   camera cues (lens, angle, depth of field) and the light.
+5. **Editing an image** (when a reference is available): change one thing per
+   instruction — "change only X; keep everything else the same" — and repeat the
+   list of what must be preserved (identity, layout, palette) **in every
+   iteration**, because each turn is judged on its own.
+6. **Constraints go last** and positively: "plain seamless background",
+   "no people in frame" works, but prefer stating what should be there.
+7. **Transparent backgrounds are not supported** — ask for a flat solid colour
+   background instead and cut it out afterwards.
+8. **Adults only**: every depicted person is an adult with an unambiguously
+   adult body and face.
+
+Example:
+```
+Advertising still for a small coffee roastery. Background: a matte dark-green seamless studio backdrop, softly lit from the upper left with a large diffused source, gentle falloff into the lower right corner. Subject: a single kraft-paper coffee bag standing upright, centred, slightly angled toward the camera, with a few roasted beans scattered at its base. Details: the bag carries the text "MORNING LIGHT" in bold condensed sans-serif, cream on green, centred across the upper third, and "single origin — 250g" in small letterspaced caps below it; do not add any other text or logos. Style: photorealistic product photography, 85mm lens, eye level, shallow depth of field, visible paper grain and bean texture, warm neutral colour grade.
+```
+"""
+
 #: family -> the prompt spec section to embed for it
 IMAGE_SPECS: dict[str, str] = {
     "krea2": IMAGE_SPEC,
@@ -324,6 +364,7 @@ IMAGE_SPECS: dict[str, str] = {
     "z-image": Z_IMAGE_SPEC,
     "qwen-image": QWEN_IMAGE_SPEC,
     "grok-imagine": GROK_IMAGINE_SPEC,
+    "gpt-image": GPT_IMAGE2_SPEC,
 }
 
 #: family -> the one-line reminder that goes into the IMAGE WORKFLOWS catalog
@@ -351,6 +392,12 @@ IMAGE_PROMPT_HINTS: dict[str, str] = {
         "Natural sentences, subject and style in the first 20-30 words, then"
         " environment, lighting, mood, camera. No negatives (write the positive"
         " form), no exact resolution — the ratio is only a wish."
+    ),
+    "gpt-image": (
+        "Background → subject → details → constraints, and say what the picture"
+        " is for. Best-in-class text rendering: quote every string verbatim with"
+        " its font, colour and placement, then forbid any other text. Write"
+        " `photorealistic` outright; no transparent backgrounds."
     ),
 }
 

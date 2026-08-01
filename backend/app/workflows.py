@@ -35,8 +35,9 @@ WorkflowKind = Literal["image", "video", "audio"]
 #: どのエンジンがこのワークフローを実行するか（SPEC §5 / §5.2）。``comfyui`` は
 #: ``workflow/*.json`` のテンプレートを自前の ComfyUI に投げる従来の経路、``kie``
 #: は外部 API アグリゲータ kie.ai にタスクを投げる経路、``grok_cli`` は Grok Build
-#: CLI をサブスク枠でヘッドレス実行する経路（:mod:`app.grok_media`）。
-#: ``codex_cli``（サブスク CLI 経由の生成）は将来の枠で、まだ実装は無い。
+#: CLI をサブスク枠でヘッドレス実行する経路（:mod:`app.grok_media`）、``codex_cli``
+#: は Codex CLI を ChatGPT サブスク枠でヘッドレス実行する経路
+#: （:mod:`app.codex_media`、SPEC §5.4）。
 WorkflowBackend = Literal["comfyui", "kie", "grok_cli", "codex_cli"]
 
 #: Logical names of the assets a video workflow can require.  ``image`` is the
@@ -190,6 +191,7 @@ FAMILY_LABELS: dict[str, str] = {
     "z-image": "Z-Image",
     "qwen-image": "Qwen-Image Edit",
     "grok-imagine": "Grok Imagine",
+    "gpt-image": "GPT Image 2",
     "ltx2.3": "LTX 2.3",
     "wan": "Wan 2.2",
     "ace-step": "ACE-Step 1.5",
@@ -294,6 +296,25 @@ class GrokCliTask:
 
 
 @dataclass(frozen=True)
+class CodexCliTask:
+    """Codex CLI（ChatGPT サブスク枠）で 1 ワークフローを実行する宣言（§5.4）。
+
+    :class:`GrokCliTask` と同じ発想（渡せるのは自然文の指示だけなので「キーの
+    対応表」は持たない）だが、コマンド体系がまったく違う（``codex exec`` +
+    ``--output-last-message``）ので別の宣言にしてある。指示文の組み立ては
+    :func:`app.codex_media.build_request`。
+
+    gpt-image-2 は今のところ text-to-image だけなので :attr:`media` は持たない
+    （動画を作れる Codex の経路が出てきたら、そのときに足す）。
+    """
+
+    #: 指示文に織り込む論理値（:data:`KIE_VALUES` と同じ語彙）。``select:<名前>``
+    #: の形で :class:`SelectSpec` の値も織り込める（大きさ・品質）。サイズ・品質は
+    #: 自然文で伝える**希望**であって、API 同等の厳密保証は無い（issue #23）。
+    values: tuple[str, ...] = ("prompt",)
+
+
+@dataclass(frozen=True)
 class WorkflowSpec:
     id: str
     label: str
@@ -310,6 +331,8 @@ class WorkflowSpec:
     kie: KieTask | None = None
     #: ``backend == "grok_cli"`` のときのタスク宣言（それ以外では ``None``）
     grok: GrokCliTask | None = None
+    #: ``backend == "codex_cli"`` のときのタスク宣言（それ以外では ``None``）
+    codex: CodexCliTask | None = None
     #: model family (= the ``workflow/<kind>/<folder>`` name).  Image LoRAs are
     #: only offered for the family of the selected image workflow; the video
     #: templates all share the ``ltx2.3`` family and ignore it.
@@ -387,7 +410,9 @@ class WorkflowSpec:
             return True
         if self.kie is not None and name in self.kie.fields:
             return True
-        return self.grok is not None and name in self.grok.values
+        if self.grok is not None and name in self.grok.values:
+            return True
+        return self.codex is not None and name in self.codex.values
 
     def supported_names(self) -> tuple[str, ...]:
         """このワークフローが受け取る論理名（フォームとカタログが読む）。
@@ -402,6 +427,8 @@ class WorkflowSpec:
             names |= set(self.kie.fields)
         if self.grok is not None:
             names |= set(self.grok.values)
+        if self.codex is not None:
+            names |= set(self.codex.values)
         return tuple(
             sorted(name for name in names if not name.startswith(KIE_SELECT_PREFIX))
         )
@@ -591,6 +618,87 @@ GROK_IMAGINE = WorkflowSpec(
         "Grok Build CLI（サブスク枠）/ 縦横比・解像度はプロンプト経由の希望 /"
         " LoRA 不可 / 実在人物・著名人・商標はモデレーションで弾かれる /"
         " 枠は Chat と共有（目安 40 枚/日）"
+    ),
+)
+
+
+# --------------------------------------------------------------------------
+# image: Codex CLI（ChatGPT サブスク枠、SPEC §5.4 / issue #23）
+# --------------------------------------------------------------------------
+#
+# OpenAI の従量課金 API ではなく、ChatGPT Plus / Pro のサブスクリプションで動く
+# 公式 CLI（`codex exec`）の組み込みスキル `$imagegen` に gpt-image-2 で描かせる
+# （:mod:`app.codex_media`）。Grok CLI と同じく渡せるのは**自然文の指示だけ**で、
+# 大きさ・品質も指示文に織り込む「希望」（API 同等の厳密保証は無い）。
+#
+# 位置づけは「高品質枠として少量」: 画像生成ターンは通常のターンより 3〜5 倍速く
+# 5 時間 / 週次の枠を消費する（公式明記）。月に数百枚を回すようになったら API 直
+# （gpt-image-1.5）への切り替えを検討する。
+
+#: gpt-image-2 が受ける大きさ（正方形・横長・縦長）
+GPT_IMAGE_SIZES: tuple[str, ...] = ("1024x1024", "1536x1024", "1024x1536")
+#: 品質（枠の消費量に直結するので既定は medium）
+GPT_IMAGE_QUALITIES: tuple[str, ...] = ("low", "medium", "high")
+
+GPT_IMAGE2_PROMPT_HINT = (
+    "One natural-language description in this order: background / scene →"
+    " subject → key details → constraints, and say what the picture is for"
+    " (ad, UI mock, …). **Text rendering is this model's strength**: quote every"
+    " string verbatim and name its font, size, colour and placement, then say"
+    " no other text should appear. Name the medium (photo / watercolour / 3D"
+    " render) and write `photorealistic` outright when that is what you want."
+)
+
+GPT_IMAGE2 = WorkflowSpec(
+    id="gpt_image2",
+    label="gpt-image-2（Codex CLI）",
+    kind="image",
+    family="gpt-image",
+    backend="codex_cli",
+    description=(
+        "Text-to-image through the official Codex CLI, on the **ChatGPT"
+        " subscription** quota (no metered API key). Same shape as the local"
+        " text-to-image workflows: `image_prompt` only, usable for"
+        " `mode: \"image_only\"` and as the first stage of `mode: \"full\"`."
+        " Its strengths are rendered text, instruction following and"
+        " photorealism, so use it as the high-quality option rather than the"
+        " default one — an image turn eats the shared ChatGPT quota 3-5x faster"
+        " than a normal turn. `size` and `quality` are job fields (`selects`)"
+        " passed as *wishes* inside the instruction, so they are not guaranteed"
+        " exactly, and `aspect_ratio` / `megapixels` are ignored (pick the"
+        " `size` instead). Transparent backgrounds are not supported. LoRAs"
+        " cannot be used."
+    ),
+    prompt_hint=GPT_IMAGE2_PROMPT_HINT,
+    codex=CodexCliTask(
+        values=(
+            "prompt",
+            f"{KIE_SELECT_PREFIX}size",
+            f"{KIE_SELECT_PREFIX}quality",
+        ),
+    ),
+    selects={
+        "size": SelectSpec(
+            label="大きさ",
+            choices=GPT_IMAGE_SIZES,
+            default="1024x1024",
+            hint=(
+                "指示文に書く希望なので、実際の出力はぶれることがある"
+                "（縦横比プリセットとメガピクセルはこのワークフローでは使わない）。"
+            ),
+        ),
+        "quality": SelectSpec(
+            label="品質",
+            choices=GPT_IMAGE_QUALITIES,
+            default="medium",
+            hint="高いほどサブスク枠の消費が増える。",
+        ),
+    },
+    notes=(
+        "Codex CLI（ChatGPT サブスク枠）/ 大きさ・品質はプロンプト経由の希望 /"
+        " 縦横比・メガピクセルは使わない / LoRA 不可 / 透過背景は非対応"
+        "（クロマキー方式での透過は未対応。必要なら別途 gpt-image-1.5 の API へ）/"
+        " 画像生成ターンは通常の 3〜5 倍速く枠を消費するので少量利用向け"
     ),
 )
 
@@ -1806,6 +1914,7 @@ SPECS: tuple[WorkflowSpec, ...] = (
     Z_IMAGE_TURBO,
     QWEN_IMAGE_EDIT,
     GROK_IMAGINE,
+    GPT_IMAGE2,
     LTX_T2V,
     LTX_I2V,
     LTX_IA2V,
@@ -2139,6 +2248,41 @@ def _validate_grok_spec(spec: WorkflowSpec) -> list[str]:
     return problems
 
 
+def _validate_codex_spec(spec: WorkflowSpec) -> list[str]:
+    """Codex CLI で走るワークフローの宣言そのものの検証（SPEC §5.4）。
+
+    :func:`_validate_grok_spec` と同じ見方（タスク宣言があるか / 織り込む論理値が
+    既知の語彙か / プロンプトを受け取るか）に、「画像しか作れない」を足したもの。
+    """
+    problems: list[str] = []
+    if spec.kie is not None:
+        problems.append(f"{spec.id}: backend 'codex_cli' but a KieTask is declared")
+    if spec.grok is not None:
+        problems.append(f"{spec.id}: backend 'codex_cli' but a GrokCliTask is declared")
+    if spec.codex is None:
+        return [
+            *problems,
+            f"{spec.id}: backend 'codex_cli' but no CodexCliTask declared",
+        ]
+    if "prompt" not in spec.codex.values:
+        problems.append(f"{spec.id}.codex.values: 'prompt' is required")
+    for name in spec.codex.values:
+        if name.startswith(KIE_SELECT_PREFIX):
+            if name[len(KIE_SELECT_PREFIX):] not in spec.selects:
+                problems.append(f"{spec.id}.codex.values[{name}]: no such select")
+        elif name not in KIE_VALUES:
+            problems.append(
+                f"{spec.id}.codex.values: unknown value {name!r}"
+                f" (known: {', '.join(sorted(KIE_VALUES))})"
+            )
+    if spec.kind != "image":
+        problems.append(
+            f"{spec.id}: backend 'codex_cli' only generates images (kind is"
+            f" {spec.kind!r})"
+        )
+    return problems
+
+
 def validate_external_spec(spec: WorkflowSpec) -> list[str]:
     """テンプレートを持たないワークフロー（kie.ai など）のマニフェスト検証。
 
@@ -2165,9 +2309,15 @@ def validate_external_spec(spec: WorkflowSpec) -> list[str]:
 
     if spec.backend == "grok_cli":
         return problems + _validate_grok_spec(spec)
+    if spec.backend == "codex_cli":
+        return problems + _validate_codex_spec(spec)
     if spec.grok is not None:
         problems.append(
             f"{spec.id}: declares a GrokCliTask but its backend is {spec.backend!r}"
+        )
+    if spec.codex is not None:
+        problems.append(
+            f"{spec.id}: declares a CodexCliTask but its backend is {spec.backend!r}"
         )
     if spec.backend != "kie":
         problems.append(f"{spec.id}: backend {spec.backend!r} is not implemented yet")
@@ -2215,6 +2365,8 @@ def validate_spec(spec: WorkflowSpec, template: Workflow | None = None) -> list[
         return [f"{spec.id}: declares a KieTask but its backend is 'comfyui'"]
     if spec.grok is not None:
         return [f"{spec.id}: declares a GrokCliTask but its backend is 'comfyui'"]
+    if spec.codex is not None:
+        return [f"{spec.id}: declares a CodexCliTask but its backend is 'comfyui'"]
     problems: list[str] = []
     try:
         tpl = template if template is not None else load_template(spec)

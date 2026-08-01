@@ -247,15 +247,22 @@ export function workflowSelects(
  * 未指定（空文字）は送らない: `auto` の項目はバックエンドが入力から決め、それ以外
  * はワークフローの既定値になる。選択肢から外れた値も送らない（ワークフローを
  * 切り替えた直後の持ち越しで 422 にしない）。
+ *
+ * `selects` はステージをまたいで 1 つの辞書なので、**そのジョブで実際に走る
+ * ワークフロー**をすべて渡す（`full` なら画像と動画の両方。gpt-image-2 の
+ * `size` / `quality` は画像ステージ側の宣言、SPEC §5.4）。走らないステージの
+ * ワークフローを渡すと、持ち越した値を送って 422 になる。
  */
 export function jobSelects(
   form: FormState,
-  workflow?: WorkflowOption | null,
+  ...workflows: (WorkflowOption | null | undefined)[]
 ): Record<string, string> {
   const picked: Record<string, string> = {}
-  for (const select of workflowSelects(workflow)) {
-    const value = form.selects[select.name]
-    if (value && select.choices.includes(value)) picked[select.name] = value
+  for (const workflow of workflows) {
+    for (const select of workflowSelects(workflow)) {
+      const value = form.selects[select.name]
+      if (value && select.choices.includes(value)) picked[select.name] = value
+    }
   }
   return picked
 }

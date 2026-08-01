@@ -161,6 +161,9 @@ export const api = {
 
   /** Grok Build CLI（サブスク枠）を実際に 1 ターン回して確かめる（SPEC §5.2）。 */
   grokCheck: () => request<BackendInfo>('/api/grok/check', { method: 'POST' }),
+
+  /** Codex CLI（ChatGPT サブスク枠）にサインイン済みか確かめる（SPEC §5.4）。 */
+  codexCheck: () => request<BackendInfo>('/api/codex/check', { method: 'POST' }),
   options: () => request<Options>('/api/options'),
 
   getSettings: () => request<Settings>('/api/settings'),

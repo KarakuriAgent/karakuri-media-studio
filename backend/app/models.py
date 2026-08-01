@@ -12,6 +12,7 @@ from .workflows import (
     DEFAULT_IMAGE_WORKFLOW,
     DEFAULT_VIDEO_WORKFLOW,
     INPUT_FIELDS,
+    WorkflowSpec,
     WorkflowSpecError,
     get_audio_spec,
     get_image_spec,
@@ -65,6 +66,13 @@ class Settings(BaseModel):
     #: 1 枚（1 本）の生成に許す秒数。エージェントが画像生成ツールを回して
     #: ファイルを保存し終えるまでなので、チャットより長めに取る。
     grok_media_timeout: float = 300.0
+    #: Codex CLI（ChatGPT サブスク枠の画像生成、SPEC §5.4）のコマンド名。
+    #: 認証は `codex login` が `~/.codex/auth.json` に書くので、設定に持つのは
+    #: コマンド名と制限時間だけ（API キーは使わない）。
+    codex_command: str = "codex"
+    #: 1 枚の生成に許す秒数。`codex exec` はスキル呼び出し・画像生成・コピーまで
+    #: を 1 ターンで回すので、チャットより長めに取る。
+    codex_timeout: float = 300.0
     # Agent mode (AGENT-MODE §3.4): extra CLI flags (tool permissions) and the
     # longer timeout research / inspection turns need. `--permission-mode auto`
     # is confirmed on grok 0.2.112 to enable file read/write (incl. viewing
@@ -161,6 +169,8 @@ class SettingsUpdate(BaseModel):
     grok_workdir: str | None = None
     grok_media_workdir: str | None = None
     grok_media_timeout: float | None = None
+    codex_command: str | None = None
+    codex_timeout: float | None = None
     model_overrides: dict[ComfyTarget, dict[str, str]] | None = None
     model_choices: dict[ComfyTarget, dict[str, list[str]]] | None = None
     hf_token: str | None = None
@@ -615,37 +625,50 @@ def select_problem(
     selects: Any,
     *,
     audio_workflow: str | None = None,
+    image_workflow: str | None = None,
 ) -> str | None:
     """選択式フィールドの指定が使えるか（None == 問題なし、SPEC §3.1）。
 
     宣言のない名前と、選択肢に無い値を拒否する。見るのは**そのモードで実際に
     走るワークフロー**の宣言で、``audio`` なら音声ワークフロー（Suno の
-    `model` / `vocal_gender`）、それ以外は動画ワークフロー。画像だけのモードは
-    選択式を持つワークフローが無いので指定できない。
+    `model` / `vocal_gender`）、それ以外は画像ステージと動画ステージのうち走る
+    ほう（``full`` は両方）。``selects`` はステージをまたいで 1 つの辞書なので、
+    **どちらかのステージが宣言していれば通す**（gpt-image-2 の `size` /
+    `quality` は画像ステージ側の宣言、SPEC §5.4）。
     """
     if not selects:
         return None
     if not isinstance(selects, dict):
         return "selects は {\"<名前>\": \"<選んだ値>\"} 形式のオブジェクトで指定してください"
-    if mode not in ("full", "i2v", "audio"):
-        return f"mode '{mode}' は動画ステージを走らせないので selects は指定できません"
-    field = "audio_workflow" if mode == "audio" else "video_workflow"
+    if mode not in ("full", "i2v", "image_only", "audio"):
+        return f"mode '{mode}' は selects を持つステージを走らせません"
+    # (ジョブの入力フィールド名, マニフェスト) を実行順に
+    stages: list[tuple[str, WorkflowSpec]] = []
     try:
-        spec = (
-            get_audio_spec(audio_workflow)
-            if mode == "audio"
-            else get_video_spec(video_workflow)
-        )
+        if mode == "audio":
+            stages.append(("audio_workflow", get_audio_spec(audio_workflow)))
+        else:
+            if mode in ("full", "image_only"):
+                stages.append(("image_workflow", get_image_spec(image_workflow)))
+            if mode in ("full", "i2v"):
+                stages.append(("video_workflow", get_video_spec(video_workflow)))
     except WorkflowSpecError as exc:
         return str(exc)
     for name, value in selects.items():
-        select = spec.select(str(name))
+        select = next(
+            (
+                found
+                for _, spec in stages
+                if (found := spec.select(str(name))) is not None
+            ),
+            None,
+        )
         if select is None:
-            known = ", ".join(f"`{key}`" for key in spec.selects) or "なし"
-            return (
-                f"{field} `{spec.id}` に選択項目 `{name}` はありません"
-                f"（使えるのは {known}）"
-            )
+            known = ", ".join(
+                f"`{key}`" for _, spec in stages for key in spec.selects
+            ) or "なし"
+            where = " / ".join(f"{field} `{spec.id}`" for field, spec in stages)
+            return f"{where} に選択項目 `{name}` はありません（使えるのは {known}）"
         if str(value) not in select.choices:
             return (
                 f"`{name}` に {value!r} は使えません（使えるのは "

@@ -776,6 +776,32 @@ describe('jobSelects', () => {
     ).toEqual({})
     expect(jobSelects({ ...initialForm, selects: {} }, null)).toEqual({})
   })
+
+  it('画像ステージの選択項目も同じ辞書に混ぜて送る（SPEC §5.4）', () => {
+    // gpt-image-2 は画像ワークフロー側で大きさ・品質を宣言する
+    const GPT_IMAGE = workflow({
+      id: 'gpt_image2',
+      kind: 'image',
+      family: 'gpt-image',
+      accepts_video_loras: false,
+      selects: [
+        select({ name: 'size', label: '大きさ', choices: ['1024x1024', '1536x1024'], default: '1024x1024' }),
+        select({ name: 'quality', label: '品質', choices: ['low', 'medium', 'high'], default: 'medium' }),
+      ],
+    })
+    const form = {
+      ...initialForm,
+      selects: { size: '1536x1024', duration: '10' },
+    }
+
+    // full モードは 2 段とも走るので、両方の宣言が効く
+    expect(jobSelects(form, WAN, GPT_IMAGE)).toEqual({
+      duration: '10',
+      size: '1536x1024',
+    })
+    // 画像だけのモードでは動画側を渡さない（持ち越しの値を送らない）
+    expect(jobSelects(form, null, GPT_IMAGE)).toEqual({ size: '1536x1024' })
+  })
 })
 
 describe('hiddenFields と LoRA チェーン', () => {

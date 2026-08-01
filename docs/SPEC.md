@@ -168,6 +168,7 @@
 | `z_image_turbo` | Z-Image turbo | `z-image` | なし | text-to-image、8 steps 蒸留。ResolutionSelector が無いのでアプリが幅・高さを計算して注入 |
 | `qwen_image_edit_2511` | Qwen-Image Edit 2511 | `qwen-image` | 画像（編集元画像） | **編集系**。`source_image` 必須で、出力解像度は入力画像から決まる（`aspect_ratio` / `megapixels` は無視） |
 | `grok_imagine` | Grok Imagine（サブスク CLI） | `grok-imagine` | なし | text-to-image。**バックエンドは `grok_cli`**（§5.3）で、ローカル GPU は使わない。縦横比・解像度はプロンプト経由の希望で、LoRA は使えない |
+| `gpt_image2` | gpt-image-2（Codex CLI） | `gpt-image` | なし | text-to-image。**バックエンドは `codex_cli`**（§5.4）で、ローカル GPU は使わない。大きさ（`size`）と品質（`quality`）は選択式フィールド（§3.1）でプロンプト経由の希望。`aspect_ratio` / `megapixels` は使わず、LoRA も使えない。文字描画・フォトリアルが強い代わりにサブスク枠の消費が速いので少量利用向け |
 
 - 既定は `krea2_turbo`（選択式になる前の唯一の画像ワークフロー）
 - `qwen_image_edit_2511` は画像ステージが走るモード（`full` / `image_only`）で必ず `source_image` を要求する。
@@ -258,7 +259,11 @@ LoRA チェーンも持たない（テンプレートに LoRA ノードが無い
   検証は `models.select_problem` で Web UI とエージェント共通）、
 - エージェントのワークフローカタログにも選択肢がそのまま載る（`prompts._select_lines`）。
 
-宣言していないワークフローでは何も増えないので、既存の挙動は変わらない。注入時の要点:
+宣言していないワークフローでは何も増えないので、既存の挙動は変わらない。**動画・音声だけの
+仕組みではなく、画像ワークフローも宣言できる**（gpt-image-2 の大きさ・品質、§5.4）。ジョブの
+`selects` はステージをまたいで 1 つの辞書なので、`models.select_problem` は**そのモードで走る
+ステージの宣言をすべて**見て検証し、フォームも走るステージのぶんだけ送る（`form.jobSelects`）。
+注入時の要点:
 
 - ComfyUI の `CustomCombo` は選んだ文字列（`choice`）と 0 始まりの番号（`index`）を持ち、
   **グラフが読むのは番号側**（`choice` は表示用。番号で「n 行目」を引く RegexExtract に繋がる）。
@@ -604,7 +609,7 @@ ComfyUI と並ぶ **2 つめの生成バックエンド**として、外部 API 
 履歴で扱うための共通基盤で、個別モデルの対応はこの上に載せる。
 
 - **バックエンド軸**: ワークフローのマニフェスト（§3 / §4.3）が `backend`
-  （`comfyui` / `kie`、将来 `grok_cli` / `codex_cli`）を宣言する。ComfyUI 用は
+  （`comfyui` / `kie` / `grok_cli` / `codex_cli`）を宣言する。ComfyUI 用は
   `workflow/*.json` のテンプレート + 注入マニフェスト、kie 用はテンプレートの代わりに
   `KieTask`（`model` と「論理名 → `input` のキー」の対応、固定値、概算クレジット）を持つ。
   論理名は ComfyUI の注入マニフェストと同じ語彙（`prompt` / `image` / `duration` /
@@ -617,7 +622,8 @@ ComfyUI と並ぶ **2 つめの生成バックエンド**として、外部 API 
   静止画」で、渡し方だけが 2 段目のバックエンドで変わる（ComfyUI は input への
   アップロード、kie.ai は File Upload API で公開 URL にして `imageUrls` へ、§2.1）。
   実装してあるのは **ComfyUI の画像 → kie.ai の動画**と、**Grok CLI の画像 →
-  ComfyUI / kie.ai の動画**（§5.3）。逆向き（kie.ai の画像 → …）は kie の画像
+  ComfyUI / kie.ai の動画**（§5.3）、**Codex CLI の画像 → ComfyUI / kie.ai /
+  Grok CLI の動画**（§5.4）。逆向き（kie.ai の画像 → …）は kie の画像
   ワークフローが入ってから実装するので、それまでは投入時に 422 で断る。ComfyUI の下ごしらえ（RunPod の Pod 起動・入力ファイルの
   アップロード）は**最初の ComfyUI ステージの直前に 1 度だけ**行うので、1 段目から
   kie のジョブでは ComfyUI に一切触らない
@@ -735,6 +741,65 @@ xAI の従量課金 API ではなく、**SuperGrok / X Premium+ のサブスク�
   厳密な制御が要るようになったら `api.x.ai` 直（画像は `POST /v1/images/generations`、
   動画は `POST /v1/videos/generations` の非同期ポーリング）へ切り替えられるよう、生成の入口は
   `MediaRequest` 1 つに絞ってある
+
+### 5.4 Codex CLI（ChatGPT サブスク枠の生成バックエンド）
+
+4 つめの生成バックエンド（`backend/app/codex_media.py`、backend 名 `codex_cli`）。
+OpenAI の従量課金 API ではなく、**ChatGPT Plus / Pro のサブスクリプション枠**で動く
+公式 CLI（`codex exec`）の組み込みスキル `$imagegen`（`.system` 同梱、インストール不要）に
+gpt-image-2 で画像（§2.3 の `gpt_image2`）を描かせる。発想は §5.3 と同じだが、
+**コマンド体系がまったく違う**ので実装は分けてある（共通化しているのは考え方だけ）。
+
+- **呼び出し**: `codex exec --skip-git-repo-check --sandbox workspace-write
+  -C <作業ディレクトリ> --output-last-message <一時ファイル> '<指示>'`。
+  **最終応答は標準出力ではなくファイル**で受け取る（標準出力は進捗ログ）
+- **作業ディレクトリを分ける**: `runtime/codex-media-workdir/`。`--sandbox
+  workspace-write` が書き込みを許すのはこの作業根の下なので、リポジトリの中では走らせない
+- **`OPENAI_API_KEY` は env から必ず外す**。残っていると CLI が API キー認証
+  （従量課金）に倒れうるため、サブスク枠で回す約束を守る
+- **指示は定型テンプレート**: `$imagegen` の呼び出し + プロンプト本文 + 大きさ・品質の希望 +
+  「`outputs/{job_id}/image.png` に PNG でコピーし、成功したら `OK <絶対パス>`、
+  失敗したら `FAILED <理由>` とだけ出力せよ」。**保存先を渡す引数は無く、プロンプトで
+  コピーさせるのが公式想定フロー**（imagegen の SKILL.md）。既定の保存先は
+  `~/.codex/generated_images/`。大きさ・品質は自然文で伝える希望であって、API 同等の
+  厳密保証は無い
+- **成否の判定は 3 段構え**: ① 終了コード（0 でも「タスク失敗・ターン完走」があるので
+  単独では信用しない）② `--output-last-message` のファイルを合図（`OK` / `FAILED`）で
+  パース ③ **出力パスの実在・サイズ > 0・PNG マジックバイト**。③ が最終判定で、
+  合図と食い違ったら**ファイルを採る**。見つからなければ `~/.codex/generated_images/` を
+  mtime 順で探す保険（実行開始より新しいものだけ見る。出力先は実行前に消す）
+- **タイムアウトとリトライ**: 1 回あたり `codex_timeout`（既定 300 秒）。失敗したら
+  **1 回だけやり直す**。ただし枠の枯渇（usage limit / rate limit 系の文言）は
+  `CodexQuotaError` として「時間をおいて」の案内に変換し、やり直さない。
+  **画像生成ターンは通常のターンより 3〜5 倍速く 5 時間 / 週次の枠を消費する**（公式明記）ので、
+  高品質枠として少量使う位置づけ。月に数百枚を回すなら API 直（gpt-image-1.5）を検討する
+- **可用性の判定**（`codex login status` 相当）: 起動時・設定保存時の確認は
+  **サブスク枠を使わない軽いもの**に留める（`codex` コマンドが実行できること +
+  `~/.codex/auth.json` に ChatGPT サインインのトークンが在ること。API キーだけの
+  ログインは従量課金なので「使えない」扱い）。実際に通るかどうかは設定ページの
+  「接続確認」＝ `POST /api/codex/check` が `codex login status` を回して確かめ、
+  結果を `app.backends` のキャッシュに預ける（画像は作らないので枠は減らない）。
+  確認できるまで `gpt_image2` は `GET /api/options` にもエージェントのカタログにも
+  出ず、投入しようとしても 422
+- **`full` モードの橋渡し**: 成果物は最初から `outputs/{job_id}/` に書かれるローカル
+  ファイルなので、`source_image` を差し替えるだけで 2 段目に渡せる。実装済みの向きは
+  `codex_cli → comfyui` / `codex_cli → kie` / `codex_cli → grok_cli` の 3 つ
+  （`jobs._STAGE_BRIDGES`）。**画像しか作れない**ので 2 段目には現れず、
+  `* → codex_cli` の向きは宣言しない
+- **選択式フィールド**（§3.1）は画像ステージにも効く: `size`（1024x1024 / 1536x1024 /
+  1024x1536）と `quality`（low / medium / high）は `gpt_image2` の宣言で、ジョブの
+  `selects` は**ステージをまたいで 1 つの辞書**なので、`models.select_problem` は
+  そのモードで走るステージの宣言すべてを見て検証する
+- **LoRA は使えない**: グラフが無いので差し込む場所がない。指定したジョブは 422
+- **透過背景は非対応**（gpt-image-2 の制約）。公式スキル内蔵のクロマキー方式
+  （`#00ff00` 背景で生成 → `remove_chroma_key.py` でアルファ抜き）は**今回の範囲外**で、
+  必要になったら第 2 段として足す
+- **投入内容の保存**: `workflow_json` に段階別で
+  `{"backend": "codex_cli", "request": {"media": "image", "prompt": …, "size": …,
+  "quality": …, "dest": …, "instruction": …}}` を残す
+- **規約面**: `codex exec` の自動化は公式機能なので問題ない。個人サブスクを共有サーバーで
+  チーム / サービスのバックエンドとして使い回すのは規約リスクがあるため、
+  **1 開発者が自分のワークフローで回す**範囲に留める
 
 ## 6. 成果物の取得
 
@@ -989,6 +1054,7 @@ GET  /api/health                 … ComfyUI/Grok/kie.ai 疎通チェック
 GET  /api/kie/credits            … kie.ai の残クレジット（1 credit = $0.005、§5.2）
 POST /api/kie/check              … kie.ai の API キーを確認し直す（選択肢の出し分けに反映、§5.2）
 POST /api/grok/check             … Grok Build CLI を 1 ターン回して確認する（選択肢の出し分けに反映、§5.3）
+POST /api/codex/check            … Codex CLI の `codex login status` を確認する（選択肢の出し分けに反映、§5.4）
 GET  /api/options                … 画像/動画/音声ワークフロー一覧（必要入力・露出しているつまみ・秒数レンジつき）・アスペクト比・LoRA一覧・アセット一覧・ライブラリ一覧（library, §7.2）・実行時に選べるモデルスロット（model_slots）と ComfyUI のモデルファイル一覧（model_files）・生成バックエンドの可用性（backends, §5.2）
 GET/POST/PUT/DELETE /api/loras   … アプリ内 LoRA 登録リストの CRUD（GET は `?target=` でその接続先のもの + 共通行、POST は `comfy_target` で紐づけ先を指定、§5）
 GET  /api/library                … ライブラリ検索（kind / category / q / tag / limit / offset → items + total + tags、§7.2）

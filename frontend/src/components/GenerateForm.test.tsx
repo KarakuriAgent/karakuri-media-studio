@@ -977,6 +977,72 @@ describe('GenerateForm の選択式フィールド（SPEC §3.1）', () => {
       screen.getByPlaceholderText(/選択項目からプロンプトが組み立てられます/),
     ).toBeTruthy()
   })
+
+  it('画像ワークフローの選択式も出す（gpt-image-2 の大きさ・品質、SPEC §5.4）', () => {
+    const GPT_IMAGE: Options['image_workflows'][number] = {
+      id: 'gpt_image2',
+      label: 'gpt-image-2（Codex CLI）',
+      kind: 'image',
+      family: 'gpt-image',
+      notes: '',
+      requires: [],
+      supports: ['prompt'],
+      accepts_start_image: false,
+      image_label: '開始フレーム',
+      selects: [
+        {
+          name: 'size',
+          label: '大きさ',
+          choices: ['1024x1024', '1536x1024', '1024x1536'],
+          default: '1024x1024',
+          auto: false,
+          hint: '',
+        },
+        {
+          name: 'quality',
+          label: '品質',
+          choices: ['low', 'medium', 'high'],
+          default: 'medium',
+          auto: false,
+          hint: '',
+        },
+      ],
+      prompt_required: true,
+      accepts_video_loras: false,
+      min_duration: 0,
+      max_duration: 0,
+      default_duration: 0,
+    }
+    const patch = vi.fn()
+    render(
+      <GenerateForm
+        form={{ ...initialForm, mode: 'image_only', imageWorkflow: 'gpt_image2' }}
+        patch={patch}
+        options={{ ...OPTIONS, image_workflows: [GPT_IMAGE] }}
+        optionsError={null}
+        onReloadOptions={() => {}}
+        onOpenChat={() => {}}
+        onSubmit={() => {}}
+        submitting={false}
+        fieldErrors={{}}
+        comfyTarget="local"
+        onComfyTarget={() => {}}
+        jobs={[]}
+        showNsfw={false}
+      />,
+    )
+
+    const size = screen.getByLabelText('大きさ') as HTMLSelectElement
+    expect([...size.options].map((option) => option.value)).toEqual([
+      '',
+      '1024x1024',
+      '1536x1024',
+      '1024x1536',
+    ])
+    fireEvent.change(size, { target: { value: '1536x1024' } })
+    expect(patch).toHaveBeenCalledWith({ selects: { size: '1536x1024' } })
+    expect(screen.getByLabelText('品質')).toBeTruthy()
+  })
 })
 
 

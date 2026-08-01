@@ -264,6 +264,7 @@ def _select_detail(raw: dict[str, Any], mode: str) -> str | None:
         _text(raw.get("video_workflow")),
         raw.get("selects"),
         audio_workflow=_text(raw.get("audio_workflow")),
+        image_workflow=_text(raw.get("image_workflow")),
     )
     if problem:
         catalog = "AUDIO WORKFLOWS" if mode == "audio" else "VIDEO WORKFLOWS"

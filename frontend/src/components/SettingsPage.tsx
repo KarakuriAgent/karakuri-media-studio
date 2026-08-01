@@ -231,6 +231,7 @@ export default function SettingsPage({
   const [kieState, setKieState] = useState<KieCredits | null>(null)
   /** Grok Build CLI（サブスク枠の生成バックエンド）の接続確認の結果（§5.2）。 */
   const [grokState, setGrokState] = useState<BackendInfo | null>(null)
+  const [codexState, setCodexState] = useState<BackendInfo | null>(null)
   const [busy, setBusy] = useState(false)
   const [draft, setDraft] = useState<LoraPayload>(EMPTY_LORA)
   const [editingId, setEditingId] = useState<number | null>(null)
@@ -633,6 +634,20 @@ export default function SettingsPage({
     }
   }
 
+  /** Codex CLI（ChatGPT サブスク枠）にサインイン済みか確かめる（SPEC §5.4）。 */
+  const checkCodex = async () => {
+    setBusy(true)
+    setError(null)
+    try {
+      setCodexState(await api.codexCheck())
+      onChanged()
+    } catch (caught) {
+      fail(caught)
+    } finally {
+      setBusy(false)
+    }
+  }
+
   /** モデル / LoRA タブの先頭に置く環境プルダウン（SPEC §5）。 */
   const envPicker = (hint: string) => (
     <div className="card flex flex-wrap items-center gap-2 p-2">
@@ -843,6 +858,44 @@ export default function SettingsPage({
                               {grokState.available
                                 ? `使えます: ${grokState.detail}`
                                 : `使えません: ${grokState.detail}`}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Codex CLI（ChatGPT サブスク枠の生成バックエンド、SPEC §5.4）。
+                        API キーは使わず、CLI にサインイン済みかどうかだけで決まる。
+                        通ることを確認できたときだけ gpt-image-2 のワークフローが
+                        生成フォームとエージェントの選択肢に出る。 */}
+                    <div className="rounded-lg border border-ink-600 p-2">
+                      <h5 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+                        gpt-image-2（Codex CLI）
+                      </h5>
+                      <div className="flex flex-col gap-2">
+                        <p className="text-[11px] text-slate-500">
+                          ChatGPT Plus / Pro のサブスクリプション枠で画像を生成
+                          します。API キーは不要で、サーバー側で
+                          <code className="mx-1">codex login</code>
+                          を実行して ChatGPT アカウントでサインインしておいて
+                          ください（認証情報は ~/.codex/auth.json）。接続確認が
+                          通ったときだけワークフローが選択肢に出ます。画像生成は
+                          通常のターンより速くサブスク枠を消費するので、少量利用
+                          向けです。
+                        </p>
+                        <div className="flex flex-wrap items-center gap-2">
+                          <button
+                            className="btn-ghost"
+                            disabled={busy}
+                            onClick={() => void checkCodex()}
+                          >
+                            接続確認
+                          </button>
+                          {codexState && (
+                            <span className="text-[11px] text-slate-400">
+                              {codexState.available
+                                ? `使えます: ${codexState.detail}`
+                                : `使えません: ${codexState.detail}`}
                             </span>
                           )}
                         </div>

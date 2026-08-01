@@ -643,6 +643,13 @@ export default function GenerateForm({
               <p className="mt-1 text-[11px] text-slate-500">
                 モデルごとにプロンプトの書き方が異なります（Grokで生成 は選択中のモデルの流儀で書きます）。
               </p>
+              {/* 画像ワークフローが宣言した選択式フィールド（gpt-image-2 の
+                  大きさ・品質。§3.1 / §5.4） */}
+              <WorkflowSelects
+                workflow={imageWorkflow}
+                form={form}
+                patch={patch}
+              />
               <ModelPicker
                 slots={options?.model_slots}
                 workflowId={form.imageWorkflow}
