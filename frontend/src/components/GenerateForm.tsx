@@ -49,7 +49,7 @@ import LibraryPickerModal from './LibraryPickerModal'
 import ModelPicker from './ModelPicker'
 import SheetBuilderModal from './SheetBuilderModal'
 import WorkflowSelects from './WorkflowSelects'
-import { Banner, FieldError, Section } from './ui'
+import { Banner, FieldError, Modal, Section } from './ui'
 
 // 音声も「モード」の一つ。ただし走るのは音声ワークフロー 1 本きりで、画像→動画の
 // 連結（full）とは繋がらない独立ジョブ。
@@ -125,27 +125,34 @@ function LoraPicker({
   onTrigger: (value: string) => void
   onTriggerReset: () => void
 }) {
+  const [pickerOpen, setPickerOpen] = useState(false)
+  const [query, setQuery] = useState('')
+  const normalizedQuery = query.trim().toLocaleLowerCase()
+  const visibleLoras = normalizedQuery
+    ? loras.filter((lora) =>
+        [lora.display_name, lora.lora_name, lora.trigger_word].some((value) =>
+          value.toLocaleLowerCase().includes(normalizedQuery),
+        ),
+      )
+    : loras
+
   return (
     <div>
-      <div className="flex flex-wrap gap-1.5">
-        {loras.length === 0 && <p className="text-xs text-slate-500">{emptyHint}</p>}
-        {loras.map((lora) => {
-          const active = selected.some((item) => item.id === lora.id)
-          return (
-            <button
-              key={lora.id}
-              className={`chip ${
-                active
-                  ? 'border-accent-500 bg-accent-500/20 text-accent-400'
-                  : 'border-ink-500 bg-ink-700 text-slate-300 hover:bg-ink-600'
-              }`}
-              onClick={() => onToggle(lora)}
-            >
-              {lora.display_name}
-            </button>
-          )
-        })}
-      </div>
+      {loras.length === 0 ? (
+        <p className="text-xs text-slate-500">{emptyHint}</p>
+      ) : (
+        <div className="flex flex-wrap items-center gap-2">
+          <button className="btn-ghost text-xs" onClick={() => setPickerOpen(true)}>
+            LoRAを選ぶ
+          </button>
+          <span className="rounded-full border border-ink-600 bg-ink-800 px-2 py-1 text-[11px] text-slate-400">
+            選択 {selected.length} / 候補 {loras.length}
+          </span>
+          {selected.length === 0 && (
+            <span className="text-[11px] text-slate-600">未選択</span>
+          )}
+        </div>
+      )}
 
       {selected.length > 0 && (
         <div className="mt-3 flex flex-col gap-2">
@@ -189,6 +196,110 @@ function LoraPicker({
           onChange={(event) => onTrigger(event.target.value)}
         />
       </div>
+
+      {pickerOpen && (
+        <Modal title="LoRAを選択" onClose={() => setPickerOpen(false)} wide closeOnBackdrop>
+          <div className="sticky top-0 z-10 -mx-1 mb-3 border-b border-ink-600 bg-ink-800/95 px-1 pb-3 backdrop-blur">
+            <label className="label" htmlFor="lora-picker-search">
+              名前・ファイル名・トリガーで検索
+            </label>
+            <div className="flex items-center gap-2">
+              <input
+                id="lora-picker-search"
+                className="field"
+                placeholder="LoRAを検索"
+                value={query}
+                autoFocus
+                onChange={(event) => setQuery(event.target.value)}
+              />
+              {query && (
+                <button className="btn-ghost shrink-0 text-xs" onClick={() => setQuery('')}>
+                  クリア
+                </button>
+              )}
+            </div>
+            <div className="mt-2 flex items-center justify-between text-[11px] text-slate-500">
+              <span>
+                表示 {visibleLoras.length} / 全 {loras.length}
+              </span>
+              <span>選択中 {selected.length}件</span>
+            </div>
+          </div>
+
+          {visibleLoras.length === 0 ? (
+            <p className="rounded-lg border border-dashed border-ink-600 p-6 text-center text-xs text-slate-500">
+              条件に一致するLoRAがありません
+            </p>
+          ) : (
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+              {visibleLoras.map((lora) => {
+                const active = selected.some((item) => item.id === lora.id)
+                const sample = lora.sample_images[0]
+                return (
+                  <button
+                    key={lora.id}
+                    type="button"
+                    aria-label={lora.display_name}
+                    aria-pressed={active}
+                    className={`flex min-h-20 items-center gap-3 rounded-lg border p-2 text-left transition-colors ${
+                      active
+                        ? 'border-accent-500 bg-accent-500/15 text-accent-300'
+                        : 'border-ink-600 bg-ink-800 text-slate-300 hover:border-ink-500 hover:bg-ink-700'
+                    }`}
+                    title={lora.lora_name}
+                    onClick={() => onToggle(lora)}
+                  >
+                    {sample ? (
+                      <img
+                        src={sample}
+                        alt=""
+                        aria-hidden="true"
+                        loading="lazy"
+                        className="h-14 w-14 shrink-0 rounded-md border border-ink-600 object-cover"
+                      />
+                    ) : (
+                      <span
+                        aria-hidden="true"
+                        className="flex h-14 w-14 shrink-0 items-center justify-center rounded-md border border-ink-600 bg-ink-900 text-lg font-semibold text-slate-600"
+                      >
+                        L
+                      </span>
+                    )}
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-xs font-medium">
+                        {lora.display_name}
+                      </span>
+                      <span className="mt-1 block truncate text-[10px] text-slate-500">
+                        {lora.trigger_word || 'トリガーなし'}
+                      </span>
+                      <span className="block text-[10px] tabular-nums text-slate-600">
+                        強度 {lora.default_strength.toFixed(2)}
+                      </span>
+                    </span>
+                    <span
+                      aria-hidden="true"
+                      className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border text-[11px] ${
+                        active
+                          ? 'border-accent-500 bg-accent-500 text-white'
+                          : 'border-ink-500 text-transparent'
+                      }`}
+                    >
+                      ✓
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+          )}
+
+          <div className="sticky bottom-0 -mx-1 mt-4 flex items-center justify-between border-t border-ink-600 bg-ink-800/95 px-1 pt-3 backdrop-blur">
+            <span className="text-xs text-slate-500">{selected.length}件を選択中</span>
+            <button className="btn-primary text-xs" onClick={() => setPickerOpen(false)}>
+              選択を完了
+            </button>
+          </div>
+        </Modal>
+      )}
     </div>
   )
 }

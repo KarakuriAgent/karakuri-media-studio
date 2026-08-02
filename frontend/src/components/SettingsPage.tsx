@@ -209,6 +209,10 @@ export default function SettingsPage({
   // 繋いでいない環境の登録も整理できるよう独立して切り替えられる。
   const [envTarget, setEnvTarget] = useState<ComfyTarget | null>(null)
   const [loras, setLoras] = useState<Lora[]>([])
+  const [loraQuery, setLoraQuery] = useState('')
+  const [loraTargetFilter, setLoraTargetFilter] = useState<'all' | LoraTarget>('all')
+  const [loraFamilyFilter, setLoraFamilyFilter] = useState('all')
+  const [expandedLoraId, setExpandedLoraId] = useState<number | null>(null)
   const [models, setModels] = useState<ModelFieldState[]>([])
   const [modelDraft, setModelDraft] = useState<Record<string, string>>({})
   // スロットごとの候補リスト（編集中）と「候補に追加」入力欄の内容
@@ -243,6 +247,19 @@ export default function SettingsPage({
   const loraFiles: string[] = options?.lora_files ?? []
   const modelFiles = modelFileMap(options)
   const audioAssets: Asset[] = options?.audio_assets ?? []
+  const normalizedLoraQuery = loraQuery.trim().toLocaleLowerCase()
+  const filteredLoras = loras.filter((lora) => {
+    const target = lora.target ?? 'image'
+    const family = lora.family ?? DEFAULT_FAMILY
+    if (loraTargetFilter !== 'all' && target !== loraTargetFilter) return false
+    if (loraFamilyFilter !== 'all' && (target !== 'image' || family !== loraFamilyFilter)) {
+      return false
+    }
+    if (!normalizedLoraQuery) return true
+    return [lora.display_name, lora.lora_name, lora.trigger_word].some((value) =>
+      value.toLocaleLowerCase().includes(normalizedLoraQuery),
+    )
+  })
 
   const fail = (caught: unknown) =>
     setError(caught instanceof Error ? caught.message : String(caught))
@@ -1128,119 +1145,220 @@ export default function SettingsPage({
               {envPicker(
                 'LoRA 登録は接続先ごとです。ここで追加したものは選んだ環境の生成フォームにだけ出ます（接続先を分ける前の登録は全環境に出ます）。',
               )}
-              <div className="card divide-y divide-ink-600">
-                {loras.length === 0 && (
-                  <p className="p-3 text-xs text-slate-500">登録がありません</p>
-                )}
-                {loras.map((lora) => {
-                  // 取得元 URL はモデルタブと同じ `model_download_urls`（キーは
-                  // ファイル名 = lora_name）に入れる。[DL] / [全DL] がこれを見る。
-                  // 登録・編集は下のフォームで行うので、一覧では印だけ出す。
-                  const savedUrl =
-                    settings?.model_download_urls?.[lora.lora_name] ?? ''
-                  return (
-                  <div key={lora.id} className="flex items-center gap-2 p-2 text-xs">
-                    <div className="min-w-0 flex-1">
-                      <p className="truncate text-slate-200">{lora.display_name}</p>
-                      <p className="truncate text-slate-500">
-                        <span className="mr-1.5 rounded border border-ink-600 px-1 py-px text-[10px] text-slate-400">
-                          {loraBadge(lora)}
-                        </span>
-                        {lora.lora_name}
-                        {savedUrl && (
-                          <span
-                            className="ml-1.5 text-accent-400"
-                            title={`取得元 URL: ${savedUrl}`}
-                          >
-                            URL ✓
-                          </span>
-                        )}
+              <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(22rem,0.8fr)]">
+                <div className="flex min-w-0 flex-col gap-2">
+                  <div className="card p-3">
+                    <div className="flex flex-col gap-2 sm:flex-row">
+                      <div className="min-w-0 flex-1">
+                        <label className="sr-only" htmlFor="lora-management-search">
+                          LoRAを検索
+                        </label>
+                        <input
+                          id="lora-management-search"
+                          className="field"
+                          placeholder="名前・ファイル名・トリガーで検索"
+                          value={loraQuery}
+                          onChange={(event) => setLoraQuery(event.target.value)}
+                        />
+                      </div>
+                      <select
+                        className="field sm:w-28"
+                        aria-label="LoRAの対象"
+                        value={loraTargetFilter}
+                        onChange={(event) =>
+                          setLoraTargetFilter(event.target.value as 'all' | LoraTarget)
+                        }
+                      >
+                        <option value="all">すべて</option>
+                        <option value="image">画像用</option>
+                        <option value="video">動画用</option>
+                      </select>
+                      <select
+                        className="field sm:w-32"
+                        aria-label="LoRAのファミリー"
+                        value={loraFamilyFilter}
+                        onChange={(event) => setLoraFamilyFilter(event.target.value)}
+                      >
+                        <option value="all">全ファミリー</option>
+                        {IMAGE_FAMILIES.map((value) => (
+                          <option key={value} value={value}>
+                            {FAMILY_LABELS[value] ?? value}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-slate-500">
+                      <span>
+                        表示 {filteredLoras.length} / 全 {loras.length}
+                      </span>
+                      <button className="btn-ghost !py-1 text-[11px]" onClick={resetLoraForm}>
+                        新規登録
+                      </button>
+                    </div>
+                  </div>
+
+                  <div
+                    data-testid="lora-management-list"
+                    className="card max-h-[32rem] divide-y divide-ink-600 overflow-y-auto overscroll-contain"
+                  >
+                    {loras.length === 0 && (
+                      <p className="p-4 text-xs text-slate-500">登録がありません</p>
+                    )}
+                    {loras.length > 0 && filteredLoras.length === 0 && (
+                      <p className="p-4 text-center text-xs text-slate-500">
+                        条件に一致するLoRAがありません
                       </p>
-                      <p className="truncate text-slate-600">
-                        trigger: {lora.trigger_word} / strength: {lora.default_strength}
-                        {lora.default_audio ? ` / audio: ${lora.default_audio}` : ''}
-                      </p>
-                      {/* サンプル画像: エージェントモードで Grok が出力と見比べる基準 */}
-                      <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
-                        {lora.sample_images.map((url) => (
-                          <div key={url} className="group relative">
-                            <a href={url} target="_blank" rel="noreferrer">
+                    )}
+                    {filteredLoras.map((lora) => {
+                      // 取得元 URL はモデルタブと同じ `model_download_urls`（キーは
+                      // ファイル名 = lora_name）に入れる。[DL] / [全DL] がこれを見る。
+                      const savedUrl =
+                        settings?.model_download_urls?.[lora.lora_name] ?? ''
+                      const expanded = expandedLoraId === lora.id
+                      const sample = lora.sample_images[0]
+                      return (
+                        <div
+                          key={lora.id}
+                          className={editingId === lora.id ? 'bg-accent-500/5' : ''}
+                        >
+                          <div className="flex items-center gap-2 p-2 text-xs">
+                            {sample ? (
                               <img
-                                src={url}
-                                alt="サンプル"
-                                className="h-14 w-14 rounded border border-ink-600 object-cover"
+                                src={sample}
+                                alt=""
+                                aria-hidden="true"
+                                loading="lazy"
+                                className="h-10 w-10 shrink-0 rounded border border-ink-600 object-cover"
                               />
-                            </a>
+                            ) : (
+                              <span
+                                aria-hidden="true"
+                                className="flex h-10 w-10 shrink-0 items-center justify-center rounded border border-ink-600 bg-ink-900 text-slate-600"
+                              >
+                                L
+                              </span>
+                            )}
+                            <div className="min-w-0 flex-1">
+                              <p className="truncate font-medium text-slate-200">
+                                {lora.display_name}
+                              </p>
+                              <p className="truncate text-slate-500">
+                                <span className="mr-1.5 rounded border border-ink-600 px-1 py-px text-[10px] text-slate-400">
+                                  {loraBadge(lora)}
+                                </span>
+                                {lora.lora_name}
+                                {savedUrl && (
+                                  <span
+                                    className="ml-1.5 text-accent-400"
+                                    title={`取得元 URL: ${savedUrl}`}
+                                  >
+                                    URL ✓
+                                  </span>
+                                )}
+                              </p>
+                            </div>
                             <button
-                              type="button"
-                              title="サンプルを削除"
-                              className="absolute -right-1.5 -top-1.5 hidden h-4 w-4 items-center justify-center rounded-full border border-ink-600 bg-ink-900 text-[10px] leading-none text-slate-300 hover:text-red-400 group-hover:flex"
-                              onClick={() => void removeSample(lora, url)}
+                              className="btn-ghost !px-2 !py-1 text-[11px]"
+                              aria-expanded={expanded}
+                              onClick={() => setExpandedLoraId(expanded ? null : lora.id)}
+                            >
+                              {expanded ? '閉じる' : '詳細'}
+                            </button>
+                            <button
+                              className="btn-ghost !px-2 !py-1 text-[11px]"
+                              onClick={() => {
+                                setEditingId(lora.id)
+                                setDraftUrl(savedUrl)
+                                setEditingLoraName(lora.lora_name)
+                                setDraft({
+                                  display_name: lora.display_name,
+                                  lora_name: lora.lora_name,
+                                  trigger_word: lora.trigger_word,
+                                  default_strength: lora.default_strength,
+                                  default_audio: lora.default_audio,
+                                  sort_order: lora.sort_order,
+                                  target: lora.target ?? 'image',
+                                  family: lora.family ?? DEFAULT_FAMILY,
+                                })
+                              }}
+                            >
+                              編集
+                            </button>
+                            <button
+                              className="btn-danger !px-2 !py-1 text-[11px]"
+                              onClick={() => void removeLora(lora)}
                               disabled={busy}
                             >
-                              ×
+                              削除
                             </button>
                           </div>
-                        ))}
-                        <label
-                          className="flex h-14 w-14 cursor-pointer items-center justify-center rounded border border-dashed border-ink-600 text-lg text-slate-500 hover:border-accent-500 hover:text-accent-500"
-                          title="サンプル画像を追加"
-                        >
-                          ＋
-                          <input
-                            type="file"
-                            accept=".png,.jpg,.jpeg,.webp,.bmp"
-                            className="hidden"
-                            disabled={busy}
-                            onChange={(event) => {
-                              const file = event.target.files?.[0]
-                              event.target.value = ''
-                              if (file) void uploadSample(lora, file)
-                            }}
-                          />
-                        </label>
-                      </div>
-                    </div>
-                    <button
-                      className="btn-ghost !py-1 text-xs"
-                      onClick={() => {
-                        setEditingId(lora.id)
-                        setDraftUrl(savedUrl)
-                        setEditingLoraName(lora.lora_name)
-                        setDraft({
-                          display_name: lora.display_name,
-                          lora_name: lora.lora_name,
-                          trigger_word: lora.trigger_word,
-                          default_strength: lora.default_strength,
-                          default_audio: lora.default_audio,
-                          sort_order: lora.sort_order,
-                          target: lora.target ?? 'image',
-                          family: lora.family ?? DEFAULT_FAMILY,
-                        })
-                      }}
-                    >
-                      編集
-                    </button>
-                    <button
-                      className="btn-danger !py-1 text-xs"
-                      onClick={() => void removeLora(lora)}
-                      disabled={busy}
-                    >
-                      削除
-                    </button>
-                  </div>
-                  )
-                })}
-              </div>
 
-              <div className="card p-3">
+                          {expanded && (
+                            <div className="border-t border-ink-700 bg-ink-900/40 px-3 py-2 text-[11px] text-slate-500">
+                              <p className="break-all">
+                                trigger: {lora.trigger_word || '（なし）'} / strength:{' '}
+                                {lora.default_strength}
+                                {lora.default_audio ? ` / audio: ${lora.default_audio}` : ''}
+                              </p>
+                              <div className="mt-2 flex flex-wrap items-center gap-1.5">
+                                {lora.sample_images.map((url) => (
+                                  <div key={url} className="group relative">
+                                    <a href={url} target="_blank" rel="noreferrer">
+                                      <img
+                                        src={url}
+                                        alt={`${lora.display_name} サンプル`}
+                                        loading="lazy"
+                                        className="h-14 w-14 rounded border border-ink-600 object-cover"
+                                      />
+                                    </a>
+                                    <button
+                                      type="button"
+                                      title="サンプルを削除"
+                                      className="absolute -right-1.5 -top-1.5 hidden h-4 w-4 items-center justify-center rounded-full border border-ink-600 bg-ink-900 text-[10px] leading-none text-slate-300 hover:text-red-400 group-hover:flex"
+                                      onClick={() => void removeSample(lora, url)}
+                                      disabled={busy}
+                                    >
+                                      ×
+                                    </button>
+                                  </div>
+                                ))}
+                                <label
+                                  className="flex h-14 w-14 cursor-pointer items-center justify-center rounded border border-dashed border-ink-600 text-lg text-slate-500 hover:border-accent-500 hover:text-accent-500"
+                                  title="サンプル画像を追加"
+                                >
+                                  ＋
+                                  <input
+                                    type="file"
+                                    accept=".png,.jpg,.jpeg,.webp,.bmp"
+                                    className="hidden"
+                                    disabled={busy}
+                                    onChange={(event) => {
+                                      const file = event.target.files?.[0]
+                                      event.target.value = ''
+                                      if (file) void uploadSample(lora, file)
+                                    }}
+                                  />
+                                </label>
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )
+                    })}
+                  </div>
+                </div>
+
+                <div className="card p-3 lg:sticky lg:top-4">
                 <h4 className="mb-2 text-xs font-semibold text-slate-300">
                   {editingId == null ? 'LoRA を追加' : `LoRA を編集 (#${editingId})`}
                 </h4>
                 <div className="grid grid-cols-2 gap-2">
                   <div>
-                    <label className="label">表示名</label>
+                    <label className="label" htmlFor="lora-display-name">
+                      表示名
+                    </label>
                     <input
+                      id="lora-display-name"
                       className="field"
                       value={draft.display_name}
                       onChange={(event) =>
@@ -1404,6 +1522,7 @@ export default function SettingsPage({
                   )}
                 </div>
               </div>
+            </div>
             </div>
           )}
 

@@ -200,7 +200,7 @@ describe('SettingsPage: 環境ごとのモデル / LoRA（SPEC §5）', () => {
     screen.getByRole('button', { name: 'LoRA 管理' }).click()
     await waitFor(() => screen.getByText('かおり'))
 
-    const [displayName] = screen.getAllByRole('textbox') as HTMLInputElement[]
+    const displayName = screen.getByLabelText('表示名') as HTMLInputElement
     fireEvent.change(displayName, { target: { value: 'みずき' } })
     fireEvent.change(screen.getByPlaceholderText('例: my_lora.safetensors'), {
       target: { value: 'mizuki.safetensors' },
@@ -230,6 +230,65 @@ describe('SettingsPage: 環境ごとのモデル / LoRA（SPEC §5）', () => {
       'diffusion_models',
       'runpod',
     ])
+  })
+
+  it('LoRA 管理一覧は名前・トリガー検索と対象・ファミリーで絞り込める', async () => {
+    listLoras.mockResolvedValue([
+      loraRow(),
+      {
+        ...loraRow(),
+        id: 2,
+        display_name: 'スローモ',
+        lora_name: 'slowmo-ltx.safetensors',
+        trigger_word: 'slowmotion',
+        target: 'video',
+        family: 'ltx2',
+      },
+      {
+        ...loraRow(),
+        id: 3,
+        display_name: 'セリア',
+        lora_name: 'seria_anima_character_v1_comfy.safetensors',
+        trigger_word: 'seriaanti',
+        target: 'image',
+        family: 'anima',
+      },
+    ])
+    await openSettings()
+    screen.getByRole('button', { name: 'LoRA 管理' }).click()
+    await waitFor(() => screen.getByText('セリア'))
+
+    const list = screen.getByTestId('lora-management-list')
+    expect(list.textContent).toContain('かおり')
+    expect(list.textContent).toContain('スローモ')
+    expect(list.textContent).toContain('セリア')
+    expect(screen.getByText('表示 3 / 全 3')).toBeTruthy()
+
+    fireEvent.change(screen.getByLabelText('LoRAを検索'), {
+      target: { value: 'seriaanti' },
+    })
+    await waitFor(() => expect(list.textContent).toContain('セリア'))
+    expect(list.textContent).not.toContain('かおり')
+    expect(list.textContent).not.toContain('スローモ')
+    expect(screen.getByText('表示 1 / 全 3')).toBeTruthy()
+
+    fireEvent.change(screen.getByLabelText('LoRAを検索'), { target: { value: '' } })
+    fireEvent.change(screen.getByLabelText('LoRAの対象'), {
+      target: { value: 'video' },
+    })
+    await waitFor(() => expect(list.textContent).toContain('スローモ'))
+    expect(list.textContent).not.toContain('かおり')
+    expect(list.textContent).not.toContain('セリア')
+
+    fireEvent.change(screen.getByLabelText('LoRAの対象'), {
+      target: { value: 'all' },
+    })
+    fireEvent.change(screen.getByLabelText('LoRAのファミリー'), {
+      target: { value: 'anima' },
+    })
+    await waitFor(() => expect(list.textContent).toContain('セリア'))
+    expect(list.textContent).not.toContain('かおり')
+    expect(list.textContent).not.toContain('スローモ')
   })
 
   it('[全DL] は選んだ環境の不足モデルを一括で開始する', async () => {
@@ -598,8 +657,7 @@ describe('SettingsPage: LoRA フォームの取得元 URL', () => {
     })
     await openLorasTab()
 
-    // フォーム先頭のテキスト入力が「表示名」（label は htmlFor を持たないので順で引く）
-    const [displayName] = screen.getAllByRole('textbox') as HTMLInputElement[]
+    const displayName = screen.getByLabelText('表示名') as HTMLInputElement
     fireEvent.change(displayName, { target: { value: 'みずき' } })
     fireEvent.change(screen.getByPlaceholderText('例: my_lora.safetensors'), {
       target: { value: 'mizuki.safetensors' },
