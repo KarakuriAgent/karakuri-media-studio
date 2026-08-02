@@ -308,15 +308,13 @@ describe('editing image workflows', () => {
 
 // ------------------------------------------- マルチモーダル参照（SPEC §3.1）
 
-// Seedance 2（kie.ai）: 開始フレームも参照素材も受け取れるが、**排他**。
+// Seedance 2 の参照版（kie.ai）: 参照素材専用で、開始フレームは受け取らない。
 const SEEDANCE = workflow({
-  id: 'seedance2',
+  id: 'seedance2_ref',
   requires: [],
-  accepts_start_image: true,
+  accepts_start_image: false,
   supports: [
     'prompt',
-    'image',
-    'end_image',
     'reference_images',
     'reference_videos',
     'reference_audios',
@@ -343,11 +341,14 @@ describe('マルチモーダル参照', () => {
     expect(referenceFields(null)).toEqual([])
   })
 
-  it('開始フレームを渡せる mode（i2v）でだけ欄を出す', () => {
+  it('参照専用ワークフローの i2v でだけ欄を出す', () => {
     expect(hiddenFields('i2v', SEEDANCE).references).toBe(false)
-    // full は画像ステージが開始フレームを作るので参照モードにできない
+    // full は画像ステージが開始フレームを作るので参照ワークフローでは使えない
     expect(hiddenFields('full', SEEDANCE).references).toBe(true)
     expect(hiddenFields('i2v', VEO).references).toBe(true)
+    // 参照専用ワークフローには開始 / 最終フレームの欄そのものが無い
+    expect(hiddenFields('i2v', SEEDANCE).startImage).toBe(true)
+    expect(hiddenFields('i2v', SEEDANCE).endImage).toBe(true)
   })
 
   it('選んだ順に積み上げ、もう一度選ぶと外す', () => {
@@ -356,22 +357,15 @@ describe('マルチモーダル参照', () => {
     expect(toggleReference(['a', 'b'], 'a')).toEqual(['b'])
   })
 
-  it('開始フレームとの同時指定を送る前に断る', () => {
+  it('参照素材だけのジョブは通る（開始フレームの欄は出ない）', () => {
     const form: FormState = {
       ...initialForm,
       mode: 'i2v',
       referenceImages: ['/library/image/a.png'],
     }
     expect(validateForm(form, null, null, SEEDANCE)).toEqual({})
-
-    const withStart = { ...form, sourceImage: '/assets/image/start.png' }
-    expect(validateForm(withStart, null, null, SEEDANCE).references).toContain(
-      '同時に指定できません',
-    )
-    const withEnd = { ...form, endImage: '/assets/image/end.png' }
-    expect(validateForm(withEnd, null, null, SEEDANCE).references).toContain(
-      '同時に指定できません',
-    )
+    // 欄が出ないので送られない = 排他の検証そのものが要らなくなった
+    expect(hiddenFields('i2v', SEEDANCE).startImage).toBe(true)
   })
 
   it('full モードでの参照指定と件数超過を断る', () => {
@@ -395,19 +389,18 @@ describe('マルチモーダル参照', () => {
     ).toContain('3 件までです')
   })
 
-  it('参照素材のときだけ固定される設定を送る前に断る（Veo は 8 秒固定）', () => {
+  it('参照専用ワークフローの固定値は選択肢そのものが 1 つ（Veo は 8 秒固定）', () => {
     // Veo 3.1 Fast の素材参照生成: 参照画像 3 枚まで・尺は 8 秒しか作れない
     const veoRef = workflow({
-      id: 'veo3_1_fast',
-      accepts_start_image: true,
-      supports: ['prompt', 'image', 'end_image', 'reference_images'],
+      id: 'veo3_1_fast_ref',
+      accepts_start_image: false,
+      supports: ['prompt', 'reference_images'],
       multi_inputs: { reference_images: 3 },
-      reference_selects: { duration: '8' },
       selects: [
         {
           name: 'duration',
           label: '尺（秒）',
-          choices: ['4', '6', '8'],
+          choices: ['8'],
           default: '8',
           auto: false,
           hint: '',
@@ -420,22 +413,9 @@ describe('マルチモーダル参照', () => {
       mode: 'i2v',
       referenceImages: ['/library/image/a.png'],
     }
-    // 未指定と 8 秒はどちらも通る（既定がそのまま固定値）
     expect(validateForm(form, null, null, veoRef)).toEqual({})
-    expect(
-      validateForm({ ...form, selects: { duration: '8' } }, null, null, veoRef),
-    ).toEqual({})
-
-    const short = { ...form, selects: { duration: '4' } }
-    expect(validateForm(short, null, null, veoRef).references).toContain(
-      '尺（秒）は 8 固定です',
-    )
-    // 参照素材を使っていなければ 4 秒でも通る
-    expect(
-      validateForm(
-        { ...short, referenceImages: [] }, null, null, veoRef,
-      ),
-    ).toEqual({})
+    // 選べる尺が 1 つしかないので、他の尺を選ぶ手立てそのものが無い
+    expect(veoRef.selects[0].choices).toEqual(['8'])
   })
 
   it('過去ジョブの params から参照素材を復元する', () => {
@@ -459,14 +439,13 @@ describe('マルチモーダル参照', () => {
 
 // ------------------------- ショット割り / Elements（SPEC §3.1、Kling 3.0）
 
-// Kling 3.0（kie.ai）: 500 文字の上限つきで、マルチショットと Elements を持つ。
+// Kling 3.0（kie.ai）: 500 文字の上限つきで Elements を持つ 1 カット版。
 const KLING = workflow({
   id: 'kling3_video',
   requires: [],
   accepts_start_image: true,
   supports: ['prompt', 'image', 'end_image'],
   max_prompt_chars: 500,
-  multi_shot: { max_shots: 5, min_duration: 1, max_duration: 12 },
   elements: {
     max_elements: 3,
     min_images: 2,
@@ -476,23 +455,59 @@ const KLING = workflow({
   backend: 'kie',
 })
 
+// ショット割り専用版: 本文はショット側にあるので `video_prompt` を持たない。
+const KLING_SHOTS = workflow({
+  ...KLING,
+  id: 'kling3_multishot',
+  prompt_required: false,
+  multi_shot: { max_shots: 5, min_duration: 1, max_duration: 12 },
+})
+
 const IMAGES = ['/library/image/a.png', '/library/image/b.png']
 
 function klingForm(overrides: Partial<FormState> = {}): FormState {
   return { ...initialForm, mode: 'i2v', videoWorkflow: KLING.id, ...overrides }
 }
 
+function shotForm(overrides: Partial<FormState> = {}): FormState {
+  return {
+    ...initialForm,
+    mode: 'i2v',
+    videoWorkflow: KLING_SHOTS.id,
+    ...overrides,
+  }
+}
+
 describe('マルチショット', () => {
   it('宣言のあるワークフローで動画ステージが走るときだけ欄を出す', () => {
-    expect(multiShotLimits(KLING)?.max_shots).toBe(5)
+    expect(multiShotLimits(KLING_SHOTS)?.max_shots).toBe(5)
+    // 1 カット版にはショット割りの宣言そのものが無い
+    expect(multiShotLimits(KLING)).toBeNull()
     expect(multiShotLimits(VEO)).toBeNull()
     expect(multiShotLimits(null)).toBeNull()
 
-    expect(hiddenFields('i2v', KLING).multiShots).toBe(false)
-    expect(hiddenFields('full', KLING).multiShots).toBe(false)
+    expect(hiddenFields('i2v', KLING_SHOTS).multiShots).toBe(false)
+    expect(hiddenFields('full', KLING_SHOTS).multiShots).toBe(false)
     // 動画ステージを走らせない mode にはショットの概念が無い
-    expect(hiddenFields('image_only', KLING).multiShots).toBe(true)
+    expect(hiddenFields('image_only', KLING_SHOTS).multiShots).toBe(true)
+    expect(hiddenFields('i2v', KLING).multiShots).toBe(true)
     expect(hiddenFields('i2v', VEO).multiShots).toBe(true)
+    // ショット割り版では本文がショット側なので、プロンプト欄は出さない
+    expect(hiddenFields('i2v', KLING_SHOTS).videoPrompt).toBe(true)
+    expect(hiddenFields('i2v', KLING).videoPrompt).toBe(false)
+  })
+
+  it('ショット割り専用のワークフローではショットが必須', () => {
+    expect(validateForm(shotForm(), null, null, KLING_SHOTS).multi_shots)
+      .toContain('ショット割り専用')
+    expect(
+      validateForm(
+        shotForm({ multiShots: [{ prompt: 'She turns.', duration: 5 }] }),
+        null,
+        null,
+        KLING_SHOTS,
+      ),
+    ).toEqual({})
   })
 
   it('追加するショットの秒数は宣言の範囲に収まる', () => {
@@ -511,49 +526,49 @@ describe('マルチショット', () => {
 
   it('件数・秒数・1 ショットの長さを送る前に断る', () => {
     const shot = { prompt: 'She turns.', duration: 5 }
-    expect(validateForm(klingForm({ multiShots: [shot] }), null, null, KLING)).toEqual(
+    expect(validateForm(shotForm({ multiShots: [shot] }), null, null, KLING)).toEqual(
       {},
     )
     // ちょうど 5 ショットまでは通る
     expect(
       validateForm(
-        klingForm({ multiShots: Array(5).fill(shot) }),
+        shotForm({ multiShots: Array(5).fill(shot) }),
         null,
         null,
-        KLING,
+        KLING_SHOTS,
       ),
     ).toEqual({})
 
     expect(
       validateForm(
-        klingForm({ multiShots: Array(6).fill(shot) }),
+        shotForm({ multiShots: Array(6).fill(shot) }),
         null,
         null,
-        KLING,
+        KLING_SHOTS,
       ).multi_shots,
     ).toContain('5 個までです')
     expect(
       validateForm(
-        klingForm({ multiShots: [{ ...shot, duration: 13 }] }),
+        shotForm({ multiShots: [{ ...shot, duration: 13 }] }),
         null,
         null,
-        KLING,
+        KLING_SHOTS,
       )['multi_shots.0'],
     ).toContain('1〜12 秒')
     expect(
       validateForm(
-        klingForm({ multiShots: [{ ...shot, prompt: '  ' }] }),
+        shotForm({ multiShots: [{ ...shot, prompt: '  ' }] }),
         null,
         null,
-        KLING,
+        KLING_SHOTS,
       )['multi_shots.0'],
     ).toContain('プロンプトを入力')
     expect(
       validateForm(
-        klingForm({ multiShots: [{ ...shot, prompt: 'a'.repeat(501) }] }),
+        shotForm({ multiShots: [{ ...shot, prompt: 'a'.repeat(501) }] }),
         null,
         null,
-        KLING,
+        KLING_SHOTS,
       )['multi_shots.0'],
     ).toContain('500 文字までです')
   })
@@ -628,13 +643,13 @@ describe('Elements', () => {
     // ショットの本文の `@名前` も同じように見る
     expect(
       validateForm(
-        klingForm({
+        shotForm({
           klingElements: [element],
           multiShots: [{ prompt: '@akira waits.', duration: 4 }],
         }),
         null,
         null,
-        KLING,
+        KLING_SHOTS,
       ).kling_elements,
     ).toContain('`@akira`')
     // 宣言したが参照していないのは、素材を先に用意しただけなので通す

@@ -532,31 +532,22 @@ def _catalog_entry_lines(entry: CatalogEntry) -> list[str]:
         lines.append("  - 任意入力: " + _inputs_text(entry.optional_inputs))
     if entry.reference_inputs:
         lines.append(
-            "  - 参照素材（複数指定・**開始フレームとは排他**）: "
+            "  - 参照素材（複数指定・このワークフローの主入力）: "
             + ", ".join(
                 f"`{field}`（{label}・最大 {limit} 件）"
                 for field, label, limit in entry.reference_inputs
             )
-            + "。指定するときは `mode: \"i2v\"` で、`source_image` /"
-            " `end_image` を書かないこと（同時指定のジョブは拒否されます）"
-            + (
-                "。参照素材を使うときは "
-                + "・".join(
-                    f"`{name}` は {value!r} 固定"
-                    for name, value in entry.reference_selects
-                )
-                if entry.reference_selects
-                else ""
-            )
+            + "。**開始フレームは受け取らない**ので `mode: \"i2v\"` 専用で、"
+            "`source_image` / `end_image` を書いたジョブは拒否されます"
         )
     if entry.multi_shot is not None:
         lines.append(
-            "  - マルチショット: `multi_shots`（最大"
+            "  - マルチショット**必須**: `multi_shots`（最大"
             f" {entry.multi_shot.max_shots} ショット、各"
             f" `{{prompt, duration}}` で duration は"
             f" {entry.multi_shot.min_duration}〜{entry.multi_shot.max_duration}"
-            " 秒の整数）。指定したときは `video_prompt` を書かない"
-            "（本文はショット側にあり、API にも送られません）"
+            " 秒の整数）。本文はショット側にあるので `video_prompt` は空のまま"
+            "（書いたジョブは拒否されます）"
         )
     if entry.elements is not None:
         lines.append(
@@ -753,12 +744,8 @@ def _workflow_context_lines(workflow_id: str) -> list[str]:
 # Veo 3.1 — https://docs.kie.ai/veo3-api/generate-veo-3-video.md と
 # https://ai.google.dev/gemini-api/docs/veo（プロンプト構成・音声・否定表現）
 
-VEO_VIDEO_GUIDE = """\
-# VIDEO PROMPT SPEC — Google Veo 3.1 (kie.ai, `veo3_1_fast` / `veo3_1_quality`)
-
-Veo generates **picture and sound together** in one 4-8 second take. It is not
-LTX: where this section and the VIDEO PROMPT SPEC above disagree, this one wins.
-
+#: Veo のプロンプト本体（通常の生成と素材参照生成で共通の骨格）
+_VEO_GUIDE_BODY = """\
 Write `video_prompt` as 3-6 English sentences (100-150 words), in this order:
 
 1. **Composition / shot** — shot size and angle (medium close-up, low-angle
@@ -788,27 +775,56 @@ Hard rules:
   the very end as `Negative: cartoon, blurry, distorted hands, text, watermark`.
 - **One clip = one scene = one camera move.** Cuts, "then", and "meanwhile"
   belong in separate jobs.
+"""
+
+VEO_VIDEO_GUIDE = (
+    """\
+# VIDEO PROMPT SPEC — Google Veo 3.1 (kie.ai, `veo3_1_fast` / `veo3_1_quality`)
+
+Veo generates **picture and sound together** in one 4-8 second take. It is not
+LTX: where this section and the VIDEO PROMPT SPEC above disagree, this one wins.
+
+"""
+    + _VEO_GUIDE_BODY
+    + """\
 - With a start frame, do **not** re-describe what the picture already shows —
   write how it moves, what happens next, and how it sounds.
 - Duration, aspect ratio and resolution are job fields (`selects`), never
   sentences in the prompt. `resolution` also offers `4k`, but only for 8 second
   clips and at a much higher price — keep `720p` unless the shot is final.
+- To pin a face, a wardrobe or a prop with **material** instead of a start
+  frame, use the separate `veo3_1_fast_ref` workflow.
 """
+)
+
+VEO_REFERENCE_VIDEO_GUIDE = (
+    """\
+# VIDEO PROMPT SPEC — Google Veo 3.1 Fast, reference mode (kie.ai, `veo3_1_fast_ref`)
+
+This workflow is the **reference-to-video** mode (`REFERENCE_2_VIDEO`): 1-3
+`reference_images` carry identity and look, and the clip is always **8 seconds**
+with picture and sound generated together. It takes **no start frame at all**
+(`source_image` / `end_image` are rejected) — use `veo3_1_fast` for those.
+
+"""
+    + _VEO_GUIDE_BODY
+    + """\
+- **Do not describe what the reference images already show.** The face, the
+  wardrobe and the props come from the material; the text is direction only —
+  what happens, in which scene and light, with which single camera move.
+- Refer to the material in words the model can attach (`the woman from the
+  reference images`), never by file name.
+- Aspect ratio and resolution are job fields (`selects`); `duration` is fixed at
+  8 seconds and offers nothing else.
+"""
+)
 
 # Kling 3.0 — https://docs.kie.ai/market/kling/kling-3-0.md と
 # https://blog.fal.ai/kling-3-0-prompting-guide/（構成順・アイデンティティ固定・音声）
 
-KLING_VIDEO_GUIDE = """\
-# VIDEO PROMPT SPEC — Kling 3.0 (kie.ai, `kling3_video`)
-
-Kling is a motion model: it is strongest on people, physical action and
-photoreal footage, and it takes 3-15 second takes. Where this section and the
-generic VIDEO PROMPT SPEC above disagree, this one wins.
-
-**Hard limit: `video_prompt` must be at most 500 characters.** The job is
-rejected before it is queued if it is longer, so write one dense English
-paragraph — no lists, no repetition, no restating the job fields.
-
+#: 1 ショットの書き方（`kling3_video` の本文と `kling3_multishot` の 1 ショットで
+#: 共通の骨格）
+_KLING_SHOT_GUIDE = """\
 Write it in this order:
 
 1. **Camera first** — open with the move (`Slow dolly push forward,`
@@ -821,11 +837,10 @@ Write it in this order:
 3. **Action** — one continuous action, in the order it happens.
 4. **Mood / lighting** — time of day, key light, weather.
 5. **Style** — film stock, grade, lens character.
+"""
 
-With a start frame (`image`), the picture is the anchor: write **only what
-changes** — how the subject starts moving, where the camera goes, what happens
-next. Never re-describe the composition that is already in the picture.
-
+#: 音・ネガティブ・ジョブフィールドの扱い（2 本で共通）
+_KLING_SOUND_GUIDE = """\
 With `sound: true` (the `sound` select):
 
 - Label the speaker before the line and describe the voice:
@@ -842,34 +857,10 @@ trying to avoid.
 
 Duration, mode (std / pro / 4K), aspect ratio and sound are job fields
 (`selects`), never sentences in the prompt.
+"""
 
-## Multi-shot (`multi_shots`)
-
-One Kling job can be **up to 5 consecutive shots** instead of one take. Send
-`multi_shots` as a list and leave `video_prompt` empty — the top-level prompt is
-not sent at all when shots are present:
-
-```json
-"multi_shots": [
-  {"prompt": "Shot 1 …", "duration": 4},
-  {"prompt": "Shot 2 …", "duration": 5}
-]
-```
-
-- Each shot is **1-12 seconds** (integer) and its `prompt` obeys the same
-  **500 character** limit, on its own.
-- Write every shot in the same order as a single take: **camera move → action →
-  position in the scene → sound**. `Shot 2: Low tracking shot, she pushes
-  through the door and steps into the rain, now framed from the left, sound:
-  rain on metal.`
-- Keep the identity wording **identical in every shot** (same age, hair,
-  wardrobe words); this is the only thing holding the character together across
-  the cuts. Same for the location and the light.
-- `sound` defaults to **true** for a multi-shot job, so name the ambience per
-  shot.
-- Shots are cuts, not one long move: do not carry a camera move across two
-  shots, give each one its own.
-
+#: Elements の説明（2 本で共通）
+_KLING_ELEMENTS_GUIDE = """\
 ## Elements (`kling_elements`)
 
 Up to **3 named elements**, each with **2-4 reference images**, pin a recurring
@@ -891,21 +882,92 @@ the tram …`). Two rules that matter:
 - **`@name` must match a declared element.** A reference to an element you did
   not declare is rejected before the job is queued.
 
-Elements work with multi-shot (`@name` inside each shot's `prompt`) and with a
-start frame.
+Elements work with a start frame, and with the shots of `kling3_multishot`
+(`@name` inside each shot's `prompt`).
 """
+
+KLING_VIDEO_GUIDE = (
+    """\
+# VIDEO PROMPT SPEC — Kling 3.0 (kie.ai, `kling3_video`)
+
+Kling is a motion model: it is strongest on people, physical action and
+photoreal footage, and it takes 3-15 second takes. Where this section and the
+generic VIDEO PROMPT SPEC above disagree, this one wins.
+
+**Hard limit: `video_prompt` must be at most 500 characters.** The job is
+rejected before it is queued if it is longer, so write one dense English
+paragraph — no lists, no repetition, no restating the job fields.
+
+"""
+    + _KLING_SHOT_GUIDE
+    + """\
+
+With a start frame (`image`), the picture is the anchor: write **only what
+changes** — how the subject starts moving, where the camera goes, what happens
+next. Never re-describe the composition that is already in the picture.
+
+"""
+    + _KLING_SOUND_GUIDE
+    + "\n"
+    + _KLING_ELEMENTS_GUIDE
+    + """\
+
+For a sequence of consecutive shots in one clip, use the separate
+`kling3_multishot` workflow.
+"""
+)
+
+KLING_MULTISHOT_VIDEO_GUIDE = (
+    """\
+# VIDEO PROMPT SPEC — Kling 3.0 multi-shot (kie.ai, `kling3_multishot`)
+
+This workflow cuts one Kling job into **up to 5 consecutive shots** instead of
+one take. Send `multi_shots` as a list and **leave `video_prompt` empty** — the
+top-level prompt is not sent at all, and a job that has one (or that has no
+shots) is rejected before it is queued:
+
+```json
+"multi_shots": [
+  {"prompt": "Shot 1 …", "duration": 4},
+  {"prompt": "Shot 2 …", "duration": 5}
+]
+```
+
+- Each shot is **1-12 seconds** (integer) and its `prompt` obeys the
+  **500 character** limit, on its own.
+- Keep the identity wording **identical in every shot** (same age, hair,
+  wardrobe words); this is the only thing holding the character together across
+  the cuts. Same for the location and the light.
+- Shots are cuts, not one long move: do not carry a camera move across two
+  shots, give each one its own.
+- `sound` defaults to **true** here, so name the ambience per shot.
+- Use it when the shots must stay one continuous scene; use separate jobs when
+  they are independent.
+
+Write **every shot** in the same order as a single take:
+
+"""
+    + _KLING_SHOT_GUIDE
+    + """\
+
+`Shot 2: Low tracking shot, she pushes through the door and steps into the
+rain, now framed from the left, sound: rain on metal.`
+
+With a start frame (`image`), the picture anchors the **first** shot: write only
+what changes, never re-describe the composition that is already in the picture.
+
+"""
+    + _KLING_SOUND_GUIDE
+    + "\n"
+    + _KLING_ELEMENTS_GUIDE
+)
 
 # Seedance 2 — https://docs.kie.ai/market/bytedance/seedance-2.md と
 # 公式プロンプトガイドの解説（6 要素フォーミュラ・照明・カメラ 8 種・マルチショット）
 # https://help.apiyi.com/en/seedance-2-0-prompt-guide-video-generation-camera-style-tips-en.html
 
-SEEDANCE_VIDEO_GUIDE = """\
-# VIDEO PROMPT SPEC — ByteDance Seedance 2 (kie.ai, `seedance2` / `seedance2_fast` / `seedance2_mini`)
-
-Seedance generates picture and **native audio together** in one 4-15 second
-take. Where this section and the generic VIDEO PROMPT SPEC above disagree, this
-one wins.
-
+#: 演出の書き方（フレーム版・参照版で共通の骨格）
+_SEEDANCE_DIRECTION_GUIDE = """\
 **Write like a director, not like a tag list.** One dense English paragraph of
 **60-100 words** built from six elements, in this order:
 
@@ -936,11 +998,6 @@ shots in time order (`Shot 1: … Shot 2: …`) and write each one as **camera �
 action → spatial relation → sound**, repeating the subject's description
 verbatim in every shot so the character stays the same person.
 
-With a start frame (`image`), the picture is the anchor: write only how it
-starts moving and what happens next, never re-describe the composition. With
-`end_image` as well, describe the *transition* that lands exactly on that last
-frame.
-
 There is **no seed, no `camera_fixed` and no negative-prompt parameter** on
 Seedance 2: a locked-off camera is `fixed camera, no camera movement` in the
 text, and everything unwanted goes in the closing `avoid …` clause.
@@ -949,10 +1006,40 @@ Resolution, duration, aspect ratio, audio on/off and the NSFW checker are job
 fields (`selects`), never sentences in the prompt. `generate_audio` is **on by
 default**, so name the ambience and the effects you want; `nsfw_checker` is
 **off by default** (kie.ai's own filter stays disabled).
+"""
 
-## Reference mode (multimodal references)
+SEEDANCE_VIDEO_GUIDE = (
+    """\
+# VIDEO PROMPT SPEC — ByteDance Seedance 2 (kie.ai, `seedance2` / `seedance2_fast` / `seedance2_mini`)
 
-Instead of a start frame you can hand Seedance material to work from:
+Seedance generates picture and **native audio together** in one 4-15 second
+take. Where this section and the generic VIDEO PROMPT SPEC above disagree, this
+one wins.
+
+"""
+    + _SEEDANCE_DIRECTION_GUIDE
+    + """\
+
+With a start frame (`image`), the picture is the anchor: write only how it
+starts moving and what happens next, never re-describe the composition. With
+`end_image` as well, describe the *transition* that lands exactly on that last
+frame.
+
+To pin identity, motion or mood with **material** instead of a start frame, use
+the reference variants (`seedance2_ref` / `seedance2_fast_ref` /
+`seedance2_mini_ref`).
+"""
+)
+
+SEEDANCE_REFERENCE_VIDEO_GUIDE = (
+    """\
+# VIDEO PROMPT SPEC — ByteDance Seedance 2, reference mode (kie.ai, `seedance2_ref` / `seedance2_fast_ref` / `seedance2_mini_ref`)
+
+These workflows are the **multimodal reference** mode: instead of a start frame
+you hand Seedance material to work from. They take **no start frame at all**
+(`source_image` / `end_image` are rejected, and `mode: "full"` cannot use them,
+because the API's reference mode and its first-frame i2v mode are exclusive) —
+use `seedance2` / `seedance2_fast` / `seedance2_mini` for those.
 
 - `reference_images` (up to 9) — **identity and consistency**: the same face,
   the same wardrobe, the same prop across shots. This is how a character stays
@@ -962,18 +1049,14 @@ Instead of a start frame you can hand Seedance material to work from:
 - `reference_audios` (up to 3) — **mood and musical feel**. Each clip 2-15
   seconds, 15 seconds in total.
 
-**Reference mode and the start-frame mode are mutually exclusive**: a job with
-`reference_*` must be `mode: "i2v"` and carry neither `source_image` nor
-`end_image` (`mode: "full"` produces a start frame, so it is out too). The app
-rejects such a job before it is queued.
+**Do not describe what the material already shows** — no re-listing the face,
+the wardrobe or the camera move of the reference clip. Spend the whole prompt on
+direction instead, and refer to the material in words the model can attach
+(`the woman from the reference images`), not by file name.
 
-With references, **do not describe what the material already shows** — no
-re-listing the face, the wardrobe or the camera move of the reference clip.
-Spend the whole prompt on direction instead: what happens, in what order, in
-which light, with which single camera move, and the closing `avoid …` clause.
-Refer to the material in words the model can attach (`the woman from the
-reference images`), not by file name.
 """
+    + _SEEDANCE_DIRECTION_GUIDE
+)
 
 # Grok Imagine video-1.5 — https://docs.x.ai/developers/model-capabilities/video/generation
 # と二次のプロンプトガイド（逐次レンダリング・1 クリップ 1 アクション・音声指定・
@@ -1029,10 +1112,15 @@ batches over several days.
 VIDEO_SPECS: dict[str, str] = {
     "veo3_1_fast": VEO_VIDEO_GUIDE,
     "veo3_1_quality": VEO_VIDEO_GUIDE,
+    "veo3_1_fast_ref": VEO_REFERENCE_VIDEO_GUIDE,
     "kling3_video": KLING_VIDEO_GUIDE,
+    "kling3_multishot": KLING_MULTISHOT_VIDEO_GUIDE,
     "seedance2": SEEDANCE_VIDEO_GUIDE,
     "seedance2_fast": SEEDANCE_VIDEO_GUIDE,
     "seedance2_mini": SEEDANCE_VIDEO_GUIDE,
+    "seedance2_ref": SEEDANCE_REFERENCE_VIDEO_GUIDE,
+    "seedance2_fast_ref": SEEDANCE_REFERENCE_VIDEO_GUIDE,
+    "seedance2_mini_ref": SEEDANCE_REFERENCE_VIDEO_GUIDE,
     "grok_imagine_video": GROK_IMAGINE_VIDEO_GUIDE,
 }
 
@@ -2030,23 +2118,24 @@ Rules:
   workflows this job runs and only values from that slot's candidate list —
   anything else is rejected. `continue` may carry it too.
 - `reference_images` / `reference_videos` / `reference_audios` are the
-  **multimodal reference** inputs (Seedance 2 only — VIDEO WORKFLOWS says which
-  workflow takes them and how many of each). They take **lists** of asset /
-  library paths, and they are **exclusive with the start-frame mode**: use them
-  in `mode: "i2v"` with no `source_image` and no `end_image`, never in
-  `mode: "full"` (whose image stage *is* the start frame). Reference images pin
-  identity and consistency, a reference video is the motion to imitate,
-  reference audio sets the mood; with them in play, write `video_prompt` about
+  **multimodal reference** inputs. They belong to the **reference workflows**
+  (`*_ref` — VIDEO WORKFLOWS says which one takes what and how many), which are
+  separate entries precisely because the API's reference mode and its
+  start-frame mode are exclusive: those workflows take **no** `source_image` /
+  `end_image` and only run in `mode: "i2v"`. Pass **lists** of asset / library
+  paths. Reference images pin identity and consistency, a reference video is the
+  motion to imitate, reference audio sets the mood; write `video_prompt` about
   the direction only, not about what the material already shows. Leave the
   lists out entirely when you are not using them.
-- `multi_shots` cuts one job into **several consecutive shots** (Kling only —
-  VIDEO WORKFLOWS says how many and how long). It is a list of
-  `{"prompt": "…", "duration": <int seconds>}`; when you use it, **leave
-  `video_prompt` empty** — the top-level prompt is not sent. Every shot's
-  `prompt` obeys the model's own character limit on its own, and the identity
-  wording must be repeated verbatim in each shot or the character drifts across
-  the cuts. Use it for a short sequence that must stay one continuous scene; use
-  separate tasks when the shots are independent.
+- `multi_shots` cuts one job into **several consecutive shots**. It belongs to
+  the multi-shot workflow (`kling3_multishot` — VIDEO WORKFLOWS says how many
+  and how long), where it is **required**: a list of
+  `{"prompt": "…", "duration": <int seconds>}` with **`video_prompt` left
+  empty** (the top-level prompt is not sent, and a job that has one is
+  rejected). Every shot's `prompt` obeys the model's own character limit on its
+  own, and the identity wording must be repeated verbatim in each shot or the
+  character drifts across the cuts. Use it for a short sequence that must stay
+  one continuous scene; use separate tasks when the shots are independent.
 - `kling_elements` are named casts you refer to with `@name` in the prompt text
   (Kling only): a list of `{"name": "…", "description": "…", "images": [asset /
   library paths]}`. VIDEO WORKFLOWS says how many elements and how many pictures

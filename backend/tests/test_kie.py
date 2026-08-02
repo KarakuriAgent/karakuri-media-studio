@@ -14,7 +14,7 @@ from fastapi.testclient import TestClient
 from app import backends, config, db, jobs, kie, nsfw, workflows
 from app.backends import BackendStatus
 from app.main import app
-from app.models import GenerationParams, Settings
+from app.models import GenerationParams, Settings, video_workflow_problem
 from app.workflows import KieTask, SelectSpec, WorkflowSpec
 
 API_KEY = "kie-test-key"
@@ -774,6 +774,7 @@ def test_an_unverified_backend_is_refused_at_creation(client, monkeypatch, tmp_p
 
 VEO_FAST = workflows.BY_ID["veo3_1_fast"]
 VEO_QUALITY = workflows.BY_ID["veo3_1_quality"]
+VEO_FAST_REF = workflows.BY_ID["veo3_1_fast_ref"]
 
 
 def veo_record(flag: int, urls=(), **extra) -> FakeResponse:
@@ -975,12 +976,10 @@ def test_veo_is_offered_as_a_video_workflow(client, monkeypatch):
     veo = [wf for wf in body["video_workflows"] if wf["id"] == VEO_FAST.id][0]
     # 画像は必須ではないが受け取れる（フォームは supports を見て欄を出す）
     assert veo["requires"] == []
-    # Fast は素材参照生成（REFERENCE_2_VIDEO）も受け取る
-    assert set(veo["supports"]) == {
-        "prompt", "image", "end_image", "reference_images",
-    }
-    assert veo["multi_inputs"] == {"reference_images": 3}
-    assert veo["reference_selects"] == {"duration": "8"}
+    # 素材参照生成は別ワークフロー（veo3_1_fast_ref）なので、こちらは開始 /
+    # 最終フレームだけを宣言する
+    assert set(veo["supports"]) == {"prompt", "image", "end_image"}
+    assert veo["multi_inputs"] == {}
     assert veo["accepts_start_image"] is True
     assert [select["name"] for select in veo["selects"]] == [
         "aspect_ratio",
@@ -1017,8 +1016,11 @@ def test_the_agent_prompt_lists_the_guide_once_per_available_model(monkeypatch):
 
     mark_available(monkeypatch)
     section = video_prompt_guides_section()
-    # Fast と Quality は同じガイドなので 1 回だけ載る
-    assert section.count("VIDEO PROMPT SPEC — Google Veo 3.1") == 1
+    # Fast と Quality は同じガイドなので 1 回だけ載る（素材参照版は別のガイド）
+    assert section.count("VIDEO PROMPT SPEC — Google Veo 3.1 (") == 1
+    assert section.count(
+        "VIDEO PROMPT SPEC — Google Veo 3.1 Fast, reference mode"
+    ) == 1
 
 
 # --------------------------------------------------------------------------
@@ -1058,6 +1060,7 @@ def test_veo_reference_images_switch_the_generation_type(
     )
     job = _veo_job(
         client, fake_kie, monkeypatch,
+        video_workflow=VEO_FAST_REF.id,
         reference_images=_reference_assets(job_env),
     )
     assert job["status"] == "done", job["error"]
@@ -1067,7 +1070,7 @@ def test_veo_reference_images_switch_the_generation_type(
         "https://files.kie.ai/ref0.png",
         "https://files.kie.ai/ref1.png",
     ]
-    # 枚数だけでは flf2v と区別が付かないので、宣言した固定値で切り替える
+    # 枚数だけでは flf2v と区別が付かないので、参照専用ワークフローの固定値で送る
     assert task_input["generationType"] == "REFERENCE_2_VIDEO"
     assert fake_kie.sent("create")[0]["json"]["generationType"] == "REFERENCE_2_VIDEO"
 
@@ -1081,56 +1084,69 @@ def test_veo_without_references_keeps_the_usual_generation_type(
     assert fake_kie.sent("create")[0]["json"]["generationType"] == "TEXT_2_VIDEO"
 
 
-def test_veo_reference_images_are_exclusive_with_a_start_frame(client, job_env):
-    references = _reference_assets(job_env, 1)
+def test_the_veo_reference_workflow_takes_no_start_frame(client, job_env):
+    """参照専用ワークフローは開始フレームの受け取り口そのものを持たない。"""
     (job_env.parent / "assets" / "image" / "start.png").write_bytes(b"png")
 
     answer = client.post(
         "/api/jobs",
         json={
             "mode": "i2v",
-            "video_workflow": VEO_FAST.id,
+            "video_workflow": VEO_FAST_REF.id,
             "video_prompt": "She turns toward the window.",
             "source_image": "/assets/image/start.png",
-            "reference_images": references,
+            "reference_images": _reference_assets(job_env, 1),
         },
     )
     assert answer.status_code == 422
-    assert "同時に指定できません" in answer.text
+    assert "受け取りません" in answer.text
+
+    # full は画像ステージが開始フレームを作るモードなので、そもそも選べない
+    assert (
+        video_workflow_problem("full", VEO_FAST_REF.id) or ""
+    ).startswith(f"video workflow '{VEO_FAST_REF.id}'")
 
 
 def test_veo_reference_mode_is_fixed_to_eight_seconds(client, job_env):
-    """参照素材のときの尺は API 側で 8 秒固定なので、他を選んだら 422。"""
-    references = _reference_assets(job_env, 1)
+    """参照素材のときの尺は API 側で 8 秒固定 = 選択肢が 1 つしかない。"""
+    duration = VEO_FAST_REF.select("duration")
+    assert duration is not None
+    assert duration.choices == ("8",)
+    assert duration.fallback == "8"
+    # 生成種別は「参照素材があるときだけ」ではなく常に載る固定値になった
+    assert VEO_FAST_REF.kie.constants["generationType"] == "REFERENCE_2_VIDEO"
+    assert "generationType" not in VEO_FAST.kie.constants
+
     body = {
         "mode": "i2v",
-        "video_workflow": VEO_FAST.id,
+        "video_workflow": VEO_FAST_REF.id,
         "video_prompt": "She turns toward the window.",
-        "reference_images": references,
+        "reference_images": _reference_assets(job_env, 1),
         "selects": {"duration": "4"},
     }
     answer = client.post("/api/jobs", json=body)
     assert answer.status_code == 422
-    assert "'8' 固定" in answer.text
+    assert "'4' は使えません" in answer.text
 
     # 8 秒を明示指定するのはもちろん通る（未指定も既定が 8 なので通る）
     body["selects"] = {"duration": "8"}
     assert client.post("/api/jobs", json=body).status_code == 201
 
 
-def test_veo_quality_does_not_take_reference_images(client, job_env):
-    """素材参照生成は Fast / Lite のみ（Quality は宣言しない）。"""
-    answer = client.post(
-        "/api/jobs",
-        json={
-            "mode": "i2v",
-            "video_workflow": VEO_QUALITY.id,
-            "video_prompt": "She turns toward the window.",
-            "reference_images": _reference_assets(job_env, 1),
-        },
-    )
-    assert answer.status_code == 422
-    assert "受け取れません" in answer.text
+def test_the_plain_veo_workflows_do_not_take_reference_images(client, job_env):
+    """素材参照生成は専用ワークフローだけの機能（Fast も Quality も宣言しない）。"""
+    for workflow_id in (VEO_FAST.id, VEO_QUALITY.id):
+        answer = client.post(
+            "/api/jobs",
+            json={
+                "mode": "i2v",
+                "video_workflow": workflow_id,
+                "video_prompt": "She turns toward the window.",
+                "reference_images": _reference_assets(job_env, 1),
+            },
+        )
+        assert answer.status_code == 422
+        assert "受け取れません" in answer.text
 
 
 def test_too_many_veo_reference_images_are_rejected(client, job_env):
@@ -1138,7 +1154,7 @@ def test_too_many_veo_reference_images_are_rejected(client, job_env):
         "/api/jobs",
         json={
             "mode": "i2v",
-            "video_workflow": VEO_FAST.id,
+            "video_workflow": VEO_FAST_REF.id,
             "video_prompt": "She turns toward the window.",
             "reference_images": _reference_assets(job_env, 4),
         },
@@ -1444,6 +1460,7 @@ def test_a_full_job_bridges_comfyui_images_into_veo(client, fake_kie, comfy_env,
 # --------------------------------------------------------------------------
 
 KLING = workflows.BY_ID["kling3_video"]
+KLING_SHOTS = workflows.BY_ID["kling3_multishot"]
 
 
 def _kling_params(**overrides) -> GenerationParams:
@@ -1573,31 +1590,34 @@ _SHOTS = [
 
 def test_multi_shots_replace_the_top_level_prompt():
     """``multi_prompt`` を送るときトップレベルの ``prompt`` は送らない。"""
-    request = kie.build_request(KLING, _kling_params(multi_shots=_SHOTS), {})
-    task_input = request.input
+    params = _kling_params(video_workflow=KLING_SHOTS.id, multi_shots=_SHOTS)
+    task_input = kie.build_request(KLING_SHOTS, params, {}).input
 
     assert task_input["multi_shots"] is True
     assert task_input["multi_prompt"] == _SHOTS
     # duration は **整数**（Kling のトップレベル duration は文字列なので型が違う）
     assert all(isinstance(shot["duration"], int) for shot in task_input["multi_prompt"])
     assert "prompt" not in task_input
-    # 単発のときは逆に multi_* が一切載らない
+    # 1 カットのワークフローには multi_* の宣言そのものが無い
     single = kie.build_request(KLING, _kling_params(), {}).input
     assert "multi_shots" not in single and "multi_prompt" not in single
     assert single["prompt"]
 
 
-def test_multi_shots_turn_the_sound_on_by_default():
-    """ショット割りは音つき前提の機能なので、既定が false から true に変わる。"""
+def test_the_multi_shot_workflow_defaults_to_sound_on():
+    """ショット割りは音つき前提の機能なので、既定が 1 カット版と逆になる。"""
     assert KLING.selects["sound"].fallback == "false"
+    assert KLING_SHOTS.selects["sound"].fallback == "true"
 
-    shots = kie.build_request(KLING, _kling_params(multi_shots=_SHOTS), {}).input
-    assert shots["sound"] is True
-    # 明示指定はそのまま尊重する（既定の入れ替えは「未指定のとき」だけ）
-    muted = kie.build_request(
-        KLING, _kling_params(multi_shots=_SHOTS, selects={"sound": "false"}), {}
-    ).input
-    assert muted["sound"] is False
+    params = _kling_params(video_workflow=KLING_SHOTS.id, multi_shots=_SHOTS)
+    assert kie.build_request(KLING_SHOTS, params, {}).input["sound"] is True
+    # 明示指定はそのまま尊重する
+    muted = _kling_params(
+        video_workflow=KLING_SHOTS.id,
+        multi_shots=_SHOTS,
+        selects={"sound": "false"},
+    )
+    assert kie.build_request(KLING_SHOTS, muted, {}).input["sound"] is False
 
 
 def test_multi_shots_are_checked_before_the_job_is_queued(client, monkeypatch):
@@ -1605,38 +1625,78 @@ def test_multi_shots_are_checked_before_the_job_is_queued(client, monkeypatch):
 
     mark_available(monkeypatch)
     ok = [{"prompt": "She turns.", "duration": 5}]
-    assert multi_shot_problem("i2v", KLING.id, ok) is None
+    assert multi_shot_problem("i2v", KLING_SHOTS.id, ok) is None
     # ちょうど上限まで（5 ショット / 1 秒 / 12 秒）は通る
-    assert multi_shot_problem("i2v", KLING.id, ok * 5) is None
+    assert multi_shot_problem("i2v", KLING_SHOTS.id, ok * 5) is None
     assert (
-        multi_shot_problem("i2v", KLING.id, [{"prompt": "x", "duration": 1}]) is None
+        multi_shot_problem("i2v", KLING_SHOTS.id, [{"prompt": "x", "duration": 1}])
+        is None
     )
     assert (
-        multi_shot_problem("i2v", KLING.id, [{"prompt": "x", "duration": 12}]) is None
+        multi_shot_problem("i2v", KLING_SHOTS.id, [{"prompt": "x", "duration": 12}])
+        is None
     )
 
-    assert "5 ショットまでです" in (multi_shot_problem("i2v", KLING.id, ok * 6) or "")
+    assert "5 ショットまでです" in (
+        multi_shot_problem("i2v", KLING_SHOTS.id, ok * 6) or ""
+    )
     assert "1〜12 秒" in (
-        multi_shot_problem("i2v", KLING.id, [{"prompt": "x", "duration": 13}]) or ""
+        multi_shot_problem("i2v", KLING_SHOTS.id, [{"prompt": "x", "duration": 13}])
+        or ""
     )
     assert "整数の秒数" in (
-        multi_shot_problem("i2v", KLING.id, [{"prompt": "x", "duration": "auto"}]) or ""
+        multi_shot_problem(
+            "i2v", KLING_SHOTS.id, [{"prompt": "x", "duration": "auto"}]
+        )
+        or ""
     )
     # 1 ショットのプロンプトも 500 文字まで
     long_shot = [{"prompt": "a" * 501, "duration": 5}]
-    assert "500 文字" in (multi_shot_problem("i2v", KLING.id, long_shot) or "")
-    # 宣言していないワークフローには渡せない
-    assert "対応していません" in (
-        multi_shot_problem("i2v", SEEDANCE.id, ok) or ""
-    )
+    assert "500 文字" in (multi_shot_problem("i2v", KLING_SHOTS.id, long_shot) or "")
+    # 宣言していないワークフロー（1 カット版・Seedance）には渡せない
+    for workflow_id in (KLING.id, SEEDANCE.id):
+        assert "対応していません" in (
+            multi_shot_problem("i2v", workflow_id, ok) or ""
+        )
 
     # API も同じ理由で断る。`video_prompt` はショットがあるので要らない
     answer = client.post(
         "/api/jobs",
-        json={"mode": "i2v", "video_workflow": KLING.id, "multi_shots": ok * 6},
+        json={"mode": "i2v", "video_workflow": KLING_SHOTS.id, "multi_shots": ok * 6},
     )
     assert answer.status_code == 422
     assert "5 ショットまでです" in answer.text
+
+
+def test_the_multi_shot_workflow_requires_shots_and_refuses_a_video_prompt(client):
+    """ショット割り専用なので、ショットは必須で本文はショット側にだけ書く。"""
+    from app.models import multi_shot_problem
+
+    assert "ショット割り専用" in (multi_shot_problem("i2v", KLING_SHOTS.id, []) or "")
+    assert "本文はショット側" in (
+        multi_shot_problem(
+            "i2v", KLING_SHOTS.id, _SHOTS, video_prompt="She turns."
+        )
+        or ""
+    )
+
+    empty = client.post(
+        "/api/jobs", json={"mode": "i2v", "video_workflow": KLING_SHOTS.id}
+    )
+    assert empty.status_code == 422
+    assert "ショット割り専用" in empty.text
+
+    both = client.post(
+        "/api/jobs",
+        json={
+            "mode": "i2v",
+            "video_workflow": KLING_SHOTS.id,
+            "video_prompt": "She turns.",
+            "multi_shots": _SHOTS,
+        },
+    )
+    assert both.status_code == 422
+    assert "本文はショット側" in both.text
 
 
 def test_a_multi_shot_job_needs_no_video_prompt(client, fake_kie, job_env, monkeypatch):
@@ -1647,7 +1707,7 @@ def test_a_multi_shot_job_needs_no_video_prompt(client, fake_kie, job_env, monke
 
     created = client.post(
         "/api/jobs",
-        json={"mode": "i2v", "video_workflow": KLING.id, "multi_shots": _SHOTS},
+        json={"mode": "i2v", "video_workflow": KLING_SHOTS.id, "multi_shots": _SHOTS},
     )
     assert created.status_code == 201, created.text
     job = wait_for(client, created.json()["id"])
@@ -1838,7 +1898,7 @@ def test_the_agent_plan_validation_knows_the_kling_rules(client, job_env):
     from app.agent_protocol import ActionError, validate_job
 
     images = _reference_assets(job_env)
-    base = {"mode": "i2v", "video_workflow": KLING.id}
+    base = {"mode": "i2v", "video_workflow": KLING_SHOTS.id}
 
     payload = validate_job(
         {
@@ -1858,15 +1918,22 @@ def test_the_agent_plan_validation_knows_the_kling_rules(client, job_env):
             {**base, "video_workflow": SEEDANCE.id, "multi_shots": _SHOTS},
             where="tasks[0].job",
         )
+    with pytest.raises(ActionError, match="ショット割り専用"):
+        validate_job(dict(base), where="tasks[0].job")
     with pytest.raises(ActionError, match="対応する要素が"):
         validate_job(
-            {**base, "video_prompt": "@akira waits."}, where="tasks[0].job"
+            {
+                "mode": "i2v",
+                "video_workflow": KLING.id,
+                "video_prompt": "@akira waits.",
+            },
+            where="tasks[0].job",
         )
     with pytest.raises(ActionError, match="not found"):
         validate_job(
             {
                 **base,
-                "video_prompt": "@kaori waits.",
+                "multi_shots": [{"prompt": "@kaori waits.", "duration": 4}],
                 "kling_elements": [
                     {"name": "kaori", "images": ["/assets/image/missing.png", images[0]]}
                 ],
@@ -1883,14 +1950,20 @@ def test_the_kling_guide_explains_the_second_stage_features():
     prompt = build_system_prompt(
         ChatSessionCreate(mode="i2v", video_workflow=KLING.id)
     )
-    assert "## Multi-shot (`multi_shots`)" in prompt
     assert "## Elements (`kling_elements`)" in prompt
     assert "37 characters" in prompt
+    # ショット割りは別ワークフローのガイドに移した
+    assert "## Multi-shot" not in prompt
+    shots = build_system_prompt(
+        ChatSessionCreate(mode="i2v", video_workflow=KLING_SHOTS.id)
+    )
+    assert "Kling 3.0 multi-shot" in shots
+    assert "## Elements (`kling_elements`)" in shots
 
     # カタログ側にも上限が出る（エージェントが件数を推測しなくてよい）
     from app.prompts import _catalog_entry_lines
 
-    catalog = "\n".join(_catalog_entry_lines(catalog_entry(KLING)))
+    catalog = "\n".join(_catalog_entry_lines(catalog_entry(KLING_SHOTS)))
     assert "`multi_shots`（最大 5 ショット" in catalog
     assert "1 参照が 37 文字" in catalog
     # 宣言のないワークフローには行そのものが出ない
@@ -1906,20 +1979,30 @@ def test_kling_is_offered_as_a_video_workflow(client, monkeypatch):
     assert kling["requires"] == []
     assert set(kling["supports"]) == {
         "prompt", "image", "end_image",
-        # 構造化パラメータ（マルチショット・Elements、issue #26）
-        "multi_shots", "multi_prompt", "kling_elements",
+        # Elements は 1 カット版でも使える（ショット割りとは独立、issue #26）
+        "kling_elements",
     }
     assert kling["accepts_start_image"] is True
     assert kling["backend"] == "kie"
-    # フォームが行数・秒数・残り文字数を出せるだけの宣言が載る（SPEC §3.1）
+    # フォームが残り文字数を出せるだけの宣言が載る（SPEC §3.1）
     assert kling["max_prompt_chars"] == 500
-    assert kling["multi_shot"] == {
-        "max_shots": 5, "min_duration": 1, "max_duration": 12,
-    }
+    # ショット割りは専用ワークフローだけの宣言
+    assert kling["multi_shot"] is None
     assert kling["elements"] == {
         "max_elements": 3, "min_images": 2, "max_images": 4,
         "reference_chars": 37,
     }
+    shots = [wf for wf in body["video_workflows"] if wf["id"] == KLING_SHOTS.id][0]
+    assert set(shots["supports"]) == {
+        "prompt", "image", "end_image",
+        "multi_shots", "multi_prompt", "kling_elements",
+    }
+    assert shots["multi_shot"] == {
+        "max_shots": 5, "min_duration": 1, "max_duration": 12,
+    }
+    assert shots["prompt_required"] is False
+    shot_sound = [s for s in shots["selects"] if s["name"] == "sound"][0]
+    assert shot_sound["default"] == "true"
     # 宣言のないワークフローでは欄そのものが出ない
     seedance = [wf for wf in body["video_workflows"] if wf["id"] == SEEDANCE.id][0]
     assert seedance["multi_shot"] is None
@@ -1960,7 +2043,8 @@ def test_the_agent_prompt_carries_the_kling_guide(monkeypatch):
 
     mark_available(monkeypatch)
     section = video_prompt_guides_section()
-    assert section.count("VIDEO PROMPT SPEC — Kling 3.0") == 1
+    assert section.count("VIDEO PROMPT SPEC — Kling 3.0 (") == 1
+    assert section.count("VIDEO PROMPT SPEC — Kling 3.0 multi-shot") == 1
 
 
 def test_a_full_job_bridges_comfyui_images_into_kling(client, fake_kie, comfy_env,
@@ -2021,6 +2105,9 @@ def test_a_full_job_bridges_comfyui_images_into_kling(client, fake_kie, comfy_en
 SEEDANCE = workflows.BY_ID["seedance2"]
 SEEDANCE_FAST = workflows.BY_ID["seedance2_fast"]
 SEEDANCE_MINI = workflows.BY_ID["seedance2_mini"]
+SEEDANCE_REF = workflows.BY_ID["seedance2_ref"]
+SEEDANCE_FAST_REF = workflows.BY_ID["seedance2_fast_ref"]
+SEEDANCE_MINI_REF = workflows.BY_ID["seedance2_mini_ref"]
 
 
 def _seedance_params(**overrides) -> GenerationParams:
@@ -2116,8 +2203,8 @@ def test_without_an_image_seedance_is_text_to_video():
 def test_reference_material_goes_in_as_arrays_of_urls():
     """マルチモーダル参照は 1 フィールド = URL の配列（issue #26 B）。"""
     request = kie.build_request(
-        SEEDANCE,
-        _seedance_params(),
+        SEEDANCE_REF,
+        _seedance_params(video_workflow=SEEDANCE_REF.id),
         {
             "reference_images": [
                 "https://files.kie.ai/ref1.png",
@@ -2137,16 +2224,18 @@ def test_reference_material_goes_in_as_arrays_of_urls():
     ]
     assert task_input["reference_video_urls"] == ["https://files.kie.ai/move.mp4"]
     assert task_input["reference_audio_urls"] == ["https://files.kie.ai/mood.mp3"]
-    # 参照モードでは先頭フレームのキーは出ない（投入前に排他を弾いている）
+    # 参照専用ワークフローは先頭フレームの宣言そのものを持たない
     assert "first_frame_url" not in task_input
     assert "last_frame_url" not in task_input
+    assert "image" not in SEEDANCE_REF.kie.fields
+    assert "end_image" not in SEEDANCE_REF.kie.fields
 
 
 def test_empty_reference_lists_are_not_sent():
     """空のリストは「指定なし」なのでキーごと落ちる。"""
     task_input = kie.build_request(
-        SEEDANCE,
-        _seedance_params(),
+        SEEDANCE_REF,
+        _seedance_params(video_workflow=SEEDANCE_REF.id),
         {"reference_images": [], "reference_videos": [], "reference_audios": []},
     ).input
     for absent in (
@@ -2156,13 +2245,19 @@ def test_empty_reference_lists_are_not_sent():
 
 
 def test_the_seedance_variants_declare_the_same_reference_limits():
-    """上限は API 側の値そのまま（9 / 3 / 3）で、3 バリアント共通。"""
-    for spec in (SEEDANCE, SEEDANCE_FAST, SEEDANCE_MINI):
+    """上限は API 側の値そのまま（9 / 3 / 3）で、参照版 3 本に共通。"""
+    for spec in (SEEDANCE_REF, SEEDANCE_FAST_REF, SEEDANCE_MINI_REF):
         assert spec.multi_inputs == {
             "reference_images": 9,
             "reference_videos": 3,
             "reference_audios": 3,
         }
+        # 参照モードは先頭フレーム i2v と排他 = 開始フレームを受け取らない
+        assert spec.accepts_start_image is False
+    # フレーム版は逆に参照素材を宣言しない
+    for spec in (SEEDANCE, SEEDANCE_FAST, SEEDANCE_MINI):
+        assert spec.multi_inputs == {}
+        assert spec.accepts_start_image is True
 
 
 def test_the_mini_variant_only_differs_by_model_and_resolution():
@@ -2185,7 +2280,10 @@ def test_the_mini_variant_only_differs_by_model_and_resolution():
 def test_every_seedance_variant_is_offered_as_a_video_workflow(client, monkeypatch):
     mark_available(monkeypatch)
     body = client.get("/api/options").json()
-    variants = (SEEDANCE.id, SEEDANCE_FAST.id, SEEDANCE_MINI.id)
+    variants = (
+        SEEDANCE.id, SEEDANCE_FAST.id, SEEDANCE_MINI.id,
+        SEEDANCE_REF.id, SEEDANCE_FAST_REF.id, SEEDANCE_MINI_REF.id,
+    )
     offered = {wf["id"]: wf for wf in body["video_workflows"] if wf["id"] in variants}
     assert set(offered) == set(variants)
 
@@ -2193,20 +2291,28 @@ def test_every_seedance_variant_is_offered_as_a_video_workflow(client, monkeypat
         (SEEDANCE.id, ["480p", "720p", "1080p", "4k"]),
         (SEEDANCE_FAST.id, ["480p", "720p"]),
         (SEEDANCE_MINI.id, ["480p", "720p"]),
+        (SEEDANCE_REF.id, ["480p", "720p", "1080p", "4k"]),
+        (SEEDANCE_FAST_REF.id, ["480p", "720p"]),
+        (SEEDANCE_MINI_REF.id, ["480p", "720p"]),
     ):
         entry = offered[spec_id]
         assert entry["requires"] == []
-        assert set(entry["supports"]) == {
-            "prompt", "image", "end_image",
-            "reference_images", "reference_videos", "reference_audios",
-        }
-        # フォームが参照欄を出すのに要る件数の上限（SPEC §3.1 / §8）
-        assert entry["multi_inputs"] == {
-            "reference_images": 9,
-            "reference_videos": 3,
-            "reference_audios": 3,
-        }
-        assert entry["accepts_start_image"] is True
+        references = spec_id.endswith("_ref")
+        if references:
+            assert set(entry["supports"]) == {
+                "prompt",
+                "reference_images", "reference_videos", "reference_audios",
+            }
+            # フォームが参照欄を出すのに要る件数の上限（SPEC §3.1 / §8）
+            assert entry["multi_inputs"] == {
+                "reference_images": 9,
+                "reference_videos": 3,
+                "reference_audios": 3,
+            }
+        else:
+            assert set(entry["supports"]) == {"prompt", "image", "end_image"}
+            assert entry["multi_inputs"] == {}
+        assert entry["accepts_start_image"] is not references
         assert entry["backend"] == "kie"
         selects = {select["name"]: select for select in entry["selects"]}
         assert list(selects) == [
@@ -2233,16 +2339,25 @@ def test_the_seedance_guide_is_injected_only_when_seedance_is_selected():
         prompt = build_system_prompt(
             ChatSessionCreate(mode="i2v", video_workflow=spec_id)
         )
-        assert "VIDEO PROMPT SPEC — ByteDance Seedance 2" in prompt
-        # 参照モードの書き方（一貫性 / 動きのお手本 / ムード）と排他の注意
-        assert "identity and consistency" in prompt
-        assert "the motion to imitate" in prompt
-        assert "mutually exclusive" in prompt
+        assert "VIDEO PROMPT SPEC — ByteDance Seedance 2 (" in prompt
         # 6 要素フォーミュラ・照明・カメラ 1 つ・動きの文の分離・負例
         assert "60-100 words" in prompt
         assert "lighting sentence is the single biggest lever" in prompt
         assert "separate sentences" in prompt
         assert "avoid jitter and bent limbs" in prompt
+        # 参照モードの書き方は参照版のガイドにだけ載る
+        assert "identity and consistency" not in prompt
+
+    for spec_id in (SEEDANCE_REF.id, SEEDANCE_FAST_REF.id, SEEDANCE_MINI_REF.id):
+        prompt = build_system_prompt(
+            ChatSessionCreate(mode="i2v", video_workflow=spec_id)
+        )
+        assert "ByteDance Seedance 2, reference mode" in prompt
+        # 参照素材の使い分け（一貫性 / 動きのお手本 / ムード）と開始フレーム不可
+        assert "identity and consistency" in prompt
+        assert "the motion to imitate" in prompt
+        assert "no start frame at all" in prompt
+        assert "60-100 words" in prompt
 
     kling = build_system_prompt(
         ChatSessionCreate(mode="i2v", video_workflow=KLING.id)
@@ -2256,7 +2371,8 @@ def test_the_agent_prompt_carries_the_seedance_guide_once(monkeypatch):
 
     mark_available(monkeypatch)
     section = video_prompt_guides_section()
-    assert section.count("VIDEO PROMPT SPEC — ByteDance Seedance 2") == 1
+    assert section.count("VIDEO PROMPT SPEC — ByteDance Seedance 2 (") == 1
+    assert section.count("ByteDance Seedance 2, reference mode") == 1
 
 
 def test_a_full_job_bridges_comfyui_images_into_seedance(client, fake_kie, comfy_env,
@@ -2346,7 +2462,7 @@ def test_reference_material_travels_from_the_job_to_the_task_input(
         "/api/jobs",
         json={
             "mode": "i2v",
-            "video_workflow": SEEDANCE.id,
+            "video_workflow": SEEDANCE_REF.id,
             "video_prompt": (
                 "She steps out of the doorway into the rain and looks up."
                 " Slow push-in. Avoid jitter and bent limbs."
@@ -2368,40 +2484,41 @@ def test_reference_material_travels_from_the_job_to_the_task_input(
     assert len(job["params"]["reference_images"]) == 2
 
 
-def test_a_start_frame_and_reference_material_are_mutually_exclusive(client, job_env):
+def test_the_reference_workflow_takes_no_start_frame(client, job_env):
+    """参照版は開始 / 最終フレームの受け取り口そのものを持たない。"""
     references = _reference_assets(job_env, 1)
     (job_env.parent / "assets" / "image" / "start.png").write_bytes(b"png")
 
-    answer = client.post(
-        "/api/jobs",
-        json={
-            "mode": "i2v",
-            "video_workflow": SEEDANCE.id,
-            "video_prompt": "She turns toward the window.",
-            "source_image": "/assets/image/start.png",
-            "reference_images": references,
-        },
-    )
-    assert answer.status_code == 422
-    assert "同時に指定できません" in answer.text
+    for field in ("source_image", "end_image"):
+        answer = client.post(
+            "/api/jobs",
+            json={
+                "mode": "i2v",
+                "video_workflow": SEEDANCE_REF.id,
+                "video_prompt": "She turns toward the window.",
+                field: "/assets/image/start.png",
+                "reference_images": references,
+            },
+        )
+        assert answer.status_code == 422
+        assert "受け取りません" in answer.text
 
 
-def test_full_mode_cannot_use_reference_material(client, job_env):
-    references = _reference_assets(job_env, 1)
-
+def test_full_mode_cannot_use_the_reference_workflow(client, job_env):
+    """``full`` は画像ステージが開始フレームを作るモードなので選べない。"""
     answer = client.post(
         "/api/jobs",
         json={
             "mode": "full",
             "image_workflow": workflows.DEFAULT_IMAGE_WORKFLOW,
-            "video_workflow": SEEDANCE.id,
+            "video_workflow": SEEDANCE_REF.id,
             "image_prompt": "a cat on a roof",
             "video_prompt": "The cat stretches slowly.",
-            "reference_images": references,
+            "reference_images": _reference_assets(job_env, 1),
         },
     )
     assert answer.status_code == 422
-    assert "mode 'full'" in answer.text
+    assert "start frame" in answer.text
 
 
 def test_too_much_reference_material_is_rejected(client, job_env):
@@ -2411,7 +2528,7 @@ def test_too_much_reference_material_is_rejected(client, job_env):
         "/api/jobs",
         json={
             "mode": "i2v",
-            "video_workflow": SEEDANCE.id,
+            "video_workflow": SEEDANCE_REF.id,
             "video_prompt": "She walks along the quay.",
             "reference_images": references,
         },
@@ -2423,17 +2540,19 @@ def test_too_much_reference_material_is_rejected(client, job_env):
 def test_a_workflow_without_a_reference_mode_rejects_the_material(client, job_env):
     references = _reference_assets(job_env, 1)
 
-    answer = client.post(
-        "/api/jobs",
-        json={
-            "mode": "i2v",
-            "video_workflow": KLING.id,
-            "video_prompt": "She walks along the quay.",
-            "reference_images": references,
-        },
-    )
-    assert answer.status_code == 422
-    assert "受け取れません" in answer.text
+    # フレーム版（Seedance）も 1 カット版の Kling も参照素材を宣言しない
+    for workflow_id in (SEEDANCE.id, KLING.id):
+        answer = client.post(
+            "/api/jobs",
+            json={
+                "mode": "i2v",
+                "video_workflow": workflow_id,
+                "video_prompt": "She walks along the quay.",
+                "reference_images": references,
+            },
+        )
+        assert answer.status_code == 422
+        assert "受け取れません" in answer.text
 
 
 def test_the_agent_plan_validation_knows_the_reference_rules(client, job_env):
@@ -2443,7 +2562,7 @@ def test_the_agent_plan_validation_knows_the_reference_rules(client, job_env):
     references = _reference_assets(job_env, 1)
     base = {
         "mode": "i2v",
-        "video_workflow": SEEDANCE.id,
+        "video_workflow": SEEDANCE_REF.id,
         "video_prompt": "She walks along the quay.",
     }
 
@@ -2453,7 +2572,7 @@ def test_the_agent_plan_validation_knows_the_reference_rules(client, job_env):
     )
     assert payload.reference_images == references
 
-    with pytest.raises(ActionError, match="同時に指定できません"):
+    with pytest.raises(ActionError, match="受け取りません"):
         validate_job(
             {
                 **base,
@@ -2468,7 +2587,7 @@ def test_the_agent_plan_validation_knows_the_reference_rules(client, job_env):
         )
     with pytest.raises(ActionError, match="受け取れません"):
         validate_job(
-            {**base, "video_workflow": KLING.id, "reference_images": references},
+            {**base, "video_workflow": SEEDANCE.id, "reference_images": references},
             where="tasks[0].job",
         )
     with pytest.raises(ActionError, match="not found"):

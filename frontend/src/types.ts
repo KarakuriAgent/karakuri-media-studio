@@ -373,14 +373,10 @@ export interface WorkflowOption {
   requires: WorkflowInput[]
   /**
    * 複数ファイルで渡せる参照入力（論理名 -> 件数の上限、SPEC §3.1）。
-   * Seedance 2 系のマルチモーダル参照だけが宣言する。古いレスポンスには無い。
+   * **参照専用のワークフロー**（`*_ref` / `veo3_1_fast_ref`）だけが宣言し、
+   * そちらは開始フレームを受け取らない（`accepts_start_image` が false）。
    */
   multi_inputs?: Partial<Record<ReferenceInput, number>>
-  /**
-   * 参照素材を使っているあいだ固定される選択式（名前 -> 値、SPEC §3.1）。
-   * Veo の素材参照生成は 8 秒しか作れないので `{ duration: '8' }`。
-   */
-  reference_selects?: Record<string, string>
   /**
    * 選択式どうしの相関（名前 -> `[相手の名前, 相手に必要な値]`、SPEC §3.1）。
    * Suno の `duration` は `model` が `V5_5` のときだけ効き、他のモデルでは

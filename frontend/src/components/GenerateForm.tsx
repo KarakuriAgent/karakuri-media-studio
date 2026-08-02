@@ -939,11 +939,13 @@ export default function GenerateForm({
           )}
 
           {references.length > 0 && (
-            <Section title="マルチモーダル参照（開始フレームとは排他）">
+            <Section title="マルチモーダル参照（素材参照ワークフロー）">
               <p className="mb-2 text-[11px] text-slate-500">
-                素材から一貫性・動き・ムードを引き継ぎます。開始フレームと同時には
-                使えません（外部 API 側で排他のモードです）。プロンプトは素材の
-                説明ではなく、演出の指示に集中して書いてください。
+                素材から一貫性・動き・ムードを引き継ぎます。このワークフローは
+                開始フレームを受け取らない（外部 API 側で排他のモードなので、
+                欄そのものが出ません）ので、開始フレームから作るときは素材参照
+                ではないワークフローを選んでください。プロンプトは素材の説明では
+                なく、演出の指示に集中して書いてください。
               </p>
               <div className="flex flex-col gap-2">
                 {references.map((item) => (
@@ -1257,8 +1259,9 @@ export default function GenerateForm({
               {showShots && (
                 <div className="flex flex-col gap-2">
                   <p className="text-[11px] text-slate-500">
-                    1 本の動画をショット割りで作ります。1 ショットでも入れると
-                    上の動画プロンプトは送られません（本文はショット側）。各ショットは
+                    このワークフローは 1 本の動画をショット割りで作ります。
+                    本文はショット側にあるので動画プロンプトの欄は出ません。
+                    ショットは 1 つ以上必要で、各ショットは
                     {shotLimits.min_duration}〜{shotLimits.max_duration} 秒、
                     カメラ → 動作 → 位置 → 音の順で、人物の言い回しは全ショットで
                     揃えてください。音声は既定で ON になります。

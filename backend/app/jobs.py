@@ -81,6 +81,7 @@ from .models import (
     reference_materials,
     reference_problem,
     select_problem,
+    start_image_problem,
     video_lora_problem,
     video_workflow_problem,
 )
@@ -582,15 +583,19 @@ def _validate(params: dict[str, Any]) -> None:
             image_workflow=image_workflow,
         )
         or prompt_length_problem(mode, video_workflow, params.get("video_prompt"))
-        or reference_problem(
+        or reference_problem(mode, video_workflow, reference_materials(params))
+        or start_image_problem(
             mode,
             video_workflow,
-            reference_materials(params),
             source_image=params.get("source_image"),
             end_image=params.get("end_image"),
-            selects=params.get("selects"),
         )
-        or multi_shot_problem(mode, video_workflow, multi_shots_of(params))
+        or multi_shot_problem(
+            mode,
+            video_workflow,
+            multi_shots_of(params),
+            video_prompt=params.get("video_prompt"),
+        )
         or elements_problem(
             mode,
             video_workflow,
@@ -616,7 +621,6 @@ def _validate(params: dict[str, Any]) -> None:
             video_workflow=video_workflow,
             image_workflow=image_workflow,
             audio_prompt=params.get("audio_prompt"),
-            multi_shots=multi_shots_of(params),
         )
     except WorkflowSpecError as exc:
         raise JobValidationError(str(exc)) from exc

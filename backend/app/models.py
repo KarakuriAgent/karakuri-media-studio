@@ -21,6 +21,7 @@ from .workflows import (
     get_audio_spec,
     get_image_spec,
     get_video_spec,
+    input_label,
 )
 
 #: ``audio`` is a stand-alone mode: it runs one audio graph and is never
@@ -622,7 +623,6 @@ def missing_job_fields(
     video_workflow: str | None = None,
     image_workflow: str | None = None,
     audio_prompt: str | None = None,
-    multi_shots: list[dict[str, Any]] | None = None,
 ) -> list[str]:
     """Required fields for a mode + image / video workflow (SPEC §2 / §3.1).
 
@@ -642,14 +642,13 @@ def missing_job_fields(
     missing: list[str] = []
     if mode in ("full", "image_only") and not (image_prompt or "").strip():
         missing.append("image_prompt")
-    # プロンプトを選択肢から組み立てるワークフロー（wan_dancer）では video_prompt
-    # は任意。書かれた場合だけテンプレートに注入される（SPEC §3.1）。
-    # ショット割り（`multi_shots`）を渡したジョブでは本文がショット側にあるので、
-    # トップレベルの `video_prompt` は要らない（API にも送らない）。
+    # プロンプトを選択肢から組み立てるワークフロー（wan_dancer）と、本文が
+    # ショット側にあるワークフロー（`kling3_multishot`）では video_prompt は
+    # 任意（`prompt_required=False`）。前者は書かれた場合だけテンプレートに
+    # 注入され、後者は書かれていたら `multi_shot_problem` が断る（SPEC §3.1）。
     if (
         mode in ("full", "i2v")
         and not (video_prompt or "").strip()
-        and not (multi_shots or [])
         and get_video_spec(video_workflow).prompt_required
     ):
         missing.append("video_prompt")
@@ -866,19 +865,29 @@ def multi_shots_of(params: Any) -> list[dict[str, Any]]:
 
 
 def multi_shot_problem(
-    mode: str, video_workflow: str | None, shots: list[dict[str, Any]]
+    mode: str,
+    video_workflow: str | None,
+    shots: list[dict[str, Any]],
+    *,
+    video_prompt: str | None = None,
 ) -> str | None:
     """ショット割りの指定が使えるか（None == 問題なし、SPEC §3.1）。
 
-    宣言のないワークフローに渡す・件数超過・1 ショットの尺が範囲外・1 ショットの
-    本文が長すぎる、のいずれも API 側では 422 になるので、投入前にここで落とす。
-    ``multi_shots`` があるときトップレベルの ``video_prompt`` は送られない
-    （:func:`app.kie.task_values`）ので、空でも「必須項目が無い」とは言わない
-    （:func:`missing_job_fields`）。
+    ショット割りは**専用のワークフロー**（``kling3_multishot``）の機能なので、
+    見るのは 2 方向:
+
+    - 宣言のないワークフローに ``multi_shots`` を渡した → 断る
+    - 宣言のあるワークフローで ``multi_shots`` が空 → 断る（そのワークフローは
+      ショット割りでしか動かない）。逆にトップレベルの ``video_prompt`` は
+      API に送られない（:func:`app.kie.task_values`）ので、書かれていたら
+      「本文はショット側に書く」と教える
+
+    件数超過・1 ショットの尺が範囲外・1 ショットの本文が長すぎる、のいずれも
+    API 側では 422 になるので、投入前にここで落とす。
     """
-    if not shots:
-        return None
     if mode not in ("full", "i2v"):
+        if not shots:
+            return None
         return f"mode '{mode}' は動画ステージを走らせないので、`multi_shots` は使えません"
     try:
         spec = get_video_spec(video_workflow)
@@ -886,9 +895,24 @@ def multi_shot_problem(
         return str(exc)
     declared = spec.multi_shot
     if declared is None:
+        if not shots:
+            return None
         return (
             f"video workflow '{spec.id}' はマルチショット（`multi_shots`）に"
             "対応していません"
+            "（ショット割りで作るなら `kling3_multishot` を選んでください）"
+        )
+    if not shots:
+        return (
+            f"video workflow '{spec.id}' はショット割り専用です"
+            "（`multi_shots` に 1 ショット以上を指定してください。1 カットで"
+            "作るなら `kling3_video` を選んでください）"
+        )
+    if (video_prompt or "").strip():
+        return (
+            f"video workflow '{spec.id}' では本文はショット側に書きます"
+            "（`video_prompt` は空のままにして、`multi_shots` の各 prompt に"
+            "書いてください。トップレベルの prompt は API に送られません）"
         )
     if len(shots) > declared.max_shots:
         return (
@@ -1047,27 +1071,18 @@ def reference_problem(
     mode: str,
     video_workflow: str | None,
     references: dict[str, list[str]],
-    *,
-    source_image: str | None = None,
-    end_image: str | None = None,
-    selects: Any = None,
 ) -> str | None:
     """マルチモーダル参照が使える組み合わせか（None == 問題なし、SPEC §3.1）。
 
-    Seedance 2 の参照モード（``reference_image_urls`` ほか）は、API 側で
-    **先頭フレーム i2v（``first_frame_url`` / ``last_frame_url``）と相互排他**。
-    走らせてから 422 を食らうと待ち時間が無駄なので、投入前にここで落とす。
-    ``full`` は画像ステージが開始フレームを作る = 先頭フレームモードなので、
-    参照素材とは組み合わせられない。
+    参照モード（Seedance 2 の ``reference_image_urls`` ほか、Veo の素材参照生成）
+    は API 側で先頭フレーム i2v と相互排他だが、それは**ワークフローを分けて**
+    表現してある（参照専用のワークフローだけが ``multi_inputs`` を宣言し、開始
+    フレームの受け取り口を持たない）。だからここで見るのは「宣言のないワーク
+    フローに渡していないか」「件数の上限」「拡張子」の 3 つだけで、開始フレーム
+    との組み合わせは :func:`start_image_problem` が別に断る。
 
-    件数の上限（:attr:`app.workflows.WorkflowSpec.multi_inputs`）と拡張子だけ
-    ここで見る。サイズ・解像度・尺の細かい制約は外部 API の判断に任せ、失敗
-    メッセージをそのまま見せる。
-
-    参照モードでしか作れない設定がある場合
-    （:attr:`~app.workflows.WorkflowSpec.reference_selects`、Veo の素材参照生成は
-    8 秒固定）は ``selects`` の明示指定だけを見て断る: 未指定ならその選択式の
-    既定がそのまま固定値と同じなので、黙って通してよい。
+    サイズ・解像度・尺の細かい制約は外部 API の判断に任せ、失敗メッセージを
+    そのまま見せる。
     """
     if not references:
         return None
@@ -1102,32 +1117,38 @@ def reference_problem(
                     f"{MULTI_INPUT_LABELS[name]}に使えない拡張子です: {path}"
                     f"（{', '.join(sorted(allowed))} のいずれか）"
                 )
-    chosen = selects if isinstance(selects, dict) else {}
-    for name, fixed in spec.reference_selects.items():
-        value = str(chosen.get(name) or "").strip()
-        if value and value != fixed:
-            label = (select.label if (select := spec.select(name)) else name)
-            return (
-                f"video workflow '{spec.id}' の参照素材モードでは{label}"
-                f"（`{name}`）は {fixed!r} 固定です（今は {value!r}）"
-            )
-    if mode == "full":
+    return None
+
+
+def start_image_problem(
+    mode: str,
+    video_workflow: str | None,
+    *,
+    source_image: str | None = None,
+    end_image: str | None = None,
+) -> str | None:
+    """開始 / 最終フレームを受け取らないワークフローに渡していないか（§3.1）。
+
+    参照専用のワークフロー（``seedance2_ref`` / ``veo3_1_fast_ref``）は、API 側で
+    参照モードと先頭フレーム i2v が排他なので**開始フレームの受け取り口そのものを
+    持たない**。黙って捨てると「渡したのに効かない」になるので、投入前に断る。
+
+    ``mode: "full"`` は画像ステージが開始フレームを作るモードで、こちらは
+    :func:`video_workflow_problem` が ``accepts_start_image`` を見て断っている
+    （``source_image`` は画像ワークフロー側の入力なのでここでは見ない）。
+    """
+    if mode != "i2v":
+        return None
+    try:
+        spec = get_video_spec(video_workflow)
+    except WorkflowSpecError as exc:
+        return str(exc)
+    for name, value in (("image", source_image), ("end_image", end_image)):
+        if not (value or "").strip() or spec.supports(name):
+            continue
         return (
-            f"mode 'full' は画像ステージが作った静止画を開始フレームにするので、"
-            f"参照素材（{names}）とは同時に使えません"
-            "（参照素材だけで作るなら mode を \"i2v\" にし、開始フレームから作るなら"
-            "参照素材を外してください）"
-        )
-    given = [
-        INPUT_FIELDS[name]
-        for name, value in (("image", source_image), ("end_image", end_image))
-        if (value or "").strip()
-    ]
-    if given:
-        return (
-            f"video workflow '{spec.id}' では先頭フレーム"
-            f"（{', '.join(f'`{name}`' for name in given)}）と参照素材"
-            f"（{names}）は同時に指定できません（API 側で排他のモードです）"
+            f"video workflow '{spec.id}' は{input_label(spec, name)}"
+            f"（`{INPUT_FIELDS[name]}`）を受け取りません"
         )
     return None
 
@@ -1496,15 +1517,19 @@ class JobCreate(BaseModel):
                 self.mode, self.video_workflow, self.video_prompt
             )
             or reference_problem(
+                self.mode, self.video_workflow, reference_materials(self)
+            )
+            or start_image_problem(
                 self.mode,
                 self.video_workflow,
-                reference_materials(self),
                 source_image=self.source_image,
                 end_image=self.end_image,
-                selects=self.selects,
             )
             or multi_shot_problem(
-                self.mode, self.video_workflow, multi_shots_of(self)
+                self.mode,
+                self.video_workflow,
+                multi_shots_of(self),
+                video_prompt=self.video_prompt,
             )
             or elements_problem(
                 self.mode,
@@ -1527,7 +1552,6 @@ class JobCreate(BaseModel):
             video_workflow=self.video_workflow,
             image_workflow=self.image_workflow,
             audio_prompt=self.audio_prompt,
-            multi_shots=multi_shots_of(self),
         )
         if missing:
             raise ValueError(
@@ -2103,10 +2127,6 @@ class WorkflowOption(BaseModel):
     #: 複数ファイルで渡せる参照入力（論理名 -> 件数の上限、SPEC §3.1）。宣言の
     #: ないワークフローでは空で、フォームは参照欄そのものを出さない。
     multi_inputs: dict[str, int] = Field(default_factory=dict)
-    #: 参照素材を使うときに固定される選択式（名前 -> 値、SPEC §3.1）。Veo の
-    #: 素材参照生成は 8 秒固定なので ``{"duration": "8"}``。フォームは参照素材が
-    #: 選ばれている間だけこの値を要求する（バックエンドの 422 と同じ理由）。
-    reference_selects: dict[str, str] = Field(default_factory=dict)
     #: 選択式どうしの相関（名前 -> `[相手の名前, 相手に必要な値]`、SPEC §3.1）。
     #: Suno の `duration` は `model` が `V5_5` のときだけ効くので
     #: `{"duration": ["model", "V5_5"]}`。フォームは既定以外を選んだときだけ

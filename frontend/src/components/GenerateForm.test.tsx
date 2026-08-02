@@ -1206,16 +1206,14 @@ describe('GenerateForm のリファレンスシート合成（SPEC §7.2）', ()
 
 describe('GenerateForm のマルチモーダル参照', () => {
   const SEEDANCE: Options['video_workflows'][number] = {
-    id: 'seedance2',
-    label: 'Seedance 2.0',
+    id: 'seedance2_ref',
+    label: 'Seedance 2.0（素材参照）',
     kind: 'video',
     family: 'seedance',
     notes: '',
     requires: [],
     supports: [
       'prompt',
-      'image',
-      'end_image',
       'reference_images',
       'reference_videos',
       'reference_audios',
@@ -1225,7 +1223,7 @@ describe('GenerateForm のマルチモーダル参照', () => {
       reference_videos: 3,
       reference_audios: 3,
     },
-    accepts_start_image: true,
+    accepts_start_image: false,
     image_label: '開始フレーム（任意）',
     selects: [],
     prompt_required: true,
@@ -1243,6 +1241,7 @@ describe('GenerateForm のマルチモーダル参照', () => {
     family: 'veo',
     supports: ['prompt', 'image', 'end_image'],
     multi_inputs: {},
+    accepts_start_image: true,
   }
 
   const REFERENCES: LibraryItem[] = ['l1', 'l2'].map((id, index) => ({
@@ -1260,7 +1259,7 @@ describe('GenerateForm のマルチモーダル参照', () => {
     category: null,
   }))
 
-  const TITLE = 'マルチモーダル参照（開始フレームとは排他）'
+  const TITLE = 'マルチモーダル参照（素材参照ワークフロー）'
 
   function showReferenceForm(form: Partial<FormState> = {}) {
     vi.mocked(api.listLibrary).mockResolvedValue({
@@ -1276,7 +1275,7 @@ describe('GenerateForm のマルチモーダル参照', () => {
         form={{
           ...initialForm,
           mode: 'i2v',
-          videoWorkflow: 'seedance2',
+          videoWorkflow: 'seedance2_ref',
           ...form,
         }}
         patch={patch}
@@ -1363,7 +1362,7 @@ describe('GenerateForm のマルチショットと Elements', () => {
     requires: [],
     supports: ['prompt', 'image', 'end_image'],
     max_prompt_chars: 500,
-    multi_shot: { max_shots: 5, min_duration: 1, max_duration: 12 },
+    multi_shot: null,
     elements: {
       max_elements: 3,
       min_images: 2,
@@ -1379,6 +1378,15 @@ describe('GenerateForm のマルチショットと Elements', () => {
     min_duration: 0,
     max_duration: 0,
     default_duration: 0,
+  }
+
+  // ショット割り専用版: 本文はショット側にあるのでプロンプト欄が出ない
+  const KLING_SHOTS: Options['video_workflows'][number] = {
+    ...KLING,
+    id: 'kling3_multishot',
+    label: 'Kling 3.0 マルチショット',
+    prompt_required: false,
+    multi_shot: { max_shots: 5, min_duration: 1, max_duration: 12 },
   }
 
   const PLAIN: Options['video_workflows'][number] = {
@@ -1423,11 +1431,11 @@ describe('GenerateForm のマルチショットと Elements', () => {
         form={{
           ...initialForm,
           mode: 'i2v',
-          videoWorkflow: 'kling3_video',
+          videoWorkflow: 'kling3_multishot',
           ...form,
         }}
         patch={patch}
-        options={{ ...OPTIONS, video_workflows: [KLING, PLAIN] }}
+        options={{ ...OPTIONS, video_workflows: [KLING, KLING_SHOTS, PLAIN] }}
         optionsError={null}
         onReloadOptions={() => {}}
         onOpenChat={() => {}}
@@ -1449,6 +1457,12 @@ describe('GenerateForm のマルチショットと Elements', () => {
     expect(screen.getByText('開く（0 / 3 要素）')).toBeTruthy()
     // 畳んでいるあいだは中身を描かない
     expect(screen.queryByRole('button', { name: 'ショットを追加' })).toBeNull()
+
+    cleanup()
+    // 1 カット版は Elements だけ（ショット割りは別ワークフローの機能）
+    showKlingForm({ videoWorkflow: 'kling3_video' })
+    expect(screen.queryByText(SHOTS)).toBeNull()
+    expect(screen.getByText('開く（0 / 3 要素）')).toBeTruthy()
 
     cleanup()
     showKlingForm({ videoWorkflow: 'veo3_1_fast' })
@@ -1492,7 +1506,8 @@ describe('GenerateForm のマルチショットと Elements', () => {
   })
 
   it('`@要素名` を 37 文字として残り文字数を出す', () => {
-    showKlingForm({ videoPrompt: '@kaori walks.' })
+    // プロンプト欄が出るのは 1 カット版（ショット割り版は本文がショット側）
+    showKlingForm({ videoWorkflow: 'kling3_video', videoPrompt: '@kaori walks.' })
     // 500 - (37 + " walks.".length)
     expect(screen.getByText('残り 456 文字')).toBeTruthy()
   })

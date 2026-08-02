@@ -89,12 +89,17 @@
 | `ltx2_3_ic_lora_image` | リファレンスシート (IC-LoRA) | distilled-fp8 + ingredients IC-LoRA | リファレンスシート画像 | ✕ |
 | `ltx2_3_ic_lora_motion` | 参照動画からモーション転写 (IC-LoRA + MoGe) | distilled-fp8 + union-control IC-LoRA | 画像・参照動画 | ○ |
 | `wan_dancer` | 画像+音声→ダンス動画 (Wan Dancer) | wan2.2 global/local 2 段 + lightx2v | 画像・音声 | ○ |
-| `veo3_1_fast` | Veo 3.1 Fast（音声つき・外部 API） | kie.ai `veo3_fast` | なし（画像・最終フレーム画像・参照画像は任意） | ○ |
+| `veo3_1_fast` | Veo 3.1 Fast（音声つき・外部 API） | kie.ai `veo3_fast` | なし（画像・最終フレーム画像は任意） | ○ |
+| `veo3_1_fast_ref` | Veo 3.1 Fast 素材参照（音声つき・外部 API） | kie.ai `veo3_fast` | なし（参照画像は任意・開始フレームは不可） | ✕ |
 | `veo3_1_quality` | Veo 3.1 Quality（音声つき・外部 API） | kie.ai `veo3` | なし（画像・最終フレーム画像は任意） | ○ |
 | `kling3_video` | Kling 3.0（音声つき・外部 API） | kie.ai `kling-3.0/video` | なし（画像・最終フレーム画像は任意） | ○ |
-| `seedance2` | Seedance 2.0（音声つき・外部 API） | kie.ai `bytedance/seedance-2` | なし（画像・最終フレーム画像・参照素材は任意） | ○ |
-| `seedance2_fast` | Seedance 2.0 Fast（音声つき・外部 API） | kie.ai `bytedance/seedance-2-fast` | なし（画像・最終フレーム画像・参照素材は任意） | ○ |
-| `seedance2_mini` | Seedance 2.0 Mini（音声つき・外部 API） | kie.ai `bytedance/seedance-2-mini` | なし（画像・最終フレーム画像・参照素材は任意） | ○ |
+| `kling3_multishot` | Kling 3.0 マルチショット（音声つき・外部 API） | kie.ai `kling-3.0/video` | **`multi_shots`**（画像・最終フレーム画像は任意） | ○ |
+| `seedance2` | Seedance 2.0（音声つき・外部 API） | kie.ai `bytedance/seedance-2` | なし（画像・最終フレーム画像は任意） | ○ |
+| `seedance2_fast` | Seedance 2.0 Fast（音声つき・外部 API） | kie.ai `bytedance/seedance-2-fast` | なし（画像・最終フレーム画像は任意） | ○ |
+| `seedance2_mini` | Seedance 2.0 Mini（音声つき・外部 API） | kie.ai `bytedance/seedance-2-mini` | なし（画像・最終フレーム画像は任意） | ○ |
+| `seedance2_ref` | Seedance 2.0（素材参照・音声つき・外部 API） | kie.ai `bytedance/seedance-2` | なし（参照素材は任意・開始フレームは不可） | ✕ |
+| `seedance2_fast_ref` | Seedance 2.0 Fast（素材参照・音声つき・外部 API） | kie.ai `bytedance/seedance-2-fast` | なし（参照素材は任意・開始フレームは不可） | ✕ |
+| `seedance2_mini_ref` | Seedance 2.0 Mini（素材参照・音声つき・外部 API） | kie.ai `bytedance/seedance-2-mini` | なし（参照素材は任意・開始フレームは不可） | ✕ |
 | `grok_imagine_video` | Grok Imagine 動画（サブスク CLI） | Grok Build CLI `video-1.5` | なし（開始フレーム画像は任意） | ○ |
 
 - id はファイル名（拡張子なし）。`tx2_3_i2v` / `tx2_3_ia2v` の綴りは配布ファイル名そのまま
@@ -109,13 +114,14 @@
   最終フレーム画像も渡すと flf2v 相当（`imageUrls` 2 枚）になる。`generationType` は渡した枚数から自動で決まる。
   ユーザー LoRA・`fps`・自前の解像度指定は使えない。Fast は日常の量産、Quality は本番カット用（約 4 倍の値段）。
   プロンプトの書き方は Grok 側にモデル専用ガイド（`prompts.VIDEO_SPECS`）を注入する。
-  **素材参照生成**（`REFERENCE_2_VIDEO`）は **Fast だけ**が持つ別モードで、参照画像 1〜3 枚
-  （`reference_images`、§3.1 の「複数ファイルの参照入力」）で人物・衣装・小物の見た目を指定する。
-  参照画像は開始フレームと**同じ `imageUrls`** に載るので枚数からは区別が付かず、`generationType` は
-  マニフェストの `KieTask.reference_constants`（＝参照素材があるときだけ足す固定値）で切り替える。
-  **開始 / 最終フレームとは排他**、**尺は 8 秒固定**（`WorkflowSpec.reference_selects`。他の尺を明示指定した
-  ジョブは投入前に 422。未指定なら既定が 8 秒なので黙って通る）。Quality と Lite は宣言しない
-  （API 側が Fast / Lite のみ）。
+  **素材参照生成**（`REFERENCE_2_VIDEO`）は API 側で開始 / 最終フレームと**排他のモード**なので、
+  同じマニフェストに同居させず **`veo3_1_fast_ref` という別ワークフロー**として宣言する（§3.1）。
+  参照画像 1〜3 枚（`reference_images`、§3.1 の「複数ファイルの参照入力」）で人物・衣装・小物の
+  見た目を指定し、**開始フレームは受け取らない**（`accepts_start_image=False` なので `full` でも選べない）。
+  参照画像は通常の生成と同じ `imageUrls` に載って枚数からは区別が付かないが、参照専用の宣言なので
+  `generationType` は `KieTask.constants` に**常に載る固定値**でよい。**尺は 8 秒固定**なのも、
+  `duration` の選択肢を `("8",)` の 1 つだけにして表現する（他の尺は選択肢に無いので 422）。
+  Quality と Lite の参照版は用意しない（API 側が Fast / Lite のみ）。
   生成後は履歴から **+7 秒の延長**と **1080P 版の取得**を掛けられる（§5.2 の「生成済みタスクへの追加操作」）。
   4K の追加取得（`POST /veo/get-4k-video`、120 credits）は `resolution: "4k"` を生成時に直接選べるので見送り。
   `seeds`（10000〜99999 の再現性シード）と `watermark` は生成では未対応（選択式に馴染まない任意入力なので
@@ -134,11 +140,14 @@
   `negative_prompt` / `cfg` / `camera_control` / `seed` は kie.ai 経由の Kling には**存在しない**ので、
   すべてプロンプト本文で指定する。**`video_prompt` は 500 文字まで**で、超えたジョブは投入時に 422
   （`models.prompt_length_problem`、マニフェストの `max_prompt_chars`）。
-  **マルチショット**（`multi_shots` / `multi_prompt`、最大 5 ショット・各 1〜12 秒）と
-  **Elements**（`kling_elements`、最大 3 要素・各 2〜4 枚の参照画像を `@要素名` で呼ぶ）に対応する（§3.1）。
-  マルチショットのときはトップレベルの `prompt` を送らず（本文はショット側）、`sound` の既定が
-  **true に入れ替わる**（`MultiShotSpec.select_defaults`）。`@要素名` 1 参照は**プロンプトの 37 文字**を
-  消費するので、500 文字の判定はこの補正込みで数える（`models.prompt_chars`）。
+  **マルチショット**（`multi_shots` / `multi_prompt`、最大 5 ショット・各 1〜12 秒）は入力の形そのものが
+  違う（トップレベルの `prompt` を送らず、本文はショット側にある）ので、**`kling3_multishot` という
+  別ワークフロー**として宣言する（§3.1）。そちらでは `multi_shots` が**必須**、`video_prompt` を書いた
+  ジョブは 422、`sound` の既定は **true**（ショット割りは音つき前提の機能）。1 カットで作る
+  `kling3_video` には `multi_shots` の宣言そのものが無いので、渡せば「対応していません」で断る。
+  **Elements**（`kling_elements`、最大 3 要素・各 2〜4 枚の参照画像を `@要素名` で呼ぶ）は開始フレームとも
+  ショット割りとも併用できるので、**両方のワークフローが宣言する**。`@要素名` 1 参照は
+  **プロンプトの 37 文字**を消費するので、500 文字の判定はこの補正込みで数える（`models.prompt_chars`）。
   Turbo 系（`kling/v3-turbo-*`）は未対応。
   ユーザー LoRA は使えず、`full` は Veo と同じく ComfyUI の画像ワークフローと組み合わせられる
 - **`seedance2` / `seedance2_fast` / `seedance2_mini`（family `seedance`、backend `kie`）** も外部 API の
@@ -158,14 +167,17 @@
   `web_search`（t2v のときだけ効く真偽値）は未対応: i2v では黙って無視される項目になるので、
   モードで出し分ける仕組みができるまで宣言しない。
   **マルチモーダル参照**（`reference_images` 最大 9 枚 / `reference_videos` 最大 3 本 / `reference_audios` 最大 3 本、
-  §3.1）に対応する。参照画像は**見た目の一貫性**（同じ顔・衣装・小物）、参照動画は**動きのお手本**、
+  §3.1）は API 側で**先頭フレーム i2v と相互排他**なので、バリアントごとに
+  **参照版 `*_ref` を別ワークフロー**として立ててある（`seedance2_ref` / `seedance2_fast_ref` /
+  `seedance2_mini_ref`）。参照版は `accepts_start_image=False` で `image` / `end_image` の受け取り口を
+  持たないので、開始フレームを渡したジョブは「受け取りません」で 422（`models.start_image_problem`）、
+  `mode: "full"` は `models.video_workflow_problem` が断る。フレーム版は逆に `multi_inputs` を宣言しないので、
+  参照素材を渡せば「受け取れません」で 422（`models.reference_problem`）。
+  参照画像は**見た目の一貫性**（同じ顔・衣装・小物）、参照動画は**動きのお手本**、
   参照音声は**ムード**のよりどころで、渡した素材は 1 本ずつ File Upload API で URL 化され
   `reference_image_urls` / `reference_video_urls` / `reference_audio_urls` の**配列**として `input` に入る。
-  **先頭フレーム（`source_image` / `end_image`）と参照モードは API 側で相互排他**なので、
-  同時指定のジョブは投入前に 422（`models.reference_problem`）。`mode: "full"` は画像ステージが開始フレームを
-  作る＝先頭フレームモードなので、参照素材とは組み合わせられない（同じく 422）。件数の上限と拡張子だけ
-  投入前に見て、素材のサイズ・解像度・尺（画像 ≤30MB・300〜6000px・AR 0.4〜2.5 / 動画・音声は各 2〜15 秒・
-  合計 15 秒）は kie.ai 側の判断に任せ、失敗理由（`failMsg`）をそのまま見せる。
+  件数の上限と拡張子だけ投入前に見て、素材のサイズ・解像度・尺（画像 ≤30MB・300〜6000px・AR 0.4〜2.5 /
+  動画・音声は各 2〜15 秒・合計 15 秒）は kie.ai 側の判断に任せ、失敗理由（`failMsg`）をそのまま見せる。
   Seedance 2.5 は kie.ai 未提供（Coming Soon）だが、モデル名はマニフェストの宣言なので**エントリを 1 つ足すだけ**で通る。
   成果物 URL は約 24 時間で失効する（完了時に即ダウンロードするので影響なし、§5.2）。
   ユーザー LoRA は使えず、`full` は Veo / Kling と同じく ComfyUI の画像ワークフローと組み合わせられる
@@ -295,7 +307,10 @@ LoRA チェーンも持たない（テンプレートに LoRA ノードが無い
 
 #### 複数ファイルの参照入力（`WorkflowSpec.multi_inputs`）
 
-1 つの入力欄が**複数のファイル**を持つ論理入力の仕組み（Seedance 2 系のマルチモーダル参照、§2.2）。
+1 つの入力欄が**複数のファイル**を持つ論理入力の仕組み（Seedance 2 系のマルチモーダル参照・Veo の
+素材参照生成、§2.2）。外部 API では**参照モードと先頭フレームモードが排他**なので、宣言を持つのは
+**参照専用のワークフロー**（`*_ref` / `veo3_1_fast_ref`）だけで、そちらは `accepts_start_image=False`
+かつ `image` / `end_image` の受け取り口を持たない（マニフェストの検証がこの同居を弾く）。
 `multi_inputs = {"reference_images": 9, ...}` をマニフェストに宣言すると、
 
 - ジョブは `reference_images` / `reference_videos` / `reference_audios`（`workflows.MULTI_INPUT_FIELDS`）に
@@ -304,17 +319,17 @@ LoRA チェーンも持たない（テンプレートに LoRA ノードが無い
   （`KieTask.list_keys` は「別々の論理名を 1 つの配列に並べる」ための別の機構で、こちらとは無関係）
 - 生成フォームは宣言のある欄だけを出し（`form.referenceFields`）、件数と上限を表示する
 - 宣言のないワークフローに渡す・上限を超える・拡張子が違う場合は 422（`models.reference_problem`）
-- **参照モードでしか作れない設定**は `WorkflowSpec.reference_selects`（名前 → 値）に宣言する。参照素材が
-  入っているあいだ、その選択式に**違う値を明示指定したジョブだけ**を 422 で断る（未指定なら選択式の既定が
-  そのまま固定値なので黙って通る）。Veo 3.1 Fast の素材参照生成は `{"duration": "8"}`（API 側が 8 秒しか
-  作れない）
-- 参照素材があるときだけ `input` に足したい固定値は `KieTask.reference_constants`。Veo の参照画像は開始
-  フレームと同じ `imageUrls` に載るので**枚数からモードを判別できず**、`generationType:
-  "REFERENCE_2_VIDEO"` をこの宣言で切り替える
+- **参照モードでしか作れない設定**は、そのワークフローの `SelectSpec` にそのまま書ける。Veo 3.1 Fast の
+  素材参照生成は 8 秒しか作れないので、`veo3_1_fast_ref` の `duration` は `choices=("8",)`
+- 参照モードでだけ `input` に載る固定値も、参照専用のワークフローでは `KieTask.constants` でよい。Veo の
+  参照画像は開始フレームと同じ `imageUrls` に載って**枚数からモードを判別できない**が、
+  `veo3_1_fast_ref` は参照モードしか作らないので `generationType: "REFERENCE_2_VIDEO"` を常に送る
 
-**参照モードと先頭フレームモードは相互排他**（外部 API 側の制約）なので、`reference_*` と
-`source_image` / `end_image` の同時指定、および `mode: "full"`（画像ステージの出力が開始フレームになる）
-との組み合わせは投入前に 422 で断る。検証は Web UI（`form.validateForm` + `jobs._validate`）・
+**参照モードと先頭フレームモードが相互排他**（外部 API 側の制約）であることは、**ワークフローの分割**
+そのものが表現している: 参照版に `source_image` / `end_image` を渡せば「受け取りません」
+（`models.start_image_problem`）、`mode: "full"` は `accepts_start_image=False` を見て
+`models.video_workflow_problem` が断る。フレーム版に `reference_*` を渡せば「受け取れません」
+（`models.reference_problem`）。検証は Web UI（`form.validateForm` + `jobs._validate`）・
 API（`JobCreate` の検証）・エージェント（`agent_protocol._workflow_detail`）の 3 経路で同じ関数を通る。
 素材のサイズ・解像度・尺の細かい制約は外部 API の判断に任せ、失敗理由をそのまま見せる。
 
@@ -324,16 +339,19 @@ API（`JobCreate` の検証）・エージェント（`agent_protocol._workflow_
 JSON 文字列で持つと検証もフォームも書けないので、**型付きのリスト**（`models.MultiShot` /
 `models.ElementInput`）として `JobCreate` / `GenerationParams` / params に持つ。
 
-**マルチショット**（`MultiShotSpec(max_shots, min_duration, max_duration, select_defaults)`）:
+**マルチショット**（`MultiShotSpec(max_shots, min_duration, max_duration)`）:
 
-- ジョブは `multi_shots: [{"prompt": "…", "duration": <int>}]` を持つ。1 件でもあれば
-  `input` には `multi_shots: true` と `multi_prompt`（配列）が入り、**トップレベルの `prompt` は
-  送らない**（`kie.task_values`）。`video_prompt` はそのぶん必須チェックからも外れる
-  （`models.missing_job_fields`）
-- `select_defaults`（Kling は `{"sound": "true"}`）は「マルチショットのときだけ既定が変わる選択式」。
-  **明示指定があればそちらが勝つ**ので、音を切りたいジョブは `selects` で `false` を書けばよい
-- 件数（≤ `max_shots`）・1 ショットの尺（`min_duration`〜`max_duration` の整数）・1 ショットの
-  本文の長さ（ワークフローの `max_prompt_chars`）は投入前に `models.multi_shot_problem` が見る
+- 宣言を持つのは**ショット割り専用のワークフロー**（`kling3_multishot`）だけ。入力の形そのものが
+  1 カット版と違うので、同じマニフェストに同居させない
+- ジョブは `multi_shots: [{"prompt": "…", "duration": <int>}]` を**必ず**持ち、`input` には
+  `multi_shots: true` と `multi_prompt`（配列）が入って**トップレベルの `prompt` は送らない**
+  （`kie.task_values`）。`video_prompt` はそのワークフローの `prompt_required=False` で必須チェックから
+  外れ（`models.missing_job_fields`）、逆に**書かれていたら 422**（本文はショット側、
+  `models.multi_shot_problem`）。フォームはプロンプト欄そのものを出さない（`form.hiddenFields`）
+- ショット割りは音つき前提の機能なので、`sound` の既定は専用ワークフロー側で `true` にしてある
+  （「マルチショットのときだけ既定が変わる」という特別扱いは要らない）
+- ショットが 0 件・件数（≤ `max_shots`）・1 ショットの尺（`min_duration`〜`max_duration` の整数）・
+  1 ショットの本文の長さ（ワークフローの `max_prompt_chars`）は投入前に `models.multi_shot_problem` が見る
 
 **Elements**（`ElementsSpec(max_elements, min_images, max_images, reference_chars)`）:
 
@@ -765,8 +783,8 @@ ComfyUI と並ぶ **2 つめの生成バックエンド**として、外部 API 
   既定値が docs 内で食い違うので**明示して送る**。マニフェストの `KieTask.list_keys` に挙げたキーは
   配列になり、同じキーに複数の論理入力を宣言できる（`imageUrls` は宣言順 = 開始フレーム, 最終フレーム）。
   **素材参照生成**（`REFERENCE_2_VIDEO`、Fast のみ・参照画像 1〜3 枚・8 秒固定）も同じ `imageUrls` に
-  載るので、枚数ではなく `KieTask.reference_constants`（参照素材があるときだけ足す固定値）で
-  `generationType` を切り替える（§2.2 / §3.1）
+  載って枚数からは判別できないが、参照専用のワークフロー（`veo3_1_fast_ref`）に分けてあるので
+  `generationType` は `KieTask.constants` の固定値として常に送る（§2.2 / §3.1）
 - **生成済みタスクへの追加操作**（`FOLLOWUP_MODES` = `veo_extend` / `veo_1080p`、issue #26）:
   「ラストフレームから続きを生成」（§2）が**別のクリップを新しく作る**のに対し、こちらは **kie.ai 側に
   残っている元タスクそのもの**に仕事を足す。入口は `workflow_json` に残した `task_id` で、成果物の

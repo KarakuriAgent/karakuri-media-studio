@@ -266,14 +266,10 @@ class KieTask:
     model: str
     #: 論理名（:data:`KIE_VALUES` か ``select:<名前>``）-> ``input`` のキー
     fields: dict[str, str] = field(default_factory=dict)
-    #: 常に同じ値で入れる ``input`` のキー（モデル固有の固定オプション）
+    #: 常に同じ値で入れる ``input`` のキー（モデル固有の固定オプション）。
+    #: モードの切り替え（Veo の ``generationType``）も、モードごとに
+    #: ワークフローを分けてあるのでここに書く固定値で足りる。
     constants: dict[str, Any] = field(default_factory=dict)
-    #: **参照素材（:attr:`WorkflowSpec.multi_inputs`）が入っているときだけ**足す
-    #: 固定値。Veo の素材参照生成は ``generationType`` を ``REFERENCE_2_VIDEO``
-    #: に切り替える必要があるが、参照画像は開始 / 最終フレームと同じ
-    #: ``imageUrls`` に載るので**枚数からは区別が付かない**。値そのものは
-    #: :attr:`constants` より後に入るので、固定値を上書きできる。
-    reference_constants: dict[str, Any] = field(default_factory=dict)
     #: **配列で渡す** ``input`` のキー。同じキーに複数の論理名を割り当てられる
     #: ようになり、値は :attr:`fields` の宣言順に並ぶ（Veo の ``imageUrls`` は
     #: 「1 枚目 = 開始フレーム / 2 枚目 = 最終フレーム」の順序が意味を持つ）。
@@ -342,11 +338,12 @@ class CodexCliTask:
 class MultiShotSpec:
     """**ショット割り**で 1 本の動画を作れるモデルの宣言（SPEC §3.1、Kling 3.0）。
 
-    宣言のあるワークフローでは、ジョブは 1 本の ``video_prompt`` の代わりに
-    ``multi_shots``（``[{"prompt": ..., "duration": ...}]``）を持てる。指定が
-    あれば ``input`` には ``multi_shots: true`` と ``multi_prompt`` の配列が入り、
-    **トップレベルの ``prompt`` は送らない**（API 仕様どおり、ショットの文だけで
-    決まる）。件数・1 ショットの長さ・1 ショットのプロンプト長は投入前に
+    宣言は**ショット割り専用のワークフロー**（:data:`KLING3_MULTISHOT`）だけが
+    持つ。ジョブは 1 本の ``video_prompt`` の代わりに ``multi_shots``
+    （``[{"prompt": ..., "duration": ...}]``）を**必ず**持ち、``input`` には
+    ``multi_shots: true`` と ``multi_prompt`` の配列が入って**トップレベルの
+    ``prompt`` は送らない**（API 仕様どおり、ショットの文だけで決まる）。
+    ショットの有無・件数・1 ショットの長さ・1 ショットのプロンプト長は投入前に
     :func:`app.models.multi_shot_problem` が見る。
     """
 
@@ -355,9 +352,6 @@ class MultiShotSpec:
     #: 1 ショットの尺（秒、整数）
     min_duration: int = 1
     max_duration: int = 12
-    #: マルチショットのときだけ既定が変わる選択式（名前 -> 値）。Kling は
-    #: ``sound`` が既定 true になる（ショット割りは音つき前提の機能）。
-    select_defaults: dict[str, str] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -407,13 +401,11 @@ class WorkflowSpec:
     #: SPEC §3.1）。Seedance のマルチモーダル参照（参照画像 9 枚 / 参照動画 3 本 /
     #: 参照音声 3 本）用で、宣言のないワークフローに参照素材を渡すと 422 になる
     #: （:func:`app.models.reference_problem`）。名前は
-    #: :data:`MULTI_INPUT_FIELDS` のキー。
+    #: :data:`MULTI_INPUT_FIELDS` のキー。**参照素材を使うモードは開始フレームと
+    #: 排他**（外部 API 側の制約）なので、宣言を持つのは参照専用のワークフロー
+    #: （``*_ref`` / ``veo3_1_fast_ref``）だけで、そちらは
+    #: :attr:`accepts_start_image` が False になっている。
     multi_inputs: dict[str, int] = field(default_factory=dict)
-    #: **参照素材を使うときに固定される選択式の値**（名前 -> 値、SPEC §3.1）。
-    #: Veo の素材参照生成は 8 秒しか作れないので ``{"duration": "8"}``。既定の
-    #: ままなら黙って通り、**違う値を明示指定したジョブだけ** 422 で断る
-    #: （:func:`app.models.reference_problem`）。
-    reference_selects: dict[str, str] = field(default_factory=dict)
     #: **選択式どうしの相関**（名前 -> ``(相手の名前, 相手に必要な値)``、§3.1）。
     #: 「その項目は相手がこの値のときしか効かない」ことの宣言で、既定以外を
     #: 選んでいるのに相手が違う値なら投入前に 422 にする
@@ -1264,12 +1256,15 @@ WAN_DANCER = WorkflowSpec(
 # 音声はモデルが映像と一緒に生成するので、音声入力は取らない。
 #
 # **素材参照生成**（``REFERENCE_2_VIDEO``、issue #26）は同じ ``imageUrls`` に
-# 参照画像を 1〜3 枚載せる別モードで、枚数からは区別が付かないので
-# :attr:`KieTask.reference_constants` で ``generationType`` を切り替える。
-# API 側の制約が強く（**Fast / Lite のみ・8 秒固定**・開始 / 最終フレームとは
-# 排他）、Quality では使えないので **Fast のマニフェストだけが宣言する**。
-# 尺の固定は :attr:`WorkflowSpec.reference_selects` に書いて、違う尺を明示指定
-# したジョブを投入前に断る（:func:`app.models.reference_problem`）。
+# 参照画像を 1〜3 枚載せる別モードで、開始 / 最終フレームとは API 側で排他。
+# 排他のモードを 1 つのマニフェストに同居させると「宣言はしているが組み合わせに
+# よっては使えない」入力ができてしまうので、**ワークフローそのものを分けて**
+# 宣言する（:data:`VEO3_1_FAST_REF`）。分けたことで ``generationType`` は
+# 「参照素材があるときだけ切り替える」特別扱いではなく :attr:`KieTask.constants`
+# の固定値になり、8 秒固定も ``duration`` の選択肢を 1 つだけ持つ
+# :class:`SelectSpec` でそのまま表現できる。
+# API 側の制約で素材参照生成が使えるのは **Fast / Lite のみ**なので、参照専用の
+# バリアントも Fast にだけ用意する。
 
 #: Veo の縦横比（``Auto`` は 1080p/4K が使えないので出さない）
 VEO_ASPECT_RATIOS: tuple[str, ...] = ("16:9", "9:16")
@@ -1299,10 +1294,24 @@ VEO_PROMPT_HINT = (
     " the description as `Negative: cartoon, blurry, distorted hands, text,"
     " watermark`. With a start frame, do not re-describe what the picture"
     " already shows — write how it moves, what happens next and how it sounds."
-    " **In reference mode** (`reference_images`, 1-3 stills that cannot be"
-    " combined with a start frame) the pictures carry identity and look: do not"
-    " describe what they already show — spend the text on what happens, in"
-    " which light, with which single camera move, and how it sounds."
+)
+
+#: プロンプトの書き方（素材参照生成のバリアント）。参照画像が見た目を決めるので、
+#: 「素材が写しているもの」ではなく演出だけを書かせる。
+VEO_REFERENCE_PROMPT_HINT = (
+    "The 1-3 `reference_images` carry identity and look (face, wardrobe, prop),"
+    " so **do not describe what they already show** — spend the text on"
+    " direction. Write 3-6 English sentences (100-150 words): what happens, in"
+    " which scene and light, with **one** camera motion, lens & focus, style."
+    " Refer to the material in words the model can attach (`the woman from the"
+    " reference images`), never by file name."
+    " Veo generates the **sound with the picture**: name the ambience and the"
+    " sound effects, and put spoken lines in quotes with the speaker and the"
+    " delivery (`The woman says softly: \"...\"`) — 1-2 short lines fit in"
+    " 8 seconds. Add `(no subtitles)` when no burnt-in captions are wanted."
+    " Never write what you do *not* want inside the description; list it after"
+    " the description as `Negative: cartoon, blurry, distorted hands, text,"
+    " watermark`."
 )
 
 #: 画像入力の説明（カタログ・フォームの案内に使う共通文）
@@ -1311,11 +1320,18 @@ _VEO_INPUTS = (
     "「最初と最後のフレーム」の補間（flf2v）になる。"
 )
 
-#: 素材参照生成の説明（宣言しているバリアントにだけ足す）
-_VEO_REFERENCE_INPUTS = (
-    f"そのかわりに **参照画像**（`reference_images` 最大 {VEO_REFERENCE_IMAGES} 枚）"
-    "を渡すと、人物・衣装・小道具の見た目を素材で指定できる（素材参照生成）。"
-    f"**開始フレームとは排他**で、尺は {VEO_REFERENCE_DURATION} 秒固定。"
+#: 縦横比・解像度は素材参照生成でも同じ（尺だけが 8 秒に固定される）
+VEO_ASPECT_SELECT = SelectSpec(
+    label="縦横比",
+    choices=VEO_ASPECT_RATIOS,
+    default="16:9",
+    hint="16:9 は横長、9:16 は縦長。",
+)
+VEO_RESOLUTION_SELECT = SelectSpec(
+    label="解像度",
+    choices=VEO_RESOLUTIONS,
+    default="720p",
+    hint="1080p・4k は尺 8 秒のときのみ。4k は高価なので仕上げのカットだけに使う。",
 )
 
 
@@ -1325,13 +1341,12 @@ def _veo_spec(
     model: str,
     credits: float,
     description: str,
-    *,
-    references: bool = False,
 ) -> WorkflowSpec:
     """Veo の 1 モデル分のマニフェスト（Fast / Quality は宣言がほぼ同じ）。
 
-    ``references`` を立てたバリアントだけが**素材参照生成**
-    （``REFERENCE_2_VIDEO``）を宣言する（API 側で Fast / Lite のみ）。
+    開始 / 最終フレームで作る通常の生成だけを宣言する。素材参照生成は API 側で
+    このモードと排他なので、同じ宣言に混ぜず :data:`VEO3_1_FAST_REF` として
+    別のワークフローにしてある。
     """
     return WorkflowSpec(
         id=spec_id,
@@ -1343,12 +1358,6 @@ def _veo_spec(
         prompt_hint=VEO_PROMPT_HINT,
         accepts_start_image=True,
         image_label="開始フレーム（任意）",
-        multi_inputs=(
-            {"reference_images": VEO_REFERENCE_IMAGES} if references else {}
-        ),
-        reference_selects=(
-            {"duration": VEO_REFERENCE_DURATION} if references else {}
-        ),
         kie=KieTask(
             model=model,
             api="veo",
@@ -1357,9 +1366,6 @@ def _veo_spec(
                 # 宣言順がそのまま imageUrls の並び（1 枚目 = 開始フレーム）
                 "image": "imageUrls",
                 "end_image": "imageUrls",
-                # 素材参照生成の参照画像も同じ配列（開始フレームとは排他なので、
-                # 実際に両方が入ることはない）
-                **({"reference_images": "imageUrls"} if references else {}),
                 f"{KIE_SELECT_PREFIX}aspect_ratio": "aspect_ratio",
                 f"{KIE_SELECT_PREFIX}duration": "duration",
                 f"{KIE_SELECT_PREFIX}resolution": "resolution",
@@ -1367,46 +1373,25 @@ def _veo_spec(
             # 既定値がドキュメント内で食い違うので明示する（英語プロンプトを
             # そのまま使わせたいので翻訳は有効のままでよい）
             constants={"enableTranslation": True},
-            # 参照画像が入っているときだけ素材参照生成に切り替える（枚数からは
-            # 「最初と最後のフレーム」と区別が付かない）
-            reference_constants=(
-                {"generationType": VEO_REFERENCE_TYPE} if references else {}
-            ),
             list_keys=("imageUrls",),
             credits=credits,
         ),
         selects={
-            "aspect_ratio": SelectSpec(
-                label="縦横比",
-                choices=VEO_ASPECT_RATIOS,
-                default="16:9",
-                hint="16:9 は横長、9:16 は縦長。",
-            ),
+            "aspect_ratio": VEO_ASPECT_SELECT,
             "duration": SelectSpec(
                 label="尺（秒）",
                 choices=VEO_DURATIONS,
                 default="8",
                 hint="1080p は 8 秒のときだけ生成できる。",
             ),
-            "resolution": SelectSpec(
-                label="解像度",
-                choices=VEO_RESOLUTIONS,
-                default="720p",
-                hint="1080p・4k は尺 8 秒のときのみ。4k は高価なので"
-                "仕上げのカットだけに使う。",
-            ),
+            "resolution": VEO_RESOLUTION_SELECT,
         },
         notes=(
             "kie.ai 経由 / 音声つき / SynthID 透かしが必ず入る /"
             " 4k は生成時に選べる（8 秒のときのみ・高価） /"
             " 生成後に履歴から +7 秒の延長と 1080P 版の取得ができる /"
-            " 4K の追加取得（get-4k-video）は未対応"
-            + (
-                f" / 参照画像 {VEO_REFERENCE_IMAGES} 枚までの素材参照生成"
-                f"（開始フレームとは排他・{VEO_REFERENCE_DURATION} 秒固定）"
-                if references
-                else " / 素材参照生成（reference_images）は Fast のみ"
-            )
+            " 4K の追加取得（get-4k-video）は未対応 /"
+            " 素材参照生成は `veo3_1_fast_ref`（別ワークフロー）"
         ),
     )
 
@@ -1418,8 +1403,8 @@ VEO3_1_FAST = _veo_spec(
     60.0,
     "kie.ai 経由の Google Veo 3.1 Fast。音声（環境音・効果音・セリフ）まで"
     "モデルが同時に生成する 4〜8 秒のクリップで、ふだんの試し撮り・量産用。"
-    f"{_VEO_INPUTS}{_VEO_REFERENCE_INPUTS}外部 API なので LoRA は使えない。",
-    references=True,
+    f"{_VEO_INPUTS}素材で見た目を指定したいときは `veo3_1_fast_ref` を使う。"
+    "外部 API なので LoRA は使えない。",
 )
 
 VEO3_1_QUALITY = _veo_spec(
@@ -1430,6 +1415,67 @@ VEO3_1_QUALITY = _veo_spec(
     "kie.ai 経由の Google Veo 3.1（Quality）。Fast と同じ使い方で品質が高く、"
     "そのぶん高価（Fast の約 4 倍）。本番に載せるカットだけに使う。"
     f"{_VEO_INPUTS}外部 API なので LoRA は使えない。",
+)
+
+#: Veo 3.1 Fast の**素材参照生成**（``REFERENCE_2_VIDEO``）。通常の生成とは API
+#: 側で排他なので、開始 / 最終フレームを**宣言そのものから外した**別ワークフロー
+#: にしてある。おかげで ``generationType`` は常に載る固定値、8 秒固定は選択肢が
+#: 1 つだけの ``duration`` として素直に書ける。
+VEO3_1_FAST_REF = WorkflowSpec(
+    id="veo3_1_fast_ref",
+    label="Veo 3.1 Fast 素材参照（音声つき・外部 API）",
+    kind="video",
+    family="veo",
+    backend="kie",
+    description=(
+        "kie.ai 経由の Google Veo 3.1 Fast の**素材参照生成**。"
+        f"**参照画像**（`reference_images` 最大 {VEO_REFERENCE_IMAGES} 枚）で"
+        "人物・衣装・小道具の見た目を指定し、プロンプトには演出だけを書く。"
+        "**開始フレームは受け取らない**（API 側で通常の生成と排他のモード）ので "
+        f"`mode: \"i2v\"` 専用で、尺は {VEO_REFERENCE_DURATION} 秒固定。"
+        "外部 API なので LoRA は使えない。"
+    ),
+    prompt_hint=VEO_REFERENCE_PROMPT_HINT,
+    # 素材参照生成に開始フレームは渡せない（＝ full の 2 段目にもなれない）
+    accepts_start_image=False,
+    multi_inputs={"reference_images": VEO_REFERENCE_IMAGES},
+    kie=KieTask(
+        model="veo3_fast",
+        api="veo",
+        fields={
+            "prompt": "prompt",
+            # 参照画像も通常の生成と同じ配列（載せる中身の意味が違うだけ）
+            "reference_images": "imageUrls",
+            f"{KIE_SELECT_PREFIX}aspect_ratio": "aspect_ratio",
+            f"{KIE_SELECT_PREFIX}duration": "duration",
+            f"{KIE_SELECT_PREFIX}resolution": "resolution",
+        },
+        # 素材参照生成は枚数から判別できない（imageUrls は開始フレームと共通）
+        # ので、このワークフローでは常に generationType を明示して送る。
+        constants={
+            "enableTranslation": True,
+            "generationType": VEO_REFERENCE_TYPE,
+        },
+        list_keys=("imageUrls",),
+        credits=60.0,
+    ),
+    selects={
+        "aspect_ratio": VEO_ASPECT_SELECT,
+        "duration": SelectSpec(
+            label="尺（秒）",
+            choices=(VEO_REFERENCE_DURATION,),
+            default=VEO_REFERENCE_DURATION,
+            hint=f"素材参照生成は {VEO_REFERENCE_DURATION} 秒固定（API 側の制約）。",
+        ),
+        "resolution": VEO_RESOLUTION_SELECT,
+    },
+    notes=(
+        "kie.ai 経由 / 音声つき / SynthID 透かしが必ず入る /"
+        f" 参照画像は {VEO_REFERENCE_IMAGES} 枚まで /"
+        f" 尺は {VEO_REFERENCE_DURATION} 秒固定・開始フレームは受け取らない /"
+        " 生成後に履歴から +7 秒の延長と 1080P 版の取得ができる /"
+        " 開始フレームから作るなら `veo3_1_fast`"
+    ),
 )
 
 
@@ -1458,11 +1504,15 @@ VEO3_1_QUALITY = _veo_spec(
 # - **マルチショット**（:class:`MultiShotSpec`）。``multi_shots: true`` と
 #   ``multi_prompt: [{"prompt", "duration"}]`` の組で、1 タスクに最大 5 ショット。
 #   このとき**トップレベルの ``prompt`` は送らない**（:func:`app.kie.task_values`）。
-#   ``sound`` の既定も true に変わる
+#   1 本の ``video_prompt`` で作る通常の生成とは書き方も送るキーも別物なので、
+#   **ワークフローを分けて**宣言する（:data:`KLING3_MULTISHOT`）。分けたことで
+#   「ショット割りのときだけ ``sound`` の既定が変わる」といった特別扱いが要らず、
+#   マルチショット側の ``sound`` を既定 true にしておけば済む
 # - **Elements**（:class:`ElementsSpec`）。``kling_elements`` は
 #   ``[{"name", "description", "element_input_urls"}]`` で、参照画像は
 #   :func:`app.jobs._kie_uploads` が 1 枚ずつ URL 化する。プロンプトからは
-#   ``@要素名`` で呼び、**1 参照が 37 文字**を消費する
+#   ``@要素名`` で呼び、**1 参照が 37 文字**を消費する。こちらは開始フレームとも
+#   ショット割りとも併用できるので、両方のワークフローが宣言する
 #
 # Turbo 系（``kling/v3-turbo-text-to-video`` / ``-image-to-video``）は未対応。
 
@@ -1480,40 +1530,93 @@ KLING_SOUND: tuple[str, ...] = ("false", "true")
 KLING_MAX_PROMPT_CHARS = 500
 
 #: マルチショット（``multi_shots`` / ``multi_prompt``）の宣言
-KLING_MULTI_SHOT = MultiShotSpec(
-    max_shots=5,
-    min_duration=1,
-    max_duration=12,
-    # ショット割りは音つき前提の機能なので、明示指定が無ければ音声を出す
-    select_defaults={"sound": "true"},
-)
+KLING_MULTI_SHOT = MultiShotSpec(max_shots=5, min_duration=1, max_duration=12)
 
 #: Elements（``kling_elements``）の宣言
 KLING_ELEMENTS = ElementsSpec(
     max_elements=3, min_images=2, max_images=4, reference_chars=37
 )
 
+#: 1 ショットの書き方（通常の生成とマルチショットの 1 ショット目で共通）
+_KLING_SHOT_HINT = (
+    "Order: **camera move first**, then scene / subject, action, mood &"
+    " lighting, style. Start with the camera (`Slow dolly push forward, ...`)"
+    " and use exactly one move. Fix the subject's identity (age, hair,"
+    " wardrobe) in the first clause and refer back to it with the *same* words"
+    " — pronouns and synonyms make the character drift. One scene, one action."
+)
+
+#: Elements の書き方（両方のワークフローで共通）
+_KLING_ELEMENTS_HINT = (
+    " **Elements** (`kling_elements`, up to 3, each with 2-4 reference images)"
+    " are named casts you call with `@name` in the text — one `@name` costs"
+    " **37 characters** of the 500, and a name you did not declare is rejected."
+)
+
 KLING_PROMPT_HINT = (
     "**Hard limit: 500 characters** — the API rejects anything longer, so write"
-    " one dense paragraph, not an essay. Order: **camera move first**, then"
-    " scene / subject, action, mood & lighting, style."
-    " Start with the camera (`Slow dolly push forward, ...`) and use exactly one"
-    " move. Fix the subject's identity (age, hair, wardrobe) in the first"
-    " clause and refer back to it with the *same* words — pronouns and synonyms"
-    " make the character drift. One scene, one action."
+    " one dense paragraph, not an essay. " + _KLING_SHOT_HINT +
     " With a start frame, treat the picture as the anchor: write only how it"
     " starts moving and what changes, never re-describe the composition."
     " With `sound` on, label the speaker before the line and describe the voice"
     " (`Woman (raspy, low voice): \"...\"`); Japanese dialogue is lip-synced."
     " There is no negative prompt parameter: write what you do want, and put"
     " unwanted elements as `no text overlays, no camera shake` inside the text."
-    " For a **multi-shot** job (`multi_shots`, up to 5 shots of 1-12 seconds)"
-    " write one such paragraph **per shot** and leave `video_prompt` empty; each"
-    " shot still starts with its camera move and repeats the identity wording."
-    " **Elements** (`kling_elements`, up to 3, each with 2-4 reference images)"
-    " are named casts you call with `@name` in the text — one `@name` costs"
-    " **37 characters** of the 500, and a name you did not declare is rejected."
+    + _KLING_ELEMENTS_HINT
 )
+
+#: マルチショット版のプロンプトの書き方。本文は 1 ショットずつ ``multi_shots`` に
+#: 書き、``video_prompt`` は空のまま（API にも送られない）。
+KLING_MULTISHOT_PROMPT_HINT = (
+    "This workflow takes **shots, not one take**: write every paragraph into"
+    " `multi_shots` (up to 5 shots of 1-12 seconds) and leave `video_prompt`"
+    " empty — a job without shots is rejected."
+    " **Each shot is limited to 500 characters on its own.** " + _KLING_SHOT_HINT
+    + " Repeat the identity wording **verbatim in every shot** (same age, hair,"
+    " wardrobe) and keep the location and the light consistent: that wording is"
+    " the only thing holding the character together across the cuts."
+    " Shots are cuts, not one long move — never carry a camera move across two"
+    " shots, give each one its own."
+    " `sound` is on by default here, so name the ambience per shot; label the"
+    " speaker before a line and describe the voice (`Woman (raspy, low voice):"
+    " \"...\"`). There is no negative prompt parameter: write what you do want,"
+    " and put unwanted elements as `no text overlays` inside the text."
+    + _KLING_ELEMENTS_HINT
+)
+
+#: 開始フレーム・尺・モード・縦横比は 2 本で同じ（違うのは ``sound`` の既定だけ）
+KLING_MODE_SELECT = SelectSpec(
+    label="モード",
+    choices=KLING_MODES,
+    default="pro",
+    hint="std は 720p、pro は 1080p、4K は 4K（pro の約 4 倍の値段）。",
+)
+KLING_DURATION_SELECT = SelectSpec(
+    label="尺（秒）",
+    choices=KLING_DURATIONS,
+    default="5",
+    hint="3〜15 秒。長いほど比例して高い。",
+)
+KLING_ASPECT_SELECT = SelectSpec(
+    label="縦横比",
+    choices=KLING_ASPECT_RATIOS,
+    default="16:9",
+    hint="開始フレーム画像を渡したときは画像の縦横比が優先される。",
+)
+
+#: 2 本で共通の入力（``prompt`` / 開始 + 最終フレーム / Elements / 選択式）
+_KLING_FIELDS: dict[str, str] = {
+    "prompt": "prompt",
+    # 宣言順がそのまま image_urls の並び（1 枚目 = 開始フレーム）
+    "image": "image_urls",
+    "end_image": "image_urls",
+    # Elements（参照画像は _kie_uploads が element_input_urls に直す）
+    "kling_elements": "kling_elements",
+    f"{KIE_SELECT_PREFIX}mode": "mode",
+    f"{KIE_SELECT_PREFIX}duration": "duration",
+    f"{KIE_SELECT_PREFIX}aspect_ratio": "aspect_ratio",
+    f"{KIE_SELECT_PREFIX}sound": "sound",
+}
 
 KLING3_VIDEO = WorkflowSpec(
     id="kling3_video",
@@ -1526,58 +1629,28 @@ KLING3_VIDEO = WorkflowSpec(
         "3〜15 秒と尺が長い。`sound` を on にすると環境音・効果音・セリフ"
         "（日本語のリップシンクつき）まで同時に生成する。画像は任意で、1 枚渡すと"
         "開始フレーム、`end_image` も渡すと開始 + 最終フレームの補間になる。"
-        "**プロンプトは 500 文字まで**。`multi_shots` で最大 5 ショットの"
-        "ショット割り（各 1〜12 秒）、`kling_elements` で `@要素名` 参照の"
-        "キャラクター固定ができる。外部 API なので LoRA は使えない。"
+        "**プロンプトは 500 文字まで**。`kling_elements` で `@要素名` 参照の"
+        "キャラクター固定ができる。ショット割りで作るなら `kling3_multishot`。"
+        "外部 API なので LoRA は使えない。"
     ),
     prompt_hint=KLING_PROMPT_HINT,
     max_prompt_chars=KLING_MAX_PROMPT_CHARS,
     accepts_start_image=True,
     image_label="開始フレーム（任意）",
-    multi_shot=KLING_MULTI_SHOT,
     elements=KLING_ELEMENTS,
     kie=KieTask(
         model="kling-3.0/video",
         # Market 系（統一 API）なので系統は既定のまま
-        fields={
-            "prompt": "prompt",
-            # 宣言順がそのまま image_urls の並び（1 枚目 = 開始フレーム）
-            "image": "image_urls",
-            "end_image": "image_urls",
-            # ショット割り（指定があるときだけ入り、prompt のほうが落ちる）
-            "multi_shots": "multi_shots",
-            "multi_prompt": "multi_prompt",
-            # Elements（参照画像は _kie_uploads が element_input_urls に直す）
-            "kling_elements": "kling_elements",
-            f"{KIE_SELECT_PREFIX}mode": "mode",
-            f"{KIE_SELECT_PREFIX}duration": "duration",
-            f"{KIE_SELECT_PREFIX}aspect_ratio": "aspect_ratio",
-            f"{KIE_SELECT_PREFIX}sound": "sound",
-        },
+        fields=dict(_KLING_FIELDS),
         list_keys=("image_urls",),
-        bool_keys=("sound", "multi_shots"),
+        bool_keys=("sound",),
         # pro / 5 秒 / 音声なしの概算（$0.09/秒 = 90 credits）
         credits=90.0,
     ),
     selects={
-        "mode": SelectSpec(
-            label="モード",
-            choices=KLING_MODES,
-            default="pro",
-            hint="std は 720p、pro は 1080p、4K は 4K（pro の約 4 倍の値段）。",
-        ),
-        "duration": SelectSpec(
-            label="尺（秒）",
-            choices=KLING_DURATIONS,
-            default="5",
-            hint="3〜15 秒。長いほど比例して高い。",
-        ),
-        "aspect_ratio": SelectSpec(
-            label="縦横比",
-            choices=KLING_ASPECT_RATIOS,
-            default="16:9",
-            hint="開始フレーム画像を渡したときは画像の縦横比が優先される。",
-        ),
+        "mode": KLING_MODE_SELECT,
+        "duration": KLING_DURATION_SELECT,
+        "aspect_ratio": KLING_ASPECT_SELECT,
         "sound": SelectSpec(
             label="音声を生成",
             choices=KLING_SOUND,
@@ -1587,9 +1660,71 @@ KLING3_VIDEO = WorkflowSpec(
     },
     notes=(
         "kie.ai 経由 / プロンプトは 500 文字まで / ネガティブプロンプト・seed・"
-        "カメラ制御パラメータは無い（本文で指定） / マルチショットは最大 5 ショット"
-        "（各 1〜12 秒、指定時は音声が既定 ON） / Elements は最大 3 要素"
-        "（各 2〜4 枚、`@要素名` 1 参照 = 37 文字） / Turbo 系は未対応"
+        "カメラ制御パラメータは無い（本文で指定） / Elements は最大 3 要素"
+        "（各 2〜4 枚、`@要素名` 1 参照 = 37 文字） / ショット割りは"
+        " `kling3_multishot`（別ワークフロー） / Turbo 系は未対応"
+    ),
+)
+
+#: Kling 3.0 の**ショット割り**専用ワークフロー。``multi_shots`` があるときは
+#: トップレベルの ``prompt`` を送らない（API 仕様）ので、1 本の ``video_prompt``
+#: で作る :data:`KLING3_VIDEO` とは入力の形そのものが違う。同居させると
+#: 「どちらかにしか意味の無い欄」が両方出てしまうため、宣言ごと分けてある。
+KLING3_MULTISHOT = WorkflowSpec(
+    id="kling3_multishot",
+    label="Kling 3.0 マルチショット（音声つき・外部 API）",
+    kind="video",
+    family="kling",
+    backend="kie",
+    description=(
+        "kie.ai 経由の Kling 3.0 を**ショット割り**で使うワークフロー。"
+        "`multi_shots` に最大 5 ショット（各 1〜12 秒）を並べると 1 本の動画に"
+        "つながる。本文はショット側に書くので **`video_prompt` は空のまま**"
+        "（指定すると 422）、**1 ショットが 500 文字まで**。音声は既定 ON で、"
+        "画像は任意（1 枚で開始フレーム、`end_image` も渡すと最終フレーム）。"
+        "`kling_elements` の `@要素名` はショットをまたいで同じ人物を保つのに効く。"
+        "1 カットで作るなら `kling3_video`。外部 API なので LoRA は使えない。"
+    ),
+    prompt_hint=KLING_MULTISHOT_PROMPT_HINT,
+    max_prompt_chars=KLING_MAX_PROMPT_CHARS,
+    accepts_start_image=True,
+    image_label="開始フレーム（任意）",
+    # 本文はショット側にあるので、トップレベルの `video_prompt` は必須ではない
+    # （書かれていたら `models.multi_shot_problem` が 422 で断る）
+    prompt_required=False,
+    multi_shot=KLING_MULTI_SHOT,
+    elements=KLING_ELEMENTS,
+    kie=KieTask(
+        model="kling-3.0/video",
+        fields={
+            **_KLING_FIELDS,
+            # ショット割り（prompt は task_values が空にするので落ちる）
+            "multi_shots": "multi_shots",
+            "multi_prompt": "multi_prompt",
+        },
+        list_keys=("image_urls",),
+        bool_keys=("sound", "multi_shots"),
+        # pro / 5 秒 / 音声ありの概算（ショット割りは音つきが前提）
+        credits=90.0,
+    ),
+    selects={
+        "mode": KLING_MODE_SELECT,
+        "duration": KLING_DURATION_SELECT,
+        "aspect_ratio": KLING_ASPECT_SELECT,
+        "sound": SelectSpec(
+            label="音声を生成",
+            choices=KLING_SOUND,
+            # ショット割りは音つき前提の機能なので、こちらは既定 ON
+            default="true",
+            hint="ショット割りは音つきが前提なので既定 ON。"
+            "false にすると無音の映像だけを作る。",
+        ),
+    },
+    notes=(
+        "kie.ai 経由 / ショット割り専用（`multi_shots` が必須・`video_prompt` は"
+        "書かない） / 最大 5 ショット・各 1〜12 秒・1 ショット 500 文字まで /"
+        " 音声は既定 ON / Elements は最大 3 要素（各 2〜4 枚、`@要素名` 1 参照 ="
+        " 37 文字） / 1 カットで作るなら `kling3_video`"
     ),
 )
 
@@ -1618,9 +1753,11 @@ KLING3_VIDEO = WorkflowSpec(
 # **マルチモーダル参照**（``reference_image_urls`` / ``reference_video_urls`` /
 # ``reference_audio_urls``）は :attr:`WorkflowSpec.multi_inputs` で宣言する
 # 「複数ファイル -> URL の配列」の入力。API 側では
-# **「先頭フレーム i2v」と「参照モード」が相互排他**なので、両方を指定したジョブは
-# 投入前に 422 で断る（:func:`app.models.reference_problem`）。``full`` は画像
-# ステージが開始フレームを作る = 先頭フレームモードなので、参照素材とは組めない。
+# **「先頭フレーム i2v」と「参照モード」が相互排他**なので、1 つのマニフェストに
+# 両方を宣言せず、**バリアントごとに 2 本**（フレーム版 / 参照版 ``*_ref``）に
+# 分けてある（:func:`_seedance_spec` の ``references``）。参照版は
+# ``accepts_start_image=False`` で開始 / 最終フレームの受け取り口そのものを
+# 持たないので、``full``（画像ステージが開始フレームを作る）でも選べない。
 
 #: Seedance 2.0 の解像度（Mini は 720p まで）
 SEEDANCE_RESOLUTIONS: tuple[str, ...] = ("480p", "720p", "1080p", "4k")
@@ -1649,8 +1786,8 @@ SEEDANCE_MULTI_INPUTS: dict[str, int] = {
 #: プロンプトの長さの上限（kie.ai の Seedance 2 系）
 SEEDANCE_MAX_PROMPT_CHARS = 20000
 
-#: プロンプトの書き方（バリアント間で同じ。違うのは品質と値段と最大解像度だけ）
-SEEDANCE_PROMPT_HINT = (
+#: 演出の書き方（フレーム版・参照版で共通の骨格）
+_SEEDANCE_DIRECTION_HINT = (
     "Write like a director: one dense English paragraph of 60-100 words in the"
     " order **subject (concrete looks) → action (verb + intensity) → setting"
     " (light, atmosphere) → camera (exactly one move) → style → what to avoid**."
@@ -1661,26 +1798,44 @@ SEEDANCE_PROMPT_HINT = (
     " orbit / aerial / handheld / fixed and give it a rhythm word (slow,"
     " smooth, gentle); keep **the subject's motion and the camera's motion in"
     " separate sentences**. For characters, end with a short negative clause"
-    ' such as "avoid jitter and bent limbs". With a start frame, do not'
-    " re-describe what the picture already shows — write how it moves."
-    " **In reference mode** (`reference_images` / `reference_videos` /"
-    " `reference_audios`, which cannot be combined with a start frame) the"
-    " material carries the look: reference images pin **identity and"
-    " consistency** (the same face, wardrobe, prop across shots), a reference"
-    " video is the **motion to imitate** (rhythm, camera behaviour), reference"
-    " audio sets the **mood / musical feel**. Then do not describe what the"
-    " references already show — spend the text on direction: what happens, in"
-    " what order, in which light, with which single camera move."
+    ' such as "avoid jitter and bent limbs".'
 )
 
-#: 画像入力の説明（カタログ・フォームの案内に使う共通文）
+#: プロンプトの書き方（フレーム版。バリアント間で同じ。違うのは品質と値段と
+#: 最大解像度だけ）
+SEEDANCE_PROMPT_HINT = (
+    _SEEDANCE_DIRECTION_HINT
+    + " With a start frame, do not re-describe what the picture already shows —"
+    " write how it moves. With `end_image` as well, describe the *transition*"
+    " that lands exactly on that last frame."
+)
+
+#: プロンプトの書き方（参照版）。素材が見た目を決めるので、演出だけを書かせる。
+SEEDANCE_REFERENCE_PROMPT_HINT = (
+    "The material carries the look: `reference_images` pin **identity and"
+    " consistency** (the same face, wardrobe, prop across shots), a"
+    " `reference_videos` clip is the **motion to imitate** (rhythm, camera"
+    " behaviour), `reference_audios` set the **mood / musical feel**."
+    " **Do not describe what the references already show** — spend the text on"
+    " direction, and refer to the material in words the model can attach"
+    " (`the woman from the reference images`), never by file name. "
+    + _SEEDANCE_DIRECTION_HINT
+)
+
+#: 画像入力の説明（フレーム版のカタログ・フォームの案内に使う共通文）
 _SEEDANCE_INPUTS = (
     "画像は任意で、1 枚渡すと開始フレーム（`first_frame_url`）、`end_image` も"
     "渡すと最終フレーム（`last_frame_url`）になる。"
-    "そのかわりに **マルチモーダル参照**（`reference_images` 最大 9 枚 /"
-    " `reference_videos` 最大 3 本 / `reference_audios` 最大 3 本）を渡すと、"
-    "一貫性・動きのお手本・ムードを素材で指定できる。"
-    "**開始フレームと参照素材は排他**（同時に指定したジョブは拒否される）。"
+    "素材で見た目・動き・ムードを指定したいときは参照版（`*_ref`）を使う。"
+)
+
+#: 参照素材の説明（参照版のカタログ・フォームの案内に使う共通文）
+_SEEDANCE_REFERENCE_INPUTS = (
+    "**マルチモーダル参照**（`reference_images` 最大 9 枚 / `reference_videos`"
+    " 最大 3 本 / `reference_audios` 最大 3 本）で一貫性・動きのお手本・ムードを"
+    "素材から指定する。**開始フレームは受け取らない**（API 側で先頭フレーム "
+    "i2v と排他のモード）ので `mode: \"i2v\"` 専用。開始フレームから作るなら"
+    "フレーム版を使う。"
 )
 
 
@@ -1691,11 +1846,17 @@ def _seedance_spec(
     resolutions: tuple[str, ...],
     credits: float,
     description: str,
+    *,
+    references: bool = False,
 ) -> WorkflowSpec:
     """Seedance 2 系の 1 バリアント分のマニフェスト。
 
     バリアント間で違うのは **モデル名と解像度の選択肢と値段だけ**なので、
     2.5 や Fast を足すときもここを呼ぶエントリを 1 つ書けば済む。
+
+    ``references`` を立てると**参照版**（``*_ref``）になる: 開始 / 最終フレームの
+    受け取り口を持たず、代わりにマルチモーダル参照を宣言する。API 側で 2 つの
+    モードが排他なので、宣言のほうを分けて「使える入力だけが並ぶ」ようにしてある。
     """
     return WorkflowSpec(
         id=spec_id,
@@ -1704,24 +1865,33 @@ def _seedance_spec(
         family="seedance",
         backend="kie",
         description=description,
-        prompt_hint=SEEDANCE_PROMPT_HINT,
+        prompt_hint=(
+            SEEDANCE_REFERENCE_PROMPT_HINT if references else SEEDANCE_PROMPT_HINT
+        ),
         max_prompt_chars=SEEDANCE_MAX_PROMPT_CHARS,
-        accepts_start_image=True,
+        # 参照版は開始フレームを受け取らない（＝ full の 2 段目にもなれない）
+        accepts_start_image=not references,
         image_label="開始フレーム（任意）",
-        multi_inputs=dict(SEEDANCE_MULTI_INPUTS),
+        multi_inputs=dict(SEEDANCE_MULTI_INPUTS) if references else {},
         kie=KieTask(
             model=model,
             # Market 系（統一 API）なので系統は既定のまま
             fields={
                 "prompt": "prompt",
-                # Kling と違い開始 / 最終フレームはキーが別（配列ではない）
-                "image": "first_frame_url",
-                "end_image": "last_frame_url",
-                # マルチモーダル参照: 複数ファイル -> URL の配列（開始フレームとは
-                # 排他なので、実際に両方が入ることはない）
-                "reference_images": "reference_image_urls",
-                "reference_videos": "reference_video_urls",
-                "reference_audios": "reference_audio_urls",
+                **(
+                    {
+                        # マルチモーダル参照: 複数ファイル -> URL の配列
+                        "reference_images": "reference_image_urls",
+                        "reference_videos": "reference_video_urls",
+                        "reference_audios": "reference_audio_urls",
+                    }
+                    if references
+                    else {
+                        # Kling と違い開始 / 最終フレームはキーが別（配列ではない）
+                        "image": "first_frame_url",
+                        "end_image": "last_frame_url",
+                    }
+                ),
                 f"{KIE_SELECT_PREFIX}resolution": "resolution",
                 f"{KIE_SELECT_PREFIX}duration": "duration",
                 f"{KIE_SELECT_PREFIX}aspect_ratio": "aspect_ratio",
@@ -1749,7 +1919,11 @@ def _seedance_spec(
                 label="縦横比",
                 choices=SEEDANCE_ASPECT_RATIOS,
                 default="16:9",
-                hint="adaptive は開始フレーム画像の縦横比に合わせる。",
+                hint=(
+                    "adaptive は参照画像の縦横比に合わせる。"
+                    if references
+                    else "adaptive は開始フレーム画像の縦横比に合わせる。"
+                ),
             ),
             "generate_audio": SelectSpec(
                 label="音声を生成",
@@ -1767,9 +1941,13 @@ def _seedance_spec(
         },
         notes=(
             "kie.ai 経由 / ネイティブ音声つき（既定 ON） / seed・カメラ固定の"
-            "パラメータは無い（本文で指定） / マルチモーダル参照（参照画像 9 枚・"
-            "参照動画 3 本・参照音声 3 本）は開始フレームと排他 /"
-            " 成果物 URL は約 24 時間で失効"
+            "パラメータは無い（本文で指定） / 成果物 URL は約 24 時間で失効"
+            + (
+                " / マルチモーダル参照（参照画像 9 枚・参照動画 3 本・"
+                "参照音声 3 本）専用で開始フレームは受け取らない"
+                if references
+                else " / 素材参照で作るなら `*_ref`（別ワークフロー）"
+            )
         ),
     )
 
@@ -1809,6 +1987,42 @@ SEEDANCE2_MINI = _seedance_spec(
     "kie.ai 経由の ByteDance Seedance 2.0 Mini。2.0 と同じ使い方で最安・"
     "720p まで。試作と大量出し用で、決まったカットを 2.0 で作り直す。"
     f"{_SEEDANCE_INPUTS}外部 API なので LoRA は使えない。",
+)
+
+SEEDANCE2_REF = _seedance_spec(
+    "seedance2_ref",
+    "Seedance 2.0（素材参照・音声つき・外部 API）",
+    "bytedance/seedance-2",
+    SEEDANCE_RESOLUTIONS,
+    60.0,
+    "kie.ai 経由の ByteDance Seedance 2.0 の**素材参照モード**。"
+    f"{_SEEDANCE_REFERENCE_INPUTS}**4K まで**出せる 2 系の本命で、"
+    "外部 API なので LoRA は使えない。",
+    references=True,
+)
+
+SEEDANCE2_FAST_REF = _seedance_spec(
+    "seedance2_fast_ref",
+    "Seedance 2.0 Fast（素材参照・音声つき・外部 API）",
+    "bytedance/seedance-2-fast",
+    SEEDANCE_FAST_RESOLUTIONS,
+    50.0,
+    "kie.ai 経由の ByteDance Seedance 2.0 Fast の**素材参照モード**。"
+    f"{_SEEDANCE_REFERENCE_INPUTS}待ち時間が短く 480p / 720p まで。"
+    "外部 API なので LoRA は使えない。",
+    references=True,
+)
+
+SEEDANCE2_MINI_REF = _seedance_spec(
+    "seedance2_mini_ref",
+    "Seedance 2.0 Mini（素材参照・音声つき・外部 API）",
+    "bytedance/seedance-2-mini",
+    SEEDANCE_MINI_RESOLUTIONS,
+    40.0,
+    "kie.ai 経由の ByteDance Seedance 2.0 Mini の**素材参照モード**。"
+    f"{_SEEDANCE_REFERENCE_INPUTS}最安・720p までで、大量出し用。"
+    "外部 API なので LoRA は使えない。",
+    references=True,
 )
 
 
@@ -2234,11 +2448,16 @@ SPECS: tuple[WorkflowSpec, ...] = (
     LTX_IC_LORA_MOTION,
     WAN_DANCER,
     VEO3_1_FAST,
+    VEO3_1_FAST_REF,
     VEO3_1_QUALITY,
     KLING3_VIDEO,
+    KLING3_MULTISHOT,
     SEEDANCE2,
     SEEDANCE2_FAST,
     SEEDANCE2_MINI,
+    SEEDANCE2_REF,
+    SEEDANCE2_FAST_REF,
+    SEEDANCE2_MINI_REF,
     GROK_IMAGINE_VIDEO,
     ACE_STEP_1_5,
     STABLE_AUDIO_3,
@@ -2397,9 +2616,6 @@ class CatalogEntry:
     #: ``(JobCreate field, 日本語ラベル, 件数の上限)`` of the multi-file reference
     #: inputs it accepts (empty for every workflow without a reference mode)
     reference_inputs: tuple[tuple[str, str, int], ...]
-    #: 参照素材を使うときに固定される選択式（``(名前, 値)``、§3.1）。Veo の
-    #: 素材参照生成は 8 秒しか作れないので ``(("duration", "8"),)``。
-    reference_selects: tuple[tuple[str, str], ...]
     #: 選択式どうしの相関（``(名前, 相手の名前, 相手に必要な値)``、§3.1）。
     #: Suno の ``duration`` は ``model`` が ``V5_5`` のときしか効かない。
     select_requires: tuple[tuple[str, str, str], ...]
@@ -2453,7 +2669,6 @@ def catalog_entry(spec: WorkflowSpec) -> CatalogEntry:
             for name, limit in spec.multi_inputs.items()
             if name in MULTI_INPUT_FIELDS
         ),
-        reference_selects=tuple(spec.reference_selects.items()),
         select_requires=tuple(
             (name, other, needed)
             for name, (other, needed) in spec.select_requires.items()
@@ -2571,19 +2786,12 @@ def _validate_common(spec: WorkflowSpec) -> list[str]:
             )
         if limit < 1:
             problems.append(f"{spec.id}.multi_inputs[{name}]: limit must be >= 1")
-    # 参照素材のときに固定される選択式: 参照入力を持ち、名前と値が実在するか
-    for name, value in spec.reference_selects.items():
-        if not spec.multi_inputs:
-            problems.append(
-                f"{spec.id}.reference_selects[{name}]: no reference inputs"
-            )
-        select = spec.select(name)
-        if select is None:
-            problems.append(f"{spec.id}.reference_selects[{name}]: unknown select")
-        elif value not in select.choices:
-            problems.append(
-                f"{spec.id}.reference_selects[{name}]: {value!r} is not a choice"
-            )
+    # 参照素材のモードは開始フレームと排他なので、同じ宣言に同居させない
+    if spec.multi_inputs and (spec.accepts_start_image or spec.supports("image")):
+        problems.append(
+            f"{spec.id}: reference inputs and a start frame are exclusive"
+            " (declare the reference mode as its own workflow)"
+        )
     # 選択式どうしの相関: 両方の名前が実在し、要求する値が相手の選択肢にあるか
     for name, requirement in spec.select_requires.items():
         other, needed = requirement
@@ -2604,11 +2812,14 @@ def _validate_common(spec: WorkflowSpec) -> list[str]:
             problems.append(f"{spec.id}.multi_shot: max_shots must be >= 1")
         if spec.multi_shot.min_duration > spec.multi_shot.max_duration:
             problems.append(f"{spec.id}.multi_shot: duration range is inverted")
-        for name in spec.multi_shot.select_defaults:
-            if spec.select(name) is None:
-                problems.append(
-                    f"{spec.id}.multi_shot.select_defaults[{name}]: unknown select"
-                )
+        # ショット割りのワークフローでは本文がショット側にあるので、トップレベルの
+        # `video_prompt` を必須にしてはいけない（`models.multi_shot_problem` が
+        # 逆に「書くな」と断る）
+        if spec.prompt_required:
+            problems.append(
+                f"{spec.id}.multi_shot: prompt_required must be False"
+                " (the text lives in the shots)"
+            )
     if spec.elements is not None:
         if not spec.supports("kling_elements"):
             problems.append(f"{spec.id}.elements: no kling_elements injection point")

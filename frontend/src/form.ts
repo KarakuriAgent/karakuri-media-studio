@@ -898,7 +898,9 @@ export function hiddenFields(
     // LoRA チェーンを持たないワークフロー（Wan 系）には挿せないので出さない
     videoLoras: !video || !(workflow?.accepts_video_loras ?? true),
     videoTrigger: !video || !(workflow?.accepts_video_loras ?? true),
-    videoPrompt: !video,
+    // ショット割りのワークフローでは本文がショット側にあるので、トップレベルの
+    // プロンプト欄そのものを出さない（書いても API には送られない）
+    videoPrompt: !video || multiShotLimits(workflow) !== null,
     negative: !video,
     audio: !requires('audio'),
     duration: !supports('duration'),
@@ -988,38 +990,21 @@ export function validateForm(
       `${imageWorkflow?.label ?? '選択中の画像ワークフロー'}は入力画像を編集する` +
       'ワークフローです。参照画像を選択してください。'
   }
-  // マルチモーダル参照（SPEC §3.1）: 先頭フレームと排他で、件数にも上限がある。
-  // どちらもバックエンドが 422 で断るので、送る前に同じ理由をその場で見せる。
+  // マルチモーダル参照（SPEC §3.1）: 参照専用のワークフローだけの入力で、
+  // 件数に上限がある。バックエンドが 422 で断るのと同じ理由をその場で見せる。
   const references = referenceFields(videoWorkflow)
   const used = references.filter((item) => form[item.field].length > 0)
   if (used.length > 0) {
     if (form.mode !== 'i2v') {
       errors.references =
-        '参照素材は「動画生成」モードでだけ使えます（画像＋動画は生成した静止画が' +
-        '開始フレームになるため、参照素材とは併用できません）。'
-    } else if (form.sourceImage || form.endImage) {
-      errors.references =
-        '開始フレーム / 最後のフレームと参照素材は同時に指定できません' +
-        '（外部 API 側で排他のモードです）。どちらかを外してください。'
+        '参照素材のワークフローは「動画生成」モードでだけ使えます' +
+        '（画像＋動画は生成した静止画を開始フレームにするモードです）。'
     }
     for (const item of used) {
       if (form[item.field].length > item.limit) {
         errors[item.name] = `${item.label}は ${item.limit} 件までです（今は ${
           form[item.field].length
         } 件）。`
-      }
-    }
-    // 参照素材のときだけ固定される設定（Veo の素材参照生成は 8 秒しか作れない）。
-    for (const [name, fixed] of Object.entries(
-      videoWorkflow?.reference_selects ?? {},
-    )) {
-      const chosen = form.selects[name]
-      if (chosen && chosen !== fixed) {
-        const label =
-          videoWorkflow?.selects.find((item) => item.name === name)?.label ?? name
-        errors.references =
-          `参照素材を使うときの${label}は ${fixed} 固定です（今は ${chosen}）。` +
-          `${label}を ${fixed} にするか、参照素材を外してください。`
       }
     }
   }
@@ -1033,6 +1018,12 @@ export function validateForm(
   const cost = elementLimits?.reference_chars ?? 0
   const maxChars = videoWorkflow?.max_prompt_chars ?? 0
 
+  // ショット割り専用のワークフローではショットが必須（本文はショット側にある）
+  if (runsVideo && shotLimits && shots.length === 0) {
+    errors.multi_shots =
+      'このワークフローはショット割り専用です。ショットを 1 つ以上' +
+      '追加してください（1 カットで作るなら別のワークフローを選びます）。'
+  }
   if (shots.length > 0 && shotLimits) {
     if (shots.length > shotLimits.max_shots) {
       errors.multi_shots = `ショットは ${shotLimits.max_shots} 個までです（今は ${shots.length} 個）。`
@@ -1083,7 +1074,7 @@ export function validateForm(
     })
     // 宣言していない `@名前` は文字として渡り、しかも文字数だけ消費してしまう
     const bodies = shots.length > 0 ? shots.map((shot) => shot.prompt) : []
-    if (runsVideo) bodies.push(form.videoPrompt)
+    if (runsVideo && !shotLimits) bodies.push(form.videoPrompt)
     for (const reference of bodies.flatMap(elementReferences)) {
       if (!names.includes(reference)) {
         errors.kling_elements =
@@ -1092,10 +1083,11 @@ export function validateForm(
       }
     }
   }
-  // ショット割りを使っているときは本文がショット側にあるので、トップレベルの
-  // プロンプトの長さだけをここで見る（ショット側は上のループで見ている）。
+  // ショット割りのワークフローでは本文がショット側にあり、トップレベルの
+  // プロンプトは送られない（欄そのものが出ない）ので長さも見ない。
   if (
     runsVideo &&
+    !shotLimits &&
     maxChars &&
     form.videoPrompt &&
     promptChars(form.videoPrompt, cost) > maxChars

@@ -48,7 +48,7 @@ import httpx
 from .backends import BackendStatus
 from .config import load_settings
 from .models import GenerationParams, HealthStatus
-from .workflows import KIE_SELECT_PREFIX, MULTI_INPUT_FIELDS, WorkflowSpec
+from .workflows import KIE_SELECT_PREFIX, WorkflowSpec
 
 log = logging.getLogger(__name__)
 
@@ -348,10 +348,10 @@ class VeoTaskApi(TaskApi):
       そのまま並べる（``prompt`` / ``imageUrls`` / ``aspect_ratio`` …）
     - **``generationType`` は渡した画像の枚数で決まる**: 2 枚なら
       「最初と最後のフレーム」、0〜1 枚なら通常生成（1 枚は開始フレーム扱い）。
-      マニフェスト側で固定したいときは ``constants``（常に）か
-      ``reference_constants``（参照素材があるときだけ）に書けばそれが勝つ。
-      素材参照生成（``REFERENCE_2_VIDEO``、参照画像 1〜3 枚）は後者を使う:
-      枚数だけでは「最初と最後のフレーム」と区別が付かないため
+      マニフェスト側で固定したいときは ``constants`` に書けばそれが勝つ。
+      素材参照生成（``REFERENCE_2_VIDEO``、参照画像 1〜3 枚）は枚数だけでは
+      「最初と最後のフレーム」と区別が付かないので、専用ワークフロー
+      （``veo3_1_fast_ref``）の ``constants`` で常に明示している
     - **状態が ``successFlag``**: 0 = 生成中 / 1 = 成功 / 2, 3 = 失敗。成果物は
       ``response.resultUrls`` に入る
     """
@@ -953,11 +953,9 @@ def task_values(
     ComfyUI 側の :mod:`app.workflow` にあたる「注入する値を決める」層。実際の
     キー名は :class:`app.workflows.KieTask` が決めるので、ここはモデルに依らない。
 
-    **ショット割り**（:class:`app.workflows.MultiShotSpec`）を指定したジョブでは、
+    **ショット割り**（:class:`app.workflows.MultiShotSpec`）のワークフローでは、
     本文はショット側にあるので ``prompt`` を空にして送らず、代わりに
-    ``multi_shots``（真偽値）と ``multi_prompt``（配列）を立てる。このとき
-    :attr:`~app.workflows.MultiShotSpec.select_defaults` に挙げた選択式は
-    **明示指定が無ければ**そちらの既定に入れ替わる（Kling の ``sound``）。
+    ``multi_shots``（真偽値）と ``multi_prompt``（配列）を立てる。
     """
     shots = _multi_prompt(spec, params)
     values: dict[str, Any] = {
@@ -975,13 +973,8 @@ def task_values(
         "multi_shots": True if shots else None,
         "multi_prompt": shots,
     }
-    overrides = (
-        spec.multi_shot.select_defaults if shots and spec.multi_shot else {}
-    )
     for name, select in spec.selects.items():
-        chosen = (
-            params.selects.get(name) or overrides.get(name) or select.fallback
-        )
+        chosen = params.selects.get(name) or select.fallback
         values[f"{KIE_SELECT_PREFIX}{name}"] = chosen
     values.update(uploads)
     return values
@@ -1077,10 +1070,6 @@ def task_input(
     キーに向いているとき（Veo の参照画像は開始フレームと同じ ``imageUrls``）は
     リストを**そのまま並べに継ぐ**。空のリストは「指定なし」なのでキーごと落ちる。
 
-    :attr:`~app.workflows.KieTask.reference_constants` は「**参照素材が入って
-    いるときだけ**足す固定値」で、Veo の ``generationType``
-    （``REFERENCE_2_VIDEO``）のように枚数からは決められない切り替えに使う。
-
     ショット割りの ``multi_prompt`` と Elements の ``kling_elements``（Kling）は
     **辞書の配列**で、どちらも組み立て済みの値がそのまま入る
     （:func:`task_values` と :func:`app.jobs._kie_uploads`）。
@@ -1113,12 +1102,6 @@ def task_input(
                 payload[key] = number
         else:
             payload[key] = value
-    # 参照素材が入っているときだけの固定値（Veo の generationType）。枚数からは
-    # 決められない切り替えなので、マニフェストの宣言をここで上書きとして足す。
-    if task.reference_constants and any(
-        values.get(name) for name in MULTI_INPUT_FIELDS
-    ):
-        payload.update(task.reference_constants)
     return payload
 
 

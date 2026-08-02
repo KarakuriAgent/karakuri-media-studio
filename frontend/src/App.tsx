@@ -367,7 +367,12 @@ export default function App() {
         video_workflow: form.videoWorkflow,
         image_workflow: form.imageWorkflow,
         image_prompt: form.mode === 'i2v' ? '' : form.imagePrompt,
-        video_prompt: form.mode === 'image_only' ? '' : form.videoPrompt,
+        // ショット割りのワークフローでは本文がショット側にあるので、
+        // トップレベルのプロンプトは送らない（送ると 422、SPEC §3.1）
+        video_prompt:
+          form.mode === 'image_only' || (runsVideo && workflow?.multi_shot)
+            ? ''
+            : form.videoPrompt,
         negative_prompt: form.negativePrompt,
         aspect_ratio: form.aspectRatio,
         megapixels: form.megapixels,

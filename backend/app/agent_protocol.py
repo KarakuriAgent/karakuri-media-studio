@@ -46,6 +46,7 @@ from .models import (
     prompt_length_problem,
     reference_materials,
     reference_problem,
+    start_image_problem,
     select_problem,
     video_workflow_problem,
 )
@@ -325,22 +326,25 @@ def _workflow_detail(raw: dict[str, Any]) -> str | None:
     if length:
         return f"{length}。`video_prompt` を短く書き直してください"
 
-    # マルチモーダル参照（Seedance 2 系）: 先頭フレームとは排他で、件数にも上限が
-    # ある。VIDEO WORKFLOWS の説明に戻れるよう、理由をそのまま返す。
+    # マルチモーダル参照（参照専用のワークフロー）: 宣言の有無・件数・拡張子と、
+    # 開始フレームを受け取らないワークフローに渡していないか。VIDEO WORKFLOWS の
+    # 説明に戻れるよう、理由をそのまま返す。
     references = reference_problem(
+        mode, workflow, reference_materials(raw)
+    ) or start_image_problem(
         mode,
         workflow,
-        reference_materials(raw),
         source_image=_text(raw.get("source_image")),
         end_image=_text(raw.get("end_image")),
-        selects=raw.get("selects"),
     )
     if references:
         return references
 
     # ショット割りと Elements（Kling）: 件数・尺・`@要素名` の対応まで見る。
     shots = multi_shots_of(raw)
-    structured = multi_shot_problem(mode, workflow, shots) or elements_problem(
+    structured = multi_shot_problem(
+        mode, workflow, shots, video_prompt=_text(raw.get("video_prompt"))
+    ) or elements_problem(
         mode,
         workflow,
         elements_of(raw),
@@ -361,7 +365,6 @@ def _workflow_detail(raw: dict[str, Any]) -> str | None:
             reference_video=_text(raw.get("reference_video")),
             video_workflow=workflow,
             image_workflow=_text(raw.get("image_workflow")),
-            multi_shots=shots,
         )
     except WorkflowSpecError as exc:
         return str(exc)
