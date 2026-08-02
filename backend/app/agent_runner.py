@@ -53,6 +53,7 @@ from .models import (
     JobCreate,
     JobRerun,
 )
+from .paths import rebase_stored_path
 
 log = logging.getLogger(__name__)
 
@@ -505,7 +506,9 @@ def task_label_of_job(session: AgentSession | None, job_id: str) -> str:
 async def _inspect(session_id: str, action: AgentAction) -> None:
     job_id = action.job_id or ""
     job = await jobs.get_job(job_id, include_workflow=False)
-    if job is None or not job.video_path or not Path(job.video_path).is_file():
+    # 記録は絶対パスなので、いまの ROOT に載せ替えてから読む（app.paths）。
+    video = rebase_stored_path(job.video_path or "") if job else None
+    if job is None or not job.video_path or video is None or not video.is_file():
         await _event(
             session_id,
             "inspect_failed",
@@ -516,9 +519,7 @@ async def _inspect(session_id: str, action: AgentAction) -> None:
 
     dest_dir = session_dir(session_id) / f"inspect_{job_id}"
     try:
-        frames = await extract_frames(
-            Path(job.video_path), dest_dir, interval=action.interval
-        )
+        frames = await extract_frames(video, dest_dir, interval=action.interval)
     except jobs.JobError as exc:
         await _event(
             session_id, "inspect_failed", f"フレーム検分に失敗しました: {exc}",
@@ -526,9 +527,10 @@ async def _inspect(session_id: str, action: AgentAction) -> None:
         )
         return
 
-    if job.last_frame_path and Path(job.last_frame_path).is_file():
+    last_frame = rebase_stored_path(job.last_frame_path or "")
+    if job.last_frame_path and last_frame.is_file():
         last = dest_dir / "last_frame.png"
-        last.write_bytes(Path(job.last_frame_path).read_bytes())
+        last.write_bytes(last_frame.read_bytes())
         frames.append(last)
 
     workdir = session_dir(session_id)

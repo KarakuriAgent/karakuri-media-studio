@@ -32,7 +32,7 @@ from .models import (
     LibraryOrigin,
     LibrarySource,
 )
-from .paths import LIBRARY_DIR
+from .paths import LIBRARY_DIR, rebase_stored_path
 
 #: 種別ごとに受け付ける拡張子（routers/assets.py と同じホワイトリスト）
 ALLOWED_EXT: dict[str, set[str]] = {
@@ -359,9 +359,12 @@ def job_output(job: Job, source: str) -> Path:
         )
     attribute, _, label = SOURCES[source]
     path = getattr(job, attribute, None)
-    if not path or not Path(path).is_file():
+    # 記録は絶対パスなので、別のプレフィックスで作られた行でも読めるよう
+    # いまの ROOT に載せ替える（:func:`app.paths.rebase_stored_path`）。
+    origin = rebase_stored_path(path) if path else None
+    if origin is None or not origin.is_file():
         raise LibraryError(f"job {job.id} has no {label}")
-    return Path(path)
+    return origin
 
 
 def default_name(job: Job, source: str) -> str:
@@ -465,7 +468,9 @@ async def add_sheet(
     try:
         sheets.check_count(len(items))
         data = sheets.render_sheet(
-            [(Path(item.path), item.category) for item in items], width, height
+            [(rebase_stored_path(item.path), item.category) for item in items],
+            width,
+            height,
         )
     except sheets.SheetError as exc:
         raise LibraryError(str(exc)) from exc
@@ -536,5 +541,5 @@ async def delete_item(item_id: str) -> bool:
     async with get_db() as conn:
         await conn.execute("DELETE FROM library WHERE id = ?", (item_id,))
         await conn.commit()
-    Path(item.path).unlink(missing_ok=True)
+    rebase_stored_path(item.path).unlink(missing_ok=True)
     return True

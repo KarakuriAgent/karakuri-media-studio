@@ -85,7 +85,7 @@ from .models import (
     video_lora_problem,
     video_workflow_problem,
 )
-from .paths import ASSETS_DIR, LIBRARY_DIR, OUTPUTS_DIR
+from .paths import ASSETS_DIR, LIBRARY_DIR, OUTPUTS_DIR, rebase_stored_path
 from .workflow import (
     build_audio_workflow,
     build_image_workflow,
@@ -177,7 +177,9 @@ def resolve_asset_path(value: str, *, field: str) -> Path:
         if not candidate.is_absolute():
             candidate = ASSETS_DIR / raw
     allowed = [directory.resolve() for directory in roots.values()]
-    resolved = candidate.resolve()
+    # 過去のジョブ（rerun / continue）が持っているパスは別のプレフィックスのことが
+    # あるので、いまの ROOT に載せ替えてから判定する。
+    resolved = rebase_stored_path(candidate).resolve()
     if not any(root in resolved.parents for root in allowed):
         raise JobValidationError(
             f"{field} must point inside {' or '.join(str(root) for root in allowed)}"
@@ -229,7 +231,7 @@ def read_image_size(path: str | Path) -> tuple[int, int] | None:
     to the aspect-ratio preset.
     """
     try:
-        with Image.open(path) as image:
+        with Image.open(rebase_stored_path(path)) as image:
             width, height = image.size
     except (OSError, ValueError) as exc:
         log.warning("could not read image size of %s: %s", path, exc)
@@ -241,10 +243,12 @@ def read_image_size(path: str | Path) -> tuple[int, int] | None:
 
 
 def _output_url(path: str | None) -> str | None:
+    # 記録は絶対パスなので、別のプレフィックスで走らせた行でも `/outputs/…` に
+    # 直せるよう、いまの ROOT に載せ替えてから相対化する（app.paths を参照）。
     if not path:
         return None
     try:
-        return "/outputs/" + Path(path).resolve().relative_to(
+        return "/outputs/" + rebase_stored_path(path).resolve().relative_to(
             OUTPUTS_DIR.resolve()
         ).as_posix()
     except (ValueError, OSError):
@@ -253,7 +257,7 @@ def _output_url(path: str | None) -> str | None:
 
 def copy_into_assets(src: str | Path, kind: str = "image") -> Path:
     """Copy an arbitrary file (e.g. a job's last frame) into ``assets/{kind}/``."""
-    source = Path(src)
+    source = rebase_stored_path(src)
     if not source.is_file():
         raise JobValidationError(f"file not found: {source}")
     dest_dir = ASSETS_DIR / kind
@@ -954,10 +958,11 @@ async def continue_job(
     source = await get_job(job_id)
     if source is None:
         raise LookupError(job_id)
-    if not source.last_frame_path or not Path(source.last_frame_path).is_file():
+    last_frame = rebase_stored_path(source.last_frame_path or "")
+    if not source.last_frame_path or not last_frame.is_file():
         raise JobValidationError("source job has no last frame to continue from")
 
-    start_image = copy_into_assets(source.last_frame_path, "image")
+    start_image = copy_into_assets(last_frame, "image")
 
     prev = dict(source.params)
     video_workflow = _continuable_workflow(
@@ -1543,7 +1548,8 @@ async def _prepare_comfy(job: Job) -> tuple[GenerationParams, dict[str, str]]:
     for field, param_name in _UPLOADS.items():
         path = job.params.get(field)
         if path:
-            uploads[param_name] = await comfy.upload_file(path)
+            # 古いジョブの params は別プレフィックスの絶対パスを持ちうる（§rerun）
+            uploads[param_name] = await comfy.upload_file(rebase_stored_path(path))
 
     overrides = {
         **load_settings().overrides_for(),
@@ -1629,7 +1635,7 @@ async def _kie_uploads(spec: WorkflowSpec, params_dict: dict[str, Any]) -> dict[
             continue
         path = params_dict.get(field)
         if path:
-            uploads[name] = await kie.upload_file(path)
+            uploads[name] = await kie.upload_file(rebase_stored_path(path))
     for name, field in MULTI_INPUT_FIELDS.items():
         if not spec.supports(name):
             continue
@@ -1637,7 +1643,9 @@ async def _kie_uploads(spec: WorkflowSpec, params_dict: dict[str, Any]) -> dict[
         if not isinstance(paths, (list, tuple)) or not paths:
             continue
         uploads[name] = [
-            await kie.upload_file(str(path)) for path in paths if str(path).strip()
+            await kie.upload_file(rebase_stored_path(str(path)))
+            for path in paths
+            if str(path).strip()
         ]
     # Elements（Kling）: 要素ごとに参照画像 2〜4 枚を上げ、API の形
     # ``{"name", "description", "element_input_urls"}`` に組み直す（§3.1）。
@@ -1646,7 +1654,7 @@ async def _kie_uploads(spec: WorkflowSpec, params_dict: dict[str, Any]) -> dict[
         built: list[dict[str, Any]] = []
         for element in params_dict.get("kling_elements") or []:
             urls = [
-                await kie.upload_file(str(path))
+                await kie.upload_file(rebase_stored_path(str(path)))
                 for path in element.get("images") or []
                 if str(path).strip()
             ]
@@ -1838,7 +1846,7 @@ def _grok_inputs(spec: WorkflowSpec, params_dict: dict[str, Any]) -> dict[str, s
             continue
         path = params_dict.get(field)
         if path:
-            inputs[name] = str(path)
+            inputs[name] = str(rebase_stored_path(path))
     return inputs
 
 
