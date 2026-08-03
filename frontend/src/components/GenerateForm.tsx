@@ -13,6 +13,7 @@ import {
   elementsLimits,
   joinTriggers,
   lorasForTarget,
+  matchesLoraQuery,
   multiShotLimits,
   needsReferenceSheet,
   newElement,
@@ -127,14 +128,7 @@ function LoraPicker({
 }) {
   const [pickerOpen, setPickerOpen] = useState(false)
   const [query, setQuery] = useState('')
-  const normalizedQuery = query.trim().toLocaleLowerCase()
-  const visibleLoras = normalizedQuery
-    ? loras.filter((lora) =>
-        [lora.display_name, lora.lora_name, lora.trigger_word].some((value) =>
-          value.toLocaleLowerCase().includes(normalizedQuery),
-        ),
-      )
-    : loras
+  const visibleLoras = loras.filter((lora) => matchesLoraQuery(lora, query))
 
   return (
     <div>
@@ -142,7 +136,15 @@ function LoraPicker({
         <p className="text-xs text-slate-500">{emptyHint}</p>
       ) : (
         <div className="flex flex-wrap items-center gap-2">
-          <button className="btn-ghost text-xs" onClick={() => setPickerOpen(true)}>
+          <button
+            className="btn-ghost text-xs"
+            onClick={() => {
+              // 前回の検索語が残っていると絞り込まれた状態で開いてしまうため、
+              // 開くたびに検索欄をリセットする。
+              setQuery('')
+              setPickerOpen(true)
+            }}
+          >
             LoRAを選ぶ
           </button>
           <span className="rounded-full border border-ink-600 bg-ink-800 px-2 py-1 text-[11px] text-slate-400">

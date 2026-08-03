@@ -6,6 +6,7 @@ import {
   DEFAULT_FAMILY,
   FAMILY_LABELS,
   IMAGE_FAMILIES,
+  matchesLoraQuery,
 } from '../form'
 import type {
   Asset,
@@ -247,18 +248,20 @@ export default function SettingsPage({
   const loraFiles: string[] = options?.lora_files ?? []
   const modelFiles = modelFileMap(options)
   const audioAssets: Asset[] = options?.audio_assets ?? []
-  const normalizedLoraQuery = loraQuery.trim().toLocaleLowerCase()
   const filteredLoras = loras.filter((lora) => {
     const target = lora.target ?? 'image'
     const family = lora.family ?? DEFAULT_FAMILY
     if (loraTargetFilter !== 'all' && target !== loraTargetFilter) return false
-    if (loraFamilyFilter !== 'all' && (target !== 'image' || family !== loraFamilyFilter)) {
+    // 動画用 LoRA にファミリーの区別はない（LTX 2.3 のみ）。対象＝動画用のときに
+    // ファミリーで絞ると必ず 0 件になってしまうので、ファミリー条件は無視する。
+    if (
+      loraTargetFilter !== 'video' &&
+      loraFamilyFilter !== 'all' &&
+      (target !== 'image' || family !== loraFamilyFilter)
+    ) {
       return false
     }
-    if (!normalizedLoraQuery) return true
-    return [lora.display_name, lora.lora_name, lora.trigger_word].some((value) =>
-      value.toLocaleLowerCase().includes(normalizedLoraQuery),
-    )
+    return matchesLoraQuery(lora, loraQuery)
   })
 
   const fail = (caught: unknown) =>
@@ -1177,6 +1180,7 @@ export default function SettingsPage({
                         className="field sm:w-32"
                         aria-label="LoRAのファミリー"
                         value={loraFamilyFilter}
+                        disabled={loraTargetFilter === 'video'}
                         onChange={(event) => setLoraFamilyFilter(event.target.value)}
                       >
                         <option value="all">全ファミリー</option>
@@ -1260,6 +1264,7 @@ export default function SettingsPage({
                             <button
                               className="btn-ghost !px-2 !py-1 text-[11px]"
                               aria-expanded={expanded}
+                              aria-controls={`lora-details-${lora.id}`}
                               onClick={() => setExpandedLoraId(expanded ? null : lora.id)}
                             >
                               {expanded ? '閉じる' : '詳細'}
@@ -1294,7 +1299,10 @@ export default function SettingsPage({
                           </div>
 
                           {expanded && (
-                            <div className="border-t border-ink-700 bg-ink-900/40 px-3 py-2 text-[11px] text-slate-500">
+                            <div
+                              id={`lora-details-${lora.id}`}
+                              className="border-t border-ink-700 bg-ink-900/40 px-3 py-2 text-[11px] text-slate-500"
+                            >
                               <p className="break-all">
                                 trigger: {lora.trigger_word || '（なし）'} / strength:{' '}
                                 {lora.default_strength}

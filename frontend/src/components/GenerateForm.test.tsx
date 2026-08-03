@@ -182,6 +182,22 @@ describe('GenerateForm の LoRA セクション', () => {
     expect(screen.getByRole('button', { name: 'サクラ' })).toBeTruthy()
   })
 
+  it('モーダルを開き直すと検索語はリセットされる', () => {
+    show()
+    openLoraPicker('LoRA（画像）')
+    fireEvent.change(screen.getByPlaceholderText('LoRAを検索'), {
+      target: { value: '見つからない名前' },
+    })
+    expect(screen.getByText('条件に一致するLoRAがありません')).toBeTruthy()
+    closeLoraPicker()
+
+    openLoraPicker('LoRA（画像）')
+    const search = screen.getByPlaceholderText('LoRAを検索') as HTMLInputElement
+    expect(search.value).toBe('')
+    expect(screen.getByRole('button', { name: 'サクラ' })).toBeTruthy()
+    expect(screen.getByText('表示 1 / 全 1')).toBeTruthy()
+  })
+
   it('対象の登録が無ければその旨を出す', () => {
     render(
       <GenerateForm

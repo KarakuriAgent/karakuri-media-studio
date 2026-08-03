@@ -291,6 +291,62 @@ describe('SettingsPage: 環境ごとのモデル / LoRA（SPEC §5）', () => {
     expect(list.textContent).not.toContain('スローモ')
   })
 
+  it('対象=動画用のときファミリー絞り込みは無効になり、動画 LoRA が消えない', async () => {
+    listLoras.mockResolvedValue([
+      loraRow(),
+      {
+        ...loraRow(),
+        id: 2,
+        display_name: 'スローモ',
+        lora_name: 'slowmo-ltx.safetensors',
+        trigger_word: 'slowmotion',
+        target: 'video',
+        family: 'ltx2',
+      },
+      {
+        ...loraRow(),
+        id: 3,
+        display_name: 'セリア',
+        lora_name: 'seria_anima_character_v1_comfy.safetensors',
+        trigger_word: 'seriaanti',
+        target: 'image',
+        family: 'anima',
+      },
+    ])
+    await openSettings()
+    screen.getByRole('button', { name: 'LoRA 管理' }).click()
+    await waitFor(() => screen.getByText('セリア'))
+
+    const list = screen.getByTestId('lora-management-list')
+    // 先にファミリーを指定してから対象を動画用へ切り替える（残ったファミリー
+    // 条件で 0 件にならないこと）
+    fireEvent.change(screen.getByLabelText('LoRAのファミリー'), {
+      target: { value: 'anima' },
+    })
+    await waitFor(() => expect(list.textContent).not.toContain('かおり'))
+
+    fireEvent.change(screen.getByLabelText('LoRAの対象'), {
+      target: { value: 'video' },
+    })
+    await waitFor(() => expect(list.textContent).toContain('スローモ'))
+    expect(list.textContent).not.toContain('かおり')
+    expect(list.textContent).not.toContain('セリア')
+    expect(screen.getByText('表示 1 / 全 3')).toBeTruthy()
+    expect(
+      (screen.getByLabelText('LoRAのファミリー') as HTMLSelectElement).disabled,
+    ).toBe(true)
+
+    // 対象を戻せばファミリー条件が効き、絞り込みも再び使える
+    fireEvent.change(screen.getByLabelText('LoRAの対象'), {
+      target: { value: 'all' },
+    })
+    await waitFor(() => expect(list.textContent).toContain('セリア'))
+    expect(list.textContent).not.toContain('スローモ')
+    expect(
+      (screen.getByLabelText('LoRAのファミリー') as HTMLSelectElement).disabled,
+    ).toBe(false)
+  })
+
   it('[全DL] は選んだ環境の不足モデルを一括で開始する', async () => {
     downloadAllModels.mockResolvedValue({
       started: [],
