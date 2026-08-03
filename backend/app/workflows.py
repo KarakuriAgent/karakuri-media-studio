@@ -23,6 +23,7 @@ a template can never silently break the injector.
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass, field
 from typing import Any, Iterable, Literal
 
@@ -179,6 +180,44 @@ class LoraChain:
     consumers: tuple[Target, ...] = ()
 
 
+#: :data:`MULTI_INPUT_FIELDS` の名前のうち、ComfyUI のグラフに展開できるもの
+#: （:class:`RefImageFan`）。今は参照画像だけ。
+REF_IMAGES_NAME = "reference_images"
+
+
+@dataclass(frozen=True)
+class RefImageFan:
+    """参照画像を**渡された枚数ぶんだけ**グラフに生やす宣言（SPEC §3.1）。
+
+    :class:`LoraChain` と並ぶ「グラフを動的に組み替える」宣言のもう 1 つ。
+    MiniMax H3 の ``MiniMaxH3ReferenceToVideo`` は ``ref_images.ref_image_0``,
+    ``…_1``, … という**可変個の入力**を持ち、繋いだ順にプロンプトから
+    ``<Picture 1>``・``<Picture 2>`` として参照される。テンプレートは 1 枚だけ
+    繋いだ状態で持ち、ビルダー（:func:`app.workflow._build_ref_images`）が
+
+    * テンプレートの雛形 ``LoadImage``（:attr:`loader`）と ``ref_image_*`` の
+      入力をいったん全部落とし、
+    * ジョブが渡した枚数ぶん ``LoadImage`` を作って 0 から順に繋ぎ直す
+
+    という手順で組み直す。0 枚なら入力ごと消えるので、**雛形のファイル名が
+    ComfyUI 側に無くて失敗する**ことがない。
+
+    受け取れる枚数の上限は :attr:`WorkflowSpec.multi_inputs` の
+    ``reference_images``（外部 API の参照モードと同じ仕組み・同じ UI）、下限は
+    :attr:`min_images`。どちらも投入前に :func:`app.models.reference_problem`
+    が見る。
+    """
+
+    #: 参照画像を受け取るノード（可変入力を持つ側。``field`` は使わないので空）
+    node: Target
+    #: テンプレートが持つ雛形の ``LoadImage``（複製元。組み直しのときに消える）
+    loader: Target
+    #: 可変入力の接頭辞。後ろに 0 始まりの番号が付く
+    prefix: str = "ref_images.ref_image_"
+    #: 最低枚数（0 = 参照なしでも走らせてよい）
+    min_images: int = 1
+
+
 #: Model families, one per ``workflow/<kind>/<folder>``.  A registered LoRA is
 #: trained for exactly one family, so the family decides which image workflow a
 #: LoRA may be used with (SPEC §3.4).
@@ -194,6 +233,7 @@ FAMILY_LABELS: dict[str, str] = {
     "gpt-image": "GPT Image 2",
     "ltx2.3": "LTX 2.3",
     "wan": "Wan 2.2",
+    "minimax-h3": "MiniMax H3",
     "ace-step": "ACE-Step 1.5",
     "stable-audio": "Stable Audio 3",
     "veo": "Veo 3.1",
@@ -355,6 +395,50 @@ class MultiShotSpec:
 
 
 @dataclass(frozen=True)
+class FrameGrid:
+    """``frames_expr`` に固定するフレーム数の決め方（SPEC §3.1）。
+
+    動画モデルの latent は時間方向にも圧縮されるので、受け取れるフレーム数は
+    飛び飛びになる。テンプレートの ``ComfyMathExpression`` はその丸めを式で
+    書いているが、アプリは値を Python 側で決めて式に焼き込む
+    （:func:`app.workflow._inject_frame_count`）ので、格子をここで宣言する。
+
+    * LTX 2.3: ``8n + 1``（既定）。要求より**長くならない**よう切り下げる。
+    * MiniMax H3: ``17k + 5`` を 24fps で。ブロック単位でしか作れないので
+      切り上げ、最短は 5 フレーム（``nodes_minimax_h3.py`` の
+      ``align_frame_count(max(5, length))`` と同じ）。
+    """
+
+    #: 格子の間隔（``8`` なら 8 フレームごと）
+    multiple: int = 8
+    #: 格子の位相（``multiple * n + offset``）
+    offset: int = 1
+    #: True なら格子に切り上げ（MiniMax H3）、False なら切り下げ（LTX）
+    round_up: bool = False
+    #: グラフの fps が固定のときその値（0 = ジョブの ``fps`` を使う）
+    fps: int = 0
+    #: フレーム数の下限（0 = 下限なし）
+    minimum: int = 0
+
+    def frames(self, duration: float, fps: int) -> int:
+        """``duration`` 秒をこの格子に載せたフレーム数。"""
+        rate = self.fps or max(1, int(fps))
+        raw = max(0.0, float(duration)) * rate
+        if self.round_up:
+            count = max(self.minimum, int(round(raw)))
+            return count + (self.offset - count) % self.multiple
+        count = math.floor(raw / self.multiple) * self.multiple + self.offset
+        return max(count, self.minimum)
+
+
+#: LTX 2.3 の格子（``8n + 1``）。宣言しないワークフローはこれ。
+LTX_FRAME_GRID = FrameGrid()
+
+#: MiniMax H3 の格子（24fps・``17k + 5``、最短 5 フレーム）
+MINIMAX_H3_FRAME_GRID = FrameGrid(multiple=17, offset=5, round_up=True, fps=24, minimum=5)
+
+
+@dataclass(frozen=True)
 class ElementsSpec:
     """**Elements**（参照画像を名前つきの要素にまとめる）の宣言（§3.1、Kling 3.0）。
 
@@ -447,7 +531,14 @@ class WorkflowSpec:
     #: 解像度で latent エンコードするため、その半分（= 元の 64 の倍数）でないと
     #: latent の形が合わずに実行時に落ちる。
     resolution_multiple: int = 8
+    #: ``frames_expr`` に焼き込むフレーム数の格子（:class:`FrameGrid`）。既定は
+    #: LTX の ``8n + 1``。MiniMax H3 は 24fps の ``17k + 5`` なので宣言し直す。
+    frames: FrameGrid = LTX_FRAME_GRID
     lora_chain: LoraChain | None = None
+    #: 参照画像をグラフに動的に生やす宣言（:class:`RefImageFan`、``None`` = 非対応）。
+    #: 宣言すると ``multi_inputs`` の ``reference_images`` を ComfyUI のグラフでも
+    #: 受け取れるようになる（外部 API の参照モードと同じ入力・同じ UI）。
+    ref_images: RefImageFan | None = None
     notes: str = ""
     seeds: tuple[Target, ...] = ()
     #: extra targets keyed by logical name that are always forced to a constant
@@ -487,6 +578,10 @@ class WorkflowSpec:
         """
         if name in self.inject:
             return True
+        # 参照画像は 1 つの :class:`Target` では表せない（枚数ぶんノードを作る）
+        # ので、宣言そのものを受け取り口として見る
+        if name == REF_IMAGES_NAME and self.ref_images is not None:
+            return True
         if self.kie is not None and name in self.kie.fields:
             return True
         if self.grok is not None and name in self.grok.values:
@@ -502,6 +597,8 @@ class WorkflowSpec:
         別に案内するので外す）。
         """
         names = set(self.inject)
+        if self.ref_images is not None:
+            names.add(REF_IMAGES_NAME)
         if self.kie is not None:
             names |= set(self.kie.fields)
         if self.grok is not None:
@@ -1237,6 +1334,211 @@ WAN_DANCER = WorkflowSpec(
     notes=(
         "wan2.2 global/local の 2 段 UNet + lightx2v LoRA / 既定 720x1280 /"
         " ユーザー LoRA を挿すチェーンは持たない"
+    ),
+)
+
+
+# --------------------------------------------------------------------------
+# video: workflow/video/minimax-h3/*.json
+# --------------------------------------------------------------------------
+#
+# MiniMax H3（https://www.minimax.io/blog/minimax-h3）はテキスト・画像・動画・
+# 音声をまとめて扱う omni-modal モデルで、**映像とステレオ音声を 1 回の
+# forward pass で同時に生成する**（後乗せではない）。ComfyUI 公式テンプレート
+# （https://docs.comfy.org/tutorials/video/minimax/minimax-h3）をそのまま
+# API 形式にしたものが 3 つ:
+#
+# * t2v / i2v は同じ ``MiniMaxH3ImageToVideo`` ノード（``first_frame`` を繋ぐか
+#   どうかだけの違い）で、モデルは fl2va。プロンプトはノードの widget なので
+#   注入先は ``105:104.prompt`` そのもの。
+# * r2v は ``MiniMaxH3ReferenceToVideo``（ref2va の別ウェイト）で、プロンプトは
+#   ``PrimitiveStringMultiline``。
+#
+# グラフの都合で入れ替えた点:
+#
+# * 幅・高さはテンプレートでは ``ResolutionSelector``（115）から来ているが、
+#   アプリは縦横比とメガピクセルから自分で計算した整数を持っている（§3.1）ので、
+#   MiniMaxH3 ノードの ``width`` / ``height`` に直接入れる（115 は宙に浮くが、
+#   ComfyUI は出力に繋がっていないノードを実行しないので害はない）。
+# * 参照画像はテンプレートが 2 枚（``ref_image_0`` / ``ref_image_1``）繋いで
+#   いたが、アプリの論理入力は 1 枚（``image``）しか無く、2 枚目は
+#   「テンプレートに書いてあるファイル名を ComfyUI 側で探して失敗する」だけに
+#   なるので、**テンプレートから 2 枚目の LoadImage を外してある**
+#   （動的にノードを足し引きする仕組みはこのアプリには無い）。
+#
+# CFG を使わない（``BasicGuider``）ので **negative prompt は無い**。禁止事項は
+# プロンプト本文に書かせる。
+
+#: 3 つのワークフローで共通の注意書き（モデルの素性と要件）
+_MINIMAX_H3_NOTES = (
+    "要 ComfyUI 更新（MiniMaxH3 系ノードは新しめの master にしか無い）/"
+    " 24fps 固定・尺は 17k+5 フレームの格子に切り上げ（5 秒 = 124 フレーム、"
+    "学習範囲は約 1〜15 秒）/ 短辺 768px・最大 768x1344 が既定の画角"
+    "（幅高さは 32 の倍数）/ negative prompt は無い（CFG 無しの BasicGuider）/"
+    " ユーザー LoRA を挿すチェーンは持たない"
+)
+
+#: r2v が受け取れる参照画像の枚数（``MiniMaxH3ReferenceToVideo`` の上限そのまま）
+MINIMAX_H3_REFERENCE_IMAGES = 9
+
+#: モデルファイル（t2v / i2v は fl2va、r2v は ref2va。他は共通）
+_MINIMAX_H3_MODELS = (
+    " モデル: minimax_h3_{unet}_pruned_int8_convrot（diffusion_models）+"
+    " minimax_h3_video_vae_fp16 + minimax_h3_audio_vae_fp32 +"
+    " qwen3vl_32b_minimax_h3_nvfp4_awq（text_encoders）"
+)
+
+#: 3 つで共通のプロンプトの書き方（音声込み・1 ブロック・禁止事項を明記）。
+#: 出典: ComfyUI 公式テンプレートの MarkdownNote と作例プロンプト、
+#: https://docs.comfy.org/tutorials/video/minimax/minimax-h3 、
+#: https://www.minimax.io/blog/minimax-h3
+_MINIMAX_H3_PROMPT_CORE = (
+    " Write **one single English block** (no headings, no JSON) in this order:"
+    " (1) style / look — medium, lens, grain, grade; (2) one sentence of scene"
+    " overview; (3) a shot-by-shot timeline with explicit stamps"
+    " (`[0s-1.5s] Shot 1: …`, `[1.5s-3s] Shot 2: …`) whose last stamp reaches"
+    " the job's `duration`; (4) a `Camera:` line — angle per shot, hard cuts or"
+    " one continuous move; (5) an `Audio:` line — H3 generates **native stereo"
+    " sound in the same pass**, so name the ambience, the sound effects and the"
+    " music, and put spoken lines in double quotes with the speaker and the"
+    " delivery. A prompt without an Audio line throws away half the model."
+    " There is **no negative prompt**: finish with the exclusions written out"
+    " as a sentence (`No text, subtitles, logos or watermarks, no cartoon"
+    " rendering.`) — burnt-in captions appear otherwise whenever dialogue is"
+    " spoken."
+)
+
+MINIMAX_H3_T2V = WorkflowSpec(
+    id="minimax_h3_t2v",
+    label="テキスト→動画・音声つき (MiniMax H3 t2v)",
+    kind="video",
+    family="minimax-h3",
+    relpath="video/minimax-h3/minimax_h3_t2v.json",
+    output_node="92",
+    requires=(),
+    description=(
+        "テキストだけから、ステレオ音声つきの動画を生成する（MiniMax H3 fl2va）。"
+        "開始フレームは不要で、画面に写るものも音（セリフ・効果音・音楽）も"
+        "すべてプロンプトで決まる。1 本のプロンプトにショット割りのタイムラインを"
+        "書けば、カット割りのある短いシーンをそのまま作れる。24fps・尺は約 1〜15 秒、"
+        "短辺 768px 前後（最大 768x1344）が想定解像度。"
+    ),
+    prompt_hint=(
+        "No start frame exists: the prompt has to establish the subject, the"
+        " set, the wardrobe and the framing as well as the motion and the"
+        " sound." + _MINIMAX_H3_PROMPT_CORE
+    ),
+    accepts_start_image=False,
+    resolution_multiple=32,
+    frames=MINIMAX_H3_FRAME_GRID,
+    inject={
+        # prompt / width / height はサブグラフを展開した MiniMaxH3ImageToVideo の
+        # widget そのもの（テンプレートでは width / height は 115 から来ている）
+        "prompt": T("105:104", "prompt", "MiniMaxH3ImageToVideo"),
+        "width": T("105:104", "width", "MiniMaxH3ImageToVideo"),
+        "height": T("105:104", "height", "MiniMaxH3ImageToVideo"),
+        "duration": T("105:111", "value", "PrimitiveFloat"),
+        "frames_expr": T("105:107", "", "ComfyMathExpression"),
+        "save_prefix": T("92", "filename_prefix", "SaveVideo"),
+    },
+    seeds=(T("105:15", "noise_seed", "RandomNoise"),),
+    notes=_MINIMAX_H3_NOTES + " /" + _MINIMAX_H3_MODELS.format(unet="fl2va"),
+)
+
+MINIMAX_H3_I2V = WorkflowSpec(
+    id="minimax_h3_i2v",
+    label="画像→動画・音声つき (MiniMax H3 i2v)",
+    kind="video",
+    family="minimax-h3",
+    relpath="video/minimax-h3/minimax_h3_i2v.json",
+    output_node="92",
+    requires=("image",),
+    description=(
+        "開始フレーム画像から、ステレオ音声つきの動画を生成する"
+        "（MiniMax H3 fl2va）。被写体とセットは画像が決め、プロンプトは動き・"
+        "カット割り・音（セリフ・効果音・音楽）を担当する。24fps・尺は約 1〜15 秒。"
+    ),
+    prompt_hint=(
+        "The start frame is frame 0 and supplies the subject, the set and the"
+        " lighting — never contradict it; you may point at it in the text as"
+        " `<Picture 1>` (e.g. `the mouse from <Picture 1> in its original"
+        " scene`). Say that the clip opens exactly on that picture, then spend"
+        " the block on what changes." + _MINIMAX_H3_PROMPT_CORE
+    ),
+    accepts_start_image=True,
+    image_label="開始フレーム",
+    resolution_multiple=32,
+    frames=MINIMAX_H3_FRAME_GRID,
+    inject={
+        "prompt": T("105:104", "prompt", "MiniMaxH3ImageToVideo"),
+        "width": T("105:104", "width", "MiniMaxH3ImageToVideo"),
+        "height": T("105:104", "height", "MiniMaxH3ImageToVideo"),
+        "duration": T("105:111", "value", "PrimitiveFloat"),
+        "frames_expr": T("105:107", "", "ComfyMathExpression"),
+        "image": T("114", "image", "LoadImage"),
+        "save_prefix": T("92", "filename_prefix", "SaveVideo"),
+    },
+    seeds=(T("105:15", "noise_seed", "RandomNoise"),),
+    notes=_MINIMAX_H3_NOTES + " /" + _MINIMAX_H3_MODELS.format(unet="fl2va"),
+)
+
+MINIMAX_H3_R2V = WorkflowSpec(
+    id="minimax_h3_r2v",
+    label="参照画像→動画・音声つき (MiniMax H3 r2v)",
+    kind="video",
+    family="minimax-h3",
+    relpath="video/minimax-h3/minimax_h3_r2v.json",
+    output_node="92",
+    requires=(),
+    description=(
+        f"参照画像 1〜{MINIMAX_H3_REFERENCE_IMAGES} 枚の**見た目（人物・キャラ・"
+        "プロダクトの同一性）を保ったまま**、別のシーン・別の動きの動画を"
+        "ステレオ音声つきで生成する（MiniMax H3 ref2va）。開始フレームとは違い、"
+        "参照画像は 1 枚目の絵ではなく「誰／何を出すか」の指定で、構図・動き・"
+        "カメラ・音はプロンプトが決める。プロンプト中では渡した順に"
+        " `<Picture 1>`・`<Picture 2>` … と呼ぶ。24fps・尺は約 1〜15 秒。"
+    ),
+    prompt_hint=(
+        "The `reference_images` carry identity and look, not the framing: refer"
+        " to them **by tag in the order they were given** — `<Picture 1>`,"
+        " `<Picture 2>`, … (`the boy from <Picture 1> on the rooftop of"
+        " <Picture 2>`) — and say what each one must keep (face, wardrobe,"
+        " colour of the prop). Everything else — scene, blocking, camera,"
+        " sound — comes from the prompt, so do not re-describe the pictures,"
+        " and never use a tag with no picture behind it."
+        + _MINIMAX_H3_PROMPT_CORE
+    ),
+    # 参照モードは「1 枚目の絵」ではないので、image -> video 連鎖の受け口には
+    # しない（生成した静止画を開始フレームとして渡す意味にならない）。開始
+    # フレームの受け取り口そのものを持たないのは、外部 API の参照専用ワーク
+    # フロー（`seedance2_ref` / `veo3_1_fast_ref`）と同じ形。
+    accepts_start_image=False,
+    resolution_multiple=32,
+    frames=MINIMAX_H3_FRAME_GRID,
+    multi_inputs={"reference_images": MINIMAX_H3_REFERENCE_IMAGES},
+    inject={
+        "prompt": T("138", "value", "PrimitiveStringMultiline"),
+        "width": T("136", "width", "MiniMaxH3ReferenceToVideo"),
+        "height": T("136", "height", "MiniMaxH3ReferenceToVideo"),
+        "duration": T("132", "value", "PrimitiveFloat"),
+        "frames_expr": T("131", "", "ComfyMathExpression"),
+        "save_prefix": T("92", "filename_prefix", "SaveVideo"),
+    },
+    # 参照画像は枚数ぶん LoadImage を作って ref_images.ref_image_N に繋ぐ
+    # （テンプレートの 137 はその雛形で、組み立てのときに置き換わる）
+    ref_images=RefImageFan(
+        node=T("136", "", "MiniMaxH3ReferenceToVideo"),
+        loader=T("137", "image", "LoadImage"),
+    ),
+    seeds=(T("129", "noise_seed", "RandomNoise"),),
+    notes=(
+        _MINIMAX_H3_NOTES
+        + f" / 参照画像は 1〜{MINIMAX_H3_REFERENCE_IMAGES} 枚"
+        "（`reference_images`。枚数ぶん LoadImage を作って繋ぐ。プロンプトからは"
+        "渡した順に `<Picture 1>`…で参照する）/ 開始フレームは受け取らない /"
+        " ref_image_size=match（生成解像度に合わせて縮小。max は 2048px 短辺で"
+        "同一性は上がるが数倍遅い）/"
+        + _MINIMAX_H3_MODELS.format(unet="ref2va")
     ),
 )
 
@@ -2447,6 +2749,9 @@ SPECS: tuple[WorkflowSpec, ...] = (
     LTX_IC_LORA_IMAGE,
     LTX_IC_LORA_MOTION,
     WAN_DANCER,
+    MINIMAX_H3_T2V,
+    MINIMAX_H3_I2V,
+    MINIMAX_H3_R2V,
     VEO3_1_FAST,
     VEO3_1_FAST_REF,
     VEO3_1_QUALITY,
@@ -2616,6 +2921,9 @@ class CatalogEntry:
     #: ``(JobCreate field, 日本語ラベル, 件数の上限)`` of the multi-file reference
     #: inputs it accepts (empty for every workflow without a reference mode)
     reference_inputs: tuple[tuple[str, str, int], ...]
+    #: 参照画像の**下限**（0 = 無くても走る）。ComfyUI 側でグラフに展開する
+    #: ワークフロー（MiniMax H3 r2v）だけが 1 以上を持つ。
+    min_reference_images: int
     #: 選択式どうしの相関（``(名前, 相手の名前, 相手に必要な値)``、§3.1）。
     #: Suno の ``duration`` は ``model`` が ``V5_5`` のときしか効かない。
     select_requires: tuple[tuple[str, str, str], ...]
@@ -2668,6 +2976,9 @@ def catalog_entry(spec: WorkflowSpec) -> CatalogEntry:
             (MULTI_INPUT_FIELDS[name], MULTI_INPUT_LABELS[name], limit)
             for name, limit in spec.multi_inputs.items()
             if name in MULTI_INPUT_FIELDS
+        ),
+        min_reference_images=(
+            spec.ref_images.min_images if spec.ref_images is not None else 0
         ),
         select_requires=tuple(
             (name, other, needed)
@@ -3095,6 +3406,48 @@ def validate_spec(spec: WorkflowSpec, template: Workflow | None = None) -> list[
                 problems.append(
                     f"{spec.id}.lora_chain: placeholder {node_id!r} is"
                     f" {node.get('class_type')!r}, expected 'LoraLoaderModelOnly'"
+                )
+
+    # 参照画像の動的展開（:class:`RefImageFan`）: 受け側と雛形が実在し、雛形が
+    # 本当に ``ref_image_*`` に繋がっているか。ここがずれると、組み直しのときに
+    # 雛形が消えずにダミーのファイル名が ComfyUI に残る。
+    if spec.ref_images is not None:
+        fan = spec.ref_images
+        check(fan.node, "ref_images.node")
+        check(fan.loader, "ref_images.loader")
+        if fan.loader.class_type != "LoadImage":
+            problems.append(
+                f"{spec.id}.ref_images.loader: {fan.loader.class_type!r} is not"
+                " a 'LoadImage'"
+            )
+        limit = spec.multi_inputs.get(REF_IMAGES_NAME)
+        if limit is None:
+            problems.append(
+                f"{spec.id}.ref_images: multi_inputs[{REF_IMAGES_NAME!r}] is not"
+                " declared (the app would have no upper bound)"
+            )
+        elif not 0 <= fan.min_images <= limit:
+            problems.append(
+                f"{spec.id}.ref_images: min_images {fan.min_images} is not in"
+                f" 0..{limit}"
+            )
+        if not fan.prefix:
+            problems.append(f"{spec.id}.ref_images: prefix is empty")
+        node = tpl.get(fan.node.node_id)
+        inputs = (node.get("inputs") or {}) if isinstance(node, dict) else {}
+        wired = {
+            key: value for key, value in inputs.items() if key.startswith(fan.prefix)
+        }
+        if not wired:
+            problems.append(
+                f"{spec.id}.ref_images: {fan.node.node_id} has no"
+                f" {fan.prefix}* input"
+            )
+        for key, link in wired.items():
+            if not isinstance(link, list) or len(link) != 2 or link[0] != fan.loader.node_id:
+                problems.append(
+                    f"{spec.id}.ref_images: {fan.node.node_id}.{key} does not read"
+                    f" the loader {fan.loader.node_id!r}"
                 )
 
     if spec.output_node not in tpl:

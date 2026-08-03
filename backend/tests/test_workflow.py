@@ -9,6 +9,7 @@ from app.models import GenerationParams, LoraRef, missing_job_fields, video_work
 from app.workflow import (
     ASPECT_RATIOS,
     LORA_NODE_PREFIX,
+    REF_IMAGE_NODE_PREFIX,
     VIDEO_LORA_NODE_PREFIX,
     WorkflowError,
     all_required_class_types,
@@ -656,7 +657,9 @@ def test_video_injection(workflow_id):
     validate_workflow(wf)
 
     assert value(wf, spec, "prompt") == "VIDEO PROMPT"
-    assert value(wf, spec, "negative") == "NEGATIVE"
+    # CFG を使わないモデル（MiniMax H3）には negative そのものが無い
+    if spec.supports("negative"):
+        assert value(wf, spec, "negative") == "NEGATIVE"
     assert value(wf, spec, "save_prefix") == "video/01JOBID"
     # 1.5 MP @ 16:9, rounded to the grid the workflow's latents need
     assert (value(wf, spec, "width"), value(wf, spec, "height")) == resolution(
@@ -698,6 +701,8 @@ def test_single_seed_is_used_for_every_sampler():
 @pytest.mark.parametrize("workflow_id", VIDEO_IDS)
 def test_empty_negative_keeps_the_template_default(workflow_id):
     spec = get_spec(workflow_id)
+    if not spec.supports("negative"):
+        pytest.skip(f"{workflow_id} has no negative prompt")
     template_value = value(load_template(spec), spec, "negative")
     wf = build_video_workflow(params(video_workflow=workflow_id, negative_prompt="  "))
     assert value(wf, spec, "negative") == template_value
@@ -723,6 +728,71 @@ def test_motion_workflow_slices_the_reference_clip():
     assert not spec.supports("frames_expr")
 
 
+# --- 参照画像の動的展開（RefImageFan、SPEC §3.1）----------------------------
+
+REF_SPEC_ID = "minimax_h3_r2v"
+
+
+def _ref_wf(count: int):
+    spec = get_spec(REF_SPEC_ID)
+    wf = build_video_workflow(
+        params(
+            video_workflow=REF_SPEC_ID,
+            reference_image_names=[f"ref{index}.png" for index in range(count)],
+        )
+    )
+    validate_workflow(wf)
+    return spec, wf
+
+
+@pytest.mark.parametrize("count", [0, 1, 2, 3, 9])
+def test_reference_images_grow_one_loader_each(count):
+    spec, wf = _ref_wf(count)
+    fan = spec.ref_images
+    loaders = sorted(key for key in wf if key.startswith(REF_IMAGE_NODE_PREFIX))
+    assert loaders == [f"{REF_IMAGE_NODE_PREFIX}{i}" for i in range(count)]
+    # 渡した順に ref_image_0, _1, … へ繋がる（プロンプトの <Picture N> の順）
+    inputs = wf[fan.node.node_id]["inputs"]
+    for index in range(count):
+        node_id = f"{REF_IMAGE_NODE_PREFIX}{index}"
+        assert wf[node_id]["class_type"] == "LoadImage"
+        assert wf[node_id]["inputs"]["image"] == f"ref{index}.png"
+        assert inputs[f"{fan.prefix}{index}"] == [node_id, 0]
+    # 未指定ぶんの入力は残らない（雛形のファイル名で失敗しないように）
+    assert len([k for k in inputs if k.startswith(fan.prefix)]) == count
+    # テンプレートの雛形 LoadImage は必ず消える
+    assert fan.loader.node_id not in wf
+
+
+def test_one_reference_image_matches_the_single_input_case():
+    """1 枚のときはテンプレートと同じ形（ref_image_0 に 1 本だけ）。"""
+    spec, wf = _ref_wf(1)
+    template = load_template(spec)
+    fan = spec.ref_images
+    before = [k for k in template[fan.node.node_id]["inputs"] if k.startswith(fan.prefix)]
+    after = [k for k in wf[fan.node.node_id]["inputs"] if k.startswith(fan.prefix)]
+    assert before == after == [f"{fan.prefix}0"]
+
+
+def test_surplus_reference_images_are_dropped():
+    """宣言した上限を超えたぶんは繋がない（投入前に 422 になるので最後の砦）。"""
+    spec, wf = _ref_wf(12)
+    limit = spec.multi_inputs["reference_images"]
+    assert limit == 9
+    assert len([k for k in wf if k.startswith(REF_IMAGE_NODE_PREFIX)]) == limit
+
+
+def test_only_the_declared_workflow_grows_reference_loaders():
+    """宣言の無いワークフローに参照画像を渡してもグラフは変わらない。"""
+    for workflow_id in VIDEO_IDS:
+        if get_spec(workflow_id).ref_images is not None:
+            continue
+        wf = build_video_workflow(
+            params(video_workflow=workflow_id, reference_image_names=["ref0.png"])
+        )
+        assert not [key for key in wf if key.startswith(REF_IMAGE_NODE_PREFIX)]
+
+
 # --- frame count rounding --------------------------------------------------
 
 @pytest.mark.parametrize(
@@ -743,6 +813,25 @@ def test_ltx_frame_count(duration, fps, expected):
     assert frames <= duration * fps + 1
 
 
+@pytest.mark.parametrize(
+    ("duration", "expected"),
+    [
+        (5, 124),     # 5s * 24fps = 120 -> 17*7 + 5
+        (1, 39),      # 24 -> 17*2 + 5
+        (0.1, 5),     # 2.4 -> the 5-frame floor of the node
+        (15, 362),    # 360 -> 17*21 + 5 (the top of the trained range)
+        (6, 158),
+    ],
+)
+def test_minimax_h3_frame_count(duration, expected):
+    """MiniMax H3 は 24fps 固定で 17k+5 に**切り上げ**（ジョブの fps は見ない）。"""
+    grid = get_spec("minimax_h3_t2v").frames
+    frames = grid.frames(duration, fps=25)
+    assert frames == expected
+    assert frames % 17 == 5 % 17
+    assert frames >= duration * 24
+
+
 @pytest.mark.parametrize("workflow_id", VIDEO_IDS)
 def test_frame_expression_is_pinned(workflow_id):
     spec = get_spec(workflow_id)
@@ -752,7 +841,8 @@ def test_frame_expression_is_pinned(workflow_id):
     template_inputs = load_template(spec)[node_id]["inputs"]
     wf = build_video_workflow(params(video_workflow=workflow_id, duration=10, fps=25))
     got = wf[node_id]["inputs"]
-    assert got["expression"].endswith("249")
+    # LTX は 8n+1 を 25fps で、MiniMax H3 は 17k+5 を 24fps 固定で
+    assert got["expression"].endswith(str(spec.frames.frames(10, 25)))
     # the value links are untouched, so the graph shape does not change
     for key, link in template_inputs.items():
         if key.startswith("values."):

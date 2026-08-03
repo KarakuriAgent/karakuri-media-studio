@@ -1488,3 +1488,74 @@ async def test_probe_media_duration_survives_an_unreadable_file(tmp_path):
     broken = tmp_path / "broken.mp3"
     broken.write_bytes(b"not audio")
     assert await jobs.probe_media_duration(broken) is None
+
+
+# --------------------------------------------------------------------------
+# 参照画像を複数取るワークフロー（SPEC §3.1、MiniMax H3 r2v）
+# --------------------------------------------------------------------------
+
+REF_WORKFLOW = "minimax_h3_r2v"
+
+
+def _ref_assets(env, count: int) -> list[str]:
+    """assets/image に参照画像を置いて、その `/assets/...` URL を返す。"""
+    urls = []
+    for index in range(count):
+        path = env.assets / "image" / f"ref{index}.png"
+        path.write_bytes(b"PNG")
+        urls.append(f"/assets/image/ref{index}.png")
+    return urls
+
+
+def ref_body(env, count: int, **overrides) -> dict:
+    body = {
+        "mode": "i2v",
+        "video_workflow": REF_WORKFLOW,
+        "video_prompt": "The boy from <Picture 1> leaps off the roof.",
+        "reference_images": _ref_assets(env, count),
+    }
+    body.update(overrides)
+    return body
+
+
+@pytest.mark.parametrize("count", [1, 3])
+def test_reference_images_are_uploaded_and_wired(env, count):
+    created = env.client.post("/api/jobs", json=ref_body(env, count))
+    assert created.status_code == 201, created.text
+    job = wait_for(env.client, created.json()["id"])
+    assert job["status"] == "done", job["error"]
+
+    # 1 枚ずつ ComfyUI に上がる
+    uploaded = [Path(path).name for path in env.comfy.uploads]
+    assert [f"ref{index}.png" for index in range(count)] == uploaded
+
+    graph = graph_with(env, "136")
+    loaders = sorted(key for key in graph if key.startswith("app_ref_image_"))
+    assert len(loaders) == count
+    for index in range(count):
+        node_id = f"app_ref_image_{index}"
+        assert graph[node_id]["inputs"]["image"] == f"ref{index}.png"
+        assert graph["136"]["inputs"][f"ref_images.ref_image_{index}"] == [node_id, 0]
+    # 雛形の LoadImage はグラフに残らない
+    assert "137" not in graph
+
+
+def test_the_reference_workflow_needs_at_least_one_image(env):
+    answer = env.client.post("/api/jobs", json=ref_body(env, 0))
+    assert answer.status_code == 422
+    assert "reference_images" in answer.text
+
+
+def test_the_reference_workflow_takes_no_start_frame(env):
+    answer = env.client.post(
+        "/api/jobs",
+        json=ref_body(env, 1, source_image=str(env.start_image)),
+    )
+    assert answer.status_code == 422
+    assert "source_image" in answer.text
+
+
+def test_too_many_reference_images_are_422(env):
+    answer = env.client.post("/api/jobs", json=ref_body(env, 10))
+    assert answer.status_code == 422
+    assert "9 件" in answer.text

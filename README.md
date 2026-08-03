@@ -1,6 +1,6 @@
 # Karakuri Media Studio
 
-`workflow/` 配下の ComfyUI ワークフロー（画像 4 種 / 動画 8 種 / 音声 2 種）を Web UI から実行し、
+`workflow/` 配下の ComfyUI ワークフロー（画像 4 種 / 動画 11 種 / 音声 2 種）を Web UI から実行し、
 プロンプト作成を Grok に委譲、生成物と履歴をローカルに保存する個人利用向けのメディア生成アプリです。
 
 ![生成画面](docs/images/screen-image.png)
@@ -151,7 +151,7 @@ WebSocket で右ペインにリアルタイム表示され、完了すると生�
 
 **画像**は Krea 2 turbo（既定）/ Anima / Z-Image turbo / Qwen-Image Edit 2511（画像編集。参照画像必須）から選びます。
 
-**動画**は LTX 2.3 の 7 種と Wan Dancer から選び、必要な入力の欄だけが出ます。
+**動画**は LTX 2.3 の 7 種・Wan Dancer・MiniMax H3 の 3 種から選び、必要な入力の欄だけが出ます。
 
 | ワークフロー | 必要な入力 |
 |---|---|
@@ -163,6 +163,12 @@ WebSocket で右ペインにリアルタイム表示され、完了すると生�
 | リファレンスシート (IC-LoRA) | リファレンスシート画像 |
 | 参照動画からモーション転写 (IC-LoRA + MoGe) | 開始フレーム / 参照動画 |
 | 画像+音声→ダンス動画 (Wan Dancer) | 開始フレーム / 音声 |
+| テキスト→動画・音声つき (MiniMax H3 t2v) | なし |
+| 画像→動画・音声つき (MiniMax H3 i2v) | 開始フレーム |
+| 参照画像→動画・音声つき (MiniMax H3 r2v) | 参照画像 1〜9 枚 |
+
+MiniMax H3 の 3 種は映像とステレオ音声（台詞・効果音・音楽）を同時生成します。
+実行には MiniMaxH3 ノードを含む新しめの ComfyUI 本体が必要です（SPEC §2.2）。
 
 **音声**は ACE-Step 1.5 XL（歌もの・インスト。歌詞や BPM を指定）と
 Stable Audio 3 Medium（効果音・環境音・単一楽器）の 2 種です。

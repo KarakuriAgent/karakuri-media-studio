@@ -89,6 +89,9 @@
 | `ltx2_3_ic_lora_image` | リファレンスシート (IC-LoRA) | distilled-fp8 + ingredients IC-LoRA | リファレンスシート画像 | ✕ |
 | `ltx2_3_ic_lora_motion` | 参照動画からモーション転写 (IC-LoRA + MoGe) | distilled-fp8 + union-control IC-LoRA | 画像・参照動画 | ○ |
 | `wan_dancer` | 画像+音声→ダンス動画 (Wan Dancer) | wan2.2 global/local 2 段 + lightx2v | 画像・音声 | ○ |
+| `minimax_h3_t2v` | テキスト→動画・音声つき (MiniMax H3 t2v) | minimax_h3 fl2va int8 | なし | ✕ |
+| `minimax_h3_i2v` | 画像→動画・音声つき (MiniMax H3 i2v) | minimax_h3 fl2va int8 | 画像 | ○ |
+| `minimax_h3_r2v` | 参照画像→動画・音声つき (MiniMax H3 r2v) | minimax_h3 ref2va int8 | `reference_images` 1〜9 枚（開始フレームは不可） | ✕ |
 | `veo3_1_fast` | Veo 3.1 Fast（音声つき・外部 API） | kie.ai `veo3_fast` | なし（画像・最終フレーム画像は任意） | ○ |
 | `veo3_1_fast_ref` | Veo 3.1 Fast 素材参照（音声つき・外部 API） | kie.ai `veo3_fast` | なし（参照画像は任意・開始フレームは不可） | ✕ |
 | `veo3_1_quality` | Veo 3.1 Quality（音声つき・外部 API） | kie.ai `veo3` | なし（画像・最終フレーム画像は任意） | ○ |
@@ -107,6 +110,17 @@
   プロンプトは自由記述ではなく**選択式フィールド**（§3.1）で決まる。`video_prompt` は任意で、書けば Global 側の
   テンプレ文（`<dance style>` を含められる）を差し替える。ユーザー LoRA を挿すチェーンは持たないので、
   動画 LoRA を指定したジョブは 422 になり、フォームは LoRA（動画）欄を出さない
+- **`minimax_h3_*`（`workflow/video/minimax-h3/`、family `minimax-h3`）** は**映像とステレオ音声を同時に生成する**
+  ローカルモデル（MiniMax H3）。プロンプト 1 ブロックに「スタイル → シーン概要 → `[0s-1.5s]` 形式のショット
+  タイムライン → `Camera:` → `Audio:`（セリフ・SFX・音楽）→ 禁止事項」を書くと、1 本の中でカットを割れる。
+  CFG を使わない（`BasicGuider`）ので **negative prompt は無く**、除外したいものは本文に書く。24fps 固定で、
+  尺は 17k+5 フレームの格子に**切り上げ**（`FrameGrid`、5 秒 = 124 フレーム）。既定の画角は短辺 768px
+  （最大 768x1344・32 の倍数）なので `megapixels` は 0.4 前後。`minimax_h3_r2v` の画像入力は開始フレームでは
+  なく**同一性の参照**で、他の参照専用ワークフロー（`*_ref`）と同じ `reference_images`（1〜9 枚）で受け取り、
+  プロンプトからは渡した順に `<Picture 1>`・`<Picture 2>` … で参照する。**枚数ぶんの `LoadImage` は
+  ビルダーがグラフに生やす**（`RefImageFan`、下記）。ユーザー LoRA を挿すチェーンは持たない。
+  MiniMaxH3 系ノードは新しめの ComfyUI master にしか無いので、ヘルスチェックが「custom node なし」と出たら
+  ComfyUI を更新する
 - **`veo3_1_fast` / `veo3_1_quality`（family `veo`、backend `kie`）** はテンプレートを持たない**外部 API**の
   ワークフロー（§5.2）。映像と**音声（環境音・効果音・セリフ）を同時に生成**し、尺 4/6/8 秒・縦横比 16:9 / 9:16・
   解像度 720p（既定）/ 1080p / 4k を**選択式フィールド**（§3.1）で選ぶ（`resolution` は generate API が
@@ -332,6 +346,23 @@ LoRA チェーンも持たない（テンプレートに LoRA ノードが無い
 （`models.reference_problem`）。検証は Web UI（`form.validateForm` + `jobs._validate`）・
 API（`JobCreate` の検証）・エージェント（`agent_protocol._workflow_detail`）の 3 経路で同じ関数を通る。
 素材のサイズ・解像度・尺の細かい制約は外部 API の判断に任せ、失敗理由をそのまま見せる。
+
+##### ComfyUI 側で参照画像をグラフに展開する（`WorkflowSpec.ref_images` / `RefImageFan`）
+
+同じ `reference_images` を**ローカルのグラフ**で受け取るための宣言（MiniMax H3 r2v）。外部 API は URL の
+配列を渡すだけで済むが、ComfyUI は 1 枚 = 1 ノードなので、**渡された枚数ぶん `LoadImage` を作って繋ぐ**
+必要がある。`RefImageFan(node=…, loader=…, prefix="ref_images.ref_image_", min_images=1)` を宣言すると、
+`workflow._build_ref_images` が
+
+1. テンプレートの雛形 `LoadImage`（`loader`）と、受け側ノードの `ref_image_*` の入力を**いったん全部落とし**、
+2. ジョブが渡した枚数ぶん `app_ref_image_<n>` を作って `ref_image_0`, `ref_image_1`, … に繋ぎ直す
+
+（LoRA チェーン §3.4 と同じ「テンプレートを雛形として組み替える」やり方）。0 枚なら可変入力ごと消えるので、
+**雛形のファイル名が ComfyUI 側に無くて落ちる**ことがない。並び順は指定した順で、プロンプトの
+`<Picture 1>` / `<Picture 2>` … がその順に対応する。上限は `multi_inputs["reference_images"]`（単一情報源）、
+下限は `min_images`（`models.reference_problem` が 0 枚を 422 にする）。ファイルは他の入力と同じく
+`jobs._prepare_comfy` が 1 枚ずつ `/upload/image` に上げ、その名前が `GenerationParams.reference_image_names`
+に並ぶ。マニフェストの検証は「受け側と雛形が実在し、雛形が本当に `ref_image_*` に繋がっているか」まで見る。
 
 #### 構造化パラメータ: マルチショット（`WorkflowSpec.multi_shot`）と Elements（`WorkflowSpec.elements`）
 
@@ -1281,6 +1312,7 @@ workflow/           ComfyUI ワークフロー（API フォーマット）テン
   image/            krea2/ anima/ z-image/ qwen-image/（モデルファミリーごと）
   video/ltx2.3/     t2v / i2v / ia2v / id_lora / flf2v / ic_lora_image / ic_lora_motion
   video/wan/        wan_dancer（画像+音声→ダンス動画）
+  video/minimax-h3/ minimax_h3_t2v / minimax_h3_i2v / minimax_h3_r2v（音声つき）
   audio/            ace_step1_5_xl_sft.json / stable_audio_3_medium_base.json
 app.db              SQLite（jobs / loras / library / chat_sessions / agent_sessions）
 outputs/            生成物（/outputs で静的配信）

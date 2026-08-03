@@ -26,6 +26,8 @@ from typing import Any
 
 from .models import GenerationParams, LoraRef, ModelField, ModelSlot
 from .workflows import (
+    LTX_FRAME_GRID,
+    REF_IMAGES_NAME,
     LoraChain,
     Target,
     Workflow,
@@ -43,6 +45,8 @@ from .workflows import (
 LORA_NODE_PREFIX = "app_lora_"
 #: node id prefix of the video (LTX 2.3) LoRA chain
 VIDEO_LORA_NODE_PREFIX = "app_video_lora_"
+#: node id prefix of the dynamic reference-image loaders (MiniMax H3 r2v)
+REF_IMAGE_NODE_PREFIX = "app_ref_image_"
 
 # --- model file inputs (SPEC §3.3) -----------------------------------------
 # (class_type, input field) pairs whose value is a model file name on the
@@ -94,8 +98,8 @@ MODEL_SUBFOLDERS: dict[tuple[str, str], str] = {
 }
 
 # LTX latent temporal compression: the number of frames handed to
-# EmptyLTXVLatentVideo must satisfy frames == 8n + 1.
-LTX_FRAME_MULTIPLE = 8
+# EmptyLTXVLatentVideo must satisfy frames == 8n + 1 (workflows.LTX_FRAME_GRID).
+LTX_FRAME_MULTIPLE = LTX_FRAME_GRID.multiple
 
 # ResolutionSelector rounds the computed edges to a multiple of 8
 # (comfy_extras/nodes_resolution.py).
@@ -212,8 +216,7 @@ def ltx_frame_count(duration: float, fps: int) -> int:
     ``a * b + 1`` happily produces e.g. 251 for 10s @ 25fps, which is rejected /
     silently truncated downstream, so the app rounds the count down here.
     """
-    raw = max(0.0, float(duration)) * max(1, int(fps))
-    return math.floor(raw / LTX_FRAME_MULTIPLE) * LTX_FRAME_MULTIPLE + 1
+    return LTX_FRAME_GRID.frames(duration, fps)
 
 
 def _inject_frame_count(wf: Workflow, spec: WorkflowSpec, params: GenerationParams) -> None:
@@ -223,7 +226,8 @@ def _inject_frame_count(wf: Workflow, spec: WorkflowSpec, params: GenerationPara
     value is computed in Python and the expression rewritten as
     ``a * 0 + b * 0 + <frames>``.  The node keeps all of its incoming links — so
     the graph stays structurally identical and its output types are unchanged —
-    while the value is exactly the 8n+1 count we want.
+    while the value is exactly the count the model's latent grid accepts
+    (:class:`app.workflows.FrameGrid`: LTX is 8n+1, MiniMax H3 is 17k+5 @ 24fps).
     """
     target = spec.target("frames_expr")
     if target is None:
@@ -231,7 +235,7 @@ def _inject_frame_count(wf: Workflow, spec: WorkflowSpec, params: GenerationPara
     node = _node(wf, target)
     if node is None:
         return
-    frames = ltx_frame_count(params.duration, params.fps)
+    frames = spec.frames.frames(params.duration, params.fps)
     inputs = node.setdefault("inputs", {})
     zeroed = [f"{key.split('.', 1)[1]} * 0" for key in inputs if key.startswith("values.")]
     inputs["expression"] = " + ".join([*zeroed, str(frames)])
@@ -610,6 +614,50 @@ def _build_lora_chain(
         _set(wf, consumer.node_id, consumer.field, upstream)
 
 
+def _build_ref_images(
+    wf: Workflow, spec: WorkflowSpec, names: list[str]
+) -> list[str]:
+    """Grow one ``LoadImage`` per reference image and wire them up (SPEC §3.1).
+
+    The mirror image of :func:`_build_lora_chain` for the reference inputs of
+    MiniMax H3 r2v (:class:`app.workflows.RefImageFan`): the template's single
+    placeholder loader and **all** of its ``ref_image_*`` links are dropped, then
+    one loader per uploaded file is created and connected as ``ref_image_0``,
+    ``ref_image_1``, …  The order is the order the job lists them in, which is
+    what the prompt's ``<Picture 1>`` / ``<Picture 2>`` tags refer to.
+
+    Nothing to connect means the variable inputs disappear entirely — the node
+    accepts zero references, and leaving the placeholder behind would make
+    ComfyUI look for a file name that only exists in the template.
+
+    Returns the file names it actually wired (the surplus over the declared
+    limit is dropped; the request is refused long before this by
+    :func:`app.models.reference_problem`).
+    """
+    fan = spec.ref_images
+    if fan is None:
+        return []
+    node = _node(wf, fan.node)
+    if node is None:
+        return []
+    inputs = node.setdefault("inputs", {})
+    for key in [key for key in inputs if key.startswith(fan.prefix)]:
+        del inputs[key]
+    wf.pop(fan.loader.node_id, None)
+
+    limit = spec.multi_inputs.get(REF_IMAGES_NAME, len(names))
+    picked = [name for name in names if name][:limit]
+    for index, image in enumerate(picked):
+        node_id = f"{REF_IMAGE_NODE_PREFIX}{index}"
+        wf[node_id] = {
+            "class_type": fan.loader.class_type,
+            "_meta": {"title": f"参照画像 {index + 1}（<Picture {index + 1}>）"},
+            "inputs": {fan.loader.field: image},
+        }
+        inputs[f"{fan.prefix}{index}"] = [node_id, 0]
+    return picked
+
+
 # --------------------------------------------------------------------------
 # validation
 # --------------------------------------------------------------------------
@@ -758,6 +806,8 @@ def build_video_workflow(
     _inject(wf, resolved, "end_image", params.end_image_name)
     _inject(wf, resolved, "audio", params.audio_name)
     _inject(wf, resolved, "video", params.reference_video_name)
+    # 参照画像は 1 つの注入点では表せない: 渡された枚数ぶんノードを生やす（§3.1）
+    _build_ref_images(wf, resolved, list(params.reference_image_names))
     _build_lora_chain(
         wf, resolved.lora_chain, params.video_loras, prefix=VIDEO_LORA_NODE_PREFIX
     )

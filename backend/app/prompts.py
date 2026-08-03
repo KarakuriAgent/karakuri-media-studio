@@ -531,12 +531,19 @@ def _catalog_entry_lines(entry: CatalogEntry) -> list[str]:
     if entry.optional_inputs:
         lines.append("  - 任意入力: " + _inputs_text(entry.optional_inputs))
     if entry.reference_inputs:
+        minimum = (
+            f"。参照画像は**{entry.min_reference_images} 枚以上必須**"
+            "（0 枚のジョブは拒否されます）"
+            if entry.min_reference_images
+            else ""
+        )
         lines.append(
             "  - 参照素材（複数指定・このワークフローの主入力）: "
             + ", ".join(
                 f"`{field}`（{label}・最大 {limit} 件）"
                 for field, label, limit in entry.reference_inputs
             )
+            + minimum
             + "。**開始フレームは受け取らない**ので `mode: \"i2v\"` 専用で、"
             "`source_image` / `end_image` を書いたジョブは拒否されます"
         )
@@ -1107,9 +1114,119 @@ Grok subscription quota as the chat (roughly 10 videos a day), so plan large
 batches over several days.
 """
 
+# MiniMax H3（ローカル ComfyUI）— 出典:
+# * ComfyUI 公式テンプレート（video_minimax_h3_{t2v,i2v,r2v}）の MarkdownNote と
+#   同梱の作例プロンプト
+# * https://docs.comfy.org/tutorials/video/minimax/minimax-h3
+# * https://www.minimax.io/blog/minimax-h3（native stereo audio / 2K・15 秒・
+#   参照によるアイデンティティ保持）
+
+#: t2v / i2v / r2v で共通の骨格（1 ブロック・タイムライン・音声・禁止事項）
+_MINIMAX_H3_GUIDE_BODY = """\
+Write `video_prompt` as **one single English block** — no headings, no JSON, no
+bullet list — in this order:
+
+1. **Style / look** — medium and grade in one clause
+   (`Realistic live-action cinematic look, anamorphic lens, film grain,
+   restrained grading`). Anime, comic-ink and product-film looks work too; say
+   which one.
+2. **Scene overview** — one sentence: where, who, what is happening.
+3. **Timeline of shots** — the part that makes H3 different from a one-take
+   model. Give each shot its own stamped line, in order, and let the last stamp
+   reach the job's `duration`:
+   `[0s-1.5s] Shot 1: high side angle, he sprints along the roof edge …`
+   `[1.5s-3s] Shot 2: he leaps the gap, slight slow-motion …`
+   `SHOT 1: / CUT 2:` prefixes work as well when the timing is loose.
+4. **Camera** — one `Camera:` line: the angle per shot, whether the cuts are
+   hard (`clean hard cuts, no dissolves`) or it is one continuous move.
+5. **Audio** — one `Audio:` line. H3 models **native stereo sound in the same
+   forward pass** as the picture, so this is half the model: name the ambience,
+   the sound effects and the music, and where they hit
+   (`an accent hit on each leap, the score bursting at 4s`). Spoken lines go in
+   double quotes with the speaker and the delivery
+   (`the woman says, breathless: "Don't stop."`).
+6. **Exclusions** — there is **no negative prompt** in this graph (it samples
+   without CFG), so the last sentence carries them:
+   `No text, subtitles, logos or watermarks of any kind, no cartoon rendering.`
+   Burnt-in captions show up on their own as soon as there is dialogue, so keep
+   this sentence whenever anybody speaks.
+
+Hard rules:
+
+- 24fps, roughly 1-15 seconds; the app snaps the length up to the model's
+  17k+5 frame grid, so the clip can end a fraction of a second later than
+  `duration` asks. Do not write frame counts or fps in the text.
+- The native canvas is a **768px short edge (max 768x1344)**: keep `megapixels`
+  around 0.4 (864x480 at 16:9). Larger costs time and drifts.
+- `duration`, `megapixels` and `aspect_ratio` are job fields, never sentences.
+- Timing words are cheap, adjectives are not: `she turns sharply and the door
+  slams` beats a pile of moods.
+"""
+
+MINIMAX_H3_VIDEO_GUIDE = (
+    """\
+# VIDEO PROMPT SPEC — MiniMax H3 (local ComfyUI, `minimax_h3_t2v` / `minimax_h3_i2v`)
+
+MiniMax H3 is an omni-modal model that generates the picture **and native
+stereo audio** — voice, effects and music — in one pass, and it can hold
+several cuts inside a single clip. Where this section and the generic VIDEO
+PROMPT SPEC above disagree, this one wins.
+
+"""
+    + _MINIMAX_H3_GUIDE_BODY
+    + """\
+- `minimax_h3_t2v` has **no start frame**: the block also has to fix the
+  subject, the wardrobe and the set.
+- `minimax_h3_i2v` takes the start frame as frame 0. It supplies the subject,
+  the set and the lighting — **never contradict it**. Point at it in the text as
+  `<Picture 1>` (`the transparent mouse from <Picture 1>, in its original
+  scene`), say the clip opens exactly on that picture, and spend the rest of the
+  block on what changes and how it sounds.
+"""
+)
+
+MINIMAX_H3_REFERENCE_VIDEO_GUIDE = (
+    """\
+# VIDEO PROMPT SPEC — MiniMax H3 reference mode (local ComfyUI, `minimax_h3_r2v`)
+
+This workflow runs the **reference-to-video** task (ref2va weights). It takes
+**no start frame**: the 1-9 `reference_images` are not the first frame but
+**references for identity and look** — a character, a person, a set, a product.
+The framing, the motion, the camera and the sound all come from the text, and
+the sound is generated with the picture.
+
+"""
+    + _MINIMAX_H3_GUIDE_BODY
+    + """\
+- **Refer to the material by tag, in the order it was given**: the first
+  `reference_images` entry is `<Picture 1>`, the second `<Picture 2>`, and so
+  on. Name them where they matter (`Use <Picture 2> and <Picture 1> as
+  reference frames`, `the little boy from <Picture 1> on the rooftop of
+  <Picture 2>`) and say what each must preserve (face, hair, cape, the colour
+  of the prop).
+- **Never write a tag with no picture behind it.** With two references,
+  `<Picture 3>` is a mistake, and this workflow connects no videos or audio at
+  all, so `<Video 1>` / `<Audio 1>` are always wrong.
+- **Do not re-describe a reference as if it were the shot.** It fixes who /
+  what, not where or how; everything else is direction.
+- Ref2va is unusually sensitive to wording: be explicit about **which reference
+  drives which part** of the shot rather than leaving the model to guess.
+"""
+)
+
+#: 1 本のクリップの中でカットを割れるワークフロー（CONTEXT の一文を切り替える）。
+#: 汎用の VIDEO PROMPT SPEC は「1 クリップ 1 ショット」を前提にしているが、
+#: MiniMax H3 はタイムラインを書けば複数ショットを 1 本に収められる。
+MULTI_CUT_WORKFLOWS: frozenset[str] = frozenset(
+    {"minimax_h3_t2v", "minimax_h3_i2v", "minimax_h3_r2v"}
+)
+
 #: workflow id -> そのモデル専用の VIDEO PROMPT SPEC（無いワークフローは
 #: 汎用の :data:`VIDEO_SPEC` のまま）
 VIDEO_SPECS: dict[str, str] = {
+    "minimax_h3_t2v": MINIMAX_H3_VIDEO_GUIDE,
+    "minimax_h3_i2v": MINIMAX_H3_VIDEO_GUIDE,
+    "minimax_h3_r2v": MINIMAX_H3_REFERENCE_VIDEO_GUIDE,
     "veo3_1_fast": VEO_VIDEO_GUIDE,
     "veo3_1_quality": VEO_VIDEO_GUIDE,
     "veo3_1_fast_ref": VEO_REFERENCE_VIDEO_GUIDE,
@@ -1824,7 +1941,15 @@ def _context_section(
     lines.append("")
 
     if ctx.mode != "image_only":
-        lines.append(f"Clip duration: {ctx.duration:g} seconds, one continuous shot.")
+        # 既定は 1 クリップ 1 ショット。MiniMax H3 のようにタイムラインを書けば
+        # 1 本の中でカットを割れるモデルだけ、そう言い直す（モデル固有ガイドと
+        # CONTEXT が食い違わないように）。
+        shot = (
+            "cuts allowed inside it — write the stamped shot timeline"
+            if spec is not None and spec.id in MULTI_CUT_WORKFLOWS
+            else "one continuous shot"
+        )
+        lines.append(f"Clip duration: {ctx.duration:g} seconds, {shot}.")
         lines += _workflow_context_lines(ctx.video_workflow)
         lines += _video_trigger_lines(ctx)
         lines.append("")
@@ -2119,11 +2244,13 @@ Rules:
   anything else is rejected. `continue` may carry it too.
 - `reference_images` / `reference_videos` / `reference_audios` are the
   **multimodal reference** inputs. They belong to the **reference workflows**
-  (`*_ref` — VIDEO WORKFLOWS says which one takes what and how many), which are
-  separate entries precisely because the API's reference mode and its
-  start-frame mode are exclusive: those workflows take **no** `source_image` /
-  `end_image` and only run in `mode: "i2v"`. Pass **lists** of asset / library
-  paths. Reference images pin identity and consistency, a reference video is the
+  (`*_ref` and `minimax_h3_r2v` — VIDEO WORKFLOWS says which one takes what and
+  how many), which are separate entries precisely because a model's reference
+  mode and its start-frame mode are exclusive: those workflows take **no**
+  `source_image` / `end_image` and only run in `mode: "i2v"`. Pass **lists** of
+  asset / library paths — `minimax_h3_r2v` needs at least one image and refers
+  to them in the prompt as `<Picture 1>`, `<Picture 2>`, … in the order you list
+  them. Reference images pin identity and consistency, a reference video is the
   motion to imitate, reference audio sets the mood; write `video_prompt` about
   the direction only, not about what the material already shows. Leave the
   lists out entirely when you are not using them.

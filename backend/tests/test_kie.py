@@ -1012,7 +1012,9 @@ def test_the_veo_guide_is_injected_only_when_veo_is_selected():
 def test_the_agent_prompt_lists_the_guide_once_per_available_model(monkeypatch):
     from app.prompts import video_prompt_guides_section
 
-    assert video_prompt_guides_section() == ""  # kie が使えないうちは節ごと出ない
+    # kie が使えないうちは kie のモデルのガイドは 1 つも出ない（ローカルの
+    # ComfyUI ワークフローが持つガイドはバックエンドに依らず出る）
+    assert "Google Veo 3.1" not in video_prompt_guides_section()
 
     mark_available(monkeypatch)
     section = video_prompt_guides_section()

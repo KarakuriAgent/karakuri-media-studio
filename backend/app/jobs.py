@@ -1123,8 +1123,16 @@ async def veo_1080p_job(
 # execution
 # --------------------------------------------------------------------------
 
-def _generation_params(job: Job, uploads: dict[str, str]) -> GenerationParams:
-    """The injector's view of a job. ``uploads`` maps param field -> ComfyUI name."""
+def _generation_params(
+    job: Job,
+    uploads: dict[str, str],
+    reference_images: list[str] | None = None,
+) -> GenerationParams:
+    """The injector's view of a job. ``uploads`` maps param field -> ComfyUI name.
+
+    ``reference_images`` は**複数ファイル**の参照画像を ComfyUI に上げた名前で、
+    渡した順のまま（プロンプトの ``<Picture 1>`` … の順、SPEC §3.1）。
+    """
     p = job.params
     # 参照画像があれば、その実比で動画の幅・高さを決める（読めなければプリセット）。
     source_image = p.get("source_image")
@@ -1165,6 +1173,7 @@ def _generation_params(job: Job, uploads: dict[str, str]) -> GenerationParams:
         image_seed=int(p.get("image_seed", 0)),
         video_seeds=[int(s) for s in p.get("video_seeds", [])],
         audio_seed=int(p.get("audio_seed", p.get("seed", 0) or 0)),
+        reference_image_names=list(reference_images or []),
         **{field: uploads.get(field, "") for field in _UPLOADS.values()},
     )
 
@@ -1550,12 +1559,38 @@ async def _prepare_comfy(job: Job) -> tuple[GenerationParams, dict[str, str]]:
         if path:
             # 古いジョブの params は別プレフィックスの絶対パスを持ちうる（§rerun）
             uploads[param_name] = await comfy.upload_file(rebase_stored_path(path))
+    references = [
+        await comfy.upload_file(rebase_stored_path(str(path)))
+        for path in _comfy_reference_images(job)
+    ]
 
     overrides = {
         **load_settings().overrides_for(),
         **(job.params.get("model_overrides") or {}),
     }
-    return _generation_params(job, uploads), overrides
+    return _generation_params(job, uploads, references), overrides
+
+
+def _comfy_reference_images(job: Job) -> list[str]:
+    """ComfyUI のグラフに展開する参照画像のパス（並び順そのまま、SPEC §3.1）。
+
+    参照画像を受け取れるのは宣言のあるワークフローだけ（MiniMax H3 r2v の
+    :class:`app.workflows.RefImageFan`）。宣言の無いワークフローに付いてきた
+    ものは、外部 API 用に入れたまま動画ワークフローを差し替えたジョブなので、
+    ここで黙って捨てる（投入時の検証は :func:`app.models.reference_problem`）。
+    """
+    paths = job.params.get("reference_images")
+    if not isinstance(paths, (list, tuple)) or not paths:
+        return []
+    if job.mode not in ("full", "i2v"):
+        return []
+    try:
+        spec = get_video_spec(job.params.get("video_workflow"))
+    except WorkflowSpecError:
+        return []
+    if spec.backend != "comfyui" or spec.ref_images is None:
+        return []
+    return [str(path) for path in paths if str(path).strip()]
 
 
 async def _run_comfy_stage(
