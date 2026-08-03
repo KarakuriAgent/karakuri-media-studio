@@ -108,6 +108,18 @@ function section(title: string): HTMLElement {
   return element
 }
 
+/** Open the LoRA candidate modal belonging to the requested stage. */
+function openLoraPicker(title: string): void {
+  fireEvent.click(
+    within(section(title)).getByRole('button', { name: 'LoRAを選ぶ' }),
+  )
+  expect(screen.getByText('LoRAを選択')).toBeTruthy()
+}
+
+function closeLoraPicker(): void {
+  fireEvent.click(screen.getByRole('button', { name: '選択を完了' }))
+}
+
 describe('GenerateForm の接続先プルダウン', () => {
   it('3 つの接続先を出し、現在の選択を反映する', () => {
     show({}, 'runpod')
@@ -144,11 +156,46 @@ describe('GenerateForm の接続先プルダウン', () => {
 describe('GenerateForm の LoRA セクション', () => {
   it('画像用と動画用をそれぞれの対象で絞り込む', () => {
     show()
-    expect(within(section('LoRA（画像）')).getByText('サクラ')).toBeTruthy()
-    expect(within(section('LoRA（画像）')).queryByText('スローモ')).toBeNull()
+    openLoraPicker('LoRA（画像）')
+    expect(screen.getByRole('button', { name: 'サクラ' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'スローモ' })).toBeNull()
+    closeLoraPicker()
 
-    expect(within(section('LoRA（動画）')).getByText('スローモ')).toBeTruthy()
-    expect(within(section('LoRA（動画）')).queryByText('サクラ')).toBeNull()
+    openLoraPicker('LoRA（動画）')
+    expect(screen.getByRole('button', { name: 'スローモ' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'サクラ' })).toBeNull()
+  })
+
+  it('候補は常時並べず、モーダル内で検索できる', () => {
+    show()
+    expect(
+      within(section('LoRA（画像）')).queryByRole('button', { name: 'サクラ' }),
+    ).toBeNull()
+
+    openLoraPicker('LoRA（画像）')
+    const search = screen.getByPlaceholderText('LoRAを検索')
+    fireEvent.change(search, { target: { value: '見つからない名前' } })
+    expect(screen.queryByRole('button', { name: 'サクラ' })).toBeNull()
+    expect(screen.getByText('条件に一致するLoRAがありません')).toBeTruthy()
+
+    fireEvent.change(search, { target: { value: 'サクラ' } })
+    expect(screen.getByRole('button', { name: 'サクラ' })).toBeTruthy()
+  })
+
+  it('モーダルを開き直すと検索語はリセットされる', () => {
+    show()
+    openLoraPicker('LoRA（画像）')
+    fireEvent.change(screen.getByPlaceholderText('LoRAを検索'), {
+      target: { value: '見つからない名前' },
+    })
+    expect(screen.getByText('条件に一致するLoRAがありません')).toBeTruthy()
+    closeLoraPicker()
+
+    openLoraPicker('LoRA（画像）')
+    const search = screen.getByPlaceholderText('LoRAを検索') as HTMLInputElement
+    expect(search.value).toBe('')
+    expect(screen.getByRole('button', { name: 'サクラ' })).toBeTruthy()
+    expect(screen.getByText('表示 1 / 全 1')).toBeTruthy()
   })
 
   it('対象の登録が無ければその旨を出す', () => {
@@ -176,22 +223,21 @@ describe('GenerateForm の LoRA セクション', () => {
   it('動画生成モードでは画像 LoRA のセクションごと消す', () => {
     show({ mode: 'i2v' })
     expect(screen.queryByText('LoRA（画像）')).toBeNull()
-    expect(
-      within(section('LoRA（動画）')).getByRole('button', { name: 'スローモ' }),
-    ).toBeTruthy()
+    openLoraPicker('LoRA（動画）')
+    expect(screen.getByRole('button', { name: 'スローモ' })).toBeTruthy()
   })
 
   it('画像のみモードでは動画 LoRA のセクションごと消す', () => {
     show({ mode: 'image_only' })
     expect(screen.queryByText('LoRA（動画）')).toBeNull()
-    expect(
-      within(section('LoRA（画像）')).getByRole('button', { name: 'サクラ' }),
-    ).toBeTruthy()
+    openLoraPicker('LoRA（画像）')
+    expect(screen.getByRole('button', { name: 'サクラ' })).toBeTruthy()
   })
 
   it('動画 LoRA を選ぶと動画側のトリガーだけが連結される', () => {
     const { patch } = show()
-    const video = within(section('LoRA（動画）')).getByRole('button', { name: 'スローモ' })
+    openLoraPicker('LoRA（動画）')
+    const video = screen.getByRole('button', { name: 'スローモ' })
     video.click()
     expect(patch).toHaveBeenCalledWith(
       expect.objectContaining({ videoTriggerText: 'スローモ' }),
@@ -280,13 +326,15 @@ describe('GenerateForm の画像ワークフロー', () => {
 
   it('選択中ワークフローのファミリーの画像 LoRA だけを出す', () => {
     showImages()
-    expect(within(section('LoRA（画像）')).getByText('サクラ')).toBeTruthy()
-    expect(within(section('LoRA（画像）')).queryByText('ハナ')).toBeNull()
+    openLoraPicker('LoRA（画像）')
+    expect(screen.getByRole('button', { name: 'サクラ' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'ハナ' })).toBeNull()
 
     cleanup()
     showImages({ imageWorkflow: 'qwen_image_edit_2511' })
-    expect(within(section('LoRA（画像）')).getByText('ハナ')).toBeTruthy()
-    expect(within(section('LoRA（画像）')).queryByText('サクラ')).toBeNull()
+    openLoraPicker('LoRA（画像）')
+    expect(screen.getByRole('button', { name: 'ハナ' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'サクラ' })).toBeNull()
   })
 
   it('編集系を選ぶと参照画像ピッカーが必須表示になる', () => {

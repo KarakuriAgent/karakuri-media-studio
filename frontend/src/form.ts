@@ -254,6 +254,21 @@ export function lorasForTarget(
   })
 }
 
+/**
+ * LoRA の絞り込み検索（表示名・ファイル名・トリガーワードの部分一致）。
+ *
+ * 生成フォームの選択モーダルと設定画面の管理一覧で同じ挙動にするための共通処理。
+ * 検索語が空（空白のみを含む）なら常に true を返すので、呼び出し側は分岐なしに
+ * `filter(...)` へ渡せる。
+ */
+export function matchesLoraQuery(lora: Lora, query: string): boolean {
+  const normalized = query.trim().toLocaleLowerCase()
+  if (!normalized) return true
+  return [lora.display_name, lora.lora_name, lora.trigger_word].some((value) =>
+    value.toLocaleLowerCase().includes(normalized),
+  )
+}
+
 // ----------------------------------------------- 選択式フィールド（SPEC §3.1）
 // 自由記述ではなく決まった選択肢で挙動が決まるワークフロー（wan_dancer の踊りの
 // 種類・動きの大きさ・尺）向け。フォームは workflow.selects をそのまま select と

@@ -16,6 +16,7 @@ import {
   jobSelects,
   jobWorkflowIds,
   lorasForTarget,
+  matchesLoraQuery,
   modelSlotsForJob,
   elementsLimits,
   multiShotLimits,
@@ -198,6 +199,27 @@ describe('lorasForTarget', () => {
     const legacy = [lora(9, undefined)]
     expect(lorasForTarget(legacy, 'image')).toHaveLength(1)
     expect(lorasForTarget(legacy, 'video')).toHaveLength(0)
+  })
+
+  describe('matchesLoraQuery', () => {
+    const row: Lora = {
+      ...lora(1, 'image'),
+      display_name: 'サクラ',
+      lora_name: 'Sakura_v1.safetensors',
+      trigger_word: 'sakuraStyle',
+    }
+
+    it('keeps everything when the query is blank', () => {
+      expect(matchesLoraQuery(row, '')).toBe(true)
+      expect(matchesLoraQuery(row, '   ')).toBe(true)
+    })
+
+    it('matches display name, file name and trigger word case-insensitively', () => {
+      expect(matchesLoraQuery(row, 'サクラ')).toBe(true)
+      expect(matchesLoraQuery(row, ' sakura_v1 ')).toBe(true)
+      expect(matchesLoraQuery(row, 'SAKURASTYLE')).toBe(true)
+      expect(matchesLoraQuery(row, '見つからない名前')).toBe(false)
+    })
   })
 })
 
