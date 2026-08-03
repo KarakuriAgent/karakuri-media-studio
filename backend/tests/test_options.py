@@ -75,6 +75,45 @@ def test_workflow_catalogue_is_exposed(client):
     assert sheet["image_label"] == "リファレンスシート画像"
 
 
+def test_workflows_carry_the_two_stage_picker_labels(client):
+    """モデル（family_label）→ モード（mode_label）の 2 段プルダウン用（SPEC §8）。"""
+    options = client.get("/api/options").json()
+    videos = {w["id"]: w for w in options["video_workflows"]}
+
+    # モード名にモデル名を重ねない（1 段目に出るため）
+    h3 = videos["minimax_h3_t2v"]
+    assert h3["family_label"] == "MiniMax H3"
+    assert h3["mode_label"] == "テキスト→動画・音声つき (t2v)"
+    assert "MiniMax" in h3["label"]  # 単独で読む label は今までどおり
+
+    # 宣言のないものは label がそのままモード名になる
+    t2v = videos["ltx2_3_t2v"]
+    assert t2v["family_label"] == "LTX 2.3"
+    assert t2v["mode_label"] == t2v["label"] == "テキスト→動画 (t2v)"
+
+    # 同じモデルのモードは同じ 1 段目に集まる
+    assert {
+        videos[spec_id]["family_label"]
+        for spec_id in ("minimax_h3_t2v", "minimax_h3_i2v", "minimax_h3_r2v")
+    } == {"MiniMax H3"}
+
+    images = {w["id"]: w for w in options["image_workflows"]}
+    assert images["krea2_turbo"]["family_label"] == "Krea 2"
+    assert images["krea2_turbo"]["mode_label"] == "turbo"
+
+
+def test_family_label_carries_the_supplier_note():
+    """供給元の注記はモデル側に付く（モードごとに変わるものではない）。"""
+    from app.workflows import FAMILY_LABELS, family_label
+
+    assert family_label("kling") == "Kling 3.0（外部 API）"
+    assert family_label("grok-imagine") == "Grok Imagine（サブスク CLI）"
+    # LoRA 画面が使う素のラベルは変えない
+    assert FAMILY_LABELS["kling"] == "Kling 3.0"
+    assert family_label("krea2") == "Krea 2"
+    assert family_label("unknown") == "unknown"
+
+
 def test_negative_presets_include_the_template_default(client):
     presets = client.get("/api/options").json()["negative_presets"]
     # an empty value means "keep whatever the template ships with" (SPEC §3.1)

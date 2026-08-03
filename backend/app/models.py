@@ -16,7 +16,6 @@ from .workflows import (
     MULTI_INPUT_EXTS,
     MULTI_INPUT_FIELDS,
     MULTI_INPUT_LABELS,
-    REF_IMAGES_NAME,
     WorkflowSpec,
     WorkflowSpecError,
     get_audio_spec,
@@ -543,10 +542,14 @@ class GenerationParams(BaseModel):
     start_image_name: str = ""
     end_image_name: str = ""
     reference_video_name: str = ""
-    #: 参照画像（複数、SPEC §3.1）。渡した順がそのまま ``ref_image_0`` … の順で、
-    #: プロンプトの ``<Picture 1>`` … と対応する。宣言しているワークフロー
-    #: （:attr:`app.workflows.WorkflowSpec.ref_images`）だけが読む。
+    #: 参照素材（複数、SPEC §3.1）。渡した順がそのまま ``ref_image_0`` /
+    #: ``ref_video_0`` / ``ref_audio_0`` … の順で、プロンプトの ``<Picture 1>`` /
+    #: ``<Video 1>`` / ``<Audio 1>`` … と対応する。参照動画のサウンドトラックは
+    #: 動画から取り出して同じ番号に繋ぐので、別のリストは持たない。宣言している
+    #: ワークフロー（:attr:`app.workflows.WorkflowSpec.ref_media`）だけが読む。
     reference_image_names: list[str] = Field(default_factory=list)
+    reference_video_names: list[str] = Field(default_factory=list)
+    reference_audio_names: list[str] = Field(default_factory=list)
 
     filename_prefix: str | None = None  # explicit override
 
@@ -1075,8 +1078,9 @@ def reference_materials(params: Any) -> dict[str, list[str]]:
 def _missing_reference_problem(mode: str, video_workflow: str | None) -> str | None:
     """参照素材が 1 つも無いときに、それを必須にしているワークフローかを見る。
 
-    宣言は :attr:`app.workflows.RefImageFan.min_images`（0 なら不問）。ここは
-    「参照が空のとき」だけを通るので、ワークフロー id が壊れている場合は
+    宣言は :attr:`app.workflows.RefMediaFan.min_refs`（0 なら不問）で、**種類を
+    問わない合計**なので画像・動画・音声のどれで満たしてもよい。ここは「参照が
+    空のとき」だけを通るので、ワークフロー id が壊れている場合は
     :func:`video_workflow_problem` に任せて黙って通す。
     """
     if mode not in ("full", "i2v"):
@@ -1085,13 +1089,16 @@ def _missing_reference_problem(mode: str, video_workflow: str | None) -> str | N
         spec = get_video_spec(video_workflow)
     except WorkflowSpecError:
         return None
-    fan = spec.ref_images
-    if fan is None or fan.min_images < 1:
+    fan = spec.ref_media
+    if fan is None or fan.min_refs < 1:
         return None
+    names = "・".join(
+        f"`{MULTI_INPUT_FIELDS[name]}`（{MULTI_INPUT_LABELS[name]}）"
+        for name in fan.names()
+    )
     return (
-        f"video workflow '{spec.id}' には{MULTI_INPUT_LABELS[REF_IMAGES_NAME]}"
-        f"（`{MULTI_INPUT_FIELDS[REF_IMAGES_NAME]}`）が"
-        f" {fan.min_images} 枚以上必要です"
+        f"video workflow '{spec.id}' には参照素材 {names} のいずれかが"
+        f" {fan.min_refs} 件以上必要です"
     )
 
 
@@ -1109,10 +1116,10 @@ def reference_problem(
     フローに渡していないか」「件数の上限」「拡張子」の 3 つだけで、開始フレーム
     との組み合わせは :func:`start_image_problem` が別に断る。
 
-    例外は**下限**で、ComfyUI 側で参照画像をグラフに展開するワークフロー
-    （MiniMax H3 r2v、:class:`app.workflows.RefImageFan`）だけが「1 枚以上」を
-    要求する。参照が 1 枚も無いと ref2va のウェイトで素の生成をするだけになり、
-    ワークフローを選んだ意味が無くなるため。
+    例外は**下限**で、ComfyUI 側で参照素材をグラフに展開するワークフロー
+    （MiniMax H3 r2v、:class:`app.workflows.RefMediaFan`）だけが「種類を問わず
+    合計 1 件以上」を要求する。参照が 1 件も無いと ref2va のウェイトで素の生成を
+    するだけになり、ワークフローを選んだ意味が無くなるため。
 
     サイズ・解像度・尺の細かい制約は外部 API の判断に任せ、失敗メッセージを
     そのまま見せる。
@@ -2152,6 +2159,11 @@ class WorkflowOption(BaseModel):
     id: str
     label: str
     kind: Literal["image", "video", "audio"]
+    #: 生成フォームの 2 段プルダウンの 2 段目（モード）の表示名。1 段目に
+    #: `family_label` が出るので、こちらにモデル名は入らない（SPEC §3.1）。
+    mode_label: str = ""
+    #: 生成フォームの 1 段目（モデル）の表示名（供給元の注記つき）
+    family_label: str = ""
     #: model family — image LoRAs of another family cannot be used with it
     family: str = DEFAULT_FAMILY
     notes: str = ""

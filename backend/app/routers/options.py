@@ -18,6 +18,7 @@ from ..workflows import (
     DEFAULT_VIDEO_WORKFLOW,
     WorkflowSpec,
     audio_specs,
+    family_label,
     image_specs,
     video_specs,
 )
@@ -43,6 +44,10 @@ def _workflow_option(spec: WorkflowSpec) -> WorkflowOption:
     return WorkflowOption(
         id=spec.id,
         label=spec.label,
+        # 2 段プルダウン（モデル → モード）用。宣言が無いものは label をそのまま
+        # モードの名前にする（LTX のように既にモデル名を含まないものはこれでよい）。
+        mode_label=spec.mode_label or spec.label,
+        family_label=family_label(spec.family),
         kind=spec.kind,
         family=spec.family,
         notes=spec.notes,

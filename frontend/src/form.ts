@@ -385,14 +385,16 @@ const REFERENCE_FIELDS: Omit<ReferenceField, 'limit'>[] = [
     field: 'referenceVideos',
     kind: 'video',
     label: '参照動画',
-    hint: '動きのお手本（リズム・カメラの振る舞い）。1 本 2〜15 秒、合計 15 秒まで。',
+    hint:
+      '動きのお手本（リズム・カメラの振る舞い）。1 本 2〜15 秒。' +
+      'MiniMax H3 では 24fps 前提で、その動画の音声も一緒に参照される。',
   },
   {
     name: 'reference_audios',
     field: 'referenceAudios',
     kind: 'audio',
     label: '参照音声',
-    hint: 'ムード・曲調のよりどころ。1 本 2〜15 秒、合計 15 秒まで。',
+    hint: 'ムード・曲調・声のよりどころ。1 本 2〜15 秒。',
   },
 ]
 
@@ -1143,4 +1145,47 @@ export function workflowsForMode(
   return mode === 'full'
     ? workflows.filter((workflow) => workflow.accepts_start_image)
     : workflows
+}
+
+// ------------------------------------------- ワークフロー選択（モデル → モード）
+// フォームが持つのは今までどおりワークフロー id 1 つだけで、1 段目（モデル）は
+// そこから引いたファミリーとして描く。id を外から入れる経路（前回選択の復元・
+// ライブラリからの連鎖・エージェントのプリセット）は何も変えなくても両方の
+// セレクトが揃う。
+
+/** 同じファミリー（= モデル）のワークフローをまとめた 1 グループ。 */
+export interface WorkflowFamilyGroup {
+  family: string
+  /** 1 段目に出す表示名（バックエンドの `family_label`）。 */
+  label: string
+  /** そのモデルで選べるモード（バックエンドの並び順のまま）。 */
+  workflows: WorkflowOption[]
+}
+
+/** モデル（ファミリー）ごとのグループ。並びは渡された一覧の初出順。 */
+export function workflowFamilies(
+  workflows: WorkflowOption[],
+): WorkflowFamilyGroup[] {
+  const groups: WorkflowFamilyGroup[] = []
+  for (const workflow of workflows) {
+    const found = groups.find((group) => group.family === workflow.family)
+    if (found) found.workflows.push(workflow)
+    else
+      groups.push({
+        family: workflow.family,
+        label: workflowFamilyLabel(workflow),
+        workflows: [workflow],
+      })
+  }
+  return groups
+}
+
+/** 1 段目に出す表示名（古いレスポンスにはフォールバックで日本語名を当てる）。 */
+export function workflowFamilyLabel(workflow: WorkflowOption): string {
+  return workflow.family_label || FAMILY_LABELS[workflow.family] || workflow.family
+}
+
+/** 2 段目に出す表示名（宣言が無ければフルのラベルをそのまま使う）。 */
+export function workflowModeLabel(workflow: WorkflowOption): string {
+  return workflow.mode_label || workflow.label
 }

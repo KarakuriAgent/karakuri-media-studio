@@ -9,7 +9,10 @@ from app.models import GenerationParams, LoraRef, missing_job_fields, video_work
 from app.workflow import (
     ASPECT_RATIOS,
     LORA_NODE_PREFIX,
+    REF_AUDIO_NODE_PREFIX,
     REF_IMAGE_NODE_PREFIX,
+    REF_VIDEO_NODE_PREFIX,
+    REF_VIDEO_PARTS_NODE_PREFIX,
     VIDEO_LORA_NODE_PREFIX,
     WorkflowError,
     all_required_class_types,
@@ -728,17 +731,19 @@ def test_motion_workflow_slices_the_reference_clip():
     assert not spec.supports("frames_expr")
 
 
-# --- 参照画像の動的展開（RefImageFan、SPEC §3.1）----------------------------
+# --- 参照素材の動的展開（RefMediaFan、SPEC §3.1）----------------------------
 
 REF_SPEC_ID = "minimax_h3_r2v"
 
 
-def _ref_wf(count: int):
+def _ref_wf(images: int = 0, videos: int = 0, audios: int = 0):
     spec = get_spec(REF_SPEC_ID)
     wf = build_video_workflow(
         params(
             video_workflow=REF_SPEC_ID,
-            reference_image_names=[f"ref{index}.png" for index in range(count)],
+            reference_image_names=[f"ref{index}.png" for index in range(images)],
+            reference_video_names=[f"clip{index}.mp4" for index in range(videos)],
+            reference_audio_names=[f"track{index}.wav" for index in range(audios)],
         )
     )
     validate_workflow(wf)
@@ -747,8 +752,8 @@ def _ref_wf(count: int):
 
 @pytest.mark.parametrize("count", [0, 1, 2, 3, 9])
 def test_reference_images_grow_one_loader_each(count):
-    spec, wf = _ref_wf(count)
-    fan = spec.ref_images
+    spec, wf = _ref_wf(images=count)
+    fan = spec.ref_media
     loaders = sorted(key for key in wf if key.startswith(REF_IMAGE_NODE_PREFIX))
     assert loaders == [f"{REF_IMAGE_NODE_PREFIX}{i}" for i in range(count)]
     # 渡した順に ref_image_0, _1, … へ繋がる（プロンプトの <Picture N> の順）
@@ -757,40 +762,158 @@ def test_reference_images_grow_one_loader_each(count):
         node_id = f"{REF_IMAGE_NODE_PREFIX}{index}"
         assert wf[node_id]["class_type"] == "LoadImage"
         assert wf[node_id]["inputs"]["image"] == f"ref{index}.png"
-        assert inputs[f"{fan.prefix}{index}"] == [node_id, 0]
+        assert inputs[f"{fan.image_prefix}{index}"] == [node_id, 0]
     # 未指定ぶんの入力は残らない（雛形のファイル名で失敗しないように）
-    assert len([k for k in inputs if k.startswith(fan.prefix)]) == count
-    # テンプレートの雛形 LoadImage は必ず消える
-    assert fan.loader.node_id not in wf
+    assert len([k for k in inputs if k.startswith(fan.image_prefix)]) == count
+    # テンプレートの雛形ノードは種類を問わず必ず消える
+    for loader in fan.loaders():
+        assert loader.node_id not in wf
+
+
+@pytest.mark.parametrize("count", [0, 1, 3])
+def test_reference_videos_carry_their_own_soundtrack(count):
+    """参照動画は LoadVideo -> GetVideoComponents で映像と音声に割れ、同じ番号の
+    ref_video_N / ref_video_audio_N の両方に繋がる（ノード側のペアリング）。"""
+    spec, wf = _ref_wf(videos=count)
+    fan = spec.ref_media
+    inputs = wf[fan.node.node_id]["inputs"]
+    for index in range(count):
+        loader_id = f"{REF_VIDEO_NODE_PREFIX}{index}"
+        parts_id = f"{REF_VIDEO_PARTS_NODE_PREFIX}{index}"
+        assert wf[loader_id]["class_type"] == "LoadVideo"
+        assert wf[loader_id]["inputs"]["file"] == f"clip{index}.mp4"
+        assert wf[parts_id]["class_type"] == "GetVideoComponents"
+        assert wf[parts_id]["inputs"]["video"] == [loader_id, 0]
+        assert inputs[f"{fan.video_prefix}{index}"] == [parts_id, 0]
+        assert inputs[f"{fan.video_audio_prefix}{index}"] == [parts_id, 1]
+    assert len([k for k in inputs if k.startswith(fan.video_prefix)]) == count
+    assert len([k for k in inputs if k.startswith(fan.video_audio_prefix)]) == count
+
+
+@pytest.mark.parametrize("count", [0, 1, 3])
+def test_reference_audios_grow_one_load_audio_each(count):
+    spec, wf = _ref_wf(audios=count)
+    fan = spec.ref_media
+    inputs = wf[fan.node.node_id]["inputs"]
+    for index in range(count):
+        node_id = f"{REF_AUDIO_NODE_PREFIX}{index}"
+        assert wf[node_id]["class_type"] == "LoadAudio"
+        assert wf[node_id]["inputs"]["audio"] == f"track{index}.wav"
+        assert inputs[f"{fan.audio_prefix}{index}"] == [node_id, 0]
+    assert len([k for k in inputs if k.startswith(fan.audio_prefix)]) == count
+
+
+def test_every_reference_kind_can_be_mixed():
+    """3 種類を混ぜても番号は種類ごとに 0 から振り直される（タグの通し番号）。"""
+    spec, wf = _ref_wf(images=2, videos=2, audios=1)
+    fan = spec.ref_media
+    inputs = wf[fan.node.node_id]["inputs"]
+    assert [k for k in inputs if k.startswith(fan.image_prefix)] == [
+        f"{fan.image_prefix}0", f"{fan.image_prefix}1"
+    ]
+    assert [k for k in inputs if k.startswith(fan.video_prefix)] == [
+        f"{fan.video_prefix}0", f"{fan.video_prefix}1"
+    ]
+    assert [k for k in inputs if k.startswith(fan.video_audio_prefix)] == [
+        f"{fan.video_audio_prefix}0", f"{fan.video_audio_prefix}1"
+    ]
+    assert [k for k in inputs if k.startswith(fan.audio_prefix)] == [
+        f"{fan.audio_prefix}0"
+    ]
 
 
 def test_one_reference_image_matches_the_single_input_case():
     """1 枚のときはテンプレートと同じ形（ref_image_0 に 1 本だけ）。"""
-    spec, wf = _ref_wf(1)
+    spec, wf = _ref_wf(images=1)
     template = load_template(spec)
-    fan = spec.ref_images
-    before = [k for k in template[fan.node.node_id]["inputs"] if k.startswith(fan.prefix)]
-    after = [k for k in wf[fan.node.node_id]["inputs"] if k.startswith(fan.prefix)]
-    assert before == after == [f"{fan.prefix}0"]
+    fan = spec.ref_media
+    prefix = fan.image_prefix
+    before = [k for k in template[fan.node.node_id]["inputs"] if k.startswith(prefix)]
+    after = [k for k in wf[fan.node.node_id]["inputs"] if k.startswith(prefix)]
+    assert before == after == [f"{prefix}0"]
 
 
-def test_surplus_reference_images_are_dropped():
+def test_surplus_reference_material_is_dropped():
     """宣言した上限を超えたぶんは繋がない（投入前に 422 になるので最後の砦）。"""
-    spec, wf = _ref_wf(12)
-    limit = spec.multi_inputs["reference_images"]
-    assert limit == 9
-    assert len([k for k in wf if k.startswith(REF_IMAGE_NODE_PREFIX)]) == limit
+    spec, wf = _ref_wf(images=12, videos=5, audios=5)
+    assert spec.multi_inputs == {
+        "reference_images": 9,
+        "reference_videos": 3,
+        "reference_audios": 3,
+    }
+    for prefix, name in (
+        (REF_IMAGE_NODE_PREFIX, "reference_images"),
+        (REF_VIDEO_NODE_PREFIX, "reference_videos"),
+        (REF_AUDIO_NODE_PREFIX, "reference_audios"),
+    ):
+        grown = [key for key in wf if key.startswith(prefix)]
+        # 参照動画のノード id は LoadVideo と GetVideoComponents で接頭辞が
+        # 重なるので、デコーダぶんを除いて数える
+        grown = [key for key in grown if not key.startswith(REF_VIDEO_PARTS_NODE_PREFIX)]
+        assert len(grown) == spec.multi_inputs[name]
 
 
 def test_only_the_declared_workflow_grows_reference_loaders():
-    """宣言の無いワークフローに参照画像を渡してもグラフは変わらない。"""
+    """宣言の無いワークフローに参照素材を渡してもグラフは変わらない。"""
     for workflow_id in VIDEO_IDS:
-        if get_spec(workflow_id).ref_images is not None:
+        if get_spec(workflow_id).ref_media is not None:
             continue
         wf = build_video_workflow(
-            params(video_workflow=workflow_id, reference_image_names=["ref0.png"])
+            params(
+                video_workflow=workflow_id,
+                reference_image_names=["ref0.png"],
+                reference_video_names=["clip0.mp4"],
+                reference_audio_names=["track0.wav"],
+            )
         )
-        assert not [key for key in wf if key.startswith(REF_IMAGE_NODE_PREFIX)]
+        assert not [
+            key
+            for key in wf
+            if key.startswith(
+                (REF_IMAGE_NODE_PREFIX, REF_VIDEO_NODE_PREFIX, REF_AUDIO_NODE_PREFIX)
+            )
+        ]
+
+
+# --- 任意入力の枝落とし（optional_loaders、SPEC §3.1）------------------------
+
+def _minimax_i2v_wf(end_image: str = ""):
+    spec = get_spec("minimax_h3_i2v")
+    wf = build_video_workflow(
+        params(
+            video_workflow=spec.id,
+            start_image_name="first.png",
+            end_image_name=end_image,
+        )
+    )
+    validate_workflow(wf)
+    return spec, wf
+
+
+def test_minimax_i2v_wires_the_end_image_when_it_is_given():
+    spec, wf = _minimax_i2v_wf("last.png")
+    loader = spec.inject["end_image"]
+    assert wf[loader.node_id]["inputs"]["image"] == "last.png"
+    assert wf["105:104"]["inputs"]["last_frame"] == [loader.node_id, 0]
+    assert wf["105:104"]["inputs"]["first_frame"] == ["114", 0]
+
+
+def test_minimax_i2v_drops_the_end_image_loader_when_it_is_not_given():
+    """渡されなければ雛形ごと落ちる（テンプレートのファイル名を探しに行かない）。"""
+    spec, wf = _minimax_i2v_wf()
+    loader = spec.inject["end_image"]
+    assert loader.node_id not in wf
+    assert "last_frame" not in wf["105:104"]["inputs"]
+    # 開始フレームのほうは必須なので残る
+    assert wf["105:104"]["inputs"]["first_frame"] == ["114", 0]
+
+
+def test_the_end_image_is_an_optional_input_of_minimax_i2v():
+    spec = get_spec("minimax_h3_i2v")
+    assert spec.supports("end_image")
+    assert "end_image" not in spec.requires
+    entry = catalog_entry(spec)
+    assert ("end_image", "最後のフレーム画像") in entry.optional_inputs
 
 
 # --- frame count rounding --------------------------------------------------

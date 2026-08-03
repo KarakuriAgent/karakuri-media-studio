@@ -366,6 +366,14 @@ export interface WorkflowSelect {
 export interface WorkflowOption {
   id: string
   label: string
+  /**
+   * 生成フォームの「モデル → モード」2 段プルダウンの **2 段目**（モード）の
+   * 表示名。1 段目に `family_label` が出るので、モデル名は入っていない。
+   * 古いレスポンスには無いので、無ければ `label` を使う。
+   */
+  mode_label?: string
+  /** 1 段目（モデル）の表示名。供給元の注記（外部 API など）つき。 */
+  family_label?: string
   kind: 'image' | 'video' | 'audio'
   /** model family — image LoRAs of another family cannot be used with it. */
   family: string

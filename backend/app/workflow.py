@@ -27,7 +27,9 @@ from typing import Any
 from .models import GenerationParams, LoraRef, ModelField, ModelSlot
 from .workflows import (
     LTX_FRAME_GRID,
+    REF_AUDIOS_NAME,
     REF_IMAGES_NAME,
+    REF_VIDEOS_NAME,
     LoraChain,
     Target,
     Workflow,
@@ -45,8 +47,26 @@ from .workflows import (
 LORA_NODE_PREFIX = "app_lora_"
 #: node id prefix of the video (LTX 2.3) LoRA chain
 VIDEO_LORA_NODE_PREFIX = "app_video_lora_"
-#: node id prefix of the dynamic reference-image loaders (MiniMax H3 r2v)
+#: node id prefixes of the dynamic reference-material loaders (MiniMax H3 r2v).
+#: 参照動画は ``LoadVideo`` と ``GetVideoComponents`` の 2 ノードで 1 本になる。
 REF_IMAGE_NODE_PREFIX = "app_ref_image_"
+REF_VIDEO_NODE_PREFIX = "app_ref_video_"
+REF_VIDEO_PARTS_NODE_PREFIX = "app_ref_video_parts_"
+REF_AUDIO_NODE_PREFIX = "app_ref_audio_"
+
+#: ``GetVideoComponents`` の出力（images / audio / fps / bit_depth の 0 と 1）
+REF_VIDEO_IMAGES_SLOT = 0
+REF_VIDEO_AUDIO_SLOT = 1
+
+#: 論理入力（:data:`app.workflows.InputName`）-> :class:`GenerationParams` が持つ
+#: 「ComfyUI に上げたファイル名」のフィールド。空なら「そのファイルは渡されて
+#: いない」で、任意入力の枝を落とす判断に使う（:func:`_prune_optional_loaders`）。
+UPLOAD_NAME_FIELDS: dict[str, str] = {
+    "image": "start_image_name",
+    "end_image": "end_image_name",
+    "audio": "audio_name",
+    "video": "reference_video_name",
+}
 
 # --- model file inputs (SPEC §3.3) -----------------------------------------
 # (class_type, input field) pairs whose value is a model file name on the
@@ -614,48 +634,128 @@ def _build_lora_chain(
         _set(wf, consumer.node_id, consumer.field, upstream)
 
 
-def _build_ref_images(
-    wf: Workflow, spec: WorkflowSpec, names: list[str]
-) -> list[str]:
-    """Grow one ``LoadImage`` per reference image and wire them up (SPEC §3.1).
+def _loader_node(loader: Target, value: Any, title: str) -> dict[str, Any]:
+    """One freshly grown ``LoadImage`` / ``LoadVideo`` / ``LoadAudio`` node."""
+    return {
+        "class_type": loader.class_type,
+        "_meta": {"title": title},
+        "inputs": {loader.field: value},
+    }
+
+
+def _build_ref_media(
+    wf: Workflow, spec: WorkflowSpec, materials: dict[str, list[str]]
+) -> dict[str, list[str]]:
+    """Grow one loader per reference material and wire them up (SPEC §3.1).
 
     The mirror image of :func:`_build_lora_chain` for the reference inputs of
-    MiniMax H3 r2v (:class:`app.workflows.RefImageFan`): the template's single
-    placeholder loader and **all** of its ``ref_image_*`` links are dropped, then
-    one loader per uploaded file is created and connected as ``ref_image_0``,
-    ``ref_image_1``, …  The order is the order the job lists them in, which is
-    what the prompt's ``<Picture 1>`` / ``<Picture 2>`` tags refer to.
+    MiniMax H3 r2v (:class:`app.workflows.RefMediaFan`): the template's single
+    placeholder loader of each kind and **all** of the node's ``ref_*`` links
+    are dropped, then one loader per uploaded file is created and connected as
+    ``ref_image_0``, ``ref_image_1``, …  The order is the order the job lists
+    them in, which is what the prompt's ``<Picture i>`` / ``<Video k>`` /
+    ``<Audio j>`` tags refer to.
+
+    A reference video needs two nodes: ``LoadVideo`` feeds a
+    ``GetVideoComponents`` whose frames (output 0) go to ``ref_video_N`` and
+    whose soundtrack (output 1) goes to ``ref_video_audio_N``.  **The pairing is
+    by number**, so the soundtrack always travels with its video — that is also
+    why the app has no separate list for it.  The node ignores a soundtrack with
+    no video behind it, and a silent video simply produces no ``<Audio j>``.
 
     Nothing to connect means the variable inputs disappear entirely — the node
-    accepts zero references, and leaving the placeholder behind would make
-    ComfyUI look for a file name that only exists in the template.
+    accepts zero references, and leaving a placeholder behind would make ComfyUI
+    look for a file name that only exists in the template.
 
-    Returns the file names it actually wired (the surplus over the declared
-    limit is dropped; the request is refused long before this by
+    Returns the file names it actually wired per logical name (the surplus over
+    the declared limit is dropped; the request is refused long before this by
     :func:`app.models.reference_problem`).
     """
-    fan = spec.ref_images
+    fan = spec.ref_media
     if fan is None:
-        return []
+        return {}
     node = _node(wf, fan.node)
     if node is None:
-        return []
+        return {}
     inputs = node.setdefault("inputs", {})
-    for key in [key for key in inputs if key.startswith(fan.prefix)]:
+    for key in [key for key in inputs if key.startswith(fan.prefixes())]:
         del inputs[key]
-    wf.pop(fan.loader.node_id, None)
+    for loader in fan.loaders():
+        wf.pop(loader.node_id, None)
 
-    limit = spec.multi_inputs.get(REF_IMAGES_NAME, len(names))
-    picked = [name for name in names if name][:limit]
-    for index, image in enumerate(picked):
+    def picked(name: str) -> list[str]:
+        limit = spec.multi_inputs.get(name, 0)
+        return [item for item in materials.get(name) or [] if item][:limit]
+
+    wired: dict[str, list[str]] = {}
+
+    wired[REF_IMAGES_NAME] = picked(REF_IMAGES_NAME)
+    for index, image in enumerate(wired[REF_IMAGES_NAME]):
         node_id = f"{REF_IMAGE_NODE_PREFIX}{index}"
-        wf[node_id] = {
-            "class_type": fan.loader.class_type,
-            "_meta": {"title": f"参照画像 {index + 1}（<Picture {index + 1}>）"},
-            "inputs": {fan.loader.field: image},
-        }
-        inputs[f"{fan.prefix}{index}"] = [node_id, 0]
-    return picked
+        wf[node_id] = _loader_node(
+            fan.image_loader, image, f"参照画像 {index + 1}（<Picture {index + 1}>）"
+        )
+        inputs[f"{fan.image_prefix}{index}"] = [node_id, 0]
+
+    if REF_VIDEOS_NAME in fan.names():
+        assert fan.video_loader is not None and fan.video_decoder is not None
+        wired[REF_VIDEOS_NAME] = picked(REF_VIDEOS_NAME)
+        for index, video in enumerate(wired[REF_VIDEOS_NAME]):
+            node_id = f"{REF_VIDEO_NODE_PREFIX}{index}"
+            parts_id = f"{REF_VIDEO_PARTS_NODE_PREFIX}{index}"
+            wf[node_id] = _loader_node(
+                fan.video_loader, video, f"参照動画 {index + 1}（<Video {index + 1}>）"
+            )
+            wf[parts_id] = {
+                "class_type": fan.video_decoder.class_type,
+                "_meta": {"title": f"参照動画 {index + 1} の映像と音声"},
+                "inputs": {fan.video_decoder.field: [node_id, 0]},
+            }
+            inputs[f"{fan.video_prefix}{index}"] = [parts_id, REF_VIDEO_IMAGES_SLOT]
+            inputs[f"{fan.video_audio_prefix}{index}"] = [parts_id, REF_VIDEO_AUDIO_SLOT]
+
+    if REF_AUDIOS_NAME in fan.names():
+        assert fan.audio_loader is not None
+        wired[REF_AUDIOS_NAME] = picked(REF_AUDIOS_NAME)
+        for index, audio in enumerate(wired[REF_AUDIOS_NAME]):
+            node_id = f"{REF_AUDIO_NODE_PREFIX}{index}"
+            wf[node_id] = _loader_node(
+                fan.audio_loader, audio, f"参照音声 {index + 1}"
+            )
+            inputs[f"{fan.audio_prefix}{index}"] = [node_id, 0]
+
+    return wired
+
+
+def _prune_optional_loaders(
+    wf: Workflow, spec: WorkflowSpec, params: GenerationParams
+) -> None:
+    """Drop the loader of every optional input the job did not supply (§3.1).
+
+    ``inject`` alone can only write a file *name*, so an optional input left
+    empty would still leave the template's placeholder loader in the graph and
+    ComfyUI would fail looking for a file that only exists in the template.  The
+    workflows that declare :attr:`app.workflows.WorkflowSpec.optional_loaders`
+    (MiniMax H3 i2v's ``end_image`` -> ``last_frame``) therefore have the loader
+    **and every link that reads it** removed — the receiving input is optional on
+    the node itself, so its absence is what "not given" means.
+    """
+    for name in spec.optional_loaders:
+        target = spec.inject.get(name)
+        supplied = getattr(params, UPLOAD_NAME_FIELDS.get(name, ""), "")
+        if target is None or str(supplied or "").strip():
+            continue
+        wf.pop(target.node_id, None)
+        for node in wf.values():
+            inputs = node.get("inputs") if isinstance(node, dict) else None
+            if not isinstance(inputs, dict):
+                continue
+            for field in [
+                field
+                for field, value in inputs.items()
+                if _is_link(value) and value[0] == target.node_id
+            ]:
+                del inputs[field]
 
 
 # --------------------------------------------------------------------------
@@ -806,8 +906,18 @@ def build_video_workflow(
     _inject(wf, resolved, "end_image", params.end_image_name)
     _inject(wf, resolved, "audio", params.audio_name)
     _inject(wf, resolved, "video", params.reference_video_name)
-    # 参照画像は 1 つの注入点では表せない: 渡された枚数ぶんノードを生やす（§3.1）
-    _build_ref_images(wf, resolved, list(params.reference_image_names))
+    # 渡されなかった任意の入力は、雛形のローダーごとグラフから外す（§3.1）
+    _prune_optional_loaders(wf, resolved, params)
+    # 参照素材は 1 つの注入点では表せない: 渡された件数ぶんノードを生やす（§3.1）
+    _build_ref_media(
+        wf,
+        resolved,
+        {
+            REF_IMAGES_NAME: list(params.reference_image_names),
+            REF_VIDEOS_NAME: list(params.reference_video_names),
+            REF_AUDIOS_NAME: list(params.reference_audio_names),
+        },
+    )
     _build_lora_chain(
         wf, resolved.lora_chain, params.video_loras, prefix=VIDEO_LORA_NODE_PREFIX
     )

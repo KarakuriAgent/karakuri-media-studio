@@ -532,9 +532,9 @@ def _catalog_entry_lines(entry: CatalogEntry) -> list[str]:
         lines.append("  - 任意入力: " + _inputs_text(entry.optional_inputs))
     if entry.reference_inputs:
         minimum = (
-            f"。参照画像は**{entry.min_reference_images} 枚以上必須**"
-            "（0 枚のジョブは拒否されます）"
-            if entry.min_reference_images
+            f"。参照素材は種類を問わず**合計 {entry.min_references} 件以上必須**"
+            "（1 件も無いジョブは拒否されます）"
+            if entry.min_references
             else ""
         )
         lines.append(
@@ -1182,6 +1182,11 @@ PROMPT SPEC above disagree, this one wins.
   `<Picture 1>` (`the transparent mouse from <Picture 1>, in its original
   scene`), say the clip opens exactly on that picture, and spend the rest of the
   block on what changes and how it sounds.
+- `minimax_h3_i2v` also takes an **optional `end_image`** (the fl2va weights are
+  first/last-frame to video+audio). With one, the clip has to **land exactly on
+  that picture**, so write the *transition* — the move, the turn, the light
+  change that gets from the first frame to the last — rather than describing
+  either picture. Without one, leave `end_image` out entirely.
 """
 )
 
@@ -1190,25 +1195,40 @@ MINIMAX_H3_REFERENCE_VIDEO_GUIDE = (
 # VIDEO PROMPT SPEC — MiniMax H3 reference mode (local ComfyUI, `minimax_h3_r2v`)
 
 This workflow runs the **reference-to-video** task (ref2va weights). It takes
-**no start frame**: the 1-9 `reference_images` are not the first frame but
-**references for identity and look** — a character, a person, a set, a product.
-The framing, the motion, the camera and the sound all come from the text, and
-the sound is generated with the picture.
+**no start frame**: up to 9 `reference_images`, 3 `reference_videos` and 3
+`reference_audios` are not the first frame but **references for identity, look,
+motion and sound** — a character, a person, a set, a product, a move to imitate,
+a voice or a room tone. At least one of them is required (any kind). The
+framing, the cutting and the camera all come from the text, and the sound is
+generated with the picture.
 
 """
     + _MINIMAX_H3_GUIDE_BODY
     + """\
-- **Refer to the material by tag, in the order it was given**: the first
-  `reference_images` entry is `<Picture 1>`, the second `<Picture 2>`, and so
-  on. Name them where they matter (`Use <Picture 2> and <Picture 1> as
-  reference frames`, `the little boy from <Picture 1> on the rooftop of
-  <Picture 2>`) and say what each must preserve (face, hair, cape, the colour
-  of the prop).
-- **Never write a tag with no picture behind it.** With two references,
-  `<Picture 3>` is a mistake, and this workflow connects no videos or audio at
-  all, so `<Video 1>` / `<Audio 1>` are always wrong.
+- **Refer to the material by tag, per type, in the order it was given**: the
+  first `reference_images` entry is `<Picture 1>`, the second `<Picture 2>`, …;
+  the first `reference_videos` entry is `<Video 1>`, …; audio is `<Audio 1>`,
+  `<Audio 2>`, … Name them where they matter (`Use <Picture 2> and <Picture 1>
+  as reference frames`, `the little boy from <Picture 1> on the rooftop of
+  <Picture 2>`, `the same swagger as <Video 1>`) and say what each must
+  preserve (face, hair, cape, the colour of the prop, the rhythm, the voice).
+- **Every reference video is passed together with its own soundtrack, and those
+  soundtracks share the `<Audio j>` numbering with `reference_audios` — the
+  soundtracks take the low numbers.** The model is shown the material as:
+  every picture, then every video (each video's soundtrack labelled immediately
+  before its `<Video k>`), then the standalone audio. So with 2
+  `reference_videos` and 1 `reference_audios`, `<Audio 1>` and `<Audio 2>` are
+  those two videos' soundtracks and `<Audio 3>` is the standalone track — count
+  the videos first whenever you write an `<Audio j>` tag.
+- **Never write a tag with nothing behind it.** With two pictures,
+  `<Picture 3>` is a mistake, and `<Video 1>` / `<Audio 1>` are wrong unless the
+  job actually lists that material.
+- Reference videos are read at **24 fps** and are not resampled: material shot
+  at another frame rate plays with a different sense of time. Keep clips to
+  roughly 2-15 seconds; anything longer than the generated clip is truncated.
 - **Do not re-describe a reference as if it were the shot.** It fixes who /
-  what, not where or how; everything else is direction.
+  what / how it moves / how it sounds, not where or how it is framed;
+  everything else is direction.
 - Ref2va is unusually sensitive to wording: be explicit about **which reference
   drives which part** of the shot rather than leaving the model to guess.
 """
@@ -2248,12 +2268,14 @@ Rules:
   how many), which are separate entries precisely because a model's reference
   mode and its start-frame mode are exclusive: those workflows take **no**
   `source_image` / `end_image` and only run in `mode: "i2v"`. Pass **lists** of
-  asset / library paths — `minimax_h3_r2v` needs at least one image and refers
-  to them in the prompt as `<Picture 1>`, `<Picture 2>`, … in the order you list
-  them. Reference images pin identity and consistency, a reference video is the
-  motion to imitate, reference audio sets the mood; write `video_prompt` about
-  the direction only, not about what the material already shows. Leave the
-  lists out entirely when you are not using them.
+  asset / library paths — `minimax_h3_r2v` needs at least one reference of any
+  kind and refers to them in the prompt as `<Picture 1>` / `<Video 1>` /
+  `<Audio 1>`, numbered per type in the order you list them (its VIDEO PROMPT
+  SPEC explains how the reference videos' own soundtracks share the `<Audio j>`
+  numbering). Reference images pin identity and consistency, a reference video
+  is the motion to imitate, reference audio sets the mood; write `video_prompt`
+  about the direction only, not about what the material already shows. Leave
+  the lists out entirely when you are not using them.
 - `multi_shots` cuts one job into **several consecutive shots**. It belongs to
   the multi-shot workflow (`kling3_multishot` — VIDEO WORKFLOWS says how many
   and how long), where it is **required**: a list of

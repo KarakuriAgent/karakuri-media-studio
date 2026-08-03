@@ -10,6 +10,7 @@ import {
 } from '../form'
 import type { Options, WorkflowOption } from '../types'
 import ModelPicker from './ModelPicker'
+import WorkflowPicker from './WorkflowPicker'
 import WorkflowSelects from './WorkflowSelects'
 import { FieldError, Section } from './ui'
 
@@ -71,27 +72,14 @@ export default function AudioFields({
   return (
     <>
       <Section title="音声ワークフロー">
-        {workflows.length > 0 ? (
-          <select
-            className="field"
-            aria-label="音声ワークフロー"
-            value={form.audioWorkflow}
-            onChange={(event) => patch({ audioWorkflow: event.target.value })}
-          >
-            {workflows.map((item) => (
-              <option key={item.id} value={item.id}>
-                {item.label}
-              </option>
-            ))}
-          </select>
-        ) : (
-          <input
-            className="field"
-            aria-label="音声ワークフロー"
-            value={form.audioWorkflow}
-            onChange={(event) => patch({ audioWorkflow: event.target.value })}
-          />
-        )}
+        <WorkflowPicker
+          workflows={workflows}
+          value={form.audioWorkflow}
+          onChange={(id) => patch({ audioWorkflow: id })}
+          modelLabel="音声モデル"
+          modeLabel="音声モード"
+          fallbackLabel="音声ワークフロー"
+        />
         {workflow?.notes && (
           <p className="mt-1 text-[11px] text-slate-500">{workflow.notes}</p>
         )}
