@@ -49,6 +49,7 @@ import HistoryPickerModal, {
 import LibraryPickerModal from './LibraryPickerModal'
 import ModelPicker from './ModelPicker'
 import SheetBuilderModal from './SheetBuilderModal'
+import WorkflowPicker from './WorkflowPicker'
 import WorkflowSelects from './WorkflowSelects'
 import { Banner, FieldError, Modal, Section } from './ui'
 
@@ -866,25 +867,14 @@ export default function GenerateForm({
         <>
           {form.mode !== 'image_only' && (
             <Section title="動画ワークフロー">
-              {usable.length > 0 ? (
-                <select
-                  className="field"
-                  value={form.videoWorkflow}
-                  onChange={(event) => patch({ videoWorkflow: event.target.value })}
-                >
-                  {usable.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.label}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <input
-                  className="field"
-                  value={form.videoWorkflow}
-                  onChange={(event) => patch({ videoWorkflow: event.target.value })}
-                />
-              )}
+              <WorkflowPicker
+                workflows={usable}
+                value={form.videoWorkflow}
+                onChange={(id) => patch({ videoWorkflow: id })}
+                modelLabel="動画モデル"
+                modeLabel="動画モード"
+                fallbackLabel="動画ワークフロー"
+              />
               {workflow?.notes && (
                 <p className="mt-1 text-[11px] text-slate-500">{workflow.notes}</p>
               )}
@@ -907,25 +897,14 @@ export default function GenerateForm({
 
           {form.mode !== 'i2v' && (
             <Section title="画像ワークフロー">
-              {imageWorkflows.length > 0 ? (
-                <select
-                  className="field"
-                  value={form.imageWorkflow}
-                  onChange={(event) => patch({ imageWorkflow: event.target.value })}
-                >
-                  {imageWorkflows.map((item) => (
-                    <option key={item.id} value={item.id}>
-                      {item.label}
-                    </option>
-                  ))}
-                </select>
-              ) : (
-                <input
-                  className="field"
-                  value={form.imageWorkflow}
-                  onChange={(event) => patch({ imageWorkflow: event.target.value })}
-                />
-              )}
+              <WorkflowPicker
+                workflows={imageWorkflows}
+                value={form.imageWorkflow}
+                onChange={(id) => patch({ imageWorkflow: id })}
+                modelLabel="画像モデル"
+                modeLabel="画像モード"
+                fallbackLabel="画像ワークフロー"
+              />
               {imageWorkflow?.notes && (
                 <p className="mt-1 text-[11px] text-slate-500">{imageWorkflow.notes}</p>
               )}

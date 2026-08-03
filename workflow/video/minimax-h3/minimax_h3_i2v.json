@@ -185,6 +185,10 @@
       "first_frame": [
         "114",
         0
+      ],
+      "last_frame": [
+        "116",
+        0
       ]
     },
     "class_type": "MiniMaxH3ImageToVideo",
@@ -244,6 +248,15 @@
     "class_type": "LoadImage",
     "_meta": {
       "title": "LoadImage"
+    }
+  },
+  "116": {
+    "inputs": {
+      "image": "transparent_rgb_gaming_mouse.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "LoadImage (last frame)"
     }
   },
   "105:111": {

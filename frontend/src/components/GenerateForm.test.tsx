@@ -352,6 +352,146 @@ describe('GenerateForm の画像ワークフロー', () => {
   })
 })
 
+// ------------------------------------------------- ワークフローの 2 段プルダウン
+// 1 段目でモデル（ファミリー）、2 段目でそのモデルのモードを選ぶ。フォームが持つ
+// のはワークフロー id だけなので、id を入れれば両方のセレクトが揃う。
+
+const VIDEO_WORKFLOWS: Options['video_workflows'] = [
+  {
+    id: 'ltx2_3_t2v',
+    label: 'テキスト→動画 (t2v)',
+    mode_label: 'テキスト→動画 (t2v)',
+    family_label: 'LTX 2.3',
+    kind: 'video',
+    family: 'ltx2.3',
+    notes: '',
+    requires: [],
+    supports: ['prompt', 'duration', 'fps'],
+    accepts_start_image: false,
+    image_label: '開始フレーム',
+    selects: [],
+    prompt_required: true,
+    accepts_video_loras: true,
+    min_duration: 0,
+    max_duration: 0,
+    default_duration: 0,
+  },
+  {
+    id: 'minimax_h3_t2v',
+    label: 'テキスト→動画・音声つき (MiniMax H3 t2v)',
+    mode_label: 'テキスト→動画・音声つき (t2v)',
+    family_label: 'MiniMax H3',
+    kind: 'video',
+    family: 'minimax-h3',
+    notes: '',
+    requires: [],
+    supports: ['prompt', 'duration', 'fps'],
+    accepts_start_image: false,
+    image_label: '開始フレーム',
+    selects: [],
+    prompt_required: true,
+    accepts_video_loras: false,
+    min_duration: 0,
+    max_duration: 0,
+    default_duration: 0,
+  },
+  {
+    id: 'minimax_h3_i2v',
+    label: '画像→動画・音声つき (MiniMax H3 i2v)',
+    mode_label: '画像→動画・音声つき (i2v)',
+    family_label: 'MiniMax H3',
+    kind: 'video',
+    family: 'minimax-h3',
+    notes: '',
+    requires: ['image'],
+    supports: ['prompt', 'image', 'duration', 'fps'],
+    accepts_start_image: true,
+    image_label: '開始フレーム',
+    selects: [],
+    prompt_required: true,
+    accepts_video_loras: false,
+    min_duration: 0,
+    max_duration: 0,
+    default_duration: 0,
+  },
+]
+
+function showVideos(form: Partial<FormState> = {}) {
+  const patch = vi.fn()
+  render(
+    <GenerateForm
+      form={{ ...initialForm, ...form }}
+      patch={patch}
+      options={{ ...OPTIONS, video_workflows: VIDEO_WORKFLOWS }}
+      optionsError={null}
+      onReloadOptions={() => {}}
+      onOpenChat={() => {}}
+      onSubmit={() => {}}
+      submitting={false}
+      fieldErrors={{}}
+      comfyTarget="local"
+      onComfyTarget={() => {}}
+      jobs={[]}
+      showNsfw={false}
+    />,
+  )
+  return { patch }
+}
+
+describe('GenerateForm のワークフロー選択（モデル → モード）', () => {
+  it('モデルは家族ごとに 1 つ、モードは選択中モデルのぶんだけ出す', () => {
+    showVideos({ mode: 'i2v', videoWorkflow: 'minimax_h3_t2v' })
+    const models = screen.getByLabelText('動画モデル') as HTMLSelectElement
+    expect([...models.options].map((item) => item.textContent)).toEqual([
+      'LTX 2.3',
+      'MiniMax H3',
+    ])
+    const modes = screen.getByLabelText('動画モード') as HTMLSelectElement
+    expect([...modes.options].map((item) => item.textContent)).toEqual([
+      'テキスト→動画・音声つき (t2v)',
+      '画像→動画・音声つき (i2v)',
+    ])
+  })
+
+  it('ワークフロー id を入れると両方のセレクトが揃う', () => {
+    showVideos({ mode: 'i2v', videoWorkflow: 'minimax_h3_i2v' })
+    expect((screen.getByLabelText('動画モデル') as HTMLSelectElement).value).toBe(
+      'minimax-h3',
+    )
+    expect((screen.getByLabelText('動画モード') as HTMLSelectElement).value).toBe(
+      'minimax_h3_i2v',
+    )
+  })
+
+  it('モデルを変えるとそのモデルの先頭モードへ切り替える', () => {
+    const { patch } = showVideos({ mode: 'i2v', videoWorkflow: 'ltx2_3_t2v' })
+    fireEvent.change(screen.getByLabelText('動画モデル'), {
+      target: { value: 'minimax-h3' },
+    })
+    expect(patch).toHaveBeenCalledWith({ videoWorkflow: 'minimax_h3_t2v' })
+  })
+
+  it('モードを変えるとそのワークフロー id を patch する', () => {
+    const { patch } = showVideos({ mode: 'i2v', videoWorkflow: 'minimax_h3_t2v' })
+    fireEvent.change(screen.getByLabelText('動画モード'), {
+      target: { value: 'minimax_h3_i2v' },
+    })
+    expect(patch).toHaveBeenCalledWith({ videoWorkflow: 'minimax_h3_i2v' })
+  })
+
+  it('画像＋動画では開始フレームを取れるモードだけが並ぶ', () => {
+    showVideos({ mode: 'full', videoWorkflow: 'minimax_h3_i2v' })
+    const models = screen.getByLabelText('動画モデル') as HTMLSelectElement
+    // t2v しか無い LTX はモデルごと消える
+    expect([...models.options].map((item) => item.value)).toEqual(['minimax-h3'])
+    const modes = screen.getByLabelText('動画モード') as HTMLSelectElement
+    expect([...modes.options].map((item) => item.value)).toEqual([
+      'minimax_h3_i2v',
+    ])
+    expect(modes.disabled).toBe(true)
+  })
+})
+
 // --------------------------------------------------------------- 音声モード
 // 音声はモードタブの一つ。選ぶと画像・動画のセクションは丸ごと消え、選択中の
 // 音声ワークフローが読むつまみだけが出る。
@@ -471,12 +611,19 @@ describe('GenerateForm の音声モード', () => {
     expect(duration.max).toBe('380')
   })
 
-  it('ワークフローを選び直すと patch される', () => {
+  it('モデルを選び直すと、そのモデルの先頭モードへ patch される', () => {
     const { patch } = showAudio({ audioWorkflow: 'ace_step1_5_xl_sft' })
-    fireEvent.change(screen.getByLabelText('音声ワークフロー'), {
-      target: { value: 'stable_audio_3_medium_base' },
+    fireEvent.change(screen.getByLabelText('音声モデル'), {
+      target: { value: 'stable-audio' },
     })
     expect(patch).toHaveBeenCalledWith({ audioWorkflow: 'stable_audio_3_medium_base' })
+  })
+
+  it('モデルが 1 モードだけのときはモードのセレクトを無効にする', () => {
+    showAudio({ audioWorkflow: 'ace_step1_5_xl_sft' })
+    const mode = screen.getByLabelText('音声モード') as HTMLSelectElement
+    expect(mode.disabled).toBe(true)
+    expect(mode.value).toBe('ace_step1_5_xl_sft')
   })
 
   it('範囲外の秒数のままワークフローを切り替えると既定へ寄せる', () => {

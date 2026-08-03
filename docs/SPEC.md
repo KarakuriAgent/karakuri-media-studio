@@ -90,8 +90,8 @@
 | `ltx2_3_ic_lora_motion` | 参照動画からモーション転写 (IC-LoRA + MoGe) | distilled-fp8 + union-control IC-LoRA | 画像・参照動画 | ○ |
 | `wan_dancer` | 画像+音声→ダンス動画 (Wan Dancer) | wan2.2 global/local 2 段 + lightx2v | 画像・音声 | ○ |
 | `minimax_h3_t2v` | テキスト→動画・音声つき (MiniMax H3 t2v) | minimax_h3 fl2va int8 | なし | ✕ |
-| `minimax_h3_i2v` | 画像→動画・音声つき (MiniMax H3 i2v) | minimax_h3 fl2va int8 | 画像 | ○ |
-| `minimax_h3_r2v` | 参照画像→動画・音声つき (MiniMax H3 r2v) | minimax_h3 ref2va int8 | `reference_images` 1〜9 枚（開始フレームは不可） | ✕ |
+| `minimax_h3_i2v` | 画像→動画・音声つき (MiniMax H3 i2v) | minimax_h3 fl2va int8 | 画像（最終フレーム画像は任意） | ○ |
+| `minimax_h3_r2v` | 参照素材→動画・音声つき (MiniMax H3 r2v) | minimax_h3 ref2va int8 | `reference_images` 9 枚 / `reference_videos` 3 本 / `reference_audios` 3 本まで・合計 1 件以上（開始フレームは不可） | ✕ |
 | `veo3_1_fast` | Veo 3.1 Fast（音声つき・外部 API） | kie.ai `veo3_fast` | なし（画像・最終フレーム画像は任意） | ○ |
 | `veo3_1_fast_ref` | Veo 3.1 Fast 素材参照（音声つき・外部 API） | kie.ai `veo3_fast` | なし（参照画像は任意・開始フレームは不可） | ✕ |
 | `veo3_1_quality` | Veo 3.1 Quality（音声つき・外部 API） | kie.ai `veo3` | なし（画像・最終フレーム画像は任意） | ○ |
@@ -115,10 +115,15 @@
   タイムライン → `Camera:` → `Audio:`（セリフ・SFX・音楽）→ 禁止事項」を書くと、1 本の中でカットを割れる。
   CFG を使わない（`BasicGuider`）ので **negative prompt は無く**、除外したいものは本文に書く。24fps 固定で、
   尺は 17k+5 フレームの格子に**切り上げ**（`FrameGrid`、5 秒 = 124 フレーム）。既定の画角は短辺 768px
-  （最大 768x1344・32 の倍数）なので `megapixels` は 0.4 前後。`minimax_h3_r2v` の画像入力は開始フレームでは
-  なく**同一性の参照**で、他の参照専用ワークフロー（`*_ref`）と同じ `reference_images`（1〜9 枚）で受け取り、
-  プロンプトからは渡した順に `<Picture 1>`・`<Picture 2>` … で参照する。**枚数ぶんの `LoadImage` は
-  ビルダーがグラフに生やす**（`RefImageFan`、下記）。ユーザー LoRA を挿すチェーンは持たない。
+  （最大 768x1344・32 の倍数）なので `megapixels` は 0.4 前後。`minimax_h3_i2v` は `end_image` を**任意**で
+  受け取り、渡すと `MiniMaxH3ImageToVideo.last_frame` に繋いで最終フレーム指定（fl2va）になる。渡さなければ
+  雛形の `LoadImage` ごとグラフから外れる（`optional_loaders`、下記）。`minimax_h3_r2v` の入力は開始フレームでは
+  なく**同一性・動き・音の参照**で、他の参照専用ワークフロー（`*_ref`）と同じ `reference_images`（9 枚）/
+  `reference_videos`（3 本）/ `reference_audios`（3 本）で受け取る（合計 1 件以上必須）。プロンプトからは種類ごとに
+  渡した順で `<Picture i>` / `<Video k>` / `<Audio j>` と呼び、**参照動画のサウンドトラックは常に一緒に渡されて
+  `<Audio j>` の連番を単独音声と共有する**（動画のぶんが先に番号を消費する）。参照動画は 24fps 前提で fps 変換は
+  しない。**件数ぶんのローダーはビルダーがグラフに生やす**（`RefMediaFan`、下記）。ユーザー LoRA を挿すチェーンは
+  持たない。
   MiniMaxH3 系ノードは新しめの ComfyUI master にしか無いので、ヘルスチェックが「custom node なし」と出たら
   ComfyUI を更新する
 - **`veo3_1_fast` / `veo3_1_quality`（family `veo`、backend `kie`）** はテンプレートを持たない**外部 API**の
@@ -310,7 +315,7 @@ LoRA チェーンも持たない（テンプレートに LoRA ノードが無い
 | LoRA トリガーワード（動画） | 動画プロンプト文字列の先頭に前置 | 同上（自動連結・編集可） |
 | リファレンス音声 | `audio` → `276` (LoadAudio)。要求するワークフローのみ | アップロード（`/upload/image` で送信 → ファイル名を注入） |
 | 開始フレーム / 最終フレーム / 参照動画 | `image` / `end_image` / `video` | ワークフローの必要入力に応じて表示。画像は D&D・履歴のラストフレームからも選べる |
-| マルチモーダル参照（参照画像 / 参照動画 / 参照音声） | `reference_images` / `reference_videos` / `reference_audios`（複数ファイル → URL の配列） | 宣言のあるワークフロー（Seedance 2 系・Veo 3.1 Fast は参照画像 3 枚まで）で `mode: "i2v"` のときだけ表示。1 欄が複数ファイルを持ち、選んだ順が API に渡る配列の順序になる。**開始フレーム / 最終フレームとは排他**（下記） |
+| マルチモーダル参照（参照画像 / 参照動画 / 参照音声） | `reference_images` / `reference_videos` / `reference_audios`（複数ファイル → 外部 API では URL の配列、ComfyUI では件数ぶんのローダー） | 宣言のあるワークフロー（Seedance 2 系・Veo 3.1 Fast は参照画像 3 枚まで・MiniMax H3 r2v は画像 9 / 動画 3 / 音声 3）で `mode: "i2v"` のときだけ表示。1 欄が複数ファイルを持ち、選んだ順が API に渡る配列の順序になる。**開始フレーム / 最終フレームとは排他**（下記） |
 | マルチショット | `multi_shots` / `multi_prompt`（構造化リスト） | 宣言のあるワークフロー（Kling 3.0）で動画ステージが走るときだけ表示。折りたたみセクションで、ショット行（プロンプト + 秒数）の追加・削除（下記） |
 | Elements | `kling_elements`（構造化リスト） | 同上。折りたたみセクションで、要素（名前 + 説明 + 参照画像の複数選択）の追加・削除（下記） |
 | 秒数 (Duration) | `duration` | 数値・**上限なし**。長尺は VRAM 次第で ComfyUI 側エラーになり得ることを UI に注記。`duration` を持たないワークフロー（wan_dancer は尺を選択式で持つ）では欄ごと出さない |
@@ -322,8 +327,8 @@ LoRA チェーンも持たない（テンプレートに LoRA ノードが無い
 #### 複数ファイルの参照入力（`WorkflowSpec.multi_inputs`）
 
 1 つの入力欄が**複数のファイル**を持つ論理入力の仕組み（Seedance 2 系のマルチモーダル参照・Veo の
-素材参照生成、§2.2）。外部 API では**参照モードと先頭フレームモードが排他**なので、宣言を持つのは
-**参照専用のワークフロー**（`*_ref` / `veo3_1_fast_ref`）だけで、そちらは `accepts_start_image=False`
+素材参照生成・MiniMax H3 r2v、§2.2）。外部 API では**参照モードと先頭フレームモードが排他**なので、宣言を持つのは
+**参照専用のワークフロー**（`*_ref` / `veo3_1_fast_ref` / `minimax_h3_r2v`）だけで、そちらは `accepts_start_image=False`
 かつ `image` / `end_image` の受け取り口を持たない（マニフェストの検証がこの同居を弾く）。
 `multi_inputs = {"reference_images": 9, ...}` をマニフェストに宣言すると、
 
@@ -347,22 +352,44 @@ LoRA チェーンも持たない（テンプレートに LoRA ノードが無い
 API（`JobCreate` の検証）・エージェント（`agent_protocol._workflow_detail`）の 3 経路で同じ関数を通る。
 素材のサイズ・解像度・尺の細かい制約は外部 API の判断に任せ、失敗理由をそのまま見せる。
 
-##### ComfyUI 側で参照画像をグラフに展開する（`WorkflowSpec.ref_images` / `RefImageFan`）
+##### ComfyUI 側で参照素材をグラフに展開する（`WorkflowSpec.ref_media` / `RefMediaFan`）
 
-同じ `reference_images` を**ローカルのグラフ**で受け取るための宣言（MiniMax H3 r2v）。外部 API は URL の
-配列を渡すだけで済むが、ComfyUI は 1 枚 = 1 ノードなので、**渡された枚数ぶん `LoadImage` を作って繋ぐ**
-必要がある。`RefImageFan(node=…, loader=…, prefix="ref_images.ref_image_", min_images=1)` を宣言すると、
-`workflow._build_ref_images` が
+同じ `reference_images` / `reference_videos` / `reference_audios` を**ローカルのグラフ**で受け取るための宣言
+（MiniMax H3 r2v）。外部 API は URL の配列を渡すだけで済むが、ComfyUI は 1 件 = 1 ノードなので、**渡された
+件数ぶんローダーを作って繋ぐ**必要がある。`RefMediaFan(node=…, image_loader=…, video_loader=…,
+video_decoder=…, audio_loader=…, min_refs=1)` を宣言すると、`workflow._build_ref_media` が
 
-1. テンプレートの雛形 `LoadImage`（`loader`）と、受け側ノードの `ref_image_*` の入力を**いったん全部落とし**、
-2. ジョブが渡した枚数ぶん `app_ref_image_<n>` を作って `ref_image_0`, `ref_image_1`, … に繋ぎ直す
+1. テンプレートの雛形ローダーと、受け側ノードの `ref_*` の入力を**いったん全部落とし**、
+2. ジョブが渡した件数ぶん `app_ref_image_<n>` / `app_ref_video_<n>` + `app_ref_video_parts_<n>` /
+   `app_ref_audio_<n>` を作って `ref_image_0`, `ref_video_0`, `ref_audio_0`, … に繋ぎ直す
 
-（LoRA チェーン §3.4 と同じ「テンプレートを雛形として組み替える」やり方）。0 枚なら可変入力ごと消えるので、
+（LoRA チェーン §3.4 と同じ「テンプレートを雛形として組み替える」やり方）。0 件なら可変入力ごと消えるので、
 **雛形のファイル名が ComfyUI 側に無くて落ちる**ことがない。並び順は指定した順で、プロンプトの
-`<Picture 1>` / `<Picture 2>` … がその順に対応する。上限は `multi_inputs["reference_images"]`（単一情報源）、
-下限は `min_images`（`models.reference_problem` が 0 枚を 422 にする）。ファイルは他の入力と同じく
-`jobs._prepare_comfy` が 1 枚ずつ `/upload/image` に上げ、その名前が `GenerationParams.reference_image_names`
-に並ぶ。マニフェストの検証は「受け側と雛形が実在し、雛形が本当に `ref_image_*` に繋がっているか」まで見る。
+`<Picture i>` / `<Video k>` / `<Audio j>` がその順に対応する。
+
+参照動画だけは 2 ノードで 1 本になる: `LoadVideo` → `GetVideoComponents` でフレーム列（出力 0）と音声
+（出力 1）に分け、**同じ番号**の `ref_video_N` と `ref_video_audio_N` の両方に繋ぐ。ノード側が番号でペアを
+見る（`comfy_extras/nodes_minimax_h3.py`）ので、動画の音声を独立したリストにはせず**常に一緒に渡す**。
+その結果 `<Audio j>` の連番は「参照動画のサウンドトラック → 単独の `reference_audios`」の順で消費される
+（音声トラックの無い動画は `<Audio j>` を消費しないので番号がずれる点は notes に明記してある）。
+`GetVideoComponents` の fps 出力は素材依存で、core に汎用の fps 変換ノードが無いので**変換はしない**
+（参照動画は 24fps 前提）。
+
+上限は `multi_inputs[<論理名>]`（単一情報源）、下限は `min_refs`（種類を問わない合計。
+`models.reference_problem` が 0 件を 422 にする）。ファイルは他の入力と同じく `jobs._prepare_comfy` が
+1 件ずつ `/upload/image`（画像・音声・動画のどれでも入力ディレクトリに置かれる）に上げ、その名前が
+`GenerationParams.reference_image_names` / `reference_video_names` / `reference_audio_names` に並ぶ。
+マニフェストの検証は「受け側と雛形が実在し、雛形の class_type が種類と合っていて、本当に `ref_*` に
+繋がっているか」まで見る。
+
+##### 渡されなかった任意入力をグラフから外す（`WorkflowSpec.optional_loaders`）
+
+`inject` はファイル**名**を書き込むだけなので、任意の入力を空のままにすると雛形のローダーがグラフに残り、
+ComfyUI が「テンプレートにしか無いファイル」を探して落ちる。`optional_loaders=("end_image",)` を宣言すると
+`workflow._prune_optional_loaders` が、その入力が渡されなかったジョブでは**雛形のノードと、それを読んでいる
+リンクごと**落とす（`RefMediaFan` と同じ手口の単数版）。受け側の入力はノード定義でも optional なので、
+「リンクが無い」ことがそのまま「渡されていない」を意味する。MiniMax H3 i2v の `end_image` →
+`MiniMaxH3ImageToVideo.last_frame` がこれ。
 
 #### 構造化パラメータ: マルチショット（`WorkflowSpec.multi_shot`）と Elements（`WorkflowSpec.elements`）
 
@@ -1219,7 +1246,8 @@ SPA 1 画面 + 履歴。ダークテーマの生成系ツールらしい見た�
   - **選択した動画ワークフローのマニフェスト**に従い、音声入力を持たないワークフローでは音声欄を出さず、必要な入力（最終フレーム / 参照動画）の欄だけを出す。**必須ではないが受け取れる入力**（Veo の開始フレーム・最終フレーム画像）も欄は出す（`requires` だけでなく `supports` を見る）。渡すかどうかはユーザー次第で、空なら送らない
   - **画像ワークフロー**も同様で、編集系（qwen-image）では参照画像の欄が出る代わりにアスペクト比 / メガピクセルが消える
   - 音声モードでは画像・動画のセクション一式を出さず、音声ワークフローと、そのワークフローが露出しているつまみだけを出す
-- 「画像＋動画」モードのプルダウンには開始フレームを受け取れる動画ワークフローのみを出す（選択中のものが対象外になったら自動で切り替える）
+- **ワークフローの選択は「モデル → モード」の 2 段プルダウン**（動画 / 画像 / 音声のどのセクションでも同じ `WorkflowPicker`）: 1 段目がモデル（= ファミリー。表示名は `/api/options` の `family_label` で、外部 API・サブスク CLI といった供給元の注記もここに付く）、2 段目がそのモデルのモード（t2v / i2v / 素材参照 …。表示名は `mode_label` で、1 段目と重複するモデル名は入らない）。フォームが持つ状態は今までどおりワークフロー id 1 つだけで、1 段目はそこから引く（前回選択の復元・ライブラリからの連鎖・エージェントのプリセットは id を入れるだけで両方のセレクトが揃う）。モデルを変えるとそのモデルの先頭モードへ切り替わるので、存在しない id のまま送信されることはない。モードが 1 つしかないモデルでも 2 段目は消さず無効化して出す。選択肢そのものが取れないとき（ComfyUI に繋がらない）は従来どおり id の手入力欄になる
+- 「画像＋動画」モードのプルダウンには開始フレームを受け取れる動画ワークフローのみを出す（選択中のものが対象外になったら自動で切り替える。モードが 1 つも残らないモデルは 1 段目からも消える）
 - **選択式フィールド**を宣言しているワークフロー（wan_dancer）では、ワークフローセレクトの直下にその選択肢のプルダウンが並ぶ（§3.1）。自動決定できる項目には「自動（入力に合わせる）」、それ以外には「既定（<値>）」が先頭に入る。`video_prompt` が任意のワークフローではプロンプト欄に「（任意）」と出す
 - LoRA チェーンを持たないワークフロー（wan_dancer）では LoRA（動画）セクションを出さない（挿せないため。指定したジョブはバックエンドが 422 にする）
 - 動画ネガティブはプリセット選択（ワークフロー既定 / 現行値 / モデル作者版）+ 編集可（詳細設定アコーディオン内）

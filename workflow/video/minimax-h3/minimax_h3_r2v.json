@@ -193,6 +193,18 @@
       "ref_images.ref_image_0": [
         "137",
         0
+      ],
+      "ref_videos.ref_video_0": [
+        "141",
+        0
+      ],
+      "ref_video_audios.ref_video_audio_0": [
+        "141",
+        1
+      ],
+      "ref_audios.ref_audio_0": [
+        "142",
+        0
       ]
     },
     "class_type": "MiniMaxH3ReferenceToVideo",
@@ -261,6 +273,36 @@
     "class_type": "LoadImage",
     "_meta": {
       "title": "LoadImage"
+    }
+  },
+  "140": {
+    "inputs": {
+      "file": "reference_clip.mp4"
+    },
+    "class_type": "LoadVideo",
+    "_meta": {
+      "title": "LoadVideo (reference)"
+    }
+  },
+  "141": {
+    "inputs": {
+      "video": [
+        "140",
+        0
+      ]
+    },
+    "class_type": "GetVideoComponents",
+    "_meta": {
+      "title": "GetVideoComponents (reference)"
+    }
+  },
+  "142": {
+    "inputs": {
+      "audio": "reference_track.mp3"
+    },
+    "class_type": "LoadAudio",
+    "_meta": {
+      "title": "LoadAudio (reference)"
     }
   },
   "132": {

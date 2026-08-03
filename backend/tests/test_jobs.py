@@ -1491,19 +1491,20 @@ async def test_probe_media_duration_survives_an_unreadable_file(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# 参照画像を複数取るワークフロー（SPEC §3.1、MiniMax H3 r2v）
+# 参照素材を複数取るワークフロー（SPEC §3.1、MiniMax H3 r2v）
 # --------------------------------------------------------------------------
 
 REF_WORKFLOW = "minimax_h3_r2v"
 
 
-def _ref_assets(env, count: int) -> list[str]:
-    """assets/image に参照画像を置いて、その `/assets/...` URL を返す。"""
+def _ref_assets(env, count: int, kind: str = "image", ext: str = ".png") -> list[str]:
+    """assets/<kind> に参照素材を置いて、その `/assets/...` URL を返す。"""
     urls = []
+    (env.assets / kind).mkdir(parents=True, exist_ok=True)
     for index in range(count):
-        path = env.assets / "image" / f"ref{index}.png"
-        path.write_bytes(b"PNG")
-        urls.append(f"/assets/image/ref{index}.png")
+        path = env.assets / kind / f"ref{index}{ext}"
+        path.write_bytes(b"DATA")
+        urls.append(f"/assets/{kind}/ref{index}{ext}")
     return urls
 
 
@@ -1540,7 +1541,71 @@ def test_reference_images_are_uploaded_and_wired(env, count):
     assert "137" not in graph
 
 
-def test_the_reference_workflow_needs_at_least_one_image(env):
+def test_reference_videos_and_audios_are_uploaded_and_paired(env):
+    """参照動画は LoadVideo -> GetVideoComponents で映像と音声に割れ、同じ番号の
+    ref_video_N / ref_video_audio_N に繋がる。単独音声は LoadAudio。"""
+    created = env.client.post(
+        "/api/jobs",
+        json=ref_body(
+            env,
+            1,
+            video_prompt=(
+                "Keep the face of <Picture 1>, the move of <Video 1> and the"
+                " room tone of <Audio 3>."
+            ),
+            reference_videos=_ref_assets(env, 2, kind="video", ext=".mp4"),
+            reference_audios=_ref_assets(env, 1, kind="audio", ext=".wav"),
+        ),
+    )
+    assert created.status_code == 201, created.text
+    job = wait_for(env.client, created.json()["id"])
+    assert job["status"] == "done", job["error"]
+
+    uploaded = [Path(path).name for path in env.comfy.uploads]
+    assert uploaded == ["ref0.png", "ref0.mp4", "ref1.mp4", "ref0.wav"]
+
+    graph = graph_with(env, "136")
+    inputs = graph["136"]["inputs"]
+    assert inputs["ref_images.ref_image_0"] == ["app_ref_image_0", 0]
+    for index in range(2):
+        loader = f"app_ref_video_{index}"
+        parts = f"app_ref_video_parts_{index}"
+        assert graph[loader]["class_type"] == "LoadVideo"
+        assert graph[loader]["inputs"]["file"] == f"ref{index}.mp4"
+        assert graph[parts]["inputs"]["video"] == [loader, 0]
+        # 映像は出力 0、その動画のサウンドトラックは出力 1（番号でペアになる）
+        assert inputs[f"ref_videos.ref_video_{index}"] == [parts, 0]
+        assert inputs[f"ref_video_audios.ref_video_audio_{index}"] == [parts, 1]
+    assert graph["app_ref_audio_0"]["class_type"] == "LoadAudio"
+    assert graph["app_ref_audio_0"]["inputs"]["audio"] == "ref0.wav"
+    assert inputs["ref_audios.ref_audio_0"] == ["app_ref_audio_0", 0]
+    # 雛形のローダーはどれも残らない
+    for node_id in ("137", "140", "141", "142"):
+        assert node_id not in graph
+
+
+def test_the_reference_workflow_runs_on_a_video_or_audio_reference_alone(env):
+    """下限は「種類を問わず合計 1 件」なので、画像が無くても走る。"""
+    created = env.client.post(
+        "/api/jobs",
+        json=ref_body(
+            env,
+            0,
+            video_prompt="Match the rhythm of <Video 1>.",
+            reference_videos=_ref_assets(env, 1, kind="video", ext=".mp4"),
+        ),
+    )
+    assert created.status_code == 201, created.text
+    job = wait_for(env.client, created.json()["id"])
+    assert job["status"] == "done", job["error"]
+    graph = graph_with(env, "136")
+    assert not [key for key in graph if key.startswith("app_ref_image_")]
+    assert graph["136"]["inputs"]["ref_videos.ref_video_0"] == [
+        "app_ref_video_parts_0", 0
+    ]
+
+
+def test_the_reference_workflow_needs_at_least_one_reference(env):
     answer = env.client.post("/api/jobs", json=ref_body(env, 0))
     assert answer.status_code == 422
     assert "reference_images" in answer.text
@@ -1559,3 +1624,55 @@ def test_too_many_reference_images_are_422(env):
     answer = env.client.post("/api/jobs", json=ref_body(env, 10))
     assert answer.status_code == 422
     assert "9 件" in answer.text
+
+
+@pytest.mark.parametrize(
+    ("field", "kind", "ext"),
+    [("reference_videos", "video", ".mp4"), ("reference_audios", "audio", ".wav")],
+)
+def test_too_many_reference_videos_or_audios_are_422(env, field, kind, ext):
+    answer = env.client.post(
+        "/api/jobs",
+        json=ref_body(env, 1, **{field: _ref_assets(env, 4, kind=kind, ext=ext)}),
+    )
+    assert answer.status_code == 422
+    assert "3 件" in answer.text
+
+
+# --------------------------------------------------------------------------
+# 任意の最終フレーム（SPEC §3.1、MiniMax H3 i2v）
+# --------------------------------------------------------------------------
+
+def _minimax_i2v_body(env, **overrides) -> dict:
+    body = {
+        "mode": "i2v",
+        "video_workflow": "minimax_h3_i2v",
+        "video_prompt": "The mouse from <Picture 1> lifts off the desk.",
+        "source_image": str(env.start_image),
+        "duration": 2,
+    }
+    body.update(overrides)
+    return body
+
+
+def test_minimax_i2v_wires_an_end_image_when_it_is_given(env):
+    created = env.client.post(
+        "/api/jobs", json=_minimax_i2v_body(env, end_image=str(env.end_image))
+    )
+    assert created.status_code == 201, created.text
+    job = wait_for(env.client, created.json()["id"])
+    assert job["status"] == "done", job["error"]
+    graph = graph_with(env, "105:104")
+    assert graph["116"]["inputs"]["image"] == env.end_image.name
+    assert graph["105:104"]["inputs"]["last_frame"] == ["116", 0]
+
+
+def test_minimax_i2v_drops_the_end_image_loader_without_one(env):
+    created = env.client.post("/api/jobs", json=_minimax_i2v_body(env))
+    assert created.status_code == 201, created.text
+    job = wait_for(env.client, created.json()["id"])
+    assert job["status"] == "done", job["error"]
+    graph = graph_with(env, "105:104")
+    assert "116" not in graph
+    assert "last_frame" not in graph["105:104"]["inputs"]
+    assert graph["105:104"]["inputs"]["first_frame"] == ["114", 0]

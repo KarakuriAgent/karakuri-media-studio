@@ -181,41 +181,87 @@ class LoraChain:
 
 
 #: :data:`MULTI_INPUT_FIELDS` の名前のうち、ComfyUI のグラフに展開できるもの
-#: （:class:`RefImageFan`）。今は参照画像だけ。
+#: （:class:`RefMediaFan`）。MiniMax H3 r2v は 3 種類とも受け取る。
 REF_IMAGES_NAME = "reference_images"
+REF_VIDEOS_NAME = "reference_videos"
+REF_AUDIOS_NAME = "reference_audios"
 
 
 @dataclass(frozen=True)
-class RefImageFan:
-    """参照画像を**渡された枚数ぶんだけ**グラフに生やす宣言（SPEC §3.1）。
+class RefMediaFan:
+    """参照素材を**渡された件数ぶんだけ**グラフに生やす宣言（SPEC §3.1）。
 
     :class:`LoraChain` と並ぶ「グラフを動的に組み替える」宣言のもう 1 つ。
     MiniMax H3 の ``MiniMaxH3ReferenceToVideo`` は ``ref_images.ref_image_0``,
-    ``…_1``, … という**可変個の入力**を持ち、繋いだ順にプロンプトから
-    ``<Picture 1>``・``<Picture 2>`` として参照される。テンプレートは 1 枚だけ
-    繋いだ状態で持ち、ビルダー（:func:`app.workflow._build_ref_images`）が
+    ``…_1``, … という**可変個の入力**を種類ごとに持ち、繋いだ順にプロンプトから
+    ``<Picture i>`` / ``<Video k>`` / ``<Audio j>`` として参照される。
+    テンプレートは各種 1 件だけ繋いだ状態で持ち、ビルダー
+    （:func:`app.workflow._build_ref_media`）が
 
-    * テンプレートの雛形 ``LoadImage``（:attr:`loader`）と ``ref_image_*`` の
+    * テンプレートの雛形ローダー（:attr:`image_loader` ほか）と ``ref_*`` の
       入力をいったん全部落とし、
-    * ジョブが渡した枚数ぶん ``LoadImage`` を作って 0 から順に繋ぎ直す
+    * ジョブが渡した件数ぶんローダーを作って 0 から順に繋ぎ直す
 
-    という手順で組み直す。0 枚なら入力ごと消えるので、**雛形のファイル名が
+    という手順で組み直す。0 件なら入力ごと消えるので、**雛形のファイル名が
     ComfyUI 側に無くて失敗する**ことがない。
 
-    受け取れる枚数の上限は :attr:`WorkflowSpec.multi_inputs` の
-    ``reference_images``（外部 API の参照モードと同じ仕組み・同じ UI）、下限は
-    :attr:`min_images`。どちらも投入前に :func:`app.models.reference_problem`
-    が見る。
+    参照動画は ``LoadVideo`` 1 つでは終わらない: ``GetVideoComponents``
+    （:attr:`video_decoder`）でフレーム列（出力 0）と音声（出力 1）に分け、
+    **同じ番号**の ``ref_video_N`` / ``ref_video_audio_N`` に繋ぐ。ノード側が
+    番号でペアを見るので、動画の音声だけを別リストにはできない（アプリ側でも
+    「参照動画のサウンドトラックは常に一緒に渡す」ことにしてある）。
+
+    受け取れる件数の上限は :attr:`WorkflowSpec.multi_inputs` の各名前（外部 API
+    の参照モードと同じ仕組み・同じ UI）、下限は :attr:`min_refs`（種類を問わない
+    合計）。どちらも投入前に :func:`app.models.reference_problem` が見る。
     """
 
-    #: 参照画像を受け取るノード（可変入力を持つ側。``field`` は使わないので空）
+    #: 参照素材を受け取るノード（可変入力を持つ側。``field`` は使わないので空）
     node: Target
     #: テンプレートが持つ雛形の ``LoadImage``（複製元。組み直しのときに消える）
-    loader: Target
-    #: 可変入力の接頭辞。後ろに 0 始まりの番号が付く
-    prefix: str = "ref_images.ref_image_"
-    #: 最低枚数（0 = 参照なしでも走らせてよい）
-    min_images: int = 1
+    image_loader: Target
+    #: 参照画像の可変入力の接頭辞。後ろに 0 始まりの番号が付く
+    image_prefix: str = "ref_images.ref_image_"
+    #: 雛形の ``LoadVideo``（``None`` = 参照動画は受け取らない）
+    video_loader: Target | None = None
+    #: 雛形の ``GetVideoComponents``（``field`` は VIDEO を受ける入力名）
+    video_decoder: Target | None = None
+    #: 参照動画（フレーム列）とそのサウンドトラックの可変入力の接頭辞。番号は
+    #: 共通で、``ref_video_N`` と ``ref_video_audio_N`` が 1 本の動画を指す
+    video_prefix: str = "ref_videos.ref_video_"
+    video_audio_prefix: str = "ref_video_audios.ref_video_audio_"
+    #: 雛形の ``LoadAudio``（``None`` = 単独の参照音声は受け取らない）
+    audio_loader: Target | None = None
+    audio_prefix: str = "ref_audios.ref_audio_"
+    #: 参照素材の最低件数（種類を問わない合計。0 = 参照なしでも走らせてよい）
+    min_refs: int = 1
+
+    def names(self) -> tuple[str, ...]:
+        """この宣言が受け取る論理名（:data:`MULTI_INPUT_FIELDS` のキー）。"""
+        names = [REF_IMAGES_NAME]
+        if self.video_loader is not None and self.video_decoder is not None:
+            names.append(REF_VIDEOS_NAME)
+        if self.audio_loader is not None:
+            names.append(REF_AUDIOS_NAME)
+        return tuple(names)
+
+    def prefixes(self) -> tuple[str, ...]:
+        """組み直しのときに落とす可変入力の接頭辞（宣言している種類のぶんだけ）。"""
+        found = [self.image_prefix]
+        if REF_VIDEOS_NAME in self.names():
+            found += [self.video_prefix, self.video_audio_prefix]
+        if REF_AUDIOS_NAME in self.names():
+            found.append(self.audio_prefix)
+        return tuple(found)
+
+    def loaders(self) -> tuple[Target, ...]:
+        """テンプレートが持つ雛形ノード（組み直しのときに消える）。"""
+        found = [self.image_loader]
+        if REF_VIDEOS_NAME in self.names():
+            found += [self.video_loader, self.video_decoder]  # type: ignore[list-item]
+        if REF_AUDIOS_NAME in self.names():
+            found.append(self.audio_loader)  # type: ignore[arg-type]
+        return tuple(found)
 
 
 #: Model families, one per ``workflow/<kind>/<folder>``.  A registered LoRA is
@@ -242,9 +288,33 @@ FAMILY_LABELS: dict[str, str] = {
     "suno": "Suno V5",
 }
 
+#: 供給元の注記（生成フォームの 1 段目「モデル」に付く）。ローカル実行の
+#: ファミリーには何も付かないので、ここに載るのは外部サービス経由のものだけ。
+#: モードごとに変わるものではないので**モデル側**に出す（各ワークフローの
+#: :attr:`WorkflowSpec.mode_label` には書かない）。
+FAMILY_NOTES: dict[str, str] = {
+    "grok-imagine": "サブスク CLI",
+    "gpt-image": "Codex CLI",
+    "veo": "外部 API",
+    "kling": "外部 API",
+    "seedance": "外部 API",
+    "suno": "外部 API",
+}
+
 #: LoRA registrations default to this family (the only image workflow that
 #: existed before the selector), so the DB migration can backfill with it.
 DEFAULT_FAMILY = "krea2"
+
+
+def family_label(family: str) -> str:
+    """生成フォームの「モデル」プルダウンに出す 1 行（供給元の注記つき）。
+
+    :data:`FAMILY_LABELS` は LoRA の一覧・登録フォームでも使う素の名前なので、
+    注記はここで足す（そちらの表示は変えない）。
+    """
+    label = FAMILY_LABELS.get(family, family)
+    note = FAMILY_NOTES.get(family)
+    return f"{label}（{note}）" if note else label
 
 
 #: kie.ai のタスク入力（``input``）に流し込める論理名。ComfyUI マニフェストの
@@ -462,6 +532,14 @@ class WorkflowSpec:
     id: str
     label: str
     kind: WorkflowKind
+    #: 生成フォームの「モデル → モード」2 段プルダウンの **2 段目**（モード）に
+    #: 出す表示名。1 段目にモデル名（:data:`FAMILY_LABELS`）と供給元の注記
+    #: （:data:`FAMILY_NOTES`）が出るので、こちらには**モデル名を書かない**
+    #: （「テキスト→動画・音声つき (t2v)」のように、そのモデルの中での違いだけ）。
+    #: 空なら :attr:`label` をそのまま使う。:attr:`label` のほうは履歴・
+    #: プロンプトのカタログでも単独で読めなければならないので、モデル名を含んだ
+    #: ままにしてある（両者は用途違いの別物）。
+    mode_label: str = ""
     #: ``workflow/`` からの相対パス（``backend`` が ``comfyui`` のときだけ意味を持つ）
     relpath: str = ""
     #: logical name -> injection target
@@ -535,10 +613,19 @@ class WorkflowSpec:
     #: LTX の ``8n + 1``。MiniMax H3 は 24fps の ``17k + 5`` なので宣言し直す。
     frames: FrameGrid = LTX_FRAME_GRID
     lora_chain: LoraChain | None = None
-    #: 参照画像をグラフに動的に生やす宣言（:class:`RefImageFan`、``None`` = 非対応）。
-    #: 宣言すると ``multi_inputs`` の ``reference_images`` を ComfyUI のグラフでも
-    #: 受け取れるようになる（外部 API の参照モードと同じ入力・同じ UI）。
-    ref_images: RefImageFan | None = None
+    #: 参照素材をグラフに動的に生やす宣言（:class:`RefMediaFan`、``None`` = 非対応）。
+    #: 宣言すると ``multi_inputs`` の ``reference_images`` / ``reference_videos`` /
+    #: ``reference_audios`` を ComfyUI のグラフでも受け取れるようになる（外部 API の
+    #: 参照モードと同じ入力・同じ UI）。
+    ref_media: RefMediaFan | None = None
+    #: **渡されなかったらグラフから取り外す**入力の論理名（:data:`InputName`）。
+    #: ``inject`` に載っているだけの入力はファイル名を空文字にするだけなので、
+    #: ComfyUI が「そのファイルが無い」で落ちる。任意の最終フレーム
+    #: （MiniMax H3 i2v の ``end_image``）のように**渡されないほうが普通**の入力は
+    #: ここに宣言し、ビルダー（:func:`app.workflow._prune_optional_loaders`）が
+    #: 雛形のローダーごと、それを読んでいるリンクごと落とす。
+    #: :class:`RefMediaFan` が参照素材にしているのと同じ手口の単数版。
+    optional_loaders: tuple[InputName, ...] = ()
     notes: str = ""
     seeds: tuple[Target, ...] = ()
     #: extra targets keyed by logical name that are always forced to a constant
@@ -578,9 +665,9 @@ class WorkflowSpec:
         """
         if name in self.inject:
             return True
-        # 参照画像は 1 つの :class:`Target` では表せない（枚数ぶんノードを作る）
+        # 参照素材は 1 つの :class:`Target` では表せない（件数ぶんノードを作る）
         # ので、宣言そのものを受け取り口として見る
-        if name == REF_IMAGES_NAME and self.ref_images is not None:
+        if self.ref_media is not None and name in self.ref_media.names():
             return True
         if self.kie is not None and name in self.kie.fields:
             return True
@@ -597,8 +684,8 @@ class WorkflowSpec:
         別に案内するので外す）。
         """
         names = set(self.inject)
-        if self.ref_images is not None:
-            names.add(REF_IMAGES_NAME)
+        if self.ref_media is not None:
+            names |= set(self.ref_media.names())
         if self.kie is not None:
             names |= set(self.kie.fields)
         if self.grok is not None:
@@ -620,6 +707,7 @@ class WorkflowSpec:
 KREA2_TURBO = WorkflowSpec(
     id="krea2_turbo",
     label="Krea 2 turbo",
+    mode_label="turbo",
     kind="image",
     family="krea2",
     relpath="image/krea2/krea2_turbo.json",
@@ -654,6 +742,7 @@ KREA2_TURBO = WorkflowSpec(
 ANIMA = WorkflowSpec(
     id="anima",
     label="Anima",
+    mode_label="標準",
     kind="image",
     family="anima",
     relpath="image/anima/anima.json",
@@ -682,6 +771,7 @@ ANIMA = WorkflowSpec(
 Z_IMAGE_TURBO = WorkflowSpec(
     id="z_image_turbo",
     label="Z-Image turbo",
+    mode_label="turbo",
     kind="image",
     family="z-image",
     relpath="image/z-image/z_image_turbo.json",
@@ -711,6 +801,7 @@ Z_IMAGE_TURBO = WorkflowSpec(
 QWEN_IMAGE_EDIT = WorkflowSpec(
     id="qwen_image_edit_2511",
     label="Qwen-Image Edit 2511",
+    mode_label="画像編集 (2511)",
     kind="image",
     family="qwen-image",
     relpath="image/qwen-image/qwen_image_edit_2511.json",
@@ -775,6 +866,7 @@ GROK_IMAGINE_PROMPT_HINT = (
 GROK_IMAGINE = WorkflowSpec(
     id="grok_imagine",
     label="Grok Imagine（サブスク CLI）",
+    mode_label="画像生成",
     kind="image",
     family="grok-imagine",
     backend="grok_cli",
@@ -828,6 +920,7 @@ GPT_IMAGE2_PROMPT_HINT = (
 GPT_IMAGE2 = WorkflowSpec(
     id="gpt_image2",
     label="gpt-image-2（Codex CLI）",
+    mode_label="画像生成",
     kind="image",
     family="gpt-image",
     backend="codex_cli",
@@ -1255,6 +1348,7 @@ WAN_DURATIONS: tuple[str, ...] = ("5", "10", "15", "20", "25", "30")
 WAN_DANCER = WorkflowSpec(
     id="wan_dancer",
     label="画像+音声→ダンス動画 (Wan Dancer)",
+    mode_label="画像+音声→ダンス動画 (Dancer)",
     kind="video",
     family="wan",
     relpath="video/wan/wan_dancer.json",
@@ -1348,9 +1442,9 @@ WAN_DANCER = WorkflowSpec(
 # （https://docs.comfy.org/tutorials/video/minimax/minimax-h3）をそのまま
 # API 形式にしたものが 3 つ:
 #
-# * t2v / i2v は同じ ``MiniMaxH3ImageToVideo`` ノード（``first_frame`` を繋ぐか
-#   どうかだけの違い）で、モデルは fl2va。プロンプトはノードの widget なので
-#   注入先は ``105:104.prompt`` そのもの。
+# * t2v / i2v は同じ ``MiniMaxH3ImageToVideo`` ノード（``first_frame`` /
+#   ``last_frame`` を繋ぐかどうかだけの違い）で、モデルは fl2va。プロンプトは
+#   ノードの widget なので注入先は ``105:104.prompt`` そのもの。
 # * r2v は ``MiniMaxH3ReferenceToVideo``（ref2va の別ウェイト）で、プロンプトは
 #   ``PrimitiveStringMultiline``。
 #
@@ -1360,26 +1454,28 @@ WAN_DANCER = WorkflowSpec(
 #   アプリは縦横比とメガピクセルから自分で計算した整数を持っている（§3.1）ので、
 #   MiniMaxH3 ノードの ``width`` / ``height`` に直接入れる（115 は宙に浮くが、
 #   ComfyUI は出力に繋がっていないノードを実行しないので害はない）。
-# * 参照画像はテンプレートが 2 枚（``ref_image_0`` / ``ref_image_1``）繋いで
-#   いたが、アプリの論理入力は 1 枚（``image``）しか無く、2 枚目は
-#   「テンプレートに書いてあるファイル名を ComfyUI 側で探して失敗する」だけに
-#   なるので、**テンプレートから 2 枚目の LoadImage を外してある**
-#   （動的にノードを足し引きする仕組みはこのアプリには無い）。
+# * 任意の入力（i2v の ``last_frame``、r2v の参照素材）はテンプレートに**雛形を
+#   1 つだけ**繋いだ状態で持たせ、ビルダーが渡された件数ぶんに組み直す
+#   （:attr:`WorkflowSpec.optional_loaders` / :class:`RefMediaFan`）。雛形を
+#   そのまま残すと、テンプレートに書いてあるファイル名を ComfyUI 側で探して
+#   失敗するため。
 #
 # CFG を使わない（``BasicGuider``）ので **negative prompt は無い**。禁止事項は
 # プロンプト本文に書かせる。
 
 #: 3 つのワークフローで共通の注意書き（モデルの素性と要件）
 _MINIMAX_H3_NOTES = (
-    "要 ComfyUI 更新（MiniMaxH3 系ノードは新しめの master にしか無い）/"
-    " 24fps 固定・尺は 17k+5 フレームの格子に切り上げ（5 秒 = 124 フレーム、"
+    "24fps 固定・尺は 17k+5 フレームの格子に切り上げ（5 秒 = 124 フレーム、"
     "学習範囲は約 1〜15 秒）/ 短辺 768px・最大 768x1344 が既定の画角"
     "（幅高さは 32 の倍数）/ negative prompt は無い（CFG 無しの BasicGuider）/"
     " ユーザー LoRA を挿すチェーンは持たない"
 )
 
-#: r2v が受け取れる参照画像の枚数（``MiniMaxH3ReferenceToVideo`` の上限そのまま）
+#: r2v が受け取れる参照素材の件数（``MiniMaxH3ReferenceToVideo`` の Autogrow の
+#: 上限そのまま。動画のサウンドトラックは動画と同数なので別枠を持たない）
 MINIMAX_H3_REFERENCE_IMAGES = 9
+MINIMAX_H3_REFERENCE_VIDEOS = 3
+MINIMAX_H3_REFERENCE_AUDIOS = 3
 
 #: モデルファイル（t2v / i2v は fl2va、r2v は ref2va。他は共通）
 _MINIMAX_H3_MODELS = (
@@ -1411,6 +1507,7 @@ _MINIMAX_H3_PROMPT_CORE = (
 MINIMAX_H3_T2V = WorkflowSpec(
     id="minimax_h3_t2v",
     label="テキスト→動画・音声つき (MiniMax H3 t2v)",
+    mode_label="テキスト→動画・音声つき (t2v)",
     kind="video",
     family="minimax-h3",
     relpath="video/minimax-h3/minimax_h3_t2v.json",
@@ -1448,6 +1545,7 @@ MINIMAX_H3_T2V = WorkflowSpec(
 MINIMAX_H3_I2V = WorkflowSpec(
     id="minimax_h3_i2v",
     label="画像→動画・音声つき (MiniMax H3 i2v)",
+    mode_label="画像→動画・音声つき (i2v)",
     kind="video",
     family="minimax-h3",
     relpath="video/minimax-h3/minimax_h3_i2v.json",
@@ -1456,14 +1554,20 @@ MINIMAX_H3_I2V = WorkflowSpec(
     description=(
         "開始フレーム画像から、ステレオ音声つきの動画を生成する"
         "（MiniMax H3 fl2va）。被写体とセットは画像が決め、プロンプトは動き・"
-        "カット割り・音（セリフ・効果音・音楽）を担当する。24fps・尺は約 1〜15 秒。"
+        "カット割り・音（セリフ・効果音・音楽）を担当する。`end_image` を一緒に"
+        "渡すと**最終フレームの指定**になり（fl2va = first/last frame to video・"
+        "audio）、2 枚の間をどうつなぐかをプロンプトで書く。24fps・尺は約 1〜15 秒。"
     ),
     prompt_hint=(
         "The start frame is frame 0 and supplies the subject, the set and the"
         " lighting — never contradict it; you may point at it in the text as"
         " `<Picture 1>` (e.g. `the mouse from <Picture 1> in its original"
         " scene`). Say that the clip opens exactly on that picture, then spend"
-        " the block on what changes." + _MINIMAX_H3_PROMPT_CORE
+        " the block on what changes. With an `end_image` as well the clip has"
+        " to **land exactly on that last frame**, so describe the *transition*"
+        " — the move, the turn, the light change that gets from the first"
+        " picture to the last one — instead of describing either picture."
+        + _MINIMAX_H3_PROMPT_CORE
     ),
     accepts_start_image=True,
     image_label="開始フレーム",
@@ -1476,36 +1580,55 @@ MINIMAX_H3_I2V = WorkflowSpec(
         "duration": T("105:111", "value", "PrimitiveFloat"),
         "frames_expr": T("105:107", "", "ComfyMathExpression"),
         "image": T("114", "image", "LoadImage"),
+        # 任意の最終フレーム。渡されなければ雛形の LoadImage ごと落ちる
+        "end_image": T("116", "image", "LoadImage"),
         "save_prefix": T("92", "filename_prefix", "SaveVideo"),
     },
+    optional_loaders=("end_image",),
     seeds=(T("105:15", "noise_seed", "RandomNoise"),),
-    notes=_MINIMAX_H3_NOTES + " /" + _MINIMAX_H3_MODELS.format(unet="fl2va"),
+    notes=(
+        _MINIMAX_H3_NOTES
+        + " / `end_image` は任意（渡すと `last_frame` に繋いで最終フレーム指定に"
+        "なる。渡さなければ雛形の LoadImage ごとグラフから外す）/"
+        + _MINIMAX_H3_MODELS.format(unet="fl2va")
+    ),
 )
 
 MINIMAX_H3_R2V = WorkflowSpec(
     id="minimax_h3_r2v",
-    label="参照画像→動画・音声つき (MiniMax H3 r2v)",
+    label="参照素材→動画・音声つき (MiniMax H3 r2v)",
+    mode_label="参照素材→動画・音声つき (r2v)",
     kind="video",
     family="minimax-h3",
     relpath="video/minimax-h3/minimax_h3_r2v.json",
     output_node="92",
     requires=(),
     description=(
-        f"参照画像 1〜{MINIMAX_H3_REFERENCE_IMAGES} 枚の**見た目（人物・キャラ・"
-        "プロダクトの同一性）を保ったまま**、別のシーン・別の動きの動画を"
-        "ステレオ音声つきで生成する（MiniMax H3 ref2va）。開始フレームとは違い、"
-        "参照画像は 1 枚目の絵ではなく「誰／何を出すか」の指定で、構図・動き・"
-        "カメラ・音はプロンプトが決める。プロンプト中では渡した順に"
-        " `<Picture 1>`・`<Picture 2>` … と呼ぶ。24fps・尺は約 1〜15 秒。"
+        f"参照画像 1〜{MINIMAX_H3_REFERENCE_IMAGES} 枚・参照動画"
+        f" {MINIMAX_H3_REFERENCE_VIDEOS} 本・参照音声"
+        f" {MINIMAX_H3_REFERENCE_AUDIOS} 本までの**見た目・動き・音を保ったまま**、"
+        "別のシーンの動画をステレオ音声つきで生成する（MiniMax H3 ref2va）。"
+        "開始フレームとは違い、参照素材は 1 枚目の絵ではなく「誰／何を出すか・"
+        "どう動くか・どう鳴るか」の指定で、構図とカット割りはプロンプトが決める。"
+        "プロンプト中では種類ごとに渡した順で `<Picture 1>`・`<Video 1>`・"
+        "`<Audio 1>` … と呼ぶ（参照動画の音声も参照として渡すので、`<Audio j>` は"
+        "**参照動画のぶんが先に番号を取り**、そのあと参照音声が続く）。"
+        "24fps・尺は約 1〜15 秒。"
     ),
     prompt_hint=(
-        "The `reference_images` carry identity and look, not the framing: refer"
-        " to them **by tag in the order they were given** — `<Picture 1>`,"
-        " `<Picture 2>`, … (`the boy from <Picture 1> on the rooftop of"
-        " <Picture 2>`) — and say what each one must keep (face, wardrobe,"
-        " colour of the prop). Everything else — scene, blocking, camera,"
-        " sound — comes from the prompt, so do not re-describe the pictures,"
-        " and never use a tag with no picture behind it."
+        "The reference material carries identity, motion and sound, not the"
+        " framing: refer to it **by tag, per type, in the order it was given**"
+        " — `<Picture 1>`, `<Picture 2>`, … for `reference_images`,"
+        " `<Video 1>`, … for `reference_videos`, `<Audio 1>`, … for audio —"
+        " and say what each one must keep (face, wardrobe, colour of the prop,"
+        " the rhythm of the move, the voice). **Every reference video is passed"
+        " together with its own soundtrack, and soundtracks share the"
+        " `<Audio j>` numbering with `reference_audios`, taking the low numbers"
+        " first**: with 2 reference videos and 1 reference audio, `<Audio 1>` /"
+        " `<Audio 2>` are those videos' soundtracks and `<Audio 3>` is the"
+        " standalone track. Everything else — scene, blocking, camera, cutting"
+        " — comes from the prompt, so do not re-describe the material, and"
+        " never use a tag with nothing behind it."
         + _MINIMAX_H3_PROMPT_CORE
     ),
     # 参照モードは「1 枚目の絵」ではないので、image -> video 連鎖の受け口には
@@ -1515,7 +1638,11 @@ MINIMAX_H3_R2V = WorkflowSpec(
     accepts_start_image=False,
     resolution_multiple=32,
     frames=MINIMAX_H3_FRAME_GRID,
-    multi_inputs={"reference_images": MINIMAX_H3_REFERENCE_IMAGES},
+    multi_inputs={
+        REF_IMAGES_NAME: MINIMAX_H3_REFERENCE_IMAGES,
+        REF_VIDEOS_NAME: MINIMAX_H3_REFERENCE_VIDEOS,
+        REF_AUDIOS_NAME: MINIMAX_H3_REFERENCE_AUDIOS,
+    },
     inject={
         "prompt": T("138", "value", "PrimitiveStringMultiline"),
         "width": T("136", "width", "MiniMaxH3ReferenceToVideo"),
@@ -1524,20 +1651,35 @@ MINIMAX_H3_R2V = WorkflowSpec(
         "frames_expr": T("131", "", "ComfyMathExpression"),
         "save_prefix": T("92", "filename_prefix", "SaveVideo"),
     },
-    # 参照画像は枚数ぶん LoadImage を作って ref_images.ref_image_N に繋ぐ
-    # （テンプレートの 137 はその雛形で、組み立てのときに置き換わる）
-    ref_images=RefImageFan(
+    # 参照素材は件数ぶんローダーを作って ref_*_N に繋ぐ（テンプレートの 137 /
+    # 140+141 / 142 はその雛形で、組み立てのときに置き換わる）。参照動画は
+    # LoadVideo -> GetVideoComponents で映像（出力 0）と音声（出力 1）に分け、
+    # 同じ番号の ref_video_N / ref_video_audio_N の両方に繋ぐ。
+    ref_media=RefMediaFan(
         node=T("136", "", "MiniMaxH3ReferenceToVideo"),
-        loader=T("137", "image", "LoadImage"),
+        image_loader=T("137", "image", "LoadImage"),
+        video_loader=T("140", "file", "LoadVideo"),
+        video_decoder=T("141", "video", "GetVideoComponents"),
+        audio_loader=T("142", "audio", "LoadAudio"),
     ),
     seeds=(T("129", "noise_seed", "RandomNoise"),),
     notes=(
         _MINIMAX_H3_NOTES
-        + f" / 参照画像は 1〜{MINIMAX_H3_REFERENCE_IMAGES} 枚"
-        "（`reference_images`。枚数ぶん LoadImage を作って繋ぐ。プロンプトからは"
-        "渡した順に `<Picture 1>`…で参照する）/ 開始フレームは受け取らない /"
-        " ref_image_size=match（生成解像度に合わせて縮小。max は 2048px 短辺で"
-        "同一性は上がるが数倍遅い）/"
+        + f" / 参照素材は画像 {MINIMAX_H3_REFERENCE_IMAGES} 枚"
+        f"（`reference_images`）+ 動画 {MINIMAX_H3_REFERENCE_VIDEOS} 本"
+        f"（`reference_videos`）+ 音声 {MINIMAX_H3_REFERENCE_AUDIOS} 本"
+        "（`reference_audios`）まで・合計 1 件以上必須（件数ぶんローダーを作って"
+        "繋ぐ）/ プロンプトからは種類ごとに渡した順で `<Picture i>` /"
+        " `<Video k>` / `<Audio j>`。提示順は 画像 → 動画（各動画の音声の"
+        " `<Audio j>` はその `<Video k>` の直前）→ 単独音声で、**動画の音声と"
+        "単独音声は `<Audio j>` の連番を共有し、動画の音声が先に番号を消費する** /"
+        " 参照動画は **24fps 前提**（LoadVideo → GetVideoComponents でフレーム列と"
+        "音声を取り出すだけで fps 変換はしない。他の fps の素材は時間感覚がずれる）・"
+        "1 本 2〜15 秒が目安で、生成フレーム数より長いぶんは切り詰められる・"
+        "音声トラックは常に一緒に参照へ渡す（音声の無い動画は `<Audio j>` を"
+        "消費しないので番号がずれる）/ 参照音声は 32kHz に自動リサンプル /"
+        " 開始フレームは受け取らない / ref_image_size=match（生成解像度に合わせて"
+        "縮小。max は 2048px 短辺で同一性は上がるが数倍遅い）/"
         + _MINIMAX_H3_MODELS.format(unet="ref2va")
     ),
 )
@@ -1640,6 +1782,7 @@ VEO_RESOLUTION_SELECT = SelectSpec(
 def _veo_spec(
     spec_id: str,
     label: str,
+    mode_label: str,
     model: str,
     credits: float,
     description: str,
@@ -1653,6 +1796,7 @@ def _veo_spec(
     return WorkflowSpec(
         id=spec_id,
         label=label,
+        mode_label=mode_label,
         kind="video",
         family="veo",
         backend="kie",
@@ -1692,7 +1836,6 @@ def _veo_spec(
             "kie.ai 経由 / 音声つき / SynthID 透かしが必ず入る /"
             " 4k は生成時に選べる（8 秒のときのみ・高価） /"
             " 生成後に履歴から +7 秒の延長と 1080P 版の取得ができる /"
-            " 4K の追加取得（get-4k-video）は未対応 /"
             " 素材参照生成は `veo3_1_fast_ref`（別ワークフロー）"
         ),
     )
@@ -1701,6 +1844,7 @@ def _veo_spec(
 VEO3_1_FAST = _veo_spec(
     "veo3_1_fast",
     "Veo 3.1 Fast（音声つき・外部 API）",
+    "Fast（音声つき）",
     "veo3_fast",
     60.0,
     "kie.ai 経由の Google Veo 3.1 Fast。音声（環境音・効果音・セリフ）まで"
@@ -1712,6 +1856,7 @@ VEO3_1_FAST = _veo_spec(
 VEO3_1_QUALITY = _veo_spec(
     "veo3_1_quality",
     "Veo 3.1 Quality（音声つき・外部 API）",
+    "Quality（音声つき）",
     "veo3",
     250.0,
     "kie.ai 経由の Google Veo 3.1（Quality）。Fast と同じ使い方で品質が高く、"
@@ -1726,6 +1871,7 @@ VEO3_1_QUALITY = _veo_spec(
 VEO3_1_FAST_REF = WorkflowSpec(
     id="veo3_1_fast_ref",
     label="Veo 3.1 Fast 素材参照（音声つき・外部 API）",
+    mode_label="Fast 素材参照（音声つき）",
     kind="video",
     family="veo",
     backend="kie",
@@ -1923,6 +2069,7 @@ _KLING_FIELDS: dict[str, str] = {
 KLING3_VIDEO = WorkflowSpec(
     id="kling3_video",
     label="Kling 3.0（音声つき・外部 API）",
+    mode_label="標準（音声つき）",
     kind="video",
     family="kling",
     backend="kie",
@@ -1964,7 +2111,7 @@ KLING3_VIDEO = WorkflowSpec(
         "kie.ai 経由 / プロンプトは 500 文字まで / ネガティブプロンプト・seed・"
         "カメラ制御パラメータは無い（本文で指定） / Elements は最大 3 要素"
         "（各 2〜4 枚、`@要素名` 1 参照 = 37 文字） / ショット割りは"
-        " `kling3_multishot`（別ワークフロー） / Turbo 系は未対応"
+        " `kling3_multishot`（別ワークフロー）"
     ),
 )
 
@@ -1975,6 +2122,7 @@ KLING3_VIDEO = WorkflowSpec(
 KLING3_MULTISHOT = WorkflowSpec(
     id="kling3_multishot",
     label="Kling 3.0 マルチショット（音声つき・外部 API）",
+    mode_label="マルチショット（音声つき）",
     kind="video",
     family="kling",
     backend="kie",
@@ -2144,6 +2292,7 @@ _SEEDANCE_REFERENCE_INPUTS = (
 def _seedance_spec(
     spec_id: str,
     label: str,
+    mode_label: str,
     model: str,
     resolutions: tuple[str, ...],
     credits: float,
@@ -2163,6 +2312,7 @@ def _seedance_spec(
     return WorkflowSpec(
         id=spec_id,
         label=label,
+        mode_label=mode_label,
         kind="video",
         family="seedance",
         backend="kie",
@@ -2257,6 +2407,7 @@ def _seedance_spec(
 SEEDANCE2 = _seedance_spec(
     "seedance2",
     "Seedance 2.0（音声つき・外部 API）",
+    "標準（音声つき）",
     "bytedance/seedance-2",
     SEEDANCE_RESOLUTIONS,
     # 720p / 5 秒の概算（$0.06/秒 = 60 credits）
@@ -2270,6 +2421,7 @@ SEEDANCE2 = _seedance_spec(
 SEEDANCE2_FAST = _seedance_spec(
     "seedance2_fast",
     "Seedance 2.0 Fast（音声つき・外部 API）",
+    "Fast（音声つき）",
     "bytedance/seedance-2-fast",
     SEEDANCE_FAST_RESOLUTIONS,
     # 720p / 5 秒の概算（$0.05/秒 = 50 credits）
@@ -2282,6 +2434,7 @@ SEEDANCE2_FAST = _seedance_spec(
 SEEDANCE2_MINI = _seedance_spec(
     "seedance2_mini",
     "Seedance 2.0 Mini（音声つき・外部 API）",
+    "Mini（音声つき）",
     "bytedance/seedance-2-mini",
     SEEDANCE_MINI_RESOLUTIONS,
     # 720p / 5 秒の概算（$0.04/秒 = 40 credits）
@@ -2294,6 +2447,7 @@ SEEDANCE2_MINI = _seedance_spec(
 SEEDANCE2_REF = _seedance_spec(
     "seedance2_ref",
     "Seedance 2.0（素材参照・音声つき・外部 API）",
+    "素材参照（音声つき）",
     "bytedance/seedance-2",
     SEEDANCE_RESOLUTIONS,
     60.0,
@@ -2306,6 +2460,7 @@ SEEDANCE2_REF = _seedance_spec(
 SEEDANCE2_FAST_REF = _seedance_spec(
     "seedance2_fast_ref",
     "Seedance 2.0 Fast（素材参照・音声つき・外部 API）",
+    "Fast 素材参照（音声つき）",
     "bytedance/seedance-2-fast",
     SEEDANCE_FAST_RESOLUTIONS,
     50.0,
@@ -2318,6 +2473,7 @@ SEEDANCE2_FAST_REF = _seedance_spec(
 SEEDANCE2_MINI_REF = _seedance_spec(
     "seedance2_mini_ref",
     "Seedance 2.0 Mini（素材参照・音声つき・外部 API）",
+    "Mini 素材参照（音声つき）",
     "bytedance/seedance-2-mini",
     SEEDANCE_MINI_RESOLUTIONS,
     40.0,
@@ -2377,6 +2533,7 @@ GROK_IMAGINE_VIDEO_PROMPT_HINT = (
 GROK_IMAGINE_VIDEO = WorkflowSpec(
     id="grok_imagine_video",
     label="Grok Imagine 動画（サブスク CLI）",
+    mode_label="動画生成（音声つき）",
     kind="video",
     family="grok-imagine",
     backend="grok_cli",
@@ -2433,8 +2590,7 @@ GROK_IMAGINE_VIDEO = WorkflowSpec(
         "映像と同時に生成する（音声入力は無い） / 尺・解像度・縦横比は"
         "プロンプト経由の希望 / LoRA 不可 / 実在人物・著名人・商標は"
         "モデレーションで弾かれる / 枠は Chat と共有（動画の目安 10 本/日）/"
-        " 尺の上限 10 秒・720p は CLI 経由の報道値なので、実機検証で 15 秒・"
-        "1080p まで広げる可能性がある"
+        " 尺は最大 10 秒・720p"
     ),
 )
 
@@ -2451,6 +2607,7 @@ GROK_IMAGINE_VIDEO = WorkflowSpec(
 ACE_STEP_1_5 = WorkflowSpec(
     id="ace_step1_5_xl_sft",
     label="ACE-Step 1.5 XL（音楽・歌もの）",
+    mode_label="XL SFT（音楽・歌もの）",
     kind="audio",
     family="ace-step",
     relpath="audio/ace_step1_5_xl_sft.json",
@@ -2497,6 +2654,7 @@ ACE_STEP_1_5 = WorkflowSpec(
 STABLE_AUDIO_3 = WorkflowSpec(
     id="stable_audio_3_medium_base",
     label="Stable Audio 3 Medium（効果音・環境音・音楽）",
+    mode_label="Medium base（効果音・環境音・音楽）",
     kind="audio",
     family="stable-audio",
     relpath="audio/stable_audio_3_medium_base.json",
@@ -2626,6 +2784,7 @@ SUNO_MAX_PROMPT_CHARS = 1000
 SUNO_V5 = WorkflowSpec(
     id="suno_v5",
     label="Suno V5（歌もの・外部 API）",
+    mode_label="標準（歌もの）",
     kind="audio",
     family="suno",
     backend="kie",
@@ -2921,9 +3080,9 @@ class CatalogEntry:
     #: ``(JobCreate field, 日本語ラベル, 件数の上限)`` of the multi-file reference
     #: inputs it accepts (empty for every workflow without a reference mode)
     reference_inputs: tuple[tuple[str, str, int], ...]
-    #: 参照画像の**下限**（0 = 無くても走る）。ComfyUI 側でグラフに展開する
-    #: ワークフロー（MiniMax H3 r2v）だけが 1 以上を持つ。
-    min_reference_images: int
+    #: 参照素材の**下限**（種類を問わない合計。0 = 無くても走る）。ComfyUI 側で
+    #: グラフに展開するワークフロー（MiniMax H3 r2v）だけが 1 以上を持つ。
+    min_references: int
     #: 選択式どうしの相関（``(名前, 相手の名前, 相手に必要な値)``、§3.1）。
     #: Suno の ``duration`` は ``model`` が ``V5_5`` のときしか効かない。
     select_requires: tuple[tuple[str, str, str], ...]
@@ -2977,8 +3136,8 @@ def catalog_entry(spec: WorkflowSpec) -> CatalogEntry:
             for name, limit in spec.multi_inputs.items()
             if name in MULTI_INPUT_FIELDS
         ),
-        min_reference_images=(
-            spec.ref_images.min_images if spec.ref_images is not None else 0
+        min_references=(
+            spec.ref_media.min_refs if spec.ref_media is not None else 0
         ),
         select_requires=tuple(
             (name, other, needed)
@@ -3297,6 +3456,116 @@ def validate_external_spec(spec: WorkflowSpec) -> list[str]:
     return problems
 
 
+#: :class:`RefMediaFan` の 1 種類ぶんの検証材料
+#: ``(論理名, 可変入力の接頭辞, 繋ぎ元の雛形, 期待する class_type)``。
+#: 論理名が空の組（動画のサウンドトラック）は件数の上限を持たない。
+_RefMediaKind = tuple[str, str, Target, str]
+
+
+def _ref_media_kinds(fan: RefMediaFan) -> tuple[_RefMediaKind, ...]:
+    """宣言している種類ぶんの ``(論理名, 接頭辞, 雛形, class_type)``。
+
+    ``ref_video_audio_*`` は動画と同じ番号・同じ雛形（``GetVideoComponents``）を
+    使うので、論理名を持たない 4 つ目の組として並ぶ。
+    """
+    kinds: list[_RefMediaKind] = [
+        (REF_IMAGES_NAME, fan.image_prefix, fan.image_loader, "LoadImage")
+    ]
+    names = fan.names()
+    if REF_VIDEOS_NAME in names:
+        assert fan.video_loader is not None and fan.video_decoder is not None
+        kinds += [
+            (REF_VIDEOS_NAME, fan.video_prefix, fan.video_decoder, "GetVideoComponents"),
+            ("", fan.video_audio_prefix, fan.video_decoder, "GetVideoComponents"),
+        ]
+    if REF_AUDIOS_NAME in names:
+        assert fan.audio_loader is not None
+        kinds.append((REF_AUDIOS_NAME, fan.audio_prefix, fan.audio_loader, "LoadAudio"))
+    return tuple(kinds)
+
+
+def _ref_media_problems(
+    spec: WorkflowSpec, tpl: Workflow, check: Any
+) -> list[str]:
+    """:class:`RefMediaFan` の宣言がテンプレートと合っているか（SPEC §3.1）。
+
+    ``check`` は :func:`validate_spec` の内側の関数で、ノードの実在と
+    ``class_type`` のずれは**呼び出し側の一覧に**積まれる。ここが返すのは
+    「上限が宣言されているか」「雛形が本当にその可変入力に繋がっているか」など、
+    この宣言でしか意味を持たない検査。
+    """
+    fan = spec.ref_media
+    assert fan is not None
+    problems: list[str] = []
+    check(fan.node, "ref_media.node")
+    for target, origin in (
+        (fan.image_loader, "image_loader"),
+        (fan.video_loader, "video_loader"),
+        (fan.video_decoder, "video_decoder"),
+        (fan.audio_loader, "audio_loader"),
+    ):
+        if target is not None:
+            check(target, f"ref_media.{origin}")
+    if (fan.video_loader is None) != (fan.video_decoder is None):
+        problems.append(
+            f"{spec.id}.ref_media: video_loader and video_decoder come as a pair"
+        )
+    # 参照動画は LoadVideo -> GetVideoComponents の 2 段なので、雛形の時点で
+    # デコーダが本当にローダーを読んでいることを見る
+    if fan.video_loader is not None and fan.video_decoder is not None:
+        node = tpl.get(fan.video_decoder.node_id)
+        link = (node.get("inputs") or {}).get(fan.video_decoder.field) if isinstance(node, dict) else None
+        if not isinstance(link, list) or len(link) != 2 or link[0] != fan.video_loader.node_id:
+            problems.append(
+                f"{spec.id}.ref_media: {fan.video_decoder.key} does not read the"
+                f" loader {fan.video_loader.node_id!r}"
+            )
+
+    total = 0
+    node = tpl.get(fan.node.node_id)
+    inputs = (node.get("inputs") or {}) if isinstance(node, dict) else {}
+    for name, prefix, loader, class_type in _ref_media_kinds(fan):
+        if name:
+            limit = spec.multi_inputs.get(name)
+            if limit is None:
+                problems.append(
+                    f"{spec.id}.ref_media: multi_inputs[{name!r}] is not declared"
+                    " (the app would have no upper bound)"
+                )
+            else:
+                total += limit
+        if loader.class_type != class_type:
+            problems.append(
+                f"{spec.id}.ref_media: {prefix}* is fed by"
+                f" {loader.class_type!r}, expected {class_type!r}"
+            )
+        if not prefix:
+            problems.append(f"{spec.id}.ref_media: a prefix is empty")
+            continue
+        wired = {key: value for key, value in inputs.items() if key.startswith(prefix)}
+        if not wired:
+            problems.append(
+                f"{spec.id}.ref_media: {fan.node.node_id} has no {prefix}* input"
+            )
+        for key, link in wired.items():
+            if not isinstance(link, list) or len(link) != 2 or link[0] != loader.node_id:
+                problems.append(
+                    f"{spec.id}.ref_media: {fan.node.node_id}.{key} does not read"
+                    f" the loader {loader.node_id!r}"
+                )
+    if not 0 <= fan.min_refs <= total:
+        problems.append(
+            f"{spec.id}.ref_media: min_refs {fan.min_refs} is not in 0..{total}"
+        )
+    for name in spec.multi_inputs:
+        if name not in fan.names():
+            problems.append(
+                f"{spec.id}.ref_media: multi_inputs[{name!r}] has nothing to"
+                " connect it to"
+            )
+    return problems
+
+
 def validate_spec(spec: WorkflowSpec, template: Workflow | None = None) -> list[str]:
     """Problems found in ``spec`` against its template (empty list == fine)."""
     if spec.backend != "comfyui":
@@ -3408,47 +3677,24 @@ def validate_spec(spec: WorkflowSpec, template: Workflow | None = None) -> list[
                     f" {node.get('class_type')!r}, expected 'LoraLoaderModelOnly'"
                 )
 
-    # 参照画像の動的展開（:class:`RefImageFan`）: 受け側と雛形が実在し、雛形が
-    # 本当に ``ref_image_*`` に繋がっているか。ここがずれると、組み直しのときに
-    # 雛形が消えずにダミーのファイル名が ComfyUI に残る。
-    if spec.ref_images is not None:
-        fan = spec.ref_images
-        check(fan.node, "ref_images.node")
-        check(fan.loader, "ref_images.loader")
-        if fan.loader.class_type != "LoadImage":
+    # 参照素材の動的展開（:class:`RefMediaFan`）: 受け側と雛形が実在し、雛形が
+    # 本当に ``ref_*`` に繋がっているか。ここがずれると、組み直しのときに雛形が
+    # 消えずにダミーのファイル名が ComfyUI に残る。
+    if spec.ref_media is not None:
+        problems += _ref_media_problems(spec, tpl, check)
+
+    # 任意の入力（:attr:`WorkflowSpec.optional_loaders`）: 落とす先が
+    # ``inject`` にあり、雛形のノードを名指ししているか。
+    for name in spec.optional_loaders:
+        target = spec.inject.get(name)
+        if target is None:
             problems.append(
-                f"{spec.id}.ref_images.loader: {fan.loader.class_type!r} is not"
-                " a 'LoadImage'"
+                f"{spec.id}.optional_loaders: {name!r} has no inject target"
             )
-        limit = spec.multi_inputs.get(REF_IMAGES_NAME)
-        if limit is None:
+        elif target.node_id not in tpl:
             problems.append(
-                f"{spec.id}.ref_images: multi_inputs[{REF_IMAGES_NAME!r}] is not"
-                " declared (the app would have no upper bound)"
+                f"{spec.id}.optional_loaders: node {target.node_id!r} is missing"
             )
-        elif not 0 <= fan.min_images <= limit:
-            problems.append(
-                f"{spec.id}.ref_images: min_images {fan.min_images} is not in"
-                f" 0..{limit}"
-            )
-        if not fan.prefix:
-            problems.append(f"{spec.id}.ref_images: prefix is empty")
-        node = tpl.get(fan.node.node_id)
-        inputs = (node.get("inputs") or {}) if isinstance(node, dict) else {}
-        wired = {
-            key: value for key, value in inputs.items() if key.startswith(fan.prefix)
-        }
-        if not wired:
-            problems.append(
-                f"{spec.id}.ref_images: {fan.node.node_id} has no"
-                f" {fan.prefix}* input"
-            )
-        for key, link in wired.items():
-            if not isinstance(link, list) or len(link) != 2 or link[0] != fan.loader.node_id:
-                problems.append(
-                    f"{spec.id}.ref_images: {fan.node.node_id}.{key} does not read"
-                    f" the loader {fan.loader.node_id!r}"
-                )
 
     if spec.output_node not in tpl:
         problems.append(f"{spec.id}.output_node: node {spec.output_node!r} is missing")

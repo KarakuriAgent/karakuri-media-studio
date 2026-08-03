@@ -27,6 +27,9 @@ import {
   sheetSize,
   toggleReference,
   validateForm,
+  workflowFamilies,
+  workflowFamilyLabel,
+  workflowModeLabel,
   workflowsForMode,
   type FormState,
 } from './form'
@@ -101,6 +104,44 @@ describe('workflowsForMode', () => {
 
   it('offers everything for a standalone video job', () => {
     expect(workflowsForMode('i2v', all)).toHaveLength(5)
+  })
+})
+
+describe('workflowFamilies', () => {
+  const KLING = workflow({
+    id: 'kling3_video',
+    label: 'Kling 3.0（音声つき・外部 API）',
+    mode_label: '標準（音声つき）',
+    family_label: 'Kling 3.0（外部 API）',
+    family: 'kling',
+  })
+  const KLING_MULTI = workflow({
+    id: 'kling3_multishot',
+    mode_label: 'マルチショット（音声つき）',
+    family_label: 'Kling 3.0（外部 API）',
+    family: 'kling',
+  })
+
+  it('ファミリーごとにまとめ、並びは一覧の初出順', () => {
+    const groups = workflowFamilies([T2V, KLING, I2V, KLING_MULTI])
+    expect(groups.map((group) => group.family)).toEqual(['ltx2.3', 'kling'])
+    expect(groups[0].workflows.map((item) => item.id)).toEqual([
+      'ltx2_3_t2v',
+      'i2v',
+    ])
+    expect(groups[1].label).toBe('Kling 3.0（外部 API）')
+  })
+
+  it('モードのラベルはモデル名を含まない mode_label を使う', () => {
+    expect(workflowModeLabel(KLING)).toBe('標準（音声つき）')
+    // 宣言の無い（古いレスポンスの）ものは label のまま
+    expect(workflowModeLabel(T2V)).toBe('W')
+  })
+
+  it('モデルのラベルは family_label、無ければ日本語名に落とす', () => {
+    expect(workflowFamilyLabel(KLING)).toBe('Kling 3.0（外部 API）')
+    expect(workflowFamilyLabel(T2V)).toBe('LTX 2.3')
+    expect(workflowFamilyLabel(workflow({ family: 'unknown' }))).toBe('unknown')
   })
 })
 
