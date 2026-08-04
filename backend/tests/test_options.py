@@ -102,6 +102,44 @@ def test_workflows_carry_the_two_stage_picker_labels(client):
     assert images["krea2_turbo"]["mode_label"] == "turbo"
 
 
+def test_speedup_toggles_are_exposed_on_the_declaring_workflows(client):
+    """高速化トグル（SPEC §3.1）は宣言のあるワークフローの supports にだけ出る。"""
+    videos = {w["id"]: w for w in client.get("/api/options").json()["video_workflows"]}
+    for workflow_id in ("minimax_h3_t2v", "minimax_h3_i2v", "minimax_h3_r2v"):
+        assert {"sage_attention", "easy_cache"} <= set(videos[workflow_id]["supports"])
+    # 挟む場所を宣言していないワークフローには出ない
+    assert not {"sage_attention", "easy_cache"} & set(videos["ltx2_3_t2v"]["supports"])
+
+
+def test_unsupported_speedups_follow_the_connection_target(client):
+    """暫定ガード: クラウド接続のあいだは Sage Attention をグレーアウトさせる。"""
+    assert client.get("/api/options").json()["unsupported_speedups"] == []
+
+    client.put("/api/settings", json={"comfy_target": "comfy_cloud"})
+    assert client.get("/api/options").json()["unsupported_speedups"] == [
+        "sage_attention"
+    ]
+
+    client.put("/api/settings", json={"comfy_target": "local"})
+    assert client.get("/api/options").json()["unsupported_speedups"] == []
+
+
+def test_speedup_toggles_are_stored_in_the_settings(client):
+    """値は設定に永続化される（既定 OFF・部分更新で片方だけ書き換えられる）。"""
+    settings = client.get("/api/settings").json()
+    assert settings["sage_attention"] is False
+    assert settings["easy_cache"] is False
+
+    saved = client.put("/api/settings", json={"sage_attention": True}).json()
+    assert saved["sage_attention"] is True
+    # 部分更新なので、触っていないほうは既定のまま
+    assert saved["easy_cache"] is False
+    assert config.load_settings().sage_attention is True
+
+    saved = client.put("/api/settings", json={"easy_cache": True}).json()
+    assert saved["sage_attention"] is True and saved["easy_cache"] is True
+
+
 def test_family_label_carries_the_supplier_note():
     """供給元の注記はモデル側に付く（モードごとに変わるものではない）。"""
     from app.workflows import FAMILY_LABELS, family_label

@@ -10,6 +10,8 @@ import SettingsPage from './components/SettingsPage'
 import AgentView from './components/agent/AgentView'
 import { Banner } from './components/ui'
 import {
+  EASY_CACHE,
+  SAGE_ATTENTION,
   audioJobPayload,
   formStateFromParams,
   imageWorkflowNeedsSource,
@@ -166,11 +168,36 @@ export default function App() {
 
   const loadSettings = useCallback(async () => {
     try {
-      setSettings(await api.getSettings())
+      const loaded = await api.getSettings()
+      setSettings(loaded)
+      // 高速化トグルはジョブごとの値だがサーバー側の設定に永続化されるので、
+      // フォームの初期値はここから来る（SPEC §3.1）。
+      patch({
+        sageAttention: loaded.sage_attention,
+        easyCache: loaded.easy_cache,
+      })
     } catch (error) {
       pushError(error)
     }
-  }, [pushError])
+  }, [patch, pushError])
+
+  /**
+   * 高速化トグルの切り替え（SPEC §3.1）。フォームの値であると同時に設定でも
+   * あるので、その場で反映しつつサーバーにも保存する。
+   */
+  const changeSpeedup = useCallback(
+    async (name: string, value: boolean) => {
+      patch(
+        name === SAGE_ATTENTION ? { sageAttention: value } : { easyCache: value },
+      )
+      try {
+        setSettings(await api.putSettings({ [name]: value }))
+      } catch (error) {
+        pushError(error)
+      }
+    },
+    [patch, pushError],
+  )
 
   /**
    * 接続先を切り替える（SPEC §5）。サーバー側の設定に保存し、選択肢と接続状態を
@@ -362,6 +389,9 @@ export default function App() {
         form.mode !== 'i2v' && imageWorkflowNeedsSource(imageWorkflow)
       // ショット割り / Elements は動画ステージのパラメータ（SPEC §3.1）
       const runsVideo = form.mode === 'full' || form.mode === 'i2v'
+      // 高速化トグルも同じく動画ステージのもの（宣言のあるワークフローだけ）
+      const speedup = (name: string) =>
+        runsVideo && (workflow?.supports ?? []).includes(name)
       const payload: JobCreate = {
         mode: form.mode,
         video_workflow: form.videoWorkflow,
@@ -398,6 +428,10 @@ export default function App() {
           form.mode === 'image_only' ? '' : form.videoTriggerText,
         duration: form.duration,
         fps: form.fps,
+        // 高速化トグル（SPEC §3.1）: 宣言のあるワークフローを動画ステージで
+        // 走らせるときだけ送る（null = サーバー側の設定の既定値に従う）。
+        sage_attention: speedup(SAGE_ATTENTION) ? form.sageAttention : null,
+        easy_cache: speedup(EASY_CACHE) ? form.easyCache : null,
         audio_path: needs('audio') ? form.audioPath || null : null,
         // in full mode the image stage produces the start frame
         source_image:
@@ -639,6 +673,7 @@ export default function App() {
               fieldErrors={fieldErrors}
               comfyTarget={settings?.comfy_target ?? null}
               onComfyTarget={(target) => void changeComfyTarget(target)}
+              onSpeedup={(name, value) => void changeSpeedup(name, value)}
               // 履歴モーダルは自前で NSFW を切り替えるので、フィルタ前の全ジョブを渡す
               jobs={jobs}
               showNsfw={showNsfw}

@@ -92,6 +92,46 @@ def test_local_target_has_no_api_prefix(monkeypatch):
         config._settings = None
 
 
+@pytest.mark.parametrize(
+    ("target", "cloud"),
+    [("local", False), ("runpod", False), ("comfy_cloud", True)],
+)
+def test_is_cloud_follows_the_url_host(monkeypatch, target, cloud):
+    use(monkeypatch, comfy_target=target)
+    try:
+        assert comfy.is_cloud() is cloud
+        # プロファイル名ではなくホストで見るので、他の環境も名指しで聞ける
+        assert comfy.is_cloud("comfy_cloud") is True
+    finally:
+        config._settings = None
+
+
+def test_is_cloud_is_false_when_the_url_is_missing(monkeypatch):
+    """URL 未設定は「クラウドではない」（ここで例外を投げない）。"""
+    use(monkeypatch, comfy_target="runpod", runpod_comfy_url="")
+    try:
+        assert comfy.is_cloud() is False
+    finally:
+        config._settings = None
+
+
+def test_sage_attention_is_unsupported_on_the_cloud(monkeypatch):
+    """暫定ガード: クラウドのランタイムには sageattention が無い（SPEC §3.1）。"""
+    use(monkeypatch, comfy_target="comfy_cloud")
+    try:
+        assert comfy.unsupported_patches() == ("sage_attention",)
+        # EasyCache は ComfyUI 標準ノードなので落とさない
+        assert "easy_cache" not in comfy.unsupported_patches()
+    finally:
+        config._settings = None
+
+    use(monkeypatch, comfy_target="local")
+    try:
+        assert comfy.unsupported_patches() == ()
+    finally:
+        config._settings = None
+
+
 def test_an_empty_profile_url_is_an_error(monkeypatch):
     use(monkeypatch, comfy_target="runpod", runpod_comfy_url="")
     try:

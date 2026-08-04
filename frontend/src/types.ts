@@ -82,6 +82,13 @@ export interface Settings {
   runpod_gpu_type: string
   /** /workspace にマウントする Network Volume の ID。 */
   runpod_network_volume_id: string
+  /**
+   * 高速化トグルの既定値（SPEC §3.1）。宣言のある動画ワークフロー（`supports`
+   * にそれぞれの名前があるもの）だけが読む。生成フォームのトグルがここを
+   * 書き換えるので、次に開いたときも同じ状態で始まる。
+   */
+  sage_attention: boolean
+  easy_cache: boolean
 }
 
 /**
@@ -477,6 +484,12 @@ export interface JobCreate {
   video_trigger_text: string
   duration: number
   fps: number
+  /**
+   * 高速化トグル（SPEC §3.1）。宣言のある動画ワークフローでだけ効く。
+   * 省略 / null なら設定（`GET /api/settings`）の既定値に従う。
+   */
+  sage_attention?: boolean | null
+  easy_cache?: boolean | null
   audio_path: string | null
   source_image: string | null
   end_image: string | null
@@ -601,6 +614,11 @@ export interface Options {
   /** いま使っている接続先プロファイルと、その URL（表示用）。 */
   comfy_target: ComfyTarget
   comfy_url: string
+  /**
+   * **いまの接続先では使えない**高速化トグルの論理名（SPEC §3.1）。載っている
+   * 項目はチェックボックスをグレーアウトする（古いレスポンスには無いので任意）。
+   */
+  unsupported_speedups?: string[]
   image_workflows: WorkflowOption[]
   video_workflows: WorkflowOption[]
   audio_workflows: WorkflowOption[]

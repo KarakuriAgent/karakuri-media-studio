@@ -18,6 +18,7 @@ import httpx
 
 from .config import load_settings
 from .models import ComfyTarget
+from .workflows import SAGE_ATTENTION_NAME
 
 DEFAULT_TIMEOUT = 30.0
 UPLOAD_TIMEOUT = 300.0
@@ -118,10 +119,44 @@ def _headers(target: ComfyTarget | None = None) -> dict[str, str]:
     return {"X-API-Key": api_key, "Authorization": f"Bearer {api_key}"}
 
 
+def is_cloud(target: ComfyTarget | None = None) -> bool:
+    """その接続先が Comfy Cloud か（URL のホストで見る、SPEC §5）。
+
+    プロファイル名（``comfy_target``）ではなくホスト名で判定するのは、``runpod``
+    のプロファイルに Cloud の URL を入れる使い方もできるため。URL が未設定なら
+    「クラウドではない」扱いにする（ここで例外を投げると、接続先を決めるだけの
+    呼び出し側が全部 try で囲む羽目になる）。
+    """
+    url = (profile(target)[0] or "").strip()
+    host = url.split("://", 1)[-1].split("/", 1)[0].lower()
+    return host.endswith("comfy.org")
+
+
+#: **暫定**: Comfy Cloud のランタイムには pip パッケージ ``sageattention`` が
+#: 入っておらず、``PathchSageAttentionKJ``（ノード定義自体は KJNodes として在る）
+#: が実行時に ``ModuleNotFoundError: No module named 'sageattention'`` で落ちる
+#: （2026-08 確認）。そのためクラウドに繋いでいるあいだはこのパッチをグラフに
+#: 挟まず、通常グラフで走らせる（ジョブを失敗させない）。EasyCache は ComfyUI
+#: 本体標準のノードなのでクラウドでも動くため、ここには入れない。
+#: **クラウドが sageattention に対応したら、この定義を空にするだけで元に戻る**
+#: （ジョブ側のガードも UI のグレーアウトもここだけを見ている）。
+CLOUD_UNSUPPORTED_PATCHES: tuple[str, ...] = (SAGE_ATTENTION_NAME,)
+
+
+def unsupported_patches(target: ComfyTarget | None = None) -> tuple[str, ...]:
+    """その接続先では使えない高速化トグルの論理名（SPEC §3.1）。
+
+    ジョブの組み立て（:mod:`app.jobs`）と生成フォームのグレーアウト
+    （``GET /api/options``）が同じここを見るので、判定は 1 箇所で済む。
+    """
+    return CLOUD_UNSUPPORTED_PATCHES if is_cloud(target) else ()
+
+
 def _api_prefix(target: ComfyTarget | None = None) -> str:
     """Comfy Cloud serves the compatible API under ``/api`` (local works bare)."""
-    host = _base_url(target).split("://", 1)[-1].split("/", 1)[0].lower()
-    return "/api" if host.endswith("comfy.org") else ""
+    # URL が未設定なら _base_url が ComfyError を投げる（従来どおり）
+    _base_url(target)
+    return "/api" if is_cloud(target) else ""
 
 
 def _client(timeout: float, target: ComfyTarget | None = None) -> httpx.AsyncClient:

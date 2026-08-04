@@ -80,6 +80,7 @@ function show(
 ) {
   const patch = vi.fn()
   const onComfyTarget = vi.fn()
+  const onSpeedup = vi.fn()
   render(
     <GenerateForm
       form={{ ...initialForm, ...form }}
@@ -93,11 +94,12 @@ function show(
       fieldErrors={{}}
       comfyTarget={comfyTarget}
       onComfyTarget={onComfyTarget}
+      onSpeedup={onSpeedup}
       jobs={[]}
       showNsfw={false}
     />,
   )
-  return { patch, onComfyTarget }
+  return { patch, onComfyTarget, onSpeedup }
 }
 
 /** The <section> whose heading is `title`. */
@@ -1756,5 +1758,124 @@ describe('GenerateForm のマルチショットと Elements', () => {
     expect(second.patch).toHaveBeenCalledWith({
       klingElements: [{ name: 'kaori', description: '', images: [] }],
     })
+  })
+})
+
+// -------------------------------------------------- 高速化トグル（SPEC §3.1）
+
+const SPEEDUP_WORKFLOW = {
+  id: 'minimax_h3_i2v',
+  label: '画像→動画・音声つき',
+  kind: 'video' as const,
+  family: 'minimax-h3',
+  notes: '',
+  requires: ['image' as const],
+  supports: ['prompt', 'duration', 'image', 'sage_attention', 'easy_cache'],
+  accepts_start_image: true,
+  image_label: '開始フレーム',
+  selects: [],
+  prompt_required: true,
+  accepts_video_loras: false,
+  min_duration: 0,
+  max_duration: 0,
+  default_duration: 0,
+}
+
+/** 高速化トグルを宣言する / しないワークフローを選んだフォーム。 */
+function showSpeedups(
+  form: Partial<FormState> = {},
+  supports: string[] = SPEEDUP_WORKFLOW.supports,
+  unsupported: string[] = [],
+) {
+  const onSpeedup = vi.fn()
+  render(
+    <GenerateForm
+      form={{
+        ...initialForm,
+        mode: 'i2v',
+        videoWorkflow: SPEEDUP_WORKFLOW.id,
+        ...form,
+      }}
+      patch={vi.fn()}
+      options={{
+        ...OPTIONS,
+        video_workflows: [{ ...SPEEDUP_WORKFLOW, supports }],
+        unsupported_speedups: unsupported,
+      }}
+      optionsError={null}
+      onReloadOptions={() => {}}
+      onOpenChat={() => {}}
+      onSubmit={() => {}}
+      submitting={false}
+      fieldErrors={{}}
+      comfyTarget="local"
+      onComfyTarget={() => {}}
+      onSpeedup={onSpeedup}
+      jobs={[]}
+      showNsfw={false}
+    />,
+  )
+  return { onSpeedup }
+}
+
+describe('GenerateForm の高速化トグル（SPEC §3.1）', () => {
+  /** ラベルの先頭が `label` で始まる高速化トグルのチェックボックス。 */
+  function speedupBox(label: string): HTMLInputElement {
+    const found = screen
+      .getAllByRole('checkbox')
+      .find((box) => box.parentElement?.textContent?.startsWith(label))
+    if (!found) throw new Error(`no speedup checkbox for ${label}`)
+    return found as HTMLInputElement
+  }
+
+  it('宣言のあるワークフローでだけチェックボックスを出す', () => {
+    showSpeedups()
+    expect(screen.getByText('Sage Attention 高速化')).toBeTruthy()
+    expect(screen.getByText('EasyCache 高速化')).toBeTruthy()
+
+    cleanup()
+    showSpeedups({}, ['prompt', 'duration', 'image'])
+    expect(screen.queryByText('Sage Attention 高速化')).toBeNull()
+    expect(screen.queryByText('EasyCache 高速化')).toBeNull()
+  })
+
+  it('動画ステージを走らせないモードでは出さない', () => {
+    showSpeedups({ mode: 'image_only' })
+    expect(screen.queryByText('Sage Attention 高速化')).toBeNull()
+    expect(screen.queryByText('EasyCache 高速化')).toBeNull()
+  })
+
+  it('使えない接続先ではグレーアウトして理由を出す（Comfy Cloud の暫定措置）', () => {
+    const { onSpeedup } = showSpeedups({ sageAttention: true }, undefined, [
+      'sage_attention',
+    ])
+    const sage = speedupBox('Sage Attention')
+    // 欄は消さずに disabled（なぜ使えないかを読ませる）
+    expect(sage.disabled).toBe(true)
+    expect(sage.checked).toBe(false)
+    expect(
+      screen.getByText(/Comfy Cloud は未対応のため無効化されています/),
+    ).toBeTruthy()
+    // （disabled な input はブラウザではクリックが届かない。jsdom の
+    // fireEvent は直接ディスパッチしてしまうので、ここでは属性だけを見る）
+
+    // EasyCache は ComfyUI 標準ノードなので従来どおり操作できる
+    const easy = speedupBox('EasyCache')
+    expect(easy.disabled).toBe(false)
+    fireEvent.click(easy)
+    expect(onSpeedup).toHaveBeenCalledWith('easy_cache', true)
+  })
+
+  it('切り替えは論理名つきで親に渡す（親が設定に保存する）', () => {
+    const { onSpeedup } = showSpeedups({ easyCache: true })
+    const sage = speedupBox('Sage Attention')
+    const easy = speedupBox('EasyCache')
+    expect(sage.checked).toBe(false)
+    expect(easy.checked).toBe(true)
+
+    fireEvent.click(sage)
+    expect(onSpeedup).toHaveBeenCalledWith('sage_attention', true)
+    fireEvent.click(easy)
+    expect(onSpeedup).toHaveBeenCalledWith('easy_cache', false)
   })
 })

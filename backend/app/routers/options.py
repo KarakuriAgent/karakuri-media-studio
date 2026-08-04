@@ -110,6 +110,8 @@ async def get_options() -> Options:
     options = Options(
         comfy_target=settings.comfy_target,
         comfy_url=settings.active_comfy_url(),
+        # 今の接続先で動かない高速化トグル（グレーアウト用、SPEC §3.1）
+        unsupported_speedups=list(comfy.unsupported_patches()),
         audio_assets=list_assets("audio", AUDIO_EXT),
         image_assets=list_assets("image", IMAGE_EXT),
         video_assets=list_assets("video", VIDEO_EXT),

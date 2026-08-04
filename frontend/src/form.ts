@@ -137,6 +137,14 @@ export interface FormState {
   klingElements: KlingElement[]
   duration: number
   fps: number
+  /**
+   * 高速化トグル（SPEC §3.1）。宣言のある動画ワークフロー（`supports` に
+   * それぞれの名前があるもの）でだけ欄が出る。サーバー側の設定
+   * （`GET/PUT /api/settings`）に永続化されるので、初期値はそこから来る。
+   * 両方 ON なら UNETLoader → Sage Attention → EasyCache → BasicGuider。
+   */
+  sageAttention: boolean
+  easyCache: boolean
   seedLocked: boolean
   seed: number
   promptTemplate: PromptTemplate
@@ -201,6 +209,8 @@ export const initialForm: FormState = {
   klingElements: [],
   duration: 10,
   fps: 25,
+  sageAttention: false,
+  easyCache: false,
   seedLocked: false,
   seed: 0,
   promptTemplate: 'natural',
@@ -441,6 +451,28 @@ export function elementsLimits(
   workflow?: WorkflowOption | null,
 ): ElementsLimits | null {
   return workflow?.elements ?? null
+}
+
+// ---------------------------------------------------- 高速化トグル（SPEC §3.1）
+// UNETLoader と BasicGuider の間に挟むノードの ON / OFF。ジョブごとの値では
+// あるが、**サーバー側の設定に永続化される**（`GET/PUT /api/settings`）ので、
+// 次に開いたときも同じ状態で始まる。
+
+/** 高速化トグルの論理名（バックエンドの `supports` と同じ綴り）。 */
+export const SAGE_ATTENTION = 'sage_attention'
+export const EASY_CACHE = 'easy_cache'
+
+/**
+ * そのワークフローが高速化トグル `name` を持つか。
+ *
+ * 挿し込み口の宣言（`WorkflowSpec.patch_point`）があるワークフローだけが
+ * `supports` にこれらの名前を出すので、無いワークフローでは欄そのものが出ない。
+ */
+export function supportsSpeedup(
+  workflow: WorkflowOption | null | undefined,
+  name: string,
+): boolean {
+  return (workflow?.supports ?? []).includes(name)
 }
 
 /**

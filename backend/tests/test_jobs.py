@@ -615,6 +615,95 @@ def test_continue_chains_from_last_frame(env):
     assert wait_for(env.client, third["id"])["status"] == "done"
 
 
+# --------------------------------------------------------------------------
+# 高速化トグル（SPEC §3.1）
+# --------------------------------------------------------------------------
+
+@needs_ffmpeg
+def test_speedup_toggles_fall_back_to_the_stored_settings(env):
+    """明示されなければ設定の既定値が params に焼き込まれる。"""
+    env.client.put("/api/settings", json={"easy_cache": True})
+    created = env.client.post(
+        "/api/jobs", json=full_body(env, video_workflow="minimax_h3_i2v")
+    ).json()
+    assert created["params"]["sage_attention"] is False
+    assert created["params"]["easy_cache"] is True
+
+    job = wait_for(env.client, created["id"])
+    assert job["status"] == "done", job["error"]
+    video = graph_with(env, "105:16")
+    assert "app_sage_attention" not in video
+    assert video["105:16"]["inputs"]["model"] == ["app_easy_cache", 0]
+
+
+@needs_ffmpeg
+def test_a_job_can_override_the_stored_speedup_toggles(env):
+    env.client.put("/api/settings", json={"easy_cache": True})
+    created = env.client.post(
+        "/api/jobs",
+        json=full_body(
+            env,
+            video_workflow="minimax_h3_i2v",
+            sage_attention=True,
+            easy_cache=False,
+        ),
+    ).json()
+    assert created["params"]["sage_attention"] is True
+    assert created["params"]["easy_cache"] is False
+
+    job = wait_for(env.client, created["id"])
+    assert job["status"] == "done", job["error"]
+    video = graph_with(env, "105:16")
+    assert video["105:16"]["inputs"]["model"] == ["app_sage_attention", 0]
+    assert "app_easy_cache" not in video
+
+
+@needs_ffmpeg
+def test_sage_attention_is_dropped_on_the_comfy_cloud(env):
+    """暫定ガード: クラウドには sageattention が無いので挟まない（SPEC §3.1）。
+
+    EasyCache は ComfyUI 標準ノードなので、クラウドでもそのまま挟む。
+    """
+    env.client.put("/api/settings", json={"comfy_target": "comfy_cloud"})
+    created = env.client.post(
+        "/api/jobs",
+        json=full_body(
+            env,
+            video_workflow="minimax_h3_i2v",
+            sage_attention=True,
+            easy_cache=True,
+        ),
+    ).json()
+    # 希望した値は params に残る（ローカルに戻して再実行すれば有効になる）
+    assert created["params"]["sage_attention"] is True
+
+    job = wait_for(env.client, created["id"])
+    assert job["status"] == "done", job["error"]
+    video = graph_with(env, "105:16")
+    assert "app_sage_attention" not in video
+    assert video["105:16"]["inputs"]["model"] == ["app_easy_cache", 0]
+    assert video["app_easy_cache"]["inputs"]["model"] == ["105:6", 0]
+
+
+@needs_ffmpeg
+def test_sage_attention_survives_on_a_local_target(env):
+    """ローカル接続なら従来どおり両方挟む（ガードは接続先だけを見る）。"""
+    created = env.client.post(
+        "/api/jobs",
+        json=full_body(
+            env,
+            video_workflow="minimax_h3_i2v",
+            sage_attention=True,
+            easy_cache=True,
+        ),
+    ).json()
+    job = wait_for(env.client, created["id"])
+    assert job["status"] == "done", job["error"]
+    video = graph_with(env, "105:16")
+    assert video["app_sage_attention"]["inputs"]["model"] == ["105:6", 0]
+    assert video["app_easy_cache"]["inputs"]["model"] == ["app_sage_attention", 0]
+
+
 VIDEO_LORA = {
     "lora_name": "motion.safetensors",
     "trigger_word": "slowmo",

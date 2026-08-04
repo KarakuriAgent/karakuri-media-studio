@@ -316,6 +316,7 @@ LoRA チェーンも持たない（テンプレートに LoRA ノードが無い
 | リファレンス音声 | `audio` → `276` (LoadAudio)。要求するワークフローのみ | アップロード（`/upload/image` で送信 → ファイル名を注入） |
 | 開始フレーム / 最終フレーム / 参照動画 | `image` / `end_image` / `video` | ワークフローの必要入力に応じて表示。画像は D&D・履歴のラストフレームからも選べる |
 | マルチモーダル参照（参照画像 / 参照動画 / 参照音声） | `reference_images` / `reference_videos` / `reference_audios`（複数ファイル → 外部 API では URL の配列、ComfyUI では件数ぶんのローダー） | 宣言のあるワークフロー（Seedance 2 系・Veo 3.1 Fast は参照画像 3 枚まで・MiniMax H3 r2v は画像 9 / 動画 3 / 音声 3）で `mode: "i2v"` のときだけ表示。1 欄が複数ファイルを持ち、選んだ順が API に渡る配列の順序になる。**開始フレーム / 最終フレームとは排他**（下記） |
+| 高速化トグル（Sage Attention / EasyCache） | `sage_attention` / `easy_cache` → UNETLoader と BasicGuider の間にノードを挟む（下記） | 宣言のあるワークフロー（MiniMax H3）で動画ステージが走るときだけ「出力設定」にチェックボックスを表示。値は `PUT /api/settings` で永続化される |
 | マルチショット | `multi_shots` / `multi_prompt`（構造化リスト） | 宣言のあるワークフロー（Kling 3.0）で動画ステージが走るときだけ表示。折りたたみセクションで、ショット行（プロンプト + 秒数）の追加・削除（下記） |
 | Elements | `kling_elements`（構造化リスト） | 同上。折りたたみセクションで、要素（名前 + 説明 + 参照画像の複数選択）の追加・削除（下記） |
 | 秒数 (Duration) | `duration` | 数値・**上限なし**。長尺は VRAM 次第で ComfyUI 側エラーになり得ることを UI に注記。`duration` を持たないワークフロー（wan_dancer は尺を選択式で持つ）では欄ごと出さない |
@@ -390,6 +391,38 @@ ComfyUI が「テンプレートにしか無いファイル」を探して落ち
 リンクごと**落とす（`RefMediaFan` と同じ手口の単数版）。受け側の入力はノード定義でも optional なので、
 「リンクが無い」ことがそのまま「渡されていない」を意味する。MiniMax H3 i2v の `end_image` →
 `MiniMaxH3ImageToVideo.last_frame` がこれ。
+
+##### 高速化トグル: MODEL の経路にノードを挟む（`WorkflowSpec.patch_point` / `MODEL_PATCHES`）
+
+生成そのものを速くする**実行時オプション**。挟む場所はワークフロー側の宣言
+`PatchPoint(head=<UNETLoader のノード ID>, consumers=(<BasicGuider の model 入力>,))`
+（`LoraChain` と同じ「1 本の辺を切って間に挟む」形）、挟むノードの素性は共通の
+`MODEL_PATCHES` が持つ:
+
+| 論理名 | ノード | 効果 |
+|---|---|---|
+| `sage_attention` | `PathchSageAttentionKJ`（ComfyUI-KJNodes・**任意のカスタムノード**。クラス名のタイポは本家由来） | 生成が約 2 倍速。SageAttention を入れた環境でのみ使える |
+| `easy_cache` | `EasyCache`（ComfyUI 標準。既定値 `reuse_threshold=0.2` / `start_percent=0.15` / `end_percent=0.95`） | ステップ間の計算を再利用。短縮幅はプロンプト依存で、動きの激しい映像では品質が落ちることがある |
+
+ON にされたものだけを `workflow._build_model_patches` がこの順で**直列**に生やす
+（UNETLoader → Sage Attention → EasyCache → BasicGuider）。どれも OFF（既定）なら
+ノードは 1 つも増えず、グラフはテンプレートと完全に一致する。同じ MODEL を読む
+`BasicScheduler` は sigmas を作るだけなので繋ぎ替えない。カスタムノードのほうは
+**入れていない環境でヘルスチェックが赤くならないよう** `all_required_class_types`
+には載せない。宣言を持つのは MiniMax H3 の 3 つ（t2v / i2v / r2v）。
+
+値は**サーバー側の設定**（`Settings.sage_attention` / `.easy_cache`、`runtime/config.json`）に
+永続化され、ジョブが明示しなければその既定値が投入時に params へ焼き込まれる
+（あとから設定を変えても、再実行が同じグラフを組み立てられる）。
+
+**暫定: Comfy Cloud 接続時は Sage Attention を無効にする。** クラウドのランタイムには pip パッケージ
+`sageattention` が入っておらず、ノード定義は在るのに実行時 `ModuleNotFoundError` でジョブごと落ちる
+（2026-08 確認）。落とす対象は `comfy.CLOUD_UNSUPPORTED_PATCHES`（判定は `comfy.is_cloud` =
+URL のホストが `comfy.org`）の 1 箇所だけが持ち、`jobs._run_comfy_stage` がグラフを組む直前に
+`GenerationParams` から落とす（**ジョブの params には希望した値を残す**ので、ローカルに戻して
+再実行すれば有効なグラフが組まれる）。同じ判定が `GET /api/options` の `unsupported_speedups` にも
+出て、生成フォームはその項目を**非表示にはせず disabled（グレーアウト）**にして理由を出す。
+クラウドが対応したら `CLOUD_UNSUPPORTED_PATCHES` を空にするだけで、ジョブ側も UI も元に戻る。
 
 #### 構造化パラメータ: マルチショット（`WorkflowSpec.multi_shot`）と Elements（`WorkflowSpec.elements`）
 
