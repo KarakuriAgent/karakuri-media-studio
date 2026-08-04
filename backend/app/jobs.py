@@ -819,6 +819,19 @@ async def _insert_job(
     return job
 
 
+def _patch_toggles(payload: JobCreate) -> dict[str, bool]:
+    """高速化トグルの実効値（明示されていなければ設定の既定値、SPEC §3.1）。"""
+    settings = load_settings()
+    explicit = {
+        "sage_attention": payload.sage_attention,
+        "easy_cache": payload.easy_cache,
+    }
+    return {
+        name: (getattr(settings, name) if value is None else value)
+        for name, value in explicit.items()
+    }
+
+
 def _params_from_create(payload: JobCreate) -> dict[str, Any]:
     params: dict[str, Any] = {
         "mode": payload.mode,
@@ -845,6 +858,10 @@ def _params_from_create(payload: JobCreate) -> dict[str, Any]:
         "reprompt": payload.reprompt,
         "duration": payload.duration,
         "fps": payload.fps,
+        # 高速化トグル（宣言のある動画ワークフローだけが読む、SPEC §3.1）。
+        # 明示されなければ設定の既定値を**このジョブの params に焼き込む**
+        # （あとから設定を変えても、再実行が同じグラフを組み立てられる）。
+        **_patch_toggles(payload),
         "audio_path": payload.audio_path,
         "source_image": payload.source_image,
         "end_image": payload.end_image,
@@ -1167,6 +1184,9 @@ def _generation_params(
         negative_tags=p.get("negative_tags") or "",
         audio_category=p.get("audio_category") or "Music",
         reprompt=bool(p.get("reprompt", False)),
+        # 旧ジョブの params には無いので既定は OFF（後方互換）
+        sage_attention=bool(p.get("sage_attention", False)),
+        easy_cache=bool(p.get("easy_cache", False)),
         # 旧ジョブの params には無いので既定は空（後方互換）
         selects={
             str(name): str(value) for name, value in (p.get("selects") or {}).items()
@@ -1619,6 +1639,13 @@ async def _run_comfy_stage(
         "video": build_video_workflow,
         "audio": build_audio_workflow,
     }
+    # 今の接続先で動かない高速化トグルは、ここで落としてから組み立てる（SPEC §3.1）。
+    # ジョブの params には希望した値を残したままにするので、接続先をローカルに
+    # 戻して再実行すれば、そのときは有効なグラフが組まれる。何を落とすかは
+    # :data:`app.comfy.CLOUD_UNSUPPORTED_PATCHES`（暫定ガード）が持つ。
+    blocked = comfy.unsupported_patches()
+    if blocked:
+        params = params.model_copy(update={name: False for name in blocked})
     workflow = builders[stage](params, overrides, spec=spec)
     entry = await _run_stage(
         job_id, stage, spec, workflow, stages, label, overall, stage_index

@@ -37,9 +37,12 @@ from app.workflows import (
     ANIMA,
     DEFAULT_IMAGE_WORKFLOW,
     DEFAULT_VIDEO_WORKFLOW,
+    EASY_CACHE_PATCH,
     GENERATED_AUDIO,
     INPUT_FIELDS,
+    MODEL_PATCH_NAMES,
     QWEN_IMAGE_EDIT,
+    SAGE_ATTENTION_PATCH,
     SPECS,
     KREA2_TURBO,
     T,
@@ -914,6 +917,127 @@ def test_the_end_image_is_an_optional_input_of_minimax_i2v():
     assert "end_image" not in spec.requires
     entry = catalog_entry(spec)
     assert ("end_image", "最後のフレーム画像") in entry.optional_inputs
+
+
+# --- 高速化トグル（PatchPoint / MODEL_PATCHES、SPEC §3.1）-------------------
+
+#: 挿し込み口を宣言している動画ワークフロー（= トグルが出るもの）
+PATCH_VIDEO_IDS = [
+    workflow_id
+    for workflow_id in VIDEO_IDS
+    if get_spec(workflow_id, "video").patch_point is not None
+]
+
+
+def _patched(workflow_id: str, **toggles) -> dict:
+    wf = build_video_workflow(params(video_workflow=workflow_id, **toggles))
+    validate_workflow(wf)
+    return wf
+
+
+def test_the_minimax_workflows_declare_a_patch_point():
+    assert PATCH_VIDEO_IDS == ["minimax_h3_t2v", "minimax_h3_i2v", "minimax_h3_r2v"]
+    for workflow_id in PATCH_VIDEO_IDS:
+        spec = get_spec(workflow_id, "video")
+        assert set(MODEL_PATCH_NAMES) <= set(spec.supported_names())
+        assert spec.supports("sage_attention") and spec.supports("easy_cache")
+
+
+@pytest.mark.parametrize("workflow_id", PATCH_VIDEO_IDS)
+def test_the_toggles_are_off_by_default(workflow_id):
+    """既定 OFF: グラフはトグルを知らなかった頃と完全に同じ。"""
+    plain = _patched(workflow_id)
+    assert plain == _patched(workflow_id, sage_attention=False, easy_cache=False)
+    assert not [key for key in plain if key.startswith("app_")]
+
+
+@pytest.mark.parametrize("workflow_id", PATCH_VIDEO_IDS)
+def test_sage_attention_is_spliced_between_the_unet_and_the_guider(workflow_id):
+    spec = get_spec(workflow_id, "video")
+    point = spec.patch_point
+    wf = _patched(workflow_id, sage_attention=True)
+    node = wf[SAGE_ATTENTION_PATCH.node_id]
+    assert node["class_type"] == "PathchSageAttentionKJ"
+    assert node["inputs"] == {"model": [point.head, 0], "sage_attention": "auto"}
+    for consumer in point.consumers:
+        assert wf[consumer.node_id]["inputs"][consumer.field] == [
+            SAGE_ATTENTION_PATCH.node_id,
+            0,
+        ]
+    # sigmas を作るだけの BasicScheduler は繋ぎ替えない
+    schedulers = [
+        key
+        for key, item in wf.items()
+        if item.get("class_type") == "BasicScheduler"
+    ]
+    assert schedulers
+    for key in schedulers:
+        assert wf[key]["inputs"]["model"] == [point.head, 0]
+    assert EASY_CACHE_PATCH.node_id not in wf
+
+
+@pytest.mark.parametrize("workflow_id", PATCH_VIDEO_IDS)
+def test_easy_cache_is_spliced_with_the_node_defaults(workflow_id):
+    spec = get_spec(workflow_id, "video")
+    point = spec.patch_point
+    wf = _patched(workflow_id, easy_cache=True)
+    node = wf[EASY_CACHE_PATCH.node_id]
+    assert node["class_type"] == "EasyCache"
+    assert node["inputs"] == {
+        "model": [point.head, 0],
+        "reuse_threshold": 0.2,
+        "start_percent": 0.15,
+        "end_percent": 0.95,
+        "verbose": False,
+    }
+    for consumer in point.consumers:
+        assert wf[consumer.node_id]["inputs"][consumer.field] == [
+            EASY_CACHE_PATCH.node_id,
+            0,
+        ]
+    assert SAGE_ATTENTION_PATCH.node_id not in wf
+
+
+@pytest.mark.parametrize("workflow_id", PATCH_VIDEO_IDS)
+def test_both_toggles_are_chained_in_series(workflow_id):
+    """UNETLoader -> Sage Attention -> EasyCache -> BasicGuider の順に繋がる。"""
+    spec = get_spec(workflow_id, "video")
+    point = spec.patch_point
+    wf = _patched(workflow_id, sage_attention=True, easy_cache=True)
+    assert wf[SAGE_ATTENTION_PATCH.node_id]["inputs"]["model"] == [point.head, 0]
+    assert wf[EASY_CACHE_PATCH.node_id]["inputs"]["model"] == [
+        SAGE_ATTENTION_PATCH.node_id,
+        0,
+    ]
+    for consumer in point.consumers:
+        assert wf[consumer.node_id]["inputs"][consumer.field] == [
+            EASY_CACHE_PATCH.node_id,
+            0,
+        ]
+
+
+def test_the_r2v_node_ids_are_the_ones_in_its_template():
+    """r2v だけノード ID が違う（127 = UNETLoader / 126 = BasicGuider）。"""
+    wf = _patched("minimax_h3_r2v", sage_attention=True, easy_cache=True)
+    assert wf[SAGE_ATTENTION_PATCH.node_id]["inputs"]["model"] == ["127", 0]
+    assert wf["126"]["inputs"]["model"] == [EASY_CACHE_PATCH.node_id, 0]
+    assert wf["124"]["inputs"]["model"] == ["127", 0]  # BasicScheduler はそのまま
+
+
+def test_only_the_declared_workflows_grow_the_patch_nodes():
+    """宣言の無いワークフローでトグルを立ててもグラフは変わらない。"""
+    for workflow_id in VIDEO_IDS:
+        if workflow_id in PATCH_VIDEO_IDS:
+            continue
+        spec = get_spec(workflow_id, "video")
+        assert not set(MODEL_PATCH_NAMES) & set(spec.supported_names())
+        if spec.backend != "comfyui":
+            continue
+        wf = build_video_workflow(
+            params(video_workflow=workflow_id, sage_attention=True, easy_cache=True)
+        )
+        assert SAGE_ATTENTION_PATCH.node_id not in wf
+        assert EASY_CACHE_PATCH.node_id not in wf
 
 
 # --- frame count rounding --------------------------------------------------

@@ -5,9 +5,11 @@ import {
   COMFY_TARGETS,
   COMFY_TARGET_LABELS,
   DEFAULT_NEGATIVE_PROMPT,
+  EASY_CACHE,
   MODE_HINTS,
   MODE_LABELS,
   NEGATIVE_PRESET_LABELS,
+  SAGE_ATTENTION,
   hiddenFields,
   imageWorkflowNeedsSource,
   elementsLimits,
@@ -21,6 +23,7 @@ import {
   promptChars,
   referenceFields,
   sheetSize,
+  supportsSpeedup,
   toSelected,
   toggleReference,
   workflowsForMode,
@@ -74,6 +77,12 @@ interface Props {
   comfyTarget: ComfyTarget | null
   /** 接続先を変える（App が `PUT /api/settings` で保存する） */
   onComfyTarget: (target: ComfyTarget) => void
+  /**
+   * 高速化トグルの切り替え（SPEC §3.1）。`name` は論理名（`sage_attention` /
+   * `easy_cache`）で、App がフォームの値と `PUT /api/settings` の両方を更新する。
+   * ジョブ単位ではなく**設定**なので、次に開いたときも同じ状態で始まる。
+   */
+  onSpeedup?: (name: string, value: boolean) => void
   /** NSFW フィルタ前の全ジョブ（履歴モーダルが自前でフィルタする） */
   jobs: Job[]
   /** ヘッダーの NSFW 表示トグル（履歴モーダルの初期値） */
@@ -559,6 +568,7 @@ export default function GenerateForm({
   fieldErrors,
   comfyTarget,
   onComfyTarget,
+  onSpeedup,
   jobs,
   showNsfw,
   libraryVersion,
@@ -645,6 +655,16 @@ export default function GenerateForm({
     }
     patchElement(index, { images: toggleReference(images, url) })
   }
+  // 高速化トグル（SPEC §3.1）。宣言のある動画ワークフローを動画ステージで
+  // 走らせるときだけ出す（画像だけ・音声のモードでは効かないので出さない）。
+  const runsVideo = form.mode === 'full' || form.mode === 'i2v'
+  const speedups = runsVideo ? workflow : null
+  const sageAttention = supportsSpeedup(speedups, SAGE_ATTENTION)
+  const easyCache = supportsSpeedup(speedups, EASY_CACHE)
+  // いまの接続先で動かないトグルは、欄は出したままグレーアウトする（なぜ使えない
+  // のかが分かるように。判定はサーバー側の `unsupported_speedups`）。
+  const blockedSpeedups = options?.unsupported_speedups ?? []
+  const sageBlocked = blockedSpeedups.includes(SAGE_ATTENTION)
   // 画像欄がリファレンスシート（IC-LoRA）なら、ライブラリの素材から合成できる。
   // 画像を編集するワークフローのときの欄は別物（編集元画像）なので出さない。
   const sheetInput =
@@ -1704,6 +1724,50 @@ export default function GenerateForm({
                 onChange={(event) => patch({ seed: Number(event.target.value) || 0 })}
               />
             </div>
+            {sageAttention && (
+              <label
+                className={`mt-3 flex items-start gap-2 text-xs ${
+                  sageBlocked ? 'text-slate-500' : 'text-slate-300'
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  className="mt-0.5 accent-accent-500"
+                  // 使えない接続先では操作させず、チェックも外して見せる（設定の
+                  // 値そのものは触らないので、ローカルに戻せばそのまま復活する）
+                  disabled={sageBlocked}
+                  checked={!sageBlocked && form.sageAttention}
+                  onChange={(event) =>
+                    onSpeedup?.(SAGE_ATTENTION, event.target.checked)
+                  }
+                />
+                <span>
+                  Sage Attention 高速化
+                  <span className="mt-0.5 block text-[11px] text-slate-500">
+                    {sageBlocked
+                      ? 'Comfy Cloud は未対応のため無効化されています（sageattention パッケージ未導入）。ローカル ComfyUI 接続時に利用できます。'
+                      : '生成速度が約2倍になります（要 SageAttention + KJNodes インストール）。品質がわずかに変わる場合があります。'}
+                  </span>
+                </span>
+              </label>
+            )}
+            {easyCache && (
+              <label className="mt-2 flex items-start gap-2 text-xs text-slate-300">
+                <input
+                  type="checkbox"
+                  className="mt-0.5 accent-accent-500"
+                  checked={form.easyCache}
+                  onChange={(event) => onSpeedup?.(EASY_CACHE, event.target.checked)}
+                />
+                <span>
+                  EasyCache 高速化
+                  <span className="mt-0.5 block text-[11px] text-slate-500">
+                    ステップ間の計算を再利用してさらに高速化します。短縮幅は
+                    プロンプト依存で、動きの激しい映像では品質が落ちる場合があります。
+                  </span>
+                </span>
+              </label>
+            )}
           </Section>
         </>
       )}

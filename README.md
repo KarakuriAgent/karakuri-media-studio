@@ -23,6 +23,7 @@
 |---|---|
 | ComfyUI | 稼働中であること（既定 `http://127.0.0.1:8188`）。Comfy Cloud も可 |
 | custom nodes | ResolutionSelector / ComfySwitchNode / CustomCombo / LTXV 系 / ComfyMath / ResizeImage 系 / ResizeAndPadImage / MoGe 系 / LoadVideo / Video Slice など、`workflow/` 配下のワークフローが使うノード一式 |
+| custom nodes（任意） | MiniMax H3 の「Sage Attention 高速化」を使う場合のみ SageAttention 本体と [ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes)。トグルを OFF のままなら不要（もう一方の「EasyCache 高速化」は ComfyUI 標準ノードなので追加インストール不要）。**Comfy Cloud には `sageattention` が入っていないため、クラウド接続時はこのトグル自体が無効になります**（暫定） |
 | モデル | **使うワークフローのぶんだけ**あれば十分です（各テンプレートの既定ファイル名は SPEC §3.3）。足りないものは後述の「不足モデルの自動ダウンロード」で取得できます |
 | grok CLI | `curl -fsSL https://x.ai/cli/install.sh \| bash` でインストール後、一度 `grok` を起動してブラウザでサインイン（SuperGrok / X Premium+ のサブスクリプションで利用可） |
 | ffmpeg | 動画からのラストフレーム抽出に使用（PATH にあること） |
@@ -169,6 +170,13 @@ WebSocket で右ペインにリアルタイム表示され、完了すると生�
 
 MiniMax H3 の 3 種は映像とステレオ音声（台詞・効果音・音楽）を同時生成します。
 実行には MiniMaxH3 ノードを含む新しめの ComfyUI 本体が必要です（SPEC §2.2）。
+「出力設定」に高速化トグルが 2 つ出ます（どちらも既定オフ・オンオフは設定に保存されます）:
+**Sage Attention 高速化**（約 2 倍速。SageAttention と KJNodes を入れた環境でのみ使えます）と
+**EasyCache 高速化**（ステップ間の計算を再利用。短縮幅はプロンプト次第で、動きの激しい映像では
+品質が落ちることがあります）。両方オンにすると直列に効きます。
+なお **Comfy Cloud 接続時は Sage Attention が使えません**（クラウドのランタイムに `sageattention`
+パッケージが入っておらず実行時に落ちるため、暫定でグレーアウトし、グラフにも挟みません）。
+ローカル ComfyUI に切り替えれば設定した値がそのまま有効になります。EasyCache はクラウドでも使えます。
 
 **音声**は ACE-Step 1.5 XL（歌もの・インスト。歌詞や BPM を指定）と
 Stable Audio 3 Medium（効果音・環境音・単一楽器）の 2 種です。
@@ -231,6 +239,7 @@ Stable Audio 3 Medium（効果音・環境音・単一楽器）の 2 種です�
 | `model_overrides` / `model_choices` | **接続先ごと**のモデルファイル名の上書きと、実行ごとに選べる候補リスト | `{}` |
 | `runpod_*` | RunPod Pod の自動起動（有効化 / APIキー / テンプレート ID / GPU 種別 / Network Volume ID） | 無効 |
 | `agent_*` | エージェントの CLI フラグ・タイムアウト・自走上限（設定ページには出ません） | SPEC 参照 |
+| `sage_attention` / `easy_cache` | MiniMax H3 の高速化トグル（生成フォームの「出力設定」のチェックボックスがここを書き換えます。設定ページには出ません） | どちらも `false` |
 
 **モデルタブ**と**LoRA 管理タブ**の先頭には [対象の接続先] のプルダウンがあり、
 **モデルの指定と LoRA 登録は接続先ごとに保存されます**（環境によって入っているファイルが

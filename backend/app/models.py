@@ -106,6 +106,12 @@ class Settings(BaseModel):
     # エージェントのターンを ACP (`grok agent stdio`) で回すか。ACP だと実行中の
     # 活動（思考 / ツール実行）を UI に出せる。False なら従来のワンショット実行。
     agent_use_acp: bool = True
+    # 高速化トグルの既定値（SPEC §3.1）。宣言のあるワークフロー（MiniMax H3）
+    # だけが読み、ON にすると UNETLoader と BasicGuider の間に
+    # `PathchSageAttentionKJ` / `EasyCache` を直列で挟む。ジョブが明示しなければ
+    # この値が使われる（生成フォームのトグルがここを書き換える）。
+    sage_attention: bool = False
+    easy_cache: bool = False
     # モデルの指定は**接続先ごと**に持つ（SPEC §3.3 / §5）: どのファイルが在るかは
     # ComfyUI の環境ごとに違うので、ローカルで使うファイル名を Pod や ComfyCloud に
     # 押し付けても意味がない。キーは接続先、値は従来と同じ形。
@@ -206,6 +212,8 @@ class SettingsUpdate(BaseModel):
     agent_grok_timeout: float | None = None
     agent_max_plan_tasks: int | None = None
     agent_use_acp: bool | None = None
+    sage_attention: bool | None = None
+    easy_cache: bool | None = None
 
 
 class ModelField(BaseModel):
@@ -528,6 +536,12 @@ class GenerationParams(BaseModel):
     audio_category: str = AUDIO_CATEGORIES[0]
     #: Stable Audio: expand `audio_prompt` with the graph's own local LLM first
     reprompt: bool = False
+
+    #: 動画ワークフローに高速化のパッチを挟むか（SPEC §3.1）。宣言のある動画
+    #: ワークフロー（:attr:`app.workflows.WorkflowSpec.patch_point`）だけが読む。
+    #: ジョブが明示しなければ設定の既定値が入っている。両方 ON なら直列に挟む。
+    sage_attention: bool = False
+    easy_cache: bool = False
 
     #: 選択式フィールドの値（論理名 -> 選んだ文字列。SPEC §3.1）。宣言のない
     #: ワークフローでは常に空。
@@ -1496,6 +1510,11 @@ class JobCreate(BaseModel):
     duration: float = 10.0
     fps: int = 25
 
+    #: 高速化トグル（SPEC §3.1）。宣言のある動画ワークフローでのみ効く。
+    #: ``None`` = 設定の既定値（`Settings.sage_attention` / `.easy_cache`）に従う。
+    sage_attention: bool | None = None
+    easy_cache: bool | None = None
+
     # absolute path inside assets/ or the "/assets/..." URL returned by the
     # asset upload endpoints.
     audio_path: str | None = None
@@ -2213,6 +2232,10 @@ class Options(BaseModel):
     #: いま使っている接続先プロファイルと、その URL（表示用）
     comfy_target: ComfyTarget = "local"
     comfy_url: str = ""
+    #: **いまの接続先では使えない**高速化トグルの論理名（SPEC §3.1）。生成
+    #: フォームはここに載っている項目をグレーアウトする。中身を決めるのは
+    #: :func:`app.comfy.unsupported_patches`（現状は Comfy Cloud の暫定ガード）。
+    unsupported_speedups: list[str] = Field(default_factory=list)
     image_workflows: list[WorkflowOption] = Field(default_factory=list)
     video_workflows: list[WorkflowOption] = Field(default_factory=list)
     audio_workflows: list[WorkflowOption] = Field(default_factory=list)

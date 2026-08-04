@@ -26,11 +26,15 @@ from typing import Any
 
 from .models import GenerationParams, LoraRef, ModelField, ModelSlot
 from .workflows import (
+    EASY_CACHE_NAME,
     LTX_FRAME_GRID,
+    MODEL_PATCHES,
     REF_AUDIOS_NAME,
     REF_IMAGES_NAME,
     REF_VIDEOS_NAME,
+    SAGE_ATTENTION_NAME,
     LoraChain,
+    PatchPoint,
     Target,
     Workflow,
     WorkflowSpec,
@@ -634,6 +638,42 @@ def _build_lora_chain(
         _set(wf, consumer.node_id, consumer.field, upstream)
 
 
+def _build_model_patches(
+    wf: Workflow, point: PatchPoint | None, enabled: set[str]
+) -> None:
+    """Splice the enabled ``MODEL`` patches into ``point`` (SPEC §3.1).
+
+    :func:`_build_lora_chain` と同じ「辺を切って間に挟む」操作の、固定ノード版。
+    ON にされたものだけを :data:`app.workflows.MODEL_PATCHES` の順に**直列**で
+    繋ぐ（Sage Attention → EasyCache）。1 つも ON でなければ**何もしない**ので、
+    グラフはテンプレートのままになる。
+
+    上流には ``point.head`` ではなく **consumer が今読んでいるリンク**を使う。
+    先に LoRA チェーンを組んでいればその末尾がそのまま入力になり、パッチが必ず
+    最後段に来る（H3 は LoRA チェーンを持たないので実際には head 直結だが、
+    組み立て順に依らない形にしておく）。
+    """
+    if point is None or not point.consumers:
+        return
+    picked = [patch for patch in MODEL_PATCHES if patch.name in enabled]
+    if not picked:
+        return
+    first = point.consumers[0]
+    node = _node(wf, first)
+    upstream = (node.get("inputs") or {}).get(first.field) if node else None
+    if not _is_link(upstream):
+        upstream = [point.head, 0]
+    for patch in picked:
+        wf[patch.node_id] = {
+            "class_type": patch.class_type,
+            "_meta": {"title": patch.title},
+            "inputs": {"model": list(upstream), **patch.inputs},
+        }
+        upstream = [patch.node_id, 0]
+    for consumer in point.consumers:
+        _set(wf, consumer.node_id, consumer.field, list(upstream))
+
+
 def _loader_node(loader: Target, value: Any, title: str) -> dict[str, Any]:
     """One freshly grown ``LoadImage`` / ``LoadVideo`` / ``LoadAudio`` node."""
     return {
@@ -921,6 +961,14 @@ def build_video_workflow(
     _build_lora_chain(
         wf, resolved.lora_chain, params.video_loras, prefix=VIDEO_LORA_NODE_PREFIX
     )
+    # 高速化トグルは最後段（LoRA チェーンの出口）に挟む。どれも OFF なら
+    # ノードは 1 つも増えないので、グラフは従来と完全に同じ（SPEC §3.1）。
+    enabled_patches: set[str] = set()
+    if params.sage_attention:
+        enabled_patches.add(SAGE_ATTENTION_NAME)
+    if params.easy_cache:
+        enabled_patches.add(EASY_CACHE_NAME)
+    _build_model_patches(wf, resolved.patch_point, enabled_patches)
     _inject_selects(wf, resolved, params)
     for name, value in resolved.constants.items():
         _inject(wf, resolved, name, value)

@@ -180,6 +180,82 @@ class LoraChain:
     consumers: tuple[Target, ...] = ()
 
 
+#: 高速化トグルの論理名（``supports`` / ジョブの params / 設定のキー）
+SAGE_ATTENTION_NAME = "sage_attention"
+EASY_CACHE_NAME = "easy_cache"
+
+
+@dataclass(frozen=True)
+class ModelPatchNode:
+    """実行時オプションで ``MODEL`` の経路に挟むノード 1 種（SPEC §3.1）。
+
+    どれも「モデルを受けてモデルを返す」形なので、宣言としては**挟むノードの
+    素性**（クラス・組み立て後のノード ID・``model`` 以外の固定入力）だけで足り、
+    どこに挟むかはワークフロー側の :class:`PatchPoint` が持つ。
+    """
+
+    #: 論理名。``supports`` にもジョブの params にもこの名前で出る
+    name: str
+    class_type: str
+    #: 組み立て後のノード ID（テンプレートの ID と衝突しない ``app_`` 接頭辞）
+    node_id: str
+    title: str
+    #: ``model`` 以外の入力（ノードの既定値をそのまま書き下す）
+    inputs: dict[str, Any] = field(default_factory=dict)
+
+
+#: Sage Attention（ComfyUI-KJNodes）。クラス名の綴りは本家のタイポそのままで、
+#: これが正しいキー。**任意のカスタムノード**なので
+#: :func:`app.workflow.all_required_class_types` には載せない（入れていない環境で
+#: ヘルスチェックが赤くならないよう、使うと言われたときだけ生やす）。
+SAGE_ATTENTION_PATCH = ModelPatchNode(
+    name=SAGE_ATTENTION_NAME,
+    class_type="PathchSageAttentionKJ",
+    node_id="app_sage_attention",
+    title="Patch Sage Attention KJ",
+    inputs={"sage_attention": "auto"},
+)
+
+#: EasyCache（ComfyUI 本体標準の ``comfy_extras/nodes_easycache.py``）。
+#: 数値はノードの既定値そのまま（reuse_threshold 0.2 / start 0.15 / end 0.95）。
+EASY_CACHE_PATCH = ModelPatchNode(
+    name=EASY_CACHE_NAME,
+    class_type="EasyCache",
+    node_id="app_easy_cache",
+    title="EasyCache",
+    inputs={
+        "reuse_threshold": 0.2,
+        "start_percent": 0.15,
+        "end_percent": 0.95,
+        "verbose": False,
+    },
+)
+
+#: 挟めるパッチの全種。**この並びがそのまま直列の順**（head に近いほうが先）で、
+#: 両方 ON なら UNETLoader → Sage Attention → EasyCache → BasicGuider になる。
+MODEL_PATCHES: tuple[ModelPatchNode, ...] = (SAGE_ATTENTION_PATCH, EASY_CACHE_PATCH)
+
+#: パッチの論理名（フォーム・ジョブ・設定が使う語彙）
+MODEL_PATCH_NAMES: tuple[str, ...] = tuple(patch.name for patch in MODEL_PATCHES)
+
+
+@dataclass(frozen=True)
+class PatchPoint:
+    """Where the optional ``MODEL`` patches are spliced in (SPEC §3.1).
+
+    :class:`LoraChain` と同じ「1 本の辺を切って間に挟む」宣言: ``head`` は
+    ``MODEL`` を出すノード（UNETLoader）、``consumers`` はそれを読んでいて
+    パッチ後の ``MODEL`` に繋ぎ替える入力（BasicGuider）。どれも OFF のときは
+    ノードを一切生やさないので、グラフはテンプレートのままになる。
+
+    同じ ``MODEL`` を読む ``BasicScheduler`` は sigmas を作るだけでサンプリング
+    を回さないので、繋ぎ替えない（パッチが要るのは guider 側だけ）。
+    """
+
+    head: str
+    consumers: tuple[Target, ...] = ()
+
+
 #: :data:`MULTI_INPUT_FIELDS` の名前のうち、ComfyUI のグラフに展開できるもの
 #: （:class:`RefMediaFan`）。MiniMax H3 r2v は 3 種類とも受け取る。
 REF_IMAGES_NAME = "reference_images"
@@ -618,6 +694,11 @@ class WorkflowSpec:
     #: ``reference_audios`` を ComfyUI のグラフでも受け取れるようになる（外部 API の
     #: 参照モードと同じ入力・同じ UI）。
     ref_media: RefMediaFan | None = None
+    #: 高速化トグル（:data:`MODEL_PATCHES`）を挟む場所（:class:`PatchPoint`、
+    #: ``None`` = 非対応）。宣言すると ``supports`` に :data:`MODEL_PATCH_NAMES`
+    #: が出て、フォームにトグルが増える（既定はどれも OFF。ON にしたぶんだけ
+    #: ノードが直列に生える）。
+    patch_point: PatchPoint | None = None
     #: **渡されなかったらグラフから取り外す**入力の論理名（:data:`InputName`）。
     #: ``inject`` に載っているだけの入力はファイル名を空文字にするだけなので、
     #: ComfyUI が「そのファイルが無い」で落ちる。任意の最終フレーム
@@ -651,6 +732,8 @@ class WorkflowSpec:
                 yield select.numeric_target
         if self.lora_chain is not None:
             yield from self.lora_chain.consumers
+        if self.patch_point is not None:
+            yield from self.patch_point.consumers
 
     def select(self, name: str) -> SelectSpec | None:
         return self.selects.get(name)
@@ -669,6 +752,9 @@ class WorkflowSpec:
         # ので、宣言そのものを受け取り口として見る
         if self.ref_media is not None and name in self.ref_media.names():
             return True
+        # 実行時オプション（注入先ではなくグラフの組み替え）も受け取り口として扱う
+        if self.patch_point is not None and name in MODEL_PATCH_NAMES:
+            return True
         if self.kie is not None and name in self.kie.fields:
             return True
         if self.grok is not None and name in self.grok.values:
@@ -686,6 +772,8 @@ class WorkflowSpec:
         names = set(self.inject)
         if self.ref_media is not None:
             names |= set(self.ref_media.names())
+        if self.patch_point is not None:
+            names |= set(MODEL_PATCH_NAMES)
         if self.kie is not None:
             names |= set(self.kie.fields)
         if self.grok is not None:
@@ -1468,7 +1556,12 @@ _MINIMAX_H3_NOTES = (
     "24fps 固定・尺は 17k+5 フレームの格子に切り上げ（5 秒 = 124 フレーム、"
     "学習範囲は約 1〜15 秒）/ 短辺 768px・最大 768x1344 が既定の画角"
     "（幅高さは 32 の倍数）/ negative prompt は無い（CFG 無しの BasicGuider）/"
-    " ユーザー LoRA を挿すチェーンは持たない"
+    " ユーザー LoRA を挿すチェーンは持たない /"
+    " 高速化トグルを 2 つ持つ（どちらも既定 OFF・UNETLoader と BasicGuider の"
+    "間に直列で挟む）: `sage_attention` は `PathchSageAttentionKJ`"
+    "（ComfyUI-KJNodes・SageAttention を入れた環境でのみ使える）で約 2 倍速、"
+    "`easy_cache` は `EasyCache`（ComfyUI 標準）でステップ間の計算を再利用する"
+    "（短縮幅はプロンプト次第・動きの激しい映像では品質が落ちることがある）"
 )
 
 #: r2v が受け取れる参照素材の件数（``MiniMaxH3ReferenceToVideo`` の Autogrow の
@@ -1538,6 +1631,10 @@ MINIMAX_H3_T2V = WorkflowSpec(
         "frames_expr": T("105:107", "", "ComfyMathExpression"),
         "save_prefix": T("92", "filename_prefix", "SaveVideo"),
     },
+    # 高速化トグル（任意・既定 OFF）: UNETLoader と BasicGuider の間に挟む
+    patch_point=PatchPoint(
+        head="105:6", consumers=(T("105:16", "model", "BasicGuider"),)
+    ),
     seeds=(T("105:15", "noise_seed", "RandomNoise"),),
     notes=_MINIMAX_H3_NOTES + " /" + _MINIMAX_H3_MODELS.format(unet="fl2va"),
 )
@@ -1585,6 +1682,9 @@ MINIMAX_H3_I2V = WorkflowSpec(
         "save_prefix": T("92", "filename_prefix", "SaveVideo"),
     },
     optional_loaders=("end_image",),
+    patch_point=PatchPoint(
+        head="105:6", consumers=(T("105:16", "model", "BasicGuider"),)
+    ),
     seeds=(T("105:15", "noise_seed", "RandomNoise"),),
     notes=(
         _MINIMAX_H3_NOTES
@@ -1661,6 +1761,9 @@ MINIMAX_H3_R2V = WorkflowSpec(
         video_loader=T("140", "file", "LoadVideo"),
         video_decoder=T("141", "video", "GetVideoComponents"),
         audio_loader=T("142", "audio", "LoadAudio"),
+    ),
+    patch_point=PatchPoint(
+        head="127", consumers=(T("126", "model", "BasicGuider"),)
     ),
     seeds=(T("129", "noise_seed", "RandomNoise"),),
     notes=(
@@ -3397,6 +3500,10 @@ def validate_external_spec(spec: WorkflowSpec) -> list[str]:
         )
     if spec.lora_chain is not None:
         problems.append(f"{spec.id}: backend {spec.backend!r} has no LoRA chain")
+    if spec.patch_point is not None:
+        problems.append(
+            f"{spec.id}: backend {spec.backend!r} has no MODEL patch point"
+        )
     for name, select in spec.selects.items():
         if not select.choices:
             problems.append(f"{spec.id}.selects[{name}]: no choices declared")
@@ -3675,6 +3782,35 @@ def validate_spec(spec: WorkflowSpec, template: Workflow | None = None) -> list[
                 problems.append(
                     f"{spec.id}.lora_chain: placeholder {node_id!r} is"
                     f" {node.get('class_type')!r}, expected 'LoraLoaderModelOnly'"
+                )
+
+    # 高速化トグルの挿し込み口（:class:`PatchPoint`）: LoRA チェーンと同じく、
+    # 挟む先の辺が本当にテンプレートに在るか（consumer が head を読んでいるか）。
+    if spec.patch_point is not None:
+        point = spec.patch_point
+        if not point.consumers:
+            problems.append(f"{spec.id}.patch_point: no consumers declared")
+        if point.head not in tpl:
+            problems.append(
+                f"{spec.id}.patch_point.head: node {point.head!r} is missing"
+            )
+        for index, consumer in enumerate(point.consumers):
+            check(consumer, f"patch_point.consumers[{index}]")
+            node = tpl.get(consumer.node_id)
+            link = (
+                (node.get("inputs") or {}).get(consumer.field)
+                if isinstance(node, dict)
+                else None
+            )
+            if not isinstance(link, list) or len(link) != 2:
+                problems.append(
+                    f"{spec.id}.patch_point.consumers[{index}]:"
+                    f" {consumer.key} is not connected to a node"
+                )
+            elif link[0] != point.head:
+                problems.append(
+                    f"{spec.id}.patch_point.consumers[{index}]: {consumer.key}"
+                    f" reads {link[0]!r}, expected the head {point.head!r}"
                 )
 
     # 参照素材の動的展開（:class:`RefMediaFan`）: 受け側と雛形が実在し、雛形が

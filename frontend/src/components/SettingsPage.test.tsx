@@ -71,6 +71,8 @@ function settings(): Settings {
     runpod_template_id: '',
     runpod_gpu_type: 'NVIDIA RTX A6000',
     runpod_network_volume_id: '',
+    sage_attention: false,
+    easy_cache: false,
   }
 }
 
