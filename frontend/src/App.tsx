@@ -8,6 +8,7 @@ import JobDetail from './components/JobDetail'
 import ResultPane from './components/ResultPane'
 import SettingsPage from './components/SettingsPage'
 import AgentView from './components/agent/AgentView'
+import CanvasView from './components/canvas/CanvasView'
 import { Banner } from './components/ui'
 import {
   EASY_CACHE,
@@ -25,6 +26,7 @@ import {
 } from './form'
 import type {
   AgentProgress,
+  CanvasProgress,
   ComfyTarget,
   Health,
   Job,
@@ -69,8 +71,9 @@ export default function App() {
   const [detailBusy, setDetailBusy] = useState(false)
   const [detailError, setDetailError] = useState<string | null>(null)
   const [chatOpen, setChatOpen] = useState(false)
-  const [view, setView] = useState<'main' | 'agent' | 'settings'>('main')
+  const [view, setView] = useState<'main' | 'agent' | 'canvas' | 'settings'>('main')
   const [agentEvent, setAgentEvent] = useState<AgentProgress | null>(null)
+  const [canvasEvent, setCanvasEvent] = useState<CanvasProgress | null>(null)
   const [chatSessionId, setChatSessionId] = useState<string | null>(null)
   const [showNsfw, setShowNsfw] = useState(initialShowNsfw)
   // エラーではない一言（パラメータ復元で LoRA を落としたとき等）。
@@ -263,9 +266,15 @@ export default function App() {
           const frame = JSON.parse(event.data as string) as
             | JobProgress
             | AgentProgress
+            | CanvasProgress
             | LibraryProgress
           if (frame?.type === 'agent') {
             setAgentEvent(frame)
+            return
+          }
+          // Canvas Studio のカード・会話の更新（開いているキャンバスだけが使う）
+          if (frame?.type === 'canvas') {
+            setCanvasEvent(frame)
             return
           }
           // ライブラリの自動タグ生成が終わった: 選択肢を取り直し、開いている
@@ -655,6 +664,8 @@ export default function App() {
       {view === 'agent' && (
         <AgentView event={agentEvent} progress={progress} showNsfw={showNsfw} />
       )}
+
+      {view === 'canvas' && <CanvasView event={canvasEvent} />}
 
       {view === 'main' && (
         <>

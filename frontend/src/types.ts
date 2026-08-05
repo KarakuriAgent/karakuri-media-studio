@@ -866,3 +866,216 @@ export interface AgentProgress {
   /** 実行中の活動テキスト（null = 変化なし / ターン終了）。 */
   activity: string | null
 }
+
+// --------------------------------------------------------------- Canvas Studio
+
+export type CanvasNodeKind =
+  | 'style'
+  | 'character'
+  | 'location'
+  | 'object'
+  | 'script'
+  | 'storyboard'
+  | 'media'
+  | 'text'
+  | 'model'
+
+export type CanvasRole = 'user' | 'assistant' | 'event'
+
+/** model カードの生成対象（既存のワークフロー種別と同じ語彙）。 */
+export type CanvasModelTarget = 'image' | 'video' | 'audio'
+
+export interface CanvasViewport {
+  x: number
+  y: number
+  zoom: number
+}
+
+export interface CanvasProject {
+  id: string
+  created_at: string
+  updated_at: string
+  title: string
+  /** キャンバスエージェントの LLM provider（当面 'grok' のみ）。 */
+  llm: string
+  viewport: CanvasViewport
+}
+
+export interface CanvasNode {
+  id: string
+  project_id: string
+  created_at: string
+  updated_at: string
+  kind: CanvasNodeKind
+  title: string
+  /** kind ごとのスキーマ（CanvasCardData）。PATCH は全量置換。 */
+  data: Record<string, unknown>
+  x: number
+  y: number
+  w: number
+  h: number
+  z: number
+}
+
+export interface CanvasNodeCreate {
+  kind: CanvasNodeKind
+  title?: string
+  data?: Record<string, unknown>
+  x?: number
+  y?: number
+  w?: number
+  h?: number
+}
+
+/** 送った項目だけ変える（`data` を送るときは全量）。 */
+export interface CanvasNodeUpdate {
+  title?: string
+  data?: Record<string, unknown>
+  x?: number
+  y?: number
+  w?: number
+  h?: number
+  z?: number
+}
+
+export interface CanvasMessage {
+  id: string
+  project_id: string
+  ts: string
+  role: CanvasRole
+  content: string
+  /** event の種別（action_result 等）。 */
+  kind: string | null
+  data: Record<string, unknown>
+}
+
+export interface CanvasProjectDetail extends CanvasProject {
+  nodes: CanvasNode[]
+  messages: CanvasMessage[]
+  /** バックエンドのターンが走っているか（DB には保存されない）。 */
+  thinking: boolean
+}
+
+export interface CanvasReply {
+  content: string
+  project: CanvasProjectDetail
+}
+
+export interface CanvasProgress {
+  type: 'canvas'
+  project_id: string
+  /**
+   * node_created / node_updated / node_deleted / message / thinking /
+   * job_started / job_done / job_failed / generate_failed / best_practices
+   */
+  event: string
+  node_id: string | null
+  job_id: string | null
+  thinking: boolean | null
+  message: string | null
+}
+
+// カード種別ごとの data（バックエンド canvas/models.py と同名・同フィールド）。
+
+export interface CanvasStyleData {
+  description: string
+  palette: string
+  references: string[]
+  notes: string
+}
+
+export interface CanvasCharacterData {
+  description: string
+  appearance: string
+  personality: string
+  voice: string
+  images: string[]
+  notes: string
+}
+
+export interface CanvasLocationData {
+  description: string
+  mood: string
+  images: string[]
+  notes: string
+}
+
+export interface CanvasObjectData {
+  description: string
+  images: string[]
+  notes: string
+}
+
+export interface CanvasScriptScene {
+  no: number
+  heading: string
+  body: string
+}
+
+export interface CanvasScriptData {
+  synopsis: string
+  scenes: CanvasScriptScene[]
+  notes: string
+}
+
+export interface CanvasStoryboardCut {
+  no: number
+  scene: string
+  description: string
+  camera: string
+  audio: string
+  duration: number | null
+  prompt: string
+  image: string
+}
+
+export interface CanvasStoryboardData {
+  notes: string
+  cuts: CanvasStoryboardCut[]
+}
+
+export interface CanvasMediaData {
+  media_type: 'image' | 'video' | 'audio'
+  url: string
+  job_id: string | null
+  prompt: string
+  caption: string
+}
+
+export interface CanvasTextData {
+  body: string
+}
+
+export interface CanvasModelParams {
+  aspect_ratio: string
+  megapixels: number
+  duration: number
+  fps: number
+  /** null = サーバー設定の既定値に従う。 */
+  sage_attention: boolean | null
+  easy_cache: boolean | null
+  loras: LoraRef[]
+  video_loras: LoraRef[]
+  negative_prompt: string
+  selects: Record<string, string>
+  model_overrides: Record<string, string>
+}
+
+export interface CanvasModelData {
+  target: CanvasModelTarget
+  /** 既存カタログのワークフロー ID（空 = 未選択）。 */
+  workflow: string
+  params: CanvasModelParams
+  note: string
+}
+
+export type CanvasCardData =
+  | CanvasStyleData
+  | CanvasCharacterData
+  | CanvasLocationData
+  | CanvasObjectData
+  | CanvasScriptData
+  | CanvasStoryboardData
+  | CanvasMediaData
+  | CanvasTextData
+  | CanvasModelData

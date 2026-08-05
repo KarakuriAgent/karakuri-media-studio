@@ -22,6 +22,7 @@ from .paths import (
 from .routers import (
     agent,
     assets,
+    canvas,
     chat,
     codex,
     grok,
@@ -87,6 +88,7 @@ app.include_router(kie.router)
 app.include_router(grok.router)
 app.include_router(codex.router)
 app.include_router(agent.router)
+app.include_router(canvas.router)
 app.include_router(ws.router)
 
 ensure_dirs()

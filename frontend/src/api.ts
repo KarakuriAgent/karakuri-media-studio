@@ -9,6 +9,14 @@ import type {
   Asset,
   AudioJobCreate,
   BackendInfo,
+  CanvasMessage,
+  CanvasNode,
+  CanvasNodeCreate,
+  CanvasNodeUpdate,
+  CanvasProject,
+  CanvasProjectDetail,
+  CanvasReply,
+  CanvasViewport,
   ChatReply,
   ChatSession,
   ChatSessionCreate,
@@ -339,6 +347,38 @@ export const api = {
     json<AgentSession>('POST', `/api/agent/sessions/${id}/stop`),
   agentArtifactUrl: (id: string, name: string) =>
     `/api/agent/sessions/${id}/artifacts/${name.split('/').map(encodeURIComponent).join('/')}`,
+
+  // Canvas Studio
+  listCanvasProjects: (limit = 50) =>
+    request<CanvasProject[]>(`/api/canvas/projects?limit=${limit}`),
+  createCanvasProject: (title = '') =>
+    json<CanvasProject>('POST', '/api/canvas/projects', { title }),
+  getCanvasProject: (id: string) =>
+    request<CanvasProjectDetail>(`/api/canvas/projects/${id}`),
+  updateCanvasProject: (
+    id: string,
+    patch: { title?: string; llm?: string; viewport?: CanvasViewport },
+  ) => json<CanvasProject>('PATCH', `/api/canvas/projects/${id}`, patch),
+  deleteCanvasProject: (id: string) =>
+    json<void>('DELETE', `/api/canvas/projects/${id}`),
+  listCanvasMessages: (id: string) =>
+    request<CanvasMessage[]>(`/api/canvas/projects/${id}/messages`),
+  createCanvasNode: (projectId: string, payload: CanvasNodeCreate) =>
+    json<CanvasNode>('POST', `/api/canvas/projects/${projectId}/nodes`, payload),
+  updateCanvasNode: (projectId: string, nodeId: string, patch: CanvasNodeUpdate) =>
+    json<CanvasNode>(
+      'PATCH',
+      `/api/canvas/projects/${projectId}/nodes/${nodeId}`,
+      patch,
+    ),
+  deleteCanvasNode: (projectId: string, nodeId: string) =>
+    json<void>('DELETE', `/api/canvas/projects/${projectId}/nodes/${nodeId}`),
+  sendCanvasMessage: (projectId: string, content: string) =>
+    json<CanvasReply>('POST', `/api/canvas/projects/${projectId}/messages`, {
+      content,
+    }),
+  stopCanvasAgent: (projectId: string) =>
+    json<CanvasProjectDetail>('POST', `/api/canvas/projects/${projectId}/stop`),
 }
 
 export function wsUrl(path = '/api/ws'): string {

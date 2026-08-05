@@ -83,10 +83,54 @@ CREATE TABLE IF NOT EXISTS library (
   category      TEXT                        -- 分類（character/background/prop。NULL = 未分類）
 );
 
+-- Canvas Studio（独立サブシステム）: 無限キャンバス 1 枚 = 1 プロジェクト。
+-- ノード・会話は行数が伸びるので agent_sessions と違い JSON ブロブにせず
+-- 正規化した行で持つ（カード 1 枚の移動で全体を書き直さないため）。
+CREATE TABLE IF NOT EXISTS canvas_projects (
+  id         TEXT PRIMARY KEY,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  title      TEXT NOT NULL DEFAULT '',
+  llm        TEXT NOT NULL DEFAULT 'grok',      -- キャンバスエージェントの LLM provider
+  viewport   TEXT NOT NULL DEFAULT '{}'         -- {x, y, zoom}（表示位置の復元用）
+);
+
+CREATE TABLE IF NOT EXISTS canvas_nodes (
+  id         TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  created_at TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  kind       TEXT NOT NULL,                     -- style / character / location / object /
+                                                -- script / storyboard / media / text / model
+  title      TEXT NOT NULL DEFAULT '',
+  data       TEXT NOT NULL DEFAULT '{}',        -- kind ごとのスキーマの JSON
+  x          REAL NOT NULL DEFAULT 0,
+  y          REAL NOT NULL DEFAULT 0,
+  w          REAL NOT NULL DEFAULT 320,
+  h          REAL NOT NULL DEFAULT 220,
+  z          INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE IF NOT EXISTS canvas_messages (
+  id         TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL,
+  ts         TEXT NOT NULL,
+  role       TEXT NOT NULL,                     -- user / assistant / event
+  content    TEXT NOT NULL,
+  kind       TEXT,                              -- event の種別（action_result 等）
+  data       TEXT NOT NULL DEFAULT '{}'
+);
+
 CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_library_created_at ON library(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_agent_sessions_created_at
   ON agent_sessions(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_canvas_nodes_project
+  ON canvas_nodes(project_id, z);
+CREATE INDEX IF NOT EXISTS idx_canvas_messages_project
+  ON canvas_messages(project_id, ts);
+CREATE INDEX IF NOT EXISTS idx_canvas_projects_updated
+  ON canvas_projects(updated_at DESC);
 """
 
 # 既存 DB に後から足したカラム: {テーブル: [(カラム名, 定義), …]}。
