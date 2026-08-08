@@ -1,0 +1,134 @@
+import { useCallback, useEffect, useState } from 'react'
+import { ApiError, api, formatDetail } from '../../api'
+import type { StudioShot, StudioShotPreview } from '../../types'
+import { Banner, CopyButton } from '../ui'
+
+/** ワークフロー ID -> 画面に出す名前（`WORKFLOW_OVERRIDE_LABEL` の短い版）。 */
+const WORKFLOW_LABEL: Record<string, string> = {
+  minimax_h3_t2v: 't2v（文章だけから）',
+  minimax_h3_i2v: 'i2v（開始フレームから）',
+  minimax_h3_r2v: 'r2v（参照素材から）',
+}
+
+/** 添付ファイルのパスは長いので、ファイル名だけ見せる。 */
+function fileName(path: string): string {
+  return path.split('/').pop() || path
+}
+
+/**
+ * 投入プレビュー: このカットを今生成したら**実際に何が投入されるか**。
+ *
+ * 隠れた合成（Camera: / Audio: 行、除外文、`@素材名` の展開、ワークフローの
+ * 自動選択）を全部ここで見せる。組み立てはサーバー側の生成経路そのものなので、
+ * ここに出るものと投入されるものは食い違わない。
+ *
+ * 取り直すのは保存のあと（`shot.updated_at` が動いたとき）と「再取得」ボタン。
+ * 読み取り専用で、生成は起こさない。
+ */
+export default function PromptPreview({ shot }: { shot: StudioShot }) {
+  const [preview, setPreview] = useState<StudioShotPreview | null>(null)
+  const [loading, setLoading] = useState(false)
+  const [failure, setFailure] = useState<string | null>(null)
+
+  const shotId = shot.id
+  const updatedAt = shot.updated_at
+
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      setPreview(await api.previewStudioShotPrompt(shotId))
+      setFailure(null)
+    } catch (error) {
+      setFailure(
+        error instanceof ApiError
+          ? formatDetail(error.detail)
+          : error instanceof Error
+            ? error.message
+            : String(error),
+      )
+    } finally {
+      setLoading(false)
+    }
+  }, [shotId])
+
+  useEffect(() => {
+    void load()
+    // 保存でサーバー側の値が動いたら取り直す。
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shotId, updatedAt])
+
+  return (
+    <div
+      className="space-y-2 rounded-md border border-ink-600 bg-ink-900/40 p-2"
+      role="group"
+      aria-label="投入プレビュー"
+    >
+      <div className="flex items-center gap-2">
+        <h4 className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+          投入プレビュー
+        </h4>
+        {preview?.workflow && (
+          <span className="chip !px-1.5 !py-0 text-[10px]">
+            {WORKFLOW_LABEL[preview.workflow] ?? preview.workflow}
+          </span>
+        )}
+        <div className="ml-auto flex items-center gap-1">
+          {preview && preview.prompt && <CopyButton text={preview.prompt} />}
+          <button
+            className="btn-ghost !px-2 !py-1 text-xs"
+            onClick={() => void load()}
+            disabled={loading}
+          >
+            {loading ? '取得中…' : '再取得'}
+          </button>
+        </div>
+      </div>
+
+      <p className="text-[11px] text-slate-500">
+        保存した内容で実際に投入されるものです（ここでは生成しません）。
+      </p>
+
+      {failure && <Banner>{failure}</Banner>}
+
+      {preview && preview.error && <Banner>{preview.error}</Banner>}
+
+      {preview && !preview.error && (
+        <>
+          {preview.workflow_reason && (
+            <p className="text-[11px] text-slate-400">{preview.workflow_reason}</p>
+          )}
+          <pre
+            className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-md border border-ink-600 bg-ink-950/60 p-2 font-mono text-[11px] text-slate-200"
+            aria-label="投入される最終プロンプト"
+          >
+            {preview.prompt}
+          </pre>
+          {preview.references.length > 0 && (
+            <div className="text-[11px] text-slate-400">
+              <span className="text-slate-500">添付される参照素材:</span>
+              <ul className="mt-1 space-y-0.5">
+                {preview.references.map((reference) => (
+                  <li key={`${reference.tag}-${reference.name}`}>
+                    <code className="text-sky-300">{reference.tag}</code>{' '}
+                    {reference.name}（{reference.kind}
+                    {reference.path ? ` / ${fileName(reference.path)}` : ''}）
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+          {preview.start_frame && (
+            <p className="text-[11px] text-slate-400">
+              開始フレーム: {fileName(preview.start_frame)}
+            </p>
+          )}
+          {preview.will_translate && (
+            <p className="text-[11px] text-amber-300/90">
+              投入時に英語へ自動変換されます（引用符の中の台詞と参照タグはそのまま）。
+            </p>
+          )}
+        </>
+      )}
+    </div>
+  )
+}

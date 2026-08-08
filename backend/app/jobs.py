@@ -22,15 +22,8 @@ workflow runs first, its still is downloaded and handed to the selected video
 workflow as the start frame.  Both stages are stored in ``workflow_json``.
 
 **バックエンド（SPEC §5.2）**: ステージのマニフェストが宣言する ``backend``
-（``comfyui`` / ``kie``）を見て、:func:`_run_job_stages` が**ステージごとに**
-実行経路を選ぶ。ComfyUI のステージ（:func:`_run_comfy_stage`）は上のとおりで、
-kie.ai のステージ（:func:`_run_kie_stage`）はグラフの代わりにタスクを 1 つ投げて
-ポーリングする。どちらも「``outputs/{job_id}/`` に成果物を置き、jobs 行を更新し、
-WS に進捗を流す」ところは共通なので、履歴・ライブラリ・UI からは区別なく扱える。
-
-そのため 1 ジョブの中でバックエンドをまたげる: **ローカル（ComfyUI）で画像を作り、
-外部 API（kie.ai）で動画にする** `full` ジョブでは、1 段目の静止画を kie の
-File Upload API で公開 URL にしてから 2 段目に渡す（:data:`_STAGE_BRIDGES`）。
+を見て :func:`_run_job_stages` が**ステージごとに**実行経路を選ぶ。今あるのは
+ComfyUI のステージ（:func:`_run_comfy_stage`）だけ。
 """
 
 from __future__ import annotations
@@ -48,13 +41,11 @@ from typing import Any
 import aiosqlite
 from PIL import Image
 
-from . import codex_media, comfy, grok_media, kie, nsfw as nsfw_service, runpod, ws
+from . import comfy, nsfw as nsfw_service, runpod, ws
 from .config import load_settings
 from .db import get_db
 from .ids import new_id
 from .models import (
-    FOLLOWUP_FAMILY,
-    FOLLOWUP_MODES,
     GenerationParams,
     Job,
     JobContinue,
@@ -62,13 +53,10 @@ from .models import (
     JobRerun,
     LoraRef,
     MultiShot,
-    VeoExtend,
-    VeoUpscale,
     audio_lora_problem,
     audio_workflow_problem,
     elements_of,
     elements_problem,
-    followup_problem,
     image_lora_family_problem,
     image_lora_problem,
     image_workflow_problem,
@@ -101,7 +89,6 @@ from .workflows import (
     MULTI_INPUT_FIELDS,
     WorkflowSpec,
     WorkflowSpecError,
-    backend_available,
     get_audio_spec,
     get_image_spec,
     get_video_spec,
@@ -295,83 +282,16 @@ def _loads_paths(value: Any) -> list[str]:
     return [str(item) for item in parsed if isinstance(item, str) and item]
 
 
-def _kie_task_id(workflow: dict[str, Any], stage: str = "video") -> str:
-    """そのステージが kie.ai に投げたタスクの ID（無ければ空文字、SPEC §5.2）。
-
-    追加操作（延長・1080P 取得）は成果物のファイルではなく **kie.ai 側のタスク**を
-    指して頼むので、``workflow_json`` に残した ``task_id`` が入口になる。
-    """
-    entry = workflow.get(stage)
-    if not isinstance(entry, dict) or entry.get("backend") != "kie":
-        return ""
-    return str(entry.get("task_id") or "")
-
-
-def job_followups(
-    mode: str,
-    status: str,
-    params: dict[str, Any],
-    workflow: dict[str, Any],
-    video_path: Any,
-) -> list[str]:
-    """このジョブに追加で掛けられる操作（:data:`app.models.FOLLOWUP_MODES` の一部）。
-
-    履歴の UI はここを見て「延長」「1080P を取得」を出す（SPEC §5.2 / issue #26）。
-    出す条件は 3 つ:
-
-    - **成果物のある終わった動画ジョブ**で、kie.ai の ``task_id`` が残っていること
-      （追加操作は元タスクに対して頼むので、これが無いと何も掛けられない）
-    - モデルが Veo で、延長 API がそのモデルを受けること
-      （:data:`app.kie.VEO_EXTEND_MODELS`）
-    - 1080P は **720p で生成したぶんだけ**（1080p / 4k で生成済みなら意味がなく、
-      アップスケール済みの動画はそもそも延長もできないので ``veo_1080p`` の
-      ジョブ自体は追加操作を持たない）
-    """
-    if status != "done" or not video_path:
-        return []
-    # 1080P 取得のジョブは新しい taskId を持たない（元タスクの別バージョンを
-    # 取っただけ）ので、そこからさらに追加操作は掛けられない。
-    if mode not in ("full", "i2v", "veo_extend"):
-        return []
-    if not _kie_task_id(workflow):
-        return []
-    try:
-        spec = get_video_spec(params.get("video_workflow"))
-    except WorkflowSpecError:
-        return []
-    if spec.backend != "kie" or spec.family != FOLLOWUP_FAMILY or spec.kie is None:
-        return []
-    found: list[str] = []
-    if spec.kie.model in kie.VEO_EXTEND_MODELS:
-        found.append("veo_extend")
-    selects = params.get("selects")
-    select = spec.select("resolution")
-    chosen = (selects or {}).get("resolution") if isinstance(selects, dict) else None
-    resolution = str(chosen or (select.fallback if select is not None else ""))
-    if resolution not in ("1080p", "4k"):
-        found.append("veo_1080p")
-    return found
-
-
 def row_to_job(row: aiosqlite.Row, *, include_workflow: bool = True) -> Job:
     data = dict(row)
     data["params"] = _loads(data.get("params"))
     workflow = _loads(data.get("workflow_json"))
-    # 一覧では workflow_json を返さないが、追加操作の可否はその中の task_id で
-    # 決まるので、落とす前にここで判定する。
-    data["followups"] = job_followups(
-        str(data.get("mode") or ""),
-        str(data.get("status") or ""),
-        data["params"],
-        workflow,
-        data.get("video_path"),
-    )
     data["workflow_json"] = workflow if include_workflow else {}
     data["image_url"] = _output_url(data.get("image_path"))
     data["video_url"] = _output_url(data.get("video_path"))
     data["last_frame_url"] = _output_url(data.get("last_frame_path"))
     data["audio_output_url"] = _output_url(data.get("audio_output_path"))
-    # 主成果物に収まらない出力（Suno の 2 曲目など）。列は JSON 配列の文字列。
+    # 主成果物（jobs の列）に収まらない出力。列は JSON 配列の文字列。
     data["extra_outputs"] = _loads_paths(data.get("extra_outputs"))
     data["extra_output_urls"] = [
         url for url in map(_output_url, data["extra_outputs"]) if url
@@ -478,39 +398,15 @@ def stage_specs(mode: str, params: dict[str, Any]) -> list[tuple[str, WorkflowSp
     """このジョブが走らせるステージ ``(名前, マニフェスト)`` を順番に（SPEC §2）。
 
     ``full`` だけが 2 段（画像 → 動画）。``audio`` は独立した 1 段。
-
-    追加操作（:data:`app.models.FOLLOWUP_MODES`）も動画ステージ 1 段として数える:
-    走らせるのはタスクの生成ではなく元タスクへの追加依頼だが、置き場も列も進捗も
-    ふつうの動画ステージと同じなので、バックエンドの判定も同じ経路に乗せる。
     """
     stages: list[tuple[str, WorkflowSpec]] = []
     if mode == "audio":
         stages.append(("audio", get_audio_spec(params.get("audio_workflow"))))
     if mode in ("full", "image_only"):
         stages.append(("image", get_image_spec(params.get("image_workflow"))))
-    if mode in ("full", "i2v") or mode in FOLLOWUP_MODES:
+    if mode in ("full", "i2v"):
         stages.append(("video", get_video_spec(params.get("video_workflow"))))
     return stages
-
-
-#: バックエンドをまたぐ 2 段ジョブのうち、橋渡しを実装してある向き（SPEC §5.2）。
-#: 渡すものは常に「1 段目の静止画」で、渡し方だけが 2 段目のバックエンドで変わる:
-#: ComfyUI なら :func:`comfy.upload_file`、kie.ai なら File Upload API で公開 URL、
-#: Grok Build CLI なら :func:`grok_media.stage_input`（作業ディレクトリへコピーして
-#: 指示文でファイル名を参照）。どれも 1 段目の成果物がローカルのファイルであれば
-#: 済むので、画像ワークフローを持つバックエンド（ComfyUI / Grok CLI / Codex CLI）
-#: から**すべての向き**が張れる。``codex_cli`` は画像しか作れない（§5.4）ので
-#: 1 段目にしか現れず、``* → codex_cli`` の向きは宣言しない。``kie`` から始まる
-#: 向きは kie.ai の画像ワークフローが入ってから（今は 1 段目に選べるものが無い）。
-_STAGE_BRIDGES: frozenset[tuple[str, str]] = frozenset({
-    ("comfyui", "kie"),
-    ("comfyui", "grok_cli"),
-    ("grok_cli", "comfyui"),
-    ("grok_cli", "kie"),
-    ("codex_cli", "comfyui"),
-    ("codex_cli", "kie"),
-    ("codex_cli", "grok_cli"),
-})
 
 
 def job_backends(mode: str, params: dict[str, Any]) -> list[str]:
@@ -522,40 +418,6 @@ def job_backend(mode: str, params: dict[str, Any]) -> str:
     """このジョブの代表バックエンド（1 段目のもの。表示・ログ用）。"""
     used = job_backends(mode, params)
     return used[0] if used else "comfyui"
-
-
-def _bridge_problem(used: list[str]) -> str | None:
-    """バックエンドをまたぐ連結が実装済みか（None == 問題なし、SPEC §5.2）。"""
-    for first, second in zip(used, used[1:]):
-        if first != second and (first, second) not in _STAGE_BRIDGES:
-            return (
-                f"生成バックエンド '{first}' のステージから '{second}' の"
-                "ステージへの受け渡しはまだ実装されていません"
-            )
-    return None
-
-
-def _backend_problem(params: dict[str, Any]) -> str | None:
-    """バックエンドの都合でこのジョブが走れない理由（None == 問題なし、§5.2）。
-
-    投入してから失敗させるのではなく、422 でその場で断る: 認証が確認できていない
-    バックエンドと、橋渡しを実装していない向きのバックエンドまたぎ。
-    """
-    mode = params.get("mode", "")
-    try:
-        stages = stage_specs(mode, params)
-    except WorkflowSpecError:
-        return None  # 不正なワークフロー id は他の検証が拾う
-    bridge = _bridge_problem([spec.backend for _, spec in stages])
-    if bridge:
-        return bridge
-    for _, spec in stages:
-        if not backend_available(spec.backend):
-            return (
-                f"workflow '{spec.id}' の生成バックエンド '{spec.backend}' は"
-                "今この環境では使えません（API キーを設定して接続を確認してください）"
-            )
-    return None
 
 
 def _validate(params: dict[str, Any]) -> None:
@@ -607,9 +469,7 @@ def _validate(params: dict[str, Any]) -> None:
             video_prompt=params.get("video_prompt"),
             shots=multi_shots_of(params),
         )
-        or followup_problem(mode, video_workflow, params.get("source_task_id"))
         or _model_override_problem(params)
-        or _backend_problem(params)
     )
     if problem:
         raise JobValidationError(problem)
@@ -819,19 +679,6 @@ async def _insert_job(
     return job
 
 
-def _patch_toggles(payload: JobCreate) -> dict[str, bool]:
-    """高速化トグルの実効値（明示されていなければ設定の既定値、SPEC §3.1）。"""
-    settings = load_settings()
-    explicit = {
-        "sage_attention": payload.sage_attention,
-        "easy_cache": payload.easy_cache,
-    }
-    return {
-        name: (getattr(settings, name) if value is None else value)
-        for name, value in explicit.items()
-    }
-
-
 def _params_from_create(payload: JobCreate) -> dict[str, Any]:
     params: dict[str, Any] = {
         "mode": payload.mode,
@@ -858,10 +705,12 @@ def _params_from_create(payload: JobCreate) -> dict[str, Any]:
         "reprompt": payload.reprompt,
         "duration": payload.duration,
         "fps": payload.fps,
+        # サンプリング回数（宣言のあるワークフローだけが読む、SPEC §3.1）。
+        # 0 = 未指定で、テンプレートの既定値がそのまま使われる。
+        "steps": payload.steps,
         # 高速化トグル（宣言のある動画ワークフローだけが読む、SPEC §3.1）。
         # 明示されなければ設定の既定値を**このジョブの params に焼き込む**
         # （あとから設定を変えても、再実行が同じグラフを組み立てられる）。
-        **_patch_toggles(payload),
         "audio_path": payload.audio_path,
         "source_image": payload.source_image,
         "end_image": payload.end_image,
@@ -1007,6 +856,8 @@ async def continue_job(
             payload.duration if payload.duration is not None else prev.get("duration", 10.0)
         ),
         "fps": payload.fps if payload.fps is not None else prev.get("fps", 25),
+        # サンプリング回数は元ジョブの指定をそのまま引き継ぐ（0 = 未指定、§3.1）
+        "steps": prev.get("steps", 0),
         "audio_path": payload.audio_path or prev.get("audio_path"),
         "source_image": str(start_image),
         "end_image": payload.end_image or prev.get("end_image"),
@@ -1044,93 +895,6 @@ async def continue_job(
         params=params,
         user_input=payload.user_input or source.user_input,
         chat_session_id=payload.chat_session_id,
-        nsfw=nsfw,
-        nsfw_source=nsfw_source,
-    )
-
-
-# --------------------------------------------------------------------------
-# 生成済みジョブへの追加操作（Veo、SPEC §5.2 / issue #26）
-# --------------------------------------------------------------------------
-#
-# 「ラストフレームから続きを生成」（:func:`continue_job`）が**別のクリップを新しく
-# 作る**のに対し、ここは **kie.ai 側に残っている元タスクそのもの**に仕事を足す:
-# 延長は元動画に +7 秒を継いだ 1 本を、1080P 取得は同じ動画の高解像度版を返す。
-# どちらも新しいジョブ 1 本として履歴に並ぶので、進捗・ライブラリ・NSFW の扱いは
-# ふつうの生成と変わらない。
-
-async def _followup_params(job_id: str, mode: str) -> tuple[Job, dict[str, Any]]:
-    """追加操作のジョブの共通パラメータ（元ジョブと ``params``）。
-
-    引き継ぐのは「どのモデルの・どのタスクに対する操作か」だけで、プロンプトや
-    入力ファイルは持たない（元タスクを指すだけなので要らない）。``selects`` は
-    記録と、次の追加操作の判定（解像度）のために元ジョブのものを写す。
-    """
-    source = await get_job(job_id)
-    if source is None:
-        raise LookupError(job_id)
-    if mode not in source.followups:
-        raise JobValidationError(
-            f"ジョブ {source.id} には '{mode}' の追加操作を掛けられません"
-            "（kie.ai の Veo で生成し終えたジョブからだけ実行できます）"
-        )
-    prev = dict(source.params)
-    params: dict[str, Any] = {
-        "mode": mode,
-        "image_workflow": prev.get("image_workflow") or DEFAULT_IMAGE_WORKFLOW,
-        "video_workflow": prev.get("video_workflow") or DEFAULT_VIDEO_WORKFLOW,
-        "selects": dict(prev.get("selects") or {}),
-        # 追加操作の入口（kie.ai に投げた元タスク）
-        "source_task_id": _kie_task_id(source.workflow_json),
-        "continued_from": source.id,
-    }
-    return source, params
-
-
-async def veo_extend_job(
-    job_id: str, payload: VeoExtend, *, inherit_nsfw: bool = False
-) -> Job:
-    """元動画に **+7 秒**を継ぎ足すジョブを作る（``POST /veo/extend``）。"""
-    source, params = await _followup_params(job_id, "veo_extend")
-    prompt = (payload.prompt or "").strip()
-    if not prompt:
-        raise JobValidationError("mode 'veo_extend' requires: video_prompt")
-    spec = get_video_spec(params["video_workflow"])
-    try:
-        # 生成時のモデル名は延長 API では通らない（書式が違う）ので、投入前に
-        # 引けることを確かめておく。
-        kie.extend_model(spec.kie.model if spec.kie else "")
-    except kie.KieError as exc:
-        raise JobValidationError(str(exc)) from exc
-    params["video_prompt"] = prompt
-    if payload.seeds is not None:
-        params["veo_seeds"] = int(payload.seeds)
-    if (payload.watermark or "").strip():
-        params["veo_watermark"] = str(payload.watermark).strip()
-    nsfw, nsfw_source = _resolve_nsfw(None, source.nsfw or inherit_nsfw)
-    return await _insert_job(
-        mode="veo_extend",
-        params=params,
-        user_input=source.user_input,
-        chat_session_id=None,
-        nsfw=nsfw,
-        nsfw_source=nsfw_source,
-    )
-
-
-async def veo_1080p_job(
-    job_id: str, payload: VeoUpscale, *, inherit_nsfw: bool = False
-) -> Job:
-    """720p で作った動画の **1080P 版**を取りに行くジョブを作る（5 credits）。"""
-    source, params = await _followup_params(job_id, "veo_1080p")
-    if payload.index is not None:
-        params["veo_index"] = int(payload.index)
-    nsfw, nsfw_source = _resolve_nsfw(None, source.nsfw or inherit_nsfw)
-    return await _insert_job(
-        mode="veo_1080p",
-        params=params,
-        user_input=source.user_input,
-        chat_session_id=None,
         nsfw=nsfw,
         nsfw_source=nsfw_source,
     )
@@ -1175,6 +939,8 @@ def _generation_params(
         multi_shots=[MultiShot(**shot) for shot in multi_shots_of(p)],
         duration=float(p.get("duration", 10.0)),
         fps=int(p.get("fps", 25)),
+        # 旧ジョブの params には無いので既定は 0（= テンプレートの既定値のまま）
+        steps=int(p.get("steps", 0) or 0),
         # 音声ジョブ用（旧ジョブの params には無いので既定値のまま）
         audio_prompt=p.get("audio_prompt", ""),
         lyrics=p.get("lyrics", ""),
@@ -1184,9 +950,6 @@ def _generation_params(
         negative_tags=p.get("negative_tags") or "",
         audio_category=p.get("audio_category") or "Music",
         reprompt=bool(p.get("reprompt", False)),
-        # 旧ジョブの params には無いので既定は OFF（後方互換）
-        sage_attention=bool(p.get("sage_attention", False)),
-        easy_cache=bool(p.get("easy_cache", False)),
         # 旧ジョブの params には無いので既定は空（後方互換）
         selects={
             str(name): str(value) for name, value in (p.get("selects") or {}).items()
@@ -1304,7 +1067,7 @@ class OverallProgress:
     def stage_fraction(self, fraction: float) -> float:
         """内訳の分からないステージ用: このステージの進み具合を直接与える。
 
-        外部 API（kie.ai）は「キュー待ち / 生成中」しか教えてくれないので、
+        内訳の取れないバックエンドは「キュー待ち / 生成中」しか分からないので、
         ノード数からは計算できない。粗い目安を入れて進捗バーを進める。
         """
         return self._bump(
@@ -1566,7 +1329,7 @@ async def _prepare_comfy(job: Job) -> tuple[GenerationParams, dict[str, str]]:
     """ComfyUI のステージを 1 つでも走らせる前の下ごしらえ。
 
     Pod の起動（SPEC §5.1）と入力ファイルのアップロードは**ジョブに 1 度**でよい
-    ので、最初の ComfyUI ステージの直前に 1 回だけ呼ぶ（1 段目が kie のジョブでは
+    ので、最初の ComfyUI ステージの直前に 1 回だけ呼ぶ（1 段目が別バックエンドのジョブでは
     そもそも呼ばれない）。返すのは「アップロード名を反映したパラメータ」と
     「設定の既定値にジョブ単位の指定を重ねたモデルスロット」（SPEC §3.3）。
     """
@@ -1639,13 +1402,6 @@ async def _run_comfy_stage(
         "video": build_video_workflow,
         "audio": build_audio_workflow,
     }
-    # 今の接続先で動かない高速化トグルは、ここで落としてから組み立てる（SPEC §3.1）。
-    # ジョブの params には希望した値を残したままにするので、接続先をローカルに
-    # 戻して再実行すれば、そのときは有効なグラフが組まれる。何を落とすかは
-    # :data:`app.comfy.CLOUD_UNSUPPORTED_PATCHES`（暫定ガード）が持つ。
-    blocked = comfy.unsupported_patches()
-    if blocked:
-        params = params.model_copy(update={name: False for name in blocked})
     workflow = builders[stage](params, overrides, spec=spec)
     entry = await _run_stage(
         job_id, stage, spec, workflow, stages, label, overall, stage_index
@@ -1654,31 +1410,6 @@ async def _run_comfy_stage(
     return await _download_artifact(entry, spec.output_node, job_dir, stem, kind)
 
 
-# --------------------------------------------------------------------------
-# kie.ai バックエンド（SPEC §5.2）
-# --------------------------------------------------------------------------
-
-#: kie.ai の状態語 -> そのステージの進捗の目安（内訳が取れないので粗い刻み）。
-#: 大文字のものは Suno の旧専用系（歌詞 -> 1 曲目 -> 全曲の 3 段階が取れる）。
-_KIE_PROGRESS = {
-    "waiting": 0.05,
-    "queuing": 0.15,
-    "generating": 0.5,
-    "PENDING": 0.05,
-    "TEXT_SUCCESS": 0.3,
-    "FIRST_SUCCESS": 0.7,
-}
-
-#: 状態語の日本語（WS のメッセージに添える）
-_KIE_LABELS = {
-    "waiting": "受付待ち",
-    "queuing": "キュー待ち",
-    "generating": "生成中",
-    "PENDING": "受付待ち",
-    "TEXT_SUCCESS": "歌詞ができました",
-    "FIRST_SUCCESS": "1 曲目ができました",
-}
-
 #: ステージ名 -> (成果物の種類, outputs/ に置くときのファイル名, jobs の列)。
 #: バックエンドに依らず同じ置き場・同じ命名なので、履歴と UI からは区別が付かない。
 _STAGE_ARTIFACTS = {
@@ -1686,340 +1417,6 @@ _STAGE_ARTIFACTS = {
     "video": ("video", "video", "video_path"),
     "audio": ("audio", "audio", "audio_output_path"),
 }
-
-
-async def _kie_uploads(spec: WorkflowSpec, params_dict: dict[str, Any]) -> dict[str, Any]:
-    """入力ファイルを kie に置いて ``{論理名: 公開 URL}`` にする。
-
-    外部モデルは入力画像・音声を**公開 URL でしか**受け取らないので、ComfyUI の
-    ``/upload/image`` にあたる下ごしらえがここ（SPEC §5.2）。
-
-    複数ファイルの論理入力（:data:`app.workflows.MULTI_INPUT_FIELDS`、Seedance の
-    マルチモーダル参照）だけは値が **URL のリスト**になる: 1 本ずつ上げて、
-    params に並んでいた順のまま並べる（:func:`app.kie.task_input` がそれを
-    ``input`` の配列にする）。
-    """
-    uploads: dict[str, Any] = {}
-    for name, field in INPUT_FIELDS.items():
-        if not spec.supports(name):
-            continue
-        path = params_dict.get(field)
-        if path:
-            uploads[name] = await kie.upload_file(rebase_stored_path(path))
-    for name, field in MULTI_INPUT_FIELDS.items():
-        if not spec.supports(name):
-            continue
-        paths = params_dict.get(field)
-        if not isinstance(paths, (list, tuple)) or not paths:
-            continue
-        uploads[name] = [
-            await kie.upload_file(rebase_stored_path(str(path)))
-            for path in paths
-            if str(path).strip()
-        ]
-    # Elements（Kling）: 要素ごとに参照画像 2〜4 枚を上げ、API の形
-    # ``{"name", "description", "element_input_urls"}`` に組み直す（§3.1）。
-    spec_elements = spec.elements
-    if spec_elements is not None and spec.supports("kling_elements"):
-        built: list[dict[str, Any]] = []
-        for element in params_dict.get("kling_elements") or []:
-            urls = [
-                await kie.upload_file(rebase_stored_path(str(path)))
-                for path in element.get("images") or []
-                if str(path).strip()
-            ]
-            built.append({
-                "name": str(element.get("name") or ""),
-                "description": str(element.get("description") or ""),
-                "element_input_urls": urls,
-            })
-        if built:
-            uploads["kling_elements"] = built
-    return uploads
-
-
-async def _run_kie_stage(
-    job_id: str,
-    stage: str,
-    spec: WorkflowSpec,
-    params: GenerationParams,
-    params_dict: dict[str, Any],
-    stages: dict[str, Any],
-    label: str,
-    overall: OverallProgress,
-    stage_index: int,
-) -> kie.TaskState:
-    """kie.ai にタスクを 1 つ投げ、仕上がるまで待つ。
-
-    ComfyUI の :func:`_run_stage` と同じ役回り: 投入した内容を先に
-    ``workflow_json`` へ書いてから投げる（失敗しても何を送ったか分かる）。
-    """
-    overall.start_stage(stage_index, 0)
-    uploads = await _kie_uploads(spec, params_dict)
-    request = kie.build_request(spec, params, uploads)
-    stages[stage] = {
-        "workflow_id": spec.id,
-        "backend": "kie",
-        "task_id": None,
-        "request": request.as_dict(),
-    }
-    await _update(job_id, workflow_json=json.dumps(stages, ensure_ascii=False))
-
-    api = kie.task_api(request.api)
-    task_id = await kie.create_task(request.model, request.input, api=api)
-    stages[stage]["task_id"] = task_id
-    await _update(job_id, workflow_json=json.dumps(stages, ensure_ascii=False))
-    await ws.publish(
-        job_id,
-        "running",
-        message=f"{label}: kie.ai に投入しました ({task_id})",
-        progress=overall.stage_fraction(_KIE_PROGRESS["waiting"]),
-    )
-
-    async def relay(state: kie.TaskState) -> None:
-        text = _KIE_LABELS.get(state.label, state.label)
-        await ws.publish(
-            job_id,
-            "running",
-            message=f"{label}: 外部 API 生成中 ({text})",
-            progress=overall.stage_fraction(_KIE_PROGRESS.get(state.label, 0.5)),
-        )
-
-    state = await kie.wait_for_task(task_id, api=api, on_progress=relay)
-    await ws.publish(job_id, "running", progress=overall.stage_finished())
-    return state
-
-
-async def _run_kie_followup_stage(
-    job_id: str,
-    stage: str,
-    mode: str,
-    spec: WorkflowSpec,
-    params_dict: dict[str, Any],
-    stages: dict[str, Any],
-    label: str,
-    overall: OverallProgress,
-    stage_index: int,
-) -> kie.TaskState:
-    """生成済みタスクへの追加操作を 1 つ実行する（SPEC §5.2 / issue #26）。
-
-    :func:`_run_kie_stage` と同じ役回りで、違うのは「何を頼むか」だけ:
-
-    - ``veo_extend``: 元タスクに **+7 秒**を継ぐ新しいタスクを作って待つ
-      （成果物は元動画を含む通し = ``fullResultUrls``）
-    - ``veo_1080p``: タスクは作らず、**1080P 版が用意されるまで取りに行く**
-      （生成完了の 1〜3 分後にできるので、待ちは :mod:`app.kie` 側でリトライ）
-
-    どちらも投げた内容を先に ``workflow_json`` へ書く（失敗しても何を頼んだか
-    分かる）。返した :class:`app.kie.TaskState` の扱いは通常の kie ステージと
-    まったく同じなので、ダウンロード・ラストフレーム抽出は共通のまま。
-    """
-    overall.start_stage(stage_index, 0)
-    source_task_id = str(params_dict.get("source_task_id") or "")
-    entry: dict[str, Any] = {
-        "workflow_id": spec.id,
-        "backend": "kie",
-        "followup": mode,
-        "source_task_id": source_task_id,
-        "task_id": None,
-    }
-    stages[stage] = entry
-
-    if mode == "veo_1080p":
-        index = params_dict.get("veo_index")
-        entry["request"] = {
-            "api": "veo_1080p",
-            "taskId": source_task_id,
-            "index": index,
-        }
-        await _update(job_id, workflow_json=json.dumps(stages, ensure_ascii=False))
-        await ws.publish(
-            job_id,
-            "running",
-            message=f"{label}: 1080P 版を要求しました ({source_task_id})",
-            progress=overall.stage_fraction(_KIE_PROGRESS["waiting"]),
-        )
-
-        async def on_wait(attempt: int, attempts: int) -> None:
-            await ws.publish(
-                job_id,
-                "running",
-                message=f"{label}: 1080P 版の準備待ち ({attempt}/{attempts})",
-                progress=overall.stage_fraction(
-                    min(0.9, attempt / max(attempts, 1))
-                ),
-            )
-
-        url = await kie.get_1080p_video(
-            source_task_id,
-            index=int(index) if index is not None else None,
-            on_wait=on_wait,
-        )
-        await ws.publish(job_id, "running", progress=overall.stage_finished())
-        # 消費クレジットは 1080P 取得の応答には入らないので記録しない
-        # （タスクを作らないので recordInfo の creditsConsumed も動かない）。
-        return kie.TaskState("success", "success", (url,))
-
-    model = kie.extend_model(spec.kie.model if spec.kie else "")
-    task_input = kie.extend_input(
-        source_task_id,
-        str(params_dict.get("video_prompt") or ""),
-        seeds=params_dict.get("veo_seeds"),
-        watermark=params_dict.get("veo_watermark"),
-    )
-    api = kie.task_api(kie.VEO_EXTEND.name)
-    entry["request"] = {"model": model, "api": api.name, "input": dict(task_input)}
-    await _update(job_id, workflow_json=json.dumps(stages, ensure_ascii=False))
-
-    task_id = await kie.create_task(model, task_input, api=api)
-    entry["task_id"] = task_id
-    await _update(job_id, workflow_json=json.dumps(stages, ensure_ascii=False))
-    await ws.publish(
-        job_id,
-        "running",
-        message=f"{label}: kie.ai に延長を投入しました ({task_id})",
-        progress=overall.stage_fraction(_KIE_PROGRESS["waiting"]),
-    )
-
-    async def relay(state: kie.TaskState) -> None:
-        text = _KIE_LABELS.get(state.label, state.label)
-        await ws.publish(
-            job_id,
-            "running",
-            message=f"{label}: 外部 API で延長中 ({text})",
-            progress=overall.stage_fraction(_KIE_PROGRESS.get(state.label, 0.5)),
-        )
-
-    state = await kie.wait_for_task(task_id, api=api, on_progress=relay)
-    await ws.publish(job_id, "running", progress=overall.stage_finished())
-    return state
-
-
-# --------------------------------------------------------------------------
-# Grok Build CLI バックエンド（SPEC §5.2 / issue #21）
-# --------------------------------------------------------------------------
-
-#: CLI のステージは内訳が取れないので、投入直後に出す進捗の目安
-_GROK_START_PROGRESS = 0.1
-
-
-def _grok_inputs(spec: WorkflowSpec, params_dict: dict[str, Any]) -> dict[str, str]:
-    """CLI に渡す入力ファイル ``{論理名: ローカルのパス}``（SPEC §5.2）。
-
-    kie.ai の :func:`_kie_uploads` にあたる下ごしらえ。CLI はローカルのファイルを
-    そのまま読めるので、公開 URL にする必要はなく、パスを渡すだけでよい（作業
-    ディレクトリへのコピーは :func:`grok_media.stage_input` が行う）。
-    """
-    inputs: dict[str, str] = {}
-    for name, field in INPUT_FIELDS.items():
-        if not spec.supports(name):
-            continue
-        path = params_dict.get(field)
-        if path:
-            inputs[name] = str(rebase_stored_path(path))
-    return inputs
-
-
-async def _run_grok_cli_stage(
-    job_id: str,
-    stage: str,
-    spec: WorkflowSpec,
-    params: GenerationParams,
-    params_dict: dict[str, Any],
-    stages: dict[str, Any],
-    label: str,
-    overall: OverallProgress,
-    stage_index: int,
-    job_dir: Path,
-) -> Path:
-    """Grok Build CLI に 1 ステージ分を作らせ、成果物のパスを返す。
-
-    ComfyUI の :func:`_run_stage`、kie.ai の :func:`_run_kie_stage` と同じ役回り。
-    CLI は成果物を**直接ローカルに書く**ので、置き場（``outputs/{job_id}/``）を
-    そのまま指示文に渡せばダウンロードの段は要らない。投入した指示文は先に
-    ``workflow_json`` へ書いておく（失敗しても何を頼んだか分かる）。
-    """
-    overall.start_stage(stage_index, 0)
-    kind, stem, _ = _STAGE_ARTIFACTS[stage]
-    dest = job_dir / f"{stem}{'.png' if kind == 'image' else '.mp4'}"
-    request = grok_media.build_request(
-        spec, params, dest, _grok_inputs(spec, params_dict)
-    )
-    stages[stage] = {
-        "workflow_id": spec.id,
-        "backend": "grok_cli",
-        "request": request.as_dict(),
-    }
-    await _update(job_id, workflow_json=json.dumps(stages, ensure_ascii=False))
-    await ws.publish(
-        job_id,
-        "running",
-        message=f"{label}: Grok CLI に指示しました",
-        progress=overall.stage_fraction(_GROK_START_PROGRESS),
-    )
-
-    async def relay(text: str) -> None:
-        await ws.publish(
-            job_id,
-            "running",
-            message=f"{label}: {text}",
-            progress=overall.stage_fraction(0.5),
-        )
-
-    saved = await grok_media.generate(request, on_progress=relay)
-    await ws.publish(job_id, "running", progress=overall.stage_finished())
-    return saved
-
-
-# --------------------------------------------------------------------------
-# Codex CLI バックエンド（SPEC §5.4 / issue #23）
-# --------------------------------------------------------------------------
-
-async def _run_codex_cli_stage(
-    job_id: str,
-    stage: str,
-    spec: WorkflowSpec,
-    params: GenerationParams,
-    stages: dict[str, Any],
-    label: str,
-    overall: OverallProgress,
-    stage_index: int,
-    job_dir: Path,
-) -> Path:
-    """Codex CLI に 1 ステージ分を描かせ、成果物のパスを返す。
-
-    :func:`_run_grok_cli_stage` と同じ役回り（CLI が成果物を直接
-    ``outputs/{job_id}/`` に書くので、ダウンロードの段は要らない）。gpt-image-2 は
-    画像しか作れないので入力ファイルの下ごしらえも無い。
-    """
-    overall.start_stage(stage_index, 0)
-    _, stem, _ = _STAGE_ARTIFACTS[stage]
-    dest = job_dir / f"{stem}.png"
-    request = codex_media.build_request(spec, params, dest)
-    stages[stage] = {
-        "workflow_id": spec.id,
-        "backend": "codex_cli",
-        "request": request.as_dict(),
-    }
-    await _update(job_id, workflow_json=json.dumps(stages, ensure_ascii=False))
-    await ws.publish(
-        job_id,
-        "running",
-        message=f"{label}: Codex CLI に指示しました",
-        progress=overall.stage_fraction(_GROK_START_PROGRESS),
-    )
-
-    async def relay(text: str) -> None:
-        await ws.publish(
-            job_id,
-            "running",
-            message=f"{label}: {text}",
-            progress=overall.stage_fraction(0.5),
-        )
-
-    saved = await codex_media.generate(request, on_progress=relay)
-    await ws.publish(job_id, "running", progress=overall.stage_finished())
-    return saved
 
 
 #: ステージ名 -> 進捗メッセージの見出し（バックエンドが変わっても同じ表示）
@@ -2039,28 +1436,15 @@ async def _run_job_stages(job: Job) -> dict[str, Any]:
     2 段が別々のバックエンドでも、成果物の置き場（``outputs/{job_id}/``）と
     jobs 行の列・WS の進捗表示は共通なので、履歴と UI からは区別が付かない。
 
-    ステージ間の橋渡しは「1 段目の静止画を 2 段目の開始フレームにする」1 点だけ
-    で、渡し方だけが 2 段目のバックエンドで変わる: ComfyUI なら input ディレクトリ
-    へ再アップロード、kie.ai なら File Upload API で公開 URL にしてから
-    ``imageUrls`` に入れる（受け取り側は :func:`_kie_uploads`）、Grok Build CLI なら
-    作業ディレクトリへコピーして指示文でファイル名を参照する（受け取り側は
-    :func:`_grok_inputs`）。1 段目の成果物はどれも ``outputs/`` のローカル
-    ファイルなので、``source_image`` を差し替えるだけでどのバックエンドにも
-    渡せる（ComfyUI 側の再アップロードは、その段の :func:`_prepare_comfy` が
-    差し替え後のパスを見て行う）。実装済みの向きは :data:`_STAGE_BRIDGES`
-    （投入時に :func:`_backend_problem` が弾く）。
-
-    消費クレジットは kie のステージの分だけ合算して履歴に残す（失敗したタスクは
-    kie 側で返金されるので数えない）。
+    ステージ間の橋渡しは「1 段目の静止画を 2 段目の開始フレームにする」1 点だけ。
+    1 段目の成果物は ``outputs/`` のローカルファイルなので ``source_image`` を
+    差し替えるだけでよく、ComfyUI 側の再アップロードはその段の
+    :func:`_prepare_comfy` が差し替え後のパスを見て行う。
     """
     job_id = job.id
     job_dir = OUTPUTS_DIR / job.id
     stages: dict[str, Any] = {}
     updates: dict[str, Any] = {}
-    #: 主成果物（jobs の列）に収まらない追加の成果物（Suno の 2 曲目など、§6）
-    extras: list[str] = []
-    spent = 0.0
-    charged = False
     # ComfyUI の下ごしらえ（Pod 起動・入力のアップロード）は最初に必要になった
     # ときだけ、1 度だけ行う。
     comfy_params: GenerationParams | None = None
@@ -2081,38 +1465,6 @@ async def _run_job_stages(job: Job) -> dict[str, Any]:
                 job_id, stage, spec, comfy_params, overrides, stages, label,
                 overall, index, job_dir,
             )
-        elif spec.backend == "kie":
-            # 生成済みタスクへの追加操作（延長・1080P 取得）は入力の下ごしらえも
-            # マニフェストの組み立ても要らないので、投げ方だけを分ける（§5.2）。
-            if job.mode in FOLLOWUP_MODES:
-                state = await _run_kie_followup_stage(
-                    job_id, stage, job.mode, spec, job.params,
-                    stages, label, overall, index,
-                )
-            else:
-                state = await _run_kie_stage(
-                    job_id, stage, spec, _generation_params(job, {}), job.params,
-                    stages, label, overall, index,
-                )
-            if state.credits is not None:
-                spent += state.credits
-                charged = True
-            kind, stem, _ = _STAGE_ARTIFACTS[stage]
-            downloaded = await kie.download_results(state, job_dir, stem, kind)
-            saved = downloaded[0]
-            # 1 回の呼び出しで複数返すモデル（Suno は 1 リクエスト 2 曲）。
-            # 2 つめ以降は列に入らないので extra_outputs に積む（§6）。
-            extras.extend(str(path) for path in downloaded[1:])
-        elif spec.backend == "grok_cli":
-            saved = await _run_grok_cli_stage(
-                job_id, stage, spec, _generation_params(job, {}), job.params,
-                stages, label, overall, index, job_dir,
-            )
-        elif spec.backend == "codex_cli":
-            saved = await _run_codex_cli_stage(
-                job_id, stage, spec, _generation_params(job, {}),
-                stages, label, overall, index, job_dir,
-            )
         else:
             raise JobError(
                 f"生成バックエンド '{spec.backend}' はまだ実装されていません"
@@ -2128,8 +1480,7 @@ async def _run_job_stages(job: Job) -> dict[str, Any]:
                 await extract_last_frame(saved, job_dir / "last_frame.png")
             )
         if stage == "image" and index + 1 < total:
-            # 2 段目はこの静止画を開始フレームとして読む。kie は job.params の
-            # パスから File Upload API に載せるので、パスを差し替えるだけでよい。
+            # 2 段目はこの静止画を開始フレームとして読む。
             job.params["source_image"] = str(saved)
             if all_stages[index + 1][1].backend == "comfyui" and comfy_params:
                 # ComfyUI は input ディレクトリのファイル名で受け取る。生成した
@@ -2142,10 +1493,6 @@ async def _run_job_stages(job: Job) -> dict[str, Any]:
                     }
                 )
 
-    if charged:
-        updates["credits_consumed"] = spent
-    if extras:
-        updates["extra_outputs"] = json.dumps(extras, ensure_ascii=False)
     return updates
 
 
@@ -2181,9 +1528,6 @@ async def run_job(job_id: str) -> None:
                     JobError,
                     JobValidationError,
                     runpod.RunPodError,
-                    kie.KieError,
-                    grok_media.GrokMediaError,
-                    codex_media.CodexMediaError,
                 ),
             )
             else f"{type(exc).__name__}: {exc}"
@@ -2255,3 +1599,40 @@ class JobRunner:
 
 
 runner = JobRunner()
+
+
+#: 実行の途中でプロセスが落ちた行に残す文面（ユーザー向けにそのまま出る）。
+INTERRUPTED_MESSAGE = "実行中にサーバーが再起動したため中断されました"
+
+
+async def recover_interrupted_jobs() -> None:
+    """再起動をまたいで残った行を拾い直す（起動時に 1 回だけ呼ぶ）。
+
+    キューはプロセス内の :class:`asyncio.Queue` なので、落ちた時点で
+
+    * ``queued`` の行は誰も拾わないまま永遠に残る -> キューに入れ直す
+    * ``running`` / ``prompting`` の行は実体がもう居ない -> ``failed`` にする
+
+    どちらも WS に流して、開いている画面がそのまま追従できるようにする。
+    """
+    async with get_db() as conn:
+        async with conn.execute(
+            "SELECT id, status FROM jobs"
+            " WHERE status IN ('queued', 'prompting', 'running')"
+            " ORDER BY created_at, id"
+        ) as cur:
+            rows = await cur.fetchall()
+    for row in rows:
+        job_id, status = row["id"], row["status"]
+        if status == "queued":
+            log.info("再起動前から待っていた job %s をキューに入れ直します", job_id)
+            await ws.publish(job_id, "queued", message="queued")
+            await runner.submit(job_id)
+        else:
+            log.warning("再起動で中断された job %s を failed にします", job_id)
+            await _set_status(
+                job_id,
+                "failed",
+                message=INTERRUPTED_MESSAGE,
+                error=INTERRUPTED_MESSAGE,
+            )

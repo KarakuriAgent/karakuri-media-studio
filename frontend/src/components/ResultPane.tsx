@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { Job, JobProgress, LibraryItem, LibrarySource } from '../types'
 import LibraryAddButton, { isInLibrary } from './LibraryAddButton'
-import VeoActions from './VeoActions'
 import { Banner, CopyButton, NsfwBadge, NsfwToggle, StatusBadge } from './ui'
 
 interface Props {
@@ -11,15 +10,15 @@ interface Props {
   /** ジョブの生成パラメータを左のフォームへ書き戻す。 */
   onRestoreParams: (job: Job) => void
   onContinue: (job: Job) => void
-  /** Veo の追加操作（SPEC §5.2）: 元動画に +7 秒 / 1080P 版の取得。 */
-  onExtend: (job: Job, prompt: string) => void
-  onUpscale: (job: Job) => void
   onDelete: (job: Job) => void
   onOpenDetail: (job: Job) => void
   onToggleNsfw: (job: Job, nsfw: boolean) => void
   busy: boolean
   queue: Job[]
-  /** NSFW 表示トグル（オンのときだけ 🫣 バッジを出す）。 */
+  /**
+   * NSFW 表示トグル。オフのあいだも、このセッションで投げたジョブは渡ってくる
+   * ので、その映像はぼかして出す（オンにするとぼかしが外れる）。
+   */
   showNsfw: boolean
   /** ライブラリに登録したあと、選択肢を取り直してもらう。 */
   onLibraryChanged?: () => void
@@ -55,7 +54,7 @@ function mediaOf(job: Job): MediaItem[] {
       thumb: null,
     })
   }
-  // 1 回の生成で複数返ったぶん（Suno は 1 リクエストで 2 曲）。列に入るのは
+  // 1 回の生成で複数返ったぶん。列に入るのは
   // 1 つめだけなので、残りはここでタブとして並べる（SPEC §6）。
   for (const [index, url] of (job.extra_output_urls ?? []).entries()) {
     items.push({
@@ -111,8 +110,6 @@ export default function ResultPane({
   onRerun,
   onRestoreParams,
   onContinue,
-  onExtend,
-  onUpscale,
   onDelete,
   onOpenDetail,
   onToggleNsfw,
@@ -153,6 +150,10 @@ export default function ResultPane({
   const current = media.find((item) => item.key === selectedKey) ?? media[0] ?? null
   const running = job != null && ACTIVE_STATUSES.includes(job.status)
   const percent = Math.round(Math.min(1, Math.max(0, progress?.progress ?? 0)) * 100)
+  // 表示トグルがオフのまま届いた NSFW（このセッションで投げたジョブ）はぼかす。
+  // トグルをオンにすればそのまま見える。
+  const blurred = !showNsfw && Boolean(job?.nsfw)
+  const blur = blurred ? 'blur-lg' : ''
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-2">
@@ -177,7 +178,7 @@ export default function ResultPane({
             key={current.url}
             src={current.url}
             controls
-            className="max-h-full max-w-full"
+            className={`max-h-full max-w-full ${blur}`}
           />
         )}
         {job && current?.kind === 'audio' && (
@@ -191,9 +192,16 @@ export default function ResultPane({
             key={current.url}
             src={current.url}
             alt={current.label}
-            className="max-h-full max-w-full cursor-zoom-in object-contain"
+            className={`max-h-full max-w-full cursor-zoom-in object-contain ${blur}`}
             onClick={() => setLightbox(current.url)}
           />
+        )}
+
+        {/* ぼかしていることが分かるように、その旨を重ねる（SPEC §7.1）。 */}
+        {blurred && current && !running && (
+          <span className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-pink-800 bg-black/70 px-3 py-1 text-xs font-semibold tracking-widest text-pink-300">
+            NSFW
+          </span>
         )}
 
         {/* queue chip */}
@@ -253,7 +261,11 @@ export default function ResultPane({
             >
               <span className="flex h-10 w-16 items-center justify-center overflow-hidden rounded bg-ink-900">
                 {item.thumb ? (
-                  <img src={item.thumb} alt={item.label} className="h-full w-full object-cover" />
+                  <img
+                    src={item.thumb}
+                    alt={item.label}
+                    className={`h-full w-full object-cover ${blur}`}
+                  />
                 ) : (
                   <span className="text-sm">{item.kind === 'audio' ? '🎵' : '🎬'}</span>
                 )}
@@ -275,7 +287,7 @@ export default function ResultPane({
           </span>
           <span className="text-xs text-slate-500">{formatTime(job.created_at)}</span>
           <span className="text-xs text-slate-600">{job.mode}</span>
-          {showNsfw && job.nsfw && <NsfwBadge />}
+          {job.nsfw && <NsfwBadge />}
 
           <div className="ml-auto flex flex-wrap items-center gap-2">
             {current && (
@@ -320,13 +332,6 @@ export default function ResultPane({
             >
               続きを生成
             </button>
-            {/* Veo の生成済み動画にだけ出る追加操作（SPEC §5.2） */}
-            <VeoActions
-              job={job}
-              busy={busy}
-              onExtend={onExtend}
-              onUpscale={onUpscale}
-            />
             <NsfwToggle
               nsfw={job.nsfw}
               disabled={busy}
@@ -375,7 +380,7 @@ export default function ResultPane({
           <img
             src={lightbox}
             alt="拡大表示"
-            className="max-h-full max-w-full object-contain"
+            className={`max-h-full max-w-full object-contain ${blur}`}
             onClick={(event) => event.stopPropagation()}
           />
           <button

@@ -25,6 +25,18 @@ export const DEFAULT_IMAGE_WORKFLOW = 'krea2_turbo'
 export const DEFAULT_AUDIO_WORKFLOW = 'ace_step1_5_xl_sft'
 
 /**
+ * メガピクセルのグローバル既定（SPEC §3.1）。ワークフローが
+ * `default_megapixels` を宣言していればそちらが優先される。
+ */
+export const DEFAULT_MEGAPIXELS = 1
+
+/**
+ * サンプリング回数（`steps`）の上限（SPEC §3.1、バックエンドの `MAX_STEPS`）。
+ * `0` は「未指定」= テンプレートの既定値のまま。
+ */
+export const MAX_STEPS = 150
+
+/**
  * ComfyUI の接続先プロファイル（SPEC §5）。設定画面のサブセクションと生成
  * フォーム上部のプルダウンで共通に使う並び順・表示名。
  */
@@ -138,13 +150,11 @@ export interface FormState {
   duration: number
   fps: number
   /**
-   * 高速化トグル（SPEC §3.1）。宣言のある動画ワークフロー（`supports` に
-   * それぞれの名前があるもの）でだけ欄が出る。サーバー側の設定
-   * （`GET/PUT /api/settings`）に永続化されるので、初期値はそこから来る。
-   * 両方 ON なら UNETLoader → Sage Attention → EasyCache → BasicGuider。
+   * サンプリング回数（SPEC §3.1）。`steps` を宣言しているワークフローだけが
+   * 読む。`0` は「未指定」= テンプレートの既定値のままで、モード / ワークフローを
+   * 行き来しても値が残るよう 1 つのフィールドで持つ（送信時に絞る）。
    */
-  sageAttention: boolean
-  easyCache: boolean
+  steps: number
   seedLocked: boolean
   seed: number
   promptTemplate: PromptTemplate
@@ -167,9 +177,9 @@ export interface FormState {
   /** id of the selected audio workflow template. */
   audioWorkflow: string
   audioPrompt: string
-  /** ACE-Step / Suno の歌詞。空ならインストゥルメンタル。 */
+  /** 歌詞。空ならインストゥルメンタル。 */
   lyrics: string
-  /** Suno: 曲に入れたくない要素（英語のカンマ区切り）。 */
+  /** 曲に入れたくない要素（英語のカンマ区切り）。 */
   negativeTags: string
   /** 音声の長さ（秒）。ワークフローごとに上下限が違う。 */
   audioDuration: number
@@ -191,7 +201,7 @@ export const initialForm: FormState = {
   negativePreset: 'current',
   negativePrompt: DEFAULT_NEGATIVE_PROMPT,
   aspectRatio: '4:3 (Standard)',
-  megapixels: 1,
+  megapixels: DEFAULT_MEGAPIXELS,
   loras: [],
   triggerText: '',
   triggerDirty: false,
@@ -209,8 +219,7 @@ export const initialForm: FormState = {
   klingElements: [],
   duration: 10,
   fps: 25,
-  sageAttention: false,
-  easyCache: false,
+  steps: 0,
   seedLocked: false,
   seed: 0,
   promptTemplate: 'natural',
@@ -280,7 +289,7 @@ export function matchesLoraQuery(lora: Lora, query: string): boolean {
 }
 
 // ----------------------------------------------- 選択式フィールド（SPEC §3.1）
-// 自由記述ではなく決まった選択肢で挙動が決まるワークフロー（wan_dancer の踊りの
+// 自由記述ではなく決まった選択肢で挙動が決まるワークフロー（踊りの
 // 種類・動きの大きさ・尺）向け。フォームは workflow.selects をそのまま select と
 // して描き、送信時はそのワークフローが宣言している名前だけを送る。
 
@@ -299,7 +308,7 @@ export function workflowSelects(
  * 切り替えた直後の持ち越しで 422 にしない）。
  *
  * `selects` はステージをまたいで 1 つの辞書なので、**そのジョブで実際に走る
- * ワークフロー**をすべて渡す（`full` なら画像と動画の両方。gpt-image-2 の
+ * ワークフロー**をすべて渡す（`full` なら画像と動画の両方。画像側の
  * `size` / `quality` は画像ステージ側の宣言、SPEC §5.4）。走らないステージの
  * ワークフローを渡すと、持ち越した値を送って 422 になる。
  */
@@ -315,6 +324,23 @@ export function jobSelects(
     }
   }
   return picked
+}
+
+/**
+ * フォームの入力 → ジョブの `steps`（サンプリング回数、SPEC §3.1）。
+ *
+ * `selects` と同じで、**そのジョブで実際に走るワークフロー**だけを渡す。どれも
+ * `steps` を宣言していなければ 0（= 未指定）で、テンプレートの既定値のまま走る。
+ */
+export function jobSteps(
+  form: FormState,
+  ...workflows: (WorkflowOption | null | undefined)[]
+): number {
+  if (form.steps <= 0) return 0
+  const declared = workflows.some((workflow) =>
+    (workflow?.supports ?? []).includes('steps'),
+  )
+  return declared ? form.steps : 0
 }
 
 // ------------------------------------------------- 実行時のモデル切り替え（§3.3）
@@ -363,7 +389,7 @@ export function imageWorkflowNeedsSource(
 }
 
 // --------------------------------------------- マルチモーダル参照（SPEC §3.1）
-// 1 つの欄が**複数ファイル**を持つ参照入力（Seedance 2 系の参照画像・参照動画・
+// 1 つの欄が**複数ファイル**を持つ参照入力（参照画像・参照動画・
 // 参照音声）。どの欄をいくつまで出すかはワークフローの `multi_inputs` が決め、
 // **開始フレーム（`source_image` / `end_image`）とは排他**。
 
@@ -435,7 +461,7 @@ export function toggleReference(current: string[], url: string): string[] {
     : [...current, url]
 }
 
-// ------------------------------- ショット割り / Elements（SPEC §3.1、Kling 3.0）
+// ------------------------------- ショット割り / Elements（SPEC §3.1）
 // 平坦な値ではない**構造化パラメータ**。どちらもワークフローの宣言
 // （`multi_shot` / `elements`）がある場合だけフォームに欄が出る。
 
@@ -451,28 +477,6 @@ export function elementsLimits(
   workflow?: WorkflowOption | null,
 ): ElementsLimits | null {
   return workflow?.elements ?? null
-}
-
-// ---------------------------------------------------- 高速化トグル（SPEC §3.1）
-// UNETLoader と BasicGuider の間に挟むノードの ON / OFF。ジョブごとの値では
-// あるが、**サーバー側の設定に永続化される**（`GET/PUT /api/settings`）ので、
-// 次に開いたときも同じ状態で始まる。
-
-/** 高速化トグルの論理名（バックエンドの `supports` と同じ綴り）。 */
-export const SAGE_ATTENTION = 'sage_attention'
-export const EASY_CACHE = 'easy_cache'
-
-/**
- * そのワークフローが高速化トグル `name` を持つか。
- *
- * 挿し込み口の宣言（`WorkflowSpec.patch_point`）があるワークフローだけが
- * `supports` にこれらの名前を出すので、無いワークフローでは欄そのものが出ない。
- */
-export function supportsSpeedup(
-  workflow: WorkflowOption | null | undefined,
-  name: string,
-): boolean {
-  return (workflow?.supports ?? []).includes(name)
 }
 
 /**
@@ -573,6 +577,19 @@ export function durationRange(
   return { min: workflow.min_duration, max: workflow.max_duration }
 }
 
+/**
+ * そのワークフローで使うメガピクセル（SPEC §3.1）。
+ *
+ * `default_megapixels` を宣言しているモデル（MiniMax H3 = 0.4）はテンプレートの
+ * `ResolutionSelector` がその画角を前提にしていて、グローバル既定の 1.0MP のまま
+ * 回すと VRAM が足りずに落ちる。宣言の無いワークフローは既定のまま。
+ */
+export function megapixelsFor(
+  workflow: WorkflowOption | null | undefined,
+): number {
+  return workflow?.default_megapixels || DEFAULT_MEGAPIXELS
+}
+
 /** 音声ワークフローを切り替えたときに追随させる値（秒数を範囲内へ寄せる）。 */
 export function clampToWorkflow(
   form: FormState,
@@ -605,7 +622,7 @@ export function audioJobPayload(
   }
   const models = jobModelOverrides(form, modelSlots, [form.audioWorkflow])
   if (Object.keys(models).length > 0) payload.model_overrides = models
-  // 選択式フィールド（Suno のモデル・ボーカル性別。§3.1）
+  // 選択式フィールド（§3.1）
   const selects = jobSelects(form, workflow)
   if (Object.keys(selects).length > 0) payload.selects = selects
   if (audioSupports(workflow, 'lyrics')) payload.lyrics = form.lyrics
@@ -619,6 +636,8 @@ export function audioJobPayload(
     payload.audio_category = form.audioCategory
   }
   if (audioSupports(workflow, 'reprompt')) payload.reprompt = form.reprompt
+  // サンプリング回数（§3.1）。未指定（0）は送らない = テンプレートの既定値のまま。
+  if (audioSupports(workflow, 'steps') && form.steps > 0) payload.steps = form.steps
   return payload
 }
 
@@ -644,6 +663,33 @@ const JOB_MODES: JobMode[] = ['full', 'i2v', 'image_only', 'audio']
 
 function asString(value: unknown): string | undefined {
   return typeof value === 'string' ? value : undefined
+}
+
+/** 静的配信している置き場（バックエンドの `app/paths.py` の REBASE_ANCHORS と同じ）。 */
+const MEDIA_ROOTS = ['assets', 'library', 'outputs']
+
+/**
+ * 保存されている**絶対パス**を、そのファイルを配信している URL に直す。
+ *
+ * ジョブの params には解決済みの絶対パスが入る（バックエンドの
+ * `resolve_asset_path`）。そのままフォームへ戻すとプレビューの `<img src>` が
+ * `/home/…/library/image/x.png` を取りに行ってしまうので、配信の接頭辞
+ * （`/assets/` `/library/` `/outputs/`）に載せ替える。置き場の名前は**後ろから**
+ * 探す（リポジトリ自体が同名のディレクトリの下にあってもよいように）。既に URL の
+ * ものと、どの置き場にも当たらないものはそのまま返す。
+ */
+export function mediaUrl(value: string): string {
+  const parts = value.split('/')
+  for (let index = parts.length - 2; index > 0; index -= 1) {
+    if (MEDIA_ROOTS.includes(parts[index])) return `/${parts.slice(index).join('/')}`
+  }
+  return value
+}
+
+/** :func:`asString` に :func:`mediaUrl` を通したもの（入力素材の 1 本用）。 */
+function asMediaUrl(value: unknown): string | undefined {
+  const text = asString(value)
+  return text === undefined ? undefined : mediaUrl(text)
 }
 
 function asNumber(value: unknown): number | undefined {
@@ -689,7 +735,7 @@ function asElements(value: unknown): KlingElement[] | undefined {
         name: element.name,
         description:
           typeof element.description === 'string' ? element.description : '',
-        images: asStringList(element.images) ?? [],
+        images: (asStringList(element.images) ?? []).map(mediaUrl),
       },
     ]
   })
@@ -838,18 +884,19 @@ export function formStateFromParams(
   // --- 入力素材 ------------------------------------------------------------
   // 音声ジョブの params には画像・動画側の入力は入らないが、入っていても mode が
   // 使わないだけなので、あるものはそのまま戻す。
-  const audioPath = asString(params.audio_path)
+  // 入っているのは絶対パスなので、配信 URL に直してから戻す（mediaUrl）。
+  const audioPath = asMediaUrl(params.audio_path)
   if (audioPath !== undefined) changes.audioPath = audioPath
-  const sourceImage = asString(params.source_image)
+  const sourceImage = asMediaUrl(params.source_image)
   if (sourceImage !== undefined) changes.sourceImage = sourceImage
-  const endImage = asString(params.end_image)
+  const endImage = asMediaUrl(params.end_image)
   if (endImage !== undefined) changes.endImage = endImage
-  const referenceVideo = asString(params.reference_video)
+  const referenceVideo = asMediaUrl(params.reference_video)
   if (referenceVideo !== undefined) changes.referenceVideo = referenceVideo
   // マルチモーダル参照（複数ファイル、SPEC §3.1）。古いジョブの params には無い。
   for (const item of REFERENCE_FIELDS) {
     const paths = asStringList(params[item.name])
-    if (paths) changes[item.field] = paths
+    if (paths) changes[item.field] = paths.map(mediaUrl)
   }
   // ショット割り / Elements（構造化パラメータ、SPEC §3.1）。古いジョブには無い。
   const shots = asMultiShots(params.multi_shots)
@@ -866,6 +913,8 @@ export function formStateFromParams(
   }
   const fps = asNumber(params.fps)
   if (fps !== undefined) changes.fps = fps
+  const steps = asNumber(params.steps)
+  if (steps !== undefined) changes.steps = steps
 
   // --- 音声固有 ------------------------------------------------------------
   const audioPrompt = asString(params.audio_prompt)
@@ -934,7 +983,9 @@ export function hiddenFields(
     video && (workflow?.requires ?? []).includes(name as never)
   const supports = (name: string) =>
     video && (workflow?.supports ?? []).includes(name)
-  // 必須ではないが受け取れる入力（Veo の開始フレーム・最後のフレームは任意）も
+  const imageSupports = (name: string) =>
+    (imageWorkflow?.supports ?? []).includes(name)
+  // 必須ではないが受け取れる入力（任意の開始フレーム・最後のフレーム）も
   // 欄は出す — 出さないと渡す手立てが無くなる。
   const accepts = (name: string) => requires(name) || supports(name)
   const imageNeedsSource = image && imageWorkflowNeedsSource(imageWorkflow)
@@ -954,6 +1005,9 @@ export function hiddenFields(
     audio: !requires('audio'),
     duration: !supports('duration'),
     fps: !supports('fps'),
+    // サンプリング回数は画像・動画のどちらのワークフローも宣言しうるので、
+    // その mode で走るほうが宣言していれば出す（§3.1）。
+    steps: !(supports('steps') || (image && imageSupports('steps'))),
     // in full mode the video's start frame comes from the image stage, but an
     // editing image workflow still needs its own input picture in every mode
     // that runs the image stage
@@ -1149,15 +1203,11 @@ export function validateForm(
   return errors
 }
 
-// 追加操作（veo_extend / veo_1080p）はフォームから選べないが、履歴の表示には
-// 出るのでラベルだけ持つ（SPEC §5.2）。
 export const MODE_LABELS: Record<JobMode, string> = {
   full: '画像＋動画',
   i2v: '動画生成',
   image_only: '画像のみ',
   audio: '音声',
-  veo_extend: '動画の延長',
-  veo_1080p: '1080P 取得',
 }
 
 export const MODE_HINTS: Record<JobMode, string> = {
@@ -1165,8 +1215,6 @@ export const MODE_HINTS: Record<JobMode, string> = {
   i2v: '選択した動画ワークフローを単発実行',
   image_only: '画像のみ生成',
   audio: '音声のみ生成（画像・動画とは連結しない単独実行）',
-  veo_extend: '生成済みの Veo 動画に +7 秒を継ぎ足す（履歴から実行）',
-  veo_1080p: '生成済みの Veo 動画の 1080P 版を取得する（履歴から実行）',
 }
 
 /** Workflows that can be used in `mode` (full needs a start-frame input). */

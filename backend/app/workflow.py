@@ -26,15 +26,12 @@ from typing import Any
 
 from .models import GenerationParams, LoraRef, ModelField, ModelSlot
 from .workflows import (
-    EASY_CACHE_NAME,
     LTX_FRAME_GRID,
-    MODEL_PATCHES,
+    OPTIONAL_CLASS_TYPES,
     REF_AUDIOS_NAME,
     REF_IMAGES_NAME,
     REF_VIDEOS_NAME,
-    SAGE_ATTENTION_NAME,
     LoraChain,
-    PatchPoint,
     Target,
     Workflow,
     WorkflowSpec,
@@ -92,6 +89,8 @@ MODEL_FIELDS: set[tuple[str, str]] = {
     ("LoadMoGeModel", "model_name"),
     ("LoraLoaderModelOnly", "lora_name"),
     ("LoraLoader", "lora_name"),
+    # MiniMax H3 turbo の 4step 蒸留 LoRA（専用ローダーだが中身はただの LoRA）
+    ("MiniMaxH3TurboLoRA", "lora_name"),
 }
 
 # 不足モデルをダウンロードするときの既定の置き場所（SPEC §3.3）。値は ComfyUI 側の
@@ -111,6 +110,7 @@ MODEL_SUBFOLDERS: dict[tuple[str, str], str] = {
     ("VAELoader", "vae_name"): "vae",
     ("LoraLoader", "lora_name"): "loras",
     ("LoraLoaderModelOnly", "lora_name"): "loras",
+    ("MiniMaxH3TurboLoRA", "lora_name"): "loras",
     # LTX 2.3 の音声 VAE / テキストエンコーダは checkpoints と text_encoders を
     # 見る（comfy_extras/nodes_lt_audio.py）
     ("LTXVAudioVAELoader", "ckpt_name"): "checkpoints",
@@ -163,11 +163,25 @@ _INT_INPUTS: set[tuple[str, str]] = {
     ("TextEncodeAceStepAudio1.5", "duration"),
     ("TextEncodeAceStepAudio1.5", "bpm"),
     ("CustomCombo", "index"),
+    # サンプリング回数（SPEC §3.1）。UI が空欄なら注入しない = テンプレート既定。
+    ("KSampler", "steps"),
+    ("BasicScheduler", "steps"),
 }
 _FLOAT_INPUTS: set[tuple[str, str]] = {
     ("Video Slice", "duration"),
     ("EmptyAceStep1.5LatentAudio", "seconds"),
 }
+
+#: BOOLEAN を宣言している入力。選択式フィールド（:class:`app.workflows.SelectSpec`）
+#: は選択肢を**文字列**で持つので、こういう入力に入れる前に真偽値へ直す
+#: （``"on"`` -> ``True`` / それ以外 -> ``False``）。ComfyUI は BOOLEAN の widget に
+#: 文字列を入れると型検証で prompt ごと落ちる。
+_BOOL_INPUTS: set[tuple[str, str]] = {
+    ("MiniMaxH3TurboLoRA", "low_vram"),
+}
+
+#: :data:`_BOOL_INPUTS` で「ON」とみなす文字列（大文字小文字は問わない）
+_TRUE_WORDS = frozenset({"on", "true", "yes", "1"})
 
 
 def _coerce(class_type: str, field: str, value: Any) -> Any:
@@ -175,7 +189,14 @@ def _coerce(class_type: str, field: str, value: Any) -> Any:
 
     ``PrimitiveInt`` rejects a float and ``PrimitiveFloat`` a bool, so the
     injected numbers are cast according to the node the manifest points at.
+
+    BOOLEAN の入力（:data:`_BOOL_INPUTS`）には、選択式フィールドが持っている
+    文字列を真偽値に直して入れる。
     """
+    if (class_type, field) in _BOOL_INPUTS:
+        if isinstance(value, str):
+            return value.strip().lower() in _TRUE_WORDS
+        return bool(value)
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         return value
     if class_type == "PrimitiveInt" or (class_type, field) in _INT_INPUTS:
@@ -199,7 +220,7 @@ def _inject_selects(wf: Workflow, spec: WorkflowSpec, params: GenerationParams) 
 
     ``CustomCombo`` は選んだ文字列と 0 始まりの番号を持ち、**グラフが読むのは
     番号側**（``choice`` は表示用）なので両方書く。``numeric_target`` があれば
-    同じ値を数値としても入れる（wan_dancer の尺は音声のトリム長も決める）。
+    同じ値を数値としても入れる（尺は音声のトリム長も決める）。
     不明・リスト外の値は既定値に落とす（検証は :func:`app.models.select_problem`
     が済ませているので、ここは最後の砦）。
     """
@@ -211,7 +232,14 @@ def _inject_selects(wf: Workflow, spec: WorkflowSpec, params: GenerationParams) 
         # 無い）。ここは ComfyUI のグラフを組む関数なので何もしない。
         if not choice or select.target is None:
             continue
-        _set(wf, select.target.node_id, select.target.field, choice)
+        # 書き込み先が BOOLEAN を宣言していれば真偽値に直す（それ以外の
+        # 選択式は文字列のまま。:func:`_coerce` は文字列に触らない）。
+        _set(
+            wf,
+            select.target.node_id,
+            select.target.field,
+            _coerce(select.target.class_type, select.target.field, choice),
+        )
         if select.index_field:
             _set(wf, select.target.node_id, select.index_field, select.index_of(choice))
         if select.numeric_target is not None:
@@ -241,6 +269,17 @@ def ltx_frame_count(duration: float, fps: int) -> int:
     silently truncated downstream, so the app rounds the count down here.
     """
     return LTX_FRAME_GRID.frames(duration, fps)
+
+
+def _inject_steps(wf: Workflow, spec: WorkflowSpec, params: GenerationParams) -> None:
+    """Write the sampling step count, **only when the job asks for one** (§3.1).
+
+    ``steps`` は「未指定ならテンプレートの既定値のまま」という約束のつまみで、
+    既定値はワークフローごとに大きく違う（turbo 系は 4、ACE-Step は 50）。
+    ``0`` や負の値は未指定なので、注入せずにテンプレートの値を残す。
+    """
+    if params.steps > 0:
+        _inject(wf, spec, "steps", params.steps)
 
 
 def _inject_frame_count(wf: Workflow, spec: WorkflowSpec, params: GenerationParams) -> None:
@@ -638,42 +677,6 @@ def _build_lora_chain(
         _set(wf, consumer.node_id, consumer.field, upstream)
 
 
-def _build_model_patches(
-    wf: Workflow, point: PatchPoint | None, enabled: set[str]
-) -> None:
-    """Splice the enabled ``MODEL`` patches into ``point`` (SPEC §3.1).
-
-    :func:`_build_lora_chain` と同じ「辺を切って間に挟む」操作の、固定ノード版。
-    ON にされたものだけを :data:`app.workflows.MODEL_PATCHES` の順に**直列**で
-    繋ぐ（Sage Attention → EasyCache）。1 つも ON でなければ**何もしない**ので、
-    グラフはテンプレートのままになる。
-
-    上流には ``point.head`` ではなく **consumer が今読んでいるリンク**を使う。
-    先に LoRA チェーンを組んでいればその末尾がそのまま入力になり、パッチが必ず
-    最後段に来る（H3 は LoRA チェーンを持たないので実際には head 直結だが、
-    組み立て順に依らない形にしておく）。
-    """
-    if point is None or not point.consumers:
-        return
-    picked = [patch for patch in MODEL_PATCHES if patch.name in enabled]
-    if not picked:
-        return
-    first = point.consumers[0]
-    node = _node(wf, first)
-    upstream = (node.get("inputs") or {}).get(first.field) if node else None
-    if not _is_link(upstream):
-        upstream = [point.head, 0]
-    for patch in picked:
-        wf[patch.node_id] = {
-            "class_type": patch.class_type,
-            "_meta": {"title": patch.title},
-            "inputs": {"model": list(upstream), **patch.inputs},
-        }
-        upstream = [patch.node_id, 0]
-    for consumer in point.consumers:
-        _set(wf, consumer.node_id, consumer.field, list(upstream))
-
-
 def _loader_node(loader: Target, value: Any, title: str) -> dict[str, Any]:
     """One freshly grown ``LoadImage`` / ``LoadVideo`` / ``LoadAudio`` node."""
     return {
@@ -841,11 +844,15 @@ def all_required_class_types() -> set[str]:
 
     ``LoraLoaderModelOnly`` is listed explicitly because the dynamic image-LoRA
     chain introduces it even though the template placeholders are removed.
+
+    :data:`app.workflows.OPTIONAL_CLASS_TYPES`（MiniMax H3 turbo だけが使う任意の
+    カスタムノード）は**除く**: 入れていない環境で接続インジケーターが赤くなって
+    しまうため、そのワークフローを実際に選んだときだけ ComfyUI 側で失敗させる。
     """
     types: set[str] = {"LoraLoaderModelOnly"}
     for spec in comfy_specs():
         types |= required_class_types(load_template(spec))
-    return types
+    return types - OPTIONAL_CLASS_TYPES
 
 
 def validate_manifests() -> None:
@@ -890,6 +897,7 @@ def build_image_workflow(
     _inject(wf, resolved, "image", params.start_image_name)
     _inject(wf, resolved, "prompt", params.image_prompt)
     _inject(wf, resolved, "seed", params.image_seed)
+    _inject_steps(wf, resolved, params)
     for name, value in resolved.constants.items():
         _inject(wf, resolved, name, value)
     _inject_triggers(wf, resolved, params)
@@ -918,7 +926,7 @@ def build_video_workflow(
     apply_model_overrides(wf, overrides, resolved.id)
 
     # The video LoRA's trigger words go in front of the prompt (SPEC §3.4).
-    # プロンプトをコンボから組み立てるワークフロー（wan_dancer）では、空の
+    # プロンプトをコンボから組み立てるワークフローでは、空の
     # `video_prompt` でテンプレートの既定文を潰さない。
     if params.video_prompt.strip() or resolved.prompt_required:
         _inject(
@@ -936,6 +944,7 @@ def build_video_workflow(
     _inject(wf, resolved, "height", height)
     _inject(wf, resolved, "duration", params.duration)
     _inject(wf, resolved, "fps", params.fps)
+    _inject_steps(wf, resolved, params)
     _inject_frame_count(wf, resolved, params)
 
     seeds = list(params.video_seeds) or [0]
@@ -961,14 +970,6 @@ def build_video_workflow(
     _build_lora_chain(
         wf, resolved.lora_chain, params.video_loras, prefix=VIDEO_LORA_NODE_PREFIX
     )
-    # 高速化トグルは最後段（LoRA チェーンの出口）に挟む。どれも OFF なら
-    # ノードは 1 つも増えないので、グラフは従来と完全に同じ（SPEC §3.1）。
-    enabled_patches: set[str] = set()
-    if params.sage_attention:
-        enabled_patches.add(SAGE_ATTENTION_NAME)
-    if params.easy_cache:
-        enabled_patches.add(EASY_CACHE_NAME)
-    _build_model_patches(wf, resolved.patch_point, enabled_patches)
     _inject_selects(wf, resolved, params)
     for name, value in resolved.constants.items():
         _inject(wf, resolved, name, value)
@@ -1012,6 +1013,7 @@ def build_audio_workflow(
     _inject(wf, resolved, "audio_category", params.audio_category)
     _inject(wf, resolved, "reprompt", params.reprompt)
     _inject(wf, resolved, "seed", params.audio_seed)
+    _inject_steps(wf, resolved, params)
     for name, value in resolved.constants.items():
         _inject(wf, resolved, name, value)
     _inject(wf, resolved, "save_prefix", params.audio_filename_prefix)

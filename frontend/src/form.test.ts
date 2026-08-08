@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import {
   AUTHOR_NEGATIVE_PROMPT,
+  DEFAULT_MEGAPIXELS,
   DEFAULT_NEGATIVE_PROMPT,
   MODE_LABELS,
   audioJobPayload,
@@ -14,9 +15,11 @@ import {
   isAudioJob,
   jobModelOverrides,
   jobSelects,
+  jobSteps,
   jobWorkflowIds,
   lorasForTarget,
   matchesLoraQuery,
+  megapixelsFor,
   modelSlotsForJob,
   elementsLimits,
   multiShotLimits,
@@ -871,6 +874,21 @@ describe('audioSupports / durationRange', () => {
   })
 })
 
+describe('megapixelsFor', () => {
+  it('uses the workflow default when it declares one (MiniMax H3 = 0.4MP)', () => {
+    const h3 = workflow({ id: 'minimax_h3_i2v_turbo', default_megapixels: 0.4 })
+    expect(megapixelsFor(h3)).toBe(0.4)
+  })
+
+  it('falls back to the global default without a declaration', () => {
+    expect(megapixelsFor(T2V)).toBe(DEFAULT_MEGAPIXELS)
+    expect(megapixelsFor(workflow({ default_megapixels: 0 }))).toBe(
+      DEFAULT_MEGAPIXELS,
+    )
+    expect(megapixelsFor(null)).toBe(DEFAULT_MEGAPIXELS)
+  })
+})
+
 describe('clampToWorkflow', () => {
   it('keeps a duration that is already in range', () => {
     expect(clampToWorkflow(audioForm({ audioDuration: 90 }), ACE)).toEqual({})
@@ -1512,6 +1530,48 @@ describe('formStateFromParams — 動画のみ / 音声ジョブ', () => {
     })
   })
 
+  it('記録されている絶対パスは配信 URL に直して戻す', () => {
+    // params に入るのは解決済みの絶対パス。そのまま戻すとプレビューの
+    // <img src> がファイルシステムのパスを取りに行ってしまう。
+    const form = restored({
+      mode: 'i2v',
+      video_workflow: I2V.id,
+      source_image: '/home/kohei/workspace/video-studio/library/image/kaori_015.png',
+      end_image: '/home/kohei/workspace/video-studio/assets/image/end.png',
+      reference_video: '/home/kohei/workspace/video-studio/outputs/j1/vid.mp4',
+      audio_path: '/home/kohei/workspace/video-studio/library/audio/bgm.wav',
+      reference_images: ['/mnt/other/video-studio/library/image/a.png'],
+      kling_elements: [
+        {
+          name: 'cat',
+          description: '',
+          images: ['/mnt/other/video-studio/library/image/b.png'],
+        },
+      ],
+    })
+    expect(form).toMatchObject({
+      sourceImage: '/library/image/kaori_015.png',
+      endImage: '/assets/image/end.png',
+      referenceVideo: '/outputs/j1/vid.mp4',
+      audioPath: '/library/audio/bgm.wav',
+      referenceImages: ['/library/image/a.png'],
+    })
+    expect(form.klingElements[0].images).toEqual(['/library/image/b.png'])
+  })
+
+  it('すでに URL のもの・置き場に当たらないものはそのまま', () => {
+    const form = restored({
+      mode: 'i2v',
+      video_workflow: I2V.id,
+      source_image: '/library/image/a.png',
+      end_image: 'image/legacy.png',
+    })
+    expect(form).toMatchObject({
+      sourceImage: '/library/image/a.png',
+      endImage: 'image/legacy.png',
+    })
+  })
+
   it('音声ジョブの尺は audioDuration に入る（動画側は初期値のまま）', () => {
     const form = restored({
       mode: 'audio',
@@ -1721,5 +1781,60 @@ describe('リファレンスシート（SPEC §7.2）', () => {
     expect(sheetSize('')).toEqual({ width: 1280, height: 720 })
     expect(sheetSize('わからない')).toEqual({ width: 1280, height: 720 })
     expect(sheetSize('0:0')).toEqual({ width: 1280, height: 720 })
+  })
+})
+
+// -------------------------------------------------------- ステップ数（§3.1）
+
+const STEPS_VIDEO = workflow({
+  id: 'minimax_h3_i2v_turbo',
+  requires: ['image'],
+  accepts_start_image: true,
+  supports: ['prompt', 'width', 'height', 'duration', 'fps', 'steps'],
+})
+const STEPS_IMAGE = workflow({
+  id: 'krea2_turbo_steps',
+  kind: 'image',
+  family: 'krea2',
+  supports: ['aspect_ratio', 'megapixels', 'prompt', 'seed', 'steps'],
+})
+const STEPS_AUDIO = workflow({
+  ...SA3,
+  supports: [...SA3.supports, 'steps'],
+})
+
+describe('steps', () => {
+  it('宣言しているワークフローのときだけ欄を出す', () => {
+    expect(hiddenFields('i2v', STEPS_VIDEO).steps).toBe(false)
+    expect(hiddenFields('i2v', I2V).steps).toBe(true)
+    // full は画像・動画のどちらかが宣言していれば出す
+    expect(hiddenFields('full', I2V, STEPS_IMAGE).steps).toBe(false)
+    expect(hiddenFields('image_only', I2V, STEPS_IMAGE).steps).toBe(false)
+    expect(hiddenFields('image_only', I2V, KREA2).steps).toBe(true)
+    // 動画側だけの宣言は、画像だけ走る mode では出さない
+    expect(hiddenFields('image_only', STEPS_VIDEO, KREA2).steps).toBe(true)
+  })
+
+  it('走るワークフローが宣言しているときだけ送る（未指定の 0 は送らない）', () => {
+    const form = { ...initialForm, steps: 12 }
+    expect(jobSteps(form, STEPS_VIDEO)).toBe(12)
+    expect(jobSteps(form, null, STEPS_IMAGE)).toBe(12)
+    expect(jobSteps(form, I2V, KREA2)).toBe(0)
+    expect(jobSteps({ ...initialForm, steps: 0 }, STEPS_VIDEO)).toBe(0)
+  })
+
+  it('音声ジョブでも宣言しているワークフローのときだけ送る', () => {
+    const form = audioForm({ audioWorkflow: STEPS_AUDIO.id, steps: 24 })
+    expect(audioJobPayload(form, STEPS_AUDIO)).toMatchObject({ steps: 24 })
+    expect(audioJobPayload(form, SA3)).not.toHaveProperty('steps')
+    expect(
+      audioJobPayload({ ...form, steps: 0 }, STEPS_AUDIO),
+    ).not.toHaveProperty('steps')
+  })
+
+  it('過去ジョブの params から復元する', () => {
+    expect(formStateFromParams({ steps: 16 }, null).patch.steps).toBe(16)
+    // 古いジョブには無いので、無ければ触らない（initialForm の 0 のまま）
+    expect(formStateFromParams({}, null).patch).not.toHaveProperty('steps')
   })
 })

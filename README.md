@@ -1,6 +1,6 @@
 # Karakuri Media Studio
 
-`workflow/` 配下の ComfyUI ワークフロー（画像 4 種 / 動画 11 種 / 音声 2 種）を Web UI から実行し、
+`workflow/` 配下の ComfyUI ワークフロー（画像 4 種 / 動画 12 種 / 音声 2 種）を Web UI から実行し、
 プロンプト作成を Grok に委譲、生成物と履歴をローカルに保存する個人利用向けのメディア生成アプリです。
 
 ![生成画面](docs/images/screen-image.png)
@@ -23,7 +23,7 @@
 |---|---|
 | ComfyUI | 稼働中であること（既定 `http://127.0.0.1:8188`）。Comfy Cloud も可 |
 | custom nodes | ResolutionSelector / ComfySwitchNode / CustomCombo / LTXV 系 / ComfyMath / ResizeImage 系 / ResizeAndPadImage / MoGe 系 / LoadVideo / Video Slice など、`workflow/` 配下のワークフローが使うノード一式 |
-| custom nodes（任意） | MiniMax H3 の「Sage Attention 高速化」を使う場合のみ SageAttention 本体と [ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes)。トグルを OFF のままなら不要（もう一方の「EasyCache 高速化」は ComfyUI 標準ノードなので追加インストール不要）。**Comfy Cloud には `sageattention` が入っていないため、クラウド接続時はこのトグル自体が無効になります**（暫定） |
+| custom nodes（任意） | MiniMax H3 の Turbo ワークフロー（i2v / r2v）を使う場合のみ SageAttention 本体と [ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes)、および `SolAttnPatch` / `MiniMaxH3TurboLoRA` / `MiniMaxH3SigmaShift` / `SpectrumApplyMiniMaxH3` を提供する custom node。Turbo 以外のワークフローには不要 |
 | モデル | **使うワークフローのぶんだけ**あれば十分です（各テンプレートの既定ファイル名は SPEC §3.3）。足りないものは後述の「不足モデルの自動ダウンロード」で取得できます |
 | grok CLI | `curl -fsSL https://x.ai/cli/install.sh \| bash` でインストール後、一度 `grok` を起動してブラウザでサインイン（SuperGrok / X Premium+ のサブスクリプションで利用可） |
 | ffmpeg | 動画からのラストフレーム抽出に使用（PATH にあること） |
@@ -152,7 +152,7 @@ WebSocket で右ペインにリアルタイム表示され、完了すると生�
 
 **画像**は Krea 2 turbo（既定）/ Anima / Z-Image turbo / Qwen-Image Edit 2511（画像編集。参照画像必須）から選びます。
 
-**動画**は LTX 2.3 の 7 種・Wan Dancer・MiniMax H3 の 3 種から選び、必要な入力の欄だけが出ます。
+**動画**は LTX 2.3 の 7 種・MiniMax H3 の 5 種から選び、必要な入力の欄だけが出ます。
 
 | ワークフロー | 必要な入力 |
 |---|---|
@@ -163,20 +163,20 @@ WebSocket で右ペインにリアルタイム表示され、完了すると生�
 | 最初と最後のフレーム指定 (flf2v) | 最初 / 最後のフレーム |
 | リファレンスシート (IC-LoRA) | リファレンスシート画像 |
 | 参照動画からモーション転写 (IC-LoRA + MoGe) | 開始フレーム / 参照動画 |
-| 画像+音声→ダンス動画 (Wan Dancer) | 開始フレーム / 音声 |
 | テキスト→動画・音声つき (MiniMax H3 t2v) | なし |
 | 画像→動画・音声つき (MiniMax H3 i2v) | 開始フレーム（最後のフレームは任意） |
+| 画像→動画・音声つき (MiniMax H3 i2v Turbo) | 同上（4 ステップの高速版） |
 | 参照素材→動画・音声つき (MiniMax H3 r2v) | 参照画像 9 枚 / 参照動画 3 本 / 参照音声 3 本まで（合計 1 件以上） |
+| 参照素材→動画・音声つき (MiniMax H3 r2v Turbo) | 同上（4 ステップの高速版） |
 
-MiniMax H3 の 3 種は映像とステレオ音声（台詞・効果音・音楽）を同時生成します。
+MiniMax H3 の 5 種は映像とステレオ音声（台詞・効果音・音楽）を同時生成します。
 実行には MiniMaxH3 ノードを含む新しめの ComfyUI 本体が必要です（SPEC §2.2）。
-「出力設定」に高速化トグルが 2 つ出ます（どちらも既定オフ・オンオフは設定に保存されます）:
-**Sage Attention 高速化**（約 2 倍速。SageAttention と KJNodes を入れた環境でのみ使えます）と
-**EasyCache 高速化**（ステップ間の計算を再利用。短縮幅はプロンプト次第で、動きの激しい映像では
-品質が落ちることがあります）。両方オンにすると直列に効きます。
-なお **Comfy Cloud 接続時は Sage Attention が使えません**（クラウドのランタイムに `sageattention`
-パッケージが入っておらず実行時に落ちるため、暫定でグレーアウトし、グラフにも挟みません）。
-ローカル ComfyUI に切り替えれば設定した値がそのまま有効になります。EasyCache はクラウドでも使えます。
+**Turbo**（i2v / r2v）は 4 ステップ蒸留 LoRA と Sage Attention / Sol-Attn / Spectrum を
+ワークフローに焼き込んだ高速版で、入力の指定は素の版とまったく同じです。専用の量子化ウェイト
+（`*_pruned_w4a8_mixed` / `qwen3vl_32b_heretic_minimax_h3_nvfp4` / `minimax_h3_video_vae_int8_convrot`）と
+上記 custom node 一式が入った環境でのみ動きます。Turbo を選ぶと生成フォームに **Low VRAM**
+のプルダウンが出ます（既定 `off`。VRAM が足りずに落ちるときだけ `on` にすると、4 ステップ蒸留
+LoRA を低 VRAM モードで読み込みます）。
 
 **音声**は ACE-Step 1.5 XL（歌もの・インスト。歌詞や BPM を指定）と
 Stable Audio 3 Medium（効果音・環境音・単一楽器）の 2 種です。
@@ -239,7 +239,6 @@ Stable Audio 3 Medium（効果音・環境音・単一楽器）の 2 種です�
 | `model_overrides` / `model_choices` | **接続先ごと**のモデルファイル名の上書きと、実行ごとに選べる候補リスト | `{}` |
 | `runpod_*` | RunPod Pod の自動起動（有効化 / APIキー / テンプレート ID / GPU 種別 / Network Volume ID） | 無効 |
 | `agent_*` | エージェントの CLI フラグ・タイムアウト・自走上限（設定ページには出ません） | SPEC 参照 |
-| `sage_attention` / `easy_cache` | MiniMax H3 の高速化トグル（生成フォームの「出力設定」のチェックボックスがここを書き換えます。設定ページには出ません） | どちらも `false` |
 
 **モデルタブ**と**LoRA 管理タブ**の先頭には [対象の接続先] のプルダウンがあり、
 **モデルの指定と LoRA 登録は接続先ごとに保存されます**（環境によって入っているファイルが

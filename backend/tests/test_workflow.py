@@ -37,12 +37,11 @@ from app.workflows import (
     ANIMA,
     DEFAULT_IMAGE_WORKFLOW,
     DEFAULT_VIDEO_WORKFLOW,
-    EASY_CACHE_PATCH,
     GENERATED_AUDIO,
     INPUT_FIELDS,
-    MODEL_PATCH_NAMES,
+    MINIMAX_H3_LOW_VRAM_NAME,
+    OPTIONAL_CLASS_TYPES,
     QWEN_IMAGE_EDIT,
-    SAGE_ATTENTION_PATCH,
     SPECS,
     KREA2_TURBO,
     T,
@@ -129,7 +128,7 @@ def test_unknown_workflow_id():
 def test_ids_are_unique_and_files_exist():
     assert len({spec.id for spec in SPECS}) == len(SPECS)
     for spec in SPECS:
-        # 外部 API（kie.ai）のワークフローはテンプレートを持たない（SPEC §5.2）
+        # テンプレートを持たないワークフローは除外する（SPEC §5.2）
         if spec.backend != "comfyui":
             continue
         assert spec.path.is_file(), spec.path
@@ -476,11 +475,6 @@ def test_the_ltx_workflows_declare_a_lora_chain():
     ]
 
 
-def test_wan_dancer_has_no_lora_chain():
-    """テンプレートに挿せる場所が無いことを明示（フォームも欄を出さない）。"""
-    assert get_spec("wan_dancer", "video").lora_chain is None
-
-
 @pytest.mark.parametrize("workflow_id", LORA_VIDEO_IDS)
 def test_no_video_lora_keeps_the_template_wiring(workflow_id):
     spec = get_spec(workflow_id, "video")
@@ -671,7 +665,7 @@ def test_video_injection(workflow_id):
     assert (value(wf, spec, "width"), value(wf, spec, "height")) == resolution(
         "16:9 (Widescreen)", 1.5, multiple=spec.resolution_multiple
     )
-    # fps / 秒数を持たないワークフロー（wan_dancer は尺を選択式で持つ）もある
+    # fps / 秒数を持たないワークフローもある
     if spec.supports("fps"):
         assert value(wf, spec, "fps") == 25
     if spec.supports("duration"):
@@ -919,125 +913,167 @@ def test_the_end_image_is_an_optional_input_of_minimax_i2v():
     assert ("end_image", "最後のフレーム画像") in entry.optional_inputs
 
 
-# --- 高速化トグル（PatchPoint / MODEL_PATCHES、SPEC §3.1）-------------------
+# --- MiniMax H3 turbo（4 ステップ版、SPEC §3.1）-----------------------------
 
-#: 挿し込み口を宣言している動画ワークフロー（= トグルが出るもの）
-PATCH_VIDEO_IDS = [
-    workflow_id
-    for workflow_id in VIDEO_IDS
-    if get_spec(workflow_id, "video").patch_point is not None
+#: turbo テンプレート -> 素の対応版
+TURBO_PAIRS = [
+    ("minimax_h3_i2v_turbo", "minimax_h3_i2v"),
+    ("minimax_h3_r2v_turbo", "minimax_h3_r2v"),
+]
+
+#: UNETLoader から BasicGuider までに直列で入っている高速化ノード
+TURBO_CHAIN = [
+    "MiniMaxH3TurboLoRA",
+    "PathchSageAttentionKJ",
+    "SolAttnPatch",
+    "MiniMaxH3SigmaShift",
+    "SpectrumApplyMiniMaxH3",
 ]
 
 
-def _patched(workflow_id: str, **toggles) -> dict:
-    wf = build_video_workflow(params(video_workflow=workflow_id, **toggles))
+@pytest.mark.parametrize(("turbo_id", "plain_id"), TURBO_PAIRS)
+def test_the_turbo_workflows_take_the_same_inputs_as_the_plain_ones(
+    turbo_id, plain_id
+):
+    turbo = get_spec(turbo_id, "video")
+    plain = get_spec(plain_id, "video")
+    assert turbo.supported_names() == plain.supported_names()
+    assert turbo.requires == plain.requires
+    assert turbo.multi_inputs == plain.multi_inputs
+    assert turbo.optional_loaders == plain.optional_loaders
+    assert turbo.family == plain.family == "minimax-h3"
+    assert turbo.frames == plain.frames
+    assert "Turbo" in turbo.label and "Turbo" in turbo.mode_label
+
+
+@pytest.mark.parametrize(("turbo_id", "plain_id"), TURBO_PAIRS)
+def test_the_turbo_templates_chain_the_speedup_nodes_in_series(turbo_id, plain_id):
+    """UNETLoader -> TurboLoRA -> Sage -> SolAttn -> SigmaShift -> Spectrum."""
+    wf = build_video_workflow(params(video_workflow=turbo_id))
     validate_workflow(wf)
-    return wf
-
-
-def test_the_minimax_workflows_declare_a_patch_point():
-    assert PATCH_VIDEO_IDS == ["minimax_h3_t2v", "minimax_h3_i2v", "minimax_h3_r2v"]
-    for workflow_id in PATCH_VIDEO_IDS:
-        spec = get_spec(workflow_id, "video")
-        assert set(MODEL_PATCH_NAMES) <= set(spec.supported_names())
-        assert spec.supports("sage_attention") and spec.supports("easy_cache")
-
-
-@pytest.mark.parametrize("workflow_id", PATCH_VIDEO_IDS)
-def test_the_toggles_are_off_by_default(workflow_id):
-    """既定 OFF: グラフはトグルを知らなかった頃と完全に同じ。"""
-    plain = _patched(workflow_id)
-    assert plain == _patched(workflow_id, sage_attention=False, easy_cache=False)
-    assert not [key for key in plain if key.startswith("app_")]
-
-
-@pytest.mark.parametrize("workflow_id", PATCH_VIDEO_IDS)
-def test_sage_attention_is_spliced_between_the_unet_and_the_guider(workflow_id):
-    spec = get_spec(workflow_id, "video")
-    point = spec.patch_point
-    wf = _patched(workflow_id, sage_attention=True)
-    node = wf[SAGE_ATTENTION_PATCH.node_id]
-    assert node["class_type"] == "PathchSageAttentionKJ"
-    assert node["inputs"] == {"model": [point.head, 0], "sage_attention": "auto"}
-    for consumer in point.consumers:
-        assert wf[consumer.node_id]["inputs"][consumer.field] == [
-            SAGE_ATTENTION_PATCH.node_id,
-            0,
-        ]
-    # sigmas を作るだけの BasicScheduler は繋ぎ替えない
-    schedulers = [
-        key
-        for key, item in wf.items()
-        if item.get("class_type") == "BasicScheduler"
-    ]
-    assert schedulers
-    for key in schedulers:
-        assert wf[key]["inputs"]["model"] == [point.head, 0]
-    assert EASY_CACHE_PATCH.node_id not in wf
-
-
-@pytest.mark.parametrize("workflow_id", PATCH_VIDEO_IDS)
-def test_easy_cache_is_spliced_with_the_node_defaults(workflow_id):
-    spec = get_spec(workflow_id, "video")
-    point = spec.patch_point
-    wf = _patched(workflow_id, easy_cache=True)
-    node = wf[EASY_CACHE_PATCH.node_id]
-    assert node["class_type"] == "EasyCache"
-    assert node["inputs"] == {
-        "model": [point.head, 0],
-        "reuse_threshold": 0.2,
-        "start_percent": 0.15,
-        "end_percent": 0.95,
-        "verbose": False,
-    }
-    for consumer in point.consumers:
-        assert wf[consumer.node_id]["inputs"][consumer.field] == [
-            EASY_CACHE_PATCH.node_id,
-            0,
-        ]
-    assert SAGE_ATTENTION_PATCH.node_id not in wf
-
-
-@pytest.mark.parametrize("workflow_id", PATCH_VIDEO_IDS)
-def test_both_toggles_are_chained_in_series(workflow_id):
-    """UNETLoader -> Sage Attention -> EasyCache -> BasicGuider の順に繋がる。"""
-    spec = get_spec(workflow_id, "video")
-    point = spec.patch_point
-    wf = _patched(workflow_id, sage_attention=True, easy_cache=True)
-    assert wf[SAGE_ATTENTION_PATCH.node_id]["inputs"]["model"] == [point.head, 0]
-    assert wf[EASY_CACHE_PATCH.node_id]["inputs"]["model"] == [
-        SAGE_ATTENTION_PATCH.node_id,
+    by_class = {node["class_type"]: key for key, node in wf.items()}
+    upstream = [by_class["UNETLoader"], 0]
+    for class_type in TURBO_CHAIN:
+        node_id = by_class[class_type]
+        assert wf[node_id]["inputs"]["model"] == upstream, class_type
+        upstream = [node_id, 0]
+    # guider は末尾（Spectrum）、scheduler は SigmaShift の手前（Sol-Attn）
+    assert wf[by_class["BasicGuider"]]["inputs"]["model"] == [
+        by_class["SpectrumApplyMiniMaxH3"],
         0,
     ]
-    for consumer in point.consumers:
-        assert wf[consumer.node_id]["inputs"][consumer.field] == [
-            EASY_CACHE_PATCH.node_id,
-            0,
-        ]
+    assert wf[by_class["BasicScheduler"]]["inputs"]["model"] == [
+        by_class["SolAttnPatch"],
+        0,
+    ]
 
 
-def test_the_r2v_node_ids_are_the_ones_in_its_template():
-    """r2v だけノード ID が違う（127 = UNETLoader / 126 = BasicGuider）。"""
-    wf = _patched("minimax_h3_r2v", sage_attention=True, easy_cache=True)
-    assert wf[SAGE_ATTENTION_PATCH.node_id]["inputs"]["model"] == ["127", 0]
-    assert wf["126"]["inputs"]["model"] == [EASY_CACHE_PATCH.node_id, 0]
-    assert wf["124"]["inputs"]["model"] == ["127", 0]  # BasicScheduler はそのまま
+@pytest.mark.parametrize(("turbo_id", "plain_id"), TURBO_PAIRS)
+def test_the_turbo_templates_sample_in_four_steps(turbo_id, plain_id):
+    wf = build_video_workflow(params(video_workflow=turbo_id))
+    scheduler = next(
+        node for node in wf.values() if node["class_type"] == "BasicScheduler"
+    )
+    assert scheduler["inputs"]["steps"] == 4
+    assert scheduler["inputs"]["scheduler"] == "simple"
+    assert scheduler["inputs"]["denoise"] == 1
 
 
-def test_only_the_declared_workflows_grow_the_patch_nodes():
-    """宣言の無いワークフローでトグルを立ててもグラフは変わらない。"""
-    for workflow_id in VIDEO_IDS:
-        if workflow_id in PATCH_VIDEO_IDS:
-            continue
-        spec = get_spec(workflow_id, "video")
-        assert not set(MODEL_PATCH_NAMES) & set(spec.supported_names())
-        if spec.backend != "comfyui":
-            continue
-        wf = build_video_workflow(
-            params(video_workflow=workflow_id, sage_attention=True, easy_cache=True)
-        )
-        assert SAGE_ATTENTION_PATCH.node_id not in wf
-        assert EASY_CACHE_PATCH.node_id not in wf
+@pytest.mark.parametrize(
+    ("turbo_id", "unet"),
+    [
+        ("minimax_h3_i2v_turbo", "minimax_h3_fl2va_pruned_w4a8_mixed.safetensors"),
+        ("minimax_h3_r2v_turbo", "minimax_h3_ref2va_pruned_w4a8_mixed.safetensors"),
+    ],
+)
+def test_the_turbo_templates_load_the_quantised_weights(turbo_id, unet):
+    wf = build_video_workflow(params(video_workflow=turbo_id))
+    by_class = {}
+    for key, node in wf.items():
+        by_class.setdefault(node["class_type"], []).append(key)
+    assert wf[by_class["UNETLoader"][0]]["inputs"]["unet_name"] == unet
+    assert (
+        wf[by_class["CLIPLoader"][0]]["inputs"]["clip_name"]
+        == "qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors"
+    )
+    vaes = {wf[key]["inputs"]["vae_name"] for key in by_class["VAELoader"]}
+    assert vaes == {
+        "minimax_h3_video_vae_int8_convrot.safetensors",
+        "minimax_h3_audio_vae_fp32.safetensors",
+    }
+
+
+def test_the_turbo_only_custom_nodes_are_not_required_by_the_health_check():
+    """任意のカスタムノードなので、入れていない環境でも赤にしない（SPEC §3.1）。"""
+    required = all_required_class_types()
+    assert not (required & OPTIONAL_CLASS_TYPES)
+    # テンプレート側には確かに載っている
+    turbo = load_template("minimax_h3_r2v_turbo")
+    assert OPTIONAL_CLASS_TYPES <= {node["class_type"] for node in turbo.values()}
+
+
+def test_the_turbo_templates_have_plain_numeric_node_ids():
+    for turbo_id, _ in TURBO_PAIRS:
+        assert all(key.isdigit() for key in load_template(turbo_id))
+
+
+def turbo_lora_inputs(wf: dict) -> dict:
+    return next(
+        node["inputs"]
+        for node in wf.values()
+        if node["class_type"] == "MiniMaxH3TurboLoRA"
+    )
+
+
+@pytest.mark.parametrize(("turbo_id", "plain_id"), TURBO_PAIRS)
+def test_the_turbo_workflows_offer_the_low_vram_switch(turbo_id, plain_id):
+    """turbo だけが `low_vram` を選択式で持つ（素の版はノードごと無い）。"""
+    turbo = get_spec(turbo_id, "video")
+    select = turbo.select(MINIMAX_H3_LOW_VRAM_NAME)
+    assert select is not None
+    assert select.choices == ("off", "on")
+    assert select.fallback == "off"
+    # ``CustomCombo`` ではないので番号を書く先は持たない
+    assert select.index_field == ""
+    assert get_spec(plain_id, "video").select(MINIMAX_H3_LOW_VRAM_NAME) is None
+
+
+@pytest.mark.parametrize(("turbo_id", "_plain_id"), TURBO_PAIRS)
+def test_low_vram_defaults_to_off(turbo_id, _plain_id):
+    """未指定でもテンプレートの現状値（False）のまま。"""
+    assert turbo_lora_inputs(load_template(turbo_id))["low_vram"] is False
+    wf = build_video_workflow(params(video_workflow=turbo_id))
+    assert turbo_lora_inputs(wf)["low_vram"] is False
+
+
+@pytest.mark.parametrize(("turbo_id", "_plain_id"), TURBO_PAIRS)
+@pytest.mark.parametrize(
+    ("choice", "expected"), [("on", True), ("off", False), ("bogus", False)]
+)
+def test_low_vram_is_written_as_a_boolean(turbo_id, _plain_id, choice, expected):
+    """選択式は文字列だが、BOOLEAN の入力には真偽値で入れる（SPEC §3.1）。"""
+    wf = build_video_workflow(
+        params(video_workflow=turbo_id, selects={MINIMAX_H3_LOW_VRAM_NAME: choice})
+    )
+    validate_workflow(wf)
+    assert turbo_lora_inputs(wf)["low_vram"] is expected
+
+
+def test_low_vram_survives_a_rerun():
+    """ジョブの params に残るので、再実行でも同じ値が使われる。"""
+    original = params(
+        video_workflow="minimax_h3_i2v_turbo",
+        selects={MINIMAX_H3_LOW_VRAM_NAME: "on"},
+    )
+    restored = GenerationParams(**original.model_dump())
+    assert turbo_lora_inputs(build_video_workflow(restored))["low_vram"] is True
+
+
+def test_low_vram_is_offered_to_the_agent_catalog():
+    entry = catalog_entry(get_spec("minimax_h3_r2v_turbo", "video"))
+    assert (MINIMAX_H3_LOW_VRAM_NAME, "off") in {
+        (name, default) for name, _label, _choices, default, _auto, _hint in entry.selects
+    }
 
 
 # --- frame count rounding --------------------------------------------------
@@ -1412,7 +1448,8 @@ def test_required_class_types_cover_every_built_workflow():
             node["class_type"]
             for node in build_video_workflow(params(video_workflow=workflow_id)).values()
         }
-    assert built <= types
+    # turbo だけが使う任意のカスタムノードは意図的に外れている（SPEC §3.1）
+    assert built - types == OPTIONAL_CLASS_TYPES
 
 
 # --------------------------------------------------------------------------
@@ -1554,111 +1591,76 @@ def test_dynamic_lora_chain_is_not_overridable():
 
 
 # --------------------------------------------------------------------------
-# 選択式フィールド（SPEC §3.1）と wan_dancer
+# sampling steps (§3.1)
 # --------------------------------------------------------------------------
 
-WAN = get_spec("wan_dancer", "video")
+#: `steps` を宣言しているワークフロー（宣言 = UI に欄が出る）
+STEPS_IMAGE_IDS = [spec.id for spec in image_specs() if spec.supports("steps")]
+STEPS_VIDEO_IDS = [spec.id for spec in video_specs() if spec.supports("steps")]
 
 
-def _select_target(name: str):
-    return WAN.selects[name].target
+def test_the_steps_targets_are_the_samplers_of_their_template():
+    """`steps` の注入先は必ずサンプラー側（KSampler / BasicScheduler）。"""
+    declared = [spec for spec in SPECS if spec.supports("steps")]
+    assert declared, "steps を宣言したワークフローが 1 つも無い"
+    for spec in declared:
+        target = spec.target("steps")
+        assert target.field == "steps"
+        assert target.class_type in ("KSampler", "BasicScheduler"), spec.id
 
 
-def _wan(**overrides) -> dict:
-    return build_video_workflow(params(video_workflow="wan_dancer", **overrides))
+@pytest.mark.parametrize("workflow_id", STEPS_IMAGE_IDS)
+def test_steps_are_left_at_the_template_default_when_unset(workflow_id):
+    spec = get_spec(workflow_id, "image")
+    target = spec.target("steps")
+    default = load_template(spec)[target.node_id]["inputs"]["steps"]
+    wf = build_image_workflow(params(image_workflow=workflow_id, steps=0))
+    assert wf[target.node_id]["inputs"]["steps"] == default
 
 
-def test_only_wan_declares_selects():
-    """ComfyUI 側で選択項目を持つのは wan_dancer だけ（挙動不変）。
-
-    kie.ai のワークフロー（Veo）は縦横比・尺・解像度を選択式で持つが、これは
-    グラフではなく API のパラメータなので ComfyUI の注入には関係しない。
-    """
-    assert {
-        spec.id
-        for spec in SPECS
-        if spec.selects and spec.backend == "comfyui"
-    } == {"wan_dancer"}
-    assert set(WAN.selects) == {"dance_style", "motion_amplitude", "duration"}
+@pytest.mark.parametrize("workflow_id", STEPS_IMAGE_IDS)
+def test_steps_are_injected_into_the_image_sampler(workflow_id):
+    spec = get_spec(workflow_id, "image")
+    wf = build_image_workflow(params(image_workflow=workflow_id, steps=12))
+    assert wf[spec.target("steps").node_id]["inputs"]["steps"] == 12
 
 
-def test_selects_write_both_the_choice_and_its_index():
-    """CustomCombo が読むのは番号側なので、文字列と番号の両方を入れる。"""
-    wf = _wan(selects={"dance_style": "Street Dance 街舞"})
-    node = wf[_select_target("dance_style").node_id]["inputs"]
-    assert node["choice"] == "Street Dance 街舞"
-    assert node["index"] == 2  # 0 始まり
-    assert isinstance(node["index"], int)
+@pytest.mark.parametrize("workflow_id", STEPS_VIDEO_IDS)
+def test_steps_are_injected_into_the_video_sampler(workflow_id):
+    spec = get_spec(workflow_id, "video")
+    target = spec.target("steps")
+    default = load_template(spec)[target.node_id]["inputs"]["steps"]
+    unset = build_video_workflow(params(video_workflow=workflow_id, steps=0))
+    assert unset[target.node_id]["inputs"]["steps"] == default
+    wf = build_video_workflow(params(video_workflow=workflow_id, steps=6))
+    assert wf[target.node_id]["inputs"]["steps"] == 6
 
 
-def test_unset_selects_fall_back_to_the_declared_default():
-    wf = _wan()
-    assert wf[_select_target("dance_style").node_id]["inputs"]["choice"] == "K-Pop 韩舞"
-    assert wf[_select_target("dance_style").node_id]["inputs"]["index"] == 1
-    amplitude = wf[_select_target("motion_amplitude").node_id]["inputs"]
-    assert (amplitude["choice"], amplitude["index"]) == ("medium 中等", 1)
+def test_steps_are_an_int_even_when_given_as_a_float():
+    """KSampler / BasicScheduler の steps は INT。float を入れると全体が落ちる。"""
+    wf = build_image_workflow(params(steps=12.0))
+    value = wf[KREA2_TURBO.target("steps").node_id]["inputs"]["steps"]
+    assert isinstance(value, int) and value == 12
 
 
-def test_an_unknown_select_value_falls_back_instead_of_breaking_the_graph():
-    """API 検証をすり抜けた値でも、テンプレートの選択肢の外は入れない。"""
-    wf = _wan(selects={"dance_style": "Tango", "nope": "x"})
-    assert wf[_select_target("dance_style").node_id]["inputs"]["choice"] == "K-Pop 韩舞"
+def test_a_workflow_without_a_steps_target_ignores_the_value():
+    """宣言していないワークフロー（LTX の t2v）に steps を渡しても何も起きない。"""
+    spec = get_spec("ltx2_3_t2v", "video")
+    assert not spec.supports("steps")
+    plain = build_video_workflow(params(video_workflow="ltx2_3_t2v", steps=0))
+    with_steps = build_video_workflow(params(video_workflow="ltx2_3_t2v", steps=42))
+    assert plain == with_steps
 
 
-def test_the_duration_select_also_sets_the_audio_trim():
-    """尺はコンボと TrimAudioDuration の両方に入る（音声が 25 秒で切れない）。"""
-    wf = _wan(selects={"duration": "20"})
-    combo = wf[_select_target("duration").node_id]["inputs"]
-    assert (combo["choice"], combo["index"]) == ("20", 3)
-    trim = WAN.selects["duration"].numeric_target
-    assert trim is not None
-    assert wf[trim.node_id]["inputs"][trim.field] == 20.0
-    # テンプレートの 25 秒固定を確かに置き換えている
-    assert load_template(WAN)[trim.node_id]["inputs"][trim.field] == 25
+def test_the_minimax_turbo_lora_is_a_switchable_model_field():
+    """4step 蒸留 LoRA も設定・実行時に差し替えられる（SPEC §3.3）。"""
+    fields = {f.key: f for f in model_fields()}
+    key = "minimax_h3_i2v_turbo/150.lora_name"
+    assert key in fields
+    assert fields[key].class_type == "MiniMaxH3TurboLoRA"
+    assert fields[key].default.endswith(".safetensors")
 
-
-def test_round_up_maps_an_audio_length_to_a_choice():
-    duration = WAN.selects["duration"]
-    assert duration.round_up(0.5) == "5"
-    assert duration.round_up(5.0) == "5"
-    assert duration.round_up(5.2) == "10"
-    assert duration.round_up(28.0) == "30"
-    # 選択肢の上限で止める（曲が長くても 30 秒）
-    assert duration.round_up(300.0) == "30"
-
-
-def test_wan_keeps_the_template_prompt_when_none_is_given():
-    """プロンプトを選択肢から組み立てるので、空の video_prompt では潰さない。"""
-    template_string = load_template(WAN)[WAN.inject["prompt"].node_id]["inputs"]["string"]
-    wf = _wan(video_prompt="  ")
-    assert wf[WAN.inject["prompt"].node_id]["inputs"]["string"] == template_string
-    assert "<dance style>" in template_string
-    # 書かれていれば入る
-    written = _wan(video_prompt="一个人正在跳舞，舞蹈种类是<dance style>")
-    assert (
-        written[WAN.inject["prompt"].node_id]["inputs"]["string"]
-        == "一个人正在跳舞，舞蹈种类是<dance style>"
+    wf = build_video_workflow(
+        params(video_workflow="minimax_h3_i2v_turbo"), {key: "other.safetensors"}
     )
-
-
-def test_ltx_still_receives_an_empty_prompt():
-    """prompt_required なワークフローの挙動は変えない。"""
-    spec = get_spec("ltx2_3_id_lora", "video")
-    wf = build_video_workflow(params(video_workflow=spec.id, video_prompt=""))
-    assert value(wf, spec, "prompt") == ""
-
-
-def test_wan_takes_the_start_image_and_the_audio():
-    wf = _wan()
-    assert wf[WAN.inject["image"].node_id]["inputs"]["image"] == "start.png"
-    assert wf[WAN.inject["audio"].node_id]["inputs"]["audio"] == "ref.mp3"
-    assert wf[WAN.output_node]["inputs"]["filename_prefix"] == "video/01JOBID"
-
-
-def test_wan_model_files_are_configurable():
-    """CLIPVision も含めてモデル上書きの対象に入っている（SPEC §3.3）。"""
-    keys = {field.key: field for field in model_fields((WAN,))}
-    assert "wan_dancer/696:479.clip_name" in keys
-    assert keys["wan_dancer/696:479.clip_name"].class_type == "CLIPVisionLoader"
-    for node_id, field in (("696:475", "unet_name"), ("696:478", "vae_name")):
-        assert f"wan_dancer/{node_id}.{field}" in keys
+    assert wf["150"]["inputs"]["lora_name"] == "other.safetensors"

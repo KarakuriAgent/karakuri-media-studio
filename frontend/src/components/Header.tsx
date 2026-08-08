@@ -29,17 +29,18 @@ function Indicator({ name, status }: { name: string; status?: HealthStatus }) {
   )
 }
 
-/** [生成 | エージェント] tab toggle (AGENT-MODE §1 header). */
+/** [生成 | エージェント | スタジオ] tab toggle (AGENT-MODE §1 header). */
 function ViewTabs({
   view,
   onView,
 }: {
-  view: 'main' | 'agent' | 'settings'
-  onView: (view: 'main' | 'agent') => void
+  view: 'main' | 'agent' | 'studio' | 'settings'
+  onView: (view: 'main' | 'agent' | 'studio') => void
 }) {
-  const tabs: { value: 'main' | 'agent'; label: string }[] = [
+  const tabs: { value: 'main' | 'agent' | 'studio'; label: string }[] = [
     { value: 'main', label: '生成' },
     { value: 'agent', label: 'エージェント' },
+    { value: 'studio', label: 'スタジオ' },
   ]
   return (
     <div className="flex rounded-md border border-ink-600 bg-ink-800 p-0.5">
@@ -76,8 +77,8 @@ export default function Header({
   onRefresh: () => void
   onOpenSettings: () => void
   wsConnected: boolean
-  view: 'main' | 'agent' | 'settings'
-  onView: (view: 'main' | 'agent') => void
+  view: 'main' | 'agent' | 'studio' | 'settings'
+  onView: (view: 'main' | 'agent' | 'studio') => void
   showNsfw: boolean
   onShowNsfw: (show: boolean) => void
 }) {
@@ -90,11 +91,6 @@ export default function Header({
       <div className="ml-2 flex flex-wrap items-center gap-2">
         <Indicator name="ComfyUI" status={health?.comfyui} />
         <Indicator name="Grok" status={health?.grok} />
-        {/* kie.ai は使う人だけの機能なので、キーを入れている環境だけ出す
-            （未設定のままの環境に「未設定」の橙ランプを常設しない、SPEC §5.2）。 */}
-        {health?.kie && health.kie.status !== 'not_configured' && (
-          <Indicator name="kie.ai" status={health.kie} />
-        )}
         <span
           className="flex items-center gap-1.5 rounded-md border border-ink-600 bg-ink-800 px-2 py-1 text-xs"
           title="進捗配信 WebSocket"

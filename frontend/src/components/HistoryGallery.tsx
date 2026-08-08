@@ -30,7 +30,10 @@ export default function HistoryGallery({
   onSelect: (job: Job) => void
   onReload: () => void
   loading: boolean
-  /** オンのときだけ 🫣 バッジを出す（オフのとき NSFW は渡ってこない）。 */
+  /**
+   * NSFW 表示トグル。オフのあいだも、このセッションで投げたジョブは渡ってくる
+   * ので、そのサムネイルはぼかして出す（オンにするとぼかしが外れる）。
+   */
   showNsfw: boolean
 }) {
   const items = useRef<Record<string, HTMLButtonElement | null>>({})
@@ -90,6 +93,8 @@ export default function HistoryGallery({
           const active = job.id === selectedId
           const pending = PENDING.includes(job.status)
           const failed = job.status === 'failed'
+          // 表示トグルがオフのまま渡ってきた NSFW（このセッションで投げたもの）。
+          const blurred = !showNsfw && job.nsfw
           return (
             <button
               key={job.id}
@@ -107,7 +112,11 @@ export default function HistoryGallery({
               }`}
             >
               {thumb ? (
-                <img src={thumb} alt={job.id} className="h-full w-full object-cover" />
+                <img
+                  src={thumb}
+                  alt={job.id}
+                  className={`h-full w-full object-cover ${blurred ? 'blur-lg' : ''}`}
+                />
               ) : (
                 <span className="flex h-full w-full items-center justify-center text-[10px] text-slate-600">
                   {pending ? (
@@ -121,14 +130,20 @@ export default function HistoryGallery({
                 </span>
               )}
 
+              {blurred && thumb && (
+                <span className="pointer-events-none absolute left-1/2 top-1/2 -translate-x-1/2 -translate-y-1/2 rounded-full border border-pink-800 bg-black/70 px-2 py-0.5 text-[10px] font-semibold tracking-widest text-pink-300">
+                  NSFW
+                </span>
+              )}
+
               <span className="absolute right-1 top-1 flex items-center gap-1">
-                {showNsfw && job.nsfw && <NsfwBadge />}
+                {job.nsfw && <NsfwBadge />}
                 {job.video_url && (
                   <span className="rounded bg-black/60 px-1 text-[10px]">🎬</span>
                 )}
                 {job.audio_output_url && (
                   <span className="rounded bg-black/60 px-1 text-[10px]">
-                    {/* 1 回の生成で複数返るモデル（Suno は 2 曲）は本数を出す */}
+                    {/* 1 回の生成で複数返るモデルは本数を出す */}
                     🎵{(job.extra_output_urls?.length ?? 0) > 0
                       ? `×${(job.extra_output_urls?.length ?? 0) + 1}`
                       : ''}

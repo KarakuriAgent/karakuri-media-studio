@@ -24,7 +24,7 @@ from __future__ import annotations
 
 import json
 import math
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any, Iterable, Literal
 
 from .paths import WORKFLOW_DIR
@@ -33,13 +33,9 @@ Workflow = dict[str, dict[str, Any]]
 
 WorkflowKind = Literal["image", "video", "audio"]
 
-#: どのエンジンがこのワークフローを実行するか（SPEC §5 / §5.2）。``comfyui`` は
-#: ``workflow/*.json`` のテンプレートを自前の ComfyUI に投げる従来の経路、``kie``
-#: は外部 API アグリゲータ kie.ai にタスクを投げる経路、``grok_cli`` は Grok Build
-#: CLI をサブスク枠でヘッドレス実行する経路（:mod:`app.grok_media`）、``codex_cli``
-#: は Codex CLI を ChatGPT サブスク枠でヘッドレス実行する経路
-#: （:mod:`app.codex_media`、SPEC §5.4）。
-WorkflowBackend = Literal["comfyui", "kie", "grok_cli", "codex_cli"]
+#: どのエンジンがこのワークフローを実行するか（SPEC §5 / §5.2）。今は
+#: ``workflow/*.json`` のテンプレートを自前の ComfyUI に投げる経路だけ。
+WorkflowBackend = Literal["comfyui"]
 
 #: Logical names of the assets a video workflow can require.  ``image`` is the
 #: primary image input (start frame, first frame or reference sheet depending on
@@ -75,7 +71,7 @@ def T(node_id: str, field: str, class_type: str) -> Target:
 
 
 #: 選択式フィールドの「自動決定」の種類。``audio_duration`` は入力音声の実長から
-#: 決める（wan_dancer の尺）。空文字は自動なし（既定値をそのまま使う）。
+#: 決める（尺など）。空文字は自動なし（既定値をそのまま使う）。
 AutoSource = Literal["", "audio_duration"]
 
 
@@ -92,7 +88,7 @@ class SelectSpec:
     """One *selectable* injection point: the app offers a fixed list of strings.
 
     テンプレートが自由記述ではなくコンボボックスで挙動を決めるワークフロー
-    （wan_dancer の踊りの種類など）のための汎用の仕組み。宣言すると
+    （踊りの種類など）のための汎用の仕組み。宣言すると
 
     * 生成フォームがこのリストからの ``select`` を自動で描画し、
     * ジョブは ``selects`` にその値を持ち（リスト外は 422）、
@@ -103,7 +99,7 @@ class SelectSpec:
     そのため :attr:`index_field` にも同じ選択の番号を書き込む。
 
     ``numeric_target`` は「選んだ値を数値としても別のノードに入れる」場合に使う
-    （wan_dancer の尺はコンボと ``TrimAudioDuration`` の両方に入れないと、音声だけ
+    （尺はコンボと ``TrimAudioDuration`` の両方に入れないと、音声だけ
     25 秒で切られる）。
     """
 
@@ -135,7 +131,7 @@ class SelectSpec:
     def round_up(self, value: float) -> str:
         """``value`` 以上で最小の（数値として読める）選択肢。無ければ最大のもの。
 
-        wan_dancer の尺を音声の実長から決めるのに使う: 曲が途中で切れないよう
+        尺を音声の実長から決めるのに使う: 曲が途中で切れないよう
         切り上げ、選択肢の上限で止める。
         """
         numeric = sorted(
@@ -177,82 +173,6 @@ class LoraChain:
 
     head: str
     placeholders: tuple[str, ...] = ()
-    consumers: tuple[Target, ...] = ()
-
-
-#: 高速化トグルの論理名（``supports`` / ジョブの params / 設定のキー）
-SAGE_ATTENTION_NAME = "sage_attention"
-EASY_CACHE_NAME = "easy_cache"
-
-
-@dataclass(frozen=True)
-class ModelPatchNode:
-    """実行時オプションで ``MODEL`` の経路に挟むノード 1 種（SPEC §3.1）。
-
-    どれも「モデルを受けてモデルを返す」形なので、宣言としては**挟むノードの
-    素性**（クラス・組み立て後のノード ID・``model`` 以外の固定入力）だけで足り、
-    どこに挟むかはワークフロー側の :class:`PatchPoint` が持つ。
-    """
-
-    #: 論理名。``supports`` にもジョブの params にもこの名前で出る
-    name: str
-    class_type: str
-    #: 組み立て後のノード ID（テンプレートの ID と衝突しない ``app_`` 接頭辞）
-    node_id: str
-    title: str
-    #: ``model`` 以外の入力（ノードの既定値をそのまま書き下す）
-    inputs: dict[str, Any] = field(default_factory=dict)
-
-
-#: Sage Attention（ComfyUI-KJNodes）。クラス名の綴りは本家のタイポそのままで、
-#: これが正しいキー。**任意のカスタムノード**なので
-#: :func:`app.workflow.all_required_class_types` には載せない（入れていない環境で
-#: ヘルスチェックが赤くならないよう、使うと言われたときだけ生やす）。
-SAGE_ATTENTION_PATCH = ModelPatchNode(
-    name=SAGE_ATTENTION_NAME,
-    class_type="PathchSageAttentionKJ",
-    node_id="app_sage_attention",
-    title="Patch Sage Attention KJ",
-    inputs={"sage_attention": "auto"},
-)
-
-#: EasyCache（ComfyUI 本体標準の ``comfy_extras/nodes_easycache.py``）。
-#: 数値はノードの既定値そのまま（reuse_threshold 0.2 / start 0.15 / end 0.95）。
-EASY_CACHE_PATCH = ModelPatchNode(
-    name=EASY_CACHE_NAME,
-    class_type="EasyCache",
-    node_id="app_easy_cache",
-    title="EasyCache",
-    inputs={
-        "reuse_threshold": 0.2,
-        "start_percent": 0.15,
-        "end_percent": 0.95,
-        "verbose": False,
-    },
-)
-
-#: 挟めるパッチの全種。**この並びがそのまま直列の順**（head に近いほうが先）で、
-#: 両方 ON なら UNETLoader → Sage Attention → EasyCache → BasicGuider になる。
-MODEL_PATCHES: tuple[ModelPatchNode, ...] = (SAGE_ATTENTION_PATCH, EASY_CACHE_PATCH)
-
-#: パッチの論理名（フォーム・ジョブ・設定が使う語彙）
-MODEL_PATCH_NAMES: tuple[str, ...] = tuple(patch.name for patch in MODEL_PATCHES)
-
-
-@dataclass(frozen=True)
-class PatchPoint:
-    """Where the optional ``MODEL`` patches are spliced in (SPEC §3.1).
-
-    :class:`LoraChain` と同じ「1 本の辺を切って間に挟む」宣言: ``head`` は
-    ``MODEL`` を出すノード（UNETLoader）、``consumers`` はそれを読んでいて
-    パッチ後の ``MODEL`` に繋ぎ替える入力（BasicGuider）。どれも OFF のときは
-    ノードを一切生やさないので、グラフはテンプレートのままになる。
-
-    同じ ``MODEL`` を読む ``BasicScheduler`` は sigmas を作るだけでサンプリング
-    を回さないので、繋ぎ替えない（パッチが要るのは guider 側だけ）。
-    """
-
-    head: str
     consumers: tuple[Target, ...] = ()
 
 
@@ -351,31 +271,17 @@ FAMILY_LABELS: dict[str, str] = {
     "anima": "Anima",
     "z-image": "Z-Image",
     "qwen-image": "Qwen-Image Edit",
-    "grok-imagine": "Grok Imagine",
-    "gpt-image": "GPT Image 2",
     "ltx2.3": "LTX 2.3",
-    "wan": "Wan 2.2",
     "minimax-h3": "MiniMax H3",
     "ace-step": "ACE-Step 1.5",
     "stable-audio": "Stable Audio 3",
-    "veo": "Veo 3.1",
-    "kling": "Kling 3.0",
-    "seedance": "Seedance 2",
-    "suno": "Suno V5",
 }
 
-#: 供給元の注記（生成フォームの 1 段目「モデル」に付く）。ローカル実行の
-#: ファミリーには何も付かないので、ここに載るのは外部サービス経由のものだけ。
-#: モードごとに変わるものではないので**モデル側**に出す（各ワークフローの
-#: :attr:`WorkflowSpec.mode_label` には書かない）。
-FAMILY_NOTES: dict[str, str] = {
-    "grok-imagine": "サブスク CLI",
-    "gpt-image": "Codex CLI",
-    "veo": "外部 API",
-    "kling": "外部 API",
-    "seedance": "外部 API",
-    "suno": "外部 API",
-}
+#: 供給元の注記（生成フォームの 1 段目「モデル」に付く）。今はどのファミリーも
+#: ローカルの ComfyUI で走るので空だが、外部サービス経由のモデルを足したときに
+#: ここへ注記を書く。モードごとに変わるものではないので**モデル側**に出す
+#: （各ワークフローの :attr:`WorkflowSpec.mode_label` には書かない）。
+FAMILY_NOTES: dict[str, str] = {}
 
 #: LoRA registrations default to this family (the only image workflow that
 #: existed before the selector), so the DB migration can backfill with it.
@@ -393,138 +299,11 @@ def family_label(family: str) -> str:
     return f"{label}（{note}）" if note else label
 
 
-#: kie.ai のタスク入力（``input``）に流し込める論理名。ComfyUI マニフェストの
-#: ``inject`` と同じ語彙にしてあるので、同じワークフローを両バックエンドで書いても
-#: 意味がずれない。``select:<名前>`` の形で :class:`SelectSpec` の値も渡せる。
-KIE_VALUES: frozenset[str] = frozenset({
-    "prompt",
-    "negative_prompt",
-    "aspect_ratio",
-    "duration",
-    "fps",
-    "seed",
-    "lyrics",
-    "bpm",
-    "language",
-    # 音声の「除外したい要素」（Suno の negativeTags）。画像・動画の
-    # `negative_prompt` とは別物なので混ぜない（§2.4）。
-    "negative_tags",
-    # 入力ファイル: File Upload API で公開 URL にしてから入れる（§5.2）
-    "image",
-    "end_image",
-    "audio",
-    "video",
-    # **複数**の入力ファイル（:data:`MULTI_INPUT_FIELDS`）。1 つの論理名が
-    # ファイルのリストを持ち、URL の**配列**として ``input`` に入る（§5.2）。
-    "reference_images",
-    "reference_videos",
-    "reference_audios",
-    # マルチショット（:class:`MultiShotSpec`、Kling）。``multi_shots`` は
-    # 「ショット割りで作る」の真偽値、``multi_prompt`` は
-    # ``[{"prompt": ..., "duration": ...}]`` の配列（§3.1）。
-    "multi_shots",
-    "multi_prompt",
-    # Elements（:class:`ElementsSpec`、Kling）。参照画像を要素にまとめ、
-    # プロンプト中の ``@要素名`` で呼び出す（§3.1）。
-    "kling_elements",
-})
-
-#: ``select:<名前>`` の接頭辞
-KIE_SELECT_PREFIX = "select:"
-
-#: kie.ai の API 系統。``market`` が統一 API（``/api/v1/jobs/*``）、``veo`` /
-#: ``suno`` はモデル別の旧専用系（:class:`app.kie.VeoTaskApi` /
-#: :class:`app.kie.SunoTaskApi`）。
-KieApi = Literal["market", "veo", "suno"]
-
-
-@dataclass(frozen=True)
-class KieTask:
-    """kie.ai のタスクとして 1 ワークフローを実行するための宣言（SPEC §5.2）。
-
-    ComfyUI の :class:`Target` 群にあたるもの。「どのモデルに」「どの論理値を
-    ``input`` のどのキーで」渡すかだけを持ち、実際の組み立ては
-    :func:`app.kie.task_input` が行う。モデル名も価格もここ（＝マニフェスト）に
-    書くので、kie.ai 側でモデルが増減してもコードは触らない。
-    """
-
-    #: ``createTask`` の ``model``（例 ``"google/veo3.1"``）
-    model: str
-    #: 論理名（:data:`KIE_VALUES` か ``select:<名前>``）-> ``input`` のキー
-    fields: dict[str, str] = field(default_factory=dict)
-    #: 常に同じ値で入れる ``input`` のキー（モデル固有の固定オプション）。
-    #: モードの切り替え（Veo の ``generationType``）も、モードごとに
-    #: ワークフローを分けてあるのでここに書く固定値で足りる。
-    constants: dict[str, Any] = field(default_factory=dict)
-    #: **配列で渡す** ``input`` のキー。同じキーに複数の論理名を割り当てられる
-    #: ようになり、値は :attr:`fields` の宣言順に並ぶ（Veo の ``imageUrls`` は
-    #: 「1 枚目 = 開始フレーム / 2 枚目 = 最終フレーム」の順序が意味を持つ）。
-    list_keys: tuple[str, ...] = ()
-    #: **真偽値で渡す** ``input`` のキー。選択式フィールドの値は文字列で届くので
-    #: （``"true"`` / ``"false"``）、ここに挙げたキーだけ ``bool`` に直してから
-    #: 送る（Kling の ``sound``）。JSON の型が違うと API に弾かれる。
-    bool_keys: tuple[str, ...] = ()
-    #: **整数で渡す** ``input`` のキー。同じ「尺」でもモデルごとに型が違う
-    #: （Kling の ``duration`` は文字列、Seedance の ``duration`` は int）ので、
-    #: 選択式フィールドの文字列を ``int`` に直すキーをここで宣言する。
-    int_keys: tuple[str, ...] = ()
-    #: **小数で渡す** ``input`` のキー（Suno の ``styleWeight`` など 0〜1 の
-    #: つまみ）。選択式フィールドの文字列を ``float`` に直してから送り、
-    #: **数として読めない値（``"auto"`` = 指定しない）はキーごと落とす**。
-    #: 「未指定」を送らないことに意味がある（0 は「0 を指定した」になる）。
-    float_keys: tuple[str, ...] = ()
-    #: API 系統（既定は Market 系の統一 API）
-    api: KieApi = "market"
-    #: 1 タスクの概算クレジット（0 = 不明。実消費は ``creditsConsumed`` を記録する）
-    credits: float = 0.0
-
-
-@dataclass(frozen=True)
-class GrokCliTask:
-    """Grok Build CLI（サブスク枠）で 1 ワークフローを実行するための宣言（§5.2）。
-
-    CLI にはグラフも ``input`` も無く、渡せるのは**自然文の指示だけ**なので、
-    :class:`KieTask` のような「キーの対応表」は持たない。宣言するのは「どの論理値を
-    指示文に織り込むか」と「何が出てくるか」の 2 つだけで、指示文の組み立ては
-    :func:`app.grok_media.build_request` が行う。
-
-    入力ファイル（``image``）を宣言すると、そのファイルは**作業ディレクトリへ
-    コピー**され、指示文がファイル名で参照する（開始フレーム、issue #22）。
-    """
-
-    #: 指示文に織り込む論理値（:data:`KIE_VALUES` と同じ語彙）。``select:<名前>``
-    #: の形で :class:`SelectSpec` の値も織り込める（動画の尺・解像度・縦横比）。
-    #: 解像度・縦横比はプロンプト経由の**希望**であって、厳密な制御は保証されない
-    #: （issue #21）。
-    values: tuple[str, ...] = ("prompt", "aspect_ratio")
-    #: 生成物の種類（``image`` / ``video``）
-    media: Literal["image", "video"] = "image"
-
-
-@dataclass(frozen=True)
-class CodexCliTask:
-    """Codex CLI（ChatGPT サブスク枠）で 1 ワークフローを実行する宣言（§5.4）。
-
-    :class:`GrokCliTask` と同じ発想（渡せるのは自然文の指示だけなので「キーの
-    対応表」は持たない）だが、コマンド体系がまったく違う（``codex exec`` +
-    ``--output-last-message``）ので別の宣言にしてある。指示文の組み立ては
-    :func:`app.codex_media.build_request`。
-
-    gpt-image-2 は今のところ text-to-image だけなので :attr:`media` は持たない
-    （動画を作れる Codex の経路が出てきたら、そのときに足す）。
-    """
-
-    #: 指示文に織り込む論理値（:data:`KIE_VALUES` と同じ語彙）。``select:<名前>``
-    #: の形で :class:`SelectSpec` の値も織り込める（大きさ・品質）。サイズ・品質は
-    #: 自然文で伝える**希望**であって、API 同等の厳密保証は無い（issue #23）。
-    values: tuple[str, ...] = ("prompt",)
-
-
 @dataclass(frozen=True)
 class MultiShotSpec:
-    """**ショット割り**で 1 本の動画を作れるモデルの宣言（SPEC §3.1、Kling 3.0）。
+    """**ショット割り**で 1 本の動画を作れるモデルの宣言（SPEC §3.1）。
 
-    宣言は**ショット割り専用のワークフロー**（:data:`KLING3_MULTISHOT`）だけが
+    宣言は**ショット割り専用のワークフロー**だけが
     持つ。ジョブは 1 本の ``video_prompt`` の代わりに ``multi_shots``
     （``[{"prompt": ..., "duration": ...}]``）を**必ず**持ち、``input`` には
     ``multi_shots: true`` と ``multi_prompt`` の配列が入って**トップレベルの
@@ -586,7 +365,7 @@ MINIMAX_H3_FRAME_GRID = FrameGrid(multiple=17, offset=5, round_up=True, fps=24, 
 
 @dataclass(frozen=True)
 class ElementsSpec:
-    """**Elements**（参照画像を名前つきの要素にまとめる）の宣言（§3.1、Kling 3.0）。
+    """**Elements**（参照画像を名前つきの要素にまとめる）の宣言（§3.1）。
 
     1 要素 = 名前 + 説明 + 参照画像 2〜4 枚で、プロンプト本文からは ``@要素名``
     で呼び出す。**``@要素名`` 1 回はプロンプトの文字数を
@@ -622,34 +401,28 @@ class WorkflowSpec:
     inject: dict[str, Target] = field(default_factory=dict)
     #: node id that produces the artefact the job runner downloads
     output_node: str = ""
-    #: このワークフローを実行するエンジン（SPEC §5.2）。既定は従来どおり ComfyUI。
+    #: このワークフローを実行するエンジン（SPEC §5.2）。今は ComfyUI のみ。
     backend: WorkflowBackend = "comfyui"
-    #: ``backend == "kie"`` のときのタスク宣言（それ以外では ``None``）
-    kie: KieTask | None = None
-    #: ``backend == "grok_cli"`` のときのタスク宣言（それ以外では ``None``）
-    grok: GrokCliTask | None = None
-    #: ``backend == "codex_cli"`` のときのタスク宣言（それ以外では ``None``）
-    codex: CodexCliTask | None = None
     #: model family (= the ``workflow/<kind>/<folder>`` name).  Image LoRAs are
     #: only offered for the family of the selected image workflow; the video
     #: templates all share the ``ltx2.3`` family and ignore it.
     family: str = DEFAULT_FAMILY
     requires: tuple[InputName, ...] = ()
     #: **複数ファイル**を配列で受け取る論理入力（論理名 -> 受け取れる件数の上限、
-    #: SPEC §3.1）。Seedance のマルチモーダル参照（参照画像 9 枚 / 参照動画 3 本 /
+    #: SPEC §3.1）。マルチモーダル参照（参照画像 9 枚 / 参照動画 3 本 /
     #: 参照音声 3 本）用で、宣言のないワークフローに参照素材を渡すと 422 になる
     #: （:func:`app.models.reference_problem`）。名前は
     #: :data:`MULTI_INPUT_FIELDS` のキー。**参照素材を使うモードは開始フレームと
     #: 排他**（外部 API 側の制約）なので、宣言を持つのは参照専用のワークフロー
-    #: （``*_ref`` / ``veo3_1_fast_ref``）だけで、そちらは
+    #: （``minimax_h3_r2v``）だけで、そちらは
     #: :attr:`accepts_start_image` が False になっている。
     multi_inputs: dict[str, int] = field(default_factory=dict)
     #: **選択式どうしの相関**（名前 -> ``(相手の名前, 相手に必要な値)``、§3.1）。
     #: 「その項目は相手がこの値のときしか効かない」ことの宣言で、既定以外を
     #: 選んでいるのに相手が違う値なら投入前に 422 にする
-    #: （:func:`app.models.select_problem`）。Suno の ``duration`` は
-    #: ``model`` が ``V5_5`` のときしか効かず、**他のモデルでは黙って無視される**
-    #: ので、気づかずに指定してしまうのを防ぐ。
+    #: （:func:`app.models.select_problem`）。たとえば ``duration`` が
+    #: ``model`` の特定の値のときしか効かず、**それ以外では黙って無視される**
+    #: ようなときに、気づかずに指定してしまうのを防ぐ。
     select_requires: dict[str, tuple[str, str]] = field(default_factory=dict)
     #: **ショット割り**の宣言（``None`` = 1 ジョブ 1 ショットのみ、SPEC §3.1）
     multi_shot: MultiShotSpec | None = None
@@ -666,7 +439,7 @@ class WorkflowSpec:
     #: straight into the LLM prompts).  Required for video workflows.
     prompt_hint: str = ""
     #: プロンプトの長さの上限（文字数、0 = 上限なし）。外部 API は長すぎる
-    #: プロンプトを 422 で弾く（Kling 3.0 は 500 文字）ので、ジョブを投入する
+    #: プロンプトを 422 で弾く（たとえば 500 文字）ので、ジョブを投入する
     #: 前に :func:`app.models.prompt_length_problem` で落とす。
     max_prompt_chars: int = 0
     #: audio workflows only: the clip length the model supports, in seconds.
@@ -676,6 +449,12 @@ class WorkflowSpec:
     max_duration: float = 0.0
     #: audio workflows only: the length the UI / the agent start from
     default_duration: float = 0.0
+    #: そのモデルが想定している解像度（メガピクセル、0.0 = 宣言なし）。
+    #: テンプレートの ``ResolutionSelector`` が前提にしている画角と、フォームの
+    #: グローバル既定（1.0MP）がずれるモデル用（SPEC §3.1）。宣言があると、
+    #: そのワークフローを選んだ時点でフォームの ``megapixels`` がこの値になる。
+    #: MiniMax H3 は 0.4（1.0MP のまま回すと 8GB 級の GPU で CUDA OOM になる）。
+    default_megapixels: float = 0.0
     #: can this workflow be the second stage of a full (image -> video) job?
     accepts_start_image: bool = False
     #: UI label of the primary image input
@@ -694,11 +473,6 @@ class WorkflowSpec:
     #: ``reference_audios`` を ComfyUI のグラフでも受け取れるようになる（外部 API の
     #: 参照モードと同じ入力・同じ UI）。
     ref_media: RefMediaFan | None = None
-    #: 高速化トグル（:data:`MODEL_PATCHES`）を挟む場所（:class:`PatchPoint`、
-    #: ``None`` = 非対応）。宣言すると ``supports`` に :data:`MODEL_PATCH_NAMES`
-    #: が出て、フォームにトグルが増える（既定はどれも OFF。ON にしたぶんだけ
-    #: ノードが直列に生える）。
-    patch_point: PatchPoint | None = None
     #: **渡されなかったらグラフから取り外す**入力の論理名（:data:`InputName`）。
     #: ``inject`` に載っているだけの入力はファイル名を空文字にするだけなので、
     #: ComfyUI が「そのファイルが無い」で落ちる。任意の最終フレーム
@@ -715,7 +489,7 @@ class WorkflowSpec:
     #: では空なので、フォームにもジョブにも何も増えない。
     selects: dict[str, SelectSpec] = field(default_factory=dict)
     #: ``video_prompt`` が必須か。プロンプトをコンボから組み立てるワークフロー
-    #: （wan_dancer）は False で、書かれた場合だけ注入する。
+    #: は False で、書かれた場合だけ注入する。
     prompt_required: bool = True
 
     @property
@@ -732,57 +506,24 @@ class WorkflowSpec:
                 yield select.numeric_target
         if self.lora_chain is not None:
             yield from self.lora_chain.consumers
-        if self.patch_point is not None:
-            yield from self.patch_point.consumers
 
     def select(self, name: str) -> SelectSpec | None:
         return self.selects.get(name)
 
     def supports(self, name: str) -> bool:
-        """このワークフローが論理名 ``name`` の値を受け取るか。
-
-        バックエンドごとに「受け取り口」の持ち方が違う（ComfyUI は
-        :attr:`inject`、kie.ai は :attr:`KieTask.fields`、Grok Build CLI は
-        :attr:`GrokCliTask.values`）ので、呼び出し側はどちらかを知らずに済むよう
-        ここで吸収する。
-        """
+        """このワークフローが論理名 ``name`` の値を受け取るか。"""
         if name in self.inject:
             return True
         # 参照素材は 1 つの :class:`Target` では表せない（件数ぶんノードを作る）
         # ので、宣言そのものを受け取り口として見る
-        if self.ref_media is not None and name in self.ref_media.names():
-            return True
-        # 実行時オプション（注入先ではなくグラフの組み替え）も受け取り口として扱う
-        if self.patch_point is not None and name in MODEL_PATCH_NAMES:
-            return True
-        if self.kie is not None and name in self.kie.fields:
-            return True
-        if self.grok is not None and name in self.grok.values:
-            return True
-        return self.codex is not None and name in self.codex.values
+        return self.ref_media is not None and name in self.ref_media.names()
 
     def supported_names(self) -> tuple[str, ...]:
-        """このワークフローが受け取る論理名（フォームとカタログが読む）。
-
-        :meth:`supports` の一覧版。ComfyUI は :attr:`inject`、kie.ai は
-        :attr:`KieTask.fields`、Grok Build CLI は :attr:`GrokCliTask.values` が
-        受け取り口なので、すべて同じ語彙で見せる（``select:`` 付きは選択式として
-        別に案内するので外す）。
-        """
+        """このワークフローが受け取る論理名（フォームとカタログが読む）。"""
         names = set(self.inject)
         if self.ref_media is not None:
             names |= set(self.ref_media.names())
-        if self.patch_point is not None:
-            names |= set(MODEL_PATCH_NAMES)
-        if self.kie is not None:
-            names |= set(self.kie.fields)
-        if self.grok is not None:
-            names |= set(self.grok.values)
-        if self.codex is not None:
-            names |= set(self.codex.values)
-        return tuple(
-            sorted(name for name in names if not name.startswith(KIE_SELECT_PREFIX))
-        )
+        return tuple(sorted(names))
 
     def target(self, name: str) -> Target | None:
         return self.inject.get(name)
@@ -810,6 +551,7 @@ KREA2_TURBO = WorkflowSpec(
         "megapixels": T("49", "megapixels", "ResolutionSelector"),
         "prompt": T("30:19", "value", "PrimitiveStringMultiline"),
         "seed": T("30:3", "seed", "KSampler"),
+        "steps": T("30:3", "steps", "KSampler"),
         # local TextGenerate refine is off: Grok already writes the final prompt
         "refine_enable": T("30:24", "value", "PrimitiveBoolean"),
         # StringConcatenate that prepends the LoRA trigger words
@@ -846,6 +588,7 @@ ANIMA = WorkflowSpec(
         "megapixels": T("91", "megapixels", "ResolutionSelector"),
         "prompt": T("90:77", "text", "CLIPTextEncode"),
         "seed": T("90:76", "seed", "KSampler"),
+        "steps": T("90:76", "steps", "KSampler"),
         "save_prefix": T("46", "filename_prefix", "SaveImage"),
     },
     lora_chain=LoraChain(
@@ -876,6 +619,7 @@ Z_IMAGE_TURBO = WorkflowSpec(
         "height": T("57:13", "height", "EmptySD3LatentImage"),
         "prompt": T("57:27", "text", "CLIPTextEncode"),
         "seed": T("57:3", "seed", "KSampler"),
+        "steps": T("57:3", "steps", "KSampler"),
         "save_prefix": T("9", "filename_prefix", "SaveImage"),
     },
     lora_chain=LoraChain(
@@ -926,137 +670,6 @@ QWEN_IMAGE_EDIT = WorkflowSpec(
         ),
     ),
     notes="qwen_image_edit_2511 + Lightning 4steps LoRA / 解像度は入力画像から自動",
-)
-
-
-# --------------------------------------------------------------------------
-# image: Grok Build CLI（サブスク枠、SPEC §5.2 / issue #21）
-# --------------------------------------------------------------------------
-#
-# xAI の従量課金 API ではなく、SuperGrok / X Premium+ のサブスクリプションで動く
-# 公式 CLI をヘッドレス実行して Grok Imagine に描かせる（:mod:`app.grok_media`）。
-# ComfyUI / kie.ai と違って渡せるのは**自然文の指示だけ**なので、解像度・縦横比は
-# 指示文に織り込む「希望」であって厳密な制御は保証されない。
-#
-# 枠は Chat / Imagine / Build 横断の共有プールで、目安は画像 ~40 枚/日
-# （SuperGrok、時期・地域で変動）。使い切ったときは :class:`app.grok_media.
-# GrokQuotaError` として「時間をおいて」の案内に変換する。
-
-GROK_IMAGINE_PROMPT_HINT = (
-    "One natural-language description, not a tag list. Order: subject → style /"
-    " medium → environment → lighting → mood → technical (lens, framing)."
-    " **The first 20-30 words carry the most weight**, so put the subject and"
-    " the look there. Name the light source and its quality, and use concrete"
-    " material words. Never write what you do not want (`no blur` is ignored) —"
-    " say the positive form instead (`sharp focus`)."
-)
-
-GROK_IMAGINE = WorkflowSpec(
-    id="grok_imagine",
-    label="Grok Imagine（サブスク CLI）",
-    mode_label="画像生成",
-    kind="image",
-    family="grok-imagine",
-    backend="grok_cli",
-    description=(
-        "Text-to-image through the official Grok Build CLI, on the SuperGrok /"
-        " X Premium+ **subscription** quota (no metered API). Same shape as the"
-        " local text-to-image workflows: `image_prompt` only, usable for"
-        " `mode: \"image_only\"` and as the first stage of `mode: \"full\"`."
-        " `aspect_ratio` is passed as a wish inside the instruction, so the"
-        " exact resolution is not guaranteed. The model refuses real people,"
-        " celebrities and trademarks, and the daily quota is shared with Grok"
-        " chat. LoRAs cannot be used."
-    ),
-    prompt_hint=GROK_IMAGINE_PROMPT_HINT,
-    grok=GrokCliTask(values=("prompt", "aspect_ratio"), media="image"),
-    notes=(
-        "Grok Build CLI（サブスク枠）/ 縦横比・解像度はプロンプト経由の希望 /"
-        " LoRA 不可 / 実在人物・著名人・商標はモデレーションで弾かれる /"
-        " 枠は Chat と共有（目安 40 枚/日）"
-    ),
-)
-
-
-# --------------------------------------------------------------------------
-# image: Codex CLI（ChatGPT サブスク枠、SPEC §5.4 / issue #23）
-# --------------------------------------------------------------------------
-#
-# OpenAI の従量課金 API ではなく、ChatGPT Plus / Pro のサブスクリプションで動く
-# 公式 CLI（`codex exec`）の組み込みスキル `$imagegen` に gpt-image-2 で描かせる
-# （:mod:`app.codex_media`）。Grok CLI と同じく渡せるのは**自然文の指示だけ**で、
-# 大きさ・品質も指示文に織り込む「希望」（API 同等の厳密保証は無い）。
-#
-# 位置づけは「高品質枠として少量」: 画像生成ターンは通常のターンより 3〜5 倍速く
-# 5 時間 / 週次の枠を消費する（公式明記）。月に数百枚を回すようになったら API 直
-# （gpt-image-1.5）への切り替えを検討する。
-
-#: gpt-image-2 が受ける大きさ（正方形・横長・縦長）
-GPT_IMAGE_SIZES: tuple[str, ...] = ("1024x1024", "1536x1024", "1024x1536")
-#: 品質（枠の消費量に直結するので既定は medium）
-GPT_IMAGE_QUALITIES: tuple[str, ...] = ("low", "medium", "high")
-
-GPT_IMAGE2_PROMPT_HINT = (
-    "One natural-language description in this order: background / scene →"
-    " subject → key details → constraints, and say what the picture is for"
-    " (ad, UI mock, …). **Text rendering is this model's strength**: quote every"
-    " string verbatim and name its font, size, colour and placement, then say"
-    " no other text should appear. Name the medium (photo / watercolour / 3D"
-    " render) and write `photorealistic` outright when that is what you want."
-)
-
-GPT_IMAGE2 = WorkflowSpec(
-    id="gpt_image2",
-    label="gpt-image-2（Codex CLI）",
-    mode_label="画像生成",
-    kind="image",
-    family="gpt-image",
-    backend="codex_cli",
-    description=(
-        "Text-to-image through the official Codex CLI, on the **ChatGPT"
-        " subscription** quota (no metered API key). Same shape as the local"
-        " text-to-image workflows: `image_prompt` only, usable for"
-        " `mode: \"image_only\"` and as the first stage of `mode: \"full\"`."
-        " Its strengths are rendered text, instruction following and"
-        " photorealism, so use it as the high-quality option rather than the"
-        " default one — an image turn eats the shared ChatGPT quota 3-5x faster"
-        " than a normal turn. `size` and `quality` are job fields (`selects`)"
-        " passed as *wishes* inside the instruction, so they are not guaranteed"
-        " exactly, and `aspect_ratio` / `megapixels` are ignored (pick the"
-        " `size` instead). Transparent backgrounds are not supported. LoRAs"
-        " cannot be used."
-    ),
-    prompt_hint=GPT_IMAGE2_PROMPT_HINT,
-    codex=CodexCliTask(
-        values=(
-            "prompt",
-            f"{KIE_SELECT_PREFIX}size",
-            f"{KIE_SELECT_PREFIX}quality",
-        ),
-    ),
-    selects={
-        "size": SelectSpec(
-            label="大きさ",
-            choices=GPT_IMAGE_SIZES,
-            default="1024x1024",
-            hint=(
-                "指示文に書く希望なので、実際の出力はぶれることがある"
-                "（縦横比プリセットとメガピクセルはこのワークフローでは使わない）。"
-            ),
-        ),
-        "quality": SelectSpec(
-            label="品質",
-            choices=GPT_IMAGE_QUALITIES,
-            default="medium",
-            hint="高いほどサブスク枠の消費が増える。",
-        ),
-    },
-    notes=(
-        "Codex CLI（ChatGPT サブスク枠）/ 大きさ・品質はプロンプト経由の希望 /"
-        " 縦横比・メガピクセルは使わない / LoRA 不可 / 透過背景は非対応"
-        "（クロマキー方式での透過は未対応。必要なら別途 gpt-image-1.5 の API へ）/"
-        " 画像生成ターンは通常の 3〜5 倍速く枠を消費するので少量利用向け"
-    ),
 )
 
 
@@ -1366,6 +979,7 @@ LTX_IC_LORA_IMAGE = WorkflowSpec(
         "fps": T("716", "value", "PrimitiveInt"),
         "frames_expr": T("717", "", "ComfyMathExpression"),
         "prompt_enhance": T("129:212", "value", "PrimitiveBoolean"),
+        "steps": T("129:704", "steps", "KSampler"),
         "image": T("724", "image", "LoadImage"),
         "save_prefix": T("68", "filename_prefix", "SaveVideo"),
     },
@@ -1410,6 +1024,7 @@ LTX_IC_LORA_MOTION = WorkflowSpec(
         # frame count follows the reference clip: the slice length is the knob
         "duration": T("692", "duration", "Video Slice"),
         "prompt_enhance": T("129:212", "value", "PrimitiveBoolean"),
+        "steps": T("129:704", "steps", "KSampler"),
         "image": T("200", "image", "LoadImage"),
         "video": T("199", "file", "LoadVideo"),
         "save_prefix": T("68", "filename_prefix", "SaveVideo"),
@@ -1421,102 +1036,6 @@ LTX_IC_LORA_MOTION = WorkflowSpec(
     ),
     constants={"prompt_enhance": False},
     notes="ltx-2.3-22b-dev-fp8 + distilled-1.1 LoRA + union-control IC-LoRA / MoGe 深度",
-)
-
-
-
-# --------------------------------------------------------------------------
-# video: workflow/video/wan/*.json
-# --------------------------------------------------------------------------
-
-#: 尺の選択肢（テンプレートの Duration コンボと同じ並び）。番号がそのまま
-#: WanDancerPadKeyframesList の num_segments（= 5 秒単位のセグメント数）になる。
-WAN_DURATIONS: tuple[str, ...] = ("5", "10", "15", "20", "25", "30")
-
-WAN_DANCER = WorkflowSpec(
-    id="wan_dancer",
-    label="画像+音声→ダンス動画 (Wan Dancer)",
-    mode_label="画像+音声→ダンス動画 (Dancer)",
-    kind="video",
-    family="wan",
-    relpath="video/wan/wan_dancer.json",
-    output_node="699",
-    requires=("image", "audio"),
-    description=(
-        "開始フレーム画像と音楽ファイルから、その曲に合わせて踊る動画を生成する"
-        "（Wan 2.2 WanDancerVideo）。渡した音声がそのままクリップの音声トラックに"
-        "なり、映像はビートに合わせて踊る。プロンプトは自由記述ではなく"
-        "「踊りの種類」「動きの大きさ」の選択で決まり、尺は音声の長さに自動で"
-        "合わせる（5〜30 秒）。"
-    ),
-    audio_role=(
-        "指定した音声ファイルがクリップの音声トラックそのものになる"
-        "（`audio_path` 必須）。踊りはこの曲に合わせて付くので、"
-        "リズムのはっきりした曲を渡す。尺も既定ではこの音声の長さに合わせる。"
-    ),
-    prompt_hint=(
-        "This workflow builds its own Chinese prompt from the `dance_style` and"
-        " `motion_amplitude` selections, so **`video_prompt` is optional** —"
-        " leave it out unless the user asked for something the two selections"
-        " cannot express. When you do set it, write the Wan-style Chinese"
-        " template string; keep the `<dance style>` placeholder in it if you"
-        " want the selected dance to be substituted"
-        ' (e.g. "一个人正在跳舞，舞蹈种类是<dance style>，在霓虹灯的舞台上").'
-    ),
-    accepts_start_image=True,
-    image_label="開始フレーム",
-    prompt_required=False,
-    inject={
-        # Global 側のテンプレ文（<dance style> が選択値に置換される）
-        "prompt": T("696:685", "string", "StringReplace"),
-        "negative": T("696:629", "text", "CLIPTextEncode"),
-        "width": T("696:398", "value", "PrimitiveInt"),
-        "height": T("696:400", "value", "PrimitiveInt"),
-        "image": T("547", "image", "LoadImage"),
-        "audio": T("548", "audio", "LoadAudio"),
-        "save_prefix": T("699", "filename_prefix", "SaveVideo"),
-    },
-    selects={
-        "dance_style": SelectSpec(
-            label="踊りの種類",
-            choices=(
-                "Chinese Classic Dance 古典舞",
-                "K-Pop 韩舞",
-                "Street Dance 街舞",
-                "Latin Dance 拉丁舞",
-                "Tap Dance 踢踏舞",
-            ),
-            target=T("696:695", "choice", "CustomCombo"),
-            default="K-Pop 韩舞",
-            hint="プロンプトの <dance style> に入る踊りの種類。",
-        ),
-        "motion_amplitude": SelectSpec(
-            label="動きの大きさ",
-            choices=("low 低", "medium 中等", "high 高", "max 最大"),
-            target=T("696:694", "choice", "CustomCombo"),
-            default="medium 中等",
-            hint="大きいほど激しく動くが、破綻もしやすい。",
-        ),
-        "duration": SelectSpec(
-            label="尺（秒）",
-            choices=WAN_DURATIONS,
-            target=T("696:700", "choice", "CustomCombo"),
-            # 音声の長さが測れなかったときの落としどころ（真ん中）
-            default="15",
-            # 音声もこの秒数で切る（既定の 25 秒固定だと曲が途中で切れる）
-            numeric_target=T("696:494", "duration", "TrimAudioDuration"),
-            auto="audio_duration",
-            hint="省略すると音声の長さに合わせて 5〜30 秒から自動で決める。",
-        ),
-    },
-    seeds=(
-        T("696:654", "noise_seed", "RandomNoise"),
-        T("696:667", "noise_seed", "SamplerCustom"),
-    ),
-    notes=(
-        "wan2.2 global/local の 2 段 UNet + lightx2v LoRA / 既定 720x1280 /"
-        " ユーザー LoRA を挿すチェーンは持たない"
-    ),
 )
 
 
@@ -1535,6 +1054,18 @@ WAN_DANCER = WorkflowSpec(
 #   ノードの widget なので注入先は ``105:104.prompt`` そのもの。
 # * r2v は ``MiniMaxH3ReferenceToVideo``（ref2va の別ウェイト）で、プロンプトは
 #   ``PrimitiveStringMultiline``。
+#
+# これに加えて **turbo**（i2v / r2v）が 2 つある。入力の形は素の i2v / r2v と
+# まったく同じで、違うのは中身だけ:
+#
+# * UNET は w4a8 mixed の量子化ウェイト、CLIP は heretic nvfp4、動画 VAE は
+#   int8_convrot（音声 VAE だけ据え置き）。
+# * ``BasicScheduler`` の steps が 20 → **4**。
+# * UNETLoader と BasicGuider の間に高速化のノードが**テンプレートに直接**
+#   直列で入っている: ``MiniMaxH3TurboLoRA``（4step 蒸留 LoRA）→
+#   ``PathchSageAttentionKJ`` → ``SolAttnPatch`` → ``MiniMaxH3SigmaShift`` →
+#   ``SpectrumApplyMiniMaxH3``。``BasicScheduler`` は sigma を作るだけなので
+#   ``SolAttnPatch`` の出力（SigmaShift の**手前**）から model を取る。
 #
 # グラフの都合で入れ替えた点:
 #
@@ -1556,13 +1087,24 @@ _MINIMAX_H3_NOTES = (
     "24fps 固定・尺は 17k+5 フレームの格子に切り上げ（5 秒 = 124 フレーム、"
     "学習範囲は約 1〜15 秒）/ 短辺 768px・最大 768x1344 が既定の画角"
     "（幅高さは 32 の倍数）/ negative prompt は無い（CFG 無しの BasicGuider）/"
-    " ユーザー LoRA を挿すチェーンは持たない /"
-    " 高速化トグルを 2 つ持つ（どちらも既定 OFF・UNETLoader と BasicGuider の"
-    "間に直列で挟む）: `sage_attention` は `PathchSageAttentionKJ`"
-    "（ComfyUI-KJNodes・SageAttention を入れた環境でのみ使える）で約 2 倍速、"
-    "`easy_cache` は `EasyCache`（ComfyUI 標準）でステップ間の計算を再利用する"
-    "（短縮幅はプロンプト次第・動きの激しい映像では品質が落ちることがある）"
+    " ユーザー LoRA を挿すチェーンは持たない"
 )
+
+#: turbo 版だけの注意書き（素のものとの差分）
+_MINIMAX_H3_TURBO_NOTES = (
+    " / **turbo**: 4step 蒸留 LoRA（`minimax_h3_turbo_v4_step600_ema`）と"
+    " Sage Attention / Sol-Attn / SigmaShift / Spectrum をテンプレートに"
+    "直列で焼き込んだ高速版で、サンプリングは **4 ステップ**固定"
+    "（入力の形は素の版とまったく同じ）。`PathchSageAttentionKJ`"
+    "（ComfyUI-KJNodes + SageAttention）・`SolAttnPatch`・`MiniMaxH3TurboLoRA`・"
+    "`MiniMaxH3SigmaShift`・`SpectrumApplyMiniMaxH3` の**カスタムノードと"
+    "量子化ウェイト一式が入った環境でのみ**動く"
+)
+
+#: MiniMax H3 が想定している解像度（短辺 768px・最大 768x1344 なので約 0.4MP）。
+#: テンプレートの ``ResolutionSelector`` もこの値で、フォームのグローバル既定
+#: （1.0MP）のまま回すと 8GB 級の GPU では CUDA OOM になる（SPEC §3.1）。
+MINIMAX_H3_MEGAPIXELS = 0.4
 
 #: r2v が受け取れる参照素材の件数（``MiniMaxH3ReferenceToVideo`` の Autogrow の
 #: 上限そのまま。動画のサウンドトラックは動画と同数なので別枠を持たない）
@@ -1576,6 +1118,74 @@ _MINIMAX_H3_MODELS = (
     " minimax_h3_video_vae_fp16 + minimax_h3_audio_vae_fp32 +"
     " qwen3vl_32b_minimax_h3_nvfp4_awq（text_encoders）"
 )
+
+#: turbo テンプレートだけが使う**任意のカスタムノード**の ``class_type``。
+#: 入れていない環境で接続インジケーターが赤くならないよう、ヘルスチェックの
+#: 「必ず在るべきノード」からは外す（:func:`app.workflow.all_required_class_types`）。
+#: turbo を選んで実行したときだけ ComfyUI 側でエラーになる。
+OPTIONAL_CLASS_TYPES: frozenset[str] = frozenset(
+    {
+        "MiniMaxH3TurboLoRA",
+        "PathchSageAttentionKJ",
+        "SolAttnPatch",
+        "MiniMaxH3SigmaShift",
+        "SpectrumApplyMiniMaxH3",
+    }
+)
+
+#: turbo 版のモデルファイル（量子化ウェイト + 4step 蒸留 LoRA）
+_MINIMAX_H3_TURBO_MODELS = (
+    " モデル: minimax_h3_{unet}_pruned_w4a8_mixed（diffusion_models）+"
+    " minimax_h3_video_vae_int8_convrot + minimax_h3_audio_vae_fp32 +"
+    " qwen3vl_32b_heretic_minimax_h3_nvfp4（text_encoders）+"
+    " minimax_h3_turbo_v4_step600_ema（loras）"
+)
+
+#: turbo 版の ``MiniMaxH3TurboLoRA.low_vram``（論理名 = ジョブの ``selects`` のキー）
+MINIMAX_H3_LOW_VRAM_NAME = "low_vram"
+
+#: 4step 蒸留 LoRA を低 VRAM モードで読ませるかどうか。ノードの入力は真偽値
+#: なので、選んだ文字列は :func:`app.workflow._coerce` が ``on`` -> ``True`` /
+#: ``off`` -> ``False`` に直してから書き込む（:data:`app.workflow._BOOL_INPUTS`）。
+#: 既定は OFF（テンプレートの現状値と同じ）で、VRAM が足りないときだけ ON。
+_MINIMAX_H3_LOW_VRAM_SELECT = SelectSpec(
+    label="Low VRAM（turbo LoRA）",
+    choices=("off", "on"),
+    default="off",
+    target=T("150", "low_vram", "MiniMaxH3TurboLoRA"),
+    # ``CustomCombo`` ではないので番号を書く先は無い
+    index_field="",
+    hint=(
+        "on にすると 4step 蒸留 LoRA を低 VRAM モードで読み込む"
+        "（VRAM が足りずに落ちるときだけ。遅くなるので既定は off）"
+    ),
+)
+
+#: i2v だけの注意書き（任意の最終フレーム）
+_MINIMAX_H3_I2V_NOTES = (
+    " / `end_image` は任意（渡すと `last_frame` に繋いで最終フレーム指定に"
+    "なる。渡さなければ雛形の LoadImage ごとグラフから外す）"
+)
+
+#: r2v だけの注意書き（参照素材の数え方と扱い）
+_MINIMAX_H3_R2V_NOTES = (
+    f" / 参照素材は画像 {MINIMAX_H3_REFERENCE_IMAGES} 枚"
+    f"（`reference_images`）+ 動画 {MINIMAX_H3_REFERENCE_VIDEOS} 本"
+    f"（`reference_videos`）+ 音声 {MINIMAX_H3_REFERENCE_AUDIOS} 本"
+    "（`reference_audios`）まで・合計 1 件以上必須（件数ぶんローダーを作って"
+    "繋ぐ）/ プロンプトからは種類ごとに渡した順で `<Picture i>` /"
+    " `<Video k>` / `<Audio j>`。提示順は 画像 → 動画（各動画の音声の"
+    " `<Audio j>` はその `<Video k>` の直前）→ 単独音声で、**動画の音声と"
+    "単独音声は `<Audio j>` の連番を共有し、動画の音声が先に番号を消費する** /"
+    " 参照動画は **24fps 前提**（LoadVideo → GetVideoComponents でフレーム列と"
+    "音声を取り出すだけで fps 変換はしない。他の fps の素材は時間感覚がずれる）・"
+    "1 本 2〜15 秒が目安で、生成フレーム数より長いぶんは切り詰められる・"
+    "音声トラックは常に一緒に参照へ渡す（音声の無い動画は `<Audio j>` を"
+    "消費しないので番号がずれる）/ 参照音声は 32kHz に自動リサンプル /"
+    " 開始フレームは受け取らない / ref_image_size=match（生成解像度に合わせて"
+    "縮小。max は 2048px 短辺で同一性は上がるが数倍遅い）"
+)
+
 
 #: 3 つで共通のプロンプトの書き方（音声込み・1 ブロック・禁止事項を明記）。
 #: 出典: ComfyUI 公式テンプレートの MarkdownNote と作例プロンプト、
@@ -1620,6 +1230,7 @@ MINIMAX_H3_T2V = WorkflowSpec(
     ),
     accepts_start_image=False,
     resolution_multiple=32,
+    default_megapixels=MINIMAX_H3_MEGAPIXELS,
     frames=MINIMAX_H3_FRAME_GRID,
     inject={
         # prompt / width / height はサブグラフを展開した MiniMaxH3ImageToVideo の
@@ -1629,12 +1240,10 @@ MINIMAX_H3_T2V = WorkflowSpec(
         "height": T("105:104", "height", "MiniMaxH3ImageToVideo"),
         "duration": T("105:111", "value", "PrimitiveFloat"),
         "frames_expr": T("105:107", "", "ComfyMathExpression"),
+        "steps": T("105:9", "steps", "BasicScheduler"),
         "save_prefix": T("92", "filename_prefix", "SaveVideo"),
     },
     # 高速化トグル（任意・既定 OFF）: UNETLoader と BasicGuider の間に挟む
-    patch_point=PatchPoint(
-        head="105:6", consumers=(T("105:16", "model", "BasicGuider"),)
-    ),
     seeds=(T("105:15", "noise_seed", "RandomNoise"),),
     notes=_MINIMAX_H3_NOTES + " /" + _MINIMAX_H3_MODELS.format(unet="fl2va"),
 )
@@ -1669,6 +1278,7 @@ MINIMAX_H3_I2V = WorkflowSpec(
     accepts_start_image=True,
     image_label="開始フレーム",
     resolution_multiple=32,
+    default_megapixels=MINIMAX_H3_MEGAPIXELS,
     frames=MINIMAX_H3_FRAME_GRID,
     inject={
         "prompt": T("105:104", "prompt", "MiniMaxH3ImageToVideo"),
@@ -1676,20 +1286,18 @@ MINIMAX_H3_I2V = WorkflowSpec(
         "height": T("105:104", "height", "MiniMaxH3ImageToVideo"),
         "duration": T("105:111", "value", "PrimitiveFloat"),
         "frames_expr": T("105:107", "", "ComfyMathExpression"),
+        "steps": T("105:9", "steps", "BasicScheduler"),
         "image": T("114", "image", "LoadImage"),
         # 任意の最終フレーム。渡されなければ雛形の LoadImage ごと落ちる
         "end_image": T("116", "image", "LoadImage"),
         "save_prefix": T("92", "filename_prefix", "SaveVideo"),
     },
     optional_loaders=("end_image",),
-    patch_point=PatchPoint(
-        head="105:6", consumers=(T("105:16", "model", "BasicGuider"),)
-    ),
     seeds=(T("105:15", "noise_seed", "RandomNoise"),),
     notes=(
         _MINIMAX_H3_NOTES
-        + " / `end_image` は任意（渡すと `last_frame` に繋いで最終フレーム指定に"
-        "なる。渡さなければ雛形の LoadImage ごとグラフから外す）/"
+        + _MINIMAX_H3_I2V_NOTES
+        + " /"
         + _MINIMAX_H3_MODELS.format(unet="fl2va")
     ),
 )
@@ -1734,9 +1342,10 @@ MINIMAX_H3_R2V = WorkflowSpec(
     # 参照モードは「1 枚目の絵」ではないので、image -> video 連鎖の受け口には
     # しない（生成した静止画を開始フレームとして渡す意味にならない）。開始
     # フレームの受け取り口そのものを持たないのは、外部 API の参照専用ワーク
-    # フロー（`seedance2_ref` / `veo3_1_fast_ref`）と同じ形。
+    # フローと同じ形。
     accepts_start_image=False,
     resolution_multiple=32,
+    default_megapixels=MINIMAX_H3_MEGAPIXELS,
     frames=MINIMAX_H3_FRAME_GRID,
     multi_inputs={
         REF_IMAGES_NAME: MINIMAX_H3_REFERENCE_IMAGES,
@@ -1749,6 +1358,7 @@ MINIMAX_H3_R2V = WorkflowSpec(
         "height": T("136", "height", "MiniMaxH3ReferenceToVideo"),
         "duration": T("132", "value", "PrimitiveFloat"),
         "frames_expr": T("131", "", "ComfyMathExpression"),
+        "steps": T("124", "steps", "BasicScheduler"),
         "save_prefix": T("92", "filename_prefix", "SaveVideo"),
     },
     # 参照素材は件数ぶんローダーを作って ref_*_N に繋ぐ（テンプレートの 137 /
@@ -1762,938 +1372,70 @@ MINIMAX_H3_R2V = WorkflowSpec(
         video_decoder=T("141", "video", "GetVideoComponents"),
         audio_loader=T("142", "audio", "LoadAudio"),
     ),
-    patch_point=PatchPoint(
-        head="127", consumers=(T("126", "model", "BasicGuider"),)
-    ),
     seeds=(T("129", "noise_seed", "RandomNoise"),),
     notes=(
         _MINIMAX_H3_NOTES
-        + f" / 参照素材は画像 {MINIMAX_H3_REFERENCE_IMAGES} 枚"
-        f"（`reference_images`）+ 動画 {MINIMAX_H3_REFERENCE_VIDEOS} 本"
-        f"（`reference_videos`）+ 音声 {MINIMAX_H3_REFERENCE_AUDIOS} 本"
-        "（`reference_audios`）まで・合計 1 件以上必須（件数ぶんローダーを作って"
-        "繋ぐ）/ プロンプトからは種類ごとに渡した順で `<Picture i>` /"
-        " `<Video k>` / `<Audio j>`。提示順は 画像 → 動画（各動画の音声の"
-        " `<Audio j>` はその `<Video k>` の直前）→ 単独音声で、**動画の音声と"
-        "単独音声は `<Audio j>` の連番を共有し、動画の音声が先に番号を消費する** /"
-        " 参照動画は **24fps 前提**（LoadVideo → GetVideoComponents でフレーム列と"
-        "音声を取り出すだけで fps 変換はしない。他の fps の素材は時間感覚がずれる）・"
-        "1 本 2〜15 秒が目安で、生成フレーム数より長いぶんは切り詰められる・"
-        "音声トラックは常に一緒に参照へ渡す（音声の無い動画は `<Audio j>` を"
-        "消費しないので番号がずれる）/ 参照音声は 32kHz に自動リサンプル /"
-        " 開始フレームは受け取らない / ref_image_size=match（生成解像度に合わせて"
-        "縮小。max は 2048px 短辺で同一性は上がるが数倍遅い）/"
+        + _MINIMAX_H3_R2V_NOTES
+        + " /"
         + _MINIMAX_H3_MODELS.format(unet="ref2va")
     ),
 )
 
-
-# --------------------------------------------------------------------------
-# video: kie.ai（Google Veo 3.1、SPEC §5.2 / issue #17）
-# --------------------------------------------------------------------------
-#
-# ここから下はテンプレートを持たない**外部 API のワークフロー**。ComfyUI の
-# グラフの代わりに :class:`KieTask` が「どのモデルに何を渡すか」を宣言し、実際の
-# 組み立ては :mod:`app.kie` が行う。Veo は kie.ai の**旧専用系 API**
-# （``/api/v1/veo/generate``）で、モデル名は 3.1 になっても旧名のまま
-# （``veo3`` = Quality / ``veo3_fast`` = Fast）。
-#
-# 入力画像は 1 枚なら開始フレーム、2 枚なら「最初と最後のフレーム」になる
-# （``generationType`` は :class:`app.kie.VeoTaskApi` が枚数から決める）。
-# 音声はモデルが映像と一緒に生成するので、音声入力は取らない。
-#
-# **素材参照生成**（``REFERENCE_2_VIDEO``、issue #26）は同じ ``imageUrls`` に
-# 参照画像を 1〜3 枚載せる別モードで、開始 / 最終フレームとは API 側で排他。
-# 排他のモードを 1 つのマニフェストに同居させると「宣言はしているが組み合わせに
-# よっては使えない」入力ができてしまうので、**ワークフローそのものを分けて**
-# 宣言する（:data:`VEO3_1_FAST_REF`）。分けたことで ``generationType`` は
-# 「参照素材があるときだけ切り替える」特別扱いではなく :attr:`KieTask.constants`
-# の固定値になり、8 秒固定も ``duration`` の選択肢を 1 つだけ持つ
-# :class:`SelectSpec` でそのまま表現できる。
-# API 側の制約で素材参照生成が使えるのは **Fast / Lite のみ**なので、参照専用の
-# バリアントも Fast にだけ用意する。
-
-#: Veo の縦横比（``Auto`` は 1080p/4K が使えないので出さない）
-VEO_ASPECT_RATIOS: tuple[str, ...] = ("16:9", "9:16")
-#: Veo の尺（秒）。1080p は 8 秒生成のときだけ用意される。
-VEO_DURATIONS: tuple[str, ...] = ("4", "6", "8")
-#: 素材参照生成の ``generationType``（参照画像が入っているときだけ送る）
-VEO_REFERENCE_TYPE = "REFERENCE_2_VIDEO"
-#: 素材参照生成で受け取れる参照画像の枚数（API の上限そのまま）
-VEO_REFERENCE_IMAGES = 3
-#: 素材参照生成で固定される尺（API 側が 8 秒しか作れない）
-VEO_REFERENCE_DURATION = "8"
-#: 生成解像度。``4k`` は generate API 自体が受け取る（生成後の追加取得
-#: （``POST /veo/get-4k-video``）とは別の経路）。ただし 8 秒生成のときだけで、
-#: しかも高価なので既定にはしない。
-VEO_RESOLUTIONS: tuple[str, ...] = ("720p", "1080p", "4k")
-
-#: プロンプトの書き方（Fast / Quality で同じ。モデルの違いは品質と値段だけ）
-VEO_PROMPT_HINT = (
-    "One shot, one scene, one camera move. Write 3-6 English sentences"
-    " (100-150 words) in this order: composition / shot size, subject, action,"
-    " scene, **one** camera motion, lens & focus, style & light."
-    " Veo generates the **sound with the picture**: name the ambience and the"
-    " sound effects, and put spoken lines in quotes with the speaker and the"
-    " delivery (`The woman says softly: \"...\"`) — 1-2 short lines fit in"
-    " 8 seconds. Add `(no subtitles)` when no burnt-in captions are wanted."
-    " Never write what you do *not* want inside the description; list it after"
-    " the description as `Negative: cartoon, blurry, distorted hands, text,"
-    " watermark`. With a start frame, do not re-describe what the picture"
-    " already shows — write how it moves, what happens next and how it sounds."
+#: turbo 版は素の i2v / r2v と**入力の形が完全に同じ**（受け取る論理入力も
+#: プロンプトの書き方も変わらない）ので、宣言は :func:`dataclasses.replace` で
+#: 差分だけを書く。テンプレート側でノード ID を素の連番に振り直してあるので、
+#: i2v turbo だけは ``inject`` / ``seeds`` も宣言し直す（r2v は元から連番なので
+#: そのまま使い回せる）。
+_MINIMAX_H3_TURBO_DESCRIPTION = (
+    "サンプリングは 4 ステップ固定で、素の版よりずっと速く上がる（4step 蒸留 "
+    "LoRA と Sage Attention / Sol-Attn / Spectrum を焼き込んだ高速版）。"
+    "入力の指定は素の版とまったく同じだが、専用の量子化ウェイトと "
+    "MiniMax H3 系のカスタムノード一式が入った環境でのみ動く。"
 )
 
-#: プロンプトの書き方（素材参照生成のバリアント）。参照画像が見た目を決めるので、
-#: 「素材が写しているもの」ではなく演出だけを書かせる。
-VEO_REFERENCE_PROMPT_HINT = (
-    "The 1-3 `reference_images` carry identity and look (face, wardrobe, prop),"
-    " so **do not describe what they already show** — spend the text on"
-    " direction. Write 3-6 English sentences (100-150 words): what happens, in"
-    " which scene and light, with **one** camera motion, lens & focus, style."
-    " Refer to the material in words the model can attach (`the woman from the"
-    " reference images`), never by file name."
-    " Veo generates the **sound with the picture**: name the ambience and the"
-    " sound effects, and put spoken lines in quotes with the speaker and the"
-    " delivery (`The woman says softly: \"...\"`) — 1-2 short lines fit in"
-    " 8 seconds. Add `(no subtitles)` when no burnt-in captions are wanted."
-    " Never write what you do *not* want inside the description; list it after"
-    " the description as `Negative: cartoon, blurry, distorted hands, text,"
-    " watermark`."
-)
-
-#: 画像入力の説明（カタログ・フォームの案内に使う共通文）
-_VEO_INPUTS = (
-    "画像は任意で、1 枚渡すと開始フレーム、`end_image` も一緒に渡すと"
-    "「最初と最後のフレーム」の補間（flf2v）になる。"
-)
-
-#: 縦横比・解像度は素材参照生成でも同じ（尺だけが 8 秒に固定される）
-VEO_ASPECT_SELECT = SelectSpec(
-    label="縦横比",
-    choices=VEO_ASPECT_RATIOS,
-    default="16:9",
-    hint="16:9 は横長、9:16 は縦長。",
-)
-VEO_RESOLUTION_SELECT = SelectSpec(
-    label="解像度",
-    choices=VEO_RESOLUTIONS,
-    default="720p",
-    hint="1080p・4k は尺 8 秒のときのみ。4k は高価なので仕上げのカットだけに使う。",
-)
-
-
-def _veo_spec(
-    spec_id: str,
-    label: str,
-    mode_label: str,
-    model: str,
-    credits: float,
-    description: str,
-) -> WorkflowSpec:
-    """Veo の 1 モデル分のマニフェスト（Fast / Quality は宣言がほぼ同じ）。
-
-    開始 / 最終フレームで作る通常の生成だけを宣言する。素材参照生成は API 側で
-    このモードと排他なので、同じ宣言に混ぜず :data:`VEO3_1_FAST_REF` として
-    別のワークフローにしてある。
-    """
-    return WorkflowSpec(
-        id=spec_id,
-        label=label,
-        mode_label=mode_label,
-        kind="video",
-        family="veo",
-        backend="kie",
-        description=description,
-        prompt_hint=VEO_PROMPT_HINT,
-        accepts_start_image=True,
-        image_label="開始フレーム（任意）",
-        kie=KieTask(
-            model=model,
-            api="veo",
-            fields={
-                "prompt": "prompt",
-                # 宣言順がそのまま imageUrls の並び（1 枚目 = 開始フレーム）
-                "image": "imageUrls",
-                "end_image": "imageUrls",
-                f"{KIE_SELECT_PREFIX}aspect_ratio": "aspect_ratio",
-                f"{KIE_SELECT_PREFIX}duration": "duration",
-                f"{KIE_SELECT_PREFIX}resolution": "resolution",
-            },
-            # 既定値がドキュメント内で食い違うので明示する（英語プロンプトを
-            # そのまま使わせたいので翻訳は有効のままでよい）
-            constants={"enableTranslation": True},
-            list_keys=("imageUrls",),
-            credits=credits,
-        ),
-        selects={
-            "aspect_ratio": VEO_ASPECT_SELECT,
-            "duration": SelectSpec(
-                label="尺（秒）",
-                choices=VEO_DURATIONS,
-                default="8",
-                hint="1080p は 8 秒のときだけ生成できる。",
-            ),
-            "resolution": VEO_RESOLUTION_SELECT,
-        },
-        notes=(
-            "kie.ai 経由 / 音声つき / SynthID 透かしが必ず入る /"
-            " 4k は生成時に選べる（8 秒のときのみ・高価） /"
-            " 生成後に履歴から +7 秒の延長と 1080P 版の取得ができる /"
-            " 素材参照生成は `veo3_1_fast_ref`（別ワークフロー）"
-        ),
-    )
-
-
-VEO3_1_FAST = _veo_spec(
-    "veo3_1_fast",
-    "Veo 3.1 Fast（音声つき・外部 API）",
-    "Fast（音声つき）",
-    "veo3_fast",
-    60.0,
-    "kie.ai 経由の Google Veo 3.1 Fast。音声（環境音・効果音・セリフ）まで"
-    "モデルが同時に生成する 4〜8 秒のクリップで、ふだんの試し撮り・量産用。"
-    f"{_VEO_INPUTS}素材で見た目を指定したいときは `veo3_1_fast_ref` を使う。"
-    "外部 API なので LoRA は使えない。",
-)
-
-VEO3_1_QUALITY = _veo_spec(
-    "veo3_1_quality",
-    "Veo 3.1 Quality（音声つき・外部 API）",
-    "Quality（音声つき）",
-    "veo3",
-    250.0,
-    "kie.ai 経由の Google Veo 3.1（Quality）。Fast と同じ使い方で品質が高く、"
-    "そのぶん高価（Fast の約 4 倍）。本番に載せるカットだけに使う。"
-    f"{_VEO_INPUTS}外部 API なので LoRA は使えない。",
-)
-
-#: Veo 3.1 Fast の**素材参照生成**（``REFERENCE_2_VIDEO``）。通常の生成とは API
-#: 側で排他なので、開始 / 最終フレームを**宣言そのものから外した**別ワークフロー
-#: にしてある。おかげで ``generationType`` は常に載る固定値、8 秒固定は選択肢が
-#: 1 つだけの ``duration`` として素直に書ける。
-VEO3_1_FAST_REF = WorkflowSpec(
-    id="veo3_1_fast_ref",
-    label="Veo 3.1 Fast 素材参照（音声つき・外部 API）",
-    mode_label="Fast 素材参照（音声つき）",
-    kind="video",
-    family="veo",
-    backend="kie",
-    description=(
-        "kie.ai 経由の Google Veo 3.1 Fast の**素材参照生成**。"
-        f"**参照画像**（`reference_images` 最大 {VEO_REFERENCE_IMAGES} 枚）で"
-        "人物・衣装・小道具の見た目を指定し、プロンプトには演出だけを書く。"
-        "**開始フレームは受け取らない**（API 側で通常の生成と排他のモード）ので "
-        f"`mode: \"i2v\"` 専用で、尺は {VEO_REFERENCE_DURATION} 秒固定。"
-        "外部 API なので LoRA は使えない。"
-    ),
-    prompt_hint=VEO_REFERENCE_PROMPT_HINT,
-    # 素材参照生成に開始フレームは渡せない（＝ full の 2 段目にもなれない）
-    accepts_start_image=False,
-    multi_inputs={"reference_images": VEO_REFERENCE_IMAGES},
-    kie=KieTask(
-        model="veo3_fast",
-        api="veo",
-        fields={
-            "prompt": "prompt",
-            # 参照画像も通常の生成と同じ配列（載せる中身の意味が違うだけ）
-            "reference_images": "imageUrls",
-            f"{KIE_SELECT_PREFIX}aspect_ratio": "aspect_ratio",
-            f"{KIE_SELECT_PREFIX}duration": "duration",
-            f"{KIE_SELECT_PREFIX}resolution": "resolution",
-        },
-        # 素材参照生成は枚数から判別できない（imageUrls は開始フレームと共通）
-        # ので、このワークフローでは常に generationType を明示して送る。
-        constants={
-            "enableTranslation": True,
-            "generationType": VEO_REFERENCE_TYPE,
-        },
-        list_keys=("imageUrls",),
-        credits=60.0,
-    ),
-    selects={
-        "aspect_ratio": VEO_ASPECT_SELECT,
-        "duration": SelectSpec(
-            label="尺（秒）",
-            choices=(VEO_REFERENCE_DURATION,),
-            default=VEO_REFERENCE_DURATION,
-            hint=f"素材参照生成は {VEO_REFERENCE_DURATION} 秒固定（API 側の制約）。",
-        ),
-        "resolution": VEO_RESOLUTION_SELECT,
+MINIMAX_H3_I2V_TURBO = replace(
+    MINIMAX_H3_I2V,
+    id="minimax_h3_i2v_turbo",
+    label="画像→動画・音声つき (MiniMax H3 i2v Turbo)",
+    mode_label="画像→動画・音声つき (i2v Turbo)",
+    relpath="video/minimax-h3/minimax_h3_i2v_turbo.json",
+    description=MINIMAX_H3_I2V.description + _MINIMAX_H3_TURBO_DESCRIPTION,
+    inject={
+        "prompt": T("136", "prompt", "MiniMaxH3ImageToVideo"),
+        "width": T("136", "width", "MiniMaxH3ImageToVideo"),
+        "height": T("136", "height", "MiniMaxH3ImageToVideo"),
+        "duration": T("132", "value", "PrimitiveFloat"),
+        "frames_expr": T("131", "", "ComfyMathExpression"),
+        "steps": T("124", "steps", "BasicScheduler"),
+        "image": T("114", "image", "LoadImage"),
+        "end_image": T("116", "image", "LoadImage"),
+        "save_prefix": T("92", "filename_prefix", "SaveVideo"),
     },
+    seeds=(T("129", "noise_seed", "RandomNoise"),),
+    selects={MINIMAX_H3_LOW_VRAM_NAME: _MINIMAX_H3_LOW_VRAM_SELECT},
     notes=(
-        "kie.ai 経由 / 音声つき / SynthID 透かしが必ず入る /"
-        f" 参照画像は {VEO_REFERENCE_IMAGES} 枚まで /"
-        f" 尺は {VEO_REFERENCE_DURATION} 秒固定・開始フレームは受け取らない /"
-        " 生成後に履歴から +7 秒の延長と 1080P 版の取得ができる /"
-        " 開始フレームから作るなら `veo3_1_fast`"
+        _MINIMAX_H3_NOTES
+        + _MINIMAX_H3_I2V_NOTES
+        + _MINIMAX_H3_TURBO_NOTES
+        + " /"
+        + _MINIMAX_H3_TURBO_MODELS.format(unet="fl2va")
     ),
 )
 
-
-# --------------------------------------------------------------------------
-# video: kie.ai（Kling 3.0、SPEC §5.2 / issue #18）
-# --------------------------------------------------------------------------
-#
-# Kling は Veo と違って **Market 系（統一 API）** なので、系統は既定の
-# ``market`` のまま（``POST /api/v1/jobs/createTask`` に ``{"model", "input"}``）。
-# t2v / i2v はモデルが分かれておらず、``image_urls`` を入れるかどうかだけで
-# 決まる（1 枚 = 開始フレーム、2 枚 = 開始 + 最終フレーム）。
-#
-# 注意すべき癖が 2 つある:
-#
-# - **``duration`` は文字列**（``"3"``〜``"15"``）。Veo の ``duration`` は整数
-#   なので、同じ「尺」でも型が逆になる。選択式フィールドの値は文字列で届くので
-#   ここでは何も変換しない（Market 系の ``create_body`` も素通し）
-# - **``sound`` は真偽値**。選択式の文字列を :attr:`KieTask.bool_keys` で
-#   ``bool`` に直してから送る
-#
-# ``negative_prompt`` / ``cfg`` / ``camera_control`` / ``seed`` は kie.ai 経由の
-# Kling には無いので宣言しない（すべてプロンプト本文で制御する）。
-#
-# 第 2 段で足した 2 つの構造化パラメータ:
-#
-# - **マルチショット**（:class:`MultiShotSpec`）。``multi_shots: true`` と
-#   ``multi_prompt: [{"prompt", "duration"}]`` の組で、1 タスクに最大 5 ショット。
-#   このとき**トップレベルの ``prompt`` は送らない**（:func:`app.kie.task_values`）。
-#   1 本の ``video_prompt`` で作る通常の生成とは書き方も送るキーも別物なので、
-#   **ワークフローを分けて**宣言する（:data:`KLING3_MULTISHOT`）。分けたことで
-#   「ショット割りのときだけ ``sound`` の既定が変わる」といった特別扱いが要らず、
-#   マルチショット側の ``sound`` を既定 true にしておけば済む
-# - **Elements**（:class:`ElementsSpec`）。``kling_elements`` は
-#   ``[{"name", "description", "element_input_urls"}]`` で、参照画像は
-#   :func:`app.jobs._kie_uploads` が 1 枚ずつ URL 化する。プロンプトからは
-#   ``@要素名`` で呼び、**1 参照が 37 文字**を消費する。こちらは開始フレームとも
-#   ショット割りとも併用できるので、両方のワークフローが宣言する
-#
-# Turbo 系（``kling/v3-turbo-text-to-video`` / ``-image-to-video``）は未対応。
-
-#: Kling の生成モード（解像度と値段が変わる）
-KLING_MODES: tuple[str, ...] = ("std", "pro", "4K")
-#: Kling の尺（秒）。**API には文字列で渡す**（``"3"``〜``"15"``）。
-KLING_DURATIONS: tuple[str, ...] = tuple(str(second) for second in range(3, 16))
-#: Kling の縦横比（画像を渡したときは画像に従うので無視される）
-KLING_ASPECT_RATIOS: tuple[str, ...] = ("16:9", "9:16", "1:1")
-#: ネイティブ音声の ON / OFF（``sound`` は真偽値なので :attr:`KieTask.bool_keys`）
-KLING_SOUND: tuple[str, ...] = ("false", "true")
-
-#: プロンプトの長さの上限（kie.ai の Kling 3.0）。マルチショットの 1 ショットも
-#: 同じ上限（``multi_prompt[].prompt`` も 500 文字まで）。
-KLING_MAX_PROMPT_CHARS = 500
-
-#: マルチショット（``multi_shots`` / ``multi_prompt``）の宣言
-KLING_MULTI_SHOT = MultiShotSpec(max_shots=5, min_duration=1, max_duration=12)
-
-#: Elements（``kling_elements``）の宣言
-KLING_ELEMENTS = ElementsSpec(
-    max_elements=3, min_images=2, max_images=4, reference_chars=37
-)
-
-#: 1 ショットの書き方（通常の生成とマルチショットの 1 ショット目で共通）
-_KLING_SHOT_HINT = (
-    "Order: **camera move first**, then scene / subject, action, mood &"
-    " lighting, style. Start with the camera (`Slow dolly push forward, ...`)"
-    " and use exactly one move. Fix the subject's identity (age, hair,"
-    " wardrobe) in the first clause and refer back to it with the *same* words"
-    " — pronouns and synonyms make the character drift. One scene, one action."
-)
-
-#: Elements の書き方（両方のワークフローで共通）
-_KLING_ELEMENTS_HINT = (
-    " **Elements** (`kling_elements`, up to 3, each with 2-4 reference images)"
-    " are named casts you call with `@name` in the text — one `@name` costs"
-    " **37 characters** of the 500, and a name you did not declare is rejected."
-)
-
-KLING_PROMPT_HINT = (
-    "**Hard limit: 500 characters** — the API rejects anything longer, so write"
-    " one dense paragraph, not an essay. " + _KLING_SHOT_HINT +
-    " With a start frame, treat the picture as the anchor: write only how it"
-    " starts moving and what changes, never re-describe the composition."
-    " With `sound` on, label the speaker before the line and describe the voice"
-    " (`Woman (raspy, low voice): \"...\"`); Japanese dialogue is lip-synced."
-    " There is no negative prompt parameter: write what you do want, and put"
-    " unwanted elements as `no text overlays, no camera shake` inside the text."
-    + _KLING_ELEMENTS_HINT
-)
-
-#: マルチショット版のプロンプトの書き方。本文は 1 ショットずつ ``multi_shots`` に
-#: 書き、``video_prompt`` は空のまま（API にも送られない）。
-KLING_MULTISHOT_PROMPT_HINT = (
-    "This workflow takes **shots, not one take**: write every paragraph into"
-    " `multi_shots` (up to 5 shots of 1-12 seconds) and leave `video_prompt`"
-    " empty — a job without shots is rejected."
-    " **Each shot is limited to 500 characters on its own.** " + _KLING_SHOT_HINT
-    + " Repeat the identity wording **verbatim in every shot** (same age, hair,"
-    " wardrobe) and keep the location and the light consistent: that wording is"
-    " the only thing holding the character together across the cuts."
-    " Shots are cuts, not one long move — never carry a camera move across two"
-    " shots, give each one its own."
-    " `sound` is on by default here, so name the ambience per shot; label the"
-    " speaker before a line and describe the voice (`Woman (raspy, low voice):"
-    " \"...\"`). There is no negative prompt parameter: write what you do want,"
-    " and put unwanted elements as `no text overlays` inside the text."
-    + _KLING_ELEMENTS_HINT
-)
-
-#: 開始フレーム・尺・モード・縦横比は 2 本で同じ（違うのは ``sound`` の既定だけ）
-KLING_MODE_SELECT = SelectSpec(
-    label="モード",
-    choices=KLING_MODES,
-    default="pro",
-    hint="std は 720p、pro は 1080p、4K は 4K（pro の約 4 倍の値段）。",
-)
-KLING_DURATION_SELECT = SelectSpec(
-    label="尺（秒）",
-    choices=KLING_DURATIONS,
-    default="5",
-    hint="3〜15 秒。長いほど比例して高い。",
-)
-KLING_ASPECT_SELECT = SelectSpec(
-    label="縦横比",
-    choices=KLING_ASPECT_RATIOS,
-    default="16:9",
-    hint="開始フレーム画像を渡したときは画像の縦横比が優先される。",
-)
-
-#: 2 本で共通の入力（``prompt`` / 開始 + 最終フレーム / Elements / 選択式）
-_KLING_FIELDS: dict[str, str] = {
-    "prompt": "prompt",
-    # 宣言順がそのまま image_urls の並び（1 枚目 = 開始フレーム）
-    "image": "image_urls",
-    "end_image": "image_urls",
-    # Elements（参照画像は _kie_uploads が element_input_urls に直す）
-    "kling_elements": "kling_elements",
-    f"{KIE_SELECT_PREFIX}mode": "mode",
-    f"{KIE_SELECT_PREFIX}duration": "duration",
-    f"{KIE_SELECT_PREFIX}aspect_ratio": "aspect_ratio",
-    f"{KIE_SELECT_PREFIX}sound": "sound",
-}
-
-KLING3_VIDEO = WorkflowSpec(
-    id="kling3_video",
-    label="Kling 3.0（音声つき・外部 API）",
-    mode_label="標準（音声つき）",
-    kind="video",
-    family="kling",
-    backend="kie",
-    description=(
-        "kie.ai 経由の Kling 3.0（t2v / i2v 統合）。人物の動きと実写寄りの絵に強く、"
-        "3〜15 秒と尺が長い。`sound` を on にすると環境音・効果音・セリフ"
-        "（日本語のリップシンクつき）まで同時に生成する。画像は任意で、1 枚渡すと"
-        "開始フレーム、`end_image` も渡すと開始 + 最終フレームの補間になる。"
-        "**プロンプトは 500 文字まで**。`kling_elements` で `@要素名` 参照の"
-        "キャラクター固定ができる。ショット割りで作るなら `kling3_multishot`。"
-        "外部 API なので LoRA は使えない。"
-    ),
-    prompt_hint=KLING_PROMPT_HINT,
-    max_prompt_chars=KLING_MAX_PROMPT_CHARS,
-    accepts_start_image=True,
-    image_label="開始フレーム（任意）",
-    elements=KLING_ELEMENTS,
-    kie=KieTask(
-        model="kling-3.0/video",
-        # Market 系（統一 API）なので系統は既定のまま
-        fields=dict(_KLING_FIELDS),
-        list_keys=("image_urls",),
-        bool_keys=("sound",),
-        # pro / 5 秒 / 音声なしの概算（$0.09/秒 = 90 credits）
-        credits=90.0,
-    ),
-    selects={
-        "mode": KLING_MODE_SELECT,
-        "duration": KLING_DURATION_SELECT,
-        "aspect_ratio": KLING_ASPECT_SELECT,
-        "sound": SelectSpec(
-            label="音声を生成",
-            choices=KLING_SOUND,
-            default="false",
-            hint="true で環境音・効果音・セリフを同時生成（そのぶん高い）。",
-        ),
-    },
+MINIMAX_H3_R2V_TURBO = replace(
+    MINIMAX_H3_R2V,
+    id="minimax_h3_r2v_turbo",
+    label="参照素材→動画・音声つき (MiniMax H3 r2v Turbo)",
+    mode_label="参照素材→動画・音声つき (r2v Turbo)",
+    relpath="video/minimax-h3/minimax_h3_r2v_turbo.json",
+    description=MINIMAX_H3_R2V.description + _MINIMAX_H3_TURBO_DESCRIPTION,
+    selects={MINIMAX_H3_LOW_VRAM_NAME: _MINIMAX_H3_LOW_VRAM_SELECT},
     notes=(
-        "kie.ai 経由 / プロンプトは 500 文字まで / ネガティブプロンプト・seed・"
-        "カメラ制御パラメータは無い（本文で指定） / Elements は最大 3 要素"
-        "（各 2〜4 枚、`@要素名` 1 参照 = 37 文字） / ショット割りは"
-        " `kling3_multishot`（別ワークフロー）"
-    ),
-)
-
-#: Kling 3.0 の**ショット割り**専用ワークフロー。``multi_shots`` があるときは
-#: トップレベルの ``prompt`` を送らない（API 仕様）ので、1 本の ``video_prompt``
-#: で作る :data:`KLING3_VIDEO` とは入力の形そのものが違う。同居させると
-#: 「どちらかにしか意味の無い欄」が両方出てしまうため、宣言ごと分けてある。
-KLING3_MULTISHOT = WorkflowSpec(
-    id="kling3_multishot",
-    label="Kling 3.0 マルチショット（音声つき・外部 API）",
-    mode_label="マルチショット（音声つき）",
-    kind="video",
-    family="kling",
-    backend="kie",
-    description=(
-        "kie.ai 経由の Kling 3.0 を**ショット割り**で使うワークフロー。"
-        "`multi_shots` に最大 5 ショット（各 1〜12 秒）を並べると 1 本の動画に"
-        "つながる。本文はショット側に書くので **`video_prompt` は空のまま**"
-        "（指定すると 422）、**1 ショットが 500 文字まで**。音声は既定 ON で、"
-        "画像は任意（1 枚で開始フレーム、`end_image` も渡すと最終フレーム）。"
-        "`kling_elements` の `@要素名` はショットをまたいで同じ人物を保つのに効く。"
-        "1 カットで作るなら `kling3_video`。外部 API なので LoRA は使えない。"
-    ),
-    prompt_hint=KLING_MULTISHOT_PROMPT_HINT,
-    max_prompt_chars=KLING_MAX_PROMPT_CHARS,
-    accepts_start_image=True,
-    image_label="開始フレーム（任意）",
-    # 本文はショット側にあるので、トップレベルの `video_prompt` は必須ではない
-    # （書かれていたら `models.multi_shot_problem` が 422 で断る）
-    prompt_required=False,
-    multi_shot=KLING_MULTI_SHOT,
-    elements=KLING_ELEMENTS,
-    kie=KieTask(
-        model="kling-3.0/video",
-        fields={
-            **_KLING_FIELDS,
-            # ショット割り（prompt は task_values が空にするので落ちる）
-            "multi_shots": "multi_shots",
-            "multi_prompt": "multi_prompt",
-        },
-        list_keys=("image_urls",),
-        bool_keys=("sound", "multi_shots"),
-        # pro / 5 秒 / 音声ありの概算（ショット割りは音つきが前提）
-        credits=90.0,
-    ),
-    selects={
-        "mode": KLING_MODE_SELECT,
-        "duration": KLING_DURATION_SELECT,
-        "aspect_ratio": KLING_ASPECT_SELECT,
-        "sound": SelectSpec(
-            label="音声を生成",
-            choices=KLING_SOUND,
-            # ショット割りは音つき前提の機能なので、こちらは既定 ON
-            default="true",
-            hint="ショット割りは音つきが前提なので既定 ON。"
-            "false にすると無音の映像だけを作る。",
-        ),
-    },
-    notes=(
-        "kie.ai 経由 / ショット割り専用（`multi_shots` が必須・`video_prompt` は"
-        "書かない） / 最大 5 ショット・各 1〜12 秒・1 ショット 500 文字まで /"
-        " 音声は既定 ON / Elements は最大 3 要素（各 2〜4 枚、`@要素名` 1 参照 ="
-        " 37 文字） / 1 カットで作るなら `kling3_video`"
-    ),
-)
-
-
-# --------------------------------------------------------------------------
-# video: kie.ai（ByteDance Seedance 2、SPEC §5.2 / issue #19）
-# --------------------------------------------------------------------------
-#
-# Seedance も Kling と同じ **Market 系（統一 API）** なので系統は既定の ``market``
-# のまま。バリアント（2.0 / 2.0 Fast / 2.0 Mini）の違いは**モデル名と使える解像度
-# だけ**で、宣言の形はまったく同じなので :func:`_seedance_spec` で 1 つにまとめて
-# ある。2.5 が kie.ai に来たら（今は Coming Soon）エントリを 1 つ足すだけでよい。
-#
-# Kling との違いで気をつける点:
-#
-# - **開始 / 最終フレームはキーが別**（``first_frame_url`` / ``last_frame_url``）。
-#   Kling の ``image_urls`` のような 1 つの配列ではないので :attr:`KieTask.list_keys`
-#   は使わず、論理入力ごとに別のキーを宣言する
-# - **``duration`` は整数**（4〜15）。Kling は文字列なので型が逆で、選択式の値は
-#   文字列で届くため :attr:`KieTask.int_keys` で ``int`` に直してから送る
-# - **``generate_audio`` は真偽値**で、しかも**既定が true**（Kling の ``sound`` は
-#   既定 false）
-#
-# 2 系に seed / camera_fixed は無い（カメラ固定も再現性もプロンプト側の仕事）。
-#
-# **マルチモーダル参照**（``reference_image_urls`` / ``reference_video_urls`` /
-# ``reference_audio_urls``）は :attr:`WorkflowSpec.multi_inputs` で宣言する
-# 「複数ファイル -> URL の配列」の入力。API 側では
-# **「先頭フレーム i2v」と「参照モード」が相互排他**なので、1 つのマニフェストに
-# 両方を宣言せず、**バリアントごとに 2 本**（フレーム版 / 参照版 ``*_ref``）に
-# 分けてある（:func:`_seedance_spec` の ``references``）。参照版は
-# ``accepts_start_image=False`` で開始 / 最終フレームの受け取り口そのものを
-# 持たないので、``full``（画像ステージが開始フレームを作る）でも選べない。
-
-#: Seedance 2.0 の解像度（Mini は 720p まで）
-SEEDANCE_RESOLUTIONS: tuple[str, ...] = ("480p", "720p", "1080p", "4k")
-#: Seedance 2.0 Fast の解像度（Mini と同じく 720p まで）
-SEEDANCE_FAST_RESOLUTIONS: tuple[str, ...] = ("480p", "720p")
-#: Seedance 2.0 Mini の解像度
-SEEDANCE_MINI_RESOLUTIONS: tuple[str, ...] = ("480p", "720p")
-#: Seedance の尺（秒）。**API には整数で渡す**（:attr:`KieTask.int_keys`）。
-SEEDANCE_DURATIONS: tuple[str, ...] = tuple(str(second) for second in range(4, 16))
-#: Seedance の縦横比（``adaptive`` は入力画像に追従する）
-SEEDANCE_ASPECT_RATIOS: tuple[str, ...] = (
-    "16:9", "9:16", "1:1", "4:3", "3:4", "21:9", "adaptive",
-)
-#: ネイティブ音声の ON / OFF（**既定は ON**）
-SEEDANCE_AUDIO: tuple[str, ...] = ("false", "true")
-#: kie.ai 側の NSFW フィルタの ON / OFF（**既定は OFF**）
-SEEDANCE_NSFW_CHECKER: tuple[str, ...] = ("false", "true")
-
-#: マルチモーダル参照で受け取れる件数（論理名 -> 上限）。API 側の上限そのまま。
-SEEDANCE_MULTI_INPUTS: dict[str, int] = {
-    "reference_images": 9,
-    "reference_videos": 3,
-    "reference_audios": 3,
-}
-
-#: プロンプトの長さの上限（kie.ai の Seedance 2 系）
-SEEDANCE_MAX_PROMPT_CHARS = 20000
-
-#: 演出の書き方（フレーム版・参照版で共通の骨格）
-_SEEDANCE_DIRECTION_HINT = (
-    "Write like a director: one dense English paragraph of 60-100 words in the"
-    " order **subject (concrete looks) → action (verb + intensity) → setting"
-    " (light, atmosphere) → camera (exactly one move) → style → what to avoid**."
-    " The **lighting sentence matters most** (golden hour, rim light, neon"
-    " spill, backlit silhouette) — piles of vague adjectives (amazing, epic,"
-    ' bare "cinematic") make the result worse.'
-    " Pick **one** camera move out of push-in / pull-out / pan / tracking /"
-    " orbit / aerial / handheld / fixed and give it a rhythm word (slow,"
-    " smooth, gentle); keep **the subject's motion and the camera's motion in"
-    " separate sentences**. For characters, end with a short negative clause"
-    ' such as "avoid jitter and bent limbs".'
-)
-
-#: プロンプトの書き方（フレーム版。バリアント間で同じ。違うのは品質と値段と
-#: 最大解像度だけ）
-SEEDANCE_PROMPT_HINT = (
-    _SEEDANCE_DIRECTION_HINT
-    + " With a start frame, do not re-describe what the picture already shows —"
-    " write how it moves. With `end_image` as well, describe the *transition*"
-    " that lands exactly on that last frame."
-)
-
-#: プロンプトの書き方（参照版）。素材が見た目を決めるので、演出だけを書かせる。
-SEEDANCE_REFERENCE_PROMPT_HINT = (
-    "The material carries the look: `reference_images` pin **identity and"
-    " consistency** (the same face, wardrobe, prop across shots), a"
-    " `reference_videos` clip is the **motion to imitate** (rhythm, camera"
-    " behaviour), `reference_audios` set the **mood / musical feel**."
-    " **Do not describe what the references already show** — spend the text on"
-    " direction, and refer to the material in words the model can attach"
-    " (`the woman from the reference images`), never by file name. "
-    + _SEEDANCE_DIRECTION_HINT
-)
-
-#: 画像入力の説明（フレーム版のカタログ・フォームの案内に使う共通文）
-_SEEDANCE_INPUTS = (
-    "画像は任意で、1 枚渡すと開始フレーム（`first_frame_url`）、`end_image` も"
-    "渡すと最終フレーム（`last_frame_url`）になる。"
-    "素材で見た目・動き・ムードを指定したいときは参照版（`*_ref`）を使う。"
-)
-
-#: 参照素材の説明（参照版のカタログ・フォームの案内に使う共通文）
-_SEEDANCE_REFERENCE_INPUTS = (
-    "**マルチモーダル参照**（`reference_images` 最大 9 枚 / `reference_videos`"
-    " 最大 3 本 / `reference_audios` 最大 3 本）で一貫性・動きのお手本・ムードを"
-    "素材から指定する。**開始フレームは受け取らない**（API 側で先頭フレーム "
-    "i2v と排他のモード）ので `mode: \"i2v\"` 専用。開始フレームから作るなら"
-    "フレーム版を使う。"
-)
-
-
-def _seedance_spec(
-    spec_id: str,
-    label: str,
-    mode_label: str,
-    model: str,
-    resolutions: tuple[str, ...],
-    credits: float,
-    description: str,
-    *,
-    references: bool = False,
-) -> WorkflowSpec:
-    """Seedance 2 系の 1 バリアント分のマニフェスト。
-
-    バリアント間で違うのは **モデル名と解像度の選択肢と値段だけ**なので、
-    2.5 や Fast を足すときもここを呼ぶエントリを 1 つ書けば済む。
-
-    ``references`` を立てると**参照版**（``*_ref``）になる: 開始 / 最終フレームの
-    受け取り口を持たず、代わりにマルチモーダル参照を宣言する。API 側で 2 つの
-    モードが排他なので、宣言のほうを分けて「使える入力だけが並ぶ」ようにしてある。
-    """
-    return WorkflowSpec(
-        id=spec_id,
-        label=label,
-        mode_label=mode_label,
-        kind="video",
-        family="seedance",
-        backend="kie",
-        description=description,
-        prompt_hint=(
-            SEEDANCE_REFERENCE_PROMPT_HINT if references else SEEDANCE_PROMPT_HINT
-        ),
-        max_prompt_chars=SEEDANCE_MAX_PROMPT_CHARS,
-        # 参照版は開始フレームを受け取らない（＝ full の 2 段目にもなれない）
-        accepts_start_image=not references,
-        image_label="開始フレーム（任意）",
-        multi_inputs=dict(SEEDANCE_MULTI_INPUTS) if references else {},
-        kie=KieTask(
-            model=model,
-            # Market 系（統一 API）なので系統は既定のまま
-            fields={
-                "prompt": "prompt",
-                **(
-                    {
-                        # マルチモーダル参照: 複数ファイル -> URL の配列
-                        "reference_images": "reference_image_urls",
-                        "reference_videos": "reference_video_urls",
-                        "reference_audios": "reference_audio_urls",
-                    }
-                    if references
-                    else {
-                        # Kling と違い開始 / 最終フレームはキーが別（配列ではない）
-                        "image": "first_frame_url",
-                        "end_image": "last_frame_url",
-                    }
-                ),
-                f"{KIE_SELECT_PREFIX}resolution": "resolution",
-                f"{KIE_SELECT_PREFIX}duration": "duration",
-                f"{KIE_SELECT_PREFIX}aspect_ratio": "aspect_ratio",
-                f"{KIE_SELECT_PREFIX}generate_audio": "generate_audio",
-                f"{KIE_SELECT_PREFIX}nsfw_checker": "nsfw_checker",
-            },
-            bool_keys=("generate_audio", "nsfw_checker"),
-            int_keys=("duration",),
-            credits=credits,
-        ),
-        selects={
-            "resolution": SelectSpec(
-                label="解像度",
-                choices=resolutions,
-                default="720p",
-                hint="高いほど比例して高価（秒単価で課金される）。",
-            ),
-            "duration": SelectSpec(
-                label="尺（秒）",
-                choices=SEEDANCE_DURATIONS,
-                default="5",
-                hint="4〜15 秒。長いほど比例して高い。",
-            ),
-            "aspect_ratio": SelectSpec(
-                label="縦横比",
-                choices=SEEDANCE_ASPECT_RATIOS,
-                default="16:9",
-                hint=(
-                    "adaptive は参照画像の縦横比に合わせる。"
-                    if references
-                    else "adaptive は開始フレーム画像の縦横比に合わせる。"
-                ),
-            ),
-            "generate_audio": SelectSpec(
-                label="音声を生成",
-                choices=SEEDANCE_AUDIO,
-                default="true",
-                hint="既定で ON。false にすると無音の映像だけを作る。",
-            ),
-            "nsfw_checker": SelectSpec(
-                label="NSFW チェック",
-                choices=SEEDANCE_NSFW_CHECKER,
-                default="false",
-                hint="false で kie.ai 側のフィルタ無効（既定）。true にすると"
-                "フィルタが有効になり、際どい生成が弾かれる。",
-            ),
-        },
-        notes=(
-            "kie.ai 経由 / ネイティブ音声つき（既定 ON） / seed・カメラ固定の"
-            "パラメータは無い（本文で指定） / 成果物 URL は約 24 時間で失効"
-            + (
-                " / マルチモーダル参照（参照画像 9 枚・参照動画 3 本・"
-                "参照音声 3 本）専用で開始フレームは受け取らない"
-                if references
-                else " / 素材参照で作るなら `*_ref`（別ワークフロー）"
-            )
-        ),
-    )
-
-
-SEEDANCE2 = _seedance_spec(
-    "seedance2",
-    "Seedance 2.0（音声つき・外部 API）",
-    "標準（音声つき）",
-    "bytedance/seedance-2",
-    SEEDANCE_RESOLUTIONS,
-    # 720p / 5 秒の概算（$0.06/秒 = 60 credits）
-    60.0,
-    "kie.ai 経由の ByteDance Seedance 2.0。映像と音声を同時に生成する 4〜15 秒の"
-    "クリップで、**4K まで**出せる 2 系の本命。720p で試作して 1080p / 4K で"
-    f"仕上げる使い方を想定している。{_SEEDANCE_INPUTS}"
-    "外部 API なので LoRA は使えない。",
-)
-
-SEEDANCE2_FAST = _seedance_spec(
-    "seedance2_fast",
-    "Seedance 2.0 Fast（音声つき・外部 API）",
-    "Fast（音声つき）",
-    "bytedance/seedance-2-fast",
-    SEEDANCE_FAST_RESOLUTIONS,
-    # 720p / 5 秒の概算（$0.05/秒 = 50 credits）
-    50.0,
-    "kie.ai 経由の ByteDance Seedance 2.0 Fast。2.0 と同じ使い方で待ち時間が短く、"
-    "480p / 720p まで。数を出して当たりを探す段階向けで、決まったカットは"
-    f"2.0 で作り直す。{_SEEDANCE_INPUTS}外部 API なので LoRA は使えない。",
-)
-
-SEEDANCE2_MINI = _seedance_spec(
-    "seedance2_mini",
-    "Seedance 2.0 Mini（音声つき・外部 API）",
-    "Mini（音声つき）",
-    "bytedance/seedance-2-mini",
-    SEEDANCE_MINI_RESOLUTIONS,
-    # 720p / 5 秒の概算（$0.04/秒 = 40 credits）
-    40.0,
-    "kie.ai 経由の ByteDance Seedance 2.0 Mini。2.0 と同じ使い方で最安・"
-    "720p まで。試作と大量出し用で、決まったカットを 2.0 で作り直す。"
-    f"{_SEEDANCE_INPUTS}外部 API なので LoRA は使えない。",
-)
-
-SEEDANCE2_REF = _seedance_spec(
-    "seedance2_ref",
-    "Seedance 2.0（素材参照・音声つき・外部 API）",
-    "素材参照（音声つき）",
-    "bytedance/seedance-2",
-    SEEDANCE_RESOLUTIONS,
-    60.0,
-    "kie.ai 経由の ByteDance Seedance 2.0 の**素材参照モード**。"
-    f"{_SEEDANCE_REFERENCE_INPUTS}**4K まで**出せる 2 系の本命で、"
-    "外部 API なので LoRA は使えない。",
-    references=True,
-)
-
-SEEDANCE2_FAST_REF = _seedance_spec(
-    "seedance2_fast_ref",
-    "Seedance 2.0 Fast（素材参照・音声つき・外部 API）",
-    "Fast 素材参照（音声つき）",
-    "bytedance/seedance-2-fast",
-    SEEDANCE_FAST_RESOLUTIONS,
-    50.0,
-    "kie.ai 経由の ByteDance Seedance 2.0 Fast の**素材参照モード**。"
-    f"{_SEEDANCE_REFERENCE_INPUTS}待ち時間が短く 480p / 720p まで。"
-    "外部 API なので LoRA は使えない。",
-    references=True,
-)
-
-SEEDANCE2_MINI_REF = _seedance_spec(
-    "seedance2_mini_ref",
-    "Seedance 2.0 Mini（素材参照・音声つき・外部 API）",
-    "Mini 素材参照（音声つき）",
-    "bytedance/seedance-2-mini",
-    SEEDANCE_MINI_RESOLUTIONS,
-    40.0,
-    "kie.ai 経由の ByteDance Seedance 2.0 Mini の**素材参照モード**。"
-    f"{_SEEDANCE_REFERENCE_INPUTS}最安・720p までで、大量出し用。"
-    "外部 API なので LoRA は使えない。",
-    references=True,
-)
-
-
-# --------------------------------------------------------------------------
-# video: Grok Build CLI（サブスク枠、SPEC §5.3 / issue #22）
-# --------------------------------------------------------------------------
-#
-# 画像版（:data:`GROK_IMAGINE`）と同じ CLI ラッパーを ``media="video"`` で使う
-# 動画ワークフロー。渡せるのは自然文の指示だけなので、尺・解像度・縦横比はすべて
-# **指示文に織り込む希望**であって、外部 API の ``input`` のような保証は無い。
-#
-# 画像版との違いは 3 つ:
-#
-# - **開始フレームを取れる**（i2v）。渡された画像は grok のメディア作業ディレクトリ
-#   へコピーされ、指示文がファイル名で参照する（:func:`app.grok_media.stage_input`）
-# - **音声も同時に生成する**（環境音・効果音・セリフ）。ia2v のような音声入力は
-#   無いので、鳴らしたい音はプロンプト本文に書く
-# - **尺・解像度・縦横比が選択式フィールド**（§3.1）。CLI が受け取るのは文字列
-#   なので型変換（kie の ``int_keys`` / ``bool_keys``）にあたるものは要らない
-#
-# 上限は **10 秒 / 720p** から始める: モデル（video-1.5）の API は 15 秒 / 1080p
-# まで受けるが、CLI 経由は「up to 10 seconds at 720p」という報道しか無く、一次情報
-# が無い。実機で 15 秒が通ることを確かめたら選択肢を広げる。
-# 枠は Chat / Imagine / Build 横断の共有プールで、動画の目安は ~10 本/日
-# （SuperGrok、時期・地域で変動）。
-
-#: Grok Imagine 動画の尺（秒）。CLI 経由の上限は未確定なので 10 秒から始める。
-GROK_VIDEO_DURATIONS: tuple[str, ...] = tuple(str(second) for second in range(1, 11))
-#: Grok Imagine 動画の解像度（CLI 経由は 720p まで、という報道に合わせる）
-GROK_VIDEO_RESOLUTIONS: tuple[str, ...] = ("480p", "720p")
-#: Grok Imagine 動画の縦横比（開始フレームを渡したときは画像の比が優先される）
-GROK_VIDEO_ASPECT_RATIOS: tuple[str, ...] = ("16:9", "9:16", "1:1")
-
-GROK_IMAGINE_VIDEO_PROMPT_HINT = (
-    "One short English paragraph (2-4 sentences) covering subject → motion →"
-    " camera → audio. **With a start frame, describe only what CHANGES** — the"
-    " picture already carries composition, lighting and style, so re-describing"
-    " it fights the image. The model renders sequentially, so the action you"
-    " write first is the action the clip opens with; **one clip, one action**."
-    " Name the sounds you want (`footsteps on gravel`, `muffled through"
-    " glass`), and put spoken lines in quotes with the voice quality"
-    " (`in a low, raspy voice: \"...\"`). Use concrete camera words"
-    " (`locked static shot`, `slow push-in`, `tracking shot alongside`) —"
-    " abstract ones (`cinematic`, `epic`) do nothing, and saying nothing about"
-    " the camera gives a still one, which is the safest default. Intensity"
-    " comes from strong verbs with adverbs (`crashing down with tremendous"
-    " force`), never from adjectives piled on the subject."
-)
-
-GROK_IMAGINE_VIDEO = WorkflowSpec(
-    id="grok_imagine_video",
-    label="Grok Imagine 動画（サブスク CLI）",
-    mode_label="動画生成（音声つき）",
-    kind="video",
-    family="grok-imagine",
-    backend="grok_cli",
-    description=(
-        "Video through the official Grok Build CLI, on the SuperGrok / X"
-        " Premium+ **subscription** quota (no metered API). One take of 1-10"
-        " seconds with **native audio** (ambience, effects and spoken lines)"
-        " generated together with the picture — there is no audio input, so"
-        " write the sound into `video_prompt`. The start frame (`source_image`)"
-        " is optional: with one it works as image-to-video (the picture is"
-        " copied next to the CLI and referenced by name), without one as"
-        " text-to-video, so it can be used for `mode: \"i2v\"` and as the second"
-        " stage of `mode: \"full\"`. Duration, resolution and aspect ratio are"
-        " job fields (`selects`) that are passed as *wishes* inside the"
-        " instruction, so they are not guaranteed exactly. The model refuses"
-        " real people, celebrities and trademarks, and the daily quota is"
-        " shared with Grok chat. LoRAs cannot be used."
-    ),
-    prompt_hint=GROK_IMAGINE_VIDEO_PROMPT_HINT,
-    accepts_start_image=True,
-    image_label="開始フレーム（任意）",
-    grok=GrokCliTask(
-        values=(
-            "prompt",
-            "image",
-            f"{KIE_SELECT_PREFIX}duration",
-            f"{KIE_SELECT_PREFIX}resolution",
-            f"{KIE_SELECT_PREFIX}aspect_ratio",
-        ),
-        media="video",
-    ),
-    selects={
-        "duration": SelectSpec(
-            label="尺（秒）",
-            choices=GROK_VIDEO_DURATIONS,
-            default="6",
-            hint="1〜10 秒。指示文に書く希望なので、実際の尺はぶれることがある。",
-        ),
-        "resolution": SelectSpec(
-            label="解像度",
-            choices=GROK_VIDEO_RESOLUTIONS,
-            default="720p",
-            hint="CLI 経由は 720p までという報道に合わせている（希望として渡す）。",
-        ),
-        "aspect_ratio": SelectSpec(
-            label="縦横比",
-            choices=GROK_VIDEO_ASPECT_RATIOS,
-            default="16:9",
-            hint="開始フレーム画像を渡したときは画像の縦横比が優先される。",
-        ),
-    },
-    notes=(
-        "Grok Build CLI（サブスク枠）/ 音声（環境音・効果音・セリフ）はモデルが"
-        "映像と同時に生成する（音声入力は無い） / 尺・解像度・縦横比は"
-        "プロンプト経由の希望 / LoRA 不可 / 実在人物・著名人・商標は"
-        "モデレーションで弾かれる / 枠は Chat と共有（動画の目安 10 本/日）/"
-        " 尺は最大 10 秒・720p"
+        _MINIMAX_H3_NOTES
+        + _MINIMAX_H3_R2V_NOTES
+        + _MINIMAX_H3_TURBO_NOTES
+        + " /"
+        + _MINIMAX_H3_TURBO_MODELS.format(unet="ref2va")
     ),
 )
 
@@ -2749,6 +1491,7 @@ ACE_STEP_1_5 = WorkflowSpec(
         "language": T("94", "language", "TextEncodeAceStepAudio1.5"),
         # one PrimitiveInt feeds both KSampler.seed and 94.seed
         "seed": T("109", "value", "PrimitiveInt"),
+        "steps": T("3", "steps", "KSampler"),
         "save_prefix": T("107", "filename_prefix", "SaveAudioMP3"),
     },
     notes="acestep_v1.5_xl_sft / 出力 MP3・歌詞ありでボーカル、なしでインスト",
@@ -2788,6 +1531,7 @@ STABLE_AUDIO_3 = WorkflowSpec(
         "category_index": T("52:43", "index", "CustomCombo"),
         "reprompt": T("52:35", "value", "PrimitiveBoolean"),
         "seed": T("52:3", "seed", "KSampler"),
+        "steps": T("52:3", "steps", "KSampler"),
         "save_prefix": T("19", "filename_prefix", "SaveAudioMP3"),
     },
     # `index: 0` means "use the `choice` widget"; pinning it keeps the category
@@ -2827,182 +1571,12 @@ LANGUAGES: tuple[str, ...] = (
 BPM_RANGE: tuple[int, int] = (10, 300)
 
 
-# --------------------------------------------------------------------------
-# audio: kie.ai（Suno V5 系、SPEC §5.2 / issue #20）
-# --------------------------------------------------------------------------
-#
-# ACE-Step / Stable Audio と同じ**独立した音声ジョブ**（LoRA なし・画像や動画と
-# 連結しない）で、走らせる先が自前の ComfyUI ではなく kie.ai というだけ。ただし
-# Suno は Market 系ではなく**旧専用系**（:class:`app.kie.SunoTaskApi`）なので、
-# マニフェスト側で気をつける点が 3 つある:
-#
-# - **``model`` はモデル名ではなくバージョン**（`V5` / `V5_5` / `V4_5PLUS`）。
-#   選択式フィールドにしてあり、選んだ値が :attr:`KieTask.model` の既定を上書き
-#   する（平置きボディなので ``input`` の ``model`` がそのまま勝つ）
-# - **`customMode` は常に true**（スタイルと歌詞を自分で書くのがこのアプリの
-#   使い方）。true では `style` / `title` が必須なので、`title` は
-#   :meth:`app.kie.SunoTaskApi._title` が歌詞かスタイルの頭から作る
-# - **`instrumental` は歌詞の有無から決まる**ので宣言しない（ACE-Step と同じ
-#   「歌詞を空にすればインスト」の操作感になる）
-#
-# ACE-Step にあって Suno に無いつまみ（`bpm` / `keyscale` / `language`）は
-# **宣言しない**: フォームはそのぶんの入力を出さず、エージェントが指定してきたら
-# プラン検証で弾かれる（:func:`app.agent_protocol._audio_workflow_detail`）。
-# テンポやキーは style の文中に、歌詞の言語は歌詞そのもので決まる。
-#
-# 尺（`duration`）は **選択式**（`auto` + 代表値）で持つ: kie.ai の `duration` は
-# **V5_5 + customMode でしか効かず、他のモデルでは黙って無視される**ので、
-# `WorkflowSpec.select_requires` で `model` が `V5_5` であることを要求し、違う
-# モデルで明示指定したジョブは投入前に 422 にする（黙って無視されるより、その場で
-# 断るほうが親切）。数値入力（`min_duration` / `max_duration`）にはしない: 上下限を
-# 0 のままにしてフォームの長さ入力は出さず、選択式のプルダウンだけを出す（§2.4）。
-#
-# 1 リクエストで**2 曲**返るのが Suno の標準。両方 `outputs/{job_id}/` に落とす
-# （`audio.mp3` / `audio_2.mp3`、:func:`app.kie.download_results`）。
-
-#: Suno のモデルバージョン（kie.ai の `model`）
-SUNO_MODELS: tuple[str, ...] = ("V5", "V5_5", "V4_5PLUS")
-
-#: ボーカルの性別ヒント。``auto`` は「指定しない」で、キーごと落とされる
-#: （:attr:`app.kie.SunoTaskApi.VOCAL_GENDERS`）。
-SUNO_VOCAL_GENDERS: tuple[str, ...] = ("auto", "m", "f")
-
-#: 尺（秒）。API は 10〜360 の任意の整数を取るが、細かく刻んでも意味が薄いので
-#: 代表値だけ出す。``auto``（= 指定しない）が既定で、キーごと落とされる
-#: （:attr:`KieTask.int_keys`）。**V5_5 でしか効かない**（:attr:`SUNO_DURATION_MODEL`）。
-SUNO_DURATIONS: tuple[str, ...] = (
-    "auto", "30", "60", "90", "120", "180", "240", "300", "360",
-)
-#: `duration` が効く唯一のモデルバージョン
-SUNO_DURATION_MODEL = "V5_5"
-
-#: 0〜1 の重みづけ（`styleWeight` / `weirdnessConstraint` / `audioWeight`）。
-#: API は小数を取るので選択式では 0.25 刻みだけ出し、``auto``（= 指定しない）を
-#: 既定にしてキーごと落とす（:attr:`KieTask.float_keys`）。
-SUNO_WEIGHTS: tuple[str, ...] = ("auto", "0", "0.25", "0.5", "0.75", "1")
-
-#: `style` の上限（kie.ai の customMode）。歌詞（`prompt`）は 5,000 字まで。
-SUNO_MAX_PROMPT_CHARS = 1000
-
-SUNO_V5 = WorkflowSpec(
-    id="suno_v5",
-    label="Suno V5（歌もの・外部 API）",
-    mode_label="標準（歌もの）",
-    kind="audio",
-    family="suno",
-    backend="kie",
-    description=(
-        "Song generation with **Suno V5** (external API): the strongest option"
-        " for songs with real vocals. `audio_prompt` is the *style* — English,"
-        " comma separated, sound only (genre, tempo, instruments, vocal,"
-        " production) — and `lyrics` are the words, with `[Verse]` /"
-        " `[Chorus]` structure tags. No lyrics == instrumental. Every request"
-        " returns **two takes**. There is no bpm / key / language knob: write"
-        " those into the style, or pick another model. The track **length**"
-        f" (`duration`) only works on model `{SUNO_DURATION_MODEL}` — on any"
-        " other version it is silently ignored, so a job that sets it with a"
-        " different model is refused."
-    ),
-    prompt_hint=(
-        "The **style**, not a story: English, comma separated, and only things"
-        " you can hear — genre, tempo feel, the main instruments, the vocal"
-        " (gender, register, delivery) and the production / mood. 120-300"
-        " characters is the sweet spot. What the song is *about* belongs in"
-        " `lyrics`, and anything to keep out belongs in `negative_tags`."
-    ),
-    max_prompt_chars=SUNO_MAX_PROMPT_CHARS,
-    # 尺は選択式で持つので、数値入力の上下限は宣言しない（フォームは長さの
-    # 入力欄を出さず、`duration` のプルダウンだけを出す）。
-    # `duration` は V5_5 でしか効かず、他のモデルでは黙って無視されるので、
-    # 明示指定と model の組み合わせを投入前に見る（models.select_problem）。
-    select_requires={"duration": ("model", SUNO_DURATION_MODEL)},
-    kie=KieTask(
-        model="V5",
-        api="suno",
-        fields={
-            # audio_prompt -> style（曲の「音」の記述）、lyrics -> prompt（歌詞）
-            "prompt": "style",
-            "lyrics": "prompt",
-            "negative_tags": "negativeTags",
-            f"{KIE_SELECT_PREFIX}model": "model",
-            f"{KIE_SELECT_PREFIX}duration": "duration",
-            f"{KIE_SELECT_PREFIX}vocal_gender": "vocalGender",
-            f"{KIE_SELECT_PREFIX}style_weight": "styleWeight",
-            f"{KIE_SELECT_PREFIX}weirdness": "weirdnessConstraint",
-            f"{KIE_SELECT_PREFIX}audio_weight": "audioWeight",
-        },
-        # 0〜1 の重みづけは小数で送る。``auto`` は数として読めないので
-        # キーごと落ちる（= kie.ai 側の既定に任せる）
-        float_keys=("styleWeight", "weirdnessConstraint", "audioWeight"),
-        # 尺は整数の秒。``auto`` は数として読めないのでキーごと落ちる
-        int_keys=("duration",),
-        # customMode=true = style と歌詞を自分で書くモード（false は説明文
-        # 500 字だけのおまかせ生成なので、このアプリの使い方には合わない）
-        constants={"customMode": True},
-        # 12 credits ≒ $0.06（2 曲ぶん）。バージョンによる価格差は無い。
-        credits=12.0,
-    ),
-    selects={
-        "model": SelectSpec(
-            label="モデル",
-            choices=SUNO_MODELS,
-            default="V5",
-            hint="V5 が既定。V5_5 は最新、V4_5PLUS は旧世代。価格は同じ。",
-        ),
-        "duration": SelectSpec(
-            label="尺（秒）",
-            choices=SUNO_DURATIONS,
-            default="auto",
-            hint=f"{SUNO_DURATION_MODEL} を選んだときだけ効く（他のモデルでは"
-            "指定できない）。auto は Suno におまかせ（だいたい 3 分前後）。",
-        ),
-        "vocal_gender": SelectSpec(
-            label="ボーカルの性別",
-            choices=SUNO_VOCAL_GENDERS,
-            default="auto",
-            hint="確率的なヒント（m = 男性 / f = 女性）。auto は指定しない。",
-        ),
-        "style_weight": SelectSpec(
-            label="スタイルの効き",
-            choices=SUNO_WEIGHTS,
-            default="auto",
-            hint="スタイル文にどれだけ忠実にするか（0〜1）。高いほど指定どおり、"
-            "低いほど自由。auto は指定しない（kie.ai の既定）。",
-        ),
-        "weirdness": SelectSpec(
-            label="奇抜さ",
-            choices=SUNO_WEIGHTS,
-            default="auto",
-            hint="実験的な展開をどれだけ許すか（0〜1）。高いほど奇抜。"
-            "auto は指定しない（kie.ai の既定）。",
-        ),
-        "audio_weight": SelectSpec(
-            label="サウンドの効き",
-            choices=SUNO_WEIGHTS,
-            default="auto",
-            hint="音づくり（編曲・音色）にどれだけ寄せるか（0〜1）。"
-            "auto は指定しない（kie.ai の既定）。",
-        ),
-    },
-    notes=(
-        "kie.ai 経由 / 1 回で 2 曲返る（両方保存される） / 歌詞なしでインスト"
-        f" / 尺は {SUNO_DURATION_MODEL} を選んだときだけ指定できる"
-        "（他のモデルでは auto のまま） / bpm・キー・言語の指定は無い"
-        "（スタイル文に書く） / 除外したい"
-        "要素は「除外タグ」へ / スタイル・奇抜さ・サウンドの効きは 0〜1 の"
-        "重みづけ（auto で kie.ai の既定） / タイトルは歌詞かスタイルから自動 /"
-        " 成果物 URL は 14 日で失効"
-    ),
-)
-
 
 SPECS: tuple[WorkflowSpec, ...] = (
     KREA2_TURBO,
     ANIMA,
     Z_IMAGE_TURBO,
     QWEN_IMAGE_EDIT,
-    GROK_IMAGINE,
-    GPT_IMAGE2,
     LTX_T2V,
     LTX_I2V,
     LTX_IA2V,
@@ -3010,25 +1584,13 @@ SPECS: tuple[WorkflowSpec, ...] = (
     LTX_FLF2V,
     LTX_IC_LORA_IMAGE,
     LTX_IC_LORA_MOTION,
-    WAN_DANCER,
     MINIMAX_H3_T2V,
     MINIMAX_H3_I2V,
+    MINIMAX_H3_I2V_TURBO,
     MINIMAX_H3_R2V,
-    VEO3_1_FAST,
-    VEO3_1_FAST_REF,
-    VEO3_1_QUALITY,
-    KLING3_VIDEO,
-    KLING3_MULTISHOT,
-    SEEDANCE2,
-    SEEDANCE2_FAST,
-    SEEDANCE2_MINI,
-    SEEDANCE2_REF,
-    SEEDANCE2_FAST_REF,
-    SEEDANCE2_MINI_REF,
-    GROK_IMAGINE_VIDEO,
+    MINIMAX_H3_R2V_TURBO,
     ACE_STEP_1_5,
     STABLE_AUDIO_3,
-    SUNO_V5,
 )
 
 BY_ID: dict[str, WorkflowSpec] = {spec.id: spec for spec in SPECS}
@@ -3091,17 +1653,6 @@ def input_label(spec: WorkflowSpec, name: str) -> str:
     return spec.image_label if name == "image" else INPUT_LABELS.get(name, name)
 
 
-def backend_available(backend: str) -> bool:
-    """そのバックエンドが今この環境で使えるか（SPEC §5.2）。
-
-    判定そのものは :mod:`app.backends`（認証確認とそのキャッシュ）が持つ。
-    そちらはこのモジュールを import するので、循環を避けて関数の中で読み込む。
-    """
-    from . import backends
-
-    return backends.available(backend)
-
-
 def comfy_specs() -> tuple[WorkflowSpec, ...]:
     """``workflow/*.json`` のテンプレートを持つワークフローだけ。
 
@@ -3112,17 +1663,8 @@ def comfy_specs() -> tuple[WorkflowSpec, ...]:
 
 
 def selectable_specs(kind: WorkflowKind) -> list[WorkflowSpec]:
-    """UI・エージェントに出す ``kind`` のワークフロー（使えるものだけ）。
-
-    :func:`get_spec` は使えないバックエンドのものも返す（過去ジョブの再実行や
-    履歴の表示で id を引けなくなると困るため）。ここで絞るのは「これから選べる
-    もの」の一覧だけ。
-    """
-    return [
-        spec
-        for spec in SPECS
-        if spec.kind == kind and backend_available(spec.backend)
-    ]
+    """UI・エージェントに出す ``kind`` のワークフロー。"""
+    return [spec for spec in SPECS if spec.kind == kind]
 
 
 def image_specs() -> list[WorkflowSpec]:
@@ -3187,7 +1729,7 @@ class CatalogEntry:
     #: グラフに展開するワークフロー（MiniMax H3 r2v）だけが 1 以上を持つ。
     min_references: int
     #: 選択式どうしの相関（``(名前, 相手の名前, 相手に必要な値)``、§3.1）。
-    #: Suno の ``duration`` は ``model`` が ``V5_5`` のときしか効かない。
+    #: 相手の選択式の値でしか効かない項目のための宣言。
     select_requires: tuple[tuple[str, str, str], ...]
     #: ショット割りの宣言（``None`` = 1 ジョブ 1 ショット、§3.1）
     multi_shot: "MultiShotSpec | None"
@@ -3402,7 +1944,7 @@ def _validate_common(spec: WorkflowSpec) -> list[str]:
             problems.append(f"{spec.id}.elements: image count range is inverted")
     if spec.kind == "audio" and (spec.accepts_start_image or spec.supports("image")):
         problems.append(f"{spec.id}: an audio workflow takes no image input")
-    # 長さを一切宣言しないのは「このモデルには尺の指定が無い」（Suno）の意味で、
+    # 長さを一切宣言しないのは「このモデルには尺の指定が無い」の意味で、
     # そのときだけ 0 / 0 / 0 を許す。中途半端に片方だけ 0 なのは宣言漏れ。
     if spec.kind == "audio" and any(
         (spec.min_duration, spec.default_duration, spec.max_duration)
@@ -3414,152 +1956,6 @@ def _validate_common(spec: WorkflowSpec) -> list[str]:
             f" (got {spec.min_duration} / {spec.default_duration}"
             f" / {spec.max_duration})"
         )
-    return problems
-
-
-def _validate_grok_spec(spec: WorkflowSpec) -> list[str]:
-    """Grok Build CLI で走るワークフローの宣言そのものの検証（SPEC §5.2）。
-
-    CLI は自然文しか受け取らないので、見るのは「タスク宣言があるか」「織り込む
-    論理値が既知の語彙か」「プロンプトを受け取るか」だけ。``select:<名前>`` は
-    kie.ai と同じ流儀で、宣言した選択式フィールドが本当に在るかを見る。
-    """
-    problems: list[str] = []
-    if spec.kie is not None:
-        problems.append(f"{spec.id}: backend 'grok_cli' but a KieTask is declared")
-    if spec.grok is None:
-        return [*problems, f"{spec.id}: backend 'grok_cli' but no GrokCliTask declared"]
-    if "prompt" not in spec.grok.values:
-        problems.append(f"{spec.id}.grok.values: 'prompt' is required")
-    for name in spec.grok.values:
-        if name.startswith(KIE_SELECT_PREFIX):
-            if name[len(KIE_SELECT_PREFIX):] not in spec.selects:
-                problems.append(f"{spec.id}.grok.values[{name}]: no such select")
-        elif name not in KIE_VALUES:
-            problems.append(
-                f"{spec.id}.grok.values: unknown value {name!r}"
-                f" (known: {', '.join(sorted(KIE_VALUES))})"
-            )
-    if spec.grok.media not in ("image", "video"):
-        problems.append(f"{spec.id}.grok.media: {spec.grok.media!r} is not a media kind")
-    elif spec.grok.media != spec.kind:
-        problems.append(
-            f"{spec.id}.grok.media: {spec.grok.media!r} does not match kind"
-            f" {spec.kind!r}"
-        )
-    return problems
-
-
-def _validate_codex_spec(spec: WorkflowSpec) -> list[str]:
-    """Codex CLI で走るワークフローの宣言そのものの検証（SPEC §5.4）。
-
-    :func:`_validate_grok_spec` と同じ見方（タスク宣言があるか / 織り込む論理値が
-    既知の語彙か / プロンプトを受け取るか）に、「画像しか作れない」を足したもの。
-    """
-    problems: list[str] = []
-    if spec.kie is not None:
-        problems.append(f"{spec.id}: backend 'codex_cli' but a KieTask is declared")
-    if spec.grok is not None:
-        problems.append(f"{spec.id}: backend 'codex_cli' but a GrokCliTask is declared")
-    if spec.codex is None:
-        return [
-            *problems,
-            f"{spec.id}: backend 'codex_cli' but no CodexCliTask declared",
-        ]
-    if "prompt" not in spec.codex.values:
-        problems.append(f"{spec.id}.codex.values: 'prompt' is required")
-    for name in spec.codex.values:
-        if name.startswith(KIE_SELECT_PREFIX):
-            if name[len(KIE_SELECT_PREFIX):] not in spec.selects:
-                problems.append(f"{spec.id}.codex.values[{name}]: no such select")
-        elif name not in KIE_VALUES:
-            problems.append(
-                f"{spec.id}.codex.values: unknown value {name!r}"
-                f" (known: {', '.join(sorted(KIE_VALUES))})"
-            )
-    if spec.kind != "image":
-        problems.append(
-            f"{spec.id}: backend 'codex_cli' only generates images (kind is"
-            f" {spec.kind!r})"
-        )
-    return problems
-
-
-def validate_external_spec(spec: WorkflowSpec) -> list[str]:
-    """テンプレートを持たないワークフロー（kie.ai など）のマニフェスト検証。
-
-    ComfyUI 側は「宣言したノードが本当にテンプレートに在るか」を見るが、外部 API
-    にはグラフが無いので、代わりに**宣言そのものの筋が通っているか**を見る:
-    タスク宣言があるか、渡す論理名が :data:`KIE_VALUES` の語彙か、``requires`` に
-    書いた入力を本当に受け取れるか。
-    """
-    problems = _validate_common(spec)
-    if spec.relpath or spec.inject or spec.output_node:
-        problems.append(
-            f"{spec.id}: backend {spec.backend!r} does not use a ComfyUI template"
-        )
-    if spec.lora_chain is not None:
-        problems.append(f"{spec.id}: backend {spec.backend!r} has no LoRA chain")
-    if spec.patch_point is not None:
-        problems.append(
-            f"{spec.id}: backend {spec.backend!r} has no MODEL patch point"
-        )
-    for name, select in spec.selects.items():
-        if not select.choices:
-            problems.append(f"{spec.id}.selects[{name}]: no choices declared")
-        if select.default and select.default not in select.choices:
-            problems.append(
-                f"{spec.id}.selects[{name}]: default {select.default!r} is not"
-                " one of the choices"
-            )
-
-    if spec.backend == "grok_cli":
-        return problems + _validate_grok_spec(spec)
-    if spec.backend == "codex_cli":
-        return problems + _validate_codex_spec(spec)
-    if spec.grok is not None:
-        problems.append(
-            f"{spec.id}: declares a GrokCliTask but its backend is {spec.backend!r}"
-        )
-    if spec.codex is not None:
-        problems.append(
-            f"{spec.id}: declares a CodexCliTask but its backend is {spec.backend!r}"
-        )
-    if spec.backend != "kie":
-        problems.append(f"{spec.id}: backend {spec.backend!r} is not implemented yet")
-        return problems
-    if spec.kie is None:
-        problems.append(f"{spec.id}: backend 'kie' but no KieTask declared")
-        return problems
-    if not spec.kie.model.strip():
-        problems.append(f"{spec.id}.kie: model is empty")
-    if not spec.kie.fields:
-        problems.append(f"{spec.id}.kie: no input fields declared")
-    for name, key in spec.kie.fields.items():
-        if name.startswith(KIE_SELECT_PREFIX):
-            if name[len(KIE_SELECT_PREFIX):] not in spec.selects:
-                problems.append(
-                    f"{spec.id}.kie.fields[{name}]: no such select"
-                )
-        elif name not in KIE_VALUES:
-            problems.append(
-                f"{spec.id}.kie.fields[{name}]: unknown value"
-                f" (known: {', '.join(sorted(KIE_VALUES))})"
-            )
-        if not str(key).strip():
-            problems.append(f"{spec.id}.kie.fields[{name}]: empty input key")
-    declared = set(spec.kie.fields.values())
-    for group, keys in (
-        ("list_keys", spec.kie.list_keys),
-        ("bool_keys", spec.kie.bool_keys),
-        ("int_keys", spec.kie.int_keys),
-    ):
-        for key in keys:
-            if key not in declared:
-                problems.append(
-                    f"{spec.id}.kie.{group}: {key!r} is not one of the declared"
-                    " input keys"
-                )
     return problems
 
 
@@ -3675,14 +2071,6 @@ def _ref_media_problems(
 
 def validate_spec(spec: WorkflowSpec, template: Workflow | None = None) -> list[str]:
     """Problems found in ``spec`` against its template (empty list == fine)."""
-    if spec.backend != "comfyui":
-        return validate_external_spec(spec)
-    if spec.kie is not None:
-        return [f"{spec.id}: declares a KieTask but its backend is 'comfyui'"]
-    if spec.grok is not None:
-        return [f"{spec.id}: declares a GrokCliTask but its backend is 'comfyui'"]
-    if spec.codex is not None:
-        return [f"{spec.id}: declares a CodexCliTask but its backend is 'comfyui'"]
     problems: list[str] = []
     try:
         tpl = template if template is not None else load_template(spec)
@@ -3782,35 +2170,6 @@ def validate_spec(spec: WorkflowSpec, template: Workflow | None = None) -> list[
                 problems.append(
                     f"{spec.id}.lora_chain: placeholder {node_id!r} is"
                     f" {node.get('class_type')!r}, expected 'LoraLoaderModelOnly'"
-                )
-
-    # 高速化トグルの挿し込み口（:class:`PatchPoint`）: LoRA チェーンと同じく、
-    # 挟む先の辺が本当にテンプレートに在るか（consumer が head を読んでいるか）。
-    if spec.patch_point is not None:
-        point = spec.patch_point
-        if not point.consumers:
-            problems.append(f"{spec.id}.patch_point: no consumers declared")
-        if point.head not in tpl:
-            problems.append(
-                f"{spec.id}.patch_point.head: node {point.head!r} is missing"
-            )
-        for index, consumer in enumerate(point.consumers):
-            check(consumer, f"patch_point.consumers[{index}]")
-            node = tpl.get(consumer.node_id)
-            link = (
-                (node.get("inputs") or {}).get(consumer.field)
-                if isinstance(node, dict)
-                else None
-            )
-            if not isinstance(link, list) or len(link) != 2:
-                problems.append(
-                    f"{spec.id}.patch_point.consumers[{index}]:"
-                    f" {consumer.key} is not connected to a node"
-                )
-            elif link[0] != point.head:
-                problems.append(
-                    f"{spec.id}.patch_point.consumers[{index}]: {consumer.key}"
-                    f" reads {link[0]!r}, expected the head {point.head!r}"
                 )
 
     # 参照素材の動的展開（:class:`RefMediaFan`）: 受け側と雛形が実在し、雛形が

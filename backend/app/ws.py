@@ -21,6 +21,8 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from .models import (
     AgentArtifact,
     AgentProgress,
+    CanvasMessage,
+    CanvasProgress,
     JobProgress,
     LibraryItem,
     LibraryProgress,
@@ -138,6 +140,36 @@ async def publish_agent(
             "message": message,
             "thinking": thinking,
             "activity": activity,
+        }
+    await hub.broadcast(payload)
+
+
+async def publish_canvas(
+    project_id: str,
+    *,
+    running: bool,
+    activity: str | None = None,
+    message: CanvasMessage | None = None,
+) -> None:
+    """Broadcast one canvas agent event (``type: "canvas"``). Never raises.
+
+    会話の正は ``canvas_messages`` なので、ここで流すのは「いま足された 1 件」と
+    実行中かどうかだけ。取りこぼしたブラウザは盤面を取り直せば追いつける。
+    """
+    try:
+        payload = CanvasProgress(
+            project_id=project_id,
+            running=running,
+            activity=activity,
+            message=message,
+        ).model_dump()
+    except Exception:  # noqa: BLE001 - 通知の失敗で実行を壊さない
+        payload = {
+            "type": "canvas",
+            "project_id": project_id,
+            "running": running,
+            "activity": activity,
+            "message": message.model_dump() if message else None,
         }
     await hub.broadcast(payload)
 

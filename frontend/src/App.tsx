@@ -8,16 +8,16 @@ import JobDetail from './components/JobDetail'
 import ResultPane from './components/ResultPane'
 import SettingsPage from './components/SettingsPage'
 import AgentView from './components/agent/AgentView'
+import StudioView from './components/studio/StudioView'
 import { Banner } from './components/ui'
 import {
-  EASY_CACHE,
-  SAGE_ATTENTION,
   audioJobPayload,
   formStateFromParams,
   imageWorkflowNeedsSource,
   initialForm,
   jobModelOverrides,
   jobSelects,
+  jobSteps,
   jobWorkflowIds,
   referenceFields,
   validateForm,
@@ -25,6 +25,7 @@ import {
 } from './form'
 import type {
   AgentProgress,
+  CanvasProgress,
   ComfyTarget,
   Health,
   Job,
@@ -69,8 +70,10 @@ export default function App() {
   const [detailBusy, setDetailBusy] = useState(false)
   const [detailError, setDetailError] = useState<string | null>(null)
   const [chatOpen, setChatOpen] = useState(false)
-  const [view, setView] = useState<'main' | 'agent' | 'settings'>('main')
+  const [view, setView] = useState<'main' | 'agent' | 'studio' | 'settings'>('main')
   const [agentEvent, setAgentEvent] = useState<AgentProgress | null>(null)
+  // キャンバスのエージェント実行（会話に足された 1 件と実行中フラグ）
+  const [canvasEvent, setCanvasEvent] = useState<CanvasProgress | null>(null)
   const [chatSessionId, setChatSessionId] = useState<string | null>(null)
   const [showNsfw, setShowNsfw] = useState(initialShowNsfw)
   // エラーではない一言（パラメータ復元で LoRA を落としたとき等）。
@@ -83,6 +86,27 @@ export default function App() {
     [],
   )
 
+  /**
+   * このセッションで投入したジョブの id（メモリだけ、保存しない）。
+   *
+   * NSFW の自動判定は生成中に確定するので、投げたジョブが途中で一覧から消えて
+   * しまう。自分で投げたものは表示トグルに関わらず出し続け、NSFW ならぼかす。
+   * リロードすれば空に戻る = ふつうの NSFW フィルタに従う。
+   */
+  const sessionJobIds = useRef<Set<string>>(new Set())
+
+  /** 投入したジョブを「このセッションのもの」として覚え、結果ペインに出す。 */
+  const trackJob = useCallback((job: Job) => {
+    sessionJobIds.current.add(job.id)
+    setActiveJob(job)
+  }, [])
+
+  /** 表示トグルがオフでも、このセッションで投げたジョブは隠さない。 */
+  const isVisible = useCallback(
+    (job: Job) => showNsfw || !job.nsfw || sessionJobIds.current.has(job.id),
+    [showNsfw],
+  )
+
   // ---------------------------------------------------------------- NSFW 表示
   useEffect(() => {
     try {
@@ -92,11 +116,14 @@ export default function App() {
     }
   }, [showNsfw])
 
-  // 非表示に戻したら、開いている NSFW ジョブの選択も解除する。
+  // 非表示に戻したら、開いている NSFW ジョブの選択も解除する（このセッションで
+  // 投げたものは、ぼかしたうえで出し続ける）。
   useEffect(() => {
     if (showNsfw) return
-    setActiveJob((current) => (current?.nsfw ? null : current))
-    setDetailJob((current) => (current?.nsfw ? null : current))
+    const keep = (job: Job | null) =>
+      job?.nsfw && !sessionJobIds.current.has(job.id) ? null : job
+    setActiveJob(keep)
+    setDetailJob(keep)
   }, [showNsfw])
 
   const pushError = useCallback((error: unknown) => {
@@ -170,34 +197,10 @@ export default function App() {
     try {
       const loaded = await api.getSettings()
       setSettings(loaded)
-      // 高速化トグルはジョブごとの値だがサーバー側の設定に永続化されるので、
-      // フォームの初期値はここから来る（SPEC §3.1）。
-      patch({
-        sageAttention: loaded.sage_attention,
-        easyCache: loaded.easy_cache,
-      })
     } catch (error) {
       pushError(error)
     }
   }, [patch, pushError])
-
-  /**
-   * 高速化トグルの切り替え（SPEC §3.1）。フォームの値であると同時に設定でも
-   * あるので、その場で反映しつつサーバーにも保存する。
-   */
-  const changeSpeedup = useCallback(
-    async (name: string, value: boolean) => {
-      patch(
-        name === SAGE_ATTENTION ? { sageAttention: value } : { easyCache: value },
-      )
-      try {
-        setSettings(await api.putSettings({ [name]: value }))
-      } catch (error) {
-        pushError(error)
-      }
-    },
-    [patch, pushError],
-  )
 
   /**
    * 接続先を切り替える（SPEC §5）。サーバー側の設定に保存し、選択肢と接続状態を
@@ -263,9 +266,14 @@ export default function App() {
           const frame = JSON.parse(event.data as string) as
             | JobProgress
             | AgentProgress
+            | CanvasProgress
             | LibraryProgress
           if (frame?.type === 'agent') {
             setAgentEvent(frame)
+            return
+          }
+          if (frame?.type === 'canvas') {
+            setCanvasEvent(frame)
             return
           }
           // ライブラリの自動タグ生成が終わった: 選択肢を取り直し、開いている
@@ -373,13 +381,13 @@ export default function App() {
           audioJobPayload(form, audioWorkflow, options?.model_slots),
         )
         setChatSessionId(null)
-        setActiveJob(created)
+        trackJob(created)
         await loadJobs()
         return
       }
       const needs = (name: string) =>
         form.mode !== 'image_only' && (workflow?.requires ?? []).includes(name as never)
-      // 任意入力（Veo の開始フレーム・最後のフレーム）も、選ばれていれば送る
+      // 任意入力（開始フレーム・最後のフレーム）も、選ばれていれば送る
       const accepts = (name: string) =>
         needs(name) ||
         (form.mode !== 'image_only' && (workflow?.supports ?? []).includes(name))
@@ -389,9 +397,6 @@ export default function App() {
         form.mode !== 'i2v' && imageWorkflowNeedsSource(imageWorkflow)
       // ショット割り / Elements は動画ステージのパラメータ（SPEC §3.1）
       const runsVideo = form.mode === 'full' || form.mode === 'i2v'
-      // 高速化トグルも同じく動画ステージのもの（宣言のあるワークフローだけ）
-      const speedup = (name: string) =>
-        runsVideo && (workflow?.supports ?? []).includes(name)
       const payload: JobCreate = {
         mode: form.mode,
         video_workflow: form.videoWorkflow,
@@ -428,10 +433,13 @@ export default function App() {
           form.mode === 'image_only' ? '' : form.videoTriggerText,
         duration: form.duration,
         fps: form.fps,
-        // 高速化トグル（SPEC §3.1）: 宣言のあるワークフローを動画ステージで
-        // 走らせるときだけ送る（null = サーバー側の設定の既定値に従う）。
-        sage_attention: speedup(SAGE_ATTENTION) ? form.sageAttention : null,
-        easy_cache: speedup(EASY_CACHE) ? form.easyCache : null,
+        // サンプリング回数（SPEC §3.1）: そのモードで走るワークフローが宣言して
+        // いるときだけ送る（未指定 = 0 はテンプレートの既定値のまま）
+        steps: jobSteps(
+          form,
+          form.mode === 'image_only' ? null : workflow,
+          form.mode === 'i2v' ? null : imageWorkflow,
+        ),
         audio_path: needs('audio') ? form.audioPath || null : null,
         // in full mode the image stage produces the start frame
         source_image:
@@ -471,7 +479,7 @@ export default function App() {
       }
       const job = await api.createJob(payload)
       setChatSessionId(null)
-      setActiveJob(job)
+      trackJob(job)
       await loadJobs()
     } catch (error) {
       const fields = fieldErrorsFromError(error)
@@ -487,29 +495,7 @@ export default function App() {
     setDetailError(null)
     try {
       const next = await api.continueJob(job.id)
-      setActiveJob(next)
-      setDetailJob(null)
-      await loadJobs()
-    } catch (error) {
-      const message =
-        error instanceof ApiError ? formatDetail(error.detail) : String(error)
-      setDetailError(message)
-      pushError(error)
-    } finally {
-      setDetailBusy(false)
-    }
-  }
-
-  /**
-   * Veo の追加操作（SPEC §5.2）: どちらも新しいジョブになるので、続き生成と
-   * まったく同じ扱い（作ったジョブに切り替えて履歴を取り直す）。
-   */
-  const runFollowup = async (start: () => Promise<Job>) => {
-    setDetailBusy(true)
-    setDetailError(null)
-    try {
-      const next = await start()
-      setActiveJob(next)
+      trackJob(next)
       setDetailJob(null)
       await loadJobs()
     } catch (error) {
@@ -527,7 +513,7 @@ export default function App() {
     setDetailError(null)
     try {
       const next = await api.rerunJob(job.id)
-      setActiveJob(next)
+      trackJob(next)
       setDetailJob(null)
       await loadJobs()
     } catch (error) {
@@ -597,10 +583,11 @@ export default function App() {
     }
   }
 
-  // 表示トグルがオフのあいだは NSFW を一切渡さない。
-  const visibleJobs = showNsfw ? jobs : jobs.filter((job) => !job.nsfw)
-  const shownJob = !showNsfw && activeJob?.nsfw ? null : activeJob
-  const shownDetailJob = !showNsfw && detailJob?.nsfw ? null : detailJob
+  // 表示トグルがオフのあいだは NSFW を渡さない（このセッションで投げたものだけ、
+  // 表示コンポーネント側でぼかしたうえで渡す）。
+  const visibleJobs = jobs.filter(isVisible)
+  const shownJob = activeJob && !isVisible(activeJob) ? null : activeJob
+  const shownDetailJob = detailJob && !isVisible(detailJob) ? null : detailJob
   const queue = visibleJobs.filter((job) => ACTIVE_STATUSES.includes(job.status))
 
   return (
@@ -656,6 +643,16 @@ export default function App() {
         <AgentView event={agentEvent} progress={progress} showNsfw={showNsfw} />
       )}
 
+      {/* ドラマスタジオ（プロジェクト -> 脚本 -> Shot ごとの生成 -> Take の採用）。
+          Take の進捗は生成フォームと同じ WS のジョブフレームで届く。 */}
+      {view === 'studio' && (
+        <StudioView
+          progress={progress}
+          canvasEvent={canvasEvent}
+          aspectRatios={options?.aspect_ratios ?? []}
+        />
+      )}
+
       {view === 'main' && (
         <>
         {/* 狭幅は縦積み 1 カラム（ページ縦スクロール）、lg 以上は従来の 2 カラム */}
@@ -673,7 +670,6 @@ export default function App() {
               fieldErrors={fieldErrors}
               comfyTarget={settings?.comfy_target ?? null}
               onComfyTarget={(target) => void changeComfyTarget(target)}
-              onSpeedup={(name, value) => void changeSpeedup(name, value)}
               // 履歴モーダルは自前で NSFW を切り替えるので、フィルタ前の全ジョブを渡す
               jobs={jobs}
               showNsfw={showNsfw}
@@ -689,10 +685,6 @@ export default function App() {
                 onRerun={(job) => void rerun(job)}
                 onRestoreParams={restoreParams}
                 onContinue={(job) => void continueFrom(job)}
-                onExtend={(job, prompt) =>
-                  void runFollowup(() => api.extendVeoJob(job.id, prompt))
-                }
-                onUpscale={(job) => void runFollowup(() => api.upscaleVeoJob(job.id))}
                 onDelete={(job) => void remove(job)}
                 onOpenDetail={(job) => openDetail(job)}
                 onToggleNsfw={(job, nsfw) => void toggleNsfw(job, nsfw)}

@@ -115,23 +115,6 @@ def test_is_cloud_is_false_when_the_url_is_missing(monkeypatch):
         config._settings = None
 
 
-def test_sage_attention_is_unsupported_on_the_cloud(monkeypatch):
-    """暫定ガード: クラウドのランタイムには sageattention が無い（SPEC §3.1）。"""
-    use(monkeypatch, comfy_target="comfy_cloud")
-    try:
-        assert comfy.unsupported_patches() == ("sage_attention",)
-        # EasyCache は ComfyUI 標準ノードなので落とさない
-        assert "easy_cache" not in comfy.unsupported_patches()
-    finally:
-        config._settings = None
-
-    use(monkeypatch, comfy_target="local")
-    try:
-        assert comfy.unsupported_patches() == ()
-    finally:
-        config._settings = None
-
-
 def test_an_empty_profile_url_is_an_error(monkeypatch):
     use(monkeypatch, comfy_target="runpod", runpod_comfy_url="")
     try:

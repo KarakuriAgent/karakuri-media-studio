@@ -8,13 +8,22 @@ import type {
   AgentSessionSummary,
   Asset,
   AudioJobCreate,
-  BackendInfo,
+  CanvasAgentRun,
+  CanvasAgentState,
+  CanvasAttachment,
+  CanvasBoard,
+  CanvasCard,
+  CanvasCardCreate,
+  CanvasCardPosition,
+  CanvasCardUpdate,
+  CanvasMessage,
+  CanvasMessageCreate,
+  CanvasViewport,
   ChatReply,
   ChatSession,
   ChatSessionCreate,
   ComfyTarget,
   Health,
-  KieCredits,
   Job,
   JobCreate,
   LibraryCategoryValue,
@@ -32,6 +41,29 @@ import type {
   ModelsDirStatus,
   Options,
   Settings,
+  StudioAsset,
+  StudioAssetCreate,
+  StudioAssetFile,
+  StudioAssetFileRole,
+  StudioAssetUpdate,
+  StudioEpisode,
+  StudioEpisodeCreate,
+  StudioEpisodeUpdate,
+  StudioProject,
+  StudioProjectCreate,
+  StudioProjectDetail,
+  StudioProjectSummary,
+  StudioProjectUpdate,
+  StudioRevision,
+  StudioRevisionDetail,
+  StudioScene,
+  StudioSceneCreate,
+  StudioSceneUpdate,
+  StudioShot,
+  StudioShotCreate,
+  StudioShotPreview,
+  StudioShotUpdate,
+  StudioTake,
 } from './types'
 
 export class ApiError extends Error {
@@ -150,20 +182,44 @@ function upload<T>(
   return request<T>(path, { method: 'POST', body: data })
 }
 
+/** ファイルを伴わない multipart（受け口が Form のままのものに使う）。 */
+function form<T>(path: string, fields: Record<string, string> = {}): Promise<T> {
+  const data = new FormData()
+  for (const [key, value] of Object.entries(fields)) data.append(key, value)
+  return request<T>(path, { method: 'POST', body: data })
+}
+
+/**
+ * キャンバスのタブを指すクエリ（null = 作品共通なので何も付けない）。
+ *
+ * サーバー側は「省略 = 作品共通」なので、話タブのときだけ `?episode_id=…`。
+ */
+function canvasTab(episodeId: string | null): string {
+  return episodeId ? `?episode_id=${encodeURIComponent(episodeId)}` : ''
+}
+
+/** multipart のフィールド（未指定は送らず、サーバー側の既定値に任せる）。 */
+function formFields(fields: object): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(fields)
+      .filter(([, value]) => value !== undefined)
+      .map(([key, value]) => [key, String(value)]),
+  )
+}
+
+/** multipart で送れる素材のメタデータ（アップロードと共通）。 */
+interface StudioAssetFields {
+  name?: string
+  kind?: string
+  category?: string
+  caption?: string
+  prompt_caption?: string
+  locked?: boolean
+}
+
 export const api = {
   health: () => request<Health>('/api/health'),
 
-  /** kie.ai の残クレジット（SPEC §5.2）。 */
-  kieCredits: () => request<KieCredits>('/api/kie/credits'),
-
-  /** kie.ai のキーを確かめ直す（選択肢に出すかどうかが決まる）。 */
-  kieCheck: () => request<KieCredits>('/api/kie/check', { method: 'POST' }),
-
-  /** Grok Build CLI（サブスク枠）を実際に 1 ターン回して確かめる（SPEC §5.2）。 */
-  grokCheck: () => request<BackendInfo>('/api/grok/check', { method: 'POST' }),
-
-  /** Codex CLI（ChatGPT サブスク枠）にサインイン済みか確かめる（SPEC §5.4）。 */
-  codexCheck: () => request<BackendInfo>('/api/codex/check', { method: 'POST' }),
   options: () => request<Options>('/api/options'),
 
   getSettings: () => request<Settings>('/api/settings'),
@@ -293,14 +349,6 @@ export const api = {
     json<Job>('POST', `/api/jobs/${id}/rerun`, { randomize_seed: true }),
   continueJob: (id: string, body: Record<string, unknown> = {}) =>
     json<Job>('POST', `/api/jobs/${id}/continue`, body),
-  /**
-   * Veo の動画に +7 秒を継ぎ足す（SPEC §5.2）。続き生成（continueJob）と違い、
-   * 元動画そのものを延長した 1 本が返る。
-   */
-  extendVeoJob: (id: string, prompt: string) =>
-    json<Job>('POST', `/api/jobs/${id}/veo/extend`, { prompt }),
-  /** 720p で作った Veo の動画の 1080P 版を取りに行く（5 credits）。 */
-  upscaleVeoJob: (id: string) => json<Job>('POST', `/api/jobs/${id}/veo/1080p`, {}),
   deleteJob: (id: string) => json<void>('DELETE', `/api/jobs/${id}`),
   /** NSFW フラグの手動トグル（manual として保存される）。 */
   setJobNsfw: (id: string, nsfw: boolean) =>
@@ -339,6 +387,239 @@ export const api = {
     json<AgentSession>('POST', `/api/agent/sessions/${id}/stop`),
   agentArtifactUrl: (id: string, name: string) =>
     `/api/agent/sessions/${id}/artifacts/${name.split('/').map(encodeURIComponent).join('/')}`,
+
+  // ドラマスタジオ（プロジェクト -> 脚本 -> Shot ごとの生成 -> Take の採用）。
+  // 画面 1 枚は getStudioProject（素材・Shot・Take 込み）で組み立てる。
+  listStudioProjects: () => request<StudioProjectSummary[]>('/api/studio/projects'),
+  createStudioProject: (payload: StudioProjectCreate) =>
+    json<StudioProject>('POST', '/api/studio/projects', payload),
+  /** デモ作品を 1 本まるごと作る（同じ作品コードが既にあれば 409）。 */
+  createStudioDemoProject: (code: string) =>
+    json<StudioProjectDetail>('POST', '/api/studio/demo', { code }),
+  getStudioProject: (id: string) =>
+    request<StudioProjectDetail>(`/api/studio/projects/${id}`),
+  updateStudioProject: (id: string, patch: StudioProjectUpdate) =>
+    json<StudioProject>('PATCH', `/api/studio/projects/${id}`, patch),
+  deleteStudioProject: (id: string) =>
+    json<void>('DELETE', `/api/studio/projects/${id}`),
+
+  /** World Bible に素材を足す（multipart）。`name` が `@名前` の識別名になる。 */
+  uploadStudioAsset: (
+    projectId: string,
+    file: File,
+    fields: StudioAssetFields = {},
+  ) =>
+    upload<StudioAsset>(
+      `/api/studio/projects/${projectId}/assets`,
+      file,
+      formFields(fields),
+    ),
+  /**
+   * ファイルを持たない素材を足す（名前とキャプションだけ）。
+   *
+   * 参照には添付されず、`@名前` は投入時にプロンプトの説明文へ展開される。
+   * 受け口は upload と同じ multipart なので、file だけ付けずに投げる。
+   */
+  createStudioAsset: (projectId: string, payload: StudioAssetCreate) =>
+    form<StudioAsset>(
+      `/api/studio/projects/${projectId}/assets`,
+      formFields(payload),
+    ),
+  updateStudioAsset: (id: string, patch: StudioAssetUpdate) =>
+    json<StudioAsset>('PATCH', `/api/studio/assets/${id}`, patch),
+  deleteStudioAsset: (id: string) => json<void>('DELETE', `/api/studio/assets/${id}`),
+
+  /**
+   * 素材のメインのファイルを付ける / 差し替える。
+   *
+   * 種別（image / video / audio）は拡張子から決まり、実体は今までどおり
+   * `assets/<kind>/` に置かれる。
+   */
+  uploadStudioAssetFile: (assetId: string, file: File) =>
+    upload<StudioAsset>(`/api/studio/assets/${assetId}/file`, file),
+
+  /** 素材にぶら下がるリファレンス（声サンプル・動画・追加画像）。 */
+  listStudioAssetFiles: (assetId: string) =>
+    request<StudioAssetFile[]>(`/api/studio/assets/${assetId}/files`),
+  addStudioAssetFile: (
+    assetId: string,
+    file: File,
+    fields: { role?: StudioAssetFileRole; caption?: string } = {},
+  ) =>
+    upload<StudioAssetFile>(
+      `/api/studio/assets/${assetId}/files`,
+      file,
+      formFields(fields),
+    ),
+  deleteStudioAssetFile: (fileId: string) =>
+    json<void>('DELETE', `/api/studio/asset-files/${fileId}`),
+
+  // 話（エピソード）と場（シーン）。Shot は場に属する（属さないものは未分類）。
+  createStudioEpisode: (projectId: string, payload: StudioEpisodeCreate = {}) =>
+    json<StudioEpisode>('POST', `/api/studio/projects/${projectId}/episodes`, payload),
+  /** `ids` の並び順がそのまま sort_order になる（全件を過不足なく送る）。 */
+  reorderStudioEpisodes: (projectId: string, ids: string[]) =>
+    json<StudioEpisode[]>(
+      'POST',
+      `/api/studio/projects/${projectId}/episodes/reorder`,
+      { ids },
+    ),
+  updateStudioEpisode: (id: string, patch: StudioEpisodeUpdate) =>
+    json<StudioEpisode>('PATCH', `/api/studio/episodes/${id}`, patch),
+  /** 配下の場ごと消す（そこにいた Shot は未分類に戻る）。 */
+  deleteStudioEpisode: (id: string) =>
+    json<void>('DELETE', `/api/studio/episodes/${id}`),
+
+  createStudioScene: (episodeId: string, payload: StudioSceneCreate = {}) =>
+    json<StudioScene>('POST', `/api/studio/episodes/${episodeId}/scenes`, payload),
+  /** `ids` の並び順がそのまま sort_order になる（この話の場を全件送る）。 */
+  reorderStudioScenes: (episodeId: string, ids: string[]) =>
+    json<StudioScene[]>('POST', `/api/studio/episodes/${episodeId}/scenes/reorder`, {
+      ids,
+    }),
+  updateStudioScene: (id: string, patch: StudioSceneUpdate) =>
+    json<StudioScene>('PATCH', `/api/studio/scenes/${id}`, patch),
+  /** 場だけ消す（そこにいた Shot は未分類に戻る）。 */
+  deleteStudioScene: (id: string) => json<void>('DELETE', `/api/studio/scenes/${id}`),
+
+  // リビジョン履歴（新しい順の見出し -> 中身 -> その時点への書き戻し）。
+  listStudioRevisions: (projectId: string) =>
+    request<StudioRevision[]>(`/api/studio/projects/${projectId}/revisions`),
+  getStudioRevision: (projectId: string, seq: number) =>
+    request<StudioRevisionDetail>(
+      `/api/studio/projects/${projectId}/revisions/${seq}`,
+    ),
+  restoreStudioRevision: (projectId: string, seq: number) =>
+    json<StudioProjectDetail>(
+      'POST',
+      `/api/studio/projects/${projectId}/revisions/${seq}/restore`,
+    ),
+
+  createStudioShot: (projectId: string, payload: StudioShotCreate = {}) =>
+    json<StudioShot>('POST', `/api/studio/projects/${projectId}/shots`, payload),
+  /** `shotIds` の並び順がそのまま sort_order になる（全件を過不足なく送る）。 */
+  reorderStudioShots: (projectId: string, shotIds: string[]) =>
+    json<StudioShot[]>('POST', `/api/studio/projects/${projectId}/shots/reorder`, {
+      shot_ids: shotIds,
+    }),
+  updateStudioShot: (id: string, patch: StudioShotUpdate) =>
+    json<StudioShot>('PATCH', `/api/studio/shots/${id}`, patch),
+  deleteStudioShot: (id: string) => json<void>('DELETE', `/api/studio/shots/${id}`),
+  /**
+   * このカットを今生成したら**実際に投入されるもの**（読み取りだけ）。
+   *
+   * 生成と同じ組み立てを通るが、英訳は走らない（入るかどうかは
+   * `will_translate`）。組み立てられないカットも 200 で `error` に理由が入る。
+   */
+  previewStudioShotPrompt: (id: string) =>
+    request<StudioShotPreview>(`/api/studio/shots/${id}/prompt-preview`),
+
+  listStudioTakes: (shotId: string) =>
+    request<StudioTake[]>(`/api/studio/shots/${shotId}/takes`),
+  /** Shot を 1 回生成する（ワークフローはサーバー側で t2v / i2v / r2v に決まる）。 */
+  renderStudioShot: (shotId: string) =>
+    json<StudioTake>('POST', `/api/studio/shots/${shotId}/render`),
+  selectStudioTake: (id: string) =>
+    json<StudioTake>('POST', `/api/studio/takes/${id}/select`),
+  rejectStudioTake: (id: string) =>
+    json<StudioTake>('POST', `/api/studio/takes/${id}/reject`),
+  deleteStudioTake: (id: string) => json<void>('DELETE', `/api/studio/takes/${id}`),
+
+  // キャンバス（スタジオの別ビュー）。カードは「スタジオのどの行か」と「どこに
+  // 置いてあるか」だけを持つので、中身は getStudioProject と重ねて使う。
+  /**
+   * 盤面 1 タブぶん（読んだ時点でスタジオの中身がカードとして出そろう）。
+   *
+   * `episodeId` は開くタブ（null = 作品共通。素材と未分類のカットが出る）。
+   */
+  getCanvasBoard: (projectId: string, episodeId: string | null = null) =>
+    request<CanvasBoard>(
+      `/api/canvas/projects/${projectId}${canvasTab(episodeId)}`,
+    ),
+  /** タブの表示位置を覚える（見え方だけなのでリビジョンには残らない）。 */
+  setCanvasViewport: (
+    projectId: string,
+    viewport: CanvasViewport,
+    episodeId: string | null = null,
+  ) =>
+    json<CanvasViewport>(
+      'PUT',
+      `/api/canvas/projects/${projectId}/viewport${canvasTab(episodeId)}`,
+      viewport,
+    ),
+
+  listCanvasCards: (projectId: string, episodeId: string | null = null) =>
+    request<CanvasCard[]>(
+      `/api/canvas/projects/${projectId}/cards${canvasTab(episodeId)}`,
+    ),
+  /**
+   * カードを 1 枚**新しく作る**（参照カードはスタジオ側の行も一緒に作る）。
+   * 既にあるものは開いた時点で並んでいるので、置き直す口は無い。
+   */
+  createCanvasCard: (projectId: string, payload: CanvasCardCreate) =>
+    json<CanvasCard>('POST', `/api/canvas/projects/${projectId}/cards`, payload),
+  /** カードの中身（text / model の `data`）と大きさを変える。 */
+  updateCanvasCard: (id: string, patch: CanvasCardUpdate) =>
+    json<CanvasCard>('PATCH', `/api/canvas/cards/${id}`, patch),
+  /** 置き場所だけ動かす（エンティティには触れない軽い更新）。 */
+  moveCanvasCard: (id: string, position: CanvasCardPosition) =>
+    json<CanvasCard>('PUT', `/api/canvas/cards/${id}/position`, position),
+  /**
+   * カードを外す。参照カードはスタジオの写しなので `deleteEntity` が要る
+   * （立てないと 400）。text / model カードはそのカードだけを消す。
+   */
+  deleteCanvasCard: (id: string, deleteEntity = false) =>
+    json<void>(
+      'DELETE',
+      `/api/canvas/cards/${id}?delete_entity=${deleteEntity ? 'true' : 'false'}`,
+    ),
+
+  listCanvasMessages: (projectId: string) =>
+    request<CanvasMessage[]>(`/api/canvas/projects/${projectId}/messages`),
+  /** 発言を 1 件残すだけ（エージェントは動かさない）。 */
+  createCanvasMessage: (projectId: string, payload: CanvasMessageCreate) =>
+    json<CanvasMessage>('POST', `/api/canvas/projects/${projectId}/messages`, payload),
+
+  /**
+   * 発言を残してエージェントを走らせる。
+   *
+   * 実行はバックグラウンドで進み、応答とツール実行の結果は会話に足されながら
+   * WS（`type: "canvas"`）で届く。走っている最中の再送は 409。
+   */
+  runCanvasAgent: (
+    projectId: string,
+    content: string,
+    episodeId: string | null = null,
+    attachments: string[] = [],
+  ) =>
+    json<CanvasAgentRun>('POST', `/api/canvas/projects/${projectId}/agent`, {
+      content,
+      episode_id: episodeId,
+      attachments,
+    }),
+
+  /**
+   * チャットに添える添付を 1 件アップロードする。
+   *
+   * 返る `path`（workdir 相対）をそのまま `runCanvasAgent` に渡す。
+   */
+  uploadCanvasAttachment: (projectId: string, file: File) =>
+    upload<CanvasAttachment>(
+      `/api/canvas/projects/${projectId}/attachments`,
+      file,
+    ),
+  /** 添付そのものの URL（履歴のサムネイル用）。 */
+  canvasAttachmentUrl: (projectId: string, path: string) =>
+    `/api/canvas/projects/${projectId}/attachments/${path
+      .split('/')
+      .map(encodeURIComponent)
+      .join('/')}`,
+  /** 実行中かどうか（WS を取りこぼしたときの拾い先）。 */
+  getCanvasAgentState: (projectId: string) =>
+    request<CanvasAgentState>(`/api/canvas/projects/${projectId}/agent`),
+  /** 次のターンの手前で止める（投入済みの生成は止まらない）。 */
+  stopCanvasAgent: (projectId: string) =>
+    json<CanvasAgentState>('POST', `/api/canvas/projects/${projectId}/agent/stop`),
 }
 
 export function wsUrl(path = '/api/ws'): string {

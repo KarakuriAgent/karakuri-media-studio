@@ -1,10 +1,9 @@
 from fastapi import APIRouter
 
-from .. import backends, comfy, library
+from .. import comfy, library
 from ..config import load_settings
 from ..models import (
     DEFAULT_NEGATIVE_PROMPT,
-    BackendInfo,
     ElementsOption,
     MultiShotOption,
     Options,
@@ -83,6 +82,7 @@ def _workflow_option(spec: WorkflowSpec) -> WorkflowOption:
         min_duration=spec.min_duration,
         max_duration=spec.max_duration,
         default_duration=spec.default_duration,
+        default_megapixels=spec.default_megapixels,
         selects=[
             WorkflowSelect(
                 name=name,
@@ -104,14 +104,9 @@ def _workflow_option(spec: WorkflowSpec) -> WorkflowOption:
 async def get_options() -> Options:
     """Form choices. ComfyUI being down is reported inline, never as an HTTP error."""
     settings = load_settings()
-    # 外部バックエンド（kie.ai など）は**認証が通ることを確かめられたものだけ**
-    # ワークフロー一覧に載る（SPEC §5.2）。未確認ならここで 1 度だけ確かめる。
-    statuses = await backends.ensure_all()
     options = Options(
         comfy_target=settings.comfy_target,
         comfy_url=settings.active_comfy_url(),
-        # 今の接続先で動かない高速化トグル（グレーアウト用、SPEC §3.1）
-        unsupported_speedups=list(comfy.unsupported_patches()),
         audio_assets=list_assets("audio", AUDIO_EXT),
         image_assets=list_assets("image", IMAGE_EXT),
         video_assets=list_assets("video", VIDEO_EXT),
@@ -126,15 +121,6 @@ async def get_options() -> Options:
         model_slots=selectable_model_slots(
             settings.overrides_for(), settings.choices_for()
         ),
-        backends=[
-            BackendInfo(
-                backend=status.backend,
-                status=status.state,
-                detail=status.detail,
-                available=status.available,
-            )
-            for status in statuses
-        ],
     )
 
     # LoRA 登録は接続先ごと（共通行を含む、SPEC §5）: 生成フォームには現在の

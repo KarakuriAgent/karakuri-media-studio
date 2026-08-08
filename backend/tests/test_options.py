@@ -94,7 +94,13 @@ def test_workflows_carry_the_two_stage_picker_labels(client):
     # 同じモデルのモードは同じ 1 段目に集まる
     assert {
         videos[spec_id]["family_label"]
-        for spec_id in ("minimax_h3_t2v", "minimax_h3_i2v", "minimax_h3_r2v")
+        for spec_id in (
+            "minimax_h3_t2v",
+            "minimax_h3_i2v",
+            "minimax_h3_i2v_turbo",
+            "minimax_h3_r2v",
+            "minimax_h3_r2v_turbo",
+        )
     } == {"MiniMax H3"}
 
     images = {w["id"]: w for w in options["image_workflows"]}
@@ -102,52 +108,45 @@ def test_workflows_carry_the_two_stage_picker_labels(client):
     assert images["krea2_turbo"]["mode_label"] == "turbo"
 
 
-def test_speedup_toggles_are_exposed_on_the_declaring_workflows(client):
-    """高速化トグル（SPEC §3.1）は宣言のあるワークフローの supports にだけ出る。"""
+def test_the_minimax_workflows_declare_their_own_megapixels(client):
+    """H3 は 0.4MP 前提（1.0MP のままだと VRAM が足りない、SPEC §3.1）。"""
     videos = {w["id"]: w for w in client.get("/api/options").json()["video_workflows"]}
-    for workflow_id in ("minimax_h3_t2v", "minimax_h3_i2v", "minimax_h3_r2v"):
-        assert {"sage_attention", "easy_cache"} <= set(videos[workflow_id]["supports"])
-    # 挟む場所を宣言していないワークフローには出ない
-    assert not {"sage_attention", "easy_cache"} & set(videos["ltx2_3_t2v"]["supports"])
+    for workflow_id in (
+        "minimax_h3_t2v",
+        "minimax_h3_i2v",
+        "minimax_h3_i2v_turbo",
+        "minimax_h3_r2v",
+        "minimax_h3_r2v_turbo",
+    ):
+        assert videos[workflow_id]["default_megapixels"] == 0.4
+    # 宣言の無いワークフローは 0（フォームのグローバル既定のまま）
+    assert videos["ltx2_3_t2v"]["default_megapixels"] == 0.0
 
 
-def test_unsupported_speedups_follow_the_connection_target(client):
-    """暫定ガード: クラウド接続のあいだは Sage Attention をグレーアウトさせる。"""
-    assert client.get("/api/options").json()["unsupported_speedups"] == []
-
-    client.put("/api/settings", json={"comfy_target": "comfy_cloud"})
-    assert client.get("/api/options").json()["unsupported_speedups"] == [
-        "sage_attention"
-    ]
-
-    client.put("/api/settings", json={"comfy_target": "local"})
-    assert client.get("/api/options").json()["unsupported_speedups"] == []
-
-
-def test_speedup_toggles_are_stored_in_the_settings(client):
-    """値は設定に永続化される（既定 OFF・部分更新で片方だけ書き換えられる）。"""
-    settings = client.get("/api/settings").json()
-    assert settings["sage_attention"] is False
-    assert settings["easy_cache"] is False
-
-    saved = client.put("/api/settings", json={"sage_attention": True}).json()
-    assert saved["sage_attention"] is True
-    # 部分更新なので、触っていないほうは既定のまま
-    assert saved["easy_cache"] is False
-    assert config.load_settings().sage_attention is True
-
-    saved = client.put("/api/settings", json={"easy_cache": True}).json()
-    assert saved["sage_attention"] is True and saved["easy_cache"] is True
+def test_the_minimax_turbo_workflows_are_offered(client):
+    """turbo（4 ステップ版）も一覧に出て、素の版と同じ入力を受け取る。"""
+    videos = {w["id"]: w for w in client.get("/api/options").json()["video_workflows"]}
+    for turbo_id, plain_id in (
+        ("minimax_h3_i2v_turbo", "minimax_h3_i2v"),
+        ("minimax_h3_r2v_turbo", "minimax_h3_r2v"),
+    ):
+        turbo, plain = videos[turbo_id], videos[plain_id]
+        assert sorted(turbo["supports"]) == sorted(plain["supports"])
+        assert turbo["family_label"] == "MiniMax H3"
+        assert "Turbo" in turbo["mode_label"]
+        assert turbo["accepts_start_image"] == plain["accepts_start_image"]
+        assert turbo["multi_inputs"] == plain["multi_inputs"]
 
 
 def test_family_label_carries_the_supplier_note():
-    """供給元の注記はモデル側に付く（モードごとに変わるものではない）。"""
-    from app.workflows import FAMILY_LABELS, family_label
+    """供給元の注記はモデル側に付く（モードごとに変わるものではない）。
 
-    assert family_label("kling") == "Kling 3.0（外部 API）"
-    assert family_label("grok-imagine") == "Grok Imagine（サブスク CLI）"
-    # LoRA 画面が使う素のラベルは変えない
-    assert FAMILY_LABELS["kling"] == "Kling 3.0"
+    今はどのファミリーもローカル実行なので注記は無く、素のラベルがそのまま出る。
+    """
+    from app.workflows import FAMILY_LABELS, FAMILY_NOTES, family_label
+
+    assert FAMILY_NOTES == {}
+    assert FAMILY_LABELS["ltx2.3"] == "LTX 2.3"
     assert family_label("krea2") == "Krea 2"
     assert family_label("unknown") == "unknown"
 
@@ -290,3 +289,38 @@ def test_audio_combo_choices_are_exposed(client):
     assert options["audio_categories"] == ["Music", "Instrument", "SFX", "One-shot"]
     assert "C major" in options["keyscales"] and len(options["keyscales"]) == 34
     assert options["languages"][-1] == "unknown"
+
+
+def test_steps_are_advertised_only_where_the_template_has_a_sampler_knob(client):
+    """ステップ数の欄はマニフェストの `steps` 宣言だけで出し分かれる（§3.1）。"""
+    options = client.get("/api/options").json()
+    supports = {
+        w["id"]: set(w["supports"])
+        for key in ("image_workflows", "video_workflows", "audio_workflows")
+        for w in options[key]
+    }
+    for workflow_id in (
+        "krea2_turbo",
+        "anima",
+        "z_image_turbo",
+        "ltx2_3_ic_lora_image",
+        "ltx2_3_ic_lora_motion",
+        "minimax_h3_t2v",
+        "minimax_h3_i2v",
+        "minimax_h3_r2v",
+        "minimax_h3_i2v_turbo",
+        "minimax_h3_r2v_turbo",
+        "ace_step1_5_xl_sft",
+        "stable_audio_3_medium_base",
+    ):
+        assert "steps" in supports[workflow_id], workflow_id
+    # ManualSigmas / PrimitiveInt スイッチ構成のものは steps の概念を持たない
+    for workflow_id in (
+        "qwen_image_edit_2511",
+        "ltx2_3_t2v",
+        "tx2_3_i2v",
+        "tx2_3_ia2v",
+        "ltx2_3_id_lora",
+        "ltx2_3_flf2v",
+    ):
+        assert "steps" not in supports[workflow_id], workflow_id

@@ -57,7 +57,6 @@ function settings(): Settings {
     runpod_comfy_url: '',
     runpod_comfy_api_key: '',
     comfy_cloud_api_key: '',
-    kie_api_key: '',
     grok_command: 'grok',
     grok_model: 'grok-4.5',
     grok_workdir: '/repo/runtime/grok-workdir',
@@ -71,8 +70,6 @@ function settings(): Settings {
     runpod_template_id: '',
     runpod_gpu_type: 'NVIDIA RTX A6000',
     runpod_network_volume_id: '',
-    sage_attention: false,
-    easy_cache: false,
   }
 }
 
@@ -800,5 +797,49 @@ describe('SettingsPage: LoRA フォームの取得元 URL', () => {
 
     await waitFor(() => expect(updateLora).toHaveBeenCalled())
     expect(putSettings).not.toHaveBeenCalled()
+  })
+})
+
+describe('SettingsPage: LoRA スロットの候補（SPEC §3.3）', () => {
+  beforeEach(() => {
+    vi.stubGlobal('WebSocket', FakeSocket)
+    getSettings.mockResolvedValue(settings())
+    listLoras.mockResolvedValue([loraRow()])
+    listModelDownloads.mockResolvedValue([])
+    modelsDirStatus.mockResolvedValue(dirStatus())
+  })
+
+  it('MiniMax H3 turbo の LoRA スロットは lora_files を候補に使う', async () => {
+    // カスタムノードを入れていない環境では object_info に出てこないので、
+    // model_files にはこの class_type の一覧が無い。
+    listModels.mockResolvedValue([
+      {
+        ...modelRow(),
+        key: 'minimax_h3_i2v_turbo/150.lora_name',
+        workflow_id: 'minimax_h3_i2v_turbo',
+        workflow_label: 'MiniMax H3 i2v Turbo',
+        kind: 'video',
+        node_id: '150',
+        field: 'lora_name',
+        class_type: 'MiniMaxH3TurboLoRA',
+        title: 'MiniMax H3 Turbo LoRA',
+        default: 'minimax_h3_turbo_4step_ema_ckpt850.safetensors',
+        value: 'minimax_h3_turbo_4step_ema_ckpt850.safetensors',
+        subfolder: 'loras',
+      },
+    ])
+    await openSettings({
+      model_files: {},
+      lora_files: ['minimax_h3_turbo_4step_ema_ckpt850.safetensors', 'other.safetensors'],
+    } as unknown as Options)
+    screen.getByRole('button', { name: 'モデル' }).click()
+    await waitFor(() => screen.getByText(/MiniMax H3 i2v Turbo/))
+
+    const list = document.getElementById('model-files-MiniMaxH3TurboLoRA.lora_name')
+    expect(list).toBeTruthy()
+    expect([...(list as HTMLDataListElement).options].map((o) => o.value)).toEqual([
+      'minimax_h3_turbo_4step_ema_ckpt850.safetensors',
+      'other.safetensors',
+    ])
   })
 })

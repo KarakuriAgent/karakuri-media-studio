@@ -1,4 +1,3 @@
-import asyncio
 import logging
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -8,10 +7,10 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import agent_runner, backends, ws
+from . import agent_runner, canvas_agent, ws
 from .config import load_settings
 from .db import init_db
-from .jobs import runner
+from .jobs import recover_interrupted_jobs, runner
 from .paths import (
     ASSETS_DIR,
     FRONTEND_DIST_DIR,
@@ -22,18 +21,17 @@ from .paths import (
 from .routers import (
     agent,
     assets,
+    canvas,
     chat,
-    codex,
-    grok,
     health,
     jobs,
-    kie,
     library,
     loras,
     model_download,
     models_config,
     options,
     settings,
+    studio,
 )
 from .workflows import validate_specs
 
@@ -50,16 +48,14 @@ async def lifespan(app: FastAPI):
     # and in GET /api/health instead.
     for problem in validate_specs(use_cache=False):
         log.error("workflow manifest mismatch: %s", problem)
-    # 外部生成バックエンドの認証確認（SPEC §5.2）。確認できたものだけが
-    # /api/options の選択肢に出るので、起動のたびに取り直す。ネットワーク待ちで
-    # 起動を止めないよう、投げっぱなしで走らせる。
-    startup_checks = asyncio.create_task(backends.refresh_all())
     await runner.start()
+    # 前回のプロセスが落ちたときに残った queued / running を拾い直す（SPEC §5）。
+    await recover_interrupted_jobs()
     try:
         yield
     finally:
-        startup_checks.cancel()
         await agent_runner.stop_all()
+        await canvas_agent.stop_all()
         await runner.stop()
 
 
@@ -83,9 +79,8 @@ app.include_router(assets.router)
 app.include_router(options.router)
 app.include_router(chat.router)
 app.include_router(jobs.router)
-app.include_router(kie.router)
-app.include_router(grok.router)
-app.include_router(codex.router)
+app.include_router(studio.router)
+app.include_router(canvas.router)
 app.include_router(agent.router)
 app.include_router(ws.router)
 

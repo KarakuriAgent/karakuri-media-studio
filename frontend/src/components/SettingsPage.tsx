@@ -10,7 +10,6 @@ import {
 } from '../form'
 import type {
   Asset,
-  BackendInfo,
   ComfyTarget,
   ImageFamily,
   Lora,
@@ -20,7 +19,6 @@ import type {
   ModelFieldState,
   ModelsDirStatus,
   Options,
-  KieCredits,
   Settings,
 } from '../types'
 import { Banner } from './ui'
@@ -74,12 +72,22 @@ function fileListId(name: string): string {
  *
  * LoRA だけは以前から `lora_files` で返しているので、`model_files` に無ければ
  * そちらで補う（どちらも無い = ComfyUI に繋がっていない場合は自由入力のまま）。
+ * `MiniMaxH3TurboLoRA` は専用ローダーだが読むフォルダは `loras` なので同じ扱い
+ * （カスタムノードを入れていない環境では `model_files` に出てこない）。
  */
+const LORA_FILE_KEYS = [
+  'LoraLoaderModelOnly.lora_name',
+  'MiniMaxH3TurboLoRA.lora_name',
+]
+
 function modelFileMap(options: Options | null): Record<string, string[]> {
   const files: Record<string, string[]> = { ...(options?.model_files ?? {}) }
-  const loraKey = 'LoraLoaderModelOnly.lora_name'
   const loraFiles = options?.lora_files ?? []
-  if (!files[loraKey] && loraFiles.length > 0) files[loraKey] = loraFiles
+  if (loraFiles.length > 0) {
+    for (const key of LORA_FILE_KEYS) {
+      if (!files[key]) files[key] = loraFiles
+    }
+  }
   return files
 }
 
@@ -232,11 +240,6 @@ export default function SettingsPage({
   >({})
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
-  /** kie.ai の接続確認の結果（SPEC §5.2）。 */
-  const [kieState, setKieState] = useState<KieCredits | null>(null)
-  /** Grok Build CLI（サブスク枠の生成バックエンド）の接続確認の結果（§5.2）。 */
-  const [grokState, setGrokState] = useState<BackendInfo | null>(null)
-  const [codexState, setCodexState] = useState<BackendInfo | null>(null)
   const [busy, setBusy] = useState(false)
   const [draft, setDraft] = useState<LoraPayload>(EMPTY_LORA)
   const [editingId, setEditingId] = useState<number | null>(null)
@@ -390,7 +393,6 @@ export default function SettingsPage({
           runpod_comfy_url: settings.runpod_comfy_url,
           runpod_comfy_api_key: settings.runpod_comfy_api_key,
           comfy_cloud_api_key: settings.comfy_cloud_api_key,
-          kie_api_key: settings.kie_api_key,
           grok_model: settings.grok_model,
           grok_command: settings.grok_command,
           hf_token: settings.hf_token,
@@ -622,52 +624,6 @@ export default function SettingsPage({
   const update = (patch: Partial<Settings>) =>
     setSettings((previous) => (previous ? { ...previous, ...patch } : previous))
 
-  /**
-   * kie.ai のキーを確かめる（SPEC §5.2）。
-   *
-   * 確認が通ったバックエンドのワークフローだけが生成フォームとエージェントの
-   * 選択肢に出るので、キーを入れ替えたらここで確かめてから保存する。
-   */
-  const checkKie = async () => {
-    setBusy(true)
-    setError(null)
-    try {
-      setKieState(await api.kieCheck())
-      onChanged()
-    } catch (caught) {
-      fail(caught)
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  const checkGrok = async () => {
-    setBusy(true)
-    setError(null)
-    try {
-      setGrokState(await api.grokCheck())
-      onChanged()
-    } catch (caught) {
-      fail(caught)
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  /** Codex CLI（ChatGPT サブスク枠）にサインイン済みか確かめる（SPEC §5.4）。 */
-  const checkCodex = async () => {
-    setBusy(true)
-    setError(null)
-    try {
-      setCodexState(await api.codexCheck())
-      onChanged()
-    } catch (caught) {
-      fail(caught)
-    } finally {
-      setBusy(false)
-    }
-  }
-
   /** モデル / LoRA タブの先頭に置く環境プルダウン（SPEC §5）。 */
   const envPicker = (hint: string) => (
     <div className="card flex flex-wrap items-center gap-2 p-2">
@@ -798,126 +754,6 @@ export default function SettingsPage({
                             接続先は https://cloud.comfy.org 固定です。API アクセスは
                             Standard 以上のプランが必要です。
                           </p>
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* 外部生成バックエンド kie.ai（SPEC §5.2）。キーが有効だと
-                        確認できたときだけ、kie 系のワークフローが生成フォームと
-                        エージェントの選択肢に出る。 */}
-                    <div className="rounded-lg border border-ink-600 p-2">
-                      <h5 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-                        kie.ai（外部生成バックエンド）
-                      </h5>
-                      <div className="flex flex-col gap-2">
-                        <div>
-                          <label className="label">kie.ai APIキー</label>
-                          <input
-                            className="field"
-                            type="password"
-                            autoComplete="off"
-                            value={settings.kie_api_key}
-                            onChange={(event) =>
-                              update({ kie_api_key: event.target.value })
-                            }
-                          />
-                          <p className="mt-1 text-[11px] text-slate-500">
-                            https://kie.ai/api-key で発行したキー。保存すると有効性を
-                            確認し、通ったときだけ kie のワークフローが選択肢に出ます
-                            （空欄なら環境変数 KIE_API_KEY を使います）。
-                          </p>
-                        </div>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <button
-                            className="btn-ghost"
-                            disabled={busy}
-                            onClick={() => void checkKie()}
-                          >
-                            接続確認
-                          </button>
-                          {kieState && (
-                            <span className="text-[11px] text-slate-400">
-                              {kieState.error
-                                ? `エラー: ${kieState.error}`
-                                : kieState.configured
-                                  ? `残クレジット ${kieState.credits ?? '?'}（1 credit = $0.005）`
-                                  : 'APIキーが未設定です'}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Grok Build CLI（サブスク枠の生成バックエンド、SPEC §5.2）。
-                        API キーは使わず、CLI にサインイン済みかどうかだけで決まる。
-                        通ることを確認できたときだけ Grok Imagine のワークフローが
-                        生成フォームとエージェントの選択肢に出る。 */}
-                    <div className="rounded-lg border border-ink-600 p-2">
-                      <h5 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-                        Grok Imagine（サブスク CLI）
-                      </h5>
-                      <div className="flex flex-col gap-2">
-                        <p className="text-[11px] text-slate-500">
-                          SuperGrok / X Premium+ のサブスクリプション枠で画像を生成
-                          します。API キーは不要で、サーバー側で
-                          <code className="mx-1">grok --device-auth</code>
-                          を実行してサインインしておいてください（認証情報は
-                          ~/.grok/auth.json）。接続確認が通ったときだけワークフローが
-                          選択肢に出ます。
-                        </p>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <button
-                            className="btn-ghost"
-                            disabled={busy}
-                            onClick={() => void checkGrok()}
-                          >
-                            接続確認
-                          </button>
-                          {grokState && (
-                            <span className="text-[11px] text-slate-400">
-                              {grokState.available
-                                ? `使えます: ${grokState.detail}`
-                                : `使えません: ${grokState.detail}`}
-                            </span>
-                          )}
-                        </div>
-                      </div>
-                    </div>
-
-                    {/* Codex CLI（ChatGPT サブスク枠の生成バックエンド、SPEC §5.4）。
-                        API キーは使わず、CLI にサインイン済みかどうかだけで決まる。
-                        通ることを確認できたときだけ gpt-image-2 のワークフローが
-                        生成フォームとエージェントの選択肢に出る。 */}
-                    <div className="rounded-lg border border-ink-600 p-2">
-                      <h5 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-                        gpt-image-2（Codex CLI）
-                      </h5>
-                      <div className="flex flex-col gap-2">
-                        <p className="text-[11px] text-slate-500">
-                          ChatGPT Plus / Pro のサブスクリプション枠で画像を生成
-                          します。API キーは不要で、サーバー側で
-                          <code className="mx-1">codex login</code>
-                          を実行して ChatGPT アカウントでサインインしておいて
-                          ください（認証情報は ~/.codex/auth.json）。接続確認が
-                          通ったときだけワークフローが選択肢に出ます。画像生成は
-                          通常のターンより速くサブスク枠を消費するので、少量利用
-                          向けです。
-                        </p>
-                        <div className="flex flex-wrap items-center gap-2">
-                          <button
-                            className="btn-ghost"
-                            disabled={busy}
-                            onClick={() => void checkCodex()}
-                          >
-                            接続確認
-                          </button>
-                          {codexState && (
-                            <span className="text-[11px] text-slate-400">
-                              {codexState.available
-                                ? `使えます: ${codexState.detail}`
-                                : `使えません: ${codexState.detail}`}
-                            </span>
-                          )}
                         </div>
                       </div>
                     </div>

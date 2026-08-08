@@ -13,6 +13,7 @@ from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 
 from .. import (
+    agent_protocol,
     agent_runner,
     agent_store,
     grok,
@@ -365,9 +366,11 @@ async def _dispatch(session_id: str, action) -> None:
             await agent_runner.start_loop(session_id)
         return
     # 生成を伴わない即時アクションはこのリクエストの中で片付ける
+    # （スタジオ操作は目録の読み書きで、生成の投入も完了を待たない）
     if action.action in (
         "plan", "checkin", "done", "note", "rename",
         "library", "library_search", "library_sheet",
+        *agent_protocol.STUDIO_ACTIONS,
     ):
         await agent_runner.apply_action(session_id, action)
         return

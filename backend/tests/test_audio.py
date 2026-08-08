@@ -361,3 +361,17 @@ def test_combo_option_lists_match_the_nodes():
     assert len(LANGUAGES) == 51
     assert LANGUAGES[-1] == "unknown"
     assert "ja" in LANGUAGES
+
+
+@pytest.mark.parametrize(("workflow_id", "node_id"), [(ACE, "3"), (SA3, "52:3")])
+def test_audio_steps_default_to_the_template_and_are_injected_when_set(
+    workflow_id, node_id
+):
+    """`steps` 未指定（0）はテンプレート既定のまま、正の値だけが入る（§3.1）。"""
+    default = load_template(get_audio_spec(workflow_id))[node_id]["inputs"]["steps"]
+    unset = build_audio_workflow(_params(audio_workflow=workflow_id))
+    assert unset[node_id]["inputs"]["steps"] == default
+
+    wf = build_audio_workflow(_params(audio_workflow=workflow_id, steps=24))
+    assert wf[node_id]["inputs"]["steps"] == 24
+    assert isinstance(wf[node_id]["inputs"]["steps"], int)

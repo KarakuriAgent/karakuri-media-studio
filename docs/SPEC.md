@@ -43,7 +43,7 @@
 ## 2. 動作モード
 
 ワークフローは画像・動画・音声で分離しており、1 ジョブは **1 つまたは 2 つのステージ**で構成される
-（各ステージはそのワークフローのバックエンド＝ ComfyUI のプロンプトか kie.ai のタスク、§5.2）。
+（各ステージはそのワークフローのバックエンド＝ ComfyUI のプロンプト、§5）。
 
 | モード | 内部名 | 実行されるワークフロー | 開始フレーム |
 |---|---|---|---|
@@ -51,9 +51,6 @@
 | 動画生成 | `i2v` | 選択した動画ワークフローのみ | ワークフローが要求する入力（アップロード / 履歴 / なし） |
 | 画像のみ | `image_only` | 選択した画像ワークフローのみ | ― |
 | 音声 | `audio` | 選択した音声ワークフローのみ（独立ジョブ） | ― |
-
-モードはワークフローの**実行エンジンとは独立**で、選んだワークフローが kie.ai の
-ものなら同じモードのまま外部 API で実行される（§5.2）。
 
 `audio` は他の 3 モードと連結しない独立モード。画像・動画のフィールド（`video_workflow` /
 `source_image` / `loras` など）は一切使わず、指定すると 422 で拒否される（§2.4）。
@@ -64,16 +61,12 @@
 
 1. 選択した画像ワークフローを `/prompt` に投入 → 完了を待つ
 2. `SaveImage` の出力を `/view` でダウンロードし `outputs/{job_id}/image.png` に保存
-3. その画像を 2 段目に渡せる形にする（**2 段目のバックエンド次第**）:
-   ComfyUI なら `/upload/image` で input ディレクトリへ、kie.ai なら File Upload API で公開 URL に
+3. その画像を `/upload/image` で ComfyUI の input ディレクトリへ上げる
 4. 選択した動画ワークフローに開始フレームとして注入して投入 → 完了を待つ
-   （ComfyUI は `LoadImage` のファイル名、kie.ai は `imageUrls` の 1 枚目）
+   （`LoadImage` のファイル名）
 5. 動画をダウンロードし、ffmpeg でラストフレームを抽出
 
 - 進捗は 1 ジョブとして配信され、メッセージが「画像生成 (1/2)」→「動画生成 (2/2)」と切り替わる
-- **2 段でバックエンドが違ってもよい**: 1 段目 = ComfyUI の画像ワークフロー、2 段目 = kie.ai の
-  動画ワークフロー（Veo など）という「ローカルで画像 → 外部 API で動画化」が本命の使い方。
-  逆向き（kie.ai の画像 → ComfyUI の動画）は受け渡しが未実装なので 422（§5.2）
 - `workflow_json` には **両方のグラフ**を `{"image": {...}, "video": {...}}` の形で保存する（各要素は `workflow_id` / `prompt_id` / `graph`）。単段ジョブも同じ形（キーは `image` / `video` / `audio`）。再現性の担保はこれで行い、`rerun` は `params` から作り直す
 - `full` で選べるのは**開始フレームを受け取れる動画ワークフローだけ**（`accepts_start_image`）。t2v と IC-LoRA リファレンスシートは対象外で、選択すると 422 になる
 
@@ -88,28 +81,13 @@
 | `ltx2_3_flf2v` | 最初と最後のフレーム指定 (flf2v) | distilled-fp8 | 画像・最終フレーム画像 | ○ |
 | `ltx2_3_ic_lora_image` | リファレンスシート (IC-LoRA) | distilled-fp8 + ingredients IC-LoRA | リファレンスシート画像 | ✕ |
 | `ltx2_3_ic_lora_motion` | 参照動画からモーション転写 (IC-LoRA + MoGe) | distilled-fp8 + union-control IC-LoRA | 画像・参照動画 | ○ |
-| `wan_dancer` | 画像+音声→ダンス動画 (Wan Dancer) | wan2.2 global/local 2 段 + lightx2v | 画像・音声 | ○ |
 | `minimax_h3_t2v` | テキスト→動画・音声つき (MiniMax H3 t2v) | minimax_h3 fl2va int8 | なし | ✕ |
 | `minimax_h3_i2v` | 画像→動画・音声つき (MiniMax H3 i2v) | minimax_h3 fl2va int8 | 画像（最終フレーム画像は任意） | ○ |
+| `minimax_h3_i2v_turbo` | 画像→動画・音声つき (MiniMax H3 i2v Turbo) | minimax_h3 fl2va w4a8 + turbo 4step LoRA | 同 `minimax_h3_i2v` | ○ |
 | `minimax_h3_r2v` | 参照素材→動画・音声つき (MiniMax H3 r2v) | minimax_h3 ref2va int8 | `reference_images` 9 枚 / `reference_videos` 3 本 / `reference_audios` 3 本まで・合計 1 件以上（開始フレームは不可） | ✕ |
-| `veo3_1_fast` | Veo 3.1 Fast（音声つき・外部 API） | kie.ai `veo3_fast` | なし（画像・最終フレーム画像は任意） | ○ |
-| `veo3_1_fast_ref` | Veo 3.1 Fast 素材参照（音声つき・外部 API） | kie.ai `veo3_fast` | なし（参照画像は任意・開始フレームは不可） | ✕ |
-| `veo3_1_quality` | Veo 3.1 Quality（音声つき・外部 API） | kie.ai `veo3` | なし（画像・最終フレーム画像は任意） | ○ |
-| `kling3_video` | Kling 3.0（音声つき・外部 API） | kie.ai `kling-3.0/video` | なし（画像・最終フレーム画像は任意） | ○ |
-| `kling3_multishot` | Kling 3.0 マルチショット（音声つき・外部 API） | kie.ai `kling-3.0/video` | **`multi_shots`**（画像・最終フレーム画像は任意） | ○ |
-| `seedance2` | Seedance 2.0（音声つき・外部 API） | kie.ai `bytedance/seedance-2` | なし（画像・最終フレーム画像は任意） | ○ |
-| `seedance2_fast` | Seedance 2.0 Fast（音声つき・外部 API） | kie.ai `bytedance/seedance-2-fast` | なし（画像・最終フレーム画像は任意） | ○ |
-| `seedance2_mini` | Seedance 2.0 Mini（音声つき・外部 API） | kie.ai `bytedance/seedance-2-mini` | なし（画像・最終フレーム画像は任意） | ○ |
-| `seedance2_ref` | Seedance 2.0（素材参照・音声つき・外部 API） | kie.ai `bytedance/seedance-2` | なし（参照素材は任意・開始フレームは不可） | ✕ |
-| `seedance2_fast_ref` | Seedance 2.0 Fast（素材参照・音声つき・外部 API） | kie.ai `bytedance/seedance-2-fast` | なし（参照素材は任意・開始フレームは不可） | ✕ |
-| `seedance2_mini_ref` | Seedance 2.0 Mini（素材参照・音声つき・外部 API） | kie.ai `bytedance/seedance-2-mini` | なし（参照素材は任意・開始フレームは不可） | ✕ |
-| `grok_imagine_video` | Grok Imagine 動画（サブスク CLI） | Grok Build CLI `video-1.5` | なし（開始フレーム画像は任意） | ○ |
+| `minimax_h3_r2v_turbo` | 参照素材→動画・音声つき (MiniMax H3 r2v Turbo) | minimax_h3 ref2va w4a8 + turbo 4step LoRA | 同 `minimax_h3_r2v` | ✕ |
 
 - id はファイル名（拡張子なし）。`tx2_3_i2v` / `tx2_3_ia2v` の綴りは配布ファイル名そのまま
-- **`wan_dancer`（`workflow/video/wan/`、family `wan`）** は LTX 系とは作りが違う: 渡した曲に合わせて踊る映像を作り、
-  プロンプトは自由記述ではなく**選択式フィールド**（§3.1）で決まる。`video_prompt` は任意で、書けば Global 側の
-  テンプレ文（`<dance style>` を含められる）を差し替える。ユーザー LoRA を挿すチェーンは持たないので、
-  動画 LoRA を指定したジョブは 422 になり、フォームは LoRA（動画）欄を出さない
 - **`minimax_h3_*`（`workflow/video/minimax-h3/`、family `minimax-h3`）** は**映像とステレオ音声を同時に生成する**
   ローカルモデル（MiniMax H3）。プロンプト 1 ブロックに「スタイル → シーン概要 → `[0s-1.5s]` 形式のショット
   タイムライン → `Camera:` → `Audio:`（セリフ・SFX・音楽）→ 禁止事項」を書くと、1 本の中でカットを割れる。
@@ -126,96 +104,8 @@
   持たない。
   MiniMaxH3 系ノードは新しめの ComfyUI master にしか無いので、ヘルスチェックが「custom node なし」と出たら
   ComfyUI を更新する
-- **`veo3_1_fast` / `veo3_1_quality`（family `veo`、backend `kie`）** はテンプレートを持たない**外部 API**の
-  ワークフロー（§5.2）。映像と**音声（環境音・効果音・セリフ）を同時に生成**し、尺 4/6/8 秒・縦横比 16:9 / 9:16・
-  解像度 720p（既定）/ 1080p / 4k を**選択式フィールド**（§3.1）で選ぶ（`resolution` は generate API が
-  そのまま受け取る値で、**1080p・4k は尺 8 秒のときだけ**。4k は高価なので仕上げのカットだけに使う）。画像は任意で、1 枚なら開始フレーム、
-  最終フレーム画像も渡すと flf2v 相当（`imageUrls` 2 枚）になる。`generationType` は渡した枚数から自動で決まる。
-  ユーザー LoRA・`fps`・自前の解像度指定は使えない。Fast は日常の量産、Quality は本番カット用（約 4 倍の値段）。
-  プロンプトの書き方は Grok 側にモデル専用ガイド（`prompts.VIDEO_SPECS`）を注入する。
-  **素材参照生成**（`REFERENCE_2_VIDEO`）は API 側で開始 / 最終フレームと**排他のモード**なので、
-  同じマニフェストに同居させず **`veo3_1_fast_ref` という別ワークフロー**として宣言する（§3.1）。
-  参照画像 1〜3 枚（`reference_images`、§3.1 の「複数ファイルの参照入力」）で人物・衣装・小物の
-  見た目を指定し、**開始フレームは受け取らない**（`accepts_start_image=False` なので `full` でも選べない）。
-  参照画像は通常の生成と同じ `imageUrls` に載って枚数からは区別が付かないが、参照専用の宣言なので
-  `generationType` は `KieTask.constants` に**常に載る固定値**でよい。**尺は 8 秒固定**なのも、
-  `duration` の選択肢を `("8",)` の 1 つだけにして表現する（他の尺は選択肢に無いので 422）。
-  Quality と Lite の参照版は用意しない（API 側が Fast / Lite のみ）。
-  生成後は履歴から **+7 秒の延長**と **1080P 版の取得**を掛けられる（§5.2 の「生成済みタスクへの追加操作」）。
-  4K の追加取得（`POST /veo/get-4k-video`、120 credits）は `resolution: "4k"` を生成時に直接選べるので見送り。
-  `seeds`（10000〜99999 の再現性シード）と `watermark` は生成では未対応（選択式に馴染まない任意入力なので
-  見送り。延長 API では body に載せられるようにしてある）。
-  `full`（画像→動画）は **ComfyUI の画像ワークフローと組み合わせられる**（§2.1 / §5.2）:
-  1 段目の生成画像が kie の File Upload API 経由で開始フレームになる
-- **`kling3_video`（family `kling`、backend `kie`）** も外部 API のワークフロー（§5.2）で、Veo と違い
-  **Market 系の統一 API**（`POST /api/v1/jobs/createTask`、パラメータは `input` の中）。t2v / i2v はモデルが
-  分かれておらず、画像を渡すかどうかだけで決まる（1 枚 = 開始フレーム、2 枚 = 開始 + 最終フレーム）。
-  人物の動き・実写寄りの絵に強く、**尺は 3〜15 秒**と長い。選択式フィールド（§3.1）は
-  `mode`（`std` 720p / `pro` 1080p（既定）/ `4K`）・`duration`・`aspect_ratio`（16:9 / 9:16 / 1:1、
-  画像を渡したときは画像の縦横比が優先される）・`sound`（`true` で環境音・効果音・セリフを同時生成。
-  日本語セリフはリップシンクつき）。
-  **`duration` は文字列で送る**（`"5"`。Veo の `duration` は整数なので型が逆）、**`sound` は真偽値**で送る
-  （選択式の値は文字列で届くので `KieTask.bool_keys` で `bool` に直す）。
-  `negative_prompt` / `cfg` / `camera_control` / `seed` は kie.ai 経由の Kling には**存在しない**ので、
-  すべてプロンプト本文で指定する。**`video_prompt` は 500 文字まで**で、超えたジョブは投入時に 422
-  （`models.prompt_length_problem`、マニフェストの `max_prompt_chars`）。
-  **マルチショット**（`multi_shots` / `multi_prompt`、最大 5 ショット・各 1〜12 秒）は入力の形そのものが
-  違う（トップレベルの `prompt` を送らず、本文はショット側にある）ので、**`kling3_multishot` という
-  別ワークフロー**として宣言する（§3.1）。そちらでは `multi_shots` が**必須**、`video_prompt` を書いた
-  ジョブは 422、`sound` の既定は **true**（ショット割りは音つき前提の機能）。1 カットで作る
-  `kling3_video` には `multi_shots` の宣言そのものが無いので、渡せば「対応していません」で断る。
-  **Elements**（`kling_elements`、最大 3 要素・各 2〜4 枚の参照画像を `@要素名` で呼ぶ）は開始フレームとも
-  ショット割りとも併用できるので、**両方のワークフローが宣言する**。`@要素名` 1 参照は
-  **プロンプトの 37 文字**を消費するので、500 文字の判定はこの補正込みで数える（`models.prompt_chars`）。
-  Turbo 系（`kling/v3-turbo-*`）は未対応。
-  ユーザー LoRA は使えず、`full` は Veo と同じく ComfyUI の画像ワークフローと組み合わせられる
-- **`seedance2` / `seedance2_fast` / `seedance2_mini`（family `seedance`、backend `kie`）** も外部 API の
-  ワークフロー（§5.2）で、Kling と同じ **Market 系の統一 API**。映像と**ネイティブ音声を同時に生成**する
-  4〜15 秒のクリップで、2.0 は **4K まで**（720p で試作 → 1080p / 4K で仕上げ）、Fast は 720p までで待ち時間が短い
-  試行錯誤用、Mini は 720p までの最安バリアント（大量出し）。3 バリアントの違いは**モデル名と解像度の選択肢と
-  値段だけ**なので、宣言は `workflows._seedance_spec` 1 つを呼ぶエントリで済む。
-  選択式フィールド（§3.1）は `resolution`（2.0: 480p / 720p（既定）/ 1080p / 4k、Fast / Mini: 480p / 720p）・
-  `duration`（4〜15、既定 5）・`aspect_ratio`（16:9（既定）/ 9:16 / 1:1 / 4:3 / 3:4 / 21:9 / `adaptive` =
-  入力画像に追従）・`generate_audio`（**既定 true**）・`nsfw_checker`（**既定 false** = kie.ai 側の
-  NSFW フィルタ無効。`true` にするとフィルタが有効になり、際どい生成が弾かれる）。
-  **開始 / 最終フレームはキーが別**（`first_frame_url` / `last_frame_url`）なので、Kling の `image_urls` のような
-  配列（`KieTask.list_keys`）ではなく論理入力ごとに別キーを宣言する。**`duration` は整数で送る**
-  （Kling の文字列と型が逆なので `KieTask.int_keys` で `int` に直す）、**`generate_audio` / `nsfw_checker` は真偽値**
-  （`KieTask.bool_keys`）。
-  2 系に **`seed` / `camera_fixed` は無い**ので、カメラ固定も再現性もプロンプト本文で指定する。
-  `web_search`（t2v のときだけ効く真偽値）は未対応: i2v では黙って無視される項目になるので、
-  モードで出し分ける仕組みができるまで宣言しない。
-  **マルチモーダル参照**（`reference_images` 最大 9 枚 / `reference_videos` 最大 3 本 / `reference_audios` 最大 3 本、
-  §3.1）は API 側で**先頭フレーム i2v と相互排他**なので、バリアントごとに
-  **参照版 `*_ref` を別ワークフロー**として立ててある（`seedance2_ref` / `seedance2_fast_ref` /
-  `seedance2_mini_ref`）。参照版は `accepts_start_image=False` で `image` / `end_image` の受け取り口を
-  持たないので、開始フレームを渡したジョブは「受け取りません」で 422（`models.start_image_problem`）、
-  `mode: "full"` は `models.video_workflow_problem` が断る。フレーム版は逆に `multi_inputs` を宣言しないので、
-  参照素材を渡せば「受け取れません」で 422（`models.reference_problem`）。
-  参照画像は**見た目の一貫性**（同じ顔・衣装・小物）、参照動画は**動きのお手本**、
-  参照音声は**ムード**のよりどころで、渡した素材は 1 本ずつ File Upload API で URL 化され
-  `reference_image_urls` / `reference_video_urls` / `reference_audio_urls` の**配列**として `input` に入る。
-  件数の上限と拡張子だけ投入前に見て、素材のサイズ・解像度・尺（画像 ≤30MB・300〜6000px・AR 0.4〜2.5 /
-  動画・音声は各 2〜15 秒・合計 15 秒）は kie.ai 側の判断に任せ、失敗理由（`failMsg`）をそのまま見せる。
-  Seedance 2.5 は kie.ai 未提供（Coming Soon）だが、モデル名はマニフェストの宣言なので**エントリを 1 つ足すだけ**で通る。
-  成果物 URL は約 24 時間で失効する（完了時に即ダウンロードするので影響なし、§5.2）。
-  ユーザー LoRA は使えず、`full` は Veo / Kling と同じく ComfyUI の画像ワークフローと組み合わせられる
-- **`grok_imagine_video`（family `grok-imagine`、backend `grok_cli`）** は画像版 `grok_imagine` と同じ
-  **サブスク枠の CLI**（§5.3）で走る動画ワークフロー。1〜10 秒の 1 カットを**ネイティブ音声つき**
-  （環境音・効果音・セリフ）で生成する。音声入力は無いので鳴らしたい音は `video_prompt` に書く。
-  開始フレームは任意で、渡すと i2v（画像を **grok のメディア作業ディレクトリへコピー**し、指示文が
-  ファイル名で参照する。kie の File Upload API にあたる橋渡しが `grok_media.stage_input`）、
-  渡さなければ t2v。選択式フィールド（§3.1）は `duration`（1〜10、既定 6）・`resolution`
-  （480p / 720p（既定））・`aspect_ratio`（16:9（既定）/ 9:16 / 1:1）で、いずれも API の `input` ではなく
-  **指示文に織り込む希望**なので厳密には保証されない。尺 10 秒・720p までという上限は CLI 経由の
-  報道値（モデル自体の API は 15 秒 / 1080p まで）で、実機検証がとれたら `SelectSpec` の選択肢を広げる。
-  ユーザー LoRA は使えず（グラフが無い）、指定したジョブは 422。`full` は **ComfyUI の画像**とも
-  **`grok_imagine` の画像**とも組み合わせられる（`jobs._STAGE_BRIDGES` の `comfyui → grok_cli`、
-  同一バックエンドの 2 段は橋渡し不要）。生成後のラストフレーム抽出・ラストフレーム連鎖は他の
-  動画ワークフローと同じ。枠切れは §5.3 のとおり「時間をおいて」の案内になる（動画の目安 10 本/日）
 - 既定は `ltx2_3_id_lora`（旧 `video-gen.json` の動画側と同じ構成なので、既存ジョブ・エージェントの計画がそのまま通る）
 - ラストフレーム連鎖: 履歴の動画から「ラストフレームを開始フレームにして続きを生成」できる。元ジョブの動画ワークフローが開始フレームを受け取れない場合は既定ワークフローにフォールバックする
-- 追加操作（Veo、§5.2）: 履歴の Veo 動画からは、別クリップを作る「続きを生成」とは別に「延長（+7 秒）」「1080P を取得」を掛けられる。どちらも元動画そのものを対象にした新しいジョブになる
 
 ### 2.3 画像ワークフロー（`workflow/image/<family>/`）
 
@@ -228,8 +118,6 @@
 | `anima` | Anima | `anima` | なし | text-to-image、アニメ・イラスト系（`ResolutionSelector`） |
 | `z_image_turbo` | Z-Image turbo | `z-image` | なし | text-to-image、8 steps 蒸留。ResolutionSelector が無いのでアプリが幅・高さを計算して注入 |
 | `qwen_image_edit_2511` | Qwen-Image Edit 2511 | `qwen-image` | 画像（編集元画像） | **編集系**。`source_image` 必須で、出力解像度は入力画像から決まる（`aspect_ratio` / `megapixels` は無視） |
-| `grok_imagine` | Grok Imagine（サブスク CLI） | `grok-imagine` | なし | text-to-image。**バックエンドは `grok_cli`**（§5.3）で、ローカル GPU は使わない。縦横比・解像度はプロンプト経由の希望で、LoRA は使えない |
-| `gpt_image2` | gpt-image-2（Codex CLI） | `gpt-image` | なし | text-to-image。**バックエンドは `codex_cli`**（§5.4）で、ローカル GPU は使わない。大きさ（`size`）と品質（`quality`）は選択式フィールド（§3.1）でプロンプト経由の希望。`aspect_ratio` / `megapixels` は使わず、LoRA も使えない。文字描画・フォトリアルが強い代わりにサブスク枠の消費が速いので少量利用向け |
 
 - 既定は `krea2_turbo`（選択式になる前の唯一の画像ワークフロー）
 - `qwen_image_edit_2511` は画像ステージが走るモード（`full` / `image_only`）で必ず `source_image` を要求する。
@@ -246,7 +134,6 @@ LoRA チェーンも持たない（テンプレートに LoRA ノードが無い
 |---|---|---|---|---|
 | `ace_step1_5_xl_sft` | ACE-Step 1.5 XL（音楽・歌もの） | `ace-step` | 10 / 120 / 600 | `lyrics`（空でインスト）・`bpm`（10-300）・`keyscale`・`language` |
 | `stable_audio_3_medium_base` | Stable Audio 3 Medium（効果音・環境音・音楽） | `stable-audio` | 1 / 60 / 380 | `audio_category`（Music / Instrument / SFX / One-shot）・`reprompt`（内蔵 LLM でのプロンプト展開） |
-| `suno_v5` | Suno V5（歌もの・外部 API、kie.ai `V5` / `V5_5` / `V4_5PLUS`） | `suno` | 選択式 `duration`（auto + 代表値。**V5_5 のときだけ**） | `lyrics`（空でインスト）・`negative_tags`・選択式 `model` / `duration` / `vocal_gender` / `style_weight` / `weirdness` / `audio_weight` |
 
 - 既定は `ace_step1_5_xl_sft`
 - ジョブの必須項目は `audio_prompt` のみ。`duration` がワークフローの範囲外、`keyscale` / `language` /
@@ -256,32 +143,6 @@ LoRA チェーンも持たない（テンプレートに LoRA ノードが無い
 - 秒数の上下限・COMBO 値の一覧は `backend/app/workflows.py`（`min_duration` / `max_duration` /
   `KEYSCALES` / `LANGUAGES` / `BPM_RANGE` / `AUDIO_CATEGORIES`）が単一の情報源で、
   フォーム・Grok カタログ・バリデータが同じ集合を見る
-- **`suno_v5`（family `suno`、backend `kie`）** だけは外部 API のワークフロー（§5.2）で、走らせ先が
-  ComfyUI ではなく kie.ai というだけ。独立ジョブ・LoRA 不可という音声の流儀はそのまま。
-  フィールドの対応は **`audio_prompt` → `style`**（曲の「音」の記述。英語・カンマ区切り・120〜300 字が目安）と
-  **`lyrics` → `prompt`**（歌う言葉。`[Verse]` / `[Chorus]` の構造タグつき。**空ならインスト** = `instrumental: true`）で、
-  `customMode` は常に true。true で必須の `title` は**歌詞の最初の歌う行（無ければスタイルの先頭）から自動生成**する
-  （専用の入力欄は作らない）。除外したい要素は歌詞ではなく `negative_tags`（→ `negativeTags`）へ書く。
-  選択式フィールド（§3.1）は `model`（`V5`（既定）/ `V5_5` / `V4_5PLUS`。選んだ値がマニフェストの既定を上書きする）と
-  `vocal_gender`（`auto`（既定・キーごと送らない）/ `m` / `f`）、および 0〜1 の重みづけ 3 つ
-  — `style_weight`（→ `styleWeight`、スタイル文への忠実さ）・`weirdness`（→ `weirdnessConstraint`、奇抜さ）・
-  `audio_weight`（→ `audioWeight`、音づくりの効き）。選択肢は `auto` + 0.25 刻み（`0` / `0.25` / `0.5` /
-  `0.75` / `1`）で、**`auto`（既定）はキーごと送らない**（0 を送ると「0 を指定した」になってしまうため。
-  `vocal_gender` の `auto` と同じ流儀で、`KieTask.float_keys` が数として読めない値を落とす）。
-  **尺**（`duration`）も選択式で、`auto`（既定 = Suno におまかせ）+ 代表値（30 / 60 / 90 / 120 / 180 / 240 /
-  300 / 360 秒）。API は 10〜360 の任意の整数を取るが細かく刻んでも意味が薄いので代表値だけ出し、
-  `auto` は `KieTask.int_keys` が数として読めない値を落とすのでキーごと送らない。**`duration` は
-  `model` が `V5_5` のときしか効かず、他のバージョンでは API が黙って無視する**ので、
-  `WorkflowSpec.select_requires`（§3.1 の選択式どうしの相関）で `model: "V5_5"` を要求し、
-  違うモデルで明示指定したジョブは投入前に 422 で断る（気づかないまま違う長さの曲を待つより親切という判断）。
-  数値の長さ（`min/default/max_duration`）は宣言しない（= 0）ので、フォームは秒数の数値欄を出さず
-  プルダウンだけを出し、`duration` の範囲検証も飛ばす。
-  `personaId` / `personaModel`（ペルソナ作成 API とセット）と `model` の `V4_5ALL` は未対応。
-  延長 / カバー / ボーカル分離 / WAV 変換などの周辺エンドポイントも未対応（必要になったら個別に）。
-  **ACE-Step 固有の `bpm` / `keyscale` / `language` の指定は無い**（Suno の API にパラメータが無い）。
-  フォームはそれらの入力を出さず、エージェントが指定してきたらプラン検証で 422 にして書き場所（スタイル文・歌詞そのもの）へ誘導する。
-  **1 リクエストで 2 曲返る**ので、`outputs/{job_id}/audio.mp3` と `audio_2.mp3` の両方を保存する（§6）
-
 ---
 
 ## 3. ワークフロー解析とパラメータ注入ポイント
@@ -307,51 +168,57 @@ LoRA チェーンも持たない（テンプレートに LoRA ノードが無い
 | 動画ワークフロー | ― | プルダウン（`/api/options` の `video_workflows`）。選択に応じて必要入力の欄が出る |
 | 画像ワークフロー | ― | プルダウン（`/api/options` の `image_workflows`）。画像ステージが走るモードでのみ表示 |
 | 音声ワークフロー | ― | プルダウン（`/api/options` の `audio_workflows`）。`mode: "audio"` でのみ表示 |
-| アスペクト比 / メガピクセル | 画像: `aspect_ratio` / `megapixels` → ResolutionSelector（krea2 は `49`、anima は `91`）。z-image と動画: アプリが幅・高さを計算して `width` / `height` に注入。qwen-image-edit は入力画像から決まるので注入しない | セレクト（選択肢は `/object_info` の ResolutionSelector から動的取得）+ 数値 |
-| 音声プロンプト・歌詞・除外タグ・BPM・キー・言語・カテゴリ・展開 | `prompt` / `lyrics` / `negative_tags` / `bpm` / `keyscale` / `language` / `audio_category` / `reprompt` | `mode: "audio"` のみ。選択中の音声ワークフローが露出しているつまみだけ表示（数値の長さを宣言しないモデル（Suno）では秒数欄も出ない。Suno の尺は選択式のプルダウン）。選択式フィールド（§3.1）も音声ワークフローの宣言に従って描画する |
+| アスペクト比 / メガピクセル | 画像: `aspect_ratio` / `megapixels` → ResolutionSelector（krea2 は `49`、anima は `91`）。z-image と動画: アプリが幅・高さを計算して `width` / `height` に注入。qwen-image-edit は入力画像から決まるので注入しない | セレクト（選択肢は `/object_info` の ResolutionSelector から動的取得）+ 数値。メガピクセルの既定は 1.0 だが、`default_megapixels` を宣言するワークフローを選ぶとその値になる（下記） |
+| 音声プロンプト・歌詞・除外タグ・BPM・キー・言語・カテゴリ・展開 | `prompt` / `lyrics` / `negative_tags` / `bpm` / `keyscale` / `language` / `audio_category` / `reprompt` | `mode: "audio"` のみ。選択中の音声ワークフローが露出しているつまみだけ表示（数値の長さを宣言しないモデルでは秒数欄も出ない）。選択式フィールド（§3.1）も音声ワークフローの宣言に従って描画する |
 | LoRA（画像・複数可） | 画像ワークフローの `lora_chain` を動的構築（§3.4） | 「LoRA（画像）」セクション。登録 LoRA のうち `target = 'image'` かつ**選択中の画像ワークフローと同じファミリー**のものを複数選択＋強度スライダー |
 | LoRA トリガーワード（画像） | `trigger_concat` → `30:27` (StringConcatenate) / `trigger_switch` → `30:28`。この 2 つを持つのは krea2 テンプレートだけで、他の画像ワークフローには自動前置の口が無い（トリガーワードは `image_prompt` 本文に書く） | 選択 LoRA のトリガーワードを自動連結（編集可） |
 | LoRA（動画・複数可） | 動画ワークフローの `lora_chain` を動的構築（§3.4） | 「LoRA（動画）」セクション。登録 LoRA のうち `target = 'video'` のものを複数選択＋強度スライダー |
 | LoRA トリガーワード（動画） | 動画プロンプト文字列の先頭に前置 | 同上（自動連結・編集可） |
 | リファレンス音声 | `audio` → `276` (LoadAudio)。要求するワークフローのみ | アップロード（`/upload/image` で送信 → ファイル名を注入） |
 | 開始フレーム / 最終フレーム / 参照動画 | `image` / `end_image` / `video` | ワークフローの必要入力に応じて表示。画像は D&D・履歴のラストフレームからも選べる |
-| マルチモーダル参照（参照画像 / 参照動画 / 参照音声） | `reference_images` / `reference_videos` / `reference_audios`（複数ファイル → 外部 API では URL の配列、ComfyUI では件数ぶんのローダー） | 宣言のあるワークフロー（Seedance 2 系・Veo 3.1 Fast は参照画像 3 枚まで・MiniMax H3 r2v は画像 9 / 動画 3 / 音声 3）で `mode: "i2v"` のときだけ表示。1 欄が複数ファイルを持ち、選んだ順が API に渡る配列の順序になる。**開始フレーム / 最終フレームとは排他**（下記） |
-| 高速化トグル（Sage Attention / EasyCache） | `sage_attention` / `easy_cache` → UNETLoader と BasicGuider の間にノードを挟む（下記） | 宣言のあるワークフロー（MiniMax H3）で動画ステージが走るときだけ「出力設定」にチェックボックスを表示。値は `PUT /api/settings` で永続化される |
-| マルチショット | `multi_shots` / `multi_prompt`（構造化リスト） | 宣言のあるワークフロー（Kling 3.0）で動画ステージが走るときだけ表示。折りたたみセクションで、ショット行（プロンプト + 秒数）の追加・削除（下記） |
-| Elements | `kling_elements`（構造化リスト） | 同上。折りたたみセクションで、要素（名前 + 説明 + 参照画像の複数選択）の追加・削除（下記） |
-| 秒数 (Duration) | `duration` | 数値・**上限なし**。長尺は VRAM 次第で ComfyUI 側エラーになり得ることを UI に注記。`duration` を持たないワークフロー（wan_dancer は尺を選択式で持つ）では欄ごと出さない |
+| マルチモーダル参照（参照画像 / 参照動画 / 参照音声） | `reference_images` / `reference_videos` / `reference_audios`（複数ファイル → 件数ぶんのローダーをグラフに生やす） | 宣言のあるワークフロー（MiniMax H3 r2v は画像 9 / 動画 3 / 音声 3）で `mode: "i2v"` のときだけ表示。1 欄が複数ファイルを持ち、選んだ順がグラフに渡る順序になる。**開始フレーム / 最終フレームとは排他**（下記） |
+| 秒数 (Duration) | `duration` | 数値・**上限なし**。長尺は VRAM 次第で ComfyUI 側エラーになり得ることを UI に注記。`duration` を持たないワークフローでは欄ごと出さない |
 | 選択式フィールド | ワークフローの `selects`（論理名 → CustomCombo 等） | 宣言のあるワークフローだけ、ワークフローセレクトの直下にプルダウンが並ぶ（下記） |
 | フレームレート | `fps` | 数値（既定 25） |
+| ステップ数 | `steps` → 各テンプレートのサンプラー（`KSampler.steps` / `BasicScheduler.steps`） | 数値・**空欄（0）= 未指定**でテンプレート既定のまま。宣言のあるワークフローでだけ欄が出る（下記） |
 | 画像・動画プロンプト | `prompt`（画像 `30:19` / 動画は各テンプレート） | テキストエリア（手動入力が基本。Grok チャット §4.3 の結果を反映して編集も可） |
 | 動画ネガティブ | `negative` | プリセット切替（ワークフロー既定 / 現行値 / モデル作者版）+ 直接編集可。**空欄ならテンプレート既定値のまま**（dev 系は `pc game, …`、distilled 系は品質ネガ） |
 
+#### サンプリングのステップ数（`steps`）
+
+「何ステップ回すか」はモデルごとに前提が違う（蒸留された turbo 系は 4、ACE-Step は 50）ので、
+**ワークフローの既定値を正**として扱い、`steps` は**上書きしたいときだけ**指定するつまみにしてある。
+
+- マニフェストに `"steps": T(<node>, "steps", "KSampler" | "BasicScheduler")` を宣言したワークフローだけが
+  受け取る（`/api/options` の `supports` に出るので、フォームの欄も自動で出る）
+- ジョブの `steps` は `0` が既定 = 未指定で、**正の値のときだけ注入**する（`workflow._inject_steps`）。
+  未指定ならテンプレートの値がそのまま残る
+- 上限は `models.MAX_STEPS`（150）で、範囲外は 422
+- サンプラーの `steps` は INT なので、注入時に整数へ丸める（`workflow._INT_INPUTS`）
+- ステップ数の概念を持たないテンプレート（LTX 2.3 の ManualSigmas 構成、qwen-image-edit の
+  PrimitiveInt スイッチ）は宣言を持たず、欄も出ない
+
 #### 複数ファイルの参照入力（`WorkflowSpec.multi_inputs`）
 
-1 つの入力欄が**複数のファイル**を持つ論理入力の仕組み（Seedance 2 系のマルチモーダル参照・Veo の
-素材参照生成・MiniMax H3 r2v、§2.2）。外部 API では**参照モードと先頭フレームモードが排他**なので、宣言を持つのは
-**参照専用のワークフロー**（`*_ref` / `veo3_1_fast_ref` / `minimax_h3_r2v`）だけで、そちらは `accepts_start_image=False`
+1 つの入力欄が**複数のファイル**を持つ論理入力の仕組み（MiniMax H3 r2v の参照素材、§2.2）。
+**参照モードと先頭フレームモードは排他**なので、宣言を持つのは**参照専用のワークフロー**
+（`minimax_h3_r2v`）だけで、そちらは `accepts_start_image=False`
 かつ `image` / `end_image` の受け取り口を持たない（マニフェストの検証がこの同居を弾く）。
 `multi_inputs = {"reference_images": 9, ...}` をマニフェストに宣言すると、
 
 - ジョブは `reference_images` / `reference_videos` / `reference_audios`（`workflows.MULTI_INPUT_FIELDS`）に
-  **パスの配列**を持ち、`jobs._kie_uploads` が 1 本ずつ File Upload API に上げて **URL の配列**にしてから
-  `KieTask.fields` が指すキー（`reference_image_urls` など）に入れる。並び順は指定した順のまま
-  （`KieTask.list_keys` は「別々の論理名を 1 つの配列に並べる」ための別の機構で、こちらとは無関係）
+  **パスの配列**を持ち、並び順は指定した順のままグラフに渡る
 - 生成フォームは宣言のある欄だけを出し（`form.referenceFields`）、件数と上限を表示する
 - 宣言のないワークフローに渡す・上限を超える・拡張子が違う場合は 422（`models.reference_problem`）
-- **参照モードでしか作れない設定**は、そのワークフローの `SelectSpec` にそのまま書ける。Veo 3.1 Fast の
-  素材参照生成は 8 秒しか作れないので、`veo3_1_fast_ref` の `duration` は `choices=("8",)`
-- 参照モードでだけ `input` に載る固定値も、参照専用のワークフローでは `KieTask.constants` でよい。Veo の
-  参照画像は開始フレームと同じ `imageUrls` に載って**枚数からモードを判別できない**が、
-  `veo3_1_fast_ref` は参照モードしか作らないので `generationType: "REFERENCE_2_VIDEO"` を常に送る
+- **参照モードでしか作れない設定**は、そのワークフローの `SelectSpec` にそのまま書ける
 
-**参照モードと先頭フレームモードが相互排他**（外部 API 側の制約）であることは、**ワークフローの分割**
+**参照モードと先頭フレームモードが相互排他**であることは、**ワークフローの分割**
 そのものが表現している: 参照版に `source_image` / `end_image` を渡せば「受け取りません」
 （`models.start_image_problem`）、`mode: "full"` は `accepts_start_image=False` を見て
 `models.video_workflow_problem` が断る。フレーム版に `reference_*` を渡せば「受け取れません」
 （`models.reference_problem`）。検証は Web UI（`form.validateForm` + `jobs._validate`）・
 API（`JobCreate` の検証）・エージェント（`agent_protocol._workflow_detail`）の 3 経路で同じ関数を通る。
-素材のサイズ・解像度・尺の細かい制約は外部 API の判断に任せ、失敗理由をそのまま見せる。
+素材のサイズ・解像度・尺の細かい制約はモデル側の判断に任せ、失敗理由をそのまま見せる。
 
 ##### ComfyUI 側で参照素材をグラフに展開する（`WorkflowSpec.ref_media` / `RefMediaFan`）
 
@@ -392,88 +259,48 @@ ComfyUI が「テンプレートにしか無いファイル」を探して落ち
 「リンクが無い」ことがそのまま「渡されていない」を意味する。MiniMax H3 i2v の `end_image` →
 `MiniMaxH3ImageToVideo.last_frame` がこれ。
 
-##### 高速化トグル: MODEL の経路にノードを挟む（`WorkflowSpec.patch_point` / `MODEL_PATCHES`）
+##### MiniMax H3 Turbo: 高速化をテンプレートに焼き込む
 
-生成そのものを速くする**実行時オプション**。挟む場所はワークフロー側の宣言
-`PatchPoint(head=<UNETLoader のノード ID>, consumers=(<BasicGuider の model 入力>,))`
-（`LoraChain` と同じ「1 本の辺を切って間に挟む」形）、挟むノードの素性は共通の
-`MODEL_PATCHES` が持つ:
+生成そのものを速くする仕掛けは**実行時オプションではなくテンプレート**が持つ。MiniMax H3 には
+素の i2v / r2v と対になる **turbo** テンプレート（`minimax_h3_i2v_turbo` / `minimax_h3_r2v_turbo`）が
+あり、受け取る論理入力・プロンプトの書き方・`multi_inputs` は素の版と**完全に同じ**で、
+違うのは中身だけ:
 
-| 論理名 | ノード | 効果 |
+| 差分 | 素の版 | turbo |
 |---|---|---|
-| `sage_attention` | `PathchSageAttentionKJ`（ComfyUI-KJNodes・**任意のカスタムノード**。クラス名のタイポは本家由来） | 生成が約 2 倍速。SageAttention を入れた環境でのみ使える |
-| `easy_cache` | `EasyCache`（ComfyUI 標準。既定値 `reuse_threshold=0.2` / `start_percent=0.15` / `end_percent=0.95`） | ステップ間の計算を再利用。短縮幅はプロンプト依存で、動きの激しい映像では品質が落ちることがある |
+| UNET | `minimax_h3_{fl2va,ref2va}_pruned_int8_convrot` | `minimax_h3_{fl2va,ref2va}_pruned_w4a8_mixed` |
+| CLIP | `qwen3vl_32b_minimax_h3_nvfp4_awq` | `qwen3vl_32b_heretic_minimax_h3_nvfp4` |
+| 動画 VAE | `minimax_h3_video_vae_fp16` | `minimax_h3_video_vae_int8_convrot` |
+| `BasicScheduler.steps` | 20 | **4** |
 
-ON にされたものだけを `workflow._build_model_patches` がこの順で**直列**に生やす
-（UNETLoader → Sage Attention → EasyCache → BasicGuider）。どれも OFF（既定）なら
-ノードは 1 つも増えず、グラフはテンプレートと完全に一致する。同じ MODEL を読む
-`BasicScheduler` は sigmas を作るだけなので繋ぎ替えない。カスタムノードのほうは
-**入れていない環境でヘルスチェックが赤くならないよう** `all_required_class_types`
-には載せない。宣言を持つのは MiniMax H3 の 3 つ（t2v / i2v / r2v）。
+UNETLoader と BasicGuider の間には、高速化ノードが**テンプレートに直接**直列で入っている:
 
-値は**サーバー側の設定**（`Settings.sage_attention` / `.easy_cache`、`runtime/config.json`）に
-永続化され、ジョブが明示しなければその既定値が投入時に params へ焼き込まれる
-（あとから設定を変えても、再実行が同じグラフを組み立てられる）。
+```
+UNETLoader
+ → MiniMaxH3TurboLoRA      (minimax_h3_turbo_4step_ema_ckpt850.safetensors, strength 1)
+ → PathchSageAttentionKJ   (sage_attention=auto)
+ → SolAttnPatch            (tau 1.5 / 0.2〜0.9)   ──→ BasicScheduler.model
+ → MiniMaxH3SigmaShift     (video 12 / audio 3)
+ → SpectrumApplyMiniMaxH3  (blend_weight 0.75)    ──→ BasicGuider.model
+```
 
-**暫定: Comfy Cloud 接続時は Sage Attention を無効にする。** クラウドのランタイムには pip パッケージ
-`sageattention` が入っておらず、ノード定義は在るのに実行時 `ModuleNotFoundError` でジョブごと落ちる
-（2026-08 確認）。落とす対象は `comfy.CLOUD_UNSUPPORTED_PATCHES`（判定は `comfy.is_cloud` =
-URL のホストが `comfy.org`）の 1 箇所だけが持ち、`jobs._run_comfy_stage` がグラフを組む直前に
-`GenerationParams` から落とす（**ジョブの params には希望した値を残す**ので、ローカルに戻して
-再実行すれば有効なグラフが組まれる）。同じ判定が `GET /api/options` の `unsupported_speedups` にも
-出て、生成フォームはその項目を**非表示にはせず disabled（グレーアウト）**にして理由を出す。
-クラウドが対応したら `CLOUD_UNSUPPORTED_PATCHES` を空にするだけで、ジョブ側も UI も元に戻る。
+`BasicScheduler` は sigmas を作るだけなので **SigmaShift の手前**（`SolAttnPatch` の出力）から
+model を取る。guider だけが末尾の `SpectrumApplyMiniMaxH3` を読む。これらは**任意のカスタム
+ノード**なので、入れていない環境でヘルスチェックが赤くならないよう、turbo を選ばないかぎり
+グラフには現れない。
 
-#### 構造化パラメータ: マルチショット（`WorkflowSpec.multi_shot`）と Elements（`WorkflowSpec.elements`）
+ワークフローの宣言は `dataclasses.replace` で素の版との差分だけを書く（`workflows.py` の
+`MINIMAX_H3_I2V_TURBO` / `MINIMAX_H3_R2V_TURBO`）。family は素の版と同じ `minimax-h3` なので、
+2 段プルダウン（モデル → モード）の 2 段目に「… (i2v Turbo)」「… (r2v Turbo)」として並ぶ。
+turbo 版だけは選択式フィールド（下記）で `low_vram`（`MiniMaxH3TurboLoRA` の低 VRAM 読み込み）を
+出す。**既定は `off`** で、VRAM が足りずに落ちるときだけ `on` にする。
 
-ジョブの params は「名前 → 平坦な値」が中心だが、Kling 3.0 のこの 2 つだけは**中身に構造がある**。
-JSON 文字列で持つと検証もフォームも書けないので、**型付きのリスト**（`models.MultiShot` /
-`models.ElementInput`）として `JobCreate` / `GenerationParams` / params に持つ。
-
-**マルチショット**（`MultiShotSpec(max_shots, min_duration, max_duration)`）:
-
-- 宣言を持つのは**ショット割り専用のワークフロー**（`kling3_multishot`）だけ。入力の形そのものが
-  1 カット版と違うので、同じマニフェストに同居させない
-- ジョブは `multi_shots: [{"prompt": "…", "duration": <int>}]` を**必ず**持ち、`input` には
-  `multi_shots: true` と `multi_prompt`（配列）が入って**トップレベルの `prompt` は送らない**
-  （`kie.task_values`）。`video_prompt` はそのワークフローの `prompt_required=False` で必須チェックから
-  外れ（`models.missing_job_fields`）、逆に**書かれていたら 422**（本文はショット側、
-  `models.multi_shot_problem`）。フォームはプロンプト欄そのものを出さない（`form.hiddenFields`）
-- ショット割りは音つき前提の機能なので、`sound` の既定は専用ワークフロー側で `true` にしてある
-  （「マルチショットのときだけ既定が変わる」という特別扱いは要らない）
-- ショットが 0 件・件数（≤ `max_shots`）・1 ショットの尺（`min_duration`〜`max_duration` の整数）・
-  1 ショットの本文の長さ（ワークフローの `max_prompt_chars`）は投入前に `models.multi_shot_problem` が見る
-
-**Elements**（`ElementsSpec(max_elements, min_images, max_images, reference_chars)`）:
-
-- ジョブは `kling_elements: [{"name", "description", "images": [パス]}]` を持つ。`images` は
-  投入時に `jobs._kie_uploads` が 1 枚ずつ File Upload API に上げ、API の形
-  `{"name", "description", "element_input_urls": [URL]}` に組み直す
-- プロンプト本文からは `@要素名` で呼ぶ。**`@要素名` 1 参照が `reference_chars`（37）文字**を
-  消費するので、文字数の判定はこの補正込みで数える（`models.prompt_chars`。素の `len()` では
-  500 文字の上限が合わない）
-- **宣言していない `@名前` は 422**（`models.elements_problem`）。黙って通すとモデルには文字として
-  渡り、しかも 37 文字を食うので気づけない。逆に**宣言したが参照していない**要素は、素材を先に
-  用意しただけかもしれないので何も言わない。要素名の重複・空白入り・枚数・拡張子も同時に見る
-
-どちらも検証は Web UI（`form.validateForm` + `jobs._validate`）・API（`JobCreate` の検証）・
-エージェント（`agent_protocol._workflow_detail`）の 3 経路で同じ関数を通る。上限は
-`GET /api/options` の `multi_shot` / `elements` / `max_prompt_chars` としてフォームにも渡り、
-宣言のないワークフローではセクションそのものが出ない。
-
-#### 選択式フィールド（`WorkflowSpec.selects`）
-
-自由記述ではなく**決まった選択肢**で挙動が決まるワークフローのための汎用の仕組み。
-`SelectSpec(label, choices, target, default, index_field, numeric_target, auto, hint)` を
-マニフェストに宣言すると、
-
-- 生成フォームが選択肢からプルダウンを自動生成し（`WorkflowSelects`）、
 - ジョブは `selects: {"<論理名>": "<選んだ値>"}` で値を持ち（宣言外の名前・選択肢外の値は 422。
   検証は `models.select_problem` で Web UI とエージェント共通）、
 - エージェントのワークフローカタログにも選択肢がそのまま載る（`prompts._select_lines`）。
 
 宣言していないワークフローでは何も増えないので、既存の挙動は変わらない。**動画・音声だけの
-仕組みではなく、画像ワークフローも宣言できる**（gpt-image-2 の大きさ・品質、§5.4）。ジョブの
+仕組みではなく、画像ワークフローも宣言できる**。ジョブの
 `selects` はステージをまたいで 1 つの辞書なので、`models.select_problem` は**そのモードで走る
 ステージの宣言をすべて**見て検証し、フォームも走るステージのぶんだけ送る（`form.jobSelects`）。
 注入時の要点:
@@ -481,16 +308,20 @@ JSON 文字列で持つと検証もフォームも書けないので、**型付�
 - ComfyUI の `CustomCombo` は選んだ文字列（`choice`）と 0 始まりの番号（`index`）を持ち、
   **グラフが読むのは番号側**（`choice` は表示用。番号で「n 行目」を引く RegexExtract に繋がる）。
   そのため両方を書き込む。`validate_specs()` は選択肢がテンプレートの `option*` と一致するかも見る
-- `numeric_target` があれば同じ値を数値としても入れる（wan_dancer の尺はコンボと
-  `TrimAudioDuration.duration` の両方に入れないと、映像だけ伸びて音声は 25 秒で切れる）
+- `numeric_target` があれば同じ値を数値としても入れる（尺のように、コンボと音声のトリム長の
+  両方に入れないと映像だけ伸びてしまう項目のため）
+- 書き込み先が **BOOLEAN の widget**（`workflow._BOOL_INPUTS`）なら、選んだ文字列を
+  `on` → `true` / それ以外 → `false` に直してから入れる。ComfyUI は BOOLEAN に文字列を入れると
+  型検証で prompt ごと落ちるため。MiniMax H3 turbo の `low_vram`（`MiniMaxH3TurboLoRA.low_vram`、
+  4step 蒸留 LoRA を低 VRAM モードで読むか）がこの形で、**既定は `off`**（テンプレートの現状値と同じ）
 - `auto: "audio_duration"` の項目は、**未指定なら入力音声の実長**（`jobs.probe_media_duration`、
   ffprobe）を選択肢に切り上げて決める（上限は最大の選択肢）。決めた値は params に残るので
   再実行でも同じ尺になる。ffprobe が無い・読めない場合は宣言した既定値に落ちる（登録は止めない）
 - UI は `auto` の項目に「自動（入力に合わせる）」、それ以外に「既定（<値>）」を先頭の選択肢として置く
 - **選択式どうしの相関**（`WorkflowSpec.select_requires`、名前 → `(相手の名前, 相手に必要な値)`）:
-  「その項目は相手がこの値のときしか効かない」ことの宣言。Suno の `duration` は `model` が `V5_5` の
-  ときしか効かず、**他のバージョンでは API が黙って無視する**ので、`{"duration": ("model", "V5_5")}` と
-  宣言して**既定以外を明示指定したジョブだけ**を 422 で断る（`models.select_requires_problem`。
+  「その項目は相手がこの値のときしか効かない」ことの宣言。相手の値によっては**モデルが黙って無視する**
+  項目のために、`{"duration": ("model", "V5_5")}` のように宣言して**既定以外を明示指定したジョブだけ**を
+  422 で断る（`models.select_requires_problem`。
   既定のままなら無視されても困らないので何も言わない）。検証は Web UI（`form.selectRequiresErrors`）・
   API・エージェントの 3 経路で同じ理由になり、フォームはその選択式の直下にエラーを出す
 
@@ -501,7 +332,7 @@ JSON 文字列で持つと検証もフォームも書けないので、**型付�
 `EmptySD3LatentImage` に直接注入する。qwen-image-edit は入力画像から解像度が決まる
 （`FluxKontextImageScale`）ので、どちらも注入しない。
 動画側の新テンプレートは幅・高さの `PrimitiveInt` 指定になったため、アプリが同じ式で計算する
-（wan_dancer も同じ扱い。テンプレート既定は 720x1280 だが、開始フレームがあればその実比に従う）
+（開始フレームがあればその実比に従う）
 （ComfyUI `comfy_extras/nodes_resolution.py` と一致。各辺を 8 の倍数に丸め）:
 
 ```
@@ -509,6 +340,21 @@ scale  = sqrt(megapixels * 1024 * 1024 / (w_ratio * h_ratio))
 width  = round(w_ratio * scale / 8) * 8
 height = round(h_ratio * scale / 8) * 8
 ```
+
+##### モデルごとの既定メガピクセル（`WorkflowSpec.default_megapixels`）
+
+フォームのグローバル既定は 1.0MP（`form.ts` の `DEFAULT_MEGAPIXELS`）だが、モデルによっては
+テンプレートの `ResolutionSelector` がもっと小さい画角を前提にしていて、1.0MP のまま回すと
+VRAM が足りずに CUDA OOM で落ちる。そこで `WorkflowSpec.default_megapixels`（0.0 = 宣言なし）を
+宣言でき、値は `GET /api/options` の `video_workflows[].default_megapixels` に出る。
+宣言を持つのは **MiniMax H3 の 5 つ（t2v / i2v / i2v turbo / r2v / r2v turbo）= 0.4MP**
+（短辺 768px・最大 768x1344 の画角）。
+
+フォーム側は動画ステージが走るモード（`full` / `i2v`）で**動画ワークフローを切り替えた
+タイミング**に `megapixelsFor(workflow)` の値を入れる（宣言が無ければグローバル既定へ戻す）。
+切り替えたあとに手で変えた値はそのまま残り、次に切り替えるまで維持される（音声の
+`clampToWorkflow` と同じ「切り替え時にだけ追随させる」形）。キャンバスの model カードも
+ワークフローを選び直したときに同じ値を入れる。
 
 参照画像（開始フレーム）を取るワークフロー（`accepts_start_image=True`）で `source_image` が
 指定されている場合は、`w_ratio:h_ratio` にプリセットではなく **参照画像の実寸比** を使う
@@ -560,7 +406,7 @@ Stable Audio の `reprompt`（内蔵 LLM でのプロンプト展開）だけは
   - `runpod` … Pod の中で動く小さな API（`deploy/runpod/model_api.py`、`127.0.0.1:8190`。caddy が ComfyUI と同じ認証で `/studio/models/*` だけを通す）に `POST /download` で依頼し、`GET /downloads` を 2 秒ごとにポーリングして**ローカルと同じ WS フレーム**に変換して流す。アプリを再起動しても Pod 側は走り続けるので、`GET /api/models/downloads?target=runpod` は Pod の一覧を取り込んで見張りを再開する。Pod が古いイメージ（この API を持たない）なら 404 を「イメージを作り直してください」という 400 にして返す
   - `comfy_cloud` … ファイルシステムに触れないので 400（モデルは Comfy Cloud 側の管理）
   - **一括ダウンロード**（[全DL]、`POST /api/models/download-all`）: 選んだ環境の `/object_info` と比べて未検出、かつ `model_download_urls` に URL があるものをまとめて開始する。対象はワークフローの各スロットの実効値・候補リストと、その環境の LoRA 登録。URL が無いものは `missing_urls` として返して UI が知らせる。ComfyUI に繋がらないときは 400（何が足りないか判定できないため）
-  - 置き場所は `class_type`＋入力フィールドから決める（`workflow.MODEL_SUBFOLDERS` → `ModelField.subfolder`）: checkpoints = CheckpointLoaderSimple.ckpt_name / LTXVAudioVAELoader.ckpt_name / LTXAVTextEncoderLoader.ckpt_name、diffusion_models = UNETLoader.unet_name、text_encoders = CLIPLoader.clip_name / DualCLIPLoader.clip_name1・clip_name2 / LTXAVTextEncoderLoader.text_encoder、clip_vision = CLIPVisionLoader.clip_name、vae = VAELoader.vae_name、loras = LoraLoader.lora_name / LoraLoaderModelOnly.lora_name、latent_upscale_models = LatentUpscaleModelLoader.model_name、geometry_estimation = LoadMoGeModel.model_name。未知のローダーは空（＝ UI で入力させる。当てずっぽうに置いても ComfyUI からは見えない）
+  - 置き場所は `class_type`＋入力フィールドから決める（`workflow.MODEL_SUBFOLDERS` → `ModelField.subfolder`）: checkpoints = CheckpointLoaderSimple.ckpt_name / LTXVAudioVAELoader.ckpt_name / LTXAVTextEncoderLoader.ckpt_name、diffusion_models = UNETLoader.unet_name、text_encoders = CLIPLoader.clip_name / DualCLIPLoader.clip_name1・clip_name2 / LTXAVTextEncoderLoader.text_encoder、clip_vision = CLIPVisionLoader.clip_name、vae = VAELoader.vae_name、loras = LoraLoader.lora_name / LoraLoaderModelOnly.lora_name / MiniMaxH3TurboLoRA.lora_name、latent_upscale_models = LatentUpscaleModelLoader.model_name、geometry_estimation = LoadMoGeModel.model_name。未知のローダーは空（＝ UI で入力させる。当てずっぽうに置いても ComfyUI からは見えない）
   - `POST /api/models/download` は保存先を検証（`..` / 絶対パス / パス区切りを拒否し、`resolve()` 後に models ディレクトリ配下であることを確認）してからバックグラウンドタスクを起こす。httpx のストリームをチャンクで `<ファイル名>.part` に書き、完走したときだけ本来の名前に `rename` する（失敗・中断時は `.part` を削除）。進捗は WS `/api/ws` に `type: "model_download"` として流れる。同じファイル名の同時ダウンロードは 409
   - 認証は URL のホストで出し分ける: huggingface.co / hf.co（サブドメイン含む）は `Settings.hf_token`、civitai.com は `Settings.civitai_api_key` を `Authorization: Bearer …` として付ける（未設定なら付けない）。**リダイレクトは httpx に任せず自分で追う**（最大 10 ホップ、相対 `Location` は urljoin で解決、301/302/303/307/308 を GET のまま追う）: クライアント既定ヘッダに認証を載せると転送先の別ホストにトークンが漏れるため、ホップごとに URL を再検証して認証ヘッダを計算し直し、そのリクエストにだけ渡す（HF → `*.hf.co` の CDN には付き、無関係なホストには付かない）。URL はファイル名ごとに `Settings.model_download_urls` へ保存する（同じファイルが複数スロットに出るため、キーはスロットではなくファイル名）
   - 保存先は**環境変数 `COMFY_MODELS_DIR` だけ**が決める（設定 `runtime/config.json` には持たない）。UI からパスを入れられても、Docker で同じ絶対パスをマウントしていなければ書けないため。`.env` に書けば `run.sh`（ホスト実行、`.env` を読んで `export`）と `docker compose`（同一パスのマウント＋`environment:` で受け渡し）の双方に効く。設定に残すのは `hf_token` / `civitai_api_key` / `model_download_urls` だけで、旧バージョンが書いた `comfy_models_dir` キーは読み込み時に捨てる
@@ -728,9 +574,8 @@ Cookie ベースの非公式 API は規約リスクがあるため**使わない
 
 **音声プロンプト（`mode: "audio"`）**
 
-`prompts.ACE_STEP_AUDIO_SPEC` / `STABLE_AUDIO_SPEC` / `SUNO_AUDIO_SPEC` を、選択中の音声ワークフローに
-応じて埋め込む（出典は ACE-Step 1.5 と Stable Audio 3 の公式ドキュメント、ComfyUI の各ノード実装、
-および kie.ai の Suno API ドキュメントと Suno のメタタグガイド）:
+`prompts.ACE_STEP_AUDIO_SPEC` / `STABLE_AUDIO_SPEC` を、選択中の音声ワークフローに
+応じて埋め込む（出典は ACE-Step 1.5 と Stable Audio 3 の公式ドキュメント、ComfyUI の各ノード実装）:
 
 - **ACE-Step 1.5**: `audio_prompt` は曲そのものの**キャプション**（ジャンル・雰囲気・楽器と音色・
   プロダクション・テンポ感・ボーカルの声質）。歌詞は `audio_prompt` ではなく `lyrics` に、
@@ -738,11 +583,6 @@ Cookie ベースの非公式 API は規約リスクがあるため**使わない
 - **Stable Audio 3**: 音そのものを説明する短い自然文 1 つ（音楽ならジャンル・楽器・ムード・テンポ、
   効果音なら音源・素材・空間）。歌わないので歌詞は書かない。ネガティブプロンプトは公式にも
   テンプレートにも存在しないので書かない
-- **Suno V5**: `audio_prompt` は曲の**スタイル**（英語・カンマ区切り・「音」の記述だけ。ジャンル / テンポ /
-  主要楽器 / ボーカル / プロダクション、実用 120〜300 字）。曲の内容・ストーリーは書かない。歌詞は `lyrics` に
-  `[Intro]` `[Verse 1]` `[Chorus]` `[Bridge]` `[Outro]` `[End]` の構造タグつきで（**日本語歌詞はそのまま日本語で歌われ、
-  タグとスタイルは英語のまま**。確実に終わらせたいときは末尾 `[End]`）。除外したい要素は歌詞ではなく `negative_tags` へ。
-  `bpm` / `keyscale` / `language` / 尺は無い（テンポとキーはスタイル文に書く）。タイトルは自動生成なので書かせない
 - カテゴリ（`audio_category`）は Grok ではなくフォームで選ぶ
 
 ### 4.3 チャット型プロンプト作成フロー
@@ -820,240 +660,6 @@ Pod 側のイメージ（Dockerfile / entrypoint / 認証つき Caddy プロキ�
 モデルの取得は §3.3 と同じ流儀（`.part` に書いて完走時のみ rename、リダイレクトを
 自分で追い、ホストごとに `HF_TOKEN` / `CIVITAI_API_KEY` を出し分け）で実装してある。
 
-### 5.2 kie.ai（外部生成バックエンド）
-
-ComfyUI と並ぶ **2 つめの生成バックエンド**として、外部 API アグリゲータ
-[kie.ai](https://docs.kie.ai/) を使える（`backend/app/kie.py`）。自前の GPU では
-動かないモデル（Veo / Kling / Seedance / Suno など）をそのまま同じフォーム・同じ
-履歴で扱うための共通基盤で、個別モデルの対応はこの上に載せる。
-
-- **バックエンド軸**: ワークフローのマニフェスト（§3 / §4.3）が `backend`
-  （`comfyui` / `kie` / `grok_cli` / `codex_cli`）を宣言する。ComfyUI 用は
-  `workflow/*.json` のテンプレート + 注入マニフェスト、kie 用はテンプレートの代わりに
-  `KieTask`（`model` と「論理名 → `input` のキー」の対応、固定値、概算クレジット）を持つ。
-  論理名は ComfyUI の注入マニフェストと同じ語彙（`prompt` / `image` / `duration` /
-  `select:<名前>` …）なので、`description` / `prompt_hint` から生成される
-  UI・エージェントのカタログの作り方は §4.3 のまま変わらない
-- **ディスパッチはステージ単位**: `jobs._run_job_stages` がステージごとにそのマニフェストの
-  `backend` を見て実行経路を選ぶ（ジョブ単位ではない）。成果物の置き場・jobs 行の列・WS の
-  進捗表示はバックエンドに依らず共通なので、履歴・ライブラリ・UI からは区別が付かない
-- **バックエンドをまたぐ 2 段**（`jobs._STAGE_BRIDGES`）: 渡すものは常に「1 段目の
-  静止画」で、渡し方だけが 2 段目のバックエンドで変わる（ComfyUI は input への
-  アップロード、kie.ai は File Upload API で公開 URL にして `imageUrls` へ、§2.1）。
-  実装してあるのは **ComfyUI の画像 → kie.ai の動画**と、**Grok CLI の画像 →
-  ComfyUI / kie.ai の動画**（§5.3）、**Codex CLI の画像 → ComfyUI / kie.ai /
-  Grok CLI の動画**（§5.4）。逆向き（kie.ai の画像 → …）は kie の画像
-  ワークフローが入ってから実装するので、それまでは投入時に 422 で断る。ComfyUI の下ごしらえ（RunPod の Pod 起動・入力ファイルの
-  アップロード）は**最初の ComfyUI ステージの直前に 1 度だけ**行うので、1 段目から
-  kie のジョブでは ComfyUI に一切触らない
-- **可用性の判定（`backend/app/backends.py`）**: 外部バックエンドは
-  **認証情報が入っていて、実際に通ることを確認できたときだけ**選択肢に出る。
-  確認は軽いヘルスチェック（kie.ai は残クレジット照会 `GET /api/v1/chat/credit`）で、
-  結果はプロセス内にキャッシュし、**起動時**と**設定保存時**（`PUT /api/settings`）と
-  `POST /api/kie/check` で取り直す。未設定・確認失敗のあいだは
-  `GET /api/options` のワークフロー一覧にもエージェントのカタログにも一切出ず、
-  投入しようとしても 422。状態は `/api/options` の `backends` と `/api/health` の
-  `kie` に出る（`ok` / `not_configured` / `error`）。新しいバックエンドを足すときは
-  「確認する関数」を 1 つ登録するだけでこの出し分けに乗る
-- **API キー**: 設定の `kie_api_key`（設定ページの「kie.ai」欄）が一次で、空のときだけ
-  環境変数 `KIE_API_KEY` に落ちる
-- **実行の流れ**: 入力ファイルは File Upload API（`https://kieai.redpandaai.co/api/file-base64-upload`）で
-  公開 URL にしてから `input` に入れる（外部モデルは base64 直指定を受け付けない）→
-  `POST /api/v1/jobs/createTask`（Market 系の統一 API）で `taskId` を得る →
-  `GET /api/v1/jobs/recordInfo` を **10 秒間隔**でポーリング（`429` は**指数バックオフ**で
-  最大 30 秒。webhook はローカル運用では受け取れないので使わない）→ `success` で
-  `resultUrls` を取り出す。`resultJson` は **JSON 文字列なので二重パースが要る**
-- **エンドポイントとステータスの読み方は差し替え可能**（`kie.TaskApi`）。Kling /
-  Seedance は Market 系だが、Veo（`successFlag`）と Suno（`PENDING → … → SUCCESS`）は
-  旧専用系でパスもステータス語彙も違うため、ポーリングループは共通のまま系統だけを差し替える
-- **Veo の旧専用系**（`kie.VeoTaskApi`、マニフェストの `api: "veo"`）: 生成は
-  `POST /api/v1/veo/generate`、照会は `GET /api/v1/veo/record-info?taskId=`
-  （`successFlag` 0 = 生成中 / 1 = 成功 / 2, 3 = 失敗、成果物は `response.resultUrls`）。
-  ボディは `input` で包まず平らに並べ、`generationType` は `imageUrls` の枚数から決める
-  （2 枚 = `FIRST_AND_LAST_FRAMES_2_VIDEO`、0〜1 枚 = `TEXT_2_VIDEO`）。`enableTranslation` は
-  既定値が docs 内で食い違うので**明示して送る**。マニフェストの `KieTask.list_keys` に挙げたキーは
-  配列になり、同じキーに複数の論理入力を宣言できる（`imageUrls` は宣言順 = 開始フレーム, 最終フレーム）。
-  **素材参照生成**（`REFERENCE_2_VIDEO`、Fast のみ・参照画像 1〜3 枚・8 秒固定）も同じ `imageUrls` に
-  載って枚数からは判別できないが、参照専用のワークフロー（`veo3_1_fast_ref`）に分けてあるので
-  `generationType` は `KieTask.constants` の固定値として常に送る（§2.2 / §3.1）
-- **生成済みタスクへの追加操作**（`FOLLOWUP_MODES` = `veo_extend` / `veo_1080p`、issue #26）:
-  「ラストフレームから続きを生成」（§2）が**別のクリップを新しく作る**のに対し、こちらは **kie.ai 側に
-  残っている元タスクそのもの**に仕事を足す。入口は `workflow_json` に残した `task_id` で、成果物の
-  ファイルではなくタスクを指して頼む。どちらも**新しいジョブ 1 本**になるので、置き場・履歴・進捗・
-  ライブラリ・NSFW の扱いはふつうの生成と変わらない（フォームからは選べないモードで、
-  エージェントの計画にも出さない）
-  - **延長**（`POST /api/v1/veo/extend`、`kie.VeoExtendTaskApi`、`api: "veo_extend"`）: 元動画に **+7 秒**を
-    継いだ 1 本が返る。照会は生成と同じ `record-info` に乗るが、**`model` の書式が違い**
-    （生成 `veo3_fast` / `veo3` → 延長 `fast` / `quality` / `lite`、`kie.VEO_EXTEND_MODELS` で引き直す）、
-    **成果物は `response.fullResultUrls`**（`resultUrls` には足した分だけが入ることがあるので通しを先に見る）。
-    ボディは生成と同じく平らで `taskId` / `prompt` と任意の `seeds` / `watermark`
-  - **1080P 取得**（`GET /api/v1/veo/get-1080p-video?taskId&index`、5 credits）: タスクは作らず URL を取りに
-    行くだけ。**生成の完了から 1〜3 分遅れて**用意されるので、未準備（404 / 422 / 425）は失敗にせず
-    25 秒間隔で最大 12 回待ち直す（`kie.get_1080p_video`。クレジット不足のような「待っても変わらない」
-    失敗はそのまま投げる）。タスクを作らないので `creditsConsumed` は動かず、消費クレジットは記録しない
-  - **どのジョブに何を掛けられるか**は `Job.followups`（`jobs.job_followups`）がバックエンドで決める:
-    成果物のある終わった Veo のジョブで `task_id` が残っていて、延長 API がそのモデルを受けること。
-    1080P は **720p で生成したぶんだけ**（1080p / 4k で生成済みなら意味がない）。**1080P 取得のジョブは
-    新しい `task_id` を持たない**ので、そこからさらに追加操作は掛けられない（アップスケール後の動画は
-    API 側でも延長できない）
-  - 4K の追加取得（`POST /veo/get-4k-video`、120 credits）は生成時に `resolution: "4k"` を直接選べるので
-    見送り（§2.2）
-- **Kling は Market 系のまま**（`api: "market"`、モデル `kling-3.0/video`）。`input` に入る値の**型はモデルごとに違う**
-  ので、マニフェスト側で宣言して合わせる: `KieTask.list_keys`（配列 = `image_urls`）と
-  `KieTask.bool_keys`（真偽値 = `sound` / `multi_shots`）。選択式フィールドの値はすべて文字列で届くため、
-  型を直さないと API に弾かれる。逆に Kling の `duration` は**文字列のまま**送るのが正しい（§2.2）。
-  マルチショットの `multi_prompt` と Elements の `kling_elements` は**辞書の配列**で、前者は
-  `kie.task_values`（本文はショット側なので `prompt` は落ちる）、後者は `jobs._kie_uploads`
-  （参照画像を 1 枚ずつ上げて `element_input_urls` にする）が組み立てたものがそのまま入る（§3.1）
-- **Seedance 2 系も Market 系のまま**（`api: "market"`、モデル `bytedance/seedance-2` / `-fast` / `-mini`）。型の宣言は
-  `KieTask.int_keys`（整数 = `duration`）と `KieTask.bool_keys`（真偽値 = `generate_audio` / `nsfw_checker`）。開始 / 最終フレームは
-  `first_frame_url` / `last_frame_url` と**キーが別**なので `list_keys` は使わない。マルチモーダル参照は
-  `WorkflowSpec.multi_inputs`（§3.1）の「複数ファイル → URL の配列」で、`jobs._kie_uploads` が 1 本ずつ上げて
-  `reference_image_urls` などに配列で入れる。バリアントの違いは
-  **モデル名と解像度の選択肢と値段だけ**なので、マニフェストは 1 つのファクトリから作る（2.5 追加はエントリ 1 つ）
-- **Suno は旧専用系**（`api: "suno"`、`app.kie.SunoTaskApi`）。エンドポイントは
-  `POST /api/v1/generate` と `GET /api/v1/generate/record-info?taskId=`、状態語は
-  `PENDING → TEXT_SUCCESS → FIRST_SUCCESS → SUCCESS`（中間の 2 つは「まだ待つ」だが進捗として出す。
-  `GENERATE_AUDIO_FAILED` / `SENSITIVE_WORD_ERROR` などの `*_FAILED` / `*_ERROR` は失敗）。
-  Veo と同じくボディは平らで、`model` は**モデル名ではなくバージョン**（`V5` / `V5_5` / `V4_5PLUS`）。
-  `instrumental`（歌詞の有無）と `title`（歌詞かスタイルの頭）は他の入力から決まるので `create_body` が組み立てる
-  （`title` を明示指定する入力欄は作らない: ジョブのフィールドを 1 つ増やすと API・フォーム・エージェント
-  プロトコル・履歴まで波及するのに対し、自動生成で実害が出ていないため）。
-  0〜1 の重みづけ（`styleWeight` / `weirdnessConstraint` / `audioWeight`）は `KieTask.float_keys` で
-  `float` に直して送り、**数として読めない値（`auto` = 指定しない）はキーごと落とす**。
-  **`callBackUrl` はスキーマ上必須**だが、ローカル運用では webhook を受けられないのでダミー
-  （`kie.CALLBACK_URL` = `https://localhost/unused-callback`）を固定で入れ、結果はポーリングで拾う。
-  kie.ai はコールバックの配送失敗をタスクの失敗にはしない前提で、**もしこの運用が通らなくなったらここを見直す**
-  （その場合はトンネル経由の webhook か、kie.ai 側の設定が要る）。
-  成果物は `response.sunoData[]` に**2 曲**入るので `audioUrl` を**全曲**回収する
-- **成果物は即ダウンロード**: kie 側の URL は 14 日（モデルによっては 24 時間）で
-  失効するので、完了を検知したその場で `outputs/{job_id}/` に落とす（§6 と同じ置き場・
-  同じ命名で、ラストフレーム抽出も同じ）
-- **進捗**: 既存の WS `type: "job"`（`status: "running"` + `message`）に
-  「外部 API 生成中（キュー待ち / 生成中）」として中継する。新しいメッセージ種別は増やさない
-- **課金**: クレジット制（1 credit = $0.005）。成功したタスクの `creditsConsumed` を
-  `jobs.credits_consumed` に記録する（**失敗したタスクは kie 側で返金される**ので記録しない）。
-  残クレジットは `GET /api/kie/credits`
-- **投入内容の保存**: `workflow_json` に段階別で `{"backend": "kie", "task_id": …,
-  "request": {"model": …, "api": …, "input": {…}}}` を残す。`rerun` は今までどおり
-  `params` から作り直す
-- モデル名・価格は**マニフェストと設定にだけ**書く（kie.ai は上流の都合でモデルが
-  増減し、価格も改定されるため、コードにハードコードしない）
-
-### 5.3 Grok Build CLI（サブスク枠の生成バックエンド）
-
-3 つめの生成バックエンド（`backend/app/grok_media.py`、backend 名 `grok_cli`）。
-xAI の従量課金 API ではなく、**SuperGrok / X Premium+ のサブスクリプション枠**で動く
-公式 CLI をヘッドレス実行し、Grok Imagine に画像（§2.3 の `grok_imagine`）と
-動画（§2.2 の `grok_imagine_video`）を作らせる。プロンプト作成に使っている CLI 統合（§4.1）と
-**コマンド名だけを共有**し、実行のしかたは分けてある。画像と動画の違いはマニフェストの
-`GrokCliTask.media` と指示文の組み立てだけで、実行・成否判定・リトライ・クォータの言い換えは共通。
-
-- **呼び出し**: `grok -p "<指示>" --always-approve --output-format json --no-auto-update`。
-  `--always-approve` が無いとツール実行の承認待ちでハングする
-- **作業ディレクトリを分ける**: `runtime/grok-media-workdir/`（設定 `grok_media_workdir`）。
-  CLI は生成物を既定で `.grok/generated-media/` に書き散らすので、チャット用の
-  `runtime/grok-workdir/` と同居させない
-- **`XAI_API_KEY` は env から必ず外す**。残っていると CLI が API 直叩き（従量課金）に
-  フォールバックしうるため、サブスク枠で回す約束を守る（§4.1）
-- **指示は定型テンプレート**: プロンプト本文 + 「`outputs/{job_id}/image.png` に PNG で
-  保存し、成功したら `OK <絶対パス>`、失敗したら `FAILED <理由>` とだけ出力せよ」。
-  縦横比・解像度も指示文に織り込むが、**厳密な制御は保証されない**（プロンプト経由の希望）。
-  動画（`grok_imagine_video`）は同じテンプレートの MP4 版で、尺・解像度（選択式フィールド、§3.1）が
-  requirements の行として増える。音声はモデルが映像と同時に生成するので指示は要らない
-- **入力ファイルの受け渡し**: CLI に渡せるのは自然文だけなので、開始フレーム画像は
-  `<作業ディレクトリ>/inputs/<job_id>-<元のファイル名>` へコピーし（`grok_media.stage_input`）、
-  指示文がそのファイル名で参照する（「この画像を開始フレームに。プロンプトは変化するものだけ」）。
-  kie.ai の File Upload API にあたる下ごしらえで、ジョブ側の入口は `jobs._grok_inputs`
-- **成否の判定は 4 段構え**: ① 終了コード ② JSON 出力の `text` から合図
-  （`OK` / `FAILED`）③ **指定パスにファイルが実在しサイズ > 0**（「作った」と言って
-  置かないことがあるので、言葉ではなくファイルを信じる）④ 無ければ作業ディレクトリの
-  `.grok/generated-media/` を mtime 順で探す保険。前回の残りを拾わないよう、実行前に
-  出力先を消し、`.grok/generated-media/` は実行開始より新しいものだけ見る
-- **タイムアウトとリトライ**: 1 回あたり `grok_media_timeout`（既定 300 秒）。失敗したら
-  **1 回だけやり直す**（モデレーションの誤検知や一時的な失敗があるため）。ただし
-  クォータ枯渇（rate limit / quota 系の文言）は `GrokQuotaError` として「時間をおいて」の
-  案内に変換し、やり直さない。枠は Chat / Imagine / Build 横断の共有プールで、
-  目安は画像 ~40 枚/日・動画 ~10 本/日（SuperGrok、時期・地域で変動）
-- **可用性の判定**: 起動時・設定保存時の確認は**サブスク枠を使わない軽いもの**に留める
-  （`grok` コマンドが実行できること + `~/.grok/auth.json` が在ること）。実際に通るかどうかは
-  設定ページの「接続確認」＝ `POST /api/grok/check` で 1 ターン回して確かめ、結果を
-  `app.backends` のキャッシュに預ける。確認できるまで `grok_imagine` / `grok_imagine_video` は
-  `GET /api/options` にもエージェントのカタログにも出ず、投入しようとしても 422
-- **`full` モードの橋渡し**: 成果物は最初から `outputs/{job_id}/` に書かれるローカル
-  ファイルなので、`source_image` を差し替えるだけで 2 段目に渡せる。実装済みの向きは
-  `grok_cli → comfyui`（ComfyUI の input へ再アップロード）・`grok_cli → kie`
-  （File Upload API で公開 URL）・`comfyui → grok_cli`（作業ディレクトリへコピーして指示文で参照）の
-  3 つ（`jobs._STAGE_BRIDGES`）。`grok_cli → grok_cli`（Grok の画像 → Grok の動画）は同一
-  バックエンドなので橋渡しの宣言は要らない
-- **LoRA は使えない**: グラフが無いので差し込む場所がない。指定したジョブは 422
-- **投入内容の保存**: `workflow_json` に段階別で
-  `{"backend": "grok_cli", "request": {"media": …, "prompt": …, "dest": …, "instruction": …}}`
-  を残す（何を頼んだかがそのまま再現できる）
-- **モデレーション**: 実在人物・著名人・商標は弾かれる（2026 年 1 月以降、誤検知が増えている）。
-  厳密な制御が要るようになったら `api.x.ai` 直（画像は `POST /v1/images/generations`、
-  動画は `POST /v1/videos/generations` の非同期ポーリング）へ切り替えられるよう、生成の入口は
-  `MediaRequest` 1 つに絞ってある
-
-### 5.4 Codex CLI（ChatGPT サブスク枠の生成バックエンド）
-
-4 つめの生成バックエンド（`backend/app/codex_media.py`、backend 名 `codex_cli`）。
-OpenAI の従量課金 API ではなく、**ChatGPT Plus / Pro のサブスクリプション枠**で動く
-公式 CLI（`codex exec`）の組み込みスキル `$imagegen`（`.system` 同梱、インストール不要）に
-gpt-image-2 で画像（§2.3 の `gpt_image2`）を描かせる。発想は §5.3 と同じだが、
-**コマンド体系がまったく違う**ので実装は分けてある（共通化しているのは考え方だけ）。
-
-- **呼び出し**: `codex exec --skip-git-repo-check --sandbox workspace-write
-  -C <作業ディレクトリ> --output-last-message <一時ファイル> '<指示>'`。
-  **最終応答は標準出力ではなくファイル**で受け取る（標準出力は進捗ログ）
-- **作業ディレクトリを分ける**: `runtime/codex-media-workdir/`。`--sandbox
-  workspace-write` が書き込みを許すのはこの作業根の下なので、リポジトリの中では走らせない
-- **`OPENAI_API_KEY` は env から必ず外す**。残っていると CLI が API キー認証
-  （従量課金）に倒れうるため、サブスク枠で回す約束を守る
-- **指示は定型テンプレート**: `$imagegen` の呼び出し + プロンプト本文 + 大きさ・品質の希望 +
-  「`outputs/{job_id}/image.png` に PNG でコピーし、成功したら `OK <絶対パス>`、
-  失敗したら `FAILED <理由>` とだけ出力せよ」。**保存先を渡す引数は無く、プロンプトで
-  コピーさせるのが公式想定フロー**（imagegen の SKILL.md）。既定の保存先は
-  `~/.codex/generated_images/`。大きさ・品質は自然文で伝える希望であって、API 同等の
-  厳密保証は無い
-- **成否の判定は 3 段構え**: ① 終了コード（0 でも「タスク失敗・ターン完走」があるので
-  単独では信用しない）② `--output-last-message` のファイルを合図（`OK` / `FAILED`）で
-  パース ③ **出力パスの実在・サイズ > 0・PNG マジックバイト**。③ が最終判定で、
-  合図と食い違ったら**ファイルを採る**。見つからなければ `~/.codex/generated_images/` を
-  mtime 順で探す保険（実行開始より新しいものだけ見る。出力先は実行前に消す）
-- **タイムアウトとリトライ**: 1 回あたり `codex_timeout`（既定 300 秒）。失敗したら
-  **1 回だけやり直す**。ただし枠の枯渇（usage limit / rate limit 系の文言）は
-  `CodexQuotaError` として「時間をおいて」の案内に変換し、やり直さない。
-  **画像生成ターンは通常のターンより 3〜5 倍速く 5 時間 / 週次の枠を消費する**（公式明記）ので、
-  高品質枠として少量使う位置づけ。月に数百枚を回すなら API 直（gpt-image-1.5）を検討する
-- **可用性の判定**（`codex login status` 相当）: 起動時・設定保存時の確認は
-  **サブスク枠を使わない軽いもの**に留める（`codex` コマンドが実行できること +
-  `~/.codex/auth.json` に ChatGPT サインインのトークンが在ること。API キーだけの
-  ログインは従量課金なので「使えない」扱い）。実際に通るかどうかは設定ページの
-  「接続確認」＝ `POST /api/codex/check` が `codex login status` を回して確かめ、
-  結果を `app.backends` のキャッシュに預ける（画像は作らないので枠は減らない）。
-  確認できるまで `gpt_image2` は `GET /api/options` にもエージェントのカタログにも
-  出ず、投入しようとしても 422
-- **`full` モードの橋渡し**: 成果物は最初から `outputs/{job_id}/` に書かれるローカル
-  ファイルなので、`source_image` を差し替えるだけで 2 段目に渡せる。実装済みの向きは
-  `codex_cli → comfyui` / `codex_cli → kie` / `codex_cli → grok_cli` の 3 つ
-  （`jobs._STAGE_BRIDGES`）。**画像しか作れない**ので 2 段目には現れず、
-  `* → codex_cli` の向きは宣言しない
-- **選択式フィールド**（§3.1）は画像ステージにも効く: `size`（1024x1024 / 1536x1024 /
-  1024x1536）と `quality`（low / medium / high）は `gpt_image2` の宣言で、ジョブの
-  `selects` は**ステージをまたいで 1 つの辞書**なので、`models.select_problem` は
-  そのモードで走るステージの宣言すべてを見て検証する
-- **LoRA は使えない**: グラフが無いので差し込む場所がない。指定したジョブは 422
-- **透過背景は非対応**（gpt-image-2 の制約）。公式スキル内蔵のクロマキー方式
-  （`#00ff00` 背景で生成 → `remove_chroma_key.py` でアルファ抜き）は**今回の範囲外**で、
-  必要になったら第 2 段として足す
-- **投入内容の保存**: `workflow_json` に段階別で
-  `{"backend": "codex_cli", "request": {"media": "image", "prompt": …, "size": …,
-  "quality": …, "dest": …, "instruction": …}}` を残す
-- **規約面**: `codex exec` の自動化は公式機能なので問題ない。個人サブスクを共有サーバーで
-  チーム / サービスのバックエンドとして使い回すのは規約リスクがあるため、
-  **1 開発者が自分のワークフローで回す**範囲に留める
-
 ## 6. 成果物の取得
 
 | 成果物 | 取得方法 |
@@ -1061,7 +667,7 @@ gpt-image-2 で画像（§2.3 の `gpt_image2`）を描かせる。発想は §5
 | 生成画像 | 画像ワークフローの `SaveImage` / `SaveImageAdvanced` の出力を history から取得し `/view` でダウンロードして `outputs/{job_id}/image.png` に保存。出力ノード ID はワークフローごとに異なる（`29` / `46` / `9` / `195`）ためマニフェストの `output_node` を使う |
 | 動画 | 動画ワークフローの `SaveVideo` の出力ファイルを `/view` でダウンロードし `outputs/{job_id}/video.mp4` に保存。出力ノード ID はワークフローごとに異なる（`75` / `341` / `68`）ためマニフェストの `output_node` を使う |
 | 音声 | 音声ワークフローの `SaveAudioMP3`（`107` / `19`）の出力を `outputs/{job_id}/audio.mp3` に保存し `jobs.audio_output_path` に記録する |
-| 追加の成果物 | 1 回の生成で複数返るモデル（Suno は 1 リクエストで **2 曲**）の 2 つめ以降を `outputs/{job_id}/audio_2.mp3` … に保存し、パスの JSON 配列を `jobs.extra_outputs` に記録する（API では `extra_output_urls` として返り、結果パネルのタブと履歴のバッジに出る）。主成果物の列（`image_path` / `video_path` / `audio_output_path`）に入るのは常に 1 つめ |
+| 追加の成果物 | 1 回の生成で複数返るモデルの 2 つめ以降を `outputs/{job_id}/audio_2.mp3` … に保存し、パスの JSON 配列を `jobs.extra_outputs` に記録する（API では `extra_output_urls` として返り、結果パネルのタブと履歴のバッジに出る）。主成果物の列（`image_path` / `video_path` / `audio_output_path`）に入るのは常に 1 つめ |
 | ラストフレーム | ダウンロードした動画から ffmpeg で抽出: `ffmpeg -sseof -0.5 -i video.mp4 -update 1 -q:v 1 last_frame.png`（次回生成の開始フレームに再利用可能） |
 
 ---
@@ -1094,11 +700,11 @@ CREATE TABLE jobs (
   error         TEXT,
   nsfw          INTEGER NOT NULL DEFAULT 0,
   nsfw_source   TEXT NOT NULL DEFAULT '',  -- 判定の出所（auto / manual）
-  credits_consumed REAL                     -- kie.ai が消費したクレジット（§5.2。ComfyUI は NULL）
+  credits_consumed REAL                     -- 外部バックエンドが消費したクレジット（過去の履歴用。ComfyUI は NULL）
 );
 ```
 
-- `params` には `video_workflow` / `image_workflow` / `audio_workflow`（ワークフロー ID）と、`end_image` / `reference_video` / `reference_images` / `reference_videos` / `reference_audios` / `multi_shots` / `kling_elements`、音声モードの `audio_prompt` / `lyrics` / `negative_tags` / `bpm` / `keyscale` / `language` / `audio_category` / `reprompt` / `audio_seed` も保存する
+- `params` には `video_workflow` / `image_workflow` / `audio_workflow`（ワークフロー ID）と、`end_image` / `reference_video` / `reference_images` / `reference_videos` / `reference_audios`、音声モードの `audio_prompt` / `lyrics` / `negative_tags` / `bpm` / `keyscale` / `language` / `audio_category` / `reprompt` / `audio_seed` も保存する
 - 後から足したカラム（`nsfw` / `nsfw_source` / `audio_prompt` / `audio_output_path` / `credits_consumed` / `extra_outputs` など）は起動時に `PRAGMA table_info` と突き合わせて不足分だけ `ALTER TABLE` する（`db.MIGRATIONS`）
 - `workflow_json` を保存するため、任意の過去ジョブの投入内容をあとから完全に確認できる（`rerun` は `params` から作り直す）
 - リファレンス音声・アップロード画像は `assets/` に保存し再利用可能（名前を付けて管理）
@@ -1266,23 +872,20 @@ SPA 1 画面 + 履歴。ダークテーマの生成系ツールらしい見た�
 - 実行中でもキュー追加可能（ジョブキュー表示）
 - **入力リソースは「ライブラリから選択」「履歴から選択」で使い回せる**: 開始フレーム / 編集元画像・最後のフレーム・参照動画・リファレンス音声の各欄に 2 つのボタンを置く。[ライブラリから選択] は取っておいた素材の一覧（`LibraryPickerModal`、§7.2）で、選ぶと `/library/…` URL をそのまま欄に入れる（配信済みなのでコピーしない）。モーダル内から素材のアップロード追加・リネーム・タグ編集・削除もできる。一覧は `GET /api/library` から 50 件ずつ読み、**検索ボックス（名前・タグの部分一致）・カテゴリのプルダウン（すべて / キャラクター / 背景 / 小物 / 未分類）・タグチップでの絞り込み**、[さらに表示] での continue 読み込みに対応する（絞り込みとページングはサーバー側）。素材ごとのカテゴリはタイル下のプルダウンでその場で変えられ、モーダルからのアップロードには絞り込み中のカテゴリがそのまま付く
 - **リファレンスシートを「ライブラリから作成」**: リファレンスシートを入力に取る動画ワークフロー（`ltx2_3_ic_lora_image`）を選んでいるときだけ、画像欄に [ライブラリから作成] を足す（`SheetBuilderModal`）。押すと `LibraryPickerModal` の複数選択モード（タイルに選択順のバッジが出る）で画像素材を **2〜8 枚**選べ、[この順で作成] で `POST /api/library/sheet`（§7.2）を呼ぶ。シートの大きさは選択中のアスペクト比から長辺 1280px で決める（`form.sheetSize`。プリセットが読めなければ 1280x720）。出来上がったシートはそのまま画像欄に入り、ライブラリにも残る。作成中はボタンを [作成中…] にし、失敗はモーダル内にそのまま出す
-- **マルチモーダル参照の欄**（Seedance 2 系、§2.2 / §3.1）: 参照入力を宣言しているワークフローを `mode: "i2v"` で選んだときだけ「マルチモーダル参照（開始フレームとは排他）」セクションを出す。参照画像 / 参照動画 / 参照音声の欄がそれぞれ「n / 上限 件」と [アップロード] [ライブラリから選択] [履歴から選択] を持ち、選んだ素材は**選んだ順**に番号つきで積み上がる（並び順がそのまま API に渡る配列の順序）。各行の [外す] で個別に取り消せる。ライブラリのモーダルは複数選択モード（`LibraryPickerModal` の `selectedIds`）で開き、選ぶたびに欄へ出し入れしてモーダルは開いたまま、[選択を終える] で閉じる。上限に達したら追加の操作を無効化する。開始フレーム / 最後のフレームと同時に入っている場合と `mode: "full"` の場合は、送信前にフォームがその場でエラーを出す（バックエンドの 422 と同じ理由、`form.validateForm`）
-- **マルチショット / Elements の欄**（Kling 3.0、§2.2 / §3.1）: 宣言のあるワークフローで動画ステージが走るときだけ、「マルチショット」「Elements（@要素名 でのキャラ固定）」の 2 セクションを出す。行が増えて縦に伸びるので**どちらも既定は折りたたみ**で、見出しの右肩は [開く（n / 上限 ショット）] / [閉じる]。マルチショットは Shot ごとにプロンプトのテキストエリアと秒数の数値欄を持ち、[ショットを追加] / [削除] で増減する（上限に達したら追加を無効化）。Elements は要素ごとに名前・説明の入力と参照画像の欄を持ち、画像は [ライブラリから選択]（複数選択モード。参照素材と同じく選ぶたびに出し入れしてモーダルは開いたまま）/ [履歴から選択] で入れて [外す] で取り消す。動画プロンプトと各ショットには**残り文字数**を出し、`@要素名` は 37 文字として数える（0 を切ると赤）。件数・秒数・文字数・宣言していない `@名前` は送信前にフォームがその場でエラーを出す（バックエンドの 422 と同じ理由、`form.validateForm`）
+- **マルチモーダル参照の欄**（MiniMax H3 r2v、§2.2 / §3.1）: 参照入力を宣言しているワークフローを `mode: "i2v"` で選んだときだけ「マルチモーダル参照（開始フレームとは排他）」セクションを出す。参照画像 / 参照動画 / 参照音声の欄がそれぞれ「n / 上限 件」と [アップロード] [ライブラリから選択] [履歴から選択] を持ち、選んだ素材は**選んだ順**に番号つきで積み上がる（並び順がそのままグラフに渡る順序）。各行の [外す] で個別に取り消せる。ライブラリのモーダルは複数選択モード（`LibraryPickerModal` の `selectedIds`）で開き、選ぶたびに欄へ出し入れしてモーダルは開いたまま、[選択を終える] で閉じる。上限に達したら追加の操作を無効化する。開始フレーム / 最後のフレームと同時に入っている場合と `mode: "full"` の場合は、送信前にフォームがその場でエラーを出す（バックエンドの 422 と同じ理由、`form.validateForm`）
 - **リファレンス音声はライブラリに一本化**: `assets/audio` のプルダウンは廃止し、[ライブラリから選択] / [履歴から選択] / [アップロード]（アップロードはそのままライブラリ登録）と、選択中の名前 + プレビューだけを出す。LoRA の `default_audio` などが指す従来の `/assets/…` も入力としては引き続き有効
-- **Veo の追加操作**（§5.2 / issue #26）: 結果ペインのツールバーに、そのジョブが受け付けるものだけ [延長（+7 秒）] [1080P を取得] を出す（`VeoActions`。判定はバックエンドの `Job.followups` に任せ、フロントは条件を持たない）。[延長] は続きの指示を書くモーダルを開き、[延長を実行] で `POST /api/jobs/{id}/veo/extend`。[1080P を取得] は入力が要らないのでそのまま `POST /api/jobs/{id}/veo/1080p`。どちらも新しいジョブになるので、続き生成と同じく作ったジョブに表示を切り替える
-- **生成物のライブラリ登録**: 結果ペイン（表示中の成果物 1 件）と履歴詳細（その job が持つ出力すべて）に [☆ ライブラリに登録] を置く（`LibraryAddButton`）。既に登録済みのものは `/api/options` の library から判定して押す前から [★ 登録済みです] を出し、押してしまった場合も 409 を失敗扱いにせず同じ表示にする（§7.2）。ボタンの隣にカテゴリのプルダウン（既定は未分類）を置き、登録と同時に分類できる
 - [履歴から選択] は過去ジョブの出力から選ぶ（`HistoryPickerModal`）。**検索ボックス**でジョブの文言（動画 / 画像 / 音声プロンプト → 最初の指示）に部分一致するものだけに絞れる（ジョブは全件フロントにあるのでクライアント側で絞る）。候補は完了ジョブのみを新しい順に並べ、欄の種別で絞る（画像欄 = 生成画像とラストフレームの両方（ラベルで区別）、動画欄 = 生成動画、音声欄 = 音声ジョブの出力）。生成物は `outputs/` にあって `assets/` の外なので、選ぶと fetch → `POST /api/assets/{kind}` で assets へコピーしてから欄に入れる。モーダル内には独自の「🫣 NSFW表示」チェックボックスがあり、初期値はヘッダーのグローバルトグルに従うが、ここでの切り替えは `sessionStorage` に残さない（この画面かぎり）。オフのあいだは NSFW ジョブを一覧に出さない。Esc / 背景クリックで閉じる
 - LoRA 選択はチップ型マルチセレクト（強度スライダー付き）。選択するとトリガーワード連結欄（編集可）に反映される。セクションは 2 つあり、**「LoRA（動画）」は動画設定群の中**（登録 `target = 'video'` のみ）、**「LoRA（画像）」は画像設定群の中**（`target = 'image'` かつ選択中の画像ワークフローと同じファミリーのみ）に置く
 - **接続先プルダウン**（§5）: フォーム最上部に「接続先」（ComfyCloud / RunPod / ローカル）を置く。値は `GET /api/settings` の `comfy_target` 由来で、変えると即 `PUT /api/settings` に保存し、選択肢（`/api/options`）と `/api/health` を取り直す（ComfyUI が変われば使えるモデル・LoRA も変わるため）。設定を読み込むまでは無効化しておく
 - **モードとワークフローに応じた項目の非表示**（`form.hiddenFields`）: 使わない項目はグレーアウトではなく**その欄ごと表示しない**。ただし値は `FormState` に残るので、その項目を使うモード / ワークフローへ戻せば入力内容が復元される
   - 動画生成モードでは画像ワークフロー・画像プロンプト・LoRA（画像）・トリガーワードを出さない（LoRA（動画）は出す）。画像のみモードでは動画ワークフロー・動画プロンプト・ネガティブ・リファレンス音声・秒数・fps・LoRA（動画）を出さない
-  - **選択した動画ワークフローのマニフェスト**に従い、音声入力を持たないワークフローでは音声欄を出さず、必要な入力（最終フレーム / 参照動画）の欄だけを出す。**必須ではないが受け取れる入力**（Veo の開始フレーム・最終フレーム画像）も欄は出す（`requires` だけでなく `supports` を見る）。渡すかどうかはユーザー次第で、空なら送らない
+  - **選択した動画ワークフローのマニフェスト**に従い、音声入力を持たないワークフローでは音声欄を出さず、必要な入力（最終フレーム / 参照動画）の欄だけを出す。**必須ではないが受け取れる入力**（任意の開始フレーム・最終フレーム画像）も欄は出す（`requires` だけでなく `supports` を見る）。渡すかどうかはユーザー次第で、空なら送らない
   - **画像ワークフロー**も同様で、編集系（qwen-image）では参照画像の欄が出る代わりにアスペクト比 / メガピクセルが消える
   - 音声モードでは画像・動画のセクション一式を出さず、音声ワークフローと、そのワークフローが露出しているつまみだけを出す
 - **ワークフローの選択は「モデル → モード」の 2 段プルダウン**（動画 / 画像 / 音声のどのセクションでも同じ `WorkflowPicker`）: 1 段目がモデル（= ファミリー。表示名は `/api/options` の `family_label` で、外部 API・サブスク CLI といった供給元の注記もここに付く）、2 段目がそのモデルのモード（t2v / i2v / 素材参照 …。表示名は `mode_label` で、1 段目と重複するモデル名は入らない）。フォームが持つ状態は今までどおりワークフロー id 1 つだけで、1 段目はそこから引く（前回選択の復元・ライブラリからの連鎖・エージェントのプリセットは id を入れるだけで両方のセレクトが揃う）。モデルを変えるとそのモデルの先頭モードへ切り替わるので、存在しない id のまま送信されることはない。モードが 1 つしかないモデルでも 2 段目は消さず無効化して出す。選択肢そのものが取れないとき（ComfyUI に繋がらない）は従来どおり id の手入力欄になる
 - 「画像＋動画」モードのプルダウンには開始フレームを受け取れる動画ワークフローのみを出す（選択中のものが対象外になったら自動で切り替える。モードが 1 つも残らないモデルは 1 段目からも消える）
-- **選択式フィールド**を宣言しているワークフロー（wan_dancer）では、ワークフローセレクトの直下にその選択肢のプルダウンが並ぶ（§3.1）。自動決定できる項目には「自動（入力に合わせる）」、それ以外には「既定（<値>）」が先頭に入る。`video_prompt` が任意のワークフローではプロンプト欄に「（任意）」と出す
-- LoRA チェーンを持たないワークフロー（wan_dancer）では LoRA（動画）セクションを出さない（挿せないため。指定したジョブはバックエンドが 422 にする）
+- **選択式フィールド**を宣言しているワークフローでは、ワークフローセレクトの直下にその選択肢のプルダウンが並ぶ（§3.1）。自動決定できる項目には「自動（入力に合わせる）」、それ以外には「既定（<値>）」が先頭に入る。`video_prompt` が任意のワークフローではプロンプト欄に「（任意）」と出す
+- LoRA チェーンを持たないワークフローでは LoRA（動画）セクションを出さない（挿せないため。指定したジョブはバックエンドが 422 にする）
 - 動画ネガティブはプリセット選択（ワークフロー既定 / 現行値 / モデル作者版）+ 編集可（詳細設定アコーディオン内）
 - 設定は**モーダルではなく専用ページ（フルページ）**。ヘッダーの [設定] で画面遷移し、ページ左上の [← 戻る] で生成画面に復帰する。3 タブ構成:
   - **接続 / Grok**: 「ComfyUI 接続先」（[接続先] のプルダウン + ComfyCloud / RunPod / ローカルのサブセクション。RunPod のサブセクションには Pod の ComfyUI URL・APIキーに続けて §5.1 の自動起動の設定を置く） / grok CLI コマンドと**使用モデル（既定: grok-4.5、変更可）**  / **モデル自動ダウンロード**のブロック（常に表示。ローカルの保存先パスは環境変数由来なので読み取り専用で見せ、「書き込み可 ✓」「パスが見つかりません」等の状態と、**Hugging Face トークン**・**Civitai APIキー**（どちらも `type="password"`。RunPod へ落とすときは Pod 側の環境変数が使われる）を並べる、§3.3）
@@ -1307,12 +910,8 @@ SPA 1 画面 + 履歴。ダークテーマの生成系ツールらしい見た�
 ### バックエンド API（概要）
 
 ```
-GET  /api/health                 … ComfyUI/Grok/kie.ai 疎通チェック
-GET  /api/kie/credits            … kie.ai の残クレジット（1 credit = $0.005、§5.2）
-POST /api/kie/check              … kie.ai の API キーを確認し直す（選択肢の出し分けに反映、§5.2）
-POST /api/grok/check             … Grok Build CLI を 1 ターン回して確認する（選択肢の出し分けに反映、§5.3）
-POST /api/codex/check            … Codex CLI の `codex login status` を確認する（選択肢の出し分けに反映、§5.4）
-GET  /api/options                … 画像/動画/音声ワークフロー一覧（必要入力・露出しているつまみ・秒数レンジつき）・アスペクト比・LoRA一覧・アセット一覧・ライブラリ一覧（library, §7.2）・実行時に選べるモデルスロット（model_slots）と ComfyUI のモデルファイル一覧（model_files）・生成バックエンドの可用性（backends, §5.2）
+GET  /api/health                 … ComfyUI/Grok 疎通チェック
+GET  /api/options                … 画像/動画/音声ワークフロー一覧（必要入力・露出しているつまみ・秒数レンジつき）・アスペクト比・LoRA一覧・アセット一覧・ライブラリ一覧（library, §7.2）・実行時に選べるモデルスロット（model_slots）と ComfyUI のモデルファイル一覧（model_files）
 GET/POST/PUT/DELETE /api/loras   … アプリ内 LoRA 登録リストの CRUD（GET は `?target=` でその接続先のもの + 共通行、POST は `comfy_target` で紐づけ先を指定、§5）
 GET  /api/library                … ライブラリ検索（kind / category / q / tag / limit / offset → items + total + tags、§7.2）
 POST /api/library/{kind}         … ファイルをアップロードして登録
@@ -1329,13 +928,11 @@ POST /api/models/download-all    … 未検出かつ取得元 URL 登録済み�
 POST /api/chat/sessions          … チャット開始（フォーム現在値をコンテキストとして渡す。`video_workflow` / `image_workflow` / `audio_workflow` を含む）
 POST /api/chat/sessions/{id}/messages … 発言送信 → Grok 応答（質問 or 最終JSON案）を返す
 GET  /api/chat/sessions/{id}     … 履歴取得
-POST /api/jobs                   … ジョブ作成・実行（プロンプト確定値+パラメータ。`selects` で選択式フィールド §3.1、`model_overrides` でそのジョブだけモデルを差し替え可 §3.3、`reference_images` / `reference_videos` / `reference_audios` でマルチモーダル参照、`multi_shots` / `kling_elements` でマルチショット・Elements §3.1）
+POST /api/jobs                   … ジョブ作成・実行（プロンプト確定値+パラメータ。`selects` で選択式フィールド §3.1、`model_overrides` でそのジョブだけモデルを差し替え可 §3.3、`reference_images` / `reference_videos` / `reference_audios` でマルチモーダル参照 §3.1）
 GET  /api/jobs?limit=…           … 履歴一覧
 GET  /api/jobs/{id}              … 詳細
 POST /api/jobs/{id}/rerun        … 再実行（seed 変更オプション）
 POST /api/jobs/{id}/continue     … ラストフレームを開始フレームに新規ジョブ（`video_workflow` / `end_image` / `reference_video` / `model_overrides` 等を差分指定可。開始フレームを取れないワークフローは既定に戻す）
-POST /api/jobs/{id}/veo/extend   … Veo の動画に +7 秒を継ぎ足す新規ジョブ（body: `prompt` 必須 / 任意 `seeds` / `watermark`。§5.2）
-POST /api/jobs/{id}/veo/1080p    … Veo の動画の 1080P 版を取得する新規ジョブ（body: 任意 `index`。5 credits、§5.2）
 DELETE /api/jobs/{id}
 POST /api/assets/audio|image|video … アセットアップロード（video は参照動画用）
 GET  /library/…                  … 静的配信（ライブラリの素材、§7.2）
@@ -1347,14 +944,11 @@ GET  /outputs/…                  … 静的配信（画像/動画/音声）
 
 ```
 backend/            FastAPI アプリ
-  app/routers/      health / settings / loras / models_config / model_download / assets / options / chat / jobs / kie / grok / agent
+  app/routers/      health / settings / loras / models_config / model_download / assets / options / chat / jobs / agent
   app/comfy.py      ComfyUI クライアント（/object_info, /upload/image, /prompt, /ws, /history, /view）
-  app/kie.py        kie.ai クライアント（createTask / recordInfo ポーリング・ファイルアップロード・成果物 DL、§5.2）
-  app/backends.py   生成バックエンドの可用性判定とキャッシュ（§5.2）
   app/workflows.py  ワークフロー登録簿と注入マニフェスト（ノード ID 直指定）+ プロンプト用カタログ
   app/workflow.py   テンプレートへのパラメータ注入・LoRA チェーン動的注入・解像度計算
   app/grok.py       grok CLI 呼び出し（LLM クライアントは差し替え可能な抽象化）
-  app/grok_media.py grok CLI 経由のメディア生成（サブスク枠、4 段構えの成否判定、§5.3）
   app/prompts.py    チャット / エージェントのシステムプロンプト
   app/jobs.py       asyncio ジョブキューと実行、成果物取得・ラストフレーム抽出
   app/agent_*.py    エージェントのアクションプロトコル・実行ループ・セッション永続化
@@ -1372,14 +966,14 @@ docs/AGENT-MODE.md  エージェントモード設計書
 workflow/           ComfyUI ワークフロー（API フォーマット）テンプレート ※実行の正
   image/            krea2/ anima/ z-image/ qwen-image/（モデルファミリーごと）
   video/ltx2.3/     t2v / i2v / ia2v / id_lora / flf2v / ic_lora_image / ic_lora_motion
-  video/wan/        wan_dancer（画像+音声→ダンス動画）
   video/minimax-h3/ minimax_h3_t2v / minimax_h3_i2v / minimax_h3_r2v（音声つき）
+                    minimax_h3_i2v_turbo / minimax_h3_r2v_turbo（4 ステップ版）
   audio/            ace_step1_5_xl_sft.json / stable_audio_3_medium_base.json
 app.db              SQLite（jobs / loras / library / chat_sessions / agent_sessions）
 outputs/            生成物（/outputs で静的配信）
 assets/             アップロードした画像・音声・参照動画・LoRA サンプル（/assets で静的配信）
 library/            ライブラリ（取っておいた素材。image/ video/ audio/、/library で静的配信）
-runtime/            config.json / grok 作業ディレクトリ（プロンプト用・メディア生成用）/ agent-sessions/
+runtime/            config.json / grok 作業ディレクトリ（プロンプト用）/ agent-sessions/
 ```
 
 ---
@@ -1412,7 +1006,7 @@ runtime/            config.json / grok 作業ディレクトリ（プロンプ�
 11. 画像ワークフロー: **選択式**（krea2 / anima / z-image / qwen-image-edit）。`image_prompt` の
     仕様はファミリーごとに別物として扱う（§2.3 / §4.2）
 12. 画像 LoRA: **モデルファミリーで仕分け**、`image_workflow` と一致するものだけ使用可（§3.4）
-13. 音声生成: **独立モード**（画像・動画とは連結しない）。ACE-Step 1.5 / Stable Audio 3（ComfyUI）と Suno V5（kie.ai、1 回 2 曲）、出力は mp3（§2.4）
+13. 音声生成: **独立モード**（画像・動画とは連結しない）。ACE-Step 1.5 / Stable Audio 3（ComfyUI）、出力は mp3（§2.4）
 14. 未使用項目: **グレーアウトではなく非表示**（値はフォーム状態として保持）（§8）
 
 残課題: なし（実装着手可能）

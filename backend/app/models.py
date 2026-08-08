@@ -1,5 +1,5 @@
 import re
-from typing import Any, Literal
+from typing import Any, ClassVar, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -27,24 +27,8 @@ from .workflows import (
 #: ``audio`` is a stand-alone mode: it runs one audio graph and is never
 #: chained with the image / video stages (which is why every ``mode in (...)``
 #: test below simply does not list it).
-#:
-#: ``veo_extend`` / ``veo_1080p`` は**フォームから選ぶモードではない**（SPEC §2）:
-#: 生成済みの Veo ジョブに対して履歴から掛ける追加操作で、kie.ai に残っている
-#: 元タスクの ``taskId`` を使う。ジョブ 1 本として履歴・進捗・ライブラリに乗せる
-#: ためにモードとして持つが、生成フォームの選択肢にもエージェントの計画にも
-#: 出さない（:data:`FOLLOWUP_MODES`）。
-JobMode = Literal[
-    "full", "i2v", "image_only", "audio", "veo_extend", "veo_1080p"
-]
+JobMode = Literal["full", "i2v", "image_only", "audio"]
 JobStatus = Literal["queued", "prompting", "running", "done", "failed", "canceled"]
-
-#: 生成済みジョブへの追加操作のモード（`veo_extend` = +7 秒の延長 /
-#: `veo_1080p` = 1080P 版の取得）。どちらも新しく生成し直すのではなく、
-#: kie.ai 側に残っている元タスクに追加の仕事を頼む（SPEC §5.2 / issue #26）。
-FOLLOWUP_MODES: tuple[str, ...] = ("veo_extend", "veo_1080p")
-
-#: 追加操作を掛けられるモデルファミリー（今は Veo だけ）
-FOLLOWUP_FAMILY = "veo"
 
 #: ComfyUI の接続先プロファイル（SPEC §5）。設定には 3 つ分の接続情報を持ち、
 #: ``Settings.comfy_target`` が「今どれを使うか」を決める。生成フォームの
@@ -73,27 +57,9 @@ class Settings(BaseModel):
     runpod_comfy_api_key: str = ""
     #: ComfyCloud の API キー（URL は `COMFY_CLOUD_URL` 固定なので設定に持たない）
     comfy_cloud_api_key: str = ""
-    #: kie.ai（外部生成バックエンド、SPEC §5.2）の API キー。環境変数
-    #: ``KIE_API_KEY`` が設定されていればそちらが優先される。空のあいだは
-    #: kie 系ワークフローが選択肢に出ない。
-    kie_api_key: str = ""
     grok_command: str = "grok"
     grok_model: str = "grok-4.5"
     grok_workdir: str = ""
-    #: Grok Build CLI をメディア生成に使うときの作業ディレクトリ（SPEC §5.2）。
-    #: 空なら `runtime/grok-media-workdir`。プロンプト用の `grok_workdir` とは
-    #: 分ける（CLI が `.grok/generated-media/` に書き散らすため）。
-    grok_media_workdir: str = ""
-    #: 1 枚（1 本）の生成に許す秒数。エージェントが画像生成ツールを回して
-    #: ファイルを保存し終えるまでなので、チャットより長めに取る。
-    grok_media_timeout: float = 300.0
-    #: Codex CLI（ChatGPT サブスク枠の画像生成、SPEC §5.4）のコマンド名。
-    #: 認証は `codex login` が `~/.codex/auth.json` に書くので、設定に持つのは
-    #: コマンド名と制限時間だけ（API キーは使わない）。
-    codex_command: str = "codex"
-    #: 1 枚の生成に許す秒数。`codex exec` はスキル呼び出し・画像生成・コピーまで
-    #: を 1 ターンで回すので、チャットより長めに取る。
-    codex_timeout: float = 300.0
     # Agent mode (AGENT-MODE §3.4): extra CLI flags (tool permissions) and the
     # longer timeout research / inspection turns need. `--permission-mode auto`
     # is confirmed on grok 0.2.112 to enable file read/write (incl. viewing
@@ -106,12 +72,6 @@ class Settings(BaseModel):
     # エージェントのターンを ACP (`grok agent stdio`) で回すか。ACP だと実行中の
     # 活動（思考 / ツール実行）を UI に出せる。False なら従来のワンショット実行。
     agent_use_acp: bool = True
-    # 高速化トグルの既定値（SPEC §3.1）。宣言のあるワークフロー（MiniMax H3）
-    # だけが読み、ON にすると UNETLoader と BasicGuider の間に
-    # `PathchSageAttentionKJ` / `EasyCache` を直列で挟む。ジョブが明示しなければ
-    # この値が使われる（生成フォームのトグルがここを書き換える）。
-    sage_attention: bool = False
-    easy_cache: bool = False
     # モデルの指定は**接続先ごと**に持つ（SPEC §3.3 / §5）: どのファイルが在るかは
     # ComfyUI の環境ごとに違うので、ローカルで使うファイル名を Pod や ComfyCloud に
     # 押し付けても意味がない。キーは接続先、値は従来と同じ形。
@@ -190,14 +150,9 @@ class SettingsUpdate(BaseModel):
     runpod_comfy_url: str | None = None
     runpod_comfy_api_key: str | None = None
     comfy_cloud_api_key: str | None = None
-    kie_api_key: str | None = None
     grok_command: str | None = None
     grok_model: str | None = None
     grok_workdir: str | None = None
-    grok_media_workdir: str | None = None
-    grok_media_timeout: float | None = None
-    codex_command: str | None = None
-    codex_timeout: float | None = None
     model_overrides: dict[ComfyTarget, dict[str, str]] | None = None
     model_choices: dict[ComfyTarget, dict[str, list[str]]] | None = None
     hf_token: str | None = None
@@ -212,8 +167,6 @@ class SettingsUpdate(BaseModel):
     agent_grok_timeout: float | None = None
     agent_max_plan_tasks: int | None = None
     agent_use_acp: bool | None = None
-    sage_attention: bool | None = None
-    easy_cache: bool | None = None
 
 
 class ModelField(BaseModel):
@@ -443,6 +396,11 @@ class LoraUpdate(BaseModel):
 # negative means "keep whatever the selected template ships with" (SPEC §3.1).
 DEFAULT_NEGATIVE_PROMPT = "pc game, console game, video game, cartoon, childish, ugly"
 
+#: サンプリング回数（`steps`）の上限（SPEC §3.1）。0 は「未指定」= テンプレートの
+#: 既定値のままで、それより大きい値だけがワークフローに注入される。実用上ここまで
+#: 回すことはまず無いが、桁を間違えた指定で GPU を何時間も占有させないための蓋。
+MAX_STEPS = 150
+
 
 class LoraRef(BaseModel):
     """One LoRA selected for a job (snapshot of the registry entry)."""
@@ -470,7 +428,7 @@ class ElementInput(BaseModel):
     """Elements の 1 要素（SPEC §3.1、`WorkflowSpec.elements`）。
 
     :attr:`images` はローカル素材のパス / URL で、投入時に 1 枚ずつ File Upload
-    API に上がって ``element_input_urls`` になる（:func:`app.jobs._kie_uploads`）。
+    参照画像のパスの並びで持つ。
     プロンプト本文からは ``@要素名`` で呼ぶ。
     """
 
@@ -519,6 +477,9 @@ class GenerationParams(BaseModel):
     # of an audio job (both in seconds) — a job only ever runs one of them.
     duration: float = 10.0
     fps: int = 25
+    #: サンプリング回数（SPEC §3.1）。``0`` = 未指定で、宣言のあるワークフロー
+    #: でもテンプレートの既定値をそのまま使う（注入しない）。
+    steps: int = 0
 
     # --- audio job knobs (mode 'audio' only, see workflow.build_audio_workflow)
     audio_prompt: str = ""
@@ -528,20 +489,14 @@ class GenerationParams(BaseModel):
     bpm: int = 120
     keyscale: str = "C major"
     language: str = "en"
-    #: Suno: styles to keep out of the track (`negativeTags`). Nothing to do
+    #: styles to keep out of the track. Nothing to do
     #: with the image / video `negative_prompt` — this one is a comma separated
-    #: list of *sounds*, and only Suno reads it.
+    #: list of *sounds*, and only models that declare it read it.
     negative_tags: str = ""
     #: Stable Audio: which built-in prompt template to use
     audio_category: str = AUDIO_CATEGORIES[0]
     #: Stable Audio: expand `audio_prompt` with the graph's own local LLM first
     reprompt: bool = False
-
-    #: 動画ワークフローに高速化のパッチを挟むか（SPEC §3.1）。宣言のある動画
-    #: ワークフロー（:attr:`app.workflows.WorkflowSpec.patch_point`）だけが読む。
-    #: ジョブが明示しなければ設定の既定値が入っている。両方 ON なら直列に挟む。
-    sage_attention: bool = False
-    easy_cache: bool = False
 
     #: 選択式フィールドの値（論理名 -> 選んだ文字列。SPEC §3.1）。宣言のない
     #: ワークフローでは常に空。
@@ -583,7 +538,12 @@ class GenerationParams(BaseModel):
 class Job(BaseModel):
     id: str
     created_at: str
-    mode: JobMode
+    #: :data:`JobMode` の値。**過去に作られたジョブは今は無いモード**
+    #: （廃止した外部バックエンドの追加操作など）を持っていることがあるので、
+    #: 読み取り用のこのモデルだけは Literal で縛らない: 履歴の一覧・詳細が
+    #: 古い行 1 つで丸ごと 500 になるのを防ぐ（投入側の :class:`JobCreate` は
+    #: :data:`JobMode` のまま）。
+    mode: str
     status: JobStatus
     user_input: str | None = None
     image_prompt: str | None = None
@@ -603,13 +563,12 @@ class Job(BaseModel):
     #: the track a mode 'audio' job produced (an output)
     audio_output_path: str | None = None
     #: outputs that do not fit the columns above, in the order the backend
-    #: produced them.  One generation can return several takes (Suno answers
-    #: every request with **two songs**); the first one goes in the column for
-    #: its stage and the rest live here (SPEC §6).
+    #: produced them.  The first one goes in the column for its stage and the
+    #: rest live here (SPEC §6).
     extra_outputs: list[str] = Field(default_factory=list)
     error: str | None = None
-    #: 外部バックエンド（kie.ai）のジョブが消費したクレジット。ComfyUI のジョブと
-    #: 失敗したジョブ（kie は自動返金）では None のまま（SPEC §5.2）。
+    #: 外部バックエンドのジョブが消費したクレジット（過去の履歴のためだけに
+    #: 残している列。ComfyUI のジョブでは常に None）。
     credits_consumed: float | None = None
 
     # NSFW フラグ: nsfw_source は '' = 未判定 / 'auto' / 'manual'
@@ -623,10 +582,6 @@ class Job(BaseModel):
     audio_output_url: str | None = None
     #: URLs of :attr:`extra_outputs`, in the same order
     extra_output_urls: list[str] = Field(default_factory=list)
-    #: このジョブの成果物に**追加で掛けられる kie.ai の操作**（SPEC §5.2）。
-    #: :data:`FOLLOWUP_MODES` の部分集合で、履歴の UI はここを見てボタンを
-    #: 出す（判定は :func:`app.jobs.job_followups`）。空 = 何もできない。
-    followups: list[str] = Field(default_factory=list)
 
 
 # --------------------------------------------------------------------------
@@ -664,8 +619,8 @@ def missing_job_fields(
     missing: list[str] = []
     if mode in ("full", "image_only") and not (image_prompt or "").strip():
         missing.append("image_prompt")
-    # プロンプトを選択肢から組み立てるワークフロー（wan_dancer）と、本文が
-    # ショット側にあるワークフロー（`kling3_multishot`）では video_prompt は
+    # プロンプトを選択肢から組み立てるワークフローと、本文が
+    # ショット側にあるワークフローでは video_prompt は
     # 任意（`prompt_required=False`）。前者は書かれた場合だけテンプレートに
     # 注入され、後者は書かれていたら `multi_shot_problem` が断る（SPEC §3.1）。
     if (
@@ -713,10 +668,10 @@ def select_problem(
     """選択式フィールドの指定が使えるか（None == 問題なし、SPEC §3.1）。
 
     宣言のない名前と、選択肢に無い値を拒否する。見るのは**そのモードで実際に
-    走るワークフロー**の宣言で、``audio`` なら音声ワークフロー（Suno の
+    走るワークフロー**の宣言で、``audio`` なら音声ワークフロー（その
     `model` / `vocal_gender`）、それ以外は画像ステージと動画ステージのうち走る
     ほう（``full`` は両方）。``selects`` はステージをまたいで 1 つの辞書なので、
-    **どちらかのステージが宣言していれば通す**（gpt-image-2 の `size` /
+    **どちらかのステージが宣言していれば通す**（画像側の `size` /
     `quality` は画像ステージ側の宣言、SPEC §5.4）。
     """
     if not selects:
@@ -768,7 +723,7 @@ def select_requires_problem(
 
     「その項目は相手がこの値のときしか効かない」という宣言を投入前に見る。
     **既定のままなら何も言わない**（指定していないのだから無視されても困らない）。
-    Suno の ``duration`` は ``model`` が ``V5_5`` のときしか効かず、他のモデルでは
+    たとえば ``duration`` が ``model`` の値でしか効かないとき、他の値では
     **API が黙って無視する**ので、気づかないまま違う長さの曲を待つより 422 で
     断るほうが親切、という判断。
     """
@@ -809,7 +764,7 @@ def element_references(text: str | None) -> list[str]:
 def prompt_chars(text: str | None, reference_chars: int = 0) -> int:
     """API がそのプロンプトを何文字と数えるか（SPEC §3.1）。
 
-    Elements を持つモデル（Kling）では **``@要素名`` 1 回が
+    Elements を持つモデルでは **``@要素名`` 1 回が
     :attr:`app.workflows.ElementsSpec.reference_chars` 文字**として上限を消費する
     ので、見た目の長さのままでは 500 文字の判定が合わない。
     ``reference_chars == 0``（Elements 非対応）なら単純な文字数。
@@ -847,7 +802,7 @@ def prompt_length_problem(
 ) -> str | None:
     """``video_prompt`` がそのモデルの長さの上限に収まるか（None == 問題なし）。
 
-    外部 API には**プロンプトの文字数制限**があるものがあり（Kling 3.0 は 500
+    モデルによっては**プロンプトの文字数制限**があり（たとえば 500
     文字）、超えたリクエストは 422 で弾かれる。走らせてから失敗させると
     クレジットこそ減らないが待ち時間が無駄になるので、投入前にここで落とす。
     上限を宣言していないワークフロー（``max_prompt_chars == 0``）は素通し。
@@ -895,13 +850,13 @@ def multi_shot_problem(
 ) -> str | None:
     """ショット割りの指定が使えるか（None == 問題なし、SPEC §3.1）。
 
-    ショット割りは**専用のワークフロー**（``kling3_multishot``）の機能なので、
+    ショット割りは**専用のワークフロー**の機能なので、
     見るのは 2 方向:
 
     - 宣言のないワークフローに ``multi_shots`` を渡した → 断る
     - 宣言のあるワークフローで ``multi_shots`` が空 → 断る（そのワークフローは
       ショット割りでしか動かない）。逆にトップレベルの ``video_prompt`` は
-      API に送られない（:func:`app.kie.task_values`）ので、書かれていたら
+      モデルに送られないので、書かれていたら
       「本文はショット側に書く」と教える
 
     件数超過・1 ショットの尺が範囲外・1 ショットの本文が長すぎる、のいずれも
@@ -922,13 +877,13 @@ def multi_shot_problem(
         return (
             f"video workflow '{spec.id}' はマルチショット（`multi_shots`）に"
             "対応していません"
-            "（ショット割りで作るなら `kling3_multishot` を選んでください）"
+            "（ショット割り専用のワークフローを選んでください）"
         )
     if not shots:
         return (
             f"video workflow '{spec.id}' はショット割り専用です"
             "（`multi_shots` に 1 ショット以上を指定してください。1 カットで"
-            "作るなら `kling3_video` を選んでください）"
+            "作るなら 1 カット版のワークフローを選んでください）"
         )
     if (video_prompt or "").strip():
         return (
@@ -1123,7 +1078,7 @@ def reference_problem(
 ) -> str | None:
     """マルチモーダル参照が使える組み合わせか（None == 問題なし、SPEC §3.1）。
 
-    参照モード（Seedance 2 の ``reference_image_urls`` ほか、Veo の素材参照生成）
+    参照モード（MiniMax H3 r2v の参照素材）
     は API 側で先頭フレーム i2v と相互排他だが、それは**ワークフローを分けて**
     表現してある（参照専用のワークフローだけが ``multi_inputs`` を宣言し、開始
     フレームの受け取り口を持たない）。だからここで見るのは「宣言のないワーク
@@ -1183,7 +1138,7 @@ def start_image_problem(
 ) -> str | None:
     """開始 / 最終フレームを受け取らないワークフローに渡していないか（§3.1）。
 
-    参照専用のワークフロー（``seedance2_ref`` / ``veo3_1_fast_ref``）は、API 側で
+    参照専用のワークフロー（``minimax_h3_r2v``）は、モデル側で
     参照モードと先頭フレーム i2v が排他なので**開始フレームの受け取り口そのものを
     持たない**。黙って捨てると「渡したのに効かない」になるので、投入前に断る。
 
@@ -1203,34 +1158,6 @@ def start_image_problem(
         return (
             f"video workflow '{spec.id}' は{input_label(spec, name)}"
             f"（`{INPUT_FIELDS[name]}`）を受け取りません"
-        )
-    return None
-
-
-def followup_problem(
-    mode: str, video_workflow: str | None, source_task_id: str | None
-) -> str | None:
-    """追加操作のジョブが成り立つか（None == 問題なし、SPEC §5.2 / issue #26）。
-
-    :data:`FOLLOWUP_MODES` のジョブは新しく生成するのではなく、**kie.ai 側に
-    残っている元タスク**に仕事を足す。だから必要なのは「元ジョブの ``taskId``」と
-    「そのモデルが追加操作を持っていること」の 2 つだけで、プロンプト・入力
-    ファイル・選択式はどれも要らない（:func:`missing_job_fields` も素通しする）。
-    """
-    if mode not in FOLLOWUP_MODES:
-        return None
-    if not (source_task_id or "").strip():
-        return (
-            f"mode '{mode}' には元ジョブの kie.ai タスク ID が要ります"
-            "（外部 API に投入した記録が残っているジョブからだけ実行できます）"
-        )
-    try:
-        spec = get_video_spec(video_workflow)
-    except WorkflowSpecError as exc:
-        return str(exc)
-    if spec.backend != "kie" or spec.family != FOLLOWUP_FAMILY:
-        return (
-            f"video workflow '{spec.id}' に mode '{mode}' の追加操作はありません"
         )
     return None
 
@@ -1285,7 +1212,7 @@ def audio_workflow_problem(
     ``TextEncodeAceStepAudio1.5``: ComfyUI rejects the whole prompt when a
     value is outside its declared set, so they are caught here (422) instead of
     failing the job halfway through.  A workflow that declares no length at all
-    (``max_duration == 0``, e.g. Suno, whose API has no length parameter) skips
+    (``max_duration == 0``, e.g. a model whose API has no length parameter) skips
     the range check: the model decides how long the track is.
     """
     if mode != "audio":
@@ -1490,7 +1417,7 @@ class JobCreate(BaseModel):
     bpm: int = 120
     keyscale: str = "C major"
     language: str = "en"
-    #: Suno: styles to keep out of the track (`negativeTags`)
+    #: styles to keep out of the track
     negative_tags: str = ""
     #: Stable Audio: Music / Instrument / SFX / One-shot
     audio_category: str = AUDIO_CATEGORIES[0]
@@ -1509,11 +1436,9 @@ class JobCreate(BaseModel):
 
     duration: float = 10.0
     fps: int = 25
-
-    #: 高速化トグル（SPEC §3.1）。宣言のある動画ワークフローでのみ効く。
-    #: ``None`` = 設定の既定値（`Settings.sage_attention` / `.easy_cache`）に従う。
-    sage_attention: bool | None = None
-    easy_cache: bool | None = None
+    #: サンプリング回数（SPEC §3.1）。`steps` を宣言しているワークフローだけが
+    #: 読み、`0`（既定）は「未指定」= テンプレートの既定値のまま。
+    steps: int = Field(default=0, ge=0, le=MAX_STEPS)
 
     # absolute path inside assets/ or the "/assets/..." URL returned by the
     # asset upload endpoints.
@@ -1523,7 +1448,7 @@ class JobCreate(BaseModel):
     reference_video: str | None = None
 
     # マルチモーダル参照（SPEC §3.1）。1 つのフィールドが**複数ファイル**を持ち、
-    # 外部 API には URL の配列で渡る。宣言しているワークフロー（Seedance 2 系）で
+    # 宣言しているワークフロー（MiniMax H3 r2v）で
     # のみ使え、**先頭フレーム（`source_image` / `end_image`）とは排他**。
     #: 一貫性のよりどころにする参照画像（最大枚数はワークフロー宣言による）
     reference_images: list[str] = Field(default_factory=list)
@@ -1532,7 +1457,7 @@ class JobCreate(BaseModel):
     #: ムード・曲調のよりどころにする参照音声
     reference_audios: list[str] = Field(default_factory=list)
 
-    #: ショット割り（SPEC §3.1）。宣言しているワークフロー（Kling 3.0）でのみ
+    #: ショット割り（SPEC §3.1）。宣言しているワークフローでのみ
     #: 使え、指定すると ``video_prompt`` の代わりにこれが本文になる。
     multi_shots: list[MultiShot] = Field(default_factory=list)
     #: Elements（``@要素名`` で呼ぶ参照画像の束、SPEC §3.1）
@@ -1542,7 +1467,7 @@ class JobCreate(BaseModel):
 
     # 選択式フィールドの値（`GET /api/options` の workflow の `selects` にある
     # 論理名 -> 選んだ文字列）。省略した項目はワークフローの既定値、`auto` を
-    # 宣言している項目（wan_dancer の尺）は入力から自動で決まる（SPEC §3.1）。
+    # 宣言している項目（尺など）は入力から自動で決まる（SPEC §3.1）。
     selects: dict[str, str] = Field(default_factory=dict)
 
     # このジョブだけで使うモデルファイル名（SPEC §3.3）。キーは設定と同じ
@@ -1652,28 +1577,6 @@ class JobContinue(BaseModel):
     user_input: str | None = None
 
 
-class VeoExtend(BaseModel):
-    """``POST /api/jobs/{id}/veo/extend`` の body（SPEC §5.2 / issue #26）。
-
-    元動画の**続き 7 秒**をどう作るかの指示だけを取る。元タスクの ``taskId`` は
-    ジョブの ``workflow_json`` から引くので送らない。
-    """
-
-    #: 続きの指示（Veo の通常のプロンプトと同じ書き方）
-    prompt: str = ""
-    #: 再現性のためのシード（kie.ai の仕様どおり 10000〜99999）
-    seeds: int | None = Field(default=None, ge=10000, le=99999)
-    #: 焼き込む透かしのテキスト（省略 = 入れない）
-    watermark: str | None = None
-
-
-class VeoUpscale(BaseModel):
-    """``POST /api/jobs/{id}/veo/1080p`` の body（SPEC §5.2 / issue #26）。"""
-
-    #: 1 タスクが複数本返したときの何本目か（省略 = kie.ai の既定）
-    index: int | None = Field(default=None, ge=0)
-
-
 class NsfwUpdate(BaseModel):
     """POST /api/jobs/{id}/nsfw と POST /api/agent/sessions/{id}/nsfw の body。"""
 
@@ -1768,7 +1671,7 @@ class PromptResult(BaseModel):
     bpm: int | None = None
     keyscale: str | None = None
     language: str | None = None
-    #: Suno: styles to keep out of the track (`negativeTags`)
+    #: styles to keep out of the track
     negative_tags: str | None = None
     notes: str | None = None
 
@@ -1911,33 +1814,6 @@ class Health(BaseModel):
     app: Literal["ok"] = "ok"
     comfyui: HealthStatus
     grok: HealthStatus
-    #: 外部生成バックエンド kie.ai（キー未設定は not_configured、SPEC §5.2）
-    kie: HealthStatus = Field(
-        default_factory=lambda: HealthStatus(status="not_configured")
-    )
-
-
-class BackendInfo(BaseModel):
-    """生成バックエンドの可用性（SPEC §5.2）。
-
-    ``available`` が false のバックエンドのワークフローは選択肢に出ない。
-    """
-
-    backend: str
-    status: Literal["ok", "not_configured", "error"]
-    detail: str = ""
-    available: bool = False
-
-
-class KieCredits(BaseModel):
-    """GET /api/kie/credits — 残クレジット照会（SPEC §5.2）。"""
-
-    #: API キーがあるか（false なら kie 系ワークフローは選択肢に出ない）
-    configured: bool = False
-    #: 残クレジット（1 credit = $0.005）。取得できなければ None
-    credits: float | None = None
-    #: 照会に失敗した理由（成功時は None）
-    error: str | None = None
 
 
 # --------------------------------------------------------------------------
@@ -1951,6 +1827,16 @@ AgentCheckinMode = Literal["every_job", "milestone", "auto"]
 AgentActionName = Literal[
     "plan", "run_task", "continue", "rerun", "inspect", "note", "rename",
     "library", "library_search", "library_sheet", "checkin", "done",
+    # ドラマスタジオ（:mod:`app.studio`）の操作
+    "studio_list_projects", "studio_get_project", "studio_create_project",
+    "studio_update_project", "studio_upsert_episode", "studio_upsert_scene",
+    "studio_upsert_shot", "studio_delete_shot", "studio_upsert_asset",
+    "studio_register_asset_from_job", "studio_render_shot", "studio_get_takes",
+    "studio_select_take", "studio_reject_take",
+    # キャンバス（:mod:`app.canvas`）の盤面操作。スタジオのツール一式に足す形で
+    # 使い、キャンバスのチャットからの実行でだけプロンプトに載る
+    "canvas_list_cards", "canvas_place_card", "canvas_move_card",
+    "canvas_update_card",
 ]
 AgentTaskStatus = Literal["pending", "running", "done", "failed", "skipped"]
 
@@ -2110,6 +1996,13 @@ class AgentAction(BaseModel):
     width: int | None = None
     height: int | None = None
     overrides: dict[str, Any] = Field(default_factory=dict)
+    #: studio_* アクションのパラメータ。対象の id（``project_id`` / ``id`` /
+    #: ``shot_id`` / ``take_id`` / ``job_id`` / ``source``）と、検証済みの本文
+    #: ``body``（Studio*Create / Studio*Update のフィールドだけ）が入る
+    studio: dict[str, Any] = Field(default_factory=dict)
+    #: canvas_* アクションのパラメータ。対象の id（``project_id`` /
+    #: ``card_id``）と、検証済みの本文 ``body``（CanvasCard* のフィールドだけ）
+    canvas: dict[str, Any] = Field(default_factory=dict)
     # プラン外 continue / rerun がユーザー承認を得たか（Grok は指定できない）
     approved: bool = False
 
@@ -2148,7 +2041,7 @@ class WorkflowSelect(BaseModel):
     choices: list[str] = Field(default_factory=list)
     #: 未指定のときに使われる値
     default: str = ""
-    #: True なら「自動」を選べる（未指定で入力から決まる。wan_dancer の尺）
+    #: True なら「自動」を選べる（未指定で入力から決まる。尺など）
     auto: bool = False
     hint: str = ""
 
@@ -2192,7 +2085,7 @@ class WorkflowOption(BaseModel):
     #: ないワークフローでは空で、フォームは参照欄そのものを出さない。
     multi_inputs: dict[str, int] = Field(default_factory=dict)
     #: 選択式どうしの相関（名前 -> `[相手の名前, 相手に必要な値]`、SPEC §3.1）。
-    #: Suno の `duration` は `model` が `V5_5` のときだけ効くので
+    #: `duration` が `model` の値でしか効かないときのように
     #: `{"duration": ["model", "V5_5"]}`。フォームは既定以外を選んだときだけ
     #: その場でエラーを出す（バックエンドの 422 と同じ理由）。
     select_requires: dict[str, list[str]] = Field(default_factory=dict)
@@ -2214,12 +2107,16 @@ class WorkflowOption(BaseModel):
     prompt_required: bool = True
     #: 動画用 LoRA を挿せるか（テンプレートに LoRA チェーンがあるか）
     accepts_video_loras: bool = False
-    #: 実行エンジン（``comfyui`` / ``kie``、SPEC §5.2）。UI のバッジ用。
+    #: 実行エンジン（今は ``comfyui`` のみ、SPEC §5.2）。UI のバッジ用。
     backend: str = "comfyui"
     #: audio workflows: the clip length the model supports, in seconds
     min_duration: float = 0.0
     max_duration: float = 0.0
     default_duration: float = 0.0
+    #: そのモデルが想定している解像度（メガピクセル、0.0 = 宣言なし）。宣言が
+    #: あるワークフローを選ぶと、フォームの「メガピクセル」がこの値になる
+    #: （SPEC §3.1）。無ければフォームのグローバル既定（1.0MP）のまま。
+    default_megapixels: float = 0.0
 
 
 class Options(BaseModel):
@@ -2232,10 +2129,6 @@ class Options(BaseModel):
     #: いま使っている接続先プロファイルと、その URL（表示用）
     comfy_target: ComfyTarget = "local"
     comfy_url: str = ""
-    #: **いまの接続先では使えない**高速化トグルの論理名（SPEC §3.1）。生成
-    #: フォームはここに載っている項目をグレーアウトする。中身を決めるのは
-    #: :func:`app.comfy.unsupported_patches`（現状は Comfy Cloud の暫定ガード）。
-    unsupported_speedups: list[str] = Field(default_factory=list)
     image_workflows: list[WorkflowOption] = Field(default_factory=list)
     video_workflows: list[WorkflowOption] = Field(default_factory=list)
     audio_workflows: list[WorkflowOption] = Field(default_factory=list)
@@ -2260,7 +2153,833 @@ class Options(BaseModel):
     #: ライブラリの全件（新しい順）。入力欄の「ライブラリから選択」と、
     #: エージェントの CHOICES がここを読む（SPEC §7.2）。
     library: list["LibraryItem"] = Field(default_factory=list)
-    #: 生成バックエンドの可用性（SPEC §5.2）。使えないバックエンドのワークフローは
-    #: 上のリストに載らないので、その理由をここで見せる。
-    backends: list["BackendInfo"] = Field(default_factory=list)
     negative_presets: dict[str, str] = Field(default_factory=dict)
+
+
+# --------------------------------------------------------------------------
+# ドラマスタジオ（プロジェクト -> 脚本 -> Shot ごとの生成 -> Take の採用）
+# --------------------------------------------------------------------------
+
+#: World Bible の素材の区分（キャラクター / 場所・背景 / 小道具 / その他の参照）
+#: ``style`` は画風・トーンの取り決め（キャンバスの style カードの参照先）。
+#: ファイル実体を持たないメタデータのみの素材として使うことが多い。
+StudioAssetCategory = Literal[
+    "character", "environment", "prop", "style", "reference"
+]
+
+#: 素材の実体の種別（そのまま assets/<kind>/ の置き場になる）
+StudioAssetKind = Literal["image", "video", "audio"]
+
+#: 素材に足す追加リファレンスの役割（:data:`studio_asset_files`）。メインの
+#: ファイル（``studio_assets.path``）とは別に、キャラなら声サンプル（voice）・
+#: 動作の参照動画（video）・別アングルの画像（image）を何本でもぶら下げられる。
+StudioAssetFileRole = Literal["image", "voice", "video"]
+
+#: リファレンスの役割 -> 実体の種別（``assets/<kind>/`` の置き場と静的配信 URL）
+ASSET_FILE_ROLE_KINDS: dict[str, str] = {
+    "image": "image",
+    "voice": "audio",
+    "video": "video",
+}
+
+#: Shot の進み具合（'draft' = 執筆中 / 'ready' = 生成してよい / 'done' = 採用済み）
+StudioShotStatus = Literal["draft", "ready", "done"]
+
+#: Take の状態。'rendering' / 'failed' はジョブから導出した値で、DB に残るのは
+#: 人が決めた 'selected' / 'rejected' だけ（:mod:`app.studio`）。
+StudioTakeStatus = Literal["rendering", "candidate", "selected", "rejected", "failed"]
+
+#: Shot が使う動画ワークフローの強制指定（None = 素材と引き継ぎから自動で決める）
+StudioWorkflowOverride = Literal[
+    "minimax_h3_t2v", "minimax_h3_i2v", "minimax_h3_r2v"
+]
+
+#: リビジョンを作った主体（人の操作か、エージェントの操作か）
+StudioRevisionActor = Literal["user", "agent"]
+
+
+class StudioProject(BaseModel):
+    """1 本の作品。"""
+
+    id: str
+    name: str
+    #: 作品コード（任意。付けた場合だけ重複を拒む）
+    code: str = ""
+    synopsis: str = ""
+    #: World Bible の覚え書き（作品全体の設定）
+    world_notes: str = ""
+    #: 日本語のプロンプトを Grok で英語に直してから投入する（MiniMax H3 は英語前提）
+    auto_translate: bool = True
+    created_at: str
+    updated_at: str
+
+
+class StudioProjectSummary(StudioProject):
+    """GET /api/studio/projects の 1 行（一覧に出す件数つき）。"""
+
+    shot_count: int = 0
+    asset_count: int = 0
+    take_count: int = 0
+    #: 採用済みの Take の数（= 仕上がった Shot の数）
+    selected_take_count: int = 0
+
+
+class StudioProjectCreate(BaseModel):
+    """POST /api/studio/projects body。"""
+
+    name: str
+    code: str = ""
+    synopsis: str = ""
+    world_notes: str = ""
+    auto_translate: bool = True
+
+
+class StudioProjectUpdate(BaseModel):
+    """PATCH /api/studio/projects/{id} body（指定した項目だけ変える）。"""
+
+    name: str | None = None
+    code: str | None = None
+    synopsis: str | None = None
+    world_notes: str | None = None
+    auto_translate: bool | None = None
+
+
+class StudioEpisode(BaseModel):
+    """話（エピソード）。場（:class:`StudioScene`）の入れ物。"""
+
+    id: str
+    project_id: str
+    sort_order: int = 0
+    title: str = ""
+    synopsis: str = ""
+    created_at: str
+
+
+class StudioEpisodeCreate(BaseModel):
+    """POST /api/studio/projects/{id}/episodes body。"""
+
+    title: str = ""
+    synopsis: str = ""
+    #: 並び順（省略すると末尾に足す）
+    sort_order: int | None = None
+
+
+class StudioEpisodeUpdate(BaseModel):
+    """PATCH /api/studio/episodes/{id} body（指定した項目だけ変える）。"""
+
+    title: str | None = None
+    synopsis: str | None = None
+    sort_order: int | None = None
+
+
+class StudioScene(BaseModel):
+    """場（シーン）。Shot はここに属する（属さない Shot は未分類）。"""
+
+    id: str
+    episode_id: str
+    project_id: str
+    sort_order: int = 0
+    title: str = ""
+    synopsis: str = ""
+    #: 「夜明け前」「閉店後」などの時間帯メモ
+    time_of_day: str = ""
+    created_at: str
+
+
+class StudioSceneCreate(BaseModel):
+    """POST /api/studio/episodes/{id}/scenes body。"""
+
+    title: str = ""
+    synopsis: str = ""
+    time_of_day: str = ""
+    sort_order: int | None = None
+
+
+class StudioSceneUpdate(BaseModel):
+    """PATCH /api/studio/scenes/{id} body（指定した項目だけ変える）。"""
+
+    title: str | None = None
+    synopsis: str | None = None
+    time_of_day: str | None = None
+    sort_order: int | None = None
+    #: 引っ越し先の話（同じ作品の話だけ。並び順は移動先の末尾になる）
+    episode_id: str | None = None
+
+
+class StudioReorder(BaseModel):
+    """並べ替えの body。``ids`` の並び順がそのまま ``sort_order`` になる
+    （その親の子を全件、過不足なく並べたものを送る）。"""
+
+    ids: list[str] = Field(default_factory=list)
+
+
+# --------------------------------------------------------------------------
+# 素材の拡張項目（`studio_assets.profile`）
+# --------------------------------------------------------------------------
+#
+# 「名前・説明・ファイル」に収まらない設定を分類ごとに持つ。生成には直接
+# 効かせず（プロンプトに入るのは今までどおり `prompt_caption`）、キャンバスの
+# カードや脚本を書くときの覚え書きとして使う。
+
+class StudioCharacterProfile(BaseModel):
+    """``category='character'`` の拡張項目。"""
+
+    model_config = ConfigDict(extra="forbid")
+    #: 外見（生成プロンプトに使える具体性で）
+    appearance: str = ""
+    personality: str = ""
+    #: 声・話し方（音声つき生成の手がかり）
+    voice: str = ""
+    notes: str = ""
+
+
+class StudioEnvironmentProfile(BaseModel):
+    """``category='environment'`` の拡張項目。"""
+
+    model_config = ConfigDict(extra="forbid")
+    #: 時間帯・天候・雰囲気
+    mood: str = ""
+    notes: str = ""
+
+
+class StudioPropProfile(BaseModel):
+    """``category='prop'`` の拡張項目。"""
+
+    model_config = ConfigDict(extra="forbid")
+    notes: str = ""
+
+
+class StudioStyleProfile(BaseModel):
+    """``category='style'`` の拡張項目。"""
+
+    model_config = ConfigDict(extra="forbid")
+    #: 色調・カラーパレットのメモ
+    palette: str = ""
+    #: 参照画像の URL（``/library/…`` / ``/assets/…``）
+    references: list[str] = Field(default_factory=list)
+    notes: str = ""
+
+
+class StudioReferenceProfile(BaseModel):
+    """``category='reference'`` の拡張項目。"""
+
+    model_config = ConfigDict(extra="forbid")
+    notes: str = ""
+
+
+#: 素材の分類 -> `profile` の検証モデル
+ASSET_PROFILE_MODELS: dict[str, type[BaseModel]] = {
+    "character": StudioCharacterProfile,
+    "environment": StudioEnvironmentProfile,
+    "prop": StudioPropProfile,
+    "style": StudioStyleProfile,
+    "reference": StudioReferenceProfile,
+}
+
+
+def validate_asset_profile(
+    category: str, profile: dict[str, Any], *, strict: bool = True
+) -> dict[str, Any]:
+    """分類のスキーマで ``profile`` を検証して正規化する。
+
+    ``strict=False`` では**その分類に無い項目を黙って捨てる**。分類を付け替えた
+    ときに、前の分類でだけ意味があった項目を持ち越さないための逃げ道で、人が
+    送った値を検証するとき（``strict=True``）は知らない項目を弾く。
+    """
+    model = ASSET_PROFILE_MODELS.get(category, StudioReferenceProfile)
+    if not strict:
+        known = set(model.model_fields)
+        profile = {key: value for key, value in profile.items() if key in known}
+    return model(**profile).model_dump()
+
+
+class StudioAssetFile(BaseModel):
+    """素材にぶら下がる追加リファレンス 1 件（:data:`studio_asset_files`）。
+
+    メインのファイル（``studio_assets.path``）を置き換えるものではなく、
+    「この声で喋る」「この動きを参照する」を素材に足していくためのもの。
+    """
+
+    id: str
+    asset_id: str
+    project_id: str
+    #: image = 追加画像 / voice = 声サンプル / video = 動画リファレンス
+    role: StudioAssetFileRole = "image"
+    #: ファイルの絶対パス（``assets/<kind>/`` の下）
+    path: str = ""
+    #: ``/assets/<kind>/<file>``（静的配信 URL）
+    url: str = ""
+    #: 人間向けの短い説明（「怒っているときの声」など）
+    caption: str = ""
+    sort_order: int = 0
+    created_at: str
+
+
+class StudioAssetFileCreate(BaseModel):
+    """POST /api/studio/assets/{id}/files の multipart 以外の項目。"""
+
+    role: StudioAssetFileRole = "image"
+    caption: str = ""
+
+
+class StudioAsset(BaseModel):
+    """World Bible の素材 1 件（プロンプトからは ``@name`` で呼ぶ）。"""
+
+    id: str
+    project_id: str
+    #: `@名前` で呼ぶ識別名（プロジェクト内で一意）
+    name: str
+    category: StudioAssetCategory = "reference"
+    #: 人間向けの説明（日本語可）
+    caption: str = ""
+    #: 生成プロンプトに埋め込む説明（英語推奨）。参照として添付できないモードで
+    #: メンションを置き換えるのに使う
+    prompt_caption: str = ""
+    kind: StudioAssetKind
+    #: ファイルの絶対パス。**空 = メタデータのみの素材**（名前とキャプションだけ）で、
+    #: 参照には添付できないぶん、プロンプトでは説明文に展開される
+    path: str = ""
+    #: ``/assets/<kind>/<file>``（静的配信 URL）。メタデータのみの素材では空
+    url: str = ""
+    #: 分類ごとの拡張項目（:data:`ASSET_PROFILE_MODELS`）。生成には効かない
+    profile: dict[str, Any] = Field(default_factory=dict)
+    #: メインのファイルに足したリファレンス（声サンプル・動画・追加画像）。
+    #: 今の生成ワークフローには流し込まないが、エージェントには渡している
+    files: list[StudioAssetFile] = Field(default_factory=list)
+    #: 差し替え禁止の印（UI で鍵を出すだけ。生成には影響しない）
+    locked: bool = False
+    sort_order: int = 0
+    created_at: str
+    #: 最後に書き換えた時刻（一度も直していなければ ``created_at``）
+    updated_at: str = ""
+    #: プロンプトに効く項目（名前・キャプション・ファイル）を最後に書き換えた
+    #: 時刻。Take の stale 判定に使う
+    prompt_updated_at: str = ""
+
+
+class StudioAssetCreate(BaseModel):
+    """POST /api/studio/projects/{id}/assets を JSON で送るときの body。
+
+    ファイルを持たない**メタデータのみの素材**を作る（ファイルつきで登録する
+    ときは同じ URL に multipart で投げる）。
+    """
+
+    name: str
+    kind: StudioAssetKind = "image"
+    category: StudioAssetCategory = "reference"
+    caption: str = ""
+    prompt_caption: str = ""
+    #: 分類ごとの拡張項目（:data:`ASSET_PROFILE_MODELS` で検証する）
+    profile: dict[str, Any] = Field(default_factory=dict)
+    #: 既にあるファイルの絶対パス（省略 = メタデータのみ）。実体は
+    #: ``assets/<kind>/`` へ複製されるので、チャットの添付や生成結果を
+    #: そのまま素材にできる
+    path: str = ""
+    locked: bool = False
+    sort_order: int | None = None
+
+
+class StudioAssetUpdate(BaseModel):
+    """PATCH /api/studio/assets/{id} body（指定した項目だけ変える）。"""
+
+    name: str | None = None
+    category: StudioAssetCategory | None = None
+    caption: str | None = None
+    prompt_caption: str | None = None
+    #: 分類ごとの拡張項目。**送ったものが丸ごと今の値になる**（項目単位の
+    #: 差分更新ではない）
+    profile: dict[str, Any] | None = None
+    #: メインのファイルの差し替え（既にあるファイルの絶対パス。実体は
+    #: ``assets/<kind>/`` へ複製される）。ブラウザからのアップロードは
+    #: ``POST /api/studio/assets/{id}/file``
+    path: str | None = None
+    kind: StudioAssetKind | None = None
+    locked: bool | None = None
+    sort_order: int | None = None
+
+
+class StudioShot(BaseModel):
+    """脚本の 1 カット。"""
+
+    id: str
+    project_id: str
+    #: 所属する場（None = まだどの場にも入れていない）
+    scene_id: str | None = None
+    sort_order: int = 0
+    title: str = ""
+    #: 物語上の目的（このカットで何が進むのか）
+    purpose: str = ""
+    action: str = ""
+    #: 台詞（投入時に MiniMax H3 の `Audio:` 行へ組み込む）
+    dialogue: str = ""
+    #: 効果音・環境音
+    soundscape: str = ""
+    bgm: str = ""
+    camera: str = ""
+    #: 尺（MiniMax H3 は 1〜15 秒）
+    duration_seconds: float = 5.0
+    #: 生成プロンプトの本文（`@素材名` メンション可）
+    prompt: str = ""
+    status: StudioShotStatus = "draft"
+    selected_take_id: str | None = None
+    #: 直前の Shot の採用 Take のラストフレームを開始フレームに使う
+    carry_over_end_frame: bool = False
+    # --- Shot ごとの生成設定（None = JobCreate の既定値のまま） -------------
+    #: 画面比（``"16:9 (Widescreen)"`` などのプリセット名か ``"W:H"``）
+    aspect_ratio: str | None = None
+    #: 解像度の目安（画面比と合わせて幅×高さが決まる）
+    megapixels: float | None = None
+    #: 乱数の種（None = 毎回ランダム）
+    seed: int | None = None
+    #: ワークフローの強制指定（None = t2v / i2v / r2v を自動で決める）
+    workflow_override: StudioWorkflowOverride | None = None
+    created_at: str
+    updated_at: str
+    #: プロンプトに効く項目を最後に書き換えた時刻（Take の stale 判定に使う）
+    prompt_updated_at: str = ""
+
+
+class StudioShotCreate(BaseModel):
+    """POST /api/studio/projects/{id}/shots body。"""
+
+    title: str = ""
+    purpose: str = ""
+    action: str = ""
+    dialogue: str = ""
+    soundscape: str = ""
+    bgm: str = ""
+    camera: str = ""
+    duration_seconds: float = 5.0
+    prompt: str = ""
+    status: StudioShotStatus = "draft"
+    carry_over_end_frame: bool = False
+    scene_id: str | None = None
+    aspect_ratio: str | None = None
+    megapixels: float | None = None
+    seed: int | None = None
+    workflow_override: StudioWorkflowOverride | None = None
+    #: 並び順（省略すると末尾に足す）
+    sort_order: int | None = None
+
+
+class StudioShotUpdate(BaseModel):
+    """PATCH /api/studio/shots/{id} body（指定した項目だけ変える）。
+
+    ``scene_id`` / ``selected_take_id`` / 生成設定は **null を明示すると外れる**
+    （送らなければ今の値のまま）。区別は ``model_fields_set`` で行う。
+    """
+
+    title: str | None = None
+    purpose: str | None = None
+    action: str | None = None
+    dialogue: str | None = None
+    soundscape: str | None = None
+    bgm: str | None = None
+    camera: str | None = None
+    duration_seconds: float | None = None
+    prompt: str | None = None
+    status: StudioShotStatus | None = None
+    carry_over_end_frame: bool | None = None
+    sort_order: int | None = None
+    scene_id: str | None = None
+    selected_take_id: str | None = None
+    aspect_ratio: str | None = None
+    megapixels: float | None = None
+    seed: int | None = None
+    workflow_override: StudioWorkflowOverride | None = None
+
+    #: null を明示できる項目（送られたときだけ NULL 書き込みを許す）
+    NULLABLE: ClassVar[tuple[str, ...]] = (
+        "scene_id",
+        "selected_take_id",
+        "aspect_ratio",
+        "megapixels",
+        "seed",
+        "workflow_override",
+    )
+
+    def changes(self) -> dict[str, object]:
+        """書き換える項目だけを取り出す（未指定は入らない）。"""
+        return {
+            name: value
+            for name, value in self.model_dump().items()
+            if value is not None or (
+                name in self.NULLABLE and name in self.model_fields_set
+            )
+        }
+
+
+class StudioShotReorder(BaseModel):
+    """POST /api/studio/projects/{id}/shots/reorder body。
+
+    ``shot_ids`` の**並び順がそのまま** ``sort_order`` になる（プロジェクトの
+    Shot を全件、過不足なく並べたものを送る）。
+    """
+
+    shot_ids: list[str] = Field(default_factory=list)
+
+
+class StudioTake(BaseModel):
+    """Shot 1 回ぶんの生成。実行状態と成果物はジョブ側から引いてくる。"""
+
+    id: str
+    shot_id: str
+    project_id: str
+    job_id: str
+    status: StudioTakeStatus = "rendering"
+    created_at: str
+    #: 元ジョブの状態（queued / running / done / failed …）。ジョブが消えていれば None
+    job_status: JobStatus | None = None
+    #: 実際に走ったワークフロー（minimax_h3_t2v / _i2v / _r2v）
+    video_workflow: str | None = None
+    video_path: str | None = None
+    video_url: str | None = None
+    last_frame_path: str | None = None
+    last_frame_url: str | None = None
+    error: str | None = None
+    #: 実際に投入した本文（英訳したときは訳したあとのもの）
+    prompt: str = ""
+    #: 英訳する前の原文（英訳していなければ空）
+    source_prompt: str = ""
+    #: 投入はできたが伝えたいこと（英訳に失敗して原文のまま投げた、など）
+    warning: str = ""
+    #: この Take を作ったあとに脚本や素材が変わった（保存はせず読み取りで導出）
+    stale: bool = False
+    #: stale と判断した理由（日本語。stale が False なら空）
+    stale_reasons: list[str] = Field(default_factory=list)
+
+
+class StudioPromptReference(BaseModel):
+    """投入プレビューに出す参照素材 1 件（r2v のときだけ入る）。"""
+
+    name: str
+    kind: StudioAssetKind = "image"
+    #: 本文でこの素材を指すタグ（``<Picture 1>`` / ``<Video 1>`` / ``<Audio 1>``）
+    tag: str = ""
+    #: 添付されるファイル（``assets/`` からの相対パス）
+    path: str = ""
+
+
+class StudioShotPreview(BaseModel):
+    """GET /api/studio/shots/{id}/prompt-preview: **投入される最終形**。
+
+    生成（:func:`app.studio.render_shot`）と同じ組み立てを通した結果で、Grok の
+    英訳だけは走らせない（遅く、課金枠を食うため）。英訳が入るかどうかは
+    ``will_translate`` で伝える。組み立てられない Shot はエラーではなく
+    ``error`` に理由を入れて 200 で返す（プレビューで気づけるように）。
+    """
+
+    shot_id: str
+    #: 投入されるワークフロー（組み立てられなかったときは強制指定か None）
+    workflow: str | None = None
+    #: そのワークフローになる理由（日本語）
+    workflow_reason: str = ""
+    #: 実際に投入される本文（Camera: / Audio: 行と除外文まで込み）
+    prompt: str = ""
+    #: 参照として添付される素材（r2v のときだけ）
+    references: list[StudioPromptReference] = Field(default_factory=list)
+    #: 開始フレームに使われるファイル（i2v のときだけ）
+    start_frame: str | None = None
+    #: プロジェクトの設定（日本語まじりなら投入時に英訳する）
+    auto_translate: bool = False
+    #: この本文が実際に英訳されるか（``auto_translate`` かつ日本語を含む）
+    will_translate: bool = False
+    #: 組み立てられなかった理由（日本語。空なら問題なし）
+    error: str = ""
+
+
+class StudioProjectDetail(StudioProject):
+    """GET /api/studio/projects/{id}: 画面 1 枚を組み立てるのに要るもの一式。"""
+
+    assets: list[StudioAsset] = Field(default_factory=list)
+    episodes: list[StudioEpisode] = Field(default_factory=list)
+    #: プロジェクトの全シーン（話ごとではなく 1 本の配列。``episode_id`` で束ねる）
+    scenes: list[StudioScene] = Field(default_factory=list)
+    shots: list[StudioShot] = Field(default_factory=list)
+    #: プロジェクトの全 Take（新しい順ではなく Shot ごとに古い順）
+    takes: list[StudioTake] = Field(default_factory=list)
+
+
+class StudioRevision(BaseModel):
+    """リビジョン 1 件の見出し（GET .../revisions の 1 行）。"""
+
+    seq: int
+    actor: StudioRevisionActor = "user"
+    #: 変更内容の短い説明（日本語）
+    action: str = ""
+    created_at: str
+
+
+class StudioRevisionDetail(StudioRevision):
+    """GET .../revisions/{seq}: 中身（そのときのプロジェクト全体）つき。"""
+
+    #: ``{"project": {...}, "episodes": [...], "scenes": [...],
+    #: "shots": [...], "assets": [...]}``。Take と実行状態は入らない
+    snapshot: dict[str, Any] = Field(default_factory=dict)
+
+
+class StudioDemoCreate(BaseModel):
+    """POST /api/studio/demo body。"""
+
+    #: 作りたいデモの作品コード（:mod:`app.studio_demo` の ``DEMO_PROJECTS``）
+    code: str
+
+
+# --------------------------------------------------------------------------
+# キャンバス（スタジオの別ビュー）
+# --------------------------------------------------------------------------
+#
+# 1 枚のカード = スタジオの 1 エンティティ。カードが持つのは「どの行か」と
+# 「どこに置いてあるか」だけで、中身は studio_* が唯一の正。対応する
+# エンティティが無い text / model のカードだけ、中身を `data` に持つ。
+
+#: カードの種別。前半 5 つは素材（``studio_assets``。分類は
+#: :data:`app.canvas.CARD_CATEGORIES` で対応づける）、``scene`` / ``shot`` /
+#: ``media`` はそれぞれ場・Shot・Take、``text`` / ``model`` はキャンバス専用。
+CanvasCardKind = Literal[
+    "character", "location", "object", "style", "reference",
+    "scene", "shot", "media", "text", "model",
+]
+CanvasRole = Literal["user", "assistant", "event"]
+
+#: model カードの生成対象（既存 WorkflowKind と同じ語彙）
+CanvasModelTarget = Literal["image", "video", "audio"]
+
+
+class CanvasTextData(BaseModel):
+    """text カードの中身（ただの覚え書き）。"""
+
+    model_config = ConfigDict(extra="forbid")
+    body: str = ""
+
+
+class CanvasModelParams(BaseModel):
+    """model カードに書ける生成パラメータ。"""
+
+    model_config = ConfigDict(extra="forbid")
+    aspect_ratio: str = "4:3 (Standard)"
+    megapixels: float = 1.0
+    #: 動画の尺 / 音声の長さ（秒）
+    duration: float = 10.0
+    fps: int = 25
+    loras: list[LoraRef] = Field(default_factory=list)
+    video_loras: list[LoraRef] = Field(default_factory=list)
+    #: 空 = JobCreate の既定値に任せる
+    negative_prompt: str = ""
+    selects: dict[str, str] = Field(default_factory=dict)
+    model_overrides: dict[str, str] = Field(default_factory=dict)
+
+
+class CanvasModelData(BaseModel):
+    """model カードの中身（「何用の生成設定か」を置いておくカード）。"""
+
+    model_config = ConfigDict(extra="forbid")
+    target: CanvasModelTarget = "image"
+    #: 既存カタログのワークフロー ID（空 = まだ選んでいない）
+    workflow: str = ""
+    params: CanvasModelParams = Field(default_factory=CanvasModelParams)
+    note: str = ""
+
+
+#: キャンバス専用の kind -> `data` の検証モデル。ここに無い kind は
+#: スタジオ側の行が中身を持つので、`data` は常に空。
+CARD_DATA_MODELS: dict[str, type[BaseModel]] = {
+    "text": CanvasTextData,
+    "model": CanvasModelData,
+}
+
+
+def validate_card_data(kind: str, data: dict[str, Any]) -> dict[str, Any]:
+    """kind のスキーマで ``data`` を検証して正規化する。
+
+    参照カード（スタジオのエンティティを指すもの）は中身を持たないので、何を
+    送られても空の dict になる。
+    """
+    model = CARD_DATA_MODELS.get(kind)
+    return model(**data).model_dump() if model else {}
+
+
+class CanvasViewport(BaseModel):
+    """キャンバスの表示位置（タブ = 話ごとに 1 つ）。"""
+
+    x: float = 0.0
+    y: float = 0.0
+    zoom: float = Field(default=1.0, gt=0)
+
+
+class CanvasCard(BaseModel):
+    """キャンバスに置いた 1 枚。"""
+
+    id: str
+    project_id: str
+    kind: CanvasCardKind
+    #: 参照しているスタジオ側の行（text / model は None）
+    entity_id: str | None = None
+    #: 置いてあるタブ（None = 作品共通）。**参照カードでは常に None** で、
+    #: そのカードがどのタブに出るかはスタジオの所属（場 -> 話）から導く
+    #: （:func:`app.canvas.card_episode`）。使うのは text / model カードだけ。
+    episode_id: str | None = None
+    #: キャンバス専用 kind の中身（参照カードでは空）
+    data: dict[str, Any] = Field(default_factory=dict)
+    x: float = 0.0
+    y: float = 0.0
+    w: float = 320.0
+    h: float = 220.0
+    z: int = 0
+    created_at: str
+    updated_at: str
+
+
+class CanvasCardCreate(BaseModel):
+    """POST /api/canvas/projects/{id}/cards body。
+
+    作るのは**新しいもの**だけ: 参照カードは対応するエンティティも一緒に作り、
+    text / model はキャンバス専用のカードを作る。既にあるエンティティは
+    :func:`app.canvas._mirror` が自動で並べるので、ここでは指定しない
+    （media カードは Take が生まれたときにだけできる）。
+    エンティティの中身はスタジオの API で編集する。
+    """
+
+    kind: CanvasCardKind
+    #: 新しく作るエンティティの名前（素材）またはタイトル（場 / Shot）。
+    #: 素材で省くと ``character_1`` のような名前が自動で付く
+    title: str = ""
+    #: 新しく作る素材の種別（image / video / audio）
+    asset_kind: StudioAssetKind = "image"
+    #: shot カードを作るとき、どの場に入れるか（None = 未分類）
+    scene_id: str | None = None
+    #: scene カードならどの話に入れるか（None = 先頭の話。無ければ作る）、
+    #: text / model カードならどのタブに置くか（None = 作品共通）。
+    #: 素材 / shot カードでは見ない（出るタブはスタジオの所属で決まる）
+    episode_id: str | None = None
+    #: text / model カードの中身。素材カードでは新しい素材の `profile`
+    #: （:data:`ASSET_PROFILE_MODELS`）として渡る。それ以外の kind では無視
+    data: dict[str, Any] = Field(default_factory=dict)
+    x: float = 0.0
+    y: float = 0.0
+    w: float = 320.0
+    h: float = 220.0
+
+
+class CanvasCardUpdate(BaseModel):
+    """PATCH /api/canvas/cards/{id} body（指定した項目だけ変える）。"""
+
+    data: dict[str, Any] | None = None
+    x: float | None = None
+    y: float | None = None
+    w: float | None = None
+    h: float | None = None
+    z: int | None = None
+
+
+class CanvasCardPosition(BaseModel):
+    """PUT /api/canvas/cards/{id}/position body（置き場所だけ動かす）。"""
+
+    x: float
+    y: float
+    w: float | None = None
+    h: float | None = None
+    z: int | None = None
+
+
+class CanvasMessage(BaseModel):
+    """キャンバスのチャット 1 発言。"""
+
+    id: str
+    project_id: str
+    ts: str
+    role: CanvasRole
+    content: str
+    #: event の種別（``action_result`` など。会話なら None）
+    kind: str | None = None
+    data: dict[str, Any] = Field(default_factory=dict)
+
+
+class CanvasMessageCreate(BaseModel):
+    """POST /api/canvas/projects/{id}/messages body。"""
+
+    role: CanvasRole = "user"
+    content: str
+    kind: str | None = None
+    data: dict[str, Any] = Field(default_factory=dict)
+
+
+#: 添付ファイルの種別（プレビューの出し分けにだけ使う）
+CanvasAttachmentKind = Literal["image", "video", "audio", "document"]
+
+
+class CanvasAttachment(BaseModel):
+    """POST /api/canvas/projects/{id}/attachments のレスポンス。
+
+    置き場所はキャンバスの作業ディレクトリの ``attachments/`` で、エージェント
+    （grok CLI）はそこを作業根として動くので、``path`` をそのまま開ける
+    （エージェントモードの添付と同じ流儀。:mod:`app.agent_store`）。
+    """
+
+    #: 元のファイル名（画面に出す名前）
+    name: str
+    #: workdir 相対パス（``attachments/<file>``）
+    path: str
+    #: 保存先の絶対パス（プロンプトにはこちらを書く）
+    abs_path: str = ""
+    kind: CanvasAttachmentKind = "document"
+
+
+class CanvasAgentStart(CanvasMessageCreate):
+    """POST /api/canvas/projects/{id}/agent body。
+
+    発言に「いま開いているタブ」を添える（エージェントはそのタブの盤面を見て
+    考え、置いた text / model カードもそのタブに載る）。
+    """
+
+    #: 開いているタブ（None / 'common' = 作品共通）
+    episode_id: str | None = None
+    #: 添付ファイルの workdir 相対パス（``attachments/<file>``）。本文が空でも
+    #: 添付だけで送れる
+    attachments: list[str] = Field(default_factory=list)
+
+
+class CanvasBoard(BaseModel):
+    """GET /api/canvas/projects/{id}: キャンバス **1 タブ**ぶん。
+
+    カードの中身はスタジオ側（``GET /api/studio/projects/{id}``）にあるので、
+    ここに入るのは置き場所と会話だけ。``cards`` と ``viewport`` は開いている
+    タブのもので、会話（``messages``）はタブによらず作品に 1 本。
+    """
+
+    project_id: str
+    #: 開いているタブ（None = 作品共通）
+    episode_id: str | None = None
+    viewport: CanvasViewport = Field(default_factory=CanvasViewport)
+    cards: list[CanvasCard] = Field(default_factory=list)
+    messages: list[CanvasMessage] = Field(default_factory=list)
+
+
+class CanvasAgentState(BaseModel):
+    """キャンバスのチャットから走らせたエージェントの状態。
+
+    セッション行は持たない（会話は ``canvas_messages`` が唯一の正）ので、
+    走っているかどうかと実行中の活動だけをインメモリから返す。
+    """
+
+    project_id: str
+    running: bool = False
+    #: 実行中の活動テキスト（「ツール実行中: …」など）。無ければ None
+    activity: str | None = None
+
+
+class CanvasAgentRun(CanvasAgentState):
+    """POST /api/canvas/projects/{id}/agent の応答（保存した発言つき）。"""
+
+    message: CanvasMessage
+
+
+class CanvasProgress(BaseModel):
+    """WS /api/ws で流すキャンバスの実行イベント（``type: "canvas"``）。"""
+
+    type: Literal["canvas"] = "canvas"
+    project_id: str
+    running: bool
+    activity: str | None = None
+    #: 会話に足された 1 件（発言・エージェントの応答・ツール実行イベント）
+    message: CanvasMessage | None = None

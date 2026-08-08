@@ -32,7 +32,18 @@ from typing import Any
 
 from pydantic import ValidationError
 
-from . import agent_protocol, autotag, grok, jobs, library, prompts, sheets, ws
+from . import (
+    agent_protocol,
+    autotag,
+    canvas,
+    grok,
+    jobs,
+    library,
+    prompts,
+    sheets,
+    studio,
+    ws,
+)
 from .agent_protocol import ActionError
 from .agent_store import (
     load,
@@ -48,10 +59,18 @@ from .models import (
     AgentMessage,
     AgentSession,
     AgentTask,
+    CanvasCardCreate,
     Job,
     JobContinue,
     JobCreate,
     JobRerun,
+    StudioAssetCreate,
+    StudioEpisodeCreate,
+    StudioProjectDetail,
+    StudioSceneCreate,
+    StudioShotCreate,
+    StudioShotUpdate,
+    StudioTake,
 )
 from .paths import rebase_stored_path
 
@@ -828,6 +847,715 @@ async def _library_sheet(session_id: str, action: AgentAction) -> None:
     )
 
 
+# --------------------------------------------------------------------------
+# ドラマスタジオ (app.studio) の操作
+# --------------------------------------------------------------------------
+#
+# HTTP は経由せず :mod:`app.studio` のサービス層をそのまま呼ぶ（ルーターと同じ
+# 入り口）。結果はイベント本文にまとめて次のターンでそのまま読めるようにし、
+# 失敗は他のアクションと同じ ``action_failed`` に落とす。
+
+#: リビジョン履歴に残す主体（人の操作と区別できるようにする）。キャンバスの
+#: 盤面操作も同じプロジェクトの履歴に載るので、そちらでも使う
+STUDIO_ACTOR = "agent"
+
+
+def _studio_project_line(project) -> str:
+    code = f"（作品コード `{project.code}`）" if project.code else ""
+    return (
+        f"- `{project.id}` 「{project.name}」{code} — Shot {project.shot_count} 件"
+        f" / 素材 {project.asset_count} 件 / Take {project.take_count} 件"
+        f"（採用済み {project.selected_take_count} 件）"
+    )
+
+
+#: 素材のリファレンスの役割 -> プロンプトに書く呼び名
+_ASSET_FILE_LABELS = {"voice": "声", "video": "動画", "image": "画像"}
+
+
+def _asset_files_text(asset) -> str:
+    """素材にぶら下がるリファレンス（声サンプル・動画・追加画像）の 1 行。
+
+    生成ワークフローには自動では流れないが、パスが分かればエージェントは
+    自分で開いて確かめられる（人物の声や動きを掴むのに要る）。
+    """
+    files = getattr(asset, "files", None) or []
+    if not files:
+        return ""
+    parts = [
+        f"{_ASSET_FILE_LABELS.get(item.role, item.role)} `{item.path}`"
+        + (f"（{item.caption}）" if item.caption else "")
+        for item in files
+    ]
+    return " 参照: " + " / ".join(parts)
+
+
+def _studio_asset_line(asset) -> str:
+    where = (
+        f"ファイルあり `{asset.path}`"
+        if asset.path
+        else "メタデータのみ（参照には添付されず説明文に展開されます）"
+    )
+    caption = asset.caption or asset.prompt_caption
+    return (
+        f"- `{asset.id}` `@{asset.name}`（{asset.category} / {asset.kind}、{where}）"
+        + (f" — {caption}" if caption else "")
+        + _asset_files_text(asset)
+    )
+
+
+def _studio_take_line(take: StudioTake) -> str:
+    marks = []
+    if take.stale:
+        marks.append("stale: " + " / ".join(take.stale_reasons))
+    if take.warning:
+        marks.append(take.warning)
+    if take.error:
+        marks.append(f"error: {take.error}")
+    video = f" 動画 {take.video_url}" if take.video_url else ""
+    return (
+        f"Take `{take.id}` {take.status}"
+        f"（job `{take.job_id}` {take.job_status or '不明'}"
+        f"{', ' + take.video_workflow if take.video_workflow else ''}）{video}"
+        + (" ⚠ " + " / ".join(marks) if marks else "")
+    )
+
+
+def _studio_shot_lines(shot, takes: list[StudioTake], indent: str) -> list[str]:
+    carry = "、前 Shot のラストフレームを引き継ぐ" if shot.carry_over_end_frame else ""
+    lines = [
+        f"{indent}- Shot `{shot.id}`「{shot.title}」"
+        f"（{shot.duration_seconds:g} 秒 / status {shot.status}"
+        f" / workflow {shot.workflow_override or '自動'}{carry}）"
+    ]
+    for label, value in (
+        ("prompt", shot.prompt),
+        ("台詞", shot.dialogue),
+        ("SE", shot.soundscape),
+        ("BGM", shot.bgm),
+        ("カメラ", shot.camera),
+    ):
+        if value:
+            lines.append(f"{indent}  {label}: {value}")
+    for take in takes:
+        selected = " ← 採用中" if shot.selected_take_id == take.id else ""
+        lines.append(f"{indent}  {_studio_take_line(take)}{selected}")
+    return lines
+
+
+def _studio_detail_text(detail: StudioProjectDetail) -> str:
+    """プロジェクト 1 本ぶんを、次のターンでそのまま読める本文にする。"""
+    code = f"（作品コード `{detail.code}`）" if detail.code else ""
+    translate = (
+        "on（日本語で書けば投入時に英語へ直されます）"
+        if detail.auto_translate
+        else "off（プロンプトは英語で書いてください）"
+    )
+    lines = [
+        f"プロジェクト `{detail.id}` 「{detail.name}」{code} / auto_translate: {translate}",
+    ]
+    if detail.synopsis:
+        lines.append(f"あらすじ: {detail.synopsis}")
+    if detail.world_notes:
+        lines.append(f"World Bible: {detail.world_notes}")
+
+    lines += ["", f"素材 {len(detail.assets)} 件（プロンプトからは `@名前` で呼びます）:"]
+    lines += [_studio_asset_line(asset) for asset in detail.assets] or ["- (なし)"]
+
+    takes: dict[str, list[StudioTake]] = {}
+    for take in detail.takes:
+        takes.setdefault(take.shot_id, []).append(take)
+    shots: dict[str | None, list] = {}
+    for shot in detail.shots:
+        shots.setdefault(shot.scene_id, []).append(shot)
+
+    lines += ["", f"構成（Shot {len(detail.shots)} 件）:"]
+    if not detail.episodes and not detail.shots:
+        lines.append("- (なし)")
+    for episode in detail.episodes:
+        lines.append(f"- 話 `{episode.id}`「{episode.title}」{episode.synopsis}".rstrip())
+        scenes = [s for s in detail.scenes if s.episode_id == episode.id]
+        if not scenes:
+            lines.append("  - (場なし)")
+        for scene in scenes:
+            time_of_day = f"（{scene.time_of_day}）" if scene.time_of_day else ""
+            lines.append(f"  - 場 `{scene.id}`「{scene.title}」{time_of_day}")
+            for shot in shots.get(scene.id, []):
+                lines += _studio_shot_lines(shot, takes.get(shot.id, []), "    ")
+    orphans = shots.get(None, [])
+    if orphans:
+        lines.append("- 場に属さない Shot:")
+        for shot in orphans:
+            lines += _studio_shot_lines(shot, takes.get(shot.id, []), "  ")
+    return "\n".join(lines)
+
+
+async def _studio_list_projects(params: dict[str, Any]) -> tuple[str, str, dict]:
+    projects = await studio.list_projects()
+    if not projects:
+        return (
+            "studio_projects",
+            "スタジオにはまだプロジェクトがありません。"
+            "`studio_create_project` で作れます。",
+            {"count": 0},
+        )
+    text = "\n".join(
+        [
+            "スタジオのプロジェクト:",
+            "",
+            *[_studio_project_line(project) for project in projects],
+        ]
+    )
+    return (
+        "studio_projects",
+        text,
+        {"count": len(projects), "project_ids": [p.id for p in projects]},
+    )
+
+
+async def _studio_get_project(params: dict[str, Any]) -> tuple[str, str, dict]:
+    detail = await studio.project_detail(params["project_id"])
+    if detail is None:
+        raise studio.StudioError(
+            f"プロジェクト `{params['project_id']}` が見つかりません"
+        )
+    return "studio_project", _studio_detail_text(detail), {"project_id": detail.id}
+
+
+async def _studio_create_project(params: dict[str, Any]) -> tuple[str, str, dict]:
+    body = params["body"]
+    project = await studio.create_project(
+        str(body.get("name") or ""),
+        str(body.get("code") or ""),
+        str(body.get("synopsis") or ""),
+        str(body.get("world_notes") or ""),
+        bool(body.get("auto_translate", True)),
+        actor=STUDIO_ACTOR,
+    )
+    return (
+        "studio_saved",
+        f"プロジェクト「{project.name}」を作りました（project_id `{project.id}`）。"
+        "話 / 場 / Shot と World Bible の素材をこの id にぶら下げてください。",
+        {"project_id": project.id},
+    )
+
+
+async def _studio_update_project(params: dict[str, Any]) -> tuple[str, str, dict]:
+    project = await studio.update_project(
+        params["project_id"], actor=STUDIO_ACTOR, **params["body"]
+    )
+    if project is None:
+        raise studio.StudioError(
+            f"プロジェクト `{params['project_id']}` が見つかりません"
+        )
+    return (
+        "studio_saved",
+        f"プロジェクト「{project.name}」を更新しました（project_id `{project.id}`）。",
+        {"project_id": project.id},
+    )
+
+
+async def _studio_upsert_episode(params: dict[str, Any]) -> tuple[str, str, dict]:
+    if params.get("id"):
+        episode = await studio.update_episode(
+            params["id"], actor=STUDIO_ACTOR, **params["body"]
+        )
+        if episode is None:
+            raise studio.StudioError(f"話 `{params['id']}` が見つかりません")
+        verb = "更新"
+    else:
+        episode = await studio.create_episode(
+            params["project_id"],
+            StudioEpisodeCreate(**params["body"]),
+            actor=STUDIO_ACTOR,
+        )
+        verb = "追加"
+    return (
+        "studio_saved",
+        f"話「{episode.title}」を{verb}しました（episode_id `{episode.id}`）。",
+        {"project_id": episode.project_id, "episode_id": episode.id},
+    )
+
+
+async def _studio_upsert_scene(params: dict[str, Any]) -> tuple[str, str, dict]:
+    if params.get("id"):
+        scene = await studio.update_scene(
+            params["id"], actor=STUDIO_ACTOR, **params["body"]
+        )
+        if scene is None:
+            raise studio.StudioError(f"場 `{params['id']}` が見つかりません")
+        verb = "更新"
+    else:
+        scene = await studio.create_scene(
+            params["episode_id"],
+            StudioSceneCreate(**params["body"]),
+            actor=STUDIO_ACTOR,
+        )
+        verb = "追加"
+    return (
+        "studio_saved",
+        f"場「{scene.title}」を{verb}しました（scene_id `{scene.id}`）。",
+        {"project_id": scene.project_id, "scene_id": scene.id},
+    )
+
+
+async def _studio_upsert_shot(params: dict[str, Any]) -> tuple[str, str, dict]:
+    if params.get("id"):
+        shot = await studio.update_shot(
+            params["id"],
+            StudioShotUpdate(**params["body"]).changes(),
+            actor=STUDIO_ACTOR,
+        )
+        if shot is None:
+            raise studio.StudioError(f"Shot `{params['id']}` が見つかりません")
+        verb = "更新"
+    else:
+        shot = await studio.create_shot(
+            params["project_id"],
+            StudioShotCreate(**params["body"]),
+            actor=STUDIO_ACTOR,
+        )
+        verb = "追加"
+    return (
+        "studio_saved",
+        f"Shot「{shot.title}」を{verb}しました（shot_id `{shot.id}`）。"
+        "`studio_render_shot` で生成できます。",
+        {"project_id": shot.project_id, "shot_id": shot.id},
+    )
+
+
+async def _studio_delete_shot(params: dict[str, Any]) -> tuple[str, str, dict]:
+    if not await studio.delete_shot(params["id"], actor=STUDIO_ACTOR):
+        raise studio.StudioError(f"Shot `{params['id']}` が見つかりません")
+    return (
+        "studio_saved",
+        f"Shot `{params['id']}` を削除しました（Take も一緒に消えます）。",
+        {"shot_id": params["id"]},
+    )
+
+
+async def _studio_upsert_asset(params: dict[str, Any]) -> tuple[str, str, dict]:
+    if params.get("id"):
+        asset = await studio.update_asset(
+            params["id"], actor=STUDIO_ACTOR, **params["body"]
+        )
+        if asset is None:
+            raise studio.StudioError(f"素材 `{params['id']}` が見つかりません")
+        verb = "更新"
+    else:
+        payload = StudioAssetCreate(**params["body"])
+        asset = await studio.add_asset(
+            params["project_id"],
+            name=payload.name,
+            kind=payload.kind,
+            path=payload.path,
+            category=payload.category,
+            caption=payload.caption,
+            prompt_caption=payload.prompt_caption,
+            locked=payload.locked,
+            sort_order=payload.sort_order,
+            actor=STUDIO_ACTOR,
+        )
+        verb = "登録"
+    where = (
+        f"ファイルは {asset.path} に置きました。"
+        if asset.path
+        else "ファイルなし（メタデータのみ）の素材です。"
+    )
+    return (
+        "studio_saved",
+        f"素材「{asset.name}」を{verb}しました（asset_id `{asset.id}`）。{where}"
+        f"Shot の本文からは `@{asset.name}` で呼べます。",
+        {"project_id": asset.project_id, "asset_id": asset.id},
+    )
+
+
+async def _studio_register_asset_from_job(
+    params: dict[str, Any]
+) -> tuple[str, str, dict]:
+    """自分で生成した成果物を World Bible の素材として登録する。"""
+    job = await jobs.get_job(params["job_id"], include_workflow=False)
+    if job is None:
+        raise studio.StudioError(f"job `{params['job_id']}` が見つかりません")
+    attribute, kind, label = library.SOURCES[params["source"]]
+    path = getattr(job, attribute, None)
+    if not path:
+        raise studio.StudioError(f"job `{job.id}` には{label}がありません")
+    try:
+        dest = jobs.copy_into_assets(path, kind)
+    except jobs.JobValidationError as exc:
+        raise studio.StudioError(str(exc)) from exc
+    payload = StudioAssetCreate(**params["body"])
+    asset = await studio.add_asset(
+        params["project_id"],
+        name=payload.name,
+        kind=kind,
+        path=str(dest),
+        category=payload.category,
+        caption=payload.caption,
+        prompt_caption=payload.prompt_caption,
+        locked=payload.locked,
+        sort_order=payload.sort_order,
+        actor=STUDIO_ACTOR,
+    )
+    return (
+        "studio_saved",
+        f"job `{job.id}` の{label}を素材「{asset.name}」として登録しました"
+        f"（asset_id `{asset.id}`、{asset.path}）。"
+        f"Shot の本文で `@{asset.name}` と書けば参照素材として添付されます。",
+        {"project_id": asset.project_id, "asset_id": asset.id, "job_id": job.id},
+    )
+
+
+async def _studio_render_shot(params: dict[str, Any]) -> tuple[str, str, dict]:
+    shot_id = params["shot_id"]
+    override = params.get("workflow_override")
+    if override:
+        # 強制指定は Shot に残す（次の Take も同じモードで作れるようにする）
+        if await studio.update_shot(
+            shot_id, {"workflow_override": override}, actor=STUDIO_ACTOR
+        ) is None:
+            raise studio.StudioError(f"Shot `{shot_id}` が見つかりません")
+    take = await studio.render_shot(shot_id)
+    text = (
+        f"Shot `{shot_id}` の生成を投入しました"
+        f"（take_id `{take.id}` / job_id `{take.job_id}`）。"
+        "完了は `studio_get_takes` で確認してください"
+        "（status が candidate になれば見られます）。"
+    )
+    if take.warning:
+        text += f" 注意: {take.warning}"
+    return (
+        "studio_render_started",
+        text,
+        {"shot_id": shot_id, "take_id": take.id, "job_id": take.job_id},
+    )
+
+
+async def _studio_get_takes(params: dict[str, Any]) -> tuple[str, str, dict]:
+    shot_id = params["shot_id"]
+    shot = await studio.get_shot(shot_id)
+    if shot is None:
+        raise studio.StudioError(f"Shot `{shot_id}` が見つかりません")
+    takes = await studio.list_takes(shot_id)
+    if not takes:
+        text = (
+            f"Shot `{shot_id}`「{shot.title}」にはまだ Take がありません。"
+            "`studio_render_shot` で生成できます。"
+        )
+    else:
+        text = "\n".join(
+            [
+                f"Shot `{shot_id}`「{shot.title}」の Take:",
+                "",
+                *[f"- {_studio_take_line(take)}" for take in takes],
+            ]
+        )
+    return (
+        "studio_takes",
+        text,
+        {
+            "shot_id": shot_id,
+            "count": len(takes),
+            "take_ids": [take.id for take in takes],
+        },
+    )
+
+
+async def _studio_select_take(params: dict[str, Any]) -> tuple[str, str, dict]:
+    take = await studio.select_take(params["take_id"], actor=STUDIO_ACTOR)
+    if take is None:
+        raise studio.StudioError(f"Take `{params['take_id']}` が見つかりません")
+    return (
+        "studio_take_selected",
+        f"Take `{take.id}` を採用しました（Shot `{take.shot_id}`）。"
+        "次の Shot は `carry_over_end_frame` でこのラストフレームを引き継げます。",
+        {"take_id": take.id, "shot_id": take.shot_id},
+    )
+
+
+async def _studio_reject_take(params: dict[str, Any]) -> tuple[str, str, dict]:
+    take = await studio.reject_take(params["take_id"], actor=STUDIO_ACTOR)
+    if take is None:
+        raise studio.StudioError(f"Take `{params['take_id']}` が見つかりません")
+    return (
+        "studio_take_rejected",
+        f"Take `{take.id}` を不採用にしました（Shot `{take.shot_id}`）。"
+        "作り直すなら `studio_render_shot` をもう一度投入してください。",
+        {"take_id": take.id, "shot_id": take.shot_id},
+    )
+
+
+_STUDIO_HANDLERS = {
+    "studio_list_projects": _studio_list_projects,
+    "studio_get_project": _studio_get_project,
+    "studio_create_project": _studio_create_project,
+    "studio_update_project": _studio_update_project,
+    "studio_upsert_episode": _studio_upsert_episode,
+    "studio_upsert_scene": _studio_upsert_scene,
+    "studio_upsert_shot": _studio_upsert_shot,
+    "studio_delete_shot": _studio_delete_shot,
+    "studio_upsert_asset": _studio_upsert_asset,
+    "studio_register_asset_from_job": _studio_register_asset_from_job,
+    "studio_render_shot": _studio_render_shot,
+    "studio_get_takes": _studio_get_takes,
+    "studio_select_take": _studio_select_take,
+    "studio_reject_take": _studio_reject_take,
+}
+
+
+# --------------------------------------------------------------------------
+# キャンバス (app.canvas) の操作
+# --------------------------------------------------------------------------
+#
+# スタジオ操作と同じ流儀（サービス層を直に呼び、結果を次のターンで読める本文に
+# する）。カードが持つのは参照と座標だけなので、ここも「置く・動かす・数える」
+# しかできない: 中身を直すのは studio_* の仕事で、例外は中身を自分で持つ
+# text / model カードの ``data`` だけ。
+
+def _card_entity_label(card, detail: StudioProjectDetail | None) -> str:
+    """カードが指しているスタジオの行の呼び名（見つからなければその旨）。"""
+    if card.kind in ("text", "model"):
+        return "キャンバス専用（参照先なし）"
+    if detail is None or not card.entity_id:
+        return "参照先なし"
+    for asset in detail.assets:
+        if asset.id == card.entity_id:
+            return f"素材 `{asset.id}` `@{asset.name}`"
+    for scene in detail.scenes:
+        if scene.id == card.entity_id:
+            return f"場 `{scene.id}`「{scene.title}」"
+    for shot in detail.shots:
+        if shot.id == card.entity_id:
+            return f"Shot `{shot.id}`「{shot.title}」"
+    for take in detail.takes:
+        if take.id == card.entity_id:
+            return f"Take `{take.id}`（{take.status}）"
+    return f"参照先 `{card.entity_id}` は見つかりません"
+
+
+def _card_line(card, detail: StudioProjectDetail | None, tab: str = "") -> str:
+    line = (
+        f"- カード `{card.id}` [{card.kind}] 位置 ({card.x:g}, {card.y:g})"
+        f" 大きさ {card.w:g}×{card.h:g} — {_card_entity_label(card, detail)}"
+    )
+    if tab:
+        line += f" — タブ: {tab}"
+    if card.kind == "text":
+        body = str(card.data.get("body") or "").strip().splitlines()
+        return line + (f" — {body[0]}" if body else "")
+    if card.kind == "model":
+        return line + f" — {card.data.get('workflow') or 'ワークフロー未選択'}"
+    return line
+
+
+#: 「作品共通」タブの呼び名（素材と未分類のカットが出る盤面）
+COMMON_TAB_LABEL = "作品共通"
+
+
+def canvas_tab_label(episode_id: str | None, detail: StudioProjectDetail | None) -> str:
+    """タブの呼び名（``None`` = 作品共通、話は「第 n 話」かそのタイトル）。"""
+    if episode_id is None:
+        return COMMON_TAB_LABEL
+    episodes = detail.episodes if detail else []
+    for number, episode in enumerate(episodes, start=1):
+        if episode.id == episode_id:
+            return episode.title or f"第 {number} 話"
+    return f"話 `{episode_id}`"
+
+
+def canvas_board_text(
+    cards: list,
+    detail: StudioProjectDetail | None,
+    *,
+    tab: str | None = None,
+    whole_board: bool = False,
+) -> str:
+    """盤面に出ているカードを、次のターンでそのまま読める本文にする。
+
+    ``whole_board`` なら作品ぜんぶのカードを、行ごとにどのタブのものかを
+    添えて並べる。そうでなければ ``cards`` は ``tab``（``None`` = 作品共通）の
+    ぶんだけが渡ってきているものとして、そのタブの盤面として書く。
+    """
+    label = canvas_tab_label(tab, detail)
+    if not cards:
+        return (
+            f"キャンバスの「{label}」タブにはまだカードがありません。"
+            if not whole_board
+            else "キャンバスにはまだカードがありません"
+            "（この作品にはまだ素材も脚本もありません）。"
+        )
+    index = (
+        canvas.entity_episodes(detail.scenes, detail.shots, detail.takes)
+        if detail
+        else {}
+    )
+    lines = [
+        _card_line(
+            card,
+            detail,
+            canvas_tab_label(canvas.card_episode(card, index), detail)
+            if whole_board
+            else "",
+        )
+        for card in cards
+    ]
+    head = (
+        f"キャンバスのカード {len(cards)} 枚:"
+        if whole_board
+        else f"キャンバス「{label}」タブのカード {len(cards)} 枚:"
+    )
+    return "\n".join([head, "", *lines])
+
+
+def canvas_tabs_text(detail: StudioProjectDetail | None, tab: str | None) -> str:
+    """タブの一覧（どれを開いているか + 各タブの中身の数）。"""
+    if detail is None:
+        return ""
+    index = canvas.entity_episodes(detail.scenes, detail.shots, detail.takes)
+    loose = [shot for shot in detail.shots if index.get(shot.id) is None]
+    rows = [
+        (
+            None,
+            COMMON_TAB_LABEL,
+            f"素材 {len(detail.assets)} 件 / 未分類のカット {len(loose)} 件",
+        )
+    ]
+    for number, episode in enumerate(detail.episodes, start=1):
+        scenes = [
+            scene for scene in detail.scenes if scene.episode_id == episode.id
+        ]
+        shots = [
+            shot for shot in detail.shots if index.get(shot.id) == episode.id
+        ]
+        rows.append(
+            (
+                episode.id,
+                episode.title or f"第 {number} 話",
+                f"場 {len(scenes)} 件 / カット {len(shots)} 件",
+            )
+        )
+    lines = [
+        f"- {'▶ ' if episode_id == tab else ''}「{label}」"
+        + (f"（`{episode_id}`）" if episode_id else "（`common`）")
+        + f": {summary}"
+        for episode_id, label, summary in rows
+    ]
+    return "\n".join(["キャンバスのタブ（▶ = いま開いているタブ）:", "", *lines])
+
+
+async def _canvas_list_cards(params: dict[str, Any]) -> tuple[str, str, dict]:
+    project_id = params["project_id"]
+    detail = await studio.project_detail(project_id)
+    if detail is None:
+        raise studio.StudioError(f"プロジェクト `{project_id}` が見つかりません")
+    # episode_id を省いたら盤面ぜんぶ（タブ名つき）。指定すればそのタブだけ。
+    wanted = params.get("episode_id")
+    if wanted is None:
+        cards = await canvas.list_cards(project_id)
+        text = canvas_board_text(cards, detail, whole_board=True)
+    else:
+        tab = canvas.tab_of(str(wanted))
+        cards = await canvas.list_tab_cards(project_id, tab)
+        text = canvas_board_text(cards, detail, tab=tab)
+    return (
+        "canvas_cards",
+        text,
+        {"project_id": project_id, "count": len(cards),
+         "card_ids": [card.id for card in cards]},
+    )
+
+
+async def _canvas_place_card(params: dict[str, Any]) -> tuple[str, str, dict]:
+    card = await canvas.create_card(
+        params["project_id"],
+        CanvasCardCreate(**params["body"]),
+        actor=STUDIO_ACTOR,
+    )
+    return (
+        "canvas_card_placed",
+        f"カード `{card.id}` [{card.kind}] を ({card.x:g}, {card.y:g}) に置きました。",
+        {"project_id": card.project_id, "card_id": card.id, "kind": card.kind},
+    )
+
+
+async def _canvas_move_card(params: dict[str, Any]) -> tuple[str, str, dict]:
+    body = params["body"]
+    card = await canvas.move_card(
+        params["card_id"],
+        body["x"],
+        body["y"],
+        body.get("w"),
+        body.get("h"),
+        body.get("z"),
+    )
+    if card is None:
+        raise canvas.CanvasError(f"カード `{params['card_id']}` が見つかりません")
+    return (
+        "canvas_card_moved",
+        f"カード `{card.id}` を ({card.x:g}, {card.y:g}) へ動かしました。",
+        {"project_id": card.project_id, "card_id": card.id},
+    )
+
+
+async def _canvas_update_card(params: dict[str, Any]) -> tuple[str, str, dict]:
+    card = await canvas.update_card(
+        params["card_id"], dict(params["body"]), actor=STUDIO_ACTOR
+    )
+    if card is None:
+        raise canvas.CanvasError(f"カード `{params['card_id']}` が見つかりません")
+    return (
+        "canvas_card_updated",
+        f"カード `{card.id}` [{card.kind}] を更新しました。",
+        {"project_id": card.project_id, "card_id": card.id},
+    )
+
+
+_CANVAS_HANDLERS = {
+    "canvas_list_cards": _canvas_list_cards,
+    "canvas_place_card": _canvas_place_card,
+    "canvas_move_card": _canvas_move_card,
+    "canvas_update_card": _canvas_update_card,
+}
+
+#: 目録の読み書きだけで完結するツール（スタジオ + キャンバス）。実行は
+#: :func:`run_tool` に集約してあり、キャンバスのチャット（:mod:`app.canvas_agent`）
+#: も同じ入り口を使う。
+TOOL_HANDLERS: dict[str, Any] = {**_STUDIO_HANDLERS, **_CANVAS_HANDLERS}
+
+#: ツールの失敗が返すイベント種別（本文にそのまま理由が入る）
+TOOL_FAILED = "action_failed"
+
+
+async def run_tool(action: AgentAction) -> tuple[str, str, dict]:
+    """studio_* / canvas_* を 1 つ実行し、``(イベント種別, 本文, data)`` を返す。
+
+    失敗も例外にせず :data:`TOOL_FAILED` のイベントとして返す（次のターンで
+    エージェントが読んで直せるようにするため。制作記録に残すのは呼び出し側）。
+    """
+    handler = TOOL_HANDLERS[action.action]
+    params = action.canvas if action.action in _CANVAS_HANDLERS else action.studio
+    try:
+        return await handler(params)
+    except (
+        studio.StudioError,
+        canvas.CanvasError,
+        jobs.JobValidationError,
+        ValidationError,
+    ) as exc:
+        return (
+            TOOL_FAILED,
+            f"{action.action} を実行できませんでした: {exc}",
+            {"error": str(exc)},
+        )
+
+
+async def _tool_action(session_id: str, action: AgentAction) -> None:
+    """ツールを 1 つ実行し、結果をイベントとして制作記録に残す。"""
+    kind, text, data = await run_tool(action)
+    await _event(session_id, kind, text, **data)
+
+
 async def _apply_plan(session_id: str, action: AgentAction) -> None:
     session = await load(session_id)
     if session is None:
@@ -1024,6 +1752,11 @@ async def apply_action(session_id: str, action: AgentAction) -> bool:
         return False
     if action.action == "inspect":
         await _inspect(session_id, action)
+        return False
+    if action.action in agent_protocol.STUDIO_ACTIONS + agent_protocol.CANVAS_ACTIONS:
+        # スタジオ / キャンバスの操作は目録の読み書き（+ 生成の投入）だけで、
+        # 完了は待たない。
+        await _tool_action(session_id, action)
         return False
     if action.action in ("continue", "rerun"):
         session = await load(session_id)

@@ -3,6 +3,7 @@ import {
   AUDIO_CATEGORIES,
   CATEGORY_LABELS,
   LANGUAGE_LABELS,
+  MAX_STEPS,
   audioSupports,
   clampToWorkflow,
   durationRange,
@@ -40,7 +41,7 @@ export default function AudioFields({
 
   const hasLyrics = audioSupports(workflow, 'lyrics')
   const hasNegativeTags = audioSupports(workflow, 'negative_tags')
-  // 長さを宣言しないモデル（Suno は API に尺のパラメータが無い）では、効かない
+  // 長さを宣言しないモデル（API に尺のパラメータが無いもの）では、効かない
   // つまみを見せないよう秒数の入力ごと隠す（§2.4）。
   const hasDuration = workflow == null || workflow.max_duration > 0
   const hasBpm = audioSupports(workflow, 'bpm')
@@ -48,6 +49,7 @@ export default function AudioFields({
   const hasLanguage = audioSupports(workflow, 'language')
   const hasCategory = audioSupports(workflow, 'audio_category')
   const hasReprompt = audioSupports(workflow, 'reprompt')
+  const hasSteps = audioSupports(workflow, 'steps')
 
   // 選択肢が届いたら未知のワークフロー id を既定へ寄せる（動画側と同じ挙動）。
   useEffect(() => {
@@ -86,7 +88,7 @@ export default function AudioFields({
         <p className="mt-1 text-[11px] text-slate-500">
           音声は単独で生成されます（画像・動画とは連結されません）。
         </p>
-        {/* ワークフローが宣言した選択式フィールド（Suno のモデル・
+        {/* ワークフローが宣言した選択式フィールド（モデル・
             ボーカルの性別。§3.1） */}
         <WorkflowSelects
           workflow={workflow}
@@ -278,6 +280,28 @@ export default function AudioFields({
                 </select>
               </div>
             )}
+          </div>
+        )}
+
+        {hasSteps && (
+          <div className="mt-2">
+            <label className="label" htmlFor="audio-steps">
+              ステップ数
+            </label>
+            <input
+              id="audio-steps"
+              className="field"
+              type="number"
+              min="0"
+              max={MAX_STEPS}
+              step="1"
+              placeholder="未指定＝既定"
+              value={form.steps || ''}
+              onChange={(event) => patch({ steps: Number(event.target.value) || 0 })}
+            />
+            <p className="mt-1 text-[11px] text-slate-500">
+              未指定でワークフロー既定。増やすほど時間がかかります。
+            </p>
           </div>
         )}
 

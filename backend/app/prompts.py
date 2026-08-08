@@ -285,86 +285,12 @@ Replace the text on the shop sign with "MORNING LIGHT COFFEE", keeping the origi
 ```
 """
 
-GROK_IMAGINE_SPEC = """\
-# IMAGE PROMPT SPEC — Grok Imagine (via the Grok Build CLI, subscription quota)
-
-Grok Imagine is driven through the official CLI, so `image_prompt` is passed as
-plain natural language inside an instruction — there is no negative prompt, no
-weight syntax and no exact resolution control.
-
-1. **Write natural sentences, not a tag list.** Order: subject → style / medium
-   → environment → lighting → mood → technical (lens, framing, finish).
-2. **The first 20-30 words carry the most weight.** Put the subject and the look
-   there; details added at the end influence the picture much less.
-3. **Name the light**: where it comes from and what quality it has ("soft window
-   light from the left, shallow depth of field"). Material words land well
-   ("matte-black ceramic", "brushed steel", "raw linen").
-4. **Never write what you do not want** — negations are ignored. Say the
-   positive form instead: `sharp focus` rather than `no blur`, `plain seamless
-   background` rather than `no clutter`.
-5. **Aspect ratio and resolution are wishes, not settings**: the app writes the
-   ratio into the instruction, but the model may not follow it exactly. Do not
-   demand pixel dimensions in the prompt text.
-6. **Moderation is strict**: real people, celebrities, trademarks and logos are
-   refused (false positives are common). Describe an invented person by their
-   features instead of naming anyone.
-7. **Adults only**: every depicted person is an adult with an unambiguously
-   adult body and face.
-
-Example:
-```
-A weathered fisherman mending a net on a wooden pier at dawn, documentary photograph, muted colour, salt-worn timber and coiled rope around him, low sun raking from the left through sea haze, quiet and patient mood, 35mm lens at chest height, sharp focus on his hands, soft falloff into the harbour behind.
-```
-"""
-
-GPT_IMAGE2_SPEC = """\
-# IMAGE PROMPT SPEC — gpt-image-2 (via the Codex CLI, ChatGPT subscription)
-
-gpt-image-2 is driven through the official Codex CLI, so `image_prompt` is
-passed as plain natural language inside an instruction. It follows written
-instructions closely and renders text better than any other model in this app,
-so be explicit rather than evocative. There is no negative prompt and no weight
-syntax; the size and the quality are job fields (`selects`), not prompt text.
-
-1. **Structure the description in this order**: background / scene → subject →
-   important details → constraints. Say what the image is *for* (advertisement,
-   UI mock-up, book cover, product shot) — the intended use steers composition.
-2. **Split a complex request into labelled sections** ("Background:",
-   "Foreground:", "Text:", "Style:") instead of one long run-on sentence. The
-   model reads structure well.
-3. **Text rendering is the strength**: put every string that must appear in
-   double quotes, verbatim, and give its font style, size, colour and position
-   ("the headline \\"MORNING LIGHT\\" in bold condensed sans-serif, centred in the
-   upper third, warm cream on dark green"). Then say **"do not add any other
-   text"** — unrequested extra lettering is the usual failure.
-4. **Name the medium**: `photo`, `watercolour illustration`, `3D render`,
-   `flat vector`. For photography write **`photorealistic`** outright, plus the
-   camera cues (lens, angle, depth of field) and the light.
-5. **Editing an image** (when a reference is available): change one thing per
-   instruction — "change only X; keep everything else the same" — and repeat the
-   list of what must be preserved (identity, layout, palette) **in every
-   iteration**, because each turn is judged on its own.
-6. **Constraints go last** and positively: "plain seamless background",
-   "no people in frame" works, but prefer stating what should be there.
-7. **Transparent backgrounds are not supported** — ask for a flat solid colour
-   background instead and cut it out afterwards.
-8. **Adults only**: every depicted person is an adult with an unambiguously
-   adult body and face.
-
-Example:
-```
-Advertising still for a small coffee roastery. Background: a matte dark-green seamless studio backdrop, softly lit from the upper left with a large diffused source, gentle falloff into the lower right corner. Subject: a single kraft-paper coffee bag standing upright, centred, slightly angled toward the camera, with a few roasted beans scattered at its base. Details: the bag carries the text "MORNING LIGHT" in bold condensed sans-serif, cream on green, centred across the upper third, and "single origin — 250g" in small letterspaced caps below it; do not add any other text or logos. Style: photorealistic product photography, 85mm lens, eye level, shallow depth of field, visible paper grain and bean texture, warm neutral colour grade.
-```
-"""
-
 #: family -> the prompt spec section to embed for it
 IMAGE_SPECS: dict[str, str] = {
     "krea2": IMAGE_SPEC,
     "anima": ANIMA_SPEC,
     "z-image": Z_IMAGE_SPEC,
     "qwen-image": QWEN_IMAGE_SPEC,
-    "grok-imagine": GROK_IMAGINE_SPEC,
-    "gpt-image": GPT_IMAGE2_SPEC,
 }
 
 #: family -> the one-line reminder that goes into the IMAGE WORKFLOWS catalog
@@ -387,17 +313,6 @@ IMAGE_PROMPT_HINTS: dict[str, str] = {
         "An EDIT instruction for `source_image`, not a scene description:"
         ' "change X to Y, keep everything else unchanged". Output size follows'
         " the input picture."
-    ),
-    "grok-imagine": (
-        "Natural sentences, subject and style in the first 20-30 words, then"
-        " environment, lighting, mood, camera. No negatives (write the positive"
-        " form), no exact resolution — the ratio is only a wish."
-    ),
-    "gpt-image": (
-        "Background → subject → details → constraints, and say what the picture"
-        " is for. Best-in-class text rendering: quote every string verbatim with"
-        " its font, colour and placement, then forbid any other text. Write"
-        " `photorealistic` outright; no transparent backgrounds."
     ),
 }
 
@@ -592,7 +507,7 @@ def _catalog_entry_lines(entry: CatalogEntry) -> list[str]:
 def _select_lines(entry: CatalogEntry) -> list[str]:
     """選択式フィールドの案内（宣言していないワークフローでは何も出ない、§3.1）。
 
-    自由記述ではなく決まった選択肢で挙動が決まるワークフロー（wan_dancer）向け。
+    自由記述ではなく決まった選択肢で挙動が決まるワークフロー向け。
     ジョブの ``selects`` に書ける名前と、その値をそのまま列挙する。
     """
     if not entry.selects:
@@ -744,376 +659,10 @@ def _workflow_context_lines(workflow_id: str) -> list[str]:
 # --------------------------------------------------------------------------
 # 3.6a per-workflow video prompt guides（選んだワークフローの分だけ埋め込む）
 # --------------------------------------------------------------------------
-# VIDEO SPEC は LTX 2.3 のもの。外部 API のモデルは書き方も守備範囲も違うので、
+# VIDEO SPEC は LTX 2.3 のもの。他のモデルは書き方も守備範囲も違うので、
 # 画像 / 音声と同じ流儀で「モデルごとのガイド」を持ち、チャットでは**選択中の
 # ワークフローの分だけ**注入する（両方渡すと混ざる）。
 #
-# Veo 3.1 — https://docs.kie.ai/veo3-api/generate-veo-3-video.md と
-# https://ai.google.dev/gemini-api/docs/veo（プロンプト構成・音声・否定表現）
-
-#: Veo のプロンプト本体（通常の生成と素材参照生成で共通の骨格）
-_VEO_GUIDE_BODY = """\
-Write `video_prompt` as 3-6 English sentences (100-150 words), in this order:
-
-1. **Composition / shot** — shot size and angle (medium close-up, low-angle
-   wide shot), and the format if it matters.
-2. **Subject** — who / what, described concretely (age range, build, hair,
-   wardrobe, distinguishing details).
-3. **Action** — one continuous action, in the order it happens.
-4. **Scene** — where, when, weather, set dressing.
-5. **Camera motion** — exactly **one** (slow push-in, handheld follow, static
-   lock-off). Two moves in one clip is the most common way to break a shot.
-6. **Lens / focus** — 35mm, shallow depth of field, rack focus to the hands.
-7. **Style and light** — film stock / grade, key light direction, mood.
-
-Sound is part of the prompt, not an afterthought:
-
-- **Ambience and SFX**: name them (`distant traffic hum, rain on the window,
-  the shutter clacks once`).
-- **Dialogue**: put the line in quotes, say who speaks and how —
-  `The man says in a low voice: "We are not done here."` One or two short lines
-  is all that fits in 8 seconds.
-- Add `(no subtitles)` when the shot must not carry burnt-in captions.
-
-Hard rules:
-
-- **Never write a negative inside the description** ("no cars", "without
-  text"): Veo tends to render exactly what you name. Put unwanted elements at
-  the very end as `Negative: cartoon, blurry, distorted hands, text, watermark`.
-- **One clip = one scene = one camera move.** Cuts, "then", and "meanwhile"
-  belong in separate jobs.
-"""
-
-VEO_VIDEO_GUIDE = (
-    """\
-# VIDEO PROMPT SPEC — Google Veo 3.1 (kie.ai, `veo3_1_fast` / `veo3_1_quality`)
-
-Veo generates **picture and sound together** in one 4-8 second take. It is not
-LTX: where this section and the VIDEO PROMPT SPEC above disagree, this one wins.
-
-"""
-    + _VEO_GUIDE_BODY
-    + """\
-- With a start frame, do **not** re-describe what the picture already shows —
-  write how it moves, what happens next, and how it sounds.
-- Duration, aspect ratio and resolution are job fields (`selects`), never
-  sentences in the prompt. `resolution` also offers `4k`, but only for 8 second
-  clips and at a much higher price — keep `720p` unless the shot is final.
-- To pin a face, a wardrobe or a prop with **material** instead of a start
-  frame, use the separate `veo3_1_fast_ref` workflow.
-"""
-)
-
-VEO_REFERENCE_VIDEO_GUIDE = (
-    """\
-# VIDEO PROMPT SPEC — Google Veo 3.1 Fast, reference mode (kie.ai, `veo3_1_fast_ref`)
-
-This workflow is the **reference-to-video** mode (`REFERENCE_2_VIDEO`): 1-3
-`reference_images` carry identity and look, and the clip is always **8 seconds**
-with picture and sound generated together. It takes **no start frame at all**
-(`source_image` / `end_image` are rejected) — use `veo3_1_fast` for those.
-
-"""
-    + _VEO_GUIDE_BODY
-    + """\
-- **Do not describe what the reference images already show.** The face, the
-  wardrobe and the props come from the material; the text is direction only —
-  what happens, in which scene and light, with which single camera move.
-- Refer to the material in words the model can attach (`the woman from the
-  reference images`), never by file name.
-- Aspect ratio and resolution are job fields (`selects`); `duration` is fixed at
-  8 seconds and offers nothing else.
-"""
-)
-
-# Kling 3.0 — https://docs.kie.ai/market/kling/kling-3-0.md と
-# https://blog.fal.ai/kling-3-0-prompting-guide/（構成順・アイデンティティ固定・音声）
-
-#: 1 ショットの書き方（`kling3_video` の本文と `kling3_multishot` の 1 ショットで
-#: 共通の骨格）
-_KLING_SHOT_GUIDE = """\
-Write it in this order:
-
-1. **Camera first** — open with the move (`Slow dolly push forward,`
-   `Handheld follow behind her,` `Locked-off wide shot,`). Exactly **one**
-   move per clip.
-2. **Scene / subject** — pin the identity in the first clause (age, build,
-   hair, wardrobe: `a woman in her 30s, short black bob, grey wool coat`).
-   Refer back to her with the **same words** every time; pronouns and synonyms
-   are the main cause of the character drifting mid-shot.
-3. **Action** — one continuous action, in the order it happens.
-4. **Mood / lighting** — time of day, key light, weather.
-5. **Style** — film stock, grade, lens character.
-"""
-
-#: 音・ネガティブ・ジョブフィールドの扱い（2 本で共通）
-_KLING_SOUND_GUIDE = """\
-With `sound: true` (the `sound` select):
-
-- Label the speaker before the line and describe the voice:
-  `Woman (raspy, low voice): "We are out of time."` Japanese dialogue is
-  supported and lip-synced.
-- Name the ambience and the effects you want (`rain on glass, distant sirens`).
-- Keep it to one or two short lines — a 5 second take holds very little speech.
-
-There is **no `negative_prompt`, no `cfg`, no seed and no camera-control
-parameter** on this model. Everything is the prompt text: write what you *do*
-want, and put the few things to suppress inline in the same sentence style
-(`no text overlays, no camera shake`). Avoid words that summon what you are
-trying to avoid.
-
-Duration, mode (std / pro / 4K), aspect ratio and sound are job fields
-(`selects`), never sentences in the prompt.
-"""
-
-#: Elements の説明（2 本で共通）
-_KLING_ELEMENTS_GUIDE = """\
-## Elements (`kling_elements`)
-
-Up to **3 named elements**, each with **2-4 reference images**, pin a recurring
-cast member or prop:
-
-```json
-"kling_elements": [
-  {"name": "kaori", "description": "the woman in the grey coat",
-   "images": ["/library/image/kaori_a.png", "/library/image/kaori_b.png"]}
-]
-```
-
-Call them from the text with `@name` (`Slow dolly push forward, @kaori steps off
-the tram …`). Two rules that matter:
-
-- **One `@name` costs 37 characters** of the 500, whatever its length — three
-  references eat over a fifth of the prompt. Name elements briefly and refer to
-  them once per shot, then use ordinary pronouns.
-- **`@name` must match a declared element.** A reference to an element you did
-  not declare is rejected before the job is queued.
-
-Elements work with a start frame, and with the shots of `kling3_multishot`
-(`@name` inside each shot's `prompt`).
-"""
-
-KLING_VIDEO_GUIDE = (
-    """\
-# VIDEO PROMPT SPEC — Kling 3.0 (kie.ai, `kling3_video`)
-
-Kling is a motion model: it is strongest on people, physical action and
-photoreal footage, and it takes 3-15 second takes. Where this section and the
-generic VIDEO PROMPT SPEC above disagree, this one wins.
-
-**Hard limit: `video_prompt` must be at most 500 characters.** The job is
-rejected before it is queued if it is longer, so write one dense English
-paragraph — no lists, no repetition, no restating the job fields.
-
-"""
-    + _KLING_SHOT_GUIDE
-    + """\
-
-With a start frame (`image`), the picture is the anchor: write **only what
-changes** — how the subject starts moving, where the camera goes, what happens
-next. Never re-describe the composition that is already in the picture.
-
-"""
-    + _KLING_SOUND_GUIDE
-    + "\n"
-    + _KLING_ELEMENTS_GUIDE
-    + """\
-
-For a sequence of consecutive shots in one clip, use the separate
-`kling3_multishot` workflow.
-"""
-)
-
-KLING_MULTISHOT_VIDEO_GUIDE = (
-    """\
-# VIDEO PROMPT SPEC — Kling 3.0 multi-shot (kie.ai, `kling3_multishot`)
-
-This workflow cuts one Kling job into **up to 5 consecutive shots** instead of
-one take. Send `multi_shots` as a list and **leave `video_prompt` empty** — the
-top-level prompt is not sent at all, and a job that has one (or that has no
-shots) is rejected before it is queued:
-
-```json
-"multi_shots": [
-  {"prompt": "Shot 1 …", "duration": 4},
-  {"prompt": "Shot 2 …", "duration": 5}
-]
-```
-
-- Each shot is **1-12 seconds** (integer) and its `prompt` obeys the
-  **500 character** limit, on its own.
-- Keep the identity wording **identical in every shot** (same age, hair,
-  wardrobe words); this is the only thing holding the character together across
-  the cuts. Same for the location and the light.
-- Shots are cuts, not one long move: do not carry a camera move across two
-  shots, give each one its own.
-- `sound` defaults to **true** here, so name the ambience per shot.
-- Use it when the shots must stay one continuous scene; use separate jobs when
-  they are independent.
-
-Write **every shot** in the same order as a single take:
-
-"""
-    + _KLING_SHOT_GUIDE
-    + """\
-
-`Shot 2: Low tracking shot, she pushes through the door and steps into the
-rain, now framed from the left, sound: rain on metal.`
-
-With a start frame (`image`), the picture anchors the **first** shot: write only
-what changes, never re-describe the composition that is already in the picture.
-
-"""
-    + _KLING_SOUND_GUIDE
-    + "\n"
-    + _KLING_ELEMENTS_GUIDE
-)
-
-# Seedance 2 — https://docs.kie.ai/market/bytedance/seedance-2.md と
-# 公式プロンプトガイドの解説（6 要素フォーミュラ・照明・カメラ 8 種・マルチショット）
-# https://help.apiyi.com/en/seedance-2-0-prompt-guide-video-generation-camera-style-tips-en.html
-
-#: 演出の書き方（フレーム版・参照版で共通の骨格）
-_SEEDANCE_DIRECTION_GUIDE = """\
-**Write like a director, not like a tag list.** One dense English paragraph of
-**60-100 words** built from six elements, in this order:
-
-`[subject — concrete looks] + [action — verb + intensity] + [setting — light,
-atmosphere] + camera [exactly one move] + [style] + avoid [what to exclude]`
-
-1. **Subject** — age, build, hair, wardrobe, distinguishing details. Name them
-   once and reuse the *same* words; synonyms and pronouns make the character
-   drift.
-2. **Action** — one continuous action with an intensity (`walks briskly`,
-   `slumps slowly`), in the order it happens.
-3. **Setting and light** — **the lighting sentence is the single biggest lever
-   on quality**: name it concretely (`golden hour backlight`, `hard rim light
-   from a neon sign`, `soft overcast window light`, `backlit silhouette`).
-   Piles of vague adjectives (`amazing`, `epic`, a bare `cinematic`) make the
-   result *worse* — cut them.
-4. **Camera** — exactly **one** move out of push-in / pull-out / pan /
-   tracking / orbit / aerial / handheld / fixed, with a rhythm word (`slow`,
-   `smooth`, `gentle`). Two moves in one clip is the usual way to break a shot.
-   **Keep the subject's motion and the camera's motion in separate sentences**
-   — mixing them in one sentence is what produces sliding, warped movement.
-5. **Style** — film stock, grade, lens character.
-6. **Avoid** — a short closing clause. For anything with people, always include
-   **`avoid jitter and bent limbs`**.
-
-Multi-shot is what Seedance 2 is good at, but keep it deliberate: label the
-shots in time order (`Shot 1: … Shot 2: …`) and write each one as **camera →
-action → spatial relation → sound**, repeating the subject's description
-verbatim in every shot so the character stays the same person.
-
-There is **no seed, no `camera_fixed` and no negative-prompt parameter** on
-Seedance 2: a locked-off camera is `fixed camera, no camera movement` in the
-text, and everything unwanted goes in the closing `avoid …` clause.
-
-Resolution, duration, aspect ratio, audio on/off and the NSFW checker are job
-fields (`selects`), never sentences in the prompt. `generate_audio` is **on by
-default**, so name the ambience and the effects you want; `nsfw_checker` is
-**off by default** (kie.ai's own filter stays disabled).
-"""
-
-SEEDANCE_VIDEO_GUIDE = (
-    """\
-# VIDEO PROMPT SPEC — ByteDance Seedance 2 (kie.ai, `seedance2` / `seedance2_fast` / `seedance2_mini`)
-
-Seedance generates picture and **native audio together** in one 4-15 second
-take. Where this section and the generic VIDEO PROMPT SPEC above disagree, this
-one wins.
-
-"""
-    + _SEEDANCE_DIRECTION_GUIDE
-    + """\
-
-With a start frame (`image`), the picture is the anchor: write only how it
-starts moving and what happens next, never re-describe the composition. With
-`end_image` as well, describe the *transition* that lands exactly on that last
-frame.
-
-To pin identity, motion or mood with **material** instead of a start frame, use
-the reference variants (`seedance2_ref` / `seedance2_fast_ref` /
-`seedance2_mini_ref`).
-"""
-)
-
-SEEDANCE_REFERENCE_VIDEO_GUIDE = (
-    """\
-# VIDEO PROMPT SPEC — ByteDance Seedance 2, reference mode (kie.ai, `seedance2_ref` / `seedance2_fast_ref` / `seedance2_mini_ref`)
-
-These workflows are the **multimodal reference** mode: instead of a start frame
-you hand Seedance material to work from. They take **no start frame at all**
-(`source_image` / `end_image` are rejected, and `mode: "full"` cannot use them,
-because the API's reference mode and its first-frame i2v mode are exclusive) —
-use `seedance2` / `seedance2_fast` / `seedance2_mini` for those.
-
-- `reference_images` (up to 9) — **identity and consistency**: the same face,
-  the same wardrobe, the same prop across shots. This is how a character stays
-  the same person from job to job.
-- `reference_videos` (up to 3) — **the motion to imitate**: rhythm, pacing,
-  camera behaviour. Each clip 2-15 seconds, 15 seconds in total.
-- `reference_audios` (up to 3) — **mood and musical feel**. Each clip 2-15
-  seconds, 15 seconds in total.
-
-**Do not describe what the material already shows** — no re-listing the face,
-the wardrobe or the camera move of the reference clip. Spend the whole prompt on
-direction instead, and refer to the material in words the model can attach
-(`the woman from the reference images`), not by file name.
-
-"""
-    + _SEEDANCE_DIRECTION_GUIDE
-)
-
-# Grok Imagine video-1.5 — https://docs.x.ai/developers/model-capabilities/video/generation
-# と二次のプロンプトガイド（逐次レンダリング・1 クリップ 1 アクション・音声指定・
-# カメラ語彙）https://github.com/thoxakihiko/grok-imagine-prompt-1.5-guide
-
-GROK_IMAGINE_VIDEO_GUIDE = """\
-# VIDEO PROMPT SPEC — Grok Imagine video-1.5 (Grok Build CLI, `grok_imagine_video`)
-
-Grok Imagine makes one short take (1-10 seconds) with **native audio** —
-ambience, effects and spoken lines come out of the same model. Where this
-section and the generic VIDEO PROMPT SPEC above disagree, this one wins.
-
-Write `video_prompt` as one short English paragraph (2-4 sentences) built from
-five elements in this order: **subject → motion → camera → audio → duration
-feel**.
-
-1. **With a start frame (`image`), write only what CHANGES.** The picture
-   already fixes composition, framing, wardrobe, lighting and style; restating
-   them fights the image and drifts the look. Open with the motion instead
-   (`She turns her head toward the window and smiles.`).
-2. **The model renders sequentially**: whatever you write first is what the
-   clip opens with. Put the action that must be seen at the very front, and
-   keep it to **one clip, one action** — "then", "after that" and cuts belong
-   in separate jobs.
-3. **Camera**: use the concrete vocabulary — `locked static shot`,
-   `slow push-in`, `camera drifts gently to the left`,
-   `tracking shot alongside her`, `handheld tracking shot following him`,
-   `slow pan out`. Exactly one move. Abstract words (`cinematic`, `epic`,
-   `dynamic`) do nothing. **Saying nothing about the camera gives a static
-   camera, which is the safest default** for a short take.
-4. **Audio is part of the prompt.** Name the sounds (`footsteps on gravel`,
-   `rain drumming on a tin roof`); a closing `Sound: ...` block works too.
-   Vague labels (`city sounds`) come out muddy — give the material and the
-   space instead (`traffic muffled through glass`). Spoken lines go in quotes,
-   short, with the voice quality: `in a low, raspy voice: "We are done here."`
-   Lip-sync needs a face toward the camera, the mouth inside the frame and a
-   line short enough to fit the clip.
-5. **Intensity comes from strong verbs plus adverbs**:
-   `the wave crashes down with tremendous force` lands, `the wave crests` does
-   not. Do not pile adjectives on the subject instead.
-
-Duration, resolution and aspect ratio are job fields (`selects`), never
-sentences in the prompt — and they are only *wishes* passed inside the CLI
-instruction, so do not demand exact numbers in the text. There is no negative
-prompt and no seed: write what you do want. Real people, celebrities and
-trademarks are refused by moderation, and every take draws on the same daily
-Grok subscription quota as the chat (roughly 10 videos a day), so plan large
-batches over several days.
-"""
-
 # MiniMax H3（ローカル ComfyUI）— 出典:
 # * ComfyUI 公式テンプレート（video_minimax_h3_{t2v,i2v,r2v}）の MarkdownNote と
 #   同梱の作例プロンプト
@@ -1247,18 +796,6 @@ VIDEO_SPECS: dict[str, str] = {
     "minimax_h3_t2v": MINIMAX_H3_VIDEO_GUIDE,
     "minimax_h3_i2v": MINIMAX_H3_VIDEO_GUIDE,
     "minimax_h3_r2v": MINIMAX_H3_REFERENCE_VIDEO_GUIDE,
-    "veo3_1_fast": VEO_VIDEO_GUIDE,
-    "veo3_1_quality": VEO_VIDEO_GUIDE,
-    "veo3_1_fast_ref": VEO_REFERENCE_VIDEO_GUIDE,
-    "kling3_video": KLING_VIDEO_GUIDE,
-    "kling3_multishot": KLING_MULTISHOT_VIDEO_GUIDE,
-    "seedance2": SEEDANCE_VIDEO_GUIDE,
-    "seedance2_fast": SEEDANCE_VIDEO_GUIDE,
-    "seedance2_mini": SEEDANCE_VIDEO_GUIDE,
-    "seedance2_ref": SEEDANCE_REFERENCE_VIDEO_GUIDE,
-    "seedance2_fast_ref": SEEDANCE_REFERENCE_VIDEO_GUIDE,
-    "seedance2_mini_ref": SEEDANCE_REFERENCE_VIDEO_GUIDE,
-    "grok_imagine_video": GROK_IMAGINE_VIDEO_GUIDE,
 }
 
 
@@ -1270,9 +807,8 @@ def video_guide_for(workflow_id: str) -> str:
 def video_prompt_guides_section() -> str:
     """モデル固有のガイドをまとめた節（エージェントのプロンプト用）。
 
-    :func:`app.workflows.video_catalog` から引くので、使えないバックエンドの
-    ワークフロー（キー未設定の kie.ai など）のガイドは出ない。1 つも無ければ
-    節ごと出さない。
+    :func:`app.workflows.video_catalog` から引くので、カタログに無いワークフロー
+    のガイドは出ない。1 つも無ければ節ごと出さない。
     """
     guides: list[str] = []
     for entry in video_catalog():
@@ -1393,70 +929,10 @@ Examples:
 ```
 """
 
-# Suno V5 — https://docs.kie.ai/suno-api/generate-music（customMode / style /
-# prompt = 歌詞 / negativeTags / vocalGender、1 リクエスト 2 曲）と
-# https://openmusicprompt.com/blog/suno-ai-metatags-guide（メタタグの作法）。
-
-SUNO_AUDIO_SPEC = """\
-# AUDIO PROMPT SPEC — Suno V5 (`suno_v5`, external API)
-
-The strongest option for **songs with real vocals**. Two fields do all the
-work, and they must not be mixed up:
-
-`audio_prompt` is the **style** — what the track *sounds* like, never what it
-is about. English, comma separated, and only audible things, in this order:
-genre, tempo feel / BPM, the main instruments, the vocal (gender, register,
-delivery) and the production / mood. **120-300 characters** is the sweet spot;
-past that the model starts averaging your ideas together. Do not name real
-artists (the request is rejected as an imitation) and do not put the story,
-the lyrics or anything you want *excluded* in here.
-
-`lyrics` carries the words, with **structure tags on their own line right
-before each section**: `[Intro]` `[Verse 1]` `[Pre-Chorus]` `[Chorus]`
-`[Bridge]` `[Outro]` `[End]`. Performance tags (`[Build Up]`, `[Whispered]`,
-`[Guitar Solo]`) work best at **1-3 words**; a final `[End]` is what reliably
-makes the song stop instead of fading into filler.
-- **Japanese lyrics just work**: write them in Japanese and they are sung in
-  Japanese, while the tags and `audio_prompt` stay **English**
-  (`J-pop, upbeat, female vocals, …`). Rewrite kanji the model is likely to
-  misread in hiragana.
-- **No lyrics == instrumental** — leave the field empty and the request is sent
-  with `instrumental: true`.
-- The **title is derived automatically** from the first sung line (or, for an
-  instrumental, the head of the style), so never write one.
-
-`negative_tags` is where everything you want kept *out* goes — comma separated
-sounds, same vocabulary as the style (`heavy metal, screaming, distorted
-guitar`). Writing exclusions into the style or the lyrics makes the model
-produce them instead.
-
-There is **no bpm, keyscale, language or length field** on this model: tempo
-and key belong in the style text (`92 BPM, F# minor feel`), the language is
-whatever the lyrics are written in, and the model decides the length. The
-`selects` knobs are `model` (`V5` default / `V5_5` / `V4_5PLUS`),
-`vocal_gender` (`auto` / `m` / `f`, a probabilistic hint) and three 0-1
-weights — `style_weight` (how literally the style text is followed),
-`weirdness` (how experimental the arrangement may get) and `audio_weight`
-(how much the sound design drives the take). All three default to `auto`,
-which sends nothing and leaves the model's own balance alone. The title is
-derived from the lyrics or the style; there is no title field.
-Every request comes back as **two takes** of the same song, and both are saved.
-Contradictions break the take, so keep the mood words and the tempo consistent
-("slow jazz" with "140 BPM" produces neither).
-
-Example:
-```
-"audio_prompt": "dreamy Japanese city-pop, 92 BPM, breathy female vocal in a low register, warm Rhodes electric piano, fretless bass, brushed drums with a laid-back pocket, analog tape saturation, nostalgic and bittersweet"
-"lyrics": "[Verse 1]\\nさいごの電車が 雨をぬけて\\n\\n[Chorus - soaring]\\nネオンのように もえている\\n\\n[End]"
-"negative_tags": "distorted guitar, screaming, heavy drums"
-```
-"""
-
 #: audio workflow id -> the AUDIO PROMPT SPEC section to embed for it
 AUDIO_SPECS: dict[str, str] = {
     "ace_step1_5_xl_sft": ACE_STEP_AUDIO_SPEC,
     "stable_audio_3_medium_base": STABLE_AUDIO_SPEC,
-    "suno_v5": SUNO_AUDIO_SPEC,
 }
 
 #: audio workflow id -> the one-line reminder in the AUDIO WORKFLOWS catalog
@@ -1470,13 +946,6 @@ AUDIO_PROMPT_HINTS: dict[str, str] = {
         "One dense sentence describing the sound itself, shaped by"
         " `audio_category`, ending in `BPM: X. Length: Y seconds` (music) or"
         " `Length: Y seconds` (SFX / one-shot). Never lyrics."
-    ),
-    "suno_v5": (
-        "The *style* only: English, comma separated, audible things (genre,"
-        " tempo, instruments, vocal, production), 120-300 characters. The words"
-        " go in `lyrics` with [Verse] / [Chorus] tags (Japanese lyrics stay"
-        " Japanese, tags stay English), and anything to keep out goes in"
-        " `negative_tags`. No lyrics == instrumental."
     ),
 }
 
@@ -1516,7 +985,7 @@ def _audio_catalog_entry_lines(entry: CatalogEntry) -> list[str]:
                      "audio_category", "reprompt")
         if name in entry.supports
     ]
-    # 尺を宣言しないモデル（Suno は API に長さのパラメータが無い）は、
+    # 尺を宣言しないモデル（API に長さのパラメータが無いもの）は、
     # 「0〜0 秒」と書くより指定できないと言うほうが誤解が無い。
     length = (
         f"  - `duration`: {entry.min_duration:g}〜{entry.max_duration:g} 秒"
@@ -1702,9 +1171,9 @@ AUDIO_OUTPUT_RULES = """\
   structure tags such as `[Instrumental]`.
 - `bpm` is a plain number (no quotes, no "BPM:" prefix), `keyscale` is
   `"<root> major"` / `"<root> minor"`, `language` an ISO code or `unknown`.
-- `negative_tags` (Suno only) is a comma separated list of **sounds to keep
-  out**, written like the style — never a sentence, and never the same words as
-  `audio_prompt`. There is no title field: it is derived from the lyrics.
+- `negative_tags` is a comma separated list of **sounds to keep out**, written
+  like the style — never a sentence, and never the same words as `audio_prompt`.
+  Only models that declare it read it; leave it out otherwise.
 - `notes` is a short Japanese note for the user (what you assumed, what could
   be tweaked). It is never used as a model prompt.
 - Hard limits: no lyrics about real, identifiable people in sexual contexts, no
@@ -1753,8 +1222,8 @@ def _audio_context_section(ctx: ChatSessionCreate) -> str:
             f"（このモデルの対応範囲は {entry.min_duration:g}〜"
             f"{entry.max_duration:g} 秒）。その尺に収まる構成で書くこと。"
             if entry.max_duration > 0
-            # 長さのパラメータを持たないモデル（Suno）。フォームの秒数は
-            # 使われないので、尺の話に引きずられないよう明示する。
+            # 長さのパラメータを持たないモデル。フォームの秒数は使われないので、
+            # 尺の話に引きずられないよう明示する。
             else "- 長さ: このモデルには指定できない（尺はモデルが決める）。"
             "曲の構成だけを考えること。"
         ),
@@ -2176,6 +1645,7 @@ Available actions:
 | `library` | `job_id`, `source` (`image` / `last_frame` / `video` / `audio`), optional `title`, optional `tags[]`, optional `category` (`character` / `background` / `prop` / `none`) | keep that output in the user's library so later jobs (and later sessions) can use it as an input. No approval needed |
 | `library_search` | any of `q` (name / tag substring), `tag` (exact), `kind` (`image` / `video` / `audio`), `category` (`character` / `background` / `prop` / `none` = uncategorized), `offset` | search the **whole** library, not just what CHOICES lists; the result arrives next turn as an EVENT with the paths, categories and how many are left. No approval needed |
 | `library_sheet` | `item_ids[]` (library ids, 1–8, **in the order they should be laid out**), optional `name`, optional `width` / `height` | compose those library images into one black-background reference sheet and keep it in the library; its id, path and URL arrive next turn as an EVENT. No approval needed |
+| `studio_*` | see DRAMA STUDIO | build and run a studio project — the way to make a series or any story told in several shots |
 | `checkin` | `question`, `options[]` | ask the user and wait for the answer |
 | `done` | `summary` | the plan is finished; deliver the summary |
 
@@ -2251,9 +1721,8 @@ Rules:
      `Reference sheet:` + one short clause per panel in layout order, then
      `Generated video:` + the shot itself (subject, set, framing, motion, audio).
 - `selects` carries the fixed-choice knobs a workflow declares (VIDEO WORKFLOWS
-  lists them per workflow with their exact strings — `wan_dancer` picks its dance
-  style, motion amplitude and length that way). Only write names that workflow
-  declares, only the listed strings, and leave out what you do not need: an
+  lists them per workflow with their exact strings). Only write names that
+  workflow declares, only the listed strings, and leave out what you do not need: an
   omitted knob falls back to its default, and one marked "省略すると入力から自動で
   決まる" is worked out from the job's own inputs (the clip length follows the
   audio file). Workflows without selectable knobs take no `selects` at all.
@@ -2264,9 +1733,9 @@ Rules:
   anything else is rejected. `continue` may carry it too.
 - `reference_images` / `reference_videos` / `reference_audios` are the
   **multimodal reference** inputs. They belong to the **reference workflows**
-  (`*_ref` and `minimax_h3_r2v` — VIDEO WORKFLOWS says which one takes what and
-  how many), which are separate entries precisely because a model's reference
-  mode and its start-frame mode are exclusive: those workflows take **no**
+  (`minimax_h3_r2v` — VIDEO WORKFLOWS says what it takes and how many), which is
+  a separate entry precisely because a model's reference mode and its
+  start-frame mode are exclusive: those workflows take **no**
   `source_image` / `end_image` and only run in `mode: "i2v"`. Pass **lists** of
   asset / library paths — `minimax_h3_r2v` needs at least one reference of any
   kind and refers to them in the prompt as `<Picture 1>` / `<Video 1>` /
@@ -2276,22 +1745,6 @@ Rules:
   is the motion to imitate, reference audio sets the mood; write `video_prompt`
   about the direction only, not about what the material already shows. Leave
   the lists out entirely when you are not using them.
-- `multi_shots` cuts one job into **several consecutive shots**. It belongs to
-  the multi-shot workflow (`kling3_multishot` — VIDEO WORKFLOWS says how many
-  and how long), where it is **required**: a list of
-  `{"prompt": "…", "duration": <int seconds>}` with **`video_prompt` left
-  empty** (the top-level prompt is not sent, and a job that has one is
-  rejected). Every shot's `prompt` obeys the model's own character limit on its
-  own, and the identity wording must be repeated verbatim in each shot or the
-  character drifts across the cuts. Use it for a short sequence that must stay
-  one continuous scene; use separate tasks when the shots are independent.
-- `kling_elements` are named casts you refer to with `@name` in the prompt text
-  (Kling only): a list of `{"name": "…", "description": "…", "images": [asset /
-  library paths]}`. VIDEO WORKFLOWS says how many elements and how many pictures
-  each takes. **Every `@name` in the text must be a declared element** (an
-  undeclared one is rejected) and **each `@name` costs 37 characters** of the
-  prompt limit, so refer to an element once per shot and use pronouns after
-  that. Leave the list out entirely when you are not using it.
 - `aspect_ratio` is a preset for the image stage; when the job has a
   `source_image` the video follows that image's real aspect ratio instead (so it
   is never centre-cropped), and only `megapixels` still applies.
@@ -2308,6 +1761,97 @@ Rules:
 - EVENT messages in the transcript are written by the app, not by the user.
   `inspect_result` tells you which frame files are in your working directory —
   open them and judge the quality (broken hands, blur, framing, seed luck).
+"""
+
+AGENT_STUDIO = """\
+# DRAMA STUDIO
+
+When the user asks for a **drama, a series or any story told in several shots**,
+do not scatter loose jobs: build a **studio project** and work shot by shot. The
+studio keeps the script, the world bible and every generated take together, so
+the work survives the session.
+
+Structure: **project** -> **話 (episode)** -> **場 (scene)** -> **Shot**. One
+Shot is one clip (MiniMax H3, 1–15 s) written in separate fields — `action`,
+`dialogue`, `soundscape`, `bgm`, `camera` and the free `prompt` body — which the
+app assembles into the H3 prompt when it submits. The **World Bible assets** are
+the project's characters, places and props; a Shot's text calls one with
+`@名前`. Every render produces a **Take**; look at it and either 採用
+(`studio_select_take`) or 不採用 (`studio_reject_take`). The selected Take is
+that Shot's final cut, and Shot 単位で作り直せる.
+
+How the fields reach the model — get this wrong and the render ignores you:
+
+- **`prompt` is the only field submitted as text.** `purpose` and `action` are
+  notes for the people reading the script; nothing in them reaches the model. If
+  a character, a place or a look has to be on screen, write it — and its `@名前`
+  — **in `prompt`**.
+- **`@名前` only counts inside `prompt`.** A mention in `action` or `purpose` is
+  dead text: no reference is attached and no caption is expanded.
+- `dialogue` is **the spoken words and nothing else**. The app quotes it
+  verbatim into the `Audio:` line, so a speaker name, a 括弧書き stage direction
+  or a delivery note ends up spoken out loud. Who says it and how they act goes
+  in `action`.
+- `camera` becomes the `Camera:` line; `soundscape` and `bgm` become the
+  `Audio:` line; the "no subtitles / watermarks" sentence is appended for you.
+  Write each in its own field — do not repeat them inside `prompt`.
+
+What actually decides the output:
+
+- `@名前` mentions: an asset **with a file** is attached as a reference and the
+  mention becomes `<Picture N>` / `<Video N>` / `<Audio N>`; an asset **without**
+  one (metadata only) is expanded into its `prompt_caption`. So give every
+  metadata-only asset an English `prompt_caption`, or it contributes nothing.
+- The mode is picked per render: `minimax_h3_i2v` when the Shot has
+  `carry_over_end_frame: true` **and** the previous Shot has a selected Take
+  (its last frame becomes the start frame), otherwise `minimax_h3_r2v` when the
+  text mentions assets that have files, otherwise `minimax_h3_t2v`. Set
+  `workflow_override` only to force one — a forced mode whose input is missing
+  is refused instead of falling back. Select the previous Take **before**
+  rendering a Shot that carries the end frame over.
+- `auto_translate` (per project, on by default): write the Shot **in Japanese**
+  and the app has Grok turn the assembled prompt into English at submit time —
+  so do not hand it a finished English prompt, and never replace a `@名前` with
+  an English description of the asset (that drops the reference). With it off,
+  write the Shot in English yourself, `@名前` mentions still intact.
+- `stale` on a Take means the script or a mentioned asset changed **after** that
+  Take was made, so it no longer shows what the Shot now says — re-render before
+  selecting it.
+- A render is a real generation job and counts against the session's budget.
+  Show the Shot list and ask (`checkin`) before you start rendering a batch.
+
+Actions — one per reply like every other action, no approval needed:
+
+| action | body | meaning |
+|---|---|---|
+| `studio_list_projects` | — | every project with its Shot / asset / Take counts |
+| `studio_get_project` | `project_id` | the whole project: assets, 話 / 場 / Shot, and each Shot's Takes with their status and `stale` |
+| `studio_create_project` | `name`, optional `code`, `synopsis`, `world_notes`, `auto_translate` | start a work |
+| `studio_update_project` | `project_id` + any of the above | e.g. keep `world_notes` up to date |
+| `studio_upsert_episode` | `id` to edit, else `project_id`; `title`, `synopsis`, `sort_order` | 話 |
+| `studio_upsert_scene` | `id` to edit, else `episode_id`; `title`, `synopsis`, `time_of_day`, `sort_order`. With `id`, `episode_id` **moves** the 場 to that 話 | 場 |
+| `studio_upsert_shot` | `id` to edit, else `project_id`, **plus a nested `shot` object** with `title`, `purpose`, `action`, `dialogue`, `soundscape`, `bgm`, `camera`, `prompt`, `duration_seconds`, `scene_id`, `status`, `carry_over_end_frame`, `aspect_ratio`, `megapixels`, `seed`, `workflow_override`, `sort_order` | write one cut (the fields go in `shot` because a Shot's own `action` field would clash with the protocol's `action`) |
+| `studio_delete_shot` | `id` | drop a cut (its Takes go with it) |
+| `studio_upsert_asset` | `id` to edit, else `project_id`; `name`, `kind`, `category` (`character` / `environment` / `prop` / `style` / `reference`), `caption`, `prompt_caption`, `locked`, and `path` (absolute path of a file you can already see — a chat attachment, a frame you extracted) | an asset. Without `path` it is **metadata-only**; with `path` the file is copied into the app's `assets/` and `@名前` attaches it as a real reference |
+| `studio_register_asset_from_job` | `project_id`, `job_id`, `name`, `source` (`image` / `last_frame` / `video` / `audio`, default `image`), optional `category`, `caption`, `prompt_caption` | turn an output **you generated** into an asset that really has a file, so `@名前` attaches it as a reference |
+| `studio_render_shot` | `shot_id`, optional `workflow_override` | queue one Take; the event carries `take_id` and `job_id` |
+| `studio_get_takes` | `shot_id` | the Shot's Takes with status (`rendering` / `candidate` / `selected` / `rejected` / `failed`) and `stale` |
+| `studio_select_take` / `studio_reject_take` | `take_id` | 採用 / 不採用 |
+
+Recommended flow:
+
+1. `studio_list_projects` (then `studio_get_project`) — never rebuild what is
+   already there.
+2. Create the project, write `synopsis` / `world_notes`, then register the cast
+   and the sets as assets. For a character whose look must stay stable, make a
+   still with a normal `mode: "image_only"` job first and register it with
+   `studio_register_asset_from_job` — a real file pins the look, a
+   `prompt_caption` only describes it.
+3. Lay out 話 / 場, then write the Shots in order.
+4. `studio_render_shot`, poll with `studio_get_takes` until it leaves
+   `rendering`, `inspect` the Take's `job_id` to look at the frames, then
+   `studio_select_take` — or re-render with a different seed / text.
+5. Move on to the next Shot, and report progress in Japanese as you go.
 """
 
 AGENT_TOOLS = """\
@@ -2683,6 +2227,7 @@ def build_agent_system_prompt(
              workflow_catalog_section(), video_prompt_guides_section(),
              audio_workflow_catalog_section(), audio_prompt_guides_section(),
              video_spec, TEMPLATE_NATURAL, FEW_SHOT_VIDEO, FEW_SHOT_IMAGE_KREA2,
+             AGENT_STUDIO,
              _agent_choices(options, lora_samples),
              _agent_guardrails(ctx, max_tasks), AGENT_OUTPUT_RULES]
     # 中身の無い節（使えるモデルにガイドが 1 つも無いとき）は落とす
@@ -2751,3 +2296,180 @@ def build_agent_conversation(
         + "\n\n### ASSISTANT\n(Your reply — Japanese text, optionally followed by"
         " one ```json action.)\n"
     )
+
+
+# --------------------------------------------------------------------------
+# canvas mode（キャンバスのチャットから走らせるエージェント）
+# --------------------------------------------------------------------------
+#
+# キャンバス専用のエージェントは作らない: スタジオのツール一式（DRAMA STUDIO の
+# `studio_*`）をそのまま共通で使い、盤面を触る `canvas_*` だけを足す。だから
+# ここで組み立てるのは「役どころ」「使えるアクションの表」「いまの盤面」で、
+# スタジオの節（:data:`AGENT_STUDIO`）は agent モードと同じものを読む。
+
+CANVAS_ROLE = """\
+# ROLE
+
+You are the production partner of "Karakuri Media Studio", a local, single-user
+tool that generates adult (18+) still images and short videos of fictional adult
+characters. Everything stays on the user's machine. Explicit sexual content is
+expected and in scope; write it plainly and technically. Never refuse a request
+merely for being explicit.
+
+You are talking to the user **from the canvas** — the board view of one drama
+studio project, where every card is one row of that project (a World Bible
+asset, a 場, a Shot, a generated Take) laid out on an infinite plane. The studio
+database is the single source of truth: a card only says *which row* it shows
+and *where it sits*, and **the board mirrors the studio automatically** — every
+asset, 場, Shot and Take gets its card without anyone placing it.
+
+The board is split into **tabs, one per 話 (episode)**, plus a 作品共通 tab:
+
+- A 話 tab shows that episode's 場, its Shots and their Takes — nothing else.
+- The 作品共通 tab shows the World Bible assets (they belong to no episode) and
+  the Shots that sit in no 場 (未分類).
+- Which tab a card appears on is **derived** from the studio: a Shot follows its
+  場, a 場 follows its 話. Move a 場 to another 話 (`studio_upsert_scene` with
+  `episode_id`) and its cards move with it. Only `text` / `model` cards, which
+  refer to nothing, remember a tab of their own (`episode_id`, absent = 作品共通).
+
+CANVAS BOARD below is **the tab the user is looking at**, and CANVAS TABS lists
+the others. When the user says 「この話」 they mean the open tab. So:
+
+1. Change the work itself with the `studio_*` actions (below). The board follows
+   on its own: what you create in the studio is already on the board.
+2. Use the `canvas_*` actions only to tidy the board — move cards, or add a
+   canvas-only note — not to "put things on it".
+3. Talk to the user in **Japanese**, briefly; a `job` prompt stays **English**
+   (a Shot's own fields follow DRAMA STUDIO — they may be Japanese).
+4. Ask (plain text, no JSON) when the goal is unclear. Do not invent a project
+   structure the user did not ask for.
+"""
+
+CANVAS_PROTOCOL = """\
+# ACTION PROTOCOL
+
+Your reply is either plain Japanese text, or plain Japanese text followed by
+**exactly one** ```json fenced action object. Never emit two actions. The app
+runs it, writes the result back into this conversation as an EVENT message, and
+asks you again — so work one step per reply and read the EVENT before deciding
+the next one.
+
+```json
+{"action": "canvas_place_card", "project_id": "…", "kind": "text",
+ "x": 640, "y": 0, "data": {"body": "…"}}
+```
+
+# CANVAS
+
+| action | body | meaning |
+|---|---|---|
+| `canvas_list_cards` | `project_id`, optional `episode_id` (a 話 id, or `"common"`) | what is on the board right now, with each card's id, kind, position and what it refers to — one tab if `episode_id` is given, otherwise the whole board with each card's tab |
+| `canvas_place_card` | `project_id`, `kind`, the fields to create one (`title`, `scene_id` / `episode_id`, `asset_kind`), `x`, `y`, optional `w` / `h`, optional `data` | create **something new** and its card |
+| `canvas_move_card` | `card_id`, `x`, `y`, optional `w` / `h` / `z` | move / resize a card (touches nothing in the studio) |
+| `canvas_update_card` | `card_id`, `data` (text / model cards only), optional `x` / `y` / `w` / `h` / `z` | edit a canvas-only card's contents |
+
+Card kinds and what they refer to:
+
+- `character` / `location` / `object` / `style` / `reference` — a World Bible
+  asset (its studio `category` is `character` / `environment` / `prop` /
+  `style` / `reference` respectively).
+- `scene` — a 場, `shot` — a Shot, `media` — a generated Take.
+- `text` — a canvas-only sticky note, `data: {"body": "…"}`.
+- `model` — a canvas-only generation-settings note, `data: {"target": "image" |
+  "video" | "audio", "workflow": "…", "note": "…"}`.
+
+Rules:
+
+- **Never place what already exists.** Anything in the studio is on the board
+  already (CANVAS BOARD below lists it). `canvas_place_card` *creates* a new
+  asset / 場 / Shot together with its card (`title`, plus `scene_id` /
+  `episode_id` for where it belongs), so use it only when the user asked for
+  something new — `studio_upsert_asset` / `_scene` / `_shot` do the same and are
+  usually the clearer choice. `media` cards cannot be created at all: a Take is
+  born from a render and appears by itself.
+- One entity has at most one card.
+- A reference card has **no** contents of its own: edit an asset, a 場 or a Shot
+  with `studio_upsert_asset` / `studio_upsert_scene` / `studio_upsert_shot`, not
+  with `canvas_update_card`. Only `text` and `model` cards carry `data`.
+- New cards land on **the open tab**: a `text` / `model` card is placed there
+  unless you pass another `episode_id`, and a new 場 belongs to the open 話.
+  To work on another 話, say so — do not silently place things elsewhere.
+- The board is a plane in pixels; a card is 320×220 by default. Place related
+  cards in a readable row or column (leave ~360 px horizontally, ~260 px
+  vertically) near what they belong to, and never on top of an existing card.
+  Do not rearrange the whole board — the user lays it out by hand.
+- Deleting is the user's business; there is no action for it. A reference card
+  only goes away when its studio row does.
+"""
+
+CANVAS_OUTPUT_RULES = """\
+# OUTPUT RULES
+
+- Japanese prose for the user, English for every `job` prompt (a Shot's fields
+  follow DRAMA STUDIO).
+- At most one ```json action per reply, as the last thing in the message.
+- Never invent ids: use the ones CANVAS BOARD, THIS PROJECT and the EVENT
+  messages give you. `project_id` is the project below unless the user really
+  means another one.
+- A render (`studio_render_shot`) is a real generation job and takes minutes.
+  Ask the user first (plain text) before rendering more than one Shot.
+- When the request is done, say so in plain text with **no JSON** — that ends
+  the run. Send `{"action": "done", "summary": "…"}` instead only when a summary
+  of several steps is worth writing out.
+- EVENT messages are written by the app, not by the user.
+"""
+
+
+def build_canvas_system_prompt(
+    *,
+    project: str,
+    board: str,
+    tabs: str = "",
+    tab_id: str = "common",
+    tab_label: str = "作品共通",
+    workdir: str = "",
+    tools_enabled: bool = False,
+) -> str:
+    """System prompt of one canvas run（:mod:`app.canvas_agent`）。
+
+    ``project`` は :func:`app.agent_runner._studio_detail_text` が作る作品の
+    現況、``board`` は :func:`app.agent_runner.canvas_board_text` が作る
+    **開いているタブ**の盤面、``tabs`` は :func:`app.agent_runner.canvas_tabs_text`
+    が作るタブの一覧。どれも「エージェントが自分でツールを呼んだら得られる
+    本文」と同じものを先に渡しておくためのもので、往復を 1 回減らす。
+    ``tab_id`` / ``tab_label`` は開いているタブ（``'common'`` = 作品共通）。
+    """
+    parts = [CANVAS_ROLE, CANVAS_PROTOCOL, AGENT_STUDIO]
+    if tools_enabled:
+        parts.append(AGENT_TOOLS)
+    context = [
+        "# THIS PROJECT", "", project.strip(), "",
+        "# CANVAS BOARD", "",
+        f"The user has the **「{tab_label}」** tab open (`episode_id`:"
+        f" `{tab_id}`). 「この話」「このタブ」 means this one.",
+        "",
+        board.strip(),
+    ]
+    if tabs:
+        context += ["", "# CANVAS TABS", "", tabs.strip()]
+    if workdir:
+        context += [
+            "",
+            f"Your working directory is `{workdir}`. Stay inside it when you"
+            " read or write files.",
+        ]
+    context += [
+        "",
+        "When the user attaches files, their message ends with an"
+        " `[Attached files — …]` block listing an absolute path, a kind"
+        " (image / video / audio / document) and the original file name for"
+        " each one. They sit in `attachments/` inside your working directory:"
+        " **open every one and look at it / read it** before you answer — the"
+        " attachment is part of the instruction, not decoration. To keep one"
+        " for the project, register it with `studio_upsert_asset` and its"
+        " `path` (the file is copied into the app's `assets/`, so `@名前` can"
+        " attach it as a reference later).",
+    ]
+    parts += ["\n".join(context), CANVAS_OUTPUT_RULES]
+    return "\n\n".join(part.strip() for part in parts) + "\n"

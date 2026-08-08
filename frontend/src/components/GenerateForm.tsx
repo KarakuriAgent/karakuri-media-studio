@@ -5,17 +5,17 @@ import {
   COMFY_TARGETS,
   COMFY_TARGET_LABELS,
   DEFAULT_NEGATIVE_PROMPT,
-  EASY_CACHE,
+  MAX_STEPS,
   MODE_HINTS,
   MODE_LABELS,
   NEGATIVE_PRESET_LABELS,
-  SAGE_ATTENTION,
   hiddenFields,
   imageWorkflowNeedsSource,
   elementsLimits,
   joinTriggers,
   lorasForTarget,
   matchesLoraQuery,
+  megapixelsFor,
   multiShotLimits,
   needsReferenceSheet,
   newElement,
@@ -23,7 +23,6 @@ import {
   promptChars,
   referenceFields,
   sheetSize,
-  supportsSpeedup,
   toSelected,
   toggleReference,
   workflowsForMode,
@@ -77,12 +76,6 @@ interface Props {
   comfyTarget: ComfyTarget | null
   /** 接続先を変える（App が `PUT /api/settings` で保存する） */
   onComfyTarget: (target: ComfyTarget) => void
-  /**
-   * 高速化トグルの切り替え（SPEC §3.1）。`name` は論理名（`sage_attention` /
-   * `easy_cache`）で、App がフォームの値と `PUT /api/settings` の両方を更新する。
-   * ジョブ単位ではなく**設定**なので、次に開いたときも同じ状態で始まる。
-   */
-  onSpeedup?: (name: string, value: boolean) => void
   /** NSFW フィルタ前の全ジョブ（履歴モーダルが自前でフィルタする） */
   jobs: Job[]
   /** ヘッダーの NSFW 表示トグル（履歴モーダルの初期値） */
@@ -568,7 +561,6 @@ export default function GenerateForm({
   fieldErrors,
   comfyTarget,
   onComfyTarget,
-  onSpeedup,
   jobs,
   showNsfw,
   libraryVersion,
@@ -607,13 +599,13 @@ export default function GenerateForm({
   // 使うモードに戻せば入力はそのまま復元される）。
   const hidden = hiddenFields(form.mode, workflow, imageWorkflow)
   const imageEdits = form.mode !== 'i2v' && imageWorkflowNeedsSource(imageWorkflow)
-  // プロンプトを選択項目から組み立てるワークフロー（wan_dancer）では任意入力。
+  // プロンプトを選択項目から組み立てるワークフローでは任意入力。
   const promptOptional = workflow?.prompt_required === false
   // 編集系の画像ワークフローでは入力画像そのもの、それ以外は動画の開始フレーム。
   const startImageLabel = imageEdits
     ? (imageWorkflow?.image_label ?? '編集元画像')
     : (workflow?.image_label ?? '開始フレーム')
-  // マルチモーダル参照（Seedance 2 系）。宣言の無いワークフローでは空なので、
+  // マルチモーダル参照。宣言の無いワークフローでは空なので、
   // 参照素材のセクションそのものが出ない。
   const references = hidden.references ? [] : referenceFields(workflow)
   const addReference = (item: ReferenceField, url: string) => {
@@ -626,7 +618,7 @@ export default function GenerateForm({
       [item.field]: toggleReference(form[item.field], url),
     } as Partial<FormState>)
   }
-  // ショット割り / Elements（Kling 3.0、SPEC §3.1）。宣言の無いワークフローや
+  // ショット割り / Elements（SPEC §3.1）。宣言の無いワークフローや
   // 動画ステージを走らせない mode では null なので、セクションごと出ない。
   const shotLimits = hidden.multiShots ? null : multiShotLimits(workflow)
   const elementLimits = hidden.elements ? null : elementsLimits(workflow)
@@ -655,16 +647,6 @@ export default function GenerateForm({
     }
     patchElement(index, { images: toggleReference(images, url) })
   }
-  // 高速化トグル（SPEC §3.1）。宣言のある動画ワークフローを動画ステージで
-  // 走らせるときだけ出す（画像だけ・音声のモードでは効かないので出さない）。
-  const runsVideo = form.mode === 'full' || form.mode === 'i2v'
-  const speedups = runsVideo ? workflow : null
-  const sageAttention = supportsSpeedup(speedups, SAGE_ATTENTION)
-  const easyCache = supportsSpeedup(speedups, EASY_CACHE)
-  // いまの接続先で動かないトグルは、欄は出したままグレーアウトする（なぜ使えない
-  // のかが分かるように。判定はサーバー側の `unsupported_speedups`）。
-  const blockedSpeedups = options?.unsupported_speedups ?? []
-  const sageBlocked = blockedSpeedups.includes(SAGE_ATTENTION)
   // 画像欄がリファレンスシート（IC-LoRA）なら、ライブラリの素材から合成できる。
   // 画像を編集するワークフローのときの欄は別物（編集元画像）なので出さない。
   const sheetInput =
@@ -686,6 +668,18 @@ export default function GenerateForm({
     if (!usable.some((item) => item.id === form.videoWorkflow)) {
       patch({ videoWorkflow: usable[0].id })
     }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.mode, form.videoWorkflow, videoWorkflows])
+
+  // モデルによって想定している画角が違うので、動画ステージが走るモードで
+  // 動画ワークフローを切り替えたら「メガピクセル」もそのモデルの既定に戻す
+  // （MiniMax H3 は 0.4MP 前提。1.0MP のままだと VRAM が足りない、SPEC §3.1）。
+  // 切り替えたあとに手で変えた値はそのまま（次に切り替えるまで維持される）。
+  useEffect(() => {
+    if (form.mode !== 'full' && form.mode !== 'i2v') return
+    if (videoWorkflows.length === 0) return
+    const next = megapixelsFor(workflow)
+    if (next !== form.megapixels) patch({ megapixels: next })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form.mode, form.videoWorkflow, videoWorkflows])
 
@@ -903,7 +897,7 @@ export default function GenerateForm({
                   画像＋動画では開始フレームを受け取れるワークフローのみ選べます。
                 </p>
               )}
-              {/* ワークフローが宣言した選択式フィールド（wan_dancer の踊りの
+              {/* ワークフローが宣言した選択式フィールド（踊りの
                   種類・動きの大きさ・尺。§3.1） */}
               <WorkflowSelects workflow={workflow} form={form} patch={patch} />
               <ModelPicker
@@ -936,7 +930,7 @@ export default function GenerateForm({
               <p className="mt-1 text-[11px] text-slate-500">
                 モデルごとにプロンプトの書き方が異なります（Grokで生成 は選択中のモデルの流儀で書きます）。
               </p>
-              {/* 画像ワークフローが宣言した選択式フィールド（gpt-image-2 の
+              {/* 画像ワークフローが宣言した選択式フィールド（
                   大きさ・品質。§3.1 / §5.4） */}
               <WorkflowSelects
                 workflow={imageWorkflow}
@@ -1705,6 +1699,30 @@ export default function GenerateForm({
                 </p>
               </>
             )}
+            {!hidden.steps && (
+              <div className="mt-3">
+                <label className="label" htmlFor="generate-steps">
+                  ステップ数
+                </label>
+                <input
+                  id="generate-steps"
+                  className="field"
+                  type="number"
+                  min="0"
+                  max={MAX_STEPS}
+                  step="1"
+                  placeholder="未指定＝既定"
+                  value={form.steps || ''}
+                  onChange={(event) =>
+                    patch({ steps: Number(event.target.value) || 0 })
+                  }
+                />
+                <p className="mt-1 text-[11px] text-slate-500">
+                  未指定でワークフロー既定。増やすほど時間がかかり、蒸留モデル
+                  （turbo 系）は既定より増やしても良くなりません。
+                </p>
+              </div>
+            )}
             <div className="mt-3 flex items-center gap-2">
               <label className="flex items-center gap-2 text-xs text-slate-300">
                 <input
@@ -1724,50 +1742,6 @@ export default function GenerateForm({
                 onChange={(event) => patch({ seed: Number(event.target.value) || 0 })}
               />
             </div>
-            {sageAttention && (
-              <label
-                className={`mt-3 flex items-start gap-2 text-xs ${
-                  sageBlocked ? 'text-slate-500' : 'text-slate-300'
-                }`}
-              >
-                <input
-                  type="checkbox"
-                  className="mt-0.5 accent-accent-500"
-                  // 使えない接続先では操作させず、チェックも外して見せる（設定の
-                  // 値そのものは触らないので、ローカルに戻せばそのまま復活する）
-                  disabled={sageBlocked}
-                  checked={!sageBlocked && form.sageAttention}
-                  onChange={(event) =>
-                    onSpeedup?.(SAGE_ATTENTION, event.target.checked)
-                  }
-                />
-                <span>
-                  Sage Attention 高速化
-                  <span className="mt-0.5 block text-[11px] text-slate-500">
-                    {sageBlocked
-                      ? 'Comfy Cloud は未対応のため無効化されています（sageattention パッケージ未導入）。ローカル ComfyUI 接続時に利用できます。'
-                      : '生成速度が約2倍になります（要 SageAttention + KJNodes インストール）。品質がわずかに変わる場合があります。'}
-                  </span>
-                </span>
-              </label>
-            )}
-            {easyCache && (
-              <label className="mt-2 flex items-start gap-2 text-xs text-slate-300">
-                <input
-                  type="checkbox"
-                  className="mt-0.5 accent-accent-500"
-                  checked={form.easyCache}
-                  onChange={(event) => onSpeedup?.(EASY_CACHE, event.target.checked)}
-                />
-                <span>
-                  EasyCache 高速化
-                  <span className="mt-0.5 block text-[11px] text-slate-500">
-                    ステップ間の計算を再利用してさらに高速化します。短縮幅は
-                    プロンプト依存で、動きの激しい映像では品質が落ちる場合があります。
-                  </span>
-                </span>
-              </label>
-            )}
           </Section>
         </>
       )}

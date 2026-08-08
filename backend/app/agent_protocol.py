@@ -19,9 +19,9 @@ format-reminder retry (AGENT-MODE §3.1).
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, get_args
 
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from . import grok
 from . import library as library_service
@@ -31,8 +31,22 @@ from .jobs import JobValidationError, resolve_asset_path
 from .models import (
     AgentAction,
     AgentTask,
+    CanvasCardCreate,
+    CanvasCardPosition,
+    CanvasCardUpdate,
     JobContinue,
     JobCreate,
+    StudioAssetCreate,
+    StudioAssetUpdate,
+    StudioEpisodeCreate,
+    StudioEpisodeUpdate,
+    StudioProjectCreate,
+    StudioProjectUpdate,
+    StudioSceneCreate,
+    StudioSceneUpdate,
+    StudioShotCreate,
+    StudioShotUpdate,
+    StudioWorkflowOverride,
     audio_lora_problem,
     audio_workflow_problem,
     image_workflow_problem,
@@ -66,6 +80,36 @@ from .workflows import (
     video_specs,
 )
 
+#: ドラマスタジオ（:mod:`app.studio`）を操作するアクション。生成を伴うのは
+#: ``studio_render_shot`` だけで、他は目録（プロジェクト・脚本・素材・Take）の
+#: 読み書きなので即時に処理する。
+STUDIO_ACTIONS = (
+    "studio_list_projects",
+    "studio_get_project",
+    "studio_create_project",
+    "studio_update_project",
+    "studio_upsert_episode",
+    "studio_upsert_scene",
+    "studio_upsert_shot",
+    "studio_delete_shot",
+    "studio_upsert_asset",
+    "studio_register_asset_from_job",
+    "studio_render_shot",
+    "studio_get_takes",
+    "studio_select_take",
+    "studio_reject_take",
+)
+
+#: キャンバス（:mod:`app.canvas`）の盤面操作。カードは「スタジオのどの行か」と
+#: 「どこに置いてあるか」しか持たないので、ここも置く・動かす・数えるだけで、
+#: 中身を直すのは studio_* の仕事（text / model カードだけ例外で ``data`` を持つ）。
+CANVAS_ACTIONS = (
+    "canvas_list_cards",
+    "canvas_place_card",
+    "canvas_move_card",
+    "canvas_update_card",
+)
+
 ACTION_NAMES = (
     "plan",
     "run_task",
@@ -79,6 +123,8 @@ ACTION_NAMES = (
     "library_sheet",
     "checkin",
     "done",
+    *STUDIO_ACTIONS,
+    *CANVAS_ACTIONS,
 )
 
 # Fields a continue / rerun action may override (既存 API と同じ差分項目)
@@ -162,8 +208,8 @@ _NON_AUDIO_FIELDS = (
 
 
 #: ACE-Step 1.5 だけが読むつまみ -> 読まないモデルに渡されたときの案内。
-#: Suno のように API 側にそのパラメータが無いモデルでは、値を渡しても効かない
-#: ので拒否して書き場所（スタイル文・歌詞そのもの）へ誘導する。
+#: そのパラメータを持たないモデルでは値を渡しても効かないので、拒否して
+#: 書き場所（スタイル文・歌詞そのもの）へ誘導する。
 _ACE_ONLY_FIELDS: dict[str, str] = {
     "bpm": "テンポは `audio_prompt` のスタイル文に書いてください（例 `120 BPM`）",
     "keyscale": "キーは `audio_prompt` のスタイル文に書いてください（例 `F# minor`）",
@@ -227,8 +273,8 @@ def _audio_workflow_detail(raw: dict[str, Any]) -> str | None:
             f"audio_workflow `{spec.id}` に `audio_category` はありません"
             f"（{', '.join(AUDIO_CATEGORIES)} のカテゴリは Stable Audio 専用です）"
         )
-    # ACE-Step にしかないつまみ。読まないモデル（Suno にはテンポもキーも歌詞の
-    # 言語もパラメータが無い）に渡されたら黙って捨てず、書き場所を案内する。
+    # ACE-Step にしかないつまみ。読まないモデルに渡されたら黙って捨てず、
+    # 書き場所を案内する。
     for name in _ACE_ONLY_FIELDS:
         if raw.get(name) and not spec.supports(name):
             return (
@@ -340,7 +386,7 @@ def _workflow_detail(raw: dict[str, Any]) -> str | None:
     if references:
         return references
 
-    # ショット割りと Elements（Kling）: 件数・尺・`@要素名` の対応まで見る。
+    # ショット割りと Elements: 件数・尺・`@要素名` の対応まで見る。
     shots = multi_shots_of(raw)
     structured = multi_shot_problem(
         mode, workflow, shots, video_prompt=_text(raw.get("video_prompt"))
@@ -574,6 +620,220 @@ def _sheet_size(value: Any, field: str) -> int | None:
         ) from exc
 
 
+# --------------------------------------------------------------------------
+# ドラマスタジオのアクション（app.studio のサービス層をそのまま呼ぶ）
+# --------------------------------------------------------------------------
+#
+# 本文の検証は Web UI と同じ pydantic モデル（Studio*Create / Studio*Update）に
+# 通す。パースの段階で弾いておけば、実行時ではなくフォーマットリマインダー付きの
+# 1 回リトライ（§3.1）で直させられる。
+
+#: アクションの外枠（本文ではないキー）。本文の検証からは外す
+_STUDIO_META_KEYS = ("action", "notes")
+
+#: `studio_render_shot` の `workflow_override` に書ける値
+STUDIO_WORKFLOW_OVERRIDES = get_args(StudioWorkflowOverride)
+
+#: `studio_register_asset_from_job` が取れるジョブ出力 -> 素材の種別
+STUDIO_JOB_SOURCES: dict[str, str] = {
+    "image": "image",
+    "last_frame": "image",
+    "video": "video",
+    "audio": "audio",
+}
+
+
+def _studio_id(
+    payload: dict[str, Any], field: str, where: str, *, required: bool = True
+) -> str | None:
+    value = payload.get(field)
+    text = str(value).strip() if value not in (None, "") else ""
+    if not text and required:
+        raise ActionError(f"{where} には対象の {field} が必要です")
+    return text or None
+
+
+def _studio_target(payload: dict[str, Any], where: str, parent: str) -> tuple[
+    str | None, str | None
+]:
+    """upsert の対象: ``(既存の id, 新規に作る親の id)``（片方だけが入る）。"""
+    target = _studio_id(payload, "id", where, required=False)
+    if target:
+        return target, None
+    return None, _studio_id(payload, parent, where) or None
+
+
+def _studio_body(
+    payload: dict[str, Any],
+    model: type[BaseModel],
+    where: str,
+    *,
+    drop: tuple[str, ...] = (),
+    meta: bool = True,
+) -> dict[str, Any]:
+    """本文を ``model`` で検証し、**書かれた項目だけ**の dict にして返す。
+
+    返すのは受け取ったままの値（``model_dump`` ではない）なので、更新系では
+    「送らなかった」と「null を送った」の区別がそのまま実行側へ渡る。
+    ``meta=False`` はアクションの外枠を剥がし済みの本文（Shot の入れ子）用。
+    """
+    ignored = (*(_STUDIO_META_KEYS if meta else ()), *drop)
+    body = {k: v for k, v in payload.items() if k not in ignored}
+    unknown = [k for k in body if k not in model.model_fields]
+    if unknown:
+        raise ActionError(
+            f"{where}: 未知のフィールドがあります: {', '.join(sorted(unknown))}"
+            f"（使えるのは {', '.join(model.model_fields)} です）"
+        )
+    try:
+        model(**body)
+    except ValidationError as exc:
+        raise ActionError(f"{where}: {_pydantic_detail(exc)}") from exc
+    return body
+
+
+def _studio_shot_body(
+    payload: dict[str, Any], model: type[BaseModel], where: str
+) -> dict[str, Any]:
+    """Shot の本文。``shot`` オブジェクトに入れて渡すのが正式な形。
+
+    Shot には ``action``（何が起きるか）という欄があり、アクション名のキーと
+    ぶつかる。入れ子にすればそのまま書けるので、平置きは後方互換のための保険
+    （その場合だけ ``action_text`` を ``action`` として読む）。
+    """
+    nested = payload.get("shot")
+    if isinstance(nested, dict):
+        body = dict(nested)
+    else:
+        body = {
+            k: v
+            for k, v in payload.items()
+            if k not in (*_STUDIO_META_KEYS, "id", "project_id", "shot")
+        }
+        if "action_text" in body:
+            body["action"] = body.pop("action_text")
+    return _studio_body(body, model, where, meta=False)
+
+
+def _studio_payload(name: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """1 つの studio アクションのパラメータ（id 群 + 検証済みの ``body``）。"""
+    data: dict[str, Any] = {}
+    if name == "studio_list_projects":
+        return data
+    if name == "studio_get_project":
+        data["project_id"] = _studio_id(payload, "project_id", name)
+        return data
+    if name == "studio_create_project":
+        data["body"] = _studio_body(payload, StudioProjectCreate, name)
+        return data
+    if name == "studio_update_project":
+        data["project_id"] = _studio_id(payload, "project_id", name)
+        data["body"] = _studio_body(
+            payload, StudioProjectUpdate, name, drop=("project_id",)
+        )
+        return data
+    if name in ("studio_upsert_episode", "studio_upsert_scene", "studio_upsert_asset"):
+        parent, models = {
+            "studio_upsert_episode": (
+                "project_id", (StudioEpisodeCreate, StudioEpisodeUpdate)
+            ),
+            "studio_upsert_scene": (
+                "episode_id", (StudioSceneCreate, StudioSceneUpdate)
+            ),
+            "studio_upsert_asset": (
+                "project_id", (StudioAssetCreate, StudioAssetUpdate)
+            ),
+        }[name]
+        target, parent_id = _studio_target(payload, name, parent)
+        data["id"] = target
+        data[parent] = parent_id
+        model = models[1] if target else models[0]
+        # 既存の場を直すときの `episode_id` は「引っ越し先の話」なので本文に残す
+        # （新規作成では入れ物の id なので、親として外に出す）。
+        keeps_parent = bool(target) and name == "studio_upsert_scene"
+        data["body"] = _studio_body(
+            payload, model, name, drop=("id",) if keeps_parent else ("id", parent)
+        )
+        return data
+    if name == "studio_upsert_shot":
+        target, project_id = _studio_target(payload, name, "project_id")
+        data["id"] = target
+        data["project_id"] = project_id
+        model = StudioShotUpdate if target else StudioShotCreate
+        data["body"] = _studio_shot_body(payload, model, name)
+        return data
+    if name == "studio_delete_shot":
+        data["id"] = _studio_id(payload, "id", name)
+        return data
+    if name == "studio_register_asset_from_job":
+        data["project_id"] = _studio_id(payload, "project_id", name)
+        data["job_id"] = _studio_id(payload, "job_id", name)
+        source = str(payload.get("source") or "image").strip()
+        if source not in STUDIO_JOB_SOURCES:
+            raise ActionError(
+                f"{name} の source は {' / '.join(STUDIO_JOB_SOURCES)} の"
+                "いずれか（省略すると image）で指定してください"
+            )
+        data["source"] = source
+        # `kind` はジョブのどの出力を取るかで決まるので受け取らない
+        data["body"] = _studio_body(
+            payload,
+            StudioAssetCreate,
+            name,
+            drop=("project_id", "job_id", "source", "kind"),
+        )
+        return data
+    if name == "studio_render_shot":
+        data["shot_id"] = _studio_id(payload, "shot_id", name)
+        override = str(payload.get("workflow_override") or "").strip()
+        if override and override not in STUDIO_WORKFLOW_OVERRIDES:
+            raise ActionError(
+                f"{name} の workflow_override は"
+                f" {' / '.join(STUDIO_WORKFLOW_OVERRIDES)} のいずれか"
+                "（省略すると自動で決まる）で指定してください"
+            )
+        data["workflow_override"] = override or None
+        return data
+    if name == "studio_get_takes":
+        data["shot_id"] = _studio_id(payload, "shot_id", name)
+        return data
+    # studio_select_take / studio_reject_take
+    data["take_id"] = _studio_id(payload, "take_id", name)
+    return data
+
+
+# --------------------------------------------------------------------------
+# キャンバスのアクション（app.canvas のストアをそのまま呼ぶ）
+# --------------------------------------------------------------------------
+#
+# 検証は Web UI と同じ pydantic モデル（CanvasCard*）に通す。id の取り方と本文の
+# 取り方は studio_* と同じ helper を使い回す（外枠のキーも同じ）。
+
+def _canvas_payload(name: str, payload: dict[str, Any]) -> dict[str, Any]:
+    """1 つの canvas アクションのパラメータ（id 群 + 検証済みの ``body``）。"""
+    data: dict[str, Any] = {}
+    if name == "canvas_list_cards":
+        data["project_id"] = _studio_id(payload, "project_id", name)
+        # タブ（話）を指定すればそのタブだけ。省けば盤面ぜんぶ（タブ名つき）。
+        tab = payload.get("episode_id")
+        if tab is not None:
+            data["episode_id"] = str(tab)
+        return data
+    if name == "canvas_place_card":
+        data["project_id"] = _studio_id(payload, "project_id", name)
+        data["body"] = _studio_body(
+            payload, CanvasCardCreate, name, drop=("project_id",)
+        )
+        if not data["body"].get("kind"):
+            raise ActionError(f"{name} には置くカードの kind が必要です")
+        return data
+    # canvas_move_card / canvas_update_card
+    data["card_id"] = _studio_id(payload, "card_id", name)
+    model = CanvasCardPosition if name == "canvas_move_card" else CanvasCardUpdate
+    data["body"] = _studio_body(payload, model, name, drop=("card_id",))
+    return data
+
+
 def parse_action(
     text: str,
     *,
@@ -716,4 +976,8 @@ def parse_action(
             action.options = [str(o) for o in options if str(o).strip()][:6]
     elif name == "done":
         action.summary = str(payload.get("summary") or payload.get("notes") or "")
+    elif name in STUDIO_ACTIONS:
+        action.studio = _studio_payload(name, payload)
+    elif name in CANVAS_ACTIONS:
+        action.canvas = _canvas_payload(name, payload)
     return action

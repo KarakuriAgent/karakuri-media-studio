@@ -47,6 +47,25 @@ async def _save(upload: UploadFile, kind: str, allowed: set[str]) -> Asset:
     return _as_asset(dest, kind)
 
 
+#: 種別 -> 受け付ける拡張子（:func:`save_upload` の入り口）
+ALLOWED_EXT: dict[str, set[str]] = {
+    "image": IMAGE_EXT,
+    "video": VIDEO_EXT,
+    "audio": AUDIO_EXT,
+}
+
+
+async def save_upload(upload: UploadFile, kind: str) -> Asset:
+    """種別ごとの拡張子で ``assets/<kind>/`` に保存する（ドラマスタジオからも使う）。"""
+    allowed = ALLOWED_EXT.get(kind)
+    if allowed is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown kind '{kind}' (allowed: {', '.join(ALLOWED_EXT)})",
+        )
+    return await _save(upload, kind, allowed)
+
+
 def list_assets(kind: str, allowed: set[str]) -> list[Asset]:
     d = _kind_dir(kind)
     files = [p for p in d.iterdir() if p.is_file() and p.suffix.lower() in allowed]

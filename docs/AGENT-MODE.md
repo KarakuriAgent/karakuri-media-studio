@@ -98,20 +98,20 @@ LoRA は登録時の対象（SPEC §3.4）で振り分ける: 画像用は `lora
   「`mode: "full"` は使えない」と出す
 - `video_prompt` の書き方（`prompt_hint`。flf2v は開始→終了フレームの遷移、
   ic_lora_motion はカメラ・テンポを書かない、ia2v はセリフを書かない など）。
-  `wan_dancer` のようにプロンプトを選択肢から組み立てるワークフローは
+  プロンプトを選択肢から組み立てるワークフローは
   **`video_prompt` 自体が任意**（`prompt_required=False`）で、必須フィールドの一覧にも出てこない
 - **選択式フィールド**（`selects`、SPEC §3.1）。自由記述ではなく決まった選択肢で挙動が決まる
   ワークフローでは、論理名・見出し・選択肢の文字列・既定値をそのまま列挙する:
 
 ```
   - 選択項目（ジョブの `selects` に `{"<名前>": "<選んだ値>"}` の形で書く。以下の文字列のみ使用可）:
-    - `dance_style`（踊りの種類）: `Chinese Classic Dance 古典舞`, `K-Pop 韩舞`, … — 省略すると `K-Pop 韩舞`。
-    - `duration`（尺（秒））: `5`, `10`, `15`, `20`, `25`, `30` — 省略すると入力から自動で決まる。
+    - `<名前>`（<見出し>）: `<選択肢1>`, `<選択肢2>`, … — 省略すると `<既定値>`。
+    - `duration`（尺（秒））: `5`, `10`, `15` — 省略すると入力から自動で決まる。
 ```
 
   検証は Web UI と同じ `models.select_problem` を通し、宣言外の名前・選択肢外の値は
   プラン検証の段階で弾いて 1 回リトライさせる。`省略すると入力から自動で決まる` と出ている項目
-  （wan_dancer の尺）は書かないのが正解で、バックエンドが入力音声の長さから決める
+  （入力音声の長さから決まる尺など）は書かないのが正解で、バックエンドが決める
 
 `description` / `prompt_hint` / `audio_role` の未記入は `validate_specs()`（ヘルスチェックと
 テスト）が検出するので、ワークフローを追加したらプロンプト側の追記漏れは起きない。
@@ -364,8 +364,69 @@ Grok CLI はステートレスなテキスト入出力なので、ツール呼�
 | `library` | ジョブの出力をライブラリに取っておく（`job_id` + `source`: `image` / `last_frame` / `video` / `audio`、任意の `title` / `tags[]` / `category`: `character` / `background` / `prop` / `none`）。SPEC §7.2。既に同じ出力が登録済みなら `library_exists`（エラーではなく案内）、対象が無ければ `action_failed` | 不要（自律） |
 | `library_search` | ライブラリ**全体**を絞り込む（`q` = 名前・タグの部分一致 / `tag` = 完全一致 / `kind` / `category` / `offset`）。結果は `library_search_result` イベントとして次ターンに届く | 不要（自律） |
 | `library_sheet` | 棚の画像素材を 1 枚のリファレンスシートに合成して登録する（`item_ids[]` = 並べる順の 1〜8 件、任意の `name` / `width` / `height`）。SPEC §7.2。成功すると `library_sheet_added` イベントにシートの id・パス・URL が入り、そのまま `ltx2_3_ic_lora_image` の `source_image` に使える。組めない指定は `action_failed` | 不要（自律） |
+| `studio_*` | ドラマスタジオ（`app.studio`）の操作。下の一覧を参照 | 不要（自律） |
+| `canvas_*` | キャンバス（`app.canvas`）の盤面操作。下の一覧を参照。キャンバスのチャットからの実行でだけプロンプトに載る | 不要（自律） |
 | `checkin` | ユーザーへの確認（選択肢ボタン付き吹き出し）。応答まで次タスク保留 | ― |
 | `done` | プラン完了宣言 → 納品サマリ | ― |
+
+#### ドラマスタジオの操作（`studio_*`）
+
+連続もの・複数カットの物語は、ばらばらのジョブではなく**スタジオプロジェクト**
+として組み立てる。呼ぶのは HTTP ではなく `app.studio` のサービス層そのもの
+（ルーターと同じ入り口）で、リビジョン履歴には `actor = 'agent'` で残る:
+
+| action | ペイロード | 返り値（イベント） |
+|---|---|---|
+| `studio_list_projects` | ― | `studio_projects`（件数つき一覧） |
+| `studio_get_project` | `project_id` | `studio_project`（素材・話 / 場 / Shot・Take を stale 込みで 1 通に） |
+| `studio_create_project` | `name` ほか `code` / `synopsis` / `world_notes` / `auto_translate` | `studio_saved`（`project_id`） |
+| `studio_update_project` | `project_id` + 上と同じ項目 | `studio_saved` |
+| `studio_upsert_episode` / `studio_upsert_scene` | `id`（更新）か親の id（新規）+ 見出し項目。場の更新で `episode_id` を送ると、その話へ**引っ越す** | `studio_saved` |
+| `studio_upsert_shot` | `id` か `project_id` + **入れ子の `shot`**（Shot の `action` 欄がアクション名と衝突するため） | `studio_saved`（`shot_id`） |
+| `studio_delete_shot` | `id` | `studio_saved` |
+| `studio_upsert_asset` | `id` か `project_id` + `name` / `category` / `caption` / `prompt_caption` / `path` | `studio_saved`（`path` なしならメタデータのみ。`path` を渡すとその実体を `assets/<kind>/` へ複製して持つ） |
+| `studio_register_asset_from_job` | `project_id`, `job_id`, `name`, `source`（`image` / `last_frame` / `video` / `audio`） | `studio_saved`（自分で生成した成果物を**ファイル付き素材**にする） |
+| `studio_render_shot` | `shot_id`, 任意の `workflow_override` | `studio_render_started`（`take_id` / `job_id`） |
+| `studio_get_takes` | `shot_id` | `studio_takes`（status / stale。完了はこれで追う） |
+| `studio_select_take` / `studio_reject_take` | `take_id` | `studio_take_selected` / `studio_take_rejected` |
+
+パラメータの検証は Web UI と同じ pydantic モデル（`Studio*Create` /
+`Studio*Update`）に通すので、未知の項目・範囲外の分類はプラン検証と同じく
+フォーマットリマインダー付きの 1 回リトライになる。`studio_render_shot` は
+投入して即座に返り、完了は `studio_get_takes` のポーリングで追う（生成を伴わない
+他の studio アクションと同じく、発言リクエストの中で処理する即時アクション）。
+
+#### キャンバスの盤面操作（`canvas_*`）
+
+キャンバス（`app.canvas`）はドラマスタジオの別ビューで、カード 1 枚 =
+スタジオの 1 エンティティ。カードが持つのは「どの行か」と「どこに置いてあるか」
+だけなので、アクションも作る・動かす・数えるだけになる。**中身を直すのは
+`studio_*` の仕事**で、例外は対応するエンティティを持たない text / model カードの
+`data` だけ。
+
+盤面は**スタジオの鏡**（`app.canvas._mirror`）で、カードの無いエンティティには
+盤面を読んだ時点でサーバーがカードを作る。だから「既にあるものを載せる」用途は
+無く、`canvas_place_card` は**新しく作る**ときと text / model カードのときだけ
+使う（`media` カードは生成すれば勝手に並ぶので作れない）:
+
+盤面は**話（エピソード）ごとのタブ**に分かれる（`作品共通` + 話ごと）。どのタブに
+出るかは**スタジオの所属から導く**（場 → その話、Shot → 場の話、Take → Shot の話）
+ので、カード側には持たない（`app.canvas.card_episode`）。素材と未分類の Shot は
+話に属さないので `作品共通` タブに出る。`canvas_cards.episode_id` を使うのは、
+導きようのない text / model カードの置き場所を覚えるときだけ（NULL = 作品共通）。
+場の引っ越し（`studio_upsert_scene` の `episode_id`）がそのまま「カードを別の
+タブへ動かす」操作になる。
+
+| action | ペイロード | 返り値（イベント） |
+|---|---|---|
+| `canvas_list_cards` | `project_id`, 任意の `episode_id`（話の id か `"common"`。省くと盤面ぜんぶ） | `canvas_cards`（カードの id / 種別 / 座標 / 参照先。ぜんぶのときは各カードのタブつき） |
+| `canvas_place_card` | `project_id`, `kind`, 新規作成の項目（`title` / `scene_id` / `episode_id` / `asset_kind`）, `x` / `y` ほか | `canvas_card_placed`（`card_id`） |
+| `canvas_move_card` | `card_id`, `x`, `y`, 任意の `w` / `h` / `z` | `canvas_card_moved` |
+| `canvas_update_card` | `card_id`, `data`（text / model のみ）ほか | `canvas_card_updated` |
+
+検証は Web UI と同じ pydantic モデル（`CanvasCardCreate` / `CanvasCardPosition` /
+`CanvasCardUpdate`）に通す。整列や削除のアクションは用意しない（ユーザーが手で
+やる領分）。
 
 `continue` はラストフレームを開始フレームに使うので、`video_workflow` の切り替え先は
 **開始フレームを受け取れるワークフロー**（カタログで `mode: "full"` が使えると出ているもの）
@@ -436,6 +497,57 @@ Grok ターンの実行中は `thinking` で通知する（WS フレームの `t
 `kind = "limit"` のチェックインを出し、承認されたら `auto_limit` 本ぶん枠を伸ばして
 続行、断られたら停止する（枠は承認済みチェックインの本数から算出するので DB 変更なし）。
 
+### 5.4 キャンバスからの実行（`/api/canvas/.../agent`）
+
+キャンバスのチャットからも同じエージェントを走らせる。**キャンバス専用の
+エージェントは作らない**: ツールはスタジオのもの一式（`studio_*`）をそのまま
+共通利用し、盤面を触る `canvas_*` だけを足す（§4）。実装は `app.canvas_agent`
+で、実行の中身（アクション実行）は `agent_runner.run_tool` を呼ぶだけ。
+
+| エンドポイント | 内容 |
+|---|---|
+| `POST /api/canvas/projects/{id}/agent` | ユーザー発言と**開いているタブ**（`episode_id`。省略 / `"common"` = 作品共通）を会話に残して実行開始（202。実行中は 409、空文は 422、知らない話は 404） |
+| `GET /api/canvas/projects/{id}/agent` | 実行中かどうか + 活動テキスト（WS を取りこぼしたときの拾い先） |
+| `POST /api/canvas/projects/{id}/agent/stop` | 次のターンの手前で停止（投入済みの生成は止まらない） |
+| `POST /api/canvas/projects/{id}/messages` | 発言を残すだけの口（据え置き。エージェントは動かさない） |
+| `POST /api/canvas/projects/{id}/attachments` | 添付ファイルを 1 件保存（201。返る `path` を発言の `attachments` に添える） |
+| `GET /api/canvas/projects/{id}/attachments/{path}` | 添付そのもの（履歴のサムネイル用。範囲外は 404） |
+
+**添付ファイル**は work dir の `attachments/` に置く（エージェントモードの添付と
+同じ流儀・同じ拡張子集合）。発言に `attachments`（workdir 相対パス）を添えると、
+本文の後ろに `[Attached files — …]` の一覧が付いてエージェントに渡る。1 行は
+**絶対パス・種別・ファイル名**で、grok CLI は work dir を根に動くのでそのまま開ける
+（画像はマルチモーダルのブロックではなく**ファイルとして読ませる**——ワンショット
+フォールバックでもブロックが使えるようにするため）。画面に出すのは元の本文なので、
+ユーザーが書いた文と添付の一覧は `canvas_messages.data`（`text` / `attachments`）に
+控える。添付をそのまま素材にしたいときは `studio_upsert_asset` に `path` を渡す
+（実体は `assets/<kind>/` へ複製される）。
+
+**セッション（`agent_sessions`）は作らない。** 会話の正は `canvas_messages` で、
+セッション行を並べて持つと同じ会話が 2 箇所に増える。エージェントの応答は
+`role = 'assistant'`、ツール実行の結果は `role = 'event'`（`kind` は
+`canvas_card_placed` / `studio_saved` / `action_failed` …）としてそこに積み、
+毎ターン全量を再送する（スタジオのセッションと同じステートレス方式）。プラン承認・
+生成本数の上限・成果物パネルといったセッションの仕掛けはキャンバスには無く、
+それらが要るときはエージェントモードを開く。work dir だけは置き場を借りる
+（`runtime/agent-sessions/canvas-<project_id>/`。セッション行は作らない）。
+
+システムプロンプトは `prompts.build_canvas_system_prompt`: スタジオの節
+（`AGENT_STUDIO`）をそのまま読み、キャンバスの役どころと `canvas_*` の表、そして
+**いまの作品の現況と盤面**（`studio_get_project` / `canvas_list_cards` を呼べば
+得られるのと同じ本文）を焼き込む。盤面（`# CANVAS BOARD`）は**開いているタブ 1 枚
+ぶん**で、他のタブは件数の要約（`# CANVAS TABS`）だけ渡す——「この話のカットを〜」
+がそのまま通るようにするため。同じ理由で、`canvas_place_card` が作る text / model
+カードは `episode_id` を書かなければ開いているタブに載る（`app.canvas_agent`）。
+実行できるのは `studio_*` / `canvas_*` / `done`
+だけで、`plan` などが来たら `action_unavailable` イベントで断る（生成の計画は
+エージェントモードの担当）。ループは 1 発言あたり最大 8 ターン。
+
+進捗は WebSocket の `type: "canvas"` フレーム（`running` / `activity` / 会話に
+足された `message` 1 件）。フロントは 1 件ずつ積み、`running` が落ちたところで
+盤面（`GET /api/canvas/projects/{id}`）とスタジオの詳細を取り直す。スタジオへの
+変更はサービス層をそのまま呼ぶので、リビジョン履歴には `actor = 'agent'` で残る。
+
 ## 6. フロントエンド
 
 - `AgentView.tsx` 新設（ヘッダーにビュー切替を追加: main / agent / settings）
@@ -447,6 +559,22 @@ Grok ターンの実行中は `thinking` で通知する（WS フレームの `t
   `POST .../attachments` でアップロードし、セッション作成前は `File` のまま持って
   作成直後にアップロードする。チェックイン待ちの回答にも添付できる（承認判定は本文のみを見る）
 - 既存の GenerateForm / ResultPane / HistoryGallery / ChatModal / SettingsPage は変更しない
+- **キャンバス**（`canvas/CanvasChat.tsx`）: 発言は `POST .../agent` に送り、応答と
+  ツール実行イベントは WS の `type: "canvas"` フレームから履歴に積む。実行中は
+  入力を止めて活動テキストと ⏹ を出す。イベント行のアイコンは `agent/common` の
+  `eventIcon` を共用する（同じアクションは同じ絵で出す）。発言には**開いている
+  タブ**（`canvas/CanvasTabs.tsx` の `[作品共通] [第1話] … [＋]`）を添えて送る。
+  画像・動画・音声は 📎 とドラッグ&ドロップで添付でき（送信前はチップ、履歴では
+  サムネイル）、本文が空でも添付だけで送れる
+- **キャンバスの追従**（`canvas/CanvasView.tsx`）: 自分の操作以外の変化にも追いつく
+  ため、WS のジョブ進捗（`type: "job"`）の**状態が動いたとき**と、ウィンドウに
+  戻ってきたときに盤面とスタジオを取り直す（600ms のデバウンスで連打を潰す。
+  進捗の % では走らせない = `canvas/logic.ts` の `jobSignature`）。鏡があるので、
+  取り直せば新しい Take の `media` カードもそのまま現れる
+- **キャンバスのタブ**（`canvas/CanvasTabs.tsx`）: 盤面・表示位置・新規カードの
+  置き場所はすべてタブ単位（`GET /api/canvas/projects/{id}?episode_id=…`）。表示
+  位置は作品共通が `studio_projects.canvas_*`、話ごとが `canvas_viewports` の行。
+  入り直したときは前に開いていたタブから始める（sessionStorage）
 
 ## 7. ガードレール
 
