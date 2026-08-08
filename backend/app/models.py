@@ -60,6 +60,10 @@ class Settings(BaseModel):
     grok_command: str = "grok"
     grok_model: str = "grok-4.5"
     grok_workdir: str = ""
+    # Grok Imagine（画像生成・編集、SPEC §5.2）。コマンド名は上の `grok_command`
+    # と共有し、作業ディレクトリと制限時間だけ専用に持つ。
+    grok_media_workdir: str = ""
+    grok_media_timeout: float = 300.0
     # Agent mode (AGENT-MODE §3.4): extra CLI flags (tool permissions) and the
     # longer timeout research / inspection turns need. `--permission-mode auto`
     # is confirmed on grok 0.2.112 to enable file read/write (incl. viewing
@@ -153,6 +157,8 @@ class SettingsUpdate(BaseModel):
     grok_command: str | None = None
     grok_model: str | None = None
     grok_workdir: str | None = None
+    grok_media_workdir: str | None = None
+    grok_media_timeout: float | None = None
     model_overrides: dict[ComfyTarget, dict[str, str]] | None = None
     model_choices: dict[ComfyTarget, dict[str, list[str]]] | None = None
     hf_token: str | None = None

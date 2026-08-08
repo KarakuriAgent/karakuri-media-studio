@@ -118,12 +118,16 @@
 | `anima` | Anima | `anima` | なし | text-to-image、アニメ・イラスト系（`ResolutionSelector`） |
 | `z_image_turbo` | Z-Image turbo | `z-image` | なし | text-to-image、8 steps 蒸留。ResolutionSelector が無いのでアプリが幅・高さを計算して注入 |
 | `qwen_image_edit_2511` | Qwen-Image Edit 2511 | `qwen-image` | 画像（編集元画像） | **編集系**。`source_image` 必須で、出力解像度は入力画像から決まる（`aspect_ratio` / `megapixels` は無視） |
+| `grok_imagine_t2i` | Grok Imagine 画像生成（サブスク CLI） | `grok-imagine` | なし | **ComfyUI 非依存**（`backend: "grok_cli"`、§5.2）。text-to-image |
+| `grok_imagine_edit` | Grok Imagine 画像編集（サブスク CLI） | `grok-imagine` | 画像（編集元画像） | **ComfyUI 非依存**の編集系。`source_image` 必須で、出力解像度は入力画像から決まる |
 
 - 既定は `krea2_turbo`（選択式になる前の唯一の画像ワークフロー）
 - `qwen_image_edit_2511` は画像ステージが走るモード（`full` / `image_only`）で必ず `source_image` を要求する。
   `full` では編集結果がそのまま 2 段目の開始フレームになる
 - `image_prompt` の書き方はファミリーごとに違い（krea2 は長い自然文、qwen は編集指示）、
-  Grok のシステムプロンプトにはファミリー別のガイドが埋め込まれる（§4.2）
+  Grok のシステムプロンプトにはファミリー別のガイドが埋め込まれる（§4.2）。
+  `grok-imagine` はグラフを持たず LoRA も差せないので、`image_families()`（LoRA 登録の
+  選択肢とプロンプトガイドの単位）には**並ばない**
 
 ### 2.4 音声ワークフロー（`workflow/audio/`）
 
@@ -659,6 +663,62 @@ Pod 側のイメージ（Dockerfile / entrypoint / 認証つき Caddy プロキ�
 マニフェスト / watchdog）と手順書は [`deploy/runpod/`](../deploy/runpod/README.md)。
 モデルの取得は §3.3 と同じ流儀（`.part` に書いて完走時のみ rename、リダイレクトを
 自分で追い、ホストごとに `HF_TOKEN` / `CIVITAI_API_KEY` を出し分け）で実装してある。
+
+### 5.2 生成バックエンド: ComfyUI 以外の経路（`WorkflowSpec.backend`）
+
+ワークフローは自分がどのエンジンで走るかを `backend` で宣言する。ディスパッチは
+**ジョブ単位ではなくステージ単位**（`jobs._run_job_stages`）なので、`full` の 2 段が
+別々のバックエンドでもよい（Grok Imagine で画像を作り、ローカルの ComfyUI で動画にする）。
+成果物の置き場（`outputs/{job_id}/`）・jobs 行の列・WS の進捗は共通なので、履歴・
+ライブラリ・UI からは区別が付かない。
+
+| backend | 実行 | 対象 |
+|---|---|---|
+| `comfyui` | `workflow/*.json` のテンプレートを `/prompt` に投入（§5） | 既定。画像・動画・音声のすべて |
+| `grok_cli` | Grok Build CLI をヘッドレスで叩く（`app.grok_media`） | `grok_imagine_t2i` / `grok_imagine_edit` |
+
+#### Grok Imagine（`backend: "grok_cli"`）
+
+xAI の従量課金 API（`XAI_API_KEY`）ではなく、**SuperGrok / X Premium+ の
+サブスクリプション枠**で動く公式 CLI に内蔵ツールの `image_gen`（text-to-image）/
+`image_edit`（編集）で描かせる。プロンプト作成のチャット（§4.1）と同じコマンドだが、
+
+- **作業ディレクトリが別**（`runtime/grok-media-workdir`、設定 `grok_media_workdir`）。
+  CLI はコーディングエージェントで、セッションと生成物を書き散らすため
+- **`XAI_API_KEY` を env から必ず外す**（残っていると API 直叩き＝従量課金に
+  フォールバックしうる）。制限時間は設定 `grok_media_timeout`（既定 300 秒）、
+  コマンド名 `grok_command` はチャットと共有
+
+グラフが無いので渡せるのは**自然文の指示だけ**。したがって:
+
+- **LoRA は挿せない**（指定したジョブは 422）
+- **解像度は選べない**。`aspect_ratio` はフォームのプリセットから比を読み、CLI が
+  受ける語彙（`1:1` / `16:9` / `9:16` / `3:2` / `2:3` / `auto`）の一番近いものへ寄せて
+  渡す（`workflows.grok_aspect_ratio`）。`megapixels` は使わない
+- **モデルのバージョンは指定できない**（CLI に `model` パラメータが無い）
+- 編集元画像は CLI のサンドボックスから読めるよう、`<作業ディレクトリ>/inputs/` へ
+  **コピーしてから**指示文でファイル名を参照する
+- 実行したノードが無いので `/api/health` の ComfyUI チェック・custom node 確認・
+  モデルスロット（§3.3）の対象にはならない（`workflows.comfy_specs()` が除く）
+
+**成否は言葉ではなくファイルで判定する**（相手は「作った」と言いながら置かないことが
+あるエージェント）。指示文の末尾で `OK <絶対パス>` / `FAILED <理由>` だけを出すよう
+約束させ、4 段構えで確かめる:
+
+1. 終了コードが非 0 なら失敗（認証エラー / クォータは文言を言い換える）
+2. 出力から合図を読む
+3. **指定パスにファイルが実在し、サイズ > 0**（合図だけを信じない）
+4. 無ければ CLI 自身の保存先（`~/.grok/sessions/<URL エンコードした cwd>/<session-id>/images/`）
+   を mtime 順で探す保険（セッション id は実行のたびに変わるので根から探す）
+
+失敗した実行は **1 回だけやり直す**（モデレーションの誤検知が一定の割合で起きる）。
+ただしサブスク枠を使い切った気配（rate limit / quota / 429）はやり直しても無駄なので
+`GrokQuotaError` にしてそのままユーザー向けの文言で返す。何を頼んだかは
+`workflow_json` に指示文ごと残す（ComfyUI のグラフを残すのと同じ意図）。
+
+疎通は 2 段階: `GET /api/grok/status` は枠を使わない軽い確認（コマンドが在るか・
+`~/.grok/auth.json` が在るか）、`POST /api/grok/check` は実際に 1 ターン回す
+（設定ページの「grok CLI の接続確認」ボタン。生成はしないので消費は最小）。
 
 ## 6. 成果物の取得
 

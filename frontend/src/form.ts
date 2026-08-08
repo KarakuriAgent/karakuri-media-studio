@@ -989,15 +989,22 @@ export function hiddenFields(
   // 欄は出す — 出さないと渡す手立てが無くなる。
   const accepts = (name: string) => requires(name) || supports(name)
   const imageNeedsSource = image && imageWorkflowNeedsSource(imageWorkflow)
+  // `accepts_video_loras` は名前に反して**そのワークフローが LoRA チェーンを
+  // 持つか**（バックエンドの `lora_chain` の有無）で、画像・動画の両方に同じ
+  // 直列化が使われる。後方互換のため名前は変えていない。
+  const acceptsLoras = (item?: WorkflowOption | null) =>
+    item?.accepts_video_loras ?? true
   return {
     imagePrompt: !image,
     // the image LoRA chain only exists in the image workflow, the video one
-    // only in the LTX graph — so each follows its own stage
-    loras: !image,
-    trigger: !image,
+    // only in the LTX graph — so each follows its own stage。LoRA を挿せない
+    // 画像ワークフロー（Grok Imagine のような外部バックエンド）では、空の
+    // セクションだけが残ってしまうので出さない
+    loras: !image || !acceptsLoras(imageWorkflow),
+    trigger: !image || !acceptsLoras(imageWorkflow),
     // LoRA チェーンを持たないワークフロー（Wan 系）には挿せないので出さない
-    videoLoras: !video || !(workflow?.accepts_video_loras ?? true),
-    videoTrigger: !video || !(workflow?.accepts_video_loras ?? true),
+    videoLoras: !video || !acceptsLoras(workflow),
+    videoTrigger: !video || !acceptsLoras(workflow),
     // ショット割りのワークフローでは本文がショット側にあるので、トップレベルの
     // プロンプト欄そのものを出さない（書いても API には送られない）
     videoPrompt: !video || multiShotLimits(workflow) !== null,

@@ -27,7 +27,7 @@ from typing import Any, Callable
 
 from .config import load_settings
 from .models import HealthStatus
-from .paths import GROK_WORKDIR
+from .paths import GROK_WORKDIR, resolve_workdir
 
 DEFAULT_TIMEOUT = 120.0
 VERSION_TIMEOUT = 20.0
@@ -290,8 +290,10 @@ class GrokCliClient(LLMClient):
         settings = load_settings()
         self.command = (command if command is not None else settings.grok_command) or "grok"
         self.model = (model if model is not None else settings.grok_model) or ""
-        self.workdir = Path(
-            workdir or settings.grok_workdir or GROK_WORKDIR
+        # 設定に入っているのは保存した時点の絶対パスなので、いまの ROOT の下へ
+        # 載せ替えてから使う（Docker 内ではホスト側のパスは作れない）。
+        self.workdir = resolve_workdir(
+            workdir or settings.grok_workdir, GROK_WORKDIR
         )
         self.timeout = timeout
         # Tool-permission flags for agent mode (AGENT-MODE §3.4). The CLI is

@@ -283,6 +283,47 @@ const IMAGE_WORKFLOWS: Options['image_workflows'] = [
     max_duration: 0,
     default_duration: 0,
   },
+  // ComfyUI を使わない外部バックエンド（Grok Build CLI、SPEC §5.2）
+  {
+    id: 'grok_imagine_t2i',
+    label: 'Grok Imagine 画像生成（サブスク CLI）',
+    mode_label: 'テキスト→画像',
+    family_label: 'Grok Imagine（サブスク CLI）',
+    kind: 'image',
+    family: 'grok-imagine',
+    backend: 'grok_cli',
+    notes: '',
+    requires: [],
+    supports: ['aspect_ratio', 'prompt'],
+    accepts_start_image: false,
+    image_label: '開始フレーム',
+    selects: [],
+    prompt_required: true,
+    accepts_video_loras: false,
+    min_duration: 0,
+    max_duration: 0,
+    default_duration: 0,
+  },
+  {
+    id: 'grok_imagine_edit',
+    label: 'Grok Imagine 画像編集（サブスク CLI）',
+    mode_label: '画像編集',
+    family_label: 'Grok Imagine（サブスク CLI）',
+    kind: 'image',
+    family: 'grok-imagine',
+    backend: 'grok_cli',
+    notes: '',
+    requires: ['image'],
+    supports: ['image', 'prompt'],
+    accepts_start_image: false,
+    image_label: '編集元画像',
+    selects: [],
+    prompt_required: true,
+    accepts_video_loras: false,
+    min_duration: 0,
+    max_duration: 0,
+    default_duration: 0,
+  },
 ]
 
 function showImages(form: Partial<FormState> = {}) {
@@ -349,6 +390,41 @@ describe('GenerateForm の画像ワークフロー', () => {
     showImages({ mode: 'image_only' })
     expect(screen.queryByText('編集元画像')).toBeNull()
     expect(screen.queryByText('開始フレーム')).toBeNull()
+  })
+
+  it('Grok Imagine もモデルとして選べる（ComfyUI 非依存、SPEC §5.2）', () => {
+    showImages({ mode: 'image_only' })
+    const models = screen.getByLabelText('画像モデル') as HTMLSelectElement
+    expect([...models.options].map((item) => item.textContent)).toContain(
+      'Grok Imagine（サブスク CLI）',
+    )
+  })
+
+  it('Grok Imagine の編集モードは編集元画像を必須表示にする', () => {
+    showImages({ imageWorkflow: 'grok_imagine_edit', mode: 'image_only' })
+    expect(section('編集元画像')).toBeTruthy()
+
+    cleanup()
+    // テキスト→画像のほうは入力画像を取らない
+    showImages({ imageWorkflow: 'grok_imagine_t2i', mode: 'image_only' })
+    expect(screen.queryByText('編集元画像')).toBeNull()
+  })
+
+  it('LoRA を挿せない画像ワークフローでは LoRA の欄を出さない', () => {
+    // Grok Imagine は ComfyUI のグラフを持たない（= lora_chain が無い）ので、
+    // 出しても「設定 → LoRA 管理で追加」という誤った案内になるだけ。
+    showImages({ imageWorkflow: 'grok_imagine_t2i', mode: 'image_only' })
+    expect(screen.queryByText('LoRA（画像）')).toBeNull()
+
+    cleanup()
+    // ComfyUI のワークフローではこれまでどおり出る
+    showImages({ mode: 'image_only' })
+    expect(section('LoRA（画像）')).toBeTruthy()
+  })
+
+  it('Grok Imagine の編集モードでは解像度の欄を出さない', () => {
+    showImages({ imageWorkflow: 'grok_imagine_edit', mode: 'image_only' })
+    expect(screen.queryByText('メガピクセル')).toBeNull()
   })
 })
 

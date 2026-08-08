@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import math
+import re
 from dataclasses import dataclass, field, replace
 from typing import Any, Iterable, Literal
 
@@ -33,9 +34,11 @@ Workflow = dict[str, dict[str, Any]]
 
 WorkflowKind = Literal["image", "video", "audio"]
 
-#: どのエンジンがこのワークフローを実行するか（SPEC §5 / §5.2）。今は
-#: ``workflow/*.json`` のテンプレートを自前の ComfyUI に投げる経路だけ。
-WorkflowBackend = Literal["comfyui"]
+#: どのエンジンがこのワークフローを実行するか（SPEC §5 / §5.2）。
+#: ``comfyui`` は ``workflow/*.json`` のテンプレートを自前の ComfyUI に投げる経路、
+#: ``grok_cli`` は Grok Build CLI（サブスク枠）に Grok Imagine で描かせる経路
+#: （:mod:`app.grok_media`。テンプレートを持たない）。
+WorkflowBackend = Literal["comfyui", "grok_cli"]
 
 #: Logical names of the assets a video workflow can require.  ``image`` is the
 #: primary image input (start frame, first frame or reference sheet depending on
@@ -275,13 +278,14 @@ FAMILY_LABELS: dict[str, str] = {
     "minimax-h3": "MiniMax H3",
     "ace-step": "ACE-Step 1.5",
     "stable-audio": "Stable Audio 3",
+    "grok-imagine": "Grok Imagine",
 }
 
 #: 供給元の注記（生成フォームの 1 段目「モデル」に付く）。今はどのファミリーも
 #: ローカルの ComfyUI で走るので空だが、外部サービス経由のモデルを足したときに
 #: ここへ注記を書く。モードごとに変わるものではないので**モデル側**に出す
 #: （各ワークフローの :attr:`WorkflowSpec.mode_label` には書かない）。
-FAMILY_NOTES: dict[str, str] = {}
+FAMILY_NOTES: dict[str, str] = {"grok-imagine": "サブスク CLI"}
 
 #: LoRA registrations default to this family (the only image workflow that
 #: existed before the selector), so the DB migration can backfill with it.
@@ -382,6 +386,67 @@ class ElementsSpec:
     reference_chars: int = 37
 
 
+#: Grok Imagine が受ける縦横比（CLI の ``image_gen`` / ``image_edit`` の
+#: ``aspect_ratio`` パラメータそのまま）。``auto`` はツールに任せる。
+GROK_ASPECT_RATIOS: tuple[str, ...] = ("1:1", "16:9", "9:16", "3:2", "2:3", "auto")
+
+#: フォームの縦横比プリセット（``"16:9 (Widescreen)"``）は Grok の語彙より細かい
+#: ので、**数値の比を計算して一番近いもの**に寄せる（:func:`grok_aspect_ratio`）。
+_GROK_ASPECT_VALUES: tuple[tuple[str, float], ...] = tuple(
+    (name, float(w) / float(h))
+    for name, (w, h) in (
+        ("1:1", (1, 1)),
+        ("16:9", (16, 9)),
+        ("9:16", (9, 16)),
+        ("3:2", (3, 2)),
+        ("2:3", (2, 3)),
+    )
+)
+
+
+def grok_aspect_ratio(aspect_ratio: str) -> str:
+    """フォームの縦横比 -> Grok Imagine が受ける縦横比（SPEC §5.2）。
+
+    ``"4:3 (Standard)"`` のような表示名から ``w:h`` を読み、比が一番近いものを
+    返す。読めなければ ``auto``（ツールに任せる）。
+    """
+    match = re.search(r"(\d+)\s*:\s*(\d+)", aspect_ratio or "")
+    if not match:
+        return "auto"
+    width, height = int(match.group(1)), int(match.group(2))
+    if width <= 0 or height <= 0:
+        return "auto"
+    wanted = width / height
+    return min(_GROK_ASPECT_VALUES, key=lambda item: abs(item[1] - wanted))[0]
+
+
+#: :attr:`GrokImagineTask.values` に書ける論理名（指示文に織り込める値）
+GROK_VALUES: frozenset[str] = frozenset({"prompt", "aspect_ratio", "image"})
+
+
+@dataclass(frozen=True)
+class GrokImagineTask:
+    """Grok Build CLI の内蔵ツール 1 つ分の宣言（SPEC §5.2）。
+
+    CLI にはグラフも ``input`` も無く、渡せるのは**自然文の指示だけ**なので、
+    :class:`Target` のような注入先の対応表は持たない。宣言するのは「どの内蔵
+    ツールを使わせるか」と「どの論理値を指示文に織り込むか」の 2 つだけで、
+    指示文の組み立ては :func:`app.grok_media.build_request` が行う。
+
+    入力ファイル（``image``）を宣言すると、そのファイルは**作業ディレクトリへ
+    コピー**され、指示文がファイル名で参照する（CLI のサンドボックスは作業
+    ディレクトリの外を読めるとは限らないため）。
+    """
+
+    #: 使わせる内蔵ツール（``image_gen`` = text-to-image / ``image_edit`` = 編集）
+    tool: Literal["image_gen", "image_edit"] = "image_gen"
+    #: 指示文に織り込む論理値。``prompt`` は必須で、``aspect_ratio`` と
+    #: :data:`InputName` の入力（``image``）を足せる。
+    values: tuple[str, ...] = ("prompt", "aspect_ratio")
+    #: ``image_edit`` が受け取れる参照画像の枚数（``image_gen`` では 0）
+    max_references: int = 0
+
+
 @dataclass(frozen=True)
 class WorkflowSpec:
     id: str
@@ -473,6 +538,9 @@ class WorkflowSpec:
     #: ``reference_audios`` を ComfyUI のグラフでも受け取れるようになる（外部 API の
     #: 参照モードと同じ入力・同じ UI）。
     ref_media: RefMediaFan | None = None
+    #: Grok Build CLI で走らせるときの宣言（:class:`GrokImagineTask`、
+    #: ``None`` = ComfyUI のワークフロー）。``backend='grok_cli'`` と対で使う。
+    grok: GrokImagineTask | None = None
     #: **渡されなかったらグラフから取り外す**入力の論理名（:data:`InputName`）。
     #: ``inject`` に載っているだけの入力はファイル名を空文字にするだけなので、
     #: ComfyUI が「そのファイルが無い」で落ちる。任意の最終フレーム
@@ -516,13 +584,19 @@ class WorkflowSpec:
             return True
         # 参照素材は 1 つの :class:`Target` では表せない（件数ぶんノードを作る）
         # ので、宣言そのものを受け取り口として見る
-        return self.ref_media is not None and name in self.ref_media.names()
+        if self.ref_media is not None and name in self.ref_media.names():
+            return True
+        # 外部バックエンド（Grok CLI）は注入先を持たないので、宣言そのものを
+        # 受け取り口として見る（SPEC §5.2）
+        return self.grok is not None and name in self.grok.values
 
     def supported_names(self) -> tuple[str, ...]:
         """このワークフローが受け取る論理名（フォームとカタログが読む）。"""
         names = set(self.inject)
         if self.ref_media is not None:
             names |= set(self.ref_media.names())
+        if self.grok is not None:
+            names |= set(self.grok.values)
         return tuple(sorted(names))
 
     def target(self, name: str) -> Target | None:
@@ -670,6 +744,80 @@ QWEN_IMAGE_EDIT = WorkflowSpec(
         ),
     ),
     notes="qwen_image_edit_2511 + Lightning 4steps LoRA / 解像度は入力画像から自動",
+)
+
+
+# --------------------------------------------------------------------------
+# image: Grok Imagine（Grok Build CLI・サブスク枠、SPEC §5.2）
+# --------------------------------------------------------------------------
+#
+# xAI の従量課金 API（``XAI_API_KEY``）ではなく、**SuperGrok / X Premium+ の
+# サブスクリプション枠**で動く公式 CLI（``grok``）をヘッドレスで叩き、内蔵ツールの
+# ``image_gen`` / ``image_edit``（Grok Imagine Image 2.0）に描かせる
+# （:mod:`app.grok_media`）。ComfyUI のテンプレートは持たないので ``relpath`` /
+# ``inject`` / ``output_node`` はすべて空で、渡せるのは**自然文の指示だけ**。
+#
+# そのため:
+#
+# * **LoRA は挿せない**（グラフが無い）。``lora_chain`` は宣言しない
+# * **解像度は選べない**。縦横比だけを ``image_gen`` の ``aspect_ratio``
+#   （1:1 / 16:9 / 9:16 / 3:2 / 2:3 / auto）に寄せて渡し、``megapixels`` は使わない
+# * **モデルのバージョンは指定できない**（CLI に ``model`` パラメータが無い）
+# * 枠は Grok チャットと共有で、実在人物・著名人・商標はモデレーションで弾かれる
+
+_GROK_IMAGINE_NOTES = (
+    "Grok Build CLI（サブスク枠・要サインイン）/ ComfyUI 非依存 /"
+    " 縦横比は 1:1・16:9・9:16・3:2・2:3 のいずれかに寄せて渡す"
+    "（megapixels は使わない）/ モデルのバージョンは指定できない /"
+    " LoRA 不可 / 実在人物・著名人・商標はモデレーションで弾かれる /"
+    " 枠は Grok チャットと共有"
+)
+
+GROK_IMAGINE_T2I = WorkflowSpec(
+    id="grok_imagine_t2i",
+    label="Grok Imagine 画像生成（サブスク CLI）",
+    mode_label="テキスト→画像",
+    kind="image",
+    family="grok-imagine",
+    backend="grok_cli",
+    description=(
+        "Text-to-image through the official Grok Build CLI, on the SuperGrok /"
+        " X Premium+ **subscription** quota (no metered API, no local ComfyUI)."
+        " Same shape as the local text-to-image workflows: `image_prompt` only,"
+        ' usable for `mode: "image_only"` and as the first stage of'
+        ' `mode: "full"`. `aspect_ratio` is snapped to the closest ratio the'
+        " tool accepts (1:1 / 16:9 / 9:16 / 3:2 / 2:3); `megapixels` and LoRAs"
+        " are ignored because there is no graph. The model refuses real people,"
+        " celebrities and trademarks, and the quota is shared with Grok chat."
+    ),
+    grok=GrokImagineTask(tool="image_gen", values=("prompt", "aspect_ratio")),
+    notes=_GROK_IMAGINE_NOTES,
+)
+
+GROK_IMAGINE_EDIT = WorkflowSpec(
+    id="grok_imagine_edit",
+    label="Grok Imagine 画像編集（サブスク CLI）",
+    mode_label="画像編集",
+    kind="image",
+    family="grok-imagine",
+    backend="grok_cli",
+    requires=("image",),
+    image_label="編集元画像",
+    description=(
+        "Image **editing** through the Grok Build CLI's built-in `image_edit`"
+        " tool: it rewrites the picture given in `source_image` following the"
+        " instruction in `image_prompt`, so `source_image` is REQUIRED in every"
+        ' mode that runs the image stage (including `mode: "full"`, where the'
+        " edited still then becomes the video's start frame). The output"
+        " resolution follows the input picture, so `aspect_ratio` /"
+        " `megapixels` are ignored. Write `image_prompt` as an edit instruction"
+        ' ("change X to Y, keep everything else unchanged"), never as a full'
+        " scene description."
+    ),
+    grok=GrokImagineTask(
+        tool="image_edit", values=("prompt", "image"), max_references=5
+    ),
+    notes=_GROK_IMAGINE_NOTES + " / 編集元画像が必須・解像度は入力画像から決まる",
 )
 
 
@@ -1577,6 +1725,8 @@ SPECS: tuple[WorkflowSpec, ...] = (
     ANIMA,
     Z_IMAGE_TURBO,
     QWEN_IMAGE_EDIT,
+    GROK_IMAGINE_T2I,
+    GROK_IMAGINE_EDIT,
     LTX_T2V,
     LTX_I2V,
     LTX_IA2V,
@@ -1828,9 +1978,18 @@ def image_catalog() -> list[CatalogEntry]:
 
 
 def image_families() -> list[str]:
-    """The families an image LoRA can be registered for, in UI order."""
+    """The families an image LoRA can be registered for, in UI order.
+
+    外部バックエンド（Grok Build CLI）のワークフローはグラフを持たないので LoRA を
+    差せず、モデル固有のプロンプトガイドも持たない。LoRA 登録の選択肢と
+    エージェントのプロンプトガイド（:func:`app.prompts.image_prompt_guides_section`）
+    の両方がここを読むので、**ComfyUI のワークフローのファミリーだけ**を並べる
+    （SPEC §3.4 / §5.2）。
+    """
     seen: list[str] = []
     for spec in image_specs():
+        if spec.backend != "comfyui":
+            continue
         if spec.family not in seen:
             seen.append(spec.family)
     return seen
@@ -2066,6 +2225,55 @@ def _ref_media_problems(
                 f"{spec.id}.ref_media: multi_inputs[{name!r}] has nothing to"
                 " connect it to"
             )
+    return problems
+
+
+def validate_external_spec(spec: WorkflowSpec) -> list[str]:
+    """テンプレートを持たないワークフロー（Grok CLI）のマニフェスト検証（SPEC §5.2）。
+
+    ComfyUI 側は「宣言したノードが本当にテンプレートに在るか」を見るが、外部の
+    バックエンドにはグラフが無いので、代わりに**宣言そのものの筋が通っているか**
+    を見る: テンプレート由来の項目を持っていないか、タスク宣言があるか、指示文に
+    織り込む論理値が既知の語彙か。
+    """
+    problems = _validate_common(spec)
+    if spec.relpath or spec.inject or spec.output_node:
+        problems.append(
+            f"{spec.id}: backend {spec.backend!r} does not use a ComfyUI template"
+        )
+    if spec.lora_chain is not None:
+        problems.append(f"{spec.id}: backend {spec.backend!r} has no LoRA chain")
+    if spec.ref_media is not None:
+        problems.append(f"{spec.id}: backend {spec.backend!r} has no RefMediaFan")
+    if spec.seeds:
+        problems.append(f"{spec.id}: backend {spec.backend!r} has no seed input")
+    if spec.backend != "grok_cli":
+        problems.append(f"{spec.id}: backend {spec.backend!r} is not implemented yet")
+        return problems
+
+    task = spec.grok
+    if task is None:
+        return [*problems, f"{spec.id}: backend 'grok_cli' but no GrokImagineTask"]
+    if spec.kind != "image":
+        problems.append(f"{spec.id}: grok_cli only produces images (kind={spec.kind!r})")
+    if "prompt" not in task.values:
+        problems.append(f"{spec.id}.grok.values: 'prompt' is required")
+    for name in task.values:
+        if name not in GROK_VALUES:
+            problems.append(
+                f"{spec.id}.grok.values: unknown value {name!r}"
+                f" (known: {', '.join(sorted(GROK_VALUES))})"
+            )
+    # 編集ツールは参照画像を読むので、`image` を受け取り必須にしていること
+    if task.tool == "image_edit":
+        if "image" not in task.values:
+            problems.append(f"{spec.id}.grok: 'image_edit' needs the 'image' value")
+        if "image" not in spec.requires:
+            problems.append(f"{spec.id}.grok: 'image_edit' must require 'image'")
+        if task.max_references < 1:
+            problems.append(f"{spec.id}.grok.max_references: must be >= 1 for editing")
+    elif task.max_references:
+        problems.append(f"{spec.id}.grok.max_references: only 'image_edit' takes refs")
     return problems
 
 

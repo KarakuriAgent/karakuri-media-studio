@@ -28,7 +28,7 @@ from ..models import (
     ChatSessionCreate,
     PromptResult,
 )
-from ..paths import GROK_WORKDIR
+from ..paths import GROK_WORKDIR, resolve_workdir
 
 log = logging.getLogger(__name__)
 
@@ -40,7 +40,7 @@ def _now() -> str:
 
 
 def _workdir() -> Path:
-    return Path(load_settings().grok_workdir or GROK_WORKDIR)
+    return resolve_workdir(load_settings().grok_workdir, GROK_WORKDIR)
 
 
 def _copy_start_image(source: str, session_id: str) -> str:

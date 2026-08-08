@@ -10,6 +10,10 @@ ASSETS_DIR = ROOT / "assets"
 LIBRARY_DIR = ROOT / "library"
 RUNTIME_DIR = ROOT / "runtime"
 GROK_WORKDIR = RUNTIME_DIR / "grok-workdir"
+# Grok Imagine（画像生成・編集）専用の作業ディレクトリ（SPEC §5.2）。プロンプト
+# 作成のチャットとは別にする: CLI はコーディングエージェントで、生成物や
+# セッションを作業ディレクトリの下に書き散らすため、取り違えないよう分ける。
+GROK_MEDIA_WORKDIR = RUNTIME_DIR / "grok-media-workdir"
 # One work dir per agent session (AGENT-MODE §5.2).
 AGENT_SESSIONS_DIR = RUNTIME_DIR / "agent-sessions"
 
@@ -57,6 +61,27 @@ def rebase_stored_path(path: str | Path) -> Path:
     return original
 
 
+def resolve_workdir(stored: str | Path | None, default: Path) -> Path:
+    """設定に記録された作業ディレクトリを、いまの :data:`ROOT` の下に載せ替える。
+
+    ``runtime/config.json`` の ``grok_workdir`` / ``grok_media_workdir`` には
+    **保存した時点の ROOT を前提にした絶対パス**が入る（設定ページの既定値が
+    ``<ROOT>/runtime/grok-workdir`` なので、ふつうはホスト側のパスがそのまま
+    残る）。バックエンドを Docker の中で動かすとリポジトリは別のプレフィックス
+    （``/mnt/…``）に載るので、記録どおりのパスは作れず（``/home/…`` は
+    Permission denied）、CLI の実行が丸ごと失敗する。
+
+    そこで :func:`rebase_stored_path` を通し、いまの ROOT の下に**実在する**同じ
+    置き場（``runtime/grok-workdir`` は :func:`ensure_dirs` が作る）があれば
+    そちらを使う。載せ替え先が無ければ記録どおりのパスをそのまま返すので、
+    リポジトリの外を作業ディレクトリに指定した構成はこれまでどおり動く。
+    設定が空なら ``default``（ROOT 直下の既定の置き場）。
+    """
+    if not stored:
+        return default
+    return rebase_stored_path(stored)
+
+
 def ensure_dirs() -> None:
     for d in (
         OUTPUTS_DIR,
@@ -64,6 +89,7 @@ def ensure_dirs() -> None:
         LIBRARY_DIR,
         RUNTIME_DIR,
         GROK_WORKDIR,
+        GROK_MEDIA_WORKDIR,
         AGENT_SESSIONS_DIR,
     ):
         d.mkdir(parents=True, exist_ok=True)

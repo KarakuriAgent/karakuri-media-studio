@@ -11,6 +11,7 @@ import {
 import type {
   Asset,
   ComfyTarget,
+  HealthStatus,
   ImageFamily,
   Lora,
   LoraPayload,
@@ -240,6 +241,9 @@ export default function SettingsPage({
   >({})
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
+  /** Grok Build CLI の疎通確認の結果（SPEC §5.2）。null = まだ押していない。 */
+  const [grokCheck, setGrokCheck] = useState<HealthStatus | null>(null)
+  const [grokChecking, setGrokChecking] = useState(false)
   const [busy, setBusy] = useState(false)
   const [draft, setDraft] = useState<LoraPayload>(EMPTY_LORA)
   const [editingId, setEditingId] = useState<number | null>(null)
@@ -381,6 +385,22 @@ export default function SettingsPage({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
+  /** grok CLI を 1 ターン回して確かめる（生成はしないので枠の消費は最小）。 */
+  const checkGrok = async () => {
+    setGrokChecking(true)
+    setGrokCheck(null)
+    try {
+      setGrokCheck(await api.checkGrok())
+    } catch (caught) {
+      setGrokCheck({
+        status: 'error',
+        detail: caught instanceof Error ? caught.message : String(caught),
+      })
+    } finally {
+      setGrokChecking(false)
+    }
+  }
+
   const saveSettings = async () => {
     if (!settings) return
     setBusy(true)
@@ -395,6 +415,7 @@ export default function SettingsPage({
           comfy_cloud_api_key: settings.comfy_cloud_api_key,
           grok_model: settings.grok_model,
           grok_command: settings.grok_command,
+          grok_media_timeout: settings.grok_media_timeout,
           hf_token: settings.hf_token,
           civitai_api_key: settings.civitai_api_key,
           runpod_enabled: settings.runpod_enabled,
@@ -966,6 +987,52 @@ export default function SettingsPage({
                         onChange={(event) => update({ grok_model: event.target.value })}
                       />
                     </div>
+                    <div>
+                      <label className="label" htmlFor="grok-media-timeout">
+                        Grok Imagine の制限時間（秒）
+                      </label>
+                      <input
+                        id="grok-media-timeout"
+                        className="field"
+                        type="number"
+                        min="30"
+                        step="30"
+                        value={settings.grok_media_timeout}
+                        onChange={(event) =>
+                          update({
+                            grok_media_timeout: Number(event.target.value) || 0,
+                          })
+                        }
+                      />
+                    </div>
+                  </div>
+                  <div className="flex flex-col gap-1">
+                    <div className="flex items-center gap-2">
+                      <button
+                        className="btn-ghost self-start"
+                        onClick={() => void checkGrok()}
+                        disabled={grokChecking}
+                      >
+                        {grokChecking ? '確認中…' : 'grok CLI の接続確認'}
+                      </button>
+                      {grokCheck && (
+                        <span
+                          className={`text-xs ${
+                            grokCheck.status === 'ok'
+                              ? 'text-emerald-400'
+                              : 'text-amber-400'
+                          }`}
+                        >
+                          {grokCheck.detail || grokCheck.status}
+                        </span>
+                      )}
+                    </div>
+                    <p className="text-[11px] text-slate-500">
+                      画像ワークフローの「Grok Imagine」はこの CLI
+                      のサブスク枠で走ります（ComfyUI は使いません）。未サインインなら
+                      ターミナルで <code>grok</code>（サーバーでは{' '}
+                      <code>grok --device-auth</code>）を実行してください。
+                    </p>
                   </div>
                   <button
                     className="btn-primary self-start"

@@ -26,11 +26,13 @@ vi.mock('../api', async () => {
       downloadAllModels: vi.fn(),
       createLora: vi.fn(),
       updateLora: vi.fn(),
+      checkGrok: vi.fn(),
     },
   }
 })
 
 const getSettings = vi.mocked(api.getSettings)
+const checkGrok = vi.mocked(api.checkGrok)
 const listModels = vi.mocked(api.listModels)
 const listLoras = vi.mocked(api.listLoras)
 const modelsDirStatus = vi.mocked(api.modelsDirStatus)
@@ -60,6 +62,8 @@ function settings(): Settings {
     grok_command: 'grok',
     grok_model: 'grok-4.5',
     grok_workdir: '/repo/runtime/grok-workdir',
+    grok_media_workdir: '/repo/runtime/grok-media-workdir',
+    grok_media_timeout: 300,
     model_overrides: {},
     model_choices: {},
     hf_token: '',
@@ -841,5 +845,54 @@ describe('SettingsPage: LoRA スロットの候補（SPEC §3.3）', () => {
       'minimax_h3_turbo_4step_ema_ckpt850.safetensors',
       'other.safetensors',
     ])
+  })
+})
+
+
+describe('SettingsPage: Grok Build CLI（Grok Imagine のバックエンド、SPEC §5.2）', () => {
+  beforeEach(() => {
+    vi.stubGlobal('WebSocket', FakeSocket)
+    getSettings.mockResolvedValue(settings())
+    listModels.mockResolvedValue([])
+    listLoras.mockResolvedValue([])
+    listModelDownloads.mockResolvedValue([])
+    modelsDirStatus.mockResolvedValue(dirStatus())
+    checkGrok.mockReset()
+    putSettings.mockReset()
+  })
+
+  it('接続確認は CLI を 1 ターン回して結果を出す', async () => {
+    checkGrok.mockResolvedValue({ status: 'ok', detail: 'grok / 認証済み' })
+    await openSettings()
+
+    fireEvent.click(screen.getByRole('button', { name: 'grok CLI の接続確認' }))
+
+    await waitFor(() => expect(checkGrok).toHaveBeenCalledTimes(1))
+    await waitFor(() => screen.getByText('grok / 認証済み'))
+  })
+
+  it('未サインインなら理由をそのまま出す', async () => {
+    checkGrok.mockResolvedValue({
+      status: 'not_configured',
+      detail: 'grok CLI が未認証です',
+    })
+    await openSettings()
+
+    fireEvent.click(screen.getByRole('button', { name: 'grok CLI の接続確認' }))
+
+    await waitFor(() => screen.getByText('grok CLI が未認証です'))
+  })
+
+  it('Grok Imagine の制限時間は設定として保存される', async () => {
+    putSettings.mockResolvedValue(settings())
+    await openSettings()
+
+    fireEvent.change(screen.getByLabelText('Grok Imagine の制限時間（秒）'), {
+      target: { value: '600' },
+    })
+    fireEvent.click(screen.getAllByRole('button', { name: '保存' })[0])
+
+    await waitFor(() => expect(putSettings).toHaveBeenCalled())
+    expect(putSettings.mock.calls[0][0]).toMatchObject({ grok_media_timeout: 600 })
   })
 })

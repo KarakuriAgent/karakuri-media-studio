@@ -53,6 +53,7 @@ from app.workflows import (
     image_families,
     image_specs,
     load_template,
+    validate_external_spec,
     validate_spec,
     validate_specs,
     video_catalog,
@@ -61,6 +62,10 @@ from app.workflows import (
 
 VIDEO_IDS = [spec.id for spec in video_specs()]
 IMAGE_IDS = [spec.id for spec in image_specs()]
+#: ComfyUI のテンプレートを持つ画像ワークフローだけ（外部バックエンドは除く）
+COMFY_IMAGE_IDS = [
+    spec.id for spec in image_specs() if spec.backend == "comfyui"
+]
 
 
 def params(**overrides) -> GenerationParams:
@@ -262,12 +267,24 @@ def test_image_injection():
 
 def test_every_image_manifest_validates():
     for spec in image_specs():
-        assert validate_spec(spec) == [], spec.id
+        problems = (
+            validate_spec(spec)
+            if spec.backend == "comfyui"
+            else validate_external_spec(spec)
+        )
+        assert problems == [], spec.id
 
 
 def test_image_families_are_one_per_folder():
+    # LoRA 登録・プロンプトガイドの単位。グラフを持たない外部バックエンドの
+    # ファミリー（grok-imagine）は LoRA を差せないので並ばない（SPEC §5.2）。
     assert image_families() == ["krea2", "anima", "z-image", "qwen-image"]
-    assert [entry.family for entry in image_catalog()] == image_families()
+    comfy_families = [
+        entry.family
+        for entry in image_catalog()
+        if get_spec(entry.id, "image").backend == "comfyui"
+    ]
+    assert comfy_families == image_families()
     # every image workflow documents itself for the Grok catalog
     for entry in image_catalog():
         assert entry.description.strip()
@@ -370,7 +387,7 @@ def test_qwen_edit_user_lora_applies_to_both_switch_branches():
 
 
 def test_image_workflow_is_selected_by_id():
-    for workflow_id in IMAGE_IDS:
+    for workflow_id in COMFY_IMAGE_IDS:
         wf = build_image_workflow(params(image_workflow=workflow_id))
         spec = get_spec(workflow_id, "image")
         assert value(wf, spec, "prompt") == "IMAGE PROMPT"
@@ -378,7 +395,7 @@ def test_image_workflow_is_selected_by_id():
 
 
 def test_image_templates_are_not_mutated():
-    for workflow_id in IMAGE_IDS:
+    for workflow_id in COMFY_IMAGE_IDS:
         spec = get_spec(workflow_id)
         snapshot = copy.deepcopy(load_template(spec))
         build_image_workflow(params(image_workflow=workflow_id))

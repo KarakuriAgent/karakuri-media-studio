@@ -22,8 +22,14 @@ workflow runs first, its still is downloaded and handed to the selected video
 workflow as the start frame.  Both stages are stored in ``workflow_json``.
 
 **バックエンド（SPEC §5.2）**: ステージのマニフェストが宣言する ``backend``
-を見て :func:`_run_job_stages` が**ステージごとに**実行経路を選ぶ。今あるのは
-ComfyUI のステージ（:func:`_run_comfy_stage`）だけ。
+を見て :func:`_run_job_stages` が**ステージごとに**実行経路を選ぶ。ComfyUI の
+ステージ（:func:`_run_comfy_stage`）はグラフを投げてポーリングし、Grok Build CLI の
+ステージ（:func:`_run_grok_stage`）はグラフの代わりに自然文の指示を 1 回投げる
+（:mod:`app.grok_media`）。どちらも「``outputs/{job_id}/`` に成果物を置き、jobs 行を
+更新し、WS に進捗を流す」ところは共通なので、履歴・ライブラリ・UI からは区別なく
+扱える。そのため 1 ジョブの中でバックエンドをまたげる: **Grok Imagine で画像を作り、
+ローカルの ComfyUI で動画にする** `full` ジョブでは、1 段目の静止画をそのまま
+2 段目の開始フレームに渡す。
 """
 
 from __future__ import annotations
@@ -41,7 +47,7 @@ from typing import Any
 import aiosqlite
 from PIL import Image
 
-from . import comfy, nsfw as nsfw_service, runpod, ws
+from . import comfy, grok_media, nsfw as nsfw_service, runpod, ws
 from .config import load_settings
 from .db import get_db
 from .ids import new_id
@@ -1410,6 +1416,61 @@ async def _run_comfy_stage(
     return await _download_artifact(entry, spec.output_node, job_dir, stem, kind)
 
 
+async def _run_grok_stage(
+    job_id: str,
+    stage: str,
+    spec: WorkflowSpec,
+    job: Job,
+    stages: dict[str, Any],
+    label: str,
+    overall: OverallProgress,
+    stage_index: int,
+    job_dir: Path,
+) -> Path:
+    """Grok Build CLI で 1 ステージ分を走らせ、成果物のパスを返す（SPEC §5.2）。
+
+    ComfyUI と違ってグラフも進捗イベントも無いので、ステージの進捗は「投入した」
+    「出来た」の 2 点だけ。指示文は ``workflow_json`` に残すので、あとから
+    「何を頼んだか」を履歴から読み返せる（グラフを残すのと同じ意図）。
+    """
+    if stage != "image":
+        raise JobError(
+            f"Grok Build CLI は画像しか作れません（stage '{stage}' は不可）"
+        )
+    overall.start_stage(stage_index, 0)
+    params = _generation_params(job, {})
+    inputs = {}
+    source = job.params.get("source_image")
+    if source:
+        inputs["image"] = str(rebase_stored_path(source))
+    kind, stem, _ = _STAGE_ARTIFACTS[stage]
+    try:
+        request = grok_media.build_request(
+            spec, params, job_dir / f"{stem}.png", inputs
+        )
+    except grok_media.GrokMediaError as exc:
+        raise JobError(str(exc)) from exc
+
+    stages[stage] = {"workflow_id": spec.id, **request.as_dict()}
+    await _update(job_id, workflow_json=json.dumps(stages, ensure_ascii=False))
+    await ws.publish(
+        job_id,
+        "running",
+        message=f"{label}: Grok Build CLI に依頼しました",
+        # 内訳の取れないバックエンドなので、粗い目安だけ入れて進捗バーを進める
+        progress=overall.stage_fraction(0.1),
+    )
+    try:
+        saved = await grok_media.generate(
+            request,
+            on_progress=lambda text: ws.publish(job_id, "running", message=text),
+        )
+    except grok_media.GrokMediaError as exc:
+        raise JobError(str(exc)) from exc
+    overall.stage_finished()
+    return saved
+
+
 #: ステージ名 -> (成果物の種類, outputs/ に置くときのファイル名, jobs の列)。
 #: バックエンドに依らず同じ置き場・同じ命名なので、履歴と UI からは区別が付かない。
 _STAGE_ARTIFACTS = {
@@ -1464,6 +1525,10 @@ async def _run_job_stages(job: Job) -> dict[str, Any]:
             saved = await _run_comfy_stage(
                 job_id, stage, spec, comfy_params, overrides, stages, label,
                 overall, index, job_dir,
+            )
+        elif spec.backend == "grok_cli":
+            saved = await _run_grok_stage(
+                job_id, stage, spec, job, stages, label, overall, index, job_dir,
             )
         else:
             raise JobError(

@@ -1,13 +1,14 @@
 # Karakuri Media Studio
 
-`workflow/` 配下の ComfyUI ワークフロー（画像 4 種 / 動画 12 種 / 音声 2 種）を Web UI から実行し、
-プロンプト作成を Grok に委譲、生成物と履歴をローカルに保存する個人利用向けのメディア生成アプリです。
+`workflow/` 配下の ComfyUI ワークフロー（画像 4 種 / 動画 12 種 / 音声 2 種）と
+Grok Imagine（画像 2 種）を Web UI から実行し、プロンプト作成を Grok に委譲、
+生成物と履歴をローカルに保存する個人利用向けのメディア生成アプリです。
 
 ![生成画面](docs/images/screen-image.png)
 
 - バックエンド: Python 3.12 + FastAPI + SQLite（`app.db`）
 - フロントエンド: React + Vite + Tailwind（ダークテーマの SPA。「生成」と「エージェント」の 2 ビュー + 設定ページ）
-- 生成本体: ComfyUI（ローカル / LAN 上の別 PC / Comfy Cloud）
+- 生成本体: ComfyUI（ローカル / LAN 上の別 PC / Comfy Cloud）＋ Grok Imagine（Grok Build CLI 経由・画像のみ）
 - プロンプト生成: Grok Build CLI（サブスクリプション認証、API キー不要）
 
 仕様・設計・API の詳細は [`docs/SPEC.md`](docs/SPEC.md)、エージェントモードは
@@ -25,7 +26,7 @@
 | custom nodes | ResolutionSelector / ComfySwitchNode / CustomCombo / LTXV 系 / ComfyMath / ResizeImage 系 / ResizeAndPadImage / MoGe 系 / LoadVideo / Video Slice など、`workflow/` 配下のワークフローが使うノード一式 |
 | custom nodes（任意） | MiniMax H3 の Turbo ワークフロー（i2v / r2v）を使う場合のみ SageAttention 本体と [ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes)、および `SolAttnPatch` / `MiniMaxH3TurboLoRA` / `MiniMaxH3SigmaShift` / `SpectrumApplyMiniMaxH3` を提供する custom node。Turbo 以外のワークフローには不要 |
 | モデル | **使うワークフローのぶんだけ**あれば十分です（各テンプレートの既定ファイル名は SPEC §3.3）。足りないものは後述の「不足モデルの自動ダウンロード」で取得できます |
-| grok CLI | `curl -fsSL https://x.ai/cli/install.sh \| bash` でインストール後、一度 `grok` を起動してブラウザでサインイン（SuperGrok / X Premium+ のサブスクリプションで利用可） |
+| grok CLI | `curl -fsSL https://x.ai/cli/install.sh \| bash` でインストール後、一度 `grok` を起動してブラウザでサインイン（サーバーでは `grok --device-auth`）。SuperGrok / X Premium+ のサブスクリプションで利用可。**プロンプト作成のチャットに加えて、画像ワークフローの「Grok Imagine」もこの CLI で走ります**（サインインしていないとそちらは失敗します。設定ページの「grok CLI の接続確認」で確かめられます） |
 | ffmpeg | 動画からのラストフレーム抽出に使用（PATH にあること） |
 | Python / Node.js | 3.12 以上 / 18 以上 |
 
@@ -150,7 +151,16 @@ WebSocket で右ペインにリアルタイム表示され、完了すると生�
 | 画像のみ | 画像生成だけを実行（開始フレーム候補の量産に） |
 | 音声 | 音声ワークフローを単発実行（画像・動画とは連結しない） |
 
-**画像**は Krea 2 turbo（既定）/ Anima / Z-Image turbo / Qwen-Image Edit 2511（画像編集。参照画像必須）から選びます。
+**画像**は Krea 2 turbo（既定）/ Anima / Z-Image turbo / Qwen-Image Edit 2511（画像編集。参照画像必須）
+/ Grok Imagine（テキスト→画像・画像編集）から選びます。
+
+**Grok Imagine** は ComfyUI ではなく **grok CLI のサブスクリプション枠**で走る外部生成です
+（GPU もモデルファイルも不要）。テキスト→画像と画像編集の 2 種があり、生成物は他の
+ワークフローとまったく同じように outputs / 履歴 / ライブラリに入ります。ただしグラフが
+無いので **LoRA は使えず、解像度も選べません**（アスペクト比だけが `1:1` / `16:9` / `9:16`
+/ `3:2` / `2:3` の近いものに寄せて渡り、メガピクセルは無視されます）。モデルのバージョンも
+指定できません。枠は Grok チャットと共有で、実在人物・著名人・商標はモデレーションで
+弾かれます。
 
 **動画**は LTX 2.3 の 7 種・MiniMax H3 の 5 種から選び、必要な入力の欄だけが出ます。
 
@@ -235,6 +245,7 @@ Stable Audio 3 Medium（効果音・環境音・単一楽器）の 2 種です�
 | `runpod_comfy_url` / `runpod_comfy_api_key` | RunPod の Pod 上の ComfyUI の URL と API キー（任意） | 空 |
 | `comfy_cloud_api_key` | ComfyCloud の API キー（エンドポイントは `https://cloud.comfy.org` 固定） | 空 |
 | `grok_command` / `grok_model` | grok CLI のコマンドと使用モデル | `grok` / `grok-4.5` |
+| `grok_media_timeout` / `grok_media_workdir` | Grok Imagine の 1 枚あたりの制限時間（秒）と専用の作業ディレクトリ（プロンプト作成のチャットとは分けます） | `300` / `runtime/grok-media-workdir` |
 | `hf_token` / `civitai_api_key` | モデルダウンロード用のトークン | 空 |
 | `model_overrides` / `model_choices` | **接続先ごと**のモデルファイル名の上書きと、実行ごとに選べる候補リスト | `{}` |
 | `runpod_*` | RunPod Pod の自動起動（有効化 / APIキー / テンプレート ID / GPU 種別 / Network Volume ID） | 無効 |

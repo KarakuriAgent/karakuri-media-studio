@@ -34,7 +34,7 @@ from typing import Any, Awaitable, Callable
 from .config import load_settings
 from .grok import DEFAULT_TIMEOUT, GrokCliClient, LLMClient, LLMError
 from .models import HealthStatus
-from .paths import GROK_WORKDIR
+from .paths import GROK_WORKDIR, resolve_workdir
 
 log = logging.getLogger(__name__)
 
@@ -179,7 +179,7 @@ class AcpAgentClient(LLMClient):
         settings = load_settings()
         self.command = (command if command is not None else settings.grok_command) or "grok"
         self.model = (model if model is not None else settings.grok_model) or ""
-        self.workdir = Path(workdir or settings.grok_workdir or GROK_WORKDIR)
+        self.workdir = resolve_workdir(workdir or settings.grok_workdir, GROK_WORKDIR)
         self.timeout = timeout
         self.on_activity = on_activity
         self._fallback = fallback

@@ -23,6 +23,7 @@ from .routers import (
     assets,
     canvas,
     chat,
+    grok,
     health,
     jobs,
     library,
@@ -78,6 +79,7 @@ app.include_router(library.router)
 app.include_router(assets.router)
 app.include_router(options.router)
 app.include_router(chat.router)
+app.include_router(grok.router)
 app.include_router(jobs.router)
 app.include_router(studio.router)
 app.include_router(canvas.router)

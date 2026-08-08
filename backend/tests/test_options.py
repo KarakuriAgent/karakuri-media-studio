@@ -35,17 +35,27 @@ def test_workflow_catalogue_is_exposed(client):
         "anima",
         "z_image_turbo",
         "qwen_image_edit_2511",
+        "grok_imagine_t2i",
+        "grok_imagine_edit",
     ]
     assert [w["family"] for w in options["image_workflows"]] == [
         "krea2",
         "anima",
         "z-image",
         "qwen-image",
+        "grok-imagine",
+        "grok-imagine",
     ]
-    # the editing workflow is the only image one that needs an input picture
+    # 編集系のワークフローだけが入力画像を必要とする
     assert images["krea2_turbo"]["requires"] == []
     assert images["qwen_image_edit_2511"]["requires"] == ["image"]
     assert images["qwen_image_edit_2511"]["image_label"] == "編集元画像"
+    assert images["grok_imagine_edit"]["requires"] == ["image"]
+    assert images["grok_imagine_edit"]["image_label"] == "編集元画像"
+    # ComfyUI 非依存のワークフローは backend でそれと分かる（SPEC §5.2）
+    assert images["krea2_turbo"]["backend"] == "comfyui"
+    assert images["grok_imagine_t2i"]["backend"] == "grok_cli"
+    assert images["grok_imagine_edit"]["backend"] == "grok_cli"
     # …and the only one that does not take an aspect ratio / megapixel target
     assert "aspect_ratio" not in images["qwen_image_edit_2511"]["supports"]
     assert {"width", "height"} <= set(images["z_image_turbo"]["supports"])
@@ -141,13 +151,15 @@ def test_the_minimax_turbo_workflows_are_offered(client):
 def test_family_label_carries_the_supplier_note():
     """供給元の注記はモデル側に付く（モードごとに変わるものではない）。
 
-    今はどのファミリーもローカル実行なので注記は無く、素のラベルがそのまま出る。
+    ローカル実行のファミリーには注記が無く、素のラベルがそのまま出る。外部
+    バックエンドで走るものだけ「（サブスク CLI）」のような注記が付く。
     """
     from app.workflows import FAMILY_LABELS, FAMILY_NOTES, family_label
 
-    assert FAMILY_NOTES == {}
+    assert FAMILY_NOTES == {"grok-imagine": "サブスク CLI"}
     assert FAMILY_LABELS["ltx2.3"] == "LTX 2.3"
     assert family_label("krea2") == "Krea 2"
+    assert family_label("grok-imagine") == "Grok Imagine（サブスク CLI）"
     assert family_label("unknown") == "unknown"
 
 

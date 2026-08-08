@@ -10,7 +10,9 @@ from pathlib import Path
 
 import pytest
 
-from app import jobs, paths
+from app import config, grok, grok_media, jobs, paths
+from app.models import Settings
+from app.routers import chat
 
 
 @pytest.fixture
@@ -74,3 +76,54 @@ def test_output_url_outside_outputs_is_none(root):
     (asset / "ref.png").write_bytes(b"x")
     assert jobs._output_url(str(asset / "ref.png")) is None
     assert jobs._output_url(None) is None
+
+
+# ------------------------------------- 設定の作業ディレクトリ（grok CLI, SPEC §5.2）
+# ``runtime/config.json`` に入るのは保存した時点の ROOT を前提にした絶対パス。
+# Docker 内ではリポジトリが別のプレフィックスに載るので、そのままでは作業
+# ディレクトリを作れず（``/home/…`` は Permission denied）チャットも画像生成も
+# 落ちる。設定由来のパスも成果物と同じように載せ替わることを確かめる。
+
+#: 別のプレフィックス（ホスト側）で保存された作業ディレクトリ
+STORED_PREFIX = "/home/someone/workspace/video-studio/runtime"
+
+
+@pytest.fixture
+def workdirs(root):
+    """ROOT の下に grok の作業ディレクトリを作る（``ensure_dirs`` と同じ形）。"""
+    made = tuple(
+        root / "runtime" / name for name in ("grok-workdir", "grok-media-workdir")
+    )
+    for directory in made:
+        directory.mkdir(parents=True)
+    return made
+
+
+def test_settings_workdir_lands_under_the_current_root(workdirs, monkeypatch):
+    """存在しない別プレフィックスの設定でも、いまの ROOT の作業ディレクトリを使う。"""
+    chat_dir, media_dir = workdirs
+    monkeypatch.setattr(
+        config,
+        "_settings",
+        Settings(
+            grok_workdir=f"{STORED_PREFIX}/grok-workdir",
+            grok_media_workdir=f"{STORED_PREFIX}/grok-media-workdir",
+        ),
+    )
+    assert chat._workdir() == chat_dir
+    assert grok.GrokCliClient().workdir == chat_dir
+    assert grok_media.workdir() == media_dir
+
+
+def test_settings_workdir_falls_back_to_the_default(monkeypatch):
+    """設定が空なら ROOT 直下の既定の置き場。"""
+    monkeypatch.setattr(config, "_settings", Settings())
+    assert chat._workdir() == paths.GROK_WORKDIR
+    assert grok_media.workdir() == paths.GROK_MEDIA_WORKDIR
+
+
+def test_settings_workdir_outside_the_repo_is_kept(root, monkeypatch):
+    """リポジトリの外を指した設定はそのまま（載せ替え先が無ければ触らない）。"""
+    outside = root.parent / "elsewhere" / "grok"
+    monkeypatch.setattr(config, "_settings", Settings(grok_workdir=str(outside)))
+    assert chat._workdir() == outside

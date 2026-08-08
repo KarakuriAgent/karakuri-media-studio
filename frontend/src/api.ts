@@ -24,6 +24,7 @@ import type {
   ChatSessionCreate,
   ComfyTarget,
   Health,
+  HealthStatus,
   Job,
   JobCreate,
   LibraryCategoryValue,
@@ -225,6 +226,14 @@ export const api = {
   getSettings: () => request<Settings>('/api/settings'),
   putSettings: (patch: Partial<Settings>) =>
     json<Settings>('PUT', '/api/settings', patch),
+
+  /**
+   * Grok Build CLI（Grok Imagine の生成バックエンド、SPEC §5.2）の疎通確認。
+   * `status` は枠を使わない軽い確認（コマンドと認証ファイル）、`check` は実際に
+   * 1 ターン回す（設定ページの「接続確認」）。
+   */
+  grokStatus: () => request<HealthStatus>('/api/grok/status'),
+  checkGrok: () => json<HealthStatus>('POST', '/api/grok/check', {}),
 
   // モデル指定と LoRA 登録は接続先ごと（SPEC §5）。`target` を省略すると
   // サーバーが現在の接続先を使う。設定ページは編集中の環境を明示的に渡す。

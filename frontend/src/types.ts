@@ -32,6 +32,12 @@ export interface Settings {
   grok_model: string
   grok_workdir: string
   /**
+   * Grok Imagine（画像生成・編集、SPEC §5.2）の作業ディレクトリと制限時間。
+   * コマンド名は `grok_command` と共有する。
+   */
+  grok_media_workdir: string
+  grok_media_timeout: number
+  /**
    * 接続先ごとのモデル指定（SPEC §3.3 / §5）。
    * `{"local": {"<workflow_id>/<node_id>.<field>": "file.safetensors"}, …}` で、
    * テンプレート既定と違うものだけが入る。設定ページは `GET/PUT /api/models`

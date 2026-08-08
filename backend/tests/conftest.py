@@ -39,6 +39,8 @@ def fake_outputs(
     }
     outputs: dict[str, dict] = {}
     for spec in SPECS:
+        if spec.backend != "comfyui":
+            continue  # 外部バックエンドは ComfyUI のノードを持たない（SPEC §5.2）
         key, filename = key_and_file[spec.kind]
         outputs[spec.output_node] = {
             key: [{"filename": filename, "subfolder": "", "type": "output"}]

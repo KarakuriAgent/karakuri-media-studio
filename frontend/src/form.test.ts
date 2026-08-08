@@ -361,6 +361,25 @@ describe('editing image workflows', () => {
     expect(hiddenFields('image_only', ID_LORA, KREA2).resolution).toBe(false)
   })
 
+  it('hides the image LoRA chain for a workflow that cannot take one', () => {
+    // Grok Imagine は ComfyUI のグラフを持たない（= lora_chain が無い）
+    const GROK = workflow({
+      id: 'grok_imagine_t2i',
+      kind: 'image',
+      family: 'grok-imagine',
+      backend: 'grok_cli',
+      supports: ['aspect_ratio', 'prompt'],
+      accepts_video_loras: false,
+    })
+    expect(hiddenFields('image_only', ID_LORA, GROK).loras).toBe(true)
+    expect(hiddenFields('image_only', ID_LORA, GROK).trigger).toBe(true)
+    expect(hiddenFields('full', I2V, GROK).loras).toBe(true)
+    // LoRA チェーンを持つ ComfyUI のワークフローはこれまでどおり出す
+    expect(hiddenFields('image_only', ID_LORA, KREA2).loras).toBe(false)
+    // 選択肢がまだ来ていない（ワークフロー未指定）ときも出す
+    expect(hiddenFields('image_only', ID_LORA).loras).toBe(false)
+  })
+
   it('rejects a submit without the picture the editing workflow needs', () => {
     const form = { ...initialForm, mode: 'image_only' as const, sourceImage: '' }
     expect(validateForm(form, QWEN).source_image).toContain('参照画像')
