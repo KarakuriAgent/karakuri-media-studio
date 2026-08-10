@@ -44,7 +44,7 @@ def _workflow_option(spec: WorkflowSpec) -> WorkflowOption:
         id=spec.id,
         label=spec.label,
         # 2 段プルダウン（モデル → モード）用。宣言が無いものは label をそのまま
-        # モードの名前にする（LTX のように既にモデル名を含まないものはこれでよい）。
+        # モードの名前にする（既にモデル名を含まないものはこれでよい）。
         mode_label=spec.mode_label or spec.label,
         family_label=family_label(spec.family),
         kind=spec.kind,

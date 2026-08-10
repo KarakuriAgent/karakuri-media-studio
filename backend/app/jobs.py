@@ -90,6 +90,7 @@ from .workflow import (
 from .workflows import (
     DEFAULT_AUDIO_WORKFLOW,
     DEFAULT_IMAGE_WORKFLOW,
+    DEFAULT_T2V_WORKFLOW,
     DEFAULT_VIDEO_WORKFLOW,
     INPUT_FIELDS,
     MULTI_INPUT_FIELDS,
@@ -763,16 +764,100 @@ async def set_nsfw(job_id: str, nsfw: bool) -> Job | None:
     return job
 
 
+def _carried_video_loras(
+    workflow_id: str, loras: Any, trigger_text: Any
+) -> tuple[list[Any], str]:
+    """``workflow_id`` が LoRA チェーンを宣言しているときだけ引き継ぐ（§3.1）。
+
+    宣言のないワークフローに ``video_loras`` を渡すと
+    :func:`app.models.video_lora_problem` が 422 にするので、付け替え先が
+    受け取れないなら本文（トリガーワード）ごと落とす。
+    """
+    try:
+        spec = get_video_spec(workflow_id)
+    except WorkflowSpecError:
+        return [], ""
+    if spec.lora_chain is None:
+        return [], ""
+    return list(loras or []), str(trigger_text or "")
+
+
+def _fitted_megapixels(workflow_id: str, megapixels: Any) -> Any:
+    """付け替え先が想定している解像度に収める（宣言があるときだけ）。
+
+    別のワークフローから引き継いだ ``megapixels`` は、そのモデルが前提にして
+    いる画角（:attr:`app.workflows.WorkflowSpec.default_megapixels`）より大きい
+    ことがある（旧 LTX の 1.0MP を MiniMax H3 に持ち込むと 8GB 級の GPU で
+    CUDA OOM になる）ので、宣言を上限として扱う。
+    """
+    if not isinstance(megapixels, (int, float)):
+        return megapixels
+    try:
+        spec = get_video_spec(workflow_id)
+    except WorkflowSpecError:
+        return megapixels
+    if spec.default_megapixels and megapixels > spec.default_megapixels:
+        return spec.default_megapixels
+    return megapixels
+
+
+def _rerun_video_workflow(params: dict[str, Any]) -> str:
+    """保存済みの ``video_workflow`` を、いま在るワークフローに正規化する。
+
+    廃止されたワークフロー（旧 LTX-2 など）の id を持つ古いジョブでも再実行
+    できるように、id が引けないときだけ既定に寄せる。開始フレームを渡せる
+    ジョブ（``mode: "full"`` と ``source_image`` のあるもの）は
+    :data:`DEFAULT_VIDEO_WORKFLOW`、そうでなければ
+    :data:`DEFAULT_T2V_WORKFLOW`（開始フレームを要求しないほう）。
+    """
+    try:
+        return get_video_spec(params.get("video_workflow")).id
+    except WorkflowSpecError:
+        pass
+    if params.get("mode", "full") == "full" or params.get("source_image"):
+        return DEFAULT_VIDEO_WORKFLOW
+    return DEFAULT_T2V_WORKFLOW
+
+
+def _refit_video_params(params: dict[str, Any], workflow_id: str) -> None:
+    """``workflow_id`` へ付け替えた params から、宣言に合わない値を落とす。
+
+    付け替え先が宣言していない引き継ぎ（LoRA・ショット割り・Elements・選択
+    項目）はそのままだと 422 になり、解像度は大きすぎると CUDA OOM になる。
+    """
+    params["video_workflow"] = workflow_id
+    params["megapixels"] = _fitted_megapixels(workflow_id, params.get("megapixels"))
+    params["video_loras"], params["video_trigger_text"] = _carried_video_loras(
+        workflow_id, params.get("video_loras"), params.get("video_trigger_text")
+    )
+    spec = get_video_spec(workflow_id)
+    if spec.multi_shot is None:
+        params["multi_shots"] = []
+    if spec.elements is None:
+        params["kling_elements"] = []
+    params["selects"] = _carried_selects(workflow_id, params.get("selects"))
+
+
 async def rerun_job(job_id: str, payload: JobRerun, *, inherit_nsfw: bool = False) -> Job:
     """New job from the stored *params* (rebuilt, not replayed from workflow_json).
 
     NSFW フラグは元ジョブから継承する（継承時は判定をスキップ）。
+
+    保存済みの params はそのまま検証に掛かるので、廃止されたワークフローを
+    指しているジョブは :func:`_rerun_video_workflow` で在るものへ寄せてから
+    投入する（寄せたときは引き継ぎ値も付け替え先に合わせる）。
     """
     source = await get_job(job_id)
     if source is None:
         raise LookupError(job_id)
     params = dict(source.params)
     params.pop("job_id", None)
+    # 動画ステージを走らせるモードだけ（image_only / audio の video_workflow は
+    # 記録用で、検証もされないのでさわらない）
+    if params.get("mode", source.mode) in ("full", "i2v"):
+        workflow_id = _rerun_video_workflow(params)
+        if workflow_id != params.get("video_workflow"):
+            _refit_video_params(params, workflow_id)
     if payload.seed is not None:
         params.update(_seeds(payload.seed))
     elif payload.randomize_seed:
@@ -794,7 +879,7 @@ def _continuable_workflow(workflow_id: str | None) -> str:
     """A video workflow that can start from a last frame (SPEC §2).
 
     ``continue`` feeds a still into the video stage, so a workflow that cannot
-    take a start frame (t2v, the IC-LoRA reference sheet) falls back to the
+    take a start frame (t2v, the reference-only modes) falls back to the
     default one instead of failing the request.
     """
     try:
@@ -837,24 +922,36 @@ async def continue_job(
     start_image = copy_into_assets(last_frame, "image")
 
     prev = dict(source.params)
-    video_workflow = _continuable_workflow(
-        payload.video_workflow or prev.get("video_workflow")
+    requested_workflow = payload.video_workflow or prev.get("video_workflow")
+    video_workflow = _continuable_workflow(requested_workflow)
+    # 開始フレームを取れない・もう無いワークフローだったので既定に付け替えた
+    # （引き継ぎ値は元のワークフロー向けなので、付け替え先に合わせ直す）
+    switched = bool(requested_workflow) and video_workflow != requested_workflow
+    carried_video_loras, carried_video_trigger = _carried_video_loras(
+        video_workflow, prev.get("video_loras"), prev.get("video_trigger_text")
     )
+    # 元ジョブの params には必ず入っている値なので、この既定は `megapixels` を
+    # 記録していなかった頃のジョブ用。当時は 1.0MP で回っていたので、グローバル
+    # 既定が下がっても 1.0 のまま再現する。ただしワークフローを付け替えたときは、
+    # 引き継いだ値が付け替え先の想定より大きくなりうる（CUDA OOM）ので上限を掛ける。
+    megapixels = prev.get("megapixels", 1.0)
+    if switched:
+        megapixels = _fitted_megapixels(video_workflow, megapixels)
+    if payload.megapixels is not None:
+        megapixels = payload.megapixels
     params: dict[str, Any] = {
         "mode": "i2v",
         # kept for the record only: a continuation never runs an image stage
         "image_workflow": prev.get("image_workflow") or DEFAULT_IMAGE_WORKFLOW,
         "video_workflow": video_workflow,
         "aspect_ratio": payload.aspect_ratio or prev.get("aspect_ratio", "4:3 (Standard)"),
-        "megapixels": (
-            payload.megapixels
-            if payload.megapixels is not None
-            else prev.get("megapixels", 1.0)
-        ),
+        "megapixels": megapixels,
         "loras": prev.get("loras", []),
         "trigger_text": prev.get("trigger_text", ""),
-        "video_loras": prev.get("video_loras", []),
-        "video_trigger_text": prev.get("video_trigger_text", ""),
+        # 動画 LoRA は切り替え先が lora_chain を宣言しているときだけ引き継ぐ
+        # （宣言が無いのに渡すと 422 になる）
+        "video_loras": carried_video_loras,
+        "video_trigger_text": carried_video_trigger,
         "image_prompt": prev.get("image_prompt", ""),
         "video_prompt": payload.video_prompt or prev.get("video_prompt", ""),
         "negative_prompt": payload.negative_prompt or prev.get("negative_prompt") or "",
@@ -931,6 +1028,8 @@ def _generation_params(
         video_workflow=p.get("video_workflow") or DEFAULT_VIDEO_WORKFLOW,
         audio_workflow=p.get("audio_workflow") or DEFAULT_AUDIO_WORKFLOW,
         aspect_ratio=p.get("aspect_ratio", "4:3 (Standard)"),
+        # 既定は `megapixels` を記録していなかった頃のジョブの再現用（当時は
+        # 1.0MP 固定）。新しいジョブは必ず自分の値を持っている。
         megapixels=float(p.get("megapixels", 1.0)),
         start_image_size=read_image_size(source_image) if source_image else None,
         loras=[LoraRef(**lora) for lora in p.get("loras", [])],

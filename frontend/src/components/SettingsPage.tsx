@@ -37,15 +37,23 @@ const EMPTY_LORA: LoraPayload = {
 
 const LORA_TARGET_LABELS: Record<LoraTarget, string> = {
   image: '画像用',
-  video: '動画用（LTX 2.3）',
+  video: '動画用',
 }
 
-/** 一覧バッジ: 動画は LTX 固定、画像はモデルファミリーまで出す。 */
+/** 一覧バッジ: 動画はファミリー無し、画像はモデルファミリーまで出す。 */
 function loraBadge(lora: Lora): string {
   const target = lora.target ?? 'image'
   if (target === 'video') return LORA_TARGET_LABELS.video
   const family = lora.family ?? DEFAULT_FAMILY
   return `画像用 / ${FAMILY_LABELS[family] ?? family}`
+}
+
+/** 外部 API の共有キーを 1 本作る（英数 32 文字。ブラウザ側で完結させる）。 */
+function randomApiKey(length = 32): string {
+  const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
+  const bytes = new Uint8Array(length)
+  crypto.getRandomValues(bytes)
+  return Array.from(bytes, (byte) => alphabet[byte % alphabet.length]).join('')
 }
 
 const TABS = [
@@ -142,6 +150,7 @@ function formatBytes(bytes: number): string {
   return `${bytes} B`
 }
 
+/** 折りたたみの 1 グループ = 1 ワークフロー。 */
 interface ModelGroup {
   id: string
   label: string
@@ -151,6 +160,20 @@ interface ModelGroup {
   changed: number
   /** 既定値から変わっている行数（保存済みの上書きを含む） */
   custom: number
+}
+
+/**
+ * モデル（ファミリー）の見出しと、その下にぶら下がるワークフローのグループ。
+ *
+ * 動画は 1 モデル（MiniMax H3）に t2v / i2v / … と複数のワークフローがあるので、
+ * 「モデル名 → ワークフロー」の 2 階層で出す。ワークフローが 1 本しかない
+ * ファミリー（ほとんどの画像・音声）は見出しを省いて従来どおり並べる。
+ */
+interface ModelFamily {
+  id: string
+  label: string
+  kind: string
+  groups: ModelGroup[]
 }
 
 /** 取得元 URL の対応表が同じ内容か（無駄な PUT を避けるため）。 */
@@ -168,28 +191,71 @@ function sameChoices(a: string[], b: string[]): boolean {
 }
 
 /**
- * ワークフローごとにまとめる（表示順は API の並び = workflows.SPECS の順）。
+ * ワークフローのグループ見出し（モデル名の見出しの下に出す分）。
+ *
+ * 親にモデル名が出ているので、ラベルからその重複を落とす
+ * （「画像→動画・音声つき (MiniMax H3 i2v)」-> 「画像→動画・音声つき (i2v)」）。
+ * 落とすと空になるラベル（ワークフローが 1 本だけのファミリー）はそのまま。
+ */
+function workflowLabel(row: ModelFieldState, familyLabel: string): string {
+  const label = row.workflow_label || row.workflow_id || ''
+  // family_label は「Grok Imagine（サブスク CLI）」のように注記つきのことが
+  // あるので、注記を外した素の名前でも試す。
+  const names = [familyLabel, familyLabel.split('（')[0]].filter(Boolean)
+  for (const name of names) {
+    if (!label.includes(name)) continue
+    const stripped = label
+      .split(name)
+      .join('')
+      .replace(/[(（]\s+/g, '(')
+      .replace(/\s+[)）]/g, ')')
+      .replace(/\s{2,}/g, ' ')
+      .trim()
+    if (stripped) return stripped
+  }
+  return label
+}
+
+/**
+ * モデル（ファミリー）→ ワークフローの 2 階層にまとめる
+ * （表示順はどちらも API の並び = workflows.SPECS の順）。
+ *
+ * グループ自体は従来どおり 1 ワークフロー = 1 折りたたみで、動画のように
+ * 1 モデルへ複数のワークフローがぶら下がるときだけモデル名の見出しが挟まる。
  * 折りたたみが既定なので、中身が既定値から変わっていることをバッジで見せる。
  */
 function groupModels(
   rows: ModelFieldState[],
   draft: Record<string, string>,
   choices: Record<string, string[]>,
-): ModelGroup[] {
+): ModelFamily[] {
+  const families = new Map<string, ModelFamily>()
   const groups = new Map<string, ModelGroup>()
   for (const row of rows) {
+    const familyId = row.family || `workflow:${row.workflow_id || '(unknown)'}`
+    let family = families.get(familyId)
+    if (!family) {
+      family = {
+        id: familyId,
+        label: row.family_label || row.family || row.workflow_label || familyId,
+        kind: row.kind ?? 'image',
+        groups: [],
+      }
+      families.set(familyId, family)
+    }
     const id = row.workflow_id || '(unknown)'
     let group = groups.get(id)
     if (!group) {
       group = {
         id,
-        label: row.workflow_label || id,
+        label: workflowLabel(row, family.label),
         kind: row.kind ?? 'image',
         rows: [],
         changed: 0,
         custom: 0,
       }
       groups.set(id, group)
+      family.groups.push(group)
     }
     group.rows.push(row)
     const value = draft[row.key] ?? ''
@@ -201,7 +267,14 @@ function groupModels(
     }
     if (value !== row.default) group.custom += 1
   }
-  return [...groups.values()]
+  // ワークフローが 1 本だけのファミリーはモデル名の見出しを出さないので、
+  // 見出しに逃がした分（「Krea 2 turbo」の「Krea 2」）を書き戻す。
+  for (const family of families.values()) {
+    if (family.groups.length !== 1) continue
+    const [group] = family.groups
+    group.label = group.rows[0].workflow_label || group.id
+  }
+  return [...families.values()]
 }
 
 export default function SettingsPage({
@@ -259,7 +332,7 @@ export default function SettingsPage({
     const target = lora.target ?? 'image'
     const family = lora.family ?? DEFAULT_FAMILY
     if (loraTargetFilter !== 'all' && target !== loraTargetFilter) return false
-    // 動画用 LoRA にファミリーの区別はない（LTX 2.3 のみ）。対象＝動画用のときに
+    // 動画用 LoRA にファミリーの区別はない。対象＝動画用のときに
     // ファミリーで絞ると必ず 0 件になってしまうので、ファミリー条件は無視する。
     if (
       loraTargetFilter !== 'video' &&
@@ -423,6 +496,8 @@ export default function SettingsPage({
           runpod_template_id: settings.runpod_template_id,
           runpod_gpu_type: settings.runpod_gpu_type,
           runpod_network_volume_id: settings.runpod_network_volume_id,
+          external_api_key: settings.external_api_key,
+          external_max_pending_takes: settings.external_max_pending_takes,
         }),
       )
       setNotice('設定を保存しました')
@@ -646,7 +721,7 @@ export default function SettingsPage({
     setSettings((previous) => (previous ? { ...previous, ...patch } : previous))
 
   /** モデル / LoRA タブの先頭に置く環境プルダウン（SPEC §5）。 */
-  const envPicker = (hint: string) => (
+  const envPicker = () => (
     <div className="card flex flex-wrap items-center gap-2 p-2">
       <label className="text-xs text-slate-400" htmlFor="settings-env">
         対象の接続先
@@ -667,7 +742,6 @@ export default function SettingsPage({
           </option>
         ))}
       </select>
-      <p className="text-[11px] text-slate-500">{hint}</p>
     </div>
   )
 
@@ -680,7 +754,7 @@ export default function SettingsPage({
       !sameChoices(choiceDraft[row.key] ?? [], row.choices ?? []),
   )
   // 保存は全件置換 PUT なので、折りたたんでいても modelDraft は全行を持ち続ける。
-  const modelGroups = groupModels(models, modelDraft, choiceDraft)
+  const modelFamilies = groupModels(models, modelDraft, choiceDraft)
   // ダウンロード UI を出すか（SPEC §3.3）。ローカル / RunPod では常に出し、
   // 落とせない事情（COMFY_MODELS_DIR 未設定・Pod 停止中）は押したときに
   // エラーで知らせる。ComfyCloud だけはファイルを置けないので出さない。
@@ -748,11 +822,6 @@ export default function SettingsPage({
                           </option>
                         ))}
                       </select>
-                      <p className="mt-1 text-[11px] text-slate-500">
-                        生成フォーム上部のプルダウンと同じ設定です。ジョブは選んだ
-                        接続先の ComfyUI に投げられます（保存すると次回起動時も
-                        この選択が使われます）。
-                      </p>
                     </div>
 
                     <div className="rounded-lg border border-ink-600 p-2">
@@ -771,10 +840,6 @@ export default function SettingsPage({
                               update({ comfy_cloud_api_key: event.target.value })
                             }
                           />
-                          <p className="mt-1 text-[11px] text-slate-500">
-                            接続先は https://cloud.comfy.org 固定です。API アクセスは
-                            Standard 以上のプランが必要です。
-                          </p>
                         </div>
                       </div>
                     </div>
@@ -823,12 +888,6 @@ export default function SettingsPage({
                           />
                           RunPod の Pod を自動起動する
                         </label>
-                        <p className="text-[11px] text-slate-500">
-                          接続先が RunPod のとき、ComfyUI が落ちていればジョブ実行の
-                          直前に Pod を立ち上げます（起動待ちは最大 15 分）。上の URL
-                          には Pod の Cloudflare Tunnel のホスト名を入れてください。
-                          イメージと手順は deploy/runpod/README.md を参照。
-                        </p>
                         {settings.runpod_enabled && (
                           <>
                             <div>
@@ -900,9 +959,6 @@ export default function SettingsPage({
                             update({ local_comfy_url: event.target.value })
                           }
                         />
-                        <p className="mt-1 text-[11px] text-slate-500">
-                          同じマシン / LAN の ComfyUI。API キーは使いません。
-                        </p>
                       </div>
                     </div>
                   </div>
@@ -930,13 +986,6 @@ export default function SettingsPage({
                           }`}
                         >
                           {dirStatusMessage(dirStatus).text}
-                        </p>
-                        <p className="mt-1 text-[11px] text-slate-500">
-                          パスは .env の COMFY_MODELS_DIR で決まります（変更したら再起動）。
-                          「モデル」タブの [DL] は、接続先が<strong className="text-slate-300">
-                          ローカル</strong>ならここへ直接置き、
-                          <strong className="text-slate-300">RunPod</strong> なら Pod 側の
-                          models ディレクトリへ落とします（どちらも ComfyUI の再起動は不要）。
                         </p>
                       </div>
                       <div className="grid grid-cols-2 gap-2">
@@ -1006,33 +1055,78 @@ export default function SettingsPage({
                       />
                     </div>
                   </div>
-                  <div className="flex flex-col gap-1">
-                    <div className="flex items-center gap-2">
-                      <button
-                        className="btn-ghost self-start"
-                        onClick={() => void checkGrok()}
-                        disabled={grokChecking}
+                  <div className="flex items-center gap-2">
+                    <button
+                      className="btn-ghost self-start"
+                      onClick={() => void checkGrok()}
+                      disabled={grokChecking}
+                    >
+                      {grokChecking ? '確認中…' : 'grok CLI の接続確認'}
+                    </button>
+                    {grokCheck && (
+                      <span
+                        className={`text-xs ${
+                          grokCheck.status === 'ok'
+                            ? 'text-emerald-400'
+                            : 'text-amber-400'
+                        }`}
                       >
-                        {grokChecking ? '確認中…' : 'grok CLI の接続確認'}
-                      </button>
-                      {grokCheck && (
-                        <span
-                          className={`text-xs ${
-                            grokCheck.status === 'ok'
-                              ? 'text-emerald-400'
-                              : 'text-amber-400'
-                          }`}
-                        >
-                          {grokCheck.detail || grokCheck.status}
-                        </span>
-                      )}
+                        {grokCheck.detail || grokCheck.status}
+                      </span>
+                    )}
+                  </div>
+                  {/* 外部公開 API（docs/EXTERNAL-API.md）。キーを入れることが
+                      有効化そのもので、空のあいだは /api/v1 が丸ごと 404。 */}
+                  <div className="card flex flex-col gap-2 p-3">
+                    <h4 className="text-xs font-semibold text-slate-300">
+                      外部 API（/api/v1）
+                    </h4>
+                    <div className="grid gap-2 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+                      <div>
+                        <label className="label" htmlFor="external-api-key">
+                          API キー（空 = 外部 API は無効）
+                        </label>
+                        <div className="flex gap-2">
+                          <input
+                            id="external-api-key"
+                            className="field min-w-0 flex-1"
+                            type="password"
+                            autoComplete="off"
+                            value={settings.external_api_key}
+                            onChange={(event) =>
+                              update({ external_api_key: event.target.value })
+                            }
+                          />
+                          <button
+                            className="btn-ghost shrink-0"
+                            onClick={() =>
+                              update({ external_api_key: randomApiKey() })
+                            }
+                          >
+                            生成
+                          </button>
+                        </div>
+                      </div>
+                      <div>
+                        <label className="label" htmlFor="external-max-pending">
+                          未完了 Take の上限（0 = 無制限）
+                        </label>
+                        <input
+                          id="external-max-pending"
+                          className="field"
+                          type="number"
+                          min="0"
+                          step="1"
+                          value={settings.external_max_pending_takes}
+                          onChange={(event) =>
+                            update({
+                              external_max_pending_takes:
+                                Number(event.target.value) || 0,
+                            })
+                          }
+                        />
+                      </div>
                     </div>
-                    <p className="text-[11px] text-slate-500">
-                      画像ワークフローの「Grok Imagine」はこの CLI
-                      のサブスク枠で走ります（ComfyUI は使いません）。未サインインなら
-                      ターミナルで <code>grok</code>（サーバーでは{' '}
-                      <code>grok --device-auth</code>）を実行してください。
-                    </p>
                   </div>
                   <button
                     className="btn-primary self-start"
@@ -1048,9 +1142,7 @@ export default function SettingsPage({
 
           {tab === 'loras' && (
             <div className="flex flex-col gap-4">
-              {envPicker(
-                'LoRA 登録は接続先ごとです。ここで追加したものは選んだ環境の生成フォームにだけ出ます（接続先を分ける前の登録は全環境に出ます）。',
-              )}
+              {envPicker()}
               <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(22rem,0.8fr)]">
                 <div className="flex min-w-0 flex-col gap-2">
                   <div className="card p-3">
@@ -1331,10 +1423,6 @@ export default function SettingsPage({
                       ))}
                     </select>
                   </div>
-                  <p className="col-span-2 -mt-1 text-[11px] text-slate-500">
-                    画像用 LoRA は同じモデルファミリーの画像ワークフローでのみ選択できます。
-                    動画用は LTX 2.3 の動画生成に挿入され、ファミリーは使いません。
-                  </p>
                   <div className="col-span-2">
                     <label className="label">トリガーワード</label>
                     <input
@@ -1412,10 +1500,6 @@ export default function SettingsPage({
                       value={draftUrl}
                       onChange={(event) => setDraftUrl(event.target.value)}
                     />
-                    <p className="mt-1 text-[11px] text-slate-500">
-                      ここではダウンロードしません。モデルタブと同じ取得元 URL の登録で、
-                      [DL] / [全DL] のときに使われます。空欄で保存すると登録を解除します。
-                    </p>
                   </div>
                 </div>
                 <div className="mt-3 flex gap-2">
@@ -1439,28 +1523,8 @@ export default function SettingsPage({
 
           {tab === 'models' && (
             <div className="flex flex-col gap-3">
-              {envPicker(
-                'モデルの指定と候補リストは接続先ごとに保存されます（環境によって入っているファイルが違うため）。',
-              )}
-              <p className="text-xs text-slate-500">
-                workflow/ 配下の各ワークフローのモデルファイル名を上書きします。空欄・既定値と同じ値は保存されません。
-              </p>
-              <p className="text-xs text-slate-500">
-                候補リストに別のファイル名を足すと、そのスロットは生成フォーム（とエージェント）で
-                <strong className="text-slate-300">実行ごとに切り替えられる</strong>
-                ようになります（既定値と合わせて 2 件以上必要）。
-              </p>
-              <p className="text-xs text-slate-500">
-                ComfyUI のファイル一覧に無いファイル名には
-                <span className="mx-1 rounded border border-amber-500 px-1 py-px text-[10px] text-amber-400">
-                  未検出
-                </span>
-                が付きます。取得元 URL は行ごとに登録でき（ファイル名ごとに設定へ保存され、
-                同じファイルを使う他のワークフローの行にも共有されます）、RunPod の Pod へ
-                持っていくモデル一覧にも使われます。検出済みの行では [取得元 URL] を開くと
-                入力でき、空欄で保存すると登録解除です。
-              </p>
-              {showDownload ? (
+              {envPicker()}
+              {showDownload && (
                 <div className="flex flex-wrap items-center gap-2">
                   <button
                     className="btn-ghost text-xs"
@@ -1470,20 +1534,7 @@ export default function SettingsPage({
                   >
                     全DL
                   </button>
-                  <p className="text-xs text-slate-500">
-                    [DL] は{COMFY_TARGET_LABELS[envTarget ?? 'local']}の models
-                    ディレクトリへ実ファイルを落とします
-                    {envTarget === 'runpod'
-                      ? '（Pod が起動している必要があります）'
-                      : '（保存先は .env の COMFY_MODELS_DIR）'}
-                    。[全DL] は未検出かつ取得元 URL 登録済みのものを一括で開始します。
-                  </p>
                 </div>
-              ) : (
-                <p className="text-xs text-slate-500">
-                  ComfyCloud のモデルは Comfy Cloud 側の管理なので、ここからは
-                  ダウンロードできません（取得元 URL の登録はできます）。
-                </p>
               )}
               {/* ローカルに落とすときだけ関係する保存先の警告 */}
               {showDownload && envTarget !== 'runpod' && !dirStatusMessage(dirStatus).ok && (
@@ -1502,330 +1553,353 @@ export default function SettingsPage({
                 <p className="text-xs text-slate-500">読み込み中…</p>
               )}
               {MODEL_KINDS.map(([kind, kindLabel]) => {
-                const groups = modelGroups.filter((group) => group.kind === kind)
-                if (groups.length === 0) return null
+                const families = modelFamilies.filter(
+                  (family) => family.kind === kind,
+                )
+                if (families.length === 0) return null
                 return (
                   <div key={kind} className="flex flex-col gap-2">
                     <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-400">
                       {kindLabel}
                     </h4>
-                    {groups.map((group) => {
-                      const open = openWorkflows[group.id] ?? false
+                    {families.map((family) => {
+                      // ワークフローが 2 本以上あるモデル（動画の MiniMax H3）だけ
+                      // モデル名の見出しを挟み、その下にワークフローを並べる。
+                      // 1 本だけのモデルは見出しを出さず従来どおりの並び。
+                      const nested = family.groups.length > 1
                       return (
-                        <div key={group.id} className="card overflow-hidden">
-                          <button
-                            type="button"
-                            className="flex w-full items-center gap-2 p-2 text-left text-xs hover:bg-ink-700"
-                            onClick={() =>
-                              setOpenWorkflows((previous) => ({
-                                ...previous,
-                                [group.id]: !open,
-                              }))
-                            }
+                        <div key={family.id} className="flex flex-col gap-2">
+                          {nested && (
+                            <h5 className="text-xs font-medium text-slate-300">
+                              {family.label}
+                            </h5>
+                          )}
+                          <div
+                            className={`flex flex-col gap-2${
+                              nested ? ' border-l border-ink-600 pl-2' : ''
+                            }`}
                           >
-                            <span className="w-3 text-slate-500">
-                              {open ? '▾' : '▸'}
-                            </span>
-                            <span className="text-slate-200">{group.label}</span>
-                            <span className="text-slate-600">
-                              {group.rows.length} 項目
-                            </span>
-                            {group.changed > 0 && (
-                              <span className="rounded border border-accent-500 px-1 py-px text-[10px] text-accent-400">
-                                未保存 {group.changed}
-                              </span>
-                            )}
-                            {group.custom > 0 && (
-                              <span className="rounded border border-ink-500 px-1 py-px text-[10px] text-slate-400">
-                                既定から変更 {group.custom}
-                              </span>
-                            )}
-                          </button>
-                          {open && (
-                            <div className="overflow-x-auto border-t border-ink-600">
-                              <table className="w-full text-xs">
-                                <thead className="text-left text-slate-500">
-                                  <tr className="border-b border-ink-600">
-                                    <th className="p-2 font-medium">ノード</th>
-                                    <th className="p-2 font-medium">既定値</th>
-                                    <th className="p-2 font-medium">使用する値</th>
-                                    <th className="p-2 font-medium">
-                                      候補リスト（実行時に選べる）
-                                    </th>
-                                    {/* 取得元 URL の登録は COMFY_MODELS_DIR と無関係に
-                                        使える（Pod 用のモデル一覧に要るため）。実際の
-                                        ダウンロードだけが dir の状態に縛られる。 */}
-                                    <th className="p-2 font-medium">
-                                      取得元 URL / ダウンロード
-                                    </th>
-                                    <th className="p-2" />
-                                  </tr>
-                                </thead>
-                                <tbody className="divide-y divide-ink-600">
-                                  {group.rows.map((row) => {
-                                    const value = modelDraft[row.key] ?? ''
-                                    const choices = choiceDraft[row.key] ?? []
-                                    const changed =
-                                      value !== row.value ||
-                                      !sameChoices(choices, row.choices ?? [])
-                                    const custom = value !== row.default
-                                    const listId = modelFiles[
-                                      `${row.class_type}.${row.field}`
-                                    ]
-                                      ? fileListId(`${row.class_type}.${row.field}`)
-                                      : undefined
-                                    // 不足モデルのダウンロード（SPEC §3.3）。URL と
-                                    // 進捗はファイル名で持つので、同じファイルを使う
-                                    // 別のワークフローの行にも同じものが出る。
-                                    // 「未検出」は options（= いま繋いでいる ComfyUI）の
-                                    // ファイル一覧で決まるので、別の環境を編集して
-                                    // いるあいだは判定しない（他所の在庫は分からない）。
-                                    const missing =
-                                      connectedEnv && isMissing(row, modelFiles, value)
-                                    const progress = downloads[value]
-                                    const downloading =
-                                      progress?.status === 'downloading'
-                                    const url = (urlDraft[value] ?? '').trim()
-                                    // 検出済みの行でも取得元 URL は登録できる（別の
-                                    // 環境へ [DL] するときに要る）。表がうるさく
-                                    // ならないよう、既定では畳んでおく。
-                                    const savedUrl =
-                                      settings?.model_download_urls?.[value] ?? ''
-                                    const urlShown = urlOpen[value] ?? false
-                                    return (
-                                      <tr
-                                        key={row.key}
-                                        className={
-                                          changed ? 'bg-accent-500/10' : undefined
-                                        }
-                                      >
-                                        <td className="p-2 align-top">
-                                          <p className="text-slate-200">
-                                            {row.title || row.key}
-                                          </p>
-                                          <p className="text-slate-600">
-                                            {row.node_id}.{row.field} /{' '}
-                                            {row.class_type}
-                                          </p>
-                                        </td>
-                                        <td className="max-w-[16rem] break-all p-2 align-top text-slate-500">
-                                          {row.default}
-                                        </td>
-                                        <td className="p-2 align-top">
-                                          <input
-                                            className="field"
-                                            value={value}
-                                            list={listId}
-                                            onChange={(event) =>
-                                              setModelDraft((previous) => ({
-                                                ...previous,
-                                                [row.key]: event.target.value,
-                                              }))
-                                            }
-                                          />
-                                          {missing && (
-                                            <span
-                                              className="mt-1 inline-block rounded border border-amber-500 px-1 py-px text-[10px] text-amber-400"
-                                              title="ComfyUI のファイル一覧に見つかりません"
-                                            >
-                                              未検出
-                                            </span>
-                                          )}
-                                        </td>
-                                        <td className="min-w-[16rem] p-2 align-top">
-                                          {choices.length > 0 && (
-                                            <div className="mb-1 flex flex-wrap gap-1">
-                                              {choices.map((name) => (
-                                                <span
-                                                  key={name}
-                                                  className="chip border-ink-500 bg-ink-700 text-slate-300"
-                                                >
-                                                  <span className="max-w-[12rem] truncate">
-                                                    {name}
-                                                  </span>
-                                                  <button
-                                                    className="text-slate-500 hover:text-slate-200"
-                                                    title="候補から削除"
-                                                    onClick={() =>
-                                                      removeChoice(row.key, name)
-                                                    }
-                                                  >
-                                                    ×
-                                                  </button>
-                                                </span>
-                                              ))}
-                                            </div>
-                                          )}
-                                          <div className="flex gap-1">
-                                            <input
-                                              className="field"
-                                              placeholder="候補に追加するファイル名"
-                                              list={listId}
-                                              value={choiceInput[row.key] ?? ''}
-                                              onChange={(event) =>
-                                                setChoiceInput((previous) => ({
-                                                  ...previous,
-                                                  [row.key]: event.target.value,
-                                                }))
-                                              }
-                                              onKeyDown={(event) => {
-                                                if (event.key !== 'Enter') return
-                                                event.preventDefault()
-                                                addChoice(row.key)
-                                              }}
-                                            />
-                                            <button
-                                              className="btn-ghost !py-1 text-xs"
-                                              disabled={
-                                                !(choiceInput[row.key] ?? '').trim()
-                                              }
-                                              onClick={() => addChoice(row.key)}
-                                            >
-                                              追加
-                                            </button>
-                                          </div>
-                                        </td>
-                                        <td className="min-w-[16rem] p-2 align-top">
-                                            {/* 未検出の行は URL 欄と [DL] をそのまま
-                                                出す。検出済みの行は [取得元 URL] で
-                                                開いたときだけ出し、[URL保存] だけに
-                                                する。落とせない事情（保存先が無い・
-                                                Pod が停止中）は押したときに理由が
-                                                返るので、ボタンは隠さない。 */}
-                                            {!missing && (
-                                              <button
-                                                type="button"
-                                                className={`text-xs underline decoration-dotted underline-offset-2 hover:text-slate-200 disabled:opacity-40 ${
-                                                  savedUrl
-                                                    ? 'text-accent-400'
-                                                    : 'text-slate-500'
-                                                }`}
-                                                disabled={!value}
-                                                title={
-                                                  savedUrl
-                                                    ? `取得元 URL: ${savedUrl}`
-                                                    : '取得元 URL を登録する（[DL] / [全DL] のときに使われます）'
-                                                }
-                                                onClick={() =>
-                                                  setUrlOpen((previous) => ({
-                                                    ...previous,
-                                                    [value]: !urlShown,
-                                                  }))
+                            {family.groups.map((group) => {
+                              const open = openWorkflows[group.id] ?? false
+                              return (
+                                <div key={group.id} className="card overflow-hidden">
+                                  <button
+                                    type="button"
+                                    className="flex w-full items-center gap-2 p-2 text-left text-xs hover:bg-ink-700"
+                                    onClick={() =>
+                                      setOpenWorkflows((previous) => ({
+                                        ...previous,
+                                        [group.id]: !open,
+                                      }))
+                                    }
+                                  >
+                                    <span className="w-3 text-slate-500">
+                                      {open ? '▾' : '▸'}
+                                    </span>
+                                    <span className="text-slate-200">{group.label}</span>
+                                    <span className="text-slate-600">
+                                      {group.rows.length} 項目
+                                    </span>
+                                    {group.changed > 0 && (
+                                      <span className="rounded border border-accent-500 px-1 py-px text-[10px] text-accent-400">
+                                        未保存 {group.changed}
+                                      </span>
+                                    )}
+                                    {group.custom > 0 && (
+                                      <span className="rounded border border-ink-500 px-1 py-px text-[10px] text-slate-400">
+                                        既定から変更 {group.custom}
+                                      </span>
+                                    )}
+                                  </button>
+                                  {open && (
+                                    <div className="overflow-x-auto border-t border-ink-600">
+                                      <table className="w-full text-xs">
+                                        <thead className="text-left text-slate-500">
+                                          <tr className="border-b border-ink-600">
+                                            <th className="p-2 font-medium">ノード</th>
+                                            <th className="p-2 font-medium">既定値</th>
+                                            <th className="p-2 font-medium">使用する値</th>
+                                            <th className="p-2 font-medium">
+                                              候補リスト（実行時に選べる）
+                                            </th>
+                                            {/* 取得元 URL の登録は COMFY_MODELS_DIR と無関係に
+                                                使える（Pod 用のモデル一覧に要るため）。実際の
+                                                ダウンロードだけが dir の状態に縛られる。 */}
+                                            <th className="p-2 font-medium">
+                                              取得元 URL / ダウンロード
+                                            </th>
+                                            <th className="p-2" />
+                                          </tr>
+                                        </thead>
+                                        <tbody className="divide-y divide-ink-600">
+                                          {group.rows.map((row) => {
+                                            const value = modelDraft[row.key] ?? ''
+                                            const choices = choiceDraft[row.key] ?? []
+                                            const changed =
+                                              value !== row.value ||
+                                              !sameChoices(choices, row.choices ?? [])
+                                            const custom = value !== row.default
+                                            const listId = modelFiles[
+                                              `${row.class_type}.${row.field}`
+                                            ]
+                                              ? fileListId(`${row.class_type}.${row.field}`)
+                                              : undefined
+                                            // 不足モデルのダウンロード（SPEC §3.3）。URL と
+                                            // 進捗はファイル名で持つので、同じファイルを使う
+                                            // 別のワークフローの行にも同じものが出る。
+                                            // 「未検出」は options（= いま繋いでいる ComfyUI）の
+                                            // ファイル一覧で決まるので、別の環境を編集して
+                                            // いるあいだは判定しない（他所の在庫は分からない）。
+                                            const missing =
+                                              connectedEnv && isMissing(row, modelFiles, value)
+                                            const progress = downloads[value]
+                                            const downloading =
+                                              progress?.status === 'downloading'
+                                            const url = (urlDraft[value] ?? '').trim()
+                                            // 検出済みの行でも取得元 URL は登録できる（別の
+                                            // 環境へ [DL] するときに要る）。表がうるさく
+                                            // ならないよう、既定では畳んでおく。
+                                            const savedUrl =
+                                              settings?.model_download_urls?.[value] ?? ''
+                                            const urlShown = urlOpen[value] ?? false
+                                            return (
+                                              <tr
+                                                key={row.key}
+                                                className={
+                                                  changed ? 'bg-accent-500/10' : undefined
                                                 }
                                               >
-                                                {urlShown ? '▾' : '▸'} 取得元 URL
-                                                {savedUrl ? ' ✓' : ''}
-                                              </button>
-                                            )}
-                                            {(missing || urlShown) && (
-                                              <div
-                                                className={`flex gap-1 ${missing ? '' : 'mt-1'}`}
-                                              >
-                                                <input
-                                                  className="field"
-                                                  placeholder="ダウンロード URL（Hugging Face / Civitai など）"
-                                                  value={urlDraft[value] ?? ''}
-                                                  disabled={!value}
-                                                  onChange={(event) =>
-                                                    setUrlDraft((previous) => ({
-                                                      ...previous,
-                                                      [value]: event.target.value,
-                                                    }))
-                                                  }
-                                                />
-                                                {!missing && (
-                                                  <button
-                                                    className="btn-ghost !py-1 text-xs"
-                                                    disabled={busy || url === savedUrl}
-                                                    title="ダウンロードはせず、取得元 URL だけ設定に保存します（空欄で保存すると登録を解除）"
-                                                    onClick={() =>
-                                                      void saveDownloadUrl(value)
+                                                <td className="p-2 align-top">
+                                                  <p className="text-slate-200">
+                                                    {row.title || row.key}
+                                                  </p>
+                                                  <p className="text-slate-600">
+                                                    {row.node_id}.{row.field} /{' '}
+                                                    {row.class_type}
+                                                  </p>
+                                                </td>
+                                                <td className="max-w-[16rem] break-all p-2 align-top text-slate-500">
+                                                  {row.default}
+                                                </td>
+                                                <td className="p-2 align-top">
+                                                  <input
+                                                    className="field"
+                                                    value={value}
+                                                    list={listId}
+                                                    onChange={(event) =>
+                                                      setModelDraft((previous) => ({
+                                                        ...previous,
+                                                        [row.key]: event.target.value,
+                                                      }))
                                                     }
-                                                  >
-                                                    URL保存
-                                                  </button>
-                                                )}
-                                                {showDownload && (
-                                                  <button
-                                                    className="btn-ghost !py-1 text-xs"
-                                                    disabled={
-                                                      busy ||
-                                                      downloading ||
-                                                      !value ||
-                                                      !url
-                                                    }
-                                                    title={`${COMFY_TARGET_LABELS[envTarget ?? 'local']}の ${row.subfolder || 'models 直下'} に保存します`}
-                                                    onClick={() =>
-                                                      void startDownload(row, value)
-                                                    }
-                                                  >
-                                                    DL
-                                                  </button>
-                                                )}
-                                              </div>
-                                            )}
-                                            {missing && showDownload && (
-                                              <p className="mt-1 text-[10px] text-slate-600">
-                                                保存先: {row.subfolder || 'models 直下'}
-                                              </p>
-                                            )}
-                                            {progress && (
-                                              <div className="mt-1">
-                                                {downloading && (
-                                                  <div className="h-1 overflow-hidden rounded bg-ink-700">
-                                                    <div
-                                                      className="h-full bg-accent-500"
-                                                      style={{
-                                                        width: progress.total
-                                                          ? `${Math.min(100, (progress.received / progress.total) * 100)}%`
-                                                          : '100%',
+                                                  />
+                                                  {missing && (
+                                                    <span
+                                                      className="mt-1 inline-block rounded border border-amber-500 px-1 py-px text-[10px] text-amber-400"
+                                                      title="ComfyUI のファイル一覧に見つかりません"
+                                                    >
+                                                      未検出
+                                                    </span>
+                                                  )}
+                                                </td>
+                                                <td className="min-w-[16rem] p-2 align-top">
+                                                  {choices.length > 0 && (
+                                                    <div className="mb-1 flex flex-wrap gap-1">
+                                                      {choices.map((name) => (
+                                                        <span
+                                                          key={name}
+                                                          className="chip border-ink-500 bg-ink-700 text-slate-300"
+                                                        >
+                                                          <span className="max-w-[12rem] truncate">
+                                                            {name}
+                                                          </span>
+                                                          <button
+                                                            className="text-slate-500 hover:text-slate-200"
+                                                            title="候補から削除"
+                                                            onClick={() =>
+                                                              removeChoice(row.key, name)
+                                                            }
+                                                          >
+                                                            ×
+                                                          </button>
+                                                        </span>
+                                                      ))}
+                                                    </div>
+                                                  )}
+                                                  <div className="flex gap-1">
+                                                    <input
+                                                      className="field"
+                                                      placeholder="候補に追加するファイル名"
+                                                      list={listId}
+                                                      value={choiceInput[row.key] ?? ''}
+                                                      onChange={(event) =>
+                                                        setChoiceInput((previous) => ({
+                                                          ...previous,
+                                                          [row.key]: event.target.value,
+                                                        }))
+                                                      }
+                                                      onKeyDown={(event) => {
+                                                        if (event.key !== 'Enter') return
+                                                        event.preventDefault()
+                                                        addChoice(row.key)
                                                       }}
                                                     />
+                                                    <button
+                                                      className="btn-ghost !py-1 text-xs"
+                                                      disabled={
+                                                        !(choiceInput[row.key] ?? '').trim()
+                                                      }
+                                                      onClick={() => addChoice(row.key)}
+                                                    >
+                                                      追加
+                                                    </button>
                                                   </div>
-                                                )}
-                                                <p
-                                                  className={`text-[10px] ${
-                                                    progress.status === 'error'
-                                                      ? 'text-red-400'
-                                                      : progress.status === 'done'
-                                                        ? 'text-emerald-400'
-                                                        : 'text-slate-500'
-                                                  }`}
-                                                >
-                                                  {progress.status === 'error'
-                                                    ? `失敗: ${progress.error ?? ''}`
-                                                    : progress.status === 'done'
-                                                      ? `完了（${formatBytes(progress.received)}）`
-                                                      : `${formatBytes(progress.received)}${
-                                                          progress.total
-                                                            ? ` / ${formatBytes(progress.total)}`
-                                                            : ''
-                                                        } 取得中…`}
-                                                </p>
-                                              </div>
-                                            )}
-                                          </td>
-                                        <td className="p-2 align-top">
-                                          <button
-                                            className="btn-ghost !py-1 text-xs"
-                                            disabled={!custom}
-                                            onClick={() =>
-                                              setModelDraft((previous) => ({
-                                                ...previous,
-                                                [row.key]: row.default,
-                                              }))
-                                            }
-                                          >
-                                            既定に戻す
-                                          </button>
-                                        </td>
-                                      </tr>
-                                    )
-                                  })}
-                                </tbody>
-                              </table>
-                            </div>
-                          )}
+                                                </td>
+                                                <td className="min-w-[16rem] p-2 align-top">
+                                                    {/* 未検出の行は URL 欄と [DL] をそのまま
+                                                        出す。検出済みの行は [取得元 URL] で
+                                                        開いたときだけ出し、[URL保存] だけに
+                                                        する。落とせない事情（保存先が無い・
+                                                        Pod が停止中）は押したときに理由が
+                                                        返るので、ボタンは隠さない。 */}
+                                                    {!missing && (
+                                                      <button
+                                                        type="button"
+                                                        className={`text-xs underline decoration-dotted underline-offset-2 hover:text-slate-200 disabled:opacity-40 ${
+                                                          savedUrl
+                                                            ? 'text-accent-400'
+                                                            : 'text-slate-500'
+                                                        }`}
+                                                        disabled={!value}
+                                                        title={
+                                                          savedUrl
+                                                            ? `取得元 URL: ${savedUrl}`
+                                                            : '取得元 URL を登録する（[DL] / [全DL] のときに使われます）'
+                                                        }
+                                                        onClick={() =>
+                                                          setUrlOpen((previous) => ({
+                                                            ...previous,
+                                                            [value]: !urlShown,
+                                                          }))
+                                                        }
+                                                      >
+                                                        {urlShown ? '▾' : '▸'} 取得元 URL
+                                                        {savedUrl ? ' ✓' : ''}
+                                                      </button>
+                                                    )}
+                                                    {(missing || urlShown) && (
+                                                      <div
+                                                        className={`flex gap-1 ${missing ? '' : 'mt-1'}`}
+                                                      >
+                                                        <input
+                                                          className="field"
+                                                          placeholder="ダウンロード URL（Hugging Face / Civitai など）"
+                                                          value={urlDraft[value] ?? ''}
+                                                          disabled={!value}
+                                                          onChange={(event) =>
+                                                            setUrlDraft((previous) => ({
+                                                              ...previous,
+                                                              [value]: event.target.value,
+                                                            }))
+                                                          }
+                                                        />
+                                                        {!missing && (
+                                                          <button
+                                                            className="btn-ghost !py-1 text-xs"
+                                                            disabled={busy || url === savedUrl}
+                                                            title="ダウンロードはせず、取得元 URL だけ設定に保存します（空欄で保存すると登録を解除）"
+                                                            onClick={() =>
+                                                              void saveDownloadUrl(value)
+                                                            }
+                                                          >
+                                                            URL保存
+                                                          </button>
+                                                        )}
+                                                        {showDownload && (
+                                                          <button
+                                                            className="btn-ghost !py-1 text-xs"
+                                                            disabled={
+                                                              busy ||
+                                                              downloading ||
+                                                              !value ||
+                                                              !url
+                                                            }
+                                                            title={`${COMFY_TARGET_LABELS[envTarget ?? 'local']}の ${row.subfolder || 'models 直下'} に保存します`}
+                                                            onClick={() =>
+                                                              void startDownload(row, value)
+                                                            }
+                                                          >
+                                                            DL
+                                                          </button>
+                                                        )}
+                                                      </div>
+                                                    )}
+                                                    {missing && showDownload && (
+                                                      <p className="mt-1 text-[10px] text-slate-600">
+                                                        保存先: {row.subfolder || 'models 直下'}
+                                                      </p>
+                                                    )}
+                                                    {progress && (
+                                                      <div className="mt-1">
+                                                        {downloading && (
+                                                          <div className="h-1 overflow-hidden rounded bg-ink-700">
+                                                            <div
+                                                              className="h-full bg-accent-500"
+                                                              style={{
+                                                                width: progress.total
+                                                                  ? `${Math.min(100, (progress.received / progress.total) * 100)}%`
+                                                                  : '100%',
+                                                              }}
+                                                            />
+                                                          </div>
+                                                        )}
+                                                        <p
+                                                          className={`text-[10px] ${
+                                                            progress.status === 'error'
+                                                              ? 'text-red-400'
+                                                              : progress.status === 'done'
+                                                                ? 'text-emerald-400'
+                                                                : 'text-slate-500'
+                                                          }`}
+                                                        >
+                                                          {progress.status === 'error'
+                                                            ? `失敗: ${progress.error ?? ''}`
+                                                            : progress.status === 'done'
+                                                              ? `完了（${formatBytes(progress.received)}）`
+                                                              : `${formatBytes(progress.received)}${
+                                                                  progress.total
+                                                                    ? ` / ${formatBytes(progress.total)}`
+                                                                    : ''
+                                                                } 取得中…`}
+                                                        </p>
+                                                      </div>
+                                                    )}
+                                                  </td>
+                                                <td className="p-2 align-top">
+                                                  <button
+                                                    className="btn-ghost !py-1 text-xs"
+                                                    disabled={!custom}
+                                                    onClick={() =>
+                                                      setModelDraft((previous) => ({
+                                                        ...previous,
+                                                        [row.key]: row.default,
+                                                      }))
+                                                    }
+                                                  >
+                                                    既定に戻す
+                                                  </button>
+                                                </td>
+                                              </tr>
+                                            )
+                                          })}
+                                        </tbody>
+                                      </table>
+                                    </div>
+                                  )}
+                                </div>
+                              )
+                            })}
+                          </div>
                         </div>
                       )
                     })}

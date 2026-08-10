@@ -26,7 +26,6 @@ from typing import Any
 
 from .models import GenerationParams, LoraRef, ModelField, ModelSlot
 from .workflows import (
-    LTX_FRAME_GRID,
     OPTIONAL_CLASS_TYPES,
     REF_AUDIOS_NAME,
     REF_IMAGES_NAME,
@@ -37,6 +36,7 @@ from .workflows import (
     WorkflowSpec,
     WorkflowSpecError,
     comfy_specs,
+    family_label,
     get_audio_spec,
     get_image_spec,
     get_video_spec,
@@ -46,7 +46,7 @@ from .workflows import (
 
 #: node id prefix of the image (Krea 2) LoRA chain
 LORA_NODE_PREFIX = "app_lora_"
-#: node id prefix of the video (LTX 2.3) LoRA chain
+#: node id prefix of the video LoRA chain
 VIDEO_LORA_NODE_PREFIX = "app_video_lora_"
 #: node id prefixes of the dynamic reference-material loaders (MiniMax H3 r2v).
 #: 参照動画は ``LoadVideo`` と ``GetVideoComponents`` の 2 ノードで 1 本になる。
@@ -81,9 +81,6 @@ MODEL_FIELDS: set[tuple[str, str]] = {
     ("DualCLIPLoader", "clip_name2"),
     ("VAELoader", "vae_name"),
     ("CheckpointLoaderSimple", "ckpt_name"),
-    ("LTXVAudioVAELoader", "ckpt_name"),
-    ("LTXAVTextEncoderLoader", "text_encoder"),
-    ("LTXAVTextEncoderLoader", "ckpt_name"),
     ("CLIPVisionLoader", "clip_name"),
     ("LatentUpscaleModelLoader", "model_name"),
     ("LoadMoGeModel", "model_name"),
@@ -111,19 +108,10 @@ MODEL_SUBFOLDERS: dict[tuple[str, str], str] = {
     ("LoraLoader", "lora_name"): "loras",
     ("LoraLoaderModelOnly", "lora_name"): "loras",
     ("MiniMaxH3TurboLoRA", "lora_name"): "loras",
-    # LTX 2.3 の音声 VAE / テキストエンコーダは checkpoints と text_encoders を
-    # 見る（comfy_extras/nodes_lt_audio.py）
-    ("LTXVAudioVAELoader", "ckpt_name"): "checkpoints",
-    ("LTXAVTextEncoderLoader", "text_encoder"): "text_encoders",
-    ("LTXAVTextEncoderLoader", "ckpt_name"): "checkpoints",
     # 空間アップスケーラと MoGe は専用フォルダ（nodes_hunyuan.py / nodes_moge.py）
     ("LatentUpscaleModelLoader", "model_name"): "latent_upscale_models",
     ("LoadMoGeModel", "model_name"): "geometry_estimation",
 }
-
-# LTX latent temporal compression: the number of frames handed to
-# EmptyLTXVLatentVideo must satisfy frames == 8n + 1 (workflows.LTX_FRAME_GRID).
-LTX_FRAME_MULTIPLE = LTX_FRAME_GRID.multiple
 
 # ResolutionSelector rounds the computed edges to a multiple of 8
 # (comfy_extras/nodes_resolution.py).
@@ -260,17 +248,6 @@ def _node(wf: Workflow, target: Target) -> dict[str, Any] | None:
     return node if isinstance(node, dict) else None
 
 
-def ltx_frame_count(duration: float, fps: int) -> int:
-    """Frames for LTX: largest ``8n + 1`` value not exceeding ``duration * fps + 1``.
-
-    LTX-Video compresses 8 frames into one latent frame plus a single key frame,
-    so only ``8n + 1`` lengths are accepted.  The raw workflow expression
-    ``a * b + 1`` happily produces e.g. 251 for 10s @ 25fps, which is rejected /
-    silently truncated downstream, so the app rounds the count down here.
-    """
-    return LTX_FRAME_GRID.frames(duration, fps)
-
-
 def _inject_steps(wf: Workflow, spec: WorkflowSpec, params: GenerationParams) -> None:
     """Write the sampling step count, **only when the job asks for one** (§3.1).
 
@@ -290,7 +267,7 @@ def _inject_frame_count(wf: Workflow, spec: WorkflowSpec, params: GenerationPara
     ``a * 0 + b * 0 + <frames>``.  The node keeps all of its incoming links — so
     the graph stays structurally identical and its output types are unchanged —
     while the value is exactly the count the model's latent grid accepts
-    (:class:`app.workflows.FrameGrid`: LTX is 8n+1, MiniMax H3 is 17k+5 @ 24fps).
+    (:class:`app.workflows.FrameGrid`: MiniMax H3 is 17k+5 @ 24fps).
     """
     target = spec.target("frames_expr")
     if target is None:
@@ -306,7 +283,7 @@ def _inject_frame_count(wf: Workflow, spec: WorkflowSpec, params: GenerationPara
 
 # --- resolution (SPEC §3.1) -------------------------------------------------
 # The image workflow has a ResolutionSelector node that takes the aspect ratio
-# and megapixel target directly; the LTX 2.3 templates want plain width /
+# and megapixel target directly; the video templates want plain width /
 # height integers, so the same computation is done here (identical to
 # ComfyUI's comfy_extras/nodes_resolution.py).
 
@@ -389,12 +366,11 @@ def video_resolution(spec: WorkflowSpec, params: GenerationParams) -> tuple[int,
     A workflow that takes a start frame follows the reference image's aspect
     ratio whenever its size is known, in preference to the user's preset — the
     template centre-crops anything that does not match.  Workflows without a
-    start frame (t2v, the IC-LoRA reference sheet, whose width / height feed a
-    ``ResizeAndPadImage`` target instead) always use the preset.
+    start frame (t2v, the reference-material modes) always use the preset.
 
     Both edges are rounded to ``spec.resolution_multiple`` rather than the
-    image-side default of 8: the LTX latent grid is 32px, and the union-control
-    IC-LoRA encodes the reference clip at half resolution, so it needs 64.
+    image-side default of 8, because video latents use a coarser spatial grid
+    than images (MiniMax H3 wants multiples of 32).
     """
     size = params.start_image_size
     multiple = spec.resolution_multiple
@@ -454,6 +430,8 @@ def model_fields(specs: tuple[WorkflowSpec, ...] | None = None) -> list[ModelFie
                         workflow_id=spec.id,
                         workflow_label=spec.label,
                         kind=spec.kind,
+                        family=spec.family,
+                        family_label=family_label(spec.family),
                         node_id=node_id,
                         field=field,
                         class_type=class_type,
@@ -631,7 +609,7 @@ def video_trigger_text(params: GenerationParams) -> str:
 def prepend_triggers(trigger_text: str, prompt: str) -> str:
     """``prompt`` with the trigger words it does not contain yet in front (§3.4).
 
-    The LTX templates have no StringConcatenate to switch on, so the video
+    The video templates have no StringConcatenate to switch on, so the video
     prompt is prefixed here.  Nothing to add == the prompt is returned as is, so
     a prompt that already names the character never grows a leading ", ".
     """

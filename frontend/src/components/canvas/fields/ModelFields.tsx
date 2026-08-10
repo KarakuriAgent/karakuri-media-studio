@@ -53,7 +53,7 @@ function LoraChooser({
 }) {
   if (loras.length === 0) return null
   return (
-    <Field label={label} hint="選んだ LoRA は生成時にこの強度で挿し込まれる">
+    <Field label={label}>
       <div className="flex max-h-40 flex-col gap-1 overflow-y-auto rounded-md border border-ink-600 bg-ink-800/60 p-2">
         {loras.map((lora) => {
           const picked = selected.find((item) => item.lora_name === lora.lora_name)
@@ -219,7 +219,7 @@ export default function ModelFields({
       )}
 
       {selects.map((select) => (
-        <Field key={select.name} label={select.label} hint={select.hint}>
+        <Field key={select.name} label={select.label}>
           <select
             className="field"
             aria-label={select.label}
@@ -265,14 +265,12 @@ export default function ModelFields({
         value={data.params.negative_prompt}
         rows={2}
         onChange={(negative_prompt) => patchParams({ negative_prompt })}
-        hint="空ならジョブの既定値に任せる"
       />
       <AreaField
         label="メモ"
         value={data.note}
         rows={2}
         onChange={(note) => patch({ note })}
-        hint="何用のモデル設定か"
       />
     </div>
   )

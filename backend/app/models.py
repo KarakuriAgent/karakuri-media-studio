@@ -11,6 +11,7 @@ from .workflows import (
     DEFAULT_AUDIO_WORKFLOW,
     DEFAULT_FAMILY,
     DEFAULT_IMAGE_WORKFLOW,
+    DEFAULT_MEGAPIXELS,
     DEFAULT_VIDEO_WORKFLOW,
     INPUT_FIELDS,
     MULTI_INPUT_EXTS,
@@ -117,6 +118,14 @@ class Settings(BaseModel):
     runpod_gpu_type: str = "NVIDIA RTX PRO 6000 Blackwell Workstation Edition"
     #: /workspace にマウントする Network Volume の ID（ComfyUI 本体とモデルの置き場）
     runpod_network_volume_id: str = ""
+    # 外部公開 API（docs/EXTERNAL-API.md）。既定は空 = `/api/v1` を丸ごと無効に
+    # する（キーの設定が「有効化」そのもの）。
+    #: `X-API-Key` と定数時間比較する共有キー（空 = 外部 API は 404）
+    external_api_key: str = ""
+    #: 外部 API から積める未完了 Take の上限（0 = 無制限）。バグったブリッジの
+    #: 無限投入が GPU キューと課金を食い潰すのを防ぐ安全弁で、UI からの操作
+    #: （内部 API）には掛からない
+    external_max_pending_takes: int = 20
 
     def active_comfy_url(self) -> str:
         """いま使う ComfyUI の URL（`comfy_target` のプロファイルのもの）。"""
@@ -173,6 +182,8 @@ class SettingsUpdate(BaseModel):
     agent_grok_timeout: float | None = None
     agent_max_plan_tasks: int | None = None
     agent_use_acp: bool | None = None
+    external_api_key: str | None = None
+    external_max_pending_takes: int | None = None
 
 
 class ModelField(BaseModel):
@@ -183,6 +194,10 @@ class ModelField(BaseModel):
     workflow_label: str = ""
     #: which stage the owning workflow belongs to (settings page grouping)
     kind: Literal["image", "video", "audio"] = "image"
+    #: モデルファミリー（``WorkflowSpec.family``）とその表示名。動画は 1 モデル =
+    #: 複数ワークフローなので、設定ページはワークフローではなくこちらでまとめる。
+    family: str = ""
+    family_label: str = ""
     node_id: str
     field: str
     class_type: str
@@ -347,7 +362,7 @@ class ModelSource(BaseModel):
 
 
 #: どちらのワークフローに挿す LoRA か（SPEC §3.4）。'image' は画像ワークフロー、
-#: 'video' は LTX 2.3 の動画ワークフローに注入される。
+#: 'video' は動画ワークフローに注入される。
 LoraTarget = Literal["image", "video"]
 
 
@@ -362,7 +377,7 @@ class Lora(BaseModel):
     target: LoraTarget = "image"
     # どの画像モデルファミリー向けに学習された LoRA か（krea2 / anima /
     # z-image / qwen-image）。同じファミリーの画像ワークフローでしか使えない。
-    # target='video' の行では無視される（動画は LTX 2.3 のみ）。
+    # target='video' の行では無視される（動画 LoRA はファミリーを持たない）。
     family: str = DEFAULT_FAMILY
     # どの接続先環境に置いてある LoRA か（SPEC §5）。``None`` は「環境を問わず出す」
     # で、接続先を分ける前に登録された行がこれになる。生成フォームには
@@ -398,8 +413,8 @@ class LoraUpdate(BaseModel):
     comfy_target: ComfyTarget | None = None
 
 
-# Default of the LTX 2.3 "dev" templates (t2v / i2v / ia2v / id_lora).  An empty
-# negative means "keep whatever the selected template ships with" (SPEC §3.1).
+# フォームの既定のネガティブ。空の negative は「選んだテンプレートの値をその
+# まま使う」の意味（SPEC §3.1）。
 DEFAULT_NEGATIVE_PROMPT = "pc game, console game, video game, cartoon, childish, ugly"
 
 #: サンプリング回数（`steps`）の上限（SPEC §3.1）。0 は「未指定」= テンプレートの
@@ -458,7 +473,7 @@ class GenerationParams(BaseModel):
     audio_workflow: str = DEFAULT_AUDIO_WORKFLOW
 
     aspect_ratio: str = "4:3 (Standard)"
-    megapixels: float = 1.0
+    megapixels: float = DEFAULT_MEGAPIXELS
     # 参照画像（開始フレーム）の実寸 (w, h)。分かっている場合、動画側の幅・高さは
     # `aspect_ratio` プリセットではなくこの比から計算される（SPEC §3.1）。
     start_image_size: tuple[int, int] | None = None
@@ -466,7 +481,7 @@ class GenerationParams(BaseModel):
     # 画像ワークフロー（Krea 2）に挿す LoRA
     loras: list[LoraRef] = Field(default_factory=list)
     trigger_text: str = ""  # already-concatenated / user-edited trigger words
-    # 動画ワークフロー（LTX 2.3）に挿す LoRA。`video_trigger_text` が空なら
+    # 動画ワークフローに挿す LoRA。`video_trigger_text` が空なら
     # `video_loras` のトリガーワードを連結したものが使われる。
     video_loras: list[LoraRef] = Field(default_factory=list)
     video_trigger_text: str = ""
@@ -610,7 +625,7 @@ def missing_job_fields(
     """Required fields for a mode + image / video workflow (SPEC §2 / §3.1).
 
     The asset requirements come from the selected workflows' manifests, so e.g.
-    t2v needs no start frame while flf2v needs two images.  In ``full`` mode the
+    t2v needs no start frame while i2v needs one.  In ``full`` mode the
     *video* start frame is produced by the image stage and therefore not
     required as an input — but an **editing** image workflow (qwen-image) still
     needs its own ``source_image`` in every mode that runs the image stage.
@@ -1431,7 +1446,7 @@ class JobCreate(BaseModel):
     reprompt: bool = False
 
     aspect_ratio: str = "4:3 (Standard)"
-    megapixels: float = 1.0
+    megapixels: float = DEFAULT_MEGAPIXELS
 
     # 画像ワークフロー用 LoRA（target='image' で登録したもの）
     loras: list[LoraRef] = Field(default_factory=list)
@@ -1570,9 +1585,9 @@ class JobContinue(BaseModel):
     duration: float | None = None
     fps: int | None = None
     audio_path: str | None = None
-    # extra inputs of the workflow the continuation switches to (flf2v needs a
-    # closing frame, the motion IC-LoRA a reference clip); omitted means "keep
-    # whatever the source job used".
+    # extra inputs of the workflow the continuation switches to (a workflow may
+    # want a closing frame or a reference clip); omitted means "keep whatever
+    # the source job used".
     end_image: str | None = None
     reference_video: str | None = None
     seed: int | None = None
@@ -2121,7 +2136,7 @@ class WorkflowOption(BaseModel):
     default_duration: float = 0.0
     #: そのモデルが想定している解像度（メガピクセル、0.0 = 宣言なし）。宣言が
     #: あるワークフローを選ぶと、フォームの「メガピクセル」がこの値になる
-    #: （SPEC §3.1）。無ければフォームのグローバル既定（1.0MP）のまま。
+    #: （SPEC §3.1）。無ければフォームのグローバル既定（``DEFAULT_MEGAPIXELS``）のまま。
     default_megapixels: float = 0.0
 
 
@@ -2729,6 +2744,86 @@ class StudioDemoCreate(BaseModel):
 
     #: 作りたいデモの作品コード（:mod:`app.studio_demo` の ``DEMO_PROJECTS``）
     code: str
+
+
+#: ジョブのどの出力を素材にするか（:data:`app.library.SOURCES` のキー）
+StudioJobSource = Literal["image", "last_frame", "video", "audio"]
+
+
+class StudioAssetFromJob(StudioAssetCreate):
+    """POST /api/v1/projects/{id}/assets/from-job body。
+
+    生成済みのジョブの出力を World Bible の素材にする。``kind`` と ``path`` は
+    ``source`` が選んだ出力から決まるので、書いても無視される。
+    """
+
+    #: 出力を取ってくるジョブ
+    job_id: str
+    #: そのジョブのどの出力か
+    source: StudioJobSource = "image"
+
+
+# --------------------------------------------------------------------------
+# 一括投入（外部 API の POST /api/v1/stories。docs/EXTERNAL-API.md §2）
+# --------------------------------------------------------------------------
+#
+# 話 1 本ぶんの脚本（話 -> 場 -> Shot）を 1 リクエストで納品するための形。
+# 個別 CRUD の組み合わせでも同じことはできるが、こちらは 1 トランザクションで
+# 「全部作れたか、全く作らなかったか」の二択にする。
+
+class StoryScene(StudioSceneCreate):
+    """一括投入の中の 1 場（``shots`` を入れ子で持つ）。"""
+
+    #: この場に並べるカット（項目は :class:`StudioShotCreate` と同じ。
+    #: ``scene_id`` は入れ子の位置で決まるので書いても無視される）
+    shots: list[StudioShotCreate] = Field(default_factory=list)
+
+
+class StoryCreate(BaseModel):
+    """POST /api/v1/stories body。
+
+    対象のプロジェクトは ``project_id`` か ``project_code``（作品コード）の
+    どちらかで指定する（両方あれば ``project_id`` が優先）。
+    """
+
+    project_id: str = ""
+    project_code: str = ""
+    episode: StudioEpisodeCreate = Field(default_factory=StudioEpisodeCreate)
+    scenes: list[StoryScene] = Field(default_factory=list)
+    #: true なら作成をコミットしたあと、1 カットずつ生成を投入する
+    render: bool = False
+
+
+class StoryShotResult(BaseModel):
+    """作られたカット 1 件（``render`` したなら投入の成否つき）。"""
+
+    id: str
+    title: str = ""
+    #: 投入できた Take（``render`` が false / 投入に失敗したときは None）
+    take_id: str | None = None
+    job_id: str | None = None
+    #: 投入できなかった理由（日本語。空なら問題なし）
+    error: str = ""
+
+
+class StorySceneResult(BaseModel):
+    """作られた場 1 件。"""
+
+    id: str
+    title: str = ""
+    shots: list[StoryShotResult] = Field(default_factory=list)
+
+
+class StoryResult(BaseModel):
+    """POST /api/v1/stories のレスポンス（201）。"""
+
+    project_id: str
+    episode_id: str
+    scenes: list[StorySceneResult] = Field(default_factory=list)
+    #: 作った順の Shot の id（場をまたいだ通し）
+    shot_ids: list[str] = Field(default_factory=list)
+    #: 投入できた Take の id（``render`` が false なら空）
+    take_ids: list[str] = Field(default_factory=list)
 
 
 # --------------------------------------------------------------------------

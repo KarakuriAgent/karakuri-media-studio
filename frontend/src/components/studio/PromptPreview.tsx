@@ -84,10 +84,6 @@ export default function PromptPreview({ shot }: { shot: StudioShot }) {
         </div>
       </div>
 
-      <p className="text-[11px] text-slate-500">
-        保存した内容で実際に投入されるものです（ここでは生成しません）。
-      </p>
-
       {failure && <Banner>{failure}</Banner>}
 
       {preview && preview.error && <Banner>{preview.error}</Banner>}

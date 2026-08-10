@@ -125,7 +125,7 @@ LoRA は登録時の対象（SPEC §3.4）で振り分ける: 画像用は `lora
 検証は既存の JobCreate バリデーション（LoRA 実在チェック・全論理入力のアセット解決を含む）を
 そのまま通す。加えて `agent_protocol.validate_job` はプラン検証の段階で
 `missing_job_fields` を使ってワークフロー必須入力の不足を検出し、
-「video_workflow `ltx2_3_flf2v` を mode 'i2v' で使うには end_image が必要です」のように
+「video_workflow `minimax_h3_i2v` を mode 'i2v' で使うには source_image が必要です」のように
 ワークフロー名込みで返す（実行時ではなく plan 時に弾く）。
 不正ならフォーマットリマインダー付きで Grok に 1 回リトライ（§4.1 と同じ方式）。
 
@@ -252,15 +252,15 @@ Library（取っておいた素材、`path` をそのままジョブの入力に
 存在しない id・画像以外・0 枚・上限超過・大きすぎるキャンバスなどは `library.LibraryError` を
 `action_failed` イベントに変換して返す（ルーターの 400 と同じ判定）。承認は不要（`library` と同じ即時アクション）。
 
-プロンプトでは、キャラクターシート / IC-LoRA 動画を頼まれたときの手順をこう指示している:
+プロンプトでは、キャラクターシート / 参照動画を頼まれたときの手順をこう指示している:
 
 1. `library_search`（`category: "character"` → `prop` / `background`）で既にある素材を探す
 2. 足りないぶんだけ `mode: "image_only"` のジョブで作り、`library` + `category` で棚に入れる
 3. `library_sheet` に**並べたい順**で id を渡す。主役は先頭かつ `character`（大きいパネルほど
    忠実に再現される）、`width` / `height` は作る動画と同じ縦横比にする
-4. `mode: "i2v"` + `video_workflow: "ltx2_3_ic_lora_image"` でそのシートを `source_image` に指定。
-   シートは開始フレームではなく見た目の参照なので、`video_prompt` は
-   `Reference sheet: <各パネルの説明> / Generated video: <動画の内容>` の 2 部構成で書く
+4. `mode: "i2v"` + 参照ワークフロー（`minimax_h3_r2v`）で、素材そのもの（または合成した
+   シート）を `reference_images` に渡す。開始フレームではなく見た目の参照なので、
+   `video_prompt` には演出だけを書き、素材は `<Picture 1>` … として参照する
 
 ### 3.2 複数実行
 
@@ -321,7 +321,7 @@ Grok CLI はステートレスなテキスト入出力なので、ツール呼�
       "job": {
         "mode": "full",
         "image_workflow": "krea2_turbo",
-        "video_workflow": "ltx2_3_id_lora",
+        "video_workflow": "minimax_h3_i2v",
         "image_prompt": "...", "video_prompt": "...",
         "negative_prompt": "...",
         "aspect_ratio": "9:16", "megapixels": 1.0,
@@ -363,7 +363,7 @@ Grok CLI はステートレスなテキスト入出力なので、ツール呼�
 | `rename` | 既存成果物のタイトル付け直し（`name` または `job_id` + `kind`, `title`）。対象が無ければ `action_failed` | 不要（自律） |
 | `library` | ジョブの出力をライブラリに取っておく（`job_id` + `source`: `image` / `last_frame` / `video` / `audio`、任意の `title` / `tags[]` / `category`: `character` / `background` / `prop` / `none`）。SPEC §7.2。既に同じ出力が登録済みなら `library_exists`（エラーではなく案内）、対象が無ければ `action_failed` | 不要（自律） |
 | `library_search` | ライブラリ**全体**を絞り込む（`q` = 名前・タグの部分一致 / `tag` = 完全一致 / `kind` / `category` / `offset`）。結果は `library_search_result` イベントとして次ターンに届く | 不要（自律） |
-| `library_sheet` | 棚の画像素材を 1 枚のリファレンスシートに合成して登録する（`item_ids[]` = 並べる順の 1〜8 件、任意の `name` / `width` / `height`）。SPEC §7.2。成功すると `library_sheet_added` イベントにシートの id・パス・URL が入り、そのまま `ltx2_3_ic_lora_image` の `source_image` に使える。組めない指定は `action_failed` | 不要（自律） |
+| `library_sheet` | 棚の画像素材を 1 枚のリファレンスシートに合成して登録する（`item_ids[]` = 並べる順の 1〜8 件、任意の `name` / `width` / `height`）。SPEC §7.2。成功すると `library_sheet_added` イベントにシートの id・パス・URL が入り、そのままジョブの `source_image` / `reference_images` に使える。組めない指定は `action_failed` | 不要（自律） |
 | `studio_*` | ドラマスタジオ（`app.studio`）の操作。下の一覧を参照 | 不要（自律） |
 | `canvas_*` | キャンバス（`app.canvas`）の盤面操作。下の一覧を参照。キャンバスのチャットからの実行でだけプロンプトに載る | 不要（自律） |
 | `checkin` | ユーザーへの確認（選択肢ボタン付き吹き出し）。応答まで次タスク保留 | ― |

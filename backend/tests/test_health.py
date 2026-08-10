@@ -40,18 +40,21 @@ def test_ok_when_every_class_type_exists(client, monkeypatch):
 
 
 def test_missing_custom_nodes_are_listed(client, monkeypatch):
-    _object_info(monkeypatch, [n for n in REQUIRED if n != "LTXVReferenceAudio"])
+    _object_info(monkeypatch, [n for n in REQUIRED if n != "MiniMaxH3ImageToVideo"])
     status = client.get("/api/health").json()["comfyui"]
     assert status["status"] == "error"
-    assert "LTXVReferenceAudio" in status["detail"]
+    assert "MiniMaxH3ImageToVideo" in status["detail"]
 
 
 def test_the_class_types_span_every_template(client, monkeypatch):
     """Which workflow a job will use is unknown up front, so the union is checked."""
     _object_info(monkeypatch, REQUIRED)
-    assert {"MoGeInference", "LoadVideo", "LTXVReferenceAudio", "ResolutionSelector"} <= set(
-        REQUIRED
-    )
+    assert {
+        "MiniMaxH3ImageToVideo",
+        "MiniMaxH3ReferenceToVideo",
+        "LoadVideo",
+        "ResolutionSelector",
+    } <= set(REQUIRED)
 
 
 def test_unreachable_comfyui_is_reported(client, monkeypatch):

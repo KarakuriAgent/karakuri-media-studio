@@ -168,12 +168,6 @@ export default function CardEditor({
     >
       <div className="flex flex-col gap-3">
         {error && <Banner>{error}</Banner>}
-        {!isStandalone(card.kind) && (
-          <p className="text-[11px] text-slate-500">
-            このカードの中身はスタジオの{KIND_LABEL[card.kind]}そのものです。ここでの
-            変更はスタジオ表示にもそのまま出ます。
-          </p>
-        )}
 
         {body()}
 

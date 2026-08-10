@@ -82,12 +82,6 @@ export default function AudioFields({
           modeLabel="音声モード"
           fallbackLabel="音声ワークフロー"
         />
-        {workflow?.notes && (
-          <p className="mt-1 text-[11px] text-slate-500">{workflow.notes}</p>
-        )}
-        <p className="mt-1 text-[11px] text-slate-500">
-          音声は単独で生成されます（画像・動画とは連結されません）。
-        </p>
         {/* ワークフローが宣言した選択式フィールド（モデル・
             ボーカルの性別。§3.1） */}
         <WorkflowSelects
@@ -128,11 +122,6 @@ export default function AudioFields({
           onChange={(event) => patch({ audioPrompt: event.target.value })}
         />
         <FieldError message={fieldErrors.audio_prompt} />
-        <p className="mt-1 text-[11px] text-slate-500">
-          {hasLyrics
-            ? '曲の説明（キャプション）です。歌う言葉は下の「歌詞」に書いてください。'
-            : 'カテゴリに合わせた 1〜2 文で。末尾に BPM / Length を書くのがモデル作者の流儀です。'}
-        </p>
       </Section>
 
       {hasLyrics && (
@@ -144,10 +133,6 @@ export default function AudioFields({
             placeholder={'[Verse 1]\n最終列車が街を抜ける\n\n[Chorus]\nもう一度だけ'}
             onChange={(event) => patch({ lyrics: event.target.value })}
           />
-          <p className="mt-1 text-[11px] text-slate-500">
-            [Intro] / [Verse] / [Pre-Chorus] / [Chorus] / [Bridge] / [Outro]
-            などの構造タグを行頭に置きます。1 行 6〜10 音節が目安。
-          </p>
         </Section>
       )}
 
@@ -160,10 +145,6 @@ export default function AudioFields({
             placeholder="distorted guitar, screaming, heavy drums"
             onChange={(event) => patch({ negativeTags: event.target.value })}
           />
-          <p className="mt-1 text-[11px] text-slate-500">
-            曲に入れたくない要素を英語のカンマ区切りで。プロンプトや歌詞に
-            「〜なし」と書くと逆効果なので、こちらに書きます。
-          </p>
         </Section>
       )}
 
@@ -181,9 +162,6 @@ export default function AudioFields({
               </option>
             ))}
           </select>
-          <p className="mt-1 text-[11px] text-slate-500">
-            カテゴリごとに内蔵のプロンプトテンプレートが変わります。
-          </p>
         </Section>
       )}
 
@@ -299,9 +277,6 @@ export default function AudioFields({
               value={form.steps || ''}
               onChange={(event) => patch({ steps: Number(event.target.value) || 0 })}
             />
-            <p className="mt-1 text-[11px] text-slate-500">
-              未指定でワークフロー既定。増やすほど時間がかかります。
-            </p>
           </div>
         )}
 
@@ -313,12 +288,7 @@ export default function AudioFields({
               checked={form.reprompt}
               onChange={(event) => patch({ reprompt: event.target.checked })}
             />
-            <span>
-              内蔵 LLM でプロンプトを展開する
-              <span className="mt-0.5 block text-[11px] text-slate-500">
-                短い一言だけ書いたときに有効。自分で構造化して書いたならオフのままに。
-              </span>
-            </span>
+            <span>内蔵 LLM でプロンプトを展開する</span>
           </label>
         )}
 

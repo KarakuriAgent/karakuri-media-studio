@@ -98,7 +98,6 @@ export default function ShotFields({
         value={form.prompt}
         rows={4}
         onChange={(prompt) => patch({ prompt })}
-        hint="`@素材名` で World Bible の素材を参照できます"
       />
       <FieldError message={errors.prompt} />
 
@@ -146,7 +145,6 @@ export default function ShotFields({
         value={form.purpose}
         rows={2}
         onChange={(purpose) => patch({ purpose })}
-        hint="このカットで物語の何が進むのか"
       />
 
       <button className="btn-primary self-start" disabled={busy} onClick={save}>

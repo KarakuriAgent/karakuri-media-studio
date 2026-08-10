@@ -716,7 +716,7 @@ def test_settings_left_out_keep_the_job_defaults(env):
     assert render(env, shot["id"]).status_code == 201
     payload = env.created[-1]
     assert payload.aspect_ratio == "4:3 (Standard)"
-    assert payload.megapixels == 1.0
+    assert payload.megapixels == 0.4
     assert payload.seed is None
 
 

@@ -5,6 +5,7 @@ from dataclasses import replace
 
 import pytest
 
+from app import prompts
 from app.models import GenerationParams, LoraRef, missing_job_fields, video_workflow_problem
 from app.workflow import (
     ASPECT_RATIOS,
@@ -20,7 +21,6 @@ from app.workflow import (
     build_image_workflow,
     build_video_workflow,
     build_workflows,
-    ltx_frame_count,
     missing_triggers,
     model_fields,
     model_slots,
@@ -35,6 +35,7 @@ from app.workflow import (
 )
 from app.workflows import (
     ANIMA,
+    DEFAULT_FRAME_GRID,
     DEFAULT_IMAGE_WORKFLOW,
     DEFAULT_VIDEO_WORKFLOW,
     GENERATED_AUDIO,
@@ -179,31 +180,28 @@ def test_catalog_inputs_are_derived_from_the_manifest():
 
 def test_catalog_labels_the_image_input_per_workflow():
     entries = {entry.id: entry for entry in video_catalog()}
-    assert entries["ltx2_3_flf2v"].required_inputs == (
-        ("source_image", "最初のフレーム"),
+    assert entries["minimax_h3_i2v"].required_inputs == (
+        ("source_image", "開始フレーム"),
+    )
+    # 任意の最終フレームは「任意入力」の側に出る
+    assert entries["minimax_h3_i2v"].optional_inputs == (
         ("end_image", "最後のフレーム画像"),
     )
-    assert entries["ltx2_3_ic_lora_image"].required_inputs == (
-        ("source_image", "リファレンスシート画像"),
-    )
-    assert entries["ltx2_3_ic_lora_motion"].required_inputs[-1] == (
-        "reference_video",
-        "参照動画",
-    )
+    # 参照専用のワークフローは開始フレームを取らない
+    assert entries["minimax_h3_r2v"].required_inputs == ()
+    assert entries["minimax_h3_r2v"].reference_inputs
 
 
 def test_catalog_explains_how_audio_is_used():
     entries = {entry.id: entry for entry in video_catalog()}
     # 音声入力を持たないワークフローはモデル生成音声だと明言する
-    for workflow_id in ("ltx2_3_t2v", "tx2_3_i2v", "ltx2_3_flf2v"):
+    for workflow_id in VIDEO_IDS:
         assert entries[workflow_id].audio == GENERATED_AUDIO
-    assert "音声トラック" in entries["tx2_3_ia2v"].audio
-    assert "リファレンス音声" in entries["ltx2_3_id_lora"].audio
 
 
 def test_an_undocumented_workflow_is_a_manifest_problem():
     """カタログはマニフェスト由来なので、説明なしの追加は健全性チェックで落ちる。"""
-    spec = replace(get_spec("ltx2_3_t2v"), description="", prompt_hint="")
+    spec = replace(get_spec("minimax_h3_t2v"), description="", prompt_hint="")
     problems = validate_spec(spec)
     assert any("description is empty" in p for p in problems)
     assert any("prompt_hint is empty" in p for p in problems)
@@ -211,11 +209,14 @@ def test_an_undocumented_workflow_is_a_manifest_problem():
 
 def test_a_lora_chain_consumer_that_does_not_read_the_head_is_reported():
     """The chain is spliced into an existing edge, so the wiring is validated."""
-    spec = get_spec("ltx2_3_t2v")
+    spec = KREA2_TURBO
     stray = replace(
         spec,
         lora_chain=replace(
-            spec.lora_chain, consumers=(spec.lora_chain.consumers[0],), head="267:236"
+            spec.lora_chain,
+            consumers=(spec.lora_chain.consumers[0],),
+            head="30:11",
+            placeholders=(),
         ),
     )
     assert any("expected the chain head" in p for p in validate_spec(stray))
@@ -228,19 +229,21 @@ def test_a_lora_chain_consumer_that_does_not_read_the_head_is_reported():
 
 
 def test_a_lora_chain_consumer_of_the_wrong_type_is_reported():
-    spec = get_spec("ltx2_3_t2v")
+    spec = KREA2_TURBO
     retyped = replace(
         spec,
         lora_chain=replace(
             spec.lora_chain,
-            consumers=(T("267:213", "model", "KSampler"),),
+            consumers=(T("30:19", "model", "KSampler"),),
         ),
     )
-    assert any("267:213" in p for p in validate_spec(retyped))
+    assert any("30:19" in p for p in validate_spec(retyped))
 
 
 def test_an_audio_input_without_an_audio_role_is_reported():
-    spec = replace(get_spec("ltx2_3_id_lora"), audio_role="")
+    spec = get_spec("minimax_h3_i2v")
+    # 音声入力を持つのに使い道を書いていないワークフローは健全性チェックで落ちる
+    spec = replace(spec, audio_role="", inject={**spec.inject, "audio": spec.inject["image"]})
     assert any("audio_role" in p for p in validate_spec(spec))
 
 
@@ -484,12 +487,13 @@ LORA_VIDEO_IDS = [
 ]
 
 
-def test_the_ltx_workflows_declare_a_lora_chain():
-    assert LORA_VIDEO_IDS == [
-        workflow_id
-        for workflow_id in VIDEO_IDS
-        if get_spec(workflow_id, "video").family == "ltx2.3"
-    ]
+def test_no_video_workflow_declares_a_lora_chain_today():
+    """今ある動画モデル（MiniMax H3）は LoRA を挿せる場所を持たない。
+
+    宣言を持つワークフローが増えたらこの一覧が埋まり、以下のパラメトライズ済みの
+    テストがそのまま効く。
+    """
+    assert LORA_VIDEO_IDS == []
 
 
 @pytest.mark.parametrize("workflow_id", LORA_VIDEO_IDS)
@@ -533,16 +537,6 @@ def test_video_loras_are_chained_between_head_and_consumers(workflow_id):
     validate_workflow(wf)
 
 
-def test_the_video_chain_keeps_the_templates_fixed_loras():
-    """The distill / ID-LoRA nodes stay: the user chain is spliced after them."""
-    wf = _video("ltx2_3_id_lora", video_loras=[LoraRef(lora_name="v.safetensors")])
-    # distill LoRA (the head) still hangs off the checkpoint
-    assert wf["340:293"]["inputs"]["model"] == ["340:317", 0]
-    # …and the talkvid ID-LoRA now reads the user chain
-    assert wf["340:346"]["inputs"]["model"] == ["app_video_lora_0", 0]
-    assert wf["340:349"]["inputs"]["model"] == ["340:346", 0]
-
-
 def test_video_loras_do_not_leak_into_the_image_workflow():
     wf = build_image_workflow(
         params(loras=[], video_loras=[LoraRef(lora_name="v.safetensors")])
@@ -551,13 +545,13 @@ def test_video_loras_do_not_leak_into_the_image_workflow():
 
 
 def test_image_loras_do_not_leak_into_the_video_workflow():
-    wf = _video("ltx2_3_t2v", loras=[LoraRef(lora_name="i.safetensors")])
+    wf = _video("minimax_h3_t2v", loras=[LoraRef(lora_name="i.safetensors")])
     assert [n for n in wf if n.startswith(LORA_NODE_PREFIX)] == []
 
 
 # --- video trigger words (§3.4) --------------------------------------------
 
-def _video_prompt(workflow_id: str = "ltx2_3_t2v", **overrides) -> str:
+def _video_prompt(workflow_id: str = "minimax_h3_t2v", **overrides) -> str:
     spec = get_spec(workflow_id, "video")
     wf = _video(workflow_id, **overrides)
     return value(wf, spec, "prompt")
@@ -710,9 +704,11 @@ def test_video_seeds_are_injected(workflow_id):
 
 
 def test_single_seed_is_used_for_every_sampler():
-    spec = get_spec("tx2_3_i2v")
+    spec = get_spec("minimax_h3_i2v")
     wf = build_video_workflow(params(video_workflow=spec.id, video_seeds=[7]))
-    assert [wf[t.node_id]["inputs"][t.field] for t in spec.seeds] == [7, 7]
+    assert [wf[t.node_id]["inputs"][t.field] for t in spec.seeds] == [7] * len(
+        spec.seeds
+    )
 
 
 @pytest.mark.parametrize("workflow_id", VIDEO_IDS)
@@ -725,24 +721,18 @@ def test_empty_negative_keeps_the_template_default(workflow_id):
     assert value(wf, spec, "negative") == template_value
 
 
-def test_int_and_float_duration_nodes_are_typed():
+@pytest.mark.parametrize("workflow_id", VIDEO_IDS)
+def test_duration_nodes_keep_their_declared_type(workflow_id):
     """PrimitiveInt must not receive a float and PrimitiveFloat must stay float."""
-    int_spec = get_spec("tx2_3_i2v")  # Duration is a PrimitiveInt
-    float_spec = get_spec("tx2_3_ia2v")  # Duration is a PrimitiveFloat
-    int_wf = build_video_workflow(params(video_workflow=int_spec.id, duration=7.4))
-    float_wf = build_video_workflow(params(video_workflow=float_spec.id, duration=7.4))
-    assert value(int_wf, int_spec, "duration") == 7
-    assert isinstance(value(int_wf, int_spec, "duration"), int)
-    assert value(float_wf, float_spec, "duration") == 7.4
-
-
-def test_motion_workflow_slices_the_reference_clip():
-    spec = get_spec("ltx2_3_ic_lora_motion")
-    wf = build_video_workflow(params(video_workflow=spec.id, duration=6))
-    # duration drives "Video Slice" instead of a PrimitiveInt: the frame count of
-    # this workflow follows the reference clip.
-    assert wf["692"]["inputs"]["duration"] == 6.0
-    assert not spec.supports("frames_expr")
+    spec = get_spec(workflow_id)
+    if not spec.supports("duration"):
+        pytest.skip(f"{workflow_id} takes no duration")
+    wf = build_video_workflow(params(video_workflow=workflow_id, duration=7.4))
+    got = value(wf, spec, "duration")
+    if spec.target("duration").class_type == "PrimitiveInt":
+        assert isinstance(got, int) and got == 7
+    else:
+        assert got == pytest.approx(7.4)
 
 
 # --- 参照素材の動的展開（RefMediaFan、SPEC §3.1）----------------------------
@@ -986,6 +976,15 @@ def test_the_turbo_templates_chain_the_speedup_nodes_in_series(turbo_id, plain_i
 
 
 @pytest.mark.parametrize(("turbo_id", "plain_id"), TURBO_PAIRS)
+def test_the_turbo_workflows_share_the_prompt_guide_of_the_plain_ones(
+    turbo_id, plain_id
+):
+    """プロンプトの書き方は素の版と同じなので、Chat に出すガイドも同じ。"""
+    assert prompts.video_guide_for(turbo_id) == prompts.video_guide_for(plain_id) != ""
+    assert turbo_id in prompts.MULTI_CUT_WORKFLOWS
+
+
+@pytest.mark.parametrize(("turbo_id", "plain_id"), TURBO_PAIRS)
 def test_the_turbo_templates_sample_in_four_steps(turbo_id, plain_id):
     wf = build_video_workflow(params(video_workflow=turbo_id))
     scheduler = next(
@@ -1106,8 +1105,9 @@ def test_low_vram_is_offered_to_the_agent_catalog():
         (3.2, 25, 81),    # 80 -> exact
     ],
 )
-def test_ltx_frame_count(duration, fps, expected):
-    frames = ltx_frame_count(duration, fps)
+def test_the_default_frame_grid_rounds_down(duration, fps, expected):
+    """宣言の無いワークフローの既定（``8n + 1`` を要求より短い側へ丸める）。"""
+    frames = DEFAULT_FRAME_GRID.frames(duration, fps)
     assert frames == expected
     assert frames % 8 == 1
     assert frames <= duration * fps + 1
@@ -1141,7 +1141,7 @@ def test_frame_expression_is_pinned(workflow_id):
     template_inputs = load_template(spec)[node_id]["inputs"]
     wf = build_video_workflow(params(video_workflow=workflow_id, duration=10, fps=25))
     got = wf[node_id]["inputs"]
-    # LTX は 8n+1 を 25fps で、MiniMax H3 は 17k+5 を 24fps 固定で
+    # MiniMax H3 は 17k+5 を 24fps 固定で
     assert got["expression"].endswith(str(spec.frames.frames(10, 25)))
     # the value links are untouched, so the graph shape does not change
     for key, link in template_inputs.items():
@@ -1216,31 +1216,14 @@ def test_resolution_for_image_rejects_a_degenerate_size(size):
         resolution_for_image(*size, 1.0)
 
 
-# --- the video grid is per workflow (LTX latent = 32px, ref 0.5x = 64px) ----
-
-def test_union_control_ic_lora_rounds_both_edges_to_64():
-    """1920x1060 @1.0MP used to give 1376x760, which crashes the 0.5x ref encode."""
-    spec = get_spec("ltx2_3_ic_lora_motion")
-    width, height = video_resolution(
-        spec,
-        params(
-            mode="i2v",
-            video_workflow="ltx2_3_ic_lora_motion",
-            megapixels=1.0,
-            start_image_size=(1920, 1060),
-        ),
-    )
-    assert width % 64 == 0 and height % 64 == 0
-
+# --- the video grid is per workflow (video latents use a coarser grid) ------
 
 @pytest.mark.parametrize(
     "size", [(1920, 1060), (1920, 1080), (1000, 1500), (100, 1000), None]
 )
-def test_ltx_video_edges_follow_the_latent_grid(size):
-    """Every LTX workflow lands on its own multiple, start frame or preset."""
+def test_video_edges_follow_the_latent_grid(size):
+    """Every video workflow lands on its own multiple, start frame or preset."""
     for spec in video_specs():
-        if spec.family != "ltx2.3":
-            continue
         width, height = video_resolution(
             spec,
             params(
@@ -1256,13 +1239,13 @@ def test_ltx_video_edges_follow_the_latent_grid(size):
 
 
 def test_i2v_rounds_both_edges_to_32():
-    spec = get_spec("tx2_3_i2v")
+    spec = get_spec("minimax_h3_i2v")
     assert spec.resolution_multiple == 32
     width, height = video_resolution(
         spec,
         params(
             mode="i2v",
-            video_workflow="tx2_3_i2v",
+            video_workflow="minimax_h3_i2v",
             megapixels=1.0,
             start_image_size=(1920, 1060),
         ),
@@ -1271,8 +1254,7 @@ def test_i2v_rounds_both_edges_to_32():
 
 
 @pytest.mark.parametrize(
-    "workflow_id", ["tx2_3_i2v", "tx2_3_ia2v", "ltx2_3_id_lora", "ltx2_3_flf2v",
-                    "ltx2_3_ic_lora_motion"]
+    "workflow_id", ["minimax_h3_i2v", "minimax_h3_i2v_turbo"]
 )
 def test_start_frame_size_overrides_the_aspect_ratio_preset(workflow_id):
     spec = get_spec(workflow_id)
@@ -1293,13 +1275,14 @@ def test_start_frame_size_overrides_the_aspect_ratio_preset(workflow_id):
     assert value(wf, spec, "height") > value(wf, spec, "width")
 
 
-def test_reference_sheet_ignores_the_start_frame_size():
-    """The IC-LoRA sheet sizes a ResizeAndPadImage target: preset only."""
-    spec = get_spec("ltx2_3_ic_lora_image")
+def test_a_workflow_without_a_start_frame_ignores_the_start_frame_size():
+    """開始フレームを取らないワークフロー（参照モード）はプリセットのまま。"""
+    spec = get_spec("minimax_h3_r2v")
     wf = build_video_workflow(
         params(
             mode="i2v",
-            video_workflow="ltx2_3_ic_lora_image",
+            video_workflow="minimax_h3_r2v",
+            reference_image_names=["ref0.png"],
             aspect_ratio="16:9 (Widescreen)",
             megapixels=1.0,
             start_image_size=(1000, 1500),
@@ -1311,11 +1294,11 @@ def test_reference_sheet_ignores_the_start_frame_size():
 
 def test_without_a_start_frame_size_the_preset_is_used():
     """No readable reference image (or none at all) => unchanged behaviour."""
-    spec = get_spec("tx2_3_i2v")
+    spec = get_spec("minimax_h3_i2v")
     wf = build_video_workflow(
         params(
             mode="i2v",
-            video_workflow="tx2_3_i2v",
+            video_workflow="minimax_h3_i2v",
             aspect_ratio="16:9 (Widescreen)",
             megapixels=1.0,
             start_image_size=None,
@@ -1365,26 +1348,14 @@ def _missing(mode: str, workflow_id: str, **fields) -> list[str]:
 
 
 def test_t2v_needs_no_assets():
-    assert _missing("i2v", "ltx2_3_t2v") == []
+    assert _missing("i2v", "minimax_h3_t2v") == []
 
 
 def test_i2v_needs_a_start_frame():
-    assert _missing("i2v", "tx2_3_i2v") == ["source_image"]
-    assert _missing("i2v", "tx2_3_i2v", source_image="/assets/image/a.png") == []
-
-
-def test_id_lora_needs_image_and_audio():
-    assert _missing("i2v", "ltx2_3_id_lora") == ["source_image", "audio_path"]
-
-
-def test_flf2v_needs_two_images():
-    assert _missing("i2v", "ltx2_3_flf2v") == ["source_image", "end_image"]
-    # full mode generates the first frame, so only the closing one is required
-    assert _missing("full", "ltx2_3_flf2v") == ["end_image"]
-
-
-def test_motion_needs_a_reference_clip():
-    assert _missing("i2v", "ltx2_3_ic_lora_motion") == ["source_image", "reference_video"]
+    assert _missing("i2v", "minimax_h3_i2v") == ["source_image"]
+    assert _missing("i2v", "minimax_h3_i2v", source_image="/assets/image/a.png") == []
+    # full mode generates the first frame itself
+    assert _missing("full", "minimax_h3_i2v") == []
 
 
 def test_image_only_ignores_the_video_workflow():
@@ -1394,18 +1365,18 @@ def test_image_only_ignores_the_video_workflow():
         video_prompt=None,
         audio_path=None,
         source_image=None,
-        video_workflow="ltx2_3_ic_lora_motion",
+        video_workflow="minimax_h3_i2v",
     ) == ["image_prompt"]
 
 
-@pytest.mark.parametrize("workflow_id", ["ltx2_3_t2v", "ltx2_3_ic_lora_image"])
+@pytest.mark.parametrize("workflow_id", ["minimax_h3_t2v", "minimax_h3_r2v"])
 def test_workflows_without_a_start_frame_cannot_run_in_full_mode(workflow_id):
     assert video_workflow_problem("full", workflow_id)
     assert video_workflow_problem("i2v", workflow_id) is None
 
 
 def test_start_frame_capable_workflows_are_fine_in_full_mode():
-    assert video_workflow_problem("full", "ltx2_3_id_lora") is None
+    assert video_workflow_problem("full", "minimax_h3_i2v") is None
     assert video_workflow_problem("full", "nope")  # unknown id is reported too
     assert video_workflow_problem("image_only", "nope") is None
 
@@ -1415,8 +1386,8 @@ def test_start_frame_capable_workflows_are_fine_in_full_mode():
 # --------------------------------------------------------------------------
 
 def test_validate_detects_dangling_link():
-    wf = build_video_workflow(params(video_workflow="tx2_3_i2v"))
-    wf["320:290"]["inputs"]["input"] = ["does_not_exist", 0]
+    wf = build_video_workflow(params(video_workflow="minimax_h3_i2v"))
+    wf["105:16"]["inputs"]["model"] = ["does_not_exist", 0]
     with pytest.raises(WorkflowError) as excinfo:
         validate_workflow(wf)
     assert "does_not_exist" in str(excinfo.value)
@@ -1454,8 +1425,8 @@ def test_required_class_types_cover_every_built_workflow():
         "LoraLoaderModelOnly",
         "SaveImage",
         "SaveVideo",
-        "LTXVReferenceAudio",
-        "MoGeInference",
+        "MiniMaxH3ImageToVideo",
+        "MiniMaxH3ReferenceToVideo",
         "LoadVideo",
     } <= types
 
@@ -1479,9 +1450,9 @@ def test_model_fields_are_scoped_by_workflow():
     assert "krea2_turbo/30:11.clip_name" in fields
     assert "krea2_turbo/30:12.vae_name" in fields
     # the same node id exists in several video templates -> the scope separates them
-    assert "tx2_3_i2v/320:316.ckpt_name" in fields
-    assert "ltx2_3_id_lora/340:346.lora_name" in fields
-    assert "ltx2_3_ic_lora_motion/697:32.model_name" in fields
+    assert "minimax_h3_i2v/105:6.unet_name" in fields
+    assert "minimax_h3_r2v/127.unet_name" in fields
+    assert "minimax_h3_i2v_turbo/127.unet_name" in fields
 
     unet = fields["krea2_turbo/30:10.unet_name"]
     assert (unet.workflow_id, unet.node_id, unet.field, unet.class_type) == (
@@ -1545,11 +1516,11 @@ def test_selectable_model_slots_need_two_candidates():
 def test_scoped_model_overrides_keeps_only_the_given_workflows():
     overrides = {
         UNET_SLOT: "a.safetensors",
-        "tx2_3_i2v/320:316.ckpt_name": "b.safetensors",
-        "ltx2_3_t2v/267:221.ckpt_name": "",  # 空値は落とす
+        "minimax_h3_i2v/105:6.unet_name": "b.safetensors",
+        "minimax_h3_t2v/105:6.unet_name": "",  # 空値は落とす
     }
-    assert scoped_model_overrides(overrides, ["tx2_3_i2v", "ltx2_3_t2v"]) == {
-        "tx2_3_i2v/320:316.ckpt_name": "b.safetensors"
+    assert scoped_model_overrides(overrides, ["minimax_h3_i2v", "minimax_h3_t2v"]) == {
+        "minimax_h3_i2v/105:6.unet_name": "b.safetensors"
     }
     assert scoped_model_overrides(None, ["krea2_turbo"]) == {}
 
@@ -1577,20 +1548,25 @@ def test_apply_model_overrides_ignores_empty_unknown_and_other_workflows():
 def test_build_applies_scoped_overrides_only():
     overrides = {
         "krea2_turbo/30:10.unet_name": "custom-unet.safetensors",
-        "tx2_3_i2v/320:316.ckpt_name": "custom-ckpt.safetensors",
-        "ltx2_3_id_lora/340:317.ckpt_name": "other-ckpt.safetensors",
+        "minimax_h3_i2v/105:6.unet_name": "custom-unet2.safetensors",
+        "minimax_h3_r2v/127.unet_name": "other-unet.safetensors",
     }
     image = build_image_workflow(params(), overrides)
     assert image["30:10"]["inputs"]["unet_name"] == "custom-unet.safetensors"
 
-    i2v = build_video_workflow(params(video_workflow="tx2_3_i2v"), overrides)
-    assert i2v["320:316"]["inputs"]["ckpt_name"] == "custom-ckpt.safetensors"
+    i2v = build_video_workflow(params(video_workflow="minimax_h3_i2v"), overrides)
+    assert i2v["105:6"]["inputs"]["unet_name"] == "custom-unet2.safetensors"
 
-    # the id_lora template shares node ids with ia2v but not the override scope
-    id_lora = build_video_workflow(params(video_workflow="ltx2_3_id_lora"), overrides)
-    assert id_lora["340:317"]["inputs"]["ckpt_name"] == "other-ckpt.safetensors"
-    ia2v = build_video_workflow(params(video_workflow="tx2_3_ia2v"), overrides)
-    assert ia2v["340:317"]["inputs"]["ckpt_name"] != "other-ckpt.safetensors"
+    # r2v shares node ids with the turbo templates but not the override scope
+    r2v = build_video_workflow(
+        params(video_workflow="minimax_h3_r2v", reference_image_names=["ref0.png"]),
+        overrides,
+    )
+    assert r2v["127"]["inputs"]["unet_name"] == "other-unet.safetensors"
+    turbo = build_video_workflow(
+        params(video_workflow="minimax_h3_i2v_turbo"), overrides
+    )
+    assert turbo["127"]["inputs"]["unet_name"] != "other-unet.safetensors"
 
     # the templates keep their own defaults
     assert load_template(KREA2_TURBO)["30:10"]["inputs"]["unet_name"] != (
@@ -1661,11 +1637,18 @@ def test_steps_are_an_int_even_when_given_as_a_float():
 
 
 def test_a_workflow_without_a_steps_target_ignores_the_value():
-    """宣言していないワークフロー（LTX の t2v）に steps を渡しても何も起きない。"""
-    spec = get_spec("ltx2_3_t2v", "video")
-    assert not spec.supports("steps")
-    plain = build_video_workflow(params(video_workflow="ltx2_3_t2v", steps=0))
-    with_steps = build_video_workflow(params(video_workflow="ltx2_3_t2v", steps=42))
+    """`steps` を宣言していないワークフローに渡しても何も起きない。"""
+    spec = get_spec("minimax_h3_t2v", "video")
+    stripped = replace(
+        spec, inject={k: v for k, v in spec.inject.items() if k != "steps"}
+    )
+    assert not stripped.supports("steps")
+    plain = build_video_workflow(
+        params(video_workflow=spec.id, steps=0), spec=stripped
+    )
+    with_steps = build_video_workflow(
+        params(video_workflow=spec.id, steps=42), spec=stripped
+    )
     assert plain == with_steps
 
 

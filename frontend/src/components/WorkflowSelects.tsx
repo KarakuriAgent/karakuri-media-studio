@@ -53,9 +53,6 @@ export default function WorkflowSelects({
                 </option>
               ))}
             </select>
-            {select.hint && (
-              <p className="mt-1 text-[11px] text-slate-500">{select.hint}</p>
-            )}
             <FieldError message={errors?.[select.name]} />
           </div>
         )

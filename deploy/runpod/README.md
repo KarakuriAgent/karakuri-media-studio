@@ -97,7 +97,7 @@ docker build --build-arg COMFYUI_REF=v0.27.0 -t <user>/karakuri-comfyui:latest .
 RunPod のコンソール → **Storage** → **Network Volume** で作ります。
 
 - リージョンは、使いたい GPU（RTX PRO 6000 Blackwell / RTX 5090）の在庫があるところ
-- 容量はモデルの合計 + 100 GB 程度（LTX 2.3 系を一式入れるなら 500 GB〜）
+- 容量はモデルの合計 + 100 GB 程度（MiniMax H3 系を一式入れるなら 300 GB〜）
 - Pod には `/workspace` としてマウントされます
 
 ここに ComfyUI 本体・カスタムノード・モデルが置かれ、Pod を作り直しても残ります。

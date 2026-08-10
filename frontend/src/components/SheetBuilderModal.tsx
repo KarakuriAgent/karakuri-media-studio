@@ -90,11 +90,6 @@ export default function SheetBuilderModal({
       footer={
         <div className="mt-3 flex flex-col gap-2">
           {error && <Banner onClose={() => setError(null)}>{error}</Banner>}
-          <p className="text-[11px] text-slate-500">
-            押した順に左上から並べます（{SHEET_MIN_ITEMS}〜{SHEET_MAX_ITEMS} 枚）。
-            カテゴリが「キャラクター」の素材は大きいパネルになります。
-            出来上がりは {width}×{height} です。
-          </p>
           <div className="flex items-center gap-2">
             <span className="text-xs text-slate-400">
               {picked.length} 枚選択

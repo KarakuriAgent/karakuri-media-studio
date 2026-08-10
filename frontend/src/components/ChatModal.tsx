@@ -181,9 +181,6 @@ export default function ChatModal({
               </button>
             ))}
           </div>
-          <span className="text-slate-500">
-            切り替えると会話をやり直します
-          </span>
         </div>
         )}
 

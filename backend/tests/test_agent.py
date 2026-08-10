@@ -328,9 +328,9 @@ def test_invalid_actions_raise(env, payload, needle):
 def test_plan_job_goes_through_the_existing_validation(env):
     broken = {
         "action": "plan",
-        "tasks": [{"label": "x", "job": job_body(env, audio_path=None)}],
+        "tasks": [{"label": "x", "job": job_body(env, image_prompt="")}],
     }
-    with pytest.raises(agent_protocol.ActionError, match="audio_path"):
+    with pytest.raises(agent_protocol.ActionError, match="image_prompt"):
         agent_protocol.parse_action(action_answer(broken))
 
     stray = {
@@ -361,19 +361,12 @@ def test_unknown_lora_is_rejected(env):
         agent_protocol.parse_action(answer, known_loras=KNOWN_LORAS)
 
 
-def test_an_unknown_video_lora_is_rejected(env):
+def test_video_loras_need_a_workflow_that_can_take_them(env):
+    """今ある動画ワークフローは LoRA チェーンを持たないので、指定は弾かれる。"""
     answer = _plan_with(
-        env, video_loras=[{"lora_name": "ghost.safetensors", "trigger_word": "g"}]
+        env, video_loras=[{"lora_name": "motion.safetensors", "trigger_word": "slowmo"}]
     )
-    with pytest.raises(agent_protocol.ActionError, match="存在しない LoRA"):
-        agent_protocol.parse_action(answer, known_loras=KNOWN_LORAS)
-
-
-def test_an_image_lora_cannot_be_used_as_a_video_lora(env):
-    answer = _plan_with(
-        env, video_loras=[{"lora_name": "kaori.safetensors", "trigger_word": "kaori"}]
-    )
-    with pytest.raises(agent_protocol.ActionError, match="`video_loras` には指定できません"):
+    with pytest.raises(agent_protocol.ActionError, match="video LoRAs"):
         agent_protocol.parse_action(answer, known_loras=KNOWN_LORAS)
 
 
@@ -389,13 +382,11 @@ def test_loras_matching_their_target_are_accepted(env):
     answer = _plan_with(
         env,
         loras=[{"lora_name": "kaori.safetensors", "trigger_word": "kaori"}],
-        video_loras=[{"lora_name": "motion.safetensors", "trigger_word": "slowmo"}],
     )
     action = agent_protocol.parse_action(answer, known_loras=KNOWN_LORAS)
     assert action is not None
     job = action.tasks[0].job
     assert job["loras"][0]["lora_name"] == "kaori.safetensors"
-    assert job["video_loras"][0]["lora_name"] == "motion.safetensors"
 
 
 def _plan(env, **job_overrides) -> str:
@@ -413,52 +404,31 @@ def test_plan_can_select_another_video_workflow(env):
         _plan(
             env,
             mode="i2v",
-            video_workflow="ltx2_3_flf2v",
+            video_workflow="minimax_h3_i2v",
             source_image=str(env.image),
             end_image=str(env.image),
             audio_path=None,
         )
     )
     job = action.tasks[0].job
-    assert job["video_workflow"] == "ltx2_3_flf2v"
+    assert job["video_workflow"] == "minimax_h3_i2v"
     assert job["end_image"] == str(env.image)
 
 
-def test_motion_workflow_takes_a_reference_video(env):
-    action = agent_protocol.parse_action(
-        _plan(
-            env,
-            mode="full",
-            video_workflow="ltx2_3_ic_lora_motion",
-            reference_video=str(env.clip),
-            audio_path=None,
-        )
-    )
-    assert action.tasks[0].job["reference_video"] == str(env.clip)
-
-
 def test_a_missing_workflow_input_names_the_workflow(env):
-    """flf2v の end_image 不足は plan 検証で弾き、ワークフロー名込みで説明する。"""
+    """i2v の source_image 不足は plan 検証で弾き、ワークフロー名込みで説明する。"""
     with pytest.raises(agent_protocol.ActionError) as excinfo:
         agent_protocol.parse_action(
             _plan(
                 env,
                 mode="i2v",
-                video_workflow="ltx2_3_flf2v",
-                source_image=str(env.image),
+                video_workflow="minimax_h3_i2v",
                 audio_path=None,
             )
         )
     message = str(excinfo.value)
-    assert "end_image" in message
-    assert "ltx2_3_flf2v" in message
-
-
-def test_a_missing_reference_video_is_reported(env):
-    with pytest.raises(agent_protocol.ActionError, match="reference_video"):
-        agent_protocol.parse_action(
-            _plan(env, video_workflow="ltx2_3_ic_lora_motion", audio_path=None)
-        )
+    assert "source_image" in message
+    assert "minimax_h3_i2v" in message
 
 
 # --------------------------------------------------------------------------
@@ -466,7 +436,7 @@ def test_a_missing_reference_video_is_reported(env):
 # --------------------------------------------------------------------------
 
 IMAGE_SLOT = "krea2_turbo/30:10.unet_name"
-VIDEO_SLOT = "ltx2_3_id_lora/340:317.ckpt_name"
+VIDEO_SLOT = "minimax_h3_i2v/105:6.unet_name"
 
 
 def _register_choices(monkeypatch, choices: dict[str, list[str]]) -> None:
@@ -512,7 +482,7 @@ def test_a_model_slot_of_a_workflow_the_job_skips_is_rejected(env, monkeypatch):
                 model_overrides={VIDEO_SLOT: "alt.safetensors"},
             )
         )
-    assert "ltx2_3_id_lora" in str(excinfo.value)
+    assert "minimax_h3_i2v" in str(excinfo.value)
 
 
 def test_system_prompt_lists_the_model_choices(env, monkeypatch):
@@ -588,21 +558,21 @@ def test_a_session_still_starts_when_the_sources_cannot_be_resolved(env, monkeyp
     assert "# MODEL SOURCES" not in system
 
 
-def test_the_default_workflow_still_requires_its_audio(env):
-    """既定 (ID-LoRA) の音声必須はワークフロー由来として報告される。"""
+def test_the_default_workflow_requires_its_start_frame(env):
+    """既定 (i2v) の開始フレーム必須はワークフロー由来として報告される。"""
     with pytest.raises(agent_protocol.ActionError) as excinfo:
-        agent_protocol.parse_action(_plan(env, audio_path=None))
-    assert "audio_path" in str(excinfo.value)
-    assert "ltx2_3_id_lora" in str(excinfo.value)
+        agent_protocol.parse_action(_plan(env, mode="i2v", audio_path=None))
+    assert "source_image" in str(excinfo.value)
+    assert "minimax_h3_i2v" in str(excinfo.value)
 
 
 def test_a_workflow_without_a_start_frame_cannot_run_in_full_mode(env):
     with pytest.raises(agent_protocol.ActionError) as excinfo:
         agent_protocol.parse_action(
-            _plan(env, mode="full", video_workflow="ltx2_3_t2v", audio_path=None)
+            _plan(env, mode="full", video_workflow="minimax_h3_t2v", audio_path=None)
         )
         # t2v は開始フレームを受け取れない -> full では使えない
-    assert "ltx2_3_t2v" in str(excinfo.value)
+    assert "minimax_h3_t2v" in str(excinfo.value)
 
 
 def test_an_unknown_video_workflow_lists_the_real_ones(env):
@@ -610,18 +580,17 @@ def test_an_unknown_video_workflow_lists_the_real_ones(env):
         agent_protocol.parse_action(_plan(env, video_workflow="ghost_workflow"))
     message = str(excinfo.value)
     assert "ghost_workflow" in message
-    assert "ltx2_3_id_lora" in message
+    assert "minimax_h3_i2v" in message
 
 
 @pytest.mark.parametrize(
     "field, workflow",
     [
-        ("end_image", "ltx2_3_flf2v"),
-        ("reference_video", "ltx2_3_ic_lora_motion"),
+        ("end_image", "minimax_h3_i2v"),
     ],
 )
 def test_stray_workflow_assets_are_rejected(env, field, workflow):
-    """end_image / reference_video も assets 配下の実在チェックを通す。"""
+    """end_image も assets 配下の実在チェックを通す。"""
     overrides = {
         "mode": "i2v",
         "video_workflow": workflow,
@@ -635,7 +604,7 @@ def test_stray_workflow_assets_are_rejected(env, field, workflow):
 
 def test_image_only_ignores_the_video_workflow(env):
     action = agent_protocol.parse_action(
-        _plan(env, mode="image_only", video_workflow="ltx2_3_t2v", audio_path=None)
+        _plan(env, mode="image_only", video_workflow="minimax_h3_t2v", audio_path=None)
     )
     assert action.tasks[0].job["mode"] == "image_only"
 
@@ -753,7 +722,7 @@ def test_system_prompt_carries_the_workflow_catalog(env):
         assert spec.description in system
         assert spec.prompt_hint in system
     # ワークフロー別の必須フィールドは missing_job_fields 由来
-    assert "`video_prompt`, `source_image`, `end_image`" in system
+    assert "`video_prompt`, `source_image`" in system
     assert f"selects `{DEFAULT_VIDEO_WORKFLOW}`" in system
 
 
@@ -1382,7 +1351,7 @@ def test_continue_can_switch_the_video_workflow(env):
             {
                 "action": "continue",
                 "job_id": job_id,
-                "video_workflow": "ltx2_3_flf2v",
+                "video_workflow": "minimax_h3_i2v",
                 "end_image": str(env.image),
                 "video_prompt": "she reaches the door",
             },
@@ -1396,7 +1365,7 @@ def test_continue_can_switch_the_video_workflow(env):
     listing = env.client.get("/api/jobs").json()
     chained = [j for j in listing if j["params"].get("continued_from") == job_id]
     assert len(chained) == 1
-    assert chained[0]["params"]["video_workflow"] == "ltx2_3_flf2v"
+    assert chained[0]["params"]["video_workflow"] == "minimax_h3_i2v"
     assert chained[0]["params"]["end_image"] == str(env.image)
 
 
@@ -2451,7 +2420,7 @@ def test_library_sheet_composes_a_sheet_from_the_library(env):
     # id・パス・URL をそのまま返す（次のターンで書き写せる）
     assert (event["data"]["path"], event["data"]["url"]) == (sheet["path"], sheet["url"])
     assert event["data"]["item_ids"] == [hero["id"], sword["id"]]
-    for shown in (sheet["id"], sheet["path"], sheet["url"], "ltx2_3_ic_lora_image"):
+    for shown in (sheet["id"], sheet["path"], sheet["url"], "source_image"):
         assert shown in event["content"]
 
     # 出来上がったシートはそのまま次のジョブの source_image に使える
@@ -2573,10 +2542,9 @@ def test_system_prompt_explains_the_character_sheet_flow(env):
     assert "（character）" in system
     assert "`library_sheet`" in system
     assert "`category`" in system
-    # IC-LoRA の 2 部構成プロンプトまで案内する
-    assert "Reference sheet:" in system
-    assert "Generated video:" in system
-    assert "ltx2_3_ic_lora_image" in system
+    # 参照ワークフローへの渡し方まで案内する
+    assert "reference_images" in system
+    assert "minimax_h3_r2v" in system
 
 
 # --------------------------------------------------------------------------

@@ -92,7 +92,6 @@ export default function AssetFields({
         label="素材名（@ で呼ぶ名前）"
         value={name}
         onChange={setName}
-        hint="プロジェクト内で一意。カットのプロンプトから @名前 で参照します"
       />
       <AreaField
         label="キャプション（人間向け）"
@@ -109,9 +108,6 @@ export default function AssetFields({
       />
 
       <div className="flex flex-col gap-3 border-t border-ink-700 pt-3">
-        <p className="text-[11px] text-slate-500">
-          拡張項目（生成には効かない覚え書き。脚本やカードを書くときの手がかり）
-        </p>
         {PROFILE_FIELDS[asset.category].map((field) =>
           field.kind === 'urls' ? (
             <UrlListField
@@ -127,7 +123,6 @@ export default function AssetFields({
             <TextField
               key={field.key}
               label={field.label}
-              hint={field.hint}
               value={profile[field.key] ?? ''}
               onChange={(value) => patchProfile(field.key, value)}
             />
@@ -135,7 +130,6 @@ export default function AssetFields({
             <AreaField
               key={field.key}
               label={field.label}
-              hint={field.hint}
               rows={2}
               value={profile[field.key] ?? ''}
               onChange={(value) => patchProfile(field.key, value)}

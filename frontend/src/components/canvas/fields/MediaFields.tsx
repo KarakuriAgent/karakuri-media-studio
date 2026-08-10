@@ -81,10 +81,6 @@ export default function MediaFields({
           </p>
         </div>
       )}
-
-      <p className="text-[11px] text-slate-500">
-        Take の採用・却下はスタジオの制作タブで行います。
-      </p>
     </div>
   )
 }

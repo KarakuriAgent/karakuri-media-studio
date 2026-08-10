@@ -352,13 +352,13 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
     ],
     "loras": [
         ("sample_images", "TEXT NOT NULL DEFAULT '[]'"),
-        # 'image' = 画像ワークフロー用 / 'video' = LTX 2.3 動画ワークフロー用。
+        # 'image' = 画像ワークフロー用 / 'video' = 動画ワークフロー用。
         # 既存レコードは画像用として登録されていたので既定値は 'image'。
         ("target", "TEXT NOT NULL DEFAULT 'image'"),
         # 画像 LoRA のモデルファミリー（krea2 / anima / z-image / qwen-image）。
         # 画像ワークフローが選択式になる前の既存行はすべて krea2 用なので、
         # 既定値 'krea2' がそのままマイグレーション後の値になる。
-        # target='video' の行では無視される（動画は LTX 2.3 のみ）。
+        # target='video' の行では無視される（動画 LoRA はファミリーを持たない）。
         ("family", "TEXT NOT NULL DEFAULT 'krea2'"),
         # どの接続先環境（ComfyCloud / RunPod / ローカル）に置いてある LoRA か。
         # 既定は NULL = 「全環境で出す」: 接続先を分ける前に登録した行がどの環境の

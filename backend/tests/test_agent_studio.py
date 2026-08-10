@@ -198,7 +198,7 @@ def test_an_unknown_workflow_override_is_rejected(env):
                 {
                     "action": "studio_render_shot",
                     "shot_id": "s1",
-                    "workflow_override": "ltx2_3_id_lora",
+                    "workflow_override": "ghost_workflow",
                 }
             )
         )

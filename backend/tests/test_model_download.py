@@ -546,4 +546,4 @@ def test_unknown_loaders_get_an_empty_subfolder():
 def test_models_endpoint_exposes_the_subfolder(client):
     rows = {row["key"]: row for row in client.get("/api/models").json()}
     assert rows["krea2_turbo/30:10.unet_name"]["subfolder"] == "diffusion_models"
-    assert rows["tx2_3_i2v/320:316.ckpt_name"]["subfolder"] == "checkpoints"
+    assert rows["stable_audio_3_medium_base/52:25.ckpt_name"]["subfolder"] == "checkpoints"

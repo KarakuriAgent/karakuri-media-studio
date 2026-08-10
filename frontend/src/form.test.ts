@@ -24,6 +24,7 @@ import {
   elementsLimits,
   multiShotLimits,
   needsReferenceSheet,
+  REFERENCE_SHEET_WORKFLOWS,
   newShot,
   promptChars,
   referenceFields,
@@ -50,7 +51,7 @@ function workflow(overrides: Partial<WorkflowOption> = {}): WorkflowOption {
     id: 'w',
     label: 'W',
     kind: 'video',
-    family: 'ltx2.3',
+    family: 'minimax-h3',
     notes: '',
     requires: [],
     supports: ['prompt', 'negative', 'width', 'height', 'duration', 'fps'],
@@ -66,7 +67,7 @@ function workflow(overrides: Partial<WorkflowOption> = {}): WorkflowOption {
   }
 }
 
-const T2V = workflow({ id: 'ltx2_3_t2v' })
+const T2V = workflow({ id: 'minimax_h3_t2v' })
 const I2V = workflow({ id: 'i2v', requires: ['image'], accepts_start_image: true })
 const ID_LORA = workflow({
   id: 'id_lora',
@@ -127,9 +128,9 @@ describe('workflowFamilies', () => {
 
   it('ファミリーごとにまとめ、並びは一覧の初出順', () => {
     const groups = workflowFamilies([T2V, KLING, I2V, KLING_MULTI])
-    expect(groups.map((group) => group.family)).toEqual(['ltx2.3', 'kling'])
+    expect(groups.map((group) => group.family)).toEqual(['minimax-h3', 'kling'])
     expect(groups[0].workflows.map((item) => item.id)).toEqual([
-      'ltx2_3_t2v',
+      'minimax_h3_t2v',
       'i2v',
     ])
     expect(groups[1].label).toBe('Kling 3.0（外部 API）')
@@ -143,7 +144,7 @@ describe('workflowFamilies', () => {
 
   it('モデルのラベルは family_label、無ければ日本語名に落とす', () => {
     expect(workflowFamilyLabel(KLING)).toBe('Kling 3.0（外部 API）')
-    expect(workflowFamilyLabel(T2V)).toBe('LTX 2.3')
+    expect(workflowFamilyLabel(T2V)).toBe('MiniMax H3')
     expect(workflowFamilyLabel(workflow({ family: 'unknown' }))).toBe('unknown')
   })
 })
@@ -155,7 +156,7 @@ describe('hiddenFields', () => {
     expect(hidden.loras).toBe(true)
     expect(hidden.trigger).toBe(true)
     expect(hidden.videoPrompt).toBe(false)
-    // the video LoRA chain lives in the LTX graph, which does run here
+    // the video LoRA chain lives in the video graph, which does run here
     expect(hidden.videoLoras).toBe(false)
     expect(hidden.videoTrigger).toBe(false)
   })
@@ -1188,8 +1189,8 @@ const VIDEO_SLOT = slot({
   kind: 'video',
   node_id: '340:317',
   field: 'ckpt_name',
-  default: 'ltx.safetensors',
-  choices: ['ltx.safetensors', 'ltx-alt.safetensors'],
+  default: 'video.safetensors',
+  choices: ['video.safetensors', 'video-alt.safetensors'],
 })
 const SLOTS = [IMAGE_SLOT, VIDEO_SLOT]
 
@@ -1243,7 +1244,7 @@ describe('jobModelOverrides', () => {
       mode: 'image_only',
       modelOverrides: {
         [IMAGE_SLOT.key]: 'alt.safetensors',
-        [VIDEO_SLOT.key]: 'ltx-alt.safetensors',
+        [VIDEO_SLOT.key]: 'video-alt.safetensors',
       },
     })
     expect(jobModelOverrides(form, SLOTS, jobWorkflowIds(form))).toEqual({
@@ -1778,8 +1779,8 @@ describe('formStateFromParams — 壊れた params', () => {
 
 
 describe('リファレンスシート（SPEC §7.2）', () => {
-  it('シートを入力に取る動画ワークフローだけを見分ける', () => {
-    expect(needsReferenceSheet(workflow({ id: 'ltx2_3_ic_lora_image' }))).toBe(true)
+  it('シートを入力に取る動画ワークフローだけを見分ける（今は該当なし）', () => {
+    expect(REFERENCE_SHEET_WORKFLOWS).toEqual([])
     expect(needsReferenceSheet(T2V)).toBe(false)
     expect(needsReferenceSheet(null)).toBe(false)
     expect(needsReferenceSheet(undefined)).toBe(false)

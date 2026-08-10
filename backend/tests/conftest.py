@@ -8,7 +8,7 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-from app import config  # noqa: E402
+from app import config, db, paths  # noqa: E402
 from app.workflows import SPECS  # noqa: E402
 
 
@@ -21,6 +21,22 @@ def isolated_settings(monkeypatch, tmp_path_factory):
     monkeypatch.setattr(config, "_settings", None)
     yield
     config._settings = None
+
+
+@pytest.fixture(autouse=True)
+def isolated_db(monkeypatch, tmp_path_factory):
+    """開発機の ``<ROOT>/app.db`` をテストに触らせない。
+
+    ``with TestClient(app)`` は :func:`app.main.lifespan` を走らせる（= 実行中の
+    ``queued`` / ``running`` を「中断された」として ``failed`` に倒す
+    :func:`app.jobs.recover_interrupted_jobs` まで走る）ので、DB を差し替え忘れた
+    テストが 1 本でもあると**本物の app.db の実行中ジョブが落とされる**。
+    個々のテストの差し替え漏れを事故にしないよう、既定でここが受け止める
+    （自分で差し替えるテストは、この後から上書きするのでこれまでどおり動く）。
+    """
+    db_path = tmp_path_factory.mktemp("db") / "app.db"
+    monkeypatch.setattr(db, "DB_PATH", db_path)
+    monkeypatch.setattr(paths, "DB_PATH", db_path)
 
 
 def fake_outputs(

@@ -2,7 +2,7 @@
 
 The app ships a folder of independent ComfyUI API-format graphs under
 ``workflow/``: four image workflows (Krea 2 turbo, Anima, Z-Image turbo and
-Qwen-Image Edit 2511), seven LTX 2.3 video workflows and two audio workflows
+Qwen-Image Edit 2511), five MiniMax H3 video workflows and two audio workflows
 (ACE-Step 1.5 XL and Stable Audio 3 Medium).  Each one is described here by a
 :class:`WorkflowSpec` whose ``inject`` map names every node/field the app writes
 to.
@@ -169,9 +169,9 @@ class LoraChain:
 
     ``placeholders`` are a template's own (strength 0) ``LoraLoaderModelOnly``
     stubs, which the app deletes before rebuilding the chain.  Only the image
-    template has them; the LTX 2.3 templates splice in **after** their fixed
-    LoRA nodes (distill / ID-LoRA / IC-LoRA), which must stay, so their
-    ``placeholders`` is empty.
+    templates have them; a template that carries fixed LoRA nodes it cannot work
+    without splices the user chain in **after** them and leaves
+    ``placeholders`` empty.
     """
 
     head: str
@@ -274,7 +274,6 @@ FAMILY_LABELS: dict[str, str] = {
     "anima": "Anima",
     "z-image": "Z-Image",
     "qwen-image": "Qwen-Image Edit",
-    "ltx2.3": "LTX 2.3",
     "minimax-h3": "MiniMax H3",
     "ace-step": "ACE-Step 1.5",
     "stable-audio": "Stable Audio 3",
@@ -290,6 +289,12 @@ FAMILY_NOTES: dict[str, str] = {"grok-imagine": "サブスク CLI"}
 #: LoRA registrations default to this family (the only image workflow that
 #: existed before the selector), so the DB migration can backfill with it.
 DEFAULT_FAMILY = "krea2"
+
+#: 生成フォーム／ジョブのグローバル既定の解像度（メガピクセル、SPEC §3.1）。
+#: 既定の動画ワークフローが MiniMax H3 になり、8GB 級のローカル GPU では
+#: 1.0MP だと CUDA OOM になるので 0.4MP を全体の既定に置く。宣言のある
+#: ワークフロー（:attr:`WorkflowSpec.default_megapixels`）はそちらが優先。
+DEFAULT_MEGAPIXELS = 0.4
 
 
 def family_label(family: str) -> str:
@@ -332,7 +337,7 @@ class FrameGrid:
     書いているが、アプリは値を Python 側で決めて式に焼き込む
     （:func:`app.workflow._inject_frame_count`）ので、格子をここで宣言する。
 
-    * LTX 2.3: ``8n + 1``（既定）。要求より**長くならない**よう切り下げる。
+    * 既定: ``8n + 1``。要求より**長くならない**よう切り下げる。
     * MiniMax H3: ``17k + 5`` を 24fps で。ブロック単位でしか作れないので
       切り上げ、最短は 5 フレーム（``nodes_minimax_h3.py`` の
       ``align_frame_count(max(5, length))`` と同じ）。
@@ -342,7 +347,7 @@ class FrameGrid:
     multiple: int = 8
     #: 格子の位相（``multiple * n + offset``）
     offset: int = 1
-    #: True なら格子に切り上げ（MiniMax H3）、False なら切り下げ（LTX）
+    #: True なら格子に切り上げ（MiniMax H3）、False なら切り下げ（既定）
     round_up: bool = False
     #: グラフの fps が固定のときその値（0 = ジョブの ``fps`` を使う）
     fps: int = 0
@@ -360,8 +365,8 @@ class FrameGrid:
         return max(count, self.minimum)
 
 
-#: LTX 2.3 の格子（``8n + 1``）。宣言しないワークフローはこれ。
-LTX_FRAME_GRID = FrameGrid()
+#: 既定の格子（``8n + 1``）。宣言しないワークフローはこれ。
+DEFAULT_FRAME_GRID = FrameGrid()
 
 #: MiniMax H3 の格子（24fps・``17k + 5``、最短 5 フレーム）
 MINIMAX_H3_FRAME_GRID = FrameGrid(multiple=17, offset=5, round_up=True, fps=24, minimum=5)
@@ -470,7 +475,7 @@ class WorkflowSpec:
     backend: WorkflowBackend = "comfyui"
     #: model family (= the ``workflow/<kind>/<folder>`` name).  Image LoRAs are
     #: only offered for the family of the selected image workflow; the video
-    #: templates all share the ``ltx2.3`` family and ignore it.
+    #: templates ignore it (no video template has a user LoRA chain today).
     family: str = DEFAULT_FAMILY
     requires: tuple[InputName, ...] = ()
     #: **複数ファイル**を配列で受け取る論理入力（論理名 -> 受け取れる件数の上限、
@@ -516,7 +521,7 @@ class WorkflowSpec:
     default_duration: float = 0.0
     #: そのモデルが想定している解像度（メガピクセル、0.0 = 宣言なし）。
     #: テンプレートの ``ResolutionSelector`` が前提にしている画角と、フォームの
-    #: グローバル既定（1.0MP）がずれるモデル用（SPEC §3.1）。宣言があると、
+    #: グローバル既定（``DEFAULT_MEGAPIXELS``）がずれるモデル用（SPEC §3.1）。宣言があると、
     #: そのワークフローを選んだ時点でフォームの ``megapixels`` がこの値になる。
     #: MiniMax H3 は 0.4（1.0MP のまま回すと 8GB 級の GPU で CUDA OOM になる）。
     default_megapixels: float = 0.0
@@ -524,14 +529,13 @@ class WorkflowSpec:
     accepts_start_image: bool = False
     #: UI label of the primary image input
     image_label: str = "開始フレーム"
-    #: 動画の幅・高さを丸める単位。LTX の latent は 32px 単位なので、32 の倍数で
-    #: ないと端が数 px 欠ける。さらに union-control IC-LoRA は参照動画を 0.5 倍
-    #: 解像度で latent エンコードするため、その半分（= 元の 64 の倍数）でないと
-    #: latent の形が合わずに実行時に落ちる。
+    #: 動画の幅・高さを丸める単位。動画モデルの latent は空間方向にも粗い格子を
+    #: 持つので、その倍数でないと端が数 px 欠けたり latent の形が合わずに実行時に
+    #: 落ちたりする（MiniMax H3 は 32 の倍数）。
     resolution_multiple: int = 8
     #: ``frames_expr`` に焼き込むフレーム数の格子（:class:`FrameGrid`）。既定は
-    #: LTX の ``8n + 1``。MiniMax H3 は 24fps の ``17k + 5`` なので宣言し直す。
-    frames: FrameGrid = LTX_FRAME_GRID
+    #: 既定は ``8n + 1``。MiniMax H3 は 24fps の ``17k + 5`` なので宣言し直す。
+    frames: FrameGrid = DEFAULT_FRAME_GRID
     lora_chain: LoraChain | None = None
     #: 参照素材をグラフに動的に生やす宣言（:class:`RefMediaFan`、``None`` = 非対応）。
     #: 宣言すると ``multi_inputs`` の ``reference_images`` / ``reference_videos`` /
@@ -822,372 +826,6 @@ GROK_IMAGINE_EDIT = WorkflowSpec(
 
 
 # --------------------------------------------------------------------------
-# video: workflow/video/ltx2.3/*.json
-# --------------------------------------------------------------------------
-#
-# Video LoRA chain (SPEC §3.4): every LTX template already carries fixed LoRA
-# nodes it cannot work without — the distilled-1.1 speed LoRA on the "dev"
-# graphs, the talkvid ID-LoRA, the ingredients / union-control IC-LoRAs.  The
-# user chain is therefore spliced in *after* the last of those on the path to
-# the sampler, and only the sampler-side consumers are re-pointed:
-#
-# * t2v / i2v / ia2v: head = the distill ``LoraLoaderModelOnly``, consumers =
-#   both ``CFGGuider.model`` inputs (the base and the upscale pass).  The Gemma
-#   ``LoraLoader`` hanging off the same output is a text-encoder LoRA whose
-#   MODEL output nothing reads, so it keeps the raw model.
-# * id_lora: head = the distill LoRA as well, consumers = the first
-#   ``CFGGuider`` *and* the talkvid ID-LoRA node, so the user LoRA applies to
-#   both passes while staying in front of the ID-LoRA / LTXVReferenceAudio.
-# * flf2v: head = the distill ``LoraLoaderModelOnly`` and the single
-#   ``CFGGuider`` is the consumer.
-# * ic_lora_*: head = the IC-LoRA node, consumer = ``KSampler.model``.  The
-#   ``GetICLoRAParameters`` branch keeps reading the IC-LoRA model directly.
-
-_DEV_NEGATIVE = "pc game, console game, video game, cartoon, childish, ugly"
-
-LTX_T2V = WorkflowSpec(
-    id="ltx2_3_t2v",
-    label="テキスト→動画 (t2v)",
-    kind="video",
-    family="ltx2.3",
-    relpath="video/ltx2.3/ltx2_3_t2v.json",
-    output_node="75",
-    requires=(),
-    description=(
-        "テキストだけから動画を生成する。開始フレームは不要で、画面に写るものは"
-        "すべてプロンプトで決まる。"
-    ),
-    prompt_hint=(
-        "No start frame exists: the prompt has to establish the subject, the"
-        " set, the wardrobe and the framing as well as the motion. Never open"
-        ' with "Starting from the given first frame".'
-    ),
-    accepts_start_image=False,
-    resolution_multiple=32,
-    inject={
-        "prompt": T("267:266", "value", "PrimitiveStringMultiline"),
-        "negative": T("267:247", "text", "CLIPTextEncode"),
-        "width": T("267:257", "value", "PrimitiveInt"),
-        "height": T("267:258", "value", "PrimitiveInt"),
-        "duration": T("267:225", "value", "PrimitiveInt"),
-        "fps": T("267:260", "value", "PrimitiveInt"),
-        "frames_expr": T("267:277", "", "ComfyMathExpression"),
-        "prompt_enhance": T("267:330", "value", "PrimitiveBoolean"),
-        "save_prefix": T("75", "filename_prefix", "SaveVideo"),
-    },
-    seeds=(
-        T("267:216", "noise_seed", "RandomNoise"),
-        T("267:237", "noise_seed", "RandomNoise"),
-    ),
-    lora_chain=LoraChain(
-        head="267:232",
-        consumers=(
-            T("267:213", "model", "CFGGuider"),
-            T("267:231", "model", "CFGGuider"),
-        ),
-    ),
-    constants={"prompt_enhance": False},
-    notes="ltx-2.3-22b-dev-fp8 / 開始画像なし",
-)
-
-LTX_I2V = WorkflowSpec(
-    id="tx2_3_i2v",
-    label="画像→動画 (i2v)",
-    kind="video",
-    family="ltx2.3",
-    relpath="video/ltx2.3/tx2_3_i2v.json",
-    output_node="75",
-    requires=("image",),
-    description=(
-        "開始フレーム画像から動画を生成する。被写体とセットは画像が決め、"
-        "プロンプトは動きを担当する。"
-    ),
-    prompt_hint=(
-        "The start frame supplies the looks of the subject and the set — never"
-        ' contradict it. Open the motion description with "Starting from the'
-        ' given first frame, …" and spend the paragraph on movement, body and'
-        " face reactions, camera and sound."
-    ),
-    accepts_start_image=True,
-    image_label="開始フレーム",
-    resolution_multiple=32,
-    inject={
-        "prompt": T("320:319", "value", "PrimitiveStringMultiline"),
-        "negative": T("320:313", "text", "CLIPTextEncode"),
-        "width": T("320:312", "value", "PrimitiveInt"),
-        "height": T("320:299", "value", "PrimitiveInt"),
-        "duration": T("320:301", "value", "PrimitiveInt"),
-        "fps": T("320:300", "value", "PrimitiveInt"),
-        "frames_expr": T("320:323", "", "ComfyMathExpression"),
-        "prompt_enhance": T("320:328", "value", "PrimitiveBoolean"),
-        "image": T("269", "image", "LoadImage"),
-        "save_prefix": T("75", "filename_prefix", "SaveVideo"),
-    },
-    seeds=(
-        T("320:276", "noise_seed", "RandomNoise"),
-        T("320:277", "noise_seed", "RandomNoise"),
-    ),
-    lora_chain=LoraChain(
-        head="320:285",
-        consumers=(
-            T("320:282", "model", "CFGGuider"),
-            T("320:314", "model", "CFGGuider"),
-        ),
-    ),
-    constants={"prompt_enhance": False},
-    notes="ltx-2.3-22b-dev-fp8 / 音声は生成側で合成",
-)
-
-LTX_IA2V = WorkflowSpec(
-    id="tx2_3_ia2v",
-    label="画像+音声→動画 (ia2v)",
-    kind="video",
-    family="ltx2.3",
-    relpath="video/ltx2.3/tx2_3_ia2v.json",
-    output_node="341",
-    requires=("image", "audio"),
-    description=(
-        "開始フレーム画像と音声ファイルから動画を生成する。渡した音声がそのまま"
-        "クリップの音声トラックになり、映像はその音に合わせて動く。"
-    ),
-    audio_role=(
-        "指定した音声ファイルがクリップの音声トラックそのものになる"
-        "（`audio_path` 必須）。セリフは音声側で決まるのでプロンプトには書かない。"
-    ),
-    prompt_hint=(
-        "The user's audio file *is* the clip's soundtrack, so the picture has to"
-        ' follow it. Open with "Starting from the given first frame, …" and'
-        " describe motion that matches that audio (speech rhythm, music,"
-        " moans). Do NOT write spoken lines in double quotes — the words come"
-        " from the file, not from the prompt; keep the audio sentence about"
-        " ambience and body sounds only."
-    ),
-    accepts_start_image=True,
-    image_label="開始フレーム",
-    resolution_multiple=32,
-    inject={
-        "prompt": T("340:319", "value", "PrimitiveStringMultiline"),
-        "negative": T("340:314", "text", "CLIPTextEncode"),
-        "width": T("340:330", "value", "PrimitiveInt"),
-        "height": T("340:324", "value", "PrimitiveInt"),
-        "duration": T("340:331", "value", "PrimitiveFloat"),
-        "fps": T("340:323", "value", "PrimitiveInt"),
-        "frames_expr": T("340:329", "", "ComfyMathExpression"),
-        "prompt_enhance": T("340:349", "value", "PrimitiveBoolean"),
-        "image": T("269", "image", "LoadImage"),
-        "audio": T("276", "audio", "LoadAudio"),
-        "save_prefix": T("341", "filename_prefix", "SaveVideo"),
-    },
-    seeds=(
-        T("340:285", "noise_seed", "RandomNoise"),
-        T("340:286", "noise_seed", "RandomNoise"),
-    ),
-    lora_chain=LoraChain(
-        head="340:293",
-        consumers=(
-            T("340:290", "model", "CFGGuider"),
-            T("340:315", "model", "CFGGuider"),
-        ),
-    ),
-    constants={"prompt_enhance": False},
-    notes="ltx-2.3-22b-dev-fp8 / 音声をラテントに焼き込む",
-)
-
-LTX_ID_LORA = WorkflowSpec(
-    id="ltx2_3_id_lora",
-    label="画像+参照音声→動画・リップシンク (ID-LoRA)",
-    kind="video",
-    family="ltx2.3",
-    relpath="video/ltx2.3/ltx2_3_id_lora.json",
-    output_node="341",
-    requires=("image", "audio"),
-    description=(
-        "開始フレーム画像とリファレンス音声から、talkvid ID-LoRA で口の動きが"
-        "揃った喋りの動画を生成する。音声そのものはモデルが生成し、リファレンス"
-        "音声は声質とリップシンクの参照に使う。"
-    ),
-    audio_role=(
-        "リファレンス音声（`audio_path` 必須）。声質と口の動きの参照に使うだけで、"
-        "出力される音声はモデルが生成するので、セリフはプロンプトの二重引用符で"
-        "指定する。"
-    ),
-    prompt_hint=(
-        "The clip is a lip-synced talking performance: the reference audio drives"
-        ' the voice and the mouth. Open with "Starting from the given first'
-        ' frame, …", describe the delivery (how she speaks, expression, head and'
-        " body movement while talking) and keep the spoken lines short inside"
-        " double quotes — the model synthesizes them verbatim."
-    ),
-    accepts_start_image=True,
-    image_label="開始フレーム",
-    resolution_multiple=32,
-    inject={
-        "prompt": T("340:319", "value", "PrimitiveStringMultiline"),
-        "negative": T("340:314", "text", "CLIPTextEncode"),
-        "width": T("340:330", "value", "PrimitiveInt"),
-        "height": T("340:324", "value", "PrimitiveInt"),
-        "duration": T("340:331", "value", "PrimitiveFloat"),
-        "fps": T("340:323", "value", "PrimitiveInt"),
-        "frames_expr": T("340:329", "", "ComfyMathExpression"),
-        "image": T("269", "image", "LoadImage"),
-        "audio": T("276", "audio", "LoadAudio"),
-        "save_prefix": T("341", "filename_prefix", "SaveVideo"),
-    },
-    seeds=(
-        T("340:285", "noise_seed", "RandomNoise"),
-        T("340:286", "noise_seed", "RandomNoise"),
-    ),
-    lora_chain=LoraChain(
-        head="340:293",
-        consumers=(
-            T("340:290", "model", "CFGGuider"),
-            # the ID-LoRA -> LTXVReferenceAudio -> 2nd CFGGuider branch
-            T("340:346", "model", "LoraLoaderModelOnly"),
-        ),
-    ),
-    notes="ltx-2.3-22b-dev-fp8 + talkvid ID-LoRA / LTXVReferenceAudio",
-)
-
-LTX_FLF2V = WorkflowSpec(
-    id="ltx2_3_flf2v",
-    label="最初と最後のフレーム指定 (flf2v)",
-    kind="video",
-    family="ltx2.3",
-    relpath="video/ltx2.3/ltx2_3_flf2v.json",
-    output_node="68",
-    requires=("image", "end_image"),
-    description=(
-        "最初のフレームと最後のフレームの画像を指定し、その間の動きを補間する。"
-    ),
-    prompt_hint=(
-        "Both the first and the last frame are given: describe the *transition*"
-        " between them — the path the body, the wardrobe and the camera take"
-        " from the opening pose to the closing one — and make sure the arc ends"
-        " exactly where the last frame is. Do not describe motion that would"
-        " leave the character somewhere else."
-    ),
-    accepts_start_image=True,
-    image_label="最初のフレーム",
-    resolution_multiple=32,
-    inject={
-        "prompt": T("129:128", "text", "CLIPTextEncode"),
-        "negative": T("129:112", "text", "CLIPTextEncode"),
-        "width": T("129:113", "value", "PrimitiveInt"),
-        "height": T("129:98", "value", "PrimitiveInt"),
-        "duration": T("129:102", "value", "PrimitiveInt"),
-        "fps": T("129:114", "value", "PrimitiveInt"),
-        "frames_expr": T("129:130", "", "ComfyMathExpression"),
-        "image": T("31", "image", "LoadImage"),
-        "end_image": T("39", "image", "LoadImage"),
-        "save_prefix": T("68", "filename_prefix", "SaveVideo"),
-    },
-    seeds=(T("129:100", "noise_seed", "RandomNoise"),),
-    lora_chain=LoraChain(
-        head="129:300",
-        consumers=(T("129:116", "model", "CFGGuider"),),
-    ),
-    notes="ltx-2.3-22b-dev-fp8 + distilled-1.1 LoRA",
-)
-
-LTX_IC_LORA_IMAGE = WorkflowSpec(
-    id="ltx2_3_ic_lora_image",
-    label="リファレンスシート (IC-LoRA)",
-    kind="video",
-    family="ltx2.3",
-    relpath="video/ltx2.3/ltx2_3_ic_lora_image.json",
-    output_node="68",
-    requires=("image",),
-    description=(
-        "複数カットを並べたリファレンスシート画像から動画を生成する"
-        "（Ingredients IC-LoRA）。画像は開始フレームではなく見た目の参照なので、"
-        "full モードの 2 段目には使えない。"
-    ),
-    prompt_hint=(
-        "The image input is a multi-panel reference sheet, not a first frame: it"
-        " only fixes how the character and the props look. Write the prompt in"
-        ' the two parts this IC-LoRA expects. Start with "Reference sheet:"'
-        " followed by one short clause per panel, in the order the panels are"
-        " laid out (left to right, top to bottom), naming what each panel shows"
-        ' — then "Generated video:" followed by the shot itself (subject, set,'
-        " framing, motion and audio, written from scratch as in t2v). Never"
-        ' write "Starting from the given first frame".'
-    ),
-    # the image is a multi-panel reference sheet, not a first frame
-    accepts_start_image=False,
-    image_label="リファレンスシート画像",
-    resolution_multiple=32,
-    inject={
-        # prompt enhance is disabled, so the literal on_false branch is used
-        "prompt": T("129:211", "on_false", "ComfySwitchNode"),
-        "negative": T("129:112", "text", "CLIPTextEncode"),
-        # resolution is taken from the padded reference sheet
-        "width": T("722", "target_width", "ResizeAndPadImage"),
-        "height": T("722", "target_height", "ResizeAndPadImage"),
-        "duration": T("715", "value", "PrimitiveInt"),
-        "fps": T("716", "value", "PrimitiveInt"),
-        "frames_expr": T("717", "", "ComfyMathExpression"),
-        "prompt_enhance": T("129:212", "value", "PrimitiveBoolean"),
-        "steps": T("129:704", "steps", "KSampler"),
-        "image": T("724", "image", "LoadImage"),
-        "save_prefix": T("68", "filename_prefix", "SaveVideo"),
-    },
-    seeds=(T("129:704", "seed", "KSampler"),),
-    lora_chain=LoraChain(
-        head="129:195",
-        consumers=(T("129:704", "model", "KSampler"),),
-    ),
-    constants={"prompt_enhance": False},
-    notes="ltx-2.3-22b-dev-fp8 + distilled-1.1 LoRA + ingredients IC-LoRA",
-)
-
-LTX_IC_LORA_MOTION = WorkflowSpec(
-    id="ltx2_3_ic_lora_motion",
-    label="参照動画からモーション転写 (IC-LoRA + MoGe)",
-    kind="video",
-    family="ltx2.3",
-    relpath="video/ltx2.3/ltx2_3_ic_lora_motion.json",
-    output_node="68",
-    requires=("image", "video"),
-    description=(
-        "参照動画のカメラワークとモーションを MoGe 深度経由で転写し、開始フレーム"
-        "画像の被写体で動画を生成する（Union Control IC-LoRA）。クリップの長さは"
-        "参照動画から切り出す区間の長さになる。"
-    ),
-    prompt_hint=(
-        "Camera work and the choreography's timing come from the reference"
-        " video, not from the prompt: do not describe camera movement or the"
-        " tempo of the action. Spend the paragraph on who the subject is, the"
-        " set, the wardrobe, expressions, materials and the audio, and keep the"
-        " motion wording compatible with what the reference clip does."
-    ),
-    accepts_start_image=True,
-    image_label="開始フレーム",
-    resolution_multiple=64,
-    inject={
-        "prompt": T("129:211", "on_false", "ComfySwitchNode"),
-        "negative": T("129:112", "text", "CLIPTextEncode"),
-        "width": T("129:113", "value", "PrimitiveInt"),
-        "height": T("129:98", "value", "PrimitiveInt"),
-        "fps": T("129:114", "value", "PrimitiveInt"),
-        # frame count follows the reference clip: the slice length is the knob
-        "duration": T("692", "duration", "Video Slice"),
-        "prompt_enhance": T("129:212", "value", "PrimitiveBoolean"),
-        "steps": T("129:704", "steps", "KSampler"),
-        "image": T("200", "image", "LoadImage"),
-        "video": T("199", "file", "LoadVideo"),
-        "save_prefix": T("68", "filename_prefix", "SaveVideo"),
-    },
-    seeds=(T("129:704", "seed", "KSampler"),),
-    lora_chain=LoraChain(
-        head="129:195",
-        consumers=(T("129:704", "model", "KSampler"),),
-    ),
-    constants={"prompt_enhance": False},
-    notes="ltx-2.3-22b-dev-fp8 + distilled-1.1 LoRA + union-control IC-LoRA / MoGe 深度",
-)
-
-
-# --------------------------------------------------------------------------
 # video: workflow/video/minimax-h3/*.json
 # --------------------------------------------------------------------------
 #
@@ -1250,8 +888,8 @@ _MINIMAX_H3_TURBO_NOTES = (
 )
 
 #: MiniMax H3 が想定している解像度（短辺 768px・最大 768x1344 なので約 0.4MP）。
-#: テンプレートの ``ResolutionSelector`` もこの値で、フォームのグローバル既定
-#: （1.0MP）のまま回すと 8GB 級の GPU では CUDA OOM になる（SPEC §3.1）。
+#: テンプレートの ``ResolutionSelector`` もこの値で、1.0MP のまま回すと 8GB 級の
+#: GPU では CUDA OOM になる（SPEC §3.1）。``DEFAULT_MEGAPIXELS`` と同値。
 MINIMAX_H3_MEGAPIXELS = 0.4
 
 #: r2v が受け取れる参照素材の件数（``MiniMaxH3ReferenceToVideo`` の Autogrow の
@@ -1727,13 +1365,6 @@ SPECS: tuple[WorkflowSpec, ...] = (
     QWEN_IMAGE_EDIT,
     GROK_IMAGINE_T2I,
     GROK_IMAGINE_EDIT,
-    LTX_T2V,
-    LTX_I2V,
-    LTX_IA2V,
-    LTX_ID_LORA,
-    LTX_FLF2V,
-    LTX_IC_LORA_IMAGE,
-    LTX_IC_LORA_MOTION,
     MINIMAX_H3_T2V,
     MINIMAX_H3_I2V,
     MINIMAX_H3_I2V_TURBO,
@@ -1746,9 +1377,12 @@ SPECS: tuple[WorkflowSpec, ...] = (
 BY_ID: dict[str, WorkflowSpec] = {spec.id: spec for spec in SPECS}
 
 DEFAULT_IMAGE_WORKFLOW = KREA2_TURBO.id
-#: the closest successor of the old combined graph (image + reference audio +
-#: talkvid ID-LoRA), so existing jobs and agent plans keep their semantics
-DEFAULT_VIDEO_WORKFLOW = LTX_ID_LORA.id
+#: 開始フレームを受け取れて（``mode: "full"`` の 2 段目になれる）映像と音声を
+#: 同時に作る、いちばん素直な動画ワークフロー
+DEFAULT_VIDEO_WORKFLOW = MINIMAX_H3_I2V.id
+#: 開始フレームを**取らない**ぶんの既定（廃止されたワークフローの id を持つ古い
+#: ジョブを、開始フレーム無しで再実行するときの寄せ先）
+DEFAULT_T2V_WORKFLOW = MINIMAX_H3_T2V.id
 DEFAULT_AUDIO_WORKFLOW = ACE_STEP_1_5.id
 
 #: JobCreate field that carries each logical input
@@ -1865,7 +1499,7 @@ class CatalogEntry:
     id: str
     label: str
     kind: WorkflowKind
-    #: model family (``krea2`` / ``anima`` / ``z-image`` / ``qwen-image`` / ``ltx2.3``)
+    #: model family (``krea2`` / ``anima`` / ``z-image`` / ``qwen-image`` / ``minimax-h3``)
     family: str
     description: str
     #: ``(JobCreate field, 日本語ラベル)`` of every input the workflow needs

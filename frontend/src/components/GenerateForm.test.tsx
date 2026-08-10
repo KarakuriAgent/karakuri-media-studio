@@ -56,7 +56,7 @@ const OPTIONS: Options = {
   image_workflows: [],
   video_workflows: [],
   audio_workflows: [],
-  default_video_workflow: 'ltx2_3_id_lora',
+  default_video_workflow: 'minimax_h3_i2v',
   default_image_workflow: 'krea2_turbo',
   default_audio_workflow: 'ace_step1_5_xl_sft',
   audio_categories: [],
@@ -434,12 +434,12 @@ describe('GenerateForm の画像ワークフロー', () => {
 
 const VIDEO_WORKFLOWS: Options['video_workflows'] = [
   {
-    id: 'ltx2_3_t2v',
+    id: 'wan22_t2v',
     label: 'テキスト→動画 (t2v)',
     mode_label: 'テキスト→動画 (t2v)',
-    family_label: 'LTX 2.3',
+    family_label: 'Wan 2.2',
     kind: 'video',
-    family: 'ltx2.3',
+    family: 'wan',
     notes: '',
     requires: [],
     supports: ['prompt', 'duration', 'fps'],
@@ -521,7 +521,7 @@ describe('GenerateForm のワークフロー選択（モデル → モード）'
     showVideos({ mode: 'i2v', videoWorkflow: 'minimax_h3_t2v' })
     const models = screen.getByLabelText('動画モデル') as HTMLSelectElement
     expect([...models.options].map((item) => item.textContent)).toEqual([
-      'LTX 2.3',
+      'Wan 2.2',
       'MiniMax H3',
     ])
     const modes = screen.getByLabelText('動画モード') as HTMLSelectElement
@@ -542,7 +542,7 @@ describe('GenerateForm のワークフロー選択（モデル → モード）'
   })
 
   it('モデルを変えるとそのモデルの先頭モードへ切り替える', () => {
-    const { patch } = showVideos({ mode: 'i2v', videoWorkflow: 'ltx2_3_t2v' })
+    const { patch } = showVideos({ mode: 'i2v', videoWorkflow: 'wan22_t2v' })
     fireEvent.change(screen.getByLabelText('動画モデル'), {
       target: { value: 'minimax-h3' },
     })
@@ -570,8 +570,8 @@ describe('GenerateForm のワークフロー選択（モデル → モード）'
   it('宣言の無いモデルではグローバル既定に戻す', () => {
     const { patch } = showVideos({
       mode: 'i2v',
-      videoWorkflow: 'ltx2_3_t2v',
-      megapixels: 0.4,
+      videoWorkflow: 'wan22_t2v',
+      megapixels: 1,
     })
     expect(patch).toHaveBeenCalledWith({ megapixels: DEFAULT_MEGAPIXELS })
   })
@@ -597,7 +597,7 @@ describe('GenerateForm のワークフロー選択（モデル → モード）'
   it('画像＋動画では開始フレームを取れるモードだけが並ぶ', () => {
     showVideos({ mode: 'full', videoWorkflow: 'minimax_h3_i2v' })
     const models = screen.getByLabelText('動画モデル') as HTMLSelectElement
-    // t2v しか無い LTX はモデルごと消える
+    // t2v しか無い Wan はモデルごと消える
     expect([...models.options].map((item) => item.value)).toEqual(['minimax-h3'])
     const modes = screen.getByLabelText('動画モード') as HTMLSelectElement
     expect([...modes.options].map((item) => item.value)).toEqual([
@@ -803,10 +803,10 @@ describe('GenerateForm は使わない項目を出さない', () => {
       ...OPTIONS,
       video_workflows: [
         {
-          id: 'ltx2_3_t2v',
+          id: 'wan22_t2v',
           label: 'テキスト→動画',
           kind: 'video' as const,
-          family: 'ltx2.3',
+          family: 'wan',
           notes: '',
           requires: [],
           supports: ['prompt', 'negative', 'duration', 'fps'],
@@ -823,7 +823,7 @@ describe('GenerateForm は使わない項目を出さない', () => {
     }
     render(
       <GenerateForm
-        form={{ ...initialForm, mode: 'i2v', videoWorkflow: 'ltx2_3_t2v' }}
+        form={{ ...initialForm, mode: 'i2v', videoWorkflow: 'wan22_t2v' }}
         patch={vi.fn()}
         options={options}
         optionsError={null}
@@ -939,7 +939,7 @@ describe('GenerateForm の「履歴から選択」', () => {
       id: 'all_inputs',
       label: 'すべての入力',
       kind: 'video',
-      family: 'ltx2.3',
+      family: 'wan',
       notes: '',
       requires: ['image', 'end_image', 'video', 'audio'],
       supports: ['prompt', 'negative', 'duration', 'fps'],
@@ -1060,7 +1060,7 @@ describe('GenerateForm の「ライブラリから選択」', () => {
       id: 'all_inputs',
       label: 'すべての入力',
       kind: 'video',
-      family: 'ltx2.3',
+      family: 'wan',
       notes: '',
       requires: ['image', 'end_image', 'video', 'audio'],
       supports: ['prompt', 'negative', 'duration', 'fps'],
@@ -1274,7 +1274,6 @@ describe('GenerateForm の選択式フィールド（SPEC §3.1）', () => {
     const length = screen.getByLabelText('尺（秒）') as HTMLSelectElement
     expect(length.value).toBe('')
     expect(length.options[0].textContent).toContain('自動')
-    expect(screen.getByText(/省略すると音声の長さに合わせて決める/)).toBeTruthy()
   })
 
   it('選択式を持たないワークフローでは何も出さない', () => {
@@ -1359,162 +1358,6 @@ describe('GenerateForm の選択式フィールド（SPEC §3.1）', () => {
     fireEvent.change(size, { target: { value: '1536x1024' } })
     expect(patch).toHaveBeenCalledWith({ selects: { size: '1536x1024' } })
     expect(screen.getByLabelText('品質')).toBeTruthy()
-  })
-})
-
-
-describe('GenerateForm のリファレンスシート合成（SPEC §7.2）', () => {
-  const SHEET_WORKFLOW: Options['video_workflows'][number] = {
-    id: 'ltx2_3_ic_lora_image',
-    label: 'リファレンスシート (IC-LoRA)',
-    kind: 'video',
-    family: 'ltx2.3',
-    notes: '',
-    requires: ['image'],
-    supports: ['prompt', 'negative', 'duration', 'fps'],
-    // シートは開始フレームではないので false
-    accepts_start_image: false,
-    image_label: 'リファレンスシート画像',
-    selects: [],
-    prompt_required: true,
-    accepts_video_loras: true,
-    min_duration: 0,
-    max_duration: 0,
-    default_duration: 0,
-  }
-
-  const PLAIN: Options['video_workflows'][number] = {
-    ...SHEET_WORKFLOW,
-    id: 'ltx2_3_i2v',
-    label: 'i2v',
-    accepts_start_image: true,
-    image_label: '開始フレーム',
-  }
-
-  const MATERIALS: LibraryItem[] = [
-    {
-      id: 'l1',
-      created_at: '2026-07-30T10:00:00+00:00',
-      kind: 'image',
-      name: 'サクラ',
-      path: '/repo/library/image/hero.png',
-      url: '/library/image/hero.png',
-      nsfw: false,
-      nsfw_source: '',
-      source_job_id: null,
-      source: null,
-      tags: [],
-      category: 'character',
-    },
-    {
-      id: 'l2',
-      created_at: '2026-07-30T10:00:00+00:00',
-      kind: 'image',
-      name: '刀',
-      path: '/repo/library/image/sword.png',
-      url: '/library/image/sword.png',
-      nsfw: false,
-      nsfw_source: '',
-      source_job_id: null,
-      source: null,
-      tags: [],
-      category: 'prop',
-    },
-  ]
-
-  function showSheetForm(form: Partial<FormState> = {}) {
-    vi.mocked(api.listLibrary).mockResolvedValue({
-      items: MATERIALS,
-      total: MATERIALS.length,
-      limit: 50,
-      offset: 0,
-      tags: [],
-    })
-    const patch = vi.fn()
-    render(
-      <GenerateForm
-        form={{
-          ...initialForm,
-          mode: 'i2v',
-          videoWorkflow: 'ltx2_3_ic_lora_image',
-          ...form,
-        }}
-        patch={patch}
-        options={{
-          ...OPTIONS,
-          video_workflows: [SHEET_WORKFLOW, PLAIN],
-          aspect_ratios: ['16:9 (Widescreen)', '9:16 (Portrait Widescreen)'],
-        }}
-        optionsError={null}
-        onReloadOptions={() => {}}
-        onOpenChat={() => {}}
-        onSubmit={() => {}}
-        submitting={false}
-        fieldErrors={{}}
-        comfyTarget="local"
-        onComfyTarget={() => {}}
-        jobs={[]}
-        showNsfw={false}
-      />,
-    )
-    return { patch }
-  }
-
-  it('シートを取るワークフローのときだけ [ライブラリから作成] を出す', () => {
-    showSheetForm()
-    expect(
-      within(section('リファレンスシート画像')).getByRole('button', {
-        name: 'ライブラリから作成',
-      }),
-    ).toBeTruthy()
-
-    cleanup()
-    showSheetForm({ videoWorkflow: 'ltx2_3_i2v' })
-    expect(
-      within(section('開始フレーム')).queryByRole('button', {
-        name: 'ライブラリから作成',
-      }),
-    ).toBeNull()
-  })
-
-  it('選んだ素材からシートを作り、そのまま画像欄に入れる', async () => {
-    vi.mocked(api.createLibrarySheet).mockResolvedValue({
-      ...MATERIALS[0],
-      id: 'l9',
-      name: 'リファレンスシート（サクラほか1件）',
-      url: '/library/image/sheet_l9.png',
-      source: 'sheet',
-      tags: ['reference-sheet'],
-    })
-    const { patch } = showSheetForm({ aspectRatio: '9:16 (Portrait Widescreen)' })
-
-    fireEvent.click(
-      within(section('リファレンスシート画像')).getByRole('button', {
-        name: 'ライブラリから作成',
-      }),
-    )
-    expect(screen.getByText('ライブラリから作成: リファレンスシート')).toBeTruthy()
-
-    fireEvent.click(await screen.findByText('サクラ'))
-    fireEvent.click(await screen.findByText('刀'))
-    fireEvent.click(screen.getByRole('button', { name: 'この順で作成' }))
-
-    // シートの大きさは選択中のアスペクト比から（9:16 → 長辺 1280）
-    await waitFor(() =>
-      expect(api.createLibrarySheet).toHaveBeenCalledWith(['l1', 'l2'], {
-        width: 720,
-        height: 1280,
-      }),
-    )
-    await waitFor(() =>
-      expect(patch).toHaveBeenCalledWith({
-        sourceImage: '/library/image/sheet_l9.png',
-      }),
-    )
-    // 作り終わったらモーダルは閉じる
-    await waitFor(() =>
-      expect(screen.queryByText('ライブラリから作成: リファレンスシート')).toBeNull(),
-    )
   })
 })
 
@@ -1887,7 +1730,7 @@ describe('ステップ数（SPEC §3.1）', () => {
     showVideos({ mode: 'i2v', videoWorkflow: 'minimax_h3_i2v' })
     expect(screen.getByLabelText('ステップ数')).toBeTruthy()
     cleanup()
-    showVideos({ mode: 'i2v', videoWorkflow: 'ltx2_3_t2v' })
+    showVideos({ mode: 'i2v', videoWorkflow: 'wan22_t2v' })
     expect(screen.queryByLabelText('ステップ数')).toBeNull()
   })
 

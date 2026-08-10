@@ -241,8 +241,8 @@ async def known_lora_names() -> dict[str, str]:
 async def known_lora_families() -> dict[str, str]:
     """``{lora_name: family}`` of the **image** LoRAs (SPEC §3.4).
 
-    Video LoRAs have no family (LTX 2.3 is the only video model), so they are
-    left out and the family check never fires for ``video_loras``.
+    Video LoRAs have no family, so they are left out and the family check
+    never fires for ``video_loras``.
     """
     async with get_db() as conn:
         async with conn.execute(
@@ -813,7 +813,7 @@ async def _library_search(session_id: str, action: AgentAction) -> None:
 async def _library_sheet(session_id: str, action: AgentAction) -> None:
     """ライブラリの画像素材を 1 枚のリファレンスシートに合成する（承認不要。SPEC §7.2）。
 
-    `ltx2_3_ic_lora_image` が参照入力に取る「複数パネルを並べた 1 枚」を組み立てる。
+    参照入力に「複数パネルを並べた 1 枚」を取るワークフロー用のシートを組み立てる。
     ``item_ids`` の**並び順に意味がある**（左上から詰め、``character`` の素材だけ
     大きいパネルになる）。出来上がったシートはふつうの素材として棚に残るので、
     そのまま次のジョブの `source_image` に書ける。
@@ -839,7 +839,7 @@ async def _library_sheet(session_id: str, action: AgentAction) -> None:
         f"リファレンスシート「{item.name}」を作ってライブラリに登録しました"
         f"（id: {item.id}、{item.path}、URL: {item.url}）。"
         f"{len(action.item_ids)} 枚を指定の順に並べています。"
-        " このパスを `ltx2_3_ic_lora_image` の `source_image` に指定してください。",
+        " このパスをジョブの `source_image` に指定してください。",
         library_id=item.id,
         path=item.path,
         url=item.url,

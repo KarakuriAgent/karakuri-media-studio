@@ -194,14 +194,14 @@ _EMPTY = dict(
 
 
 def test_audio_mode_ignores_the_image_and_video_requirements():
-    """qwen-image / flf2v の必須入力は音声ジョブには一切効かない。"""
+    """qwen-image / i2v の必須入力は音声ジョブには一切効かない。"""
     assert (
         missing_job_fields(
             "audio",
             **_EMPTY,
             audio_prompt="a song",
             image_workflow="qwen_image_edit_2511",
-            video_workflow="ltx2_3_flf2v",
+            video_workflow="minimax_h3_i2v",
         )
         == []
     )
@@ -263,7 +263,7 @@ def test_existing_modes_are_unaffected_by_the_audio_fields():
     assert payload.mode == "image_only"
     # 音声の秒数レンジ（10-600s）は動画の短いクリップを巻き込まない
     clip = JobCreate(
-        mode="i2v", video_workflow="ltx2_3_t2v", video_prompt="a clip", duration=2
+        mode="i2v", video_workflow="minimax_h3_t2v", video_prompt="a clip", duration=2
     )
     assert clip.duration == 2
 

@@ -20,7 +20,7 @@ import type {
 } from './types'
 
 /** Fallback while /api/options has not answered yet (backend default). */
-export const DEFAULT_VIDEO_WORKFLOW = 'ltx2_3_id_lora'
+export const DEFAULT_VIDEO_WORKFLOW = 'minimax_h3_i2v'
 export const DEFAULT_IMAGE_WORKFLOW = 'krea2_turbo'
 export const DEFAULT_AUDIO_WORKFLOW = 'ace_step1_5_xl_sft'
 
@@ -28,7 +28,7 @@ export const DEFAULT_AUDIO_WORKFLOW = 'ace_step1_5_xl_sft'
  * メガピクセルのグローバル既定（SPEC §3.1）。ワークフローが
  * `default_megapixels` を宣言していればそちらが優先される。
  */
-export const DEFAULT_MEGAPIXELS = 1
+export const DEFAULT_MEGAPIXELS = 0.4
 
 /**
  * サンプリング回数（`steps`）の上限（SPEC §3.1、バックエンドの `MAX_STEPS`）。
@@ -76,7 +76,7 @@ export const FAMILY_LABELS: Record<string, string> = {
   anima: 'Anima',
   'z-image': 'Z-Image',
   'qwen-image': 'Qwen-Image Edit',
-  'ltx2.3': 'LTX 2.3',
+  'minimax-h3': 'MiniMax H3',
 }
 
 /** Families an image LoRA can be registered for (mirrors image_families()). */
@@ -125,7 +125,7 @@ export interface FormState {
   loras: SelectedLora[]
   triggerText: string
   triggerDirty: boolean
-  /** LoRAs of the video (LTX 2.3) stage — registered with target 'video'. */
+  /** LoRAs of the video stage — registered with target 'video'. */
   videoLoras: SelectedLora[]
   videoTriggerText: string
   videoTriggerDirty: boolean
@@ -259,7 +259,7 @@ export function joinTriggers(loras: SelectedLora[]): string {
  * Image LoRAs are additionally scoped by model family: one trained for Krea 2
  * cannot be used with Anima or Z-Image (the backend rejects such a job), so the
  * picker only offers the family of the selected image workflow. Video LoRAs have
- * no family — LTX 2.3 is the only video model.
+ * no family.
  */
 export function lorasForTarget(
   loras: Lora[],
@@ -521,8 +521,14 @@ export function newElement(): KlingElement {
 
 // -------------------------------------------------- リファレンスシート（§7.2）
 
-/** リファレンスシート 1 枚を参照入力に取る動画ワークフロー（IC-LoRA）。 */
-export const REFERENCE_SHEET_WORKFLOW = 'ltx2_3_ic_lora_image'
+/**
+ * リファレンスシート 1 枚を `source_image` に取る動画ワークフローの id。
+ *
+ * 現在は該当なし（そういう入力の取り方をするワークフローが無い）。合成機能
+ * そのもの（`SheetBuilderModal` / `POST /api/library/sheet`）は残してあるので、
+ * 該当するワークフローを足すときはここに id を並べれば UI が戻る。
+ */
+export const REFERENCE_SHEET_WORKFLOWS: readonly string[] = []
 
 /** シートの長辺（px）。バックエンドの既定 1280x720 と同じ大きさに揃える。 */
 export const SHEET_LONG_EDGE = 1280
@@ -535,14 +541,14 @@ export const SHEET_MAX_ITEMS = 8
 export function needsReferenceSheet(
   workflow?: WorkflowOption | null,
 ): boolean {
-  return workflow?.id === REFERENCE_SHEET_WORKFLOW
+  return !!workflow && REFERENCE_SHEET_WORKFLOWS.includes(workflow.id)
 }
 
 /**
  * アスペクト比プリセットから合成するシートの大きさを決める。
  *
- * シートは出力動画と同じ縦横比が望ましい（ワークフローの `ResizeAndPadImage` が
- * 黒でパディングするので、比が合っていれば余白が出ない）。プリセットは
+ * シートは出力動画と同じ縦横比が望ましい（比が合っていればワークフロー側の
+ * パディングで余白が出ない）。プリセットは
  * `"16:9 (Widescreen)"` の形なので先頭の `W:H` だけ読み、長辺を
  * :data:`SHEET_LONG_EDGE` にして 8 の倍数に丸める。読めない値のときは既定の
  * 1280x720（メガピクセルは見ない: シートは参照用で、動画の解像度とは別物）。
@@ -997,7 +1003,7 @@ export function hiddenFields(
   return {
     imagePrompt: !image,
     // the image LoRA chain only exists in the image workflow, the video one
-    // only in the LTX graph — so each follows its own stage。LoRA を挿せない
+    // only in the video graph — so each follows its own stage。LoRA を挿せない
     // 画像ワークフロー（Grok Imagine のような外部バックエンド）では、空の
     // セクションだけが残ってしまうので出さない
     loras: !image || !acceptsLoras(imageWorkflow),

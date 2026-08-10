@@ -63,16 +63,8 @@ export default function AddCardModal({
       <div className="flex flex-col gap-3">
         {error && <Banner>{error}</Banner>}
 
-        {isStandalone(kind) ? (
-          <p className="text-xs text-slate-500">
-            {KIND_LABEL[kind]}カードはキャンバスだけのカードです。中身は置いた
-            あとに編集します。
-          </p>
-        ) : (
+        {isStandalone(kind) ? null : (
           <>
-            <p className="text-xs text-slate-500">
-              スタジオの{KIND_LABEL[kind]}を新しく 1 つ作って、そのカードを置きます。
-            </p>
             <div>
               <label className="label" htmlFor="canvas-new-title">
                 {isAssetKind(kind) ? '素材名（@ で呼ぶ名前）' : 'タイトル'}
@@ -104,9 +96,6 @@ export default function AddCardModal({
                     </option>
                   ))}
                 </select>
-                <p className="mt-1 text-[11px] text-slate-500">
-                  ファイルはスタジオの World Bible から差し替えます
-                </p>
               </div>
             )}
             {kind === 'shot' && (
@@ -127,11 +116,6 @@ export default function AddCardModal({
                     </option>
                   ))}
                 </select>
-                {tab && (
-                  <p className="mt-1 text-[11px] text-slate-500">
-                    場を選ばないと未分類のカットになり、「作品共通」タブに出ます
-                  </p>
-                )}
               </div>
             )}
           </>

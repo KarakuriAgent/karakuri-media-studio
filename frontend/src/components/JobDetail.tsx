@@ -113,9 +113,6 @@ export default function JobDetail({
           {librarySources.length > 0 && (
             <div className="rounded border border-ink-600 bg-ink-900 p-2">
               <p className="mb-1 text-xs text-slate-400">ライブラリ</p>
-              <p className="mb-2 text-[11px] text-slate-600">
-                取っておくと、履歴を消したあとも入力素材として選べます。
-              </p>
               <div className="flex flex-wrap gap-2">
                 {librarySources.map(({ source, label }) => (
                   <LibraryAddButton

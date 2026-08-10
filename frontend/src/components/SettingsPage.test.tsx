@@ -74,6 +74,8 @@ function settings(): Settings {
     runpod_template_id: '',
     runpod_gpu_type: 'NVIDIA RTX A6000',
     runpod_network_volume_id: '',
+    external_api_key: '',
+    external_max_pending_takes: 20,
   }
 }
 
@@ -83,6 +85,8 @@ function modelRow(): ModelFieldState {
     workflow_id: 'krea2_turbo',
     workflow_label: 'Krea 2 Turbo',
     kind: 'image',
+    family: 'krea2',
+    family_label: 'Krea 2',
     node_id: '30:10',
     field: 'unet_name',
     class_type: 'UNETLoader',
@@ -242,10 +246,10 @@ describe('SettingsPage: 環境ごとのモデル / LoRA（SPEC §5）', () => {
         ...loraRow(),
         id: 2,
         display_name: 'スローモ',
-        lora_name: 'slowmo-ltx.safetensors',
+        lora_name: 'slowmo-video.safetensors',
         trigger_word: 'slowmotion',
         target: 'video',
-        family: 'ltx2',
+        family: 'video',
       },
       {
         ...loraRow(),
@@ -301,10 +305,10 @@ describe('SettingsPage: 環境ごとのモデル / LoRA（SPEC §5）', () => {
         ...loraRow(),
         id: 2,
         display_name: 'スローモ',
-        lora_name: 'slowmo-ltx.safetensors',
+        lora_name: 'slowmo-video.safetensors',
         trigger_word: 'slowmotion',
         target: 'video',
-        family: 'ltx2',
+        family: 'video',
       },
       {
         ...loraRow(),
@@ -390,7 +394,6 @@ describe('SettingsPage: 環境ごとのモデル / LoRA（SPEC §5）', () => {
     await waitFor(() =>
       expect(screen.queryByRole('button', { name: '全DL' })).toBeNull(),
     )
-    expect(screen.getByText(/Comfy Cloud 側の管理/)).toBeTruthy()
   })
 })
 
@@ -418,7 +421,6 @@ describe('SettingsPage: ComfyUI 接続先（3 プロファイル）', () => {
     ])
     // ComfyCloud はエンドポイント固定なので APIキーだけ（URL 欄は出さない）
     expect(screen.getByText('ComfyCloud APIキー')).toBeTruthy()
-    expect(screen.getByText(/https:\/\/cloud\.comfy\.org 固定/)).toBeTruthy()
     expect(screen.getByText('RunPod ComfyUI URL')).toBeTruthy()
     expect(screen.getByText('RunPod ComfyUI APIキー（任意）')).toBeTruthy()
     expect(screen.getByText('ローカル ComfyUI URL')).toBeTruthy()
@@ -823,6 +825,8 @@ describe('SettingsPage: LoRA スロットの候補（SPEC §3.3）', () => {
         workflow_id: 'minimax_h3_i2v_turbo',
         workflow_label: 'MiniMax H3 i2v Turbo',
         kind: 'video',
+        family: 'minimax-h3',
+        family_label: 'MiniMax H3',
         node_id: '150',
         field: 'lora_name',
         class_type: 'MiniMaxH3TurboLoRA',
@@ -837,7 +841,7 @@ describe('SettingsPage: LoRA スロットの候補（SPEC §3.3）', () => {
       lora_files: ['minimax_h3_turbo_4step_ema_ckpt850.safetensors', 'other.safetensors'],
     } as unknown as Options)
     screen.getByRole('button', { name: 'モデル' }).click()
-    await waitFor(() => screen.getByText(/MiniMax H3 i2v Turbo/))
+    await waitFor(() => screen.getByText(/MiniMax H3/))
 
     const list = document.getElementById('model-files-MiniMaxH3TurboLoRA.lora_name')
     expect(list).toBeTruthy()
@@ -848,6 +852,128 @@ describe('SettingsPage: LoRA スロットの候補（SPEC §3.3）', () => {
   })
 })
 
+
+describe('SettingsPage: 動画はモデル名 → ワークフローの 2 階層で出す', () => {
+  /** MiniMax H3 の 3 ワークフロー分の行（unet だけ turbo が別ファイル）。 */
+  function videoRow(
+    workflow: string,
+    label: string,
+    node: string,
+    field: string,
+    classType: string,
+    value: string,
+  ): ModelFieldState {
+    return {
+      ...modelRow(),
+      key: `${workflow}/${node}.${field}`,
+      workflow_id: workflow,
+      workflow_label: label,
+      kind: 'video',
+      family: 'minimax-h3',
+      family_label: 'MiniMax H3',
+      node_id: node,
+      field,
+      class_type: classType,
+      title: classType,
+      default: value,
+      value,
+      subfolder: 'diffusion_models',
+    }
+  }
+
+  const T2V = 'テキスト→動画・音声つき (MiniMax H3 t2v)'
+  const I2V = '画像→動画・音声つき (MiniMax H3 i2v)'
+  const I2V_TURBO = '画像→動画・音声つき (MiniMax H3 i2v Turbo)'
+
+  const videoRows = (): ModelFieldState[] => [
+    videoRow('minimax_h3_t2v', T2V, '10', 'vae_name', 'VAELoader', 'video_vae.safetensors'),
+    videoRow('minimax_h3_t2v', T2V, '11', 'unet_name', 'UNETLoader', 'fl2va.safetensors'),
+    videoRow('minimax_h3_i2v', I2V, '10', 'vae_name', 'VAELoader', 'video_vae.safetensors'),
+    videoRow('minimax_h3_i2v', I2V, '11', 'unet_name', 'UNETLoader', 'fl2va.safetensors'),
+    videoRow(
+      'minimax_h3_i2v_turbo',
+      I2V_TURBO,
+      '11',
+      'unet_name',
+      'UNETLoader',
+      'fl2va_w4a8.safetensors',
+    ),
+  ]
+
+  beforeEach(() => {
+    vi.stubGlobal('WebSocket', FakeSocket)
+    getSettings.mockResolvedValue(settings())
+    listModels.mockResolvedValue(videoRows())
+    listLoras.mockResolvedValue([])
+    listModelDownloads.mockResolvedValue([])
+    modelsDirStatus.mockResolvedValue(dirStatus())
+    putModels.mockReset()
+  })
+
+  /** モデルタブを開く（グループは畳まれたまま）。 */
+  async function openModels() {
+    await openSettings({ model_files: {} } as unknown as Options)
+    screen.getByRole('button', { name: 'モデル' }).click()
+    await waitFor(() => screen.getByText('MiniMax H3'))
+  }
+
+  it('モデル名を見出しにして、その下にワークフローのグループを並べる', async () => {
+    await openModels()
+
+    // 親はモデル名 1 つ、子は 3 ワークフロー分（見出しのモデル名は繰り返さない）
+    expect(screen.getByText('MiniMax H3')).toBeTruthy()
+    expect(screen.getByText('テキスト→動画・音声つき (t2v)')).toBeTruthy()
+    expect(screen.getByText('画像→動画・音声つき (i2v)')).toBeTruthy()
+    expect(screen.getByText('画像→動画・音声つき (i2v Turbo)')).toBeTruthy()
+    expect(screen.queryByText(T2V)).toBeNull()
+    // グループごとの項目数（t2v / i2v は 2 項目、turbo は 1 項目）
+    expect(screen.getAllByText('2 項目')).toHaveLength(2)
+    expect(screen.getByText('1 項目')).toBeTruthy()
+  })
+
+  it('ワークフローのグループは個別に開き、行はそのワークフローの分だけ出る', async () => {
+    await openModels()
+
+    screen.getByText('テキスト→動画・音声つき (t2v)').click()
+    await waitFor(() => screen.getByText('ノード'))
+
+    // 開いたのは t2v だけなので、同じファイルでも行は 1 本ずつ
+    expect(screen.getAllByDisplayValue('video_vae.safetensors')).toHaveLength(1)
+    expect(screen.getAllByDisplayValue('fl2va.safetensors')).toHaveLength(1)
+    expect(screen.queryByDisplayValue('fl2va_w4a8.safetensors')).toBeNull()
+    // ノード欄は従来どおり「ノード ID.欄名 / class_type」
+    expect(screen.getByText('10.vae_name / VAELoader')).toBeTruthy()
+  })
+
+  it('編集はそのワークフローのキーだけ書き換える', async () => {
+    putModels.mockResolvedValue(videoRows())
+    await openModels()
+
+    screen.getByText('テキスト→動画・音声つき (t2v)').click()
+    await waitFor(() => screen.getByText('ノード'))
+    fireEvent.change(screen.getByDisplayValue('video_vae.safetensors'), {
+      target: { value: 'mine_vae.safetensors' },
+    })
+    screen.getByRole('button', { name: '保存' }).click()
+
+    await waitFor(() => expect(putModels).toHaveBeenCalled())
+    const overrides = putModels.mock.calls[0][0] as Record<string, string>
+    expect(overrides['minimax_h3_t2v/10.vae_name']).toBe('mine_vae.safetensors')
+    // 他のワークフローの同じ欄は巻き添えにしない
+    expect(overrides['minimax_h3_i2v/10.vae_name']).toBe('video_vae.safetensors')
+  })
+
+  it('ワークフローが 1 本だけのモデルは見出しを出さず従来どおり', async () => {
+    listModels.mockResolvedValue([modelRow()])
+    await openSettings({ model_files: {} } as unknown as Options)
+    screen.getByRole('button', { name: 'モデル' }).click()
+
+    // グループの見出しはワークフローの完全なラベル（「Krea 2」だけの行は無い）
+    await waitFor(() => screen.getByText('Krea 2 Turbo'))
+    expect(screen.queryByText('Krea 2')).toBeNull()
+    expect(screen.queryByText('Turbo')).toBeNull()
+  })
+})
 
 describe('SettingsPage: Grok Build CLI（Grok Imagine のバックエンド、SPEC §5.2）', () => {
   beforeEach(() => {

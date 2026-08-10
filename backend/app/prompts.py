@@ -17,7 +17,7 @@ Contents (SPEC §4.3 "システムプロンプトの構成"):
    ``workflow/image/krea2/krea2_turbo.json`` node ``30:18``), with rule 8
    ("assume clothing covers …") replaced by an adults-only rule because this app
    generates adult content,
-3. video prompt spec — LTX 2.3, plus the two prompt templates and the selected
+3. video prompt spec — the general one, plus the two prompt templates and the selected
    video workflow's own characteristics (generated from ``app.workflows``, so
    the prompts, the UI and the job validator share one source of truth),
 4. few-shot examples taken from ``docs/prompt-samples.md`` (kept here as
@@ -342,7 +342,7 @@ def image_prompt_guides_section() -> str:
 # --------------------------------------------------------------------------
 
 VIDEO_SPEC = """\
-# VIDEO PROMPT SPEC — LTX 2.3 22B (dev / distilled fp8), TE: Gemma-3 12B
+# VIDEO PROMPT SPEC (general)
 
 One flowing paragraph, **4–8 sentences**, one continuous shot (no cuts, no
 scene changes). It must cover, in roughly this order:
@@ -357,8 +357,8 @@ scene changes). It must cover, in roughly this order:
    breathing.
 4. **Camera** — static / slow push-in / handheld tremble, shot scale, what
    stays in focus.
-5. **Audio** — LTX 2.3 generates sound together with the picture, so audio is
-   mandatory: ambience, room tone, breathing, moans, impact sounds. **Spoken
+5. **Audio** — the video models generate sound together with the picture, so
+   audio is mandatory: ambience, room tone, breathing, moans, impact sounds. **Spoken
    lines go inside double quotes** and may be attributed with language, accent
    and voice quality, e.g. `in a soft Japanese-accented voice she says "..."`.
    Everything inside quotes is synthesized verbatim, so keep lines short and
@@ -659,7 +659,7 @@ def _workflow_context_lines(workflow_id: str) -> list[str]:
 # --------------------------------------------------------------------------
 # 3.6a per-workflow video prompt guides（選んだワークフローの分だけ埋め込む）
 # --------------------------------------------------------------------------
-# VIDEO SPEC は LTX 2.3 のもの。他のモデルは書き方も守備範囲も違うので、
+# VIDEO SPEC は汎用のもの。モデルごとに書き方も守備範囲も違うので、
 # 画像 / 音声と同じ流儀で「モデルごとのガイド」を持ち、チャットでは**選択中の
 # ワークフローの分だけ**注入する（両方渡すと混ざる）。
 #
@@ -786,8 +786,17 @@ generated with the picture.
 #: 1 本のクリップの中でカットを割れるワークフロー（CONTEXT の一文を切り替える）。
 #: 汎用の VIDEO PROMPT SPEC は「1 クリップ 1 ショット」を前提にしているが、
 #: MiniMax H3 はタイムラインを書けば複数ショットを 1 本に収められる。
+#: turbo 版は素の版と入力の形もプロンプトの書き方も同じなので、ガイドの登録は
+#: 素の版と同じものを共有する（ここに載っていないと汎用の
+#: :data:`VIDEO_SPEC` に落ちてしまう）。
 MULTI_CUT_WORKFLOWS: frozenset[str] = frozenset(
-    {"minimax_h3_t2v", "minimax_h3_i2v", "minimax_h3_r2v"}
+    {
+        "minimax_h3_t2v",
+        "minimax_h3_i2v",
+        "minimax_h3_i2v_turbo",
+        "minimax_h3_r2v",
+        "minimax_h3_r2v_turbo",
+    }
 )
 
 #: workflow id -> そのモデル専用の VIDEO PROMPT SPEC（無いワークフローは
@@ -795,7 +804,9 @@ MULTI_CUT_WORKFLOWS: frozenset[str] = frozenset(
 VIDEO_SPECS: dict[str, str] = {
     "minimax_h3_t2v": MINIMAX_H3_VIDEO_GUIDE,
     "minimax_h3_i2v": MINIMAX_H3_VIDEO_GUIDE,
+    "minimax_h3_i2v_turbo": MINIMAX_H3_VIDEO_GUIDE,
     "minimax_h3_r2v": MINIMAX_H3_REFERENCE_VIDEO_GUIDE,
+    "minimax_h3_r2v_turbo": MINIMAX_H3_REFERENCE_VIDEO_GUIDE,
 }
 
 
@@ -1046,7 +1057,7 @@ def audio_workflow_catalog_section() -> str:
 FEW_SHOT_VIDEO = """\
 # FEW-SHOT EXAMPLES — video (real prompts from the model authors' own posts)
 
-## Video prompts — LTX 2.3 (model authors' own posts)
+## Video prompts (model authors' own posts)
 
 Example V1 (dialogue + sound effects):
 ```
@@ -1318,7 +1329,7 @@ OUTPUT_RULES = """\
 def _mode_rules(mode: str, spec: WorkflowSpec | None = None) -> str:
     if mode == "i2v":
         # a video-only run: whether an image is even involved depends on the
-        # selected workflow (t2v and the reference-sheet IC-LoRA take none).
+        # selected workflow (t2v and the reference-only modes take none).
         has_start_frame = spec is None or spec.accepts_start_image
         detail = (
             "Interview only about motion, camera, sound and dialogue: the look\n"
@@ -1368,8 +1379,8 @@ def _video_trigger_lines(ctx: ChatSessionCreate) -> list[str]:
     lines = [
         "",
         f"Active **video** LoRA trigger words: `{triggers}`."
-        " These belong in `video_prompt` (the video LoRA is applied to the LTX"
-        " graph, not to the image one).",
+        " These belong in `video_prompt` (the video LoRA is applied to the"
+        " video graph, not to the image one).",
     ]
     named = _named_triggers(ctx.video_loras)
     if named:
@@ -1598,10 +1609,10 @@ Your reply is either plain Japanese text, or plain Japanese text followed by
       "job": {
         "mode": "full",
         "image_workflow": "krea2_turbo",
-        "video_workflow": "ltx2_3_id_lora",
+        "video_workflow": "minimax_h3_i2v",
         "image_prompt": "...", "video_prompt": "...",
         "negative_prompt": "...",
-        "aspect_ratio": "9:16", "megapixels": 1.0,
+        "aspect_ratio": "9:16", "megapixels": 0.4,
         "model_overrides": {"krea2_turbo/30:10.unet_name": "other.safetensors"},
         "selects": {"dance_style": "K-Pop 韩舞"},
         "loras": [{"lora_name": "kaori.safetensors", "trigger_word": "kaori",
@@ -1661,8 +1672,8 @@ Rules:
   and per mode, so read them before you write a plan. Omit the inputs a
   workflow does not use.
 - `mode: "audio"` is a **stand-alone** job — a separate task, never a stage of
-  a `full` one, and it cannot supply or replace a video's soundtrack (LTX
-  generates its own, and `audio_path` takes a *file* you already have). Such a
+  a `full` one, and it cannot supply or replace a video's soundtrack (the video
+  model generates its own, and `audio_path` takes a *file* you already have). Such a
   job carries only `mode`, `audio_workflow`, `audio_prompt`, `duration`, `seed`,
   its workflow's own extra fields (`lyrics`, `bpm`, `keyscale`,
   `language`, `audio_category`, `reprompt`) and — if you switch a model —
@@ -1682,7 +1693,7 @@ Rules:
 - `continue` may switch `video_workflow` too, but only to a workflow that can
   take a start frame (the ones marked `mode: "full"` -> …); anything else falls
   back to the default. Supply the extra inputs that workflow needs (e.g.
-  `end_image` for flf2v), otherwise the continuation is rejected.
+  `end_image`), otherwise the continuation is rejected.
 - Use only values listed in CHOICES: LoRA file names, aspect ratios and the
   audio / image / video asset paths must exist. `seed: null` means "roll a
   random seed".
@@ -1704,8 +1715,8 @@ Rules:
   `library_search`'s `category`, and label what you keep with the `library`
   action's `category`; a category is what decides how big that material gets on
   a reference sheet, so an unlabelled character is a waste.
-- **Character sheets and IC-LoRA video** (the way to keep one character looking
-  the same across shots) — work in this order:
+- **Character sheets and reference video** (the way to keep one character
+  looking the same across shots) — work in this order:
   1. `library_search` with `category: "character"` (then `prop` / `background`)
      for material that already exists. Do not regenerate what the user curated.
   2. for what is missing, plan `mode: "image_only"` jobs — other angles or
@@ -1715,11 +1726,12 @@ Rules:
      big panels and **the bigger a panel is, the more faithfully the model
      reproduces it**, so put the hero first and label it `character`; give
      `width` / `height` the aspect ratio of the video you are about to make.
-  4. plan a `mode: "i2v"` job with `video_workflow: "ltx2_3_ic_lora_image"` and
-     the sheet's path as `source_image`. The sheet is a look reference, **not** a
-     first frame, so write `video_prompt` in the two parts that workflow expects:
-     `Reference sheet:` + one short clause per panel in layout order, then
-     `Generated video:` + the shot itself (subject, set, framing, motion, audio).
+  4. plan a `mode: "i2v"` job with a **reference** workflow
+     (`minimax_h3_r2v`) and hand it those looks as `reference_images` — either
+     the individual pictures or the composed sheet as a single reference. The
+     material is a look reference, **not** a first frame, so write
+     `video_prompt` about the direction only (subject, set, framing, motion,
+     audio) and refer to the material as `<Picture 1>`, `<Picture 2>`, ….
 - `selects` carries the fixed-choice knobs a workflow declares (VIDEO WORKFLOWS
   lists them per workflow with their exact strings). Only write names that
   workflow declares, only the listed strings, and leave out what you do not need: an
@@ -1750,7 +1762,7 @@ Rules:
   is never centre-cropped), and only `megapixels` still applies.
 - LoRAs come in two kinds and are **not** interchangeable: 画像用 goes into
   `loras` (+ `trigger_text`, used by the image stage) and 動画用 into
-  `video_loras` (+ `video_trigger_text`, used by the LTX video stage). Leave
+  `video_loras` (+ `video_trigger_text`, used by the video stage). Leave
   either list out when you do not need it, and never put video LoRAs in a
   `mode: "image_only"` job.
 - Exactly one action per reply — `rename`, `library`, `library_search` and
@@ -1985,7 +1997,7 @@ def _agent_choices(
         if video_loras:
             lines.append(
                 "動画用 LoRA — the `video_loras` field of a job. These are"
-                " spliced into the LTX 2.3 graph (`mode` must be `full` or"
+                " spliced into the video graph (`mode` must be `full` or"
                 " `i2v`) (lora_name -> trigger word):"
             )
             lora_lines(video_loras)

@@ -64,25 +64,23 @@ def test_workflow_catalogue_is_exposed(client):
     assert set(videos) == {spec.id for spec in video_specs()}
     assert videos[DEFAULT_VIDEO_WORKFLOW]["accepts_start_image"] is True
 
-    t2v = videos["ltx2_3_t2v"]
+    t2v = videos["minimax_h3_t2v"]
     assert t2v["requires"] == []
     assert t2v["accepts_start_image"] is False
-    assert {"prompt", "negative", "width", "height", "duration", "fps"} <= set(
-        t2v["supports"]
-    )
+    assert {"prompt", "width", "height", "duration"} <= set(t2v["supports"])
 
-    flf2v = videos["ltx2_3_flf2v"]
-    assert flf2v["requires"] == ["image", "end_image"]
-    assert flf2v["image_label"] == "最初のフレーム"
+    i2v = videos["minimax_h3_i2v"]
+    assert i2v["requires"] == ["image"]
+    assert i2v["image_label"] == "開始フレーム"
+    # 任意の最終フレームは requires ではなく supports の側に出る
+    assert "end_image" not in i2v["requires"]
+    assert "end_image" in i2v["supports"]
 
-    motion = videos["ltx2_3_ic_lora_motion"]
-    assert motion["requires"] == ["image", "video"]
-    # the frame count follows the reference clip, so there is no expression to pin
-    assert "frames_expr" not in motion["supports"]
-
-    sheet = videos["ltx2_3_ic_lora_image"]
-    assert sheet["accepts_start_image"] is False
-    assert sheet["image_label"] == "リファレンスシート画像"
+    # 参照モードは開始フレームと排他（外部 API 側の制約と同じ扱い）
+    r2v = videos["minimax_h3_r2v"]
+    assert r2v["accepts_start_image"] is False
+    assert r2v["requires"] == []
+    assert r2v["multi_inputs"]
 
 
 def test_workflows_carry_the_two_stage_picker_labels(client):
@@ -95,11 +93,6 @@ def test_workflows_carry_the_two_stage_picker_labels(client):
     assert h3["family_label"] == "MiniMax H3"
     assert h3["mode_label"] == "テキスト→動画・音声つき (t2v)"
     assert "MiniMax" in h3["label"]  # 単独で読む label は今までどおり
-
-    # 宣言のないものは label がそのままモード名になる
-    t2v = videos["ltx2_3_t2v"]
-    assert t2v["family_label"] == "LTX 2.3"
-    assert t2v["mode_label"] == t2v["label"] == "テキスト→動画 (t2v)"
 
     # 同じモデルのモードは同じ 1 段目に集まる
     assert {
@@ -129,8 +122,9 @@ def test_the_minimax_workflows_declare_their_own_megapixels(client):
         "minimax_h3_r2v_turbo",
     ):
         assert videos[workflow_id]["default_megapixels"] == 0.4
-    # 宣言の無いワークフローは 0（フォームのグローバル既定のまま）
-    assert videos["ltx2_3_t2v"]["default_megapixels"] == 0.0
+    # 宣言の無いワークフロー（画像側）は 0（フォームのグローバル既定のまま）
+    images = {w["id"]: w for w in client.get("/api/options").json()["image_workflows"]}
+    assert images["krea2_turbo"]["default_megapixels"] == 0.0
 
 
 def test_the_minimax_turbo_workflows_are_offered(client):
@@ -157,7 +151,7 @@ def test_family_label_carries_the_supplier_note():
     from app.workflows import FAMILY_LABELS, FAMILY_NOTES, family_label
 
     assert FAMILY_NOTES == {"grok-imagine": "サブスク CLI"}
-    assert FAMILY_LABELS["ltx2.3"] == "LTX 2.3"
+    assert FAMILY_LABELS["minimax-h3"] == "MiniMax H3"
     assert family_label("krea2") == "Krea 2"
     assert family_label("grok-imagine") == "Grok Imagine（サブスク CLI）"
     assert family_label("unknown") == "unknown"
@@ -315,8 +309,6 @@ def test_steps_are_advertised_only_where_the_template_has_a_sampler_knob(client)
         "krea2_turbo",
         "anima",
         "z_image_turbo",
-        "ltx2_3_ic_lora_image",
-        "ltx2_3_ic_lora_motion",
         "minimax_h3_t2v",
         "minimax_h3_i2v",
         "minimax_h3_r2v",
@@ -327,12 +319,5 @@ def test_steps_are_advertised_only_where_the_template_has_a_sampler_knob(client)
     ):
         assert "steps" in supports[workflow_id], workflow_id
     # ManualSigmas / PrimitiveInt スイッチ構成のものは steps の概念を持たない
-    for workflow_id in (
-        "qwen_image_edit_2511",
-        "ltx2_3_t2v",
-        "tx2_3_i2v",
-        "tx2_3_ia2v",
-        "ltx2_3_id_lora",
-        "ltx2_3_flf2v",
-    ):
+    for workflow_id in ("qwen_image_edit_2511",):
         assert "steps" not in supports[workflow_id], workflow_id

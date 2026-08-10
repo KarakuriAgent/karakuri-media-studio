@@ -3,18 +3,15 @@ import type { ReactNode } from 'react'
 
 export function Field({
   label,
-  hint,
   children,
 }: {
   label: string
-  hint?: string
   children: ReactNode
 }) {
   return (
     <div>
       <label className="label">{label}</label>
       {children}
-      {hint && <p className="mt-1 text-[11px] text-slate-500">{hint}</p>}
     </div>
   )
 }
@@ -23,17 +20,15 @@ export function TextField({
   label,
   value,
   onChange,
-  hint,
   placeholder,
 }: {
   label: string
   value: string
   onChange: (value: string) => void
-  hint?: string
   placeholder?: string
 }) {
   return (
-    <Field label={label} hint={hint}>
+    <Field label={label}>
       <input
         className="field"
         aria-label={label}
@@ -50,18 +45,16 @@ export function AreaField({
   value,
   onChange,
   rows = 3,
-  hint,
   placeholder,
 }: {
   label: string
   value: string
   onChange: (value: string) => void
   rows?: number
-  hint?: string
   placeholder?: string
 }) {
   return (
-    <Field label={label} hint={hint}>
+    <Field label={label}>
       <textarea
         className="field"
         aria-label={label}
@@ -80,17 +73,15 @@ export function NumberField({
   onChange,
   step,
   min,
-  hint,
 }: {
   label: string
   value: number
   onChange: (value: number) => void
   step?: number
   min?: number
-  hint?: string
 }) {
   return (
-    <Field label={label} hint={hint}>
+    <Field label={label}>
       <input
         className="field"
         aria-label={label}
@@ -109,15 +100,13 @@ export function UrlListField({
   label,
   value,
   onChange,
-  hint = '1 行に 1 件（/library/… や /outputs/… の URL）',
 }: {
   label: string
   value: string[]
   onChange: (value: string[]) => void
-  hint?: string
 }) {
   return (
-    <Field label={label} hint={hint}>
+    <Field label={label}>
       <textarea
         className="field"
         aria-label={label}

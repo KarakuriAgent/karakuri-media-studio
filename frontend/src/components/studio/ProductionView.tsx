@@ -71,35 +71,24 @@ function PromptPreview({
       </p>
     )
   }
-  const metaOnly = segments.some(
-    (segment) => segment.asset && !assetHasFile(segment.asset),
-  )
   return (
-    <>
-      <p className="whitespace-pre-wrap break-words text-xs leading-relaxed text-slate-300">
-        {segments.map((segment, index) =>
-          segment.asset ? (
-            <MentionSpan key={index} text={segment.text} asset={segment.asset} />
-          ) : segment.unresolved ? (
-            <span
-              key={index}
-              className="rounded bg-red-950/60 px-1 font-mono text-red-300"
-              title="World Bible に無い素材です"
-            >
-              {segment.text}
-            </span>
-          ) : (
-            <span key={index}>{segment.text}</span>
-          ),
-        )}
-      </p>
-      {metaOnly && (
-        <p className="mt-1 text-[10px] text-slate-500">
-          📝 が付いた素材はファイルを持たないため、参照には添付されず説明文として
-          本文に展開されます。
-        </p>
+    <p className="whitespace-pre-wrap break-words text-xs leading-relaxed text-slate-300">
+      {segments.map((segment, index) =>
+        segment.asset ? (
+          <MentionSpan key={index} text={segment.text} asset={segment.asset} />
+        ) : segment.unresolved ? (
+          <span
+            key={index}
+            className="rounded bg-red-950/60 px-1 font-mono text-red-300"
+            title="World Bible に無い素材です"
+          >
+            {segment.text}
+          </span>
+        ) : (
+          <span key={index}>{segment.text}</span>
+        ),
       )}
-    </>
+    </p>
   )
 }
 

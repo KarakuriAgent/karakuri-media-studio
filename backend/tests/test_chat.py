@@ -299,12 +299,12 @@ def test_image_only_drops_the_video_spec(env):
 # --------------------------------------------------------------------------
 
 def test_the_selected_workflow_is_described_in_the_context(env):
-    spec = get_video_spec("ltx2_3_flf2v")
+    spec = get_video_spec("minimax_h3_i2v")
     system = start(env, video_workflow=spec.id)["messages"][0]["content"]
     assert f"Selected video workflow: **`{spec.id}`**" in system
     assert spec.description in system
     assert spec.prompt_hint in system
-    assert "`end_image`（最後のフレーム画像）" in system
+    assert "`source_image`（開始フレーム）" in system
 
 
 def test_the_default_workflow_is_used_when_the_form_omits_it(env):
@@ -316,7 +316,7 @@ def test_the_default_workflow_is_used_when_the_form_omits_it(env):
 
 def test_a_workflow_without_a_start_frame_asks_about_the_looks_too(env):
     """t2v を選ぶと i2v モードでも「開始フレームがある」前提にしない。"""
-    system = start(env, mode="i2v", video_workflow="ltx2_3_t2v")["messages"][0][
+    system = start(env, mode="i2v", video_workflow="minimax_h3_t2v")["messages"][0][
         "content"
     ]
     assert "`video_prompt` only" in system
@@ -325,14 +325,14 @@ def test_a_workflow_without_a_start_frame_asks_about_the_looks_too(env):
 
 
 def test_a_start_frame_workflow_keeps_the_i2v_wording(env):
-    system = start(env, mode="i2v", video_workflow="tx2_3_i2v")["messages"][0][
+    system = start(env, mode="i2v", video_workflow="minimax_h3_i2v")["messages"][0][
         "content"
     ]
     assert "already fixed by the given image" in system
 
 
 def test_image_only_has_no_workflow_section(env):
-    system = start(env, mode="image_only", video_workflow="ltx2_3_flf2v")["messages"][
+    system = start(env, mode="image_only", video_workflow="minimax_h3_i2v")["messages"][
         0
     ]["content"]
     assert "Selected video workflow" not in system

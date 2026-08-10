@@ -29,6 +29,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 from datetime import datetime, timezone
@@ -46,6 +47,10 @@ from .ids import new_id
 from .models import (
     ASSET_FILE_ROLE_KINDS,
     JobCreate,
+    StoryCreate,
+    StoryResult,
+    StorySceneResult,
+    StoryShotResult,
     StudioAsset,
     StudioAssetFile,
     StudioEpisode,
@@ -640,34 +645,42 @@ async def _next_sort_order(
         return int((await cur.fetchone())["next"])
 
 
+async def _insert_episode(
+    conn: aiosqlite.Connection, project_id: str, payload: Any
+) -> StudioEpisode:
+    """話を 1 件書く（``commit`` とリビジョンは呼び出し側）。"""
+    if await _fetch_project(conn, project_id) is None:
+        raise StudioError("project not found")
+    sort_order = payload.sort_order
+    if sort_order is None:
+        sort_order = await _next_sort_order(
+            conn, "studio_episodes", "project_id", project_id
+        )
+    episode_id = new_id()
+    await conn.execute(
+        "INSERT INTO studio_episodes"
+        " (id, project_id, sort_order, title, synopsis, created_at)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        (
+            episode_id,
+            project_id,
+            sort_order,
+            payload.title,
+            payload.synopsis,
+            _now(),
+        ),
+    )
+    return await _fetch_episode(conn, episode_id)  # type: ignore[return-value]
+
+
 async def create_episode(
     project_id: str, payload: Any, *, actor: str = "user"
 ) -> StudioEpisode:
     async with get_db() as conn:
-        if await _fetch_project(conn, project_id) is None:
-            raise StudioError("project not found")
-        sort_order = payload.sort_order
-        if sort_order is None:
-            sort_order = await _next_sort_order(
-                conn, "studio_episodes", "project_id", project_id
-            )
-        episode_id = new_id()
-        await conn.execute(
-            "INSERT INTO studio_episodes"
-            " (id, project_id, sort_order, title, synopsis, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
-            (
-                episode_id,
-                project_id,
-                sort_order,
-                payload.title,
-                payload.synopsis,
-                _now(),
-            ),
-        )
+        episode = await _insert_episode(conn, project_id, payload)
         await _record_revision(conn, project_id, actor, "話を追加")
         await conn.commit()
-        return await _fetch_episode(conn, episode_id)  # type: ignore[return-value]
+        return episode
 
 
 async def update_episode(
@@ -720,38 +733,46 @@ async def reorder_episodes(project_id: str, ids: list[str]) -> list[StudioEpisod
         return await _fetch_episodes(conn, project_id)
 
 
+async def _insert_scene(
+    conn: aiosqlite.Connection, episode_id: str, payload: Any
+) -> StudioScene:
+    """場を 1 件書く（``commit`` とリビジョンは呼び出し側）。"""
+    episode = await _fetch_episode(conn, episode_id)
+    if episode is None:
+        raise StudioError("episode not found")
+    sort_order = payload.sort_order
+    if sort_order is None:
+        sort_order = await _next_sort_order(
+            conn, "studio_scenes", "episode_id", episode_id
+        )
+    scene_id = new_id()
+    await conn.execute(
+        "INSERT INTO studio_scenes"
+        " (id, episode_id, project_id, sort_order, title, synopsis,"
+        "  time_of_day, created_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            scene_id,
+            episode_id,
+            episode.project_id,
+            sort_order,
+            payload.title,
+            payload.synopsis,
+            payload.time_of_day,
+            _now(),
+        ),
+    )
+    return await _fetch_scene(conn, scene_id)  # type: ignore[return-value]
+
+
 async def create_scene(
     episode_id: str, payload: Any, *, actor: str = "user"
 ) -> StudioScene:
     async with get_db() as conn:
-        episode = await _fetch_episode(conn, episode_id)
-        if episode is None:
-            raise StudioError("episode not found")
-        sort_order = payload.sort_order
-        if sort_order is None:
-            sort_order = await _next_sort_order(
-                conn, "studio_scenes", "episode_id", episode_id
-            )
-        scene_id = new_id()
-        await conn.execute(
-            "INSERT INTO studio_scenes"
-            " (id, episode_id, project_id, sort_order, title, synopsis,"
-            "  time_of_day, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                scene_id,
-                episode_id,
-                episode.project_id,
-                sort_order,
-                payload.title,
-                payload.synopsis,
-                payload.time_of_day,
-                _now(),
-            ),
-        )
-        await _record_revision(conn, episode.project_id, actor, "場を追加")
+        scene = await _insert_scene(conn, episode_id, payload)
+        await _record_revision(conn, scene.project_id, actor, "場を追加")
         await conn.commit()
-        return await _fetch_scene(conn, scene_id)  # type: ignore[return-value]
+        return scene
 
 
 async def update_scene(
@@ -1339,50 +1360,67 @@ _SHOT_TEXT_FIELDS = (
 _SHOT_SETTING_FIELDS = ("aspect_ratio", "megapixels", "seed", "workflow_override")
 
 
+async def _insert_shot(
+    conn: aiosqlite.Connection,
+    project_id: str,
+    payload: Any,
+    *,
+    scene_id: str | None = None,
+) -> StudioShot:
+    """Shot を 1 件書く（``commit`` とリビジョンは呼び出し側）。
+
+    ``scene_id`` を渡すと本文の値ではなくそちらの場に入れる（一括投入は
+    入れ子の位置で所属が決まるため）。
+    """
+    if await _fetch_project(conn, project_id) is None:
+        raise StudioError("project not found")
+    if scene_id is None:
+        scene_id = getattr(payload, "scene_id", None)
+    if scene_id is not None:
+        scene = await _fetch_scene(conn, scene_id)
+        if scene is None or scene.project_id != project_id:
+            raise StudioError("scene not found")
+    sort_order = payload.sort_order
+    if sort_order is None:
+        sort_order = await _next_sort_order(
+            conn, "studio_shots", "project_id", project_id
+        )
+    shot_id = new_id()
+    now = _now()
+    columns = ("id", "project_id", "scene_id", "sort_order", *_SHOT_TEXT_FIELDS,
+               "duration_seconds", "carry_over_end_frame",
+               *_SHOT_SETTING_FIELDS,
+               "created_at", "updated_at", "prompt_updated_at")
+    values = (
+        shot_id,
+        project_id,
+        scene_id,
+        sort_order,
+        *(getattr(payload, name) for name in _SHOT_TEXT_FIELDS),
+        float(payload.duration_seconds),
+        1 if payload.carry_over_end_frame else 0,
+        *(getattr(payload, name, None) for name in _SHOT_SETTING_FIELDS),
+        now,
+        now,
+        now,
+    )
+    placeholders = ", ".join("?" * len(columns))
+    await conn.execute(
+        f"INSERT INTO studio_shots ({', '.join(columns)})"
+        f" VALUES ({placeholders})",
+        values,
+    )
+    return await _fetch_shot(conn, shot_id)  # type: ignore[return-value]
+
+
 async def create_shot(
     project_id: str, payload: Any, *, actor: str = "user"
 ) -> StudioShot:
     async with get_db() as conn:
-        if await _fetch_project(conn, project_id) is None:
-            raise StudioError("project not found")
-        scene_id = getattr(payload, "scene_id", None)
-        if scene_id is not None:
-            scene = await _fetch_scene(conn, scene_id)
-            if scene is None or scene.project_id != project_id:
-                raise StudioError("scene not found")
-        sort_order = payload.sort_order
-        if sort_order is None:
-            sort_order = await _next_sort_order(
-                conn, "studio_shots", "project_id", project_id
-            )
-        shot_id = new_id()
-        now = _now()
-        columns = ("id", "project_id", "scene_id", "sort_order", *_SHOT_TEXT_FIELDS,
-                   "duration_seconds", "carry_over_end_frame",
-                   *_SHOT_SETTING_FIELDS,
-                   "created_at", "updated_at", "prompt_updated_at")
-        values = (
-            shot_id,
-            project_id,
-            scene_id,
-            sort_order,
-            *(getattr(payload, name) for name in _SHOT_TEXT_FIELDS),
-            float(payload.duration_seconds),
-            1 if payload.carry_over_end_frame else 0,
-            *(getattr(payload, name, None) for name in _SHOT_SETTING_FIELDS),
-            now,
-            now,
-            now,
-        )
-        placeholders = ", ".join("?" * len(columns))
-        await conn.execute(
-            f"INSERT INTO studio_shots ({', '.join(columns)})"
-            f" VALUES ({placeholders})",
-            values,
-        )
+        shot = await _insert_shot(conn, project_id, payload)
         await _record_revision(conn, project_id, actor, "Shot を追加")
         await conn.commit()
-        return await _fetch_shot(conn, shot_id)  # type: ignore[return-value]
+        return shot
 
 
 async def update_shot(
@@ -2129,6 +2167,135 @@ async def reject_take(take_id: str, *, actor: str = "user") -> StudioTake | None
         await _record_revision(conn, take.project_id, actor, "Take を不採用に")
         await conn.commit()
         return await _fetch_take(conn, take_id)
+
+
+#: 「まだ終わっていない」とみなすジョブの状態（暴走ガードの数え方）。
+#: docs/EXTERNAL-API.md §3 は queued / running と書いているが、その 2 つの
+#: 間に一瞬だけ通る prompting も走っている最中なので同じ扱いにする。
+PENDING_JOB_STATUSES = ("queued", "prompting", "running")
+
+#: 暴走ガードの「数えてから投入する」を直列化する錠（外部 API 用）。
+#: 数えたあとに投入するまでのあいだ（英訳の待ちを含む）に別のリクエストが
+#: 割り込むと、上限に達していても全部すり抜けてしまう。バックエンドは 1 本の
+#: プロセスで動かすので、プロセス内の錠で足りる。
+#: **投入する側だけが取る**（:func:`count_pending_takes` 自体は錠を取らない）。
+PENDING_TAKES_LOCK = asyncio.Lock()
+
+
+async def count_pending_takes() -> int:
+    """元ジョブがまだ走っている Take の数（外部 API の投入上限に使う）。"""
+    placeholders = ", ".join("?" * len(PENDING_JOB_STATUSES))
+    async with get_db() as conn:
+        async with conn.execute(
+            "SELECT COUNT(*) AS pending FROM studio_takes t"
+            " JOIN jobs j ON j.id = t.job_id"
+            f" WHERE j.status IN ({placeholders})",
+            PENDING_JOB_STATUSES,
+        ) as cur:
+            return int((await cur.fetchone())["pending"])
+
+
+async def _story_project(
+    conn: aiosqlite.Connection, payload: StoryCreate
+) -> StudioProject:
+    """一括投入の宛先（``project_id`` 優先、無ければ作品コードで引く）。"""
+    project_id = (payload.project_id or "").strip()
+    if project_id:
+        project = await _fetch_project(conn, project_id)
+        if project is None:
+            raise StudioError(f"project '{project_id}' が見つかりません")
+        return project
+    code = (payload.project_code or "").strip()
+    if not code:
+        raise StudioError("project_id か project_code のどちらかを指定してください")
+    async with conn.execute(
+        "SELECT * FROM studio_projects WHERE code = ?", (code,)
+    ) as cur:
+        row = await cur.fetchone()
+    if row is None:
+        raise StudioError(f"作品コード '{code}' のプロジェクトがありません")
+    return _row_to_project(row)
+
+
+async def create_story(
+    payload: StoryCreate, *, actor: str = "agent", pending_limit: int = 0
+) -> StoryResult:
+    """話 1 本ぶん（話 -> 場 -> Shot）をまとめて作る（外部 API の一括投入）。
+
+    作成は 1 トランザクション: 途中の検証に落ちたら全ロールバックして
+    :class:`StudioError` を投げる（中途半端な脚本を残さない）。
+
+    ``render`` が立っているときは**コミットしたあと**に 1 カットずつ
+    :func:`render_shot` を呼ぶ。生成は GPU と課金がからむので二択にはせず、
+    投入に失敗したカットがあっても作成済みの脚本は残し、成否をカットごとに
+    返す。``pending_limit`` を渡すと、未完了 Take がその数に達しているあいだは
+    投入を見送る（外部 API の暴走ガード）。
+    """
+    async with get_db() as conn:
+        project = await _story_project(conn, payload)
+        try:
+            episode = await _insert_episode(conn, project.id, payload.episode)
+            created: list[tuple[StudioScene, list[StudioShot]]] = []
+            for scene_body in payload.scenes:
+                scene = await _insert_scene(conn, episode.id, scene_body)
+                shots = [
+                    await _insert_shot(
+                        conn, project.id, shot_body, scene_id=scene.id
+                    )
+                    for shot_body in scene_body.shots
+                ]
+                created.append((scene, shots))
+            await _record_revision(
+                conn, project.id, actor, f"話「{episode.title}」を一括作成"
+            )
+        except Exception:
+            await conn.rollback()
+            raise
+        await conn.commit()
+
+    result = StoryResult(
+        project_id=project.id,
+        episode_id=episode.id,
+        scenes=[
+            StorySceneResult(
+                id=scene.id,
+                title=scene.title,
+                shots=[
+                    StoryShotResult(id=shot.id, title=shot.title) for shot in shots
+                ],
+            )
+            for scene, shots in created
+        ],
+        shot_ids=[shot.id for _, shots in created for shot in shots],
+    )
+    if not payload.render:
+        return result
+
+    for scene_result in result.scenes:
+        for shot_result in scene_result.shots:
+            # 数えてから投入するまでを錠で括る（同時に走っている別の一括投入と
+            # 数え合いになって、両方すり抜けるのを防ぐ）
+            async with PENDING_TAKES_LOCK:
+                if pending_limit > 0 and await count_pending_takes() >= pending_limit:
+                    shot_result.error = (
+                        f"未完了の Take が上限（{pending_limit} 件）に達しているので"
+                        "投入を見送りました"
+                    )
+                    continue
+                try:
+                    take = await render_shot(shot_result.id)
+                except StudioError as exc:
+                    shot_result.error = str(exc)
+                except (job_service.JobValidationError, OSError) as exc:
+                    # 引き継ぎフレームの複製（`_carry_over_start_frame`）や入力の
+                    # 検証がここで落ちても、脚本はもうコミット済みで先行カットは
+                    # 投入済みなので 500 にはしない（そのカットだけ理由を返す）
+                    shot_result.error = f"投入に失敗しました: {exc}"
+                else:
+                    shot_result.take_id = take.id
+                    shot_result.job_id = take.job_id
+                    result.take_ids.append(take.id)
+    return result
 
 
 async def delete_take(take_id: str) -> bool:

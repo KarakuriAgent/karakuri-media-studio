@@ -522,7 +522,6 @@ function ReferencePicker({
           履歴から選択
         </button>
       </div>
-      <p className="text-[11px] text-slate-500">{item.hint}</p>
       {values.length > 0 && (
         <ul className="flex flex-col gap-1">
           {values.map((url, index) => (
@@ -889,14 +888,6 @@ export default function GenerateForm({
                 modeLabel="動画モード"
                 fallbackLabel="動画ワークフロー"
               />
-              {workflow?.notes && (
-                <p className="mt-1 text-[11px] text-slate-500">{workflow.notes}</p>
-              )}
-              {form.mode === 'full' && (
-                <p className="mt-1 text-[11px] text-slate-500">
-                  画像＋動画では開始フレームを受け取れるワークフローのみ選べます。
-                </p>
-              )}
               {/* ワークフローが宣言した選択式フィールド（踊りの
                   種類・動きの大きさ・尺。§3.1） */}
               <WorkflowSelects workflow={workflow} form={form} patch={patch} />
@@ -919,17 +910,11 @@ export default function GenerateForm({
                 modeLabel="画像モード"
                 fallbackLabel="画像ワークフロー"
               />
-              {imageWorkflow?.notes && (
-                <p className="mt-1 text-[11px] text-slate-500">{imageWorkflow.notes}</p>
-              )}
               {imageEdits && (
                 <p className="mt-1 text-[11px] text-amber-400">
                   入力画像を編集するワークフローです。参照画像が必須で、解像度は入力画像から決まります。
                 </p>
               )}
-              <p className="mt-1 text-[11px] text-slate-500">
-                モデルごとにプロンプトの書き方が異なります（Grokで生成 は選択中のモデルの流儀で書きます）。
-              </p>
               {/* 画像ワークフローが宣言した選択式フィールド（
                   大きさ・品質。§3.1 / §5.4） */}
               <WorkflowSelects
@@ -971,16 +956,6 @@ export default function GenerateForm({
                 }
                 onOpenSheet={sheetInput ? () => setBuildingSheet(true) : undefined}
               />
-              {sheetInput ? (
-                <p className="mt-1 text-[11px] text-slate-500">
-                  [ライブラリから作成] で、棚の素材を並べたリファレンスシートをその場で合成できます
-                  （キャラクターは大きいパネルになります）。
-                </p>
-              ) : (
-                <p className="mt-1 text-[11px] text-slate-500">
-                  履歴のラストフレームから続きを生成する場合は、履歴詳細の「続きを生成」を使ってください。
-                </p>
-              )}
               <FieldError message={fieldErrors.source_image} />
             </Section>
           )}
@@ -1037,22 +1012,12 @@ export default function GenerateForm({
                   })
                 }
               />
-              <p className="mt-1 text-[11px] text-slate-500">
-                秒数の設定ぶんだけ先頭から切り出して深度を取り、モーションを転写します。
-              </p>
               <FieldError message={fieldErrors.reference_video} />
             </Section>
           )}
 
           {references.length > 0 && (
             <Section title="マルチモーダル参照（素材参照ワークフロー）">
-              <p className="mb-2 text-[11px] text-slate-500">
-                素材から一貫性・動き・ムードを引き継ぎます。このワークフローは
-                開始フレームを受け取らない（外部 API 側で排他のモードなので、
-                欄そのものが出ません）ので、開始フレームから作るときは素材参照
-                ではないワークフローを選んでください。プロンプトは素材の説明では
-                なく、演出の指示に集中して書いてください。
-              </p>
               <div className="flex flex-col gap-2">
                 {references.map((item) => (
                   <div key={item.name}>
@@ -1196,10 +1161,6 @@ export default function GenerateForm({
                   })
                 }
               />
-              <p className="mt-2 text-[11px] text-slate-500">
-                動画ワークフロー（LTX 2.3）の既定 LoRA の後ろに直列で挿入され、
-                トリガーワードは動画プロンプトの先頭に付きます。
-              </p>
             </Section>
           )}
 
@@ -1251,11 +1212,6 @@ export default function GenerateForm({
                   />
                 </div>
               </div>
-              <p className="mt-1 text-[11px] text-slate-500">
-                動画側の幅・高さはこの組み合わせから 8 の倍数で計算されます。
-                開始フレーム画像を指定した場合、アスペクト比は画像に合わせて自動調整されます
-                （メガピクセルはそのまま有効。リファレンスシートを除く）。
-              </p>
             </Section>
           )}
 
@@ -1280,11 +1236,6 @@ export default function GenerateForm({
                   patch({ triggerDirty: false, triggerText: joinTriggers(form.loras) })
                 }
               />
-              <p className="mt-2 text-[11px] text-slate-500">
-                選択中の画像ワークフロー（{imageWorkflow?.label ?? '—'}）に適用され、
-                トリガーワードは画像プロンプトの先頭に付きます。
-                モデルファミリーが一致する LoRA のみ表示されます。
-              </p>
             </Section>
           )}
 
@@ -1364,14 +1315,6 @@ export default function GenerateForm({
             >
               {showShots && (
                 <div className="flex flex-col gap-2">
-                  <p className="text-[11px] text-slate-500">
-                    このワークフローは 1 本の動画をショット割りで作ります。
-                    本文はショット側にあるので動画プロンプトの欄は出ません。
-                    ショットは 1 つ以上必要で、各ショットは
-                    {shotLimits.min_duration}〜{shotLimits.max_duration} 秒、
-                    カメラ → 動作 → 位置 → 音の順で、人物の言い回しは全ショットで
-                    揃えてください。音声は既定で ON になります。
-                  </p>
                   {form.multiShots.map((shot, index) => (
                     <div
                       key={index}
@@ -1466,14 +1409,6 @@ export default function GenerateForm({
             >
               {showElements && (
                 <div className="flex flex-col gap-2">
-                  <p className="text-[11px] text-slate-500">
-                    参照画像 {elementLimits.min_images}〜{elementLimits.max_images}{' '}
-                    枚に名前を付けておくと、プロンプト本文から `@要素名` で呼べます。
-                    <strong className="text-slate-400">
-                      1 参照が {elementLimits.reference_chars} 文字
-                    </strong>
-                    を消費し、宣言していない `@名前` は送信前に弾かれます。
-                  </p>
                   {form.klingElements.map((element, index) => (
                     <div
                       key={index}
@@ -1663,41 +1598,36 @@ export default function GenerateForm({
 
           <Section title="出力設定">
             {(!hidden.duration || !hidden.fps) && (
-              <>
-                <div className="grid grid-cols-2 gap-2">
-                  {!hidden.duration && (
-                    <div>
-                      <label className="label">秒数（上限なし）</label>
-                      <input
-                        className="field"
-                        type="number"
-                        min="1"
-                        step="1"
-                        value={form.duration}
-                        onChange={(event) =>
-                          patch({ duration: Number(event.target.value) || 0 })
-                        }
-                      />
-                    </div>
-                  )}
-                  {!hidden.fps && (
-                    <div>
-                      <label className="label">fps</label>
-                      <input
-                        className="field"
-                        type="number"
-                        min="1"
-                        step="1"
-                        value={form.fps}
-                        onChange={(event) => patch({ fps: Number(event.target.value) || 0 })}
-                      />
-                    </div>
-                  )}
-                </div>
-                <p className="mt-1 text-[11px] text-slate-500">
-                  長尺は VRAM 次第で ComfyUI 側がエラーになることがあります。
-                </p>
-              </>
+              <div className="grid grid-cols-2 gap-2">
+                {!hidden.duration && (
+                  <div>
+                    <label className="label">秒数（上限なし）</label>
+                    <input
+                      className="field"
+                      type="number"
+                      min="1"
+                      step="1"
+                      value={form.duration}
+                      onChange={(event) =>
+                        patch({ duration: Number(event.target.value) || 0 })
+                      }
+                    />
+                  </div>
+                )}
+                {!hidden.fps && (
+                  <div>
+                    <label className="label">fps</label>
+                    <input
+                      className="field"
+                      type="number"
+                      min="1"
+                      step="1"
+                      value={form.fps}
+                      onChange={(event) => patch({ fps: Number(event.target.value) || 0 })}
+                    />
+                  </div>
+                )}
+              </div>
             )}
             {!hidden.steps && (
               <div className="mt-3">
@@ -1717,10 +1647,6 @@ export default function GenerateForm({
                     patch({ steps: Number(event.target.value) || 0 })
                   }
                 />
-                <p className="mt-1 text-[11px] text-slate-500">
-                  未指定でワークフロー既定。増やすほど時間がかかり、蒸留モデル
-                  （turbo 系）は既定より増やしても良くなりません。
-                </p>
               </div>
             )}
             <div className="mt-3 flex items-center gap-2">

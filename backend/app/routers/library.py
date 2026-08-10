@@ -85,8 +85,8 @@ async def add_from_job(payload: LibraryFromJob) -> LibraryItem:
 async def create_sheet(payload: LibrarySheet) -> LibraryItem:
     """素材を 1 枚のリファレンスシートに合成して登録する（SPEC §7.2）。
 
-    IC-LoRA の動画ワークフロー（`ltx2_3_ic_lora_image`）が参照入力に取る「複数
-    パネルを並べた 1 枚」を、ライブラリの画像から組み立てる。`item_ids` の並び順に
+    参照入力に「複数パネルを並べた 1 枚」を取るワークフロー向けのシートを、
+    ライブラリの画像から組み立てる。`item_ids` の並び順に
     左上から置き、`character` の素材だけ大きいパネルになる。
 
     ``/{kind}`` より先に定義しておく（後ろだと `kind='sheet'` として食われる）。

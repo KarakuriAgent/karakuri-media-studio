@@ -54,7 +54,7 @@ def test_put_drops_default_valued_and_empty_entries(client):
     default = by_key(client.get("/api/models").json())[UNET_KEY]["default"]
     client.put("/api/models", json={"overrides": {UNET_KEY: "mine.safetensors"}})
 
-    other = "tx2_3_i2v/320:316.ckpt_name"
+    other = "stable_audio_3_medium_base/52:25.ckpt_name"
     rows = client.put(
         "/api/models",
         json={"overrides": {UNET_KEY: default, other: "  "}},

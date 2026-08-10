@@ -355,10 +355,6 @@ export default function WorldView({
                 if (picked && !name) setName(assetNameFromFile(picked.name))
               }}
             />
-            <p className="text-[11px] text-slate-500">
-              ファイルを付けずに名前とキャプションだけで登録すると、参照には
-              添付されず、投入時に説明文として本文へ展開されます。
-            </p>
             <div className="grid gap-2 sm:grid-cols-2">
               <div>
                 <label className="label" htmlFor="studio-upload-name">

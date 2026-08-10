@@ -445,7 +445,7 @@ def _check_loras(
 
     ``known_loras`` maps ``lora_name`` -> ``'image'`` / ``'video'`` (the registry
     column).  A画像用 LoRA in ``video_loras`` would silently be spliced into the
-    LTX graph, so it is rejected with a message that names the right field.
+    video graph, so it is rejected with a message that names the right field.
 
     ``known_families`` maps ``lora_name`` -> the image model family it was
     trained for.  An image LoRA of another family than the job's

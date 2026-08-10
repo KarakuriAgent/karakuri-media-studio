@@ -30,10 +30,6 @@ export default function RevisionsModal({
 }) {
   return (
     <Modal title="変更履歴" onClose={onClose} wide closeOnBackdrop>
-      <p className="mb-2 text-[11px] text-slate-500">
-        脚本・話と場・World Bible の内容だけを書き戻します（生成した Take と
-        実ファイルはそのまま残ります）。
-      </p>
       {loading ? (
         <p className="px-3 py-6 text-center text-xs text-slate-600">読込中…</p>
       ) : revisions.length === 0 ? (

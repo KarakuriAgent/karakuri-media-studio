@@ -13,7 +13,7 @@
 # 既定では空。
 #
 # workflow/ のテンプレートが使うノード（ResolutionSelector / CustomCombo /
-# ComfySwitchNode / LTXV 系 / MoGe 系 / LatentUpscaleModelLoader /
+# ComfySwitchNode / MiniMaxH3 系 / MoGe 系 / LatentUpscaleModelLoader /
 # ResizeImagesByLongerEdge / WanDancer 系 / Video Slice など）は、Dockerfile で
 # 固定している ComfyUI のバージョンに **本体同梱（comfy_extras）として入っている**
 # ことを前提にしている。COMFYUI_REF を古いタグに下げる場合や、自分で足した

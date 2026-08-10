@@ -95,15 +95,11 @@ export default function AssetFilesPanel({
             if (mainRef.current) mainRef.current.value = ''
           }}
         />
-        <p className="mt-1 text-[11px] text-slate-500">
-          種別（画像 / 動画 / 音声）は拡張子から決まります。
-        </p>
       </div>
 
       <div className="flex flex-col gap-2 border-t border-ink-700 pt-3">
         <p className="text-[11px] text-slate-500">
-          リファレンス {files.length} 件（声サンプル・動画・追加画像）。生成には
-          まだ自動で流れませんが、エージェントには渡ります。
+          リファレンス {files.length} 件
         </p>
 
         {files.map((file) => (

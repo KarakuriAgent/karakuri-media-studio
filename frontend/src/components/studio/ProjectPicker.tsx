@@ -153,10 +153,6 @@ export default function ProjectPicker({
 
       <Section title="デモから試す">
         <div className="space-y-2">
-          <p className="text-[11px] text-slate-500">
-            脚本・World Bible・話と場まで入った作品を 1 本まるごと作ります
-            （素材はメタデータのみで、ファイルは付きません）。
-          </p>
           <div className="flex flex-wrap items-end gap-2">
             <div className="min-w-[12rem] flex-1">
               <label className="label" htmlFor="studio-demo-code">

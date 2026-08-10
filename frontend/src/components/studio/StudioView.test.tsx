@@ -812,14 +812,6 @@ describe('StudioView: メタデータのみの素材', () => {
     )
   })
 
-  it('制作タブでは「説明文として展開される」ことが分かる', async () => {
-    await openProject(metaOnly())
-    fireEvent.click(screen.getByRole('button', { name: '制作' }))
-    fireEvent.click(rail().getByRole('button', { name: 'カット1' }))
-    expect(
-      await screen.findByText(/説明文として\s*本文に展開されます/),
-    ).toBeTruthy()
-  })
 })
 
 describe('StudioView: 投入プレビュー', () => {

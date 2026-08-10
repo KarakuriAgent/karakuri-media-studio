@@ -43,7 +43,6 @@ export default function SceneFields({
       <TextField label="場のタイトル" value={title} onChange={setTitle} />
       <Field
         label="所属する話"
-        hint="変えると、この場とそのカットが移動先の話のタブに移ります"
       >
         <select
           className="field"
@@ -63,7 +62,6 @@ export default function SceneFields({
         label="時間帯"
         value={timeOfDay}
         onChange={setTimeOfDay}
-        hint="「夜明け前」「閉店後」などのメモ"
       />
 
       <div className="rounded-md border border-ink-600 bg-ink-900 p-2">

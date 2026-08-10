@@ -70,6 +70,13 @@ export interface Settings {
   /** /workspace にマウントする Network Volume の ID。 */
   runpod_network_volume_id: string
   /**
+   * 外部公開 API（`/api/v1`。docs/EXTERNAL-API.md）の共有キー。
+   * 空 = 外部 API を丸ごと無効（404）。キーを入れることが有効化そのもの。
+   */
+  external_api_key: string
+  /** 外部 API から積める未完了 Take の上限（0 = 無制限）。 */
+  external_max_pending_takes: number
+  /**
    * 高速化トグルの既定値（SPEC §3.1）。宣言のある動画ワークフロー（`supports`
    * にそれぞれの名前があるもの）だけが読む。生成フォームのトグルがここを
    * 書き換えるので、次に開いたときも同じ状態で始まる。
@@ -123,6 +130,9 @@ export interface ModelFieldState {
   workflow_label: string
   /** which stage the owning workflow belongs to (settings page grouping). */
   kind: 'image' | 'video' | 'audio'
+  /** モデルファミリーとその表示名（設定ページの動画はこちらでまとめる）。 */
+  family: string
+  family_label: string
   node_id: string
   field: string
   class_type: string
@@ -168,7 +178,7 @@ export interface Lora {
   default_strength: number
   default_audio: string | null
   sort_order: number
-  /** 'image' = 画像ワークフロー / 'video' = LTX 2.3 の動画ワークフロー。 */
+  /** 'image' = 画像ワークフロー / 'video' = 動画ワークフロー。 */
   target: LoraTarget
   /**
    * 学習元の画像モデルファミリー。同じ family の画像ワークフローでのみ使える。

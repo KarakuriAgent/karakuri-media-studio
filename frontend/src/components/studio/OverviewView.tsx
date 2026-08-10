@@ -140,10 +140,6 @@ export default function OverviewView({
               />
               日本語プロンプトを自動で英訳して投入
             </label>
-            <p className="mt-1 text-[11px] text-slate-500">
-              MiniMax H3 は英語のプロンプトを前提にしています。オンにすると、投入の
-              直前に Grok が日本語の本文を英訳します（原文は Take に残ります）。
-            </p>
           </div>
 
           <div className="flex items-center gap-2">

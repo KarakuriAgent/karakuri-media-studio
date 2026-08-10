@@ -3,7 +3,7 @@
 Grokのシステムプロンプト設計の参考資料。各サンプルは公開ギャラリー画像/動画に埋め込まれた
 ComfyUIワークフローから抽出した生データ（原文ママ）。
 
-## SexGod PinkCherry LTX 2.3 — 動画プロンプト実例（モデル作者本人の投稿）
+## 動画プロンプト実例（モデル作者本人の投稿）
 
 構造: `<シーン種別> scene.` の宣言で始まり、人物の外見 → 動作の推移 → 引用符 `"..."` で囲んだセリフ（そのまま音声合成される）→ 音・声の描写、の順。
 
@@ -53,7 +53,7 @@ Wide range of colors, high Dynamic
 `workflow/` 配下のテンプレート自体にも実運用サンプルが残っている（こちらが最重要の参考元）:
 
 - 画像プロンプト: `workflow/image/krea2/krea2_turbo.json` のノード `30:19`（トリガーワード先頭 + スタイル宣言 + 被写体/ポーズ + 表情 + 照明/質感 + カメラ/品質語）
-- 動画プロンプト: `workflow/video/ltx2.3/*.json` の各 `Prompt` ノード（i2v 系は "Starting from the given first frame" で開始フレームからの継続を宣言 + 動きの推移 + 表情 + カメラ + 音の描写で締める。ID-LoRA は `[VISUAL]` / `[SPEECH]` / `[SOUNDS]` のタグ形式）
+- 動画プロンプト: `workflow/video/minimax-h3/*.json` の各プロンプトノード（スタイル → シーン概要 → `[0s-1.5s]` 形式のショットタイムライン → `Camera:` → `Audio:` → 禁止事項）
 
 
 ## Krea 2 公式プロンプティングガイド（krea-ai/krea-2 docs/prompting.md）
@@ -73,7 +73,7 @@ high-fashion editorial portrait of a young East Asian woman, short choppy platin
 extreme close-up of a woman's face partially obscured by tousled dark brown hair, soft parted lips, smooth skin on lower cheek and jawline, stray hair strands falling loosely across the nose, deep moody shadows enveloping the left frame, cinematic warm lighting, delicate highlights on the mouth, muted earthy color palette, sepia-toned warmth, intimate portrait photography, macro lens, shallow depth of field, distinct film grain texture, vintage atmospheric aesthetic
 ```
 
-## LTX 2.3 公式プロンプトガイド要点（ltx.io ブログ / HF README より）
+## 汎用の動画プロンプトガイド要点（`prompts.VIDEO_SPEC` の元ネタ）
 
 - 1 つの流れる段落で書く（箇条書きにしない）。**4〜8 文**が目安
 - 含める要素: 被写体 / 動作 / 環境 / 照明 / カメラの動き / **音声**
@@ -81,16 +81,15 @@ extreme close-up of a woman's face partially obscured by tousled dark brown hair
 - 照明・色調・質感・雰囲気でムードを確立
 - **セリフは引用符で囲み、必要なら言語とアクセントを指定**（例: in a british voice she says "…"）
 - 環境音・音楽・話し声・歌声も明示的に記述する
-- 技術制約: 幅・高さは 32 の倍数、フレーム数は 8n+1（各動画テンプレートは duration*fps+1 で対応済み）
+- 技術制約: 幅・高さの丸め単位とフレーム数の格子はワークフローごと（SPEC §3.1）
 
-## LTX 2.3 ID LoRA（talkvid）+ リファレンス音声（comfy.org ワークフロー解説より）
+## タグ形式プロンプト（comfy.org のワークフロー解説より）
 
-- ID-LoRA は軽量な同一性アダプタを拡散過程に注入する仕組み。**リファレンス音声が口の形とタイミングを駆動する**（リップシンク）
-- 解説ページ推奨のプロンプト構造（タグ形式）:
+- タグ形式のプロンプト構造:
   - `[VISUAL]` シーン・外見の描写
   - `[SPEECH]` 実際に話すセリフ
   - `[SOUNDS]` 話者のスタイル・環境音
-- 一方 PinkCherry 作者の実例はタグなしの自然文（セリフのみ引用符）。**両形式を試せるよう、アプリはテンプレート切替（自然文 / タグ形式）を持つ**
+- 一方、上の作例はタグなしの自然文（セリフのみ引用符）。**両形式を試せるよう、アプリはテンプレート切替（自然文 / タグ形式）を持つ**
 
 ## 抽出方法メモ
 

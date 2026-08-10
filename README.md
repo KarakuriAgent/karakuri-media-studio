@@ -12,7 +12,8 @@ Grok Imagine（画像 2 種）を Web UI から実行し、プロンプト作成
 - プロンプト生成: Grok Build CLI（サブスクリプション認証、API キー不要）
 
 仕様・設計・API の詳細は [`docs/SPEC.md`](docs/SPEC.md)、エージェントモードは
-[`docs/AGENT-MODE.md`](docs/AGENT-MODE.md)、プロンプト実例は
+[`docs/AGENT-MODE.md`](docs/AGENT-MODE.md)、外部公開 API（`/api/v1`・`X-API-Key`）は
+[`docs/EXTERNAL-API.md`](docs/EXTERNAL-API.md)、プロンプト実例は
 [`docs/prompt-samples.md`](docs/prompt-samples.md) にあります。この README は
 「起動して使い始めるまで」に絞っています。
 
@@ -23,7 +24,7 @@ Grok Imagine（画像 2 種）を Web UI から実行し、プロンプト作成
 | 依存 | 内容 |
 |---|---|
 | ComfyUI | 稼働中であること（既定 `http://127.0.0.1:8188`）。Comfy Cloud も可 |
-| custom nodes | ResolutionSelector / ComfySwitchNode / CustomCombo / LTXV 系 / ComfyMath / ResizeImage 系 / ResizeAndPadImage / MoGe 系 / LoadVideo / Video Slice など、`workflow/` 配下のワークフローが使うノード一式 |
+| custom nodes | ResolutionSelector / ComfySwitchNode / CustomCombo / MiniMaxH3 系 / ComfyMath / ResizeImage 系 / ResizeAndPadImage / MoGe 系 / LoadVideo など、`workflow/` 配下のワークフローが使うノード一式 |
 | custom nodes（任意） | MiniMax H3 の Turbo ワークフロー（i2v / r2v）を使う場合のみ SageAttention 本体と [ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes)、および `SolAttnPatch` / `MiniMaxH3TurboLoRA` / `MiniMaxH3SigmaShift` / `SpectrumApplyMiniMaxH3` を提供する custom node。Turbo 以外のワークフローには不要 |
 | モデル | **使うワークフローのぶんだけ**あれば十分です（各テンプレートの既定ファイル名は SPEC §3.3）。足りないものは後述の「不足モデルの自動ダウンロード」で取得できます |
 | grok CLI | `curl -fsSL https://x.ai/cli/install.sh \| bash` でインストール後、一度 `grok` を起動してブラウザでサインイン（サーバーでは `grok --device-auth`）。SuperGrok / X Premium+ のサブスクリプションで利用可。**プロンプト作成のチャットに加えて、画像ワークフローの「Grok Imagine」もこの CLI で走ります**（サインインしていないとそちらは失敗します。設定ページの「grok CLI の接続確認」で確かめられます） |
@@ -162,19 +163,12 @@ WebSocket で右ペインにリアルタイム表示され、完了すると生�
 指定できません。枠は Grok チャットと共有で、実在人物・著名人・商標はモデレーションで
 弾かれます。
 
-**動画**は LTX 2.3 の 7 種・MiniMax H3 の 5 種から選び、必要な入力の欄だけが出ます。
+**動画**は MiniMax H3 の 5 種から選び、必要な入力の欄だけが出ます。
 
 | ワークフロー | 必要な入力 |
 |---|---|
-| テキスト→動画 (t2v) | なし |
-| 画像→動画 (i2v) | 開始フレーム |
-| 画像+音声→動画 (ia2v) | 開始フレーム / 音声 |
-| リップシンク (ID-LoRA)（既定） | 開始フレーム / リファレンス音声 |
-| 最初と最後のフレーム指定 (flf2v) | 最初 / 最後のフレーム |
-| リファレンスシート (IC-LoRA) | リファレンスシート画像 |
-| 参照動画からモーション転写 (IC-LoRA + MoGe) | 開始フレーム / 参照動画 |
 | テキスト→動画・音声つき (MiniMax H3 t2v) | なし |
-| 画像→動画・音声つき (MiniMax H3 i2v) | 開始フレーム（最後のフレームは任意） |
+| 画像→動画・音声つき (MiniMax H3 i2v)（既定） | 開始フレーム（最後のフレームは任意） |
 | 画像→動画・音声つき (MiniMax H3 i2v Turbo) | 同上（4 ステップの高速版） |
 | 参照素材→動画・音声つき (MiniMax H3 r2v) | 参照画像 9 枚 / 参照動画 3 本 / 参照音声 3 本まで（合計 1 件以上） |
 | 参照素材→動画・音声つき (MiniMax H3 r2v Turbo) | 同上（4 ステップの高速版） |
@@ -250,6 +244,7 @@ Stable Audio 3 Medium（効果音・環境音・単一楽器）の 2 種です�
 | `model_overrides` / `model_choices` | **接続先ごと**のモデルファイル名の上書きと、実行ごとに選べる候補リスト | `{}` |
 | `runpod_*` | RunPod Pod の自動起動（有効化 / APIキー / テンプレート ID / GPU 種別 / Network Volume ID） | 無効 |
 | `agent_*` | エージェントの CLI フラグ・タイムアウト・自走上限（設定ページには出ません） | SPEC 参照 |
+| `external_api_key` / `external_max_pending_takes` | 外部 API（`/api/v1`）の共有キーと、未完了 Take の上限 | 空 / `20` |
 
 **モデルタブ**と**LoRA 管理タブ**の先頭には [対象の接続先] のプルダウンがあり、
 **モデルの指定と LoRA 登録は接続先ごとに保存されます**（環境によって入っているファイルが
@@ -274,6 +269,38 @@ Pod 側の models ディレクトリです（RunPod は Pod のダウンロー�
 します（エンドポイントは `https://cloud.comfy.org` 固定。API アクセスは Standard 以上のプランが
 必要）。旧バージョンの `comfy_url` / `comfy_api_key` は、初回読み込み
 時にどれか 1 つのプロファイルへ自動で移されます。
+
+---
+
+## 外部 API（/api/v1）
+
+外部のエージェント（ログを見て話を納品するブリッジなど）から、スタジオの脚本づくりと
+生成を行うための API です。**既定では無効**で、設定の「接続 / Grok」タブにある
+**外部 API（/api/v1）** の APIキー欄にキーを入れて保存すると有効になります（[生成] で
+ランダムなキーを作れます）。キーが空のあいだは `/api/v1` は丸ごと 404 を返します。
+
+```bash
+curl -H "X-API-Key: <保存したキー>" http://127.0.0.1:8000/api/v1/projects
+```
+
+公開しているのは Grok エージェントに許しているスタジオ操作と同じ範囲
+（プロジェクト / 話 / 場 / カット / 素材の作成・更新、カットの削除、生成の投入と Take の
+採否、ジョブ状態の参照）と、話 1 本を 1 リクエストで納品する `POST /api/v1/stories` です。
+壊れた連携先が生成を積み続けないよう、**未完了 Take が上限**（`external_max_pending_takes`、
+既定 20 / 0 で無制限）に達しているあいだは投入を 429 で拒みます（UI からの生成には
+掛かりません）。
+
+認証・CRUD・素材登録・`POST /api/v1/stories` での一括投入から、レンダリングと Take の
+採否までは**ローカルの ComfyUI（MiniMax H3）で実機確認済み**です（429 のガードのみ未検証）。
+プロンプトに `@素材名` を書いて画像素材を参照すると、ワークフローは自動で参照素材版
+（r2v）に切り替わります。カットの `megapixels` を省略するとバックエンドの既定値になるので、
+VRAM の小さい GPU では小さめの値を明示してください。確認済みの範囲と運用上の注意は
+[`docs/EXTERNAL-API.md`](docs/EXTERNAL-API.md) §8 にまとめてあります。
+
+**ネット越しに公開する場合はアプリをそのまま外に出さないでください**: `/api/v1` 以外の
+内部 API・`/docs`・生成物の静的配信は無認証です。Cloudflare Tunnel + Access を前に置く
+構成を [`docs/EXTERNAL-API.md`](docs/EXTERNAL-API.md) §5 に書いてあります。エンドポイントの
+一覧と本文の形も同じドキュメントを参照してください。
 
 ---
 

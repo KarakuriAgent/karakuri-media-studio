@@ -1,7 +1,9 @@
 """Job lifecycle tests. ComfyUI is fully mocked; ffmpeg is used for real."""
 
 import asyncio
+import json
 import shutil
+import sqlite3
 import subprocess
 import time
 from pathlib import Path
@@ -13,7 +15,7 @@ from PIL import Image
 from app import comfy, config, db, jobs, nsfw
 from app.main import app
 from app.workflow import resolution, resolution_for_image
-from app.workflows import get_video_spec
+from app.workflows import DEFAULT_MEGAPIXELS, get_video_spec
 
 from conftest import fake_outputs
 
@@ -199,7 +201,7 @@ def test_full_job_runs_two_chained_stages(env):
     created = response.json()
     assert created["status"] == "queued"
     assert created["params"]["seed"] > 0  # random seed recorded for reproducibility
-    assert created["params"]["video_workflow"] == "ltx2_3_id_lora"
+    assert created["params"]["video_workflow"] == "minimax_h3_i2v"
 
     job = wait_for(env.client, created["id"])
     assert job["status"] == "done", job["error"]
@@ -213,18 +215,16 @@ def test_full_job_runs_two_chained_stages(env):
     stages = job["workflow_json"]
     assert sorted(stages) == ["image", "video"]
     assert stages["image"]["workflow_id"] == "krea2_turbo"
-    assert stages["video"]["workflow_id"] == "ltx2_3_id_lora"
+    assert stages["video"]["workflow_id"] == "minimax_h3_i2v"
     assert stages["image"]["prompt_id"] == "prompt-1"
     assert stages["video"]["prompt_id"] == "prompt-2"
     assert job["comfy_prompt_id"] == "prompt-2"
 
     image_graph, video_graph = env.comfy.queued
     assert image_graph["30:3"]["inputs"]["seed"] == job["params"]["seed"]
-    assert video_graph["276"]["inputs"]["audio"] == "ref.mp3"
     # the generated still was uploaded and wired in as the start frame
-    assert env.comfy.uploads[0] == str(env.audio)
     assert env.comfy.uploads[-1] == job["image_path"]
-    assert video_graph["269"]["inputs"]["image"] == Path(job["image_path"]).name
+    assert video_graph["114"]["inputs"]["image"] == Path(job["image_path"]).name
 
 
 def test_image_only_job_runs_the_image_stage_only(env):
@@ -245,23 +245,26 @@ def test_t2v_job_needs_no_input_assets(env):
         "/api/jobs",
         json={
             "mode": "i2v",
-            "video_workflow": "ltx2_3_t2v",
+            "video_workflow": "minimax_h3_t2v",
             "video_prompt": "a machine assembles itself",
         },
     ).json()
     job = wait_for(env.client, created["id"])
     assert job["status"] == "done", job["error"]
     assert len(env.comfy.queued) == 1
-    assert env.comfy.queued[0]["267:266"]["inputs"]["value"] == "a machine assembles itself"
+    assert (
+        env.comfy.queued[0]["105:104"]["inputs"]["prompt"]
+        == "a machine assembles itself"
+    )
     assert list(job["workflow_json"]) == ["video"]
 
 
-def test_flf2v_job_uploads_both_frames(env):
+def test_an_end_frame_job_uploads_both_frames(env):
     created = env.client.post(
         "/api/jobs",
         json={
             "mode": "i2v",
-            "video_workflow": "ltx2_3_flf2v",
+            "video_workflow": "minimax_h3_i2v",
             "video_prompt": "the camera drops",
             "source_image": str(env.start_image),
             "end_image": str(env.end_image),
@@ -270,8 +273,8 @@ def test_flf2v_job_uploads_both_frames(env):
     job = wait_for(env.client, created["id"])
     assert job["status"] == "done", job["error"]
     workflow = env.comfy.queued[0]
-    assert workflow["31"]["inputs"]["image"] == "start.png"
-    assert workflow["39"]["inputs"]["image"] == "end.png"
+    assert workflow["114"]["inputs"]["image"] == "start.png"
+    assert workflow["116"]["inputs"]["image"] == "end.png"
     assert str(env.end_image) in env.comfy.uploads
 
 
@@ -292,7 +295,7 @@ def test_start_frame_sets_the_output_aspect_ratio(env):
         "/api/jobs",
         json={
             "mode": "i2v",
-            "video_workflow": "tx2_3_i2v",
+            "video_workflow": "minimax_h3_i2v",
             "video_prompt": "she turns around",
             "source_image": str(portrait),
             "aspect_ratio": "16:9 (Widescreen)",
@@ -301,8 +304,8 @@ def test_start_frame_sets_the_output_aspect_ratio(env):
     ).json()
     job = wait_for(env.client, created["id"])
     assert job["status"] == "done", job["error"]
-    assert _submitted_size(env.comfy.queued[0], "tx2_3_i2v") == resolution_for_image(
-        1000, 1500, 1.0, multiple=get_video_spec("tx2_3_i2v").resolution_multiple
+    assert _submitted_size(env.comfy.queued[0], "minimax_h3_i2v") == resolution_for_image(
+        1000, 1500, 1.0, multiple=get_video_spec("minimax_h3_i2v").resolution_multiple
     )
 
 
@@ -312,7 +315,7 @@ def test_unreadable_start_frame_falls_back_to_the_preset(env):
         "/api/jobs",
         json={
             "mode": "i2v",
-            "video_workflow": "tx2_3_i2v",
+            "video_workflow": "minimax_h3_i2v",
             "video_prompt": "she turns around",
             "source_image": str(env.start_image),
             "aspect_ratio": "16:9 (Widescreen)",
@@ -321,8 +324,8 @@ def test_unreadable_start_frame_falls_back_to_the_preset(env):
     ).json()
     job = wait_for(env.client, created["id"])
     assert job["status"] == "done", job["error"]
-    assert _submitted_size(env.comfy.queued[0], "tx2_3_i2v") == resolution(
-        "16:9 (Widescreen)", 1.0, multiple=get_video_spec("tx2_3_i2v").resolution_multiple
+    assert _submitted_size(env.comfy.queued[0], "minimax_h3_i2v") == resolution(
+        "16:9 (Widescreen)", 1.0, multiple=get_video_spec("minimax_h3_i2v").resolution_multiple
     )
 
 
@@ -336,7 +339,7 @@ def test_full_mode_keeps_the_preset_for_the_generated_still(env):
         "/api/jobs",
         json=full_body(
             env,
-            video_workflow="tx2_3_i2v",
+            video_workflow="minimax_h3_i2v",
             source_image=str(portrait),
             aspect_ratio="16:9 (Widescreen)",
             megapixels=1.0,
@@ -344,58 +347,14 @@ def test_full_mode_keeps_the_preset_for_the_generated_still(env):
     ).json()
     job = wait_for(env.client, created["id"])
     assert job["status"] == "done", job["error"]
-    assert _submitted_size(env.comfy.queued[1], "tx2_3_i2v") == resolution(
-        "16:9 (Widescreen)", 1.0, multiple=get_video_spec("tx2_3_i2v").resolution_multiple
+    assert _submitted_size(env.comfy.queued[1], "minimax_h3_i2v") == resolution(
+        "16:9 (Widescreen)", 1.0, multiple=get_video_spec("minimax_h3_i2v").resolution_multiple
     )
-
-
-def test_reference_sheet_ignores_the_start_frame_size(env):
-    """The IC-LoRA sheet sizes a ResizeAndPadImage target: preset only."""
-    portrait = env.assets / "image" / "portrait.png"
-    Image.new("RGB", (1000, 1500), "black").save(portrait)
-
-    created = env.client.post(
-        "/api/jobs",
-        json={
-            "mode": "i2v",
-            "video_workflow": "ltx2_3_ic_lora_image",
-            "video_prompt": "a character sheet",
-            "source_image": str(portrait),
-            "aspect_ratio": "16:9 (Widescreen)",
-            "megapixels": 1.0,
-        },
-    ).json()
-    job = wait_for(env.client, created["id"])
-    assert job["status"] == "done", job["error"]
-    assert _submitted_size(env.comfy.queued[0], "ltx2_3_ic_lora_image") == resolution(
-        "16:9 (Widescreen)",
-        1.0,
-        multiple=get_video_spec("ltx2_3_ic_lora_image").resolution_multiple,
-    )
-
-
-def test_motion_job_uploads_the_reference_clip(env):
-    created = env.client.post(
-        "/api/jobs",
-        json={
-            "mode": "i2v",
-            "video_workflow": "ltx2_3_ic_lora_motion",
-            "video_prompt": "a slow dolly",
-            "source_image": str(env.start_image),
-            "reference_video": str(env.reference_video),
-            "duration": 4,
-        },
-    ).json()
-    job = wait_for(env.client, created["id"])
-    assert job["status"] == "done", job["error"]
-    workflow = env.comfy.queued[0]
-    assert workflow["199"]["inputs"]["file"] == "ref.mp4"
-    assert workflow["692"]["inputs"]["duration"] == 4.0
 
 
 def test_full_mode_rejects_a_workflow_without_a_start_frame(env):
     response = env.client.post(
-        "/api/jobs", json=full_body(env, video_workflow="ltx2_3_t2v")
+        "/api/jobs", json=full_body(env, video_workflow="minimax_h3_t2v")
     )
     assert response.status_code == 422
     assert "start frame" in response.text
@@ -494,11 +453,9 @@ def test_chat_session_is_linked(env):
 @pytest.mark.parametrize(
     "body, missing",
     [
-        ({"mode": "full", "image_prompt": "i", "video_prompt": "v"}, "audio_path"),
         ({"mode": "full", "video_prompt": "v", "audio_path": "A"}, "image_prompt"),
         ({"mode": "full", "image_prompt": "i", "audio_path": "A"}, "video_prompt"),
         ({"mode": "i2v", "video_prompt": "v", "audio_path": "A"}, "source_image"),
-        ({"mode": "i2v", "source_image": "S", "video_prompt": "v"}, "audio_path"),
         ({"mode": "i2v", "audio_path": "A", "source_image": "S"}, "video_prompt"),
         ({"mode": "image_only"}, "image_prompt"),
     ],
@@ -632,7 +589,7 @@ def test_continue_chains_from_last_frame(env):
     job = wait_for(env.client, second["id"])
     assert job["status"] == "done", job["error"]
     workflow = env.comfy.queued[-1]
-    assert workflow["269"]["inputs"]["image"] == start.name
+    assert workflow["114"]["inputs"]["image"] == start.name
     assert "30:19" not in workflow  # the video stage runs on its own
     assert list(job["workflow_json"]) == ["video"]
     assert str(start) in env.comfy.uploads
@@ -650,48 +607,11 @@ VIDEO_LORA = {
 }
 
 
-@needs_ffmpeg
-def test_video_loras_are_snapshotted_and_injected(env):
-    created = env.client.post(
-        "/api/jobs",
-        json=full_body(env, video_loras=[VIDEO_LORA], video_trigger_text="slowmo"),
-    ).json()
-    assert created["params"]["video_loras"] == [VIDEO_LORA]
-    assert created["params"]["video_trigger_text"] == "slowmo"
-
-    job = wait_for(env.client, created["id"])
-    assert job["status"] == "done", job["error"]
-
-    # spliced into the video graph only…
-    video = graph_with(env, "340:346")
-    assert video["app_video_lora_0"]["inputs"]["lora_name"] == "motion.safetensors"
-    assert video["app_video_lora_0"]["inputs"]["strength_model"] == 0.9
-    assert video["340:346"]["inputs"]["model"] == ["app_video_lora_0", 0]
-    # …and the trigger word leads the video prompt
-    assert video["340:319"]["inputs"]["value"].startswith("slowmo, ")
-    # …never into the image graph
-    assert not [n for n in graph_with(env, "30:3") if n.startswith("app_video_lora_")]
-
-
-@needs_ffmpeg
-def test_rerun_keeps_the_video_loras(env):
-    first = env.client.post(
-        "/api/jobs", json=full_body(env, video_loras=[VIDEO_LORA])
-    ).json()
-    wait_for(env.client, first["id"])
-    again = env.client.post(f"/api/jobs/{first['id']}/rerun", json={}).json()
-    assert again["params"]["video_loras"] == [VIDEO_LORA]
-    assert wait_for(env.client, again["id"])["status"] == "done"
-
-
-@needs_ffmpeg
-def test_continue_keeps_the_video_loras(env):
-    first = env.client.post(
-        "/api/jobs", json=full_body(env, video_loras=[VIDEO_LORA])
-    ).json()
-    wait_for(env.client, first["id"])
-    second = env.client.post(f"/api/jobs/{first['id']}/continue", json={}).json()
-    assert second["params"]["video_loras"] == [VIDEO_LORA]
+def test_video_loras_need_a_workflow_with_a_lora_chain(env):
+    """今ある動画ワークフローは LoRA を挿せる場所を持たないので 422（SPEC §3.4）。"""
+    response = env.client.post("/api/jobs", json=full_body(env, video_loras=[VIDEO_LORA]))
+    assert response.status_code == 422
+    assert "video_loras" in response.text
 
 
 def test_a_job_without_video_loras_still_loads(env):
@@ -717,11 +637,97 @@ def test_video_loras_without_a_video_stage_are_422(env):
 
 
 # --------------------------------------------------------------------------
+# 廃止されたワークフローを指している古いジョブ
+# --------------------------------------------------------------------------
+#
+# 保存済みの params はそのまま検証に掛かるので、当時のワークフローがもう無い
+# ジョブは再実行も続き生成も 422 になっていた。いま在るワークフローへ寄せた
+# うえで、寄せ先が受け取れない引き継ぎ（LoRA・解像度）は落とす。
+
+#: もう無いワークフローの id（旧 LTX-2）
+RETIRED_VIDEO_WORKFLOW = "ltx2_3_i2v"
+
+
+def _rewrite_params(job_id: str, **changes) -> None:
+    """保存済みの params を書き換える（当時のジョブを再現する）。"""
+    with sqlite3.connect(db.DB_PATH) as conn:
+        (stored,) = conn.execute(
+            "SELECT params FROM jobs WHERE id = ?", (job_id,)
+        ).fetchone()
+        conn.execute(
+            "UPDATE jobs SET params = ? WHERE id = ?",
+            (json.dumps({**json.loads(stored), **changes}), job_id),
+        )
+
+
+def _retire(env, **extra) -> str:
+    """完了した full ジョブを作り、廃止ワークフロー時代の params に書き換える。"""
+    created = env.client.post("/api/jobs", json=full_body(env)).json()
+    assert wait_for(env.client, created["id"])["status"] == "done"
+    _rewrite_params(
+        created["id"],
+        video_workflow=RETIRED_VIDEO_WORKFLOW,
+        megapixels=1.0,
+        video_loras=[VIDEO_LORA],
+        video_trigger_text="slowmo",
+        **extra,
+    )
+    return created["id"]
+
+
+@needs_ffmpeg
+def test_rerun_falls_back_when_the_workflow_is_gone(env):
+    params = env.client.post(f"/api/jobs/{_retire(env)}/rerun", json={}).json()["params"]
+    assert params["video_workflow"] == "minimax_h3_i2v"
+    # 寄せ先が LoRA チェーンを持たないので、本文ごと落ちる（残ると 422）
+    assert params["video_loras"] == []
+    assert params["video_trigger_text"] == ""
+    # 1.0MP のままだと 8GB 級の GPU で CUDA OOM になる
+    assert params["megapixels"] == get_video_spec("minimax_h3_i2v").default_megapixels
+
+
+@needs_ffmpeg
+def test_rerun_keeps_a_workflow_that_still_exists(env):
+    """在るワークフローのジョブは何も付け替えない（解像度もそのまま）。"""
+    created = env.client.post("/api/jobs", json=full_body(env)).json()
+    assert wait_for(env.client, created["id"])["status"] == "done"
+    _rewrite_params(created["id"], megapixels=1.0)
+    params = env.client.post(
+        f"/api/jobs/{created['id']}/rerun", json={}
+    ).json()["params"]
+    assert params["video_workflow"] == "minimax_h3_i2v"
+    assert params["megapixels"] == 1.0
+
+
+@needs_ffmpeg
+def test_continue_refits_the_params_of_a_retired_workflow(env):
+    response = env.client.post(f"/api/jobs/{_retire(env)}/continue", json={})
+    assert response.status_code == 201, response.text
+    params = response.json()["params"]
+    assert params["video_workflow"] == "minimax_h3_i2v"
+    assert params["video_loras"] == []
+    assert params["video_trigger_text"] == ""
+    assert params["megapixels"] == get_video_spec("minimax_h3_i2v").default_megapixels
+
+
+@needs_ffmpeg
+def test_continue_keeps_the_megapixels_of_the_same_workflow(env):
+    """付け替えていないときは、元ジョブの解像度をそのまま再現する。"""
+    created = env.client.post("/api/jobs", json=full_body(env)).json()
+    assert wait_for(env.client, created["id"])["status"] == "done"
+    _rewrite_params(created["id"], megapixels=1.0)
+    params = env.client.post(
+        f"/api/jobs/{created['id']}/continue", json={}
+    ).json()["params"]
+    assert params["megapixels"] == 1.0
+
+
+# --------------------------------------------------------------------------
 # ジョブ単位のモデル切り替え（SPEC §3.3）
 # --------------------------------------------------------------------------
 
 IMAGE_SLOT = "krea2_turbo/30:10.unet_name"
-VIDEO_SLOT = "ltx2_3_id_lora/340:317.ckpt_name"
+VIDEO_SLOT = "minimax_h3_i2v/105:6.unet_name"
 
 
 def _register_choices(
@@ -789,7 +795,7 @@ def test_a_slot_of_a_workflow_the_job_does_not_run_is_422(env, monkeypatch):
     _register_choices(monkeypatch, {VIDEO_SLOT: ["alt.safetensors"]})
     response = _image_job(env, model_overrides={VIDEO_SLOT: "alt.safetensors"})
     assert response.status_code == 422
-    assert "ltx2_3_id_lora" in response.text
+    assert "minimax_h3_i2v" in response.text
 
 
 def test_an_unknown_model_slot_is_422(env, monkeypatch):
@@ -1061,7 +1067,7 @@ def test_the_image_workflow_is_selectable(env):
     assert job["workflow_json"]["image"]["workflow_id"] == "z_image_turbo"
     # z-image has no ResolutionSelector: the app injects the computed edges
     graph = graph_with(env, "57:13")
-    width, height = resolution("4:3 (Standard)", 1.0)
+    width, height = resolution("4:3 (Standard)", DEFAULT_MEGAPIXELS)
     assert graph["57:13"]["inputs"]["width"] == width
     assert graph["57:13"]["inputs"]["height"] == height
 
@@ -1130,8 +1136,8 @@ def test_full_mode_edits_the_source_image_then_animates_it(env):
     image_graph = graph_with(env, "41")
     assert image_graph["41"]["inputs"]["image"] == env.start_image.name
     # the video stage starts from the *generated* still, not the input picture
-    video_graph = graph_with(env, "269")
-    assert video_graph["269"]["inputs"]["image"] == Path(job["image_path"]).name
+    video_graph = graph_with(env, "114")
+    assert video_graph["114"]["inputs"]["image"] == Path(job["image_path"]).name
 
 
 def _register_lora(env, name: str, family: str) -> dict:

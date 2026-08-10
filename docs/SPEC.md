@@ -1,6 +1,6 @@
 # Karakuri Media Studio 仕様書（ドラフト v0.2）
 
-`workflow/` 配下の ComfyUI ワークフロー群（画像 4 種 / 動画: LTX 2.3 の 7 種 / 音声 2 種）をバックエンドとして使うメディア生成アプリの仕様。
+`workflow/` 配下の ComfyUI ワークフロー群（画像 4 種 / 動画: MiniMax H3 の 5 種 / 音声 2 種）をバックエンドとして使うメディア生成アプリの仕様。
 プロンプト作成は Grok（サブスクリプション認証）に委譲し、実行・成果物管理・履歴保存を本アプリが担う。
 
 > v0.2 での変更: 単一の合体グラフ `video-gen.json` を廃止し、分離された複数テンプレートを
@@ -68,26 +68,19 @@
 
 - 進捗は 1 ジョブとして配信され、メッセージが「画像生成 (1/2)」→「動画生成 (2/2)」と切り替わる
 - `workflow_json` には **両方のグラフ**を `{"image": {...}, "video": {...}}` の形で保存する（各要素は `workflow_id` / `prompt_id` / `graph`）。単段ジョブも同じ形（キーは `image` / `video` / `audio`）。再現性の担保はこれで行い、`rerun` は `params` から作り直す
-- `full` で選べるのは**開始フレームを受け取れる動画ワークフローだけ**（`accepts_start_image`）。t2v と IC-LoRA リファレンスシートは対象外で、選択すると 422 になる
+- `full` で選べるのは**開始フレームを受け取れる動画ワークフローだけ**（`accepts_start_image`）。t2v と参照専用（r2v）は対象外で、選択すると 422 になる
 
 ### 2.2 動画ワークフロー（`workflow/video/<family>/`）
 
 | id | 表示名 | ckpt | 必要入力 | `full` 可 |
 |---|---|---|---|---|
-| `ltx2_3_t2v` | テキスト→動画 (t2v) | dev-fp8 | なし | ✕ |
-| `tx2_3_i2v` | 画像→動画 (i2v) | dev-fp8 | 画像 | ○ |
-| `tx2_3_ia2v` | 画像+音声→動画 (ia2v) | dev-fp8 | 画像・音声 | ○ |
-| `ltx2_3_id_lora` | 画像+参照音声→動画・リップシンク (ID-LoRA) | dev-fp8 + talkvid ID-LoRA | 画像・音声 | ○（既定） |
-| `ltx2_3_flf2v` | 最初と最後のフレーム指定 (flf2v) | distilled-fp8 | 画像・最終フレーム画像 | ○ |
-| `ltx2_3_ic_lora_image` | リファレンスシート (IC-LoRA) | distilled-fp8 + ingredients IC-LoRA | リファレンスシート画像 | ✕ |
-| `ltx2_3_ic_lora_motion` | 参照動画からモーション転写 (IC-LoRA + MoGe) | distilled-fp8 + union-control IC-LoRA | 画像・参照動画 | ○ |
 | `minimax_h3_t2v` | テキスト→動画・音声つき (MiniMax H3 t2v) | minimax_h3 fl2va int8 | なし | ✕ |
-| `minimax_h3_i2v` | 画像→動画・音声つき (MiniMax H3 i2v) | minimax_h3 fl2va int8 | 画像（最終フレーム画像は任意） | ○ |
+| `minimax_h3_i2v` | 画像→動画・音声つき (MiniMax H3 i2v) | minimax_h3 fl2va int8 | 画像（最終フレーム画像は任意） | ○（既定） |
 | `minimax_h3_i2v_turbo` | 画像→動画・音声つき (MiniMax H3 i2v Turbo) | minimax_h3 fl2va w4a8 + turbo 4step LoRA | 同 `minimax_h3_i2v` | ○ |
 | `minimax_h3_r2v` | 参照素材→動画・音声つき (MiniMax H3 r2v) | minimax_h3 ref2va int8 | `reference_images` 9 枚 / `reference_videos` 3 本 / `reference_audios` 3 本まで・合計 1 件以上（開始フレームは不可） | ✕ |
 | `minimax_h3_r2v_turbo` | 参照素材→動画・音声つき (MiniMax H3 r2v Turbo) | minimax_h3 ref2va w4a8 + turbo 4step LoRA | 同 `minimax_h3_r2v` | ✕ |
 
-- id はファイル名（拡張子なし）。`tx2_3_i2v` / `tx2_3_ia2v` の綴りは配布ファイル名そのまま
+- id はファイル名（拡張子なし）
 - **`minimax_h3_*`（`workflow/video/minimax-h3/`、family `minimax-h3`）** は**映像とステレオ音声を同時に生成する**
   ローカルモデル（MiniMax H3）。プロンプト 1 ブロックに「スタイル → シーン概要 → `[0s-1.5s]` 形式のショット
   タイムライン → `Camera:` → `Audio:`（セリフ・SFX・音楽）→ 禁止事項」を書くと、1 本の中でカットを割れる。
@@ -104,7 +97,7 @@
   持たない。
   MiniMaxH3 系ノードは新しめの ComfyUI master にしか無いので、ヘルスチェックが「custom node なし」と出たら
   ComfyUI を更新する
-- 既定は `ltx2_3_id_lora`（旧 `video-gen.json` の動画側と同じ構成なので、既存ジョブ・エージェントの計画がそのまま通る）
+- 既定は `minimax_h3_i2v`（開始フレームを受け取れて `full` の 2 段目になれる、いちばん素直な構成）
 - ラストフレーム連鎖: 履歴の動画から「ラストフレームを開始フレームにして続きを生成」できる。元ジョブの動画ワークフローが開始フレームを受け取れない場合は既定ワークフローにフォールバックする
 
 ### 2.3 画像ワークフロー（`workflow/image/<family>/`）
@@ -199,8 +192,8 @@ LoRA チェーンも持たない（テンプレートに LoRA ノードが無い
   未指定ならテンプレートの値がそのまま残る
 - 上限は `models.MAX_STEPS`（150）で、範囲外は 422
 - サンプラーの `steps` は INT なので、注入時に整数へ丸める（`workflow._INT_INPUTS`）
-- ステップ数の概念を持たないテンプレート（LTX 2.3 の ManualSigmas 構成、qwen-image-edit の
-  PrimitiveInt スイッチ）は宣言を持たず、欄も出ない
+- ステップ数の概念を持たないテンプレート（qwen-image-edit の PrimitiveInt スイッチなど）は
+  宣言を持たず、欄も出ない
 
 #### 複数ファイルの参照入力（`WorkflowSpec.multi_inputs`）
 
@@ -354,6 +347,12 @@ VRAM が足りずに CUDA OOM で落ちる。そこで `WorkflowSpec.default_meg
 宣言を持つのは **MiniMax H3 の 5 つ（t2v / i2v / i2v turbo / r2v / r2v turbo）= 0.4MP**
 （短辺 768px・最大 768x1344 の画角）。
 
+バックエンド側（`POST /api/jobs` の `megapixels` を省いたとき、および Studio の
+カットが `megapixels` 未設定のとき）の既定は **0.4MP**（`workflows.py` の
+`DEFAULT_MEGAPIXELS`）。既定の動画ワークフローが MiniMax H3 で、1.0MP のままだと
+8GB 級のローカル GPU で CUDA OOM になるため、フォームが明示的に値を送らない
+経路でも安全側に倒している。
+
 フォーム側は動画ステージが走るモード（`full` / `i2v`）で**動画ワークフローを切り替えた
 タイミング**に `megapixelsFor(workflow)` の値を入れる（宣言が無ければグローバル既定へ戻す）。
 切り替えたあとに手で変えた値はそのまま残り、次に切り替えるまで維持される（音声の
@@ -369,16 +368,13 @@ VRAM が足りずに CUDA OOM で落ちる。そこで `WorkflowSpec.default_meg
 （生成画像はプリセット通りの比で出るため。ただし解像度が入力画像依存の
 `qwen_image_edit_2511` を 1 段目に選んだ場合だけは、両者がずれることがある）。
 
-例外: `ltx2_3_ic_lora_image` は幅・高さがリファレンスシートのパディング結果
-（`722` ResizeAndPadImage の `target_width` / `target_height`）から決まるため、そこに注入する。
-潜在側の丸めは `EmptyLTXVLatentVideo` が行う。
-
 #### フレーム数
 
 各テンプレートの `ComfyMathExpression`（`a * b + 1` もしくは `a * b`）を、アプリが計算した
-`8n + 1` の定数に固定する。式は `a * 0 + b * 0 + <frames>` に書き換え、入力リンクは温存するので
-グラフ形状と出力型は変わらない。`ltx2_3_ic_lora_motion` はフレーム数が参照動画の長さで決まるため
-式の固定を行わず、代わりに秒数を `692` (Video Slice) の `duration` に注入する。
+定数に固定する（格子はワークフローごと: `WorkflowSpec.frames` / `FrameGrid`。宣言が無ければ
+`8n + 1` を切り下げ、MiniMax H3 は 24fps の `17k + 5` を切り上げ）。式は
+`a * 0 + b * 0 + <frames>` に書き換え、入力リンクは温存するのでグラフ形状と出力型は変わらない。
+`frames_expr` を宣言しないワークフローでは固定を行わない。
 
 ### 3.2 アプリが自動注入する項目
 
@@ -400,8 +396,8 @@ Stable Audio の `reprompt`（内蔵 LLM でのプロンプト展開）だけは
 
 - 画像側: 各ファミリーの UNET / CLIP / VAE（krea2 = `krea2_turbo_fp8_scaled` + `qwen3vl_4b_fp8_scaled` + `qwen_image_vae`、anima = `anima-base-v1.0`、z-image = `z_image_turbo_bf16`、qwen-image = `qwen_image_edit_2511_int8_convrot` + Lightning 4steps LoRA）と KSampler 設定
 - 音声側: ACE-Step `acestep_v1.5_xl_sft_bf16` + `qwen_0.6b_ace15` / `qwen_4b_ace15` + `ace_1.5_vae`、Stable Audio `stable_audio_3_medium_base` + `t5gemma_b_b_ul2` / `qwen3.5_2b_bf16`、およびサンプラー設定
-- 動画側: checkpoint `ltx-2.3-22b-dev-fp8` または `ltx-2.3-22b-distilled-fp8`、distil LoRA (strength 0.5)、talkvid ID-LoRA + `LTXVReferenceAudio`（identity_guidance_scale 3）、IC-LoRA と MoGe、2 段サンプリング（半解像度 → LatentUpsampler x2）、ManualSigmas
-- **モデルファイル名は利用者の ComfyUI 環境依存**のため、設定ページ（`GET/PUT /api/models`）で上書き可能。既定値は各テンプレートの値。対象は UNETLoader.unet_name / CLIPLoader.clip_name / CLIPVisionLoader.clip_name / VAELoader.vae_name / CheckpointLoaderSimple.ckpt_name / LTXVAudioVAELoader.ckpt_name / LTXAVTextEncoderLoader.text_encoder・ckpt_name / LatentUpscaleModelLoader.model_name / LoadMoGeModel.model_name / LoraLoaderModelOnly.lora_name / LoraLoader.lora_name（§3.4 で削除される画像テンプレートのプレースホルダは除く。LTX 側の固定 LoRA ノードや qwen-image の Lightning LoRA はユーザー LoRA と共存するので上書き対象のまま）
+- 動画側: MiniMax H3 の UNET / CLIP / 映像 VAE / 音声 VAE（`minimax_h3_*` 系。turbo は w4a8 量子化ウェイト + 4step 蒸留 LoRA + Sage Attention / Sol-Attn / SigmaShift / Spectrum）とサンプラー設定
+- **モデルファイル名は利用者の ComfyUI 環境依存**のため、設定ページ（`GET/PUT /api/models`）で上書き可能。既定値は各テンプレートの値。対象は UNETLoader.unet_name / CLIPLoader.clip_name / CLIPVisionLoader.clip_name / VAELoader.vae_name / CheckpointLoaderSimple.ckpt_name / LatentUpscaleModelLoader.model_name / LoadMoGeModel.model_name / LoraLoaderModelOnly.lora_name / LoraLoader.lora_name / MiniMaxH3TurboLoRA.lora_name（§3.4 で削除される画像テンプレートのプレースホルダは除く。テンプレートが持つ固定 LoRA ノード（qwen-image の Lightning LoRA、MiniMax H3 turbo の 4step 蒸留 LoRA）はユーザー LoRA と共存するので上書き対象のまま）
 - **モデルの指定は接続先ごと**（SPEC §5）: `Settings.model_overrides` / `model_choices` は `{"<comfy_target>": {"<スロットキー>": …}}` の 2 段で持つ。どのファイルが在るかは ComfyUI の環境ごとに違うため。`GET/PUT /api/models` は `?target=`（PUT はボディの `target`）で対象環境を選び、省略すると現在の接続先。**書き込みは選んだ環境だけ**で他の環境の指定は残る。ジョブ実行・`/api/options` の `model_slots`・エージェントの検証はすべて「現在の接続先」の値（`Settings.overrides_for()` / `choices_for()`）を使う。接続先を分ける前の設定（1 組だけ）は読み込み時に**3 環境すべてへ複製**される（`config._per_target`）: 分けた瞬間に指定が消えて既定モデルで走り出すのを避けるため
 - 上書きキーは**ワークフロー ID でスコープ**する: `"<workflow_id>/<node_id>.<field>": "<ファイル名>"`。テンプレート間で同じノード ID（例: `340:317` が ia2v と id_lora の両方にある）が衝突しないため。旧レイアウトの非スコープキーは無視される（マイグレーション不要）
 - **実行ごとのモデル切り替え**: 同じキー形式で「そのスロットで選べるファイル名」を設定に持てる（`Settings.model_choices`、`GET/PUT /api/models` で読み書き）。既定値（`model_overrides` → 無ければテンプレート値）と合わせて **2 件以上**になったスロットは *switchable* とみなし、`GET /api/options` の `model_slots`（キー・ラベル・既定値・候補一覧）に出す。ジョブは `model_overrides`（`JobCreate` / `JobContinue` のフィールド）で 1 回ぶんだけ差し替えられ、実行時に設定の既定値の上へマージされる（`jobs.run_job`）。検証（`models.model_override_problem`、Web UI とエージェントで共通）は「キーが `model_fields()` に存在」「そのジョブが走らせるワークフロー（`models.job_workflow_ids`）に属する」「値が候補（既定値を含む）に入っている」を満たさないものを 422 で拒否する。再実行は params ごと引き継ぎ、続き生成は動画ワークフローぶんのキーだけを引き継ぐ（`workflow.scoped_model_overrides`）
@@ -410,7 +406,7 @@ Stable Audio の `reprompt`（内蔵 LLM でのプロンプト展開）だけは
   - `runpod` … Pod の中で動く小さな API（`deploy/runpod/model_api.py`、`127.0.0.1:8190`。caddy が ComfyUI と同じ認証で `/studio/models/*` だけを通す）に `POST /download` で依頼し、`GET /downloads` を 2 秒ごとにポーリングして**ローカルと同じ WS フレーム**に変換して流す。アプリを再起動しても Pod 側は走り続けるので、`GET /api/models/downloads?target=runpod` は Pod の一覧を取り込んで見張りを再開する。Pod が古いイメージ（この API を持たない）なら 404 を「イメージを作り直してください」という 400 にして返す
   - `comfy_cloud` … ファイルシステムに触れないので 400（モデルは Comfy Cloud 側の管理）
   - **一括ダウンロード**（[全DL]、`POST /api/models/download-all`）: 選んだ環境の `/object_info` と比べて未検出、かつ `model_download_urls` に URL があるものをまとめて開始する。対象はワークフローの各スロットの実効値・候補リストと、その環境の LoRA 登録。URL が無いものは `missing_urls` として返して UI が知らせる。ComfyUI に繋がらないときは 400（何が足りないか判定できないため）
-  - 置き場所は `class_type`＋入力フィールドから決める（`workflow.MODEL_SUBFOLDERS` → `ModelField.subfolder`）: checkpoints = CheckpointLoaderSimple.ckpt_name / LTXVAudioVAELoader.ckpt_name / LTXAVTextEncoderLoader.ckpt_name、diffusion_models = UNETLoader.unet_name、text_encoders = CLIPLoader.clip_name / DualCLIPLoader.clip_name1・clip_name2 / LTXAVTextEncoderLoader.text_encoder、clip_vision = CLIPVisionLoader.clip_name、vae = VAELoader.vae_name、loras = LoraLoader.lora_name / LoraLoaderModelOnly.lora_name / MiniMaxH3TurboLoRA.lora_name、latent_upscale_models = LatentUpscaleModelLoader.model_name、geometry_estimation = LoadMoGeModel.model_name。未知のローダーは空（＝ UI で入力させる。当てずっぽうに置いても ComfyUI からは見えない）
+  - 置き場所は `class_type`＋入力フィールドから決める（`workflow.MODEL_SUBFOLDERS` → `ModelField.subfolder`）: checkpoints = CheckpointLoaderSimple.ckpt_name、diffusion_models = UNETLoader.unet_name、text_encoders = CLIPLoader.clip_name / DualCLIPLoader.clip_name1・clip_name2、clip_vision = CLIPVisionLoader.clip_name、vae = VAELoader.vae_name、loras = LoraLoader.lora_name / LoraLoaderModelOnly.lora_name / MiniMaxH3TurboLoRA.lora_name、latent_upscale_models = LatentUpscaleModelLoader.model_name、geometry_estimation = LoadMoGeModel.model_name。未知のローダーは空（＝ UI で入力させる。当てずっぽうに置いても ComfyUI からは見えない）
   - `POST /api/models/download` は保存先を検証（`..` / 絶対パス / パス区切りを拒否し、`resolve()` 後に models ディレクトリ配下であることを確認）してからバックグラウンドタスクを起こす。httpx のストリームをチャンクで `<ファイル名>.part` に書き、完走したときだけ本来の名前に `rename` する（失敗・中断時は `.part` を削除）。進捗は WS `/api/ws` に `type: "model_download"` として流れる。同じファイル名の同時ダウンロードは 409
   - 認証は URL のホストで出し分ける: huggingface.co / hf.co（サブドメイン含む）は `Settings.hf_token`、civitai.com は `Settings.civitai_api_key` を `Authorization: Bearer …` として付ける（未設定なら付けない）。**リダイレクトは httpx に任せず自分で追う**（最大 10 ホップ、相対 `Location` は urljoin で解決、301/302/303/307/308 を GET のまま追う）: クライアント既定ヘッダに認証を載せると転送先の別ホストにトークンが漏れるため、ホップごとに URL を再検証して認証ヘッダを計算し直し、そのリクエストにだけ渡す（HF → `*.hf.co` の CDN には付き、無関係なホストには付かない）。URL はファイル名ごとに `Settings.model_download_urls` へ保存する（同じファイルが複数スロットに出るため、キーはスロットではなくファイル名）
   - 保存先は**環境変数 `COMFY_MODELS_DIR` だけ**が決める（設定 `runtime/config.json` には持たない）。UI からパスを入れられても、Docker で同じ絶対パスをマウントしていなければ書けないため。`.env` に書けば `run.sh`（ホスト実行、`.env` を読んで `export`）と `docker compose`（同一パスのマウント＋`environment:` で受け渡し）の双方に効く。設定に残すのは `hf_token` / `civitai_api_key` / `model_download_urls` だけで、旧バージョンが書いた `comfy_models_dir` キーは読み込み時に捨てる
@@ -438,7 +434,7 @@ ID がズレた場合は起動時の検証と `GET /api/health` が検知して�
 ### 3.4 複数 LoRA の動的注入
 
 LoRA は**登録時に対象（`target`）を選ぶ**: `image` なら画像ワークフロー、
-`video` なら動画ワークフロー（LTX 2.3）に注入される。ジョブは両者を別フィールドで持つ
+`video` なら動画ワークフローに注入される。ジョブは両者を別フィールドで持つ
 （`loras` / `trigger_text` と `video_loras` / `video_trigger_text`）。
 音声ワークフローは LoRA チェーンを持たないので、`mode: "audio"` に LoRA を指定すると 422 になる。
 
@@ -447,7 +443,7 @@ LoRA は**登録時に対象（`target`）を選ぶ**: `image` なら画像ワ�
 `loras` に選択中の `image_workflow` と違うファミリーが混ざったジョブは 422 で拒否する
 （`models.image_lora_family_problem`）。フォームの LoRA ピッカーも同じファミリーのものだけを出し、
 エージェントのシステムプロンプトには LoRA ごとのファミリーが明記される。
-動画 LoRA は LTX 2.3 しか無いのでファミリーを使わない。
+動画 LoRA はファミリーを使わない。
 
 #### 3.4.1 画像 LoRA チェーン
 
@@ -476,24 +472,20 @@ LoRA は**登録時に対象（`target`）を選ぶ**: `image` なら画像ワ�
 
 #### 3.4.2 動画 LoRA チェーン
 
-LTX 2.3 の各テンプレートは動作に必須の固定 LoRA（distilled-1.1 / talkvid ID-LoRA /
-IC-LoRA）を持つので、ユーザー LoRA は**その後段**へ同じ仕組みで直列挿入する。
-`LoraChain` はプレースホルダを持たず、「`head` の MODEL 出力を読んでいた入力（`consumers`）を
-チェーン末尾に付け替える」という 1 本の辺の切り開きとして表現する:
+動画テンプレートが動作に必須の固定 LoRA を持つ場合、ユーザー LoRA は**その後段**へ
+同じ仕組みで直列挿入する。`LoraChain` はプレースホルダを持たず、「`head` の MODEL 出力を
+読んでいた入力（`consumers`）をチェーン末尾に付け替える」という 1 本の辺の切り開きとして
+表現する。
 
-| ワークフロー | head（挿入位置の直前） | consumers（付け替える入力） |
-|---|---|---|
-| `ltx2_3_t2v` | `267:232` distill LoRA | `267:213` / `267:231` CFGGuider.model |
-| `tx2_3_i2v` | `320:285` distill LoRA | `320:282` / `320:314` CFGGuider.model |
-| `tx2_3_ia2v` | `340:293` distill LoRA | `340:290` / `340:315` CFGGuider.model |
-| `ltx2_3_id_lora` | `340:293` distill LoRA | `340:290` CFGGuider.model / `340:346` ID-LoRA.model |
-| `ltx2_3_flf2v` | `129:300` distill LoRA | `129:116` CFGGuider.model |
-| `ltx2_3_ic_lora_image` / `_motion` | `129:195` IC-LoRA | `129:704` KSampler.model |
+**現在、`lora_chain` を宣言する動画ワークフローは無い**（MiniMax H3 の 5 種はどれも
+ユーザー LoRA を挿せる場所を持たない）ので、`video_loras` を指定したジョブはすべて 422 で
+拒否される（`models.video_lora_problem`）。フォームも欄ごと出さない
+（`/api/options` の `accepts_video_loras` が false）。仕組み自体は画像側と共通なので、
+チェーンを持つ動画モデルを足せばそのまま効く。
 
 - ノード ID は `app_video_lora_0`, `app_video_lora_1`, … と採番する
 - 0 件選択時は consumers が `head` を直接指す（テンプレートと同一のグラフ）
-- テキストエンコーダ側の Gemma `LoraLoader` や `GetICLoRAParameters` は付け替えない
-  （MODEL 出力を使わない／IC-LoRA 自体のパラメータ取得に使うため）
+- MODEL 出力を使わないテキストエンコーダ側の `LoraLoader` などは付け替えない
 - 動画側テンプレートには StringConcatenate が無いので、トリガーワードは
   `video_trigger_text`（空なら選択 LoRA の trigger_word 連結）のうち**動画プロンプトに
   未出現の語だけ**をプロンプト文字列の先頭に前置する（判定は画像側と同じ単語境界一致）
@@ -562,16 +554,16 @@ Cookie ベースの非公式 API は規約リスクがあるため**使わない
 - 推論設定は Steps 8 / CFG 1 / Euler / Simple（モデル配布ページの推奨値、ワークフロー側で固定済み）
 - ネガティブプロンプトは不使用（ConditioningZeroOut で代替済み）
 
-**動画プロンプト（SexGod PinkCherry LTX 2.3 / i2v、TE は Gemma-3 12B）**
+**動画プロンプト（汎用の VIDEO PROMPT SPEC。モデル固有のガイドがあるワークフローではそちらが優先）**
 
-- LTX 2.3 公式ガイド準拠: **1 つの流れる段落・4〜8 文**。含める要素は「被写体 / 動作 / 環境 / 照明 / カメラの動き / 音声」。i2v では「開始フレームからの続き」を書く（例: "Starting from the given first frame, …"）
+- **1 つの流れる段落・4〜8 文**。含める要素は「被写体 / 動作 / 環境 / 照明 / カメラの動き / 音声」。i2v では「開始フレームからの続き」を書く（例: "Starting from the given first frame, …"）
 - 含めるべき要素:
   1. 被写体と状況の要約（開始フレームと矛盾しないこと）
   2. **動きの推移**（何がどう動くか、テンポ・強度の変化）
   3. 身体・表情のリアクション描写
   4. カメラワーク（static / handheld tremble / ショットスケール / focus 対象など）
-  5. **音声の記述**（LTX 2.3 は音声も同時生成。環境音・呼吸・声を必ず文中に含める。**セリフは引用符で囲み、言語・アクセント・声質を形容できる**）
-- **リファレンス音声 + ID-LoRA（talkvid）は口の形とタイミングを駆動する（リップシンク）**。comfy.org のワークフロー解説は `[VISUAL]` / `[SPEECH]` / `[SOUNDS]` のタグ形式プロンプトを推奨しており、PinkCherry 作者実例の自然文形式と合わせて**2 種のテンプレートを UI で切替可能にする**（既定: 自然文）
+  5. **音声の記述**（動画モデルは音声も同時生成する。環境音・呼吸・声を必ず文中に含める。**セリフは引用符で囲み、言語・アクセント・声質を形容できる**）
+- プロンプトの書式は `[VISUAL]` / `[SPEECH]` / `[SOUNDS]` のタグ形式と自然文形式の**2 種を UI で切替可能にする**（既定: 自然文）
 - 継続時間は秒数設定に従う。1 カット（continuous shot）前提で書く
 - ネガティブプロンプトは Grok に生成させず、プリセット選択制（§3.1: 現行値 / モデル作者版、編集可）
 - モデルが学習済みの動作カテゴリ（配布ページの trained actions リスト）を Grok のシステムプロンプトに語彙リストとして与え、それに寄せた表現を優先させる
@@ -848,7 +840,7 @@ CREATE TABLE library (
   変更なし、`"none"` を送ると未分類に戻す（`tags: []` と同じ考え方）。この分類は後段の
   キャラクターシート合成で `character` を大パネル、`background` / `prop` を小パネルに割り当てる
 - **リファレンスシートの合成**（`POST /api/library/sheet`、`app/sheets.py`）: 棚の画像素材を選ぶと、
-  IC-LoRA の動画ワークフロー（`ltx2_3_ic_lora_image`）が参照入力に取る「複数パネルを並べた 1 枚」を
+  参照入力に「複数パネルを並べた 1 枚」を取るワークフロー向けのシートを
   自動で組み立てる。body は `{item_ids, name?, width?, height?}` で、**`item_ids` の並び順に意味がある**
   （左上から詰める）。1〜8 枚（`sheets.MAX_ITEMS`）、すべて `kind='image'`。存在しない id・画像以外・
   0 枚・上限超過・大きすぎるキャンバス（1 辺 4096px 超）・読めない画像は **400**。
@@ -885,7 +877,7 @@ CREATE TABLE library (
   `library_search` は絞り込みに `kind` / `category` を取り、検索結果の各行には分類を
   `（image / character）`（未分類は `none`）の形で出す。`library_sheet` は `add_sheet` をそのまま
   呼ぶアクションで、成功すると `library_sheet_added` イベントにシートの id・パス・URL が入り、
-  そのパスを `ltx2_3_ic_lora_image` の `source_image` に指定して動画化する流れまでを
+  そのパスをジョブの `source_image` に指定して動画化する流れまでを
   システムプロンプトで指示している（承認不要の即時アクション）
 
 ---
@@ -931,7 +923,7 @@ SPA 1 画面 + 履歴。ダークテーマの生成系ツールらしい見た�
 - 進捗は **ワークフロー全体を通した 0→100%**（ノード単位の 0→100% の繰り返しではない）。ComfyUI の WS イベントから、`executing` で通過したノードと `execution_cached` のノードを「完了」、実行中ノードの `progress`（`value/max`）を端数として数え、`(完了ノード数 + 端数) / ワークフローのノード総数` を 1 ステージ分の割合とする。ノードの重みは均等。「画像＋動画」の 2 ステージジョブでは画像が 0〜50%、動画が 50〜100%（一般には `(stage_index + 割合) / ステージ数`）。値は単調非減少で、後退しない。進捗を持たないフレーム（メッセージだけの通知）が来てもバーは直前の値を保つ
 - 実行中でもキュー追加可能（ジョブキュー表示）
 - **入力リソースは「ライブラリから選択」「履歴から選択」で使い回せる**: 開始フレーム / 編集元画像・最後のフレーム・参照動画・リファレンス音声の各欄に 2 つのボタンを置く。[ライブラリから選択] は取っておいた素材の一覧（`LibraryPickerModal`、§7.2）で、選ぶと `/library/…` URL をそのまま欄に入れる（配信済みなのでコピーしない）。モーダル内から素材のアップロード追加・リネーム・タグ編集・削除もできる。一覧は `GET /api/library` から 50 件ずつ読み、**検索ボックス（名前・タグの部分一致）・カテゴリのプルダウン（すべて / キャラクター / 背景 / 小物 / 未分類）・タグチップでの絞り込み**、[さらに表示] での continue 読み込みに対応する（絞り込みとページングはサーバー側）。素材ごとのカテゴリはタイル下のプルダウンでその場で変えられ、モーダルからのアップロードには絞り込み中のカテゴリがそのまま付く
-- **リファレンスシートを「ライブラリから作成」**: リファレンスシートを入力に取る動画ワークフロー（`ltx2_3_ic_lora_image`）を選んでいるときだけ、画像欄に [ライブラリから作成] を足す（`SheetBuilderModal`）。押すと `LibraryPickerModal` の複数選択モード（タイルに選択順のバッジが出る）で画像素材を **2〜8 枚**選べ、[この順で作成] で `POST /api/library/sheet`（§7.2）を呼ぶ。シートの大きさは選択中のアスペクト比から長辺 1280px で決める（`form.sheetSize`。プリセットが読めなければ 1280x720）。出来上がったシートはそのまま画像欄に入り、ライブラリにも残る。作成中はボタンを [作成中…] にし、失敗はモーダル内にそのまま出す
+- **リファレンスシートを「ライブラリから作成」**: リファレンスシート 1 枚を `source_image` に取る動画ワークフロー（`form.REFERENCE_SHEET_WORKFLOWS`。現在は該当なしなので UI には出ない）を選んでいるときだけ、画像欄に [ライブラリから作成] を足す（`SheetBuilderModal`）。押すと `LibraryPickerModal` の複数選択モード（タイルに選択順のバッジが出る）で画像素材を **2〜8 枚**選べ、[この順で作成] で `POST /api/library/sheet`（§7.2）を呼ぶ。シートの大きさは選択中のアスペクト比から長辺 1280px で決める（`form.sheetSize`。プリセットが読めなければ 1280x720）。出来上がったシートはそのまま画像欄に入り、ライブラリにも残る。作成中はボタンを [作成中…] にし、失敗はモーダル内にそのまま出す
 - **マルチモーダル参照の欄**（MiniMax H3 r2v、§2.2 / §3.1）: 参照入力を宣言しているワークフローを `mode: "i2v"` で選んだときだけ「マルチモーダル参照（開始フレームとは排他）」セクションを出す。参照画像 / 参照動画 / 参照音声の欄がそれぞれ「n / 上限 件」と [アップロード] [ライブラリから選択] [履歴から選択] を持ち、選んだ素材は**選んだ順**に番号つきで積み上がる（並び順がそのままグラフに渡る順序）。各行の [外す] で個別に取り消せる。ライブラリのモーダルは複数選択モード（`LibraryPickerModal` の `selectedIds`）で開き、選ぶたびに欄へ出し入れしてモーダルは開いたまま、[選択を終える] で閉じる。上限に達したら追加の操作を無効化する。開始フレーム / 最後のフレームと同時に入っている場合と `mode: "full"` の場合は、送信前にフォームがその場でエラーを出す（バックエンドの 422 と同じ理由、`form.validateForm`）
 - **リファレンス音声はライブラリに一本化**: `assets/audio` のプルダウンは廃止し、[ライブラリから選択] / [履歴から選択] / [アップロード]（アップロードはそのままライブラリ登録）と、選択中の名前 + プレビューだけを出す。LoRA の `default_audio` などが指す従来の `/assets/…` も入力としては引き続き有効
 - [履歴から選択] は過去ジョブの出力から選ぶ（`HistoryPickerModal`）。**検索ボックス**でジョブの文言（動画 / 画像 / 音声プロンプト → 最初の指示）に部分一致するものだけに絞れる（ジョブは全件フロントにあるのでクライアント側で絞る）。候補は完了ジョブのみを新しい順に並べ、欄の種別で絞る（画像欄 = 生成画像とラストフレームの両方（ラベルで区別）、動画欄 = 生成動画、音声欄 = 音声ジョブの出力）。生成物は `outputs/` にあって `assets/` の外なので、選ぶと fetch → `POST /api/assets/{kind}` で assets へコピーしてから欄に入れる。モーダル内には独自の「🫣 NSFW表示」チェックボックスがあり、初期値はヘッダーのグローバルトグルに従うが、ここでの切り替えは `sessionStorage` に残さない（この画面かぎり）。オフのあいだは NSFW ジョブを一覧に出さない。Esc / 背景クリックで閉じる
@@ -1000,11 +992,21 @@ WS   /api/ws                     … 進捗配信（`type: "job"` / `"agent"` / 
 GET  /outputs/…                  … 静的配信（画像/動画/音声）
 ```
 
+### 外部公開 API（`/api/v1`）
+
+内部 API（`/api/…`）とは別系統に、外部のエージェント向けの API を持つ。公開範囲は
+Grok エージェントのスタジオ操作（§ドラマスタジオ / `app.agent_protocol.STUDIO_ACTIONS`）と
+同じで、認証は設定 `external_api_key` と突き合わせる `X-API-Key` ヘッダ。キーが空の
+あいだは `/api/v1` ごと 404 を返す（既定は無効）。実体は `app.studio` / `app.jobs` を
+呼ぶだけの薄いラッパー（`backend/app/routers/external.py`）で、内部 API・UI・
+エージェント機構には影響しない。設計・エンドポイント一覧・Cloudflare 越しの公開手順は
+[`docs/EXTERNAL-API.md`](EXTERNAL-API.md)。
+
 ### ディレクトリ構成
 
 ```
 backend/            FastAPI アプリ
-  app/routers/      health / settings / loras / models_config / model_download / assets / options / chat / jobs / agent
+  app/routers/      health / settings / loras / models_config / model_download / assets / options / chat / jobs / agent / studio / canvas / external
   app/comfy.py      ComfyUI クライアント（/object_info, /upload/image, /prompt, /ws, /history, /view）
   app/workflows.py  ワークフロー登録簿と注入マニフェスト（ノード ID 直指定）+ プロンプト用カタログ
   app/workflow.py   テンプレートへのパラメータ注入・LoRA チェーン動的注入・解像度計算
@@ -1025,7 +1027,6 @@ docs/SPEC.md        仕様書
 docs/AGENT-MODE.md  エージェントモード設計書
 workflow/           ComfyUI ワークフロー（API フォーマット）テンプレート ※実行の正
   image/            krea2/ anima/ z-image/ qwen-image/（モデルファミリーごと）
-  video/ltx2.3/     t2v / i2v / ia2v / id_lora / flf2v / ic_lora_image / ic_lora_motion
   video/minimax-h3/ minimax_h3_t2v / minimax_h3_i2v / minimax_h3_r2v（音声つき）
                     minimax_h3_i2v_turbo / minimax_h3_r2v_turbo（4 ステップ版）
   audio/            ace_step1_5_xl_sft.json / stable_audio_3_medium_base.json
@@ -1042,7 +1043,7 @@ runtime/            config.json / grok 作業ディレクトリ（プロンプ�
 
 1. **Grok Build CLI 依存**: `grok` CLI のインストールとサブスクリプションでのサインインが前提。CLI はベータ段階のため出力形式・挙動が変わる可能性があり、LLM クライアントは抽象化して公式 API / ローカル LLM に差し替え可能に設計する。NSFW プロンプト生成を Grok が拒否した場合のリトライ指示（システムプロンプト側の調整）とエラー表示も用意する
 2. **コンテンツ**: 本アプリは成人向けコンテンツをローカル生成する個人利用ツール。生成物・プロンプトはすべてローカル保存のみで外部送信しない。LoRA は実在人物の無断利用を行わないこと（利用者責任）
-3. **ComfyUI 依存**: ResolutionSelector / ComfySwitchNode / CustomCombo / LTXV 系 / ComfyMath / ResizeImage 系 / ResizeAndPadImage / MoGe 系 / LoadVideo / Video Slice 等の custom nodes が導入済みである前提。起動時と `/api/health` で `/object_info` に対し **`workflow/` 配下の全テンプレートに含まれる class_type** の存在チェックを行い、不足があれば UI に警告する（どのワークフローを使うか実行前には分からないため、集合は全テンプレート横断）。同時にマニフェストとテンプレートの整合性も検証する（§3.0）
+3. **ComfyUI 依存**: ResolutionSelector / ComfySwitchNode / CustomCombo / MiniMaxH3 系 / ComfyMath / ResizeImage 系 / ResizeAndPadImage / MoGe 系 / LoadVideo 等の custom nodes が導入済みである前提。起動時と `/api/health` で `/object_info` に対し **`workflow/` 配下の全テンプレートに含まれる class_type** の存在チェックを行い、不足があれば UI に警告する（どのワークフローを使うか実行前には分からないため、集合は全テンプレート横断）。同時にマニフェストとテンプレートの整合性も検証する（§3.0）
 4. **プロンプト拡張ブランチのモデルファイル**: 各動画テンプレートは prompt enhance 用に `gemma-3-12b-it-abliterated_lora`（`LoraLoader`）を参照している。アプリは enhance を常に false にするので実行はされないが、ComfyUI は投入グラフ全体の入力を検証するためファイル自体は存在する必要がある。無い場合は設定ページの「モデル」タブで別名に差し替えるか、同タブの [DL] でダウンロードする（§3.3）
 5. モデル既定値（steps/CFG/sigmas 等）は配布ページ推奨値でワークフローに固定済みのため、アプリからは変更しない（上級者向けに将来開放余地あり）
 
