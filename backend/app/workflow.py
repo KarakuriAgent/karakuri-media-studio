@@ -22,6 +22,7 @@ from __future__ import annotations
 import copy
 import math
 import re
+from collections.abc import Iterable
 from typing import Any
 
 from .models import GenerationParams, LoraRef, ModelField, ModelSlot
@@ -831,6 +832,52 @@ def all_required_class_types() -> set[str]:
     for spec in comfy_specs():
         types |= required_class_types(load_template(spec))
     return types - OPTIONAL_CLASS_TYPES
+
+
+#: spec id -> テンプレートが :data:`app.workflows.OPTIONAL_CLASS_TYPES` を使うか。
+#: テンプレートは読み取り専用なので、プロセス内で 1 回読めば十分（毎リクエストの
+#: ``/api/options`` でファイルを開き直さないためのキャッシュ）。
+_optional_nodes_cache: dict[str, bool] = {}
+
+
+def uses_optional_class_types(spec: WorkflowSpec) -> bool:
+    """``spec`` のテンプレートが任意のカスタムノードを 1 つでも使うか。
+
+    :data:`app.workflows.OPTIONAL_CLASS_TYPES` は MiniMax H3 の turbo / opt だけが
+    使うノード群なので、ここが真になるワークフローは「カスタムノードが入って
+    いない環境では動かない」ことを意味する。ComfyUI のテンプレートを持たない
+    バックエンド（Grok Build CLI など）は常に偽。
+    """
+    cached = _optional_nodes_cache.get(spec.id)
+    if cached is None:
+        if spec.backend != "comfyui":
+            cached = False
+        else:
+            cached = bool(
+                required_class_types(load_template(spec)) & OPTIONAL_CLASS_TYPES
+            )
+        _optional_nodes_cache[spec.id] = cached
+    return cached
+
+
+def supported_on_target(spec: WorkflowSpec, comfy_target: str) -> bool:
+    """接続先 ``comfy_target`` でそのワークフローを選ばせてよいか。
+
+    Comfy Cloud には任意のカスタムノードを入れられないので、それを使う
+    ワークフロー（MiniMax H3 turbo / opt）はフォームの選択肢からもエージェントの
+    カタログからも落とす。local / runpod は自前の ComfyUI なので従来どおり全件出す
+    （入っていなければ実行時に ComfyUI 側でエラーになる）。
+    """
+    if comfy_target != "comfy_cloud":
+        return True
+    return not uses_optional_class_types(spec)
+
+
+def specs_for_target(
+    specs: Iterable[WorkflowSpec], comfy_target: str
+) -> list[WorkflowSpec]:
+    """``specs`` から接続先で使えないものを落とす（:func:`supported_on_target`）。"""
+    return [spec for spec in specs if supported_on_target(spec, comfy_target)]
 
 
 def validate_manifests() -> None:

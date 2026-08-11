@@ -112,7 +112,7 @@
   },
   "129": {
     "inputs": {
-      "noise_seed": 157368968253448
+      "noise_seed": 168866841893410
     },
     "class_type": "RandomNoise",
     "_meta": {
@@ -147,7 +147,7 @@
   "124": {
     "inputs": {
       "scheduler": "simple",
-      "steps": 4,
+      "steps": 20,
       "denoise": 1,
       "model": [
         "152",
@@ -161,10 +161,7 @@
   },
   "136": {
     "inputs": {
-      "prompt": [
-        "138",
-        0
-      ],
+      "prompt": "Editorial tech product film. The transparent gaming mouse from <Picture 1> in its original scene: a pitch-black studio void with a dark, subtle reflective surface, lit by dramatic duotone vibrant blue and warm neon orange rim lighting, deep soft shadow falloff into pure black. Monochromatic dark palette with electric blue and amber accents. Material motif: glowing internal metallic micro-components and glossy acrylic refractions. The environment is constant throughout.\nSHOT 1: The scene opens exactly on image 1, the mouse resting confidently on the dark surface; the blue and orange lights slowly pulse brighter, refracting deeply through the transparent acrylic shell as the camera executes a slow, deliberate push-in to reveal the intricate circuitry.\nSHOT 2: Cut to an extreme macro profile of the ridged scroll wheel and layered internal micro-components; the camera glides slowly along the side as a sharp beam of warm orange light sweeps across the metallic textures, contrasting perfectly against the deep blue ambient glow.\nSHOT 3: Cut to a low-angle beauty shot: the mouse levitates weightlessly a few centimeters above the dark reflective surface, rotating in a slow, precise orbit; the duotone lighting flares gently along the glassy transparent edges before fading slowly into a sleek silhouette.\nAudio: deep pulsing sub-bass room tone, sharp tactile mechanical clicks, a sweeping glassy whoosh on cuts, and a rising electronic swell that resolves to near-silence on the final fade. ",
       "width": [
         "115",
         0
@@ -177,7 +174,6 @@
         "131",
         1
       ],
-      "ref_image_size": "match",
       "clip": [
         "128",
         0
@@ -186,35 +182,23 @@
         "119",
         0
       ],
-      "audio_vae": [
-        "120",
+      "first_frame": [
+        "114",
         0
       ],
-      "ref_images.ref_image_0": [
-        "137",
-        0
-      ],
-      "ref_videos.ref_video_0": [
-        "141",
-        0
-      ],
-      "ref_video_audios.ref_video_audio_0": [
-        "141",
-        1
-      ],
-      "ref_audios.ref_audio_0": [
-        "142",
+      "last_frame": [
+        "116",
         0
       ]
     },
-    "class_type": "MiniMaxH3ReferenceToVideo",
+    "class_type": "MiniMaxH3ImageToVideo",
     "_meta": {
-      "title": "MiniMaxH3ReferenceToVideo"
+      "title": "MiniMaxH3ImageToVideo"
     }
   },
   "127": {
     "inputs": {
-      "unet_name": "minimax_h3_ref2va_pruned_w4a8_mixed.safetensors",
+      "unet_name": "minimax_h3_fl2va_pruned_w4a8_mixed.safetensors",
       "weight_dtype": "default"
     },
     "class_type": "UNETLoader",
@@ -222,24 +206,15 @@
       "title": "UNETLoader"
     }
   },
-  "138": {
-    "inputs": {
-      "value": "Bold comic-book ink style, heavy linework, red and blue-black palette, night city. Use <Picture 2> and <Picture 1> as reference frames and <Audio 1> exactly as it is.\nCUT 1: top-down view of the little boy superhero on the rooftop — red cape fluttering in the wind, hands planted on his hips, freckles and a cocky grin as he looks straight up into the camera. The camera slowly descends toward him as he delivers his line — as he speaks, comic-book graphic overlay text word by word in sync with his voice: \"GET READY TO\" - \"MEET\" — \"YOUR\" — \"MAKER\" — huge jagged comic lettering, white with heavy black outlines and red drop shadows, tilted at scrappy angles, until the three words hang stacked in the air above him between his face and the lens.\nTRANSITION: a violent WHIP PAN off the rooftop that SMEARS the floating words away with it, motion-streaked —\nCUT 2: low hero angle on the colossal black mech-kaiju towering over the skyline as it rears back and unleashes a GIANT terrifying ROAR — jaws wide with fangs, red eyes and chest-core flaring blinding bright, blue lightning arcing off its head, the roar's shockwave rippling dust and rattling windows down the buildings, comic-style speed-lines and ink splatter bursting from the impact of the sound. It leans INTO the camera as the roar peaks. Hold on the roar."
-    },
-    "class_type": "PrimitiveStringMultiline",
-    "_meta": {
-      "title": "Input Text (Prompt)"
-    }
-  },
   "115": {
     "inputs": {
-      "aspect_ratio": "16:9 (Widescreen)",
+      "aspect_ratio": "1:1 (Square)",
       "megapixels": 0.4,
       "multiple": 32
     },
     "class_type": "ResolutionSelector",
     "_meta": {
-      "title": "Resolution Selector (Size)"
+      "title": "ResolutionSelector"
     }
   },
   "131": {
@@ -266,43 +241,22 @@
       "title": "CLIPLoader"
     }
   },
-  "137": {
+  "114": {
     "inputs": {
-      "image": "red_superboy_on_city_roof.png"
+      "image": "transparent_rgb_gaming_mouse.png"
     },
     "class_type": "LoadImage",
     "_meta": {
       "title": "LoadImage"
     }
   },
-  "140": {
+  "116": {
     "inputs": {
-      "file": "reference_clip.mp4"
+      "image": "transparent_rgb_gaming_mouse.png"
     },
-    "class_type": "LoadVideo",
+    "class_type": "LoadImage",
     "_meta": {
-      "title": "LoadVideo (reference)"
-    }
-  },
-  "141": {
-    "inputs": {
-      "video": [
-        "140",
-        0
-      ]
-    },
-    "class_type": "GetVideoComponents",
-    "_meta": {
-      "title": "GetVideoComponents (reference)"
-    }
-  },
-  "142": {
-    "inputs": {
-      "audio": "reference_track.mp3"
-    },
-    "class_type": "LoadAudio",
-    "_meta": {
-      "title": "LoadAudio (reference)"
+      "title": "LoadImage (last frame)"
     }
   },
   "132": {
@@ -311,22 +265,7 @@
     },
     "class_type": "PrimitiveFloat",
     "_meta": {
-      "title": "Float (Duration)"
-    }
-  },
-  "150": {
-    "inputs": {
-      "lora_name": "minimax_h3_turbo_v4_step600_ema.safetensors",
-      "strength": 1,
-      "low_vram": false,
-      "model": [
-        "127",
-        0
-      ]
-    },
-    "class_type": "MiniMaxH3TurboLoRA",
-    "_meta": {
-      "title": "MiniMaxH3TurboLoRA"
+      "title": "Float (duration)"
     }
   },
   "151": {
@@ -334,7 +273,7 @@
       "sage_attention": "auto",
       "allow_compile": false,
       "model": [
-        "150",
+        "127",
         0
       ]
     },

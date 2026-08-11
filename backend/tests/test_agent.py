@@ -2565,3 +2565,104 @@ def test_selects_on_a_workflow_without_them_is_rejected(env):
     with pytest.raises(agent_protocol.ActionError) as excinfo:
         agent_protocol.parse_action(_plan(env, selects={"dance_style": "K-Pop 韩舞"}))
     assert "dance_style" in str(excinfo.value)
+
+
+# --------------------------------------------------------------------------
+# 接続先ごとの MiniMax H3 の版の選び分け（local だけ opt を勧める）
+# --------------------------------------------------------------------------
+
+#: カスタムノード（`app.workflows.OPTIONAL_CLASS_TYPES`）前提のワークフロー
+CUSTOM_NODE_WORKFLOWS = (
+    "minimax_h3_i2v_turbo",
+    "minimax_h3_r2v_turbo",
+    "minimax_h3_i2v_opt",
+    "minimax_h3_r2v_opt",
+)
+
+
+def _set_target(monkeypatch, target: str) -> None:
+    monkeypatch.setattr(
+        config,
+        "_settings",
+        config.load_settings().model_copy(update={"comfy_target": target}),
+    )
+
+
+def test_the_catalog_has_no_target_section_without_a_target():
+    """既存の呼び出し（接続先を渡さない）では節ごと出ない。"""
+    section = prompts.workflow_catalog_section()
+    assert "この環境の接続先" not in section
+    assert "# VIDEO WORKFLOWS" in section
+
+
+def test_local_prefers_the_opt_workflows():
+    section = prompts.workflow_catalog_section("local")
+    assert "この環境の接続先: `local`" in section
+    target_section = section.split("## この環境の接続先")[1]
+    assert "`minimax_h3_i2v_opt`" in target_section
+    assert "ユーザーがワークフローを名指ししたとき" in section
+
+
+def test_runpod_prefers_the_plain_workflows():
+    section = prompts.workflow_catalog_section("runpod")
+    assert "この環境の接続先: `runpod`" in section
+    assert "`_turbo` / `_opt` は選ばないこと" in section
+    # opt を勧める文言は出ない（カタログの一覧には全ワークフローが載るので、
+    # 判定は接続先の節そのものを見る）
+    target_section = section.split("## この環境の接続先")[1]
+    assert "_opt` 版" not in target_section
+    assert "ユーザーがワークフローを名指ししたとき" in section
+    # 自前の ComfyUI なので一覧からは何も落とさない
+    for workflow_id in CUSTOM_NODE_WORKFLOWS:
+        assert f"`{workflow_id}`" in section
+
+
+def test_comfy_cloud_drops_the_custom_node_workflows_from_the_catalog():
+    """Comfy Cloud ではカスタムノード前提の turbo / opt を列挙ごと出さない。"""
+    section = prompts.workflow_catalog_section("comfy_cloud")
+    assert "この環境の接続先: `comfy_cloud`" in section
+    for workflow_id in CUSTOM_NODE_WORKFLOWS:
+        assert f"`{workflow_id}`" not in section
+    for workflow_id in ("minimax_h3_t2v", "minimax_h3_i2v", "minimax_h3_r2v"):
+        assert f"`{workflow_id}`" in section
+    target_section = section.split("## この環境の接続先")[1]
+    assert "`_turbo` / `_opt` は選ばないこと" in target_section
+    # 名指しなら従う、という但し書きは出さない（この接続先では動かないため）
+    assert "ユーザーがワークフローを名指ししたとき" not in section
+
+
+def test_the_catalog_can_be_limited_to_the_form_choices():
+    """`only` に無い id はカタログに出さない（options の一覧と揃える）。"""
+    section = prompts.workflow_catalog_section("local", {"minimax_h3_i2v"})
+    assert "`minimax_h3_i2v`" in section
+    assert "`minimax_h3_t2v` —" not in section
+
+
+def test_the_session_prompt_follows_the_configured_target(env, monkeypatch):
+    _set_target(monkeypatch, "local")
+    system = start(env)["messages"][0]["content"]
+    assert "この環境の接続先: `local`" in system
+    assert "`minimax_h3_i2v_opt`" in system.split("## この環境の接続先")[1]
+
+    _set_target(monkeypatch, "comfy_cloud")
+    system = start(env)["messages"][0]["content"]
+    assert "この環境の接続先: `comfy_cloud`" in system
+    assert "`_turbo` / `_opt` は選ばないこと" in system
+
+
+def test_the_comfy_cloud_session_prompt_omits_the_custom_node_workflows(
+    env, monkeypatch
+):
+    """VIDEO WORKFLOWS のカタログにも CHOICES にも turbo / opt が出ない。"""
+    _set_target(monkeypatch, "comfy_cloud")
+    system = start(env)["messages"][0]["content"]
+    for workflow_id in CUSTOM_NODE_WORKFLOWS:
+        assert workflow_id not in system
+    for workflow_id in ("minimax_h3_t2v", "minimax_h3_i2v", "minimax_h3_r2v"):
+        assert f"`{workflow_id}`" in system
+
+    # local では従来どおり全件載る
+    _set_target(monkeypatch, "local")
+    system = start(env)["messages"][0]["content"]
+    for workflow_id in CUSTOM_NODE_WORKFLOWS:
+        assert f"`{workflow_id}`" in system

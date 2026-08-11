@@ -10,7 +10,7 @@ from ..models import (
     WorkflowOption,
     WorkflowSelect,
 )
-from ..workflow import MODEL_FIELDS, selectable_model_slots
+from ..workflow import MODEL_FIELDS, selectable_model_slots, specs_for_target
 from ..workflows import (
     DEFAULT_AUDIO_WORKFLOW,
     DEFAULT_IMAGE_WORKFLOW,
@@ -104,6 +104,10 @@ def _workflow_option(spec: WorkflowSpec) -> WorkflowOption:
 async def get_options() -> Options:
     """Form choices. ComfyUI being down is reported inline, never as an HTTP error."""
     settings = load_settings()
+    # 接続先で動かないワークフローは選択肢に出さない: Comfy Cloud には任意の
+    # カスタムノードを入れられないので、それを使う MiniMax H3 turbo / opt が消える
+    # （local / runpod は従来どおり全件）。
+    target = settings.comfy_target
     options = Options(
         comfy_target=settings.comfy_target,
         comfy_url=settings.active_comfy_url(),
@@ -111,9 +115,18 @@ async def get_options() -> Options:
         image_assets=list_assets("image", IMAGE_EXT),
         video_assets=list_assets("video", VIDEO_EXT),
         negative_presets=NEGATIVE_PRESETS,
-        image_workflows=[_workflow_option(spec) for spec in image_specs()],
-        video_workflows=[_workflow_option(spec) for spec in video_specs()],
-        audio_workflows=[_workflow_option(spec) for spec in audio_specs()],
+        image_workflows=[
+            _workflow_option(spec)
+            for spec in specs_for_target(image_specs(), target)
+        ],
+        video_workflows=[
+            _workflow_option(spec)
+            for spec in specs_for_target(video_specs(), target)
+        ],
+        audio_workflows=[
+            _workflow_option(spec)
+            for spec in specs_for_target(audio_specs(), target)
+        ],
         default_video_workflow=DEFAULT_VIDEO_WORKFLOW,
         default_image_workflow=DEFAULT_IMAGE_WORKFLOW,
         default_audio_workflow=DEFAULT_AUDIO_WORKFLOW,

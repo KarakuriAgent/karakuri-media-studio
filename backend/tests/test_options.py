@@ -6,7 +6,12 @@ from fastapi.testclient import TestClient
 from app import comfy, config
 from app.main import app
 from app.routers import assets as assets_router
-from app.workflows import DEFAULT_VIDEO_WORKFLOW, video_specs
+from app.workflows import (
+    DEFAULT_VIDEO_WORKFLOW,
+    audio_specs,
+    image_specs,
+    video_specs,
+)
 
 
 @pytest.fixture
@@ -140,6 +145,56 @@ def test_the_minimax_turbo_workflows_are_offered(client):
         assert "Turbo" in turbo["mode_label"]
         assert turbo["accepts_start_image"] == plain["accepts_start_image"]
         assert turbo["multi_inputs"] == plain["multi_inputs"]
+
+
+#: カスタムノード（`app.workflows.OPTIONAL_CLASS_TYPES`）を使うワークフロー
+CUSTOM_NODE_WORKFLOWS = (
+    "minimax_h3_i2v_turbo",
+    "minimax_h3_r2v_turbo",
+    "minimax_h3_i2v_opt",
+    "minimax_h3_r2v_opt",
+)
+#: それらを外しても残る MiniMax H3 の素の版
+PLAIN_WORKFLOWS = ("minimax_h3_t2v", "minimax_h3_i2v", "minimax_h3_r2v")
+
+
+def _set_target(monkeypatch, target: str) -> None:
+    monkeypatch.setattr(
+        config,
+        "_settings",
+        config.load_settings().model_copy(update={"comfy_target": target}),
+    )
+
+
+def test_comfy_cloud_hides_the_custom_node_workflows(client, monkeypatch):
+    """Comfy Cloud には任意のカスタムノードを入れられないので turbo / opt は出さない。"""
+    _set_target(monkeypatch, "comfy_cloud")
+    options = client.get("/api/options").json()
+    assert options["comfy_target"] == "comfy_cloud"
+    ids = [w["id"] for w in options["video_workflows"]]
+    for workflow_id in CUSTOM_NODE_WORKFLOWS:
+        assert workflow_id not in ids
+    # 素の版（と他のモデル）はそのまま残る
+    for workflow_id in PLAIN_WORKFLOWS:
+        assert workflow_id in ids
+    assert options["default_video_workflow"] in ids
+    # 画像・音声のワークフローはカスタムノードを使わないので 1 件も減らない
+    assert [w["id"] for w in options["image_workflows"]] == [
+        spec.id for spec in image_specs()
+    ]
+    assert [w["id"] for w in options["audio_workflows"]] == [
+        spec.id for spec in audio_specs()
+    ]
+
+
+@pytest.mark.parametrize("target", ["local", "runpod"])
+def test_the_other_targets_still_offer_every_workflow(client, monkeypatch, target):
+    """自前の ComfyUI（local / runpod）は従来どおり全件出す。"""
+    _set_target(monkeypatch, target)
+    ids = [w["id"] for w in client.get("/api/options").json()["video_workflows"]]
+    assert ids == [spec.id for spec in video_specs()]
+    for workflow_id in CUSTOM_NODE_WORKFLOWS:
+        assert workflow_id in ids
 
 
 def test_family_label_carries_the_supplier_note():

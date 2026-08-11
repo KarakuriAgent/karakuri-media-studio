@@ -25,7 +25,7 @@ Grok Imagine（画像 2 種）を Web UI から実行し、プロンプト作成
 |---|---|
 | ComfyUI | 稼働中であること（既定 `http://127.0.0.1:8188`）。Comfy Cloud も可 |
 | custom nodes | ResolutionSelector / ComfySwitchNode / CustomCombo / MiniMaxH3 系 / ComfyMath / ResizeImage 系 / ResizeAndPadImage / MoGe 系 / LoadVideo など、`workflow/` 配下のワークフローが使うノード一式 |
-| custom nodes（任意） | MiniMax H3 の Turbo ワークフロー（i2v / r2v）を使う場合のみ SageAttention 本体と [ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes)、および `SolAttnPatch` / `MiniMaxH3TurboLoRA` / `MiniMaxH3SigmaShift` / `SpectrumApplyMiniMaxH3` を提供する custom node。Turbo 以外のワークフローには不要 |
+| custom nodes（任意） | MiniMax H3 の Turbo / Optimized ワークフロー（i2v / r2v）を使う場合のみ SageAttention 本体と [ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes)、および `SolAttnPatch` / `MiniMaxH3TurboLoRA` / `MiniMaxH3MemoryEfficientSageAttentionPatch` / `MiniMaxH3SigmaShift` / `SpectrumApplyMiniMaxH3` を提供する custom node。Turbo / Optimized 以外のワークフローには不要（Optimized は `MiniMaxH3TurboLoRA` だけ使わない） |
 | モデル | **使うワークフローのぶんだけ**あれば十分です（各テンプレートの既定ファイル名は SPEC §3.3）。足りないものは後述の「不足モデルの自動ダウンロード」で取得できます |
 | grok CLI | `curl -fsSL https://x.ai/cli/install.sh \| bash` でインストール後、一度 `grok` を起動してブラウザでサインイン（サーバーでは `grok --device-auth`）。SuperGrok / X Premium+ のサブスクリプションで利用可。**プロンプト作成のチャットに加えて、画像ワークフローの「Grok Imagine」もこの CLI で走ります**（サインインしていないとそちらは失敗します。設定ページの「grok CLI の接続確認」で確かめられます） |
 | ffmpeg | 動画からのラストフレーム抽出に使用（PATH にあること） |
@@ -163,17 +163,19 @@ WebSocket で右ペインにリアルタイム表示され、完了すると生�
 指定できません。枠は Grok チャットと共有で、実在人物・著名人・商標はモデレーションで
 弾かれます。
 
-**動画**は MiniMax H3 の 5 種から選び、必要な入力の欄だけが出ます。
+**動画**は MiniMax H3 の 7 種から選び、必要な入力の欄だけが出ます。
 
 | ワークフロー | 必要な入力 |
 |---|---|
 | テキスト→動画・音声つき (MiniMax H3 t2v) | なし |
 | 画像→動画・音声つき (MiniMax H3 i2v)（既定） | 開始フレーム（最後のフレームは任意） |
 | 画像→動画・音声つき (MiniMax H3 i2v Turbo) | 同上（4 ステップの高速版） |
+| 画像→動画・音声つき (MiniMax H3 i2v Optimized) | 同上（蒸留 LoRA なし・20 ステップのまま実行だけ速い版） |
 | 参照素材→動画・音声つき (MiniMax H3 r2v) | 参照画像 9 枚 / 参照動画 3 本 / 参照音声 3 本まで（合計 1 件以上） |
 | 参照素材→動画・音声つき (MiniMax H3 r2v Turbo) | 同上（4 ステップの高速版） |
+| 参照素材→動画・音声つき (MiniMax H3 r2v Optimized) | 同上（蒸留 LoRA なし・20 ステップのまま実行だけ速い版） |
 
-MiniMax H3 の 5 種は映像とステレオ音声（台詞・効果音・音楽）を同時生成します。
+MiniMax H3 の 7 種は映像とステレオ音声（台詞・効果音・音楽）を同時生成します。
 実行には MiniMaxH3 ノードを含む新しめの ComfyUI 本体が必要です（SPEC §2.2）。
 **Turbo**（i2v / r2v）は 4 ステップ蒸留 LoRA と Sage Attention / Sol-Attn / Spectrum を
 ワークフローに焼き込んだ高速版で、入力の指定は素の版とまったく同じです。専用の量子化ウェイト

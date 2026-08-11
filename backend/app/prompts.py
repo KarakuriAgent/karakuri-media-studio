@@ -29,6 +29,8 @@ Contents (SPEC §4.3 "システムプロンプトの構成"):
 
 from __future__ import annotations
 
+from collections.abc import Collection, Iterable
+
 from .models import (
     AgentMessage,
     AgentSessionCreate,
@@ -37,6 +39,7 @@ from .models import (
     ModelSlot,
     ModelSource,
     Options,
+    WorkflowOption,
     missing_job_fields,
     video_workflow_problem,
 )
@@ -56,10 +59,12 @@ from .workflows import (
     get_audio_spec,
     get_image_spec,
     get_video_spec,
+    get_spec,
     image_catalog,
     image_families,
     video_catalog,
 )
+from .workflow import supported_on_target
 
 # --------------------------------------------------------------------------
 # 1. role
@@ -528,8 +533,89 @@ def _select_lines(entry: CatalogEntry) -> list[str]:
     return lines
 
 
-def workflow_catalog_section() -> str:
-    """The `video_workflow` catalog embedded in the agent system prompt."""
+# 接続先ごとの「MiniMax H3 のどの版を選ぶか」。turbo / opt は専用の量子化
+# ウェイトと MiniMax H3 系カスタムノードが要るので、それが入っている前提の
+# local だけで勧める（runpod / comfy_cloud は素の版が既定）。
+def _catalog_entries(
+    entries: Iterable[CatalogEntry],
+    only: Collection[str] | None = None,
+    comfy_target: str = "",
+) -> list[CatalogEntry]:
+    """カタログに載せるワークフローだけを残す。
+
+    ``only`` は ``GET /api/options`` が返したワークフロー id の集合（フォームに
+    出ていないものはエージェントにも出さない）。``comfy_target`` を渡すと、その
+    接続先で動かないワークフロー（Comfy Cloud の MiniMax H3 turbo / opt）も落ちる
+    ので、``only`` を持たない直接の呼び出しでも同じ一覧になる。
+    """
+    kept: list[CatalogEntry] = []
+    for entry in entries:
+        if only is not None and entry.id not in only:
+            continue
+        if comfy_target and not supported_on_target(get_spec(entry.id), comfy_target):
+            continue
+        kept.append(entry)
+    return kept
+
+
+def _target_preference_lines(comfy_target: str) -> list[str]:
+    """接続先（`Settings.comfy_target`）に合わせた MiniMax H3 の版の選び方。"""
+    if not comfy_target:
+        return []
+    lines = [
+        "",
+        f"## この環境の接続先: `{comfy_target}`",
+        "",
+    ]
+    if comfy_target == "comfy_cloud":
+        # Comfy Cloud には任意のカスタムノードを入れられないので、turbo / opt は
+        # 上のカタログからも消えている（:func:`_catalog_entries`）。
+        lines += [
+            "Comfy Cloud には MiniMax H3 系のカスタムノードと量子化ウェイトを"
+            "入れられないので、`_turbo` / `_opt` は選ばないこと"
+            "（上のカタログにも載せていない）。MiniMax H3 は **素の版"
+            "（`minimax_h3_i2v` / `minimax_h3_r2v` / `minimax_h3_t2v`）だけ**を"
+            "使う。",
+            "ユーザーが turbo / opt を名指ししてきたときも、**この接続先では"
+            "動かない**ことを伝えて素の版を提案すること。",
+        ]
+        return lines
+    if comfy_target == "local":
+        lines += [
+            "ローカルの ComfyUI には MiniMax H3 系のカスタムノードと量子化"
+            "ウェイトが入っているので、MiniMax H3 を使うときは"
+            " **`_opt` 版（`minimax_h3_i2v_opt` / `minimax_h3_r2v_opt`）を"
+            "優先**して選ぶこと。opt は素の版と入力もプロンプトの書き方も同じで、"
+            "20 ステップのまま実行だけが速い（品質は素の版相当）。",
+        ]
+    else:
+        lines += [
+            "この接続先には MiniMax H3 系のカスタムノードと量子化ウェイトが"
+            "無い前提なので、MiniMax H3 を使うときは **素の版"
+            "（`minimax_h3_i2v` / `minimax_h3_r2v` / `minimax_h3_t2v`）を優先**し、"
+            "`_turbo` / `_opt` は選ばないこと。",
+        ]
+    lines += [
+        "ただし**ユーザーがワークフローを名指ししたとき、あるいは turbo /"
+        " opt を明示的に指定したときは、その指定が最優先**でこの既定より優先"
+        "される。",
+    ]
+    return lines
+
+
+def workflow_catalog_section(
+    comfy_target: str = "", only: Collection[str] | None = None
+) -> str:
+    """The `video_workflow` catalog embedded in the agent system prompt.
+
+    ``comfy_target`` は :class:`app.models.Settings` の接続先で、渡すと末尾に
+    「どの版を優先するか」の節が付き（空なら何も足さない）、その接続先で動かない
+    ワークフローは一覧から落ちる。``only`` は ``GET /api/options`` が返した
+    ワークフロー id の集合で、フォームに出ていないものはカタログにも出さない。
+    システムプロンプトはセッション作成時に一度だけ組み立てて焼き込むので、
+    途中で接続先を変えても既存セッションの文面は変わらない（新しいセッションから
+    効く）。
+    """
     lines = [
         "# VIDEO WORKFLOWS (the `video_workflow` field of a job)",
         "",
@@ -540,7 +626,7 @@ def workflow_catalog_section() -> str:
         "PROMPT SPEC disagree, the workflow's note wins.",
         "",
     ]
-    for entry in video_catalog():
+    for entry in _catalog_entries(video_catalog(), only, comfy_target):
         lines += _catalog_entry_lines(entry)
     lines += [
         "",
@@ -553,6 +639,7 @@ def workflow_catalog_section() -> str:
         "アセットのパスは CHOICES に挙がっているものだけを使い、そのワークフローが"
         "使わない入力は送らないこと（未知のフィールドはエラーになります）。",
     ]
+    lines += _target_preference_lines(comfy_target)
     return "\n".join(lines)
 
 
@@ -575,8 +662,14 @@ def _image_catalog_entry_lines(entry: CatalogEntry) -> list[str]:
     return lines
 
 
-def image_workflow_catalog_section() -> str:
-    """The `image_workflow` catalog embedded in the agent system prompt."""
+def image_workflow_catalog_section(
+    comfy_target: str = "", only: Collection[str] | None = None
+) -> str:
+    """The `image_workflow` catalog embedded in the agent system prompt.
+
+    ``comfy_target`` / ``only`` は :func:`workflow_catalog_section` と同じ意味
+    （フォームに出ていないワークフローはカタログにも出さない）。
+    """
     lines = [
         "# IMAGE WORKFLOWS (the `image_workflow` field of a job)",
         "",
@@ -589,7 +682,7 @@ def image_workflow_catalog_section() -> str:
         "GUIDES section right below has the full rules per family).",
         "",
     ]
-    for entry in image_catalog():
+    for entry in _catalog_entries(image_catalog(), only, comfy_target):
         lines += _image_catalog_entry_lines(entry)
     lines += [
         "",
@@ -786,16 +879,18 @@ generated with the picture.
 #: 1 本のクリップの中でカットを割れるワークフロー（CONTEXT の一文を切り替える）。
 #: 汎用の VIDEO PROMPT SPEC は「1 クリップ 1 ショット」を前提にしているが、
 #: MiniMax H3 はタイムラインを書けば複数ショットを 1 本に収められる。
-#: turbo 版は素の版と入力の形もプロンプトの書き方も同じなので、ガイドの登録は
-#: 素の版と同じものを共有する（ここに載っていないと汎用の
+#: turbo / opt 版は素の版と入力の形もプロンプトの書き方も同じなので、ガイドの
+#: 登録は素の版と同じものを共有する（ここに載っていないと汎用の
 #: :data:`VIDEO_SPEC` に落ちてしまう）。
 MULTI_CUT_WORKFLOWS: frozenset[str] = frozenset(
     {
         "minimax_h3_t2v",
         "minimax_h3_i2v",
         "minimax_h3_i2v_turbo",
+        "minimax_h3_i2v_opt",
         "minimax_h3_r2v",
         "minimax_h3_r2v_turbo",
+        "minimax_h3_r2v_opt",
     }
 )
 
@@ -805,8 +900,10 @@ VIDEO_SPECS: dict[str, str] = {
     "minimax_h3_t2v": MINIMAX_H3_VIDEO_GUIDE,
     "minimax_h3_i2v": MINIMAX_H3_VIDEO_GUIDE,
     "minimax_h3_i2v_turbo": MINIMAX_H3_VIDEO_GUIDE,
+    "minimax_h3_i2v_opt": MINIMAX_H3_VIDEO_GUIDE,
     "minimax_h3_r2v": MINIMAX_H3_REFERENCE_VIDEO_GUIDE,
     "minimax_h3_r2v_turbo": MINIMAX_H3_REFERENCE_VIDEO_GUIDE,
+    "minimax_h3_r2v_opt": MINIMAX_H3_REFERENCE_VIDEO_GUIDE,
 }
 
 
@@ -1022,8 +1119,14 @@ def _audio_catalog_entry_lines(entry: CatalogEntry) -> list[str]:
     return lines
 
 
-def audio_workflow_catalog_section() -> str:
-    """The `audio_workflow` catalog embedded in the agent system prompt."""
+def audio_workflow_catalog_section(
+    comfy_target: str = "", only: Collection[str] | None = None
+) -> str:
+    """The `audio_workflow` catalog embedded in the agent system prompt.
+
+    ``comfy_target`` / ``only`` は :func:`workflow_catalog_section` と同じ意味
+    （フォームに出ていないワークフローはカタログにも出さない）。
+    """
     lines = [
         "# AUDIO WORKFLOWS (the `audio_workflow` field of a `mode: \"audio\"` job)",
         "",
@@ -1039,7 +1142,7 @@ def audio_workflow_catalog_section() -> str:
         "音声ワークフローに LoRA はありません。",
         "",
     ]
-    for entry in audio_catalog():
+    for entry in _catalog_entries(audio_catalog(), only, comfy_target):
         lines += _audio_catalog_entry_lines(entry)
     lines += [
         "",
@@ -2220,6 +2323,16 @@ def _model_sources_lines(sources: list[ModelSource]) -> str:
     return "\n".join(lines)
 
 
+def _option_ids(workflows: Iterable[WorkflowOption]) -> set[str] | None:
+    """フォームに出ているワークフロー id（1 件も無ければ ``None`` = 絞らない）。
+
+    ``Options`` を最小限だけ組み立てて呼ぶ古い経路でカタログが空にならないよう、
+    空リストは「指定なし」として扱う。
+    """
+    ids = {workflow.id for workflow in workflows}
+    return ids or None
+
+
 def build_agent_system_prompt(
     ctx: AgentSessionCreate,
     options: Options,
@@ -2229,15 +2342,35 @@ def build_agent_system_prompt(
     tools_enabled: bool = False,
     lora_samples: dict[str, list[str]] | None = None,
     model_sources: list[ModelSource] | None = None,
+    comfy_target: str = "",
 ) -> str:
-    """System prompt of one agent session (AGENT-MODE §5.1)."""
+    """System prompt of one agent session (AGENT-MODE §5.1).
+
+    ``comfy_target`` は :class:`app.models.Settings` の接続先で、VIDEO WORKFLOWS
+    の末尾に「MiniMax H3 のどの版を優先するか」を書き足すためだけに使う。
+    システムプロンプトは**セッション作成時に一度だけ焼き込む**ので、あとから
+    接続先を切り替えても既存セッションの文面は変わらない（新しいセッションから
+    効く）。空文字なら節ごと出さない。
+    """
     video_spec = VIDEO_SPEC.replace(
         "DURATION_SECONDS seconds", "as many seconds as the job's `duration` field says"
     )
+    # カタログはフォームの選択肢（``GET /api/options``）と同じ一覧にする:
+    # 接続先で使えないワークフローは options から落ちているので、その id 集合で
+    # カタログも絞る（空のときは絞らない = 従来どおり全件）。
     parts = [AGENT_ROLE, AGENT_PROTOCOL,
-             image_workflow_catalog_section(), image_prompt_guides_section(),
-             workflow_catalog_section(), video_prompt_guides_section(),
-             audio_workflow_catalog_section(), audio_prompt_guides_section(),
+             image_workflow_catalog_section(
+                 comfy_target, _option_ids(options.image_workflows)
+             ),
+             image_prompt_guides_section(),
+             workflow_catalog_section(
+                 comfy_target, _option_ids(options.video_workflows)
+             ),
+             video_prompt_guides_section(),
+             audio_workflow_catalog_section(
+                 comfy_target, _option_ids(options.audio_workflows)
+             ),
+             audio_prompt_guides_section(),
              video_spec, TEMPLATE_NATURAL, FEW_SHOT_VIDEO, FEW_SHOT_IMAGE_KREA2,
              AGENT_STUDIO,
              _agent_choices(options, lora_samples),

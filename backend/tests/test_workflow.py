@@ -932,6 +932,7 @@ TURBO_PAIRS = [
 TURBO_CHAIN = [
     "MiniMaxH3TurboLoRA",
     "PathchSageAttentionKJ",
+    "MiniMaxH3MemoryEfficientSageAttentionPatch",
     "SolAttnPatch",
     "MiniMaxH3SigmaShift",
     "SpectrumApplyMiniMaxH3",
@@ -955,7 +956,8 @@ def test_the_turbo_workflows_take_the_same_inputs_as_the_plain_ones(
 
 @pytest.mark.parametrize(("turbo_id", "plain_id"), TURBO_PAIRS)
 def test_the_turbo_templates_chain_the_speedup_nodes_in_series(turbo_id, plain_id):
-    """UNETLoader -> TurboLoRA -> Sage -> SolAttn -> SigmaShift -> Spectrum."""
+    """UNETLoader -> TurboLoRA -> Sage -> MemEffSage -> SolAttn -> SigmaShift
+    -> Spectrum."""
     wf = build_video_workflow(params(video_workflow=turbo_id))
     validate_workflow(wf)
     by_class = {node["class_type"]: key for key, node in wf.items()}
@@ -1090,6 +1092,128 @@ def test_low_vram_is_offered_to_the_agent_catalog():
     assert (MINIMAX_H3_LOW_VRAM_NAME, "off") in {
         (name, default) for name, _label, _choices, default, _auto, _hint in entry.selects
     }
+
+
+# --- MiniMax H3 opt（turbo から蒸留 LoRA を抜いた 20 ステップ版）------------
+
+#: opt テンプレート -> 素の対応版 / 派生元の turbo
+OPT_PAIRS = [
+    ("minimax_h3_i2v_opt", "minimax_h3_i2v", "minimax_h3_i2v_turbo"),
+    ("minimax_h3_r2v_opt", "minimax_h3_r2v", "minimax_h3_r2v_turbo"),
+]
+
+#: opt の高速化ノード（turbo から ``MiniMaxH3TurboLoRA`` を抜いたもの）
+OPT_CHAIN = [class_type for class_type in TURBO_CHAIN if class_type != "MiniMaxH3TurboLoRA"]
+
+
+@pytest.mark.parametrize(("opt_id", "plain_id", "_turbo_id"), OPT_PAIRS)
+def test_the_opt_workflows_take_the_same_inputs_as_the_plain_ones(
+    opt_id, plain_id, _turbo_id
+):
+    opt = get_spec(opt_id, "video")
+    plain = get_spec(plain_id, "video")
+    assert opt.supported_names() == plain.supported_names()
+    assert opt.requires == plain.requires
+    assert opt.multi_inputs == plain.multi_inputs
+    assert opt.optional_loaders == plain.optional_loaders
+    assert opt.family == plain.family == "minimax-h3"
+    assert opt.frames == plain.frames
+    assert "Optimized" in opt.label and "Optimized" in opt.mode_label
+
+
+@pytest.mark.parametrize(("opt_id", "_plain_id", "_turbo_id"), OPT_PAIRS)
+def test_the_opt_templates_drop_the_distilled_lora(opt_id, _plain_id, _turbo_id):
+    """UNETLoader -> Sage -> MemEffSage -> SolAttn -> SigmaShift -> Spectrum。"""
+    template = load_template(opt_id)
+    assert "MiniMaxH3TurboLoRA" not in {
+        node["class_type"] for node in template.values()
+    }
+    wf = build_video_workflow(params(video_workflow=opt_id))
+    validate_workflow(wf)
+    by_class = {node["class_type"]: key for key, node in wf.items()}
+    upstream = [by_class["UNETLoader"], 0]
+    for class_type in OPT_CHAIN:
+        node_id = by_class[class_type]
+        assert wf[node_id]["inputs"]["model"] == upstream, class_type
+        upstream = [node_id, 0]
+    # turbo と同じく guider は末尾、scheduler は SigmaShift の手前
+    assert wf[by_class["BasicGuider"]]["inputs"]["model"] == [
+        by_class["SpectrumApplyMiniMaxH3"],
+        0,
+    ]
+    assert wf[by_class["BasicScheduler"]]["inputs"]["model"] == [
+        by_class["SolAttnPatch"],
+        0,
+    ]
+
+
+@pytest.mark.parametrize(("opt_id", "_plain_id", "_turbo_id"), OPT_PAIRS)
+def test_the_opt_templates_sample_in_twenty_steps(opt_id, _plain_id, _turbo_id):
+    """蒸留 LoRA が無いので、素の版と同じ 20 ステップ。"""
+    wf = build_video_workflow(params(video_workflow=opt_id))
+    scheduler = next(
+        node for node in wf.values() if node["class_type"] == "BasicScheduler"
+    )
+    assert scheduler["inputs"]["steps"] == 20
+    assert scheduler["inputs"]["scheduler"] == "simple"
+    assert scheduler["inputs"]["denoise"] == 1
+
+
+@pytest.mark.parametrize(
+    ("opt_id", "unet"),
+    [
+        ("minimax_h3_i2v_opt", "minimax_h3_fl2va_pruned_w4a8_mixed.safetensors"),
+        ("minimax_h3_r2v_opt", "minimax_h3_ref2va_pruned_w4a8_mixed.safetensors"),
+    ],
+)
+def test_the_opt_templates_keep_the_quantised_weights(opt_id, unet):
+    wf = build_video_workflow(params(video_workflow=opt_id))
+    by_class: dict[str, list[str]] = {}
+    for key, node in wf.items():
+        by_class.setdefault(node["class_type"], []).append(key)
+    assert wf[by_class["UNETLoader"][0]]["inputs"]["unet_name"] == unet
+    assert (
+        wf[by_class["CLIPLoader"][0]]["inputs"]["clip_name"]
+        == "qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors"
+    )
+    vaes = {wf[key]["inputs"]["vae_name"] for key in by_class["VAELoader"]}
+    assert vaes == {
+        "minimax_h3_video_vae_int8_convrot.safetensors",
+        "minimax_h3_audio_vae_fp32.safetensors",
+    }
+
+
+@pytest.mark.parametrize(("opt_id", "_plain_id", "_turbo_id"), OPT_PAIRS)
+def test_the_opt_workflows_have_no_low_vram_switch(opt_id, _plain_id, _turbo_id):
+    """書き込む先の ``MiniMaxH3TurboLoRA`` がテンプレートに無いので持たない。"""
+    assert get_spec(opt_id, "video").select(MINIMAX_H3_LOW_VRAM_NAME) is None
+
+
+@pytest.mark.parametrize(("opt_id", "plain_id", "_turbo_id"), OPT_PAIRS)
+def test_the_opt_workflows_share_the_prompt_guide_of_the_plain_ones(
+    opt_id, plain_id, _turbo_id
+):
+    assert prompts.video_guide_for(opt_id) == prompts.video_guide_for(plain_id) != ""
+    assert opt_id in prompts.MULTI_CUT_WORKFLOWS
+
+
+@pytest.mark.parametrize(("opt_id", "_plain_id", "turbo_id"), OPT_PAIRS)
+def test_the_opt_templates_differ_from_turbo_only_in_the_lora_and_the_steps(
+    opt_id, _plain_id, turbo_id
+):
+    """テンプレートの差分はノード 150 の削除・151 の付け替え・steps だけ。"""
+    opt = load_template(opt_id)
+    turbo = copy.deepcopy(load_template(turbo_id))
+    assert "150" in turbo and "150" not in opt
+    del turbo["150"]
+    turbo["151"]["inputs"]["model"] = ["127", 0]
+    turbo["124"]["inputs"]["steps"] = 20
+    assert opt == turbo
+
+
+def test_the_opt_templates_have_plain_numeric_node_ids():
+    for opt_id, _plain_id, _turbo_id in OPT_PAIRS:
+        assert all(key.isdigit() for key in load_template(opt_id))
 
 
 # --- frame count rounding --------------------------------------------------

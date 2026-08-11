@@ -849,9 +849,15 @@ GROK_IMAGINE_EDIT = WorkflowSpec(
 # * ``BasicScheduler`` の steps が 20 → **4**。
 # * UNETLoader と BasicGuider の間に高速化のノードが**テンプレートに直接**
 #   直列で入っている: ``MiniMaxH3TurboLoRA``（4step 蒸留 LoRA）→
-#   ``PathchSageAttentionKJ`` → ``SolAttnPatch`` → ``MiniMaxH3SigmaShift`` →
+#   ``PathchSageAttentionKJ`` → ``MiniMaxH3MemoryEfficientSageAttentionPatch`` →
+#   ``SolAttnPatch`` → ``MiniMaxH3SigmaShift`` →
 #   ``SpectrumApplyMiniMaxH3``。``BasicScheduler`` は sigma を作るだけなので
 #   ``SolAttnPatch`` の出力（SigmaShift の**手前**）から model を取る。
+#
+# さらに **opt**（i2v / r2v）が 2 つ。turbo から蒸留 LoRA だけを抜いたもので、
+# ``MiniMaxH3TurboLoRA`` が無く（``PathchSageAttentionKJ`` が UNETLoader 直結）、
+# ``BasicScheduler`` の steps は素の版と同じ **20**。量子化ウェイトと
+# アテンション系パッチはそのままなので、品質は素の版相当のまま実行だけ速い。
 #
 # グラフの都合で入れ替えた点:
 #
@@ -879,10 +885,26 @@ _MINIMAX_H3_NOTES = (
 #: turbo 版だけの注意書き（素のものとの差分）
 _MINIMAX_H3_TURBO_NOTES = (
     " / **turbo**: 4step 蒸留 LoRA（`minimax_h3_turbo_v4_step600_ema`）と"
-    " Sage Attention / Sol-Attn / SigmaShift / Spectrum をテンプレートに"
+    " Sage Attention / Mem Eff Sage Attention / Sol-Attn / SigmaShift /"
+    " Spectrum をテンプレートに"
     "直列で焼き込んだ高速版で、サンプリングは **4 ステップ**固定"
     "（入力の形は素の版とまったく同じ）。`PathchSageAttentionKJ`"
-    "（ComfyUI-KJNodes + SageAttention）・`SolAttnPatch`・`MiniMaxH3TurboLoRA`・"
+    "（ComfyUI-KJNodes + SageAttention）・"
+    "`MiniMaxH3MemoryEfficientSageAttentionPatch`・"
+    "`SolAttnPatch`・`MiniMaxH3TurboLoRA`・"
+    "`MiniMaxH3SigmaShift`・`SpectrumApplyMiniMaxH3` の**カスタムノードと"
+    "量子化ウェイト一式が入った環境でのみ**動く"
+)
+
+#: opt 版だけの注意書き（turbo からの差分）
+_MINIMAX_H3_OPT_NOTES = (
+    " / **opt**: turbo から 4step 蒸留 LoRA だけを抜いた最適化版で、"
+    "サンプリングは素の版と同じ **20 ステップ**（品質は素の版相当のまま）。"
+    "量子化ウェイトと Sage Attention / Mem Eff Sage Attention / Sol-Attn /"
+    " SigmaShift / Spectrum は turbo と同じくテンプレートに直列で焼き込み済みで、"
+    "実行だけが速い（入力の形は素の版とまったく同じ）。"
+    "`PathchSageAttentionKJ`（ComfyUI-KJNodes + SageAttention）・"
+    "`MiniMaxH3MemoryEfficientSageAttentionPatch`・`SolAttnPatch`・"
     "`MiniMaxH3SigmaShift`・`SpectrumApplyMiniMaxH3` の**カスタムノードと"
     "量子化ウェイト一式が入った環境でのみ**動く"
 )
@@ -913,6 +935,7 @@ OPTIONAL_CLASS_TYPES: frozenset[str] = frozenset(
     {
         "MiniMaxH3TurboLoRA",
         "PathchSageAttentionKJ",
+        "MiniMaxH3MemoryEfficientSageAttentionPatch",
         "SolAttnPatch",
         "MiniMaxH3SigmaShift",
         "SpectrumApplyMiniMaxH3",
@@ -925,6 +948,13 @@ _MINIMAX_H3_TURBO_MODELS = (
     " minimax_h3_video_vae_int8_convrot + minimax_h3_audio_vae_fp32 +"
     " qwen3vl_32b_heretic_minimax_h3_nvfp4（text_encoders）+"
     " minimax_h3_turbo_v4_step600_ema（loras）"
+)
+
+#: opt 版のモデルファイル（量子化ウェイトのみ・蒸留 LoRA は使わない）
+_MINIMAX_H3_OPT_MODELS = (
+    " モデル: minimax_h3_{unet}_pruned_w4a8_mixed（diffusion_models）+"
+    " minimax_h3_video_vae_int8_convrot + minimax_h3_audio_vae_fp32 +"
+    " qwen3vl_32b_heretic_minimax_h3_nvfp4（text_encoders）"
 )
 
 #: turbo 版の ``MiniMaxH3TurboLoRA.low_vram``（論理名 = ジョブの ``selects`` のキー）
@@ -1225,6 +1255,52 @@ MINIMAX_H3_R2V_TURBO = replace(
     ),
 )
 
+#: opt 版は turbo から 4step 蒸留 LoRA（``MiniMaxH3TurboLoRA``）を抜いただけの
+#: テンプレートなので、宣言も turbo と同じ形。ただし **`low_vram` は持たない**:
+#: あの選択式が書き込む先はノード 150（TurboLoRA）で、opt にはそのノードが無い。
+_MINIMAX_H3_OPT_DESCRIPTION = (
+    "サンプリングは素の版と同じ 20 ステップで、品質は素の版相当のまま実行だけ"
+    "速い最適化版（4step 蒸留 LoRA は使わず、量子化ウェイトと Sage Attention /"
+    " Mem Eff Patch / Sol-Attn / SigmaShift / Spectrum だけを焼き込んである）。"
+    "入力の指定は素の版とまったく同じだが、専用の量子化ウェイトと "
+    "MiniMax H3 系のカスタムノード一式が入った環境でのみ動く。"
+)
+
+MINIMAX_H3_I2V_OPT = replace(
+    MINIMAX_H3_I2V,
+    id="minimax_h3_i2v_opt",
+    label="画像→動画・音声つき (MiniMax H3 i2v Optimized)",
+    mode_label="画像→動画・音声つき (i2v Optimized)",
+    relpath="video/minimax-h3/minimax_h3_i2v_opt.json",
+    description=MINIMAX_H3_I2V.description + _MINIMAX_H3_OPT_DESCRIPTION,
+    # テンプレートのノード ID は turbo と同じ連番なので、turbo と同じ宣言を使う
+    inject=dict(MINIMAX_H3_I2V_TURBO.inject),
+    seeds=MINIMAX_H3_I2V_TURBO.seeds,
+    notes=(
+        _MINIMAX_H3_NOTES
+        + _MINIMAX_H3_I2V_NOTES
+        + _MINIMAX_H3_OPT_NOTES
+        + " /"
+        + _MINIMAX_H3_OPT_MODELS.format(unet="fl2va")
+    ),
+)
+
+MINIMAX_H3_R2V_OPT = replace(
+    MINIMAX_H3_R2V,
+    id="minimax_h3_r2v_opt",
+    label="参照素材→動画・音声つき (MiniMax H3 r2v Optimized)",
+    mode_label="参照素材→動画・音声つき (r2v Optimized)",
+    relpath="video/minimax-h3/minimax_h3_r2v_opt.json",
+    description=MINIMAX_H3_R2V.description + _MINIMAX_H3_OPT_DESCRIPTION,
+    notes=(
+        _MINIMAX_H3_NOTES
+        + _MINIMAX_H3_R2V_NOTES
+        + _MINIMAX_H3_OPT_NOTES
+        + " /"
+        + _MINIMAX_H3_OPT_MODELS.format(unet="ref2va")
+    ),
+)
+
 
 # --------------------------------------------------------------------------
 # audio: workflow/audio/*.json
@@ -1368,8 +1444,10 @@ SPECS: tuple[WorkflowSpec, ...] = (
     MINIMAX_H3_T2V,
     MINIMAX_H3_I2V,
     MINIMAX_H3_I2V_TURBO,
+    MINIMAX_H3_I2V_OPT,
     MINIMAX_H3_R2V,
     MINIMAX_H3_R2V_TURBO,
+    MINIMAX_H3_R2V_OPT,
     ACE_STEP_1_5,
     STABLE_AUDIO_3,
 )

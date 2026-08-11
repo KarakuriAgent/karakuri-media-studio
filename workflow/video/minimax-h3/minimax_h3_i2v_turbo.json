@@ -297,6 +297,18 @@
       "title": "PathchSageAttentionKJ"
     }
   },
+  "155": {
+    "inputs": {
+      "model": [
+        "151",
+        0
+      ]
+    },
+    "class_type": "MiniMaxH3MemoryEfficientSageAttentionPatch",
+    "_meta": {
+      "title": "MiniMaxH3MemoryEfficientSageAttentionPatch"
+    }
+  },
   "152": {
     "inputs": {
       "tau": 1.5,
@@ -312,7 +324,7 @@
       "use_tma": false,
       "dense_blocks": "",
       "model": [
-        "151",
+        "155",
         0
       ]
     },

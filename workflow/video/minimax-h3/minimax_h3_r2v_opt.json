@@ -147,7 +147,7 @@
   "124": {
     "inputs": {
       "scheduler": "simple",
-      "steps": 4,
+      "steps": 20,
       "denoise": 1,
       "model": [
         "152",
@@ -314,27 +314,12 @@
       "title": "Float (Duration)"
     }
   },
-  "150": {
-    "inputs": {
-      "lora_name": "minimax_h3_turbo_v4_step600_ema.safetensors",
-      "strength": 1,
-      "low_vram": false,
-      "model": [
-        "127",
-        0
-      ]
-    },
-    "class_type": "MiniMaxH3TurboLoRA",
-    "_meta": {
-      "title": "MiniMaxH3TurboLoRA"
-    }
-  },
   "151": {
     "inputs": {
       "sage_attention": "auto",
       "allow_compile": false,
       "model": [
-        "150",
+        "127",
         0
       ]
     },

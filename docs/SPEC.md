@@ -77,10 +77,13 @@
 | `minimax_h3_t2v` | テキスト→動画・音声つき (MiniMax H3 t2v) | minimax_h3 fl2va int8 | なし | ✕ |
 | `minimax_h3_i2v` | 画像→動画・音声つき (MiniMax H3 i2v) | minimax_h3 fl2va int8 | 画像（最終フレーム画像は任意） | ○（既定） |
 | `minimax_h3_i2v_turbo` | 画像→動画・音声つき (MiniMax H3 i2v Turbo) | minimax_h3 fl2va w4a8 + turbo 4step LoRA | 同 `minimax_h3_i2v` | ○ |
+| `minimax_h3_i2v_opt` | 画像→動画・音声つき (MiniMax H3 i2v Optimized) | minimax_h3 fl2va w4a8（蒸留 LoRA なし・20 steps） | 同 `minimax_h3_i2v` | ○ |
 | `minimax_h3_r2v` | 参照素材→動画・音声つき (MiniMax H3 r2v) | minimax_h3 ref2va int8 | `reference_images` 9 枚 / `reference_videos` 3 本 / `reference_audios` 3 本まで・合計 1 件以上（開始フレームは不可） | ✕ |
 | `minimax_h3_r2v_turbo` | 参照素材→動画・音声つき (MiniMax H3 r2v Turbo) | minimax_h3 ref2va w4a8 + turbo 4step LoRA | 同 `minimax_h3_r2v` | ✕ |
+| `minimax_h3_r2v_opt` | 参照素材→動画・音声つき (MiniMax H3 r2v Optimized) | minimax_h3 ref2va w4a8（蒸留 LoRA なし・20 steps） | 同 `minimax_h3_r2v` | ✕ |
 
 - id はファイル名（拡張子なし）
+- `_turbo` / `_opt` はカスタムノード前提なので、**接続先が `comfy_cloud` のときは選択肢に出ない**（§3.1）
 - **`minimax_h3_*`（`workflow/video/minimax-h3/`、family `minimax-h3`）** は**映像とステレオ音声を同時に生成する**
   ローカルモデル（MiniMax H3）。プロンプト 1 ブロックに「スタイル → シーン概要 → `[0s-1.5s]` 形式のショット
   タイムライン → `Camera:` → `Audio:`（セリフ・SFX・音楽）→ 禁止事項」を書くと、1 本の中でカットを割れる。
@@ -276,6 +279,7 @@ UNETLoader と BasicGuider の間には、高速化ノードが**テンプレー
 UNETLoader
  → MiniMaxH3TurboLoRA      (minimax_h3_turbo_4step_ema_ckpt850.safetensors, strength 1)
  → PathchSageAttentionKJ   (sage_attention=auto)
+ → MiniMaxH3MemoryEfficientSageAttentionPatch     (入力は model のみ)
  → SolAttnPatch            (tau 1.5 / 0.2〜0.9)   ──→ BasicScheduler.model
  → MiniMaxH3SigmaShift     (video 12 / audio 3)
  → SpectrumApplyMiniMaxH3  (blend_weight 0.75)    ──→ BasicGuider.model
@@ -291,6 +295,25 @@ model を取る。guider だけが末尾の `SpectrumApplyMiniMaxH3` を読む�
 2 段プルダウン（モデル → モード）の 2 段目に「… (i2v Turbo)」「… (r2v Turbo)」として並ぶ。
 turbo 版だけは選択式フィールド（下記）で `low_vram`（`MiniMaxH3TurboLoRA` の低 VRAM 読み込み）を
 出す。**既定は `off`** で、VRAM が足りずに落ちるときだけ `on` にする。
+
+さらに turbo から**蒸留 LoRA だけを抜いた** **opt**（`minimax_h3_i2v_opt` / `minimax_h3_r2v_opt`）が
+ある。`MiniMaxH3TurboLoRA` を持たず（`PathchSageAttentionKJ` が UNETLoader 直結）、
+`BasicScheduler.steps` は素の版と同じ **20**。量子化ウェイトとアテンション系パッチはそのままなので、
+品質は素の版相当のまま実行だけが速い。書き込む先のノードが無いので **`low_vram` は持たない**。
+エージェント（AGENT モード）がワークフローを自分で選ぶときは、接続先が `local` なら opt を、
+`runpod` なら素の版を優先するようシステムプロンプトに書く
+（`prompts.workflow_catalog_section(comfy_target)`。ユーザーの明示指定が最優先。システムプロンプトは
+セッション作成時に焼き込むので、途中で接続先を変えても既存セッションには効かない）。
+
+**接続先が `comfy_cloud` のときは turbo / opt を選択肢に出さない**。Comfy Cloud には任意の
+カスタムノードを入れられないためで、判定は id のハードコードではなく「テンプレートが
+`workflows.OPTIONAL_CLASS_TYPES`（turbo / opt だけが使う任意のカスタムノード）を 1 つでも使うか」
+（`workflow.uses_optional_class_types` / `workflow.supported_on_target`。spec ごとにプロセス内
+キャッシュ）。`GET /api/options` の `image_workflows` / `video_workflows` / `audio_workflows` が
+同じ規則で絞られ、フォームの 2 段プルダウンもエージェントのカタログもそれに従う（AGENT-MODE §3.1）。
+`local` / `runpod` は自前の ComfyUI なので従来どおり全件出す（入っていなければ実行時に ComfyUI 側で
+エラーになる）。保存済みの選択が消えた場合、フロントは `default_video_workflow`（または先頭）へ
+自動的に戻す（`App.tsx` の `loadOptions`）。
 
 - ジョブは `selects: {"<論理名>": "<選んだ値>"}` で値を持ち（宣言外の名前・選択肢外の値は 422。
   検証は `models.select_problem` で Web UI とエージェント共通）、
@@ -344,7 +367,7 @@ height = round(h_ratio * scale / 8) * 8
 テンプレートの `ResolutionSelector` がもっと小さい画角を前提にしていて、1.0MP のまま回すと
 VRAM が足りずに CUDA OOM で落ちる。そこで `WorkflowSpec.default_megapixels`（0.0 = 宣言なし）を
 宣言でき、値は `GET /api/options` の `video_workflows[].default_megapixels` に出る。
-宣言を持つのは **MiniMax H3 の 5 つ（t2v / i2v / i2v turbo / r2v / r2v turbo）= 0.4MP**
+宣言を持つのは **MiniMax H3 の 7 つ（t2v / i2v / i2v turbo / i2v opt / r2v / r2v turbo / r2v opt）= 0.4MP**
 （短辺 768px・最大 768x1344 の画角）。
 
 バックエンド側（`POST /api/jobs` の `megapixels` を省いたとき、および Studio の
@@ -1029,6 +1052,7 @@ workflow/           ComfyUI ワークフロー（API フォーマット）テン
   image/            krea2/ anima/ z-image/ qwen-image/（モデルファミリーごと）
   video/minimax-h3/ minimax_h3_t2v / minimax_h3_i2v / minimax_h3_r2v（音声つき）
                     minimax_h3_i2v_turbo / minimax_h3_r2v_turbo（4 ステップ版）
+                    minimax_h3_i2v_opt / minimax_h3_r2v_opt（蒸留 LoRA なしの 20 ステップ最適化版）
   audio/            ace_step1_5_xl_sft.json / stable_audio_3_medium_base.json
 app.db              SQLite（jobs / loras / library / chat_sessions / agent_sessions）
 outputs/            生成物（/outputs で静的配信）

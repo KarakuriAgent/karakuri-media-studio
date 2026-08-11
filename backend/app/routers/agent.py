@@ -107,6 +107,10 @@ async def create_session(payload: AgentSessionCreate) -> AgentSession:
         tools_enabled=bool(settings.agent_grok_args),
         lora_samples=lora_samples,
         model_sources=sources,
+        # 接続先ごとに MiniMax H3 のどの版を優先するかが変わる（local だけ opt）。
+        # セッション作成時に焼き込むので、あとで接続先を変えても既存セッションの
+        # システムプロンプトは変わらない。
+        comfy_target=settings.comfy_target,
     )
     session = AgentSession(
         id=session_id,
