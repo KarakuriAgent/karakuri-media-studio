@@ -25,7 +25,6 @@ import {
   isStale,
   selectedTakeOf,
   splitMentions,
-  staleTooltip,
   takesByShot,
   unresolvedMentions,
 } from './studio'
@@ -153,7 +152,7 @@ function TakeCard({
               className={`h-full w-full object-cover ${hideNsfw ? 'blur-sm' : ''}`}
             />
           ) : (
-            <span className="flex h-full w-full items-center justify-center text-[10px] text-muted-foreground/70">
+            <span className="flex h-full w-full items-center justify-center text-[11px] text-muted-foreground">
               {take.status === 'rendering' ? (
                 <Loader2 className="size-4 animate-spin text-primary" />
               ) : (
@@ -166,59 +165,54 @@ function TakeCard({
           <span className="flex flex-wrap items-center gap-1">
             <span className="text-[11px] text-muted-foreground">Take {index + 1}</span>
             <span
-              className={`chip !px-1.5 !py-0 text-[10px] ${TAKE_STATUS_CLASS[take.status]}`}
+              className={`chip !px-1.5 !py-0 text-[11px] ${TAKE_STATUS_CLASS[take.status]}`}
             >
               {TAKE_STATUS_LABEL[take.status]}
             </span>
             {stale && (
-              <Badge
-                variant="warning"
-                className="px-1.5 py-0 text-[10px] font-normal"
-                title={staleTooltip(take)}
-              >
-                <AlertTriangle className="size-2.5" />
+              <Badge variant="warning" className="px-1.5 py-0 text-[11px] font-normal">
+                <AlertTriangle className="size-3" />
                 要再生成
               </Badge>
             )}
-            {nsfw && <NsfwBadge className="!px-1 !py-0 text-[10px]" />}
+            {nsfw && <NsfwBadge className="!px-1 !py-0 text-[11px]" />}
           </span>
-          <span className="tnum mt-0.5 block truncate text-[10px] text-muted-foreground/70">
+          <span className="tnum mt-0.5 block truncate text-[11px] text-muted-foreground">
             {percent != null ? `${percent}%` : (take.video_workflow ?? take.job_id)}
           </span>
         </span>
       </button>
 
-      {stale && (take.stale_reasons?.length ?? 0) > 0 && (
-        <ul className="mt-1 space-y-0.5">
-          {take.stale_reasons?.map((reason) => (
-            <li
-              key={reason}
-              className="flex items-start gap-1 text-[10px] text-amber-400/90"
-            >
-              <AlertTriangle className="mt-px size-2.5 shrink-0" />
-              {reason}
-            </li>
-          ))}
-        </ul>
+      {/* 「なぜ作り直すのか」は title 属性だと触れない人に届かないので、
+          理由（無ければ既定の一言）を必ず本文として出す。 */}
+      {stale && (
+        <div className="mt-1">
+          <Banner tone="warn">
+            <span className="flex items-start gap-1.5">
+              <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+              作り直しをおすすめします
+            </span>
+            {(take.stale_reasons?.length ?? 0) > 0 && (
+              <ul className="mt-1 list-disc space-y-0.5 pl-5">
+                {take.stale_reasons?.map((reason) => (
+                  <li key={reason}>{reason}</li>
+                ))}
+              </ul>
+            )}
+          </Banner>
+        </div>
       )}
 
       {take.warning && (
-        <p
-          className="mt-1 flex items-start gap-1 text-[10px] text-amber-400"
-          title={take.warning}
-        >
-          <AlertTriangle className="mt-px size-2.5 shrink-0" />
-          {take.warning}
-        </p>
+        <div className="mt-1">
+          <Banner tone="warn">{take.warning}</Banner>
+        </div>
       )}
 
       {take.error && (
-        <p
-          className="mt-1 line-clamp-2 text-[10px] text-red-400"
-          title={take.error}
-        >
-          {take.error}
-        </p>
+        <div className="mt-1">
+          <Banner tone="error">{take.error}</Banner>
+        </div>
       )}
 
       <div className="mt-1 flex flex-wrap items-center gap-1">
@@ -519,12 +513,12 @@ export default function ProductionView({
                       }`}
                     />
                   ) : (
-                    <span className="flex h-full w-full items-center justify-center text-[10px] text-muted-foreground/70">
+                    <span className="flex h-full w-full items-center justify-center text-[11px] text-muted-foreground">
                       未採用
                     </span>
                   )}
                 </span>
-                <span className="tnum block truncate bg-card px-1.5 py-1 text-[10px] text-foreground/85">
+                <span className="tnum block truncate bg-card px-1.5 py-1 text-[11px] text-foreground/85">
                   {String(index + 1).padStart(2, '0')}{' '}
                   {shot.title || `カット ${index + 1}`}
                 </span>

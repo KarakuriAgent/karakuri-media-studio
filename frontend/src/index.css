@@ -24,7 +24,15 @@
     --secondary-foreground: 214 32% 91%;
 
     --muted: 220 19% 15%;
-    --muted-foreground: 215 20% 65%;
+    --muted-foreground: 215 20% 65%; /* #94a3b8 */
+    /*
+     * 補助情報用の一段控えめな文字色。以前は text-muted-foreground/70 のように
+     * 不透明度で暗くしていたが、背景 #0a0c11 に対して 4.2:1 しか出ず WCAG AA
+     * (4.5:1) に届かなかった。この実値 #8491a4 なら background 6.16:1 /
+     * surface-sunken 5.71:1 / card 5.33:1 / secondary 4.86:1 と、アプリで使う
+     * どのサーフェス上でも 4.5:1 を満たす。
+     */
+    --muted-foreground-subtle: 215 15% 58%; /* #8491a4 */
 
     --accent: 220 19% 15%;
     --accent-foreground: 214 32% 91%;

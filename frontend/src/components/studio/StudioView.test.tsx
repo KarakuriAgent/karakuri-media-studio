@@ -259,7 +259,10 @@ describe('StudioView', () => {
     mocked.createStudioProject.mockResolvedValue({ id: 'p9', name: '新作' })
     mocked.getStudioProject.mockResolvedValue(detail({ id: 'p9', name: '新作' }))
     render(<StudioView progress={{}} />)
-    await screen.findByText('まだプロジェクトがありません。下から作ってください。')
+    await screen.findByText(/まだプロジェクトがありません/)
+    // 空状態の導線（＋新しいプロジェクト）から作成フォームへ入れる
+    fireEvent.click(screen.getByRole('button', { name: '新しいプロジェクト' }))
+    expect(document.activeElement).toBe(screen.getByLabelText('作品名'))
 
     // 作品名が空のままだとバリデーションで止まる
     fireEvent.click(screen.getByRole('button', { name: '作成' }))

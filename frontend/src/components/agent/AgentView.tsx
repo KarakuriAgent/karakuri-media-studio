@@ -371,11 +371,11 @@ export default function AgentView({
           />
         ) : (
           <section className="flex min-h-0 min-w-0 flex-1 flex-col items-center justify-center gap-2 rounded-lg border border-border bg-surface-sunken p-4 text-center">
-            <Bot className="size-10 text-muted-foreground/40" />
+            <Bot className="size-10 text-muted-foreground-subtle" />
             <p className="text-sm text-muted-foreground">
               エージェントに任せる作業をセッションとして始めます
             </p>
-            <p className="hidden text-xs text-muted-foreground/70 lg:block">
+            <p className="hidden text-xs text-muted-foreground lg:block">
               左の「新規セッション」から最初の指示を入力してください
             </p>
             <Button

@@ -21,7 +21,8 @@ const NativeSelect = React.forwardRef<
       ref={ref}
       className={cn(
         'flex h-9 w-full appearance-none rounded-md border border-input bg-surface-sunken py-2 pl-3 pr-8',
-        'text-sm text-foreground shadow-sm transition-colors [color-scheme:dark]',
+        // iOS は 16px 未満の入力欄にフォーカスすると自動ズームするので、狭い画面では text-base。
+        'text-base text-foreground shadow-sm transition-colors md:text-sm [color-scheme:dark]',
         'focus-visible:border-ring focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40',
         'disabled:cursor-not-allowed disabled:opacity-40',
         className,

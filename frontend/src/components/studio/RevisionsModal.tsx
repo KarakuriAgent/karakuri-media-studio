@@ -49,14 +49,14 @@ export default function RevisionsModal({
               key={revision.seq}
               className="flex items-center gap-2 rounded-md border border-border bg-surface-sunken px-3 py-2"
             >
-              <span className="tnum shrink-0 font-mono text-[11px] text-muted-foreground/70">
+              <span className="tnum shrink-0 font-mono text-[11px] text-muted-foreground">
                 #{revision.seq}
               </span>
               <span className="tnum shrink-0 text-[11px] text-muted-foreground">
                 {formatRevisionTime(revision.created_at)}
               </span>
               <span
-                className={`chip !px-1.5 !py-0 shrink-0 text-[10px] ${
+                className={`chip !px-1.5 !py-0 shrink-0 text-[11px] ${
                   REVISION_ACTOR_CLASS[revision.actor]
                 }`}
               >

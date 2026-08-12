@@ -78,7 +78,7 @@ export default function PromptPreview({ shot }: { shot: StudioShot }) {
           投入プレビュー
         </h4>
         {preview?.workflow && (
-          <Badge variant="outline" className="bg-card px-1.5 py-0 text-[10px] font-normal">
+          <Badge variant="outline" className="bg-card px-1.5 py-0 text-[11px] font-normal">
             {WORKFLOW_LABEL[preview.workflow] ?? preview.workflow}
           </Badge>
         )}
@@ -115,7 +115,7 @@ export default function PromptPreview({ shot }: { shot: StudioShot }) {
           </pre>
           {preview.references.length > 0 && (
             <div className="text-[11px] text-muted-foreground">
-              <span className="text-muted-foreground/80">添付される参照素材:</span>
+              <span className="text-muted-foreground-subtle">添付される参照素材:</span>
               <ul className="mt-1 space-y-0.5">
                 {preview.references.map((reference) => (
                   <li key={`${reference.tag}-${reference.name}`}>
@@ -143,7 +143,7 @@ export default function PromptPreview({ shot }: { shot: StudioShot }) {
             </p>
           )}
           {preview.will_translate && (
-            <p className="text-[11px] text-amber-300/90">
+            <p className="text-[11px] text-amber-300">
               投入時に英語へ自動変換されます（引用符の中の台詞と参照タグはそのまま）。
             </p>
           )}

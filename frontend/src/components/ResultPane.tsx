@@ -1,11 +1,14 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import {
   Clapperboard,
   Download,
+  EyeOff,
   Film,
   Loader2,
+  MoreHorizontal,
   Music,
   RotateCcw,
+  Star,
   Trash2,
   Undo2,
   X,
@@ -13,8 +16,15 @@ import {
 import type { Job, JobProgress, LibraryItem, LibrarySource } from '../types'
 import { Button } from '@/components/ui/button'
 import { Progress } from '@/components/ui/progress'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@/components/ui/dropdown-menu'
 import LibraryAddButton, { isInLibrary } from './LibraryAddButton'
-import { Banner, CopyButton, NsfwBadge, NsfwToggle, StatusBadge } from './ui'
+import { Banner, CopyButton, NsfwBadge, StatusBadge } from './ui'
 
 interface Props {
   job: Job | null
@@ -136,6 +146,17 @@ export default function ResultPane({
   const media = useMemo(() => (job ? mediaOf(job) : []), [job])
   const [selectedKey, setSelectedKey] = useState<string | null>(null)
   const [lightbox, setLightbox] = useState<string | null>(null)
+  // 「…」メニューから開くライブラリ登録欄（ツールバーの 2 段目に出す）。
+  const [libraryOpen, setLibraryOpen] = useState(false)
+  // ライトボックスを閉じたら、開いたトリガー（画像ボタン）へフォーカスを戻す。
+  const zoomTriggerRef = useRef<HTMLButtonElement | null>(null)
+  const lightboxCloseRef = useRef<HTMLButtonElement | null>(null)
+
+  const closeLightbox = useCallback(() => {
+    setLightbox(null)
+    const trigger = zoomTriggerRef.current
+    if (trigger?.isConnected) trigger.focus()
+  }, [])
 
   // Job (or its outputs) changed: fall back to the best available media.
   useEffect(() => {
@@ -150,16 +171,19 @@ export default function ResultPane({
   useEffect(() => {
     setSelectedKey(null)
     setLightbox(null)
+    setLibraryOpen(false)
   }, [job?.id])
 
   useEffect(() => {
     if (!lightbox) return
+    // 開いたら閉じるボタンへフォーカスを移す（キーボードで閉じられるように）。
+    lightboxCloseRef.current?.focus()
     const onKey = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setLightbox(null)
+      if (event.key === 'Escape') closeLightbox()
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [lightbox])
+  }, [lightbox, closeLightbox])
 
   const current = media.find((item) => item.key === selectedKey) ?? media[0] ?? null
   const running = job != null && ACTIVE_STATUSES.includes(job.status)
@@ -168,6 +192,13 @@ export default function ResultPane({
   // トグルをオンにすればそのまま見える。
   const blurred = !showNsfw && Boolean(job?.nsfw)
   const blur = blurred ? 'blur-lg' : ''
+  // 表示中の成果物がライブラリに登録できるか（`extra_*` は列を持たないので不可）。
+  const libraryEligible = Boolean(
+    current && LIBRARY_SOURCES.includes(current.key as LibrarySource),
+  )
+  const libraryRegistered = Boolean(
+    job && libraryEligible && isInLibrary(library, job, current!.key as LibrarySource),
+  )
 
   return (
     <div className="flex flex-col gap-2 lg:h-full lg:min-h-0">
@@ -177,9 +208,9 @@ export default function ResultPane({
       <div className="relative flex min-h-[40vh] flex-1 items-center justify-center overflow-hidden rounded-lg border border-border bg-black shadow-elevation-1 lg:min-h-0">
         {!job && (
           <div className="flex flex-col items-center gap-2 px-6 text-center">
-            <Clapperboard className="size-10 text-muted-foreground/40" />
+            <Clapperboard className="size-10 text-muted-foreground-subtle" />
             <p className="text-sm text-muted-foreground">結果はここに表示されます</p>
-            <p className="text-xs text-muted-foreground/70">
+            <p className="text-xs text-muted-foreground">
               左のフォームから実行してください
             </p>
           </div>
@@ -202,18 +233,25 @@ export default function ResultPane({
         )}
         {job && current?.kind === 'audio' && (
           <div className="flex w-full max-w-xl flex-col items-center gap-4 px-6">
-            <Music className="size-12 text-muted-foreground/60" />
+            <Music className="size-12 text-muted-foreground-subtle" />
             <audio key={current.url} src={current.url} controls className="w-full" />
           </div>
         )}
         {job && current?.kind === 'image' && (
-          <img
+          <button
             key={current.url}
-            src={current.url}
-            alt={current.label}
-            className={`max-h-[60vh] max-w-full cursor-zoom-in object-contain lg:max-h-full ${blur}`}
+            type="button"
+            ref={zoomTriggerRef}
+            aria-label={`${current.label}を拡大表示`}
+            className="flex max-h-full max-w-full cursor-zoom-in items-center justify-center focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
             onClick={() => setLightbox(current.url)}
-          />
+          >
+            <img
+              src={current.url}
+              alt=""
+              className={`max-h-[60vh] max-w-full object-contain lg:max-h-full ${blur}`}
+            />
+          </button>
         )}
 
         {/* ぼかしていることが分かるように、その旨を重ねる（SPEC §7.1）。 */}
@@ -302,57 +340,20 @@ export default function ResultPane({
           <span className="tnum text-xs text-muted-foreground">
             {formatTime(job.created_at)}
           </span>
-          <span className="text-xs text-muted-foreground/70">{job.mode}</span>
+          <span className="text-xs text-muted-foreground">{job.mode}</span>
           {job.nsfw && <NsfwBadge />}
 
+          {/* 主要 3 つ（ダウンロード / 続きを生成 / 再実行）と詳細だけを前面に置き、
+              残りは「…」メニューへ畳む。狭幅でも 1〜2 行に収まる。 */}
           <div className="ml-auto flex flex-wrap items-center gap-2">
             {current && (
-              <Button asChild variant="outline" size="sm">
+              <Button asChild size="sm">
                 <a href={current.url} download={fileNameOf(current.url)}>
                   <Download />
                   ダウンロード
                 </a>
               </Button>
             )}
-            {/* 表示中の成果物をライブラリへ（SPEC §7.2）。タブの key が
-                そのまま登録元の区分になる。 */}
-            {current && LIBRARY_SOURCES.includes(current.key as LibrarySource) && (
-              <LibraryAddButton
-                key={current.key}
-                job={job}
-                source={current.key as LibrarySource}
-                registered={isInLibrary(library, job, current.key as LibrarySource)}
-                onAdded={onLibraryChanged}
-              />
-            )}
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={busy}
-              onClick={() => onRerun(job, true)}
-            >
-              <RotateCcw />
-              再実行（シード再抽選）
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              disabled={busy}
-              title="元ジョブと同じシードのまま流し直します"
-              onClick={() => onRerun(job, false)}
-            >
-              <RotateCcw />
-              再実行（同じシード）
-            </Button>
-            <Button
-              variant="outline"
-              size="sm"
-              title="このジョブの設定をフォームに書き戻します"
-              onClick={() => onRestoreParams(job)}
-            >
-              <Undo2 />
-              パラメータを復元
-            </Button>
             <Button
               variant="outline"
               size="sm"
@@ -362,31 +363,121 @@ export default function ResultPane({
             >
               続きを生成
             </Button>
-            <NsfwToggle
-              nsfw={job.nsfw}
+            <Button
+              variant="outline"
+              size="sm"
               disabled={busy}
-              onToggle={(nsfw) => onToggleNsfw(job, nsfw)}
-            />
+              title="シードを引き直して流し直します"
+              onClick={() => onRerun(job, true)}
+            >
+              <RotateCcw />
+              再実行
+            </Button>
             <Button variant="outline" size="sm" onClick={() => onOpenDetail(job)}>
               詳細
             </Button>
-            <Button
-              variant="destructive"
-              size="sm"
-              disabled={busy}
-              onClick={() => onDelete(job)}
-            >
-              <Trash2 />
-              削除
-            </Button>
+
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="icon-sm" aria-label="その他の操作">
+                  <MoreHorizontal />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-64">
+                <DropdownMenuItem
+                  disabled={busy}
+                  onSelect={() => onRerun(job, false)}
+                >
+                  <RotateCcw />
+                  <MenuLabel
+                    label="同じシードで再実行"
+                    hint={
+                      busy
+                        ? '生成中は実行できません'
+                        : '元ジョブと同じシードのまま流し直します'
+                    }
+                  />
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => onRestoreParams(job)}>
+                  <Undo2 />
+                  <MenuLabel
+                    label="パラメータを復元"
+                    hint="このジョブの設定をフォームに書き戻します"
+                  />
+                </DropdownMenuItem>
+                {/* 表示中の成果物をライブラリへ（SPEC §7.2）。タブの key が
+                    そのまま登録元の区分になる。 */}
+                <DropdownMenuItem
+                  disabled={!libraryEligible || libraryRegistered}
+                  onSelect={() => setLibraryOpen(true)}
+                >
+                  <Star className={libraryRegistered ? 'fill-current' : undefined} />
+                  <MenuLabel
+                    label="ライブラリに追加"
+                    hint={
+                      libraryRegistered
+                        ? '登録済みです'
+                        : !libraryEligible
+                          ? 'この出力はライブラリに登録できません'
+                          : '履歴を消しても素材として残ります'
+                    }
+                  />
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  disabled={busy}
+                  onSelect={() => onToggleNsfw(job, !job.nsfw)}
+                >
+                  <EyeOff />
+                  <MenuLabel
+                    label={job.nsfw ? 'NSFW 指定を外す' : 'NSFW として印を付ける'}
+                    hint={busy ? '生成中は変更できません' : undefined}
+                  />
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  disabled={busy}
+                  className="text-red-300 focus:bg-destructive/20 focus:text-red-200"
+                  onSelect={() => onDelete(job)}
+                >
+                  <Trash2 />
+                  <MenuLabel
+                    label="削除"
+                    hint={busy ? '生成中は削除できません' : '生成物ごと消えます'}
+                  />
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
           </div>
+
+          {/* 「ライブラリに追加」を選んだときだけ、ツールバーの 2 段目に登録欄を出す
+              （名前・タグ・分類はここで指定する）。 */}
+          {libraryOpen && current && libraryEligible && (
+            <div className="flex w-full flex-wrap items-center gap-2 border-t border-border pt-2">
+              <LibraryAddButton
+                key={current.key}
+                job={job}
+                source={current.key as LibrarySource}
+                registered={libraryRegistered}
+                onAdded={onLibraryChanged}
+              />
+              <Button
+                variant="ghost"
+                size="sm"
+                className="ml-auto"
+                onClick={() => setLibraryOpen(false)}
+              >
+                閉じる
+              </Button>
+            </div>
+          )}
         </div>
       )}
 
-      {/* --------------------------------------------------------- prompts */}
+      {/* --------------------------------------------------------- prompts
+          ビューア・タブ・ツールバーと同じ重さの箱が続かないよう、ここは境界を弱める。 */}
       {job &&
         (job.image_prompt || job.video_prompt || job.audio_prompt || job.user_input) && (
-        <details className="shrink-0 rounded-lg border border-border bg-card px-3 py-2 shadow-elevation-1">
+        <details className="shrink-0 rounded-lg bg-secondary/30 px-3 py-2">
           <summary className="cursor-pointer text-xs text-muted-foreground">
             プロンプト
           </summary>
@@ -408,8 +499,11 @@ export default function ResultPane({
       {/* -------------------------------------------------------- lightbox */}
       {lightbox && (
         <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="拡大表示"
           className="fixed inset-0 z-50 flex items-center justify-center bg-black/90 p-6"
-          onClick={() => setLightbox(null)}
+          onClick={closeLightbox}
         >
           <img
             src={lightbox}
@@ -418,10 +512,11 @@ export default function ResultPane({
             onClick={(event) => event.stopPropagation()}
           />
           <Button
+            ref={lightboxCloseRef}
             variant="outline"
             size="icon-sm"
             className="absolute right-4 top-4"
-            onClick={() => setLightbox(null)}
+            onClick={closeLightbox}
             title="閉じる (Esc)"
           >
             <X />
@@ -430,6 +525,19 @@ export default function ResultPane({
         </div>
       )}
     </div>
+  )
+}
+
+/**
+ * メニュー項目のラベルと補足。押せない項目はその理由をここに出す
+ * （title 属性だとキーボード・タッチでは読めないため）。
+ */
+function MenuLabel({ label, hint }: { label: string; hint?: string }) {
+  return (
+    <span className="flex flex-col items-start gap-0.5">
+      <span>{label}</span>
+      {hint && <span className="text-xs text-muted-foreground">{hint}</span>}
+    </span>
   )
 }
 

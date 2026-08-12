@@ -72,7 +72,7 @@ export default function FrameGrid({ title, frames, urlOf, onClose }: Props) {
                     loading="lazy"
                   />
                 )}
-                <span className="tnum block truncate px-1.5 py-1 text-[10px] text-muted-foreground">
+                <span className="tnum block truncate px-1.5 py-1 text-[11px] text-muted-foreground">
                   {index + 1}. {shortTime(frame.ts)}
                 </span>
               </button>

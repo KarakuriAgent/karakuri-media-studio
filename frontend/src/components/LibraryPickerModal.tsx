@@ -354,17 +354,17 @@ export default function LibraryPickerModal({
                   {item.name}
                 </p>
                 {item.tags.length > 0 && (
-                  <p className="truncate px-1.5 text-[10px] text-primary">
+                  <p className="truncate px-1.5 text-[11px] text-primary">
                     {item.tags.map((name) => `#${name}`).join(' ')}
                   </p>
                 )}
-                <p className="tnum px-1.5 text-[10px] text-muted-foreground">
+                <p className="tnum px-1.5 text-[11px] text-muted-foreground">
                   {timestamp(item)}
                 </p>
               </button>
               <div className="px-1 pb-1">
                 <NativeSelect
-                  className="mb-1 h-6 py-0 pl-1.5 pr-6 text-[10px]"
+                  className="mb-1 h-6 py-0 pl-1.5 pr-6 text-[11px]"
                   aria-label={`「${item.name}」のカテゴリ`}
                   value={item.category ?? UNCATEGORIZED}
                   disabled={busy}
@@ -389,7 +389,7 @@ export default function LibraryPickerModal({
                 <Button
                   variant="outline"
                   size="xs"
-                  className="px-1.5 text-[10px]"
+                  className="px-1.5 text-[11px]"
                   disabled={busy}
                   onClick={() => rename(item)}
                 >
@@ -400,12 +400,12 @@ export default function LibraryPickerModal({
                   nsfw={item.nsfw}
                   disabled={busy}
                   onToggle={(value) => setItemNsfw(item, value)}
-                  className="h-6 px-1.5 text-[10px]"
+                  className="h-6 px-1.5 text-[11px]"
                 />
                 <Button
                   variant="outline"
                   size="xs"
-                  className="px-1.5 text-[10px]"
+                  className="px-1.5 text-[11px]"
                   disabled={busy}
                   onClick={() => editTags(item)}
                 >
@@ -414,7 +414,7 @@ export default function LibraryPickerModal({
                 <Button
                   variant="destructive"
                   size="xs"
-                  className="px-1.5 text-[10px]"
+                  className="px-1.5 text-[11px]"
                   disabled={busy}
                   onClick={() => remove(item)}
                 >

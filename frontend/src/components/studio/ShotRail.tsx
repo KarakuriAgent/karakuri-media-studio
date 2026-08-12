@@ -1,6 +1,7 @@
-import type { ReactNode } from 'react'
+import { useState, type ReactNode } from 'react'
 import {
   ChevronDown,
+  ChevronRight,
   ChevronUp,
   Clock,
   FileText,
@@ -21,7 +22,11 @@ import {
   type ShotTree,
 } from './studio'
 
-/** 話・場の見出しに並べる操作ボタン（アイコンだけなので aria-label で名前を付ける）。 */
+/**
+ * 話・場の見出しに並べる操作ボタン（アイコンだけなので aria-label で名前を付ける）。
+ *
+ * 20px 角では狙いが要るので、最小でも 32px（icon-sm）を確保する。
+ */
 function IconButton({
   label,
   title,
@@ -40,8 +45,7 @@ function IconButton({
   return (
     <Button
       variant={danger ? 'destructive' : 'outline'}
-      size="icon-xs"
-      className="size-5"
+      size="icon-sm"
       aria-label={label}
       title={title}
       onClick={onClick}
@@ -94,7 +98,7 @@ function ShotItem({
               className="h-full w-full object-cover"
             />
           ) : (
-            <span className="tnum flex h-full w-full items-center justify-center text-[10px] text-muted-foreground/70">
+            <span className="tnum flex h-full w-full items-center justify-center text-[11px] text-muted-foreground">
               {String(index + 1).padStart(2, '0')}
             </span>
           )}
@@ -103,17 +107,17 @@ function ShotItem({
           <span className="block truncate text-xs text-foreground/90">{label}</span>
           <span className="mt-0.5 flex items-center gap-1">
             <span
-              className={`chip !px-1.5 !py-0 text-[10px] ${SHOT_STATUS_CLASS[shot.status]}`}
+              className={`chip !px-1.5 !py-0 text-[11px] ${SHOT_STATUS_CLASS[shot.status]}`}
             >
               {SHOT_STATUS_LABEL[shot.status]}
             </span>
-            <span className="tnum text-[10px] text-muted-foreground">
+            <span className="tnum text-[11px] text-muted-foreground">
               {shot.duration_seconds}s
             </span>
           </span>
         </span>
       </button>
-      <span className="flex shrink-0 flex-col justify-center gap-0.5">
+      <span className="flex shrink-0 flex-col justify-center gap-1">
         <IconButton
           label={`${label}を上へ`}
           title="上へ"
@@ -191,6 +195,9 @@ export default function ShotRail({
   onDeleteScene: (id: string) => void
   busy: boolean
 }) {
+  /** lg 未満でのレールの開閉（lg 以上は CSS で常に開いている）。 */
+  const [open, setOpen] = useState(false)
+
   /**
    * 1 行の書き換えはブラウザの `prompt` で済ませる（この面は移動と選択のための
    * もので、書くのは中央のフォームに寄せてある）。取消（null）は何もしない。
@@ -210,7 +217,7 @@ export default function ShotRail({
 
   const shotList = (nodes: ShotNode[], empty: string) =>
     nodes.length === 0 ? (
-      <p className="px-2 py-2 text-[10px] text-muted-foreground/70">{empty}</p>
+      <p className="px-2 py-2 text-xs text-muted-foreground">{empty}</p>
     ) : (
       <ul className="space-y-1">
         {nodes.map((node) => (
@@ -230,24 +237,43 @@ export default function ShotRail({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center gap-2 border-b border-border px-3 py-2">
+      <div className="flex flex-wrap items-center gap-2 border-b border-border px-3 py-2">
+        {/* 画面が狭いと（lg 未満）レールが縦に積まれて中身を押し下げるので、
+            そこでは畳めるようにする。既定は閉で、カット数だけ見出しに残す。 */}
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          className="lg:hidden"
+          aria-expanded={open}
+          aria-controls="shot-rail-tree"
+          aria-label={open ? '脚本を折りたたむ' : '脚本を開く'}
+          title={open ? '折りたたむ' : '開く'}
+          onClick={() => setOpen((previous) => !previous)}
+        >
+          <ChevronRight className={open ? 'rotate-90' : ''} />
+        </Button>
         <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           脚本
         </h2>
-        <span className="tnum text-xs text-muted-foreground/70">{total} カット</span>
+        <span className="tnum text-xs text-muted-foreground">{total} カット</span>
         <span className="ml-auto flex gap-1">
-          <Button variant="outline" size="xs" onClick={onAddEpisode} disabled={busy}>
+          <Button variant="outline" size="sm" onClick={onAddEpisode} disabled={busy}>
             <Plus />
             話を追加
           </Button>
-          <Button variant="outline" size="xs" onClick={onAdd} disabled={busy}>
+          <Button variant="outline" size="sm" onClick={onAdd} disabled={busy}>
             <Plus />
             カットを追加
           </Button>
         </span>
       </div>
 
-      <div className="flex-1 space-y-2 overflow-y-auto p-2">
+      <div
+        id="shot-rail-tree"
+        className={`flex-1 space-y-2 overflow-y-auto p-2 ${
+          open ? '' : 'hidden lg:block'
+        }`}
+      >
         {total === 0 && tree.episodes.length === 0 && (
           <p className="px-2 py-6 text-center text-xs text-muted-foreground">
             まだカットがありません
@@ -258,74 +284,80 @@ export default function ShotRail({
           const label = episodeLabel(node.episode, episodeIndex)
           return (
             <section key={node.episode.id}>
-              <div className="flex items-center gap-1 rounded-md bg-surface-sunken px-2 py-1">
-                <h3 className="min-w-0 flex-1 truncate text-[11px] font-semibold text-foreground/90">
-                  {label}
-                </h3>
-                <span className="tnum shrink-0 text-[10px] text-muted-foreground/70">
-                  {node.shotCount}
-                </span>
-                <IconButton
-                  label={`${label}に場を追加`}
-                  title="場を追加"
-                  onClick={() => onAddScene(node.episode.id)}
-                  disabled={busy}
-                >
-                  <Plus />
-                </IconButton>
-                <IconButton
-                  label={`${label}を改名`}
-                  title="改名"
-                  onClick={() =>
-                    rename(node.episode.title, (title) =>
-                      onRenameEpisode(node.episode.id, title),
-                    )
-                  }
-                  disabled={busy}
-                >
-                  <Pencil />
-                </IconButton>
-                <IconButton
-                  label={`${label}のあらすじを編集`}
-                  title="あらすじ"
-                  onClick={() =>
-                    edit(`${label}のあらすじ`, node.episode.synopsis, (synopsis) =>
-                      onEditEpisodeSynopsis(node.episode.id, synopsis),
-                    )
-                  }
-                  disabled={busy}
-                >
-                  <FileText />
-                </IconButton>
-                <IconButton
-                  label={`${label}を上へ`}
-                  title="上へ"
-                  onClick={() => onMoveEpisode(node.episode.id, -1)}
-                  disabled={busy || episodeIndex === 0}
-                >
-                  <ChevronUp />
-                </IconButton>
-                <IconButton
-                  label={`${label}を下へ`}
-                  title="下へ"
-                  onClick={() => onMoveEpisode(node.episode.id, 1)}
-                  disabled={busy || episodeIndex === tree.episodes.length - 1}
-                >
-                  <ChevronDown />
-                </IconButton>
-                <IconButton
-                  label={`${label}を削除`}
-                  title="削除"
-                  onClick={() => onDeleteEpisode(node.episode.id)}
-                  disabled={busy}
-                  danger
-                >
-                  <X />
-                </IconButton>
+              {/* 操作は見出しと同じ行に詰めず下段へ回す（32px のボタンが
+                  7 つ並ぶと、狭いレールではタイトルが潰れるため）。 */}
+              <div className="rounded-md bg-surface-sunken px-2 py-1.5">
+                <div className="flex items-center gap-2">
+                  <h3 className="min-w-0 flex-1 truncate text-xs font-semibold text-foreground/90">
+                    {label}
+                  </h3>
+                  <span className="tnum shrink-0 text-[11px] text-muted-foreground">
+                    {node.shotCount}
+                  </span>
+                </div>
+                <div className="mt-1 flex flex-wrap items-center gap-1">
+                  <IconButton
+                    label={`${label}に場を追加`}
+                    title="場を追加"
+                    onClick={() => onAddScene(node.episode.id)}
+                    disabled={busy}
+                  >
+                    <Plus />
+                  </IconButton>
+                  <IconButton
+                    label={`${label}を改名`}
+                    title="改名"
+                    onClick={() =>
+                      rename(node.episode.title, (title) =>
+                        onRenameEpisode(node.episode.id, title),
+                      )
+                    }
+                    disabled={busy}
+                  >
+                    <Pencil />
+                  </IconButton>
+                  <IconButton
+                    label={`${label}のあらすじを編集`}
+                    title="あらすじ"
+                    onClick={() =>
+                      edit(`${label}のあらすじ`, node.episode.synopsis, (synopsis) =>
+                        onEditEpisodeSynopsis(node.episode.id, synopsis),
+                      )
+                    }
+                    disabled={busy}
+                  >
+                    <FileText />
+                  </IconButton>
+                  <IconButton
+                    label={`${label}を上へ`}
+                    title="上へ"
+                    onClick={() => onMoveEpisode(node.episode.id, -1)}
+                    disabled={busy || episodeIndex === 0}
+                  >
+                    <ChevronUp />
+                  </IconButton>
+                  <IconButton
+                    label={`${label}を下へ`}
+                    title="下へ"
+                    onClick={() => onMoveEpisode(node.episode.id, 1)}
+                    disabled={busy || episodeIndex === tree.episodes.length - 1}
+                  >
+                    <ChevronDown />
+                  </IconButton>
+                  <IconButton
+                    label={`${label}を削除`}
+                    title="削除"
+                    onClick={() => onDeleteEpisode(node.episode.id)}
+                    disabled={busy}
+                    danger
+                  >
+                    <X />
+                  </IconButton>
+                </div>
               </div>
 
               {node.scenes.length === 0 && (
-                <p className="px-2 py-2 text-[10px] text-muted-foreground/70">
+                <p className="px-2 py-2 text-xs text-muted-foreground">
                   まだ場がありません
                 </p>
               )}
@@ -333,94 +365,96 @@ export default function ShotRail({
                 const name = sceneLabel(sceneNode.scene, sceneIndex)
                 return (
                   <div key={sceneNode.scene.id} className="mt-1 pl-2">
-                    <div className="flex items-center gap-1 border-l-2 border-border pl-2">
-                      <h4 className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
+                    <div className="border-l-2 border-border pl-2">
+                      <h4 className="min-w-0 truncate text-xs text-muted-foreground">
                         {name}
                         {sceneNode.scene.time_of_day && (
-                          <span className="ml-1 text-[10px] text-muted-foreground/70">
+                          <span className="ml-1 text-[11px] text-muted-foreground">
                             {sceneNode.scene.time_of_day}
                           </span>
                         )}
                       </h4>
-                      <IconButton
-                        label={`${name}にカットを追加`}
-                        title="この場にカットを追加"
-                        onClick={() => onAddShotToScene(sceneNode.scene.id)}
-                        disabled={busy}
-                      >
-                        <Plus />
-                      </IconButton>
-                      <IconButton
-                        label={`${name}を改名`}
-                        title="改名"
-                        onClick={() =>
-                          rename(sceneNode.scene.title, (title) =>
-                            onRenameScene(sceneNode.scene.id, title),
-                          )
-                        }
-                        disabled={busy}
-                      >
-                        <Pencil />
-                      </IconButton>
-                      <IconButton
-                        label={`${name}のあらすじを編集`}
-                        title="あらすじ"
-                        onClick={() =>
-                          edit(
-                            `${name}のあらすじ`,
-                            sceneNode.scene.synopsis,
-                            (synopsis) =>
-                              onEditSceneSynopsis(sceneNode.scene.id, synopsis),
-                          )
-                        }
-                        disabled={busy}
-                      >
-                        <FileText />
-                      </IconButton>
-                      <IconButton
-                        label={`${name}の時間帯を編集`}
-                        title="時間帯"
-                        onClick={() =>
-                          edit(
-                            `${name}の時間帯（例: 夕方）`,
-                            sceneNode.scene.time_of_day,
-                            (timeOfDay) =>
-                              onEditSceneTimeOfDay(sceneNode.scene.id, timeOfDay),
-                          )
-                        }
-                        disabled={busy}
-                      >
-                        <Clock />
-                      </IconButton>
-                      <IconButton
-                        label={`${name}を上へ`}
-                        title="上へ"
-                        onClick={() =>
-                          onMoveScene(node.episode.id, sceneNode.scene.id, -1)
-                        }
-                        disabled={busy || sceneIndex === 0}
-                      >
-                        <ChevronUp />
-                      </IconButton>
-                      <IconButton
-                        label={`${name}を下へ`}
-                        title="下へ"
-                        onClick={() =>
-                          onMoveScene(node.episode.id, sceneNode.scene.id, 1)
-                        }
-                        disabled={busy || sceneIndex === node.scenes.length - 1}
-                      >
-                        <ChevronDown />
-                      </IconButton>
-                      <IconButton
-                        label={`${name}を削除`}
-                        title="削除"
-                        onClick={() => onDeleteScene(sceneNode.scene.id)}
-                        disabled={busy}
-                        danger
-                      >
-                        <X />
-                      </IconButton>
+                      <div className="mt-1 flex flex-wrap items-center gap-1">
+                        <IconButton
+                          label={`${name}にカットを追加`}
+                          title="この場にカットを追加"
+                          onClick={() => onAddShotToScene(sceneNode.scene.id)}
+                          disabled={busy}
+                        >
+                          <Plus />
+                        </IconButton>
+                        <IconButton
+                          label={`${name}を改名`}
+                          title="改名"
+                          onClick={() =>
+                            rename(sceneNode.scene.title, (title) =>
+                              onRenameScene(sceneNode.scene.id, title),
+                            )
+                          }
+                          disabled={busy}
+                        >
+                          <Pencil />
+                        </IconButton>
+                        <IconButton
+                          label={`${name}のあらすじを編集`}
+                          title="あらすじ"
+                          onClick={() =>
+                            edit(
+                              `${name}のあらすじ`,
+                              sceneNode.scene.synopsis,
+                              (synopsis) =>
+                                onEditSceneSynopsis(sceneNode.scene.id, synopsis),
+                            )
+                          }
+                          disabled={busy}
+                        >
+                          <FileText />
+                        </IconButton>
+                        <IconButton
+                          label={`${name}の時間帯を編集`}
+                          title="時間帯"
+                          onClick={() =>
+                            edit(
+                              `${name}の時間帯（例: 夕方）`,
+                              sceneNode.scene.time_of_day,
+                              (timeOfDay) =>
+                                onEditSceneTimeOfDay(sceneNode.scene.id, timeOfDay),
+                            )
+                          }
+                          disabled={busy}
+                        >
+                          <Clock />
+                        </IconButton>
+                        <IconButton
+                          label={`${name}を上へ`}
+                          title="上へ"
+                          onClick={() =>
+                            onMoveScene(node.episode.id, sceneNode.scene.id, -1)
+                          }
+                          disabled={busy || sceneIndex === 0}
+                        >
+                          <ChevronUp />
+                        </IconButton>
+                        <IconButton
+                          label={`${name}を下へ`}
+                          title="下へ"
+                          onClick={() =>
+                            onMoveScene(node.episode.id, sceneNode.scene.id, 1)
+                          }
+                          disabled={busy || sceneIndex === node.scenes.length - 1}
+                        >
+                          <ChevronDown />
+                        </IconButton>
+                        <IconButton
+                          label={`${name}を削除`}
+                          title="削除"
+                          onClick={() => onDeleteScene(sceneNode.scene.id)}
+                          disabled={busy}
+                          danger
+                        >
+                          <X />
+                        </IconButton>
+                      </div>
                     </div>
                     <div className="mt-1 pl-2">
                       {shotList(sceneNode.shots, 'カットなし')}
@@ -434,11 +468,11 @@ export default function ShotRail({
 
         {(tree.unassigned.length > 0 || tree.episodes.length > 0) && (
           <section>
-            <div className="flex items-center gap-1 rounded-md bg-surface-sunken px-2 py-1">
-              <h3 className="min-w-0 flex-1 truncate text-[11px] font-semibold text-muted-foreground">
+            <div className="flex items-center gap-2 rounded-md bg-surface-sunken px-2 py-1.5">
+              <h3 className="min-w-0 flex-1 truncate text-xs font-semibold text-muted-foreground">
                 未分類
               </h3>
-              <span className="tnum shrink-0 text-[10px] text-muted-foreground/70">
+              <span className="tnum shrink-0 text-[11px] text-muted-foreground">
                 {tree.unassigned.length}
               </span>
             </div>

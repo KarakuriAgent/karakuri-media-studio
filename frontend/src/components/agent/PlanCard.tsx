@@ -95,13 +95,13 @@ function TaskRow({
           <div className="mt-1 space-y-1">
             {text(task.job, 'image_prompt') && (
               <p className="whitespace-pre-wrap break-words text-[11px] text-muted-foreground">
-                <span className="text-muted-foreground/80">画像: </span>
+                <span className="text-muted-foreground-subtle">画像: </span>
                 {text(task.job, 'image_prompt')}
               </p>
             )}
             {text(task.job, 'video_prompt') && (
               <p className="whitespace-pre-wrap break-words text-[11px] text-muted-foreground">
-                <span className="text-muted-foreground/80">動画: </span>
+                <span className="text-muted-foreground-subtle">動画: </span>
                 {text(task.job, 'video_prompt')}
               </p>
             )}

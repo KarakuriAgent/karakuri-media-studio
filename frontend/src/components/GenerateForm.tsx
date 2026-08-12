@@ -50,12 +50,19 @@ import type {
   Options,
   WorkflowOption,
 } from '../types'
+import {
+  Accordion,
+  AccordionContent,
+  AccordionItem,
+  AccordionTrigger,
+} from '@/components/ui/accordion'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Slider } from '@/components/ui/slider'
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs'
 import { Textarea } from '@/components/ui/textarea'
 import { NativeSelect } from './NativeSelect'
 import AudioFields, { audioErrorKeys } from './AudioFields'
@@ -75,6 +82,70 @@ import { Banner, FieldError, Modal, Section } from './ui'
 // 音声も「モード」の一つ。ただし走るのは音声ワークフロー 1 本きりで、画像→動画の
 // 連結（full）とは繋がらない独立ジョブ。
 const MODES: JobMode[] = ['full', 'i2v', 'image_only', 'audio']
+
+/**
+ * 「詳細」アコーディオンの開閉状態を覚えておく場所。
+ *
+ * どの項目を開いて使うかは人によって固定なので、開き直すたびに畳み直させない。
+ * 保存できない環境（プライベートモード等）では単に覚えないだけで動く。
+ */
+const OPEN_DETAILS_KEY = 'generateForm.openDetails'
+
+function readOpenDetails(): string[] {
+  try {
+    const raw = window.localStorage.getItem(OPEN_DETAILS_KEY)
+    const parsed: unknown = raw ? JSON.parse(raw) : null
+    if (!Array.isArray(parsed)) return []
+    return parsed.filter((item): item is string => typeof item === 'string')
+  } catch {
+    return []
+  }
+}
+
+function writeOpenDetails(values: string[]) {
+  try {
+    window.localStorage.setItem(OPEN_DETAILS_KEY, JSON.stringify(values))
+  } catch {
+    // 保存できなくても操作は続けられる（次に開いたとき畳まれているだけ）
+  }
+}
+
+/**
+ * 「詳細」1 ブロック（折りたたみ）。
+ *
+ * 見出しの見た目は :func:`Section` と揃えたうえで `<section>` のまま出す
+ * （畳んでいるあいだ中身は描かれない）。右肩の `badge` は開かなくても状態が
+ * 分かるようにするための要約（件数・選択の有無など）。
+ */
+function DetailSection({
+  value,
+  title,
+  badge,
+  children,
+}: {
+  value: string
+  title: string
+  badge?: React.ReactNode
+  children: React.ReactNode
+}) {
+  return (
+    <AccordionItem value={value} asChild>
+      <section className="card border-b px-3 py-0">
+        <AccordionTrigger className="text-xs font-semibold uppercase tracking-wider text-muted-foreground hover:text-foreground hover:no-underline">
+          <span className="flex min-w-0 flex-wrap items-center gap-2">
+            <span>{title}</span>
+            {badge !== undefined && (
+              <Badge variant="secondary" className="tnum normal-case tracking-normal">
+                {badge}
+              </Badge>
+            )}
+          </span>
+        </AccordionTrigger>
+        <AccordionContent>{children}</AccordionContent>
+      </section>
+    </AccordionItem>
+  )
+}
 
 interface Props {
   form: FormState
@@ -174,7 +245,7 @@ function LoraPicker({
             選択 {selected.length} / 候補 {loras.length}
           </Badge>
           {selected.length === 0 && (
-            <span className="text-[11px] text-muted-foreground/70">未選択</span>
+            <span className="text-[11px] text-muted-foreground">未選択</span>
           )}
         </div>
       )}
@@ -286,7 +357,7 @@ function LoraPicker({
                     ) : (
                       <span
                         aria-hidden="true"
-                        className="flex size-14 shrink-0 items-center justify-center rounded-md border border-border bg-background text-lg font-semibold text-muted-foreground/70"
+                        className="flex size-14 shrink-0 items-center justify-center rounded-md border border-border bg-background text-lg font-semibold text-muted-foreground-subtle"
                       >
                         L
                       </span>
@@ -295,10 +366,10 @@ function LoraPicker({
                       <span className="block truncate text-xs font-medium">
                         {lora.display_name}
                       </span>
-                      <span className="mt-1 block truncate text-[10px] text-muted-foreground">
+                      <span className="mt-1 block truncate text-[11px] text-muted-foreground">
                         {lora.trigger_word || 'トリガーなし'}
                       </span>
-                      <span className="tnum block text-[10px] text-muted-foreground/70">
+                      <span className="tnum block text-[11px] text-muted-foreground-subtle">
                         強度 {lora.default_strength.toFixed(2)}
                       </span>
                     </span>
@@ -335,6 +406,7 @@ function LoraPicker({
 /** Asset select + upload + preview, shared by every image / video input. */
 function AssetPicker({
   kind,
+  title,
   value,
   assets,
   busy,
@@ -346,6 +418,8 @@ function AssetPicker({
   children,
 }: {
   kind: 'image' | 'video'
+  /** 欄の名前（「開始フレーム」など）。プルダウンの読み上げ名に使う。 */
+  title: string
   value: string
   assets: Asset[]
   busy: boolean
@@ -371,8 +445,10 @@ function AssetPicker({
 
   return (
     <div
-      className={`flex flex-col gap-2 rounded-lg border border-dashed p-2 transition-colors ${
-        dragOver ? 'border-primary bg-primary/10' : 'border-border'
+      // 枠は常時出さない（入れ子の罫線を減らす）。ドロップ先だと分かればよいので、
+      // 普段は背景の差だけ、ドラッグ中だけ破線を出す。
+      className={`flex flex-col gap-2 rounded-lg border border-transparent p-2 transition-colors ${
+        dragOver ? 'border-dashed border-primary bg-primary/10' : 'bg-secondary/30'
       }`}
       onDragOver={(event) => {
         event.preventDefault()
@@ -389,7 +465,7 @@ function AssetPicker({
         pickFile(event.dataTransfer.files)
       }}
     >
-      <div className="flex items-center gap-2">
+      <div className="flex flex-wrap items-center gap-2">
         <input
           ref={input}
           type="file"
@@ -435,7 +511,11 @@ function AssetPicker({
           </Button>
         )}
       </div>
-      <NativeSelect value={value} onChange={(event) => onPick(event.target.value)}>
+      <NativeSelect
+        aria-label={`${title}を選択`}
+        value={value}
+        onChange={(event) => onPick(event.target.value)}
+      >
         <option value="">（未選択）</option>
         {value && !assets.some((asset) => asset.url === value) && (
           <option value={value}>{value}</option>
@@ -448,18 +528,10 @@ function AssetPicker({
       </NativeSelect>
       {children}
       {value && kind === 'image' && (
-        <img
-          src={value}
-          alt=""
-          className="max-h-40 w-fit rounded-md border border-border object-contain"
-        />
+        <img src={value} alt="" className="max-h-40 w-fit rounded-md object-contain" />
       )}
       {value && kind === 'video' && (
-        <video
-          src={value}
-          controls
-          className="max-h-40 w-fit rounded-md border border-border"
-        />
+        <video src={value} controls className="max-h-40 w-fit rounded-md" />
       )}
     </div>
   )
@@ -510,12 +582,12 @@ function ReferencePicker({
   const full = values.length >= item.limit
 
   return (
-    <div className="flex flex-col gap-2 rounded-lg border border-dashed border-border p-2">
+    <div className="flex flex-col gap-2 rounded-lg bg-secondary/30 p-2">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-xs text-foreground/85">{item.label}</span>
-        <span className="tnum text-[11px] text-muted-foreground">
+        <Label>{item.label}</Label>
+        <Badge variant="secondary" className="tnum">
           {values.length} / {item.limit} 件
-        </span>
+        </Badge>
         <input
           ref={input}
           type="file"
@@ -557,11 +629,7 @@ function ReferencePicker({
                 {index + 1}.
               </span>
               {item.kind === 'image' && (
-                <img
-                  src={url}
-                  alt=""
-                  className="size-10 shrink-0 rounded-md border border-border object-cover"
-                />
+                <img src={url} alt="" className="size-10 shrink-0 rounded-md object-cover" />
               )}
               <span className="flex-1 truncate text-[11px] text-muted-foreground">
                 {url}
@@ -595,10 +663,15 @@ export default function GenerateForm({
 }: Props) {
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [busyUpload, setBusyUpload] = useState(false)
-  const [showAdvanced, setShowAdvanced] = useState(false)
+  // 「詳細」の折りたたみ（既定は全部畳む）。開閉は localStorage に覚えておく。
+  const [openDetails, setOpenDetails] = useState<string[]>(readOpenDetails)
+  const changeOpenDetails = (values: string[]) => {
+    setOpenDetails(values)
+    writeOpenDetails(values)
+  }
   // 構造化パラメータは行が増えてフォームが伸びるので、既定は畳んでおく（§8）
-  const [showShots, setShowShots] = useState(false)
-  const [showElements, setShowElements] = useState(false)
+  const showShots = openDetails.includes('multiShots')
+  const showElements = openDetails.includes('elements')
   // 履歴 / ライブラリのモーダルを開いている入力欄（null = 閉じている）
   const [historyTarget, setHistoryTarget] = useState<PickerTarget | null>(null)
   const [libraryTarget, setLibraryTarget] = useState<PickerTarget | null>(null)
@@ -688,18 +761,22 @@ export default function GenerateForm({
     form.mode === 'audio' ? audioErrorKeys(form, options) : [],
   )
   if (form.mode !== 'audio') {
+    // 「基本」に置いた欄は常に見えている。
     if (!hidden.startImage) shownErrorKeys.add('source_image')
     if (!hidden.endImage) shownErrorKeys.add('end_image')
-    if (!hidden.referenceVideo) shownErrorKeys.add('reference_video')
-    if (references.length > 0) {
+    if (!hidden.imagePrompt) shownErrorKeys.add('image_prompt')
+    if (!hidden.videoPrompt) shownErrorKeys.add('video_prompt')
+    // 「詳細」に畳んだ欄は、開いているあいだだけ「表示先がある」とみなす。
+    if (!hidden.referenceVideo && openDetails.includes('referenceVideo')) {
+      shownErrorKeys.add('reference_video')
+    }
+    if (references.length > 0 && openDetails.includes('references')) {
       shownErrorKeys.add('references')
       for (const item of references) shownErrorKeys.add(item.name)
     }
-    if (!hidden.audio) shownErrorKeys.add('audio_path')
-    if (!hidden.imagePrompt) shownErrorKeys.add('image_prompt')
-    if (!hidden.videoPrompt) shownErrorKeys.add('video_prompt')
-    // ショット / Elements は畳んでいるあいだ中身ごと見えないので、
-    // 開いているときだけ「表示先がある」とみなす。
+    if (!hidden.audio && openDetails.includes('audio')) {
+      shownErrorKeys.add('audio_path')
+    }
     if (shotLimits && showShots) {
       shownErrorKeys.add('multi_shots')
       form.multiShots.forEach((_, index) =>
@@ -895,23 +972,19 @@ export default function GenerateForm({
         </Banner>
       )}
 
-      {/* mode tabs */}
-      <div className="flex gap-1 rounded-lg border border-border bg-surface-sunken p-1 shadow-elevation-1">
-        {MODES.map((mode) => (
-          <button
-            key={mode}
-            onClick={() => patch({ mode })}
-            title={MODE_HINTS[mode]}
-            className={`flex-1 rounded-md px-2 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 ${
-              form.mode === mode
-                ? 'bg-primary text-primary-foreground shadow-elevation-1'
-                : 'text-muted-foreground hover:bg-secondary hover:text-foreground'
-            }`}
-          >
-            {MODE_LABELS[mode]}
-          </button>
-        ))}
-      </div>
+      {/* mode tabs（見た目はヘッダーのセグメンテッドと同じ shadcn Tabs） */}
+      <Tabs
+        value={form.mode}
+        onValueChange={(value) => patch({ mode: value as JobMode })}
+      >
+        <TabsList className="grid w-full grid-cols-4">
+          {MODES.map((mode) => (
+            <TabsTrigger key={mode} value={mode} title={MODE_HINTS[mode]}>
+              {MODE_LABELS[mode]}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+      </Tabs>
 
       {/* 音声モード: 音声ワークフロー 1 本きりの独立ジョブ（画像・動画とは無関係） */}
       {form.mode === 'audio' && (
@@ -980,324 +1053,7 @@ export default function GenerateForm({
             </Section>
           )}
 
-          {!hidden.startImage && (
-            <Section title={startImageLabel}>
-              <AssetPicker
-                kind="image"
-                value={form.sourceImage}
-                assets={imageAssets}
-                busy={busyUpload}
-                onPick={(url) => patch({ sourceImage: url })}
-                onUpload={(file) => void upload('image', file, (url) => ({ sourceImage: url }))}
-                onOpenHistory={() =>
-                  setHistoryTarget({
-                    kind: 'image',
-                    title: startImageLabel,
-                    apply: (url) => ({ sourceImage: url }),
-                  })
-                }
-                onOpenLibrary={() =>
-                  setLibraryTarget({
-                    kind: 'image',
-                    title: startImageLabel,
-                    apply: (url) => ({ sourceImage: url }),
-                  })
-                }
-                onOpenSheet={sheetInput ? () => setBuildingSheet(true) : undefined}
-              />
-              <FieldError message={fieldErrors.source_image} />
-            </Section>
-          )}
-
-          {!hidden.endImage && (
-            <Section title="最後のフレーム">
-              <AssetPicker
-                kind="image"
-                value={form.endImage}
-                assets={imageAssets}
-                busy={busyUpload}
-                onPick={(url) => patch({ endImage: url })}
-                onUpload={(file) => void upload('image', file, (url) => ({ endImage: url }))}
-                onOpenHistory={() =>
-                  setHistoryTarget({
-                    kind: 'image',
-                    title: '最後のフレーム',
-                    apply: (url) => ({ endImage: url }),
-                  })
-                }
-                onOpenLibrary={() =>
-                  setLibraryTarget({
-                    kind: 'image',
-                    title: '最後のフレーム',
-                    apply: (url) => ({ endImage: url }),
-                  })
-                }
-              />
-              <FieldError message={fieldErrors.end_image} />
-            </Section>
-          )}
-
-          {!hidden.referenceVideo && (
-            <Section title="参照動画（モーション転写）">
-              <AssetPicker
-                kind="video"
-                value={form.referenceVideo}
-                assets={videoAssets}
-                busy={busyUpload}
-                onPick={(url) => patch({ referenceVideo: url })}
-                onUpload={(file) => void upload('video', file, (url) => ({ referenceVideo: url }))}
-                onOpenHistory={() =>
-                  setHistoryTarget({
-                    kind: 'video',
-                    title: '参照動画',
-                    apply: (url) => ({ referenceVideo: url }),
-                  })
-                }
-                onOpenLibrary={() =>
-                  setLibraryTarget({
-                    kind: 'video',
-                    title: '参照動画',
-                    apply: (url) => ({ referenceVideo: url }),
-                  })
-                }
-              />
-              <FieldError message={fieldErrors.reference_video} />
-            </Section>
-          )}
-
-          {references.length > 0 && (
-            <Section title="マルチモーダル参照（素材参照ワークフロー）">
-              <div className="flex flex-col gap-2">
-                {references.map((item) => (
-                  <div key={item.name}>
-                    <ReferencePicker
-                      item={item}
-                      values={form[item.field]}
-                      busy={busyUpload}
-                      onUpload={(file) =>
-                        void upload(item.kind, file, (url) => ({
-                          [item.field]: [...form[item.field], url],
-                        }) as Partial<FormState>)
-                      }
-                      onOpenLibrary={() =>
-                        setLibraryTarget({
-                          kind: item.kind,
-                          title: item.label,
-                          reference: item,
-                          apply: (url) => ({ [item.field]: [url] }) as Partial<FormState>,
-                        })
-                      }
-                      onOpenHistory={() =>
-                        setHistoryTarget({
-                          kind: item.kind,
-                          title: item.label,
-                          reference: item,
-                          apply: (url) => ({ [item.field]: [url] }) as Partial<FormState>,
-                        })
-                      }
-                      onRemove={(url) =>
-                        patch({
-                          [item.field]: form[item.field].filter((one) => one !== url),
-                        } as Partial<FormState>)
-                      }
-                    />
-                    <FieldError message={fieldErrors[item.name]} />
-                  </div>
-                ))}
-              </div>
-              <FieldError message={fieldErrors.references} />
-            </Section>
-          )}
-
-          {!hidden.audio && (
-            <Section title="リファレンス音声">
-              {/* 音声の一覧はライブラリに一本化した（SPEC §7.2）。アップロードも
-                  そのままライブラリ登録になるので、選んだものは次回も残る。 */}
-              <div className="flex flex-col gap-2">
-                <div className="flex flex-wrap items-center gap-2">
-                  <input
-                    ref={audioInput}
-                    type="file"
-                    accept="audio/*"
-                    className="hidden"
-                    onChange={(event) => {
-                      const file = event.target.files?.[0]
-                      event.target.value = ''
-                      if (file) void uploadToLibrary('audio', file, 'audioPath')
-                    }}
-                  />
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={busyUpload}
-                    onClick={() =>
-                      setLibraryTarget({
-                        kind: 'audio',
-                        title: 'リファレンス音声',
-                        apply: (url) => ({ audioPath: url }),
-                      })
-                    }
-                  >
-                    ライブラリから選択
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={busyUpload}
-                    onClick={() =>
-                      setHistoryTarget({
-                        kind: 'audio',
-                        title: 'リファレンス音声',
-                        apply: (url) => ({ audioPath: url }),
-                      })
-                    }
-                  >
-                    履歴から選択
-                  </Button>
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    disabled={busyUpload}
-                    onClick={() => audioInput.current?.click()}
-                  >
-                    {busyUpload ? <Loader2 className="animate-spin" /> : <Upload />}
-                    {busyUpload ? 'アップロード中…' : 'アップロード'}
-                  </Button>
-                  {form.audioPath && (
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      onClick={() => patch({ audioPath: '' })}
-                    >
-                      クリア
-                    </Button>
-                  )}
-                </div>
-                {form.audioPath ? (
-                  <div className="flex items-center gap-2">
-                    <span
-                      className="max-w-[12rem] truncate text-xs text-foreground/85"
-                      title={form.audioPath}
-                    >
-                      {audioLabel}
-                    </span>
-                    <audio className="h-8 flex-1" controls src={form.audioPath} />
-                  </div>
-                ) : (
-                  <p className="text-[11px] text-muted-foreground">（未選択）</p>
-                )}
-                <FieldError message={fieldErrors.audio_path} />
-              </div>
-            </Section>
-          )}
-
-          {!hidden.videoLoras && (
-            <Section title="LoRA（動画）">
-              <LoraPicker
-                loras={videoLoras}
-                selected={form.videoLoras}
-                triggerText={form.videoTriggerText}
-                triggerDirty={form.videoTriggerDirty}
-                emptyHint="動画用の登録済み LoRA がありません（設定 → LoRA 管理で追加）"
-                onToggle={toggleVideoLora}
-                onStrength={(index, strength) => {
-                  const next = [...form.videoLoras]
-                  next[index] = { ...next[index], strength }
-                  patch({ videoLoras: next })
-                }}
-                onTrigger={(value) =>
-                  patch({ videoTriggerText: value, videoTriggerDirty: true })
-                }
-                onTriggerReset={() =>
-                  patch({
-                    videoTriggerDirty: false,
-                    videoTriggerText: joinTriggers(form.videoLoras),
-                  })
-                }
-              />
-            </Section>
-          )}
-
-          {!hidden.resolution && (
-            <Section title="解像度">
-              {imageEdits && (
-                <p className="mb-2 text-[11px] text-amber-300">
-                  選択中の画像ワークフローは入力画像から解像度を決めます。ここの設定は動画側にのみ効きます。
-                </p>
-              )}
-              <div className="grid grid-cols-2 gap-2">
-                <div>
-                  <Label className="mb-1" htmlFor="generate-aspect-ratio">
-                    アスペクト比
-                  </Label>
-                  {aspectRatios.length > 0 ? (
-                    <NativeSelect
-                      id="generate-aspect-ratio"
-                      value={form.aspectRatio}
-                      onChange={(event) => patch({ aspectRatio: event.target.value })}
-                    >
-                      {!aspectRatios.includes(form.aspectRatio) && (
-                        <option value={form.aspectRatio}>{form.aspectRatio}</option>
-                      )}
-                      {aspectRatios.map((ratio) => (
-                        <option key={ratio} value={ratio}>
-                          {ratio}
-                        </option>
-                      ))}
-                    </NativeSelect>
-                  ) : (
-                    <Input
-                      id="generate-aspect-ratio"
-                      value={form.aspectRatio}
-                      placeholder="4:3 (Standard)"
-                      onChange={(event) => patch({ aspectRatio: event.target.value })}
-                    />
-                  )}
-                </div>
-                <div>
-                  <Label className="mb-1" htmlFor="generate-megapixels">
-                    メガピクセル
-                  </Label>
-                  <Input
-                    id="generate-megapixels"
-                    className="tnum"
-                    type="number"
-                    step="0.05"
-                    min="0.1"
-                    value={form.megapixels}
-                    onChange={(event) =>
-                      patch({ megapixels: Number(event.target.value) || 0 })
-                    }
-                  />
-                </div>
-              </div>
-            </Section>
-          )}
-
-          {!hidden.loras && (
-            <Section title="LoRA（画像）">
-              <LoraPicker
-                loras={imageLoras}
-                selected={form.loras}
-                triggerText={form.triggerText}
-                triggerDirty={form.triggerDirty}
-                emptyHint={`画像用の登録済み LoRA がありません${
-                  imageWorkflow ? `（${imageWorkflow.label} と同じファミリーのもの）` : ''
-                }（設定 → LoRA 管理で追加）`}
-                onToggle={toggleLora}
-                onStrength={(index, strength) => {
-                  const next = [...form.loras]
-                  next[index] = { ...next[index], strength }
-                  patch({ loras: next })
-                }}
-                onTrigger={(value) => patch({ triggerText: value, triggerDirty: true })}
-                onTriggerReset={() =>
-                  patch({ triggerDirty: false, triggerText: joinTriggers(form.loras) })
-                }
-              />
-            </Section>
-          )}
-
+          {/* 毎回書き換える欄なので、フォームの上のほう（ワークフローの直後）に置く */}
           <Section
             title="プロンプト"
             right={
@@ -1328,7 +1084,7 @@ export default function GenerateForm({
                   <Label className="mb-1" htmlFor="generate-video-prompt">
                     動画プロンプト
                     {promptOptional && (
-                      <span className="ml-1 font-normal text-muted-foreground/70">
+                      <span className="ml-1 font-normal text-muted-foreground">
                         （任意）
                       </span>
                     )}
@@ -1363,27 +1119,469 @@ export default function GenerateForm({
             </div>
           </Section>
 
-          {shotLimits && (
-            <Section
-              title="マルチショット"
-              right={
-                <Button
-                  variant="ghost"
-                  size="xs"
-                  onClick={() => setShowShots((value) => !value)}
-                >
-                  {showShots
-                    ? '閉じる'
-                    : `開く（${form.multiShots.length} / ${shotLimits.max_shots} ショット）`}
-                </Button>
-              }
+          {/* モードが要求する必須アセット（ここまでが「基本」） */}
+          {!hidden.startImage && (
+            <Section title={startImageLabel}>
+              <AssetPicker
+                kind="image"
+                title={startImageLabel}
+                value={form.sourceImage}
+                assets={imageAssets}
+                busy={busyUpload}
+                onPick={(url) => patch({ sourceImage: url })}
+                onUpload={(file) => void upload('image', file, (url) => ({ sourceImage: url }))}
+                onOpenHistory={() =>
+                  setHistoryTarget({
+                    kind: 'image',
+                    title: startImageLabel,
+                    apply: (url) => ({ sourceImage: url }),
+                  })
+                }
+                onOpenLibrary={() =>
+                  setLibraryTarget({
+                    kind: 'image',
+                    title: startImageLabel,
+                    apply: (url) => ({ sourceImage: url }),
+                  })
+                }
+                onOpenSheet={sheetInput ? () => setBuildingSheet(true) : undefined}
+              />
+              <FieldError message={fieldErrors.source_image} />
+            </Section>
+          )}
+
+          {!hidden.endImage && (
+            <Section title="最後のフレーム">
+              <AssetPicker
+                kind="image"
+                title="最後のフレーム"
+                value={form.endImage}
+                assets={imageAssets}
+                busy={busyUpload}
+                onPick={(url) => patch({ endImage: url })}
+                onUpload={(file) => void upload('image', file, (url) => ({ endImage: url }))}
+                onOpenHistory={() =>
+                  setHistoryTarget({
+                    kind: 'image',
+                    title: '最後のフレーム',
+                    apply: (url) => ({ endImage: url }),
+                  })
+                }
+                onOpenLibrary={() =>
+                  setLibraryTarget({
+                    kind: 'image',
+                    title: '最後のフレーム',
+                    apply: (url) => ({ endImage: url }),
+                  })
+                }
+              />
+              <FieldError message={fieldErrors.end_image} />
+            </Section>
+          )}
+        </>
+      )}
+
+      {/* --------------------------------------------------------- 詳細
+          使う頻度の低い設定は畳んでおく。開閉は localStorage に覚えるので、
+          いつも使う項目は開いたままにできる。畳んでいるあいだのエラーは
+          送信ボタンのそばにまとめて出す（`unseenErrors`）。 */}
+      <Accordion
+        type="multiple"
+        className="flex flex-col gap-2"
+        value={openDetails}
+        onValueChange={changeOpenDetails}
+      >
+        {form.mode !== 'audio' && (
+          <>
+            {!hidden.referenceVideo && (
+              <DetailSection
+                value="referenceVideo"
+                title="参照動画（モーション転写）"
+                badge={form.referenceVideo ? '選択済み' : '未選択'}
+              >
+                <AssetPicker
+                  kind="video"
+                  title="参照動画"
+                  value={form.referenceVideo}
+                  assets={videoAssets}
+                  busy={busyUpload}
+                  onPick={(url) => patch({ referenceVideo: url })}
+                  onUpload={(file) => void upload('video', file, (url) => ({ referenceVideo: url }))}
+                  onOpenHistory={() =>
+                    setHistoryTarget({
+                      kind: 'video',
+                      title: '参照動画',
+                      apply: (url) => ({ referenceVideo: url }),
+                    })
+                  }
+                  onOpenLibrary={() =>
+                    setLibraryTarget({
+                      kind: 'video',
+                      title: '参照動画',
+                      apply: (url) => ({ referenceVideo: url }),
+                    })
+                  }
+                />
+                <FieldError message={fieldErrors.reference_video} />
+              </DetailSection>
+            )}
+
+            {references.length > 0 && (
+              <DetailSection
+                value="references"
+                title="マルチモーダル参照（素材参照ワークフロー）"
+                badge={`${references.reduce(
+                  (total, item) => total + form[item.field].length,
+                  0,
+                )} 件選択`}
+              >
+                <div className="flex flex-col gap-2">
+                  {references.map((item) => (
+                    <div key={item.name}>
+                      <ReferencePicker
+                        item={item}
+                        values={form[item.field]}
+                        busy={busyUpload}
+                        onUpload={(file) =>
+                          void upload(item.kind, file, (url) => ({
+                            [item.field]: [...form[item.field], url],
+                          }) as Partial<FormState>)
+                        }
+                        onOpenLibrary={() =>
+                          setLibraryTarget({
+                            kind: item.kind,
+                            title: item.label,
+                            reference: item,
+                            apply: (url) => ({ [item.field]: [url] }) as Partial<FormState>,
+                          })
+                        }
+                        onOpenHistory={() =>
+                          setHistoryTarget({
+                            kind: item.kind,
+                            title: item.label,
+                            reference: item,
+                            apply: (url) => ({ [item.field]: [url] }) as Partial<FormState>,
+                          })
+                        }
+                        onRemove={(url) =>
+                          patch({
+                            [item.field]: form[item.field].filter((one) => one !== url),
+                          } as Partial<FormState>)
+                        }
+                      />
+                      <FieldError message={fieldErrors[item.name]} />
+                    </div>
+                  ))}
+                </div>
+                <FieldError message={fieldErrors.references} />
+              </DetailSection>
+            )}
+
+            {!hidden.audio && (
+              <DetailSection
+                value="audio"
+                title="リファレンス音声"
+                badge={form.audioPath ? '選択済み' : '未選択'}
+              >
+                {/* 音声の一覧はライブラリに一本化した（SPEC §7.2）。アップロードも
+                    そのままライブラリ登録になるので、選んだものは次回も残る。 */}
+                <div className="flex flex-col gap-2">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <input
+                      ref={audioInput}
+                      type="file"
+                      accept="audio/*"
+                      className="hidden"
+                      onChange={(event) => {
+                        const file = event.target.files?.[0]
+                        event.target.value = ''
+                        if (file) void uploadToLibrary('audio', file, 'audioPath')
+                      }}
+                    />
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={busyUpload}
+                      onClick={() =>
+                        setLibraryTarget({
+                          kind: 'audio',
+                          title: 'リファレンス音声',
+                          apply: (url) => ({ audioPath: url }),
+                        })
+                      }
+                    >
+                      ライブラリから選択
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={busyUpload}
+                      onClick={() =>
+                        setHistoryTarget({
+                          kind: 'audio',
+                          title: 'リファレンス音声',
+                          apply: (url) => ({ audioPath: url }),
+                        })
+                      }
+                    >
+                      履歴から選択
+                    </Button>
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      disabled={busyUpload}
+                      onClick={() => audioInput.current?.click()}
+                    >
+                      {busyUpload ? <Loader2 className="animate-spin" /> : <Upload />}
+                      {busyUpload ? 'アップロード中…' : 'アップロード'}
+                    </Button>
+                    {form.audioPath && (
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => patch({ audioPath: '' })}
+                      >
+                        クリア
+                      </Button>
+                    )}
+                  </div>
+                  {form.audioPath ? (
+                    <div className="flex items-center gap-2">
+                      <span
+                        className="max-w-[12rem] truncate text-xs text-foreground/85"
+                        title={form.audioPath}
+                      >
+                        {audioLabel}
+                      </span>
+                      <audio className="h-8 flex-1" controls src={form.audioPath} />
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-muted-foreground">（未選択）</p>
+                  )}
+                  <FieldError message={fieldErrors.audio_path} />
+                </div>
+              </DetailSection>
+            )}
+
+            {!hidden.videoLoras && (
+              <DetailSection
+                value="videoLoras"
+                title="LoRA（動画）"
+                badge={`${form.videoLoras.length} / ${videoLoras.length}`}
+              >
+                <LoraPicker
+                  loras={videoLoras}
+                  selected={form.videoLoras}
+                  triggerText={form.videoTriggerText}
+                  triggerDirty={form.videoTriggerDirty}
+                  emptyHint="動画用の登録済み LoRA がありません（設定 → LoRA 管理で追加）"
+                  onToggle={toggleVideoLora}
+                  onStrength={(index, strength) => {
+                    const next = [...form.videoLoras]
+                    next[index] = { ...next[index], strength }
+                    patch({ videoLoras: next })
+                  }}
+                  onTrigger={(value) =>
+                    patch({ videoTriggerText: value, videoTriggerDirty: true })
+                  }
+                  onTriggerReset={() =>
+                    patch({
+                      videoTriggerDirty: false,
+                      videoTriggerText: joinTriggers(form.videoLoras),
+                    })
+                  }
+                />
+              </DetailSection>
+            )}
+
+            {!hidden.loras && (
+              <DetailSection
+                value="imageLoras"
+                title="LoRA（画像）"
+                badge={`${form.loras.length} / ${imageLoras.length}`}
+              >
+                <LoraPicker
+                  loras={imageLoras}
+                  selected={form.loras}
+                  triggerText={form.triggerText}
+                  triggerDirty={form.triggerDirty}
+                  emptyHint={`画像用の登録済み LoRA がありません${
+                    imageWorkflow ? `（${imageWorkflow.label} と同じファミリーのもの）` : ''
+                  }（設定 → LoRA 管理で追加）`}
+                  onToggle={toggleLora}
+                  onStrength={(index, strength) => {
+                    const next = [...form.loras]
+                    next[index] = { ...next[index], strength }
+                    patch({ loras: next })
+                  }}
+                  onTrigger={(value) => patch({ triggerText: value, triggerDirty: true })}
+                  onTriggerReset={() =>
+                    patch({ triggerDirty: false, triggerText: joinTriggers(form.loras) })
+                  }
+                />
+              </DetailSection>
+            )}
+
+            {!hidden.resolution && (
+              <DetailSection
+                value="resolution"
+                title="解像度"
+                badge={`${form.aspectRatio} / ${form.megapixels}MP`}
+              >
+                {imageEdits && (
+                  <p className="mb-2 text-[11px] text-amber-300">
+                    選択中の画像ワークフローは入力画像から解像度を決めます。ここの設定は動画側にのみ効きます。
+                  </p>
+                )}
+                <div className="grid grid-cols-2 gap-2">
+                  <div>
+                    <Label className="mb-1" htmlFor="generate-aspect-ratio">
+                      アスペクト比
+                    </Label>
+                    {aspectRatios.length > 0 ? (
+                      <NativeSelect
+                        id="generate-aspect-ratio"
+                        value={form.aspectRatio}
+                        onChange={(event) => patch({ aspectRatio: event.target.value })}
+                      >
+                        {!aspectRatios.includes(form.aspectRatio) && (
+                          <option value={form.aspectRatio}>{form.aspectRatio}</option>
+                        )}
+                        {aspectRatios.map((ratio) => (
+                          <option key={ratio} value={ratio}>
+                            {ratio}
+                          </option>
+                        ))}
+                      </NativeSelect>
+                    ) : (
+                      <Input
+                        id="generate-aspect-ratio"
+                        value={form.aspectRatio}
+                        placeholder="4:3 (Standard)"
+                        onChange={(event) => patch({ aspectRatio: event.target.value })}
+                      />
+                    )}
+                  </div>
+                  <div>
+                    <Label className="mb-1" htmlFor="generate-megapixels">
+                      メガピクセル
+                    </Label>
+                    <Input
+                      id="generate-megapixels"
+                      className="tnum"
+                      type="number"
+                      step="0.05"
+                      min="0.1"
+                      value={form.megapixels}
+                      onChange={(event) =>
+                        patch({ megapixels: Number(event.target.value) || 0 })
+                      }
+                    />
+                  </div>
+                </div>
+              </DetailSection>
+            )}
+
+            <DetailSection
+              value="output"
+              title="出力設定"
+              badge={form.seedLocked ? `seed ${form.seed}` : 'seed ランダム'}
             >
-              {showShots && (
+              {(!hidden.duration || !hidden.fps) && (
+                <div className="grid grid-cols-2 gap-2">
+                  {!hidden.duration && (
+                    <div>
+                      <Label className="mb-1" htmlFor="generate-duration">
+                        秒数（上限なし）
+                      </Label>
+                      <Input
+                        id="generate-duration"
+                        className="tnum"
+                        type="number"
+                        min="1"
+                        step="1"
+                        value={form.duration}
+                        onChange={(event) =>
+                          patch({ duration: Number(event.target.value) || 0 })
+                        }
+                      />
+                    </div>
+                  )}
+                  {!hidden.fps && (
+                    <div>
+                      <Label className="mb-1" htmlFor="generate-fps">
+                        fps
+                      </Label>
+                      <Input
+                        id="generate-fps"
+                        className="tnum"
+                        type="number"
+                        min="1"
+                        step="1"
+                        value={form.fps}
+                        onChange={(event) => patch({ fps: Number(event.target.value) || 0 })}
+                      />
+                    </div>
+                  )}
+                </div>
+              )}
+              {!hidden.steps && (
+                <div className="mt-3">
+                  <Label className="mb-1" htmlFor="generate-steps">
+                    ステップ数
+                  </Label>
+                  <Input
+                    id="generate-steps"
+                    className="tnum"
+                    type="number"
+                    min="0"
+                    max={MAX_STEPS}
+                    step="1"
+                    placeholder="未指定＝既定"
+                    value={form.steps || ''}
+                    onChange={(event) =>
+                      patch({ steps: Number(event.target.value) || 0 })
+                    }
+                  />
+                </div>
+              )}
+              <div className="mt-3 flex items-center gap-2">
+                <div className="flex shrink-0 items-center gap-2">
+                  <Checkbox
+                    id="generate-seed-locked"
+                    checked={form.seedLocked}
+                    onCheckedChange={(checked) => patch({ seedLocked: checked === true })}
+                  />
+                  <Label
+                    htmlFor="generate-seed-locked"
+                    className="cursor-pointer text-xs text-foreground/85"
+                  >
+                    seed 固定
+                  </Label>
+                </div>
+                <Input
+                  className="tnum flex-1"
+                  type="number"
+                  min="0"
+                  aria-label="seed"
+                  value={form.seed}
+                  disabled={!form.seedLocked}
+                  onChange={(event) => patch({ seed: Number(event.target.value) || 0 })}
+                />
+              </div>
+            </DetailSection>
+
+            {shotLimits && (
+              <DetailSection
+                value="multiShots"
+                title="マルチショット"
+                badge={`${form.multiShots.length} / ${shotLimits.max_shots} ショット`}
+              >
                 <div className="flex flex-col gap-2">
                   {form.multiShots.map((shot, index) => (
                     <div
                       key={index}
-                      className="flex flex-col gap-1 rounded-lg border border-dashed border-border p-2"
+                      className="flex flex-col gap-1 rounded-lg bg-secondary/30 p-2"
                     >
                       <div className="flex items-center gap-2">
                         <span className="text-xs text-foreground/85">
@@ -1459,31 +1657,20 @@ export default function GenerateForm({
                   </Button>
                   <FieldError message={fieldErrors.multi_shots} />
                 </div>
-              )}
-            </Section>
-          )}
+              </DetailSection>
+            )}
 
-          {elementLimits && (
-            <Section
-              title="Elements（@要素名 でのキャラ固定）"
-              right={
-                <Button
-                  variant="ghost"
-                  size="xs"
-                  onClick={() => setShowElements((value) => !value)}
-                >
-                  {showElements
-                    ? '閉じる'
-                    : `開く（${form.klingElements.length} / ${elementLimits.max_elements} 要素）`}
-                </Button>
-              }
-            >
-              {showElements && (
+            {elementLimits && (
+              <DetailSection
+                value="elements"
+                title="Elements（@要素名 でのキャラ固定）"
+                badge={`${form.klingElements.length} / ${elementLimits.max_elements} 要素`}
+              >
                 <div className="flex flex-col gap-2">
                   {form.klingElements.map((element, index) => (
                     <div
                       key={index}
-                      className="flex flex-col gap-1 rounded-lg border border-dashed border-border p-2"
+                      className="flex flex-col gap-1 rounded-lg bg-secondary/30 p-2"
                     >
                       <div className="flex items-center gap-2">
                         <Input
@@ -1522,9 +1709,9 @@ export default function GenerateForm({
                         </Button>
                       </div>
                       <div className="flex flex-wrap items-center gap-2">
-                        <span className="tnum text-[11px] text-muted-foreground">
+                        <Badge variant="secondary" className="tnum">
                           {element.images.length} / {elementLimits.max_images} 枚
-                        </span>
+                        </Badge>
                         <Button
                           variant="outline"
                           size="sm"
@@ -1572,7 +1759,7 @@ export default function GenerateForm({
                               <img
                                 src={url}
                                 alt=""
-                                className="size-10 shrink-0 rounded-md border border-border object-cover"
+                                className="size-10 shrink-0 rounded-md object-cover"
                               />
                               <span className="flex-1 truncate text-[11px] text-muted-foreground">
                                 {url}
@@ -1617,24 +1804,15 @@ export default function GenerateForm({
                   </Button>
                   <FieldError message={fieldErrors.kling_elements} />
                 </div>
-              )}
-            </Section>
-          )}
+              </DetailSection>
+            )}
 
-          {!hidden.negative && (
-            <Section
-              title="動画ネガティブ"
-              right={
-                <Button
-                  variant="ghost"
-                  size="xs"
-                  onClick={() => setShowAdvanced((value) => !value)}
-                >
-                  {showAdvanced ? '閉じる' : '詳細設定'}
-                </Button>
-              }
-            >
-              {showAdvanced && (
+            {!hidden.negative && (
+              <DetailSection
+                value="negative"
+                title="動画ネガティブ"
+                badge={NEGATIVE_PRESET_LABELS[form.negativePreset] ?? form.negativePreset}
+              >
                 <div className="flex flex-col gap-2">
                   <NativeSelect
                     aria-label="ネガティブプリセット"
@@ -1667,135 +1845,57 @@ export default function GenerateForm({
                     }
                   />
                 </div>
-              )}
-              {!showAdvanced && (
-                <p className="truncate text-xs text-muted-foreground">
-                  {NEGATIVE_PRESET_LABELS[form.negativePreset] ?? form.negativePreset}:{' '}
-                  {form.negativePrompt || '（ワークフロー既定）'}
-                </p>
-              )}
-            </Section>
-          )}
-
-          <Section title="出力設定">
-            {(!hidden.duration || !hidden.fps) && (
-              <div className="grid grid-cols-2 gap-2">
-                {!hidden.duration && (
-                  <div>
-                    <Label className="mb-1" htmlFor="generate-duration">
-                      秒数（上限なし）
-                    </Label>
-                    <Input
-                      id="generate-duration"
-                      className="tnum"
-                      type="number"
-                      min="1"
-                      step="1"
-                      value={form.duration}
-                      onChange={(event) =>
-                        patch({ duration: Number(event.target.value) || 0 })
-                      }
-                    />
-                  </div>
-                )}
-                {!hidden.fps && (
-                  <div>
-                    <Label className="mb-1" htmlFor="generate-fps">
-                      fps
-                    </Label>
-                    <Input
-                      id="generate-fps"
-                      className="tnum"
-                      type="number"
-                      min="1"
-                      step="1"
-                      value={form.fps}
-                      onChange={(event) => patch({ fps: Number(event.target.value) || 0 })}
-                    />
-                  </div>
-                )}
-              </div>
+              </DetailSection>
             )}
-            {!hidden.steps && (
-              <div className="mt-3">
-                <Label className="mb-1" htmlFor="generate-steps">
-                  ステップ数
-                </Label>
-                <Input
-                  id="generate-steps"
-                  className="tnum"
-                  type="number"
-                  min="0"
-                  max={MAX_STEPS}
-                  step="1"
-                  placeholder="未指定＝既定"
-                  value={form.steps || ''}
-                  onChange={(event) =>
-                    patch({ steps: Number(event.target.value) || 0 })
-                  }
-                />
-              </div>
-            )}
-            <div className="mt-3 flex items-center gap-2">
-              <div className="flex shrink-0 items-center gap-2">
-                <Checkbox
-                  id="generate-seed-locked"
-                  checked={form.seedLocked}
-                  onCheckedChange={(checked) => patch({ seedLocked: checked === true })}
-                />
-                <Label
-                  htmlFor="generate-seed-locked"
-                  className="cursor-pointer text-xs text-foreground/85"
-                >
-                  seed 固定
-                </Label>
-              </div>
-              <Input
-                className="tnum flex-1"
-                type="number"
-                min="0"
-                aria-label="seed"
-                value={form.seed}
-                disabled={!form.seedLocked}
-                onChange={(event) => patch({ seed: Number(event.target.value) || 0 })}
-              />
-            </div>
-          </Section>
-        </>
-      )}
+          </>
+        )}
 
-      {uploadError && <Banner onClose={() => setUploadError(null)}>{uploadError}</Banner>}
-
-      {/* NSFW の手動指定（SPEC §7.1）。オンで投げたジョブは manual 扱いになり、
-          生成後の自動判定で上書きされない。オフなら従来どおり自動判定に任せる。 */}
-      <div className="flex items-center gap-2">
-        <Checkbox
-          id="generate-nsfw"
-          checked={form.nsfw}
-          onCheckedChange={(checked) => patch({ nsfw: checked === true })}
-        />
-        <Label
-          htmlFor="generate-nsfw"
-          className="flex cursor-pointer items-center gap-1 text-xs text-foreground/85"
+        {/* NSFW の手動指定（SPEC §7.1）。オンで投げたジョブは manual 扱いになり、
+            生成後の自動判定で上書きされない。オフなら従来どおり自動判定に任せる。
+            音声モードでも使うので、モードで分けたかたまりの外に置く。 */}
+        <DetailSection
+          value="nsfw"
+          title="NSFW"
+          badge={form.nsfw ? '手動でオン' : '自動判定'}
         >
-          <EyeOff className="size-3" aria-hidden="true" />
-          NSFW として投入（オフなら生成後に自動判定）
-        </Label>
+          <div className="flex items-center gap-2">
+            <Checkbox
+              id="generate-nsfw"
+              checked={form.nsfw}
+              onCheckedChange={(checked) => patch({ nsfw: checked === true })}
+            />
+            <Label
+              htmlFor="generate-nsfw"
+              className="flex cursor-pointer items-center gap-1 text-xs text-foreground/85"
+            >
+              <EyeOff className="size-3" aria-hidden="true" />
+              NSFW として投入（オフなら生成後に自動判定）
+            </Label>
+          </div>
+        </DetailSection>
+      </Accordion>
+
+      {/* 実行ボタンとエラーはフォームの長さに関係なく見えていないといけないので、
+          スクロールしても残るよう下端に貼り付ける（親は overflow-y-auto）。 */}
+      <div className="sticky bottom-0 z-20 -mx-3 -mb-3 mt-1 flex flex-col gap-2 border-t border-border bg-background/95 px-3 py-3 backdrop-blur">
+        {uploadError && (
+          <Banner onClose={() => setUploadError(null)}>{uploadError}</Banner>
+        )}
+
+        {/* 表示先の無いエラー（隠れている欄・畳んだセクション・バックエンドの
+            422 が返した見覚えのないキー）。これが無いと送信が黙って止まる。 */}
+        {unseenErrors.length > 0 && (
+          <Banner tone="warn">
+            {'入力に問題があるため実行できません:\n'}
+            {unseenErrors.map(([key, message]) => `・${message}（${key}）`).join('\n')}
+          </Banner>
+        )}
+
+        <Button size="lg" className="w-full" onClick={onSubmit} disabled={submitting}>
+          {submitting && <Loader2 className="animate-spin" />}
+          {submitting ? '送信中…' : '実行'}
+        </Button>
       </div>
-
-      {/* 表示先の無いエラー（隠れている欄・畳んだセクション・バックエンドの
-          422 が返した見覚えのないキー）。これが無いと送信が黙って止まる。 */}
-      {unseenErrors.length > 0 && (
-        <Banner tone="warn">
-          {'入力に問題があるため実行できません:\n'}
-          {unseenErrors.map(([key, message]) => `・${message}（${key}）`).join('\n')}
-        </Banner>
-      )}
-
-      <Button size="lg" className="w-full" onClick={onSubmit} disabled={submitting}>
-        {submitting && <Loader2 className="animate-spin" />}
-        {submitting ? '送信中…' : '実行'}
-      </Button>
 
       {historyTarget && (
         <HistoryPickerModal

@@ -93,7 +93,7 @@ export default function ArtifactPanel({
         >
           <ChevronLeft />
         </Button>
-        <span className="tnum text-[10px] text-muted-foreground">
+        <span className="tnum text-[11px] text-muted-foreground">
           {artifacts.length}
         </span>
       </aside>
@@ -117,7 +117,7 @@ export default function ArtifactPanel({
         <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           成果物
         </h2>
-        <span className="tnum text-xs text-muted-foreground/70">
+        <span className="tnum text-xs text-muted-foreground">
           {artifacts.length}
         </span>
         <Button
@@ -167,11 +167,11 @@ export default function ArtifactPanel({
                 <span className="mt-0.5 flex items-center gap-1.5">
                   <Badge
                     variant="outline"
-                    className="bg-background px-1.5 py-0 text-[10px] font-normal text-muted-foreground"
+                    className="bg-background px-1.5 py-0 text-[11px] font-normal text-muted-foreground"
                   >
                     {chip}
                   </Badge>
-                  <span className="tnum text-[10px] text-muted-foreground/70">
+                  <span className="tnum text-[11px] text-muted-foreground-subtle">
                     {shortTime(isFrames ? card.ts : card.artifact.ts)}
                   </span>
                 </span>
@@ -191,7 +191,7 @@ export default function ArtifactPanel({
             </p>
             <div className="mt-1 flex items-center gap-2">
               <Progress className="flex-1" value={task.percent} />
-              <span className="tnum text-[10px] text-muted-foreground">
+              <span className="tnum text-[11px] text-muted-foreground">
                 {task.percent}%
               </span>
             </div>

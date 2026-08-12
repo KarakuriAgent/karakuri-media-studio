@@ -84,7 +84,7 @@ function CardBody({
         </p>
         {references > 0 && (
           <span
-            className="chip w-fit !px-1.5 !py-0 text-[10px] text-muted-foreground"
+            className="chip w-fit !px-1.5 !py-0 text-[11px] text-muted-foreground"
             title="声サンプル・動画リファレンス・追加画像（編集で見られます）"
           >
             <Paperclip className="size-3 shrink-0" aria-hidden="true" />
@@ -113,7 +113,7 @@ function CardBody({
             <Button
               variant="outline"
               size="xs"
-              className="h-5 px-1.5 text-[10px]"
+              className="h-5 px-1.5 text-[11px]"
               title="この場にカットを追加"
               aria-label={`${cardTitle(card, detail)} にカットを追加`}
               disabled={busy}
@@ -147,16 +147,16 @@ function CardBody({
     return (
       <div className="flex h-full flex-col gap-1">
         <div className="flex flex-wrap items-center gap-1">
-          <span className={`chip !px-1.5 !py-0 text-[10px] ${SHOT_STATUS_CLASS[shot.status]}`}>
+          <span className={`chip !px-1.5 !py-0 text-[11px] ${SHOT_STATUS_CLASS[shot.status]}`}>
             {SHOT_STATUS_LABEL[shot.status]}
           </span>
           {/* 場に入れていないカットは、どの話にも属さず作品共通タブに出る */}
           {isLooseShot(card, detail) && (
-            <span className="chip !px-1.5 !py-0 text-[10px] text-muted-foreground">
+            <span className="chip !px-1.5 !py-0 text-[11px] text-muted-foreground">
               未分類
             </span>
           )}
-          <span className="tnum text-[10px] text-muted-foreground">
+          <span className="tnum text-[11px] text-muted-foreground">
             {shot.duration_seconds} 秒
           </span>
         </div>
@@ -174,7 +174,7 @@ function CardBody({
     const media = takeMedia(take)
     return (
       <div className="flex h-full flex-col gap-1">
-        <span className={`chip w-fit !px-1.5 !py-0 text-[10px] ${TAKE_STATUS_CLASS[take.status]}`}>
+        <span className={`chip w-fit !px-1.5 !py-0 text-[11px] ${TAKE_STATUS_CLASS[take.status]}`}>
           {TAKE_STATUS_LABEL[take.status]}
         </span>
         {media ? (

@@ -1,4 +1,11 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+} from 'react'
 import { ApiError, api, fieldErrorsFromError, formatDetail, wsUrl } from './api'
 import ChatModal from './components/ChatModal'
 import ContinueModal from './components/ContinueModal'
@@ -11,6 +18,7 @@ import SettingsPage from './components/SettingsPage'
 import AgentView from './components/agent/AgentView'
 import StudioView from './components/studio/StudioView'
 import { Banner } from './components/ui'
+import { Tabs, TabsList, TabsTrigger } from './components/ui/tabs'
 import {
   audioJobPayload,
   formStateFromParams,
@@ -51,6 +59,196 @@ function initialShowNsfw(): boolean {
   }
 }
 
+const SIDEBAR_WIDTH_KEY = 'sidebarWidth'
+const SIDEBAR_WIDTH = { initial: 400, min: 320, max: 640 }
+const HISTORY_HEIGHT_KEY = 'historyHeight'
+const HISTORY_HEIGHT = { initial: 144, min: 100, max: 320 }
+
+/** 矢印キー 1 打ぶんの変化量（px）。 */
+const RESIZE_STEP = 16
+
+/** lg（1024px）以上か。未満ではリサイズを止め、生成／結果を切り替え表示にする。 */
+function useIsWide(): boolean {
+  const [wide, setWide] = useState(true)
+  useEffect(() => {
+    if (typeof window.matchMedia !== 'function') return
+    const query = window.matchMedia('(min-width: 1024px)')
+    const apply = () => setWide(query.matches)
+    apply()
+    query.addEventListener('change', apply)
+    return () => query.removeEventListener('change', apply)
+  }, [])
+  return wide
+}
+
+function clampSize(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, Math.round(value)))
+}
+
+function storedSize(key: string, fallback: number, min: number, max: number): number {
+  try {
+    const raw = window.localStorage.getItem(key)
+    const value = raw == null ? Number.NaN : Number(raw)
+    return Number.isFinite(value) ? clampSize(value, min, max) : fallback
+  } catch {
+    return fallback
+  }
+}
+
+interface ResizablePanel {
+  /** いまの幅（axis='x'）または高さ（axis='y'）。単位は px。 */
+  size: number
+  dragging: boolean
+  axis: 'x' | 'y'
+  min: number
+  max: number
+  handleProps: {
+    onPointerDown: (event: ReactPointerEvent<HTMLDivElement>) => void
+    onPointerMove: (event: ReactPointerEvent<HTMLDivElement>) => void
+    onPointerUp: (event: ReactPointerEvent<HTMLDivElement>) => void
+    onPointerCancel: (event: ReactPointerEvent<HTMLDivElement>) => void
+    onDoubleClick: () => void
+    onKeyDown: (event: ReactKeyboardEvent<HTMLDivElement>) => void
+  }
+}
+
+/**
+ * ドラッグでサイズを変えられるパネル（サイドバーの幅・履歴の高さ）。
+ *
+ * 値は localStorage に持つので次に開いたときも同じ大きさで出る。ハンドルの
+ * ダブルクリックで既定値へ戻し、矢印キーでも ±{@link RESIZE_STEP}px 動かせる。
+ * `axis='y'` のハンドルは対象の上端に置くので、上へドラッグすると大きくなる。
+ */
+function useResizablePanel(
+  storageKey: string,
+  { initial, min, max }: { initial: number; min: number; max: number },
+  axis: 'x' | 'y',
+): ResizablePanel {
+  const [size, setSize] = useState(() => storedSize(storageKey, initial, min, max))
+  const [dragging, setDragging] = useState(false)
+  // ドラッグ開始時のポインタ位置とサイズ（移動量を足し込むための起点）。
+  const origin = useRef<{ position: number; size: number } | null>(null)
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(storageKey, String(size))
+    } catch {
+      /* 保存できない環境ではこのセッションのあいだだけ効く */
+    }
+  }, [size, storageKey])
+
+  // ドラッグ中は文字が選択されないようにする（ハンドルを掴んだまま動かすため）。
+  useEffect(() => {
+    if (!dragging) return
+    document.body.classList.add('select-none')
+    return () => document.body.classList.remove('select-none')
+  }, [dragging])
+
+  const nudge = useCallback(
+    (delta: number) => setSize((previous) => clampSize(previous + delta, min, max)),
+    [max, min],
+  )
+
+  const handleProps = {
+    onPointerDown: (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (event.button !== 0) return
+      event.preventDefault()
+      origin.current = {
+        position: axis === 'x' ? event.clientX : event.clientY,
+        size,
+      }
+      event.currentTarget.setPointerCapture(event.pointerId)
+      setDragging(true)
+    },
+    onPointerMove: (event: ReactPointerEvent<HTMLDivElement>) => {
+      const start = origin.current
+      if (!start) return
+      const position = axis === 'x' ? event.clientX : event.clientY
+      // 上端ハンドルは上へ動かすと広がるので符号が逆。
+      const delta = axis === 'x' ? position - start.position : start.position - position
+      setSize(clampSize(start.size + delta, min, max))
+    },
+    onPointerUp: (event: ReactPointerEvent<HTMLDivElement>) => {
+      origin.current = null
+      setDragging(false)
+      if (event.currentTarget.hasPointerCapture(event.pointerId))
+        event.currentTarget.releasePointerCapture(event.pointerId)
+    },
+    onPointerCancel: () => {
+      origin.current = null
+      setDragging(false)
+    },
+    onDoubleClick: () => setSize(clampSize(initial, min, max)),
+    onKeyDown: (event: ReactKeyboardEvent<HTMLDivElement>) => {
+      const grow = axis === 'x' ? 'ArrowRight' : 'ArrowUp'
+      const shrink = axis === 'x' ? 'ArrowLeft' : 'ArrowDown'
+      if (event.key === grow) nudge(RESIZE_STEP)
+      else if (event.key === shrink) nudge(-RESIZE_STEP)
+      else if (event.key === 'Home') setSize(min)
+      else if (event.key === 'End') setSize(max)
+      else return
+      event.preventDefault()
+    },
+  }
+
+  return { size, dragging, axis, min, max, handleProps }
+}
+
+/**
+ * リサイズ用のつまみ（lg 以上でのみ出す）。
+ *
+ * ドラッグ中は全面のオーバーレイを重ね、iframe / video がポインタを奪って
+ * 追従が途切れるのを防ぐ。
+ */
+function ResizeHandle({
+  panel,
+  label,
+  className,
+}: {
+  panel: ResizablePanel
+  label: string
+  className?: string
+}) {
+  const vertical = panel.axis === 'x'
+  const bar = panel.dragging
+    ? 'bg-primary'
+    : 'bg-transparent group-hover:bg-primary group-focus-visible:bg-primary'
+  return (
+    <>
+      <div
+        role="separator"
+        aria-orientation={vertical ? 'vertical' : 'horizontal'}
+        aria-label={label}
+        aria-valuenow={panel.size}
+        aria-valuemin={panel.min}
+        aria-valuemax={panel.max}
+        tabIndex={0}
+        title={`${label}（ドラッグで変更 / ダブルクリックで既定に戻す）`}
+        className={`group relative hidden shrink-0 touch-none focus-visible:outline-none lg:block ${
+          vertical ? 'w-1.5 cursor-col-resize' : 'h-1.5 cursor-row-resize'
+        } ${className ?? ''}`}
+        {...panel.handleProps}
+      >
+        <span
+          aria-hidden
+          className={`pointer-events-none absolute transition-colors ${bar} ${
+            vertical
+              ? 'inset-y-0 left-1/2 w-[3px] -translate-x-1/2'
+              : 'inset-x-0 top-1/2 h-[3px] -translate-y-1/2'
+          }`}
+        />
+      </div>
+      {panel.dragging && (
+        <div
+          className={`fixed inset-0 z-50 ${
+            vertical ? 'cursor-col-resize' : 'cursor-row-resize'
+          }`}
+        />
+      )}
+    </>
+  )
+}
+
 export default function App() {
   const [form, setForm] = useState<FormState>(initialForm)
   const [health, setHealth] = useState<Health | null>(null)
@@ -85,6 +283,14 @@ export default function App() {
   const [notice, setNotice] = useState<string | null>(null)
   // ライブラリが変わるたびに増える。開いているモーダルの読み直しに使う。
   const [libraryVersion, setLibraryVersion] = useState(0)
+  // エラーバナーの展開（既定は最新 1 件だけ出す）。
+  const [errorsExpanded, setErrorsExpanded] = useState(false)
+  // 狭幅（lg 未満）でのフォーム / 結果の切り替え。lg 以上では 2 カラムのまま。
+  const [narrowPane, setNarrowPane] = useState<'form' | 'result'>('form')
+
+  const isWide = useIsWide()
+  const sidebar = useResizablePanel(SIDEBAR_WIDTH_KEY, SIDEBAR_WIDTH, 'x')
+  const historyPanel = useResizablePanel(HISTORY_HEIGHT_KEY, HISTORY_HEIGHT, 'y')
 
   const patch = useCallback(
     (changes: Partial<FormState>) => setForm((prev) => ({ ...prev, ...changes })),
@@ -104,6 +310,8 @@ export default function App() {
   const trackJob = useCallback((job: Job) => {
     sessionJobIds.current.add(job.id)
     setActiveJob(job)
+    // 狭幅では結果が下に沈むので、投げたら結果側へ切り替える。
+    setNarrowPane('result')
   }, [])
 
   /** 表示トグルがオフでも、このセッションで投げたジョブは隠さない。 */
@@ -567,6 +775,7 @@ export default function App() {
     )
     // フォームを見せたいので、開いていれば詳細ドロワーを閉じる。
     setDetailJob(null)
+    setNarrowPane('form')
   }
 
   const remove = async (job: Job) => {
@@ -611,6 +820,12 @@ export default function App() {
   const shownJob = activeJob && !isVisible(activeJob) ? null : activeJob
   const shownDetailJob = detailJob && !isVisible(detailJob) ? null : detailJob
   const queue = visibleJobs.filter((job) => ACTIVE_STATUSES.includes(job.status))
+  // バナーは元の並びの位置（dismiss 用）を持ったまま絞り込む。
+  const shownErrors = errors.map((message, index) => ({ message, index }))
+  const showAllErrors = errorsExpanded && errors.length > 1
+  // lg 未満だけ、フォームと結果+履歴を切り替え表示にする（両方 render は続ける）。
+  const showForm = isWide || narrowPane === 'form'
+  const showResult = isWide || narrowPane === 'result'
 
   return (
     <div className="flex h-full flex-col">
@@ -634,18 +849,32 @@ export default function App() {
         </div>
       )}
 
+      {/* 積み上げるとコンテンツを押し下げるので、既定は最新 1 件だけ。
+          残りは「他 n 件」で開閉する（dismiss は元の並びの位置で消す）。 */}
       {errors.length > 0 && (
         <div className="flex flex-col gap-1 px-4 py-2">
-          {errors.map((message, index) => (
+          {(showAllErrors ? shownErrors : shownErrors.slice(-1)).map((item) => (
             <Banner
-              key={index}
+              key={item.index}
               onClose={() =>
-                setErrors((previous) => previous.filter((_, i) => i !== index))
+                setErrors((previous) =>
+                  previous.filter((_, i) => i !== item.index),
+                )
               }
             >
-              {message}
+              {item.message}
             </Banner>
           ))}
+          {errors.length > 1 && (
+            <button
+              type="button"
+              className="self-start rounded-sm text-[11px] text-muted-foreground underline-offset-2 hover:text-foreground hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+              aria-expanded={showAllErrors}
+              onClick={() => setErrorsExpanded((previous) => !previous)}
+            >
+              {showAllErrors ? '最新だけ表示' : `他 ${errors.length - 1} 件`}
+            </button>
+          )}
         </div>
       )}
 
@@ -686,11 +915,32 @@ export default function App() {
 
       {view === 'main' && (
         <>
+        {/* 狭幅では結果が画面外に沈むので、フォームと結果を切り替える。 */}
+        <div className="border-b border-border px-3 py-2 lg:hidden">
+          <Tabs
+            value={narrowPane}
+            onValueChange={(value) => setNarrowPane(value as 'form' | 'result')}
+          >
+            <TabsList className="w-full">
+              <TabsTrigger value="form" className="flex-1">
+                生成
+              </TabsTrigger>
+              <TabsTrigger value="result" className="flex-1">
+                結果
+              </TabsTrigger>
+            </TabsList>
+          </Tabs>
+        </div>
         {/* 狭幅は縦積み 1 カラム（ページ縦スクロール）、lg 以上は従来の 2 カラム。
             lg 以上ではサイドバーと右カラムがそれぞれ余白を持ち、境界線が端まで
             通るように main 側の padding / gap を落とす。 */}
         <main className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3 lg:flex-row lg:gap-0 lg:overflow-hidden lg:p-0">
-          <aside className="w-full shrink-0 lg:w-[400px] lg:overflow-y-auto lg:border-r lg:border-border lg:bg-surface-sunken/50 lg:p-3">
+          <aside
+            className={`w-full shrink-0 lg:overflow-y-auto lg:border-r lg:border-border lg:bg-surface-sunken/50 lg:p-3 ${
+              showForm ? '' : 'hidden'
+            }`}
+            style={isWide ? { width: sidebar.size } : undefined}
+          >
             <GenerateForm
               form={form}
               patch={patch}
@@ -710,9 +960,15 @@ export default function App() {
             />
           </aside>
 
+          <ResizeHandle panel={sidebar} label="サイドバーの幅" />
+
           {/* 狭幅ではこの列も ResultPane も高さを固定せず、内容なりに伸ばして
               main の縦スクロールへ逃がす（lg 以上は従来どおり高さを分け合う）。 */}
-          <div className="flex min-w-0 flex-1 flex-col gap-2 lg:min-h-0 lg:p-3">
+          <div
+            className={`flex min-w-0 flex-1 flex-col gap-2 lg:min-h-0 lg:p-3 ${
+              showResult ? '' : 'hidden'
+            }`}
+          >
             <div className="flex-1 lg:min-h-0">
               <ResultPane
                 job={shownJob}
@@ -731,7 +987,12 @@ export default function App() {
               />
             </div>
 
-            <section className="h-36 shrink-0 rounded-lg border border-border bg-card shadow-elevation-1">
+            <ResizeHandle panel={historyPanel} label="履歴ギャラリーの高さ" />
+
+            <section
+              className="h-36 shrink-0 rounded-lg border border-border bg-card shadow-elevation-1"
+              style={isWide ? { height: historyPanel.size } : undefined}
+            >
               <HistoryGallery
                 jobs={visibleJobs}
                 selectedId={shownJob?.id ?? null}

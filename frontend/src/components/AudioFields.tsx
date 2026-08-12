@@ -208,7 +208,7 @@ export default function AudioFields({
               <Label className="mb-1" htmlFor="audio-duration">
                 長さ（秒）
                 {range && (
-                  <span className="tnum ml-1 font-normal text-muted-foreground/70">
+                  <span className="tnum ml-1 font-normal text-muted-foreground-subtle">
                     {range.min}〜{range.max}
                   </span>
                 )}

@@ -518,18 +518,35 @@ export default function StudioView({
 
   const selectedShot = detail.shots.find((shot) => shot.id === shotId) ?? null
 
-  /** スタジオ表示 ⇔ キャンバス表示（同じプロジェクトの別の見せ方）。 */
+  /**
+   * スタジオ表示 ⇔ キャンバス表示（同じプロジェクトの別の見せ方）。
+   *
+   * 中央のタブ（概要 / 脚本 / …）と同じ Tabs で並べると 2 組が区別できないので、
+   * こちらはアイコン付きのセグメントトグルにして右端へ置く。
+   */
   const modeToggle = (
-    <Tabs value={mode} onValueChange={(value) => setMode(value as ProjectMode)}>
-      <TabsList>
-        {MODES.map((item) => (
-          <TabsTrigger key={item.value} value={item.value}>
+    <div
+      role="group"
+      aria-label="表示モード"
+      className="flex shrink-0 items-center gap-0.5 rounded-md border border-border bg-card p-0.5"
+    >
+      {MODES.map((item) => {
+        const current = item.value === mode
+        return (
+          <Button
+            key={item.value}
+            variant={current ? 'secondary' : 'ghost'}
+            size="sm"
+            aria-pressed={current}
+            title={item.label}
+            onClick={() => setMode(item.value)}
+          >
             <item.icon />
             {item.label}
-          </TabsTrigger>
-        ))}
-      </TabsList>
-    </Tabs>
+          </Button>
+        )
+      })}
+    </div>
   )
 
   const backToProjects = (
@@ -546,10 +563,10 @@ export default function StudioView({
         <div className="flex min-h-0 flex-1 flex-col gap-2 p-3">
           <div className="flex flex-wrap items-center gap-2">
             {backToProjects}
-            <h2 className="truncate text-sm font-semibold text-foreground">
+            <h2 className="min-w-0 truncate text-base font-semibold text-foreground">
               {detail.name}
             </h2>
-            <div className="ml-auto flex items-center gap-2">
+            <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
               {targetSelector}
               {modeToggle}
             </div>
@@ -595,13 +612,20 @@ export default function StudioView({
         </aside>
 
         <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
-          <div className="flex flex-wrap items-center gap-2">
-            {backToProjects}
-            <h2 className="truncate text-sm font-semibold text-foreground">
-              {detail.name}
-            </h2>
-            <div className="ml-auto">{targetSelector}</div>
-            {modeToggle}
+          {/* 上段 = プロジェクトの identity と接続先・表示モード、
+              下段 = このプロジェクトの中の行き先（タブ）。混ぜると
+              「タブが 2 組」に見えるので段で分ける。 */}
+          <div className="flex flex-col gap-2">
+            <div className="flex flex-wrap items-center gap-2">
+              {backToProjects}
+              <h2 className="min-w-0 truncate text-base font-semibold text-foreground">
+                {detail.name}
+              </h2>
+              <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
+                {targetSelector}
+                {modeToggle}
+              </div>
+            </div>
             <Tabs value={tab} onValueChange={(value) => setTab(value as StudioTab)}>
               <TabsList>
                 {TABS.map((item) => (

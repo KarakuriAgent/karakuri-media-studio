@@ -59,7 +59,7 @@ function ShotScript({
         <span className="min-w-0 flex-1 truncate text-sm text-foreground">
           {shot.title || `カット ${index + 1}`}
         </span>
-        <span className={`chip !px-1.5 !py-0 text-[10px] ${SHOT_STATUS_CLASS[shot.status]}`}>
+        <span className={`chip !px-1.5 !py-0 text-[11px] ${SHOT_STATUS_CLASS[shot.status]}`}>
           {SHOT_STATUS_LABEL[shot.status]}
         </span>
         <span className="tnum shrink-0 text-[11px] text-muted-foreground">
@@ -79,7 +79,7 @@ function ShotScript({
         </blockquote>
       )}
       {shot.camera && (
-        <p className="mt-1.5 text-[11px] uppercase tracking-wide text-sky-400/80">
+        <p className="mt-1.5 text-[11px] uppercase tracking-wide text-sky-400">
           CAM: {shot.camera}
         </p>
       )}

@@ -1,5 +1,5 @@
-import { useState, type ReactNode } from 'react'
-import { EyeOff, Loader2, RefreshCw } from 'lucide-react'
+import { useRef, useState, type ReactNode } from 'react'
+import { EyeOff, Loader2, Plus, RefreshCw } from 'lucide-react'
 
 import type { StudioProjectCreate, StudioProjectSummary } from '../../types'
 import { FieldError, Section } from '../ui'
@@ -12,12 +12,12 @@ import { Switch } from '../ui/switch'
 import { Textarea } from '../ui/textarea'
 import { DEMO_PROJECTS, validateProjectForm } from './studio'
 
-/** 一覧の 1 行に出す件数（0 は薄く出す）。 */
+/** 一覧の 1 行に出す件数（0 は控えめ、1 件以上は強めに出して差を付ける）。 */
 function Count({ value, label }: { value: number; label: string }) {
   return (
     <span
-      className={`text-[10px] tnum ${
-        value > 0 ? 'text-muted-foreground' : 'text-muted-foreground/50'
+      className={`tnum text-[11px] ${
+        value > 0 ? 'text-foreground/85' : 'text-muted-foreground'
       }`}
     >
       {label} {value}
@@ -77,6 +77,14 @@ export default function ProjectPicker({
   const [nsfw, setNsfw] = useState(false)
   const [demoCode, setDemoCode] = useState(DEMO_PROJECTS[0].code)
   const [errors, setErrors] = useState<Record<string, string>>({})
+  const nameRef = useRef<HTMLInputElement>(null)
+
+  /** 空状態からの導線: 下の「新しいプロジェクト」まで運んで作品名に入る。 */
+  const focusCreateForm = () => {
+    // jsdom には scrollIntoView が無いので、あるときだけ呼ぶ。
+    nameRef.current?.scrollIntoView?.({ block: 'center' })
+    nameRef.current?.focus()
+  }
 
   const create = () => {
     const problems = validateProjectForm({ name })
@@ -102,6 +110,16 @@ export default function ProjectPicker({
 
   return (
     <div className="mx-auto w-full max-w-3xl space-y-3 p-4">
+      {/* この画面そのものの名前（下の Section 見出しはフォームの見出しなので、
+          ページの名前としては弱い）。 */}
+      <div className="space-y-1">
+        <h2 className="text-lg font-semibold text-foreground">スタジオ</h2>
+        <p className="text-xs text-muted-foreground">
+          作品（プロジェクト）を選んで開くか、新しく作ってください。脚本・World
+          Bible・制作をひとつの作品としてまとめて扱います。
+        </p>
+      </div>
+
       <Section
         title={`プロジェクト（${projects.length}）`}
         right={
@@ -112,9 +130,15 @@ export default function ProjectPicker({
         }
       >
         {projects.length === 0 ? (
-          <p className="px-3 py-6 text-center text-xs text-muted-foreground">
-            まだプロジェクトがありません。下から作ってください。
-          </p>
+          <div className="flex flex-col items-center gap-3 px-3 py-8 text-center">
+            <p className="text-xs text-muted-foreground">
+              まだプロジェクトがありません。最初の 1 本を作るところから始めます。
+            </p>
+            <Button onClick={focusCreateForm}>
+              <Plus />
+              新しいプロジェクト
+            </Button>
+          </div>
         ) : (
           <ul className="space-y-1">
             {projects.map((project) => (
@@ -142,11 +166,11 @@ export default function ProjectPicker({
                     </span>
                   </span>
                   {project.code && (
-                    <Badge variant="secondary" className="px-2 py-0 text-[10px]">
+                    <Badge variant="secondary" className="px-2 py-0 text-[11px]">
                       {project.code}
                     </Badge>
                   )}
-                  <span className="tnum shrink-0 text-[10px] text-muted-foreground/70">
+                  <span className="tnum shrink-0 text-[11px] text-muted-foreground">
                     {project.updated_at.slice(0, 10)}
                   </span>
                 </button>
@@ -163,6 +187,7 @@ export default function ProjectPicker({
               <Label htmlFor="studio-new-name">作品名</Label>
               <Input
                 id="studio-new-name"
+                ref={nameRef}
                 value={name}
                 onChange={(event) => setName(event.target.value)}
               />

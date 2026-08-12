@@ -86,14 +86,14 @@ function AssetCard({
       </span>
       <span className="absolute left-1 top-1 flex flex-wrap gap-1">
         <span
-          className={`chip !px-1.5 !py-0 text-[10px] ${ASSET_CATEGORY_CLASS[asset.category]}`}
+          className={`chip !px-1.5 !py-0 text-[11px] ${ASSET_CATEGORY_CLASS[asset.category]}`}
         >
           {ASSET_CATEGORY_LABEL[asset.category]}
         </span>
         {!assetHasFile(asset) && (
           <Badge
             variant="secondary"
-            className="px-1.5 py-0 text-[10px] font-normal"
+            className="px-1.5 py-0 text-[11px] font-normal"
             title="ファイルを持たない素材です。参照には添付されず、投入時に説明文として展開されます"
           >
             ファイルなし
@@ -102,7 +102,7 @@ function AssetCard({
         {asset.locked && (
           <Badge
             variant="warning"
-            className="px-1.5 py-0 text-[10px] font-normal"
+            className="px-1.5 py-0 text-[11px] font-normal"
             title="差し替え禁止"
           >
             <Lock className="size-2.5" />
@@ -112,7 +112,7 @@ function AssetCard({
         {(asset.files?.length ?? 0) > 0 && (
           <Badge
             variant="outline"
-            className="bg-card px-1.5 py-0 text-[10px] font-normal"
+            className="bg-card px-1.5 py-0 text-[11px] font-normal"
             title="声サンプル・動画リファレンス・追加画像"
           >
             <Paperclip className="size-2.5" />

@@ -35,6 +35,11 @@ export default {
           DEFAULT: 'hsl(var(--muted))',
           foreground: 'hsl(var(--muted-foreground))',
         },
+        // 補助情報用の控えめな文字色。`text-muted-foreground/70` のような不透明度
+        // 指定は AA 不合格になるため、代わりにこの実値トークンを使う。
+        // （`muted.subtle` にすると `text-muted-subtle` という紛らわしいクラス名に
+        // なるので、トップレベルキーで `text-muted-foreground-subtle` を生やす）
+        'muted-foreground-subtle': 'hsl(var(--muted-foreground-subtle))',
         popover: {
           DEFAULT: 'hsl(var(--popover))',
           foreground: 'hsl(var(--popover-foreground))',

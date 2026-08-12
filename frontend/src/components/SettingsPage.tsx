@@ -50,6 +50,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from './ui/select'
+import { Separator } from './ui/separator'
 import { Switch } from './ui/switch'
 import { Tabs, TabsList, TabsTrigger } from './ui/tabs'
 
@@ -82,13 +83,21 @@ function SettingsCard({
   )
 }
 
-/** カードの中をさらに区切る小見出し付きブロック。 */
+/**
+ * カードの中をさらに区切る小見出し付きブロック。
+ *
+ * 箱を入れ子にすると「線だらけ」になるので、境界は持たせず見出し + 罫線だけで
+ * まとまりを示す（見出しのレベルはページの h2「設定」の直下なので h3）。
+ */
 function SubGroup({ title, children }: { title: string; children: ReactNode }) {
   return (
-    <section className="rounded-md border border-border bg-secondary/30 p-2.5">
-      <h5 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
-        {title}
-      </h5>
+    <section className="flex flex-col gap-2">
+      <div className="flex items-center gap-2">
+        <h3 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+          {title}
+        </h3>
+        <Separator className="flex-1" />
+      </div>
       <div className="flex flex-col gap-2">{children}</div>
     </section>
   )
@@ -118,13 +127,20 @@ function Field({
   return (
     <div className={className}>
       <Label htmlFor={htmlFor}>{label}</Label>
-      <div className="mt-1">{children}</div>
-      {hint && <p className={`mt-1 text-[11px] ${tone}`}>{hint}</p>}
+      {/* 1 カラムのときに入力欄がカード幅いっぱい（900px 級）まで伸びると
+          行が長すぎて読みにくいので、入力と補足の幅に上限を持たせる。 */}
+      <div className="mt-1 max-w-xl">{children}</div>
+      {hint && <p className={`mt-1 max-w-xl text-[11px] ${tone}`}>{hint}</p>}
     </div>
   )
 }
 
-/** オン / オフ 1 項目（説明は左、スイッチは右端）。 */
+/**
+ * オン / オフ 1 項目（説明は左、スイッチは右端）。
+ *
+ * 1 項目ずつ枠で囲むとカードの中が線だらけになるので、境界は持たない行にする
+ * （複数並べるときは親側の `divide-y divide-border/50` で区切る）。
+ */
 function ToggleRow({
   id,
   label,
@@ -139,7 +155,7 @@ function ToggleRow({
   onCheckedChange: (checked: boolean) => void
 }) {
   return (
-    <div className="flex items-start justify-between gap-3 rounded-md border border-border bg-secondary/30 px-3 py-2">
+    <div className="-mx-2 flex items-start justify-between gap-3 rounded-md px-2 py-2 transition-colors hover:bg-secondary/50">
       <div className="min-w-0">
         <Label htmlFor={id} className="cursor-pointer text-foreground/90">
           {label}
@@ -1511,7 +1527,7 @@ export default function SettingsPage({
                               <p className="flex items-center gap-1.5 truncate text-muted-foreground">
                                 <Badge
                                   variant="outline"
-                                  className="shrink-0 px-1.5 py-0 text-[10px] text-muted-foreground"
+                                  className="shrink-0 px-1.5 py-0 text-[11px] text-muted-foreground"
                                 >
                                   {loraBadge(lora)}
                                 </Badge>
@@ -1629,9 +1645,9 @@ export default function SettingsPage({
                 </div>
 
                 <Card className="p-3 lg:sticky lg:top-4">
-                  <h4 className="mb-2 text-sm font-medium text-foreground">
+                  <h3 className="mb-2 text-sm font-medium text-foreground">
                     {editingId == null ? 'LoRA を追加' : `LoRA を編集 (#${editingId})`}
-                  </h4>
+                  </h3>
                   <p className="mb-3 text-xs text-muted-foreground">
                     ComfyUI に置いた LoRA ファイルを、生成フォームから選べるように登録します。
                   </p>
@@ -1846,9 +1862,9 @@ export default function SettingsPage({
                 if (families.length === 0) return null
                 return (
                   <div key={kind} className="flex flex-col gap-2">
-                    <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                    <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                       {kindLabel}
-                    </h4>
+                    </h3>
                     {families.map((family) => {
                       // ワークフローが 2 本以上あるモデル（動画の MiniMax H3）だけ
                       // モデル名の見出しを挟み、その下にワークフローを並べる。
@@ -1857,9 +1873,9 @@ export default function SettingsPage({
                       return (
                         <div key={family.id} className="flex flex-col gap-2">
                           {nested && (
-                            <h5 className="text-xs font-medium text-foreground/85">
+                            <h4 className="text-xs font-medium text-foreground/85">
                               {family.label}
-                            </h5>
+                            </h4>
                           )}
                           <div
                             className={`flex flex-col gap-2${
@@ -1893,7 +1909,7 @@ export default function SettingsPage({
                                     {group.changed > 0 && (
                                       <Badge
                                         variant="outline"
-                                        className="border-primary/60 px-1.5 py-0 text-[10px] text-accent-400"
+                                        className="border-primary/60 px-1.5 py-0 text-[11px] text-accent-400"
                                       >
                                         未保存 {group.changed}
                                       </Badge>
@@ -1901,7 +1917,7 @@ export default function SettingsPage({
                                     {group.custom > 0 && (
                                       <Badge
                                         variant="outline"
-                                        className="px-1.5 py-0 text-[10px] text-muted-foreground"
+                                        className="px-1.5 py-0 text-[11px] text-muted-foreground"
                                       >
                                         既定から変更 {group.custom}
                                       </Badge>
@@ -1992,7 +2008,7 @@ export default function SettingsPage({
                                                   {missing && (
                                                     <Badge
                                                       variant="warning"
-                                                      className="mt-1 px-1.5 py-0 text-[10px]"
+                                                      className="mt-1 px-1.5 py-0 text-[11px]"
                                                       title="ComfyUI のファイル一覧に見つかりません"
                                                     >
                                                       未検出
@@ -2153,7 +2169,7 @@ export default function SettingsPage({
                                                       </div>
                                                     )}
                                                     {missing && showDownload && (
-                                                      <p className="mt-1 text-[10px] text-muted-foreground">
+                                                      <p className="mt-1 text-[11px] text-muted-foreground">
                                                         保存先: {row.subfolder || 'models 直下'}
                                                       </p>
                                                     )}
@@ -2172,7 +2188,7 @@ export default function SettingsPage({
                                                           </div>
                                                         )}
                                                         <p
-                                                          className={`tnum text-[10px] ${
+                                                          className={`tnum text-[11px] ${
                                                             progress.status === 'error'
                                                               ? 'text-red-400'
                                                               : progress.status === 'done'

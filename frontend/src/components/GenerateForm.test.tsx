@@ -26,7 +26,11 @@ vi.mock('../api', () => ({
   },
 }))
 
-afterEach(cleanup)
+afterEach(() => {
+  cleanup()
+  // 「詳細」の開閉は localStorage に残るので、テストを跨いで持ち越さない
+  window.localStorage.clear()
+})
 
 function lora(
   id: number,
@@ -101,11 +105,18 @@ function show(
   return { patch, onComfyTarget }
 }
 
-/** The <section> whose heading is `title`. */
+/**
+ * The <section> whose heading is `title`.
+ *
+ * 「詳細」に畳まれているセクションは中身ごと描かれないので、掴むついでに開く
+ * （すでに開いていれば何もしない）。
+ */
 function section(title: string): HTMLElement {
   const heading = screen.getByText(title)
   const element = heading.closest('section')
   if (!element) throw new Error(`no section for ${title}`)
+  const trigger = element.querySelector('h3 > button[data-state="closed"]')
+  if (trigger) fireEvent.click(trigger)
   return element
 }
 
@@ -217,6 +228,9 @@ describe('GenerateForm の LoRA セクション', () => {
         showNsfw={false}
       />,
     )
+    // どちらも「詳細」の折りたたみなので、掴むついでに開く
+    section('LoRA（画像）')
+    section('LoRA（動画）')
     expect(screen.getAllByText(/画像用の登録済み LoRA がありません/).length).toBe(1)
     expect(screen.getAllByText(/動画用の登録済み LoRA がありません/).length).toBe(1)
   })
@@ -793,10 +807,11 @@ describe('GenerateForm は使わない項目を出さない', () => {
     expect(screen.queryByText('動画ネガティブ')).toBeNull()
     expect(screen.queryByText('リファレンス音声')).toBeNull()
     // 秒数 / fps は動画ステージのものなので消える。seed は残るのでセクションは残す
-    expect(screen.queryByText('秒数（上限なし）')).toBeNull()
-    expect(screen.queryByText('fps')).toBeNull()
     expect(screen.getByText('出力設定')).toBeTruthy()
-    expect(screen.getByText('seed 固定')).toBeTruthy()
+    const output = section('出力設定')
+    expect(within(output).queryByText('秒数（上限なし）')).toBeNull()
+    expect(within(output).queryByText('fps')).toBeNull()
+    expect(within(output).getByText('seed 固定')).toBeTruthy()
   })
 
   it('音声入力を取らない動画ワークフローではリファレンス音声を出さない', () => {
@@ -1626,14 +1641,15 @@ describe('GenerateForm のマルチショットと Elements', () => {
     // 中身ごと描かれないので、そのままでは行方不明になってしまう
     expect(screen.getByText(new RegExp(error))).toBeTruthy()
     // 開けばショットの欄の下に出るので、フォールバックからは消える
-    fireEvent.click(screen.getByText('開く（1 / 5 ショット）'))
+    section(SHOTS)
     expect(screen.getAllByText(error)).toHaveLength(1)
   })
 
   it('宣言しているワークフローのときだけ、畳んだ状態で出す', () => {
     showKlingForm()
-    expect(screen.getByText('開く（0 / 5 ショット）')).toBeTruthy()
-    expect(screen.getByText('開く（0 / 3 要素）')).toBeTruthy()
+    // 見出しの右のバッジで、開かなくても件数が分かる
+    expect(screen.getByText('0 / 5 ショット')).toBeTruthy()
+    expect(screen.getByText('0 / 3 要素')).toBeTruthy()
     // 畳んでいるあいだは中身を描かない
     expect(screen.queryByRole('button', { name: 'ショットを追加' })).toBeNull()
 
@@ -1641,7 +1657,7 @@ describe('GenerateForm のマルチショットと Elements', () => {
     // 1 カット版は Elements だけ（ショット割りは別ワークフローの機能）
     showKlingForm({ videoWorkflow: 'kling3_video' })
     expect(screen.queryByText(SHOTS)).toBeNull()
-    expect(screen.getByText('開く（0 / 3 要素）')).toBeTruthy()
+    expect(screen.getByText('0 / 3 要素')).toBeTruthy()
 
     cleanup()
     showKlingForm({ videoWorkflow: 'veo3_1_fast' })
@@ -1653,7 +1669,7 @@ describe('GenerateForm のマルチショットと Elements', () => {
     const { patch } = showKlingForm({
       multiShots: [{ prompt: 'Shot 1', duration: 4 }],
     })
-    fireEvent.click(screen.getByText('開く（1 / 5 ショット）'))
+    section(SHOTS)
 
     fireEvent.click(screen.getByRole('button', { name: 'ショットを追加' }))
     expect(patch).toHaveBeenCalledWith({
@@ -1678,7 +1694,7 @@ describe('GenerateForm のマルチショットと Elements', () => {
     showKlingForm({
       multiShots: Array(5).fill({ prompt: 'x', duration: 4 }),
     })
-    fireEvent.click(screen.getByText('開く（5 / 5 ショット）'))
+    section(SHOTS)
     expect(
       screen.getByRole('button', { name: 'ショットを追加' }),
     ).toHaveProperty('disabled', true)
@@ -1695,7 +1711,7 @@ describe('GenerateForm のマルチショットと Elements', () => {
     const { patch } = showKlingForm({
       klingElements: [{ name: 'kaori', description: '', images: [] }],
     })
-    fireEvent.click(screen.getByText('開く（1 / 3 要素）'))
+    section(ELEMENTS)
     expect(within(section(ELEMENTS)).getByText('0 / 4 枚')).toBeTruthy()
 
     fireEvent.click(
@@ -1723,7 +1739,7 @@ describe('GenerateForm のマルチショットと Elements', () => {
 
   it('要素を追加・削除できる', () => {
     const { patch } = showKlingForm()
-    fireEvent.click(screen.getByText('開く（0 / 3 要素）'))
+    section(ELEMENTS)
     fireEvent.click(screen.getByRole('button', { name: '要素を追加' }))
     expect(patch).toHaveBeenCalledWith({
       klingElements: [{ name: '', description: '', images: [] }],
@@ -1735,7 +1751,7 @@ describe('GenerateForm のマルチショットと Elements', () => {
         { name: 'kaori', description: '', images: ['/library/image/el0.png'] },
       ],
     })
-    fireEvent.click(screen.getByText('開く（1 / 3 要素）'))
+    section(ELEMENTS)
     fireEvent.click(within(section(ELEMENTS)).getByRole('button', { name: '外す' }))
     expect(second.patch).toHaveBeenCalledWith({
       klingElements: [{ name: 'kaori', description: '', images: [] }],
@@ -1747,14 +1763,17 @@ describe('GenerateForm のマルチショットと Elements', () => {
 describe('ステップ数（SPEC §3.1）', () => {
   it('宣言しているワークフローのときだけ欄を出す', () => {
     showVideos({ mode: 'i2v', videoWorkflow: 'minimax_h3_i2v' })
+    section('出力設定')
     expect(screen.getByLabelText('ステップ数')).toBeTruthy()
     cleanup()
     showVideos({ mode: 'i2v', videoWorkflow: 'wan22_t2v' })
+    section('出力設定')
     expect(screen.queryByLabelText('ステップ数')).toBeNull()
   })
 
   it('未指定（0）は空欄で見せ、入力すると patch する', () => {
     const { patch } = showVideos({ mode: 'i2v', videoWorkflow: 'minimax_h3_i2v' })
+    section('出力設定')
     const steps = screen.getByLabelText('ステップ数') as HTMLInputElement
     expect(steps.value).toBe('')
     expect(steps.placeholder).toBe('未指定＝既定')
@@ -1776,6 +1795,7 @@ describe('GenerateForm の NSFW 投入チェック', () => {
 
   it('既定はオフで、押すと form.nsfw が立つ', () => {
     const { patch } = show()
+    section('NSFW')
     const box = screen.getByLabelText(LABEL)
     expect(box.getAttribute('aria-checked')).toBe('false')
     fireEvent.click(box)
@@ -1784,6 +1804,7 @@ describe('GenerateForm の NSFW 投入チェック', () => {
 
   it('オンの状態が反映される', () => {
     show({ nsfw: true })
+    section('NSFW')
     expect(screen.getByLabelText(LABEL).getAttribute('aria-checked')).toBe('true')
   })
 })

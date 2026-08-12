@@ -98,7 +98,7 @@ export default function SessionList({
         >
           <ChevronRight />
         </Button>
-        <span className="tnum text-[10px] text-muted-foreground">
+        <span className="tnum text-[11px] text-muted-foreground">
           {sessions.length}
         </span>
       </aside>
@@ -145,7 +145,7 @@ export default function SessionList({
         <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           セッション
         </h2>
-        <span className="tnum text-xs text-muted-foreground/70">
+        <span className="tnum text-xs text-muted-foreground">
           {sessions.length}
         </span>
         <div className="ml-auto flex items-center gap-1">
@@ -322,11 +322,11 @@ export default function SessionList({
               <span className="mt-1 flex items-center gap-1.5">
                 <AgentStatusBadge status={session.status} />
                 {showNsfw && session.nsfw && <NsfwBadge />}
-                <span className="tnum text-[10px] text-muted-foreground">
+                <span className="tnum text-[11px] text-muted-foreground">
                   {shortTime(session.created_at)}
                 </span>
               </span>
-              <span className="mt-1 block text-[10px] text-muted-foreground/70">
+              <span className="mt-1 block text-[11px] text-muted-foreground-subtle">
                 タスク {session.task_count} / 成果物 {session.artifact_count} ／{' '}
                 {CHECKIN_LABEL[session.checkin_mode]} ／{' '}
                 {autoLimitLabel(session.auto_limit)}
@@ -337,12 +337,12 @@ export default function SessionList({
                 nsfw={session.nsfw}
                 disabled={busy}
                 onToggle={(nsfw) => onToggleNsfw(session.id, nsfw)}
-                className="h-6 px-1.5 text-[10px]"
+                className="h-6 px-1.5 text-[11px]"
               />
               <Button
                 variant="ghost"
                 size="xs"
-                className="ml-auto text-[10px] text-muted-foreground opacity-0 transition-opacity hover:text-red-400 group-hover:opacity-100"
+                className="ml-auto text-[11px] text-muted-foreground opacity-0 transition-opacity hover:text-red-400 group-hover:opacity-100"
                 onClick={() => onDelete(session.id)}
               >
                 削除

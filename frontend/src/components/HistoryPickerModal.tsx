@@ -201,7 +201,7 @@ export default function HistoryPickerModal({
                   <Film className="size-7 opacity-60" />
                 )}
               </div>
-              <span className="absolute left-1 top-1 chip !px-1.5 !py-0.5 border-border bg-black/70 text-[10px] text-foreground/85">
+              <span className="absolute left-1 top-1 chip !px-1.5 !py-0.5 border-border bg-black/70 text-[11px] text-foreground/85">
                 {candidate.label}
               </span>
               {nsfw && candidate.job.nsfw && (
@@ -213,7 +213,7 @@ export default function HistoryPickerModal({
                 <p className="truncate text-[11px] text-foreground/85">
                   {jobText(candidate.job)}
                 </p>
-                <p className="tnum text-[10px] text-muted-foreground">
+                <p className="tnum text-[11px] text-muted-foreground">
                   {timestamp(candidate.job)}
                 </p>
               </div>

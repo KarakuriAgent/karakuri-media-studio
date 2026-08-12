@@ -118,7 +118,7 @@ function EventRow({ message }: { message: CanvasMessage }) {
       <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">
         {message.content}
       </span>
-      <span className="tnum shrink-0 text-muted-foreground/60">
+      <span className="tnum shrink-0 text-muted-foreground-subtle">
         {shortTime(message.ts)}
       </span>
     </div>

@@ -148,7 +148,7 @@ function EventRow({ message }: { message: AgentMessage }) {
       <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">
         {message.content}
       </span>
-      <span className="tnum shrink-0 text-muted-foreground/60">
+      <span className="tnum shrink-0 text-muted-foreground-subtle">
         {shortTime(message.ts)}
       </span>
     </div>
@@ -234,7 +234,7 @@ function CheckinBubble({
           </div>
         )}
         {!open && (
-          <p className="mt-1 text-[11px] text-muted-foreground/70">
+          <p className="mt-1 text-[11px] text-muted-foreground">
             {answered ? '応答済み' : '未応答のまま終了しました'}
           </p>
         )}
