@@ -47,7 +47,51 @@ const SA3 = workflow({
   default_duration: 60,
 })
 
-const OPTIONS = { audio_workflows: [ACE, SA3] } as unknown as Options
+/** 参照素材だけを受け取るワークフロー（開始フレームは取らない）。 */
+const R2V = workflow({
+  id: 'minimax_h3_r2v',
+  label: 'MiniMax H3 r2v',
+  kind: 'video',
+  family: 'minimax-h3',
+  supports: ['duration', 'prompt'],
+  multi_inputs: { reference_images: 9, reference_videos: 3, reference_audios: 3 },
+})
+
+/** 開始フレームと最後のフレームを取る動画ワークフロー。 */
+const I2V = workflow({
+  id: 'minimax_h3_i2v',
+  label: 'MiniMax H3 i2v',
+  kind: 'video',
+  family: 'minimax-h3',
+  requires: ['image'],
+  supports: ['duration', 'prompt', 'image', 'end_image'],
+  accepts_start_image: true,
+})
+
+/** 入力画像を編集する画像ワークフロー（LoRA チェーンは持たない）。 */
+const EDIT = workflow({
+  id: 'qwen_image_edit_2511',
+  label: 'Qwen Image Edit',
+  kind: 'image',
+  family: 'qwen-image',
+  requires: ['image'],
+  supports: ['prompt', 'image'],
+  accepts_video_loras: false,
+})
+
+const KREA2 = workflow({
+  id: 'krea2_turbo',
+  label: 'Krea 2 Turbo',
+  kind: 'image',
+  family: 'krea2',
+  supports: ['prompt'],
+})
+
+const OPTIONS = {
+  audio_workflows: [ACE, SA3],
+  video_workflows: [R2V, I2V],
+  image_workflows: [KREA2, EDIT],
+} as unknown as Options
 
 const SESSION: ChatSession = {
   id: 'session-1',
@@ -191,5 +235,123 @@ describe('ChatModal — 音声モード', () => {
       imagePrompt: 'a still',
       videoPrompt: 'a clip',
     })
+  })
+})
+
+describe('ChatModal — フォームの現在値の受け渡し', () => {
+  it('欄が出ている参照素材と解像度・除外指定を渡す', async () => {
+    await open({
+      mode: 'i2v',
+      videoWorkflow: R2V.id,
+      referenceImages: ['/library/image/a.png'],
+      referenceVideos: ['/library/video/b.mp4'],
+      referenceAudios: ['/library/audio/c.wav'],
+      aspectRatio: '9:16 (Portrait Widescreen)',
+      megapixels: 0.4,
+      negativePrompt: 'blurry',
+    })
+    expect(created[0]).toMatchObject({
+      reference_images: ['/library/image/a.png'],
+      reference_videos: ['/library/video/b.mp4'],
+      reference_audios: ['/library/audio/c.wav'],
+      aspect_ratio: '9:16 (Portrait Widescreen)',
+      megapixels: 0.4,
+      negative_prompt: 'blurry',
+    })
+  })
+
+  it('参照欄の出ないワークフローでは残っている参照素材を送らない', async () => {
+    await open({
+      mode: 'i2v',
+      videoWorkflow: I2V.id,
+      referenceImages: ['/library/image/a.png'],
+    })
+    expect(created[0]).toMatchObject({ reference_images: [] })
+  })
+
+  it('開始フレームは欄が出ているときだけ送る', async () => {
+    await open({
+      mode: 'i2v',
+      videoWorkflow: R2V.id,
+      sourceImage: '/assets/image/start.png',
+      endImage: '/assets/image/end.png',
+    })
+    // r2v は開始フレームも最後のフレームも取らない
+    expect(created[0]).toMatchObject({
+      start_image_path: null,
+      end_image_path: null,
+    })
+  })
+
+  it('開始フレームと最後のフレームを取るワークフローでは両方送る', async () => {
+    await open({
+      mode: 'i2v',
+      videoWorkflow: I2V.id,
+      sourceImage: '/assets/image/start.png',
+      endImage: '/assets/image/end.png',
+    })
+    expect(created[0]).toMatchObject({
+      start_image_path: '/assets/image/start.png',
+      end_image_path: '/assets/image/end.png',
+    })
+  })
+
+  it('編集系の画像ワークフローでは image_only でも編集元画像を送る', async () => {
+    await open({
+      mode: 'image_only',
+      imageWorkflow: EDIT.id,
+      sourceImage: '/assets/image/start.png',
+    })
+    expect(created[0]).toMatchObject({
+      start_image_path: '/assets/image/start.png',
+      // 編集系は入力画像から大きさが決まるので解像度欄は出ない
+      aspect_ratio: null,
+      megapixels: null,
+    })
+  })
+
+  it('LoRA を挿せないワークフローには LoRA もトリガーも送らない', async () => {
+    const lora = {
+      id: 1,
+      lora_name: 'x.safetensors',
+      trigger_word: 'kaori',
+      strength: 1,
+      display_name: 'かおり',
+    }
+    await open({
+      mode: 'image_only',
+      imageWorkflow: EDIT.id,
+      sourceImage: '/assets/image/start.png',
+      loras: [lora],
+      triggerText: 'kaori',
+    })
+    expect(created[0]).toMatchObject({ loras: [], trigger_text: '' })
+  })
+
+  it('動画 LoRA は動画ステージが走るときだけ送る', async () => {
+    const lora = {
+      id: 2,
+      lora_name: 'motion.safetensors',
+      trigger_word: 'slowmo',
+      strength: 1,
+      display_name: 'スローモ',
+    }
+    await open({
+      mode: 'image_only',
+      imageWorkflow: KREA2.id,
+      videoLoras: [lora],
+      videoTriggerText: 'slowmo',
+    })
+    expect(created[0]).toMatchObject({ video_loras: [], video_trigger_text: '' })
+  })
+
+  it('プロンプトテンプレートの切替は image_only では出さない', async () => {
+    await open({ mode: 'image_only', imageWorkflow: KREA2.id })
+    expect(screen.queryByText('プロンプトテンプレート')).toBeNull()
+  })
+
+  it('動画モードではプロンプトテンプレートの切替を出す', async () => {
+    await open({ mode: 'full', videoWorkflow: I2V.id, imageWorkflow: KREA2.id })
+    expect(screen.getByText('プロンプトテンプレート')).toBeTruthy()
   })
 })

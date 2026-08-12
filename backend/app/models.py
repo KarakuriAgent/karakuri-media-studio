@@ -1705,6 +1705,26 @@ class ChatLoraRef(LoraRef):
     display_name: str = ""
 
 
+class ChatReference(BaseModel):
+    """チャットに渡す参照素材 1 件（ライブラリで解決済み、SPEC §4.3）。
+
+    生成タブのチャットは参照ファイルそのものを Grok に見せない（ワークフローが
+    実際に読むのはジョブ実行時）。代わりに**何が添付されているか**だけを伝える
+    ためのメタデータで、``name`` が空なら「ライブラリに無いファイル」の意味。
+    """
+
+    #: 素材の種別（``image`` / ``video`` / ``audio``）
+    kind: str = "image"
+    #: 実ファイル名（ライブラリに無い素材でも、これだけは必ず入る）
+    filename: str = ""
+    #: ライブラリ上の表示名（未登録なら空）
+    name: str = ""
+    #: ライブラリの分類（``character`` / ``background`` / ``prop``、未分類は空）
+    category: str = ""
+    tags: list[str] = Field(default_factory=list)
+    nsfw: bool = False
+
+
 class ChatSessionCreate(BaseModel):
     """POST /api/chat/sessions body: a snapshot of the generation form (§4.3)."""
 
@@ -1731,6 +1751,26 @@ class ChatSessionCreate(BaseModel):
     # mode B start frame (assets path or "/assets/..." URL); copied into the
     # grok work dir so the CLI can look at it.
     start_image_path: str | None = None
+    #: 最後のフレーム（欄が出ているときだけ送られる）。中身は見せず、「指定が
+    #: あるかどうか」と名前だけを CONTEXT に出す。
+    end_image_path: str | None = None
+    #: r2v 系で実際に添付されている参照素材（フォームで選んだ順。ライブラリの
+    #: パス / URL）。突き合わせて名前・分類・タグを CONTEXT の対応表にする。
+    reference_images: list[str] = Field(default_factory=list)
+    reference_videos: list[str] = Field(default_factory=list)
+    reference_audios: list[str] = Field(default_factory=list)
+    #: 解像度欄が出ているときのフォームの現在値（構図の前提になる）
+    aspect_ratio: str | None = None
+    megapixels: float | None = None
+    #: ネガティブプロンプト欄が出ているときの現在値。ネガティブを持たない
+    #: ワークフローでは本文の除外文に畳み込ませる。
+    negative_prompt: str | None = None
+    # --- 音声モードのフォームの現在値 ---------------------------------------
+    audio_category: str | None = None
+    bpm: int | None = None
+    keyscale: str | None = None
+    language: str | None = None
+    negative_tags_draft: str | None = None
 
 
 class ChatSendMessage(BaseModel):

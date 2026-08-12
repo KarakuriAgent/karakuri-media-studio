@@ -30,11 +30,13 @@ Contents (SPEC §4.3 "システムプロンプトの構成"):
 from __future__ import annotations
 
 from collections.abc import Collection, Iterable
+from pathlib import Path
 
 from .models import (
     AgentMessage,
     AgentSessionCreate,
     ChatMessage,
+    ChatReference,
     ChatSessionCreate,
     ModelSlot,
     ModelSource,
@@ -64,7 +66,7 @@ from .workflows import (
     image_families,
     video_catalog,
 )
-from .workflow import supported_on_target
+from .workflow import WorkflowError, parse_aspect_ratio, supported_on_target
 
 # --------------------------------------------------------------------------
 # 1. role
@@ -898,6 +900,10 @@ MULTI_CUT_WORKFLOWS: frozenset[str] = frozenset(
     }
 )
 
+#: 前のカットの映像と AV ラテントを引き継ぐワークフロー（Motion Context）。
+#: プロンプトの書き方は素の r2v と同じなので、CONTEXT に一言添えるだけでよい。
+MOTION_CONTEXT_WORKFLOWS: frozenset[str] = frozenset({"minimax_h3_r2v_context"})
+
 #: workflow id -> そのモデル専用の VIDEO PROMPT SPEC（無いワークフローは
 #: 汎用の :data:`VIDEO_SPEC` のまま）
 VIDEO_SPECS: dict[str, str] = {
@@ -1307,6 +1313,44 @@ AUDIO_OUTPUT_RULES = """\
 """
 
 
+def _audio_form_value_lines(
+    ctx: ChatSessionCreate, spec: WorkflowSpec
+) -> list[str]:
+    """音声フォームで**既に選ばれている値**（選択中のモデルが読むものだけ）。
+
+    とくに ``audio_category`` はグラフ内蔵のテンプレートを切り替えるつまみなので、
+    その文型で書かせるために明示する。
+    """
+    lines: list[str] = []
+    category = (ctx.audio_category or "").strip()
+    if category and spec.supports("audio_category"):
+        lines.append(
+            f"- フォームで選択済みのカテゴリ（`audio_category`）は **{category}**。"
+            "その文型で `audio_prompt` を書くこと（勝手に別のカテゴリの書き方に"
+            "しない。合っていないと思うならフォームで変えるよう案内する）。"
+        )
+    current = [
+        ("bpm", str(ctx.bpm) if ctx.bpm else ""),
+        ("keyscale", (ctx.keyscale or "").strip()),
+        ("language", (ctx.language or "").strip()),
+    ]
+    values = [
+        f"`{name}` = {value}"
+        for name, value in current
+        if value and spec.supports(name)
+    ]
+    if values:
+        lines.append(
+            "- フォームの現在値: "
+            + "、".join(values)
+            + "。特に変える理由が無ければこの値を尊重すること。"
+        )
+    negative = (ctx.negative_tags_draft or "").strip()
+    if negative and spec.supports("negative_tags"):
+        lines.append(f"- フォームの除外タグ（`negative_tags`）: `{negative}`")
+    return lines
+
+
 def _audio_context_section(ctx: ChatSessionCreate) -> str:
     """CONTEXT of an audio session: the selected model and what it reads."""
     try:
@@ -1361,6 +1405,7 @@ def _audio_context_section(ctx: ChatSessionCreate) -> str:
             "  interview the user accordingly (do not ask about things this"
             " model does not take).",
         ]
+    lines += _audio_form_value_lines(ctx, spec)
     if not spec.supports("lyrics"):
         lines.append(
             "- このモデルは歌いません。`lyrics` は `null` にし、歌詞の相談もしない"
@@ -1540,8 +1585,144 @@ def _trigger_lines(ctx: ChatSessionCreate) -> list[str]:
     return lines
 
 
+#: 参照素材の種別 -> プロンプトに書くタグの名前（studio 側の ``MENTION_TAGS`` と
+#: 同じ規約。r2v ガイドの `<Picture N>` / `<Video N>` / `<Audio N>` に対応する）
+_REFERENCE_TAGS: dict[str, str] = {
+    "image": "Picture",
+    "video": "Video",
+    "audio": "Audio",
+}
+
+
+def reference_tags(references: list[ChatReference]) -> list[str]:
+    """添付順の参照素材に、H3 の規約どおりのタグ番号を振る。
+
+    種別ごとに 1 から数えるが、**参照動画は自分のサウンドトラックを連れてくる**
+    ので ``<Audio j>`` の若い番号は動画が先に取る（:data:`app.workflows` の
+    MiniMax H3 r2v の注記、:mod:`app.studio` のメンション解決と同じ規則）。
+    """
+    counts: dict[str, int] = {"image": 0, "video": 0, "audio": 0}
+    videos = sum(1 for ref in references if ref.kind == "video")
+    tags: list[str] = []
+    for ref in references:
+        label = _REFERENCE_TAGS.get(ref.kind)
+        if label is None:
+            tags.append("")
+            continue
+        counts[ref.kind] += 1
+        index = counts[ref.kind]
+        if ref.kind == "audio":
+            index += videos
+        tags.append(f"<{label} {index}>")
+    return tags
+
+
+def _reference_description(ref: ChatReference) -> str:
+    """1 件の参照の説明（ライブラリ登録済みなら名前・分類・タグ）。"""
+    if not ref.name:
+        return f"file `{ref.filename}` (not in library)"
+    text = f"「{ref.name}」"
+    if ref.category:
+        text += f"({ref.category})"
+    if ref.tags:
+        text += " [" + ", ".join(ref.tags) + "]"
+    if ref.nsfw:
+        text += " (NSFW)"
+    return text
+
+
+def _reference_lines(
+    ctx: ChatSessionCreate,
+    spec: WorkflowSpec | None,
+    references: list[ChatReference],
+) -> list[str]:
+    """参照素材の対応表（r2v 系のワークフローでだけ出す、SPEC §4.3）。
+
+    ファイルそのものは渡さないので、**何が添付されていて、どのタグがどれを指す
+    のか**だけを伝える。挙げていないタグを書かせないことが肝心（存在しない
+    ``<Picture 3>`` を書かれると、その参照は静かに無視される）。
+    """
+    if spec is None or not spec.multi_inputs:
+        return []
+    if not references:
+        return [
+            "",
+            "Reference material: **none is attached yet**. このワークフローは参照"
+            "素材（人物・背景・小物・動き・声）が要るので、勝手に決めつけず、何を"
+            "参照にするのかユーザーに確認すること。",
+        ]
+    lines = [
+        "",
+        "Reference material actually attached to this job"
+        "（この並びがそのままタグ番号）:",
+    ]
+    for ref, tag in zip(references, reference_tags(references)):
+        lines.append(f"- `{tag}` = {_reference_description(ref)}")
+    lines += [
+        "ここに挙がっていないタグ（存在しない `<Picture N>` など）は絶対に書かない"
+        "こと。",
+        "参照の中身を書き写すのではなく、**どの参照が何の役割か**を指定して、"
+        "あとは演出（構図・カメラ・動き・音）だけを書くこと。",
+    ]
+    return lines
+
+
+#: 比率の見え方のヒント（構図の書き分けに効くので一言添える）
+def _orientation(aspect_ratio: str) -> str:
+    try:
+        width, height = parse_aspect_ratio(aspect_ratio)
+    except WorkflowError:
+        return ""
+    if width == height:
+        return "square"
+    return "landscape" if width > height else "portrait"
+
+
+def _resolution_lines(ctx: ChatSessionCreate) -> list[str]:
+    """解像度欄が出ているときの現在値（構図の前提になる）。"""
+    lines: list[str] = []
+    ratio = (ctx.aspect_ratio or "").strip()
+    if ratio:
+        orientation = _orientation(ratio)
+        hint = f"（{orientation}）" if orientation else ""
+        lines.append(
+            f"Aspect ratio: **{ratio}**{hint} — 構図はこの画面比を前提に書くこと"
+            "（比そのものはジョブの項目なので、プロンプト本文には書かない）。"
+        )
+    if ctx.megapixels:
+        lines.append(f"Target size: {ctx.megapixels:g} megapixels（参考）。")
+    return lines
+
+
+def _negative_prompt_lines(
+    ctx: ChatSessionCreate, spec: WorkflowSpec | None
+) -> list[str]:
+    """フォームの除外希望。ネガティブを持たないモデルでは本文へ畳ませる。"""
+    negative = (ctx.negative_prompt or "").strip()
+    if not negative:
+        return []
+    lines = ["", f"ユーザーの除外希望（フォームのネガティブプロンプト欄）: `{negative}`"]
+    if spec is None or not spec.supports("negative"):
+        lines.append(
+            "- このワークフローは**ネガティブプロンプトを読まない**（MiniMax H3 は"
+            " CFG 無しでサンプリングする）ので、この内容は `video_prompt` 本文の"
+            "**最後の除外文**に畳み込むこと"
+            "（`No text, subtitles, logos or watermarks …` の一文）。"
+        )
+    else:
+        lines.append(
+            "- ネガティブプロンプトはフォーム側で送られるので、`video_prompt` 本文"
+            "には書き写さないこと。"
+        )
+    return lines
+
+
 def _context_section(
-    ctx: ChatSessionCreate, start_image_filename: str | None = None
+    ctx: ChatSessionCreate,
+    start_image_filename: str | None = None,
+    end_image_filename: str | None = None,
+    references: list[ChatReference] | None = None,
+    comfy_target: str = "",
 ) -> str:
     spec = None
     if ctx.mode != "image_only":
@@ -1565,20 +1746,51 @@ def _context_section(
         )
         lines.append(f"Clip duration: {ctx.duration:g} seconds, {shot}.")
         lines += _workflow_context_lines(ctx.video_workflow)
+        # 前カットのラテントを引き継ぐ版だけの一言（書き方は素の r2v と同じ）
+        if spec is not None and spec.id in MOTION_CONTEXT_WORKFLOWS:
+            lines.append(
+                "- Motion Context: 前のカットの映像と AV ラテントをそのまま引き継ぐ"
+                "モード（つながりはアプリが受け持つ）。プロンプトの書き方は素の"
+                " r2v とまったく同じで、続きのカットとして書けばよい。"
+            )
+        lines += _reference_lines(ctx, spec, references or [])
         lines += _video_trigger_lines(ctx)
+        lines += _negative_prompt_lines(ctx, spec)
         lines.append("")
     if ctx.mode != "i2v":
         lines += _image_workflow_context_lines(ctx.image_workflow)
         lines.append("")
         lines += _trigger_lines(ctx)
 
-    if ctx.mode == "i2v" and start_image_filename:
+    resolution = _resolution_lines(ctx)
+    if resolution:
+        lines.append("")
+        lines += resolution
+
+    if start_image_filename:
+        lines.append("")
         lines.append(
-            f"A start frame image named `{start_image_filename}` is in your "
-            "current working directory. Open and look at it if you can, and "
-            "make the video prompt match what it actually shows. If you cannot "
-            "read it, just continue from the user's description without "
-            "mentioning the file."
+            f"An input image named `{start_image_filename}` is in your current "
+            "working directory — this is the picture the job actually runs on. "
+            "Open and look at it if you can, and make the prompts match what it "
+            "actually shows. If you cannot read it, just continue from the "
+            "user's description without mentioning the file."
+        )
+        if ctx.mode == "image_only":
+            # 編集系の画像ワークフロー（qwen-image-edit など）。生成ではなく
+            # 「この画像をどう変えるか」を書かせる。
+            lines.append(
+                "この画像ワークフローは**入力画像を編集する**ものなので、"
+                "`image_prompt` は情景の描写ではなく**編集指示**として書くこと"
+                "（何をどう変えるか。触らない部分は変えないと明示する）。"
+            )
+    if end_image_filename or (ctx.end_image_path or "").strip():
+        name = end_image_filename or Path((ctx.end_image_path or "").strip()).name
+        lines.append("")
+        lines.append(
+            f"`end_image` が指定されている（`{name}`）。クリップは**最後にこの絵で"
+            "着地する**ので、始点と終点の絵をそれぞれ描写するのではなく、"
+            "ガイドの指示どおり**そこへ至る遷移（transition）**を書くこと。"
         )
 
     if ctx.image_prompt_draft.strip() and ctx.mode != "i2v":
@@ -1597,11 +1809,16 @@ def _context_section(
             ctx.video_prompt_draft.strip(),
             "```",
         ]
+    lines += _target_preference_lines(comfy_target)
     return "\n".join(lines) + "\n"
 
 
 def build_system_prompt(
-    ctx: ChatSessionCreate, start_image_filename: str | None = None
+    ctx: ChatSessionCreate,
+    start_image_filename: str | None = None,
+    end_image_filename: str | None = None,
+    references: list[ChatReference] | None = None,
+    comfy_target: str = "",
 ) -> str:
     """Full system prompt for one chat session (SPEC §4.2 / §4.3).
 
@@ -1609,6 +1826,10 @@ def build_system_prompt(
     want incompatible prompt styles, so shipping all four would be worse than
     useless.  ``mode: "audio"`` is a different conversation altogether (no
     scene, no camera, no LoRA) and gets its own prompt.
+
+    ``start_image_filename`` / ``end_image_filename`` は grok の作業ディレクトリに
+    置いた入力画像のファイル名、``references`` はライブラリで解決済みの参照素材、
+    ``comfy_target`` は接続先（どの MiniMax H3 の版を勧めるか）。
     """
     if ctx.mode == "audio":
         return build_audio_system_prompt(ctx)
@@ -1640,7 +1861,15 @@ def build_system_prompt(
     # style and carry their own examples in their spec section.
     if family == DEFAULT_FAMILY:
         parts.append(FEW_SHOT_IMAGE_KREA2)
-    parts.append(_context_section(ctx, start_image_filename))
+    parts.append(
+        _context_section(
+            ctx,
+            start_image_filename,
+            end_image_filename=end_image_filename,
+            references=references,
+            comfy_target=comfy_target,
+        )
+    )
     parts.append(OUTPUT_RULES)
     return "\n\n".join(part.strip() for part in parts) + "\n"
 

@@ -5,7 +5,7 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from app import config, db, grok, jobs
+from app import config, db, grok, jobs, library
 from app.main import app
 from app.models import ChatSessionCreate, Settings
 from app.prompts import build_conversation, build_system_prompt
@@ -66,11 +66,15 @@ def env(tmp_path, monkeypatch):
     assets = tmp_path / "assets"
     (assets / "image").mkdir(parents=True)
     (assets / "audio").mkdir(parents=True)
+    lib = tmp_path / "library"
+    lib.mkdir()
     workdir = tmp_path / "grok-workdir"
     workdir.mkdir()
 
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.db")
     monkeypatch.setattr(jobs, "ASSETS_DIR", assets)
+    monkeypatch.setattr(jobs, "LIBRARY_DIR", lib)
+    monkeypatch.setattr(library, "LIBRARY_DIR", lib)
     monkeypatch.setattr(
         config,
         "_settings",
@@ -82,6 +86,8 @@ def env(tmp_path, monkeypatch):
 
     start_image = assets / "image" / "start.png"
     start_image.write_bytes(b"PNG")
+    end_image = assets / "image" / "end.png"
+    end_image.write_bytes(b"PNG")
 
     with TestClient(app) as client:
         yield type(
@@ -92,9 +98,28 @@ def env(tmp_path, monkeypatch):
                 "cli": fake,
                 "workdir": workdir,
                 "assets": assets,
+                "library": lib,
                 "start_image": start_image,
+                "end_image": end_image,
             },
         )
+
+
+def add_to_library(
+    env, kind: str, name: str, tags: str = "", category: str = ""
+) -> dict:
+    """ライブラリに 1 件登録して、その行（``path`` / ``url`` 付き）を返す。"""
+    suffix = {"image": ".png", "video": ".mp4", "audio": ".wav"}[kind]
+    response = env.client.post(
+        f"/api/library/{kind}",
+        files={"file": (f"{name}{suffix}", b"data", "application/octet-stream")},
+        data={"tags": tags, "category": category},
+    )
+    assert response.status_code == 201, response.text
+    item = response.json()
+    renamed = env.client.patch(f"/api/library/{item['id']}", json={"name": name})
+    assert renamed.status_code == 200, renamed.text
+    return renamed.json()
 
 
 def start(env, **overrides) -> dict:
@@ -727,3 +752,194 @@ def test_build_audio_system_prompt_is_used_by_build_system_prompt():
     image = build_system_prompt(ChatSessionCreate(mode="image_only"))
     assert "# AUDIO PROMPT SPEC" not in image
     assert "# IMAGE PROMPT SPEC" in image
+
+
+# --------------------------------------------------------------------------
+# フォームの現在値の受け渡し（参照素材・解像度・end_image・除外指定、SPEC §4.3）
+# --------------------------------------------------------------------------
+
+def test_reference_material_becomes_a_tag_table(env):
+    picture = add_to_library(
+        env, "image", "サクラ", tags="銀髪,メイド服", category="character"
+    )
+    clip = add_to_library(env, "video", "走り", category="prop")
+    track = add_to_library(env, "audio", "声")
+    system = start(
+        env,
+        mode="i2v",
+        video_workflow="minimax_h3_r2v",
+        reference_images=[picture["url"]],
+        reference_videos=[clip["url"]],
+        reference_audios=[track["url"]],
+    )["messages"][0]["content"]
+    assert "`<Picture 1>` = 「サクラ」(character) [銀髪, メイド服]" in system
+    assert "`<Video 1>` = 「走り」(prop)" in system
+    # 参照動画のサウンドトラックが `<Audio 1>` を取るので、参照音声は 2 番から
+    assert "`<Audio 2>` = 「声」" in system
+    assert "存在しない `<Picture N>`" in system
+
+
+def test_unregistered_reference_material_shows_only_its_filename(env):
+    stray = env.assets / "image" / "stray.png"
+    stray.write_bytes(b"PNG")
+    system = start(
+        env,
+        mode="i2v",
+        video_workflow="minimax_h3_r2v",
+        reference_images=[str(stray)],
+    )["messages"][0]["content"]
+    assert "`<Picture 1>` = file `stray.png` (not in library)" in system
+
+
+def test_a_reference_workflow_without_material_asks_the_user(env):
+    system = start(env, mode="i2v", video_workflow="minimax_h3_r2v")["messages"][0][
+        "content"
+    ]
+    assert "none is attached yet" in system
+    assert "ユーザーに確認" in system
+
+
+def test_a_workflow_without_references_gets_no_reference_section(env):
+    system = start(env, mode="i2v", video_workflow="minimax_h3_i2v")["messages"][0][
+        "content"
+    ]
+    assert "Reference material" not in system
+
+
+def test_the_motion_context_workflow_says_so(env):
+    system = start(env, mode="i2v", video_workflow="minimax_h3_r2v_context")[
+        "messages"
+    ][0]["content"]
+    assert "Motion Context" in system
+    # 書き方そのものは素の r2v と同じガイド
+    assert "MiniMax H3 reference mode" in system
+
+
+def test_the_aspect_ratio_is_passed_with_an_orientation_hint(env):
+    system = start(
+        env, aspect_ratio="9:16 (Portrait Widescreen)", megapixels=0.4
+    )["messages"][0]["content"]
+    assert "Aspect ratio: **9:16 (Portrait Widescreen)**（portrait）" in system
+    assert "0.4 megapixels" in system
+
+
+def test_without_an_aspect_ratio_nothing_is_said_about_it(env):
+    assert "Aspect ratio:" not in start(env)["messages"][0]["content"]
+
+
+def test_an_end_image_asks_for_a_transition(env):
+    system = start(
+        env,
+        mode="i2v",
+        video_workflow="minimax_h3_i2v",
+        start_image_path=str(env.start_image),
+        end_image_path=str(env.end_image),
+    )["messages"][0]["content"]
+    assert "`end_image` が指定されている" in system
+    assert "遷移（transition）" in system
+    # start と同じく作業ディレクトリに置く
+    assert len(list(env.workdir.glob("end_frame_*.png"))) == 1
+
+
+def test_without_an_end_image_nothing_is_said_about_it(env):
+    system = start(
+        env,
+        mode="i2v",
+        video_workflow="minimax_h3_i2v",
+        start_image_path=str(env.start_image),
+    )["messages"][0]["content"]
+    # ワークフローの説明には出てくるので、CONTEXT の「指定されている」の一文だけ見る
+    assert "`end_image` が指定されている" not in system
+    assert not list(env.workdir.glob("end_frame_*"))
+
+
+def test_an_editing_image_workflow_gets_its_input_picture(env):
+    session = start(
+        env,
+        mode="image_only",
+        image_workflow="qwen_image_edit_2511",
+        start_image_path=str(env.start_image),
+    )
+    system = session["messages"][0]["content"]
+    copied = list(env.workdir.glob("start_frame_*.png"))
+    assert len(copied) == 1
+    assert copied[0].name in system
+    assert "編集指示" in system
+
+
+def test_the_negative_prompt_is_folded_into_the_body(env):
+    system = start(env, negative_prompt="blurry, watermark")["messages"][0]["content"]
+    assert "blurry, watermark" in system
+    assert "ネガティブプロンプトを読まない" in system
+
+
+def test_an_image_only_session_ignores_the_negative_prompt(env):
+    system = start(env, mode="image_only", negative_prompt="blurry")["messages"][0][
+        "content"
+    ]
+    assert "ユーザーの除外希望" not in system
+
+
+def test_the_comfy_target_preference_is_injected(env, monkeypatch):
+    monkeypatch.setattr(
+        config,
+        "_settings",
+        Settings(
+            grok_command="grok",
+            grok_workdir=str(env.workdir),
+            comfy_target="comfy_cloud",
+        ),
+    )
+    system = start(env)["messages"][0]["content"]
+    assert "この環境の接続先: `comfy_cloud`" in system
+
+
+def test_the_audio_form_values_are_listed(env):
+    system = start(
+        env,
+        mode="audio",
+        bpm=92,
+        keyscale="F# minor",
+        language="ja",
+    )["messages"][0]["content"]
+    assert "`bpm` = 92" in system
+    assert "`keyscale` = F# minor" in system
+    assert "`language` = ja" in system
+
+
+def test_the_selected_audio_category_is_spelled_out(env):
+    system = start(
+        env,
+        mode="audio",
+        audio_workflow="stable_audio_3_medium_base",
+        audio_category="SFX",
+    )["messages"][0]["content"]
+    assert "選択済みのカテゴリ（`audio_category`）は **SFX**" in system
+
+
+def test_audio_values_the_model_does_not_read_are_left_out(env):
+    system = start(
+        env,
+        mode="audio",
+        audio_workflow="stable_audio_3_medium_base",
+        keyscale="F# minor",
+    )["messages"][0]["content"]
+    assert "`keyscale` =" not in system
+
+
+def test_reference_tags_number_audio_after_the_videos():
+    from app.models import ChatReference
+    from app.prompts import reference_tags
+
+    references = [
+        ChatReference(kind="image", filename="a.png"),
+        ChatReference(kind="video", filename="b.mp4"),
+        ChatReference(kind="video", filename="c.mp4"),
+        ChatReference(kind="audio", filename="d.wav"),
+    ]
+    assert reference_tags(references) == [
+        "<Picture 1>",
+        "<Video 1>",
+        "<Video 2>",
+        "<Audio 3>",
+    ]

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { api, formatDetail, ApiError } from '../api'
-import { audioSupports, type FormState } from '../form'
+import { audioSupports, hiddenFields, type FormState } from '../form'
 import type {
   ChatMessage,
   Options,
@@ -38,6 +38,14 @@ export default function ChatModal({
   const audio = form.mode === 'audio'
   const audioWorkflow =
     options?.audio_workflows.find((item) => item.id === form.audioWorkflow) ?? null
+  const videoWorkflow =
+    options?.video_workflows?.find((item) => item.id === form.videoWorkflow) ?? null
+  const imageWorkflow =
+    options?.image_workflows?.find((item) => item.id === form.imageWorkflow) ?? null
+  // フォームに**出ていない**欄の値は送らない: 使われないまま残っている値
+  // （モードを切り替える前の開始フレームなど）を渡すと、Grok がそれを前提に
+  // 書いてしまう。判定はフォーム本体と同じ :func:`hiddenFields`。
+  const hidden = hiddenFields(form.mode, videoWorkflow, imageWorkflow)
 
   const startSession = async (promptTemplate: PromptTemplate) => {
     setBusy(true)
@@ -50,31 +58,62 @@ export default function ChatModal({
         image_workflow: form.imageWorkflow,
         // …and which AUDIO PROMPT SPEC, in mode 'audio'
         audio_workflow: form.audioWorkflow,
-        loras: form.loras.map(
-          ({ lora_name, trigger_word, strength, display_name }) => ({
-            lora_name,
-            trigger_word,
-            strength,
-            display_name,
-          }),
-        ),
-        trigger_text: form.triggerText,
-        video_loras: form.videoLoras.map(
-          ({ lora_name, trigger_word, strength, display_name }) => ({
-            lora_name,
-            trigger_word,
-            strength,
-            display_name,
-          }),
-        ),
-        video_trigger_text: form.videoTriggerText,
+        // LoRA はそのステージが走り、かつ LoRA チェーンを持つワークフローの
+        // ときだけ効く（挿せないワークフローに渡すとトリガーワードだけが
+        // プロンプトに紛れ込む）。
+        loras: hidden.loras
+          ? []
+          : form.loras.map(
+              ({ lora_name, trigger_word, strength, display_name }) => ({
+                lora_name,
+                trigger_word,
+                strength,
+                display_name,
+              }),
+            ),
+        trigger_text: hidden.trigger ? '' : form.triggerText,
+        video_loras: hidden.videoLoras
+          ? []
+          : form.videoLoras.map(
+              ({ lora_name, trigger_word, strength, display_name }) => ({
+                lora_name,
+                trigger_word,
+                strength,
+                display_name,
+              }),
+            ),
+        video_trigger_text: hidden.videoTrigger ? '' : form.videoTriggerText,
         duration: audio ? form.audioDuration : form.duration,
         image_prompt_draft: form.imagePrompt,
         video_prompt_draft: form.videoPrompt,
         audio_prompt_draft: form.audioPrompt,
         lyrics_draft: form.lyrics,
         prompt_template: promptTemplate,
-        start_image_path: form.mode === 'i2v' ? form.sourceImage || null : null,
+        // 入力画像は「欄が出ているかどうか」で決める: i2v の開始フレームだけ
+        // でなく、編集系の画像ワークフロー（qwen-image-edit など）の編集元も
+        // 見せたい。
+        start_image_path: hidden.startImage ? null : form.sourceImage || null,
+        end_image_path: hidden.endImage ? null : form.endImage || null,
+        reference_images: hidden.references ? [] : form.referenceImages,
+        reference_videos: hidden.references ? [] : form.referenceVideos,
+        reference_audios: hidden.references ? [] : form.referenceAudios,
+        aspect_ratio: hidden.resolution ? null : form.aspectRatio,
+        megapixels: hidden.resolution ? null : form.megapixels,
+        negative_prompt: hidden.negative ? null : form.negativePrompt,
+        // 音声モードのフォームの現在値（選択中のモデルが読む項目だけ）
+        audio_category:
+          audio && audioSupports(audioWorkflow, 'audio_category')
+            ? form.audioCategory
+            : null,
+        bpm: audio && audioSupports(audioWorkflow, 'bpm') ? form.bpm : null,
+        keyscale:
+          audio && audioSupports(audioWorkflow, 'keyscale') ? form.keyscale : null,
+        language:
+          audio && audioSupports(audioWorkflow, 'language') ? form.language : null,
+        negative_tags_draft:
+          audio && audioSupports(audioWorkflow, 'negative_tags')
+            ? form.negativeTags
+            : null,
       })
       setSessionId(session.id)
       onSessionId(session.id)
@@ -157,7 +196,10 @@ export default function ChatModal({
   return (
     <Modal title="Grok プロンプト作成" onClose={onClose} wide>
       <div className="flex h-[70vh] flex-col gap-3">
-        {!audio && (
+        {/* テンプレートは動画プロンプトの書き方の切り替えなので、動画ステージが
+            走らない mode（音声・画像のみ）では出さない（押してもセッションが
+            作り直されるだけで文面は変わらない）。 */}
+        {!audio && form.mode !== 'image_only' && (
         <div className="flex items-center gap-2 text-xs">
           <span className="text-slate-400">プロンプトテンプレート</span>
           <div className="flex rounded-md border border-ink-600 bg-ink-800 p-0.5">

@@ -15,20 +15,22 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
-from .. import grok, prompts
+from .. import grok, library, prompts
 from ..config import load_settings
 from ..db import get_db
 from ..ids import new_id
 from ..jobs import JobValidationError, resolve_asset_path
 from ..models import (
     ChatMessage,
+    ChatReference,
     ChatReply,
     ChatSendMessage,
     ChatSession,
     ChatSessionCreate,
+    LibraryItem,
     PromptResult,
 )
-from ..paths import GROK_WORKDIR, resolve_workdir
+from ..paths import GROK_WORKDIR, rebase_stored_path, resolve_workdir
 
 log = logging.getLogger(__name__)
 
@@ -43,14 +45,90 @@ def _workdir() -> Path:
     return resolve_workdir(load_settings().grok_workdir, GROK_WORKDIR)
 
 
-def _copy_start_image(source: str, session_id: str) -> str:
-    """Put the mode-B start frame next to the CLI so it can look at it (§4.3)."""
-    src = resolve_asset_path(source, field="start_image_path")
+def _copy_input_image(source: str, session_id: str, *, field: str, stem: str) -> str:
+    """入力画像を CLI の隣に置いて中身を見られるようにする（§4.3）。
+
+    ``field`` はエラー文言に出す欄の名前、``stem`` はコピー先のファイル名の頭
+    （``start_frame`` / ``end_frame``）。
+    """
+    src = resolve_asset_path(source, field=field)
     workdir = _workdir()
     workdir.mkdir(parents=True, exist_ok=True)
-    dest = workdir / f"start_frame_{session_id}{src.suffix or '.png'}"
+    dest = workdir / f"{stem}_{session_id}{src.suffix or '.png'}"
     shutil.copy2(src, dest)
     return dest.name
+
+
+def _stage_image(source: str, session_id: str, *, field: str, stem: str) -> str | None:
+    """:func:`_copy_input_image` の best effort 版（失敗しても本文だけで続ける）。
+
+    パスの検証で弾かれたら 422 に変換するが、コピーそのものの失敗（権限など）は
+    致命的ではないので、ファイル名を渡さずテキストだけのセッションに落とす。
+    """
+    if not (source or "").strip():
+        return None
+    try:
+        return _copy_input_image(source, session_id, field=field, stem=stem)
+    except JobValidationError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except OSError as exc:  # copying is best effort: text-only fallback
+        log.warning("could not stage %s for grok: %s", field, exc)
+        return None
+
+
+def _reference_of(
+    raw: str, kind: str, by_path: dict[Path, LibraryItem]
+) -> ChatReference:
+    """参照 1 件をライブラリと突き合わせる（未登録ならファイル名だけ）。
+
+    パスが解決できない（消えている・ライブラリ外）ときもエラーにはしない: これは
+    ジョブの入力ではなくチャットに渡すメタデータなので、書いてある文字列の
+    ファイル名だけを伝えて会話は続ける。
+    """
+    filename = Path(raw.strip()).name
+    try:
+        resolved = resolve_asset_path(raw, field=f"reference_{kind}s")
+    except JobValidationError:
+        resolved = None
+    item = by_path.get(resolved) if resolved is not None else None
+    if item is None:
+        return ChatReference(kind=kind, filename=filename)
+    return ChatReference(
+        kind=kind,
+        filename=Path(item.path).name,
+        name=item.name,
+        category=item.category or "",
+        tags=list(item.tags),
+        nsfw=item.nsfw,
+    )
+
+
+async def _resolve_references(payload: ChatSessionCreate) -> list[ChatReference]:
+    """フォームで選ばれている参照素材を、種別ごとの順番を保ったまま解決する。
+
+    並びは ``<Picture N>` / `<Video N>` / `<Audio N>`` のタグ番号そのものなので、
+    画像 -> 動画 -> 音声の順に積む（:func:`app.prompts.reference_tags` が同じ順で
+    番号を振る）。
+    """
+    groups = [
+        ("image", payload.reference_images),
+        ("video", payload.reference_videos),
+        ("audio", payload.reference_audios),
+    ]
+    if not any(values for _, values in groups):
+        return []
+    by_path: dict[Path, LibraryItem] = {}
+    for item in await library.list_items():
+        try:
+            by_path[rebase_stored_path(item.path).resolve()] = item
+        except OSError:  # 消えている行はメタデータだけ残っていることがある
+            continue
+    return [
+        _reference_of(raw, kind, by_path)
+        for kind, values in groups
+        for raw in values
+        if (raw or "").strip()
+    ]
 
 
 # --------------------------------------------------------------------------
@@ -104,20 +182,33 @@ async def create_session(payload: ChatSessionCreate) -> ChatSession:
     """Start a session; the form snapshot becomes the stored system message."""
     session_id = new_id()
 
-    start_image_filename = None
-    if payload.mode == "i2v" and (payload.start_image_path or "").strip():
-        try:
-            start_image_filename = _copy_start_image(
-                payload.start_image_path or "", session_id
-            )
-        except JobValidationError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
-        except OSError as exc:  # copying is best effort: text-only fallback
-            log.warning("could not stage the start frame for grok: %s", exc)
+    # 入力画像は mode を問わず（編集系の画像ワークフローでも）見せる: 欄が出て
+    # いるときだけフォームが送ってくるので、来ていれば実際に使われる画像。
+    start_image_filename = _stage_image(
+        payload.start_image_path or "",
+        session_id,
+        field="start_image_path",
+        stem="start_frame",
+    )
+    end_image_filename = _stage_image(
+        payload.end_image_path or "",
+        session_id,
+        field="end_image_path",
+        stem="end_frame",
+    )
+    references = await _resolve_references(payload)
 
     system = ChatMessage(
         role="system",
-        content=prompts.build_system_prompt(payload, start_image_filename),
+        content=prompts.build_system_prompt(
+            payload,
+            start_image_filename,
+            end_image_filename=end_image_filename,
+            references=references,
+            # 接続先ごとに勧める MiniMax H3 の版が変わる（agent と同じ扱いで、
+            # セッション作成時に焼き込む）。
+            comfy_target=load_settings().comfy_target,
+        ),
         ts=_now(),
     )
     session = ChatSession(id=session_id, created_at=_now(), messages=[system])

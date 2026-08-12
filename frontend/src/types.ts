@@ -698,6 +698,23 @@ export interface ChatSessionCreate {
   lyrics_draft?: string
   prompt_template: PromptTemplate
   start_image_path?: string | null
+  /** 最後のフレーム（欄が出ているときだけ送る）。 */
+  end_image_path?: string | null
+  /** r2v 系で実際に選んでいる参照素材（欄が出ているときだけ送る）。 */
+  reference_images?: string[]
+  reference_videos?: string[]
+  reference_audios?: string[]
+  /** 解像度欄が出ているときのフォームの現在値。 */
+  aspect_ratio?: string | null
+  megapixels?: number | null
+  /** ネガティブプロンプト欄が出ているときの現在値。 */
+  negative_prompt?: string | null
+  /** 音声モードのフォームの現在値（選択中のモデルが読むものだけ）。 */
+  audio_category?: string | null
+  bpm?: number | null
+  keyscale?: string | null
+  language?: string | null
+  negative_tags_draft?: string | null
 }
 
 // ---------------------------------------------------------------- agent mode
