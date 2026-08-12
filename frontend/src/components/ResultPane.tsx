@@ -157,9 +157,11 @@ export default function ResultPane({
   const blur = blurred ? 'blur-lg' : ''
 
   return (
-    <div className="flex h-full min-h-0 flex-col gap-2">
-      {/* ---------------------------------------------------------- viewer */}
-      <div className="relative flex min-h-0 flex-1 items-center justify-center overflow-hidden rounded-lg border border-ink-600 bg-black">
+    <div className="flex flex-col gap-2 lg:h-full lg:min-h-0">
+      {/* ---------------------------------------------------------- viewer
+          狭幅では親の高さに押し込まれず、最低 40vh を確保して内容なりに伸びる。
+          lg 以上は従来どおり親の残り高さを埋める。 */}
+      <div className="relative flex min-h-[40vh] flex-1 items-center justify-center overflow-hidden rounded-lg border border-ink-600 bg-black lg:min-h-0">
         {!job && (
           <div className="flex flex-col items-center gap-2 px-6 text-center">
             <span className="text-4xl opacity-40">🎬</span>
@@ -174,12 +176,13 @@ export default function ResultPane({
           </p>
         )}
 
+        {/* 狭幅はビューアが auto 高さなので max-h-full が効かない。vh で上限を置く。 */}
         {job && current?.kind === 'video' && (
           <video
             key={current.url}
             src={current.url}
             controls
-            className={`max-h-full max-w-full ${blur}`}
+            className={`max-h-[60vh] max-w-full lg:max-h-full ${blur}`}
           />
         )}
         {job && current?.kind === 'audio' && (
@@ -193,7 +196,7 @@ export default function ResultPane({
             key={current.url}
             src={current.url}
             alt={current.label}
-            className={`max-h-full max-w-full cursor-zoom-in object-contain ${blur}`}
+            className={`max-h-[60vh] max-w-full cursor-zoom-in object-contain lg:max-h-full ${blur}`}
             onClick={() => setLightbox(current.url)}
           />
         )}

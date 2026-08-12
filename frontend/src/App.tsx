@@ -708,8 +708,10 @@ export default function App() {
             />
           </aside>
 
-          <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
-            <div className="min-h-[40vh] flex-1 lg:min-h-0">
+          {/* 狭幅ではこの列も ResultPane も高さを固定せず、内容なりに伸ばして
+              main の縦スクロールへ逃がす（lg 以上は従来どおり高さを分け合う）。 */}
+          <div className="flex min-w-0 flex-1 flex-col gap-2 lg:min-h-0">
+            <div className="flex-1 lg:min-h-0">
               <ResultPane
                 job={shownJob}
                 progress={shownJob ? progress[shownJob.id] : undefined}
