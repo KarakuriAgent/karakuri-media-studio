@@ -7,6 +7,7 @@ and every turn re-sends the whole thing.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import shutil
@@ -103,6 +104,17 @@ def _reference_of(
     )
 
 
+def _index_by_path(items: list[LibraryItem]) -> dict[Path, LibraryItem]:
+    """ライブラリを解決済みパスで引けるようにする（同期・スレッドで回す）。"""
+    by_path: dict[Path, LibraryItem] = {}
+    for item in items:
+        try:
+            by_path[rebase_stored_path(item.path).resolve()] = item
+        except OSError:  # 消えている行はメタデータだけ残っていることがある
+            continue
+    return by_path
+
+
 async def _resolve_references(payload: ChatSessionCreate) -> list[ChatReference]:
     """フォームで選ばれている参照素材を、種別ごとの順番を保ったまま解決する。
 
@@ -117,12 +129,9 @@ async def _resolve_references(payload: ChatSessionCreate) -> list[ChatReference]
     ]
     if not any(values for _, values in groups):
         return []
-    by_path: dict[Path, LibraryItem] = {}
-    for item in await library.list_items():
-        try:
-            by_path[rebase_stored_path(item.path).resolve()] = item
-        except OSError:  # 消えている行はメタデータだけ残っていることがある
-            continue
+    items = await library.list_items()
+    # 行数ぶんの stat が走るので、イベントループを止めないよう別スレッドで組む。
+    by_path = await asyncio.to_thread(_index_by_path, items)
     return [
         _reference_of(raw, kind, by_path)
         for kind, values in groups
@@ -184,13 +193,16 @@ async def create_session(payload: ChatSessionCreate) -> ChatSession:
 
     # 入力画像は mode を問わず（編集系の画像ワークフローでも）見せる: 欄が出て
     # いるときだけフォームが送ってくるので、来ていれば実際に使われる画像。
-    start_image_filename = _stage_image(
+    # コピーは数 MB になることがあるので、イベントループの外で行う。
+    start_image_filename = await asyncio.to_thread(
+        _stage_image,
         payload.start_image_path or "",
         session_id,
         field="start_image_path",
         stem="start_frame",
     )
-    end_image_filename = _stage_image(
+    end_image_filename = await asyncio.to_thread(
+        _stage_image,
         payload.end_image_path or "",
         session_id,
         field="end_image_path",

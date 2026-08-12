@@ -437,6 +437,7 @@ async def get_db() -> AsyncIterator[aiosqlite.Connection]:
 
 async def _migrate(conn: aiosqlite.Connection) -> None:
     """Add the columns :data:`MIGRATIONS` lists but the existing DB lacks."""
+    added: dict[str, set[str]] = {}
     for table, columns in MIGRATIONS.items():
         async with conn.execute(f"PRAGMA table_info({table})") as cur:
             existing = {row["name"] for row in await cur.fetchall()}
@@ -445,6 +446,18 @@ async def _migrate(conn: aiosqlite.Connection) -> None:
                 await conn.execute(
                     f"ALTER TABLE {table} ADD COLUMN {name} {definition}"
                 )
+                added.setdefault(table, set()).add(name)
+
+    # 旧 Shot 単位の NSFW 印を安全側（プロジェクト全体 NSFW）に引き継ぐ。
+    # 列を足した回だけ走らせるので、あとからプロジェクト側で外しても復活しない。
+    if "nsfw" in added.get("studio_projects", set()):
+        async with conn.execute("PRAGMA table_info(studio_shots)") as cur:
+            shot_columns = {row["name"] for row in await cur.fetchall()}
+        if "nsfw" in shot_columns:
+            await conn.execute(
+                "UPDATE studio_projects SET nsfw = 1 WHERE id IN "
+                "(SELECT DISTINCT project_id FROM studio_shots WHERE nsfw = 1)"
+            )
 
 
 async def init_db() -> None:

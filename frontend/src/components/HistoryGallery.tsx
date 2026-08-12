@@ -2,19 +2,9 @@ import { useEffect, useRef } from 'react'
 import { Film, ImageIcon, Loader2, Music, RefreshCw } from 'lucide-react'
 import type { Job } from '../types'
 import { Button } from '@/components/ui/button'
-import { NsfwBadge, StatusBadge } from './ui'
+import { NsfwBadge, STATUS_LABELS, StatusBadge } from './ui'
 
 const PENDING = ['queued', 'running', 'prompting']
-
-/** 読み上げ用の状態名（バッジと同じ言い回し）。 */
-const STATUS_LABELS: Record<string, string> = {
-  queued: 'キュー',
-  prompting: 'プロンプト生成中',
-  running: '実行中',
-  done: '完了',
-  failed: '失敗',
-  canceled: 'キャンセル',
-}
 
 /** サムネイルのボタンに付ける説明（UUID ではなく日時・状態・プロンプトで示す）。 */
 function labelOf(job: Job): string {

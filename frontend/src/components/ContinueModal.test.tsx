@@ -40,20 +40,34 @@ function show() {
 
 describe('continuePayload', () => {
   it('空欄は送らない（＝元ジョブを引き継ぐ）', () => {
-    expect(continuePayload({}, {})).toEqual({})
-    expect(continuePayload({ video_prompt: '  ', duration: '' }, {})).toEqual({})
+    expect(continuePayload(job(), {}, {})).toEqual({})
+    expect(continuePayload(job(), { video_prompt: '  ', duration: '' }, {})).toEqual({})
   })
 
   it('埋めた項目だけ送る', () => {
     expect(
-      continuePayload({ video_prompt: ' 続き ', duration: '3', fps: 'x' }, {}),
+      continuePayload(job(), { video_prompt: ' 続き ', duration: '3', fps: 'x' }, {}),
     ).toEqual({ video_prompt: '続き', duration: 3 })
   })
 
   it('モデル指定は 1 つでも選ばれたときだけ載せる', () => {
-    expect(continuePayload({}, {})).toEqual({})
-    expect(continuePayload({}, { 'w/1.unet': 'a.safetensors' })).toEqual({
+    expect(continuePayload(job(), {}, {})).toEqual({})
+    expect(continuePayload(job(), {}, { 'w/1.unet': 'a.safetensors' })).toEqual({
       model_overrides: { 'w/1.unet': 'a.safetensors' },
+    })
+  })
+
+  it('選ばなかったスロットは元ジョブのモデル指定を残す', () => {
+    const source = job()
+    source.params.model_overrides = {
+      'w/1.unet': 'old-unet.safetensors',
+      'w/2.clip': 'old-clip.safetensors',
+    }
+    expect(continuePayload(source, {}, { 'w/1.unet': 'new-unet.safetensors' })).toEqual({
+      model_overrides: {
+        'w/1.unet': 'new-unet.safetensors',
+        'w/2.clip': 'old-clip.safetensors',
+      },
     })
   })
 })

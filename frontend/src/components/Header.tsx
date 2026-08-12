@@ -36,11 +36,11 @@ function connection(name: string, status: HealthStatus | undefined): Connection 
   return { name, tone: 'error', detail: 'エラー', note: status.detail ?? undefined }
 }
 
-/** いちばん悪い状態（エラー > 未確認 > 未設定 > 正常）をヘッダーの見た目に使う。 */
+/** いちばん悪い状態（エラー > 未設定 > 未確認 > 正常）をヘッダーの見た目に使う。 */
 function worstTone(items: Connection[]): Tone {
   if (items.some((item) => item.tone === 'error')) return 'error'
-  if (items.some((item) => item.tone === 'unknown')) return 'unknown'
   if (items.some((item) => item.tone === 'warn')) return 'warn'
+  if (items.some((item) => item.tone === 'unknown')) return 'unknown'
   return 'ok'
 }
 

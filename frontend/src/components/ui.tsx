@@ -126,6 +126,16 @@ export function FieldError({ message }: { message?: string }) {
   return <p className="mt-1 text-xs text-red-400">{message}</p>
 }
 
+/** 状態名（バッジ表記。読み上げ用のラベルでも同じ言い回しを使う）。 */
+export const STATUS_LABELS: Record<string, string> = {
+  queued: 'キュー',
+  prompting: 'プロンプト生成中',
+  running: '実行中',
+  done: '完了',
+  failed: '失敗',
+  canceled: 'キャンセル',
+}
+
 export function StatusBadge({ status }: { status: string }) {
   const map: Record<string, string> = {
     queued: 'border-border bg-secondary text-muted-foreground',
@@ -135,19 +145,11 @@ export function StatusBadge({ status }: { status: string }) {
     failed: 'border-destructive/50 bg-destructive/15 text-red-300',
     canceled: 'border-border bg-secondary text-muted-foreground',
   }
-  const label: Record<string, string> = {
-    queued: 'キュー',
-    prompting: 'プロンプト生成中',
-    running: '実行中',
-    done: '完了',
-    failed: '失敗',
-    canceled: 'キャンセル',
-  }
   return (
     <span
       className={`chip !px-2 !py-0.5 ${map[status] ?? 'border-border bg-card text-foreground/85'}`}
     >
-      {label[status] ?? status}
+      {STATUS_LABELS[status] ?? status}
     </span>
   )
 }

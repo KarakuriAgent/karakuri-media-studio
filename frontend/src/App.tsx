@@ -129,12 +129,16 @@ function useResizablePanel(
   // ドラッグ開始時のポインタ位置とサイズ（移動量を足し込むための起点）。
   const origin = useRef<{ position: number; size: number } | null>(null)
 
+  // ドラッグ中は 1 フレームごとに size が変わるので、落ち着いた値だけ書き込む。
   useEffect(() => {
-    try {
-      window.localStorage.setItem(storageKey, String(size))
-    } catch {
-      /* 保存できない環境ではこのセッションのあいだだけ効く */
-    }
+    const timer = window.setTimeout(() => {
+      try {
+        window.localStorage.setItem(storageKey, String(size))
+      } catch {
+        /* 保存できない環境ではこのセッションのあいだだけ効く */
+      }
+    }, 200)
+    return () => window.clearTimeout(timer)
   }, [size, storageKey])
 
   // ドラッグ中は文字が選択されないようにする（ハンドルを掴んだまま動かすため）。

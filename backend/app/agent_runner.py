@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections import defaultdict
 from pathlib import Path
 from typing import Any
 
@@ -141,13 +142,19 @@ async def _set_activity(session_id: str, activity: str | None) -> None:
 # transcript helpers
 # --------------------------------------------------------------------------
 
+# 同時 append で読み書きが交錯するとメッセージが消えるため直列化する
+# （ループのターンと PATCH /api/agent/sessions/{id} が同じ会話に書き込む）。
+_append_locks: defaultdict[str, asyncio.Lock] = defaultdict(asyncio.Lock)
+
+
 async def append_message(session_id: str, message: AgentMessage) -> AgentSession | None:
-    session = await load(session_id)
-    if session is None:
-        return None
-    session.messages.append(message)
-    await update(session_id, messages=session.messages)
-    return session
+    async with _append_locks[session_id]:
+        session = await load(session_id)
+        if session is None:
+            return None
+        session.messages.append(message)
+        await update(session_id, messages=session.messages)
+        return session
 
 
 async def add_artifact(session_id: str, artifact: AgentArtifact) -> None:

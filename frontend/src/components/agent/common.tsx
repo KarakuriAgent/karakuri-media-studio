@@ -2,6 +2,7 @@ import {
   Check,
   CheckCircle2,
   CircleDashed,
+  CircleHelp,
   Clapperboard,
   ClipboardList,
   FileText,
@@ -89,7 +90,7 @@ export function ArtifactIcon({
   kind: AgentArtifact['kind']
   className?: string
 }) {
-  const Icon = ARTIFACT_ICON[kind]
+  const Icon = ARTIFACT_ICON[kind] ?? CircleHelp // 未知の種別でも落とさない
   return <Icon className={cn('size-3.5 shrink-0', className)} />
 }
 
@@ -128,7 +129,7 @@ export function TaskIcon({
   status: AgentTaskStatus
   className?: string
 }) {
-  const Icon = TASK_ICON[status]
+  const Icon = TASK_ICON[status] ?? CircleHelp // 未知の状態でも落とさない
   return (
     <Icon className={cn('size-3.5 shrink-0', TASK_ICON_STYLE[status], className)} />
   )

@@ -1,4 +1,4 @@
-import { Paperclip, Pencil, Plus } from 'lucide-react'
+import { CircleHelp, Paperclip, Pencil, Plus } from 'lucide-react'
 
 import type { CanvasCard, StudioProjectDetail } from '../../types'
 import { Button } from '../ui/button'
@@ -224,7 +224,7 @@ export default function CardNode({
   /** 場カードの「＋カット」（渡さなければボタンを出さない）。 */
   onAddShot?: (sceneId: string) => void
 }) {
-  const KindIcon = KIND_ICON[card.kind]
+  const KindIcon = KIND_ICON[card.kind] ?? CircleHelp // 未知の種別でも落とさない
   return (
     <div
       className={`absolute flex flex-col overflow-hidden rounded-lg border bg-card text-left shadow-elevation-2 ${

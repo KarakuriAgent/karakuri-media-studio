@@ -26,6 +26,14 @@ function placeholderOf(job: Job, key: string): string {
   return value ? `元ジョブを引き継ぐ（${value}）` : '元ジョブを引き継ぐ'
 }
 
+/** 元ジョブのモデル指定（無ければ空）。 */
+function inheritedOverrides(job: Job): Record<string, string> {
+  const value = (job.params ?? {}).model_overrides
+  return value && typeof value === 'object'
+    ? (value as Record<string, string>)
+    : {}
+}
+
 /** 空欄なら未指定、そうでなければ数値（数にならない入力は未指定扱い）。 */
 function numberOrUndefined(raw: string): number | undefined {
   if (raw.trim() === '') return undefined
@@ -35,6 +43,7 @@ function numberOrUndefined(raw: string): number | undefined {
 
 /** 空文字を落として `JobContinue` にする（未変更の項目は送らない）。 */
 export function continuePayload(
+  job: Job,
   draft: Record<string, string>,
   modelOverrides: Record<string, string>,
 ): JobContinue {
@@ -47,8 +56,10 @@ export function continuePayload(
     const value = numberOrUndefined(draft[key] ?? '')
     if (value !== undefined) body[key] = value
   }
-  // model_overrides は送ると丸ごと差し替わるので、1 つでも選んだときだけ送る。
-  if (Object.keys(modelOverrides).length > 0) body.model_overrides = modelOverrides
+  // model_overrides は送ると丸ごと差し替わるので、1 つでも選んだときだけ、
+  // 元ジョブの指定に選んだぶんを重ねて送る（触っていないスロットも残す）。
+  if (Object.keys(modelOverrides).length > 0)
+    body.model_overrides = { ...inheritedOverrides(job), ...modelOverrides }
   return body
 }
 
@@ -212,7 +223,7 @@ export default function ContinueModal({
         <div className="flex flex-wrap gap-2 border-t border-border pt-3">
           <Button
             disabled={busy}
-            onClick={() => onSubmit(continuePayload(draft, modelOverrides))}
+            onClick={() => onSubmit(continuePayload(job, draft, modelOverrides))}
           >
             {busy && <Loader2 className="animate-spin" />}
             {busy ? '送信中…' : 'この設定で続き生成'}
