@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { ChevronDown, ChevronUp, Loader2, Star } from 'lucide-react'
 import { ApiError, api, formatDetail } from '../api'
 import type {
   Job,
@@ -7,6 +8,10 @@ import type {
   LibraryItem,
   LibrarySource,
 } from '../types'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { NativeSelect } from './NativeSelect'
 import { CATEGORY_LABELS, UNCATEGORIZED } from './LibraryPickerModal'
 
 /** その出力が既にライブラリにあるか（`/api/options` の library から判定）。 */
@@ -97,31 +102,44 @@ export default function LibraryAddButton({
   const shown = state === 'idle' && registered ? 'exists' : state
   const text =
     shown === 'done'
-      ? '★ 登録しました'
+      ? '登録しました'
       : shown === 'busy'
         ? '登録中…'
         : shown === 'exists'
-          ? '★ 登録済みです'
+          ? '登録済みです'
           : shown === 'failed'
             ? '登録できません'
-            : `☆ ライブラリに登録${label ? `: ${label}` : ''}`
+            : `ライブラリに登録${label ? `: ${label}` : ''}`
+  // 登録済み（済んだ直後を含む）は塗りつぶした星、まだなら輪郭だけの星。
+  const starred = shown === 'done' || shown === 'exists'
 
   return (
     <span className="relative inline-flex items-center gap-1">
-      <button
-        className={`btn-ghost !py-1 text-xs ${
-          shown === 'failed' ? '!text-red-300' : ''
-        } ${shown === 'exists' ? '!text-slate-500' : ''}`}
+      <Button
+        variant="outline"
+        size="sm"
+        className={
+          shown === 'failed'
+            ? 'text-red-300'
+            : shown === 'exists'
+              ? 'text-muted-foreground'
+              : undefined
+        }
         disabled={shown === 'busy' || shown === 'exists'}
         title={error ?? 'ライブラリに入れると、履歴を消しても素材として残ります'}
         onClick={() => void add()}
       >
+        {shown === 'busy' ? (
+          <Loader2 className="animate-spin" />
+        ) : (
+          <Star className={starred ? 'fill-current' : undefined} />
+        )}
         {text}
-      </button>
+      </Button>
       {/* 登録済み・登録直後は分類を変える先がライブラリ側なので出さない */}
       {(shown === 'idle' || shown === 'failed') && (
-        <select
-          className="field w-auto !py-1 text-xs"
+        <NativeSelect
+          className="h-8 w-auto py-0 text-xs"
           aria-label="登録するカテゴリ"
           value={category}
           onChange={(event) =>
@@ -134,59 +152,54 @@ export default function LibraryAddButton({
               {CATEGORY_LABELS[value]}
             </option>
           ))}
-        </select>
+        </NativeSelect>
       )}
       {/* 名前・タグは任意。開かずに押せば従来どおり空（サーバー側がプロンプト
           から名前を決め、タグは自動生成に任せる）。 */}
       {(shown === 'idle' || shown === 'failed') && (
-        <button
-          className="btn-ghost !px-1.5 !py-1 text-xs"
+        <Button
+          variant="outline"
+          size="icon-sm"
           aria-label="名前とタグを指定"
           aria-expanded={open}
           title="名前とタグを指定してから登録する"
           onClick={() => setOpen((value) => !value)}
         >
-          {open ? '▴' : '▾'}
-        </button>
+          {open ? <ChevronUp /> : <ChevronDown />}
+        </Button>
       )}
       {open && (
-        <div className="absolute left-0 top-full z-20 mt-1 w-64 space-y-2 rounded-md border border-ink-600 bg-ink-800 p-2 shadow-lg">
+        <div className="absolute left-0 top-full z-20 mt-1 w-64 space-y-2 rounded-lg border border-border bg-popover p-2 shadow-elevation-3">
           <div>
-            <label className="label" htmlFor={`library-add-name-${job.id}-${source}`}>
+            <Label className="mb-1" htmlFor={`library-add-name-${job.id}-${source}`}>
               表示名（空ならプロンプトから決まります）
-            </label>
-            <input
+            </Label>
+            <Input
               id={`library-add-name-${job.id}-${source}`}
-              className="field text-xs"
+              className="h-8 text-xs"
               value={name}
               onChange={(event) => setName(event.target.value)}
             />
           </div>
           <div>
-            <label className="label" htmlFor={`library-add-tags-${job.id}-${source}`}>
+            <Label className="mb-1" htmlFor={`library-add-tags-${job.id}-${source}`}>
               タグ（カンマ区切り・任意）
-            </label>
-            <input
+            </Label>
+            <Input
               id={`library-add-tags-${job.id}-${source}`}
-              className="field text-xs"
+              className="h-8 text-xs"
               value={tags}
               placeholder="夜, 屋上"
               onChange={(event) => setTags(event.target.value)}
             />
           </div>
           <div className="flex gap-2">
-            <button
-              className="btn-primary flex-1 !py-1 text-xs"
-              onClick={() => void add()}
-            >
+            <Button size="sm" className="flex-1" onClick={() => void add()}>
               この内容で登録
-            </button>
-            <button
-              className="btn-ghost !py-1 text-xs"
-              onClick={() => setOpen(false)}
-            >
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => setOpen(false)}>
               閉じる
-            </button>
+            </Button>
           </div>
         </div>
       )}

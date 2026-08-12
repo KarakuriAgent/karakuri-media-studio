@@ -1,15 +1,50 @@
+import { EyeOff, RefreshCw, Settings as SettingsIcon } from 'lucide-react'
+
 import type { Health, HealthStatus } from '../types'
+import { Button } from './ui/button'
+import { Switch } from './ui/switch'
+import { Tabs, TabsList, TabsTrigger } from './ui/tabs'
+
+/** 接続状態のドット付きピル（ヘッダー右寄りの並び）。 */
+function StatusPill({
+  label,
+  tone,
+  detail,
+  title,
+}: {
+  label: string
+  tone: 'ok' | 'warn' | 'error' | 'unknown'
+  detail: string
+  title?: string
+}) {
+  const dot = {
+    ok: 'bg-emerald-400',
+    warn: 'bg-amber-400',
+    error: 'bg-red-500',
+    unknown: 'bg-muted-foreground/40',
+  }[tone]
+  return (
+    <span
+      className="flex items-center gap-1.5 rounded-md border border-border bg-card/70 px-2 py-1 text-xs shadow-elevation-1"
+      title={title ?? ''}
+    >
+      <span className={`size-1.5 rounded-full ${dot}`} />
+      <span className="text-foreground/85">{label}</span>
+      <span className="text-muted-foreground">{detail}</span>
+    </span>
+  )
+}
 
 function Indicator({ name, status }: { name: string; status?: HealthStatus }) {
-  const color =
-    status?.status === 'ok'
-      ? 'bg-emerald-400'
-      : status === undefined
-        ? 'bg-slate-600'
+  const tone =
+    status === undefined
+      ? 'unknown'
+      : status.status === 'ok'
+        ? 'ok'
         : status.status === 'not_configured'
-          ? 'bg-amber-400'
-          : 'bg-red-500'
-  const text =
+          ? 'warn'
+          : 'error'
+  const detail =
     status === undefined
       ? '未確認'
       : status.status === 'ok'
@@ -17,16 +52,7 @@ function Indicator({ name, status }: { name: string; status?: HealthStatus }) {
         : status.status === 'not_configured'
           ? '未設定'
           : 'エラー'
-  return (
-    <span
-      className="flex items-center gap-1.5 rounded-md border border-ink-600 bg-ink-800 px-2 py-1 text-xs"
-      title={status?.detail ?? ''}
-    >
-      <span className={`h-2 w-2 rounded-full ${color}`} />
-      <span className="text-slate-300">{name}</span>
-      <span className="text-slate-500">{text}</span>
-    </span>
-  )
+  return <StatusPill label={name} tone={tone} detail={detail} title={status?.detail ?? ''} />
 }
 
 /** [生成 | エージェント | スタジオ | 設定] tab toggle (AGENT-MODE §1 header). */
@@ -44,21 +70,18 @@ function ViewTabs({
     { value: 'settings', label: '設定' },
   ]
   return (
-    <div className="flex rounded-md border border-ink-600 bg-ink-800 p-0.5">
-      {tabs.map((tab) => (
-        <button
-          key={tab.value}
-          className={`rounded px-2.5 py-1 text-xs transition-colors ${
-            view === tab.value
-              ? 'bg-accent-500 text-white'
-              : 'text-slate-400 hover:bg-ink-700'
-          }`}
-          onClick={() => onView(tab.value)}
-        >
-          {tab.label}
-        </button>
-      ))}
-    </div>
+    <Tabs
+      value={view}
+      onValueChange={(value) => onView(value as 'main' | 'agent' | 'studio' | 'settings')}
+    >
+      <TabsList>
+        {tabs.map((tab) => (
+          <TabsTrigger key={tab.value} value={tab.value}>
+            {tab.label}
+          </TabsTrigger>
+        ))}
+      </TabsList>
+    </Tabs>
   )
 }
 
@@ -84,47 +107,47 @@ export default function Header({
   onShowNsfw: (show: boolean) => void
 }) {
   return (
-    <header className="flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-ink-700 bg-ink-800/80 px-4 py-2.5 backdrop-blur">
-      <h1 className="text-sm font-semibold tracking-wide text-slate-100">
+    <header className="sticky top-0 z-30 flex flex-wrap items-center gap-x-3 gap-y-2 border-b border-border bg-background/80 px-4 py-2.5 shadow-elevation-1 backdrop-blur-md supports-[backdrop-filter]:bg-background/60">
+      <h1 className="text-sm font-semibold tracking-wide text-foreground">
         Karakuri Media Studio
       </h1>
       <ViewTabs view={view} onView={onView} />
       <div className="ml-2 flex flex-wrap items-center gap-2">
         <Indicator name="ComfyUI" status={health?.comfyui} />
         <Indicator name="Grok" status={health?.grok} />
-        <span
-          className="flex items-center gap-1.5 rounded-md border border-ink-600 bg-ink-800 px-2 py-1 text-xs"
+        <StatusPill
+          label="進捗WS"
+          tone={wsConnected ? 'ok' : 'unknown'}
+          detail={wsConnected ? '接続済み' : '未接続'}
           title="進捗配信 WebSocket"
-        >
-          <span
-            className={`h-2 w-2 rounded-full ${wsConnected ? 'bg-emerald-400' : 'bg-slate-600'}`}
-          />
-          <span className="text-slate-300">進捗WS</span>
-        </span>
+        />
       </div>
       <div className="ml-auto flex items-center gap-2">
-        <label
-          className={`chip cursor-pointer select-none !py-1 ${
+        <div
+          className={`flex select-none items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition-colors ${
             showNsfw
-              ? 'border-accent-500 bg-accent-500/15 text-accent-400'
-              : 'border-ink-600 bg-ink-800 text-slate-400 hover:border-ink-500'
+              ? 'border-primary/60 bg-primary/15 text-accent-400'
+              : 'border-border bg-card text-muted-foreground'
           }`}
           title="オフのあいだは NSFW の作品を一覧から隠します"
         >
-          <input
-            type="checkbox"
-            className="h-3 w-3 accent-accent-500"
-            checked={showNsfw}
-            onChange={(event) => onShowNsfw(event.target.checked)}
-          />
-          🫣 NSFW表示
-        </label>
-        <button className="btn-ghost" onClick={onRefresh} disabled={checking}>
+          <Switch id="header-show-nsfw" checked={showNsfw} onCheckedChange={onShowNsfw} />
+          <label
+            htmlFor="header-show-nsfw"
+            className="flex cursor-pointer items-center gap-1.5 text-inherit"
+          >
+            <EyeOff className="size-3.5" />
+            NSFW表示
+          </label>
+        </div>
+        <Button variant="outline" size="sm" onClick={onRefresh} disabled={checking}>
+          <RefreshCw className={checking ? 'animate-spin' : undefined} />
           {checking ? '確認中…' : '接続状態を更新'}
-        </button>
-        <button className="btn-ghost" onClick={onOpenSettings}>
+        </Button>
+        <Button variant="outline" size="sm" onClick={onOpenSettings}>
+          <SettingsIcon />
           設定
-        </button>
+        </Button>
       </div>
     </header>
   )

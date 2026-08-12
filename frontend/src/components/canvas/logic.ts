@@ -8,6 +8,20 @@
  * `GET /api/studio/projects/{id}`（StudioProjectDetail）から引く。カードが
  * 持っているのは「どの行か」と「どこに置いてあるか」だけ。
  */
+import {
+  Bookmark,
+  Clapperboard,
+  FileText,
+  Film,
+  Image as ImageIcon,
+  Mountain,
+  Package,
+  Palette,
+  Settings,
+  User,
+  type LucideIcon,
+} from 'lucide-react'
+
 import type {
   CanvasAttachment,
   CanvasCard,
@@ -58,17 +72,18 @@ export const KIND_LABEL: Record<CanvasCardKind, string> = {
   model: 'モデル設定',
 }
 
-export const KIND_ICON: Record<CanvasCardKind, string> = {
-  character: '🧑',
-  location: '🏞',
-  object: '📦',
-  style: '🎨',
-  reference: '🔖',
-  scene: '🎞',
-  shot: '🎬',
-  media: '🖼',
-  text: '📝',
-  model: '⚙️',
+/** カード種別のアイコン（`<Icon />` として描く。ボード・メニュー・見出しで共通）。 */
+export const KIND_ICON: Record<CanvasCardKind, LucideIcon> = {
+  character: User,
+  location: Mountain,
+  object: Package,
+  style: Palette,
+  reference: Bookmark,
+  scene: Film,
+  shot: Clapperboard,
+  media: ImageIcon,
+  text: FileText,
+  model: Settings,
 }
 
 /** カード種別ごとのヘッダー色（ボード上で種別を見分けるため）。 */
@@ -77,11 +92,11 @@ export const KIND_STYLE: Record<CanvasCardKind, string> = {
   location: 'border-emerald-800 bg-emerald-950/60 text-emerald-200',
   object: 'border-amber-800 bg-amber-950/60 text-amber-200',
   style: 'border-fuchsia-800 bg-fuchsia-950/60 text-fuchsia-200',
-  reference: 'border-slate-600 bg-slate-800/60 text-slate-200',
+  reference: 'border-border bg-secondary text-foreground/85',
   scene: 'border-indigo-800 bg-indigo-950/60 text-indigo-200',
   shot: 'border-sky-800 bg-sky-950/60 text-sky-200',
   media: 'border-teal-800 bg-teal-950/60 text-teal-200',
-  text: 'border-slate-600 bg-slate-800/60 text-slate-200',
+  text: 'border-border bg-secondary text-foreground/85',
   model: 'border-rose-800 bg-rose-950/60 text-rose-200',
 }
 

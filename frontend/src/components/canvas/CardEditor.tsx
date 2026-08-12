@@ -10,7 +10,10 @@ import type {
   StudioSceneUpdate,
   StudioShotUpdate,
 } from '../../types'
+import { Trash2 } from 'lucide-react'
+
 import { Banner, Modal } from '../ui'
+import { Button } from '../ui/button'
 import AssetFields from './fields/AssetFields'
 import MediaFields from './fields/MediaFields'
 import ModelFields from './fields/ModelFields'
@@ -18,7 +21,6 @@ import SceneFields from './fields/SceneFields'
 import ShotFields from './fields/ShotFields'
 import TextFields from './fields/TextFields'
 import {
-  KIND_ICON,
   KIND_LABEL,
   assetOf,
   cardTitle,
@@ -94,13 +96,13 @@ export default function CardEditor({
       return (
         <div className="flex flex-col gap-3">
           <TextFields data={text} onChange={setText} />
-          <button
-            className="btn-primary self-start"
+          <Button
+            className="self-start"
             disabled={busy}
             onClick={() => onSaveData(text as unknown as Record<string, unknown>)}
           >
             {busy ? '保存中…' : '保存'}
-          </button>
+          </Button>
         </div>
       )
     }
@@ -108,13 +110,13 @@ export default function CardEditor({
       return (
         <div className="flex flex-col gap-3">
           <ModelFields data={model} onChange={setModel} options={options} />
-          <button
-            className="btn-primary self-start"
+          <Button
+            className="self-start"
             disabled={busy}
             onClick={() => onSaveData(model as unknown as Record<string, unknown>)}
           >
             {busy ? '保存中…' : '保存'}
-          </button>
+          </Button>
         </div>
       )
     }
@@ -162,7 +164,7 @@ export default function CardEditor({
 
   return (
     <Modal
-      title={`${KIND_ICON[card.kind]} ${KIND_LABEL[card.kind]}: ${cardTitle(card, detail)}`}
+      title={`${KIND_LABEL[card.kind]}: ${cardTitle(card, detail)}`}
       onClose={onClose}
       wide
     >
@@ -171,29 +173,33 @@ export default function CardEditor({
 
         {body()}
 
-        <div className="flex flex-wrap items-center gap-2 border-t border-ink-600 pt-3">
+        <div className="flex flex-wrap items-center gap-2 border-t border-border pt-3">
           {isStandalone(card.kind) ? (
-            <button
-              className="btn-danger text-xs"
+            <Button
+              variant="destructive"
+              size="sm"
               disabled={busy}
               title="このカードを消します（キャンバスだけのカードです）"
               onClick={() => onRemove(false)}
             >
-              🗑 {KIND_LABEL[card.kind]}を削除
-            </button>
+              <Trash2 aria-hidden="true" />
+              {KIND_LABEL[card.kind]}を削除
+            </Button>
           ) : (
-            <button
-              className="btn-danger text-xs"
+            <Button
+              variant="destructive"
+              size="sm"
               disabled={busy}
               title="スタジオからも消えます（カードだけ外すことはできません）"
               onClick={() => onRemove(true)}
             >
-              🗑 {KIND_LABEL[card.kind]}ごと削除
-            </button>
+              <Trash2 aria-hidden="true" />
+              {KIND_LABEL[card.kind]}ごと削除
+            </Button>
           )}
-          <button className="btn-ghost ml-auto" onClick={onClose} disabled={busy}>
+          <Button variant="outline" className="ml-auto" onClick={onClose} disabled={busy}>
             閉じる
-          </button>
+          </Button>
         </div>
       </div>
     </Modal>

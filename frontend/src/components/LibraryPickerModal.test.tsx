@@ -214,7 +214,7 @@ describe('LibraryPickerModal', () => {
     show()
     await screen.findByText('決めポーズ')
     expect(screen.queryByText('ひみつ')).toBeNull()
-    fireEvent.click(screen.getByLabelText('🫣 NSFW表示'))
+    fireEvent.click(screen.getByLabelText('NSFW表示'))
     expect(screen.getByText('ひみつ')).toBeTruthy()
     expect(screen.getByText('2 件表示 / 全 2 件')).toBeTruthy()
   })
@@ -255,7 +255,7 @@ describe('LibraryPickerModal', () => {
     await screen.findByText('決めポーズ')
     updateLibraryItem.mockResolvedValue(item({ nsfw: true }))
 
-    fireEvent.click(screen.getByRole('button', { name: '🫣 NSFW' }))
+    fireEvent.click(screen.getByRole('button', { name: 'NSFW' }))
     await waitFor(() =>
       expect(updateLibraryItem).toHaveBeenCalledWith('l1', { nsfw: true }),
     )

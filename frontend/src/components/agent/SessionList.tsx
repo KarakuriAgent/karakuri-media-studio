@@ -1,10 +1,25 @@
 import { useRef, useState } from 'react'
+import {
+  ChevronLeft,
+  ChevronRight,
+  Loader2,
+  Paperclip,
+  Plus,
+  RefreshCw,
+} from 'lucide-react'
+
 import type {
   AgentCheckinMode,
   AgentSessionCreate,
   AgentSessionSummary,
 } from '../../types'
 import { NsfwBadge, NsfwToggle } from '../ui'
+import { cn } from '@/lib/utils'
+import { NativeSelect } from '../NativeSelect'
+import { Button } from '../ui/button'
+import { Input } from '../ui/input'
+import { Label } from '../ui/label'
+import { Textarea } from '../ui/textarea'
 import {
   ATTACHMENT_ACCEPT,
   AttachmentChip,
@@ -35,7 +50,7 @@ interface Props {
    */
   onCreate: (payload: AgentSessionCreate, files: File[]) => void
   onToggleNsfw: (id: string, nsfw: boolean) => void
-  /** オンのときだけ 🫣 バッジを出す（オフのとき NSFW は渡ってこない）。 */
+  /** オンのときだけ NSFW バッジを出す（オフのとき NSFW は渡ってこない）。 */
   showNsfw: boolean
   /** Layout override: desktop column vs. mobile drawer (AGENT-MODE §1). */
   className?: string
@@ -69,12 +84,23 @@ export default function SessionList({
   if (collapsed) {
     return (
       <aside
-        className={`flex w-10 shrink-0 flex-col items-center gap-2 rounded-lg border border-ink-700 bg-ink-800/60 py-2 ${className}`}
+        className={cn(
+          'flex w-10 shrink-0 flex-col items-center gap-2 rounded-lg border border-border bg-card py-2 shadow-elevation-1',
+          className,
+        )}
       >
-        <button className="btn-ghost !px-2 !py-1 text-xs" onClick={onToggle} title="セッション一覧を開く">
-          ▶
-        </button>
-        <span className="text-[10px] text-slate-500">{sessions.length}</span>
+        <Button
+          variant="outline"
+          size="icon-xs"
+          onClick={onToggle}
+          title="セッション一覧を開く"
+          aria-label="セッション一覧を開く"
+        >
+          <ChevronRight />
+        </Button>
+        <span className="tnum text-[10px] text-muted-foreground">
+          {sessions.length}
+        </span>
       </aside>
     )
   }
@@ -110,71 +136,74 @@ export default function SessionList({
 
   return (
     <aside
-      className={`flex w-64 shrink-0 flex-col rounded-lg border border-ink-700 bg-ink-800/60 ${className}`}
+      className={cn(
+        'flex w-64 shrink-0 flex-col rounded-lg border border-border bg-card shadow-elevation-1',
+        className,
+      )}
     >
-      <div className="flex items-center gap-2 border-b border-ink-700 px-3 py-2">
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+      <div className="flex items-center gap-2 border-b border-border px-3 py-2">
+        <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           セッション
         </h2>
-        <span className="text-xs text-slate-600">{sessions.length}</span>
+        <span className="tnum text-xs text-muted-foreground/70">
+          {sessions.length}
+        </span>
         <div className="ml-auto flex items-center gap-1">
-          <button
-            className="btn-ghost !px-2 !py-1 text-xs"
+          <Button
+            variant="outline"
+            size="icon-xs"
             onClick={onReload}
             disabled={loading}
             title="一覧を更新"
+            aria-label="一覧を更新"
           >
-            {loading ? '…' : '⟳'}
-          </button>
-          <button
-            className="btn-ghost !px-2 !py-1 text-xs"
+            {loading ? <Loader2 className="animate-spin" /> : <RefreshCw />}
+          </Button>
+          <Button
+            variant="outline"
+            size="icon-xs"
             onClick={onToggle}
             title="折りたたむ"
+            aria-label="折りたたむ"
           >
-            ◀
-          </button>
+            <ChevronLeft />
+          </Button>
         </div>
       </div>
 
-      <div className="border-b border-ink-700 p-2">
+      <div className="border-b border-border p-2">
         {!creating ? (
-          <button
-            className="btn-primary w-full !py-1.5 text-xs"
-            onClick={() => setCreating(true)}
-          >
-            ＋ 新規セッション
-          </button>
+          <Button size="sm" className="w-full" onClick={() => setCreating(true)}>
+            <Plus />
+            新規セッション
+          </Button>
         ) : (
           <div className="space-y-2">
-            <div>
-              <label className="label" htmlFor="new-session-title">
-                セッション名（任意）
-              </label>
-              <input
+            <div className="space-y-1">
+              <Label htmlFor="new-session-title">セッション名（任意）</Label>
+              <Input
                 id="new-session-title"
-                className="field text-xs"
+                className="h-8 text-xs"
                 value={title}
                 placeholder="空なら最初の指示から決めます"
                 onChange={(event) => setTitle(event.target.value)}
               />
             </div>
-            <div>
-              <label className="label">最初の指示</label>
-              <textarea
-                className="field h-20 resize-none text-xs"
+            <div className="space-y-1">
+              <Label htmlFor="new-session-goal">最初の指示</Label>
+              <Textarea
+                id="new-session-goal"
+                className="h-20 resize-none text-xs"
                 value={goal}
                 autoFocus
                 placeholder="例: かおりのダンス動画を雰囲気違いで3本"
                 onChange={(event) => setGoal(event.target.value)}
               />
             </div>
-            <div>
-              <label className="label" htmlFor="new-session-checkin">
-                チェックイン
-              </label>
-              <select
+            <div className="space-y-1">
+              <Label htmlFor="new-session-checkin">チェックイン</Label>
+              <NativeSelect
                 id="new-session-checkin"
-                className="field text-xs"
                 value={mode}
                 onChange={(event) =>
                   setMode(event.target.value as AgentCheckinMode)
@@ -185,17 +214,15 @@ export default function SessionList({
                     {CHECKIN_LABEL[value]}
                   </option>
                 ))}
-              </select>
+              </NativeSelect>
             </div>
             {/* 生成本数の上限はチェックインモードに関係なく効く
                 （agent_runner.over_limit は auto_limit だけを見る）。 */}
-            <div>
-              <label className="label" htmlFor="new-session-auto-limit">
-                上限本数（0 = 無制限）
-              </label>
-              <input
+            <div className="space-y-1">
+              <Label htmlFor="new-session-auto-limit">上限本数（0 = 無制限）</Label>
+              <Input
                 id="new-session-auto-limit"
-                className="field text-xs"
+                className="tnum h-8 text-xs"
                 type="number"
                 min={0}
                 value={autoLimit}
@@ -203,7 +230,7 @@ export default function SessionList({
                   setAutoLimit(Math.max(0, Number(event.target.value) || 0))
                 }
               />
-              <p className="mt-1 text-[11px] text-slate-500">
+              <p className="text-[11px] text-muted-foreground">
                 この本数ごとに続けてよいか確認します。0 = 無制限で、確認せず走り切ります。
               </p>
             </div>
@@ -217,14 +244,17 @@ export default function SessionList({
                 data-testid="new-session-attachment-input"
                 onChange={(event) => pick(event.target.files)}
               />
-              <button
-                className="btn-ghost w-full !py-1 text-xs"
+              <Button
+                variant="outline"
+                size="sm"
+                className="w-full"
                 title="ファイルを添付"
                 aria-label="ファイルを添付"
                 onClick={() => filePicker.current?.click()}
               >
-                📎 ファイルを添付
-              </button>
+                <Paperclip />
+                ファイルを添付
+              </Button>
               {files.length > 0 && (
                 <div className="mt-1.5 flex flex-wrap gap-1">
                   {files.map((file) => (
@@ -243,15 +273,17 @@ export default function SessionList({
               )}
             </div>
             <div className="flex gap-2">
-              <button
-                className="btn-primary flex-1 !py-1.5 text-xs"
+              <Button
+                size="sm"
+                className="flex-1"
                 disabled={busy || (!goal.trim() && files.length === 0)}
                 onClick={start}
               >
                 開始
-              </button>
-              <button
-                className="btn-ghost !py-1.5 text-xs"
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
                 onClick={() => {
                   setFiles([])
                   setAttachError(null)
@@ -259,7 +291,7 @@ export default function SessionList({
                 }}
               >
                 取消
-              </button>
+              </Button>
             </div>
           </div>
         )}
@@ -267,7 +299,7 @@ export default function SessionList({
 
       <div className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
         {sessions.length === 0 && (
-          <p className="px-1 py-3 text-center text-xs text-slate-600">
+          <p className="px-1 py-3 text-center text-xs text-muted-foreground">
             まだセッションがありません
           </p>
         )}
@@ -276,25 +308,25 @@ export default function SessionList({
             key={session.id}
             className={`group rounded-md border px-2 py-1.5 transition-colors ${
               session.id === activeId
-                ? 'border-accent-500 bg-accent-500/10'
-                : 'border-ink-600 bg-ink-800 hover:border-ink-500'
+                ? 'border-primary bg-primary/10'
+                : 'border-border bg-surface-sunken hover:border-primary/50'
             }`}
           >
             <button
-              className="block w-full text-left"
+              className="block w-full rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
               onClick={() => onSelect(session.id)}
             >
-              <span className="block truncate text-xs text-slate-200">
+              <span className="block truncate text-xs text-foreground/90">
                 {session.title || '(無題)'}
               </span>
               <span className="mt-1 flex items-center gap-1.5">
                 <AgentStatusBadge status={session.status} />
                 {showNsfw && session.nsfw && <NsfwBadge />}
-                <span className="text-[10px] text-slate-500">
+                <span className="tnum text-[10px] text-muted-foreground">
                   {shortTime(session.created_at)}
                 </span>
               </span>
-              <span className="mt-1 block text-[10px] text-slate-600">
+              <span className="mt-1 block text-[10px] text-muted-foreground/70">
                 タスク {session.task_count} / 成果物 {session.artifact_count} ／{' '}
                 {CHECKIN_LABEL[session.checkin_mode]} ／{' '}
                 {autoLimitLabel(session.auto_limit)}
@@ -305,14 +337,16 @@ export default function SessionList({
                 nsfw={session.nsfw}
                 disabled={busy}
                 onToggle={(nsfw) => onToggleNsfw(session.id, nsfw)}
-                className="!px-1.5 !py-0.5 !text-[10px]"
+                className="h-6 px-1.5 text-[10px]"
               />
-              <button
-                className="ml-auto text-[10px] text-slate-600 opacity-0 transition-opacity hover:text-red-400 group-hover:opacity-100"
+              <Button
+                variant="ghost"
+                size="xs"
+                className="ml-auto text-[10px] text-muted-foreground opacity-0 transition-opacity hover:text-red-400 group-hover:opacity-100"
                 onClick={() => onDelete(session.id)}
               >
                 削除
-              </button>
+              </Button>
             </div>
           </div>
         ))}

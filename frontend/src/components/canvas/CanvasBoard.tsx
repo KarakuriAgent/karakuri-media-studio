@@ -1,10 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { LayoutGrid, Maximize, Minus, Plus } from 'lucide-react'
+
 import type {
   CanvasCard,
   CanvasCardKind,
   CanvasViewport,
   StudioProjectDetail,
 } from '../../types'
+import { Button } from '../ui/button'
 import CardNode from './CardNode'
 import {
   ADDABLE_KINDS,
@@ -242,7 +245,7 @@ export default function CanvasBoard({
   return (
     <div
       ref={container}
-      className="relative h-full w-full touch-none overflow-hidden bg-ink-900"
+      className="relative h-full w-full touch-none overflow-hidden bg-background"
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerUp}
@@ -285,48 +288,53 @@ export default function CanvasBoard({
       </div>
 
       {/* 表示のコントロール（拡大・縮小・原点に戻す・整列） */}
-      <div className="absolute bottom-4 left-4 z-10 flex items-center gap-1 rounded-md border border-ink-600 bg-ink-800/90 p-1">
-        <button
-          className="btn-ghost !px-2 !py-1 text-xs"
+      <div className="absolute bottom-4 left-4 z-10 flex items-center gap-1 rounded-md border border-border bg-card/90 p-1 shadow-elevation-1">
+        <Button
+          variant="outline"
+          size="icon-sm"
           onClick={() => zoomBy(1 / 1.2)}
           disabled={view.zoom <= MIN_ZOOM}
           aria-label="縮小"
         >
-          −
-        </button>
-        <span className="w-12 text-center text-[11px] text-slate-400">
+          <Minus aria-hidden="true" />
+        </Button>
+        <span className="tnum w-12 text-center text-[11px] text-muted-foreground">
           {Math.round(view.zoom * 100)}%
         </span>
-        <button
-          className="btn-ghost !px-2 !py-1 text-xs"
+        <Button
+          variant="outline"
+          size="icon-sm"
           onClick={() => zoomBy(1.2)}
           disabled={view.zoom >= MAX_ZOOM}
           aria-label="拡大"
         >
-          ＋
-        </button>
-        <button
-          className="btn-ghost !px-2 !py-1 text-xs"
+          <Plus aria-hidden="true" />
+        </Button>
+        <Button
+          variant="outline"
+          size="icon-sm"
           onClick={fit}
           title="全体が見えるように寄せる"
           aria-label="全体を見る"
         >
-          ⌖
-        </button>
-        <button
-          className="btn-ghost !px-2 !py-1 text-xs"
+          <Maximize aria-hidden="true" />
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
           onClick={onArrange}
           title="カードを格子状に並べ直す"
         >
-          ⊞ 整列
-        </button>
+          <LayoutGrid aria-hidden="true" />
+          整列
+        </Button>
       </div>
 
       {/* スタジオにも中身が無いとき（鏡なので、盤面が空 = そのタブが空）。 */}
       {cards.length === 0 && (
         <div className="pointer-events-none absolute inset-0 z-10 flex items-center justify-center p-6">
-          <div className="max-w-sm rounded-lg border border-ink-600 bg-ink-800/90 p-4 text-center">
-            <p className="text-sm text-slate-300">
+          <div className="max-w-sm rounded-lg border border-border bg-card/90 p-4 text-center shadow-elevation-1">
+            <p className="text-sm text-foreground/85">
               {tab
                 ? 'この話にはまだ中身がありません'
                 : 'この作品にはまだ中身がありません'}
@@ -336,14 +344,15 @@ export default function CanvasBoard({
       )}
 
       {/* カード作成の「＋」 */}
-      <button
-        className="btn-primary absolute bottom-4 right-4 z-10 !rounded-full !px-4 !py-3 text-lg shadow-lg"
+      <Button
+        size="icon"
+        className="absolute bottom-4 right-4 z-10 rounded-full shadow-elevation-3 [&_svg]:size-5"
         title="カードを追加"
         aria-label="カードを追加"
         onClick={openCenterPicker}
       >
-        ＋
-      </button>
+        <Plus aria-hidden="true" />
+      </Button>
 
       {picker && (
         <>
@@ -353,27 +362,30 @@ export default function CanvasBoard({
             onDoubleClick={(event) => event.stopPropagation()}
           />
           <div
-            className="absolute z-20 flex w-44 flex-col gap-0.5 rounded-lg border border-ink-600 bg-ink-800 p-1 shadow-2xl"
+            className="absolute z-20 flex w-44 flex-col gap-0.5 rounded-lg border border-border bg-popover p-1 shadow-elevation-3"
             style={
               picker.screen
                 ? { left: picker.screen.left, top: picker.screen.top }
                 : { right: '1rem', bottom: '5rem' }
             }
           >
-            <p className="px-2 py-1 text-[11px] text-slate-500">カードの種類</p>
-            {ADDABLE_KINDS.map((kind) => (
-              <button
-                key={kind}
-                className="flex items-center gap-2 rounded px-2 py-1 text-left text-xs text-slate-300 hover:bg-ink-700"
-                onClick={() => {
-                  setPicker(null)
-                  onAdd(kind, picker.point)
-                }}
-              >
-                <span>{KIND_ICON[kind]}</span>
-                {KIND_LABEL[kind]}
-              </button>
-            ))}
+            <p className="px-2 py-1 text-[11px] text-muted-foreground">カードの種類</p>
+            {ADDABLE_KINDS.map((kind) => {
+              const Icon = KIND_ICON[kind]
+              return (
+                <button
+                  key={kind}
+                  className="flex items-center gap-2 rounded-sm px-2 py-1 text-left text-xs text-foreground/85 transition-colors hover:bg-secondary hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                  onClick={() => {
+                    setPicker(null)
+                    onAdd(kind, picker.point)
+                  }}
+                >
+                  <Icon className="size-3.5 shrink-0" aria-hidden="true" />
+                  {KIND_LABEL[kind]}
+                </button>
+              )
+            })}
           </div>
         </>
       )}

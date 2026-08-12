@@ -1,4 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
+import { Clapperboard, Music, Paperclip, Square } from 'lucide-react'
+
 import { api } from '../../api'
 import type { CanvasAttachment, CanvasMessage, StudioAsset } from '../../types'
 import { Banner } from '../ui'
@@ -8,7 +10,8 @@ import {
   isAllowedAttachment,
   rejectedMessage,
 } from '../agent/attachments'
-import { eventIcon } from '../agent/common'
+import { EventIcon } from '../agent/common'
+import { Button } from '../ui/button'
 import MentionInput from './MentionInput'
 import {
   messageAttachments,
@@ -50,19 +53,17 @@ function AttachmentThumb({
       href={url}
       target="_blank"
       rel="noreferrer"
-      className="flex items-center gap-1.5 rounded border border-ink-600 bg-ink-800/70 px-1.5 py-1 text-[11px] text-slate-300 hover:text-slate-100"
+      className="flex items-center gap-1.5 rounded-sm border border-border bg-surface-sunken px-1.5 py-1 text-[11px] text-foreground/85 transition-colors hover:text-foreground"
       title={attachment.abs_path || attachment.path}
     >
       {attachment.kind === 'image' ? (
         <img src={url} alt="" className="h-8 w-8 rounded object-cover" />
+      ) : attachment.kind === 'video' ? (
+        <Clapperboard className="size-3.5 shrink-0" aria-hidden="true" />
+      ) : attachment.kind === 'audio' ? (
+        <Music className="size-3.5 shrink-0" aria-hidden="true" />
       ) : (
-        <span>
-          {attachment.kind === 'video'
-            ? '🎬'
-            : attachment.kind === 'audio'
-              ? '🎵'
-              : '📎'}
-        </span>
+        <Paperclip className="size-3.5 shrink-0" aria-hidden="true" />
       )}
       <span className="max-w-[10rem] truncate">{attachment.name}</span>
     </a>
@@ -84,7 +85,7 @@ function Bubble({
     <div className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>
       <div
         className={`max-w-[85%] break-words rounded-lg px-3 py-2 text-sm ${
-          mine ? 'bg-accent-500/20 text-slate-100' : 'bg-ink-700 text-slate-200'
+          mine ? 'bg-primary/20 text-foreground' : 'bg-secondary text-foreground/90'
         }`}
       >
         {text && <p className="whitespace-pre-wrap">{text}</p>}
@@ -112,12 +113,14 @@ function Bubble({
  */
 function EventRow({ message }: { message: CanvasMessage }) {
   return (
-    <div className="flex items-start gap-2 px-1 text-[11px] text-slate-500">
-      <span>{eventIcon(message.kind)}</span>
+    <div className="flex items-start gap-2 px-1 text-[11px] text-muted-foreground">
+      <EventIcon kind={message.kind} />
       <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">
         {message.content}
       </span>
-      <span className="shrink-0 text-slate-700">{shortTime(message.ts)}</span>
+      <span className="tnum shrink-0 text-muted-foreground/60">
+        {shortTime(message.ts)}
+      </span>
     </div>
   )
 }
@@ -195,7 +198,7 @@ export default function CanvasChat({
   return (
     <div
       className={`flex min-h-0 flex-1 flex-col gap-2 ${
-        dragging ? 'rounded-lg outline-dashed outline-2 outline-accent-500' : ''
+        dragging ? 'rounded-lg outline-dashed outline-2 outline-primary' : ''
       }`}
       onDragOver={(event) => {
         event.preventDefault()
@@ -209,22 +212,23 @@ export default function CanvasChat({
       }}
     >
       <div className="flex shrink-0 items-center gap-2">
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+        <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           チャット
         </h2>
         {running && (
-          <button className="btn-ghost ml-auto !py-1 text-xs" onClick={onStop}>
-            ⏹ 停止
-          </button>
+          <Button variant="outline" size="sm" className="ml-auto" onClick={onStop}>
+            <Square aria-hidden="true" />
+            停止
+          </Button>
         )}
       </div>
 
       <div
         ref={scroller}
-        className="min-h-0 flex-1 space-y-2 overflow-y-auto rounded-lg border border-ink-700 bg-ink-800/40 p-2"
+        className="min-h-0 flex-1 space-y-2 overflow-y-auto rounded-lg border border-border bg-surface-sunken p-2"
       >
         {messages.length === 0 && (
-          <p className="text-xs text-slate-600">
+          <p className="text-xs text-muted-foreground">
             まだ会話はありません。作りたいものを書いてみてください（画像・動画・
             音声はドラッグ&ドロップでも添付できます）。
           </p>
@@ -237,7 +241,7 @@ export default function CanvasChat({
           ),
         )}
         {running && (
-          <p className="animate-pulse px-1 text-[11px] text-slate-500">
+          <p className="animate-pulse px-1 text-[11px] text-muted-foreground">
             {runningLabel(activity)}
           </p>
         )}
@@ -262,7 +266,7 @@ export default function CanvasChat({
             />
           ))}
           {uploading && (
-            <span className="text-[11px] text-slate-500">アップロード中…</span>
+            <span className="text-[11px] text-muted-foreground">アップロード中…</span>
           )}
         </div>
       )}
@@ -286,23 +290,25 @@ export default function CanvasChat({
             data-testid="canvas-attachment-input"
             onChange={(event) => void pick(event.target.files)}
           />
-          <button
-            className="btn-ghost !px-2 !py-1 text-xs"
+          <Button
+            variant="outline"
+            size="icon-sm"
             disabled={disabled || uploading}
             title="ファイルを添付（エージェントが中身を見ます）"
             aria-label="ファイルを添付"
             onClick={() => filePicker.current?.click()}
           >
-            📎
-          </button>
-          <span className="text-[11px] text-slate-600">Ctrl + Enter で送信</span>
-          <button
-            className="btn-primary ml-auto !py-1 text-xs"
+            <Paperclip aria-hidden="true" />
+          </Button>
+          <span className="text-[11px] text-muted-foreground">Ctrl + Enter で送信</span>
+          <Button
+            size="sm"
+            className="ml-auto"
             disabled={disabled || !sendable}
             onClick={send}
           >
             送信
-          </button>
+          </Button>
         </div>
       </div>
     </div>

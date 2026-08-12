@@ -1,4 +1,14 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useId, useRef, useState } from 'react'
+import {
+  Check,
+  EyeOff,
+  ImageUp,
+  Loader2,
+  Plus,
+  Sparkles,
+  Trash2,
+  Upload,
+} from 'lucide-react'
 import { api } from '../api'
 import {
   AUTHOR_NEGATIVE_PROMPT,
@@ -40,6 +50,14 @@ import type {
   Options,
   WorkflowOption,
 } from '../types'
+import { Badge } from '@/components/ui/badge'
+import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Slider } from '@/components/ui/slider'
+import { Textarea } from '@/components/ui/textarea'
+import { NativeSelect } from './NativeSelect'
 import AudioFields, { audioErrorKeys } from './AudioFields'
 import HistoryPickerModal, {
   assetExtension,
@@ -130,16 +148,19 @@ function LoraPicker({
 }) {
   const [pickerOpen, setPickerOpen] = useState(false)
   const [query, setQuery] = useState('')
+  // 画像用と動画用で 2 つ描かれるので、ラベルの結び付け先は id を分ける。
+  const triggerId = useId()
   const visibleLoras = loras.filter((lora) => matchesLoraQuery(lora, query))
 
   return (
     <div>
       {loras.length === 0 ? (
-        <p className="text-xs text-slate-500">{emptyHint}</p>
+        <p className="text-xs text-muted-foreground">{emptyHint}</p>
       ) : (
         <div className="flex flex-wrap items-center gap-2">
-          <button
-            className="btn-ghost text-xs"
+          <Button
+            variant="outline"
+            size="sm"
             onClick={() => {
               // 前回の検索語が残っていると絞り込まれた状態で開いてしまうため、
               // 開くたびに検索欄をリセットする。
@@ -148,12 +169,12 @@ function LoraPicker({
             }}
           >
             LoRAを選ぶ
-          </button>
-          <span className="rounded-full border border-ink-600 bg-ink-800 px-2 py-1 text-[11px] text-slate-400">
+          </Button>
+          <Badge variant="secondary" className="tnum">
             選択 {selected.length} / 候補 {loras.length}
-          </span>
+          </Badge>
           {selected.length === 0 && (
-            <span className="text-[11px] text-slate-600">未選択</span>
+            <span className="text-[11px] text-muted-foreground/70">未選択</span>
           )}
         </div>
       )}
@@ -162,19 +183,19 @@ function LoraPicker({
         <div className="mt-3 flex flex-col gap-2">
           {selected.map((lora, index) => (
             <div key={lora.id} className="flex items-center gap-2">
-              <span className="w-24 shrink-0 truncate text-xs text-slate-300">
+              <span className="w-24 shrink-0 truncate text-xs text-foreground/85">
                 {lora.display_name}
               </span>
-              <input
-                type="range"
-                min="0"
-                max="2"
-                step="0.05"
-                className="flex-1 accent-accent-500"
-                value={lora.strength}
-                onChange={(event) => onStrength(index, Number(event.target.value))}
+              <Slider
+                className="flex-1"
+                min={0}
+                max={2}
+                step={0.05}
+                aria-label={`${lora.display_name} の強度`}
+                value={[lora.strength]}
+                onValueChange={([value]) => onStrength(index, value)}
               />
-              <span className="w-10 text-right text-xs tabular-nums text-slate-400">
+              <span className="tnum w-10 text-right text-xs text-muted-foreground">
                 {lora.strength.toFixed(2)}
               </span>
             </div>
@@ -183,19 +204,16 @@ function LoraPicker({
       )}
 
       <div className="mt-3">
-        <div className="flex items-center justify-between">
-          <label className="label">トリガーワード（自動連結・編集可）</label>
+        <div className="mb-1 flex items-center justify-between">
+          <Label htmlFor={triggerId}>トリガーワード（自動連結・編集可）</Label>
           {triggerDirty && (
-            <button
-              className="mb-1 text-[11px] text-slate-400 hover:text-slate-200"
-              onClick={onTriggerReset}
-            >
+            <Button variant="ghost" size="xs" onClick={onTriggerReset}>
               自動連結に戻す
-            </button>
+            </Button>
           )}
         </div>
-        <input
-          className="field"
+        <Input
+          id={triggerId}
           value={triggerText}
           onChange={(event) => onTrigger(event.target.value)}
         />
@@ -203,26 +221,30 @@ function LoraPicker({
 
       {pickerOpen && (
         <Modal title="LoRAを選択" onClose={() => setPickerOpen(false)} wide closeOnBackdrop>
-          <div className="sticky top-0 z-10 -mx-1 mb-3 border-b border-ink-600 bg-ink-800/95 px-1 pb-3 backdrop-blur">
-            <label className="label" htmlFor="lora-picker-search">
+          <div className="sticky top-0 z-10 -mx-1 mb-3 border-b border-border bg-card/95 px-1 pb-3 backdrop-blur">
+            <Label className="mb-1" htmlFor="lora-picker-search">
               名前・ファイル名・トリガーで検索
-            </label>
+            </Label>
             <div className="flex items-center gap-2">
-              <input
+              <Input
                 id="lora-picker-search"
-                className="field"
                 placeholder="LoRAを検索"
                 value={query}
                 autoFocus
                 onChange={(event) => setQuery(event.target.value)}
               />
               {query && (
-                <button className="btn-ghost shrink-0 text-xs" onClick={() => setQuery('')}>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="shrink-0"
+                  onClick={() => setQuery('')}
+                >
                   クリア
-                </button>
+                </Button>
               )}
             </div>
-            <div className="mt-2 flex items-center justify-between text-[11px] text-slate-500">
+            <div className="tnum mt-2 flex items-center justify-between text-[11px] text-muted-foreground">
               <span>
                 表示 {visibleLoras.length} / 全 {loras.length}
               </span>
@@ -231,7 +253,7 @@ function LoraPicker({
           </div>
 
           {visibleLoras.length === 0 ? (
-            <p className="rounded-lg border border-dashed border-ink-600 p-6 text-center text-xs text-slate-500">
+            <p className="rounded-lg border border-dashed border-border p-6 text-center text-xs text-muted-foreground">
               条件に一致するLoRAがありません
             </p>
           ) : (
@@ -245,10 +267,10 @@ function LoraPicker({
                     type="button"
                     aria-label={lora.display_name}
                     aria-pressed={active}
-                    className={`flex min-h-20 items-center gap-3 rounded-lg border p-2 text-left transition-colors ${
+                    className={`flex min-h-20 items-center gap-3 rounded-lg border p-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 ${
                       active
-                        ? 'border-accent-500 bg-accent-500/15 text-accent-300'
-                        : 'border-ink-600 bg-ink-800 text-slate-300 hover:border-ink-500 hover:bg-ink-700'
+                        ? 'border-primary bg-primary/15 text-foreground'
+                        : 'border-border bg-surface-sunken text-foreground/85 hover:bg-secondary'
                     }`}
                     title={lora.lora_name}
                     onClick={() => onToggle(lora)}
@@ -259,12 +281,12 @@ function LoraPicker({
                         alt=""
                         aria-hidden="true"
                         loading="lazy"
-                        className="h-14 w-14 shrink-0 rounded-md border border-ink-600 object-cover"
+                        className="size-14 shrink-0 rounded-md border border-border object-cover"
                       />
                     ) : (
                       <span
                         aria-hidden="true"
-                        className="flex h-14 w-14 shrink-0 items-center justify-center rounded-md border border-ink-600 bg-ink-900 text-lg font-semibold text-slate-600"
+                        className="flex size-14 shrink-0 items-center justify-center rounded-md border border-border bg-background text-lg font-semibold text-muted-foreground/70"
                       >
                         L
                       </span>
@@ -273,22 +295,22 @@ function LoraPicker({
                       <span className="block truncate text-xs font-medium">
                         {lora.display_name}
                       </span>
-                      <span className="mt-1 block truncate text-[10px] text-slate-500">
+                      <span className="mt-1 block truncate text-[10px] text-muted-foreground">
                         {lora.trigger_word || 'トリガーなし'}
                       </span>
-                      <span className="block text-[10px] tabular-nums text-slate-600">
+                      <span className="tnum block text-[10px] text-muted-foreground/70">
                         強度 {lora.default_strength.toFixed(2)}
                       </span>
                     </span>
                     <span
                       aria-hidden="true"
-                      className={`flex h-5 w-5 shrink-0 items-center justify-center rounded-full border text-[11px] ${
+                      className={`flex size-5 shrink-0 items-center justify-center rounded-full border ${
                         active
-                          ? 'border-accent-500 bg-accent-500 text-white'
-                          : 'border-ink-500 text-transparent'
+                          ? 'border-primary bg-primary text-primary-foreground'
+                          : 'border-input text-transparent'
                       }`}
                     >
-                      ✓
+                      <Check className="size-3" />
                     </span>
                   </button>
                 )
@@ -296,11 +318,13 @@ function LoraPicker({
             </div>
           )}
 
-          <div className="sticky bottom-0 -mx-1 mt-4 flex items-center justify-between border-t border-ink-600 bg-ink-800/95 px-1 pt-3 backdrop-blur">
-            <span className="text-xs text-slate-500">{selected.length}件を選択中</span>
-            <button className="btn-primary text-xs" onClick={() => setPickerOpen(false)}>
+          <div className="sticky bottom-0 -mx-1 mt-4 flex items-center justify-between border-t border-border bg-card/95 px-1 pt-3 backdrop-blur">
+            <span className="text-xs text-muted-foreground">
+              {selected.length}件を選択中
+            </span>
+            <Button size="sm" onClick={() => setPickerOpen(false)}>
               選択を完了
-            </button>
+            </Button>
           </div>
         </Modal>
       )}
@@ -348,7 +372,7 @@ function AssetPicker({
   return (
     <div
       className={`flex flex-col gap-2 rounded-lg border border-dashed p-2 transition-colors ${
-        dragOver ? 'border-accent-500 bg-accent-500/10' : 'border-ink-600'
+        dragOver ? 'border-primary bg-primary/10' : 'border-border'
       }`}
       onDragOver={(event) => {
         event.preventDefault()
@@ -376,42 +400,42 @@ function AssetPicker({
             event.target.value = ''
           }}
         />
-        <button
-          className="btn-ghost text-xs"
+        <Button
+          variant="outline"
+          size="sm"
           disabled={busy}
           onClick={() => input.current?.click()}
         >
+          <Upload />
           {kind === 'image' ? '画像をアップロード' : '動画をアップロード'}
-        </button>
+        </Button>
         {onOpenLibrary && (
-          <button className="btn-ghost text-xs" disabled={busy} onClick={onOpenLibrary}>
+          <Button variant="outline" size="sm" disabled={busy} onClick={onOpenLibrary}>
             ライブラリから選択
-          </button>
+          </Button>
         )}
         {onOpenSheet && (
-          <button className="btn-ghost text-xs" disabled={busy} onClick={onOpenSheet}>
+          <Button variant="outline" size="sm" disabled={busy} onClick={onOpenSheet}>
+            <ImageUp />
             ライブラリから作成
-          </button>
+          </Button>
         )}
         {onOpenHistory && (
-          <button className="btn-ghost text-xs" disabled={busy} onClick={onOpenHistory}>
+          <Button variant="outline" size="sm" disabled={busy} onClick={onOpenHistory}>
             履歴から選択
-          </button>
+          </Button>
         )}
-        <span className="text-[11px] text-slate-500">
+        <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
+          {busy && <Loader2 className="size-3 animate-spin" />}
           {busy ? 'アップロード中…' : 'またはここにドロップ'}
         </span>
         {value && (
-          <button className="btn-ghost text-xs" onClick={() => onPick('')}>
+          <Button variant="ghost" size="sm" onClick={() => onPick('')}>
             クリア
-          </button>
+          </Button>
         )}
       </div>
-      <select
-        className="field"
-        value={value}
-        onChange={(event) => onPick(event.target.value)}
-      >
+      <NativeSelect value={value} onChange={(event) => onPick(event.target.value)}>
         <option value="">（未選択）</option>
         {value && !assets.some((asset) => asset.url === value) && (
           <option value={value}>{value}</option>
@@ -421,17 +445,21 @@ function AssetPicker({
             {asset.name}
           </option>
         ))}
-      </select>
+      </NativeSelect>
       {children}
       {value && kind === 'image' && (
         <img
           src={value}
           alt=""
-          className="max-h-40 w-fit rounded border border-ink-600 object-contain"
+          className="max-h-40 w-fit rounded-md border border-border object-contain"
         />
       )}
       {value && kind === 'video' && (
-        <video src={value} controls className="max-h-40 w-fit rounded border border-ink-600" />
+        <video
+          src={value}
+          controls
+          className="max-h-40 w-fit rounded-md border border-border"
+        />
       )}
     </div>
   )
@@ -482,10 +510,10 @@ function ReferencePicker({
   const full = values.length >= item.limit
 
   return (
-    <div className="flex flex-col gap-2 rounded-lg border border-dashed border-ink-600 p-2">
+    <div className="flex flex-col gap-2 rounded-lg border border-dashed border-border p-2">
       <div className="flex flex-wrap items-center gap-2">
-        <span className="text-xs text-slate-300">{item.label}</span>
-        <span className="text-[11px] tabular-nums text-slate-500">
+        <span className="text-xs text-foreground/85">{item.label}</span>
+        <span className="tnum text-[11px] text-muted-foreground">
           {values.length} / {item.limit} 件
         </span>
         <input
@@ -499,46 +527,48 @@ function ReferencePicker({
             if (file) onUpload(file)
           }}
         />
-        <button
-          className="btn-ghost ml-auto text-xs"
+        <Button
+          variant="outline"
+          size="sm"
+          className="ml-auto"
           disabled={busy || full}
           onClick={() => input.current?.click()}
         >
+          <Upload />
           アップロード
-        </button>
-        <button
-          className="btn-ghost text-xs"
-          disabled={busy}
-          onClick={onOpenLibrary}
-        >
+        </Button>
+        <Button variant="outline" size="sm" disabled={busy} onClick={onOpenLibrary}>
           ライブラリから選択
-        </button>
-        <button
-          className="btn-ghost text-xs"
+        </Button>
+        <Button
+          variant="outline"
+          size="sm"
           disabled={busy || full}
           onClick={onOpenHistory}
         >
           履歴から選択
-        </button>
+        </Button>
       </div>
       {values.length > 0 && (
         <ul className="flex flex-col gap-1">
           {values.map((url, index) => (
             <li key={url} className="flex items-center gap-2">
-              <span className="w-5 shrink-0 text-[11px] tabular-nums text-slate-500">
+              <span className="tnum w-5 shrink-0 text-[11px] text-muted-foreground">
                 {index + 1}.
               </span>
               {item.kind === 'image' && (
                 <img
                   src={url}
                   alt=""
-                  className="h-10 w-10 shrink-0 rounded border border-ink-600 object-cover"
+                  className="size-10 shrink-0 rounded-md border border-border object-cover"
                 />
               )}
-              <span className="flex-1 truncate text-[11px] text-slate-400">{url}</span>
-              <button className="btn-ghost text-xs" onClick={() => onRemove(url)}>
+              <span className="flex-1 truncate text-[11px] text-muted-foreground">
+                {url}
+              </span>
+              <Button variant="ghost" size="sm" onClick={() => onRemove(url)}>
                 外す
-              </button>
+              </Button>
             </li>
           ))}
         </ul>
@@ -866,16 +896,16 @@ export default function GenerateForm({
       )}
 
       {/* mode tabs */}
-      <div className="flex gap-1 rounded-lg border border-ink-600 bg-ink-800 p-1">
+      <div className="flex gap-1 rounded-lg border border-border bg-surface-sunken p-1 shadow-elevation-1">
         {MODES.map((mode) => (
           <button
             key={mode}
             onClick={() => patch({ mode })}
             title={MODE_HINTS[mode]}
-            className={`flex-1 rounded-md px-2 py-1.5 text-xs font-medium transition-colors ${
+            className={`flex-1 rounded-md px-2 py-1.5 text-xs font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 ${
               form.mode === mode
-                ? 'bg-accent-500 text-white'
-                : 'text-slate-400 hover:bg-ink-700'
+                ? 'bg-primary text-primary-foreground shadow-elevation-1'
+                : 'text-muted-foreground hover:bg-secondary hover:text-foreground'
             }`}
           >
             {MODE_LABELS[mode]}
@@ -930,7 +960,7 @@ export default function GenerateForm({
                 fallbackLabel="画像ワークフロー"
               />
               {imageEdits && (
-                <p className="mt-1 text-[11px] text-amber-400">
+                <p className="mt-1 text-[11px] text-amber-300">
                   入力画像を編集するワークフローです。参照画像が必須で、解像度は入力画像から決まります。
                 </p>
               )}
@@ -1096,8 +1126,9 @@ export default function GenerateForm({
                       if (file) void uploadToLibrary('audio', file, 'audioPath')
                     }}
                   />
-                  <button
-                    className="btn-ghost text-xs"
+                  <Button
+                    variant="outline"
+                    size="sm"
                     disabled={busyUpload}
                     onClick={() =>
                       setLibraryTarget({
@@ -1108,9 +1139,10 @@ export default function GenerateForm({
                     }
                   >
                     ライブラリから選択
-                  </button>
-                  <button
-                    className="btn-ghost text-xs"
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
                     disabled={busyUpload}
                     onClick={() =>
                       setHistoryTarget({
@@ -1121,27 +1153,30 @@ export default function GenerateForm({
                     }
                   >
                     履歴から選択
-                  </button>
-                  <button
-                    className="btn-ghost text-xs"
+                  </Button>
+                  <Button
+                    variant="outline"
+                    size="sm"
                     disabled={busyUpload}
                     onClick={() => audioInput.current?.click()}
                   >
+                    {busyUpload ? <Loader2 className="animate-spin" /> : <Upload />}
                     {busyUpload ? 'アップロード中…' : 'アップロード'}
-                  </button>
+                  </Button>
                   {form.audioPath && (
-                    <button
-                      className="btn-ghost text-xs"
+                    <Button
+                      variant="ghost"
+                      size="sm"
                       onClick={() => patch({ audioPath: '' })}
                     >
                       クリア
-                    </button>
+                    </Button>
                   )}
                 </div>
                 {form.audioPath ? (
                   <div className="flex items-center gap-2">
                     <span
-                      className="max-w-[12rem] truncate text-xs text-slate-300"
+                      className="max-w-[12rem] truncate text-xs text-foreground/85"
                       title={form.audioPath}
                     >
                       {audioLabel}
@@ -1149,7 +1184,7 @@ export default function GenerateForm({
                     <audio className="h-8 flex-1" controls src={form.audioPath} />
                   </div>
                 ) : (
-                  <p className="text-[11px] text-slate-500">（未選択）</p>
+                  <p className="text-[11px] text-muted-foreground">（未選択）</p>
                 )}
                 <FieldError message={fieldErrors.audio_path} />
               </div>
@@ -1186,16 +1221,18 @@ export default function GenerateForm({
           {!hidden.resolution && (
             <Section title="解像度">
               {imageEdits && (
-                <p className="mb-2 text-[11px] text-amber-400">
+                <p className="mb-2 text-[11px] text-amber-300">
                   選択中の画像ワークフローは入力画像から解像度を決めます。ここの設定は動画側にのみ効きます。
                 </p>
               )}
               <div className="grid grid-cols-2 gap-2">
                 <div>
-                  <label className="label">アスペクト比</label>
+                  <Label className="mb-1" htmlFor="generate-aspect-ratio">
+                    アスペクト比
+                  </Label>
                   {aspectRatios.length > 0 ? (
-                    <select
-                      className="field"
+                    <NativeSelect
+                      id="generate-aspect-ratio"
                       value={form.aspectRatio}
                       onChange={(event) => patch({ aspectRatio: event.target.value })}
                     >
@@ -1207,10 +1244,10 @@ export default function GenerateForm({
                           {ratio}
                         </option>
                       ))}
-                    </select>
+                    </NativeSelect>
                   ) : (
-                    <input
-                      className="field"
+                    <Input
+                      id="generate-aspect-ratio"
                       value={form.aspectRatio}
                       placeholder="4:3 (Standard)"
                       onChange={(event) => patch({ aspectRatio: event.target.value })}
@@ -1218,9 +1255,12 @@ export default function GenerateForm({
                   )}
                 </div>
                 <div>
-                  <label className="label">メガピクセル</label>
-                  <input
-                    className="field"
+                  <Label className="mb-1" htmlFor="generate-megapixels">
+                    メガピクセル
+                  </Label>
+                  <Input
+                    id="generate-megapixels"
+                    className="tnum"
                     type="number"
                     step="0.05"
                     min="0.1"
@@ -1261,17 +1301,21 @@ export default function GenerateForm({
           <Section
             title="プロンプト"
             right={
-              <button className="btn-ghost !py-1 text-xs" onClick={onOpenChat}>
+              <Button variant="outline" size="xs" onClick={onOpenChat}>
+                <Sparkles />
                 Grokで生成
-              </button>
+              </Button>
             }
           >
             <div className="flex flex-col gap-3">
               {!hidden.imagePrompt && (
                 <div>
-                  <label className="label">画像プロンプト</label>
-                  <textarea
-                    className="field h-28 resize-y"
+                  <Label className="mb-1" htmlFor="generate-image-prompt">
+                    画像プロンプト
+                  </Label>
+                  <Textarea
+                    id="generate-image-prompt"
+                    className="h-28 resize-y"
                     value={form.imagePrompt}
                     placeholder="自然文 1 段落で詳細に"
                     onChange={(event) => patch({ imagePrompt: event.target.value })}
@@ -1281,16 +1325,17 @@ export default function GenerateForm({
               )}
               {!hidden.videoPrompt && (
                 <div>
-                  <label className="label">
+                  <Label className="mb-1" htmlFor="generate-video-prompt">
                     動画プロンプト
                     {promptOptional && (
-                      <span className="ml-1 font-normal text-slate-500">
+                      <span className="ml-1 font-normal text-muted-foreground/70">
                         （任意）
                       </span>
                     )}
-                  </label>
-                  <textarea
-                    className="field h-28 resize-y"
+                  </Label>
+                  <Textarea
+                    id="generate-video-prompt"
+                    className="h-28 resize-y"
                     value={form.videoPrompt}
                     placeholder={
                       promptOptional
@@ -1303,10 +1348,10 @@ export default function GenerateForm({
                     <FieldError message={fieldErrors.video_prompt} />
                     {charsLeft(form.videoPrompt) !== null && (
                       <span
-                        className={`ml-auto text-[11px] tabular-nums ${
+                        className={`tnum ml-auto text-[11px] ${
                           charsLeft(form.videoPrompt)! < 0
                             ? 'text-rose-400'
-                            : 'text-slate-500'
+                            : 'text-muted-foreground'
                         }`}
                       >
                         残り {charsLeft(form.videoPrompt)} 文字
@@ -1322,14 +1367,15 @@ export default function GenerateForm({
             <Section
               title="マルチショット"
               right={
-                <button
-                  className="text-xs text-slate-400 hover:text-slate-200"
+                <Button
+                  variant="ghost"
+                  size="xs"
                   onClick={() => setShowShots((value) => !value)}
                 >
                   {showShots
                     ? '閉じる'
                     : `開く（${form.multiShots.length} / ${shotLimits.max_shots} ショット）`}
-                </button>
+                </Button>
               }
             >
               {showShots && (
@@ -1337,29 +1383,29 @@ export default function GenerateForm({
                   {form.multiShots.map((shot, index) => (
                     <div
                       key={index}
-                      className="flex flex-col gap-1 rounded-lg border border-dashed border-ink-600 p-2"
+                      className="flex flex-col gap-1 rounded-lg border border-dashed border-border p-2"
                     >
                       <div className="flex items-center gap-2">
-                        <span className="text-xs text-slate-300">
+                        <span className="text-xs text-foreground/85">
                           Shot {index + 1}
                         </span>
                         {charsLeft(shot.prompt) !== null && (
                           <span
-                            className={`text-[11px] tabular-nums ${
+                            className={`tnum text-[11px] ${
                               charsLeft(shot.prompt)! < 0
                                 ? 'text-rose-400'
-                                : 'text-slate-500'
+                                : 'text-muted-foreground'
                             }`}
                           >
                             残り {charsLeft(shot.prompt)} 文字
                           </span>
                         )}
-                        <label className="ml-auto text-[11px] text-slate-500">
+                        <span className="ml-auto text-[11px] text-muted-foreground">
                           秒数
-                        </label>
-                        <input
+                        </span>
+                        <Input
                           type="number"
-                          className="field w-20 !py-1 text-xs"
+                          className="tnum h-7 w-20 px-2 text-xs"
                           min={shotLimits.min_duration}
                           max={shotLimits.max_duration}
                           value={shot.duration}
@@ -1370,8 +1416,9 @@ export default function GenerateForm({
                             })
                           }
                         />
-                        <button
-                          className="btn-ghost text-xs"
+                        <Button
+                          variant="ghost"
+                          size="sm"
                           onClick={() =>
                             patch({
                               multiShots: form.multiShots.filter(
@@ -1380,11 +1427,12 @@ export default function GenerateForm({
                             })
                           }
                         >
+                          <Trash2 />
                           削除
-                        </button>
+                        </Button>
                       </div>
-                      <textarea
-                        className="field h-20 resize-y"
+                      <Textarea
+                        className="h-20 resize-y"
                         value={shot.prompt}
                         aria-label={`Shot ${index + 1} のプロンプト`}
                         placeholder="カメラの動き、動作、画面内の位置、音"
@@ -1395,8 +1443,10 @@ export default function GenerateForm({
                       <FieldError message={fieldErrors[`multi_shots.${index}`]} />
                     </div>
                   ))}
-                  <button
-                    className="btn-ghost self-start text-xs"
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="self-start"
                     disabled={form.multiShots.length >= shotLimits.max_shots}
                     onClick={() =>
                       patch({
@@ -1404,8 +1454,9 @@ export default function GenerateForm({
                       })
                     }
                   >
+                    <Plus />
                     ショットを追加
-                  </button>
+                  </Button>
                   <FieldError message={fieldErrors.multi_shots} />
                 </div>
               )}
@@ -1416,14 +1467,15 @@ export default function GenerateForm({
             <Section
               title="Elements（@要素名 でのキャラ固定）"
               right={
-                <button
-                  className="text-xs text-slate-400 hover:text-slate-200"
+                <Button
+                  variant="ghost"
+                  size="xs"
                   onClick={() => setShowElements((value) => !value)}
                 >
                   {showElements
                     ? '閉じる'
                     : `開く（${form.klingElements.length} / ${elementLimits.max_elements} 要素）`}
-                </button>
+                </Button>
               }
             >
               {showElements && (
@@ -1431,11 +1483,11 @@ export default function GenerateForm({
                   {form.klingElements.map((element, index) => (
                     <div
                       key={index}
-                      className="flex flex-col gap-1 rounded-lg border border-dashed border-ink-600 p-2"
+                      className="flex flex-col gap-1 rounded-lg border border-dashed border-border p-2"
                     >
                       <div className="flex items-center gap-2">
-                        <input
-                          className="field w-32 !py-1 text-xs"
+                        <Input
+                          className="h-7 w-32 px-2 text-xs"
                           value={element.name}
                           aria-label={`要素 ${index + 1} の名前`}
                           placeholder="kaori"
@@ -1443,8 +1495,8 @@ export default function GenerateForm({
                             patchElement(index, { name: event.target.value })
                           }
                         />
-                        <input
-                          className="field flex-1 !py-1 text-xs"
+                        <Input
+                          className="h-7 flex-1 px-2 text-xs"
                           value={element.description}
                           aria-label={`要素 ${index + 1} の説明`}
                           placeholder="灰色のコートの女性"
@@ -1454,8 +1506,9 @@ export default function GenerateForm({
                             })
                           }
                         />
-                        <button
-                          className="btn-ghost text-xs"
+                        <Button
+                          variant="ghost"
+                          size="sm"
                           onClick={() =>
                             patch({
                               klingElements: form.klingElements.filter(
@@ -1464,15 +1517,17 @@ export default function GenerateForm({
                             })
                           }
                         >
+                          <Trash2 />
                           削除
-                        </button>
+                        </Button>
                       </div>
                       <div className="flex flex-wrap items-center gap-2">
-                        <span className="text-[11px] tabular-nums text-slate-500">
+                        <span className="tnum text-[11px] text-muted-foreground">
                           {element.images.length} / {elementLimits.max_images} 枚
                         </span>
-                        <button
-                          className="btn-ghost text-xs"
+                        <Button
+                          variant="outline"
+                          size="sm"
                           disabled={busyUpload}
                           onClick={() =>
                             setLibraryTarget({
@@ -1487,9 +1542,10 @@ export default function GenerateForm({
                           }
                         >
                           ライブラリから選択
-                        </button>
-                        <button
-                          className="btn-ghost text-xs"
+                        </Button>
+                        <Button
+                          variant="outline"
+                          size="sm"
                           disabled={
                             busyUpload ||
                             element.images.length >= elementLimits.max_images
@@ -1507,7 +1563,7 @@ export default function GenerateForm({
                           }
                         >
                           履歴から選択
-                        </button>
+                        </Button>
                       </div>
                       {element.images.length > 0 && (
                         <ul className="flex flex-col gap-1">
@@ -1516,13 +1572,14 @@ export default function GenerateForm({
                               <img
                                 src={url}
                                 alt=""
-                                className="h-10 w-10 shrink-0 rounded border border-ink-600 object-cover"
+                                className="size-10 shrink-0 rounded-md border border-border object-cover"
                               />
-                              <span className="flex-1 truncate text-[11px] text-slate-400">
+                              <span className="flex-1 truncate text-[11px] text-muted-foreground">
                                 {url}
                               </span>
-                              <button
-                                className="btn-ghost text-xs"
+                              <Button
+                                variant="ghost"
+                                size="sm"
                                 onClick={() =>
                                   patchElement(index, {
                                     images: element.images.filter(
@@ -1532,7 +1589,7 @@ export default function GenerateForm({
                                 }
                               >
                                 外す
-                              </button>
+                              </Button>
                             </li>
                           ))}
                         </ul>
@@ -1542,8 +1599,10 @@ export default function GenerateForm({
                       />
                     </div>
                   ))}
-                  <button
-                    className="btn-ghost self-start text-xs"
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    className="self-start"
                     disabled={
                       form.klingElements.length >= elementLimits.max_elements
                     }
@@ -1553,8 +1612,9 @@ export default function GenerateForm({
                       })
                     }
                   >
+                    <Plus />
                     要素を追加
-                  </button>
+                  </Button>
                   <FieldError message={fieldErrors.kling_elements} />
                 </div>
               )}
@@ -1565,18 +1625,19 @@ export default function GenerateForm({
             <Section
               title="動画ネガティブ"
               right={
-                <button
-                  className="text-xs text-slate-400 hover:text-slate-200"
+                <Button
+                  variant="ghost"
+                  size="xs"
                   onClick={() => setShowAdvanced((value) => !value)}
                 >
                   {showAdvanced ? '閉じる' : '詳細設定'}
-                </button>
+                </Button>
               }
             >
               {showAdvanced && (
                 <div className="flex flex-col gap-2">
-                  <select
-                    className="field"
+                  <NativeSelect
+                    aria-label="ネガティブプリセット"
                     value={form.negativePreset}
                     onChange={(event) => {
                       const key = event.target.value
@@ -1595,9 +1656,10 @@ export default function GenerateForm({
                       </option>
                     ))}
                     <option value="custom">{NEGATIVE_PRESET_LABELS.custom}</option>
-                  </select>
-                  <textarea
-                    className="field h-20 resize-y font-mono text-xs"
+                  </NativeSelect>
+                  <Textarea
+                    className="h-20 resize-y font-mono text-xs"
+                    aria-label="ネガティブプロンプト"
                     value={form.negativePrompt}
                     placeholder="空欄ならワークフロー既定のネガティブを使います"
                     onChange={(event) =>
@@ -1607,7 +1669,7 @@ export default function GenerateForm({
                 </div>
               )}
               {!showAdvanced && (
-                <p className="truncate text-xs text-slate-500">
+                <p className="truncate text-xs text-muted-foreground">
                   {NEGATIVE_PRESET_LABELS[form.negativePreset] ?? form.negativePreset}:{' '}
                   {form.negativePrompt || '（ワークフロー既定）'}
                 </p>
@@ -1620,9 +1682,12 @@ export default function GenerateForm({
               <div className="grid grid-cols-2 gap-2">
                 {!hidden.duration && (
                   <div>
-                    <label className="label">秒数（上限なし）</label>
-                    <input
-                      className="field"
+                    <Label className="mb-1" htmlFor="generate-duration">
+                      秒数（上限なし）
+                    </Label>
+                    <Input
+                      id="generate-duration"
+                      className="tnum"
                       type="number"
                       min="1"
                       step="1"
@@ -1635,9 +1700,12 @@ export default function GenerateForm({
                 )}
                 {!hidden.fps && (
                   <div>
-                    <label className="label">fps</label>
-                    <input
-                      className="field"
+                    <Label className="mb-1" htmlFor="generate-fps">
+                      fps
+                    </Label>
+                    <Input
+                      id="generate-fps"
+                      className="tnum"
                       type="number"
                       min="1"
                       step="1"
@@ -1650,12 +1718,12 @@ export default function GenerateForm({
             )}
             {!hidden.steps && (
               <div className="mt-3">
-                <label className="label" htmlFor="generate-steps">
+                <Label className="mb-1" htmlFor="generate-steps">
                   ステップ数
-                </label>
-                <input
+                </Label>
+                <Input
                   id="generate-steps"
-                  className="field"
+                  className="tnum"
                   type="number"
                   min="0"
                   max={MAX_STEPS}
@@ -1669,19 +1737,24 @@ export default function GenerateForm({
               </div>
             )}
             <div className="mt-3 flex items-center gap-2">
-              <label className="flex items-center gap-2 text-xs text-slate-300">
-                <input
-                  type="checkbox"
-                  className="accent-accent-500"
+              <div className="flex shrink-0 items-center gap-2">
+                <Checkbox
+                  id="generate-seed-locked"
                   checked={form.seedLocked}
-                  onChange={(event) => patch({ seedLocked: event.target.checked })}
+                  onCheckedChange={(checked) => patch({ seedLocked: checked === true })}
                 />
-                seed 固定
-              </label>
-              <input
-                className="field flex-1"
+                <Label
+                  htmlFor="generate-seed-locked"
+                  className="cursor-pointer text-xs text-foreground/85"
+                >
+                  seed 固定
+                </Label>
+              </div>
+              <Input
+                className="tnum flex-1"
                 type="number"
                 min="0"
+                aria-label="seed"
                 value={form.seed}
                 disabled={!form.seedLocked}
                 onChange={(event) => patch({ seed: Number(event.target.value) || 0 })}
@@ -1695,15 +1768,20 @@ export default function GenerateForm({
 
       {/* NSFW の手動指定（SPEC §7.1）。オンで投げたジョブは manual 扱いになり、
           生成後の自動判定で上書きされない。オフなら従来どおり自動判定に任せる。 */}
-      <label className="flex items-center gap-2 text-xs text-slate-300">
-        <input
-          type="checkbox"
-          className="accent-accent-500"
+      <div className="flex items-center gap-2">
+        <Checkbox
+          id="generate-nsfw"
           checked={form.nsfw}
-          onChange={(event) => patch({ nsfw: event.target.checked })}
+          onCheckedChange={(checked) => patch({ nsfw: checked === true })}
         />
-        🫣 NSFW として投入（オフなら生成後に自動判定）
-      </label>
+        <Label
+          htmlFor="generate-nsfw"
+          className="flex cursor-pointer items-center gap-1 text-xs text-foreground/85"
+        >
+          <EyeOff className="size-3" aria-hidden="true" />
+          NSFW として投入（オフなら生成後に自動判定）
+        </Label>
+      </div>
 
       {/* 表示先の無いエラー（隠れている欄・畳んだセクション・バックエンドの
           422 が返した見覚えのないキー）。これが無いと送信が黙って止まる。 */}
@@ -1714,9 +1792,10 @@ export default function GenerateForm({
         </Banner>
       )}
 
-      <button className="btn-primary w-full py-2.5" onClick={onSubmit} disabled={submitting}>
+      <Button size="lg" className="w-full" onClick={onSubmit} disabled={submitting}>
+        {submitting && <Loader2 className="animate-spin" />}
         {submitting ? '送信中…' : '実行'}
-      </button>
+      </Button>
 
       {historyTarget && (
         <HistoryPickerModal
@@ -1765,7 +1844,7 @@ export default function GenerateForm({
           footer={
             (libraryTarget.reference || libraryTarget.element) && (
               <div className="mt-3 flex items-center gap-2">
-                <span className="text-xs text-slate-400">
+                <span className="tnum text-xs text-muted-foreground">
                   {libraryTarget.reference
                     ? form[libraryTarget.reference.field].length
                     : (form.klingElements[libraryTarget.element!.index]?.images
@@ -1774,12 +1853,13 @@ export default function GenerateForm({
                   {libraryTarget.reference?.limit ?? libraryTarget.element!.limit}{' '}
                   件
                 </span>
-                <button
-                  className="btn-primary ml-auto !py-1 text-xs"
+                <Button
+                  size="sm"
+                  className="ml-auto"
                   onClick={() => setLibraryTarget(null)}
                 >
                   選択を終える
-                </button>
+                </Button>
               </div>
             )
           }

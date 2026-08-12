@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
+import { Loader2, RefreshCw } from 'lucide-react'
+
 import { ApiError, api, formatDetail } from '../../api'
 import type { StudioShot, StudioShotPreview } from '../../types'
 import { Banner, CopyButton } from '../ui'
+import { Badge } from '../ui/badge'
+import { Button } from '../ui/button'
 
 /** ワークフロー ID -> 画面に出す名前（`WORKFLOW_OVERRIDE_LABEL` の短い版）。 */
 const WORKFLOW_LABEL: Record<string, string> = {
@@ -65,28 +69,30 @@ export default function PromptPreview({ shot }: { shot: StudioShot }) {
 
   return (
     <div
-      className="space-y-2 rounded-md border border-ink-600 bg-ink-900/40 p-2"
+      className="space-y-2 rounded-md border border-border bg-surface-sunken p-2"
       role="group"
       aria-label="投入プレビュー"
     >
       <div className="flex items-center gap-2">
-        <h4 className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+        <h4 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
           投入プレビュー
         </h4>
         {preview?.workflow && (
-          <span className="chip !px-1.5 !py-0 text-[10px]">
+          <Badge variant="outline" className="bg-card px-1.5 py-0 text-[10px] font-normal">
             {WORKFLOW_LABEL[preview.workflow] ?? preview.workflow}
-          </span>
+          </Badge>
         )}
         <div className="ml-auto flex items-center gap-1">
           {preview && preview.prompt && <CopyButton text={preview.prompt} />}
-          <button
-            className="btn-ghost !px-2 !py-1 text-xs"
+          <Button
+            variant="outline"
+            size="xs"
             onClick={() => void load()}
             disabled={loading}
           >
+            {loading ? <Loader2 className="animate-spin" /> : <RefreshCw />}
             {loading ? '取得中…' : '再取得'}
-          </button>
+          </Button>
         </div>
       </div>
 
@@ -97,17 +103,19 @@ export default function PromptPreview({ shot }: { shot: StudioShot }) {
       {preview && !preview.error && (
         <>
           {preview.workflow_reason && (
-            <p className="text-[11px] text-slate-400">{preview.workflow_reason}</p>
+            <p className="text-[11px] text-muted-foreground">
+              {preview.workflow_reason}
+            </p>
           )}
           <pre
-            className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-md border border-ink-600 bg-ink-950/60 p-2 font-mono text-[11px] text-slate-200"
+            className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-background/60 p-2 font-mono text-[11px] text-foreground/90"
             aria-label="投入される最終プロンプト"
           >
             {preview.prompt}
           </pre>
           {preview.references.length > 0 && (
-            <div className="text-[11px] text-slate-400">
-              <span className="text-slate-500">添付される参照素材:</span>
+            <div className="text-[11px] text-muted-foreground">
+              <span className="text-muted-foreground/80">添付される参照素材:</span>
               <ul className="mt-1 space-y-0.5">
                 {preview.references.map((reference) => (
                   <li key={`${reference.tag}-${reference.name}`}>
@@ -120,12 +128,12 @@ export default function PromptPreview({ shot }: { shot: StudioShot }) {
             </div>
           )}
           {preview.start_frame && (
-            <p className="text-[11px] text-slate-400">
+            <p className="text-[11px] text-muted-foreground">
               開始フレーム: {fileName(preview.start_frame)}
             </p>
           )}
           {preview.context_latent && (
-            <p className="text-[11px] text-slate-400">
+            <p className="text-[11px] text-muted-foreground">
               ラテント引き継ぎ: 有効（引き継ぎ元ラテント:{' '}
               {fileName(preview.context_latent)}
               {preview.context_video

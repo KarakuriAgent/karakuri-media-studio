@@ -686,9 +686,11 @@ export default function App() {
 
       {view === 'main' && (
         <>
-        {/* 狭幅は縦積み 1 カラム（ページ縦スクロール）、lg 以上は従来の 2 カラム */}
-        <main className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3 lg:flex-row lg:overflow-hidden">
-          <aside className="w-full shrink-0 lg:w-[400px] lg:overflow-y-auto lg:pr-1">
+        {/* 狭幅は縦積み 1 カラム（ページ縦スクロール）、lg 以上は従来の 2 カラム。
+            lg 以上ではサイドバーと右カラムがそれぞれ余白を持ち、境界線が端まで
+            通るように main 側の padding / gap を落とす。 */}
+        <main className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3 lg:flex-row lg:gap-0 lg:overflow-hidden lg:p-0">
+          <aside className="w-full shrink-0 lg:w-[400px] lg:overflow-y-auto lg:border-r lg:border-border lg:bg-surface-sunken/50 lg:p-3">
             <GenerateForm
               form={form}
               patch={patch}
@@ -710,7 +712,7 @@ export default function App() {
 
           {/* 狭幅ではこの列も ResultPane も高さを固定せず、内容なりに伸ばして
               main の縦スクロールへ逃がす（lg 以上は従来どおり高さを分け合う）。 */}
-          <div className="flex min-w-0 flex-1 flex-col gap-2 lg:min-h-0">
+          <div className="flex min-w-0 flex-1 flex-col gap-2 lg:min-h-0 lg:p-3">
             <div className="flex-1 lg:min-h-0">
               <ResultPane
                 job={shownJob}
@@ -729,7 +731,7 @@ export default function App() {
               />
             </div>
 
-            <section className="h-36 shrink-0 rounded-lg border border-ink-700 bg-ink-800/60">
+            <section className="h-36 shrink-0 rounded-lg border border-border bg-card shadow-elevation-1">
               <HistoryGallery
                 jobs={visibleJobs}
                 selectedId={shownJob?.id ?? null}

@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react'
+import { Trash2 } from 'lucide-react'
+
 import type {
   StudioEpisode,
   StudioScene,
@@ -7,6 +9,12 @@ import type {
   StudioShotUpdate,
 } from '../../types'
 import { FieldError, Section } from '../ui'
+import { NativeSelect } from '../NativeSelect'
+import { Button } from '../ui/button'
+import { Checkbox } from '../ui/checkbox'
+import { Input } from '../ui/input'
+import { Label } from '../ui/label'
+import { Textarea } from '../ui/textarea'
 import PromptPreview from './PromptPreview'
 import {
   SHOT_STATUS_CLASS,
@@ -36,37 +44,37 @@ function ShotScript({
 }) {
   return (
     <button
-      className={`w-full rounded-md border px-3 py-2 text-left transition-colors ${
+      className={`w-full rounded-md border px-3 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 ${
         active
-          ? 'border-accent-500 bg-accent-500/10'
-          : 'border-ink-600 bg-ink-800 hover:border-ink-500'
+          ? 'border-primary bg-primary/10'
+          : 'border-border bg-surface-sunken hover:border-primary/50'
       }`}
       onClick={onSelect}
       aria-current={active ? 'true' : undefined}
     >
       <div className="flex items-center gap-2">
-        <span className="text-[11px] font-semibold tracking-wider text-slate-500">
+        <span className="tnum text-[11px] font-semibold tracking-wider text-muted-foreground">
           #{String(index + 1).padStart(2, '0')}
         </span>
-        <span className="min-w-0 flex-1 truncate text-sm text-slate-100">
+        <span className="min-w-0 flex-1 truncate text-sm text-foreground">
           {shot.title || `カット ${index + 1}`}
         </span>
         <span className={`chip !px-1.5 !py-0 text-[10px] ${SHOT_STATUS_CLASS[shot.status]}`}>
           {SHOT_STATUS_LABEL[shot.status]}
         </span>
-        <span className="shrink-0 text-[11px] text-slate-500">
+        <span className="tnum shrink-0 text-[11px] text-muted-foreground">
           {shot.duration_seconds}s
         </span>
       </div>
 
       {shot.purpose && (
-        <p className="mt-1 text-[11px] italic text-slate-500">{shot.purpose}</p>
+        <p className="mt-1 text-[11px] italic text-muted-foreground">{shot.purpose}</p>
       )}
       {shot.action && (
-        <p className="mt-1 whitespace-pre-wrap text-xs text-slate-300">{shot.action}</p>
+        <p className="mt-1 whitespace-pre-wrap text-xs text-foreground/85">{shot.action}</p>
       )}
       {shot.dialogue && (
-        <blockquote className="mt-1.5 border-l-2 border-accent-500/60 pl-2 text-xs text-slate-200">
+        <blockquote className="mt-1.5 border-l-2 border-primary/60 pl-2 text-xs text-foreground">
           <span className="whitespace-pre-wrap">{shot.dialogue}</span>
         </blockquote>
       )}
@@ -97,23 +105,20 @@ function Field({
   error?: string
 }) {
   return (
-    <div>
-      <label className="label" htmlFor={id}>
-        {label}
-      </label>
+    <div className="space-y-1">
+      <Label htmlFor={id}>{label}</Label>
       {rows ? (
-        <textarea
+        <Textarea
           id={id}
-          className="field resize-y"
+          className="resize-y"
           rows={rows}
           value={value}
           placeholder={placeholder}
           onChange={(event) => onChange(event.target.value)}
         />
       ) : (
-        <input
+        <Input
           id={id}
-          className="field"
           value={value}
           placeholder={placeholder}
           onChange={(event) => onChange(event.target.value)}
@@ -183,12 +188,12 @@ export default function ScriptView({
   return (
     <div className="grid min-h-0 gap-3 lg:grid-cols-2">
       <div className="space-y-2">
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           脚本
         </h3>
         {shots.length === 0 && (
-          <p className="rounded-md border border-ink-600 bg-ink-800 px-3 py-6 text-center text-xs text-slate-600">
-            左のレールの「＋ 追加」でカットを作ってください
+          <p className="rounded-md border border-border bg-surface-sunken px-3 py-6 text-center text-xs text-muted-foreground">
+            左のレールの「カットを追加」でカットを作ってください
           </p>
         )}
         {shots.map((shot, index) => (
@@ -204,7 +209,7 @@ export default function ScriptView({
 
       <div>
         {!selectedShot || !form ? (
-          <p className="rounded-md border border-ink-600 bg-ink-800 px-3 py-6 text-center text-xs text-slate-600">
+          <p className="rounded-md border border-border bg-surface-sunken px-3 py-6 text-center text-xs text-muted-foreground">
             カットを選ぶとここで編集できます
           </p>
         ) : (
@@ -260,13 +265,11 @@ export default function ScriptView({
                   placeholder="slow dolly in, eye level"
                   onChange={(value) => patch({ camera: value })}
                 />
-                <div>
-                  <label className="label" htmlFor="studio-shot-duration">
-                    尺（秒）
-                  </label>
-                  <input
+                <div className="space-y-1">
+                  <Label htmlFor="studio-shot-duration">尺（秒）</Label>
+                  <Input
                     id="studio-shot-duration"
-                    className="field"
+                    className="tnum"
                     type="number"
                     min={1}
                     max={15}
@@ -290,13 +293,10 @@ export default function ScriptView({
               />
 
               <div className="flex flex-wrap items-center gap-3">
-                <div>
-                  <label className="label" htmlFor="studio-shot-status">
-                    状態
-                  </label>
-                  <select
+                <div className="space-y-1">
+                  <Label htmlFor="studio-shot-status">状態</Label>
+                  <NativeSelect
                     id="studio-shot-status"
-                    className="field"
                     value={form.status}
                     onChange={(event) =>
                       patch({ status: event.target.value as StudioShotStatus })
@@ -307,32 +307,33 @@ export default function ScriptView({
                         {SHOT_STATUS_LABEL[status]}
                       </option>
                     ))}
-                  </select>
+                  </NativeSelect>
                 </div>
-                <label className="mt-4 flex cursor-pointer items-center gap-2 text-xs text-slate-300">
-                  <input
-                    type="checkbox"
-                    className="h-3.5 w-3.5 accent-accent-500"
+                <div className="mt-4 flex items-center gap-2">
+                  <Checkbox
+                    id="studio-shot-carry-over"
                     checked={form.carry_over_end_frame}
-                    onChange={(event) =>
-                      patch({ carry_over_end_frame: event.target.checked })
+                    onCheckedChange={(checked) =>
+                      patch({ carry_over_end_frame: checked === true })
                     }
                   />
-                  直前カットのラストフレームを開始フレームに使う
-                </label>
+                  <Label
+                    htmlFor="studio-shot-carry-over"
+                    className="cursor-pointer text-foreground/85"
+                  >
+                    直前カットのラストフレームを開始フレームに使う
+                  </Label>
+                </div>
               </div>
 
-              <div className="space-y-3 rounded-md border border-ink-600 bg-ink-900/40 p-2">
-                <h4 className="text-[11px] font-semibold uppercase tracking-wider text-slate-400">
+              <div className="space-y-3 rounded-md border border-border bg-surface-sunken p-2">
+                <h4 className="text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
                   生成設定
                 </h4>
-                <div>
-                  <label className="label" htmlFor="studio-shot-scene">
-                    所属する場
-                  </label>
-                  <select
+                <div className="space-y-1">
+                  <Label htmlFor="studio-shot-scene">所属する場</Label>
+                  <NativeSelect
                     id="studio-shot-scene"
-                    className="field"
                     value={form.scene_id}
                     onChange={(event) => patch({ scene_id: event.target.value })}
                   >
@@ -342,18 +343,15 @@ export default function ScriptView({
                         {choice.label}
                       </option>
                     ))}
-                  </select>
+                  </NativeSelect>
                 </div>
 
                 <div className="grid gap-3 sm:grid-cols-2">
-                  <div>
-                    <label className="label" htmlFor="studio-shot-aspect">
-                      アスペクト比
-                    </label>
+                  <div className="space-y-1">
+                    <Label htmlFor="studio-shot-aspect">アスペクト比</Label>
                     {aspectRatios.length > 0 ? (
-                      <select
+                      <NativeSelect
                         id="studio-shot-aspect"
-                        className="field"
                         value={form.aspect_ratio}
                         onChange={(event) =>
                           patch({ aspect_ratio: event.target.value })
@@ -371,11 +369,10 @@ export default function ScriptView({
                             {ratio}
                           </option>
                         ))}
-                      </select>
+                      </NativeSelect>
                     ) : (
-                      <input
+                      <Input
                         id="studio-shot-aspect"
-                        className="field"
                         value={form.aspect_ratio}
                         placeholder="16:9 (Widescreen)（空欄で既定値）"
                         onChange={(event) =>
@@ -384,13 +381,13 @@ export default function ScriptView({
                       />
                     )}
                   </div>
-                  <div>
-                    <label className="label" htmlFor="studio-shot-megapixels">
+                  <div className="space-y-1">
+                    <Label htmlFor="studio-shot-megapixels">
                       解像度（メガピクセル）
-                    </label>
-                    <input
+                    </Label>
+                    <Input
                       id="studio-shot-megapixels"
-                      className="field"
+                      className="tnum"
                       type="number"
                       step="0.05"
                       min="0.1"
@@ -400,13 +397,11 @@ export default function ScriptView({
                     />
                     <FieldError message={errors.megapixels} />
                   </div>
-                  <div>
-                    <label className="label" htmlFor="studio-shot-seed">
-                      シード
-                    </label>
-                    <input
+                  <div className="space-y-1">
+                    <Label htmlFor="studio-shot-seed">シード</Label>
+                    <Input
                       id="studio-shot-seed"
-                      className="field"
+                      className="tnum"
                       type="number"
                       step="1"
                       value={form.seed}
@@ -415,13 +410,12 @@ export default function ScriptView({
                     />
                     <FieldError message={errors.seed} />
                   </div>
-                  <div>
-                    <label className="label" htmlFor="studio-shot-workflow">
+                  <div className="space-y-1">
+                    <Label htmlFor="studio-shot-workflow">
                       ワークフローの強制指定
-                    </label>
-                    <select
+                    </Label>
+                    <NativeSelect
                       id="studio-shot-workflow"
-                      className="field"
                       value={form.workflow_override}
                       onChange={(event) =>
                         patch({ workflow_override: event.target.value })
@@ -433,22 +427,24 @@ export default function ScriptView({
                           {WORKFLOW_OVERRIDE_LABEL[value]}
                         </option>
                       ))}
-                    </select>
+                    </NativeSelect>
                   </div>
                 </div>
               </div>
 
               <div className="flex items-center gap-2">
-                <button className="btn-primary" onClick={save} disabled={busy}>
+                <Button onClick={save} disabled={busy}>
                   保存
-                </button>
-                <button
-                  className="btn-danger ml-auto"
+                </Button>
+                <Button
+                  variant="destructive"
+                  className="ml-auto"
                   onClick={() => onDelete(selectedShot.id)}
                   disabled={busy}
                 >
+                  <Trash2 />
                   このカットを削除
-                </button>
+                </Button>
               </div>
 
               <PromptPreview shot={selectedShot} />

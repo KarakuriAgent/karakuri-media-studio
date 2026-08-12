@@ -1,9 +1,12 @@
 import { useState } from 'react'
+import { Lock, LockOpen } from 'lucide-react'
+
 import type {
   StudioAsset,
   StudioAssetFileRole,
   StudioAssetUpdate,
 } from '../../../types'
+import { Button } from '../../ui/button'
 import AssetFilesPanel from '../../studio/AssetFilesPanel'
 import { ASSET_KIND_LABEL, assetHasFile } from '../../studio/studio'
 import { PROFILE_FIELDS, profileForm, profilePayload } from '../logic'
@@ -49,9 +52,9 @@ export default function AssetFields({
 
   return (
     <div className="flex flex-col gap-3">
-      <div className="overflow-hidden rounded-md border border-ink-600 bg-ink-900">
+      <div className="overflow-hidden rounded-md border border-border bg-surface-sunken">
         {!assetHasFile(asset) ? (
-          <p className="px-3 py-6 text-center text-[11px] text-slate-500">
+          <p className="px-3 py-6 text-center text-[11px] text-muted-foreground">
             ファイルなしの素材です。参照には添付されず、投入時に下のプロンプト用
             キャプションが説明文として本文に展開されます。
           </p>
@@ -69,15 +72,32 @@ export default function AssetFields({
       </div>
 
       <div className="flex flex-wrap items-center gap-2 text-xs">
-        <span className="text-slate-500">{ASSET_KIND_LABEL[asset.kind]}</span>
-        {asset.locked && <span className="text-amber-300">🔒 差し替え禁止</span>}
-        <button
-          className="btn-ghost ml-auto !py-1 text-xs"
+        <span className="text-muted-foreground">{ASSET_KIND_LABEL[asset.kind]}</span>
+        {asset.locked && (
+          <span className="flex items-center gap-1 text-amber-300">
+            <Lock className="size-3 shrink-0" aria-hidden="true" />
+            差し替え禁止
+          </span>
+        )}
+        <Button
+          variant="outline"
+          size="sm"
+          className="ml-auto"
           disabled={busy}
           onClick={() => onSave({ locked: !asset.locked })}
         >
-          {asset.locked ? '🔓 ロック解除' : '🔒 ロック'}
-        </button>
+          {asset.locked ? (
+            <>
+              <LockOpen aria-hidden="true" />
+              ロック解除
+            </>
+          ) : (
+            <>
+              <Lock aria-hidden="true" />
+              ロック
+            </>
+          )}
+        </Button>
       </div>
 
       <AssetFilesPanel
@@ -107,7 +127,7 @@ export default function AssetFields({
         placeholder="参照を添付できないモードで @メンションの代わりに埋め込まれます"
       />
 
-      <div className="flex flex-col gap-3 border-t border-ink-700 pt-3">
+      <div className="flex flex-col gap-3 border-t border-border pt-3">
         {PROFILE_FIELDS[asset.category].map((field) =>
           field.kind === 'urls' ? (
             <UrlListField
@@ -138,8 +158,8 @@ export default function AssetFields({
         )}
       </div>
 
-      <button
-        className="btn-primary self-start"
+      <Button
+        className="self-start"
         disabled={busy || !name.trim()}
         onClick={() =>
           onSave({
@@ -151,7 +171,7 @@ export default function AssetFields({
         }
       >
         {busy ? '保存中…' : '保存'}
-      </button>
+      </Button>
     </div>
   )
 }

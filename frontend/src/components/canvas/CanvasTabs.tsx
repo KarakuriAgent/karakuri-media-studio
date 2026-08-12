@@ -1,3 +1,6 @@
+import { Plus } from 'lucide-react'
+
+import { Button } from '../ui/button'
 import type { CanvasTab } from './logic'
 
 /**
@@ -23,7 +26,7 @@ export default function CanvasTabs({
 }) {
   return (
     <div
-      className="flex flex-wrap items-center gap-0.5 rounded-md border border-ink-600 bg-ink-800 p-0.5"
+      className="flex flex-wrap items-center gap-0.5 rounded-md border border-border bg-card p-0.5"
       role="tablist"
       aria-label="キャンバスのタブ"
     >
@@ -31,10 +34,10 @@ export default function CanvasTabs({
         <button
           key={tab.episodeId ?? 'common'}
           role="tab"
-          className={`rounded px-2.5 py-1 text-xs transition-colors ${
+          className={`rounded-sm px-2.5 py-1 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 ${
             current === tab.episodeId
-              ? 'bg-accent-500 text-white'
-              : 'text-slate-400 hover:bg-ink-700'
+              ? 'bg-primary text-primary-foreground'
+              : 'text-muted-foreground hover:bg-secondary hover:text-foreground'
           }`}
           aria-selected={current === tab.episodeId}
           onClick={() => onSelect(tab.episodeId)}
@@ -42,15 +45,16 @@ export default function CanvasTabs({
           {tab.label}
         </button>
       ))}
-      <button
-        className="rounded px-2 py-1 text-xs text-slate-400 transition-colors hover:bg-ink-700"
+      <Button
+        variant="ghost"
+        size="icon-xs"
         title="話を追加"
         aria-label="話を追加"
         disabled={busy}
         onClick={onAddEpisode}
       >
-        ＋
-      </button>
+        <Plus aria-hidden="true" />
+      </Button>
     </div>
   )
 }

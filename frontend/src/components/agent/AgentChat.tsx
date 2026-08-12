@@ -1,4 +1,14 @@
 import { useEffect, useRef, useState } from 'react'
+import {
+  AlertTriangle,
+  Loader2,
+  Menu,
+  Paperclip,
+  Settings,
+  ShieldCheck,
+  Square,
+} from 'lucide-react'
+
 import { api } from '../../api'
 import type {
   AgentAttachment,
@@ -9,6 +19,11 @@ import type {
   JobProgress,
 } from '../../types'
 import { Banner, NsfwBadge, NsfwToggle } from '../ui'
+import { NativeSelect } from '../NativeSelect'
+import { Button } from '../ui/button'
+import { Input } from '../ui/input'
+import { Label } from '../ui/label'
+import { Textarea } from '../ui/textarea'
 import PlanCard from './PlanCard'
 import {
   ATTACHMENT_ACCEPT,
@@ -21,8 +36,8 @@ import {
   AgentStatusBadge,
   CHECKIN_LABEL,
   CHECKIN_MODES,
+  EventIcon,
   autoLimitLabel,
-  eventIcon,
   shortTime,
 } from './common'
 import { inputState, isCheckinAnswered, openCheckinIndex } from './logic'
@@ -48,7 +63,7 @@ interface Props {
   /** 未読の新着成果物がある（狭幅ではボタンにバッジを出すだけ）。 */
   artifactBadge: boolean
   onToggleNsfw: (nsfw: boolean) => void
-  /** NSFW 表示トグル（オンのときだけ 🫣 バッジを出す）。 */
+  /** NSFW 表示トグル（オンのときだけ NSFW バッジを出す）。 */
   showNsfw: boolean
   /**
    * Grok ターンが走っている（このブラウザ発の呼び出し + バックエンドのループ）。
@@ -93,7 +108,7 @@ function Bubble({ message, sessionId }: { message: AgentMessage; sessionId: stri
     <div className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>
       <div
         className={`max-w-[80%] rounded-lg px-3 py-2 text-sm ${
-          mine ? 'bg-accent-500/20 text-slate-100' : 'bg-ink-700 text-slate-200'
+          mine ? 'bg-primary/20 text-foreground' : 'bg-card text-foreground/90'
         }`}
       >
         {text && <p className="whitespace-pre-wrap">{text}</p>}
@@ -107,13 +122,13 @@ function Bubble({ message, sessionId }: { message: AgentMessage; sessionId: stri
                   href={url}
                   target="_blank"
                   rel="noreferrer"
-                  className="flex items-center gap-1.5 rounded border border-ink-600 bg-ink-800/70 px-1.5 py-1 text-[11px] text-slate-300 hover:text-slate-100"
+                  className="flex items-center gap-1.5 rounded-md border border-border bg-secondary px-1.5 py-1 text-[11px] text-foreground/85 transition-colors hover:text-foreground"
                   title={path}
                 >
                   {IMAGE_RE.test(path) ? (
                     <img src={url} alt="" className="h-8 w-8 rounded object-cover" />
                   ) : (
-                    <span>📎</span>
+                    <Paperclip className="size-3" />
                   )}
                   <span className="max-w-[12rem] truncate">{baseName(path)}</span>
                 </a>
@@ -128,12 +143,14 @@ function Bubble({ message, sessionId }: { message: AgentMessage; sessionId: stri
 
 function EventRow({ message }: { message: AgentMessage }) {
   return (
-    <div className="flex items-start gap-2 px-1 text-[11px] text-slate-500">
-      <span>{eventIcon(message.kind)}</span>
+    <div className="flex items-start gap-2 px-1 text-[11px] text-muted-foreground">
+      <EventIcon kind={message.kind} />
       <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">
         {message.content}
       </span>
-      <span className="shrink-0 text-slate-700">{shortTime(message.ts)}</span>
+      <span className="tnum shrink-0 text-muted-foreground/60">
+        {shortTime(message.ts)}
+      </span>
     </div>
   )
 }
@@ -161,28 +178,37 @@ function CheckinBubble({
         className={`max-w-[85%] rounded-lg border px-3 py-2 text-sm ${
           open
             ? 'border-violet-700/70 bg-violet-950/40 text-violet-100'
-            : 'border-ink-600 bg-ink-800 text-slate-400'
+            : 'border-border bg-surface-sunken text-muted-foreground'
         }`}
       >
-        <p className="mb-2 whitespace-pre-wrap">
-          {message.kind === 'approval' ? '🛡 承認' : '⚠'} {message.content}
+        <p className="mb-2 flex items-start gap-1.5 whitespace-pre-wrap">
+          {message.kind === 'approval' ? (
+            <>
+              <ShieldCheck className="mt-0.5 size-3.5 shrink-0" />
+              承認{' '}
+            </>
+          ) : (
+            <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
+          )}
+          {message.content}
         </p>
         <div className="flex flex-wrap gap-1.5">
           {options.map((option) => (
-            <button
+            <Button
               key={option}
-              className="btn-ghost !py-1 text-xs"
+              variant="outline"
+              size="sm"
               disabled={!open || busy}
               onClick={() => onAnswer(option)}
             >
               {option}
-            </button>
+            </Button>
           ))}
         </div>
         {open && (
           <div className="mt-2 flex gap-1.5">
-            <input
-              className="field !py-1 text-xs"
+            <Input
+              className="h-8 text-xs"
               value={free}
               placeholder="自由に回答"
               disabled={busy}
@@ -195,8 +221,8 @@ function CheckinBubble({
                 }
               }}
             />
-            <button
-              className="btn-primary !py-1 text-xs"
+            <Button
+              size="sm"
               disabled={busy || !free.trim()}
               onClick={() => {
                 onAnswer(free.trim())
@@ -204,11 +230,11 @@ function CheckinBubble({
               }}
             >
               返答
-            </button>
+            </Button>
           </div>
         )}
         {!open && (
-          <p className="mt-1 text-[11px] text-slate-600">
+          <p className="mt-1 text-[11px] text-muted-foreground/70">
             {answered ? '応答済み' : '未応答のまま終了しました'}
           </p>
         )}
@@ -247,24 +273,23 @@ function SessionSettings({
 
   return (
     <span className="relative">
-      <button
-        className="btn-ghost !px-2 !py-1 text-xs"
+      <Button
+        variant="outline"
+        size="icon-sm"
         aria-label="セッション設定を変更"
         aria-expanded={open}
         title="チェックインと生成本数の上限を変える"
         onClick={toggle}
       >
-        ⚙
-      </button>
+        <Settings />
+      </Button>
       {open && (
-        <div className="absolute right-0 top-full z-20 mt-1 w-64 space-y-2 rounded-md border border-ink-600 bg-ink-800 p-2 shadow-lg">
-          <div>
-            <label className="label" htmlFor="session-checkin-mode">
-              チェックイン
-            </label>
-            <select
+        <div className="absolute right-0 top-full z-20 mt-1 w-64 space-y-2 rounded-md border border-border bg-popover p-2 shadow-elevation-3">
+          <div className="space-y-1">
+            <Label htmlFor="session-checkin-mode">チェックイン</Label>
+            <NativeSelect
               id="session-checkin-mode"
-              className="field text-xs"
+              className="h-8 text-xs"
               value={mode}
               onChange={(event) =>
                 setMode(event.target.value as AgentCheckinMode)
@@ -275,15 +300,13 @@ function SessionSettings({
                   {CHECKIN_LABEL[value]}
                 </option>
               ))}
-            </select>
+            </NativeSelect>
           </div>
-          <div>
-            <label className="label" htmlFor="session-auto-limit">
-              上限本数（0 = 無制限）
-            </label>
-            <input
+          <div className="space-y-1">
+            <Label htmlFor="session-auto-limit">上限本数（0 = 無制限）</Label>
+            <Input
               id="session-auto-limit"
-              className="field text-xs"
+              className="tnum h-8 text-xs"
               type="number"
               min={0}
               value={limit}
@@ -292,12 +315,13 @@ function SessionSettings({
               }
             />
           </div>
-          <p className="text-[11px] text-slate-500">
+          <p className="text-[11px] text-muted-foreground">
             上限の判定はすぐ効きます。エージェントへの指示文に載るのは次のターンからです。
           </p>
           <div className="flex gap-2">
-            <button
-              className="btn-primary flex-1 !py-1 text-xs"
+            <Button
+              size="sm"
+              className="flex-1"
               disabled={busy}
               onClick={() => {
                 onSave({ checkin_mode: mode, auto_limit: limit })
@@ -305,13 +329,10 @@ function SessionSettings({
               }}
             >
               保存
-            </button>
-            <button
-              className="btn-ghost !py-1 text-xs"
-              onClick={() => setOpen(false)}
-            >
+            </Button>
+            <Button variant="outline" size="sm" onClick={() => setOpen(false)}>
               取消
-            </button>
+            </Button>
           </div>
         </div>
       )}
@@ -394,21 +415,24 @@ export default function AgentChat({
 
   return (
     <section className="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
-      <div className="flex shrink-0 flex-wrap items-center gap-2 rounded-lg border border-ink-600 bg-ink-800 px-3 py-2">
-        <button
-          className="btn-ghost !px-2 !py-1 text-xs lg:hidden"
+      <div className="flex shrink-0 flex-wrap items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 shadow-elevation-1">
+        <Button
+          variant="outline"
+          size="icon-sm"
+          className="lg:hidden"
           onClick={onOpenSessions}
           title="セッション一覧"
+          aria-label="セッション一覧"
         >
-          ☰
-        </button>
-        <span className="min-w-0 flex-1 truncate text-xs text-slate-200 lg:flex-none">
+          <Menu />
+        </Button>
+        <span className="min-w-0 flex-1 truncate text-xs text-foreground/90 lg:flex-none">
           {session.title || '(無題)'}
         </span>
         <AgentStatusBadge status={session.status} />
         {showNsfw && session.nsfw && <NsfwBadge />}
         {/* 生成本数の上限はどのチェックインモードでも効く（0 なら「無制限」）。 */}
-        <span className="text-[11px] text-slate-500">
+        <span className="text-[11px] text-muted-foreground">
           {CHECKIN_LABEL[session.checkin_mode]} / {autoLimitLabel(session.auto_limit)}
         </span>
         <div className="ml-auto flex items-center gap-1.5">
@@ -418,26 +442,30 @@ export default function AgentChat({
             onSave={onUpdateSession}
           />
           <NsfwToggle nsfw={session.nsfw} disabled={busy} onToggle={onToggleNsfw} />
-          <button
-            className="btn-ghost relative !py-1 text-xs lg:hidden"
+          <Button
+            variant="outline"
+            size="sm"
+            className="relative lg:hidden"
             onClick={onOpenArtifacts}
             title="成果物パネルを開く"
           >
             成果物 ({artifactCount})
             {artifactBadge && (
-              <span className="absolute -right-0.5 -top-0.5 h-2 w-2 rounded-full bg-accent-400" />
+              <span className="absolute -right-0.5 -top-0.5 size-2 rounded-full bg-accent-400" />
             )}
-          </button>
-          <button
-            className="btn-ghost !py-1 text-xs"
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
             disabled={!stoppable}
             title={
               stoppable ? '実行中のジョブは完了を待って中断します' : '実行中ではありません'
             }
             onClick={onStop}
           >
-            ⏹ 停止
-          </button>
+            <Square />
+            停止
+          </Button>
         </div>
       </div>
 
@@ -445,10 +473,10 @@ export default function AgentChat({
 
       <div
         ref={scroller}
-        className="min-h-0 flex-1 space-y-2 overflow-y-auto rounded-lg border border-ink-600 bg-ink-900 p-3"
+        className="min-h-0 flex-1 space-y-2 overflow-y-auto rounded-lg border border-border bg-surface-sunken p-3"
       >
         {running && session.plan.tasks.length > 0 && (
-          <div className="sticky -top-3 z-10 -mx-1 bg-ink-900/95 py-1 backdrop-blur">
+          <div className="sticky -top-3 z-10 -mx-1 bg-surface-sunken/95 py-1 backdrop-blur">
             <PlanCard
               plan={session.plan}
               compact
@@ -490,7 +518,8 @@ export default function AgentChat({
         )}
 
         {thinking && (
-          <p className="text-xs text-slate-500">
+          <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+            <Loader2 className="size-3.5 animate-spin" />
             {activity ? `Grok が作業しています… ${activity}` : 'Grok が考えています…'}
           </p>
         )}
@@ -515,7 +544,10 @@ export default function AgentChat({
             />
           ))}
           {uploading && (
-            <span className="text-[11px] text-slate-500">アップロード中…</span>
+            <span className="flex items-center gap-1 text-[11px] text-muted-foreground">
+              <Loader2 className="size-3 animate-spin" />
+              アップロード中…
+            </span>
           )}
         </div>
       )}
@@ -530,18 +562,19 @@ export default function AgentChat({
           data-testid="agent-attachment-input"
           onChange={(event) => void pick(event.target.files)}
         />
-        <button
-          className="btn-ghost !px-2"
+        <Button
+          variant="outline"
+          size="icon"
           disabled={inputDisabled || uploading}
           title="ファイルを添付"
           aria-label="ファイルを添付"
           onClick={() => filePicker.current?.click()}
         >
-          📎
-        </button>
-        <textarea
+          <Paperclip />
+        </Button>
+        <Textarea
           ref={input}
-          className="field h-16 flex-1 resize-none"
+          className="h-16 flex-1 resize-none"
           value={draft}
           placeholder={placeholder}
           disabled={inputDisabled}
@@ -553,13 +586,9 @@ export default function AgentChat({
             }
           }}
         />
-        <button
-          className="btn-primary"
-          disabled={inputDisabled || !sendable}
-          onClick={send}
-        >
+        <Button disabled={inputDisabled || !sendable} onClick={send}>
           送信
-        </button>
+        </Button>
       </div>
     </section>
   )

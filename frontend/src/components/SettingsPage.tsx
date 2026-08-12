@@ -1,4 +1,19 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useState, type ReactNode } from 'react'
+import {
+  ArrowLeft,
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Download,
+  DownloadCloud,
+  Image as ImageIcon,
+  Pencil,
+  Plus,
+  RotateCcw,
+  Trash2,
+  X,
+} from 'lucide-react'
+
 import { api, wsUrl } from '../api'
 import {
   COMFY_TARGETS,
@@ -23,6 +38,125 @@ import type {
   Settings,
 } from '../types'
 import { Banner } from './ui'
+import { Badge } from './ui/badge'
+import { Button } from './ui/button'
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card'
+import { Input } from './ui/input'
+import { Label } from './ui/label'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from './ui/select'
+import { Switch } from './ui/switch'
+import { Tabs, TabsList, TabsTrigger } from './ui/tabs'
+
+/**
+ * 「（なし）」を表す番兵。Radix Select は空文字を選択肢の値にできないので、
+ * 表示のあいだだけこの値に置き換える（保存する値は従来どおり null）。
+ */
+const NO_AUDIO = '__none__'
+
+/** 設定の 1 ブロック（見出し + 説明 + 中身）。 */
+function SettingsCard({
+  title,
+  description,
+  children,
+  className = '',
+}: {
+  title: string
+  description?: ReactNode
+  children: ReactNode
+  className?: string
+}) {
+  return (
+    <Card className={className}>
+      <CardHeader className="pb-2">
+        <CardTitle className="text-sm font-medium">{title}</CardTitle>
+        {description && <CardDescription>{description}</CardDescription>}
+      </CardHeader>
+      <CardContent className="flex flex-col gap-3">{children}</CardContent>
+    </Card>
+  )
+}
+
+/** カードの中をさらに区切る小見出し付きブロック。 */
+function SubGroup({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <section className="rounded-md border border-border bg-secondary/30 p-2.5">
+      <h5 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground">
+        {title}
+      </h5>
+      <div className="flex flex-col gap-2">{children}</div>
+    </section>
+  )
+}
+
+/** ラベル + 入力 + 補足説明の縦積み。 */
+function Field({
+  label,
+  htmlFor,
+  hint,
+  hintTone = 'muted',
+  children,
+  className = '',
+}: {
+  label: ReactNode
+  htmlFor?: string
+  hint?: ReactNode
+  hintTone?: 'muted' | 'warn' | 'ok'
+  children: ReactNode
+  className?: string
+}) {
+  const tone = {
+    muted: 'text-muted-foreground',
+    warn: 'text-amber-400',
+    ok: 'text-emerald-400',
+  }[hintTone]
+  return (
+    <div className={className}>
+      <Label htmlFor={htmlFor}>{label}</Label>
+      <div className="mt-1">{children}</div>
+      {hint && <p className={`mt-1 text-[11px] ${tone}`}>{hint}</p>}
+    </div>
+  )
+}
+
+/** オン / オフ 1 項目（説明は左、スイッチは右端）。 */
+function ToggleRow({
+  id,
+  label,
+  description,
+  checked,
+  onCheckedChange,
+}: {
+  id: string
+  label: string
+  description?: ReactNode
+  checked: boolean
+  onCheckedChange: (checked: boolean) => void
+}) {
+  return (
+    <div className="flex items-start justify-between gap-3 rounded-md border border-border bg-secondary/30 px-3 py-2">
+      <div className="min-w-0">
+        <Label htmlFor={id} className="cursor-pointer text-foreground/90">
+          {label}
+        </Label>
+        {description && (
+          <p className="mt-0.5 text-[11px] text-muted-foreground">{description}</p>
+        )}
+      </div>
+      <Switch
+        id={id}
+        checked={checked}
+        onCheckedChange={onCheckedChange}
+        className="mt-0.5 shrink-0"
+      />
+    </div>
+  )
+}
 
 const EMPTY_LORA: LoraPayload = {
   display_name: '',
@@ -747,27 +881,28 @@ export default function SettingsPage({
 
   /** モデル / LoRA タブの先頭に置く環境プルダウン（SPEC §5）。 */
   const envPicker = () => (
-    <div className="card flex flex-wrap items-center gap-2 p-2">
-      <label className="text-xs text-slate-400" htmlFor="settings-env">
+    <Card className="flex flex-wrap items-center gap-2 p-2">
+      <Label htmlFor="settings-env" className="text-muted-foreground">
         対象の接続先
-      </label>
-      <select
-        id="settings-env"
-        className="field max-w-[14rem]"
+      </Label>
+      <Select
         value={envTarget ?? 'local'}
         disabled={envTarget == null || busy}
-        onChange={(event) =>
-          void changeEnvTarget(event.target.value as ComfyTarget)
-        }
+        onValueChange={(value) => void changeEnvTarget(value as ComfyTarget)}
       >
-        {COMFY_TARGETS.map((target) => (
-          <option key={target} value={target}>
-            {COMFY_TARGET_LABELS[target]}
-            {target === settings?.comfy_target ? '（現在の接続先）' : ''}
-          </option>
-        ))}
-      </select>
-    </div>
+        <SelectTrigger id="settings-env" className="h-8 w-[16rem] text-xs">
+          <SelectValue />
+        </SelectTrigger>
+        <SelectContent>
+          {COMFY_TARGETS.map((target) => (
+            <SelectItem key={target} value={target}>
+              {COMFY_TARGET_LABELS[target]}
+              {target === settings?.comfy_target ? '（現在の接続先）' : ''}
+            </SelectItem>
+          ))}
+        </SelectContent>
+      </Select>
+    </Card>
   )
 
   // いま繋いでいる環境を編集しているか（未検出バッジの判定に使う）
@@ -786,27 +921,26 @@ export default function SettingsPage({
   const showDownload = envTarget !== 'comfy_cloud'
 
   return (
-    <div className="flex h-full flex-col overflow-hidden">
-      <div className="flex items-center gap-3 border-b border-ink-700 bg-ink-800/80 px-4 py-2.5">
-        <button className="btn-ghost" onClick={onBack}>
-          ← 戻る
-        </button>
-        <h2 className="text-sm font-semibold text-slate-100">設定</h2>
-        <div className="ml-4 flex gap-1 rounded-lg border border-ink-600 bg-ink-900 p-1 text-xs">
-          {TABS.map(([key, label]) => (
-            <button
-              key={key}
-              className={`rounded px-3 py-1.5 ${
-                tab === key
-                  ? 'bg-accent-500 text-white'
-                  : 'text-slate-400 hover:bg-ink-700'
-              }`}
-              onClick={() => setTab(key)}
-            >
-              {label}
-            </button>
-          ))}
-        </div>
+    <div className="flex h-full flex-col overflow-hidden bg-background">
+      <div className="flex items-center gap-3 border-b border-border bg-card/70 px-4 py-2.5 shadow-elevation-1">
+        <Button variant="outline" size="sm" onClick={onBack}>
+          <ArrowLeft />
+          戻る
+        </Button>
+        <h2 className="text-sm font-semibold text-foreground">設定</h2>
+        <Tabs
+          className="ml-2"
+          value={tab}
+          onValueChange={(value) => setTab(value as Tab)}
+        >
+          <TabsList>
+            {TABS.map(([key, label]) => (
+              <TabsTrigger key={key} value={key}>
+                {label}
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </Tabs>
       </div>
 
       <div className="flex-1 overflow-y-auto p-4">
@@ -820,432 +954,376 @@ export default function SettingsPage({
 
           {tab === 'connection' && (
             <div className="flex flex-col gap-3">
-              {!settings && <p className="text-xs text-slate-500">読み込み中…</p>}
+              {!settings && (
+                <p className="text-xs text-muted-foreground">読み込み中…</p>
+              )}
               {settings && (
                 <>
                   {/* ComfyUI の接続先（SPEC §5）。3 プロファイル分の接続情報を
                       ここに置き、「接続先」がそのどれを使うかを決める。生成
                       フォーム上部のプルダウンは同じ値を書き換える。 */}
-                  <div className="card flex flex-col gap-3 p-3">
-                    <h4 className="text-xs font-semibold text-slate-300">
-                      ComfyUI 接続先
-                    </h4>
-                    <div>
-                      <label className="label">接続先</label>
-                      <select
-                        className="field"
+                  <SettingsCard
+                    title="ComfyUI 接続先"
+                    description="3 つのプロファイルの接続情報をまとめて持ち、「接続先」で実際に使うものを選びます。"
+                  >
+                    <Field label="接続先" htmlFor="settings-comfy-target">
+                      <Select
                         value={settings.comfy_target}
-                        onChange={(event) =>
-                          update({
-                            comfy_target: event.target.value as ComfyTarget,
-                          })
+                        onValueChange={(value) =>
+                          update({ comfy_target: value as ComfyTarget })
                         }
                       >
-                        {COMFY_TARGETS.map((target) => (
-                          <option key={target} value={target}>
-                            {COMFY_TARGET_LABELS[target]}
-                          </option>
-                        ))}
-                      </select>
-                    </div>
+                        <SelectTrigger id="settings-comfy-target">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {COMFY_TARGETS.map((target) => (
+                            <SelectItem key={target} value={target}>
+                              {COMFY_TARGET_LABELS[target]}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </Field>
 
-                    <div className="rounded-lg border border-ink-600 p-2">
-                      <h5 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-                        ComfyCloud
-                      </h5>
-                      <div className="flex flex-col gap-2">
-                        <div>
-                          <label className="label">ComfyCloud APIキー</label>
-                          <input
-                            className="field"
-                            type="password"
-                            autoComplete="off"
-                            value={settings.comfy_cloud_api_key}
-                            onChange={(event) =>
-                              update({ comfy_cloud_api_key: event.target.value })
-                            }
-                          />
-                        </div>
-                      </div>
-                    </div>
+                    <SubGroup title="ComfyCloud">
+                      <Field label="ComfyCloud APIキー" htmlFor="comfy-cloud-api-key">
+                        <Input
+                          id="comfy-cloud-api-key"
+                          type="password"
+                          autoComplete="off"
+                          value={settings.comfy_cloud_api_key}
+                          onChange={(event) =>
+                            update({ comfy_cloud_api_key: event.target.value })
+                          }
+                        />
+                      </Field>
+                    </SubGroup>
 
                     {/* ComfyUI を RunPod の Pod で動かす構成（SPEC §5.1）。
                         自動起動を有効にすると、接続先が RunPod のときだけ、
                         ジョブ投入の直前に疎通を確かめて落ちていれば Pod を作って
                         待つ。Pod の停止はイメージ側の watchdog が行う。 */}
-                    <div className="rounded-lg border border-ink-600 p-2">
-                      <h5 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-                        RunPod
-                      </h5>
-                      <div className="flex flex-col gap-2">
-                        <div>
-                          <label className="label">RunPod ComfyUI URL</label>
-                          <input
-                            className="field"
-                            placeholder="https://<Cloudflare Tunnel のホスト名>"
-                            value={settings.runpod_comfy_url}
-                            onChange={(event) =>
-                              update({ runpod_comfy_url: event.target.value })
-                            }
-                          />
-                        </div>
-                        <div>
-                          <label className="label">
-                            RunPod ComfyUI APIキー（任意）
-                          </label>
-                          <input
-                            className="field"
-                            type="password"
-                            autoComplete="off"
-                            value={settings.runpod_comfy_api_key}
-                            onChange={(event) =>
-                              update({ runpod_comfy_api_key: event.target.value })
-                            }
-                          />
-                        </div>
-                        <label className="flex items-center gap-2 text-xs font-semibold text-slate-300">
-                          <input
-                            type="checkbox"
-                            checked={settings.runpod_enabled}
-                            onChange={(event) =>
-                              update({ runpod_enabled: event.target.checked })
-                            }
-                          />
-                          RunPod の Pod を自動起動する
-                        </label>
-                        {settings.runpod_enabled && (
-                          <>
-                            <div>
-                              <label className="label">RunPod APIキー</label>
-                              <input
-                                className="field"
-                                type="password"
-                                autoComplete="off"
-                                value={settings.runpod_api_key}
+                    <SubGroup title="RunPod">
+                      <Field label="RunPod ComfyUI URL" htmlFor="runpod-comfy-url">
+                        <Input
+                          id="runpod-comfy-url"
+                          placeholder="https://<Cloudflare Tunnel のホスト名>"
+                          value={settings.runpod_comfy_url}
+                          onChange={(event) =>
+                            update({ runpod_comfy_url: event.target.value })
+                          }
+                        />
+                      </Field>
+                      <Field
+                        label="RunPod ComfyUI APIキー（任意）"
+                        htmlFor="runpod-comfy-api-key"
+                      >
+                        <Input
+                          id="runpod-comfy-api-key"
+                          type="password"
+                          autoComplete="off"
+                          value={settings.runpod_comfy_api_key}
+                          onChange={(event) =>
+                            update({ runpod_comfy_api_key: event.target.value })
+                          }
+                        />
+                      </Field>
+                      <ToggleRow
+                        id="runpod-enabled"
+                        label="RunPod の Pod を自動起動する"
+                        description="接続先が RunPod のとき、ジョブ投入の直前に Pod が落ちていれば起動して待ちます。"
+                        checked={settings.runpod_enabled}
+                        onCheckedChange={(checked) =>
+                          update({ runpod_enabled: checked })
+                        }
+                      />
+                      {settings.runpod_enabled && (
+                        <>
+                          <Field label="RunPod APIキー" htmlFor="runpod-api-key">
+                            <Input
+                              id="runpod-api-key"
+                              type="password"
+                              autoComplete="off"
+                              value={settings.runpod_api_key}
+                              onChange={(event) =>
+                                update({ runpod_api_key: event.target.value })
+                              }
+                            />
+                          </Field>
+                          <div className="grid grid-cols-2 gap-2">
+                            <Field label="テンプレート ID" htmlFor="runpod-template-id">
+                              <Input
+                                id="runpod-template-id"
+                                value={settings.runpod_template_id}
                                 onChange={(event) =>
-                                  update({ runpod_api_key: event.target.value })
+                                  update({ runpod_template_id: event.target.value })
                                 }
                               />
-                            </div>
-                            <div className="grid grid-cols-2 gap-2">
-                              <div>
-                                <label className="label">テンプレート ID</label>
-                                <input
-                                  className="field"
-                                  value={settings.runpod_template_id}
-                                  onChange={(event) =>
-                                    update({
-                                      runpod_template_id: event.target.value,
-                                    })
-                                  }
-                                />
-                              </div>
-                              <div>
-                                <label className="label">GPU 種別（gpuTypeId）</label>
-                                <input
-                                  className="field"
-                                  value={settings.runpod_gpu_type}
-                                  onChange={(event) =>
-                                    update({ runpod_gpu_type: event.target.value })
-                                  }
-                                />
-                              </div>
-                            </div>
-                            <div>
-                              <label className="label">
-                                Network Volume ID（任意）
-                              </label>
-                              <input
-                                className="field"
-                                value={settings.runpod_network_volume_id}
+                            </Field>
+                            <Field label="GPU 種別（gpuTypeId）" htmlFor="runpod-gpu-type">
+                              <Input
+                                id="runpod-gpu-type"
+                                value={settings.runpod_gpu_type}
                                 onChange={(event) =>
-                                  update({
-                                    runpod_network_volume_id: event.target.value,
-                                  })
+                                  update({ runpod_gpu_type: event.target.value })
                                 }
                               />
-                            </div>
-                          </>
-                        )}
-                      </div>
-                    </div>
+                            </Field>
+                          </div>
+                          <Field
+                            label="Network Volume ID（任意）"
+                            htmlFor="runpod-network-volume-id"
+                          >
+                            <Input
+                              id="runpod-network-volume-id"
+                              value={settings.runpod_network_volume_id}
+                              onChange={(event) =>
+                                update({
+                                  runpod_network_volume_id: event.target.value,
+                                })
+                              }
+                            />
+                          </Field>
+                        </>
+                      )}
+                    </SubGroup>
 
-                    <div className="rounded-lg border border-ink-600 p-2">
-                      <h5 className="mb-2 text-[11px] font-semibold uppercase tracking-wider text-slate-400">
-                        ローカル
-                      </h5>
-                      <div>
-                        <label className="label">ローカル ComfyUI URL</label>
-                        <input
-                          className="field"
+                    <SubGroup title="ローカル">
+                      <Field label="ローカル ComfyUI URL" htmlFor="local-comfy-url">
+                        <Input
+                          id="local-comfy-url"
                           placeholder="http://127.0.0.1:8188"
                           value={settings.local_comfy_url}
                           onChange={(event) =>
                             update({ local_comfy_url: event.target.value })
                           }
                         />
-                      </div>
-                    </div>
-                  </div>
+                      </Field>
+                    </SubGroup>
+                  </SettingsCard>
                   {/* 不足モデルの自動ダウンロード（SPEC §3.3）。トークンは
                       ローカルにも RunPod の Pod にも要るので常に出す。保存先の
                       環境変数はローカルに落とすときだけ関係する。 */}
-                  <div className="card flex flex-col gap-2 p-3">
-                      <h4 className="text-xs font-semibold text-slate-300">
-                        モデル自動ダウンロード
-                      </h4>
-                      <div>
-                        <label className="label">
-                          ローカルの保存先（環境変数 COMFY_MODELS_DIR）
-                        </label>
-                        <input
-                          className="field"
-                          value={dirStatus?.path ?? ''}
-                          readOnly
+                  <SettingsCard
+                    title="モデル自動ダウンロード"
+                    description="不足しているモデルを取得元 URL から落とすための共通設定です。"
+                  >
+                    <Field
+                      label="ローカルの保存先（環境変数 COMFY_MODELS_DIR）"
+                      htmlFor="models-dir"
+                      hint={dirStatusMessage(dirStatus).text}
+                      hintTone={dirStatusMessage(dirStatus).ok ? 'ok' : 'warn'}
+                    >
+                      <Input id="models-dir" value={dirStatus?.path ?? ''} readOnly />
+                    </Field>
+                    <div className="grid grid-cols-2 gap-2">
+                      <Field
+                        label="Hugging Face トークン（gated モデル用・任意）"
+                        htmlFor="hf-token"
+                      >
+                        <Input
+                          id="hf-token"
+                          type="password"
+                          autoComplete="off"
+                          value={settings.hf_token}
+                          onChange={(event) => update({ hf_token: event.target.value })}
                         />
-                        <p
-                          className={`mt-1 text-[11px] ${
-                            dirStatusMessage(dirStatus).ok
+                      </Field>
+                      <Field label="Civitai APIキー（任意）" htmlFor="civitai-api-key">
+                        <Input
+                          id="civitai-api-key"
+                          type="password"
+                          autoComplete="off"
+                          value={settings.civitai_api_key}
+                          onChange={(event) =>
+                            update({ civitai_api_key: event.target.value })
+                          }
+                        />
+                      </Field>
+                    </div>
+                  </SettingsCard>
+
+                  <SettingsCard
+                    title="Grok CLI / エージェント"
+                    description="チャット・エージェント・Grok Imagine が回す grok CLI の設定です。"
+                  >
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <Field label="grok コマンド" htmlFor="grok-command">
+                        <Input
+                          id="grok-command"
+                          value={settings.grok_command}
+                          onChange={(event) =>
+                            update({ grok_command: event.target.value })
+                          }
+                        />
+                      </Field>
+                      <Field label="grok モデル" htmlFor="grok-model">
+                        <Input
+                          id="grok-model"
+                          value={settings.grok_model}
+                          onChange={(event) => update({ grok_model: event.target.value })}
+                        />
+                      </Field>
+                      <Field
+                        label="Grok Imagine の制限時間（秒）"
+                        htmlFor="grok-media-timeout"
+                      >
+                        <Input
+                          id="grok-media-timeout"
+                          className="tnum"
+                          type="number"
+                          min="30"
+                          step="30"
+                          value={settings.grok_media_timeout}
+                          onChange={(event) =>
+                            update({
+                              grok_media_timeout: Number(event.target.value) || 0,
+                            })
+                          }
+                        />
+                      </Field>
+                      <Field
+                        label="grok の作業ディレクトリ（空 = 既定）"
+                        htmlFor="grok-workdir"
+                        hint="チャット / エージェントが grok CLI を回すディレクトリです。"
+                      >
+                        <Input
+                          id="grok-workdir"
+                          value={settings.grok_workdir}
+                          placeholder="/path/to/workdir"
+                          onChange={(event) =>
+                            update({ grok_workdir: event.target.value })
+                          }
+                        />
+                      </Field>
+                      <Field
+                        label="Grok Imagine の作業ディレクトリ（空 = 既定）"
+                        htmlFor="grok-media-workdir"
+                        hint="画像生成・編集（SPEC §5.2）で使う置き場所です。"
+                      >
+                        <Input
+                          id="grok-media-workdir"
+                          value={settings.grok_media_workdir}
+                          placeholder="/path/to/workdir"
+                          onChange={(event) =>
+                            update({ grok_media_workdir: event.target.value })
+                          }
+                        />
+                      </Field>
+                      <Field
+                        label="grok CLI の追加フラグ（空白区切り）"
+                        htmlFor="agent-grok-args"
+                        hintTone="warn"
+                        hint={
+                          <>
+                            <strong>空にするとエージェントのツールが無効になります</strong>
+                            （ファイルの読み書き・画像の確認・Web 検索ができなくなり、
+                            システムプロンプトからもツールの節が落ちます）。
+                          </>
+                        }
+                      >
+                        <Input
+                          id="agent-grok-args"
+                          value={grokArgsDraft}
+                          placeholder="--permission-mode auto"
+                          onChange={(event) => setGrokArgsDraft(event.target.value)}
+                        />
+                      </Field>
+                    </div>
+                    <ToggleRow
+                      id="agent-use-acp"
+                      label="ACP でターンを回す"
+                      description="オンだと実行中の活動（思考 / ツール実行）がチャットに出ます。オフは従来のワンショット実行で、活動表示はありません。"
+                      checked={settings.agent_use_acp}
+                      onCheckedChange={(checked) => update({ agent_use_acp: checked })}
+                    />
+                    <div className="flex items-center gap-2">
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        onClick={() => void checkGrok()}
+                        disabled={grokChecking}
+                      >
+                        {grokChecking ? '確認中…' : 'grok CLI の接続確認'}
+                      </Button>
+                      {grokCheck && (
+                        <span
+                          className={`text-xs ${
+                            grokCheck.status === 'ok'
                               ? 'text-emerald-400'
                               : 'text-amber-400'
                           }`}
                         >
-                          {dirStatusMessage(dirStatus).text}
-                        </p>
-                      </div>
-                      <div className="grid grid-cols-2 gap-2">
-                        <div>
-                          <label className="label">
-                            Hugging Face トークン（gated モデル用・任意）
-                          </label>
-                          <input
-                            className="field"
-                            type="password"
-                            autoComplete="off"
-                            value={settings.hf_token}
-                            onChange={(event) =>
-                              update({ hf_token: event.target.value })
-                            }
-                          />
-                        </div>
-                        <div>
-                          <label className="label">Civitai APIキー（任意）</label>
-                          <input
-                            className="field"
-                            type="password"
-                            autoComplete="off"
-                            value={settings.civitai_api_key}
-                            onChange={(event) =>
-                              update({ civitai_api_key: event.target.value })
-                            }
-                          />
-                        </div>
-                      </div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    <div>
-                      <label className="label">grok コマンド</label>
-                      <input
-                        className="field"
-                        value={settings.grok_command}
-                        onChange={(event) =>
-                          update({ grok_command: event.target.value })
-                        }
-                      />
+                          {grokCheck.detail || grokCheck.status}
+                        </span>
+                      )}
                     </div>
-                    <div>
-                      <label className="label">grok モデル</label>
-                      <input
-                        className="field"
-                        value={settings.grok_model}
-                        onChange={(event) => update({ grok_model: event.target.value })}
-                      />
-                    </div>
-                    <div>
-                      <label className="label" htmlFor="grok-media-timeout">
-                        Grok Imagine の制限時間（秒）
-                      </label>
-                      <input
-                        id="grok-media-timeout"
-                        className="field"
-                        type="number"
-                        min="30"
-                        step="30"
-                        value={settings.grok_media_timeout}
-                        onChange={(event) =>
-                          update({
-                            grok_media_timeout: Number(event.target.value) || 0,
-                          })
-                        }
-                      />
-                    </div>
-                    <div>
-                      <label className="label" htmlFor="grok-workdir">
-                        grok の作業ディレクトリ（空 = 既定）
-                      </label>
-                      <input
-                        id="grok-workdir"
-                        className="field"
-                        value={settings.grok_workdir}
-                        placeholder="/path/to/workdir"
-                        onChange={(event) =>
-                          update({ grok_workdir: event.target.value })
-                        }
-                      />
-                      <p className="mt-1 text-[11px] text-slate-500">
-                        チャット / エージェントが grok CLI を回すディレクトリです。
-                      </p>
-                    </div>
-                    <div>
-                      <label className="label" htmlFor="grok-media-workdir">
-                        Grok Imagine の作業ディレクトリ（空 = 既定）
-                      </label>
-                      <input
-                        id="grok-media-workdir"
-                        className="field"
-                        value={settings.grok_media_workdir}
-                        placeholder="/path/to/workdir"
-                        onChange={(event) =>
-                          update({ grok_media_workdir: event.target.value })
-                        }
-                      />
-                      <p className="mt-1 text-[11px] text-slate-500">
-                        画像生成・編集（SPEC §5.2）で使う置き場所です。
-                      </p>
-                    </div>
-                    <div>
-                      <label className="label" htmlFor="agent-grok-args">
-                        grok CLI の追加フラグ（空白区切り）
-                      </label>
-                      <input
-                        id="agent-grok-args"
-                        className="field"
-                        value={grokArgsDraft}
-                        placeholder="--permission-mode auto"
-                        onChange={(event) => setGrokArgsDraft(event.target.value)}
-                      />
-                      <p className="mt-1 text-[11px] text-amber-400">
-                        <strong>空にするとエージェントのツールが無効になります</strong>
-                        （ファイルの読み書き・画像の確認・Web 検索ができなくなり、
-                        システムプロンプトからもツールの節が落ちます）。
-                      </p>
-                    </div>
-                    <div>
-                      <p className="label">エージェントの実行方式</p>
-                      <label
-                        className="flex items-center gap-2 text-xs text-slate-300"
-                        htmlFor="agent-use-acp"
-                      >
-                        <input
-                          id="agent-use-acp"
-                          type="checkbox"
-                          className="accent-accent-500"
-                          checked={settings.agent_use_acp}
-                          onChange={(event) =>
-                            update({ agent_use_acp: event.target.checked })
-                          }
-                        />
-                        ACP でターンを回す
-                      </label>
-                      <p className="mt-1 text-[11px] text-slate-500">
-                        オンだと実行中の活動（思考 / ツール実行）がチャットに出ます。
-                        オフは従来のワンショット実行で、活動表示はありません。
-                      </p>
-                    </div>
-                  </div>
-                  <div className="flex items-center gap-2">
-                    <button
-                      className="btn-ghost self-start"
-                      onClick={() => void checkGrok()}
-                      disabled={grokChecking}
-                    >
-                      {grokChecking ? '確認中…' : 'grok CLI の接続確認'}
-                    </button>
-                    {grokCheck && (
-                      <span
-                        className={`text-xs ${
-                          grokCheck.status === 'ok'
-                            ? 'text-emerald-400'
-                            : 'text-amber-400'
-                        }`}
-                      >
-                        {grokCheck.detail || grokCheck.status}
-                      </span>
-                    )}
-                  </div>
+                  </SettingsCard>
                   {/* エージェント / 相談の実行上限（AGENT-MODE §3.4）。
                       既定値は従来どおりで、0 を入れたときだけ無制限になる。 */}
-                  <div className="card flex flex-col gap-2 p-3">
-                    <h4 className="text-xs font-semibold text-slate-300">
-                      実行上限（0 = 無制限）
-                    </h4>
-                    <p className="text-[11px] text-slate-500">
-                      暴走防止の上限です。0 を入れるとその項目だけ無制限になります
-                      （止めたいときは各画面の「停止」で止めてください）。
-                    </p>
+                  <SettingsCard
+                    title="実行上限（0 = 無制限）"
+                    description="暴走防止の上限です。0 を入れるとその項目だけ無制限になります（止めたいときは各画面の「停止」で止めてください）。"
+                  >
                     <div className="grid gap-2 sm:grid-cols-2">
-                      <div>
-                        <label className="label" htmlFor="agent-max-turns">
-                          エージェントの連続ターン上限（0 = 無制限）
-                        </label>
-                        <input
+                      <Field
+                        label="エージェントの連続ターン上限（0 = 無制限）"
+                        htmlFor="agent-max-turns"
+                      >
+                        <Input
                           id="agent-max-turns"
-                          className="field"
+                          className="tnum"
                           type="number"
                           min="0"
                           step="1"
                           value={settings.agent_max_turns}
                           onChange={(event) =>
-                            update({
-                              agent_max_turns: Number(event.target.value) || 0,
-                            })
+                            update({ agent_max_turns: Number(event.target.value) || 0 })
                           }
                         />
-                      </div>
-                      <div>
-                        <label className="label" htmlFor="canvas-max-turns">
-                          キャンバスの連続ターン上限（0 = 無制限）
-                        </label>
-                        <input
+                      </Field>
+                      <Field
+                        label="キャンバスの連続ターン上限（0 = 無制限）"
+                        htmlFor="canvas-max-turns"
+                      >
+                        <Input
                           id="canvas-max-turns"
-                          className="field"
+                          className="tnum"
                           type="number"
                           min="0"
                           step="1"
                           value={settings.canvas_max_turns}
                           onChange={(event) =>
-                            update({
-                              canvas_max_turns: Number(event.target.value) || 0,
-                            })
+                            update({ canvas_max_turns: Number(event.target.value) || 0 })
                           }
                         />
-                      </div>
-                      <div>
-                        <label className="label" htmlFor="agent-max-plan-tasks">
-                          1 プラン提案の新規ジョブ上限（自走時・0 = 無制限）
-                        </label>
-                        <input
+                      </Field>
+                      <Field
+                        label="1 プラン提案の新規ジョブ上限（自走時・0 = 無制限）"
+                        htmlFor="agent-max-plan-tasks"
+                      >
+                        <Input
                           id="agent-max-plan-tasks"
-                          className="field"
+                          className="tnum"
                           type="number"
                           min="0"
                           step="1"
                           value={settings.agent_max_plan_tasks}
                           onChange={(event) =>
                             update({
-                              agent_max_plan_tasks:
-                                Number(event.target.value) || 0,
+                              agent_max_plan_tasks: Number(event.target.value) || 0,
                             })
                           }
                         />
-                      </div>
-                      <div>
-                        <label className="label" htmlFor="agent-grok-timeout">
-                          grok の制限時間（秒・0 = タイムアウトなし）
-                        </label>
-                        <input
+                      </Field>
+                      <Field
+                        label="grok の制限時間（秒・0 = タイムアウトなし）"
+                        htmlFor="agent-grok-timeout"
+                      >
+                        <Input
                           id="agent-grok-timeout"
-                          className="field"
+                          className="tnum"
                           type="number"
                           min="0"
                           step="30"
@@ -1256,24 +1334,24 @@ export default function SettingsPage({
                             })
                           }
                         />
-                      </div>
+                      </Field>
                     </div>
-                  </div>
+                  </SettingsCard>
                   {/* 外部公開 API（docs/EXTERNAL-API.md）。キーを入れることが
                       有効化そのもので、空のあいだは /api/v1 が丸ごと 404。 */}
-                  <div className="card flex flex-col gap-2 p-3">
-                    <h4 className="text-xs font-semibold text-slate-300">
-                      外部 API（/api/v1）
-                    </h4>
+                  <SettingsCard
+                    title="外部 API（/api/v1）"
+                    description="キーを入れることが有効化そのものです。空のあいだは /api/v1 が丸ごと 404 になります。"
+                  >
                     <div className="grid gap-2 sm:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
-                      <div>
-                        <label className="label" htmlFor="external-api-key">
-                          API キー（空 = 外部 API は無効）
-                        </label>
+                      <Field
+                        label="API キー（空 = 外部 API は無効）"
+                        htmlFor="external-api-key"
+                      >
                         <div className="flex gap-2">
-                          <input
+                          <Input
                             id="external-api-key"
-                            className="field min-w-0 flex-1"
+                            className="min-w-0 flex-1"
                             type="password"
                             autoComplete="off"
                             value={settings.external_api_key}
@@ -1281,23 +1359,22 @@ export default function SettingsPage({
                               update({ external_api_key: event.target.value })
                             }
                           />
-                          <button
-                            className="btn-ghost shrink-0"
-                            onClick={() =>
-                              update({ external_api_key: randomApiKey() })
-                            }
+                          <Button
+                            variant="outline"
+                            className="shrink-0"
+                            onClick={() => update({ external_api_key: randomApiKey() })}
                           >
                             生成
-                          </button>
+                          </Button>
                         </div>
-                      </div>
-                      <div>
-                        <label className="label" htmlFor="external-max-pending">
-                          未完了 Take の上限（0 = 無制限）
-                        </label>
-                        <input
+                      </Field>
+                      <Field
+                        label="未完了 Take の上限（0 = 無制限）"
+                        htmlFor="external-max-pending"
+                      >
+                        <Input
                           id="external-max-pending"
-                          className="field"
+                          className="tnum"
                           type="number"
                           min="0"
                           step="1"
@@ -1309,16 +1386,16 @@ export default function SettingsPage({
                             })
                           }
                         />
-                      </div>
+                      </Field>
                     </div>
-                  </div>
-                  <button
-                    className="btn-primary self-start"
+                  </SettingsCard>
+                  <Button
+                    className="self-start"
                     onClick={() => void saveSettings()}
                     disabled={busy}
                   >
                     保存
-                  </button>
+                  </Button>
                 </>
               )}
             </div>
@@ -1329,66 +1406,72 @@ export default function SettingsPage({
               {envPicker()}
               <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1.2fr)_minmax(22rem,0.8fr)]">
                 <div className="flex min-w-0 flex-col gap-2">
-                  <div className="card p-3">
+                  <Card className="p-3">
                     <div className="flex flex-col gap-2 sm:flex-row">
                       <div className="min-w-0 flex-1">
-                        <label className="sr-only" htmlFor="lora-management-search">
+                        <Label className="sr-only" htmlFor="lora-management-search">
                           LoRAを検索
-                        </label>
-                        <input
+                        </Label>
+                        <Input
                           id="lora-management-search"
-                          className="field"
                           placeholder="名前・ファイル名・トリガーで検索"
                           value={loraQuery}
                           onChange={(event) => setLoraQuery(event.target.value)}
                         />
                       </div>
-                      <select
-                        className="field sm:w-28"
-                        aria-label="LoRAの対象"
+                      <Select
                         value={loraTargetFilter}
-                        onChange={(event) =>
-                          setLoraTargetFilter(event.target.value as 'all' | LoraTarget)
+                        onValueChange={(value) =>
+                          setLoraTargetFilter(value as 'all' | LoraTarget)
                         }
                       >
-                        <option value="all">すべて</option>
-                        <option value="image">画像用</option>
-                        <option value="video">動画用</option>
-                      </select>
-                      <select
-                        className="field sm:w-32"
-                        aria-label="LoRAのファミリー"
+                        <SelectTrigger aria-label="LoRAの対象" className="sm:w-32">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">すべて</SelectItem>
+                          <SelectItem value="image">画像用</SelectItem>
+                          <SelectItem value="video">動画用</SelectItem>
+                        </SelectContent>
+                      </Select>
+                      <Select
                         value={loraFamilyFilter}
                         disabled={loraTargetFilter === 'video'}
-                        onChange={(event) => setLoraFamilyFilter(event.target.value)}
+                        onValueChange={setLoraFamilyFilter}
                       >
-                        <option value="all">全ファミリー</option>
-                        {IMAGE_FAMILIES.map((value) => (
-                          <option key={value} value={value}>
-                            {FAMILY_LABELS[value] ?? value}
-                          </option>
-                        ))}
-                      </select>
+                        <SelectTrigger aria-label="LoRAのファミリー" className="sm:w-36">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="all">全ファミリー</SelectItem>
+                          {IMAGE_FAMILIES.map((value) => (
+                            <SelectItem key={value} value={value}>
+                              {FAMILY_LABELS[value] ?? value}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
                     </div>
-                    <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-slate-500">
-                      <span>
+                    <div className="mt-2 flex items-center justify-between gap-2 text-[11px] text-muted-foreground">
+                      <span className="tnum">
                         表示 {filteredLoras.length} / 全 {loras.length}
                       </span>
-                      <button className="btn-ghost !py-1 text-[11px]" onClick={resetLoraForm}>
+                      <Button variant="outline" size="xs" onClick={resetLoraForm}>
+                        <Plus />
                         新規登録
-                      </button>
+                      </Button>
                     </div>
-                  </div>
+                  </Card>
 
-                  <div
+                  <Card
                     data-testid="lora-management-list"
-                    className="card max-h-[32rem] divide-y divide-ink-600 overflow-y-auto overscroll-contain"
+                    className="max-h-[32rem] divide-y divide-border overflow-y-auto overscroll-contain"
                   >
                     {loras.length === 0 && (
-                      <p className="p-4 text-xs text-slate-500">登録がありません</p>
+                      <p className="p-4 text-xs text-muted-foreground">登録がありません</p>
                     )}
                     {loras.length > 0 && filteredLoras.length === 0 && (
-                      <p className="p-4 text-center text-xs text-slate-500">
+                      <p className="p-4 text-center text-xs text-muted-foreground">
                         条件に一致するLoRAがありません
                       </p>
                     )}
@@ -1402,7 +1485,7 @@ export default function SettingsPage({
                       return (
                         <div
                           key={lora.id}
-                          className={editingId === lora.id ? 'bg-accent-500/5' : ''}
+                          className={editingId === lora.id ? 'bg-primary/5' : ''}
                         >
                           <div className="flex items-center gap-2 p-2 text-xs">
                             {sample ? (
@@ -1411,45 +1494,51 @@ export default function SettingsPage({
                                 alt=""
                                 aria-hidden="true"
                                 loading="lazy"
-                                className="h-10 w-10 shrink-0 rounded border border-ink-600 object-cover"
+                                className="size-10 shrink-0 rounded-md border border-border object-cover"
                               />
                             ) : (
                               <span
                                 aria-hidden="true"
-                                className="flex h-10 w-10 shrink-0 items-center justify-center rounded border border-ink-600 bg-ink-900 text-slate-600"
+                                className="flex size-10 shrink-0 items-center justify-center rounded-md border border-border bg-surface-sunken text-muted-foreground"
                               >
-                                L
+                                <ImageIcon className="size-4" />
                               </span>
                             )}
                             <div className="min-w-0 flex-1">
-                              <p className="truncate font-medium text-slate-200">
+                              <p className="truncate font-medium text-foreground">
                                 {lora.display_name}
                               </p>
-                              <p className="truncate text-slate-500">
-                                <span className="mr-1.5 rounded border border-ink-600 px-1 py-px text-[10px] text-slate-400">
+                              <p className="flex items-center gap-1.5 truncate text-muted-foreground">
+                                <Badge
+                                  variant="outline"
+                                  className="shrink-0 px-1.5 py-0 text-[10px] text-muted-foreground"
+                                >
                                   {loraBadge(lora)}
-                                </span>
-                                {lora.lora_name}
+                                </Badge>
+                                <span className="truncate">{lora.lora_name}</span>
                                 {savedUrl && (
                                   <span
-                                    className="ml-1.5 text-accent-400"
+                                    className="flex shrink-0 items-center gap-0.5 text-accent-400"
                                     title={`取得元 URL: ${savedUrl}`}
                                   >
-                                    URL ✓
+                                    <Check className="size-3" />
+                                    URL
                                   </span>
                                 )}
                               </p>
                             </div>
-                            <button
-                              className="btn-ghost !px-2 !py-1 text-[11px]"
+                            <Button
+                              variant="outline"
+                              size="xs"
                               aria-expanded={expanded}
                               aria-controls={`lora-details-${lora.id}`}
                               onClick={() => setExpandedLoraId(expanded ? null : lora.id)}
                             >
                               {expanded ? '閉じる' : '詳細'}
-                            </button>
-                            <button
-                              className="btn-ghost !px-2 !py-1 text-[11px]"
+                            </Button>
+                            <Button
+                              variant="outline"
+                              size="xs"
                               onClick={() => {
                                 setEditingId(lora.id)
                                 setDraftUrl(savedUrl)
@@ -1466,21 +1555,24 @@ export default function SettingsPage({
                                 })
                               }}
                             >
+                              <Pencil />
                               編集
-                            </button>
-                            <button
-                              className="btn-danger !px-2 !py-1 text-[11px]"
+                            </Button>
+                            <Button
+                              variant="destructive"
+                              size="xs"
                               onClick={() => void removeLora(lora)}
                               disabled={busy}
                             >
+                              <Trash2 />
                               削除
-                            </button>
+                            </Button>
                           </div>
 
                           {expanded && (
                             <div
                               id={`lora-details-${lora.id}`}
-                              className="border-t border-ink-700 bg-ink-900/40 px-3 py-2 text-[11px] text-slate-500"
+                              className="border-t border-border bg-surface-sunken/50 px-3 py-2 text-[11px] text-muted-foreground"
                             >
                               <p className="break-all">
                                 trigger: {lora.trigger_word || '（なし）'} / strength:{' '}
@@ -1495,25 +1587,26 @@ export default function SettingsPage({
                                         src={url}
                                         alt={`${lora.display_name} サンプル`}
                                         loading="lazy"
-                                        className="h-14 w-14 rounded border border-ink-600 object-cover"
+                                        className="size-14 rounded-md border border-border object-cover"
                                       />
                                     </a>
                                     <button
                                       type="button"
                                       title="サンプルを削除"
-                                      className="absolute -right-1.5 -top-1.5 hidden h-4 w-4 items-center justify-center rounded-full border border-ink-600 bg-ink-900 text-[10px] leading-none text-slate-300 hover:text-red-400 group-hover:flex"
+                                      className="absolute -right-1.5 -top-1.5 hidden size-4 items-center justify-center rounded-full border border-border bg-card text-foreground/85 hover:text-red-400 group-hover:flex"
                                       onClick={() => void removeSample(lora, url)}
                                       disabled={busy}
                                     >
-                                      ×
+                                      <X className="size-2.5" />
+                                      <span className="sr-only">サンプルを削除</span>
                                     </button>
                                   </div>
                                 ))}
                                 <label
-                                  className="flex h-14 w-14 cursor-pointer items-center justify-center rounded border border-dashed border-ink-600 text-lg text-slate-500 hover:border-accent-500 hover:text-accent-500"
+                                  className="flex size-14 cursor-pointer items-center justify-center rounded-md border border-dashed border-border text-muted-foreground hover:border-primary hover:text-primary"
                                   title="サンプル画像を追加"
                                 >
-                                  ＋
+                                  <Plus className="size-5" />
                                   <input
                                     type="file"
                                     accept=".png,.jpg,.jpeg,.webp,.bmp"
@@ -1532,176 +1625,184 @@ export default function SettingsPage({
                         </div>
                       )
                     })}
-                  </div>
+                  </Card>
                 </div>
 
-                <div className="card p-3 lg:sticky lg:top-4">
-                <h4 className="mb-2 text-xs font-semibold text-slate-300">
-                  {editingId == null ? 'LoRA を追加' : `LoRA を編集 (#${editingId})`}
-                </h4>
-                <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="label" htmlFor="lora-display-name">
-                      表示名
-                    </label>
-                    <input
-                      id="lora-display-name"
-                      className="field"
-                      value={draft.display_name}
-                      onChange={(event) =>
-                        setDraft({ ...draft, display_name: event.target.value })
-                      }
-                    />
-                  </div>
-                  <div>
-                    <label className="label">ファイル名 (lora_name)</label>
-                    {/* 手入力が基本。入力し始めると一覧から補完候補が出る。 */}
-                    <input
-                      className="field"
-                      list="lora-file-candidates"
-                      placeholder="例: my_lora.safetensors"
-                      value={draft.lora_name}
-                      onChange={(event) =>
-                        setDraft({ ...draft, lora_name: event.target.value })
-                      }
-                    />
-                    <datalist id="lora-file-candidates">
-                      {loraFiles.map((file) => (
-                        <option key={file} value={file} />
-                      ))}
-                    </datalist>
-                  </div>
-                  <div>
-                    <label className="label">対象ワークフロー</label>
-                    <select
-                      className="field"
-                      value={draft.target}
-                      onChange={(event) =>
-                        setDraft({
-                          ...draft,
-                          target: event.target.value as LoraTarget,
-                        })
-                      }
+                <Card className="p-3 lg:sticky lg:top-4">
+                  <h4 className="mb-2 text-sm font-medium text-foreground">
+                    {editingId == null ? 'LoRA を追加' : `LoRA を編集 (#${editingId})`}
+                  </h4>
+                  <p className="mb-3 text-xs text-muted-foreground">
+                    ComfyUI に置いた LoRA ファイルを、生成フォームから選べるように登録します。
+                  </p>
+                  <div className="grid grid-cols-2 gap-2">
+                    <Field label="表示名" htmlFor="lora-display-name">
+                      <Input
+                        id="lora-display-name"
+                        value={draft.display_name}
+                        onChange={(event) =>
+                          setDraft({ ...draft, display_name: event.target.value })
+                        }
+                      />
+                    </Field>
+                    <Field label="ファイル名 (lora_name)" htmlFor="lora-file-name">
+                      {/* 手入力が基本。入力し始めると一覧から補完候補が出る。 */}
+                      <Input
+                        id="lora-file-name"
+                        list="lora-file-candidates"
+                        placeholder="例: my_lora.safetensors"
+                        value={draft.lora_name}
+                        onChange={(event) =>
+                          setDraft({ ...draft, lora_name: event.target.value })
+                        }
+                      />
+                      <datalist id="lora-file-candidates">
+                        {loraFiles.map((file) => (
+                          <option key={file} value={file} />
+                        ))}
+                      </datalist>
+                    </Field>
+                    <Field label="対象ワークフロー" htmlFor="lora-target">
+                      <Select
+                        value={draft.target}
+                        onValueChange={(value) =>
+                          setDraft({ ...draft, target: value as LoraTarget })
+                        }
+                      >
+                        <SelectTrigger id="lora-target">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {(['video', 'image'] as LoraTarget[]).map((value) => (
+                            <SelectItem key={value} value={value}>
+                              {LORA_TARGET_LABELS[value]}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </Field>
+                    <Field label="モデルファミリー（画像用のみ）" htmlFor="lora-family">
+                      <Select
+                        value={draft.family}
+                        disabled={draft.target === 'video'}
+                        onValueChange={(value) => setDraft({ ...draft, family: value })}
+                      >
+                        <SelectTrigger id="lora-family">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {IMAGE_FAMILIES.map((value: ImageFamily) => (
+                            <SelectItem key={value} value={value}>
+                              {FAMILY_LABELS[value] ?? value}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </Field>
+                    <Field
+                      className="col-span-2"
+                      label="トリガーワード"
+                      htmlFor="lora-trigger-word"
                     >
-                      {(['video', 'image'] as LoraTarget[]).map((value) => (
-                        <option key={value} value={value}>
-                          {LORA_TARGET_LABELS[value]}
-                        </option>
-                      ))}
-                    </select>
-                  </div>
-                  <div>
-                    <label className="label">モデルファミリー（画像用のみ）</label>
-                    <select
-                      className="field"
-                      value={draft.family}
-                      disabled={draft.target === 'video'}
-                      onChange={(event) =>
-                        setDraft({ ...draft, family: event.target.value })
-                      }
+                      <Input
+                        id="lora-trigger-word"
+                        value={draft.trigger_word}
+                        onChange={(event) =>
+                          setDraft({ ...draft, trigger_word: event.target.value })
+                        }
+                      />
+                    </Field>
+                    <Field label="既定強度" htmlFor="lora-default-strength">
+                      <Input
+                        id="lora-default-strength"
+                        className="tnum"
+                        type="number"
+                        step="0.05"
+                        value={draft.default_strength}
+                        onChange={(event) =>
+                          setDraft({
+                            ...draft,
+                            default_strength: Number(event.target.value) || 0,
+                          })
+                        }
+                      />
+                    </Field>
+                    <Field label="既定リファレンス音声" htmlFor="lora-default-audio">
+                      <Select
+                        value={draft.default_audio ?? NO_AUDIO}
+                        onValueChange={(value) =>
+                          setDraft({
+                            ...draft,
+                            default_audio: value === NO_AUDIO ? null : value,
+                          })
+                        }
+                      >
+                        <SelectTrigger id="lora-default-audio">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value={NO_AUDIO}>（なし）</SelectItem>
+                          {draft.default_audio &&
+                            !audioAssets.some(
+                              (asset) => asset.url === draft.default_audio,
+                            ) && (
+                              <SelectItem value={draft.default_audio}>
+                                {draft.default_audio}
+                              </SelectItem>
+                            )}
+                          {audioAssets.map((asset) => (
+                            <SelectItem key={asset.url} value={asset.url}>
+                              {asset.name}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </Field>
+                    <Field label="並び順" htmlFor="lora-sort-order">
+                      <Input
+                        id="lora-sort-order"
+                        className="tnum"
+                        type="number"
+                        value={draft.sort_order}
+                        onChange={(event) =>
+                          setDraft({
+                            ...draft,
+                            sort_order: Number(event.target.value) || 0,
+                          })
+                        }
+                      />
+                    </Field>
+                    {/* 取得元 URL: モデルタブと同じ model_download_urls（キーは
+                        ファイル名）に、LoRA の保存と同時に書き込む。 */}
+                    <Field
+                      className="col-span-2"
+                      label="取得元 URL（任意）"
+                      htmlFor="lora-download-url"
                     >
-                      {IMAGE_FAMILIES.map((value: ImageFamily) => (
-                        <option key={value} value={value}>
-                          {FAMILY_LABELS[value] ?? value}
-                        </option>
-                      ))}
-                    </select>
+                      <Input
+                        id="lora-download-url"
+                        placeholder="ダウンロード URL（Hugging Face / Civitai など）"
+                        value={draftUrl}
+                        onChange={(event) => setDraftUrl(event.target.value)}
+                      />
+                    </Field>
                   </div>
-                  <div className="col-span-2">
-                    <label className="label">トリガーワード</label>
-                    <input
-                      className="field"
-                      value={draft.trigger_word}
-                      onChange={(event) =>
-                        setDraft({ ...draft, trigger_word: event.target.value })
-                      }
-                    />
-                  </div>
-                  <div>
-                    <label className="label">既定強度</label>
-                    <input
-                      className="field"
-                      type="number"
-                      step="0.05"
-                      value={draft.default_strength}
-                      onChange={(event) =>
-                        setDraft({
-                          ...draft,
-                          default_strength: Number(event.target.value) || 0,
-                        })
-                      }
-                    />
-                  </div>
-                  <div>
-                    <label className="label">既定リファレンス音声</label>
-                    <select
-                      className="field"
-                      value={draft.default_audio ?? ''}
-                      onChange={(event) =>
-                        setDraft({
-                          ...draft,
-                          default_audio: event.target.value || null,
-                        })
-                      }
+                  <div className="mt-3 flex gap-2">
+                    <Button
+                      size="sm"
+                      onClick={() => void submitLora()}
+                      disabled={busy || !draft.display_name || !draft.lora_name}
                     >
-                      <option value="">（なし）</option>
-                      {draft.default_audio &&
-                        !audioAssets.some(
-                          (asset) => asset.url === draft.default_audio,
-                        ) && (
-                          <option value={draft.default_audio}>
-                            {draft.default_audio}
-                          </option>
-                        )}
-                      {audioAssets.map((asset) => (
-                        <option key={asset.url} value={asset.url}>
-                          {asset.name}
-                        </option>
-                      ))}
-                    </select>
+                      {editingId == null ? '追加' : '更新'}
+                    </Button>
+                    {editingId != null && (
+                      <Button variant="outline" size="sm" onClick={resetLoraForm}>
+                        キャンセル
+                      </Button>
+                    )}
                   </div>
-                  <div>
-                    <label className="label">並び順</label>
-                    <input
-                      className="field"
-                      type="number"
-                      value={draft.sort_order}
-                      onChange={(event) =>
-                        setDraft({
-                          ...draft,
-                          sort_order: Number(event.target.value) || 0,
-                        })
-                      }
-                    />
-                  </div>
-                  {/* 取得元 URL: モデルタブと同じ model_download_urls（キーは
-                      ファイル名）に、LoRA の保存と同時に書き込む。 */}
-                  <div className="col-span-2">
-                    <label className="label">取得元 URL（任意）</label>
-                    <input
-                      className="field"
-                      placeholder="ダウンロード URL（Hugging Face / Civitai など）"
-                      value={draftUrl}
-                      onChange={(event) => setDraftUrl(event.target.value)}
-                    />
-                  </div>
-                </div>
-                <div className="mt-3 flex gap-2">
-                  <button
-                    className="btn-primary text-xs"
-                    onClick={() => void submitLora()}
-                    disabled={busy || !draft.display_name || !draft.lora_name}
-                  >
-                    {editingId == null ? '追加' : '更新'}
-                  </button>
-                  {editingId != null && (
-                    <button className="btn-ghost text-xs" onClick={resetLoraForm}>
-                      キャンセル
-                    </button>
-                  )}
-                </div>
+                </Card>
               </div>
-            </div>
             </div>
           )}
 
@@ -1710,14 +1811,16 @@ export default function SettingsPage({
               {envPicker()}
               {showDownload && (
                 <div className="flex flex-wrap items-center gap-2">
-                  <button
-                    className="btn-ghost text-xs"
+                  <Button
+                    variant="outline"
+                    size="sm"
                     onClick={() => void startAllDownloads()}
                     disabled={busy}
                     title="未検出かつ取得元 URL が登録済みのモデルをまとめて落とします"
                   >
+                    <DownloadCloud />
                     全DL
-                  </button>
+                  </Button>
                 </div>
               )}
               {/* ローカルに落とすときだけ関係する保存先の警告 */}
@@ -1734,7 +1837,7 @@ export default function SettingsPage({
                 </datalist>
               ))}
               {models.length === 0 && (
-                <p className="text-xs text-slate-500">読み込み中…</p>
+                <p className="text-xs text-muted-foreground">読み込み中…</p>
               )}
               {MODEL_KINDS.map(([kind, kindLabel]) => {
                 const families = modelFamilies.filter(
@@ -1743,7 +1846,7 @@ export default function SettingsPage({
                 if (families.length === 0) return null
                 return (
                   <div key={kind} className="flex flex-col gap-2">
-                    <h4 className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+                    <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                       {kindLabel}
                     </h4>
                     {families.map((family) => {
@@ -1754,22 +1857,23 @@ export default function SettingsPage({
                       return (
                         <div key={family.id} className="flex flex-col gap-2">
                           {nested && (
-                            <h5 className="text-xs font-medium text-slate-300">
+                            <h5 className="text-xs font-medium text-foreground/85">
                               {family.label}
                             </h5>
                           )}
                           <div
                             className={`flex flex-col gap-2${
-                              nested ? ' border-l border-ink-600 pl-2' : ''
+                              nested ? ' border-l border-border pl-2' : ''
                             }`}
                           >
                             {family.groups.map((group) => {
                               const open = openWorkflows[group.id] ?? false
                               return (
-                                <div key={group.id} className="card overflow-hidden">
+                                <Card key={group.id} className="overflow-hidden">
                                   <button
                                     type="button"
-                                    className="flex w-full items-center gap-2 p-2 text-left text-xs hover:bg-ink-700"
+                                    aria-expanded={open}
+                                    className="flex w-full items-center gap-2 rounded-lg p-2 text-left text-xs transition-colors hover:bg-secondary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
                                     onClick={() =>
                                       setOpenWorkflows((previous) => ({
                                         ...previous,
@@ -1777,29 +1881,37 @@ export default function SettingsPage({
                                       }))
                                     }
                                   >
-                                    <span className="w-3 text-slate-500">
-                                      {open ? '▾' : '▸'}
-                                    </span>
-                                    <span className="text-slate-200">{group.label}</span>
-                                    <span className="text-slate-600">
+                                    {open ? (
+                                      <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
+                                    ) : (
+                                      <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
+                                    )}
+                                    <span className="text-foreground">{group.label}</span>
+                                    <span className="tnum text-muted-foreground">
                                       {group.rows.length} 項目
                                     </span>
                                     {group.changed > 0 && (
-                                      <span className="rounded border border-accent-500 px-1 py-px text-[10px] text-accent-400">
+                                      <Badge
+                                        variant="outline"
+                                        className="border-primary/60 px-1.5 py-0 text-[10px] text-accent-400"
+                                      >
                                         未保存 {group.changed}
-                                      </span>
+                                      </Badge>
                                     )}
                                     {group.custom > 0 && (
-                                      <span className="rounded border border-ink-500 px-1 py-px text-[10px] text-slate-400">
+                                      <Badge
+                                        variant="outline"
+                                        className="px-1.5 py-0 text-[10px] text-muted-foreground"
+                                      >
                                         既定から変更 {group.custom}
-                                      </span>
+                                      </Badge>
                                     )}
                                   </button>
                                   {open && (
-                                    <div className="overflow-x-auto border-t border-ink-600">
+                                    <div className="overflow-x-auto border-t border-border">
                                       <table className="w-full text-xs">
-                                        <thead className="text-left text-slate-500">
-                                          <tr className="border-b border-ink-600">
+                                        <thead className="text-left text-muted-foreground">
+                                          <tr className="border-b border-border">
                                             <th className="p-2 font-medium">ノード</th>
                                             <th className="p-2 font-medium">既定値</th>
                                             <th className="p-2 font-medium">使用する値</th>
@@ -1815,7 +1927,7 @@ export default function SettingsPage({
                                             <th className="p-2" />
                                           </tr>
                                         </thead>
-                                        <tbody className="divide-y divide-ink-600">
+                                        <tbody className="divide-y divide-border">
                                           {group.rows.map((row) => {
                                             const value = modelDraft[row.key] ?? ''
                                             const choices = choiceDraft[row.key] ?? []
@@ -1850,24 +1962,24 @@ export default function SettingsPage({
                                               <tr
                                                 key={row.key}
                                                 className={
-                                                  changed ? 'bg-accent-500/10' : undefined
+                                                  changed ? 'bg-primary/10' : undefined
                                                 }
                                               >
                                                 <td className="p-2 align-top">
-                                                  <p className="text-slate-200">
+                                                  <p className="text-foreground">
                                                     {row.title || row.key}
                                                   </p>
-                                                  <p className="text-slate-600">
+                                                  <p className="text-muted-foreground">
                                                     {row.node_id}.{row.field} /{' '}
                                                     {row.class_type}
                                                   </p>
                                                 </td>
-                                                <td className="max-w-[16rem] break-all p-2 align-top text-slate-500">
+                                                <td className="max-w-[16rem] break-all p-2 align-top text-muted-foreground">
                                                   {row.default}
                                                 </td>
                                                 <td className="p-2 align-top">
-                                                  <input
-                                                    className="field"
+                                                  <Input
+                                                    className="h-8 text-xs"
                                                     value={value}
                                                     list={listId}
                                                     onChange={(event) =>
@@ -1878,41 +1990,46 @@ export default function SettingsPage({
                                                     }
                                                   />
                                                   {missing && (
-                                                    <span
-                                                      className="mt-1 inline-block rounded border border-amber-500 px-1 py-px text-[10px] text-amber-400"
+                                                    <Badge
+                                                      variant="warning"
+                                                      className="mt-1 px-1.5 py-0 text-[10px]"
                                                       title="ComfyUI のファイル一覧に見つかりません"
                                                     >
                                                       未検出
-                                                    </span>
+                                                    </Badge>
                                                   )}
                                                 </td>
                                                 <td className="min-w-[16rem] p-2 align-top">
                                                   {choices.length > 0 && (
                                                     <div className="mb-1 flex flex-wrap gap-1">
                                                       {choices.map((name) => (
-                                                        <span
+                                                        <Badge
                                                           key={name}
-                                                          className="chip border-ink-500 bg-ink-700 text-slate-300"
+                                                          variant="secondary"
+                                                          className="max-w-full gap-1 px-2 py-0.5"
                                                         >
                                                           <span className="max-w-[12rem] truncate">
                                                             {name}
                                                           </span>
                                                           <button
-                                                            className="text-slate-500 hover:text-slate-200"
+                                                            className="shrink-0 text-muted-foreground hover:text-foreground"
                                                             title="候補から削除"
                                                             onClick={() =>
                                                               removeChoice(row.key, name)
                                                             }
                                                           >
-                                                            ×
+                                                            <X className="size-3" />
+                                                            <span className="sr-only">
+                                                              候補から削除
+                                                            </span>
                                                           </button>
-                                                        </span>
+                                                        </Badge>
                                                       ))}
                                                     </div>
                                                   )}
                                                   <div className="flex gap-1">
-                                                    <input
-                                                      className="field"
+                                                    <Input
+                                                      className="h-8 text-xs"
                                                       placeholder="候補に追加するファイル名"
                                                       list={listId}
                                                       value={choiceInput[row.key] ?? ''}
@@ -1928,15 +2045,16 @@ export default function SettingsPage({
                                                         addChoice(row.key)
                                                       }}
                                                     />
-                                                    <button
-                                                      className="btn-ghost !py-1 text-xs"
+                                                    <Button
+                                                      variant="outline"
+                                                      size="sm"
                                                       disabled={
                                                         !(choiceInput[row.key] ?? '').trim()
                                                       }
                                                       onClick={() => addChoice(row.key)}
                                                     >
                                                       追加
-                                                    </button>
+                                                    </Button>
                                                   </div>
                                                 </td>
                                                 <td className="min-w-[16rem] p-2 align-top">
@@ -1949,10 +2067,11 @@ export default function SettingsPage({
                                                     {!missing && (
                                                       <button
                                                         type="button"
-                                                        className={`text-xs underline decoration-dotted underline-offset-2 hover:text-slate-200 disabled:opacity-40 ${
+                                                        aria-expanded={urlShown}
+                                                        className={`flex items-center gap-1 rounded-sm text-xs transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:opacity-40 ${
                                                           savedUrl
                                                             ? 'text-accent-400'
-                                                            : 'text-slate-500'
+                                                            : 'text-muted-foreground'
                                                         }`}
                                                         disabled={!value}
                                                         title={
@@ -1967,16 +2086,28 @@ export default function SettingsPage({
                                                           }))
                                                         }
                                                       >
-                                                        {urlShown ? '▾' : '▸'} 取得元 URL
-                                                        {savedUrl ? ' ✓' : ''}
+                                                        {urlShown ? (
+                                                          <ChevronDown className="size-3" />
+                                                        ) : (
+                                                          <ChevronRight className="size-3" />
+                                                        )}
+                                                        取得元 URL
+                                                        {savedUrl && (
+                                                          <>
+                                                            <Check className="size-3" />
+                                                            <span className="sr-only">
+                                                              登録済み
+                                                            </span>
+                                                          </>
+                                                        )}
                                                       </button>
                                                     )}
                                                     {(missing || urlShown) && (
                                                       <div
                                                         className={`flex gap-1 ${missing ? '' : 'mt-1'}`}
                                                       >
-                                                        <input
-                                                          className="field"
+                                                        <Input
+                                                          className="h-8 text-xs"
                                                           placeholder="ダウンロード URL（Hugging Face / Civitai など）"
                                                           value={urlDraft[value] ?? ''}
                                                           disabled={!value}
@@ -1988,8 +2119,9 @@ export default function SettingsPage({
                                                           }
                                                         />
                                                         {!missing && (
-                                                          <button
-                                                            className="btn-ghost !py-1 text-xs"
+                                                          <Button
+                                                            variant="outline"
+                                                            size="sm"
                                                             disabled={busy || url === savedUrl}
                                                             title="ダウンロードはせず、取得元 URL だけ設定に保存します（空欄で保存すると登録を解除）"
                                                             onClick={() =>
@@ -1997,11 +2129,12 @@ export default function SettingsPage({
                                                             }
                                                           >
                                                             URL保存
-                                                          </button>
+                                                          </Button>
                                                         )}
                                                         {showDownload && (
-                                                          <button
-                                                            className="btn-ghost !py-1 text-xs"
+                                                          <Button
+                                                            variant="outline"
+                                                            size="sm"
                                                             disabled={
                                                               busy ||
                                                               downloading ||
@@ -2013,22 +2146,23 @@ export default function SettingsPage({
                                                               void startDownload(row, value)
                                                             }
                                                           >
+                                                            <Download />
                                                             DL
-                                                          </button>
+                                                          </Button>
                                                         )}
                                                       </div>
                                                     )}
                                                     {missing && showDownload && (
-                                                      <p className="mt-1 text-[10px] text-slate-600">
+                                                      <p className="mt-1 text-[10px] text-muted-foreground">
                                                         保存先: {row.subfolder || 'models 直下'}
                                                       </p>
                                                     )}
                                                     {progress && (
                                                       <div className="mt-1">
                                                         {downloading && (
-                                                          <div className="h-1 overflow-hidden rounded bg-ink-700">
+                                                          <div className="h-1 overflow-hidden rounded-full bg-secondary">
                                                             <div
-                                                              className="h-full bg-accent-500"
+                                                              className="h-full bg-primary transition-[width]"
                                                               style={{
                                                                 width: progress.total
                                                                   ? `${Math.min(100, (progress.received / progress.total) * 100)}%`
@@ -2038,12 +2172,12 @@ export default function SettingsPage({
                                                           </div>
                                                         )}
                                                         <p
-                                                          className={`text-[10px] ${
+                                                          className={`tnum text-[10px] ${
                                                             progress.status === 'error'
                                                               ? 'text-red-400'
                                                               : progress.status === 'done'
                                                                 ? 'text-emerald-400'
-                                                                : 'text-slate-500'
+                                                                : 'text-muted-foreground'
                                                           }`}
                                                         >
                                                           {progress.status === 'error'
@@ -2060,8 +2194,9 @@ export default function SettingsPage({
                                                     )}
                                                   </td>
                                                 <td className="p-2 align-top">
-                                                  <button
-                                                    className="btn-ghost !py-1 text-xs"
+                                                  <Button
+                                                    variant="outline"
+                                                    size="sm"
                                                     disabled={!custom}
                                                     onClick={() =>
                                                       setModelDraft((previous) => ({
@@ -2070,8 +2205,9 @@ export default function SettingsPage({
                                                       }))
                                                     }
                                                   >
+                                                    <RotateCcw />
                                                     既定に戻す
-                                                  </button>
+                                                  </Button>
                                                 </td>
                                               </tr>
                                             )
@@ -2080,7 +2216,7 @@ export default function SettingsPage({
                                       </table>
                                     </div>
                                   )}
-                                </div>
+                                </Card>
                               )
                             })}
                           </div>
@@ -2090,13 +2226,13 @@ export default function SettingsPage({
                   </div>
                 )
               })}
-              <button
-                className="btn-primary self-start"
+              <Button
+                className="self-start"
                 onClick={() => void saveModels()}
                 disabled={busy || models.length === 0 || !modelsDirty}
               >
                 保存
-              </button>
+              </Button>
             </div>
           )}
         </div>

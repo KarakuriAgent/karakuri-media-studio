@@ -1,9 +1,15 @@
 import { useEffect, useRef, useState } from 'react'
+import { Clapperboard, ChevronLeft, ChevronRight, X } from 'lucide-react'
+
 import { api } from '../../api'
 import type { AgentArtifact } from '../../types'
+import { cn } from '@/lib/utils'
+import { Badge } from '../ui/badge'
+import { Button } from '../ui/button'
+import { Progress } from '../ui/progress'
 import ArtifactViewer from './ArtifactViewer'
 import FrameGrid from './FrameGrid'
-import { ARTIFACT_ICON, ARTIFACT_LABEL, shortTime } from './common'
+import { ARTIFACT_LABEL, ArtifactIcon, shortTime } from './common'
 import { groupArtifacts } from './logic'
 
 interface PendingTask {
@@ -22,8 +28,8 @@ interface Props {
   onExpand: () => void
   /** Layout override: desktop column vs. mobile full-screen overlay (§1). */
   className?: string
-  /** Icon of the header toggle (mobile overlay closes instead of collapsing). */
-  toggleIcon?: string
+  /** 見出しのトグルの意味（狭幅のオーバーレイは折りたたみではなく「閉じる」）。 */
+  toggleIcon?: 'collapse' | 'close'
 }
 
 /** Backend fills `url` for outputs; workdir files are served by name. */
@@ -47,7 +53,7 @@ export default function ArtifactPanel({
   onToggle,
   onExpand,
   className = '',
-  toggleIcon = '▶',
+  toggleIcon = 'collapse',
 }: Props) {
   /** 単体ビューアで開いている成果物（artifacts 配列の位置）。 */
   const [openIndex, setOpenIndex] = useState<number | null>(null)
@@ -73,16 +79,23 @@ export default function ArtifactPanel({
   if (collapsed) {
     return (
       <aside
-        className={`flex w-10 shrink-0 flex-col items-center gap-2 rounded-lg border border-ink-700 bg-ink-800/60 py-2 ${className}`}
+        className={cn(
+          'flex w-10 shrink-0 flex-col items-center gap-2 rounded-lg border border-border bg-card py-2 shadow-elevation-1',
+          className,
+        )}
       >
-        <button
-          className="btn-ghost !px-2 !py-1 text-xs"
+        <Button
+          variant="outline"
+          size="icon-xs"
           onClick={onToggle}
           title="成果物パネルを開く"
+          aria-label="成果物パネルを開く"
         >
-          ◀
-        </button>
-        <span className="text-[10px] text-slate-500">{artifacts.length}</span>
+          <ChevronLeft />
+        </Button>
+        <span className="tnum text-[10px] text-muted-foreground">
+          {artifacts.length}
+        </span>
       </aside>
     )
   }
@@ -95,25 +108,33 @@ export default function ArtifactPanel({
 
   return (
     <aside
-      className={`flex w-72 shrink-0 flex-col rounded-lg border border-ink-700 bg-ink-800/60 ${className}`}
+      className={cn(
+        'flex w-72 shrink-0 flex-col rounded-lg border border-border bg-card shadow-elevation-1',
+        className,
+      )}
     >
-      <div className="flex items-center gap-2 border-b border-ink-700 px-3 py-2">
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+      <div className="flex items-center gap-2 border-b border-border px-3 py-2">
+        <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           成果物
         </h2>
-        <span className="text-xs text-slate-600">{artifacts.length}</span>
-        <button
-          className="btn-ghost ml-auto !px-2 !py-1 text-xs"
+        <span className="tnum text-xs text-muted-foreground/70">
+          {artifacts.length}
+        </span>
+        <Button
+          variant="outline"
+          size="icon-xs"
+          className="ml-auto"
           onClick={onToggle}
-          title={toggleIcon === '▶' ? '折りたたむ' : '閉じる'}
+          title={toggleIcon === 'collapse' ? '折りたたむ' : '閉じる'}
+          aria-label={toggleIcon === 'collapse' ? '折りたたむ' : '閉じる'}
         >
-          {toggleIcon}
-        </button>
+          {toggleIcon === 'collapse' ? <ChevronRight /> : <X />}
+        </Button>
       </div>
 
       <div className="min-h-0 flex-1 space-y-1.5 overflow-y-auto p-2">
         {artifacts.length === 0 && pending.length === 0 && (
-          <p className="px-1 py-3 text-center text-xs text-slate-600">
+          <p className="px-1 py-3 text-center text-xs text-muted-foreground">
             まだ成果物がありません
           </p>
         )}
@@ -130,24 +151,27 @@ export default function ArtifactPanel({
           return (
             <button
               key={card.key}
-              className="flex w-full items-center gap-2 rounded-md border border-ink-600 bg-ink-800 p-2 text-left transition-colors hover:border-accent-500"
+              className="flex w-full items-center gap-2 rounded-md border border-border bg-surface-sunken p-2 text-left transition-colors hover:border-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
               onClick={() =>
                 isFrames ? setOpenFrames(card.key) : setOpenIndex(card.index)
               }
               title={title}
             >
-              <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded bg-ink-900 text-sm">
-                {ARTIFACT_ICON[kind]}
+              <span className="flex size-8 shrink-0 items-center justify-center rounded bg-background text-muted-foreground">
+                <ArtifactIcon kind={kind} className="size-4" />
               </span>
               <span className="min-w-0 flex-1">
-                <span className="block truncate text-xs text-slate-200">
+                <span className="block truncate text-xs text-foreground/90">
                   {title}
                 </span>
                 <span className="mt-0.5 flex items-center gap-1.5">
-                  <span className="chip !border-ink-600 !bg-ink-900 !px-1.5 !py-0 text-[10px] text-slate-400">
+                  <Badge
+                    variant="outline"
+                    className="bg-background px-1.5 py-0 text-[10px] font-normal text-muted-foreground"
+                  >
                     {chip}
-                  </span>
-                  <span className="text-[10px] text-slate-600">
+                  </Badge>
+                  <span className="tnum text-[10px] text-muted-foreground/70">
                     {shortTime(isFrames ? card.ts : card.artifact.ts)}
                   </span>
                 </span>
@@ -159,17 +183,15 @@ export default function ArtifactPanel({
         {pending.map((task) => (
           <div
             key={task.id}
-            className="rounded-md border border-ink-600 bg-ink-800 p-1.5"
+            className="rounded-md border border-border bg-surface-sunken p-1.5"
           >
-            <p className="truncate text-xs text-slate-300">🎬 {task.label}</p>
+            <p className="flex items-center gap-1.5 truncate text-xs text-foreground/85">
+              <Clapperboard className="size-3.5 shrink-0" />
+              {task.label}
+            </p>
             <div className="mt-1 flex items-center gap-2">
-              <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-ink-600">
-                <div
-                  className="h-full bg-accent-500 transition-all"
-                  style={{ width: `${task.percent}%` }}
-                />
-              </div>
-              <span className="text-[10px] tabular-nums text-slate-400">
+              <Progress className="flex-1" value={task.percent} />
+              <span className="tnum text-[10px] text-muted-foreground">
                 {task.percent}%
               </span>
             </div>

@@ -111,20 +111,20 @@ describe('LibraryAddButton', () => {
     addJobToLibrary.mockResolvedValue(libraryItem())
     render(<LibraryAddButton job={job()} source="image" onAdded={onAdded} />)
 
-    const button = screen.getByRole('button', { name: '☆ ライブラリに登録' })
+    const button = screen.getByRole('button', { name: 'ライブラリに登録' })
     fireEvent.click(button)
     // カテゴリを触らなければ未分類（'none'）で登録する
     await waitFor(() =>
       expect(addJobToLibrary).toHaveBeenCalledWith('j1', 'image', '', [], 'none'),
     )
-    expect(await screen.findByRole('button', { name: '★ 登録しました' })).toBeTruthy()
+    expect(await screen.findByRole('button', { name: '登録しました' })).toBeTruthy()
     expect(onAdded).toHaveBeenCalled()
   })
 
   it('出力名をラベルに出す', () => {
     render(<LibraryAddButton job={job()} source="last_frame" label="ラストフレーム" />)
     expect(
-      screen.getByRole('button', { name: '☆ ライブラリに登録: ラストフレーム' }),
+      screen.getByRole('button', { name: 'ライブラリに登録: ラストフレーム' }),
     ).toBeTruthy()
   })
 
@@ -136,9 +136,9 @@ describe('LibraryAddButton', () => {
       }),
     )
     render(<LibraryAddButton job={job()} source="image" />)
-    fireEvent.click(screen.getByRole('button', { name: '☆ ライブラリに登録' }))
+    fireEvent.click(screen.getByRole('button', { name: 'ライブラリに登録' }))
 
-    const done = await screen.findByRole('button', { name: '★ 登録済みです' })
+    const done = await screen.findByRole('button', { name: '登録済みです' })
     // 押し直しても 409 を繰り返さないよう止め、理由は title に出す
     expect(done.hasAttribute('disabled')).toBe(true)
     expect(done.getAttribute('title')).toBe('「決めポーズ」は登録済みです')
@@ -148,7 +148,7 @@ describe('LibraryAddButton', () => {
   it('それ以外の失敗は赤くして理由を出す', async () => {
     addJobToLibrary.mockRejectedValue(new ApiError(400, 'job has no 動画'))
     render(<LibraryAddButton job={job()} source="video" />)
-    fireEvent.click(screen.getByRole('button', { name: '☆ ライブラリに登録' }))
+    fireEvent.click(screen.getByRole('button', { name: 'ライブラリに登録' }))
 
     const failed = await screen.findByRole('button', { name: '登録できません' })
     expect(failed.className).toContain('text-red-300')
@@ -165,7 +165,7 @@ describe('LibraryAddButton', () => {
     // 既定は未分類
     expect(select.value).toBe('none')
     fireEvent.change(select, { target: { value: 'character' } })
-    fireEvent.click(screen.getByRole('button', { name: '☆ ライブラリに登録' }))
+    fireEvent.click(screen.getByRole('button', { name: 'ライブラリに登録' }))
 
     await waitFor(() =>
       expect(addJobToLibrary).toHaveBeenCalledWith(
@@ -177,13 +177,13 @@ describe('LibraryAddButton', () => {
       ),
     )
     // 登録し終わったら分類はライブラリ側で変えるものなので、選択欄は引っ込める
-    expect(await screen.findByRole('button', { name: '★ 登録しました' })).toBeTruthy()
+    expect(await screen.findByRole('button', { name: '登録しました' })).toBeTruthy()
     expect(screen.queryByLabelText('登録するカテゴリ')).toBeNull()
   })
 
   it('登録済みと分かっているときは押す前からそう出す', () => {
     render(<LibraryAddButton job={job()} source="image" registered />)
-    const button = screen.getByRole('button', { name: '★ 登録済みです' })
+    const button = screen.getByRole('button', { name: '登録済みです' })
     expect(button.hasAttribute('disabled')).toBe(true)
     expect(addJobToLibrary).not.toHaveBeenCalled()
   })

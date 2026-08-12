@@ -2,22 +2,65 @@
 @tailwind components;
 @tailwind utilities;
 
+/*
+ * デザイントークン。このアプリはダーク一択（index.html の <html class="dark"> 固定）なので、
+ * :root にダークの値だけを定義し、ライトモード用の上書きは持たない。
+ */
 @layer base {
+  :root {
+    --background: 223 26% 5%; /* #0a0c11 */
+    --foreground: 214 32% 91%;
+
+    --card: 222 22% 12%; /* #171b24 */
+    --card-foreground: 214 32% 91%;
+
+    --popover: 222 22% 12%;
+    --popover-foreground: 214 32% 91%;
+
+    --primary: 228 94% 67%; /* #5b7cfa */
+    --primary-foreground: 0 0% 100%;
+
+    --secondary: 220 19% 15%; /* #20252f */
+    --secondary-foreground: 214 32% 91%;
+
+    --muted: 220 19% 15%;
+    --muted-foreground: 215 20% 65%;
+
+    --accent: 220 19% 15%;
+    --accent-foreground: 214 32% 91%;
+
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 98%;
+
+    --border: 220 17% 20%; /* #2b313d */
+    --input: 220 17% 20%;
+    --ring: 228 94% 67%; /* = primary */
+
+    /* サーフェスの沈み込み（入力欄など）。 */
+    --surface-sunken: 222 23% 9%; /* #11141b */
+
+    --radius: 0.5rem;
+  }
+
   html,
   body,
   #root {
     height: 100%;
   }
   body {
-    @apply bg-ink-900 text-slate-200 antialiased;
-    font-family: system-ui, -apple-system, 'Segoe UI', 'Noto Sans JP', sans-serif;
+    @apply bg-background text-foreground antialiased;
+    font-family: 'Inter Variable', 'Noto Sans JP Variable', 'Noto Sans JP', system-ui,
+      -apple-system, 'Segoe UI', sans-serif;
+  }
+  * {
+    @apply border-border;
   }
   ::-webkit-scrollbar {
     width: 10px;
     height: 10px;
   }
   ::-webkit-scrollbar-thumb {
-    @apply rounded bg-ink-500;
+    @apply rounded bg-border;
   }
   ::-webkit-scrollbar-track {
     @apply bg-transparent;
@@ -25,31 +68,22 @@
 }
 
 @layer components {
-  .field {
-    @apply w-full rounded-md border border-ink-500 bg-ink-800 px-3 py-2 text-sm text-slate-100
-      placeholder:text-slate-500 focus:border-accent-500 focus:outline-none
-      disabled:cursor-not-allowed disabled:opacity-40;
-  }
-  .label {
-    @apply mb-1 block text-xs font-medium tracking-wide text-slate-400;
-  }
-  .btn {
-    @apply inline-flex items-center justify-center gap-1.5 rounded-md px-3 py-2 text-sm
-      font-medium transition-colors disabled:cursor-not-allowed disabled:opacity-40;
-  }
-  .btn-primary {
-    @apply btn bg-accent-500 text-white hover:bg-accent-600;
-  }
-  .btn-ghost {
-    @apply btn border border-ink-500 bg-ink-700 text-slate-300 hover:bg-ink-600;
-  }
-  .btn-danger {
-    @apply btn border border-red-900/60 bg-red-950/40 text-red-300 hover:bg-red-900/40;
-  }
+  /*
+   * shadcn/ui のプリミティブでは足りない 2 つだけを共通クラスとして持つ。
+   * （フォーム部品・ボタンは src/components/ui/* に移行済み）
+   */
   .card {
-    @apply rounded-lg border border-ink-600 bg-ink-800;
+    @apply rounded-lg border border-border bg-card shadow-elevation-1;
   }
   .chip {
     @apply inline-flex items-center gap-1 rounded-full border px-3 py-1 text-xs transition-colors;
+  }
+}
+
+@layer utilities {
+  /* 数値の桁が揃うので、進捗・秒数・解像度などの表示に使う。 */
+  .tnum {
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: 'tnum' 1;
   }
 }

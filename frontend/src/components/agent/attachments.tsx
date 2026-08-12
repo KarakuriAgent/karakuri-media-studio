@@ -1,3 +1,7 @@
+import { Paperclip, X } from 'lucide-react'
+
+import { Button } from '../ui/button'
+
 /**
  * 添付ファイルの共通部品（チャット欄と新規セッションフォームで共用）。
  *
@@ -39,18 +43,24 @@ export function AttachmentChip({
   onRemove: () => void
 }) {
   return (
-    <span className="flex items-center gap-1 rounded border border-ink-600 bg-ink-800 px-1.5 py-1 text-[11px] text-slate-300">
-      <span className="max-w-[12rem] truncate" title={title ?? label}>
-        📎 {label}
+    <span className="flex items-center gap-1 rounded-md border border-border bg-secondary px-1.5 py-1 text-[11px] text-foreground/85">
+      <span
+        className="flex max-w-[12rem] items-center gap-1 truncate"
+        title={title ?? label}
+      >
+        <Paperclip className="size-3 shrink-0" />
+        {label}
       </span>
-      <button
-        className="text-slate-500 hover:text-slate-200"
+      <Button
+        variant="ghost"
+        size="icon-xs"
+        className="size-4"
         title="添付を外す"
         aria-label={`${label} を外す`}
         onClick={onRemove}
       >
-        ✕
-      </button>
+        <X />
+      </Button>
     </span>
   )
 }

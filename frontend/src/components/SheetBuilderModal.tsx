@@ -1,7 +1,9 @@
 import { useState } from 'react'
+import { Loader2 } from 'lucide-react'
 import { api } from '../api'
 import { SHEET_MAX_ITEMS, SHEET_MIN_ITEMS } from '../form'
 import type { LibraryItem } from '../types'
+import { Button } from '@/components/ui/button'
 import LibraryPickerModal from './LibraryPickerModal'
 import { Banner } from './ui'
 
@@ -91,17 +93,19 @@ export default function SheetBuilderModal({
         <div className="mt-3 flex flex-col gap-2">
           {error && <Banner onClose={() => setError(null)}>{error}</Banner>}
           <div className="flex items-center gap-2">
-            <span className="text-xs text-slate-400">
+            <span className="text-xs text-muted-foreground">
               {picked.length} 枚選択
               {picked.length > 0 && `: ${picked.map((item) => item.name).join(' → ')}`}
             </span>
-            <button
-              className="btn-primary ml-auto !py-1 text-xs"
+            <Button
+              size="sm"
+              className="ml-auto"
               disabled={!enough || busy}
               onClick={() => void create()}
             >
+              {busy && <Loader2 className="animate-spin" />}
               {busy ? '作成中…' : 'この順で作成'}
-            </button>
+            </Button>
           </div>
         </div>
       }

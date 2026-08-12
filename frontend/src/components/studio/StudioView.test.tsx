@@ -176,6 +176,19 @@ function detail(overrides: Partial<StudioProjectDetail> = {}): StudioProjectDeta
   }
 }
 
+/**
+ * 中央のタブを切り替える。Radix の Tabs は mousedown で選択が動くので、
+ * click ではなくこちらで押す。
+ */
+function clickTab(name: string) {
+  fireEvent.mouseDown(screen.getByRole('tab', { name }))
+}
+
+/** タブが出るのを待ってから押す（プロジェクトを開いた直後用）。 */
+async function openTab(name: string) {
+  fireEvent.mouseDown(await screen.findByRole('tab', { name }))
+}
+
 /** 左レール（Shot リスト）の中だけを探す。タブや脚本ビューと名前がぶつかるため。 */
 function rail() {
   return within(screen.getByRole('complementary'))
@@ -228,14 +241,14 @@ async function openProject(current = detail()) {
   mocked.previewStudioShotPrompt.mockResolvedValue(shotPreview())
   render(<StudioView progress={{}} />)
   fireEvent.click(await screen.findByText(current.name))
-  await screen.findByRole('button', { name: '概要' })
+  await screen.findByRole('tab', { name: '概要' })
 }
 
 describe('StudioView', () => {
   it('プロジェクト一覧を出し、選ぶと 3 ペインに切り替わる', async () => {
     await openProject()
     expect(rail().getByRole('heading', { name: '脚本' })).toBeTruthy()
-    expect(screen.getByRole('button', { name: 'World Bible' })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: 'World Bible' })).toBeTruthy()
     // 概要タブのサマリー（カット 2 / 素材 1 / Take 1）
     expect(screen.getByText('カット')).toBeTruthy()
     expect(screen.getByDisplayValue('夜明けの街')).toBeTruthy()
@@ -290,7 +303,7 @@ describe('StudioView', () => {
 
   it('脚本タブでカットを保存すると尺が数値で PATCH される', async () => {
     await openProject()
-    fireEvent.click(screen.getByRole('button', { name: '脚本' }))
+    clickTab('脚本')
     // 左レールで選んでからフォームが出る
     fireEvent.click(rail().getByRole('button', { name: 'カット1' }))
     fireEvent.change(await screen.findByLabelText('尺（秒）'), {
@@ -308,7 +321,7 @@ describe('StudioView', () => {
 
   it('尺が範囲外なら PATCH を投げずにエラーを出す', async () => {
     await openProject()
-    fireEvent.click(screen.getByRole('button', { name: '脚本' }))
+    clickTab('脚本')
     fireEvent.click(rail().getByRole('button', { name: 'カット1' }))
     fireEvent.change(await screen.findByLabelText('尺（秒）'), {
       target: { value: '99' },
@@ -320,9 +333,9 @@ describe('StudioView', () => {
 
   it('World Bible タブに素材と LOCKED バッジが出る', async () => {
     await openProject()
-    fireEvent.click(screen.getByRole('button', { name: 'World Bible' }))
+    clickTab('World Bible')
     expect(await screen.findByText('@アキ')).toBeTruthy()
-    expect(screen.getByText('🔒 LOCKED')).toBeTruthy()
+    expect(screen.getByText('LOCKED')).toBeTruthy()
     // インスペクタは選んでから
     fireEvent.click(screen.getByRole('button', { name: /@アキ/ }))
     expect(await screen.findByDisplayValue('主人公')).toBeTruthy()
@@ -331,7 +344,7 @@ describe('StudioView', () => {
 
   it('素材にリファレンス（声サンプル）を足せる', async () => {
     await openProject()
-    fireEvent.click(screen.getByRole('button', { name: 'World Bible' }))
+    clickTab('World Bible')
     fireEvent.click(await screen.findByRole('button', { name: /@アキ/ }))
     mocked.addStudioAssetFile.mockResolvedValue({})
 
@@ -353,7 +366,7 @@ describe('StudioView', () => {
 
   it('素材のメインのファイルを差し替えられる', async () => {
     await openProject()
-    fireEvent.click(screen.getByRole('button', { name: 'World Bible' }))
+    clickTab('World Bible')
     fireEvent.click(await screen.findByRole('button', { name: /@アキ/ }))
     mocked.uploadStudioAssetFile.mockResolvedValue({})
 
@@ -371,10 +384,10 @@ describe('StudioView', () => {
 
   it('素材のロックを外すと locked だけを PATCH する', async () => {
     await openProject()
-    fireEvent.click(screen.getByRole('button', { name: 'World Bible' }))
+    clickTab('World Bible')
     fireEvent.click(await screen.findByRole('button', { name: /@アキ/ }))
     mocked.updateStudioAsset.mockResolvedValue({})
-    fireEvent.click(screen.getByRole('button', { name: '🔓 ロック解除' }))
+    fireEvent.click(screen.getByRole('button', { name: 'ロック解除' }))
     await waitFor(() =>
       expect(mocked.updateStudioAsset).toHaveBeenCalledWith('a1', { locked: false }),
     )
@@ -382,7 +395,7 @@ describe('StudioView', () => {
 
   it('制作タブで生成を押すと render に投げる', async () => {
     await openProject()
-    fireEvent.click(screen.getByRole('button', { name: '制作' }))
+    clickTab('制作')
     expect(
       screen.getByText('左のレールでカットを選ぶと、ここで生成できます'),
     ).toBeTruthy()
@@ -409,7 +422,7 @@ describe('StudioView', () => {
       />,
     )
     fireEvent.click(await screen.findByText('夜明けの街'))
-    fireEvent.click(await screen.findByRole('button', { name: '制作' }))
+    await openTab('制作')
     fireEvent.click(rail().getByRole('button', { name: 'カット1' }))
 
     expect(await screen.findByRole('button', { name: '生成中…' })).toBeTruthy()
@@ -420,7 +433,7 @@ describe('StudioView', () => {
 
   it('Take を採用すると select を呼び、プロジェクトを取り直す', async () => {
     await openProject()
-    fireEvent.click(screen.getByRole('button', { name: '制作' }))
+    clickTab('制作')
     fireEvent.click(rail().getByRole('button', { name: 'カット1' }))
     mocked.selectStudioTake.mockResolvedValue({})
     const before = mocked.getStudioProject.mock.calls.length
@@ -435,7 +448,7 @@ describe('StudioView', () => {
     await openProject(
       detail({ shots: [shot('カット1', { prompt: '@アキ と @ユキ が歩く' })] }),
     )
-    fireEvent.click(screen.getByRole('button', { name: '制作' }))
+    clickTab('制作')
     fireEvent.click(rail().getByRole('button', { name: 'カット1' }))
     expect(
       await screen.findByText('World Bible に無い素材を指しています: @ユキ'),
@@ -475,7 +488,7 @@ describe('StudioView: プロジェクト一覧', () => {
     await waitFor(() =>
       expect(mocked.createStudioDemoProject).toHaveBeenCalledWith('SAZANAMI-02'),
     )
-    expect(await screen.findByRole('button', { name: '概要' })).toBeTruthy()
+    expect(await screen.findByRole('tab', { name: '概要' })).toBeTruthy()
   })
 
   it('同じデモが既にあれば（409）エラーを出す', async () => {
@@ -519,11 +532,11 @@ describe('StudioView: NSFW プロジェクトの出し分け', () => {
     mocked.getStudioProject.mockResolvedValue(current)
     const view = render(<StudioView progress={{}} showNsfw />)
     fireEvent.click(await screen.findByText(current.name))
-    await screen.findByRole('button', { name: '概要' })
+    await screen.findByRole('tab', { name: '概要' })
 
     view.rerender(<StudioView progress={{}} showNsfw={false} />)
     await waitFor(() =>
-      expect(screen.queryByRole('button', { name: '概要' })).toBeNull(),
+      expect(screen.queryByRole('tab', { name: '概要' })).toBeNull(),
     )
     expect(screen.queryByText(current.name)).toBeNull()
   })
@@ -534,11 +547,11 @@ describe('StudioView: NSFW プロジェクトの出し分け', () => {
     mocked.getStudioProject.mockResolvedValue(current)
     render(<StudioView progress={{}} showNsfw={false} />)
     fireEvent.click(await screen.findByText(current.name))
-    await screen.findByRole('button', { name: '概要' })
+    await screen.findByRole('tab', { name: '概要' })
 
-    fireEvent.click(screen.getByLabelText('🫣 NSFW プロジェクト'))
+    fireEvent.click(screen.getByLabelText('NSFW プロジェクト'))
     // 編集中に画面が消えないこと（一覧へ戻ったときに見えなくなる方針）
-    expect(screen.getByRole('button', { name: '概要' })).toBeTruthy()
+    expect(screen.getByRole('tab', { name: '概要' })).toBeTruthy()
   })
 })
 
@@ -578,7 +591,7 @@ describe('StudioView: 話と場のツリー', () => {
   it('話を追加すると連番のタイトルで作る', async () => {
     await openProject(structured())
     mocked.createStudioEpisode.mockResolvedValue({})
-    fireEvent.click(rail().getByRole('button', { name: '＋ 話' }))
+    fireEvent.click(rail().getByRole('button', { name: '話を追加' }))
     await waitFor(() =>
       expect(mocked.createStudioEpisode).toHaveBeenCalledWith('p1', {
         title: '第 3 話',
@@ -696,7 +709,7 @@ describe('StudioView: 話と場のツリー', () => {
 describe('StudioView: 脚本タブの生成設定', () => {
   it('空欄の生成設定は null を明示して PATCH する', async () => {
     await openProject(structured())
-    fireEvent.click(screen.getByRole('button', { name: '脚本' }))
+    clickTab('脚本')
     fireEvent.click(rail().getByRole('button', { name: 'カット2' }))
     mocked.updateStudioShot.mockResolvedValue({})
     fireEvent.click(await screen.findByRole('button', { name: '保存' }))
@@ -716,7 +729,7 @@ describe('StudioView: 脚本タブの生成設定', () => {
 
   it('場の割り当てとワークフロー強制指定を保存する', async () => {
     await openProject(structured())
-    fireEvent.click(screen.getByRole('button', { name: '脚本' }))
+    clickTab('脚本')
     fireEvent.click(rail().getByRole('button', { name: 'カット2' }))
     fireEvent.change(await screen.findByLabelText('所属する場'), {
       target: { value: 'sc3' },
@@ -744,7 +757,7 @@ describe('StudioView: 脚本タブの生成設定', () => {
     mocked.getStudioProject.mockResolvedValue(detail())
     render(<StudioView progress={{}} aspectRatios={['16:9 (Widescreen)']} />)
     fireEvent.click(await screen.findByText('夜明けの街'))
-    fireEvent.click(await screen.findByRole('button', { name: '脚本' }))
+    await openTab('脚本')
     fireEvent.click(rail().getByRole('button', { name: 'カット1' }))
     const select = await screen.findByLabelText('アスペクト比')
     expect(select.tagName).toBe('SELECT')
@@ -755,7 +768,7 @@ describe('StudioView: 脚本タブの生成設定', () => {
 
   it('シードが整数でなければ PATCH を投げない', async () => {
     await openProject()
-    fireEvent.click(screen.getByRole('button', { name: '脚本' }))
+    clickTab('脚本')
     fireEvent.click(rail().getByRole('button', { name: 'カット1' }))
     fireEvent.change(await screen.findByLabelText('シード'), {
       target: { value: '1.5' },
@@ -769,7 +782,7 @@ describe('StudioView: 脚本タブの生成設定', () => {
 
   it('カットに NSFW のチェックボックスは無い（プロジェクト単位に移した）', async () => {
     await openProject()
-    fireEvent.click(screen.getByRole('button', { name: '脚本' }))
+    clickTab('脚本')
     fireEvent.click(rail().getByRole('button', { name: 'カット1' }))
     await screen.findByLabelText('尺（秒）')
     expect(screen.queryByLabelText(/NSFW/)).toBeNull()
@@ -799,7 +812,7 @@ describe('StudioView の接続先プルダウン', () => {
 
     // プロジェクトを開いてもヘッダーに残る
     fireEvent.click(screen.getByText(current.name))
-    await screen.findByRole('button', { name: '概要' })
+    await screen.findByRole('tab', { name: '概要' })
     expect(screen.getByLabelText('接続先')).toBeTruthy()
   })
 
@@ -812,7 +825,7 @@ describe('StudioView の接続先プルダウン', () => {
       <StudioView progress={{}} comfyTarget="local" onComfyTarget={vi.fn()} />,
     )
     fireEvent.click(await screen.findByText(current.name))
-    await screen.findByRole('button', { name: '概要' })
+    await screen.findByRole('tab', { name: '概要' })
     await waitFor(() => expect(mocked.getStudioCapabilities).toHaveBeenCalledTimes(1))
 
     view.rerender(
@@ -843,7 +856,7 @@ describe('StudioView: 概要タブと変更履歴', () => {
   it('NSFW プロジェクトのトグルを保存する', async () => {
     await openProject()
     mocked.updateStudioProject.mockResolvedValue({})
-    fireEvent.click(screen.getByLabelText('🫣 NSFW プロジェクト'))
+    fireEvent.click(screen.getByLabelText('NSFW プロジェクト'))
     fireEvent.click(screen.getByRole('button', { name: '保存' }))
     await waitFor(() =>
       expect(mocked.updateStudioProject).toHaveBeenCalledWith(
@@ -860,7 +873,7 @@ describe('StudioView: 概要タブと変更履歴', () => {
         'このプロジェクトから投入するジョブは非 NSFW で固定されます（自動判定は走りません）。',
       ),
     ).toBeTruthy()
-    fireEvent.click(screen.getByLabelText('🫣 NSFW プロジェクト'))
+    fireEvent.click(screen.getByLabelText('NSFW プロジェクト'))
     expect(
       screen.getByText(
         'このプロジェクトから投入するジョブはすべて NSFW 扱いになります。',
@@ -926,11 +939,11 @@ describe('StudioView: stale と自動英訳の見せ方', () => {
         ],
       }),
     )
-    fireEvent.click(screen.getByRole('button', { name: '制作' }))
+    clickTab('制作')
     fireEvent.click(rail().getByRole('button', { name: 'カット1' }))
-    expect(await screen.findByText('⚠ 要再生成')).toBeTruthy()
-    expect(screen.getByText('⚠ 脚本が更新されました')).toBeTruthy()
-    expect(screen.getByText('⚠ 素材『アキ』が更新されました')).toBeTruthy()
+    expect(await screen.findByText('要再生成')).toBeTruthy()
+    expect(screen.getByText('脚本が更新されました')).toBeTruthy()
+    expect(screen.getByText('素材『アキ』が更新されました')).toBeTruthy()
   })
 
   it('実投入プロンプトと英訳前の原文を併記する', async () => {
@@ -945,7 +958,7 @@ describe('StudioView: stale と自動英訳の見せ方', () => {
         ],
       }),
     )
-    fireEvent.click(screen.getByRole('button', { name: '制作' }))
+    clickTab('制作')
     fireEvent.click(rail().getByRole('button', { name: 'カット1' }))
     expect(await screen.findByText('a woman walks down a quiet street')).toBeTruthy()
     expect(screen.getByText('英訳する前の原文を見る')).toBeTruthy()
@@ -981,13 +994,13 @@ describe('StudioView: メタデータのみの素材', () => {
 
   it('World Bible の素材カードに「ファイルなし」バッジを出す', async () => {
     await openProject(metaOnly())
-    fireEvent.click(screen.getByRole('button', { name: 'World Bible' }))
+    clickTab('World Bible')
     expect(await screen.findByText('ファイルなし')).toBeTruthy()
   })
 
   it('ファイルなしで素材を追加できる', async () => {
     await openProject(metaOnly())
-    fireEvent.click(screen.getByRole('button', { name: 'World Bible' }))
+    clickTab('World Bible')
     fireEvent.change(await screen.findByLabelText('素材名（@ で呼ぶ名前）'), {
       target: { value: '停止した警告灯' },
     })
@@ -1010,7 +1023,7 @@ describe('StudioView: メタデータのみの素材', () => {
 describe('StudioView: 投入プレビュー', () => {
   it('脚本タブに最終プロンプトとワークフローが出る', async () => {
     await openProject()
-    fireEvent.click(screen.getByRole('button', { name: '脚本' }))
+    clickTab('脚本')
     fireEvent.click(rail().getByRole('button', { name: 'カット1' }))
 
     await waitFor(() =>
@@ -1040,7 +1053,7 @@ describe('StudioView: 投入プレビュー', () => {
         will_translate: true,
       }),
     )
-    fireEvent.click(screen.getByRole('button', { name: '脚本' }))
+    clickTab('脚本')
     fireEvent.click(rail().getByRole('button', { name: 'カット1' }))
 
     const panel = within(await screen.findByRole('group', { name: '投入プレビュー' }))
@@ -1059,7 +1072,7 @@ describe('StudioView: 投入プレビュー', () => {
         error: '解決できない素材メンションです: @Inu',
       }),
     )
-    fireEvent.click(screen.getByRole('button', { name: '脚本' }))
+    clickTab('脚本')
     fireEvent.click(rail().getByRole('button', { name: 'カット1' }))
 
     expect(

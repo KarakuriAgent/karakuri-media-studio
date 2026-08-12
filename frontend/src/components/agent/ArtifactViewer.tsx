@@ -1,7 +1,10 @@
 import { useEffect, useState } from 'react'
+import { Download, X } from 'lucide-react'
+
 import type { AgentArtifact } from '../../types'
 import { Modal } from '../ui'
-import { ARTIFACT_ICON, formatTime } from './common'
+import { Button } from '../ui/button'
+import { ARTIFACT_LABEL, ArtifactIcon, formatTime } from './common'
 import { downloadName } from './logic'
 
 const MEDIA_KINDS: AgentArtifact['kind'][] = ['image', 'video', 'frame', 'audio']
@@ -53,23 +56,24 @@ export default function ArtifactViewer({
   if (!media) {
     return (
       <Modal
-        title={`${ARTIFACT_ICON[artifact.kind]} ${artifact.title || artifact.name}`}
+        title={`${ARTIFACT_LABEL[artifact.kind]}: ${artifact.title || artifact.name}`}
         onClose={onClose}
         wide
       >
-        <p className="mb-2 text-[11px] text-slate-500">{formatTime(artifact.ts)}</p>
-        <pre className="whitespace-pre-wrap break-words rounded border border-ink-600 bg-ink-900 p-3 text-xs text-slate-300">
+        <p className="tnum mb-2 text-[11px] text-muted-foreground">
+          {formatTime(artifact.ts)}
+        </p>
+        <pre className="whitespace-pre-wrap break-words rounded-md border border-border bg-surface-sunken p-3 text-xs text-foreground/85">
           {text || '（本文がありません）'}
         </pre>
         {url && (
           <div className="mt-3">
-            <a
-              className="btn-ghost !py-1 text-xs"
-              href={url}
-              download={downloadName(artifact.title, url)}
-            >
-              ダウンロード
-            </a>
+            <Button variant="outline" size="sm" asChild>
+              <a href={url} download={downloadName(artifact.title, url)}>
+                <Download />
+                ダウンロード
+              </a>
+            </Button>
           </div>
         )}
       </Modal>
@@ -108,27 +112,30 @@ export default function ArtifactViewer({
         className="absolute inset-x-4 bottom-4 flex items-center justify-center gap-3"
         onClick={(event) => event.stopPropagation()}
       >
-        <span className="rounded-full border border-ink-600 bg-ink-800/90 px-3 py-1 text-xs text-slate-300 backdrop-blur">
-          {ARTIFACT_ICON[artifact.kind]} {artifact.title}
+        <span className="flex items-center gap-1.5 rounded-full border border-border bg-card/90 px-3 py-1 text-xs text-foreground/85 backdrop-blur">
+          <ArtifactIcon kind={artifact.kind} />
+          {artifact.title}
         </span>
         {url && (
-          <a
-            className="btn-ghost !py-1 text-xs"
-            href={url}
-            download={downloadName(artifact.title, url)}
-          >
-            ダウンロード
-          </a>
+          <Button variant="outline" size="sm" asChild>
+            <a href={url} download={downloadName(artifact.title, url)}>
+              <Download />
+              ダウンロード
+            </a>
+          </Button>
         )}
       </div>
 
-      <button
-        className="btn-ghost absolute right-4 top-4 !px-2 !py-1"
+      <Button
+        variant="outline"
+        size="icon-sm"
+        className="absolute right-4 top-4"
         onClick={onClose}
         title="閉じる (Esc)"
+        aria-label="閉じる"
       >
-        ✕
-      </button>
+        <X />
+      </Button>
     </div>
   )
 }

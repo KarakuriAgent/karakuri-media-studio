@@ -1,5 +1,7 @@
 import { COMFY_TARGETS, COMFY_TARGET_LABELS } from '../form'
 import type { ComfyTarget } from '../types'
+import { NativeSelect } from './NativeSelect'
+import { Label } from './ui/label'
 
 /**
  * ComfyUI の接続先セレクタ（SPEC §5）。
@@ -23,22 +25,24 @@ export default function TargetSelector({
 }) {
   return (
     <div className={`flex items-center gap-2 ${className}`}>
-      <label className="shrink-0 text-xs text-slate-400" htmlFor={id}>
+      <Label className="shrink-0" htmlFor={id}>
         接続先
-      </label>
-      <select
-        id={id}
-        className="field"
-        value={target ?? 'local'}
-        disabled={target == null}
-        onChange={(event) => onChange(event.target.value as ComfyTarget)}
-      >
-        {COMFY_TARGETS.map((value) => (
-          <option key={value} value={value}>
-            {COMFY_TARGET_LABELS[value]}
-          </option>
-        ))}
-      </select>
+      </Label>
+      {/* NativeSelect は `relative` なブロックを被せるので、行の中では包んで伸ばす */}
+      <div className="min-w-0 flex-1">
+        <NativeSelect
+          id={id}
+          value={target ?? 'local'}
+          disabled={target == null}
+          onChange={(event) => onChange(event.target.value as ComfyTarget)}
+        >
+          {COMFY_TARGETS.map((value) => (
+            <option key={value} value={value}>
+              {COMFY_TARGET_LABELS[value]}
+            </option>
+          ))}
+        </NativeSelect>
+      </div>
     </div>
   )
 }

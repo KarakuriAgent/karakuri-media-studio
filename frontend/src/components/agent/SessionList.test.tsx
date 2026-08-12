@@ -24,7 +24,7 @@ function show() {
     />,
   )
   // 新規セッションフォームを開く
-  fireEvent.click(screen.getByRole('button', { name: '＋ 新規セッション' }))
+  fireEvent.click(screen.getByRole('button', { name: '新規セッション' }))
   return { onCreate }
 }
 
@@ -39,22 +39,22 @@ describe('SessionList の新規セッションフォーム', () => {
   it('選んだファイルはチップに出る（アップロードはまだしない）', () => {
     show()
     attach('photo.png')
-    expect(screen.queryByText('📎 photo.png')).not.toBeNull()
+    expect(screen.queryByText('photo.png')).not.toBeNull()
   })
 
   it('✕ でチップを外せる', () => {
     show()
     attach('photo.png')
     fireEvent.click(screen.getByRole('button', { name: 'photo.png を外す' }))
-    expect(screen.queryByText('📎 photo.png')).toBeNull()
+    expect(screen.queryByText('photo.png')).toBeNull()
   })
 
   it('許可外の拡張子は弾いてエラーを出す', () => {
     show()
     attach('evil.exe', 'ok.png')
     expect(screen.queryByText('この形式は添付できません: evil.exe')).not.toBeNull()
-    expect(screen.queryByText('📎 evil.exe')).toBeNull()
-    expect(screen.queryByText('📎 ok.png')).not.toBeNull()
+    expect(screen.queryByText('evil.exe')).toBeNull()
+    expect(screen.queryByText('ok.png')).not.toBeNull()
   })
 
   it('開始で onCreate に File が渡り、チップは片付く', () => {

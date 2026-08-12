@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { Bot } from 'lucide-react'
+
 import { ApiError, api, formatDetail } from '../../api'
 import type {
   AgentProgress,
@@ -13,6 +15,7 @@ import AgentChat from './AgentChat'
 import ArtifactPanel from './ArtifactPanel'
 import SessionList from './SessionList'
 import TargetSelector from '../TargetSelector'
+import { Button } from '../ui/button'
 import { AGENT_ACTIVE } from './common'
 import { currentActivity, isThinking, shouldReplaceSession } from './logic'
 
@@ -367,20 +370,21 @@ export default function AgentView({
             activity={activity}
           />
         ) : (
-          <section className="flex min-h-0 min-w-0 flex-1 flex-col items-center justify-center gap-2 rounded-lg border border-ink-600 bg-ink-900 p-4 text-center">
-            <span className="text-4xl opacity-40">🤖</span>
-            <p className="text-sm text-slate-500">
+          <section className="flex min-h-0 min-w-0 flex-1 flex-col items-center justify-center gap-2 rounded-lg border border-border bg-surface-sunken p-4 text-center">
+            <Bot className="size-10 text-muted-foreground/40" />
+            <p className="text-sm text-muted-foreground">
               エージェントに任せる作業をセッションとして始めます
             </p>
-            <p className="hidden text-xs text-slate-600 lg:block">
-              左の「＋ 新規セッション」から最初の指示を入力してください
+            <p className="hidden text-xs text-muted-foreground/70 lg:block">
+              左の「新規セッション」から最初の指示を入力してください
             </p>
-            <button
-              className="btn-primary mt-1 text-xs lg:hidden"
+            <Button
+              size="sm"
+              className="mt-1 lg:hidden"
               onClick={() => setSessionsOpen(true)}
             >
               セッション一覧を開く
-            </button>
+            </Button>
           </section>
         )}
 
@@ -406,7 +410,7 @@ export default function AgentView({
           />
           <SessionList
             {...sessionListProps}
-            className="relative z-10 h-full !w-72 max-w-[85%] rounded-none border-y-0 border-l-0"
+            className="relative z-10 h-full w-72 max-w-[85%] rounded-none border-y-0 border-l-0"
             collapsed={false}
             onToggle={() => setSessionsOpen(false)}
             onSelect={(id) => {
@@ -419,7 +423,7 @@ export default function AgentView({
 
       {/* 狭幅: 成果物パネルは全画面オーバーレイ（AGENT-MODE §1） */}
       {session && artifactsOpen && (
-        <div className="fixed inset-0 z-40 flex bg-ink-900 p-2 lg:hidden">
+        <div className="fixed inset-0 z-40 flex bg-background p-2 lg:hidden">
           <ArtifactPanel
             sessionId={session.id}
             artifacts={session.artifacts}
@@ -427,8 +431,8 @@ export default function AgentView({
             collapsed={false}
             onToggle={() => setArtifactsOpen(false)}
             onExpand={() => setArtifactsOpen(true)}
-            className="!w-full"
-            toggleIcon="✕"
+            className="w-full"
+            toggleIcon="close"
           />
         </div>
       )}

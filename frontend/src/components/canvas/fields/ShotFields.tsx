@@ -6,6 +6,8 @@ import type {
   StudioShotUpdate,
 } from '../../../types'
 import { FieldError } from '../../ui'
+import { NativeSelect } from '../../NativeSelect'
+import { Button } from '../../ui/button'
 import {
   SHOT_STATUS_LABEL,
   sceneOptions,
@@ -61,8 +63,7 @@ export default function ShotFields({
 
       <div className="grid gap-2 sm:grid-cols-2">
         <Field label="状態">
-          <select
-            className="field"
+          <NativeSelect
             aria-label="状態"
             value={form.status}
             onChange={(event) =>
@@ -74,11 +75,10 @@ export default function ShotFields({
                 {SHOT_STATUS_LABEL[status]}
               </option>
             ))}
-          </select>
+          </NativeSelect>
         </Field>
         <Field label="所属する場">
-          <select
-            className="field"
+          <NativeSelect
             aria-label="所属する場"
             value={form.scene_id}
             onChange={(event) => patch({ scene_id: event.target.value })}
@@ -89,7 +89,7 @@ export default function ShotFields({
                 {scene.label}
               </option>
             ))}
-          </select>
+          </NativeSelect>
         </Field>
       </div>
 
@@ -147,9 +147,9 @@ export default function ShotFields({
         onChange={(purpose) => patch({ purpose })}
       />
 
-      <button className="btn-primary self-start" disabled={busy} onClick={save}>
+      <Button className="self-start" disabled={busy} onClick={save}>
         {busy ? '保存中…' : '保存'}
-      </button>
+      </Button>
 
       <PromptPreview shot={shot} />
     </div>

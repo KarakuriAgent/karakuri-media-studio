@@ -37,7 +37,7 @@ export const TAKE_STATUS_CLASS: Record<StudioTakeStatus, string> = {
   rendering: 'border-amber-800 bg-amber-950 text-amber-300',
   candidate: 'border-sky-800 bg-sky-950 text-sky-300',
   selected: 'border-emerald-800 bg-emerald-950 text-emerald-300',
-  rejected: 'border-slate-600 bg-slate-800 text-slate-400',
+  rejected: 'border-border bg-secondary text-muted-foreground',
   failed: 'border-red-800 bg-red-950 text-red-300',
 }
 
@@ -48,7 +48,7 @@ export const SHOT_STATUS_LABEL: Record<StudioShotStatus, string> = {
 }
 
 export const SHOT_STATUS_CLASS: Record<StudioShotStatus, string> = {
-  draft: 'border-ink-500 bg-ink-700 text-slate-400',
+  draft: 'border-border bg-secondary text-muted-foreground',
   ready: 'border-sky-800 bg-sky-950 text-sky-300',
   done: 'border-emerald-800 bg-emerald-950 text-emerald-300',
 }
@@ -66,7 +66,7 @@ export const ASSET_CATEGORY_CLASS: Record<StudioAssetCategory, string> = {
   environment: 'border-emerald-800 bg-emerald-950 text-emerald-300',
   prop: 'border-amber-800 bg-amber-950 text-amber-300',
   style: 'border-fuchsia-800 bg-fuchsia-950 text-fuchsia-300',
-  reference: 'border-slate-600 bg-slate-800 text-slate-400',
+  reference: 'border-border bg-secondary text-muted-foreground',
 }
 
 export const ASSET_CATEGORIES: StudioAssetCategory[] = [

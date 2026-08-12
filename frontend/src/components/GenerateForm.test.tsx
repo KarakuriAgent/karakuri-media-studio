@@ -1772,19 +1772,19 @@ describe('ステップ数（SPEC §3.1）', () => {
 })
 
 describe('GenerateForm の NSFW 投入チェック', () => {
-  const LABEL = '🫣 NSFW として投入（オフなら生成後に自動判定）'
+  const LABEL = 'NSFW として投入（オフなら生成後に自動判定）'
 
   it('既定はオフで、押すと form.nsfw が立つ', () => {
     const { patch } = show()
-    const box = screen.getByLabelText(LABEL) as HTMLInputElement
-    expect(box.checked).toBe(false)
+    const box = screen.getByLabelText(LABEL)
+    expect(box.getAttribute('aria-checked')).toBe('false')
     fireEvent.click(box)
     expect(patch).toHaveBeenCalledWith({ nsfw: true })
   })
 
   it('オンの状態が反映される', () => {
     show({ nsfw: true })
-    expect((screen.getByLabelText(LABEL) as HTMLInputElement).checked).toBe(true)
+    expect(screen.getByLabelText(LABEL).getAttribute('aria-checked')).toBe('true')
   })
 })
 

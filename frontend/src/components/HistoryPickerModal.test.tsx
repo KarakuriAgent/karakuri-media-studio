@@ -215,7 +215,7 @@ describe('HistoryPickerModal', () => {
   it('NSFW 表示はモーダル内で切り替えられる', () => {
     show()
     expect(screen.queryByTitle('spicy')).toBeNull()
-    fireEvent.click(screen.getByLabelText('🫣 NSFW表示'))
+    fireEvent.click(screen.getByLabelText('NSFW表示'))
     expect(screen.getByTitle('spicy')).toBeTruthy()
     expect(screen.getByText('2 件')).toBeTruthy()
   })

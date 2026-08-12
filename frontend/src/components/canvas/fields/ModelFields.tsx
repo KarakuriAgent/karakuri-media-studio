@@ -14,6 +14,10 @@ import type {
   WorkflowOption,
 } from '../../../types'
 import WorkflowPicker from '../../WorkflowPicker'
+import { NativeSelect } from '../../NativeSelect'
+import { Checkbox } from '../../ui/checkbox'
+import { Input } from '../../ui/input'
+import { Label } from '../../ui/label'
 import { AreaField, Field, NumberField } from './common'
 
 const TARGETS: { value: CanvasModelTarget; label: string }[] = [
@@ -55,31 +59,33 @@ function LoraChooser({
   if (loras.length === 0) return null
   return (
     <Field label={label}>
-      <div className="flex max-h-40 flex-col gap-1 overflow-y-auto rounded-md border border-ink-600 bg-ink-800/60 p-2">
+      <div className="flex max-h-40 flex-col gap-1 overflow-y-auto rounded-md border border-border bg-surface-sunken p-2">
         {loras.map((lora) => {
           const picked = selected.find((item) => item.lora_name === lora.lora_name)
+          const id = `canvas-lora-${lora.id}`
           return (
             <div key={lora.id} className="flex items-center gap-2 text-xs">
-              <label className="flex flex-1 cursor-pointer items-center gap-2">
-                <input
-                  type="checkbox"
-                  className="h-3 w-3 accent-accent-500"
-                  checked={!!picked}
-                  onChange={() =>
-                    onChange(
-                      picked
-                        ? selected.filter(
-                            (item) => item.lora_name !== lora.lora_name,
-                          )
-                        : [...selected, toRef(lora)],
-                    )
-                  }
-                />
-                <span className="truncate text-slate-300">{lora.display_name}</span>
-              </label>
+              <Checkbox
+                id={id}
+                className="size-3.5"
+                checked={!!picked}
+                onCheckedChange={() =>
+                  onChange(
+                    picked
+                      ? selected.filter((item) => item.lora_name !== lora.lora_name)
+                      : [...selected, toRef(lora)],
+                  )
+                }
+              />
+              <Label
+                htmlFor={id}
+                className="flex-1 cursor-pointer truncate text-xs text-foreground/85"
+              >
+                {lora.display_name}
+              </Label>
               {picked && (
-                <input
-                  className="field !w-20 !py-0.5"
+                <Input
+                  className="tnum h-7 w-20 px-2 py-0.5"
                   aria-label={`${lora.display_name} の強度`}
                   type="number"
                   step={0.05}
@@ -135,8 +141,7 @@ export default function ModelFields({
   return (
     <div className="flex flex-col gap-3">
       <Field label="生成対象">
-        <select
-          className="field"
+        <NativeSelect
           aria-label="生成対象"
           value={data.target}
           onChange={(event) => {
@@ -152,7 +157,7 @@ export default function ModelFields({
               {item.label}
             </option>
           ))}
-        </select>
+        </NativeSelect>
       </Field>
 
       <WorkflowPicker
@@ -178,8 +183,7 @@ export default function ModelFields({
       {data.target !== 'audio' && (
         <div className="grid gap-2 sm:grid-cols-2">
           <Field label="アスペクト比">
-            <select
-              className="field"
+            <NativeSelect
               aria-label="アスペクト比"
               value={data.params.aspect_ratio}
               onChange={(event) => patchParams({ aspect_ratio: event.target.value })}
@@ -189,7 +193,7 @@ export default function ModelFields({
                   {ratio}
                 </option>
               ))}
-            </select>
+            </NativeSelect>
           </Field>
           <NumberField
             label="メガピクセル"
@@ -224,8 +228,7 @@ export default function ModelFields({
 
       {selects.map((select) => (
         <Field key={select.name} label={select.label}>
-          <select
-            className="field"
+          <NativeSelect
             aria-label={select.label}
             value={data.params.selects[select.name] ?? ''}
             onChange={(event) => {
@@ -243,7 +246,7 @@ export default function ModelFields({
                 {choice}
               </option>
             ))}
-          </select>
+          </NativeSelect>
         </Field>
       ))}
 
@@ -253,8 +256,7 @@ export default function ModelFields({
         const title = `使用モデル: ${slot.label || `${slot.node_id}.${slot.field}`}`
         return (
           <Field key={slot.key} label={title}>
-            <select
-              className="field"
+            <NativeSelect
               aria-label={title}
               value={data.params.model_overrides[slot.key] ?? slot.default}
               onChange={(event) => {
@@ -269,7 +271,7 @@ export default function ModelFields({
                   {name === slot.default ? `${name}（既定）` : name}
                 </option>
               ))}
-            </select>
+            </NativeSelect>
           </Field>
         )
       })}

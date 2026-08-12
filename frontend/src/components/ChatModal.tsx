@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
+import { Loader2, Send } from 'lucide-react'
 import { api, formatDetail, ApiError } from '../api'
 import { audioSupports, hiddenFields, type FormState } from '../form'
 import type {
@@ -7,6 +8,8 @@ import type {
   PromptResult,
   PromptTemplate,
 } from '../types'
+import { Button } from '@/components/ui/button'
+import { Textarea } from '@/components/ui/textarea'
 import { Banner, Modal } from './ui'
 
 interface Props {
@@ -201,15 +204,15 @@ export default function ChatModal({
             作り直されるだけで文面は変わらない）。 */}
         {!audio && form.mode !== 'image_only' && (
         <div className="flex items-center gap-2 text-xs">
-          <span className="text-slate-400">プロンプトテンプレート</span>
-          <div className="flex rounded-md border border-ink-600 bg-ink-800 p-0.5">
+          <span className="text-muted-foreground">プロンプトテンプレート</span>
+          <div className="flex rounded-md border border-border bg-surface-sunken p-0.5">
             {(['natural', 'tagged'] as PromptTemplate[]).map((value) => (
               <button
                 key={value}
-                className={`rounded px-2 py-1 ${
+                className={`rounded-sm px-2 py-1 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:opacity-40 ${
                   template === value
-                    ? 'bg-accent-500 text-white'
-                    : 'text-slate-400 hover:bg-ink-700'
+                    ? 'bg-primary text-primary-foreground'
+                    : 'text-muted-foreground hover:bg-secondary hover:text-foreground'
                 }`}
                 disabled={busy}
                 onClick={() => {
@@ -230,10 +233,10 @@ export default function ChatModal({
 
         <div
           ref={scroller}
-          className="flex-1 space-y-3 overflow-y-auto rounded-md border border-ink-600 bg-ink-900 p-3"
+          className="flex-1 space-y-3 overflow-y-auto rounded-lg border border-border bg-surface-sunken p-3"
         >
           {messages.length === 0 && !busy && (
-            <p className="text-xs text-slate-500">
+            <p className="text-xs text-muted-foreground">
               {audio
                 ? '作りたい音をひとこと入力してください（例: 「夜の街を歩くときの lo-fi な曲」）。不足があれば Grok が質問で掘り下げます。'
                 : '作りたいものをひとこと入力してください（例: 「かおりが楽しそうにダンスをしている」）。不足があれば Grok が質問で掘り下げます。'}
@@ -247,51 +250,56 @@ export default function ChatModal({
               <div
                 className={`max-w-[80%] whitespace-pre-wrap rounded-lg px-3 py-2 text-sm ${
                   message.role === 'user'
-                    ? 'bg-accent-500/20 text-slate-100'
-                    : 'bg-ink-700 text-slate-200'
+                    ? 'bg-primary/20 text-foreground'
+                    : 'bg-card text-foreground/90'
                 }`}
               >
                 {message.content}
               </div>
             </div>
           ))}
-          {busy && <p className="text-xs text-slate-500">Grok が考えています…</p>}
+          {busy && (
+            <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
+              <Loader2 className="size-3.5 animate-spin" />
+              Grok が考えています…
+            </p>
+          )}
         </div>
 
         {result && (
-          <div className="card border-accent-600/60 p-3">
-            <h4 className="mb-2 text-xs font-semibold text-accent-400">
+          <div className="rounded-lg border border-primary/60 bg-card p-3 shadow-elevation-1">
+            <h4 className="mb-2 text-xs font-semibold text-primary">
               プロンプトプレビュー
             </h4>
             <div className="space-y-2 text-xs">
               {result.image_prompt != null && (
                 <div>
-                  <p className="text-slate-400">画像プロンプト</p>
-                  <p className="whitespace-pre-wrap text-slate-200">
+                  <p className="text-muted-foreground">画像プロンプト</p>
+                  <p className="whitespace-pre-wrap text-foreground/90">
                     {result.image_prompt}
                   </p>
                 </div>
               )}
               {result.video_prompt != null && (
                 <div>
-                  <p className="text-slate-400">動画プロンプト</p>
-                  <p className="whitespace-pre-wrap text-slate-200">
+                  <p className="text-muted-foreground">動画プロンプト</p>
+                  <p className="whitespace-pre-wrap text-foreground/90">
                     {result.video_prompt}
                   </p>
                 </div>
               )}
               {result.audio_prompt != null && (
                 <div>
-                  <p className="text-slate-400">音声プロンプト</p>
-                  <p className="whitespace-pre-wrap text-slate-200">
+                  <p className="text-muted-foreground">音声プロンプト</p>
+                  <p className="whitespace-pre-wrap text-foreground/90">
                     {result.audio_prompt}
                   </p>
                 </div>
               )}
               {result.lyrics != null && audioSupports(audioWorkflow, 'lyrics') && (
                 <div>
-                  <p className="text-slate-400">歌詞</p>
-                  <p className="whitespace-pre-wrap font-mono text-slate-200">
+                  <p className="text-muted-foreground">歌詞</p>
+                  <p className="whitespace-pre-wrap font-mono text-foreground/90">
                     {result.lyrics}
                   </p>
                 </div>
@@ -299,14 +307,14 @@ export default function ChatModal({
               {result.negative_tags != null &&
                 audioSupports(audioWorkflow, 'negative_tags') && (
                   <div>
-                    <p className="text-slate-400">除外タグ</p>
-                    <p className="whitespace-pre-wrap text-slate-200">
+                    <p className="text-muted-foreground">除外タグ</p>
+                    <p className="whitespace-pre-wrap text-foreground/90">
                       {result.negative_tags}
                     </p>
                   </div>
                 )}
               {audio && (result.bpm != null || result.keyscale || result.language) && (
-                <p className="text-slate-500">
+                <p className="text-muted-foreground">
                   {[
                     result.bpm != null && audioSupports(audioWorkflow, 'bpm')
                       ? `BPM ${result.bpm}`
@@ -323,23 +331,23 @@ export default function ChatModal({
                 </p>
               )}
               {result.notes && (
-                <p className="text-slate-500 whitespace-pre-wrap">{result.notes}</p>
+                <p className="whitespace-pre-wrap text-muted-foreground">{result.notes}</p>
               )}
             </div>
             <div className="mt-3 flex gap-2">
-              <button className="btn-primary text-xs" onClick={applyToForm}>
+              <Button size="sm" onClick={applyToForm}>
                 フォームに反映
-              </button>
-              <button className="btn-ghost text-xs" onClick={() => setResult(null)}>
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => setResult(null)}>
                 続けて調整
-              </button>
+              </Button>
             </div>
           </div>
         )}
 
         <div className="flex gap-2">
-          <textarea
-            className="field h-16 flex-1 resize-none"
+          <Textarea
+            className="h-16 flex-1 resize-none"
             value={draft}
             placeholder="メッセージを入力（Ctrl+Enter で送信）"
             disabled={!sessionId || busy}
@@ -351,13 +359,14 @@ export default function ChatModal({
               }
             }}
           />
-          <button
-            className="btn-primary"
+          <Button
+            className="h-16"
             disabled={!sessionId || busy || !draft.trim()}
             onClick={() => void send()}
           >
+            <Send />
             送信
-          </button>
+          </Button>
         </div>
       </div>
     </Modal>

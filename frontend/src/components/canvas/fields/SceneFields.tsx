@@ -9,6 +9,8 @@ import {
   SHOT_STATUS_LABEL,
   episodeLabel,
 } from '../../studio/studio'
+import { NativeSelect } from '../../NativeSelect'
+import { Button } from '../../ui/button'
 import { shotsInScene } from '../logic'
 import { AreaField, Field, TextField } from './common'
 
@@ -41,11 +43,8 @@ export default function SceneFields({
   return (
     <div className="flex flex-col gap-3">
       <TextField label="場のタイトル" value={title} onChange={setTitle} />
-      <Field
-        label="所属する話"
-      >
-        <select
-          className="field"
+      <Field label="所属する話">
+        <NativeSelect
           aria-label="所属する話"
           value={episodeId}
           onChange={(event) => setEpisodeId(event.target.value)}
@@ -55,7 +54,7 @@ export default function SceneFields({
               {episodeLabel(episode, index)}
             </option>
           ))}
-        </select>
+        </NativeSelect>
       </Field>
       <AreaField label="あらすじ" value={synopsis} rows={3} onChange={setSynopsis} />
       <TextField
@@ -64,18 +63,22 @@ export default function SceneFields({
         onChange={setTimeOfDay}
       />
 
-      <div className="rounded-md border border-ink-600 bg-ink-900 p-2">
-        <p className="mb-1 text-[11px] text-slate-500">
+      <div className="rounded-md border border-border bg-surface-sunken p-2">
+        <p className="mb-1 text-[11px] text-muted-foreground">
           この場のカット（{shots.length} 件）
         </p>
         {shots.length === 0 ? (
-          <p className="py-2 text-center text-xs text-slate-600">まだありません</p>
+          <p className="py-2 text-center text-xs text-muted-foreground">
+            まだありません
+          </p>
         ) : (
           <ul className="flex flex-col gap-1">
             {shots.map((shot, index) => (
               <li key={shot.id} className="flex items-center gap-2 text-xs">
-                <span className="w-6 shrink-0 text-slate-600">{index + 1}</span>
-                <span className="min-w-0 flex-1 truncate text-slate-300">
+                <span className="tnum w-6 shrink-0 text-muted-foreground">
+                  {index + 1}
+                </span>
+                <span className="min-w-0 flex-1 truncate text-foreground/85">
                   {shot.title || '無題のカット'}
                 </span>
                 <span className={`chip !px-1.5 !py-0 ${SHOT_STATUS_CLASS[shot.status]}`}>
@@ -87,8 +90,8 @@ export default function SceneFields({
         )}
       </div>
 
-      <button
-        className="btn-primary self-start"
+      <Button
+        className="self-start"
         disabled={busy}
         onClick={() =>
           onSave({
@@ -100,7 +103,7 @@ export default function SceneFields({
         }
       >
         {busy ? '保存中…' : '保存'}
-      </button>
+      </Button>
     </div>
   )
 }

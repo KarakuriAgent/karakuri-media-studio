@@ -1,4 +1,5 @@
 import { useEffect } from 'react'
+import { Sparkles } from 'lucide-react'
 import {
   AUDIO_CATEGORIES,
   CATEGORY_LABELS,
@@ -11,6 +12,12 @@ import {
   type FormState,
 } from '../form'
 import type { Options, WorkflowOption } from '../types'
+import { Button } from '@/components/ui/button'
+import { Checkbox } from '@/components/ui/checkbox'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Textarea } from '@/components/ui/textarea'
+import { NativeSelect } from './NativeSelect'
 import ModelPicker from './ModelPicker'
 import WorkflowPicker from './WorkflowPicker'
 import WorkflowSelects from './WorkflowSelects'
@@ -131,17 +138,18 @@ export default function AudioFields({
       <Section
         title="プロンプト"
         right={
-          <button className="btn-ghost !py-1 text-xs" onClick={onOpenChat}>
+          <Button variant="outline" size="xs" onClick={onOpenChat}>
+            <Sparkles />
             Grokで生成
-          </button>
+          </Button>
         }
       >
-        <label className="label" htmlFor="audio-prompt">
+        <Label className="mb-1" htmlFor="audio-prompt">
           音声プロンプト
-        </label>
-        <textarea
+        </Label>
+        <Textarea
           id="audio-prompt"
-          className="field h-28 resize-y"
+          className="h-28 resize-y"
           aria-label="音声プロンプト"
           value={form.audioPrompt}
           placeholder={
@@ -156,8 +164,8 @@ export default function AudioFields({
 
       {hasLyrics && (
         <Section title="歌詞（空欄でインストゥルメンタル）">
-          <textarea
-            className="field h-40 resize-y font-mono text-xs"
+          <Textarea
+            className="h-40 resize-y font-mono text-xs"
             aria-label="歌詞"
             value={form.lyrics}
             placeholder={'[Verse 1]\n最終列車が街を抜ける\n\n[Chorus]\nもう一度だけ'}
@@ -168,8 +176,7 @@ export default function AudioFields({
 
       {hasNegativeTags && (
         <Section title="除外タグ（任意）">
-          <input
-            className="field"
+          <Input
             aria-label="除外タグ"
             value={form.negativeTags}
             placeholder="distorted guitar, screaming, heavy drums"
@@ -180,8 +187,7 @@ export default function AudioFields({
 
       {hasCategory && (
         <Section title="カテゴリ">
-          <select
-            className="field"
+          <NativeSelect
             aria-label="カテゴリ"
             value={form.audioCategory}
             onChange={(event) => patch({ audioCategory: event.target.value })}
@@ -191,7 +197,7 @@ export default function AudioFields({
                 {CATEGORY_LABELS[value] ?? value}
               </option>
             ))}
-          </select>
+          </NativeSelect>
         </Section>
       )}
 
@@ -199,17 +205,17 @@ export default function AudioFields({
         <div className={hasBpm && hasDuration ? 'grid grid-cols-2 gap-2' : undefined}>
           {hasDuration && (
             <div>
-              <label className="label" htmlFor="audio-duration">
+              <Label className="mb-1" htmlFor="audio-duration">
                 長さ（秒）
                 {range && (
-                  <span className="ml-1 text-slate-600">
+                  <span className="tnum ml-1 font-normal text-muted-foreground/70">
                     {range.min}〜{range.max}
                   </span>
                 )}
-              </label>
-              <input
+              </Label>
+              <Input
                 id="audio-duration"
-                className="field"
+                className="tnum"
                 type="number"
                 min={range?.min ?? 1}
                 max={range?.max ?? undefined}
@@ -224,12 +230,12 @@ export default function AudioFields({
           )}
           {hasBpm && (
             <div>
-              <label className="label" htmlFor="audio-bpm">
+              <Label className="mb-1" htmlFor="audio-bpm">
                 BPM
-              </label>
-              <input
+              </Label>
+              <Input
                 id="audio-bpm"
-                className="field"
+                className="tnum"
                 type="number"
                 min="10"
                 max="300"
@@ -246,12 +252,11 @@ export default function AudioFields({
           <div className="mt-2 grid grid-cols-2 gap-2">
             {hasKeyscale && (
               <div>
-                <label className="label" htmlFor="audio-keyscale">
+                <Label className="mb-1" htmlFor="audio-keyscale">
                   キー / スケール
-                </label>
-                <select
+                </Label>
+                <NativeSelect
                   id="audio-keyscale"
-                  className="field"
                   value={form.keyscale}
                   onChange={(event) => patch({ keyscale: event.target.value })}
                 >
@@ -263,17 +268,16 @@ export default function AudioFields({
                       {value}
                     </option>
                   ))}
-                </select>
+                </NativeSelect>
               </div>
             )}
             {hasLanguage && (
               <div>
-                <label className="label" htmlFor="audio-language">
+                <Label className="mb-1" htmlFor="audio-language">
                   歌詞の言語
-                </label>
-                <select
+                </Label>
+                <NativeSelect
                   id="audio-language"
-                  className="field"
                   value={form.language}
                   onChange={(event) => patch({ language: event.target.value })}
                 >
@@ -285,7 +289,7 @@ export default function AudioFields({
                       {LANGUAGE_LABELS[value] ?? value}
                     </option>
                   ))}
-                </select>
+                </NativeSelect>
               </div>
             )}
           </div>
@@ -293,12 +297,12 @@ export default function AudioFields({
 
         {hasSteps && (
           <div className="mt-2">
-            <label className="label" htmlFor="audio-steps">
+            <Label className="mb-1" htmlFor="audio-steps">
               ステップ数
-            </label>
-            <input
+            </Label>
+            <Input
               id="audio-steps"
-              className="field"
+              className="tnum"
               type="number"
               min="0"
               max={MAX_STEPS}
@@ -311,29 +315,38 @@ export default function AudioFields({
         )}
 
         {hasReprompt && (
-          <label className="mt-3 flex items-start gap-2 text-xs text-slate-300">
-            <input
-              type="checkbox"
-              className="mt-0.5 accent-accent-500"
+          <div className="mt-3 flex items-start gap-2">
+            <Checkbox
+              id="audio-reprompt"
+              className="mt-0.5"
               checked={form.reprompt}
-              onChange={(event) => patch({ reprompt: event.target.checked })}
+              onCheckedChange={(checked) => patch({ reprompt: checked === true })}
             />
-            <span>内蔵 LLM でプロンプトを展開する</span>
-          </label>
+            <Label
+              htmlFor="audio-reprompt"
+              className="cursor-pointer text-xs text-foreground/85"
+            >
+              内蔵 LLM でプロンプトを展開する
+            </Label>
+          </div>
         )}
 
         <div className="mt-3 flex items-center gap-2">
-          <label className="flex items-center gap-2 text-xs text-slate-300">
-            <input
-              type="checkbox"
-              className="accent-accent-500"
+          <div className="flex shrink-0 items-center gap-2">
+            <Checkbox
+              id="audio-seed-locked"
               checked={form.seedLocked}
-              onChange={(event) => patch({ seedLocked: event.target.checked })}
+              onCheckedChange={(checked) => patch({ seedLocked: checked === true })}
             />
-            seed 固定
-          </label>
-          <input
-            className="field flex-1"
+            <Label
+              htmlFor="audio-seed-locked"
+              className="cursor-pointer text-xs text-foreground/85"
+            >
+              seed 固定
+            </Label>
+          </div>
+          <Input
+            className="tnum flex-1"
             type="number"
             min="0"
             aria-label="seed"

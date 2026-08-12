@@ -1,3 +1,5 @@
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 
@@ -8,6 +10,12 @@ const BACKEND =
 
 export default defineConfig({
   plugins: [react()],
+  // `@/…` で src 配下を参照できるようにする（shadcn/ui の標準的な書式に合わせる）
+  resolve: {
+    alias: {
+      '@': path.resolve(path.dirname(fileURLToPath(import.meta.url)), './src'),
+    },
+  },
   // `/assets` is taken by the backend's uploaded-asset mount, so build bundles
   // into dist/static/ instead to avoid shadowing them in production serving.
   build: { assetsDir: 'static' },

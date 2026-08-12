@@ -138,10 +138,40 @@ async function openSettings(options: Options = {} as Options) {
   await waitFor(() => screen.getByText('ComfyUI 接続先'))
 }
 
+/** 設定タブを切り替える（shadcn Tabs = Radix なので mousedown が切り替えの契機）。 */
+function openTab(name: string) {
+  fireEvent.mouseDown(screen.getByRole('tab', { name }))
+}
+
+/** shadcn Select（Radix）のプルダウンを開く。 */
+function openSelect(label: string): HTMLElement {
+  const trigger = screen.getByLabelText(label)
+  fireEvent.keyDown(trigger, { key: 'ArrowDown' })
+  return trigger
+}
+
+/** shadcn Select から選択肢を選ぶ。 */
+async function chooseOption(label: string, option: string | RegExp) {
+  openSelect(label)
+  await waitFor(() => screen.getByRole('option', { name: option }))
+  fireEvent.click(screen.getByRole('option', { name: option }))
+  await waitFor(() => expect(screen.queryByRole('listbox')).toBeNull())
+}
+
+/** 開いた Select の選択肢のラベル一覧（読み終えたら閉じる）。 */
+async function optionLabels(label: string): Promise<string[]> {
+  const trigger = openSelect(label)
+  await waitFor(() => screen.getByRole('listbox'))
+  const labels = screen.getAllByRole('option').map((item) => item.textContent ?? '')
+  fireEvent.keyDown(trigger, { key: 'Escape' })
+  await waitFor(() => expect(screen.queryByRole('listbox')).toBeNull())
+  return labels
+}
+
 /** モデルタブを開いて、1 件だけあるワークフローの折りたたみも開く。 */
 async function openModelsTab(options: Options = {} as Options) {
   await openSettings(options)
-  screen.getByRole('button', { name: 'モデル' }).click()
+  openTab('モデル')
   await waitFor(() => screen.getByText(/Krea 2 Turbo/))
   screen.getByText(/Krea 2 Turbo/).click()
   await waitFor(() => screen.getByText('ノード'))
@@ -169,26 +199,21 @@ describe('SettingsPage: 環境ごとのモデル / LoRA（SPEC §5）', () => {
     expect(listModels).toHaveBeenCalledWith('runpod')
     expect(listLoras).toHaveBeenCalledWith('runpod')
     expect(listModelDownloads).toHaveBeenCalledWith('runpod')
-    screen.getByRole('button', { name: 'モデル' }).click()
+    openTab('モデル')
     await waitFor(() => screen.getByLabelText('対象の接続先'))
-    const select = screen.getByLabelText('対象の接続先') as HTMLSelectElement
-    expect(select.value).toBe('runpod')
+    expect(screen.getByLabelText('対象の接続先').textContent).toContain('RunPod')
     // 現在の接続先が分かるように印を付ける
-    expect(
-      [...select.options].find((option) => option.value === 'runpod')?.text,
-    ).toContain('現在の接続先')
+    expect(await optionLabels('対象の接続先')).toContain('RunPod（現在の接続先）')
   })
 
   it('環境を切り替えるとその環境の一覧を読み直す', async () => {
     await openSettings()
-    screen.getByRole('button', { name: 'モデル' }).click()
+    openTab('モデル')
     await waitFor(() => screen.getByLabelText('対象の接続先'))
     listModels.mockClear()
     listLoras.mockClear()
 
-    fireEvent.change(screen.getByLabelText('対象の接続先'), {
-      target: { value: 'local' },
-    })
+    await chooseOption('対象の接続先', 'ローカル')
 
     await waitFor(() => expect(listModels).toHaveBeenCalledWith('local'))
     expect(listLoras).toHaveBeenCalledWith('local')
@@ -210,7 +235,7 @@ describe('SettingsPage: 環境ごとのモデル / LoRA（SPEC §5）', () => {
 
   it('LoRA の新規登録は選んだ環境に紐づける', async () => {
     await openSettings()
-    screen.getByRole('button', { name: 'LoRA 管理' }).click()
+    openTab('LoRA 管理')
     await waitFor(() => screen.getByText('かおり'))
 
     const displayName = screen.getByLabelText('表示名') as HTMLInputElement
@@ -268,7 +293,7 @@ describe('SettingsPage: 環境ごとのモデル / LoRA（SPEC §5）', () => {
       },
     ])
     await openSettings()
-    screen.getByRole('button', { name: 'LoRA 管理' }).click()
+    openTab('LoRA 管理')
     await waitFor(() => screen.getByText('セリア'))
 
     const list = screen.getByTestId('lora-management-list')
@@ -286,19 +311,13 @@ describe('SettingsPage: 環境ごとのモデル / LoRA（SPEC §5）', () => {
     expect(screen.getByText('表示 1 / 全 3')).toBeTruthy()
 
     fireEvent.change(screen.getByLabelText('LoRAを検索'), { target: { value: '' } })
-    fireEvent.change(screen.getByLabelText('LoRAの対象'), {
-      target: { value: 'video' },
-    })
+    await chooseOption('LoRAの対象', '動画用')
     await waitFor(() => expect(list.textContent).toContain('スローモ'))
     expect(list.textContent).not.toContain('かおり')
     expect(list.textContent).not.toContain('セリア')
 
-    fireEvent.change(screen.getByLabelText('LoRAの対象'), {
-      target: { value: 'all' },
-    })
-    fireEvent.change(screen.getByLabelText('LoRAのファミリー'), {
-      target: { value: 'anima' },
-    })
+    await chooseOption('LoRAの対象', 'すべて')
+    await chooseOption('LoRAのファミリー', 'Anima')
     await waitFor(() => expect(list.textContent).toContain('セリア'))
     expect(list.textContent).not.toContain('かおり')
     expect(list.textContent).not.toContain('スローモ')
@@ -327,36 +346,30 @@ describe('SettingsPage: 環境ごとのモデル / LoRA（SPEC §5）', () => {
       },
     ])
     await openSettings()
-    screen.getByRole('button', { name: 'LoRA 管理' }).click()
+    openTab('LoRA 管理')
     await waitFor(() => screen.getByText('セリア'))
 
     const list = screen.getByTestId('lora-management-list')
     // 先にファミリーを指定してから対象を動画用へ切り替える（残ったファミリー
     // 条件で 0 件にならないこと）
-    fireEvent.change(screen.getByLabelText('LoRAのファミリー'), {
-      target: { value: 'anima' },
-    })
+    await chooseOption('LoRAのファミリー', 'Anima')
     await waitFor(() => expect(list.textContent).not.toContain('かおり'))
 
-    fireEvent.change(screen.getByLabelText('LoRAの対象'), {
-      target: { value: 'video' },
-    })
+    await chooseOption('LoRAの対象', '動画用')
     await waitFor(() => expect(list.textContent).toContain('スローモ'))
     expect(list.textContent).not.toContain('かおり')
     expect(list.textContent).not.toContain('セリア')
     expect(screen.getByText('表示 1 / 全 3')).toBeTruthy()
     expect(
-      (screen.getByLabelText('LoRAのファミリー') as HTMLSelectElement).disabled,
+      (screen.getByLabelText('LoRAのファミリー') as HTMLButtonElement).disabled,
     ).toBe(true)
 
     // 対象を戻せばファミリー条件が効き、絞り込みも再び使える
-    fireEvent.change(screen.getByLabelText('LoRAの対象'), {
-      target: { value: 'all' },
-    })
+    await chooseOption('LoRAの対象', 'すべて')
     await waitFor(() => expect(list.textContent).toContain('セリア'))
     expect(list.textContent).not.toContain('スローモ')
     expect(
-      (screen.getByLabelText('LoRAのファミリー') as HTMLSelectElement).disabled,
+      (screen.getByLabelText('LoRAのファミリー') as HTMLButtonElement).disabled,
     ).toBe(false)
   })
 
@@ -380,9 +393,7 @@ describe('SettingsPage: 環境ごとのモデル / LoRA（SPEC §5）', () => {
     await openModelsTab(missingOptions())
     expect(screen.getByTitle('ComfyUI のファイル一覧に見つかりません')).toBeTruthy()
 
-    fireEvent.change(screen.getByLabelText('対象の接続先'), {
-      target: { value: 'local' },
-    })
+    await chooseOption('対象の接続先', 'ローカル')
 
     await waitFor(() =>
       expect(
@@ -393,9 +404,7 @@ describe('SettingsPage: 環境ごとのモデル / LoRA（SPEC §5）', () => {
 
   it('ComfyCloud を選ぶとダウンロード関連は出さない', async () => {
     await openModelsTab()
-    fireEvent.change(screen.getByLabelText('対象の接続先'), {
-      target: { value: 'comfy_cloud' },
-    })
+    await chooseOption('対象の接続先', 'ComfyCloud')
 
     await waitFor(() =>
       expect(screen.queryByRole('button', { name: '全DL' })).toBeNull(),
@@ -417,14 +426,8 @@ describe('SettingsPage: ComfyUI 接続先（3 プロファイル）', () => {
   it('接続先の選択と、プロファイルごとの接続情報を出す', async () => {
     await openSettings()
 
-    const select = screen.getByDisplayValue('ローカル') as HTMLSelectElement
-    expect(
-      [...select.options].map((option) => [option.value, option.text]),
-    ).toEqual([
-      ['comfy_cloud', 'ComfyCloud'],
-      ['runpod', 'RunPod'],
-      ['local', 'ローカル'],
-    ])
+    expect(screen.getByLabelText('接続先').textContent).toContain('ローカル')
+    expect(await optionLabels('接続先')).toEqual(['ComfyCloud', 'RunPod', 'ローカル'])
     // ComfyCloud はエンドポイント固定なので APIキーだけ（URL 欄は出さない）
     expect(screen.getByText('ComfyCloud APIキー')).toBeTruthy()
     expect(screen.getByText('RunPod ComfyUI URL')).toBeTruthy()
@@ -442,9 +445,7 @@ describe('SettingsPage: ComfyUI 接続先（3 プロファイル）', () => {
     })
     await openSettings()
 
-    fireEvent.change(screen.getByDisplayValue('ローカル'), {
-      target: { value: 'comfy_cloud' },
-    })
+    await chooseOption('接続先', 'ComfyCloud')
     fireEvent.change(screen.getByPlaceholderText('https://<Cloudflare Tunnel のホスト名>'), {
       target: { value: 'https://pod.example.com' },
     })
@@ -473,7 +474,7 @@ describe('SettingsPage: ComfyUI 接続先（3 プロファイル）', () => {
     fireEvent.change(screen.getByLabelText('grok CLI の追加フラグ（空白区切り）'), {
       target: { value: '--permission-mode  ask ' },
     })
-    fireEvent.click(screen.getByLabelText('ACP でターンを回す'))
+    fireEvent.click(screen.getByRole('switch', { name: 'ACP でターンを回す' }))
     screen.getByRole('button', { name: '保存' }).click()
 
     await waitFor(() => expect(putSettings).toHaveBeenCalled())
@@ -504,9 +505,9 @@ describe('SettingsPage: ComfyUI 接続先（3 プロファイル）', () => {
   it('自動起動を有効にすると RunPod の起動設定が出る', async () => {
     await openSettings()
 
-    screen
-      .getByRole('checkbox', { name: 'RunPod の Pod を自動起動する' })
-      .click()
+    fireEvent.click(
+      screen.getByRole('switch', { name: 'RunPod の Pod を自動起動する' }),
+    )
 
     await waitFor(() => screen.getByText('テンプレート ID'))
     expect(screen.getByText('RunPod APIキー')).toBeTruthy()
@@ -649,7 +650,7 @@ describe('SettingsPage: 検出済みモデルの取得元 URL 登録', () => {
     })
     await waitFor(() => screen.getByText(/取得元 URL を保存しました/))
     // 登録済みは開閉ボタンの表示で分かる
-    expect(screen.getByRole('button', { name: /取得元 URL ✓/ })).toBeTruthy()
+    expect(screen.getByRole('button', { name: /取得元 URL 登録済み/ })).toBeTruthy()
   })
 
   it('空欄で保存すると登録が解除される（キーが消える）', async () => {
@@ -668,7 +669,7 @@ describe('SettingsPage: 検出済みモデルの取得元 URL 登録', () => {
     })
     await openModelsTab()
     // 登録済みなので印が付いている
-    const toggle = screen.getByRole('button', { name: /取得元 URL ✓/ })
+    const toggle = screen.getByRole('button', { name: /取得元 URL 登録済み/ })
     toggle.click()
     const input = (await waitFor(() =>
       screen.getByPlaceholderText(/ダウンロード URL/),
@@ -683,7 +684,7 @@ describe('SettingsPage: 検出済みモデルの取得元 URL 登録', () => {
       model_download_urls: { 'other.safetensors': 'https://example.com/b.safetensors' },
     })
     await waitFor(() => screen.getByText(/取得元 URL を解除しました/))
-    expect(screen.queryByRole('button', { name: /取得元 URL ✓/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: /取得元 URL 登録済み/ })).toBeNull()
   })
 
   it('COMFY_MODELS_DIR 未設定でも取得元 URL は登録できる', async () => {
@@ -739,7 +740,7 @@ describe('SettingsPage: LoRA フォームの取得元 URL', () => {
   /** LoRA タブを開く（1 件だけ登録がある状態）。 */
   async function openLorasTab() {
     await openSettings()
-    screen.getByRole('button', { name: 'LoRA 管理' }).click()
+    openTab('LoRA 管理')
     await waitFor(() => screen.getByText('かおり'))
   }
 
@@ -890,7 +891,7 @@ describe('SettingsPage: LoRA スロットの候補（SPEC §3.3）', () => {
       model_files: {},
       lora_files: ['minimax_h3_turbo_4step_ema_ckpt850.safetensors', 'other.safetensors'],
     } as unknown as Options)
-    screen.getByRole('button', { name: 'モデル' }).click()
+    openTab('モデル')
     await waitFor(() => screen.getByText(/MiniMax H3/))
 
     const list = document.getElementById('model-files-MiniMaxH3TurboLoRA.lora_name')
@@ -963,7 +964,7 @@ describe('SettingsPage: 動画はモデル名 → ワークフローの 2 階層
   /** モデルタブを開く（グループは畳まれたまま）。 */
   async function openModels() {
     await openSettings({ model_files: {} } as unknown as Options)
-    screen.getByRole('button', { name: 'モデル' }).click()
+    openTab('モデル')
     await waitFor(() => screen.getByText('MiniMax H3'))
   }
 
@@ -1016,7 +1017,7 @@ describe('SettingsPage: 動画はモデル名 → ワークフローの 2 階層
   it('ワークフローが 1 本だけのモデルは見出しを出さず従来どおり', async () => {
     listModels.mockResolvedValue([modelRow()])
     await openSettings({ model_files: {} } as unknown as Options)
-    screen.getByRole('button', { name: 'モデル' }).click()
+    openTab('モデル')
 
     // グループの見出しはワークフローの完全なラベル（「Krea 2」だけの行は無い）
     await waitFor(() => screen.getByText('Krea 2 Turbo'))

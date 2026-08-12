@@ -1,5 +1,8 @@
 import { workflowFamilies, workflowModeLabel } from '../form'
 import type { WorkflowOption } from '../types'
+import { NativeSelect } from './NativeSelect'
+import { Input } from './ui/input'
+import { Label } from './ui/label'
 
 /**
  * ワークフローの「モデル → モード」2 段プルダウン（SPEC §3.1）。
@@ -36,8 +39,7 @@ export default function WorkflowPicker({
   // 選択肢が来ていない（ComfyUI に繋がらない）ときは今までどおり id の手入力。
   if (workflows.length === 0) {
     return (
-      <input
-        className="field"
+      <Input
         aria-label={fallbackLabel}
         value={value}
         onChange={(event) => onChange(event.target.value)}
@@ -57,9 +59,8 @@ export default function WorkflowPicker({
   return (
     <div className="grid gap-2 sm:grid-cols-2">
       <div>
-        <label className="label">モデル</label>
-        <select
-          className="field"
+        <Label className="mb-1">モデル</Label>
+        <NativeSelect
           aria-label={modelLabel}
           value={group.family}
           onChange={(event) => {
@@ -76,12 +77,11 @@ export default function WorkflowPicker({
               {item.label}
             </option>
           ))}
-        </select>
+        </NativeSelect>
       </div>
       <div>
-        <label className="label">モード</label>
-        <select
-          className="field"
+        <Label className="mb-1">モード</Label>
+        <NativeSelect
           aria-label={modeLabel}
           value={selected}
           disabled={modes.length < 2}
@@ -92,7 +92,7 @@ export default function WorkflowPicker({
               {workflowModeLabel(item)}
             </option>
           ))}
-        </select>
+        </NativeSelect>
       </div>
     </div>
   )

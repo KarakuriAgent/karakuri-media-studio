@@ -1,5 +1,12 @@
 import { useRef, useState } from 'react'
+import { X } from 'lucide-react'
+
 import type { StudioAsset, StudioAssetFile, StudioAssetFileRole } from '../../types'
+import { Badge } from '../ui/badge'
+import { NativeSelect } from '../NativeSelect'
+import { Button } from '../ui/button'
+import { Input } from '../ui/input'
+import { Label } from '../ui/label'
 import { ASSET_KIND_LABEL, assetHasFile } from './studio'
 
 /** リファレンスの役割 -> 画面に出す名前と実体の種別（backend の ASSET_FILE_ROLE_KINDS）。 */
@@ -77,18 +84,18 @@ export default function AssetFilesPanel({
 
   return (
     <div className="flex flex-col gap-3">
-      <div>
-        <label className="label" htmlFor={`asset-main-file-${asset.id}`}>
+      <div className="space-y-1">
+        <Label htmlFor={`asset-main-file-${asset.id}`}>
           {assetHasFile(asset)
             ? `メインのファイルを差し替え（いまは ${ASSET_KIND_LABEL[asset.kind]}）`
             : 'メインのファイルを付ける'}
-        </label>
-        <input
+        </Label>
+        <Input
           id={`asset-main-file-${asset.id}`}
           ref={mainRef}
           type="file"
           disabled={busy}
-          className="field cursor-pointer file:mr-2 file:rounded file:border-0 file:bg-ink-600 file:px-2 file:py-1 file:text-slate-200"
+          className="cursor-pointer py-1.5 file:mr-2 file:rounded file:border-0 file:bg-secondary file:px-2 file:py-1 file:text-foreground/85"
           onChange={(event) => {
             const picked = event.target.files?.[0] ?? null
             if (picked) onReplaceMain(picked)
@@ -97,45 +104,43 @@ export default function AssetFilesPanel({
         />
       </div>
 
-      <div className="flex flex-col gap-2 border-t border-ink-700 pt-3">
-        <p className="text-[11px] text-slate-500">
+      <div className="flex flex-col gap-2 border-t border-border pt-3">
+        <p className="text-[11px] text-muted-foreground">
           リファレンス {files.length} 件
         </p>
 
         {files.map((file) => (
           <div
             key={file.id}
-            className="flex flex-col gap-1 rounded-md border border-ink-600 bg-ink-900 p-2"
+            className="flex flex-col gap-1 rounded-md border border-border bg-surface-sunken p-2"
           >
             <div className="flex items-center gap-2 text-[11px]">
-              <span className="chip !px-1.5 !py-0">
+              <Badge variant="secondary" className="px-1.5 py-0 font-normal">
                 {assetFileRoleLabel(file.role)}
-              </span>
-              <span className="min-w-0 flex-1 truncate text-slate-400">
+              </Badge>
+              <span className="min-w-0 flex-1 truncate text-muted-foreground">
                 {file.caption || file.path.split('/').pop()}
               </span>
-              <button
-                className="btn-ghost !px-2 !py-0.5 text-xs"
+              <Button
+                variant="ghost"
+                size="icon-xs"
                 disabled={busy}
                 title="このリファレンスを外す"
                 aria-label={`${assetFileRoleLabel(file.role)} を外す`}
                 onClick={() => onRemoveReference(file.id)}
               >
-                ✕
-              </button>
+                <X />
+              </Button>
             </div>
             <ReferencePreview file={file} />
           </div>
         ))}
 
         <div className="flex flex-wrap items-end gap-2">
-          <div className="min-w-[8rem]">
-            <label className="label" htmlFor={`asset-file-role-${asset.id}`}>
-              種類
-            </label>
-            <select
+          <div className="min-w-[8rem] space-y-1">
+            <Label htmlFor={`asset-file-role-${asset.id}`}>種類</Label>
+            <NativeSelect
               id={`asset-file-role-${asset.id}`}
-              className="field"
               value={role}
               onChange={(event) =>
                 setRole(event.target.value as StudioAssetFileRole)
@@ -146,27 +151,24 @@ export default function AssetFilesPanel({
                   {item.label}
                 </option>
               ))}
-            </select>
+            </NativeSelect>
           </div>
-          <div className="min-w-[10rem] flex-1">
-            <label className="label" htmlFor={`asset-file-caption-${asset.id}`}>
-              メモ（任意）
-            </label>
-            <input
+          <div className="min-w-[10rem] flex-1 space-y-1">
+            <Label htmlFor={`asset-file-caption-${asset.id}`}>メモ（任意）</Label>
+            <Input
               id={`asset-file-caption-${asset.id}`}
-              className="field"
               value={caption}
               placeholder="怒っているときの声 など"
               onChange={(event) => setCaption(event.target.value)}
             />
           </div>
         </div>
-        <input
+        <Input
           ref={referenceRef}
           type="file"
           aria-label="リファレンスを追加"
           disabled={busy}
-          className="field cursor-pointer file:mr-2 file:rounded file:border-0 file:bg-ink-600 file:px-2 file:py-1 file:text-slate-200"
+          className="cursor-pointer py-1.5 file:mr-2 file:rounded file:border-0 file:bg-secondary file:px-2 file:py-1 file:text-foreground/85"
           onChange={(event) => pickReference(event.target.files?.[0] ?? null)}
         />
       </div>

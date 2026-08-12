@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react'
+import { EyeOff, History, Trash2 } from 'lucide-react'
+
 import { api } from '../../api'
 import type {
   ComfyTarget,
@@ -7,13 +9,18 @@ import type {
   StudioProjectUpdate,
 } from '../../types'
 import { FieldError, Section } from '../ui'
+import { Button } from '../ui/button'
+import { Input } from '../ui/input'
+import { Label } from '../ui/label'
+import { Switch } from '../ui/switch'
+import { Textarea } from '../ui/textarea'
 import { projectSummary, validateProjectForm, type ProjectFormState } from './studio'
 
 function Metric({ value, label }: { value: string | number; label: string }) {
   return (
-    <div className="rounded-md border border-ink-600 bg-ink-900/60 px-3 py-2">
-      <div className="text-lg font-semibold text-slate-100">{value}</div>
-      <div className="text-[11px] text-slate-500">{label}</div>
+    <div className="rounded-md border border-border bg-surface-sunken px-3 py-2 shadow-elevation-1">
+      <div className="tnum text-lg font-semibold text-foreground">{value}</div>
+      <div className="text-[11px] text-muted-foreground">{label}</div>
     </div>
   )
 }
@@ -118,25 +125,19 @@ export default function OverviewView({
       <Section title="作品情報">
         <div className="space-y-3">
           <div className="grid gap-3 sm:grid-cols-2">
-            <div>
-              <label className="label" htmlFor="studio-project-name">
-                作品名
-              </label>
-              <input
+            <div className="space-y-1">
+              <Label htmlFor="studio-project-name">作品名</Label>
+              <Input
                 id="studio-project-name"
-                className="field"
                 value={form.name}
                 onChange={(event) => patch({ name: event.target.value })}
               />
               <FieldError message={errors.name} />
             </div>
-            <div>
-              <label className="label" htmlFor="studio-project-code">
-                作品コード（任意）
-              </label>
-              <input
+            <div className="space-y-1">
+              <Label htmlFor="studio-project-code">作品コード（任意）</Label>
+              <Input
                 id="studio-project-code"
-                className="field"
                 value={form.code}
                 placeholder="EP01"
                 onChange={(event) => patch({ code: event.target.value })}
@@ -144,75 +145,86 @@ export default function OverviewView({
             </div>
           </div>
 
-          <div>
-            <label className="label" htmlFor="studio-project-synopsis">
-              あらすじ
-            </label>
-            <textarea
+          <div className="space-y-1">
+            <Label htmlFor="studio-project-synopsis">あらすじ</Label>
+            <Textarea
               id="studio-project-synopsis"
-              className="field h-24 resize-y"
+              className="h-24 resize-y"
               value={form.synopsis}
               onChange={(event) => patch({ synopsis: event.target.value })}
             />
           </div>
 
-          <div>
-            <label className="label" htmlFor="studio-project-notes">
-              世界観メモ
-            </label>
-            <textarea
+          <div className="space-y-1">
+            <Label htmlFor="studio-project-notes">世界観メモ</Label>
+            <Textarea
               id="studio-project-notes"
-              className="field h-32 resize-y"
+              className="h-32 resize-y"
               value={form.world_notes}
               placeholder="時代・土地・トーン・撮影の決まりごとなど"
               onChange={(event) => patch({ world_notes: event.target.value })}
             />
           </div>
 
-          <div className="space-y-2">
-            <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-300">
-              <input
-                type="checkbox"
-                className="h-3.5 w-3.5 accent-accent-500"
+          <div className="space-y-3">
+            <div className="flex items-center gap-2">
+              <Switch
+                id="studio-project-auto-translate"
                 checked={form.auto_translate}
-                onChange={(event) => patch({ auto_translate: event.target.checked })}
+                onCheckedChange={(checked) => patch({ auto_translate: checked })}
               />
-              日本語プロンプトを自動で英訳して投入
-            </label>
+              <Label
+                htmlFor="studio-project-auto-translate"
+                className="cursor-pointer text-foreground/85"
+              >
+                日本語プロンプトを自動で英訳して投入
+              </Label>
+            </div>
             <div>
-              <label
-                className={`flex items-center gap-2 text-xs text-slate-300 ${
-                  continuityDisabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'
+              <div
+                className={`flex items-center gap-2 ${
+                  continuityDisabled ? 'opacity-60' : ''
                 }`}
               >
-                <input
-                  type="checkbox"
-                  className="h-3.5 w-3.5 accent-accent-500"
+                <Switch
+                  id="studio-project-latent-continuity"
                   checked={form.latent_continuity}
                   disabled={continuityDisabled}
-                  onChange={(event) =>
-                    patch({ latent_continuity: event.target.checked })
+                  onCheckedChange={(checked) =>
+                    patch({ latent_continuity: checked })
                   }
                 />
-                ラテント連続性（連続カットを動きと音ごと引き継ぐ）
-              </label>
-              <p className="mt-1 text-[11px] text-slate-500">
+                <Label
+                  htmlFor="studio-project-latent-continuity"
+                  className={`text-foreground/85 ${
+                    continuityDisabled ? 'cursor-not-allowed' : 'cursor-pointer'
+                  }`}
+                >
+                  ラテント連続性（連続カットを動きと音ごと引き継ぐ）
+                </Label>
+              </div>
+              <p className="mt-1 text-[11px] text-muted-foreground">
                 {continuityDisabled
                   ? '接続先（Comfy Cloud）では利用できません（MiniMaxH3MotionContext 系のカスタムノードが入っていません）。'
                   : 'カットの引き継ぎ（「直前カットから続ける」）が、ラストフレーム 1 枚ではなく直前カットの動画とラテントごとになります。参照素材の指定と直前カットの採用 Take が要ります。'}
               </p>
             </div>
             <div>
-              <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-300">
-                <input
-                  type="checkbox"
-                  className="h-3.5 w-3.5 accent-accent-500"
+              <div className="flex items-center gap-2">
+                <Switch
+                  id="studio-project-nsfw"
                   checked={form.nsfw}
-                  onChange={(event) => patch({ nsfw: event.target.checked })}
+                  onCheckedChange={(checked) => patch({ nsfw: checked })}
                 />
-                🫣 NSFW プロジェクト
-              </label>
-              <p className="mt-1 text-[11px] text-slate-500">
+                <Label
+                  htmlFor="studio-project-nsfw"
+                  className="flex cursor-pointer items-center gap-1.5 text-foreground/85"
+                >
+                  <EyeOff className="size-3.5" />
+                  NSFW プロジェクト
+                </Label>
+              </div>
+              <p className="mt-1 text-[11px] text-muted-foreground">
                 {form.nsfw
                   ? 'このプロジェクトから投入するジョブはすべて NSFW 扱いになります。'
                   : 'このプロジェクトから投入するジョブは非 NSFW で固定されます（自動判定は走りません）。'}
@@ -221,15 +233,22 @@ export default function OverviewView({
           </div>
 
           <div className="flex items-center gap-2">
-            <button className="btn-primary" onClick={save} disabled={busy}>
+            <Button onClick={save} disabled={busy}>
               保存
-            </button>
-            <button className="btn-ghost" onClick={onOpenRevisions} disabled={busy}>
+            </Button>
+            <Button variant="outline" onClick={onOpenRevisions} disabled={busy}>
+              <History />
               変更履歴
-            </button>
-            <button className="btn-danger ml-auto" onClick={onDelete} disabled={busy}>
+            </Button>
+            <Button
+              variant="destructive"
+              className="ml-auto"
+              onClick={onDelete}
+              disabled={busy}
+            >
+              <Trash2 />
               このプロジェクトを削除
-            </button>
+            </Button>
           </div>
         </div>
       </Section>

@@ -1,4 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
+import {
+  AlertTriangle,
+  Download,
+  EyeOff,
+  FileText,
+  Loader2,
+  Trash2,
+} from 'lucide-react'
+
 import type {
   JobProgress,
   StudioAsset,
@@ -6,6 +15,9 @@ import type {
   StudioTake,
 } from '../../types'
 import { Banner, NsfwBadge, Section } from '../ui'
+import { Badge } from '../ui/badge'
+import { Button } from '../ui/button'
+import { Progress } from '../ui/progress'
 import {
   TAKE_STATUS_CLASS,
   TAKE_STATUS_LABEL,
@@ -28,7 +40,7 @@ function fileNameOf(url: string): string {
  *
  * ファイルを持つ素材は参照として添付されるが、メタデータのみの素材は添付されず
  * 投入時に説明文へ置き換わる——どちらの扱いになるか本文の上で分かるように、色と
- * 📝 の印で分ける。
+ * 書類アイコンの印で分ける。
  */
 function MentionSpan({ text, asset }: { text: string; asset: StudioAsset }) {
   const description = asset.prompt_caption || asset.caption
@@ -44,13 +56,13 @@ function MentionSpan({ text, asset }: { text: string; asset: StudioAsset }) {
   }
   return (
     <span
-      className="rounded bg-slate-700/50 px-1 font-mono text-slate-300 underline decoration-dotted"
+      className="rounded bg-secondary px-1 font-mono text-foreground/85 underline decoration-dotted"
       title={`ファイルなしの素材です。投入時は説明文として展開されます${
         description ? `: ${description}` : ''
       }`}
     >
       {text}
-      <span className="ml-0.5 text-[10px] text-slate-400">📝</span>
+      <FileText className="ml-0.5 inline size-3 align-[-0.125em] text-muted-foreground" />
     </span>
   )
 }
@@ -66,13 +78,13 @@ function PromptPreview({
   const segments = useMemo(() => splitMentions(prompt, assets), [prompt, assets])
   if (!prompt.trim()) {
     return (
-      <p className="text-xs text-slate-600">
+      <p className="text-xs text-muted-foreground">
         プロンプトが空です（脚本タブで書いてください）
       </p>
     )
   }
   return (
-    <p className="whitespace-pre-wrap break-words text-xs leading-relaxed text-slate-300">
+    <p className="whitespace-pre-wrap break-words text-xs leading-relaxed text-foreground/85">
       {segments.map((segment, index) =>
         segment.asset ? (
           <MentionSpan key={index} text={segment.text} asset={segment.asset} />
@@ -125,15 +137,15 @@ function TakeCard({
   return (
     <li
       className={`rounded-md border p-1.5 ${
-        active ? 'border-accent-500 bg-accent-500/10' : 'border-ink-600 bg-ink-800'
+        active ? 'border-primary bg-primary/10' : 'border-border bg-surface-sunken'
       }`}
     >
       <button
-        className="flex w-full items-center gap-2 text-left"
+        className="flex w-full items-center gap-2 rounded text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
         onClick={onPreview}
         aria-current={active ? 'true' : undefined}
       >
-        <span className="h-10 w-14 shrink-0 overflow-hidden rounded bg-ink-900">
+        <span className="h-10 w-14 shrink-0 overflow-hidden rounded bg-background">
           {take.last_frame_url ? (
             <img
               src={take.last_frame_url}
@@ -141,9 +153,9 @@ function TakeCard({
               className={`h-full w-full object-cover ${hideNsfw ? 'blur-sm' : ''}`}
             />
           ) : (
-            <span className="flex h-full w-full items-center justify-center text-[10px] text-slate-600">
+            <span className="flex h-full w-full items-center justify-center text-[10px] text-muted-foreground/70">
               {take.status === 'rendering' ? (
-                <span className="h-4 w-4 animate-spin rounded-full border-2 border-ink-500 border-t-accent-500" />
+                <Loader2 className="size-4 animate-spin text-primary" />
               ) : (
                 '—'
               )}
@@ -152,23 +164,25 @@ function TakeCard({
         </span>
         <span className="min-w-0 flex-1">
           <span className="flex flex-wrap items-center gap-1">
-            <span className="text-[11px] text-slate-400">Take {index + 1}</span>
+            <span className="text-[11px] text-muted-foreground">Take {index + 1}</span>
             <span
               className={`chip !px-1.5 !py-0 text-[10px] ${TAKE_STATUS_CLASS[take.status]}`}
             >
               {TAKE_STATUS_LABEL[take.status]}
             </span>
             {stale && (
-              <span
-                className="chip !px-1.5 !py-0 border-amber-800 bg-amber-950 text-[10px] text-amber-300"
+              <Badge
+                variant="warning"
+                className="px-1.5 py-0 text-[10px] font-normal"
                 title={staleTooltip(take)}
               >
-                ⚠ 要再生成
-              </span>
+                <AlertTriangle className="size-2.5" />
+                要再生成
+              </Badge>
             )}
             {nsfw && <NsfwBadge className="!px-1 !py-0 text-[10px]" />}
           </span>
-          <span className="mt-0.5 block truncate text-[10px] text-slate-600">
+          <span className="tnum mt-0.5 block truncate text-[10px] text-muted-foreground/70">
             {percent != null ? `${percent}%` : (take.video_workflow ?? take.job_id)}
           </span>
         </span>
@@ -177,56 +191,65 @@ function TakeCard({
       {stale && (take.stale_reasons?.length ?? 0) > 0 && (
         <ul className="mt-1 space-y-0.5">
           {take.stale_reasons?.map((reason) => (
-            <li key={reason} className="text-[10px] text-amber-400/90">
-              ⚠ {reason}
+            <li
+              key={reason}
+              className="flex items-start gap-1 text-[10px] text-amber-400/90"
+            >
+              <AlertTriangle className="mt-px size-2.5 shrink-0" />
+              {reason}
             </li>
           ))}
         </ul>
       )}
 
       {take.warning && (
-        <p className="mt-1 text-[10px] text-amber-400" title={take.warning}>
-          ⚠ {take.warning}
+        <p
+          className="mt-1 flex items-start gap-1 text-[10px] text-amber-400"
+          title={take.warning}
+        >
+          <AlertTriangle className="mt-px size-2.5 shrink-0" />
+          {take.warning}
         </p>
       )}
 
       {take.error && (
-        <p className="mt-1 line-clamp-2 text-[10px] text-red-400" title={take.error}>
+        <p
+          className="mt-1 line-clamp-2 text-[10px] text-red-400"
+          title={take.error}
+        >
           {take.error}
         </p>
       )}
 
       <div className="mt-1 flex flex-wrap items-center gap-1">
-        <button
-          className="btn-ghost !px-1.5 !py-0.5 text-[10px]"
+        <Button
+          variant="outline"
+          size="xs"
           onClick={onSelect}
           disabled={busy || take.status === 'rendering' || !take.video_url}
         >
           採用
-        </button>
-        <button
-          className="btn-ghost !px-1.5 !py-0.5 text-[10px]"
+        </Button>
+        <Button
+          variant="outline"
+          size="xs"
           onClick={onReject}
           disabled={busy || take.status === 'rendering'}
         >
           却下
-        </button>
+        </Button>
         {take.video_url && (
-          <a
-            className="btn-ghost !px-1.5 !py-0.5 text-[10px]"
-            href={take.video_url}
-            download={fileNameOf(take.video_url)}
-          >
-            保存
-          </a>
+          <Button variant="outline" size="xs" asChild>
+            <a href={take.video_url} download={fileNameOf(take.video_url)}>
+              <Download />
+              保存
+            </a>
+          </Button>
         )}
-        <button
-          className="btn-danger !px-1.5 !py-0.5 text-[10px]"
-          onClick={onDelete}
-          disabled={busy}
-        >
+        <Button variant="destructive" size="xs" onClick={onDelete} disabled={busy}>
+          <Trash2 />
           削除
-        </button>
+        </Button>
       </div>
     </li>
   )
@@ -245,7 +268,9 @@ function TakeDetail({ take, index }: { take: StudioTake; index: number }) {
       title={`Take ${index + 1} の投入内容`}
       right={
         take.video_workflow ? (
-          <span className="text-[11px] text-slate-500">{take.video_workflow}</span>
+          <span className="text-[11px] text-muted-foreground">
+            {take.video_workflow}
+          </span>
         ) : undefined
       }
     >
@@ -256,18 +281,20 @@ function TakeDetail({ take, index }: { take: StudioTake; index: number }) {
       )}
       {take.prompt && (
         <>
-          <h4 className="label">実際に投入したプロンプト</h4>
-          <p className="whitespace-pre-wrap break-words rounded-md border border-ink-600 bg-ink-900/60 p-2 text-xs leading-relaxed text-slate-300">
+          <h4 className="mb-1 text-xs font-medium tracking-wide text-muted-foreground">
+            実際に投入したプロンプト
+          </h4>
+          <p className="whitespace-pre-wrap break-words rounded-md border border-border bg-surface-sunken p-2 text-xs leading-relaxed text-foreground/85">
             {take.prompt}
           </p>
         </>
       )}
       {take.source_prompt && (
         <details className="mt-2">
-          <summary className="cursor-pointer text-[11px] text-slate-500">
+          <summary className="cursor-pointer text-[11px] text-muted-foreground">
             英訳する前の原文を見る
           </summary>
-          <p className="mt-1 whitespace-pre-wrap break-words rounded-md border border-ink-600 bg-ink-900/60 p-2 text-xs leading-relaxed text-slate-400">
+          <p className="mt-1 whitespace-pre-wrap break-words rounded-md border border-border bg-surface-sunken p-2 text-xs leading-relaxed text-muted-foreground">
             {take.source_prompt}
           </p>
         </details>
@@ -342,7 +369,7 @@ export default function ProductionView({
 
   if (!selectedShot) {
     return (
-      <p className="rounded-md border border-ink-600 bg-ink-800 px-3 py-8 text-center text-xs text-slate-600">
+      <p className="rounded-md border border-border bg-surface-sunken px-3 py-8 text-center text-xs text-muted-foreground">
         左のレールでカットを選ぶと、ここで生成できます
       </p>
     )
@@ -361,7 +388,7 @@ export default function ProductionView({
           <Section
             title={`${selectedShot.title || 'カット'} のプロンプト`}
             right={
-              <span className="text-[11px] text-slate-500">
+              <span className="tnum text-[11px] text-muted-foreground">
                 {selectedShot.duration_seconds}s
                 {selectedShot.carry_over_end_frame
                   ? latentContinuity
@@ -380,24 +407,20 @@ export default function ProductionView({
               </div>
             )}
             <div className="mt-3 flex items-center gap-2">
-              <button
-                className="btn-primary"
+              <Button
                 onClick={() => onRender(selectedShot.id)}
                 disabled={busy || rendering}
               >
+                {rendering && <Loader2 className="animate-spin" />}
                 {rendering ? '生成中…' : '生成'}
-              </button>
+              </Button>
               {rendering && (
                 <div className="flex min-w-0 flex-1 items-center gap-2">
-                  <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-ink-700">
-                    <div
-                      className="h-full bg-accent-500 transition-all"
-                      style={{
-                        width: `${Math.round((renderingProgress?.progress ?? 0) * 100)}%`,
-                      }}
-                    />
-                  </div>
-                  <span className="shrink-0 text-[11px] text-slate-500">
+                  <Progress
+                    className="flex-1"
+                    value={Math.round((renderingProgress?.progress ?? 0) * 100)}
+                  />
+                  <span className="shrink-0 text-[11px] text-muted-foreground">
                     {renderingProgress?.message ??
                       renderingProgress?.status ??
                       'キュー待ち'}
@@ -420,15 +443,16 @@ export default function ProductionView({
                 />
                 {shouldHide(preview) && (
                   <button
-                    className="absolute inset-0 flex items-center justify-center rounded-md bg-ink-900/40 text-xs text-slate-200"
+                    className="absolute inset-0 flex items-center justify-center gap-1.5 rounded-md bg-background/50 text-xs text-foreground backdrop-blur-sm"
                     onClick={() => setRevealed((ids) => [...ids, preview.id])}
                   >
-                    🫣 NSFW（クリックで表示）
+                    <EyeOff className="size-3.5" />
+                    NSFW（クリックで表示）
                   </button>
                 )}
               </div>
             ) : (
-              <p className="px-3 py-10 text-center text-xs text-slate-600">
+              <p className="px-3 py-10 text-center text-xs text-muted-foreground">
                 再生できる Take がまだありません
               </p>
             )}
@@ -439,7 +463,7 @@ export default function ProductionView({
 
         <Section title={`Take（${takes.length}）`}>
           {takes.length === 0 ? (
-            <p className="px-2 py-6 text-center text-xs text-slate-600">
+            <p className="px-2 py-6 text-center text-xs text-muted-foreground">
               まだ生成していません
             </p>
           ) : (
@@ -467,7 +491,7 @@ export default function ProductionView({
       <Section title="タイムライン">
         <div className="flex gap-2 overflow-x-auto pb-1">
           {shots.length === 0 && (
-            <p className="w-full py-4 text-center text-xs text-slate-600">
+            <p className="w-full py-4 text-center text-xs text-muted-foreground">
               カットがありません
             </p>
           )}
@@ -477,15 +501,15 @@ export default function ProductionView({
             return (
               <button
                 key={shot.id}
-                className={`w-28 shrink-0 overflow-hidden rounded-md border text-left transition-colors ${
+                className={`w-28 shrink-0 overflow-hidden rounded-md border text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 ${
                   active
-                    ? 'border-accent-500 ring-2 ring-accent-500/60'
-                    : 'border-ink-600 hover:border-ink-500'
+                    ? 'border-primary ring-2 ring-primary/60'
+                    : 'border-border hover:border-primary/50'
                 }`}
                 onClick={() => onSelectShot(shot.id)}
                 title={shot.title || `カット ${index + 1}`}
               >
-                <span className="block h-16 w-full bg-ink-900">
+                <span className="block h-16 w-full bg-background">
                   {take?.last_frame_url ? (
                     <img
                       src={take.last_frame_url}
@@ -495,12 +519,12 @@ export default function ProductionView({
                       }`}
                     />
                   ) : (
-                    <span className="flex h-full w-full items-center justify-center text-[10px] text-slate-600">
+                    <span className="flex h-full w-full items-center justify-center text-[10px] text-muted-foreground/70">
                       未採用
                     </span>
                   )}
                 </span>
-                <span className="block truncate bg-ink-800 px-1.5 py-1 text-[10px] text-slate-300">
+                <span className="tnum block truncate bg-card px-1.5 py-1 text-[10px] text-foreground/85">
                   {String(index + 1).padStart(2, '0')}{' '}
                   {shot.title || `カット ${index + 1}`}
                 </span>

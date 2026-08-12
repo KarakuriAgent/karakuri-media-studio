@@ -1,4 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { ArrowLeft, ClipboardList, LayoutGrid } from 'lucide-react'
+
 import { ApiError, api, formatDetail } from '../../api'
 import type {
   CanvasProgress,
@@ -15,6 +17,8 @@ import type {
   StudioShotUpdate,
 } from '../../types'
 import { Banner } from '../ui'
+import { Button } from '../ui/button'
+import { Tabs, TabsList, TabsTrigger } from '../ui/tabs'
 import TargetSelector from '../TargetSelector'
 import CanvasView from '../canvas/CanvasView'
 import OverviewView from './OverviewView'
@@ -42,9 +46,9 @@ type StudioTab = 'overview' | 'script' | 'world' | 'production'
  */
 type ProjectMode = 'studio' | 'canvas'
 
-const MODES: { value: ProjectMode; label: string }[] = [
-  { value: 'studio', label: '📋 スタジオ表示' },
-  { value: 'canvas', label: '🗂 キャンバス表示' },
+const MODES: { value: ProjectMode; label: string; icon: typeof ClipboardList }[] = [
+  { value: 'studio', label: 'スタジオ表示', icon: ClipboardList },
+  { value: 'canvas', label: 'キャンバス表示', icon: LayoutGrid },
 ]
 
 const TABS: { value: StudioTab; label: string }[] = [
@@ -293,7 +297,7 @@ export default function StudioView({
       setTab('script')
     })
 
-  /** その場に属するカットを足す（レールの場の「＋」から）。 */
+  /** その場に属するカットを足す（レールの場の「＋」ボタンから）。 */
   const addShotToScene = (sceneId: string) =>
     void run(async () => {
       if (!projectId) return
@@ -516,28 +520,23 @@ export default function StudioView({
 
   /** スタジオ表示 ⇔ キャンバス表示（同じプロジェクトの別の見せ方）。 */
   const modeToggle = (
-    <div className="flex rounded-md border border-ink-600 bg-ink-800 p-0.5">
-      {MODES.map((item) => (
-        <button
-          key={item.value}
-          className={`rounded px-2.5 py-1 text-xs transition-colors ${
-            mode === item.value
-              ? 'bg-accent-500 text-white'
-              : 'text-slate-400 hover:bg-ink-700'
-          }`}
-          aria-pressed={mode === item.value}
-          onClick={() => setMode(item.value)}
-        >
-          {item.label}
-        </button>
-      ))}
-    </div>
+    <Tabs value={mode} onValueChange={(value) => setMode(value as ProjectMode)}>
+      <TabsList>
+        {MODES.map((item) => (
+          <TabsTrigger key={item.value} value={item.value}>
+            <item.icon />
+            {item.label}
+          </TabsTrigger>
+        ))}
+      </TabsList>
+    </Tabs>
   )
 
   const backToProjects = (
-    <button className="btn-ghost !py-1 text-xs" onClick={() => setProjectId(null)}>
-      ← プロジェクト一覧
-    </button>
+    <Button variant="outline" size="sm" onClick={() => setProjectId(null)}>
+      <ArrowLeft />
+      プロジェクト一覧
+    </Button>
   )
 
   if (mode === 'canvas') {
@@ -547,7 +546,7 @@ export default function StudioView({
         <div className="flex min-h-0 flex-1 flex-col gap-2 p-3">
           <div className="flex flex-wrap items-center gap-2">
             {backToProjects}
-            <h2 className="truncate text-sm font-semibold text-slate-100">
+            <h2 className="truncate text-sm font-semibold text-foreground">
               {detail.name}
             </h2>
             <div className="ml-auto flex items-center gap-2">
@@ -570,7 +569,7 @@ export default function StudioView({
     <main className="flex min-h-0 flex-1 flex-col">
       {banner}
       <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3 lg:flex-row lg:overflow-hidden">
-        <aside className="w-full shrink-0 rounded-lg border border-ink-700 bg-ink-800/60 lg:w-64 lg:overflow-hidden">
+        <aside className="w-full shrink-0 rounded-lg border border-border bg-card shadow-elevation-1 lg:w-64 lg:overflow-hidden">
           <ShotRail
             tree={tree}
             total={detail.shots.length}
@@ -598,27 +597,20 @@ export default function StudioView({
         <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
           <div className="flex flex-wrap items-center gap-2">
             {backToProjects}
-            <h2 className="truncate text-sm font-semibold text-slate-100">
+            <h2 className="truncate text-sm font-semibold text-foreground">
               {detail.name}
             </h2>
             <div className="ml-auto">{targetSelector}</div>
             {modeToggle}
-            <div className="flex rounded-md border border-ink-600 bg-ink-800 p-0.5">
-              {TABS.map((item) => (
-                <button
-                  key={item.value}
-                  className={`rounded px-2.5 py-1 text-xs transition-colors ${
-                    tab === item.value
-                      ? 'bg-accent-500 text-white'
-                      : 'text-slate-400 hover:bg-ink-700'
-                  }`}
-                  aria-pressed={tab === item.value}
-                  onClick={() => setTab(item.value)}
-                >
-                  {item.label}
-                </button>
-              ))}
-            </div>
+            <Tabs value={tab} onValueChange={(value) => setTab(value as StudioTab)}>
+              <TabsList>
+                {TABS.map((item) => (
+                  <TabsTrigger key={item.value} value={item.value}>
+                    {item.label}
+                  </TabsTrigger>
+                ))}
+              </TabsList>
+            </Tabs>
           </div>
 
           <div className="min-h-0 flex-1 lg:overflow-y-auto lg:pr-1">

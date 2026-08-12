@@ -1,3 +1,5 @@
+import { AlertTriangle } from 'lucide-react'
+
 import type { StudioProjectDetail, StudioTake } from '../../../types'
 import {
   TAKE_STATUS_CLASS,
@@ -28,19 +30,23 @@ export default function MediaFields({
           {TAKE_STATUS_LABEL[take.status]}
         </span>
         {shot && (
-          <span className="text-slate-400">{shot.title || '無題のカット'}</span>
+          <span className="text-muted-foreground">{shot.title || '無題のカット'}</span>
         )}
         {take.video_workflow && (
-          <span className="text-slate-500">{take.video_workflow}</span>
+          <span className="text-muted-foreground">{take.video_workflow}</span>
         )}
         {isStale(take) && (
-          <span className="text-amber-300" title={staleTooltip(take)}>
-            ⚠ 古い
+          <span
+            className="flex items-center gap-1 text-amber-300"
+            title={staleTooltip(take)}
+          >
+            <AlertTriangle className="size-3 shrink-0" aria-hidden="true" />
+            古い
           </span>
         )}
       </div>
 
-      <div className="overflow-hidden rounded-md border border-ink-600 bg-ink-900">
+      <div className="overflow-hidden rounded-md border border-border bg-surface-sunken">
         {take.video_url ? (
           <video src={take.video_url} controls className="max-h-72 w-full object-contain" />
         ) : take.last_frame_url ? (
@@ -50,7 +56,7 @@ export default function MediaFields({
             className="max-h-72 w-full object-contain"
           />
         ) : (
-          <p className="px-3 py-6 text-center text-[11px] text-slate-500">
+          <p className="px-3 py-6 text-center text-[11px] text-muted-foreground">
             まだ成果物がありません
           </p>
         )}
@@ -68,15 +74,19 @@ export default function MediaFields({
       )}
 
       <div>
-        <p className="label">投入したプロンプト</p>
-        <p className="whitespace-pre-wrap break-words rounded-md border border-ink-600 bg-ink-900 p-2 text-xs text-slate-300">
+        <p className="mb-1 text-xs font-medium tracking-wide text-muted-foreground">
+          投入したプロンプト
+        </p>
+        <p className="whitespace-pre-wrap break-words rounded-md border border-border bg-surface-sunken p-2 text-xs text-foreground/85">
           {take.prompt || '（記録なし）'}
         </p>
       </div>
       {take.source_prompt && (
         <div>
-          <p className="label">英訳する前の原文</p>
-          <p className="whitespace-pre-wrap break-words rounded-md border border-ink-600 bg-ink-900 p-2 text-xs text-slate-400">
+          <p className="mb-1 text-xs font-medium tracking-wide text-muted-foreground">
+            英訳する前の原文
+          </p>
+          <p className="whitespace-pre-wrap break-words rounded-md border border-border bg-surface-sunken p-2 text-xs text-muted-foreground">
             {take.source_prompt}
           </p>
         </div>

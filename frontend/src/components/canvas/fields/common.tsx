@@ -1,6 +1,10 @@
 /** カード編集フォームの部品（9 種の fields/* で共有する）。 */
 import type { ReactNode } from 'react'
 
+import { Input } from '../../ui/input'
+import { Label } from '../../ui/label'
+import { Textarea } from '../../ui/textarea'
+
 export function Field({
   label,
   children,
@@ -10,7 +14,7 @@ export function Field({
 }) {
   return (
     <div>
-      <label className="label">{label}</label>
+      <Label className="mb-1">{label}</Label>
       {children}
     </div>
   )
@@ -29,8 +33,7 @@ export function TextField({
 }) {
   return (
     <Field label={label}>
-      <input
-        className="field"
+      <Input
         aria-label={label}
         value={value}
         placeholder={placeholder}
@@ -55,8 +58,7 @@ export function AreaField({
 }) {
   return (
     <Field label={label}>
-      <textarea
-        className="field"
+      <Textarea
         aria-label={label}
         rows={rows}
         value={value}
@@ -82,8 +84,7 @@ export function NumberField({
 }) {
   return (
     <Field label={label}>
-      <input
-        className="field"
+      <Input
         aria-label={label}
         type="number"
         step={step}
@@ -107,8 +108,7 @@ export function UrlListField({
 }) {
   return (
     <Field label={label}>
-      <textarea
-        className="field"
+      <Textarea
         aria-label={label}
         rows={2}
         value={value.join('\n')}

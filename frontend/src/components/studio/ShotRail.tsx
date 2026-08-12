@@ -1,4 +1,16 @@
+import type { ReactNode } from 'react'
+import {
+  ChevronDown,
+  ChevronUp,
+  Clock,
+  FileText,
+  Pencil,
+  Plus,
+  X,
+} from 'lucide-react'
+
 import type { StudioTake } from '../../types'
+import { Button } from '../ui/button'
 import {
   SHOT_STATUS_CLASS,
   SHOT_STATUS_LABEL,
@@ -9,7 +21,7 @@ import {
   type ShotTree,
 } from './studio'
 
-/** 話・場の見出しに並べる操作ボタン（記号だけなので aria-label で名前を付ける）。 */
+/** 話・場の見出しに並べる操作ボタン（アイコンだけなので aria-label で名前を付ける）。 */
 function IconButton({
   label,
   title,
@@ -22,19 +34,21 @@ function IconButton({
   title: string
   onClick: () => void
   disabled?: boolean
-  children: string
+  children: ReactNode
   danger?: boolean
 }) {
   return (
-    <button
-      className={`${danger ? 'btn-danger' : 'btn-ghost'} !px-1.5 !py-0 text-[10px]`}
+    <Button
+      variant={danger ? 'destructive' : 'outline'}
+      size="icon-xs"
+      className="size-5"
       aria-label={label}
       title={title}
       onClick={onClick}
       disabled={disabled}
     >
       {children}
-    </button>
+    </Button>
   )
 }
 
@@ -64,15 +78,15 @@ function ShotItem({
     <li className="flex items-stretch gap-1">
       <button
         aria-label={label}
-        className={`flex min-w-0 flex-1 items-center gap-2 rounded-md border px-2 py-2 text-left transition-colors ${
+        className={`flex min-w-0 flex-1 items-center gap-2 rounded-md border px-2 py-2 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 ${
           active
-            ? 'border-accent-500 bg-accent-500/10'
-            : 'border-ink-600 bg-ink-800 hover:border-ink-500'
+            ? 'border-primary bg-primary/10'
+            : 'border-border bg-surface-sunken hover:border-primary/50'
         }`}
         onClick={() => onSelect(shot.id)}
         aria-current={active ? 'true' : undefined}
       >
-        <span className="h-10 w-14 shrink-0 overflow-hidden rounded bg-ink-900">
+        <span className="h-10 w-14 shrink-0 overflow-hidden rounded bg-background">
           {selectedTake?.last_frame_url ? (
             <img
               src={selectedTake.last_frame_url}
@@ -80,20 +94,22 @@ function ShotItem({
               className="h-full w-full object-cover"
             />
           ) : (
-            <span className="flex h-full w-full items-center justify-center text-[10px] text-slate-600">
+            <span className="tnum flex h-full w-full items-center justify-center text-[10px] text-muted-foreground/70">
               {String(index + 1).padStart(2, '0')}
             </span>
           )}
         </span>
         <span className="min-w-0 flex-1">
-          <span className="block truncate text-xs text-slate-200">{label}</span>
+          <span className="block truncate text-xs text-foreground/90">{label}</span>
           <span className="mt-0.5 flex items-center gap-1">
             <span
               className={`chip !px-1.5 !py-0 text-[10px] ${SHOT_STATUS_CLASS[shot.status]}`}
             >
               {SHOT_STATUS_LABEL[shot.status]}
             </span>
-            <span className="text-[10px] text-slate-500">{shot.duration_seconds}s</span>
+            <span className="tnum text-[10px] text-muted-foreground">
+              {shot.duration_seconds}s
+            </span>
           </span>
         </span>
       </button>
@@ -104,7 +120,7 @@ function ShotItem({
           onClick={() => onMove(shot.id, -1)}
           disabled={busy || index === 0}
         >
-          ▲
+          <ChevronUp />
         </IconButton>
         <IconButton
           label={`${label}を下へ`}
@@ -112,7 +128,7 @@ function ShotItem({
           onClick={() => onMove(shot.id, 1)}
           disabled={busy || index === total - 1}
         >
-          ▼
+          <ChevronDown />
         </IconButton>
       </span>
     </li>
@@ -194,7 +210,7 @@ export default function ShotRail({
 
   const shotList = (nodes: ShotNode[], empty: string) =>
     nodes.length === 0 ? (
-      <p className="px-2 py-2 text-[10px] text-slate-600">{empty}</p>
+      <p className="px-2 py-2 text-[10px] text-muted-foreground/70">{empty}</p>
     ) : (
       <ul className="space-y-1">
         {nodes.map((node) => (
@@ -214,32 +230,26 @@ export default function ShotRail({
 
   return (
     <div className="flex h-full flex-col">
-      <div className="flex items-center gap-2 border-b border-ink-700 px-3 py-2">
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+      <div className="flex items-center gap-2 border-b border-border px-3 py-2">
+        <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           脚本
         </h2>
-        <span className="text-xs text-slate-600">{total} カット</span>
+        <span className="tnum text-xs text-muted-foreground/70">{total} カット</span>
         <span className="ml-auto flex gap-1">
-          <button
-            className="btn-ghost !px-2 !py-1 text-xs"
-            onClick={onAddEpisode}
-            disabled={busy}
-          >
-            ＋ 話
-          </button>
-          <button
-            className="btn-ghost !px-2 !py-1 text-xs"
-            onClick={onAdd}
-            disabled={busy}
-          >
-            ＋ カット
-          </button>
+          <Button variant="outline" size="xs" onClick={onAddEpisode} disabled={busy}>
+            <Plus />
+            話を追加
+          </Button>
+          <Button variant="outline" size="xs" onClick={onAdd} disabled={busy}>
+            <Plus />
+            カットを追加
+          </Button>
         </span>
       </div>
 
       <div className="flex-1 space-y-2 overflow-y-auto p-2">
         {total === 0 && tree.episodes.length === 0 && (
-          <p className="px-2 py-6 text-center text-xs text-slate-600">
+          <p className="px-2 py-6 text-center text-xs text-muted-foreground">
             まだカットがありません
           </p>
         )}
@@ -248,11 +258,11 @@ export default function ShotRail({
           const label = episodeLabel(node.episode, episodeIndex)
           return (
             <section key={node.episode.id}>
-              <div className="flex items-center gap-1 rounded-md bg-ink-900/60 px-2 py-1">
-                <h3 className="min-w-0 flex-1 truncate text-[11px] font-semibold text-slate-200">
+              <div className="flex items-center gap-1 rounded-md bg-surface-sunken px-2 py-1">
+                <h3 className="min-w-0 flex-1 truncate text-[11px] font-semibold text-foreground/90">
                   {label}
                 </h3>
-                <span className="shrink-0 text-[10px] text-slate-600">
+                <span className="tnum shrink-0 text-[10px] text-muted-foreground/70">
                   {node.shotCount}
                 </span>
                 <IconButton
@@ -261,7 +271,7 @@ export default function ShotRail({
                   onClick={() => onAddScene(node.episode.id)}
                   disabled={busy}
                 >
-                  ＋場
+                  <Plus />
                 </IconButton>
                 <IconButton
                   label={`${label}を改名`}
@@ -273,7 +283,7 @@ export default function ShotRail({
                   }
                   disabled={busy}
                 >
-                  ✎
+                  <Pencil />
                 </IconButton>
                 <IconButton
                   label={`${label}のあらすじを編集`}
@@ -285,7 +295,7 @@ export default function ShotRail({
                   }
                   disabled={busy}
                 >
-                  📝
+                  <FileText />
                 </IconButton>
                 <IconButton
                   label={`${label}を上へ`}
@@ -293,7 +303,7 @@ export default function ShotRail({
                   onClick={() => onMoveEpisode(node.episode.id, -1)}
                   disabled={busy || episodeIndex === 0}
                 >
-                  ▲
+                  <ChevronUp />
                 </IconButton>
                 <IconButton
                   label={`${label}を下へ`}
@@ -301,7 +311,7 @@ export default function ShotRail({
                   onClick={() => onMoveEpisode(node.episode.id, 1)}
                   disabled={busy || episodeIndex === tree.episodes.length - 1}
                 >
-                  ▼
+                  <ChevronDown />
                 </IconButton>
                 <IconButton
                   label={`${label}を削除`}
@@ -310,12 +320,12 @@ export default function ShotRail({
                   disabled={busy}
                   danger
                 >
-                  ✕
+                  <X />
                 </IconButton>
               </div>
 
               {node.scenes.length === 0 && (
-                <p className="px-2 py-2 text-[10px] text-slate-600">
+                <p className="px-2 py-2 text-[10px] text-muted-foreground/70">
                   まだ場がありません
                 </p>
               )}
@@ -323,11 +333,11 @@ export default function ShotRail({
                 const name = sceneLabel(sceneNode.scene, sceneIndex)
                 return (
                   <div key={sceneNode.scene.id} className="mt-1 pl-2">
-                    <div className="flex items-center gap-1 border-l-2 border-ink-600 pl-2">
-                      <h4 className="min-w-0 flex-1 truncate text-[11px] text-slate-400">
+                    <div className="flex items-center gap-1 border-l-2 border-border pl-2">
+                      <h4 className="min-w-0 flex-1 truncate text-[11px] text-muted-foreground">
                         {name}
                         {sceneNode.scene.time_of_day && (
-                          <span className="ml-1 text-[10px] text-slate-600">
+                          <span className="ml-1 text-[10px] text-muted-foreground/70">
                             {sceneNode.scene.time_of_day}
                           </span>
                         )}
@@ -338,7 +348,7 @@ export default function ShotRail({
                         onClick={() => onAddShotToScene(sceneNode.scene.id)}
                         disabled={busy}
                       >
-                        ＋
+                        <Plus />
                       </IconButton>
                       <IconButton
                         label={`${name}を改名`}
@@ -350,7 +360,7 @@ export default function ShotRail({
                         }
                         disabled={busy}
                       >
-                        ✎
+                        <Pencil />
                       </IconButton>
                       <IconButton
                         label={`${name}のあらすじを編集`}
@@ -365,7 +375,7 @@ export default function ShotRail({
                         }
                         disabled={busy}
                       >
-                        📝
+                        <FileText />
                       </IconButton>
                       <IconButton
                         label={`${name}の時間帯を編集`}
@@ -380,7 +390,7 @@ export default function ShotRail({
                         }
                         disabled={busy}
                       >
-                        🕒
+                        <Clock />
                       </IconButton>
                       <IconButton
                         label={`${name}を上へ`}
@@ -390,7 +400,7 @@ export default function ShotRail({
                         }
                         disabled={busy || sceneIndex === 0}
                       >
-                        ▲
+                        <ChevronUp />
                       </IconButton>
                       <IconButton
                         label={`${name}を下へ`}
@@ -400,7 +410,7 @@ export default function ShotRail({
                         }
                         disabled={busy || sceneIndex === node.scenes.length - 1}
                       >
-                        ▼
+                        <ChevronDown />
                       </IconButton>
                       <IconButton
                         label={`${name}を削除`}
@@ -409,7 +419,7 @@ export default function ShotRail({
                         disabled={busy}
                         danger
                       >
-                        ✕
+                        <X />
                       </IconButton>
                     </div>
                     <div className="mt-1 pl-2">
@@ -424,11 +434,11 @@ export default function ShotRail({
 
         {(tree.unassigned.length > 0 || tree.episodes.length > 0) && (
           <section>
-            <div className="flex items-center gap-1 rounded-md bg-ink-900/60 px-2 py-1">
-              <h3 className="min-w-0 flex-1 truncate text-[11px] font-semibold text-slate-400">
+            <div className="flex items-center gap-1 rounded-md bg-surface-sunken px-2 py-1">
+              <h3 className="min-w-0 flex-1 truncate text-[11px] font-semibold text-muted-foreground">
                 未分類
               </h3>
-              <span className="shrink-0 text-[10px] text-slate-600">
+              <span className="tnum shrink-0 text-[10px] text-muted-foreground/70">
                 {tree.unassigned.length}
               </span>
             </div>

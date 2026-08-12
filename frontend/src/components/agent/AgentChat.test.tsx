@@ -79,7 +79,7 @@ describe('AgentChat の入力欄', () => {
     show({ status: 'running' })
     const input = screen.getByRole('textbox') as HTMLTextAreaElement
     expect(input.disabled).toBe(true)
-    expect(input.placeholder).toBe('実行中は完了を待つか ⏹停止 してください')
+    expect(input.placeholder).toBe('実行中は完了を待つか「停止」してください')
     expect((screen.getByRole('button', { name: '送信' }) as HTMLButtonElement).disabled).toBe(
       true,
     )
@@ -112,26 +112,26 @@ describe('AgentChat のファイル添付', () => {
   it('選んだファイルは即アップロードしてチップに出る', async () => {
     show()
     attach()
-    expect(await screen.findByText('📎 photo.png')).not.toBeNull()
+    expect(await screen.findByText('photo.png')).not.toBeNull()
   })
 
   it('添付だけでも送信でき、パスが onSend に渡る', async () => {
     const { onSend } = show()
     attach()
-    await screen.findByText('📎 photo.png')
+    await screen.findByText('photo.png')
 
     const button = screen.getByRole('button', { name: '送信' }) as HTMLButtonElement
     expect(button.disabled).toBe(false)
     fireEvent.click(button)
     expect(onSend).toHaveBeenCalledWith('', ['attachments/photo.png'])
     // 送信後はチップを片付ける
-    await waitFor(() => expect(screen.queryByText('📎 photo.png')).toBeNull())
+    await waitFor(() => expect(screen.queryByText('photo.png')).toBeNull())
   })
 
   it('本文と一緒に送ると両方渡る', async () => {
     const { onSend } = show()
     attach()
-    await screen.findByText('📎 photo.png')
+    await screen.findByText('photo.png')
 
     fireEvent.change(screen.getByRole('textbox'), { target: { value: 'これ見て' } })
     fireEvent.click(screen.getByRole('button', { name: '送信' }))
@@ -142,7 +142,7 @@ describe('AgentChat のファイル添付', () => {
     show()
     attach()
     fireEvent.click(await screen.findByRole('button', { name: 'photo.png を外す' }))
-    expect(screen.queryByText('📎 photo.png')).toBeNull()
+    expect(screen.queryByText('photo.png')).toBeNull()
     expect((screen.getByRole('button', { name: '送信' }) as HTMLButtonElement).disabled).toBe(
       true,
     )

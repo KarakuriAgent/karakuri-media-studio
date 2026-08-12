@@ -1,6 +1,12 @@
 import { useState } from 'react'
+import { Loader2 } from 'lucide-react'
 import { modelSlotsForJob } from '../form'
 import type { Job, JobContinue, Options } from '../types'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Textarea } from '@/components/ui/textarea'
+import { NativeSelect } from './NativeSelect'
 import WorkflowPicker from './WorkflowPicker'
 import { Banner, Modal } from './ui'
 
@@ -81,12 +87,12 @@ export default function ContinueModal({
 
   const field = (key: string, label: string, type: 'text' | 'number' = 'text') => (
     <div>
-      <label className="label" htmlFor={`continue-${key}`}>
+      <Label className="mb-1" htmlFor={`continue-${key}`}>
         {label}
-      </label>
-      <input
+      </Label>
+      <Input
         id={`continue-${key}`}
-        className="field"
+        className={type === 'number' ? 'tnum' : undefined}
         type={type}
         value={draft[key] ?? INHERIT}
         placeholder={placeholderOf(job, key)}
@@ -98,14 +104,16 @@ export default function ContinueModal({
   return (
     <Modal title="続きを生成" onClose={onClose}>
       <div className="space-y-3">
-        <p className="text-xs text-slate-400">
+        <p className="text-xs text-muted-foreground">
           空欄の項目は元ジョブの設定をそのまま引き継ぎます。変えたい欄だけ埋めてください。
         </p>
 
         {error && <Banner>{error}</Banner>}
 
         <div>
-          <p className="label">動画ワークフロー</p>
+          <p className="mb-1 block text-xs font-medium tracking-wide text-muted-foreground">
+            動画ワークフロー
+          </p>
           <WorkflowPicker
             workflows={options?.video_workflows ?? []}
             value={workflowId}
@@ -117,12 +125,12 @@ export default function ContinueModal({
         </div>
 
         <div>
-          <label className="label" htmlFor="continue-video_prompt">
+          <Label className="mb-1" htmlFor="continue-video_prompt">
             動画プロンプト
-          </label>
-          <textarea
+          </Label>
+          <Textarea
             id="continue-video_prompt"
-            className="field h-24 resize-y"
+            className="h-24 resize-y"
             value={draft.video_prompt ?? INHERIT}
             placeholder={placeholderOf(job, 'video_prompt')}
             onChange={(event) => set('video_prompt', event.target.value)}
@@ -130,12 +138,12 @@ export default function ContinueModal({
         </div>
 
         <div>
-          <label className="label" htmlFor="continue-negative_prompt">
+          <Label className="mb-1" htmlFor="continue-negative_prompt">
             ネガティブプロンプト
-          </label>
-          <textarea
+          </Label>
+          <Textarea
             id="continue-negative_prompt"
-            className="field h-16 resize-y"
+            className="h-16 resize-y"
             value={draft.negative_prompt ?? INHERIT}
             placeholder={placeholderOf(job, 'negative_prompt')}
             onChange={(event) => set('negative_prompt', event.target.value)}
@@ -144,12 +152,11 @@ export default function ContinueModal({
 
         <div className="grid gap-2 sm:grid-cols-2">
           <div>
-            <label className="label" htmlFor="continue-aspect_ratio">
+            <Label className="mb-1" htmlFor="continue-aspect_ratio">
               アスペクト比
-            </label>
-            <select
+            </Label>
+            <NativeSelect
               id="continue-aspect_ratio"
-              className="field"
               value={draft.aspect_ratio ?? INHERIT}
               onChange={(event) => set('aspect_ratio', event.target.value)}
             >
@@ -159,7 +166,7 @@ export default function ContinueModal({
                   {ratio}
                 </option>
               ))}
-            </select>
+            </NativeSelect>
           </div>
           {field('megapixels', 'メガピクセル', 'number')}
           {field('duration', '長さ（秒）', 'number')}
@@ -176,9 +183,8 @@ export default function ContinueModal({
               const title = `使用モデル: ${slot.label || `${slot.node_id}.${slot.field}`}`
               return (
                 <div key={slot.key}>
-                  <label className="label">{title}</label>
-                  <select
-                    className="field"
+                  <Label className="mb-1">{title}</Label>
+                  <NativeSelect
                     aria-label={title}
                     value={modelOverrides[slot.key] ?? INHERIT}
                     onChange={(event) =>
@@ -196,32 +202,32 @@ export default function ContinueModal({
                         {name === slot.default ? `${name}（既定）` : name}
                       </option>
                     ))}
-                  </select>
+                  </NativeSelect>
                 </div>
               )
             })}
           </div>
         )}
 
-        <div className="flex flex-wrap gap-2 border-t border-ink-600 pt-3">
-          <button
-            className="btn-primary"
+        <div className="flex flex-wrap gap-2 border-t border-border pt-3">
+          <Button
             disabled={busy}
             onClick={() => onSubmit(continuePayload(draft, modelOverrides))}
           >
+            {busy && <Loader2 className="animate-spin" />}
             {busy ? '送信中…' : 'この設定で続き生成'}
-          </button>
-          <button
-            className="btn-ghost"
+          </Button>
+          <Button
+            variant="outline"
             disabled={busy}
             title="入力を無視して、元ジョブの設定をそのまま引き継ぎます"
             onClick={() => onSubmit({})}
           >
             そのまま続き生成
-          </button>
-          <button className="btn-ghost ml-auto" disabled={busy} onClick={onClose}>
+          </Button>
+          <Button variant="ghost" className="ml-auto" disabled={busy} onClick={onClose}>
             取消
-          </button>
+          </Button>
         </div>
       </div>
     </Modal>

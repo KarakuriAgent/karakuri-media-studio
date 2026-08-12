@@ -510,14 +510,14 @@ export default function CanvasView({
           onAddEpisode={addEpisode}
         />
         {!desktop && (
-          <div className="ml-auto flex rounded-md border border-ink-600 bg-ink-800 p-0.5">
+          <div className="ml-auto flex rounded-md border border-border bg-card p-0.5">
             {(['board', 'chat'] as const).map((value) => (
               <button
                 key={value}
-                className={`rounded px-2.5 py-1 text-xs transition-colors ${
+                className={`rounded-sm px-2.5 py-1 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 ${
                   pane === value
-                    ? 'bg-accent-500 text-white'
-                    : 'text-slate-400 hover:bg-ink-700'
+                    ? 'bg-primary text-primary-foreground'
+                    : 'text-muted-foreground hover:bg-secondary hover:text-foreground'
                 }`}
                 aria-pressed={pane === value}
                 onClick={() => setPane(value)}
@@ -531,7 +531,7 @@ export default function CanvasView({
 
       <div className="flex min-h-0 flex-1 gap-3">
         <section
-          className={`min-h-0 min-w-0 flex-1 overflow-hidden rounded-lg border border-ink-600 bg-ink-900 ${
+          className={`min-h-0 min-w-0 flex-1 overflow-hidden rounded-lg border border-border bg-background ${
             boardVisible ? 'flex' : 'hidden'
           }`}
         >
@@ -553,7 +553,7 @@ export default function CanvasView({
               fitRequest={fitRequest}
             />
           ) : (
-            <p className="m-auto text-xs text-slate-600">
+            <p className="m-auto text-xs text-muted-foreground">
               {/* 別のタブの盤面が残っているあいだも「読み込み中」（すぐ取り直す） */}
               {loading || board
                 ? 'キャンバスを読み込み中…'
@@ -566,8 +566,8 @@ export default function CanvasView({
           <aside
             className={
               desktop
-                ? 'flex min-h-0 w-80 shrink-0 flex-col gap-2 rounded-lg border border-ink-600 bg-ink-900 p-3'
-                : 'flex min-h-0 flex-1 flex-col gap-2 rounded-lg border border-ink-600 bg-ink-900 p-3'
+                ? 'flex min-h-0 w-80 shrink-0 flex-col gap-2 rounded-lg border border-border bg-background p-3'
+                : 'flex min-h-0 flex-1 flex-col gap-2 rounded-lg border border-border bg-background p-3'
             }
           >
             <CanvasChat

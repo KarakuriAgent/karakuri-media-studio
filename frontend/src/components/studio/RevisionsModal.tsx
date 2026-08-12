@@ -1,5 +1,8 @@
+import { Loader2, Undo2 } from 'lucide-react'
+
 import type { StudioRevision } from '../../types'
 import { Modal } from '../ui'
+import { Button } from '../ui/button'
 import { REVISION_ACTOR_CLASS, REVISION_ACTOR_LABEL } from './studio'
 
 /** ISO 8601 を「2026-08-07 09:30」まで詰める（秒とタイムゾーンは落とす）。 */
@@ -31,9 +34,12 @@ export default function RevisionsModal({
   return (
     <Modal title="変更履歴" onClose={onClose} wide closeOnBackdrop>
       {loading ? (
-        <p className="px-3 py-6 text-center text-xs text-slate-600">読込中…</p>
+        <p className="flex items-center justify-center gap-2 px-3 py-6 text-center text-xs text-muted-foreground">
+          <Loader2 className="size-3.5 animate-spin" />
+          読込中…
+        </p>
       ) : revisions.length === 0 ? (
-        <p className="px-3 py-6 text-center text-xs text-slate-600">
+        <p className="px-3 py-6 text-center text-xs text-muted-foreground">
           まだ変更履歴がありません
         </p>
       ) : (
@@ -41,12 +47,12 @@ export default function RevisionsModal({
           {revisions.map((revision) => (
             <li
               key={revision.seq}
-              className="flex items-center gap-2 rounded-md border border-ink-600 bg-ink-800 px-3 py-2"
+              className="flex items-center gap-2 rounded-md border border-border bg-surface-sunken px-3 py-2"
             >
-              <span className="shrink-0 font-mono text-[11px] text-slate-600">
+              <span className="tnum shrink-0 font-mono text-[11px] text-muted-foreground/70">
                 #{revision.seq}
               </span>
-              <span className="shrink-0 text-[11px] text-slate-500">
+              <span className="tnum shrink-0 text-[11px] text-muted-foreground">
                 {formatRevisionTime(revision.created_at)}
               </span>
               <span
@@ -56,17 +62,20 @@ export default function RevisionsModal({
               >
                 {REVISION_ACTOR_LABEL[revision.actor]}
               </span>
-              <span className="min-w-0 flex-1 truncate text-xs text-slate-200">
+              <span className="min-w-0 flex-1 truncate text-xs text-foreground/90">
                 {revision.action || '（説明なし）'}
               </span>
-              <button
-                className="btn-ghost !px-2 !py-0.5 shrink-0 text-[10px]"
+              <Button
+                variant="outline"
+                size="xs"
+                className="shrink-0"
                 aria-label={`#${revision.seq} の時点に戻す`}
                 onClick={() => onRestore(revision.seq)}
                 disabled={busy}
               >
+                <Undo2 />
                 この時点に戻す
-              </button>
+              </Button>
             </li>
           ))}
         </ul>

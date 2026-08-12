@@ -1,5 +1,9 @@
 import { useState } from 'react'
+import { EyeOff, Film, Music } from 'lucide-react'
 import type { Job } from '../types'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Switch } from '@/components/ui/switch'
 import { Modal, NsfwBadge } from './ui'
 
 /** 入力欄の種別（そのままアセットのアップロード先になる）。 */
@@ -145,35 +149,38 @@ export default function HistoryPickerModal({
   return (
     <Modal title={title} onClose={onClose} closeOnBackdrop wide>
       <div className="mb-3 flex flex-wrap items-center gap-2">
-        <input
-          className="field max-w-[16rem] flex-1"
+        <Input
+          className="max-w-[16rem] flex-1"
           type="search"
           aria-label="履歴を検索"
           placeholder="プロンプトで検索"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
         />
-        <span className="text-xs text-slate-500">{candidates.length} 件</span>
-        <label
-          className={`chip ml-auto cursor-pointer select-none !py-1 ${
+        <span className="tnum text-xs text-muted-foreground">
+          {candidates.length} 件
+        </span>
+        <div
+          className={`chip ml-auto select-none !py-1 ${
             nsfw
-              ? 'border-accent-500 bg-accent-500/15 text-accent-400'
-              : 'border-ink-600 bg-ink-800 text-slate-400 hover:border-ink-500'
+              ? 'border-primary bg-primary/15 text-foreground'
+              : 'border-border bg-surface-sunken text-muted-foreground'
           }`}
           title="オフのあいだは NSFW の作品を一覧から隠します（この画面かぎりの設定）"
         >
-          <input
-            type="checkbox"
-            className="h-3 w-3 accent-accent-500"
-            checked={nsfw}
-            onChange={(event) => setNsfw(event.target.checked)}
-          />
-          🫣 NSFW表示
-        </label>
+          <Switch id="history-picker-nsfw" checked={nsfw} onCheckedChange={setNsfw} />
+          <Label
+            htmlFor="history-picker-nsfw"
+            className="flex cursor-pointer items-center gap-1 text-xs"
+          >
+            <EyeOff className="size-3" aria-hidden="true" />
+            NSFW表示
+          </Label>
+        </div>
       </div>
 
       {candidates.length === 0 ? (
-        <p className="py-6 text-center text-xs text-slate-500">
+        <p className="py-6 text-center text-xs text-muted-foreground">
           {query.trim() ? '検索に一致する生成物がありません。' : EMPTY_HINT[kind]}
         </p>
       ) : (
@@ -182,23 +189,19 @@ export default function HistoryPickerModal({
             <button
               key={candidate.id}
               title={jobText(candidate.job)}
-              className="group relative overflow-hidden rounded-md border border-ink-600 bg-ink-900 text-left transition-colors hover:border-accent-500"
+              className="group relative overflow-hidden rounded-md border border-border bg-surface-sunken text-left shadow-elevation-1 transition-colors hover:border-primary focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
               onClick={() => onSelect(candidate)}
             >
-              <div className="flex h-24 items-center justify-center bg-ink-950">
+              <div className="flex h-24 items-center justify-center bg-background">
                 {candidate.thumb ? (
-                  <img
-                    src={candidate.thumb}
-                    alt=""
-                    className="h-full w-full object-cover"
-                  />
+                  <img src={candidate.thumb} alt="" className="size-full object-cover" />
+                ) : candidate.kind === 'audio' ? (
+                  <Music className="size-7 opacity-60" />
                 ) : (
-                  <span className="text-2xl opacity-60">
-                    {candidate.kind === 'audio' ? '🎵' : '🎬'}
-                  </span>
+                  <Film className="size-7 opacity-60" />
                 )}
               </div>
-              <span className="absolute left-1 top-1 chip !px-1.5 !py-0.5 border-ink-500 bg-black/70 text-[10px] text-slate-300">
+              <span className="absolute left-1 top-1 chip !px-1.5 !py-0.5 border-border bg-black/70 text-[10px] text-foreground/85">
                 {candidate.label}
               </span>
               {nsfw && candidate.job.nsfw && (
@@ -207,10 +210,12 @@ export default function HistoryPickerModal({
                 </span>
               )}
               <div className="p-1.5">
-                <p className="truncate text-[11px] text-slate-300">
+                <p className="truncate text-[11px] text-foreground/85">
                   {jobText(candidate.job)}
                 </p>
-                <p className="text-[10px] text-slate-600">{timestamp(candidate.job)}</p>
+                <p className="tnum text-[10px] text-muted-foreground">
+                  {timestamp(candidate.job)}
+                </p>
               </div>
             </button>
           ))}

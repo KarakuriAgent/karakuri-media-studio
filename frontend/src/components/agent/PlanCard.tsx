@@ -1,5 +1,10 @@
+import { Check, ClipboardList } from 'lucide-react'
+
 import type { AgentPlan, AgentTask, JobProgress } from '../../types'
-import { TASK_ICON } from './common'
+import { Badge } from '../ui/badge'
+import { Button } from '../ui/button'
+import { Progress } from '../ui/progress'
+import { TaskIcon } from './common'
 
 interface Props {
   plan: AgentPlan
@@ -50,23 +55,23 @@ function TaskRow({
   if (compact) {
     return (
       <span
-        className="flex items-center gap-1 rounded border border-ink-600 bg-ink-900 px-2 py-0.5 text-[11px] text-slate-300"
+        className="flex items-center gap-1 rounded-md border border-border bg-surface-sunken px-2 py-0.5 text-[11px] text-foreground/85"
         title={task.label}
       >
-        <span>{TASK_ICON[task.status]}</span>
+        <TaskIcon status={task.status} className="size-3" />
         <span className="max-w-[10rem] truncate">{task.label}</span>
-        {running && <span className="tabular-nums text-amber-300">{percent}%</span>}
+        {running && <span className="tnum text-amber-300">{percent}%</span>}
       </span>
     )
   }
 
   return (
-    <div className="rounded border border-ink-600 bg-ink-900 p-2">
+    <div className="rounded-md border border-border bg-surface-sunken p-2">
       <div className="flex items-start gap-2">
-        <span className="text-sm leading-5">{TASK_ICON[task.status]}</span>
+        <TaskIcon status={task.status} className="mt-0.5" />
         <div className="min-w-0 flex-1">
-          <p className="truncate text-xs text-slate-200">{task.label}</p>
-          <p className="mt-0.5 truncate text-[11px] text-slate-500">
+          <p className="truncate text-xs text-foreground/90">{task.label}</p>
+          <p className="mt-0.5 truncate text-[11px] text-muted-foreground">
             {summarize(task.job)}
           </p>
           {task.error && (
@@ -77,31 +82,26 @@ function TaskRow({
 
       {running && (
         <div className="mt-1.5 flex items-center gap-2">
-          <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-ink-600">
-            <div
-              className="h-full bg-accent-500 transition-all"
-              style={{ width: `${percent}%` }}
-            />
-          </div>
-          <span className="text-[11px] tabular-nums text-slate-400">{percent}%</span>
+          <Progress className="flex-1" value={percent} />
+          <span className="tnum text-[11px] text-muted-foreground">{percent}%</span>
         </div>
       )}
 
       {(text(task.job, 'image_prompt') || text(task.job, 'video_prompt')) && (
         <details className="mt-1.5">
-          <summary className="cursor-pointer text-[11px] text-slate-500">
+          <summary className="cursor-pointer text-[11px] text-muted-foreground">
             プロンプト
           </summary>
           <div className="mt-1 space-y-1">
             {text(task.job, 'image_prompt') && (
-              <p className="whitespace-pre-wrap break-words text-[11px] text-slate-400">
-                <span className="text-slate-500">画像: </span>
+              <p className="whitespace-pre-wrap break-words text-[11px] text-muted-foreground">
+                <span className="text-muted-foreground/80">画像: </span>
                 {text(task.job, 'image_prompt')}
               </p>
             )}
             {text(task.job, 'video_prompt') && (
-              <p className="whitespace-pre-wrap break-words text-[11px] text-slate-400">
-                <span className="text-slate-500">動画: </span>
+              <p className="whitespace-pre-wrap break-words text-[11px] text-muted-foreground">
+                <span className="text-muted-foreground/80">動画: </span>
                 {text(task.job, 'video_prompt')}
               </p>
             )}
@@ -123,27 +123,28 @@ export default function PlanCard({
   if (plan.tasks.length === 0) return null
 
   return (
-    <div
-      className={`card border-accent-600/60 ${compact ? 'px-3 py-2' : 'p-3'}`}
-    >
+    <div className={`card border-primary/50 ${compact ? 'px-3 py-2' : 'p-3'}`}>
       <div className="flex items-center gap-2">
-        <h3 className="text-xs font-semibold text-accent-400">
-          📋 プラン v{plan.version}
+        <h3 className="flex items-center gap-1.5 text-xs font-semibold text-accent-400">
+          <ClipboardList className="size-3.5" />
+          プラン v{plan.version}
         </h3>
-        <span className="text-[11px] text-slate-500">{plan.tasks.length} 件</span>
+        <span className="tnum text-[11px] text-muted-foreground">
+          {plan.tasks.length} 件
+        </span>
         {plan.approved ? (
-          <span className="chip !px-2 !py-0.5 border-emerald-800 bg-emerald-950 text-emerald-300">
+          <Badge variant="success" className="px-2 py-0.5 font-normal">
             承認済み
-          </span>
+          </Badge>
         ) : (
-          <span className="chip !px-2 !py-0.5 border-amber-800 bg-amber-950 text-amber-300">
+          <Badge variant="warning" className="px-2 py-0.5 font-normal">
             未承認
-          </span>
+          </Badge>
         )}
       </div>
 
       {!compact && plan.notes && (
-        <p className="mt-1.5 whitespace-pre-wrap text-xs text-slate-400">
+        <p className="mt-1.5 whitespace-pre-wrap text-xs text-muted-foreground">
           {plan.notes}
         </p>
       )}
@@ -167,16 +168,13 @@ export default function PlanCard({
 
       {!plan.approved && !compact && (
         <div className="mt-2 flex gap-2">
-          <button
-            className="btn-primary !py-1.5 text-xs"
-            disabled={busy}
-            onClick={onApprove}
-          >
-            ✔ 承認して開始
-          </button>
-          <button className="btn-ghost !py-1.5 text-xs" onClick={onRequestChanges}>
+          <Button size="sm" disabled={busy} onClick={onApprove}>
+            <Check />
+            承認して開始
+          </Button>
+          <Button variant="outline" size="sm" onClick={onRequestChanges}>
             修正を指示
-          </button>
+          </Button>
         </div>
       )}
     </div>

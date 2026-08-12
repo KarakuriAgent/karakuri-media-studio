@@ -6,8 +6,12 @@ import type {
   StudioProjectDetail,
 } from '../../types'
 import { Banner, Modal } from '../ui'
+import { NativeSelect } from '../NativeSelect'
+import { Button } from '../ui/button'
+import { Input } from '../ui/input'
+import { Label } from '../ui/label'
 import { ASSET_KIND_LABEL, sceneOptions } from '../studio/studio'
-import { KIND_ICON, KIND_LABEL, isAssetKind, isStandalone } from './logic'
+import { KIND_LABEL, isAssetKind, isStandalone } from './logic'
 
 /**
  * カードを 1 枚**新しく作る**ときの入力。
@@ -56,22 +60,18 @@ export default function AddCardModal({
     })
 
   return (
-    <Modal
-      title={`${KIND_ICON[kind]} ${KIND_LABEL[kind]}カードを作る`}
-      onClose={onClose}
-    >
+    <Modal title={`${KIND_LABEL[kind]}カードを作る`} onClose={onClose}>
       <div className="flex flex-col gap-3">
         {error && <Banner>{error}</Banner>}
 
         {isStandalone(kind) ? null : (
           <>
             <div>
-              <label className="label" htmlFor="canvas-new-title">
+              <Label className="mb-1" htmlFor="canvas-new-title">
                 {isAssetKind(kind) ? '素材名（@ で呼ぶ名前）' : 'タイトル'}
-              </label>
-              <input
+              </Label>
+              <Input
                 id="canvas-new-title"
-                className="field"
                 value={title}
                 placeholder={isAssetKind(kind) ? '省略すると自動で付きます' : ''}
                 onChange={(event) => setTitle(event.target.value)}
@@ -79,12 +79,11 @@ export default function AddCardModal({
             </div>
             {isAssetKind(kind) && (
               <div>
-                <label className="label" htmlFor="canvas-new-asset-kind">
+                <Label className="mb-1" htmlFor="canvas-new-asset-kind">
                   素材の種別
-                </label>
-                <select
+                </Label>
+                <NativeSelect
                   id="canvas-new-asset-kind"
-                  className="field"
                   value={assetKind}
                   onChange={(event) =>
                     setAssetKind(event.target.value as StudioAssetKind)
@@ -95,17 +94,16 @@ export default function AddCardModal({
                       {ASSET_KIND_LABEL[value]}
                     </option>
                   ))}
-                </select>
+                </NativeSelect>
               </div>
             )}
             {kind === 'shot' && (
               <div>
-                <label className="label" htmlFor="canvas-new-scene">
+                <Label className="mb-1" htmlFor="canvas-new-scene">
                   所属する場
-                </label>
-                <select
+                </Label>
+                <NativeSelect
                   id="canvas-new-scene"
-                  className="field"
                   value={sceneId}
                   onChange={(event) => setSceneId(event.target.value)}
                 >
@@ -115,19 +113,19 @@ export default function AddCardModal({
                       {scene.label}
                     </option>
                   ))}
-                </select>
+                </NativeSelect>
               </div>
             )}
           </>
         )}
 
-        <div className="flex justify-end gap-2 border-t border-ink-600 pt-3">
-          <button className="btn-ghost" onClick={onClose} disabled={busy}>
+        <div className="flex justify-end gap-2 border-t border-border pt-3">
+          <Button variant="outline" onClick={onClose} disabled={busy}>
             キャンセル
-          </button>
-          <button className="btn-primary" onClick={submit} disabled={busy}>
+          </Button>
+          <Button onClick={submit} disabled={busy}>
             {busy ? '追加中…' : '作る'}
-          </button>
+          </Button>
         </div>
       </div>
     </Modal>

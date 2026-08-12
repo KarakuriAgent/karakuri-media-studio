@@ -1,5 +1,7 @@
 import { workflowSelects, type FormState } from '../form'
 import type { WorkflowOption } from '../types'
+import { Label } from '@/components/ui/label'
+import { NativeSelect } from './NativeSelect'
 import { FieldError } from './ui'
 
 /** `auto` を宣言した項目に出る「おまかせ」の選択肢（値は未指定 = 空文字）。 */
@@ -33,9 +35,8 @@ export default function WorkflowSelects({
         const value = form.selects[select.name] ?? ''
         return (
           <div key={select.name}>
-            <label className="label">{select.label}</label>
-            <select
-              className="field"
+            <Label className="mb-1">{select.label}</Label>
+            <NativeSelect
               aria-label={select.label}
               value={value}
               onChange={(event) =>
@@ -52,7 +53,7 @@ export default function WorkflowSelects({
                   {choice}
                 </option>
               ))}
-            </select>
+            </NativeSelect>
             <FieldError message={errors?.[select.name]} />
           </div>
         )

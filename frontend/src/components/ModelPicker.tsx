@@ -1,5 +1,7 @@
 import { modelSlotsForJob, type FormState } from '../form'
 import type { ModelSlot } from '../types'
+import { Label } from '@/components/ui/label'
+import { NativeSelect } from './NativeSelect'
 
 /**
  * 実行時のモデル切り替えセレクト（SPEC §3.3）。
@@ -27,9 +29,8 @@ export default function ModelPicker({
         const title = `使用モデル: ${slot.label || `${slot.node_id}.${slot.field}`}`
         return (
           <div key={slot.key}>
-            <label className="label">{title}</label>
-            <select
-              className="field"
+            <Label className="mb-1">{title}</Label>
+            <NativeSelect
               aria-label={title}
               value={form.modelOverrides[slot.key] ?? slot.default}
               onChange={(event) =>
@@ -46,7 +47,7 @@ export default function ModelPicker({
                   {name === slot.default ? `${name}（既定）` : name}
                 </option>
               ))}
-            </select>
+            </NativeSelect>
           </div>
         )
       })}

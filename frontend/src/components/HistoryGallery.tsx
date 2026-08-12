@@ -1,5 +1,7 @@
 import { useEffect, useRef } from 'react'
+import { Film, Loader2, Music, RefreshCw } from 'lucide-react'
 import type { Job } from '../types'
+import { Button } from '@/components/ui/button'
 import { NsfwBadge, StatusBadge } from './ui'
 
 const PENDING = ['queued', 'running', 'prompting']
@@ -68,23 +70,26 @@ export default function HistoryGallery({
   return (
     <div className="flex h-full flex-col">
       <div className="flex items-center gap-2 px-3 pt-1.5">
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-slate-400">
+        <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           履歴
         </h2>
-        <span className="text-xs text-slate-600">{jobs.length} 件</span>
-        <span className="text-[11px] text-slate-700">← / → で切替</span>
-        <button
-          className="btn-ghost ml-auto !py-1 text-xs"
+        <span className="tnum text-xs text-muted-foreground/70">{jobs.length} 件</span>
+        <span className="text-[11px] text-muted-foreground/50">← / → で切替</span>
+        <Button
+          variant="outline"
+          size="xs"
+          className="ml-auto"
           onClick={onReload}
           disabled={loading}
         >
+          {loading ? <Loader2 className="animate-spin" /> : <RefreshCw />}
           {loading ? '読込中…' : '更新'}
-        </button>
+        </Button>
       </div>
 
       <div className="flex flex-1 items-center gap-2 overflow-x-auto overflow-y-hidden px-3 pb-2">
         {jobs.length === 0 && (
-          <p className="w-full text-center text-xs text-slate-600">
+          <p className="w-full text-center text-xs text-muted-foreground">
             まだジョブがありません
           </p>
         )}
@@ -103,27 +108,27 @@ export default function HistoryGallery({
               }}
               onClick={() => onSelect(job)}
               title={job.video_prompt ?? job.image_prompt ?? job.id}
-              className={`relative h-24 w-32 shrink-0 overflow-hidden rounded-md border bg-ink-900 transition-colors ${
+              className={`relative h-24 w-32 shrink-0 overflow-hidden rounded-md border bg-surface-sunken transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 ${
                 active
-                  ? 'border-accent-500 ring-2 ring-accent-500/60'
+                  ? 'border-primary ring-2 ring-primary/60'
                   : failed
                     ? 'border-red-800/70 hover:border-red-700'
-                    : 'border-ink-600 hover:border-ink-500'
+                    : 'border-border'
               }`}
             >
               {thumb ? (
                 <img
                   src={thumb}
                   alt={job.id}
-                  className={`h-full w-full object-cover ${blurred ? 'blur-lg' : ''}`}
+                  className={`size-full object-cover ${blurred ? 'blur-lg' : ''}`}
                 />
               ) : (
-                <span className="flex h-full w-full items-center justify-center text-[10px] text-slate-600">
+                <span className="flex size-full items-center justify-center text-[10px] text-muted-foreground/70">
                   {pending ? (
-                    <span className="h-5 w-5 animate-spin rounded-full border-2 border-ink-500 border-t-accent-500" />
+                    <Loader2 className="size-5 animate-spin text-primary" />
                   ) : job.audio_output_url ? (
-                    // 音声ジョブには映像が無いのでサムネイルの代わりに 🎵 を出す
-                    <span className="text-2xl opacity-60">🎵</span>
+                    // 音声ジョブには映像が無いので、サムネイルの代わりに音符を出す
+                    <Music className="size-6 opacity-60" />
                   ) : (
                     'サムネなし'
                   )}
@@ -139,12 +144,15 @@ export default function HistoryGallery({
               <span className="absolute right-1 top-1 flex items-center gap-1">
                 {job.nsfw && <NsfwBadge />}
                 {job.video_url && (
-                  <span className="rounded bg-black/60 px-1 text-[10px]">🎬</span>
+                  <span className="rounded-sm bg-black/60 p-0.5">
+                    <Film className="size-3 text-foreground" />
+                  </span>
                 )}
                 {job.audio_output_url && (
-                  <span className="rounded bg-black/60 px-1 text-[10px]">
+                  <span className="tnum flex items-center gap-0.5 rounded-sm bg-black/60 px-1 py-0.5 text-[10px] text-foreground">
+                    <Music className="size-3" />
                     {/* 1 回の生成で複数返るモデルは本数を出す */}
-                    🎵{(job.extra_output_urls?.length ?? 0) > 0
+                    {(job.extra_output_urls?.length ?? 0) > 0
                       ? `×${(job.extra_output_urls?.length ?? 0) + 1}`
                       : ''}
                   </span>
@@ -155,7 +163,7 @@ export default function HistoryGallery({
                   <StatusBadge status={job.status} />
                 </span>
               )}
-              <span className="absolute inset-x-0 bottom-0 truncate bg-black/60 px-1 py-0.5 text-[10px] text-slate-400">
+              <span className="tnum absolute inset-x-0 bottom-0 truncate bg-black/60 px-1 py-0.5 text-[10px] text-foreground/85">
                 {job.created_at.replace('T', ' ').replace('+00:00', '').slice(5, 16)}
               </span>
             </button>

@@ -1,4 +1,7 @@
+import { Paperclip, Pencil, Plus } from 'lucide-react'
+
 import type { CanvasCard, StudioProjectDetail } from '../../types'
+import { Button } from '../ui/button'
 import { SHOT_STATUS_CLASS, SHOT_STATUS_LABEL, TAKE_STATUS_CLASS, TAKE_STATUS_LABEL } from '../studio/studio'
 import {
   KIND_ICON,
@@ -74,17 +77,18 @@ function CardBody({
             <Preview media={media} alt={asset.name} />
           </div>
         )}
-        <p className="line-clamp-3 whitespace-pre-wrap break-words text-xs text-slate-300">
+        <p className="line-clamp-3 whitespace-pre-wrap break-words text-xs text-foreground/85">
           {asset.caption || asset.prompt_caption || (
-            <span className="text-slate-600">（説明なし）</span>
+            <span className="text-muted-foreground">（説明なし）</span>
           )}
         </p>
         {references > 0 && (
           <span
-            className="chip w-fit !px-1.5 !py-0 text-[10px] text-slate-400"
+            className="chip w-fit !px-1.5 !py-0 text-[10px] text-muted-foreground"
             title="声サンプル・動画リファレンス・追加画像（編集で見られます）"
           >
-            📎 リファレンス {references}
+            <Paperclip className="size-3 shrink-0" aria-hidden="true" />
+            リファレンス {references}
           </span>
         )}
       </div>
@@ -97,15 +101,19 @@ function CardBody({
     return (
       <div className="flex h-full flex-col gap-1">
         {(scene.synopsis || scene.time_of_day) && (
-          <p className="line-clamp-2 whitespace-pre-wrap break-words text-xs text-slate-300">
+          <p className="line-clamp-2 whitespace-pre-wrap break-words text-xs text-foreground/85">
             {scene.synopsis || scene.time_of_day}
           </p>
         )}
         <div className="flex items-center gap-1">
-          <p className="text-[11px] text-slate-500">カット {shots.length} 件</p>
+          <p className="tnum text-[11px] text-muted-foreground">
+            カット {shots.length} 件
+          </p>
           {onAddShot && (
-            <button
-              className="btn-ghost !px-1.5 !py-0 text-[10px]"
+            <Button
+              variant="outline"
+              size="xs"
+              className="h-5 px-1.5 text-[10px]"
               title="この場にカットを追加"
               aria-label={`${cardTitle(card, detail)} にカットを追加`}
               disabled={busy}
@@ -115,15 +123,16 @@ function CardBody({
                 onAddShot(scene.id)
               }}
             >
-              ＋カット
-            </button>
+              <Plus aria-hidden="true" />
+              カット
+            </Button>
           )}
         </div>
         <ul className="min-h-0 flex-1 overflow-hidden">
           {shots.map((shot, index) => (
             <li key={shot.id} className="flex items-center gap-1.5 text-[11px]">
-              <span className="w-4 shrink-0 text-slate-600">{index + 1}</span>
-              <span className="min-w-0 flex-1 truncate text-slate-300">
+              <span className="tnum w-4 shrink-0 text-muted-foreground">{index + 1}</span>
+              <span className="min-w-0 flex-1 truncate text-foreground/85">
                 {shot.title || '無題のカット'}
               </span>
             </li>
@@ -143,15 +152,17 @@ function CardBody({
           </span>
           {/* 場に入れていないカットは、どの話にも属さず作品共通タブに出る */}
           {isLooseShot(card, detail) && (
-            <span className="chip !px-1.5 !py-0 text-[10px] text-slate-400">
+            <span className="chip !px-1.5 !py-0 text-[10px] text-muted-foreground">
               未分類
             </span>
           )}
-          <span className="text-[10px] text-slate-500">{shot.duration_seconds} 秒</span>
+          <span className="tnum text-[10px] text-muted-foreground">
+            {shot.duration_seconds} 秒
+          </span>
         </div>
-        <p className="line-clamp-5 whitespace-pre-wrap break-words text-xs text-slate-300">
+        <p className="line-clamp-5 whitespace-pre-wrap break-words text-xs text-foreground/85">
           {shot.prompt || shot.action || (
-            <span className="text-slate-600">（まだ何も書かれていません）</span>
+            <span className="text-muted-foreground">（まだ何も書かれていません）</span>
           )}
         </p>
       </div>
@@ -171,7 +182,7 @@ function CardBody({
             <Preview media={media} alt="生成結果" />
           </div>
         ) : (
-          <p className="line-clamp-3 text-xs text-slate-500">
+          <p className="line-clamp-3 text-xs text-muted-foreground">
             {take.error || 'まだ成果物がありません'}
           </p>
         )}
@@ -181,8 +192,8 @@ function CardBody({
 
   const summary = cardSummary(card, detail)
   return (
-    <p className="line-clamp-6 whitespace-pre-wrap break-words text-xs text-slate-300">
-      {summary || <span className="text-slate-600">（空のカード）</span>}
+    <p className="line-clamp-6 whitespace-pre-wrap break-words text-xs text-foreground/85">
+      {summary || <span className="text-muted-foreground">（空のカード）</span>}
     </p>
   )
 }
@@ -191,7 +202,7 @@ function CardBody({
  * ボード上のカード 1 枚。
  *
  * 掴んで動かすのはヘッダー（本文の中の動画やリンクを操作できるように）で、
- * ダブルクリックか ✎ で編集を開く。
+ * ダブルクリックか鉛筆ボタンで編集を開く。
  */
 export default function CardNode({
   card,
@@ -213,10 +224,11 @@ export default function CardNode({
   /** 場カードの「＋カット」（渡さなければボタンを出さない）。 */
   onAddShot?: (sceneId: string) => void
 }) {
+  const KindIcon = KIND_ICON[card.kind]
   return (
     <div
-      className={`absolute flex flex-col overflow-hidden rounded-lg border bg-ink-900 text-left shadow-lg ${
-        selected ? 'border-accent-500' : 'border-ink-600'
+      className={`absolute flex flex-col overflow-hidden rounded-lg border bg-card text-left shadow-elevation-2 ${
+        selected ? 'border-primary' : 'border-border'
       }`}
       style={{ left: card.x, top: card.y, width: card.w, height: card.h, zIndex: card.z }}
       onPointerDown={onSelect}
@@ -228,13 +240,15 @@ export default function CardNode({
         onPointerDown={onDragStart}
         title="ドラッグで移動 / ダブルクリックで編集"
       >
-        <span>{KIND_ICON[card.kind]}</span>
+        <KindIcon className="size-3.5 shrink-0" aria-hidden="true" />
         <span className="shrink-0 opacity-80">{KIND_LABEL[card.kind]}</span>
-        <span className="truncate font-semibold text-slate-100">
+        <span className="truncate font-semibold text-foreground">
           {cardTitle(card, detail)}
         </span>
-        <button
-          className="ml-auto shrink-0 opacity-60 hover:opacity-100"
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          className="ml-auto shrink-0 text-current opacity-60 hover:bg-transparent hover:text-current hover:opacity-100"
           title="編集"
           aria-label={`${cardTitle(card, detail)} を編集`}
           onPointerDown={(event) => event.stopPropagation()}
@@ -243,11 +257,11 @@ export default function CardNode({
             onEdit()
           }}
         >
-          ✎
-        </button>
+          <Pencil aria-hidden="true" />
+        </Button>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-hidden p-2 text-xs text-slate-300">
+      <div className="min-h-0 flex-1 overflow-hidden p-2 text-xs text-foreground/85">
         <CardBody card={card} detail={detail} busy={busy} onAddShot={onAddShot} />
       </div>
     </div>

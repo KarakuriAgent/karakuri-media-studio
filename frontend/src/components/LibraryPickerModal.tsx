@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { EyeOff, Film, Loader2, Music, Upload } from 'lucide-react'
 import { api } from '../api'
 import type {
   LibraryCategory,
@@ -6,6 +7,11 @@ import type {
   LibraryItem,
   LibraryKind,
 } from '../types'
+import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
+import { Label } from '@/components/ui/label'
+import { Switch } from '@/components/ui/switch'
+import { NativeSelect } from './NativeSelect'
 import { Banner, Modal, NsfwBadge, NsfwToggle } from './ui'
 
 /** カテゴリの表示名（プルダウンの並び順もこの通り。SPEC §7.2）。 */
@@ -204,16 +210,16 @@ export default function LibraryPickerModal({
   return (
     <Modal title={title} onClose={onClose} closeOnBackdrop wide>
       <div className="mb-2 flex flex-wrap items-center gap-2">
-        <input
-          className="field max-w-[16rem] flex-1"
+        <Input
+          className="max-w-[16rem] flex-1"
           type="search"
           aria-label="ライブラリを検索"
           placeholder="名前・タグで検索"
           value={query}
           onChange={(event) => setQuery(event.target.value)}
         />
-        <select
-          className="field w-auto"
+        <NativeSelect
+          className="w-auto"
           aria-label="カテゴリで絞り込み"
           value={category}
           onChange={(event) =>
@@ -227,7 +233,7 @@ export default function LibraryPickerModal({
             </option>
           ))}
           <option value={UNCATEGORIZED}>未分類</option>
-        </select>
+        </NativeSelect>
         <input
           ref={input}
           type="file"
@@ -245,41 +251,44 @@ export default function LibraryPickerModal({
             }
           }}
         />
-        <button
-          className="btn-ghost text-xs"
+        <Button
+          variant="outline"
+          size="sm"
           disabled={busy}
           onClick={() => input.current?.click()}
         >
+          {busy ? <Loader2 className="animate-spin" /> : <Upload />}
           {busy ? '処理中…' : 'アップロードして追加'}
-        </button>
-        <label
-          className={`chip ml-auto cursor-pointer select-none !py-1 ${
+        </Button>
+        <div
+          className={`chip ml-auto select-none !py-1 ${
             nsfw
-              ? 'border-accent-500 bg-accent-500/15 text-accent-400'
-              : 'border-ink-600 bg-ink-800 text-slate-400 hover:border-ink-500'
+              ? 'border-primary bg-primary/15 text-foreground'
+              : 'border-border bg-surface-sunken text-muted-foreground'
           }`}
           title="オフのあいだは NSFW の素材を一覧から隠します（この画面かぎりの設定）"
         >
-          <input
-            type="checkbox"
-            className="h-3 w-3 accent-accent-500"
-            checked={nsfw}
-            onChange={(event) => setNsfw(event.target.checked)}
-          />
-          🫣 NSFW表示
-        </label>
+          <Switch id="library-picker-nsfw" checked={nsfw} onCheckedChange={setNsfw} />
+          <Label
+            htmlFor="library-picker-nsfw"
+            className="flex cursor-pointer items-center gap-1 text-xs"
+          >
+            <EyeOff className="size-3" aria-hidden="true" />
+            NSFW表示
+          </Label>
+        </div>
       </div>
 
       {knownTags.length > 0 && (
         <div className="mb-2 flex flex-wrap items-center gap-1">
-          <span className="text-[11px] text-slate-500">タグ:</span>
+          <span className="text-[11px] text-muted-foreground">タグ:</span>
           {knownTags.map((name) => (
             <button
               key={name}
-              className={`chip !py-0.5 text-[11px] ${
+              className={`chip !py-0.5 text-[11px] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 ${
                 tag === name
-                  ? 'border-accent-500 bg-accent-500/20 text-accent-400'
-                  : 'border-ink-500 bg-ink-700 text-slate-300 hover:bg-ink-600'
+                  ? 'border-primary bg-primary/20 text-foreground'
+                  : 'border-border bg-card text-foreground/85 hover:bg-secondary'
               }`}
               onClick={() => setTag(tag === name ? null : name)}
             >
@@ -289,7 +298,7 @@ export default function LibraryPickerModal({
         </div>
       )}
 
-      <p className="mb-2 text-xs text-slate-500">
+      <p className="tnum mb-2 text-xs text-muted-foreground">
         {visible.length} 件表示 / 全 {total} 件
         {hiddenByNsfw > 0 && `（NSFW ${hiddenByNsfw} 件を非表示）`}
       </p>
@@ -297,7 +306,7 @@ export default function LibraryPickerModal({
       {error && <Banner onClose={() => setError(null)}>{error}</Banner>}
 
       {visible.length === 0 ? (
-        <p className="py-6 text-center text-xs text-slate-500">
+        <p className="py-6 text-center text-xs text-muted-foreground">
           {busy
             ? '読み込み中…'
             : query.trim() || tag || category
@@ -309,8 +318,8 @@ export default function LibraryPickerModal({
           {visible.map((item) => (
             <div
               key={item.id}
-              className={`overflow-hidden rounded-md border bg-ink-900 ${
-                orderOf(item) > 0 ? 'border-accent-500' : 'border-ink-600'
+              className={`overflow-hidden rounded-md border bg-surface-sunken shadow-elevation-1 ${
+                orderOf(item) > 0 ? 'border-primary' : 'border-border'
               }`}
             >
               <button
@@ -319,17 +328,17 @@ export default function LibraryPickerModal({
                 disabled={busy}
                 onClick={() => onSelect(item)}
               >
-                <div className="relative flex h-24 items-center justify-center bg-ink-950">
+                <div className="relative flex h-24 items-center justify-center bg-background">
                   {item.kind === 'image' ? (
-                    <img src={item.url} alt="" className="h-full w-full object-cover" />
+                    <img src={item.url} alt="" className="size-full object-cover" />
+                  ) : item.kind === 'audio' ? (
+                    <Music className="size-7 opacity-60" />
                   ) : (
-                    <span className="text-2xl opacity-60">
-                      {item.kind === 'audio' ? '🎵' : '🎬'}
-                    </span>
+                    <Film className="size-7 opacity-60" />
                   )}
                   {orderOf(item) > 0 && (
                     <span
-                      className="absolute left-1 top-1 flex h-5 w-5 items-center justify-center rounded-full bg-accent-500 text-[11px] font-medium text-white"
+                      className="tnum absolute left-1 top-1 flex size-5 items-center justify-center rounded-full bg-primary text-[11px] font-medium text-primary-foreground"
                       aria-label={`「${item.name}」の選択順`}
                     >
                       {orderOf(item)}
@@ -341,19 +350,21 @@ export default function LibraryPickerModal({
                     </span>
                   )}
                 </div>
-                <p className="truncate px-1.5 pt-1.5 text-[11px] text-slate-300">
+                <p className="truncate px-1.5 pt-1.5 text-[11px] text-foreground/85">
                   {item.name}
                 </p>
                 {item.tags.length > 0 && (
-                  <p className="truncate px-1.5 text-[10px] text-accent-400">
+                  <p className="truncate px-1.5 text-[10px] text-primary">
                     {item.tags.map((name) => `#${name}`).join(' ')}
                   </p>
                 )}
-                <p className="px-1.5 text-[10px] text-slate-600">{timestamp(item)}</p>
+                <p className="tnum px-1.5 text-[10px] text-muted-foreground">
+                  {timestamp(item)}
+                </p>
               </button>
               <div className="px-1 pb-1">
-                <select
-                  className="field mb-1 w-full !px-1.5 !py-0.5 !text-[10px]"
+                <NativeSelect
+                  className="mb-1 h-6 py-0 pl-1.5 pr-6 text-[10px]"
                   aria-label={`「${item.name}」のカテゴリ`}
                   value={item.category ?? UNCATEGORIZED}
                   disabled={busy}
@@ -372,37 +383,43 @@ export default function LibraryPickerModal({
                       </option>
                     ),
                   )}
-                </select>
+                </NativeSelect>
               </div>
               <div className="flex gap-1 px-1 pb-1">
-                <button
-                  className="btn-ghost !px-1.5 !py-0.5 text-[10px]"
+                <Button
+                  variant="outline"
+                  size="xs"
+                  className="px-1.5 text-[10px]"
                   disabled={busy}
                   onClick={() => rename(item)}
                 >
                   名前
-                </button>
+                </Button>
                 {/* NSFW の手動トグル（ジョブ側と同じ見た目・同じ manual 扱い）。 */}
                 <NsfwToggle
                   nsfw={item.nsfw}
                   disabled={busy}
                   onToggle={(value) => setItemNsfw(item, value)}
-                  className="!px-1.5 !py-0.5 !text-[10px]"
+                  className="h-6 px-1.5 text-[10px]"
                 />
-                <button
-                  className="btn-ghost !px-1.5 !py-0.5 text-[10px]"
+                <Button
+                  variant="outline"
+                  size="xs"
+                  className="px-1.5 text-[10px]"
                   disabled={busy}
                   onClick={() => editTags(item)}
                 >
                   タグ
-                </button>
-                <button
-                  className="btn-ghost !px-1.5 !py-0.5 text-[10px] text-red-300"
+                </Button>
+                <Button
+                  variant="destructive"
+                  size="xs"
+                  className="px-1.5 text-[10px]"
                   disabled={busy}
                   onClick={() => remove(item)}
                 >
                   削除
-                </button>
+                </Button>
               </div>
             </div>
           ))}
@@ -412,13 +429,16 @@ export default function LibraryPickerModal({
       {footer}
 
       {more && (
-        <button
-          className="btn-ghost mt-3 w-full text-xs"
+        <Button
+          variant="outline"
+          size="sm"
+          className="mt-3 w-full"
           disabled={busy}
           onClick={() => void load(items.length)}
         >
+          {busy && <Loader2 className="animate-spin" />}
           {busy ? '読み込み中…' : `さらに表示（残り ${total - items.length} 件）`}
-        </button>
+        </Button>
       )}
     </Modal>
   )

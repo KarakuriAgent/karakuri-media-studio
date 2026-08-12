@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import type { StudioAsset } from '../../types'
+import { Textarea } from '../ui/textarea'
 import { applyMention, mentionCandidates, mentionQueryAt } from './logic'
 
 interface Props {
@@ -64,7 +65,7 @@ export default function MentionInput({
     <div className="relative">
       {showing && (
         <ul
-          className="absolute bottom-full left-0 z-20 mb-1 max-h-48 w-full overflow-y-auto rounded-md border border-ink-600 bg-ink-800 py-1 shadow-lg"
+          className="absolute bottom-full left-0 z-20 mb-1 max-h-48 w-full overflow-y-auto rounded-md border border-border bg-popover py-1 shadow-elevation-2"
           role="listbox"
           aria-label="素材の候補"
         >
@@ -74,10 +75,10 @@ export default function MentionInput({
                 type="button"
                 role="option"
                 aria-selected={index === active}
-                className={`flex w-full items-center gap-2 px-2 py-1 text-left text-xs ${
+                className={`flex w-full items-center gap-2 px-2 py-1 text-left text-xs transition-colors ${
                   index === active
-                    ? 'bg-accent-500/20 text-slate-100'
-                    : 'text-slate-300 hover:bg-ink-700'
+                    ? 'bg-primary/20 text-foreground'
+                    : 'text-foreground/85 hover:bg-secondary hover:text-foreground'
                 }`}
                 // blur でリストが閉じる前に確定させる
                 onMouseDown={(event) => {
@@ -92,9 +93,9 @@ export default function MentionInput({
         </ul>
       )}
 
-      <textarea
+      <Textarea
         ref={input}
-        className="field h-16 w-full resize-none"
+        className="h-16 w-full resize-none"
         value={value}
         placeholder={placeholder}
         disabled={disabled}

@@ -1,5 +1,18 @@
 import { useEffect, useMemo, useState } from 'react'
+import {
+  Clapperboard,
+  Download,
+  Film,
+  Loader2,
+  Music,
+  RotateCcw,
+  Trash2,
+  Undo2,
+  X,
+} from 'lucide-react'
 import type { Job, JobProgress, LibraryItem, LibrarySource } from '../types'
+import { Button } from '@/components/ui/button'
+import { Progress } from '@/components/ui/progress'
 import LibraryAddButton, { isInLibrary } from './LibraryAddButton'
 import { Banner, CopyButton, NsfwBadge, NsfwToggle, StatusBadge } from './ui'
 
@@ -45,7 +58,7 @@ const LIBRARY_SOURCES: LibrarySource[] = ['image', 'last_frame', 'video', 'audio
 
 function mediaOf(job: Job): MediaItem[] {
   const items: MediaItem[] = []
-  // 音声ジョブの成果物（サムネイルは存在しないので 🎵 が出る）
+  // 音声ジョブの成果物（サムネイルは存在しないので音符アイコンが出る）
   if (job.audio_output_url) {
     items.push({
       key: 'audio',
@@ -161,17 +174,19 @@ export default function ResultPane({
       {/* ---------------------------------------------------------- viewer
           狭幅では親の高さに押し込まれず、最低 40vh を確保して内容なりに伸びる。
           lg 以上は従来どおり親の残り高さを埋める。 */}
-      <div className="relative flex min-h-[40vh] flex-1 items-center justify-center overflow-hidden rounded-lg border border-ink-600 bg-black lg:min-h-0">
+      <div className="relative flex min-h-[40vh] flex-1 items-center justify-center overflow-hidden rounded-lg border border-border bg-black shadow-elevation-1 lg:min-h-0">
         {!job && (
           <div className="flex flex-col items-center gap-2 px-6 text-center">
-            <span className="text-4xl opacity-40">🎬</span>
-            <p className="text-sm text-slate-500">結果はここに表示されます</p>
-            <p className="text-xs text-slate-600">左のフォームから実行してください</p>
+            <Clapperboard className="size-10 text-muted-foreground/40" />
+            <p className="text-sm text-muted-foreground">結果はここに表示されます</p>
+            <p className="text-xs text-muted-foreground/70">
+              左のフォームから実行してください
+            </p>
           </div>
         )}
 
         {job && !current && !running && (
-          <p className="px-6 text-center text-sm text-slate-600">
+          <p className="px-6 text-center text-sm text-muted-foreground">
             {job.status === 'failed' ? '成果物はありません' : 'メディアがありません'}
           </p>
         )}
@@ -187,7 +202,7 @@ export default function ResultPane({
         )}
         {job && current?.kind === 'audio' && (
           <div className="flex w-full max-w-xl flex-col items-center gap-4 px-6">
-            <span className="text-5xl opacity-60">🎵</span>
+            <Music className="size-12 text-muted-foreground/60" />
             <audio key={current.url} src={current.url} controls className="w-full" />
           </div>
         )}
@@ -210,9 +225,9 @@ export default function ResultPane({
 
         {/* queue chip */}
         {queue.length > 0 && (
-          <div className="absolute right-2 top-2 flex items-center gap-1.5 rounded-full border border-ink-500 bg-ink-800/90 px-2.5 py-1 text-xs backdrop-blur">
-            <span className="h-2 w-2 animate-pulse rounded-full bg-accent-500" />
-            <span className="text-slate-300">キュー {queue.length}件</span>
+          <div className="absolute right-2 top-2 flex items-center gap-1.5 rounded-full border border-border bg-card/90 px-2.5 py-1 text-xs shadow-elevation-2 backdrop-blur">
+            <span className="size-2 animate-pulse rounded-full bg-primary" />
+            <span className="tnum text-foreground/85">キュー {queue.length}件</span>
             {queue[0] && <StatusBadge status={queue[0].status} />}
           </div>
         )}
@@ -220,19 +235,12 @@ export default function ResultPane({
         {/* progress overlay */}
         {running && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/70 backdrop-blur-sm">
-            <div className="h-10 w-10 animate-spin rounded-full border-2 border-ink-500 border-t-accent-500" />
-            <p className="text-4xl font-semibold tabular-nums text-slate-100">
-              {percent}%
-            </p>
-            <div className="h-1.5 w-64 max-w-[70%] overflow-hidden rounded-full bg-ink-600">
-              <div
-                className="h-full bg-accent-500 transition-all"
-                style={{ width: `${percent}%` }}
-              />
-            </div>
+            <Loader2 className="size-10 animate-spin text-primary" />
+            <p className="tnum text-4xl font-semibold text-foreground">{percent}%</p>
+            <Progress value={percent} className="w-64 max-w-[70%]" />
             <StatusBadge status={job.status} />
             {(progress?.node || progress?.message) && (
-              <p className="max-w-[80%] truncate text-xs text-slate-400">
+              <p className="max-w-[80%] truncate text-xs text-muted-foreground">
                 {progress?.node ? `ノード ${progress.node}` : ''}
                 {progress?.node && progress?.message ? ' — ' : ''}
                 {progress?.message ?? ''}
@@ -257,25 +265,27 @@ export default function ResultPane({
               key={item.key}
               onClick={() => setSelectedKey(item.key)}
               title={item.label}
-              className={`flex shrink-0 items-center gap-2 rounded-md border p-1 pr-2 text-xs transition-colors ${
+              className={`flex shrink-0 items-center gap-2 rounded-md border p-1 pr-2 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 ${
                 item.key === current?.key
-                  ? 'border-accent-500 bg-accent-500/10 text-accent-400'
-                  : 'border-ink-600 bg-ink-800 text-slate-400 hover:border-ink-500'
+                  ? 'border-primary bg-primary/10 text-foreground'
+                  : 'border-border bg-card text-muted-foreground hover:text-foreground'
               }`}
             >
-              <span className="flex h-10 w-16 items-center justify-center overflow-hidden rounded bg-ink-900">
+              <span className="flex h-10 w-16 items-center justify-center overflow-hidden rounded-sm bg-background">
                 {item.thumb ? (
                   <img
                     src={item.thumb}
                     alt={item.label}
-                    className={`h-full w-full object-cover ${blur}`}
+                    className={`size-full object-cover ${blur}`}
                   />
+                ) : item.kind === 'audio' ? (
+                  <Music className="size-4 opacity-60" />
                 ) : (
-                  <span className="text-sm">{item.kind === 'audio' ? '🎵' : '🎬'}</span>
+                  <Film className="size-4 opacity-60" />
                 )}
               </span>
-              {item.kind === 'video' && <span>🎬</span>}
-              {item.kind === 'audio' && <span>🎵</span>}
+              {item.kind === 'video' && <Film className="size-3.5" />}
+              {item.kind === 'audio' && <Music className="size-3.5" />}
               {item.label}
             </button>
           ))}
@@ -284,24 +294,25 @@ export default function ResultPane({
 
       {/* --------------------------------------------------------- toolbar */}
       {job && (
-        <div className="flex shrink-0 flex-wrap items-center gap-2 rounded-lg border border-ink-600 bg-ink-800 px-3 py-2">
+        <div className="flex shrink-0 flex-wrap items-center gap-2 rounded-lg border border-border bg-card px-3 py-2 shadow-elevation-1">
           <StatusBadge status={job.status} />
-          <span className="font-mono text-xs text-slate-500" title={job.id}>
+          <span className="font-mono text-xs text-muted-foreground" title={job.id}>
             {job.id.slice(0, 8)}
           </span>
-          <span className="text-xs text-slate-500">{formatTime(job.created_at)}</span>
-          <span className="text-xs text-slate-600">{job.mode}</span>
+          <span className="tnum text-xs text-muted-foreground">
+            {formatTime(job.created_at)}
+          </span>
+          <span className="text-xs text-muted-foreground/70">{job.mode}</span>
           {job.nsfw && <NsfwBadge />}
 
           <div className="ml-auto flex flex-wrap items-center gap-2">
             {current && (
-              <a
-                className="btn-ghost !py-1 text-xs"
-                href={current.url}
-                download={fileNameOf(current.url)}
-              >
-                ダウンロード
-              </a>
+              <Button asChild variant="outline" size="sm">
+                <a href={current.url} download={fileNameOf(current.url)}>
+                  <Download />
+                  ダウンロード
+                </a>
+              </Button>
             )}
             {/* 表示中の成果物をライブラリへ（SPEC §7.2）。タブの key が
                 そのまま登録元の区分になる。 */}
@@ -314,51 +325,60 @@ export default function ResultPane({
                 onAdded={onLibraryChanged}
               />
             )}
-            <button
-              className="btn-ghost !py-1 text-xs"
+            <Button
+              variant="outline"
+              size="sm"
               disabled={busy}
               onClick={() => onRerun(job, true)}
             >
+              <RotateCcw />
               再実行（シード再抽選）
-            </button>
-            <button
-              className="btn-ghost !py-1 text-xs"
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
               disabled={busy}
               title="元ジョブと同じシードのまま流し直します"
               onClick={() => onRerun(job, false)}
             >
+              <RotateCcw />
               再実行（同じシード）
-            </button>
-            <button
-              className="btn-ghost !py-1 text-xs"
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
               title="このジョブの設定をフォームに書き戻します"
               onClick={() => onRestoreParams(job)}
             >
+              <Undo2 />
               パラメータを復元
-            </button>
-            <button
-              className="btn-ghost !py-1 text-xs"
+            </Button>
+            <Button
+              variant="outline"
+              size="sm"
               disabled={busy || !job.last_frame_url}
               title={job.last_frame_url ? '' : 'ラストフレームがありません'}
               onClick={() => onContinue(job)}
             >
               続きを生成
-            </button>
+            </Button>
             <NsfwToggle
               nsfw={job.nsfw}
               disabled={busy}
               onToggle={(nsfw) => onToggleNsfw(job, nsfw)}
             />
-            <button className="btn-ghost !py-1 text-xs" onClick={() => onOpenDetail(job)}>
+            <Button variant="outline" size="sm" onClick={() => onOpenDetail(job)}>
               詳細
-            </button>
-            <button
-              className="btn-danger !py-1 text-xs"
+            </Button>
+            <Button
+              variant="destructive"
+              size="sm"
               disabled={busy}
               onClick={() => onDelete(job)}
             >
+              <Trash2 />
               削除
-            </button>
+            </Button>
           </div>
         </div>
       )}
@@ -366,8 +386,10 @@ export default function ResultPane({
       {/* --------------------------------------------------------- prompts */}
       {job &&
         (job.image_prompt || job.video_prompt || job.audio_prompt || job.user_input) && (
-        <details className="shrink-0 rounded-lg border border-ink-600 bg-ink-800 px-3 py-2">
-          <summary className="cursor-pointer text-xs text-slate-400">プロンプト</summary>
+        <details className="shrink-0 rounded-lg border border-border bg-card px-3 py-2 shadow-elevation-1">
+          <summary className="cursor-pointer text-xs text-muted-foreground">
+            プロンプト
+          </summary>
           <div className="mt-2 max-h-48 space-y-2 overflow-y-auto">
             {job.image_prompt && (
               <PromptBlock label="画像プロンプト" text={job.image_prompt} />
@@ -395,13 +417,16 @@ export default function ResultPane({
             className={`max-h-full max-w-full object-contain ${blur}`}
             onClick={(event) => event.stopPropagation()}
           />
-          <button
-            className="btn-ghost absolute right-4 top-4 !px-2 !py-1"
+          <Button
+            variant="outline"
+            size="icon-sm"
+            className="absolute right-4 top-4"
             onClick={() => setLightbox(null)}
             title="閉じる (Esc)"
           >
-            ✕
-          </button>
+            <X />
+            <span className="sr-only">閉じる</span>
+          </Button>
         </div>
       )}
     </div>
@@ -410,12 +435,12 @@ export default function ResultPane({
 
 export function PromptBlock({ label, text }: { label: string; text: string }) {
   return (
-    <div className="rounded border border-ink-600 bg-ink-900 p-2">
+    <div className="rounded-md border border-border bg-surface-sunken p-2">
       <div className="mb-1 flex items-center justify-between">
-        <span className="text-xs text-slate-400">{label}</span>
+        <span className="text-xs text-muted-foreground">{label}</span>
         <CopyButton text={text} />
       </div>
-      <p className="whitespace-pre-wrap break-words text-xs text-slate-300">{text}</p>
+      <p className="whitespace-pre-wrap break-words text-xs text-foreground/85">{text}</p>
     </div>
   )
 }
