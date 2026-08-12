@@ -172,7 +172,8 @@ class AcpAgentClient(LLMClient):
         command: str | None = None,
         model: str | None = None,
         workdir: str | Path | None = None,
-        timeout: float = DEFAULT_TIMEOUT,
+        # None = タイムアウトなし（設定 agent_grok_timeout が 0 のとき）
+        timeout: float | None = DEFAULT_TIMEOUT,
         on_activity: ActivityCallback | None = None,
         fallback: LLMClient | None = None,
     ) -> None:

@@ -9,12 +9,14 @@ from pathlib import Path
 
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 
+from .. import comfy
 from .. import studio as service
 from ..models import (
     ASSET_FILE_ROLE_KINDS,
     StudioAsset,
     StudioAssetFile,
     StudioAssetUpdate,
+    StudioCapabilities,
     StudioDemoCreate,
     StudioEpisode,
     StudioEpisodeCreate,
@@ -63,6 +65,27 @@ def _bad_request(exc: service.StudioError) -> HTTPException:
 
 
 # --------------------------------------------------------------------------
+# 接続先でできること
+# --------------------------------------------------------------------------
+
+@router.get("/capabilities", response_model=StudioCapabilities)
+async def get_capabilities() -> StudioCapabilities:
+    """いまの接続先でスタジオの追加機能が使えるか（画面のトグルの出し分け用）。
+
+    ``/object_info`` をひとつ聞くだけなので、接続できないときは 500 にせず
+    「使えない」＋理由を返す（設定していないだけのこともあるため）。
+    """
+    try:
+        return StudioCapabilities(
+            latent_continuity=await comfy.latent_context_support()
+        )
+    except comfy.ComfyError as exc:
+        return StudioCapabilities(
+            latent_continuity=False, error=comfy.display_error(exc)
+        )
+
+
+# --------------------------------------------------------------------------
 # プロジェクト
 # --------------------------------------------------------------------------
 
@@ -81,6 +104,7 @@ async def create_project(payload: StudioProjectCreate) -> StudioProject:
             payload.synopsis,
             payload.world_notes,
             payload.auto_translate,
+            payload.latent_continuity,
         )
     except service.StudioError as exc:
         raise _bad_request(exc) from exc

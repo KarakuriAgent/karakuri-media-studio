@@ -199,7 +199,7 @@ def extract_result(text: str) -> dict[str, object] | None:
 async def _exec(
     argv: list[str],
     cwd: str | Path,
-    timeout: float,
+    timeout: float | None,
     env: dict[str, str] | None = None,
 ) -> tuple[int, str, str]:
     """Run ``argv`` and return ``(returncode, stdout, stderr)``.
@@ -207,6 +207,8 @@ async def _exec(
     ``env`` replaces the inherited environment when given.  Media generation
     (:mod:`app.grok_media`) uses it to drop ``XAI_API_KEY`` so that the CLI can
     never silently fall back to the metered API (SPEC §4.1).
+
+    ``timeout=None`` は「待ち続ける」（設定で 0 = タイムアウトなし にしたとき）。
     """
     workdir = Path(cwd)
     try:
@@ -284,7 +286,7 @@ class GrokCliClient(LLMClient):
         command: str | None = None,
         model: str | None = None,
         workdir: str | Path | None = None,
-        timeout: float = DEFAULT_TIMEOUT,
+        timeout: float | None = DEFAULT_TIMEOUT,
         extra_args: list[str] | None = None,
     ) -> None:
         settings = load_settings()
@@ -345,9 +347,18 @@ class GrokCliClient(LLMClient):
         )
 
 
-def get_client() -> LLMClient:
+def configured_timeout() -> float | None:
+    """設定 ``agent_grok_timeout`` の制限時間。**0 = タイムアウトなし**（``None``）。
+
+    ``None`` はそのまま :func:`asyncio.wait_for` に渡せる（待ち続ける）。
+    """
+    timeout = load_settings().agent_grok_timeout
+    return timeout if timeout > 0 else None
+
+
+def get_client(timeout: float | None = DEFAULT_TIMEOUT) -> LLMClient:
     """Factory: CLI by default; swap here for the API-key backed client."""
-    return GrokCliClient()
+    return GrokCliClient(timeout=timeout)
 
 
 def get_agent_client(
@@ -363,9 +374,11 @@ def get_agent_client(
     ``agent_use_acp``（既定 True）のときは ``grok agent stdio``（ACP）で回し、
     実行中の活動を ``on_activity`` に流す。ACP を開始できなければ内部で従来の
     ワンショット実行へフォールバックする。
+
+    制限時間は設定 ``agent_grok_timeout``（0 = タイムアウトなし）。
     """
     settings = load_settings()
-    timeout = settings.agent_grok_timeout or DEFAULT_TIMEOUT
+    timeout = configured_timeout()
     oneshot = GrokCliClient(
         workdir=workdir,
         timeout=timeout,

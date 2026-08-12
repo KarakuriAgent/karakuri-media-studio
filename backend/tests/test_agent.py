@@ -291,6 +291,13 @@ def kinds(session: dict) -> list[str]:
     return [m["kind"] for m in session["messages"] if m["kind"]]
 
 
+def tweak_settings(monkeypatch, **fields) -> None:
+    """env の設定に差分だけ上書きする（実行上限まわりの検証用）。"""
+    monkeypatch.setattr(
+        config, "_settings", config.load_settings().model_copy(update=fields)
+    )
+
+
 # --------------------------------------------------------------------------
 # protocol (AGENT-MODE §4)
 # --------------------------------------------------------------------------
@@ -647,6 +654,29 @@ def test_plan_task_limits_apply_to_auto_only(mode, expected):
     assert agent_runner.plan_task_limits(session) == expected
 
 
+def test_plan_task_limit_zero_is_unlimited(env, monkeypatch):
+    """agent_max_plan_tasks=0 なら自走でも 6 件以上のプランが通る（0 = 無制限）。"""
+    tweak_settings(monkeypatch, agent_max_plan_tasks=0)
+    session = AgentSession(
+        id="s1", created_at="2024-01-01T00:00:00Z", checkin_mode="auto"
+    )
+    assert agent_runner.plan_task_limits(session) == (None, 0)
+
+    created = start(env, checkin_mode="auto", auto_limit=0)
+    env.cli.answers = [plan_answer(env, 8)]
+    reply = say(env, created["id"]).json()
+    assert len(reply["action"]["tasks"]) == 8
+
+
+def test_long_plan_is_rejected_in_an_auto_session_by_default(env):
+    """既定（5 件）は従来どおり: 自走セッションの 6 件以上は突き返される。"""
+    session = start(env, checkin_mode="auto", auto_limit=5)
+    env.cli.answers = [plan_answer(env, 6), plan_answer(env, 3)]
+    reply = say(env, session["id"]).json()
+    # 上限超過は ActionError → リマインダー付きで 1 回だけ再試行される
+    assert len(reply["action"]["tasks"]) == 3
+
+
 def test_long_plan_passes_in_a_non_auto_session(env):
     """節目のみ確認では上限なし（承認 + チェックインで人間が必ず挟まる）。"""
     session = start(env, checkin_mode="milestone")
@@ -994,6 +1024,26 @@ def test_auto_limit_checkin_approval_buys_another_round(env):
     assert again["plan"]["tasks"][2]["status"] == "pending"
 
 
+def test_auto_limit_zero_never_checks_in(env):
+    """auto_limit=0 は無制限: 上限チェックインを挟まず最後まで走り切る。"""
+    session = start(env, checkin_mode="auto", auto_limit=0)
+    assert session["auto_limit"] == 0
+    env.cli.answers = [
+        plan_answer(env, 3),
+        "1本目ができました。",
+        "2本目ができました。",
+        "3本できました。",
+        DONE_ANSWER,
+    ]
+    say(env, session["id"])
+    env.client.post(f"/api/agent/sessions/{session['id']}/approve", json={})
+
+    final = wait_status(env, session["id"], ("done", "stopped", "waiting_checkin"))
+    assert final["status"] == "done"
+    assert "limit_reached" not in kinds(final)
+    assert env.comfy.job_count == 3
+
+
 def test_auto_limit_checkin_decline_stops_the_session(env):
     session = _run_to_limit_checkin(env)
     env.client.post(
@@ -1010,7 +1060,7 @@ def test_auto_limit_checkin_decline_stops_the_session(env):
 
 
 def test_turn_limit_stops_the_loop(env, monkeypatch):
-    monkeypatch.setattr(agent_runner, "MAX_TURNS", 2)
+    tweak_settings(monkeypatch, agent_max_turns=2)
     session = start(env)
     env.cli.answers = [plan_answer(env, 2)] + ["まだ考え中です。"] * 4
     say(env, session["id"])
@@ -1019,6 +1069,41 @@ def test_turn_limit_stops_the_loop(env, monkeypatch):
     final = wait_status(env, session["id"], ("stopped", "done", "idle"))
     assert final["status"] == "stopped"
     assert "連続ターン" in final["messages"][-1]["content"]
+    assert "（2）" in final["messages"][-1]["content"]
+
+
+#: ループを止めずに次のターンへ進むだけの答え（ターン数の検証用）
+KEEP_GOING_ANSWER = action_answer({"action": "run_task"}, "続けます。")
+
+
+def test_turn_limit_defaults_to_twenty(env):
+    """設定を触らなければ従来どおり 20 ターンで止まる。"""
+    assert agent_runner.turn_limit() == agent_runner.MAX_TURNS == 20
+    session = start(env)
+    env.cli.answers = [plan_answer(env, 1)] + [KEEP_GOING_ANSWER] * 30
+    say(env, session["id"])
+    env.client.post(f"/api/agent/sessions/{session['id']}/approve", json={})
+
+    final = wait_status(env, session["id"], ("stopped", "done", "idle"))
+    assert final["status"] == "stopped"
+    assert "連続ターン" in final["messages"][-1]["content"]
+    assert "（20）" in final["messages"][-1]["content"]
+    assert env.cli.answers  # 台本を使い切る前に上限で止まっている
+
+
+def test_turn_limit_zero_is_unlimited(env, monkeypatch):
+    """agent_max_turns=0 なら 20 ターンを超えても止まらない（0 = 無制限）。"""
+    tweak_settings(monkeypatch, agent_max_turns=0)
+    assert agent_runner.turn_limit() == 0
+    session = start(env)
+    env.cli.answers = [plan_answer(env, 1)] + [KEEP_GOING_ANSWER] * 25 + [DONE_ANSWER]
+    say(env, session["id"])
+    env.client.post(f"/api/agent/sessions/{session['id']}/approve", json={})
+
+    final = wait_status(env, session["id"], ("stopped", "done", "idle"))
+    assert final["status"] == "done"  # 上限で打ち切られていない
+    assert not env.cli.answers  # 26 ターンぶんすべて回った
+    assert not any("連続ターン" in m["content"] for m in final["messages"])
 
 
 # --------------------------------------------------------------------------

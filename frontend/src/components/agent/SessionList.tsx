@@ -165,19 +165,19 @@ export default function SessionList({
             </div>
             {mode === 'auto' && (
               <div>
-                <label className="label">上限本数（自走時は必須）</label>
+                <label className="label">上限本数（0 = 無制限）</label>
                 <input
                   className="field text-xs"
                   type="number"
-                  min={1}
-                  max={50}
+                  min={0}
                   value={autoLimit}
                   onChange={(event) =>
-                    setAutoLimit(
-                      Math.min(50, Math.max(1, Number(event.target.value) || 1)),
-                    )
+                    setAutoLimit(Math.max(0, Number(event.target.value) || 0))
                   }
                 />
+                <p className="mt-1 text-[11px] text-slate-500">
+                  この本数ごとに続けてよいか確認します。0 なら確認せず走り切ります。
+                </p>
               </div>
             )}
             <div>

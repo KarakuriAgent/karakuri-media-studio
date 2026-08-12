@@ -61,6 +61,7 @@ from .models import (
     MultiShot,
     audio_lora_problem,
     audio_workflow_problem,
+    context_latent_problem,
     elements_of,
     elements_problem,
     image_lora_family_problem,
@@ -457,6 +458,9 @@ def _validate(params: dict[str, Any]) -> None:
         )
         or prompt_length_problem(mode, video_workflow, params.get("video_prompt"))
         or reference_problem(mode, video_workflow, reference_materials(params))
+        or context_latent_problem(
+            mode, video_workflow, params.get("context_latent_path")
+        )
         or start_image_problem(
             mode,
             video_workflow,
@@ -722,6 +726,9 @@ def _params_from_create(payload: JobCreate) -> dict[str, Any]:
         "source_image": payload.source_image,
         "end_image": payload.end_image,
         "reference_video": payload.reference_video,
+        # 直前カットの AV ラテント（ラテント連続性を宣言しているワークフローだけ
+        # が読む、SPEC §3.1）。ComfyUI 側のパスなので上げ直しはしない。
+        "context_latent_path": payload.context_latent_path,
         # マルチモーダル参照（宣言しているワークフローだけが読む、SPEC §3.1）
         "reference_images": list(payload.reference_images),
         "reference_videos": list(payload.reference_videos),
@@ -1065,8 +1072,31 @@ def _generation_params(
         reference_image_names=list((references or {}).get("reference_images") or []),
         reference_video_names=list((references or {}).get("reference_videos") or []),
         reference_audio_names=list((references or {}).get("reference_audios") or []),
+        # 旧ジョブの params には無いので既定は空（= ラテント連続性を使わない）
+        context_latent_path=str(p.get("context_latent_path") or ""),
         **{field: uploads.get(field, "") for field in _UPLOADS.values()},
     )
+
+
+def _pick_text(outputs: dict[str, Any], node_id: str) -> str:
+    """``node_id`` が ``/history`` に残した文字列（無ければ空）。
+
+    ``PreviewAny`` の ``ui.text`` を読む口で、成果物のファイルではなく**文字列を
+    1 本**持ち帰るときに使う（ラテント連続性が保存した AV ラテントのパス）。
+    ``text`` が list でも str でも取れるようにしてある（ComfyUI のバージョンと
+    Comfy Cloud で形が揺れるため）。
+    """
+    node = outputs.get(node_id)
+    if not isinstance(node, dict):
+        return ""
+    value = node.get("text")
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            if isinstance(item, str) and item.strip():
+                return item.strip()
+    return ""
 
 
 def _pick_output(outputs: dict[str, Any], node_id: str) -> dict[str, Any] | None:
@@ -1500,8 +1530,13 @@ async def _run_comfy_stage(
     overall: OverallProgress,
     stage_index: int,
     job_dir: Path,
+    extras: dict[str, str] | None = None,
 ) -> Path:
-    """ComfyUI で 1 ステージ分のグラフを走らせ、成果物のパスを返す。"""
+    """ComfyUI で 1 ステージ分のグラフを走らせ、成果物のパスを返す。
+
+    ``extras`` を渡すと、成果物のファイル以外に ``/history`` から拾えたものを
+    そこへ入れる（今のところ、ラテント連続性が保存した AV ラテントのパスだけ）。
+    """
     builders = {
         "image": build_image_workflow,
         "video": build_video_workflow,
@@ -1511,6 +1546,17 @@ async def _run_comfy_stage(
     entry = await _run_stage(
         job_id, stage, spec, workflow, stages, label, overall, stage_index
     )
+    if extras is not None and spec.latent_output_node:
+        latent_path = _pick_text(entry.get("outputs") or {}, spec.latent_output_node)
+        if latent_path:
+            extras["context_latent_path"] = latent_path
+        else:
+            log.warning(
+                "job %s: %s は AV ラテントのパスを返しませんでした"
+                "（次のカットの引き継ぎには使えません）",
+                job_id,
+                spec.id,
+            )
     kind, stem, _ = _STAGE_ARTIFACTS[stage]
     return await _download_artifact(entry, spec.output_node, job_dir, stem, kind)
 
@@ -1583,6 +1629,18 @@ _STAGE_ARTIFACTS = {
 _STAGE_LABELS = {"image": "画像生成", "video": "動画生成", "audio": "音声生成"}
 
 
+async def _record_take_latent(job_id: str, latent_path: str) -> None:
+    """保存された AV ラテントのパスを、このジョブの Take に控える。
+
+    スタジオ（:mod:`app.studio`）がこちらを import している側なので、逆向きの
+    import は関数の中で行う（循環 import を作らない）。ジョブがスタジオ由来で
+    なければ何も起きない。
+    """
+    from . import studio
+
+    await studio.record_take_latent(job_id, latent_path)
+
+
 def _stage_label(stage: str, index: int, total: int) -> str:
     """「画像生成 (1/2)」のような見出し（1 段のジョブでは番号を付けない）。"""
     label = _STAGE_LABELS.get(stage, stage)
@@ -1609,6 +1667,8 @@ async def _run_job_stages(job: Job) -> dict[str, Any]:
     # ときだけ、1 度だけ行う。
     comfy_params: GenerationParams | None = None
     overrides: dict[str, str] = {}
+    # 成果物のファイル以外に ComfyUI から拾えたもの（ラテント連続性のパス）
+    extras: dict[str, str] = {}
 
     all_stages = stage_specs(job.mode, job.params)
     total = len(all_stages)
@@ -1623,7 +1683,7 @@ async def _run_job_stages(job: Job) -> dict[str, Any]:
                 comfy_params, overrides = await _prepare_comfy(job)
             saved = await _run_comfy_stage(
                 job_id, stage, spec, comfy_params, overrides, stages, label,
-                overall, index, job_dir,
+                overall, index, job_dir, extras,
             )
         elif spec.backend == "grok_cli":
             saved = await _run_grok_stage(
@@ -1643,6 +1703,12 @@ async def _run_job_stages(job: Job) -> dict[str, Any]:
             updates["last_frame_path"] = str(
                 await extract_last_frame(saved, job_dir / "last_frame.png")
             )
+            # ラテント連続性を使ったカットは、保存された AV ラテントのパスを
+            # この ジョブの Take に控えておく（次のカットが読む）。取れなければ
+            # 何も書かない = 次のカットは「引き継ぎ元が無い」として断られる。
+            latent_path = extras.pop("context_latent_path", "")
+            if latent_path:
+                await _record_take_latent(job_id, latent_path)
         if stage == "image" and index + 1 < total:
             # 2 段目はこの静止画を開始フレームとして読む。
             job.params["source_image"] = str(saved)

@@ -76,6 +76,10 @@ function settings(): Settings {
     runpod_network_volume_id: '',
     external_api_key: '',
     external_max_pending_takes: 20,
+    agent_grok_timeout: 300,
+    agent_max_plan_tasks: 5,
+    agent_max_turns: 20,
+    canvas_max_turns: 8,
   }
 }
 
@@ -1020,5 +1024,36 @@ describe('SettingsPage: Grok Build CLI（Grok Imagine のバックエンド、SP
 
     await waitFor(() => expect(putSettings).toHaveBeenCalled())
     expect(putSettings.mock.calls[0][0]).toMatchObject({ grok_media_timeout: 600 })
+  })
+
+  it('実行上限は 0（無制限）を含めて保存される', async () => {
+    putSettings.mockResolvedValue(settings())
+    await openSettings()
+
+    fireEvent.change(
+      screen.getByLabelText('エージェントの連続ターン上限（0 = 無制限）'),
+      { target: { value: '0' } },
+    )
+    fireEvent.change(
+      screen.getByLabelText('キャンバスの連続ターン上限（0 = 無制限）'),
+      { target: { value: '0' } },
+    )
+    fireEvent.change(
+      screen.getByLabelText('1 プラン提案の新規ジョブ上限（自走時・0 = 無制限）'),
+      { target: { value: '0' } },
+    )
+    fireEvent.change(
+      screen.getByLabelText('grok の制限時間（秒・0 = タイムアウトなし）'),
+      { target: { value: '900' } },
+    )
+    fireEvent.click(screen.getAllByRole('button', { name: '保存' })[0])
+
+    await waitFor(() => expect(putSettings).toHaveBeenCalled())
+    expect(putSettings.mock.calls[0][0]).toMatchObject({
+      agent_max_turns: 0,
+      canvas_max_turns: 0,
+      agent_max_plan_tasks: 0,
+      agent_grok_timeout: 900,
+    })
   })
 })

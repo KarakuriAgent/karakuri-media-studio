@@ -75,15 +75,41 @@
 | id | 表示名 | ckpt | 必要入力 | `full` 可 |
 |---|---|---|---|---|
 | `minimax_h3_t2v` | テキスト→動画・音声つき (MiniMax H3 t2v) | minimax_h3 fl2va int8 | なし | ✕ |
+| `minimax_h3_t2v_save` | テキスト→動画・音声つき・ラテント保存 (MiniMax H3 t2v + Save Latent) | 同 `minimax_h3_t2v` | 同 `minimax_h3_t2v` | ✕ |
 | `minimax_h3_i2v` | 画像→動画・音声つき (MiniMax H3 i2v) | minimax_h3 fl2va int8 | 画像（最終フレーム画像は任意） | ○（既定） |
+| `minimax_h3_i2v_save` | 画像→動画・音声つき・ラテント保存 (MiniMax H3 i2v + Save Latent) | 同 `minimax_h3_i2v` | 同 `minimax_h3_i2v` | ○ |
 | `minimax_h3_i2v_turbo` | 画像→動画・音声つき (MiniMax H3 i2v Turbo) | minimax_h3 fl2va w4a8 + turbo 4step LoRA | 同 `minimax_h3_i2v` | ○ |
 | `minimax_h3_i2v_opt` | 画像→動画・音声つき (MiniMax H3 i2v Optimized) | minimax_h3 fl2va w4a8（蒸留 LoRA なし・20 steps） | 同 `minimax_h3_i2v` | ○ |
 | `minimax_h3_r2v` | 参照素材→動画・音声つき (MiniMax H3 r2v) | minimax_h3 ref2va int8 | `reference_images` 9 枚 / `reference_videos` 3 本 / `reference_audios` 3 本まで・合計 1 件以上（開始フレームは不可） | ✕ |
+| `minimax_h3_r2v_save` | 参照素材→動画・音声つき・ラテント保存 (MiniMax H3 r2v + Save Latent) | 同 `minimax_h3_r2v` | 同 `minimax_h3_r2v` | ✕ |
+| `minimax_h3_r2v_context` | 参照素材→動画・音声つき・連続カット (MiniMax H3 r2v + Motion Context) | minimax_h3 ref2va int8 | 同 `minimax_h3_r2v` に加えて `reference_video`（直前カットの動画）と `context_latent_path`（直前カットの AV ラテント）が必須 | ✕ |
 | `minimax_h3_r2v_turbo` | 参照素材→動画・音声つき (MiniMax H3 r2v Turbo) | minimax_h3 ref2va w4a8 + turbo 4step LoRA | 同 `minimax_h3_r2v` | ✕ |
 | `minimax_h3_r2v_opt` | 参照素材→動画・音声つき (MiniMax H3 r2v Optimized) | minimax_h3 ref2va w4a8（蒸留 LoRA なし・20 steps） | 同 `minimax_h3_r2v` | ✕ |
 
 - id はファイル名（拡張子なし）
-- `_turbo` / `_opt` はカスタムノード前提なので、**接続先が `comfy_cloud` のときは選択肢に出ない**（§3.1）
+- `_turbo` / `_opt` / `_context` / `_save` はカスタムノード前提なので、**接続先が `comfy_cloud` のときは選択肢に出ない**（§3.1）
+- **`minimax_h3_*_save`** は素の t2v / i2v / r2v に `MiniMaxH3MotionContextSaveLatent` →
+  `PreviewAny` の 2 ノードだけを足した版で、**AV ラテントを保存する以外は素の版とまったく同じ**
+  （Motion Context の読み込み・`…Trim` は入っていないので尺も変わらない）。ドラマスタジオは
+  「ラテント連続性」が ON のプロジェクトでは通常カットもこちらに読み替えて投げる: **連鎖の起点になる
+  カットがラテントを残さないと、次のカットに引き継ぐものが無く連鎖を始められない**ため。素の版の
+  テンプレートは触っていないので、OFF のプロジェクトと Comfy Cloud は今までどおり素の版を使う。
+- **`minimax_h3_r2v_context`** は素の r2v に Motion Context（`MiniMaxH3MotionContext` /
+  `…LoadLatent` / `…SaveLatent` / `…Trim`）を足した**連続カット専用**の版。ドラマスタジオの
+  「ラテント連続性」（プロジェクトの `latent_continuity`）だけが選ぶ。`ReferenceToVideo` の
+  CONDITIONING に直前カットの末尾フレームと音を追記し、動き・音・見た目をつないだまま次のカットを作る。
+  受け取るのは r2v の参照素材一式に加えて `reference_video`（直前カットの mp4。`LoadVideo` →
+  `GetVideoComponents` でフレーム列にする）と `context_latent_path`（直前カットのサンプラー出力を
+  `…SaveLatent` が safetensors で保存したもの。**ComfyUI 側のパス**なのでアップロードは通さない）。
+  Motion Context のつまみ（`context_length` = `"22"`（文字列コンボ `"22"` / `"5"` / `"39"` /
+  `"56"`）・`audio_context_length` = 0（映像の窓に追従））は**テンプレートの固定値**でジョブからは
+  動かせない。`encode_mode` / `anchor_mode` / `crop` / `audio_mode` は本家 ComfyUI-H3-Motion-Context
+  v0.2.0 には入力として存在せず、ノード内部で固定されている。ピン留めした 22 フレームが出力の
+  先頭に返り、`…Trim` が映像と音声を揃えて落とすため、**仕上がりの尺は指定した尺より 22 フレーム
+  （24fps で約 0.9 秒）短くなる**。`context_latent` は生成するクリップと同じ解像度である必要がある。
+  このカットぶんのラテントは `h3_context/{job_id}` に保存し、パスは `PreviewAny` 経由で `/history`
+  から回収して Take の `latent_path` に控える（回収できなければ NULL のままで、次のカットは
+  「引き継ぎ元が無い」として断られる）。
 - **`minimax_h3_*`（`workflow/video/minimax-h3/`、family `minimax-h3`）** は**映像とステレオ音声を同時に生成する**
   ローカルモデル（MiniMax H3）。プロンプト 1 ブロックに「スタイル → シーン概要 → `[0s-1.5s]` 形式のショット
   タイムライン → `Camera:` → `Audio:`（セリフ・SFX・音楽）→ 禁止事項」を書くと、1 本の中でカットを割れる。
@@ -1051,6 +1077,8 @@ docs/AGENT-MODE.md  エージェントモード設計書
 workflow/           ComfyUI ワークフロー（API フォーマット）テンプレート ※実行の正
   image/            krea2/ anima/ z-image/ qwen-image/（モデルファミリーごと）
   video/minimax-h3/ minimax_h3_t2v / minimax_h3_i2v / minimax_h3_r2v（音声つき）
+                    minimax_h3_r2v_context（連続カット・Motion Context 版）
+                    minimax_h3_t2v_save / _i2v_save / _r2v_save（AV ラテント保存つき）
                     minimax_h3_i2v_turbo / minimax_h3_r2v_turbo（4 ステップ版）
                     minimax_h3_i2v_opt / minimax_h3_r2v_opt（蒸留 LoRA なしの 20 ステップ最適化版）
   audio/            ace_step1_5_xl_sft.json / stable_audio_3_medium_base.json

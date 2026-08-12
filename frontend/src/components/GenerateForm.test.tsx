@@ -1034,9 +1034,12 @@ describe('GenerateForm の「履歴から選択」', () => {
         name: '履歴から選択',
       }),
     )
-    expect(screen.getByText('履歴から選択: 参照動画')).toBeTruthy()
-    expect(screen.getByText('1 件')).toBeTruthy()
-    expect(screen.getByText('動画')).toBeTruthy()
+    // モードタブにも「動画」があるので、バッジの確認はモーダル内にスコープする
+    const modal = screen
+      .getByText('履歴から選択: 参照動画')
+      .closest('.card') as HTMLElement
+    expect(within(modal).getByText('1 件')).toBeTruthy()
+    expect(within(modal).getByText('動画')).toBeTruthy()
   })
 
   it('リファレンス音声のボタンからは音声候補だけが並ぶ', () => {

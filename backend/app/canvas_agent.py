@@ -39,9 +39,15 @@ from .models import AgentAction, AgentMessage, CanvasMessage
 
 log = logging.getLogger(__name__)
 
-#: 1 回の発言から回す Grok ターンの上限（暴走防止）。スタジオのループより短いのは、
-#: キャンバスの操作が目録の読み書きだけで、待つべき生成が挟まらないため。
+#: 1 回の発言から回す Grok ターンの上限（暴走防止）の既定。スタジオのループより
+#: 短いのは、キャンバスの操作が目録の読み書きだけで、待つべき生成が挟まらないため。
+#: 実際に使う値は設定 ``canvas_max_turns``（0 = 無制限）。
 MAX_TURNS = 8
+
+
+def turn_limit() -> int:
+    """いま効いている連続ターン上限（設定 ``canvas_max_turns``）。0 = 無制限。"""
+    return load_settings().canvas_max_turns
 
 _runs: dict[str, asyncio.Task[None]] = {}
 _stop_requests: set[str] = set()
@@ -284,8 +290,11 @@ def _place_on_open_tab(project_id: str, action: AgentAction) -> None:
 
 
 async def _loop(project_id: str) -> None:
+    max_turns = turn_limit()
+    turns = 0
     try:
-        for _ in range(MAX_TURNS):
+        while max_turns == 0 or turns < max_turns:  # 0 = 無制限
+            turns += 1
             if project_id in _stop_requests:
                 await _event(project_id, "stopped", "実行を止めました。")
                 return
@@ -302,7 +311,7 @@ async def _loop(project_id: str) -> None:
         await _event(
             project_id,
             "turn_limit",
-            f"連続 {MAX_TURNS} ターンで区切りました。続けるなら声をかけてください。",
+            f"連続 {max_turns} ターンで区切りました。続けるなら声をかけてください。",
         )
     except canvas.CanvasError:
         # プロジェクトごと消えた: 書き足す先が無いので黙って終える

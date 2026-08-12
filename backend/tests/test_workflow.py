@@ -6,7 +6,13 @@ from dataclasses import replace
 import pytest
 
 from app import prompts
-from app.models import GenerationParams, LoraRef, missing_job_fields, video_workflow_problem
+from app.models import (
+    GenerationParams,
+    LoraRef,
+    context_latent_problem,
+    missing_job_fields,
+    video_workflow_problem,
+)
 from app.workflow import (
     ASPECT_RATIOS,
     LORA_NODE_PREFIX,
@@ -29,6 +35,7 @@ from app.workflow import (
     resolution_for_image,
     scoped_model_overrides,
     selectable_model_slots,
+    supported_on_target,
     validate_manifests,
     validate_workflow,
     video_resolution,
@@ -53,6 +60,7 @@ from app.workflows import (
     image_catalog,
     image_families,
     image_specs,
+    get_video_spec,
     load_template,
     validate_external_spec,
     validate_spec,
@@ -1021,13 +1029,15 @@ def test_the_turbo_templates_load_the_quantised_weights(turbo_id, unet):
     }
 
 
-def test_the_turbo_only_custom_nodes_are_not_required_by_the_health_check():
+def test_the_optional_custom_nodes_are_not_required_by_the_health_check():
     """任意のカスタムノードなので、入れていない環境でも赤にしない（SPEC §3.1）。"""
     required = all_required_class_types()
     assert not (required & OPTIONAL_CLASS_TYPES)
-    # テンプレート側には確かに載っている
-    turbo = load_template("minimax_h3_r2v_turbo")
-    assert OPTIONAL_CLASS_TYPES <= {node["class_type"] for node in turbo.values()}
+    # テンプレート側には確かに載っている（turbo と連続カットで全部そろう）
+    used: set[str] = set()
+    for workflow_id in ("minimax_h3_r2v_turbo", "minimax_h3_r2v_context"):
+        used |= {node["class_type"] for node in load_template(workflow_id).values()}
+    assert OPTIONAL_CLASS_TYPES <= used
 
 
 def test_the_turbo_templates_have_plain_numeric_node_ids():
@@ -1788,3 +1798,161 @@ def test_the_minimax_turbo_lora_is_a_switchable_model_field():
         params(video_workflow="minimax_h3_i2v_turbo"), {key: "other.safetensors"}
     )
     assert wf["150"]["inputs"]["lora_name"] == "other.safetensors"
+
+
+# --------------------------------------------------------------------------
+# 連続カット（MiniMax H3 r2v + Motion Context）
+# --------------------------------------------------------------------------
+
+def context_nodes(wf: dict) -> dict:
+    """class_type -> そのノード（連続カットのテンプレートは各 1 個ずつ）。"""
+    return {node["class_type"]: node for node in wf.values()}
+
+
+def test_the_context_workflow_wires_the_previous_clip_in():
+    wf = build_video_workflow(
+        params(
+            video_workflow="minimax_h3_r2v_context",
+            reference_video_name="previous.mp4",
+            context_latent_path="/comfy/output/h3_context/prev_00002_.safetensors",
+            reference_image_names=["ref.png"],
+        )
+    )
+    by_class = context_nodes(wf)
+    # 直前カットの動画はアップロード名、AV ラテントは ComfyUI 側のパスそのまま
+    assert by_class["LoadVideo"]["inputs"]["file"] == "previous.mp4"
+    assert (
+        by_class["MiniMaxH3MotionContextLoadLatent"]["inputs"]["latent_path"]
+        == "/comfy/output/h3_context/prev_00002_.safetensors"
+    )
+    # このカットぶんの保存先はジョブごとに分ける
+    assert (
+        by_class["MiniMaxH3MotionContextSaveLatent"]["inputs"]["filename_prefix"]
+        == "h3_context/01JOBID"
+    )
+    # サンプラーは Motion Context を通した CONDITIONING を読む
+    context_id = next(
+        key for key, node in wf.items() if node["class_type"] == "MiniMaxH3MotionContext"
+    )
+    guider = by_class["BasicGuider"]
+    assert guider["inputs"]["conditioning"] == [context_id, 0]
+    # 出力はピン留めフレームを落としたあとの映像・音声から組み立てる
+    trim_id = next(
+        key
+        for key, node in wf.items()
+        if node["class_type"] == "MiniMaxH3MotionContextTrim"
+    )
+    assert by_class["CreateVideo"]["inputs"]["images"] == [trim_id, 0]
+    assert by_class["CreateVideo"]["inputs"]["audio"] == [trim_id, 1]
+    assert wf[trim_id]["inputs"]["trim_frames"] == [context_id, 1]
+
+
+def test_the_context_workflow_uses_the_sample_settings():
+    """Motion Context のつまみはテンプレートの固定値（本家ノードの既定に合わせる）。"""
+    inputs = context_nodes(
+        build_video_workflow(params(video_workflow="minimax_h3_r2v_context"))
+    )["MiniMaxH3MotionContext"]["inputs"]
+    # context_length は文字列コンボ（"22" / "5" / "39" / "56"）で、既定の "22"
+    assert inputs["context_length"] == "22"
+    # 0 = 音の窓は映像の窓に追従する
+    assert inputs["audio_context_length"] == 0
+    # 本家 v0.2.0 には無い入力（送ると ComfyUI のバリデーションで弾かれる）
+    for gone in ("encode_mode", "anchor_mode", "crop", "audio_mode"):
+        assert gone not in inputs
+
+
+def test_only_the_context_workflow_declares_a_latent_output():
+    spec = get_video_spec("minimax_h3_r2v_context")
+    assert spec.latent_output_node
+    node = load_template(spec)[spec.latent_output_node]
+    assert node["class_type"] == "PreviewAny"
+    assert get_video_spec("minimax_h3_r2v").latent_output_node == ""
+
+
+# --------------------------------------------------------------------------
+# ラテント保存版（連鎖の起点になる通常カット）
+# --------------------------------------------------------------------------
+
+#: (保存付きバリアント, 素の版)
+SAVE_PAIRS = [
+    ("minimax_h3_t2v_save", "minimax_h3_t2v"),
+    ("minimax_h3_i2v_save", "minimax_h3_i2v"),
+    ("minimax_h3_r2v_save", "minimax_h3_r2v"),
+]
+
+
+@pytest.mark.parametrize(("save_id", "plain_id"), SAVE_PAIRS)
+def test_the_save_templates_only_add_the_two_saving_nodes(save_id, plain_id):
+    """素の版に SaveLatent -> PreviewAny を足しただけ（他は一切変えない）。"""
+    plain = load_template(plain_id)
+    save = load_template(save_id)
+    assert set(save) - set(plain) == {"155", "156"}
+    assert not set(plain) - set(save)
+    for key, node in plain.items():
+        assert save[key] == node, key
+    # 保存するのはサンプラー出力の AV ラテント
+    sampler = save["155"]["inputs"]["latent"][0]
+    assert save[sampler]["class_type"] == "SamplerCustomAdvanced"
+    assert save["155"]["class_type"] == "MiniMaxH3MotionContextSaveLatent"
+    assert save["155"]["inputs"]["filename_prefix"] == "h3_context/clip"
+    # パスは PreviewAny 経由で持ち帰る（:func:`app.jobs._pick_text`）
+    assert save["156"]["class_type"] == "PreviewAny"
+    assert save["156"]["inputs"]["source"] == ["155", 0]
+    # Motion Context の読み込み・Trim は入れない（起点のカットなので）
+    assert not {node["class_type"] for node in save.values()} & {
+        "MiniMaxH3MotionContext",
+        "MiniMaxH3MotionContextLoadLatent",
+        "MiniMaxH3MotionContextTrim",
+    }
+
+
+@pytest.mark.parametrize(("save_id", "plain_id"), SAVE_PAIRS)
+def test_the_save_specs_declare_the_latent_output(save_id, plain_id):
+    spec = get_video_spec(save_id)
+    assert spec.latent_output_node == "156"
+    assert load_template(spec)["156"]["class_type"] == "PreviewAny"
+    # 引き継ぎ元は受け取らない（LoadLatent が無いので）
+    assert not spec.supports("context_latent")
+    # 保存先はジョブごとに分ける
+    wf = build_video_workflow(params(video_workflow=save_id))
+    assert wf["155"]["inputs"]["filename_prefix"] == "h3_context/01JOBID"
+    # 入力の形は素の版と同じ
+    plain = get_video_spec(plain_id)
+    assert spec.requires == plain.requires
+    assert spec.multi_inputs == plain.multi_inputs
+    assert spec.accepts_start_image == plain.accepts_start_image
+
+
+@pytest.mark.parametrize(("save_id", "plain_id"), SAVE_PAIRS)
+def test_the_save_workflows_are_hidden_on_comfy_cloud(save_id, plain_id):
+    """SaveLatent はカスタムノードなので Comfy Cloud では選ばせない。"""
+    assert not supported_on_target(get_video_spec(save_id), "comfy_cloud")
+    assert supported_on_target(get_video_spec(save_id), "local")
+    # 素の版は今までどおり Comfy Cloud でも使える
+    assert supported_on_target(get_video_spec(plain_id), "comfy_cloud")
+
+
+@pytest.mark.parametrize(("save_id", "plain_id"), SAVE_PAIRS)
+def test_the_save_workflows_share_the_prompt_guide_of_the_plain_ones(save_id, plain_id):
+    assert prompts.video_guide_for(save_id) == prompts.video_guide_for(plain_id) != ""
+    assert save_id in prompts.MULTI_CUT_WORKFLOWS
+
+
+def test_the_context_workflow_is_hidden_on_comfy_cloud():
+    """カスタムノード頼みなので Comfy Cloud では選ばせない（SPEC §2.2）。"""
+    spec = get_video_spec("minimax_h3_r2v_context")
+    assert not supported_on_target(spec, "comfy_cloud")
+    assert supported_on_target(spec, "local")
+
+
+def test_the_context_latent_is_required_by_the_context_workflow_only():
+    """連続カットは引き継ぎ元が要り、他のワークフローには渡せない（SPEC §2.2）。"""
+    assert context_latent_problem("i2v", "minimax_h3_r2v_context", None)
+    assert not context_latent_problem(
+        "i2v", "minimax_h3_r2v_context", "/comfy/output/h3_context/a_00001_.safetensors"
+    )
+    # 宣言の無いワークフローには渡せない
+    assert context_latent_problem("i2v", "minimax_h3_r2v", "/comfy/output/a.safetensors")
+    assert not context_latent_problem("i2v", "minimax_h3_r2v", None)
+    # 動画ステージを走らせないモードでは何も言わない
+    assert not context_latent_problem("image_only", "minimax_h3_r2v_context", None)

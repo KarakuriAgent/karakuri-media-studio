@@ -103,7 +103,8 @@ async def create_session(payload: AgentSessionCreate) -> AgentSession:
         payload,
         options,
         workdir=str(workdir),
-        max_tasks=settings.agent_max_plan_tasks or 5,
+        # 0 = 無制限（プロンプト側が上限の行そのものを落とす）
+        max_tasks=settings.agent_max_plan_tasks,
         tools_enabled=bool(settings.agent_grok_args),
         lora_samples=lora_samples,
         model_sources=sources,

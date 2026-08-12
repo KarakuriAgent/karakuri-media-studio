@@ -5,7 +5,7 @@ import type {
   StudioShot,
   StudioTake,
 } from '../../types'
-import { Banner, Section } from '../ui'
+import { Banner, NsfwBadge, Section } from '../ui'
 import {
   TAKE_STATUS_CLASS,
   TAKE_STATUS_LABEL,
@@ -101,6 +101,8 @@ function TakeCard({
   onSelect,
   onReject,
   onDelete,
+  onSetNsfw,
+  hideNsfw,
   busy,
 }: {
   take: StudioTake
@@ -111,6 +113,9 @@ function TakeCard({
   onSelect: () => void
   onReject: () => void
   onDelete: () => void
+  onSetNsfw: (nsfw: boolean) => void
+  /** NSFW 表示がオフで、この Take が NSFW（サムネイルをぼかす）。 */
+  hideNsfw: boolean
   busy: boolean
 }) {
   const percent =
@@ -118,6 +123,7 @@ function TakeCard({
       ? Math.round(progress.progress * 100)
       : null
   const stale = isStale(take)
+  const nsfw = take.nsfw === true
   return (
     <li
       className={`rounded-md border p-1.5 ${
@@ -131,7 +137,11 @@ function TakeCard({
       >
         <span className="h-10 w-14 shrink-0 overflow-hidden rounded bg-ink-900">
           {take.last_frame_url ? (
-            <img src={take.last_frame_url} alt="" className="h-full w-full object-cover" />
+            <img
+              src={take.last_frame_url}
+              alt=""
+              className={`h-full w-full object-cover ${hideNsfw ? 'blur-sm' : ''}`}
+            />
           ) : (
             <span className="flex h-full w-full items-center justify-center text-[10px] text-slate-600">
               {take.status === 'rendering' ? (
@@ -158,6 +168,7 @@ function TakeCard({
                 ⚠ 要再生成
               </span>
             )}
+            {nsfw && <NsfwBadge className="!px-1 !py-0 text-[10px]" />}
           </span>
           <span className="mt-0.5 block truncate text-[10px] text-slate-600">
             {percent != null ? `${percent}%` : (take.video_workflow ?? take.job_id)}
@@ -201,6 +212,22 @@ function TakeCard({
           disabled={busy || take.status === 'rendering'}
         >
           却下
+        </button>
+        <button
+          className={`btn-ghost !px-1.5 !py-0.5 text-[10px] ${
+            nsfw ? '!border-pink-700 !bg-pink-950/60 !text-pink-300' : ''
+          }`}
+          onClick={() => onSetNsfw(!nsfw)}
+          disabled={busy || take.nsfw == null}
+          title={
+            take.nsfw_source === 'manual'
+              ? '手動で決めた印です（自動判定に上書きされません）'
+              : nsfw
+                ? 'NSFW 指定を外す'
+                : 'NSFW として印を付ける'
+          }
+        >
+          🫣 NSFW
         </button>
         {take.video_url && (
           <a
@@ -283,7 +310,10 @@ export default function ProductionView({
   onSelectTake,
   onRejectTake,
   onDeleteTake,
+  onSetTakeNsfw,
   busy,
+  latentContinuity = false,
+  showNsfw = true,
 }: {
   shots: StudioShot[]
   assets: StudioAsset[]
@@ -295,7 +325,16 @@ export default function ProductionView({
   onSelectTake: (takeId: string) => void
   onRejectTake: (takeId: string) => void
   onDeleteTake: (takeId: string) => void
+  /** Take の NSFW フラグの手動切り替え（元ジョブに対して効く）。 */
+  onSetTakeNsfw: (take: StudioTake, nsfw: boolean) => void
   busy: boolean
+  /** プロジェクトの設定（引き継ぎを Motion Context で行う = ラテント連続性）。 */
+  latentContinuity?: boolean
+  /**
+   * ヘッダーの「NSFW表示」。オフのあいだは NSFW な Take の絵をぼかす（制作は
+   * 続けられるよう隠しはせず、プレビューはクリックで一時的に出せる）。
+   */
+  showNsfw?: boolean
 }) {
   const grouped = useMemo(() => takesByShot(allTakes), [allTakes])
   // 参照を安定させておく（下の useEffect の依存に入るので、毎回新しい [] を
@@ -305,6 +344,12 @@ export default function ProductionView({
     [grouped, selectedShot],
   )
   const [previewId, setPreviewId] = useState<string | null>(null)
+  // 「クリックで一時表示」した Take（画面を離れるまでのあいだだけ覚える）。
+  const [revealed, setRevealed] = useState<string[]>([])
+
+  /** NSFW 表示がオフで、まだ一時表示していない Take か。 */
+  const shouldHide = (take: StudioTake | null) =>
+    !showNsfw && take?.nsfw === true && !revealed.includes(take.id)
 
   // カットを切り替えたら、採用済み（無ければ最後の再生できる Take）を出す。
   useEffect(() => {
@@ -339,7 +384,11 @@ export default function ProductionView({
             right={
               <span className="text-[11px] text-slate-500">
                 {selectedShot.duration_seconds}s
-                {selectedShot.carry_over_end_frame ? ' / 続きから' : ''}
+                {selectedShot.carry_over_end_frame
+                  ? latentContinuity
+                    ? ' / 続きから（ラテント連続）'
+                    : ' / 続きから（ラストフレーム）'
+                  : ''}
               </span>
             }
           >
@@ -381,12 +430,24 @@ export default function ProductionView({
 
           <Section title="プレビュー">
             {preview?.video_url ? (
-              <video
-                key={preview.id}
-                src={preview.video_url}
-                controls
-                className="max-h-[46vh] w-full rounded-md bg-black"
-              />
+              <div className="relative">
+                <video
+                  key={preview.id}
+                  src={preview.video_url}
+                  controls
+                  className={`max-h-[46vh] w-full rounded-md bg-black ${
+                    shouldHide(preview) ? 'blur-xl' : ''
+                  }`}
+                />
+                {shouldHide(preview) && (
+                  <button
+                    className="absolute inset-0 flex items-center justify-center rounded-md bg-ink-900/40 text-xs text-slate-200"
+                    onClick={() => setRevealed((ids) => [...ids, preview.id])}
+                  >
+                    🫣 NSFW（クリックで表示）
+                  </button>
+                )}
+              </div>
             ) : (
               <p className="px-3 py-10 text-center text-xs text-slate-600">
                 再生できる Take がまだありません
@@ -412,10 +473,12 @@ export default function ProductionView({
                   active={take.id === previewId}
                   progress={progress[take.job_id]}
                   busy={busy}
+                  hideNsfw={shouldHide(take)}
                   onPreview={() => setPreviewId(take.id)}
                   onSelect={() => onSelectTake(take.id)}
                   onReject={() => onRejectTake(take.id)}
                   onDelete={() => onDeleteTake(take.id)}
+                  onSetNsfw={(nsfw) => onSetTakeNsfw(take, nsfw)}
                 />
               ))}
             </ul>
@@ -449,7 +512,9 @@ export default function ProductionView({
                     <img
                       src={take.last_frame_url}
                       alt=""
-                      className="h-full w-full object-cover"
+                      className={`h-full w-full object-cover ${
+                        shouldHide(take) ? 'blur-sm' : ''
+                      }`}
                     />
                   ) : (
                     <span className="flex h-full w-full items-center justify-center text-[10px] text-slate-600">

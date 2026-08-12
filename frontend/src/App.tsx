@@ -650,6 +650,7 @@ export default function App() {
           progress={progress}
           canvasEvent={canvasEvent}
           aspectRatios={options?.aspect_ratios ?? []}
+          showNsfw={showNsfw}
         />
       )}
 

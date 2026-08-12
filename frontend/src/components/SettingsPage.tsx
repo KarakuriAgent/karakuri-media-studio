@@ -498,6 +498,10 @@ export default function SettingsPage({
           runpod_network_volume_id: settings.runpod_network_volume_id,
           external_api_key: settings.external_api_key,
           external_max_pending_takes: settings.external_max_pending_takes,
+          agent_grok_timeout: settings.agent_grok_timeout,
+          agent_max_plan_tasks: settings.agent_max_plan_tasks,
+          agent_max_turns: settings.agent_max_turns,
+          canvas_max_turns: settings.canvas_max_turns,
         }),
       )
       setNotice('設定を保存しました')
@@ -1074,6 +1078,92 @@ export default function SettingsPage({
                         {grokCheck.detail || grokCheck.status}
                       </span>
                     )}
+                  </div>
+                  {/* エージェント / 相談の実行上限（AGENT-MODE §3.4）。
+                      既定値は従来どおりで、0 を入れたときだけ無制限になる。 */}
+                  <div className="card flex flex-col gap-2 p-3">
+                    <h4 className="text-xs font-semibold text-slate-300">
+                      実行上限（0 = 無制限）
+                    </h4>
+                    <p className="text-[11px] text-slate-500">
+                      暴走防止の上限です。0 を入れるとその項目だけ無制限になります
+                      （止めたいときは各画面の「停止」で止めてください）。
+                    </p>
+                    <div className="grid gap-2 sm:grid-cols-2">
+                      <div>
+                        <label className="label" htmlFor="agent-max-turns">
+                          エージェントの連続ターン上限（0 = 無制限）
+                        </label>
+                        <input
+                          id="agent-max-turns"
+                          className="field"
+                          type="number"
+                          min="0"
+                          step="1"
+                          value={settings.agent_max_turns}
+                          onChange={(event) =>
+                            update({
+                              agent_max_turns: Number(event.target.value) || 0,
+                            })
+                          }
+                        />
+                      </div>
+                      <div>
+                        <label className="label" htmlFor="canvas-max-turns">
+                          キャンバスの連続ターン上限（0 = 無制限）
+                        </label>
+                        <input
+                          id="canvas-max-turns"
+                          className="field"
+                          type="number"
+                          min="0"
+                          step="1"
+                          value={settings.canvas_max_turns}
+                          onChange={(event) =>
+                            update({
+                              canvas_max_turns: Number(event.target.value) || 0,
+                            })
+                          }
+                        />
+                      </div>
+                      <div>
+                        <label className="label" htmlFor="agent-max-plan-tasks">
+                          1 プラン提案の新規ジョブ上限（自走時・0 = 無制限）
+                        </label>
+                        <input
+                          id="agent-max-plan-tasks"
+                          className="field"
+                          type="number"
+                          min="0"
+                          step="1"
+                          value={settings.agent_max_plan_tasks}
+                          onChange={(event) =>
+                            update({
+                              agent_max_plan_tasks:
+                                Number(event.target.value) || 0,
+                            })
+                          }
+                        />
+                      </div>
+                      <div>
+                        <label className="label" htmlFor="agent-grok-timeout">
+                          grok の制限時間（秒・0 = タイムアウトなし）
+                        </label>
+                        <input
+                          id="agent-grok-timeout"
+                          className="field"
+                          type="number"
+                          min="0"
+                          step="30"
+                          value={settings.agent_grok_timeout}
+                          onChange={(event) =>
+                            update({
+                              agent_grok_timeout: Number(event.target.value) || 0,
+                            })
+                          }
+                        />
+                      </div>
+                    </div>
                   </div>
                   {/* 外部公開 API（docs/EXTERNAL-API.md）。キーを入れることが
                       有効化そのもので、空のあいだは /api/v1 が丸ごと 404。 */}

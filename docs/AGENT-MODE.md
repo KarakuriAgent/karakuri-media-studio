@@ -279,7 +279,7 @@ Library（取っておいた素材、`path` をそのままジョブの入力に
 プランは複数ジョブを含み、承認後に既存 JobRunner キューへ順次投入（1 本ずつ、SPEC §5 のまま）。
 プランの長さは毎ジョブ確認 / 節目のみ確認では無制限（プラン承認とチェックインで
 必ず人間が挟まるため）。自走モードだけ「1 回のプラン提案で増やせる**新規**ジョブ数」を
-既定 5 に制限する（`agent_max_plan_tasks`、設定変更可）。プラン改訂は前のプランを
+既定 5 に制限する（`agent_max_plan_tasks`、設定変更可。**0 = 無制限**）。プラン改訂は前のプランを
 丸ごと置き換えるので、完了済みタスクを再掲した分は上限にカウントしない。
 
 ### 3.3 結果を見て次の一手を打つ（自律ループ）
@@ -315,7 +315,8 @@ Grok CLI はファイル操作・シェル・Web 検索ツールを持つエー�
 付けると、ファイル読み書き（画像の閲覧を含む）と Web 検索が動作する。
 これを `agent_grok_args` の既定値とし、フラグを知らない古い CLI では素の `-p`
 実行（検索・ファイル操作なし、アプリ操作のみ）に自動フォールバックする。
-タイムアウトは現行 120 秒から延長（リサーチ・検分ターンは 300 秒）。
+タイムアウトは設定 `agent_grok_timeout`（既定 300 秒。**0 = タイムアウトなし**）。
+エージェントのターンだけでなく、生成フォームの相談チャットもこの設定を使う。
 
 ## 4. アクションプロトコル
 
@@ -391,7 +392,7 @@ Grok CLI はステートレスなテキスト入出力なので、ツール呼�
 |---|---|---|
 | `studio_list_projects` | ― | `studio_projects`（件数つき一覧） |
 | `studio_get_project` | `project_id` | `studio_project`（素材・話 / 場 / Shot・Take を stale 込みで 1 通に） |
-| `studio_create_project` | `name` ほか `code` / `synopsis` / `world_notes` / `auto_translate` | `studio_saved`（`project_id`） |
+| `studio_create_project` | `name` ほか `code` / `synopsis` / `world_notes` / `auto_translate` / `latent_continuity` | `studio_saved`（`project_id`） |
 | `studio_update_project` | `project_id` + 上と同じ項目 | `studio_saved` |
 | `studio_upsert_episode` / `studio_upsert_scene` | `id`（更新）か親の id（新規）+ 見出し項目。場の更新で `episode_id` を送ると、その話へ**引っ越す** | `studio_saved` |
 | `studio_upsert_shot` | `id` か `project_id` + **入れ子の `shot`**（Shot の `action` 欄がアクション名と衝突するため） | `studio_saved`（`shot_id`） |
@@ -502,9 +503,12 @@ Grok ターンの実行中は `thinking` で通知する（WS フレームの `t
                     │ done      → 納品サマリ → ループ終了 ←─────────┘
 ```
 
-暴走防止: 自走時の連続 Grok ターン数・セッションの生成本数（`auto_limit`）・
+暴走防止: 自走時の連続 Grok ターン数（`agent_max_turns`、既定 20。キャンバスは
+`canvas_max_turns`、既定 8）・セッションの生成本数（`auto_limit`）・
 1 回のプラン提案で増やせる新規ジョブ数（`agent_max_plan_tasks`、自走モードのみ）に上限。
 失敗の同一タスク自動リトライは 1 回まで。
+どの上限も **0 を入れれば無制限**（設定ページ「実行上限」／セッション作成の上限本数）。
+既定値は従来どおりなので、無制限はあくまでオプトイン。
 生成本数の上限は打ち切りではなく**続行確認**: 次の 1 本が上限を超える時点で
 `kind = "limit"` のチェックインを出し、承認されたら `auto_limit` 本ぶん枠を伸ばして
 続行、断られたら停止する（枠は承認済みチェックインの本数から算出するので DB 変更なし）。
@@ -593,6 +597,7 @@ Grok ターンの実行中は `thinking` で通知する（WS フレームの `t
 - 自走モードのみ 1 回のプラン提案で新規 5 ジョブまで（設定可。完了済みの再掲は除く）、
   さらに自走モードは上限本数（`auto_limit`）必須。生成本数の上限自体はどのチェックイン
   モードでも効き、達したら打ち切りではなく続行確認のチェックインを出す（§5.3）。
+  上限はどれも 0 を入れれば無制限（`auto_limit = 0` なら続行確認そのものを出さない）。
   プランのタスクだけでなく `continue` / `rerun` も同じ枠で数える
 - 生成開始・プラン外アクション・削除は承認必須。実行前にプランカードで全設定が見える
 - 不正 JSON・実在しない LoRA / アセット指定は自動リトライ + ユーザーにも可視化

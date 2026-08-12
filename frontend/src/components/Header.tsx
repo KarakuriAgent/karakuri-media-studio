@@ -29,18 +29,19 @@ function Indicator({ name, status }: { name: string; status?: HealthStatus }) {
   )
 }
 
-/** [生成 | エージェント | スタジオ] tab toggle (AGENT-MODE §1 header). */
+/** [生成 | エージェント | スタジオ | 設定] tab toggle (AGENT-MODE §1 header). */
 function ViewTabs({
   view,
   onView,
 }: {
   view: 'main' | 'agent' | 'studio' | 'settings'
-  onView: (view: 'main' | 'agent' | 'studio') => void
+  onView: (view: 'main' | 'agent' | 'studio' | 'settings') => void
 }) {
-  const tabs: { value: 'main' | 'agent' | 'studio'; label: string }[] = [
+  const tabs: { value: 'main' | 'agent' | 'studio' | 'settings'; label: string }[] = [
     { value: 'main', label: '生成' },
     { value: 'agent', label: 'エージェント' },
     { value: 'studio', label: 'スタジオ' },
+    { value: 'settings', label: '設定' },
   ]
   return (
     <div className="flex rounded-md border border-ink-600 bg-ink-800 p-0.5">
@@ -78,7 +79,7 @@ export default function Header({
   onOpenSettings: () => void
   wsConnected: boolean
   view: 'main' | 'agent' | 'studio' | 'settings'
-  onView: (view: 'main' | 'agent' | 'studio') => void
+  onView: (view: 'main' | 'agent' | 'studio' | 'settings') => void
   showNsfw: boolean
   onShowNsfw: (show: boolean) => void
 }) {

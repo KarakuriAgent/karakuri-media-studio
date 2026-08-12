@@ -16,6 +16,7 @@ from test_agent import (  # noqa: F401 - フィクスチャの再エクスポー
     action_answer,
     env,
     sample_video,
+    tweak_settings,
 )
 
 
@@ -519,13 +520,35 @@ def test_done_ends_the_run(env):
 
 
 def test_the_run_stops_at_the_turn_limit(env, monkeypatch):
-    monkeypatch.setattr(canvas_agent, "MAX_TURNS", 2)
+    tweak_settings(monkeypatch, canvas_max_turns=2)
     project = make_project(env)
     listing = action_answer(
         {"action": "canvas_list_cards", "project_id": project["id"]}
     )
     ask(env, project["id"], [listing, listing])
     assert "turn_limit" in kinds(env, project["id"])
+    assert "連続 2 ターン" in event_of(env, project["id"], "turn_limit")["content"]
+
+
+def test_the_turn_limit_can_be_switched_off(env, monkeypatch):
+    """canvas_max_turns=0 は無制限: 既定の 8 ターンを超えても区切られない。"""
+    tweak_settings(monkeypatch, canvas_max_turns=0)
+    assert canvas_agent.turn_limit() == 0
+    project = make_project(env)
+    listing = action_answer(
+        {"action": "canvas_list_cards", "project_id": project["id"]}
+    )
+    ask(
+        env,
+        project["id"],
+        [*[listing] * 12, action_answer({"action": "done", "summary": "見ました"})],
+    )
+    assert "turn_limit" not in kinds(env, project["id"])
+    assert event_of(env, project["id"], "done")["content"] == "見ました"
+
+
+def test_the_turn_limit_defaults_to_eight(env):
+    assert canvas_agent.turn_limit() == canvas_agent.MAX_TURNS == 8
 
 
 def test_a_broken_action_is_retried_once_then_reported(env):

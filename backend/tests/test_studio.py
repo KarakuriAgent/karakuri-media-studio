@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from app import comfy, db, grok, jobs, nsfw, studio
+from app import comfy, db, grok, jobs, nsfw, studio, workflows
 from app.main import app
 from app.routers import assets as assets_router
 
@@ -58,6 +58,9 @@ def env(tmp_path, monkeypatch):
 
     for name in ("get_object_info", "upload_file", "queue_prompt"):
         monkeypatch.setattr(comfy, name, offline)
+    # 接続先ごとのケーパビリティ（ラテント連続性）はプロセス内に覚えるので、
+    # テストのあいだで持ち越さない。
+    comfy.clear_latent_context_cache()
 
     # 実際に投入された JobCreate を覚えておく（生成の中身の検証はここを見る）
     created: list = []
@@ -589,6 +592,254 @@ def test_carry_over_renders_mentions_as_descriptions(env):
 
 
 # --------------------------------------------------------------------------
+# ラテント連続性（Motion Context）の引き継ぎ
+# --------------------------------------------------------------------------
+
+def _allow_latent_context(monkeypatch, available: bool = True) -> None:
+    """接続先に Motion Context のノードが「ある / ない」ことにする。"""
+
+    async def support(target=None):
+        return available
+
+    monkeypatch.setattr(studio.comfy, "latent_context_support", support)
+
+
+def _finish_context_job(env, take: dict, *, latent: str | None) -> None:
+    """ジョブを成功させ、ラテント連続性の成果（AV ラテント）まで揃える。
+
+    ``latent`` が None なら「ラテントは残らなかった」ぶんの再現。
+    """
+    import sqlite3
+
+    last_frame = env.outputs / f"last_{take['id']}.png"
+    last_frame.write_bytes(b"PNG")
+    # 引き継ぎ元の動画は実体が要る（assets/video/ に複製してから渡すため）
+    last_frame.with_suffix(".mp4").write_bytes(b"MP4")
+    _finish_job(env, take["job_id"], last_frame)
+    if latent is None:
+        return
+    with sqlite3.connect(db.DB_PATH) as conn:
+        conn.execute(
+            "UPDATE studio_takes SET latent_path = ? WHERE id = ?",
+            (latent, take["id"]),
+        )
+
+
+def _continuity_pair(env, *, latent: str | None = "/comfy/output/h3_context/a_00001_.safetensors"):
+    """「前カットを採用済み」の状態まで進めた (project, 続きの Shot) を返す。"""
+    project = make_project(env, latent_continuity=True)
+    make_asset(env, project["id"], "Neko", kind="image", prompt_caption="a calico cat")
+    first = make_shot(env, project["id"], prompt="@Neko walks in.")
+    second = make_shot(
+        env,
+        project["id"],
+        prompt="@Neko sits down.",
+        carry_over_end_frame=True,
+    )
+    take = render(env, first["id"]).json()
+    _finish_context_job(env, take, latent=latent)
+    assert env.client.post(f"/api/studio/takes/{take['id']}/select").status_code == 200
+    return project, second
+
+
+def test_latent_continuity_is_off_by_default(env):
+    project = make_project(env)
+    assert project["latent_continuity"] is False
+
+
+def test_latent_continuity_carries_the_previous_video_and_latent(env, monkeypatch):
+    _allow_latent_context(monkeypatch)
+    latent = "/comfy/output/h3_context/a_00001_.safetensors"
+    _project, second = _continuity_pair(env, latent=latent)
+
+    assert render(env, second["id"]).status_code == 201
+    payload = env.created[-1]
+    assert payload.video_workflow == "minimax_h3_r2v_context"
+    # 直前カットの動画はジョブの入力なので assets/video/ に移してから渡す
+    assert (env.assets / "video") in Path(payload.reference_video).parents
+    # AV ラテントは ComfyUI 側のパスなので、そのまま渡す
+    assert payload.context_latent_path == latent
+    # 素材は参照として添付される（連続カットは r2v の上に乗っている）
+    assert len(payload.reference_images) == 1
+
+
+def test_latent_continuity_needs_reference_material(env, monkeypatch):
+    """参照素材を呼んでいないカットは、黙って i2v に落とさずその場で断る。"""
+    _allow_latent_context(monkeypatch)
+    project = make_project(env, latent_continuity=True)
+    make_shot(env, project["id"], prompt="A cat walks in.")
+    second = make_shot(
+        env, project["id"], prompt="The cat sits.", carry_over_end_frame=True
+    )
+    response = render(env, second["id"])
+    assert response.status_code == 400
+    assert "連続カットには参照素材が必要です" in response.json()["detail"]
+
+
+def test_latent_continuity_needs_a_selected_previous_take(env, monkeypatch):
+    _allow_latent_context(monkeypatch)
+    project = make_project(env, latent_continuity=True)
+    make_asset(env, project["id"], "Neko", kind="image", prompt_caption="a calico cat")
+    make_shot(env, project["id"], prompt="@Neko walks in.")
+    second = make_shot(
+        env, project["id"], prompt="@Neko sits down.", carry_over_end_frame=True
+    )
+    response = render(env, second["id"])
+    assert response.status_code == 400
+    assert "前 Shot の採用 Take がありません" in response.json()["detail"]
+
+
+def test_latent_continuity_needs_the_previous_take_to_have_a_latent(env, monkeypatch):
+    """採用済みでも AV ラテントが残っていなければ続きにはできない。"""
+    _allow_latent_context(monkeypatch)
+    _project, second = _continuity_pair(env, latent=None)
+    response = render(env, second["id"])
+    assert response.status_code == 400
+    assert "前 Shot の採用 Take がありません" in response.json()["detail"]
+
+
+def test_latent_continuity_is_refused_when_the_backend_lacks_the_nodes(env, monkeypatch):
+    """ノードの無い接続先には投げない（黙って別のモードに落とさない）。"""
+    _allow_latent_context(monkeypatch)
+    _project, second = _continuity_pair(env)
+    _allow_latent_context(monkeypatch, available=False)
+    response = render(env, second["id"])
+    assert response.status_code == 400
+    assert "ラテント連続性" in response.json()["detail"]
+    # 投入そのものが起きていない
+    assert all(
+        payload.video_workflow != "minimax_h3_r2v_context" for payload in env.created
+    )
+
+
+def test_latent_continuity_saves_the_latent_on_the_plain_cuts_too(env, monkeypatch):
+    """連鎖の起点になる通常カットも保存付きバリアントで投げる。
+
+    ここでラテントを残さないと、次のカットが引き継ぐものが無く連鎖を始められない。
+    """
+    _allow_latent_context(monkeypatch)
+    project = make_project(env, latent_continuity=True)
+    make_asset(env, project["id"], "Neko", kind="image", prompt_caption="a calico cat")
+    # t2v（素材も引き継ぎも無い）
+    plain = make_shot(env, project["id"], prompt="A cat walks in.")
+    assert render(env, plain["id"]).status_code == 201
+    assert env.created[-1].video_workflow == "minimax_h3_t2v_save"
+    # r2v（プロンプトが素材を呼ぶ）
+    reference = make_shot(env, project["id"], prompt="@Neko walks in.")
+    assert render(env, reference["id"]).status_code == 201
+    assert env.created[-1].video_workflow == "minimax_h3_r2v_save"
+    # AV ラテントは持たないので、引き継ぎ元は渡らない
+    assert env.created[-1].context_latent_path is None
+
+
+def test_latent_continuity_saves_the_latent_on_a_forced_workflow(env, monkeypatch):
+    """強制指定（``workflow_override``）でも、ON なら保存付きに読み替える。"""
+    _allow_latent_context(monkeypatch)
+    project = make_project(env, latent_continuity=True)
+    shot = make_shot(
+        env, project["id"], prompt="A cat walks in.", workflow_override="minimax_h3_t2v"
+    )
+    assert render(env, shot["id"]).status_code == 201
+    assert env.created[-1].video_workflow == "minimax_h3_t2v_save"
+
+
+def test_latent_continuity_keeps_the_context_workflow_as_is(env, monkeypatch):
+    """連続カット版は元から保存するので、読み替えない。"""
+    _allow_latent_context(monkeypatch)
+    _project, second = _continuity_pair(env)
+    assert render(env, second["id"]).status_code == 201
+    assert env.created[-1].video_workflow == "minimax_h3_r2v_context"
+
+
+def test_the_plain_cuts_are_refused_when_the_backend_lacks_the_nodes(env, monkeypatch):
+    """保存付きバリアントもカスタムノード頼みなので、投入前に断る。"""
+    _allow_latent_context(monkeypatch, available=False)
+    project = make_project(env, latent_continuity=True)
+    shot = make_shot(env, project["id"], prompt="A cat walks in.")
+    response = render(env, shot["id"])
+    assert response.status_code == 400
+    assert "ラテント連続性" in response.json()["detail"]
+    assert env.created == []
+
+
+def test_latent_continuity_off_keeps_the_plain_workflows(env, monkeypatch):
+    """OFF のプロジェクトは今までどおり素のワークフロー id のまま。"""
+    _allow_latent_context(monkeypatch)
+    project = make_project(env)  # latent_continuity は既定の False
+    make_asset(env, project["id"], "Neko", kind="image", prompt_caption="a calico cat")
+    plain = make_shot(env, project["id"], prompt="A cat walks in.")
+    assert render(env, plain["id"]).status_code == 201
+    assert env.created[-1].video_workflow == "minimax_h3_t2v"
+    reference = make_shot(env, project["id"], prompt="@Neko walks in.")
+    assert render(env, reference["id"]).status_code == 201
+    assert env.created[-1].video_workflow == "minimax_h3_r2v"
+
+
+def test_latent_continuity_off_keeps_the_last_frame_carry_over(env, monkeypatch):
+    """既定（OFF）のプロジェクトの挙動は今までどおり i2v のまま。"""
+    _allow_latent_context(monkeypatch)
+    project = make_project(env)  # latent_continuity は既定の False
+    make_asset(env, project["id"], "Neko", kind="image", prompt_caption="a calico cat")
+    first = make_shot(env, project["id"], prompt="@Neko walks in.")
+    second = make_shot(
+        env, project["id"], prompt="@Neko sits down.", carry_over_end_frame=True
+    )
+    take = render(env, first["id"]).json()
+    _finish_context_job(env, take, latent="/comfy/output/h3_context/a_00001_.safetensors")
+    env.client.post(f"/api/studio/takes/{take['id']}/select")
+
+    assert render(env, second["id"]).status_code == 201
+    payload = env.created[-1]
+    assert payload.video_workflow == "minimax_h3_i2v"
+    assert payload.reference_video is None
+    assert payload.context_latent_path is None
+
+
+def test_the_preview_shows_where_the_latent_comes_from(env, monkeypatch):
+    _allow_latent_context(monkeypatch)
+    latent = "/comfy/output/h3_context/a_00001_.safetensors"
+    _project, second = _continuity_pair(env, latent=latent)
+
+    preview = env.client.get(f"/api/studio/shots/{second['id']}/prompt-preview").json()
+    assert preview["workflow"] == "minimax_h3_r2v_context"
+    assert preview["latent_continuity"] is True
+    assert preview["context_latent"] == latent
+    assert preview["context_video"]
+    assert "ラテント" in preview["workflow_reason"]
+
+
+def test_the_capabilities_endpoint_reports_the_target(env, monkeypatch):
+    # ComfyUI に届かないときは「使えない」＋理由（500 にはしない）
+    unreachable = env.client.get("/api/studio/capabilities").json()
+    assert unreachable["latent_continuity"] is False
+    assert unreachable["error"]
+
+    async def object_info(class_type=None, *, target=None):
+        return {name: {} for name in workflows.LATENT_CONTEXT_CLASS_TYPES}
+
+    monkeypatch.setattr(comfy, "get_object_info", object_info)
+    comfy.clear_latent_context_cache()
+    assert env.client.get("/api/studio/capabilities").json() == {
+        "latent_continuity": True,
+        "error": "",
+    }
+
+
+def test_a_job_records_its_latent_on_the_take(env, monkeypatch):
+    """ジョブランナーが持ち帰ったパスは、その Take に控えられる。"""
+    import asyncio
+
+    _allow_latent_context(monkeypatch)
+    project = make_project(env, latent_continuity=True)
+    shot = make_shot(env, project["id"], prompt="A cat walks in.")
+    take = render(env, shot["id"]).json()
+
+    asyncio.run(studio.record_take_latent(take["job_id"], "/comfy/output/x_00003_.safetensors"))
+    takes = env.client.get(f"/api/studio/shots/{shot['id']}/takes").json()
+    assert takes[0]["latent_path"] == "/comfy/output/x_00003_.safetensors"
+
+
+# --------------------------------------------------------------------------
 # Take の採用・不採用
 # --------------------------------------------------------------------------
 
@@ -730,6 +981,62 @@ def test_a_setting_can_be_cleared_with_an_explicit_null(env):
     assert patched.json()["seed"] is None
     # 送らなかった項目は残る
     assert patched.json()["aspect_ratio"] == "16:9 (Widescreen)"
+
+
+def test_a_shot_marked_nsfw_submits_the_job_as_nsfw(env):
+    project = make_project(env)
+    shot = make_shot(env, project["id"], nsfw=True)
+    assert shot["nsfw"] is True
+    assert render(env, shot["id"]).status_code == 201
+    # 明示指定なので manual 扱い（あとから自動判定に上書きされない）
+    assert env.created[-1].nsfw is True
+    take = detail(env, project["id"])["takes"][0]
+    assert take["nsfw"] is True
+    assert take["nsfw_source"] == "manual"
+
+
+def test_a_shot_left_alone_leaves_the_nsfw_flag_to_the_classifier(env):
+    project = make_project(env)
+    shot = make_shot(env, project["id"])
+    assert shot["nsfw"] is False
+    assert render(env, shot["id"]).status_code == 201
+    # 何も渡さない = 投入後の自動判定に任せる
+    assert env.created[-1].nsfw is None
+
+
+def test_the_nsfw_flag_of_a_shot_can_be_turned_off_again(env):
+    project = make_project(env)
+    shot = make_shot(env, project["id"], nsfw=True)
+    patched = env.client.patch(
+        f"/api/studio/shots/{shot['id']}", json={"nsfw": False}
+    )
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["nsfw"] is False
+    assert render(env, shot["id"]).status_code == 201
+    assert env.created[-1].nsfw is None
+
+
+def test_the_nsfw_flag_does_not_make_the_takes_stale(env):
+    project = make_project(env)
+    shot = make_shot(env, project["id"])
+    render(env, shot["id"])
+    env.client.patch(f"/api/studio/shots/{shot['id']}", json={"nsfw": True})
+    assert detail(env, project["id"])["takes"][0]["stale"] is False
+
+
+def test_a_take_carries_the_nsfw_flag_of_its_job(env):
+    project = make_project(env)
+    shot = make_shot(env, project["id"])
+    take = render(env, shot["id"]).json()
+    # 自動判定に任せたカットなので、ここは手動の印ではない
+    assert take["nsfw"] is False
+    assert take["nsfw_source"] != "manual"
+
+    toggled = env.client.post(f"/api/jobs/{take['job_id']}/nsfw", json={"nsfw": True})
+    assert toggled.status_code == 200, toggled.text
+    row = detail(env, project["id"])["takes"][0]
+    assert row["nsfw"] is True
+    assert row["nsfw_source"] == "manual"
 
 
 def test_the_workflow_can_be_forced_to_t2v_even_with_material(env):

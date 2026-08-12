@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react'
-import type { StudioProjectDetail, StudioProjectUpdate } from '../../types'
+import { api } from '../../api'
+import type { StudioCapabilities, StudioProjectDetail, StudioProjectUpdate } from '../../types'
 import { FieldError, Section } from '../ui'
 import { projectSummary, validateProjectForm, type ProjectFormState } from './studio'
 
@@ -33,8 +34,28 @@ export default function OverviewView({
     synopsis: detail.synopsis,
     world_notes: detail.world_notes,
     auto_translate: detail.auto_translate,
+    latent_continuity: detail.latent_continuity,
   })
   const [errors, setErrors] = useState<Record<string, string>>({})
+  // 接続先にカスタムノードが入っているか（null = まだ聞いていない）。
+  const [capabilities, setCapabilities] = useState<StudioCapabilities | null>(null)
+
+  // ラテント連続性は接続先の ComfyUI 頼みなので、開いたときに 1 度だけ聞く。
+  // 聞けなかったときはトグルを塞がず、いま入っている値のままにしておく。
+  useEffect(() => {
+    let alive = true
+    void api
+      .getStudioCapabilities()
+      .then((result) => {
+        if (alive) setCapabilities(result)
+      })
+      .catch(() => {
+        if (alive) setCapabilities(null)
+      })
+    return () => {
+      alive = false
+    }
+  }, [])
 
   // プロジェクトを切り替えたら編集中の内容もそちらに揃える。
   useEffect(() => {
@@ -44,6 +65,7 @@ export default function OverviewView({
       synopsis: detail.synopsis,
       world_notes: detail.world_notes,
       auto_translate: detail.auto_translate,
+      latent_continuity: detail.latent_continuity,
     })
     setErrors({})
   }, [
@@ -53,9 +75,14 @@ export default function OverviewView({
     detail.synopsis,
     detail.world_notes,
     detail.auto_translate,
+    detail.latent_continuity,
   ])
 
   const summary = projectSummary(detail)
+  // 接続先に入っていないと分かっていて、まだオンにしていないときだけ塞ぐ
+  // （オン済みのプロジェクトはオフに戻せなければ困る）。
+  const continuityDisabled =
+    capabilities !== null && !capabilities.latent_continuity && !form.latent_continuity
   const patch = (changes: Partial<ProjectFormState>) =>
     setForm((previous) => ({ ...previous, ...changes }))
 
@@ -130,7 +157,7 @@ export default function OverviewView({
             />
           </div>
 
-          <div>
+          <div className="space-y-2">
             <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-300">
               <input
                 type="checkbox"
@@ -140,6 +167,29 @@ export default function OverviewView({
               />
               日本語プロンプトを自動で英訳して投入
             </label>
+            <div>
+              <label
+                className={`flex items-center gap-2 text-xs text-slate-300 ${
+                  continuityDisabled ? 'cursor-not-allowed opacity-60' : 'cursor-pointer'
+                }`}
+              >
+                <input
+                  type="checkbox"
+                  className="h-3.5 w-3.5 accent-accent-500"
+                  checked={form.latent_continuity}
+                  disabled={continuityDisabled}
+                  onChange={(event) =>
+                    patch({ latent_continuity: event.target.checked })
+                  }
+                />
+                ラテント連続性（連続カットを動きと音ごと引き継ぐ）
+              </label>
+              <p className="mt-1 text-[11px] text-slate-500">
+                {continuityDisabled
+                  ? '接続先（Comfy Cloud）では利用できません（MiniMaxH3MotionContext 系のカスタムノードが入っていません）。'
+                  : 'カットの引き継ぎ（「直前カットから続ける」）が、ラストフレーム 1 枚ではなく直前カットの動画とラテントごとになります。参照素材の指定と直前カットの採用 Take が要ります。'}
+              </p>
+            </div>
           </div>
 
           <div className="flex items-center gap-2">

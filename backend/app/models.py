@@ -72,8 +72,16 @@ class Settings(BaseModel):
     agent_grok_args: list[str] = Field(
         default_factory=lambda: ["--permission-mode", "auto"]
     )
-    agent_grok_timeout: float = 300.0
-    agent_max_plan_tasks: int = 5
+    # 実行上限はどれも **0 = 無制限**（既定値は従来どおりなので、無制限にしたい
+    # 人だけが 0 を入れる）。
+    #: grok CLI 1 回あたりの制限時間（秒）。0 = タイムアウトなし
+    agent_grok_timeout: float = Field(default=300.0, ge=0)
+    #: 自走セッションの「1 回のプラン提案で増やせる新規ジョブ数」。0 = 無制限
+    agent_max_plan_tasks: int = Field(default=5, ge=0)
+    #: スタジオのエージェントが人間の入力なしに回せる連続ターン数。0 = 無制限
+    agent_max_turns: int = Field(default=20, ge=0)
+    #: キャンバスのエージェントが 1 回の発言から回す連続ターン数。0 = 無制限
+    canvas_max_turns: int = Field(default=8, ge=0)
     # エージェントのターンを ACP (`grok agent stdio`) で回すか。ACP だと実行中の
     # 活動（思考 / ツール実行）を UI に出せる。False なら従来のワンショット実行。
     agent_use_acp: bool = True
@@ -179,8 +187,10 @@ class SettingsUpdate(BaseModel):
     runpod_gpu_type: str | None = None
     runpod_network_volume_id: str | None = None
     agent_grok_args: list[str] | None = None
-    agent_grok_timeout: float | None = None
-    agent_max_plan_tasks: int | None = None
+    agent_grok_timeout: float | None = Field(default=None, ge=0)
+    agent_max_plan_tasks: int | None = Field(default=None, ge=0)
+    agent_max_turns: int | None = Field(default=None, ge=0)
+    canvas_max_turns: int | None = Field(default=None, ge=0)
     agent_use_acp: bool | None = None
     external_api_key: str | None = None
     external_max_pending_takes: int | None = None
@@ -541,11 +551,24 @@ class GenerationParams(BaseModel):
     reference_video_names: list[str] = Field(default_factory=list)
     reference_audio_names: list[str] = Field(default_factory=list)
 
+    #: 直前カットの AV ラテントのパス（ラテント連続性、SPEC §3.1）。ComfyUI 側の
+    #: ファイルなのでアップロードは通さず、文字列をそのままグラフに書く。
+    context_latent_path: str = ""
+
     filename_prefix: str | None = None  # explicit override
 
     @property
     def video_filename_prefix(self) -> str:
         return self.filename_prefix or f"video/{self.job_id}"
+
+    @property
+    def latent_filename_prefix(self) -> str:
+        """このジョブが保存する AV ラテントの ComfyUI 側での置き場所。
+
+        ジョブごとに別の名前にして、再実行や別カットの保存とぶつからないように
+        する（``clip_index`` は 0 のままなので実行ごとに連番が付く）。
+        """
+        return f"h3_context/{self.job_id}"
 
     @property
     def image_filename_prefix(self) -> str:
@@ -1150,6 +1173,38 @@ def reference_problem(
     return None
 
 
+def context_latent_problem(
+    mode: str,
+    video_workflow: str | None,
+    context_latent_path: str | None,
+) -> str | None:
+    """ラテント連続性の入力が揃っているか（None == 問題なし、SPEC §2.2）。
+
+    連続カットのワークフロー（``minimax_h3_r2v_context``）は、直前カットの
+    AV ラテントが無いと ComfyUI 側でファイルを探しに行って落ちる。宣言のない
+    ワークフローに渡していないかと合わせて、投入前にここで断る。
+    """
+    supplied = (context_latent_path or "").strip()
+    try:
+        spec = get_video_spec(video_workflow)
+    except WorkflowSpecError as exc:
+        return str(exc) if supplied else None
+    if not spec.supports("context_latent"):
+        if supplied and mode in ("full", "i2v"):
+            return (
+                f"video workflow '{spec.id}' は引き継ぎ元の AV ラテント"
+                "（`context_latent_path`）を受け取れません"
+            )
+        return None
+    if mode in ("full", "i2v") and not supplied:
+        return (
+            f"video workflow '{spec.id}' は連続カット専用なので、引き継ぎ元の"
+            "AV ラテント（`context_latent_path`）が要ります"
+            "（前のカットを生成して採用すると付きます）"
+        )
+    return None
+
+
 def start_image_problem(
     mode: str,
     video_workflow: str | None,
@@ -1467,6 +1522,12 @@ class JobCreate(BaseModel):
     source_image: str | None = None
     end_image: str | None = None
     reference_video: str | None = None
+
+    #: ラテント連続性（``minimax_h3_r2v_context``）で読み込む、直前カットの
+    #: AV ラテントのパス。**ComfyUI 側のファイルパス**であって `assets/` の中の
+    #: ファイルではないので、投入前の解決も上げ直しもしない（宣言のある
+    #: ワークフローだけが読む、SPEC §3.1）。
+    context_latent_path: str | None = None
 
     # マルチモーダル参照（SPEC §3.1）。1 つのフィールドが**複数ファイル**を持ち、
     # 宣言しているワークフロー（MiniMax H3 r2v）で
@@ -1948,7 +2009,8 @@ class AgentSessionCreate(BaseModel):
     title: str = ""
     goal: str = ""
     checkin_mode: AgentCheckinMode = "milestone"
-    auto_limit: int = Field(default=5, ge=1, le=50)
+    #: 自走セッションが続けて生成する本数（0 = 無制限。チェックインしない）
+    auto_limit: int = Field(default=5, ge=0)
 
 
 class AgentSendMessage(BaseModel):
@@ -2231,6 +2293,11 @@ class StudioProject(BaseModel):
     world_notes: str = ""
     #: 日本語のプロンプトを Grok で英語に直してから投入する（MiniMax H3 は英語前提）
     auto_translate: bool = True
+    #: 引き継ぎ（`carry_over_end_frame`）を Motion Context で行う（ラテント連続性）。
+    #: OFF なら直前カットのラストフレーム 1 枚を開始フレームにする従来の i2v、
+    #: ON なら直前カットの動画と AV ラテントを渡す ``minimax_h3_r2v_context``。
+    #: カスタムノードが要るので、入っていない接続先では投入時に断られる。
+    latent_continuity: bool = False
     created_at: str
     updated_at: str
 
@@ -2253,6 +2320,11 @@ class StudioProjectCreate(BaseModel):
     synopsis: str = ""
     world_notes: str = ""
     auto_translate: bool = True
+    #: 引き継ぎ（`carry_over_end_frame`）を Motion Context で行う（ラテント連続性）。
+    #: OFF なら直前カットのラストフレーム 1 枚を開始フレームにする従来の i2v、
+    #: ON なら直前カットの動画と AV ラテントを渡す ``minimax_h3_r2v_context``。
+    #: カスタムノードが要るので、入っていない接続先では投入時に断られる。
+    latent_continuity: bool = False
 
 
 class StudioProjectUpdate(BaseModel):
@@ -2263,6 +2335,11 @@ class StudioProjectUpdate(BaseModel):
     synopsis: str | None = None
     world_notes: str | None = None
     auto_translate: bool | None = None
+    #: 引き継ぎ（`carry_over_end_frame`）を Motion Context で行う（ラテント連続性）。
+    #: OFF なら直前カットのラストフレーム 1 枚を開始フレームにする従来の i2v、
+    #: ON なら直前カットの動画と AV ラテントを渡す ``minimax_h3_r2v_context``。
+    #: カスタムノードが要るので、入っていない接続先では投入時に断られる。
+    latent_continuity: bool | None = None
 
 
 class StudioEpisode(BaseModel):
@@ -2554,6 +2631,8 @@ class StudioShot(BaseModel):
     seed: int | None = None
     #: ワークフローの強制指定（None = t2v / i2v / r2v を自動で決める）
     workflow_override: StudioWorkflowOverride | None = None
+    #: 投入するジョブに NSFW の印を付ける（False = Grok の自動判定に任せる）
+    nsfw: bool = False
     created_at: str
     updated_at: str
     #: プロンプトに効く項目を最後に書き換えた時刻（Take の stale 判定に使う）
@@ -2579,6 +2658,7 @@ class StudioShotCreate(BaseModel):
     megapixels: float | None = None
     seed: int | None = None
     workflow_override: StudioWorkflowOverride | None = None
+    nsfw: bool = False
     #: 並び順（省略すると末尾に足す）
     sort_order: int | None = None
 
@@ -2608,6 +2688,8 @@ class StudioShotUpdate(BaseModel):
     megapixels: float | None = None
     seed: int | None = None
     workflow_override: StudioWorkflowOverride | None = None
+    #: NSFW の印（bool なので解除は false を送る。NULLABLE には入れない）
+    nsfw: bool | None = None
 
     #: null を明示できる項目（送られたときだけ NULL 書き込みを許す）
     NULLABLE: ClassVar[tuple[str, ...]] = (
@@ -2651,13 +2733,20 @@ class StudioTake(BaseModel):
     created_at: str
     #: 元ジョブの状態（queued / running / done / failed …）。ジョブが消えていれば None
     job_status: JobStatus | None = None
-    #: 実際に走ったワークフロー（minimax_h3_t2v / _i2v / _r2v）
+    #: 実際に走ったワークフロー（minimax_h3_t2v / _i2v / _r2v / _r2v_context）
     video_workflow: str | None = None
     video_path: str | None = None
     video_url: str | None = None
     last_frame_path: str | None = None
     last_frame_url: str | None = None
+    #: ラテント連続性で保存した AV ラテント（ComfyUI 側のパス）。次のカットが
+    #: ここから続きを作る。使わなかった Take は None。
+    latent_path: str | None = None
     error: str | None = None
+    #: 元ジョブの NSFW フラグ（ジョブが消えていれば None）
+    nsfw: bool | None = None
+    #: その判定の出どころ（'' = 未判定 / 'auto' / 'manual'）
+    nsfw_source: str = ""
     #: 実際に投入した本文（英訳したときは訳したあとのもの）
     prompt: str = ""
     #: 英訳する前の原文（英訳していなければ空）
@@ -2705,7 +2794,25 @@ class StudioShotPreview(BaseModel):
     auto_translate: bool = False
     #: この本文が実際に英訳されるか（``auto_translate`` かつ日本語を含む）
     will_translate: bool = False
+    #: プロジェクトの設定（引き継ぎを Motion Context で行う = ラテント連続性）
+    latent_continuity: bool = False
+    #: ラテント連続性で引き継ぐ直前カットの動画（使わないときは None）
+    context_video: str | None = None
+    #: 同じく、引き継ぎ元の AV ラテント（ComfyUI 側のパス）
+    context_latent: str | None = None
     #: 組み立てられなかった理由（日本語。空なら問題なし）
+    error: str = ""
+
+
+class StudioCapabilities(BaseModel):
+    """GET /api/studio/capabilities: いまの接続先でスタジオの追加機能が使えるか。
+
+    画面はこれを見てトグルを出し分ける（使えない接続先でオンにさせない）。
+    """
+
+    #: ラテント連続性（``MiniMaxH3MotionContext`` 系のカスタムノードが揃っている）
+    latent_continuity: bool = False
+    #: 確かめられなかった理由（日本語。空なら判定できている）
     error: str = ""
 
 

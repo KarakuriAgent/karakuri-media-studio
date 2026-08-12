@@ -39,6 +39,7 @@ from typing import Any, NamedTuple
 import aiosqlite
 from pydantic import ValidationError
 
+from . import comfy
 from . import grok
 from . import jobs as job_service
 from . import studio_demo
@@ -73,6 +74,40 @@ from .workflows import get_video_spec
 WORKFLOW_T2V = "minimax_h3_t2v"
 WORKFLOW_I2V = "minimax_h3_i2v"
 WORKFLOW_R2V = "minimax_h3_r2v"
+#: ラテント連続性（プロジェクトの ``latent_continuity``）を入れた引き継ぎ。
+#: 直前カットのラストフレーム 1 枚ではなく、直前カットの動画そのものと保存して
+#: おいた AV ラテントを Motion Context に渡して続きを作る（:mod:`app.workflows`
+#: の ``minimax_h3_r2v_context``）。Shot の強制指定（``workflow_override``）には
+#: 出さない: プロジェクト設定と直前カットの採用 Take が揃って初めて成立する
+#: モードなので、「引き継ぎのやり方」としてプロジェクト側で選ばせる。
+WORKFLOW_R2V_CONTEXT = "minimax_h3_r2v_context"
+
+#: ラテント連続性が ON のときに使う「AV ラテントを保存する版」への読み替え。
+#: 連鎖の起点になる通常カット（t2v / i2v / r2v）でもラテントを残さないと、次の
+#: カットが引き継ぐものが無く連鎖を始められない（``minimax_h3_r2v_context`` は
+#: 元から保存する）。仕上がりは素の版と同じで、保存の 2 ノードが増えるだけ。
+LATENT_SAVE_WORKFLOWS: dict[str, str] = {
+    WORKFLOW_T2V: "minimax_h3_t2v_save",
+    WORKFLOW_I2V: "minimax_h3_i2v_save",
+    WORKFLOW_R2V: "minimax_h3_r2v_save",
+}
+
+#: ラテント連続性が ON のときにスタジオが投げうる、カスタムノード頼みの
+#: ワークフロー（投入前に接続先の対応を確かめる:
+#: :func:`_require_latent_context`）。
+LATENT_CONTEXT_WORKFLOWS: frozenset[str] = frozenset(
+    {WORKFLOW_R2V_CONTEXT, *LATENT_SAVE_WORKFLOWS.values()}
+)
+
+
+def _latent_save_workflow(workflow: str, latent_continuity: bool) -> str:
+    """ラテント連続性が ON なら、保存付きバリアントに読み替えた id。
+
+    OFF のとき（と読み替え先を持たないワークフロー）はそのまま返す。
+    """
+    if not latent_continuity:
+        return workflow
+    return LATENT_SAVE_WORKFLOWS.get(workflow, workflow)
 
 #: 素材の種別 -> プロンプト中で参照素材を呼ぶタグの名前（SPEC §3.1 / r2v）
 MENTION_TAGS: dict[str, str] = {
@@ -132,6 +167,7 @@ def _asset_url(kind: str, path: str) -> str:
 def _row_to_project(row: aiosqlite.Row) -> StudioProject:
     data = dict(row)
     data["auto_translate"] = bool(data.get("auto_translate", 1))
+    data["latent_continuity"] = bool(data.get("latent_continuity", 0))
     return StudioProject(**data)
 
 
@@ -193,6 +229,7 @@ def _stored_asset_path(path: str, kind: str) -> str:
 def _row_to_shot(row: aiosqlite.Row) -> StudioShot:
     data = dict(row)
     data["carry_over_end_frame"] = bool(data["carry_over_end_frame"])
+    data["nsfw"] = bool(data.get("nsfw", 0))
     data["prompt_updated_at"] = data.get("prompt_updated_at") or data["updated_at"]
     return StudioShot(**data)
 
@@ -221,6 +258,7 @@ async def list_projects() -> list[StudioProjectSummary]:
     for row in rows:
         data = dict(row)
         data["auto_translate"] = bool(data.get("auto_translate", 1))
+        data["latent_continuity"] = bool(data.get("latent_continuity", 0))
         summaries.append(StudioProjectSummary(**data))
     return summaries
 
@@ -231,6 +269,7 @@ async def create_project(
     synopsis: str,
     world_notes: str,
     auto_translate: bool = True,
+    latent_continuity: bool = False,
     *,
     actor: str = "user",
 ) -> StudioProject:
@@ -239,7 +278,8 @@ async def create_project(
         raise StudioError("プロジェクト名を入れてください")
     async with get_db() as conn:
         project = await _insert_project(
-            conn, title, code, synopsis, world_notes, auto_translate
+            conn, title, code, synopsis, world_notes, auto_translate,
+            latent_continuity,
         )
         await _record_revision(conn, project.id, actor, "プロジェクトを作成")
         await conn.commit()
@@ -253,6 +293,7 @@ async def _insert_project(
     synopsis: str,
     world_notes: str,
     auto_translate: bool,
+    latent_continuity: bool = False,
 ) -> StudioProject:
     project_id = new_id()
     now = _now()
@@ -260,8 +301,8 @@ async def _insert_project(
         await conn.execute(
             "INSERT INTO studio_projects"
             " (id, name, code, synopsis, world_notes, auto_translate,"
-            "  created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "  latent_continuity, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 project_id,
                 title,
@@ -269,6 +310,7 @@ async def _insert_project(
                 synopsis or "",
                 world_notes or "",
                 1 if auto_translate else 0,
+                1 if latent_continuity else 0,
                 now,
                 now,
             ),
@@ -306,6 +348,8 @@ async def update_project(
         changes["code"] = str(changes["code"]).strip()
     if "auto_translate" in changes:
         changes["auto_translate"] = 1 if changes["auto_translate"] else 0
+    if "latent_continuity" in changes:
+        changes["latent_continuity"] = 1 if changes["latent_continuity"] else 0
     async with get_db() as conn:
         if await _fetch_project(conn, project_id) is None:
             return None
@@ -1356,8 +1400,11 @@ _SHOT_TEXT_FIELDS = (
 )
 
 
-#: Shot のうち、生成設定の欄（NULL 可。JobCreate へは値があるものだけ渡す）
-_SHOT_SETTING_FIELDS = ("aspect_ratio", "megapixels", "seed", "workflow_override")
+#: Shot のうち、生成設定の欄（NULL 可。JobCreate へは値があるものだけ渡す）。
+#: ``nsfw`` だけは bool で、解除は NULL ではなく False（列も NOT NULL）。
+_SHOT_SETTING_FIELDS = (
+    "aspect_ratio", "megapixels", "seed", "workflow_override", "nsfw",
+)
 
 
 async def _insert_shot(
@@ -1435,6 +1482,8 @@ async def update_shot(
     changes = dict(changes)
     if changes.get("carry_over_end_frame") is not None:
         changes["carry_over_end_frame"] = 1 if changes["carry_over_end_frame"] else 0
+    if changes.get("nsfw") is not None:
+        changes["nsfw"] = 1 if changes["nsfw"] else 0
     if changes.get("duration_seconds") is not None:
         changes["duration_seconds"] = float(changes["duration_seconds"])
     async with get_db() as conn:
@@ -1753,30 +1802,49 @@ class _Plan(NamedTuple):
     references: list[StudioAsset]
     #: ``references`` と同じ並びの ``<Picture 1>`` などのタグ
     tags: list[str]
+    #: ラテント連続性で引き継ぐ直前カットの動画（``assets/video/`` に複製済み）
+    context_video: str | None = None
+    #: 同じく、直前カットの AV ラテント（ComfyUI 側のパス）
+    context_latent: str | None = None
 
 
 async def _plan_render(
-    conn: aiosqlite.Connection, shot: StudioShot, assets: list[StudioAsset]
+    conn: aiosqlite.Connection,
+    shot: StudioShot,
+    assets: list[StudioAsset],
+    project: StudioProject | None = None,
 ) -> _Plan:
     """モードを決めて ``@素材名`` を解決し、最終プロンプトまで組み立てる。
 
     生成（:func:`render_shot`）と投入プレビュー（:func:`preview_shot`）が
     **同じものを見る**ための唯一の経路。組み立てられなければ
     :class:`StudioError`（生成は 400、プレビューは理由として見せる）。
+
+    ``project`` は引き継ぎのやり方（``latent_continuity``）を見るために渡す。
+    ON のときは、連鎖の起点になる通常カットも AV ラテントを残せるよう、最後に
+    保存付きバリアントへ読み替える（:func:`_latent_save_workflow`）。
     """
     # 添付できる（＝ファイル実体を持つ）素材を呼んでいるか。メタデータだけの
     # 素材はここに出てこないので、r2v の理由にはならない。
     mode = await _pick_workflow(
-        conn, shot, bool(resolve_mentions(shot.prompt, assets, attach=True).references)
+        conn,
+        shot,
+        bool(resolve_mentions(shot.prompt, assets, attach=True).references),
+        project,
+    )
+    workflow = _latent_save_workflow(
+        mode.workflow, project is not None and project.latent_continuity
     )
     resolved = resolve_mentions(shot.prompt, assets, attach=mode.attach)
     return _Plan(
-        mode.workflow,
+        workflow,
         mode.reason,
         compose_prompt(shot, resolved.text),
         mode.start_image,
         resolved.references,
         resolved.tags,
+        mode.context_video,
+        mode.context_latent,
     )
 
 
@@ -1794,13 +1862,15 @@ async def preview_shot(shot_id: str) -> StudioShotPreview | None:
         project = await _fetch_project(conn, shot.project_id)
         assets = await _fetch_assets(conn, shot.project_id)
         auto_translate = project is not None and project.auto_translate
+        latent_continuity = project is not None and project.latent_continuity
         try:
-            plan = await _plan_render(conn, shot, assets)
+            plan = await _plan_render(conn, shot, assets, project)
         except StudioError as exc:
             return StudioShotPreview(
                 shot_id=shot.id,
                 workflow=shot.workflow_override,
                 auto_translate=auto_translate,
+                latent_continuity=latent_continuity,
                 error=str(exc),
             )
     return StudioShotPreview(
@@ -1817,6 +1887,9 @@ async def preview_shot(shot_id: str) -> StudioShotPreview | None:
         start_frame=plan.start_image,
         auto_translate=auto_translate,
         will_translate=auto_translate and has_japanese(plan.prompt),
+        latent_continuity=latent_continuity,
+        context_video=plan.context_video,
+        context_latent=plan.context_latent,
     )
 
 
@@ -1873,6 +1946,9 @@ async def _fetch_takes(
             data["last_frame_path"] = job.last_frame_path
             data["last_frame_url"] = job.last_frame_url
             data["error"] = job.error
+            # NSFW はジョブ側が正（手動トグルは POST /api/jobs/{id}/nsfw）。
+            data["nsfw"] = job.nsfw
+            data["nsfw_source"] = job.nsfw_source
         takes.append(StudioTake(**data))
     return takes
 
@@ -1936,18 +2012,13 @@ def _mark_stale(
     return marked
 
 
-async def _carry_over_start_frame(
+async def _previous_selected_take(
     conn: aiosqlite.Connection, shot: StudioShot
-) -> str | None:
-    """直前の Shot の採用 Take のラストフレーム（無ければ None）。
+) -> StudioTake | None:
+    """直前の Shot の採用 Take（無ければ None）。
 
     「直前」は並び順（``sort_order`` -> ``created_at`` -> ``id``）で 1 つ手前の
-    Shot。まだ採用していない・生成が終わっていないときは None を返すだけで
-    エラーにはしない（先頭 Shot と同じく t2v / r2v に落ちる）。
-
-    返すのは ``assets/image/`` に複製したほうのパス: ジョブの入力に取れるのは
-    ``assets/`` と ``library/`` の中だけなので（:func:`app.jobs.resolve_asset_path`）、
-    続き生成（``/api/jobs/{id}/continue``）と同じように移してから渡す。
+    Shot。先頭 Shot・まだ採用していない Shot では None。
     """
     shots = await _fetch_shots(conn, shot.project_id)
     index = next((i for i, item in enumerate(shots) if item.id == shot.id), 0)
@@ -1956,10 +2027,78 @@ async def _carry_over_start_frame(
     previous = shots[index - 1]
     if not previous.selected_take_id:
         return None
-    take = await _fetch_take(conn, previous.selected_take_id)
+    return await _fetch_take(conn, previous.selected_take_id)
+
+
+async def _carry_over_context(
+    conn: aiosqlite.Connection, shot: StudioShot
+) -> tuple[str, str] | None:
+    """ラテント連続性で引き継ぐ ``(直前カットの動画, AV ラテント)``。
+
+    どちらか片方でも欠けていたら None（続きとして生成できないため）。AV ラテントは
+    ComfyUI 側に置きっぱなしのファイルなので複製しないが、動画のほうはジョブの
+    入力になるので ``assets/video/`` に移してから渡す
+    （:func:`app.jobs.resolve_asset_path` が読めるのは ``assets/`` と
+    ``library/`` の中だけ）。
+    """
+    take = await _previous_selected_take(conn, shot)
+    if take is None or not take.video_path or not take.latent_path:
+        return None
+    return str(job_service.copy_into_assets(take.video_path, "video")), take.latent_path
+
+
+async def record_take_latent(job_id: str, latent_path: str) -> None:
+    """ジョブが保存した AV ラテントのパスを、その Take に控える。
+
+    呼ぶのはジョブランナー（:func:`app.jobs._record_take_latent`）で、スタジオ
+    由来でないジョブでは対象の行が無いだけ（何も起きない）。
+    """
+    async with get_db() as conn:
+        await conn.execute(
+            "UPDATE studio_takes SET latent_path = ? WHERE job_id = ?",
+            (latent_path, job_id),
+        )
+        await conn.commit()
+
+
+async def _carry_over_start_frame(
+    conn: aiosqlite.Connection, shot: StudioShot
+) -> str | None:
+    """直前の Shot の採用 Take のラストフレーム（無ければ None）。
+
+    まだ採用していない・生成が終わっていないときは None を返すだけでエラーには
+    しない（先頭 Shot と同じく t2v / r2v に落ちる）。
+
+    返すのは ``assets/image/`` に複製したほうのパス: ジョブの入力に取れるのは
+    ``assets/`` と ``library/`` の中だけなので（:func:`app.jobs.resolve_asset_path`）、
+    続き生成（``/api/jobs/{id}/continue``）と同じように移してから渡す。
+    """
+    take = await _previous_selected_take(conn, shot)
     if take is None or not take.last_frame_path:
         return None
     return str(job_service.copy_into_assets(take.last_frame_path, "image"))
+
+
+async def _require_latent_context() -> None:
+    """今の接続先で Motion Context が使えなければ断る（黙って落とさない）。
+
+    ラテント連続性はカスタムノード頼みなので、入っていない接続先（Comfy Cloud
+    など）に投げると ComfyUI 側で落ちる。投入前に ``/object_info`` を見て、
+    設定を直すか引き継ぎをオフにするよう伝える。
+    """
+    try:
+        available = await comfy.latent_context_support()
+    except comfy.ComfyError as exc:
+        raise StudioError(
+            "ComfyUI に接続できないので、ラテント連続性が使えるか確かめられません"
+            f"（{comfy.display_error(exc)}）"
+        ) from exc
+    if not available:
+        raise StudioError(
+            "いまの接続先では「ラテント連続性」が使えません"
+            "（MiniMaxH3MotionContext 系のカスタムノードが入っていません）。"
+            "接続先を変えるか、プロジェクト設定のラテント連続性をオフにしてください"
+        )
 
 
 async def render_shot(shot_id: str) -> StudioTake:
@@ -1981,7 +2120,7 @@ async def render_shot(shot_id: str) -> StudioTake:
             raise StudioError("shot not found")
         project = await _fetch_project(conn, shot.project_id)
         assets = await _fetch_assets(conn, shot.project_id)
-        plan = await _plan_render(conn, shot, assets)
+        plan = await _plan_render(conn, shot, assets, project)
         workflow = plan.workflow
         prompt = plan.prompt
 
@@ -2000,10 +2139,26 @@ async def render_shot(shot_id: str) -> StudioTake:
             fields["megapixels"] = float(shot.megapixels)
         if shot.seed is not None:
             fields["seed"] = int(shot.seed)
+        # NSFW は「立てたときだけ」明示する。明示すると manual 扱いになって
+        # あとから自動判定に上書きされないので、オフのままなら渡さない
+        # （従来どおり投入後に Grok が判定する。app.jobs._resolve_nsfw）。
+        if shot.nsfw:
+            fields["nsfw"] = True
         if plan.start_image is not None:
             fields["source_image"] = plan.start_image
+        # ラテント連続性: 直前カットの動画は入力ファイル、AV ラテントは
+        # ComfyUI 側のパス（上げ直さない）。
+        if plan.context_video is not None:
+            fields["reference_video"] = plan.context_video
+        if plan.context_latent is not None:
+            fields["context_latent_path"] = plan.context_latent
         for asset in plan.references:
             fields.setdefault(REFERENCE_FIELDS[asset.kind], []).append(asset.path)
+
+    # 接続先にカスタムノードが入っているかは、投入の直前に 1 度だけ確かめる
+    # （DB の接続を閉じてから。黙って別のモードに落とさず、その場で断る）。
+    if workflow in LATENT_CONTEXT_WORKFLOWS:
+        await _require_latent_context()
 
     # 英訳は DB の接続を閉じてから（Grok の応答を待つあいだ掴まない）。
     source_prompt = ""
@@ -2061,15 +2216,31 @@ class _Mode(NamedTuple):
     start_image: str | None
     attach: bool
     reason: str
+    #: ラテント連続性で引き継ぐ直前カットの動画（``assets/video/`` に複製済み）
+    context_video: str | None = None
+    #: 同じく、直前カットの AV ラテント（ComfyUI 側のパス）
+    context_latent: str | None = None
 
 
 async def _pick_workflow(
-    conn: aiosqlite.Connection, shot: StudioShot, has_material: bool
+    conn: aiosqlite.Connection,
+    shot: StudioShot,
+    has_material: bool,
+    project: StudioProject | None = None,
 ) -> _Mode:
     """``(ワークフロー, 開始フレーム, 参照として添付するか, 理由)``。
 
     ``workflow_override`` があればそれに従い、足りない入力はその場で断る
     （黙って別のモードに落ちると、指定した意味が無くなるため）。
+
+    引き継ぎ（``carry_over_end_frame``）のやり方はプロジェクトの
+    ``latent_continuity`` が決める。OFF なら今までどおりラストフレーム 1 枚を
+    開始フレームにする i2v で、ON なら直前カットの動画と AV ラテントを渡す
+    ``minimax_h3_r2v_context``。ON のときに材料が揃わなければ、こちらも
+    黙って i2v / r2v に落とさずその場で断る（強制指定と同じ考え方）。
+
+    返すのは**論理モードのまま**の id で、ラテント連続性が ON のときの保存付き
+    バリアントへの読み替えは呼び出し側（:func:`_plan_render`）がやる。
     """
     override = shot.workflow_override
     if override == WORKFLOW_T2V:
@@ -2097,6 +2268,30 @@ async def _pick_workflow(
         )
     # 自動: 引き継ぎが最優先（i2v は参照素材を取れず、`<Picture 1>` が開始
     # フレームを指してしまう）、次に参照素材、どちらでもなければ t2v。
+    #
+    # 引き継ぎのやり方が「ラテント連続性」のときは、ここだけが分かれる。
+    # 直前カットの動画と AV ラテントを参照モードに足すので、参照素材（`@素材`）
+    # が要る。材料が欠けていたら黙って落とさず、何をすればよいかを言って断る。
+    if shot.carry_over_end_frame and project is not None and project.latent_continuity:
+        if not has_material:
+            raise StudioError(
+                "連続カットには参照素材が必要です。プロンプトで @素材 を参照するか、"
+                "carry_over_end_frame をオフにしてください"
+            )
+        context = await _carry_over_context(conn, shot)
+        if context is None:
+            raise StudioError(
+                "前 Shot の採用 Take がありません。前 Shot の Take を採用するか、"
+                "carry_over_end_frame をオフにしてください"
+            )
+        context_video, context_latent = context
+        return _Mode(
+            WORKFLOW_R2V_CONTEXT, None, True,
+            "直前カットの動きと音をラテントごと引き継ぎます"
+            "（ラテント連続性・素材は参照として添付）",
+            context_video,
+            context_latent,
+        )
     start_image = (
         await _carry_over_start_frame(conn, shot)
         if shot.carry_over_end_frame

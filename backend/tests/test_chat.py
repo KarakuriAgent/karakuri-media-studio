@@ -20,10 +20,12 @@ class FakeCli:
         self.error = error
         self.calls: list[list[str]] = []
         self.cwds: list[str] = []
+        self.timeouts: list[float | None] = []
 
     async def __call__(self, argv, cwd, timeout):
         self.calls.append(list(argv))
         self.cwds.append(str(cwd))
+        self.timeouts.append(timeout)
         if self.error is not None:
             raise self.error
         if not self.answers:
@@ -529,6 +531,28 @@ async def test_client_reads_settings(monkeypatch, tmp_path):
     client = grok.get_client()
     assert await client.complete("hi") == "ok"
     assert calls == [["mygrok", "-p", "hi"]]  # no --model when it is unset
+
+
+def _chat_timeout(env, monkeypatch, timeout: float) -> float | None:
+    """設定を差し替えて 1 往復し、CLI に渡った制限時間を返す。"""
+    monkeypatch.setattr(
+        config, "_settings", config.load_settings().model_copy(
+            update={"agent_grok_timeout": timeout}
+        )
+    )
+    session = start(env)
+    env.cli.answers = [QUESTION_ANSWER]
+    assert say(env, session["id"]).status_code == 200
+    return env.cli.timeouts[-1]
+
+
+def test_chat_uses_the_configured_grok_timeout(env, monkeypatch):
+    """相談の CLI 呼び出しにも agent_grok_timeout が効く（既定 120 秒固定ではない）。"""
+    assert _chat_timeout(env, monkeypatch, 900.0) == 900.0
+
+
+def test_chat_timeout_zero_means_no_timeout(env, monkeypatch):
+    assert _chat_timeout(env, monkeypatch, 0.0) is None
 
 
 def test_json_answer_is_valid_json_fixture():

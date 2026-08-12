@@ -77,6 +77,18 @@ export interface Settings {
   /** 外部 API から積める未完了 Take の上限（0 = 無制限）。 */
   external_max_pending_takes: number
   /**
+   * エージェント / 相談の実行上限（AGENT-MODE §3.4）。どれも **0 = 無制限**で、
+   * 既定値は従来どおり（無制限にしたい人だけが 0 を入れる）。
+   */
+  /** grok CLI 1 回あたりの制限時間（秒）。0 = タイムアウトなし。 */
+  agent_grok_timeout: number
+  /** 自走セッションの「1 回のプラン提案で増やせる新規ジョブ数」。0 = 無制限。 */
+  agent_max_plan_tasks: number
+  /** スタジオのエージェントが人間の入力なしに回せる連続ターン数。0 = 無制限。 */
+  agent_max_turns: number
+  /** キャンバスのエージェントが 1 回の発言から回す連続ターン数。0 = 無制限。 */
+  canvas_max_turns: number
+  /**
    * 高速化トグルの既定値（SPEC §3.1）。宣言のある動画ワークフロー（`supports`
    * にそれぞれの名前があるもの）だけが読む。生成フォームのトグルがここを
    * 書き換えるので、次に開いたときも同じ状態で始まる。
@@ -895,6 +907,12 @@ export interface StudioProject {
   world_notes: string
   /** 日本語のプロンプトを Grok で英訳してから投入する（MiniMax H3 は英語前提）。 */
   auto_translate: boolean
+  /**
+   * 引き継ぎ（`carry_over_end_frame`）を Motion Context で行う（ラテント連続性）。
+   * OFF なら直前カットのラストフレーム 1 枚を開始フレームにする従来の i2v、
+   * ON なら直前カットの動画と AV ラテントを渡す `minimax_h3_r2v_context`。
+   */
+  latent_continuity: boolean
   created_at: string
   updated_at: string
 }
@@ -914,6 +932,12 @@ export interface StudioProjectCreate {
   synopsis?: string
   world_notes?: string
   auto_translate?: boolean
+  /**
+   * 引き継ぎ（`carry_over_end_frame`）を Motion Context で行う（ラテント連続性）。
+   * OFF なら直前カットのラストフレーム 1 枚を開始フレームにする従来の i2v、
+   * ON なら直前カットの動画と AV ラテントを渡す `minimax_h3_r2v_context`。
+   */
+  latent_continuity?: boolean
 }
 
 /** PATCH /api/studio/projects/{id}（送った項目だけ変わる）。 */
@@ -923,6 +947,12 @@ export interface StudioProjectUpdate {
   synopsis?: string
   world_notes?: string
   auto_translate?: boolean
+  /**
+   * 引き継ぎ（`carry_over_end_frame`）を Motion Context で行う（ラテント連続性）。
+   * OFF なら直前カットのラストフレーム 1 枚を開始フレームにする従来の i2v、
+   * ON なら直前カットの動画と AV ラテントを渡す `minimax_h3_r2v_context`。
+   */
+  latent_continuity?: boolean
 }
 
 /** 話（エピソード）。場（StudioScene）の入れ物。 */
@@ -1087,6 +1117,8 @@ export interface StudioShot {
   seed: number | null
   /** ワークフローの強制指定（null = t2v / i2v / r2v を自動で決める）。 */
   workflow_override: StudioWorkflowOverride | null
+  /** 投入するジョブに NSFW の印を付ける（false = 投入後の自動判定に任せる）。 */
+  nsfw: boolean
   created_at: string
   updated_at: string
   /** プロンプトに効く項目を最後に書き換えた時刻（Take の stale 判定に使う）。 */
@@ -1110,6 +1142,7 @@ export interface StudioShotCreate {
   megapixels?: number | null
   seed?: number | null
   workflow_override?: StudioWorkflowOverride | null
+  nsfw?: boolean
   /** 並び順（省略すると末尾に足す）。 */
   sort_order?: number | null
 }
@@ -1138,6 +1171,8 @@ export interface StudioShotUpdate {
   megapixels?: number | null
   seed?: number | null
   workflow_override?: StudioWorkflowOverride | null
+  /** NSFW の印（bool なので解除は false を送る）。 */
+  nsfw?: boolean
 }
 
 export interface StudioTake {
@@ -1149,13 +1184,22 @@ export interface StudioTake {
   created_at: string
   /** 元ジョブの状態。ジョブが消えていれば null。 */
   job_status: JobStatus | null
-  /** 実際に走ったワークフロー（minimax_h3_t2v / _i2v / _r2v）。 */
+  /** 実際に走ったワークフロー（minimax_h3_t2v / _i2v / _r2v / _r2v_context）。 */
   video_workflow: string | null
   video_path: string | null
   video_url: string | null
   last_frame_path: string | null
   last_frame_url: string | null
+  /**
+   * ラテント連続性で保存した AV ラテント（ComfyUI 側のパス）。次のカットが
+   * ここから続きを作る。使わなかった Take は null。
+   */
+  latent_path?: string | null
   error: string | null
+  /** 元ジョブの NSFW フラグ（ジョブが消えていれば null）。 */
+  nsfw?: boolean | null
+  /** その判定の出どころ（'' = 未判定 / 'auto' / 'manual'）。 */
+  nsfw_source?: string
   /** 実際に投入した本文（英訳したときは訳したあとのもの）。 */
   prompt?: string
   /** 英訳する前の原文（英訳していなければ空）。 */
@@ -1199,7 +1243,21 @@ export interface StudioShotPreview {
   auto_translate: boolean
   /** この本文が実際に英訳されるか。 */
   will_translate: boolean
+  /** プロジェクトの設定（引き継ぎを Motion Context で行う = ラテント連続性）。 */
+  latent_continuity: boolean
+  /** ラテント連続性で引き継ぐ直前カットの動画（使わないときは null）。 */
+  context_video: string | null
+  /** 同じく、引き継ぎ元の AV ラテント（ComfyUI 側のパス）。 */
+  context_latent: string | null
   /** 組み立てられなかった理由（日本語。空なら問題なし）。 */
+  error: string
+}
+
+/** GET /api/studio/capabilities: いまの接続先でスタジオの追加機能が使えるか。 */
+export interface StudioCapabilities {
+  /** ラテント連続性（MiniMaxH3MotionContext 系のカスタムノードが揃っている）。 */
+  latent_continuity: boolean
+  /** 確かめられなかった理由（日本語。空なら判定できている）。 */
   error: string
 }
 

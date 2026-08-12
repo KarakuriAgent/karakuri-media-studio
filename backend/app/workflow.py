@@ -980,6 +980,11 @@ def build_video_workflow(
     _inject(wf, resolved, "end_image", params.end_image_name)
     _inject(wf, resolved, "audio", params.audio_name)
     _inject(wf, resolved, "video", params.reference_video_name)
+    # ラテント連続性（§3.1）: 直前カットの AV ラテントは ComfyUI 側にあるファイル
+    # なので、アップロード名ではなくパス文字列をそのまま書く。このカットぶんの
+    # 保存先はジョブ ID から決め、次のカットがそのパスを読む。
+    _inject(wf, resolved, "context_latent", params.context_latent_path)
+    _inject(wf, resolved, "save_latent_prefix", params.latent_filename_prefix)
     # 渡されなかった任意の入力は、雛形のローダーごとグラフから外す（§3.1）
     _prune_optional_loaders(wf, resolved, params)
     # 参照素材は 1 つの注入点では表せない: 渡された件数ぶんノードを生やす（§3.1）

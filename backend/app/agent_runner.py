@@ -14,9 +14,10 @@ FastAPI lifespan).  Jobs go through the existing :class:`app.jobs.JobRunner`
 queue — the loop only waits for the job row to reach a final state, so ComfyUI
 still runs one job at a time (SPEC §5).
 
-暴走防止: 連続 Grok ターン上限 (:data:`MAX_TURNS`)、セッションあたりの生成本数
-上限 (``auto_limit``)、同一タスクの自動リトライは 1 回まで。自走（auto）セッションは
-さらに 1 回のプラン提案で増やせる新規ジョブ数も制限する (:func:`plan_task_limits`)。
+暴走防止: 連続 Grok ターン上限 (:func:`turn_limit` = 設定 ``agent_max_turns``)、
+セッションあたりの生成本数上限 (``auto_limit``)、同一タスクの自動リトライは 1 回まで。
+自走（auto）セッションはさらに 1 回のプラン提案で増やせる新規ジョブ数も制限する
+(:func:`plan_task_limits`)。どの上限も **0 を入れれば無制限**。
 
 生成本数の上限は「そこで打ち切る」のではなく「超える直前にユーザーへ確認する」
 （:func:`_request_limit_checkin`）。承認 1 回につき ``auto_limit`` 本ぶん枠が伸び、
@@ -79,7 +80,7 @@ log = logging.getLogger(__name__)
 # Tunables (monkeypatched by the tests to keep them fast).
 POLL_INTERVAL = 1.0
 JOB_WAIT_TIMEOUT = 6 * 60 * 60.0
-MAX_TURNS = 20  # 連続 Grok ターン上限
+MAX_TURNS = 20  # 連続 Grok ターン上限の既定（実際に使う値は設定 agent_max_turns）
 MAX_TASK_RETRIES = 1
 MAX_INSPECT_FRAMES = 8
 
@@ -173,6 +174,11 @@ async def _set_status(session_id: str, status: str, message: str | None = None) 
     await ws.publish_agent(session_id, status, message=message)
 
 
+def turn_limit() -> int:
+    """いま効いている連続ターン上限（設定 ``agent_max_turns``）。0 = 無制限。"""
+    return load_settings().agent_max_turns
+
+
 def _turns(session: AgentSession) -> int:
     """Assistant turns since the last human input (暴走防止のカウンタ)."""
     count = 0
@@ -222,10 +228,12 @@ def plan_task_limits(session: AgentSession) -> tuple[int | None, int]:
     counts the **new** jobs of one proposal — a revised plan replaces the whole
     task list (:func:`_apply_plan`), so the finished tasks it re-lists are
     subtracted. セッション全体の生成本数は別途 ``auto_limit`` が守る。
+
+    設定 ``agent_max_plan_tasks`` が 0 なら自走でも無制限（``None``）。
     """
     if session.checkin_mode != "auto":
         return None, 0
-    max_tasks = load_settings().agent_max_plan_tasks or agent_protocol.MAX_PLAN_TASKS
+    max_tasks = load_settings().agent_max_plan_tasks or None
     done = sum(1 for task in session.plan.tasks if task.status == "done")
     return max_tasks, done
 
@@ -951,8 +959,16 @@ def _studio_detail_text(detail: StudioProjectDetail) -> str:
         if detail.auto_translate
         else "off（プロンプトは英語で書いてください）"
     )
+    continuity = (
+        "on（`carry_over_end_frame` を立てた Shot は直前カットの動きと音を"
+        "ラテントごと引き継ぎます。参照素材の指定と直前 Shot の採用 Take が"
+        "要ります）"
+        if detail.latent_continuity
+        else "off（引き継ぎは直前カットのラストフレーム 1 枚）"
+    )
     lines = [
         f"プロジェクト `{detail.id}` 「{detail.name}」{code} / auto_translate: {translate}",
+        f"latent_continuity: {continuity}",
     ]
     if detail.synopsis:
         lines.append(f"あらすじ: {detail.synopsis}")
@@ -1030,6 +1046,7 @@ async def _studio_create_project(params: dict[str, Any]) -> tuple[str, str, dict
         str(body.get("synopsis") or ""),
         str(body.get("world_notes") or ""),
         bool(body.get("auto_translate", True)),
+        bool(body.get("latent_continuity", False)),
         actor=STUDIO_ACTOR,
     )
     return (
@@ -1825,11 +1842,17 @@ def limit_grants(session: AgentSession) -> int:
 
 
 def effective_limit(session: AgentSession) -> int:
-    """いま許されている生成本数。承認 1 回につき作成時の設定値ぶん伸びる。"""
+    """いま許されている生成本数。承認 1 回につき作成時の設定値ぶん伸びる。
+
+    ``auto_limit`` が 0（無制限）のときは 0 のまま返る。呼ぶ側は
+    :func:`over_limit` のように 0 を先に弾くこと。
+    """
     return session.auto_limit * (limit_grants(session) + 1)
 
 
 def over_limit(session: AgentSession) -> bool:
+    if session.auto_limit <= 0:
+        return False  # 0 = 無制限（チェックインを挟まない）
     return generated_count(session) >= effective_limit(session)
 
 
@@ -1902,10 +1925,11 @@ async def _loop(session_id: str, action: AgentAction | None = None) -> None:
                 if _stopping(session_id):
                     await _halt(session_id, "ユーザーの操作で停止しました。")
                     return
-            if _turns(session) >= MAX_TURNS:
+            max_turns = turn_limit()
+            if max_turns and _turns(session) >= max_turns:
                 await _halt(
                     session_id,
-                    f"連続ターンが上限（{MAX_TURNS}）に達したため停止しました。",
+                    f"連続ターンが上限（{max_turns}）に達したため停止しました。",
                 )
                 return
             try:

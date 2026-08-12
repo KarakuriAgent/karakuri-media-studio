@@ -132,6 +132,7 @@ CONTINUE_FIELDS = tuple(JobContinue.model_fields)
 RERUN_FIELDS = ("seed", "randomize_seed")
 
 # 自走（auto）セッションだけに効く「1 回のプラン提案あたりの新規ジョブ数」の既定値
+# （実際に使う値は設定 ``agent_max_plan_tasks``。0 なら上限なし = ``max_tasks=None``）
 MAX_PLAN_TASKS = 5
 
 # library アクションが取っておけるジョブ出力（app.library.SOURCES と同じ区分）

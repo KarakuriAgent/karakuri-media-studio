@@ -146,7 +146,9 @@ async def send_message(session_id: str, payload: ChatSendMessage) -> ChatReply:
     session = await _load_session(session_id)
     messages = [*session.messages, ChatMessage(role="user", content=content, ts=_now())]
 
-    client = grok.get_client()
+    # 相談も研究や検分と同じくらい待たされることがあるので、エージェントと同じ
+    # 設定（``agent_grok_timeout``。0 = タイムアウトなし）を使う。
+    client = grok.get_client(timeout=grok.configured_timeout())
     try:
         answer = await client.complete(prompts.build_conversation(messages))
         result = grok.extract_result(answer)

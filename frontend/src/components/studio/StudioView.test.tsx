@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError, api } from '../../api'
 import type {
   StudioEpisode,
@@ -18,6 +18,7 @@ vi.mock('../../api', async () => {
   return {
     ...actual,
     api: {
+      getStudioCapabilities: vi.fn(),
       listStudioProjects: vi.fn(),
       createStudioProject: vi.fn(),
       createStudioDemoProject: vi.fn(),
@@ -59,6 +60,15 @@ afterEach(cleanup)
 
 const mocked = api as unknown as Record<string, ReturnType<typeof vi.fn>>
 
+// 概要タブは開いたときに接続先のケーパビリティを聞きに行く（ラテント連続性の
+// トグルの出し分け）。既定は「使える」にして、他のテストの邪魔をしない。
+beforeEach(() => {
+  mocked.getStudioCapabilities.mockResolvedValue({
+    latent_continuity: true,
+    error: '',
+  })
+})
+
 function shot(id: string, overrides: Partial<StudioShot> = {}): StudioShot {
   return {
     id,
@@ -77,6 +87,7 @@ function shot(id: string, overrides: Partial<StudioShot> = {}): StudioShot {
     status: 'draft',
     selected_take_id: null,
     carry_over_end_frame: false,
+    nsfw: false,
     aspect_ratio: null,
     megapixels: null,
     seed: null,
@@ -138,6 +149,7 @@ function detail(overrides: Partial<StudioProjectDetail> = {}): StudioProjectDeta
     synopsis: 'あらすじ',
     world_notes: '',
     auto_translate: true,
+  latent_continuity: false,
     created_at: '2026-01-01T00:00:00+00:00',
     updated_at: '2026-01-01T00:00:00+00:00',
     episodes: [],
@@ -177,6 +189,7 @@ function summary(current: StudioProjectDetail): StudioProjectSummary {
     synopsis: current.synopsis,
     world_notes: current.world_notes,
     auto_translate: current.auto_translate,
+    latent_continuity: current.latent_continuity,
     created_at: current.created_at,
     updated_at: current.updated_at,
     shot_count: current.shots.length,
@@ -199,6 +212,9 @@ function shotPreview(
     start_frame: null,
     auto_translate: true,
     will_translate: false,
+    latent_continuity: false,
+    context_video: null,
+    context_latent: null,
     error: '',
     ...overrides,
   }

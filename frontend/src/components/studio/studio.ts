@@ -347,6 +347,8 @@ export interface ProjectFormState {
   synopsis: string
   world_notes: string
   auto_translate: boolean
+  /** 引き継ぎを Motion Context で行う（ラテント連続性）。 */
+  latent_continuity: boolean
 }
 
 export function validateProjectForm(form: {
@@ -377,6 +379,8 @@ export interface ShotFormState {
   seed: string
   /** ワークフローの強制指定（空 = 自動）。 */
   workflow_override: string
+  /** 投入するジョブに NSFW の印を付ける（false = 自動判定に任せる）。 */
+  nsfw: boolean
 }
 
 export function shotFormFromShot(shot: StudioShot): ShotFormState {
@@ -397,6 +401,7 @@ export function shotFormFromShot(shot: StudioShot): ShotFormState {
     megapixels: shot.megapixels == null ? '' : String(shot.megapixels),
     seed: shot.seed == null ? '' : String(shot.seed),
     workflow_override: shot.workflow_override ?? '',
+    nsfw: shot.nsfw,
   }
 }
 
@@ -447,6 +452,7 @@ export function shotUpdateFromForm(form: ShotFormState): StudioShotUpdate {
     seed: form.seed.trim() === '' ? null : Number(form.seed),
     workflow_override:
       (form.workflow_override as StudioWorkflowOverride) || null,
+    nsfw: form.nsfw,
   }
 }
 

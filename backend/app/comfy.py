@@ -228,6 +228,38 @@ def combo_options(info: dict[str, Any], class_type: str, field: str) -> list[str
     return [str(o) for o in options]
 
 
+#: 接続先（URL）-> ラテント連続性のカスタムノードが揃っているか。
+#: ``/object_info`` は全ノードの定義を返す重い応答なので、接続先ごとに 1 回だけ
+#: 聞いて覚えておく（custom node の入れ替えはアプリの再起動を伴う運用なので、
+#: プロセス内のキャッシュで足りる）。
+_latent_context_cache: dict[str, bool] = {}
+
+
+def clear_latent_context_cache() -> None:
+    """:func:`latent_context_support` の覚え書きを捨てる（設定変更・テスト用）。"""
+    _latent_context_cache.clear()
+
+
+async def latent_context_support(target: ComfyTarget | None = None) -> bool:
+    """その接続先に Motion Context 系のカスタムノードが揃っているか。
+
+    ラテント連続性（``minimax_h3_r2v_context``）は
+    :data:`app.workflows.LATENT_CONTEXT_CLASS_TYPES` のノードを全部使うので、
+    1 つでも欠けていたら False。接続先そのものに届かないときは
+    :class:`ComfyError` がそのまま上がる（「入っていない」と混同しないため）。
+    """
+    from .workflows import LATENT_CONTEXT_CLASS_TYPES
+
+    key = _base_url(target)
+    cached = _latent_context_cache.get(key)
+    if cached is not None:
+        return cached
+    info = await get_object_info(target=target)
+    available = all(name in info for name in LATENT_CONTEXT_CLASS_TYPES)
+    _latent_context_cache[key] = available
+    return available
+
+
 async def get_aspect_ratio_options() -> list[str]:
     """aspect_ratio choices of ResolutionSelector (`366`)."""
     return combo_options(

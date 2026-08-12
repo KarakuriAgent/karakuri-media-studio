@@ -87,6 +87,7 @@ function shot(id: string, overrides: Partial<StudioShot> = {}): StudioShot {
     status: 'draft',
     selected_take_id: null,
     carry_over_end_frame: false,
+    nsfw: false,
     aspect_ratio: null,
     megapixels: null,
     seed: null,
@@ -123,6 +124,7 @@ const detail: StudioProjectDetail = {
   synopsis: '',
   world_notes: '',
   auto_translate: true,
+  latent_continuity: false,
   created_at: '2026-01-01T00:00:00Z',
   updated_at: '2026-01-01T00:00:00Z',
   assets: [asset('a1')],
@@ -192,6 +194,7 @@ function setup(data: CanvasBoard = board(), project: StudioProjectDetail = detai
     ],
     start_frame: null,
     auto_translate: true,
+  latent_continuity: false,
     will_translate: true,
     error: '',
   })

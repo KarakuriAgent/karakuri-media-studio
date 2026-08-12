@@ -471,6 +471,11 @@ class WorkflowSpec:
     inject: dict[str, Target] = field(default_factory=dict)
     #: node id that produces the artefact the job runner downloads
     output_node: str = ""
+    #: 成果物とは別に、``/history`` から**文字列を 1 本**受け取るノードの id
+    #: （``""`` = 受け取らない）。ラテント連続性（``minimax_h3_r2v_context``）が
+    #: 保存した AV ラテントのパスを持ち帰るための口で、``PreviewAny`` の
+    #: ``ui.text`` を読む（:func:`app.jobs._pick_text`）。
+    latent_output_node: str = ""
     #: このワークフローを実行するエンジン（SPEC §5.2）。今は ComfyUI のみ。
     backend: WorkflowBackend = "comfyui"
     #: model family (= the ``workflow/<kind>/<folder>`` name).  Image LoRAs are
@@ -927,10 +932,11 @@ _MINIMAX_H3_MODELS = (
     " qwen3vl_32b_minimax_h3_nvfp4_awq（text_encoders）"
 )
 
-#: turbo テンプレートだけが使う**任意のカスタムノード**の ``class_type``。
-#: 入れていない環境で接続インジケーターが赤くならないよう、ヘルスチェックの
-#: 「必ず在るべきノード」からは外す（:func:`app.workflow.all_required_class_types`）。
-#: turbo を選んで実行したときだけ ComfyUI 側でエラーになる。
+#: turbo / 連続カットのテンプレートだけが使う**任意のカスタムノード**の
+#: ``class_type``。入れていない環境で接続インジケーターが赤くならないよう、
+#: ヘルスチェックの「必ず在るべきノード」からは外す
+#: （:func:`app.workflow.all_required_class_types`）。そのワークフローを選んで
+#: 実行したときだけ ComfyUI 側でエラーになる。
 OPTIONAL_CLASS_TYPES: frozenset[str] = frozenset(
     {
         "MiniMaxH3TurboLoRA",
@@ -939,7 +945,23 @@ OPTIONAL_CLASS_TYPES: frozenset[str] = frozenset(
         "SolAttnPatch",
         "MiniMaxH3SigmaShift",
         "SpectrumApplyMiniMaxH3",
+        # ラテント連続性（ComfyUI-H3-Motion-Context /
+        # ComfyUI-MiniMaxH3-Contex-Loop）。:data:`LATENT_CONTEXT_CLASS_TYPES`
+        # にも同じものを並べてあり、そちらは接続先ごとの対応判定に使う。
+        "MiniMaxH3MotionContext",
+        "MiniMaxH3MotionContextLoadLatent",
+        "MiniMaxH3MotionContextSaveLatent",
+        "MiniMaxH3MotionContextTrim",
     }
+)
+
+#: ラテント連続性が要求するカスタムノード（:func:`app.comfy.latent_context_support`
+#: が ``/object_info`` に居るかどうかを見る）。1 つでも欠けたら「使えない」。
+LATENT_CONTEXT_CLASS_TYPES: tuple[str, ...] = (
+    "MiniMaxH3MotionContext",
+    "MiniMaxH3MotionContextLoadLatent",
+    "MiniMaxH3MotionContextSaveLatent",
+    "MiniMaxH3MotionContextTrim",
 )
 
 #: turbo 版のモデルファイル（量子化ウェイト + 4step 蒸留 LoRA）
@@ -1197,6 +1219,158 @@ MINIMAX_H3_R2V = WorkflowSpec(
     ),
 )
 
+#: ラテント連続性（Motion Context）の固定パラメータ。ComfyUI に入っている本家
+#: ComfyUI-H3-Motion-Context v0.2.0 の `MiniMaxH3MotionContext` は
+#: context_length（"22" / "5" / "39" / "56" の文字列コンボ）と
+#: audio_context_length（INT・0 で映像窓に追従）だけを受け取る。既定どおり
+#: context_length = "22"（ツールチップ曰く「22 is nearly seamless」で、頭で
+#: 捨てるフレームが 39 より少なく尺への影響が小さい）・audio_context_length = 0。
+#: encode_mode / anchor_mode / crop / audio_mode は v0.2.0 には入力として存在せず
+#: ノード内部で固定されている。テンプレートに直接書いてあり、ジョブからは動かせない
+#: （つまみを増やすほど組み合わせの検証が効かなくなる）。
+_MINIMAX_H3_CONTEXT_NOTES = (
+    " / ラテント連続性: 直前カットの mp4（`reference_video`）とサンプラー出力の"
+    "AV ラテント（`context_latent`）を `MiniMaxH3MotionContext` に渡し、"
+    "ReferenceToVideo の CONDITIONING に直前カットの末尾フレームと音を追記する"
+    "（context_length \"22\" / audio_context_length 0 = 映像窓に追従、の固定値。"
+    "encode_mode / anchor_mode / crop / audio_mode は本家 v0.2.0 には入力として"
+    "存在せずノード内部で固定）/ ピン留めした 22 フレームが出力の先頭に返ってくる。"
+    "`MiniMaxH3MotionContextTrim` で映像と音声を揃えて落とすため、"
+    "**仕上がりの尺は指定した尺より 22 フレーム（24fps で約 0.9 秒）短くなる** /"
+    " `context_latent` は**生成するクリップと同じ解像度**でなければならない /"
+    " サンプラー出力は `MiniMaxH3MotionContextSaveLatent` でも保存し、"
+    "そのパスを `PreviewAny` 経由で受け取って次のカットに渡す /"
+    " `MiniMaxH3MotionContext` 系のカスタムノード"
+    "（ComfyUI-H3-Motion-Context + ComfyUI-MiniMaxH3-Contex-Loop）が"
+    "入った ComfyUI でしか動かない（Comfy Cloud では選べない）"
+)
+
+MINIMAX_H3_R2V_CONTEXT = replace(
+    MINIMAX_H3_R2V,
+    id="minimax_h3_r2v_context",
+    label="参照素材→動画・音声つき・連続カット (MiniMax H3 r2v + Motion Context)",
+    mode_label="参照素材→動画・音声つき・連続カット (r2v context)",
+    relpath="video/minimax-h3/minimax_h3_r2v_context.json",
+    description=(
+        MINIMAX_H3_R2V.description
+        + "こちらは**直前カットの続きとして**生成する版で、直前カットの動画"
+        "（`reference_video`）と保存しておいた AV ラテント（`context_latent`）を"
+        "Motion Context に渡し、動き・音・見た目をつないだまま次のカットを作る。"
+        "スタジオの「ラテント連続性」がこれを使う。"
+    ),
+    # 直前カットの動画は必須（無ければ連続カットにならない）。参照素材の
+    # 1 件以上必須（:func:`app.models.reference_problem`）は r2v と同じ。
+    requires=("video",),
+    inject={
+        **MINIMAX_H3_R2V.inject,
+        # 直前カットの mp4（LoadVideo -> GetVideoComponents で映像を取り出す）
+        "video": T("150", "file", "LoadVideo"),
+        # 直前カットの AV ラテント。ComfyUI 側のパス文字列で、上げ直しはしない
+        "context_latent": T(
+            "152", "latent_path", "MiniMaxH3MotionContextLoadLatent"
+        ),
+        # このカットのラテントの保存先（次のカットが `context_latent` で読む）
+        "save_latent_prefix": T(
+            "155", "filename_prefix", "MiniMaxH3MotionContextSaveLatent"
+        ),
+    },
+    # SaveLatent は STRING を返すだけで /history に何も残さないので、
+    # `PreviewAny` に通した先を読む（:func:`app.jobs._pick_text`）。
+    latent_output_node="156",
+    notes=(
+        _MINIMAX_H3_NOTES
+        + _MINIMAX_H3_R2V_NOTES
+        + _MINIMAX_H3_CONTEXT_NOTES
+        + " /"
+        + _MINIMAX_H3_MODELS.format(unet="ref2va")
+    ),
+)
+
+#: 保存付きバリアント（``*_save``）の説明と注記。素の t2v / i2v / r2v に
+#: `MiniMaxH3MotionContextSaveLatent` + `PreviewAny` の 2 ノードだけを足したもので、
+#: Motion Context（読み込み・Trim）は入っていない: **連鎖の起点になるカット**も
+#: 次のカットに渡す AV ラテントを残すためだけの版。素の JSON は触っていないので、
+#: ラテント連続性 OFF のプロジェクトと Comfy Cloud は今までどおり素の版を使う。
+_MINIMAX_H3_SAVE_DESCRIPTION = (
+    "こちらはスタジオの「ラテント連続性」が ON のときに使う版で、"
+    "サンプラー出力の AV ラテントを保存する以外は素の版とまったく同じ"
+    "（入力の指定も仕上がりも変わらない）。保存したラテントは、次のカットを"
+    "`minimax_h3_r2v_context` で作るときの引き継ぎ元になる。"
+)
+
+_MINIMAX_H3_SAVE_NOTES = (
+    " / latent_continuity ON のスタジオ生成用: サンプラー出力を"
+    "`MiniMaxH3MotionContextSaveLatent` で保存し、そのパスを `PreviewAny` 経由で"
+    "受け取って次のカットに渡す。**AV ラテントを保存する以外は素の版と同じ**で、"
+    "Motion Context の読み込み・Trim は入っていない（尺も素の版のまま）/"
+    " `MiniMaxH3MotionContextSaveLatent` はカスタムノード"
+    "（ComfyUI-H3-Motion-Context + ComfyUI-MiniMaxH3-Contex-Loop）なので、"
+    "入っていない ComfyUI では動かない（Comfy Cloud では選べない）"
+)
+
+#: このカットのラテントの保存先（次のカットが `context_latent` で読む）と、
+#: そのパスを持ち帰る `PreviewAny`。ノード ID は連続カット版と同じ 155 / 156。
+_MINIMAX_H3_SAVE_LATENT_INJECT = {
+    "save_latent_prefix": T(
+        "155", "filename_prefix", "MiniMaxH3MotionContextSaveLatent"
+    ),
+}
+
+MINIMAX_H3_T2V_SAVE = replace(
+    MINIMAX_H3_T2V,
+    id="minimax_h3_t2v_save",
+    label="テキスト→動画・音声つき・ラテント保存 (MiniMax H3 t2v + Save Latent)",
+    mode_label="テキスト→動画・音声つき・ラテント保存 (t2v save)",
+    relpath="video/minimax-h3/minimax_h3_t2v_save.json",
+    description=MINIMAX_H3_T2V.description + _MINIMAX_H3_SAVE_DESCRIPTION,
+    inject={**MINIMAX_H3_T2V.inject, **_MINIMAX_H3_SAVE_LATENT_INJECT},
+    # SaveLatent は STRING を返すだけで /history に何も残さないので、
+    # `PreviewAny` に通した先を読む（:func:`app.jobs._pick_text`）。
+    latent_output_node="156",
+    notes=(
+        _MINIMAX_H3_NOTES
+        + _MINIMAX_H3_SAVE_NOTES
+        + " /"
+        + _MINIMAX_H3_MODELS.format(unet="fl2va")
+    ),
+)
+
+MINIMAX_H3_I2V_SAVE = replace(
+    MINIMAX_H3_I2V,
+    id="minimax_h3_i2v_save",
+    label="画像→動画・音声つき・ラテント保存 (MiniMax H3 i2v + Save Latent)",
+    mode_label="画像→動画・音声つき・ラテント保存 (i2v save)",
+    relpath="video/minimax-h3/minimax_h3_i2v_save.json",
+    description=MINIMAX_H3_I2V.description + _MINIMAX_H3_SAVE_DESCRIPTION,
+    inject={**MINIMAX_H3_I2V.inject, **_MINIMAX_H3_SAVE_LATENT_INJECT},
+    latent_output_node="156",
+    notes=(
+        _MINIMAX_H3_NOTES
+        + _MINIMAX_H3_I2V_NOTES
+        + _MINIMAX_H3_SAVE_NOTES
+        + " /"
+        + _MINIMAX_H3_MODELS.format(unet="fl2va")
+    ),
+)
+
+MINIMAX_H3_R2V_SAVE = replace(
+    MINIMAX_H3_R2V,
+    id="minimax_h3_r2v_save",
+    label="参照素材→動画・音声つき・ラテント保存 (MiniMax H3 r2v + Save Latent)",
+    mode_label="参照素材→動画・音声つき・ラテント保存 (r2v save)",
+    relpath="video/minimax-h3/minimax_h3_r2v_save.json",
+    description=MINIMAX_H3_R2V.description + _MINIMAX_H3_SAVE_DESCRIPTION,
+    inject={**MINIMAX_H3_R2V.inject, **_MINIMAX_H3_SAVE_LATENT_INJECT},
+    latent_output_node="156",
+    notes=(
+        _MINIMAX_H3_NOTES
+        + _MINIMAX_H3_R2V_NOTES
+        + _MINIMAX_H3_SAVE_NOTES
+        + " /"
+        + _MINIMAX_H3_MODELS.format(unet="ref2va")
+    ),
+)
+
 #: turbo 版は素の i2v / r2v と**入力の形が完全に同じ**（受け取る論理入力も
 #: プロンプトの書き方も変わらない）ので、宣言は :func:`dataclasses.replace` で
 #: 差分だけを書く。テンプレート側でノード ID を素の連番に振り直してあるので、
@@ -1442,10 +1616,14 @@ SPECS: tuple[WorkflowSpec, ...] = (
     GROK_IMAGINE_T2I,
     GROK_IMAGINE_EDIT,
     MINIMAX_H3_T2V,
+    MINIMAX_H3_T2V_SAVE,
     MINIMAX_H3_I2V,
+    MINIMAX_H3_I2V_SAVE,
     MINIMAX_H3_I2V_TURBO,
     MINIMAX_H3_I2V_OPT,
     MINIMAX_H3_R2V,
+    MINIMAX_H3_R2V_SAVE,
+    MINIMAX_H3_R2V_CONTEXT,
     MINIMAX_H3_R2V_TURBO,
     MINIMAX_H3_R2V_OPT,
     ACE_STEP_1_5,

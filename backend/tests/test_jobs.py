@@ -1217,6 +1217,24 @@ def test_the_artifact_picker_accepts_any_output_key():
     assert jobs._pick_output({}, "195") is None
 
 
+def test_the_text_picker_reads_a_preview_any_output():
+    """ラテント連続性は成果物ではなく**文字列**を 1 本持ち帰る（SPEC §2.2）。
+
+    ``PreviewAny`` は ``ui.text`` に配列で載せるが、ComfyUI のバージョンと
+    Comfy Cloud で形が揺れるので文字列 1 本も読めるようにしてある。
+    """
+    listed = {"156": {"text": ["/comfy/output/h3_context/a_00001_.safetensors"]}}
+    assert jobs._pick_text(listed, "156").endswith("a_00001_.safetensors")
+
+    plain = {"156": {"text": "/comfy/output/b.safetensors"}}
+    assert jobs._pick_text(plain, "156") == "/comfy/output/b.safetensors"
+
+    # 何も載っていないときは空（呼び出し側が警告を出して先へ進む）
+    assert jobs._pick_text({"156": {"text": []}}, "156") == ""
+    assert jobs._pick_text({"156": {"images": [{"filename": "a.png"}]}}, "156") == ""
+    assert jobs._pick_text({}, "156") == ""
+
+
 # --------------------------------------------------------------------------
 # 音声ジョブ（mode='audio'）— 独立ジョブなので画像・動画は一切走らない
 # --------------------------------------------------------------------------

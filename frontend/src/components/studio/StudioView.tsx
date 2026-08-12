@@ -12,6 +12,7 @@ import type {
   StudioProjectUpdate,
   StudioRevision,
   StudioShotUpdate,
+  StudioTake,
 } from '../../types'
 import { Banner } from '../ui'
 import CanvasView from '../canvas/CanvasView'
@@ -63,6 +64,7 @@ export default function StudioView({
   progress,
   canvasEvent = null,
   aspectRatios = [],
+  showNsfw = true,
 }: {
   /** App が WS から集めているジョブ進捗（Take の生成中表示に使う）。 */
   progress: Record<string, JobProgress>
@@ -70,6 +72,8 @@ export default function StudioView({
   canvasEvent?: CanvasProgress | null
   /** 生成フォームと同じアスペクト比の候補（無ければ Shot 側は自由入力）。 */
   aspectRatios?: string[]
+  /** ヘッダーの「NSFW表示」（オフのあいだは Take の絵をぼかす）。 */
+  showNsfw?: boolean
 }) {
   const [projects, setProjects] = useState<StudioProjectSummary[]>([])
   const [loadingProjects, setLoadingProjects] = useState(false)
@@ -417,6 +421,10 @@ export default function StudioView({
     if (!window.confirm('この Take を削除しますか？')) return
     void run(() => api.deleteStudioTake(id))
   }
+  // NSFW は Take ではなく元ジョブの持ち物なので、ジョブ側の手動トグルを叩いて
+  // からプロジェクトを取り直す（Take 一覧はジョブから値を引いている）。
+  const setTakeNsfw = (take: StudioTake, nsfw: boolean) =>
+    void run(() => api.setJobNsfw(take.job_id, nsfw))
 
   // ---------------------------------------------------------------- render
 
@@ -595,11 +603,14 @@ export default function StudioView({
                 selectedShot={selectedShot}
                 progress={progress}
                 busy={busy}
+                latentContinuity={detail.latent_continuity}
+                showNsfw={showNsfw}
                 onSelectShot={setShotId}
                 onRender={render}
                 onSelectTake={selectTake}
                 onRejectTake={rejectTake}
                 onDeleteTake={deleteTake}
+                onSetTakeNsfw={setTakeNsfw}
               />
             )}
           </div>

@@ -8,6 +8,12 @@ const WORKFLOW_LABEL: Record<string, string> = {
   minimax_h3_t2v: 't2v（文章だけから）',
   minimax_h3_i2v: 'i2v（開始フレームから）',
   minimax_h3_r2v: 'r2v（参照素材から）',
+  minimax_h3_r2v_context: 'r2v + 連続カット（直前カットの続き）',
+  // ラテント連続性が ON のときの通常カット（仕上がりは素の版と同じで、
+  // 次のカットに渡す AV ラテントを残すぶんだけ違う）
+  minimax_h3_t2v_save: 't2v（文章だけから・ラテント保存）',
+  minimax_h3_i2v_save: 'i2v（開始フレームから・ラテント保存）',
+  minimax_h3_r2v_save: 'r2v（参照素材から・ラテント保存）',
 }
 
 /** 添付ファイルのパスは長いので、ファイル名だけ見せる。 */
@@ -116,6 +122,16 @@ export default function PromptPreview({ shot }: { shot: StudioShot }) {
           {preview.start_frame && (
             <p className="text-[11px] text-slate-400">
               開始フレーム: {fileName(preview.start_frame)}
+            </p>
+          )}
+          {preview.context_latent && (
+            <p className="text-[11px] text-slate-400">
+              ラテント引き継ぎ: 有効（引き継ぎ元ラテント:{' '}
+              {fileName(preview.context_latent)}
+              {preview.context_video
+                ? ` / 引き継ぎ元動画: ${fileName(preview.context_video)}`
+                : ''}
+              ）
             </p>
           )}
           {preview.will_translate && (

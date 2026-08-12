@@ -1113,7 +1113,7 @@ export function validateForm(
   if (used.length > 0) {
     if (form.mode !== 'i2v') {
       errors.references =
-        '参照素材のワークフローは「動画生成」モードでだけ使えます' +
+        '参照素材のワークフローは「動画」モードでだけ使えます' +
         '（画像＋動画は生成した静止画を開始フレームにするモードです）。'
     }
     for (const item of used) {
@@ -1218,8 +1218,8 @@ export function validateForm(
 
 export const MODE_LABELS: Record<JobMode, string> = {
   full: '画像＋動画',
-  i2v: '動画生成',
-  image_only: '画像のみ',
+  i2v: '動画',
+  image_only: '画像',
   audio: '音声',
 }
 

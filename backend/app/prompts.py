@@ -879,16 +879,20 @@ generated with the picture.
 #: 1 本のクリップの中でカットを割れるワークフロー（CONTEXT の一文を切り替える）。
 #: 汎用の VIDEO PROMPT SPEC は「1 クリップ 1 ショット」を前提にしているが、
 #: MiniMax H3 はタイムラインを書けば複数ショットを 1 本に収められる。
-#: turbo / opt 版は素の版と入力の形もプロンプトの書き方も同じなので、ガイドの
-#: 登録は素の版と同じものを共有する（ここに載っていないと汎用の
+#: turbo / opt / ラテント保存版は素の版と入力の形もプロンプトの書き方も同じなので、
+#: ガイドの登録は素の版と同じものを共有する（ここに載っていないと汎用の
 #: :data:`VIDEO_SPEC` に落ちてしまう）。
 MULTI_CUT_WORKFLOWS: frozenset[str] = frozenset(
     {
         "minimax_h3_t2v",
+        "minimax_h3_t2v_save",
         "minimax_h3_i2v",
+        "minimax_h3_i2v_save",
         "minimax_h3_i2v_turbo",
         "minimax_h3_i2v_opt",
         "minimax_h3_r2v",
+        "minimax_h3_r2v_save",
+        "minimax_h3_r2v_context",
         "minimax_h3_r2v_turbo",
         "minimax_h3_r2v_opt",
     }
@@ -898,10 +902,17 @@ MULTI_CUT_WORKFLOWS: frozenset[str] = frozenset(
 #: 汎用の :data:`VIDEO_SPEC` のまま）
 VIDEO_SPECS: dict[str, str] = {
     "minimax_h3_t2v": MINIMAX_H3_VIDEO_GUIDE,
+    # ラテント保存版は AV ラテントを保存するだけなので、書き方は素の版と同じ
+    "minimax_h3_t2v_save": MINIMAX_H3_VIDEO_GUIDE,
     "minimax_h3_i2v": MINIMAX_H3_VIDEO_GUIDE,
+    "minimax_h3_i2v_save": MINIMAX_H3_VIDEO_GUIDE,
     "minimax_h3_i2v_turbo": MINIMAX_H3_VIDEO_GUIDE,
     "minimax_h3_i2v_opt": MINIMAX_H3_VIDEO_GUIDE,
     "minimax_h3_r2v": MINIMAX_H3_REFERENCE_VIDEO_GUIDE,
+    "minimax_h3_r2v_save": MINIMAX_H3_REFERENCE_VIDEO_GUIDE,
+    # 連続カット版は参照モードの上に Motion Context を足しただけで、プロンプトの
+    # 書き方は素の r2v とまったく同じ
+    "minimax_h3_r2v_context": MINIMAX_H3_REFERENCE_VIDEO_GUIDE,
     "minimax_h3_r2v_turbo": MINIMAX_H3_REFERENCE_VIDEO_GUIDE,
     "minimax_h3_r2v_opt": MINIMAX_H3_REFERENCE_VIDEO_GUIDE,
 }
@@ -1924,6 +1935,17 @@ What actually decides the output:
   `workflow_override` only to force one — a forced mode whose input is missing
   is refused instead of falling back. Select the previous Take **before**
   rendering a Shot that carries the end frame over.
+- `latent_continuity` (per project, off by default) changes only what
+  `carry_over_end_frame` does: instead of the previous cut's last frame the run
+  gets the previous cut's **video and saved AV latent** through
+  `minimax_h3_r2v_context`, so motion and sound continue across the join. It
+  needs both a selected previous Take **and** a `@名前` mention of an asset with
+  a file — when either is missing the render is refused, not downgraded. It also
+  needs the `MiniMaxH3MotionContext` custom nodes on the ComfyUI the app talks
+  to (Comfy Cloud cannot run it). While it is on, every other cut is submitted
+  as the `_save` variant of its mode (`minimax_h3_t2v_save` / `_i2v_save` /
+  `_r2v_save`) so that the cut that **starts** a chain leaves an AV latent
+  behind; the result is identical to the plain mode otherwise.
 - `auto_translate` (per project, on by default): write the Shot **in Japanese**
   and the app has Grok turn the assembled prompt into English at submit time —
   so do not hand it a finished English prompt, and never replace a `@名前` with
@@ -1941,7 +1963,7 @@ Actions — one per reply like every other action, no approval needed:
 |---|---|---|
 | `studio_list_projects` | — | every project with its Shot / asset / Take counts |
 | `studio_get_project` | `project_id` | the whole project: assets, 話 / 場 / Shot, and each Shot's Takes with their status and `stale` |
-| `studio_create_project` | `name`, optional `code`, `synopsis`, `world_notes`, `auto_translate` | start a work |
+| `studio_create_project` | `name`, optional `code`, `synopsis`, `world_notes`, `auto_translate`, `latent_continuity` | start a work |
 | `studio_update_project` | `project_id` + any of the above | e.g. keep `world_notes` up to date |
 | `studio_upsert_episode` | `id` to edit, else `project_id`; `title`, `synopsis`, `sort_order` | 話 |
 | `studio_upsert_scene` | `id` to edit, else `episode_id`; `title`, `synopsis`, `time_of_day`, `sort_order`. With `id`, `episode_id` **moves** the 場 to that 話 | 場 |
@@ -2016,16 +2038,26 @@ def _agent_guardrails(ctx: AgentSessionCreate, max_tasks: int) -> str:
         "# GUARDRAILS",
         "",
         f"- Check-in mode: **{ctx.checkin_mode}** — {modes[ctx.checkin_mode]}.",
-        f"- Generation budget: **{ctx.auto_limit}** generated jobs per stretch."
-        " When the budget is used up the app itself asks the user whether to"
-        f" keep going; approval buys another {ctx.auto_limit} jobs and the"
-        " question comes back at the next milestone. Plan inside the budget"
-        " and never try to work around it — you cannot approve the extension"
-        " yourself.",
     ]
+    # 生成本数の上限は 0 で無制限（セッション作成時に外したとき）。
+    if ctx.auto_limit > 0:
+        lines.append(
+            f"- Generation budget: **{ctx.auto_limit}** generated jobs per stretch."
+            " When the budget is used up the app itself asks the user whether to"
+            f" keep going; approval buys another {ctx.auto_limit} jobs and the"
+            " question comes back at the next milestone. Plan inside the budget"
+            " and never try to work around it — you cannot approve the extension"
+            " yourself."
+        )
+    else:
+        lines.append(
+            "- Generation budget: **unlimited** — the app will not stop you at a"
+            " job count, so keep the plan proportionate to the goal yourself."
+        )
     # 1 プラン提案あたりの新規ジョブ数の上限は自走モードだけ。他のモードは
     # プラン承認とチェックインで必ず人間が挟まるので、プランの長さは自由。
-    if ctx.checkin_mode == "auto":
+    # 設定 ``agent_max_plan_tasks`` が 0 なら自走でも上限なし。
+    if ctx.checkin_mode == "auto" and max_tasks > 0:
         lines.append(
             f"- One plan proposal may add at most {max_tasks} **new** jobs;"
             " tasks that already finished and are only re-listed in a revised"

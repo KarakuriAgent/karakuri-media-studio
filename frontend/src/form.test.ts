@@ -462,7 +462,7 @@ describe('マルチモーダル参照', () => {
       referenceImages: ['/library/image/a.png'],
     }
     expect(validateForm(form, KREA2, null, SEEDANCE).references).toContain(
-      '動画生成',
+      '「動画」モード',
     )
 
     const tooMany: FormState = {

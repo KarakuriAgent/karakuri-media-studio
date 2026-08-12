@@ -47,6 +47,7 @@ import type {
   StudioAssetFile,
   StudioAssetFileRole,
   StudioAssetUpdate,
+  StudioCapabilities,
   StudioEpisode,
   StudioEpisodeCreate,
   StudioEpisodeUpdate,
@@ -399,6 +400,9 @@ export const api = {
 
   // ドラマスタジオ（プロジェクト -> 脚本 -> Shot ごとの生成 -> Take の採用）。
   // 画面 1 枚は getStudioProject（素材・Shot・Take 込み）で組み立てる。
+  /** いまの接続先でスタジオの追加機能（ラテント連続性）が使えるか。 */
+  getStudioCapabilities: () =>
+    request<StudioCapabilities>('/api/studio/capabilities'),
   listStudioProjects: () => request<StudioProjectSummary[]>('/api/studio/projects'),
   createStudioProject: (payload: StudioProjectCreate) =>
     json<StudioProject>('POST', '/api/studio/projects', payload),

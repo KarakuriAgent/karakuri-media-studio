@@ -92,6 +92,7 @@ CREATE TABLE IF NOT EXISTS studio_projects (
   synopsis    TEXT NOT NULL DEFAULT '',
   world_notes TEXT NOT NULL DEFAULT '',   -- World Bible の覚え書き
   auto_translate INTEGER NOT NULL DEFAULT 1, -- 日本語プロンプトを Grok で英訳してから投入
+  latent_continuity INTEGER NOT NULL DEFAULT 0, -- 引き継ぎを Motion Context（ラテント連続性）で行う
   canvas_x    REAL NOT NULL DEFAULT 0,      -- キャンバス（別ビュー）の表示位置
   canvas_y    REAL NOT NULL DEFAULT 0,
   canvas_zoom REAL NOT NULL DEFAULT 1,
@@ -194,6 +195,7 @@ CREATE TABLE IF NOT EXISTS studio_shots (
   megapixels           REAL,                       -- 解像度の目安（比と合わせて幅×高さになる）
   seed                 INTEGER,                    -- NULL = 毎回ランダム
   workflow_override    TEXT,                       -- NULL = t2v/i2v/r2v を自動選択
+  nsfw                 INTEGER NOT NULL DEFAULT 0, -- 1 = 投入するジョブに NSFW の印を付ける（manual）
   created_at           TEXT NOT NULL,
   updated_at           TEXT NOT NULL,
   prompt_updated_at    TEXT                        -- プロンプトに効く項目を変えた時刻（stale 判定用）
@@ -210,7 +212,8 @@ CREATE TABLE IF NOT EXISTS studio_takes (
   created_at TEXT NOT NULL,
   prompt        TEXT NOT NULL DEFAULT '',  -- 実際に投入した本文
   source_prompt TEXT NOT NULL DEFAULT '',  -- 英訳する前の原文（訳していなければ空）
-  warning       TEXT NOT NULL DEFAULT ''   -- 投入はできたが伝えたいこと（英訳の失敗など）
+  warning       TEXT NOT NULL DEFAULT '',  -- 投入はできたが伝えたいこと（英訳の失敗など）
+  latent_path   TEXT                       -- ラテント連続性で保存した AV ラテント（ComfyUI 側のパス。NULL = 無し）
 );
 
 -- キャンバス: スタジオの中身を「座標を持つカード」として並べる別ビュー。
@@ -376,6 +379,9 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         ("canvas_x", "REAL NOT NULL DEFAULT 0"),
         ("canvas_y", "REAL NOT NULL DEFAULT 0"),
         ("canvas_zoom", "REAL NOT NULL DEFAULT 1"),
+        # 引き継ぎを Motion Context（ラテント連続性）で行うか。既存の
+        # プロジェクトは既定 OFF = 今までどおりラストフレームの引き継ぎ。
+        ("latent_continuity", "INTEGER NOT NULL DEFAULT 0"),
     ],
     "studio_assets": [
         # ファイル実体を持たない「名前とキャプションだけ」の素材を許すので、
@@ -393,6 +399,8 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         ("megapixels", "REAL"),
         ("seed", "INTEGER"),
         ("workflow_override", "TEXT"),
+        # 既存行は 0 = 今までどおり投入後の自動判定に任せる。
+        ("nsfw", "INTEGER NOT NULL DEFAULT 0"),
         ("prompt_updated_at", "TEXT"),
     ],
     "canvas_cards": [
@@ -405,6 +413,9 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         ("prompt", "TEXT NOT NULL DEFAULT ''"),
         ("source_prompt", "TEXT NOT NULL DEFAULT ''"),
         ("warning", "TEXT NOT NULL DEFAULT ''"),
+        # ラテント連続性で保存した AV ラテントのパス（ComfyUI 側）。既存行と、
+        # ラテント連続性を使わなかった Take は NULL のまま。
+        ("latent_path", "TEXT"),
     ],
 }
 
