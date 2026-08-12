@@ -486,6 +486,57 @@ describe('StudioView: プロジェクト一覧', () => {
   })
 })
 
+describe('StudioView: NSFW プロジェクトの出し分け', () => {
+  const nsfwProject = () => detail({ id: 'p2', name: '深夜の楽屋', nsfw: true })
+
+  it('NSFW表示がオフなら NSFW プロジェクトは一覧に出ない', async () => {
+    mocked.listStudioProjects.mockResolvedValue([
+      summary(detail()),
+      summary(nsfwProject()),
+    ])
+    render(<StudioView progress={{}} showNsfw={false} />)
+    expect(await screen.findByText('夜明けの街')).toBeTruthy()
+    expect(screen.queryByText('深夜の楽屋')).toBeNull()
+  })
+
+  it('NSFW表示がオンなら NSFW プロジェクトも一覧に出る', async () => {
+    mocked.listStudioProjects.mockResolvedValue([
+      summary(detail()),
+      summary(nsfwProject()),
+    ])
+    render(<StudioView progress={{}} showNsfw />)
+    expect(await screen.findByText('深夜の楽屋')).toBeTruthy()
+  })
+
+  it('開いている NSFW プロジェクトは表示をオフに戻すと一覧へ戻る', async () => {
+    const current = nsfwProject()
+    mocked.listStudioProjects.mockResolvedValue([summary(current)])
+    mocked.getStudioProject.mockResolvedValue(current)
+    const view = render(<StudioView progress={{}} showNsfw />)
+    fireEvent.click(await screen.findByText(current.name))
+    await screen.findByRole('button', { name: '概要' })
+
+    view.rerender(<StudioView progress={{}} showNsfw={false} />)
+    await waitFor(() =>
+      expect(screen.queryByRole('button', { name: '概要' })).toBeNull(),
+    )
+    expect(screen.queryByText(current.name)).toBeNull()
+  })
+
+  it('表示オフのまま概要タブで NSFW を ON にしても画面は閉じない', async () => {
+    const current = detail()
+    mocked.listStudioProjects.mockResolvedValue([summary(current)])
+    mocked.getStudioProject.mockResolvedValue(current)
+    render(<StudioView progress={{}} showNsfw={false} />)
+    fireEvent.click(await screen.findByText(current.name))
+    await screen.findByRole('button', { name: '概要' })
+
+    fireEvent.click(screen.getByLabelText('🫣 NSFW プロジェクト'))
+    // 編集中に画面が消えないこと（一覧へ戻ったときに見えなくなる方針）
+    expect(screen.getByRole('button', { name: '概要' })).toBeTruthy()
+  })
+})
+
 /** 話 2 本・場 3 つ・未分類 1 カットのプロジェクト。 */
 function structured() {
   return detail({

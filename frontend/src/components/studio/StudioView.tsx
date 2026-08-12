@@ -75,7 +75,10 @@ export default function StudioView({
   canvasEvent?: CanvasProgress | null
   /** 生成フォームと同じアスペクト比の候補（無ければ Shot 側は自由入力）。 */
   aspectRatios?: string[]
-  /** ヘッダーの「NSFW表示」（オフのあいだは Take の絵をぼかす）。 */
+  /**
+   * ヘッダーの「NSFW表示」。オフのあいだは Take の絵をぼかし、NSFW プロジェクト
+   * は一覧から存在ごと消す（ジョブ一覧と同じ扱い）。
+   */
   showNsfw?: boolean
   /** ComfyUI の接続先（生成タブと同じグローバル設定）。 */
   comfyTarget?: ComfyTarget | null
@@ -135,6 +138,35 @@ export default function StudioView({
     }
     void reload()
   }, [projectId, reload])
+
+  // ------------------------------------------------------------ NSFW の表示
+  // ヘッダーのトグルがオフのあいだは、NSFW プロジェクトを一覧から存在ごと消す
+  // （ジョブ一覧の App.tsx `isVisible` と同じ流儀。ぼかしではなく非表示）。
+  const visibleProjects = useMemo(
+    () => (showNsfw ? projects : projects.filter((project) => !project.nsfw)),
+    [projects, showNsfw],
+  )
+
+  /** 開いているプロジェクトの最新（下のトグル監視から読むだけ）。 */
+  const detailRef = useRef<StudioProjectDetail | null>(null)
+  useEffect(() => {
+    detailRef.current = detail
+  }, [detail])
+
+  // 表示をオフに戻したら、開いている NSFW プロジェクトを閉じて一覧へ戻す
+  // （App.tsx が activeJob / detailJob の選択を解除するのと同じ）。
+  //
+  // 効くのは showNsfw が変わった瞬間だけにしてある。オフのまま概要タブで NSFW を
+  // ON にした場合は画面を閉じない = 編集中のフォームを飛ばさず、一覧へ戻った
+  // 時点（次回以降）で見えなくなる、という方針。
+  useEffect(() => {
+    if (showNsfw) return
+    if (!detailRef.current?.nsfw) return
+    setProjectId(null)
+    setDetail(null)
+    setShotId(null)
+    setAssetId(null)
+  }, [showNsfw])
 
   /**
    * 変更操作の共通の型: 走らせて、成功したら画面を取り直す。エラーはバナーに
@@ -452,7 +484,7 @@ export default function StudioView({
         {banner}
         {targetSelector && <div className="px-4 pt-3">{targetSelector}</div>}
         <ProjectPicker
-          projects={projects}
+          projects={visibleProjects}
           loading={loadingProjects}
           busy={busy}
           onOpen={(id) => {
