@@ -5,6 +5,7 @@ import type {
   AgentSession,
   AgentSessionCreate,
   AgentSessionSummary,
+  AgentSessionUpdate,
   ComfyTarget,
   JobProgress,
 } from '../../types'
@@ -152,7 +153,8 @@ export default function AgentView({
       // is then posted as the first message to trigger the opening Grok turn
       // (the backend does not record it twice).
       const created = await api.createAgentSession({
-        title: goal.slice(0, 40),
+        // 手入力の名前があればそれ、無ければ従来どおり最初の指示の頭 40 字
+        title: (payload.title ?? '').trim() || goal.slice(0, 40),
         goal,
         checkin_mode: payload.checkin_mode,
         auto_limit: payload.auto_limit,
@@ -215,6 +217,17 @@ export default function AgentView({
   const stop = () => {
     if (!sessionId) return
     void run(() => api.stopAgentSession(sessionId))
+  }
+
+  /**
+   * チェックインモードと生成本数の上限を後から変える。
+   *
+   * 上限の判定は実行中のループにも即時効くが、Grok が読む指示文は作成時に
+   * 焼き込んであるので、そちらへの反映は次のターンから。
+   */
+  const updateSession = (patch: AgentSessionUpdate) => {
+    if (!sessionId) return
+    void run(() => api.updateAgentSession(sessionId, patch))
   }
 
   const remove = async (id: string) => {
@@ -343,6 +356,7 @@ export default function AgentView({
             onApprove={approve}
             onCheckin={checkin}
             onStop={stop}
+            onUpdateSession={updateSession}
             onOpenSessions={() => setSessionsOpen(true)}
             onOpenArtifacts={openArtifacts}
             artifactCount={session.artifacts.length}

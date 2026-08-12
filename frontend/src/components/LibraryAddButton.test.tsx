@@ -188,3 +188,32 @@ describe('LibraryAddButton', () => {
     expect(addJobToLibrary).not.toHaveBeenCalled()
   })
 })
+
+describe('LibraryAddButton の名前・タグ指定', () => {
+  beforeEach(() => vi.clearAllMocks())
+
+  it('▾ を開いて名前とタグを入れてから登録できる', async () => {
+    addJobToLibrary.mockResolvedValue(libraryItem())
+    render(<LibraryAddButton job={job()} source="image" />)
+
+    fireEvent.click(screen.getByRole('button', { name: '名前とタグを指定' }))
+    fireEvent.change(
+      screen.getByLabelText('表示名（空ならプロンプトから決まります）'),
+      { target: { value: '決めポーズ' } },
+    )
+    fireEvent.change(screen.getByLabelText('タグ（カンマ区切り・任意）'), {
+      target: { value: ' 夜 , 屋上 ,, ' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'この内容で登録' }))
+
+    await waitFor(() =>
+      expect(addJobToLibrary).toHaveBeenCalledWith(
+        'j1',
+        'image',
+        '決めポーズ',
+        ['夜', '屋上'],
+        'none',
+      ),
+    )
+  })
+})

@@ -13,6 +13,7 @@ afterEach(() => {
 function show(overrides: Partial<AgentSession> = {}, props: { busy?: boolean; thinking?: boolean; activity?: string | null } = {}) {
   const onSend = vi.fn<(content: string, attachments: string[]) => void>()
   const onCheckin = vi.fn()
+  const onUpdateSession = vi.fn()
   render(
     <AgentChat
       session={session(overrides)}
@@ -26,6 +27,7 @@ function show(overrides: Partial<AgentSession> = {}, props: { busy?: boolean; th
       onApprove={() => {}}
       onCheckin={onCheckin}
       onStop={() => {}}
+      onUpdateSession={onUpdateSession}
       onOpenSessions={() => {}}
       onOpenArtifacts={() => {}}
       artifactCount={0}
@@ -34,7 +36,7 @@ function show(overrides: Partial<AgentSession> = {}, props: { busy?: boolean; th
       showNsfw={false}
     />,
   )
-  return { onSend, onCheckin }
+  return { onSend, onCheckin, onUpdateSession }
 }
 
 const THINKING = 'Grok が考えています…'
@@ -216,5 +218,36 @@ describe('AgentChat のチェックイン吹き出し', () => {
     expect((screen.getByRole('button', { name: '進める' }) as HTMLButtonElement).disabled).toBe(
       true,
     )
+  })
+})
+
+describe('AgentChat のセッション設定（上限・チェックイン）', () => {
+  it('上限バッジはどのチェックインモードでも出る（0 は無制限）', () => {
+    show({ checkin_mode: 'milestone', auto_limit: 3 })
+    expect(screen.queryByText('節目のみ / 上限 3 本')).not.toBeNull()
+
+    cleanup()
+    show({ checkin_mode: 'auto', auto_limit: 0 })
+    expect(screen.queryByText('完了まで自走 / 上限 無制限')).not.toBeNull()
+  })
+
+  it('⚙ から上限とチェックインを変えて保存できる', () => {
+    const { onUpdateSession } = show({ checkin_mode: 'milestone', auto_limit: 5 })
+    fireEvent.click(screen.getByRole('button', { name: 'セッション設定を変更' }))
+
+    fireEvent.change(screen.getByLabelText('チェックイン'), {
+      target: { value: 'auto' },
+    })
+    fireEvent.change(screen.getByLabelText('上限本数（0 = 無制限）'), {
+      target: { value: '0' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: '保存' }))
+
+    expect(onUpdateSession).toHaveBeenCalledWith({
+      checkin_mode: 'auto',
+      auto_limit: 0,
+    })
+    // 保存すると小窓は閉じる
+    expect(screen.queryByLabelText('上限本数（0 = 無制限）')).toBeNull()
   })
 })

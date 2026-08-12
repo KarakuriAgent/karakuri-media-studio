@@ -48,6 +48,16 @@ function loraBadge(lora: Lora): string {
   return `画像用 / ${FAMILY_LABELS[family] ?? family}`
 }
 
+/**
+ * `agent_grok_args`（grok CLI の追加フラグ）の入力欄 → 配列。
+ *
+ * 空白区切りの素朴な分解でよい（値は `--permission-mode auto` のようなフラグ列
+ * で、空白を含む引数は想定していない）。空欄なら空配列 = ツール無効。
+ */
+export function splitGrokArgs(raw: string): string[] {
+  return raw.split(/\s+/).filter(Boolean)
+}
+
 /** 外部 API の共有キーを 1 本作る（英数 32 文字。ブラウザ側で完結させる）。 */
 function randomApiKey(length = 32): string {
   const alphabet = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789'
@@ -288,6 +298,11 @@ export default function SettingsPage({
 }) {
   const [tab, setTab] = useState<Tab>('connection')
   const [settings, setSettings] = useState<Settings | null>(null)
+  /**
+   * `agent_grok_args` の編集中の文字列（実体は list なので空白区切りで持つ）。
+   * 打っている途中の空白を保つため、表示はこちら・保存は分解した配列を使う。
+   */
+  const [grokArgsDraft, setGrokArgsDraft] = useState('')
   // モデル / LoRA タブの編集対象の環境（SPEC §5）。初期値は現在の接続先だが、
   // 繋いでいない環境の登録も整理できるよう独立して切り替えられる。
   const [envTarget, setEnvTarget] = useState<ComfyTarget | null>(null)
@@ -416,6 +431,7 @@ export default function SettingsPage({
       try {
         const loaded = await api.getSettings()
         setSettings(loaded)
+        setGrokArgsDraft(loaded.agent_grok_args.join(' '))
         setUrlDraft({ ...loaded.model_download_urls })
         target = loaded.comfy_target
       } catch (caught) {
@@ -488,7 +504,12 @@ export default function SettingsPage({
           comfy_cloud_api_key: settings.comfy_cloud_api_key,
           grok_model: settings.grok_model,
           grok_command: settings.grok_command,
+          grok_workdir: settings.grok_workdir,
+          grok_media_workdir: settings.grok_media_workdir,
           grok_media_timeout: settings.grok_media_timeout,
+          // 空白区切りの入力欄をフラグの配列に戻す（空 = ツール無効）
+          agent_grok_args: splitGrokArgs(grokArgsDraft),
+          agent_use_acp: settings.agent_use_acp,
           hf_token: settings.hf_token,
           civitai_api_key: settings.civitai_api_key,
           runpod_enabled: settings.runpod_enabled,
@@ -1057,6 +1078,79 @@ export default function SettingsPage({
                           })
                         }
                       />
+                    </div>
+                    <div>
+                      <label className="label" htmlFor="grok-workdir">
+                        grok の作業ディレクトリ（空 = 既定）
+                      </label>
+                      <input
+                        id="grok-workdir"
+                        className="field"
+                        value={settings.grok_workdir}
+                        placeholder="/path/to/workdir"
+                        onChange={(event) =>
+                          update({ grok_workdir: event.target.value })
+                        }
+                      />
+                      <p className="mt-1 text-[11px] text-slate-500">
+                        チャット / エージェントが grok CLI を回すディレクトリです。
+                      </p>
+                    </div>
+                    <div>
+                      <label className="label" htmlFor="grok-media-workdir">
+                        Grok Imagine の作業ディレクトリ（空 = 既定）
+                      </label>
+                      <input
+                        id="grok-media-workdir"
+                        className="field"
+                        value={settings.grok_media_workdir}
+                        placeholder="/path/to/workdir"
+                        onChange={(event) =>
+                          update({ grok_media_workdir: event.target.value })
+                        }
+                      />
+                      <p className="mt-1 text-[11px] text-slate-500">
+                        画像生成・編集（SPEC §5.2）で使う置き場所です。
+                      </p>
+                    </div>
+                    <div>
+                      <label className="label" htmlFor="agent-grok-args">
+                        grok CLI の追加フラグ（空白区切り）
+                      </label>
+                      <input
+                        id="agent-grok-args"
+                        className="field"
+                        value={grokArgsDraft}
+                        placeholder="--permission-mode auto"
+                        onChange={(event) => setGrokArgsDraft(event.target.value)}
+                      />
+                      <p className="mt-1 text-[11px] text-amber-400">
+                        <strong>空にするとエージェントのツールが無効になります</strong>
+                        （ファイルの読み書き・画像の確認・Web 検索ができなくなり、
+                        システムプロンプトからもツールの節が落ちます）。
+                      </p>
+                    </div>
+                    <div>
+                      <p className="label">エージェントの実行方式</p>
+                      <label
+                        className="flex items-center gap-2 text-xs text-slate-300"
+                        htmlFor="agent-use-acp"
+                      >
+                        <input
+                          id="agent-use-acp"
+                          type="checkbox"
+                          className="accent-accent-500"
+                          checked={settings.agent_use_acp}
+                          onChange={(event) =>
+                            update({ agent_use_acp: event.target.checked })
+                          }
+                        />
+                        ACP でターンを回す
+                      </label>
+                      <p className="mt-1 text-[11px] text-slate-500">
+                        オンだと実行中の活動（思考 / ツール実行）がチャットに出ます。
+                        オフは従来のワンショット実行で、活動表示はありません。
+                      </p>
                     </div>
                   </div>
                   <div className="flex items-center gap-2">

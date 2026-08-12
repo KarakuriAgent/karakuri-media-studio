@@ -223,10 +223,14 @@ Stable Audio 3 Medium（効果音・環境音・単一楽器）の 2 種です�
 
 ### 履歴・NSFW
 
-履歴ギャラリーのサムネイルから詳細を開き、**再実行**（seed ランダム化）・**続きを生成**
-（ラストフレームを開始フレームに）・**削除**ができます。履歴は無制限に保存され、削除は手動のみです。
+履歴ギャラリーのサムネイルから詳細を開き、**再実行**（seed ランダム化 / 同じシードの 2 通り）・
+**続きを生成**（ラストフレームを開始フレームに）・**削除**ができます。[続きを生成] は上書きフォームを
+開き、そのまま押せば元ジョブの設定を丸ごと引き継ぎ、埋めた欄（プロンプト・尺・ワークフローなど）
+だけが上書きされます。履歴は無制限に保存され、削除は手動のみです。
 ジョブとセッションには NSFW フラグが付き（Grok の自動判定、手動上書き可）、ヘッダーの NSFW トグルが
 オフのあいだは履歴・ビューアから除外されます（トグルはタブを開き直すと必ずオフに戻ります）。
+生成フォームの [実行] の上にある「🫣 NSFW として投入」をオンにすると、そのジョブは自動判定を
+待たずに最初から NSFW 扱いになります（オフのままなら従来どおり生成後に自動判定）。
 ドラマスタジオは**プロジェクト単位**で NSFW を決めます（概要タブの「🫣 NSFW プロジェクト」）。
 オンならその作品から投入するジョブはすべて NSFW、オフなら非 NSFW で固定され、
 どちらの場合も自動判定は走りません。
@@ -245,11 +249,14 @@ Stable Audio 3 Medium（効果音・環境音・単一楽器）の 2 種です�
 | `runpod_comfy_url` / `runpod_comfy_api_key` | RunPod の Pod 上の ComfyUI の URL と API キー（任意） | 空 |
 | `comfy_cloud_api_key` | ComfyCloud の API キー（エンドポイントは `https://cloud.comfy.org` 固定） | 空 |
 | `grok_command` / `grok_model` | grok CLI のコマンドと使用モデル | `grok` / `grok-4.5` |
+| `grok_workdir` | チャット / エージェントが grok CLI を回す作業ディレクトリ | `runtime/grok-workdir` |
 | `grok_media_timeout` / `grok_media_workdir` | Grok Imagine の 1 枚あたりの制限時間（秒）と専用の作業ディレクトリ（プロンプト作成のチャットとは分けます） | `300` / `runtime/grok-media-workdir` |
+| `agent_grok_args` | grok CLI に足すフラグ（ツール権限）。**空にするとエージェントのツールが無効**になります | `--permission-mode auto` |
+| `agent_use_acp` | エージェントのターンを ACP で回す（実行中の活動をチャットに出す） | オン |
 | `hf_token` / `civitai_api_key` | モデルダウンロード用のトークン | 空 |
 | `model_overrides` / `model_choices` | **接続先ごと**のモデルファイル名の上書きと、実行ごとに選べる候補リスト | `{}` |
 | `runpod_*` | RunPod Pod の自動起動（有効化 / APIキー / テンプレート ID / GPU 種別 / Network Volume ID） | 無効 |
-| `agent_*` | エージェントの CLI フラグ・タイムアウト・自走上限（設定ページには出ません） | SPEC 参照 |
+| `agent_grok_timeout` / `agent_max_*` / `canvas_max_turns` | エージェントのタイムアウトと実行上限（どれも 0 = 無制限） | SPEC 参照 |
 | `external_api_key` / `external_max_pending_takes` | 外部 API（`/api/v1`）の共有キーと、未完了 Take の上限 | 空 / `20` |
 
 **モデルタブ**と**LoRA 管理タブ**の先頭には [対象の接続先] のプルダウンがあり、

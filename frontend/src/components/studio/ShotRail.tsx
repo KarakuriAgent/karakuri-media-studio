@@ -136,11 +136,14 @@ export default function ShotRail({
   onAdd,
   onAddEpisode,
   onRenameEpisode,
+  onEditEpisodeSynopsis,
   onMoveEpisode,
   onDeleteEpisode,
   onAddScene,
   onAddShotToScene,
   onRenameScene,
+  onEditSceneSynopsis,
+  onEditSceneTimeOfDay,
   onMoveScene,
   onDeleteScene,
   busy,
@@ -156,21 +159,38 @@ export default function ShotRail({
   onAdd: () => void
   onAddEpisode: () => void
   onRenameEpisode: (id: string, title: string) => void
+  /** 話のあらすじ（`StudioEpisode.synopsis`）を書き換える。 */
+  onEditEpisodeSynopsis: (id: string, synopsis: string) => void
   onMoveEpisode: (id: string, delta: number) => void
   onDeleteEpisode: (id: string) => void
   onAddScene: (episodeId: string) => void
   /** その場に属するカットを 1 手で足す（作ったカットを選ぶ）。 */
   onAddShotToScene: (sceneId: string) => void
   onRenameScene: (id: string, title: string) => void
+  /** 場のあらすじ（`StudioScene.synopsis`）を書き換える。 */
+  onEditSceneSynopsis: (id: string, synopsis: string) => void
+  /** 場の時間帯（`StudioScene.time_of_day`）を書き換える。 */
+  onEditSceneTimeOfDay: (id: string, timeOfDay: string) => void
   onMoveScene: (episodeId: string, id: string, delta: number) => void
   onDeleteScene: (id: string) => void
   busy: boolean
 }) {
-  const rename = (current: string, apply: (title: string) => void) => {
-    const next = window.prompt('新しいタイトル', current)
+  /**
+   * 1 行の書き換えはブラウザの `prompt` で済ませる（この面は移動と選択のための
+   * もので、書くのは中央のフォームに寄せてある）。取消（null）は何もしない。
+   */
+  const edit = (
+    message: string,
+    current: string,
+    apply: (value: string) => void,
+  ) => {
+    const next = window.prompt(message, current)
     if (next === null) return
     apply(next.trim())
   }
+
+  const rename = (current: string, apply: (title: string) => void) =>
+    edit('新しいタイトル', current, apply)
 
   const shotList = (nodes: ShotNode[], empty: string) =>
     nodes.length === 0 ? (
@@ -256,6 +276,18 @@ export default function ShotRail({
                   ✎
                 </IconButton>
                 <IconButton
+                  label={`${label}のあらすじを編集`}
+                  title="あらすじ"
+                  onClick={() =>
+                    edit(`${label}のあらすじ`, node.episode.synopsis, (synopsis) =>
+                      onEditEpisodeSynopsis(node.episode.id, synopsis),
+                    )
+                  }
+                  disabled={busy}
+                >
+                  📝
+                </IconButton>
+                <IconButton
                   label={`${label}を上へ`}
                   title="上へ"
                   onClick={() => onMoveEpisode(node.episode.id, -1)}
@@ -319,6 +351,36 @@ export default function ShotRail({
                         disabled={busy}
                       >
                         ✎
+                      </IconButton>
+                      <IconButton
+                        label={`${name}のあらすじを編集`}
+                        title="あらすじ"
+                        onClick={() =>
+                          edit(
+                            `${name}のあらすじ`,
+                            sceneNode.scene.synopsis,
+                            (synopsis) =>
+                              onEditSceneSynopsis(sceneNode.scene.id, synopsis),
+                          )
+                        }
+                        disabled={busy}
+                      >
+                        📝
+                      </IconButton>
+                      <IconButton
+                        label={`${name}の時間帯を編集`}
+                        title="時間帯"
+                        onClick={() =>
+                          edit(
+                            `${name}の時間帯（例: 夕方）`,
+                            sceneNode.scene.time_of_day,
+                            (timeOfDay) =>
+                              onEditSceneTimeOfDay(sceneNode.scene.id, timeOfDay),
+                          )
+                        }
+                        disabled={busy}
+                      >
+                        🕒
                       </IconButton>
                       <IconButton
                         label={`${name}を上へ`}

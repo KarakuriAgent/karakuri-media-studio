@@ -34,6 +34,12 @@ export default function ProjectPicker({
   const [name, setName] = useState('')
   const [code, setCode] = useState('')
   const [synopsis, setSynopsis] = useState('')
+  // 作品の初期設定（あとから作品設定でも変えられるので、ここでは折りたたむ）。
+  // 既定値はバックエンドの StudioProjectCreate と揃えてある。
+  const [worldNotes, setWorldNotes] = useState('')
+  const [autoTranslate, setAutoTranslate] = useState(true)
+  const [latentContinuity, setLatentContinuity] = useState(false)
+  const [nsfw, setNsfw] = useState(false)
   const [demoCode, setDemoCode] = useState(DEMO_PROJECTS[0].code)
   const [errors, setErrors] = useState<Record<string, string>>({})
 
@@ -41,10 +47,22 @@ export default function ProjectPicker({
     const problems = validateProjectForm({ name })
     setErrors(problems)
     if (Object.keys(problems).length > 0) return
-    onCreate({ name: name.trim(), code: code.trim(), synopsis })
+    onCreate({
+      name: name.trim(),
+      code: code.trim(),
+      synopsis,
+      world_notes: worldNotes,
+      auto_translate: autoTranslate,
+      latent_continuity: latentContinuity,
+      nsfw,
+    })
     setName('')
     setCode('')
     setSynopsis('')
+    setWorldNotes('')
+    setAutoTranslate(true)
+    setLatentContinuity(false)
+    setNsfw(false)
   }
 
   return (
@@ -145,6 +163,53 @@ export default function ProjectPicker({
               onChange={(event) => setSynopsis(event.target.value)}
             />
           </div>
+          {/* 初期設定は既定のままでよい人が多いので折りたたんでおく
+              （どれも作品設定であとから変えられる）。 */}
+          <details className="rounded-md border border-ink-600 bg-ink-900/40 px-3 py-2">
+            <summary className="cursor-pointer text-xs text-slate-400">
+              初期設定（任意）
+            </summary>
+            <div className="mt-2 space-y-3">
+              <div>
+                <label className="label" htmlFor="studio-new-world-notes">
+                  世界観メモ
+                </label>
+                <textarea
+                  id="studio-new-world-notes"
+                  className="field h-20 resize-y"
+                  value={worldNotes}
+                  onChange={(event) => setWorldNotes(event.target.value)}
+                />
+              </div>
+              <label className="flex items-center gap-2 text-xs text-slate-300">
+                <input
+                  type="checkbox"
+                  className="accent-accent-500"
+                  checked={autoTranslate}
+                  onChange={(event) => setAutoTranslate(event.target.checked)}
+                />
+                日本語のプロンプトを投入時に英訳する
+              </label>
+              <label className="flex items-center gap-2 text-xs text-slate-300">
+                <input
+                  type="checkbox"
+                  className="accent-accent-500"
+                  checked={latentContinuity}
+                  onChange={(event) => setLatentContinuity(event.target.checked)}
+                />
+                ラテント連続性（Motion Context）で引き継ぐ
+              </label>
+              <label className="flex items-center gap-2 text-xs text-slate-300">
+                <input
+                  type="checkbox"
+                  className="accent-accent-500"
+                  checked={nsfw}
+                  onChange={(event) => setNsfw(event.target.checked)}
+                />
+                🫣 この作品のジョブをすべて NSFW 扱いにする
+              </label>
+            </div>
+          </details>
           <button className="btn-primary" onClick={create} disabled={busy}>
             作成
           </button>

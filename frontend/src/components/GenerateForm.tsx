@@ -1656,6 +1656,18 @@ export default function GenerateForm({
 
       {uploadError && <Banner onClose={() => setUploadError(null)}>{uploadError}</Banner>}
 
+      {/* NSFW の手動指定（SPEC §7.1）。オンで投げたジョブは manual 扱いになり、
+          生成後の自動判定で上書きされない。オフなら従来どおり自動判定に任せる。 */}
+      <label className="flex items-center gap-2 text-xs text-slate-300">
+        <input
+          type="checkbox"
+          className="accent-accent-500"
+          checked={form.nsfw}
+          onChange={(event) => patch({ nsfw: event.target.checked })}
+        />
+        🫣 NSFW として投入（オフなら生成後に自動判定）
+      </label>
+
       <button className="btn-primary w-full py-2.5" onClick={onSubmit} disabled={submitting}>
         {submitting ? '送信中…' : '実行'}
       </button>

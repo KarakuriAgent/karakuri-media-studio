@@ -190,6 +190,13 @@ export interface FormState {
   audioCategory: string
   /** Stable Audio: 内蔵 LLM でプロンプトを展開してから流すか。 */
   reprompt: boolean
+
+  // --- 共通 ---------------------------------------------------------------
+  /**
+   * 投入時に NSFW として印を付ける（manual 扱い、SPEC §7.1）。
+   * オフのときは何も送らず、従来どおり生成後の自動判定に任せる。
+   */
+  nsfw: boolean
 }
 
 export const initialForm: FormState = {
@@ -235,6 +242,7 @@ export const initialForm: FormState = {
   language: 'ja',
   audioCategory: 'Music',
   reprompt: false,
+  nsfw: false,
 }
 
 export function toSelected(lora: Lora): SelectedLora {
@@ -626,6 +634,8 @@ export function audioJobPayload(
     duration: form.audioDuration,
     seed: form.seedLocked ? form.seed : null,
   }
+  // チェックしたときだけ manual 指定を送る（オフ = 自動判定に任せる）
+  if (form.nsfw) payload.nsfw = true
   const models = jobModelOverrides(form, modelSlots, [form.audioWorkflow])
   if (Object.keys(models).length > 0) payload.model_overrides = models
   // 選択式フィールド（§3.1）

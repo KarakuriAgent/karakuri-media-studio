@@ -250,6 +250,18 @@ describe('LibraryPickerModal', () => {
     expect(onChanged).toHaveBeenCalled()
   })
 
+  it('NSFW トグルで manual フラグを立てられる', async () => {
+    const { onChanged } = show()
+    await screen.findByText('決めポーズ')
+    updateLibraryItem.mockResolvedValue(item({ nsfw: true }))
+
+    fireEvent.click(screen.getByRole('button', { name: '🫣 NSFW' }))
+    await waitFor(() =>
+      expect(updateLibraryItem).toHaveBeenCalledWith('l1', { nsfw: true }),
+    )
+    expect(onChanged).toHaveBeenCalled()
+  })
+
   it('タグ編集をキャンセルしたら何もしない', async () => {
     show()
     await screen.findByText('決めポーズ')

@@ -1,4 +1,9 @@
-import type { AgentArtifact, AgentStatus, AgentTaskStatus } from '../../types'
+import type {
+  AgentArtifact,
+  AgentCheckinMode,
+  AgentStatus,
+  AgentTaskStatus,
+} from '../../types'
 
 /** Statuses where the backend loop is (or may be) working (AGENT-MODE §5.3). */
 export const AGENT_ACTIVE: AgentStatus[] = ['running', 'waiting_checkin']
@@ -33,6 +38,14 @@ export const CHECKIN_LABEL: Record<string, string> = {
   every_job: '毎ジョブ確認',
   milestone: '節目のみ',
   auto: '完了まで自走',
+}
+
+/** プルダウンに出す順（新規作成と後からの変更で同じ並びにする）。 */
+export const CHECKIN_MODES: AgentCheckinMode[] = ['every_job', 'milestone', 'auto']
+
+/** 生成本数の上限の表示（0 = 無制限。どのモードでも効く）。 */
+export function autoLimitLabel(limit: number): string {
+  return limit > 0 ? `上限 ${limit} 本` : '上限 無制限'
 }
 
 export const ARTIFACT_ICON: Record<AgentArtifact['kind'], string> = {

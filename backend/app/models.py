@@ -2053,6 +2053,20 @@ class AgentSessionCreate(BaseModel):
     auto_limit: int = Field(default=5, ge=0)
 
 
+class AgentSessionUpdate(BaseModel):
+    """PATCH /api/agent/sessions/{id} body（指定した項目だけ変える）。
+
+    システムプロンプトはセッション作成時に焼き込む方式なので、ここで変えた値が
+    Grok の読む文面に載るのは**次のターンから**。一方、上限に達したかどうかの
+    判定（:func:`app.agent_runner.over_limit`）は毎回ここの値を読むので、実行中
+    でも即時に効く。
+    """
+
+    checkin_mode: AgentCheckinMode | None = None
+    #: 生成本数の上限（0 = 無制限）
+    auto_limit: int | None = Field(default=None, ge=0)
+
+
 class AgentSendMessage(BaseModel):
     content: str
     # 添付ファイルの workdir 相対パス（``attachments/<name>``）。本文が空でも

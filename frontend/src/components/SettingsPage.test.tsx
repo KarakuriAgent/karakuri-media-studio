@@ -76,6 +76,8 @@ function settings(): Settings {
     runpod_network_volume_id: '',
     external_api_key: '',
     external_max_pending_takes: 20,
+    agent_grok_args: ['--permission-mode', 'auto'],
+    agent_use_acp: true,
     agent_grok_timeout: 300,
     agent_max_plan_tasks: 5,
     agent_max_turns: 20,
@@ -457,10 +459,54 @@ describe('SettingsPage: ComfyUI 接続先（3 プロファイル）', () => {
     expect(sent.comfy_cloud_api_key).toBe('')
   })
 
+  it('Grok の workdir / 追加フラグ / ACP を編集して保存できる', async () => {
+    putSettings.mockResolvedValue(settings())
+    await openSettings()
+
+    fireEvent.change(screen.getByLabelText('grok の作業ディレクトリ（空 = 既定）'), {
+      target: { value: '/tmp/chat' },
+    })
+    fireEvent.change(
+      screen.getByLabelText('Grok Imagine の作業ディレクトリ（空 = 既定）'),
+      { target: { value: '/tmp/media' } },
+    )
+    fireEvent.change(screen.getByLabelText('grok CLI の追加フラグ（空白区切り）'), {
+      target: { value: '--permission-mode  ask ' },
+    })
+    fireEvent.click(screen.getByLabelText('ACP でターンを回す'))
+    screen.getByRole('button', { name: '保存' }).click()
+
+    await waitFor(() => expect(putSettings).toHaveBeenCalled())
+    const sent = putSettings.mock.calls[0][0]
+    expect(sent.grok_workdir).toBe('/tmp/chat')
+    expect(sent.grok_media_workdir).toBe('/tmp/media')
+    // 空白区切りの入力欄はフラグの配列に戻る
+    expect(sent.agent_grok_args).toEqual(['--permission-mode', 'ask'])
+    expect(sent.agent_use_acp).toBe(false)
+  })
+
+  it('追加フラグを空にするとツール無効の警告を出したまま空配列で保存する', async () => {
+    putSettings.mockResolvedValue(settings())
+    await openSettings()
+
+    fireEvent.change(screen.getByLabelText('grok CLI の追加フラグ（空白区切り）'), {
+      target: { value: '   ' },
+    })
+    expect(
+      screen.getByText('空にするとエージェントのツールが無効になります'),
+    ).toBeTruthy()
+    screen.getByRole('button', { name: '保存' }).click()
+
+    await waitFor(() => expect(putSettings).toHaveBeenCalled())
+    expect(putSettings.mock.calls[0][0].agent_grok_args).toEqual([])
+  })
+
   it('自動起動を有効にすると RunPod の起動設定が出る', async () => {
     await openSettings()
 
-    screen.getByRole('checkbox').click()
+    screen
+      .getByRole('checkbox', { name: 'RunPod の Pod を自動起動する' })
+      .click()
 
     await waitFor(() => screen.getByText('テンプレート ID'))
     expect(screen.getByText('RunPod APIキー')).toBeTruthy()

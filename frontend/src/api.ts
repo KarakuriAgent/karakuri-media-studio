@@ -6,6 +6,7 @@ import type {
   AgentSession,
   AgentSessionCreate,
   AgentSessionSummary,
+  AgentSessionUpdate,
   Asset,
   AudioJobCreate,
   CanvasAgentRun,
@@ -26,6 +27,7 @@ import type {
   Health,
   HealthStatus,
   Job,
+  JobContinue,
   JobCreate,
   LibraryCategoryValue,
   LibraryItem,
@@ -355,9 +357,16 @@ export const api = {
   getJob: (id: string) => request<Job>(`/api/jobs/${id}`),
   createJob: (payload: JobCreate | AudioJobCreate) =>
     json<Job>('POST', '/api/jobs', payload),
-  rerunJob: (id: string) =>
-    json<Job>('POST', `/api/jobs/${id}/rerun`, { randomize_seed: true }),
-  continueJob: (id: string, body: Record<string, unknown> = {}) =>
+  /**
+   * 同じ設定でもう一度流す。既定はシードの再抽選で、`randomizeSeed: false` を
+   * 渡すと元ジョブと同じシードのまま投げ直す（SPEC §2）。
+   */
+  rerunJob: (id: string, randomizeSeed = true) =>
+    json<Job>('POST', `/api/jobs/${id}/rerun`, {
+      randomize_seed: randomizeSeed,
+    }),
+  /** ラストフレームから続きを生成する。`body` に入れた項目だけ元ジョブを上書きする。 */
+  continueJob: (id: string, body: JobContinue = {}) =>
     json<Job>('POST', `/api/jobs/${id}/continue`, body),
   deleteJob: (id: string) => json<void>('DELETE', `/api/jobs/${id}`),
   /** NSFW フラグの手動トグル（manual として保存される）。 */
@@ -377,6 +386,14 @@ export const api = {
     request<AgentSessionSummary[]>(`/api/agent/sessions?limit=${limit}`),
   getAgentSession: (id: string) =>
     request<AgentSession>(`/api/agent/sessions/${id}`),
+  /**
+   * チェックインモードと生成本数の上限を後から変える。
+   *
+   * 上限の判定には即時に効くが、Grok が読む指示文（作成時に焼き込み）に載るのは
+   * 次のターンから。
+   */
+  updateAgentSession: (id: string, patch: AgentSessionUpdate) =>
+    json<AgentSession>('PATCH', `/api/agent/sessions/${id}`, patch),
   deleteAgentSession: (id: string) =>
     json<void>('DELETE', `/api/agent/sessions/${id}`),
   sendAgentMessage: (id: string, content: string, attachments: string[] = []) =>

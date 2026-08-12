@@ -71,6 +71,47 @@ describe('SessionList の新規セッションフォーム', () => {
     expect(files.map((file) => file.name)).toEqual(['photo.png'])
   })
 
+  it('上限本数はチェックインモードに関係なく出る（0 = 無制限）', () => {
+    const { onCreate } = show()
+    const limit = screen.getByLabelText('上限本数（0 = 無制限）')
+    // 既定は「節目のみ」。自走に切り替えなくても欄は出ている。
+    expect((screen.getByLabelText('チェックイン') as HTMLSelectElement).value).toBe(
+      'milestone',
+    )
+    expect(limit).not.toBeNull()
+    expect(
+      screen.queryByText(/0 = 無制限で、確認せず走り切ります/),
+    ).not.toBeNull()
+
+    fireEvent.change(limit, { target: { value: '0' } })
+    fireEvent.change(screen.getByPlaceholderText(/かおりのダンス動画/), {
+      target: { value: '3本' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: '開始' }))
+    expect(onCreate.mock.calls[0][0].auto_limit).toBe(0)
+    expect(onCreate.mock.calls[0][0].checkin_mode).toBe('milestone')
+  })
+
+  it('セッション名は任意（入れれば payload に載る）', () => {
+    const { onCreate } = show()
+    fireEvent.change(screen.getByPlaceholderText(/かおりのダンス動画/), {
+      target: { value: '3本' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: '開始' }))
+    expect(onCreate.mock.calls[0][0].title).toBe('')
+
+    cleanup()
+    const again = show()
+    fireEvent.change(screen.getByLabelText('セッション名（任意）'), {
+      target: { value: '夏の企画' },
+    })
+    fireEvent.change(screen.getByPlaceholderText(/かおりのダンス動画/), {
+      target: { value: '3本' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: '開始' }))
+    expect(again.onCreate.mock.calls[0][0].title).toBe('夏の企画')
+  })
+
   it('添付だけでも開始できる（指示が空でもボタンが押せる）', () => {
     const { onCreate } = show()
     const button = screen.getByRole('button', { name: '開始' }) as HTMLButtonElement

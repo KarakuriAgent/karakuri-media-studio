@@ -335,6 +335,10 @@ export default function StudioView({
   const renameEpisode = (id: string, title: string) =>
     void run(() => api.updateStudioEpisode(id, { title }))
 
+  /** 話のあらすじ（脚本の書き出しに効く設定なので、レールからも直せるように）。 */
+  const editEpisodeSynopsis = (id: string, synopsis: string) =>
+    void run(() => api.updateStudioEpisode(id, { synopsis }))
+
   const moveEpisodeBy = (id: string, delta: number) => {
     if (!projectId || !detail) return
     const order = moveId(
@@ -361,6 +365,13 @@ export default function StudioView({
 
   const renameScene = (id: string, title: string) =>
     void run(() => api.updateStudioScene(id, { title }))
+
+  /** 場のあらすじと時間帯（キャンバスの場カードと同じ項目）。 */
+  const editSceneSynopsis = (id: string, synopsis: string) =>
+    void run(() => api.updateStudioScene(id, { synopsis }))
+
+  const editSceneTimeOfDay = (id: string, timeOfDay: string) =>
+    void run(() => api.updateStudioScene(id, { time_of_day: timeOfDay }))
 
   const moveSceneBy = (episodeId: string, id: string, delta: number) => {
     if (!detail) return
@@ -571,11 +582,14 @@ export default function StudioView({
             onAdd={addShot}
             onAddEpisode={addEpisode}
             onRenameEpisode={renameEpisode}
+            onEditEpisodeSynopsis={editEpisodeSynopsis}
             onMoveEpisode={moveEpisodeBy}
             onDeleteEpisode={deleteEpisode}
             onAddScene={addScene}
             onAddShotToScene={addShotToScene}
             onRenameScene={renameScene}
+            onEditSceneSynopsis={editSceneSynopsis}
+            onEditSceneTimeOfDay={editSceneTimeOfDay}
             onMoveScene={moveSceneBy}
             onDeleteScene={deleteScene}
           />

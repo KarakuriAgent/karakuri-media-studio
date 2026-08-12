@@ -30,6 +30,7 @@ export interface Settings {
   comfy_cloud_api_key: string
   grok_command: string
   grok_model: string
+  /** チャット / エージェントが grok CLI を回すときの作業ディレクトリ（空 = 既定）。 */
   grok_workdir: string
   /**
    * Grok Imagine（画像生成・編集、SPEC §5.2）の作業ディレクトリと制限時間。
@@ -80,6 +81,16 @@ export interface Settings {
    * エージェント / 相談の実行上限（AGENT-MODE §3.4）。どれも **0 = 無制限**で、
    * 既定値は従来どおり（無制限にしたい人だけが 0 を入れる）。
    */
+  /**
+   * grok CLI に足す追加フラグ（ツール権限）。**空にするとエージェントのツールが
+   * 丸ごと無効**になり、システムプロンプトからもツールの節が落ちる。
+   */
+  agent_grok_args: string[]
+  /**
+   * エージェントのターンを ACP（`grok agent stdio`）で回すか。ON だと実行中の
+   * 活動（思考 / ツール実行）が UI に出る。OFF は従来のワンショット実行。
+   */
+  agent_use_acp: boolean
   /** grok CLI 1 回あたりの制限時間（秒）。0 = タイムアウトなし。 */
   agent_grok_timeout: number
   /** 自走セッションの「1 回のプラン提案で増やせる新規ジョブ数」。0 = 無制限。 */
@@ -575,6 +586,27 @@ export interface AudioJobCreate {
   nsfw?: boolean | null
 }
 
+/**
+ * POST /api/jobs/{id}/continue の body（すべて任意の上書き）。
+ *
+ * 送らなかった項目は元ジョブの値をそのまま引き継ぐので、何も入れずに投げれば
+ * 従来どおりの「そのまま続き」になる。
+ */
+export interface JobContinue {
+  video_workflow?: string
+  video_prompt?: string
+  negative_prompt?: string
+  aspect_ratio?: string
+  megapixels?: number
+  duration?: number
+  fps?: number
+  audio_path?: string
+  end_image?: string
+  reference_video?: string
+  seed?: number
+  model_overrides?: Record<string, string>
+}
+
 /** WS /api/ws のライブラリ更新（自動タグ生成の反映など）。 */
 export interface LibraryProgress {
   type: 'library'
@@ -821,6 +853,18 @@ export interface AgentSessionCreate {
   title?: string
   goal?: string
   checkin_mode?: AgentCheckinMode
+  auto_limit?: number
+}
+
+/**
+ * PATCH /api/agent/sessions/{id} body（送った項目だけ変わる）。
+ *
+ * システムプロンプトは作成時に焼き込むので、指示文に載るのは次のターンから。
+ * 生成本数の上限判定だけは実行中のループにも即時に効く。
+ */
+export interface AgentSessionUpdate {
+  checkin_mode?: AgentCheckinMode
+  /** 生成本数の上限（0 = 無制限）。 */
   auto_limit?: number
 }
 

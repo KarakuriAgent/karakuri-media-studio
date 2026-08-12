@@ -842,6 +842,43 @@ def test_continue_keeps_only_the_video_slots(env, monkeypatch):
     assert second["params"]["model_overrides"] == {VIDEO_SLOT: "alt-ckpt.safetensors"}
 
 
+@needs_ffmpeg
+def test_continue_overrides_only_the_fields_that_are_sent(env):
+    """続き生成の上書き（UI の「続き」モーダルが送る形）。"""
+    first = env.client.post(
+        "/api/jobs", json=full_body(env, negative_prompt="blurry", fps=25)
+    ).json()
+    assert wait_for(env.client, first["id"])["status"] == "done"
+
+    params = env.client.post(
+        f"/api/jobs/{first['id']}/continue",
+        json={
+            "video_prompt": "she walks away",
+            "negative_prompt": "noisy",
+            "aspect_ratio": "16:9 (Widescreen)",
+            "megapixels": 0.6,
+            "duration": 4,
+            "fps": 16,
+            "seed": 4242,
+        },
+    ).json()["params"]
+    assert params["video_prompt"] == "she walks away"
+    assert params["negative_prompt"] == "noisy"
+    assert params["aspect_ratio"] == "16:9 (Widescreen)"
+    assert params["megapixels"] == 0.6
+    assert params["duration"] == 4
+    assert params["fps"] == 16
+    assert params["seed"] == 4242
+
+    # 送らなかった項目は元ジョブのまま（空ボディ = 全部引き継ぐ）
+    inherited = env.client.post(
+        f"/api/jobs/{first['id']}/continue", json={}
+    ).json()["params"]
+    assert inherited["negative_prompt"] == "blurry"
+    assert inherited["fps"] == 25
+    assert inherited["aspect_ratio"] == first["params"]["aspect_ratio"]
+
+
 def test_continue_without_last_frame_is_422(env):
     created = env.client.post(
         "/api/jobs", json={"mode": "image_only", "image_prompt": "i"}

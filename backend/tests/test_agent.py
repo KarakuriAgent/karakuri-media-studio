@@ -1044,6 +1044,67 @@ def test_auto_limit_zero_never_checks_in(env):
     assert env.comfy.job_count == 3
 
 
+def test_session_settings_can_be_changed_after_the_start(env):
+    """PATCH で checkin_mode / auto_limit を変えられる（送った項目だけ）。"""
+    session = start(env, checkin_mode="milestone", auto_limit=5)
+    response = env.client.patch(
+        f"/api/agent/sessions/{session['id']}",
+        json={"checkin_mode": "auto", "auto_limit": 0},
+    )
+    assert response.status_code == 200, response.text
+    updated = response.json()
+    assert updated["checkin_mode"] == "auto"
+    assert updated["auto_limit"] == 0
+    # 変更は制作記録にも残る（指示文への反映は次のターンから）
+    assert "settings_changed" in kinds(updated)
+    assert "無制限" in updated["messages"][-1]["content"]
+
+    # 片方だけ送れば、もう片方は変わらない
+    only_limit = env.client.patch(
+        f"/api/agent/sessions/{session['id']}", json={"auto_limit": 3}
+    ).json()
+    assert only_limit["checkin_mode"] == "auto"
+    assert only_limit["auto_limit"] == 3
+
+    # 空ボディは何もしない（イベントも増やさない）
+    before = len(only_limit["messages"])
+    empty = env.client.patch(f"/api/agent/sessions/{session['id']}", json={}).json()
+    assert len(empty["messages"]) == before
+
+    assert env.client.patch("/api/agent/sessions/nope", json={}).status_code == 404
+    assert (
+        env.client.patch(
+            f"/api/agent/sessions/{session['id']}", json={"auto_limit": -1}
+        ).status_code
+        == 422
+    )
+
+
+def test_session_limit_change_takes_effect_immediately(env):
+    """上限の判定はセッション行を毎回読むので、実行中でも即時に効く（§5.1）。"""
+    session = start(env, checkin_mode="milestone", auto_limit=0)
+    loaded = asyncio.run(agent_store.load(session["id"]))
+    assert agent_runner.over_limit(loaded) is False
+
+    env.client.patch(f"/api/agent/sessions/{session['id']}", json={"auto_limit": 1})
+    loaded = asyncio.run(agent_store.load(session["id"]))
+    assert loaded.auto_limit == 1
+    assert agent_runner.effective_limit(loaded) == 1
+
+
+def test_non_auto_sessions_also_respect_the_limit(env):
+    """上限はチェックインモードに依らず効く（UI が全モードで出す根拠）。"""
+    session = start(env, checkin_mode="milestone", auto_limit=1)
+    env.cli.answers = [plan_answer(env, 3), "1本目ができました。次に進みます。"]
+    say(env, session["id"])
+    env.client.post(f"/api/agent/sessions/{session['id']}/approve", json={})
+
+    paused = wait_status(env, session["id"], ("waiting_checkin", "stopped", "done"))
+    assert paused["status"] == "waiting_checkin"
+    assert env.comfy.job_count == 1
+    assert "limit_reached" in kinds(paused)
+
+
 def test_auto_limit_checkin_decline_stops_the_session(env):
     session = _run_to_limit_checkin(env)
     env.client.post(

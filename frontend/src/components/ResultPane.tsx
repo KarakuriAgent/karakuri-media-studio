@@ -6,7 +6,8 @@ import { Banner, CopyButton, NsfwBadge, NsfwToggle, StatusBadge } from './ui'
 interface Props {
   job: Job | null
   progress: JobProgress | undefined
-  onRerun: (job: Job) => void
+  /** `randomizeSeed` を false にすると元ジョブと同じシードで流し直す。 */
+  onRerun: (job: Job, randomizeSeed?: boolean) => void
   /** ジョブの生成パラメータを左のフォームへ書き戻す。 */
   onRestoreParams: (job: Job) => void
   onContinue: (job: Job) => void
@@ -313,9 +314,17 @@ export default function ResultPane({
             <button
               className="btn-ghost !py-1 text-xs"
               disabled={busy}
-              onClick={() => onRerun(job)}
+              onClick={() => onRerun(job, true)}
             >
               再実行（シード再抽選）
+            </button>
+            <button
+              className="btn-ghost !py-1 text-xs"
+              disabled={busy}
+              title="元ジョブと同じシードのまま流し直します"
+              onClick={() => onRerun(job, false)}
+            >
+              再実行（同じシード）
             </button>
             <button
               className="btn-ghost !py-1 text-xs"

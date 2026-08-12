@@ -11,7 +11,13 @@ import {
   isAllowedAttachment,
   rejectedMessage,
 } from './attachments'
-import { AgentStatusBadge, CHECKIN_LABEL, shortTime } from './common'
+import {
+  AgentStatusBadge,
+  CHECKIN_LABEL,
+  CHECKIN_MODES,
+  autoLimitLabel,
+  shortTime,
+} from './common'
 
 interface Props {
   sessions: AgentSessionSummary[]
@@ -35,8 +41,6 @@ interface Props {
   className?: string
 }
 
-const MODES: AgentCheckinMode[] = ['every_job', 'milestone', 'auto']
-
 export default function SessionList({
   sessions,
   activeId,
@@ -54,6 +58,8 @@ export default function SessionList({
 }: Props) {
   const [creating, setCreating] = useState(false)
   const [goal, setGoal] = useState('')
+  /** 表示名（空なら最初の指示から自動で決まる）。 */
+  const [title, setTitle] = useState('')
   const [mode, setMode] = useState<AgentCheckinMode>('milestone')
   const [autoLimit, setAutoLimit] = useState(5)
   const [files, setFiles] = useState<File[]>([])
@@ -76,6 +82,8 @@ export default function SessionList({
   const start = () => {
     onCreate(
       {
+        // 空なら送らない（バックエンドが最初の指示から自動で名前を付ける）
+        title: title.trim(),
         goal: goal.trim(),
         checkin_mode: mode,
         auto_limit: autoLimit,
@@ -83,6 +91,7 @@ export default function SessionList({
       files,
     )
     setGoal('')
+    setTitle('')
     setFiles([])
     setAttachError(null)
     setCreating(false)
@@ -138,6 +147,18 @@ export default function SessionList({
         ) : (
           <div className="space-y-2">
             <div>
+              <label className="label" htmlFor="new-session-title">
+                セッション名（任意）
+              </label>
+              <input
+                id="new-session-title"
+                className="field text-xs"
+                value={title}
+                placeholder="空なら最初の指示から決めます"
+                onChange={(event) => setTitle(event.target.value)}
+              />
+            </div>
+            <div>
               <label className="label">最初の指示</label>
               <textarea
                 className="field h-20 resize-none text-xs"
@@ -148,38 +169,44 @@ export default function SessionList({
               />
             </div>
             <div>
-              <label className="label">チェックイン</label>
+              <label className="label" htmlFor="new-session-checkin">
+                チェックイン
+              </label>
               <select
+                id="new-session-checkin"
                 className="field text-xs"
                 value={mode}
                 onChange={(event) =>
                   setMode(event.target.value as AgentCheckinMode)
                 }
               >
-                {MODES.map((value) => (
+                {CHECKIN_MODES.map((value) => (
                   <option key={value} value={value}>
                     {CHECKIN_LABEL[value]}
                   </option>
                 ))}
               </select>
             </div>
-            {mode === 'auto' && (
-              <div>
-                <label className="label">上限本数（0 = 無制限）</label>
-                <input
-                  className="field text-xs"
-                  type="number"
-                  min={0}
-                  value={autoLimit}
-                  onChange={(event) =>
-                    setAutoLimit(Math.max(0, Number(event.target.value) || 0))
-                  }
-                />
-                <p className="mt-1 text-[11px] text-slate-500">
-                  この本数ごとに続けてよいか確認します。0 なら確認せず走り切ります。
-                </p>
-              </div>
-            )}
+            {/* 生成本数の上限はチェックインモードに関係なく効く
+                （agent_runner.over_limit は auto_limit だけを見る）。 */}
+            <div>
+              <label className="label" htmlFor="new-session-auto-limit">
+                上限本数（0 = 無制限）
+              </label>
+              <input
+                id="new-session-auto-limit"
+                className="field text-xs"
+                type="number"
+                min={0}
+                value={autoLimit}
+                onChange={(event) =>
+                  setAutoLimit(Math.max(0, Number(event.target.value) || 0))
+                }
+              />
+              <p className="mt-1 text-[11px] text-slate-500">
+                この本数ごとに続けてよいか確認します。0 = 無制限で、確認せず走り切ります。
+              </p>
+            </div>
             <div>
               <input
                 ref={filePicker}
@@ -269,7 +296,8 @@ export default function SessionList({
               </span>
               <span className="mt-1 block text-[10px] text-slate-600">
                 タスク {session.task_count} / 成果物 {session.artifact_count} ／{' '}
-                {CHECKIN_LABEL[session.checkin_mode]}
+                {CHECKIN_LABEL[session.checkin_mode]} ／{' '}
+                {autoLimitLabel(session.auto_limit)}
               </span>
             </button>
             <div className="mt-1 flex items-center gap-2">

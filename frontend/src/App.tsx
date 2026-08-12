@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ApiError, api, fieldErrorsFromError, formatDetail, wsUrl } from './api'
 import ChatModal from './components/ChatModal'
+import ContinueModal from './components/ContinueModal'
 import GenerateForm from './components/GenerateForm'
 import Header from './components/Header'
 import HistoryGallery from './components/HistoryGallery'
@@ -29,6 +30,7 @@ import type {
   ComfyTarget,
   Health,
   Job,
+  JobContinue,
   JobCreate,
   JobProgress,
   LibraryProgress,
@@ -62,6 +64,9 @@ export default function App() {
   const [loadingJobs, setLoadingJobs] = useState(false)
   const [activeJob, setActiveJob] = useState<Job | null>(null)
   const [detailJob, setDetailJob] = useState<Job | null>(null)
+  // 続き生成の上書きモーダル（開いているジョブと、その中に出すエラー）。
+  const [continueJob, setContinueJob] = useState<Job | null>(null)
+  const [continueError, setContinueError] = useState<string | null>(null)
   const [progress, setProgress] = useState<Record<string, JobProgress>>({})
   const [wsConnected, setWsConnected] = useState(false)
   const [errors, setErrors] = useState<string[]>([])
@@ -476,6 +481,8 @@ export default function App() {
           jobWorkflowIds(form),
         ),
         chat_session_id: chatSessionId,
+        // チェックしたときだけ manual 指定として送る（オフ = null で自動判定）
+        nsfw: form.nsfw ? true : null,
       }
       const job = await api.createJob(payload)
       setChatSessionId(null)
@@ -490,29 +497,44 @@ export default function App() {
     }
   }
 
-  const continueFrom = async (job: Job) => {
+  /** 「続きを生成」: 上書きフォームを開く（そのまま押せば全項目引き継ぎ）。 */
+  const openContinue = (job: Job) => {
+    setContinueError(null)
+    setContinueJob(job)
+  }
+
+  /**
+   * 続き生成（`POST /api/jobs/{id}/continue`）。
+   *
+   * `body` に入れた項目だけが元ジョブの設定を上書きする（空 = 全部引き継ぐ）。
+   */
+  const continueFrom = async (job: Job, body: JobContinue = {}) => {
     setDetailBusy(true)
     setDetailError(null)
+    setContinueError(null)
     try {
-      const next = await api.continueJob(job.id)
+      const next = await api.continueJob(job.id, body)
       trackJob(next)
+      setContinueJob(null)
       setDetailJob(null)
       await loadJobs()
     } catch (error) {
       const message =
         error instanceof ApiError ? formatDetail(error.detail) : String(error)
       setDetailError(message)
+      setContinueError(message)
       pushError(error)
     } finally {
       setDetailBusy(false)
     }
   }
 
-  const rerun = async (job: Job) => {
+  /** 再実行。`randomizeSeed` を false にすると元ジョブと同じシードで流し直す。 */
+  const rerun = async (job: Job, randomizeSeed = true) => {
     setDetailBusy(true)
     setDetailError(null)
     try {
-      const next = await api.rerunJob(job.id)
+      const next = await api.rerunJob(job.id, randomizeSeed)
       trackJob(next)
       setDetailJob(null)
       await loadJobs()
@@ -691,9 +713,9 @@ export default function App() {
               <ResultPane
                 job={shownJob}
                 progress={shownJob ? progress[shownJob.id] : undefined}
-                onRerun={(job) => void rerun(job)}
+                onRerun={(job, randomizeSeed) => void rerun(job, randomizeSeed)}
                 onRestoreParams={restoreParams}
-                onContinue={(job) => void continueFrom(job)}
+                onContinue={(job) => openContinue(job)}
                 onDelete={(job) => void remove(job)}
                 onOpenDetail={(job) => openDetail(job)}
                 onToggleNsfw={(job, nsfw) => void toggleNsfw(job, nsfw)}
@@ -726,14 +748,26 @@ export default function App() {
           busy={detailBusy}
           error={detailError}
           onClose={() => setDetailJob(null)}
-          onRerun={(job) => void rerun(job)}
+          onRerun={(job, randomizeSeed) => void rerun(job, randomizeSeed)}
           onRestoreParams={restoreParams}
-          onContinue={(job) => void continueFrom(job)}
+          onContinue={(job) => openContinue(job)}
           onDelete={(job) => void remove(job)}
           onToggleNsfw={(job, nsfw) => void toggleNsfw(job, nsfw)}
           showNsfw={showNsfw}
           onLibraryChanged={() => void loadOptions()}
           library={options?.library}
+        />
+      )}
+
+      {/* 続き生成の上書きフォーム（既定は全項目「元ジョブを引き継ぐ」）。 */}
+      {continueJob && (
+        <ContinueModal
+          job={continueJob}
+          options={options}
+          busy={detailBusy}
+          error={continueError}
+          onClose={() => setContinueJob(null)}
+          onSubmit={(body) => void continueFrom(continueJob, body)}
         />
       )}
 

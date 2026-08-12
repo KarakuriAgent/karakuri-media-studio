@@ -58,12 +58,26 @@ export default function LibraryAddButton({
   const [error, setError] = useState<string | null>(null)
   // 登録と同時に付ける分類。既定は未分類（あとからライブラリで変えられる）。
   const [category, setCategory] = useState<LibraryCategoryValue>(UNCATEGORIZED)
+  // 名前・タグの小窓（開かなければ従来どおり空のまま即登録できる）。
+  const [open, setOpen] = useState(false)
+  const [name, setName] = useState('')
+  const [tags, setTags] = useState('')
 
   const add = async () => {
     setState('busy')
+    setOpen(false)
     setError(null)
     try {
-      await api.addJobToLibrary(job.id, source, '', [], category)
+      await api.addJobToLibrary(
+        job.id,
+        source,
+        name.trim(),
+        tags
+          .split(',')
+          .map((value) => value.trim())
+          .filter(Boolean),
+        category,
+      )
       setState('done')
       onAdded?.()
       window.setTimeout(() => setState('idle'), 2000)
@@ -93,7 +107,7 @@ export default function LibraryAddButton({
             : `☆ ライブラリに登録${label ? `: ${label}` : ''}`
 
   return (
-    <span className="inline-flex items-center gap-1">
+    <span className="relative inline-flex items-center gap-1">
       <button
         className={`btn-ghost !py-1 text-xs ${
           shown === 'failed' ? '!text-red-300' : ''
@@ -121,6 +135,60 @@ export default function LibraryAddButton({
             </option>
           ))}
         </select>
+      )}
+      {/* 名前・タグは任意。開かずに押せば従来どおり空（サーバー側がプロンプト
+          から名前を決め、タグは自動生成に任せる）。 */}
+      {(shown === 'idle' || shown === 'failed') && (
+        <button
+          className="btn-ghost !px-1.5 !py-1 text-xs"
+          aria-label="名前とタグを指定"
+          aria-expanded={open}
+          title="名前とタグを指定してから登録する"
+          onClick={() => setOpen((value) => !value)}
+        >
+          {open ? '▴' : '▾'}
+        </button>
+      )}
+      {open && (
+        <div className="absolute left-0 top-full z-20 mt-1 w-64 space-y-2 rounded-md border border-ink-600 bg-ink-800 p-2 shadow-lg">
+          <div>
+            <label className="label" htmlFor={`library-add-name-${job.id}-${source}`}>
+              表示名（空ならプロンプトから決まります）
+            </label>
+            <input
+              id={`library-add-name-${job.id}-${source}`}
+              className="field text-xs"
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+            />
+          </div>
+          <div>
+            <label className="label" htmlFor={`library-add-tags-${job.id}-${source}`}>
+              タグ（カンマ区切り・任意）
+            </label>
+            <input
+              id={`library-add-tags-${job.id}-${source}`}
+              className="field text-xs"
+              value={tags}
+              placeholder="夜, 屋上"
+              onChange={(event) => setTags(event.target.value)}
+            />
+          </div>
+          <div className="flex gap-2">
+            <button
+              className="btn-primary flex-1 !py-1 text-xs"
+              onClick={() => void add()}
+            >
+              この内容で登録
+            </button>
+            <button
+              className="btn-ghost !py-1 text-xs"
+              onClick={() => setOpen(false)}
+            >
+              閉じる
+            </button>
+          </div>
+        </div>
       )}
     </span>
   )

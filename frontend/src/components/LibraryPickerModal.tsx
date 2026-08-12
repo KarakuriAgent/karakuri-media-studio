@@ -6,7 +6,7 @@ import type {
   LibraryItem,
   LibraryKind,
 } from '../types'
-import { Banner, Modal, NsfwBadge } from './ui'
+import { Banner, Modal, NsfwBadge, NsfwToggle } from './ui'
 
 /** カテゴリの表示名（プルダウンの並び順もこの通り。SPEC §7.2）。 */
 export const CATEGORY_LABELS: Record<LibraryCategory, string> = {
@@ -168,6 +168,11 @@ export default function LibraryPickerModal({
     const name = window.prompt('新しい表示名', item.name)
     if (name == null || !name.trim() || name === item.name) return
     void mutate(() => api.updateLibraryItem(item.id, { name }))
+  }
+
+  /** NSFW フラグの手動トグル（manual として保存され、自動判定に上書きされない）。 */
+  const setItemNsfw = (item: LibraryItem, nsfw: boolean) => {
+    void mutate(() => api.updateLibraryItem(item.id, { nsfw }))
   }
 
   /** タイルのプルダウンで分類を変える（'none' は未分類に戻す指定）。 */
@@ -377,6 +382,13 @@ export default function LibraryPickerModal({
                 >
                   名前
                 </button>
+                {/* NSFW の手動トグル（ジョブ側と同じ見た目・同じ manual 扱い）。 */}
+                <NsfwToggle
+                  nsfw={item.nsfw}
+                  disabled={busy}
+                  onToggle={(value) => setItemNsfw(item, value)}
+                  className="!px-1.5 !py-0.5 !text-[10px]"
+                />
                 <button
                   className="btn-ghost !px-1.5 !py-0.5 text-[10px]"
                   disabled={busy}

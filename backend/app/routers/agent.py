@@ -34,6 +34,7 @@ from ..models import (
     AgentSession,
     AgentSessionCreate,
     AgentSessionSummary,
+    AgentSessionUpdate,
     NsfwUpdate,
 )
 from .assets import AUDIO_EXT, IMAGE_EXT, VIDEO_EXT
@@ -151,6 +152,58 @@ async def list_sessions(
 @router.get("/sessions/{session_id}", response_model=AgentSession)
 async def get_session(session_id: str) -> AgentSession:
     return await _require(session_id)
+
+
+@router.patch("/sessions/{session_id}", response_model=AgentSession)
+async def update_session(
+    session_id: str, payload: AgentSessionUpdate
+) -> AgentSession:
+    """チェックインモードと生成本数の上限を後から変える（AGENT-MODE §5.1）。
+
+    システムプロンプトは作成時に焼き込んであるので、Grok の読む文面に載るのは
+    次のターンから。上限そのもの（:func:`agent_runner.over_limit`）はセッション
+    行を毎回読むので、実行中のループにも即時に効く。
+    """
+    await _require(session_id)
+    changes = payload.model_dump(exclude_none=True)
+    if not changes:
+        return await _require(session_id)
+    await agent_store.update(session_id, **changes)
+    # 何をいつ変えたかは制作記録にも残す（次のターンから効くことを明記する）。
+    await agent_runner.append_message(
+        session_id,
+        AgentMessage(
+            role="event",
+            content=_settings_changed(changes),
+            ts=agent_store.now(),
+            kind="settings_changed",
+            data=changes,
+        ),
+    )
+    return await _require(session_id)
+
+
+#: チェックインモードの日本語表記（UI の CHECKIN_LABEL と揃える）。
+CHECKIN_LABELS = {
+    "every_job": "毎ジョブ確認",
+    "milestone": "節目のみ",
+    "auto": "完了まで自走",
+}
+
+
+def _settings_changed(changes: dict) -> str:
+    parts: list[str] = []
+    if "checkin_mode" in changes:
+        mode = changes["checkin_mode"]
+        parts.append(f"チェックイン: {CHECKIN_LABELS.get(mode, mode)}")
+    if "auto_limit" in changes:
+        limit = changes["auto_limit"]
+        parts.append(f"生成本数の上限: {'無制限' if limit == 0 else f'{limit} 本'}")
+    return (
+        "セッション設定を変更しました（"
+        + " / ".join(parts)
+        + "）。上限の判定は即時、指示文への反映は次のターンからです。"
+    )
 
 
 @router.post("/sessions/{session_id}/nsfw", response_model=AgentSession)

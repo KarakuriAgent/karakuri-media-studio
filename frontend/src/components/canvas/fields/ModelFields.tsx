@@ -1,6 +1,7 @@
 import {
   lorasForTarget,
   megapixelsFor,
+  modelSlotsForJob,
   workflowSelects,
 } from '../../../form'
 import type {
@@ -127,6 +128,9 @@ export default function ModelFields({
   const selects = workflowSelects(workflow)
   const imageLoras = lorasForTarget(options?.loras ?? [], 'image', workflow?.family)
   const videoLoras = lorasForTarget(options?.loras ?? [], 'video', workflow?.family)
+  // 実行時に切り替えられるモデル（SPEC §3.3）。設定で候補を 2 件以上登録した
+  // スロットだけが出るので、何も登録していないワークフローでは何も描かない。
+  const slots = modelSlotsForJob(options?.model_slots, [data.workflow])
 
   return (
     <div className="flex flex-col gap-3">
@@ -242,6 +246,33 @@ export default function ModelFields({
           </select>
         </Field>
       ))}
+
+      {/* 使用モデルの切り替え（生成フォーム / 設定画面と同じスロット単位）。
+          既定のままの選択は保存しない（`model_overrides` は差分だけ持つ）。 */}
+      {slots.map((slot) => {
+        const title = `使用モデル: ${slot.label || `${slot.node_id}.${slot.field}`}`
+        return (
+          <Field key={slot.key} label={title}>
+            <select
+              className="field"
+              aria-label={title}
+              value={data.params.model_overrides[slot.key] ?? slot.default}
+              onChange={(event) => {
+                const next = { ...data.params.model_overrides }
+                if (event.target.value === slot.default) delete next[slot.key]
+                else next[slot.key] = event.target.value
+                patchParams({ model_overrides: next })
+              }}
+            >
+              {slot.choices.map((name) => (
+                <option key={name} value={name}>
+                  {name === slot.default ? `${name}（既定）` : name}
+                </option>
+              ))}
+            </select>
+          </Field>
+        )
+      })}
 
       {data.target === 'image' && (
         <LoraChooser

@@ -260,6 +260,11 @@ describe('StudioView', () => {
         name: '新作',
         code: '',
         synopsis: '',
+        // 折りたたみの初期設定は既定値のまま送られる
+        world_notes: '',
+        auto_translate: true,
+        latent_continuity: false,
+        nsfw: false,
       }),
     )
   })
@@ -612,6 +617,40 @@ describe('StudioView: 話と場のツリー', () => {
     await waitFor(() =>
       expect(mocked.updateStudioEpisode).toHaveBeenCalledWith('e1', {
         title: '第一夜（改）',
+      }),
+    )
+    prompt.mockRestore()
+  })
+
+  it('話のあらすじを prompt で書き換える', async () => {
+    await openProject(structured())
+    const prompt = vi.spyOn(window, 'prompt').mockReturnValue(' 夜の追跡劇 ')
+    mocked.updateStudioEpisode.mockResolvedValue({})
+    fireEvent.click(rail().getByRole('button', { name: '第一夜のあらすじを編集' }))
+    await waitFor(() =>
+      expect(mocked.updateStudioEpisode).toHaveBeenCalledWith('e1', {
+        synopsis: '夜の追跡劇',
+      }),
+    )
+    prompt.mockRestore()
+  })
+
+  it('場のあらすじと時間帯も prompt で書き換える', async () => {
+    await openProject(structured())
+    const prompt = vi.spyOn(window, 'prompt').mockReturnValue('夕方')
+    mocked.updateStudioScene.mockResolvedValue({})
+    fireEvent.click(rail().getByRole('button', { name: '路地の時間帯を編集' }))
+    await waitFor(() =>
+      expect(mocked.updateStudioScene).toHaveBeenCalledWith('sc1', {
+        time_of_day: '夕方',
+      }),
+    )
+
+    prompt.mockReturnValue('逃げ込む')
+    fireEvent.click(rail().getByRole('button', { name: '路地のあらすじを編集' }))
+    await waitFor(() =>
+      expect(mocked.updateStudioScene).toHaveBeenLastCalledWith('sc1', {
+        synopsis: '逃げ込む',
       }),
     )
     prompt.mockRestore()

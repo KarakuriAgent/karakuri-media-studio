@@ -2,8 +2,10 @@ import { useEffect, useRef, useState } from 'react'
 import { api } from '../../api'
 import type {
   AgentAttachment,
+  AgentCheckinMode,
   AgentMessage,
   AgentSession,
+  AgentSessionUpdate,
   JobProgress,
 } from '../../types'
 import { Banner, NsfwBadge, NsfwToggle } from '../ui'
@@ -14,7 +16,15 @@ import {
   isAllowedAttachment,
   rejectedMessage,
 } from './attachments'
-import { AGENT_ACTIVE, AgentStatusBadge, CHECKIN_LABEL, eventIcon, shortTime } from './common'
+import {
+  AGENT_ACTIVE,
+  AgentStatusBadge,
+  CHECKIN_LABEL,
+  CHECKIN_MODES,
+  autoLimitLabel,
+  eventIcon,
+  shortTime,
+} from './common'
 import { inputState, isCheckinAnswered, openCheckinIndex } from './logic'
 
 interface Props {
@@ -28,6 +38,8 @@ interface Props {
   onApprove: () => void
   onCheckin: (answer: string) => void
   onStop: () => void
+  /** チェックインモード / 生成本数の上限の変更（送った項目だけ変わる）。 */
+  onUpdateSession: (patch: AgentSessionUpdate) => void
   /** 狭幅のみ: セッション一覧ドロワーを開く。 */
   onOpenSessions: () => void
   /** 狭幅のみ: 成果物パネル（全画面オーバーレイ）を開く。 */
@@ -205,6 +217,108 @@ function CheckinBubble({
   )
 }
 
+/**
+ * セッションの進め方（チェックイン / 生成本数の上限）を後から変える小窓。
+ *
+ * 上限はどのチェックインモードでも効くので、モードに関係なく出す。指示文への
+ * 反映は次のターンからなので、その旨をここに書いておく。
+ */
+function SessionSettings({
+  session,
+  busy,
+  onSave,
+}: {
+  session: AgentSession
+  busy: boolean
+  onSave: (patch: AgentSessionUpdate) => void
+}) {
+  const [open, setOpen] = useState(false)
+  const [mode, setMode] = useState<AgentCheckinMode>(session.checkin_mode)
+  const [limit, setLimit] = useState(session.auto_limit)
+
+  /** 開くたびに現在値へ揃える（閉じている間に変わっていることがある）。 */
+  const toggle = () => {
+    if (!open) {
+      setMode(session.checkin_mode)
+      setLimit(session.auto_limit)
+    }
+    setOpen((value) => !value)
+  }
+
+  return (
+    <span className="relative">
+      <button
+        className="btn-ghost !px-2 !py-1 text-xs"
+        aria-label="セッション設定を変更"
+        aria-expanded={open}
+        title="チェックインと生成本数の上限を変える"
+        onClick={toggle}
+      >
+        ⚙
+      </button>
+      {open && (
+        <div className="absolute right-0 top-full z-20 mt-1 w-64 space-y-2 rounded-md border border-ink-600 bg-ink-800 p-2 shadow-lg">
+          <div>
+            <label className="label" htmlFor="session-checkin-mode">
+              チェックイン
+            </label>
+            <select
+              id="session-checkin-mode"
+              className="field text-xs"
+              value={mode}
+              onChange={(event) =>
+                setMode(event.target.value as AgentCheckinMode)
+              }
+            >
+              {CHECKIN_MODES.map((value) => (
+                <option key={value} value={value}>
+                  {CHECKIN_LABEL[value]}
+                </option>
+              ))}
+            </select>
+          </div>
+          <div>
+            <label className="label" htmlFor="session-auto-limit">
+              上限本数（0 = 無制限）
+            </label>
+            <input
+              id="session-auto-limit"
+              className="field text-xs"
+              type="number"
+              min={0}
+              value={limit}
+              onChange={(event) =>
+                setLimit(Math.max(0, Number(event.target.value) || 0))
+              }
+            />
+          </div>
+          <p className="text-[11px] text-slate-500">
+            上限の判定はすぐ効きます。エージェントへの指示文に載るのは次のターンからです。
+          </p>
+          <div className="flex gap-2">
+            <button
+              className="btn-primary flex-1 !py-1 text-xs"
+              disabled={busy}
+              onClick={() => {
+                onSave({ checkin_mode: mode, auto_limit: limit })
+                setOpen(false)
+              }}
+            >
+              保存
+            </button>
+            <button
+              className="btn-ghost !py-1 text-xs"
+              onClick={() => setOpen(false)}
+            >
+              取消
+            </button>
+          </div>
+        </div>
+      )}
+    </span>
+  )
+}
+
 export default function AgentChat({
   session,
   progress,
@@ -215,6 +329,7 @@ export default function AgentChat({
   onApprove,
   onCheckin,
   onStop,
+  onUpdateSession,
   onOpenSessions,
   onOpenArtifacts,
   artifactCount,
@@ -292,11 +407,16 @@ export default function AgentChat({
         </span>
         <AgentStatusBadge status={session.status} />
         {showNsfw && session.nsfw && <NsfwBadge />}
+        {/* 生成本数の上限はどのチェックインモードでも効く（0 なら「無制限」）。 */}
         <span className="text-[11px] text-slate-500">
-          {CHECKIN_LABEL[session.checkin_mode]}
-          {session.checkin_mode === 'auto' ? ` / 上限 ${session.auto_limit} 本` : ''}
+          {CHECKIN_LABEL[session.checkin_mode]} / {autoLimitLabel(session.auto_limit)}
         </span>
         <div className="ml-auto flex items-center gap-1.5">
+          <SessionSettings
+            session={session}
+            busy={busy}
+            onSave={onUpdateSession}
+          />
           <NsfwToggle nsfw={session.nsfw} disabled={busy} onToggle={onToggleNsfw} />
           <button
             className="btn-ghost relative !py-1 text-xs lg:hidden"
