@@ -40,7 +40,7 @@ import type {
   Options,
   WorkflowOption,
 } from '../types'
-import AudioFields from './AudioFields'
+import AudioFields, { audioErrorKeys } from './AudioFields'
 import HistoryPickerModal, {
   assetExtension,
   type HistoryCandidate,
@@ -649,6 +649,43 @@ export default function GenerateForm({
   // 画像を編集するワークフローのときの欄は別物（編集元画像）なので出さない。
   const sheetInput =
     form.mode !== 'image_only' && !imageEdits && needsReferenceSheet(workflow)
+
+  // 今の表示状態で `FieldError` として実際に描かれるエラーのキー（SPEC §8）。
+  // 出ていない欄のエラーで送信が止まると「押しても無反応」に見えるので、
+  // ここに無いキーのぶんは送信ボタンのそばにまとめて出す（下の `unseenErrors`）。
+  // 描画箇所を増やしたらこの一覧にも足すこと。
+  const shownErrorKeys = new Set<string>(
+    form.mode === 'audio' ? audioErrorKeys(form, options) : [],
+  )
+  if (form.mode !== 'audio') {
+    if (!hidden.startImage) shownErrorKeys.add('source_image')
+    if (!hidden.endImage) shownErrorKeys.add('end_image')
+    if (!hidden.referenceVideo) shownErrorKeys.add('reference_video')
+    if (references.length > 0) {
+      shownErrorKeys.add('references')
+      for (const item of references) shownErrorKeys.add(item.name)
+    }
+    if (!hidden.audio) shownErrorKeys.add('audio_path')
+    if (!hidden.imagePrompt) shownErrorKeys.add('image_prompt')
+    if (!hidden.videoPrompt) shownErrorKeys.add('video_prompt')
+    // ショット / Elements は畳んでいるあいだ中身ごと見えないので、
+    // 開いているときだけ「表示先がある」とみなす。
+    if (shotLimits && showShots) {
+      shownErrorKeys.add('multi_shots')
+      form.multiShots.forEach((_, index) =>
+        shownErrorKeys.add(`multi_shots.${index}`),
+      )
+    }
+    if (elementLimits && showElements) {
+      shownErrorKeys.add('kling_elements')
+      form.klingElements.forEach((_, index) =>
+        shownErrorKeys.add(`kling_elements.${index}`),
+      )
+    }
+  }
+  const unseenErrors = Object.entries(fieldErrors).filter(
+    ([key, message]) => message && !shownErrorKeys.has(key),
+  )
 
   // Image LoRAs are family-scoped: only the ones matching the selected image
   // workflow can be used (the backend rejects the rest).
@@ -1667,6 +1704,15 @@ export default function GenerateForm({
         />
         🫣 NSFW として投入（オフなら生成後に自動判定）
       </label>
+
+      {/* 表示先の無いエラー（隠れている欄・畳んだセクション・バックエンドの
+          422 が返した見覚えのないキー）。これが無いと送信が黙って止まる。 */}
+      {unseenErrors.length > 0 && (
+        <Banner tone="warn">
+          {'入力に問題があるため実行できません:\n'}
+          {unseenErrors.map(([key, message]) => `・${message}（${key}）`).join('\n')}
+        </Banner>
+      )}
 
       <button className="btn-primary w-full py-2.5" onClick={onSubmit} disabled={submitting}>
         {submitting ? '送信中…' : '実行'}

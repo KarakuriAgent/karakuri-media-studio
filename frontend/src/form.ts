@@ -1117,21 +1117,16 @@ export function validateForm(
       'ワークフローです。参照画像を選択してください。'
   }
   // マルチモーダル参照（SPEC §3.1）: 参照専用のワークフローだけの入力で、
-  // 件数に上限がある。バックエンドが 422 で断るのと同じ理由をその場で見せる。
-  const references = referenceFields(videoWorkflow)
-  const used = references.filter((item) => form[item.field].length > 0)
-  if (used.length > 0) {
-    if (form.mode !== 'i2v') {
-      errors.references =
-        '参照素材のワークフローは「動画」モードでだけ使えます' +
-        '（画像＋動画は生成した静止画を開始フレームにするモードです）。'
-    }
-    for (const item of used) {
-      if (form[item.field].length > item.limit) {
-        errors[item.name] = `${item.label}は ${item.limit} 件までです（今は ${
-          form[item.field].length
-        } 件）。`
-      }
+  // 件数に上限がある。欄が出るのも送るのも「動画」モードだけ（`hiddenFields`
+  // の `references` / App のペイロード）なので、検証もそこに揃える。
+  // 他のモードに切り替えても値は FormState に残るが、送られない以上 422 には
+  // ならないし、欄が無い＝直す手立ても無いので止めない（§8）。
+  const references = referenceFields(form.mode === 'i2v' ? videoWorkflow : null)
+  for (const item of references) {
+    if (form[item.field].length > item.limit) {
+      errors[item.name] = `${item.label}は ${item.limit} 件までです（今は ${
+        form[item.field].length
+      } 件）。`
     }
   }
   // ショット割り / Elements（SPEC §3.1）。バックエンドが 422 で断るのと同じ
@@ -1174,7 +1169,9 @@ export function validateForm(
       }
     })
   }
-  if (elementLimits) {
+  // Elements も動画ステージのパラメータなので、表示（`hiddenFields` の
+  // `elements`）・送信と同じく動画ステージが走る mode でだけ見る。
+  if (runsVideo && elementLimits) {
     if (elements.length > elementLimits.max_elements) {
       errors.kling_elements = `Elements は ${elementLimits.max_elements} 要素までです（今は ${elements.length} 要素）。`
     }

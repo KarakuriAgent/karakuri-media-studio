@@ -77,6 +77,7 @@ const OPTIONS: Options = {
 function show(
   form: Partial<FormState> = {},
   comfyTarget: ComfyTarget | null = 'local',
+  fieldErrors: Record<string, string> = {},
 ) {
   const patch = vi.fn()
   const onComfyTarget = vi.fn()
@@ -90,7 +91,7 @@ function show(
       onOpenChat={() => {}}
       onSubmit={() => {}}
       submitting={false}
-      fieldErrors={{}}
+      fieldErrors={fieldErrors}
       comfyTarget={comfyTarget}
       onComfyTarget={onComfyTarget}
       jobs={[]}
@@ -1580,7 +1581,10 @@ describe('GenerateForm のマルチショットと Elements', () => {
   const SHOTS = 'マルチショット'
   const ELEMENTS = 'Elements（@要素名 でのキャラ固定）'
 
-  function showKlingForm(form: Partial<FormState> = {}) {
+  function showKlingForm(
+    form: Partial<FormState> = {},
+    fieldErrors: Record<string, string> = {},
+  ) {
     vi.mocked(api.listLibrary).mockResolvedValue({
       items: ELEMENT_IMAGES,
       total: ELEMENT_IMAGES.length,
@@ -1604,7 +1608,7 @@ describe('GenerateForm のマルチショットと Elements', () => {
         onOpenChat={() => {}}
         onSubmit={() => {}}
         submitting={false}
-        fieldErrors={{}}
+        fieldErrors={fieldErrors}
         comfyTarget="local"
         onComfyTarget={() => {}}
         jobs={[]}
@@ -1613,6 +1617,18 @@ describe('GenerateForm のマルチショットと Elements', () => {
     )
     return { patch }
   }
+
+  it('畳んでいるあいだのエラーは送信ボタンのそばに出す（SPEC §8）', () => {
+    const error = '1 ショット目のプロンプトを入力してください。'
+    showKlingForm({ multiShots: [{ prompt: '', duration: 4 }] }, {
+      'multi_shots.0': error,
+    })
+    // 中身ごと描かれないので、そのままでは行方不明になってしまう
+    expect(screen.getByText(new RegExp(error))).toBeTruthy()
+    // 開けばショットの欄の下に出るので、フォールバックからは消える
+    fireEvent.click(screen.getByText('開く（1 / 5 ショット）'))
+    expect(screen.getAllByText(error)).toHaveLength(1)
+  })
 
   it('宣言しているワークフローのときだけ、畳んだ状態で出す', () => {
     showKlingForm()
@@ -1769,5 +1785,21 @@ describe('GenerateForm の NSFW 投入チェック', () => {
   it('オンの状態が反映される', () => {
     show({ nsfw: true })
     expect((screen.getByLabelText(LABEL) as HTMLInputElement).checked).toBe(true)
+  })
+})
+
+describe('表示先の無いエラーのフォールバック（SPEC §8）', () => {
+  it('どの欄にも出ないエラーは送信ボタンのそばに出す', () => {
+    show({}, 'local', { unknown_field: '見覚えのない項目が不正です。' })
+    expect(screen.getByText(/見覚えのない項目が不正です。/)).toBeTruthy()
+  })
+
+  it('表示先のあるエラーは二重に出さない', () => {
+    show({ mode: 'image_only' }, 'local', {
+      image_prompt: '画像プロンプトを入力してください。',
+    })
+    expect(
+      screen.getAllByText('画像プロンプトを入力してください。'),
+    ).toHaveLength(1)
   })
 })

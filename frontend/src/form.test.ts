@@ -454,17 +454,29 @@ describe('マルチモーダル参照', () => {
     expect(hiddenFields('i2v', SEEDANCE).startImage).toBe(true)
   })
 
-  it('full モードでの参照指定と件数超過を断る', () => {
+  it('「動画」モード以外に残った参照素材では止めない（出ていない欄は見ない）', () => {
+    // モードを切り替えても値は FormState に残る（意図した設計）。欄が出ず
+    // 送りもしない以上、直す手立ての無いエラーで送信を止めてはいけない（§8）。
     const form: FormState = {
       ...initialForm,
-      mode: 'full',
       imagePrompt: 'a cat',
       referenceImages: ['/library/image/a.png'],
     }
-    expect(validateForm(form, KREA2, null, SEEDANCE).references).toContain(
-      '「動画」モード',
-    )
+    expect(validateForm({ ...form, mode: 'full' }, KREA2, null, SEEDANCE)).toEqual({})
+    expect(
+      validateForm({ ...form, mode: 'image_only' }, KREA2, null, SEEDANCE),
+    ).toEqual({})
+    // 件数の上限も「動画」モードでだけ見る（欄が出るのがそこだけなので）
+    const overInImage: FormState = {
+      ...initialForm,
+      mode: 'image_only',
+      imagePrompt: 'a cat',
+      referenceVideos: ['a', 'b', 'c', 'd'].map((n) => `/library/video/${n}.mp4`),
+    }
+    expect(validateForm(overInImage, KREA2, null, SEEDANCE)).toEqual({})
+  })
 
+  it('「動画」モードでは参照素材の件数超過を断る', () => {
     const tooMany: FormState = {
       ...initialForm,
       mode: 'i2v',

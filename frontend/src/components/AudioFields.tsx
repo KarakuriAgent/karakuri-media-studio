@@ -7,6 +7,7 @@ import {
   audioSupports,
   clampToWorkflow,
   durationRange,
+  workflowSelects,
   type FormState,
 } from '../form'
 import type { Options, WorkflowOption } from '../types'
@@ -14,6 +15,35 @@ import ModelPicker from './ModelPicker'
 import WorkflowPicker from './WorkflowPicker'
 import WorkflowSelects from './WorkflowSelects'
 import { FieldError, Section } from './ui'
+
+/** 選択中の音声ワークフロー（見つからなければ null）。 */
+function audioWorkflowOf(
+  form: FormState,
+  options: Options | null,
+): WorkflowOption | null {
+  const workflows: WorkflowOption[] = options?.audio_workflows ?? []
+  return workflows.find((item) => item.id === form.audioWorkflow) ?? null
+}
+
+/**
+ * 音声モードで `FieldError` の表示先があるエラーのキー（SPEC §8）。
+ *
+ * 「出ていない欄のエラーは、送信ボタンのそばにまとめて出す」フォールバック
+ * （`GenerateForm`）が、ここに無いキーを拾う。下の `hasDuration` / `hasBpm` と
+ * 同じ条件を使うので、欄を出し分ける条件を変えるときは両方そろえること。
+ */
+export function audioErrorKeys(
+  form: FormState,
+  options: Options | null,
+): string[] {
+  const workflow = audioWorkflowOf(form, options)
+  const keys = ['audio_prompt']
+  if (workflow == null || workflow.max_duration > 0) keys.push('duration')
+  if (audioSupports(workflow, 'bpm')) keys.push('bpm')
+  // 選択式の相関エラー（`selectRequiresErrors`）はセレクトの下に出る
+  for (const select of workflowSelects(workflow)) keys.push(select.name)
+  return keys
+}
 
 /**
  * 生成フォームの `mode: 'audio'` ブロック。
@@ -36,7 +66,7 @@ export default function AudioFields({
   fieldErrors: Record<string, string>
 }) {
   const workflows: WorkflowOption[] = options?.audio_workflows ?? []
-  const workflow = workflows.find((item) => item.id === form.audioWorkflow) ?? null
+  const workflow = audioWorkflowOf(form, options)
   const range = durationRange(workflow)
 
   const hasLyrics = audioSupports(workflow, 'lyrics')
