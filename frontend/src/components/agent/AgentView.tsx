@@ -5,11 +5,13 @@ import type {
   AgentSession,
   AgentSessionCreate,
   AgentSessionSummary,
+  ComfyTarget,
   JobProgress,
 } from '../../types'
 import AgentChat from './AgentChat'
 import ArtifactPanel from './ArtifactPanel'
 import SessionList from './SessionList'
+import TargetSelector from '../TargetSelector'
 import { AGENT_ACTIVE } from './common'
 import { currentActivity, isThinking, shouldReplaceSession } from './logic'
 
@@ -20,9 +22,18 @@ interface Props {
   progress: Record<string, JobProgress>
   /** オフのあいだは NSFW セッションを一覧から隠す。 */
   showNsfw: boolean
+  /** ComfyUI の接続先（生成タブと同じグローバル設定）。 */
+  comfyTarget?: ComfyTarget | null
+  onComfyTarget?: (target: ComfyTarget) => void
 }
 
-export default function AgentView({ event, progress, showNsfw }: Props) {
+export default function AgentView({
+  event,
+  progress,
+  showNsfw,
+  comfyTarget = null,
+  onComfyTarget,
+}: Props) {
   const [sessions, setSessions] = useState<AgentSessionSummary[]>([])
   const [sessionId, setSessionId] = useState<string | null>(null)
   const [session, setSession] = useState<AgentSession | null>(null)
@@ -300,65 +311,77 @@ export default function AgentView({ event, progress, showNsfw }: Props) {
   }
 
   return (
-    <main className="flex min-h-0 flex-1 gap-3 overflow-hidden p-3">
-      {/* デスクトップ: 3 カラムの左列（狭幅ではドロワーに退避する） */}
-      <SessionList
-        {...sessionListProps}
-        className="hidden lg:flex"
-        collapsed={leftCollapsed}
-        onToggle={() => setLeftCollapsed((value) => !value)}
-        onSelect={selectSession}
-      />
-
-      {session ? (
-        <AgentChat
-          session={session}
-          progress={progress}
-          busy={busy}
-          error={error}
-          onDismissError={() => setError(null)}
-          onSend={send}
-          onApprove={approve}
-          onCheckin={checkin}
-          onStop={stop}
-          onOpenSessions={() => setSessionsOpen(true)}
-          onOpenArtifacts={openArtifacts}
-          artifactCount={session.artifacts.length}
-          artifactBadge={artifactBadge}
-          onToggleNsfw={(nsfw) => void toggleNsfw(session.id, nsfw)}
-          showNsfw={showNsfw}
-          thinking={thinking}
-          activity={activity}
+    <main className="flex min-h-0 flex-1 flex-col gap-2 overflow-hidden p-3">
+      {/* 生成タブと同じ接続先セレクタ（グローバル設定で、ここで変えても全体に効く） */}
+      {onComfyTarget && (
+        <TargetSelector
+          target={comfyTarget}
+          onChange={onComfyTarget}
+          id="agent-comfy-target"
+          className="w-52 shrink-0"
         />
-      ) : (
-        <section className="flex min-h-0 min-w-0 flex-1 flex-col items-center justify-center gap-2 rounded-lg border border-ink-600 bg-ink-900 p-4 text-center">
-          <span className="text-4xl opacity-40">🤖</span>
-          <p className="text-sm text-slate-500">
-            エージェントに任せる作業をセッションとして始めます
-          </p>
-          <p className="hidden text-xs text-slate-600 lg:block">
-            左の「＋ 新規セッション」から最初の指示を入力してください
-          </p>
-          <button
-            className="btn-primary mt-1 text-xs lg:hidden"
-            onClick={() => setSessionsOpen(true)}
-          >
-            セッション一覧を開く
-          </button>
-        </section>
       )}
 
-      {session && (
-        <ArtifactPanel
-          sessionId={session.id}
-          artifacts={session.artifacts}
-          pending={pending}
-          collapsed={rightCollapsed}
-          onToggle={() => setRightCollapsed((value) => !value)}
-          onExpand={expandArtifacts}
+      <div className="flex min-h-0 flex-1 gap-3 overflow-hidden">
+        {/* デスクトップ: 3 カラムの左列（狭幅ではドロワーに退避する） */}
+        <SessionList
+          {...sessionListProps}
           className="hidden lg:flex"
+          collapsed={leftCollapsed}
+          onToggle={() => setLeftCollapsed((value) => !value)}
+          onSelect={selectSession}
         />
-      )}
+
+        {session ? (
+          <AgentChat
+            session={session}
+            progress={progress}
+            busy={busy}
+            error={error}
+            onDismissError={() => setError(null)}
+            onSend={send}
+            onApprove={approve}
+            onCheckin={checkin}
+            onStop={stop}
+            onOpenSessions={() => setSessionsOpen(true)}
+            onOpenArtifacts={openArtifacts}
+            artifactCount={session.artifacts.length}
+            artifactBadge={artifactBadge}
+            onToggleNsfw={(nsfw) => void toggleNsfw(session.id, nsfw)}
+            showNsfw={showNsfw}
+            thinking={thinking}
+            activity={activity}
+          />
+        ) : (
+          <section className="flex min-h-0 min-w-0 flex-1 flex-col items-center justify-center gap-2 rounded-lg border border-ink-600 bg-ink-900 p-4 text-center">
+            <span className="text-4xl opacity-40">🤖</span>
+            <p className="text-sm text-slate-500">
+              エージェントに任せる作業をセッションとして始めます
+            </p>
+            <p className="hidden text-xs text-slate-600 lg:block">
+              左の「＋ 新規セッション」から最初の指示を入力してください
+            </p>
+            <button
+              className="btn-primary mt-1 text-xs lg:hidden"
+              onClick={() => setSessionsOpen(true)}
+            >
+              セッション一覧を開く
+            </button>
+          </section>
+        )}
+
+        {session && (
+          <ArtifactPanel
+            sessionId={session.id}
+            artifacts={session.artifacts}
+            pending={pending}
+            collapsed={rightCollapsed}
+            onToggle={() => setRightCollapsed((value) => !value)}
+            onExpand={expandArtifacts}
+            className="hidden lg:flex"
+          />
+        )}
+      </div>
 
       {/* 狭幅: セッション一覧は左ドロワー（背景タップで閉じる） */}
       {sessionsOpen && (

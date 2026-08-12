@@ -1,6 +1,11 @@
 import { useEffect, useState } from 'react'
 import { api } from '../../api'
-import type { StudioCapabilities, StudioProjectDetail, StudioProjectUpdate } from '../../types'
+import type {
+  ComfyTarget,
+  StudioCapabilities,
+  StudioProjectDetail,
+  StudioProjectUpdate,
+} from '../../types'
 import { FieldError, Section } from '../ui'
 import { projectSummary, validateProjectForm, type ProjectFormState } from './studio'
 
@@ -20,6 +25,7 @@ export default function OverviewView({
   onDelete,
   onOpenRevisions,
   busy,
+  comfyTarget = null,
 }: {
   detail: StudioProjectDetail
   onSave: (patch: StudioProjectUpdate) => void
@@ -27,6 +33,8 @@ export default function OverviewView({
   /** 変更履歴（リビジョン）のモーダルを開く。 */
   onOpenRevisions: () => void
   busy: boolean
+  /** いまの ComfyUI 接続先（変わったらケーパビリティを聞き直す）。 */
+  comfyTarget?: ComfyTarget | null
 }) {
   const [form, setForm] = useState<ProjectFormState>({
     name: detail.name,
@@ -35,13 +43,15 @@ export default function OverviewView({
     world_notes: detail.world_notes,
     auto_translate: detail.auto_translate,
     latent_continuity: detail.latent_continuity,
+    nsfw: detail.nsfw,
   })
   const [errors, setErrors] = useState<Record<string, string>>({})
   // 接続先にカスタムノードが入っているか（null = まだ聞いていない）。
   const [capabilities, setCapabilities] = useState<StudioCapabilities | null>(null)
 
-  // ラテント連続性は接続先の ComfyUI 頼みなので、開いたときに 1 度だけ聞く。
-  // 聞けなかったときはトグルを塞がず、いま入っている値のままにしておく。
+  // ラテント連続性は接続先の ComfyUI 頼みなので、開いたときと**接続先を
+  // 切り替えたとき**に聞き直す。聞けなかったときはトグルを塞がず、いま入って
+  // いる値のままにしておく。
   useEffect(() => {
     let alive = true
     void api
@@ -55,7 +65,7 @@ export default function OverviewView({
     return () => {
       alive = false
     }
-  }, [])
+  }, [comfyTarget])
 
   // プロジェクトを切り替えたら編集中の内容もそちらに揃える。
   useEffect(() => {
@@ -66,6 +76,7 @@ export default function OverviewView({
       world_notes: detail.world_notes,
       auto_translate: detail.auto_translate,
       latent_continuity: detail.latent_continuity,
+      nsfw: detail.nsfw,
     })
     setErrors({})
   }, [
@@ -76,6 +87,7 @@ export default function OverviewView({
     detail.world_notes,
     detail.auto_translate,
     detail.latent_continuity,
+    detail.nsfw,
   ])
 
   const summary = projectSummary(detail)
@@ -188,6 +200,22 @@ export default function OverviewView({
                 {continuityDisabled
                   ? '接続先（Comfy Cloud）では利用できません（MiniMaxH3MotionContext 系のカスタムノードが入っていません）。'
                   : 'カットの引き継ぎ（「直前カットから続ける」）が、ラストフレーム 1 枚ではなく直前カットの動画とラテントごとになります。参照素材の指定と直前カットの採用 Take が要ります。'}
+              </p>
+            </div>
+            <div>
+              <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-300">
+                <input
+                  type="checkbox"
+                  className="h-3.5 w-3.5 accent-accent-500"
+                  checked={form.nsfw}
+                  onChange={(event) => patch({ nsfw: event.target.checked })}
+                />
+                🫣 NSFW プロジェクト
+              </label>
+              <p className="mt-1 text-[11px] text-slate-500">
+                {form.nsfw
+                  ? 'このプロジェクトから投入するジョブはすべて NSFW 扱いになります。'
+                  : 'このプロジェクトから投入するジョブは非 NSFW で固定されます（自動判定は走りません）。'}
               </p>
             </div>
           </div>

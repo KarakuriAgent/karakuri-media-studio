@@ -2175,6 +2175,10 @@ What actually decides the output:
   as the `_save` variant of its mode (`minimax_h3_t2v_save` / `_i2v_save` /
   `_r2v_save`) so that the cut that **starts** a chain leaves an AV latent
   behind; the result is identical to the plain mode otherwise.
+- `nsfw` (per project, off by default): every job this project submits carries
+  the project's flag as a **manual** decision — on marks all of them NSFW, off
+  pins them to non-NSFW and skips the automatic classifier entirely. It is a
+  property of the work, not of a single cut, so change it on the project.
 - `auto_translate` (per project, on by default): write the Shot **in Japanese**
   and the app has Grok turn the assembled prompt into English at submit time —
   so do not hand it a finished English prompt, and never replace a `@名前` with
@@ -2192,7 +2196,7 @@ Actions — one per reply like every other action, no approval needed:
 |---|---|---|
 | `studio_list_projects` | — | every project with its Shot / asset / Take counts |
 | `studio_get_project` | `project_id` | the whole project: assets, 話 / 場 / Shot, and each Shot's Takes with their status and `stale` |
-| `studio_create_project` | `name`, optional `code`, `synopsis`, `world_notes`, `auto_translate`, `latent_continuity` | start a work |
+| `studio_create_project` | `name`, optional `code`, `synopsis`, `world_notes`, `auto_translate`, `latent_continuity`, `nsfw` | start a work |
 | `studio_update_project` | `project_id` + any of the above | e.g. keep `world_notes` up to date |
 | `studio_upsert_episode` | `id` to edit, else `project_id`; `title`, `synopsis`, `sort_order` | 話 |
 | `studio_upsert_scene` | `id` to edit, else `episode_id`; `title`, `synopsis`, `time_of_day`, `sort_order`. With `id`, `episode_id` **moves** the 場 to that 話 | 場 |

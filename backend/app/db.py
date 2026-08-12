@@ -93,6 +93,7 @@ CREATE TABLE IF NOT EXISTS studio_projects (
   world_notes TEXT NOT NULL DEFAULT '',   -- World Bible の覚え書き
   auto_translate INTEGER NOT NULL DEFAULT 1, -- 日本語プロンプトを Grok で英訳してから投入
   latent_continuity INTEGER NOT NULL DEFAULT 0, -- 引き継ぎを Motion Context（ラテント連続性）で行う
+  nsfw        INTEGER NOT NULL DEFAULT 0,   -- 1 = この作品から投入するジョブはすべて NSFW（0 = 非 NSFW 固定）
   canvas_x    REAL NOT NULL DEFAULT 0,      -- キャンバス（別ビュー）の表示位置
   canvas_y    REAL NOT NULL DEFAULT 0,
   canvas_zoom REAL NOT NULL DEFAULT 1,
@@ -195,7 +196,6 @@ CREATE TABLE IF NOT EXISTS studio_shots (
   megapixels           REAL,                       -- 解像度の目安（比と合わせて幅×高さになる）
   seed                 INTEGER,                    -- NULL = 毎回ランダム
   workflow_override    TEXT,                       -- NULL = t2v/i2v/r2v を自動選択
-  nsfw                 INTEGER NOT NULL DEFAULT 0, -- 1 = 投入するジョブに NSFW の印を付ける（manual）
   created_at           TEXT NOT NULL,
   updated_at           TEXT NOT NULL,
   prompt_updated_at    TEXT                        -- プロンプトに効く項目を変えた時刻（stale 判定用）
@@ -382,6 +382,9 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         # 引き継ぎを Motion Context（ラテント連続性）で行うか。既存の
         # プロジェクトは既定 OFF = 今までどおりラストフレームの引き継ぎ。
         ("latent_continuity", "INTEGER NOT NULL DEFAULT 0"),
+        # この作品から投入するジョブを NSFW 扱いにするか。既存のプロジェクトは
+        # 0 = 非 NSFW（投入時に明示するので Grok の自動判定は走らない）。
+        ("nsfw", "INTEGER NOT NULL DEFAULT 0"),
     ],
     "studio_assets": [
         # ファイル実体を持たない「名前とキャプションだけ」の素材を許すので、
@@ -399,8 +402,9 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         ("megapixels", "REAL"),
         ("seed", "INTEGER"),
         ("workflow_override", "TEXT"),
-        # 既存行は 0 = 今までどおり投入後の自動判定に任せる。
-        ("nsfw", "INTEGER NOT NULL DEFAULT 0"),
+        # NSFW はプロジェクト単位に移した（studio_projects.nsfw）。一度でも
+        # 起動した DB には Shot 側の nsfw 列が残るが、読み書きしないので放置する
+        # （SQLite では列を落とせず、落とす価値もない）。
         ("prompt_updated_at", "TEXT"),
     ],
     "canvas_cards": [

@@ -2338,6 +2338,9 @@ class StudioProject(BaseModel):
     #: ON なら直前カットの動画と AV ラテントを渡す ``minimax_h3_r2v_context``。
     #: カスタムノードが要るので、入っていない接続先では投入時に断られる。
     latent_continuity: bool = False
+    #: この作品から投入するジョブをすべて NSFW 扱いにする。OFF なら**非 NSFW で
+    #: 固定**（投入時に明示するので、Grok の自動判定は走らない）。
+    nsfw: bool = False
     created_at: str
     updated_at: str
 
@@ -2365,6 +2368,8 @@ class StudioProjectCreate(BaseModel):
     #: ON なら直前カットの動画と AV ラテントを渡す ``minimax_h3_r2v_context``。
     #: カスタムノードが要るので、入っていない接続先では投入時に断られる。
     latent_continuity: bool = False
+    #: この作品から投入するジョブをすべて NSFW 扱いにする（OFF = 非 NSFW 固定）
+    nsfw: bool = False
 
 
 class StudioProjectUpdate(BaseModel):
@@ -2380,6 +2385,8 @@ class StudioProjectUpdate(BaseModel):
     #: ON なら直前カットの動画と AV ラテントを渡す ``minimax_h3_r2v_context``。
     #: カスタムノードが要るので、入っていない接続先では投入時に断られる。
     latent_continuity: bool | None = None
+    #: この作品から投入するジョブをすべて NSFW 扱いにする（OFF = 非 NSFW 固定）
+    nsfw: bool | None = None
 
 
 class StudioEpisode(BaseModel):
@@ -2671,8 +2678,6 @@ class StudioShot(BaseModel):
     seed: int | None = None
     #: ワークフローの強制指定（None = t2v / i2v / r2v を自動で決める）
     workflow_override: StudioWorkflowOverride | None = None
-    #: 投入するジョブに NSFW の印を付ける（False = Grok の自動判定に任せる）
-    nsfw: bool = False
     created_at: str
     updated_at: str
     #: プロンプトに効く項目を最後に書き換えた時刻（Take の stale 判定に使う）
@@ -2698,7 +2703,6 @@ class StudioShotCreate(BaseModel):
     megapixels: float | None = None
     seed: int | None = None
     workflow_override: StudioWorkflowOverride | None = None
-    nsfw: bool = False
     #: 並び順（省略すると末尾に足す）
     sort_order: int | None = None
 
@@ -2728,8 +2732,6 @@ class StudioShotUpdate(BaseModel):
     megapixels: float | None = None
     seed: int | None = None
     workflow_override: StudioWorkflowOverride | None = None
-    #: NSFW の印（bool なので解除は false を送る。NULLABLE には入れない）
-    nsfw: bool | None = None
 
     #: null を明示できる項目（送られたときだけ NULL 書き込みを許す）
     NULLABLE: ClassVar[tuple[str, ...]] = (

@@ -87,7 +87,6 @@ function shot(id: string, overrides: Partial<StudioShot> = {}): StudioShot {
     status: 'draft',
     selected_take_id: null,
     carry_over_end_frame: false,
-    nsfw: false,
     aspect_ratio: null,
     megapixels: null,
     seed: null,
@@ -149,7 +148,8 @@ function detail(overrides: Partial<StudioProjectDetail> = {}): StudioProjectDeta
     synopsis: 'あらすじ',
     world_notes: '',
     auto_translate: true,
-  latent_continuity: false,
+    latent_continuity: false,
+    nsfw: false,
     created_at: '2026-01-01T00:00:00+00:00',
     updated_at: '2026-01-01T00:00:00+00:00',
     episodes: [],
@@ -190,6 +190,7 @@ function summary(current: StudioProjectDetail): StudioProjectSummary {
     world_notes: current.world_notes,
     auto_translate: current.auto_translate,
     latent_continuity: current.latent_continuity,
+    nsfw: current.nsfw,
     created_at: current.created_at,
     updated_at: current.updated_at,
     shot_count: current.shots.length,
@@ -675,6 +676,64 @@ describe('StudioView: 脚本タブの生成設定', () => {
     ).toBeTruthy()
     expect(mocked.updateStudioShot).not.toHaveBeenCalled()
   })
+
+  it('カットに NSFW のチェックボックスは無い（プロジェクト単位に移した）', async () => {
+    await openProject()
+    fireEvent.click(screen.getByRole('button', { name: '脚本' }))
+    fireEvent.click(rail().getByRole('button', { name: 'カット1' }))
+    await screen.findByLabelText('尺（秒）')
+    expect(screen.queryByLabelText(/NSFW/)).toBeNull()
+  })
+})
+
+describe('StudioView の接続先プルダウン', () => {
+  it('生成タブと同じセレクタを出し、選び直すと保存を頼む', async () => {
+    const onComfyTarget = vi.fn()
+    const current = detail()
+    mocked.listStudioProjects.mockResolvedValue([summary(current)])
+    mocked.getStudioProject.mockResolvedValue(current)
+    mocked.previewStudioShotPrompt.mockResolvedValue(shotPreview())
+    render(
+      <StudioView
+        progress={{}}
+        comfyTarget="runpod"
+        onComfyTarget={onComfyTarget}
+      />,
+    )
+    // プロジェクト一覧の時点から出す
+    const select = (await screen.findByLabelText('接続先')) as HTMLSelectElement
+    expect(select.value).toBe('runpod')
+
+    fireEvent.change(select, { target: { value: 'comfy_cloud' } })
+    expect(onComfyTarget).toHaveBeenCalledWith('comfy_cloud')
+
+    // プロジェクトを開いてもヘッダーに残る
+    fireEvent.click(screen.getByText(current.name))
+    await screen.findByRole('button', { name: '概要' })
+    expect(screen.getByLabelText('接続先')).toBeTruthy()
+  })
+
+  it('接続先が変わったらケーパビリティを聞き直す', async () => {
+    const current = detail()
+    mocked.listStudioProjects.mockResolvedValue([summary(current)])
+    mocked.getStudioProject.mockResolvedValue(current)
+    mocked.previewStudioShotPrompt.mockResolvedValue(shotPreview())
+    const view = render(
+      <StudioView progress={{}} comfyTarget="local" onComfyTarget={vi.fn()} />,
+    )
+    fireEvent.click(await screen.findByText(current.name))
+    await screen.findByRole('button', { name: '概要' })
+    await waitFor(() => expect(mocked.getStudioCapabilities).toHaveBeenCalledTimes(1))
+
+    view.rerender(
+      <StudioView
+        progress={{}}
+        comfyTarget="comfy_cloud"
+        onComfyTarget={vi.fn()}
+      />,
+    )
+    await waitFor(() => expect(mocked.getStudioCapabilities).toHaveBeenCalledTimes(2))
+  })
 })
 
 describe('StudioView: 概要タブと変更履歴', () => {
@@ -689,6 +748,34 @@ describe('StudioView: 概要タブと変更履歴', () => {
         expect.objectContaining({ auto_translate: false }),
       ),
     )
+  })
+
+  it('NSFW プロジェクトのトグルを保存する', async () => {
+    await openProject()
+    mocked.updateStudioProject.mockResolvedValue({})
+    fireEvent.click(screen.getByLabelText('🫣 NSFW プロジェクト'))
+    fireEvent.click(screen.getByRole('button', { name: '保存' }))
+    await waitFor(() =>
+      expect(mocked.updateStudioProject).toHaveBeenCalledWith(
+        'p1',
+        expect.objectContaining({ nsfw: true }),
+      ),
+    )
+  })
+
+  it('NSFW プロジェクトの説明は ON / OFF で入れ替わる', async () => {
+    await openProject()
+    expect(
+      screen.getByText(
+        'このプロジェクトから投入するジョブは非 NSFW で固定されます（自動判定は走りません）。',
+      ),
+    ).toBeTruthy()
+    fireEvent.click(screen.getByLabelText('🫣 NSFW プロジェクト'))
+    expect(
+      screen.getByText(
+        'このプロジェクトから投入するジョブはすべて NSFW 扱いになります。',
+      ),
+    ).toBeTruthy()
   })
 
   it('変更履歴を一覧して、その時点に戻す', async () => {

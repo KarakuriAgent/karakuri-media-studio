@@ -983,10 +983,10 @@ def test_a_setting_can_be_cleared_with_an_explicit_null(env):
     assert patched.json()["aspect_ratio"] == "16:9 (Widescreen)"
 
 
-def test_a_shot_marked_nsfw_submits_the_job_as_nsfw(env):
-    project = make_project(env)
-    shot = make_shot(env, project["id"], nsfw=True)
-    assert shot["nsfw"] is True
+def test_an_nsfw_project_submits_its_jobs_as_nsfw(env):
+    project = make_project(env, nsfw=True)
+    assert project["nsfw"] is True
+    shot = make_shot(env, project["id"])
     assert render(env, shot["id"]).status_code == 201
     # 明示指定なので manual 扱い（あとから自動判定に上書きされない）
     assert env.created[-1].nsfw is True
@@ -995,42 +995,62 @@ def test_a_shot_marked_nsfw_submits_the_job_as_nsfw(env):
     assert take["nsfw_source"] == "manual"
 
 
-def test_a_shot_left_alone_leaves_the_nsfw_flag_to_the_classifier(env):
+def test_a_plain_project_pins_its_jobs_to_non_nsfw(env):
+    project = make_project(env)
+    assert project["nsfw"] is False
+    shot = make_shot(env, project["id"])
+    assert render(env, shot["id"]).status_code == 201
+    # False も明示する = 自動判定は走らない（非 NSFW で固定）
+    assert env.created[-1].nsfw is False
+    take = detail(env, project["id"])["takes"][0]
+    assert take["nsfw"] is False
+    assert take["nsfw_source"] == "manual"
+
+
+def test_a_plain_project_never_runs_the_auto_classifier(env, monkeypatch):
+    calls: list[str] = []
+
+    async def spy(text: str) -> bool | None:
+        calls.append(text)
+        return True
+
+    monkeypatch.setattr(nsfw, "classify", spy)
     project = make_project(env)
     shot = make_shot(env, project["id"])
-    assert shot["nsfw"] is False
     assert render(env, shot["id"]).status_code == 201
-    # 何も渡さない = 投入後の自動判定に任せる
-    assert env.created[-1].nsfw is None
+    assert calls == []
 
 
-def test_the_nsfw_flag_of_a_shot_can_be_turned_off_again(env):
-    project = make_project(env)
-    shot = make_shot(env, project["id"], nsfw=True)
+def test_the_nsfw_flag_of_a_project_can_be_turned_off_again(env):
+    project = make_project(env, nsfw=True)
     patched = env.client.patch(
-        f"/api/studio/shots/{shot['id']}", json={"nsfw": False}
+        f"/api/studio/projects/{project['id']}", json={"nsfw": False}
     )
     assert patched.status_code == 200, patched.text
     assert patched.json()["nsfw"] is False
+    shot = make_shot(env, project["id"])
     assert render(env, shot["id"]).status_code == 201
-    assert env.created[-1].nsfw is None
+    assert env.created[-1].nsfw is False
 
 
-def test_the_nsfw_flag_does_not_make_the_takes_stale(env):
+def test_the_project_nsfw_flag_shows_up_in_the_listing(env):
+    make_project(env, nsfw=True)
+    rows = env.client.get("/api/studio/projects").json()
+    assert [row["nsfw"] for row in rows] == [True]
+
+
+def test_shots_do_not_carry_an_nsfw_flag_of_their_own(env):
     project = make_project(env)
     shot = make_shot(env, project["id"])
-    render(env, shot["id"])
-    env.client.patch(f"/api/studio/shots/{shot['id']}", json={"nsfw": True})
-    assert detail(env, project["id"])["takes"][0]["stale"] is False
+    assert "nsfw" not in shot
 
 
 def test_a_take_carries_the_nsfw_flag_of_its_job(env):
     project = make_project(env)
     shot = make_shot(env, project["id"])
     take = render(env, shot["id"]).json()
-    # 自動判定に任せたカットなので、ここは手動の印ではない
+    # 非 NSFW のプロジェクトなので、投入の時点で False に固定されている
     assert take["nsfw"] is False
-    assert take["nsfw_source"] != "manual"
 
     toggled = env.client.post(f"/api/jobs/{take['job_id']}/nsfw", json={"nsfw": True})
     assert toggled.status_code == 200, toggled.text

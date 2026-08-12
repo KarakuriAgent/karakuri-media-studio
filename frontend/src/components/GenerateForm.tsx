@@ -2,8 +2,6 @@ import { useEffect, useRef, useState } from 'react'
 import { api } from '../api'
 import {
   AUTHOR_NEGATIVE_PROMPT,
-  COMFY_TARGETS,
-  COMFY_TARGET_LABELS,
   DEFAULT_NEGATIVE_PROMPT,
   MAX_STEPS,
   MODE_HINTS,
@@ -51,6 +49,7 @@ import HistoryPickerModal, {
 import LibraryPickerModal from './LibraryPickerModal'
 import ModelPicker from './ModelPicker'
 import SheetBuilderModal from './SheetBuilderModal'
+import TargetSelector from './TargetSelector'
 import WorkflowPicker from './WorkflowPicker'
 import WorkflowSelects from './WorkflowSelects'
 import { Banner, FieldError, Modal, Section } from './ui'
@@ -819,24 +818,7 @@ export default function GenerateForm({
     <div className="flex flex-col gap-3">
       {/* ComfyUI の接続先（SPEC §5）。選択はサーバー側の設定に保存されるので、
           次に開いたときも前回の接続先が使われる。詳しい接続情報は設定ページ。 */}
-      <div className="flex items-center gap-2">
-        <label className="shrink-0 text-xs text-slate-400" htmlFor="comfy-target">
-          接続先
-        </label>
-        <select
-          id="comfy-target"
-          className="field"
-          value={comfyTarget ?? 'local'}
-          disabled={comfyTarget == null}
-          onChange={(event) => onComfyTarget(event.target.value as ComfyTarget)}
-        >
-          {COMFY_TARGETS.map((target) => (
-            <option key={target} value={target}>
-              {COMFY_TARGET_LABELS[target]}
-            </option>
-          ))}
-        </select>
-      </div>
+      <TargetSelector target={comfyTarget} onChange={onComfyTarget} />
 
       {optionsError && (
         <Banner tone="warn">

@@ -168,6 +168,7 @@ def _row_to_project(row: aiosqlite.Row) -> StudioProject:
     data = dict(row)
     data["auto_translate"] = bool(data.get("auto_translate", 1))
     data["latent_continuity"] = bool(data.get("latent_continuity", 0))
+    data["nsfw"] = bool(data.get("nsfw", 0))
     return StudioProject(**data)
 
 
@@ -229,7 +230,6 @@ def _stored_asset_path(path: str, kind: str) -> str:
 def _row_to_shot(row: aiosqlite.Row) -> StudioShot:
     data = dict(row)
     data["carry_over_end_frame"] = bool(data["carry_over_end_frame"])
-    data["nsfw"] = bool(data.get("nsfw", 0))
     data["prompt_updated_at"] = data.get("prompt_updated_at") or data["updated_at"]
     return StudioShot(**data)
 
@@ -259,6 +259,7 @@ async def list_projects() -> list[StudioProjectSummary]:
         data = dict(row)
         data["auto_translate"] = bool(data.get("auto_translate", 1))
         data["latent_continuity"] = bool(data.get("latent_continuity", 0))
+        data["nsfw"] = bool(data.get("nsfw", 0))
         summaries.append(StudioProjectSummary(**data))
     return summaries
 
@@ -270,6 +271,7 @@ async def create_project(
     world_notes: str,
     auto_translate: bool = True,
     latent_continuity: bool = False,
+    nsfw: bool = False,
     *,
     actor: str = "user",
 ) -> StudioProject:
@@ -279,7 +281,7 @@ async def create_project(
     async with get_db() as conn:
         project = await _insert_project(
             conn, title, code, synopsis, world_notes, auto_translate,
-            latent_continuity,
+            latent_continuity, nsfw,
         )
         await _record_revision(conn, project.id, actor, "プロジェクトを作成")
         await conn.commit()
@@ -294,6 +296,7 @@ async def _insert_project(
     world_notes: str,
     auto_translate: bool,
     latent_continuity: bool = False,
+    nsfw: bool = False,
 ) -> StudioProject:
     project_id = new_id()
     now = _now()
@@ -301,8 +304,8 @@ async def _insert_project(
         await conn.execute(
             "INSERT INTO studio_projects"
             " (id, name, code, synopsis, world_notes, auto_translate,"
-            "  latent_continuity, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "  latent_continuity, nsfw, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 project_id,
                 title,
@@ -311,6 +314,7 @@ async def _insert_project(
                 world_notes or "",
                 1 if auto_translate else 0,
                 1 if latent_continuity else 0,
+                1 if nsfw else 0,
                 now,
                 now,
             ),
@@ -350,6 +354,8 @@ async def update_project(
         changes["auto_translate"] = 1 if changes["auto_translate"] else 0
     if "latent_continuity" in changes:
         changes["latent_continuity"] = 1 if changes["latent_continuity"] else 0
+    if "nsfw" in changes:
+        changes["nsfw"] = 1 if changes["nsfw"] else 0
     async with get_db() as conn:
         if await _fetch_project(conn, project_id) is None:
             return None
@@ -1400,11 +1406,8 @@ _SHOT_TEXT_FIELDS = (
 )
 
 
-#: Shot のうち、生成設定の欄（NULL 可。JobCreate へは値があるものだけ渡す）。
-#: ``nsfw`` だけは bool で、解除は NULL ではなく False（列も NOT NULL）。
-_SHOT_SETTING_FIELDS = (
-    "aspect_ratio", "megapixels", "seed", "workflow_override", "nsfw",
-)
+#: Shot のうち、生成設定の欄（NULL 可。JobCreate へは値があるものだけ渡す）
+_SHOT_SETTING_FIELDS = ("aspect_ratio", "megapixels", "seed", "workflow_override")
 
 
 async def _insert_shot(
@@ -1482,8 +1485,6 @@ async def update_shot(
     changes = dict(changes)
     if changes.get("carry_over_end_frame") is not None:
         changes["carry_over_end_frame"] = 1 if changes["carry_over_end_frame"] else 0
-    if changes.get("nsfw") is not None:
-        changes["nsfw"] = 1 if changes["nsfw"] else 0
     if changes.get("duration_seconds") is not None:
         changes["duration_seconds"] = float(changes["duration_seconds"])
     async with get_db() as conn:
@@ -2139,11 +2140,10 @@ async def render_shot(shot_id: str) -> StudioTake:
             fields["megapixels"] = float(shot.megapixels)
         if shot.seed is not None:
             fields["seed"] = int(shot.seed)
-        # NSFW は「立てたときだけ」明示する。明示すると manual 扱いになって
-        # あとから自動判定に上書きされないので、オフのままなら渡さない
-        # （従来どおり投入後に Grok が判定する。app.jobs._resolve_nsfw）。
-        if shot.nsfw:
-            fields["nsfw"] = True
+        # NSFW はプロジェクトの設定をそのまま**常に明示**する（True でも False
+        # でも manual 扱い）。オフの作品は非 NSFW で固定され、投入後の Grok の
+        # 自動判定は走らない（:func:`app.jobs._resolve_nsfw`）。
+        fields["nsfw"] = bool(project is not None and project.nsfw)
         if plan.start_image is not None:
             fields["source_image"] = plan.start_image
         # ラテント連続性: 直前カットの動画は入力ファイル、AV ラテントは

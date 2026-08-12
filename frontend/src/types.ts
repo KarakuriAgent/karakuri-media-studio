@@ -930,6 +930,11 @@ export interface StudioProject {
    * ON なら直前カットの動画と AV ラテントを渡す `minimax_h3_r2v_context`。
    */
   latent_continuity: boolean
+  /**
+   * この作品から投入するジョブをすべて NSFW 扱いにする。OFF なら**非 NSFW で
+   * 固定**（投入時に明示するので、Grok の自動判定は走らない）。
+   */
+  nsfw: boolean
   created_at: string
   updated_at: string
 }
@@ -955,6 +960,8 @@ export interface StudioProjectCreate {
    * ON なら直前カットの動画と AV ラテントを渡す `minimax_h3_r2v_context`。
    */
   latent_continuity?: boolean
+  /** この作品から投入するジョブをすべて NSFW 扱いにする（OFF = 非 NSFW 固定）。 */
+  nsfw?: boolean
 }
 
 /** PATCH /api/studio/projects/{id}（送った項目だけ変わる）。 */
@@ -970,6 +977,8 @@ export interface StudioProjectUpdate {
    * ON なら直前カットの動画と AV ラテントを渡す `minimax_h3_r2v_context`。
    */
   latent_continuity?: boolean
+  /** この作品から投入するジョブをすべて NSFW 扱いにする（OFF = 非 NSFW 固定）。 */
+  nsfw?: boolean
 }
 
 /** 話（エピソード）。場（StudioScene）の入れ物。 */
@@ -1134,8 +1143,6 @@ export interface StudioShot {
   seed: number | null
   /** ワークフローの強制指定（null = t2v / i2v / r2v を自動で決める）。 */
   workflow_override: StudioWorkflowOverride | null
-  /** 投入するジョブに NSFW の印を付ける（false = 投入後の自動判定に任せる）。 */
-  nsfw: boolean
   created_at: string
   updated_at: string
   /** プロンプトに効く項目を最後に書き換えた時刻（Take の stale 判定に使う）。 */
@@ -1159,7 +1166,6 @@ export interface StudioShotCreate {
   megapixels?: number | null
   seed?: number | null
   workflow_override?: StudioWorkflowOverride | null
-  nsfw?: boolean
   /** 並び順（省略すると末尾に足す）。 */
   sort_order?: number | null
 }
@@ -1188,8 +1194,6 @@ export interface StudioShotUpdate {
   megapixels?: number | null
   seed?: number | null
   workflow_override?: StudioWorkflowOverride | null
-  /** NSFW の印（bool なので解除は false を送る）。 */
-  nsfw?: boolean
 }
 
 export interface StudioTake {

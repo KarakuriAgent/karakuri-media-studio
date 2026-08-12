@@ -131,6 +131,7 @@ async def create_project(payload: StudioProjectCreate) -> StudioProject:
             payload.world_notes,
             payload.auto_translate,
             payload.latent_continuity,
+            payload.nsfw,
             actor=ACTOR,
         )
     except service.StudioError as exc:

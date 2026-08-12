@@ -966,9 +966,15 @@ def _studio_detail_text(detail: StudioProjectDetail) -> str:
         if detail.latent_continuity
         else "off（引き継ぎは直前カットのラストフレーム 1 枚）"
     )
+    nsfw = (
+        "on（この作品から投入するジョブはすべて NSFW 扱いになります）"
+        if detail.nsfw
+        else "off（非 NSFW で固定されます）"
+    )
     lines = [
         f"プロジェクト `{detail.id}` 「{detail.name}」{code} / auto_translate: {translate}",
         f"latent_continuity: {continuity}",
+        f"nsfw: {nsfw}",
     ]
     if detail.synopsis:
         lines.append(f"あらすじ: {detail.synopsis}")
@@ -1047,6 +1053,7 @@ async def _studio_create_project(params: dict[str, Any]) -> tuple[str, str, dict
         str(body.get("world_notes") or ""),
         bool(body.get("auto_translate", True)),
         bool(body.get("latent_continuity", False)),
+        bool(body.get("nsfw", False)),
         actor=STUDIO_ACTOR,
     )
     return (

@@ -436,15 +436,6 @@ export default function ScriptView({
                     </select>
                   </div>
                 </div>
-                <label className="flex cursor-pointer items-center gap-2 text-xs text-slate-300">
-                  <input
-                    type="checkbox"
-                    className="h-3.5 w-3.5 accent-accent-500"
-                    checked={form.nsfw}
-                    onChange={(event) => patch({ nsfw: event.target.checked })}
-                  />
-                  🫣 NSFW として投入する（オフなら生成後に自動で判定します）
-                </label>
               </div>
 
               <div className="flex items-center gap-2">

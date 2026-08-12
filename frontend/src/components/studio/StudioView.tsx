@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ApiError, api, formatDetail } from '../../api'
 import type {
   CanvasProgress,
+  ComfyTarget,
   JobProgress,
   StudioAssetCategory,
   StudioAssetFileRole,
@@ -12,9 +13,9 @@ import type {
   StudioProjectUpdate,
   StudioRevision,
   StudioShotUpdate,
-  StudioTake,
 } from '../../types'
 import { Banner } from '../ui'
+import TargetSelector from '../TargetSelector'
 import CanvasView from '../canvas/CanvasView'
 import OverviewView from './OverviewView'
 import ProductionView from './ProductionView'
@@ -65,6 +66,8 @@ export default function StudioView({
   canvasEvent = null,
   aspectRatios = [],
   showNsfw = true,
+  comfyTarget = null,
+  onComfyTarget,
 }: {
   /** App が WS から集めているジョブ進捗（Take の生成中表示に使う）。 */
   progress: Record<string, JobProgress>
@@ -74,6 +77,9 @@ export default function StudioView({
   aspectRatios?: string[]
   /** ヘッダーの「NSFW表示」（オフのあいだは Take の絵をぼかす）。 */
   showNsfw?: boolean
+  /** ComfyUI の接続先（生成タブと同じグローバル設定）。 */
+  comfyTarget?: ComfyTarget | null
+  onComfyTarget?: (target: ComfyTarget) => void
 }) {
   const [projects, setProjects] = useState<StudioProjectSummary[]>([])
   const [loadingProjects, setLoadingProjects] = useState(false)
@@ -421,10 +427,6 @@ export default function StudioView({
     if (!window.confirm('この Take を削除しますか？')) return
     void run(() => api.deleteStudioTake(id))
   }
-  // NSFW は Take ではなく元ジョブの持ち物なので、ジョブ側の手動トグルを叩いて
-  // からプロジェクトを取り直す（Take 一覧はジョブから値を引いている）。
-  const setTakeNsfw = (take: StudioTake, nsfw: boolean) =>
-    void run(() => api.setJobNsfw(take.job_id, nsfw))
 
   // ---------------------------------------------------------------- render
 
@@ -434,10 +436,21 @@ export default function StudioView({
     </div>
   )
 
+  /** 生成タブと同じ接続先セレクタ（グローバル設定。どこで変えても全体に効く）。 */
+  const targetSelector = onComfyTarget ? (
+    <TargetSelector
+      target={comfyTarget}
+      onChange={onComfyTarget}
+      id="studio-comfy-target"
+      className="w-52 shrink-0"
+    />
+  ) : null
+
   if (!projectId || !detail) {
     return (
       <main className="flex min-h-0 flex-1 flex-col overflow-y-auto">
         {banner}
+        {targetSelector && <div className="px-4 pt-3">{targetSelector}</div>}
         <ProjectPicker
           projects={projects}
           loading={loadingProjects}
@@ -494,7 +507,10 @@ export default function StudioView({
             <h2 className="truncate text-sm font-semibold text-slate-100">
               {detail.name}
             </h2>
-            <div className="ml-auto">{modeToggle}</div>
+            <div className="ml-auto flex items-center gap-2">
+              {targetSelector}
+              {modeToggle}
+            </div>
           </div>
           <CanvasView
             detail={detail}
@@ -539,7 +555,8 @@ export default function StudioView({
             <h2 className="truncate text-sm font-semibold text-slate-100">
               {detail.name}
             </h2>
-            <div className="ml-auto">{modeToggle}</div>
+            <div className="ml-auto">{targetSelector}</div>
+            {modeToggle}
             <div className="flex rounded-md border border-ink-600 bg-ink-800 p-0.5">
               {TABS.map((item) => (
                 <button
@@ -566,6 +583,7 @@ export default function StudioView({
                 onSave={saveProject}
                 onDelete={deleteProject}
                 onOpenRevisions={openRevisions}
+                comfyTarget={comfyTarget}
               />
             )}
             {tab === 'script' && (
@@ -610,7 +628,6 @@ export default function StudioView({
                 onSelectTake={selectTake}
                 onRejectTake={rejectTake}
                 onDeleteTake={deleteTake}
-                onSetTakeNsfw={setTakeNsfw}
               />
             )}
           </div>

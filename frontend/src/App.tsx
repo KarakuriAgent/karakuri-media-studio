@@ -640,7 +640,13 @@ export default function App() {
       )}
 
       {view === 'agent' && (
-        <AgentView event={agentEvent} progress={progress} showNsfw={showNsfw} />
+        <AgentView
+          event={agentEvent}
+          progress={progress}
+          showNsfw={showNsfw}
+          comfyTarget={settings?.comfy_target ?? null}
+          onComfyTarget={(target) => void changeComfyTarget(target)}
+        />
       )}
 
       {/* ドラマスタジオ（プロジェクト -> 脚本 -> Shot ごとの生成 -> Take の採用）。
@@ -651,6 +657,8 @@ export default function App() {
           canvasEvent={canvasEvent}
           aspectRatios={options?.aspect_ratios ?? []}
           showNsfw={showNsfw}
+          comfyTarget={settings?.comfy_target ?? null}
+          onComfyTarget={(target) => void changeComfyTarget(target)}
         />
       )}
 

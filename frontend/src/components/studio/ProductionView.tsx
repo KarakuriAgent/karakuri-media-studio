@@ -101,7 +101,6 @@ function TakeCard({
   onSelect,
   onReject,
   onDelete,
-  onSetNsfw,
   hideNsfw,
   busy,
 }: {
@@ -113,7 +112,6 @@ function TakeCard({
   onSelect: () => void
   onReject: () => void
   onDelete: () => void
-  onSetNsfw: (nsfw: boolean) => void
   /** NSFW 表示がオフで、この Take が NSFW（サムネイルをぼかす）。 */
   hideNsfw: boolean
   busy: boolean
@@ -213,22 +211,6 @@ function TakeCard({
         >
           却下
         </button>
-        <button
-          className={`btn-ghost !px-1.5 !py-0.5 text-[10px] ${
-            nsfw ? '!border-pink-700 !bg-pink-950/60 !text-pink-300' : ''
-          }`}
-          onClick={() => onSetNsfw(!nsfw)}
-          disabled={busy || take.nsfw == null}
-          title={
-            take.nsfw_source === 'manual'
-              ? '手動で決めた印です（自動判定に上書きされません）'
-              : nsfw
-                ? 'NSFW 指定を外す'
-                : 'NSFW として印を付ける'
-          }
-        >
-          🫣 NSFW
-        </button>
         {take.video_url && (
           <a
             className="btn-ghost !px-1.5 !py-0.5 text-[10px]"
@@ -310,7 +292,6 @@ export default function ProductionView({
   onSelectTake,
   onRejectTake,
   onDeleteTake,
-  onSetTakeNsfw,
   busy,
   latentContinuity = false,
   showNsfw = true,
@@ -325,8 +306,6 @@ export default function ProductionView({
   onSelectTake: (takeId: string) => void
   onRejectTake: (takeId: string) => void
   onDeleteTake: (takeId: string) => void
-  /** Take の NSFW フラグの手動切り替え（元ジョブに対して効く）。 */
-  onSetTakeNsfw: (take: StudioTake, nsfw: boolean) => void
   busy: boolean
   /** プロジェクトの設定（引き継ぎを Motion Context で行う = ラテント連続性）。 */
   latentContinuity?: boolean
@@ -478,7 +457,6 @@ export default function ProductionView({
                   onSelect={() => onSelectTake(take.id)}
                   onReject={() => onRejectTake(take.id)}
                   onDelete={() => onDeleteTake(take.id)}
-                  onSetNsfw={(nsfw) => onSetTakeNsfw(take, nsfw)}
                 />
               ))}
             </ul>
