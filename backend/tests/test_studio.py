@@ -12,7 +12,7 @@ from fastapi.testclient import TestClient
 
 from app import comfy, db, grok, jobs, nsfw, studio, workflows
 from app.main import app
-from app.models import StudioShot
+from app.models import MAX_STEPS, StudioShot
 from app.routers import assets as assets_router
 
 
@@ -152,8 +152,11 @@ def make_metadata_asset(env, project_id: str, name: str, **form) -> dict:
     return response.json()
 
 
-def render(env, shot_id: str):
-    return env.client.post(f"/api/studio/shots/{shot_id}/render")
+def render(env, shot_id: str, body: dict | None = None):
+    """カットを 1 回生成する（``body`` はその 1 回だけに効く上書き）。"""
+    return env.client.post(
+        f"/api/studio/shots/{shot_id}/render", json=body if body is not None else None
+    )
 
 
 def detail(env, project_id: str) -> dict:
@@ -641,9 +644,14 @@ def _finish_context_job(env, take: dict, *, latent: str | None) -> None:
         )
 
 
-def _continuity_pair(env, *, latent: str | None = "/comfy/output/h3_context/a_00001_.safetensors"):
+def _continuity_pair(
+    env,
+    *,
+    latent: str | None = "/comfy/output/h3_context/a_00001_.safetensors",
+    quality: str = "normal",
+):
     """「前カットを採用済み」の状態まで進めた (project, 続きの Shot) を返す。"""
-    project = make_project(env, latent_continuity=True)
+    project = make_project(env, latent_continuity=True, quality=quality)
     make_asset(env, project["id"], "Neko", kind="image", prompt_caption="a calico cat")
     first = make_shot(env, project["id"], prompt="@Neko walks in.")
     second = make_shot(
@@ -956,36 +964,101 @@ def test_quality_picks_the_i2v_variant(env, monkeypatch, quality, expected):
     assert env.created[-1].video_workflow == expected
 
 
-@pytest.mark.parametrize("quality", ["opt", "turbo"])
-def test_quality_falls_back_to_plain_on_t2v(env, monkeypatch, quality):
-    """t2v には turbo / opt のバリアントが無いので素へ落とす（理由つき）。"""
+@pytest.mark.parametrize(
+    ("quality", "expected"),
+    [
+        ("normal", "minimax_h3_t2v"),
+        ("opt", "minimax_h3_t2v_opt"),
+        ("turbo", "minimax_h3_t2v_turbo"),
+    ],
+)
+def test_quality_picks_the_t2v_variant(env, monkeypatch, quality, expected):
+    """t2v にも turbo / opt のテンプレートがある。"""
     _use_target(monkeypatch, "local")
     project = make_project(env, quality=quality)
     shot = make_shot(env, project["id"], prompt="A cat walks in.")
     assert render(env, shot["id"]).status_code == 201
-    assert env.created[-1].video_workflow == "minimax_h3_t2v"
-
-    preview = env.client.get(f"/api/studio/shots/{shot['id']}/prompt-preview").json()
-    assert preview["quality"] == quality
-    assert preview["quality_applied"] is False
-    assert "用意が無い" in preview["workflow_reason"]
+    assert env.created[-1].video_workflow == expected
 
 
-@pytest.mark.parametrize("quality", ["opt", "turbo"])
-def test_quality_falls_back_when_latent_continuity_is_on(env, monkeypatch, quality):
-    """保存付き（_save / _context）のバリアントが無いので、素系のまま投げる。"""
+@pytest.mark.parametrize(
+    ("quality", "expected"),
+    [
+        ("normal", "minimax_h3_r2v_save"),
+        ("opt", "minimax_h3_r2v_save_opt"),
+        ("turbo", "minimax_h3_r2v_save_turbo"),
+    ],
+)
+def test_quality_applies_to_the_latent_saving_variant(
+    env, monkeypatch, quality, expected
+):
+    """ラテント連続性 ON の**起点**カットは、保存付き × 品質で解決する。"""
     _allow_latent_context(monkeypatch)
     _use_target(monkeypatch, "local")
     project = make_project(env, quality=quality, latent_continuity=True)
     make_asset(env, project["id"], "Neko", kind="image", prompt_caption="a calico cat")
     shot = make_shot(env, project["id"], prompt="@Neko walks in.")
     assert render(env, shot["id"]).status_code == 201
-    # 連鎖の起点なので保存付きへの読み替えだけが効く
+    assert env.created[-1].video_workflow == expected
+
+    preview = env.client.get(f"/api/studio/shots/{shot['id']}/prompt-preview").json()
+    assert preview["quality_applied"] is (quality != "normal")
+
+
+@pytest.mark.parametrize(
+    ("quality", "expected"),
+    [
+        ("normal", "minimax_h3_r2v_context"),
+        ("opt", "minimax_h3_r2v_context_opt"),
+        ("turbo", "minimax_h3_r2v_context_turbo"),
+    ],
+)
+def test_quality_applies_to_the_continuous_cut_variant(
+    env, monkeypatch, quality, expected
+):
+    """ラテント連続性 ON の**続き**のカットも、連続カット版 × 品質で解決する。"""
+    _allow_latent_context(monkeypatch)
+    _use_target(monkeypatch, "local")
+    _project, second = _continuity_pair(env, quality=quality)
+    assert render(env, second["id"]).status_code == 201
+    assert env.created[-1].video_workflow == expected
+
+
+@pytest.mark.parametrize("quality", ["opt", "turbo"])
+def test_latent_continuity_falls_back_on_a_target_without_the_custom_nodes(
+    env, monkeypatch, quality
+):
+    """接続先が対応しないときは、品質だけ落として保存付きの版は保つ。"""
+    _allow_latent_context(monkeypatch)
+    _use_target(monkeypatch, "comfy_cloud")
+    project = make_project(env, quality=quality, latent_continuity=True)
+    make_asset(env, project["id"], "Neko", kind="image", prompt_caption="a calico cat")
+    shot = make_shot(env, project["id"], prompt="@Neko walks in.")
+    assert render(env, shot["id"]).status_code == 201
     assert env.created[-1].video_workflow == "minimax_h3_r2v_save"
 
     preview = env.client.get(f"/api/studio/shots/{shot['id']}/prompt-preview").json()
     assert preview["quality_applied"] is False
-    assert "ラテント連続性" in preview["workflow_reason"]
+    assert "接続先" in preview["workflow_reason"]
+
+
+@pytest.mark.parametrize("quality", ["opt", "turbo"])
+def test_quality_falls_back_when_a_workflow_has_no_variant(monkeypatch, quality):
+    """表に無いワークフローは黙って落とさず、理由つきでそのまま投げる。"""
+    _use_target(monkeypatch, "local")
+    workflow, reason = studio._quality_workflow("minimax_h3_nonesuch", quality)
+    assert workflow == "minimax_h3_nonesuch"
+    assert "用意が無い" in reason
+
+
+def test_every_quality_variant_is_a_registered_workflow():
+    """品質の表が実在しないテンプレートを指していたら、黙って素へ落ちてしまう。"""
+    from app.workflows import get_video_spec
+
+    for table in studio.QUALITY_WORKFLOWS.values():
+        for base, variant in table.items():
+            assert get_video_spec(base).id == base
+            assert get_video_spec(variant).id == variant
 
 
 @pytest.mark.parametrize("quality", ["opt", "turbo"])
@@ -1156,6 +1229,200 @@ def test_the_project_megapixels_are_not_clamped_to_the_workflow_default(env):
     shot = make_shot(env, project["id"])
     assert render(env, shot["id"]).status_code == 201
     assert env.created[-1].megapixels == 1.0
+
+
+# --------------------------------------------------------------------------
+# ステップ数（プロジェクト共通の設定）
+# --------------------------------------------------------------------------
+#
+# 0 = 未指定 = テンプレートの既定のまま（turbo なら 4、normal / opt なら 20）。
+# `steps` を宣言しているワークフローにだけ載る。
+
+def test_the_project_steps_are_unset_by_default(env):
+    project = make_project(env)
+    assert project["steps"] == 0
+    assert env.client.get("/api/studio/projects").json()[0]["steps"] == 0
+
+
+def test_the_project_steps_are_saved(env):
+    project = make_project(env)
+    updated = env.client.patch(
+        f"/api/studio/projects/{project['id']}", json={"steps": 12}
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["steps"] == 12
+    assert detail(env, project["id"])["steps"] == 12
+
+
+def test_the_project_steps_can_be_set_at_creation(env):
+    assert make_project(env, steps=8)["steps"] == 8
+
+
+def test_zero_puts_the_project_steps_back_to_the_template_default(env):
+    project = make_project(env, steps=8)
+    cleared = env.client.patch(
+        f"/api/studio/projects/{project['id']}", json={"steps": 0}
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["steps"] == 0
+
+
+def test_out_of_range_project_steps_are_refused(env):
+    project = make_project(env)
+    for value in (-1, MAX_STEPS + 1):
+        refused = env.client.patch(
+            f"/api/studio/projects/{project['id']}", json={"steps": value}
+        )
+        assert refused.status_code == 400, refused.text
+    assert detail(env, project["id"])["steps"] == 0
+
+
+def test_an_unreadable_steps_value_reads_as_unset():
+    """列を持たない（この設定より前の）DB や壊れた値は 0 = 未指定として読む。"""
+    assert studio.normalize_steps(None) == 0
+    assert studio.normalize_steps("") == 0
+    assert studio.normalize_steps(-5) == 0
+    # 読み取りは断らず、上限で止めるだけ
+    assert studio.normalize_steps(MAX_STEPS + 10) == MAX_STEPS
+
+
+def test_the_project_steps_reach_the_job(env):
+    project = make_project(env, steps=12)
+    shot = make_shot(env, project["id"])
+    assert render(env, shot["id"]).status_code == 201
+    assert env.created[-1].steps == 12
+
+
+def test_unset_project_steps_leave_the_template_default(env):
+    project = make_project(env)
+    shot = make_shot(env, project["id"])
+    assert render(env, shot["id"]).status_code == 201
+    # 0 = 何も載せない = テンプレートの既定のまま
+    assert env.created[-1].steps == 0
+
+
+# --------------------------------------------------------------------------
+# テイク 1 回ぶんの上書き（POST /shots/{id}/render のボディ）
+# --------------------------------------------------------------------------
+#
+# 送った項目だけがその 1 回に効き、Shot もプロジェクトも書き換えない。
+
+def test_an_empty_render_body_behaves_like_before(env):
+    project = make_project(env, megapixels=1.0, steps=12)
+    shot = make_shot(env, project["id"], duration_seconds=7, seed=3)
+    assert render(env, shot["id"], {}).status_code == 201
+    payload = env.created[-1]
+    assert payload.megapixels == 1.0
+    assert payload.duration == 7
+    assert payload.steps == 12
+    assert payload.seed == 3
+
+
+def test_the_render_body_overrides_the_resolution(env):
+    project = make_project(env, megapixels=1.0, aspect_ratio="1:1 (Square)")
+    shot = make_shot(env, project["id"], megapixels=0.5)
+    response = render(
+        env,
+        shot["id"],
+        {"megapixels": 0.8, "aspect_ratio": "16:9 (Widescreen)"},
+    )
+    assert response.status_code == 201, response.text
+    payload = env.created[-1]
+    assert payload.megapixels == 0.8
+    assert payload.aspect_ratio == "16:9 (Widescreen)"
+    # Shot もプロジェクトも据え置き
+    saved = detail(env, project["id"])
+    assert saved["megapixels"] == 1.0
+    assert saved["aspect_ratio"] == "1:1 (Square)"
+    assert saved["shots"][0]["megapixels"] == 0.5
+
+
+def test_the_render_body_overrides_the_duration(env):
+    project = make_project(env)
+    shot = make_shot(env, project["id"], duration_seconds=5)
+    assert render(env, shot["id"], {"duration": 9}).status_code == 201
+    assert env.created[-1].duration == 9
+    # カットの尺は変わらない
+    assert detail(env, project["id"])["shots"][0]["duration_seconds"] == 5
+
+
+def test_the_render_body_overrides_the_steps(env):
+    project = make_project(env, steps=12)
+    shot = make_shot(env, project["id"])
+    assert render(env, shot["id"], {"steps": 30}).status_code == 201
+    assert env.created[-1].steps == 30
+    assert detail(env, project["id"])["steps"] == 12
+
+
+def test_zero_steps_in_the_render_body_drop_the_project_setting(env):
+    """0 は「テンプレートの既定のまま」の明示なので、作品の設定にも勝つ。"""
+    project = make_project(env, steps=12)
+    shot = make_shot(env, project["id"])
+    assert render(env, shot["id"], {"steps": 0}).status_code == 201
+    assert env.created[-1].steps == 0
+
+
+def test_the_render_body_pins_the_seed(env):
+    project = make_project(env)
+    shot = make_shot(env, project["id"])
+    assert shot["seed"] is None
+    assert render(env, shot["id"], {"seed": 4242}).status_code == 201
+    assert env.created[-1].seed == 4242
+    # カットの設定はランダムのまま
+    assert detail(env, project["id"])["shots"][0]["seed"] is None
+
+
+def test_the_render_body_seed_wins_over_the_shot_one(env):
+    project = make_project(env)
+    shot = make_shot(env, project["id"], seed=7)
+    assert render(env, shot["id"], {"seed": 99}).status_code == 201
+    assert env.created[-1].seed == 99
+    # 送らなければ Shot の設定に落ちる
+    assert render(env, shot["id"]).status_code == 201
+    assert env.created[-1].seed == 7
+
+
+def test_the_take_params_keep_the_values_actually_used(env):
+    """生成記録（元ジョブの params）に、上書きした値がそのまま残る。"""
+    project = make_project(env, steps=12, megapixels=1.0)
+    shot = make_shot(env, project["id"], duration_seconds=5)
+    take = render(
+        env,
+        shot["id"],
+        {"steps": 30, "megapixels": 0.6, "duration": 8, "seed": 11},
+    ).json()
+    job = env.client.get(f"/api/jobs/{take['job_id']}").json()
+    assert job["params"]["steps"] == 30
+    assert job["params"]["megapixels"] == 0.6
+    assert job["params"]["duration"] == 8
+    assert job["params"]["seed"] == 11
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        {"steps": -1},
+        {"steps": MAX_STEPS + 1},
+        {"duration": 0},
+        {"duration": 16},
+    ],
+)
+def test_an_out_of_range_render_body_is_refused(env, body):
+    """範囲外は :class:`StudioError` -> 400（投入そのものが起きない）。"""
+    project = make_project(env)
+    shot = make_shot(env, project["id"])
+    refused = render(env, shot["id"], body)
+    assert refused.status_code == 400, refused.text
+    assert env.created == []
+
+
+@pytest.mark.parametrize("body", [{"duration": "ごびょう"}, {"seed": "たね"}])
+def test_a_render_body_with_the_wrong_type_is_refused(env, body):
+    """型そのものが違うものは、他の body と同じく FastAPI が 422 で弾く。"""
+    project = make_project(env)
+    shot = make_shot(env, project["id"])
+    assert render(env, shot["id"], body).status_code == 422
+    assert env.created == []
 
 
 # --------------------------------------------------------------------------

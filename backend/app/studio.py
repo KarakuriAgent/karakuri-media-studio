@@ -47,6 +47,7 @@ from .db import get_db
 from .ids import new_id
 from .models import (
     ASSET_FILE_ROLE_KINDS,
+    MAX_STEPS,
     JobCreate,
     StoryCreate,
     StoryResult,
@@ -60,6 +61,7 @@ from .models import (
     StudioProjectSummary,
     StudioProjectUpdate,
     StudioPromptReference,
+    StudioRenderRequest,
     StudioRevision,
     StudioRevisionDetail,
     StudioScene,
@@ -95,10 +97,10 @@ LATENT_SAVE_WORKFLOWS: dict[str, str] = {
     WORKFLOW_R2V: "minimax_h3_r2v_save",
 }
 
-#: ラテント連続性が ON のときにスタジオが投げうる、カスタムノード頼みの
-#: ワークフロー（投入前に接続先の対応を確かめる:
-#: :func:`_require_latent_context`）。
-LATENT_CONTEXT_WORKFLOWS: frozenset[str] = frozenset(
+#: ラテント連続性が ON のときにスタジオが投げうる**論理**ワークフロー
+#: （保存付きと連続カット）。品質のバリアント（``_turbo`` / ``_opt``）は
+#: :data:`LATENT_CONTEXT_WORKFLOWS` の方に混ぜて数える。
+LATENT_CONTEXT_BASE_WORKFLOWS: frozenset[str] = frozenset(
     {WORKFLOW_R2V_CONTEXT, *LATENT_SAVE_WORKFLOWS.values()}
 )
 
@@ -117,9 +119,12 @@ def _latent_save_workflow(workflow: str, latent_continuity: bool) -> str:
 # 動画生成の品質（プロジェクトの ``quality``）
 # --------------------------------------------------------------------------
 #
-# 品質は論理モード（t2v / i2v / r2v / r2v_context）と**直交**したパラメータ
-# として持つ。モードを決めるのは :func:`_pick_workflow` の仕事で、そのあとに
-# 「モード × 品質 -> バリアント id」をここで解決する（:func:`_quality_workflow`）。
+# 品質は論理モード（t2v / i2v / r2v / r2v_context）ともラテント連続性とも
+# **直交**したパラメータとして持つ。モードを決めるのは :func:`_pick_workflow` の
+# 仕事で、そのあとにラテント連続性の読み替え（:func:`_latent_save_workflow`）を
+# かけ、最後に「そこまでで決まった論理ワークフロー × 品質 -> バリアント id」を
+# ここで解決する（:func:`_quality_workflow`）。ラテント保存版・連続カット版にも
+# turbo / opt のテンプレートがあるので、品質はどの組み合わせでも効く。
 # Shot の ``workflow_override`` は素のモード id しか取らないままでよく、品質を
 # 掛け合わせても強制指定の意味は変わらない。
 
@@ -133,23 +138,49 @@ QUALITY_LABELS: dict[str, str] = {
     "turbo": "Turbo",
 }
 
-#: 品質 -> （論理モード -> そのバリアント id）。ここに無い組み合わせは
-#: 「バリアントが存在しない」＝素へフォールバックする。t2v と
-#: ``minimax_h3_r2v_context`` は turbo / opt を持たない。
+#: 品質 -> （論理ワークフロー -> そのバリアント id）。論理ワークフローは
+#: :func:`_pick_workflow` と :func:`_latent_save_workflow` を通ったあとの id
+#: （素の t2v / i2v / r2v、ラテント保存版、連続カット版）で、全 7 通りに
+#: turbo / opt のテンプレートが揃っている。ここに無い組み合わせは
+#: 「バリアントが存在しない」＝素へフォールバックする。
 QUALITY_WORKFLOWS: dict[str, dict[str, str]] = {
     "turbo": {
+        WORKFLOW_T2V: "minimax_h3_t2v_turbo",
         WORKFLOW_I2V: "minimax_h3_i2v_turbo",
         WORKFLOW_R2V: "minimax_h3_r2v_turbo",
+        "minimax_h3_t2v_save": "minimax_h3_t2v_save_turbo",
+        "minimax_h3_i2v_save": "minimax_h3_i2v_save_turbo",
+        "minimax_h3_r2v_save": "minimax_h3_r2v_save_turbo",
+        WORKFLOW_R2V_CONTEXT: "minimax_h3_r2v_context_turbo",
     },
     "opt": {
+        WORKFLOW_T2V: "minimax_h3_t2v_opt",
         WORKFLOW_I2V: "minimax_h3_i2v_opt",
         WORKFLOW_R2V: "minimax_h3_r2v_opt",
+        "minimax_h3_t2v_save": "minimax_h3_t2v_save_opt",
+        "minimax_h3_i2v_save": "minimax_h3_i2v_save_opt",
+        "minimax_h3_r2v_save": "minimax_h3_r2v_save_opt",
+        WORKFLOW_R2V_CONTEXT: "minimax_h3_r2v_context_opt",
     },
 }
 
 #: スタジオが投げうる turbo / opt のワークフロー id（接続先の対応判定用）
 QUALITY_VARIANT_WORKFLOWS: frozenset[str] = frozenset(
     workflow for table in QUALITY_WORKFLOWS.values() for workflow in table.values()
+)
+
+#: ラテント連続性が ON のときにスタジオが投げうる、カスタムノード頼みの
+#: ワークフロー（投入前に接続先の対応を確かめる: :func:`_require_latent_context`）。
+#: 論理ワークフローだけでなく、その turbo / opt のバリアントも同じ
+#: `MiniMaxH3MotionContext*` を使うので同じ扱いにする。
+LATENT_CONTEXT_WORKFLOWS: frozenset[str] = frozenset(
+    LATENT_CONTEXT_BASE_WORKFLOWS
+    | {
+        variant
+        for table in QUALITY_WORKFLOWS.values()
+        for base, variant in table.items()
+        if base in LATENT_CONTEXT_BASE_WORKFLOWS
+    }
 )
 
 
@@ -179,18 +210,17 @@ def _quality_supported_on_target(workflow: str) -> bool:
         return False
 
 
-def _quality_workflow(
-    workflow: str, quality: str, latent_continuity: bool
-) -> tuple[str, str]:
+def _quality_workflow(workflow: str, quality: str) -> tuple[str, str]:
     """``(解決したワークフロー id, 理由に足す一文)``。
 
-    ``quality`` が ``normal`` なら何もしない（付ける一文も無い）。それ以外は
-    次のどれかに当てはまれば**素へフォールバック**し、その理由を返す:
+    ``workflow`` は :func:`_pick_workflow` と :func:`_latent_save_workflow` を
+    通ったあとの論理ワークフロー（素 / ラテント保存版 / 連続カット版）。
 
-    1. t2v になったショット（turbo / opt のバリアントが存在しない）
-    2. ラテント連続性が ON（保存付き ``_save`` / ``_context`` のバリアントが
-       turbo / opt に無いので、連鎖を壊さないよう素系のままにする）
-    3. いまの接続先が turbo / opt のカスタムノードに対応しない（Comfy Cloud）
+    ``quality`` が ``normal`` なら何もしない（付ける一文も無い）。それ以外は
+    次のどちらかに当てはまれば**その論理ワークフローのまま**投げ、理由を返す:
+
+    1. そのワークフローに turbo / opt のバリアントが無い（:data:`QUALITY_WORKFLOWS`）
+    2. いまの接続先が turbo / opt のカスタムノードに対応しない（Comfy Cloud）
 
     黙って落とすのではなく、必ず ``workflow_reason`` に理由を出す。
     """
@@ -198,11 +228,6 @@ def _quality_workflow(
     if quality == DEFAULT_QUALITY:
         return workflow, ""
     label = QUALITY_LABELS[quality]
-    if latent_continuity:
-        return workflow, (
-            f"品質「{label}」はラテント連続性が ON のあいだ使えないので、"
-            "通常品質で投入します（ラテントを保存する版が turbo / opt にありません）"
-        )
     variant = QUALITY_WORKFLOWS[quality].get(workflow)
     if variant is None:
         return workflow, (
@@ -253,6 +278,42 @@ def normalize_aspect_ratio(value: Any) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+#: カットの尺（秒）として受け付ける範囲。MiniMax H3 は 1〜15 秒で、フォーム側の
+#: 検証（`studio.ts` の `SHOT_DURATION_MIN` / `SHOT_DURATION_MAX`）と揃えてある。
+SHOT_DURATION_MIN = 1.0
+SHOT_DURATION_MAX = 15.0
+
+
+def normalize_steps(value: Any) -> int:
+    """DB や API から来た値を ``0``〜:data:`MAX_STEPS` の整数に均す。
+
+    ``0`` は「未指定」= テンプレートの既定のまま。列を持たない既存 DB も、
+    数でない値も ``0`` に倒す（読めない値で作品を開けなくしない）。上限を
+    超えた値は上限で止める（読み取りは断らない。API から来た値の範囲検査は
+    :func:`_checked_steps` が別に行う）。
+    """
+    if value is None:
+        return 0
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return 0
+    return max(0, min(number, MAX_STEPS))
+
+
+def _checked_steps(value: Any) -> int:
+    """API から来た ``steps`` を検査する（範囲外は :class:`StudioError`）。"""
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        raise StudioError("ステップ数は整数で入れてください") from None
+    if not 0 <= number <= MAX_STEPS:
+        raise StudioError(
+            f"ステップ数は 0〜{MAX_STEPS} です（0 = テンプレートの既定）"
+        )
+    return number
 
 
 #: 素材の種別 -> プロンプト中で参照素材を呼ぶタグの名前（SPEC §3.1 / r2v）
@@ -317,6 +378,7 @@ def _row_to_project(row: aiosqlite.Row) -> StudioProject:
     data["quality"] = normalize_quality(data.get("quality"))
     data["megapixels"] = normalize_megapixels(data.get("megapixels"))
     data["aspect_ratio"] = normalize_aspect_ratio(data.get("aspect_ratio"))
+    data["steps"] = normalize_steps(data.get("steps"))
     data["nsfw"] = bool(data.get("nsfw", 0))
     return StudioProject(**data)
 
@@ -411,6 +473,7 @@ async def list_projects() -> list[StudioProjectSummary]:
         data["quality"] = normalize_quality(data.get("quality"))
         data["megapixels"] = normalize_megapixels(data.get("megapixels"))
         data["aspect_ratio"] = normalize_aspect_ratio(data.get("aspect_ratio"))
+        data["steps"] = normalize_steps(data.get("steps"))
         data["nsfw"] = bool(data.get("nsfw", 0))
         summaries.append(StudioProjectSummary(**data))
     return summaries
@@ -427,6 +490,7 @@ async def create_project(
     quality: str = DEFAULT_QUALITY,
     megapixels: float | None = None,
     aspect_ratio: str | None = None,
+    steps: int = 0,
     *,
     actor: str = "user",
 ) -> StudioProject:
@@ -437,6 +501,7 @@ async def create_project(
         project = await _insert_project(
             conn, title, code, synopsis, world_notes, auto_translate,
             latent_continuity, nsfw, quality, megapixels, aspect_ratio,
+            _checked_steps(steps),
         )
         await _record_revision(conn, project.id, actor, "プロジェクトを作成")
         await conn.commit()
@@ -455,6 +520,7 @@ async def _insert_project(
     quality: str = DEFAULT_QUALITY,
     megapixels: float | None = None,
     aspect_ratio: str | None = None,
+    steps: int = 0,
 ) -> StudioProject:
     project_id = new_id()
     now = _now()
@@ -462,9 +528,9 @@ async def _insert_project(
         await conn.execute(
             "INSERT INTO studio_projects"
             " (id, name, code, synopsis, world_notes, auto_translate,"
-            "  latent_continuity, quality, megapixels, aspect_ratio, nsfw,"
-            "  created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "  latent_continuity, quality, megapixels, aspect_ratio, steps,"
+            "  nsfw, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 project_id,
                 title,
@@ -476,6 +542,7 @@ async def _insert_project(
                 normalize_quality(quality),
                 normalize_megapixels(megapixels),
                 normalize_aspect_ratio(aspect_ratio),
+                normalize_steps(steps),
                 1 if nsfw else 0,
                 now,
                 now,
@@ -533,6 +600,8 @@ async def update_project(
         changes["megapixels"] = normalize_megapixels(changes["megapixels"])
     if "aspect_ratio" in changes:
         changes["aspect_ratio"] = normalize_aspect_ratio(changes["aspect_ratio"])
+    if "steps" in changes:
+        changes["steps"] = _checked_steps(changes["steps"])
     if "nsfw" in changes:
         changes["nsfw"] = 1 if changes["nsfw"] else 0
     async with get_db() as conn:
@@ -2119,11 +2188,12 @@ async def _plan_render(
     見るために渡す。ワークフロー id は 3 段で決まる:
 
     1. 論理モード（:func:`_pick_workflow`。t2v / i2v / r2v / r2v_context）
-    2. モード × 品質 -> バリアント（:func:`_quality_workflow`。条件が揃わなければ
-       素へフォールバックし、その理由を ``reason`` に足す）
-    3. ラテント連続性が ON なら保存付きバリアントへの読み替え
+    2. ラテント連続性が ON なら保存付きバリアントへの読み替え
        （:func:`_latent_save_workflow`。連鎖の起点になる通常カットも AV ラテントを
        残せるようにするため）
+    3. そこまでで決まった論理ワークフロー × 品質 -> バリアント
+       （:func:`_quality_workflow`。接続先が対応しなければ 2 の結果のまま投げ、
+       その理由を ``reason`` に足す）
     """
     # 添付できる（＝ファイル実体を持つ）素材を呼んでいるか。メタデータだけの
     # 素材はここに出てこないので、r2v の理由にはならない。
@@ -2135,13 +2205,11 @@ async def _plan_render(
     )
     latent_continuity = project is not None and project.latent_continuity
     quality = normalize_quality(project.quality if project is not None else None)
-    workflow, quality_reason = _quality_workflow(
-        mode.workflow, quality, latent_continuity
-    )
-    quality_applied = workflow != mode.workflow
-    # 品質のバリアントは素の版と同じ入力を取るので、保存付きへの読み替えは
-    # 素のモードにしか当たらない（品質が効いたときは latent_continuity が OFF）。
-    workflow = _latent_save_workflow(workflow, latent_continuity)
+    # 品質のバリアントは同じ論理ワークフローの別テンプレートなので、先に
+    # ラテント連続性の読み替えを済ませてから、その id で品質を引く。
+    logical = _latent_save_workflow(mode.workflow, latent_continuity)
+    workflow, quality_reason = _quality_workflow(logical, quality)
+    quality_applied = workflow != logical
     reason = f"{mode.reason} / {quality_reason}" if quality_reason else mode.reason
     resolved = resolve_mentions(shot.prompt, assets, attach=mode.attach)
     return _Plan(
@@ -2414,19 +2482,48 @@ async def _require_latent_context() -> None:
         )
 
 
-async def render_shot(shot_id: str) -> StudioTake:
+def _workflow_supports_steps(workflow: str) -> bool:
+    """そのワークフローが ``steps`` を宣言しているか（知らない id なら False）。"""
+    try:
+        return get_video_spec(workflow).supports("steps")
+    except WorkflowSpecError:  # pragma: no cover - 投入直前の id は必ず既知
+        return False
+
+
+def _checked_duration(value: Any) -> float:
+    """テイク 1 回ぶんの尺の上書きを検査する（範囲外は :class:`StudioError`）。"""
+    try:
+        seconds = float(value)
+    except (TypeError, ValueError):
+        raise StudioError("尺は数値で入れてください") from None
+    if not SHOT_DURATION_MIN <= seconds <= SHOT_DURATION_MAX:
+        raise StudioError(
+            f"尺は {SHOT_DURATION_MIN:g}〜{SHOT_DURATION_MAX:g} 秒です"
+        )
+    return seconds
+
+
+async def render_shot(
+    shot_id: str, overrides: StudioRenderRequest | None = None
+) -> StudioTake:
     """Shot を 1 回生成してジョブに載せ、Take を返す。
 
     やることは 4 つ:
 
     1. モードを決めて ``@素材名`` を解決し、プロンプトを組み立てる
        （:func:`_plan_render`。投入プレビューと同じ経路。未登録の名前は 400）。
-    2. 生成設定（画面比・解像度・シード）も Shot の値があればここで渡す。
+    2. 生成設定（画面比・解像度・尺・ステップ数・シード）を
+       **この 1 回ぶんの上書き > Shot > プロジェクト > 既定** の順に解決する。
     3. プロジェクトの ``auto_translate`` が有効で本文に日本語が混ざっていれば、
        Grok に H3 用の英語プロンプトへ直させる。直せなければ**原文のまま投入**し、
        Take の ``warning`` に理由を残す（生成そのものは止めない）。
     4. :func:`app.jobs.create_job` にそのまま渡す（HTTP は経由しない）。
+
+    ``overrides``（:class:`app.models.StudioRenderRequest`）はそのテイクにだけ
+    効き、Shot もプロジェクトも書き換えない。実際に使った値は Take の元ジョブの
+    ``params`` に残る。
     """
+    over = overrides or StudioRenderRequest()
     async with get_db() as conn:
         shot = await _fetch_shot(conn, shot_id)
         if shot is None:
@@ -2437,31 +2534,55 @@ async def render_shot(shot_id: str) -> StudioTake:
         workflow = plan.workflow
         prompt = plan.prompt
 
+        # 尺は **この 1 回ぶんの上書き > Shot** の順（プロジェクト既定は無い）。
+        duration = (
+            _checked_duration(over.duration)
+            if over.duration is not None
+            else float(shot.duration_seconds)
+        )
         fields: dict[str, Any] = {
             "mode": "i2v",  # 動画ステージだけを走らせるモード（SPEC §2）
             "video_workflow": workflow,
             "video_prompt": prompt,
-            "duration": float(shot.duration_seconds),
+            "duration": duration,
             "user_input": shot.title or None,
         }
         # Shot ごとの生成設定。**H3 が実際に受け取るものだけ**を渡す（否定
         # プロンプトは MiniMax H3 のグラフに注入先が無いので Shot には持たせない）。
         #
-        # 画面比とメガピクセルは **Shot 個別 > プロジェクト > グローバル既定** の
-        # 順で、2 つはそれぞれ独立に解決する。どちらも指定が無ければ何も載せず、
-        # 今までどおり `JobCreate` / ワークフロー宣言の既定に落とす。
-        aspect_ratio = shot.aspect_ratio or (
-            project.aspect_ratio if project is not None else None
+        # 画面比とメガピクセルは **この 1 回ぶんの上書き > Shot 個別 >
+        # プロジェクト > グローバル既定** の順で、2 つはそれぞれ独立に解決する。
+        # どこにも指定が無ければ何も載せず、今までどおり `JobCreate` /
+        # ワークフロー宣言の既定に落とす。
+        aspect_ratio = (
+            normalize_aspect_ratio(over.aspect_ratio)
+            or shot.aspect_ratio
+            or (project.aspect_ratio if project is not None else None)
         )
         if aspect_ratio:
             fields["aspect_ratio"] = aspect_ratio
-        megapixels = shot.megapixels
+        megapixels = normalize_megapixels(over.megapixels)
+        if megapixels is None:
+            megapixels = shot.megapixels
         if megapixels is None and project is not None:
             megapixels = project.megapixels
         if megapixels is not None:
             fields["megapixels"] = float(megapixels)
-        if shot.seed is not None:
-            fields["seed"] = int(shot.seed)
+        # シードは **上書き > Shot > 毎回ランダム**（載せなければランダム）。
+        seed = over.seed if over.seed is not None else shot.seed
+        if seed is not None:
+            fields["seed"] = int(seed)
+        # ステップ数は **上書き > プロジェクト > テンプレートの既定**。0 は
+        # 「テンプレートの既定のまま」なので、そのときは何も載せない（上書きで
+        # 0 を明示すればプロジェクトの設定も外れる）。宣言の無いワークフローに
+        # 送っても効かないので、そもそも載せない。
+        steps = (
+            _checked_steps(over.steps)
+            if over.steps is not None
+            else (project.steps if project is not None else 0)
+        )
+        if steps > 0 and _workflow_supports_steps(workflow):
+            fields["steps"] = steps
         # NSFW はプロジェクトの設定をそのまま**常に明示**する（True でも False
         # でも manual 扱い）。オフの作品は非 NSFW で固定され、投入後の Grok の
         # 自動判定は走らない（:func:`app.jobs._resolve_nsfw`）。

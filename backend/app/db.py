@@ -96,6 +96,7 @@ CREATE TABLE IF NOT EXISTS studio_projects (
   quality     TEXT NOT NULL DEFAULT 'normal', -- 動画生成の品質（normal / opt / turbo）
   megapixels  REAL,                        -- 動画生成のメガピクセル（NULL = ワークフローの既定）
   aspect_ratio TEXT,                       -- 動画生成のアスペクト比（NULL = 既定）
+  steps       INTEGER NOT NULL DEFAULT 0,  -- サンプリング回数（0 = テンプレートの既定のまま）
   nsfw        INTEGER NOT NULL DEFAULT 0,   -- 1 = この作品から投入するジョブはすべて NSFW（0 = 非 NSFW 固定）
   canvas_x    REAL NOT NULL DEFAULT 0,      -- キャンバス（別ビュー）の表示位置
   canvas_y    REAL NOT NULL DEFAULT 0,
@@ -398,6 +399,11 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         # つきなので、列を書かない INSERT はそのまま通る）。
         ("megapixels", "REAL"),
         ("aspect_ratio", "TEXT"),
+        # サンプリング回数（`steps` を宣言しているワークフローにだけ効く）。
+        # 既存のプロジェクトは 0 = 今までどおりテンプレートの既定のまま
+        # （品質 turbo なら 4、normal / opt なら 20）。画質の 2 項目と違って
+        # NULL を持たせず、「未指定」は 0 で表す（JobCreate.steps と同じ流儀）。
+        ("steps", "INTEGER NOT NULL DEFAULT 0"),
         # この作品から投入するジョブを NSFW 扱いにするか。既存のプロジェクトは
         # 0 = 非 NSFW（投入時に明示するので Grok の自動判定は走らない）。
         ("nsfw", "INTEGER NOT NULL DEFAULT 0"),

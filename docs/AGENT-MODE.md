@@ -392,14 +392,14 @@ Grok CLI はステートレスなテキスト入出力なので、ツール呼�
 |---|---|---|
 | `studio_list_projects` | ― | `studio_projects`（件数つき一覧） |
 | `studio_get_project` | `project_id` | `studio_project`（素材・話 / 場 / Shot・Take を stale 込みで 1 通に） |
-| `studio_create_project` | `name` ほか `code` / `synopsis` / `world_notes` / `auto_translate` / `latent_continuity` / `quality`（`normal` / `opt` / `turbo`） / `megapixels`（例 `0.4`） / `aspect_ratio`（例 `16:9 (Widescreen)`） / `nsfw` | `studio_saved`（`project_id`） |
+| `studio_create_project` | `name` ほか `code` / `synopsis` / `world_notes` / `auto_translate` / `latent_continuity` / `quality`（`normal` / `opt` / `turbo`） / `megapixels`（例 `0.4`） / `aspect_ratio`（例 `16:9 (Widescreen)`） / `steps`（サンプリング回数。`0` = テンプレートの既定のまま、上限 150） / `nsfw` | `studio_saved`（`project_id`） |
 | `studio_update_project` | `project_id` + 上と同じ項目 | `studio_saved` |
 | `studio_upsert_episode` / `studio_upsert_scene` | `id`（更新）か親の id（新規）+ 見出し項目。場の更新で `episode_id` を送ると、その話へ**引っ越す** | `studio_saved` |
 | `studio_upsert_shot` | `id` か `project_id` + **入れ子の `shot`**（Shot の `action` 欄がアクション名と衝突するため） | `studio_saved`（`shot_id`） |
 | `studio_delete_shot` | `id` | `studio_saved` |
 | `studio_upsert_asset` | `id` か `project_id` + `name` / `category` / `caption` / `prompt_caption` / `path` | `studio_saved`（`path` なしならメタデータのみ。`path` を渡すとその実体を `assets/<kind>/` へ複製して持つ） |
 | `studio_register_asset_from_job` | `project_id`, `job_id`, `name`, `source`（`image` / `last_frame` / `video` / `audio`） | `studio_saved`（自分で生成した成果物を**ファイル付き素材**にする） |
-| `studio_render_shot` | `shot_id`, 任意の `workflow_override` | `studio_render_started`（`take_id` / `job_id`） |
+| `studio_render_shot` | `shot_id`, 任意の `workflow_override` | `studio_render_started`（`take_id` / `job_id`）。カット / プロジェクトの設定でそのまま焼く（UI の生成ダイアログのような 1 回ぶんの上書きはエージェントからは行わず、変えたいならプロジェクトかカットの設定を書き換える） |
 | `studio_get_takes` | `shot_id` | `studio_takes`（status / stale。完了はこれで追う） |
 | `studio_select_take` / `studio_reject_take` | `take_id` | `studio_take_selected` / `studio_take_rejected` |
 

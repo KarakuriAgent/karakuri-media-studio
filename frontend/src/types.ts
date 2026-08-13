@@ -1000,6 +1000,11 @@ export interface StudioProject {
    */
   aspect_ratio: string | null
   /**
+   * サンプリング回数の作品既定。`0` = 未指定＝**テンプレートの既定のまま**
+   * （品質 turbo なら 4、normal / opt なら 20）。
+   */
+  steps: number
+  /**
    * この作品から投入するジョブをすべて NSFW 扱いにする。OFF なら**非 NSFW で
    * 固定**（投入時に明示するので、Grok の自動判定は走らない）。
    */
@@ -1035,6 +1040,8 @@ export interface StudioProjectCreate {
   megapixels?: number | null
   /** 動画生成のアスペクト比の作品既定（`null` = 既定のまま）。 */
   aspect_ratio?: string | null
+  /** サンプリング回数の作品既定（`0` = テンプレートの既定のまま）。 */
+  steps?: number
   /** この作品から投入するジョブをすべて NSFW 扱いにする（OFF = 非 NSFW 固定）。 */
   nsfw?: boolean
 }
@@ -1058,6 +1065,8 @@ export interface StudioProjectUpdate {
   megapixels?: number | null
   /** 動画生成のアスペクト比の作品既定（`null` を送ると既定へ戻る）。 */
   aspect_ratio?: string | null
+  /** サンプリング回数の作品既定（`0` を送るとテンプレートの既定へ戻る）。 */
+  steps?: number
   /** この作品から投入するジョブをすべて NSFW 扱いにする（OFF = 非 NSFW 固定）。 */
   nsfw?: boolean
 }
@@ -1275,6 +1284,28 @@ export interface StudioShotUpdate {
   megapixels?: number | null
   seed?: number | null
   workflow_override?: StudioWorkflowOverride | null
+}
+
+/**
+ * POST /api/studio/shots/{id}/render のボディ（**すべて任意**）。
+ *
+ * そのテイク 1 回の生成にだけ効き、カットもプロジェクトも書き換えない。送らな
+ * かった項目は今までどおりの解決に落ちる:
+ *
+ * - `megapixels` / `aspect_ratio`: ここ → カット → プロジェクト → 既定
+ * - `duration`: ここ → カットの `duration_seconds`
+ * - `steps`: ここ → プロジェクトの `steps` → テンプレートの既定
+ * - `seed`: ここ → カットの `seed` → 毎回ランダム
+ */
+export interface StudioRenderRequest {
+  megapixels?: number
+  aspect_ratio?: string
+  /** 尺（秒）。 */
+  duration?: number
+  /** サンプリング回数（`0` = テンプレートの既定のまま、を明示する）。 */
+  steps?: number
+  /** 乱数の種（省略 = カットの設定、それも無ければ毎回ランダム）。 */
+  seed?: number
 }
 
 export interface StudioTake {

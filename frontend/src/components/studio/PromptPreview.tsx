@@ -7,7 +7,13 @@ import { Banner, CopyButton } from '../ui'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 
-/** ワークフロー ID -> 画面に出す名前（`WORKFLOW_OVERRIDE_LABEL` の短い版）。 */
+/**
+ * 論理ワークフロー ID -> 画面に出す名前（`WORKFLOW_OVERRIDE_LABEL` の短い版）。
+ *
+ * 品質（`_turbo` / `_opt`）は同じ論理ワークフローの別テンプレートなので、
+ * ここには**素の id だけ**を並べ、末尾の品質は `workflowLabel` が切り離して
+ * 「… ・Turbo」のように後ろに足す。
+ */
 const WORKFLOW_LABEL: Record<string, string> = {
   minimax_h3_t2v: 't2v（文章だけから）',
   minimax_h3_i2v: 'i2v（開始フレームから）',
@@ -18,6 +24,22 @@ const WORKFLOW_LABEL: Record<string, string> = {
   minimax_h3_t2v_save: 't2v（文章だけから・ラテント保存）',
   minimax_h3_i2v_save: 'i2v（開始フレームから・ラテント保存）',
   minimax_h3_r2v_save: 'r2v（参照素材から・ラテント保存）',
+}
+
+/** 品質バリアントの接尾辞 -> 画面に出す名前（`app.studio.QUALITY_LABELS`）。 */
+const QUALITY_SUFFIX_LABEL: Record<string, string> = {
+  _turbo: 'Turbo',
+  _opt: 'Opt',
+}
+
+/** ワークフロー ID を「モード（・品質）」の日本語にする（未知の id はそのまま）。 */
+export function workflowLabel(workflow: string): string {
+  for (const [suffix, quality] of Object.entries(QUALITY_SUFFIX_LABEL)) {
+    if (!workflow.endsWith(suffix)) continue
+    const base = WORKFLOW_LABEL[workflow.slice(0, -suffix.length)]
+    if (base) return `${base}・${quality}`
+  }
+  return WORKFLOW_LABEL[workflow] ?? workflow
 }
 
 /** 添付ファイルのパスは長いので、ファイル名だけ見せる。 */
@@ -79,7 +101,7 @@ export default function PromptPreview({ shot }: { shot: StudioShot }) {
         </h4>
         {preview?.workflow && (
           <Badge variant="outline" className="bg-card px-1.5 py-0 text-[11px] font-normal">
-            {WORKFLOW_LABEL[preview.workflow] ?? preview.workflow}
+            {workflowLabel(preview.workflow)}
           </Badge>
         )}
         <div className="ml-auto flex items-center gap-1">

@@ -26,6 +26,7 @@ from ..models import (
     StudioProjectDetail,
     StudioProjectSummary,
     StudioProjectUpdate,
+    StudioRenderRequest,
     StudioReorder,
     StudioRevision,
     StudioRevisionDetail,
@@ -109,6 +110,7 @@ async def create_project(payload: StudioProjectCreate) -> StudioProject:
             payload.quality,
             payload.megapixels,
             payload.aspect_ratio,
+            payload.steps,
         )
     except service.StudioError as exc:
         raise _bad_request(exc) from exc
@@ -475,12 +477,18 @@ async def list_takes(shot_id: str) -> list[StudioTake]:
 
 
 @router.post("/shots/{shot_id}/render", response_model=StudioTake, status_code=201)
-async def render_shot(shot_id: str) -> StudioTake:
-    """Shot を 1 回生成する（ワークフローは t2v / i2v / r2v から自動で決まる）。"""
+async def render_shot(
+    shot_id: str, payload: StudioRenderRequest | None = None
+) -> StudioTake:
+    """Shot を 1 回生成する（ワークフローは t2v / i2v / r2v から自動で決まる）。
+
+    ボディは任意で、送った項目だけがその 1 回の投入に効く（Shot もプロジェクトも
+    書き換えない）。省略すれば今までどおり Shot / プロジェクトの設定で焼く。
+    """
     if await service.get_shot(shot_id) is None:
         raise HTTPException(status_code=404, detail="shot not found")
     try:
-        return await service.render_shot(shot_id)
+        return await service.render_shot(shot_id, payload)
     except service.StudioError as exc:
         raise _bad_request(exc) from exc
 

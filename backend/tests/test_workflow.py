@@ -65,11 +65,13 @@ from app.workflows import (
     validate_external_spec,
     validate_spec,
     validate_specs,
+    specs_of_kind,
     video_catalog,
-    video_specs,
 )
 
-VIDEO_IDS = [spec.id for spec in video_specs()]
+#: 動画ワークフローは**全件**（手動フォームに出さない ``studio_only`` の
+#: ラテント保存版・連続カット版もテンプレートは組めなければならない）
+VIDEO_IDS = [spec.id for spec in specs_of_kind("video")]
 IMAGE_IDS = [spec.id for spec in image_specs()]
 #: ComfyUI のテンプレートを持つ画像ワークフローだけ（外部バックエンドは除く）
 COMFY_IMAGE_IDS = [
@@ -169,12 +171,12 @@ def test_templates_are_not_mutated():
 def test_every_workflow_documents_itself():
     for spec in SPECS:
         assert spec.description.strip(), spec.id
-    for spec in video_specs():
+    for spec in specs_of_kind("video"):
         assert spec.prompt_hint.strip(), spec.id
 
 
 def test_catalog_inputs_are_derived_from_the_manifest():
-    for spec in video_specs():
+    for spec in specs_of_kind("video"):
         entry = catalog_entry(spec)
         assert entry.required_fields == tuple(
             INPUT_FIELDS[name] for name in spec.requires
@@ -201,10 +203,12 @@ def test_catalog_labels_the_image_input_per_workflow():
 
 
 def test_catalog_explains_how_audio_is_used():
-    entries = {entry.id: entry for entry in video_catalog()}
+    # カタログに載るのは選択肢に出るものだけ（`studio_only` は除かれる）
+    entries = video_catalog()
+    assert entries
     # 音声入力を持たないワークフローはモデル生成音声だと明言する
-    for workflow_id in VIDEO_IDS:
-        assert entries[workflow_id].audio == GENERATED_AUDIO
+    for entry in entries:
+        assert entry.audio == GENERATED_AUDIO, entry.id
 
 
 def test_an_undocumented_workflow_is_a_manifest_problem():
@@ -1357,7 +1361,7 @@ def test_resolution_for_image_rejects_a_degenerate_size(size):
 )
 def test_video_edges_follow_the_latent_grid(size):
     """Every video workflow lands on its own multiple, start frame or preset."""
-    for spec in video_specs():
+    for spec in specs_of_kind("video"):
         width, height = video_resolution(
             spec,
             params(
@@ -1723,7 +1727,9 @@ def test_dynamic_lora_chain_is_not_overridable():
 
 #: `steps` を宣言しているワークフロー（宣言 = UI に欄が出る）
 STEPS_IMAGE_IDS = [spec.id for spec in image_specs() if spec.supports("steps")]
-STEPS_VIDEO_IDS = [spec.id for spec in video_specs() if spec.supports("steps")]
+STEPS_VIDEO_IDS = [
+    spec.id for spec in specs_of_kind("video") if spec.supports("steps")
+]
 
 
 def test_the_steps_targets_are_the_samplers_of_their_template():

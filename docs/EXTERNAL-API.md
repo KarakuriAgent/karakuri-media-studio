@@ -37,11 +37,26 @@
 | `studio_delete_shot` | `DELETE /api/v1/shots/{id}` |
 | `studio_upsert_asset` | `POST /api/v1/projects/{id}/assets` / `PATCH /api/v1/assets/{id}` |
 | `studio_register_asset_from_job` | `POST /api/v1/projects/{id}/assets/from-job` |
-| `studio_render_shot` | `POST /api/v1/shots/{id}/render` |
+| `studio_render_shot` | `POST /api/v1/shots/{id}/render`（ボディは任意、下記） |
 | `studio_get_takes` | `GET /api/v1/shots/{id}/takes` |
 | `studio_select_take` | `POST /api/v1/takes/{id}/select` |
 | `studio_reject_take` | `POST /api/v1/takes/{id}/reject` |
 | （ジョブ状態の参照） | `GET /api/v1/jobs/{id}`（読み取りのみ） |
+
+`POST /api/v1/shots/{id}/render` は**任意の JSON ボディ**を取る（内部 API の
+`POST /api/studio/shots/{id}/render` と同じ `StudioRenderRequest`）。送った項目だけが
+**その 1 回の投入にだけ**効き、カットもプロジェクトも書き換えない:
+
+| 項目 | 省いたときの解決 |
+| --- | --- |
+| `megapixels` | カット → プロジェクト → ワークフローの既定（0.4MP） |
+| `aspect_ratio` | カット → プロジェクト → `4:3 (Standard)` |
+| `duration` | カットの `duration_seconds`（1〜15 秒） |
+| `steps` | プロジェクトの `steps` → テンプレートの既定（0〜150。`0` を送れば「既定のまま」の明示で、プロジェクトの設定より優先） |
+| `seed` | カットの `seed` → 毎回ランダム |
+
+ボディごと省けば従来どおりの投入。範囲外の値は 400（`StudioError`）で、実際に使われた
+値は Take の元ジョブの `params`（`GET /api/v1/jobs/{id}`）に残る。
 
 **公開しないもの**: プロジェクト / エピソード / シーン / Take の削除、設定
 （`/api/settings`）、モデルダウンロード、汎用ジョブ投入（`/api/jobs` POST）、
@@ -200,12 +215,14 @@ queued / running のもの）が上限を超えているとき 429 を返す。
   ノード頼みなので、無い接続先では 400 です）。
 - プロジェクトの `quality`（`POST /api/v1/projects` と `PATCH /api/v1/projects/{id}`
   で読み書きできます。`"normal"` / `"opt"` / `"turbo"`。既定 `"normal"`）は
-  **動画生成の品質**で、モード（t2v / i2v / r2v）とは直交しています。モードが
-  決まったあとに掛け合わせて `minimax_h3_{i2v,r2v}_{turbo,opt}` へ解決されます。
-  `turbo` は 4step 蒸留 LoRA 版（速いが粗い）、`opt` は 20 steps のまま量子化と
-  高速化だけを入れた版です。t2v になったカット・`latent_continuity` が立っている
-  あいだ・カスタムノードの無い接続先（Comfy Cloud）では**素の版へフォールバック
-  します**（400 にはしません）。どれに当たったかは
+  **動画生成の品質**で、モード（t2v / i2v / r2v）とも `latent_continuity` とも
+  直交しています。モードが決まり、`latent_continuity` によるラテント保存版への
+  読み替えが済んだあとに掛け合わせて、`minimax_h3_{t2v,i2v,r2v}_{turbo,opt}` /
+  `minimax_h3_{t2v,i2v,r2v}_save_{turbo,opt}` / `minimax_h3_r2v_context_{turbo,opt}`
+  へ解決されます。`turbo` は 4step 蒸留 LoRA 版（速いが粗い）、`opt` は 20 steps の
+  まま量子化と高速化だけを入れた版です。カスタムノードの無い接続先
+  （Comfy Cloud）では**品質だけを落として**読み替え済みの版で投入します
+  （400 にはしません）。どれに当たったかは
   `GET /api/v1/shots/{id}/prompt-preview` の `workflow_reason` に出ます。
 - プロジェクトの `megapixels` と `aspect_ratio`（`POST /api/v1/projects` と
   `PATCH /api/v1/projects/{id}` で読み書きできます。どちらも既定 `null`）は

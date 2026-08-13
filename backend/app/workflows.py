@@ -478,6 +478,17 @@ class WorkflowSpec:
     latent_output_node: str = ""
     #: このワークフローを実行するエンジン（SPEC §5.2）。今は ComfyUI のみ。
     backend: WorkflowBackend = "comfyui"
+    #: **ドラマスタジオが内部で解決するだけ**のバリアントか（SPEC §2.2）。
+    #: True のものは :func:`selectable_specs` が落とすので、生成フォームの
+    #: 動画モードにもエージェントのカタログにも出ない。ラテント保存版
+    #: （``*_save``）と連続カット版（``*_context``）がこれで、どちらも
+    #: プロジェクトの「ラテント連続性」＋「動画生成品質」から
+    #: :func:`app.studio._plan_render` が id を組み立てて使う
+    #: （素の版と入力の形も仕上がりも同じで、人が手で選ぶ意味が無い）。
+    #: **id を直に指定する経路（:func:`get_spec`）はそのまま通る**ので、
+    #: スタジオの解決・ジョブの実行・マニフェスト検証（:func:`validate_specs`）・
+    #: 外部 API の id 直指定はどれも従来どおり。
+    studio_only: bool = False
     #: model family (= the ``workflow/<kind>/<folder>`` name).  Image LoRAs are
     #: only offered for the family of the selected image workflow; the video
     #: templates ignore it (no video template has a user LoRA chain today).
@@ -1263,6 +1274,7 @@ _MINIMAX_H3_CONTEXT_NOTES = (
 MINIMAX_H3_R2V_CONTEXT = replace(
     MINIMAX_H3_R2V,
     id="minimax_h3_r2v_context",
+    studio_only=True,
     label="参照素材→動画・音声つき・連続カット (MiniMax H3 r2v + Motion Context)",
     mode_label="参照素材→動画・音声つき・連続カット (r2v context)",
     relpath="video/minimax-h3/minimax_h3_r2v_context.json",
@@ -1334,6 +1346,7 @@ _MINIMAX_H3_SAVE_LATENT_INJECT = {
 MINIMAX_H3_T2V_SAVE = replace(
     MINIMAX_H3_T2V,
     id="minimax_h3_t2v_save",
+    studio_only=True,
     label="テキスト→動画・音声つき・ラテント保存 (MiniMax H3 t2v + Save Latent)",
     mode_label="テキスト→動画・音声つき・ラテント保存 (t2v save)",
     relpath="video/minimax-h3/minimax_h3_t2v_save.json",
@@ -1353,6 +1366,7 @@ MINIMAX_H3_T2V_SAVE = replace(
 MINIMAX_H3_I2V_SAVE = replace(
     MINIMAX_H3_I2V,
     id="minimax_h3_i2v_save",
+    studio_only=True,
     label="画像→動画・音声つき・ラテント保存 (MiniMax H3 i2v + Save Latent)",
     mode_label="画像→動画・音声つき・ラテント保存 (i2v save)",
     relpath="video/minimax-h3/minimax_h3_i2v_save.json",
@@ -1371,6 +1385,7 @@ MINIMAX_H3_I2V_SAVE = replace(
 MINIMAX_H3_R2V_SAVE = replace(
     MINIMAX_H3_R2V,
     id="minimax_h3_r2v_save",
+    studio_only=True,
     label="参照素材→動画・音声つき・ラテント保存 (MiniMax H3 r2v + Save Latent)",
     mode_label="参照素材→動画・音声つき・ラテント保存 (r2v save)",
     relpath="video/minimax-h3/minimax_h3_r2v_save.json",
@@ -1396,6 +1411,32 @@ _MINIMAX_H3_TURBO_DESCRIPTION = (
     "LoRA と Sage Attention / Sol-Attn / Spectrum を焼き込んだ高速版）。"
     "入力の指定は素の版とまったく同じだが、専用の量子化ウェイトと "
     "MiniMax H3 系のカスタムノード一式が入った環境でのみ動く。"
+)
+
+MINIMAX_H3_T2V_TURBO = replace(
+    MINIMAX_H3_T2V,
+    id="minimax_h3_t2v_turbo",
+    label="テキスト→動画・音声つき (MiniMax H3 t2v Turbo)",
+    mode_label="テキスト→動画・音声つき (t2v Turbo)",
+    relpath="video/minimax-h3/minimax_h3_t2v_turbo.json",
+    description=MINIMAX_H3_T2V.description + _MINIMAX_H3_TURBO_DESCRIPTION,
+    inject={
+        "prompt": T("136", "prompt", "MiniMaxH3ImageToVideo"),
+        "width": T("136", "width", "MiniMaxH3ImageToVideo"),
+        "height": T("136", "height", "MiniMaxH3ImageToVideo"),
+        "duration": T("132", "value", "PrimitiveFloat"),
+        "frames_expr": T("131", "", "ComfyMathExpression"),
+        "steps": T("124", "steps", "BasicScheduler"),
+        "save_prefix": T("92", "filename_prefix", "SaveVideo"),
+    },
+    seeds=(T("129", "noise_seed", "RandomNoise"),),
+    selects={MINIMAX_H3_LOW_VRAM_NAME: _MINIMAX_H3_LOW_VRAM_SELECT},
+    notes=(
+        _MINIMAX_H3_NOTES
+        + _MINIMAX_H3_TURBO_NOTES
+        + " /"
+        + _MINIMAX_H3_TURBO_MODELS.format(unet="fl2va")
+    ),
 )
 
 MINIMAX_H3_I2V_TURBO = replace(
@@ -1455,6 +1496,24 @@ _MINIMAX_H3_OPT_DESCRIPTION = (
     "MiniMax H3 系のカスタムノード一式が入った環境でのみ動く。"
 )
 
+MINIMAX_H3_T2V_OPT = replace(
+    MINIMAX_H3_T2V,
+    id="minimax_h3_t2v_opt",
+    label="テキスト→動画・音声つき (MiniMax H3 t2v Optimized)",
+    mode_label="テキスト→動画・音声つき (t2v Optimized)",
+    relpath="video/minimax-h3/minimax_h3_t2v_opt.json",
+    description=MINIMAX_H3_T2V.description + _MINIMAX_H3_OPT_DESCRIPTION,
+    # テンプレートのノード ID は turbo と同じ連番なので、turbo と同じ宣言を使う
+    inject=dict(MINIMAX_H3_T2V_TURBO.inject),
+    seeds=MINIMAX_H3_T2V_TURBO.seeds,
+    notes=(
+        _MINIMAX_H3_NOTES
+        + _MINIMAX_H3_OPT_NOTES
+        + " /"
+        + _MINIMAX_H3_OPT_MODELS.format(unet="fl2va")
+    ),
+)
+
 MINIMAX_H3_I2V_OPT = replace(
     MINIMAX_H3_I2V,
     id="minimax_h3_i2v_opt",
@@ -1484,6 +1543,243 @@ MINIMAX_H3_R2V_OPT = replace(
     notes=(
         _MINIMAX_H3_NOTES
         + _MINIMAX_H3_R2V_NOTES
+        + _MINIMAX_H3_OPT_NOTES
+        + " /"
+        + _MINIMAX_H3_OPT_MODELS.format(unet="ref2va")
+    ),
+)
+
+#: ラテント連続性（``*_save`` / ``*_context``）と品質（turbo / opt）を掛け合わせた
+#: バリアント。テンプレートは「turbo / opt の JSON + 保存の 2 ノード」（連続カット版は
+#: さらに Motion Context の 5 ノード）で、素の版と同じ作りをそのまま踏襲している。
+#: ただし**ノード ID だけが素の版と違う**: 素の ``*_save`` / ``*_context`` は保存の
+#: 2 ノードを 155 / 156 に置いているが、turbo / opt のテンプレートは高速化パッチの
+#: チェーンで 150〜155 を使い切っているので、こちらは 10 ずらして 160〜166 に置く。
+_MINIMAX_H3_QUALITY_SAVE_LATENT_INJECT = {
+    "save_latent_prefix": T(
+        "165", "filename_prefix", "MiniMaxH3MotionContextSaveLatent"
+    ),
+}
+
+#: 保存の 2 ノードのうち、パスを持ち帰る ``PreviewAny``（:attr:`latent_output_node`）
+_MINIMAX_H3_QUALITY_LATENT_OUTPUT = "166"
+
+MINIMAX_H3_T2V_SAVE_TURBO = replace(
+    MINIMAX_H3_T2V_TURBO,
+    id="minimax_h3_t2v_save_turbo",
+    studio_only=True,
+    label=(
+        "テキスト→動画・音声つき・ラテント保存"
+        " (MiniMax H3 t2v Turbo + Save Latent)"
+    ),
+    mode_label="テキスト→動画・音声つき・ラテント保存 (t2v Turbo save)",
+    relpath="video/minimax-h3/minimax_h3_t2v_save_turbo.json",
+    description=MINIMAX_H3_T2V_TURBO.description + _MINIMAX_H3_SAVE_DESCRIPTION,
+    inject={
+        **MINIMAX_H3_T2V_TURBO.inject,
+        **_MINIMAX_H3_QUALITY_SAVE_LATENT_INJECT,
+    },
+    latent_output_node=_MINIMAX_H3_QUALITY_LATENT_OUTPUT,
+    notes=(
+        _MINIMAX_H3_NOTES
+        + _MINIMAX_H3_SAVE_NOTES
+        + _MINIMAX_H3_TURBO_NOTES
+        + " /"
+        + _MINIMAX_H3_TURBO_MODELS.format(unet="fl2va")
+    ),
+)
+
+MINIMAX_H3_T2V_SAVE_OPT = replace(
+    MINIMAX_H3_T2V_OPT,
+    id="minimax_h3_t2v_save_opt",
+    studio_only=True,
+    label=(
+        "テキスト→動画・音声つき・ラテント保存"
+        " (MiniMax H3 t2v Optimized + Save Latent)"
+    ),
+    mode_label="テキスト→動画・音声つき・ラテント保存 (t2v Optimized save)",
+    relpath="video/minimax-h3/minimax_h3_t2v_save_opt.json",
+    description=MINIMAX_H3_T2V_OPT.description + _MINIMAX_H3_SAVE_DESCRIPTION,
+    inject={
+        **MINIMAX_H3_T2V_OPT.inject,
+        **_MINIMAX_H3_QUALITY_SAVE_LATENT_INJECT,
+    },
+    latent_output_node=_MINIMAX_H3_QUALITY_LATENT_OUTPUT,
+    notes=(
+        _MINIMAX_H3_NOTES
+        + _MINIMAX_H3_SAVE_NOTES
+        + _MINIMAX_H3_OPT_NOTES
+        + " /"
+        + _MINIMAX_H3_OPT_MODELS.format(unet="fl2va")
+    ),
+)
+
+MINIMAX_H3_I2V_SAVE_TURBO = replace(
+    MINIMAX_H3_I2V_TURBO,
+    id="minimax_h3_i2v_save_turbo",
+    studio_only=True,
+    label=(
+        "画像→動画・音声つき・ラテント保存"
+        " (MiniMax H3 i2v Turbo + Save Latent)"
+    ),
+    mode_label="画像→動画・音声つき・ラテント保存 (i2v Turbo save)",
+    relpath="video/minimax-h3/minimax_h3_i2v_save_turbo.json",
+    description=MINIMAX_H3_I2V_TURBO.description + _MINIMAX_H3_SAVE_DESCRIPTION,
+    inject={
+        **MINIMAX_H3_I2V_TURBO.inject,
+        **_MINIMAX_H3_QUALITY_SAVE_LATENT_INJECT,
+    },
+    latent_output_node=_MINIMAX_H3_QUALITY_LATENT_OUTPUT,
+    notes=(
+        _MINIMAX_H3_NOTES
+        + _MINIMAX_H3_I2V_NOTES
+        + _MINIMAX_H3_SAVE_NOTES
+        + _MINIMAX_H3_TURBO_NOTES
+        + " /"
+        + _MINIMAX_H3_TURBO_MODELS.format(unet="fl2va")
+    ),
+)
+
+MINIMAX_H3_I2V_SAVE_OPT = replace(
+    MINIMAX_H3_I2V_OPT,
+    id="minimax_h3_i2v_save_opt",
+    studio_only=True,
+    label=(
+        "画像→動画・音声つき・ラテント保存"
+        " (MiniMax H3 i2v Optimized + Save Latent)"
+    ),
+    mode_label="画像→動画・音声つき・ラテント保存 (i2v Optimized save)",
+    relpath="video/minimax-h3/minimax_h3_i2v_save_opt.json",
+    description=MINIMAX_H3_I2V_OPT.description + _MINIMAX_H3_SAVE_DESCRIPTION,
+    inject={
+        **MINIMAX_H3_I2V_OPT.inject,
+        **_MINIMAX_H3_QUALITY_SAVE_LATENT_INJECT,
+    },
+    latent_output_node=_MINIMAX_H3_QUALITY_LATENT_OUTPUT,
+    notes=(
+        _MINIMAX_H3_NOTES
+        + _MINIMAX_H3_I2V_NOTES
+        + _MINIMAX_H3_SAVE_NOTES
+        + _MINIMAX_H3_OPT_NOTES
+        + " /"
+        + _MINIMAX_H3_OPT_MODELS.format(unet="fl2va")
+    ),
+)
+
+MINIMAX_H3_R2V_SAVE_TURBO = replace(
+    MINIMAX_H3_R2V_TURBO,
+    id="minimax_h3_r2v_save_turbo",
+    studio_only=True,
+    label=(
+        "参照素材→動画・音声つき・ラテント保存"
+        " (MiniMax H3 r2v Turbo + Save Latent)"
+    ),
+    mode_label="参照素材→動画・音声つき・ラテント保存 (r2v Turbo save)",
+    relpath="video/minimax-h3/minimax_h3_r2v_save_turbo.json",
+    description=MINIMAX_H3_R2V_TURBO.description + _MINIMAX_H3_SAVE_DESCRIPTION,
+    inject={
+        **MINIMAX_H3_R2V_TURBO.inject,
+        **_MINIMAX_H3_QUALITY_SAVE_LATENT_INJECT,
+    },
+    latent_output_node=_MINIMAX_H3_QUALITY_LATENT_OUTPUT,
+    notes=(
+        _MINIMAX_H3_NOTES
+        + _MINIMAX_H3_R2V_NOTES
+        + _MINIMAX_H3_SAVE_NOTES
+        + _MINIMAX_H3_TURBO_NOTES
+        + " /"
+        + _MINIMAX_H3_TURBO_MODELS.format(unet="ref2va")
+    ),
+)
+
+MINIMAX_H3_R2V_SAVE_OPT = replace(
+    MINIMAX_H3_R2V_OPT,
+    id="minimax_h3_r2v_save_opt",
+    studio_only=True,
+    label=(
+        "参照素材→動画・音声つき・ラテント保存"
+        " (MiniMax H3 r2v Optimized + Save Latent)"
+    ),
+    mode_label="参照素材→動画・音声つき・ラテント保存 (r2v Optimized save)",
+    relpath="video/minimax-h3/minimax_h3_r2v_save_opt.json",
+    description=MINIMAX_H3_R2V_OPT.description + _MINIMAX_H3_SAVE_DESCRIPTION,
+    inject={
+        **MINIMAX_H3_R2V_OPT.inject,
+        **_MINIMAX_H3_QUALITY_SAVE_LATENT_INJECT,
+    },
+    latent_output_node=_MINIMAX_H3_QUALITY_LATENT_OUTPUT,
+    notes=(
+        _MINIMAX_H3_NOTES
+        + _MINIMAX_H3_R2V_NOTES
+        + _MINIMAX_H3_SAVE_NOTES
+        + _MINIMAX_H3_OPT_NOTES
+        + " /"
+        + _MINIMAX_H3_OPT_MODELS.format(unet="ref2va")
+    ),
+)
+
+#: 連続カット版の Motion Context 一式（読み込み・引き継ぎ・Trim）の注入先。
+#: 素の ``minimax_h3_r2v_context`` の 150 / 152 / 155 を 10 ずらしたもの。
+_MINIMAX_H3_QUALITY_CONTEXT_INJECT = {
+    "video": T("160", "file", "LoadVideo"),
+    "context_latent": T(
+        "162", "latent_path", "MiniMaxH3MotionContextLoadLatent"
+    ),
+    **_MINIMAX_H3_QUALITY_SAVE_LATENT_INJECT,
+}
+
+MINIMAX_H3_R2V_CONTEXT_TURBO = replace(
+    MINIMAX_H3_R2V_TURBO,
+    id="minimax_h3_r2v_context_turbo",
+    studio_only=True,
+    label=(
+        "参照素材→動画・音声つき・連続カット"
+        " (MiniMax H3 r2v Turbo + Motion Context)"
+    ),
+    mode_label="参照素材→動画・音声つき・連続カット (r2v Turbo context)",
+    relpath="video/minimax-h3/minimax_h3_r2v_context_turbo.json",
+    description=(
+        MINIMAX_H3_R2V_CONTEXT.description + _MINIMAX_H3_TURBO_DESCRIPTION
+    ),
+    requires=("video",),
+    inject={
+        **MINIMAX_H3_R2V_TURBO.inject,
+        **_MINIMAX_H3_QUALITY_CONTEXT_INJECT,
+    },
+    latent_output_node=_MINIMAX_H3_QUALITY_LATENT_OUTPUT,
+    notes=(
+        _MINIMAX_H3_NOTES
+        + _MINIMAX_H3_R2V_NOTES
+        + _MINIMAX_H3_CONTEXT_NOTES
+        + _MINIMAX_H3_TURBO_NOTES
+        + " /"
+        + _MINIMAX_H3_TURBO_MODELS.format(unet="ref2va")
+    ),
+)
+
+MINIMAX_H3_R2V_CONTEXT_OPT = replace(
+    MINIMAX_H3_R2V_OPT,
+    id="minimax_h3_r2v_context_opt",
+    studio_only=True,
+    label=(
+        "参照素材→動画・音声つき・連続カット"
+        " (MiniMax H3 r2v Optimized + Motion Context)"
+    ),
+    mode_label="参照素材→動画・音声つき・連続カット (r2v Optimized context)",
+    relpath="video/minimax-h3/minimax_h3_r2v_context_opt.json",
+    description=(
+        MINIMAX_H3_R2V_CONTEXT.description + _MINIMAX_H3_OPT_DESCRIPTION
+    ),
+    requires=("video",),
+    inject={
+        **MINIMAX_H3_R2V_OPT.inject,
+        **_MINIMAX_H3_QUALITY_CONTEXT_INJECT,
+    },
+    latent_output_node=_MINIMAX_H3_QUALITY_LATENT_OUTPUT,
+    notes=(
+        _MINIMAX_H3_NOTES
+        + _MINIMAX_H3_R2V_NOTES
+        + _MINIMAX_H3_CONTEXT_NOTES
         + _MINIMAX_H3_OPT_NOTES
         + " /"
         + _MINIMAX_H3_OPT_MODELS.format(unet="ref2va")
@@ -1632,15 +1928,25 @@ SPECS: tuple[WorkflowSpec, ...] = (
     GROK_IMAGINE_EDIT,
     MINIMAX_H3_T2V,
     MINIMAX_H3_T2V_SAVE,
+    MINIMAX_H3_T2V_TURBO,
+    MINIMAX_H3_T2V_SAVE_TURBO,
+    MINIMAX_H3_T2V_OPT,
+    MINIMAX_H3_T2V_SAVE_OPT,
     MINIMAX_H3_I2V,
     MINIMAX_H3_I2V_SAVE,
     MINIMAX_H3_I2V_TURBO,
+    MINIMAX_H3_I2V_SAVE_TURBO,
     MINIMAX_H3_I2V_OPT,
+    MINIMAX_H3_I2V_SAVE_OPT,
     MINIMAX_H3_R2V,
     MINIMAX_H3_R2V_SAVE,
     MINIMAX_H3_R2V_CONTEXT,
     MINIMAX_H3_R2V_TURBO,
+    MINIMAX_H3_R2V_SAVE_TURBO,
+    MINIMAX_H3_R2V_CONTEXT_TURBO,
     MINIMAX_H3_R2V_OPT,
+    MINIMAX_H3_R2V_SAVE_OPT,
+    MINIMAX_H3_R2V_CONTEXT_OPT,
     ACE_STEP_1_5,
     STABLE_AUDIO_3,
 )
@@ -1717,9 +2023,29 @@ def comfy_specs() -> tuple[WorkflowSpec, ...]:
     return tuple(spec for spec in SPECS if spec.backend == "comfyui")
 
 
-def selectable_specs(kind: WorkflowKind) -> list[WorkflowSpec]:
-    """UI・エージェントに出す ``kind`` のワークフロー。"""
+def specs_of_kind(kind: WorkflowKind) -> list[WorkflowSpec]:
+    """``kind`` の**全**ワークフロー（:attr:`WorkflowSpec.studio_only` も含む）。
+
+    「そのモデルで焼けるか」を見るもの（マニフェスト検証・テンプレートの
+    組み立て）は、選択肢に出さないバリアントも見なければならない。
+    """
     return [spec for spec in SPECS if spec.kind == kind]
+
+
+def selectable_specs(kind: WorkflowKind) -> list[WorkflowSpec]:
+    """UI・エージェントに出す ``kind`` のワークフロー（SPEC §2.2）。
+
+    :attr:`WorkflowSpec.studio_only` のバリアント（``*_save`` / ``*_context``）は
+    落とす。生成フォームに出さないのはもちろん、**エージェントのカタログからも
+    外す**: ラテント連続性はプロジェクトの設定から
+    :func:`app.studio._plan_render` が自動で解決する建て付けで、エージェントが
+    書くのは論理モード（t2v / i2v / r2v）までというのが既存の取り決めだから
+    （素の版と入力の形も仕上がりも同じなので、選ばせても得るものが無く、
+    「ラテント連続性 OFF なのに保存版」のような矛盾だけが増える）。
+    id 直指定（:func:`get_spec`）は落とさないので、スタジオの解決・ジョブの
+    実行・外部 API の直指定は従来どおり通る。
+    """
+    return [spec for spec in specs_of_kind(kind) if not spec.studio_only]
 
 
 def image_specs() -> list[WorkflowSpec]:

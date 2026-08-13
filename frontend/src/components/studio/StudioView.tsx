@@ -13,6 +13,7 @@ import type {
   StudioProjectDetail,
   StudioProjectSummary,
   StudioProjectUpdate,
+  StudioRenderRequest,
   StudioRevision,
   StudioShotUpdate,
   StudioVideoQuality,
@@ -35,6 +36,7 @@ import ScriptView from './ScriptView'
 import ShotRail from './ShotRail'
 import WorldView from './WorldView'
 import {
+  MAX_STEPS,
   VIDEO_QUALITIES,
   VIDEO_QUALITY_HINT,
   VIDEO_QUALITY_LABEL,
@@ -115,6 +117,8 @@ export default function StudioView({
   // ヘッダーのメガピクセル欄。1 文字打つたびに PATCH しないよう、確定
   // （フォーカスを外す / Enter）までは打った文字列をここに置いて映す。
   const [megapixelsDraft, setMegapixelsDraft] = useState('')
+  // ヘッダーのステップ数欄。空欄 = 0 = おまかせ（テンプレートの既定のまま）。
+  const [stepsDraft, setStepsDraft] = useState('')
   // ショット一覧の列は lg 以上でだけドラッグで広げられる（狭幅は縦積み）。
   const isWide = useIsWide()
   const shotRail = useResizablePanel(SHOT_RAIL_WIDTH_KEY, SHOT_RAIL_WIDTH, 'x')
@@ -159,6 +163,12 @@ export default function StudioView({
   useEffect(() => {
     setMegapixelsDraft(savedMegapixels === null ? '' : String(savedMegapixels))
   }, [savedMegapixels])
+
+  // ステップ数も同じ扱い（0 = おまかせ、を空欄で見せる）。
+  const savedSteps = detail?.steps ?? 0
+  useEffect(() => {
+    setStepsDraft(savedSteps > 0 ? String(savedSteps) : '')
+  }, [savedSteps])
 
   useEffect(() => {
     if (!projectId) {
@@ -492,7 +502,9 @@ export default function StudioView({
     })
   }
 
-  const render = (id: string) => void run(() => api.renderStudioShot(id))
+  /** テイクを 1 本焼く（`body` は生成ダイアログで決めたその 1 回ぶんの設定）。 */
+  const render = (id: string, body: StudioRenderRequest) =>
+    void run(() => api.renderStudioShot(id, body))
   const selectTake = (id: string) => void run(() => api.selectStudioTake(id))
   const rejectTake = (id: string) => void run(() => api.rejectStudioTake(id))
   const deleteTake = (id: string) => {
@@ -579,11 +591,9 @@ export default function StudioView({
    * これがテイクを 1 本焼くたびの待ち時間をそのまま決める設定だから。
    *
    * 変更はその場でプロジェクトへ保存する（`saveProject` が PATCH と読み直しを
-   * やるので、楽観更新は持たず、保存が終わるまで `busy` で塞ぐ）。ラテント
-   * 連続性が ON のあいだは turbo / opt に保存付きのバリアントが無く、投入時に
-   * 素へフォールバックするので、選ばせたまま注記だけを添える。
+   * やるので、楽観更新は持たず、保存が終わるまで `busy` で塞ぐ）。turbo / opt は
+   * ラテント保存・連続カット版にもバリアントがあるので、連続性 ON でもそのまま効く。
    */
-  const qualityIgnored = detail.latent_continuity && detail.quality !== 'normal'
   const qualitySelector = (
     <div className="flex shrink-0 items-center gap-2">
       <Label className="shrink-0" htmlFor="studio-quality">
@@ -606,16 +616,6 @@ export default function StudioView({
           ))}
         </NativeSelect>
       </div>
-      {qualityIgnored && (
-        <span
-          className="text-[11px] leading-tight text-amber-400"
-          title="turbo / opt には AV ラテントを保存する版が無いので、連続性が ON のあいだは通常品質で投入します"
-        >
-          連続性が有効なため
-          <br />
-          品質設定は無効
-        </span>
-      )}
     </div>
   )
 
@@ -641,7 +641,29 @@ export default function StudioView({
     saveProject({ megapixels: next })
   }
 
+  /**
+   * ステップ数（サンプリング回数）のプロジェクト既定。
+   *
+   * **0（空欄）= おまかせ**で、そのときはワークフローのテンプレートの既定値
+   * （品質 turbo なら 4、normal / opt なら 20）のまま焼く。値を入れると、
+   * `steps` を宣言しているワークフローにその回数が注入される。
+   */
+  const commitSteps = () => {
+    const text = stepsDraft.trim()
+    const next = text === '' ? 0 : Number(text)
+    // 整数でない / 範囲外は捨てて、保存済みの値に戻す。
+    if (!Number.isInteger(next) || next < 0 || next > MAX_STEPS) {
+      setStepsDraft(savedSteps > 0 ? String(savedSteps) : '')
+      return
+    }
+    if (next === savedSteps) return
+    saveProject({ steps: next })
+  }
+
+  // 画質（アスペクト比 + MP）とステップは別ブロックにして、狭い画面では
+  // ヘッダーの flex-wrap がブロック単位で折り返せるようにする。
   const qualitySettings = (
+    <>
     <div className="flex shrink-0 items-center gap-2">
       <Label className="shrink-0" htmlFor="studio-aspect-ratio">
         画質
@@ -688,6 +710,34 @@ export default function StudioView({
       </div>
       <span className="shrink-0 text-[11px] text-muted-foreground">MP</span>
     </div>
+    <div className="flex shrink-0 items-center gap-2">
+      <Label className="shrink-0" htmlFor="studio-steps">
+        ステップ
+      </Label>
+      <div className="w-24">
+        <Input
+          id="studio-steps"
+          className="tnum"
+          type="number"
+          step="1"
+          min="0"
+          max={MAX_STEPS}
+          value={stepsDraft}
+          disabled={busy}
+          placeholder="おまかせ"
+          title={
+            'この作品のサンプリング回数の既定（空欄 = 0 = おまかせ' +
+            ' = テンプレートの既定のまま。turbo は 4、normal / opt は 20）'
+          }
+          onChange={(event) => setStepsDraft(event.target.value)}
+          onBlur={commitSteps}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') event.currentTarget.blur()
+          }}
+        />
+      </div>
+    </div>
+    </>
   )
 
   const backToProjects = (
@@ -833,6 +883,12 @@ export default function StudioView({
                 selectedShot={selectedShot}
                 progress={progress}
                 busy={busy}
+                projectDefaults={{
+                  megapixels: detail.megapixels,
+                  aspect_ratio: detail.aspect_ratio,
+                  steps: detail.steps,
+                }}
+                aspectRatios={aspectRatios}
                 latentContinuity={detail.latent_continuity}
                 showNsfw={showNsfw}
                 onSelectShot={setShotId}

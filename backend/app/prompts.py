@@ -593,7 +593,8 @@ def _target_preference_lines(comfy_target: str) -> list[str]:
         lines += [
             "ローカルの ComfyUI には MiniMax H3 系のカスタムノードと量子化"
             "ウェイトが入っているので、MiniMax H3 を使うときは"
-            " **`_opt` 版（`minimax_h3_i2v_opt` / `minimax_h3_r2v_opt`）を"
+            " **`_opt` 版（`minimax_h3_t2v_opt` / `minimax_h3_i2v_opt` /"
+            " `minimax_h3_r2v_opt`）を"
             "優先**して選ぶこと。opt は素の版と入力もプロンプトの書き方も同じで、"
             "20 ステップのまま実行だけが速い（品質は素の版相当）。",
         ]
@@ -962,43 +963,47 @@ Sparse piano at a slow tempo.
 #: turbo / opt / ラテント保存版は素の版と入力の形もプロンプトの書き方も同じなので、
 #: ガイドの登録は素の版と同じものを共有する（ここに載っていないと汎用の
 #: :data:`VIDEO_SPEC` に落ちてしまう）。
+#: ``t2v`` / ``i2v`` / ``r2v`` の論理モードごとの、素・ラテント保存（``_save``）・
+#: 連続カット（``_context``）× 品質（``_turbo`` / ``_opt``）の全 id。どれも入力の形も
+#: プロンプトの書き方も素の版と同じなので、ガイドの登録は素の版と共有する。
+def _minimax_h3_ids(mode: str) -> tuple[str, ...]:
+    bases = [f"minimax_h3_{mode}", f"minimax_h3_{mode}_save"]
+    if mode == "r2v":
+        bases.append("minimax_h3_r2v_context")
+    return tuple(
+        f"{base}{suffix}" for base in bases for suffix in ("", "_turbo", "_opt")
+    )
+
+
 MULTI_CUT_WORKFLOWS: frozenset[str] = frozenset(
-    {
-        "minimax_h3_t2v",
-        "minimax_h3_t2v_save",
-        "minimax_h3_i2v",
-        "minimax_h3_i2v_save",
-        "minimax_h3_i2v_turbo",
-        "minimax_h3_i2v_opt",
-        "minimax_h3_r2v",
-        "minimax_h3_r2v_save",
-        "minimax_h3_r2v_context",
-        "minimax_h3_r2v_turbo",
-        "minimax_h3_r2v_opt",
-    }
+    workflow_id
+    for mode in ("t2v", "i2v", "r2v")
+    for workflow_id in _minimax_h3_ids(mode)
 )
 
 #: 前のカットの映像と AV ラテントを引き継ぐワークフロー（Motion Context）。
 #: プロンプトの書き方は素の r2v と同じなので、CONTEXT に一言添えるだけでよい。
-MOTION_CONTEXT_WORKFLOWS: frozenset[str] = frozenset({"minimax_h3_r2v_context"})
+MOTION_CONTEXT_WORKFLOWS: frozenset[str] = frozenset(
+    {
+        "minimax_h3_r2v_context",
+        "minimax_h3_r2v_context_turbo",
+        "minimax_h3_r2v_context_opt",
+    }
+)
 
 #: workflow id -> そのモデル専用の VIDEO PROMPT SPEC（無いワークフローは
-#: 汎用の :data:`VIDEO_SPEC` のまま）
+#: 汎用の :data:`VIDEO_SPEC` のまま）。参照モード（r2v）だけ別のガイドで、連続カット版も
+#: 参照モードの上に Motion Context を足しただけなので同じものを読む。
 VIDEO_SPECS: dict[str, str] = {
-    "minimax_h3_t2v": MINIMAX_H3_VIDEO_GUIDE,
-    # ラテント保存版は AV ラテントを保存するだけなので、書き方は素の版と同じ
-    "minimax_h3_t2v_save": MINIMAX_H3_VIDEO_GUIDE,
-    "minimax_h3_i2v": MINIMAX_H3_VIDEO_GUIDE,
-    "minimax_h3_i2v_save": MINIMAX_H3_VIDEO_GUIDE,
-    "minimax_h3_i2v_turbo": MINIMAX_H3_VIDEO_GUIDE,
-    "minimax_h3_i2v_opt": MINIMAX_H3_VIDEO_GUIDE,
-    "minimax_h3_r2v": MINIMAX_H3_REFERENCE_VIDEO_GUIDE,
-    "minimax_h3_r2v_save": MINIMAX_H3_REFERENCE_VIDEO_GUIDE,
-    # 連続カット版は参照モードの上に Motion Context を足しただけで、プロンプトの
-    # 書き方は素の r2v とまったく同じ
-    "minimax_h3_r2v_context": MINIMAX_H3_REFERENCE_VIDEO_GUIDE,
-    "minimax_h3_r2v_turbo": MINIMAX_H3_REFERENCE_VIDEO_GUIDE,
-    "minimax_h3_r2v_opt": MINIMAX_H3_REFERENCE_VIDEO_GUIDE,
+    **{
+        workflow_id: MINIMAX_H3_VIDEO_GUIDE
+        for mode in ("t2v", "i2v")
+        for workflow_id in _minimax_h3_ids(mode)
+    },
+    **{
+        workflow_id: MINIMAX_H3_REFERENCE_VIDEO_GUIDE
+        for workflow_id in _minimax_h3_ids("r2v")
+    },
 }
 
 
@@ -2381,6 +2386,10 @@ What actually decides the output:
   project's, and the two resolve independently. Changing either only affects
   cuts rendered from then on, so switching mid-chain breaks `latent_continuity`
   (the context latent has to match the previous clip's size).
+- `steps` (per project, `0` by default) is the sampler step count. `0` means
+  "leave it to the build" — 4 steps on `turbo`, 20 on `normal` / `opt` — and the
+  cap is 150. There is no per-Shot `steps`: it is a work-wide knob for trading
+  time against quality without changing the build, so set it on the project.
 - `nsfw` (per project, off by default): every job this project submits carries
   the project's flag as a **manual** decision — on marks all of them NSFW, off
   pins them to non-NSFW and skips the automatic classifier entirely. It is a

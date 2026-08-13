@@ -11,6 +11,7 @@ import {
 import type {
   JobProgress,
   StudioAsset,
+  StudioRenderRequest,
   StudioShot,
   StudioTake,
 } from '../../types'
@@ -18,6 +19,7 @@ import { Banner, NsfwBadge, Section } from '../ui'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import { Progress } from '../ui/progress'
+import RenderDialog from './RenderDialog'
 import {
   TAKE_STATUS_CLASS,
   TAKE_STATUS_LABEL,
@@ -27,6 +29,7 @@ import {
   splitMentions,
   takesByShot,
   unresolvedMentions,
+  type RenderDefaults,
 } from './studio'
 
 function fileNameOf(url: string): string {
@@ -314,6 +317,8 @@ export default function ProductionView({
   onRejectTake,
   onDeleteTake,
   busy,
+  projectDefaults,
+  aspectRatios = [],
   latentContinuity = false,
   showNsfw = true,
 }: {
@@ -323,11 +328,16 @@ export default function ProductionView({
   selectedShot: StudioShot | null
   onSelectShot: (id: string) => void
   progress: Record<string, JobProgress>
-  onRender: (shotId: string) => void
+  /** `body` はそのテイク 1 回ぶんの設定（ダイアログで決めたもの）。 */
+  onRender: (shotId: string, body: StudioRenderRequest) => void
   onSelectTake: (takeId: string) => void
   onRejectTake: (takeId: string) => void
   onDeleteTake: (takeId: string) => void
   busy: boolean
+  /** 生成ダイアログの初期値に使うプロジェクト設定（解像度・ステップ数）。 */
+  projectDefaults: RenderDefaults
+  /** 生成フォームと同じアスペクト比の候補。 */
+  aspectRatios?: string[]
   /** プロジェクトの設定（引き継ぎを Motion Context で行う = ラテント連続性）。 */
   latentContinuity?: boolean
   /**
@@ -344,6 +354,8 @@ export default function ProductionView({
     [grouped, selectedShot],
   )
   const [previewId, setPreviewId] = useState<string | null>(null)
+  // 「生成」を押すと開く、そのテイク 1 回ぶんの設定ダイアログ。
+  const [renderOpen, setRenderOpen] = useState(false)
   // 「クリックで一時表示」した Take（画面を離れるまでのあいだだけ覚える）。
   const [revealed, setRevealed] = useState<string[]>([])
 
@@ -360,6 +372,13 @@ export default function ProductionView({
       null
     setPreviewId(fallback?.id ?? null)
   }, [takes, selectedShot, previewId])
+
+  // カットを切り替えたら開きっぱなしのダイアログは畳む（別のカットの設定を
+  // そのまま投げてしまわないように）。
+  const selectedShotId = selectedShot?.id ?? null
+  useEffect(() => {
+    setRenderOpen(false)
+  }, [selectedShotId])
 
   if (!selectedShot) {
     return (
@@ -402,7 +421,7 @@ export default function ProductionView({
             )}
             <div className="mt-3 flex items-center gap-2">
               <Button
-                onClick={() => onRender(selectedShot.id)}
+                onClick={() => setRenderOpen(true)}
                 disabled={busy || rendering}
               >
                 {rendering && <Loader2 className="animate-spin" />}
@@ -527,6 +546,21 @@ export default function ProductionView({
           })}
         </div>
       </Section>
+
+      {renderOpen && (
+        <RenderDialog
+          key={selectedShot.id}
+          shot={selectedShot}
+          project={projectDefaults}
+          aspectRatios={aspectRatios}
+          busy={busy}
+          onClose={() => setRenderOpen(false)}
+          onRender={(body) => {
+            setRenderOpen(false)
+            onRender(selectedShot.id, body)
+          }}
+        />
+      )}
     </div>
   )
 }

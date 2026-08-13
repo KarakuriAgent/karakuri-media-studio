@@ -169,6 +169,7 @@ function detailOf(overrides: Partial<StudioProjectDetail> = {}): StudioProjectDe
     quality: 'normal',
     megapixels: null,
     aspect_ratio: null,
+    steps: 0,
     nsfw: false,
     created_at: '2026-01-01T00:00:00Z',
     updated_at: '2026-01-01T00:00:00Z',

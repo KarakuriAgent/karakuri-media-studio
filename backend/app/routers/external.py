@@ -42,6 +42,7 @@ from ..models import (
     StudioProjectDetail,
     StudioProjectSummary,
     StudioProjectUpdate,
+    StudioRenderRequest,
     StudioScene,
     StudioSceneCreate,
     StudioSceneUpdate,
@@ -135,6 +136,7 @@ async def create_project(payload: StudioProjectCreate) -> StudioProject:
             payload.quality,
             payload.megapixels,
             payload.aspect_ratio,
+            payload.steps,
             actor=ACTOR,
         )
     except service.StudioError as exc:
@@ -373,8 +375,14 @@ async def list_takes(shot_id: str) -> list[StudioTake]:
 
 
 @router.post("/shots/{shot_id}/render", response_model=StudioTake, status_code=201)
-async def render_shot(shot_id: str) -> StudioTake:
-    """Shot を 1 回生成する（未完了 Take が上限に達していれば 429）。"""
+async def render_shot(
+    shot_id: str, payload: StudioRenderRequest | None = None
+) -> StudioTake:
+    """Shot を 1 回生成する（未完了 Take が上限に達していれば 429）。
+
+    ボディは内部 API と同じ任意の上書き（解像度・尺・ステップ数・シード）で、
+    送らなければ今までどおり Shot / プロジェクトの設定で焼く。
+    """
     if await service.get_shot(shot_id) is None:
         raise HTTPException(status_code=404, detail="shot not found")
     # 数えてから投入するまでを錠で括る（並行リクエストが数え合いになって、
@@ -382,7 +390,7 @@ async def render_shot(shot_id: str) -> StudioTake:
     async with service.PENDING_TAKES_LOCK:
         await _check_pending_takes()
         try:
-            return await service.render_shot(shot_id)
+            return await service.render_shot(shot_id, payload)
         except service.StudioError as exc:
             raise _bad_request(exc) from exc
 

@@ -322,6 +322,37 @@ def test_a_job_can_be_read_but_not_created(env):
     assert call(env, "POST", "/api/v1/jobs", json={}).status_code == 405
 
 
+def test_the_render_body_overrides_that_take_only(env):
+    """内部 API と同じ任意の上書き（送らなければ今までどおり）。"""
+    enable(env)
+    project = make_project(env, steps=12)
+    shot = call(
+        env,
+        "POST",
+        f"/api/v1/projects/{project['id']}/shots",
+        json={"prompt": "A cat walks in.", "duration_seconds": 5},
+    ).json()
+
+    take = call(
+        env,
+        "POST",
+        f"/api/v1/shots/{shot['id']}/render",
+        json={"steps": 30, "duration": 8, "seed": 4242},
+    )
+    assert take.status_code == 201, take.text
+    params = call(env, "GET", f"/api/v1/jobs/{take.json()['job_id']}").json()["params"]
+    assert params["steps"] == 30
+    assert params["duration"] == 8
+    assert params["seed"] == 4242
+    # カットもプロジェクトも据え置き
+    assert call(env, "GET", f"/api/v1/projects/{project['id']}").json()["steps"] == 12
+
+    refused = call(
+        env, "POST", f"/api/v1/shots/{shot['id']}/render", json={"duration": 99}
+    )
+    assert refused.status_code == 400, refused.text
+
+
 def test_takes_can_be_listed_and_selected(env):
     enable(env)
     project = make_project(env)

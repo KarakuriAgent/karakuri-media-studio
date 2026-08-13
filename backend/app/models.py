@@ -2375,6 +2375,10 @@ class StudioProject(BaseModel):
     #: 動画生成のアスペクト比（作品単位の既定。``"16:9 (Widescreen)"`` 等）。
     #: ``None`` = 指定しない＝既定のまま。Shot 個別の指定があればそちらが勝つ。
     aspect_ratio: str | None = None
+    #: サンプリング回数（作品単位の既定、:data:`MAX_STEPS` まで）。``0`` = 未指定
+    #: ＝**テンプレートの既定のまま**（品質 turbo なら 4、normal / opt なら 20）。
+    #: ``steps`` を宣言しているワークフローだけが読む（SPEC §3.1）。
+    steps: int = 0
     #: この作品から投入するジョブをすべて NSFW 扱いにする。OFF なら**非 NSFW で
     #: 固定**（投入時に明示するので、Grok の自動判定は走らない）。
     nsfw: bool = False
@@ -2411,6 +2415,8 @@ class StudioProjectCreate(BaseModel):
     megapixels: float | None = None
     #: 動画生成のアスペクト比（``None`` = 既定のまま）
     aspect_ratio: str | None = None
+    #: サンプリング回数（``0`` = 未指定＝テンプレートの既定のまま）
+    steps: int = 0
     #: この作品から投入するジョブをすべて NSFW 扱いにする（OFF = 非 NSFW 固定）
     nsfw: bool = False
 
@@ -2439,6 +2445,10 @@ class StudioProjectUpdate(BaseModel):
     megapixels: float | None = None
     #: 動画生成のアスペクト比（null を送ると既定へ戻る）
     aspect_ratio: str | None = None
+    #: サンプリング回数（``0`` を送ると「テンプレートの既定のまま」へ戻る）。
+    #: ``megapixels`` などと違って NULL を持たない列なので、未指定を表すのは
+    #: null ではなく **0** のほう（送らなければ今の値のまま）。
+    steps: int | None = None
     #: この作品から投入するジョブをすべて NSFW 扱いにする（OFF = 非 NSFW 固定）
     nsfw: bool | None = None
 
@@ -2829,6 +2839,33 @@ class StudioShotReorder(BaseModel):
     """
 
     shot_ids: list[str] = Field(default_factory=list)
+
+
+class StudioRenderRequest(BaseModel):
+    """POST /api/studio/shots/{id}/render body（**すべて任意**）。
+
+    その 1 回の投入にだけ効く上書きで、Shot もプロジェクトも書き換えない
+    （何を使ったかは Take の元ジョブの ``params`` に残る）。送らなかった項目は
+    今までどおりの解決に落ちる:
+
+    - ``megapixels`` / ``aspect_ratio``: ここ → Shot → プロジェクト → 既定
+    - ``duration``: ここ → Shot の ``duration_seconds``
+    - ``steps``: ここ → プロジェクトの ``steps`` → テンプレートの既定
+    - ``seed``: ここ → Shot の ``seed`` → 毎回ランダム
+
+    ``steps`` は **0 も指定**（＝「テンプレートの既定のまま」を明示する）で、
+    プロジェクトの設定より優先される。範囲の検査は
+    :func:`app.studio.render_shot` が行い、外れていれば 400。
+    """
+
+    megapixels: float | None = None
+    aspect_ratio: str | None = None
+    #: 尺（秒）。未指定なら Shot の ``duration_seconds``
+    duration: float | None = None
+    #: サンプリング回数（``0`` = テンプレートの既定のまま）
+    steps: int | None = None
+    #: 乱数の種（未指定 = Shot の設定、それも無ければ毎回ランダム）
+    seed: int | None = None
 
 
 class StudioTake(BaseModel):

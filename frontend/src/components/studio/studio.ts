@@ -11,6 +11,7 @@ import type {
   StudioAssetKind,
   StudioEpisode,
   StudioProjectDetail,
+  StudioRenderRequest,
   StudioRevisionActor,
   StudioScene,
   StudioShot,
@@ -468,6 +469,103 @@ export function shotUpdateFromForm(form: ShotFormState): StudioShotUpdate {
     workflow_override:
       (form.workflow_override as StudioWorkflowOverride) || null,
   }
+}
+
+// --------------------------------------------------------------------------
+// テイク 1 回ぶんの生成設定（生成ボタンのダイアログ）
+// --------------------------------------------------------------------------
+//
+// ここで決めた値は **その 1 回の投入にだけ**効き、カットもプロジェクトも
+// 書き換えない。既定値はいまの解決結果（カット → プロジェクト）をそのまま
+// 映すので、触らずに「生成」を押せば今までどおりの投入になる。
+
+/** サンプリング回数の上限（backend/app/models.py の `MAX_STEPS`）。 */
+export const MAX_STEPS = 150
+
+export interface RenderFormState {
+  /** 空 = 既定に従う（カット → プロジェクト → ワークフローの既定）。 */
+  megapixels: string
+  /** 空 = 既定に従う。 */
+  aspect_ratio: string
+  /** 尺（秒）。空にはできない（既定はカットの尺）。 */
+  duration: string
+  /** 空 = おまかせ（テンプレートの既定のまま）。 */
+  steps: string
+  /** シードを固定するか（false = 毎回ランダム）。 */
+  fixed_seed: boolean
+  seed: string
+}
+
+/** プロジェクト設定のうち、このダイアログが既定値に使うぶん。 */
+export interface RenderDefaults {
+  megapixels: number | null
+  aspect_ratio: string | null
+  steps: number
+}
+
+/**
+ * ダイアログの初期値。解像度は **カット個別 → プロジェクト**、尺はカット、
+ * ステップ数はプロジェクト、シードはカットに設定があればその固定値。
+ */
+export function renderFormFromShot(
+  shot: StudioShot,
+  project: RenderDefaults,
+): RenderFormState {
+  const megapixels = shot.megapixels ?? project.megapixels
+  const aspectRatio = shot.aspect_ratio ?? project.aspect_ratio
+  return {
+    megapixels: megapixels == null ? '' : String(megapixels),
+    aspect_ratio: aspectRatio ?? '',
+    duration: String(shot.duration_seconds),
+    steps: project.steps > 0 ? String(project.steps) : '',
+    fixed_seed: shot.seed != null,
+    seed: shot.seed == null ? '' : String(shot.seed),
+  }
+}
+
+export function validateRenderForm(form: RenderFormState): Record<string, string> {
+  const errors: Record<string, string> = {}
+  const duration = Number(form.duration)
+  if (form.duration.trim() === '' || Number.isNaN(duration)) {
+    errors.duration = '尺は数値で入れてください'
+  } else if (duration < SHOT_DURATION_MIN || duration > SHOT_DURATION_MAX) {
+    errors.duration = `尺は ${SHOT_DURATION_MIN}〜${SHOT_DURATION_MAX} 秒です`
+  }
+  const megapixels = Number(form.megapixels)
+  if (form.megapixels.trim() !== '' && (Number.isNaN(megapixels) || megapixels <= 0)) {
+    errors.megapixels = '解像度は正の数で入れてください（空欄で既定値）'
+  }
+  const steps = Number(form.steps)
+  if (form.steps.trim() !== '') {
+    if (!Number.isInteger(steps) || steps < 0 || steps > MAX_STEPS) {
+      errors.steps = `ステップ数は 0〜${MAX_STEPS} の整数です（空欄でおまかせ）`
+    }
+  }
+  const seed = Number(form.seed)
+  if (form.fixed_seed && (form.seed.trim() === '' || !Number.isInteger(seed))) {
+    errors.seed = 'シードは整数で入れてください'
+  }
+  return errors
+}
+
+/**
+ * 検証を通ったフォームを render のボディにする。
+ *
+ * 空欄の項目は**送らない**（サーバー側の従来どおりの解決に落とす）。ただし
+ * ステップ数だけは空欄でも `0` を送る: 0 は「テンプレートの既定のまま」を
+ * **明示する**値で、プロジェクトの設定より優先されるため。
+ */
+export function renderRequestFromForm(
+  form: RenderFormState,
+): StudioRenderRequest {
+  const body: StudioRenderRequest = {
+    duration: Number(form.duration),
+    steps: form.steps.trim() === '' ? 0 : Number(form.steps),
+  }
+  if (form.megapixels.trim() !== '') body.megapixels = Number(form.megapixels)
+  if (form.aspect_ratio.trim() !== '') body.aspect_ratio = form.aspect_ratio.trim()
+  if (form.fixed_seed && form.seed.trim() !== '') body.seed = Number(form.seed)
+  return body
 }
 
 // --------------------------------------------------------------------------

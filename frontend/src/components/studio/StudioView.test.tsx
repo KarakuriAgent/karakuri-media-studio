@@ -152,6 +152,7 @@ function detail(overrides: Partial<StudioProjectDetail> = {}): StudioProjectDeta
     quality: 'normal',
     megapixels: null,
     aspect_ratio: null,
+    steps: 0,
     nsfw: false,
     created_at: '2026-01-01T00:00:00+00:00',
     updated_at: '2026-01-01T00:00:00+00:00',
@@ -209,6 +210,7 @@ function summary(current: StudioProjectDetail): StudioProjectSummary {
     quality: current.quality,
     megapixels: current.megapixels,
     aspect_ratio: current.aspect_ratio,
+    steps: current.steps,
     nsfw: current.nsfw,
     created_at: current.created_at,
     updated_at: current.updated_at,
@@ -407,7 +409,7 @@ describe('StudioView', () => {
     )
   })
 
-  it('制作タブで生成を押すと render に投げる', async () => {
+  it('制作タブで生成を押すとダイアログが開き、既定のまま render に投げる', async () => {
     await openProject()
     clickTab('制作')
     expect(
@@ -417,9 +419,68 @@ describe('StudioView', () => {
     fireEvent.click(rail().getByRole('button', { name: 'カット1' }))
     mocked.renderStudioShot.mockResolvedValue({})
     fireEvent.click(await screen.findByRole('button', { name: '生成' }))
+
+    // 初期値はいまの解決結果（尺 = カット、ステップ数 = 作品の設定 = おまかせ）
+    expect(
+      (screen.getByLabelText('尺（秒）') as HTMLInputElement).value,
+    ).toBe('5')
+    expect(
+      (screen.getByLabelText('ステップ数') as HTMLInputElement).value,
+    ).toBe('')
+    // 触らずに押せば従来どおりの投入
+    fireEvent.click(screen.getByRole('button', { name: 'この設定で生成' }))
     await waitFor(() =>
-      expect(mocked.renderStudioShot).toHaveBeenCalledWith('カット1'),
+      expect(mocked.renderStudioShot).toHaveBeenCalledWith('カット1', {
+        duration: 5,
+        steps: 0,
+      }),
     )
+  })
+
+  it('生成ダイアログで変えた値だけがそのテイクに効く', async () => {
+    await openProject(
+      detail({ megapixels: 1.0, aspect_ratio: '16:9 (Widescreen)', steps: 12 }),
+      { aspectRatios: ['16:9 (Widescreen)'] },
+    )
+    clickTab('制作')
+    fireEvent.click(rail().getByRole('button', { name: 'カット1' }))
+    mocked.renderStudioShot.mockResolvedValue({})
+    fireEvent.click(await screen.findByRole('button', { name: '生成' }))
+
+    // 作品の設定がプレフィルされている
+    expect(
+      (screen.getByLabelText('解像度（メガピクセル）') as HTMLInputElement).value,
+    ).toBe('1')
+    expect(
+      (screen.getByLabelText('ステップ数') as HTMLInputElement).value,
+    ).toBe('12')
+
+    fireEvent.change(screen.getByLabelText('尺（秒）'), {
+      target: { value: '8' },
+    })
+    fireEvent.change(screen.getByLabelText('ステップ数'), {
+      target: { value: '30' },
+    })
+    fireEvent.click(
+      screen.getByLabelText('シードを固定する（オフ = ランダム）'),
+    )
+    fireEvent.change(screen.getByLabelText('シード'), {
+      target: { value: '4242' },
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'この設定で生成' }))
+
+    await waitFor(() =>
+      expect(mocked.renderStudioShot).toHaveBeenCalledWith('カット1', {
+        duration: 8,
+        steps: 30,
+        megapixels: 1,
+        aspect_ratio: '16:9 (Widescreen)',
+        seed: 4242,
+      }),
+    )
+    // プロジェクトもカットも書き換えない
+    expect(mocked.updateStudioProject).not.toHaveBeenCalled()
+    expect(mocked.updateStudioShot).not.toHaveBeenCalled()
   })
 
   it('生成中は Take レールに進捗が出て、生成ボタンが止まる', async () => {
@@ -877,14 +938,10 @@ describe('StudioView の品質セレクタ', () => {
     expect((screen.getByLabelText('品質') as HTMLSelectElement).value).toBe('opt')
   })
 
-  it('ラテント連続性が ON のあいだは効かないことを注記する', async () => {
+  it('ラテント連続性が ON でも品質はそのまま効く（注記を出さない）', async () => {
     await openProject(detail({ latent_continuity: true, quality: 'turbo' }))
-    expect(screen.getByText(/連続性が有効なため/)).toBeTruthy()
-  })
-
-  it('通常品質なら連続性が ON でも注記は出ない', async () => {
-    await openProject(detail({ latent_continuity: true }))
     expect(screen.queryByText(/連続性が有効なため/)).toBeNull()
+    expect((screen.getByLabelText('品質') as HTMLSelectElement).value).toBe('turbo')
   })
 })
 
@@ -965,6 +1022,45 @@ describe('StudioView の画質設定（アスペクト比 / メガピクセル�
     fireEvent.blur(input)
     expect(mocked.updateStudioProject).not.toHaveBeenCalled()
     expect(input.value).toBe('0.7')
+  })
+
+  it('ステップ数は確定まで保存せず、空欄は 0（おまかせ）として送る', async () => {
+    await openProject(detail({ steps: 20 }))
+    const input = screen.getByLabelText('ステップ') as HTMLInputElement
+    expect(input.value).toBe('20')
+
+    mocked.updateStudioProject.mockResolvedValue({})
+    fireEvent.change(input, { target: { value: '' } })
+    expect(mocked.updateStudioProject).not.toHaveBeenCalled()
+
+    fireEvent.blur(input)
+    await waitFor(() =>
+      expect(mocked.updateStudioProject).toHaveBeenCalledWith('p1', { steps: 0 }),
+    )
+  })
+
+  it('未設定のステップ数は空欄で見せ、入れた値を保存する', async () => {
+    await openProject()
+    const input = screen.getByLabelText('ステップ') as HTMLInputElement
+    expect(input.value).toBe('')
+
+    mocked.updateStudioProject.mockResolvedValue({})
+    fireEvent.change(input, { target: { value: '30' } })
+    fireEvent.blur(input)
+    await waitFor(() =>
+      expect(mocked.updateStudioProject).toHaveBeenCalledWith('p1', { steps: 30 }),
+    )
+  })
+
+  it('範囲外のステップ数は捨てて保存済みの値に戻す', async () => {
+    await openProject(detail({ steps: 20 }))
+    const input = screen.getByLabelText('ステップ') as HTMLInputElement
+    for (const value of ['-1', '151', '1.5']) {
+      fireEvent.change(input, { target: { value } })
+      fireEvent.blur(input)
+      expect(mocked.updateStudioProject).not.toHaveBeenCalled()
+      expect(input.value).toBe('20')
+    }
   })
 })
 

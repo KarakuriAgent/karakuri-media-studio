@@ -19,6 +19,8 @@ import {
   renderingJobIds,
   sceneOptions,
   selectedTakeOf,
+  renderFormFromShot,
+  renderRequestFromForm,
   shotFormFromShot,
   shotUpdateFromForm,
   splitMentions,
@@ -26,6 +28,7 @@ import {
   takesByShot,
   unresolvedMentions,
   validateProjectForm,
+  validateRenderForm,
   validateShotForm,
 } from './studio'
 
@@ -304,6 +307,7 @@ describe('projectSummary / renderingJobIds', () => {
     quality: 'normal',
     megapixels: null,
     aspect_ratio: null,
+    steps: 0,
     nsfw: false,
     created_at: '2026-01-01T00:00:00+00:00',
     updated_at: '2026-01-01T00:00:00+00:00',
@@ -385,6 +389,131 @@ describe('validateShotForm', () => {
     expect(validateShotForm({ ...base, seed: '' })).toEqual({})
     expect(validateShotForm({ ...base, seed: '42' })).toEqual({})
     expect(validateShotForm({ ...base, seed: '1.5' })).toHaveProperty('seed')
+  })
+})
+
+describe('renderFormFromShot / renderRequestFromForm', () => {
+  const unset = { megapixels: null, aspect_ratio: null, steps: 0 }
+
+  it('何も設定が無ければ尺だけが埋まる', () => {
+    const form = renderFormFromShot(shot('s1', { duration_seconds: 5 }), unset)
+    expect(form).toEqual({
+      megapixels: '',
+      aspect_ratio: '',
+      duration: '5',
+      steps: '',
+      fixed_seed: false,
+      seed: '',
+    })
+  })
+
+  it('解像度とステップ数はプロジェクトの設定をプレフィルする', () => {
+    const form = renderFormFromShot(shot('s1'), {
+      megapixels: 1,
+      aspect_ratio: '16:9 (Widescreen)',
+      steps: 12,
+    })
+    expect(form).toMatchObject({
+      megapixels: '1',
+      aspect_ratio: '16:9 (Widescreen)',
+      steps: '12',
+    })
+  })
+
+  it('カット個別の設定はプロジェクトより優先してプレフィルする', () => {
+    const form = renderFormFromShot(
+      shot('s1', { megapixels: 0.5, aspect_ratio: '1:1 (Square)', seed: 7 }),
+      { megapixels: 1, aspect_ratio: '16:9 (Widescreen)', steps: 12 },
+    )
+    expect(form).toMatchObject({
+      megapixels: '0.5',
+      aspect_ratio: '1:1 (Square)',
+      fixed_seed: true,
+      seed: '7',
+    })
+  })
+
+  it('触らなければ従来どおりの投入になる body を作る', () => {
+    const form = renderFormFromShot(shot('s1', { duration_seconds: 5 }), unset)
+    // 空欄の解像度とシードは送らない（サーバー側の解決に落とす）
+    expect(renderRequestFromForm(form)).toEqual({ duration: 5, steps: 0 })
+  })
+
+  it('入っている項目だけを型を戻して送る', () => {
+    const form = renderFormFromShot(shot('s1'), unset)
+    expect(
+      renderRequestFromForm({
+        ...form,
+        megapixels: '0.8',
+        aspect_ratio: '16:9 (Widescreen)',
+        duration: '9',
+        steps: '30',
+        fixed_seed: true,
+        seed: '4242',
+      }),
+    ).toEqual({
+      megapixels: 0.8,
+      aspect_ratio: '16:9 (Widescreen)',
+      duration: 9,
+      steps: 30,
+      seed: 4242,
+    })
+  })
+
+  it('シードの固定を外せば seed を送らない（= 毎回ランダム）', () => {
+    const form = renderFormFromShot(shot('s1', { seed: 7 }), unset)
+    const body = renderRequestFromForm({ ...form, fixed_seed: false })
+    expect(body.seed).toBeUndefined()
+  })
+})
+
+describe('validateRenderForm', () => {
+  const base = renderFormFromShot(shot('s1'), {
+    megapixels: null,
+    aspect_ratio: null,
+    steps: 0,
+  })
+
+  it('既定のままなら通る', () => {
+    expect(validateRenderForm(base)).toEqual({})
+  })
+
+  it('尺は 1〜15 秒', () => {
+    expect(validateRenderForm({ ...base, duration: '0.5' })).toHaveProperty(
+      'duration',
+    )
+    expect(validateRenderForm({ ...base, duration: '16' })).toHaveProperty(
+      'duration',
+    )
+    expect(validateRenderForm({ ...base, duration: '' })).toHaveProperty('duration')
+    expect(validateRenderForm({ ...base, duration: '15' })).toEqual({})
+  })
+
+  it('ステップ数は空欄か 0〜150 の整数', () => {
+    expect(validateRenderForm({ ...base, steps: '' })).toEqual({})
+    expect(validateRenderForm({ ...base, steps: '0' })).toEqual({})
+    expect(validateRenderForm({ ...base, steps: '150' })).toEqual({})
+    expect(validateRenderForm({ ...base, steps: '151' })).toHaveProperty('steps')
+    expect(validateRenderForm({ ...base, steps: '-1' })).toHaveProperty('steps')
+    expect(validateRenderForm({ ...base, steps: '1.5' })).toHaveProperty('steps')
+  })
+
+  it('解像度は空欄か正の数', () => {
+    expect(validateRenderForm({ ...base, megapixels: '' })).toEqual({})
+    expect(validateRenderForm({ ...base, megapixels: '0' })).toHaveProperty(
+      'megapixels',
+    )
+  })
+
+  it('固定シードは整数が要る（ランダムなら空欄でよい）', () => {
+    expect(validateRenderForm({ ...base, fixed_seed: false, seed: '' })).toEqual({})
+    expect(
+      validateRenderForm({ ...base, fixed_seed: true, seed: '' }),
+    ).toHaveProperty('seed')
+    expect(
+      validateRenderForm({ ...base, fixed_seed: true, seed: '1.5' }),
+    ).toHaveProperty('seed')
+    expect(validateRenderForm({ ...base, fixed_seed: true, seed: '42' })).toEqual({})
   })
 })
 

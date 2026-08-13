@@ -76,36 +76,80 @@
 |---|---|---|---|---|
 | `minimax_h3_t2v` | テキスト→動画・音声つき (MiniMax H3 t2v) | minimax_h3 fl2va int8 | なし | ✕ |
 | `minimax_h3_t2v_save` | テキスト→動画・音声つき・ラテント保存 (MiniMax H3 t2v + Save Latent) | 同 `minimax_h3_t2v` | 同 `minimax_h3_t2v` | ✕ |
+| `minimax_h3_t2v_turbo` | テキスト→動画・音声つき (MiniMax H3 t2v Turbo) | minimax_h3 fl2va w4a8 + turbo 4step LoRA | 同 `minimax_h3_t2v` | ✕ |
+| `minimax_h3_t2v_save_turbo` | テキスト→動画・音声つき・ラテント保存 (MiniMax H3 t2v Turbo + Save Latent) | 同 `minimax_h3_t2v_turbo` | 同 `minimax_h3_t2v` | ✕ |
+| `minimax_h3_t2v_opt` | テキスト→動画・音声つき (MiniMax H3 t2v Optimized) | minimax_h3 fl2va w4a8（蒸留 LoRA なし・20 steps） | 同 `minimax_h3_t2v` | ✕ |
+| `minimax_h3_t2v_save_opt` | テキスト→動画・音声つき・ラテント保存 (MiniMax H3 t2v Optimized + Save Latent) | 同 `minimax_h3_t2v_opt` | 同 `minimax_h3_t2v` | ✕ |
 | `minimax_h3_i2v` | 画像→動画・音声つき (MiniMax H3 i2v) | minimax_h3 fl2va int8 | 画像（最終フレーム画像は任意） | ○（既定） |
 | `minimax_h3_i2v_save` | 画像→動画・音声つき・ラテント保存 (MiniMax H3 i2v + Save Latent) | 同 `minimax_h3_i2v` | 同 `minimax_h3_i2v` | ○ |
 | `minimax_h3_i2v_turbo` | 画像→動画・音声つき (MiniMax H3 i2v Turbo) | minimax_h3 fl2va w4a8 + turbo 4step LoRA | 同 `minimax_h3_i2v` | ○ |
+| `minimax_h3_i2v_save_turbo` | 画像→動画・音声つき・ラテント保存 (MiniMax H3 i2v Turbo + Save Latent) | 同 `minimax_h3_i2v_turbo` | 同 `minimax_h3_i2v` | ○ |
 | `minimax_h3_i2v_opt` | 画像→動画・音声つき (MiniMax H3 i2v Optimized) | minimax_h3 fl2va w4a8（蒸留 LoRA なし・20 steps） | 同 `minimax_h3_i2v` | ○ |
+| `minimax_h3_i2v_save_opt` | 画像→動画・音声つき・ラテント保存 (MiniMax H3 i2v Optimized + Save Latent) | 同 `minimax_h3_i2v_opt` | 同 `minimax_h3_i2v` | ○ |
 | `minimax_h3_r2v` | 参照素材→動画・音声つき (MiniMax H3 r2v) | minimax_h3 ref2va int8 | `reference_images` 9 枚 / `reference_videos` 3 本 / `reference_audios` 3 本まで・合計 1 件以上（開始フレームは不可） | ✕ |
 | `minimax_h3_r2v_save` | 参照素材→動画・音声つき・ラテント保存 (MiniMax H3 r2v + Save Latent) | 同 `minimax_h3_r2v` | 同 `minimax_h3_r2v` | ✕ |
 | `minimax_h3_r2v_context` | 参照素材→動画・音声つき・連続カット (MiniMax H3 r2v + Motion Context) | minimax_h3 ref2va int8 | 同 `minimax_h3_r2v` に加えて `reference_video`（直前カットの動画）と `context_latent_path`（直前カットの AV ラテント）が必須 | ✕ |
 | `minimax_h3_r2v_turbo` | 参照素材→動画・音声つき (MiniMax H3 r2v Turbo) | minimax_h3 ref2va w4a8 + turbo 4step LoRA | 同 `minimax_h3_r2v` | ✕ |
+| `minimax_h3_r2v_save_turbo` | 参照素材→動画・音声つき・ラテント保存 (MiniMax H3 r2v Turbo + Save Latent) | 同 `minimax_h3_r2v_turbo` | 同 `minimax_h3_r2v` | ✕ |
+| `minimax_h3_r2v_context_turbo` | 参照素材→動画・音声つき・連続カット (MiniMax H3 r2v Turbo + Motion Context) | 同 `minimax_h3_r2v_turbo` | 同 `minimax_h3_r2v_context` | ✕ |
 | `minimax_h3_r2v_opt` | 参照素材→動画・音声つき (MiniMax H3 r2v Optimized) | minimax_h3 ref2va w4a8（蒸留 LoRA なし・20 steps） | 同 `minimax_h3_r2v` | ✕ |
+| `minimax_h3_r2v_save_opt` | 参照素材→動画・音声つき・ラテント保存 (MiniMax H3 r2v Optimized + Save Latent) | 同 `minimax_h3_r2v_opt` | 同 `minimax_h3_r2v` | ✕ |
+| `minimax_h3_r2v_context_opt` | 参照素材→動画・音声つき・連続カット (MiniMax H3 r2v Optimized + Motion Context) | 同 `minimax_h3_r2v_opt` | 同 `minimax_h3_r2v_context` | ✕ |
 
 - id はファイル名（拡張子なし）
+- **`_save` / `_context` は手動の生成フォームにもエージェントのカタログにも出ない**
+  （`WorkflowSpec.studio_only`）。この 12 個はドラマスタジオが
+  「ラテント連続性」×「動画生成品質」から id を組み立てて使うだけの版で、入力の形も
+  仕上がりも素の版と同じなので人が手で選ぶ意味が無く、選べると「ラテント連続性 OFF
+  なのに保存版」のような矛盾だけが増える。落としているのは
+  `app.workflows.selectable_specs`（＝ `/api/options` とプロンプトのカタログ）だけで、
+  **id 直指定（`get_spec`）は従来どおり通る**: スタジオの解決（`_plan_render`）・
+  ジョブの実行・マニフェスト検証（`validate_specs`）・外部 API の `video_workflow`
+  直指定はどれも 21 件すべてを見る
 - `_turbo` / `_opt` / `_context` / `_save` はカスタムノード前提なので、**接続先が `comfy_cloud` のときは選択肢に出ない**（§3.1）
 - **`_turbo` / `_opt`** はドラマスタジオからは直接選ばず、プロジェクトの
   **「動画生成品質」**（`quality` = `normal` / `opt` / `turbo`）として持つ。品質は論理モード
-  （t2v / i2v / r2v）と直交していて、モードが決まったあとに「モード × 品質 → バリアント id」で
-  解決される（`app.studio._quality_workflow`）。t2v にはバリアントが無く、`latent_continuity` が
-  ON のあいだも `_save` / `_context` のバリアントが無いので、どちらも**素へフォールバック**する。
-  接続先が対応しない（`comfy_cloud`）ときも同じで、理由は投入プレビューの `workflow_reason` に出る。
+  （t2v / i2v / r2v / r2v_context）ともラテント連続性とも直交していて、ワークフロー id は
+  **3 段**で決まる（`app.studio._plan_render`）:
+  1. 論理モード（`_pick_workflow`。t2v / i2v / r2v / r2v_context）
+  2. `latent_continuity` が ON なら保存付き（`_save`）への読み替え（`_latent_save_workflow`）
+  3. そこまでで決まった論理ワークフロー × 品質 → バリアント（`_quality_workflow`）
+
+  3 段目の表（`app.studio.QUALITY_WORKFLOWS`）は 7 つの論理ワークフロー
+  （`minimax_h3_{t2v,i2v,r2v}` / `minimax_h3_{t2v,i2v,r2v}_save` / `minimax_h3_r2v_context`）
+  すべてに `_turbo` / `_opt` を持つので、**ラテント連続性が ON でも t2v でも品質は効く**。
+  素へ落ちるのは接続先が対応しない（`comfy_cloud`）ときだけで、そのときも 2 段目までの結果
+  （＝保存付きの版）は保ったまま品質だけを落とす。理由は投入プレビューの `workflow_reason` に出る。
 - 画質のほうはワークフローを選ばず、プロジェクトの **`megapixels` / `aspect_ratio`**
   （生成フォームと同じ 2 項目を作品単位の既定として持つ）が投入時の値を決める。
   どちらも `NULL` = **明示しない**（＝これまでどおりワークフロー宣言の
   `default_megapixels` / グローバル既定 0.4MP、画面比は既定のまま）。効き方は
-  **Shot 個別 → プロジェクト → グローバル既定**の順で、2 つはそれぞれ独立に解決する。
+  **テイク 1 回ぶんの上書き → Shot 個別 → プロジェクト → グローバル既定**の順で、2 つは
+  それぞれ独立に解決する。
   品質（`quality`）とも直交していて、どちらのバリアントに落ちても同じ画素数で焼く。
+- **サンプリング回数**もプロジェクトの設定（`steps`）として持てる。`0` = 未指定 =
+  **テンプレートの既定のまま**（turbo は 4、normal / opt は 20）で、上限は `MAX_STEPS`（150）。
+  `steps` を宣言しているワークフロー（MiniMax H3 は全バリアントが `BasicScheduler.steps` を
+  宣言している）にだけ注入される。効き方は**テイク 1 回ぶんの上書き → プロジェクト →
+  テンプレートの既定**で、Shot 単位の設定は持たない（品質を変えずに刻みだけ増減したい、
+  という使い方のための作品共通のつまみ）。
+- テイク 1 回ぶんの上書きは `POST /api/studio/shots/{id}/render` の**任意のボディ**
+  （`app.models.StudioRenderRequest`。`megapixels` / `aspect_ratio` / `duration` / `steps` /
+  `seed`、すべて任意）。送った項目だけがその 1 回の投入に効き、**Shot もプロジェクトも
+  書き換えない**（何を使ったかは Take の元ジョブの `params` に残る）。ボディを省けば
+  今までどおり。`steps` だけは `0` も「テンプレートの既定のまま」の**明示**として扱い、
+  プロジェクトの設定より優先される。範囲外の `steps`（0〜150 の外）と `duration`
+  （1〜15 秒の外）は `StudioError` → 400。
 - **`minimax_h3_*_save`** は素の t2v / i2v / r2v に `MiniMaxH3MotionContextSaveLatent` →
   `PreviewAny` の 2 ノードだけを足した版で、**AV ラテントを保存する以外は素の版とまったく同じ**
   （Motion Context の読み込み・`…Trim` は入っていないので尺も変わらない）。ドラマスタジオは
   「ラテント連続性」が ON のプロジェクトでは通常カットもこちらに読み替えて投げる: **連鎖の起点になる
   カットがラテントを残さないと、次のカットに引き継ぐものが無く連鎖を始められない**ため。素の版の
   テンプレートは触っていないので、OFF のプロジェクトと Comfy Cloud は今までどおり素の版を使う。
+  `_save` にも `_turbo` / `_opt` があり（`minimax_h3_*_save_turbo` / `…_save_opt`）、中身は
+  **その品質のテンプレート + 保存の 2 ノード**。品質のテンプレートは高速化パッチのチェーンで
+  ノード 150〜155 を使い切っているので、保存の 2 ノードは素の版の 155 / 156 ではなく
+  **160〜166 の側（165 / 166）**に置いてある。
 - **`minimax_h3_r2v_context`** は素の r2v に Motion Context（`MiniMaxH3MotionContext` /
   `…LoadLatent` / `…SaveLatent` / `…Trim`）を足した**連続カット専用**の版。ドラマスタジオの
   「ラテント連続性」（プロジェクトの `latent_continuity`）だけが選ぶ。`ReferenceToVideo` の
@@ -123,7 +167,10 @@
   合わなくなる**（設定変更はそれ以降の生成にしか効かないので、変えるなら連鎖の切れ目で）。
   このカットぶんのラテントは `h3_context/{job_id}` に保存し、パスは `PreviewAny` 経由で `/history`
   から回収して Take の `latent_path` に控える（回収できなければ NULL のままで、次のカットは
-  「引き継ぎ元が無い」として断られる）。
+  「引き継ぎ元が無い」として断られる）。連続カット版にも `_turbo` / `_opt`
+  （`minimax_h3_r2v_context_turbo` / `…_context_opt`）があり、中身は**その品質のテンプレート +
+  Motion Context の 5 ノード + 保存の 2 ノード**。ノード ID は素の版の 150〜156 を 10 ずらした
+  **160〜166**（品質のテンプレートが 150〜155 を使うため）。
 - **`minimax_h3_*`（`workflow/video/minimax-h3/`、family `minimax-h3`）** は**映像とステレオ音声を同時に生成する**
   ローカルモデル（MiniMax H3）。プロンプトは公式 rewrite 契約で書く: ベース（t2v / i2v）は任意の
   アライメント行のあと `integrated_multimodal_description:` / `overall_soundscape:` /
@@ -307,8 +354,10 @@ ComfyUI が「テンプレートにしか無いファイル」を探して落ち
 ##### MiniMax H3 Turbo: 高速化をテンプレートに焼き込む
 
 生成そのものを速くする仕掛けは**実行時オプションではなくテンプレート**が持つ。MiniMax H3 には
-素の i2v / r2v と対になる **turbo** テンプレート（`minimax_h3_i2v_turbo` / `minimax_h3_r2v_turbo`）が
-あり、受け取る論理入力・プロンプトの書き方・`multi_inputs` は素の版と**完全に同じ**で、
+素の t2v / i2v / r2v と対になる **turbo** テンプレート（`minimax_h3_t2v_turbo` /
+`minimax_h3_i2v_turbo` / `minimax_h3_r2v_turbo`）があり、ラテント保存版・連続カット版にも同じ差分を
+当てた turbo（`minimax_h3_*_save_turbo` / `minimax_h3_r2v_context_turbo`）がある。
+受け取る論理入力・プロンプトの書き方・`multi_inputs` は素の版と**完全に同じ**で、
 違うのは中身だけ:
 
 | 差分 | 素の版 | turbo |
@@ -336,13 +385,16 @@ model を取る。guider だけが末尾の `SpectrumApplyMiniMaxH3` を読む�
 グラフには現れない。
 
 ワークフローの宣言は `dataclasses.replace` で素の版との差分だけを書く（`workflows.py` の
-`MINIMAX_H3_I2V_TURBO` / `MINIMAX_H3_R2V_TURBO`）。family は素の版と同じ `minimax-h3` なので、
-2 段プルダウン（モデル → モード）の 2 段目に「… (i2v Turbo)」「… (r2v Turbo)」として並ぶ。
+`MINIMAX_H3_T2V_TURBO` / `MINIMAX_H3_I2V_TURBO` / `MINIMAX_H3_R2V_TURBO`、およびそれらを
+さらに `replace` した `…_SAVE_TURBO` / `MINIMAX_H3_R2V_CONTEXT_TURBO`）。family は素の版と同じ
+`minimax-h3` なので、2 段プルダウン（モデル → モード）の 2 段目に「… (i2v Turbo)」
+「… (r2v Turbo)」として並ぶ。
 turbo 版だけは選択式フィールド（下記）で `low_vram`（`MiniMaxH3TurboLoRA` の低 VRAM 読み込み）を
 出す。**既定は `off`** で、VRAM が足りずに落ちるときだけ `on` にする。
 
-さらに turbo から**蒸留 LoRA だけを抜いた** **opt**（`minimax_h3_i2v_opt` / `minimax_h3_r2v_opt`）が
-ある。`MiniMaxH3TurboLoRA` を持たず（`PathchSageAttentionKJ` が UNETLoader 直結）、
+さらに turbo から**蒸留 LoRA だけを抜いた** **opt**（`minimax_h3_t2v_opt` / `minimax_h3_i2v_opt` /
+`minimax_h3_r2v_opt` と、その `_save` / `_context` 版）がある。
+`MiniMaxH3TurboLoRA` を持たず（`PathchSageAttentionKJ` が UNETLoader 直結）、
 `BasicScheduler.steps` は素の版と同じ **20**。量子化ウェイトとアテンション系パッチはそのままなので、
 品質は素の版相当のまま実行だけが速い。書き込む先のノードが無いので **`low_vram` は持たない**。
 エージェント（AGENT モード）がワークフローを自分で選ぶときは、接続先が `local` なら opt を、
@@ -428,8 +480,12 @@ VRAM が足りずに CUDA OOM で落ちる。そこで `WorkflowSpec.default_meg
 ワークフローを選び直したときに同じ値を入れる。
 
 ドラマスタジオは生成フォームを通さないので、`megapixels` と `aspect_ratio` はカット投入時に
-`app.studio.render_shot` が組み立てる: **Shot 個別 → プロジェクト（どちらも `NULL` = 載せない）
+`app.studio.render_shot` が組み立てる: **テイク 1 回ぶんの上書き（render のボディ）
+→ Shot 個別 → プロジェクト（どちらも `NULL` = 載せない）
 → `JobCreate` の既定（0.4MP / `4:3 (Standard)`）**。
+同じ関数が `duration`（**上書き → Shot の `duration_seconds`**）・`steps`（**上書き →
+プロジェクトの `steps` → 載せない = テンプレートの既定**）・`seed`（**上書き → Shot の
+`seed` → 載せない = 毎回ランダム**）も同じ流儀で解決する。
 `app.jobs._fitted_megapixels` の切り下げ（宣言の `default_megapixels` を上限にする）が掛かるのは
 **別のワークフローから params を引き継ぐとき（再実行での付け替え・「続きから」）だけ**なので、
 0.4MP より大きい値もそのまま ComfyUI に届く（Shot 個別の指定が従来から効いているのと同じ経路）。
@@ -1113,8 +1169,8 @@ workflow/           ComfyUI ワークフロー（API フォーマット）テン
   video/minimax-h3/ minimax_h3_t2v / minimax_h3_i2v / minimax_h3_r2v（音声つき）
                     minimax_h3_r2v_context（連続カット・Motion Context 版）
                     minimax_h3_t2v_save / _i2v_save / _r2v_save（AV ラテント保存つき）
-                    minimax_h3_i2v_turbo / minimax_h3_r2v_turbo（4 ステップ版）
-                    minimax_h3_i2v_opt / minimax_h3_r2v_opt（蒸留 LoRA なしの 20 ステップ最適化版）
+                    …_turbo（4 ステップ版）/ …_opt（蒸留 LoRA なしの 20 ステップ最適化版）
+                    ※ turbo / opt は上の 7 通り（素 3 / _save 3 / _r2v_context）すべてに揃えてある
   audio/            ace_step1_5_xl_sft.json / stable_audio_3_medium_base.json
 app.db              SQLite（jobs / loras / library / chat_sessions / agent_sessions）
 outputs/            生成物（/outputs で静的配信）

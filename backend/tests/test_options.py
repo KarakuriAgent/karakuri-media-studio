@@ -9,6 +9,7 @@ from app.routers import assets as assets_router
 from app.workflows import (
     DEFAULT_VIDEO_WORKFLOW,
     audio_specs,
+    get_spec,
     image_specs,
     video_specs,
 )
@@ -156,6 +157,31 @@ CUSTOM_NODE_WORKFLOWS = (
 )
 #: それらを外しても残る MiniMax H3 の素の版
 PLAIN_WORKFLOWS = ("minimax_h3_t2v", "minimax_h3_i2v", "minimax_h3_r2v")
+
+
+#: ドラマスタジオが内部で解決するだけのバリアント（`WorkflowSpec.studio_only`）。
+#: プロジェクトの「ラテント連続性」×「動画生成品質」から `app.studio._plan_render`
+#: が id を組み立てるもので、手動の生成フォームには出さない（SPEC §2.2）。
+STUDIO_ONLY_WORKFLOWS = tuple(
+    f"minimax_h3_{mode}_save{suffix}"
+    for mode in ("t2v", "i2v", "r2v")
+    for suffix in ("", "_turbo", "_opt")
+) + tuple(
+    f"minimax_h3_r2v_context{suffix}" for suffix in ("", "_turbo", "_opt")
+)
+
+
+def test_the_studio_only_variants_are_not_offered(client):
+    """`_save` / `_context` 系は生成フォームの選択肢に出ない（id 直指定は生きる）。"""
+    options = client.get("/api/options").json()
+    ids = [w["id"] for w in options["video_workflows"]]
+    for workflow_id in STUDIO_ONLY_WORKFLOWS:
+        assert workflow_id not in ids
+        # 選択肢から外しただけで、宣言そのものは残っている（スタジオの解決・
+        # ジョブの実行・外部 API の id 直指定はこちらを通る）
+        assert get_spec(workflow_id, "video").studio_only is True
+    for workflow_id in PLAIN_WORKFLOWS:
+        assert workflow_id in ids
 
 
 def _set_target(monkeypatch, target: str) -> None:

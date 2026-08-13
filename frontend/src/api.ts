@@ -58,6 +58,7 @@ import type {
   StudioProjectDetail,
   StudioProjectSummary,
   StudioProjectUpdate,
+  StudioRenderRequest,
   StudioRevision,
   StudioRevisionDetail,
   StudioScene,
@@ -546,9 +547,14 @@ export const api = {
 
   listStudioTakes: (shotId: string) =>
     request<StudioTake[]>(`/api/studio/shots/${shotId}/takes`),
-  /** Shot を 1 回生成する（ワークフローはサーバー側で t2v / i2v / r2v に決まる）。 */
-  renderStudioShot: (shotId: string) =>
-    json<StudioTake>('POST', `/api/studio/shots/${shotId}/render`),
+  /**
+   * Shot を 1 回生成する（ワークフローはサーバー側で t2v / i2v / r2v に決まる）。
+   *
+   * `body` はそのテイク 1 回だけに効く上書き（解像度・尺・ステップ数・シード）。
+   * 省略すればカット / プロジェクトの設定で焼く従来どおりの投入。
+   */
+  renderStudioShot: (shotId: string, body?: StudioRenderRequest) =>
+    json<StudioTake>('POST', `/api/studio/shots/${shotId}/render`, body),
   selectStudioTake: (id: string) =>
     json<StudioTake>('POST', `/api/studio/takes/${id}/select`),
   rejectStudioTake: (id: string) =>
