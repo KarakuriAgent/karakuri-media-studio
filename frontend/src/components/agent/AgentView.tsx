@@ -16,8 +16,18 @@ import ArtifactPanel from './ArtifactPanel'
 import SessionList from './SessionList'
 import TargetSelector from '../TargetSelector'
 import { Button } from '../ui/button'
+import {
+  ResizeHandle,
+  useIsWide,
+  useResizablePanel,
+} from '../ui/resizable-panel'
 import { AGENT_ACTIVE } from './common'
 import { currentActivity, isThinking, shouldReplaceSession } from './logic'
+
+const SESSION_LIST_WIDTH_KEY = 'agentSessionListWidth'
+const SESSION_LIST_WIDTH = { initial: 256, min: 200, max: 400 }
+const ARTIFACT_PANEL_WIDTH_KEY = 'agentArtifactPanelWidth'
+const ARTIFACT_PANEL_WIDTH = { initial: 288, min: 220, max: 480 }
 
 interface Props {
   /** Latest `type: "agent"` WS frame (AGENT-MODE §5.1). */
@@ -50,6 +60,20 @@ export default function AgentView({
   const [sessionsOpen, setSessionsOpen] = useState(false)
   const [artifactsOpen, setArtifactsOpen] = useState(false)
   const [artifactBadge, setArtifactBadge] = useState(false)
+  // lg 以上の 3 カラムだけ、左右の列をドラッグで広げられる（狭幅は固定）。
+  const isWide = useIsWide()
+  const sessionListPanel = useResizablePanel(
+    SESSION_LIST_WIDTH_KEY,
+    SESSION_LIST_WIDTH,
+    'x',
+  )
+  // ハンドルはパネルの左縁に出るので、左へ引くと広がる（符号を反転）。
+  const artifactPanel = useResizablePanel(
+    ARTIFACT_PANEL_WIDTH_KEY,
+    ARTIFACT_PANEL_WIDTH,
+    'x',
+    { inverted: true },
+  )
 
   /** 開いているセッション（レース判定用に ref でも持つ）。 */
   const wanted = useRef<string | null>(null)
@@ -346,7 +370,19 @@ export default function AgentView({
           collapsed={leftCollapsed}
           onToggle={() => setLeftCollapsed((value) => !value)}
           onSelect={selectSession}
+          style={
+            isWide && !leftCollapsed ? { width: sessionListPanel.size } : undefined
+          }
         />
+
+        {/* 折りたたみ中（w-10）は掴む相手が無いのでハンドルも出さない。 */}
+        {!leftCollapsed && (
+          <ResizeHandle
+            panel={sessionListPanel}
+            label="セッション一覧の幅"
+            className="-mx-2"
+          />
+        )}
 
         {session ? (
           <AgentChat
@@ -388,6 +424,14 @@ export default function AgentView({
           </section>
         )}
 
+        {session && !rightCollapsed && (
+          <ResizeHandle
+            panel={artifactPanel}
+            label="成果物パネルの幅"
+            className="-mx-2"
+          />
+        )}
+
         {session && (
           <ArtifactPanel
             sessionId={session.id}
@@ -397,6 +441,9 @@ export default function AgentView({
             onToggle={() => setRightCollapsed((value) => !value)}
             onExpand={expandArtifacts}
             className="hidden lg:flex"
+            style={
+              isWide && !rightCollapsed ? { width: artifactPanel.size } : undefined
+            }
           />
         )}
       </div>

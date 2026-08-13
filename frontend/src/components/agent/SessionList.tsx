@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react'
+import { useRef, useState, type CSSProperties } from 'react'
 import {
   ChevronLeft,
   ChevronRight,
@@ -54,6 +54,8 @@ interface Props {
   showNsfw: boolean
   /** Layout override: desktop column vs. mobile drawer (AGENT-MODE §1). */
   className?: string
+  /** 展開時の幅（リサイズ結果）。折りたたみ中は当てない。 */
+  style?: CSSProperties
 }
 
 export default function SessionList({
@@ -70,6 +72,7 @@ export default function SessionList({
   onToggleNsfw,
   showNsfw,
   className = '',
+  style,
 }: Props) {
   const [creating, setCreating] = useState(false)
   const [goal, setGoal] = useState('')
@@ -140,6 +143,7 @@ export default function SessionList({
         'flex w-64 shrink-0 flex-col rounded-lg border border-border bg-card shadow-elevation-1',
         className,
       )}
+      style={style}
     >
       <div className="flex items-center gap-2 border-b border-border px-3 py-2">
         <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">

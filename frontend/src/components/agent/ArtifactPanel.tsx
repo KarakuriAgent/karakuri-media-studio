@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type CSSProperties } from 'react'
 import { Clapperboard, ChevronLeft, ChevronRight, X } from 'lucide-react'
 
 import { api } from '../../api'
@@ -30,6 +30,8 @@ interface Props {
   className?: string
   /** 見出しのトグルの意味（狭幅のオーバーレイは折りたたみではなく「閉じる」）。 */
   toggleIcon?: 'collapse' | 'close'
+  /** 展開時の幅（リサイズ結果）。折りたたみ中は当てない。 */
+  style?: CSSProperties
 }
 
 /** Backend fills `url` for outputs; workdir files are served by name. */
@@ -54,6 +56,7 @@ export default function ArtifactPanel({
   onExpand,
   className = '',
   toggleIcon = 'collapse',
+  style,
 }: Props) {
   /** 単体ビューアで開いている成果物（artifacts 配列の位置）。 */
   const [openIndex, setOpenIndex] = useState<number | null>(null)
@@ -112,6 +115,7 @@ export default function ArtifactPanel({
         'flex w-72 shrink-0 flex-col rounded-lg border border-border bg-card shadow-elevation-1',
         className,
       )}
+      style={style}
     >
       <div className="flex items-center gap-2 border-b border-border px-3 py-2">
         <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">

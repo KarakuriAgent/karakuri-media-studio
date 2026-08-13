@@ -1,12 +1,6 @@
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  type KeyboardEvent as ReactKeyboardEvent,
-  type PointerEvent as ReactPointerEvent,
-} from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { ApiError, api, fieldErrorsFromError, formatDetail, wsUrl } from './api'
+import BottomNav from './components/BottomNav'
 import ChatModal from './components/ChatModal'
 import ContinueModal from './components/ContinueModal'
 import GenerateForm from './components/GenerateForm'
@@ -18,6 +12,11 @@ import SettingsPage from './components/SettingsPage'
 import AgentView from './components/agent/AgentView'
 import StudioView from './components/studio/StudioView'
 import { Banner } from './components/ui'
+import {
+  ResizeHandle,
+  useIsWide,
+  useResizablePanel,
+} from './components/ui/resizable-panel'
 import { Tabs, TabsList, TabsTrigger } from './components/ui/tabs'
 import {
   audioJobPayload,
@@ -63,195 +62,6 @@ const SIDEBAR_WIDTH_KEY = 'sidebarWidth'
 const SIDEBAR_WIDTH = { initial: 400, min: 320, max: 640 }
 const HISTORY_HEIGHT_KEY = 'historyHeight'
 const HISTORY_HEIGHT = { initial: 144, min: 100, max: 320 }
-
-/** 矢印キー 1 打ぶんの変化量（px）。 */
-const RESIZE_STEP = 16
-
-/** lg（1024px）以上か。未満ではリサイズを止め、生成／結果を切り替え表示にする。 */
-function useIsWide(): boolean {
-  const [wide, setWide] = useState(true)
-  useEffect(() => {
-    if (typeof window.matchMedia !== 'function') return
-    const query = window.matchMedia('(min-width: 1024px)')
-    const apply = () => setWide(query.matches)
-    apply()
-    query.addEventListener('change', apply)
-    return () => query.removeEventListener('change', apply)
-  }, [])
-  return wide
-}
-
-function clampSize(value: number, min: number, max: number): number {
-  return Math.min(max, Math.max(min, Math.round(value)))
-}
-
-function storedSize(key: string, fallback: number, min: number, max: number): number {
-  try {
-    const raw = window.localStorage.getItem(key)
-    const value = raw == null ? Number.NaN : Number(raw)
-    return Number.isFinite(value) ? clampSize(value, min, max) : fallback
-  } catch {
-    return fallback
-  }
-}
-
-interface ResizablePanel {
-  /** いまの幅（axis='x'）または高さ（axis='y'）。単位は px。 */
-  size: number
-  dragging: boolean
-  axis: 'x' | 'y'
-  min: number
-  max: number
-  handleProps: {
-    onPointerDown: (event: ReactPointerEvent<HTMLDivElement>) => void
-    onPointerMove: (event: ReactPointerEvent<HTMLDivElement>) => void
-    onPointerUp: (event: ReactPointerEvent<HTMLDivElement>) => void
-    onPointerCancel: (event: ReactPointerEvent<HTMLDivElement>) => void
-    onDoubleClick: () => void
-    onKeyDown: (event: ReactKeyboardEvent<HTMLDivElement>) => void
-  }
-}
-
-/**
- * ドラッグでサイズを変えられるパネル（サイドバーの幅・履歴の高さ）。
- *
- * 値は localStorage に持つので次に開いたときも同じ大きさで出る。ハンドルの
- * ダブルクリックで既定値へ戻し、矢印キーでも ±{@link RESIZE_STEP}px 動かせる。
- * `axis='y'` のハンドルは対象の上端に置くので、上へドラッグすると大きくなる。
- */
-function useResizablePanel(
-  storageKey: string,
-  { initial, min, max }: { initial: number; min: number; max: number },
-  axis: 'x' | 'y',
-): ResizablePanel {
-  const [size, setSize] = useState(() => storedSize(storageKey, initial, min, max))
-  const [dragging, setDragging] = useState(false)
-  // ドラッグ開始時のポインタ位置とサイズ（移動量を足し込むための起点）。
-  const origin = useRef<{ position: number; size: number } | null>(null)
-
-  // ドラッグ中は 1 フレームごとに size が変わるので、落ち着いた値だけ書き込む。
-  useEffect(() => {
-    const timer = window.setTimeout(() => {
-      try {
-        window.localStorage.setItem(storageKey, String(size))
-      } catch {
-        /* 保存できない環境ではこのセッションのあいだだけ効く */
-      }
-    }, 200)
-    return () => window.clearTimeout(timer)
-  }, [size, storageKey])
-
-  // ドラッグ中は文字が選択されないようにする（ハンドルを掴んだまま動かすため）。
-  useEffect(() => {
-    if (!dragging) return
-    document.body.classList.add('select-none')
-    return () => document.body.classList.remove('select-none')
-  }, [dragging])
-
-  const nudge = useCallback(
-    (delta: number) => setSize((previous) => clampSize(previous + delta, min, max)),
-    [max, min],
-  )
-
-  const handleProps = {
-    onPointerDown: (event: ReactPointerEvent<HTMLDivElement>) => {
-      if (event.button !== 0) return
-      event.preventDefault()
-      origin.current = {
-        position: axis === 'x' ? event.clientX : event.clientY,
-        size,
-      }
-      event.currentTarget.setPointerCapture(event.pointerId)
-      setDragging(true)
-    },
-    onPointerMove: (event: ReactPointerEvent<HTMLDivElement>) => {
-      const start = origin.current
-      if (!start) return
-      const position = axis === 'x' ? event.clientX : event.clientY
-      // 上端ハンドルは上へ動かすと広がるので符号が逆。
-      const delta = axis === 'x' ? position - start.position : start.position - position
-      setSize(clampSize(start.size + delta, min, max))
-    },
-    onPointerUp: (event: ReactPointerEvent<HTMLDivElement>) => {
-      origin.current = null
-      setDragging(false)
-      if (event.currentTarget.hasPointerCapture(event.pointerId))
-        event.currentTarget.releasePointerCapture(event.pointerId)
-    },
-    onPointerCancel: () => {
-      origin.current = null
-      setDragging(false)
-    },
-    onDoubleClick: () => setSize(clampSize(initial, min, max)),
-    onKeyDown: (event: ReactKeyboardEvent<HTMLDivElement>) => {
-      const grow = axis === 'x' ? 'ArrowRight' : 'ArrowUp'
-      const shrink = axis === 'x' ? 'ArrowLeft' : 'ArrowDown'
-      if (event.key === grow) nudge(RESIZE_STEP)
-      else if (event.key === shrink) nudge(-RESIZE_STEP)
-      else if (event.key === 'Home') setSize(min)
-      else if (event.key === 'End') setSize(max)
-      else return
-      event.preventDefault()
-    },
-  }
-
-  return { size, dragging, axis, min, max, handleProps }
-}
-
-/**
- * リサイズ用のつまみ（lg 以上でのみ出す）。
- *
- * ドラッグ中は全面のオーバーレイを重ね、iframe / video がポインタを奪って
- * 追従が途切れるのを防ぐ。
- */
-function ResizeHandle({
-  panel,
-  label,
-  className,
-}: {
-  panel: ResizablePanel
-  label: string
-  className?: string
-}) {
-  const vertical = panel.axis === 'x'
-  const bar = panel.dragging
-    ? 'bg-primary'
-    : 'bg-transparent group-hover:bg-primary group-focus-visible:bg-primary'
-  return (
-    <>
-      <div
-        role="separator"
-        aria-orientation={vertical ? 'vertical' : 'horizontal'}
-        aria-label={label}
-        aria-valuenow={panel.size}
-        aria-valuemin={panel.min}
-        aria-valuemax={panel.max}
-        tabIndex={0}
-        title={`${label}（ドラッグで変更 / ダブルクリックで既定に戻す）`}
-        className={`group relative hidden shrink-0 touch-none focus-visible:outline-none lg:block ${
-          vertical ? 'w-1.5 cursor-col-resize' : 'h-1.5 cursor-row-resize'
-        } ${className ?? ''}`}
-        {...panel.handleProps}
-      >
-        <span
-          aria-hidden
-          className={`pointer-events-none absolute transition-colors ${bar} ${
-            vertical
-              ? 'inset-y-0 left-1/2 w-[3px] -translate-x-1/2'
-              : 'inset-x-0 top-1/2 h-[3px] -translate-y-1/2'
-          }`}
-        />
-      </div>
-      {panel.dragging && (
-        <div
-          className={`fixed inset-0 z-50 ${
-            vertical ? 'cursor-col-resize' : 'cursor-row-resize'
-          }`}
-        />
-      )}
-    </>
-  )
-}
 
 export default function App() {
   const [form, setForm] = useState<FormState>(initialForm)
@@ -832,7 +642,9 @@ export default function App() {
   const showResult = isWide || narrowPane === 'result'
 
   return (
-    <div className="flex h-full flex-col">
+    // 狭幅では下部タブバーが固定で乗るので、その高さ（+ safe-area）ぶんだけ
+    // ルートを縮めてコンテンツが隠れないようにする（sm 以上はタブバーなし）。
+    <div className="flex h-full flex-col pb-[calc(3.5rem+env(safe-area-inset-bottom))] sm:pb-0">
       <Header
         health={health}
         checking={checkingHealth}
@@ -1050,6 +862,8 @@ export default function App() {
         />
       )}
 
+      {/* 狭幅（sm 未満）の画面切替。ヘッダーのタブと同じ行き先を下に固定する。 */}
+      <BottomNav view={view} onView={setView} />
     </div>
   )
 }

@@ -6,7 +6,18 @@ import { Popover, PopoverContent, PopoverTrigger } from './ui/popover'
 import { Switch } from './ui/switch'
 import { Tabs, TabsList, TabsTrigger } from './ui/tabs'
 
-type View = 'main' | 'agent' | 'studio' | 'settings'
+export type View = 'main' | 'agent' | 'studio' | 'settings'
+
+/**
+ * 画面切替の行き先（設定は歯車ボタン側なのでここには出さない）。
+ *
+ * sm 以上のヘッダータブと、sm 未満の下部タブバー（BottomNav）で共有する。
+ */
+export const VIEW_TABS: { value: Exclude<View, 'settings'>; label: string }[] = [
+  { value: 'main', label: '生成' },
+  { value: 'agent', label: 'エージェント' },
+  { value: 'studio', label: 'スタジオ' },
+]
 
 type Tone = 'ok' | 'warn' | 'error' | 'unknown'
 
@@ -203,15 +214,10 @@ function NsfwToggle({
  * のあいだはどのタブも選択状態にならない）。
  */
 function ViewTabs({ view, onView }: { view: View; onView: (view: View) => void }) {
-  const tabs: { value: View; label: string }[] = [
-    { value: 'main', label: '生成' },
-    { value: 'agent', label: 'エージェント' },
-    { value: 'studio', label: 'スタジオ' },
-  ]
   return (
     <Tabs value={view} onValueChange={(value) => onView(value as View)}>
       <TabsList>
-        {tabs.map((tab) => (
+        {VIEW_TABS.map((tab) => (
           <TabsTrigger key={tab.value} value={tab.value}>
             {tab.label}
           </TabsTrigger>
@@ -244,14 +250,15 @@ export default function Header({
 }) {
   return (
     <header className="sticky top-0 z-30 flex items-center gap-x-2 gap-y-2 border-b border-border bg-background/80 px-3 py-2 shadow-elevation-1 backdrop-blur-md supports-[backdrop-filter]:bg-background/60 sm:px-4">
-      <h1 className="flex shrink-0 items-center gap-2 text-base font-semibold tracking-wide text-foreground">
+      {/* 狭幅ではタイトルを短縮して、操作系を 1 行に収める。 */}
+      {/* 狭幅では文字を viewport 幅なりに縮めてフルタイトルのまま収める。 */}
+      <h1 className="flex min-w-0 shrink items-center gap-2 text-[clamp(0.72rem,3.2vw,1rem)] font-semibold tracking-wide text-foreground sm:shrink-0 sm:text-base">
         <span className="size-2 shrink-0 rounded-full bg-primary" aria-hidden />
-        <span className="hidden truncate sm:inline">Karakuri Media Studio</span>
-        <span className="sm:hidden">Karakuri</span>
+        <span className="truncate">Karakuri Media Studio</span>
       </h1>
 
-      {/* 狭幅でも折り返さず 1 行に収め、はみ出すぶんは横スクロールに逃がす。 */}
-      <div className="-mb-1 min-w-0 overflow-x-auto pb-1">
+      {/* 画面切替は sm 以上だけ。sm 未満は下部タブバー（BottomNav）に出す。 */}
+      <div className="hidden min-w-0 sm:block">
         <ViewTabs view={view} onView={onView} />
       </div>
 

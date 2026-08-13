@@ -18,6 +18,7 @@ import type {
 } from '../../types'
 import { Banner } from '../ui'
 import { Button } from '../ui/button'
+import { ResizeHandle, useIsWide, useResizablePanel } from '../ui/resizable-panel'
 import { Tabs, TabsList, TabsTrigger } from '../ui/tabs'
 import TargetSelector from '../TargetSelector'
 import CanvasView from '../canvas/CanvasView'
@@ -38,6 +39,9 @@ import {
 
 /** ジョブがまだ動いている状態（App.tsx と同じ定義）。 */
 const ACTIVE_STATUSES = ['queued', 'prompting', 'running']
+
+const SHOT_RAIL_WIDTH_KEY = 'studioShotRailWidth'
+const SHOT_RAIL_WIDTH = { initial: 256, min: 200, max: 480 }
 
 type StudioTab = 'overview' | 'script' | 'world' | 'production'
 
@@ -100,6 +104,9 @@ export default function StudioView({
   const [error, setError] = useState<string | null>(null)
   const [revisions, setRevisions] = useState<StudioRevision[] | null>(null)
   const [loadingRevisions, setLoadingRevisions] = useState(false)
+  // ショット一覧の列は lg 以上でだけドラッグで広げられる（狭幅は縦積み）。
+  const isWide = useIsWide()
+  const shotRail = useResizablePanel(SHOT_RAIL_WIDTH_KEY, SHOT_RAIL_WIDTH, 'x')
 
   const pushError = useCallback((cause: unknown) => {
     setError(
@@ -586,7 +593,10 @@ export default function StudioView({
     <main className="flex min-h-0 flex-1 flex-col">
       {banner}
       <div className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3 lg:flex-row lg:overflow-hidden">
-        <aside className="w-full shrink-0 rounded-lg border border-border bg-card shadow-elevation-1 lg:w-64 lg:overflow-hidden">
+        <aside
+          className="w-full shrink-0 rounded-lg border border-border bg-card shadow-elevation-1 lg:w-64 lg:overflow-hidden"
+          style={isWide ? { width: shotRail.size } : undefined}
+        >
           <ShotRail
             tree={tree}
             total={detail.shots.length}
@@ -610,6 +620,8 @@ export default function StudioView({
             onDeleteScene={deleteScene}
           />
         </aside>
+
+        <ResizeHandle panel={shotRail} label="ショット一覧の幅" className="-mx-2" />
 
         <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
           {/* 上段 = プロジェクトの identity と接続先・表示モード、

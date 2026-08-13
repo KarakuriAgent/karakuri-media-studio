@@ -16,6 +16,7 @@ import type {
   StudioShotUpdate,
 } from '../../types'
 import { Banner } from '../ui'
+import { ResizeHandle, useIsWide, useResizablePanel } from '../ui/resizable-panel'
 import AddCardModal from './AddCardModal'
 import Board from './CanvasBoard'
 import CanvasChat from './CanvasChat'
@@ -63,6 +64,9 @@ function rememberTab(projectId: string, episodeId: string | null): void {
     /* 覚えられなくても表示には困らない */
   }
 }
+
+const CHAT_WIDTH_KEY = 'canvasChatWidth'
+const CHAT_WIDTH = { initial: 320, min: 260, max: 560 }
 
 /** md 以上か（未満ではチャットをボードとの切り替えにする）。 */
 function useIsDesktop(): boolean {
@@ -125,6 +129,11 @@ export default function CanvasView({
   /** エージェントが走っているか（WS で届き、開き直したときは API で拾う）。 */
   const [running, setRunning] = useState(false)
   const [activity, setActivity] = useState<string | null>(null)
+  // チャット欄は lg 以上でだけドラッグで広げられる（ハンドルは左縁なので反転）。
+  const isWide = useIsWide()
+  const chatPanel = useResizablePanel(CHAT_WIDTH_KEY, CHAT_WIDTH, 'x', {
+    inverted: true,
+  })
 
   const fail = useCallback((cause: unknown) => {
     setError(
@@ -562,6 +571,10 @@ export default function CanvasView({
           )}
         </section>
 
+        {chatVisible && desktop && (
+          <ResizeHandle panel={chatPanel} label="チャット欄の幅" className="-mx-2" />
+        )}
+
         {chatVisible && (
           <aside
             className={
@@ -569,6 +582,7 @@ export default function CanvasView({
                 ? 'flex min-h-0 w-80 shrink-0 flex-col gap-2 rounded-lg border border-border bg-background p-3'
                 : 'flex min-h-0 flex-1 flex-col gap-2 rounded-lg border border-border bg-background p-3'
             }
+            style={isWide && desktop ? { width: chatPanel.size } : undefined}
           >
             <CanvasChat
               projectId={projectId}
