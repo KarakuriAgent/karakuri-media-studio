@@ -253,7 +253,14 @@ export default function Header({
       {/* 狭幅ではタイトルを短縮して、操作系を 1 行に収める。 */}
       {/* 狭幅では文字を viewport 幅なりに縮めてフルタイトルのまま収める。 */}
       <h1 className="flex min-w-0 shrink items-center gap-2 text-[clamp(0.72rem,3.2vw,1rem)] font-semibold tracking-wide text-foreground sm:shrink-0 sm:text-base">
-        <span className="size-2 shrink-0 rounded-full bg-primary" aria-hidden />
+        <img
+          src="/icon.svg"
+          alt=""
+          width={28}
+          height={28}
+          className="size-7 shrink-0 rounded-md"
+          aria-hidden
+        />
         <span className="truncate">Karakuri Media Studio</span>
       </h1>
 

@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#1b2440"/>
+      <stop offset="1" stop-color="#0a0c11"/>
+    </linearGradient>
+    <linearGradient id="brass" x1="0.2" y1="0" x2="0.8" y2="1">
+      <stop offset="0" stop-color="#e2c57e"/>
+      <stop offset="0.55" stop-color="#c4a05a"/>
+      <stop offset="1" stop-color="#8d6b30"/>
+    </linearGradient>
+    <radialGradient id="lens" cx="42%" cy="36%" r="68%">
+      <stop offset="0" stop-color="#c5d2ff"/>
+      <stop offset="0.28" stop-color="#5b7cfa"/>
+      <stop offset="0.7" stop-color="#1a2450"/>
+      <stop offset="1" stop-color="#070910"/>
+    </radialGradient>
+  </defs>
+  <rect width="512" height="512" fill="url(#bg)"/>
+  <g transform="translate(256 256) scale(0.78) translate(-256 -256)">
+    <g fill="url(#brass)">
+      <circle cx="256" cy="256" r="168"/>
+      <rect x="226" y="62" width="60" height="58" rx="10"/>
+      <rect x="226" y="62" width="60" height="58" rx="10" transform="rotate(30 256 256)"/>
+      <rect x="226" y="62" width="60" height="58" rx="10" transform="rotate(60 256 256)"/>
+      <rect x="226" y="62" width="60" height="58" rx="10" transform="rotate(90 256 256)"/>
+      <rect x="226" y="62" width="60" height="58" rx="10" transform="rotate(120 256 256)"/>
+      <rect x="226" y="62" width="60" height="58" rx="10" transform="rotate(150 256 256)"/>
+      <rect x="226" y="62" width="60" height="58" rx="10" transform="rotate(180 256 256)"/>
+      <rect x="226" y="62" width="60" height="58" rx="10" transform="rotate(210 256 256)"/>
+      <rect x="226" y="62" width="60" height="58" rx="10" transform="rotate(240 256 256)"/>
+      <rect x="226" y="62" width="60" height="58" rx="10" transform="rotate(270 256 256)"/>
+      <rect x="226" y="62" width="60" height="58" rx="10" transform="rotate(300 256 256)"/>
+      <rect x="226" y="62" width="60" height="58" rx="10" transform="rotate(330 256 256)"/>
+    </g>
+    <circle cx="256" cy="256" r="138" fill="#101624"/>
+    <circle cx="256" cy="256" r="118" fill="url(#lens)"/>
+    <circle cx="256" cy="256" r="118" fill="none" stroke="#8ba3ff" stroke-width="5" opacity="0.45"/>
+    <path d="M228 204 L228 308 L332 256 Z" fill="#d7e0ff"/>
+  </g>
+</svg>

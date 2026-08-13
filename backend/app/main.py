@@ -1,4 +1,5 @@
 import logging
+import mimetypes
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -94,6 +95,12 @@ app.mount("/assets", StaticFiles(directory=ASSETS_DIR), name="assets")
 app.mount("/library", StaticFiles(directory=LIBRARY_DIR), name="library")
 
 
+# python:3.12-slim には /etc/mime.types が無く、標準の mimetypes だけだと
+# .webmanifest が判別できずに text/plain で返ってしまう（PWA のマニフェストが
+# 読まれない）。明示的に登録しておく。
+mimetypes.add_type("application/manifest+json", ".webmanifest")
+
+
 def _dist_file(rel_path: str) -> Path | None:
     """Resolve `rel_path` inside frontend/dist, refusing anything that escapes it."""
     candidate = (FRONTEND_DIST_DIR / rel_path).resolve()
@@ -101,6 +108,17 @@ def _dist_file(rel_path: str) -> Path | None:
     if candidate != root and root not in candidate.parents:
         return None
     return candidate if candidate.is_file() else None
+
+
+# Service Worker とその登録スクリプト、そして SPA シェルは常に取り直させる。
+# 古い sw.js がキャッシュに居座ると registerType: "autoUpdate" でも更新が
+# 届かなくなるため（PWA、SPEC §7）。
+_NO_STORE_FILES = frozenset({"sw.js", "registerSW.js", "index.html"})
+
+
+def _dist_response(file: Path) -> FileResponse:
+    headers = {"Cache-Control": "no-cache"} if file.name in _NO_STORE_FILES else None
+    return FileResponse(file, headers=headers)
 
 
 # Production serving: when the frontend has been built, serve it as an SPA.
@@ -112,10 +130,12 @@ if FRONTEND_DIST_DIR.is_dir():
         # Unmatched API paths must stay a real 404, not the SPA shell.
         if spa_path == "api" or spa_path.startswith("api/"):
             raise HTTPException(status_code=404, detail="Not Found")
+        # 実ファイル（sw.js / manifest.webmanifest / static/… など）が最優先。
+        # 見つからないパスだけを index.html にフォールバックする。
         file = _dist_file(spa_path) if spa_path else None
         if file is None:
             index = FRONTEND_DIST_DIR / "index.html"
             if not index.is_file():
                 raise HTTPException(status_code=404, detail="frontend is not built")
-            return FileResponse(index)
-        return FileResponse(file)
+            return _dist_response(index)
+        return _dist_response(file)

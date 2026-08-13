@@ -1022,6 +1022,9 @@ SPA 1 画面 + 履歴。ダークテーマの生成系ツールらしい見た�
 | 動画処理 | ffmpeg (subprocess) | ラストフレーム抽出・サムネ生成 |
 | ジョブ管理 | アプリ内 asyncio キュー | 外部依存を増やさない |
 
+- **PWA**: `vite-plugin-pwa`（`registerType: "autoUpdate"`）でインストール可能にする。マニフェスト（`Karakuri Media Studio` / `standalone` / テーマ色 `#0a0c11`）とアイコンは `frontend/public/`、Service Worker のプリキャッシュは**ビルド成果物（JS/CSS/HTML/アイコン/Inter）だけ**に限る
+- 生成物・素材（`/api` `/outputs` `/assets` `/library`）は動画など大きなファイルを含むので **Service Worker では一切キャッシュせず、SPA フォールバック（`navigateFallbackDenylist`）からも除外する**。バックエンド側も `dist/` の実ファイル（`sw.js` / `manifest.webmanifest` 等）を index.html フォールバックより優先して返す
+
 ### バックエンド API（概要）
 
 ```
@@ -1084,6 +1087,8 @@ backend/            FastAPI アプリ
   app/model_sources.py   取得元 URL → 配布ページ URL（エージェントの調べ先、§3.3）
   tests/            pytest
 frontend/           React + Vite + Tailwind の SPA（ビルド成果物は frontend/dist）
+  public/           PWA のアイコン（icon.svg / pwa-192x192.png / pwa-512x512.png /
+                    maskable-512x512.png / apple-touch-icon.png）
   src/components/   GenerateForm / AudioFields / ResultPane / HistoryGallery / ChatModal /
                     SettingsPage / agent/
 docs/SPEC.md        仕様書
