@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError, api } from '../../api'
 import type {
+  ComfyTarget,
   StudioEpisode,
   StudioProjectDetail,
   StudioProjectSummary,
@@ -52,6 +53,10 @@ vi.mock('../../api', async () => {
       selectStudioTake: vi.fn(),
       rejectStudioTake: vi.fn(),
       deleteStudioTake: vi.fn(),
+      // キャンバス表示に切り替えたとき CanvasView が叩く。狭い画面の切替テスト用。
+      options: vi.fn(),
+      getCanvasBoard: vi.fn(),
+      getCanvasAgentState: vi.fn(),
     },
   }
 })
@@ -247,7 +252,11 @@ function shotPreview(
 /** プロジェクトを 1 つ開いた状態まで進める。 */
 async function openProject(
   current = detail(),
-  props: { aspectRatios?: string[] } = {},
+  props: {
+    aspectRatios?: string[]
+    comfyTarget?: ComfyTarget | null
+    onComfyTarget?: (target: ComfyTarget) => void
+  } = {},
 ) {
   mocked.listStudioProjects.mockResolvedValue([summary(current)])
   mocked.getStudioProject.mockResolvedValue(current)
@@ -1304,5 +1313,106 @@ describe('StudioView: 投入プレビュー', () => {
       await screen.findByText('解決できない素材メンションです: @Inu'),
     ).toBeTruthy()
     expect(screen.queryByLabelText('投入される最終プロンプト')).toBeNull()
+  })
+})
+
+describe('StudioView の狭い画面ヘッダー', () => {
+  const originalMatchMedia = window.matchMedia
+
+  beforeEach(() => {
+    window.matchMedia = ((query: string) =>
+      ({
+        matches: query === '(min-width: 1024px)' ? false : true,
+        media: query,
+        onchange: null,
+        addListener: () => {},
+        removeListener: () => {},
+        addEventListener: () => {},
+        removeEventListener: () => {},
+        dispatchEvent: () => false,
+      })) as typeof window.matchMedia
+  })
+
+  afterEach(() => {
+    window.matchMedia = originalMatchMedia
+  })
+
+  it('プロジェクトを開くと要約チップだけで、品質などはシートを開くまで無い', async () => {
+    await openProject(
+      detail({
+        quality: 'turbo',
+        aspect_ratio: '16:9 (Widescreen)',
+        megapixels: 1,
+        steps: 20,
+      }),
+    )
+    const chip = await screen.findByRole('button', { name: /生成設定/ })
+    expect(chip.textContent).toContain('Turbo')
+    expect(chip.textContent).toContain('16:9')
+    expect(chip.textContent).toContain('1MP')
+    expect(chip.textContent).toContain('20step')
+    expect(screen.queryByLabelText('品質')).toBeNull()
+    expect(screen.queryByLabelText('画質')).toBeNull()
+    expect(screen.queryByLabelText('メガピクセル')).toBeNull()
+    expect(screen.queryByLabelText('ステップ')).toBeNull()
+  })
+
+  it('チップを押すとシートが開き、品質の変更がプロジェクトへ保存される', async () => {
+    await openProject(detail({ quality: 'normal' }))
+    fireEvent.click(await screen.findByRole('button', { name: /生成設定/ }))
+    const select = await screen.findByLabelText('品質') as HTMLSelectElement
+    expect(select.value).toBe('normal')
+
+    mocked.updateStudioProject.mockResolvedValue({})
+    fireEvent.change(select, { target: { value: 'turbo' } })
+    await waitFor(() =>
+      expect(mocked.updateStudioProject).toHaveBeenCalledWith('p1', {
+        quality: 'turbo',
+      }),
+    )
+  })
+
+  it('モードトグルはアイコンのみで、キャンバス表示に切り替えられる', async () => {
+    mocked.options.mockResolvedValue({})
+    mocked.getCanvasBoard.mockResolvedValue({
+      project_id: 'p1',
+      episode_id: null,
+      viewport: { x: 0, y: 0, zoom: 1 },
+      cards: [],
+      messages: [],
+    })
+    mocked.getCanvasAgentState.mockResolvedValue({
+      project_id: 'p1',
+      running: false,
+      activity: null,
+    })
+    await openProject()
+    await screen.findByRole('button', { name: /生成設定/ })
+    expect(screen.queryByText('スタジオ表示')).toBeNull()
+    expect(screen.queryByText('キャンバス表示')).toBeNull()
+
+    fireEvent.click(screen.getByRole('button', { name: 'キャンバス表示' }))
+    expect(screen.queryByRole('tab', { name: '概要' })).toBeNull()
+    expect(
+      screen.getByRole('button', { name: 'キャンバス表示' }).getAttribute('aria-pressed'),
+    ).toBe('true')
+    expect(screen.getByRole('button', { name: /生成設定/ })).toBeTruthy()
+  })
+
+  it('接続先を渡しているとシート内のセレクトを操作できる', async () => {
+    const onComfyTarget = vi.fn()
+    await openProject(detail(), {
+      comfyTarget: 'runpod',
+      onComfyTarget,
+    })
+    const chip = await screen.findByRole('button', { name: /生成設定/ })
+    expect(chip.textContent).toContain('RunPod')
+    expect(screen.queryByLabelText('接続先')).toBeNull()
+
+    fireEvent.click(chip)
+    const select = (await screen.findByLabelText('接続先')) as HTMLSelectElement
+    expect(select.value).toBe('runpod')
+    fireEvent.change(select, { target: { value: 'local' } })
+    expect(onComfyTarget).toHaveBeenCalledWith('local')
   })
 })

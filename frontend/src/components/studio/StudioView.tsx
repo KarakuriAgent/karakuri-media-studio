@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, ClipboardList, LayoutGrid } from 'lucide-react'
 
 import { ApiError, api, formatDetail } from '../../api'
 import type {
@@ -16,16 +15,10 @@ import type {
   StudioRenderRequest,
   StudioRevision,
   StudioShotUpdate,
-  StudioVideoQuality,
 } from '../../types'
-import { DEFAULT_MEGAPIXELS } from '../../form'
 import { Banner } from '../ui'
-import { Button } from '../ui/button'
-import { Input } from '../ui/input'
-import { Label } from '../ui/label'
 import { ResizeHandle, useIsWide, useResizablePanel } from '../ui/resizable-panel'
 import { Tabs, TabsList, TabsTrigger } from '../ui/tabs'
-import { NativeSelect } from '../NativeSelect'
 import TargetSelector from '../TargetSelector'
 import CanvasView from '../canvas/CanvasView'
 import OverviewView from './OverviewView'
@@ -34,12 +27,10 @@ import ProjectPicker from './ProjectPicker'
 import RevisionsModal from './RevisionsModal'
 import ScriptView from './ScriptView'
 import ShotRail from './ShotRail'
+import StudioProjectBar, { type StudioProjectMode } from './StudioProjectBar'
 import WorldView from './WorldView'
 import {
   MAX_STEPS,
-  VIDEO_QUALITIES,
-  VIDEO_QUALITY_HINT,
-  VIDEO_QUALITY_LABEL,
   assetKindFromFile,
   buildShotTree,
   moveId,
@@ -54,16 +45,6 @@ const SHOT_RAIL_WIDTH_KEY = 'studioShotRailWidth'
 const SHOT_RAIL_WIDTH = { initial: 256, min: 200, max: 480 }
 
 type StudioTab = 'overview' | 'script' | 'world' | 'production'
-
-/**
- * 同じプロジェクトの見せ方（キャンバスはスタジオの別ビューで、DB は同じ）。
- */
-type ProjectMode = 'studio' | 'canvas'
-
-const MODES: { value: ProjectMode; label: string; icon: typeof ClipboardList }[] = [
-  { value: 'studio', label: 'スタジオ表示', icon: ClipboardList },
-  { value: 'canvas', label: 'キャンバス表示', icon: LayoutGrid },
-]
 
 const TABS: { value: StudioTab; label: string }[] = [
   { value: 'overview', label: '概要' },
@@ -107,7 +88,7 @@ export default function StudioView({
   const [projectId, setProjectId] = useState<string | null>(null)
   const [detail, setDetail] = useState<StudioProjectDetail | null>(null)
   const [tab, setTab] = useState<StudioTab>('overview')
-  const [mode, setMode] = useState<ProjectMode>('studio')
+  const [mode, setMode] = useState<StudioProjectMode>('studio')
   const [shotId, setShotId] = useState<string | null>(null)
   const [assetId, setAssetId] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -556,78 +537,10 @@ export default function StudioView({
   const selectedShot = detail.shots.find((shot) => shot.id === shotId) ?? null
 
   /**
-   * スタジオ表示 ⇔ キャンバス表示（同じプロジェクトの別の見せ方）。
+   * 画質（アスペクト比とメガピクセル）のプロジェクト既定。
    *
-   * 中央のタブ（概要 / 脚本 / …）と同じ Tabs で並べると 2 組が区別できないので、
-   * こちらはアイコン付きのセグメントトグルにして右端へ置く。
-   */
-  const modeToggle = (
-    <div
-      role="group"
-      aria-label="表示モード"
-      className="flex shrink-0 items-center gap-0.5 rounded-md border border-border bg-card p-0.5"
-    >
-      {MODES.map((item) => {
-        const current = item.value === mode
-        return (
-          <Button
-            key={item.value}
-            variant={current ? 'secondary' : 'ghost'}
-            size="sm"
-            aria-pressed={current}
-            title={item.label}
-            onClick={() => setMode(item.value)}
-          >
-            <item.icon />
-            {item.label}
-          </Button>
-        )
-      })}
-    </div>
-  )
-
-  /**
-   * 動画生成の品質（プロジェクト設定）。接続先セレクタの隣に**常時**出すのは、
-   * これがテイクを 1 本焼くたびの待ち時間をそのまま決める設定だから。
-   *
-   * 変更はその場でプロジェクトへ保存する（`saveProject` が PATCH と読み直しを
-   * やるので、楽観更新は持たず、保存が終わるまで `busy` で塞ぐ）。turbo / opt は
-   * ラテント保存・連続カット版にもバリアントがあるので、連続性 ON でもそのまま効く。
-   */
-  const qualitySelector = (
-    <div className="flex shrink-0 items-center gap-2">
-      <Label className="shrink-0" htmlFor="studio-quality">
-        品質
-      </Label>
-      <div className="w-28">
-        <NativeSelect
-          id="studio-quality"
-          value={detail.quality}
-          disabled={busy}
-          title={VIDEO_QUALITIES.map((value) => VIDEO_QUALITY_HINT[value]).join('\n')}
-          onChange={(event) =>
-            saveProject({ quality: event.target.value as StudioVideoQuality })
-          }
-        >
-          {VIDEO_QUALITIES.map((value) => (
-            <option key={value} value={value}>
-              {VIDEO_QUALITY_LABEL[value]}
-            </option>
-          ))}
-        </NativeSelect>
-      </div>
-    </div>
-  )
-
-  /**
-   * 画質（アスペクト比とメガピクセル）のプロジェクト既定。項目も表記も生成
-   * フォームの「解像度」セクションに揃えてある。
-   *
-   * 効き方は **Shot 個別 > ここ > 既定** なので、ここは「Shot が何も言わな
-   * かったときの既定」でしかない。メガピクセルを上げるほど生成が遅くなり、
-   * ローカルの低 VRAM GPU ではメモリ不足になることがある。
-   *
-   * どちらも空欄（＝未指定）に戻せる。PATCH では null を明示して送る。
+   * 効き方は **Shot 個別 > ここ > 既定**。どちらも空欄（＝未指定）に戻せる。
+   * PATCH では null を明示して送る。
    */
   const commitMegapixels = () => {
     const text = megapixelsDraft.trim()
@@ -645,8 +558,7 @@ export default function StudioView({
    * ステップ数（サンプリング回数）のプロジェクト既定。
    *
    * **0（空欄）= おまかせ**で、そのときはワークフローのテンプレートの既定値
-   * （品質 turbo なら 4、normal / opt なら 20）のまま焼く。値を入れると、
-   * `steps` を宣言しているワークフローにその回数が注入される。
+   * （品質 turbo なら 4、normal / opt なら 20）のまま焼く。
    */
   const commitSteps = () => {
     const text = stepsDraft.trim()
@@ -660,91 +572,30 @@ export default function StudioView({
     saveProject({ steps: next })
   }
 
-  // 画質（アスペクト比 + MP）とステップは別ブロックにして、狭い画面では
-  // ヘッダーの flex-wrap がブロック単位で折り返せるようにする。
-  const qualitySettings = (
-    <>
-    <div className="flex shrink-0 items-center gap-2">
-      <Label className="shrink-0" htmlFor="studio-aspect-ratio">
-        画質
-      </Label>
-      <div className="w-40">
-        <NativeSelect
-          id="studio-aspect-ratio"
-          value={detail.aspect_ratio ?? ''}
-          disabled={busy}
-          title="この作品のアスペクト比の既定（Shot 個別の指定があればそちらが優先）"
-          onChange={(event) =>
-            saveProject({ aspect_ratio: event.target.value || null })
-          }
-        >
-          <option value="">既定のまま</option>
-          {detail.aspect_ratio && !aspectRatios.includes(detail.aspect_ratio) && (
-            <option value={detail.aspect_ratio}>{detail.aspect_ratio}</option>
-          )}
-          {aspectRatios.map((ratio) => (
-            <option key={ratio} value={ratio}>
-              {ratio}
-            </option>
-          ))}
-        </NativeSelect>
-      </div>
-      <div className="w-24">
-        <Input
-          id="studio-megapixels"
-          aria-label="メガピクセル"
-          className="tnum"
-          type="number"
-          step="0.05"
-          min="0.1"
-          value={megapixelsDraft}
-          disabled={busy}
-          placeholder={`${DEFAULT_MEGAPIXELS}`}
-          title="この作品のメガピクセルの既定（空欄でワークフローの既定。Shot 個別の指定があればそちらが優先）"
-          onChange={(event) => setMegapixelsDraft(event.target.value)}
-          onBlur={commitMegapixels}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter') event.currentTarget.blur()
-          }}
-        />
-      </div>
-      <span className="shrink-0 text-[11px] text-muted-foreground">MP</span>
-    </div>
-    <div className="flex shrink-0 items-center gap-2">
-      <Label className="shrink-0" htmlFor="studio-steps">
-        ステップ
-      </Label>
-      <div className="w-24">
-        <Input
-          id="studio-steps"
-          className="tnum"
-          type="number"
-          step="1"
-          min="0"
-          max={MAX_STEPS}
-          value={stepsDraft}
-          disabled={busy}
-          placeholder="おまかせ"
-          title={
-            'この作品のサンプリング回数の既定（空欄 = 0 = おまかせ' +
-            ' = テンプレートの既定のまま。turbo は 4、normal / opt は 20）'
-          }
-          onChange={(event) => setStepsDraft(event.target.value)}
-          onBlur={commitSteps}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter') event.currentTarget.blur()
-          }}
-        />
-      </div>
-    </div>
-    </>
-  )
-
-  const backToProjects = (
-    <Button variant="outline" size="sm" onClick={() => setProjectId(null)}>
-      <ArrowLeft />
-      プロジェクト一覧
-    </Button>
+  const projectBar = (
+    <StudioProjectBar
+      name={detail.name}
+      isWide={isWide}
+      mode={mode}
+      onModeChange={setMode}
+      onBack={() => setProjectId(null)}
+      comfyTarget={comfyTarget}
+      onComfyTarget={onComfyTarget}
+      quality={detail.quality}
+      onQualityChange={(value) => saveProject({ quality: value })}
+      aspectRatio={detail.aspect_ratio}
+      aspectRatios={aspectRatios}
+      onAspectRatioChange={(value) => saveProject({ aspect_ratio: value })}
+      megapixels={detail.megapixels}
+      megapixelsDraft={megapixelsDraft}
+      onMegapixelsDraftChange={setMegapixelsDraft}
+      onCommitMegapixels={commitMegapixels}
+      steps={detail.steps}
+      stepsDraft={stepsDraft}
+      onStepsDraftChange={setStepsDraft}
+      onCommitSteps={commitSteps}
+      busy={busy}
+    />
   )
 
   if (mode === 'canvas') {
@@ -752,18 +603,7 @@ export default function StudioView({
       <main className="flex min-h-0 flex-1 flex-col">
         {banner}
         <div className="flex min-h-0 flex-1 flex-col gap-2 p-3">
-          <div className="flex flex-wrap items-center gap-2">
-            {backToProjects}
-            <h2 className="min-w-0 truncate text-base font-semibold text-foreground">
-              {detail.name}
-            </h2>
-            <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
-              {targetSelector}
-              {qualitySelector}
-              {qualitySettings}
-              {modeToggle}
-            </div>
-          </div>
+          {projectBar}
           <CanvasView
             detail={detail}
             event={canvasEvent}
@@ -814,18 +654,7 @@ export default function StudioView({
               下段 = このプロジェクトの中の行き先（タブ）。混ぜると
               「タブが 2 組」に見えるので段で分ける。 */}
           <div className="flex flex-col gap-2">
-            <div className="flex flex-wrap items-center gap-2">
-              {backToProjects}
-              <h2 className="min-w-0 truncate text-base font-semibold text-foreground">
-                {detail.name}
-              </h2>
-              <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
-                {targetSelector}
-                {qualitySelector}
-                {qualitySettings}
-                {modeToggle}
-              </div>
-            </div>
+            {projectBar}
             <Tabs value={tab} onValueChange={(value) => setTab(value as StudioTab)}>
               <TabsList>
                 {TABS.map((item) => (

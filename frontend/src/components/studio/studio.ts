@@ -5,7 +5,9 @@
  * 描画から切り離してあるのは `src/form.ts` と同じ理由で、ここだけを単体で
  * テストできるようにするため。
  */
+import { COMFY_TARGET_LABELS } from '../../form'
 import type {
+  ComfyTarget,
   StudioAsset,
   StudioAssetCategory,
   StudioAssetKind,
@@ -111,6 +113,29 @@ export const VIDEO_QUALITY_HINT: Record<StudioVideoQuality, string> = {
   normal: '通常 = 素の MiniMax H3（20 steps）。どの接続先でも動く標準の品質。',
   opt: 'Opt = 20 steps のまま量子化と高速化だけを入れた版（品質は通常のまま速い）。',
   turbo: 'Turbo = 4 steps の蒸留 LoRA 版（いちばん速いが粗い）。',
+}
+
+/** 狭い画面のヘッダーに出す、プロジェクト生成設定の 1 行要約。 */
+export function formatProjectSettingsSummary(input: {
+  target?: ComfyTarget | null
+  quality: StudioVideoQuality
+  aspectRatio: string | null
+  megapixels: number | null
+  steps: number
+}): string {
+  const parts: string[] = []
+  if (input.target) parts.push(COMFY_TARGET_LABELS[input.target])
+  parts.push(VIDEO_QUALITY_LABEL[input.quality])
+  const aspect = input.aspectRatio?.trim() ?? ''
+  if (!aspect) {
+    parts.push('既定')
+  } else {
+    const cut = aspect.indexOf(' (')
+    parts.push(cut === -1 ? aspect : aspect.slice(0, cut))
+  }
+  parts.push(input.megapixels === null ? '既定' : `${input.megapixels}MP`)
+  parts.push(input.steps > 0 ? `${input.steps}step` : 'おまかせ')
+  return parts.join(' · ')
 }
 
 export const REVISION_ACTOR_LABEL: Record<StudioRevisionActor, string> = {

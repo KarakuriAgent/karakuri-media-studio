@@ -14,7 +14,13 @@ export const RESIZE_STEP = 16
 
 /** lg（1024px）以上か。未満ではリサイズを止め、切り替え表示／ドロワーに寄せる。 */
 export function useIsWide(): boolean {
-  const [wide, setWide] = useState(true)
+  // matchMedia があれば初回からその結果（モバイルでデスクトップ用が一瞬出ない）。
+  // 無い環境（現行テスト）は wide のまま。
+  const [wide, setWide] = useState(() =>
+    typeof window.matchMedia === 'function'
+      ? window.matchMedia('(min-width: 1024px)').matches
+      : true,
+  )
   useEffect(() => {
     if (typeof window.matchMedia !== 'function') return
     const query = window.matchMedia('(min-width: 1024px)')

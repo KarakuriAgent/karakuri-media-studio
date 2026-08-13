@@ -12,6 +12,7 @@ import {
   assetKindFromFile,
   assetNameFromFile,
   buildShotTree,
+  formatProjectSettingsSummary,
   isStale,
   moveId,
   moveShot,
@@ -645,5 +646,42 @@ describe('assetKindFromFile / assetNameFromFile', () => {
     expect(assetNameFromFile('アキ.png')).toBe('アキ')
     expect(assetNameFromFile('a.b.mp4')).toBe('a.b')
     expect(assetNameFromFile('noext')).toBe('noext')
+  })
+})
+
+describe('formatProjectSettingsSummary', () => {
+  it('接続先・短縮アスペクト・MP・おまかせを中黒でつなぐ', () => {
+    expect(
+      formatProjectSettingsSummary({
+        target: 'local',
+        quality: 'turbo',
+        aspectRatio: '16:9 (Widescreen)',
+        megapixels: 1,
+        steps: 0,
+      }),
+    ).toBe('ローカル · Turbo · 16:9 · 1MP · おまかせ')
+  })
+
+  it('接続先なし・既定の画質・ステップ数を出す', () => {
+    expect(
+      formatProjectSettingsSummary({
+        quality: 'normal',
+        aspectRatio: null,
+        megapixels: null,
+        steps: 20,
+      }),
+    ).toBe('通常 · 既定 · 既定 · 20step')
+  })
+
+  it('空のアスペクトも既定、小数の MP は桁を足さない', () => {
+    expect(
+      formatProjectSettingsSummary({
+        target: undefined,
+        quality: 'opt',
+        aspectRatio: '',
+        megapixels: 0.7,
+        steps: 4,
+      }),
+    ).toBe('Opt · 既定 · 0.7MP · 4step')
   })
 })
