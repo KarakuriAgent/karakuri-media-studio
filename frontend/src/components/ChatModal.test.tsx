@@ -350,8 +350,11 @@ describe('ChatModal — フォームの現在値の受け渡し', () => {
     expect(screen.queryByText('プロンプトテンプレート')).toBeNull()
   })
 
-  it('動画モードではプロンプトテンプレートの切替を出す', async () => {
+  it('動画モードでは公式 H3 形式の注記だけ出し、テンプレート切替は出さない', async () => {
     await open({ mode: 'full', videoWorkflow: I2V.id, imageWorkflow: KREA2.id })
-    expect(screen.getByText('プロンプトテンプレート')).toBeTruthy()
+    expect(screen.queryByText('プロンプトテンプレート')).toBeNull()
+    expect(screen.queryByText('自然文')).toBeNull()
+    expect(screen.queryByText('タグ形式')).toBeNull()
+    expect(screen.getByText(/公式リライト形式/)).toBeTruthy()
   })
 })

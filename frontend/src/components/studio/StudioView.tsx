@@ -17,8 +17,10 @@ import type {
   StudioShotUpdate,
   StudioVideoQuality,
 } from '../../types'
+import { DEFAULT_MEGAPIXELS } from '../../form'
 import { Banner } from '../ui'
 import { Button } from '../ui/button'
+import { Input } from '../ui/input'
 import { Label } from '../ui/label'
 import { ResizeHandle, useIsWide, useResizablePanel } from '../ui/resizable-panel'
 import { Tabs, TabsList, TabsTrigger } from '../ui/tabs'
@@ -110,6 +112,9 @@ export default function StudioView({
   const [error, setError] = useState<string | null>(null)
   const [revisions, setRevisions] = useState<StudioRevision[] | null>(null)
   const [loadingRevisions, setLoadingRevisions] = useState(false)
+  // ヘッダーのメガピクセル欄。1 文字打つたびに PATCH しないよう、確定
+  // （フォーカスを外す / Enter）までは打った文字列をここに置いて映す。
+  const [megapixelsDraft, setMegapixelsDraft] = useState('')
   // ショット一覧の列は lg 以上でだけドラッグで広げられる（狭幅は縦積み）。
   const isWide = useIsWide()
   const shotRail = useResizablePanel(SHOT_RAIL_WIDTH_KEY, SHOT_RAIL_WIDTH, 'x')
@@ -147,6 +152,13 @@ export default function StudioView({
   useEffect(() => {
     void loadProjects()
   }, [loadProjects])
+
+  // 保存後の読み直しとプロジェクトの開き直しに追随させる（未確定の入力は
+  // 保存が終わった時点で捨てる）。
+  const savedMegapixels = detail?.megapixels ?? null
+  useEffect(() => {
+    setMegapixelsDraft(savedMegapixels === null ? '' : String(savedMegapixels))
+  }, [savedMegapixels])
 
   useEffect(() => {
     if (!projectId) {
@@ -607,6 +619,77 @@ export default function StudioView({
     </div>
   )
 
+  /**
+   * 画質（アスペクト比とメガピクセル）のプロジェクト既定。項目も表記も生成
+   * フォームの「解像度」セクションに揃えてある。
+   *
+   * 効き方は **Shot 個別 > ここ > 既定** なので、ここは「Shot が何も言わな
+   * かったときの既定」でしかない。メガピクセルを上げるほど生成が遅くなり、
+   * ローカルの低 VRAM GPU ではメモリ不足になることがある。
+   *
+   * どちらも空欄（＝未指定）に戻せる。PATCH では null を明示して送る。
+   */
+  const commitMegapixels = () => {
+    const text = megapixelsDraft.trim()
+    const next = text === '' ? null : Number(text)
+    // 数として読めない / 0 以下は捨てて、保存済みの値に戻す。
+    if (next !== null && (!Number.isFinite(next) || next <= 0)) {
+      setMegapixelsDraft(savedMegapixels === null ? '' : String(savedMegapixels))
+      return
+    }
+    if (next === savedMegapixels) return
+    saveProject({ megapixels: next })
+  }
+
+  const qualitySettings = (
+    <div className="flex shrink-0 items-center gap-2">
+      <Label className="shrink-0" htmlFor="studio-aspect-ratio">
+        画質
+      </Label>
+      <div className="w-40">
+        <NativeSelect
+          id="studio-aspect-ratio"
+          value={detail.aspect_ratio ?? ''}
+          disabled={busy}
+          title="この作品のアスペクト比の既定（Shot 個別の指定があればそちらが優先）"
+          onChange={(event) =>
+            saveProject({ aspect_ratio: event.target.value || null })
+          }
+        >
+          <option value="">既定のまま</option>
+          {detail.aspect_ratio && !aspectRatios.includes(detail.aspect_ratio) && (
+            <option value={detail.aspect_ratio}>{detail.aspect_ratio}</option>
+          )}
+          {aspectRatios.map((ratio) => (
+            <option key={ratio} value={ratio}>
+              {ratio}
+            </option>
+          ))}
+        </NativeSelect>
+      </div>
+      <div className="w-24">
+        <Input
+          id="studio-megapixels"
+          aria-label="メガピクセル"
+          className="tnum"
+          type="number"
+          step="0.05"
+          min="0.1"
+          value={megapixelsDraft}
+          disabled={busy}
+          placeholder={`${DEFAULT_MEGAPIXELS}`}
+          title="この作品のメガピクセルの既定（空欄でワークフローの既定。Shot 個別の指定があればそちらが優先）"
+          onChange={(event) => setMegapixelsDraft(event.target.value)}
+          onBlur={commitMegapixels}
+          onKeyDown={(event) => {
+            if (event.key === 'Enter') event.currentTarget.blur()
+          }}
+        />
+      </div>
+      <span className="shrink-0 text-[11px] text-muted-foreground">MP</span>
+    </div>
+  )
+
   const backToProjects = (
     <Button variant="outline" size="sm" onClick={() => setProjectId(null)}>
       <ArrowLeft />
@@ -627,6 +710,7 @@ export default function StudioView({
             <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
               {targetSelector}
               {qualitySelector}
+              {qualitySettings}
               {modeToggle}
             </div>
           </div>
@@ -688,6 +772,7 @@ export default function StudioView({
               <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
                 {targetSelector}
                 {qualitySelector}
+                {qualitySettings}
                 {modeToggle}
               </div>
             </div>

@@ -17,11 +17,13 @@ Contents (SPEC §4.3 "システムプロンプトの構成"):
    ``workflow/image/krea2/krea2_turbo.json`` node ``30:18``), with rule 8
    ("assume clothing covers …") replaced by an adults-only rule because this app
    generates adult content,
-3. video prompt spec — the general one, plus the two prompt templates and the selected
-   video workflow's own characteristics (generated from ``app.workflows``, so
-   the prompts, the UI and the job validator share one source of truth),
-4. few-shot examples taken from ``docs/prompt-samples.md`` (kept here as
-   constants so the running app never reads the docs tree),
+3. video prompt spec — MiniMax H3 jobs get the official rewrite contract
+   (``MINIMAX_H3_*`` + official few-shots + quality bar). The pre-H3 general
+   spec / talkvid templates stay in this module for any future workflow
+   without an H3 guide,
+4. few-shot examples: H3 video examples live here as official-format
+   documents; Krea 2 image examples stay in this module so the running app
+   never reads the docs tree,
 5. the form context (mode, LoRA trigger words, duration, drafts),
 6. output rules — a single ```json fence with
    ``{image_prompt, video_prompt, notes}``.
@@ -92,13 +94,16 @@ You have two jobs, in this order:
    - clothing and its state (and how it changes)
    - lighting and mood
    - camera: shot scale, angle, movement
+   - one take vs cuts inside the clip
    - facial expression / emotion
    - action and how it develops over the clip (tempo, intensity)
-   - spoken lines and sounds (does the character say anything?)
+   - spoken lines (only lines the user gives) and diegetic sounds
+   - score vs only diegetic sound
    **Ask in Japanese**, concisely, and offer plausible default options so the
-   user can just pick one.
+   user can just pick one. Keep it ONE short question block.
 2. **Write the prompts.** As soon as you have enough, output the final JSON
-   (see OUTPUT RULES).
+   (see OUTPUT RULES). `video_prompt` is the official MiniMax H3 document
+   from VIDEO PROMPT SPEC — MiniMax H3, not a 4–8 sentence paragraph.
 
 Rules of engagement:
 
@@ -347,6 +352,8 @@ def image_prompt_guides_section() -> str:
 # --------------------------------------------------------------------------
 # 3. video prompt spec
 # --------------------------------------------------------------------------
+# VIDEO_SPEC / TEMPLATE_* / FEW_SHOT_VIDEO are the pre-H3 path. MiniMax H3
+# jobs do not embed them (see build_system_prompt / build_agent_system_prompt).
 
 VIDEO_SPEC = """\
 # VIDEO PROMPT SPEC (general)
@@ -759,128 +766,199 @@ def _workflow_context_lines(workflow_id: str) -> list[str]:
 # ワークフローの分だけ**注入する（両方渡すと混ざる）。
 #
 # MiniMax H3（ローカル ComfyUI）— 出典:
-# * ComfyUI 公式テンプレート（video_minimax_h3_{t2v,i2v,r2v}）の MarkdownNote と
-#   同梱の作例プロンプト
-# * https://docs.comfy.org/tutorials/video/minimax/minimax-h3
-# * https://www.minimax.io/blog/minimax-h3（native stereo audio / 2K・15 秒・
-#   参照によるアイデンティティ保持）
+# * 公式 rewrite 契約（一次）:
+#   https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/docs/VIDEO_PROMPT_WRITING_GUIDE_base_en.md
+#   https://huggingface.co/MiniMaxAI/MiniMax-H3/blob/main/docs/VIDEO_PROMPT_WRITING_GUIDE_ref_en.md
+#   https://github.com/MiniMax-AI/MiniMax-H3/tree/main/skills/h3-prompt-writing
+# * 二次（このアプリのグラフ / タグ番号）:
+#   https://docs.comfy.org/tutorials/video/minimax/minimax-h3
+#   https://www.minimax.io/blog/minimax-h3
 
-#: t2v / i2v / r2v で共通の骨格（1 ブロック・タイムライン・音声・禁止事項）
+#: t2v / i2v / r2v で共通のショット・カメラ・台詞・音・禁止事項
 _MINIMAX_H3_GUIDE_BODY = """\
-Write `video_prompt` as **one single English block** — no headings, no JSON, no
-bullet list — in this order:
+Shared shot / camera / speech / sound rules (base `integrated_multimodal_description`
+and Ref2VA `detailed_description`):
 
-1. **Style / look** — medium and grade in one clause
-   (`Realistic live-action cinematic look, anamorphic lens, film grain,
-   restrained grading`). Anime, comic-ink and product-film looks work too; say
-   which one.
-2. **Scene overview** — one sentence: where, who, what is happening.
-3. **Timeline of shots** — the part that makes H3 different from a one-take
-   model. Give each shot its own stamped line, in order, and let the last stamp
-   reach the job's `duration`:
-   `[0s-1.5s] Shot 1: high side angle, he sprints along the roof edge …`
-   `[1.5s-3s] Shot 2: he leaps the gap, slight slow-motion …`
-   `SHOT 1: / CUT 2:` prefixes work as well when the timing is loose.
-4. **Camera** — one `Camera:` line: the angle per shot, whether the cuts are
-   hard (`clean hard cuts, no dissolves`) or it is one continuous move.
-5. **Audio** — one `Audio:` line. H3 models **native stereo sound in the same
-   forward pass** as the picture, so this is half the model: name the ambience,
-   the sound effects and the music, and where they hit
-   (`an accent hit on each leap, the score bursting at 4s`). Spoken lines go in
-   double quotes with the speaker and the delivery
-   (`the woman says, breathless: "Don't stop."`).
-6. **Exclusions** — there is **no negative prompt** in this graph (it samples
-   without CFG), so the last sentence carries them:
-   `No text, subtitles, logos or watermarks of any kind, no cartoon rendering.`
-   Burnt-in captions show up on their own as soon as there is dialogue, so keep
-   this sentence whenever anybody speaks.
+- `[Shot 1]` has **no timestamp**. Later shots: `[Shot 2] At 00:03.500, the
+  camera cuts to …` with strictly increasing cut times inside the job
+  `duration`. Prefer `the camera cuts to` for ordinary cuts.
+- Start Shot 1 with style + initial composition
+  (`Live-action, cinematic, a medium-wide shot frames…`). Ref2VA puts those 1–2
+  style sentences **before** `[Shot 1]`.
+- Camera motion is a **natural English clause inside the shot**, never a
+  `Camera:` footer. Vocabulary: Zoom In/Out, Push In / Pull Out, Pan Left/Right,
+  Truck Left/Right, Tilt Up/Down, Pedestal Up/Down, Arc Shot, Tracking Shot,
+  Static Shot, Shake Slightly/Strongly, POV, Roll Clockwise/Counterclockwise;
+  optional `with small/large amplitude`, `at slow/fast speed`.
+- Speakers: stable `(S1)`, `(S2)`; compound `(S1,S2)` when they speak together.
+  Identifying phrase + ID + delivery **outside** `<d>`; inside `<d>` only
+  `[Language]` + the user's verbatim words. Do not translate dialogue.
+  Example: `The young woman with a quiet, breathy voice (S1) says: <d>[Japanese] いらっしゃい</d>`
+  Voiceover: exact phrase `says in an off-screen voiceover`, then state lips
+  remain closed. Cross-cut speech: `<scenetrans>`. Truncated by clip end:
+  `<cutoff>`.
+- Visible on-screen text stays in English double quotes, original language, no
+  translation (`A neon sign reading "営業中"`).
+- `overall_soundscape:` 1–4 English sentences. Ambience + physical + non-verbal
+  human sounds. Do **not** repeat dialogue/singing. `N/A` only if the user
+  wants complete silence.
+- `non_diegetic_music:` 1–3 sentences of instrumentation / tempo / dynamics
+  (not mood words). Diegetic music belongs in the description. `N/A` when none.
+- Never write a `Camera:` or `Audio:` footer and never use `[0s-1.5s] Shot 1:`
+  stamps.
 
-Hard rules:
+Hard rules (this app):
 
-- 24fps, roughly 1-15 seconds; the app snaps the length up to the model's
-  17k+5 frame grid, so the clip can end a fraction of a second later than
-  `duration` asks. Do not write frame counts or fps in the text.
+- Duration 4–15s; the app snaps the length up to the model's 17k+5 frame grid
+  at 24fps. Do not write frame counts or fps in the text.
 - The native canvas is a **768px short edge (max 768x1344)**: keep `megapixels`
-  around 0.4 (864x480 at 16:9). Larger costs time and drifts.
+  around 0.4. Larger costs time and drifts.
 - `duration`, `megapixels` and `aspect_ratio` are job fields, never sentences.
-- Timing words are cheap, adjectives are not: `she turns sharply and the door
-  slams` beats a pile of moods.
+- There is **no negative prompt** (no CFG). If the body does not already
+  mention subtitles/watermarks, finish with
+  `No text, subtitles, logos or watermarks.` Official `<d>` is how speech is
+  spoken; that sentence is a safety net against burnt-in captions.
+- Number tags **per type, in attach order**: `<Picture 1>`, `<Video 1>`,
+  `<Audio 1>`. Never write a tag with nothing behind it.
 """
 
 MINIMAX_H3_VIDEO_GUIDE = (
     """\
-# VIDEO PROMPT SPEC — MiniMax H3 (local ComfyUI, `minimax_h3_t2v` / `minimax_h3_i2v`)
+# VIDEO PROMPT SPEC — MiniMax H3 (local ComfyUI, `minimax_h3_t2v*` / `minimax_h3_i2v*`)
 
-MiniMax H3 is an omni-modal model that generates the picture **and native
-stereo audio** — voice, effects and music — in one pass, and it can hold
-several cuts inside a single clip. Where this section and the generic VIDEO
-PROMPT SPEC above disagree, this one wins.
+MiniMax H3 generates the picture **and native stereo audio** in one pass and
+can hold several cuts inside a single clip. This is the only video contract
+for this job. Write **one English document** in the official rewrite fields —
+never a `Camera:` / `Audio:` footer.
+
+Base modes (`minimax_h3_t2v*`, `minimax_h3_i2v*`): this order.
+
+1. Optional **alignment first line** (then a blank line). T2VA has none.
+   - I2VA (start frame only):
+     `For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.`
+   - FL2VA (`end_image` present):
+     `How the reference pictures align with the target video — Picture 1 (from Shot 1) aligns with the 0.00-second mark of the target video; Picture 2 (from Shot N) aligns with the S.SS-second mark of the target video.`
+     (`N` = last shot index, `S.SS` = duration with exactly two decimals)
+   - L2VA (last-frame only; chat may write it, studio i2v does not):
+     `How the reference pictures align with the target video — <Picture 1> (from [Shot N]) aligns with the S.SS-second mark of the target video.`
+2. Three fields:
+   ```
+   integrated_multimodal_description: [Shot 1] ...
+   overall_soundscape: ...
+   non_diegetic_music: ...
+   ```
+
+- `minimax_h3_t2v` has **no start frame**: Shot 1 must also fix the subject,
+  wardrobe and set.
+- `minimax_h3_i2v`: Picture 1 **is** frame 0 of Shot 1. Path: first-frame
+  anchor → action onset → development → result. Never contradict the start
+  frame.
+- `minimax_h3_i2v` + `end_image` (FL2VA): prefer a **single shot**; describe the
+  **path** between Picture 1 and Picture 2, do not re-describe both stills.
+  Without `end_image`, leave it out entirely.
+
+Short T2VA example:
+
+```
+integrated_multimodal_description: [Shot 1] Live-action, cinematic, a medium-wide shot frames a baker opening the shutters of a small street bakery. The camera pushes in with small amplitude at slow speed as the baker with a calm, slightly raspy voice (S1) says: <d>[English] First batch of the morning.</d> [Shot 2] At 00:05.000, the camera cuts to a close-up of steam rising from the sliced bread.
+
+overall_soundscape: Wooden shutters scrape open over a quiet street. Trays clink; bread is sliced.
+
+non_diegetic_music: A soft acoustic-guitar pattern at a moderate tempo, fading out.
+```
 
 """
     + _MINIMAX_H3_GUIDE_BODY
-    + """\
-- `minimax_h3_t2v` has **no start frame**: the block also has to fix the
-  subject, the wardrobe and the set.
-- `minimax_h3_i2v` takes the start frame as frame 0. It supplies the subject,
-  the set and the lighting — **never contradict it**. Point at it in the text as
-  `<Picture 1>` (`the transparent mouse from <Picture 1>, in its original
-  scene`), say the clip opens exactly on that picture, and spend the rest of the
-  block on what changes and how it sounds.
-- `minimax_h3_i2v` also takes an **optional `end_image`** (the fl2va weights are
-  first/last-frame to video+audio). With one, the clip has to **land exactly on
-  that picture**, so write the *transition* — the move, the turn, the light
-  change that gets from the first frame to the last — rather than describing
-  either picture. Without one, leave `end_image` out entirely.
-"""
 )
 
 MINIMAX_H3_REFERENCE_VIDEO_GUIDE = (
     """\
-# VIDEO PROMPT SPEC — MiniMax H3 reference mode (local ComfyUI, `minimax_h3_r2v`)
+# VIDEO PROMPT SPEC — MiniMax H3 reference mode (local ComfyUI, `minimax_h3_r2v*`)
 
-This workflow runs the **reference-to-video** task (ref2va weights). It takes
-**no start frame**: up to 9 `reference_images`, 3 `reference_videos` and 3
-`reference_audios` are not the first frame but **references for identity, look,
-motion and sound** — a character, a person, a set, a product, a move to imitate,
-a voice or a room tone. At least one of them is required (any kind). The
-framing, the cutting and the camera all come from the text, and the sound is
-generated with the picture.
+This workflow runs **Ref2VA** (`minimax_h3_r2v`, including `_context` / `_save`
+/ `_turbo` / `_opt`). It takes **no start frame**: up to 9 `reference_images`,
+3 `reference_videos` and 3 `reference_audios` are references for identity,
+look, motion and sound. At least one is required. This is the only video
+contract for this job. Motion Context (`minimax_h3_r2v_context`) uses the
+same writing rules.
+
+Six English sections, this order:
+
+```
+subject_definitions:
+summary:
+retention_analysis:
+detailed_description:
+overall_soundscape:
+non_diegetic_music:
+```
+
+- `subject_definitions`: one line per tracked item. `<Subject N>` = reusable
+  visible content (person, set, wardrobe, style, motion). Standalone
+  `<Picture N>` only if the image is a concrete frame / storyboard /
+  composition anchor — if it only defines a character, cite it *inside* the
+  Subject line. `<Video N>` = edit source / continuation / whole-video
+  structure (not a person extracted from the video). `<Audio N>` = copied or
+  referenced audio.
+- `summary`: one short paragraph starting with `[task type]` or
+  `[type + type]`. Types: `keyframe completion`, `reference generation`,
+  `video editing`, `video continuation`, `audio reuse`, `audio reference`.
+  Combined with ` + `.
+- `retention_analysis`: one line per label.
+  Visible markers: `fully_preserved` / `partially_preserved` /
+  `attribute_transfer` / `weak_reference`
+  Audio markers: `fully_copy` / `partially_copy` / `reference` /
+  `weak_reference`
+  Subject form: `<Subject 1> (appears in [Shot 1], [Shot 3]): fully_preserved - …`
+- `detailed_description`: style in 1–2 sentences **before** `[Shot 1]`. Then
+  the same shot / camera / dialogue rules as base. Insert labels where they
+  apply. Generation tasks target ~350–500 English words when the source has
+  enough facts; do not invent plot to pad.
+- Do not re-describe a reference as if it were the shot. Name **which
+  reference drives which part**.
+
+This app's tag numbering (overrides official pairing):
+
+- Number tags **per type, in attach order**: `<Picture 1>`, `<Video 1>`,
+  `<Audio 1>`.
+- **Every reference video is passed with its soundtrack.** Those soundtracks
+  **share `<Audio j>` numbering with standalone `reference_audios` and take
+  the low numbers.** Example: 2 videos + 1 audio → `<Audio 1>` / `<Audio 2>`
+  are the videos' soundtracks, `<Audio 3>` is the standalone track.
+- Never write a tag with nothing behind it.
+
+Short Ref2VA skeleton (fill from the attached material; do not invent plot):
+
+```
+subject_definitions:
+<Subject 1> is the woman in <Picture 1>, with …
+<Audio 1> is the voice-timbre reference for <Subject 1> (S1).
+
+summary:
+[reference generation + audio reference] The target video shows <Subject 1> …
+
+retention_analysis:
+<Subject 1> (appears in [Shot 1]): fully_preserved - …
+<Audio 1>: reference - timbre only, signal not copied.
+
+detailed_description:
+The target video is live-action and cinematic, warm practical lighting.
+[Shot 1] A medium shot frames <Subject 1>. The camera pushes in with small amplitude at slow speed. <Subject 1> (S1) says: <d>[Japanese] いらっしゃい</d>
+
+overall_soundscape:
+Quiet indoor room tone and light rain on the awning.
+
+non_diegetic_music:
+Sparse piano at a slow tempo.
+```
 
 """
     + _MINIMAX_H3_GUIDE_BODY
-    + """\
-- **Refer to the material by tag, per type, in the order it was given**: the
-  first `reference_images` entry is `<Picture 1>`, the second `<Picture 2>`, …;
-  the first `reference_videos` entry is `<Video 1>`, …; audio is `<Audio 1>`,
-  `<Audio 2>`, … Name them where they matter (`Use <Picture 2> and <Picture 1>
-  as reference frames`, `the little boy from <Picture 1> on the rooftop of
-  <Picture 2>`, `the same swagger as <Video 1>`) and say what each must
-  preserve (face, hair, cape, the colour of the prop, the rhythm, the voice).
-- **Every reference video is passed together with its own soundtrack, and those
-  soundtracks share the `<Audio j>` numbering with `reference_audios` — the
-  soundtracks take the low numbers.** The model is shown the material as:
-  every picture, then every video (each video's soundtrack labelled immediately
-  before its `<Video k>`), then the standalone audio. So with 2
-  `reference_videos` and 1 `reference_audios`, `<Audio 1>` and `<Audio 2>` are
-  those two videos' soundtracks and `<Audio 3>` is the standalone track — count
-  the videos first whenever you write an `<Audio j>` tag.
-- **Never write a tag with nothing behind it.** With two pictures,
-  `<Picture 3>` is a mistake, and `<Video 1>` / `<Audio 1>` are wrong unless the
-  job actually lists that material.
-- Reference videos are read at **24 fps** and are not resampled: material shot
-  at another frame rate plays with a different sense of time. Keep clips to
-  roughly 2-15 seconds; anything longer than the generated clip is truncated.
-- **Do not re-describe a reference as if it were the shot.** It fixes who /
-  what / how it moves / how it sounds, not where or how it is framed;
-  everything else is direction.
-- Ref2va is unusually sensitive to wording: be explicit about **which reference
-  drives which part** of the shot rather than leaving the model to guess.
-"""
 )
 
 #: 1 本のクリップの中でカットを割れるワークフロー（CONTEXT の一文を切り替える）。
 #: 汎用の VIDEO PROMPT SPEC は「1 クリップ 1 ショット」を前提にしているが、
-#: MiniMax H3 はタイムラインを書けば複数ショットを 1 本に収められる。
+#: MiniMax H3 は公式の `[Shot N]` タイムラインを書けば複数ショットを 1 本に収められる。
 #: turbo / opt / ラテント保存版は素の版と入力の形もプロンプトの書き方も同じなので、
 #: ガイドの登録は素の版と同じものを共有する（ここに載っていないと汎用の
 #: :data:`VIDEO_SPEC` に落ちてしまう）。
@@ -944,8 +1022,8 @@ def video_prompt_guides_section() -> str:
         return ""
     header = (
         "# VIDEO PROMPT GUIDES (model-specific — use the one that matches the"
-        "\n`video_workflow` of the job you are writing; it overrides the generic"
-        "\nVIDEO PROMPT SPEC)"
+        "\n`video_workflow` of the job you are writing; that guide is the video"
+        "\ncontract for the job)"
     )
     return "\n\n".join([header, *guides])
 
@@ -1174,8 +1252,13 @@ def audio_workflow_catalog_section(
 # 4. few-shot examples (docs/prompt-samples.md)
 # --------------------------------------------------------------------------
 
+#: pre-H3 path — not embedded when the selected video workflow has an H3 guide
 FEW_SHOT_VIDEO = """\
 # FEW-SHOT EXAMPLES — video (real prompts from the model authors' own posts)
+
+MiniMax H3 jobs must follow the MiniMax H3 VIDEO PROMPT SPEC (official fields /
+`[Shot N] At MM:SS.mmm` / `<d>`), **not** these legacy one-paragraph examples
+and **not** a `Camera:` / `Audio:` footer.
 
 ## Video prompts (model authors' own posts)
 
@@ -1201,6 +1284,92 @@ closing sound sentence):
 adult Japanese woman in sex on a rumpled hotel bed. Starting from the given first frame, the thrusting becomes rapid and intense, short hard strokes in quick succession. Her whole body shakes with the pace, legs tremble, fingers dig into the sheets, and her back arches off the mattress. Her brows lock tight, watery eyes roll upward, mouth open wide as shaky high moans break between gasps. Heavy sweat on her flushed skin, messy dark hair stuck to her face and pillow. Static camera with stronger handheld tremble, tight focus on her climaxing face and torso under harsh practical lighting. Fast bed creaks, sharp body sounds, gasping breaths, and urgent moans continue through the continuous shot.
 ```
 
+"""
+
+H3_QUALITY_BAR = """\
+# QUALITY BAR — MiniMax H3
+
+The MiniMax H3 VIDEO PROMPT SPEC is the only video contract. Do not copy
+legacy one-paragraph examples, talkvid visual/speech/sounds blocks,
+`Camera:` / `Audio:` footers, or `[0s-1.5s] Shot 1:` stamps. Do not replace
+the official I2VA alignment line with a first-frame opener sentence.
+
+- Every added detail is visible or audible. Prefer geometry, contact, and
+  cause-and-effect over mood adjectives.
+- Do not invent characters, locations, wardrobe, or spoken lines the user
+  did not give. Develop the stated action fully: body, contact, eyeline,
+  resulting state, camera, synced diegetic sound.
+- Shot 1 opens with style + composition, then subject position, environment,
+  action/reaction, state change, camera, synced diegetic sound, in playback
+  order.
+- Time the last shot to the job `duration`. `[Shot 1]` has no timestamp;
+  later shots: `[Shot N] At MM:SS.mmm, the camera cuts to …`.
+- `video_prompt` is a **complete** official H3 document, not a one-liner wrap
+  of the user's sentence.
+- Base (t2v / i2v): alignment line if needed, then
+  `integrated_multimodal_description` / `overall_soundscape` /
+  `non_diegetic_music`.
+- Ref2VA (r2v*): all six sections. When facts exist, `detailed_description`
+  should be richly explicit (official ~350–500 English words is a target, not
+  padding).
+- Keep this app's tag numbering: per type, attach order. Reference-video
+  soundtracks take the low `<Audio j>` numbers.
+"""
+
+FEW_SHOT_H3 = """\
+# FEW-SHOT EXAMPLES — MiniMax H3 (official rewrite format)
+
+Imitate these complete official documents. Do not fall back to one-paragraph
+legacy examples.
+
+## H3-E1 I2VA — hotel-bed i2v (this app's scene; no invented dialogue)
+
+```
+For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.
+
+integrated_multimodal_description: [Shot 1] Live-action, cinematic, a tight medium shot frames the adult Japanese woman shown in <Picture 1> on a rumpled hotel bed with white sheets. She lies on her back under a man, knees bent, hips raised against his, fingers already gripping the sheet beside her hip. The camera holds a static shot and shakes slightly as the thrusting becomes rapid and intense — short hard strokes in quick succession. Each stroke drives her hips into the mattress; her legs tremble, fingers dig into the sheets, and her back arches off the bed. Her brows lock tight, watery eyes roll upward, mouth open wide. Heavy sweat beads on her flushed skin; messy dark hair sticks to her face and the pillow. Harsh practical bedroom lighting stays on her climaxing face and torso. Bed springs compress and rebound with each stroke; skin slaps at the contact; her breath breaks into shaky high moans between gasps.
+
+overall_soundscape: Fast bed creaks keep time with the thrusts. Skin-on-skin impacts stay sharp and close. Gasping breaths and urgent moans continue through the continuous shot.
+
+non_diegetic_music: N/A
+
+No text, subtitles, logos or watermarks.
+```
+
+## H3-E2 T2VA — two shots, 8s (ramen stall; one user-given line)
+
+```
+integrated_multimodal_description: [Shot 1] Live-action, cinematic, a medium-wide shot frames a late-night ramen stall under a canvas awning, steam rising from a steel pot toward a handwritten sign reading "営業中". A young woman in a dark apron stands behind the counter, wiping a ceramic bowl. The camera pushes in with small amplitude at slow speed as the woman with a quiet, even voice (S1) looks up at the arriving customer and says: <d>[Japanese] いらっしゃい</d> [Shot 2] At 00:05.000, the camera cuts to a close-up of chopsticks lifting noodles from the bowl while broth steam crosses the frame.
+
+overall_soundscape: Rain ticks on the awning. Broth simmers; ceramic bowls clink; traffic passes on the wet street.
+
+non_diegetic_music: Sparse electric-piano notes at a slow tempo, fading under the simmer.
+
+No text, subtitles, logos or watermarks.
+```
+
+## H3-E3 Ref2VA — six sections (one picture as identity; no standalone Picture line)
+
+```
+subject_definitions:
+<Subject 1> is the adult Japanese woman in <Picture 1>, with long dark hair, flushed skin, and the same face, body, and wardrobe shown there.
+
+summary:
+[reference generation] The target video shows <Subject 1> sitting up on a rumpled hotel bed and looking toward the camera.
+
+retention_analysis:
+<Subject 1> (appears in [Shot 1]): fully_preserved - identity, face, hair, body, and wardrobe from <Picture 1> are retained.
+
+detailed_description:
+The target video is live-action and cinematic, lit by a single warm practical lamp that leaves the far wall in shadow.
+[Shot 1] A medium shot frames <Subject 1> sitting on the edge of the rumpled hotel bed, knees together, hands on the mattress. The camera pushes in with small amplitude at slow speed as she lifts her chin, meets the lens, and holds the look. Sheets crease under her palms; her shoulders rise with one breath and settle.
+
+overall_soundscape: Hotel-room tone and the rustle of sheets under her hands. A distant corridor door clicks once.
+
+non_diegetic_music: N/A
+
+No text, subtitles, logos or watermarks.
+```
 """
 
 # Krea 2 only: the other image families carry their own examples inside their
@@ -1475,7 +1644,9 @@ OUTPUT_RULES = """\
 - `notes` is a short Japanese note for the user (what you assumed, what could
   be tweaked). It is never used as a model prompt.
 - Use JSON `null` for a prompt this mode does not need (see CONTEXT).
-- The prompt strings are one single line each — no newlines, no markdown.
+- `image_prompt` is one single line. `video_prompt` is the official MiniMax H3
+  document (alignment line, field headers, `[Shot N]`) and may contain
+  newlines. No markdown fences inside the JSON strings.
 - Hard limits: only adults; no real, identifiable people; no non-consent themes
   and no animals in sexual contexts.
 """
@@ -1740,7 +1911,7 @@ def _context_section(
         # 1 本の中でカットを割れるモデルだけ、そう言い直す（モデル固有ガイドと
         # CONTEXT が食い違わないように）。
         shot = (
-            "cuts allowed inside it — write the stamped shot timeline"
+            "cuts allowed inside it — write the official `[Shot N]` timeline"
             if spec is not None and spec.id in MULTI_CUT_WORKFLOWS
             else "one continuous shot"
         )
@@ -1842,21 +2013,25 @@ def build_system_prompt(
             family = DEFAULT_FAMILY
         parts.append(image_spec_for(family))
     if ctx.mode != "image_only":
-        parts.append(
-            VIDEO_SPEC.replace("DURATION_SECONDS", f"{ctx.duration:g}")
-        )
-        parts.append(
-            TEMPLATE_TAGGED if ctx.prompt_template == "tagged" else TEMPLATE_NATURAL
-        )
-        parts.append(FEW_SHOT_VIDEO)
-        # 選択中の動画ワークフローがモデル固有のガイドを持つなら、そのぶんだけ
-        # 足す（両方のモデルの流儀を渡すと混ざるので選択中の 1 本きり）。
+        # 選択中の動画ワークフローが H3 ガイドを持つなら公式契約だけ渡す。
+        # tagged/natural の talkvid テンプレは H3 では使わない。
         try:
             guide = video_guide_for(get_video_spec(ctx.video_workflow).id)
         except WorkflowSpecError:
             guide = ""
         if guide:
-            parts.append(guide)
+            parts += [guide, H3_QUALITY_BAR, FEW_SHOT_H3]
+        else:
+            # pre-H3 path: generic paragraph + talkvid template + legacy few-shots
+            parts.append(
+                VIDEO_SPEC.replace("DURATION_SECONDS", f"{ctx.duration:g}")
+            )
+            parts.append(
+                TEMPLATE_TAGGED
+                if ctx.prompt_template == "tagged"
+                else TEMPLATE_NATURAL
+            )
+            parts.append(FEW_SHOT_VIDEO)
     # The image examples are Krea 2 prose; the other families demand a different
     # style and carry their own examples in their spec section.
     if family == DEFAULT_FAMILY:
@@ -2006,7 +2181,10 @@ Available actions:
 Rules:
 
 - `job` uses the app's own job schema, exactly the fields shown above and
-  nothing else. `mode` picks the stages (`full` = image then video, `i2v` =
+  nothing else. A loose job's `video_prompt` is the same official MiniMax H3
+  document as VIDEO PROMPT GUIDES for that `video_workflow` (base 3 fields or
+  Ref2VA 6 fields, `[Shot N]` timeline) — not a one-paragraph wrap.
+  `mode` picks the stages (`full` = image then video, `i2v` =
   video only from assets you supply, `image_only` = a still and nothing else,
   `audio` = one audio track and nothing else), `image_workflow` picks the image
   graph, `video_workflow` the video one and `audio_workflow` the audio one.
@@ -2137,19 +2315,31 @@ that Shot's final cut, and Shot 単位で作り直せる.
 
 How the fields reach the model — get this wrong and the render ignores you:
 
-- **`prompt` is the only field submitted as text.** `purpose` and `action` are
-  notes for the people reading the script; nothing in them reaches the model. If
-  a character, a place or a look has to be on screen, write it — and its `@名前`
-  — **in `prompt`**.
+- **`prompt` is the only field submitted as the visual/timeline body.**
+  It must be a **complete** official H3 document, not a one-liner. `purpose`
+  and `action` are notes for the people reading the script; nothing in them
+  reaches the model. If a character, a place or a look has to be on screen,
+  write it — and its `@名前` — **in `prompt`**. For t2v/i2v write a `[Shot N]`
+  timeline with style, blocking, action and an official camera clause (no
+  timestamp on Shot 1). For r2v write all six official sections in `prompt`
+  (`subject_definitions` / `summary` / `retention_analysis` /
+  `detailed_description` / `overall_soundscape` / `non_diegetic_music`).
+- `compose_prompt` only fills missing sound / camera / `<d>` — do not rely on
+  it to invent shots or a timeline.
+- Do not put spoken lines in `prompt` that are not in `dialogue` or the
+  user's text. Develop the stated action (body, contact, eyeline, resulting
+  state, camera, sound) without new plot.
 - **`@名前` only counts inside `prompt`.** A mention in `action` or `purpose` is
   dead text: no reference is attached and no caption is expanded.
-- `dialogue` is **the spoken words and nothing else**. The app quotes it
-  verbatim into the `Audio:` line, so a speaker name, a 括弧書き stage direction
-  or a delivery note ends up spoken out loud. Who says it and how they act goes
-  in `action`.
-- `camera` becomes the `Camera:` line; `soundscape` and `bgm` become the
-  `Audio:` line; the "no subtitles / watermarks" sentence is appended for you.
-  Write each in its own field — do not repeat them inside `prompt`.
+- `dialogue` is **the spoken words only**. The app wraps them as
+  `<d>[Language] …</d>` if the body has no `<d>`. No speaker name / stage
+  direction in this field — those belong in `prompt` / `action`.
+- `camera` is a short camera note. The app weaves it as a natural
+  `The camera …` sentence if the body does not already describe the camera.
+  Prefer official motion vocabulary when you fill this field.
+- `soundscape` becomes `overall_soundscape:`; `bgm` becomes
+  `non_diegetic_music:`. Do not repeat those inside `prompt`. The "no
+  subtitles / watermarks" sentence is appended for you.
 
 What actually decides the output:
 
@@ -2183,6 +2373,14 @@ What actually decides the output:
   `_context` builds have no variants), or a ComfyUI that lacks the custom nodes
   (Comfy Cloud) falls back to the plain build; the prompt preview's
   `workflow_reason` says which of those happened.
+- `megapixels` and `aspect_ratio` (per project, both unset by default) are the
+  work's own defaults for the same two settings the generate form has, and are
+  independent of the workflow. Unset means "leave it to the build" (0.4MP for
+  MiniMax H3) — a bigger `megapixels` is slower and can run a low-VRAM local GPU
+  out of memory. A Shot's own `megapixels` / `aspect_ratio` still wins over the
+  project's, and the two resolve independently. Changing either only affects
+  cuts rendered from then on, so switching mid-chain breaks `latent_continuity`
+  (the context latent has to match the previous clip's size).
 - `nsfw` (per project, off by default): every job this project submits carries
   the project's flag as a **manual** decision — on marks all of them NSFW, off
   pins them to non-NSFW and skips the automatic classifier entirely. It is a
@@ -2204,7 +2402,7 @@ Actions — one per reply like every other action, no approval needed:
 |---|---|---|
 | `studio_list_projects` | — | every project with its Shot / asset / Take counts |
 | `studio_get_project` | `project_id` | the whole project: assets, 話 / 場 / Shot, and each Shot's Takes with their status and `stale` |
-| `studio_create_project` | `name`, optional `code`, `synopsis`, `world_notes`, `auto_translate`, `latent_continuity`, `quality` (`normal` / `opt` / `turbo`), `nsfw` | start a work |
+| `studio_create_project` | `name`, optional `code`, `synopsis`, `world_notes`, `auto_translate`, `latent_continuity`, `quality` (`normal` / `opt` / `turbo`), `megapixels` (e.g. `0.4`), `aspect_ratio` (e.g. `16:9 (Widescreen)`), `nsfw` | start a work |
 | `studio_update_project` | `project_id` + any of the above | e.g. keep `world_notes` up to date |
 | `studio_upsert_episode` | `id` to edit, else `project_id`; `title`, `synopsis`, `sort_order` | 話 |
 | `studio_upsert_scene` | `id` to edit, else `episode_id`; `title`, `synopsis`, `time_of_day`, `sort_order`. With `id`, `episode_id` **moves** the 場 to that 話 | 場 |
@@ -2256,6 +2454,7 @@ AGENT_OUTPUT_RULES = """\
 # OUTPUT RULES
 
 - Japanese prose for the user, English for every model prompt inside `job`.
+  A loose job's `video_prompt` is the same official MiniMax H3 document.
 - At most one ```json action per reply, as the last thing in the message.
 - Never invent job ids: use the ones the EVENT messages give you.
 - `done` only after every approved task reached a final state.
@@ -2625,9 +2824,6 @@ def build_agent_system_prompt(
     接続先を切り替えても既存セッションの文面は変わらない（新しいセッションから
     効く）。空文字なら節ごと出さない。
     """
-    video_spec = VIDEO_SPEC.replace(
-        "DURATION_SECONDS seconds", "as many seconds as the job's `duration` field says"
-    )
     # カタログはフォームの選択肢（``GET /api/options``）と同じ一覧にする:
     # 接続先で使えないワークフローは options から落ちているので、その id 集合で
     # カタログも絞る（空のときは絞らない = 従来どおり全件）。
@@ -2644,7 +2840,7 @@ def build_agent_system_prompt(
                  comfy_target, _option_ids(options.audio_workflows)
              ),
              audio_prompt_guides_section(),
-             video_spec, TEMPLATE_NATURAL, FEW_SHOT_VIDEO, FEW_SHOT_IMAGE_KREA2,
+             H3_QUALITY_BAR, FEW_SHOT_H3, FEW_SHOT_IMAGE_KREA2,
              AGENT_STUDIO,
              _agent_choices(options, lora_samples),
              _agent_guardrails(ctx, max_tasks), AGENT_OUTPUT_RULES]

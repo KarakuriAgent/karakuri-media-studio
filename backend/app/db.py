@@ -94,6 +94,8 @@ CREATE TABLE IF NOT EXISTS studio_projects (
   auto_translate INTEGER NOT NULL DEFAULT 1, -- 日本語プロンプトを Grok で英訳してから投入
   latent_continuity INTEGER NOT NULL DEFAULT 0, -- 引き継ぎを Motion Context（ラテント連続性）で行う
   quality     TEXT NOT NULL DEFAULT 'normal', -- 動画生成の品質（normal / opt / turbo）
+  megapixels  REAL,                        -- 動画生成のメガピクセル（NULL = ワークフローの既定）
+  aspect_ratio TEXT,                       -- 動画生成のアスペクト比（NULL = 既定）
   nsfw        INTEGER NOT NULL DEFAULT 0,   -- 1 = この作品から投入するジョブはすべて NSFW（0 = 非 NSFW 固定）
   canvas_x    REAL NOT NULL DEFAULT 0,      -- キャンバス（別ビュー）の表示位置
   canvas_y    REAL NOT NULL DEFAULT 0,
@@ -386,6 +388,16 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         # 動画生成の品質（normal / opt / turbo）。既存のプロジェクトは
         # 'normal' = 今までどおり素の MiniMax H3（20 steps）。
         ("quality", "TEXT NOT NULL DEFAULT 'normal'"),
+        # 画質（メガピクセル）と画面比。生成フォームと同じ 2 項目を作品単位の
+        # 既定として持つ。既存のプロジェクトは NULL = 今までどおりワークフロー
+        # 宣言の default_megapixels / グローバル既定に従う。
+        #
+        # 短いあいだ standard / high / max の 3 段プリセットを 'resolution' 列で
+        # 持っていたので、その頃に一度でも起動した DB には列が残る。読み書き
+        # しないので放置する（Shot 側の nsfw 列と同じ扱い。NOT NULL だが既定値
+        # つきなので、列を書かない INSERT はそのまま通る）。
+        ("megapixels", "REAL"),
+        ("aspect_ratio", "TEXT"),
         # この作品から投入するジョブを NSFW 扱いにするか。既存のプロジェクトは
         # 0 = 非 NSFW（投入時に明示するので Grok の自動判定は走らない）。
         ("nsfw", "INTEGER NOT NULL DEFAULT 0"),

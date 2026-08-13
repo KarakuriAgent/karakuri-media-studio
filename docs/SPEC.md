@@ -94,6 +94,12 @@
   解決される（`app.studio._quality_workflow`）。t2v にはバリアントが無く、`latent_continuity` が
   ON のあいだも `_save` / `_context` のバリアントが無いので、どちらも**素へフォールバック**する。
   接続先が対応しない（`comfy_cloud`）ときも同じで、理由は投入プレビューの `workflow_reason` に出る。
+- 画質のほうはワークフローを選ばず、プロジェクトの **`megapixels` / `aspect_ratio`**
+  （生成フォームと同じ 2 項目を作品単位の既定として持つ）が投入時の値を決める。
+  どちらも `NULL` = **明示しない**（＝これまでどおりワークフロー宣言の
+  `default_megapixels` / グローバル既定 0.4MP、画面比は既定のまま）。効き方は
+  **Shot 個別 → プロジェクト → グローバル既定**の順で、2 つはそれぞれ独立に解決する。
+  品質（`quality`）とも直交していて、どちらのバリアントに落ちても同じ画素数で焼く。
 - **`minimax_h3_*_save`** は素の t2v / i2v / r2v に `MiniMaxH3MotionContextSaveLatent` →
   `PreviewAny` の 2 ノードだけを足した版で、**AV ラテントを保存する以外は素の版とまったく同じ**
   （Motion Context の読み込み・`…Trim` は入っていないので尺も変わらない）。ドラマスタジオは
@@ -112,14 +118,21 @@
   動かせない。`encode_mode` / `anchor_mode` / `crop` / `audio_mode` は本家 ComfyUI-H3-Motion-Context
   v0.2.0 には入力として存在せず、ノード内部で固定されている。ピン留めした 22 フレームが出力の
   先頭に返り、`…Trim` が映像と音声を揃えて落とすため、**仕上がりの尺は指定した尺より 22 フレーム
-  （24fps で約 0.9 秒）短くなる**。`context_latent` は生成するクリップと同じ解像度である必要がある。
+  （24fps で約 0.9 秒）短くなる**。`context_latent` は生成するクリップと同じ解像度である必要がある。**連鎖の途中でプロジェクトの
+  `megapixels` / `aspect_ratio` を変えると、次のカットは前クリップと違う解像度で焼かれてラテント連続性が
+  合わなくなる**（設定変更はそれ以降の生成にしか効かないので、変えるなら連鎖の切れ目で）。
   このカットぶんのラテントは `h3_context/{job_id}` に保存し、パスは `PreviewAny` 経由で `/history`
   から回収して Take の `latent_path` に控える（回収できなければ NULL のままで、次のカットは
   「引き継ぎ元が無い」として断られる）。
 - **`minimax_h3_*`（`workflow/video/minimax-h3/`、family `minimax-h3`）** は**映像とステレオ音声を同時に生成する**
-  ローカルモデル（MiniMax H3）。プロンプト 1 ブロックに「スタイル → シーン概要 → `[0s-1.5s]` 形式のショット
-  タイムライン → `Camera:` → `Audio:`（セリフ・SFX・音楽）→ 禁止事項」を書くと、1 本の中でカットを割れる。
-  CFG を使わない（`BasicGuider`）ので **negative prompt は無く**、除外したいものは本文に書く。24fps 固定で、
+  ローカルモデル（MiniMax H3）。プロンプトは公式 rewrite 契約で書く: ベース（t2v / i2v）は任意の
+  アライメント行のあと `integrated_multimodal_description:` / `overall_soundscape:` /
+  `non_diegetic_music:`、参照（r2v）はそれに加えて `subject_definitions:` / `summary:` /
+  `retention_analysis:` / `detailed_description:`。`[Shot 1]` にタイムスタンプは無く、以降は
+  `[Shot N] At MM:SS.mmm, the camera cuts to …`。カメラはショット内の自然文、台詞は
+  `<d>[Language] …</d>`（話者 ID と言い方は `<d>` の外）。`Camera:` / `Audio:` フッタや
+  `[0s-1.5s] Shot 1:` は使わない。CFG を使わない（`BasicGuider`）ので **negative prompt は無く**、
+  除外したいものは本文に書く。24fps 固定で、
   尺は 17k+5 フレームの格子に**切り上げ**（`FrameGrid`、5 秒 = 124 フレーム）。既定の画角は短辺 768px
   （最大 768x1344・32 の倍数）なので `megapixels` は 0.4 前後。`minimax_h3_i2v` は `end_image` を**任意**で
   受け取り、渡すと `MiniMaxH3ImageToVideo.last_frame` に繋いで最終フレーム指定（fl2va）になる。渡さなければ
@@ -403,8 +416,8 @@ VRAM が足りずに CUDA OOM で落ちる。そこで `WorkflowSpec.default_meg
 （短辺 768px・最大 768x1344 の画角）。
 
 バックエンド側（`POST /api/jobs` の `megapixels` を省いたとき、および Studio の
-カットが `megapixels` 未設定のとき）の既定は **0.4MP**（`workflows.py` の
-`DEFAULT_MEGAPIXELS`）。既定の動画ワークフローが MiniMax H3 で、1.0MP のままだと
+カットもプロジェクトも `megapixels` 未設定のとき）の既定は
+**0.4MP**（`workflows.py` の `DEFAULT_MEGAPIXELS`）。既定の動画ワークフローが MiniMax H3 で、1.0MP のままだと
 8GB 級のローカル GPU で CUDA OOM になるため、フォームが明示的に値を送らない
 経路でも安全側に倒している。
 
@@ -413,6 +426,13 @@ VRAM が足りずに CUDA OOM で落ちる。そこで `WorkflowSpec.default_meg
 切り替えたあとに手で変えた値はそのまま残り、次に切り替えるまで維持される（音声の
 `clampToWorkflow` と同じ「切り替え時にだけ追随させる」形）。キャンバスの model カードも
 ワークフローを選び直したときに同じ値を入れる。
+
+ドラマスタジオは生成フォームを通さないので、`megapixels` と `aspect_ratio` はカット投入時に
+`app.studio.render_shot` が組み立てる: **Shot 個別 → プロジェクト（どちらも `NULL` = 載せない）
+→ `JobCreate` の既定（0.4MP / `4:3 (Standard)`）**。
+`app.jobs._fitted_megapixels` の切り下げ（宣言の `default_megapixels` を上限にする）が掛かるのは
+**別のワークフローから params を引き継ぐとき（再実行での付け替え・「続きから」）だけ**なので、
+0.4MP より大きい値もそのまま ComfyUI に届く（Shot 個別の指定が従来から効いているのと同じ経路）。
 
 参照画像（開始フレーム）を取るワークフロー（`accepts_start_image=True`）で `source_image` が
 指定されている場合は、`w_ratio:h_ratio` にプリセットではなく **参照画像の実寸比** を使う
@@ -575,12 +595,11 @@ Cookie ベースの非公式 API は規約リスクがあるため**使わない
 複数のワークフローを使い分けるので、全ファミリー・全モデルのガイドをまとめて焼き込む
 （`prompts.image_prompt_guides_section()` / `audio_prompt_guides_section()`）。
 
-**実例集**: Civitai の公開ギャラリー（モデル作者投稿の動画・画像）に埋め込まれたワークフローから実際のプロンプトを抽出し、`docs/prompt-samples.md` にまとめた。Grok のシステムプロンプトには、この実例を few-shot として埋め込むこと。実例から得られた重要な知見:
+**実例集**: 画像（Krea 2）の few-shot は Civitai 公開ギャラリー由来で `docs/prompt-samples.md` に残してある。動画の few-shot は公式 MiniMax H3 文書（`prompts.FEW_SHOT_H3`）で、古い Civitai 1 段落は埋め込まない。
 
-- 動画プロンプトは `<シーン種別> scene.` の宣言で始めるのが作者流（例: "voyeur style ... scene."）
-- **引用符 `"..."` で囲んだセリフはそのまま音声合成される**（英語のセリフ+話者の声質形容: "in a british voice she says …"）。セリフ機能を UI のオプションとして扱う
-- 音・声の描写（moaning, sigh, 効果音）を文中に散りばめる
-- 作者が実際に使うネガティブは品質系+音声系（blurry, …, distorted sound, saturated loud 等）で、テンプレート既定値と異なる。**アプリからネガティブも選択可能にする**（既定は現行値、プリセットで作者版を用意）
+- MiniMax H3 の台詞は `<d>[Language] …</d>`（話者 ID と言い方は `<d>` の外）。中身は原語のまま音声合成される
+- 音は `overall_soundscape`（環境・物理・非言語）と `non_diegetic_music`（観客だけのスコア、無ければ `N/A`）に分ける
+- MiniMax H3 に negative prompt は無い（本文末尾の除外文で字幕・ロゴを落とす）
 - RedCraft 画像プロンプトは品質語プレフィックス（例: "masterpiece, very aesthetic"）+ 自然文 1 段落が実例でも主流
 
 **画像プロンプト（ファミリー別）**
@@ -609,19 +628,15 @@ Cookie ベースの非公式 API は規約リスクがあるため**使わない
 - 推論設定は Steps 8 / CFG 1 / Euler / Simple（モデル配布ページの推奨値、ワークフロー側で固定済み）
 - ネガティブプロンプトは不使用（ConditioningZeroOut で代替済み）
 
-**動画プロンプト（汎用の VIDEO PROMPT SPEC。モデル固有のガイドがあるワークフローではそちらが優先）**
+**動画プロンプト（MiniMax H3 公式リライト契約。`prompts.MINIMAX_H3_*` + `FEW_SHOT_H3`）**
 
-- **1 つの流れる段落・4〜8 文**。含める要素は「被写体 / 動作 / 環境 / 照明 / カメラの動き / 音声」。i2v では「開始フレームからの続き」を書く（例: "Starting from the given first frame, …"）
-- 含めるべき要素:
-  1. 被写体と状況の要約（開始フレームと矛盾しないこと）
-  2. **動きの推移**（何がどう動くか、テンポ・強度の変化）
-  3. 身体・表情のリアクション描写
-  4. カメラワーク（static / handheld tremble / ショットスケール / focus 対象など）
-  5. **音声の記述**（動画モデルは音声も同時生成する。環境音・呼吸・声を必ず文中に含める。**セリフは引用符で囲み、言語・アクセント・声質を形容できる**）
-- プロンプトの書式は `[VISUAL]` / `[SPEECH]` / `[SOUNDS]` のタグ形式と自然文形式の**2 種を UI で切替可能にする**（既定: 自然文）
-- 継続時間は秒数設定に従う。1 カット（continuous shot）前提で書く
-- ネガティブプロンプトは Grok に生成させず、プリセット選択制（§3.1: 現行値 / モデル作者版、編集可）
-- モデルが学習済みの動作カテゴリ（配布ページの trained actions リスト）を Grok のシステムプロンプトに語彙リストとして与え、それに寄せた表現を優先させる
+- Grok に渡すのは公式 H3 文書であって、4〜8 文の 1 段落ではない。自然文 / タグ形式の UI 切替は廃止（talkvid の `[VISUAL]` / `[SPEECH]` は埋め込まない）
+- ベース（t2v / i2v）: 必要なときだけアライメント行のあと `integrated_multimodal_description:` / `overall_soundscape:` / `non_diegetic_music:`
+- 参照（r2v）: 6 節（`subject_definitions` / `summary` / `retention_analysis` / `detailed_description` / 音 2 節）
+- `[Shot 1]` にタイムスタンプは無く、以降は `[Shot N] At MM:SS.mmm, the camera cuts to …`。最後のショットはジョブの `duration` に収める
+- カメラはショット内の公式運鏡語彙。台詞は `(S1) says: <d>[Language] …</d>`。`Camera:` / `Audio:` フッタや `[0s-1.5s] Shot 1:` は使わない
+- ユーザーが書いていない人物・場所・衣装・台詞は発明せず、述べられた動作を身体・接触・視線・結果・カメラ・音まで展開する
+- MiniMax H3 に negative prompt は無い（本文末尾の除外文）
 
 **音声プロンプト（`mode: "audio"`）**
 
@@ -651,7 +666,7 @@ Cookie ベースの非公式 API は規約リスクがあるため**使わない
 実装:
 
 - grok CLI のヘッドレス実行（`grok -p`）は 1 発呼び出しのため、**会話履歴はアプリ側で保持**し、毎ターン「システムプロンプト + 履歴全文 + 最新発言」を組み立てて渡す
-- システムプロンプトの構成: ①役割（プロンプトエンジニア兼インタビュアー）②各モデルのプロンプト仕様（§4.2。画像は選択中ワークフローのファミリーのものだけ）+ few-shot 実例（docs/prompt-samples.md）③ヒアリング項目チェックリスト ④選択中の画像・動画ワークフローの特性（下記）⑤最終出力は ```json フェンス内の `{image_prompt, video_prompt, notes}` のみ、というルール
+- システムプロンプトの構成: ①役割（プロンプトエンジニア兼インタビュアー）②各モデルのプロンプト仕様（§4.2。画像は選択中ワークフローのファミリーのものだけ。動画は公式 H3 契約 + `FEW_SHOT_H3`）③ヒアリング項目チェックリスト ④選択中の画像・動画ワークフローの特性（下記）⑤最終出力は ```json フェンス内の `{image_prompt, video_prompt, notes}` のみ、というルール
 - `mode: "audio"` では専用のシステムプロンプト（`build_audio_system_prompt`）に切り替わる: 選択中の音声ワークフローの仕様とそのモデルが読むフィールドだけを提示し、出力は `{audio_prompt, lyrics, bpm, keyscale, language, negative_tags, notes}`。画像・動画のプロンプトは書かせない。フォーム側も、選択中のワークフローが持たないつまみ（Stable Audio の `lyrics` など）は反映しない
 - **ワークフロー特性の反映**: CONTEXT には選択中の `video_workflow` の用途・必要入力・音声の扱い・`video_prompt` の書き方と、`image_workflow` の用途・ファミリー・必要入力・`image_prompt` の書き方を出す。文面は `app/workflows.py` の `WorkflowSpec`（`description` / `audio_role` / `prompt_hint`）から自動生成する単一情報源なので、ワークフローを追加したらマニフェスト側に書けばチャット・エージェント両方に反映される（未記入は `validate_specs()` = ヘルスチェックで検出）。例: flf2v なら開始→終了フレーム間の遷移を書かせる、t2v / リファレンスシート IC-LoRA なら開始フレーム前提にしない、ia2v なら渡した音声がそのまま音声トラックになるのでセリフをプロンプトに書かせない、ic_lora_motion ならカメラ・テンポは参照動画由来なので書かせない
 - 応答の判定: 応答に JSON フェンスがあれば「最終案の提示」、なければ「質問継続」として UI に表示

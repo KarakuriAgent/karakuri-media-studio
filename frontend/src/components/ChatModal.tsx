@@ -2,12 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { Loader2, Send } from 'lucide-react'
 import { api, formatDetail, ApiError } from '../api'
 import { audioSupports, hiddenFields, type FormState } from '../form'
-import type {
-  ChatMessage,
-  Options,
-  PromptResult,
-  PromptTemplate,
-} from '../types'
+import type { ChatMessage, Options, PromptResult } from '../types'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { Banner, Modal } from './ui'
@@ -34,7 +29,6 @@ export default function ChatModal({
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   const [result, setResult] = useState<PromptResult | null>(null)
-  const [template, setTemplate] = useState<PromptTemplate>(form.promptTemplate)
   const scroller = useRef<HTMLDivElement>(null)
 
   // 音声モードは会話の中身も反映先も別物（シーンもカメラも LoRA も無い）。
@@ -50,7 +44,7 @@ export default function ChatModal({
   // 書いてしまう。判定はフォーム本体と同じ :func:`hiddenFields`。
   const hidden = hiddenFields(form.mode, videoWorkflow, imageWorkflow)
 
-  const startSession = async (promptTemplate: PromptTemplate) => {
+  const startSession = async () => {
     setBusy(true)
     setError(null)
     try {
@@ -91,7 +85,7 @@ export default function ChatModal({
         video_prompt_draft: form.videoPrompt,
         audio_prompt_draft: form.audioPrompt,
         lyrics_draft: form.lyrics,
-        prompt_template: promptTemplate,
+        prompt_template: form.promptTemplate,
         // 入力画像は「欄が出ているかどうか」で決める: i2v の開始フレームだけ
         // でなく、編集系の画像ワークフロー（qwen-image-edit など）の編集元も
         // 見せたい。
@@ -133,7 +127,7 @@ export default function ChatModal({
   }
 
   useEffect(() => {
-    void startSession(template)
+    void startSession()
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
 
@@ -199,34 +193,10 @@ export default function ChatModal({
   return (
     <Modal title="Grok プロンプト作成" onClose={onClose} wide>
       <div className="flex h-[70vh] flex-col gap-3">
-        {/* テンプレートは動画プロンプトの書き方の切り替えなので、動画ステージが
-            走らない mode（音声・画像のみ）では出さない（押してもセッションが
-            作り直されるだけで文面は変わらない）。 */}
         {!audio && form.mode !== 'image_only' && (
-        <div className="flex items-center gap-2 text-xs">
-          <span className="text-muted-foreground">プロンプトテンプレート</span>
-          <div className="flex rounded-md border border-border bg-surface-sunken p-0.5">
-            {(['natural', 'tagged'] as PromptTemplate[]).map((value) => (
-              <button
-                key={value}
-                className={`rounded-sm px-2 py-1 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 disabled:opacity-40 ${
-                  template === value
-                    ? 'bg-primary text-primary-foreground'
-                    : 'text-muted-foreground hover:bg-secondary hover:text-foreground'
-                }`}
-                disabled={busy}
-                onClick={() => {
-                  setTemplate(value)
-                  patch({ promptTemplate: value })
-                  // The template is baked into the system prompt: restart.
-                  void startSession(value)
-                }}
-              >
-                {value === 'natural' ? '自然文' : 'タグ形式'}
-              </button>
-            ))}
-          </div>
-        </div>
+          <p className="text-xs text-muted-foreground">
+            MiniMax H3 は公式リライト形式（フィールド見出し / [Shot N]）で書き直します。
+          </p>
         )}
 
         {error && <Banner onClose={() => setError(null)}>{error}</Banner>}

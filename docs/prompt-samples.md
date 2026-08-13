@@ -5,7 +5,10 @@ ComfyUIワークフローから抽出した生データ（原文ママ）。
 
 ## 動画プロンプト実例（モデル作者本人の投稿）
 
-構造: `<シーン種別> scene.` の宣言で始まり、人物の外見 → 動作の推移 → 引用符 `"..."` で囲んだセリフ（そのまま音声合成される）→ 音・声の描写、の順。
+これらは Civitai 由来の **1 段落**で、Grok には埋め込まない。現行の動画 few-shot は
+`prompts.FEW_SHOT_H3`（公式 MiniMax H3 文書: H3-E1 I2VA / H3-E2 T2VA / H3-E3 Ref2VA）。
+
+構造（旧）: `<シーン種別> scene.` の宣言で始まり、人物の外見 → 動作の推移 → 引用符 `"..."` で囲んだセリフ（そのまま音声合成される）→ 音・声の描写、の順。
 
 ### サンプル1（セリフ+効果音あり）
 ```
@@ -53,7 +56,7 @@ Wide range of colors, high Dynamic
 `workflow/` 配下のテンプレート自体にも実運用サンプルが残っている（こちらが最重要の参考元）:
 
 - 画像プロンプト: `workflow/image/krea2/krea2_turbo.json` のノード `30:19`（トリガーワード先頭 + スタイル宣言 + 被写体/ポーズ + 表情 + 照明/質感 + カメラ/品質語）
-- 動画プロンプト: `workflow/video/minimax-h3/*.json` の各プロンプトノード（スタイル → シーン概要 → `[0s-1.5s]` 形式のショットタイムライン → `Camera:` → `Audio:` → 禁止事項）
+- 動画プロンプト: MiniMax H3 の書き方は公式 base / ref ガイド（`VIDEO_PROMPT_WRITING_GUIDE_{base,ref}_en.md`）が契約。このアプリの Grok 向け要約は `prompts.MINIMAX_H3_*`。`workflow/video/minimax-h3/*.json` のプロンプトノードはグラフ上の投入先であり、`Camera:` / `Audio:` フッタや `[0s-1.5s]` スタンプは使わない
 
 
 ## Krea 2 公式プロンプティングガイド（krea-ai/krea-2 docs/prompting.md）
@@ -73,23 +76,11 @@ high-fashion editorial portrait of a young East Asian woman, short choppy platin
 extreme close-up of a woman's face partially obscured by tousled dark brown hair, soft parted lips, smooth skin on lower cheek and jawline, stray hair strands falling loosely across the nose, deep moody shadows enveloping the left frame, cinematic warm lighting, delicate highlights on the mouth, muted earthy color palette, sepia-toned warmth, intimate portrait photography, macro lens, shallow depth of field, distinct film grain texture, vintage atmospheric aesthetic
 ```
 
-## 汎用の動画プロンプトガイド要点（`prompts.VIDEO_SPEC` の元ネタ）
+## MiniMax H3 の動画プロンプト（Grok に渡す契約）
 
-- 1 つの流れる段落で書く（箇条書きにしない）。**4〜8 文**が目安
-- 含める要素: 被写体 / 動作 / 環境 / 照明 / カメラの動き / **音声**
-- 冒頭はジャンルに合った映画的な視覚描写から。ショットスケール（close-up 等）を明示
-- 照明・色調・質感・雰囲気でムードを確立
-- **セリフは引用符で囲み、必要なら言語とアクセントを指定**（例: in a british voice she says "…"）
-- 環境音・音楽・話し声・歌声も明示的に記述する
+- 公式 rewrite 契約は `prompts.MINIMAX_H3_*`。few-shot は `prompts.FEW_SHOT_H3`（公式フィールド / `[Shot N]` / `<d>`）
+- `prompts.VIDEO_SPEC` と talkvid の `[VISUAL]` / `[SPEECH]` 切替は pre-H3 経路。H3 ジョブには埋め込まない
 - 技術制約: 幅・高さの丸め単位とフレーム数の格子はワークフローごと（SPEC §3.1）
-
-## タグ形式プロンプト（comfy.org のワークフロー解説より）
-
-- タグ形式のプロンプト構造:
-  - `[VISUAL]` シーン・外見の描写
-  - `[SPEECH]` 実際に話すセリフ
-  - `[SOUNDS]` 話者のスタイル・環境音
-- 一方、上の作例はタグなしの自然文（セリフのみ引用符）。**両形式を試せるよう、アプリはテンプレート切替（自然文 / タグ形式）を持つ**
 
 ## 抽出方法メモ
 

@@ -150,6 +150,8 @@ function detail(overrides: Partial<StudioProjectDetail> = {}): StudioProjectDeta
     auto_translate: true,
     latent_continuity: false,
     quality: 'normal',
+    megapixels: null,
+    aspect_ratio: null,
     nsfw: false,
     created_at: '2026-01-01T00:00:00+00:00',
     updated_at: '2026-01-01T00:00:00+00:00',
@@ -205,6 +207,8 @@ function summary(current: StudioProjectDetail): StudioProjectSummary {
     auto_translate: current.auto_translate,
     latent_continuity: current.latent_continuity,
     quality: current.quality,
+    megapixels: current.megapixels,
+    aspect_ratio: current.aspect_ratio,
     nsfw: current.nsfw,
     created_at: current.created_at,
     updated_at: current.updated_at,
@@ -239,11 +243,14 @@ function shotPreview(
 }
 
 /** プロジェクトを 1 つ開いた状態まで進める。 */
-async function openProject(current = detail()) {
+async function openProject(
+  current = detail(),
+  props: { aspectRatios?: string[] } = {},
+) {
   mocked.listStudioProjects.mockResolvedValue([summary(current)])
   mocked.getStudioProject.mockResolvedValue(current)
   mocked.previewStudioShotPrompt.mockResolvedValue(shotPreview())
-  render(<StudioView progress={{}} />)
+  render(<StudioView progress={{}} {...props} />)
   fireEvent.click(await screen.findByText(current.name))
   await screen.findByRole('tab', { name: '概要' })
 }
@@ -878,6 +885,86 @@ describe('StudioView の品質セレクタ', () => {
   it('通常品質なら連続性が ON でも注記は出ない', async () => {
     await openProject(detail({ latent_continuity: true }))
     expect(screen.queryByText(/連続性が有効なため/)).toBeNull()
+  })
+})
+
+describe('StudioView の画質設定（アスペクト比 / メガピクセル）', () => {
+  const ratios = ['4:3 (Standard)', '16:9 (Widescreen)']
+
+  it('アスペクト比は生成フォームと同じ候補で、選ぶとプロジェクトへ保存される', async () => {
+    await openProject(detail(), { aspectRatios: ratios })
+    const select = screen.getByLabelText('画質') as HTMLSelectElement
+    expect(select.value).toBe('')
+    expect(Array.from(select.options).map((option) => option.value)).toEqual([
+      '',
+      ...ratios,
+    ])
+
+    mocked.updateStudioProject.mockResolvedValue({})
+    fireEvent.change(select, { target: { value: '16:9 (Widescreen)' } })
+    await waitFor(() =>
+      expect(mocked.updateStudioProject).toHaveBeenCalledWith('p1', {
+        aspect_ratio: '16:9 (Widescreen)',
+      }),
+    )
+  })
+
+  it('アスペクト比を「既定のまま」に戻すと null を送る', async () => {
+    await openProject(detail({ aspect_ratio: '16:9 (Widescreen)' }), {
+      aspectRatios: ratios,
+    })
+    expect((screen.getByLabelText('画質') as HTMLSelectElement).value).toBe(
+      '16:9 (Widescreen)',
+    )
+
+    mocked.updateStudioProject.mockResolvedValue({})
+    fireEvent.change(screen.getByLabelText('画質'), { target: { value: '' } })
+    await waitFor(() =>
+      expect(mocked.updateStudioProject).toHaveBeenCalledWith('p1', {
+        aspect_ratio: null,
+      }),
+    )
+  })
+
+  it('メガピクセルは確定（フォーカスを外す）まで保存しない', async () => {
+    await openProject()
+    const input = screen.getByLabelText('メガピクセル') as HTMLInputElement
+    expect(input.value).toBe('')
+
+    mocked.updateStudioProject.mockResolvedValue({})
+    fireEvent.change(input, { target: { value: '1' } })
+    expect(mocked.updateStudioProject).not.toHaveBeenCalled()
+
+    fireEvent.blur(input)
+    await waitFor(() =>
+      expect(mocked.updateStudioProject).toHaveBeenCalledWith('p1', {
+        megapixels: 1,
+      }),
+    )
+  })
+
+  it('保存済みのメガピクセルをそのまま映し、空欄にすると既定へ戻す', async () => {
+    await openProject(detail({ megapixels: 0.7 }))
+    const input = screen.getByLabelText('メガピクセル') as HTMLInputElement
+    expect(input.value).toBe('0.7')
+
+    mocked.updateStudioProject.mockResolvedValue({})
+    fireEvent.change(input, { target: { value: '' } })
+    fireEvent.blur(input)
+    await waitFor(() =>
+      expect(mocked.updateStudioProject).toHaveBeenCalledWith('p1', {
+        megapixels: null,
+      }),
+    )
+  })
+
+  it('0 以下のメガピクセルは捨てて保存済みの値に戻す', async () => {
+    await openProject(detail({ megapixels: 0.7 }))
+    const input = screen.getByLabelText('メガピクセル') as HTMLInputElement
+    fireEvent.change(input, { target: { value: '0' } })
+    fireEvent.blur(input)
+    expect(mocked.updateStudioProject).not.toHaveBeenCalled()
+    expect(input.value).toBe('0.7')
   })
 })
 

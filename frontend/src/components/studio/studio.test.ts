@@ -302,6 +302,8 @@ describe('projectSummary / renderingJobIds', () => {
     auto_translate: true,
     latent_continuity: false,
     quality: 'normal',
+    megapixels: null,
+    aspect_ratio: null,
     nsfw: false,
     created_at: '2026-01-01T00:00:00+00:00',
     updated_at: '2026-01-01T00:00:00+00:00',

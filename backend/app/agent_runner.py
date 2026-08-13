@@ -1062,6 +1062,8 @@ async def _studio_create_project(params: dict[str, Any]) -> tuple[str, str, dict
         bool(body.get("latent_continuity", False)),
         bool(body.get("nsfw", False)),
         str(body.get("quality") or studio.DEFAULT_QUALITY),
+        body.get("megapixels"),
+        body.get("aspect_ratio"),
         actor=STUDIO_ACTOR,
     )
     return (

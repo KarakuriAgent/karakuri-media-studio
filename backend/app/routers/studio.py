@@ -107,6 +107,8 @@ async def create_project(payload: StudioProjectCreate) -> StudioProject:
             payload.latent_continuity,
             payload.nsfw,
             payload.quality,
+            payload.megapixels,
+            payload.aspect_ratio,
         )
     except service.StudioError as exc:
         raise _bad_request(exc) from exc
@@ -139,7 +141,7 @@ async def update_project(
     project_id: str, payload: StudioProjectUpdate
 ) -> StudioProject:
     try:
-        project = await service.update_project(project_id, **payload.model_dump())
+        project = await service.update_project(project_id, **payload.changes())
     except service.StudioError as exc:
         raise _bad_request(exc) from exc
     if project is None:

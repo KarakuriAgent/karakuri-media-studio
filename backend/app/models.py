@@ -2368,6 +2368,13 @@ class StudioProject(BaseModel):
     #: 動画生成の品質（:data:`StudioVideoQuality`）。テイク生成のたびに、決まった
     #: 論理モードと掛け合わせてワークフローのバリアントへ解決される。
     quality: StudioVideoQuality = "normal"
+    #: 動画生成の画質＝メガピクセル（作品単位の既定）。``None`` = 指定しない
+    #: ＝ワークフロー宣言の ``default_megapixels`` / グローバル既定のまま。
+    #: Shot 個別の ``megapixels`` があればそちらが勝つ。
+    megapixels: float | None = None
+    #: 動画生成のアスペクト比（作品単位の既定。``"16:9 (Widescreen)"`` 等）。
+    #: ``None`` = 指定しない＝既定のまま。Shot 個別の指定があればそちらが勝つ。
+    aspect_ratio: str | None = None
     #: この作品から投入するジョブをすべて NSFW 扱いにする。OFF なら**非 NSFW で
     #: 固定**（投入時に明示するので、Grok の自動判定は走らない）。
     nsfw: bool = False
@@ -2400,12 +2407,21 @@ class StudioProjectCreate(BaseModel):
     latent_continuity: bool = False
     #: 動画生成の品質（:data:`StudioVideoQuality`。既定は素の 20 steps）
     quality: StudioVideoQuality = "normal"
+    #: 動画生成の画質＝メガピクセル（``None`` = ワークフローの既定のまま）
+    megapixels: float | None = None
+    #: 動画生成のアスペクト比（``None`` = 既定のまま）
+    aspect_ratio: str | None = None
     #: この作品から投入するジョブをすべて NSFW 扱いにする（OFF = 非 NSFW 固定）
     nsfw: bool = False
 
 
 class StudioProjectUpdate(BaseModel):
-    """PATCH /api/studio/projects/{id} body（指定した項目だけ変える）。"""
+    """PATCH /api/studio/projects/{id} body（指定した項目だけ変える）。
+
+    ``megapixels`` / ``aspect_ratio`` は **null を明示すると外れる**（送らな
+    ければ今の値のまま）。区別は ``model_fields_set`` で行う（Shot 側の
+    :class:`StudioShotUpdate` と同じ約束）。
+    """
 
     name: str | None = None
     code: str | None = None
@@ -2419,8 +2435,25 @@ class StudioProjectUpdate(BaseModel):
     latent_continuity: bool | None = None
     #: 動画生成の品質（:data:`StudioVideoQuality`）
     quality: StudioVideoQuality | None = None
+    #: 動画生成の画質＝メガピクセル（null を送ると既定へ戻る）
+    megapixels: float | None = None
+    #: 動画生成のアスペクト比（null を送ると既定へ戻る）
+    aspect_ratio: str | None = None
     #: この作品から投入するジョブをすべて NSFW 扱いにする（OFF = 非 NSFW 固定）
     nsfw: bool | None = None
+
+    #: null を明示できる項目（送られたときだけ NULL 書き込みを許す）
+    NULLABLE: ClassVar[tuple[str, ...]] = ("megapixels", "aspect_ratio")
+
+    def changes(self) -> dict[str, object]:
+        """書き換える項目だけを取り出す（未指定は入らない）。"""
+        return {
+            name: value
+            for name, value in self.model_dump().items()
+            if value is not None or (
+                name in self.NULLABLE and name in self.model_fields_set
+            )
+        }
 
 
 class StudioEpisode(BaseModel):
@@ -2689,7 +2722,7 @@ class StudioShot(BaseModel):
     #: 物語上の目的（このカットで何が進むのか）
     purpose: str = ""
     action: str = ""
-    #: 台詞（投入時に MiniMax H3 の `Audio:` 行へ組み込む）
+    #: 台詞（投入時に MiniMax H3 の `<d>[Language] …</d>` へ組み込む）
     dialogue: str = ""
     #: 効果音・環境音
     soundscape: str = ""
@@ -2860,7 +2893,7 @@ class StudioShotPreview(BaseModel):
     workflow: str | None = None
     #: そのワークフローになる理由（日本語）
     workflow_reason: str = ""
-    #: 実際に投入される本文（Camera: / Audio: 行と除外文まで込み）
+    #: 実際に投入される本文（公式フィールドと除外文まで込み）
     prompt: str = ""
     #: 参照として添付される素材（r2v のときだけ）
     references: list[StudioPromptReference] = Field(default_factory=list)

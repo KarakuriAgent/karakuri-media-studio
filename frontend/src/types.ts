@@ -990,6 +990,16 @@ export interface StudioProject {
   /** 動画生成の品質（テイク生成のたびにモードと掛け合わせて解決される）。 */
   quality: StudioVideoQuality
   /**
+   * 動画生成の画質（メガピクセル）の作品既定。`null` = 指定しない＝ワークフローの
+   * 既定のまま。Shot 個別の `megapixels` があればそちらが勝つ。
+   */
+  megapixels: number | null
+  /**
+   * 動画生成のアスペクト比の作品既定（`'16:9 (Widescreen)'` 等）。`null` = 既定の
+   * まま。Shot 個別の `aspect_ratio` があればそちらが勝つ。
+   */
+  aspect_ratio: string | null
+  /**
    * この作品から投入するジョブをすべて NSFW 扱いにする。OFF なら**非 NSFW で
    * 固定**（投入時に明示するので、Grok の自動判定は走らない）。
    */
@@ -1021,6 +1031,10 @@ export interface StudioProjectCreate {
   latent_continuity?: boolean
   /** 動画生成の品質（既定は素の 20 steps = `normal`）。 */
   quality?: StudioVideoQuality
+  /** 動画生成の画質（メガピクセル）の作品既定（`null` = ワークフローの既定）。 */
+  megapixels?: number | null
+  /** 動画生成のアスペクト比の作品既定（`null` = 既定のまま）。 */
+  aspect_ratio?: string | null
   /** この作品から投入するジョブをすべて NSFW 扱いにする（OFF = 非 NSFW 固定）。 */
   nsfw?: boolean
 }
@@ -1040,6 +1054,10 @@ export interface StudioProjectUpdate {
   latent_continuity?: boolean
   /** 動画生成の品質。 */
   quality?: StudioVideoQuality
+  /** 動画生成の画質（メガピクセル）の作品既定（`null` を送ると既定へ戻る）。 */
+  megapixels?: number | null
+  /** 動画生成のアスペクト比の作品既定（`null` を送ると既定へ戻る）。 */
+  aspect_ratio?: string | null
   /** この作品から投入するジョブをすべて NSFW 扱いにする（OFF = 非 NSFW 固定）。 */
   nsfw?: boolean
 }
@@ -1183,7 +1201,7 @@ export interface StudioShot {
   /** 物語上の目的（このカットで何が進むのか）。 */
   purpose: string
   action: string
-  /** 台詞（投入時に MiniMax H3 の `Audio:` 行へ組み込まれる）。 */
+  /** 台詞（投入時に MiniMax H3 の `<d>[Language] …</d>` へ組み込まれる）。 */
   dialogue: string
   /** 効果音・環境音。 */
   soundscape: string
@@ -1318,7 +1336,7 @@ export interface StudioShotPreview {
   workflow: string | null
   /** そのワークフローになる理由（日本語）。 */
   workflow_reason: string
-  /** 実際に投入される本文（Camera: / Audio: 行と除外文まで込み）。 */
+  /** 実際に投入される本文（公式フィールドと除外文まで込み）。 */
   prompt: string
   references: StudioPromptReference[]
   /** 開始フレームに使われるファイル（i2v のときだけ）。 */

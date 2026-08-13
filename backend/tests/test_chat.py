@@ -366,9 +366,39 @@ def test_image_only_has_no_workflow_section(env):
 
 
 def test_tagged_template_is_selected(env):
+    """H3 は talkvid タグを埋め込まない。公式フィールドだけが動画契約。"""
     system = start(env, prompt_template="tagged")["messages"][0]["content"]
-    assert "[VISUAL]" in system and "[SPEECH]" in system
+    assert "[VISUAL]" not in system and "[SPEECH]" not in system
     assert "Prompt template: NATURAL" not in system
+    assert "VIDEO PROMPT SPEC — MiniMax H3" in system
+    assert "integrated_multimodal_description" in system
+    assert "[Shot 1]" in system
+    assert "<d>" in system
+
+
+def test_default_video_system_prompt_is_official_h3(env):
+    i2v = start(env, mode="i2v", video_workflow="minimax_h3_i2v")["messages"][0][
+        "content"
+    ]
+    t2v = start(env, mode="i2v", video_workflow="minimax_h3_t2v")["messages"][0][
+        "content"
+    ]
+    for system in (i2v, t2v):
+        assert "VIDEO PROMPT SPEC — MiniMax H3" in system
+        assert "integrated_multimodal_description" in system
+        assert "FEW-SHOT EXAMPLES — MiniMax H3" in system
+        assert "follow the FEW-SHOT video examples closely" not in system
+        assert "Starting from the given first frame" not in system
+        assert "one continuous shot (no cuts" not in system
+
+
+def test_image_only_and_audio_keep_h3_guides_out(env):
+    image = start(env, mode="image_only")["messages"][0]["content"]
+    audio = start(env, mode="audio")["messages"][0]["content"]
+    assert "# VIDEO PROMPT SPEC" not in image
+    assert "# VIDEO PROMPT SPEC" not in audio
+    assert "FEW-SHOT EXAMPLES — MiniMax H3" not in image
+    assert "FEW-SHOT EXAMPLES — MiniMax H3" not in audio
 
 
 # --------------------------------------------------------------------------
@@ -640,7 +670,7 @@ def test_a_video_only_session_embeds_no_image_spec():
         ChatSessionCreate(mode="i2v", image_workflow="anima")
     )
     assert "IMAGE PROMPT SPEC" not in system
-    assert "FEW-SHOT EXAMPLES — video" in system
+    assert "FEW-SHOT EXAMPLES — MiniMax H3" in system
 
 
 # --------------------------------------------------------------------------

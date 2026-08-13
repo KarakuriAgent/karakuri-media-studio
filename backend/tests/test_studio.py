@@ -12,6 +12,7 @@ from fastapi.testclient import TestClient
 
 from app import comfy, db, grok, jobs, nsfw, studio, workflows
 from app.main import app
+from app.models import StudioShot
 from app.routers import assets as assets_router
 
 
@@ -426,10 +427,14 @@ def test_a_shot_without_material_renders_as_t2v(env):
     assert payload.duration == 5
     assert payload.source_image is None
     assert payload.reference_images == []
-    # 台詞・SE・BGM・カメラが H3 の書式で本文に足される
-    assert "Camera: handheld, low angle" in payload.video_prompt
-    assert 'Audio: rain on the awning; music: slow jazz; spoken: "いらっしゃい"' \
-        in payload.video_prompt
+    # 台詞・SE・BGM・カメラが公式 H3 フィールドで本文に足される
+    assert payload.video_prompt.startswith("integrated_multimodal_description:")
+    assert "The camera handheld, low angle." in payload.video_prompt
+    assert "<d>[Japanese] いらっしゃい</d>" in payload.video_prompt
+    assert "overall_soundscape: rain on the awning" in payload.video_prompt
+    assert "non_diegetic_music: slow jazz" in payload.video_prompt
+    assert "Camera:" not in payload.video_prompt
+    assert "Audio:" not in payload.video_prompt
     assert payload.video_prompt.endswith(studio.EXCLUSION_SENTENCE)
 
 
@@ -449,7 +454,7 @@ def test_mentions_become_reference_tags_and_pick_r2v(env):
     assert payload.video_workflow == "minimax_h3_r2v"
     # `<Audio j>` は参照動画のサウンドトラックが先に番号を取る（H3 の決まり）
     assert payload.video_prompt.startswith(
-        "<Picture 1> moves like <Video 1> and sounds like <Audio 2>."
+        "detailed_description: <Picture 1> moves like <Video 1> and sounds like <Audio 2>."
     )
     assert [p.rsplit("/", 1)[-1].split("_")[0] for p in payload.reference_images] \
         == ["Neko"]
@@ -464,7 +469,9 @@ def test_the_same_asset_mentioned_twice_keeps_one_slot(env):
     assert render(env, shot["id"]).status_code == 201
 
     payload = env.created[-1]
-    assert payload.video_prompt.startswith("<Picture 1> sits, then <Picture 1> jumps.")
+    assert payload.video_prompt.startswith(
+        "detailed_description: <Picture 1> sits, then <Picture 1> jumps."
+    )
     assert len(payload.reference_images) == 1
 
 
@@ -485,7 +492,9 @@ def test_a_longer_name_wins_over_its_prefix(env):
     shot = make_shot(env, project["id"], prompt="@Akira greets @Aki.")
     assert render(env, shot["id"]).status_code == 201
     payload = env.created[-1]
-    assert payload.video_prompt.startswith("<Picture 1> greets <Picture 2>.")
+    assert payload.video_prompt.startswith(
+        "detailed_description: <Picture 1> greets <Picture 2>."
+    )
 
 
 def test_a_braced_mention_is_resolved(env):
@@ -493,7 +502,9 @@ def test_a_braced_mention_is_resolved(env):
     make_asset(env, project["id"], "Ramen Shop", kind="image")
     shot = make_shot(env, project["id"], prompt="Inside @{Ramen Shop}, steam rises.")
     assert render(env, shot["id"]).status_code == 201
-    assert env.created[-1].video_prompt.startswith("Inside <Picture 1>, steam rises.")
+    assert env.created[-1].video_prompt.startswith(
+        "detailed_description: Inside <Picture 1>, steam rises."
+    )
 
 
 def test_an_empty_prompt_is_a_400(env):
@@ -587,7 +598,12 @@ def test_carry_over_renders_mentions_as_descriptions(env):
     assert render(env, second["id"]).status_code == 201
     payload = env.created[-1]
     assert payload.video_workflow == "minimax_h3_i2v"
-    assert payload.video_prompt.startswith("a calico cat sits down.")
+    assert payload.video_prompt.startswith(
+        "For the target video, at 0.00 seconds into the target video, "
+        "<Picture 1> (from [Shot 1]) is fully referenced."
+    )
+    assert "integrated_multimodal_description: a calico cat sits down." \
+        in payload.video_prompt
     assert payload.reference_images == []
 
 
@@ -1014,6 +1030,135 @@ def test_a_forced_workflow_still_gets_the_quality(env, monkeypatch):
 
 
 # --------------------------------------------------------------------------
+# 動画生成の画質（プロジェクトの megapixels / aspect_ratio）
+# --------------------------------------------------------------------------
+#
+# 品質と違ってワークフローの選択には効かず、投入時の megapixels / aspect_ratio
+# だけを決める。効き方は **Shot 個別 > プロジェクト > グローバル既定** の順で、
+# 2 つはそれぞれ独立に解決される。
+
+def test_the_project_quality_settings_are_unset_by_default(env):
+    project = make_project(env)
+    assert project["megapixels"] is None
+    assert project["aspect_ratio"] is None
+    listed = env.client.get("/api/studio/projects").json()[0]
+    assert listed["megapixels"] is None
+    assert listed["aspect_ratio"] is None
+
+
+def test_the_project_quality_settings_are_saved(env):
+    project = make_project(env)
+    updated = env.client.patch(
+        f"/api/studio/projects/{project['id']}",
+        json={"megapixels": 1.0, "aspect_ratio": "16:9 (Widescreen)"},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["megapixels"] == 1.0
+    assert updated.json()["aspect_ratio"] == "16:9 (Widescreen)"
+    saved = detail(env, project["id"])
+    assert saved["megapixels"] == 1.0
+    assert saved["aspect_ratio"] == "16:9 (Widescreen)"
+
+
+def test_a_null_puts_the_project_quality_settings_back_to_the_default(env):
+    """null を**明示**したときだけ既定へ戻る（送らなければ今の値のまま）。"""
+    project = make_project(
+        env, megapixels=1.0, aspect_ratio="16:9 (Widescreen)"
+    )
+    kept = env.client.patch(
+        f"/api/studio/projects/{project['id']}", json={"synopsis": "夜の話"}
+    )
+    assert kept.json()["megapixels"] == 1.0
+    assert kept.json()["aspect_ratio"] == "16:9 (Widescreen)"
+
+    cleared = env.client.patch(
+        f"/api/studio/projects/{project['id']}",
+        json={"megapixels": None, "aspect_ratio": None},
+    )
+    assert cleared.status_code == 200
+    assert cleared.json()["megapixels"] is None
+    assert cleared.json()["aspect_ratio"] is None
+
+
+def test_a_project_without_the_quality_columns_reads_as_unset(env):
+    """列を持たない（この設定より前に作られた）既存 DB は「未指定」として読む。"""
+    import sqlite3
+
+    project = make_project(env, megapixels=1.0, aspect_ratio="16:9 (Widescreen)")
+    with sqlite3.connect(db.DB_PATH) as conn:
+        conn.execute(
+            "UPDATE studio_projects SET megapixels = 0, aspect_ratio = ''"
+            " WHERE id = ?",
+            (project["id"],),
+        )
+    saved = detail(env, project["id"])
+    assert saved["megapixels"] is None
+    assert saved["aspect_ratio"] is None
+
+
+def test_the_project_megapixels_reach_the_job(env):
+    project = make_project(env, megapixels=1.0)
+    shot = make_shot(env, project["id"])
+    assert render(env, shot["id"]).status_code == 201
+    assert env.created[-1].megapixels == 1.0
+
+
+def test_an_unset_project_megapixels_leaves_the_global_default(env):
+    """未指定なら何も載せない = JobCreate の既定 0.4 のまま。"""
+    project = make_project(env)
+    shot = make_shot(env, project["id"])
+    assert render(env, shot["id"]).status_code == 201
+    assert env.created[-1].megapixels == 0.4
+
+
+def test_the_project_aspect_ratio_reaches_the_job(env):
+    project = make_project(env, aspect_ratio="9:16 (Portrait Widescreen)")
+    shot = make_shot(env, project["id"])
+    assert render(env, shot["id"]).status_code == 201
+    assert env.created[-1].aspect_ratio == "9:16 (Portrait Widescreen)"
+
+
+def test_the_shot_settings_win_over_the_project_ones(env):
+    project = make_project(env, megapixels=1.0, aspect_ratio="1:1 (Square)")
+    shot = make_shot(
+        env,
+        project["id"],
+        megapixels=0.5,
+        aspect_ratio="16:9 (Widescreen)",
+    )
+    assert render(env, shot["id"]).status_code == 201
+    payload = env.created[-1]
+    assert payload.megapixels == 0.5
+    assert payload.aspect_ratio == "16:9 (Widescreen)"
+
+
+def test_the_two_project_settings_resolve_independently(env):
+    """Shot が片方だけ言ったなら、もう片方はプロジェクトの値が残る。"""
+    project = make_project(env, megapixels=1.0, aspect_ratio="1:1 (Square)")
+    shot = make_shot(env, project["id"], aspect_ratio="16:9 (Widescreen)")
+    assert render(env, shot["id"]).status_code == 201
+    payload = env.created[-1]
+    assert payload.aspect_ratio == "16:9 (Widescreen)"
+    assert payload.megapixels == 1.0
+
+
+def test_the_project_megapixels_are_not_clamped_to_the_workflow_default(env):
+    """1.0 は MiniMax H3 の宣言（0.4MP）に切り下げられずに投入される。
+
+    切り下げ（``app.jobs._fitted_megapixels``）が掛かるのは、別のワークフローから
+    引き継いだ params を付け替えるとき（再実行 / 続きから）だけ。スタジオの投入は
+    ``JobCreate`` を直に組むので、Shot 個別の指定と同じくそのまま渡る。
+    """
+    from app.workflows import get_video_spec
+
+    assert get_video_spec("minimax_h3_t2v").default_megapixels == 0.4
+    project = make_project(env, megapixels=1.0)
+    shot = make_shot(env, project["id"])
+    assert render(env, shot["id"]).status_code == 201
+    assert env.created[-1].megapixels == 1.0
+
+
+# --------------------------------------------------------------------------
 # Take の採用・不採用
 # --------------------------------------------------------------------------
 
@@ -1243,7 +1388,9 @@ def test_the_workflow_can_be_forced_to_t2v_even_with_material(env):
     payload = env.created[-1]
     assert payload.video_workflow == "minimax_h3_t2v"
     assert payload.reference_images == []
-    assert payload.video_prompt.startswith("a calico cat sits.")
+    assert payload.video_prompt.startswith(
+        "integrated_multimodal_description: a calico cat sits."
+    )
 
 
 def test_forcing_r2v_without_material_is_a_400(env):
@@ -1623,7 +1770,9 @@ def test_a_material_without_a_file_is_written_out_as_text(env):
     payload = env.created[-1]
     # 添付する実体が無いので r2v にはならず、説明文が本文に入る
     assert payload.video_workflow == "minimax_h3_t2v"
-    assert payload.video_prompt.startswith("a calico cat sits down.")
+    assert payload.video_prompt.startswith(
+        "integrated_multimodal_description: a calico cat sits down."
+    )
     assert payload.reference_images == []
 
 
@@ -1636,7 +1785,9 @@ def test_a_file_backed_material_still_wins_r2v_next_to_a_metadata_one(env):
 
     payload = env.created[-1]
     assert payload.video_workflow == "minimax_h3_r2v"
-    assert payload.video_prompt.startswith("<Picture 1> sits in a ramen stall.")
+    assert payload.video_prompt.startswith(
+        "detailed_description: <Picture 1> sits in a ramen stall."
+    )
     assert len(payload.reference_images) == 1
 
 
@@ -1654,7 +1805,10 @@ def test_a_material_without_a_file_still_needs_a_name(env):
 
 def test_a_japanese_prompt_is_translated_before_it_is_submitted(env):
     env.llm.error = None
-    env.llm.reply = 'A cat walks into <Picture 1>.\nAudio: spoken: "いらっしゃい"'
+    env.llm.reply = (
+        "detailed_description: A cat walks into <Picture 1>. "
+        "(S1) says: <d>[Japanese] いらっしゃい</d>"
+    )
     project = make_project(env)
     make_asset(env, project["id"], "Yatai", kind="image")
     shot = make_shot(
@@ -1670,11 +1824,17 @@ def test_a_japanese_prompt_is_translated_before_it_is_submitted(env):
     assert "<Picture 1>" in instruction
     assert "reference tag" in instruction
     assert "original language" in instruction
-    assert "shot-by-shot timeline" in instruction
+    assert "<d>" in instruction
+    assert "detailed_description" in instruction
+    assert "complete official" in instruction
+    assert "Do not invent dialogue" in instruction
 
     body = take.json()
     assert body["prompt"] == env.llm.reply
-    assert body["source_prompt"].startswith("猫が <Picture 1> に入ってくる。")
+    assert body["source_prompt"].startswith(
+        "detailed_description: 猫が <Picture 1> に入ってくる。"
+    )
+    assert "<d>[Japanese] いらっしゃい</d>" in body["source_prompt"]
     assert body["warning"] == ""
 
 
@@ -1686,7 +1846,9 @@ def test_an_english_prompt_is_submitted_as_is(env):
     take = render(env, shot["id"]).json()
     assert env.llm.prompts == []
     assert take["source_prompt"] == ""
-    assert env.created[-1].video_prompt.startswith("A cat walks in.")
+    assert env.created[-1].video_prompt.startswith(
+        "integrated_multimodal_description: A cat walks in."
+    )
 
 
 def test_translation_can_be_turned_off_per_project(env):
@@ -1696,7 +1858,9 @@ def test_translation_can_be_turned_off_per_project(env):
     shot = make_shot(env, project["id"], prompt="猫が入ってくる。")
     assert render(env, shot["id"]).status_code == 201
     assert env.llm.prompts == []
-    assert env.created[-1].video_prompt.startswith("猫が入ってくる。")
+    assert env.created[-1].video_prompt.startswith(
+        "integrated_multimodal_description: 猫が入ってくる。"
+    )
 
 
 def test_a_broken_grok_warns_but_still_submits_the_original(env):
@@ -1707,7 +1871,9 @@ def test_a_broken_grok_warns_but_still_submits_the_original(env):
     take = response.json()
     assert "原文のまま投入" in take["warning"]
     assert take["source_prompt"] == ""
-    assert env.created[-1].video_prompt.startswith("猫が入ってくる。")
+    assert env.created[-1].video_prompt.startswith(
+        "integrated_multimodal_description: 猫が入ってくる。"
+    )
 
 
 def test_a_fenced_answer_is_unwrapped(env):
@@ -1802,13 +1968,15 @@ def test_the_preview_shows_the_whole_assembled_prompt(env):
     assert body["error"] == ""
     assert body["references"] == []
     assert body["start_frame"] is None
-    lines = body["prompt"].splitlines()
-    assert lines[0] == "A cat walks in."
-    assert lines[1] == "Camera: slow dolly in"
-    assert "rain on the roof" in lines[2]
-    assert "music: lonely piano" in lines[2]
-    assert 'spoken: "Good evening."' in lines[2]
-    assert lines[3] == studio.EXCLUSION_SENTENCE
+    prompt = body["prompt"]
+    assert prompt.startswith("integrated_multimodal_description: A cat walks in.")
+    assert "The camera slow dolly in." in prompt
+    assert "<d>[English] Good evening.</d>" in prompt
+    assert "overall_soundscape: rain on the roof" in prompt
+    assert "non_diegetic_music: lonely piano" in prompt
+    assert "Camera:" not in prompt
+    assert "Audio:" not in prompt
+    assert prompt.endswith(studio.EXCLUSION_SENTENCE)
 
 
 def test_the_preview_lists_the_attached_references(env):
@@ -1819,7 +1987,9 @@ def test_the_preview_lists_the_attached_references(env):
 
     body = preview(env, shot["id"])
     assert body["workflow"] == "minimax_h3_r2v"
-    assert body["prompt"].startswith("<Picture 1> meows, <Audio 1> answers.")
+    assert body["prompt"].startswith(
+        "detailed_description: <Picture 1> meows, <Audio 1> answers."
+    )
     assert [(row["name"], row["kind"], row["tag"]) for row in body["references"]] == [
         ("Neko", "image", "<Picture 1>"),
         ("Koe", "audio", "<Audio 1>"),
@@ -1845,7 +2015,11 @@ def test_the_preview_shows_the_carried_over_start_frame(env):
     assert body["workflow"] == "minimax_h3_i2v"
     assert body["start_frame"].endswith(".png")
     # i2v は参照を取れないので、`@名前` は説明文になる（生成と同じ）
-    assert body["prompt"].startswith("a calico cat sits down.")
+    assert body["prompt"].startswith(
+        "For the target video, at 0.00 seconds into the target video, "
+        "<Picture 1> (from [Shot 1]) is fully referenced."
+    )
+    assert "integrated_multimodal_description: a calico cat sits down." in body["prompt"]
     assert body["references"] == []
 
 
@@ -1883,7 +2057,9 @@ def test_the_preview_says_the_prompt_will_be_translated_but_does_not_call_grok(e
     body = preview(env, shot["id"])
     assert body["auto_translate"] is True
     assert body["will_translate"] is True
-    assert body["prompt"].startswith("猫が歩いてくる。")  # 訳す前の姿
+    assert body["prompt"].startswith(
+        "integrated_multimodal_description: 猫が歩いてくる。"
+    )  # 訳す前の姿
     assert env.llm.prompts == []
 
 
@@ -1925,3 +2101,107 @@ def test_the_preview_matches_what_is_actually_submitted(env):
 
 def test_the_preview_of_an_unknown_shot_is_a_404(env):
     assert env.client.get("/api/studio/shots/nope/prompt-preview").status_code == 404
+
+
+# --------------------------------------------------------------------------
+# compose_prompt（公式 MiniMax H3 契約）
+# --------------------------------------------------------------------------
+
+def _compose_shot(**overrides) -> StudioShot:
+    fields = {
+        "id": "s1",
+        "project_id": "p1",
+        "prompt": "A cat walks in.",
+        "created_at": "2026-01-01T00:00:00+00:00",
+        "updated_at": "2026-01-01T00:00:00+00:00",
+    }
+    fields.update(overrides)
+    return StudioShot(**fields)
+
+
+def test_compose_prompt_wraps_a_bare_t2v_body():
+    shot = _compose_shot(
+        camera="handheld, low angle",
+        dialogue="いらっしゃい",
+        soundscape="rain on the awning",
+        bgm="slow jazz",
+    )
+    text = studio.compose_prompt(
+        shot, "A cat walks into a ramen shop.", workflow="minimax_h3_t2v"
+    )
+    assert text.startswith("integrated_multimodal_description:")
+    assert "The camera handheld, low angle." in text
+    assert "(S1) says: <d>[Japanese] いらっしゃい</d>" in text
+    assert "overall_soundscape: rain on the awning" in text
+    assert "non_diegetic_music: slow jazz" in text
+    assert text.endswith(studio.EXCLUSION_SENTENCE)
+    assert "Camera:" not in text
+    assert "Audio:" not in text
+
+
+def test_compose_prompt_does_not_double_wrap_official_fields():
+    body = (
+        "integrated_multimodal_description: [Shot 1] Live-action, cinematic, "
+        "a medium shot frames a cat in a doorway."
+    )
+    shot = _compose_shot(soundscape="rain on the awning")
+    text = studio.compose_prompt(shot, body, workflow="minimax_h3_t2v")
+    assert text.count("integrated_multimodal_description:") == 1
+    assert text.startswith(body)
+    assert "overall_soundscape: rain on the awning" in text
+    assert "non_diegetic_music: N/A" in text
+
+
+def test_compose_prompt_i2v_alignment_and_r2v_wrap():
+    shot = _compose_shot()
+    i2v = studio.compose_prompt(shot, "The cat sits.", workflow="minimax_h3_i2v")
+    assert i2v.startswith(
+        "For the target video, at 0.00 seconds into the target video, "
+        "<Picture 1> (from [Shot 1]) is fully referenced."
+    )
+    assert "integrated_multimodal_description: The cat sits." in i2v
+
+    turbo = studio.compose_prompt(
+        shot, "The cat sits.", workflow="minimax_h3_i2v_turbo"
+    )
+    assert turbo.startswith(
+        "For the target video, at 0.00 seconds into the target video, "
+        "<Picture 1> (from [Shot 1]) is fully referenced."
+    )
+
+    r2v = studio.compose_prompt(
+        shot, "<Picture 1> walks in.", workflow="minimax_h3_r2v"
+    )
+    assert r2v.startswith("detailed_description: <Picture 1> walks in.")
+    assert "For the target video" not in r2v
+
+    context = studio.compose_prompt(
+        shot, "<Picture 1> walks in.", workflow="minimax_h3_r2v_context"
+    )
+    assert context.startswith("detailed_description: <Picture 1> walks in.")
+
+
+def test_compose_prompt_strips_wrapping_quotes_and_skips_existing_camera():
+    shot = _compose_shot(
+        camera="Push In at slow speed",
+        dialogue='"いらっしゃい"',
+    )
+    body = (
+        "integrated_multimodal_description: [Shot 1] Live-action, cinematic, "
+        "a medium shot frames the doorway. The camera holds a static shot."
+    )
+    text = studio.compose_prompt(shot, body, workflow="minimax_h3_t2v")
+    assert "The camera Push In" not in text
+    assert "<d>[Japanese] いらっしゃい</d>" in text
+    assert '"いらっしゃい"' not in text
+
+
+def test_compose_prompt_keeps_camera_when_body_only_cuts():
+    shot = _compose_shot(camera="Push In at slow speed")
+    body = (
+        "integrated_multimodal_description: [Shot 1] Live-action, cinematic, "
+        "a medium shot frames the doorway. [Shot 2] At 00:03.500, the camera "
+        "cuts to a close-up of the counter."
+    )
+    text = studio.compose_prompt(shot, body, workflow="minimax_h3_t2v")
+    assert "The camera Push In at slow speed." in text

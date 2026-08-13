@@ -1025,24 +1025,32 @@ _MINIMAX_H3_R2V_NOTES = (
 )
 
 
-#: 3 つで共通のプロンプトの書き方（音声込み・1 ブロック・禁止事項を明記）。
-#: 出典: ComfyUI 公式テンプレートの MarkdownNote と作例プロンプト、
-#: https://docs.comfy.org/tutorials/video/minimax/minimax-h3 、
-#: https://www.minimax.io/blog/minimax-h3
+#: 3 つで共通のプロンプトの書き方（公式 rewrite 契約・禁止事項を明記）。
+#: 一次: MiniMax H3 VIDEO_PROMPT_WRITING_GUIDE_{base,ref}_en.md と
+#: skills/h3-prompt-writing。二次: ComfyUI テンプレート / docs.comfy.org。
 _MINIMAX_H3_PROMPT_CORE = (
-    " Write **one single English block** (no headings, no JSON) in this order:"
-    " (1) style / look — medium, lens, grain, grade; (2) one sentence of scene"
-    " overview; (3) a shot-by-shot timeline with explicit stamps"
-    " (`[0s-1.5s] Shot 1: …`, `[1.5s-3s] Shot 2: …`) whose last stamp reaches"
-    " the job's `duration`; (4) a `Camera:` line — angle per shot, hard cuts or"
-    " one continuous move; (5) an `Audio:` line — H3 generates **native stereo"
-    " sound in the same pass**, so name the ambience, the sound effects and the"
-    " music, and put spoken lines in double quotes with the speaker and the"
-    " delivery. A prompt without an Audio line throws away half the model."
-    " There is **no negative prompt**: finish with the exclusions written out"
-    " as a sentence (`No text, subtitles, logos or watermarks, no cartoon"
-    " rendering.`) — burnt-in captions appear otherwise whenever dialogue is"
-    " spoken."
+    " Write **one English document** in official MiniMax H3 fields — never a"
+    " `Camera:` / `Audio:` footer and never `[0s-1.5s] Shot 1:` stamps."
+    " Base (t2v / i2v): optional alignment first line (I2VA / FL2VA / L2VA"
+    " only), then `integrated_multimodal_description:` /"
+    " `overall_soundscape:` / `non_diegetic_music:`. Ref2VA:"
+    " `subject_definitions:` / `summary:` / `retention_analysis:` /"
+    " `detailed_description:` / `overall_soundscape:` /"
+    " `non_diegetic_music:`. `[Shot 1]` has no timestamp; later shots are"
+    " `[Shot N] At MM:SS.mmm, the camera cuts to …` with strictly increasing"
+    " times inside `duration`. Camera motion is a natural English clause"
+    " inside the shot (Zoom In/Out, Push In / Pull Out, Pan Left/Right, Truck"
+    " Left/Right, Tilt Up/Down, Pedestal Up/Down, Arc Shot, Tracking Shot,"
+    " Static Shot, Shake Slightly/Strongly, POV, Roll Clockwise/"
+    " Counterclockwise; optional `with small/large amplitude`,"
+    " `at slow/fast speed`). Speakers use stable `(S1)` / `(S2)`; spoken words"
+    " go in `<d>[Language] …</d>` (identifying phrase + ID + delivery outside"
+    " `<d>`; do not translate the words). `overall_soundscape` is 1–4 sentences"
+    " of ambience and physical / non-verbal sound (not dialogue)."
+    " `non_diegetic_music` is 1–3 sentences of instrumentation / tempo /"
+    " dynamics, or `N/A`. There is **no negative prompt**: finish with"
+    " `No text, subtitles, logos or watermarks.` — burnt-in captions appear"
+    " otherwise whenever dialogue is spoken."
 )
 
 MINIMAX_H3_T2V = WorkflowSpec(
@@ -1062,9 +1070,10 @@ MINIMAX_H3_T2V = WorkflowSpec(
         "短辺 768px 前後（最大 768x1344）が想定解像度。"
     ),
     prompt_hint=(
-        "No start frame exists: the prompt has to establish the subject, the"
-        " set, the wardrobe and the framing as well as the motion and the"
-        " sound." + _MINIMAX_H3_PROMPT_CORE
+        "No start frame exists (T2VA): the prompt has to establish the"
+        " subject, the set, the wardrobe and the framing as well as the motion"
+        " and the sound. Start directly with the three official fields — no"
+        " alignment line." + _MINIMAX_H3_PROMPT_CORE
     ),
     accepts_start_image=False,
     resolution_multiple=32,
@@ -1103,14 +1112,18 @@ MINIMAX_H3_I2V = WorkflowSpec(
         "audio）、2 枚の間をどうつなぐかをプロンプトで書く。24fps・尺は約 1〜15 秒。"
     ),
     prompt_hint=(
-        "The start frame is frame 0 and supplies the subject, the set and the"
-        " lighting — never contradict it; you may point at it in the text as"
-        " `<Picture 1>` (e.g. `the mouse from <Picture 1> in its original"
-        " scene`). Say that the clip opens exactly on that picture, then spend"
-        " the block on what changes. With an `end_image` as well the clip has"
-        " to **land exactly on that last frame**, so describe the *transition*"
-        " — the move, the turn, the light change that gets from the first"
-        " picture to the last one — instead of describing either picture."
+        "I2VA: the start frame is Picture 1 and **is** frame 0 of Shot 1 —"
+        " never contradict it. Open with"
+        " `For the target video, at 0.00 seconds into the target video,"
+        " <Picture 1> (from [Shot 1]) is fully referenced.` then a blank line,"
+        " then the three official fields. Path: first-frame anchor → action"
+        " onset → development → result. With an `end_image` as well this is"
+        " FL2VA: prefer a single shot and describe the *path* between Picture 1"
+        " and Picture 2 (alignment:"
+        " `How the reference pictures align with the target video — Picture 1"
+        " (from Shot 1) aligns with the 0.00-second mark of the target video;"
+        " Picture 2 (from Shot N) aligns with the S.SS-second mark of the"
+        " target video.`)."
         + _MINIMAX_H3_PROMPT_CORE
     ),
     accepts_start_image=True,
@@ -1162,19 +1175,21 @@ MINIMAX_H3_R2V = WorkflowSpec(
         "24fps・尺は約 1〜15 秒。"
     ),
     prompt_hint=(
-        "The reference material carries identity, motion and sound, not the"
-        " framing: refer to it **by tag, per type, in the order it was given**"
-        " — `<Picture 1>`, `<Picture 2>`, … for `reference_images`,"
+        "Ref2VA: write the six official sections in order"
+        " (`subject_definitions` / `summary` / `retention_analysis` /"
+        " `detailed_description` / `overall_soundscape` /"
+        " `non_diegetic_music`). Refer to the material **by tag, per type, in"
+        " the order it was given** — `<Picture 1>`, … for `reference_images`,"
         " `<Video 1>`, … for `reference_videos`, `<Audio 1>`, … for audio —"
-        " and say what each one must keep (face, wardrobe, colour of the prop,"
-        " the rhythm of the move, the voice). **Every reference video is passed"
-        " together with its own soundtrack, and soundtracks share the"
-        " `<Audio j>` numbering with `reference_audios`, taking the low numbers"
-        " first**: with 2 reference videos and 1 reference audio, `<Audio 1>` /"
-        " `<Audio 2>` are those videos' soundtracks and `<Audio 3>` is the"
-        " standalone track. Everything else — scene, blocking, camera, cutting"
-        " — comes from the prompt, so do not re-describe the material, and"
-        " never use a tag with nothing behind it."
+        " and say what each one must keep. `<Subject N>` is reusable visible"
+        " content; a standalone `<Picture N>` is only a frame / storyboard"
+        " anchor. **Every reference video is passed together with its own"
+        " soundtrack, and soundtracks share the `<Audio j>` numbering with"
+        " `reference_audios`, taking the low numbers first**: with 2 reference"
+        " videos and 1 reference audio, `<Audio 1>` / `<Audio 2>` are those"
+        " videos' soundtracks and `<Audio 3>` is the standalone track. Do not"
+        " re-describe a reference as if it were the shot; name which reference"
+        " drives which part, and never use a tag with nothing behind it."
         + _MINIMAX_H3_PROMPT_CORE
     ),
     # 参照モードは「1 枚目の絵」ではないので、image -> video 連鎖の受け口には

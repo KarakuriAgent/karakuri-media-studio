@@ -756,6 +756,14 @@ def test_system_prompt_carries_the_workflow_catalog(env):
     assert f"selects `{DEFAULT_VIDEO_WORKFLOW}`" in system
 
 
+def test_system_prompt_uses_official_h3_not_legacy_video_spec(env):
+    system = start(env)["messages"][0]["content"]
+    assert "VIDEO PROMPT SPEC — MiniMax H3" in system
+    assert "FEW-SHOT EXAMPLES — MiniMax H3" in system
+    assert "Prompt template: NATURAL" not in system
+    assert "follow the FEW-SHOT video examples closely" not in system
+
+
 def test_system_prompt_lists_the_video_assets(env):
     """reference_video に使える動画アセットも選択肢として出す。"""
     system = start(env)["messages"][0]["content"]

@@ -58,6 +58,7 @@ from .models import (
     StudioProject,
     StudioProjectDetail,
     StudioProjectSummary,
+    StudioProjectUpdate,
     StudioPromptReference,
     StudioRevision,
     StudioRevisionDetail,
@@ -215,6 +216,45 @@ def _quality_workflow(
     return variant, f"品質「{label}」で投入します"
 
 
+# --------------------------------------------------------------------------
+# 動画生成の画質（プロジェクトの ``megapixels`` / ``aspect_ratio``）
+# --------------------------------------------------------------------------
+#
+# 品質（``quality``）が「どのワークフローで焼くか」なのに対して、こちらは
+# 「どれだけの画素数・どの画面比で焼くか」で、生成フォームと同じ 2 項目を作品
+# 単位の既定として持つだけ。ワークフローの選択には一切かかわらない。
+# 効き方は **Shot 個別 > プロジェクト > グローバル既定** の順で、2 つは
+# それぞれ独立に解決する（:func:`render_shot`）。
+
+
+def normalize_megapixels(value: Any) -> float | None:
+    """DB や API から来た値を「正の実数」か ``None``（＝既定のまま）に均す。
+
+    列を持たない既存 DB も、0 や負や数でない値も ``None`` に倒す（読めない値で
+    作品を開けなくしない）。
+    """
+    if value is None:
+        return None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def normalize_aspect_ratio(value: Any) -> str | None:
+    """空文字は ``None``（＝既定のまま）に均す。
+
+    ラベルの妥当性は見ない。``app.workflow.parse_aspect_ratio`` が ``W:H`` で
+    始まる文字列を広く受けるので、ComfyUI 側が比を増やしてもアプリの更新は
+    要らない（Shot の ``aspect_ratio`` と同じ扱い）。
+    """
+    if value is None:
+        return None
+    text = str(value).strip()
+    return text or None
+
+
 #: 素材の種別 -> プロンプト中で参照素材を呼ぶタグの名前（SPEC §3.1 / r2v）
 MENTION_TAGS: dict[str, str] = {
     "image": "Picture",
@@ -275,6 +315,8 @@ def _row_to_project(row: aiosqlite.Row) -> StudioProject:
     data["auto_translate"] = bool(data.get("auto_translate", 1))
     data["latent_continuity"] = bool(data.get("latent_continuity", 0))
     data["quality"] = normalize_quality(data.get("quality"))
+    data["megapixels"] = normalize_megapixels(data.get("megapixels"))
+    data["aspect_ratio"] = normalize_aspect_ratio(data.get("aspect_ratio"))
     data["nsfw"] = bool(data.get("nsfw", 0))
     return StudioProject(**data)
 
@@ -367,6 +409,8 @@ async def list_projects() -> list[StudioProjectSummary]:
         data["auto_translate"] = bool(data.get("auto_translate", 1))
         data["latent_continuity"] = bool(data.get("latent_continuity", 0))
         data["quality"] = normalize_quality(data.get("quality"))
+        data["megapixels"] = normalize_megapixels(data.get("megapixels"))
+        data["aspect_ratio"] = normalize_aspect_ratio(data.get("aspect_ratio"))
         data["nsfw"] = bool(data.get("nsfw", 0))
         summaries.append(StudioProjectSummary(**data))
     return summaries
@@ -381,6 +425,8 @@ async def create_project(
     latent_continuity: bool = False,
     nsfw: bool = False,
     quality: str = DEFAULT_QUALITY,
+    megapixels: float | None = None,
+    aspect_ratio: str | None = None,
     *,
     actor: str = "user",
 ) -> StudioProject:
@@ -390,7 +436,7 @@ async def create_project(
     async with get_db() as conn:
         project = await _insert_project(
             conn, title, code, synopsis, world_notes, auto_translate,
-            latent_continuity, nsfw, quality,
+            latent_continuity, nsfw, quality, megapixels, aspect_ratio,
         )
         await _record_revision(conn, project.id, actor, "プロジェクトを作成")
         await conn.commit()
@@ -407,6 +453,8 @@ async def _insert_project(
     latent_continuity: bool = False,
     nsfw: bool = False,
     quality: str = DEFAULT_QUALITY,
+    megapixels: float | None = None,
+    aspect_ratio: str | None = None,
 ) -> StudioProject:
     project_id = new_id()
     now = _now()
@@ -414,8 +462,9 @@ async def _insert_project(
         await conn.execute(
             "INSERT INTO studio_projects"
             " (id, name, code, synopsis, world_notes, auto_translate,"
-            "  latent_continuity, quality, nsfw, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "  latent_continuity, quality, megapixels, aspect_ratio, nsfw,"
+            "  created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 project_id,
                 title,
@@ -425,6 +474,8 @@ async def _insert_project(
                 1 if auto_translate else 0,
                 1 if latent_continuity else 0,
                 normalize_quality(quality),
+                normalize_megapixels(megapixels),
+                normalize_aspect_ratio(aspect_ratio),
                 1 if nsfw else 0,
                 now,
                 now,
@@ -453,8 +504,19 @@ async def get_project(project_id: str) -> StudioProject | None:
 async def update_project(
     project_id: str, *, actor: str = "user", **fields: Any
 ) -> StudioProject | None:
-    """``None`` の項目は触らない（指定されたものだけ書き換える）。"""
-    changes = {key: value for key, value in fields.items() if value is not None}
+    """``None`` の項目は触らない（指定されたものだけ書き換える）。
+
+    ただし ``megapixels`` / ``aspect_ratio`` は「既定へ戻す」を表す必要がある
+    ので、**入っていれば** ``None``（NULL）も書く。「送らなかった」と「null を
+    送った」の区別は :meth:`app.models.StudioProjectUpdate.changes` が済ませて
+    いる（Shot 側と同じ約束）。
+    """
+    nullable = StudioProjectUpdate.NULLABLE
+    changes = {
+        key: value
+        for key, value in fields.items()
+        if value is not None or key in nullable
+    }
     if "name" in changes:
         changes["name"] = str(changes["name"]).strip()
         if not changes["name"]:
@@ -467,6 +529,10 @@ async def update_project(
         changes["latent_continuity"] = 1 if changes["latent_continuity"] else 0
     if "quality" in changes:
         changes["quality"] = normalize_quality(changes["quality"])
+    if "megapixels" in changes:
+        changes["megapixels"] = normalize_megapixels(changes["megapixels"])
+    if "aspect_ratio" in changes:
+        changes["aspect_ratio"] = normalize_aspect_ratio(changes["aspect_ratio"])
     if "nsfw" in changes:
         changes["nsfw"] = 1 if changes["nsfw"] else 0
     async with get_db() as conn:
@@ -1803,43 +1869,133 @@ def resolve_mentions(
 # プロンプトの組み立て
 # --------------------------------------------------------------------------
 
-def _audio_line(shot: StudioShot) -> str:
-    """台詞・SE・BGM を H3 の ``Audio:`` 行にまとめる（何も無ければ空）。"""
-    segments: list[str] = []
-    if shot.soundscape.strip():
-        segments.append(shot.soundscape.strip())
-    if shot.bgm.strip():
-        segments.append(f"music: {shot.bgm.strip()}")
-    if shot.dialogue.strip():
-        line = shot.dialogue.strip()
-        # 台詞は二重引用符で囲むのが H3 の決まり。書き手が自分で囲っていれば
-        # そのまま（話者や言い方を添えた書き方を壊さない）。
-        if '"' not in line:
-            line = f'"{line}"'
-        segments.append(f"spoken: {line}")
-    return f"Audio: {'; '.join(segments)}" if segments else ""
+#: 公式 H3 フィールド（行頭）。本文が既に持っていれば二重に包まない。
+_H3_FIELD = re.compile(
+    r"(?im)^(integrated_multimodal_description|detailed_description|"
+    r"overall_soundscape|non_diegetic_music|subject_definitions|summary|"
+    r"retention_analysis)\s*:"
+)
+
+_I2VA_ALIGNMENT = (
+    "For the target video, at 0.00 seconds into the target video, "
+    "<Picture 1> (from [Shot 1]) is fully referenced."
+)
+
+_WRAPPED_QUOTES = (
+    ('"', '"'),
+    ("'", "'"),
+    ("「", "」"),
+    ("『", "』"),
+    ("“", "”"),
+)
+
+#: 公式の切替句。これがあるだけではカメラ欄を捨てない（運鏡の指定ではない）。
+_CAMERA_CUT = re.compile(
+    r"the camera (?:cuts|cut|switches|transitions|changes) to",
+    re.I,
+)
 
 
-def compose_prompt(shot: StudioShot, body: str) -> str:
-    """メンション解決済みの本文に、カメラ・音・除外指定を足した最終プロンプト。
+def _strip_wrapping_quotes(text: str) -> str:
+    text = text.strip()
+    for left, right in _WRAPPED_QUOTES:
+        if len(text) >= len(left) + len(right) and text.startswith(left) and text.endswith(right):
+            return text[len(left) : -len(right)].strip()
+    return text
 
-    どの行も**本文が既に自分で書いていれば足さない**: 書き手がタイムラインごと
-    仕上げたプロンプトを、欄の内容で二重に上書きしないため。
+
+def _has_h3_description(text: str) -> bool:
+    lowered = text.lower()
+    return (
+        "integrated_multimodal_description:" in lowered
+        or "detailed_description:" in lowered
+    )
+
+
+def _has_alignment(text: str) -> bool:
+    lowered = text.lower()
+    return (
+        "at 0.00 seconds into the target video" in lowered
+        or "how the reference pictures align with the target video" in lowered
+    )
+
+
+def _append_to_description(text: str, extra: str) -> str:
+    """カメラ・台詞を description フィールドの末尾（次フィールドの直前）へ足す。"""
+    matches = list(_H3_FIELD.finditer(text))
+    desc_i = next(
+        (
+            i
+            for i, match in reversed(list(enumerate(matches)))
+            if match.group(1).lower()
+            in {"integrated_multimodal_description", "detailed_description"}
+        ),
+        None,
+    )
+    if desc_i is None:
+        return f"{text.rstrip()} {extra}"
+    end = matches[desc_i + 1].start() if desc_i + 1 < len(matches) else len(text)
+    return f"{text[:end].rstrip()} {extra}{text[end:]}"
+
+
+def compose_prompt(shot: StudioShot, body: str, *, workflow: str = "") -> str:
+    """メンション解決済みの本文を公式 MiniMax H3 契約へ組み立てる。
+
+    本文が既に ``integrated_multimodal_description:`` /
+    ``detailed_description:`` を持っていれば包み直さない。無いときだけ
+    r2v* は ``detailed_description:``、それ以外は
+    ``integrated_multimodal_description:`` で包む。
+    ``subject_definitions`` / ``summary`` / ``retention_analysis`` は
+    一行の本文から作らない。カメラ・台詞・音は**本文が既に書いていれば足さない**。
     """
     text = body.strip()
     if not text:
         raise StudioError("Shot のプロンプトが空です")
-    lines = [text]
+    if not _has_h3_description(text):
+        field = (
+            "detailed_description"
+            if workflow.startswith("minimax_h3_r2v")
+            else "integrated_multimodal_description"
+        )
+        text = f"{field}: {text}"
+
+    extras: list[str] = []
     lowered = text.lower()
-    if shot.camera.strip() and "camera:" not in lowered:
-        lines.append(f"Camera: {shot.camera.strip()}")
-    audio = _audio_line(shot)
-    if audio and "audio:" not in lowered:
-        lines.append(audio)
-    # 否定プロンプトが無いモデルなので、除外は本文の最後に文として書く。
-    if "subtitle" not in lowered and "watermark" not in lowered:
-        lines.append(EXCLUSION_SENTENCE)
-    return "\n".join(lines)
+    camera_prose = _CAMERA_CUT.sub("", text)
+    if (
+        shot.camera.strip()
+        and "camera:" not in lowered
+        and "the camera " not in camera_prose.lower()
+    ):
+        extras.append(f"The camera {shot.camera.strip()}.")
+    dialogue = shot.dialogue.strip()
+    if dialogue and "<d>" not in lowered:
+        spoken = _strip_wrapping_quotes(dialogue)
+        lang = "Japanese" if has_japanese(spoken) else "English"
+        extras.append(f"(S1) says: <d>[{lang}] {spoken}</d>")
+    if extras:
+        text = _append_to_description(text, " ".join(extras))
+        lowered = text.lower()
+
+    parts = [text]
+    soundscape_added = False
+    if "overall_soundscape:" not in lowered and shot.soundscape.strip():
+        parts.append(f"overall_soundscape: {shot.soundscape.strip()}")
+        soundscape_added = True
+    if "non_diegetic_music:" not in lowered:
+        if shot.bgm.strip():
+            parts.append(f"non_diegetic_music: {shot.bgm.strip()}")
+        elif soundscape_added:
+            parts.append("non_diegetic_music: N/A")
+    assembled = "\n\n".join(parts)
+
+    if workflow.startswith("minimax_h3_i2v") and not _has_alignment(assembled):
+        assembled = f"{_I2VA_ALIGNMENT}\n\n{assembled}"
+
+    assembled_lowered = assembled.lower()
+    if "subtitle" not in assembled_lowered and "watermark" not in assembled_lowered:
+        assembled = f"{assembled}\n{EXCLUSION_SENTENCE}"
+    return assembled
 
 
 # --------------------------------------------------------------------------
@@ -1848,26 +2004,48 @@ def compose_prompt(shot: StudioShot, body: str) -> str:
 #
 # MiniMax H3 は英語プロンプト前提のモデルなので、日本語で書いた脚本はそのまま
 # 投げると精度が落ちる。プロジェクトの `auto_translate` が有効なら、組み立て
-# 終わった本文を Grok に「H3 用の英語プロンプト」へ直させてから投入する。
-# 壊してはいけないものが 2 つあるので、指示で名指しする:
-#   - `<Picture N>` / `<Video N>` / `<Audio N>`（参照素材を指すタグ）
-#   - 引用符の中の台詞（H3 はこれをそのまま喋るので、原語のまま残す）
+# 終わった本文を Grok に「公式 H3 文書へ書き直す」仕事をさせてから投入する。
+# 直訳ではなく、事実はそのまま、欠ける公式フィールドと観測できる演出を足す。
+# 壊してはいけないもの:
+#   - `<Picture N>` / `<Video N>` / `<Audio N>` / `<Subject N>`（参照タグ）
+#   - 引用符の中の台詞と `<d>…</d>` の中身（H3 はこれをそのまま喋るので、原語）
+#   - ユーザーが書いていない人物・場所・衣装・台詞・筋（発明しない）
+#   - 除外文があればそのまま
 
 #: 変換指示のひな形。``{hint}`` に投入先ワークフローの `prompt_hint` が入る。
 TRANSLATION_INSTRUCTION = (
-    "You rewrite a Japanese video prompt into a single English prompt for the"
-    " MiniMax H3 video+audio model. Output **only** the rewritten prompt — no"
-    " preamble, no explanation, no markdown fences.\n\n"
+    "You rewrite a Japanese video prompt into a complete official English"
+    " MiniMax H3 document. Output **only** the rewritten prompt — no"
+    " preamble, no explanation, no markdown fences. You are an official"
+    " rewriter, not a literal translator: keep every stated fact, and fill"
+    " the official fields and observable staging the source omitted.\n\n"
     "Hard rules:\n"
-    "- Keep every reference tag (`<Picture 1>`, `<Video 2>`, `<Audio 1>`, …)"
-    " exactly as written, in the same places. Never renumber, translate or"
+    "- Keep every reference tag (`<Picture 1>`, `<Video 2>`, `<Audio 1>`,"
+    " `<Subject 1>`, …) exactly as written. Never renumber, translate or"
     " drop one, and never invent a new one.\n"
-    "- Keep spoken lines inside double quotes **in their original language**"
-    " (Japanese stays Japanese); translate only the words around them.\n"
-    "- Keep the `Camera:` and `Audio:` lines and the closing exclusion"
-    " sentence.\n"
-    "- Keep the same shots, timing and length: do not add events that are not"
-    " in the source.\n\n"
+    "- Keep spoken lines inside double quotes **and** the contents of every"
+    " `<d>…</d>` block **in their original language** (Japanese stays"
+    " Japanese); translate only the words around them. Do not invent"
+    " dialogue.\n"
+    "- Do not invent characters, locations, wardrobe, spoken lines, or plot"
+    " events the source did not state.\n"
+    "- Keep the closing exclusion sentence if present.\n\n"
+    "You must now do:\n"
+    "- Emit a complete official document (base 3 fields or Ref2VA 6 fields,"
+    " from the workflow hint below).\n"
+    "- Add missing field headers, `[Shot 1]`, official camera clauses, and"
+    " `overall_soundscape` / `non_diegetic_music` derived from the stated"
+    " action and any `soundscape` / `bgm` already in the source.\n"
+    "- Develop observable staging of **stated** actions (body, contact,"
+    " eyeline, resulting state, lighting already implied).\n"
+    "- I2VA: keep or add the official alignment first line when the source"
+    " is a first-frame job.\n"
+    "- Ref2VA: if tags are present but analysis sections are missing, write"
+    " **minimal** `subject_definitions` / `summary` /"
+    " `retention_analysis` / `detailed_description` **only from those tags"
+    " and stated facts** (do not invent extra subjects).\n"
+    "- Keep `[Shot N]` and `At MM:SS.mmm`. Do **not** convert into"
+    " `Camera:` / `Audio:` lines.\n\n"
     "How an H3 prompt should read:\n{hint}\n\n"
     "Source prompt:\n{prompt}"
 )
@@ -1910,7 +2088,7 @@ class _Plan(NamedTuple):
 
     workflow: str
     reason: str
-    #: 実際に投入する本文（Camera: / Audio: 行と除外文まで込み。英訳の前）
+    #: 実際に投入する本文（公式フィールドと除外文まで込み。英訳の前）
     prompt: str
     start_image: str | None
     references: list[StudioAsset]
@@ -1969,7 +2147,7 @@ async def _plan_render(
     return _Plan(
         workflow,
         reason,
-        compose_prompt(shot, resolved.text),
+        compose_prompt(shot, resolved.text, workflow=workflow),
         mode.start_image,
         resolved.references,
         resolved.tags,
@@ -2268,10 +2446,20 @@ async def render_shot(shot_id: str) -> StudioTake:
         }
         # Shot ごとの生成設定。**H3 が実際に受け取るものだけ**を渡す（否定
         # プロンプトは MiniMax H3 のグラフに注入先が無いので Shot には持たせない）。
-        if shot.aspect_ratio:
-            fields["aspect_ratio"] = shot.aspect_ratio
-        if shot.megapixels is not None:
-            fields["megapixels"] = float(shot.megapixels)
+        #
+        # 画面比とメガピクセルは **Shot 個別 > プロジェクト > グローバル既定** の
+        # 順で、2 つはそれぞれ独立に解決する。どちらも指定が無ければ何も載せず、
+        # 今までどおり `JobCreate` / ワークフロー宣言の既定に落とす。
+        aspect_ratio = shot.aspect_ratio or (
+            project.aspect_ratio if project is not None else None
+        )
+        if aspect_ratio:
+            fields["aspect_ratio"] = aspect_ratio
+        megapixels = shot.megapixels
+        if megapixels is None and project is not None:
+            megapixels = project.megapixels
+        if megapixels is not None:
+            fields["megapixels"] = float(megapixels)
         if shot.seed is not None:
             fields["seed"] = int(shot.seed)
         # NSFW はプロジェクトの設定をそのまま**常に明示**する（True でも False

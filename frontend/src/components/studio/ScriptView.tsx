@@ -241,7 +241,7 @@ export default function ScriptView({
                 label="台詞"
                 value={form.dialogue}
                 rows={3}
-                placeholder="投入時に MiniMax H3 の Audio: 行へ入ります"
+                placeholder="投入時に MiniMax H3 の <d>[Language] …</d> へ入ります"
                 onChange={(value) => patch({ dialogue: value })}
               />
 
@@ -357,7 +357,7 @@ export default function ScriptView({
                           patch({ aspect_ratio: event.target.value })
                         }
                       >
-                        <option value="">既定のまま</option>
+                        <option value="">プロジェクト設定に従う</option>
                         {!aspectRatios.includes(form.aspect_ratio) &&
                           form.aspect_ratio && (
                             <option value={form.aspect_ratio}>
@@ -374,7 +374,7 @@ export default function ScriptView({
                       <Input
                         id="studio-shot-aspect"
                         value={form.aspect_ratio}
-                        placeholder="16:9 (Widescreen)（空欄で既定値）"
+                        placeholder="16:9 (Widescreen)（空欄でプロジェクト設定）"
                         onChange={(event) =>
                           patch({ aspect_ratio: event.target.value })
                         }
@@ -392,10 +392,14 @@ export default function ScriptView({
                       step="0.05"
                       min="0.1"
                       value={form.megapixels}
-                      placeholder="空欄で既定値"
+                      placeholder="空欄でプロジェクト設定"
                       onChange={(event) => patch({ megapixels: event.target.value })}
                     />
                     <FieldError message={errors.megapixels} />
+                    <p className="text-[11px] text-muted-foreground">
+                      この Shot だけの指定。空欄ならプロジェクトの「画質」
+                      （ヘッダーのアスペクト比・メガピクセル）に従います。
+                    </p>
                   </div>
                   <div className="space-y-1">
                     <Label htmlFor="studio-shot-seed">シード</Label>
