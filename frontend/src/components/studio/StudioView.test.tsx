@@ -149,6 +149,7 @@ function detail(overrides: Partial<StudioProjectDetail> = {}): StudioProjectDeta
     world_notes: '',
     auto_translate: true,
     latent_continuity: false,
+    quality: 'normal',
     nsfw: false,
     created_at: '2026-01-01T00:00:00+00:00',
     updated_at: '2026-01-01T00:00:00+00:00',
@@ -203,6 +204,7 @@ function summary(current: StudioProjectDetail): StudioProjectSummary {
     world_notes: current.world_notes,
     auto_translate: current.auto_translate,
     latent_continuity: current.latent_continuity,
+    quality: current.quality,
     nsfw: current.nsfw,
     created_at: current.created_at,
     updated_at: current.updated_at,
@@ -227,6 +229,8 @@ function shotPreview(
     auto_translate: true,
     will_translate: false,
     latent_continuity: false,
+    quality: 'normal',
+    quality_applied: false,
     context_video: null,
     context_latent: null,
     error: '',
@@ -839,6 +843,41 @@ describe('StudioView の接続先プルダウン', () => {
       />,
     )
     await waitFor(() => expect(mocked.getStudioCapabilities).toHaveBeenCalledTimes(2))
+  })
+})
+
+describe('StudioView の品質セレクタ', () => {
+  it('ヘッダーに常時出て、選び直すとプロジェクト設定として保存される', async () => {
+    const current = detail()
+    await openProject(current)
+    const select = screen.getByLabelText('品質') as HTMLSelectElement
+    expect(select.value).toBe('normal')
+    expect(
+      Array.from(select.options).map((option) => option.value),
+    ).toEqual(['normal', 'opt', 'turbo'])
+
+    mocked.updateStudioProject.mockResolvedValue({})
+    fireEvent.change(select, { target: { value: 'turbo' } })
+    await waitFor(() =>
+      expect(mocked.updateStudioProject).toHaveBeenCalledWith('p1', {
+        quality: 'turbo',
+      }),
+    )
+  })
+
+  it('保存済みの品質をそのまま映す', async () => {
+    await openProject(detail({ quality: 'opt' }))
+    expect((screen.getByLabelText('品質') as HTMLSelectElement).value).toBe('opt')
+  })
+
+  it('ラテント連続性が ON のあいだは効かないことを注記する', async () => {
+    await openProject(detail({ latent_continuity: true, quality: 'turbo' }))
+    expect(screen.getByText(/連続性が有効なため/)).toBeTruthy()
+  })
+
+  it('通常品質なら連続性が ON でも注記は出ない', async () => {
+    await openProject(detail({ latent_continuity: true }))
+    expect(screen.queryByText(/連続性が有効なため/)).toBeNull()
   })
 })
 

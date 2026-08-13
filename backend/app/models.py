@@ -2331,6 +2331,19 @@ StudioWorkflowOverride = Literal[
     "minimax_h3_t2v", "minimax_h3_i2v", "minimax_h3_r2v"
 ]
 
+#: 動画生成の品質（プロジェクト単位の設定）。論理モード（t2v / i2v / r2v）とは
+#: 直交していて、モードが決まったあとに「モード × 品質 -> バリアント id」で
+#: 解決される（:func:`app.studio._quality_workflow`）:
+#:
+#: - ``normal``: 素の MiniMax H3（20 steps）。どの接続先でも動く。
+#: - ``opt``: 素と同じ 20 steps のまま、量子化ウェイトと高速化パッチだけを
+#:   焼き込んだ最適化版（品質は素相当で実行が速い）。
+#: - ``turbo``: 4 steps の蒸留 LoRA 版（いちばん速いが粗い）。
+#:
+#: ``opt`` / ``turbo`` は i2v / r2v にしかバリアントが無く、カスタムノード頼み
+#: なので、条件が揃わなければ素へフォールバックする。
+StudioVideoQuality = Literal["normal", "opt", "turbo"]
+
 #: リビジョンを作った主体（人の操作か、エージェントの操作か）
 StudioRevisionActor = Literal["user", "agent"]
 
@@ -2352,6 +2365,9 @@ class StudioProject(BaseModel):
     #: ON なら直前カットの動画と AV ラテントを渡す ``minimax_h3_r2v_context``。
     #: カスタムノードが要るので、入っていない接続先では投入時に断られる。
     latent_continuity: bool = False
+    #: 動画生成の品質（:data:`StudioVideoQuality`）。テイク生成のたびに、決まった
+    #: 論理モードと掛け合わせてワークフローのバリアントへ解決される。
+    quality: StudioVideoQuality = "normal"
     #: この作品から投入するジョブをすべて NSFW 扱いにする。OFF なら**非 NSFW で
     #: 固定**（投入時に明示するので、Grok の自動判定は走らない）。
     nsfw: bool = False
@@ -2382,6 +2398,8 @@ class StudioProjectCreate(BaseModel):
     #: ON なら直前カットの動画と AV ラテントを渡す ``minimax_h3_r2v_context``。
     #: カスタムノードが要るので、入っていない接続先では投入時に断られる。
     latent_continuity: bool = False
+    #: 動画生成の品質（:data:`StudioVideoQuality`。既定は素の 20 steps）
+    quality: StudioVideoQuality = "normal"
     #: この作品から投入するジョブをすべて NSFW 扱いにする（OFF = 非 NSFW 固定）
     nsfw: bool = False
 
@@ -2399,6 +2417,8 @@ class StudioProjectUpdate(BaseModel):
     #: ON なら直前カットの動画と AV ラテントを渡す ``minimax_h3_r2v_context``。
     #: カスタムノードが要るので、入っていない接続先では投入時に断られる。
     latent_continuity: bool | None = None
+    #: 動画生成の品質（:data:`StudioVideoQuality`）
+    quality: StudioVideoQuality | None = None
     #: この作品から投入するジョブをすべて NSFW 扱いにする（OFF = 非 NSFW 固定）
     nsfw: bool | None = None
 
@@ -2852,6 +2872,11 @@ class StudioShotPreview(BaseModel):
     will_translate: bool = False
     #: プロジェクトの設定（引き継ぎを Motion Context で行う = ラテント連続性）
     latent_continuity: bool = False
+    #: プロジェクトの設定（動画生成の品質）
+    quality: StudioVideoQuality = "normal"
+    #: ``quality`` が実際に効いたか（False = 素へフォールバックした。理由は
+    #: ``workflow_reason`` の末尾に入る）
+    quality_applied: bool = False
     #: ラテント連続性で引き継ぐ直前カットの動画（使わないときは None）
     context_video: str | None = None
     #: 同じく、引き継ぎ元の AV ラテント（ComfyUI 側のパス）

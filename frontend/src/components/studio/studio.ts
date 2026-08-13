@@ -18,6 +18,7 @@ import type {
   StudioShotUpdate,
   StudioTake,
   StudioTakeStatus,
+  StudioVideoQuality,
   StudioWorkflowOverride,
 } from '../../types'
 
@@ -94,6 +95,21 @@ export const WORKFLOW_OVERRIDE_LABEL: Record<StudioWorkflowOverride, string> = {
   minimax_h3_t2v: 't2v（文章だけから）',
   minimax_h3_i2v: 'i2v（開始フレームから）',
   minimax_h3_r2v: 'r2v（参照素材から）',
+}
+
+/** 動画生成の品質（プロジェクト設定。速い順ではなく「素からの寄り道」の順）。 */
+export const VIDEO_QUALITIES: StudioVideoQuality[] = ['normal', 'opt', 'turbo']
+
+export const VIDEO_QUALITY_LABEL: Record<StudioVideoQuality, string> = {
+  normal: '通常',
+  opt: 'Opt',
+  turbo: 'Turbo',
+}
+
+export const VIDEO_QUALITY_HINT: Record<StudioVideoQuality, string> = {
+  normal: '通常 = 素の MiniMax H3（20 steps）。どの接続先でも動く標準の品質。',
+  opt: 'Opt = 20 steps のまま量子化と高速化だけを入れた版（品質は通常のまま速い）。',
+  turbo: 'Turbo = 4 steps の蒸留 LoRA 版（いちばん速いが粗い）。',
 }
 
 export const REVISION_ACTOR_LABEL: Record<StudioRevisionActor, string> = {

@@ -67,8 +67,10 @@ from .models import (
     StudioTake,
     validate_asset_profile,
 )
+from .config import load_settings
 from .paths import rebase_stored_path
-from .workflows import get_video_spec
+from .workflow import WorkflowError, supported_on_target
+from .workflows import WorkflowSpecError, get_video_spec
 
 #: Shot が使う動画ワークフロー（すべて MiniMax H3。音声も同じパスで出る）
 WORKFLOW_T2V = "minimax_h3_t2v"
@@ -108,6 +110,110 @@ def _latent_save_workflow(workflow: str, latent_continuity: bool) -> str:
     if not latent_continuity:
         return workflow
     return LATENT_SAVE_WORKFLOWS.get(workflow, workflow)
+
+
+# --------------------------------------------------------------------------
+# 動画生成の品質（プロジェクトの ``quality``）
+# --------------------------------------------------------------------------
+#
+# 品質は論理モード（t2v / i2v / r2v / r2v_context）と**直交**したパラメータ
+# として持つ。モードを決めるのは :func:`_pick_workflow` の仕事で、そのあとに
+# 「モード × 品質 -> バリアント id」をここで解決する（:func:`_quality_workflow`）。
+# Shot の ``workflow_override`` は素のモード id しか取らないままでよく、品質を
+# 掛け合わせても強制指定の意味は変わらない。
+
+#: 既定の品質（列が無い / 値が壊れている既存プロジェクトもこれとして扱う）
+DEFAULT_QUALITY = "normal"
+
+#: 品質 -> 画面に出す短い名前（``workflow_reason`` の文言に使う）
+QUALITY_LABELS: dict[str, str] = {
+    "normal": "通常",
+    "opt": "Opt",
+    "turbo": "Turbo",
+}
+
+#: 品質 -> （論理モード -> そのバリアント id）。ここに無い組み合わせは
+#: 「バリアントが存在しない」＝素へフォールバックする。t2v と
+#: ``minimax_h3_r2v_context`` は turbo / opt を持たない。
+QUALITY_WORKFLOWS: dict[str, dict[str, str]] = {
+    "turbo": {
+        WORKFLOW_I2V: "minimax_h3_i2v_turbo",
+        WORKFLOW_R2V: "minimax_h3_r2v_turbo",
+    },
+    "opt": {
+        WORKFLOW_I2V: "minimax_h3_i2v_opt",
+        WORKFLOW_R2V: "minimax_h3_r2v_opt",
+    },
+}
+
+#: スタジオが投げうる turbo / opt のワークフロー id（接続先の対応判定用）
+QUALITY_VARIANT_WORKFLOWS: frozenset[str] = frozenset(
+    workflow for table in QUALITY_WORKFLOWS.values() for workflow in table.values()
+)
+
+
+def normalize_quality(value: Any) -> str:
+    """DB や API から来た値を ``normal`` / ``opt`` / ``turbo`` に均す。
+
+    列を持たない既存 DB（``None``）も、知らない値も既定の ``normal`` に倒す
+    （品質は「速さの好み」でしかないので、読めない値で作品を開けなくしない）。
+    """
+    text = str(value or "").strip().lower()
+    return text if text in QUALITY_LABELS else DEFAULT_QUALITY
+
+
+def _quality_supported_on_target(workflow: str) -> bool:
+    """いまの接続先で turbo / opt のバリアントを投げてよいか。
+
+    turbo / opt はカスタムノード頼み（:data:`app.workflows.OPTIONAL_CLASS_TYPES`）
+    なので、任意のノードを入れられない Comfy Cloud では動かない。判定は生成
+    フォームの選択肢を絞るのと同じ :func:`app.workflow.supported_on_target` に
+    任せる（対応の定義を 2 か所に散らさない）。
+    """
+    try:
+        spec = get_video_spec(workflow)
+        return supported_on_target(spec, load_settings().comfy_target)
+    except (WorkflowSpecError, WorkflowError, OSError):
+        # テンプレートが読めない環境では素へ落として投入だけは通す
+        return False
+
+
+def _quality_workflow(
+    workflow: str, quality: str, latent_continuity: bool
+) -> tuple[str, str]:
+    """``(解決したワークフロー id, 理由に足す一文)``。
+
+    ``quality`` が ``normal`` なら何もしない（付ける一文も無い）。それ以外は
+    次のどれかに当てはまれば**素へフォールバック**し、その理由を返す:
+
+    1. t2v になったショット（turbo / opt のバリアントが存在しない）
+    2. ラテント連続性が ON（保存付き ``_save`` / ``_context`` のバリアントが
+       turbo / opt に無いので、連鎖を壊さないよう素系のままにする）
+    3. いまの接続先が turbo / opt のカスタムノードに対応しない（Comfy Cloud）
+
+    黙って落とすのではなく、必ず ``workflow_reason`` に理由を出す。
+    """
+    quality = normalize_quality(quality)
+    if quality == DEFAULT_QUALITY:
+        return workflow, ""
+    label = QUALITY_LABELS[quality]
+    if latent_continuity:
+        return workflow, (
+            f"品質「{label}」はラテント連続性が ON のあいだ使えないので、"
+            "通常品質で投入します（ラテントを保存する版が turbo / opt にありません）"
+        )
+    variant = QUALITY_WORKFLOWS[quality].get(workflow)
+    if variant is None:
+        return workflow, (
+            f"品質「{label}」はこのモードに用意が無いので、通常品質で投入します"
+        )
+    if not _quality_supported_on_target(variant):
+        return workflow, (
+            f"いまの接続先は品質「{label}」のカスタムノードに対応しないので、"
+            "通常品質で投入します"
+        )
+    return variant, f"品質「{label}」で投入します"
+
 
 #: 素材の種別 -> プロンプト中で参照素材を呼ぶタグの名前（SPEC §3.1 / r2v）
 MENTION_TAGS: dict[str, str] = {
@@ -168,6 +274,7 @@ def _row_to_project(row: aiosqlite.Row) -> StudioProject:
     data = dict(row)
     data["auto_translate"] = bool(data.get("auto_translate", 1))
     data["latent_continuity"] = bool(data.get("latent_continuity", 0))
+    data["quality"] = normalize_quality(data.get("quality"))
     data["nsfw"] = bool(data.get("nsfw", 0))
     return StudioProject(**data)
 
@@ -259,6 +366,7 @@ async def list_projects() -> list[StudioProjectSummary]:
         data = dict(row)
         data["auto_translate"] = bool(data.get("auto_translate", 1))
         data["latent_continuity"] = bool(data.get("latent_continuity", 0))
+        data["quality"] = normalize_quality(data.get("quality"))
         data["nsfw"] = bool(data.get("nsfw", 0))
         summaries.append(StudioProjectSummary(**data))
     return summaries
@@ -272,6 +380,7 @@ async def create_project(
     auto_translate: bool = True,
     latent_continuity: bool = False,
     nsfw: bool = False,
+    quality: str = DEFAULT_QUALITY,
     *,
     actor: str = "user",
 ) -> StudioProject:
@@ -281,7 +390,7 @@ async def create_project(
     async with get_db() as conn:
         project = await _insert_project(
             conn, title, code, synopsis, world_notes, auto_translate,
-            latent_continuity, nsfw,
+            latent_continuity, nsfw, quality,
         )
         await _record_revision(conn, project.id, actor, "プロジェクトを作成")
         await conn.commit()
@@ -297,6 +406,7 @@ async def _insert_project(
     auto_translate: bool,
     latent_continuity: bool = False,
     nsfw: bool = False,
+    quality: str = DEFAULT_QUALITY,
 ) -> StudioProject:
     project_id = new_id()
     now = _now()
@@ -304,8 +414,8 @@ async def _insert_project(
         await conn.execute(
             "INSERT INTO studio_projects"
             " (id, name, code, synopsis, world_notes, auto_translate,"
-            "  latent_continuity, nsfw, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "  latent_continuity, quality, nsfw, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 project_id,
                 title,
@@ -314,6 +424,7 @@ async def _insert_project(
                 world_notes or "",
                 1 if auto_translate else 0,
                 1 if latent_continuity else 0,
+                normalize_quality(quality),
                 1 if nsfw else 0,
                 now,
                 now,
@@ -354,6 +465,8 @@ async def update_project(
         changes["auto_translate"] = 1 if changes["auto_translate"] else 0
     if "latent_continuity" in changes:
         changes["latent_continuity"] = 1 if changes["latent_continuity"] else 0
+    if "quality" in changes:
+        changes["quality"] = normalize_quality(changes["quality"])
     if "nsfw" in changes:
         changes["nsfw"] = 1 if changes["nsfw"] else 0
     async with get_db() as conn:
@@ -1807,6 +1920,9 @@ class _Plan(NamedTuple):
     context_video: str | None = None
     #: 同じく、直前カットの AV ラテント（ComfyUI 側のパス）
     context_latent: str | None = None
+    #: プロジェクトの ``quality`` が実際にバリアントとして効いたか
+    #: （False = ``normal`` だった、または素へフォールバックした）
+    quality_applied: bool = False
 
 
 async def _plan_render(
@@ -1821,9 +1937,15 @@ async def _plan_render(
     **同じものを見る**ための唯一の経路。組み立てられなければ
     :class:`StudioError`（生成は 400、プレビューは理由として見せる）。
 
-    ``project`` は引き継ぎのやり方（``latent_continuity``）を見るために渡す。
-    ON のときは、連鎖の起点になる通常カットも AV ラテントを残せるよう、最後に
-    保存付きバリアントへ読み替える（:func:`_latent_save_workflow`）。
+    ``project`` は引き継ぎのやり方（``latent_continuity``）と品質（``quality``）を
+    見るために渡す。ワークフロー id は 3 段で決まる:
+
+    1. 論理モード（:func:`_pick_workflow`。t2v / i2v / r2v / r2v_context）
+    2. モード × 品質 -> バリアント（:func:`_quality_workflow`。条件が揃わなければ
+       素へフォールバックし、その理由を ``reason`` に足す）
+    3. ラテント連続性が ON なら保存付きバリアントへの読み替え
+       （:func:`_latent_save_workflow`。連鎖の起点になる通常カットも AV ラテントを
+       残せるようにするため）
     """
     # 添付できる（＝ファイル実体を持つ）素材を呼んでいるか。メタデータだけの
     # 素材はここに出てこないので、r2v の理由にはならない。
@@ -1833,19 +1955,27 @@ async def _plan_render(
         bool(resolve_mentions(shot.prompt, assets, attach=True).references),
         project,
     )
-    workflow = _latent_save_workflow(
-        mode.workflow, project is not None and project.latent_continuity
+    latent_continuity = project is not None and project.latent_continuity
+    quality = normalize_quality(project.quality if project is not None else None)
+    workflow, quality_reason = _quality_workflow(
+        mode.workflow, quality, latent_continuity
     )
+    quality_applied = workflow != mode.workflow
+    # 品質のバリアントは素の版と同じ入力を取るので、保存付きへの読み替えは
+    # 素のモードにしか当たらない（品質が効いたときは latent_continuity が OFF）。
+    workflow = _latent_save_workflow(workflow, latent_continuity)
+    reason = f"{mode.reason} / {quality_reason}" if quality_reason else mode.reason
     resolved = resolve_mentions(shot.prompt, assets, attach=mode.attach)
     return _Plan(
         workflow,
-        mode.reason,
+        reason,
         compose_prompt(shot, resolved.text),
         mode.start_image,
         resolved.references,
         resolved.tags,
         mode.context_video,
         mode.context_latent,
+        quality_applied,
     )
 
 
@@ -1864,6 +1994,7 @@ async def preview_shot(shot_id: str) -> StudioShotPreview | None:
         assets = await _fetch_assets(conn, shot.project_id)
         auto_translate = project is not None and project.auto_translate
         latent_continuity = project is not None and project.latent_continuity
+        quality = normalize_quality(project.quality if project is not None else None)
         try:
             plan = await _plan_render(conn, shot, assets, project)
         except StudioError as exc:
@@ -1872,6 +2003,7 @@ async def preview_shot(shot_id: str) -> StudioShotPreview | None:
                 workflow=shot.workflow_override,
                 auto_translate=auto_translate,
                 latent_continuity=latent_continuity,
+                quality=quality,
                 error=str(exc),
             )
     return StudioShotPreview(
@@ -1889,6 +2021,8 @@ async def preview_shot(shot_id: str) -> StudioShotPreview | None:
         auto_translate=auto_translate,
         will_translate=auto_translate and has_japanese(plan.prompt),
         latent_continuity=latent_continuity,
+        quality=quality,
+        quality_applied=plan.quality_applied,
         context_video=plan.context_video,
         context_latent=plan.context_latent,
     )

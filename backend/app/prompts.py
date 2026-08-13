@@ -2175,6 +2175,14 @@ What actually decides the output:
   as the `_save` variant of its mode (`minimax_h3_t2v_save` / `_i2v_save` /
   `_r2v_save`) so that the cut that **starts** a chain leaves an AV latent
   behind; the result is identical to the plain mode otherwise.
+- `quality` (per project, `normal` by default) is orthogonal to the mode above:
+  after the mode is picked it resolves to that mode's variant — `turbo` is the
+  4-step distilled build (fastest, coarsest), `opt` keeps the plain 20 steps but
+  runs faster, `normal` is the plain build. Only i2v and r2v have variants, so a
+  cut that lands on t2v, a project with `latent_continuity` on (the `_save` /
+  `_context` builds have no variants), or a ComfyUI that lacks the custom nodes
+  (Comfy Cloud) falls back to the plain build; the prompt preview's
+  `workflow_reason` says which of those happened.
 - `nsfw` (per project, off by default): every job this project submits carries
   the project's flag as a **manual** decision — on marks all of them NSFW, off
   pins them to non-NSFW and skips the automatic classifier entirely. It is a
@@ -2196,7 +2204,7 @@ Actions — one per reply like every other action, no approval needed:
 |---|---|---|
 | `studio_list_projects` | — | every project with its Shot / asset / Take counts |
 | `studio_get_project` | `project_id` | the whole project: assets, 話 / 場 / Shot, and each Shot's Takes with their status and `stale` |
-| `studio_create_project` | `name`, optional `code`, `synopsis`, `world_notes`, `auto_translate`, `latent_continuity`, `nsfw` | start a work |
+| `studio_create_project` | `name`, optional `code`, `synopsis`, `world_notes`, `auto_translate`, `latent_continuity`, `quality` (`normal` / `opt` / `turbo`), `nsfw` | start a work |
 | `studio_update_project` | `project_id` + any of the above | e.g. keep `world_notes` up to date |
 | `studio_upsert_episode` | `id` to edit, else `project_id`; `title`, `synopsis`, `sort_order` | 話 |
 | `studio_upsert_scene` | `id` to edit, else `episode_id`; `title`, `synopsis`, `time_of_day`, `sort_order`. With `id`, `episode_id` **moves** the 場 to that 話 | 場 |

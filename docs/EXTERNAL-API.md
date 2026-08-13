@@ -198,6 +198,15 @@ queued / running のもの）が上限を超えているとき 429 を返す。
   連鎖の起点になるカットがラテントを残さないと、次のカットに引き継ぐものが無く
   連鎖を始められないためで、仕上がりは素の版と変わりません（こちらもカスタム
   ノード頼みなので、無い接続先では 400 です）。
+- プロジェクトの `quality`（`POST /api/v1/projects` と `PATCH /api/v1/projects/{id}`
+  で読み書きできます。`"normal"` / `"opt"` / `"turbo"`。既定 `"normal"`）は
+  **動画生成の品質**で、モード（t2v / i2v / r2v）とは直交しています。モードが
+  決まったあとに掛け合わせて `minimax_h3_{i2v,r2v}_{turbo,opt}` へ解決されます。
+  `turbo` は 4step 蒸留 LoRA 版（速いが粗い）、`opt` は 20 steps のまま量子化と
+  高速化だけを入れた版です。t2v になったカット・`latent_continuity` が立っている
+  あいだ・カスタムノードの無い接続先（Comfy Cloud）では**素の版へフォールバック
+  します**（400 にはしません）。どれに当たったかは
+  `GET /api/v1/shots/{id}/prompt-preview` の `workflow_reason` に出ます。
 - プロジェクトの `nsfw`（`POST /api/v1/projects` と `PATCH /api/v1/projects/{id}`
   で読み書きできます。既定 `false`）は**作品まるごとの指定**です。立てるとその
   プロジェクトから投入するジョブはすべて NSFW（`nsfw_source: "manual"`）になり、

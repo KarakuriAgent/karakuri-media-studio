@@ -840,6 +840,180 @@ def test_a_job_records_its_latent_on_the_take(env, monkeypatch):
 
 
 # --------------------------------------------------------------------------
+# 動画生成の品質（プロジェクトの quality）
+# --------------------------------------------------------------------------
+#
+# 品質は論理モード（t2v / i2v / r2v）と直交していて、モードが決まったあとに
+# 「モード × 品質 -> バリアント id」で解決される（studio._quality_workflow）。
+# ここで押さえるのは、効くとき・素へ落ちる 3 つの条件・そのときの理由の文言。
+
+def _use_target(monkeypatch, target: str) -> None:
+    """接続先だけを差し替える（turbo / opt の対応判定に効く）。"""
+    from app import config
+    from app.models import Settings
+
+    monkeypatch.setattr(config, "_settings", Settings(comfy_target=target))
+
+
+def _quality_pair(env, quality: str):
+    """(project, 参照素材を呼ぶ Shot) を作る（r2v になるので品質が効く）。"""
+    project = make_project(env, quality=quality)
+    make_asset(env, project["id"], "Neko", kind="image", prompt_caption="a calico cat")
+    shot = make_shot(env, project["id"], prompt="@Neko walks in.")
+    return project, shot
+
+
+def test_quality_is_normal_by_default(env):
+    project = make_project(env)
+    assert project["quality"] == "normal"
+    assert env.client.get("/api/studio/projects").json()[0]["quality"] == "normal"
+
+
+def test_quality_is_saved_as_a_project_setting(env):
+    project = make_project(env)
+    updated = env.client.patch(
+        f"/api/studio/projects/{project['id']}", json={"quality": "turbo"}
+    )
+    assert updated.status_code == 200
+    assert updated.json()["quality"] == "turbo"
+    assert detail(env, project["id"])["quality"] == "turbo"
+
+
+def test_an_unknown_quality_is_refused(env):
+    project = make_project(env)
+    response = env.client.patch(
+        f"/api/studio/projects/{project['id']}", json={"quality": "ultra"}
+    )
+    assert response.status_code == 422
+
+
+def test_a_project_without_the_column_reads_as_normal(env):
+    """列を持たない（品質より前に作られた）既存 DB は 'normal' として読む。"""
+    import sqlite3
+
+    project = make_project(env, quality="turbo")
+    with sqlite3.connect(db.DB_PATH) as conn:
+        conn.execute(
+            "UPDATE studio_projects SET quality = '' WHERE id = ?", (project["id"],)
+        )
+    assert detail(env, project["id"])["quality"] == "normal"
+
+
+@pytest.mark.parametrize(
+    ("quality", "expected"),
+    [
+        ("normal", "minimax_h3_r2v"),
+        ("opt", "minimax_h3_r2v_opt"),
+        ("turbo", "minimax_h3_r2v_turbo"),
+    ],
+)
+def test_quality_picks_the_r2v_variant(env, monkeypatch, quality, expected):
+    _use_target(monkeypatch, "local")
+    _project, shot = _quality_pair(env, quality)
+    assert render(env, shot["id"]).status_code == 201
+    assert env.created[-1].video_workflow == expected
+
+
+@pytest.mark.parametrize(
+    ("quality", "expected"),
+    [
+        ("normal", "minimax_h3_i2v"),
+        ("opt", "minimax_h3_i2v_opt"),
+        ("turbo", "minimax_h3_i2v_turbo"),
+    ],
+)
+def test_quality_picks_the_i2v_variant(env, monkeypatch, quality, expected):
+    """引き継ぎで i2v になったカットにも品質が掛かる。"""
+    _use_target(monkeypatch, "local")
+    project = make_project(env, quality=quality)
+    first = make_shot(env, project["id"], prompt="A cat walks in.")
+    second = make_shot(
+        env, project["id"], prompt="The cat sits.", carry_over_end_frame=True
+    )
+    take = render(env, first["id"]).json()
+    last_frame = env.outputs / f"last_{take['id']}.png"
+    last_frame.write_bytes(b"PNG")
+    _finish_job(env, take["job_id"], last_frame)
+    env.client.post(f"/api/studio/takes/{take['id']}/select")
+
+    assert render(env, second["id"]).status_code == 201
+    assert env.created[-1].video_workflow == expected
+
+
+@pytest.mark.parametrize("quality", ["opt", "turbo"])
+def test_quality_falls_back_to_plain_on_t2v(env, monkeypatch, quality):
+    """t2v には turbo / opt のバリアントが無いので素へ落とす（理由つき）。"""
+    _use_target(monkeypatch, "local")
+    project = make_project(env, quality=quality)
+    shot = make_shot(env, project["id"], prompt="A cat walks in.")
+    assert render(env, shot["id"]).status_code == 201
+    assert env.created[-1].video_workflow == "minimax_h3_t2v"
+
+    preview = env.client.get(f"/api/studio/shots/{shot['id']}/prompt-preview").json()
+    assert preview["quality"] == quality
+    assert preview["quality_applied"] is False
+    assert "用意が無い" in preview["workflow_reason"]
+
+
+@pytest.mark.parametrize("quality", ["opt", "turbo"])
+def test_quality_falls_back_when_latent_continuity_is_on(env, monkeypatch, quality):
+    """保存付き（_save / _context）のバリアントが無いので、素系のまま投げる。"""
+    _allow_latent_context(monkeypatch)
+    _use_target(monkeypatch, "local")
+    project = make_project(env, quality=quality, latent_continuity=True)
+    make_asset(env, project["id"], "Neko", kind="image", prompt_caption="a calico cat")
+    shot = make_shot(env, project["id"], prompt="@Neko walks in.")
+    assert render(env, shot["id"]).status_code == 201
+    # 連鎖の起点なので保存付きへの読み替えだけが効く
+    assert env.created[-1].video_workflow == "minimax_h3_r2v_save"
+
+    preview = env.client.get(f"/api/studio/shots/{shot['id']}/prompt-preview").json()
+    assert preview["quality_applied"] is False
+    assert "ラテント連続性" in preview["workflow_reason"]
+
+
+@pytest.mark.parametrize("quality", ["opt", "turbo"])
+def test_quality_falls_back_on_a_target_without_the_custom_nodes(
+    env, monkeypatch, quality
+):
+    """Comfy Cloud には任意のカスタムノードを入れられないので素へ落とす。"""
+    _use_target(monkeypatch, "comfy_cloud")
+    _project, shot = _quality_pair(env, quality)
+    assert render(env, shot["id"]).status_code == 201
+    assert env.created[-1].video_workflow == "minimax_h3_r2v"
+
+    preview = env.client.get(f"/api/studio/shots/{shot['id']}/prompt-preview").json()
+    assert preview["quality_applied"] is False
+    assert "接続先" in preview["workflow_reason"]
+
+
+def test_the_preview_keeps_the_mode_reason_next_to_the_quality(env, monkeypatch):
+    """品質の一文はモードの理由を置き換えず、後ろに足す。"""
+    _use_target(monkeypatch, "local")
+    _project, shot = _quality_pair(env, "turbo")
+    preview = env.client.get(f"/api/studio/shots/{shot['id']}/prompt-preview").json()
+    assert preview["workflow"] == "minimax_h3_r2v_turbo"
+    assert preview["quality_applied"] is True
+    assert "素材を呼んでいます" in preview["workflow_reason"]
+    assert "Turbo" in preview["workflow_reason"]
+
+
+def test_a_forced_workflow_still_gets_the_quality(env, monkeypatch):
+    """workflow_override は素のモード id のままで、品質は掛け合わせで効く。"""
+    _use_target(monkeypatch, "local")
+    project = make_project(env, quality="opt")
+    make_asset(env, project["id"], "Neko", kind="image", prompt_caption="a calico cat")
+    shot = make_shot(
+        env,
+        project["id"],
+        prompt="@Neko walks in.",
+        workflow_override="minimax_h3_r2v",
+    )
+    assert render(env, shot["id"]).status_code == 201
+    assert env.created[-1].video_workflow == "minimax_h3_r2v_opt"
+
+
+# --------------------------------------------------------------------------
 # Take の採用・不採用
 # --------------------------------------------------------------------------
 

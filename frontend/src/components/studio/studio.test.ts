@@ -301,6 +301,7 @@ describe('projectSummary / renderingJobIds', () => {
     world_notes: '',
     auto_translate: true,
     latent_continuity: false,
+    quality: 'normal',
     nsfw: false,
     created_at: '2026-01-01T00:00:00+00:00',
     updated_at: '2026-01-01T00:00:00+00:00',

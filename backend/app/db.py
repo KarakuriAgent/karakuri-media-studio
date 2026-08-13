@@ -93,6 +93,7 @@ CREATE TABLE IF NOT EXISTS studio_projects (
   world_notes TEXT NOT NULL DEFAULT '',   -- World Bible の覚え書き
   auto_translate INTEGER NOT NULL DEFAULT 1, -- 日本語プロンプトを Grok で英訳してから投入
   latent_continuity INTEGER NOT NULL DEFAULT 0, -- 引き継ぎを Motion Context（ラテント連続性）で行う
+  quality     TEXT NOT NULL DEFAULT 'normal', -- 動画生成の品質（normal / opt / turbo）
   nsfw        INTEGER NOT NULL DEFAULT 0,   -- 1 = この作品から投入するジョブはすべて NSFW（0 = 非 NSFW 固定）
   canvas_x    REAL NOT NULL DEFAULT 0,      -- キャンバス（別ビュー）の表示位置
   canvas_y    REAL NOT NULL DEFAULT 0,
@@ -382,6 +383,9 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         # 引き継ぎを Motion Context（ラテント連続性）で行うか。既存の
         # プロジェクトは既定 OFF = 今までどおりラストフレームの引き継ぎ。
         ("latent_continuity", "INTEGER NOT NULL DEFAULT 0"),
+        # 動画生成の品質（normal / opt / turbo）。既存のプロジェクトは
+        # 'normal' = 今までどおり素の MiniMax H3（20 steps）。
+        ("quality", "TEXT NOT NULL DEFAULT 'normal'"),
         # この作品から投入するジョブを NSFW 扱いにするか。既存のプロジェクトは
         # 0 = 非 NSFW（投入時に明示するので Grok の自動判定は走らない）。
         ("nsfw", "INTEGER NOT NULL DEFAULT 0"),

@@ -88,6 +88,12 @@
 
 - id はファイル名（拡張子なし）
 - `_turbo` / `_opt` / `_context` / `_save` はカスタムノード前提なので、**接続先が `comfy_cloud` のときは選択肢に出ない**（§3.1）
+- **`_turbo` / `_opt`** はドラマスタジオからは直接選ばず、プロジェクトの
+  **「動画生成品質」**（`quality` = `normal` / `opt` / `turbo`）として持つ。品質は論理モード
+  （t2v / i2v / r2v）と直交していて、モードが決まったあとに「モード × 品質 → バリアント id」で
+  解決される（`app.studio._quality_workflow`）。t2v にはバリアントが無く、`latent_continuity` が
+  ON のあいだも `_save` / `_context` のバリアントが無いので、どちらも**素へフォールバック**する。
+  接続先が対応しない（`comfy_cloud`）ときも同じで、理由は投入プレビューの `workflow_reason` に出る。
 - **`minimax_h3_*_save`** は素の t2v / i2v / r2v に `MiniMaxH3MotionContextSaveLatent` →
   `PreviewAny` の 2 ノードだけを足した版で、**AV ラテントを保存する以外は素の版とまったく同じ**
   （Motion Context の読み込み・`…Trim` は入っていないので尺も変わらない）。ドラマスタジオは

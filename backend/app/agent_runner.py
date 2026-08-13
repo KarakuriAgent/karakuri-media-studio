@@ -1061,6 +1061,7 @@ async def _studio_create_project(params: dict[str, Any]) -> tuple[str, str, dict
         bool(body.get("auto_translate", True)),
         bool(body.get("latent_continuity", False)),
         bool(body.get("nsfw", False)),
+        str(body.get("quality") or studio.DEFAULT_QUALITY),
         actor=STUDIO_ACTOR,
     )
     return (

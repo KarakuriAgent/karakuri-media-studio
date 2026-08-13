@@ -15,11 +15,14 @@ import type {
   StudioProjectUpdate,
   StudioRevision,
   StudioShotUpdate,
+  StudioVideoQuality,
 } from '../../types'
 import { Banner } from '../ui'
 import { Button } from '../ui/button'
+import { Label } from '../ui/label'
 import { ResizeHandle, useIsWide, useResizablePanel } from '../ui/resizable-panel'
 import { Tabs, TabsList, TabsTrigger } from '../ui/tabs'
+import { NativeSelect } from '../NativeSelect'
 import TargetSelector from '../TargetSelector'
 import CanvasView from '../canvas/CanvasView'
 import OverviewView from './OverviewView'
@@ -30,6 +33,9 @@ import ScriptView from './ScriptView'
 import ShotRail from './ShotRail'
 import WorldView from './WorldView'
 import {
+  VIDEO_QUALITIES,
+  VIDEO_QUALITY_HINT,
+  VIDEO_QUALITY_LABEL,
   assetKindFromFile,
   buildShotTree,
   moveId,
@@ -556,6 +562,51 @@ export default function StudioView({
     </div>
   )
 
+  /**
+   * 動画生成の品質（プロジェクト設定）。接続先セレクタの隣に**常時**出すのは、
+   * これがテイクを 1 本焼くたびの待ち時間をそのまま決める設定だから。
+   *
+   * 変更はその場でプロジェクトへ保存する（`saveProject` が PATCH と読み直しを
+   * やるので、楽観更新は持たず、保存が終わるまで `busy` で塞ぐ）。ラテント
+   * 連続性が ON のあいだは turbo / opt に保存付きのバリアントが無く、投入時に
+   * 素へフォールバックするので、選ばせたまま注記だけを添える。
+   */
+  const qualityIgnored = detail.latent_continuity && detail.quality !== 'normal'
+  const qualitySelector = (
+    <div className="flex shrink-0 items-center gap-2">
+      <Label className="shrink-0" htmlFor="studio-quality">
+        品質
+      </Label>
+      <div className="w-28">
+        <NativeSelect
+          id="studio-quality"
+          value={detail.quality}
+          disabled={busy}
+          title={VIDEO_QUALITIES.map((value) => VIDEO_QUALITY_HINT[value]).join('\n')}
+          onChange={(event) =>
+            saveProject({ quality: event.target.value as StudioVideoQuality })
+          }
+        >
+          {VIDEO_QUALITIES.map((value) => (
+            <option key={value} value={value}>
+              {VIDEO_QUALITY_LABEL[value]}
+            </option>
+          ))}
+        </NativeSelect>
+      </div>
+      {qualityIgnored && (
+        <span
+          className="text-[11px] leading-tight text-amber-400"
+          title="turbo / opt には AV ラテントを保存する版が無いので、連続性が ON のあいだは通常品質で投入します"
+        >
+          連続性が有効なため
+          <br />
+          品質設定は無効
+        </span>
+      )}
+    </div>
+  )
+
   const backToProjects = (
     <Button variant="outline" size="sm" onClick={() => setProjectId(null)}>
       <ArrowLeft />
@@ -575,6 +626,7 @@ export default function StudioView({
             </h2>
             <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
               {targetSelector}
+              {qualitySelector}
               {modeToggle}
             </div>
           </div>
@@ -635,6 +687,7 @@ export default function StudioView({
               </h2>
               <div className="ml-auto flex flex-wrap items-center justify-end gap-2">
                 {targetSelector}
+                {qualitySelector}
                 {modeToggle}
               </div>
             </div>

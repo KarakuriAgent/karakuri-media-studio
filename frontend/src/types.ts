@@ -958,6 +958,19 @@ export type StudioWorkflowOverride =
 /** リビジョンを作った主体（人の操作か、エージェントの操作か）。 */
 export type StudioRevisionActor = 'user' | 'agent'
 
+/**
+ * 動画生成の品質（プロジェクト単位の設定）。論理モード（t2v / i2v / r2v）とは
+ * 直交していて、モードが決まったあとに「モード × 品質 -> バリアント」で解決される。
+ *
+ * - `normal`: 素の MiniMax H3（20 steps）。どの接続先でも動く。
+ * - `opt`: 20 steps のまま、量子化と高速化パッチだけを焼き込んだ最適化版。
+ * - `turbo`: 4 steps の蒸留 LoRA 版（いちばん速いが粗い）。
+ *
+ * `opt` / `turbo` は i2v / r2v にしかバリアントが無く、カスタムノード頼みなので、
+ * 条件が揃わなければ素へフォールバックする（理由は `workflow_reason`）。
+ */
+export type StudioVideoQuality = 'normal' | 'opt' | 'turbo'
+
 export interface StudioProject {
   id: string
   name: string
@@ -974,6 +987,8 @@ export interface StudioProject {
    * ON なら直前カットの動画と AV ラテントを渡す `minimax_h3_r2v_context`。
    */
   latent_continuity: boolean
+  /** 動画生成の品質（テイク生成のたびにモードと掛け合わせて解決される）。 */
+  quality: StudioVideoQuality
   /**
    * この作品から投入するジョブをすべて NSFW 扱いにする。OFF なら**非 NSFW で
    * 固定**（投入時に明示するので、Grok の自動判定は走らない）。
@@ -1004,6 +1019,8 @@ export interface StudioProjectCreate {
    * ON なら直前カットの動画と AV ラテントを渡す `minimax_h3_r2v_context`。
    */
   latent_continuity?: boolean
+  /** 動画生成の品質（既定は素の 20 steps = `normal`）。 */
+  quality?: StudioVideoQuality
   /** この作品から投入するジョブをすべて NSFW 扱いにする（OFF = 非 NSFW 固定）。 */
   nsfw?: boolean
 }
@@ -1021,6 +1038,8 @@ export interface StudioProjectUpdate {
    * ON なら直前カットの動画と AV ラテントを渡す `minimax_h3_r2v_context`。
    */
   latent_continuity?: boolean
+  /** 動画生成の品質。 */
+  quality?: StudioVideoQuality
   /** この作品から投入するジョブをすべて NSFW 扱いにする（OFF = 非 NSFW 固定）。 */
   nsfw?: boolean
 }
@@ -1310,6 +1329,13 @@ export interface StudioShotPreview {
   will_translate: boolean
   /** プロジェクトの設定（引き継ぎを Motion Context で行う = ラテント連続性）。 */
   latent_continuity: boolean
+  /** プロジェクトの設定（動画生成の品質）。 */
+  quality: StudioVideoQuality
+  /**
+   * `quality` が実際に効いたか（false = 素へフォールバックした。
+   * 理由は `workflow_reason` の末尾に入る）。
+   */
+  quality_applied: boolean
   /** ラテント連続性で引き継ぐ直前カットの動画（使わないときは null）。 */
   context_video: string | null
   /** 同じく、引き継ぎ元の AV ラテント（ComfyUI 側のパス）。 */

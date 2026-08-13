@@ -106,6 +106,7 @@ async def create_project(payload: StudioProjectCreate) -> StudioProject:
             payload.auto_translate,
             payload.latent_continuity,
             payload.nsfw,
+            payload.quality,
         )
     except service.StudioError as exc:
         raise _bad_request(exc) from exc
