@@ -105,6 +105,8 @@ STUDIO_ACTIONS = (
 #: 中身を直すのは studio_* の仕事（text / model カードだけ例外で ``data`` を持つ）。
 CANVAS_ACTIONS = (
     "canvas_list_cards",
+    "canvas_search_sessions",
+    "canvas_read_session",
     "canvas_place_card",
     "canvas_move_card",
     "canvas_update_card",
@@ -121,6 +123,8 @@ ACTION_NAMES = (
     "library",
     "library_search",
     "library_sheet",
+    "agent_search_sessions",
+    "agent_read_session",
     "checkin",
     "done",
     *STUDIO_ACTIONS,
@@ -654,6 +658,15 @@ def _studio_id(
     return text or None
 
 
+def _offset(payload: dict[str, Any], name: str) -> int:
+    try:
+        return max(0, int(payload.get("offset") or 0))
+    except (TypeError, ValueError) as exc:
+        raise ActionError(
+            f"{name} の offset は 0 以上の整数で指定してください"
+        ) from exc
+
+
 def _studio_target(payload: dict[str, Any], where: str, parent: str) -> tuple[
     str | None, str | None
 ]:
@@ -820,6 +833,21 @@ def _canvas_payload(name: str, payload: dict[str, Any]) -> dict[str, Any]:
         if tab is not None:
             data["episode_id"] = str(tab)
         return data
+    if name == "canvas_search_sessions":
+        data["project_id"] = _studio_id(payload, "project_id", name)
+        data["q"] = str(payload.get("q") or payload.get("query") or "").strip()
+        exclude = _studio_id(payload, "session_id", name, required=False)
+        if exclude:
+            data["session_id"] = exclude
+        data["offset"] = _offset(payload, name)
+        return data
+    if name == "canvas_read_session":
+        data["session_id"] = _studio_id(payload, "session_id", name)
+        project = _studio_id(payload, "project_id", name, required=False)
+        if project:
+            data["project_id"] = project
+        data["offset"] = _offset(payload, name)
+        return data
     if name == "canvas_place_card":
         data["project_id"] = _studio_id(payload, "project_id", name)
         data["body"] = _studio_body(
@@ -951,6 +979,12 @@ def parse_action(
             raise ActionError(
                 "library_search の offset は 0 以上の整数で指定してください"
             ) from exc
+    elif name == "agent_search_sessions":
+        action.query = str(payload.get("q") or payload.get("query") or "").strip()
+        action.offset = _offset(payload, name)
+    elif name == "agent_read_session":
+        action.session_id = _studio_id(payload, "session_id", name)
+        action.offset = _offset(payload, name)
     elif name == "library_sheet":
         raw_ids = payload.get("item_ids")
         item_ids = (

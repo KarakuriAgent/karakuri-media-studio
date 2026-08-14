@@ -46,7 +46,9 @@ from .models import (
     CanvasBoard,
     CanvasCard,
     CanvasCardCreate,
+    CanvasChatSession,
     CanvasMessage,
+    CanvasSessionSearchHit,
     CanvasViewport,
     StudioAsset,
     StudioEpisode,
@@ -117,6 +119,7 @@ def _row_to_card(row: aiosqlite.Row) -> CanvasCard:
 def _row_to_message(row: aiosqlite.Row) -> CanvasMessage:
     data = dict(row)
     data["data"] = studio._load_json(data.get("data"))
+    data["session_id"] = data.get("session_id") or ""
     return CanvasMessage(**data)
 
 
@@ -260,26 +263,33 @@ async def _fetch_viewport(
 
 
 async def board(
-    project_id: str, episode_id: str | None = None
+    project_id: str,
+    episode_id: str | None = None,
+    session_id: str | None = None,
 ) -> CanvasBoard | None:
     """キャンバス 1 タブぶん（表示位置・そのタブのカード・会話）。
 
     カードはここで :func:`_mirror` を通すので、スタジオにあるものは必ず
     出そろう（開いた瞬間に白紙、ということが起きない）。鏡は作品ぜんぶに
-    かけたうえで、返すのは開いているタブのカードだけ。会話は作品に 1 本なので
-    タブによらず同じものを返す。
+    かけたうえで、返すのは開いているタブのカードだけ。会話はセッションごと
+    （省略時は更新が新しいセッション。無ければ空）。
     """
     async with get_db() as conn:
         viewport = await _fetch_viewport(conn, project_id, episode_id)
         if viewport is None:
             return None
         cards, index = await _mirror(conn, project_id)
+        session = await _resolve_session(conn, project_id, session_id)
+        messages = (
+            await _fetch_messages(conn, project_id, session.id) if session else []
+        )
         return CanvasBoard(
             project_id=project_id,
             episode_id=episode_id,
+            session_id=session.id if session else None,
             viewport=viewport,
             cards=cards_in_tab(cards, index, episode_id),
-            messages=await _fetch_messages(conn, project_id),
+            messages=messages,
         )
 
 
@@ -796,12 +806,307 @@ async def _delete_entity(kind: str, entity_id: str) -> None:
 
 
 # --------------------------------------------------------------------------
+# 会話セッション
+# --------------------------------------------------------------------------
+
+SESSION_SEARCH_LIMIT = 20
+SESSION_READ_LIMIT = 40
+
+
+def _row_to_session(row: aiosqlite.Row, *, preview: str = "") -> CanvasChatSession:
+    return CanvasChatSession(
+        id=row["id"],
+        project_id=row["project_id"],
+        title=row["title"] or "",
+        created_at=row["created_at"],
+        updated_at=row["updated_at"],
+        preview=preview,
+        grok_session_id=row["grok_session_id"] or "",
+        grok_cwd=row["grok_cwd"] or "",
+        snapshot_key=row["snapshot_key"] or "",
+    )
+
+
+async def _fetch_session(
+    conn: aiosqlite.Connection, session_id: str
+) -> CanvasChatSession | None:
+    async with conn.execute(
+        "SELECT * FROM canvas_sessions WHERE id = ?", (session_id,)
+    ) as cur:
+        row = await cur.fetchone()
+    return _row_to_session(row) if row else None
+
+
+async def _latest_session(
+    conn: aiosqlite.Connection, project_id: str
+) -> CanvasChatSession | None:
+    async with conn.execute(
+        "SELECT * FROM canvas_sessions WHERE project_id = ?"
+        " ORDER BY updated_at DESC, created_at DESC, id DESC LIMIT 1",
+        (project_id,),
+    ) as cur:
+        row = await cur.fetchone()
+    return _row_to_session(row) if row else None
+
+
+async def _resolve_session(
+    conn: aiosqlite.Connection, project_id: str, session_id: str | None
+) -> CanvasChatSession | None:
+    if session_id:
+        session = await _fetch_session(conn, session_id)
+        if session is None or session.project_id != project_id:
+            return None
+        return session
+    return await _latest_session(conn, project_id)
+
+
+async def get_session(
+    project_id: str, session_id: str
+) -> CanvasChatSession | None:
+    async with get_db() as conn:
+        return await _resolve_session(conn, project_id, session_id)
+
+
+async def latest_session(project_id: str) -> CanvasChatSession | None:
+    async with get_db() as conn:
+        return await _latest_session(conn, project_id)
+
+
+async def ensure_session(
+    project_id: str, session_id: str | None = None, *, title: str = ""
+) -> CanvasChatSession:
+    """指定セッション、または最新。無ければ空のセッションを 1 本作る。"""
+    async with get_db() as conn:
+        if await _fetch_viewport(conn, project_id) is None:
+            raise CanvasError("project not found")
+        if session_id:
+            session = await _resolve_session(conn, project_id, session_id)
+            if session is None:
+                raise CanvasError("session not found")
+            return session
+        existing = await _latest_session(conn, project_id)
+        if existing is not None:
+            return existing
+        return await _insert_session(conn, project_id, title=title or "チャット")
+
+
+async def _insert_session(
+    conn: aiosqlite.Connection,
+    project_id: str,
+    *,
+    title: str = "",
+    grok_cwd: str = "",
+) -> CanvasChatSession:
+    now = _now()
+    session_id = new_id()
+    from .agent_store import session_dir
+
+    cwd = grok_cwd or str(session_dir(f"canvas-sess-{session_id}"))
+    await conn.execute(
+        "INSERT INTO canvas_sessions"
+        " (id, project_id, title, created_at, updated_at, grok_cwd)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        (session_id, project_id, title, now, now, cwd),
+    )
+    await conn.commit()
+    session = await _fetch_session(conn, session_id)
+    assert session is not None
+    return session
+
+
+async def create_session(project_id: str, title: str = "") -> CanvasChatSession:
+    async with get_db() as conn:
+        if await _fetch_viewport(conn, project_id) is None:
+            raise CanvasError("project not found")
+        return await _insert_session(conn, project_id, title=title)
+
+
+async def list_sessions(project_id: str) -> list[CanvasChatSession]:
+    async with get_db() as conn:
+        if await _fetch_viewport(conn, project_id) is None:
+            raise CanvasError("project not found")
+        async with conn.execute(
+            "SELECT * FROM canvas_sessions WHERE project_id = ?"
+            " ORDER BY updated_at DESC, created_at DESC, id DESC",
+            (project_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+        sessions: list[CanvasChatSession] = []
+        for row in rows:
+            preview = await _session_preview(conn, row["id"])
+            sessions.append(_row_to_session(row, preview=preview))
+        return sessions
+
+
+async def _session_preview(conn: aiosqlite.Connection, session_id: str) -> str:
+    async with conn.execute(
+        "SELECT content FROM canvas_messages WHERE session_id = ?"
+        " AND role != 'system' ORDER BY ts DESC, id DESC LIMIT 1",
+        (session_id,),
+    ) as cur:
+        row = await cur.fetchone()
+    if row is None or not (row["content"] or "").strip():
+        return ""
+    return row["content"].strip().splitlines()[0][:80]
+
+
+async def update_session(
+    project_id: str, session_id: str, *, title: str
+) -> CanvasChatSession | None:
+    async with get_db() as conn:
+        session = await _resolve_session(conn, project_id, session_id)
+        if session is None:
+            return None
+        await conn.execute(
+            "UPDATE canvas_sessions SET title = ?, updated_at = ? WHERE id = ?",
+            (title, _now(), session_id),
+        )
+        await conn.commit()
+        return await _fetch_session(conn, session_id)
+
+
+async def update_session_grok(
+    session_id: str,
+    *,
+    grok_session_id: str | None = None,
+    grok_cwd: str | None = None,
+    snapshot_key: str | None = None,
+) -> None:
+    fields: dict[str, str] = {}
+    if grok_session_id is not None:
+        fields["grok_session_id"] = grok_session_id
+    if grok_cwd is not None:
+        fields["grok_cwd"] = grok_cwd
+    if snapshot_key is not None:
+        fields["snapshot_key"] = snapshot_key
+    if not fields:
+        return
+    assignments = ", ".join(f"{key} = ?" for key in fields)
+    async with get_db() as conn:
+        await conn.execute(
+            f"UPDATE canvas_sessions SET {assignments} WHERE id = ?",
+            (*fields.values(), session_id),
+        )
+        await conn.commit()
+
+
+async def delete_session(project_id: str, session_id: str) -> CanvasChatSession | None:
+    async with get_db() as conn:
+        session = await _resolve_session(conn, project_id, session_id)
+        if session is None:
+            return None
+        await conn.execute(
+            "DELETE FROM canvas_messages WHERE session_id = ?", (session_id,)
+        )
+        await conn.execute("DELETE FROM canvas_sessions WHERE id = ?", (session_id,))
+        await conn.commit()
+        return session
+
+
+async def search_sessions(
+    project_id: str,
+    query: str,
+    *,
+    exclude_id: str | None = None,
+    limit: int = SESSION_SEARCH_LIMIT,
+    offset: int = 0,
+) -> tuple[list[CanvasSessionSearchHit], int]:
+    """同じ作品のセッションをタイトル・本文 LIKE で探す。"""
+    q = (query or "").strip()
+    like = f"%{q}%"
+    async with get_db() as conn:
+        if await _fetch_viewport(conn, project_id) is None:
+            raise CanvasError("project not found")
+        params: list[Any] = [project_id]
+        where = "s.project_id = ?"
+        if q:
+            where += " AND (s.title LIKE ? OR m.content LIKE ?)"
+            params += [like, like]
+        if exclude_id:
+            where += " AND s.id != ?"
+            params.append(exclude_id)
+        count_sql = (
+            "SELECT COUNT(DISTINCT s.id) AS n FROM canvas_sessions s"
+            " LEFT JOIN canvas_messages m ON m.session_id = s.id"
+            f" WHERE {where}"
+        )
+        async with conn.execute(count_sql, params) as cur:
+            total = int((await cur.fetchone())["n"])
+        sql = (
+            "SELECT s.id AS session_id, s.title AS title,"
+            " COALESCE(m.content, '') AS snippet, COALESCE(m.ts, s.updated_at) AS ts"
+            " FROM canvas_sessions s"
+            " LEFT JOIN canvas_messages m ON m.session_id = s.id"
+            f" WHERE {where}"
+            " ORDER BY COALESCE(m.ts, s.updated_at) DESC, s.id DESC"
+            " LIMIT ? OFFSET ?"
+        )
+        async with conn.execute(sql, [*params, limit, offset]) as cur:
+            rows = await cur.fetchall()
+    hits: list[CanvasSessionSearchHit] = []
+    seen: set[str] = set()
+    for row in rows:
+        sid = row["session_id"]
+        if sid in seen:
+            continue
+        seen.add(sid)
+        snippet = (row["snippet"] or "").replace("\n", " ").strip()
+        if q:
+            idx = snippet.lower().find(q.lower())
+            if idx >= 0:
+                start = max(0, idx - 20)
+                snippet = snippet[start : start + 120]
+            else:
+                snippet = snippet[:120]
+        else:
+            snippet = snippet[:120]
+        hits.append(
+            CanvasSessionSearchHit(
+                session_id=sid,
+                title=row["title"] or "",
+                snippet=snippet,
+                ts=row["ts"] or "",
+            )
+        )
+    return hits, total
+
+
+async def read_session_transcript(
+    session_id: str,
+    *,
+    project_id: str | None = None,
+    exclude_id: str | None = None,
+    offset: int = 0,
+    limit: int = SESSION_READ_LIMIT,
+) -> tuple[CanvasChatSession | None, list[CanvasMessage], int, str | None]:
+    """同じ作品の他セッション本文。失敗は例外にせず error 文字列で返す。"""
+    if exclude_id and session_id == exclude_id:
+        return None, [], 0, "今の会話自身は読めない"
+    async with get_db() as conn:
+        session = await _fetch_session(conn, session_id)
+        if session is None:
+            return None, [], 0, "セッションが見つからない"
+        if project_id and session.project_id != project_id:
+            return None, [], 0, "この作品のものではない"
+        messages = await _fetch_messages(conn, session.project_id, session_id)
+    visible = [message for message in messages if message.role != "system"]
+    start = max(0, offset)
+    return session, visible[start : start + limit], len(visible), None
+
+
+# --------------------------------------------------------------------------
 # 会話
 # --------------------------------------------------------------------------
 
 async def _fetch_messages(
-    conn: aiosqlite.Connection, project_id: str
+    conn: aiosqlite.Connection, project_id: str, session_id: str | None = None
 ) -> list[CanvasMessage]:
+    if session_id:
+        async with conn.execute(
+            "SELECT * FROM canvas_messages WHERE session_id = ? ORDER BY ts, id",
+            (session_id,),
+        ) as cur:
+            return [_row_to_message(row) for row in await cur.fetchall()]
     async with conn.execute(
         "SELECT * FROM canvas_messages WHERE project_id = ? ORDER BY ts, id",
         (project_id,),
@@ -809,9 +1114,16 @@ async def _fetch_messages(
         return [_row_to_message(row) for row in await cur.fetchall()]
 
 
-async def list_messages(project_id: str) -> list[CanvasMessage]:
+async def list_messages(
+    project_id: str, session_id: str | None = None
+) -> list[CanvasMessage]:
     async with get_db() as conn:
-        return await _fetch_messages(conn, project_id)
+        if session_id is None:
+            session = await _latest_session(conn, project_id)
+            session_id = session.id if session else None
+            if session_id is None:
+                return []
+        return await _fetch_messages(conn, project_id, session_id)
 
 
 async def append_message(
@@ -819,26 +1131,45 @@ async def append_message(
     role: str,
     content: str,
     *,
+    session_id: str | None = None,
     kind: str | None = None,
     data: dict[str, Any] | None = None,
 ) -> CanvasMessage:
     message_id = new_id()
+    now = _now()
     async with get_db() as conn:
         if await _fetch_viewport(conn, project_id) is None:
             raise CanvasError("project not found")
+        session = await _resolve_session(conn, project_id, session_id)
+        if session is None:
+            if session_id:
+                raise CanvasError("session not found")
+            session = await _insert_session(
+                conn, project_id, title=_title_from_content(content) if role == "user" else "チャット"
+            )
         await conn.execute(
             "INSERT INTO canvas_messages"
-            " (id, project_id, ts, role, content, kind, data)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?)",
+            " (id, project_id, session_id, ts, role, content, kind, data)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 message_id,
                 project_id,
-                _now(),
+                session.id,
+                now,
                 role,
                 content,
                 kind,
                 json.dumps(data or {}, ensure_ascii=False),
             ),
+        )
+        title = session.title
+        if role == "user" and (not title or title == "チャット"):
+            derived = _title_from_content(content)
+            if derived:
+                title = derived
+        await conn.execute(
+            "UPDATE canvas_sessions SET updated_at = ?, title = ? WHERE id = ?",
+            (now, title, session.id),
         )
         await conn.commit()
         async with conn.execute(
@@ -846,3 +1177,8 @@ async def append_message(
         ) as cur:
             row = await cur.fetchone()
     return _row_to_message(row)  # type: ignore[arg-type]
+
+
+def _title_from_content(content: str) -> str:
+    line = (content or "").strip().splitlines()[0] if content else ""
+    return line[:40]

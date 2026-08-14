@@ -328,6 +328,13 @@ async def queue_prompt(workflow: dict[str, Any], client_id: str) -> str:
     return str(prompt_id)
 
 
+async def interrupt() -> None:
+    """Best-effort ``POST /interrupt``. Comfy Cloud には無いので呼ばない。"""
+    if is_cloud():
+        return
+    await _request("POST", "/interrupt", timeout=2.0)
+
+
 async def get_history(prompt_id: str) -> dict[str, Any]:
     """Job state in local ``/history`` entry shape ({} while queued).
 

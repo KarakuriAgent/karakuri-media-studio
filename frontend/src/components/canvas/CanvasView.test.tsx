@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import { api } from '../../api'
 import type {
+  CanvasAgentState,
   CanvasBoard,
   CanvasCard,
   CanvasMessage,
@@ -22,6 +23,9 @@ vi.mock('../../api', async () => {
     api: {
       options: vi.fn(),
       getCanvasBoard: vi.fn(),
+      listCanvasSessions: vi.fn(),
+      createCanvasSession: vi.fn(),
+      searchCanvasSessions: vi.fn(),
       setCanvasViewport: vi.fn(),
       createCanvasCard: vi.fn(),
       updateCanvasCard: vi.fn(),
@@ -142,6 +146,7 @@ function board(overrides: Partial<CanvasBoard> = {}): CanvasBoard {
   return {
     project_id: 'p1',
     episode_id: null,
+    session_id: 'sess1',
     viewport: { x: 0, y: 0, zoom: 1 },
     cards: [card('c1')],
     messages: [],
@@ -153,6 +158,7 @@ function message(overrides: Partial<CanvasMessage> = {}): CanvasMessage {
   return {
     id: 'm1',
     project_id: 'p1',
+    session_id: 'sess1',
     ts: '2026-01-01T00:00:00Z',
     role: 'user',
     content: '@アキ の立ち絵がほしい',
@@ -169,19 +175,46 @@ function frame(overrides: Partial<CanvasProgress> = {}): CanvasProgress {
     project_id: 'p1',
     running: true,
     activity: null,
+    session_id: 'sess1',
     message: null,
     ...overrides,
   }
 }
 
-function setup(data: CanvasBoard = board(), project: StudioProjectDetail = detail) {
+function setup(
+  data: CanvasBoard = board(),
+  project: StudioProjectDetail = detail,
+  leftover?: CanvasProgress | null,
+  agentState?: Partial<CanvasAgentState>,
+) {
   mocked.options.mockResolvedValue({})
   mocked.setCanvasViewport.mockResolvedValue(data.viewport)
   mocked.getCanvasBoard.mockResolvedValue(data)
+  mocked.listCanvasSessions.mockResolvedValue([
+    {
+      id: data.session_id || 'sess1',
+      project_id: 'p1',
+      title: 'チャット',
+      created_at: '2026-01-01T00:00:00Z',
+      updated_at: '2026-01-01T00:00:00Z',
+      preview: '',
+    },
+  ])
+  mocked.searchCanvasSessions.mockResolvedValue([])
+  mocked.createCanvasSession.mockResolvedValue({
+    id: 'sess-new',
+    project_id: 'p1',
+    title: 'チャット',
+    created_at: '2026-01-01T00:00:00Z',
+    updated_at: '2026-01-01T00:00:00Z',
+    preview: '',
+  })
   mocked.getCanvasAgentState.mockResolvedValue({
     project_id: 'p1',
     running: false,
     activity: null,
+    session_id: data.session_id || 'sess1',
+    ...agentState,
   })
   mocked.previewStudioShotPrompt.mockResolvedValue({
     shot_id: 'sh1',
@@ -204,7 +237,13 @@ function setup(data: CanvasBoard = board(), project: StudioProjectDetail = detai
     error: '',
   })
   const reload = vi.fn().mockResolvedValue(undefined)
-  const view = render(<CanvasView detail={project} onReloadStudio={reload} />)
+  const view = render(
+    <CanvasView
+      detail={project}
+      event={leftover ?? undefined}
+      onReloadStudio={reload}
+    />,
+  )
   const emit = (event: CanvasProgress) =>
     view.rerender(
       <CanvasView detail={project} event={event} onReloadStudio={reload} />,
@@ -283,7 +322,7 @@ describe('CanvasView のタブ', () => {
     fireEvent.click(screen.getByRole('tab', { name: '第1話' }))
 
     await waitFor(() =>
-      expect(mocked.getCanvasBoard).toHaveBeenCalledWith('p1', 'e1'),
+      expect(mocked.getCanvasBoard).toHaveBeenCalledWith('p1', 'e1', expect.anything()),
     )
     expect(await screen.findByText('カット2')).toBeTruthy()
     // 作品共通のカード（素材）は出ない
@@ -336,7 +375,36 @@ describe('CanvasView のタブ', () => {
     await waitFor(() => expect(mocked.createStudioEpisode).toHaveBeenCalledWith('p1'))
     await waitFor(() => expect(reload).toHaveBeenCalled())
     await waitFor(() =>
-      expect(mocked.getCanvasBoard).toHaveBeenCalledWith('p1', 'e3'),
+      expect(mocked.getCanvasBoard).toHaveBeenCalledWith('p1', 'e3', expect.anything()),
+    )
+  })
+
+  it('別画面から戻っても取り残した終了フレームで実行中を消さない', async () => {
+    setup(board({ cards: [] }), serial, frame({ running: false, activity: null }), {
+      running: true,
+      activity: '思考中',
+    })
+    expect(await screen.findByRole('button', { name: /停止/ })).toBeTruthy()
+    expect(screen.getByText(/思考中/)).toBeTruthy()
+  })
+
+  it('実行中は会話の検索を受け付けない', async () => {
+    const { emit } = setup(board({ cards: [] }), serial)
+    await screen.findByRole('tab', { name: '作品共通' })
+    emit(frame({ running: true, activity: '思考中' }))
+    const search = screen.getByRole('textbox', { name: '他の会話を検索' })
+    expect((search as HTMLInputElement).disabled).toBe(true)
+    fireEvent.change(search, { target: { value: '塩' } })
+    expect(mocked.searchCanvasSessions).not.toHaveBeenCalled()
+  })
+
+  it('新しい会話を作って切り替えられる', async () => {
+    setup(board({ cards: [] }), serial)
+    await screen.findByRole('tab', { name: '作品共通' })
+    fireEvent.click(screen.getByRole('button', { name: '新しい会話' }))
+    await waitFor(() => expect(mocked.createCanvasSession).toHaveBeenCalledWith('p1'))
+    await waitFor(() =>
+      expect(screen.getByRole('combobox', { name: '会話セッション' })).toBeTruthy(),
     )
   })
 
@@ -362,6 +430,7 @@ describe('CanvasView のタブ', () => {
         'この話のカットを足して',
         'e1',
         [],
+        expect.anything(),
       ),
     )
   })
@@ -372,14 +441,14 @@ describe('CanvasView のタブ', () => {
     mocked.getCanvasBoard.mockResolvedValue(board({ episode_id: 'e1', cards: [] }))
     fireEvent.click(screen.getByRole('tab', { name: '第1話' }))
     await waitFor(() =>
-      expect(mocked.getCanvasBoard).toHaveBeenCalledWith('p1', 'e1'),
+      expect(mocked.getCanvasBoard).toHaveBeenCalledWith('p1', 'e1', expect.anything()),
     )
     cleanup()
 
     mocked.getCanvasBoard.mockClear()
     setup(board({ episode_id: 'e1', cards: [] }), serial)
     await waitFor(() =>
-      expect(mocked.getCanvasBoard).toHaveBeenCalledWith('p1', 'e1'),
+      expect(mocked.getCanvasBoard).toHaveBeenCalledWith('p1', 'e1', expect.anything()),
     )
   })
 })
@@ -389,7 +458,7 @@ describe('CanvasView', () => {
     setup()
     expect(await screen.findByText('@アキ')).toBeTruthy()
     expect(screen.getByText('主人公')).toBeTruthy()
-    expect(mocked.getCanvasBoard).toHaveBeenCalledWith('p1', null)
+    expect(mocked.getCanvasBoard).toHaveBeenCalledWith('p1', null, expect.anything())
   })
 
   it('初めて開いたときは全体が見える位置に寄せる', async () => {
@@ -533,6 +602,7 @@ describe('CanvasView', () => {
         '@アキ の立ち絵がほしい',
         null,
         [],
+        expect.anything(),
       ),
     )
     // 実行中は送信できず、止める口が出る
@@ -576,7 +646,9 @@ describe('CanvasView', () => {
 
     emit(frame({ running: false }))
 
-    await waitFor(() => expect(mocked.getCanvasBoard).toHaveBeenCalledWith('p1', null))
+    await waitFor(() =>
+      expect(mocked.getCanvasBoard).toHaveBeenCalledWith('p1', null, expect.anything()),
+    )
     await waitFor(() => expect(reload).toHaveBeenCalled())
     expect(screen.queryByRole('button', { name: /停止/ })).toBeNull()
   })
@@ -647,7 +719,11 @@ describe('CanvasView の添付', () => {
       target: { files: [file()] },
     })
     await waitFor(() =>
-      expect(mocked.uploadCanvasAttachment).toHaveBeenCalledWith('p1', expect.any(File)),
+      expect(mocked.uploadCanvasAttachment).toHaveBeenCalledWith(
+        'p1',
+        expect.any(File),
+        expect.anything(),
+      ),
     )
     // 送信前はチップとして見えている
     expect(await screen.findByTitle('/tmp/canvas/attachments/koe_1.wav')).toBeTruthy()
@@ -658,9 +734,13 @@ describe('CanvasView の添付', () => {
     fireEvent.click(screen.getByRole('button', { name: '送信' }))
 
     await waitFor(() =>
-      expect(mocked.runCanvasAgent).toHaveBeenCalledWith('p1', 'この声で', null, [
-        'attachments/koe_1.wav',
-      ]),
+      expect(mocked.runCanvasAgent).toHaveBeenCalledWith(
+        'p1',
+        'この声で',
+        null,
+        ['attachments/koe_1.wav'],
+        expect.anything(),
+      ),
     )
   })
 
@@ -690,9 +770,13 @@ describe('CanvasView の添付', () => {
     )
     fireEvent.click(screen.getByRole('button', { name: '送信' }))
     await waitFor(() =>
-      expect(mocked.runCanvasAgent).toHaveBeenCalledWith('p1', '', null, [
-        'attachments/koe_2.wav',
-      ]),
+      expect(mocked.runCanvasAgent).toHaveBeenCalledWith(
+        'p1',
+        '',
+        null,
+        ['attachments/koe_2.wav'],
+        expect.anything(),
+      ),
     )
   })
 
@@ -793,7 +877,9 @@ describe('CanvasView: 場カードからのカット追加', () => {
       }),
     )
     // 鏡がカード化するので、盤面とスタジオを取り直せば出てくる
-    await waitFor(() => expect(mocked.getCanvasBoard).toHaveBeenCalledWith('p1', 'e1'))
+    await waitFor(() =>
+      expect(mocked.getCanvasBoard).toHaveBeenCalledWith('p1', 'e1', expect.anything()),
+    )
     await waitFor(() => expect(reload).toHaveBeenCalled())
   })
 

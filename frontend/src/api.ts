@@ -17,8 +17,10 @@ import type {
   CanvasCardCreate,
   CanvasCardPosition,
   CanvasCardUpdate,
+  CanvasChatSession,
   CanvasMessage,
   CanvasMessageCreate,
+  CanvasSessionSearchHit,
   CanvasViewport,
   ChatReply,
   ChatSession,
@@ -43,6 +45,8 @@ import type {
   ModelFieldState,
   ModelsDirStatus,
   Options,
+  PushSubscriptionPayload,
+  PushVapidPublicKey,
   Settings,
   StudioAsset,
   StudioAssetCreate,
@@ -199,8 +203,12 @@ function form<T>(path: string, fields: Record<string, string> = {}): Promise<T> 
  *
  * サーバー側は「省略 = 作品共通」なので、話タブのときだけ `?episode_id=…`。
  */
-function canvasTab(episodeId: string | null): string {
-  return episodeId ? `?episode_id=${encodeURIComponent(episodeId)}` : ''
+function canvasTab(episodeId: string | null, sessionId?: string | null): string {
+  const params = new URLSearchParams()
+  if (episodeId) params.set('episode_id', episodeId)
+  if (sessionId) params.set('session_id', sessionId)
+  const query = params.toString()
+  return query ? `?${query}` : ''
 }
 
 /** multipart のフィールド（未指定は送らず、サーバー側の既定値に任せる）。 */
@@ -238,6 +246,15 @@ export const api = {
    */
   grokStatus: () => request<HealthStatus>('/api/grok/status'),
   checkGrok: () => json<HealthStatus>('POST', '/api/grok/check', {}),
+
+  vapidPublicKey: () => request<PushVapidPublicKey>('/api/push/vapid-public-key'),
+  savePushSubscription: (payload: PushSubscriptionPayload) =>
+    json<void>('POST', '/api/push/subscriptions', payload),
+  deletePushSubscription: (endpoint: string) =>
+    json<void>(
+      'DELETE',
+      `/api/push/subscriptions?endpoint=${encodeURIComponent(endpoint)}`,
+    ),
 
   // モデル指定と LoRA 登録は接続先ごと（SPEC §5）。`target` を省略すると
   // サーバーが現在の接続先を使う。設定ページは編集中の環境を明示的に渡す。
@@ -370,6 +387,8 @@ export const api = {
   continueJob: (id: string, body: JobContinue = {}) =>
     json<Job>('POST', `/api/jobs/${id}/continue`, body),
   deleteJob: (id: string) => json<void>('DELETE', `/api/jobs/${id}`),
+  /** 実行中・待ちのジョブを止める。完了済みは冪等にそのまま返る。 */
+  cancelJob: (id: string) => json<Job>('POST', `/api/jobs/${id}/cancel`),
   /** NSFW フラグの手動トグル（manual として保存される）。 */
   setJobNsfw: (id: string, nsfw: boolean) =>
     json<Job>('POST', `/api/jobs/${id}/nsfw`, { nsfw }),
@@ -568,9 +587,37 @@ export const api = {
    *
    * `episodeId` は開くタブ（null = 作品共通。素材と未分類のカットが出る）。
    */
-  getCanvasBoard: (projectId: string, episodeId: string | null = null) =>
+  getCanvasBoard: (
+    projectId: string,
+    episodeId: string | null = null,
+    sessionId: string | null = null,
+  ) =>
     request<CanvasBoard>(
-      `/api/canvas/projects/${projectId}${canvasTab(episodeId)}`,
+      `/api/canvas/projects/${projectId}${canvasTab(episodeId, sessionId)}`,
+    ),
+  listCanvasSessions: (projectId: string) =>
+    request<CanvasChatSession[]>(`/api/canvas/projects/${projectId}/sessions`),
+  createCanvasSession: (projectId: string, title = '') =>
+    json<CanvasChatSession>('POST', `/api/canvas/projects/${projectId}/sessions`, {
+      title,
+    }),
+  updateCanvasSession: (projectId: string, sessionId: string, title: string) =>
+    json<CanvasChatSession>(
+      'PATCH',
+      `/api/canvas/projects/${projectId}/sessions/${sessionId}`,
+      { title },
+    ),
+  deleteCanvasSession: (projectId: string, sessionId: string) =>
+    json<void>('DELETE', `/api/canvas/projects/${projectId}/sessions/${sessionId}`),
+  searchCanvasSessions: (
+    projectId: string,
+    q: string,
+    sessionId?: string | null,
+  ) =>
+    request<CanvasSessionSearchHit[]>(
+      `/api/canvas/projects/${projectId}/sessions/search?q=${encodeURIComponent(q)}${
+        sessionId ? `&session_id=${encodeURIComponent(sessionId)}` : ''
+      }`,
     ),
   /** タブの表示位置を覚える（見え方だけなのでリビジョンには残らない）。 */
   setCanvasViewport: (
@@ -610,8 +657,12 @@ export const api = {
       `/api/canvas/cards/${id}?delete_entity=${deleteEntity ? 'true' : 'false'}`,
     ),
 
-  listCanvasMessages: (projectId: string) =>
-    request<CanvasMessage[]>(`/api/canvas/projects/${projectId}/messages`),
+  listCanvasMessages: (projectId: string, sessionId?: string | null) =>
+    request<CanvasMessage[]>(
+      `/api/canvas/projects/${projectId}/messages${
+        sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ''
+      }`,
+    ),
   /** 発言を 1 件残すだけ（エージェントは動かさない）。 */
   createCanvasMessage: (projectId: string, payload: CanvasMessageCreate) =>
     json<CanvasMessage>('POST', `/api/canvas/projects/${projectId}/messages`, payload),
@@ -627,11 +678,13 @@ export const api = {
     content: string,
     episodeId: string | null = null,
     attachments: string[] = [],
+    sessionId: string | null = null,
   ) =>
     json<CanvasAgentRun>('POST', `/api/canvas/projects/${projectId}/agent`, {
       content,
       episode_id: episodeId,
       attachments,
+      session_id: sessionId,
     }),
 
   /**
@@ -639,17 +692,27 @@ export const api = {
    *
    * 返る `path`（workdir 相対）をそのまま `runCanvasAgent` に渡す。
    */
-  uploadCanvasAttachment: (projectId: string, file: File) =>
+  uploadCanvasAttachment: (
+    projectId: string,
+    file: File,
+    sessionId?: string | null,
+  ) =>
     upload<CanvasAttachment>(
-      `/api/canvas/projects/${projectId}/attachments`,
+      `/api/canvas/projects/${projectId}/attachments${
+        sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ''
+      }`,
       file,
     ),
   /** 添付そのものの URL（履歴のサムネイル用）。 */
-  canvasAttachmentUrl: (projectId: string, path: string) =>
+  canvasAttachmentUrl: (
+    projectId: string,
+    path: string,
+    sessionId?: string | null,
+  ) =>
     `/api/canvas/projects/${projectId}/attachments/${path
       .split('/')
       .map(encodeURIComponent)
-      .join('/')}`,
+      .join('/')}${sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ''}`,
   /** 実行中かどうか（WS を取りこぼしたときの拾い先）。 */
   getCanvasAgentState: (projectId: string) =>
     request<CanvasAgentState>(`/api/canvas/projects/${projectId}/agent`),

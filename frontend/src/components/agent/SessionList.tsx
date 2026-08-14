@@ -75,6 +75,7 @@ export default function SessionList({
   style,
 }: Props) {
   const [creating, setCreating] = useState(false)
+  const [filter, setFilter] = useState('')
   const [goal, setGoal] = useState('')
   /** 表示名（空なら最初の指示から自動で決まる）。 */
   const [title, setTitle] = useState('')
@@ -302,12 +303,30 @@ export default function SessionList({
       </div>
 
       <div className="min-h-0 flex-1 space-y-1 overflow-y-auto p-2">
+        {sessions.length > 0 && (
+          <Input
+            className="mb-1 h-7 text-[11px]"
+            value={filter}
+            placeholder="タイトル・発言で絞り込み"
+            aria-label="セッションを絞り込み"
+            onChange={(event) => setFilter(event.target.value)}
+          />
+        )}
         {sessions.length === 0 && (
           <p className="px-1 py-3 text-center text-xs text-muted-foreground">
             まだセッションがありません
           </p>
         )}
-        {sessions.map((session) => (
+        {sessions
+          .filter((session) => {
+            const q = filter.trim().toLowerCase()
+            if (!q) return true
+            return (
+              (session.title || '').toLowerCase().includes(q) ||
+              (session.preview || '').toLowerCase().includes(q)
+            )
+          })
+          .map((session) => (
           <div
             key={session.id}
             className={`group rounded-md border px-2 py-1.5 transition-colors ${

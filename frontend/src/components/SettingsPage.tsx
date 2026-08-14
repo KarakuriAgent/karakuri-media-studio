@@ -16,6 +16,11 @@ import {
 
 import { api, wsUrl } from '../api'
 import {
+  currentPushPermission,
+  ensurePushSubscription,
+  type PushPermission,
+} from '../push'
+import {
   COMFY_TARGETS,
   COMFY_TARGET_LABELS,
   DEFAULT_FAMILY,
@@ -214,6 +219,74 @@ function randomApiKey(length = 32): string {
   const bytes = new Uint8Array(length)
   crypto.getRandomValues(bytes)
   return Array.from(bytes, (byte) => alphabet[byte % alphabet.length]).join('')
+}
+
+const PUSH_LABELS: Record<PushPermission, string> = {
+  granted: '許可',
+  denied: '拒否',
+  default: '未設定',
+  unsupported: '非対応',
+}
+
+function PushSettingsCard() {
+  const [permission, setPermission] = useState<PushPermission>(() =>
+    currentPushPermission(),
+  )
+  const [busy, setBusy] = useState(false)
+  const [message, setMessage] = useState<string | null>(null)
+
+  const enable = async () => {
+    setBusy(true)
+    setMessage(null)
+    try {
+      if (currentPushPermission() === 'denied') {
+        setPermission('denied')
+        setMessage(
+          'ブラウザのサイト設定でこのオリジンの通知を許可してから再読み込みしてください。拒否したあとは JavaScript からダイアログを出せません。',
+        )
+        return
+      }
+      const next = await ensurePushSubscription({ request: true })
+      setPermission(next)
+      if (next === 'granted') setMessage('この端末を購読しました')
+    } catch (error) {
+      setMessage(error instanceof Error ? error.message : String(error))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <SettingsCard
+      title="プッシュ通知"
+      description="生成の完了やエージェントの確認待ちを、この端末の通知として受け取ります。"
+    >
+      <p className="text-sm">
+        いまの許可状態:{' '}
+        <span className="font-medium">{PUSH_LABELS[permission]}</span>
+      </p>
+      {permission === 'denied' && (
+        <p className="text-[11px] text-muted-foreground">
+          ブラウザのサイト設定でこのオリジンの通知を許可してから再読み込みしてください。拒否したあとは
+          JavaScript からダイアログを出せません。
+        </p>
+      )}
+      {permission === 'unsupported' && (
+        <p className="text-[11px] text-muted-foreground">
+          この環境では通知を使えません（HTTPS または localhost
+          と、対応ブラウザが必要です）。
+        </p>
+      )}
+      {permission !== 'unsupported' && (
+        <div>
+          <Button type="button" disabled={busy} onClick={() => void enable()}>
+            {permission === 'granted' ? '購読を作り直す' : '通知を許可する'}
+          </Button>
+        </div>
+      )}
+      {message && <p className="text-[11px] text-muted-foreground">{message}</p>}
+    </SettingsCard>
+  )
 }
 
 const TABS = [
@@ -970,6 +1043,7 @@ export default function SettingsPage({
 
           {tab === 'connection' && (
             <div className="flex flex-col gap-3">
+              <PushSettingsCard />
               {!settings && (
                 <p className="text-xs text-muted-foreground">読み込み中…</p>
               )}

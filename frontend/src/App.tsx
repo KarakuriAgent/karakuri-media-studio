@@ -31,6 +31,7 @@ import {
   validateForm,
   type FormState,
 } from './form'
+import { ensurePushSubscription } from './push'
 import type {
   AgentProgress,
   CanvasProgress,
@@ -267,6 +268,10 @@ export default function App() {
     void loadJobs()
     void loadSettings()
   }, [loadHealth, loadOptions, loadJobs, loadSettings])
+
+  useEffect(() => {
+    void ensurePushSubscription({ request: true })
+  }, [])
 
   // ------------------------------------------------------------------- WS
 
@@ -609,6 +614,22 @@ export default function App() {
     }
   }
 
+  const cancel = async (job: Job) => {
+    setDetailBusy(true)
+    try {
+      const next = await api.cancelJob(job.id)
+      setJobs((previous) =>
+        previous.map((item) => (item.id === next.id ? next : item)),
+      )
+      setActiveJob((current) => (current?.id === next.id ? next : current))
+      setDetailJob((current) => (current?.id === next.id ? next : current))
+    } catch (error) {
+      pushError(error)
+    } finally {
+      setDetailBusy(false)
+    }
+  }
+
   /** NSFW フラグの手動トグル（manual として保存され、自動判定に上書きされない）。 */
   const toggleNsfw = async (job: Job, nsfw: boolean) => {
     try {
@@ -793,6 +814,7 @@ export default function App() {
                 onRestoreParams={restoreParams}
                 onContinue={(job) => openContinue(job)}
                 onDelete={(job) => void remove(job)}
+                onCancel={(job) => void cancel(job)}
                 onOpenDetail={(job) => openDetail(job)}
                 onToggleNsfw={(job, nsfw) => void toggleNsfw(job, nsfw)}
                 busy={detailBusy}

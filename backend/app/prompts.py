@@ -2178,6 +2178,8 @@ Available actions:
 | `rename` | `title`, plus `name` (artifact file name) **or** `job_id` (+ optional `kind`: `image` / `video` / `frame`) | rename an existing artifact so the panel shows a human title. No approval needed |
 | `library` | `job_id`, `source` (`image` / `last_frame` / `video` / `audio`), optional `title`, optional `tags[]`, optional `category` (`character` / `background` / `prop` / `none`) | keep that output in the user's library so later jobs (and later sessions) can use it as an input. No approval needed |
 | `library_search` | any of `q` (name / tag substring), `tag` (exact), `kind` (`image` / `video` / `audio`), `category` (`character` / `background` / `prop` / `none` = uncategorized), `offset` | search the **whole** library, not just what CHOICES lists; the result arrives next turn as an EVENT with the paths, categories and how many are left. No approval needed |
+| `agent_search_sessions` | `q` (title / message substring), optional `offset` | search **other** agent sessions (not this one) by title or transcript; the result arrives next turn as an EVENT (snippets only — use `agent_read_session` to read a hit). No approval needed |
+| `agent_read_session` | `session_id` (the other session), optional `offset` | read that session's transcript; the result arrives next turn as an EVENT. This session is excluded. No approval needed |
 | `library_sheet` | `item_ids[]` (library ids, 1–8, **in the order they should be laid out**), optional `name`, optional `width` / `height` | compose those library images into one black-background reference sheet and keep it in the library; its id, path and URL arrive next turn as an EVENT. No approval needed |
 | `studio_*` | see DRAMA STUDIO | build and run a studio project — the way to make a series or any story told in several shots |
 | `checkin` | `question`, `options[]` | ask the user and wait for the answer |
@@ -2291,10 +2293,16 @@ Rules:
   `video_loras` (+ `video_trigger_text`, used by the video stage). Leave
   either list out when you do not need it, and never put video LoRAs in a
   `mode: "image_only"` job.
-- Exactly one action per reply — `rename`, `library`, `library_search` and
-  `library_sheet` count like `plan` / `checkin` here, so rename, keep, search or
+- Exactly one action per reply — `rename`, `library`, `library_search`,
+  `library_sheet`, `agent_search_sessions` and `agent_read_session` count like
+  `plan` / `checkin` here, so rename, keep, search or
   compose one thing per turn (the app renames every frame of a job at once when
   you target it by `job_id`).
+- You can look up other sessions, but only when the user **asks** you to
+  (前のセッションを見て / さっきの会話を読んで / use the earlier chat). Do
+  not browse them on your own. Then `agent_search_sessions` (`q` from their
+  words, or empty to list newest-first) and `agent_read_session` with that
+  `session_id`. Do not guess, and do not decide from snippets alone.
 - While you are only asking a question or reporting, send **no JSON at all**.
 - EVENT messages in the transcript are written by the app, not by the user.
   `inspect_result` tells you which frame files are in your working directory —
@@ -2899,7 +2907,10 @@ the ACTION PROTOCOL, or with no JSON at all if you only meant to talk.
 def build_agent_conversation(
     messages: list[AgentMessage], *, retry_reason: str | None = None
 ) -> str:
-    """Flatten the agent transcript into the single ``grok -p`` argument."""
+    """Flatten the agent transcript into the single ``grok -p`` argument.
+
+    ホストへ渡す経路からは外した。REPLAY 組み立てと古い呼び出し用に残す。
+    """
     chunks: list[str] = []
     for message in messages:
         if message.role == "system":
@@ -2919,6 +2930,69 @@ def build_agent_conversation(
         + "\n\n### ASSISTANT\n(Your reply — Japanese text, optionally followed by"
         " one ```json action.)\n"
     )
+
+
+def build_replay(messages: list[AgentMessage]) -> str:
+    """load / resume 失敗時に 1 通だけ送る過去会話（ツールは再実行しない）。"""
+    chunks: list[str] = []
+    for message in messages:
+        if message.role == "system":
+            continue
+        label = _AGENT_ROLE_LABEL.get(message.role, message.role.upper())
+        if message.kind:
+            label = f"{label} ({message.kind})"
+        chunks.append(f"### {label}\n{message.content.strip()}")
+    if not chunks:
+        return ""
+    return (
+        "# REPLAY\n"
+        "Past studio/agent conversation. Actions in this block already ran.\n"
+        "Do not repeat them unless the user asks.\n\n"
+        + "\n\n".join(chunks)
+        + "\n"
+    )
+
+
+def build_user_turn(content: str) -> str:
+    return f"# USER\n{content.strip()}\n"
+
+
+def build_event_turn(content: str, kind: str | None = None) -> str:
+    label = f"# EVENT ({kind})" if kind else "# EVENT"
+    return f"{label}\n{content.strip()}\n"
+
+
+def build_retry_turn(reason: str) -> str:
+    return "# RETRY\n" + AGENT_RETRY_SUFFIX.format(reason=reason).lstrip() + "\n"
+
+
+def build_turn_batch(
+    messages: list[AgentMessage],
+    *,
+    open_tab: tuple[str, str] | None = None,
+) -> str:
+    """最後の assistant 以降の user / event / checkin をターン文に組む。"""
+    parts: list[str] = []
+    for message in messages:
+        if message.role == "user":
+            if open_tab is not None:
+                parts.append(
+                    build_canvas_turn(
+                        tab_label=open_tab[0],
+                        tab_id=open_tab[1],
+                        content=message.content,
+                    )
+                )
+            else:
+                parts.append(build_user_turn(message.content))
+        elif message.role == "event":
+            parts.append(build_event_turn(message.content, message.kind))
+        elif message.role == "checkin":
+            label = (
+                f"# CHECKIN ({message.kind})" if message.kind else "# CHECKIN"
+            )
+            parts.append(f"{label}\n{message.content.strip()}\n")
+    return "\n".join(part for part in parts if part.strip())
 
 
 # --------------------------------------------------------------------------
@@ -2988,6 +3062,8 @@ the next one.
 | action | body | meaning |
 |---|---|---|
 | `canvas_list_cards` | `project_id`, optional `episode_id` (a 話 id, or `"common"`) | what is on the board right now, with each card's id, kind, position and what it refers to — one tab if `episode_id` is given, otherwise the whole board with each card's tab |
+| `canvas_search_sessions` | `project_id`, `q`, optional `session_id` (exclude this chat), optional `offset` | search other chats of **this project** by title or message text; the result arrives next turn as an EVENT (snippets only — use `canvas_read_session` to read a hit). No approval needed |
+| `canvas_read_session` | `session_id` (the other chat), optional `project_id`, optional `offset` | read that chat's messages; the result arrives next turn as an EVENT. This chat is excluded. No approval needed |
 | `canvas_place_card` | `project_id`, `kind`, the fields to create one (`title`, `scene_id` / `episode_id`, `asset_kind`), `x`, `y`, optional `w` / `h`, optional `data` | create **something new** and its card |
 | `canvas_move_card` | `card_id`, `x`, `y`, optional `w` / `h` / `z` | move / resize a card (touches nothing in the studio) |
 | `canvas_update_card` | `card_id`, `data` (text / model cards only), optional `x` / `y` / `w` / `h` / `z` | edit a canvas-only card's contents |
@@ -3004,6 +3080,11 @@ Card kinds and what they refer to:
 
 Rules:
 
+- You can look up other chats of this project, but only when the user **asks**
+  you to (前のセッションを見て / さっきの会話を読んで / use the earlier chat).
+  Do not browse them on your own. Then `canvas_search_sessions` (`q` from their
+  words, or empty to list newest-first) and `canvas_read_session` with that
+  `session_id`. Do not guess, and do not decide from snippets alone.
 - **Never place what already exists.** Anything in the studio is on the board
   already (CANVAS BOARD below lists it). `canvas_place_card` *creates* a new
   asset / 場 / Shot together with its card (`title`, plus `scene_id` /
@@ -3044,46 +3125,35 @@ CANVAS_OUTPUT_RULES = """\
 """
 
 
-def build_canvas_system_prompt(
+def build_canvas_contract(
     *,
-    project: str,
-    board: str,
-    tabs: str = "",
-    tab_id: str = "common",
-    tab_label: str = "作品共通",
+    project_id: str = "",
     workdir: str = "",
     tools_enabled: bool = False,
 ) -> str:
-    """System prompt of one canvas run（:mod:`app.canvas_agent`）。
-
-    ``project`` は :func:`app.agent_runner._studio_detail_text` が作る作品の
-    現況、``board`` は :func:`app.agent_runner.canvas_board_text` が作る
-    **開いているタブ**の盤面、``tabs`` は :func:`app.agent_runner.canvas_tabs_text`
-    が作るタブの一覧。どれも「エージェントが自分でツールを呼んだら得られる
-    本文」と同じものを先に渡しておくためのもので、往復を 1 回減らす。
-    ``tab_id`` / ``tab_label`` は開いているタブ（``'common'`` = 作品共通）。
-    """
+    """キャンバス Grok セッション誕生時だけ渡す契約（現況は入れない）。"""
     parts = [CANVAS_ROLE, CANVAS_PROTOCOL, AGENT_STUDIO]
     if tools_enabled:
         parts.append(AGENT_TOOLS)
     context = [
-        "# THIS PROJECT", "", project.strip(), "",
-        "# CANVAS BOARD", "",
-        f"The user has the **「{tab_label}」** tab open (`episode_id`:"
-        f" `{tab_id}`). 「この話」「このタブ」 means this one.",
-        "",
-        board.strip(),
+        "The LIVE SNAPSHOT / THIS PROJECT / CANVAS BOARD blocks (when present)"
+        " can be stale. When you need a new id or the current board, call"
+        " `studio_get_project` / `canvas_list_cards`.",
+        "# EVENT blocks are results the app wrote after running your action.",
+        "# REPLAY blocks already ran. Do not repeat those actions unless the"
+        " user asks.",
+        "Other chats of this project can be searched with"
+        " `canvas_search_sessions` and read with `canvas_read_session`,"
+        " but only when the user asks you to. Do not open them unprompted.",
     ]
-    if tabs:
-        context += ["", "# CANVAS TABS", "", tabs.strip()]
+    if project_id:
+        context.append(f"This project's `project_id` is `{project_id}`.")
     if workdir:
-        context += [
-            "",
+        context.append(
             f"Your working directory is `{workdir}`. Stay inside it when you"
-            " read or write files.",
-        ]
+            " read or write files."
+        )
     context += [
-        "",
         "When the user attaches files, their message ends with an"
         " `[Attached files — …]` block listing an absolute path, a kind"
         " (image / video / audio / document) and the original file name for"
@@ -3096,3 +3166,70 @@ def build_canvas_system_prompt(
     ]
     parts += ["\n".join(context), CANVAS_OUTPUT_RULES]
     return "\n\n".join(part.strip() for part in parts) + "\n"
+
+
+def build_canvas_snapshot(
+    *,
+    project: str,
+    board: str,
+    tabs: str = "",
+    tab_id: str = "common",
+    tab_label: str = "作品共通",
+) -> str:
+    """必要なときだけ付ける現況（開いているタブ + 作品 + 盤面）。"""
+    lines = [
+        "# OPEN TAB",
+        f"「{tab_label}」 (`episode_id`: `{tab_id}`)",
+        "",
+        "# LIVE SNAPSHOT",
+        "# THIS PROJECT",
+        "",
+        project.strip(),
+        "",
+        "# CANVAS BOARD",
+        "",
+        f"The user has the **「{tab_label}」** tab open (`episode_id`:"
+        f" `{tab_id}`). 「この話」「このタブ」 means this one.",
+        "",
+        board.strip(),
+    ]
+    if tabs:
+        lines += ["", "# CANVAS TABS", "", tabs.strip()]
+    return "\n".join(lines) + "\n"
+
+
+def build_canvas_turn(*, tab_label: str, tab_id: str, content: str) -> str:
+    """毎回のユーザー発言（タブは短く、本文は # USER）。"""
+    return (
+        "# OPEN TAB\n"
+        f"「{tab_label}」 (`episode_id`: `{tab_id}`)\n"
+        "\n"
+        f"# USER\n{content.strip()}\n"
+    )
+
+
+def build_canvas_system_prompt(
+    *,
+    project: str,
+    board: str,
+    tabs: str = "",
+    tab_id: str = "common",
+    tab_label: str = "作品共通",
+    workdir: str = "",
+    tools_enabled: bool = False,
+    project_id: str = "",
+) -> str:
+    """契約 + 現況を 1 本にしたもの（ワンショット冷スタート / 旧呼び出し用）。"""
+    return (
+        build_canvas_contract(
+            project_id=project_id, workdir=workdir, tools_enabled=tools_enabled
+        ).rstrip()
+        + "\n\n"
+        + build_canvas_snapshot(
+            project=project,
+            board=board,
+            tabs=tabs,
+            tab_id=tab_id,
+            tab_label=tab_label,
+        )
+    )

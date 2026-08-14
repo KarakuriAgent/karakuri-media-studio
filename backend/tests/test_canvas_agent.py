@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from app import agent_protocol, canvas_agent
+from app import agent_protocol, canvas_agent, grok
 
 # test_agent.py の env フィクスチャ（Grok / ComfyUI のモック一式）をそのまま使う。
 from test_agent import (  # noqa: F401 - フィクスチャの再エクスポート
@@ -153,6 +153,7 @@ def test_parse_place_card(env):
         ({"action": "canvas_move_card", "x": 0, "y": 0}, "card_id"),
         ({"action": "canvas_move_card", "card_id": "c1"}, "canvas_move_card"),
         ({"action": "canvas_update_card"}, "card_id"),
+        ({"action": "canvas_read_session"}, "session_id"),
     ],
 )
 def test_a_canvas_action_without_its_target_is_rejected(env, payload, needle):
@@ -503,8 +504,42 @@ def test_the_conversation_is_fed_back_to_the_next_turn(env):
         said="いま何がある？",
     )
     second = env.cli.prompts[1]
-    assert "いま何がある？" in second
-    assert "### EVENT (canvas_cards)" in second
+    assert "いま何がある？" not in second
+    assert "# ROLE" not in second
+    assert "# EVENT" in second
+    assert "canvas_cards" in second
+
+
+def test_stop_during_a_turn_does_not_apply_the_action(env, monkeypatch):
+    """ターン中に ⏹ したら、返ってきたアクションは実行しない。"""
+    project = make_project(env)
+
+    async def stopping_exec(argv, cwd, timeout):
+        canvas_agent.request_stop(project["id"])
+        return (
+            0,
+            action_answer(
+                {
+                    "action": "canvas_place_card",
+                    "project_id": project["id"],
+                    "kind": "character",
+                    "title": "残ってはいけない",
+                    "x": 10,
+                    "y": 10,
+                }
+            ),
+            "",
+        )
+
+    monkeypatch.setattr(grok, "_exec", stopping_exec)
+    response = env.client.post(
+        f"/api/canvas/projects/{project['id']}/agent", json={"content": "お願い"}
+    )
+    assert response.status_code == 202, response.text
+    wait_idle(env, project["id"])
+    assert event_of(env, project["id"], "stopped")["content"] == "実行を止めました。"
+    assert board(env, project["id"])["cards"] == []
+    assert "canvas_card_placed" not in kinds(env, project["id"])
 
 
 def test_done_ends_the_run(env):
@@ -614,8 +649,8 @@ def test_an_attachment_lands_in_the_canvas_workdir(env):
     assert uploaded["name"] == "アキ 立ち絵.png"
     assert uploaded["path"].startswith("attachments/")
     assert uploaded["kind"] == "image"
-    # 実体はキャンバスの作業ディレクトリの下（エージェントが開ける場所）
-    assert uploaded["abs_path"].startswith(canvas_agent.workdir(project["id"]))
+    # 実体はセッションの作業ディレクトリの下（エージェントが開ける場所）
+    assert "/agent-sessions/" in uploaded["abs_path"]
     assert Path(uploaded["abs_path"]).is_file()
     # 画面のサムネイル用にそのまま読める
     served = env.client.get(
@@ -726,3 +761,193 @@ def test_the_asset_references_reach_the_agent(env):
     prompt = env.cli.prompts[-1]
     assert added.json()["path"] in prompt
     assert "落ち着いた声" in prompt
+
+
+# --------------------------------------------------------------------------
+# セッション継続・検索・移行
+# --------------------------------------------------------------------------
+
+def test_a_new_session_starts_empty(env):
+    project = make_project(env)
+    ask(env, project["id"], ["はい。"], said="最初の会話")
+    created = env.client.post(f"/api/canvas/projects/{project['id']}/sessions")
+    assert created.status_code == 201, created.text
+    sid = created.json()["id"]
+    board = env.client.get(
+        f"/api/canvas/projects/{project['id']}", params={"session_id": sid}
+    ).json()
+    assert board["messages"] == []
+    assert board["session_id"] == sid
+
+
+def test_search_finds_another_sessions_message(env):
+    project = make_project(env)
+    first = env.client.post(
+        f"/api/canvas/projects/{project['id']}/messages",
+        json={"content": "ラーメンの湯気について"},
+    ).json()
+    env.client.post(f"/api/canvas/projects/{project['id']}/sessions", json={"title": "別"})
+    env.client.post(
+        f"/api/canvas/projects/{project['id']}/messages",
+        json={"content": "別の話"},
+        params={"session_id": env.client.get(
+            f"/api/canvas/projects/{project['id']}/sessions"
+        ).json()[0]["id"]},
+    )
+    hits = env.client.get(
+        f"/api/canvas/projects/{project['id']}/sessions/search",
+        params={"q": "湯気"},
+    ).json()
+    assert any(first["session_id"] == hit["session_id"] for hit in hits)
+    assert any("湯気" in hit["snippet"] or "湯気" in hit["title"] for hit in hits)
+
+
+def test_existing_messages_move_to_a_default_session(env):
+    import sqlite3
+
+    from app import db
+
+    project = make_project(env)
+    conn = sqlite3.connect(db.DB_PATH)
+    conn.execute(
+        "INSERT INTO canvas_messages"
+        " (id, project_id, ts, role, content, kind, data)"
+        " VALUES (?, ?, ?, 'user', ?, NULL, '{}')",
+        ("orphan1", project["id"], "2026-01-01T00:00:00+00:00", "昔の発言"),
+    )
+    conn.commit()
+    conn.close()
+    import asyncio
+
+    asyncio.get_event_loop().run_until_complete(db.init_db())
+    messages = env.client.get(f"/api/canvas/projects/{project['id']}/messages").json()
+    moved = [m for m in messages if m["content"] == "昔の発言"]
+    assert moved
+    assert moved[0]["session_id"]
+
+
+def test_init_db_upgrades_legacy_canvas_messages_without_session_id():
+    """既存 DB の canvas_messages に session_id が無くても起動できる。"""
+    import asyncio
+    import sqlite3
+
+    from app import db
+
+    conn = sqlite3.connect(db.DB_PATH)
+    conn.executescript(
+        """
+        CREATE TABLE canvas_messages (
+          id TEXT PRIMARY KEY,
+          project_id TEXT NOT NULL,
+          ts TEXT NOT NULL,
+          role TEXT NOT NULL,
+          content TEXT NOT NULL,
+          kind TEXT,
+          data TEXT NOT NULL DEFAULT '{}'
+        );
+        """
+    )
+    conn.commit()
+    conn.close()
+    asyncio.get_event_loop().run_until_complete(db.init_db())
+    conn = sqlite3.connect(db.DB_PATH)
+    columns = {row[1] for row in conn.execute("PRAGMA table_info(canvas_messages)")}
+    conn.close()
+    assert "session_id" in columns
+
+
+def test_the_agent_can_search_other_canvas_sessions(env):
+    project = make_project(env)
+    env.client.post(
+        f"/api/canvas/projects/{project['id']}/messages",
+        json={"content": "深夜のスープの塩加減"},
+    )
+    other = env.client.post(
+        f"/api/canvas/projects/{project['id']}/sessions", json={"title": "別件"}
+    ).json()
+    ask(
+        env,
+        project["id"],
+        script(
+            {
+                "action": "canvas_search_sessions",
+                "project_id": project["id"],
+                "q": "スープ",
+            }
+        ),
+        said="前の会話を探して",
+        episode_id=None,
+    )
+    # 最新セッション（別件）で走らせるには session_id が要る。上の ask は最新
+    # （別件）に付くので、検索は他セッションの「スープ」を当てる。
+    event = event_of(env, project["id"], "canvas_search_result")
+    assert "スープ" in event["content"]
+    assert other["id"] not in event["content"] or "スープ" in event["content"]
+    assert "canvas_read_session" in event["content"]
+
+
+def test_the_agent_can_read_another_canvas_session(env):
+    project = make_project(env)
+    first = env.client.post(
+        f"/api/canvas/projects/{project['id']}/messages",
+        json={"content": "塩は小さじ2"},
+    ).json()
+    env.client.post(
+        f"/api/canvas/projects/{project['id']}/sessions", json={"title": "別件"}
+    )
+    ask(
+        env,
+        project["id"],
+        script(
+            {
+                "action": "canvas_read_session",
+                "session_id": first["session_id"],
+            }
+        ),
+        said="前のセッションの塩加減を読んで",
+        episode_id=None,
+    )
+    event = event_of(env, project["id"], "canvas_session_transcript")
+    assert "塩は小さじ2" in event["content"]
+    assert first["session_id"] in event["content"]
+    assert "### USER" in event["content"]
+
+
+def test_the_agent_cannot_read_its_own_canvas_session(env):
+    project = make_project(env)
+    mine = env.client.post(
+        f"/api/canvas/projects/{project['id']}/sessions", json={"title": "今"}
+    ).json()
+    ask(
+        env,
+        project["id"],
+        script({"action": "canvas_read_session", "session_id": mine["id"]}),
+        said="この会話を読んで",
+        episode_id=None,
+    )
+    event = event_of(env, project["id"], "canvas_session_transcript")
+    assert "今の会話自身は読めない" in event["content"]
+
+
+def test_the_agent_cannot_read_a_canvas_session_of_another_project(env):
+    project = make_project(env)
+    other = make_project(env, name="別作品")
+    foreign = env.client.post(
+        f"/api/canvas/projects/{other['id']}/messages",
+        json={"content": "秘密のレシピ"},
+    ).json()
+    ask(
+        env,
+        project["id"],
+        script(
+            {
+                "action": "canvas_read_session",
+                "session_id": foreign["session_id"],
+            }
+        ),
+        said="向こうの会話を読んで",
+        episode_id=None,
+    )
+    event = event_of(env, project["id"], "canvas_session_transcript")
+    assert "この作品のものではない" in event["content"]
+    assert "秘密のレシピ" not in event["content"]

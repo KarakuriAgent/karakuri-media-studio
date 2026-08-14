@@ -123,6 +123,10 @@ class _Turn:
         )
         return self._next_id
 
+    def notify(self, method: str, params: dict[str, Any]) -> None:
+        """JSON-RPC 通知（id なし）。``session/cancel`` など。"""
+        self._write({"jsonrpc": "2.0", "method": method, "params": params})
+
     def respond(self, message_id: Any, result: dict[str, Any]) -> None:
         self._write({"jsonrpc": "2.0", "id": message_id, "result": result})
 

@@ -8,6 +8,7 @@ import {
   MoreHorizontal,
   Music,
   RotateCcw,
+  Square,
   Star,
   Trash2,
   Undo2,
@@ -35,6 +36,7 @@ interface Props {
   onRestoreParams: (job: Job) => void
   onContinue: (job: Job) => void
   onDelete: (job: Job) => void
+  onCancel: (job: Job) => void
   onOpenDetail: (job: Job) => void
   onToggleNsfw: (job: Job, nsfw: boolean) => void
   busy: boolean
@@ -135,6 +137,7 @@ export default function ResultPane({
   onRestoreParams,
   onContinue,
   onDelete,
+  onCancel,
   onOpenDetail,
   onToggleNsfw,
   busy,
@@ -271,7 +274,7 @@ export default function ResultPane({
         )}
 
         {/* progress overlay */}
-        {running && (
+        {running && job && (
           <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-black/70 backdrop-blur-sm">
             <Loader2 className="size-10 animate-spin text-primary" />
             <p className="tnum text-4xl font-semibold text-foreground">{percent}%</p>
@@ -284,6 +287,16 @@ export default function ResultPane({
                 {progress?.message ?? ''}
               </p>
             )}
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={busy}
+              title="このジョブを停止します"
+              onClick={() => onCancel(job)}
+            >
+              <Square />
+              停止
+            </Button>
           </div>
         )}
 

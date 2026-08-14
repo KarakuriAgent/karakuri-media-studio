@@ -5,6 +5,7 @@ import type {
   CanvasCard,
   CanvasCardCreate,
   CanvasCardKind,
+  CanvasChatSession,
   CanvasProgress,
   CanvasViewport,
   JobProgress,
@@ -46,6 +47,8 @@ const RELOAD_DEBOUNCE_MS = 600
 
 /** 前に開いていたタブの置き場（作品ごと。タブを閉じたら忘れてよい）。 */
 const TAB_KEY = 'canvas-tab'
+/** 開いている会話セッション（作品ごと）。 */
+const CHAT_KEY = 'canvas-chat'
 
 function rememberedTab(projectId: string): string | null {
   try {
@@ -59,6 +62,24 @@ function rememberTab(projectId: string, episodeId: string | null): void {
   try {
     const key = `${TAB_KEY}:${projectId}`
     if (episodeId) window.sessionStorage.setItem(key, episodeId)
+    else window.sessionStorage.removeItem(key)
+  } catch {
+    /* 覚えられなくても表示には困らない */
+  }
+}
+
+function rememberedChat(projectId: string): string | null {
+  try {
+    return window.sessionStorage.getItem(`${CHAT_KEY}:${projectId}`)
+  } catch {
+    return null
+  }
+}
+
+function rememberChat(projectId: string, sessionId: string | null): void {
+  try {
+    const key = `${CHAT_KEY}:${projectId}`
+    if (sessionId) window.sessionStorage.setItem(key, sessionId)
     else window.sessionStorage.removeItem(key)
   } catch {
     /* 覚えられなくても表示には困らない */
@@ -109,6 +130,10 @@ export default function CanvasView({
   const projectId = detail.id
   /** 開いているタブ（null = 作品共通）。入ったときは前回のタブを開く。 */
   const [tab, setTab] = useState<string | null>(() => rememberedTab(projectId))
+  const [sessionId, setSessionId] = useState<string | null>(() =>
+    rememberedChat(projectId),
+  )
+  const [sessions, setSessions] = useState<CanvasChatSession[]>([])
   const [board, setBoard] = useState<BoardData | null>(null)
   const [options, setOptions] = useState<Options | null>(null)
   const [loading, setLoading] = useState(false)
@@ -129,6 +154,8 @@ export default function CanvasView({
   /** エージェントが走っているか（WS で届き、開き直したときは API で拾う）。 */
   const [running, setRunning] = useState(false)
   const [activity, setActivity] = useState<string | null>(null)
+  /** マウント時点の WS フレーム。別画面から戻った取り残しで実行中を消さない。 */
+  const leftoverEvent = useRef(event)
   // チャット欄は lg 以上でだけドラッグで広げられる（ハンドルは左縁なので反転）。
   const isWide = useIsWide()
   const chatPanel = useResizablePanel(CHAT_WIDTH_KEY, CHAT_WIDTH, 'x', {
@@ -148,7 +175,15 @@ export default function CanvasView({
   const load = useCallback(async () => {
     setLoading(true)
     try {
-      const next = await api.getCanvasBoard(projectId, tab)
+      const [next, listed] = await Promise.all([
+        api.getCanvasBoard(projectId, tab, sessionId),
+        api.listCanvasSessions(projectId).catch(() => [] as CanvasChatSession[]),
+      ])
+      setSessions(listed)
+      if (next.session_id && next.session_id !== sessionId) {
+        setSessionId(next.session_id)
+        rememberChat(projectId, next.session_id)
+      }
       setBoard(next)
       // 初めて開いたときは、鏡が並べたカードが画面外にも広がっている。表示位置に
       // 覚えがある（動かしたことがある）ならそれを尊重し、既定のままなら寄せる。
@@ -165,7 +200,7 @@ export default function CanvasView({
     } finally {
       setLoading(false)
     }
-  }, [projectId, tab, fail])
+  }, [projectId, tab, sessionId, fail])
 
   useEffect(() => {
     void load()
@@ -198,11 +233,16 @@ export default function CanvasView({
 
   useEffect(() => {
     if (!event || event.project_id !== projectId) return
+    // 開き直した直後の props は、別画面にいるあいだの最後のフレーム。
+    // 終わったあとの running: false が、GET で拾った実行中を上書きしてしまう。
+    if (event === leftoverEvent.current) return
     setRunning(event.running)
     setActivity(event.activity)
     // 会話は 1 件ずつ届く（`canvas_messages` が正なので、取り直せば必ず揃う）。
     if (event.message) {
       const message = event.message
+      const forSession = event.session_id || message.session_id
+      if (forSession && sessionId && forSession !== sessionId) return
       setBoard((current) =>
         current
           ? { ...current, messages: appendMessage(current.messages, message) }
@@ -214,7 +254,7 @@ export default function CanvasView({
       void loadRef.current()
       void reloadStudioRef.current()
     }
-  }, [event, projectId])
+  }, [event, projectId, sessionId])
 
   /**
    * 盤面とスタジオをまとめて取り直す（連打を潰す軽いデバウンスつき）。
@@ -484,6 +524,7 @@ export default function CanvasView({
         content,
         tab,
         attachments,
+        sessionId,
       )
       setRunning(started.running)
       setActivity(started.activity)
@@ -586,6 +627,8 @@ export default function CanvasView({
           >
             <CanvasChat
               projectId={projectId}
+              sessionId={sessionId}
+              sessions={sessions}
               messages={board?.messages ?? []}
               assets={detail.assets}
               busy={busy}
@@ -593,6 +636,23 @@ export default function CanvasView({
               activity={activity}
               onSend={sendMessage}
               onStop={stopAgent}
+              onSelectSession={(id) => {
+                setSessionId(id)
+                rememberChat(projectId, id)
+              }}
+              onNewSession={() =>
+                void run(async () => {
+                  const created = await api.createCanvasSession(projectId)
+                  setSessionId(created.id)
+                  rememberChat(projectId, created.id)
+                  setSessions((current) => [created, ...current])
+                  setBoard((current) =>
+                    current
+                      ? { ...current, session_id: created.id, messages: [] }
+                      : current,
+                  )
+                })
+              }
             />
           </aside>
         )}

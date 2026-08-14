@@ -17,6 +17,7 @@ from .. import (
     agent_runner,
     agent_store,
     grok,
+    grok_session,
     lora_samples,
     model_sources,
     nsfw as nsfw_service,
@@ -252,8 +253,13 @@ async def send_message(session_id: str, payload: AgentSendMessage) -> AgentReply
         session_id,
         AgentMessage(role="user", content=prompt, ts=agent_store.now(), data=data),
     )
-    answer, action = await _turn(session_id)
+    try:
+        answer, action = await _turn(session_id)
+    except grok_session.GrokTurnCancelled:
+        return await _reply(session_id, "", None)
     await _dispatch(session_id, action)
+    if not agent_runner.is_running(session_id):
+        await agent_runner.release_host(session_id)
     return await _reply(session_id, answer, action)
 
 
@@ -427,7 +433,8 @@ async def _dispatch(session_id: str, action) -> None:
     # （スタジオ操作は目録の読み書きで、生成の投入も完了を待たない）
     if action.action in (
         "plan", "checkin", "done", "note", "rename",
-        "library", "library_search", "library_sheet",
+        "library", "library_search", "library_sheet", "agent_search_sessions",
+        "agent_read_session",
         *agent_protocol.STUDIO_ACTIONS,
     ):
         await agent_runner.apply_action(session_id, action)

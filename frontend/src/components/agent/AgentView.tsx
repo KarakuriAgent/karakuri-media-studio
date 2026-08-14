@@ -24,6 +24,25 @@ import {
 import { AGENT_ACTIVE } from './common'
 import { currentActivity, isThinking, shouldReplaceSession } from './logic'
 
+const OPEN_SESSION_KEY = 'agent-open-session'
+
+function rememberedSession(): string | null {
+  try {
+    return window.sessionStorage.getItem(OPEN_SESSION_KEY)
+  } catch {
+    return null
+  }
+}
+
+function rememberSession(id: string | null): void {
+  try {
+    if (id) window.sessionStorage.setItem(OPEN_SESSION_KEY, id)
+    else window.sessionStorage.removeItem(OPEN_SESSION_KEY)
+  } catch {
+    /* 覚えられなくても次に選べばよい */
+  }
+}
+
 const SESSION_LIST_WIDTH_KEY = 'agentSessionListWidth'
 const SESSION_LIST_WIDTH = { initial: 256, min: 200, max: 400 }
 const ARTIFACT_PANEL_WIDTH_KEY = 'agentArtifactPanelWidth'
@@ -89,7 +108,15 @@ export default function AgentView({
   const loadSessions = useCallback(async () => {
     setLoadingSessions(true)
     try {
-      setSessions(await api.listAgentSessions())
+      const listed = await api.listAgentSessions()
+      setSessions(listed)
+      if (!wanted.current) {
+        const remembered = rememberedSession()
+        if (remembered && listed.some((item) => item.id === remembered)) {
+          wanted.current = remembered
+          setSessionId(remembered)
+        }
+      }
     } catch (caught) {
       fail(caught)
     } finally {
@@ -131,6 +158,7 @@ export default function AgentView({
     wanted.current = id
     generation.current += 1
     setSessionId(id)
+    rememberSession(id)
   }, [])
 
   useEffect(() => {
@@ -149,8 +177,10 @@ export default function AgentView({
 
   // WS: agent frames for the open session refresh it (and the list metadata).
   const eventRef = useRef<AgentProgress | null>(null)
+  const leftoverEvent = useRef(event)
   useEffect(() => {
-    if (!event || event === eventRef.current) return
+    if (!event || event === leftoverEvent.current) return
+    if (event === eventRef.current) return
     eventRef.current = event
     if (event.session_id !== sessionId) return
     void syncSession(event.session_id)
@@ -326,11 +356,12 @@ export default function AgentView({
 
   // 「Grok が考えています…」: busy（このブラウザ発）だけでなく、バックエンドの
   // ループが回すターンも session.thinking / WS フレームで拾う。
+  const liveFrame = event === leftoverEvent.current ? null : event
   const thinking = session
-    ? isThinking({ busy, session, frame: event })
+    ? isThinking({ busy, session, frame: liveFrame })
     : busy
   // 実行中の活動（ACP から届く「思考中」「ツール実行中: …」）。
-  const activity = session ? currentActivity({ session, frame: event }) : null
+  const activity = session ? currentActivity({ session, frame: liveFrame }) : null
 
   // 一覧からは NSFW を外す（開いているセッションは作業中なので表示を続ける）。
   const visibleSessions = showNsfw

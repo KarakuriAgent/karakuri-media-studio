@@ -8,7 +8,7 @@ BACKEND_DIR = Path(__file__).resolve().parents[1]
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
-from app import config, db, paths  # noqa: E402
+from app import config, db, paths, push  # noqa: E402
 from app.workflows import SPECS  # noqa: E402
 
 
@@ -37,6 +37,14 @@ def isolated_db(monkeypatch, tmp_path_factory):
     db_path = tmp_path_factory.mktemp("db") / "app.db"
     monkeypatch.setattr(db, "DB_PATH", db_path)
     monkeypatch.setattr(paths, "DB_PATH", db_path)
+
+
+@pytest.fixture(autouse=True)
+def isolated_vapid(monkeypatch, tmp_path_factory):
+    """開発機の ``runtime/vapid.json`` をテストへ持ち込まない。"""
+    monkeypatch.setattr(
+        push, "VAPID_PATH", tmp_path_factory.mktemp("vapid") / "vapid.json"
+    )
 
 
 def fake_outputs(

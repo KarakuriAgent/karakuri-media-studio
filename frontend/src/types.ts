@@ -638,6 +638,15 @@ export interface Health {
   grok: HealthStatus
 }
 
+export interface PushVapidPublicKey {
+  public_key: string
+}
+
+export interface PushSubscriptionPayload {
+  endpoint: string
+  keys: { p256dh: string; auth: string }
+}
+
 export interface Options {
   comfy_connected: boolean
   comfy_error: string | null
@@ -847,6 +856,7 @@ export interface AgentSessionSummary {
   artifact_count: number
   nsfw: boolean
   nsfw_source: string
+  preview?: string
 }
 
 export interface AgentSessionCreate {
@@ -1577,6 +1587,7 @@ export interface CanvasCardPosition {
 export interface CanvasMessage {
   id: string
   project_id: string
+  session_id?: string
   ts: string
   role: CanvasRole
   content: string
@@ -1624,9 +1635,28 @@ export interface CanvasBoard {
   project_id: string
   /** 開いているタブ（null = 作品共通）。 */
   episode_id: string | null
+  session_id?: string | null
   viewport: CanvasViewport
   cards: CanvasCard[]
   messages: CanvasMessage[]
+}
+
+/** GET /api/canvas/projects/{id}/sessions の 1 行。 */
+export interface CanvasChatSession {
+  id: string
+  project_id: string
+  title: string
+  created_at: string
+  updated_at: string
+  preview: string
+}
+
+/** GET /api/canvas/projects/{id}/sessions/search のヒット。 */
+export interface CanvasSessionSearchHit {
+  session_id: string
+  title: string
+  snippet: string
+  ts: string
 }
 
 /**
@@ -1640,6 +1670,7 @@ export interface CanvasAgentState {
   running: boolean
   /** 実行中の活動（「ツール実行中: …」など）。null = 無し。 */
   activity: string | null
+  session_id?: string | null
 }
 
 /** POST /api/canvas/projects/{id}/agent の応答（保存したユーザー発言つき）。 */
@@ -1650,6 +1681,7 @@ export interface CanvasAgentRun extends CanvasAgentState {
 /** WS /api/ws のキャンバス実行イベント（`type: "canvas"`）。 */
 export interface CanvasProgress extends CanvasAgentState {
   type: 'canvas'
+  session_id?: string | null
   /** 会話に足された 1 件（null = 状態が変わっただけ）。 */
   message: CanvasMessage | null
 }

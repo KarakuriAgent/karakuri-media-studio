@@ -58,6 +58,7 @@ class FakeComfy:
         self.queue_error: Exception | None = None
         self.history_status = "success"
         self.outputs = fake_outputs()
+        self.interrupts = 0
 
     async def upload_file(self, path, subfolder=None):
         self.uploads.append(str(path))
@@ -100,6 +101,9 @@ class FakeComfy:
         # Refused immediately -> exercises the /history polling fallback.
         return f"ws://127.0.0.1:1/ws?clientId={client_id}"
 
+    async def interrupt(self):
+        self.interrupts += 1
+
 
 async def _no_llm(text: str) -> None:
     """NSFW 判定の LLM を使わない差し替え（ヒューリスティックに落ちる）。"""
@@ -128,7 +132,14 @@ def env(tmp_path, monkeypatch, request):
     monkeypatch.setattr(nsfw, "classify", _no_llm)
 
     fake = FakeComfy(video)
-    for name in ("upload_file", "queue_prompt", "get_history", "download_view", "ws_url"):
+    for name in (
+        "upload_file",
+        "queue_prompt",
+        "get_history",
+        "download_view",
+        "ws_url",
+        "interrupt",
+    ):
         monkeypatch.setattr(comfy, name, getattr(fake, name))
 
     audio = assets / "audio" / "ref.mp3"
@@ -1721,3 +1732,96 @@ async def test_startup_fails_jobs_left_mid_flight(recovery_db, status):
     assert submitted == []
     assert published == [("job-stale", "failed")]
     assert await _status_of("job-stale") == ("failed", jobs.INTERRUPTED_MESSAGE)
+
+
+# --------------------------------------------------------------------------
+# cancel
+# --------------------------------------------------------------------------
+
+def _image_body(prompt="just an image") -> dict:
+    return {"mode": "image_only", "image_prompt": prompt}
+
+
+async def _hang_until_cancelled(job):
+    """run_job のステージを短くモックして、cancel されるまで居座る。"""
+    await jobs._set_status(job.id, "running", message="hang")
+    await asyncio.sleep(60)
+    return {}
+
+
+def test_cancel_queued_job_is_not_run(env, monkeypatch):
+    started: list[str] = []
+
+    async def hang(job):
+        started.append(job.id)
+        return await _hang_until_cancelled(job)
+
+    monkeypatch.setattr(jobs, "_run_job_stages", hang)
+
+    first = env.client.post("/api/jobs", json=_image_body("first")).json()
+    wait_for(env.client, first["id"], statuses=("running",))
+
+    second = env.client.post("/api/jobs", json=_image_body("second")).json()
+    assert second["status"] == "queued"
+
+    canceled = env.client.post(f"/api/jobs/{second['id']}/cancel")
+    assert canceled.status_code == 200, canceled.text
+    assert canceled.json()["status"] == "canceled"
+    assert env.client.get(f"/api/jobs/{second['id']}").json()["status"] == "canceled"
+    assert env.client.get(f"/api/jobs/{first['id']}").json()["status"] == "running"
+    assert second["id"] not in started
+
+    # ワーカーは生きたまま。先頭の実行中ジョブも止められる。
+    stopped = env.client.post(f"/api/jobs/{first['id']}/cancel")
+    assert stopped.status_code == 200, stopped.text
+    assert stopped.json()["status"] == "canceled"
+    assert jobs.runner.running
+
+
+def test_cancel_running_job(env, monkeypatch):
+    monkeypatch.setattr(jobs, "_run_job_stages", _hang_until_cancelled)
+
+    created = env.client.post("/api/jobs", json=_image_body()).json()
+    wait_for(env.client, created["id"], statuses=("running",))
+
+    canceled = env.client.post(f"/api/jobs/{created['id']}/cancel")
+    assert canceled.status_code == 200, canceled.text
+    assert canceled.json()["status"] == "canceled"
+    assert env.comfy.interrupts == 1
+    assert jobs.runner.running
+
+    async def finish(_job):
+        return {}
+
+    monkeypatch.setattr(jobs, "_run_job_stages", finish)
+    nxt = env.client.post("/api/jobs", json=_image_body("after")).json()
+    done = wait_for(env.client, nxt["id"])
+    assert done["status"] == "done", done.get("error")
+
+
+def test_cancel_completed_job_is_idempotent(env):
+    created = env.client.post("/api/jobs", json=_image_body()).json()
+    job = wait_for(env.client, created["id"])
+    assert job["status"] == "done", job.get("error")
+
+    again = env.client.post(f"/api/jobs/{job['id']}/cancel")
+    assert again.status_code == 200, again.text
+    body = again.json()
+    assert body["status"] == "done"
+    assert body["id"] == job["id"]
+    assert env.client.get(f"/api/jobs/{job['id']}").json()["status"] == "done"
+
+
+def test_cancel_missing_job_is_404(env):
+    response = env.client.post("/api/jobs/nope/cancel")
+    assert response.status_code == 404
+
+
+async def test_interrupt_skips_cloud(monkeypatch):
+    monkeypatch.setattr(comfy, "is_cloud", lambda: True)
+
+    async def boom(*_args, **_kwargs):
+        raise AssertionError("cloud must not POST /interrupt")
+
+    monkeypatch.setattr(comfy, "_request", boom)
+    await comfy.interrupt()

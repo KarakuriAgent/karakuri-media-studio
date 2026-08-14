@@ -31,11 +31,21 @@ from typing import Any
 
 from pathlib import Path
 
-from . import agent_protocol, agent_runner, canvas, grok, prompts, studio, ws
+from . import (
+    agent_protocol,
+    agent_runner,
+    canvas,
+    grok,
+    grok_session,
+    prompts,
+    push,
+    studio,
+    ws,
+)
 from .agent_protocol import ActionError
 from .agent_store import attachment_path, attachments_dir, session_dir
 from .config import load_settings
-from .models import AgentAction, AgentMessage, CanvasMessage
+from .models import AgentAction, AgentMessage, CanvasChatSession, CanvasMessage
 
 log = logging.getLogger(__name__)
 
@@ -54,6 +64,9 @@ _stop_requests: set[str] = set()
 _activity: dict[str, str] = {}
 #: 実行ごとの「いま開いているタブ」（話の id。作品共通なら入らない）
 _tabs: dict[str, str] = {}
+#: 実行中のキャンバスセッション（project_id → session_id）
+_active_session: dict[str, str] = {}
+_hosts: dict[str, grok_session.GrokSessionHost] = {}
 
 
 def is_running(project_id: str) -> bool:
@@ -67,29 +80,49 @@ def current_activity(project_id: str) -> str | None:
     return _activity.get(project_id)
 
 
-def _session_key(project_id: str) -> str:
-    """エージェントセッションの置き場を借りるときの名前。"""
+def _legacy_session_key(project_id: str) -> str:
+    """移行したセッションの作業ディレクトリ名（添付が残る）。"""
     return f"canvas-{project_id}"
 
 
-def workdir(project_id: str) -> str:
-    """このキャンバスの作業ディレクトリ（エージェントセッションと同じ置き場）。"""
-    return str(session_dir(_session_key(project_id)))
+def workdir_for(session: CanvasChatSession) -> str:
+    """この会話セッションの作業ディレクトリ。"""
+    if session.grok_cwd:
+        return session.grok_cwd
+    return str(session_dir(f"canvas-sess-{session.id}"))
 
 
-def attachment_dir(project_id: str) -> Path:
-    """チャットに添付されたファイルの置き場（``<workdir>/attachments/``）。
-
-    grok CLI は作業ディレクトリを根に動くので、ここへ置いておけば
-    ``attachments/<file>`` でも絶対パスでも開ける（エージェントモードの添付
-    と同じ流儀）。
-    """
-    return attachments_dir(_session_key(project_id))
+def workdir(project_id: str, session: CanvasChatSession | None = None) -> str:
+    """このキャンバスの作業ディレクトリ。"""
+    if session is not None:
+        return workdir_for(session)
+    return str(session_dir(_legacy_session_key(project_id)))
 
 
-def resolve_attachment(project_id: str, rel: str) -> Path | None:
+def attachment_dir(project_id: str, session: CanvasChatSession | None = None) -> Path:
+    """チャットに添付されたファイルの置き場（``<workdir>/attachments/``）。"""
+    if session is not None:
+        path = Path(workdir_for(session)) / "attachments"
+        path.mkdir(parents=True, exist_ok=True)
+        return path
+    return attachments_dir(_legacy_session_key(project_id))
+
+
+def resolve_attachment(
+    project_id: str, rel: str, session: CanvasChatSession | None = None
+) -> Path | None:
     """``attachments/<file>`` の実在ファイルだけを解決する（ほかは ``None``）。"""
-    return attachment_path(_session_key(project_id), rel)
+    if session is not None:
+        root = Path(workdir_for(session))
+        raw = (rel or "").strip()
+        if not raw.startswith("attachments/"):
+            return None
+        candidate = (root / raw).resolve()
+        attach = (root / "attachments").resolve()
+        if candidate.parent != attach or not candidate.is_file():
+            return None
+        return candidate
+    return attachment_path(_legacy_session_key(project_id), rel)
 
 
 # --------------------------------------------------------------------------
@@ -97,13 +130,18 @@ def resolve_attachment(project_id: str, rel: str) -> Path | None:
 # --------------------------------------------------------------------------
 
 async def _publish(
-    project_id: str, message: CanvasMessage | None = None, *, running: bool = True
+    project_id: str,
+    message: CanvasMessage | None = None,
+    *,
+    running: bool = True,
+    session_id: str | None = None,
 ) -> None:
     await ws.publish_canvas(
         project_id,
         running=running,
         activity=_activity.get(project_id),
         message=message,
+        session_id=session_id or _active_session.get(project_id),
     )
 
 
@@ -112,15 +150,17 @@ async def append(
     role: str,
     content: str,
     *,
+    session_id: str | None = None,
     kind: str | None = None,
     data: dict[str, Any] | None = None,
     running: bool = True,
 ) -> CanvasMessage:
     """発言を 1 件残して WS に流す（ルーターのユーザー発言もここを通る）。"""
+    sid = session_id or _active_session.get(project_id)
     message = await canvas.append_message(
-        project_id, role, content, kind=kind, data=data
+        project_id, role, content, session_id=sid, kind=kind, data=data
     )
-    await _publish(project_id, message, running=running)
+    await _publish(project_id, message, running=running, session_id=message.session_id)
     return message
 
 
@@ -148,24 +188,16 @@ async def _set_activity(project_id: str, activity: str | None) -> None:
 # 1 ターン
 # --------------------------------------------------------------------------
 
-def _history(messages: list[CanvasMessage], system: str) -> list[AgentMessage]:
-    """キャンバスの会話を、エージェントの transcript の形に均す。
-
-    役割（user / assistant / event）は :class:`AgentMessage` とそのまま対応する
-    ので、:func:`app.prompts.build_agent_conversation` を共通で使える。
-    """
+def _as_agent_messages(messages: list[CanvasMessage]) -> list[AgentMessage]:
     return [
-        AgentMessage(role="system", content=system, ts=""),
-        *[
-            AgentMessage(
-                role=message.role,
-                content=message.content,
-                ts=message.ts,
-                kind=message.kind,
-                data=message.data,
-            )
-            for message in messages
-        ],
+        AgentMessage(
+            role=message.role,
+            content=message.content,
+            ts=message.ts,
+            kind=message.kind,
+            data=message.data,
+        )
+        for message in messages
     ]
 
 
@@ -174,43 +206,167 @@ def open_tab(project_id: str) -> str | None:
     return _tabs.get(project_id)
 
 
-async def _system_prompt(project_id: str) -> str:
-    """作品の現況と**開いているタブの盤面**を焼き込んだシステムプロンプト。
+def _tab_info(project_id: str, detail) -> tuple[str, str]:
+    tab = open_tab(project_id)
+    return (
+        agent_runner.canvas_tab_label(tab, detail),
+        tab or canvas.COMMON_TAB,
+    )
 
-    盤面はタブ 1 枚ぶんに絞る（「この話のカットを〜」がそのまま通るように）。
-    他のタブは件数の要約だけ渡し、必要なら `canvas_list_cards` で読ませる。
-    """
+
+def snapshot_key_of(seq: int, tab: str | None) -> str:
+    return f"{seq}:{tab or canvas.COMMON_TAB}"
+
+
+async def _contract_text(project_id: str, session: CanvasChatSession) -> str:
+    return prompts.build_canvas_contract(
+        project_id=project_id,
+        workdir=workdir_for(session),
+        tools_enabled=bool(load_settings().agent_grok_args),
+    )
+
+
+async def _snapshot_text(project_id: str) -> str:
     detail = await studio.project_detail(project_id)
     if detail is None:
         raise LookupError(project_id)
     tab = open_tab(project_id)
     cards = await canvas.list_tab_cards(project_id, tab)
-    return prompts.build_canvas_system_prompt(
+    label, tab_id = _tab_info(project_id, detail)
+    return prompts.build_canvas_snapshot(
         project=agent_runner._studio_detail_text(detail),
         board=agent_runner.canvas_board_text(cards, detail, tab=tab),
         tabs=agent_runner.canvas_tabs_text(detail, tab),
-        tab_id=tab or canvas.COMMON_TAB,
-        tab_label=agent_runner.canvas_tab_label(tab, detail),
-        workdir=workdir(project_id),
-        tools_enabled=bool(load_settings().agent_grok_args),
+        tab_id=tab_id,
+        tab_label=label,
     )
 
 
-async def run_turn(project_id: str) -> tuple[str, AgentAction | None]:
-    """Grok に 1 回尋ね、答えを会話に残してアクションを解釈する。
+async def _current_snapshot_key(project_id: str) -> str:
+    seq = await studio.current_revision_seq(project_id)
+    return snapshot_key_of(seq, open_tab(project_id))
 
-    解釈できないアクションはフォーマットの注意つきで 1 回だけ聞き直す
-    （AGENT-MODE §3.1。スタジオの :func:`app.agent_runner.run_turn` と同じ）。
-    """
-    system = await _system_prompt(project_id)
-    messages = await canvas.list_messages(project_id)
+
+def _canvas_prompt(
+    session: CanvasChatSession,
+    host: grok_session.GrokSessionHost,
+    messages: list[CanvasMessage],
+    *,
+    contract: str,
+    snapshot: str | None,
+    tab_label: str,
+    tab_id: str,
+) -> str:
+    past, current = agent_runner._split_transcript(_as_agent_messages(messages))
+    if host.primed:
+        return prompts.build_turn_batch(current, open_tab=(tab_label, tab_id))
+    parts: list[str] = []
+    cold = host.rebuild or not host.resumed
+    if cold and (not host.use_acp) and not host.session_id:
+        if contract.strip():
+            parts.append(contract.strip())
+    if cold:
+        replay = prompts.build_replay(past)
+        if replay.strip():
+            parts.append(replay.strip())
+    if snapshot:
+        parts.append(snapshot.strip())
+    batch = prompts.build_turn_batch(current, open_tab=(tab_label, tab_id))
+    if batch.strip():
+        parts.append(batch.strip())
+    return "\n\n".join(parts) + "\n"
+
+
+async def run_turn(
+    project_id: str, session: CanvasChatSession
+) -> tuple[str, AgentAction | None]:
+    """Grok に 1 回尋ね、答えを会話に残してアクションを解釈する。"""
+    messages = await canvas.list_messages(project_id, session.id)
+    detail = await studio.project_detail(project_id)
+    if detail is None:
+        raise LookupError(project_id)
+    tab_label, tab_id = _tab_info(project_id, detail)
+    cwd = workdir_for(session)
 
     async def on_activity(activity: str | None) -> None:
         await _set_activity(project_id, activity)
 
-    client = grok.get_agent_client(workdir(project_id), on_activity)
-    history = _history(messages, system)
-    answer = await client.complete(prompts.build_agent_conversation(history))
+    host = _hosts.get(project_id)
+    if host is None or host._closed:
+        host = grok_session.open_host(cwd, on_activity)
+        contract = await _contract_text(project_id, session)
+        try:
+            grok_id = await host.start(contract, session.grok_session_id or None, cwd)
+            host.resumed = bool(session.grok_session_id)
+            host.rebuild = False
+        except grok_session.GrokSessionGone:
+            await host.close()
+            host = grok_session.open_host(cwd, on_activity)
+            grok_id = await host.start(contract, None, cwd)
+            host.resumed = False
+            host.rebuild = True
+        host.primed = False
+        _hosts[project_id] = host
+        session.grok_session_id = grok_id or ""
+        session.grok_cwd = cwd
+        await canvas.update_session_grok(
+            session.id, grok_session_id=grok_id or "", grok_cwd=cwd
+        )
+    else:
+        contract = await _contract_text(project_id, session)
+
+    current_key = await _current_snapshot_key(project_id)
+    # 同じループの EVENT には現況を付けない。必要なのは Grok セッションの初通、
+    # 組み直し、タブ変更、作品 revision の上昇。
+    need_snapshot = (not host.primed) and (
+        host.rebuild
+        or not host.resumed
+        or session.snapshot_key != current_key
+    )
+    snapshot = await _snapshot_text(project_id) if need_snapshot else None
+
+    text = _canvas_prompt(
+        session,
+        host,
+        messages,
+        contract=contract,
+        snapshot=snapshot,
+        tab_label=tab_label,
+        tab_id=tab_id,
+    )
+    try:
+        answer = await host.prompt(text)
+    except grok_session.GrokSessionGone:
+        await host.close()
+        host = grok_session.open_host(cwd, on_activity)
+        grok_id = await host.start(contract, None, cwd)
+        host.resumed = False
+        host.rebuild = True
+        host.primed = False
+        _hosts[project_id] = host
+        snapshot = await _snapshot_text(project_id)
+        text = _canvas_prompt(
+            session,
+            host,
+            messages,
+            contract=contract,
+            snapshot=snapshot,
+            tab_label=tab_label,
+            tab_id=tab_id,
+        )
+        answer = await host.prompt(text)
+        session.grok_session_id = grok_id or ""
+        await canvas.update_session_grok(session.id, grok_session_id=grok_id or "")
+    host.primed = True
+    if need_snapshot:
+        session.snapshot_key = current_key
+        await canvas.update_session_grok(session.id, snapshot_key=current_key)
+    if host.session_id != (session.grok_session_id or ""):
+        session.grok_session_id = host.session_id or ""
+        await canvas.update_session_grok(
+            session.id, grok_session_id=host.session_id or ""
+        )
+
     action: AgentAction | None = None
     reason = ""
     try:
@@ -218,11 +374,8 @@ async def run_turn(project_id: str) -> tuple[str, AgentAction | None]:
     except ActionError as exc:
         reason = str(exc)
     if action is None and (reason or agent_protocol.looks_like_action_attempt(answer)):
-        retry = [*history, AgentMessage(role="assistant", content=answer, ts="")]
-        answer = await client.complete(
-            prompts.build_agent_conversation(
-                retry, retry_reason=reason or "JSON を解釈できませんでした"
-            )
+        answer = await host.prompt(
+            prompts.build_retry_turn(reason or "JSON を解釈できませんでした")
         )
         try:
             action = agent_protocol.parse_action(answer)
@@ -230,7 +383,7 @@ async def run_turn(project_id: str) -> tuple[str, AgentAction | None]:
         except ActionError as exc:
             reason = str(exc)
 
-    await append(project_id, "assistant", answer)
+    await append(project_id, "assistant", answer, session_id=session.id)
     if reason:
         await _event(
             project_id,
@@ -264,6 +417,16 @@ async def _apply(project_id: str, action: AgentAction) -> bool:
         )
         return False
     _place_on_open_tab(project_id, action)
+    if action.action == "canvas_search_sessions":
+        action.canvas.setdefault("project_id", project_id)
+        mine = _active_session.get(project_id)
+        if mine and not action.canvas.get("session_id"):
+            action.canvas["session_id"] = mine
+    elif action.action == "canvas_read_session":
+        action.canvas["project_id"] = project_id
+        mine = _active_session.get(project_id)
+        if mine:
+            action.canvas["exclude_id"] = mine
     kind, text, data = await agent_runner.run_tool(action)
     await _event(project_id, kind, text, data)
     return False
@@ -289,51 +452,90 @@ def _place_on_open_tab(project_id: str, action: AgentAction) -> None:
         body["episode_id"] = tab
 
 
-async def _loop(project_id: str) -> None:
+async def _loop(project_id: str, session_id: str) -> str | None:
+    """キャンバスループ。終端の種別を返す（``None`` = 通知しない）。"""
     max_turns = turn_limit()
     turns = 0
+    session = await canvas.get_session(project_id, session_id)
+    if session is None:
+        return None
     try:
         while max_turns == 0 or turns < max_turns:  # 0 = 無制限
             turns += 1
             if project_id in _stop_requests:
                 await _event(project_id, "stopped", "実行を止めました。")
-                return
+                return "stopped"
             try:
-                _, action = await run_turn(project_id)
+                _, action = await run_turn(project_id, session)
+            except grok_session.GrokTurnCancelled:
+                await _event(project_id, "stopped", "実行を止めました。")
+                return "stopped"
             except grok.LLMError as exc:
                 await _event(
                     project_id, "error", f"Grok を呼べませんでした: {exc}",
                     {"error": str(exc)},
                 )
-                return
+                return "failed"
+            if project_id in _stop_requests:
+                await _event(project_id, "stopped", "実行を止めました。")
+                return "stopped"
             if action is None or await _apply(project_id, action):
-                return
+                return "done"
         await _event(
             project_id,
             "turn_limit",
             f"連続 {max_turns} ターンで区切りました。続けるなら声をかけてください。",
         )
+        return "done"
     except canvas.CanvasError:
         # プロジェクトごと消えた: 書き足す先が無いので黙って終える
         log.info("canvas %s disappeared while the agent was running", project_id)
+        return None
     except asyncio.CancelledError:
         raise
     except Exception:  # noqa: BLE001 - 実行の失敗で API を落とさない
         log.exception("canvas agent failed (project %s)", project_id)
+        return "failed"
 
 
-async def _run(project_id: str) -> None:
+async def _notify_canvas(outcome: str) -> None:
+    if outcome == "done":
+        title = "スタジオの作業が終わりました"
+    else:
+        title = "スタジオの作業が止まりました"
+    await push.notify_all(title, title, url="/", tag="canvas")
+
+
+async def _run(project_id: str, session_id: str) -> None:
+    outcome: str | None = None
     try:
-        await _loop(project_id)
+        outcome = await _loop(project_id, session_id)
+    except asyncio.CancelledError:
+        # lifespan の stop_all / プロセス終了では出さない
+        outcome = None
+        raise
     finally:
         _stop_requests.discard(project_id)
         _activity.pop(project_id, None)
         _tabs.pop(project_id, None)
+        _active_session.pop(project_id, None)
+        host = _hosts.pop(project_id, None)
+        if host is not None:
+            grok_id = host.session_id or ""
+            await host.close()
+            if grok_id:
+                await canvas.update_session_grok(session_id, grok_session_id=grok_id)
         _runs.pop(project_id, None)
-        await _publish(project_id, running=False)
+        await _publish(project_id, running=False, session_id=session_id)
+        if outcome is not None:
+            await _notify_canvas(outcome)
 
 
-async def start(project_id: str, episode_id: str | None = None) -> None:
+async def start(
+    project_id: str,
+    episode_id: str | None = None,
+    session_id: str | None = None,
+) -> None:
     """バックグラウンドで実行ループを始める（既に走っていれば何もしない）。
 
     ``episode_id`` は開いているタブ（``None`` = 作品共通）。この実行のあいだ
@@ -341,19 +543,30 @@ async def start(project_id: str, episode_id: str | None = None) -> None:
     """
     if is_running(project_id):
         return
+    session = await canvas.ensure_session(project_id, session_id)
     _stop_requests.discard(project_id)
     if episode_id:
         _tabs[project_id] = episode_id
     else:
         _tabs.pop(project_id, None)
-    _runs[project_id] = asyncio.create_task(_run(project_id))
-    await _publish(project_id)
+    _active_session[project_id] = session.id
+    _runs[project_id] = asyncio.create_task(_run(project_id, session.id))
+    await _publish(project_id, session_id=session.id)
 
 
 def request_stop(project_id: str) -> None:
-    """次のターンの手前で止める（走っていなければ何もしない）。"""
-    if is_running(project_id):
-        _stop_requests.add(project_id)
+    """⏹: 実行中の Grok ターンを中断する（走っていなければ何もしない）。"""
+    if not is_running(project_id):
+        return
+    _stop_requests.add(project_id)
+    host = _hosts.get(project_id)
+    if host is None:
+        return
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    loop.create_task(host.cancel())
 
 
 async def stop_all() -> None:
@@ -370,3 +583,10 @@ async def stop_all() -> None:
     _stop_requests.clear()
     _activity.clear()
     _tabs.clear()
+    _active_session.clear()
+    for host in _hosts.values():
+        try:
+            await host.close()
+        except Exception:  # noqa: BLE001
+            pass
+    _hosts.clear()

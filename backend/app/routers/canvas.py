@@ -30,8 +30,12 @@ from ..models import (
     CanvasCardCreate,
     CanvasCardPosition,
     CanvasCardUpdate,
+    CanvasChatSession,
     CanvasMessage,
     CanvasMessageCreate,
+    CanvasSessionCreate,
+    CanvasSessionSearchHit,
+    CanvasSessionUpdate,
     CanvasViewport,
 )
 from . import agent as agent_router
@@ -79,17 +83,23 @@ async def _require_tab(project_id: str, episode_id: str | None) -> str | None:
 
 @router.get("/projects/{project_id}", response_model=CanvasBoard)
 async def get_board(
-    project_id: str, episode_id: str | None = _TAB
+    project_id: str,
+    episode_id: str | None = _TAB,
+    session_id: str | None = Query(None),
 ) -> CanvasBoard:
     """1 タブぶんのカードの置き場所と会話。**中身はスタジオの詳細と合わせて使う**。
 
     カードはスタジオの中身の写しなので、まだカードが無いエンティティ（素材 /
     場 / Shot / Take）にはここで自動的にカードができる（履歴には残さない）。
     鏡は作品ぜんぶにかかり、返るのは開いているタブのカードだけ（開いていない
-    話のカードも存在はする）。
+    話のカードも存在はする）。会話は ``session_id`` のセッション（省略時は最新）。
     """
     tab = await _require_tab(project_id, episode_id)
-    board = await service.board(project_id, tab)
+    if session_id:
+        session = await service.get_session(project_id, session_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail="session not found")
+    board = await service.board(project_id, tab, session_id)
     if board is None:
         raise HTTPException(status_code=404, detail="project not found")
     return board
@@ -178,19 +188,106 @@ async def delete_card(
 
 
 # --------------------------------------------------------------------------
+# 会話セッション
+# --------------------------------------------------------------------------
+
+@router.get("/projects/{project_id}/sessions", response_model=list[CanvasChatSession])
+async def list_sessions(project_id: str) -> list[CanvasChatSession]:
+    await _require_project(project_id)
+    try:
+        return await service.list_sessions(project_id)
+    except service.CanvasError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.post(
+    "/projects/{project_id}/sessions",
+    response_model=CanvasChatSession,
+    status_code=201,
+)
+async def create_session(
+    project_id: str, payload: CanvasSessionCreate | None = None
+) -> CanvasChatSession:
+    await _require_project(project_id)
+    body = payload or CanvasSessionCreate()
+    try:
+        return await service.create_session(project_id, body.title)
+    except service.CanvasError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+@router.get(
+    "/projects/{project_id}/sessions/search",
+    response_model=list[CanvasSessionSearchHit],
+)
+async def search_sessions(
+    project_id: str,
+    q: str = Query(""),
+    offset: int = Query(0, ge=0),
+    limit: int = Query(20, ge=1, le=100),
+    session_id: str | None = Query(None, description="除外する自分のセッション"),
+) -> list[CanvasSessionSearchHit]:
+    await _require_project(project_id)
+    hits, _total = await service.search_sessions(
+        project_id, q, exclude_id=session_id, offset=offset, limit=limit
+    )
+    return hits
+
+
+@router.patch(
+    "/projects/{project_id}/sessions/{session_id}",
+    response_model=CanvasChatSession,
+)
+async def update_session(
+    project_id: str, session_id: str, payload: CanvasSessionUpdate
+) -> CanvasChatSession:
+    if payload.title is None:
+        session = await service.get_session(project_id, session_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail="session not found")
+        return session
+    session = await service.update_session(
+        project_id, session_id, title=payload.title
+    )
+    if session is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    return session
+
+
+@router.delete(
+    "/projects/{project_id}/sessions/{session_id}", status_code=204
+)
+async def delete_session(project_id: str, session_id: str) -> None:
+    session = await service.delete_session(project_id, session_id)
+    if session is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    from .. import grok_session as grok_sessions
+
+    await grok_sessions.delete_remote_session(
+        session.grok_session_id, session.grok_cwd or None
+    )
+
+
+# --------------------------------------------------------------------------
 # 会話
 # --------------------------------------------------------------------------
 
 @router.get("/projects/{project_id}/messages", response_model=list[CanvasMessage])
-async def list_messages(project_id: str) -> list[CanvasMessage]:
+async def list_messages(
+    project_id: str, session_id: str | None = Query(None)
+) -> list[CanvasMessage]:
     await _require_project(project_id)
-    return await service.list_messages(project_id)
+    if session_id and await service.get_session(project_id, session_id) is None:
+        raise HTTPException(status_code=404, detail="session not found")
+    return await service.list_messages(project_id, session_id)
 
 
 @router.post("/projects/{project_id}/messages", response_model=CanvasMessage,
              status_code=201)
 async def append_message(
-    project_id: str, payload: CanvasMessageCreate
+    project_id: str,
+    payload: CanvasMessageCreate,
+    session_id: str | None = Query(None),
 ) -> CanvasMessage:
     """発言を 1 件残すだけ（エージェントは動かさない）。"""
     content = payload.content.strip()
@@ -201,6 +298,7 @@ async def append_message(
             project_id,
             payload.role,
             content,
+            session_id=session_id,
             kind=payload.kind,
             data=payload.data,
         )
@@ -236,13 +334,39 @@ def attachment_kind(filename: str) -> str:
     return "document"
 
 
+async def _session_for_files(
+    project_id: str, session_id: str | None
+) -> object:
+    try:
+        return await service.ensure_session(project_id, session_id)
+    except service.CanvasError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+def _save_attachment(session, original: Path, data: bytes) -> CanvasAttachment:
+    ext = original.suffix.lower()
+    stem = lora_samples.safe_stem(original.stem, fallback="attachment")
+    dest = canvas_agent.attachment_dir(session.project_id, session) / (
+        f"{stem}_{new_id()}{ext}"
+    )
+    dest.write_bytes(data)
+    return CanvasAttachment(
+        name=original.name,
+        path=f"{agent_store.ATTACHMENTS_DIR}/{dest.name}",
+        abs_path=str(dest),
+        kind=attachment_kind(original.name),  # type: ignore[arg-type]
+    )
+
+
 @router.post(
     "/projects/{project_id}/attachments",
     response_model=CanvasAttachment,
     status_code=201,
 )
 async def upload_attachment(
-    project_id: str, file: UploadFile = File(...)
+    project_id: str,
+    file: UploadFile = File(...),
+    session_id: str | None = Query(None),
 ) -> CanvasAttachment:
     """添付を 1 件保存する（発言に添えるのは返ってきた ``path``）。"""
     await _require_project(project_id)
@@ -254,28 +378,56 @@ async def upload_attachment(
             detail=f"unsupported extension '{ext}'"
             f" (allowed: {sorted(ATTACHMENT_EXT)})",
         )
-    stem = lora_samples.safe_stem(original.stem, fallback="attachment")
-    dest = canvas_agent.attachment_dir(project_id) / f"{stem}_{new_id()}{ext}"
-    dest.write_bytes(await file.read())
-    return CanvasAttachment(
-        name=original.name,
-        path=f"{agent_store.ATTACHMENTS_DIR}/{dest.name}",
-        abs_path=str(dest),
-        kind=attachment_kind(original.name),  # type: ignore[arg-type]
-    )
+    session = await _session_for_files(project_id, session_id)
+    return _save_attachment(session, original, await file.read())
+
+
+@router.post(
+    "/projects/{project_id}/sessions/{session_id}/attachments",
+    response_model=CanvasAttachment,
+    status_code=201,
+)
+async def upload_session_attachment(
+    project_id: str, session_id: str, file: UploadFile = File(...)
+) -> CanvasAttachment:
+    await _require_project(project_id)
+    original = Path(file.filename or "upload")
+    ext = original.suffix.lower()
+    if ext not in ATTACHMENT_EXT:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unsupported extension '{ext}'"
+            f" (allowed: {sorted(ATTACHMENT_EXT)})",
+        )
+    session = await _session_for_files(project_id, session_id)
+    return _save_attachment(session, original, await file.read())
 
 
 @router.get("/projects/{project_id}/attachments/{name:path}")
-async def get_attachment(project_id: str, name: str) -> FileResponse:
+async def get_attachment(
+    project_id: str,
+    name: str,
+    session_id: str | None = Query(None),
+) -> FileResponse:
     """添付そのものを返す（履歴のサムネイル用。範囲外は 404）。"""
     await _require_project(project_id)
-    path = canvas_agent.resolve_attachment(project_id, name)
+    session = None
+    if session_id:
+        session = await service.get_session(project_id, session_id)
+    elif not session_id:
+        session = await service.latest_session(project_id)
+    path = canvas_agent.resolve_attachment(project_id, name, session)
+    if path is None:
+        # 移行セッションの旧 workdir も見る
+        path = canvas_agent.resolve_attachment(project_id, name)
     if path is None:
         raise HTTPException(status_code=404, detail="attachment not found")
     return FileResponse(path)
 
 
-def _verify_attachments(project_id: str, paths: list[str]) -> list[dict[str, str]]:
+def _verify_attachments(
+    project_id: str, paths: list[str], session=None
+) -> list[dict[str, str]]:
     """``attachments/`` 配下の実在ファイルだけを通す（それ以外は 400）。
 
     返すのは会話に残す形（種別と絶対パスつき）。エージェントにはこの絶対パスを
@@ -283,7 +435,9 @@ def _verify_attachments(project_id: str, paths: list[str]) -> list[dict[str, str
     """
     verified: list[dict[str, str]] = []
     for raw in paths:
-        resolved = canvas_agent.resolve_attachment(project_id, raw)
+        resolved = canvas_agent.resolve_attachment(project_id, raw, session)
+        if resolved is None:
+            resolved = canvas_agent.resolve_attachment(project_id, raw)
         if resolved is None:
             raise HTTPException(status_code=400, detail=f"unknown attachment '{raw}'")
         verified.append(
@@ -317,11 +471,12 @@ def with_attachments(content: str, attachments: list[dict[str, str]]) -> str:
 # エージェント（スタジオのツール一式 + 盤面の操作）
 # --------------------------------------------------------------------------
 
-def _agent_state(project_id: str) -> CanvasAgentState:
+def _agent_state(project_id: str, session_id: str | None = None) -> CanvasAgentState:
     return CanvasAgentState(
         project_id=project_id,
         running=canvas_agent.is_running(project_id),
         activity=canvas_agent.current_activity(project_id),
+        session_id=session_id or canvas_agent._active_session.get(project_id),
     )
 
 
@@ -350,8 +505,12 @@ async def run_agent(
     """
     await _require_project(project_id)
     tab = await _require_tab(project_id, payload.episode_id)
+    try:
+        session = await service.ensure_session(project_id, payload.session_id)
+    except service.CanvasError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     content = payload.content.strip()
-    attachments = _verify_attachments(project_id, payload.attachments)
+    attachments = _verify_attachments(project_id, payload.attachments, session)
     if not content and not attachments:
         raise HTTPException(status_code=422, detail="content が空です")
     if canvas_agent.is_running(project_id):
@@ -367,12 +526,15 @@ async def run_agent(
             project_id,
             "user",
             with_attachments(content, attachments),
+            session_id=session.id,
             data=data,
         )
     except service.CanvasError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
-    await canvas_agent.start(project_id, tab)
-    return CanvasAgentRun(**_agent_state(project_id).model_dump(), message=message)
+    await canvas_agent.start(project_id, tab, session.id)
+    return CanvasAgentRun(
+        **_agent_state(project_id, session.id).model_dump(), message=message
+    )
 
 
 @router.post("/projects/{project_id}/agent/stop", response_model=CanvasAgentState)

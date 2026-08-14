@@ -49,6 +49,15 @@ async def delete_job(job_id: str) -> None:
         raise HTTPException(status_code=404, detail="job not found")
 
 
+@router.post("/{job_id}/cancel", response_model=Job)
+async def cancel_job(job_id: str) -> Job:
+    """実行中・待ちのジョブを 1 件止める。終端状態は冪等にそのまま返す。"""
+    job = await service.cancel_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    return job
+
+
 @router.post("/{job_id}/nsfw", response_model=Job)
 async def set_job_nsfw(job_id: str, payload: NsfwUpdate) -> Job:
     """NSFW フラグの手動トグル（manual として保存し、自動判定に上書きされない）。"""

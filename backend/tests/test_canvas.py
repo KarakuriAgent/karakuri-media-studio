@@ -612,6 +612,26 @@ def test_messages_are_kept_in_order(env):
     ]
 
 
+def test_canvas_sessions_can_be_created_and_listed(env):
+    project = make_project(env)
+    env.client.post(
+        f"/api/canvas/projects/{project['id']}/messages", json={"content": "やあ"}
+    )
+    listed = env.client.get(f"/api/canvas/projects/{project['id']}/sessions").json()
+    assert len(listed) == 1
+    created = env.client.post(
+        f"/api/canvas/projects/{project['id']}/sessions", json={"title": "別案"}
+    )
+    assert created.status_code == 201
+    listed = env.client.get(f"/api/canvas/projects/{project['id']}/sessions").json()
+    assert {row["title"] for row in listed} >= {"別案"}
+    empty = env.client.get(
+        f"/api/canvas/projects/{project['id']}",
+        params={"session_id": created.json()["id"]},
+    ).json()
+    assert empty["messages"] == []
+
+
 def test_an_empty_message_is_refused(env):
     project = make_project(env)
     response = env.client.post(

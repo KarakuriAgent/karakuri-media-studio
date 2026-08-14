@@ -33,6 +33,7 @@ from .routers import (
     model_download,
     models_config,
     options,
+    push,
     settings,
     studio,
 )
@@ -87,6 +88,7 @@ app.include_router(studio.router)
 app.include_router(external.router)
 app.include_router(canvas.router)
 app.include_router(agent.router)
+app.include_router(push.router)
 app.include_router(ws.router)
 
 ensure_dirs()
@@ -113,7 +115,7 @@ def _dist_file(rel_path: str) -> Path | None:
 # Service Worker とその登録スクリプト、そして SPA シェルは常に取り直させる。
 # 古い sw.js がキャッシュに居座ると registerType: "autoUpdate" でも更新が
 # 届かなくなるため（PWA、SPEC §7）。
-_NO_STORE_FILES = frozenset({"sw.js", "registerSW.js", "index.html"})
+_NO_STORE_FILES = frozenset({"sw.js", "registerSW.js", "index.html", "push-sw.js"})
 
 
 def _dist_response(file: Path) -> FileResponse:

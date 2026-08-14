@@ -1938,6 +1938,24 @@ class Health(BaseModel):
     grok: HealthStatus
 
 
+class PushKeys(BaseModel):
+    p256dh: str
+    auth: str
+
+
+class PushSubscriptionIn(BaseModel):
+    endpoint: str
+    keys: PushKeys
+
+
+class PushEndpointIn(BaseModel):
+    endpoint: str
+
+
+class PushVapidPublicKey(BaseModel):
+    public_key: str
+
+
 # --------------------------------------------------------------------------
 # agent mode (AGENT-MODE §4 / §5)
 # --------------------------------------------------------------------------
@@ -1948,7 +1966,9 @@ AgentStatus = Literal[
 AgentCheckinMode = Literal["every_job", "milestone", "auto"]
 AgentActionName = Literal[
     "plan", "run_task", "continue", "rerun", "inspect", "note", "rename",
-    "library", "library_search", "library_sheet", "checkin", "done",
+    "library", "library_search", "library_sheet", "agent_search_sessions",
+    "agent_read_session",
+    "checkin", "done",
     # ドラマスタジオ（:mod:`app.studio`）の操作
     "studio_list_projects", "studio_get_project", "studio_create_project",
     "studio_update_project", "studio_upsert_episode", "studio_upsert_scene",
@@ -1957,8 +1977,9 @@ AgentActionName = Literal[
     "studio_select_take", "studio_reject_take",
     # キャンバス（:mod:`app.canvas`）の盤面操作。スタジオのツール一式に足す形で
     # 使い、キャンバスのチャットからの実行でだけプロンプトに載る
-    "canvas_list_cards", "canvas_place_card", "canvas_move_card",
-    "canvas_update_card",
+    "canvas_list_cards", "canvas_search_sessions", "canvas_read_session",
+    "canvas_place_card",
+    "canvas_move_card", "canvas_update_card",
 ]
 AgentTaskStatus = Literal["pending", "running", "done", "failed", "skipped"]
 
@@ -2025,6 +2046,10 @@ class AgentSession(BaseModel):
     thinking: bool = False
     # 実行中の活動（「思考中」「ツール実行中: …」。未実行なら None）
     activity: str | None = None
+    # Grok セッションの続き用キャッシュ（API には出さない）
+    grok_session_id: str = Field(default="", exclude=True)
+    grok_cwd: str = Field(default="", exclude=True)
+    snapshot_key: str = Field(default="", exclude=True)
 
 
 class AgentSessionSummary(BaseModel):
@@ -2041,6 +2066,8 @@ class AgentSessionSummary(BaseModel):
     artifact_count: int = 0
     nsfw: bool = False
     nsfw_source: str = ""
+    #: 直近の非 system メッセージ冒頭（一覧の絞り込み用）
+    preview: str = ""
 
 
 class AgentSessionCreate(BaseModel):
@@ -2128,6 +2155,8 @@ class AgentAction(BaseModel):
     category: str | None = None
     #: 検索結果の読み出し位置（ページング）
     offset: int = 0
+    #: agent_read_session の対象（他セッション。自分自身は読めない）
+    session_id: str | None = None
     # library_sheet アクション: シートに載せる素材の id（並べる順）と大きさ
     item_ids: list[str] = Field(default_factory=list)
     width: int | None = None
@@ -3246,6 +3275,7 @@ class CanvasMessage(BaseModel):
 
     id: str
     project_id: str
+    session_id: str = ""
     ts: str
     role: CanvasRole
     content: str
@@ -3293,6 +3323,8 @@ class CanvasAgentStart(CanvasMessageCreate):
 
     #: 開いているタブ（None / 'common' = 作品共通）
     episode_id: str | None = None
+    #: 会話セッション（省略時は最新。無ければ作る）
+    session_id: str | None = None
     #: 添付ファイルの workdir 相対パス（``attachments/<file>``）。本文が空でも
     #: 添付だけで送れる
     attachments: list[str] = Field(default_factory=list)
@@ -3303,28 +3335,56 @@ class CanvasBoard(BaseModel):
 
     カードの中身はスタジオ側（``GET /api/studio/projects/{id}``）にあるので、
     ここに入るのは置き場所と会話だけ。``cards`` と ``viewport`` は開いている
-    タブのもので、会話（``messages``）はタブによらず作品に 1 本。
+    タブのもので、会話（``messages``）は指定した（または最新の）セッション。
     """
 
     project_id: str
     #: 開いているタブ（None = 作品共通）
     episode_id: str | None = None
+    #: 会話セッション（省略時は最新）
+    session_id: str | None = None
     viewport: CanvasViewport = Field(default_factory=CanvasViewport)
     cards: list[CanvasCard] = Field(default_factory=list)
     messages: list[CanvasMessage] = Field(default_factory=list)
 
 
-class CanvasAgentState(BaseModel):
-    """キャンバスのチャットから走らせたエージェントの状態。
+class CanvasChatSession(BaseModel):
+    """キャンバスの会話セッション 1 本。"""
 
-    セッション行は持たない（会話は ``canvas_messages`` が唯一の正）ので、
-    走っているかどうかと実行中の活動だけをインメモリから返す。
-    """
+    id: str
+    project_id: str
+    title: str = ""
+    created_at: str
+    updated_at: str
+    preview: str = ""
+    grok_session_id: str = Field(default="", exclude=True)
+    grok_cwd: str = Field(default="", exclude=True)
+    snapshot_key: str = Field(default="", exclude=True)
+
+
+class CanvasSessionCreate(BaseModel):
+    title: str = ""
+
+
+class CanvasSessionUpdate(BaseModel):
+    title: str | None = None
+
+
+class CanvasSessionSearchHit(BaseModel):
+    session_id: str
+    title: str = ""
+    snippet: str = ""
+    ts: str = ""
+
+
+class CanvasAgentState(BaseModel):
+    """キャンバスのチャットから走らせたエージェントの状態。"""
 
     project_id: str
     running: bool = False
     #: 実行中の活動テキスト（「ツール実行中: …」など）。無ければ None
     activity: str | None = None
+    session_id: str | None = None
 
 
 class CanvasAgentRun(CanvasAgentState):
@@ -3340,5 +3400,6 @@ class CanvasProgress(BaseModel):
     project_id: str
     running: bool
     activity: str | None = None
+    session_id: str | None = None
     #: 会話に足された 1 件（発言・エージェントの応答・ツール実行イベント）
     message: CanvasMessage | None = None

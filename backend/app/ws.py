@@ -150,6 +150,7 @@ async def publish_canvas(
     running: bool,
     activity: str | None = None,
     message: CanvasMessage | None = None,
+    session_id: str | None = None,
 ) -> None:
     """Broadcast one canvas agent event (``type: "canvas"``). Never raises.
 
@@ -162,6 +163,7 @@ async def publish_canvas(
             running=running,
             activity=activity,
             message=message,
+            session_id=session_id,
         ).model_dump()
     except Exception:  # noqa: BLE001 - 通知の失敗で実行を壊さない
         payload = {
@@ -170,6 +172,7 @@ async def publish_canvas(
             "running": running,
             "activity": activity,
             "message": message.model_dump() if message else None,
+            "session_id": session_id,
         }
     await hub.broadcast(payload)
 

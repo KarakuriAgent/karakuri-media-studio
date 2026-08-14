@@ -15,6 +15,7 @@ import pytest
 from app import acp
 from app.acp import AcpAgentClient
 from app.grok import LLMClient, LLMError
+from app.grok_session import GrokSessionGone, GrokSessionHost, GrokTurnCancelled
 from app.models import HealthStatus, Settings
 
 # --------------------------------------------------------------------------
@@ -147,11 +148,103 @@ for line in sys.stdin:
         break
 '''
 
+#: session/load 成功 → prompt。_meta.rules を session/new で記録する。
+LOAD_OK_AGENT = r'''
+import json, sys
+
+def send(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+rules = ""
+loaded = False
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    msg = json.loads(line)
+    method = msg.get("method")
+    if method == "initialize":
+        send({"jsonrpc": "2.0", "id": msg["id"], "result": {"protocolVersion": 1}})
+    elif method == "session/new":
+        rules = ((msg.get("params") or {}).get("_meta") or {}).get("rules") or ""
+        send({"jsonrpc": "2.0", "id": msg["id"],
+              "result": {"sessionId": "s-new"}})
+    elif method == "session/load":
+        loaded = True
+        send({"jsonrpc": "2.0", "id": msg["id"],
+              "result": {"sessionId": msg["params"]["sessionId"]}})
+    elif method == "session/prompt":
+        text = "loaded" if loaded else ("rules=" + rules[:20])
+        send({"jsonrpc": "2.0", "method": "session/update",
+              "params": {"sessionId": "s1", "update": {
+                  "sessionUpdate": "agent_message_chunk",
+                  "content": {"type": "text", "text": text}}}})
+        send({"jsonrpc": "2.0", "id": msg["id"], "result": {"stopReason": "end_turn"}})
+'''
+
+#: session/load がエラーを返す。
+LOAD_FAIL_AGENT = r'''
+import json, sys
+
+def send(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    msg = json.loads(line)
+    method = msg.get("method")
+    if method == "initialize":
+        send({"jsonrpc": "2.0", "id": msg["id"], "result": {"protocolVersion": 1}})
+    elif method == "session/load":
+        send({"jsonrpc": "2.0", "id": msg["id"],
+              "error": {"code": -32000, "message": "session not found"}})
+        break
+    elif method == "session/new":
+        send({"jsonrpc": "2.0", "id": msg["id"], "result": {"sessionId": "s1"}})
+'''
+
 #: 何も返さず居座る（タイムアウト検証用）。
 HANGING_AGENT = r'''
 import sys, time
 sys.stdin.readline()
 time.sleep(120)
+'''
+
+#: session/prompt を受けたら返さず、session/cancel が来たら cancelled で応答する。
+CANCEL_AGENT = r'''
+import json, sys
+
+def send(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+prompt_id = None
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    msg = json.loads(line)
+    method = msg.get("method")
+    if method == "initialize":
+        send({"jsonrpc": "2.0", "id": msg["id"], "result": {"protocolVersion": 1}})
+    elif method == "session/new":
+        send({"jsonrpc": "2.0", "id": msg["id"], "result": {"sessionId": "s1"}})
+    elif method == "session/prompt":
+        prompt_id = msg["id"]
+        send({"jsonrpc": "2.0", "method": "session/update",
+              "params": {"sessionId": "s1", "update": {
+                  "sessionUpdate": "agent_thought_chunk",
+                  "content": {"type": "text", "text": "考え中"}}}})
+    elif method == "session/cancel":
+        assert prompt_id is not None
+        assert "id" not in msg
+        assert msg.get("params", {}).get("sessionId") == "s1"
+        send({"jsonrpc": "2.0", "id": prompt_id, "result": {"stopReason": "cancelled"}})
+        break
 '''
 
 
@@ -315,3 +408,68 @@ async def test_cancelling_the_turn_kills_the_process(tmp_path):
     task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await task
+
+
+@pytest.mark.asyncio
+async def test_session_load_succeeds(tmp_path, monkeypatch):
+    command = write_agent(tmp_path, LOAD_OK_AGENT)
+    monkeypatch.setattr(
+        acp,
+        "load_settings",
+        lambda: Settings(
+            grok_command=command, grok_model="", grok_workdir=str(tmp_path)
+        ),
+    )
+    host = GrokSessionHost(tmp_path / "workdir", timeout=20.0, use_acp=True)
+    host.command = command
+    host.model = ""
+    try:
+        sid = await host.start("契約文", "s1")
+        assert sid == "s1"
+        assert await host.prompt("# USER\n続き") == "loaded"
+    finally:
+        await host.close()
+
+
+@pytest.mark.asyncio
+async def test_session_load_failure_is_gone(tmp_path, monkeypatch):
+    command = write_agent(tmp_path, LOAD_FAIL_AGENT)
+    host = GrokSessionHost(tmp_path / "workdir", timeout=20.0, use_acp=True)
+    host.command = command
+    host.model = ""
+    with pytest.raises(GrokSessionGone):
+        await host.start("契約文", "missing")
+    await host.close()
+
+
+@pytest.mark.asyncio
+async def test_session_cancel_raises_turn_cancelled(tmp_path):
+    """session/cancel で prompt が cancelled になり、エージェントは居座らない。"""
+    command = write_agent(tmp_path, CANCEL_AGENT)
+    host = GrokSessionHost(tmp_path / "workdir", timeout=20.0, use_acp=True)
+    host.command = command
+    host.model = ""
+    try:
+        sid = await host.start("契約文", None)
+        assert sid == "s1"
+        task = asyncio.create_task(host.prompt("# USER\nやあ"))
+        await asyncio.sleep(0.2)
+        await host.cancel()
+        with pytest.raises(GrokTurnCancelled):
+            await asyncio.wait_for(task, timeout=5.0)
+    finally:
+        await host.close()
+
+
+@pytest.mark.asyncio
+async def test_session_new_carries_rules(tmp_path, monkeypatch):
+    command = write_agent(tmp_path, LOAD_OK_AGENT)
+    host = GrokSessionHost(tmp_path / "workdir", timeout=20.0, use_acp=True)
+    host.command = command
+    host.model = ""
+    try:
+        sid = await host.start("THE_RULES_BLOCK", None)
+        assert sid == "s-new"
+        assert await host.prompt("# USER\nやあ") == "rules=THE_RULES_BLOCK"
+    finally:
+        await host.close()

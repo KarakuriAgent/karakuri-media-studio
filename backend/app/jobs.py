@@ -47,7 +47,7 @@ from typing import Any
 import aiosqlite
 from PIL import Image
 
-from . import comfy, grok_media, nsfw as nsfw_service, runpod, ws
+from . import comfy, grok_media, nsfw as nsfw_service, push, runpod, ws
 from .config import load_settings
 from .db import get_db
 from .ids import new_id
@@ -336,6 +336,48 @@ async def _update(job_id: str, **fields: Any) -> None:
         await conn.commit()
 
 
+_JOB_NOTIFY = {
+    "done": ("生成が完了しました", "生成が完了しました"),
+    "failed": ("生成に失敗しました", "生成に失敗しました"),
+    "canceled": ("生成がキャンセルされました", "生成がキャンセルされました"),
+}
+
+
+async def _job_status(job_id: str) -> str | None:
+    async with get_db() as conn:
+        async with conn.execute(
+            "SELECT status FROM jobs WHERE id = ?", (job_id,)
+        ) as cur:
+            row = await cur.fetchone()
+    return row["status"] if row else None
+
+
+async def _is_agent_job(job_id: str) -> bool:
+    """``jobs.chat_session_id`` が ``agent_sessions.id`` ならエージェント発。"""
+    async with get_db() as conn:
+        async with conn.execute(
+            "SELECT chat_session_id FROM jobs WHERE id = ?", (job_id,)
+        ) as cur:
+            row = await cur.fetchone()
+        session_id = (row["chat_session_id"] if row else None) or ""
+        if not session_id:
+            return False
+        async with conn.execute(
+            "SELECT 1 FROM agent_sessions WHERE id = ?", (session_id,)
+        ) as cur:
+            return await cur.fetchone() is not None
+
+
+async def _notify_job(job_id: str, previous: str | None, status: str) -> None:
+    copy = _JOB_NOTIFY.get(status)
+    if copy is None or previous == status:
+        return
+    if await _is_agent_job(job_id):
+        return
+    title, body = copy
+    await push.notify_all(title, body, url="/", tag=f"job-{status}")
+
+
 async def _set_status(
     job_id: str,
     status: str,
@@ -344,8 +386,10 @@ async def _set_status(
     progress: float | None = None,
     **fields: Any,
 ) -> None:
+    previous = await _job_status(job_id) if status in _JOB_NOTIFY else None
     await _update(job_id, status=status, **fields)
     await ws.publish(job_id, status, message=message, progress=progress)
+    await _notify_job(job_id, previous, status)
 
 
 async def delete_job(job_id: str) -> bool:
@@ -649,18 +693,20 @@ async def _insert_job(
         "error": None,
         "nsfw": 1 if nsfw else 0,
         "nsfw_source": nsfw_source if nsfw is not None else "",
+        "chat_session_id": chat_session_id,
     }
     async with get_db() as conn:
         await conn.execute(
             "INSERT INTO jobs (id, created_at, mode, status, user_input, image_prompt,"
             " video_prompt, audio_prompt, grok_raw, params, workflow_json,"
             " comfy_prompt_id, image_path, video_path, last_frame_path, source_image,"
-            " audio_path, audio_output_path, error, nsfw, nsfw_source)"
+            " audio_path, audio_output_path, error, nsfw, nsfw_source,"
+            " chat_session_id)"
             " VALUES (:id, :created_at, :mode, :status, :user_input, :image_prompt,"
             " :video_prompt, :audio_prompt, :grok_raw, :params, :workflow_json,"
             " :comfy_prompt_id, :image_path, :video_path, :last_frame_path,"
             " :source_image, :audio_path, :audio_output_path, :error, :nsfw,"
-            " :nsfw_source)",
+            " :nsfw_source, :chat_session_id)",
             row,
         )
         await conn.commit()
@@ -1726,6 +1772,9 @@ async def _run_job_stages(job: Job) -> dict[str, Any]:
     return updates
 
 
+_TERMINAL_STATUSES = frozenset({"done", "failed", "canceled"})
+
+
 async def run_job(job_id: str) -> None:
     """Execute one job end to end. Failures are recorded, never raised.
 
@@ -1736,6 +1785,8 @@ async def run_job(job_id: str) -> None:
     job = await get_job(job_id)
     if job is None:
         log.warning("job %s disappeared before it could run", job_id)
+        return
+    if job.status in _TERMINAL_STATUSES:
         return
     try:
         updates = await _run_job_stages(job)
@@ -1776,6 +1827,9 @@ class JobRunner:
     def __init__(self) -> None:
         self._queue: asyncio.Queue[str] | None = None
         self._task: asyncio.Task[None] | None = None
+        self._current_task: asyncio.Task[None] | None = None
+        self._cancelled: set[str] = set()
+        self._stopping = False
         self.current: str | None = None
 
     @property
@@ -1789,11 +1843,16 @@ class JobRunner:
 
     async def start(self) -> None:
         self._ensure_queue()
+        self._stopping = False
         if not self.running:
             self._task = asyncio.create_task(self._worker(), name="job-worker")
 
     async def stop(self) -> None:
+        self._stopping = True
         task, self._task = self._task, None
+        current = self._current_task
+        if current is not None and not current.done():
+            current.cancel()
         if task is not None:
             task.cancel()
             try:
@@ -1802,6 +1861,8 @@ class JobRunner:
                 pass
         self._queue = None
         self.current = None
+        self._current_task = None
+        self._cancelled.clear()
 
     async def submit(self, job_id: str) -> None:
         await self._ensure_queue().put(job_id)
@@ -1812,23 +1873,95 @@ class JobRunner:
     def pending(self) -> int:
         return self._queue.qsize() if self._queue else 0
 
+    async def cancel_job(self, job_id: str) -> Job | None:
+        """このジョブだけ止める。ワーカー自体は生かしたまま。"""
+        job = await get_job(job_id)
+        if job is None:
+            return None
+        if job.status in _TERMINAL_STATUSES:
+            return job
+
+        self._cancelled.add(job_id)
+        task = self._current_task if self.current == job_id else None
+        if task is not None:
+            await _interrupt_comfy()
+            if not task.done():
+                task.cancel()
+                try:
+                    await task
+                except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                    pass
+        else:
+            current = await get_job(job_id)
+            if current is not None and current.status not in _TERMINAL_STATUSES:
+                if current.status in ("prompting", "running"):
+                    await _interrupt_comfy()
+                await _set_status(
+                    job_id, "canceled", message="canceled", error="canceled"
+                )
+
+        return await get_job(job_id)
+
+    async def _skip_canceled(self, job_id: str) -> bool:
+        if job_id not in self._cancelled:
+            return False
+        job = await get_job(job_id)
+        if job is not None and job.status not in _TERMINAL_STATUSES:
+            await _set_status(
+                job_id, "canceled", message="canceled", error="canceled"
+            )
+        return True
+
     async def _worker(self) -> None:
         queue = self._ensure_queue()
         while True:
             job_id = await queue.get()
             self.current = job_id
+            self._current_task = None
             try:
-                await run_job(job_id)
+                if await self._skip_canceled(job_id):
+                    continue
+                self._current_task = asyncio.create_task(
+                    run_job(job_id), name=f"job-{job_id}"
+                )
+                if job_id in self._cancelled:
+                    self._current_task.cancel()
+                try:
+                    await self._current_task
+                except asyncio.CancelledError:
+                    if self._stopping:
+                        raise
             except asyncio.CancelledError:
+                current = self._current_task
+                if current is not None and not current.done():
+                    current.cancel()
+                    try:
+                        await current
+                    except (asyncio.CancelledError, Exception):  # noqa: BLE001
+                        pass
                 raise
             except Exception:  # noqa: BLE001 - never let the worker die
                 log.exception("unexpected failure while running job %s", job_id)
             finally:
                 self.current = None
+                self._current_task = None
+                self._cancelled.discard(job_id)
                 queue.task_done()
 
 
 runner = JobRunner()
+
+
+async def cancel_job(job_id: str) -> Job | None:
+    return await runner.cancel_job(job_id)
+
+
+async def _interrupt_comfy() -> None:
+    """ComfyUI の現行プロンプトを best-effort で中断する。失敗してもジョブ側は進める。"""
+    try:
+        await comfy.interrupt()
+    except Exception:  # noqa: BLE001
+        log.debug("ComfyUI /interrupt に失敗しました", exc_info=True)
 
 
 #: 実行の途中でプロセスが落ちた行に残す文面（ユーザー向けにそのまま出る）。

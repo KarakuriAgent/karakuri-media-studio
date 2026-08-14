@@ -138,6 +138,18 @@ async function openSettings(options: Options = {} as Options) {
   await waitFor(() => screen.getByText('ComfyUI 接続先'))
 }
 
+it('接続タブの先頭に通知カードを出す', async () => {
+  getSettings.mockResolvedValue(settings())
+  listModels.mockResolvedValue([])
+  listLoras.mockResolvedValue([])
+  modelsDirStatus.mockResolvedValue(dirStatus())
+  listModelDownloads.mockResolvedValue([])
+  await openSettings()
+  expect(screen.getByText('プッシュ通知')).toBeTruthy()
+  expect(screen.getByText(/いまの許可状態/)).toBeTruthy()
+  expect(screen.getByText('非対応')).toBeTruthy()
+})
+
 /** 設定タブを切り替える（shadcn Tabs = Radix なので mousedown が切り替えの契機）。 */
 function openTab(name: string) {
   fireEvent.mouseDown(screen.getByRole('tab', { name }))

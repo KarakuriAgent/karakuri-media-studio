@@ -60,6 +60,8 @@ export default defineConfig({
         cleanupOutdatedCaches: true,
         clientsClaim: true,
         skipWaiting: true,
+        // public/push-sw.js を生成 SW に読み込む（既存のプリキャッシュは変えない）
+        importScripts: ['/push-sw.js'],
       },
       // dev サーバーでは SW を登録しない（/api などの proxy を邪魔しないため）
       devOptions: { enabled: false },

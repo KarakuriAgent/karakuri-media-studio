@@ -141,7 +141,17 @@ def _row_to_session(row) -> AgentSession:
         ],
         nsfw=bool(row["nsfw"]),
         nsfw_source=row["nsfw_source"] or "",
+        grok_session_id=_row_get(row, "grok_session_id"),
+        grok_cwd=_row_get(row, "grok_cwd"),
+        snapshot_key=_row_get(row, "snapshot_key"),
     )
+
+
+def _row_get(row, key: str) -> str:
+    try:
+        return row[key] or ""
+    except (KeyError, IndexError):
+        return ""
 
 
 def _dump(values: list[Any] | Any) -> str:
@@ -154,8 +164,9 @@ async def insert(session: AgentSession) -> AgentSession:
     async with get_db() as conn:
         await conn.execute(
             "INSERT INTO agent_sessions (id, created_at, title, status, checkin_mode,"
-            " auto_limit, messages, plan, artifacts, nsfw, nsfw_source)"
-            " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+            " auto_limit, messages, plan, artifacts, nsfw, nsfw_source,"
+            " grok_session_id, grok_cwd, snapshot_key)"
+            " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
             (
                 session.id,
                 session.created_at,
@@ -168,6 +179,9 @@ async def insert(session: AgentSession) -> AgentSession:
                 _dump(session.artifacts),
                 1 if session.nsfw else 0,
                 session.nsfw_source,
+                session.grok_session_id,
+                session.grok_cwd,
+                session.snapshot_key,
             ),
         )
         await conn.commit()
@@ -206,9 +220,82 @@ async def list_sessions(limit: int = 50, offset: int = 0) -> list[AgentSessionSu
             artifact_count=len(s.artifacts),
             nsfw=s.nsfw,
             nsfw_source=s.nsfw_source,
+            preview=_preview_of(s.messages),
         )
         for s in sessions
     ]
+
+
+def _preview_of(messages: list[AgentMessage]) -> str:
+    for message in reversed(messages):
+        if message.role == "system":
+            continue
+        text = (message.content or "").strip().splitlines()[0] if message.content else ""
+        return text[:80]
+    return ""
+
+
+async def search_sessions(
+    query: str,
+    *,
+    exclude_id: str | None = None,
+    limit: int = 20,
+    offset: int = 0,
+) -> tuple[list[tuple[str, str, str, str]], int]:
+    """他セッションをタイトル・本文 LIKE で探す。戻りは (id, title, snippet, ts)。"""
+    needle = f"%{(query or '').strip()}%"
+    async with get_db() as conn:
+        async with conn.execute("SELECT * FROM agent_sessions") as cur:
+            rows = await cur.fetchall()
+    hits: list[tuple[str, str, str, str]] = []
+    q = (query or "").strip().lower()
+    for row in rows:
+        session = _row_to_session(row)
+        if exclude_id and session.id == exclude_id:
+            continue
+        snippet = ""
+        ts = session.created_at
+        if q and q in (session.title or "").lower():
+            snippet = session.title
+        for message in reversed(session.messages):
+            if message.role == "system":
+                continue
+            body = message.content or ""
+            if not q or q in body.lower() or q in (session.title or "").lower():
+                if not snippet:
+                    idx = body.lower().find(q) if q else 0
+                    start = max(0, idx - 20)
+                    snippet = body[start : start + 120].replace("\n", " ").strip()
+                    ts = message.ts or ts
+                break
+        if q and not snippet:
+            continue
+        if not q:
+            snippet = _preview_of(session.messages)
+        hits.append((session.id, session.title, snippet, ts))
+    hits.sort(key=lambda item: item[3], reverse=True)
+    return hits[offset : offset + limit], len(hits)
+
+
+SESSION_READ_LIMIT = 40
+
+
+async def read_session_transcript(
+    session_id: str,
+    *,
+    exclude_id: str | None = None,
+    offset: int = 0,
+    limit: int = SESSION_READ_LIMIT,
+) -> tuple[AgentSession | None, list[AgentMessage], int, str | None]:
+    """他セッションの本文。system は出さない。失敗は例外にせず error で返す。"""
+    if exclude_id and session_id == exclude_id:
+        return None, [], 0, "今の会話自身は読めない"
+    session = await load(session_id)
+    if session is None:
+        return None, [], 0, "セッションが見つからない"
+    visible = [message for message in session.messages if message.role != "system"]
+    start = max(0, offset)
+    return session, visible[start : start + limit], len(visible), None
 
 
 async def update(session_id: str, **fields: Any) -> None:

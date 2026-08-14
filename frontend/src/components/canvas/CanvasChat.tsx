@@ -1,9 +1,17 @@
 import { useEffect, useRef, useState } from 'react'
-import { Clapperboard, Music, Paperclip, Square } from 'lucide-react'
+import { Clapperboard, Music, Paperclip, Plus, Search, Square } from 'lucide-react'
 
 import { api } from '../../api'
-import type { CanvasAttachment, CanvasMessage, StudioAsset } from '../../types'
+import type {
+  CanvasAttachment,
+  CanvasChatSession,
+  CanvasMessage,
+  CanvasSessionSearchHit,
+  StudioAsset,
+} from '../../types'
 import { Banner } from '../ui'
+import { NativeSelect } from '../NativeSelect'
+import { Input } from '../ui/input'
 import {
   ATTACHMENT_ACCEPT,
   AttachmentChip,
@@ -25,6 +33,8 @@ export const CHAT_PLACEHOLDER = 'やりたいことを書く（@ で素材を参
 interface Props {
   /** 添付のアップロード先・配信元（キャンバスは作品ごとに 1 本の会話）。 */
   projectId: string
+  sessionId: string | null
+  sessions: CanvasChatSession[]
   messages: CanvasMessage[]
   /** `@` 候補に出す素材（World Bible）。 */
   assets: StudioAsset[]
@@ -37,17 +47,21 @@ interface Props {
   /** 本文と添付（workdir 相対パス）。どちらか一方だけでも送れる。 */
   onSend: (content: string, attachments: string[]) => void
   onStop: () => void
+  onSelectSession: (id: string) => void
+  onNewSession: () => void
 }
 
 /** 発言に添えられた添付のサムネイル（クリックで開ける）。 */
 function AttachmentThumb({
   projectId,
+  sessionId,
   attachment,
 }: {
   projectId: string
+  sessionId: string | null
   attachment: CanvasAttachment
 }) {
-  const url = api.canvasAttachmentUrl(projectId, attachment.path)
+  const url = api.canvasAttachmentUrl(projectId, attachment.path, sessionId)
   return (
     <a
       href={url}
@@ -73,9 +87,11 @@ function AttachmentThumb({
 function Bubble({
   message,
   projectId,
+  sessionId,
 }: {
   message: CanvasMessage
   projectId: string
+  sessionId: string | null
 }) {
   const mine = message.role === 'user'
   // 添付つきの発言は本文の後ろに一覧が足してあるので、画面には元の文だけ出す。
@@ -95,6 +111,7 @@ function Bubble({
               <AttachmentThumb
                 key={attachment.path}
                 projectId={projectId}
+                sessionId={sessionId}
                 attachment={attachment}
               />
             ))}
@@ -135,8 +152,17 @@ function EventRow({ message }: { message: CanvasMessage }) {
  * 画像・動画・音声はここから添付できる（アップロード先はキャンバスの作業
  * ディレクトリで、エージェントはそのファイルを直接開いて中身を見る）。
  */
+function sessionLabel(session: CanvasChatSession): string {
+  const title = session.title || 'チャット'
+  const when = session.updated_at || session.created_at
+  const time = when ? when.replace('T', ' ').slice(0, 16) : ''
+  return time ? `${title} · ${time}` : title
+}
+
 export default function CanvasChat({
   projectId,
+  sessionId,
+  sessions,
   messages,
   assets,
   busy,
@@ -144,14 +170,24 @@ export default function CanvasChat({
   activity,
   onSend,
   onStop,
+  onSelectSession,
+  onNewSession,
 }: Props) {
   const [draft, setDraft] = useState('')
   const [attachments, setAttachments] = useState<CanvasAttachment[]>([])
   const [uploading, setUploading] = useState(false)
   const [uploadError, setUploadError] = useState<string | null>(null)
   const [dragging, setDragging] = useState(false)
+  const [query, setQuery] = useState('')
+  const [hits, setHits] = useState<CanvasSessionSearchHit[]>([])
   const scroller = useRef<HTMLDivElement>(null)
   const filePicker = useRef<HTMLInputElement>(null)
+
+  useEffect(() => {
+    if (!running && !busy) return
+    setQuery('')
+    setHits([])
+  }, [running, busy])
 
   useEffect(() => {
     scroller.current?.scrollTo({ top: scroller.current.scrollHeight })
@@ -184,7 +220,7 @@ export default function CanvasChat({
     setUploading(true)
     try {
       for (const file of allowed) {
-        const uploaded = await api.uploadCanvasAttachment(projectId, file)
+        const uploaded = await api.uploadCanvasAttachment(projectId, file, sessionId)
         setAttachments((current) => [...current, uploaded])
       }
     } catch (caught) {
@@ -211,16 +247,98 @@ export default function CanvasChat({
         if (!disabled) void pick(event.dataTransfer.files)
       }}
     >
-      <div className="flex shrink-0 items-center gap-2">
-        <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-          チャット
-        </h2>
-        {running && (
-          <Button variant="outline" size="sm" className="ml-auto" onClick={onStop}>
-            <Square aria-hidden="true" />
-            停止
+      <div className="flex shrink-0 flex-col gap-1.5">
+        <div className="flex items-center gap-1.5">
+          <h2 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            チャット
+          </h2>
+          {running && (
+            <Button variant="outline" size="sm" className="ml-auto" onClick={onStop}>
+              <Square aria-hidden="true" />
+              停止
+            </Button>
+          )}
+        </div>
+        <div className="flex items-center gap-1">
+          <NativeSelect
+            className="h-7 min-w-0 flex-1 py-0 text-[11px]"
+            value={sessionId ?? ''}
+            disabled={busy || running}
+            aria-label="会話セッション"
+            onChange={(event) => {
+              if (event.target.value) onSelectSession(event.target.value)
+            }}
+          >
+            {sessions.length === 0 && <option value="">（会話なし）</option>}
+            {sessions.map((session) => (
+              <option key={session.id} value={session.id}>
+                {sessionLabel(session)}
+              </option>
+            ))}
+          </NativeSelect>
+          <Button
+            variant="outline"
+            size="icon-xs"
+            disabled={busy || running}
+            title="新しい会話"
+            aria-label="新しい会話"
+            onClick={onNewSession}
+          >
+            <Plus aria-hidden="true" />
           </Button>
-        )}
+        </div>
+        <div className="relative">
+          <Search
+            aria-hidden="true"
+            className="pointer-events-none absolute left-2 top-1/2 size-3 -translate-y-1/2 text-muted-foreground"
+          />
+          <Input
+            className="h-7 pl-7 text-[11px]"
+            value={query}
+            placeholder="他の会話を検索"
+            aria-label="他の会話を検索"
+            disabled={busy || running}
+            onChange={(event) => {
+              if (busy || running) return
+              const value = event.target.value
+              setQuery(value)
+              if (!value.trim()) {
+                setHits([])
+                return
+              }
+              void api
+                .searchCanvasSessions(projectId, value.trim(), sessionId)
+                .then(setHits)
+                .catch(() => setHits([]))
+            }}
+          />
+          {hits.length > 0 && !running && !busy && (
+            <ul className="absolute z-10 mt-1 max-h-40 w-full overflow-y-auto rounded-md border border-border bg-card py-1 text-[11px] shadow-elevation-1">
+              {hits.map((hit) => (
+                <li key={`${hit.session_id}:${hit.ts}`}>
+                  <button
+                    type="button"
+                    className="block w-full px-2 py-1 text-left hover:bg-secondary"
+                    onClick={() => {
+                      onSelectSession(hit.session_id)
+                      setQuery('')
+                      setHits([])
+                    }}
+                  >
+                    <span className="block truncate text-foreground/90">
+                      {hit.title || 'チャット'}
+                    </span>
+                    {hit.snippet && (
+                      <span className="block truncate text-muted-foreground">
+                        {hit.snippet}
+                      </span>
+                    )}
+                  </button>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
       </div>
 
       <div
@@ -237,7 +355,12 @@ export default function CanvasChat({
           message.role === 'event' ? (
             <EventRow key={message.id} message={message} />
           ) : (
-            <Bubble key={message.id} message={message} projectId={projectId} />
+            <Bubble
+              key={message.id}
+              message={message}
+              projectId={projectId}
+              sessionId={sessionId}
+            />
           ),
         )}
         {running && (

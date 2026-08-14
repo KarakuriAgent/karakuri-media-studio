@@ -737,8 +737,19 @@ async def _record_revision(
     )
 
 
+async def current_revision_seq(project_id: str) -> int:
+    """いまのリビジョン連番（無ければ 0）。スナップショットの鮮度判定用。"""
+    async with get_db() as conn:
+        async with conn.execute(
+            "SELECT COALESCE(MAX(seq), 0) AS seq FROM studio_revisions"
+            " WHERE project_id = ?",
+            (project_id,),
+        ) as cur:
+            row = await cur.fetchone()
+    return int(row["seq"] if row else 0)
+
+
 async def list_revisions(project_id: str) -> list[StudioRevision]:
-    """新しい順の見出し一覧（snapshot は含めない）。"""
     async with get_db() as conn:
         async with conn.execute(
             "SELECT seq, actor, action, created_at FROM studio_revisions"

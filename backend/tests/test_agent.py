@@ -705,7 +705,32 @@ def test_unusable_action_triggers_one_retry(env):
     assert reply["action"]["action"] == "plan"
     assert len(env.cli.calls) == 2
     assert "could not be used" in env.cli.prompts[-1]
+    assert "# RETRY" in env.cli.prompts[-1]
     assert reply["session"]["status"] == "planning"
+
+
+def test_retry_does_not_resend_the_broken_assistant(env):
+    session = start(env)
+    broken = action_answer({"action": "plan", "tasks": []})
+    env.cli.answers = [broken, plan_answer(env, 1)]
+    say(env, session["id"])
+    retry = env.cli.prompts[-1]
+    assert "# RETRY" in retry
+    assert broken.strip() not in retry
+    assert "ダンス動画を作りたい" not in retry
+
+
+def test_a_follow_up_turn_does_not_flatten_the_whole_transcript(env):
+    session = start(env)
+    env.cli.answers = ["了解です。"]
+    say(env, session["id"], "最初の指示")
+    env.cli.answers = ["続きですね。"]
+    say(env, session["id"], "次の指示")
+    second = env.cli.prompts[-1]
+    assert "次の指示" in second
+    assert "(Your reply" not in second
+    if "最初の指示" in second:
+        assert "# REPLAY" in second
 
 
 def test_retry_that_keeps_failing_is_reported_as_an_event(env):
@@ -2508,6 +2533,40 @@ def test_library_search_rejects_an_unknown_category(env):
     # 省略は「分類で絞らない」
     action = agent_protocol.parse_action(action_answer({"action": "library_search"}))
     assert action is not None and action.category is None
+
+
+def test_the_agent_can_read_another_agent_session(env):
+    other = start(env, title="前の作業")
+    env.cli.answers = ["塩は小さじ2で決めました。"]
+    say(env, other["id"], "塩加減は？")
+
+    session = start(env, title="今")
+    env.cli.answers = [
+        action_answer(
+            {"action": "agent_read_session", "session_id": other["id"]},
+            "読みます。",
+        )
+    ]
+    reply = say(env, session["id"], "前のセッションの塩加減を読んで").json()
+    text = event_of(reply, "agent_session_transcript")["content"]
+    assert "塩は小さじ2" in text
+    assert other["id"] in text
+    assert "### USER" in text
+    assert "### ASSISTANT" in text
+    assert "### SYSTEM" not in text
+
+
+def test_the_agent_cannot_read_its_own_session(env):
+    session = start(env)
+    env.cli.answers = [
+        action_answer(
+            {"action": "agent_read_session", "session_id": session["id"]},
+            "読みます。",
+        )
+    ]
+    reply = say(env, session["id"], "この会話を読んで").json()
+    text = event_of(reply, "agent_session_transcript")["content"]
+    assert "今の会話自身は読めない" in text
 
 
 def test_library_action_can_set_a_category(env):

@@ -39,9 +39,11 @@ from . import (
     autotag,
     canvas,
     grok,
+    grok_session,
     jobs,
     library,
     prompts,
+    push,
     sheets,
     studio,
     ws,
@@ -50,6 +52,8 @@ from .agent_protocol import ActionError
 from .agent_store import (
     load,
     now,
+    read_session_transcript as read_agent_transcript,
+    search_sessions as search_agent_sessions,
     session_dir,
     update,
 )
@@ -87,6 +91,8 @@ MAX_INSPECT_FRAMES = 8
 
 _loops: dict[str, asyncio.Task[None]] = {}
 _stop_requests: set[str] = set()
+#: 1 ユーザー発言のループのあいだ使い回す Grok ホスト
+_hosts: dict[str, grok_session.GrokSessionHost] = {}
 # Grok ターンを実行中のセッション（「Grok が考えています…」の唯一の情報源）。
 # ブラウザ発の API 呼び出しだけでなく、ループが回すターンもここに入る。
 _thinking: set[str] = set()
@@ -176,9 +182,30 @@ async def _event(
     )
 
 
+_AGENT_NOTIFY = {
+    "waiting_checkin": ("エージェントが確認を待っています", "エージェントが確認を待っています"),
+    "planning": ("プランの承認待ちです", "プランの承認待ちです"),
+    "done": ("エージェントの処理が終わりました", "エージェントの処理が終わりました"),
+    "stopped": ("処理が止まりました", "処理が止まりました"),
+}
+
+
+async def _notify_agent_status(previous: str | None, status: str) -> None:
+    copy = _AGENT_NOTIFY.get(status)
+    if copy is None or previous == status:
+        return
+    title, body = copy
+    await push.notify_all(title, body, url="/", tag=f"agent-{status}")
+
+
 async def _set_status(session_id: str, status: str, message: str | None = None) -> None:
+    previous = None
+    if status in _AGENT_NOTIFY:
+        session = await load(session_id)
+        previous = session.status if session else None
     await update(session_id, status=status)
     await ws.publish_agent(session_id, status, message=message)
+    await _notify_agent_status(previous, status)
 
 
 def turn_limit() -> int:
@@ -271,6 +298,95 @@ async def known_lora_families() -> dict[str, str]:
 # one Grok turn
 # --------------------------------------------------------------------------
 
+def _contract_of(session: AgentSession) -> str:
+    for message in session.messages:
+        if message.role == "system":
+            return message.content
+    return ""
+
+
+def _split_transcript(
+    messages: list[AgentMessage],
+) -> tuple[list[AgentMessage], list[AgentMessage]]:
+    """最後の assistant より前（system 除く）と、それ以降。"""
+    cut = 0
+    for index, message in enumerate(messages):
+        if message.role == "assistant":
+            cut = index + 1
+    past = [m for m in messages[:cut] if m.role != "system"]
+    current = [m for m in messages[cut:] if m.role != "system"]
+    return past, current
+
+
+async def bind_host(
+    session: AgentSession,
+    on_activity: Any,
+    *,
+    force_new: bool = False,
+) -> grok_session.GrokSessionHost:
+    """ループ中なら既存ホストを返し、無ければ start する。"""
+    existing = _hosts.get(session.id)
+    if existing is not None and not existing._closed and not force_new:
+        return existing
+    if existing is not None:
+        await existing.close()
+        _hosts.pop(session.id, None)
+    cwd = session.grok_cwd or str(session_dir(session.id))
+    contract = _contract_of(session)
+    saved = "" if force_new else (session.grok_session_id or "")
+    host = grok_session.open_host(cwd, on_activity)
+    try:
+        grok_id = await host.start(contract, saved or None, cwd)
+        host.resumed = bool(saved)
+        host.rebuild = False
+    except grok_session.GrokSessionGone:
+        await host.close()
+        host = grok_session.open_host(cwd, on_activity)
+        grok_id = await host.start(contract, None, cwd)
+        host.resumed = False
+        host.rebuild = True
+    host.primed = False
+    _hosts[session.id] = host
+    await update(
+        session.id,
+        grok_session_id=grok_id or "",
+        grok_cwd=str(cwd),
+    )
+    session.grok_session_id = grok_id or ""
+    session.grok_cwd = str(cwd)
+    return host
+
+
+async def release_host(session_id: str) -> None:
+    host = _hosts.pop(session_id, None)
+    if host is None:
+        return
+    grok_id = host.session_id or ""
+    await host.close()
+    if grok_id:
+        await update(session_id, grok_session_id=grok_id)
+
+
+def _agent_prompt(session: AgentSession, host: grok_session.GrokSessionHost) -> str:
+    past, current = _split_transcript(session.messages)
+    if host.primed:
+        return prompts.build_turn_batch(current)
+    parts: list[str] = []
+    cold = host.rebuild or not host.resumed
+    if cold and (not host.use_acp) and not host.session_id:
+        contract = _contract_of(session)
+        if contract.strip():
+            parts.append(contract.strip())
+    if cold:
+        replay = prompts.build_replay(past)
+        if replay.strip():
+            parts.append(replay.strip())
+    batch = prompts.build_turn_batch(current)
+    if batch.strip():
+        parts.append(batch.strip())
+    return "\n\n".join(parts) + "\n"
+
+
 async def run_turn(session_id: str) -> tuple[str, AgentAction | None]:
     """Ask Grok once, store the answer and parse its action.
 
@@ -295,7 +411,7 @@ async def _run_turn(
     async def on_activity(activity: str | None) -> None:
         await _set_activity(session_id, activity)
 
-    client = grok.get_agent_client(session_dir(session_id), on_activity)
+    host = await bind_host(session, on_activity)
     known = await known_lora_names() or None
     families = await known_lora_families() or None
     max_tasks, done_tasks = plan_task_limits(session)
@@ -309,7 +425,19 @@ async def _run_turn(
             done_tasks=done_tasks,
         )
 
-    answer = await client.complete(prompts.build_agent_conversation(session.messages))
+    text = _agent_prompt(session, host)
+    try:
+        answer = await host.prompt(text)
+    except grok_session.GrokSessionGone:
+        host = await bind_host(session, on_activity, force_new=True)
+        host.rebuild = True
+        host.primed = False
+        answer = await host.prompt(_agent_prompt(session, host))
+    host.primed = True
+    if host.session_id != (session.grok_session_id or ""):
+        await update(session_id, grok_session_id=host.session_id or "")
+        session.grok_session_id = host.session_id or ""
+
     action: AgentAction | None = None
     reason = ""
     try:
@@ -317,14 +445,8 @@ async def _run_turn(
     except ActionError as exc:
         reason = str(exc)
     if action is None and (reason or agent_protocol.looks_like_action_attempt(answer)):
-        history = [
-            *session.messages,
-            AgentMessage(role="assistant", content=answer, ts=now()),
-        ]
-        answer = await client.complete(
-            prompts.build_agent_conversation(
-                history, retry_reason=reason or "JSON を解釈できませんでした"
-            )
+        answer = await host.prompt(
+            prompts.build_retry_turn(reason or "JSON を解釈できませんでした")
         )
         try:
             action = parse(answer)
@@ -1546,8 +1668,227 @@ async def _canvas_update_card(params: dict[str, Any]) -> tuple[str, str, dict]:
     )
 
 
+CANVAS_SEARCH_LIMIT = 20
+TRANSCRIPT_PAGE = 40
+TRANSCRIPT_MESSAGE_MAX = 2000
+
+
+def _session_read_action(search_action: str) -> str:
+    return search_action.replace("search_sessions", "read_session")
+
+
+def _session_search_text(
+    hits: list, total: int, offset: int, criteria: str, *, action_name: str
+) -> str:
+    read_name = _session_read_action(action_name)
+    hint = f"中身を使うなら `{read_name}` にその `session_id` を渡してください。"
+    if not hits:
+        return (
+            f"セッション検索（{criteria}）: 該当なし（全 {total} 件中 {offset} 件目以降）。"
+            "条件を緩めるか、別の言葉で探してください。"
+            f" {hint}"
+        )
+    shown = offset + len(hits)
+    lines = [
+        f"セッション検索（{criteria}）: {total} 件中 {offset + 1}〜{shown} 件目。",
+        "",
+    ]
+    for item in hits:
+        if isinstance(item, tuple):
+            session_id, title, snippet, ts = item
+        else:
+            session_id, title, snippet, ts = (
+                item.session_id, item.title, item.snippet, item.ts
+            )
+        label = title or "(無題)"
+        lines.append(f"- `{session_id}` 「{label}」 ({ts})")
+        if snippet:
+            lines.append(f"  {snippet}")
+    if shown < total:
+        lines += [
+            "",
+            f"まだ {total - shown} 件あります。続きは"
+            f' `{{"action": "{action_name}", "offset": {shown}, …}}`'
+            "（同じ絞り込み条件のまま）で取得してください。",
+        ]
+    lines += ["", hint]
+    return "\n".join(lines)
+
+
+def _clip_transcript(text: str) -> str:
+    body = text or ""
+    if len(body) <= TRANSCRIPT_MESSAGE_MAX:
+        return body
+    return body[:TRANSCRIPT_MESSAGE_MAX] + "…"
+
+
+def _transcript_heading(role: str, kind: str | None) -> str:
+    name = (role or "event").upper()
+    if role in ("event", "checkin") and kind:
+        return f"### {name} ({kind})"
+    return f"### {name}"
+
+
+def _session_transcript_text(
+    session_id: str,
+    title: str,
+    *,
+    updated: str,
+    created: str,
+    messages: list,
+    total: int,
+    offset: int,
+    action_name: str,
+) -> str:
+    label = title or "(無題)"
+    shown = offset + len(messages)
+    line = (
+        f"セッション `{session_id}` 「{label}」（{updated} / {created}）\n"
+        f"メッセージ 全{total}件中 {offset + 1}〜{shown} 件目。"
+    )
+    if shown < total:
+        line += (
+            f' 続きは {{"action":"{action_name}","session_id":"{session_id}",'
+            f'"offset": {shown}}}'
+        )
+    blocks = [line, ""]
+    for message in messages:
+        blocks.append(_transcript_heading(message.role, message.kind))
+        blocks.append(_clip_transcript(message.content))
+        blocks.append("")
+    return "\n".join(blocks).rstrip() + "\n"
+
+
+async def _canvas_search_sessions(params: dict[str, Any]) -> tuple[str, str, dict]:
+    hits, total = await canvas.search_sessions(
+        params["project_id"],
+        params.get("q") or "",
+        exclude_id=params.get("session_id"),
+        offset=int(params.get("offset") or 0),
+        limit=CANVAS_SEARCH_LIMIT,
+    )
+    criteria = f"q={params.get('q')!r}" if params.get("q") else "絞り込みなし"
+    return (
+        "canvas_search_result",
+        _session_search_text(
+            hits, total, int(params.get("offset") or 0), criteria,
+            action_name="canvas_search_sessions",
+        ),
+        {
+            "project_id": params["project_id"],
+            "total": total,
+            "offset": int(params.get("offset") or 0),
+            "returned": len(hits),
+        },
+    )
+
+
+async def _canvas_read_session(params: dict[str, Any]) -> tuple[str, str, dict]:
+    target = params.get("session_id") or ""
+    offset = int(params.get("offset") or 0)
+    session, messages, total, error = await canvas.read_session_transcript(
+        target,
+        project_id=params.get("project_id"),
+        exclude_id=params.get("exclude_id"),
+        offset=offset,
+        limit=TRANSCRIPT_PAGE,
+    )
+    if error:
+        return (
+            "canvas_session_transcript",
+            error,
+            {"error": error, "session_id": target},
+        )
+    assert session is not None
+    return (
+        "canvas_session_transcript",
+        _session_transcript_text(
+            session.id,
+            session.title,
+            updated=session.updated_at,
+            created=session.created_at,
+            messages=messages,
+            total=total,
+            offset=offset,
+            action_name="canvas_read_session",
+        ),
+        {
+            "project_id": session.project_id,
+            "session_id": session.id,
+            "total": total,
+            "offset": offset,
+            "returned": len(messages),
+        },
+    )
+
+
+async def _agent_search_sessions(session_id: str, action: AgentAction) -> None:
+    hits, total = await search_agent_sessions(
+        action.query,
+        exclude_id=session_id,
+        offset=action.offset,
+        limit=CANVAS_SEARCH_LIMIT,
+    )
+    criteria = f"q={action.query!r}" if action.query else "絞り込みなし"
+    await _event(
+        session_id,
+        "agent_search_result",
+        _session_search_text(
+            hits, total, action.offset, criteria,
+            action_name="agent_search_sessions",
+        ),
+        total=total,
+        offset=action.offset,
+        returned=len(hits),
+    )
+
+
+async def _agent_read_session(session_id: str, action: AgentAction) -> None:
+    target = action.session_id or ""
+    session, messages, total, error = await read_agent_transcript(
+        target,
+        exclude_id=session_id,
+        offset=action.offset,
+        limit=TRANSCRIPT_PAGE,
+    )
+    if error:
+        await _event(
+            session_id,
+            "agent_session_transcript",
+            error,
+            error=error,
+            target_session_id=target,
+        )
+        return
+    assert session is not None
+    updated = next(
+        (message.ts for message in reversed(session.messages) if message.ts),
+        session.created_at,
+    )
+    await _event(
+        session_id,
+        "agent_session_transcript",
+        _session_transcript_text(
+            session.id,
+            session.title,
+            updated=updated,
+            created=session.created_at,
+            messages=messages,
+            total=total,
+            offset=action.offset,
+            action_name="agent_read_session",
+        ),
+        target_session_id=session.id,
+        total=total,
+        offset=action.offset,
+        returned=len(messages),
+    )
+
+
 _CANVAS_HANDLERS = {
     "canvas_list_cards": _canvas_list_cards,
+    "canvas_search_sessions": _canvas_search_sessions,
+    "canvas_read_session": _canvas_read_session,
     "canvas_place_card": _canvas_place_card,
     "canvas_move_card": _canvas_move_card,
     "canvas_update_card": _canvas_update_card,
@@ -1595,11 +1936,13 @@ async def _apply_plan(session_id: str, action: AgentAction) -> None:
     session = await load(session_id)
     if session is None:
         return
+    previous = session.status
     session.plan.version += 1
     session.plan.notes = action.notes
     session.plan.approved = False
     session.plan.tasks = action.tasks
     await update(session_id, plan=session.plan, status="planning")
+    await _notify_agent_status(previous, "planning")
     await add_artifact(
         session_id,
         AgentArtifact(
@@ -1782,6 +2125,12 @@ async def apply_action(session_id: str, action: AgentAction) -> bool:
     if action.action == "library_search":
         await _library_search(session_id, action)
         return False
+    if action.action == "agent_search_sessions":
+        await _agent_search_sessions(session_id, action)
+        return False
+    if action.action == "agent_read_session":
+        await _agent_read_session(session_id, action)
+        return False
     if action.action == "library_sheet":
         await _library_sheet(session_id, action)
         return False
@@ -1952,6 +2301,10 @@ async def _loop(session_id: str, action: AgentAction | None = None) -> None:
                 return
             try:
                 _, action = await run_turn(session_id)
+            except grok_session.GrokTurnCancelled:
+                _stop_requests.discard(session_id)
+                await _halt(session_id, "ユーザーの操作で停止しました。")
+                return
             except grok.LLMError as exc:
                 await _halt(session_id, f"Grok の呼び出しに失敗しました: {exc}")
                 return
@@ -2024,6 +2377,7 @@ async def _guarded_loop(
         await _halt(session_id, f"エージェントの実行中にエラーが発生しました: {exc}")
     finally:
         _loops.pop(session_id, None)
+        await release_host(session_id)
 
 
 def forget(session_id: str) -> None:
@@ -2031,12 +2385,19 @@ def forget(session_id: str) -> None:
     _stop_requests.discard(session_id)
     _thinking.discard(session_id)
     _activity.pop(session_id, None)
+    host = _hosts.pop(session_id, None)
+    if host is not None:
+        asyncio.create_task(host.close())
 
 
 async def request_stop(session_id: str) -> None:
-    """⏹: 実行中のジョブは完了を待ってから停止する（AGENT-MODE §2）。"""
+    """⏹: 実行中の Grok ターンを中断する。投入済みジョブは完了待ち（AGENT-MODE §2）。"""
     _stop_requests.add(session_id)
-    if not is_running(session_id):
+    running = is_running(session_id)
+    host = _hosts.get(session_id)
+    if host is not None:
+        await host.cancel()
+    if not running:
         _stop_requests.discard(session_id)
         await _halt(session_id, "ユーザーの操作で停止しました。")
 

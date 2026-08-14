@@ -29,7 +29,8 @@ CREATE TABLE IF NOT EXISTS jobs (
   error         TEXT,
   nsfw          INTEGER NOT NULL DEFAULT 0,
   nsfw_source   TEXT NOT NULL DEFAULT '',
-  credits_consumed REAL                     -- 外部バックエンドが消費したクレジット（§5.2）
+  credits_consumed REAL,                    -- 外部バックエンドが消費したクレジット（§5.2）
+  chat_session_id TEXT                      -- 生成フォームの chat / エージェント session。エージェント発判定に使う
 );
 
 CREATE TABLE IF NOT EXISTS loras (
@@ -64,7 +65,10 @@ CREATE TABLE IF NOT EXISTS agent_sessions (
   plan         TEXT NOT NULL DEFAULT '{}',
   artifacts    TEXT NOT NULL DEFAULT '[]',
   nsfw         INTEGER NOT NULL DEFAULT 0,
-  nsfw_source  TEXT NOT NULL DEFAULT ''
+  nsfw_source  TEXT NOT NULL DEFAULT '',
+  grok_session_id TEXT NOT NULL DEFAULT '',
+  grok_cwd     TEXT NOT NULL DEFAULT '',
+  snapshot_key TEXT NOT NULL DEFAULT ''
 );
 
 -- ライブラリ（SPEC §7.2）: 履歴とは別に取っておく素材の目録。ファイル実体は
@@ -257,9 +261,22 @@ CREATE TABLE IF NOT EXISTS canvas_viewports (
 );
 
 -- キャンバスのチャット履歴（エージェント実行は別途。ここは保存だけ）。
+-- 同じ作品に複数セッションを持てる。session_id は canvas_sessions を指す。
+CREATE TABLE IF NOT EXISTS canvas_sessions (
+  id              TEXT PRIMARY KEY,
+  project_id      TEXT NOT NULL REFERENCES studio_projects(id) ON DELETE CASCADE,
+  title           TEXT NOT NULL DEFAULT '',
+  created_at      TEXT NOT NULL,
+  updated_at      TEXT NOT NULL,
+  grok_session_id TEXT NOT NULL DEFAULT '',
+  grok_cwd        TEXT NOT NULL DEFAULT '',
+  snapshot_key    TEXT NOT NULL DEFAULT ''
+);
+
 CREATE TABLE IF NOT EXISTS canvas_messages (
   id         TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES studio_projects(id) ON DELETE CASCADE,
+  session_id TEXT,
   ts         TEXT NOT NULL,
   role       TEXT NOT NULL,                -- user / assistant / event
   content    TEXT NOT NULL,
@@ -299,6 +316,19 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_canvas_cards_entity
   ON canvas_cards(project_id, entity_id) WHERE entity_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_canvas_messages_project
   ON canvas_messages(project_id, ts);
+-- session_id 付きインデックスは SCHEMA に置かない。既存 DB の
+-- canvas_messages にはまだ列が無く、executescript が _migrate より先に
+-- 落ちる。列を足したあと _backfill_canvas_sessions が作る。
+CREATE INDEX IF NOT EXISTS idx_canvas_sessions_project
+  ON canvas_sessions(project_id, updated_at DESC);
+
+-- Web Push の購読（単一ユーザー。endpoint が識別子）。
+CREATE TABLE IF NOT EXISTS push_subscriptions (
+  endpoint   TEXT PRIMARY KEY,
+  p256dh     TEXT NOT NULL,
+  auth       TEXT NOT NULL,
+  created_at TEXT NOT NULL
+);
 
 -- 参照先が消えたカードは残さない（孤児化の防止）。スタジオ API 経由の削除
 -- だけでなく、親を消した ON DELETE CASCADE やリビジョン復元での行の入れ替えも
@@ -340,10 +370,19 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         # 外部バックエンドのジョブが消費したクレジット（SPEC §5.2）。
         # ComfyUI のジョブは自前 GPU なので NULL のままでよい。
         ("credits_consumed", "REAL"),
+        # 投入元の chat / agent セッション。エージェント発のジョブは
+        # agent_sessions.id と一致し、完了通知の対象外になる。
+        ("chat_session_id", "TEXT"),
     ],
     "agent_sessions": [
         ("nsfw", "INTEGER NOT NULL DEFAULT 0"),
         ("nsfw_source", "TEXT NOT NULL DEFAULT ''"),
+        ("grok_session_id", "TEXT NOT NULL DEFAULT ''"),
+        ("grok_cwd", "TEXT NOT NULL DEFAULT ''"),
+        ("snapshot_key", "TEXT NOT NULL DEFAULT ''"),
+    ],
+    "canvas_messages": [
+        ("session_id", "TEXT"),
     ],
     "library": [
         # 分類タグ（JSON 配列。loras.sample_images と同じ持ち方）。ライブラリを
@@ -480,6 +519,71 @@ async def _migrate(conn: aiosqlite.Connection) -> None:
                 "UPDATE studio_projects SET nsfw = 1 WHERE id IN "
                 "(SELECT DISTINCT project_id FROM studio_shots WHERE nsfw = 1)"
             )
+
+    await _backfill_canvas_sessions(conn)
+
+
+async def _backfill_canvas_sessions(conn: aiosqlite.Connection) -> None:
+    """メッセージがある作品ごとにキャンバスセッションを 1 本作り、session_id を埋める。"""
+    async with conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'canvas_sessions'"
+    ) as cur:
+        if await cur.fetchone() is None:
+            return
+    async with conn.execute("PRAGMA table_info(canvas_messages)") as cur:
+        columns = {row["name"] for row in await cur.fetchall()}
+    if "session_id" not in columns:
+        return
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_canvas_messages_session"
+        " ON canvas_messages(session_id, ts)"
+    )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_canvas_sessions_project"
+        " ON canvas_sessions(project_id, updated_at DESC)"
+    )
+
+    from .ids import new_id
+    from .paths import AGENT_SESSIONS_DIR
+
+    async with conn.execute(
+        "SELECT DISTINCT m.project_id FROM canvas_messages m"
+        " JOIN studio_projects p ON p.id = m.project_id"
+        " WHERE m.session_id IS NULL OR m.session_id = ''"
+    ) as cur:
+        project_ids = [row["project_id"] for row in await cur.fetchall()]
+    for project_id in project_ids:
+        async with conn.execute(
+            "SELECT content, ts FROM canvas_messages"
+            " WHERE project_id = ? AND role = 'user'"
+            " ORDER BY ts, id LIMIT 1",
+            (project_id,),
+        ) as cur:
+            first = await cur.fetchone()
+        async with conn.execute(
+            "SELECT MIN(ts) AS created_at, MAX(ts) AS updated_at"
+            " FROM canvas_messages WHERE project_id = ?",
+            (project_id,),
+        ) as cur:
+            times = await cur.fetchone()
+        title = "チャット"
+        if first and (first["content"] or "").strip():
+            title = first["content"].strip().splitlines()[0][:40]
+        session_id = new_id()
+        created = (times["created_at"] if times else None) or ""
+        updated = (times["updated_at"] if times else None) or created
+        cwd = str(AGENT_SESSIONS_DIR / f"canvas-{project_id}")
+        await conn.execute(
+            "INSERT INTO canvas_sessions"
+            " (id, project_id, title, created_at, updated_at, grok_cwd)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (session_id, project_id, title, created, updated, cwd),
+        )
+        await conn.execute(
+            "UPDATE canvas_messages SET session_id = ?"
+            " WHERE project_id = ? AND (session_id IS NULL OR session_id = '')",
+            (session_id, project_id),
+        )
 
 
 async def init_db() -> None:
