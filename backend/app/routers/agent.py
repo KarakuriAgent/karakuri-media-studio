@@ -350,7 +350,7 @@ async def _answer_checkin(
 
 @router.post("/sessions/{session_id}/stop", response_model=AgentSession)
 async def stop(session_id: str) -> AgentSession:
-    """⏹: 実行中の ComfyUI ジョブは完了を待って中断する（§2）。"""
+    """⏹: 実行中の Grok ターンと投入済みジョブを cancel する。"""
     await _require(session_id)
     await agent_runner.request_stop(session_id)
     return await _require(session_id)

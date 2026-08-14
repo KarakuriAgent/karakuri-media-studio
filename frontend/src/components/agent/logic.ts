@@ -79,7 +79,7 @@ export function inputState(
   if (session.status === 'running' || thinking) {
     return {
       disabled: true,
-      placeholder: '実行中は完了を待つか「停止」してください',
+      placeholder: '実行中は「停止」で中断できます',
     }
   }
   if (session.status === 'waiting_checkin') {

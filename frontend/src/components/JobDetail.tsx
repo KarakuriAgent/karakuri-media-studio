@@ -1,9 +1,11 @@
-import { RotateCcw, Trash2, Undo2, X } from 'lucide-react'
+import { RotateCcw, Square, Trash2, Undo2, X } from 'lucide-react'
 import type { Job, LibraryItem } from '../types'
 import { Button } from '@/components/ui/button'
 import LibraryAddButton, { isInLibrary, librarySourcesOf } from './LibraryAddButton'
 import { PromptBlock } from './ResultPane'
 import { Banner, CopyButton, NsfwBadge, NsfwToggle, StatusBadge } from './ui'
+
+const ACTIVE_STATUSES = ['queued', 'prompting', 'running']
 
 export default function JobDetail({
   job,
@@ -11,6 +13,7 @@ export default function JobDetail({
   onRerun,
   onRestoreParams,
   onContinue,
+  onCancel,
   onDelete,
   onToggleNsfw,
   busy,
@@ -26,6 +29,7 @@ export default function JobDetail({
   /** ジョブの生成パラメータを生成フォームへ書き戻す。 */
   onRestoreParams: (job: Job) => void
   onContinue: (job: Job) => void
+  onCancel: (job: Job) => void
   onDelete: (job: Job) => void
   onToggleNsfw: (job: Job, nsfw: boolean) => void
   busy: boolean
@@ -184,6 +188,18 @@ export default function JobDetail({
             disabled={busy}
             onToggle={(nsfw) => onToggleNsfw(job, nsfw)}
           />
+          {ACTIVE_STATUSES.includes(job.status) && (
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={busy}
+              title="このジョブを停止します"
+              onClick={() => onCancel(job)}
+            >
+              <Square />
+              停止
+            </Button>
+          )}
           <Button
             variant="destructive"
             size="sm"

@@ -4,12 +4,14 @@ Grok と ComfyUI は test_agent.py と同じ仕掛けで完全にモックする
 「アクションがどう解釈され、カードとスタジオに何が起きて、会話に何が残ったか」。
 """
 
+import asyncio
 import time
 from pathlib import Path
 
 import pytest
 
-from app import agent_protocol, canvas_agent, grok
+from app import agent_protocol, canvas_agent, grok, jobs
+from tests.test_jobs import _hang_until_cancelled, wait_for
 
 # test_agent.py の env フィクスチャ（Grok / ComfyUI のモック一式）をそのまま使う。
 from test_agent import (  # noqa: F401 - フィクスチャの再エクスポート
@@ -508,6 +510,57 @@ def test_the_conversation_is_fed_back_to_the_next_turn(env):
     assert "# ROLE" not in second
     assert "# EVENT" in second
     assert "canvas_cards" in second
+
+
+def test_stop_cancels_render_jobs(env, monkeypatch):
+    """⏹ はキャンバスのランで投入した studio_render_shot ジョブも止める。"""
+    monkeypatch.setattr(jobs, "_run_job_stages", _hang_until_cancelled)
+    project = make_project(env)
+    shot = env.client.post(
+        f"/api/studio/projects/{project['id']}/shots",
+        json={"title": "S1", "prompt": "A cat walks in.", "duration_seconds": 5},
+    ).json()
+    calls = {"n": 0}
+
+    async def exec_then_hang(argv, cwd, timeout):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            return (
+                0,
+                action_answer({"action": "studio_render_shot", "shot_id": shot["id"]}),
+                "",
+            )
+        # ワンショット実行は host.cancel が届かないので、停止要求を見て抜ける
+        deadline = time.time() + 30
+        while time.time() < deadline:
+            if project["id"] in canvas_agent._stop_requests:
+                return (0, "ok", "")
+            await asyncio.sleep(0.05)
+        return (0, "ok", "")
+
+    monkeypatch.setattr(grok, "_exec", exec_then_hang)
+    response = env.client.post(
+        f"/api/canvas/projects/{project['id']}/agent", json={"content": "焼いて"}
+    )
+    assert response.status_code == 202, response.text
+
+    deadline = time.time() + 10
+    take = None
+    while time.time() < deadline:
+        takes = env.client.get(f"/api/studio/shots/{shot['id']}/takes").json()
+        # 2 ターン目に入ってから止める（1 本目の job_id を覚え終わっている）
+        if takes and calls["n"] >= 2:
+            take = takes[0]
+            break
+        time.sleep(0.05)
+    assert take is not None, "studio_render_shot が Take を作らなかった"
+    wait_for(env.client, take["job_id"], statuses=("queued", "prompting", "running"))
+
+    env.client.post(f"/api/canvas/projects/{project['id']}/agent/stop")
+    wait_idle(env, project["id"])
+    job = wait_for(env.client, take["job_id"], statuses=("canceled",))
+    assert job["status"] == "canceled"
+    assert event_of(env, project["id"], "stopped")["content"] == "実行を止めました。"
 
 
 def test_stop_during_a_turn_does_not_apply_the_action(env, monkeypatch):

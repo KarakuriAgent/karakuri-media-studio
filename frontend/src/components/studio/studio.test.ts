@@ -26,6 +26,7 @@ import {
   shotUpdateFromForm,
   splitMentions,
   staleTooltip,
+  takeActivityLabel,
   takesByShot,
   unresolvedMentions,
   validateProjectForm,
@@ -335,6 +336,21 @@ describe('projectSummary / renderingJobIds', () => {
 
   it('生成中の Take の job_id だけ返す', () => {
     expect(renderingJobIds(detail.takes)).toEqual(['job-t2'])
+  })
+})
+
+describe('takeActivityLabel', () => {
+  it('rendering 中は進捗メッセージを優先する', () => {
+    expect(
+      takeActivityLabel(take('t1', { status: 'rendering' }), { message: '英訳作成中' }),
+    ).toBe('英訳作成中')
+  })
+
+  it('メッセージが無ければ状態ラベル', () => {
+    expect(takeActivityLabel(take('t1', { status: 'rendering' }))).toBe('生成中')
+    expect(
+      takeActivityLabel(take('t1', { status: 'failed' }), { message: '英訳作成中' }),
+    ).toBe('失敗')
   })
 })
 

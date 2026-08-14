@@ -459,7 +459,7 @@ export default function AgentChat({
             size="sm"
             disabled={!stoppable}
             title={
-              stoppable ? '実行中のジョブは完了を待って中断します' : '実行中ではありません'
+              stoppable ? '実行中の生成も停止します' : '実行中ではありません'
             }
             onClick={onStop}
           >

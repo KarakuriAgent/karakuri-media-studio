@@ -2087,8 +2087,8 @@ def compose_prompt(shot: StudioShot, body: str, *, workflow: str = "") -> str:
 # --------------------------------------------------------------------------
 #
 # MiniMax H3 は英語プロンプト前提のモデルなので、日本語で書いた脚本はそのまま
-# 投げると精度が落ちる。プロジェクトの `auto_translate` が有効なら、組み立て
-# 終わった本文を Grok に「公式 H3 文書へ書き直す」仕事をさせてから投入する。
+# 投げると精度が落ちる。プロジェクトの `auto_translate` が有効なら、ジョブランナー
+# が組み立て済み本文を Grok に「公式 H3 文書へ書き直す」仕事をさせてから投入する。
 # 直訳ではなく、事実はそのまま、欠ける公式フィールドと観測できる演出を足す。
 # 壊してはいけないもの:
 #   - `<Picture N>` / `<Video N>` / `<Audio N>` / `<Subject N>`（参照タグ）
@@ -2150,7 +2150,7 @@ def _unfence(text: str) -> str:
 async def translate_prompt(prompt: str, workflow_id: str) -> str:
     """日本語まじりの本文を H3 用の英語プロンプトへ直す。
 
-    :class:`app.grok.LLMError` はそのまま投げる（呼び出し側が投入を止める）。
+    :class:`app.grok.LLMError` はそのまま投げる（呼び出し側がジョブを失敗させる）。
     空の応答も同じ扱いにする。待ち時間は相談と同じ ``agent_grok_timeout``。
     """
     hint = get_video_spec(workflow_id).prompt_hint
@@ -2459,6 +2459,19 @@ async def record_take_latent(job_id: str, latent_path: str) -> None:
         await conn.commit()
 
 
+async def record_translated_prompt(job_id: str, translated: str) -> None:
+    """英訳が終わった本文を、そのジョブの Take に書き戻す。
+
+    呼ぶのはジョブランナー。スタジオ由来でないジョブでは対象の行が無いだけ。
+    """
+    async with get_db() as conn:
+        await conn.execute(
+            "UPDATE studio_takes SET prompt = ? WHERE job_id = ?",
+            (translated, job_id),
+        )
+        await conn.commit()
+
+
 async def _carry_over_start_frame(
     conn: aiosqlite.Connection, shot: StudioShot
 ) -> str | None:
@@ -2521,7 +2534,10 @@ def _checked_duration(value: Any) -> float:
 
 
 async def render_shot(
-    shot_id: str, overrides: StudioRenderRequest | None = None
+    shot_id: str,
+    overrides: StudioRenderRequest | None = None,
+    *,
+    chat_session_id: str | None = None,
 ) -> StudioTake:
     """Shot を 1 回生成してジョブに載せ、Take を返す。
 
@@ -2532,8 +2548,7 @@ async def render_shot(
     2. 生成設定（画面比・解像度・尺・ステップ数・シード）を
        **この 1 回ぶんの上書き > Shot > プロジェクト > 既定** の順に解決する。
     3. プロジェクトの ``auto_translate`` が有効で本文に日本語が混ざっていれば、
-       Grok に H3 用の英語プロンプトへ直させる。直せなければ
-       :class:`StudioError` で投入を止める（ジョブも Take も作らない）。
+       ジョブ側で英訳する（ここでは待たない。``pending_translate`` を載せる）。
     4. :func:`app.jobs.create_job` にそのまま渡す（HTTP は経由しない）。
 
     ``overrides``（:class:`app.models.StudioRenderRequest`）はそのテイクにだけ
@@ -2620,20 +2635,17 @@ async def render_shot(
     if workflow in LATENT_CONTEXT_WORKFLOWS:
         await _require_latent_context()
 
-    # 英訳は DB の接続を閉じてから（Grok の応答を待つあいだ掴まない）。
+    # 英訳はジョブランナー側（HTTP を待たせない）。必要なら原文を残し、
+    # ``pending_translate`` だけ載せる。
     source_prompt = ""
     warning = ""
+    extra_params: dict[str, Any] | None = None
     if project is not None and project.auto_translate and has_japanese(prompt):
-        try:
-            translated = await translate_prompt(prompt, workflow)
-        except grok.LLMError as exc:
-            raise StudioError(
-                "英語プロンプトへの変換ができないので投入しませんでした"
-                f"（{exc}）"
-            ) from exc
         source_prompt = prompt
-        prompt = translated
-        fields["video_prompt"] = prompt
+        extra_params = {"pending_translate": True}
+
+    if chat_session_id:
+        fields["chat_session_id"] = chat_session_id
 
     # ジョブの投入も接続を閉じてから: 走り出したランナーが jobs 行を書きに来る
     # ので、読み取り用の接続を掴んだままにしない。
@@ -2642,7 +2654,7 @@ async def render_shot(
     except ValidationError as exc:
         raise StudioError(_first_message(exc)) from exc
     try:
-        job = await job_service.create_job(payload)
+        job = await job_service.create_job(payload, extra_params=extra_params)
     except job_service.JobValidationError as exc:
         raise StudioError(str(exc)) from exc
 
@@ -2665,6 +2677,19 @@ async def render_shot(
             ),
         )
         await conn.commit()
+
+    # ランナーが Take 作成より先に英訳を済ませていることがある。
+    if extra_params and extra_params.get("pending_translate"):
+        current = await job_service.get_job(job.id, include_workflow=False)
+        translated = ""
+        if current is not None:
+            translated = str(
+                current.params.get("video_prompt") or current.video_prompt or ""
+            )
+        if translated and translated != prompt:
+            await record_translated_prompt(job.id, translated)
+
+    async with get_db() as conn:
         return await _fetch_take(conn, take_id)  # type: ignore[return-value]
 
 
@@ -2952,21 +2977,47 @@ async def create_story(
     return result
 
 
+async def cancel_take(take_id: str) -> StudioTake | None:
+    """Take に紐づくジョブを止める。行は残す（状態はジョブから導出）。"""
+    take = await get_take(take_id)
+    if take is None:
+        return None
+    if take.job_id:
+        await job_service.cancel_job(take.job_id)
+    return await get_take(take_id)
+
+
 async def delete_take(take_id: str) -> bool:
-    """Take を目録から外す（ジョブと成果物は履歴に残す）。"""
+    """Take を目録から外す（実行中ならジョブも止める。成果物は履歴に残す）。"""
     async with get_db() as conn:
         async with conn.execute(
-            "SELECT shot_id, project_id FROM studio_takes WHERE id = ?", (take_id,)
+            "SELECT shot_id, project_id, job_id FROM studio_takes WHERE id = ?",
+            (take_id,),
         ) as cur:
             row = await cur.fetchone()
         if row is None:
             return False
+        job_id = str(row["job_id"] or "")
+        shot_id = str(row["shot_id"])
+        project_id = str(row["project_id"])
+
+    if job_id:
+        job = await job_service.get_job(job_id, include_workflow=False)
+        if job is not None and job.status in ("queued", "prompting", "running"):
+            await job_service.cancel_job(job_id)
+
+    async with get_db() as conn:
+        async with conn.execute(
+            "SELECT 1 FROM studio_takes WHERE id = ?", (take_id,)
+        ) as cur:
+            if await cur.fetchone() is None:
+                return False
         await conn.execute("DELETE FROM studio_takes WHERE id = ?", (take_id,))
         await conn.execute(
             "UPDATE studio_shots SET selected_take_id = NULL, updated_at = ?"
             " WHERE id = ? AND selected_take_id = ?",
-            (_now(), str(row["shot_id"]), take_id),
+            (_now(), shot_id, take_id),
         )
-        await _record_revision(conn, str(row["project_id"]), "user", "Take を削除")
+        await _record_revision(conn, project_id, "user", "Take を削除")
         await conn.commit()
         return True

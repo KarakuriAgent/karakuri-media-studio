@@ -793,12 +793,24 @@ def _params_from_create(payload: JobCreate) -> dict[str, Any]:
     return params
 
 
-async def create_job(payload: JobCreate, *, inherit_nsfw: bool = False) -> Job:
-    """``inherit_nsfw``: 呼び出し元（エージェントセッション等）が NSFW のとき True。"""
+async def create_job(
+    payload: JobCreate,
+    *,
+    inherit_nsfw: bool = False,
+    extra_params: dict[str, Any] | None = None,
+) -> Job:
+    """``inherit_nsfw``: 呼び出し元（エージェントセッション等）が NSFW のとき True。
+
+    ``extra_params`` は JobCreate に無い内部フラグ（``pending_translate`` など）を
+    params に足す。
+    """
     nsfw, source = _resolve_nsfw(payload.nsfw, inherit_nsfw)
+    params = _params_from_create(payload)
+    if extra_params:
+        params.update(extra_params)
     return await _insert_job(
         mode=payload.mode,
-        params=_params_from_create(payload),
+        params=params,
         user_input=payload.user_input,
         chat_session_id=payload.chat_session_id,
         nsfw=nsfw,
@@ -1687,6 +1699,33 @@ async def _record_take_latent(job_id: str, latent_path: str) -> None:
     await studio.record_take_latent(job_id, latent_path)
 
 
+async def _apply_pending_translate(job: Job) -> None:
+    """スタジオが後回しにした英訳を、Comfy に投げる前に済ませる。"""
+    if not job.params.get("pending_translate"):
+        return
+    from . import grok, studio
+
+    await _set_status(job.id, "running", message="英訳作成中")
+    prompt = str(job.params.get("video_prompt") or job.video_prompt or "")
+    workflow_id = str(job.params.get("video_workflow") or "")
+    try:
+        translated = await studio.translate_prompt(prompt, workflow_id)
+    except grok.LLMError as exc:
+        raise JobError(
+            "英語プロンプトへの変換ができないので中止しました"
+            f"（{exc}）"
+        ) from exc
+    job.params["video_prompt"] = translated
+    job.params["pending_translate"] = False
+    job.video_prompt = translated
+    await _update(
+        job.id,
+        video_prompt=translated,
+        params=json.dumps(job.params, ensure_ascii=False),
+    )
+    await studio.record_translated_prompt(job.id, translated)
+
+
 def _stage_label(stage: str, index: int, total: int) -> str:
     """「画像生成 (1/2)」のような見出し（1 段のジョブでは番号を付けない）。"""
     label = _STAGE_LABELS.get(stage, stage)
@@ -1715,6 +1754,8 @@ async def _run_job_stages(job: Job) -> dict[str, Any]:
     overrides: dict[str, str] = {}
     # 成果物のファイル以外に ComfyUI から拾えたもの（ラテント連続性のパス）
     extras: dict[str, str] = {}
+
+    await _apply_pending_translate(job)
 
     all_stages = stage_specs(job.mode, job.params)
     total = len(all_stages)
@@ -1954,6 +1995,24 @@ runner = JobRunner()
 
 async def cancel_job(job_id: str) -> Job | None:
     return await runner.cancel_job(job_id)
+
+
+async def cancel_jobs_for_session(session_id: str) -> list[str]:
+    """``chat_session_id`` が一致する queued / prompting / running ジョブを止める。"""
+    async with get_db() as conn:
+        async with conn.execute(
+            "SELECT id FROM jobs WHERE chat_session_id = ?"
+            " AND status IN ('queued', 'prompting', 'running')",
+            (session_id,),
+        ) as cur:
+            rows = await cur.fetchall()
+    canceled: list[str] = []
+    for row in rows:
+        job_id = str(row["id"])
+        job = await cancel_job(job_id)
+        if job is not None:
+            canceled.append(job_id)
+    return canceled
 
 
 async def _interrupt_comfy() -> None:

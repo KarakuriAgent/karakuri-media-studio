@@ -3,7 +3,7 @@
 ComfyUI には繋がない（接続確認を潰してあるので投入したジョブは失敗する）。
 ここで見るのは「どのワークフローに何を渡してジョブを作ったか」まで。
 Grok（日本語 -> 英語の変換）も呼ばせず、既定では「使えない環境」として扱う
-（auto_translate の日本語 Shot は投入しない）。
+（auto_translate の日本語 Shot は受け付けるが、ジョブ側の英訳で失敗する）。
 """
 
 from pathlib import Path
@@ -15,6 +15,7 @@ from app import comfy, db, grok, jobs, nsfw, studio, workflows
 from app.main import app
 from app.models import MAX_STEPS, StudioShot
 from app.routers import assets as assets_router
+from tests.test_jobs import _hang_until_cancelled, wait_for
 
 
 async def _no_llm(text: str) -> None:
@@ -66,15 +67,17 @@ def env(tmp_path, monkeypatch):
 
     # 実際に投入された JobCreate を覚えておく（生成の中身の検証はここを見る）
     created: list = []
+    extras: list = []
     real_create_job = jobs.create_job
 
     async def recording_create_job(payload, **kwargs):
         created.append(payload)
+        extras.append(kwargs.get("extra_params"))
         return await real_create_job(payload, **kwargs)
 
     monkeypatch.setattr(studio.job_service, "create_job", recording_create_job)
 
-    # 日本語 -> 英語の変換は既定で「Grok が使えない」= 投入しない。
+    # 日本語 -> 英語の変換は既定で「Grok が使えない」= ジョブが失敗する。
     # 変換そのものを見るテストは `llm.error = None` と `llm.reply` を差す。
     llm = FakeLLM()
     monkeypatch.setattr(grok, "get_client", lambda *a, **k: llm)
@@ -101,6 +104,7 @@ def env(tmp_path, monkeypatch):
                 "assets": assets,
                 "outputs": outputs,
                 "created": created,
+                "extras": extras,
                 "llm": llm,
                 "tmp": tmp_path,
             },
@@ -1480,6 +1484,38 @@ def test_a_finished_job_makes_the_take_a_candidate(env):
     assert row["video_workflow"] == "minimax_h3_t2v"
 
 
+def test_canceling_a_take_stops_its_job(env, monkeypatch):
+    monkeypatch.setattr(jobs, "_run_job_stages", _hang_until_cancelled)
+    project = make_project(env)
+    shot = make_shot(env, project["id"])
+    take = render(env, shot["id"]).json()
+    wait_for(env.client, take["job_id"], statuses=("queued", "prompting", "running"))
+
+    canceled = env.client.post(f"/api/studio/takes/{take['id']}/cancel")
+    assert canceled.status_code == 200, canceled.text
+    body = canceled.json()
+    assert body["status"] == "failed"
+    assert body["job_status"] == "canceled"
+    job = wait_for(env.client, take["job_id"], statuses=("canceled",))
+    assert job["status"] == "canceled"
+    row = detail(env, project["id"])["takes"][0]
+    assert row["status"] == "failed"
+    assert row["job_status"] == "canceled"
+
+
+def test_deleting_a_rendering_take_cancels_its_job(env, monkeypatch):
+    monkeypatch.setattr(jobs, "_run_job_stages", _hang_until_cancelled)
+    project = make_project(env)
+    shot = make_shot(env, project["id"])
+    take = render(env, shot["id"]).json()
+    wait_for(env.client, take["job_id"], statuses=("queued", "prompting", "running"))
+
+    assert env.client.delete(f"/api/studio/takes/{take['id']}").status_code == 204
+    job = wait_for(env.client, take["job_id"], statuses=("canceled",))
+    assert job["status"] == "canceled"
+    assert detail(env, project["id"])["takes"] == []
+
+
 def test_deleting_a_take_clears_the_selection(env):
     project = make_project(env)
     shot = make_shot(env, project["id"])
@@ -1503,6 +1539,7 @@ def test_unknown_ids_are_404(env):
     assert env.client.get("/api/studio/projects/nope").status_code == 404
     assert env.client.post("/api/studio/shots/nope/render").status_code == 404
     assert env.client.post("/api/studio/takes/nope/select").status_code == 404
+    assert env.client.post("/api/studio/takes/nope/cancel").status_code == 404
     assert env.client.patch("/api/studio/assets/nope", json={}).status_code == 404
     assert env.client.delete("/api/studio/shots/nope").status_code == 404
 
@@ -2087,7 +2124,23 @@ def test_a_japanese_prompt_is_translated_before_it_is_submitted(env):
     assert take.status_code == 201, take.text
 
     payload = env.created[-1]
-    assert payload.video_prompt == env.llm.reply
+    assert payload.video_prompt.startswith(
+        "detailed_description: 猫が <Picture 1> に入ってくる。"
+    )
+    assert "<d>[Japanese] いらっしゃい</d>" in payload.video_prompt
+    assert env.extras[-1] == {"pending_translate": True}
+
+    body = take.json()
+    assert body["source_prompt"].startswith(
+        "detailed_description: 猫が <Picture 1> に入ってくる。"
+    )
+    assert "<d>[Japanese] いらっしゃい</d>" in body["source_prompt"]
+    assert body["warning"] == ""
+
+    job = wait_for(env.client, body["job_id"])
+    assert job["params"]["video_prompt"] == env.llm.reply
+    assert not job["params"].get("pending_translate")
+
     # 変換の指示にはワークフローの書き方の規約とタグの取り扱いが入る
     instruction = env.llm.prompts[-1]
     assert "<Picture 1>" in instruction
@@ -2098,13 +2151,11 @@ def test_a_japanese_prompt_is_translated_before_it_is_submitted(env):
     assert "complete official" in instruction
     assert "Do not invent dialogue" in instruction
 
-    body = take.json()
-    assert body["prompt"] == env.llm.reply
-    assert body["source_prompt"].startswith(
+    takes = env.client.get(f"/api/studio/shots/{shot['id']}/takes").json()
+    assert takes[0]["source_prompt"].startswith(
         "detailed_description: 猫が <Picture 1> に入ってくる。"
     )
-    assert "<d>[Japanese] いらっしゃい</d>" in body["source_prompt"]
-    assert body["warning"] == ""
+    assert takes[0]["prompt"] == env.llm.reply
 
 
 def test_an_english_prompt_is_submitted_as_is(env):
@@ -2118,6 +2169,7 @@ def test_an_english_prompt_is_submitted_as_is(env):
     assert env.created[-1].video_prompt.startswith(
         "integrated_multimodal_description: A cat walks in."
     )
+    assert env.extras[-1] is None
 
 
 def test_translation_can_be_turned_off_per_project(env):
@@ -2130,18 +2182,23 @@ def test_translation_can_be_turned_off_per_project(env):
     assert env.created[-1].video_prompt.startswith(
         "integrated_multimodal_description: 猫が入ってくる。"
     )
+    assert env.extras[-1] is None
 
 
 def test_a_broken_grok_does_not_submit(env):
     project = make_project(env)  # fixture の既定は「grok が使えない」
     shot = make_shot(env, project["id"], prompt="猫が入ってくる。")
     response = render(env, shot["id"])
-    assert response.status_code == 400, response.text
-    detail = response.json()["detail"]
-    assert "投入しませんでした" in detail
-    assert "grok CLI が見つかりません" in detail
-    assert env.created == []
-    assert env.client.get(f"/api/studio/shots/{shot['id']}/takes").json() == []
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert env.created
+    job = wait_for(env.client, body["job_id"])
+    assert job["status"] == "failed"
+    error = job["error"] or ""
+    assert "中止しました" in error
+    assert "grok CLI が見つかりません" in error
+    takes = env.client.get(f"/api/studio/shots/{shot['id']}/takes").json()
+    assert takes[0]["status"] == "failed"
 
 
 def test_an_empty_translation_does_not_submit(env):
@@ -2150,12 +2207,16 @@ def test_an_empty_translation_does_not_submit(env):
     project = make_project(env)
     shot = make_shot(env, project["id"], prompt="猫が入ってくる。")
     response = render(env, shot["id"])
-    assert response.status_code == 400, response.text
-    detail = response.json()["detail"]
-    assert "投入しませんでした" in detail
-    assert "空のプロンプト" in detail
-    assert env.created == []
-    assert env.client.get(f"/api/studio/shots/{shot['id']}/takes").json() == []
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert env.created
+    job = wait_for(env.client, body["job_id"])
+    assert job["status"] == "failed"
+    error = job["error"] or ""
+    assert "中止しました" in error
+    assert "空のプロンプト" in error
+    takes = env.client.get(f"/api/studio/shots/{shot['id']}/takes").json()
+    assert takes[0]["status"] == "failed"
 
 
 def test_translation_uses_the_configured_grok_timeout(env, monkeypatch):
@@ -2183,7 +2244,9 @@ def test_translation_uses_the_configured_grok_timeout(env, monkeypatch):
     monkeypatch.setattr(grok, "get_client", capture)
     project = make_project(env)
     shot = make_shot(env, project["id"], prompt="猫が入ってくる。")
-    assert render(env, shot["id"]).status_code == 201
+    take = render(env, shot["id"])
+    assert take.status_code == 201
+    wait_for(env.client, take.json()["job_id"])
     assert seen == [grok.configured_timeout()]
     assert seen == [900.0]
 
@@ -2193,8 +2256,13 @@ def test_a_fenced_answer_is_unwrapped(env):
     env.llm.reply = "```\nA cat walks in.\n```"
     project = make_project(env)
     shot = make_shot(env, project["id"], prompt="猫が入ってくる。")
-    assert render(env, shot["id"]).status_code == 201
-    assert env.created[-1].video_prompt == "A cat walks in."
+    take = render(env, shot["id"])
+    assert take.status_code == 201
+    assert env.created[-1].video_prompt.startswith(
+        "integrated_multimodal_description: 猫が入ってくる。"
+    )
+    job = wait_for(env.client, take.json()["job_id"])
+    assert job["params"]["video_prompt"] == "A cat walks in."
 
 
 # --------------------------------------------------------------------------
@@ -2233,7 +2301,8 @@ def test_the_demo_builds_a_whole_project(env):
     assert take.status_code == 201, take.text
     assert env.created[-1].video_workflow == "minimax_h3_t2v"
     assert "young Japanese mechanic" in take.json()["source_prompt"]
-    assert env.created[-1].video_prompt == env.llm.reply
+    job = wait_for(env.client, take.json()["job_id"])
+    assert job["params"]["video_prompt"] == env.llm.reply
 
 
 def test_every_demo_can_be_created(env):

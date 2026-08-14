@@ -92,7 +92,17 @@ export class ApiError extends Error {
  * errors that carry data（ライブラリの二重登録など）, `{detail: {message, …}}`.
  */
 export function formatDetail(detail: unknown): string {
-  if (typeof detail === 'string') return detail
+  if (typeof detail === 'string') {
+    const trimmed = detail.trim()
+    if (/^<!DOCTYPE/i.test(trimmed) || /^<html\b/i.test(trimmed)) {
+      const lower = trimmed.toLowerCase()
+      if (lower.includes('524') || lower.includes('timeout')) {
+        return '接続がタイムアウトしました。生成はサーバー側で続いていることがあります。'
+      }
+      return 'サーバーから予期しない応答が返りました。'
+    }
+    return detail
+  }
   if (
     detail &&
     typeof detail === 'object' &&
@@ -578,6 +588,8 @@ export const api = {
     json<StudioTake>('POST', `/api/studio/takes/${id}/select`),
   rejectStudioTake: (id: string) =>
     json<StudioTake>('POST', `/api/studio/takes/${id}/reject`),
+  cancelStudioTake: (id: string) =>
+    json<StudioTake>('POST', `/api/studio/takes/${id}/cancel`),
   deleteStudioTake: (id: string) => json<void>('DELETE', `/api/studio/takes/${id}`),
 
   // キャンバス（スタジオの別ビュー）。カードは「スタジオのどの行か」と「どこに

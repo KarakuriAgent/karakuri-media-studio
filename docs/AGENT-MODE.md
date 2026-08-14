@@ -54,7 +54,7 @@ Grok がチャットから生成設定一式を組み立て、複数の動画ジ
 | プランモード | 実行前に必ずタスクリスト（何を何本・どの設定で）を提示。承認まで生成しない。プランは v1, v2… とバージョン管理 |
 | アクション承認 | 「生成開始」「プラン外の追加生成」「ジョブ削除」は承認必須。設定の組み立て・リサーチ・検分は自律 |
 | チェックイン | セッション単位で「毎ジョブ確認 / 節目のみ / 完了まで自走」を選択。生成本数の上限（0 = 無制限）はどのモードでも効くので、新規セッション欄でもチャットヘッダー（⚙）でも全モードで指定できる |
-| 停止 | ⏹ を常時表示。実行中の ComfyUI ジョブは完了を待って中断（キャンセル API は現状なし） |
+| 停止 | ⏹ を常時表示。実行中の ComfyUI ジョブも `POST /api/jobs/{id}/cancel` で止める |
 
 ## 3. エージェントの能力
 
@@ -525,7 +525,7 @@ Grok ターンの実行中は `thinking` で通知する（WS フレームの `t
 |---|---|
 | `POST /api/canvas/projects/{id}/agent` | ユーザー発言と**開いているタブ**（`episode_id`。省略 / `"common"` = 作品共通）を会話に残して実行開始（202。実行中は 409、空文は 422、知らない話は 404） |
 | `GET /api/canvas/projects/{id}/agent` | 実行中かどうか + 活動テキスト（WS を取りこぼしたときの拾い先） |
-| `POST /api/canvas/projects/{id}/agent/stop` | 次のターンの手前で停止（投入済みの生成は止まらない） |
+| `POST /api/canvas/projects/{id}/agent/stop` | 次のターンの手前で停止し、このランで投入した生成も cancel する |
 | `POST /api/canvas/projects/{id}/messages` | 発言を残すだけの口（据え置き。エージェントは動かさない） |
 | `POST /api/canvas/projects/{id}/attachments` | 添付ファイルを 1 件保存（201。返る `path` を発言の `attachments` に添える） |
 | `GET /api/canvas/projects/{id}/attachments/{path}` | 添付そのもの（履歴のサムネイル用。範囲外は 404） |

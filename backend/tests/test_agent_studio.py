@@ -5,12 +5,13 @@ Grok と ComfyUI は test_agent.py と同じ仕掛けで完全にモックする
 """
 
 import json
+import sqlite3
 from datetime import datetime, timedelta, timezone
 from itertools import count
 
 import pytest
 
-from app import agent_protocol, studio
+from app import agent_protocol, db, studio
 
 # test_agent.py の env フィクスチャ（Grok / ComfyUI のモック一式）をそのまま使う。
 from test_agent import (  # noqa: F401 - フィクスチャの再エクスポート
@@ -511,6 +512,10 @@ def test_render_shot_queues_a_take_and_reports_its_ids(env):
     takes = env.client.get(f"/api/studio/shots/{shot['id']}/takes").json()
     assert [take["id"] for take in takes] == [take_id]
     assert takes[0]["job_id"] == job_id
+    row = sqlite3.connect(db.DB_PATH).execute(
+        "SELECT chat_session_id FROM jobs WHERE id = ?", (job_id,)
+    ).fetchone()
+    assert row is not None and row[0] == session
 
     # 同じ内容が studio_get_takes でも読める（完了はこれで追う）
     listed = event_of(

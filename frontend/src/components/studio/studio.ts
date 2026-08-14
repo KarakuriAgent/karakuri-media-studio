@@ -37,6 +37,14 @@ export const TAKE_STATUS_LABEL: Record<StudioTakeStatus, string> = {
   failed: '失敗',
 }
 
+export function takeActivityLabel(
+  take: StudioTake,
+  progress?: { message?: string | null } | null,
+): string {
+  if (take.status === 'rendering' && progress?.message) return progress.message
+  return TAKE_STATUS_LABEL[take.status]
+}
+
 export const TAKE_STATUS_CLASS: Record<StudioTakeStatus, string> = {
   rendering: 'border-amber-800 bg-amber-950 text-amber-300',
   candidate: 'border-sky-800 bg-sky-950 text-sky-300',

@@ -181,7 +181,7 @@ describe('inputState', () => {
   it('実行中は入力を止めて理由を出す', () => {
     const state = inputState(session({ status: 'running' }), false)
     expect(state.disabled).toBe(true)
-    expect(state.placeholder).toContain('停止')
+    expect(state.placeholder).toBe('実行中は「停止」で中断できます')
   })
 
   it('ターン実行中（thinking）も入力を止める', () => {

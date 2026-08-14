@@ -539,7 +539,7 @@ async def run_agent(
 
 @router.post("/projects/{project_id}/agent/stop", response_model=CanvasAgentState)
 async def stop_agent(project_id: str) -> CanvasAgentState:
-    """⏹: 次のターンの手前で止める（投入済みの生成は止まらない）。"""
+    """⏹: 次のターンの手前で止め、このランで投入したジョブも cancel する。"""
     await _require_project(project_id)
     canvas_agent.request_stop(project_id)
     return _agent_state(project_id)

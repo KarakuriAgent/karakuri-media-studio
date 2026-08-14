@@ -854,6 +854,7 @@ export default function App() {
           onRerun={(job, randomizeSeed) => void rerun(job, randomizeSeed)}
           onRestoreParams={restoreParams}
           onContinue={(job) => openContinue(job)}
+          onCancel={(job) => void cancel(job)}
           onDelete={(job) => void remove(job)}
           onToggleNsfw={(job, nsfw) => void toggleNsfw(job, nsfw)}
           showNsfw={showNsfw}

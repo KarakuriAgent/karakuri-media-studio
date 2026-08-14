@@ -37,6 +37,7 @@ from . import (
     canvas,
     grok,
     grok_session,
+    jobs,
     prompts,
     push,
     studio,
@@ -67,6 +68,8 @@ _tabs: dict[str, str] = {}
 #: 実行中のキャンバスセッション（project_id → session_id）
 _active_session: dict[str, str] = {}
 _hosts: dict[str, grok_session.GrokSessionHost] = {}
+#: このランでツールが返した job_id（停止時に cancel する）
+_run_jobs: dict[str, set[str]] = {}
 
 
 def is_running(project_id: str) -> bool:
@@ -428,6 +431,9 @@ async def _apply(project_id: str, action: AgentAction) -> bool:
         if mine:
             action.canvas["exclude_id"] = mine
     kind, text, data = await agent_runner.run_tool(action)
+    job_id = data.get("job_id")
+    if isinstance(job_id, str) and job_id:
+        _run_jobs.setdefault(project_id, set()).add(job_id)
     await _event(project_id, kind, text, data)
     return False
 
@@ -519,6 +525,7 @@ async def _run(project_id: str, session_id: str) -> None:
         _activity.pop(project_id, None)
         _tabs.pop(project_id, None)
         _active_session.pop(project_id, None)
+        _run_jobs.pop(project_id, None)
         host = _hosts.pop(project_id, None)
         if host is not None:
             grok_id = host.session_id or ""
@@ -545,6 +552,7 @@ async def start(
         return
     session = await canvas.ensure_session(project_id, session_id)
     _stop_requests.discard(project_id)
+    _run_jobs[project_id] = set()
     if episode_id:
         _tabs[project_id] = episode_id
     else:
@@ -555,18 +563,20 @@ async def start(
 
 
 def request_stop(project_id: str) -> None:
-    """⏹: 実行中の Grok ターンを中断する（走っていなければ何もしない）。"""
+    """⏹: 実行中の Grok ターンと、このランで投入したジョブを止める。"""
     if not is_running(project_id):
         return
     _stop_requests.add(project_id)
-    host = _hosts.get(project_id)
-    if host is None:
-        return
+    job_ids = list(_run_jobs.get(project_id, ()))
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         return
-    loop.create_task(host.cancel())
+    host = _hosts.get(project_id)
+    if host is not None:
+        loop.create_task(host.cancel())
+    for job_id in job_ids:
+        loop.create_task(jobs.cancel_job(job_id))
 
 
 async def stop_all() -> None:
@@ -584,6 +594,7 @@ async def stop_all() -> None:
     _activity.clear()
     _tabs.clear()
     _active_session.clear()
+    _run_jobs.clear()
     for host in _hosts.values():
         try:
             await host.close()

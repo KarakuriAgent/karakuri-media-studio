@@ -79,7 +79,7 @@ describe('AgentChat の入力欄', () => {
     show({ status: 'running' })
     const input = screen.getByRole('textbox') as HTMLTextAreaElement
     expect(input.disabled).toBe(true)
-    expect(input.placeholder).toBe('実行中は完了を待つか「停止」してください')
+    expect(input.placeholder).toBe('実行中は「停止」で中断できます')
     expect((screen.getByRole('button', { name: '送信' }) as HTMLButtonElement).disabled).toBe(
       true,
     )

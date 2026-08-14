@@ -471,7 +471,7 @@ async def _run_turn(
 # job execution
 # --------------------------------------------------------------------------
 
-async def _wait_for_job(job_id: str) -> Job:
+async def _wait_for_job(job_id: str, session_id: str | None = None) -> Job:
     loop = asyncio.get_running_loop()
     deadline = loop.time() + JOB_WAIT_TIMEOUT
     while True:
@@ -480,6 +480,11 @@ async def _wait_for_job(job_id: str) -> Job:
             raise jobs.JobError(f"job {job_id} が見つかりません")
         if job.status in ("done", "failed", "canceled"):
             return job
+        # 消費はしない（``_stopping`` がループ側で消費する）
+        if session_id is not None and session_id in _stop_requests:
+            canceled = await jobs.cancel_job(job_id)
+            if canceled is not None:
+                return canceled
         if loop.time() > deadline:
             raise jobs.JobError(f"job {job_id} の完了を待てませんでした（タイムアウト）")
         await asyncio.sleep(POLL_INTERVAL)
@@ -532,7 +537,7 @@ async def _run_and_wait(
         task_status="running",
         job_id=job.id,
     )
-    finished = await _wait_for_job(job.id)
+    finished = await _wait_for_job(job.id, session_id)
     if finished.status == "done":
         await _register_job_artifacts(session_id, finished, label)
         await _event(
@@ -1373,7 +1378,9 @@ async def _studio_render_shot(params: dict[str, Any]) -> tuple[str, str, dict]:
             shot_id, {"workflow_override": override}, actor=STUDIO_ACTOR
         ) is None:
             raise studio.StudioError(f"Shot `{shot_id}` が見つかりません")
-    take = await studio.render_shot(shot_id)
+    take = await studio.render_shot(
+        shot_id, chat_session_id=params.get("chat_session_id")
+    )
     text = (
         f"Shot `{shot_id}` の生成を投入しました"
         f"（take_id `{take.id}` / job_id `{take.job_id}`）。"
@@ -1928,6 +1935,8 @@ async def run_tool(action: AgentAction) -> tuple[str, str, dict]:
 
 async def _tool_action(session_id: str, action: AgentAction) -> None:
     """ツールを 1 つ実行し、結果をイベントとして制作記録に残す。"""
+    if action.action == "studio_render_shot":
+        action.studio["chat_session_id"] = session_id
     kind, text, data = await run_tool(action)
     await _event(session_id, kind, text, **data)
 
@@ -2391,12 +2400,13 @@ def forget(session_id: str) -> None:
 
 
 async def request_stop(session_id: str) -> None:
-    """⏹: 実行中の Grok ターンを中断する。投入済みジョブは完了待ち（AGENT-MODE §2）。"""
+    """⏹: 実行中の Grok ターンと投入済みジョブを cancel する。"""
     _stop_requests.add(session_id)
     running = is_running(session_id)
     host = _hosts.get(session_id)
     if host is not None:
         await host.cancel()
+    await jobs.cancel_jobs_for_session(session_id)
     if not running:
         _stop_requests.discard(session_id)
         await _halt(session_id, "ユーザーの操作で停止しました。")

@@ -52,6 +52,7 @@ vi.mock('../../api', async () => {
       renderStudioShot: vi.fn(),
       selectStudioTake: vi.fn(),
       rejectStudioTake: vi.fn(),
+      cancelStudioTake: vi.fn(),
       deleteStudioTake: vi.fn(),
       // キャンバス表示に切り替えたとき CanvasView が叩く。狭い画面の切替テスト用。
       options: vi.fn(),
@@ -513,6 +514,45 @@ describe('StudioView', () => {
     const takeRail = screen.getByText('Take（1）').closest('section') as HTMLElement
     expect(within(takeRail).getByText('生成中')).toBeTruthy()
     expect(within(takeRail).getByText('40%')).toBeTruthy()
+  })
+
+  it('progress.message が英訳作成中なら制作タブに出す', async () => {
+    const current = detail({
+      takes: [take('t1', { status: 'rendering', job_status: 'running' })],
+    })
+    await openProject(current)
+    cleanup()
+    render(
+      <StudioView
+        progress={{
+          'job-t1': {
+            type: 'job',
+            job_id: 'job-t1',
+            status: 'running',
+            progress: 0,
+            message: '英訳作成中',
+          },
+        }}
+      />,
+    )
+    fireEvent.click(await screen.findByText('夜明けの街'))
+    await openTab('制作')
+    fireEvent.click(rail().getByRole('button', { name: 'カット1' }))
+
+    expect(await screen.findAllByText('英訳作成中')).not.toHaveLength(0)
+  })
+
+  it('生成中の Take に停止が出て、押すと cancel する', async () => {
+    const current = detail({
+      takes: [take('t1', { status: 'rendering', job_status: 'running' })],
+    })
+    await openProject(current)
+    clickTab('制作')
+    fireEvent.click(rail().getByRole('button', { name: 'カット1' }))
+    mocked.cancelStudioTake.mockResolvedValue({})
+    const takeRail = screen.getByText('Take（1）').closest('section') as HTMLElement
+    fireEvent.click(within(takeRail).getByRole('button', { name: '停止' }))
+    await waitFor(() => expect(mocked.cancelStudioTake).toHaveBeenCalledWith('t1'))
   })
 
   it('Take を採用すると select を呼び、プロジェクトを取り直す', async () => {

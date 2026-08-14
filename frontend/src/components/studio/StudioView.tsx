@@ -488,6 +488,7 @@ export default function StudioView({
     void run(() => api.renderStudioShot(id, body))
   const selectTake = (id: string) => void run(() => api.selectStudioTake(id))
   const rejectTake = (id: string) => void run(() => api.rejectStudioTake(id))
+  const cancelTake = (id: string) => void run(() => api.cancelStudioTake(id))
   const deleteTake = (id: string) => {
     if (!window.confirm('この Take を削除しますか？')) return
     void run(() => api.deleteStudioTake(id))
@@ -724,6 +725,7 @@ export default function StudioView({
                 onRender={render}
                 onSelectTake={selectTake}
                 onRejectTake={rejectTake}
+                onCancelTake={cancelTake}
                 onDeleteTake={deleteTake}
               />
             )}

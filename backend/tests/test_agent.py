@@ -1893,6 +1893,47 @@ async def test_start_loop_never_runs_twice(env, monkeypatch):
     assert agent_runner.is_running(session["id"]) is False
 
 
+def test_stop_cancels_session_jobs(env, monkeypatch):
+    """停止はセッションに紐づく queued / running ジョブも cancel する。"""
+    from tests.test_jobs import _hang_until_cancelled, wait_for
+
+    monkeypatch.setattr(jobs, "_run_job_stages", _hang_until_cancelled)
+    session = start(env)
+
+    running = env.client.post(
+        "/api/jobs",
+        json={
+            "mode": "image_only",
+            "image_prompt": "running",
+            "chat_session_id": session["id"],
+        },
+    )
+    assert running.status_code == 201, running.text
+    running_id = running.json()["id"]
+    wait_for(env.client, running_id, statuses=("queued", "prompting", "running"))
+
+    queued = env.client.post(
+        "/api/jobs",
+        json={
+            "mode": "image_only",
+            "image_prompt": "queued",
+            "chat_session_id": session["id"],
+        },
+    )
+    assert queued.status_code == 201, queued.text
+    queued_id = queued.json()["id"]
+    assert queued.json()["status"] == "queued"
+
+    env.client.post(f"/api/agent/sessions/{session['id']}/stop")
+    for job_id in (running_id, queued_id):
+        finished = wait_for(env.client, job_id, statuses=("canceled",))
+        assert finished["status"] == "canceled"
+
+    final = wait_status(env, session["id"], ("stopped",))
+    assert final["status"] == "stopped"
+    assert final["messages"][-1]["content"] == "ユーザーの操作で停止しました。"
+
+
 def test_stop_during_a_running_loop_ends_it(env):
     """実行中の stop はジョブ完了を待って stopped に落ち、WS でも通知される。"""
     session = start(env)

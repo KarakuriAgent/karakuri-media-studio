@@ -5,6 +5,7 @@ import {
   EyeOff,
   FileText,
   Loader2,
+  Square,
   Trash2,
 } from 'lucide-react'
 
@@ -22,8 +23,8 @@ import { Progress } from '../ui/progress'
 import RenderDialog from './RenderDialog'
 import {
   TAKE_STATUS_CLASS,
-  TAKE_STATUS_LABEL,
   assetHasFile,
+  takeActivityLabel,
   isStale,
   selectedTakeOf,
   splitMentions,
@@ -114,6 +115,7 @@ function TakeCard({
   onPreview,
   onSelect,
   onReject,
+  onCancel,
   onDelete,
   hideNsfw,
   busy,
@@ -125,6 +127,7 @@ function TakeCard({
   onPreview: () => void
   onSelect: () => void
   onReject: () => void
+  onCancel: () => void
   onDelete: () => void
   /** NSFW 表示がオフで、この Take が NSFW（サムネイルをぼかす）。 */
   hideNsfw: boolean
@@ -170,7 +173,7 @@ function TakeCard({
             <span
               className={`chip !px-1.5 !py-0 text-[11px] ${TAKE_STATUS_CLASS[take.status]}`}
             >
-              {TAKE_STATUS_LABEL[take.status]}
+              {takeActivityLabel(take, progress)}
             </span>
             {stale && (
               <Badge variant="warning" className="px-1.5 py-0 text-[11px] font-normal">
@@ -181,7 +184,11 @@ function TakeCard({
             {nsfw && <NsfwBadge className="!px-1 !py-0 text-[11px]" />}
           </span>
           <span className="tnum mt-0.5 block truncate text-[11px] text-muted-foreground">
-            {percent != null ? `${percent}%` : (take.video_workflow ?? take.job_id)}
+            {percent != null
+              ? `${percent}%`
+              : take.status === 'rendering' && progress?.message
+                ? progress.message
+                : (take.video_workflow ?? take.job_id)}
           </span>
         </span>
       </button>
@@ -241,6 +248,12 @@ function TakeCard({
               <Download />
               保存
             </a>
+          </Button>
+        )}
+        {take.status === 'rendering' && (
+          <Button variant="outline" size="xs" onClick={onCancel} disabled={busy}>
+            <Square />
+            停止
           </Button>
         )}
         <Button variant="destructive" size="xs" onClick={onDelete} disabled={busy}>
@@ -315,6 +328,7 @@ export default function ProductionView({
   onRender,
   onSelectTake,
   onRejectTake,
+  onCancelTake,
   onDeleteTake,
   busy,
   projectDefaults,
@@ -332,6 +346,7 @@ export default function ProductionView({
   onRender: (shotId: string, body: StudioRenderRequest) => void
   onSelectTake: (takeId: string) => void
   onRejectTake: (takeId: string) => void
+  onCancelTake: (takeId: string) => void
   onDeleteTake: (takeId: string) => void
   busy: boolean
   /** 生成ダイアログの初期値に使うプロジェクト設定（解像度・ステップ数）。 */
@@ -425,7 +440,7 @@ export default function ProductionView({
                 disabled={busy || rendering}
               >
                 {rendering && <Loader2 className="animate-spin" />}
-                {rendering ? '生成中…' : '生成'}
+                {rendering ? renderingProgress?.message || '生成中…' : '生成'}
               </Button>
               {rendering && (
                 <div className="flex min-w-0 flex-1 items-center gap-2">
@@ -493,6 +508,7 @@ export default function ProductionView({
                   onPreview={() => setPreviewId(take.id)}
                   onSelect={() => onSelectTake(take.id)}
                   onReject={() => onRejectTake(take.id)}
+                  onCancel={() => onCancelTake(take.id)}
                   onDelete={() => onDeleteTake(take.id)}
                 />
               ))}

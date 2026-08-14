@@ -509,6 +509,14 @@ async def reject_take(take_id: str) -> StudioTake:
     return take
 
 
+@router.post("/takes/{take_id}/cancel", response_model=StudioTake)
+async def cancel_take(take_id: str) -> StudioTake:
+    take = await service.cancel_take(take_id)
+    if take is None:
+        raise HTTPException(status_code=404, detail="take not found")
+    return take
+
+
 @router.delete("/takes/{take_id}", status_code=204)
 async def delete_take(take_id: str) -> None:
     if not await service.delete_take(take_id):
