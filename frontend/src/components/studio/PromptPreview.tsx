@@ -166,7 +166,7 @@ export default function PromptPreview({ shot }: { shot: StudioShot }) {
           )}
           {preview.will_translate && (
             <p className="text-[11px] text-amber-300">
-              投入時に英語へ自動変換されます（引用符の中の台詞と参照タグはそのまま）。
+              投入時に英語へ自動変換されます（引用符の中の台詞と参照タグはそのまま）。変換できなければ投入しません。
             </p>
           )}
         </>

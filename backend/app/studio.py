@@ -31,7 +31,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import re
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -74,6 +76,8 @@ from .config import load_settings
 from .paths import rebase_stored_path
 from .workflow import WorkflowError, supported_on_target
 from .workflows import WorkflowSpecError, get_video_spec
+
+log = logging.getLogger(__name__)
 
 #: Shot が使う動画ワークフロー（すべて MiniMax H3。音声も同じパスで出る）
 WORKFLOW_T2V = "minimax_h3_t2v"
@@ -2135,16 +2139,18 @@ def _unfence(text: str) -> str:
 async def translate_prompt(prompt: str, workflow_id: str) -> str:
     """日本語まじりの本文を H3 用の英語プロンプトへ直す。
 
-    :class:`app.grok.LLMError` はそのまま投げる（呼び出し側が「原文のまま投入」に
-    落とす）。空の応答も同じ扱いにする。
+    :class:`app.grok.LLMError` はそのまま投げる（呼び出し側が投入を止める）。
+    空の応答も同じ扱いにする。待ち時間は相談と同じ ``agent_grok_timeout``。
     """
     hint = get_video_spec(workflow_id).prompt_hint
-    answer = await grok.get_client().complete(
+    started = time.monotonic()
+    answer = await grok.get_client(timeout=grok.configured_timeout()).complete(
         TRANSLATION_INSTRUCTION.format(hint=hint, prompt=prompt)
     )
     translated = _unfence(answer)
     if not translated:
         raise grok.LLMError("grok が空のプロンプトを返しました")
+    log.info("translate_prompt took %.1fs", time.monotonic() - started)
     return translated
 
 
@@ -2515,8 +2521,8 @@ async def render_shot(
     2. 生成設定（画面比・解像度・尺・ステップ数・シード）を
        **この 1 回ぶんの上書き > Shot > プロジェクト > 既定** の順に解決する。
     3. プロジェクトの ``auto_translate`` が有効で本文に日本語が混ざっていれば、
-       Grok に H3 用の英語プロンプトへ直させる。直せなければ**原文のまま投入**し、
-       Take の ``warning`` に理由を残す（生成そのものは止めない）。
+       Grok に H3 用の英語プロンプトへ直させる。直せなければ
+       :class:`StudioError` で投入を止める（ジョブも Take も作らない）。
     4. :func:`app.jobs.create_job` にそのまま渡す（HTTP は経由しない）。
 
     ``overrides``（:class:`app.models.StudioRenderRequest`）はそのテイクにだけ
@@ -2610,14 +2616,13 @@ async def render_shot(
         try:
             translated = await translate_prompt(prompt, workflow)
         except grok.LLMError as exc:
-            warning = (
-                "英語プロンプトへの変換ができなかったので、原文のまま投入しました"
+            raise StudioError(
+                "英語プロンプトへの変換ができないので投入しませんでした"
                 f"（{exc}）"
-            )
-        else:
-            source_prompt = prompt
-            prompt = translated
-            fields["video_prompt"] = prompt
+            ) from exc
+        source_prompt = prompt
+        prompt = translated
+        fields["video_prompt"] = prompt
 
     # ジョブの投入も接続を閉じてから: 走り出したランナーが jobs 行を書きに来る
     # ので、読み取り用の接続を掴んだままにしない。

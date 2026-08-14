@@ -2897,7 +2897,7 @@ class StudioTake(BaseModel):
     prompt: str = ""
     #: 英訳する前の原文（英訳していなければ空）
     source_prompt: str = ""
-    #: 投入はできたが伝えたいこと（英訳に失敗して原文のまま投げた、など）
+    #: 投入はできたが伝えたいこと（過去 Take の英訳失敗フォールバックなど）
     warning: str = ""
     #: この Take を作ったあとに脚本や素材が変わった（保存はせず読み取りで導出）
     stale: bool = False

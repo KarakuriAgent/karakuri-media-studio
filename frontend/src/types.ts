@@ -1337,7 +1337,7 @@ export interface StudioTake {
   prompt?: string
   /** 英訳する前の原文（英訳していなければ空）。 */
   source_prompt?: string
-  /** 投入はできたが伝えたいこと（英訳に失敗して原文のまま投げた、など）。 */
+  /** 投入はできたが伝えたいこと（過去 Take の英訳失敗フォールバックなど）。 */
   warning?: string
   /** この Take を作ったあとに脚本や素材が変わった。 */
   stale?: boolean

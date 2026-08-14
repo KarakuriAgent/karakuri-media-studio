@@ -216,7 +216,7 @@ CREATE TABLE IF NOT EXISTS studio_takes (
   created_at TEXT NOT NULL,
   prompt        TEXT NOT NULL DEFAULT '',  -- 実際に投入した本文
   source_prompt TEXT NOT NULL DEFAULT '',  -- 英訳する前の原文（訳していなければ空）
-  warning       TEXT NOT NULL DEFAULT '',  -- 投入はできたが伝えたいこと（英訳の失敗など）
+  warning       TEXT NOT NULL DEFAULT '',  -- 投入はできたが伝えたいこと（過去の英訳失敗フォールバックなど）
   latent_path   TEXT                       -- ラテント連続性で保存した AV ラテント（ComfyUI 側のパス。NULL = 無し）
 );
 

@@ -2,7 +2,8 @@
 
 ComfyUI には繋がない（接続確認を潰してあるので投入したジョブは失敗する）。
 ここで見るのは「どのワークフローに何を渡してジョブを作ったか」まで。
-Grok（日本語 -> 英語の変換）も呼ばせず、既定では「使えない環境」として扱う。
+Grok（日本語 -> 英語の変換）も呼ばせず、既定では「使えない環境」として扱う
+（auto_translate の日本語 Shot は投入しない）。
 """
 
 from pathlib import Path
@@ -73,10 +74,10 @@ def env(tmp_path, monkeypatch):
 
     monkeypatch.setattr(studio.job_service, "create_job", recording_create_job)
 
-    # 日本語 -> 英語の変換は既定で「Grok が使えない」= 原文のまま投入。
+    # 日本語 -> 英語の変換は既定で「Grok が使えない」= 投入しない。
     # 変換そのものを見るテストは `llm.error = None` と `llm.reply` を差す。
     llm = FakeLLM()
-    monkeypatch.setattr(grok, "get_client", lambda: llm)
+    monkeypatch.setattr(grok, "get_client", lambda *a, **k: llm)
 
     # スタジオの時計を 1 呼び出し = 1 秒で進める。実時間では 1 テストが同じ秒に
     # 収まってしまい、「Take を作ったあとに脚本を直した」順序が出せないため。
@@ -407,7 +408,8 @@ def test_an_unsupported_extension_is_refused(env):
 # --------------------------------------------------------------------------
 
 def test_a_shot_without_material_renders_as_t2v(env):
-    project = make_project(env)
+    # 台詞が日本語なので、組み立て検証のために英訳は切る。
+    project = make_project(env, auto_translate=False)
     shot = make_shot(
         env,
         project["id"],
@@ -2130,17 +2132,60 @@ def test_translation_can_be_turned_off_per_project(env):
     )
 
 
-def test_a_broken_grok_warns_but_still_submits_the_original(env):
+def test_a_broken_grok_does_not_submit(env):
     project = make_project(env)  # fixture の既定は「grok が使えない」
     shot = make_shot(env, project["id"], prompt="猫が入ってくる。")
     response = render(env, shot["id"])
-    assert response.status_code == 201, response.text
-    take = response.json()
-    assert "原文のまま投入" in take["warning"]
-    assert take["source_prompt"] == ""
-    assert env.created[-1].video_prompt.startswith(
-        "integrated_multimodal_description: 猫が入ってくる。"
+    assert response.status_code == 400, response.text
+    detail = response.json()["detail"]
+    assert "投入しませんでした" in detail
+    assert "grok CLI が見つかりません" in detail
+    assert env.created == []
+    assert env.client.get(f"/api/studio/shots/{shot['id']}/takes").json() == []
+
+
+def test_an_empty_translation_does_not_submit(env):
+    env.llm.error = None
+    env.llm.reply = ""
+    project = make_project(env)
+    shot = make_shot(env, project["id"], prompt="猫が入ってくる。")
+    response = render(env, shot["id"])
+    assert response.status_code == 400, response.text
+    detail = response.json()["detail"]
+    assert "投入しませんでした" in detail
+    assert "空のプロンプト" in detail
+    assert env.created == []
+    assert env.client.get(f"/api/studio/shots/{shot['id']}/takes").json() == []
+
+
+def test_translation_uses_the_configured_grok_timeout(env, monkeypatch):
+    """英訳の待ち時間は相談と同じ agent_grok_timeout。"""
+    from app import config
+
+    seen: list[float | None] = []
+    env.llm.error = None
+    env.llm.reply = "A cat walks in."
+
+    def capture(*args, **kwargs):
+        if "timeout" in kwargs:
+            seen.append(kwargs["timeout"])
+        elif args:
+            seen.append(args[0])
+        else:
+            seen.append(grok.DEFAULT_TIMEOUT)
+        return env.llm
+
+    monkeypatch.setattr(
+        config,
+        "_settings",
+        config.load_settings().model_copy(update={"agent_grok_timeout": 900.0}),
     )
+    monkeypatch.setattr(grok, "get_client", capture)
+    project = make_project(env)
+    shot = make_shot(env, project["id"], prompt="猫が入ってくる。")
+    assert render(env, shot["id"]).status_code == 201
+    assert seen == [grok.configured_timeout()]
+    assert seen == [900.0]
 
 
 def test_a_fenced_answer_is_unwrapped(env):
@@ -2182,9 +2227,13 @@ def test_the_demo_builds_a_whole_project(env):
     assert "@凛" in context["shots"][0]["prompt"]
 
     # そのまま投入できる（メタデータのみの素材は説明文に展開される）
-    assert render(env, context["shots"][0]["id"]).status_code == 201
+    env.llm.error = None
+    env.llm.reply = "detailed_description: A mechanic walks into the hangar at dawn."
+    take = render(env, context["shots"][0]["id"])
+    assert take.status_code == 201, take.text
     assert env.created[-1].video_workflow == "minimax_h3_t2v"
-    assert "young Japanese mechanic" in env.created[-1].video_prompt
+    assert "young Japanese mechanic" in take.json()["source_prompt"]
+    assert env.created[-1].video_prompt == env.llm.reply
 
 
 def test_every_demo_can_be_created(env):

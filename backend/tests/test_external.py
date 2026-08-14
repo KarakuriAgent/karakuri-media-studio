@@ -24,7 +24,7 @@ async def _no_llm(text: str) -> None:
 
 
 class FakeLLM:
-    """Grok の差し替え（既定では「使えない環境」= 原文のまま投入）。"""
+    """Grok の差し替え（既定では使えない。日本語の auto_translate は投入しない）。"""
 
     def __init__(self) -> None:
         self.reply: str | None = None
@@ -61,7 +61,8 @@ def env(tmp_path, monkeypatch):
     for name in ("get_object_info", "upload_file", "queue_prompt"):
         monkeypatch.setattr(comfy, name, offline)
 
-    monkeypatch.setattr(grok, "get_client", lambda: FakeLLM())
+    llm = FakeLLM()
+    monkeypatch.setattr(grok, "get_client", lambda *a, **k: llm)
 
     with TestClient(app) as client:
         yield type(

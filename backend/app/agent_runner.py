@@ -962,7 +962,7 @@ def _studio_detail_text(detail: StudioProjectDetail) -> str:
     """プロジェクト 1 本ぶんを、次のターンでそのまま読める本文にする。"""
     code = f"（作品コード `{detail.code}`）" if detail.code else ""
     translate = (
-        "on（日本語で書けば投入時に英語へ直されます）"
+        "on（日本語で書けば投入時に英語へ直されます。直せなければ投入しません）"
         if detail.auto_translate
         else "off（プロンプトは英語で書いてください）"
     )
