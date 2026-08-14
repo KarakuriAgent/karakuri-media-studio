@@ -4,6 +4,8 @@ __pycache__/
 node_modules/
 dist/
 app.db
+app.db-*
+*.bak
 outputs/
 assets/
 library/
