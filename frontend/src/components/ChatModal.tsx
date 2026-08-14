@@ -5,6 +5,7 @@ import { audioSupports, hiddenFields, type FormState } from '../form'
 import type { ChatMessage, Options, PromptResult } from '../types'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
+import { MarkdownBody } from './MarkdownBody'
 import { Banner, Modal } from './ui'
 
 interface Props {
@@ -203,7 +204,7 @@ export default function ChatModal({
 
         <div
           ref={scroller}
-          className="flex-1 space-y-3 overflow-y-auto rounded-lg border border-border bg-surface-sunken p-3"
+          className="min-w-0 flex-1 space-y-3 overflow-x-hidden overflow-y-auto rounded-lg border border-border bg-surface-sunken p-3"
         >
           {messages.length === 0 && !busy && (
             <p className="text-xs text-muted-foreground">
@@ -218,13 +219,17 @@ export default function ChatModal({
               className={`flex ${message.role === 'user' ? 'justify-end' : 'justify-start'}`}
             >
               <div
-                className={`max-w-[80%] whitespace-pre-wrap rounded-lg px-3 py-2 text-sm ${
+                className={`min-w-0 max-w-[80%] rounded-lg px-3 py-2 text-sm ${
                   message.role === 'user'
-                    ? 'bg-primary/20 text-foreground'
+                    ? 'whitespace-pre-wrap break-words bg-primary/20 text-foreground [overflow-wrap:anywhere]'
                     : 'bg-card text-foreground/90'
                 }`}
               >
-                {message.content}
+                {message.role === 'user' ? (
+                  message.content
+                ) : (
+                  <MarkdownBody text={message.content} splitAction />
+                )}
               </div>
             </div>
           ))}

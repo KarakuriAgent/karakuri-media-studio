@@ -54,6 +54,9 @@
   body,
   #root {
     height: 100%;
+    /* チャットの長い語・テーブルがビューポートより広くなっても、ページ自体は横に伸びない。 */
+    max-width: 100%;
+    overflow-x: hidden;
   }
   body {
     @apply bg-background text-foreground antialiased;

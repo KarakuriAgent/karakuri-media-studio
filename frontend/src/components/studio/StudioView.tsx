@@ -601,9 +601,9 @@ export default function StudioView({
 
   if (mode === 'canvas') {
     return (
-      <main className="flex min-h-0 flex-1 flex-col">
+      <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
         {banner}
-        <div className="flex min-h-0 flex-1 flex-col gap-2 p-3">
+        <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2 p-3">
           {projectBar}
           <CanvasView
             detail={detail}

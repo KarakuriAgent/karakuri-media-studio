@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Download, X } from 'lucide-react'
 
 import type { AgentArtifact } from '../../types'
+import { MarkdownBody } from '../MarkdownBody'
 import { Modal } from '../ui'
 import { Button } from '../ui/button'
 import { ARTIFACT_LABEL, ArtifactIcon, formatTime } from './common'
@@ -63,9 +64,16 @@ export default function ArtifactViewer({
         <p className="tnum mb-2 text-[11px] text-muted-foreground">
           {formatTime(artifact.ts)}
         </p>
-        <pre className="whitespace-pre-wrap break-words rounded-md border border-border bg-surface-sunken p-3 text-xs text-foreground/85">
-          {text || '（本文がありません）'}
-        </pre>
+        {text.trim() ? (
+          <MarkdownBody
+            text={text}
+            className="rounded-md border border-border bg-surface-sunken p-3 text-xs text-foreground/85"
+          />
+        ) : (
+          <p className="whitespace-pre-wrap break-words rounded-md border border-border bg-surface-sunken p-3 text-xs text-foreground/85">
+            （本文がありません）
+          </p>
+        )}
         {url && (
           <div className="mt-3">
             <Button variant="outline" size="sm" asChild>

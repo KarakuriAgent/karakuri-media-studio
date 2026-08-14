@@ -41,6 +41,22 @@ function show(overrides: Partial<AgentSession> = {}, props: { busy?: boolean; th
 
 const THINKING = 'Grok が考えています…'
 
+describe('AgentChat のアシスタント吹き出し', () => {
+  it('assistant の Markdown は太字とリストとして描画する', () => {
+    show({ messages: [message('assistant', '**方針**\n- 画像')] })
+    const strong = screen.getByText('方針')
+    expect(strong.tagName).toBe('STRONG')
+    expect(screen.getByText('画像').closest('li')).not.toBeNull()
+    expect(screen.queryByText('**方針**')).toBeNull()
+    let bubble: HTMLElement | null = strong.parentElement
+    while (bubble && !bubble.className.includes('max-w-[80%]')) {
+      bubble = bubble.parentElement
+    }
+    expect(bubble?.className).toContain('min-w-0')
+    expect(bubble?.className).toContain('max-w-[80%]')
+  })
+})
+
 describe('AgentChat のインジケーター', () => {
   it('このブラウザ発の呼び出し中（busy）は出る', () => {
     show({}, { busy: true })

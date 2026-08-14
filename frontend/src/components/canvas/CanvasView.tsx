@@ -548,7 +548,7 @@ export default function CanvasView({
   const chatVisible = desktop || pane === 'chat'
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-2">
+    <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2">
       {error && <Banner onClose={() => setError(null)}>{error}</Banner>}
 
       <div className="flex flex-wrap items-center gap-2">
@@ -579,7 +579,7 @@ export default function CanvasView({
         )}
       </div>
 
-      <div className="flex min-h-0 flex-1 gap-3">
+      <div className="flex min-h-0 min-w-0 flex-1 gap-3 overflow-hidden">
         <section
           className={`min-h-0 min-w-0 flex-1 overflow-hidden rounded-lg border border-border bg-background ${
             boardVisible ? 'flex' : 'hidden'
@@ -620,8 +620,8 @@ export default function CanvasView({
           <aside
             className={
               desktop
-                ? 'flex min-h-0 w-80 shrink-0 flex-col gap-2 rounded-lg border border-border bg-background p-3'
-                : 'flex min-h-0 flex-1 flex-col gap-2 rounded-lg border border-border bg-background p-3'
+                ? 'flex min-h-0 min-w-0 w-80 shrink-0 flex-col gap-2 overflow-hidden rounded-lg border border-border bg-background p-3'
+                : 'flex min-h-0 min-w-0 flex-1 flex-col gap-2 overflow-hidden rounded-lg border border-border bg-background p-3'
             }
             style={isWide && desktop ? { width: chatPanel.size } : undefined}
           >

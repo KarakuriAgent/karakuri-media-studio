@@ -13,11 +13,13 @@ export default defineConfig({
   plugins: [
     react(),
     // PWA（インストール可能・オフラインでシェルだけ開ける）。生成物は
-    // dist/manifest.webmanifest / dist/sw.js / dist/registerSW.js。
+    // dist/manifest.webmanifest / dist/sw.js。登録は main.tsx 側。
     VitePWA({
       // 新しいビルドを見つけたら確認なしで差し替える（常時 online 前提のアプリのため）
       registerType: 'autoUpdate',
-      injectRegister: 'script',
+      // main.tsx の virtual:pwa-register が更新検知してリロードする。
+      // 注入スクリプトだけだと SW が差し替わっても画面が古いまま残る。
+      injectRegister: false,
       manifest: {
         name: 'Karakuri Media Studio',
         short_name: 'Karakuri Media Studio',
@@ -48,13 +50,13 @@ export default defineConfig({
         // ブラウザは実際に使う数個しか取りに行かないので、全部をプリキャッシュすると
         // インストール時のダウンロードだけが無駄に膨らむ。オフライン時に落ちても
         // system-ui にフォールバックするだけなので除外する（Inter は残す）。
-        globIgnores: ['**/noto-sans-jp-*.woff2'],
+        globIgnores: ['**/noto-sans-jp-*.woff2', 'index.html'],
         // 可変フォント（Noto Sans JP など）が数 MB になることがあるので上限を上げる
         maximumFileSizeToCacheInBytes: 6 * 1024 * 1024,
-        // SPA フォールバックの対象外。API とバックエンドの静的マウントは
-        // Service Worker に触らせず、常にネットワークへ素通しする（§7 参照）。
-        navigateFallback: '/index.html',
-        navigateFallbackDenylist: [/^\/api\//, /^\/outputs\//, /^\/assets\//, /^\/library\//],
+        // index.html はプリキャッシュしない。ナビゲーションは毎回ネットワークへ
+        // 行き、サーバの no-cache なシェル（新しい JS ハッシュ）を取る。
+        // 常時 online 前提なので、古い HTML を SW が掴み続ける方が困る。
+        navigateFallback: undefined,
         // ランタイムキャッシュは持たない（動画・画像はキャッシュしない）
         runtimeCaching: [],
         cleanupOutdatedCaches: true,

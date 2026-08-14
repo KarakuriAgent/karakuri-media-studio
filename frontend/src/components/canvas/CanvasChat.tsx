@@ -9,6 +9,7 @@ import type {
   CanvasSessionSearchHit,
   StudioAsset,
 } from '../../types'
+import { MarkdownBody } from '../MarkdownBody'
 import { Banner } from '../ui'
 import { NativeSelect } from '../NativeSelect'
 import { Input } from '../ui/input'
@@ -100,11 +101,16 @@ function Bubble({
   return (
     <div className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>
       <div
-        className={`max-w-[85%] break-words rounded-lg px-3 py-2 text-sm ${
+        className={`min-w-0 max-w-[85%] break-words rounded-lg px-3 py-2 text-sm ${
           mine ? 'bg-primary/20 text-foreground' : 'bg-secondary text-foreground/90'
         }`}
       >
-        {text && <p className="whitespace-pre-wrap">{text}</p>}
+        {text &&
+          (mine ? (
+            <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{text}</p>
+          ) : (
+            <MarkdownBody text={text} splitAction />
+          ))}
         {attachments.length > 0 && (
           <div className={`flex flex-wrap gap-1.5 ${text ? 'mt-2' : ''}`}>
             {attachments.map((attachment) => (
@@ -132,7 +138,7 @@ function EventRow({ message }: { message: CanvasMessage }) {
   return (
     <div className="flex items-start gap-2 px-1 text-[11px] text-muted-foreground">
       <EventIcon kind={message.kind} />
-      <span className="min-w-0 flex-1 whitespace-pre-wrap break-words">
+      <span className="min-w-0 flex-1 whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
         {message.content}
       </span>
       <span className="tnum shrink-0 text-muted-foreground-subtle">
@@ -233,7 +239,7 @@ export default function CanvasChat({
 
   return (
     <div
-      className={`flex min-h-0 flex-1 flex-col gap-2 ${
+      className={`flex min-h-0 min-w-0 flex-1 flex-col gap-2 ${
         dragging ? 'rounded-lg outline-dashed outline-2 outline-primary' : ''
       }`}
       onDragOver={(event) => {
@@ -343,7 +349,7 @@ export default function CanvasChat({
 
       <div
         ref={scroller}
-        className="min-h-0 flex-1 space-y-2 overflow-y-auto rounded-lg border border-border bg-surface-sunken p-2"
+        className="min-h-0 min-w-0 flex-1 space-y-2 overflow-x-hidden overflow-y-auto rounded-lg border border-border bg-surface-sunken p-2"
       >
         {messages.length === 0 && (
           <p className="text-xs text-muted-foreground">

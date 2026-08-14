@@ -18,6 +18,7 @@ import type {
   AgentSessionUpdate,
   JobProgress,
 } from '../../types'
+import { MarkdownBody } from '../MarkdownBody'
 import { Banner, NsfwBadge, NsfwToggle } from '../ui'
 import { NativeSelect } from '../NativeSelect'
 import { Button } from '../ui/button'
@@ -107,11 +108,16 @@ function Bubble({ message, sessionId }: { message: AgentMessage; sessionId: stri
   return (
     <div className={`flex ${mine ? 'justify-end' : 'justify-start'}`}>
       <div
-        className={`max-w-[80%] rounded-lg px-3 py-2 text-sm ${
+        className={`min-w-0 max-w-[80%] rounded-lg px-3 py-2 text-sm ${
           mine ? 'bg-primary/20 text-foreground' : 'bg-card text-foreground/90'
         }`}
       >
-        {text && <p className="whitespace-pre-wrap">{text}</p>}
+        {text &&
+          (mine ? (
+            <p className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">{text}</p>
+          ) : (
+            <MarkdownBody text={text} splitAction />
+          ))}
         {attachments.length > 0 && (
           <div className={`flex flex-wrap gap-1.5 ${text ? 'mt-2' : ''}`}>
             {attachments.map((path) => {
@@ -175,23 +181,23 @@ function CheckinBubble({
   return (
     <div className="flex justify-start">
       <div
-        className={`max-w-[85%] rounded-lg border px-3 py-2 text-sm ${
+        className={`min-w-0 max-w-[85%] rounded-lg border px-3 py-2 text-sm ${
           open
             ? 'border-violet-700/70 bg-violet-950/40 text-violet-100'
             : 'border-border bg-surface-sunken text-muted-foreground'
         }`}
       >
-        <p className="mb-2 flex items-start gap-1.5 whitespace-pre-wrap">
+        <div className="mb-2 flex items-start gap-1.5">
           {message.kind === 'approval' ? (
             <>
               <ShieldCheck className="mt-0.5 size-3.5 shrink-0" />
-              承認{' '}
+              <span className="shrink-0">承認</span>
             </>
           ) : (
             <AlertTriangle className="mt-0.5 size-3.5 shrink-0" />
           )}
-          {message.content}
-        </p>
+          <MarkdownBody text={message.content} className="min-w-0 flex-1" />
+        </div>
         <div className="flex flex-wrap gap-1.5">
           {options.map((option) => (
             <Button
@@ -473,7 +479,7 @@ export default function AgentChat({
 
       <div
         ref={scroller}
-        className="min-h-0 flex-1 space-y-2 overflow-y-auto rounded-lg border border-border bg-surface-sunken p-3"
+        className="min-h-0 min-w-0 flex-1 space-y-2 overflow-x-hidden overflow-y-auto rounded-lg border border-border bg-surface-sunken p-3"
       >
         {running && session.plan.tasks.length > 0 && (
           <div className="sticky -top-3 z-10 -mx-1 bg-surface-sunken/95 py-1 backdrop-blur">
