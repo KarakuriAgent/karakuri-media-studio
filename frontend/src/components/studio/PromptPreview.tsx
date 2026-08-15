@@ -206,7 +206,7 @@ export default function PromptPreview({ shot }: { shot: StudioShot }) {
           {preview.references.length > 0 && (
             <div className="text-[11px] text-muted-foreground">
               <span className="text-muted-foreground-subtle">添付される参照素材:</span>
-              <ul className="mt-1 space-y-0.5">
+              <ul className="mt-1 space-y-0.5 break-words">
                 {preview.references.map((reference) => (
                   <li key={`${reference.tag}-${reference.name}`}>
                     <code className="text-sky-300">{reference.tag}</code>{' '}

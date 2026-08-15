@@ -68,18 +68,22 @@ function ShotScript({
       </div>
 
       {shot.purpose && (
-        <p className="mt-1 text-[11px] italic text-muted-foreground">{shot.purpose}</p>
+        <p className="mt-1 break-words text-[11px] italic text-muted-foreground">
+          {shot.purpose}
+        </p>
       )}
       {shot.action && (
-        <p className="mt-1 whitespace-pre-wrap text-xs text-foreground/85">{shot.action}</p>
+        <p className="mt-1 whitespace-pre-wrap break-words text-xs text-foreground/85">
+          {shot.action}
+        </p>
       )}
       {shot.dialogue && (
         <blockquote className="mt-1.5 border-l-2 border-primary/60 pl-2 text-xs text-foreground">
-          <span className="whitespace-pre-wrap">{shot.dialogue}</span>
+          <span className="whitespace-pre-wrap break-words">{shot.dialogue}</span>
         </blockquote>
       )}
       {shot.camera && (
-        <p className="mt-1.5 text-[11px] uppercase tracking-wide text-sky-400">
+        <p className="mt-1.5 break-words text-[11px] uppercase tracking-wide text-sky-400">
           CAM: {shot.camera}
         </p>
       )}
@@ -187,7 +191,7 @@ export default function ScriptView({
 
   return (
     <div className="grid min-h-0 gap-3 lg:grid-cols-2">
-      <div className="space-y-2">
+      <div className="min-w-0 space-y-2">
         <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           脚本
         </h3>
@@ -207,7 +211,7 @@ export default function ScriptView({
         ))}
       </div>
 
-      <div>
+      <div className="min-w-0">
         {!selectedShot || !form ? (
           <p className="rounded-md border border-border bg-surface-sunken px-3 py-6 text-center text-xs text-muted-foreground">
             カットを選ぶとここで編集できます
