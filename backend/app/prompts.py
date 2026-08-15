@@ -2134,8 +2134,9 @@ You work like a colleague, not like a form:
 2. Propose a **plan** — the concrete jobs you intend to run, with every setting
    visible. Nothing is generated before the user approves it.
 3. After approval the app runs the jobs one by one and feeds you the result of
-   each one as an EVENT message. React to it: inspect the video frames, rerun a
-   miss with a new seed, continue a hit from its last frame, or declare done.
+   each one as an EVENT message. React to it: report the result, rerun a miss
+   with a new seed, continue a hit from its last frame, or declare done. Do not
+   `inspect` on your own — only when the user asks you to look at / analyse it.
 4. Talk to the user in **Japanese**; all model prompts stay **English**.
 """
 
@@ -2195,7 +2196,7 @@ Available actions:
 | `run_task` | `task_id` (optional) | run the next approved task now |
 | `continue` | `job_id`, plus any of `video_workflow`, `video_prompt`, `negative_prompt`, `aspect_ratio`, `megapixels`, `duration`, `fps`, `audio_path`, `end_image`, `reference_video`, `seed`, `model_overrides` | new i2v job starting from that job's last frame |
 | `rerun` | `job_id`, `seed` or `randomize_seed` | re-run a job (new seed by default) |
-| `inspect` | `job_id`, `interval` (seconds, default 1) | the app extracts frames with ffmpeg into your work dir; look at them next turn |
+| `inspect` | `job_id`, `interval` (seconds, default 1) | **only when the user asks you to check / analyse an output.** The app extracts frames with ffmpeg into your work dir and analyses the sound track (silences, LUFS, peak / clipping, waveform + spectrogram PNGs, and a transcript when STT is enabled); look at them next turn |
 | `note` | `title`, `content` or `filename`, `kind` | register a memo as an artifact; `kind: "research"` for a web-search / research summary, `"note"` (default) for anything else |
 | `rename` | `title`, plus `name` (artifact file name) **or** `job_id` (+ optional `kind`: `image` / `video` / `frame`) | rename an existing artifact so the panel shows a human title. No approval needed |
 | `library` | `job_id`, `source` (`image` / `last_frame` / `video` / `audio`), optional `title`, optional `tags[]`, optional `category` (`character` / `background` / `prop` / `none`) | keep that output in the user's library so later jobs (and later sessions) can use it as an input. No approval needed |
@@ -2326,9 +2327,17 @@ Rules:
   words, or empty to list newest-first) and `agent_read_session` with that
   `session_id`. Do not guess, and do not decide from snippets alone.
 - While you are only asking a question or reporting, send **no JSON at all**.
+- `inspect` runs **on request only**: when the user asks you to check, analyse
+  or judge an output (確認して / 見て / 分析して / どうだった?). A finished job
+  is not by itself a reason to inspect — report it and move on.
 - EVENT messages in the transcript are written by the app, not by the user.
   `inspect_result` tells you which frame files are in your working directory —
-  open them and judge the quality (broken hands, blur, framing, seed luck).
+  open them and judge the quality (broken hands, blur, framing, seed luck). It
+  also carries an audio report (音声解析): silences with timecodes, integrated
+  loudness, peak level / clipping, and the waveform + spectrogram PNGs, whose
+  horizontal axis matches the clip's full length, so you can line them up with
+  the frames. When STT is enabled the transcript with timestamps is there too —
+  compare it against the script yourself; the app does no matching.
 """
 
 AGENT_STUDIO = """\
@@ -2468,8 +2477,8 @@ Recommended flow:
    `prompt_caption` only describes it.
 3. Lay out 話 / 場, then write the Shots in order.
 4. `studio_render_shot`, poll with `studio_get_takes` until it leaves
-   `rendering`, `inspect` the Take's `job_id` to look at the frames, then
-   `studio_select_take` — or re-render with a different seed / text.
+   `rendering`, then `studio_select_take` — or re-render with a different seed
+   / text. `inspect` the Take's `job_id` only if the user asks you to check it.
 5. Move on to the next Shot, and report progress in Japanese as you go.
 """
 
@@ -2638,7 +2647,8 @@ def _agent_choices(
                 " images of each character, copied into your working directory."
                 " They show what the character is supposed to look like. Open"
                 " and study them before planning, and after every generation"
-                " compare the output (generated stills, `inspect` frames)"
+                " compare the output (generated stills, and the `inspect`"
+                " frames when the user asks you to check it)"
                 " against them — face, hairstyle, body proportions and overall"
                 " style must match the reference. If the output drifts from the"
                 " reference, adjust the prompt or LoRA strength and rerun"

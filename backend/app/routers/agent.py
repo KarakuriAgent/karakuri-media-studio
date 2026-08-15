@@ -13,11 +13,8 @@ from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import FileResponse
 
 from .. import (
-    agent_protocol,
     agent_runner,
     agent_store,
-    grok,
-    grok_session,
     lora_samples,
     model_sources,
     nsfw as nsfw_service,
@@ -61,14 +58,13 @@ async def _require(session_id: str) -> AgentSession:
     # ブラウザでもポーリングで「Grok が考えています…」を拾えるようにする。
     session.thinking = agent_runner.is_thinking(session_id)
     session.activity = agent_runner.current_activity(session_id)
+    # ループがまだ畳まれていないあいだは running のまま見せる: 実行ループは
+    # 「planning にする → 後片付け」の順で終わるので、その隙に落ち着いた状態を
+    # 見せると、承認や次の発言を送っても 409（実行中）で弾かれてしまう。
+    # 受け付けられるかどうかと画面の表示を同じ情報源（is_running）に揃える。
+    if agent_runner.is_running(session_id):
+        session.status = "running"
     return session
-
-
-async def _turn(session_id: str) -> tuple[str, object]:
-    try:
-        return await agent_runner.run_turn(session_id)
-    except grok.LLMError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
 
 
 async def _reply(session_id: str, answer: str, action) -> AgentReply:
@@ -229,9 +225,18 @@ async def delete_session(session_id: str) -> None:
 # conversation
 # --------------------------------------------------------------------------
 
-@router.post("/sessions/{session_id}/messages", response_model=AgentReply)
+@router.post(
+    "/sessions/{session_id}/messages", response_model=AgentReply, status_code=202
+)
 async def send_message(session_id: str, payload: AgentSendMessage) -> AgentReply:
-    """ユーザー発言 → Grok ターン → アクション解釈（必要なら実行ループ起動）。"""
+    """ユーザー発言を記録して実行を始める（202 即受付）。
+
+    Grok ターンとアクションの実行はバックグラウンド（:func:`agent_runner.start_loop`）
+    で進むので、**HTTP はターンの完了を待たない**（検分の音声解析などでターンが数分に
+    なると、途中の CDN が 100 秒で切ってしまうため）。応答に載るのは受付時点の
+    セッション（``status: "running"``）だけで、Grok の返事と成果物は制作記録に
+    足されながら WS（``type: "agent"``）とポーリングで届く。
+    """
     content = (payload.content or "").strip()
     if not content and not payload.attachments:
         raise HTTPException(status_code=422, detail="content is empty")
@@ -253,19 +258,21 @@ async def send_message(session_id: str, payload: AgentSendMessage) -> AgentReply
         session_id,
         AgentMessage(role="user", content=prompt, ts=agent_store.now(), data=data),
     )
-    try:
-        answer, action = await _turn(session_id)
-    except grok_session.GrokTurnCancelled:
-        return await _reply(session_id, "", None)
-    await _dispatch(session_id, action)
-    if not agent_runner.is_running(session_id):
-        await agent_runner.release_host(session_id)
-    return await _reply(session_id, answer, action)
+    # user_turn: まず返事のターンを回し、生成を伴わないアクションは 1 つ適用したら
+    # 待機に戻る（会話を勝手に続けない）。実行系だけがそのまま実行ループに入る。
+    await agent_runner.start_loop(session_id, user_turn=True)
+    return await _reply(session_id, "", None)
 
 
-@router.post("/sessions/{session_id}/approve", response_model=AgentReply)
+@router.post(
+    "/sessions/{session_id}/approve", response_model=AgentReply, status_code=202
+)
 async def approve(session_id: str, payload: AgentApprove | None = None) -> AgentReply:
-    """プラン承認 → タスク実行ループ開始（AGENT-MODE §2 アクション承認）。"""
+    """プラン承認 → タスク実行ループ開始（202 即受付。AGENT-MODE §2 アクション承認）。
+
+    実行はバックグラウンドなので、応答は受付時点のセッションだけ（``messages`` の
+    続きは WS / ポーリングで届く）。
+    """
     body = payload or AgentApprove()
     session = await _require(session_id)
     if not session.plan.tasks:
@@ -305,9 +312,11 @@ async def approve(session_id: str, payload: AgentApprove | None = None) -> Agent
     return await _reply(session_id, "", None)
 
 
-@router.post("/sessions/{session_id}/checkin", response_model=AgentReply)
+@router.post(
+    "/sessions/{session_id}/checkin", response_model=AgentReply, status_code=202
+)
 async def checkin(session_id: str, payload: AgentCheckinReply) -> AgentReply:
-    """チェックインへの応答 → ループ再開。"""
+    """チェックインへの応答 → ループ再開（202 即受付）。"""
     session = await _require(session_id)
     if session.status != "waiting_checkin":
         raise HTTPException(status_code=409, detail="チェックイン待ちではありません")
@@ -418,26 +427,3 @@ async def get_artifact(session_id: str, name: str) -> FileResponse:
     return FileResponse(path)
 
 
-# --------------------------------------------------------------------------
-# helpers
-# --------------------------------------------------------------------------
-
-async def _dispatch(session_id: str, action) -> None:
-    """Apply the action of a synchronous turn, starting the loop when needed."""
-    if action is None:
-        session = await _require(session_id)
-        if agent_runner.next_task(session) is not None:
-            await agent_runner.start_loop(session_id)
-        return
-    # 生成を伴わない即時アクションはこのリクエストの中で片付ける
-    # （スタジオ操作は目録の読み書きで、生成の投入も完了を待たない）
-    if action.action in (
-        "plan", "checkin", "done", "note", "rename",
-        "library", "library_search", "library_sheet", "agent_search_sessions",
-        "agent_read_session",
-        *agent_protocol.STUDIO_ACTIONS,
-    ):
-        await agent_runner.apply_action(session_id, action)
-        return
-    # 実行系アクションはバックグラウンドループに委ねる
-    await agent_runner.start_loop(session_id, action)

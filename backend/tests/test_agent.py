@@ -5,6 +5,7 @@ import io
 import json
 import shutil
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -270,10 +271,30 @@ def start(env, **overrides) -> dict:
     return response.json()
 
 
-def say(env, session_id: str, content: str = "3本つくって"):
-    return env.client.post(
+#: ターンが終わって落ち着いた状態（= 実行ループが running から抜けた）
+SETTLED = ("idle", "planning", "waiting_checkin", "done", "stopped")
+
+
+def say(env, session_id: str, content: str = "3本つくって", *, wait: bool = True):
+    """発言を投げる。
+
+    ``POST .../messages`` は**受付だけして 202 で返る**（Grok ターンはバックグラウンド）
+    ので、既定ではターンが終わって落ち着くまで待ってから返す。受付そのものを見たい
+    テストだけ ``wait=False`` にする。
+    """
+    response = env.client.post(
         f"/api/agent/sessions/{session_id}/messages", json={"content": content}
     )
+    if wait and response.status_code == 202:
+        wait_status(env, session_id, SETTLED)
+    return response
+
+
+def say_and_settle(env, session_id: str, content: str = "3本つくって") -> dict:
+    """発言 → 受付（202）を確かめ → ターン後のセッションを返す。"""
+    response = say(env, session_id, content)
+    assert response.status_code == 202, response.text
+    return env.client.get(f"/api/agent/sessions/{session_id}").json()
 
 
 def wait_status(env, session_id: str, statuses, timeout: float = 30.0) -> dict:
@@ -664,35 +685,35 @@ def test_plan_task_limit_zero_is_unlimited(env, monkeypatch):
 
     created = start(env, checkin_mode="auto", auto_limit=0)
     env.cli.answers = [plan_answer(env, 8)]
-    reply = say(env, created["id"]).json()
-    assert len(reply["action"]["tasks"]) == 8
+    settled = say_and_settle(env, created["id"])
+    assert len(settled["plan"]["tasks"]) == 8
 
 
 def test_long_plan_is_rejected_in_an_auto_session_by_default(env):
     """既定（5 件）は従来どおり: 自走セッションの 6 件以上は突き返される。"""
     session = start(env, checkin_mode="auto", auto_limit=5)
     env.cli.answers = [plan_answer(env, 6), plan_answer(env, 3)]
-    reply = say(env, session["id"]).json()
+    settled = say_and_settle(env, session["id"])
     # 上限超過は ActionError → リマインダー付きで 1 回だけ再試行される
-    assert len(reply["action"]["tasks"]) == 3
+    assert len(settled["plan"]["tasks"]) == 3
 
 
 def test_long_plan_passes_in_a_non_auto_session(env):
     """節目のみ確認では上限なし（承認 + チェックインで人間が必ず挟まる）。"""
     session = start(env, checkin_mode="milestone")
     env.cli.answers = [plan_answer(env, 8)]
-    reply = say(env, session["id"]).json()
-    assert len(reply["action"]["tasks"]) == 8
-    assert reply["session"]["status"] == "planning"
+    settled = say_and_settle(env, session["id"])
+    assert len(settled["plan"]["tasks"]) == 8
+    assert settled["status"] == "planning"
 
 
 def test_auto_session_rejects_too_many_new_tasks(env):
     """自走モードは 1 回のプラン提案で新規 5 件まで（既定）。"""
     session = start(env, checkin_mode="auto", auto_limit=20)
     env.cli.answers = [plan_answer(env, 6), plan_answer(env, 6)]
-    reply = say(env, session["id"]).json()
-    assert reply["action"] is None
-    assert "最大 5 件" in reply["session"]["messages"][-1]["content"]
+    settled = say_and_settle(env, session["id"])
+    assert settled["plan"]["tasks"] == []  # 突き返したので採用されない
+    assert "最大 5 件" in settled["messages"][-1]["content"]
 
 
 def test_unusable_action_triggers_one_retry(env):
@@ -701,12 +722,12 @@ def test_unusable_action_triggers_one_retry(env):
         action_answer({"action": "plan", "tasks": []}),  # 不正
         plan_answer(env, 1),  # リマインダー後の再送
     ]
-    reply = say(env, session["id"]).json()
-    assert reply["action"]["action"] == "plan"
+    settled = say_and_settle(env, session["id"])
+    assert len(settled["plan"]["tasks"]) == 1  # 再送されたプランが採用される
     assert len(env.cli.calls) == 2
     assert "could not be used" in env.cli.prompts[-1]
     assert "# RETRY" in env.cli.prompts[-1]
-    assert reply["session"]["status"] == "planning"
+    assert settled["status"] == "planning"
 
 
 def test_retry_does_not_resend_the_broken_assistant(env):
@@ -739,9 +760,9 @@ def test_retry_that_keeps_failing_is_reported_as_an_event(env):
         action_answer({"action": "plan", "tasks": []}),
         action_answer({"action": "plan", "tasks": []}),
     ]
-    reply = say(env, session["id"]).json()
-    assert reply["action"] is None
-    assert "action_invalid" in kinds(reply["session"])
+    settled = say_and_settle(env, session["id"])
+    assert settled["plan"]["tasks"] == []
+    assert "action_invalid" in kinds(settled)
     assert len(env.cli.calls) == 2  # 再試行は 1 回だけ
 
 
@@ -906,9 +927,7 @@ def test_plan_approve_run_done(env):
     session = start(env)
     env.cli.answers = [plan_answer(env, 1), DONE_ANSWER]
 
-    reply = say(env, session["id"]).json()
-    assert reply["action"]["action"] == "plan"
-    planning = reply["session"]
+    planning = say_and_settle(env, session["id"])
     assert planning["status"] == "planning"
     assert planning["plan"]["version"] == 1
     assert planning["plan"]["approved"] is False
@@ -916,7 +935,7 @@ def test_plan_approve_run_done(env):
     assert not env.comfy.queued  # 承認前は 1 本も生成しない
 
     approved = env.client.post(f"/api/agent/sessions/{session['id']}/approve", json={})
-    assert approved.status_code == 200, approved.text
+    assert approved.status_code == 202, approved.text  # 即受付（実行はループ）
 
     final = wait_status(env, session["id"], ("done", "stopped", "idle"))
     assert final["status"] == "done"
@@ -984,7 +1003,7 @@ def test_checkin_pauses_and_the_reply_resumes_the_loop(env):
     response = env.client.post(
         f"/api/agent/sessions/{session['id']}/checkin", json={"choice": "そのまま"}
     )
-    assert response.status_code == 200, response.text
+    assert response.status_code == 202, response.text
     final = wait_status(env, session["id"], ("done", "stopped", "idle"))
     assert final["status"] == "done"
     assert env.comfy.job_count == 2
@@ -1234,6 +1253,68 @@ def test_inspect_extracts_frames_into_the_workdir(env):
     assert served.status_code == 200
     assert served.content
 
+    # 音の無い動画なので、音声解析は「トラックなし」と明記する（黙らない）
+    result = [m for m in final["messages"] if m.get("kind") == "inspect_result"][-1]
+    assert "音声トラックがありません" in result["content"]
+
+
+@needs_ffmpeg
+def test_inspect_reports_the_sound_track_and_keeps_its_pictures(env):
+    """音のある動画は無音区間・ラウドネス・波形まで検分する（AGENT-MODE §3.3）。"""
+    session = start(env)
+    env.cli.answers = [plan_answer(env, 1), "確認します。", DONE_ANSWER]
+    say(env, session["id"])
+    env.client.post(f"/api/agent/sessions/{session['id']}/approve", json={})
+    done = wait_status(env, session["id"], ("done", "stopped", "idle"))
+    job_id = done["plan"]["tasks"][0]["job_id"]
+
+    # 出来上がった動画を「頭が無音の音つき動画」に差し替えて検分させる
+    video_path = env.client.get(f"/api/jobs/{job_id}").json()["video_path"]
+    subprocess.run(
+        ["ffmpeg", "-y", "-v", "error",
+         "-f", "lavfi", "-i", "testsrc=size=64x64:rate=12:duration=4",
+         "-f", "lavfi", "-i", "sine=frequency=440:duration=4",
+         "-af", "volume=enable='between(t,0,1.5)':volume=0",
+         "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest",
+         video_path],
+        check=True,
+        capture_output=True,
+    )
+
+    env.cli.answers = [
+        action_answer({"action": "inspect", "job_id": job_id, "interval": 1}, "検分します。"),
+        DONE_ANSWER,
+    ]
+    say(env, session["id"], "音も含めて確認して")
+    final = wait_status(env, session["id"], ("done", "stopped", "idle"))
+
+    result = [m for m in final["messages"] if m.get("kind") == "inspect_result"][-1]
+    assert "LUFS" in result["content"]
+    assert "先頭 t=0.00s" in result["content"]  # 頭の無音を時刻つきで出す
+    assert "文字起こし: 設定で無効" in result["content"]  # STT は既定で走らない
+    assert result["data"]["has_audio"] is True
+
+    # 波形 / スペクトログラムは画像成果物として残り、workdir から配信される
+    images = [a for a in final["artifacts"] if a["kind"] == "image" and a["name"]]
+    names = {Path(a["name"]).name for a in images}
+    assert {"audio_waveform.png", "audio_spectrogram.png"} <= names
+    assert env.client.get(images[0]["url"]).status_code == 200
+
+
+@needs_ffmpeg
+def test_a_finished_job_does_not_nag_the_agent_to_inspect(env):
+    """完了通知は事実だけ。検分はユーザーに頼まれたときだけ回す（§3.3）。"""
+    session = start(env)
+    env.cli.answers = [plan_answer(env, 1), "できました。", DONE_ANSWER]
+    say(env, session["id"])
+    env.client.post(f"/api/agent/sessions/{session['id']}/approve", json={})
+    final = wait_status(env, session["id"], ("done", "stopped", "idle"))
+
+    events = [m for m in final["messages"] if m.get("kind") == "job_done"]
+    assert events
+    assert all("inspect" not in m["content"] for m in events)
+    assert all("フレーム" not in m["content"] for m in events)
+
 
 def test_note_is_registered_as_an_artifact(env):
     session = start(env)
@@ -1243,8 +1324,8 @@ def test_note_is_registered_as_an_artifact(env):
             "調べました。",
         )
     ]
-    reply = say(env, session["id"], "トレンドを調べて").json()
-    notes = [a for a in reply["session"]["artifacts"] if a["kind"] == "note"]
+    settled = say_and_settle(env, session["id"], "トレンドを調べて")
+    notes = [a for a in settled["artifacts"] if a["kind"] == "note"]
     assert notes and notes[0]["title"] == "リサーチ"
     served = env.client.get(notes[0]["url"])
     assert served.status_code == 200
@@ -1264,9 +1345,8 @@ def test_note_kind_research_becomes_a_research_artifact(env):
             "調べました。",
         )
     ]
-    reply = say(env, session["id"], "トレンドを調べて").json()
-    assert reply["action"]["kind"] == "research"
-    research = [a for a in reply["session"]["artifacts"] if a["kind"] == "research"]
+    settled = say_and_settle(env, session["id"], "トレンドを調べて")
+    research = [a for a in settled["artifacts"] if a["kind"] == "research"]
     assert research and research[0]["title"] == "トレンド調査"
     assert env.client.get(research[0]["url"]).status_code == 200
 
@@ -1294,12 +1374,11 @@ def test_rename_updates_an_artifact_title_by_name(env):
         ),
     ]
     say(env, session["id"], "メモして")
-    reply = say(env, session["id"], "名前を付けて").json()
+    settled = say_and_settle(env, session["id"], "名前を付けて")
 
-    assert reply["action"]["action"] == "rename"
-    notes = [a for a in reply["session"]["artifacts"] if a["kind"] == "note"]
+    notes = [a for a in settled["artifacts"] if a["kind"] == "note"]
     assert notes and notes[0]["title"] == "夕暮れ屋上ダンス・企画メモ"
-    assert "artifact_renamed" in kinds(reply["session"])
+    assert "artifact_renamed" in kinds(settled)
 
 
 def test_rename_targets_a_jobs_artifacts_by_kind(env):
@@ -1323,7 +1402,7 @@ def test_rename_targets_a_jobs_artifacts_by_kind(env):
             "名前を付け直します。",
         )
     ]
-    artifacts = say(env, session["id"], "名前を付けて").json()["session"]["artifacts"]
+    artifacts = say_and_settle(env, session["id"], "名前を付けて")["artifacts"]
     images = [a for a in artifacts if a["kind"] == "image"]
     assert [a["title"] for a in images] == ["夕暮れ屋上ダンス・引きカメラ"]
     # 他の種別は触らない
@@ -1338,9 +1417,9 @@ def test_rename_of_a_missing_artifact_is_reported(env):
             "名前を付け直します。",
         )
     ]
-    reply = say(env, session["id"], "名前を付けて").json()
-    assert "action_failed" in kinds(reply["session"])
-    assert reply["session"]["artifacts"] == []
+    settled = say_and_settle(env, session["id"], "名前を付けて")
+    assert "action_failed" in kinds(settled)
+    assert settled["artifacts"] == []
 
 
 def test_rename_without_a_target_or_title_is_rejected(env):
@@ -1436,9 +1515,10 @@ def test_message_embeds_attachment_paths_for_the_agent(env):
         f"/api/agent/sessions/{session['id']}/messages",
         json={"content": "この写真に寄せて", "attachments": [uploaded["path"]]},
     )
-    assert response.status_code == 200, response.text
+    assert response.status_code == 202, response.text
+    settled = wait_status(env, session["id"], SETTLED)
 
-    users = [m for m in response.json()["session"]["messages"] if m["role"] == "user"]
+    users = [m for m in settled["messages"] if m["role"] == "user"]
     assert users[-1]["content"].startswith("この写真に寄せて")
     assert uploaded["path"] in users[-1]["content"]
     # UI 用: 添付とユーザー本文は data に分けて残す
@@ -1457,8 +1537,9 @@ def test_message_can_be_attachments_only(env):
         f"/api/agent/sessions/{session['id']}/messages",
         json={"content": "", "attachments": [uploaded["path"]]},
     )
-    assert response.status_code == 200, response.text
-    users = [m for m in response.json()["session"]["messages"] if m["role"] == "user"]
+    assert response.status_code == 202, response.text
+    settled = wait_status(env, session["id"], SETTLED)
+    users = [m for m in settled["messages"] if m["role"] == "user"]
     assert users[-1]["content"].startswith(
         "[Attached files — open them from your working directory to inspect]"
     )
@@ -1581,7 +1662,7 @@ def test_out_of_plan_continue_waits_for_approval(env):
     response = env.client.post(
         f"/api/agent/sessions/{session['id']}/checkin", json={"choice": "実行する"}
     )
-    assert response.status_code == 200, response.text
+    assert response.status_code == 202, response.text
     final = wait_status(env, session["id"], ("done", "stopped", "idle"))
     assert env.comfy.job_count == queued_before + 1
     chained = [
@@ -1737,7 +1818,7 @@ def test_turn_marks_the_session_as_thinking(env, monkeypatch):
     monkeypatch.setattr(grok, "_exec", spy)
     env.cli.answers = ["どんな雰囲気にしますか？"]
     with env.client.websocket_connect("/api/ws") as socket:
-        assert say(env, session["id"]).status_code == 200
+        assert say(env, session["id"], wait=False).status_code == 202
         for _ in range(6):
             message = socket.receive_json()
             if message["type"] == "agent" and message["thinking"] is not None:
@@ -1763,11 +1844,18 @@ def test_get_session_reports_the_thinking_flag(env):
 
 
 def test_thinking_is_cleared_when_the_turn_fails(env):
-    """LLMError で 502 になってもフラグは残さない（try/finally）。"""
+    """LLMError でもフラグは残さず、理由をセッションに残して止まる。
+
+    ターンはバックグラウンドなので HTTP には出せない（受付は 202）。握りつぶさず
+    制作記録に残すのが唯一の伝え方。
+    """
     session = start(env)
     env.cli.answers = [grok.LLMError("grok CLI が失敗しました")]
     response = say(env, session["id"])
-    assert response.status_code == 502
+    assert response.status_code == 202
+
+    stopped = wait_status(env, session["id"], ("stopped",))
+    assert "grok CLI が失敗しました" in stopped["messages"][-1]["content"]
     assert agent_runner.is_thinking(session["id"]) is False
     assert env.client.get(f"/api/agent/sessions/{session['id']}").json()["thinking"] is False
 
@@ -1801,9 +1889,8 @@ def test_message_during_a_checkin_answers_it(env):
     assert paused["status"] == "waiting_checkin"
 
     response = say(env, session["id"], "そのままで進めて")
-    assert response.status_code == 200, response.text
-    body = response.json()
-    assert body["action"] is None  # チェックイン応答なので同期ターンは走らない
+    assert response.status_code == 202, response.text
+    assert response.json()["action"] is None  # 受付だけ（アクションは載らない）
     final = wait_status(env, session["id"], ("done", "stopped", "idle"))
     assert final["status"] == "done"
     assert env.comfy.job_count == 2
@@ -1825,7 +1912,7 @@ def test_message_during_a_checkin_can_approve_a_pending_action(env):
     wait_status(env, session["id"], ("waiting_checkin", "stopped", "done"))
 
     env.cli.answers = [DONE_ANSWER]
-    assert say(env, session["id"], "実行する").status_code == 200
+    assert say(env, session["id"], "実行する").status_code == 202
     final = wait_status(env, session["id"], ("done", "stopped", "idle"))
     assert env.comfy.job_count == queued_before + 1
     assert "action_skipped" not in kinds(final)
@@ -1858,6 +1945,140 @@ def test_message_and_approve_are_409_while_the_loop_runs(env, monkeypatch):
     approve = env.client.post(f"/api/agent/sessions/{session['id']}/approve", json={})
     assert approve.status_code == 409
     assert "すでに実行中です" in approve.json()["detail"]
+
+
+# --------------------------------------------------------------------------
+# 即受付（202）: HTTP はターンの完了を待たない（AGENT-MODE §5.1）
+# --------------------------------------------------------------------------
+
+def _blocking_cli(env, monkeypatch):
+    """Grok のターンを止めておくフック。``(始まった, 離す)`` を返す。"""
+    started = threading.Event()
+    release = threading.Event()
+    base = env.cli
+
+    async def slow(argv, cwd, timeout):
+        started.set()
+        await asyncio.to_thread(release.wait, 10)
+        return await base(argv, cwd, timeout)
+
+    monkeypatch.setattr(grok, "_exec", slow)
+    return started, release
+
+
+def test_a_message_is_accepted_before_the_turn_finishes(env, monkeypatch):
+    """発言 → 202 即受付。ターンの完了は待たない（間の CDN に切られないため）。"""
+    session = start(env)
+    started, release = _blocking_cli(env, monkeypatch)
+    env.cli.answers = ["どんな雰囲気にしますか？"]
+
+    accepted = say(env, session["id"], wait=False)
+    assert accepted.status_code == 202
+    assert started.wait(5)  # ターンはバックグラウンドで走り出している
+    body = accepted.json()
+    assert body["content"] == ""  # 返事はまだ無い（制作記録に後から届く）
+    assert body["action"] is None
+    assert body["session"]["status"] == "running"
+    assert body["session"]["thinking"] is True  # 「Grok が考えています…」
+    # ユーザー発言だけは受付の時点で記録されている
+    assert body["session"]["messages"][-1]["content"] == "3本つくって"
+    # 実行中の二重送信は従来どおり 409
+    assert say(env, session["id"], "もう一言", wait=False).status_code == 409
+
+    release.set()
+    final = wait_status(env, session["id"], SETTLED)
+    assert final["status"] == "idle"
+    assert final["messages"][-1]["role"] == "assistant"
+    assert final["messages"][-1]["content"] == "どんな雰囲気にしますか？"
+
+
+def test_approve_is_accepted_before_the_jobs_finish(env, monkeypatch):
+    """承認も 202 即受付で、生成の完了は待たない。"""
+    session = start(env)
+    env.cli.answers = [plan_answer(env, 1), DONE_ANSWER]
+    say(env, session["id"])
+
+    started, release = _blocking_cli(env, monkeypatch)
+    accepted = env.client.post(f"/api/agent/sessions/{session['id']}/approve", json={})
+    assert accepted.status_code == 202
+    assert accepted.json()["session"]["status"] == "running"
+
+    release.set()
+    final = wait_status(env, session["id"], ("done", "stopped", "idle"))
+    assert final["status"] == "done"
+    assert env.comfy.job_count == 1
+
+
+def test_a_checkin_answer_is_accepted_before_the_loop_resumes(env):
+    """チェックイン応答も 202 即受付（再開はバックグラウンド）。"""
+    session = start(env)
+    env.cli.answers = [plan_answer(env, 2), CHECKIN_ANSWER, DONE_ANSWER]
+    say(env, session["id"])
+    env.client.post(f"/api/agent/sessions/{session['id']}/approve", json={})
+    wait_status(env, session["id"], ("waiting_checkin", "stopped", "done"))
+
+    accepted = env.client.post(
+        f"/api/agent/sessions/{session['id']}/checkin", json={"choice": "そのまま"}
+    )
+    assert accepted.status_code == 202
+    final = wait_status(env, session["id"], ("done", "stopped", "idle"))
+    assert final["status"] == "done"
+    assert env.comfy.job_count == 2
+
+
+def test_stop_cuts_a_background_turn(env, monkeypatch):
+    """⏹ はバックグラウンドで走っているターンにも効く。"""
+    session = start(env)
+    started, release = _blocking_cli(env, monkeypatch)
+    env.cli.answers = [plan_answer(env, 1)]
+
+    assert say(env, session["id"], wait=False).status_code == 202
+    assert started.wait(5)
+    env.client.post(f"/api/agent/sessions/{session['id']}/stop")
+    release.set()
+
+    final = wait_status(env, session["id"], ("stopped", "planning", "idle", "done"))
+    assert final["status"] == "stopped"
+    assert final["messages"][-1]["content"] == "ユーザーの操作で停止しました。"
+    # 停止後に返ってきたプランは採用せず、生成も投入しない
+    assert final["plan"]["tasks"] == []
+    assert env.comfy.job_count == 0
+
+
+def test_a_failing_background_turn_is_recorded_not_swallowed(env, monkeypatch):
+    """バックグラウンドの例外は握りつぶさず、セッションに残して止める。"""
+    session = start(env)
+
+    async def boom(session_id):
+        raise RuntimeError("想定外の失敗")
+
+    monkeypatch.setattr(agent_runner, "run_turn", boom)
+    assert say(env, session["id"]).status_code == 202
+
+    final = wait_status(env, session["id"], ("stopped",))
+    assert "想定外の失敗" in final["messages"][-1]["content"]
+    assert agent_runner.is_running(session["id"]) is False
+
+
+def test_a_plain_answer_resumes_the_approved_tasks(env):
+    """返事だけのターンでも、承認済みで残っているタスクがあれば実行に入る。
+
+    即受付にしても、ここは従来（同期ターン + `_dispatch`）と同じ振る舞いを保つ。
+    """
+    session = start(env)
+    env.cli.answers = [plan_answer(env, 2), CHECKIN_ANSWER]
+    say(env, session["id"])
+    env.client.post(f"/api/agent/sessions/{session['id']}/approve", json={})
+    wait_status(env, session["id"], ("waiting_checkin", "stopped", "done"))
+    env.client.post(f"/api/agent/sessions/{session['id']}/stop")
+    stopped = wait_status(env, session["id"], ("stopped",))
+    assert stopped["plan"]["tasks"][1]["status"] == "pending"
+    queued_before = env.comfy.job_count
+
+    env.cli.answers = ["残りを進めますね。", DONE_ANSWER]
+    final = say_and_settle(env, session["id"], "続けて")
+    assert final["status"] == "done"
+    assert env.comfy.job_count == queued_before + 1  # 残りの 1 本が走る
 
 
 def test_checkin_outside_a_checkin_is_409(env):
@@ -2195,9 +2416,8 @@ def test_library_action_keeps_a_job_output(env):
             "取っておきます。",
         )
     ]
-    reply = say(env, session["id"], "この画像を残して").json()
-    assert reply["action"]["action"] == "library"
-    assert "library_added" in kinds(reply["session"])
+    settled = say_and_settle(env, session["id"], "この画像を残して")
+    assert "library_added" in kinds(settled)
 
     items = env.client.get("/api/library").json()["items"]
     assert [item["name"] for item in items] == ["夕暮れ屋上ダンス・決め絵"]
@@ -2215,8 +2435,8 @@ def test_library_action_reports_a_missing_output(env):
             "取っておきます。",
         )
     ]
-    reply = say(env, session["id"], "残して").json()
-    assert "action_failed" in kinds(reply["session"])
+    settled = say_and_settle(env, session["id"], "残して")
+    assert "action_failed" in kinds(settled)
     assert env.client.get("/api/library").json()["items"] == []
 
 
@@ -2315,11 +2535,10 @@ def test_library_search_returns_matches_as_an_event(env):
             {"action": "library_search", "q": "sakura"}, "探します。"
         )
     ]
-    reply = say(env, session["id"], "サクラの素材ある？").json()
-    assert reply["action"]["action"] == "library_search"
+    settled = say_and_settle(env, session["id"], "サクラの素材ある？")
 
     events = [
-        m for m in reply["session"]["messages"] if m["kind"] == "library_search_result"
+        m for m in settled["messages"] if m["kind"] == "library_search_result"
     ]
     assert len(events) == 1
     text = events[0]["content"]
@@ -2339,9 +2558,9 @@ def test_library_search_can_filter_by_tag_and_kind(env):
             {"action": "library_search", "tag": "夜景", "kind": "audio"}, "探します。"
         )
     ]
-    reply = say(env, session["id"], "夜景の音は？").json()
+    settled = say_and_settle(env, session["id"], "夜景の音は？")
     text = [
-        m for m in reply["session"]["messages"] if m["kind"] == "library_search_result"
+        m for m in settled["messages"] if m["kind"] == "library_search_result"
     ][0]["content"]
     assert track["path"] in text
     assert "a.png" not in text
@@ -2354,9 +2573,9 @@ def test_library_search_tells_how_to_get_the_next_page(env):
 
     session = start(env)
     env.cli.answers = [action_answer({"action": "library_search"}, "探します。")]
-    reply = say(env, session["id"], "全部見せて").json()
+    settled = say_and_settle(env, session["id"], "全部見せて")
     event = [
-        m for m in reply["session"]["messages"] if m["kind"] == "library_search_result"
+        m for m in settled["messages"] if m["kind"] == "library_search_result"
     ][0]
     assert f"{total} 件中 1〜{agent_runner.LIBRARY_SEARCH_LIMIT} 件目" in event["content"]
     assert "まだ 5 件あります" in event["content"]
@@ -2370,9 +2589,9 @@ def test_library_search_tells_how_to_get_the_next_page(env):
             "続きです。",
         )
     ]
-    reply = say(env, session["id"], "続き").json()
+    settled = say_and_settle(env, session["id"], "続き")
     latest = [
-        m for m in reply["session"]["messages"] if m["kind"] == "library_search_result"
+        m for m in settled["messages"] if m["kind"] == "library_search_result"
     ][-1]
     assert f"{total} 件中 {agent_runner.LIBRARY_SEARCH_LIMIT + 1}〜{total} 件目" in (
         latest["content"]
@@ -2386,9 +2605,9 @@ def test_library_search_reports_no_match(env):
     env.cli.answers = [
         action_answer({"action": "library_search", "q": "ghost"}, "探します。")
     ]
-    reply = say(env, session["id"], "探して").json()
+    settled = say_and_settle(env, session["id"], "探して")
     text = [
-        m for m in reply["session"]["messages"] if m["kind"] == "library_search_result"
+        m for m in settled["messages"] if m["kind"] == "library_search_result"
     ][0]["content"]
     assert "該当なし" in text
 
@@ -2444,10 +2663,10 @@ def test_library_action_reports_an_already_registered_output(env):
     say(env, session["id"], "残して")
 
     env.cli.answers = [keep]
-    reply = say(env, session["id"], "もう一度残して").json()
-    assert "library_exists" in kinds(reply["session"])
-    assert "action_failed" not in kinds(reply["session"])
-    event = [m for m in reply["session"]["messages"] if m["kind"] == "library_exists"][0]
+    settled = say_and_settle(env, session["id"], "もう一度残して")
+    assert "library_exists" in kinds(settled)
+    assert "action_failed" not in kinds(settled)
+    event = [m for m in settled["messages"] if m["kind"] == "library_exists"][0]
     assert "既にライブラリにあります" in event["content"]
     assert "決め絵" in event["content"]
     # コピーは増えない
@@ -2511,8 +2730,9 @@ def material(env, name: str, category: str = "") -> dict:
     return created.json()
 
 
-def event_of(reply: dict, kind: str) -> dict:
-    return [m for m in reply["session"]["messages"] if m["kind"] == kind][-1]
+def event_of(session: dict, kind: str) -> dict:
+    """落ち着いたセッションから、その種別の最後のイベントを取る。"""
+    return [m for m in session["messages"] if m["kind"] == kind][-1]
 
 
 def library_ids(env) -> list[str]:
@@ -2520,21 +2740,20 @@ def library_ids(env) -> list[str]:
 
 
 def run_action(env, payload: dict, said: str = "お願い") -> dict:
-    """アクション 1 つを走らせて返信 JSON を返す（セッションは使い捨て）。"""
+    """アクション 1 つを走らせ、落ち着いたセッションを返す（使い捨てセッション）。"""
     session = start(env)
     env.cli.answers = [action_answer(payload, "やります。")]
-    return say(env, session["id"], said).json()
+    return say_and_settle(env, session["id"], said)
 
 
 def test_library_search_can_filter_by_category(env):
     hero = material(env, "hero.png", "character")
     material(env, "room.png", "background")
 
-    reply = run_action(
+    settled = run_action(
         env, {"action": "library_search", "category": "character"}, "キャラ素材ある？"
     )
-    assert reply["action"]["category"] == "character"
-    text = event_of(reply, "library_search_result")["content"]
+    text = event_of(settled, "library_search_result")["content"]
     assert hero["path"] in text
     assert "room.png" not in text
     # 絞り込み条件も本文に出るので、同じ条件で offset を進められる
@@ -2545,12 +2764,12 @@ def test_library_search_can_ask_for_the_uncategorized(env):
     plain = material(env, "plain.png")
     material(env, "hero.png", "character")
 
-    reply = run_action(
+    settled = run_action(
         env,
         {"action": "library_search", "category": library.UNCATEGORIZED},
         "分類していない素材は？",
     )
-    text = event_of(reply, "library_search_result")["content"]
+    text = event_of(settled, "library_search_result")["content"]
     assert plain["path"] in text
     assert "hero.png" not in text
 
@@ -2559,8 +2778,8 @@ def test_library_search_shows_the_category_of_every_hit(env):
     material(env, "hero.png", "character")
     material(env, "plain.png")
 
-    reply = run_action(env, {"action": "library_search"}, "全部見せて")
-    text = event_of(reply, "library_search_result")["content"]
+    settled = run_action(env, {"action": "library_search"}, "全部見せて")
+    text = event_of(settled, "library_search_result")["content"]
     assert "（image / character）" in text
     # 未分類も明示値で書いておく（そのまま category にコピーできる）
     assert f"（image / {library.UNCATEGORIZED}）" in text
@@ -2588,8 +2807,8 @@ def test_the_agent_can_read_another_agent_session(env):
             "読みます。",
         )
     ]
-    reply = say(env, session["id"], "前のセッションの塩加減を読んで").json()
-    text = event_of(reply, "agent_session_transcript")["content"]
+    settled = say_and_settle(env, session["id"], "前のセッションの塩加減を読んで")
+    text = event_of(settled, "agent_session_transcript")["content"]
     assert "塩は小さじ2" in text
     assert other["id"] in text
     assert "### USER" in text
@@ -2605,8 +2824,8 @@ def test_the_agent_cannot_read_its_own_session(env):
             "読みます。",
         )
     ]
-    reply = say(env, session["id"], "この会話を読んで").json()
-    text = event_of(reply, "agent_session_transcript")["content"]
+    settled = say_and_settle(env, session["id"], "この会話を読んで")
+    text = event_of(settled, "agent_session_transcript")["content"]
     assert "今の会話自身は読めない" in text
 
 
@@ -2630,9 +2849,9 @@ def test_library_action_can_set_a_category(env):
             "取っておきます。",
         )
     ]
-    reply = say(env, session["id"], "キャラとして残して").json()
+    settled = say_and_settle(env, session["id"], "キャラとして残して")
     assert env.client.get("/api/library").json()["items"][0]["category"] == "character"
-    assert "分類: character" in event_of(reply, "library_added")["content"]
+    assert "分類: character" in event_of(settled, "library_added")["content"]
 
 
 def test_library_action_rejects_an_unknown_category(env):
@@ -2653,7 +2872,7 @@ def test_library_sheet_composes_a_sheet_from_the_library(env):
     hero = material(env, "hero.png", "character")
     sword = material(env, "sword.png", "prop")
 
-    reply = run_action(
+    settled = run_action(
         env,
         {
             "action": "library_sheet",
@@ -2662,9 +2881,8 @@ def test_library_sheet_composes_a_sheet_from_the_library(env):
         },
         "シートを作って",
     )
-    assert reply["action"]["action"] == "library_sheet"
 
-    event = event_of(reply, "library_sheet_added")
+    event = event_of(settled, "library_sheet_added")
     rows = env.client.get("/api/library").json()["items"]
     sheet = [row for row in rows if row["id"] == event["data"]["library_id"]][0]
     assert sheet["name"] == "サクラのシート"
@@ -2683,7 +2901,7 @@ def test_library_sheet_composes_a_sheet_from_the_library(env):
 
 def test_library_sheet_takes_the_requested_size(env):
     hero = material(env, "hero.png", "character")
-    reply = run_action(
+    settled = run_action(
         env,
         {
             "action": "library_sheet",
@@ -2693,28 +2911,28 @@ def test_library_sheet_takes_the_requested_size(env):
         },
         "縦のシートで",
     )
-    with Image.open(event_of(reply, "library_sheet_added")["data"]["path"]) as image:
+    with Image.open(event_of(settled, "library_sheet_added")["data"]["path"]) as image:
         assert image.size == (640, 1136)
 
 
 def test_library_sheet_falls_back_to_the_default_size(env):
     hero = material(env, "hero.png", "character")
-    reply = run_action(
+    settled = run_action(
         env, {"action": "library_sheet", "item_ids": [hero["id"]]}, "シート"
     )
-    with Image.open(event_of(reply, "library_sheet_added")["data"]["path"]) as image:
+    with Image.open(event_of(settled, "library_sheet_added")["data"]["path"]) as image:
         assert image.size == (sheets.DEFAULT_WIDTH, sheets.DEFAULT_HEIGHT)
 
 
 def test_library_sheet_reports_an_unknown_id(env):
     hero = material(env, "hero.png", "character")
-    reply = run_action(
+    settled = run_action(
         env,
         {"action": "library_sheet", "item_ids": [hero["id"], "ghost"]},
         "シートを作って",
     )
-    assert "library_sheet_added" not in kinds(reply["session"])
-    assert "ghost" in event_of(reply, "action_failed")["content"]
+    assert "library_sheet_added" not in kinds(settled)
+    assert "ghost" in event_of(settled, "action_failed")["content"]
     # 素材はそのまま、壊れたシートは棚に残らない
     assert library_ids(env) == [hero["id"]]
 
@@ -2722,18 +2940,18 @@ def test_library_sheet_reports_an_unknown_id(env):
 def test_library_sheet_reports_a_material_that_is_not_an_image(env):
     hero = material(env, "hero.png", "character")
     track = add_to_library(env, "audio", "bgm.mp3")
-    reply = run_action(
+    settled = run_action(
         env,
         {"action": "library_sheet", "item_ids": [hero["id"], track["id"]]},
         "シートを作って",
     )
-    assert "action_failed" in kinds(reply["session"])
+    assert "action_failed" in kinds(settled)
     assert sorted(library_ids(env)) == sorted([hero["id"], track["id"]])
 
 
 def test_library_sheet_reports_a_canvas_that_is_too_large(env):
     hero = material(env, "hero.png", "character")
-    reply = run_action(
+    settled = run_action(
         env,
         {
             "action": "library_sheet",
@@ -2743,7 +2961,7 @@ def test_library_sheet_reports_a_canvas_that_is_too_large(env):
         },
         "巨大なシート",
     )
-    assert "action_failed" in kinds(reply["session"])
+    assert "action_failed" in kinds(settled)
     assert library_ids(env) == [hero["id"]]
 
 
@@ -2752,10 +2970,10 @@ def test_library_sheet_reports_too_many_materials(env):
         material(env, f"{index}.png", "prop")["id"]
         for index in range(sheets.MAX_ITEMS + 1)
     ]
-    reply = run_action(
+    settled = run_action(
         env, {"action": "library_sheet", "item_ids": picked}, "全部でシート"
     )
-    assert "action_failed" in kinds(reply["session"])
+    assert "action_failed" in kinds(settled)
     assert len(library_ids(env)) == sheets.MAX_ITEMS + 1
 
 

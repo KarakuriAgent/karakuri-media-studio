@@ -81,6 +81,10 @@ function settings(): Settings {
     external_max_pending_takes: 20,
     agent_grok_args: ['--permission-mode', 'auto'],
     agent_use_acp: true,
+    agent_stt_enabled: false,
+    agent_stt_base_url: '',
+    agent_stt_model: '',
+    agent_stt_api_key: '',
     agent_grok_timeout: 300,
     agent_max_plan_tasks: 5,
     agent_max_turns: 20,
@@ -499,6 +503,40 @@ describe('SettingsPage: ComfyUI 接続先（3 プロファイル）', () => {
     // 空白区切りの入力欄はフラグの配列に戻る
     expect(sent.agent_grok_args).toEqual(['--permission-mode', 'ask'])
     expect(sent.agent_use_acp).toBe(false)
+  })
+
+  it('STT を有効にすると接続先の欄が出て、URL・モデル・キーを保存できる', async () => {
+    putSettings.mockResolvedValue(settings())
+    await openSettings()
+
+    // 無効のあいだは接続先の欄を出さない（接続先は STT のためだけの設定）
+    expect(
+      screen.queryByLabelText('文字起こしサーバーの URL（OpenAI 互換）'),
+    ).toBeNull()
+
+    fireEvent.click(
+      screen.getByRole('switch', { name: '音声文字起こし（STT）を有効にする' }),
+    )
+    fireEvent.change(
+      screen.getByLabelText('文字起こしサーバーの URL（OpenAI 互換）'),
+      { target: { value: 'http://host.docker.internal:8000/v1' } },
+    )
+    fireEvent.change(screen.getByLabelText('STT モデル（空 = サーバー任せ）'), {
+      target: { value: 'whisper-1' },
+    })
+    fireEvent.change(
+      screen.getByLabelText('STT の API キー（ローカルサーバーなら空）'),
+      { target: { value: 'sk-test' } },
+    )
+    screen.getByRole('button', { name: '保存' }).click()
+
+    await waitFor(() => expect(putSettings).toHaveBeenCalled())
+    expect(putSettings.mock.calls[0][0]).toMatchObject({
+      agent_stt_enabled: true,
+      agent_stt_base_url: 'http://host.docker.internal:8000/v1',
+      agent_stt_model: 'whisper-1',
+      agent_stt_api_key: 'sk-test',
+    })
   })
 
   it('使う CLI を切り替えると、その CLI のコマンド / モデル欄になる', async () => {

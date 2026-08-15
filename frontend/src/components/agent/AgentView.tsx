@@ -251,6 +251,11 @@ export default function AgentView({
     }
   }
 
+  /**
+   * 発言・承認・チェックイン応答は**受付だけ**（202）。返ってくるのは実行中の
+   * セッションなので、それをそのまま画面に載せて「Grok が考えています…」を出し、
+   * 続き（返事・成果物・完了）は WS フレームと下のポーラーで受け取る。
+   */
   const send = (content: string, attachments: string[] = []) => {
     if (!sessionId) return
     void run(

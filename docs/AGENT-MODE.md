@@ -287,16 +287,39 @@ Library（取っておいた素材、`path` をそのままジョブの入力に
 ジョブの完了 / 失敗イベントは会話履歴に自動追記され、バックエンドが次の Grok ターンを
 自動で回す。Grok は結果を踏まえて以下ができる:
 
+- **検分（`inspect`）はオンデマンド**: ユーザーが「確認して」「見て」「分析して」と
+  頼んだときだけ実行する。ジョブ完了イベントは**事実（出力の URL）だけ**を伝え、
+  検分を促さない（毎回フレームを展開すると時間もターンも食うため）
 - **フレーム検分**: 成果物の動画を ffmpeg でフレーム分解（例: 1 秒間隔 + ラストフレーム）して
   セッション workdir に展開し、Grok が画像として実際に見て品質判断
   （破綻・手の崩れ・シードの当たり外れ）。検分結果は成果物パネルに残る
+- **音声検分**: 同じ `inspect` で音声トラックも解析する（`app.audio_inspect`）。
+  ffmpeg だけで測れるもの — 無音区間（`silencedetect`、先頭 / 途中 / 末尾を時刻つき）、
+  統合ラウドネス LUFS（`ebur128`）、ピークレベルとクリッピング疑い（`astats`）、実尺 —
+  を人間可読なレポートにして `inspect_result` に載せ、波形（`showwavespic`）と
+  スペクトログラム（`showspectrumpic`）の PNG を画像成果物として登録する
+  （横軸は全尺に対応するので、レポートの尺と突き合わせて時刻を読める）。
+  音声トラックが無ければ「音声トラックなし」と明記する。個々のフィルタが失敗しても
+  inspect は止めず、「その項目をスキップした」とレポートに残す
+- **文字起こし（STT）**: 設定 `agent_stt_enabled` が真のときだけ、音声検分に
+  タイムスタンプつきの文字起こしを足す（既定は無効）。**推論はこのプロセスに抱えず**、
+  OpenAI 互換の外部エンドポイント `POST {agent_stt_base_url}/audio/transcriptions` へ
+  音声を multipart で投げる（`response_format=verbose_json`。ComfyUI や LLM CLI と同じく
+  重い処理は外に出す方針）。接続先は speaches / whisper.cpp server / OpenAI API など何でもよく、
+  設定は `agent_stt_base_url`（例 `http://localhost:8000/v1`）・`agent_stt_model`
+  （空ならサーバー任せ。OpenAI なら `whisper-1`）・`agent_stt_api_key`（ローカルなら空）。
+  **アプリを Docker で動かしてホスト側のサーバーを使うなら `http://host.docker.internal:8000/v1`**
+  （コンテナ内の `localhost` はコンテナ自身）。URL 未設定・接続不能・タイムアウト・非 2xx は
+  どれも例外にせず、理由をレポート（と `warnings`）に残して検分は続ける。
+  `verbose_json` を返さないサーバーのときは時刻なしの全文だけ載せる。
+  台本との照合はエージェント（LLM）の仕事で、アプリ側では機械的な照合をしない
 - **続き生成**: 当たりの動画のラストフレームを開始画像に、次の動画ジョブを提案・実行
   （既存の continue API と同じ経路。i2v の連鎖で長尺化）
 - **再生成**: 外れジョブのシード再抽選・プロンプト修正版の再実行
 - **画像先行**: image_only で開始フレーム候補を量産 → 検分で選抜 → 当たりを i2v へ
   （SPEC §2 モード C の使い方をエージェントが自動で回す）
-- **音声ジョブ**（`mode: "audio"`）は映像を持たないので `inspect` の対象外。完了イベントでも
-  「音声は聴けないので判断はプロンプトと設定から」と明示し、フレーム検分を促さない
+- **音声ジョブ**（`mode: "audio"`）は映像を持たないので `inspect` の対象外。
+  判断はプロンプトと設定から行う
 
 ### 3.4 Grok CLI のエージェント能力の解放
 
@@ -380,7 +403,7 @@ Grok CLI はステートレスなテキスト入出力なので、ツール呼�
 | `run_task` | 承認済みプラン内タスクの実行 / 自走モードでの実行 | プラン承認で包括承認 |
 | `continue` | 既存ジョブのラストフレームから続き生成（対象 job_id + `JobContinue` の差分項目 = `video_workflow` / `video_prompt` / `negative_prompt` / `aspect_ratio` / `megapixels` / `duration` / `fps` / `audio_path` / `end_image` / `reference_video` / `seed`） | プラン外なら必要 |
 | `rerun` | シード再抽選 / 修正版で再実行（対象 job_id + 差分） | プラン外なら必要 |
-| `inspect` | 動画のフレーム分解検分を依頼（対象 job_id, 間隔秒）。バックエンドが ffmpeg で展開し、次ターンで Grok がフレームを見る | 不要（自律） |
+| `inspect` | 動画の検分を依頼（対象 job_id, 間隔秒）。バックエンドが ffmpeg でフレーム展開 + 音声解析（無音 / LUFS / ピーク / 波形・スペクトログラム、任意で STT）を行い、次ターンで Grok がフレームとレポートを見る。**ユーザーに確認・分析を頼まれたときだけ**実行する | 不要（自律） |
 | `note` | メモ / リサーチまとめの成果物登録（workdir ファイル or 本文） | 不要（自律） |
 | `rename` | 既存成果物のタイトル付け直し（`name` または `job_id` + `kind`, `title`）。対象が無ければ `action_failed` | 不要（自律） |
 | `library` | ジョブの出力をライブラリに取っておく（`job_id` + `source`: `image` / `last_frame` / `video` / `audio`、任意の `title` / `tags[]` / `category`: `character` / `background` / `prop` / `none`）。SPEC §7.2。既に同じ出力が登録済みなら `library_exists`（エラーではなく案内）、対象が無ければ `action_failed` | 不要（自律） |
@@ -459,9 +482,10 @@ Grok CLI はステートレスなテキスト入出力なので、ツール呼�
 1 返信 1 アクションの制約は `rename` / `library` / `library_search` / `library_sheet` も同じ
 （`plan` / `checkin` 等と同列）。
 生成を伴わない即時アクション（`plan` / `checkin` / `done` / `note` / `rename` / `library` /
-`library_search` / `library_sheet`）は
-発言リクエストの中で処理し、実行系（`run_task` / `continue` / `rerun` / `inspect`）だけを
-バックグラウンドループに委ねる（`routers/agent._dispatch`）。
+`library_search` / `library_sheet` / `studio_*`）は**1 つ適用したらそのターンを閉じ**、
+待機に戻る（勝手に次のターンを回さない）。実行系（`run_task` / `continue` / `rerun`）だけが
+そのまま実行ループに入る（`agent_runner.IMMEDIATE_ACTIONS` / `_user_turn`）。
+どちらも HTTP リクエストの中では走らない（下の「即受付」を参照）。
 タスクの `label` と `note` / `rename` のタイトルは、ユーザーがひと目で分かる
 日本語の作品名（例:「夕暮れ屋上ダンス・引きカメラ」）にすることをシステムプロンプトで
 指示している。ファイル名的な文字列・ID・シード値はタイトルに使わせない。
@@ -479,13 +503,25 @@ Grok CLI はステートレスなテキスト入出力なので、ツール呼�
 | `POST /api/agent/sessions` | セッション開始（チェックイン設定・自走上限を受け取り、options を焼き込んだシステムプロンプト生成） |
 | `GET /api/agent/sessions` / `GET .../{id}` | 一覧 / 詳細（メッセージ・タスク状態・成果物インデックス） |
 | `PATCH /api/agent/sessions/{id}` | 開始後の設定変更（`checkin_mode` / `auto_limit`。送った項目だけ変わる。上限の判定は実行中のループにも即時効くが、システムプロンプトは作成時の焼き込みなので指示文への反映は次のターンから。変更は `settings_changed` イベントとして制作記録にも残る） |
-| `POST .../{id}/messages` | ユーザー発言 → Grok ターン → アクション解釈まで（チェックイン待ちのあいだは「チェックインへの自由回答」として `checkin` と同じ経路に流す。実行ループ中は 409。`attachments` の workdir 相対パスは発言本文の末尾に列挙して渡す。本文が空でも添付だけで送信できる） |
-| `POST .../{id}/approve` | プラン承認（承認後バックエンドがタスク実行ループを開始。実行中・チェックイン待ちは 409） |
-| `POST .../{id}/checkin` | チェックインへの応答 |
+| `POST .../{id}/messages` | ユーザー発言を記録して実行開始（**202 即受付**。Grok ターンは待たない）。チェックイン待ちのあいだは「チェックインへの自由回答」として `checkin` と同じ経路に流す。実行ループ中は 409。`attachments` の workdir 相対パスは発言本文の末尾に列挙して渡す。本文が空でも添付だけで送信できる |
+| `POST .../{id}/approve` | プラン承認（**202 即受付**。承認後バックエンドがタスク実行ループを開始。実行中・チェックイン待ちは 409） |
+| `POST .../{id}/checkin` | チェックインへの応答（**202 即受付**でループ再開） |
 | `POST .../{id}/stop` | 実行ループ停止 |
 | `POST .../{id}/attachments` | ファイル添付（workdir の `attachments/` に保存し、`{name, path}` を返す。拡張子は画像・音声・動画とテキスト系のみ） |
 | `GET .../{id}/artifacts/{name}` | workdir 内ファイル（メモ・検分フレーム等）の配信 |
 | `DELETE .../{id}` | セッション削除（workdir ごと） |
+
+**即受付（202）**: 発言・承認・チェックイン応答はどれも「ユーザーの入力を記録して
+実行を始める」ところまでで返し、Grok ターンもアクションの実行も
+`agent_runner.start_loop` のバックグラウンドタスクが進める。HTTP でターンの完了を
+待つと、検分の音声解析などで数分かかったときに間の CDN（Cloudflare は 100 秒）に
+切られてしまうため。レスポンスの `content` / `action` は常に空で、載るのは受付時点の
+セッション（`status: "running"`、`thinking: true`）だけ。Grok の返事・イベント・成果物は
+制作記録に足されながら WS とポーリングで届く。バックグラウンドで落ちた例外は
+握りつぶさず、`stopped` イベント（`エージェントの実行中にエラーが発生しました: …` /
+`Grok の呼び出しに失敗しました: …`）として制作記録に残す。
+`GET .../{id}` はループが畳まれるまで `status: "running"` を返す（受付が 409 になる
+あいだ画面が「落ち着いた」状態に見えないようにするため）。
 
 進捗は既存 WebSocket を拡張（`type: "agent"` フレームでタスク状態・新着成果物を通知。
 ジョブ進捗は既存 `type: "job"` をそのまま利用）。
@@ -505,8 +541,11 @@ Grok ターンの実行中は `thinking` で通知する（WS フレームの `t
 
 ### 5.3 実行ループ
 
+発言・承認・チェックイン応答は 202 で返り、この図の中身はすべて
+バックグラウンドタスク（`agent_runner.start_loop`）の中で進む。
+
 ```
-ユーザー発言 ─→ Grok ターン ─→ action?
+ユーザー発言（202 受付）─→ Grok ターン ─→ action?
                     │ plan      → プランカード提示（承認待ち）
    承認 ──────────→ │ run_task  → JobRunner 投入 → 完了イベント追記 ─┐
                     │ inspect   → ffmpeg 展開 → 結果イベント追記 ──┤→ 次の Grok ターンを自動実行

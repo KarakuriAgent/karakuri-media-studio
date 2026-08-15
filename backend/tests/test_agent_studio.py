@@ -32,11 +32,15 @@ from test_agent import (  # noqa: F401 - フィクスチャの再エクスポー
 # --------------------------------------------------------------------------
 
 def act(env, session_id: str, payload: dict, said: str = "お願い") -> dict:
-    """1 セッションの中でアクションを 1 つ走らせる（続きの操作ができる）。"""
+    """1 セッションの中でアクションを 1 つ走らせる（続きの操作ができる）。
+
+    発言は 202 で即受付され、ターンはバックグラウンドで回る（``say`` が終わりまで
+    待つ）ので、結果は落ち着いたセッションを取り直して見る。
+    """
     env.cli.answers = [action_answer(payload, "やります。")]
     response = say(env, session_id, said)
-    assert response.status_code == 200, response.text
-    return response.json()
+    assert response.status_code == 202, response.text
+    return env.client.get(f"/api/agent/sessions/{session_id}").json()
 
 
 def studio_action(env, payload: dict) -> dict:
@@ -318,7 +322,7 @@ def test_get_project_reports_a_missing_project(env):
     reply = studio_action(
         env, {"action": "studio_get_project", "project_id": "ghost"}
     )
-    assert "action_failed" in kinds(reply["session"])
+    assert "action_failed" in kinds(reply)
 
 
 def test_upsert_episode_and_scene_build_the_outline(env):
@@ -414,13 +418,13 @@ def test_delete_shot_removes_it(env):
     project = make_project(env)
     shot = make_shot(env, project["id"])
     reply = studio_action(env, {"action": "studio_delete_shot", "id": shot["id"]})
-    assert "studio_saved" in kinds(reply["session"])
+    assert "studio_saved" in kinds(reply)
     assert env.client.get(f"/api/studio/projects/{project['id']}").json()["shots"] == []
 
 
 def test_delete_of_a_missing_shot_is_reported(env):
     reply = studio_action(env, {"action": "studio_delete_shot", "id": "ghost"})
-    assert "action_failed" in kinds(reply["session"])
+    assert "action_failed" in kinds(reply)
 
 
 def test_upsert_asset_registers_a_metadata_only_material(env):
@@ -501,7 +505,7 @@ def test_register_asset_from_a_missing_job_is_reported(env):
             "name": "アキ",
         },
     )
-    assert "action_failed" in kinds(reply["session"])
+    assert "action_failed" in kinds(reply)
     assert env.client.get(f"/api/studio/projects/{project['id']}").json()["assets"] == []
 
 
@@ -582,7 +586,7 @@ def test_render_shot_can_force_a_workflow(env):
 
 def test_render_of_a_missing_shot_is_reported(env):
     reply = studio_action(env, {"action": "studio_render_shot", "shot_id": "ghost"})
-    assert "action_failed" in kinds(reply["session"])
+    assert "action_failed" in kinds(reply)
 
 
 def test_select_and_reject_a_take(env):
@@ -613,7 +617,7 @@ def test_select_and_reject_a_take(env):
 
 def test_select_of_a_missing_take_is_reported(env):
     reply = studio_action(env, {"action": "studio_select_take", "take_id": "ghost"})
-    assert "action_failed" in kinds(reply["session"])
+    assert "action_failed" in kinds(reply)
 
 
 def test_takes_of_a_shot_without_any_point_at_render(env):
@@ -666,7 +670,7 @@ def test_the_studio_actions_are_handled_inside_the_request(env):
     reply = studio_action(
         env, {"action": "studio_get_project", "project_id": project["id"]}
     )
-    assert reply["session"]["status"] == "idle"
+    assert reply["status"] == "idle"
 
 
 # --------------------------------------------------------------------------

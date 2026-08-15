@@ -1,7 +1,12 @@
 """Agent execution loop (AGENT-MODE §5.3).
 
+HTTP（発言 / 承認 / チェックイン応答）は**受付だけして 202 で返る**。下の流れは
+すべてバックグラウンドタスク（:func:`start_loop`）の中で進み、経過は制作記録と
+WS（``type: "agent"``）で届く。ターンの完了を HTTP で待つと、検分の音声解析などで
+数分かかったときに間の CDN（Cloudflare は 100 秒）に切られてしまうため。
+
 ```
-ユーザー発言 ─→ Grok ターン ─→ action?
+ユーザー発言（202 受付）─→ Grok ターン ─→ action?
                     │ plan      → 承認待ち
    承認 ──────────→ │ run_task  → JobRunner 投入 → 完了イベント追記 ─┐
                     │ inspect   → ffmpeg 展開 → 結果イベント追記 ──┤→ 次の Grok ターン
@@ -36,6 +41,7 @@ from pydantic import ValidationError
 
 from . import (
     agent_protocol,
+    audio_inspect,
     autotag,
     canvas,
     grok,
@@ -114,6 +120,8 @@ def current_activity(session_id: str) -> str | None:
 async def _set_thinking(session_id: str, value: bool) -> None:
     """thinking フラグを更新し、WS で通知する（取りこぼしはポーリングで拾える）。"""
     if value:
+        if session_id in _thinking:
+            return  # 既に立っている（受付時に立てたぶん）。同じ通知は流さない。
         _thinking.add(session_id)
     else:
         _thinking.discard(session_id)
@@ -547,13 +555,9 @@ async def _run_and_wait(
             f"{label} が完了しました (job {finished.id})。"
             f"{'動画: ' + finished.video_url + '。' if finished.video_url else ''}"
             f"{'画像: ' + finished.image_url + '。' if finished.image_url else ''}"
-            f"{'音声: ' + finished.audio_output_url + '。' if finished.audio_output_url else ''}"
-            # 音声ジョブには映像が無いので inspect（ffmpeg でのフレーム抽出）は使えない
-            + (
-                "音声ファイルは聴けないので、判断はプロンプトと設定から行ってください。"
-                if finished.mode == "audio"
-                else "必要なら inspect でフレームを確認してください。"
-            ),
+            f"{'音声: ' + finished.audio_output_url + '。' if finished.audio_output_url else ''}",
+            # 検分（inspect）はユーザーに頼まれたときだけ回す（AGENT-MODE §3.3）。
+            # 完了通知はここまでの事実だけを伝え、次の一手はエージェントに委ねる。
             job_id=finished.id,
             task_id=task.id if task else None,
             video_url=finished.video_url,
@@ -711,14 +715,43 @@ async def _inspect(session_id: str, action: AgentAction) -> None:
                 job_id=job_id,
             ),
         )
+
+    # 音声はエージェントに聴けないので、ffmpeg で測れることをレポートにして渡す。
+    # 波形 / スペクトログラムは「見て分かる音」なので画像成果物として登録する
+    # （フレームのカードに混ざらないよう kind は image）。
+    audio = await audio_inspect.analyze(video, dest_dir)
+    audio_names: list[str] = []
+    for image in audio.images:
+        name = str(image.relative_to(workdir))
+        audio_names.append(name)
+        await add_artifact(
+            session_id,
+            AgentArtifact(
+                kind="image",
+                title=f"{label} 音声検分 {image.stem}",
+                ts=now(),
+                name=name,
+                url=f"/api/agent/sessions/{session_id}/artifacts/{name}",
+                job_id=job_id,
+            ),
+        )
+    audio_report = audio.report
+    if audio_names:
+        audio_report += "\n- 画像は作業ディレクトリの " + ", ".join(audio_names) + " です。"
+
     await _event(
         session_id,
         "inspect_result",
         f"job {job_id} の動画を {action.interval:g} 秒間隔で分解しました。"
         "作業ディレクトリの次のフレーム画像を開いて品質を判断してください: "
-        + ", ".join(names),
+        + ", ".join(names)
+        + "\n"
+        + audio_report,
         job_id=job_id,
         frames=names,
+        audio_report=audio_report,
+        audio_images=audio_names,
+        has_audio=audio.has_audio,
     )
 
 
@@ -2296,6 +2329,61 @@ async def _halt(session_id: str, reason: str) -> None:
     await _set_status(session_id, "stopped", message=reason)
 
 
+#: ユーザー発言のターンで**その場で片付ける**アクション（生成を伴わない）。
+#: 生成の投入を伴うもの（run_task / continue / rerun）だけが実行ループに入る。
+#: スタジオ操作は目録の読み書きで、生成の投入も完了を待たない。
+IMMEDIATE_ACTIONS = (
+    "plan", "checkin", "done", "note", "rename",
+    "library", "library_search", "library_sheet", "agent_search_sessions",
+    "agent_read_session",
+    *agent_protocol.STUDIO_ACTIONS,
+)
+
+
+async def _user_turn(session_id: str) -> None:
+    """ユーザーが今しゃべった直後の 1 ターン（``POST .../messages`` の中身）。
+
+    ここで区切るのが肝: 生成を伴わないアクション（メモ・改名・検索…）は 1 つ
+    適用したら**次のターンを回さずに待機へ戻る**。ユーザーの発言に対する返事は
+    1 往復で、勝手に会話を続けない（実行ループに入るのは生成を伴うときだけ）。
+    """
+    try:
+        _, action = await run_turn(session_id)
+    except grok_session.GrokTurnCancelled:
+        _stop_requests.discard(session_id)
+        await _halt(session_id, "ユーザーの操作で停止しました。")
+        return
+    except grok.LLMError as exc:
+        await _halt(session_id, f"Grok の呼び出しに失敗しました: {exc}")
+        return
+    if _stopping(session_id):
+        await _halt(session_id, "ユーザーの操作で停止しました。")
+        return
+
+    if action is None:
+        session = await load(session_id)
+        # 承認済みのタスクが残っていれば、そのまま実行に入る（旧 _dispatch と同じ）
+        if session is not None and next_task(session) is not None:
+            await _loop(session_id)
+            return
+        await _rest(session_id)
+        return
+    if action.action in IMMEDIATE_ACTIONS:
+        await apply_action(session_id, action)
+        # 行き先はアクション側が決める（plan→planning / checkin→waiting_checkin /
+        # done→done）。決まらなかったものは待機へ戻す。
+        await _rest(session_id)
+        return
+    await _loop(session_id, action)
+
+
+async def _rest(session_id: str) -> None:
+    """まだ running のままなら待機に戻す（他の状態に落ち着いていれば触らない）。"""
+    session = await load(session_id)
+    if session is not None and session.status == "running":
+        await _set_status(session_id, "idle", message="待機中")
+
+
 async def _loop(session_id: str, action: AgentAction | None = None) -> None:
     while True:
         session = await load(session_id)
@@ -2372,33 +2460,55 @@ def is_running(session_id: str) -> bool:
     return task is not None and not task.done()
 
 
-async def start_loop(session_id: str, action: AgentAction | None = None) -> None:
+async def start_loop(
+    session_id: str,
+    action: AgentAction | None = None,
+    *,
+    user_turn: bool = False,
+) -> None:
     """Start (or restart) the execution loop of one session.
+
+    HTTP はここで返る（AGENT-MODE §5.1 の即受付）。Grok ターンもアクションの実行も
+    このタスクの中で進み、経過は WS（`type: "agent"`）と制作記録に出る。
 
     二重起動防止: is_running() の判定とタスク登録の間で await しない（approve や
     checkin の連打で 2 本走らないようにするため）。``status = running`` への遷移は
-    タスク側で行い、呼び出し元はそれが済むまで待ってから応答を返す。
+    タスク側で行い、呼び出し元はそれが済むまで待ってから応答を返す
+    （受付の応答に「実行中」が載るようにするため）。
     """
     if is_running(session_id):
         return
     _stop_requests.discard(session_id)
     started = asyncio.Event()
     _loops[session_id] = asyncio.create_task(
-        _guarded_loop(session_id, action, started), name=f"agent-loop-{session_id}"
+        _guarded_loop(session_id, action, started, user_turn=user_turn),
+        name=f"agent-loop-{session_id}",
     )
     await started.wait()
 
 
 async def _guarded_loop(
-    session_id: str, action: AgentAction | None, started: asyncio.Event | None = None
+    session_id: str,
+    action: AgentAction | None,
+    started: asyncio.Event | None = None,
+    *,
+    user_turn: bool = False,
 ) -> None:
     try:
         try:
             await _set_status(session_id, "running", message="running")
+            if user_turn:
+                # この直後に必ず Grok ターンを回すので、受付の応答（と WS）に
+                # 「Grok が考えています…」を載せてから返す。run_turn が立て直し、
+                # 終わりに必ず倒す。
+                await _set_thinking(session_id, True)
         finally:
             if started is not None:
                 started.set()
-        await _loop(session_id, action)
+        if user_turn:
+            await _user_turn(session_id)
+        else:
+            await _loop(session_id, action)
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # noqa: BLE001 - ループは絶対に落とさない
@@ -2406,6 +2516,9 @@ async def _guarded_loop(
         await _halt(session_id, f"エージェントの実行中にエラーが発生しました: {exc}")
     finally:
         _loops.pop(session_id, None)
+        # ターンの外で落ちても「考えています…」を残さない（唯一の情報源なので）。
+        if is_thinking(session_id):
+            await _set_thinking(session_id, False)
         await release_host(session_id)
 
 

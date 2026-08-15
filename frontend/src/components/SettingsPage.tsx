@@ -776,6 +776,10 @@ export default function SettingsPage({
           // 空白区切りの入力欄をフラグの配列に戻す（空 = ツール無効）
           agent_grok_args: splitGrokArgs(grokArgsDraft),
           agent_use_acp: settings.agent_use_acp,
+          agent_stt_enabled: settings.agent_stt_enabled,
+          agent_stt_base_url: settings.agent_stt_base_url,
+          agent_stt_model: settings.agent_stt_model,
+          agent_stt_api_key: settings.agent_stt_api_key,
           hf_token: settings.hf_token,
           civitai_api_key: settings.civitai_api_key,
           runpod_enabled: settings.runpod_enabled,
@@ -1434,6 +1438,62 @@ export default function SettingsPage({
                       checked={settings.agent_use_acp}
                       onCheckedChange={(checked) => update({ agent_use_acp: checked })}
                     />
+                    {/* 検分（inspect）の音声解析に文字起こしを足すか。推論は
+                        外部の OpenAI 互換サーバーに出すので、接続先が要る。 */}
+                    <ToggleRow
+                      id="agent-stt-enabled"
+                      label="音声文字起こし（STT）を有効にする"
+                      description="検分（inspect）でセリフをタイムスタンプつきに書き起こします。OpenAI 互換の文字起こしサーバー（speaches / whisper.cpp server / OpenAI API など）が必要です。URL が空のときはスキップし、検分レポートにその旨が出ます。"
+                      checked={settings.agent_stt_enabled}
+                      onCheckedChange={(checked) =>
+                        update({ agent_stt_enabled: checked })
+                      }
+                    />
+                    {settings.agent_stt_enabled && (
+                      <div className="grid gap-2 sm:grid-cols-2">
+                        <Field
+                          label="文字起こしサーバーの URL（OpenAI 互換）"
+                          htmlFor="agent-stt-base-url"
+                          hint="/v1/audio/transcriptions を持つサーバーのベース URL。Docker で動かしていてホスト側のサーバーを使う場合は http://host.docker.internal:8000/v1 のように指定してください。"
+                        >
+                          <Input
+                            id="agent-stt-base-url"
+                            value={settings.agent_stt_base_url}
+                            placeholder="http://localhost:8000/v1"
+                            onChange={(event) =>
+                              update({ agent_stt_base_url: event.target.value })
+                            }
+                          />
+                        </Field>
+                        <Field
+                          label="STT モデル（空 = サーバー任せ）"
+                          htmlFor="agent-stt-model"
+                        >
+                          <Input
+                            id="agent-stt-model"
+                            value={settings.agent_stt_model}
+                            placeholder="whisper-1"
+                            onChange={(event) =>
+                              update({ agent_stt_model: event.target.value })
+                            }
+                          />
+                        </Field>
+                        <Field
+                          label="STT の API キー（ローカルサーバーなら空）"
+                          htmlFor="agent-stt-api-key"
+                        >
+                          <Input
+                            id="agent-stt-api-key"
+                            type="password"
+                            value={settings.agent_stt_api_key}
+                            placeholder="（任意）"
+                            onChange={(event) =>
+                              update({ agent_stt_api_key: event.target.value })
+                            }
+                          />
+                        </Field>
+                      </div>
+                    )}
                     <div className="flex items-center gap-2">
                       <Button
                         variant="outline"

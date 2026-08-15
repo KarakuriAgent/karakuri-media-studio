@@ -430,6 +430,13 @@ export const api = {
     json<AgentSession>('PATCH', `/api/agent/sessions/${id}`, patch),
   deleteAgentSession: (id: string) =>
     json<void>('DELETE', `/api/agent/sessions/${id}`),
+  /**
+   * 発言を残してエージェントを動かす（**202 即受付**）。
+   *
+   * ターンはバックグラウンドで回るので、返るのは受付時点のセッション
+   * （`status: "running"`）だけ。Grok の返事と成果物は WS フレームと
+   * セッションの取り直し（ポーリング）で届く。
+   */
   sendAgentMessage: (id: string, content: string, attachments: string[] = []) =>
     json<AgentReply>('POST', `/api/agent/sessions/${id}/messages`, {
       content,
@@ -438,8 +445,10 @@ export const api = {
   /** 添付ファイルを workdir の attachments/ に置き、相対パスを受け取る。 */
   uploadAgentAttachment: (id: string, file: File) =>
     upload<AgentAttachment>(`/api/agent/sessions/${id}/attachments`, file),
+  /** プラン承認（202 即受付。実行の完了は待たない）。 */
   approveAgentPlan: (id: string, body: AgentApprove = {}) =>
     json<AgentReply>('POST', `/api/agent/sessions/${id}/approve`, body),
+  /** チェックイン応答（202 即受付。再開はバックグラウンド）。 */
   replyAgentCheckin: (id: string, body: AgentCheckinReply) =>
     json<AgentReply>('POST', `/api/agent/sessions/${id}/checkin`, body),
   setAgentSessionNsfw: (id: string, nsfw: boolean) =>

@@ -93,6 +93,18 @@ class Settings(BaseModel):
     # エージェントのターンを ACP (`grok agent stdio`) で回すか。ACP だと実行中の
     # 活動（思考 / ツール実行）を UI に出せる。False なら従来のワンショット実行。
     agent_use_acp: bool = True
+    # inspect の音声解析に文字起こし (STT) を足すか（AGENT-MODE §3.3）。推論は
+    # このプロセスに抱えず、**OpenAI 互換の外部エンドポイント**へ投げる
+    # （speaches / whisper.cpp server / OpenAI API など）。接続先が要るので既定は無効。
+    agent_stt_enabled: bool = False
+    #: 文字起こしサーバーのベース URL（例 `http://localhost:8000/v1`、
+    #: `https://api.openai.com/v1`）。空なら STT はスキップする。Docker から
+    #: ホストのサーバーを指すときは `host.docker.internal` を使う
+    agent_stt_base_url: str = ""
+    #: 使うモデル名（空 = サーバーの既定に任せる。OpenAI なら `whisper-1`）
+    agent_stt_model: str = ""
+    #: 文字起こしサーバーの API キー（ローカルサーバーなら空でよい）
+    agent_stt_api_key: str = ""
     # モデルの指定は**接続先ごと**に持つ（SPEC §3.3 / §5）: どのファイルが在るかは
     # ComfyUI の環境ごとに違うので、ローカルで使うファイル名を Pod や ComfyCloud に
     # 押し付けても意味がない。キーは接続先、値は従来と同じ形。
@@ -203,6 +215,10 @@ class SettingsUpdate(BaseModel):
     agent_max_turns: int | None = Field(default=None, ge=0)
     canvas_max_turns: int | None = Field(default=None, ge=0)
     agent_use_acp: bool | None = None
+    agent_stt_enabled: bool | None = None
+    agent_stt_base_url: str | None = None
+    agent_stt_model: str | None = None
+    agent_stt_api_key: str | None = None
     external_api_key: str | None = None
     external_max_pending_takes: int | None = None
 

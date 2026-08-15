@@ -104,6 +104,20 @@ export interface Settings {
    * 活動（思考 / ツール実行）が UI に出る。OFF は従来のワンショット実行。
    */
   agent_use_acp: boolean
+  /**
+   * inspect の音声解析に文字起こし（STT）を足すか。推論はバックエンドに抱えず
+   * OpenAI 互換の外部エンドポイントへ投げるので、接続先が要る（既定は OFF）。
+   */
+  agent_stt_enabled: boolean
+  /**
+   * 文字起こしサーバーのベース URL（例 `http://localhost:8000/v1`）。
+   * 空なら STT はスキップされる。
+   */
+  agent_stt_base_url: string
+  /** 使うモデル名（空 = サーバー任せ。OpenAI なら `whisper-1`）。 */
+  agent_stt_model: string
+  /** 文字起こしサーバーの API キー（ローカルサーバーなら空でよい）。 */
+  agent_stt_api_key: string
   /** grok CLI 1 回あたりの制限時間（秒）。0 = タイムアウトなし。 */
   agent_grok_timeout: number
   /** 自走セッションの「1 回のプラン提案で増やせる新規ジョブ数」。0 = 無制限。 */
@@ -932,6 +946,13 @@ export interface AgentAction {
   approved: boolean
 }
 
+/**
+ * 発言 / 承認 / チェックイン応答の**受付**レスポンス（202）。
+ *
+ * ターンはバックグラウンドで回るので `content` と `action` は常に空で、
+ * 見るのは受付時点の `session`（`status: "running"`）だけ。返事はそのあとの
+ * WS フレームとポーリングで届く。
+ */
 export interface AgentReply {
   content: string
   action: AgentAction | null

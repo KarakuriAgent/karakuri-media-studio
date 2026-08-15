@@ -212,8 +212,37 @@ Stable Audio 3 Medium（効果音・環境音・単一楽器）の 2 種です�
 
 ヘッダーの「エージェント」タブでは、Grok が**同僚のように制作を回します**。「ダンス動画を 3 本」の
 ような目標を伝えるとプランを提示し、**承認するまで生成しません**。承認後はジョブを順に実行し、
-結果を検分して再抽選・続き生成まで自分で進めます（⏹ でいつでも停止）。詳細は
+結果を見て再抽選・続き生成まで自分で進めます（⏹ でいつでも停止）。詳細は
 [`docs/AGENT-MODE.md`](docs/AGENT-MODE.md)。
+
+**検分（inspect）は頼んだときだけ**走ります。「確認して」「分析して」と言うと、その動画を
+ffmpeg でフレーム分解し、あわせて音声も解析します（無音区間の時刻・統合ラウドネス LUFS・
+ピーク / クリッピング判定・実尺、波形とスペクトログラムの PNG）。音声トラックが無ければ
+「音声トラックなし」と報告します。
+
+#### 音声文字起こし（STT、オプション）
+
+検分でセリフをタイムスタンプつきに書き起こしたい場合は、**OpenAI 互換の文字起こし
+エンドポイント**（`POST {base_url}/audio/transcriptions`）を用意して、設定 > 接続 / Grok の
+「音声文字起こし（STT）を有効にする」をオンにし、そのサーバーの URL を入れてください。
+ComfyUI や LLM CLI と同じで、重い推論はこのアプリの外に置きます（バックエンドに ML
+ランタイムを抱えません）。使えるサーバーの例:
+
+- [speaches](https://github.com/speaches-ai/speaches)（旧 faster-whisper-server。Docker で起動）
+- [whisper.cpp](https://github.com/ggml-org/whisper.cpp) の `whisper-server`（`--convert` つきで OpenAI 互換）
+- OpenAI API（`https://api.openai.com/v1` + API キー、モデル `whisper-1`）
+
+設定は 3 つです: **URL**（例 `http://localhost:8000/v1`）、**モデル名**（空ならサーバー任せ。
+OpenAI なら `whisper-1`）、**API キー**（ローカルサーバーなら空でかまいません）。
+**このアプリを Docker で動かしていてホスト側のサーバーを使う場合は、`localhost` ではなく
+`http://host.docker.internal:8000/v1` を指定してください**（コンテナ内の `localhost` は
+コンテナ自身を指すため）。
+
+有効にすると次の検分から `t=1.2-2.4s: 「…」` の形式でレポートに載ります
+（タイムスタンプを返さないサーバーなら全文のみ）。URL 未設定・接続不能・エラー応答の
+どれでも検分は止まらず、「STT の接続先 URL が未設定のためスキップしました」のように
+理由がレポートに残り、ほかの解析はそのまま行われます。台本との照合はエージェントが
+読んで判断します。
 
 ### LoRA
 
@@ -253,6 +282,7 @@ Stable Audio 3 Medium（効果音・環境音・単一楽器）の 2 種です�
 | `grok_media_timeout` / `grok_media_workdir` | Grok Imagine の 1 枚あたりの制限時間（秒）と専用の作業ディレクトリ（プロンプト作成のチャットとは分けます） | `300` / `runtime/grok-media-workdir` |
 | `agent_grok_args` | grok CLI に足すフラグ（ツール権限）。**空にするとエージェントのツールが無効**になります | `--permission-mode auto` |
 | `agent_use_acp` | エージェントのターンを ACP で回す（実行中の活動をチャットに出す） | オン |
+| `agent_stt_enabled` / `agent_stt_base_url` / `agent_stt_model` / `agent_stt_api_key` | 検分（inspect）の音声解析に文字起こしを足すか、と OpenAI 互換の文字起こしサーバーの URL・モデル名・API キー（Docker からホストのサーバーを指すなら `host.docker.internal`） | オフ / 空 / 空 / 空 |
 | `hf_token` / `civitai_api_key` | モデルダウンロード用のトークン | 空 |
 | `model_overrides` / `model_choices` | **接続先ごと**のモデルファイル名の上書きと、実行ごとに選べる候補リスト | `{}` |
 | `runpod_*` | RunPod Pod の自動起動（有効化 / APIキー / テンプレート ID / GPU 種別 / Network Volume ID） | 無効 |
