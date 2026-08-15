@@ -212,16 +212,6 @@ _NON_AUDIO_FIELDS = (
 )
 
 
-#: ACE-Step 1.5 だけが読むつまみ -> 読まないモデルに渡されたときの案内。
-#: そのパラメータを持たないモデルでは値を渡しても効かないので、拒否して
-#: 書き場所（スタイル文・歌詞そのもの）へ誘導する。
-_ACE_ONLY_FIELDS: dict[str, str] = {
-    "bpm": "テンポは `audio_prompt` のスタイル文に書いてください（例 `120 BPM`）",
-    "keyscale": "キーは `audio_prompt` のスタイル文に書いてください（例 `F# minor`）",
-    "language": "歌詞の言語は `lyrics` に書いた言語がそのまま歌われます",
-}
-
-
 def _audio_workflow_detail(raw: dict[str, Any]) -> str | None:
     """音声ジョブ固有の問題（不明なワークフロー / 範囲外の秒数 / 誤ったフィールド）。
 
@@ -251,9 +241,6 @@ def _audio_workflow_detail(raw: dict[str, Any]) -> str | None:
         workflow,
         duration=raw.get("duration"),
         audio_category=_text(raw.get("audio_category")),
-        keyscale=_text(raw.get("keyscale")),
-        language=_text(raw.get("language")),
-        bpm=raw.get("bpm") if isinstance(raw.get("bpm"), int) else None,
     )
     if problem:
         return problem
@@ -270,7 +257,7 @@ def _audio_workflow_detail(raw: dict[str, Any]) -> str | None:
     if raw.get("lyrics") and not spec.supports("lyrics"):
         return (
             f"audio_workflow `{spec.id}` は歌詞を歌えません（`lyrics` は"
-            " ACE-Step だけの入力です）。歌モノにするなら"
+            " MiniMax Music 3 だけの入力です）。歌モノにするなら"
             f" `audio_workflow: \"{DEFAULT_AUDIO_WORKFLOW}\"` を使ってください"
         )
     if raw.get("audio_category") and not spec.supports("audio_category"):
@@ -278,14 +265,6 @@ def _audio_workflow_detail(raw: dict[str, Any]) -> str | None:
             f"audio_workflow `{spec.id}` に `audio_category` はありません"
             f"（{', '.join(AUDIO_CATEGORIES)} のカテゴリは Stable Audio 専用です）"
         )
-    # ACE-Step にしかないつまみ。読まないモデルに渡されたら黙って捨てず、
-    # 書き場所を案内する。
-    for name in _ACE_ONLY_FIELDS:
-        if raw.get(name) and not spec.supports(name):
-            return (
-                f"audio_workflow `{spec.id}` に `{name}` はありません"
-                f"（{_ACE_ONLY_FIELDS[name]}）"
-            )
     return None
 
 

@@ -12,7 +12,7 @@ function workflow(overrides: Partial<WorkflowOption> = {}): WorkflowOption {
     id: 'w',
     label: 'W',
     kind: 'audio',
-    family: 'ace-step',
+    family: 'minimax-music',
     notes: '',
     requires: [],
     supports: [],
@@ -28,13 +28,13 @@ function workflow(overrides: Partial<WorkflowOption> = {}): WorkflowOption {
   }
 }
 
-const ACE = workflow({
-  id: 'ace_step1_5_xl_sft',
-  label: 'ACE-Step 1.5 XL',
-  supports: ['prompt', 'lyrics', 'duration', 'bpm', 'keyscale', 'language', 'seed'],
-  min_duration: 10,
-  max_duration: 600,
-  default_duration: 120,
+const MMM3 = workflow({
+  id: 'minimax_music_3',
+  label: 'MiniMax Music 3',
+  supports: ['prompt', 'lyrics', 'duration', 'steps', 'seed'],
+  min_duration: 1,
+  max_duration: 300,
+  default_duration: 60,
 })
 
 const SA3 = workflow({
@@ -88,7 +88,7 @@ const KREA2 = workflow({
 })
 
 const OPTIONS = {
-  audio_workflows: [ACE, SA3],
+  audio_workflows: [MMM3, SA3],
   video_workflows: [R2V, I2V],
   image_workflows: [KREA2, EDIT],
 } as unknown as Options
@@ -107,9 +107,6 @@ function result(overrides: Partial<PromptResult> = {}): PromptResult {
     audio_prompt: null,
     lyrics: null,
     negative_tags: null,
-    bpm: null,
-    keyscale: null,
-    language: null,
     notes: null,
     ...overrides,
   }
@@ -117,10 +114,7 @@ function result(overrides: Partial<PromptResult> = {}): PromptResult {
 
 const AUDIO_RESULT = result({
   audio_prompt: 'dreamy city-pop ballad, female vocal',
-  lyrics: '[Verse 1]\n最終列車が街を抜ける',
-  bpm: 92,
-  keyscale: 'F# minor',
-  language: 'ja',
+  lyrics: '[Verse]\n最終列車が街を抜ける',
   notes: 'しっとりめに',
 })
 
@@ -196,10 +190,10 @@ describe('ChatModal — 音声モード', () => {
     expect(screen.queryByText('プロンプトテンプレート')).toBeNull()
   })
 
-  it('ACE-Step では歌詞と提案値までフォームに反映する', async () => {
+  it('MiniMax Music 3 では歌詞までフォームに反映する', async () => {
     const { patch, onClose } = await open({
       mode: 'audio',
-      audioWorkflow: ACE.id,
+      audioWorkflow: MMM3.id,
     })
     await reply(AUDIO_RESULT)
     expect(screen.getByText('音声プロンプト')).toBeTruthy()
@@ -208,15 +202,12 @@ describe('ChatModal — 音声モード', () => {
     fireEvent.click(screen.getByText('フォームに反映'))
     expect(patch).toHaveBeenCalledWith({
       audioPrompt: 'dreamy city-pop ballad, female vocal',
-      lyrics: '[Verse 1]\n最終列車が街を抜ける',
-      bpm: 92,
-      keyscale: 'F# minor',
-      language: 'ja',
+      lyrics: '[Verse]\n最終列車が街を抜ける',
     })
     expect(onClose).toHaveBeenCalled()
   })
 
-  it('Stable Audio では読めない項目（歌詞・BPM・キー）を反映しない', async () => {
+  it('Stable Audio では読めない項目（歌詞）を反映しない', async () => {
     const { patch } = await open({ mode: 'audio', audioWorkflow: SA3.id })
     await reply(AUDIO_RESULT)
     expect(screen.queryByText('歌詞')).toBeNull()

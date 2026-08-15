@@ -3,7 +3,7 @@
 The app ships a folder of independent ComfyUI API-format graphs under
 ``workflow/``: four image workflows (Krea 2 turbo, Anima, Z-Image turbo and
 Qwen-Image Edit 2511), five MiniMax H3 video workflows and two audio workflows
-(ACE-Step 1.5 XL and Stable Audio 3 Medium).  Each one is described here by a
+(MiniMax Music 3 and Stable Audio 3 Medium).  Each one is described here by a
 :class:`WorkflowSpec` whose ``inject`` map names every node/field the app writes
 to.
 
@@ -275,7 +275,7 @@ FAMILY_LABELS: dict[str, str] = {
     "z-image": "Z-Image",
     "qwen-image": "Qwen-Image Edit",
     "minimax-h3": "MiniMax H3",
-    "ace-step": "ACE-Step 1.5",
+    "minimax-music": "MiniMax Music 3",
     "stable-audio": "Stable Audio 3",
     "grok-imagine": "Grok Imagine",
 }
@@ -1796,52 +1796,53 @@ MINIMAX_H3_R2V_CONTEXT_OPT = replace(
 # either (neither template carries a LoRA loader), so ``lora_chain`` stays None
 # and the LoRA pickers simply never offer them.
 
-ACE_STEP_1_5 = WorkflowSpec(
-    id="ace_step1_5_xl_sft",
-    label="ACE-Step 1.5 XL（音楽・歌もの）",
-    mode_label="XL SFT（音楽・歌もの）",
+MINIMAX_MUSIC_3 = WorkflowSpec(
+    id="minimax_music_3",
+    label="MiniMax Music 3（音楽・歌もの）",
+    mode_label="Music 3（音楽・歌もの）",
     kind="audio",
-    family="ace-step",
-    relpath="audio/ace_step1_5_xl_sft.json",
-    output_node="107",
+    family="minimax-music",
+    relpath="audio/minimax_music_3.json",
+    output_node="35",
     description=(
         "Song generation: writes a full music track, with **vocals** when"
         " `lyrics` are given and an instrumental when they are not."
-        " `audio_prompt` is the *caption* of the track (style, instruments,"
-        " production, voice); `bpm` / `keyscale` / `language` steer the"
-        " arrangement. Use it whenever the user wants music or a song."
+        " `audio_prompt` is the *caption* of the track — tempo, key, style,"
+        " instruments, production and the voice all go in there as prose."
+        " Use it whenever the user wants music or a song."
     ),
     prompt_hint=(
-        "A caption of the track, not a scene: style / genre, mood and"
-        " atmosphere, the instruments and how each one sounds, production"
-        " style, tempo feel and — when there are lyrics — the voice. Comma"
-        " separated keywords and plain prose both work; be specific rather"
-        " than vague and keep it consistent with `lyrics`. The words to sing"
-        " go in `lyrics`, never in `audio_prompt`."
+        "A **Structured Caption** of the track, not a scene: three headed"
+        " sections — `Global Metadata:` (genre, tempo, key, emotional arc,"
+        " listening setting, production), `Vocal Details:` (lead, timbre,"
+        " register, delivery, harmonies) and `Arrangement:` (a section by"
+        " section timeline of what enters and leaves). 250-450 words of prose."
+        " The words to sing go in `lyrics`, never in `audio_prompt`, and the"
+        " caption never paraphrases them."
     ),
-    # 公式スペックは 10 秒〜600 秒（github.com/ace-step/ACE-Step-1.5 README）。
-    # ComfyUI ノード側の受付幅（duration 0-2000 / seconds 1-1000）はもっと広いが、
-    # モデルが品質を保証するのは 600 秒まで。
-    min_duration=10.0,
-    max_duration=600.0,
-    default_duration=120.0,
+    # 尺の根拠: モデルが書ける曲は約 5 分（300 秒）まで
+    # （github.com/MiniMax-AI/MiniMax-Music3 README /
+    # docs.comfy.org/tutorials/audio/minimax/minimax-music-3）。ComfyUI ノード側の
+    # 受付幅はもっと広い（MiniMaxMusic3TextEncode.max_duration は FLOAT で
+    # 0.04〜MAX_AUDIO_FRAMES/AUDIO_FRAMES_PER_SECOND = 9000/25 = 360 秒、
+    # comfy_extras/nodes_minimax_music.py）ので、狭いほうのモデル仕様を採る。
+    # 既定はテンプレートの widget 値そのまま（60 秒）。なお `max_duration` は
+    # 「上限」であって、モデルはそれより早く曲を終えることがある。
+    min_duration=1.0,
+    max_duration=300.0,
+    default_duration=60.0,
     inject={
-        # tags = the prompt describing the track
-        "prompt": T("94", "tags", "TextEncodeAceStepAudio1.5"),
-        "lyrics": T("94", "lyrics", "TextEncodeAceStepAudio1.5"),
-        # the length lives in two places and must stay in sync: the conditioning
-        # (94.duration) and the empty latent the sampler fills (98.seconds)
-        "duration": T("94", "duration", "TextEncodeAceStepAudio1.5"),
-        "latent_seconds": T("98", "seconds", "EmptyAceStep1.5LatentAudio"),
-        "bpm": T("94", "bpm", "TextEncodeAceStepAudio1.5"),
-        "keyscale": T("94", "keyscale", "TextEncodeAceStepAudio1.5"),
-        "language": T("94", "language", "TextEncodeAceStepAudio1.5"),
-        # one PrimitiveInt feeds both KSampler.seed and 94.seed
-        "seed": T("109", "value", "PrimitiveInt"),
-        "steps": T("3", "steps", "KSampler"),
-        "save_prefix": T("107", "filename_prefix", "SaveAudioMP3"),
+        "prompt": T("37:13", "caption", "MiniMaxMusic3TextEncode"),
+        "lyrics": T("37:13", "lyrics", "MiniMaxMusic3TextEncode"),
+        # 空ラテント（37:15.seconds）は 37:13 の 2 番目の出力を読むので、
+        # 秒数の注入先はここ 1 か所だけでよい
+        "duration": T("37:13", "max_duration", "MiniMaxMusic3TextEncode"),
+        # one SeedNode feeds both KSampler.seed and 37:13.seed
+        "seed": T("37:38", "seed", "SeedNode"),
+        "steps": T("37:9", "steps", "KSampler"),
+        "save_prefix": T("35", "filename_prefix", "SaveAudioAdvanced"),
     },
-    notes="acestep_v1.5_xl_sft / 出力 MP3・歌詞ありでボーカル、なしでインスト",
+    notes="minimax_music3_dit / 出力 MP3・歌詞ありでボーカル、なしでインスト",
 )
 
 STABLE_AUDIO_3 = WorkflowSpec(
@@ -1858,7 +1859,7 @@ STABLE_AUDIO_3 = WorkflowSpec(
         " description, `audio_category` picks the built-in prompt template"
         " (Music / Instrument / SFX / One-shot) and `reprompt` lets a local LLM"
         " expand the description before it is encoded. It does **not** sing:"
-        " use ACE-Step for songs with lyrics."
+        " use MiniMax Music 3 for songs with lyrics."
     ),
     prompt_hint=(
         "One short natural-language description of the sound itself — what is"
@@ -1890,34 +1891,6 @@ STABLE_AUDIO_3 = WorkflowSpec(
 #: the categories the Stable Audio template's CustomCombo offers
 AUDIO_CATEGORIES: tuple[str, ...] = ("Music", "Instrument", "SFX", "One-shot")
 
-# --- ACE-Step 1.5 enums (comfy_extras/nodes_ace.py, TextEncodeAceStepAudio1.5)
-# The node declares these as COMBO widgets, so a value outside the list fails
-# the whole prompt on ComfyUI's side.  Mirrored here so the form, the agent
-# catalog and the job validator all offer / accept exactly the same set.
-
-#: 17 roots x {major, minor}
-KEYSCALES: tuple[str, ...] = tuple(
-    f"{root} {quality}"
-    for root in (
-        "C", "C#", "Db", "D", "D#", "Eb", "E", "F", "F#", "Gb", "G", "G#",
-        "Ab", "A", "A#", "Bb", "B",
-    )
-    for quality in ("major", "minor")
-)
-
-#: 50 languages plus ``unknown`` (auto / instrumental)
-LANGUAGES: tuple[str, ...] = (
-    "ar", "az", "bg", "bn", "ca", "cs", "da", "de", "el", "en", "es", "fa",
-    "fi", "fr", "he", "hi", "hr", "ht", "hu", "id", "is", "it", "ja", "ko",
-    "la", "lt", "ms", "ne", "nl", "no", "pa", "pl", "pt", "ro", "ru", "sa",
-    "sk", "sr", "sv", "sw", "ta", "te", "th", "tl", "tr", "uk", "ur", "vi",
-    "yue", "zh", "unknown",
-)
-
-#: the node's own INT bounds for ``bpm``
-BPM_RANGE: tuple[int, int] = (10, 300)
-
-
 
 SPECS: tuple[WorkflowSpec, ...] = (
     KREA2_TURBO,
@@ -1947,7 +1920,7 @@ SPECS: tuple[WorkflowSpec, ...] = (
     MINIMAX_H3_R2V_OPT,
     MINIMAX_H3_R2V_SAVE_OPT,
     MINIMAX_H3_R2V_CONTEXT_OPT,
-    ACE_STEP_1_5,
+    MINIMAX_MUSIC_3,
     STABLE_AUDIO_3,
 )
 
@@ -1960,7 +1933,7 @@ DEFAULT_VIDEO_WORKFLOW = MINIMAX_H3_I2V.id
 #: 開始フレームを**取らない**ぶんの既定（廃止されたワークフローの id を持つ古い
 #: ジョブを、開始フレーム無しで再実行するときの寄せ先）
 DEFAULT_T2V_WORKFLOW = MINIMAX_H3_T2V.id
-DEFAULT_AUDIO_WORKFLOW = ACE_STEP_1_5.id
+DEFAULT_AUDIO_WORKFLOW = MINIMAX_MUSIC_3.id
 
 #: JobCreate field that carries each logical input
 INPUT_FIELDS: dict[str, str] = {
@@ -2123,7 +2096,7 @@ class CatalogEntry:
     audio: str
     prompt_hint: str
     notes: str
-    #: logical knobs the manifest exposes (``prompt``, ``lyrics``, ``bpm``, …).
+    #: logical knobs the manifest exposes (``prompt``, ``lyrics``, ``duration``, …).
     #: The audio catalog lists them so the agent knows which extra fields the
     #: workflow reads and which it ignores.
     supports: tuple[str, ...] = ()

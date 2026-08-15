@@ -247,9 +247,6 @@ def test_json_without_a_fence_is_accepted(env):
         # 音声セッション用のフィールドは画像・動画のセッションでは常に null
         "audio_prompt": None,
         "lyrics": None,
-        "bpm": None,
-        "keyscale": None,
-        "language": None,
         "negative_tags": None,
     }
 
@@ -511,9 +508,6 @@ def test_extract_result_normalizes_missing_keys():
         "notes": None,
         "audio_prompt": None,
         "lyrics": None,
-        "bpm": None,
-        "keyscale": None,
-        "language": None,
         "negative_tags": None,
     }
 
@@ -683,10 +677,7 @@ AUDIO_JSON_ANSWER = """\
 ```json
 {
   "audio_prompt": "dreamy city-pop ballad, female vocal, warm rhodes, brushed drums",
-  "lyrics": "[Verse 1]\\n最終列車が街を抜ける\\n\\n[Chorus - soaring]\\nもう一度だけ",
-  "bpm": 92,
-  "keyscale": "F# minor",
-  "language": "ja",
+  "lyrics": "[Verse]\\n最終列車が街を抜ける\\n\\n[Chorus]\\nもう一度だけ",
   "notes": "しっとりめにしました"
 }
 ```
@@ -694,9 +685,9 @@ AUDIO_JSON_ANSWER = """\
 
 
 def test_audio_session_embeds_the_selected_models_guide(env):
-    ace = start(env, mode="audio", audio_workflow="ace_step1_5_xl_sft")
-    system = ace["messages"][0]["content"]
-    assert "AUDIO PROMPT SPEC — ACE-Step 1.5 XL" in system
+    mmm3 = start(env, mode="audio", audio_workflow="minimax_music_3")
+    system = mmm3["messages"][0]["content"]
+    assert "AUDIO PROMPT SPEC — MiniMax Music 3" in system
     assert "Stable Audio 3 Medium" not in system
     # 音声の会話にシーン・カメラ・LoRA の話は出さない
     assert "IMAGE PROMPT SPEC" not in system
@@ -705,18 +696,18 @@ def test_audio_session_embeds_the_selected_models_guide(env):
     sa3 = start(env, mode="audio", audio_workflow="stable_audio_3_medium_base")
     system = sa3["messages"][0]["content"]
     assert "AUDIO PROMPT SPEC — Stable Audio 3 Medium" in system
-    assert "ACE-Step 1.5 XL" not in system
+    assert "AUDIO PROMPT SPEC — MiniMax Music 3" not in system
     # 歌えないモデルなので歌詞の相談をさせない
     assert "このモデルは歌いません" in system
 
 
 def test_audio_session_context_carries_the_length_and_the_fields(env):
     system = start(
-        env, mode="audio", audio_workflow="ace_step1_5_xl_sft", duration=90
+        env, mode="audio", audio_workflow="minimax_music_3", duration=90
     )["messages"][0]["content"]
     assert "**90 秒**" in system
-    assert "10〜600 秒" in system
-    assert "`lyrics`" in system and "`bpm`" in system and "`keyscale`" in system
+    assert "1〜300 秒" in system
+    assert "`lyrics`" in system
 
     sa3 = start(
         env, mode="audio", audio_workflow="stable_audio_3_medium_base", duration=30
@@ -748,7 +739,7 @@ def test_audio_session_ignores_a_lyrics_draft_the_model_cannot_use(env):
 
 def test_audio_session_falls_back_to_the_default_workflow(env):
     system = start(env, mode="audio", audio_workflow="nope")["messages"][0]["content"]
-    assert "AUDIO PROMPT SPEC — ACE-Step 1.5 XL" in system
+    assert "AUDIO PROMPT SPEC — MiniMax Music 3" in system
 
 
 def test_audio_result_carries_the_prompt_lyrics_and_suggestions(env):
@@ -757,10 +748,7 @@ def test_audio_result_carries_the_prompt_lyrics_and_suggestions(env):
     reply = say(env, session["id"]).json()
     result = reply["result"]
     assert result["audio_prompt"].startswith("dreamy city-pop")
-    assert result["lyrics"].startswith("[Verse 1]")
-    assert result["bpm"] == 92
-    assert result["keyscale"] == "F# minor"
-    assert result["language"] == "ja"
+    assert result["lyrics"].startswith("[Verse]")
     assert result["notes"] == "しっとりめにしました"
     # 画像・動画のフィールドは音声セッションでは常に null
     assert result["image_prompt"] is None
@@ -775,7 +763,7 @@ def test_audio_question_turn_returns_no_result(env):
 
 def test_build_audio_system_prompt_is_used_by_build_system_prompt():
     audio = build_system_prompt(
-        ChatSessionCreate(mode="audio", audio_workflow="ace_step1_5_xl_sft")
+        ChatSessionCreate(mode="audio", audio_workflow="minimax_music_3")
     )
     assert "# AUDIO PROMPT SPEC" in audio
     # 画像・動画のセッションは今までどおり
@@ -924,19 +912,6 @@ def test_the_comfy_target_preference_is_injected(env, monkeypatch):
     assert "この環境の接続先: `comfy_cloud`" in system
 
 
-def test_the_audio_form_values_are_listed(env):
-    system = start(
-        env,
-        mode="audio",
-        bpm=92,
-        keyscale="F# minor",
-        language="ja",
-    )["messages"][0]["content"]
-    assert "`bpm` = 92" in system
-    assert "`keyscale` = F# minor" in system
-    assert "`language` = ja" in system
-
-
 def test_the_selected_audio_category_is_spelled_out(env):
     system = start(
         env,
@@ -951,10 +926,10 @@ def test_audio_values_the_model_does_not_read_are_left_out(env):
     system = start(
         env,
         mode="audio",
-        audio_workflow="stable_audio_3_medium_base",
-        keyscale="F# minor",
+        audio_workflow="minimax_music_3",
+        audio_category="SFX",
     )["messages"][0]["content"]
-    assert "`keyscale` =" not in system
+    assert "`audio_category`" not in system
 
 
 def test_reference_tags_number_audio_after_the_videos():

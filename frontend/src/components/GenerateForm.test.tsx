@@ -62,10 +62,8 @@ const OPTIONS: Options = {
   audio_workflows: [],
   default_video_workflow: 'minimax_h3_i2v',
   default_image_workflow: 'krea2_turbo',
-  default_audio_workflow: 'ace_step1_5_xl_sft',
+  default_audio_workflow: 'minimax_music_3',
   audio_categories: [],
-  keyscales: [],
-  languages: [],
   aspect_ratios: [],
   lora_files: [],
   library: [],
@@ -628,21 +626,21 @@ describe('GenerateForm のワークフロー選択（モデル → モード）'
 
 const AUDIO_WORKFLOWS: Options['audio_workflows'] = [
   {
-    id: 'ace_step1_5_xl_sft',
-    label: 'ACE-Step 1.5 XL',
+    id: 'minimax_music_3',
+    label: 'MiniMax Music 3',
     kind: 'audio',
-    family: 'ace-step',
-    notes: 'acestep_v1.5_xl_sft',
+    family: 'minimax-music',
+    notes: 'minimax_music3_dit',
     requires: [],
-    supports: ['prompt', 'lyrics', 'duration', 'bpm', 'keyscale', 'language', 'seed'],
+    supports: ['prompt', 'lyrics', 'duration', 'steps', 'seed'],
     accepts_start_image: false,
     image_label: '開始フレーム',
     selects: [],
     prompt_required: true,
     accepts_video_loras: true,
-    min_duration: 10,
-    max_duration: 600,
-    default_duration: 120,
+    min_duration: 1,
+    max_duration: 300,
+    default_duration: 60,
   },
   {
     id: 'stable_audio_3_medium_base',
@@ -682,8 +680,6 @@ function showAudio(form: Partial<FormState> = {}, options: Options | null = null
           ...OPTIONS,
           audio_workflows: AUDIO_WORKFLOWS,
           audio_categories: ['Music', 'Instrument', 'SFX', 'One-shot'],
-          keyscales: ['C major', 'F# minor'],
-          languages: ['ja', 'en', 'unknown'],
         }
       }
       optionsError={null}
@@ -722,12 +718,9 @@ describe('GenerateForm の音声モード', () => {
     expect(screen.queryByText('動画プロンプト')).toBeNull()
   })
 
-  it('ACE-Step では歌詞・BPM・キー・言語が出て、カテゴリは出ない', () => {
-    showAudio({ audioWorkflow: 'ace_step1_5_xl_sft' })
+  it('MiniMax Music 3 では歌詞が出て、カテゴリは出ない', () => {
+    showAudio({ audioWorkflow: 'minimax_music_3' })
     expect(screen.getByLabelText('歌詞')).toBeTruthy()
-    expect(screen.getByLabelText('BPM')).toBeTruthy()
-    expect(screen.getByLabelText('キー / スケール')).toBeTruthy()
-    expect(screen.getByLabelText('歌詞の言語')).toBeTruthy()
     expect(screen.queryByLabelText('カテゴリ')).toBeNull()
     expect(screen.queryByText(/内蔵 LLM でプロンプトを展開/)).toBeNull()
   })
@@ -737,8 +730,6 @@ describe('GenerateForm の音声モード', () => {
     expect(screen.getByLabelText('カテゴリ')).toBeTruthy()
     expect(screen.getByText(/内蔵 LLM でプロンプトを展開/)).toBeTruthy()
     expect(screen.queryByLabelText('歌詞')).toBeNull()
-    expect(screen.queryByLabelText('BPM')).toBeNull()
-    expect(screen.queryByLabelText('キー / スケール')).toBeNull()
   })
 
   it('秒数の入力にモデルの上下限が入る', () => {
@@ -749,7 +740,7 @@ describe('GenerateForm の音声モード', () => {
   })
 
   it('モデルを選び直すと、そのモデルの先頭モードへ patch される', () => {
-    const { patch } = showAudio({ audioWorkflow: 'ace_step1_5_xl_sft' })
+    const { patch } = showAudio({ audioWorkflow: 'minimax_music_3' })
     fireEvent.change(screen.getByLabelText('音声モデル'), {
       target: { value: 'stable-audio' },
     })
@@ -757,10 +748,10 @@ describe('GenerateForm の音声モード', () => {
   })
 
   it('モデルが 1 モードだけのときはモードのセレクトを無効にする', () => {
-    showAudio({ audioWorkflow: 'ace_step1_5_xl_sft' })
+    showAudio({ audioWorkflow: 'minimax_music_3' })
     const mode = screen.getByLabelText('音声モード') as HTMLSelectElement
     expect(mode.disabled).toBe(true)
-    expect(mode.value).toBe('ace_step1_5_xl_sft')
+    expect(mode.value).toBe('minimax_music_3')
   })
 
   it('範囲外の秒数のままワークフローを切り替えると既定へ寄せる', () => {
@@ -1785,7 +1776,16 @@ describe('ステップ数（SPEC §3.1）', () => {
     showAudio({ audioWorkflow: 'stable_audio_3_medium_base', steps: 24 })
     expect((screen.getByLabelText('ステップ数') as HTMLInputElement).value).toBe('24')
     cleanup()
-    showAudio({ audioWorkflow: 'ace_step1_5_xl_sft' })
+    // 宣言していないワークフローでは欄ごと出ない
+    showAudio(
+      { audioWorkflow: 'no_steps_audio' },
+      {
+        ...OPTIONS,
+        audio_workflows: [
+          { ...AUDIO_WORKFLOWS[0], id: 'no_steps_audio', supports: ['prompt'] },
+        ],
+      },
+    )
     expect(screen.queryByLabelText('ステップ数')).toBeNull()
   })
 })

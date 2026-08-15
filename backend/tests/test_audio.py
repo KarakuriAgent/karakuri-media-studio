@@ -23,8 +23,6 @@ from app.workflow import build_audio_workflow, build_workflows, model_fields
 from app.workflows import (
     AUDIO_CATEGORIES,
     DEFAULT_AUDIO_WORKFLOW,
-    KEYSCALES,
-    LANGUAGES,
     audio_catalog,
     audio_specs,
     get_audio_spec,
@@ -33,7 +31,7 @@ from app.workflows import (
     validate_spec,
 )
 
-ACE = "ace_step1_5_xl_sft"
+MMM3 = "minimax_music_3"
 SA3 = "stable_audio_3_medium_base"
 
 
@@ -43,7 +41,7 @@ SA3 = "stable_audio_3_medium_base"
 
 def test_both_audio_manifests_match_their_templates():
     specs = audio_specs()
-    assert [spec.id for spec in specs] == [ACE, SA3]
+    assert [spec.id for spec in specs] == [MMM3, SA3]
     for spec in specs:
         assert spec.kind == "audio"
         # 音声に LoRA は無い（どちらのテンプレートにもローダーが無い）
@@ -53,22 +51,21 @@ def test_both_audio_manifests_match_their_templates():
         assert validate_spec(spec, load_template(spec, use_cache=False)) == []
 
 
-def test_default_audio_workflow_is_ace_step():
-    assert DEFAULT_AUDIO_WORKFLOW == ACE
-    assert get_audio_spec(None).id == ACE
+def test_default_audio_workflow_is_minimax_music_3():
+    assert DEFAULT_AUDIO_WORKFLOW == MMM3
+    assert get_audio_spec(None).id == MMM3
 
 
 def test_get_spec_rejects_a_cross_kind_lookup():
     with pytest.raises(Exception):
-        get_spec(ACE, "video")
+        get_spec(MMM3, "video")
 
 
 def test_audio_model_fields_are_configurable():
     keys = {field.key for field in model_fields() if field.kind == "audio"}
-    # ACE-Step は DualCLIPLoader で 2 本のテキストエンコーダを読む
-    assert f"{ACE}/105.clip_name1" in keys
-    assert f"{ACE}/105.clip_name2" in keys
-    assert f"{ACE}/104.unet_name" in keys
+    assert f"{MMM3}/37:6.unet_name" in keys
+    assert f"{MMM3}/37:3.clip_name" in keys
+    assert f"{MMM3}/37:7.vae_name" in keys
     assert f"{SA3}/52:25.ckpt_name" in keys
 
 
@@ -82,48 +79,43 @@ def _params(**overrides) -> GenerationParams:
     return GenerationParams(**base)
 
 
-def test_ace_injects_the_duration_into_both_nodes():
-    """94.duration（条件付け）と 98.seconds（空ラテント）は同期が必須。"""
-    wf = build_audio_workflow(_params(audio_workflow=ACE, duration=45.4))
-    # TextEncodeAceStepAudio1.5.duration は INT ウィジェット
-    assert wf["94"]["inputs"]["duration"] == 45
-    assert isinstance(wf["94"]["inputs"]["duration"], int)
-    # EmptyAceStep1.5LatentAudio.seconds は FLOAT
-    assert wf["98"]["inputs"]["seconds"] == pytest.approx(45.4)
-    assert isinstance(wf["98"]["inputs"]["seconds"], float)
+def test_minimax_music_injects_the_duration_once_and_the_latent_follows():
+    """37:13.max_duration だけ入れれば、空ラテントはその出力を読む。"""
+    wf = build_audio_workflow(_params(audio_workflow=MMM3, duration=45.4))
+    # MiniMaxMusic3TextEncode.max_duration は FLOAT ウィジェット
+    assert wf["37:13"]["inputs"]["max_duration"] == pytest.approx(45.4)
+    assert isinstance(wf["37:13"]["inputs"]["max_duration"], float)
+    # EmptyMiniMaxMusic3LatentAudio.seconds は 37:13 の 2 番目の出力へのリンク
+    assert wf["37:15"]["inputs"]["seconds"] == ["37:13", 1]
 
 
-def test_ace_injects_every_exposed_field():
+def test_minimax_music_injects_every_exposed_field():
     wf = build_audio_workflow(
         _params(
-            audio_workflow=ACE,
-            audio_prompt="dreamy city-pop, female vocal, rhodes",
-            lyrics="[Verse 1]\nthe last train hums",
-            bpm=92,
-            keyscale="F# minor",
-            language="ja",
+            audio_workflow=MMM3,
+            audio_prompt="Global Metadata: dreamy city-pop, around 80 BPM",
+            lyrics="[Verse]\nthe last train hums",
             audio_seed=4242,
         )
     )
-    encode = wf["94"]["inputs"]
-    assert encode["tags"] == "dreamy city-pop, female vocal, rhodes"
-    assert encode["lyrics"] == "[Verse 1]\nthe last train hums"
-    assert encode["bpm"] == 92
-    assert encode["keyscale"] == "F# minor"
-    assert encode["language"] == "ja"
-    # 一つの PrimitiveInt が KSampler.seed と 94.seed の両方に配線されている
-    assert wf["109"]["inputs"]["value"] == 4242
-    assert wf["3"]["inputs"]["seed"] == ["109", 0]
-    assert wf["94"]["inputs"]["seed"] == ["109", 0]
-    assert wf["107"]["inputs"]["filename_prefix"] == "audio/job1"
-    # テンプレート既定はそのまま（拍子は露出していない）
-    assert encode["timesignature"] == "4"
+    encode = wf["37:13"]["inputs"]
+    assert encode["caption"] == "Global Metadata: dreamy city-pop, around 80 BPM"
+    assert encode["lyrics"] == "[Verse]\nthe last train hums"
+    # 一つの SeedNode が KSampler.seed と 37:13.seed の両方に配線されている
+    assert wf["37:38"]["inputs"]["seed"] == 4242
+    assert isinstance(wf["37:38"]["inputs"]["seed"], int)
+    assert wf["37:9"]["inputs"]["seed"] == ["37:38", 0]
+    assert wf["37:13"]["inputs"]["seed"] == ["37:38", 0]
+    assert wf["35"]["inputs"]["filename_prefix"] == "audio/job1"
+    # テンプレート既定はそのまま（cfg_scale / top_k は露出していない）
+    assert encode["cfg_scale"] == pytest.approx(1.7)
+    assert encode["top_k"] == 50
 
 
-def test_ace_ignores_stable_audio_only_fields():
+def test_minimax_music_ignores_stable_audio_only_fields():
     """モデル固有フィールドは inject キーの有無で自然にスキップされる。"""
     wf = build_audio_workflow(
-        _params(audio_workflow=ACE, audio_category="SFX", reprompt=True)
+        _params(audio_workflow=MMM3, audio_category="SFX", reprompt=True)
     )
     assert "choice" not in wf.get("52:43", {}).get("inputs", {})
     assert "52:43" not in wf
@@ -155,23 +147,23 @@ def test_stable_audio_injects_category_and_reprompt():
     assert wf["19"]["inputs"]["filename_prefix"] == "audio/job1"
 
 
-def test_stable_audio_ignores_ace_only_fields():
-    wf = build_audio_workflow(_params(audio_workflow=SA3, lyrics="[Verse] la la", bpm=90))
-    assert "94" not in wf
+def test_stable_audio_ignores_the_lyrics_it_cannot_sing():
+    wf = build_audio_workflow(_params(audio_workflow=SA3, lyrics="[Verse] la la"))
+    assert "37:13" not in wf
     assert all("lyrics" not in (node.get("inputs") or {}) for node in wf.values())
 
 
 def test_build_workflows_returns_only_the_audio_stage():
-    stages = build_workflows(_params(audio_workflow=ACE))
+    stages = build_workflows(_params(audio_workflow=MMM3))
     assert list(stages) == ["audio"]
 
 
 def test_model_overrides_apply_to_audio_templates():
     wf = build_audio_workflow(
-        _params(audio_workflow=ACE),
-        {f"{ACE}/104.unet_name": "other.safetensors"},
+        _params(audio_workflow=MMM3),
+        {f"{MMM3}/37:6.unet_name": "other.safetensors"},
     )
-    assert wf["104"]["inputs"]["unet_name"] == "other.safetensors"
+    assert wf["37:6"]["inputs"]["unet_name"] == "other.safetensors"
 
 
 # --------------------------------------------------------------------------
@@ -211,15 +203,12 @@ def test_audio_mode_ignores_the_image_and_video_requirements():
     "kwargs, needle",
     [
         ({"audio_workflow": "nope"}, "unknown workflow"),
-        ({"duration": 900}, "10-600 seconds"),
-        ({"duration": 3}, "10-600 seconds"),
-        ({"keyscale": "Am"}, "unknown keyscale"),
-        ({"language": "jp"}, "unknown language"),
-        ({"bpm": 500}, "bpm must be between"),
+        ({"duration": 900}, "1-300 seconds"),
+        ({"duration": 0.5}, "1-300 seconds"),
     ],
 )
 def test_audio_workflow_problem_reports_out_of_range_values(kwargs, needle):
-    problem = audio_workflow_problem("audio", kwargs.pop("audio_workflow", ACE), **kwargs)
+    problem = audio_workflow_problem("audio", kwargs.pop("audio_workflow", MMM3), **kwargs)
     assert problem and needle in problem
 
 
@@ -232,8 +221,8 @@ def test_stable_audio_rejects_an_unknown_category():
     assert problem and "unknown audio_category" in problem
 
 
-def test_ace_does_not_police_the_category_it_does_not_have():
-    assert audio_workflow_problem("audio", ACE, audio_category="Podcast") is None
+def test_minimax_music_does_not_police_the_category_it_does_not_have():
+    assert audio_workflow_problem("audio", MMM3, audio_category="Podcast") is None
 
 
 def test_job_create_accepts_an_audio_job():
@@ -252,8 +241,8 @@ def test_job_create_rejects_loras_on_an_audio_job():
 
 
 def test_job_create_rejects_an_out_of_range_duration():
-    with pytest.raises(ValueError, match="10-600 seconds"):
-        JobCreate(mode="audio", audio_prompt="a lofi loop", duration=5)
+    with pytest.raises(ValueError, match="1-300 seconds"):
+        JobCreate(mode="audio", audio_prompt="a lofi loop", duration=900)
 
 
 def test_existing_modes_are_unaffected_by_the_audio_fields():
@@ -261,11 +250,11 @@ def test_existing_modes_are_unaffected_by_the_audio_fields():
     payload = JobCreate(mode="image_only", image_prompt="a still")
     assert payload.audio_prompt == ""
     assert payload.mode == "image_only"
-    # 音声の秒数レンジ（10-600s）は動画の短いクリップを巻き込まない
+    # 音声の秒数レンジ（1-300s）は動画の短いクリップを巻き込まない
     clip = JobCreate(
-        mode="i2v", video_workflow="minimax_h3_t2v", video_prompt="a clip", duration=2
+        mode="i2v", video_workflow="minimax_h3_t2v", video_prompt="a clip", duration=0.5
     )
-    assert clip.duration == 2
+    assert clip.duration == 0.5
 
 
 # --------------------------------------------------------------------------
@@ -293,9 +282,12 @@ def test_agent_accepts_a_well_formed_audio_task():
         ({"mode": "audio", "audio_prompt": "x", "audio_workflow": "nope"},
          "使えるのは"),
         ({"mode": "audio", "duration": 60}, "audio_prompt"),
-        ({"mode": "audio", "audio_prompt": "x", "duration": 1200}, "10-600 seconds"),
-        ({"mode": "audio", "audio_prompt": "x", "keyscale": "Am"}, "unknown keyscale"),
-        ({"mode": "audio", "audio_prompt": "x", "language": "jp"}, "unknown language"),
+        ({"mode": "audio", "audio_prompt": "x", "duration": 1200}, "1-300 seconds"),
+        # テンポ・キー・言語はどの音声モデルにも無いので、スキーマ外として弾く
+        ({"mode": "audio", "audio_prompt": "x", "keyscale": "Am"},
+         "未知のフィールドがあります: keyscale"),
+        ({"mode": "audio", "audio_prompt": "x", "bpm": 92},
+         "未知のフィールドがあります: bpm"),
         ({"mode": "audio", "audio_prompt": "x", "video_prompt": "she dances"},
          "独立ジョブ"),
         ({"mode": "audio", "audio_prompt": "x", "source_image": "/assets/image/a.png"},
@@ -325,8 +317,8 @@ def test_agent_still_accepts_the_existing_video_tasks():
 
 def test_audio_catalog_section_lists_both_workflows_and_their_limits():
     section = audio_workflow_catalog_section()
-    assert ACE in section and SA3 in section
-    assert "10〜600 秒" in section
+    assert MMM3 in section and SA3 in section
+    assert "1〜300 秒" in section
     assert "1〜380 秒" in section
     assert "独立したジョブ" in section
 
@@ -335,8 +327,11 @@ def test_audio_prompt_guides_cover_every_registered_audio_workflow():
     guides = audio_prompt_guides_section()
     for entry in audio_catalog():
         assert f"`{entry.id}`" in guides
-    # ACE-Step 1.5 公式の構造タグは大文字始まり
+    # MiniMax Music 3 公式のセクションタグは大文字始まり
     assert "[Chorus]" in guides
+    # 公式の Structured Caption の 3 セクション
+    for head in ("Global Metadata:", "Vocal Details:", "Arrangement:"):
+        assert head in guides
     # Stable Audio 公式テンプレートの締めくくり
     assert "Length: Y seconds" in guides
 
@@ -356,14 +351,9 @@ def test_agent_system_prompt_embeds_the_audio_sections():
 
 def test_combo_option_lists_match_the_nodes():
     assert AUDIO_CATEGORIES == ("Music", "Instrument", "SFX", "One-shot")
-    assert len(KEYSCALES) == 34
-    assert "C major" in KEYSCALES and "F# minor" in KEYSCALES
-    assert len(LANGUAGES) == 51
-    assert LANGUAGES[-1] == "unknown"
-    assert "ja" in LANGUAGES
 
 
-@pytest.mark.parametrize(("workflow_id", "node_id"), [(ACE, "3"), (SA3, "52:3")])
+@pytest.mark.parametrize(("workflow_id", "node_id"), [(MMM3, "37:9"), (SA3, "52:3")])
 def test_audio_steps_default_to_the_template_and_are_injected_when_set(
     workflow_id, node_id
 ):

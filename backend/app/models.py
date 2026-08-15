@@ -5,9 +5,6 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .workflows import (
     AUDIO_CATEGORIES,
-    BPM_RANGE,
-    KEYSCALES,
-    LANGUAGES,
     DEFAULT_AUDIO_WORKFLOW,
     DEFAULT_FAMILY,
     DEFAULT_IMAGE_WORKFLOW,
@@ -514,12 +511,9 @@ class GenerationParams(BaseModel):
 
     # --- audio job knobs (mode 'audio' only, see workflow.build_audio_workflow)
     audio_prompt: str = ""
-    #: ACE-Step: the words to sing, with [verse] / [chorus] structure tags.
+    #: the words to sing, with [Verse] / [Chorus] structure tags.
     #: Empty == instrumental.
     lyrics: str = ""
-    bpm: int = 120
-    keyscale: str = "C major"
-    language: str = "en"
     #: styles to keep out of the track. Nothing to do
     #: with the image / video `negative_prompt` — this one is a comma separated
     #: list of *sounds*, and only models that declare it read it.
@@ -1275,18 +1269,14 @@ def audio_workflow_problem(
     *,
     duration: float | None = None,
     audio_category: str | None = None,
-    keyscale: str | None = None,
-    language: str | None = None,
-    bpm: int | None = None,
 ) -> str | None:
     """Why this audio job cannot run (None == fine).
 
     Only ``mode: "audio"`` is checked: every other mode ignores the audio
     fields entirely, so an unknown ``audio_workflow`` there is harmless.
 
-    ``keyscale`` / ``language`` / ``bpm`` are COMBO / INT widgets of
-    ``TextEncodeAceStepAudio1.5``: ComfyUI rejects the whole prompt when a
-    value is outside its declared set, so they are caught here (422) instead of
+    ``audio_category`` is a COMBO widget: ComfyUI rejects the whole prompt when
+    a value is outside its declared set, so it is caught here (422) instead of
     failing the job halfway through.  A workflow that declares no length at all
     (``max_duration == 0``, e.g. a model whose API has no length parameter) skips
     the range check: the model decides how long the track is.
@@ -1314,18 +1304,6 @@ def audio_workflow_problem(
             f"unknown audio_category '{audio_category}';"
             f" use one of {', '.join(AUDIO_CATEGORIES)}"
         )
-    if keyscale and spec.supports("keyscale") and keyscale not in KEYSCALES:
-        return (
-            f"unknown keyscale '{keyscale}'; use \"<root> major\" or"
-            ' "<root> minor" (e.g. "C major", "F# minor")'
-        )
-    if language and spec.supports("language") and language not in LANGUAGES:
-        return (
-            f"unknown language '{language}'; use an ISO code from the model's"
-            " list (en, ja, zh, …) or 'unknown'"
-        )
-    if bpm is not None and spec.supports("bpm") and not BPM_RANGE[0] <= int(bpm) <= BPM_RANGE[1]:
-        return f"bpm must be between {BPM_RANGE[0]} and {BPM_RANGE[1]}, got {int(bpm)}"
     return None
 
 
@@ -1488,11 +1466,8 @@ class JobCreate(BaseModel):
 
     # --- mode 'audio' only ------------------------------------------------
     audio_prompt: str = ""
-    #: ACE-Step: the words to sing ([Verse] / [Chorus] …). Empty == instrumental.
+    #: the words to sing ([Verse] / [Chorus] …). Empty == instrumental.
     lyrics: str = ""
-    bpm: int = 120
-    keyscale: str = "C major"
-    language: str = "en"
     #: styles to keep out of the track
     negative_tags: str = ""
     #: Stable Audio: Music / Instrument / SFX / One-shot
@@ -1573,9 +1548,6 @@ class JobCreate(BaseModel):
                 self.audio_workflow,
                 duration=self.duration,
                 audio_category=self.audio_category,
-                keyscale=self.keyscale,
-                language=self.language,
-                bpm=self.bpm,
             )
             or audio_lora_problem(self.mode, self.loras, self.video_loras)
             or video_lora_problem(self.mode, self.video_workflow, self.video_loras)
@@ -1767,9 +1739,6 @@ class ChatSessionCreate(BaseModel):
     negative_prompt: str | None = None
     # --- 音声モードのフォームの現在値 ---------------------------------------
     audio_category: str | None = None
-    bpm: int | None = None
-    keyscale: str | None = None
-    language: str | None = None
     negative_tags_draft: str | None = None
 
 
@@ -1788,11 +1757,8 @@ class PromptResult(BaseModel):
     image_prompt: str | None = None
     video_prompt: str | None = None
     audio_prompt: str | None = None
-    #: ACE-Step: the words to sing, with [Verse] / [Chorus] structure tags
+    #: the words to sing, with [Verse] / [Chorus] structure tags
     lyrics: str | None = None
-    bpm: int | None = None
-    keyscale: str | None = None
-    language: str | None = None
     #: styles to keep out of the track
     negative_tags: str | None = None
     notes: str | None = None
@@ -2301,10 +2267,8 @@ class Options(BaseModel):
     default_video_workflow: str = DEFAULT_VIDEO_WORKFLOW
     default_image_workflow: str = DEFAULT_IMAGE_WORKFLOW
     default_audio_workflow: str = DEFAULT_AUDIO_WORKFLOW
-    #: the ACE-Step / Stable Audio COMBO choices, for the 音声 form
+    #: the Stable Audio COMBO choices, for the 音声 form
     audio_categories: list[str] = Field(default_factory=lambda: list(AUDIO_CATEGORIES))
-    keyscales: list[str] = Field(default_factory=lambda: list(KEYSCALES))
-    languages: list[str] = Field(default_factory=lambda: list(LANGUAGES))
     aspect_ratios: list[str] = Field(default_factory=list)
     lora_files: list[str] = Field(default_factory=list)
     #: 実行時に切り替えられるモデルスロット（候補が 2 件以上あるものだけ、§3.3）

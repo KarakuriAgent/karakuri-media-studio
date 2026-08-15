@@ -275,24 +275,24 @@ def test_video_upload_rejects_a_wrong_extension(client):
 
 def test_audio_workflows_are_exposed(client):
     options = client.get("/api/options").json()
-    assert options["default_audio_workflow"] == "ace_step1_5_xl_sft"
+    assert options["default_audio_workflow"] == "minimax_music_3"
 
     audio = {w["id"]: w for w in options["audio_workflows"]}
-    assert list(audio) == ["ace_step1_5_xl_sft", "stable_audio_3_medium_base"]
+    assert list(audio) == ["minimax_music_3", "stable_audio_3_medium_base"]
     assert [w["family"] for w in options["audio_workflows"]] == [
-        "ace-step",
+        "minimax-music",
         "stable-audio",
     ]
     # 音声は単体ジョブ: 入力アセットも開始フレームも取らない
     assert all(w["requires"] == [] for w in audio.values())
     assert all(w["accepts_start_image"] is False for w in audio.values())
 
-    ace = audio["ace_step1_5_xl_sft"]
-    assert {"prompt", "lyrics", "duration", "bpm", "keyscale", "language"} <= set(
-        ace["supports"]
+    mmm3 = audio["minimax_music_3"]
+    assert {"prompt", "lyrics", "duration", "steps", "seed"} <= set(
+        mmm3["supports"]
     )
-    assert (ace["min_duration"], ace["max_duration"]) == (10.0, 600.0)
-    assert ace["default_duration"] == 120.0
+    assert (mmm3["min_duration"], mmm3["max_duration"]) == (1.0, 300.0)
+    assert mmm3["default_duration"] == 60.0
 
     sa3 = audio["stable_audio_3_medium_base"]
     assert {"audio_category", "reprompt"} <= set(sa3["supports"])
@@ -374,8 +374,6 @@ def test_audio_combo_choices_are_exposed(client):
     """ComfyUI が落ちていてもローカル定義の選択肢は返る。"""
     options = client.get("/api/options").json()
     assert options["audio_categories"] == ["Music", "Instrument", "SFX", "One-shot"]
-    assert "C major" in options["keyscales"] and len(options["keyscales"]) == 34
-    assert options["languages"][-1] == "unknown"
 
 
 def test_steps_are_advertised_only_where_the_template_has_a_sampler_knob(client):
@@ -395,7 +393,7 @@ def test_steps_are_advertised_only_where_the_template_has_a_sampler_knob(client)
         "minimax_h3_r2v",
         "minimax_h3_i2v_turbo",
         "minimax_h3_r2v_turbo",
-        "ace_step1_5_xl_sft",
+        "minimax_music_3",
         "stable_audio_3_medium_base",
     ):
         assert "steps" in supports[workflow_id], workflow_id

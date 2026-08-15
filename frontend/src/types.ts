@@ -566,11 +566,8 @@ export interface AudioJobCreate {
    * 省略 / 0 は「未指定」= テンプレートの既定値のまま。
    */
   steps?: number
-  /** ACE-Step: 歌詞（[Verse] / [Chorus] の構造タグ付き）。空ならインスト。 */
+  /** 歌詞（[Verse] / [Chorus] のセクションタグ付き）。空ならインスト。 */
   lyrics?: string
-  bpm?: number
-  keyscale?: string
-  language?: string
   /** 曲に入れたくない要素（宣言しているモデルのみ）。 */
   negative_tags?: string
   /** ワークフローが宣言する選択式フィールド。 */
@@ -659,10 +656,8 @@ export interface Options {
   default_video_workflow: string
   default_image_workflow: string
   default_audio_workflow: string
-  /** ACE-Step / Stable Audio の COMBO 選択肢（音声フォーム用）。 */
+  /** Stable Audio の COMBO 選択肢（音声フォーム用）。 */
   audio_categories: string[]
-  keyscales: string[]
-  languages: string[]
   aspect_ratios: string[]
   lora_files: string[]
   /** 実行時に切り替えられるモデルスロット（候補が 2 件以上あるものだけ）。 */
@@ -698,11 +693,8 @@ export interface PromptResult {
   video_prompt: string | null
   /** mode 'audio' のセッションが返す音の説明。 */
   audio_prompt: string | null
-  /** ACE-Step: 構造タグ付きの歌詞。 */
+  /** セクションタグ付きの歌詞。 */
   lyrics: string | null
-  bpm: number | null
-  keyscale: string | null
-  language: string | null
   /** 曲に入れたくない要素（宣言しているモデルのみ）。 */
   negative_tags: string | null
   notes: string | null
@@ -752,9 +744,6 @@ export interface ChatSessionCreate {
   negative_prompt?: string | null
   /** 音声モードのフォームの現在値（選択中のモデルが読むものだけ）。 */
   audio_category?: string | null
-  bpm?: number | null
-  keyscale?: string | null
-  language?: string | null
   negative_tags_draft?: string | null
 }
 

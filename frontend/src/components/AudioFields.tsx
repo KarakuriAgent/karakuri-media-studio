@@ -3,7 +3,6 @@ import { Sparkles } from 'lucide-react'
 import {
   AUDIO_CATEGORIES,
   CATEGORY_LABELS,
-  LANGUAGE_LABELS,
   MAX_STEPS,
   audioSupports,
   clampToWorkflow,
@@ -36,8 +35,8 @@ function audioWorkflowOf(
  * 音声モードで `FieldError` の表示先があるエラーのキー（SPEC §8）。
  *
  * 「出ていない欄のエラーは、送信ボタンのそばにまとめて出す」フォールバック
- * （`GenerateForm`）が、ここに無いキーを拾う。下の `hasDuration` / `hasBpm` と
- * 同じ条件を使うので、欄を出し分ける条件を変えるときは両方そろえること。
+ * （`GenerateForm`）が、ここに無いキーを拾う。下の `hasDuration` と同じ条件を
+ * 使うので、欄を出し分ける条件を変えるときは両方そろえること。
  */
 export function audioErrorKeys(
   form: FormState,
@@ -46,7 +45,6 @@ export function audioErrorKeys(
   const workflow = audioWorkflowOf(form, options)
   const keys = ['audio_prompt']
   if (workflow == null || workflow.max_duration > 0) keys.push('duration')
-  if (audioSupports(workflow, 'bpm')) keys.push('bpm')
   // 選択式の相関エラー（`selectRequiresErrors`）はセレクトの下に出る
   for (const select of workflowSelects(workflow)) keys.push(select.name)
   return keys
@@ -81,9 +79,6 @@ export default function AudioFields({
   // 長さを宣言しないモデル（API に尺のパラメータが無いもの）では、効かない
   // つまみを見せないよう秒数の入力ごと隠す（§2.4）。
   const hasDuration = workflow == null || workflow.max_duration > 0
-  const hasBpm = audioSupports(workflow, 'bpm')
-  const hasKeyscale = audioSupports(workflow, 'keyscale')
-  const hasLanguage = audioSupports(workflow, 'language')
   const hasCategory = audioSupports(workflow, 'audio_category')
   const hasReprompt = audioSupports(workflow, 'reprompt')
   const hasSteps = audioSupports(workflow, 'steps')
@@ -104,8 +99,6 @@ export default function AudioFields({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form.audioWorkflow, workflow?.max_duration])
 
-  const keyscales = options?.keyscales ?? []
-  const languages = options?.languages ?? []
   const categories = options?.audio_categories ?? AUDIO_CATEGORIES
 
   return (
@@ -202,7 +195,7 @@ export default function AudioFields({
       )}
 
       <Section title="出力設定">
-        <div className={hasBpm && hasDuration ? 'grid grid-cols-2 gap-2' : undefined}>
+        <div>
           {hasDuration && (
             <div>
               <Label className="mb-1" htmlFor="audio-duration">
@@ -228,72 +221,7 @@ export default function AudioFields({
               <FieldError message={fieldErrors.duration} />
             </div>
           )}
-          {hasBpm && (
-            <div>
-              <Label className="mb-1" htmlFor="audio-bpm">
-                BPM
-              </Label>
-              <Input
-                id="audio-bpm"
-                className="tnum"
-                type="number"
-                min="10"
-                max="300"
-                step="1"
-                value={form.bpm}
-                onChange={(event) => patch({ bpm: Number(event.target.value) || 0 })}
-              />
-              <FieldError message={fieldErrors.bpm} />
-            </div>
-          )}
         </div>
-
-        {(hasKeyscale || hasLanguage) && (
-          <div className="mt-2 grid grid-cols-2 gap-2">
-            {hasKeyscale && (
-              <div>
-                <Label className="mb-1" htmlFor="audio-keyscale">
-                  キー / スケール
-                </Label>
-                <NativeSelect
-                  id="audio-keyscale"
-                  value={form.keyscale}
-                  onChange={(event) => patch({ keyscale: event.target.value })}
-                >
-                  {!keyscales.includes(form.keyscale) && (
-                    <option value={form.keyscale}>{form.keyscale}</option>
-                  )}
-                  {keyscales.map((value) => (
-                    <option key={value} value={value}>
-                      {value}
-                    </option>
-                  ))}
-                </NativeSelect>
-              </div>
-            )}
-            {hasLanguage && (
-              <div>
-                <Label className="mb-1" htmlFor="audio-language">
-                  歌詞の言語
-                </Label>
-                <NativeSelect
-                  id="audio-language"
-                  value={form.language}
-                  onChange={(event) => patch({ language: event.target.value })}
-                >
-                  {!languages.includes(form.language) && (
-                    <option value={form.language}>{form.language}</option>
-                  )}
-                  {languages.map((value) => (
-                    <option key={value} value={value}>
-                      {LANGUAGE_LABELS[value] ?? value}
-                    </option>
-                  ))}
-                </NativeSelect>
-              </div>
-            )}
-          </div>
-        )}
 
         {hasSteps && (
           <div className="mt-2">

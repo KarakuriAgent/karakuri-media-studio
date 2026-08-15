@@ -22,7 +22,7 @@ import type {
 /** Fallback while /api/options has not answered yet (backend default). */
 export const DEFAULT_VIDEO_WORKFLOW = 'minimax_h3_i2v'
 export const DEFAULT_IMAGE_WORKFLOW = 'krea2_turbo'
-export const DEFAULT_AUDIO_WORKFLOW = 'ace_step1_5_xl_sft'
+export const DEFAULT_AUDIO_WORKFLOW = 'minimax_music_3'
 
 /**
  * メガピクセルのグローバル既定（SPEC §3.1）。ワークフローが
@@ -56,15 +56,6 @@ export const CATEGORY_LABELS: Record<string, string> = {
   Instrument: '楽器 / ステム',
   SFX: '効果音・環境音',
   'One-shot': 'ワンショット',
-}
-
-/** よく使う言語だけ読みやすく（残りは ISO コードのまま並ぶ）。 */
-export const LANGUAGE_LABELS: Record<string, string> = {
-  ja: '日本語 (ja)',
-  en: '英語 (en)',
-  zh: '中国語 (zh)',
-  ko: '韓国語 (ko)',
-  unknown: '自動 / インスト (unknown)',
 }
 
 /** Backend workflows.DEFAULT_FAMILY — the family a LoRA gets when unset. */
@@ -183,9 +174,6 @@ export interface FormState {
   negativeTags: string
   /** 音声の長さ（秒）。ワークフローごとに上下限が違う。 */
   audioDuration: number
-  bpm: number
-  keyscale: string
-  language: string
   /** Stable Audio: Music / Instrument / SFX / One-shot。 */
   audioCategory: string
   /** Stable Audio: 内蔵 LLM でプロンプトを展開してから流すか。 */
@@ -236,10 +224,7 @@ export const initialForm: FormState = {
   audioPrompt: '',
   lyrics: '',
   negativeTags: '',
-  audioDuration: 120,
-  bpm: 120,
-  keyscale: 'C major',
-  language: 'ja',
+  audioDuration: 60,
   audioCategory: 'Music',
   reprompt: false,
   nsfw: false,
@@ -645,9 +630,6 @@ export function audioJobPayload(
   if (audioSupports(workflow, 'negative_tags')) {
     payload.negative_tags = form.negativeTags
   }
-  if (audioSupports(workflow, 'bpm')) payload.bpm = form.bpm
-  if (audioSupports(workflow, 'keyscale')) payload.keyscale = form.keyscale
-  if (audioSupports(workflow, 'language')) payload.language = form.language
   if (audioSupports(workflow, 'audio_category')) {
     payload.audio_category = form.audioCategory
   }
@@ -939,12 +921,6 @@ export function formStateFromParams(
   if (lyrics !== undefined) changes.lyrics = lyrics
   const negativeTags = asString(params.negative_tags)
   if (negativeTags !== undefined) changes.negativeTags = negativeTags
-  const bpm = asNumber(params.bpm)
-  if (bpm !== undefined) changes.bpm = bpm
-  const keyscale = asString(params.keyscale)
-  if (keyscale !== undefined) changes.keyscale = keyscale
-  const language = asString(params.language)
-  if (language !== undefined) changes.language = language
   const audioCategory = asString(params.audio_category)
   if (audioCategory !== undefined) changes.audioCategory = audioCategory
   const reprompt = asBoolean(params.reprompt)
@@ -1100,9 +1076,6 @@ export function validateForm(
       errors.duration =
         `${audioWorkflow?.label ?? 'このワークフロー'}の長さは` +
         ` ${range.min}〜${range.max} 秒です。`
-    }
-    if (audioSupports(audioWorkflow, 'bpm') && (form.bpm < 10 || form.bpm > 300)) {
-      errors.bpm = 'BPM は 10〜300 で指定してください。'
     }
     Object.assign(errors, selectRequiresErrors(form, audioWorkflow))
     return errors

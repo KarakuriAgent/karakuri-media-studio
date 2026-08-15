@@ -49,7 +49,6 @@ from .models import (
 )
 from .workflows import (
     AUDIO_CATEGORIES,
-    BPM_RANGE,
     DEFAULT_AUDIO_WORKFLOW,
     DEFAULT_FAMILY,
     DEFAULT_IMAGE_WORKFLOW,
@@ -1038,16 +1037,15 @@ def video_prompt_guides_section() -> str:
 # --------------------------------------------------------------------------
 # Summarized from each model's primary sources:
 #
-# * ACE-Step 1.5 — https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/Tutorial.md
-#   (caption dimensions, lyric structure tags, syllable / dynamics rules),
-#   https://github.com/ace-step/ACE-Step-1.5/blob/main/docs/en/GRADIO_GUIDE.md
-#   (instrumental switch, auto language) and the README's "10 seconds to 10
-#   minutes (600s)" length spec.  The COMBO value sets (keyscale, language,
-#   timesignature) and the numeric bounds come from ComfyUI's own
-#   comfy_extras/nodes_ace.py, mirrored in app.workflows.
-#   NB: the node's `tags` input is inserted into the LLM prompt's `# Caption`
-#   section verbatim (comfy/text_encoders/ace15.py), so it is a *caption*, not
-#   a tag list — the official tutorial says either style works.
+# * MiniMax Music 3 — https://github.com/MiniMax-AI/MiniMax-Music3 (README and
+#   skills/music-caption-rewriter/SKILL.md: the three Structured Caption
+#   sections, the 250-450 word target, the section tag list, the "do not invent
+#   unstated BPM / key / vocal gender" rule) and
+#   https://docs.comfy.org/tutorials/audio/minimax/minimax-music-3 (the ComfyUI
+#   workflow this template comes from: songs of up to ~5 minutes, 32 kHz
+#   16-bit stereo output, 5,000 token text budget).  The node's own widget
+#   bounds are in comfy_extras/nodes_minimax_music.py, mirrored in
+#   app.workflows.
 # * Stable Audio 3 —
 #   https://github.com/Stability-AI/stable-audio-3/blob/main/docs/guides/prompting.md
 #   (Music = genre / instruments / mood / BPM; SFX = source / action /
@@ -1058,40 +1056,51 @@ def video_prompt_guides_section() -> str:
 #   Stability's guides document no negative prompt, and this template exposes
 #   none, so never write one.
 
-ACE_STEP_AUDIO_SPEC = """\
-# AUDIO PROMPT SPEC — ACE-Step 1.5 XL (`ace_step1_5_xl_sft`)
+MINIMAX_MUSIC_3_SPEC = """\
+# AUDIO PROMPT SPEC — MiniMax Music 3 (`minimax_music_3`)
 
 This model writes **songs**: a full arrangement, with a singer when `lyrics`
-are given and an instrumental when they are not.
+are given and an instrumental when they are not. Output is 32 kHz 16-bit
+stereo, up to about 5 minutes (300s) per track.
 
-`audio_prompt` is the track's **caption**. Comma-separated keywords and plain
-prose both work (the model is explicitly agnostic there) — what matters is that
-it is specific and that it agrees with the lyrics. Cover, roughly in this
-order: style / genre, mood and atmosphere, the instruments and how each one
-sounds, timbre and production style, tempo feel, and — when someone sings — the
-voice (gender, register, delivery).
+`audio_prompt` is the track's **Structured Caption**: prose, written as three
+labelled sections in this order, 250-450 words in total.
 
-`lyrics` carries the words, with **capitalized structure tags** on their own
-lines: `[Intro]` `[Verse]` / `[Verse 1]` `[Pre-Chorus]` `[Chorus]` `[Bridge]`
-`[Outro]`, dynamics `[Build]` `[Drop]` `[Breakdown]`, instrumental sections
-`[Instrumental]` `[Guitar Solo]` `[Piano Interlude]`, and `[Fade Out]`.
-- One modifier per tag at most, joined with a single hyphen: `[Chorus - anthemic]`.
-- 6-10 syllables per line, kept even inside a section; blank line between sections.
-- CAPITALS raise the vocal intensity; backing vocals go in parentheses:
-  `We rise together (together)`.
-- **Instrumental**: leave the words out and write structure tags only, e.g.
-  `[Instrumental]` / `[Main Theme - piano]` / `[Outro - fade out]`, and set
-  `language` to `unknown`.
+1. `Global Metadata:` — genre and sub-genre, tempo, key / scale (only when it
+   matters), the emotional arc across the track, the listening setting, and the
+   production character (recording style, texture, mix, era).
+2. `Vocal Details:` — the lead vocal setup, gender / timbre / register,
+   delivery and phrasing, harmonies and backing vocals, and vocal effects
+   (sparingly). Never retell or paraphrase what the lyrics say. For an
+   instrumental, name the instrument that carries the melody instead.
+3. `Arrangement:` — a section-by-section timeline (Intro -> Verse -> Chorus ->
+   …): which instruments enter and leave and when, how the groove develops, the
+   transitions, the texture and the spatial effects. Prefer concrete musical
+   changes over decorative prose.
 
-Other fields: `bpm` ({bpm_min}-{bpm_max}), `keyscale` as `"<root> <major|minor>"`
-(`"C major"`, `"F# minor"` — never `"Am"`), `language` as an ISO code
-(`en`, `ja`, `zh`, …) or `unknown`. `duration` is the track length in seconds;
-the model is specified for 10-600s and is most reliable at 30-60s or 2-4min.
+Do **not** invent specifics the user did not give: write an exact BPM, key or
+vocal gender only when they asked for one — otherwise give a range
+(`around 70-80 BPM`) or a qualitative description (`slow and unhurried`). Any
+constraint or exclusion the user stated must survive into the caption.
+
+`lyrics` carries the words, with **section tags on their own lines**:
+`[Intro]` `[Verse]` `[Pre-Chorus]` `[Chorus]` `[Post-Chorus]` `[Bridge]`
+`[Instrumental]` `[Solo]` `[Outro]`.
+- The words to sing live **only** in `lyrics` — never in `audio_prompt`.
+- Blank line between sections; keep the line breaks.
+- Write them in the language they should be sung in (Japanese lyrics stay
+  Japanese).
+- **Instrumental**: leave `lyrics` empty (or write structure tags only, e.g.
+  `[Intro]` / `[Solo]` / `[Outro]`) and describe the lead instrument in
+  `Vocal Details:`.
+
+`duration` is the track length in seconds — it is an *upper bound*, so the
+model may end the song earlier.
 
 Example:
 ```
-"audio_prompt": "dreamy city-pop ballad, female vocal with a breathy low register, warm Rhodes electric piano, fretless bass, brushed drums with a laid-back pocket, analog tape saturation, nostalgic and bittersweet, slow build into a wide chorus"
-"lyrics": "[Verse 1]\\nThe last train hums below the rain\\nYour name still lights the window pane\\n\\n[Chorus - soaring]\\nWE BURN LIKE NEON IN THE DARK\\nStill holding on (holding on)"
+"audio_prompt": "Global Metadata: Dreamy city-pop ballad with a modern neo-soul tint, around 80 BPM, minor key with jazzy extensions. Nostalgic and bittersweet, opening intimate and widening into a spacious chorus before settling back down. Late-night headphone listening after rain. Warm analog production: tape saturation, soft-clipped drums, wide but uncrowded stereo image.\\n\\nVocal Details: Single female lead, breathy low register with an airy top, laid-back behind-the-beat phrasing, close-mic'd and intimate in the verses, opening into a fuller belted tone in the chorus. Doubled octave harmonies and soft wordless backing pads in the chorus only, light plate reverb and short slap delay.\\n\\nArrangement: Intro: solo warm Rhodes chords with tape wobble, faint vinyl noise. Verse: fretless bass and brushed drums enter with a relaxed pocket, Rhodes thins out to leave space for the vocal. Pre-Chorus: sustained string pad rises, hi-hats open up, a single rising bass fill leads in. Chorus: full band, wide layered harmonies, ride cymbal wash, bass moving in melodic countermelody. Bridge: everything drops to Rhodes and voice, one distant muted trumpet line. Outro: the band fades out one layer at a time, ending on an unresolved Rhodes chord.",
+"lyrics": "[Verse]\\nThe last train hums below the rain\\nYour name still lights the window pane\\n\\n[Chorus]\\nWe burn like neon in the dark\\nStill holding on (holding on)"
 ```
 """
 
@@ -1099,7 +1108,8 @@ STABLE_AUDIO_SPEC = """\
 # AUDIO PROMPT SPEC — Stable Audio 3 Medium (`stable_audio_3_medium_base`)
 
 General-purpose audio: sound effects, one-shots, single-instrument stems and
-**instrumental** music. It does not sing — a song with words needs ACE-Step.
+**instrumental** music. It does not sing — a song with words needs
+MiniMax Music 3.
 
 `audio_prompt` is one dense natural-language description of the sound, and
 `audio_category` picks which of the graph's built-in templates shapes it
@@ -1139,16 +1149,17 @@ Examples:
 
 #: audio workflow id -> the AUDIO PROMPT SPEC section to embed for it
 AUDIO_SPECS: dict[str, str] = {
-    "ace_step1_5_xl_sft": ACE_STEP_AUDIO_SPEC,
+    "minimax_music_3": MINIMAX_MUSIC_3_SPEC,
     "stable_audio_3_medium_base": STABLE_AUDIO_SPEC,
 }
 
 #: audio workflow id -> the one-line reminder in the AUDIO WORKFLOWS catalog
 AUDIO_PROMPT_HINTS: dict[str, str] = {
-    "ace_step1_5_xl_sft": (
-        "A caption of the track (style, mood, instruments, production, voice);"
-        " the words to sing go in `lyrics` with [Verse] / [Chorus] structure"
-        " tags. No lyrics == instrumental."
+    "minimax_music_3": (
+        "A Structured Caption of the track in three labelled sections"
+        " (`Global Metadata:` / `Vocal Details:` / `Arrangement:`), 250-450"
+        " words; the words to sing go in `lyrics` with [Verse] / [Chorus]"
+        " section tags, never in the caption. No lyrics == instrumental."
     ),
     "stable_audio_3_medium_base": (
         "One dense sentence describing the sound itself, shaped by"
@@ -1160,20 +1171,16 @@ AUDIO_PROMPT_HINTS: dict[str, str] = {
 
 def audio_spec_for(workflow_id: str) -> str:
     """The AUDIO PROMPT SPEC section of one audio workflow (formatted)."""
-    template = AUDIO_SPECS.get(workflow_id, ACE_STEP_AUDIO_SPEC)
-    return (
-        template.replace("{bpm_min}", str(BPM_RANGE[0]))
-        .replace("{bpm_max}", str(BPM_RANGE[1]))
-        .replace("{categories}", " / ".join(AUDIO_CATEGORIES))
-    )
+    template = AUDIO_SPECS.get(workflow_id, MINIMAX_MUSIC_3_SPEC)
+    return template.replace("{categories}", " / ".join(AUDIO_CATEGORIES))
 
 
 def audio_prompt_guides_section() -> str:
     """Every audio workflow's prompt guide, for the agent system prompt.
 
     Driven by :func:`app.workflows.audio_catalog`, so a workflow added to
-    ``workflow/audio/`` without a guide here falls back to the ACE-Step one
-    rather than silently going missing.
+    ``workflow/audio/`` without a guide here falls back to the MiniMax Music 3
+    one rather than silently going missing.
     """
     header = (
         "# AUDIO PROMPT GUIDES (one per audio model — use the one that matches"
@@ -1189,8 +1196,7 @@ def _audio_catalog_entry_lines(entry: CatalogEntry) -> list[str]:
     default = " **（既定）**" if entry.id == DEFAULT_AUDIO_WORKFLOW else ""
     extra = [
         name
-        for name in ("lyrics", "bpm", "keyscale", "language", "negative_tags",
-                     "audio_category", "reprompt")
+        for name in ("lyrics", "negative_tags", "audio_category", "reprompt")
         if name in entry.supports
     ]
     # 尺を宣言しないモデル（API に長さのパラメータが無いもの）は、
@@ -1247,8 +1253,9 @@ def audio_workflow_catalog_section(
     lines += [
         "",
         f"`audio_workflow` を省略すると `{DEFAULT_AUDIO_WORKFLOW}` になります。",
-        "歌詞のある曲は ACE-Step、効果音・環境音・単発の楽器音・インストの短尺は",
-        "Stable Audio 3 が向いています。書き方は AUDIO PROMPT GUIDES を見ること。",
+        "歌詞のある曲は MiniMax Music 3、効果音・環境音・単発の楽器音・インストの",
+        "短尺は Stable Audio 3 が向いています。書き方は AUDIO PROMPT GUIDES を",
+        "見ること。",
     ]
     return "\n".join(lines)
 
@@ -1426,7 +1433,8 @@ You have two jobs, in this order:
    - instrumentation and the production feel (analog / clean / lo-fi …)
    - vocals: is there singing at all? language, gender, register, delivery
    - what the song is about, and any words the user wants sung
-   - tempo (BPM) and key, if the user has a preference
+   - tempo (BPM) and key, if the user has a preference (never decide an
+     exact number for them — leave it qualitative when they did not say)
    For a sound effect ask instead about the source, the material, the space
    (indoor / outdoor, close / distant) and how the sound evolves.
    **Ask in Japanese**, concisely, and offer plausible default options so the
@@ -1442,9 +1450,8 @@ Rules of engagement:
 - After a JSON proposal the conversation may continue (e.g. 「もっと静かに」).
   Apply the change and output a **complete** updated JSON again — never a diff.
 - All conversational text is Japanese. `audio_prompt` is **English**.
-  `lyrics` are written in the language the song is sung in (the `language`
-  field when the model has one, otherwise simply the language you write them
-  in), so Japanese lyrics stay Japanese.
+  `lyrics` are written in the language the song is sung in — simply the
+  language you write them in — so Japanese lyrics stay Japanese.
 """
 
 AUDIO_OUTPUT_RULES = """\
@@ -1460,9 +1467,6 @@ AUDIO_OUTPUT_RULES = """\
 {
   "audio_prompt": "...",
   "lyrics": "...",
-  "bpm": 92,
-  "keyscale": "F# minor",
-  "language": "ja",
   "negative_tags": "...",
   "notes": "..."
 }
@@ -1471,11 +1475,11 @@ AUDIO_OUTPUT_RULES = """\
 - `audio_prompt` is the only required field. Use JSON `null` for anything the
   selected workflow does not have (CONTEXT lists exactly which fields it reads)
   — sending a field it ignores is harmless but pointless.
-- `lyrics` keeps its newlines and structure tags; every other string is one
+- `lyrics` keeps its newlines and section tags; every other string is one
   single line. For an instrumental, either omit the words entirely or send only
-  structure tags such as `[Instrumental]`.
-- `bpm` is a plain number (no quotes, no "BPM:" prefix), `keyscale` is
-  `"<root> major"` / `"<root> minor"`, `language` an ISO code or `unknown`.
+  section tags such as `[Instrumental]`.
+- Tempo and key belong in the `audio_prompt` text itself, not in a field of
+  their own — and only as precisely as the user actually specified them.
 - `negative_tags` is a comma separated list of **sounds to keep out**, written
   like the style — never a sentence, and never the same words as `audio_prompt`.
   Only models that declare it read it; leave it out otherwise.
@@ -1503,22 +1507,6 @@ def _audio_form_value_lines(
             "その文型で `audio_prompt` を書くこと（勝手に別のカテゴリの書き方に"
             "しない。合っていないと思うならフォームで変えるよう案内する）。"
         )
-    current = [
-        ("bpm", str(ctx.bpm) if ctx.bpm else ""),
-        ("keyscale", (ctx.keyscale or "").strip()),
-        ("language", (ctx.language or "").strip()),
-    ]
-    values = [
-        f"`{name}` = {value}"
-        for name, value in current
-        if value and spec.supports(name)
-    ]
-    if values:
-        lines.append(
-            "- フォームの現在値: "
-            + "、".join(values)
-            + "。特に変える理由が無ければこの値を尊重すること。"
-        )
     negative = (ctx.negative_tags_draft or "").strip()
     if negative and spec.supports("negative_tags"):
         lines.append(f"- フォームの除外タグ（`negative_tags`）: `{negative}`")
@@ -1534,10 +1522,7 @@ def _audio_context_section(ctx: ChatSessionCreate) -> str:
     entry = catalog_entry(spec)
 
     knobs = {
-        "lyrics": "`lyrics`（歌詞。構造タグ付き）",
-        "bpm": f"`bpm`（{BPM_RANGE[0]}-{BPM_RANGE[1]}）",
-        "keyscale": "`keyscale`（例 `C major` / `F# minor`）",
-        "language": "`language`（ISO コード、または `unknown`）",
+        "lyrics": "`lyrics`（歌詞。セクションタグ付き）",
         "negative_tags": (
             "`negative_tags`（曲に**入れたくない**要素。スタイルと同じ書き方で"
             "英語のカンマ区切り）"
@@ -1583,8 +1568,8 @@ def _audio_context_section(ctx: ChatSessionCreate) -> str:
     if not spec.supports("lyrics"):
         lines.append(
             "- このモデルは歌いません。`lyrics` は `null` にし、歌詞の相談もしない"
-            "こと（歌モノが欲しいと言われたら、音声ワークフローを ACE-Step に"
-            "変えるようフォームで案内する）。"
+            "こと（歌モノが欲しいと言われたら、音声ワークフローを"
+            " MiniMax Music 3 に変えるようフォームで案内する）。"
         )
     if ctx.audio_prompt_draft.strip():
         lines += [
@@ -1608,9 +1593,9 @@ def _audio_context_section(ctx: ChatSessionCreate) -> str:
 def build_audio_system_prompt(ctx: ChatSessionCreate) -> str:
     """System prompt of a `mode: "audio"` chat session.
 
-    Only the *selected* workflow's guide is embedded: ACE-Step wants a track
-    caption plus structured lyrics and Stable Audio a single dense sentence, so
-    shipping both would just invite the model to mix them.
+    Only the *selected* workflow's guide is embedded: MiniMax Music 3 wants a
+    structured caption plus tagged lyrics and Stable Audio a single dense
+    sentence, so shipping both would just invite the model to mix them.
     """
     try:
         workflow_id = get_audio_spec(ctx.audio_workflow).id
@@ -2155,9 +2140,8 @@ Your reply is either plain Japanese text, or plain Japanese text followed by
       "label": "② 主題歌デモ（音声のみ）",
       "job": {
         "mode": "audio",
-        "audio_workflow": "ace_step1_5_xl_sft",
-        "audio_prompt": "...", "lyrics": "[Verse 1]\\n...",
-        "bpm": 92, "keyscale": "F# minor", "language": "ja",
+        "audio_workflow": "minimax_music_3",
+        "audio_prompt": "Global Metadata: ...", "lyrics": "[Verse]\\n...",
         "duration": 120, "seed": null
       }
     }
@@ -2203,8 +2187,8 @@ Rules:
   a `full` one, and it cannot supply or replace a video's soundtrack (the video
   model generates its own, and `audio_path` takes a *file* you already have). Such a
   job carries only `mode`, `audio_workflow`, `audio_prompt`, `duration`, `seed`,
-  its workflow's own extra fields (`lyrics`, `bpm`, `keyscale`,
-  `language`, `audio_category`, `reprompt`) and — if you switch a model —
+  its workflow's own extra fields (`lyrics`, `negative_tags`,
+  `audio_category`, `reprompt`) and — if you switch a model —
   `model_overrides`; adding `image_prompt`,
   `video_prompt`, `source_image`, `loras` or `video_loras` to it is rejected.
   There are no audio LoRAs.

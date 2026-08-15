@@ -77,7 +77,7 @@ UPLOAD_NAME_FIELDS: dict[str, str] = {
 MODEL_FIELDS: set[tuple[str, str]] = {
     ("UNETLoader", "unet_name"),
     ("CLIPLoader", "clip_name"),
-    # ACE-Step 1.5 loads two Qwen text encoders through one DualCLIPLoader
+    # 2 本のテキストエンコーダを 1 つのローダーで読むワークフロー用
     ("DualCLIPLoader", "clip_name1"),
     ("DualCLIPLoader", "clip_name2"),
     ("VAELoader", "vae_name"),
@@ -149,16 +149,18 @@ def _set(wf: Workflow, node_id: str, field: str, value: Any) -> None:
 # injected value has to match.  ComfyUI validates INT / FLOAT strictly, so an
 # INT widget fed a float (or the other way round) fails the whole prompt.
 _INT_INPUTS: set[tuple[str, str]] = {
-    ("TextEncodeAceStepAudio1.5", "duration"),
-    ("TextEncodeAceStepAudio1.5", "bpm"),
     ("CustomCombo", "index"),
+    # 1 つの SeedNode が KSampler と MiniMax Music 3 のテキストエンコードに
+    # 同じ種を配る（comfy_extras/nodes_seed.py の INT 入力）
+    ("SeedNode", "seed"),
     # サンプリング回数（SPEC §3.1）。UI が空欄なら注入しない = テンプレート既定。
     ("KSampler", "steps"),
     ("BasicScheduler", "steps"),
 }
 _FLOAT_INPUTS: set[tuple[str, str]] = {
     ("Video Slice", "duration"),
-    ("EmptyAceStep1.5LatentAudio", "seconds"),
+    ("MiniMaxMusic3TextEncode", "max_duration"),
+    ("EmptyMiniMaxMusic3LatentAudio", "seconds"),
 }
 
 #: BOOLEAN を宣言している入力。選択式フィールド（:class:`app.workflows.SelectSpec`）
@@ -253,7 +255,7 @@ def _inject_steps(wf: Workflow, spec: WorkflowSpec, params: GenerationParams) ->
     """Write the sampling step count, **only when the job asks for one** (§3.1).
 
     ``steps`` は「未指定ならテンプレートの既定値のまま」という約束のつまみで、
-    既定値はワークフローごとに大きく違う（turbo 系は 4、ACE-Step は 50）。
+    既定値はワークフローごとに大きく違う（turbo 系は 4、MiniMax Music 3 は 30）。
     ``0`` や負の値は未指定なので、注入せずにテンプレートの値を残す。
     """
     if params.steps > 0:
@@ -1020,7 +1022,7 @@ def build_audio_workflow(
 
     Audio is not part of the image / video chain: nothing here reads a start
     frame, an aspect ratio or a LoRA list.  Model-specific knobs (``lyrics``,
-    ``bpm``, ``audio_category``, …) are injected through the same
+    ``audio_category``, …) are injected through the same
     :func:`_inject` as everything else, so a workflow whose manifest does not
     declare one simply skips it.
     """
@@ -1033,13 +1035,11 @@ def build_audio_workflow(
 
     _inject(wf, resolved, "prompt", params.audio_prompt)
     _inject(wf, resolved, "lyrics", params.lyrics)
-    # ACE-Step wants the length twice (conditioning + empty latent); Stable
-    # Audio's latent reads the same PrimitiveFloat, so it only declares one.
+    # 秒数を 2 か所に入れるテンプレート（conditioning + 空ラテント）用に
+    # ``latent_seconds`` も持つ。どちらの音声ワークフローも空ラテント側が
+    # 同じ値を読むので、いまは宣言しているのは ``duration`` だけ。
     _inject(wf, resolved, "duration", params.duration)
     _inject(wf, resolved, "latent_seconds", params.duration)
-    _inject(wf, resolved, "bpm", params.bpm)
-    _inject(wf, resolved, "keyscale", params.keyscale)
-    _inject(wf, resolved, "language", params.language)
     _inject(wf, resolved, "audio_category", params.audio_category)
     _inject(wf, resolved, "reprompt", params.reprompt)
     _inject(wf, resolved, "seed", params.audio_seed)

@@ -484,9 +484,6 @@ def _validate(params: dict[str, Any]) -> None:
             params.get("audio_workflow"),
             duration=params.get("duration"),
             audio_category=params.get("audio_category"),
-            keyscale=params.get("keyscale"),
-            language=params.get("language"),
-            bpm=params.get("bpm"),
         )
         or audio_lora_problem(
             mode, params.get("loras") or [], params.get("video_loras") or []
@@ -754,9 +751,6 @@ def _params_from_create(payload: JobCreate) -> dict[str, Any]:
         # mode 'audio' only (kept in params for rerun / inspection)
         "audio_prompt": payload.audio_prompt,
         "lyrics": payload.lyrics,
-        "bpm": payload.bpm,
-        "keyscale": payload.keyscale,
-        "language": payload.language,
         "negative_tags": payload.negative_tags,
         "audio_category": payload.audio_category,
         "reprompt": payload.reprompt,
@@ -1114,9 +1108,6 @@ def _generation_params(
         # 音声ジョブ用（旧ジョブの params には無いので既定値のまま）
         audio_prompt=p.get("audio_prompt", ""),
         lyrics=p.get("lyrics", ""),
-        bpm=int(p.get("bpm", 120)),
-        keyscale=p.get("keyscale") or "C major",
-        language=p.get("language") or "en",
         negative_tags=p.get("negative_tags") or "",
         audio_category=p.get("audio_category") or "Music",
         reprompt=bool(p.get("reprompt", False)),

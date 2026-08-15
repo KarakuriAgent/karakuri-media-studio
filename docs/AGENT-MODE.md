@@ -71,7 +71,7 @@ Grok がチャットから生成設定一式を組み立て、複数の動画ジ
 `audio_path`, `source_image`, **`end_image`**, **`reference_video`**, `seed`（固定 or 抽選）、
 **`selects`**（ワークフローが宣言する選択式フィールド）、
 **`model_overrides`**（実行ごとのモデル切り替え）、
-および音声モード専用の **`audio_prompt`** / `lyrics` / `bpm` / `keyscale` / `language` /
+および音声モード専用の **`audio_prompt`** / `lyrics` / `negative_tags` /
 `audio_category` / `reprompt`
 
 LoRA は登録時の対象（SPEC §3.4）で振り分ける: 画像用は `loras`、動画用は `video_loras`。
@@ -117,7 +117,7 @@ LoRA は登録時の対象（SPEC §3.4）で振り分ける: 画像用は `lora
 テスト）が検出するので、ワークフローを追加したらプロンプト側の追記漏れは起きない。
 
 画像カタログは各ワークフローのモデルファミリーと `image_prompt` の書き方（ファミリー別）を、
-音声カタログは秒数の対応範囲とそのモデルが読むフィールド（`lyrics` / `bpm` / `audio_category` 等）を
+音声カタログは秒数の対応範囲とそのモデルが読むフィールド（`lyrics` / `audio_category` 等）を
 同じ仕組みで出す。あわせて **IMAGE PROMPT GUIDES / AUDIO PROMPT SPEC**（モデル別の書き方、
 公式ドキュメント準拠）も全種ぶん焼き込む。エージェントは 1 セッションで複数のモデルを
 使い分けるため、チャット（SPEC §4.3）と違って選択中のものだけに絞らない。
@@ -352,9 +352,8 @@ Grok CLI はステートレスなテキスト入出力なので、ツール呼�
       "label": "② 主題歌デモ（音声のみ）",
       "job": {
         "mode": "audio",
-        "audio_workflow": "ace_step1_5_xl_sft",
-        "audio_prompt": "...", "lyrics": "[Verse 1]\n...",
-        "bpm": 92, "keyscale": "F# minor", "language": "ja",
+        "audio_workflow": "minimax_music_3",
+        "audio_prompt": "Global Metadata: ...", "lyrics": "[Verse]\n...",
         "duration": 120, "seed": null
       }
     }

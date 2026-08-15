@@ -820,15 +820,15 @@ describe('Elements', () => {
 // ------------------------------------------------------------- audio (mode)
 // 音声はモードタブの一つだが、走るのは音声ワークフロー 1 本きりの独立ジョブ。
 
-const ACE = workflow({
-  id: 'ace_step1_5_xl_sft',
-  label: 'ACE-Step 1.5 XL',
+const MMM3 = workflow({
+  id: 'minimax_music_3',
+  label: 'MiniMax Music 3',
   kind: 'audio',
-  family: 'ace-step',
-  supports: ['prompt', 'lyrics', 'duration', 'bpm', 'keyscale', 'language', 'seed'],
-  min_duration: 10,
-  max_duration: 600,
-  default_duration: 120,
+  family: 'minimax-music',
+  supports: ['prompt', 'lyrics', 'duration', 'steps', 'seed'],
+  min_duration: 1,
+  max_duration: 300,
+  default_duration: 60,
 })
 
 const SA3 = workflow({
@@ -894,15 +894,15 @@ function audioForm(overrides: Partial<FormState> = {}): FormState {
 
 describe('audioSupports / durationRange', () => {
   it('reads the knobs straight off the workflow manifest', () => {
-    expect(audioSupports(ACE, 'lyrics')).toBe(true)
+    expect(audioSupports(MMM3, 'lyrics')).toBe(true)
     expect(audioSupports(SA3, 'lyrics')).toBe(false)
     expect(audioSupports(SA3, 'audio_category')).toBe(true)
-    expect(audioSupports(ACE, 'audio_category')).toBe(false)
+    expect(audioSupports(MMM3, 'audio_category')).toBe(false)
   })
 
   it('treats a missing workflow as unconstrained', () => {
     expect(durationRange(null)).toBeNull()
-    expect(durationRange(ACE)).toEqual({ min: 10, max: 600 })
+    expect(durationRange(MMM3)).toEqual({ min: 1, max: 300 })
   })
 })
 
@@ -923,15 +923,15 @@ describe('megapixelsFor', () => {
 
 describe('clampToWorkflow', () => {
   it('keeps a duration that is already in range', () => {
-    expect(clampToWorkflow(audioForm({ audioDuration: 90 }), ACE)).toEqual({})
+    expect(clampToWorkflow(audioForm({ audioDuration: 90 }), MMM3)).toEqual({})
   })
 
   it('falls back to the new model default when switching out of range', () => {
     expect(clampToWorkflow(audioForm({ audioDuration: 600 }), SA3)).toEqual({
       audioDuration: 60,
     })
-    expect(clampToWorkflow(audioForm({ audioDuration: 2 }), ACE)).toEqual({
-      audioDuration: 120,
+    expect(clampToWorkflow(audioForm({ audioDuration: 600 }), MMM3)).toEqual({
+      audioDuration: 60,
     })
   })
 
@@ -960,65 +960,50 @@ describe('hiddenFields — audio mode', () => {
 
 describe('validateForm — audio mode', () => {
   it('accepts a filled-in form', () => {
-    expect(validateForm(audioForm({ audioDuration: 120 }), null, ACE)).toEqual({})
+    expect(validateForm(audioForm({ audioDuration: 120 }), null, MMM3)).toEqual({})
   })
 
   it('requires a prompt', () => {
     expect(
-      validateForm(audioForm({ audioPrompt: '   ' }), null, ACE),
+      validateForm(audioForm({ audioPrompt: '   ' }), null, MMM3),
     ).toHaveProperty('audio_prompt')
   })
 
   it('reports a duration outside the model range', () => {
-    const errors = validateForm(audioForm({ audioDuration: 900 }), null, ACE)
-    expect(errors.duration).toContain('10')
-    expect(errors.duration).toContain('600')
+    const errors = validateForm(audioForm({ audioDuration: 900 }), null, MMM3)
+    expect(errors.duration).toContain('1')
+    expect(errors.duration).toContain('300')
     expect(
       validateForm(audioForm({ audioDuration: 900 }), null, SA3).duration,
     ).toContain('380')
   })
 
-  it('only checks the bpm of a workflow that has one', () => {
-    expect(
-      validateForm(audioForm({ bpm: 900, audioDuration: 120 }), null, ACE),
-    ).toHaveProperty('bpm')
-    expect(
-      validateForm(audioForm({ bpm: 900, audioDuration: 60 }), null, SA3),
-    ).toEqual({})
-  })
-
   it('does not run the image-workflow check in audio mode', () => {
     // qwen-image が選ばれたままでも、音声ジョブは参照画像を要求しない
     expect(
-      validateForm(audioForm({ audioDuration: 120, sourceImage: '' }), QWEN, ACE),
+      validateForm(audioForm({ audioDuration: 120, sourceImage: '' }), QWEN, MMM3),
     ).toEqual({})
   })
 })
 
 describe('audioJobPayload', () => {
-  it('sends only the fields the selected workflow uses (ACE-Step)', () => {
+  it('sends only the fields the selected workflow uses (MiniMax Music 3)', () => {
     const payload = audioJobPayload(
       audioForm({
-        audioWorkflow: ACE.id,
-        lyrics: '[Verse 1]\nhello',
+        audioWorkflow: MMM3.id,
+        lyrics: '[Verse]\nhello',
         audioDuration: 120,
-        bpm: 92,
-        keyscale: 'F# minor',
-        language: 'ja',
         audioCategory: 'SFX',
         reprompt: true,
       }),
-      ACE,
+      MMM3,
     )
     expect(payload).toMatchObject({
       mode: 'audio',
-      audio_workflow: ACE.id,
+      audio_workflow: MMM3.id,
       audio_prompt: 'a warm lofi loop',
-      lyrics: '[Verse 1]\nhello',
+      lyrics: '[Verse]\nhello',
       duration: 120,
-      bpm: 92,
-      keyscale: 'F# minor',
-      language: 'ja',
       seed: null,
     })
     expect(payload).not.toHaveProperty('audio_category')
@@ -1042,8 +1027,6 @@ describe('audioJobPayload', () => {
       duration: 30,
     })
     expect(payload).not.toHaveProperty('lyrics')
-    expect(payload).not.toHaveProperty('bpm')
-    expect(payload).not.toHaveProperty('keyscale')
   })
 
   it('sends the style, the lyrics, the negative tags and the selects (Suno)', () => {
@@ -1052,8 +1035,6 @@ describe('audioJobPayload', () => {
         audioWorkflow: SUNO.id,
         lyrics: '[Verse 1]\nhello',
         negativeTags: 'screaming, distorted guitar',
-        bpm: 92,
-        keyscale: 'F# minor',
         selects: { model: 'V5_5', vocal_gender: 'f' },
       }),
       SUNO,
@@ -1065,10 +1046,9 @@ describe('audioJobPayload', () => {
       negative_tags: 'screaming, distorted guitar',
       selects: { model: 'V5_5', vocal_gender: 'f' },
     })
-    // Suno が読まないつまみは送らない（ACE-Step 専用）
-    expect(payload).not.toHaveProperty('bpm')
-    expect(payload).not.toHaveProperty('keyscale')
-    expect(payload).not.toHaveProperty('language')
+    // Suno が読まないつまみは送らない（Stable Audio 専用）
+    expect(payload).not.toHaveProperty('audio_category')
+    expect(payload).not.toHaveProperty('reprompt')
   })
 
   it('尺は V5_5 のときだけ指定できる（他のモデルでは黙って無視される）', () => {
@@ -1101,22 +1081,22 @@ describe('audioJobPayload', () => {
     ).toContain('V5_5')
   })
 
-  it('leaves the negative tags and the selects out for ACE-Step', () => {
+  it('leaves the negative tags and the selects out for MiniMax Music 3', () => {
     const payload = audioJobPayload(
       audioForm({
-        audioWorkflow: ACE.id,
+        audioWorkflow: MMM3.id,
         negativeTags: 'screaming',
         selects: { model: 'V5_5' },
         audioDuration: 120,
       }),
-      ACE,
+      MMM3,
     )
     expect(payload).not.toHaveProperty('negative_tags')
     expect(payload).not.toHaveProperty('selects')
   })
 
   it('never carries image / video fields', () => {
-    const payload = audioJobPayload(audioForm({ audioWorkflow: ACE.id }), ACE)
+    const payload = audioJobPayload(audioForm({ audioWorkflow: MMM3.id }), MMM3)
     for (const key of [
       'image_prompt',
       'video_prompt',
@@ -1135,43 +1115,43 @@ describe('audioJobPayload', () => {
   it('uses the audio length, never the video one', () => {
     const payload = audioJobPayload(
       audioForm({ duration: 10, audioDuration: 180 }),
-      ACE,
+      MMM3,
     )
     expect(payload.duration).toBe(180)
   })
 
   it('carries the picked audio model, and only when it differs', () => {
     const audioSlot: ModelSlot = {
-      key: `${ACE.id}/1.ckpt_name`,
-      workflow_id: ACE.id,
-      workflow_label: 'ACE-Step',
+      key: `${MMM3.id}/1.ckpt_name`,
+      workflow_id: MMM3.id,
+      workflow_label: 'MiniMax Music 3',
       kind: 'audio',
       node_id: '1',
       field: 'ckpt_name',
       class_type: 'CheckpointLoaderSimple',
       label: 'Load Checkpoint',
-      default: 'ace.safetensors',
-      choices: ['ace.safetensors', 'ace-alt.safetensors'],
+      default: 'minimax_music3.safetensors',
+      choices: ['minimax_music3.safetensors', 'minimax_music3-alt.safetensors'],
     }
     const picked = audioJobPayload(
       audioForm({
-        audioWorkflow: ACE.id,
-        modelOverrides: { [audioSlot.key]: 'ace-alt.safetensors' },
+        audioWorkflow: MMM3.id,
+        modelOverrides: { [audioSlot.key]: 'minimax_music3-alt.safetensors' },
       }),
-      ACE,
+      MMM3,
       [audioSlot],
     )
-    expect(picked.model_overrides).toEqual({ [audioSlot.key]: 'ace-alt.safetensors' })
+    expect(picked.model_overrides).toEqual({ [audioSlot.key]: 'minimax_music3-alt.safetensors' })
     // 既定値のままなら送らない
     expect(
-      audioJobPayload(audioForm({ audioWorkflow: ACE.id }), ACE, [audioSlot]),
+      audioJobPayload(audioForm({ audioWorkflow: MMM3.id }), MMM3, [audioSlot]),
     ).not.toHaveProperty('model_overrides')
   })
 
   it('passes an explicit seed only when it is locked', () => {
-    expect(audioJobPayload(audioForm({ seedLocked: true, seed: 7 }), ACE).seed).toBe(7)
+    expect(audioJobPayload(audioForm({ seedLocked: true, seed: 7 }), MMM3).seed).toBe(7)
     expect(
-      audioJobPayload(audioForm({ seedLocked: false, seed: 7 }), ACE).seed,
+      audioJobPayload(audioForm({ seedLocked: false, seed: 7 }), MMM3).seed,
     ).toBeNull()
   })
 })
@@ -1428,13 +1408,11 @@ function restoreOptions(overrides: Partial<Options> = {}): Options {
     comfy_url: '',
     image_workflows: [KREA2, ANIMA, QWEN],
     video_workflows: [T2V, I2V, ID_LORA, WAN],
-    audio_workflows: [ACE, SA3],
+    audio_workflows: [MMM3, SA3],
     default_video_workflow: ID_LORA.id,
     default_image_workflow: KREA2.id,
-    default_audio_workflow: ACE.id,
+    default_audio_workflow: MMM3.id,
     audio_categories: [],
-    keyscales: [],
-    languages: [],
     aspect_ratios: ['4:3 (Standard)', '16:9 (Wide)'],
     lora_files: [],
     model_slots: [],
@@ -1607,13 +1585,10 @@ describe('formStateFromParams — 動画のみ / 音声ジョブ', () => {
   it('音声ジョブの尺は audioDuration に入る（動画側は初期値のまま）', () => {
     const form = restored({
       mode: 'audio',
-      audio_workflow: ACE.id,
+      audio_workflow: MMM3.id,
       audio_prompt: 'a warm lofi loop',
       lyrics: '[Verse 1]\nhello',
       duration: 180,
-      bpm: 92,
-      keyscale: 'F# minor',
-      language: 'ja',
       audio_category: 'SFX',
       reprompt: true,
       audio_seed: 7,
@@ -1621,13 +1596,10 @@ describe('formStateFromParams — 動画のみ / 音声ジョブ', () => {
     })
     expect(form).toMatchObject({
       mode: 'audio',
-      audioWorkflow: ACE.id,
+      audioWorkflow: MMM3.id,
       audioPrompt: 'a warm lofi loop',
       lyrics: '[Verse 1]\nhello',
       audioDuration: 180,
-      bpm: 92,
-      keyscale: 'F# minor',
-      language: 'ja',
       audioCategory: 'SFX',
       reprompt: true,
       seed: 7,

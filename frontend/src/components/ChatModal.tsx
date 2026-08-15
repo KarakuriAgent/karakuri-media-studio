@@ -103,11 +103,6 @@ export default function ChatModal({
           audio && audioSupports(audioWorkflow, 'audio_category')
             ? form.audioCategory
             : null,
-        bpm: audio && audioSupports(audioWorkflow, 'bpm') ? form.bpm : null,
-        keyscale:
-          audio && audioSupports(audioWorkflow, 'keyscale') ? form.keyscale : null,
-        language:
-          audio && audioSupports(audioWorkflow, 'language') ? form.language : null,
         negative_tags_draft:
           audio && audioSupports(audioWorkflow, 'negative_tags')
             ? form.negativeTags
@@ -168,18 +163,9 @@ export default function ChatModal({
     if (result.video_prompt != null) changes.videoPrompt = result.video_prompt
     if (result.audio_prompt != null) changes.audioPrompt = result.audio_prompt
     // モデル固有の提案は、選択中のワークフローが実際に読む項目だけ反映する
-    // （Stable Audio に歌詞やキーを書き込んでも使われないので入れない）。
+    // （Stable Audio に歌詞を書き込んでも使われないので入れない）。
     if (result.lyrics != null && audioSupports(audioWorkflow, 'lyrics')) {
       changes.lyrics = result.lyrics
-    }
-    if (result.bpm != null && audioSupports(audioWorkflow, 'bpm')) {
-      changes.bpm = result.bpm
-    }
-    if (result.keyscale != null && audioSupports(audioWorkflow, 'keyscale')) {
-      changes.keyscale = result.keyscale
-    }
-    if (result.language != null && audioSupports(audioWorkflow, 'language')) {
-      changes.language = result.language
     }
     if (
       result.negative_tags != null &&
@@ -288,23 +274,6 @@ export default function ChatModal({
                     </p>
                   </div>
                 )}
-              {audio && (result.bpm != null || result.keyscale || result.language) && (
-                <p className="text-muted-foreground">
-                  {[
-                    result.bpm != null && audioSupports(audioWorkflow, 'bpm')
-                      ? `BPM ${result.bpm}`
-                      : null,
-                    result.keyscale && audioSupports(audioWorkflow, 'keyscale')
-                      ? result.keyscale
-                      : null,
-                    result.language && audioSupports(audioWorkflow, 'language')
-                      ? `言語 ${result.language}`
-                      : null,
-                  ]
-                    .filter(Boolean)
-                    .join(' / ')}
-                </p>
-              )}
               {result.notes && (
                 <p className="whitespace-pre-wrap text-muted-foreground">{result.notes}</p>
               )}

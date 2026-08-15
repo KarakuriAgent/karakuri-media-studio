@@ -10,7 +10,7 @@
 >
 > v0.3 での変更: 画像ワークフローを 4 種（krea2 / anima / z-image / qwen-image-edit）から
 > 選択式にし、画像 LoRA を**モデルファミリー**で仕分けるようにした。あわせて**音声モード**
-> （ACE-Step 1.5 / Stable Audio 3）を追加した。音声は画像・動画と連結しない独立ジョブ。
+> （MiniMax Music 3 / Stable Audio 3）を追加した。音声は画像・動画と連結しない独立ジョブ。
 
 ---
 
@@ -224,17 +224,18 @@ LoRA チェーンも持たない（テンプレートに LoRA ノードが無い
 
 | id | 表示名 | family | 秒数（min/既定/max） | 固有フィールド |
 |---|---|---|---|---|
-| `ace_step1_5_xl_sft` | ACE-Step 1.5 XL（音楽・歌もの） | `ace-step` | 10 / 120 / 600 | `lyrics`（空でインスト）・`bpm`（10-300）・`keyscale`・`language` |
+| `minimax_music_3` | MiniMax Music 3（音楽・歌もの） | `minimax-music` | 1 / 60 / 300 | `lyrics`（空でインスト） |
 | `stable_audio_3_medium_base` | Stable Audio 3 Medium（効果音・環境音・音楽） | `stable-audio` | 1 / 60 / 380 | `audio_category`（Music / Instrument / SFX / One-shot）・`reprompt`（内蔵 LLM でのプロンプト展開） |
 
-- 既定は `ace_step1_5_xl_sft`
-- ジョブの必須項目は `audio_prompt` のみ。`duration` がワークフローの範囲外、`keyscale` / `language` /
-  `audio_category` が ComfyUI ノードの COMBO 値に無い、`bpm` が範囲外、といったものはジョブ投入前に 422 で弾く
+- 既定は `minimax_music_3`。テンポ・キー・歌い手といった指定は、専用のつまみではなく
+  `audio_prompt`（キャプション）本文に書く
+- ジョブの必須項目は `audio_prompt` のみ。`duration` がワークフローの範囲外、`audio_category` が
+  ComfyUI ノードの COMBO 値に無い、といったものはジョブ投入前に 422 で弾く
   （どれも ComfyUI 側で prompt 全体が失敗するため）
-- 出力は mp3（`SaveAudioMP3`）で `outputs/{job_id}/audio.mp3` に保存し、`jobs.audio_output_path` に記録する
+- 出力は mp3（MiniMax Music 3 は `SaveAudioAdvanced`、Stable Audio は `SaveAudioMP3`）で
+  `outputs/{job_id}/audio.mp3` に保存し、`jobs.audio_output_path` に記録する
 - 秒数の上下限・COMBO 値の一覧は `backend/app/workflows.py`（`min_duration` / `max_duration` /
-  `KEYSCALES` / `LANGUAGES` / `BPM_RANGE` / `AUDIO_CATEGORIES`）が単一の情報源で、
-  フォーム・Grok カタログ・バリデータが同じ集合を見る
+  `AUDIO_CATEGORIES`）が単一の情報源で、フォーム・Grok カタログ・バリデータが同じ集合を見る
 ---
 
 ## 3. ワークフロー解析とパラメータ注入ポイント
@@ -261,7 +262,7 @@ LoRA チェーンも持たない（テンプレートに LoRA ノードが無い
 | 画像ワークフロー | ― | プルダウン（`/api/options` の `image_workflows`）。画像ステージが走るモードでのみ表示 |
 | 音声ワークフロー | ― | プルダウン（`/api/options` の `audio_workflows`）。`mode: "audio"` でのみ表示 |
 | アスペクト比 / メガピクセル | 画像: `aspect_ratio` / `megapixels` → ResolutionSelector（krea2 は `49`、anima は `91`）。z-image と動画: アプリが幅・高さを計算して `width` / `height` に注入。qwen-image-edit は入力画像から決まるので注入しない | セレクト（選択肢は `/object_info` の ResolutionSelector から動的取得）+ 数値。メガピクセルの既定は 1.0 だが、`default_megapixels` を宣言するワークフローを選ぶとその値になる（下記） |
-| 音声プロンプト・歌詞・除外タグ・BPM・キー・言語・カテゴリ・展開 | `prompt` / `lyrics` / `negative_tags` / `bpm` / `keyscale` / `language` / `audio_category` / `reprompt` | `mode: "audio"` のみ。選択中の音声ワークフローが露出しているつまみだけ表示（数値の長さを宣言しないモデルでは秒数欄も出ない）。選択式フィールド（§3.1）も音声ワークフローの宣言に従って描画する |
+| 音声プロンプト・歌詞・除外タグ・カテゴリ・展開 | `prompt` / `lyrics` / `negative_tags` / `audio_category` / `reprompt` | `mode: "audio"` のみ。選択中の音声ワークフローが露出しているつまみだけ表示（数値の長さを宣言しないモデルでは秒数欄も出ない）。選択式フィールド（§3.1）も音声ワークフローの宣言に従って描画する |
 | LoRA（画像・複数可） | 画像ワークフローの `lora_chain` を動的構築（§3.4） | 「LoRA（画像）」セクション。登録 LoRA のうち `target = 'image'` かつ**選択中の画像ワークフローと同じファミリー**のものを複数選択＋強度スライダー |
 | LoRA トリガーワード（画像） | `trigger_concat` → `30:27` (StringConcatenate) / `trigger_switch` → `30:28`。この 2 つを持つのは krea2 テンプレートだけで、他の画像ワークフローには自動前置の口が無い（トリガーワードは `image_prompt` 本文に書く） | 選択 LoRA のトリガーワードを自動連結（編集可） |
 | LoRA（動画・複数可） | 動画ワークフローの `lora_chain` を動的構築（§3.4） | 「LoRA（動画）」セクション。登録 LoRA のうち `target = 'video'` のものを複数選択＋強度スライダー |
@@ -278,7 +279,7 @@ LoRA チェーンも持たない（テンプレートに LoRA ノードが無い
 
 #### サンプリングのステップ数（`steps`）
 
-「何ステップ回すか」はモデルごとに前提が違う（蒸留された turbo 系は 4、ACE-Step は 50）ので、
+「何ステップ回すか」はモデルごとに前提が違う（蒸留された turbo 系は 4、MiniMax Music 3 は 30）ので、
 **ワークフローの既定値を正**として扱い、`steps` は**上書きしたいときだけ**指定するつまみにしてある。
 
 - マニフェストに `"steps": T(<node>, "steps", "KSampler" | "BasicScheduler")` を宣言したワークフローだけが
@@ -514,8 +515,8 @@ VRAM が足りずに CUDA OOM で落ちる。そこで `WorkflowSpec.default_meg
 | 画像 / 動画 / 音声プロンプト | `prompt` | フォームの確定値（手動 or Grok チャット反映後） |
 | 画像 seed | `seed`（krea2 は `30:3` の `KSampler.seed`。テンプレートごとに異なる） | 実行毎にランダム（固定オプションあり）。`params` に保存して再現可能 |
 | 動画 noise seed | `seeds`（低解像度パス + アップスケールパスの `RandomNoise`、IC-LoRA 系は `KSampler.seed`） | 同上。seed が 1 個しか渡らない場合は全サンプラーで共用 |
-| 音声 seed | `seed`（ACE-Step は `109` の `PrimitiveInt`、Stable Audio は `KSampler.seed`） | 同上（`params` には `audio_seed` として保存） |
-| 音声の長さ | `duration` / `latent_seconds` | ACE-Step は conditioning と空ラテントの両方に同じ秒数を入れる。Stable Audio は空ラテントが同じ `PrimitiveFloat` を読むので 1 か所 |
+| 音声 seed | `seed`（MiniMax Music 3 は `37:38` の `SeedNode`、Stable Audio は `KSampler.seed`） | 同上（`params` には `audio_seed` として保存） |
+| 音声の長さ | `duration` / `latent_seconds` | どちらのワークフローも空ラテントがテキストエンコード側の出力（MiniMax Music 3）や同じ `PrimitiveFloat`（Stable Audio）を読むので注入は 1 か所。2 か所に入れるテンプレート用に `latent_seconds` の口は残してある |
 | 出力プレフィックス | `save_prefix` | 画像 `images/{job_id}` / 動画 `video/{job_id}` / 音声 `audio/{job_id}` にして成果物とジョブを紐付け |
 | ローカル LLM リファイン | `refine_enable` → `30:24`（krea2 のみ） | **false 固定**（プロンプト整形は Grok が担う）。`ComfySwitchNode` は遅延評価（`check_lazy_status`）なので `30:16` (TextGenerate) は実行されない |
 | プロンプト拡張 | `prompt_enhance` → 各テンプレートの `Boolean (Enable Prompt Enhance)` | **false 固定**（同上）。IC-LoRA 系は false なのでスイッチのリテラル側 `on_false` にプロンプトを注入する |
@@ -526,7 +527,7 @@ Stable Audio の `reprompt`（内蔵 LLM でのプロンプト展開）だけは
 ### 3.3 固定（触らない）ノード
 
 - 画像側: 各ファミリーの UNET / CLIP / VAE（krea2 = `krea2_turbo_fp8_scaled` + `qwen3vl_4b_fp8_scaled` + `qwen_image_vae`、anima = `anima-base-v1.0`、z-image = `z_image_turbo_bf16`、qwen-image = `qwen_image_edit_2511_int8_convrot` + Lightning 4steps LoRA）と KSampler 設定
-- 音声側: ACE-Step `acestep_v1.5_xl_sft_bf16` + `qwen_0.6b_ace15` / `qwen_4b_ace15` + `ace_1.5_vae`、Stable Audio `stable_audio_3_medium_base` + `t5gemma_b_b_ul2` / `qwen3.5_2b_bf16`、およびサンプラー設定
+- 音声側: MiniMax Music 3 `minimax_music3_dit_fp16` + `minimax_music3_text_encoder_pruned_int8_convrot` + `minimax_music3_dav`、Stable Audio `stable_audio_3_medium_base` + `t5gemma_b_b_ul2` / `qwen3.5_2b_bf16`、およびサンプラー設定
 - 動画側: MiniMax H3 の UNET / CLIP / 映像 VAE / 音声 VAE（`minimax_h3_*` 系。turbo は w4a8 量子化ウェイト + 4step 蒸留 LoRA + Sage Attention / Sol-Attn / SigmaShift / Spectrum）とサンプラー設定
 - **モデルファイル名は利用者の ComfyUI 環境依存**のため、設定ページ（`GET/PUT /api/models`）で上書き可能。既定値は各テンプレートの値。対象は UNETLoader.unet_name / CLIPLoader.clip_name / CLIPVisionLoader.clip_name / VAELoader.vae_name / CheckpointLoaderSimple.ckpt_name / LatentUpscaleModelLoader.model_name / LoadMoGeModel.model_name / LoraLoaderModelOnly.lora_name / LoraLoader.lora_name / MiniMaxH3TurboLoRA.lora_name（§3.4 で削除される画像テンプレートのプレースホルダは除く。テンプレートが持つ固定 LoRA ノード（qwen-image の Lightning LoRA、MiniMax H3 turbo の 4step 蒸留 LoRA）はユーザー LoRA と共存するので上書き対象のまま）
 - **モデルの指定は接続先ごと**（SPEC §5）: `Settings.model_overrides` / `model_choices` は `{"<comfy_target>": {"<スロットキー>": …}}` の 2 段で持つ。どのファイルが在るかは ComfyUI の環境ごとに違うため。`GET/PUT /api/models` は `?target=`（PUT はボディの `target`）で対象環境を選び、省略すると現在の接続先。**書き込みは選んだ環境だけ**で他の環境の指定は残る。ジョブ実行・`/api/options` の `model_slots`・エージェントの検証はすべて「現在の接続先」の値（`Settings.overrides_for()` / `choices_for()`）を使う。接続先を分ける前の設定（1 組だけ）は読み込み時に**3 環境すべてへ複製**される（`config._per_target`）: 分けた瞬間に指定が消えて既定モデルで走り出すのを避けるため
@@ -644,7 +645,7 @@ Cookie ベースの非公式 API は規約リスクがあるため**使わない
 
 ### 4.2 プロンプト生成の仕様
 
-プロンプト作成は**手動が基本**。Grok を使う場合はチャット形式（§4.3）で要件を掘り下げ、最終的に JSON（`image_prompt`, `video_prompt`, `notes`。`mode: "audio"` では `audio_prompt`, `lyrics`, `bpm`, `keyscale`, `language`, `notes`）を出力させてフォームに反映する。システムプロンプトに各モデルのプロンプト仕様を埋め込む。
+プロンプト作成は**手動が基本**。Grok を使う場合はチャット形式（§4.3）で要件を掘り下げ、最終的に JSON（`image_prompt`, `video_prompt`, `notes`。`mode: "audio"` では `audio_prompt`, `lyrics`, `negative_tags`, `notes`）を出力させてフォームに反映する。システムプロンプトに各モデルのプロンプト仕様を埋め込む。
 
 チャットのシステムプロンプトには**選択中のワークフローに対応する仕様だけ**を入れる
 （画像はファミリー別、動画はワークフロー別、音声はモデル別）。エージェントは 1 セッションで
@@ -696,12 +697,13 @@ Cookie ベースの非公式 API は規約リスクがあるため**使わない
 
 **音声プロンプト（`mode: "audio"`）**
 
-`prompts.ACE_STEP_AUDIO_SPEC` / `STABLE_AUDIO_SPEC` を、選択中の音声ワークフローに
-応じて埋め込む（出典は ACE-Step 1.5 と Stable Audio 3 の公式ドキュメント、ComfyUI の各ノード実装）:
+`prompts.MINIMAX_MUSIC_3_SPEC` / `STABLE_AUDIO_SPEC` を、選択中の音声ワークフローに
+応じて埋め込む（出典は MiniMax Music 3 と Stable Audio 3 の公式ドキュメント、ComfyUI の各ノード実装）:
 
-- **ACE-Step 1.5**: `audio_prompt` は曲そのものの**キャプション**（ジャンル・雰囲気・楽器と音色・
-  プロダクション・テンポ感・ボーカルの声質）。歌詞は `audio_prompt` ではなく `lyrics` に、
-  `[Verse]` / `[Chorus]` の構造タグ付きで書く。`bpm` / `keyscale` / `language` も Grok が提案する
+- **MiniMax Music 3**: `audio_prompt` は曲そのものの **Structured Caption**（`Global Metadata:` /
+  `Vocal Details:` / `Arrangement:` の 3 見出し、250〜450 語）。テンポ・キー・声質・編成は
+  すべてこの本文に書く。歌詞は `audio_prompt` ではなく `lyrics` に、`[Verse]` / `[Chorus]` の
+  セクションタグ付きで書く。ユーザーが言っていない BPM・キー・ボーカルの性別は確定させない
 - **Stable Audio 3**: 音そのものを説明する短い自然文 1 つ（音楽ならジャンル・楽器・ムード・テンポ、
   効果音なら音源・素材・空間）。歌わないので歌詞は書かない。ネガティブプロンプトは公式にも
   テンプレートにも存在しないので書かない
@@ -723,7 +725,7 @@ Cookie ベースの非公式 API は規約リスクがあるため**使わない
 
 - grok CLI のヘッドレス実行（`grok -p`）は 1 発呼び出しのため、**会話履歴はアプリ側で保持**し、毎ターン「システムプロンプト + 履歴全文 + 最新発言」を組み立てて渡す
 - システムプロンプトの構成: ①役割（プロンプトエンジニア兼インタビュアー）②各モデルのプロンプト仕様（§4.2。画像は選択中ワークフローのファミリーのものだけ。動画は公式 H3 契約 + `FEW_SHOT_H3`）③ヒアリング項目チェックリスト ④選択中の画像・動画ワークフローの特性（下記）⑤最終出力は ```json フェンス内の `{image_prompt, video_prompt, notes}` のみ、というルール
-- `mode: "audio"` では専用のシステムプロンプト（`build_audio_system_prompt`）に切り替わる: 選択中の音声ワークフローの仕様とそのモデルが読むフィールドだけを提示し、出力は `{audio_prompt, lyrics, bpm, keyscale, language, negative_tags, notes}`。画像・動画のプロンプトは書かせない。フォーム側も、選択中のワークフローが持たないつまみ（Stable Audio の `lyrics` など）は反映しない
+- `mode: "audio"` では専用のシステムプロンプト（`build_audio_system_prompt`）に切り替わる: 選択中の音声ワークフローの仕様とそのモデルが読むフィールドだけを提示し、出力は `{audio_prompt, lyrics, negative_tags, notes}`。画像・動画のプロンプトは書かせない。フォーム側も、選択中のワークフローが持たないつまみ（Stable Audio の `lyrics` など）は反映しない
 - **ワークフロー特性の反映**: CONTEXT には選択中の `video_workflow` の用途・必要入力・音声の扱い・`video_prompt` の書き方と、`image_workflow` の用途・ファミリー・必要入力・`image_prompt` の書き方を出す。文面は `app/workflows.py` の `WorkflowSpec`（`description` / `audio_role` / `prompt_hint`）から自動生成する単一情報源なので、ワークフローを追加したらマニフェスト側に書けばチャット・エージェント両方に反映される（未記入は `validate_specs()` = ヘルスチェックで検出）。例: flf2v なら開始→終了フレーム間の遷移を書かせる、t2v / リファレンスシート IC-LoRA なら開始フレーム前提にしない、ia2v なら渡した音声がそのまま音声トラックになるのでセリフをプロンプトに書かせない、ic_lora_motion ならカメラ・テンポは参照動画由来なので書かせない
 - 応答の判定: 応答に JSON フェンスがあれば「最終案の提示」、なければ「質問継続」として UI に表示
 - 十分詳細な初回入力なら Grok は質問を飛ばして即 JSON を返してよい（ワンショット生成はチャットの特殊ケースとして自然に実現）
@@ -882,7 +884,7 @@ CREATE TABLE jobs (
 );
 ```
 
-- `params` には `video_workflow` / `image_workflow` / `audio_workflow`（ワークフロー ID）と、`end_image` / `reference_video` / `reference_images` / `reference_videos` / `reference_audios`、音声モードの `audio_prompt` / `lyrics` / `negative_tags` / `bpm` / `keyscale` / `language` / `audio_category` / `reprompt` / `audio_seed` も保存する
+- `params` には `video_workflow` / `image_workflow` / `audio_workflow`（ワークフロー ID）と、`end_image` / `reference_video` / `reference_images` / `reference_videos` / `reference_audios`、音声モードの `audio_prompt` / `lyrics` / `negative_tags` / `audio_category` / `reprompt` / `audio_seed` も保存する
 - 後から足したカラム（`nsfw` / `nsfw_source` / `audio_prompt` / `audio_output_path` / `credits_consumed` / `extra_outputs` など）は起動時に `PRAGMA table_info` と突き合わせて不足分だけ `ALTER TABLE` する（`db.MIGRATIONS`）
 - `workflow_json` を保存するため、任意の過去ジョブの投入内容をあとから完全に確認できる（`rerun` は `params` から作り直す）
 - リファレンス音声・アップロード画像は `assets/` に保存し再利用可能（名前を付けて管理）
@@ -1171,7 +1173,7 @@ workflow/           ComfyUI ワークフロー（API フォーマット）テン
                     minimax_h3_t2v_save / _i2v_save / _r2v_save（AV ラテント保存つき）
                     …_turbo（4 ステップ版）/ …_opt（蒸留 LoRA なしの 20 ステップ最適化版）
                     ※ turbo / opt は上の 7 通り（素 3 / _save 3 / _r2v_context）すべてに揃えてある
-  audio/            ace_step1_5_xl_sft.json / stable_audio_3_medium_base.json
+  audio/            minimax_music_3.json / stable_audio_3_medium_base.json
 app.db              SQLite（jobs / loras / library / chat_sessions / agent_sessions）
 outputs/            生成物（/outputs で静的配信）
 assets/             アップロードした画像・音声・参照動画・LoRA サンプル（/assets で静的配信）
@@ -1209,7 +1211,7 @@ runtime/            config.json / grok 作業ディレクトリ（プロンプ�
 11. 画像ワークフロー: **選択式**（krea2 / anima / z-image / qwen-image-edit）。`image_prompt` の
     仕様はファミリーごとに別物として扱う（§2.3 / §4.2）
 12. 画像 LoRA: **モデルファミリーで仕分け**、`image_workflow` と一致するものだけ使用可（§3.4）
-13. 音声生成: **独立モード**（画像・動画とは連結しない）。ACE-Step 1.5 / Stable Audio 3（ComfyUI）、出力は mp3（§2.4）
+13. 音声生成: **独立モード**（画像・動画とは連結しない）。MiniMax Music 3 / Stable Audio 3（ComfyUI）、出力は mp3（§2.4）
 14. 未使用項目: **グレーアウトではなく非表示**（値はフォーム状態として保持）（§8）
 
 残課題: なし（実装着手可能）

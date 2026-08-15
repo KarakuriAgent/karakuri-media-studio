@@ -1292,13 +1292,10 @@ def test_audio_job_runs_one_stage_and_stores_the_track(env):
         "/api/jobs",
         json={
             "mode": "audio",
-            "audio_workflow": "ace_step1_5_xl_sft",
+            "audio_workflow": "minimax_music_3",
             "audio_prompt": "warm neo-soul, rhodes piano, brushed drums",
-            "lyrics": "[Verse 1]\nthe last train hums",
+            "lyrics": "[Verse]\nthe last train hums",
             "duration": 30,
-            "bpm": 92,
-            "keyscale": "F# minor",
-            "language": "ja",
             "seed": 1234,
         },
     )
@@ -1310,10 +1307,9 @@ def test_audio_job_runs_one_stage_and_stores_the_track(env):
     assert len(env.comfy.queued) == 1
     assert list(job["workflow_json"]) == ["audio"]
     graph = env.comfy.queued[0]
-    assert graph["94"]["inputs"]["tags"].startswith("warm neo-soul")
-    assert graph["94"]["inputs"]["duration"] == 30
-    assert graph["98"]["inputs"]["seconds"] == 30.0
-    assert graph["109"]["inputs"]["value"] == 1234
+    assert graph["37:13"]["inputs"]["caption"].startswith("warm neo-soul")
+    assert graph["37:13"]["inputs"]["max_duration"] == 30.0
+    assert graph["37:38"]["inputs"]["seed"] == 1234
 
     # 成果物は audio_output_path/-url のみ。動画・画像・ラストフレームは無い。
     assert job["audio_output_url"].endswith(".mp3")
@@ -1360,10 +1356,10 @@ def test_audio_job_uploads_nothing(env):
 def test_audio_job_rejects_an_out_of_range_duration(env):
     response = env.client.post(
         "/api/jobs",
-        json={"mode": "audio", "audio_prompt": "a lofi loop", "duration": 5},
+        json={"mode": "audio", "audio_prompt": "a lofi loop", "duration": 900},
     )
     assert response.status_code == 422
-    assert "10-600 seconds" in response.text
+    assert "1-300 seconds" in response.text
 
 
 def test_audio_job_can_be_rerun_with_a_new_seed(env):
@@ -1380,7 +1376,7 @@ def test_audio_job_can_be_rerun_with_a_new_seed(env):
     again = wait_for(env.client, rerun.json()["id"])
     assert again["status"] == "done", again["error"]
     assert again["mode"] == "audio"
-    assert env.comfy.queued[-1]["109"]["inputs"]["value"] == 22
+    assert env.comfy.queued[-1]["37:38"]["inputs"]["seed"] == 22
 
 
 def test_audio_job_cannot_be_continued(env):
