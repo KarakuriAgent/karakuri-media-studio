@@ -427,9 +427,8 @@ describe('StudioView', () => {
   it('制作タブで生成を押すとダイアログが開き、既定のまま render に投げる', async () => {
     await openProject()
     clickTab('制作')
-    expect(
-      screen.getByText('左のレールでカットを選ぶと、ここで生成できます'),
-    ).toBeTruthy()
+    // 未選択で行き止まりにならないよう、先頭のカットが選ばれている。
+    expect(screen.getByText('カット1 のプロンプト')).toBeTruthy()
 
     fireEvent.click(rail().getByRole('button', { name: 'カット1' }))
     mocked.renderStudioShot.mockResolvedValue({})
@@ -701,6 +700,43 @@ function structured() {
     takes: [],
   })
 }
+
+describe('StudioView: カットの既定選択', () => {
+  it('開いた時点で 1 話目の最初のカットを選ぶ', async () => {
+    await openProject(structured())
+    clickTab('制作')
+    // 未分類（カット2）ではなく、第一夜 / 路地 の先頭（カット1）
+    expect(screen.getByText('カット1 のプロンプト')).toBeTruthy()
+  })
+
+  it('カットが 0 件なら 0 件向けの案内を出す', async () => {
+    await openProject(detail({ shots: [], takes: [] }))
+    clickTab('制作')
+    expect(
+      screen.getByText('カットがありません。脚本タブでカットを追加してください'),
+    ).toBeTruthy()
+  })
+
+  it('選んでいたカットを消すと先頭のカットへ戻る', async () => {
+    const current = structured()
+    await openProject(current)
+    fireEvent.click(rail().getByRole('button', { name: 'カット3' }))
+    clickTab('制作')
+    expect(screen.getByText('カット3 のプロンプト')).toBeTruthy()
+
+    vi.spyOn(window, 'confirm').mockReturnValue(true)
+    mocked.deleteStudioShot.mockResolvedValue({})
+    mocked.getStudioProject.mockResolvedValue({
+      ...current,
+      shots: current.shots.filter((item) => item.id !== 'カット3'),
+    })
+    clickTab('脚本')
+    fireEvent.click(screen.getByRole('button', { name: 'このカットを削除' }))
+    await waitFor(() => expect(mocked.deleteStudioShot).toHaveBeenCalledWith('カット3'))
+    clickTab('制作')
+    expect(await screen.findByText('カット1 のプロンプト')).toBeTruthy()
+  })
+})
 
 describe('StudioView: 話と場のツリー', () => {
   it('話 -> 場 -> カットを並べ、余ったカットは未分類に置く', async () => {

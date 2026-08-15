@@ -12,6 +12,7 @@ import {
   assetKindFromFile,
   assetNameFromFile,
   buildShotTree,
+  firstShotId,
   formatProjectSettingsSummary,
   isStale,
   moveId,
@@ -218,6 +219,34 @@ describe('buildShotTree', () => {
     })
     expect(built.episodes).toEqual([])
     expect(built.unassigned.map((node) => node.shot.id)).toEqual(['s1', 's2'])
+  })
+})
+
+describe('firstShotId', () => {
+  it('1 話目の最初のカットを返す', () => {
+    const built = buildShotTree({
+      episodes: [episode('e1'), episode('e2')],
+      scenes: [scene('sc1', 'e1'), scene('sc2', 'e2')],
+      shots: [
+        shot('s1', { scene_id: null }),
+        shot('s2', { scene_id: 'sc2' }),
+        shot('s3', { scene_id: 'sc1' }),
+      ],
+    })
+    expect(firstShotId(built)).toBe('s3')
+  })
+
+  it('どの話にもカットが無ければ未分類の先頭に落ちる', () => {
+    const built = buildShotTree({
+      episodes: [episode('e1')],
+      scenes: [scene('sc1', 'e1')],
+      shots: [shot('s1', { scene_id: null })],
+    })
+    expect(firstShotId(built)).toBe('s1')
+  })
+
+  it('カットが 1 つも無ければ null', () => {
+    expect(firstShotId(buildShotTree({ episodes: [], scenes: [], shots: [] }))).toBeNull()
   })
 })
 

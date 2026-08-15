@@ -33,6 +33,7 @@ import {
   MAX_STEPS,
   assetKindFromFile,
   buildShotTree,
+  firstShotId,
   moveId,
   moveShot,
   renderingJobIds,
@@ -159,6 +160,13 @@ export default function StudioView({
     void reload()
   }, [projectId, reload])
 
+  // 別のプロジェクトを開いたら選択は持ち越さない（新しい detail が届くまでの
+  // あいだ、前のプロジェクトのカットを選んだままに見えてしまうのを防ぐ）。
+  useEffect(() => {
+    setShotId(null)
+    setAssetId(null)
+  }, [projectId])
+
   // ------------------------------------------------------------ NSFW の表示
   // ヘッダーのトグルがオフのあいだは、NSFW プロジェクトを一覧から存在ごと消す
   // （ジョブ一覧の App.tsx `isVisible` と同じ流儀。ぼかしではなく非表示）。
@@ -238,6 +246,22 @@ export default function StudioView({
       buildShotTree(detail ?? { episodes: [], scenes: [], shots: [] }),
     [detail],
   )
+
+  // 選択が空 / 消えたカットを指しているなら、1 話目の最初のカットへ寄せる。
+  // 制作タブは選択が無いと何も出せず、狭幅では左レールが畳まれていて行き止まり
+  // になるため、詳細を読み直すたびに「必ずどれか選ばれている」状態へ戻す。
+  //
+  // 依存は detail（と、そこから作った tree）だけにしてある。shotId を見てしまうと
+  // 「カットを足して選ぶ -> 読み直す」の途中（新しいカットはまだ detail に無い）で
+  // 選択を奪ってしまうため。
+  useEffect(() => {
+    if (!detail) return
+    setShotId((current) =>
+      current && detail.shots.some((shot) => shot.id === current)
+        ? current
+        : firstShotId(tree),
+    )
+  }, [detail, tree])
 
   // ---------------------------------------------------------------- actions
 

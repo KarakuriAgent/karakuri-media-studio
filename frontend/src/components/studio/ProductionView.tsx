@@ -398,7 +398,7 @@ export default function ProductionView({
   if (!selectedShot) {
     return (
       <p className="rounded-md border border-border bg-surface-sunken px-3 py-8 text-center text-xs text-muted-foreground">
-        左のレールでカットを選ぶと、ここで生成できます
+        カットがありません。脚本タブでカットを追加してください
       </p>
     )
   }

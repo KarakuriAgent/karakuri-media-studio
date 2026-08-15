@@ -288,6 +288,21 @@ export function buildShotTree(detail: {
   return { episodes, unassigned }
 }
 
+/**
+ * 既定で選んでおくカット = 「1 話目の最初のカット」。
+ *
+ * レールに出る順（話 -> 場 -> Shot）で最初に見つかったものを返し、どの話にも
+ * カットが無ければ未分類の先頭に落とす。カットが 1 つも無ければ null。
+ */
+export function firstShotId(tree: ShotTree): string | null {
+  for (const episode of tree.episodes) {
+    for (const scene of episode.scenes) {
+      if (scene.shots.length > 0) return scene.shots[0].shot.id
+    }
+  }
+  return tree.unassigned[0]?.shot.id ?? null
+}
+
 /** 場のセレクトに出す選択肢（`話 / 場` のラベル）。 */
 export function sceneOptions(detail: {
   episodes: StudioEpisode[]
