@@ -47,6 +47,14 @@ function fileName(path: string): string {
   return path.split('/').pop() || path
 }
 
+function failureMessage(error: unknown): string {
+  return error instanceof ApiError
+    ? formatDetail(error.detail)
+    : error instanceof Error
+      ? error.message
+      : String(error)
+}
+
 /**
  * 投入プレビュー: このカットを今生成したら**実際に何が投入されるか**。
  *
@@ -55,15 +63,19 @@ function fileName(path: string): string {
  * ここに出るものと投入されるものは食い違わない。
  *
  * 取り直すのは保存のあと（`shot.updated_at` が動いたとき）と「再取得」ボタン。
- * 読み取り専用で、生成は起こさない。
+ * 英訳の作成・削除はプレビューだけ取り直し、親のプロジェクトは再読込しない。
  */
 export default function PromptPreview({ shot }: { shot: StudioShot }) {
   const [preview, setPreview] = useState<StudioShotPreview | null>(null)
   const [loading, setLoading] = useState(false)
+  const [translating, setTranslating] = useState(false)
+  const [clearing, setClearing] = useState(false)
   const [failure, setFailure] = useState<string | null>(null)
 
   const shotId = shot.id
   const updatedAt = shot.updated_at
+  const pending = preview?.english_status === 'translating'
+  const busyTranslate = translating || pending
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -71,23 +83,54 @@ export default function PromptPreview({ shot }: { shot: StudioShot }) {
       setPreview(await api.previewStudioShotPrompt(shotId))
       setFailure(null)
     } catch (error) {
-      setFailure(
-        error instanceof ApiError
-          ? formatDetail(error.detail)
-          : error instanceof Error
-            ? error.message
-            : String(error),
-      )
+      setFailure(failureMessage(error))
     } finally {
       setLoading(false)
     }
   }, [shotId])
+
+  const refreshPreview = useCallback(async () => {
+    setPreview(await api.previewStudioShotPrompt(shotId))
+    setFailure(null)
+  }, [shotId])
+
+  const translate = useCallback(async () => {
+    setTranslating(true)
+    try {
+      await api.translateStudioShotPrompt(shotId)
+      await refreshPreview()
+    } catch (error) {
+      setFailure(failureMessage(error))
+    } finally {
+      setTranslating(false)
+    }
+  }, [shotId, refreshPreview])
+
+  const clearEnglish = useCallback(async () => {
+    setClearing(true)
+    try {
+      await api.updateStudioShot(shotId, { english_prompt: '' })
+      await refreshPreview()
+    } catch (error) {
+      setFailure(failureMessage(error))
+    } finally {
+      setClearing(false)
+    }
+  }, [shotId, refreshPreview])
 
   useEffect(() => {
     void load()
     // 保存でサーバー側の値が動いたら取り直す。
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shotId, updatedAt])
+
+  useEffect(() => {
+    if (!pending) return
+    const timer = window.setInterval(() => {
+      void refreshPreview()
+    }, 2000)
+    return () => window.clearInterval(timer)
+  }, [pending, refreshPreview])
 
   return (
     <div
@@ -104,8 +147,29 @@ export default function PromptPreview({ shot }: { shot: StudioShot }) {
             {workflowLabel(preview.workflow)}
           </Badge>
         )}
-        <div className="ml-auto flex items-center gap-1">
+        <div className="ml-auto flex flex-wrap items-center justify-end gap-1">
           {preview && preview.prompt && <CopyButton text={preview.prompt} />}
+          <Button
+            variant="outline"
+            size="xs"
+            onClick={() => void translate()}
+            disabled={
+              loading || busyTranslate || clearing || !preview || Boolean(preview.error)
+            }
+          >
+            {busyTranslate && <Loader2 className="animate-spin" />}
+            {busyTranslate ? '英訳中…' : '英訳する'}
+          </Button>
+          {preview?.english_prompt ? (
+            <Button
+              variant="outline"
+              size="xs"
+              onClick={() => void clearEnglish()}
+              disabled={loading || busyTranslate || clearing}
+            >
+              英語を消す
+            </Button>
+          ) : null}
           <Button
             variant="outline"
             size="xs"
@@ -119,6 +183,10 @@ export default function PromptPreview({ shot }: { shot: StudioShot }) {
       </div>
 
       {failure && <Banner>{failure}</Banner>}
+
+      {preview?.english_status === 'failed' && (
+        <Banner>{preview.english_error || '英訳に失敗しました'}</Banner>
+      )}
 
       {preview && preview.error && <Banner>{preview.error}</Banner>}
 
@@ -164,13 +232,36 @@ export default function PromptPreview({ shot }: { shot: StudioShot }) {
               ）
             </p>
           )}
-          {preview.will_translate && (
+          {preview.will_translate && !(preview.english_prompt && !preview.english_stale) && (
             <p className="text-[11px] text-amber-300">
               投入時に英語へ自動変換されます（引用符の中の台詞と参照タグはそのまま）。変換できなければ投入しません。
             </p>
           )}
         </>
       )}
+
+      {preview?.english_prompt ? (
+        <>
+          {preview.english_stale || preview.error ? (
+            <p className="text-[11px] text-amber-300">
+              脚本が変わったのでこの英語は使いません。投入時に訳し直すか、もう一度英訳してください
+            </p>
+          ) : (
+            <p className="text-[11px] text-muted-foreground">
+              この英語を投入します（投入時の自動英訳はしません）
+            </p>
+          )}
+          <div className="flex justify-end">
+            <CopyButton text={preview.english_prompt} />
+          </div>
+          <pre
+            className="max-h-56 overflow-auto whitespace-pre-wrap break-words rounded-md border border-border bg-background/60 p-2 font-mono text-[11px] text-foreground/90"
+            aria-label="保存済みの英語プロンプト"
+          >
+            {preview.english_prompt}
+          </pre>
+        </>
+      ) : null}
     </div>
   )
 }

@@ -643,6 +643,26 @@ Cookie ベースの非公式 API は規約リスクがあるため**使わない
 - 起動時ヘルスチェック: `grok --version` の成否と、認証切れ（初回サインイン未実施）をエラーメッセージから検出して UI に表示
 - フォールバック: LLM クライアントはインターフェースを抽象化し、`XAI_API_KEY` による公式 API 直叩きにも切り替え可能な構造にしておく（既定は CLI）
 
+#### 使う CLI を選ぶ（`agent_cli`）
+
+LLM を回す CLI は設定 `agent_cli`（既定 `grok`）で選ぶ。**チャット・エージェントモード・スタジオ会話・キャンバス・英訳・自動タグ・ヘルスチェックのすべてが同じ選択に従う**。
+**例外: Grok Imagine（画像生成・編集、§5.2 の `app.grok_media`）は常に Grok CLI**（内蔵ツールに乗っているため、`grok_command` を直接見る）。
+
+CLI ごとの違いは `backend/app/llm_cli.py` の `CliAdapter` にまとまっている（起動 argv・契約の渡し方・認証エラーの文字列・`--version`）。
+
+| `agent_cli` | ACP 起動（既定コマンド） | ワンショット | 契約（rules）の渡し方 |
+| --- | --- | --- | --- |
+| `grok` | `grok agent [-m モデル] stdio` | `grok [--model M] [追加フラグ] [--output-format json] -p <本文> [--resume <id>]` | `session/new` の `_meta.rules` |
+| `claude` | `claude-agent-acp` | `claude [--model M] -p <本文>` | cwd の `CLAUDE.md`（**プロンプトにも埋める二重化**） |
+| `codex` | `codex-acp` | `codex [-m M] exec <本文>` | cwd の `AGENTS.md` |
+| `cursor` | `cursor-agent --acp` | `cursor-agent [--model M] -p <本文>` | cwd の `AGENTS.md` |
+
+- 契約をファイルで渡す CLI は、**ホストを開くたび**に作業ディレクトリへそのファイルを書き出す（毎回上書き。プロセス起動前に置く）。claude は Agent SDK の `settingSources` を省略すれば `CLAUDE.md` を読むが、**ACP ブリッジが何を渡すかはブリッジ側の実装次第**で外から強制する環境変数・フラグは公式ドキュメントに無いため、保険として初回プロンプトにも同じ契約を埋める（`GrokSessionHost.wants_contract()`）
+- 続き（`--resume`）と JSON 包装（`--output-format json`）を使うのは grok だけ。ほかの CLI のワンショットは毎ターン履歴を組み直して投げる（正本は DB なので結果は同じ）
+- コマンド名は `agent_cli_commands`（`{cli: コマンド}`）で上書きできる。値には引数を書いてよく、**2 語以上なら既定の引数を足さずそのまま使う**（`"cursor-agent acp"` のように起動方法が変わっても設定だけで追随できる）。ワンショット側だけを変えたいときは `"<cli>_oneshot"` キー。モデルは `agent_cli_models`（grok は従来の `grok_model`。空なら CLI の既定に任せてフラグごと出さない）
+- **CLI を切り替えると**、保存済みの続き用セッション id（`chat_sessions` / `agent_sessions` / `canvas_sessions` の `grok_session_id`）は別 CLI では通じないので `PUT /api/settings` で空にする。会話そのもの（正本）は残るので、次のターンは履歴を組み直した新しいセッションで続く
+- ヘルスチェック（`GET /api/health`）は選択中の CLI の `--version` を見る。応答の `cli` / `cli_label` が選択中の CLI を表し、ヘッダーの接続状態もその名前で出る
+
 ### 4.2 プロンプト生成の仕様
 
 プロンプト作成は**手動が基本**。Grok を使う場合はチャット形式（§4.3）で要件を掘り下げ、最終的に JSON（`image_prompt`, `video_prompt`, `notes`。`mode: "audio"` では `audio_prompt`, `lyrics`, `negative_tags`, `notes`）を出力させてフォームに反映する。システムプロンプトに各モデルのプロンプト仕様を埋め込む。
@@ -723,7 +743,11 @@ Cookie ベースの非公式 API は規約リスクがあるため**使わない
 
 実装:
 
-- grok CLI のヘッドレス実行（`grok -p`）は 1 発呼び出しのため、**会話履歴はアプリ側で保持**し、毎ターン「システムプロンプト + 履歴全文 + 最新発言」を組み立てて渡す
+- **会話履歴はアプリ側（`chat_sessions.messages`）が正本**。Grok へは `app/chat_agent.py` が **ACP の継続セッション**（`app/grok_session.py` の `GrokSessionHost`）で渡す: セッションを開くときにシステムプロンプトを**契約**（`session/new` の `_meta.rules`）として渡し、2 通目以降は**新しい発言だけ**を `session/prompt` で送る（履歴の再送はしない）。`session/load` による再開はせず、Grok 側のセッションが消えていたら（`GrokSessionGone`・アプリ再起動）DB の履歴を組み直して新しいセッションの初回プロンプトに詰める
+  - 相談は**ツールを使わない**: `--permission-mode auto` は付けず、ACP の `session/request_permission` は拒否する
+  - 作業ディレクトリはチャットごと（`runtime/agent-sessions/chat-<session_id>/`）。入力画像のコピー先でもあり、grok の cwd と同じ場所。`chat_sessions.grok_session_id` / `grok_cwd` に控える
+  - 実行中の活動（「思考中」「ツール実行中: …」）は WS `type: "chat"` で流し、`POST /api/chat/sessions/{id}/stop` でターンを止められる（ACP は `session/cancel`、ワンショットはプロセス中断）
+  - 設定 `agent_use_acp` がオフ・ACP を起動できない環境では従来どおり `grok -p` のワンショット実行にフォールバックし、毎ターン「システムプロンプト + 履歴全文 + 最新発言」を組み立てて渡す
 - システムプロンプトの構成: ①役割（プロンプトエンジニア兼インタビュアー）②各モデルのプロンプト仕様（§4.2。画像は選択中ワークフローのファミリーのものだけ。動画は公式 H3 契約 + `FEW_SHOT_H3`）③ヒアリング項目チェックリスト ④選択中の画像・動画ワークフローの特性（下記）⑤最終出力は ```json フェンス内の `{image_prompt, video_prompt, notes}` のみ、というルール
 - `mode: "audio"` では専用のシステムプロンプト（`build_audio_system_prompt`）に切り替わる: 選択中の音声ワークフローの仕様とそのモデルが読むフィールドだけを提示し、出力は `{audio_prompt, lyrics, negative_tags, notes}`。画像・動画のプロンプトは書かせない。フォーム側も、選択中のワークフローが持たないつまみ（Stable Audio の `lyrics` など）は反映しない
 - **ワークフロー特性の反映**: CONTEXT には選択中の `video_workflow` の用途・必要入力・音声の扱い・`video_prompt` の書き方と、`image_workflow` の用途・ファミリー・必要入力・`image_prompt` の書き方を出す。文面は `app/workflows.py` の `WorkflowSpec`（`description` / `audio_role` / `prompt_hint`）から自動生成する単一情報源なので、ワークフローを追加したらマニフェスト側に書けばチャット・エージェント両方に反映される（未記入は `validate_specs()` = ヘルスチェックで検出）。例: flf2v なら開始→終了フレーム間の遷移を書かせる、t2v / リファレンスシート IC-LoRA なら開始フレーム前提にしない、ia2v なら渡した音声がそのまま音声トラックになるのでセリフをプロンプトに書かせない、ic_lora_motion ならカメラ・テンポは参照動画由来なので書かせない
@@ -908,7 +932,9 @@ CREATE TABLE chat_sessions (
   id         TEXT PRIMARY KEY,
   created_at TEXT NOT NULL,
   job_id     TEXT,                          -- 反映先ジョブ（実行後に紐付け）
-  messages   TEXT NOT NULL                  -- [{role, content, ts}] の JSON
+  messages   TEXT NOT NULL,                 -- [{role, content, ts}] の JSON（会話の正本）
+  grok_session_id TEXT NOT NULL DEFAULT '', -- 続き用の grok セッション（§4.3。消えたら組み直す）
+  grok_cwd   TEXT NOT NULL DEFAULT ''       -- このチャットの作業ディレクトリ（grok の cwd）
 );
 ```
 
@@ -1073,7 +1099,7 @@ SPA 1 画面 + 履歴。ダークテーマの生成系ツールらしい見た�
 - LoRA チェーンを持たないワークフローでは LoRA（動画）セクションを出さない（挿せないため。指定したジョブはバックエンドが 422 にする）
 - 動画ネガティブはプリセット選択（ワークフロー既定 / 現行値 / モデル作者版）+ 編集可（詳細設定アコーディオン内）
 - 設定は**モーダルではなく専用ページ（フルページ）**。ヘッダーの [設定] で画面遷移し、ページ左上の [← 戻る] で生成画面に復帰する。3 タブ構成:
-  - **接続 / Grok**: 「ComfyUI 接続先」（[接続先] のプルダウン + ComfyCloud / RunPod / ローカルのサブセクション。RunPod のサブセクションには Pod の ComfyUI URL・APIキーに続けて §5.1 の自動起動の設定を置く） / grok CLI コマンドと**使用モデル（既定: grok-4.5、変更可）**・**grok の作業ディレクトリ**（`grok_workdir`）・**Grok Imagine の作業ディレクトリ**（`grok_media_workdir`）・**grok CLI の追加フラグ**（`agent_grok_args`。空白区切りで入力し、**空にするとエージェントのツールが丸ごと無効**になる旨を警告として添える）・**ACP でターンを回す**トグル（`agent_use_acp`。オンだと実行中の活動がチャットに出る）  / **モデル自動ダウンロード**のブロック（常に表示。ローカルの保存先パスは環境変数由来なので読み取り専用で見せ、「書き込み可 ✓」「パスが見つかりません」等の状態と、**Hugging Face トークン**・**Civitai APIキー**（どちらも `type="password"`。RunPod へ落とすときは Pod 側の環境変数が使われる）を並べる、§3.3）
+  - **接続 / LLM CLI**: 「ComfyUI 接続先」（[接続先] のプルダウン + ComfyCloud / RunPod / ローカルのサブセクション。RunPod のサブセクションには Pod の ComfyUI URL・APIキーに続けて §5.1 の自動起動の設定を置く） / **使う CLI**のプルダウン（`agent_cli`。grok / claude / codex / cursor）とその CLI の**コマンド**（空 = 既定。placeholder に既定のコマンド名を出す）・**モデル**（grok は既定 grok-4.5、ほかは空 = CLI の既定）・**CLI の作業ディレクトリ**（`grok_workdir`）・**Grok Imagine の作業ディレクトリ**（`grok_media_workdir`）・**CLI の追加フラグ**（`agent_grok_args`。空白区切りで入力し、**空にするとエージェントのツールが丸ごと無効**になる旨を警告として添える）・**ACP でターンを回す**トグル（`agent_use_acp`。オンだと実行中の活動がチャットに出る）  / **モデル自動ダウンロード**のブロック（常に表示。ローカルの保存先パスは環境変数由来なので読み取り専用で見せ、「書き込み可 ✓」「パスが見つかりません」等の状態と、**Hugging Face トークン**・**Civitai APIキー**（どちらも `type="password"`。RunPod へ落とすときは Pod 側の環境変数が使われる）を並べる、§3.3）
   - **LoRA 管理**: 表示名・ファイル名・**対象ワークフロー（画像用 / 動画用）**・**モデルファミリー（画像用のみ）**・トリガーワード・既定強度・既定音声・並び順・**取得元 URL（任意）**の CRUD とサンプル画像の登録。一覧のバッジには対象とファミリーを出し、取得元 URL が登録済みなら `URL ✓`（title に URL）を添える。取得元 URL は LoRA 本体と同じ [追加] / [更新] で保存し、保存先はモデルタブと同じ `model_download_urls`（キーは `lora_name`）。**空欄で保存するとキーを消し**、**ファイル名を変えた場合は旧キーを消して新キーへ移す**（URL に変化が無ければ設定は PUT しない）。ここではダウンロードせず、モデルタブと同じく [DL] / [全DL]（§3.3）の取得元として使う
   - **モデル** / **LoRA 管理**: どちらもタブの先頭に [対象の接続先]（ComfyCloud / RunPod / ローカル。現在の接続先には「（現在の接続先）」を添える）のプルダウンを置き、選んだ環境の登録を読み書きする（初期値は現在の接続先。繋いでいない環境も整理できるよう、接続先そのものとは独立に切り替えられる。切り替えると未保存の編集は捨てて読み直す、§5）
   - **モデル**: 全ワークフローのモデルファイル名一覧を **画像 / 動画 / 音声の大分類 → ワークフローごとの折りたたみ**（既定は閉じ、見出しに項目数・未保存件数・既定から変更した件数のバッジ）に整理し、行ごとにテキスト入力で上書き。変更行はハイライト、[既定に戻す] で復帰、[保存] で全行を一括 PUT。各行にはさらに**候補リスト**（チップ + 追加/削除）があり、既定値と合わせて 2 件以上にすると生成フォーム / エージェントが実行ごとに選べるようになる。既定値入力・候補追加入力はどちらも `/api/options` の `model_files`（`"<class_type>.<field>"` ごとの ComfyUI ファイル一覧。LoRA は従来の `lora_files` で補う）があれば datalist で補完。さらに各行には**不足モデルのダウンロード**の UI がある: 値が `model_files` の該当リストに無ければ**未検出**バッジ、URL 入力欄（`model_download_urls`。キーはファイル名なので同じファイルを使う行では共有）と [DL] ボタン、進行中は進捗バーと取得済みバイト数（WS の `model_download` を購読）。**取得元 URL の登録・編集は環境や `COMFY_MODELS_DIR` の有無に関係なく常に使える**（いま繋いでいない環境ぶんの URL も先に登録しておけるため）。[DL] と、タブ上部の **[全DL]**（未検出かつ URL 登録済みを一括開始）は `comfy_cloud` 以外で常に出し、落とせない事情は押したときの 400 で知らせる（ローカル選択中は `dir-status` の理由をタブ上部の警告にも出す、§3.3）。**未検出バッジは「いま繋いでいる環境」を編集しているときだけ**出す（`model_files` は接続中の ComfyUI のものなので、他の環境の在庫は分からない）。バッジが出ない行でも [取得元 URL] を開けば [URL保存] と [DL] が並ぶ。**検出済みの行**でも取得元 URL は登録できる（手元には在るが RunPod の Pod には無いモデルを、あとで [DL] / [全DL] で入れるため）: 表がうるさくならないよう既定は畳んでおき、[▸ 取得元 URL]（登録済みならアクセント色 + ✓）を押すと URL 欄と [URL保存] が開く。[URL保存] はダウンロードせず `model_download_urls` だけを PUT し、**空欄で保存するとそのファイル名のキーを消す**（登録解除）
@@ -1117,7 +1143,8 @@ GET  /api/models/downloads       … 進行中と直近のモデルダウンロ�
 POST /api/models/download        … 不足モデルのダウンロード開始（filename / url / subfolder / target。local は自前・runpod は Pod の API へ・comfy_cloud は 400。保存先を検証して 400、二重実行は 409。進捗は WS、§3.3）
 POST /api/models/download-all    … 未検出かつ取得元 URL 登録済みを一括開始（target。started / missing_urls / errors を返す、§3.3）
 POST /api/chat/sessions          … チャット開始（フォーム現在値をコンテキストとして渡す。`video_workflow` / `image_workflow` / `audio_workflow` を含む）
-POST /api/chat/sessions/{id}/messages … 発言送信 → Grok 応答（質問 or 最終JSON案）を返す
+POST /api/chat/sessions/{id}/messages … 発言送信 → Grok 応答（質問 or 最終JSON案）を返す。継続セッションで回し、停止されたときは 409
+POST /api/chat/sessions/{id}/stop … ⏹ 走っている Grok のターンを止める（次の発言は履歴を組み直した新しい会話で続く）
 GET  /api/chat/sessions/{id}     … 履歴取得
 POST /api/jobs                   … ジョブ作成・実行（プロンプト確定値+パラメータ。`selects` で選択式フィールド §3.1、`model_overrides` でそのジョブだけモデルを差し替え可 §3.3、`reference_images` / `reference_videos` / `reference_audios` でマルチモーダル参照 §3.1）
 GET  /api/jobs?limit=…           … 履歴一覧
@@ -1127,7 +1154,7 @@ POST /api/jobs/{id}/continue     … ラストフレームを開始フレーム�
 DELETE /api/jobs/{id}
 POST /api/assets/audio|image|video … アセットアップロード（video は参照動画用）
 GET  /library/…                  … 静的配信（ライブラリの素材、§7.2）
-WS   /api/ws                     … 進捗配信（`type: "job"` / `"agent"` / `"library"` / `"model_download"`）
+WS   /api/ws                     … 進捗配信（`type: "job"` / `"agent"` / `"chat"` / `"canvas"` / `"library"` / `"model_download"`）
 GET  /outputs/…                  … 静的配信（画像/動画/音声）
 ```
 
@@ -1149,7 +1176,10 @@ backend/            FastAPI アプリ
   app/comfy.py      ComfyUI クライアント（/object_info, /upload/image, /prompt, /ws, /history, /view）
   app/workflows.py  ワークフロー登録簿と注入マニフェスト（ノード ID 直指定）+ プロンプト用カタログ
   app/workflow.py   テンプレートへのパラメータ注入・LoRA チェーン動的注入・解像度計算
-  app/grok.py       grok CLI 呼び出し（LLM クライアントは差し替え可能な抽象化）
+  app/grok.py       CLI 呼び出し（LLM クライアントは差し替え可能な抽象化）
+  app/llm_cli.py    CLI アダプタ（grok / claude / codex / cursor の起動と契約の渡し方、§4.1）
+  app/grok_session.py CLI の継続セッション（ACP / ワンショット）のホスト
+  app/chat_agent.py 相談チャットの継続セッション・活動通知・停止（§4.3）
   app/prompts.py    チャット / エージェントのシステムプロンプト
   app/jobs.py       asyncio ジョブキューと実行、成果物取得・ラストフレーム抽出
   app/agent_*.py    エージェントのアクションプロトコル・実行ループ・セッション永続化

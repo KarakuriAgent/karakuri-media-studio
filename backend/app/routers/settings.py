@@ -1,5 +1,6 @@
 from fastapi import APIRouter
 
+from .. import chat_agent, llm_cli
 from ..config import load_settings, update_settings
 from ..models import Settings, SettingsUpdate
 
@@ -13,4 +14,11 @@ async def get_settings() -> Settings:
 
 @router.put("/settings", response_model=Settings)
 async def put_settings(payload: SettingsUpdate) -> Settings:
-    return update_settings(payload.model_dump(exclude_unset=True))
+    before = load_settings().agent_cli
+    saved = update_settings(payload.model_dump(exclude_unset=True))
+    if saved.agent_cli != before:
+        # CLI が変わった: 保存済みの続き用セッション id は別 CLI では通じない
+        # （SPEC §4.1）。開きっぱなしの相談ホストも畳んで新しい CLI で開き直す。
+        await llm_cli.forget_saved_sessions()
+        await chat_agent.stop_all()
+    return saved

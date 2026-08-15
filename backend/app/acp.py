@@ -33,6 +33,7 @@ from typing import Any, Awaitable, Callable
 
 from .config import load_settings
 from .grok import DEFAULT_TIMEOUT, GrokCliClient, LLMClient, LLMError
+from .llm_cli import CliAdapter, active_adapter, command_for, model_for
 from .models import HealthStatus
 from .paths import GROK_WORKDIR, resolve_workdir
 
@@ -165,6 +166,17 @@ def _allow_option_id(options: list[dict[str, Any]]) -> str | None:
     return options[0].get("optionId") if options else None
 
 
+def _reject_option_id(options: list[dict[str, Any]]) -> str | None:
+    """許可要求から「拒否」に当たる選択肢の id（ツールを使わせない相談用）。
+
+    拒否の選択肢が無ければ ``None``: 呼び出し側は ``outcome: cancelled`` で返す。
+    """
+    for option in options:
+        if "reject" in str(option.get("kind", "")) or "deny" in str(option.get("kind", "")):
+            return option.get("optionId")
+    return None
+
+
 class AcpAgentClient(LLMClient):
     """ACP でエージェントを 1 ターン実行するクライアント。
 
@@ -180,10 +192,16 @@ class AcpAgentClient(LLMClient):
         timeout: float | None = DEFAULT_TIMEOUT,
         on_activity: ActivityCallback | None = None,
         fallback: LLMClient | None = None,
+        adapter: CliAdapter | None = None,
     ) -> None:
         settings = load_settings()
-        self.command = (command if command is not None else settings.grok_command) or "grok"
-        self.model = (model if model is not None else settings.grok_model) or ""
+        self.adapter = adapter or active_adapter(settings)
+        self.command = (
+            command if command is not None else command_for(self.adapter, settings)
+        ) or self.adapter.default_command
+        self.model = (
+            model if model is not None else model_for(self.adapter, settings)
+        ) or ""
         self.workdir = resolve_workdir(workdir or settings.grok_workdir, GROK_WORKDIR)
         self.timeout = timeout
         self.on_activity = on_activity
@@ -192,22 +210,20 @@ class AcpAgentClient(LLMClient):
 
     # ------------------------------------------------------------- plumbing
     def argv(self) -> list[str]:
-        argv = [self.command, "agent"]
-        if self.model:
-            argv += ["-m", self.model]
-        argv.append("stdio")
-        return argv
+        return self.adapter.acp_argv(self.command, self.model)
 
     def fallback_client(self) -> LLMClient:
         """ACP が使えないときのワンショット実行クライアント。"""
         if self._fallback is None:
             settings = load_settings()
             self._fallback = GrokCliClient(
-                command=self.command,
+                # ACP のブリッジと本体が別コマンドの CLI があるので、command は
+                # 渡さずワンショット側の解決に任せる。
                 model=self.model,
                 workdir=self.workdir,
                 timeout=self.timeout,
                 extra_args=settings.agent_grok_args,
+                adapter=self.adapter,
             )
         return self._fallback
 
@@ -241,7 +257,9 @@ class AcpAgentClient(LLMClient):
                 stderr=asyncio.subprocess.PIPE,
             )
         except (OSError, ValueError) as exc:  # FileNotFoundError を含む
-            raise AcpUnavailable(f"'{self.command} agent stdio' を起動できません: {exc}") from exc
+            raise AcpUnavailable(
+                f"'{' '.join(self.argv())}' を起動できません: {exc}"
+            ) from exc
 
     @staticmethod
     async def _terminate(process: asyncio.subprocess.Process) -> None:

@@ -5,9 +5,19 @@ import json
 import pytest
 from fastapi.testclient import TestClient
 
-from app import config, db, grok, jobs, library
+from app import (
+    agent_store,
+    chat_agent,
+    config,
+    db,
+    grok,
+    grok_session,
+    jobs,
+    library,
+    ws,
+)
 from app.main import app
-from app.models import ChatSessionCreate, Settings
+from app.models import ChatMessage, ChatSessionCreate, Settings
 from app.prompts import build_conversation, build_system_prompt
 from app.workflows import get_video_spec
 
@@ -70,15 +80,25 @@ def env(tmp_path, monkeypatch):
     lib.mkdir()
     workdir = tmp_path / "grok-workdir"
     workdir.mkdir()
+    sessions = tmp_path / "chat-sessions"
+    sessions.mkdir()
 
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.db")
     monkeypatch.setattr(jobs, "ASSETS_DIR", assets)
     monkeypatch.setattr(jobs, "LIBRARY_DIR", lib)
     monkeypatch.setattr(library, "LIBRARY_DIR", lib)
+    monkeypatch.setattr(agent_store, "AGENT_SESSIONS_DIR", sessions)
     monkeypatch.setattr(
         config,
         "_settings",
-        Settings(grok_command="grok", grok_model="grok-4.5", grok_workdir=str(workdir)),
+        # 既定では ACP（`grok agent stdio`）で回る。ここは従来のワンショット
+        # 実行の経路を見るテストなので切っておく（ACP は下の専用テスト）。
+        Settings(
+            grok_command="grok",
+            grok_model="grok-4.5",
+            grok_workdir=str(workdir),
+            agent_use_acp=False,
+        ),
     )
 
     fake = FakeCli()
@@ -97,6 +117,7 @@ def env(tmp_path, monkeypatch):
                 "client": client,
                 "cli": fake,
                 "workdir": workdir,
+                "sessions": sessions,
                 "assets": assets,
                 "library": lib,
                 "start_image": start_image,
@@ -120,6 +141,11 @@ def add_to_library(
     renamed = env.client.patch(f"/api/library/{item['id']}", json={"name": name})
     assert renamed.status_code == 200, renamed.text
     return renamed.json()
+
+
+def chat_dir(env, session_id: str):
+    """そのチャットの作業ディレクトリ（入力画像のコピー先 = grok の cwd）。"""
+    return env.sessions / f"chat-{session_id}"
 
 
 def start(env, **overrides) -> dict:
@@ -225,13 +251,15 @@ def test_interview_then_final_json(env):
     roles = [m["role"] for m in stored["messages"]]
     assert roles == ["system", "user", "assistant", "user", "assistant"]
 
-    # every turn re-sends system prompt + history (stateless CLI, SPEC §4.3)
+    # 続きを持てないワンショット（session id を返さない CLI）では、これまでどおり
+    # 毎ターン「システムプロンプト + 履歴全文」を組み直して渡す（SPEC §4.3）
     last_prompt = env.cli.prompts[-1]
     assert "# ROLE" in last_prompt
     assert "おまかせで" in last_prompt
     assert "場所はどこですか" in last_prompt
     assert env.cli.calls[-1][:3] == ["grok", "--model", "grok-4.5"]
-    assert env.cli.cwds[-1] == str(env.workdir)
+    # cwd はチャットごとの作業ディレクトリ
+    assert env.cli.cwds[-1] == str(chat_dir(env, session["id"]))
 
 
 def test_json_without_a_fence_is_accepted(env):
@@ -287,6 +315,251 @@ def test_empty_message_is_422(env):
 
 
 # --------------------------------------------------------------------------
+# 継続セッション（ACP）とその組み直し・停止
+# --------------------------------------------------------------------------
+
+class FakeHost:
+    """``GrokSessionHost`` の身代わり（ACP で開いた継続セッションのつもり）。"""
+
+    #: 開かれた順に全部残す（何本目のセッションかを見るため）
+    opened: list["FakeHost"] = []
+
+    def __init__(self, workdir, on_activity=None, **kwargs):
+        self.workdir = str(workdir)
+        self.on_activity = on_activity
+        self.extra_args = kwargs.get("extra_args")
+        self.allow_tools = kwargs.get("allow_tools", True)
+        self.use_acp = True
+        self.session_id = ""
+        self.resumed = False
+        self.rebuild = False
+        self.primed = False
+        self._closed = False
+        self.rules = ""
+        self.started_with: str | None = None
+        self.prompts: list[str] = []
+        self.answers: list = []
+        self.cancelled = False
+        self.closed_count = 0
+        self.contract_in_prompt = False
+        FakeHost.opened.append(self)
+
+    def wants_contract(self) -> bool:
+        """契約をプロンプトにも埋めるか（claude 相当の CLI だけ True）。"""
+        if self.use_acp:
+            return self.contract_in_prompt
+        return not self.session_id
+
+    async def start(self, rules, session_id, workdir=None):
+        self.rules = rules
+        self.started_with = session_id
+        if workdir is not None:
+            self.workdir = str(workdir)
+        self.session_id = f"grok-{len(FakeHost.opened)}"
+        return self.session_id
+
+    async def prompt(self, text):
+        self.prompts.append(text)
+        if not self.answers:
+            raise AssertionError("fake host ran out of scripted answers")
+        answer = self.answers.pop(0)
+        if isinstance(answer, Exception):
+            raise answer
+        if callable(answer):
+            return await answer(self)
+        return answer
+
+    async def cancel(self):
+        self.cancelled = True
+
+    async def close(self):
+        self._closed = True
+        self.closed_count += 1
+
+
+@pytest.fixture
+def acp(env, monkeypatch):
+    """``open_host`` を偽ホストに差し替える（ACP 経路のテスト用）。
+
+    答えは 1 本のキュー（``env.script(...)`` で入れ替える）を全ホストで共有する:
+    セッションを開き直しても、そのまま次の答えが読まれる。
+    """
+    FakeHost.opened = []
+    queue: list = []
+
+    def open_host(workdir, on_activity=None, **kwargs):
+        host = FakeHost(workdir, on_activity, **kwargs)
+        host.answers = queue
+        return host
+
+    monkeypatch.setattr(grok_session, "open_host", open_host)
+    env.script = lambda *answers: queue.__setitem__(slice(None), list(answers))
+    yield env
+
+
+def test_the_second_turn_only_sends_the_new_message(acp):
+    env = acp
+    session = start(env)
+    env.script(QUESTION_ANSWER, JSON_ANSWER)
+
+    assert say(env, session["id"]).status_code == 200
+    host = FakeHost.opened[0]
+
+    # 1 本のホストが作られ、契約は session/new の rules で渡っている
+    assert len(FakeHost.opened) == 1
+    assert "# ROLE" in host.rules
+    assert host.started_with is None  # session/load での再開はしない
+    assert host.extra_args == []  # 相談はツールを使わない
+    assert host.allow_tools is False
+    assert host.workdir == str(chat_dir(env, session["id"]))
+
+    first = host.prompts[0]
+    assert "# ROLE" not in first  # 契約はプロンプトに埋めない
+    assert "かおりが楽しそうにダンスをしている" in first
+
+    assert say(env, session["id"], "おまかせで").status_code == 200
+    assert len(FakeHost.opened) == 1  # 同じセッションを使い回す
+    assert host.prompts[1].strip().startswith("### USER")
+    assert "おまかせで" in host.prompts[1]
+    # 履歴の再送はしない
+    assert "かおりが楽しそうにダンスをしている" not in host.prompts[1]
+
+
+def test_a_lost_grok_session_replays_the_history(acp):
+    env = acp
+    session = start(env)
+    env.script(QUESTION_ANSWER)
+    assert say(env, session["id"]).status_code == 200
+
+    # 次のターンで Grok 側のセッションが消えていた
+    env.script(grok_session.GrokSessionGone("gone"), JSON_ANSWER)
+    assert say(env, session["id"], "おまかせで").status_code == 200
+
+    assert len(FakeHost.opened) == 2
+    rebuilt = FakeHost.opened[-1]
+    replay = rebuilt.prompts[0]
+    # DB の履歴から組み直して新しいセッションの初回プロンプトに詰める
+    assert "# CONVERSATION SO FAR" in replay
+    assert "かおりが楽しそうにダンスをしている" in replay
+    assert "場所はどこですか" in replay
+    assert "おまかせで" in replay
+    assert rebuilt.started_with is None  # 再開ではなく新規セッション
+
+
+def test_the_grok_session_and_cwd_are_stored(acp):
+    env = acp
+    session = start(env)
+    env.script(QUESTION_ANSWER)
+    assert say(env, session["id"]).status_code == 200
+
+    stored = env.client.get(f"/api/chat/sessions/{session['id']}").json()
+    assert stored["grok_session_id"] == FakeHost.opened[-1].session_id
+    assert stored["grok_cwd"] == str(chat_dir(env, session["id"]))
+
+
+def test_the_user_message_survives_a_failed_turn(acp):
+    env = acp
+    session = start(env)
+    env.script(grok.LLMError("grok CLI が見つかりません"))
+    assert say(env, session["id"]).status_code == 502
+
+    stored = env.client.get(f"/api/chat/sessions/{session['id']}").json()
+    assert [m["role"] for m in stored["messages"]] == ["system", "user"]
+
+
+def test_stop_cancels_the_running_turn(acp):
+    env = acp
+    session = start(env)
+
+    async def stopped(host):
+        # ターンの最中に停止された、という筋書き
+        raise grok_session.GrokTurnCancelled()
+
+    env.script(stopped)
+    response = say(env, session["id"])
+    assert response.status_code == 409
+    assert "止め" in response.json()["detail"]
+
+    # 停止した会話は次の発言で新しいセッションから組み直す（正本は DB の履歴）
+    env.script(QUESTION_ANSWER)
+    assert say(env, session["id"], "もう一度").status_code == 200
+    assert len(FakeHost.opened) == 2
+    rebuilt = FakeHost.opened[-1].prompts[0]
+    assert "かおりが楽しそうにダンスをしている" in rebuilt  # 止めた発言も残る
+    assert "もう一度" in rebuilt
+
+
+def test_stop_endpoint_cancels_the_host(acp):
+    env = acp
+    session = start(env)
+    env.script(QUESTION_ANSWER)
+    assert say(env, session["id"]).status_code == 200
+    host = FakeHost.opened[-1]
+
+    response = env.client.post(f"/api/chat/sessions/{session['id']}/stop")
+    assert response.status_code == 200
+    assert response.json() == {
+        "session_id": session["id"],
+        "running": False,
+        "activity": None,
+    }
+    assert host.cancelled and host._closed
+
+
+def test_stop_on_a_missing_session_is_404(env):
+    assert env.client.post("/api/chat/sessions/nope/stop").status_code == 404
+
+
+def test_activity_is_broadcast_over_the_websocket(acp, monkeypatch):
+    env = acp
+    frames: list[dict] = []
+
+    async def broadcast(payload):
+        frames.append(payload)
+
+    monkeypatch.setattr(ws.hub, "broadcast", broadcast)
+    session = start(env)
+
+    async def report(host):
+        await host.on_activity("思考中")
+        return QUESTION_ANSWER
+
+    env.script(report)
+    assert say(env, session["id"]).status_code == 200
+
+    chat_frames = [f for f in frames if f.get("type") == "chat"]
+    assert [f["activity"] for f in chat_frames] == [None, "思考中", None]
+    assert [f["running"] for f in chat_frames] == [True, True, False]
+    assert {f["session_id"] for f in chat_frames} == {session["id"]}
+
+
+def test_the_acp_prompt_carries_no_contract_when_the_session_lives(acp):
+    env = acp
+    session = start(env)
+    env.script(QUESTION_ANSWER, JSON_ANSWER)
+    assert say(env, session["id"]).status_code == 200
+    assert say(env, session["id"], "おまかせで").status_code == 200
+    assert all("# ROLE" not in text for text in FakeHost.opened[-1].prompts)
+
+
+def test_build_prompt_falls_back_to_the_full_conversation_without_acp():
+    """ACP が使えないホストは、これまでどおり全文を組み直す。"""
+    host = FakeHost("/tmp")
+    host.use_acp = False
+    host.session_id = ""
+    messages = [
+        ChatMessage(role="system", content=build_system_prompt(ChatSessionCreate()), ts="t"),
+        ChatMessage(role="user", content="踊って", ts="t"),
+    ]
+    text = chat_agent.build_prompt(host, messages)
+    assert "# ROLE" in text and "踊って" in text
+    # resume できる id を持てば続きの発言だけになる
+    host.session_id = "s1"
+    host.primed = True
+    assert chat_agent.build_prompt(host, messages).strip().startswith("### USER")
+
+
+# --------------------------------------------------------------------------
 # modes
 # --------------------------------------------------------------------------
 
@@ -295,7 +568,7 @@ def test_i2v_copies_the_start_frame_into_the_workdir(env):
         env, mode="i2v", start_image_path=str(env.start_image), duration=8
     )
     system = session["messages"][0]["content"]
-    copied = list(env.workdir.glob("start_frame_*.png"))
+    copied = list(chat_dir(env, session["id"]).glob("start_frame_*.png"))
     assert len(copied) == 1
     assert copied[0].name in system
     assert "`video_prompt` only" in system
@@ -846,29 +1119,31 @@ def test_without_an_aspect_ratio_nothing_is_said_about_it(env):
 
 
 def test_an_end_image_asks_for_a_transition(env):
-    system = start(
+    session = start(
         env,
         mode="i2v",
         video_workflow="minimax_h3_i2v",
         start_image_path=str(env.start_image),
         end_image_path=str(env.end_image),
-    )["messages"][0]["content"]
+    )
+    system = session["messages"][0]["content"]
     assert "`end_image` が指定されている" in system
     assert "遷移（transition）" in system
     # start と同じく作業ディレクトリに置く
-    assert len(list(env.workdir.glob("end_frame_*.png"))) == 1
+    assert len(list(chat_dir(env, session["id"]).glob("end_frame_*.png"))) == 1
 
 
 def test_without_an_end_image_nothing_is_said_about_it(env):
-    system = start(
+    session = start(
         env,
         mode="i2v",
         video_workflow="minimax_h3_i2v",
         start_image_path=str(env.start_image),
-    )["messages"][0]["content"]
+    )
+    system = session["messages"][0]["content"]
     # ワークフローの説明には出てくるので、CONTEXT の「指定されている」の一文だけ見る
     assert "`end_image` が指定されている" not in system
-    assert not list(env.workdir.glob("end_frame_*"))
+    assert not list(chat_dir(env, session["id"]).glob("end_frame_*"))
 
 
 def test_an_editing_image_workflow_gets_its_input_picture(env):
@@ -879,7 +1154,7 @@ def test_an_editing_image_workflow_gets_its_input_picture(env):
         start_image_path=str(env.start_image),
     )
     system = session["messages"][0]["content"]
-    copied = list(env.workdir.glob("start_frame_*.png"))
+    copied = list(chat_dir(env, session["id"]).glob("start_frame_*.png"))
     assert len(copied) == 1
     assert copied[0].name in system
     assert "編集指示" in system

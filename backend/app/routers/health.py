@@ -1,6 +1,6 @@
 from fastapi import APIRouter
 
-from .. import comfy, grok
+from .. import comfy, grok, llm_cli
 from ..config import load_settings
 from ..models import Health, HealthStatus
 from ..workflow import WorkflowError, all_required_class_types, validate_manifests
@@ -47,4 +47,10 @@ async def check_comfyui() -> HealthStatus:
 async def health() -> Health:
     comfyui = await check_comfyui()
     grok_status = await grok.check_grok()
-    return Health(comfyui=comfyui, grok=grok_status)
+    adapter = llm_cli.active_adapter()
+    return Health(
+        comfyui=comfyui,
+        grok=grok_status,
+        cli=adapter.id,  # type: ignore[arg-type]
+        cli_label=adapter.label,
+    )

@@ -70,7 +70,7 @@ const TRIGGER_TONE: Record<Tone, string> = {
 }
 
 /**
- * 接続状態（ComfyUI / Grok / 進捗WS）。
+ * 接続状態（ComfyUI / 選択中の CLI / 進捗WS）。
  *
  * ヘッダーでは色付きドットだけに縮退させ、名前・状態テキスト・更新ボタンは
  * クリックで開く Popover の中に可視テキストで置く（title 頼みにしない）。
@@ -88,7 +88,7 @@ function ConnectionStatus({
 }) {
   const items: Connection[] = [
     connection('ComfyUI', health?.comfyui),
-    connection('Grok', health?.grok),
+    connection(health?.cli_label || 'Grok', health?.grok),
     {
       name: '進捗WS',
       tone: wsConnected ? 'ok' : 'unknown',

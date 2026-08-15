@@ -35,6 +35,7 @@ import { ensurePushSubscription } from './push'
 import type {
   AgentProgress,
   CanvasProgress,
+  ChatProgress,
   ComfyTarget,
   Health,
   Job,
@@ -93,6 +94,8 @@ export default function App() {
   // キャンバスのエージェント実行（会話に足された 1 件と実行中フラグ）
   const [canvasEvent, setCanvasEvent] = useState<CanvasProgress | null>(null)
   const [chatSessionId, setChatSessionId] = useState<string | null>(null)
+  // 相談チャットの実行状態（活動テキスト。応答待ちのあいだ表示する）
+  const [chatEvent, setChatEvent] = useState<ChatProgress | null>(null)
   const [showNsfw, setShowNsfw] = useState(initialShowNsfw)
   // エラーではない一言（パラメータ復元で LoRA を落としたとき等）。
   const [notice, setNotice] = useState<string | null>(null)
@@ -299,6 +302,7 @@ export default function App() {
             | JobProgress
             | AgentProgress
             | CanvasProgress
+            | ChatProgress
             | LibraryProgress
           if (frame?.type === 'agent') {
             setAgentEvent(frame)
@@ -306,6 +310,10 @@ export default function App() {
           }
           if (frame?.type === 'canvas') {
             setCanvasEvent(frame)
+            return
+          }
+          if (frame?.type === 'chat') {
+            setChatEvent(frame)
             return
           }
           // ライブラリの自動タグ生成が終わった: 選択肢を取り直し、開いている
@@ -880,6 +888,7 @@ export default function App() {
           form={form}
           patch={patch}
           options={options}
+          event={chatEvent}
           onClose={() => setChatOpen(false)}
           onSessionId={setChatSessionId}
         />

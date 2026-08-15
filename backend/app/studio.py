@@ -44,6 +44,7 @@ from pydantic import ValidationError
 from . import comfy
 from . import grok
 from . import jobs as job_service
+from . import nsfw
 from . import studio_demo
 from .db import get_db
 from .ids import new_id
@@ -356,6 +357,7 @@ REVISION_LIMIT = 200
 PROMPT_FIELDS = frozenset({
     "prompt", "dialogue", "soundscape", "bgm", "camera", "duration_seconds",
     "aspect_ratio", "megapixels", "seed", "workflow_override",
+    "english_prompt",
 })
 
 #: 素材のうち、書き換えるとプロンプト（または参照そのもの）が変わる項目。
@@ -446,6 +448,10 @@ def _row_to_shot(row: aiosqlite.Row) -> StudioShot:
     data = dict(row)
     data["carry_over_end_frame"] = bool(data["carry_over_end_frame"])
     data["prompt_updated_at"] = data.get("prompt_updated_at") or data["updated_at"]
+    data["english_prompt"] = data.get("english_prompt") or ""
+    data["english_source"] = data.get("english_source") or ""
+    data["english_status"] = data.get("english_status") or ""
+    data["english_error"] = data.get("english_error") or ""
     return StudioShot(**data)
 
 
@@ -1750,6 +1756,11 @@ async def update_shot(
         changes["carry_over_end_frame"] = 1 if changes["carry_over_end_frame"] else 0
     if changes.get("duration_seconds") is not None:
         changes["duration_seconds"] = float(changes["duration_seconds"])
+    if "english_prompt" in changes and not changes.get("english_prompt"):
+        changes["english_prompt"] = ""
+        changes["english_source"] = ""
+        changes["english_status"] = ""
+        changes["english_error"] = ""
     async with get_db() as conn:
         shot = await _fetch_shot(conn, shot_id)
         if shot is None:
@@ -2087,8 +2098,10 @@ def compose_prompt(shot: StudioShot, body: str, *, workflow: str = "") -> str:
 # --------------------------------------------------------------------------
 #
 # MiniMax H3 は英語プロンプト前提のモデルなので、日本語で書いた脚本はそのまま
-# 投げると精度が落ちる。プロジェクトの `auto_translate` が有効なら、ジョブランナー
-# が組み立て済み本文を Grok に「公式 H3 文書へ書き直す」仕事をさせてから投入する。
+# 投げると精度が落ちる。Shot に使える英語キャッシュ（``english_prompt`` があり
+# ``english_source`` が今の組み立て文と一致）があればそれを投入し、Grok は走らない。
+# 無ければプロジェクトの `auto_translate` が有効なら、ジョブランナーが組み立て済み
+# 本文を Grok に「公式 H3 文書へ書き直す」仕事をさせてから投入する。
 # 直訳ではなく、事実はそのまま、欠ける公式フィールドと観測できる演出を足す。
 # 壊してはいけないもの:
 #   - `<Picture N>` / `<Video N>` / `<Audio N>` / `<Subject N>`（参照タグ）
@@ -2137,6 +2150,27 @@ TRANSLATION_INSTRUCTION = (
 #: 応答が ```…``` で包まれていたときに中身だけ取り出す
 _FENCE = re.compile(r"^```[a-zA-Z0-9_-]*\s*(.*?)\s*```$", re.DOTALL)
 
+#: Grok CLI が公式文書の前に独り言を付けることがある。最初の公式フィールド
+#: （または i2v の alignment 行）からを本文とする。
+_H3_DOCUMENT_START = re.compile(
+    r"(?is)("
+    r"For the target video, at 0\.00 seconds into the target video,"
+    r"|How the reference pictures align with the target video"
+    r"|integrated_multimodal_description\s*:"
+    r"|detailed_description\s*:"
+    r"|subject_definitions\s*:"
+    r"|summary\s*:"
+    r"|retention_analysis\s*:"
+    r"|overall_soundscape\s*:"
+    r"|non_diegetic_music\s*:"
+    r")"
+)
+
+_DIALOGUE_LANG = (
+    (re.compile(r"(<d>\[)日本語(\])"), r"\1Japanese\2"),
+    (re.compile(r"(<d>\[)英語(\])"), r"\1English\2"),
+)
+
 
 def has_japanese(text: str) -> bool:
     return bool(_JAPANESE.search(text or ""))
@@ -2145,6 +2179,21 @@ def has_japanese(text: str) -> bool:
 def _unfence(text: str) -> str:
     match = _FENCE.match((text or "").strip())
     return (match.group(1) if match else text).strip()
+
+
+def extract_h3_document(text: str) -> str:
+    """フェンスと先頭の独り言を落とし、公式 H3 文書だけ残す。
+
+    公式フィールドが一つも無い応答は空文字（呼び出し側が失敗にする）。
+    """
+    body = _unfence(text)
+    match = _H3_DOCUMENT_START.search(body)
+    if match is None:
+        return ""
+    body = body[match.start() :].strip()
+    for pattern, repl in _DIALOGUE_LANG:
+        body = pattern.sub(repl, body)
+    return body
 
 
 async def translate_prompt(prompt: str, workflow_id: str) -> str:
@@ -2158,7 +2207,7 @@ async def translate_prompt(prompt: str, workflow_id: str) -> str:
     answer = await grok.get_client(timeout=grok.configured_timeout()).complete(
         TRANSLATION_INSTRUCTION.format(hint=hint, prompt=prompt)
     )
-    translated = _unfence(answer)
+    translated = extract_h3_document(answer)
     if not translated:
         raise grok.LLMError("grok が空のプロンプトを返しました")
     log.info("translate_prompt took %.1fs", time.monotonic() - started)
@@ -2242,11 +2291,17 @@ async def _plan_render(
     )
 
 
+def _english_cache_usable(shot: StudioShot, assembled: str) -> bool:
+    """組み立て済み本文に対して、保存してある英語がそのまま使えるか。"""
+    return bool(shot.english_prompt) and shot.english_source == assembled
+
+
 async def preview_shot(shot_id: str) -> StudioShotPreview | None:
     """この Shot を今生成したら何が投入されるか（Shot が無ければ None）。
 
     生成と同じ :func:`_plan_render` を通すが、**Grok の英訳は走らせない**
-    （遅く、課金枠を食う）。英訳が入るかどうかは ``will_translate`` で返す。
+    （遅く、課金枠を食う）。英訳が入るかどうかは ``will_translate`` で返す
+    （使える ``english_prompt`` があれば False）。
     組み立てられないときも 200 で、理由を ``error`` に入れて返す。
     """
     async with get_db() as conn:
@@ -2267,8 +2322,13 @@ async def preview_shot(shot_id: str) -> StudioShotPreview | None:
                 auto_translate=auto_translate,
                 latent_continuity=latent_continuity,
                 quality=quality,
+                english_prompt=shot.english_prompt,
+                english_stale=bool(shot.english_prompt),
+                english_status=shot.english_status,
+                english_error=shot.english_error,
                 error=str(exc),
             )
+    usable = _english_cache_usable(shot, plan.prompt)
     return StudioShotPreview(
         shot_id=shot.id,
         workflow=plan.workflow,
@@ -2282,13 +2342,136 @@ async def preview_shot(shot_id: str) -> StudioShotPreview | None:
         ],
         start_frame=plan.start_image,
         auto_translate=auto_translate,
-        will_translate=auto_translate and has_japanese(plan.prompt),
+        will_translate=(
+            not usable and auto_translate and has_japanese(plan.prompt)
+        ),
+        english_prompt=shot.english_prompt,
+        english_stale=bool(shot.english_prompt) and not usable,
+        english_status=shot.english_status,
+        english_error=shot.english_error,
         latent_continuity=latent_continuity,
         quality=quality,
         quality_applied=plan.quality_applied,
         context_video=plan.context_video,
         context_latent=plan.context_latent,
     )
+
+
+async def recover_interrupted_translates() -> None:
+    """再起動で残った ``translating`` を失敗にする（起動時に 1 回だけ呼ぶ）。"""
+    async with get_db() as conn:
+        await conn.execute(
+            "UPDATE studio_shots SET english_status='failed',"
+            " english_error='英訳が中断されました。もう一度英訳してください'"
+            " WHERE english_status='translating'"
+        )
+        await conn.commit()
+
+
+async def _run_translate(
+    shot_id: str, assembled: str, workflow_id: str, actor: str
+) -> None:
+    """Grok 英訳の本体。例外は投げない（autotag と同じ）。"""
+    try:
+        error = ""
+        english = ""
+        try:
+            english = await translate_prompt(assembled, workflow_id)
+        except asyncio.CancelledError:
+            raise
+        except grok.LLMError as exc:
+            error = (
+                "英語プロンプトへの変換ができないので保存しませんでした"
+                f"（{exc}）"
+            )
+        async with get_db() as conn:
+            shot = await _fetch_shot(conn, shot_id)
+            if shot is None or shot.english_status != "translating":
+                return
+            now = _now()
+            if error:
+                await conn.execute(
+                    "UPDATE studio_shots SET english_status = 'failed',"
+                    " english_error = ?, updated_at = ? WHERE id = ?",
+                    (error, now, shot_id),
+                )
+            else:
+                await conn.execute(
+                    "UPDATE studio_shots SET english_prompt = ?, english_source = ?,"
+                    " english_status = '', english_error = '',"
+                    " updated_at = ?, prompt_updated_at = ? WHERE id = ?",
+                    (english, assembled, now, now, shot_id),
+                )
+                await _record_revision(
+                    conn, shot.project_id, actor, "英語プロンプトを作成"
+                )
+            await conn.commit()
+    except asyncio.CancelledError:
+        raise
+    except Exception:  # noqa: BLE001 - 英訳の失敗で HTTP を壊さない
+        log.exception("shot %s の英訳に失敗しました", shot_id)
+        try:
+            async with get_db() as conn:
+                await conn.execute(
+                    "UPDATE studio_shots SET english_status = 'failed',"
+                    " english_error = ?, updated_at = ?"
+                    " WHERE id = ? AND english_status = 'translating'",
+                    ("英訳に失敗しました", _now(), shot_id),
+                )
+                await conn.commit()
+        except Exception:  # noqa: BLE001
+            log.exception("shot %s の英訳失敗を記録できませんでした", shot_id)
+
+
+async def translate_shot(shot_id: str, *, actor: str = "user") -> StudioShot | None:
+    """組み立て済み本文の英訳を開始して Shot を返す。
+
+    組み立て不能なら :class:`StudioError`。英語だけなら Grok は呼ばず、その
+    組み立て文をキャッシュとして残して返す。日本語があるときは
+    ``english_status='translating'`` にして Grok を裏で走らせ、すぐ返す。
+    """
+    async with get_db() as conn:
+        shot = await _fetch_shot(conn, shot_id)
+        if shot is None:
+            return None
+        project = await _fetch_project(conn, shot.project_id)
+        assets = await _fetch_assets(conn, shot.project_id)
+        plan = await _plan_render(conn, shot, assets, project)
+
+    if not has_japanese(plan.prompt):
+        now = _now()
+        async with get_db() as conn:
+            await conn.execute(
+                "UPDATE studio_shots SET english_prompt = ?, english_source = ?,"
+                " english_status = '', english_error = '',"
+                " updated_at = ?, prompt_updated_at = ? WHERE id = ?",
+                (plan.prompt, plan.prompt, now, now, shot_id),
+            )
+            await _record_revision(conn, shot.project_id, actor, "英語プロンプトを作成")
+            await conn.commit()
+            return await _fetch_shot(conn, shot_id)
+
+    async with get_db() as conn:
+        shot = await _fetch_shot(conn, shot_id)
+        if shot is None:
+            return None
+        if shot.english_status == "translating":
+            return shot
+        await conn.execute(
+            "UPDATE studio_shots SET english_status = 'translating',"
+            " english_error = '' WHERE id = ?",
+            (shot_id,),
+        )
+        await conn.commit()
+        shot = await _fetch_shot(conn, shot_id)
+    if shot is None:
+        return None
+
+    nsfw.spawn(
+        _run_translate(shot_id, plan.prompt, plan.workflow, actor),
+        key=f"translate:{shot_id}",
+    )
+    return shot
 
 
 # --------------------------------------------------------------------------
@@ -2547,7 +2730,8 @@ async def render_shot(
        （:func:`_plan_render`。投入プレビューと同じ経路。未登録の名前は 400）。
     2. 生成設定（画面比・解像度・尺・ステップ数・シード）を
        **この 1 回ぶんの上書き > Shot > プロジェクト > 既定** の順に解決する。
-    3. プロジェクトの ``auto_translate`` が有効で本文に日本語が混ざっていれば、
+    3. 使える英語キャッシュがあればそれを ``video_prompt`` にする。無ければ
+       プロジェクトの ``auto_translate`` が有効で本文に日本語が混ざっていれば、
        ジョブ側で英訳する（ここでは待たない。``pending_translate`` を載せる）。
     4. :func:`app.jobs.create_job` にそのまま渡す（HTTP は経由しない）。
 
@@ -2635,12 +2819,18 @@ async def render_shot(
     if workflow in LATENT_CONTEXT_WORKFLOWS:
         await _require_latent_context()
 
-    # 英訳はジョブランナー側（HTTP を待たせない）。必要なら原文を残し、
-    # ``pending_translate`` だけ載せる。
+    # 使える英語キャッシュがあればそれを投入する（投入時の Grok は走らない）。
+    # 無ければ今までどおり、auto_translate かつ日本語ならジョブランナー側で
+    # 英訳する（HTTP を待たせない。``pending_translate`` だけ載せる）。
     source_prompt = ""
     warning = ""
     extra_params: dict[str, Any] | None = None
-    if project is not None and project.auto_translate and has_japanese(prompt):
+    submitted = prompt
+    if _english_cache_usable(shot, prompt):
+        submitted = shot.english_prompt
+        fields["video_prompt"] = submitted
+        source_prompt = prompt
+    elif project is not None and project.auto_translate and has_japanese(prompt):
         source_prompt = prompt
         extra_params = {"pending_translate": True}
 
@@ -2671,7 +2861,7 @@ async def render_shot(
                 shot.project_id,
                 job.id,
                 _now(),
-                prompt,
+                submitted,
                 source_prompt,
                 warning,
             ),

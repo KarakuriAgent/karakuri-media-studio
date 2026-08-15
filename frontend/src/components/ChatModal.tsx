@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from 'react'
-import { Loader2, Send } from 'lucide-react'
+import { Loader2, Send, Square } from 'lucide-react'
 import { api, formatDetail, ApiError } from '../api'
 import { audioSupports, hiddenFields, type FormState } from '../form'
-import type { ChatMessage, Options, PromptResult } from '../types'
+import type { ChatMessage, ChatProgress, Options, PromptResult } from '../types'
 import { Button } from '@/components/ui/button'
 import { Textarea } from '@/components/ui/textarea'
 import { MarkdownBody } from './MarkdownBody'
@@ -13,6 +13,8 @@ interface Props {
   patch: (patch: Partial<FormState>) => void
   /** 音声モードで、選択中のワークフローが読むフィールドを知るために使う。 */
   options: Options | null
+  /** WS /api/ws の相談チャットのイベント（実行中の活動テキスト）。 */
+  event?: ChatProgress | null
   onClose: () => void
   onSessionId: (id: string | null) => void
 }
@@ -21,6 +23,7 @@ export default function ChatModal({
   form,
   patch,
   options,
+  event,
   onClose,
   onSessionId,
 }: Props) {
@@ -29,7 +32,12 @@ export default function ChatModal({
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
+  // エラーではない一言（停止したときなど）
+  const [notice, setNotice] = useState<string | null>(null)
   const [result, setResult] = useState<PromptResult | null>(null)
+  // Grok がいま何をしているか（WS 由来。ターンが終わると消える）
+  const [activity, setActivity] = useState<string | null>(null)
+  const [stopping, setStopping] = useState(false)
   const scroller = useRef<HTMLDivElement>(null)
 
   // 音声モードは会話の中身も反映先も別物（シーンもカメラも LoRA も無い）。
@@ -131,11 +139,18 @@ export default function ChatModal({
     scroller.current?.scrollTo({ top: scroller.current.scrollHeight })
   }, [messages, busy])
 
+  // このチャットのイベントだけ拾う（ほかのセッションの通知は無視する）。
+  useEffect(() => {
+    if (!event || !sessionId || event.session_id !== sessionId) return
+    setActivity(event.running ? event.activity : null)
+  }, [event, sessionId])
+
   const send = async () => {
     const content = draft.trim()
     if (!content || !sessionId || busy) return
     setDraft('')
     setError(null)
+    setNotice(null)
     setBusy(true)
     const ts = new Date().toISOString()
     setMessages((previous) => [...previous, { role: 'user', content, ts }])
@@ -147,12 +162,33 @@ export default function ChatModal({
       ])
       if (reply.result) setResult(reply.result)
     } catch (caught) {
-      // 502 = grok CLI failure: show its detail verbatim (SPEC §8).
+      // 409 = 停止した（エラーではない）。502 = grok CLI failure: show its
+      // detail verbatim (SPEC §8).
+      if (caught instanceof ApiError && caught.status === 409) {
+        setNotice(formatDetail(caught.detail))
+      } else {
+        setError(
+          caught instanceof ApiError ? formatDetail(caught.detail) : String(caught),
+        )
+      }
+    } finally {
+      setBusy(false)
+      setStopping(false)
+      setActivity(null)
+    }
+  }
+
+  /** ⏹: 走っている Grok のターンを止める（発言は履歴に残る）。 */
+  const stop = async () => {
+    if (!sessionId || !busy || stopping) return
+    setStopping(true)
+    try {
+      await api.stopChatTurn(sessionId)
+    } catch (caught) {
       setError(
         caught instanceof ApiError ? formatDetail(caught.detail) : String(caught),
       )
-    } finally {
-      setBusy(false)
+      setStopping(false)
     }
   }
 
@@ -187,6 +223,9 @@ export default function ChatModal({
         )}
 
         {error && <Banner onClose={() => setError(null)}>{error}</Banner>}
+        {notice && (
+          <p className="text-xs text-muted-foreground">{notice}</p>
+        )}
 
         <div
           ref={scroller}
@@ -220,10 +259,27 @@ export default function ChatModal({
             </div>
           ))}
           {busy && (
-            <p className="flex items-center gap-1.5 text-xs text-muted-foreground">
-              <Loader2 className="size-3.5 animate-spin" />
-              Grok が考えています…
-            </p>
+            <div className="flex items-center gap-2 text-xs text-muted-foreground">
+              <span className="flex items-center gap-1.5">
+                <Loader2 className="size-3.5 animate-spin" />
+                {/* 活動テキストは ACP のときだけ届く（ワンショットでは出ない）。 */}
+                {stopping
+                  ? '停止しています…'
+                  : activity
+                    ? `Grok が${activity}…`
+                    : 'Grok が考えています…'}
+              </span>
+              <Button
+                variant="outline"
+                size="sm"
+                className="h-6 px-2"
+                disabled={stopping}
+                onClick={() => void stop()}
+              >
+                <Square className="size-3" />
+                停止
+              </Button>
+            </div>
           )}
         </div>
 

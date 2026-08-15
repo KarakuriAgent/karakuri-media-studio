@@ -373,7 +373,8 @@ def _agent_prompt(session: AgentSession, host: grok_session.GrokSessionHost) -> 
         return prompts.build_turn_batch(current)
     parts: list[str] = []
     cold = host.rebuild or not host.resumed
-    if cold and (not host.use_acp) and not host.session_id:
+    # 契約は CLI ごと（ACP の rules / cwd のファイル / プロンプト埋め込み）。
+    if cold and host.wants_contract():
         contract = _contract_of(session)
         if contract.strip():
             parts.append(contract.strip())
@@ -1079,6 +1080,12 @@ def _studio_shot_lines(shot, takes: list[StudioTake], indent: str) -> list[str]:
     ):
         if value:
             lines.append(f"{indent}  {label}: {value}")
+    if shot.english_status == "translating":
+        lines.append(f"{indent}  english_prompt: (translating)")
+    elif shot.english_status == "failed":
+        lines.append(f"{indent}  english_prompt: (failed)")
+    elif shot.english_prompt:
+        lines.append(f"{indent}  english_prompt: (cached)")
     for take in takes:
         selected = " ← 採用中" if shot.selected_take_id == take.id else ""
         lines.append(f"{indent}  {_studio_take_line(take)}{selected}")
@@ -1396,6 +1403,18 @@ async def _studio_render_shot(params: dict[str, Any]) -> tuple[str, str, dict]:
     )
 
 
+async def _studio_translate_shot(params: dict[str, Any]) -> tuple[str, str, dict]:
+    shot_id = params["shot_id"]
+    shot = await studio.translate_shot(shot_id, actor=STUDIO_ACTOR)
+    if shot is None:
+        raise studio.StudioError(f"Shot `{shot_id}` が見つかりません")
+    return (
+        "studio_saved",
+        f"Shot `{shot_id}` の英語プロンプトの作成を開始しました。",
+        {"shot_id": shot.id},
+    )
+
+
 async def _studio_get_takes(params: dict[str, Any]) -> tuple[str, str, dict]:
     shot_id = params["shot_id"]
     shot = await studio.get_shot(shot_id)
@@ -1463,6 +1482,7 @@ _STUDIO_HANDLERS = {
     "studio_register_asset_from_job": _studio_register_asset_from_job,
     "studio_render_shot": _studio_render_shot,
     "studio_get_takes": _studio_get_takes,
+    "studio_translate_shot": _studio_translate_shot,
     "studio_select_take": _studio_select_take,
     "studio_reject_take": _studio_reject_take,
 }

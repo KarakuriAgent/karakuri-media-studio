@@ -318,6 +318,16 @@ Grok CLI はファイル操作・シェル・Web 検索ツールを持つエー�
 タイムアウトは設定 `agent_grok_timeout`（既定 300 秒。**0 = タイムアウトなし**）。
 エージェントのターンだけでなく、生成フォームの相談チャットもこの設定を使う。
 
+**どの CLI で回すかは設定 `agent_cli`（SPEC §4.1）**: grok / claude / codex / cursor。
+起動コマンドと契約（システムプロンプト）の渡し方だけがアダプタ
+（`backend/app/llm_cli.py`）で変わり、アクションプロトコル（§4）も実行ループも
+そのまま同じものが動く。契約は grok なら ACP の `_meta.rules`、claude なら
+セッション workdir の `CLAUDE.md`、codex / cursor なら `AGENTS.md`。
+`agent_grok_args` は **grok の**ツール許可フラグなので、ほかの CLI を選んだときは
+その CLI の許可フラグを書く（既定のままだと知らないフラグとして落とされ、素の
+実行にフォールバックする）。CLI を切り替えると保存済みのセッション id は捨てられ、
+次のターンは会話履歴を組み直した新しいセッションで続く。
+
 ## 4. アクションプロトコル
 
 Grok CLI はステートレスなテキスト入出力なので、ツール呼び出しは JSON アクションとして自前定義する
@@ -400,6 +410,7 @@ Grok CLI はステートレスなテキスト入出力なので、ツール呼�
 | `studio_register_asset_from_job` | `project_id`, `job_id`, `name`, `source`（`image` / `last_frame` / `video` / `audio`） | `studio_saved`（自分で生成した成果物を**ファイル付き素材**にする） |
 | `studio_render_shot` | `shot_id`, 任意の `workflow_override` | `studio_render_started`（`take_id` / `job_id`）。カット / プロジェクトの設定でそのまま焼く（UI の生成ダイアログのような 1 回ぶんの上書きはエージェントからは行わず、変えたいならプロジェクトかカットの設定を書き換える） |
 | `studio_get_takes` | `shot_id` | `studio_takes`（status / stale。完了はこれで追う） |
+| `studio_translate_shot` | `shot_id` | `studio_saved`（`shot_id`）。開始してすぐ戻る。完了は `studio_get_project` の Shot の `english_status` / `english_prompt` を見る |
 | `studio_select_take` / `studio_reject_take` | `take_id` | `studio_take_selected` / `studio_take_rejected` |
 
 パラメータの検証は Web UI と同じ pydantic モデル（`Studio*Create` /

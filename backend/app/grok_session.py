@@ -1,10 +1,13 @@
-"""Grok セッションのホスト（ACP またはワンショット）を 1 ループのあいだ使い回す。
+"""CLI セッションのホスト（ACP またはワンショット）を 1 ループのあいだ使い回す。
 
-正本はこちらの DB。Grok 側のセッションは続き用のキャッシュで、削除・cwd 違い・
-``~/.grok`` 消失で load / resume は失敗する。失敗は :class:`GrokSessionGone`。
+正本はこちらの DB。CLI 側のセッションは続き用のキャッシュで、削除・cwd 違い・
+資格情報の消失で load / resume は失敗する。失敗は :class:`GrokSessionGone`。
 
-契約（rules）は ACP なら ``session/new`` の ``_meta.rules``、ワンショットなら
-呼び出し側が初回 ``-p`` に埋め込む。``systemPromptOverride`` は使わない。
+どの CLI を回すかは設定 ``agent_cli``（:mod:`app.llm_cli` のアダプタ）。契約
+（rules）の渡し方もアダプタが決める: grok は ``session/new`` の ``_meta.rules``、
+claude / codex / cursor は作業ディレクトリへ ``CLAUDE.md`` / ``AGENTS.md`` を
+書き出す。ワンショットは従来どおり呼び出し側が初回 ``-p`` に埋め込む
+（:meth:`GrokSessionHost.wants_contract`）。``systemPromptOverride`` は使わない。
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ from .acp import (
 )
 from .config import load_settings
 from .grok import LLMError, configured_timeout, looks_like_auth_error
+from .llm_cli import CliAdapter, active_adapter, command_for, model_for
 from .paths import GROK_WORKDIR, resolve_workdir
 
 log = logging.getLogger(__name__)
@@ -112,14 +116,25 @@ class GrokSessionHost:
         on_activity: ActivityCallback | None = None,
         timeout: float | None = None,
         use_acp: bool | None = None,
+        extra_args: list[str] | None = None,
+        allow_tools: bool = True,
+        adapter: CliAdapter | None = None,
     ) -> None:
         settings = load_settings()
+        #: どの CLI を回すか（設定 ``agent_cli``）
+        self.adapter = adapter or active_adapter(settings)
         self.workdir = resolve_workdir(workdir, GROK_WORKDIR)
         self.timeout = timeout if timeout is not None else configured_timeout()
         self.on_activity = on_activity
-        self.extra_args = list(settings.agent_grok_args)
-        self.command = settings.grok_command or "grok"
-        self.model = settings.grok_model or ""
+        self.extra_args = (
+            list(settings.agent_grok_args) if extra_args is None else list(extra_args)
+        )
+        #: ツール実行の許可要求に「許可」で答えるか（相談専用の会話は False）。
+        self.allow_tools = allow_tools
+        self.command = command_for(self.adapter, settings)
+        #: ワンショット（``-p``）側のコマンド。ACP ブリッジと別のことがある
+        self.oneshot_command = command_for(self.adapter, settings, oneshot=True)
+        self.model = model_for(self.adapter, settings)
         self.use_acp = settings.agent_use_acp if use_acp is None else use_acp
         self.session_id = ""
         self.resumed = False
@@ -135,11 +150,25 @@ class GrokSessionHost:
         self._prompt_done: asyncio.Event | None = None
         self._oneshot_process: asyncio.subprocess.Process | None = None
 
+    def wants_contract(self) -> bool:
+        """このターンのプロンプトの頭に契約（システムプロンプト）を置くべきか。
+
+        ACP なら契約は ``session/new`` の ``_meta.rules`` か、作業ディレクトリの
+        ``CLAUDE.md`` / ``AGENTS.md`` として渡っているので、ふつうは不要。ただし
+        読み込みが確実でない CLI（claude）だけは保険で埋める
+        （:attr:`app.llm_cli.CliAdapter.rules_in_prompt`）。
+
+        ワンショットはこれまでどおり「続きでないとき」だけ埋める。
+        """
+        if self.use_acp:
+            return self.adapter.rules_in_prompt
+        return not self.session_id
+
     # --------------------------------------------------------------- start
     async def start(
         self, rules: str, session_id: str | None, workdir: str | Path | None = None
     ) -> str:
-        """Grok セッションを開く。返るのは実際の grok session id（空もあり）。"""
+        """CLI のセッションを開く。返るのは実際の session id（空もあり）。"""
         if workdir is not None:
             self.workdir = resolve_workdir(workdir, GROK_WORKDIR)
         self._rules = rules or ""
@@ -149,7 +178,8 @@ class GrokSessionHost:
                 return await self._acp_start(wanted)
             except AcpUnavailable as exc:
                 log.warning(
-                    "grok ACP を利用できないためワンショット実行に切り替えます: %s",
+                    "%s の ACP を利用できないためワンショット実行に切り替えます: %s",
+                    self.adapter.label,
                     exc,
                 )
                 self.use_acp = False
@@ -162,12 +192,16 @@ class GrokSessionHost:
         return self.session_id
 
     async def _acp_start(self, session_id: str) -> str:
+        # 契約をファイルで渡す CLI（claude / codex / cursor）は、プロセスが
+        # 起き上がる前に置いておく必要がある。中身は毎回上書きでよい。
+        self.adapter.write_rules(self.workdir, self._rules)
         client = AcpAgentClient(
             command=self.command,
             model=self.model,
             workdir=self.workdir,
             timeout=self.timeout,
             on_activity=self.on_activity,
+            adapter=self.adapter,
         )
         process = await client._spawn()
         stderr_task = asyncio.create_task(client._drain(process.stderr))
@@ -210,13 +244,17 @@ class GrokSessionHost:
             "cwd": str(self.workdir),
             "mcpServers": [],
         }
-        if rules:
+        # 契約の渡し方は CLI ごと: grok は _meta.rules、ほかは作業ディレクトリに
+        # 置いた CLAUDE.md / AGENTS.md（:meth:`_acp_start` が先に書いている）。
+        if rules and self.adapter.rules_mode == "meta":
             params["_meta"] = {"rules": rules}
         req = turn.request("session/new", params)
         result = await self._acp_wait(turn, req, phase="init")
         session_id = str((result or {}).get("sessionId") or "").strip()
         if not session_id:
-            raise AcpUnavailable("grok ACP が sessionId を返しませんでした")
+            raise AcpUnavailable(
+                f"{self.adapter.label} の ACP が sessionId を返しませんでした"
+            )
         return session_id
 
     async def _acp_load(self, turn: _Turn, session_id: str) -> None:
@@ -280,7 +318,7 @@ class GrokSessionHost:
                     (result or {}).get("stopReason") if isinstance(result, dict) else None
                 )
                 raise LLMError(
-                    "grok ACP エージェントが空の応答を返しました"
+                    f"{self.adapter.label} の ACP エージェントが空の応答を返しました"
                     f"（stopReason={stop or 'unknown'}）"
                 )
             return answer
@@ -293,8 +331,9 @@ class GrokSessionHost:
         if self._cancelled:
             raise GrokTurnCancelled()
         extra = list(self.extra_args)
-        resume = bool(self.session_id)
-        want_json = not resume
+        # 続き（``--resume``）と json 包装はアダプタが対応している CLI だけ。
+        resume = bool(self.session_id) and self.adapter.supports_resume
+        want_json = not resume and self.adapter.supports_json_output
         try:
             code, out, err = await self._oneshot_exec(
                 text, extra, resume=resume, output_json=want_json
@@ -308,12 +347,12 @@ class GrokSessionHost:
         if self._cancelled:
             raise GrokTurnCancelled()
         if resume and code != 0:
-            if looks_like_auth_error(err or out):
-                raise LLMError(grok._failure_message(code, out, err))
+            if looks_like_auth_error(err or out, self.adapter):
+                raise LLMError(grok._failure_message(code, out, err, self.adapter))
             raise GrokSessionGone(
-                grok._failure_message(code, out, err)
+                grok._failure_message(code, out, err, self.adapter)
                 if code
-                else "grok --resume に失敗しました"
+                else f"{self.adapter.label} の続き実行に失敗しました"
             )
         if code == 0 and out.strip():
             if want_json:
@@ -323,9 +362,9 @@ class GrokSessionHost:
                 return _oneshot_answer(out)
             return out.strip()
         raise LLMError(
-            "grok CLI が空の応答を返しました"
+            f"{self.adapter.label} CLI が空の応答を返しました"
             if code == 0
-            else grok._failure_message(code, out, err)
+            else grok._failure_message(code, out, err, self.adapter)
         )
 
     async def _oneshot_exec(
@@ -336,20 +375,17 @@ class GrokSessionHost:
         resume: bool,
         output_json: bool,
     ) -> tuple[int, str, str]:
-        """``grok -p`` を、モデル / extra / json フラグを落としながら試す。"""
+        """ワンショット実行を、モデル / extra / json フラグを落としながら試す。"""
 
         def argv(model: bool, extras: bool, json_fmt: bool) -> list[str]:
-            parts = [self.command]
-            if model and self.model:
-                parts += ["--model", self.model]
-            if extras:
-                parts += extra
-            if json_fmt:
-                parts += ["--output-format", "json"]
-            parts += ["-p", text]
-            if resume:
-                parts += ["--resume", self.session_id]
-            return parts
+            return self.adapter.oneshot_argv(
+                text,
+                self.oneshot_command,
+                self.model if model else "",
+                extra=extra if extras else (),
+                output_json=json_fmt,
+                resume_id=self.session_id if resume else "",
+            )
 
         attempts: list[list[str]] = []
         if self.model:
@@ -376,7 +412,7 @@ class GrokSessionHost:
             code, out, err = last
             if code == 0 and out.strip():
                 return last
-            if looks_like_auth_error(err or out):
+            if looks_like_auth_error(err or out, self.adapter):
                 return last
             if resume and code != 0:
                 # resume 失敗はフラグを落としても直らない。呼び出し側が組み直す。
@@ -541,11 +577,15 @@ class GrokSessionHost:
             if isinstance(update, dict):
                 await self._acp._handle_update(update, turn)
         elif method == "session/request_permission":
-            from .acp import _allow_option_id
+            from .acp import _allow_option_id, _reject_option_id
 
             params = message.get("params") or {}
             options = params.get("options") or []
-            option_id = _allow_option_id(options)
+            option_id = (
+                _allow_option_id(options)
+                if self.allow_tools
+                else _reject_option_id(options)
+            )
             if option_id is None:
                 turn.respond(message_id, {"outcome": {"outcome": "cancelled"}})
             else:
@@ -585,20 +625,41 @@ def open_host(
     *,
     timeout: float | None = None,
     use_acp: bool | None = None,
+    extra_args: list[str] | None = None,
+    allow_tools: bool = True,
+    adapter: CliAdapter | None = None,
 ) -> GrokSessionHost:
-    """ACP / ワンショットを設定に従って選んだホストを返す。"""
+    """ACP / ワンショットを設定に従って選んだホストを返す。
+
+    ``extra_args`` は ``grok -p`` に足す追加フラグ（``None`` = 設定の
+    ``agent_grok_args``、``[]`` = 何も足さない）、``allow_tools`` が ``False`` の
+    ホストは ACP のツール実行許可要求を拒否する（相談専用の会話）。
+    """
     return GrokSessionHost(
-        workdir, on_activity=on_activity, timeout=timeout, use_acp=use_acp
+        workdir,
+        on_activity=on_activity,
+        timeout=timeout,
+        use_acp=use_acp,
+        extra_args=extra_args,
+        allow_tools=allow_tools,
+        adapter=adapter,
     )
 
 
 async def delete_remote_session(session_id: str, workdir: str | Path | None = None) -> None:
-    """``grok sessions delete`` を best-effort で呼ぶ（失敗しても黙る）。"""
+    """``grok sessions delete`` を best-effort で呼ぶ（失敗しても黙る）。
+
+    続き用キャッシュの掃除。この形の掃除コマンドを持つのは grok だけなので、
+    ほかの CLI では何もしない（残っても :class:`GrokSessionGone` で組み直す）。
+    """
     sid = (session_id or "").strip()
     if not sid:
         return
     settings = load_settings()
-    command = settings.grok_command or "grok"
+    adapter = active_adapter(settings)
+    if adapter.id != "grok":
+        return
+    command = command_for(adapter, settings, oneshot=True)
     cwd = resolve_workdir(workdir or settings.grok_workdir, GROK_WORKDIR)
     try:
         await grok._exec([command, "sessions", "delete", sid], cwd, 20.0)

@@ -24,6 +24,7 @@ import type {
   CanvasViewport,
   ChatReply,
   ChatSession,
+  ChatState,
   ChatSessionCreate,
   ComfyTarget,
   Health,
@@ -408,6 +409,9 @@ export const api = {
   getChatSession: (id: string) => request<ChatSession>(`/api/chat/sessions/${id}`),
   sendChatMessage: (id: string, content: string) =>
     json<ChatReply>('POST', `/api/chat/sessions/${id}/messages`, { content }),
+  /** ⏹: 走っている Grok のターンを止める（次の発言は新しい会話で続く）。 */
+  stopChatTurn: (id: string) =>
+    json<ChatState>('POST', `/api/chat/sessions/${id}/stop`, {}),
 
   // agent mode (AGENT-MODE §5.1)
   createAgentSession: (payload: AgentSessionCreate) =>
@@ -569,10 +573,14 @@ export const api = {
    * このカットを今生成したら**実際に投入されるもの**（読み取りだけ）。
    *
    * 生成と同じ組み立てを通るが、英訳は走らない（入るかどうかは
-   * `will_translate`）。組み立てられないカットも 200 で `error` に理由が入る。
+   * `will_translate`。使える英語キャッシュがあれば false）。組み立てられない
+   * カットも 200 で `error` に理由が入る。
    */
   previewStudioShotPrompt: (id: string) =>
     request<StudioShotPreview>(`/api/studio/shots/${id}/prompt-preview`),
+  /** 組み立て済み本文を英語の公式 H3 文書にして Shot に保存する。 */
+  translateStudioShotPrompt: (id: string) =>
+    json<StudioShot>('POST', `/api/studio/shots/${id}/translate`),
 
   listStudioTakes: (shotId: string) =>
     request<StudioTake[]>(`/api/studio/shots/${shotId}/takes`),

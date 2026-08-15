@@ -1,8 +1,14 @@
 import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { api } from '../api'
+import { api, ApiError } from '../api'
 import { initialForm, type FormState } from '../form'
-import type { ChatSession, Options, PromptResult, WorkflowOption } from '../types'
+import type {
+  ChatProgress,
+  ChatSession,
+  Options,
+  PromptResult,
+  WorkflowOption,
+} from '../types'
 import ChatModal from './ChatModal'
 
 afterEach(cleanup)
@@ -347,5 +353,85 @@ describe('ChatModal — フォームの現在値の受け渡し', () => {
     expect(screen.queryByText('自然文')).toBeNull()
     expect(screen.queryByText('タグ形式')).toBeNull()
     expect(screen.getByText(/公式リライト形式/)).toBeTruthy()
+  })
+})
+
+describe('ChatModal — 応答待ちの活動表示と停止', () => {
+  /** 送信を宙ぶらりんにしたまま開く（応答待ちの見た目を確かめるため）。 */
+  async function pending() {
+    let reject: (error: unknown) => void = () => {}
+    vi.spyOn(api, 'sendChatMessage').mockImplementation(
+      () => new Promise((_resolve, rejectSend) => (reject = rejectSend)),
+    )
+    const view = render(
+      <ChatModal
+        form={initialForm}
+        patch={vi.fn()}
+        options={OPTIONS}
+        event={null}
+        onClose={vi.fn()}
+        onSessionId={() => {}}
+      />,
+    )
+    await waitFor(() => expect(created.length).toBe(1))
+    fireEvent.change(screen.getByPlaceholderText(/メッセージを入力/), {
+      target: { value: '踊って' },
+    })
+    fireEvent.click(screen.getByText('送信'))
+    await screen.findByText('Grok が考えています…')
+    return { view, reject: (error: unknown) => reject(error) }
+  }
+
+  function frame(activity: string | null, running = true): ChatProgress {
+    return { type: 'chat', session_id: SESSION.id, running, activity }
+  }
+
+  it('WS で届いた活動テキストを応答待ちの間に出す', async () => {
+    const { view } = await pending()
+    view.rerender(
+      <ChatModal
+        form={initialForm}
+        patch={vi.fn()}
+        options={OPTIONS}
+        event={frame('ツール実行中: ls')}
+        onClose={vi.fn()}
+        onSessionId={() => {}}
+      />,
+    )
+    expect(await screen.findByText('Grok がツール実行中: ls…')).toBeTruthy()
+  })
+
+  it('ほかのチャットの活動は出さない', async () => {
+    const { view } = await pending()
+    view.rerender(
+      <ChatModal
+        form={initialForm}
+        patch={vi.fn()}
+        options={OPTIONS}
+        event={{ ...frame('思考中'), session_id: 'other' }}
+        onClose={vi.fn()}
+        onSessionId={() => {}}
+      />,
+    )
+    expect(screen.getByText('Grok が考えています…')).toBeTruthy()
+  })
+
+  it('停止ボタンでターンを止め、409 はエラーではなく一言で出す', async () => {
+    const stop = vi.spyOn(api, 'stopChatTurn').mockResolvedValue({
+      session_id: SESSION.id,
+      running: false,
+      activity: null,
+    })
+    const { reject } = await pending()
+    fireEvent.click(screen.getByText('停止'))
+    await waitFor(() => expect(stop).toHaveBeenCalledWith(SESSION.id))
+    expect(screen.getByText('停止しています…')).toBeTruthy()
+
+    reject(new ApiError(409, '実行を止めました'))
+    expect(await screen.findByText('実行を止めました')).toBeTruthy()
+    // 送信欄はまた使える（応答待ちが解けている）
+    await waitFor(() =>
+      expect(screen.queryByText('停止しています…')).toBeNull(),
+    )
   })
 })

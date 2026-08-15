@@ -37,6 +37,7 @@ import type {
   LoraPayload,
   LoraTarget,
   ModelDownloadProgress,
+  LlmCli,
   ModelFieldState,
   ModelsDirStatus,
   Options,
@@ -48,6 +49,7 @@ import { Button } from './ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from './ui/card'
 import { Input } from './ui/input'
 import { Label } from './ui/label'
+import { NativeSelect } from './NativeSelect'
 import {
   Select,
   SelectContent,
@@ -202,6 +204,44 @@ function loraBadge(lora: Lora): string {
   const family = lora.family ?? DEFAULT_FAMILY
   return `画像用 / ${FAMILY_LABELS[family] ?? family}`
 }
+
+/**
+ * 選べる CLI（バックエンドの `app/llm_cli.py` のアダプタと対応、SPEC §4.1）。
+ *
+ * `command` は既定のコマンド名で、入力欄の placeholder に出す（空欄 = 既定）。
+ * Grok Imagine（画像生成）はこの選択と無関係に常に Grok CLI を使う。
+ */
+export const CLI_CHOICES: {
+  id: LlmCli
+  label: string
+  command: string
+  note: string
+}[] = [
+  {
+    id: 'grok',
+    label: 'Grok',
+    command: 'grok',
+    note: '契約は ACP の rules で渡ります。',
+  },
+  {
+    id: 'claude',
+    label: 'Claude Code',
+    command: 'claude-agent-acp',
+    note: '契約は作業ディレクトリの CLAUDE.md（プロンプトにも埋めます）。',
+  },
+  {
+    id: 'codex',
+    label: 'Codex',
+    command: 'codex-acp',
+    note: '契約は作業ディレクトリの AGENTS.md。ワンショットは codex exec。',
+  },
+  {
+    id: 'cursor',
+    label: 'Cursor',
+    command: 'cursor-agent',
+    note: '契約は作業ディレクトリの AGENTS.md。',
+  },
+]
 
 /**
  * `agent_grok_args`（grok CLI の追加フラグ）の入力欄 → 配列。
@@ -725,6 +765,9 @@ export default function SettingsPage({
           runpod_comfy_url: settings.runpod_comfy_url,
           runpod_comfy_api_key: settings.runpod_comfy_api_key,
           comfy_cloud_api_key: settings.comfy_cloud_api_key,
+          agent_cli: settings.agent_cli,
+          agent_cli_commands: settings.agent_cli_commands,
+          agent_cli_models: settings.agent_cli_models,
           grok_model: settings.grok_model,
           grok_command: settings.grok_command,
           grok_workdir: settings.grok_workdir,
@@ -967,6 +1010,44 @@ export default function SettingsPage({
 
   const update = (patch: Partial<Settings>) =>
     setSettings((previous) => (previous ? { ...previous, ...patch } : previous))
+
+  // ------------------------------------------------ 選択中の CLI（SPEC §4.1）
+  // コマンドとモデルの欄は選択中の CLI のものを出す。grok だけは従来からある
+  // `grok_command` / `grok_model` を、ほかは `agent_cli_*` の辞書を書き換える。
+  const activeCli: LlmCli = settings?.agent_cli ?? 'grok'
+  const cliChoice = CLI_CHOICES.find((choice) => choice.id === activeCli) ?? CLI_CHOICES[0]
+  const cliCommand =
+    activeCli === 'grok'
+      ? (settings?.grok_command ?? '')
+      : (settings?.agent_cli_commands?.[activeCli] ?? '')
+  const cliModel =
+    activeCli === 'grok'
+      ? (settings?.grok_model ?? '')
+      : (settings?.agent_cli_models?.[activeCli] ?? '')
+
+  const setCliCommand = (value: string) =>
+    update(
+      activeCli === 'grok'
+        ? { grok_command: value }
+        : {
+            agent_cli_commands: {
+              ...(settings?.agent_cli_commands ?? {}),
+              [activeCli]: value,
+            },
+          },
+    )
+
+  const setCliModel = (value: string) =>
+    update(
+      activeCli === 'grok'
+        ? { grok_model: value }
+        : {
+            agent_cli_models: {
+              ...(settings?.agent_cli_models ?? {}),
+              [activeCli]: value,
+            },
+          },
+    )
 
   /** モデル / LoRA タブの先頭に置く環境プルダウン（SPEC §5）。 */
   const envPicker = () => (
@@ -1235,24 +1316,49 @@ export default function SettingsPage({
                   </SettingsCard>
 
                   <SettingsCard
-                    title="Grok CLI / エージェント"
-                    description="チャット・エージェント・Grok Imagine が回す grok CLI の設定です。"
+                    title="LLM CLI / エージェント"
+                    description="チャット・エージェント・スタジオ会話・英訳が回す CLI の設定です。Grok Imagine（画像生成）は常に Grok CLI を使います。"
                   >
                     <div className="grid gap-2 sm:grid-cols-2">
-                      <Field label="grok コマンド" htmlFor="grok-command">
-                        <Input
-                          id="grok-command"
-                          value={settings.grok_command}
+                      <Field
+                        label="使う CLI"
+                        htmlFor="agent-cli"
+                        hint={cliChoice.note}
+                      >
+                        <NativeSelect
+                          id="agent-cli"
+                          value={settings.agent_cli}
                           onChange={(event) =>
-                            update({ grok_command: event.target.value })
+                            update({ agent_cli: event.target.value as LlmCli })
                           }
+                        >
+                          {CLI_CHOICES.map((choice) => (
+                            <option key={choice.id} value={choice.id}>
+                              {choice.label}
+                            </option>
+                          ))}
+                        </NativeSelect>
+                      </Field>
+                      <Field
+                        label={`${cliChoice.label} のコマンド（空 = 既定）`}
+                        htmlFor="cli-command"
+                        hint="引数まで書けます（例: npx @zed-industries/claude-code-acp）。"
+                      >
+                        <Input
+                          id="cli-command"
+                          value={cliCommand}
+                          placeholder={cliChoice.command}
+                          onChange={(event) => setCliCommand(event.target.value)}
                         />
                       </Field>
-                      <Field label="grok モデル" htmlFor="grok-model">
+                      <Field
+                        label={`${cliChoice.label} のモデル（空 = CLI の既定）`}
+                        htmlFor="cli-model"
+                      >
                         <Input
-                          id="grok-model"
-                          value={settings.grok_model}
-                          onChange={(event) => update({ grok_model: event.target.value })}
+                          id="cli-model"
+                          value={cliModel}
+                          onChange={(event) => setCliModel(event.target.value)}
                         />
                       </Field>
                       <Field
@@ -1274,9 +1380,9 @@ export default function SettingsPage({
                         />
                       </Field>
                       <Field
-                        label="grok の作業ディレクトリ（空 = 既定）"
+                        label="CLI の作業ディレクトリ（空 = 既定）"
                         htmlFor="grok-workdir"
-                        hint="チャット / エージェントが grok CLI を回すディレクトリです。"
+                        hint="チャット / エージェントが CLI を回すディレクトリの根です（セッションごとに下へ掘ります）。"
                       >
                         <Input
                           id="grok-workdir"
@@ -1302,7 +1408,7 @@ export default function SettingsPage({
                         />
                       </Field>
                       <Field
-                        label="grok CLI の追加フラグ（空白区切り）"
+                        label="CLI の追加フラグ（空白区切り）"
                         htmlFor="agent-grok-args"
                         hintTone="warn"
                         hint={
@@ -1335,7 +1441,7 @@ export default function SettingsPage({
                         onClick={() => void checkGrok()}
                         disabled={grokChecking}
                       >
-                        {grokChecking ? '確認中…' : 'grok CLI の接続確認'}
+                        {grokChecking ? '確認中…' : 'Grok CLI の接続確認（Grok Imagine）'}
                       </Button>
                       {grokCheck && (
                         <span

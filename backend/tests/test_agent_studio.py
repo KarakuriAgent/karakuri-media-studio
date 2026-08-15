@@ -159,6 +159,7 @@ def test_parse_upsert_shot_keeps_an_explicit_null(env):
         ({"action": "studio_delete_shot"}, "id"),
         ({"action": "studio_render_shot"}, "shot_id"),
         ({"action": "studio_get_takes"}, "shot_id"),
+        ({"action": "studio_translate_shot"}, "shot_id"),
         ({"action": "studio_select_take"}, "take_id"),
         ({"action": "studio_reject_take"}, "take_id"),
         ({"action": "studio_register_asset_from_job", "job_id": "j"}, "project_id"),
@@ -190,6 +191,15 @@ def test_an_unknown_asset_category_is_rejected(env):
                 }
             )
         )
+
+
+def test_parse_translate_shot_takes_shot_id(env):
+    action = agent_protocol.parse_action(
+        action_answer({"action": "studio_translate_shot", "shot_id": "s1"})
+    )
+    assert action is not None
+    assert action.action == "studio_translate_shot"
+    assert action.studio["shot_id"] == "s1"
 
 
 def test_an_unknown_workflow_override_is_rejected(env):
@@ -495,6 +505,33 @@ def test_register_asset_from_a_missing_job_is_reported(env):
     assert env.client.get(f"/api/studio/projects/{project['id']}").json()["assets"] == []
 
 
+def test_translate_shot_saves_the_english_prompt(env, monkeypatch):
+    from app import grok
+    from test_studio import FakeLLM, wait_translated
+
+    llm = FakeLLM()
+    llm.error = None
+    llm.reply = "integrated_multimodal_description: A cat walks in."
+    monkeypatch.setattr(grok, "get_client", lambda *a, **k: llm)
+
+    project = make_project(env)
+    shot = make_shot(env, project["id"], prompt="猫が歩いてくる。")
+    event = event_of(
+        studio_action(
+            env, {"action": "studio_translate_shot", "shot_id": shot["id"]}
+        ),
+        "studio_saved",
+    )
+    assert event["data"]["shot_id"] == shot["id"]
+    assert shot["id"] in event["content"]
+    assert "開始しました" in event["content"]
+    wait_translated(env, shot["id"])
+    stored = env.client.get(f"/api/studio/projects/{project['id']}").json()["shots"][0]
+    assert stored["english_prompt"] == llm.reply
+    assert stored["prompt"] == "猫が歩いてくる。"
+    assert llm.prompts
+
+
 def test_render_shot_queues_a_take_and_reports_its_ids(env):
     project = make_project(env)
     shot = make_shot(env, project["id"])
@@ -643,6 +680,7 @@ def test_system_prompt_explains_the_studio(env):
         "studio_create_project",
         "studio_upsert_shot",
         "studio_render_shot",
+        "studio_translate_shot",
         "studio_select_take",
         "studio_register_asset_from_job",
         "`@名前`",

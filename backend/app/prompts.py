@@ -2076,6 +2076,44 @@ def build_conversation(messages: list[ChatMessage], retry: bool = False) -> str:
     )
 
 
+#: 1 ターン分の締め（``build_conversation`` の末尾と同じ文面）。
+_CHAT_ASSISTANT_CUE = (
+    "### ASSISTANT\n(Your reply — Japanese questions, or the final "
+    "```json block.)\n"
+)
+
+
+def build_chat_turn(content: str) -> str:
+    """継続セッションに送る 1 発言（契約と履歴は Grok 側が覚えている）。
+
+    ACP なら契約は ``session/new`` の ``_meta.rules``、履歴は Grok のセッション
+    そのものが持つので、2 通目以降はこれだけを ``session/prompt`` で送る。
+    """
+    return f"### USER\n{content.strip()}\n\n{_CHAT_ASSISTANT_CUE}"
+
+
+def build_chat_replay(messages: list[ChatMessage]) -> str:
+    """セッションを組み直したときに 1 通だけ送る過去会話（system は除く）。
+
+    正本は DB の chat メッセージ履歴。Grok 側のセッションが消えていたら、ここで
+    組み直したものを新しいセッションの初回プロンプトの頭に置く。
+    """
+    chunks: list[str] = []
+    for message in messages:
+        if message.role == "system":
+            continue
+        label = _ROLE_LABEL.get(message.role, message.role.upper())
+        chunks.append(f"### {label}\n{message.content.strip()}")
+    if not chunks:
+        return ""
+    return "# CONVERSATION SO FAR (oldest first)\n\n" + "\n\n".join(chunks) + "\n"
+
+
+def build_chat_retry_turn() -> str:
+    """JSON を読めなかったときに継続セッションへ送る作り直しの指示。"""
+    return "# RETRY\n" + RETRY_SUFFIX.strip() + "\n\n" + _CHAT_ASSISTANT_CUE
+
+
 # --------------------------------------------------------------------------
 # agent mode (AGENT-MODE §3 / §4 / §7)
 # --------------------------------------------------------------------------
@@ -2386,11 +2424,14 @@ What actually decides the output:
   the project's flag as a **manual** decision — on marks all of them NSFW, off
   pins them to non-NSFW and skips the automatic classifier entirely. It is a
   property of the work, not of a single cut, so change it on the project.
-- `auto_translate` (per project, on by default): write the Shot **in Japanese**
-  and the app has Grok turn the assembled prompt into English at submit time —
-  so do not hand it a finished English prompt, and never replace a `@名前` with
-  an English description of the asset (that drops the reference). With it off,
-  write the Shot in English yourself, `@名前` mentions still intact.
+- `auto_translate` (per project, on by default): write the Shot **in Japanese**.
+  If a usable `english_prompt` is already cached, submit uses that English and
+  Grok does not run at submit time. Otherwise the app has Grok turn the
+  assembled prompt into English at submit time — so do not put a finished
+  English prompt in `shot.prompt`, and never replace a `@名前` with an English
+  description of the asset (that drops the reference). With it off, a usable
+  cache is still submitted as English; without one, write the Shot in English
+  yourself, `@名前` mentions still intact.
 - `stale` on a Take means the script or a mentioned asset changed **after** that
   Take was made, so it no longer shows what the Shot now says — re-render before
   selecting it.
@@ -2413,6 +2454,7 @@ Actions — one per reply like every other action, no approval needed:
 | `studio_register_asset_from_job` | `project_id`, `job_id`, `name`, `source` (`image` / `last_frame` / `video` / `audio`, default `image`), optional `category`, `caption`, `prompt_caption` | turn an output **you generated** into an asset that really has a file, so `@名前` attaches it as a reference |
 | `studio_render_shot` | `shot_id`, optional `workflow_override` | queue one Take; the event carries `take_id` and `job_id` |
 | `studio_get_takes` | `shot_id` | the Shot's Takes with status (`rendering` / `candidate` / `selected` / `rejected` / `failed`) and `stale` |
+| `studio_translate_shot` | `shot_id` | start rewriting the assembled prompt into the official English H3 document and return immediately. Completion is on the Shot from `studio_get_project` (`english_status` / `english_prompt`). Submit then uses that cache |
 | `studio_select_take` / `studio_reject_take` | `take_id` | 採用 / 不採用 |
 
 Recommended flow:

@@ -367,6 +367,18 @@ async def update_asset(asset_id: str, payload: StudioAssetUpdate) -> StudioAsset
 # Take（Shot の生成）
 # --------------------------------------------------------------------------
 
+@router.post("/shots/{shot_id}/translate", response_model=StudioShot)
+async def translate_shot(shot_id: str) -> StudioShot:
+    """組み立て済み本文の英訳を開始する（Grok は裏で走り、完了は Shot を見る）。"""
+    try:
+        shot = await service.translate_shot(shot_id, actor=ACTOR)
+    except service.StudioError as exc:
+        raise _bad_request(exc) from exc
+    if shot is None:
+        raise HTTPException(status_code=404, detail="shot not found")
+    return shot
+
+
 @router.get("/shots/{shot_id}/takes", response_model=list[StudioTake])
 async def list_takes(shot_id: str) -> list[StudioTake]:
     if await service.get_shot(shot_id) is None:

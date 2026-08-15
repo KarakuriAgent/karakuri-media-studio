@@ -6,6 +6,9 @@ Grok（日本語 -> 英語の変換）も呼ばせず、既定では「使えな
 （auto_translate の日本語 Shot は受け付けるが、ジョブ側の英訳で失敗する）。
 """
 
+import asyncio
+import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -24,15 +27,23 @@ async def _no_llm(text: str) -> None:
 
 
 class FakeLLM:
-    """Grok の差し替え。``reply`` を返すか、``error`` があれば失敗する。"""
+    """Grok の差し替え。``reply`` を返すか、``error`` があれば失敗する。
+
+    ``hold`` がセットされた Event なら、立つまで待つ（既定はゲート無しで即返す）。
+    """
 
     def __init__(self) -> None:
         self.reply: str | None = None
         self.error: str | None = "grok CLI が見つかりません"
         self.prompts: list[str] = []
+        self.hold: threading.Event | None = None
 
     async def complete(self, prompt: str) -> str:
         self.prompts.append(prompt)
+        hold = self.hold
+        if hold is not None:
+            while not hold.is_set():
+                await asyncio.sleep(0.05)
         if self.error is not None:
             raise grok.LLMError(self.error)
         return self.reply or ""
@@ -2225,7 +2236,7 @@ def test_translation_uses_the_configured_grok_timeout(env, monkeypatch):
 
     seen: list[float | None] = []
     env.llm.error = None
-    env.llm.reply = "A cat walks in."
+    env.llm.reply = "integrated_multimodal_description: A cat walks in."
 
     def capture(*args, **kwargs):
         if "timeout" in kwargs:
@@ -2251,9 +2262,30 @@ def test_translation_uses_the_configured_grok_timeout(env, monkeypatch):
     assert seen == [900.0]
 
 
+def test_extract_h3_document_drops_a_grok_preamble():
+    raw = (
+        "I'll load the official MiniMax H3 rewrite rules so the English "
+        "document matches the required fields and constraints."
+        "subject_definitions:\n<Subject 1> is in <Picture 1>.\n\n"
+        "detailed_description:\n[Shot 1] A cat walks in.\n"
+        "(S1) says: <d>[日本語] 痛ぁ！</d>"
+    )
+    text = studio.extract_h3_document(raw)
+    assert text.startswith("subject_definitions:")
+    assert "I'll load" not in text
+    assert "<d>[Japanese] 痛ぁ！</d>" in text
+
+
+def test_extract_h3_document_rejects_chatter_without_fields():
+    assert studio.extract_h3_document(
+        "I'll load the official MiniMax H3 rewrite rules and emit only "
+        "the completed English document."
+    ) == ""
+
+
 def test_a_fenced_answer_is_unwrapped(env):
     env.llm.error = None
-    env.llm.reply = "```\nA cat walks in.\n```"
+    env.llm.reply = "```\nintegrated_multimodal_description: A cat walks in.\n```"
     project = make_project(env)
     shot = make_shot(env, project["id"], prompt="猫が入ってくる。")
     take = render(env, shot["id"])
@@ -2262,7 +2294,9 @@ def test_a_fenced_answer_is_unwrapped(env):
         "integrated_multimodal_description: 猫が入ってくる。"
     )
     job = wait_for(env.client, take.json()["job_id"])
-    assert job["params"]["video_prompt"] == "A cat walks in."
+    assert job["params"]["video_prompt"] == (
+        "integrated_multimodal_description: A cat walks in."
+    )
 
 
 # --------------------------------------------------------------------------
@@ -2486,6 +2520,257 @@ def test_the_preview_matches_what_is_actually_submitted(env):
 
 def test_the_preview_of_an_unknown_shot_is_a_404(env):
     assert env.client.get("/api/studio/shots/nope/prompt-preview").status_code == 404
+
+
+# --------------------------------------------------------------------------
+# 事前英訳キャッシュ（english_prompt / english_source）
+# --------------------------------------------------------------------------
+
+def _translate(env, shot_id: str):
+    return env.client.post(f"/api/studio/shots/{shot_id}/translate")
+
+
+def wait_translated(env, shot_id, timeout=5.0) -> dict:
+    """preview をポーリングし、英訳が終わったらそのプレビューを返す。"""
+    deadline = time.time() + timeout
+    body: dict = {}
+    while time.time() < deadline:
+        body = preview(env, shot_id)
+        status = body.get("english_status") or ""
+        if status != "translating" and (body.get("english_prompt") or status == "failed"):
+            return body
+        time.sleep(0.05)
+    raise AssertionError(
+        f"translate {shot_id} stuck in {body.get('english_status')!r}"
+    )
+
+
+def test_translate_saves_the_assembled_english(env):
+    env.llm.error = None
+    env.llm.reply = (
+        "integrated_multimodal_description: A cat walks in.\n"
+        "No text, subtitles, logos or watermarks."
+    )
+    project = make_project(env)
+    shot = make_shot(env, project["id"], prompt="猫が歩いてくる。")
+    assembled = preview(env, shot["id"])["prompt"]
+
+    response = _translate(env, shot["id"])
+    assert response.status_code == 200, response.text
+    wait_translated(env, shot["id"])
+    stored = detail(env, project["id"])["shots"][0]
+    assert stored["english_prompt"] == env.llm.reply
+    assert stored["english_source"] == assembled
+    assert stored["prompt"] == "猫が歩いてくる。"
+    assert assembled in env.llm.prompts[-1]
+
+
+def test_translate_returns_before_grok_finishes(env):
+    env.llm.error = None
+    env.llm.reply = "integrated_multimodal_description: ENGLISH CACHE"
+    env.llm.hold = threading.Event()
+    project = make_project(env)
+    shot = make_shot(env, project["id"], prompt="猫が歩いてくる。")
+    try:
+        response = _translate(env, shot["id"])
+        assert response.status_code == 200, response.text
+        body = response.json()
+        assert body["english_status"] == "translating"
+        assert body["english_prompt"] == ""
+        assert not env.llm.hold.is_set()
+
+        env.llm.hold.set()
+        done = wait_translated(env, shot["id"])
+        assert done["english_prompt"] == "integrated_multimodal_description: ENGLISH CACHE"
+        assert done["english_status"] == ""
+    finally:
+        env.llm.hold.set()
+
+
+def test_a_usable_english_cache_is_submitted_without_pending_translate(env):
+    env.llm.error = None
+    env.llm.reply = "integrated_multimodal_description: ENGLISH CACHE"
+    project = make_project(env)
+    shot = make_shot(env, project["id"], prompt="猫が歩いてくる。")
+    assembled = preview(env, shot["id"])["prompt"]
+    assert _translate(env, shot["id"]).status_code == 200
+    wait_translated(env, shot["id"])
+    env.llm.prompts.clear()
+
+    take = render(env, shot["id"])
+    assert take.status_code == 201, take.text
+    assert env.extras[-1] is None
+    assert env.created[-1].video_prompt == "integrated_multimodal_description: ENGLISH CACHE"
+    assert env.llm.prompts == []
+    body = take.json()
+    assert body["prompt"] == "integrated_multimodal_description: ENGLISH CACHE"
+    assert body["source_prompt"] == assembled
+
+
+def test_a_stale_english_cache_falls_back_to_pending_translate(env):
+    env.llm.error = None
+    env.llm.reply = "integrated_multimodal_description: ENGLISH CACHE"
+    project = make_project(env)
+    shot = make_shot(env, project["id"], prompt="猫が歩いてくる。")
+    assert _translate(env, shot["id"]).status_code == 200
+    wait_translated(env, shot["id"])
+
+    patched = env.client.patch(
+        f"/api/studio/shots/{shot['id']}", json={"prompt": "犬が走ってくる。"}
+    )
+    assert patched.status_code == 200
+    take = render(env, shot["id"])
+    assert take.status_code == 201, take.text
+    assert env.extras[-1] == {"pending_translate": True}
+
+
+def test_changing_seed_alone_keeps_the_english_cache(env):
+    env.llm.error = None
+    env.llm.reply = "integrated_multimodal_description: ENGLISH CACHE"
+    project = make_project(env)
+    shot = make_shot(env, project["id"], prompt="猫が歩いてくる。")
+    assert _translate(env, shot["id"]).status_code == 200
+    wait_translated(env, shot["id"])
+    env.llm.prompts.clear()
+
+    patched = env.client.patch(
+        f"/api/studio/shots/{shot['id']}", json={"seed": 42}
+    )
+    assert patched.status_code == 200
+    take = render(env, shot["id"])
+    assert take.status_code == 201, take.text
+    assert env.extras[-1] is None
+    assert env.created[-1].video_prompt == "integrated_multimodal_description: ENGLISH CACHE"
+    assert env.created[-1].seed == 42
+    assert env.llm.prompts == []
+
+
+def test_auto_translate_off_still_submits_a_usable_english_cache(env):
+    env.llm.error = None
+    env.llm.reply = "integrated_multimodal_description: ENGLISH CACHE"
+    project = make_project(env, auto_translate=False)
+    shot = make_shot(env, project["id"], prompt="猫が歩いてくる。")
+    assert _translate(env, shot["id"]).status_code == 200
+    wait_translated(env, shot["id"])
+    env.llm.prompts.clear()
+
+    take = render(env, shot["id"])
+    assert take.status_code == 201, take.text
+    assert env.extras[-1] is None
+    assert env.created[-1].video_prompt == "integrated_multimodal_description: ENGLISH CACHE"
+    assert env.llm.prompts == []
+
+
+def test_no_cache_and_japanese_still_sets_pending_translate(env):
+    project = make_project(env)
+    shot = make_shot(env, project["id"], prompt="猫が歩いてくる。")
+    take = render(env, shot["id"])
+    assert take.status_code == 201, take.text
+    assert env.extras[-1] == {"pending_translate": True}
+
+
+def test_a_failed_translate_does_not_write_the_cache(env):
+    project = make_project(env)
+    shot = make_shot(env, project["id"], prompt="猫が歩いてくる。")
+    response = _translate(env, shot["id"])
+    assert response.status_code == 200, response.text
+    body = wait_translated(env, shot["id"])
+    assert body["english_status"] == "failed"
+    assert body["english_prompt"] == ""
+    assert "保存しませんでした" in (body.get("english_error") or "")
+    stored = detail(env, project["id"])["shots"][0]
+    assert stored["english_prompt"] == ""
+    assert stored["english_source"] == ""
+    assert stored["english_status"] == "failed"
+    assert "保存しませんでした" in stored["english_error"]
+
+
+def test_preview_reports_a_usable_english_cache(env):
+    env.llm.error = None
+    env.llm.reply = "integrated_multimodal_description: ENGLISH CACHE"
+    project = make_project(env)
+    shot = make_shot(env, project["id"], prompt="猫が歩いてくる。")
+    assert _translate(env, shot["id"]).status_code == 200
+    wait_translated(env, shot["id"])
+
+    body = preview(env, shot["id"])
+    assert body["will_translate"] is False
+    assert body["english_stale"] is False
+    assert body["english_prompt"] == "integrated_multimodal_description: ENGLISH CACHE"
+
+
+def test_preview_marks_a_stale_english_cache(env):
+    env.llm.error = None
+    env.llm.reply = "integrated_multimodal_description: ENGLISH CACHE"
+    project = make_project(env)
+    shot = make_shot(env, project["id"], prompt="猫が歩いてくる。")
+    assert _translate(env, shot["id"]).status_code == 200
+    wait_translated(env, shot["id"])
+    env.client.patch(
+        f"/api/studio/shots/{shot['id']}", json={"prompt": "犬が走ってくる。"}
+    )
+
+    body = preview(env, shot["id"])
+    assert body["will_translate"] is True
+    assert body["english_stale"] is True
+    assert body["english_prompt"] == "integrated_multimodal_description: ENGLISH CACHE"
+
+
+def test_clearing_english_prompt_clears_the_source_too(env):
+    env.llm.error = None
+    env.llm.reply = "integrated_multimodal_description: ENGLISH CACHE"
+    project = make_project(env)
+    shot = make_shot(env, project["id"], prompt="猫が歩いてくる。")
+    assert _translate(env, shot["id"]).status_code == 200
+    wait_translated(env, shot["id"])
+
+    patched = env.client.patch(
+        f"/api/studio/shots/{shot['id']}", json={"english_prompt": ""}
+    )
+    assert patched.status_code == 200
+    assert patched.json()["english_prompt"] == ""
+    assert patched.json()["english_source"] == ""
+    assert patched.json()["english_status"] == ""
+    assert patched.json()["english_error"] == ""
+
+    take = render(env, shot["id"])
+    assert take.status_code == 201, take.text
+    assert env.extras[-1] == {"pending_translate": True}
+
+
+def test_an_english_only_prompt_is_cached_without_grok(env):
+    env.llm.error = None
+    env.llm.reply = "should not be used"
+    project = make_project(env)
+    shot = make_shot(env, project["id"], prompt="A cat walks in.")
+    assembled = preview(env, shot["id"])["prompt"]
+
+    response = _translate(env, shot["id"])
+    assert response.status_code == 200, response.text
+    assert env.llm.prompts == []
+    assert response.json()["english_prompt"] == assembled
+    assert response.json()["english_source"] == assembled
+
+
+def test_translating_an_unknown_shot_is_a_404(env):
+    assert env.client.post("/api/studio/shots/nope/translate").status_code == 404
+
+
+def test_preview_keeps_cached_english_when_assembly_fails(env):
+    env.llm.error = None
+    env.llm.reply = "integrated_multimodal_description: ENGLISH CACHE"
+    project = make_project(env)
+    shot = make_shot(env, project["id"], prompt="猫が歩いてくる。")
+    assert _translate(env, shot["id"]).status_code == 200
+    wait_translated(env, shot["id"])
+    env.client.patch(
+        f"/api/studio/shots/{shot['id']}", json={"prompt": "@Inu が吠える。"}
+    )
+
+    body = preview(env, shot["id"])
+    assert body["error"]
+    assert body["english_prompt"] == "integrated_multimodal_description: ENGLISH CACHE"
+    assert body["english_stale"] is True
 
 
 # --------------------------------------------------------------------------

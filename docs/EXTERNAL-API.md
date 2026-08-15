@@ -39,6 +39,7 @@
 | `studio_register_asset_from_job` | `POST /api/v1/projects/{id}/assets/from-job` |
 | `studio_render_shot` | `POST /api/v1/shots/{id}/render`（ボディは任意、下記） |
 | `studio_get_takes` | `GET /api/v1/shots/{id}/takes` |
+| `studio_translate_shot` | `POST /api/v1/shots/{id}/translate` |
 | `studio_select_take` | `POST /api/v1/takes/{id}/select` |
 | `studio_reject_take` | `POST /api/v1/takes/{id}/reject` |
 | （ジョブ状態の参照） | `GET /api/v1/jobs/{id}`（読み取りのみ） |

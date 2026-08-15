@@ -41,6 +41,7 @@ vi.mock('../../api', async () => {
       createStudioShot: vi.fn(),
       updateStudioShot: vi.fn(),
       previewStudioShotPrompt: vi.fn(),
+      translateStudioShotPrompt: vi.fn(),
       uploadCanvasAttachment: vi.fn(),
       canvasAttachmentUrl: (projectId: string, path: string) =>
         `/api/canvas/projects/${projectId}/attachments/${path}`,
@@ -234,6 +235,10 @@ function setup(
     latent_continuity: false,
     nsfw: false,
     will_translate: true,
+    english_prompt: '',
+    english_stale: false,
+    english_status: '',
+    english_error: '',
     error: '',
   })
   const reload = vi.fn().mockResolvedValue(undefined)

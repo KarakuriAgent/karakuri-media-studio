@@ -17,6 +17,13 @@ export type JobStatus =
  */
 export type ComfyTarget = 'local' | 'runpod' | 'comfy_cloud'
 
+/**
+ * LLM を回すコーディング CLI（SPEC §4.1）。チャット・エージェント・
+ * スタジオ会話・キャンバス・英訳・自動タグがこの選択に従う。
+ * Grok Imagine（画像生成）だけは常に grok。
+ */
+export type LlmCli = 'grok' | 'claude' | 'codex' | 'cursor'
+
 export interface Settings {
   /** 現在の接続先（生成フォームのプルダウンがこれだけを書き換える）。 */
   comfy_target: ComfyTarget
@@ -28,6 +35,12 @@ export interface Settings {
   runpod_comfy_api_key: string
   /** ComfyCloud の API キー（URL は `https://cloud.comfy.org` 固定）。 */
   comfy_cloud_api_key: string
+  /** どの CLI で LLM を回すか（既定 'grok'）。 */
+  agent_cli: LlmCli
+  /** CLI ごとのコマンド上書き（空 = 既定。`<cli>_oneshot` も置ける）。 */
+  agent_cli_commands: Record<string, string>
+  /** CLI ごとのモデル上書き（空 = CLI の既定）。grok は `grok_model`。 */
+  agent_cli_models: Record<string, string>
   grok_command: string
   grok_model: string
   /** チャット / エージェントが grok CLI を回すときの作業ディレクトリ（空 = 既定）。 */
@@ -632,7 +645,11 @@ export interface HealthStatus {
 export interface Health {
   app: 'ok'
   comfyui: HealthStatus
+  /** 選ばれている CLI の状態（キー名は歴史的に grok のまま）。 */
   grok: HealthStatus
+  /** いま選ばれている CLI とその表示名。 */
+  cli?: LlmCli
+  cli_label?: string
 }
 
 export interface PushVapidPublicKey {
@@ -686,6 +703,24 @@ export interface ChatSession {
   created_at: string
   job_id: string | null
   messages: ChatMessage[]
+  /** 続き用の grok セッション id（空 = まだ開いていない）。 */
+  grok_session_id?: string
+  /** このチャットの作業ディレクトリ（grok の cwd）。 */
+  grok_cwd?: string
+}
+
+/** 相談チャットの実行状態（POST /api/chat/sessions/{id}/stop の応答）。 */
+export interface ChatState {
+  session_id: string
+  /** Grok のターンが走っているか。 */
+  running: boolean
+  /** 実行中の活動テキスト（「思考中」など。null = 無し）。 */
+  activity: string | null
+}
+
+/** WS /api/ws の相談チャットのイベント（`type: "chat"`）。 */
+export interface ChatProgress extends ChatState {
+  type: 'chat'
 }
 
 export interface PromptResult {
@@ -1232,6 +1267,14 @@ export interface StudioShot {
   seed: number | null
   /** ワークフローの強制指定（null = t2v / i2v / r2v を自動で決める）。 */
   workflow_override: StudioWorkflowOverride | null
+  /** 訳した（または人が直した）英語。公式フィールド込みの完成文。 */
+  english_prompt?: string
+  /** その英語の元になった組み立て済み日本語。 */
+  english_source?: string
+  /** 英訳の進行（`''` / `translating` / `failed`）。 */
+  english_status?: string
+  /** 英訳失敗の理由（日本語。成功時・未実施は空）。 */
+  english_error?: string
   created_at: string
   updated_at: string
   /** プロンプトに効く項目を最後に書き換えた時刻（Take の stale 判定に使う）。 */
@@ -1283,6 +1326,8 @@ export interface StudioShotUpdate {
   megapixels?: number | null
   seed?: number | null
   workflow_override?: StudioWorkflowOverride | null
+  /** 英語キャッシュ。空文字または null で消す。 */
+  english_prompt?: string | null
 }
 
 /**
@@ -1358,7 +1403,8 @@ export interface StudioPromptReference {
  * GET /api/studio/shots/{id}/prompt-preview: 投入される最終形。
  *
  * 生成と同じ組み立てを通した結果で、Grok の英訳だけは走らせない（入るかどうかは
- * `will_translate`）。組み立てられないカットは 400 ではなく `error` 付きで返る。
+ * `will_translate`。使える英語キャッシュがあれば false）。組み立てられないカットは
+ * 400 ではなく `error` 付きで返る。
  */
 export interface StudioShotPreview {
   shot_id: string
@@ -1373,8 +1419,16 @@ export interface StudioShotPreview {
   start_frame: string | null
   /** プロジェクトの設定（日本語まじりなら投入時に英訳する）。 */
   auto_translate: boolean
-  /** この本文が実際に英訳されるか。 */
+  /** 使える英語キャッシュが無く、auto_translate かつ日本語を含むときだけ true。 */
   will_translate: boolean
+  /** 保存済みの英語（古くても出す）。 */
+  english_prompt: string
+  /** 英語はあるが脚本の組み立てが変わっている。 */
+  english_stale: boolean
+  /** 英訳の進行（`''` / `translating` / `failed`）。 */
+  english_status?: string
+  /** 英訳失敗の理由（日本語。成功時・未実施は空）。 */
+  english_error?: string
   /** プロジェクトの設定（引き継ぎを Motion Context で行う = ラテント連続性）。 */
   latent_continuity: boolean
   /** プロジェクトの設定（動画生成の品質）。 */

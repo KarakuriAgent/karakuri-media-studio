@@ -8,10 +8,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import agent_runner, canvas_agent, ws
+from . import agent_runner, canvas_agent, chat_agent, ws
 from .config import load_settings
 from .db import init_db
 from .jobs import recover_interrupted_jobs, runner
+from .studio import recover_interrupted_translates
 from .paths import (
     ASSETS_DIR,
     FRONTEND_DIST_DIR,
@@ -55,11 +56,13 @@ async def lifespan(app: FastAPI):
     await runner.start()
     # 前回のプロセスが落ちたときに残った queued / running を拾い直す（SPEC §5）。
     await recover_interrupted_jobs()
+    await recover_interrupted_translates()
     try:
         yield
     finally:
         await agent_runner.stop_all()
         await canvas_agent.stop_all()
+        await chat_agent.stop_all()
         await runner.stop()
 
 

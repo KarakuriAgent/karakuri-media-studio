@@ -23,6 +23,7 @@ from .models import (
     AgentProgress,
     CanvasMessage,
     CanvasProgress,
+    ChatProgress,
     JobProgress,
     LibraryItem,
     LibraryProgress,
@@ -173,6 +174,28 @@ async def publish_canvas(
             "activity": activity,
             "message": message.model_dump() if message else None,
             "session_id": session_id,
+        }
+    await hub.broadcast(payload)
+
+
+async def publish_chat(
+    session_id: str, *, running: bool, activity: str | None = None
+) -> None:
+    """Broadcast one prompt-chat event (``type: "chat"``). Never raises.
+
+    会話の正本は ``chat_sessions.messages`` なので、ここで流すのは「Grok の
+    ターンが走っているか」と実行中の活動テキストだけ。
+    """
+    try:
+        payload = ChatProgress(
+            session_id=session_id, running=running, activity=activity
+        ).model_dump()
+    except Exception:  # noqa: BLE001 - 通知の失敗で相談を壊さない
+        payload = {
+            "type": "chat",
+            "session_id": session_id,
+            "running": running,
+            "activity": activity,
         }
     await hub.broadcast(payload)
 

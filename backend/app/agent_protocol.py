@@ -96,6 +96,7 @@ STUDIO_ACTIONS = (
     "studio_register_asset_from_job",
     "studio_render_shot",
     "studio_get_takes",
+    "studio_translate_shot",
     "studio_select_take",
     "studio_reject_take",
 )
@@ -787,7 +788,7 @@ def _studio_payload(name: str, payload: dict[str, Any]) -> dict[str, Any]:
             )
         data["workflow_override"] = override or None
         return data
-    if name == "studio_get_takes":
+    if name in ("studio_get_takes", "studio_translate_shot"):
         data["shot_id"] = _studio_id(payload, "shot_id", name)
         return data
     # studio_select_take / studio_reject_take

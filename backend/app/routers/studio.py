@@ -450,13 +450,25 @@ async def preview_shot_prompt(shot_id: str) -> StudioShotPreview:
     """このカットを今生成したら**実際に投入されるもの**（読み取りだけ）。
 
     生成と同じ組み立てを通すが、Grok の英訳は走らせない（``will_translate``
-    で入るかどうかだけ伝える）。組み立てられないカットも 400 ではなく、理由を
-    ``error`` に入れた 200 で返す。
+    で入るかどうかだけ伝える。使える英語キャッシュがあれば False）。
+    組み立てられないカットも 400 ではなく、理由を ``error`` に入れた 200 で返す。
     """
     preview = await service.preview_shot(shot_id)
     if preview is None:
         raise HTTPException(status_code=404, detail="shot not found")
     return preview
+
+
+@router.post("/shots/{shot_id}/translate", response_model=StudioShot)
+async def translate_shot_prompt(shot_id: str) -> StudioShot:
+    """組み立て済み本文の英訳を開始する（Grok は裏で走り、完了は Shot を見る）。"""
+    try:
+        shot = await service.translate_shot(shot_id)
+    except service.StudioError as exc:
+        raise _bad_request(exc) from exc
+    if shot is None:
+        raise HTTPException(status_code=404, detail="shot not found")
+    return shot
 
 
 @router.delete("/shots/{shot_id}", status_code=204)

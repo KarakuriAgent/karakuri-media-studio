@@ -51,7 +51,9 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
   id         TEXT PRIMARY KEY,
   created_at TEXT NOT NULL,
   job_id     TEXT,
-  messages   TEXT NOT NULL
+  messages   TEXT NOT NULL,
+  grok_session_id TEXT NOT NULL DEFAULT '',  -- 続き用の grok セッション（正本は messages）
+  grok_cwd   TEXT NOT NULL DEFAULT ''        -- このチャットの作業ディレクトリ
 );
 
 CREATE TABLE IF NOT EXISTS agent_sessions (
@@ -204,6 +206,10 @@ CREATE TABLE IF NOT EXISTS studio_shots (
   megapixels           REAL,                       -- 解像度の目安（比と合わせて幅×高さになる）
   seed                 INTEGER,                    -- NULL = 毎回ランダム
   workflow_override    TEXT,                       -- NULL = t2v/i2v/r2v を自動選択
+  english_prompt       TEXT NOT NULL DEFAULT '',   -- 訳した（または人が直した）英語。公式フィールド込みの完成文
+  english_source       TEXT NOT NULL DEFAULT '',   -- その英語の元になった組み立て済み日本語
+  english_status       TEXT NOT NULL DEFAULT '',   -- '' / translating / failed
+  english_error        TEXT NOT NULL DEFAULT '',
   created_at           TEXT NOT NULL,
   updated_at           TEXT NOT NULL,
   prompt_updated_at    TEXT                        -- プロンプトに効く項目を変えた時刻（stale 判定用）
@@ -374,6 +380,12 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         # agent_sessions.id と一致し、完了通知の対象外になる。
         ("chat_session_id", "TEXT"),
     ],
+    "chat_sessions": [
+        # 続き用の grok セッションと、その cwd（SPEC §4.3）。会話の正本は
+        # messages なので、消えていれば履歴を組み直して新しい会話を始める。
+        ("grok_session_id", "TEXT NOT NULL DEFAULT ''"),
+        ("grok_cwd", "TEXT NOT NULL DEFAULT ''"),
+    ],
     "agent_sessions": [
         ("nsfw", "INTEGER NOT NULL DEFAULT 0"),
         ("nsfw_source", "TEXT NOT NULL DEFAULT ''"),
@@ -467,6 +479,11 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         # 起動した DB には Shot 側の nsfw 列が残るが、読み書きしないので放置する
         # （SQLite では列を落とせず、落とす価値もない）。
         ("prompt_updated_at", "TEXT"),
+        # 組み立て済み本文の英語キャッシュ。既存行は空 = 今までどおり投入時に訳す。
+        ("english_prompt", "TEXT NOT NULL DEFAULT ''"),
+        ("english_source", "TEXT NOT NULL DEFAULT ''"),
+        ("english_status", "TEXT NOT NULL DEFAULT ''"),
+        ("english_error", "TEXT NOT NULL DEFAULT ''"),
     ],
     "canvas_cards": [
         # カードを置いたタブ（話）。参照カードの所属はスタジオのデータから

@@ -303,6 +303,23 @@ def test_registering_from_an_unknown_job_is_a_404(env):
     assert response.status_code == 404
 
 
+def test_a_shot_can_be_translated(env):
+    enable(env)
+    project = make_project(env)
+    shot = call(
+        env,
+        "POST",
+        f"/api/v1/projects/{project['id']}/shots",
+        json={"prompt": "A cat walks in."},
+    ).json()
+    response = call(env, "POST", f"/api/v1/shots/{shot['id']}/translate")
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["english_prompt"]
+    assert body["english_source"] == body["english_prompt"]
+    assert body["prompt"] == "A cat walks in."
+
+
 def test_a_job_can_be_read_but_not_created(env):
     enable(env)
     project = make_project(env)

@@ -473,3 +473,29 @@ async def test_session_new_carries_rules(tmp_path, monkeypatch):
         assert await host.prompt("# USER\nやあ") == "rules=THE_RULES_BLOCK"
     finally:
         await host.close()
+
+
+async def _permission_choice(tmp_path, *, allow_tools: bool) -> str:
+    """許可要求つきのターンを 1 回回して、ホストが選んだ選択肢を返す。"""
+    command = write_agent(tmp_path, PERMISSION_AGENT)
+    host = GrokSessionHost(
+        tmp_path / "workdir", timeout=20.0, use_acp=True, allow_tools=allow_tools
+    )
+    host.command = command
+    host.model = ""
+    try:
+        await host.start("契約文", None)
+        return await host.prompt("# USER\nls して")
+    finally:
+        await host.close()
+
+
+@pytest.mark.asyncio
+async def test_a_host_approves_tool_permissions_by_default(tmp_path):
+    assert await _permission_choice(tmp_path, allow_tools=True) == "選択=allow-always"
+
+
+@pytest.mark.asyncio
+async def test_a_tool_free_host_rejects_tool_permissions(tmp_path):
+    """相談専用のチャット（``allow_tools=False``）はツールを使わせない。"""
+    assert await _permission_choice(tmp_path, allow_tools=False) == "選択=reject-once"

@@ -1,15 +1,16 @@
 """LLM client used for prompt authoring (SPEC §4.1).
 
-The default (and currently only) implementation shells out to the official
-**Grok Build CLI** in headless mode::
+The implementation shells out to a **coding CLI** in headless mode::
 
     grok --model grok-4.5 -p "<prompt>"
 
+どの CLI を回すかは設定 ``agent_cli``（grok / claude / codex / cursor）で選び、
+コマンドの組み立てと認証エラーの見分けは :mod:`app.llm_cli` のアダプタが持つ。
 Everything the app needs from an LLM is expressed by the tiny
 :class:`LLMClient` interface so that the CLI can later be swapped for the
 official xAI API (``XAI_API_KEY``) or a local model without touching the chat
 router.  The CLI is a coding agent with file-system powers, so it is always
-started inside the dedicated empty work directory (``runtime/grok-workdir``).
+started inside a dedicated empty work directory.
 
 The CLI is beta and its flag surface is not stable: when a call with
 ``--model`` fails we retry **once** without it before giving up.
@@ -26,6 +27,15 @@ from pathlib import Path
 from typing import Any, Callable
 
 from .config import load_settings
+from .llm_cli import (
+    COMMON_AUTH_MARKERS,
+    CliAdapter,
+    active_adapter,
+    command_for,
+    install_hint_for,
+    label_for,
+    model_for,
+)
 from .models import HealthStatus
 from .paths import GROK_WORKDIR, resolve_workdir
 
@@ -33,20 +43,8 @@ DEFAULT_TIMEOUT = 120.0
 VERSION_TIMEOUT = 20.0
 
 # Substrings that mean "the CLI runs but you are not signed in" (SPEC §4.1).
-AUTH_MARKERS = (
-    "not authenticated",
-    "not logged in",
-    "unauthenticated",
-    "unauthorized",
-    "authentication required",
-    "please sign in",
-    "please log in",
-    "sign in to",
-    "run `grok` to sign in",
-    "no credentials",
-    "invalid api key",
-    "401",
-)
+# CLI 固有のものは :mod:`app.llm_cli` のアダプタが足す。
+AUTH_MARKERS = COMMON_AUTH_MARKERS
 
 RESULT_KEYS = ("image_prompt", "video_prompt", "notes")
 #: mode 'audio' のセッションが返す追加キー（すべて文字列）。
@@ -188,7 +186,7 @@ async def _exec(
     try:
         workdir.mkdir(parents=True, exist_ok=True)
     except OSError as exc:
-        raise LLMError(f"grok 作業ディレクトリを作成できません: {workdir} ({exc})") from exc
+        raise LLMError(f"CLI の作業ディレクトリを作成できません: {workdir} ({exc})") from exc
     try:
         process = await asyncio.create_subprocess_exec(
             *argv,
@@ -199,9 +197,10 @@ async def _exec(
             stderr=asyncio.subprocess.PIPE,
         )
     except FileNotFoundError as exc:
+        hint = install_hint_for(argv[0])
         raise LLMError(
-            f"'{argv[0]}' コマンドが見つかりません。Grok Build CLI をインストール"
-            " (curl -fsSL https://x.ai/cli/install.sh | bash) してください"
+            f"'{argv[0]}' コマンドが見つかりません。"
+            + (hint or "設定ページでコマンド名を確認してください")
         ) from exc
     except OSError as exc:
         raise LLMError(f"'{argv[0]}' を起動できませんでした: {exc}") from exc
@@ -214,7 +213,8 @@ async def _exec(
         with suppress(Exception):  # reap the child so its pipes are closed
             await process.communicate()
         raise LLMError(
-            f"grok CLI が {timeout:.0f} 秒以内に応答しませんでした（タイムアウト）"
+            f"{label_for(argv[0])} CLI が {timeout:.0f} 秒以内に応答しませんでした"
+            "（タイムアウト）"
         ) from exc
     return (
         process.returncode or 0,
@@ -223,19 +223,22 @@ async def _exec(
     )
 
 
-def looks_like_auth_error(text: str) -> bool:
-    lowered = (text or "").lower()
-    return any(marker in lowered for marker in AUTH_MARKERS)
+def looks_like_auth_error(text: str, adapter: CliAdapter | None = None) -> bool:
+    """「動いてはいるがサインインしていない」出力か（既定は選択中の CLI）。"""
+    return (adapter or active_adapter()).looks_like_auth_error(text)
 
 
-def _failure_message(returncode: int, stdout: str, stderr: str) -> str:
+def _failure_message(
+    returncode: int, stdout: str, stderr: str, adapter: CliAdapter | None = None
+) -> str:
+    cli = adapter or active_adapter()
     detail = (stderr.strip() or stdout.strip() or "(no output)")[:500]
-    if looks_like_auth_error(detail):
+    if looks_like_auth_error(detail, cli):
         return (
-            "grok CLI が認証されていません。ターミナルで `grok` を実行して"
-            f" サインインしてください: {detail}"
+            f"{cli.label} CLI が認証されていません。ターミナルで"
+            f" `{cli.oneshot_command}` を実行してサインインしてください: {detail}"
         )
-    return f"grok CLI が失敗しました (exit {returncode}): {detail}"
+    return f"{cli.label} CLI が失敗しました (exit {returncode}): {detail}"
 
 
 # --------------------------------------------------------------------------
@@ -255,6 +258,12 @@ class LLMClient(ABC):
 
 
 class GrokCliClient(LLMClient):
+    """選ばれている CLI を 1 発だけ回すクライアント（``grok -p …`` 相当）。
+
+    名前は歴史的なもので、実際に叩くコマンドは設定 ``agent_cli`` のアダプタが
+    決める（:mod:`app.llm_cli`）。
+    """
+
     def __init__(
         self,
         command: str | None = None,
@@ -262,10 +271,18 @@ class GrokCliClient(LLMClient):
         workdir: str | Path | None = None,
         timeout: float | None = DEFAULT_TIMEOUT,
         extra_args: list[str] | None = None,
+        adapter: CliAdapter | None = None,
     ) -> None:
         settings = load_settings()
-        self.command = (command if command is not None else settings.grok_command) or "grok"
-        self.model = (model if model is not None else settings.grok_model) or ""
+        self.adapter = adapter or active_adapter(settings)
+        self.command = (
+            command
+            if command is not None
+            else command_for(self.adapter, settings, oneshot=True)
+        ) or self.adapter.oneshot_command
+        self.model = (
+            model if model is not None else model_for(self.adapter, settings)
+        ) or ""
         # 設定に入っているのは保存した時点の絶対パスなので、いまの ROOT の下へ
         # 載せ替えてから使う（Docker 内ではホスト側のパスは作れない）。
         self.workdir = resolve_workdir(
@@ -276,44 +293,70 @@ class GrokCliClient(LLMClient):
         # beta, so the flags stay configurable instead of hard coded.
         self.extra_args = list(extra_args or [])
 
-    async def complete(self, prompt: str) -> str:
+    def _attempts(self, prompt: str) -> list[list[str]]:
+        """モデル / 追加フラグを落としながら試す argv の並び。
+
+        CLI はどれもフラグ面が安定していないので、知らないフラグで落ちても
+        素の実行まで降りて答えを取りに行く。
+        """
         extra = self.extra_args
         attempts: list[list[str]] = []
-        if self.model:
-            attempts.append([self.command, "--model", self.model, *extra, "-p", prompt])
-        attempts.append([self.command, *extra, "-p", prompt])
-        if extra:
-            # The CLI is beta: tool-permission flags unknown to an older CLI
-            # must degrade to the plain (tool-less) run, not kill the turn.
-            attempts.append([self.command, "-p", prompt])
 
+        def argv(model: bool, extras: bool) -> list[str]:
+            return self.adapter.oneshot_argv(
+                prompt,
+                self.command,
+                self.model if model else "",
+                extra=extra if extras else (),
+            )
+
+        if self.model:
+            attempts.append(argv(True, True))
+        attempts.append(argv(False, True))
+        if extra:
+            # tool-permission flags unknown to an older CLI must degrade to the
+            # plain (tool-less) run, not kill the turn.
+            attempts.append(argv(False, False))
+        return attempts
+
+    async def complete(self, prompt: str) -> str:
         last_failure = ""
-        for argv in attempts:
+        seen: set[tuple[str, ...]] = set()
+        for argv in self._attempts(prompt):
+            key = tuple(argv)
+            if key in seen:
+                continue
+            seen.add(key)
             code, out, err = await _exec(argv, self.workdir, self.timeout)
             if code == 0 and out.strip():
                 return out.strip()
             last_failure = (
-                "grok CLI が空の応答を返しました"
+                f"{self.adapter.label} CLI が空の応答を返しました"
                 if code == 0
-                else _failure_message(code, out, err)
+                else _failure_message(code, out, err, self.adapter)
             )
-            # The CLI is beta: an unknown --model flag must not be fatal, but a
-            # genuine auth problem will not be fixed by dropping the flag.
-            if looks_like_auth_error(err or out):
+            # An unknown --model flag must not be fatal, but a genuine auth
+            # problem will not be fixed by dropping the flag.
+            if looks_like_auth_error(err or out, self.adapter):
                 break
-        raise LLMError(last_failure or "grok CLI が失敗しました")
+        raise LLMError(last_failure or f"{self.adapter.label} CLI が失敗しました")
 
     async def health(self) -> HealthStatus:
         if not self.command:
-            return HealthStatus(status="not_configured", detail="grok_command is empty")
+            return HealthStatus(
+                status="not_configured",
+                detail=f"{self.adapter.label} のコマンドが未設定です",
+            )
         try:
             code, out, err = await _exec(
-                [self.command, "--version"], self.workdir, VERSION_TIMEOUT
+                self.adapter.version_argv(self.command), self.workdir, VERSION_TIMEOUT
             )
         except LLMError as exc:
             return HealthStatus(status="error", detail=str(exc))
         if code != 0:
-            return HealthStatus(status="error", detail=_failure_message(code, out, err))
+            return HealthStatus(
+                status="error", detail=_failure_message(code, out, err, self.adapter)
+            )
         version = (out.strip() or err.strip() or "unknown").splitlines()[0][:200]
         return HealthStatus(
             status="ok",
@@ -331,7 +374,7 @@ def configured_timeout() -> float | None:
 
 
 def get_client(timeout: float | None = DEFAULT_TIMEOUT) -> LLMClient:
-    """Factory: CLI by default; swap here for the API-key backed client."""
+    """Factory: 設定 ``agent_cli`` の CLI をワンショットで回すクライアント。"""
     return GrokCliClient(timeout=timeout)
 
 
@@ -371,5 +414,5 @@ def get_agent_client(
 
 
 async def check_grok() -> HealthStatus:
-    """/api/health "grok" section (SPEC §4.1)."""
+    """/api/health の CLI 欄（SPEC §4.1）。選ばれている CLI を見る。"""
     return await get_client().health()

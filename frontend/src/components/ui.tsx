@@ -158,7 +158,9 @@ export function StatusBadge({ status }: { status: string }) {
 export function NsfwBadge({ className = '' }: { className?: string }) {
   return (
     <span
-      className={`chip !px-1.5 !py-0.5 border-pink-800 bg-pink-950/80 text-pink-300 ${className}`}
+      // relative が無いと中の sr-only（絶対配置）の包含ブロックが body になり、
+      // ページ全体が「何もない領域」まで縦スクロールできてしまう。
+      className={`chip relative !px-1.5 !py-0.5 border-pink-800 bg-pink-950/80 text-pink-300 ${className}`}
       title="NSFW"
     >
       <EyeOff className="size-3" aria-hidden="true" />

@@ -265,7 +265,8 @@ def _canvas_prompt(
         return prompts.build_turn_batch(current, open_tab=(tab_label, tab_id))
     parts: list[str] = []
     cold = host.rebuild or not host.resumed
-    if cold and (not host.use_acp) and not host.session_id:
+    # 契約は CLI ごと（ACP の rules / cwd のファイル / プロンプト埋め込み）。
+    if cold and host.wants_contract():
         if contract.strip():
             parts.append(contract.strip())
     if cold:

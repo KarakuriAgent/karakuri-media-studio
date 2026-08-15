@@ -87,3 +87,18 @@ def test_a_manifest_mismatch_is_reported(client, monkeypatch):
 def test_not_configured_without_a_comfy_url(client, monkeypatch):
     monkeypatch.setattr(config, "_settings", Settings(local_comfy_url=""))
     assert client.get("/api/health").json()["comfyui"]["status"] == "not_configured"
+
+
+def test_health_names_the_selected_cli(client, monkeypatch):
+    """ヘッダーの接続状態に出す CLI 名は、選択中の CLI（SPEC §4.1）。"""
+    _object_info(monkeypatch, REQUIRED)
+    assert client.get("/api/health").json()["cli_label"] == "Grok"
+
+    monkeypatch.setattr(
+        config,
+        "_settings",
+        Settings(local_comfy_url="http://comfy:8188", agent_cli="claude"),
+    )
+    body = client.get("/api/health").json()
+    assert body["cli"] == "claude"
+    assert body["cli_label"] == "Claude Code"

@@ -59,6 +59,9 @@ function settings(): Settings {
     runpod_comfy_url: '',
     runpod_comfy_api_key: '',
     comfy_cloud_api_key: '',
+    agent_cli: 'grok',
+    agent_cli_commands: {},
+    agent_cli_models: {},
     grok_command: 'grok',
     grok_model: 'grok-4.5',
     grok_workdir: '/repo/runtime/grok-workdir',
@@ -476,14 +479,14 @@ describe('SettingsPage: ComfyUI 接続先（3 プロファイル）', () => {
     putSettings.mockResolvedValue(settings())
     await openSettings()
 
-    fireEvent.change(screen.getByLabelText('grok の作業ディレクトリ（空 = 既定）'), {
+    fireEvent.change(screen.getByLabelText('CLI の作業ディレクトリ（空 = 既定）'), {
       target: { value: '/tmp/chat' },
     })
     fireEvent.change(
       screen.getByLabelText('Grok Imagine の作業ディレクトリ（空 = 既定）'),
       { target: { value: '/tmp/media' } },
     )
-    fireEvent.change(screen.getByLabelText('grok CLI の追加フラグ（空白区切り）'), {
+    fireEvent.change(screen.getByLabelText('CLI の追加フラグ（空白区切り）'), {
       target: { value: '--permission-mode  ask ' },
     })
     fireEvent.click(screen.getByRole('switch', { name: 'ACP でターンを回す' }))
@@ -498,11 +501,49 @@ describe('SettingsPage: ComfyUI 接続先（3 プロファイル）', () => {
     expect(sent.agent_use_acp).toBe(false)
   })
 
+  it('使う CLI を切り替えると、その CLI のコマンド / モデル欄になる', async () => {
+    putSettings.mockResolvedValue(settings())
+    await openSettings()
+
+    // 既定は Grok: 従来の grok_command / grok_model をそのまま編集する
+    expect((screen.getByLabelText(/Grok のコマンド/) as HTMLInputElement).value).toBe(
+      'grok',
+    )
+    expect((screen.getByLabelText(/Grok のモデル/) as HTMLInputElement).value).toBe(
+      'grok-4.5',
+    )
+
+    fireEvent.change(screen.getByLabelText('使う CLI'), {
+      target: { value: 'claude' },
+    })
+
+    // 欄は選択中の CLI のものに入れ替わり、既定のコマンドが placeholder に出る
+    const command = screen.getByLabelText(/Claude Code のコマンド/) as HTMLInputElement
+    expect(command.value).toBe('')
+    expect(command.placeholder).toBe('claude-agent-acp')
+    expect(screen.getByText(/CLAUDE\.md/)).toBeTruthy()
+
+    fireEvent.change(command, { target: { value: '/opt/claude-acp' } })
+    fireEvent.change(screen.getByLabelText(/Claude Code のモデル/), {
+      target: { value: 'opus' },
+    })
+    screen.getByRole('button', { name: '保存' }).click()
+
+    await waitFor(() => expect(putSettings).toHaveBeenCalled())
+    const sent = putSettings.mock.calls[0][0]
+    expect(sent.agent_cli).toBe('claude')
+    expect(sent.agent_cli_commands).toEqual({ claude: '/opt/claude-acp' })
+    expect(sent.agent_cli_models).toEqual({ claude: 'opus' })
+    // grok の設定は消えない（戻したときにそのまま使える）
+    expect(sent.grok_command).toBe('grok')
+    expect(sent.grok_model).toBe('grok-4.5')
+  })
+
   it('追加フラグを空にするとツール無効の警告を出したまま空配列で保存する', async () => {
     putSettings.mockResolvedValue(settings())
     await openSettings()
 
-    fireEvent.change(screen.getByLabelText('grok CLI の追加フラグ（空白区切り）'), {
+    fireEvent.change(screen.getByLabelText('CLI の追加フラグ（空白区切り）'), {
       target: { value: '   ' },
     })
     expect(
@@ -1054,7 +1095,7 @@ describe('SettingsPage: Grok Build CLI（Grok Imagine のバックエンド、SP
     checkGrok.mockResolvedValue({ status: 'ok', detail: 'grok / 認証済み' })
     await openSettings()
 
-    fireEvent.click(screen.getByRole('button', { name: 'grok CLI の接続確認' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Grok CLI の接続確認（Grok Imagine）' }))
 
     await waitFor(() => expect(checkGrok).toHaveBeenCalledTimes(1))
     await waitFor(() => screen.getByText('grok / 認証済み'))
@@ -1067,7 +1108,7 @@ describe('SettingsPage: Grok Build CLI（Grok Imagine のバックエンド、SP
     })
     await openSettings()
 
-    fireEvent.click(screen.getByRole('button', { name: 'grok CLI の接続確認' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Grok CLI の接続確認（Grok Imagine）' }))
 
     await waitFor(() => screen.getByText('grok CLI が未認証です'))
   })

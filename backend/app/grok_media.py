@@ -19,8 +19,10 @@ ComfyUI と並ぶ **2 つめの生成バックエンド**。xAI の従量課金 
 - **成否の判定が 4 段構え**（下記）。相手は「画像を作った」と言いながらファイルを
   置かないことがあるエージェントなので、言葉ではなくファイルを信じる
 
-コマンド名（``grok_command``）はチャットと共有し、タイムアウトと作業ディレクトリは
-メディア専用の設定（``grok_media_timeout`` / ``grok_media_workdir``）を持つ。
+**ここだけは設定 ``agent_cli`` の選択に従わず、常に Grok CLI**（``grok_command``）:
+画像生成は Grok CLI 内蔵のツールに乗っているので、ほかの CLI では実行できない。
+タイムアウトと作業ディレクトリはメディア専用の設定（``grok_media_timeout`` /
+``grok_media_workdir``）を持つ。
 
 成否の判定:
 
@@ -48,6 +50,7 @@ from typing import Any
 
 from . import grok
 from .config import load_settings
+from . import llm_cli
 from .grok import LLMError, iter_json_objects, looks_like_auth_error
 from .models import GenerationParams, HealthStatus
 from .paths import GROK_MEDIA_WORKDIR, resolve_workdir
@@ -107,10 +110,11 @@ class GrokQuotaError(GrokMediaError):
 
 
 # --------------------------------------------------------------------------
-# 設定（コマンド名はチャットと共有、作業ディレクトリと制限時間は専用）
+# 設定（コマンドは常に Grok、作業ディレクトリと制限時間は専用）
 # --------------------------------------------------------------------------
 
 def command() -> str:
+    """画像生成に使う CLI。``agent_cli`` の選択とは無関係に常に Grok。"""
     return (load_settings().grok_command or "grok").strip()
 
 
@@ -463,7 +467,8 @@ async def _attempt(request: ImageRequest, directory: Path) -> Path:
     if code != 0:
         if looks_like_quota(f"{out}\n{err}"):
             raise GrokQuotaError(_quota_message(detail))
-        if looks_like_auth_error(detail):
+        # 判定も Grok 固定（選択中の CLI ではなく grok のパターンで見る）
+        if looks_like_auth_error(detail, llm_cli.GROK):
             raise GrokMediaError(
                 "grok CLI が認証されていません。ターミナルで `grok`"
                 "（サーバーでは `grok --device-auth`）を実行してサインインして"

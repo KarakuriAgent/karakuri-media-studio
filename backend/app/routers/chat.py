@@ -1,8 +1,10 @@
 """Chat-style prompt authoring API (SPEC §4.3 / §9).
 
-Grok's CLI is stateless, so the transcript lives here: the session row keeps
-``[{role, content, ts}]`` with the assembled system prompt as ``messages[0]``
-and every turn re-sends the whole thing.
+会話の正本はここ: セッション行が ``[{role, content, ts}]`` を持ち、組み上げた
+システムプロンプトが ``messages[0]`` に入る。Grok へは
+:mod:`app.chat_agent` の**継続セッション**（ACP）で渡し、2 通目以降は新しい
+発言だけを送る。ACP が使えないときだけ従来どおり全文を組み直して
+``grok -p`` をワンショット実行する。
 """
 
 from __future__ import annotations
@@ -16,7 +18,7 @@ from pathlib import Path
 
 from fastapi import APIRouter, HTTPException
 
-from .. import grok, library, prompts
+from .. import chat_agent, grok, grok_session, library, prompts
 from ..config import load_settings
 from ..db import get_db
 from ..ids import new_id
@@ -28,10 +30,11 @@ from ..models import (
     ChatSendMessage,
     ChatSession,
     ChatSessionCreate,
+    ChatState,
     LibraryItem,
     PromptResult,
 )
-from ..paths import GROK_WORKDIR, rebase_stored_path, resolve_workdir
+from ..paths import rebase_stored_path
 
 log = logging.getLogger(__name__)
 
@@ -42,8 +45,9 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
-def _workdir() -> Path:
-    return resolve_workdir(load_settings().grok_workdir, GROK_WORKDIR)
+def _workdir(session_id: str, stored: str = "") -> Path:
+    """このチャットの作業ディレクトリ（= grok の cwd）。"""
+    return chat_agent.workdir_path(session_id, stored)
 
 
 def _copy_input_image(source: str, session_id: str, *, field: str, stem: str) -> str:
@@ -53,7 +57,7 @@ def _copy_input_image(source: str, session_id: str, *, field: str, stem: str) ->
     （``start_frame`` / ``end_frame``）。
     """
     src = resolve_asset_path(source, field=field)
-    workdir = _workdir()
+    workdir = _workdir(session_id)
     workdir.mkdir(parents=True, exist_ok=True)
     dest = workdir / f"{stem}_{session_id}{src.suffix or '.png'}"
     shutil.copy2(src, dest)
@@ -155,7 +159,17 @@ def _row_to_session(row) -> ChatSession:
         created_at=row["created_at"],
         job_id=row["job_id"],
         messages=messages,
+        grok_session_id=_column(row, "grok_session_id"),
+        grok_cwd=_column(row, "grok_cwd"),
     )
+
+
+def _column(row, name: str) -> str:
+    """後から足したカラムを、古い行にも耐える形で読む。"""
+    try:
+        return str(row[name] or "")
+    except (IndexError, KeyError):
+        return ""
 
 
 async def _load_session(session_id: str) -> ChatSession:
@@ -178,6 +192,28 @@ async def _save_messages(session_id: str, messages: list[ChatMessage]) -> None:
         await conn.execute(
             "UPDATE chat_sessions SET messages = ? WHERE id = ?",
             (_dump(messages), session_id),
+        )
+        await conn.commit()
+
+
+async def _save_grok(
+    session_id: str, *, grok_session_id: str | None = None, grok_cwd: str | None = None
+) -> None:
+    """続き用の grok セッション / cwd を控える（会話の正本は messages）。"""
+    sets: list[str] = []
+    values: list[str] = []
+    if grok_session_id is not None:
+        sets.append("grok_session_id = ?")
+        values.append(grok_session_id)
+    if grok_cwd is not None:
+        sets.append("grok_cwd = ?")
+        values.append(grok_cwd)
+    if not sets:
+        return
+    async with get_db() as conn:
+        await conn.execute(
+            f"UPDATE chat_sessions SET {', '.join(sets)} WHERE id = ?",
+            (*values, session_id),
         )
         await conn.commit()
 
@@ -223,12 +259,25 @@ async def create_session(payload: ChatSessionCreate) -> ChatSession:
         ),
         ts=_now(),
     )
-    session = ChatSession(id=session_id, created_at=_now(), messages=[system])
+    session = ChatSession(
+        id=session_id,
+        created_at=_now(),
+        messages=[system],
+        grok_cwd=str(_workdir(session_id)),
+    )
     async with get_db() as conn:
         await conn.execute(
-            "INSERT INTO chat_sessions (id, created_at, job_id, messages)"
-            " VALUES (?,?,?,?)",
-            (session.id, session.created_at, None, _dump(session.messages)),
+            "INSERT INTO chat_sessions"
+            " (id, created_at, job_id, messages, grok_session_id, grok_cwd)"
+            " VALUES (?,?,?,?,?,?)",
+            (
+                session.id,
+                session.created_at,
+                None,
+                _dump(session.messages),
+                "",
+                session.grok_cwd,
+            ),
         )
         await conn.commit()
     return session
@@ -237,6 +286,14 @@ async def create_session(payload: ChatSessionCreate) -> ChatSession:
 @router.get("/sessions/{session_id}", response_model=ChatSession)
 async def get_session(session_id: str) -> ChatSession:
     return await _load_session(session_id)
+
+
+def _contract_of(session: ChatSession) -> str:
+    """このチャットの契約（ACP なら ``session/new`` の ``_meta.rules``）。"""
+    for message in session.messages:
+        if message.role == "system":
+            return message.content
+    return ""
 
 
 @router.post("/sessions/{session_id}/messages", response_model=ChatReply)
@@ -248,29 +305,40 @@ async def send_message(session_id: str, payload: ChatSendMessage) -> ChatReply:
 
     session = await _load_session(session_id)
     messages = [*session.messages, ChatMessage(role="user", content=content, ts=_now())]
+    # 発言は先に残す: 途中で止めても・失敗しても、次のターンは DB の履歴から
+    # 組み直せる（Grok 側のセッションは続き用のキャッシュでしかない）。
+    await _save_messages(session_id, messages)
 
-    # 相談も研究や検分と同じくらい待たされることがあるので、エージェントと同じ
-    # 設定（``agent_grok_timeout``。0 = タイムアウトなし）を使う。
-    client = grok.get_client(timeout=grok.configured_timeout())
+    cwd = chat_agent.workdir(session_id, session.grok_cwd)
     try:
-        answer = await client.complete(prompts.build_conversation(messages))
-        result = grok.extract_result(answer)
-        if result is None and grok.has_json_fence(answer):
-            # It tried to deliver JSON but we could not parse it: one retry
-            # with an explicit format reminder (SPEC §4.1).
-            retry_messages = [
-                *messages,
-                ChatMessage(role="assistant", content=answer, ts=_now()),
-            ]
-            answer = await client.complete(
-                prompts.build_conversation(retry_messages, retry=True)
-            )
-            result = grok.extract_result(answer)
+        answer, result, grok_id = await chat_agent.run_turn(
+            session_id,
+            contract=_contract_of(session),
+            messages=messages,
+            cwd=cwd,
+            saved_session_id=session.grok_session_id,
+        )
+    except chat_agent.ChatBusy as exc:
+        raise HTTPException(
+            status_code=409, detail="このチャットはまだ応答中です"
+        ) from exc
+    except grok_session.GrokTurnCancelled as exc:
+        raise HTTPException(status_code=409, detail="実行を止めました") from exc
     except grok.LLMError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+
+    if grok_id != session.grok_session_id or cwd != session.grok_cwd:
+        await _save_grok(session_id, grok_session_id=grok_id, grok_cwd=cwd)
 
     messages.append(ChatMessage(role="assistant", content=answer, ts=_now()))
     await _save_messages(session_id, messages)
     return ChatReply(
         content=answer, result=PromptResult(**result) if result else None
     )
+
+
+@router.post("/sessions/{session_id}/stop", response_model=ChatState)
+async def stop_turn(session_id: str) -> ChatState:
+    """⏹: 走っている Grok のターンを止める（次の発言は新しい会話で続く）。"""
+    await _load_session(session_id)
+    return await chat_agent.request_stop(session_id)

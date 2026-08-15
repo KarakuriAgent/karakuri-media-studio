@@ -49,6 +49,7 @@ vi.mock('../../api', async () => {
       updateStudioShot: vi.fn(),
       deleteStudioShot: vi.fn(),
       previewStudioShotPrompt: vi.fn(),
+      translateStudioShotPrompt: vi.fn(),
       renderStudioShot: vi.fn(),
       selectStudioTake: vi.fn(),
       rejectStudioTake: vi.fn(),
@@ -240,6 +241,10 @@ function shotPreview(
     start_frame: null,
     auto_translate: true,
     will_translate: false,
+    english_prompt: '',
+    english_stale: false,
+    english_status: '',
+    english_error: '',
     latent_continuity: false,
     quality: 'normal',
     quality_applied: false,
@@ -1353,6 +1358,144 @@ describe('StudioView: 投入プレビュー', () => {
       await screen.findByText('解決できない素材メンションです: @Inu'),
     ).toBeTruthy()
     expect(screen.queryByLabelText('投入される最終プロンプト')).toBeNull()
+  })
+
+  it('英訳するを押すと選んでいるカットを訳し、プレビューを取り直す', async () => {
+    await openProject()
+    clickTab('脚本')
+    fireEvent.click(rail().getByRole('button', { name: 'カット1' }))
+    const panel = within(await screen.findByRole('group', { name: '投入プレビュー' }))
+    await waitFor(() =>
+      expect(mocked.previewStudioShotPrompt).toHaveBeenCalledWith('カット1'),
+    )
+
+    mocked.translateStudioShotPrompt.mockResolvedValue(shot('カット1'))
+    mocked.previewStudioShotPrompt.mockResolvedValue(
+      shotPreview({
+        english_prompt: 'A quiet street in English.',
+        english_stale: false,
+        will_translate: false,
+      }),
+    )
+    fireEvent.click(panel.getByRole('button', { name: '英訳する' }))
+    await waitFor(() =>
+      expect(mocked.translateStudioShotPrompt).toHaveBeenCalledWith('カット1'),
+    )
+    await waitFor(() =>
+      expect(mocked.previewStudioShotPrompt.mock.calls.length).toBeGreaterThan(1),
+    )
+  })
+
+  it('preview が英訳中ならボタンを止める', async () => {
+    await openProject()
+    mocked.previewStudioShotPrompt.mockResolvedValue(
+      shotPreview({ english_status: 'translating' }),
+    )
+    clickTab('脚本')
+    fireEvent.click(rail().getByRole('button', { name: 'カット1' }))
+
+    const panel = within(await screen.findByRole('group', { name: '投入プレビュー' }))
+    const button = await panel.findByRole('button', { name: '英訳中…' })
+    expect(button).toHaveProperty('disabled', true)
+  })
+
+  it('英訳失敗なら Banner に理由を出す', async () => {
+    await openProject()
+    mocked.previewStudioShotPrompt.mockResolvedValue(
+      shotPreview({
+        english_status: 'failed',
+        english_error: '英語プロンプトへの変換ができないので保存しませんでした（grok CLI が見つかりません）',
+      }),
+    )
+    clickTab('脚本')
+    fireEvent.click(rail().getByRole('button', { name: 'カット1' }))
+
+    expect(
+      await screen.findByText(
+        '英語プロンプトへの変換ができないので保存しませんでした（grok CLI が見つかりません）',
+      ),
+    ).toBeTruthy()
+  })
+
+  it('使える英語キャッシュがあれば投入時変換の注記を出さない', async () => {
+    await openProject()
+    mocked.previewStudioShotPrompt.mockResolvedValue(
+      shotPreview({
+        english_prompt: 'A quiet street in English.',
+        english_stale: false,
+        will_translate: false,
+      }),
+    )
+    clickTab('脚本')
+    fireEvent.click(rail().getByRole('button', { name: 'カット1' }))
+
+    const panel = within(await screen.findByRole('group', { name: '投入プレビュー' }))
+    expect(await panel.findByText(/この英語を投入します/)).toBeTruthy()
+    expect(panel.queryByText(/投入時に英語へ自動変換されます/)).toBeNull()
+  })
+
+  it('古い英語キャッシュには使いませんという注記を出す', async () => {
+    await openProject()
+    mocked.previewStudioShotPrompt.mockResolvedValue(
+      shotPreview({
+        english_prompt: 'old English.',
+        english_stale: true,
+        will_translate: true,
+      }),
+    )
+    clickTab('脚本')
+    fireEvent.click(rail().getByRole('button', { name: 'カット1' }))
+
+    const panel = within(await screen.findByRole('group', { name: '投入プレビュー' }))
+    expect(await panel.findByText(/この英語は使いません/)).toBeTruthy()
+  })
+
+  it('組み立てに失敗しても保存済みの英語は消せる', async () => {
+    await openProject()
+    mocked.previewStudioShotPrompt.mockResolvedValue(
+      shotPreview({
+        workflow: null,
+        prompt: '',
+        error: '解決できない素材メンションです: @Inu',
+        english_prompt: 'A quiet street in English.',
+        english_stale: true,
+        will_translate: false,
+      }),
+    )
+    mocked.updateStudioShot.mockResolvedValue(shot('カット1'))
+    clickTab('脚本')
+    fireEvent.click(rail().getByRole('button', { name: 'カット1' }))
+
+    const panel = within(await screen.findByRole('group', { name: '投入プレビュー' }))
+    expect(await panel.findByText(/この英語は使いません/)).toBeTruthy()
+    fireEvent.click(panel.getByRole('button', { name: '英語を消す' }))
+    await waitFor(() =>
+      expect(mocked.updateStudioShot).toHaveBeenCalledWith('カット1', {
+        english_prompt: '',
+      }),
+    )
+  })
+
+  it('英語を消すと english_prompt を空で PATCH する', async () => {
+    await openProject()
+    mocked.previewStudioShotPrompt.mockResolvedValue(
+      shotPreview({
+        english_prompt: 'A quiet street in English.',
+        english_stale: false,
+        will_translate: false,
+      }),
+    )
+    mocked.updateStudioShot.mockResolvedValue(shot('カット1'))
+    clickTab('脚本')
+    fireEvent.click(rail().getByRole('button', { name: 'カット1' }))
+
+    const panel = within(await screen.findByRole('group', { name: '投入プレビュー' }))
+    fireEvent.click(await panel.findByRole('button', { name: '英語を消す' }))
+    await waitFor(() =>
+      expect(mocked.updateStudioShot).toHaveBeenCalledWith('カット1', {
+        english_prompt: '',
+      }),
+    )
   })
 })
 

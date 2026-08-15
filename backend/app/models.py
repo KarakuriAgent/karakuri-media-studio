@@ -32,6 +32,8 @@ JobStatus = Literal["queued", "prompting", "running", "done", "failed", "cancele
 #: ``Settings.comfy_target`` が「今どれを使うか」を決める。生成フォームの
 #: プルダウンはこの値だけを書き換える。
 ComfyTarget = Literal["local", "runpod", "comfy_cloud"]
+#: LLM を回すコーディング CLI（SPEC §4.1。app/llm_cli.py のアダプタと対応）
+LlmCli = Literal["grok", "claude", "codex", "cursor"]
 
 #: ComfyCloud のエンドポイント（固定。設定項目にはしない）。ホストが
 #: ``comfy.org`` なので :func:`app.comfy._api_prefix` が Cloud 互換モードに入る。
@@ -55,6 +57,15 @@ class Settings(BaseModel):
     runpod_comfy_api_key: str = ""
     #: ComfyCloud の API キー（URL は `COMFY_CLOUD_URL` 固定なので設定に持たない）
     comfy_cloud_api_key: str = ""
+    # LLM を回すコーディング CLI（SPEC §4.1）。チャット・エージェント・スタジオ
+    # 会話・キャンバス・英訳・自動タグ・ヘルスチェックがこの選択に従う。
+    # **Grok Imagine（画像生成）だけは常に grok**（内蔵ツールに乗っているため）。
+    agent_cli: LlmCli = "grok"
+    #: CLI ごとのコマンド上書き（``{cli: コマンド}``。空 = アダプタの既定）。
+    #: 値には引数を書いてよく、``"<cli>_oneshot"`` でワンショット側だけも指定できる。
+    agent_cli_commands: dict[str, str] = Field(default_factory=dict)
+    #: CLI ごとのモデル上書き（空 = CLI の既定に任せる）。grok は ``grok_model``。
+    agent_cli_models: dict[str, str] = Field(default_factory=dict)
     grok_command: str = "grok"
     grok_model: str = "grok-4.5"
     grok_workdir: str = ""
@@ -168,6 +179,9 @@ class SettingsUpdate(BaseModel):
     runpod_comfy_url: str | None = None
     runpod_comfy_api_key: str | None = None
     comfy_cloud_api_key: str | None = None
+    agent_cli: LlmCli | None = None
+    agent_cli_commands: dict[str, str] | None = None
+    agent_cli_models: dict[str, str] | None = None
     grok_command: str | None = None
     grok_model: str | None = None
     grok_workdir: str | None = None
@@ -1661,6 +1675,10 @@ class ChatSession(BaseModel):
     created_at: str
     job_id: str | None = None
     messages: list[ChatMessage] = Field(default_factory=list)
+    #: 続き用の grok セッション id（空 = まだ開いていない / 使えなかった）
+    grok_session_id: str = ""
+    #: このチャットの作業ディレクトリ（入力画像のコピー先 = grok の cwd）
+    grok_cwd: str = ""
 
 
 PromptTemplate = Literal["natural", "tagged"]
@@ -1770,6 +1788,22 @@ class ChatReply(BaseModel):
     role: Literal["assistant"] = "assistant"
     content: str
     result: PromptResult | None = None
+
+
+class ChatState(BaseModel):
+    """相談チャットの実行状態（POST …/stop の応答）。"""
+
+    session_id: str
+    #: Grok のターンが走っているか
+    running: bool
+    #: 実行中の活動テキスト（「思考中」など。None = 無し）
+    activity: str | None = None
+
+
+class ChatProgress(ChatState):
+    """WS /api/ws で流す相談チャットのイベント（``type: "chat"``）。"""
+
+    type: Literal["chat"] = "chat"
 
 
 class Asset(BaseModel):
@@ -1901,7 +1935,11 @@ class HealthStatus(BaseModel):
 class Health(BaseModel):
     app: Literal["ok"] = "ok"
     comfyui: HealthStatus
+    #: 選ばれている CLI の状態（歴史的に ``grok`` という名前のまま）
     grok: HealthStatus
+    #: いま選ばれている CLI（設定 ``agent_cli``）とその表示名
+    cli: LlmCli = "grok"
+    cli_label: str = "Grok"
 
 
 class PushKeys(BaseModel):
@@ -1940,6 +1978,7 @@ AgentActionName = Literal[
     "studio_update_project", "studio_upsert_episode", "studio_upsert_scene",
     "studio_upsert_shot", "studio_delete_shot", "studio_upsert_asset",
     "studio_register_asset_from_job", "studio_render_shot", "studio_get_takes",
+    "studio_translate_shot",
     "studio_select_take", "studio_reject_take",
     # キャンバス（:mod:`app.canvas`）の盤面操作。スタジオのツール一式に足す形で
     # 使い、キャンバスのチャットからの実行でだけプロンプトに載る
@@ -2748,6 +2787,14 @@ class StudioShot(BaseModel):
     seed: int | None = None
     #: ワークフローの強制指定（None = t2v / i2v / r2v を自動で決める）
     workflow_override: StudioWorkflowOverride | None = None
+    #: 訳した（または人が直した）英語。公式フィールド込みの完成文
+    english_prompt: str = ""
+    #: その英語の元になった組み立て済み日本語（``preview.prompt`` と同じもの）
+    english_source: str = ""
+    #: 英訳の進行（``''`` / ``translating`` / ``failed``）
+    english_status: str = ""
+    #: 英訳失敗の理由（日本語。成功時・未実施は空）
+    english_error: str = ""
     created_at: str
     updated_at: str
     #: プロンプトに効く項目を最後に書き換えた時刻（Take の stale 判定に使う）
@@ -2802,6 +2849,8 @@ class StudioShotUpdate(BaseModel):
     megapixels: float | None = None
     seed: int | None = None
     workflow_override: StudioWorkflowOverride | None = None
+    #: 英語キャッシュ。空文字または null 明示で消す（``english_source`` は書けない）
+    english_prompt: str | None = None
 
     #: null を明示できる項目（送られたときだけ NULL 書き込みを許す）
     NULLABLE: ClassVar[tuple[str, ...]] = (
@@ -2811,6 +2860,7 @@ class StudioShotUpdate(BaseModel):
         "megapixels",
         "seed",
         "workflow_override",
+        "english_prompt",
     )
 
     def changes(self) -> dict[str, object]:
@@ -2914,8 +2964,9 @@ class StudioShotPreview(BaseModel):
 
     生成（:func:`app.studio.render_shot`）と同じ組み立てを通した結果で、Grok の
     英訳だけは走らせない（遅く、課金枠を食うため）。英訳が入るかどうかは
-    ``will_translate`` で伝える。組み立てられない Shot はエラーではなく
-    ``error`` に理由を入れて 200 で返す（プレビューで気づけるように）。
+    ``will_translate`` で伝える（使える ``english_prompt`` があれば False）。
+    組み立てられない Shot はエラーではなく ``error`` に理由を入れて 200 で返す
+    （プレビューで気づけるように）。
     """
 
     shot_id: str
@@ -2931,8 +2982,16 @@ class StudioShotPreview(BaseModel):
     start_frame: str | None = None
     #: プロジェクトの設定（日本語まじりなら投入時に英訳する）
     auto_translate: bool = False
-    #: この本文が実際に英訳されるか（``auto_translate`` かつ日本語を含む）
+    #: 使える英語キャッシュが無く、``auto_translate`` かつ日本語を含むときだけ True
     will_translate: bool = False
+    #: 保存済みの英語（古くても出す）
+    english_prompt: str = ""
+    #: 英語はあるが ``english_source`` が今の組み立てと一致しない
+    english_stale: bool = False
+    #: 英訳の進行（``''`` / ``translating`` / ``failed``）
+    english_status: str = ""
+    #: 英訳失敗の理由（日本語。成功時・未実施は空）
+    english_error: str = ""
     #: プロジェクトの設定（引き継ぎを Motion Context で行う = ラテント連続性）
     latent_continuity: bool = False
     #: プロジェクトの設定（動画生成の品質）
