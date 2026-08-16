@@ -1424,8 +1424,9 @@ async def _studio_render_shot(params: dict[str, Any]) -> tuple[str, str, dict]:
     text = (
         f"Shot `{shot_id}` の生成を投入しました"
         f"（take_id `{take.id}` / job_id `{take.job_id}`）。"
-        "完了は `studio_get_takes` で確認してください"
-        "（status が candidate になれば見られます）。"
+        "生成には数分かかりますが、完了したらシステムが "
+        "`studio_take_finished` イベントで結果を知らせます。"
+        "ポーリングは不要なので、このターンで他にやることが無ければ終えてください。"
     )
     if take.warning:
         text += f" 注意: {take.warning}"
@@ -2543,6 +2544,196 @@ async def request_stop(session_id: str) -> None:
     if not running:
         _stop_requests.discard(session_id)
         await _halt(session_id, "ユーザーの操作で停止しました。")
+
+
+# --------------------------------------------------------------------------
+# スタジオ Take の完了通知（レンダーはポーリングしない）
+# --------------------------------------------------------------------------
+#
+# `studio_render_shot` は投入して即返るので、そのターンはそこで終わる。完了は
+# ジョブ側から知らせる: :func:`app.jobs._set_status` が終端に入った瞬間に
+# :func:`_on_job_final` を呼び、対象なら制作記録へイベントを 1 件積み、待機中の
+# セッションだけ :func:`start_loop` で起こす。
+#
+# 対象は「``studio_takes`` に紐付いていて、かつジョブの ``chat_session_id`` が
+# ``agent_sessions`` に実在する」ジョブだけ。run_task / continue / rerun のジョブは
+# :func:`_wait_for_job` がサーバ側で待っているので二重に通知しない（take が無い）。
+# スタジオ画面からの手動レンダーは ``chat_session_id`` を持たないので外れる。
+
+#: 安全網の定期スキャン間隔（秒）。イベントを取りこぼしても最悪これで届く。
+TAKE_SCAN_INTERVAL = 5 * 60.0
+
+_scan_task: asyncio.Task[None] | None = None
+
+#: 完了イベントで**起こしてよい**セッション状態（:data:`app.models.AgentStatus`）。
+#:
+#: * ``idle``   … 待機中。次の一手を決めさせたいので起こす。
+#: * ``running``… 実行中。ループが次のターンでイベントを読むので積むだけ。ただし
+#:                ループの実体が居ない（プロセス再起動などで残った）ときは起こす。
+#: * ``planning`` / ``waiting_checkin`` … ユーザーの承認・返答待ち。勝手に進めない。
+#: * ``stopped``… ユーザーが止めた / 異常停止。復活させない。
+#: * ``done``   … 納品済み。次にユーザーが話しかけたターンでイベントが目に入る。
+_WAKEABLE_STATUSES = frozenset({"idle"})
+
+_TAKE_QUERY = (
+    "SELECT t.id AS take_id, t.shot_id, t.job_id,"
+    "       j.chat_session_id AS session_id"
+    "  FROM studio_takes t"
+    "  JOIN jobs j ON j.id = t.job_id"
+    " WHERE t.agent_notified_at IS NULL"
+    "   AND j.status IN ('done', 'failed', 'canceled')"
+    "   AND j.chat_session_id IN (SELECT id FROM agent_sessions)"
+)
+
+
+async def _claim_take_notification(take_id: str) -> bool:
+    """``agent_notified_at`` が NULL のときだけ埋める（先に埋めた側が通知する）。
+
+    イベントと定期スキャンが同時に同じ Take を掴んでも、UPDATE が当たるのは
+    片方だけなので、制作記録には 1 件しか積まれない。
+    """
+    async with get_db() as conn:
+        cur = await conn.execute(
+            "UPDATE studio_takes SET agent_notified_at = ?"
+            " WHERE id = ? AND agent_notified_at IS NULL",
+            (now(), take_id),
+        )
+        await conn.commit()
+        return cur.rowcount > 0
+
+
+def _take_finished_text(
+    take: StudioTake | None, take_id: str, shot_id: str, job_id: str
+) -> str:
+    """LLM が追加のツール呼び出し無しで次を決められるだけの本文を作る。"""
+    if take is None:  # 通知の直前に消された（消えたものは伝えるだけ）
+        return (
+            f"Shot `{shot_id}` の Take `{take_id}`（job `{job_id}`）は"
+            "生成の完了前に削除されました。"
+        )
+    head = (
+        f"Shot `{shot_id}` の Take `{take_id}`（job `{job_id}`）の生成が"
+    )
+    if take.status == "failed":
+        detail = take.error or "原因は記録されていません"
+        return (
+            head + f"失敗しました（job {take.job_status or '不明'}）。エラー: {detail}。"
+            "同じ設定で作り直すなら `studio_render_shot` をもう一度、"
+            "本文や seed を変えるなら先に `studio_upsert_shot` で直してください。"
+        )
+    lines = [
+        head + f"終わりました（status {take.status}）。",
+        _studio_take_line(take),
+        "採用するなら `studio_select_take`、捨てるなら `studio_reject_take`、"
+        "中身を確かめるなら `inspect` にこの job_id を渡してください。",
+    ]
+    return "\n".join(lines)
+
+
+async def _deliver_take_finished(
+    take_id: str, shot_id: str, job_id: str, session_id: str
+) -> None:
+    """1 件ぶんの完了通知（イベント追記 → 必要ならループ起動）。"""
+    if not await _claim_take_notification(take_id):
+        return  # 既に誰かが伝えた
+    session = await load(session_id)
+    if session is None:
+        return  # セッションが消えている（印は付けたので二度と拾わない）
+    take = await studio.get_take(take_id)
+    text = _take_finished_text(take, take_id, shot_id, job_id)
+    await _event(
+        session_id,
+        "studio_take_finished",
+        text,
+        shot_id=shot_id,
+        take_id=take_id,
+        job_id=job_id,
+        take_status=take.status if take else "deleted",
+        job_status=take.job_status if take else None,
+        error=take.error if take else None,
+    )
+    # _event は制作記録に書くだけなので、開いている画面には別途流す
+    # （job_id 付きで送ると、その Take の行がそのまま更新される）。
+    await ws.publish_agent(session_id, session.status, job_id=job_id, message=text)
+    if is_running(session_id):
+        return  # 走っているループが次のターンでこのイベントを読む
+    # ここに来た時点でループの実体は居ない。status が running のまま残っている
+    # のは前のプロセスが落ちた跡なので、待機中と同じように起こしてよい。
+    if session.status in _WAKEABLE_STATUSES or session.status == "running":
+        await start_loop(session_id)
+
+
+async def _on_job_final(job_id: str, status: str) -> None:
+    """:func:`app.jobs.on_job_final` のコールバック（終端に入った瞬間に 1 回）。"""
+    async with get_db() as conn:
+        async with conn.execute(_TAKE_QUERY + " AND t.job_id = ?", (job_id,)) as cur:
+            rows = await cur.fetchall()
+    for row in rows:
+        await _deliver_take_finished(
+            str(row["take_id"]),
+            str(row["shot_id"]),
+            str(row["job_id"]),
+            str(row["session_id"]),
+        )
+
+
+async def scan_pending_takes() -> int:
+    """未通知のまま終端に達した Take を拾い直す（起動時 + 定期実行）。
+
+    プロセスが落ちているあいだに終わったジョブと、イベントの取りこぼしの両方が
+    ここで回収される。まだ終端に達していない Take は何もしない（ジョブ自体の
+    タイムアウトは :data:`app.jobs.JOB_WAIT_TIMEOUT` 側の担当）。
+    """
+    async with get_db() as conn:
+        async with conn.execute(_TAKE_QUERY) as cur:
+            rows = await cur.fetchall()
+    for row in rows:
+        await _deliver_take_finished(
+            str(row["take_id"]),
+            str(row["shot_id"]),
+            str(row["job_id"]),
+            str(row["session_id"]),
+        )
+    return len(rows)
+
+
+async def _scan_loop() -> None:
+    while True:
+        await asyncio.sleep(TAKE_SCAN_INTERVAL)
+        try:
+            await scan_pending_takes()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - 安全網が落ちても本体は止めない
+            log.exception("未通知 Take のスキャンに失敗しました")
+
+
+async def start_take_watcher() -> None:
+    """起動時に 1 回スキャンして、以後は定期スキャンを 1 本だけ回す。"""
+    global _scan_task
+    try:
+        await scan_pending_takes()
+    except Exception:  # noqa: BLE001 - 起動を止めない
+        log.exception("起動時の未通知 Take スキャンに失敗しました")
+    if _scan_task is None or _scan_task.done():
+        _scan_task = asyncio.create_task(_scan_loop(), name="studio-take-scan")
+
+
+async def stop_take_watcher() -> None:
+    global _scan_task
+    task, _scan_task = _scan_task, None
+    if task is None:
+        return
+    task.cancel()
+    try:
+        await task
+    except (asyncio.CancelledError, Exception):  # noqa: BLE001
+        pass
+
+
+# ジョブ側は agent_runner を知らない（import は agent_runner → jobs の一方向）。
+# import された時点で受け口を渡しておく。
+jobs.on_job_final(_on_job_final)
 
 
 async def stop_all() -> None:

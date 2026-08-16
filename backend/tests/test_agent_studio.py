@@ -4,6 +4,7 @@ Grok と ComfyUI は test_agent.py と同じ仕掛けで完全にモックする
 「アクションがどう解釈され、スタジオのサービス層に何が起きたか」まで。
 """
 
+import asyncio
 import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -11,7 +12,7 @@ from itertools import count
 
 import pytest
 
-from app import agent_protocol, db, studio
+from app import agent_protocol, agent_runner, canvas_agent, db, studio
 
 # test_agent.py の env フィクスチャ（Grok / ComfyUI のモック一式）をそのまま使う。
 from test_agent import (  # noqa: F401 - フィクスチャの再エクスポート
@@ -713,3 +714,396 @@ def test_the_action_json_of_a_studio_call_round_trips(env):
     assert action is not None
     assert (action.action, action.notes) == ("studio_render_shot", "1 カット目を回します")
     assert action.studio["shot_id"] == "s1"
+
+
+# --------------------------------------------------------------------------
+# レンダー完了の通知（ポーリングしない / app.agent_runner の Take 通知）
+# --------------------------------------------------------------------------
+#
+# 実物のジョブを回すと「いつ終わるか」がテストの外なので、ここでは jobs 行と
+# studio_takes 行を直接作り、完了フックの入口（``_on_job_final``）と安全網
+# （``scan_pending_takes``）を呼んで見る。``start_loop`` は差し替えて「起こされた
+# かどうか」だけを見る。
+
+def sql(query: str, *params) -> list[tuple]:
+    conn = sqlite3.connect(db.DB_PATH)
+    try:
+        rows = conn.execute(query, params).fetchall()
+        conn.commit()
+        return rows
+    finally:
+        conn.close()
+
+
+def run_async(coro):
+    """TestClient のループとは別のループで agent_runner の内部を回す。
+
+    ``_append_locks`` はセッションごとの :class:`asyncio.Lock` を使い回すので、
+    別ループから触る前に捨てる（Lock はループに束縛される）。
+    """
+    agent_runner._append_locks.clear()
+    return asyncio.run(coro)
+
+
+def fake_job(session_id: str | None, status: str = "done", error=None) -> str:
+    """jobs 行を 1 つ直接作る（ランナーには載せない）。"""
+    job_id = f"job-{next(_fake_ids)}"
+    sql(
+        "INSERT INTO jobs (id, created_at, mode, status, params, workflow_json,"
+        " chat_session_id, error) VALUES (?, ?, 'i2v', ?, '{}', '{}', ?, ?)",
+        job_id, "2026-01-01T00:00:00+00:00", status, session_id, error,
+    )
+    return job_id
+
+
+def fake_take(shot: dict, job_id: str) -> str:
+    take_id = f"take-{next(_fake_ids)}"
+    sql(
+        "INSERT INTO studio_takes (id, shot_id, project_id, job_id, status,"
+        " created_at) VALUES (?, ?, ?, ?, 'rendering', ?)",
+        take_id, shot["id"], shot["project_id"], job_id,
+        "2026-01-01T00:00:00+00:00",
+    )
+    return take_id
+
+
+_fake_ids = count(1)
+
+
+@pytest.fixture
+def woken(monkeypatch) -> list[str]:
+    """``start_loop`` を差し替えて、起こされたセッションを記録する。"""
+    started: list[str] = []
+
+    async def fake_start_loop(session_id, action=None, *, user_turn=False):
+        started.append(session_id)
+
+    monkeypatch.setattr(agent_runner, "start_loop", fake_start_loop)
+    return started
+
+
+def take_events(env, session_id: str) -> list[dict]:
+    session = env.client.get(f"/api/agent/sessions/{session_id}").json()
+    return [m for m in session["messages"] if m["kind"] == "studio_take_finished"]
+
+
+def test_a_finished_take_wakes_an_idle_session(env, woken):
+    project = make_project(env)
+    shot = make_shot(env, project["id"])
+    session = start(env)["id"]
+    job_id = fake_job(session)
+    take_id = fake_take(shot, job_id)
+
+    run_async(agent_runner._on_job_final(job_id, "done"))
+
+    events = take_events(env, session)
+    assert len(events) == 1
+    event = events[0]
+    assert event["data"]["take_id"] == take_id
+    assert event["data"]["job_id"] == job_id
+    assert event["data"]["shot_id"] == shot["id"]
+    # ジョブが done なら Take は候補（studio 側の導出そのまま）
+    assert event["data"]["take_status"] == "candidate"
+    assert take_id in event["content"] and job_id in event["content"]
+    assert "studio_select_take" in event["content"]
+    assert woken == [session]
+    # 通知済みの印が付く（次のスキャンで拾い直さない）
+    assert sql(
+        "SELECT agent_notified_at FROM studio_takes WHERE id = ?", take_id
+    )[0][0]
+
+
+def test_a_failed_take_reports_the_job_error(env, woken):
+    project = make_project(env)
+    shot = make_shot(env, project["id"])
+    session = start(env)["id"]
+    job_id = fake_job(session, status="failed", error="ComfyUI is down")
+    fake_take(shot, job_id)
+
+    run_async(agent_runner._on_job_final(job_id, "failed"))
+
+    event = take_events(env, session)[0]
+    assert event["data"]["take_status"] == "failed"
+    assert "ComfyUI is down" in event["content"]
+    assert "studio_render_shot" in event["content"]  # 次の一手が本文に載る
+    assert woken == [session]
+
+
+def test_the_same_take_is_only_announced_once(env, woken):
+    """イベントと定期スキャンのどちらが先でも 1 件しか積まれない。"""
+    project = make_project(env)
+    shot = make_shot(env, project["id"])
+    session = start(env)["id"]
+    job_id = fake_job(session)
+    fake_take(shot, job_id)
+
+    run_async(agent_runner._on_job_final(job_id, "done"))
+    run_async(agent_runner._on_job_final(job_id, "done"))
+    assert run_async(agent_runner.scan_pending_takes()) == 0
+
+    assert len(take_events(env, session)) == 1
+    assert woken == [session]
+
+
+def test_a_job_without_a_take_is_not_announced(env, woken):
+    """execute_task 由来のジョブは _wait_for_job が待っている（二重に伝えない）。"""
+    session = start(env)["id"]
+    job_id = fake_job(session)
+
+    run_async(agent_runner._on_job_final(job_id, "done"))
+
+    assert take_events(env, session) == []
+    assert woken == []
+
+
+def test_a_take_without_an_agent_session_is_not_announced(env, woken):
+    """スタジオ画面からの手動レンダー（chat_session_id なし）は対象外。"""
+    project = make_project(env)
+    shot = make_shot(env, project["id"])
+    job_id = fake_job(None)
+    take_id = fake_take(shot, job_id)
+
+    run_async(agent_runner._on_job_final(job_id, "done"))
+
+    assert sql(
+        "SELECT agent_notified_at FROM studio_takes WHERE id = ?", take_id
+    )[0][0] is None
+
+
+def test_a_stopped_session_is_not_woken_up(env, woken):
+    """停止系のセッションはイベントを積むだけ（ユーザーの次の発言で目に入る）。"""
+    project = make_project(env)
+    shot = make_shot(env, project["id"])
+    session = start(env)["id"]
+    sql("UPDATE agent_sessions SET status = 'stopped' WHERE id = ?", session)
+    job_id = fake_job(session)
+    fake_take(shot, job_id)
+
+    run_async(agent_runner._on_job_final(job_id, "done"))
+
+    assert len(take_events(env, session)) == 1
+    assert woken == []
+
+
+@pytest.mark.parametrize("status", ["planning", "waiting_checkin", "done"])
+def test_a_session_waiting_for_the_user_is_not_woken_up(env, woken, status):
+    project = make_project(env)
+    shot = make_shot(env, project["id"])
+    session = start(env)["id"]
+    sql("UPDATE agent_sessions SET status = ? WHERE id = ?", status, session)
+    job_id = fake_job(session)
+    fake_take(shot, job_id)
+
+    run_async(agent_runner._on_job_final(job_id, "done"))
+
+    assert len(take_events(env, session)) == 1
+    assert woken == []
+
+
+def test_the_scan_picks_up_a_take_nobody_announced(env, woken):
+    """イベントを取りこぼしても（= プロセスが落ちていても）スキャンが拾う。"""
+    project = make_project(env)
+    shot = make_shot(env, project["id"])
+    session = start(env)["id"]
+    done = fake_take(shot, fake_job(session))
+    still_running = fake_take(shot, fake_job(session, status="running"))
+
+    assert run_async(agent_runner.scan_pending_takes()) == 1
+
+    events = take_events(env, session)
+    assert [e["data"]["take_id"] for e in events] == [done]
+    assert woken == [session]
+    # まだ走っているジョブには触らない（ジョブ側のタイムアウトに任せる）
+    assert sql(
+        "SELECT agent_notified_at FROM studio_takes WHERE id = ?", still_running
+    )[0][0] is None
+
+
+# --------------------------------------------------------------------------
+# レンダー完了の通知（キャンバスのチャット / app.canvas_agent）
+# --------------------------------------------------------------------------
+#
+# 仕掛けは上と同じで、積まれる先が canvas_messages、起こされるのが
+# project_id 単位のキャンバスループになる。ジョブの ``chat_session_id`` は
+# ``canvas_sessions.id``。
+
+def canvas_session(env, project_id: str) -> str:
+    created = env.client.post(f"/api/canvas/projects/{project_id}/sessions")
+    assert created.status_code == 201, created.text
+    return created.json()["id"]
+
+
+def canvas_take_events(env, project_id: str, session_id: str) -> list[dict]:
+    response = env.client.get(
+        f"/api/canvas/projects/{project_id}/messages",
+        params={"session_id": session_id},
+    )
+    assert response.status_code == 200, response.text
+    return [m for m in response.json() if m["kind"] == "studio_take_finished"]
+
+
+@pytest.fixture
+def canvas_woken(monkeypatch) -> list[str]:
+    """``canvas_agent.start`` を差し替えて、起こされたキャンバスを記録する。"""
+    started: list[str] = []
+
+    async def fake_start(project_id, episode_id=None, session_id=None):
+        started.append(project_id)
+
+    monkeypatch.setattr(canvas_agent, "start", fake_start)
+    return started
+
+
+def test_the_canvas_injects_its_session_into_a_render(env, monkeypatch):
+    """キャンバスからのレンダーはその会話に紐付く（でないと通知が届かない）。"""
+    project = make_project(env)
+    shot = make_shot(env, project["id"])
+    session_id = canvas_session(env, project["id"])
+    seen: list[dict] = []
+
+    async def fake_run_tool(action):
+        seen.append(dict(action.studio))
+        return ("studio_render_started", "投入しました", {})
+
+    monkeypatch.setattr(canvas_agent.agent_runner, "run_tool", fake_run_tool)
+    monkeypatch.setitem(canvas_agent._active_session, project["id"], session_id)
+    action = agent_protocol.parse_action(
+        action_answer({"action": "studio_render_shot", "shot_id": shot["id"]}, "")
+    )
+
+    run_async(canvas_agent._apply(project["id"], action))
+
+    assert len(seen) == 1
+    assert seen[0]["shot_id"] == shot["id"]
+    assert seen[0]["chat_session_id"] == session_id
+
+
+def test_a_finished_take_wakes_the_canvas(env, canvas_woken):
+    project = make_project(env)
+    shot = make_shot(env, project["id"])
+    session_id = canvas_session(env, project["id"])
+    job_id = fake_job(session_id)
+    take_id = fake_take(shot, job_id)
+
+    run_async(canvas_agent._on_job_final(job_id, "done"))
+
+    events = canvas_take_events(env, project["id"], session_id)
+    assert len(events) == 1
+    event = events[0]
+    assert event["role"] == "event"
+    assert event["data"]["take_id"] == take_id
+    assert event["data"]["job_id"] == job_id
+    assert event["data"]["shot_id"] == shot["id"]
+    assert event["data"]["take_status"] == "candidate"
+    assert take_id in event["content"] and job_id in event["content"]
+    assert "studio_select_take" in event["content"]
+    assert canvas_woken == [project["id"]]
+    assert sql(
+        "SELECT agent_notified_at FROM studio_takes WHERE id = ?", take_id
+    )[0][0]
+
+
+def test_a_failed_canvas_take_reports_the_job_error(env, canvas_woken):
+    project = make_project(env)
+    shot = make_shot(env, project["id"])
+    session_id = canvas_session(env, project["id"])
+    job_id = fake_job(session_id, status="failed", error="ComfyUI is down")
+    fake_take(shot, job_id)
+
+    run_async(canvas_agent._on_job_final(job_id, "failed"))
+
+    event = canvas_take_events(env, project["id"], session_id)[0]
+    assert event["data"]["take_status"] == "failed"
+    assert "ComfyUI is down" in event["content"]
+    assert "studio_render_shot" in event["content"]
+    assert canvas_woken == [project["id"]]
+
+
+def test_the_same_canvas_take_is_only_announced_once(env, canvas_woken):
+    project = make_project(env)
+    shot = make_shot(env, project["id"])
+    session_id = canvas_session(env, project["id"])
+    job_id = fake_job(session_id)
+    fake_take(shot, job_id)
+
+    run_async(canvas_agent._on_job_final(job_id, "done"))
+    run_async(canvas_agent._on_job_final(job_id, "done"))
+    assert run_async(canvas_agent.scan_pending_takes()) == 0
+
+    assert len(canvas_take_events(env, project["id"], session_id)) == 1
+    assert canvas_woken == [project["id"]]
+
+
+def test_a_canceled_canvas_take_does_not_restart_the_loop(env, canvas_woken):
+    """⏹ はこのランのジョブを cancel する。その完了で起こしたら止めた意味がない。"""
+    project = make_project(env)
+    shot = make_shot(env, project["id"])
+    session_id = canvas_session(env, project["id"])
+    job_id = fake_job(session_id, status="canceled")
+    fake_take(shot, job_id)
+
+    run_async(canvas_agent._on_job_final(job_id, "canceled"))
+
+    assert len(canvas_take_events(env, project["id"], session_id)) == 1
+    assert canvas_woken == []
+
+
+def test_a_canvas_asked_to_stop_is_not_woken_up(env, canvas_woken):
+    project = make_project(env)
+    shot = make_shot(env, project["id"])
+    session_id = canvas_session(env, project["id"])
+    fake_take(shot, fake_job(session_id))
+    canvas_agent._stop_requests.add(project["id"])
+    try:
+        run_async(canvas_agent.scan_pending_takes())
+    finally:
+        canvas_agent._stop_requests.discard(project["id"])
+
+    assert len(canvas_take_events(env, project["id"], session_id)) == 1
+    assert canvas_woken == []
+
+
+def test_a_manual_render_is_not_announced_to_the_canvas(env, canvas_woken):
+    """スタジオ画面からの手動レンダー（chat_session_id なし）は対象外。"""
+    project = make_project(env)
+    shot = make_shot(env, project["id"])
+    take_id = fake_take(shot, fake_job(None))
+
+    assert run_async(canvas_agent.scan_pending_takes()) == 0
+
+    assert sql(
+        "SELECT agent_notified_at FROM studio_takes WHERE id = ?", take_id
+    )[0][0] is None
+    assert canvas_woken == []
+
+
+def test_an_agent_tab_take_is_not_delivered_to_the_canvas(env, canvas_woken, woken):
+    """エージェントタブ発のジョブはあちらの担当（同じ印を共用している）。"""
+    project = make_project(env)
+    shot = make_shot(env, project["id"])
+    canvas_session(env, project["id"])  # 会話はあるが、このジョブとは無関係
+    session = start(env)["id"]
+    fake_take(shot, fake_job(session))
+
+    assert run_async(canvas_agent.scan_pending_takes()) == 0
+    assert run_async(agent_runner.scan_pending_takes()) == 1
+
+    assert canvas_woken == []
+    assert woken == [session]
+
+
+def test_the_scan_picks_up_a_canvas_take_nobody_announced(env, canvas_woken):
+    project = make_project(env)
+    shot = make_shot(env, project["id"])
+    session_id = canvas_session(env, project["id"])
+    done = fake_take(shot, fake_job(session_id))
+    still_running = fake_take(shot, fake_job(session_id, status="running"))
+
+    assert run_async(canvas_agent.scan_pending_takes()) == 1
+
+    events = canvas_take_events(env, project["id"], session_id)
+    assert [e["data"]["take_id"] for e in events] == [done]
+    assert canvas_woken == [project["id"]]
+    assert sql(
+        "SELECT agent_notified_at FROM studio_takes WHERE id = ?", still_running
+    )[0][0] is None

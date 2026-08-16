@@ -40,6 +40,7 @@ import logging
 import random
 import shutil
 import uuid
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -342,6 +343,35 @@ _JOB_NOTIFY = {
     "canceled": ("生成がキャンセルされました", "生成がキャンセルされました"),
 }
 
+#: これ以上は動かない状態。ここへの遷移だけが :data:`_final_callbacks` を呼ぶ。
+_TERMINAL_STATUSES = frozenset({"done", "failed", "canceled"})
+
+#: 終端に達したジョブを知りたいモジュール（agent_runner）が起動時に積む
+#: コールバック。import は agent_runner → jobs の一方向なので、こちらからは
+#: 相手を知らないまま `on_job_final()` で受け取る。
+_final_callbacks: list[Callable[[str, str], Awaitable[None]]] = []
+
+
+def on_job_final(callback: Callable[[str, str], Awaitable[None]]) -> None:
+    """ジョブが終端状態（done / failed / canceled）に入ったら呼ぶ関数を登録する。
+
+    同じ関数を二重に登録しても 1 回しか呼ばれない（import の順序で
+    登録が複数回走っても事故にしないため）。
+    """
+    if callback not in _final_callbacks:
+        _final_callbacks.append(callback)
+
+
+async def _fire_job_final(job_id: str, status: str) -> None:
+    """登録済みコールバックを順に呼ぶ。失敗はログだけ（ワーカーを落とさない）。"""
+    for callback in list(_final_callbacks):
+        try:
+            await callback(job_id, status)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - 通知の失敗でジョブを壊さない
+            log.exception("job %s の完了コールバックが失敗しました", job_id)
+
 
 async def _job_status(job_id: str) -> str | None:
     async with get_db() as conn:
@@ -386,10 +416,14 @@ async def _set_status(
     progress: float | None = None,
     **fields: Any,
 ) -> None:
-    previous = await _job_status(job_id) if status in _JOB_NOTIFY else None
+    terminal = status in _TERMINAL_STATUSES
+    previous = await _job_status(job_id) if status in _JOB_NOTIFY or terminal else None
     await _update(job_id, status=status, **fields)
     await ws.publish(job_id, status, message=message, progress=progress)
     await _notify_job(job_id, previous, status)
+    # 終端に入った瞬間は 1 回だけ（既に同じ終端なら二重に知らせない）。
+    if terminal and previous != status:
+        await _fire_job_final(job_id, status)
 
 
 async def delete_job(job_id: str) -> bool:
@@ -1802,9 +1836,6 @@ async def _run_job_stages(job: Job) -> dict[str, Any]:
                 )
 
     return updates
-
-
-_TERMINAL_STATUSES = frozenset({"done", "failed", "canceled"})
 
 
 async def run_job(job_id: str) -> None:

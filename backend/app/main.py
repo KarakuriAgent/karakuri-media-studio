@@ -57,9 +57,18 @@ async def lifespan(app: FastAPI):
     # 前回のプロセスが落ちたときに残った queued / running を拾い直す（SPEC §5）。
     await recover_interrupted_jobs()
     await recover_interrupted_translates()
+    # スタジオのレンダー完了はジョブ側のイベントでエージェントに届く。ここでは
+    # 取りこぼし（プロセスが落ちているあいだに終わったジョブなど）を回収する
+    # 定期スキャンを 1 本だけ回す。
+    await agent_runner.start_take_watcher()
+    # キャンバスのチャットから投入したレンダーも同じ仕組みで届く（積む先が
+    # canvas_messages なので、スキャンはモジュールごとに 1 本）。
+    await canvas_agent.start_take_watcher()
     try:
         yield
     finally:
+        await agent_runner.stop_take_watcher()
+        await canvas_agent.stop_take_watcher()
         await agent_runner.stop_all()
         await canvas_agent.stop_all()
         await chat_agent.stop_all()

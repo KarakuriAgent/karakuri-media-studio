@@ -2461,8 +2461,8 @@ Actions — one per reply like every other action, no approval needed:
 | `studio_delete_shot` | `id` | drop a cut (its Takes go with it) |
 | `studio_upsert_asset` | `id` to edit, else `project_id`; `name`, `kind`, `category` (`character` / `environment` / `prop` / `style` / `reference`), `caption`, `prompt_caption`, `locked`, and `path` (absolute path of a file you can already see — a chat attachment, a frame you extracted) | an asset. Without `path` it is **metadata-only**; with `path` the file is copied into the app's `assets/` and `@名前` attaches it as a real reference |
 | `studio_register_asset_from_job` | `project_id`, `job_id`, `name`, `source` (`image` / `last_frame` / `video` / `audio`, default `image`), optional `category`, `caption`, `prompt_caption` | turn an output **you generated** into an asset that really has a file, so `@名前` attaches it as a reference |
-| `studio_render_shot` | `shot_id`, optional `workflow_override` | queue one Take; the event carries `take_id` and `job_id` |
-| `studio_get_takes` | `shot_id` | the Shot's Takes with status (`rendering` / `candidate` / `selected` / `rejected` / `failed`) and `stale` |
+| `studio_render_shot` | `shot_id`, optional `workflow_override` | queue one Take and return at once; the event carries `take_id` and `job_id`. **Never poll for it** — a `studio_take_finished` EVENT brings you the result and wakes you up (agent mode and canvas chat alike) |
+| `studio_get_takes` | `shot_id` | the Shot's Takes with status (`rendering` / `candidate` / `selected` / `rejected` / `failed`) and `stale`. Use it to take stock, not to wait for a render |
 | `studio_translate_shot` | `shot_id` | start rewriting the assembled prompt into the official English H3 document and return immediately. Completion is on the Shot from `studio_get_project` (`english_status` / `english_prompt`). Submit then uses that cache |
 | `studio_select_take` / `studio_reject_take` | `take_id` | 採用 / 不採用 |
 
@@ -2476,10 +2476,16 @@ Recommended flow:
    `studio_register_asset_from_job` — a real file pins the look, a
    `prompt_caption` only describes it.
 3. Lay out 話 / 場, then write the Shots in order.
-4. `studio_render_shot`, poll with `studio_get_takes` until it leaves
-   `rendering`, then `studio_select_take` — or re-render with a different seed
-   / text. `inspect` the Take's `job_id` only if the user asks you to check it.
-5. Move on to the next Shot, and report progress in Japanese as you go.
+4. `studio_render_shot`, then **end your turn**. A render takes minutes and you
+   must never wait or poll for it. The app appends a `studio_take_finished`
+   EVENT carrying the result (`candidate` or `failed`, with the error message
+   when it failed) and gives you a fresh turn at that moment — in agent mode and
+   in the canvas chat alike. So: say in Japanese what you queued, and stop — no
+   `studio_get_takes` loop, no filler turns.
+5. When the result reaches you: `studio_select_take` when it is good, or
+   re-render with a different seed / text when it is not. `inspect` the Take's
+   `job_id` only if the user asks you to check it.
+6. Move on to the next Shot, and report progress in Japanese as you go.
 """
 
 AGENT_TOOLS = """\
@@ -3153,7 +3159,12 @@ CANVAS_OUTPUT_RULES = """\
   messages give you. `project_id` is the project below unless the user really
   means another one.
 - A render (`studio_render_shot`) is a real generation job and takes minutes.
-  Ask the user first (plain text) before rendering more than one Shot.
+  Ask the user first (plain text) before rendering more than one Shot. Once it
+  is queued, say so and **end the turn** — never poll `studio_get_takes` for it.
+  The app sends you a `studio_take_finished` EVENT when the render is over
+  (success or failure) and wakes this chat up, so there is nothing to wait for.
+  Pick the next step from that event: 採用 / 不採用, the next Shot, or a fix
+  when it failed.
 - When the request is done, say so in plain text with **no JSON** — that ends
   the run. Send `{"action": "done", "summary": "…"}` instead only when a summary
   of several steps is worth writing out.

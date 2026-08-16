@@ -1,5 +1,6 @@
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from datetime import datetime, timezone
 
 import aiosqlite
 
@@ -227,7 +228,11 @@ CREATE TABLE IF NOT EXISTS studio_takes (
   prompt        TEXT NOT NULL DEFAULT '',  -- 実際に投入した本文
   source_prompt TEXT NOT NULL DEFAULT '',  -- 英訳する前の原文（訳していなければ空）
   warning       TEXT NOT NULL DEFAULT '',  -- 投入はできたが伝えたいこと（過去の英訳失敗フォールバックなど）
-  latent_path   TEXT                       -- ラテント連続性で保存した AV ラテント（ComfyUI 側のパス。NULL = 無し）
+  latent_path   TEXT,                      -- ラテント連続性で保存した AV ラテント（ComfyUI 側のパス。NULL = 無し）
+  -- エージェントに「この Take の生成が終わった」と伝えた時刻（NULL = まだ）。
+  -- ジョブ完了イベントと定期スキャンのどちらが先に来ても 1 回しか通知しない
+  -- ための印（app/agent_runner.py の _claim_take_notification）。
+  agent_notified_at TEXT
 );
 
 -- キャンバス: スタジオの中身を「座標を持つカード」として並べる別ビュー。
@@ -498,6 +503,11 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         # ラテント連続性で保存した AV ラテントのパス（ComfyUI 側）。既存行と、
         # ラテント連続性を使わなかった Take は NULL のまま。
         ("latent_path", "TEXT"),
+        # エージェントへ完了を伝えた時刻。既存行は NULL だが、起動時のスキャンが
+        # 「終端に達しているのに未通知」の Take を拾うので、移行直後に過去の
+        # Take がまとめて通知されないよう、ここで一度だけ現在時刻で埋める
+        # （下の _migrate を参照）。
+        ("agent_notified_at", "TEXT"),
     ],
 }
 
@@ -536,6 +546,14 @@ async def _migrate(conn: aiosqlite.Connection) -> None:
                 "UPDATE studio_projects SET nsfw = 1 WHERE id IN "
                 "(SELECT DISTINCT project_id FROM studio_shots WHERE nsfw = 1)"
             )
+
+    # 既存の Take は「もう伝えた」ことにする。列を足した直後のスキャンが、
+    # この機能より前に終わっていた Take をまとめて制作記録へ積むのを防ぐ。
+    if "agent_notified_at" in added.get("studio_takes", set()):
+        await conn.execute(
+            "UPDATE studio_takes SET agent_notified_at = ?",
+            (datetime.now(timezone.utc).isoformat(timespec="seconds"),),
+        )
 
     await _backfill_canvas_sessions(conn)
 

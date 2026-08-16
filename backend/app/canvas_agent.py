@@ -46,6 +46,7 @@ from . import (
 from .agent_protocol import ActionError
 from .agent_store import attachment_path, attachments_dir, session_dir
 from .config import load_settings
+from .db import get_db
 from .models import AgentAction, AgentMessage, CanvasChatSession, CanvasMessage
 
 log = logging.getLogger(__name__)
@@ -431,6 +432,12 @@ async def _apply(project_id: str, action: AgentAction) -> bool:
         mine = _active_session.get(project_id)
         if mine:
             action.canvas["exclude_id"] = mine
+    elif action.action == "studio_render_shot":
+        # 投入したジョブをこの会話に紐付ける（エージェントタブの _tool_action と
+        # 同じ流儀）。完了通知（studio_take_finished）はこの id を辿って届く。
+        mine = _active_session.get(project_id)
+        if mine:
+            action.studio["chat_session_id"] = mine
     kind, text, data = await agent_runner.run_tool(action)
     job_id = data.get("job_id")
     if isinstance(job_id, str) and job_id:
@@ -578,6 +585,150 @@ def request_stop(project_id: str) -> None:
         loop.create_task(host.cancel())
     for job_id in job_ids:
         loop.create_task(jobs.cancel_job(job_id))
+
+
+# --------------------------------------------------------------------------
+# スタジオ Take の完了通知（キャンバス版。レンダーはポーリングしない）
+# --------------------------------------------------------------------------
+#
+# 仕組みはエージェントタブ（:mod:`app.agent_runner` の同名の節）と同じで、
+# 「どの会話に積むか」と「誰を起こすか」だけが違う。対象は ``studio_takes`` に
+# 紐付いていて、かつジョブの ``chat_session_id`` が **canvas_sessions** に実在
+# するジョブ。エージェントタブ側の問い合わせは ``agent_sessions`` しか見ないので
+# 二重には積まれず、冪等の印（``studio_takes.agent_notified_at``）は共用する。
+#
+# 置き場所がここなのは import の向きのため: import は canvas_agent →
+# agent_runner の一方向なので、agent_runner から canvas を叩くと循環になる。
+# ジョブ側の受け口（:func:`app.jobs.on_job_final`）はモジュールごとに登録できる
+# ので、キャンバス分はこのモジュールが自分で登録する。
+
+#: 安全網の定期スキャン間隔（秒）。エージェントタブ側と同じ間隔で回す。
+TAKE_SCAN_INTERVAL = agent_runner.TAKE_SCAN_INTERVAL
+
+_scan_task: asyncio.Task[None] | None = None
+
+#: project_id は**セッション行**から取る（take 側の列ではなく）。起こす相手は
+#: 「その会話が住んでいるキャンバス」なので、両者がずれていたら困るのは前者。
+_TAKE_QUERY = (
+    "SELECT t.id AS take_id, t.shot_id, t.job_id,"
+    "       cs.id AS session_id, cs.project_id AS project_id,"
+    "       j.status AS job_status"
+    "  FROM studio_takes t"
+    "  JOIN jobs j ON j.id = t.job_id"
+    "  JOIN canvas_sessions cs ON cs.id = j.chat_session_id"
+    " WHERE t.agent_notified_at IS NULL"
+    "   AND j.status IN ('done', 'failed', 'canceled')"
+)
+
+
+async def _deliver_take_finished(
+    take_id: str, shot_id: str, job_id: str, session_id: str,
+    project_id: str, job_status: str,
+) -> None:
+    """1 件ぶんの完了通知（会話への追記 → 必要ならループ起動）。"""
+    if not await agent_runner._claim_take_notification(take_id):
+        return  # 既に誰かが伝えた
+    session = await canvas.get_session(project_id, session_id)
+    if session is None:
+        return  # 会話ごと消えている（印は付けたので二度と拾わない）
+    take = await studio.get_take(take_id)
+    text = agent_runner._take_finished_text(take, take_id, shot_id, job_id)
+    # append が WS（type: "canvas"）にも流すので、別途 publish は要らない。
+    await append(
+        project_id,
+        "event",
+        text,
+        session_id=session_id,
+        kind="studio_take_finished",
+        data={
+            "shot_id": shot_id,
+            "take_id": take_id,
+            "job_id": job_id,
+            "take_status": take.status if take else "deleted",
+            "job_status": take.job_status if take else None,
+            "error": take.error if take else None,
+        },
+        running=is_running(project_id),
+    )
+    if is_running(project_id):
+        return  # 走っているループが次のターンでこのイベントを読む
+    # ここから下は「止まっているキャンバスを起こしてよいか」。キャンバスの実行
+    # 状態はインメモリの _runs だけで、エージェントセッションのような status 列は
+    # 無いので、起こさない条件は 2 つ:
+    #
+    # * ⏹ の直後（_stop_requests に居る = ループが畳まれる途中）。
+    # * ジョブが canceled。キャンセルの出所は ⏹（request_stop がこのランの
+    #   ジョブを cancel する）か手動なので、その完了で起こしたら止めた意味が
+    #   無くなる。イベントは積んであるので、次にユーザーが話しかければ目に入る。
+    if project_id in _stop_requests or job_status == "canceled":
+        return
+    # episode_id は渡さない（作品共通タブで起きる）。どのタブの話かは積んだ
+    # イベントの shot_id から辿れる。
+    await start(project_id, session_id=session_id)
+
+
+async def _on_job_final(job_id: str, status: str) -> None:
+    """:func:`app.jobs.on_job_final` のコールバック（終端に入った瞬間に 1 回）。"""
+    await _deliver_pending(" AND t.job_id = ?", (job_id,))
+
+
+async def scan_pending_takes() -> int:
+    """未通知のまま終端に達した Take を拾い直す（起動時 + 定期実行）。"""
+    return await _deliver_pending()
+
+
+async def _deliver_pending(where: str = "", params: tuple = ()) -> int:
+    async with get_db() as conn:
+        async with conn.execute(_TAKE_QUERY + where, params) as cur:
+            rows = await cur.fetchall()
+    for row in rows:
+        await _deliver_take_finished(
+            str(row["take_id"]),
+            str(row["shot_id"]),
+            str(row["job_id"]),
+            str(row["session_id"]),
+            str(row["project_id"]),
+            str(row["job_status"]),
+        )
+    return len(rows)
+
+
+async def _scan_loop() -> None:
+    while True:
+        await asyncio.sleep(TAKE_SCAN_INTERVAL)
+        try:
+            await scan_pending_takes()
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - 安全網が落ちても本体は止めない
+            log.exception("未通知 Take のスキャン（キャンバス）に失敗しました")
+
+
+async def start_take_watcher() -> None:
+    """起動時に 1 回スキャンして、以後は定期スキャンを 1 本だけ回す。"""
+    global _scan_task
+    try:
+        await scan_pending_takes()
+    except Exception:  # noqa: BLE001 - 起動を止めない
+        log.exception("起動時の未通知 Take スキャン（キャンバス）に失敗しました")
+    if _scan_task is None or _scan_task.done():
+        _scan_task = asyncio.create_task(_scan_loop(), name="canvas-take-scan")
+
+
+async def stop_take_watcher() -> None:
+    global _scan_task
+    task, _scan_task = _scan_task, None
+    if task is None:
+        return
+    task.cancel()
+    try:
+        await task
+    except (asyncio.CancelledError, Exception):  # noqa: BLE001
+        pass
+
+
+# ジョブ側は canvas_agent を知らない（import は canvas_agent → jobs の一方向）。
+jobs.on_job_final(_on_job_final)
 
 
 async def stop_all() -> None:
