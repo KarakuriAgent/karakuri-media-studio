@@ -550,12 +550,39 @@ async def _migrate(conn: aiosqlite.Connection) -> None:
     # 既存の Take は「もう伝えた」ことにする。列を足した直後のスキャンが、
     # この機能より前に終わっていた Take をまとめて制作記録へ積むのを防ぐ。
     if "agent_notified_at" in added.get("studio_takes", set()):
-        await conn.execute(
-            "UPDATE studio_takes SET agent_notified_at = ?",
-            (datetime.now(timezone.utc).isoformat(timespec="seconds"),),
-        )
+        await _backfill_take_notifications(conn)
 
     await _backfill_canvas_sessions(conn)
+
+
+#: :func:`_backfill_take_notifications` が「まだ終わっていない」とみなすジョブ。
+#: ここに居るジョブの Take は印を付けない（付けると、いま走っているレンダーの
+#: 完了通知がそのまま消える）。
+_IN_FLIGHT_JOB_STATUSES = ("queued", "prompting", "running")
+
+
+async def _backfill_take_notifications(conn: aiosqlite.Connection) -> None:
+    """``agent_notified_at`` を足した回だけ走る後始末（SPEC §2.2）。
+
+    この機能より前に終わっていた Take が、列を足した直後のスキャンでまとめて
+    制作記録へ積まれるのを防ぐために「もう伝えた」ことにする。
+
+    ただし**まだ走っているジョブの Take は対象外**。移行の瞬間に実行中だった
+    レンダーまで埋めてしまうと、その完了通知が永久に届かなくなる（印は
+    ``IS NULL`` でしか拾われない）。ジョブ行がもう無い Take は結果を辿れないので
+    印を付ける側に寄せる。
+    """
+    placeholders = ", ".join("?" for _ in _IN_FLIGHT_JOB_STATUSES)
+    await conn.execute(
+        "UPDATE studio_takes SET agent_notified_at = ?"
+        " WHERE job_id NOT IN ("
+        f"   SELECT id FROM jobs WHERE status IN ({placeholders})"
+        " )",
+        (
+            datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            *_IN_FLIGHT_JOB_STATUSES,
+        ),
+    )
 
 
 async def _backfill_canvas_sessions(conn: aiosqlite.Connection) -> None:

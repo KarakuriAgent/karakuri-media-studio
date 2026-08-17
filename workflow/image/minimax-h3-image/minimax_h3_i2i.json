@@ -1,0 +1,197 @@
+{
+  "1": {
+    "inputs": {
+      "unet_name": "minimax_h3_fl2va_pruned_int8_convrot.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "拡散モデルを読み込む"
+    }
+  },
+  "2": {
+    "inputs": {
+      "clip_name": "qwen3vl_32b_minimax_h3_nvfp4_awq.safetensors",
+      "type": "minimax",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "テキストエンコーダを読み込む"
+    }
+  },
+  "3": {
+    "inputs": {
+      "vae_name": "minimax_h3_video_vae_fp16.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "動画 VAE を読み込む"
+    }
+  },
+  "0": {
+    "inputs": {
+      "image": "input.png"
+    },
+    "class_type": "LoadImage",
+    "_meta": {
+      "title": "編集元画像"
+    }
+  },
+  "5": {
+    "inputs": {
+      "clip": [
+        "2",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ],
+      "source_image": [
+        "0",
+        0
+      ],
+      "edit_instruction": "",
+      "width": 1344,
+      "height": 768,
+      "quality_profile": "recommended | 5 frames",
+      "source_fidelity": 0.75,
+      "source_fit": "crop_center",
+      "optimize_for_still": true
+    },
+    "class_type": "H3ImageToImagePrepare",
+    "_meta": {
+      "title": "MiniMax H3 Image・画像→画像"
+    }
+  },
+  "6": {
+    "inputs": {
+      "noise_seed": 1
+    },
+    "class_type": "RandomNoise",
+    "_meta": {
+      "title": "ノイズ"
+    }
+  },
+  "8": {
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "sampler_name": "res_multistep",
+      "scheduler": "simple",
+      "steps": 20,
+      "denoise": 1.0,
+      "shift_video": 12.0,
+      "shift_audio": 3.0,
+      "beta_alpha": 0.6,
+      "beta_beta": 0.6
+    },
+    "class_type": "H3SamplingSettings",
+    "_meta": {
+      "title": "MiniMax H3 Image・サンプリング設定"
+    }
+  },
+  "7": {
+    "inputs": {
+      "model": [
+        "8",
+        0
+      ],
+      "conditioning": [
+        "5",
+        0
+      ]
+    },
+    "class_type": "BasicGuider",
+    "_meta": {
+      "title": "ガイダンス"
+    }
+  },
+  "10": {
+    "inputs": {
+      "noise": [
+        "6",
+        0
+      ],
+      "guider": [
+        "7",
+        0
+      ],
+      "sampler": [
+        "8",
+        1
+      ],
+      "sigmas": [
+        "8",
+        2
+      ],
+      "latent_image": [
+        "5",
+        1
+      ]
+    },
+    "class_type": "SamplerCustomAdvanced",
+    "_meta": {
+      "title": "サンプラー"
+    }
+  },
+  "11": {
+    "inputs": {
+      "samples": [
+        "10",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ]
+    },
+    "class_type": "H3ImageDecode",
+    "_meta": {
+      "title": "MiniMax H3 Image・フレームをデコード"
+    }
+  },
+  "12": {
+    "inputs": {
+      "frames": [
+        "11",
+        0
+      ],
+      "strategy": "decode_recommended",
+      "manual_index": 0,
+      "skip_first_frames": 0,
+      "candidate_start": 0.0,
+      "candidate_end": 1.0,
+      "similarity_weight": 0.35,
+      "top_k": 4,
+      "recommended_index": [
+        "11",
+        3
+      ],
+      "source_image": [
+        "5",
+        2
+      ]
+    },
+    "class_type": "H3ImageFrameSelector",
+    "_meta": {
+      "title": "MiniMax H3 Image・静止画 1 枚を出力"
+    }
+  },
+  "13": {
+    "inputs": {
+      "images": [
+        "12",
+        0
+      ],
+      "filename_prefix": "MiniMax_H3_Image"
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "画像を保存"
+    }
+  }
+}

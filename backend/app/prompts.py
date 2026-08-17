@@ -296,12 +296,58 @@ Replace the text on the shop sign with "MORNING LIGHT COFFEE", keeping the origi
 ```
 """
 
+MINIMAX_H3_IMAGE_SPEC = """\
+# IMAGE PROMPT SPEC — MiniMax H3 Image (t2i / i2i / r2i, TE: Qwen3-VL)
+
+MiniMax H3 is the audio-video model driven as a still-image generator: it samples
+a short frame packet (5 frames by default, up to 20 through the
+`quality_profile` knob) and returns the one frame its own selector picks. The
+prompt is therefore a **still-image** prompt, and the node already adds its own
+locked-camera still wrapper. A larger packet gives the model more temporal
+context and a better still, at the cost of time and VRAM — but it does **not**
+change how the prompt is written: never describe motion to "fill" the extra
+frames.
+
+1. **English prose, one still.** Describe the finished photograph: subject,
+   wardrobe, pose and expression, set, lighting, lens, shot scale and mood.
+2. **Never write video language.** No shot lists, no `[0s-1.5s]` stamps, no
+   camera moves, no `overall_soundscape:` / `non_diegetic_music:` fields — those
+   belong to the H3 *video* workflows and push this one back toward motion.
+3. **No negative prompt exists** (the graph has no CFG). Say what should be
+   there; do not list what must not.
+4. The native canvas is about 1344x768 (0.98 MP) on a 32-pixel grid; do not ask
+   for a framing the chosen aspect ratio cannot hold.
+5. **`minimax_h3_i2i` is editing**, not generation: write an instruction for the
+   picture in `source_image` and say explicitly what has to stay (identity,
+   pose, wardrobe, composition, background geometry).
+6. **`minimax_h3_r2i` is reference editing**: refer to every entry of
+   `reference_images` by number, in the order it was given — `<Picture 1>`,
+   `<Picture 2>`, … — and say what each one contributes. Never write a tag with
+   no reference behind it.
+7. Keep it under roughly 200 words for the editing modes and 250 for t2i;
+   beyond that the instruction starts to contradict itself.
+8. **Adults only**: every depicted person is an adult (early twenties or older)
+   with an unambiguously adult body and face; never wording that reads as a
+   minor. Explicit anatomy may be described plainly when the user asks for it.
+
+Example (t2i):
+```
+A finished cinematic editorial portrait of an adult Japanese woman seated on a low studio stool, turned three-quarters to camera, wearing a structured charcoal blazer over a cream silk blouse. Controlled Rembrandt key light from the upper left with a soft fill, sharp catchlights in the eyes, natural skin texture and fine fabric weave, clean dark grey background. Shot on an 85mm lens at eye level, medium close-up, shallow depth of field, muted warm palette.
+```
+
+Example (r2i):
+```
+Keep the subject, pose, framing, lighting and background from <Picture 1>. Replace only her jacket with the structured black high-fashion jacket and silver hardware from <Picture 2>, matching its drape and material to the existing light. The result is one sharp finished fashion photograph.
+```
+"""
+
 #: family -> the prompt spec section to embed for it
 IMAGE_SPECS: dict[str, str] = {
     "krea2": IMAGE_SPEC,
     "anima": ANIMA_SPEC,
     "z-image": Z_IMAGE_SPEC,
     "qwen-image": QWEN_IMAGE_SPEC,
+    "minimax-h3-image": MINIMAX_H3_IMAGE_SPEC,
 }
 
 #: family -> the one-line reminder that goes into the IMAGE WORKFLOWS catalog
@@ -324,6 +370,14 @@ IMAGE_PROMPT_HINTS: dict[str, str] = {
         "An EDIT instruction for `source_image`, not a scene description:"
         ' "change X to Y, keep everything else unchanged". Output size follows'
         " the input picture."
+    ),
+    "minimax-h3-image": (
+        "A **still-image** prompt in English prose (subject, wardrobe, pose,"
+        " set, lighting, lens, framing) — never video language: no shot lists,"
+        " no timestamps, no camera moves, no soundscape fields. No negative"
+        " prompt. `minimax_h3_i2i` takes an edit instruction for"
+        " `source_image`; `minimax_h3_r2i` refers to `reference_images` by"
+        " number as `<Picture 1>`, `<Picture 2>`, … in the order given."
     ),
 }
 
@@ -529,8 +583,14 @@ def _select_lines(entry: CatalogEntry) -> list[str]:
         "  - 選択項目（ジョブの `selects` に"
         ' `{"<名前>": "<選んだ値>"}` の形で書く。以下の文字列のみ使用可）:'
     ]
-    for name, label, choices, default, auto, hint in entry.selects:
-        values = ", ".join(f"`{choice}`" for choice in choices)
+    for name, label, choices, default, auto, hint, choice_labels in entry.selects:
+        # **書くのは常にバッククォートの中の生の値**。日本語ラベルは意味の手がかり
+        # としてだけ添える（宣言の無い値はそのまま）。
+        values = ", ".join(
+            f"`{choice}`"
+            + (f"（{choice_labels[choice]}）" if choice_labels.get(choice) else "")
+            for choice in choices
+        )
         note = f" {hint}" if hint else ""
         fallback = (
             "省略すると入力から自動で決まる"
@@ -663,6 +723,27 @@ def _image_catalog_entry_lines(entry: CatalogEntry) -> list[str]:
         "  - 必要入力: "
         + _inputs_text(entry.required_inputs, "なし（image_prompt だけで生成できる）"),
     ]
+    # 参照素材を主入力にする画像ワークフロー（MiniMax H3 Image r2i）だけに出る。
+    # VIDEO WORKFLOWS 側と同じ書きぶりで、こちらは開始フレームの代わりに
+    # `reference_images` を並べる（`source_image` は受け取らない）。
+    if entry.reference_inputs:
+        minimum = (
+            f"。参照素材は**合計 {entry.min_references} 件以上必須**"
+            "（1 件も無いジョブは拒否されます）"
+            if entry.min_references
+            else ""
+        )
+        lines.append(
+            "  - 参照素材（複数指定・このワークフローの主入力）: "
+            + ", ".join(
+                f"`{field}`（{label}・最大 {limit} 件）"
+                for field, label, limit in entry.reference_inputs
+            )
+            + minimum
+            + "。渡した順が `<Picture 1>`, `<Picture 2>`, … の番号になり、"
+            "**開始フレーム（`source_image`）は受け取らない**"
+        )
+    lines += _select_lines(entry)
     hint = IMAGE_PROMPT_HINTS.get(entry.family)
     if hint:
         lines.append(f"  - Writing `image_prompt`: {hint}")
@@ -775,7 +856,7 @@ def _workflow_context_lines(workflow_id: str) -> list[str]:
 #   https://www.minimax.io/blog/minimax-h3
 
 #: t2v / i2v / r2v で共通のショット・カメラ・台詞・音・禁止事項
-_MINIMAX_H3_GUIDE_BODY = """\
+MINIMAX_H3_GUIDE_BODY = """\
 Shared shot / camera / speech / sound rules (base `integrated_multimodal_description`
 and Ref2VA `detailed_description`):
 
@@ -868,7 +949,7 @@ non_diegetic_music: A soft acoustic-guitar pattern at a moderate tempo, fading o
 ```
 
 """
-    + _MINIMAX_H3_GUIDE_BODY
+    + MINIMAX_H3_GUIDE_BODY
 )
 
 MINIMAX_H3_REFERENCE_VIDEO_GUIDE = (
@@ -953,7 +1034,7 @@ Sparse piano at a slow tempo.
 ```
 
 """
-    + _MINIMAX_H3_GUIDE_BODY
+    + MINIMAX_H3_GUIDE_BODY
 )
 
 #: 1 本のクリップの中でカットを割れるワークフロー（CONTEXT の一文を切り替える）。

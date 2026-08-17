@@ -2042,6 +2042,9 @@ def compose_prompt(shot: StudioShot, body: str, *, workflow: str = "") -> str:
     ``integrated_multimodal_description:`` で包む。
     ``subject_definitions`` / ``summary`` / ``retention_analysis`` は
     一行の本文から作らない。カメラ・台詞・音は**本文が既に書いていれば足さない**。
+
+    ここが「どのフィールドがモデルに届くか」の正本。挙動を変えたら、外部 API が
+    配る脚本ガイド（:mod:`app.drafting_guide` の「1. フィールド契約」）も直すこと。
     """
     text = body.strip()
     if not text:

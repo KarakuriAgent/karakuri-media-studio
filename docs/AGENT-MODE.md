@@ -439,8 +439,36 @@ Grok CLI はステートレスなテキスト入出力なので、ツール呼�
 パラメータの検証は Web UI と同じ pydantic モデル（`Studio*Create` /
 `Studio*Update`）に通すので、未知の項目・範囲外の分類はプラン検証と同じく
 フォーマットリマインダー付きの 1 回リトライになる。`studio_render_shot` は
-投入して即座に返り、完了は `studio_get_takes` のポーリングで追う（生成を伴わない
+投入して即座に返り、完了は**ジョブ側から届く**（生成を伴わない
 他の studio アクションと同じく、発言リクエストの中で処理する即時アクション）。
+
+##### レンダー完了の通知（ポーリングしない）
+
+ジョブが終端に入った瞬間に `app.jobs._dispatch_job_final` が
+`agent_runner._on_job_final` / `canvas_agent._on_job_final` を呼び、対象の Take があれば
+制作記録（キャンバスは会話）へ `studio_take_finished` のイベントを 1 件積む。二重通知は
+`studio_takes.agent_notified_at` を「先に埋めた側が配る」印にして防ぎ、**配達に失敗したら印を
+戻す**（`_release_take_notification`。印だけ残ると `IS NULL` を見ている 5 分ごとのスキャンにも
+拾われず、永久に通知されない）。取りこぼし（プロセスが落ちているあいだに終わったジョブ）は
+その定期スキャン（`scan_pending_takes`）が回収する。
+
+止まっているセッション / キャンバスは、待機中なら起こす（`start_loop` / `canvas_agent.start`）。
+ただし**起こさない**のは 2 つ:
+
+* ⏹ の直後（`_stop_requests` に居る = 畳まれる途中）。`start_loop` は `_stop_requests` を捨てるので、
+  起こすと「止めた印」ごと消えて、止めたはずのエージェントが走り出す。
+* ジョブが `canceled`。出所は ⏹ か手動キャンセルなので、その完了で起こしたら止めた意味が無い。
+  本文も「**ユーザーが停止した / 作り直すな**」専用の文面にする（失敗の文面を出すと再レンダーする）。
+
+シャットダウン中（`JobRunner.stop` のあいだ）は通知を配らない（`jobs._final_dispatch_stopped`。
+ワーカーを畳む CancelledError 経路が `canceled` を書いたところからループが立ち上がらないように）。
+そこで取りこぼしたぶんは次の起動時のスキャンが拾い直す。配達そのものはインラインで待つ
+（`asyncio.create_task` に逃がすと、誰も await しないタスクの中の DB 接続が閉じられず
+aiosqlite のワーカースレッドが残ってプロセスが終われなくなる）。
+
+ジョブを履歴から削除すると `chat_session_id` が辿れなくなり、その Take はどのスキャンからも
+宛先が引けなくなる。そこで `jobs.delete_job` が**行を消す直前に** `on_job_deleted` を呼び、
+未通知の Take に「job が削除されたので結果を確認できない」ことだけを伝えて印を付ける。
 
 #### キャンバスの盤面操作（`canvas_*`）
 

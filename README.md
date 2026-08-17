@@ -1,6 +1,6 @@
 # Karakuri Media Studio
 
-`workflow/` 配下の ComfyUI ワークフロー（画像 4 種 / 動画 12 種 / 音声 2 種）と
+`workflow/` 配下の ComfyUI ワークフロー（画像 13 種 / 動画 12 種 / 音声 2 種）と
 Grok Imagine（画像 2 種）を Web UI から実行し、プロンプト作成を Grok に委譲、
 生成物と履歴をローカルに保存する個人利用向けのメディア生成アプリです。
 
@@ -25,7 +25,8 @@ Grok Imagine（画像 2 種）を Web UI から実行し、プロンプト作成
 |---|---|
 | ComfyUI | 稼働中であること（既定 `http://127.0.0.1:8188`）。Comfy Cloud も可 |
 | custom nodes | ResolutionSelector / ComfySwitchNode / CustomCombo / MiniMaxH3 系 / ComfyMath / ResizeImage 系 / ResizeAndPadImage / MoGe 系 / LoadVideo など、`workflow/` 配下のワークフローが使うノード一式 |
-| custom nodes（任意） | MiniMax H3 の Turbo / Optimized ワークフロー（i2v / r2v）を使う場合のみ SageAttention 本体と [ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes)、および `SolAttnPatch` / `MiniMaxH3TurboLoRA` / `MiniMaxH3MemoryEfficientSageAttentionPatch` / `MiniMaxH3SigmaShift` / `SpectrumApplyMiniMaxH3` を提供する custom node。Turbo / Optimized 以外のワークフローには不要（Optimized は `MiniMaxH3TurboLoRA` だけ使わない） |
+| custom nodes | MiniMax H3 Image（t2i / i2i / r2i）を使う場合は [ComfyUI-MiniMax-H3-Image-Studio](https://github.com/astropuzzo/ComfyUI-MiniMax-H3-Image-Studio)（`H3TextToImagePrepare` / `H3ImageToImagePrepare` / `H3ReferenceEditPrepare` / `H3SamplingSettings` / `H3ImageDecode` / `H3ImageFrameSelector`）。`deploy/runpod/custom_nodes.txt` にコミットを固定してあるので RunPod では自動で入ります |
+| custom nodes（任意） | MiniMax H3 の Turbo / Optimized ワークフロー（動画の i2v / r2v・画像の t2i / i2i / r2i）を使う場合のみ SageAttention 本体と [ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes)、および `SolAttnPatch` / `MiniMaxH3TurboLoRA` / `MiniMaxH3MemoryEfficientSageAttentionPatch` / `MiniMaxH3SigmaShift` / `SpectrumApplyMiniMaxH3` を提供する custom node。Turbo / Optimized 以外のワークフローには不要（Optimized は `MiniMaxH3TurboLoRA` だけ使わない） |
 | custom nodes（任意） | ドラマスタジオの「ラテント連続性」（連続カット・`minimax_h3_r2v_context` と、起点になる通常カットの `minimax_h3_*_save`）を使う場合のみ、`MiniMaxH3MotionContext` / `MiniMaxH3MotionContextLoadLatent` / `MiniMaxH3MotionContextSaveLatent` を提供する [ComfyUI-H3-Motion-Context](https://github.com/NikoDemon80/ComfyUI-H3-Motion-Context) と、`MiniMaxH3MotionContextTrim` を提供する ComfyUI-MiniMaxH3-Contex-Loop。Comfy Cloud には入れられないので、その接続先ではこの機能が使えません |
 | モデル | **使うワークフローのぶんだけ**あれば十分です（各テンプレートの既定ファイル名は SPEC §3.3）。足りないものは後述の「不足モデルの自動ダウンロード」で取得できます |
 | grok CLI | `curl -fsSL https://x.ai/cli/install.sh \| bash` でインストール後、一度 `grok` を起動してブラウザでサインイン（サーバーでは `grok --device-auth`）。SuperGrok / X Premium+ のサブスクリプションで利用可。**プロンプト作成のチャットに加えて、画像ワークフローの「Grok Imagine」もこの CLI で走ります**（サインインしていないとそちらは失敗します。設定ページの「grok CLI の接続確認」で確かめられます） |
@@ -154,7 +155,31 @@ WebSocket で右ペインにリアルタイム表示され、完了すると生�
 | 音声 | 音声ワークフローを単発実行（画像・動画とは連結しない） |
 
 **画像**は Krea 2 turbo（既定）/ Anima / Z-Image turbo / Qwen-Image Edit 2511（画像編集。参照画像必須）
-/ Grok Imagine（テキスト→画像・画像編集）から選びます。
+/ MiniMax H3 Image（t2i / i2i / r2i、各 3 バリアント）/ Grok Imagine（テキスト→画像・画像編集）
+から選びます。
+
+**MiniMax H3 Image** は音声つき動画モデルの MiniMax H3 で**静止画 1 枚**を作るワークフローです
+（複数フレームのパケットを作って 1 枚を選ぶ）。テキスト→画像 (t2i)・画像編集 (i2i)・参照編集
+(r2i、参照画像 1〜9 枚を `<Picture 1>` … として渡す) の 3 モードがあり、それぞれ素の版 /
+**Optimized**（20 ステップのまま実行だけ速い）/ **Turbo**（公式 Turbo アダプタつき。t2i・i2i は
+8 ステップ、r2i は 4 ステップ）の 3 バリアントです。実行には
+[ComfyUI-MiniMax-H3-Image-Studio](https://github.com/astropuzzo/ComfyUI-MiniMax-H3-Image-Studio)
+が必要で（`deploy/runpod/custom_nodes.txt` に固定済み）、Optimized / Turbo はさらに動画側の
+Turbo と同じ custom node 一式と量子化ウェイトが必要です。Turbo アダプタは設定ページの
+モデルスロットから差し替えられます。
+
+生成フォームの「画像ワークフロー」セクションには、H3 のつまみがプルダウンで並びます
+（選択肢は「標準（5 フレーム）」「安定重視」のような日本語で表示されます。ComfyUI に送る値は
+ノード側の英語のまま変わりません）。
+
+| つまみ | 対象 | 内容 |
+|---|---|---|
+| フレーム枚数（品質） | 全モード | 5（既定）/ 9 / 13 / 20 フレーム。**上げるほど H3 が使える時間方向の文脈が増えて仕上がりが良くなり、そのぶん遅く VRAM も要ります** |
+| 出力フレームの選び方 | 全モード | デコードしたパケットから 1 枚を選ぶやり方（既定はノードの推奨フレーム）。枚数を増やしたときに効きます |
+| 静止画プロンプト補正 | 全モード | ノードが「カメラ固定の 1 枚絵」を要求する文をプロンプトに足すか（既定 on） |
+| 元画像の保持強度 | i2i / r2i | 0.00〜1.00（既定 0.75）。**denoise ではなく**「元をどれだけ保て」とプロンプトに書き足す強さです |
+| 元画像の合わせ方 | i2i / r2i | 生成キャンバスへの合わせ方（中央切り抜き / 余白を足す / 引き伸ばす） |
+| 参照画像の解像度 | r2i | 生成解像度に合わせて縮小（既定・速い）か、短辺 2048px まで残して同一性を上げるか |
 
 **Grok Imagine** は ComfyUI ではなく **grok CLI のサブスクリプション枠**で走る外部生成です
 （GPU もモデルファイルも不要）。テキスト→画像と画像編集の 2 種があり、生成物は他の

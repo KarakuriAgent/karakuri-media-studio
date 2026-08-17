@@ -1107,3 +1107,183 @@ def test_the_scan_picks_up_a_canvas_take_nobody_announced(env, canvas_woken):
     assert sql(
         "SELECT agent_notified_at FROM studio_takes WHERE id = ?", still_running
     )[0][0] is None
+
+
+# --------------------------------------------------------------------------
+# 停止・キャンセル・削除まわりの通知（コードレビューで見つかった退行）
+# --------------------------------------------------------------------------
+
+def test_a_canceled_agent_take_does_not_restart_the_loop(env, woken):
+    """⏹ はこのセッションのジョブも cancel する。その完了で起こしたら意味がない。"""
+    project = make_project(env)
+    shot = make_shot(env, project["id"])
+    session = start(env)["id"]
+    job_id = fake_job(session, status="canceled")
+    fake_take(shot, job_id)
+
+    run_async(agent_runner._on_job_final(job_id, "canceled"))
+
+    # イベントは積む（次にユーザーが話しかければ目に入る）が、起こさない
+    assert len(take_events(env, session)) == 1
+    assert woken == []
+
+
+def test_a_session_asked_to_stop_is_not_woken_up(env, woken):
+    """⏹ の直後（`_stop_requests` に居る）は、done の完了でも起こさない。
+
+    `start_loop` は `_stop_requests` を捨てるので、起こしてしまうと「止めた印」
+    ごと消えて、止めたはずのエージェントが走り出す。
+    """
+    project = make_project(env)
+    shot = make_shot(env, project["id"])
+    session = start(env)["id"]
+    job_id = fake_job(session)
+    fake_take(shot, job_id)
+    agent_runner._stop_requests.add(session)
+    try:
+        run_async(agent_runner._on_job_final(job_id, "done"))
+    finally:
+        agent_runner._stop_requests.discard(session)
+
+    assert len(take_events(env, session)) == 1
+    assert woken == []
+    # 止めた印は残っている（消されていない）
+    assert session not in woken
+
+
+def test_a_canceled_take_tells_the_agent_not_to_rerender(env, woken):
+    """キャンセルは失敗ではない: 「作り直せ」と言ってはいけない。"""
+    project = make_project(env)
+    shot = make_shot(env, project["id"])
+    session = start(env)["id"]
+    job_id = fake_job(session, status="canceled")
+    fake_take(shot, job_id)
+
+    run_async(agent_runner._on_job_final(job_id, "canceled"))
+
+    event = take_events(env, session)[0]
+    assert event["data"]["job_status"] == "canceled"
+    assert "停止" in event["content"]
+    assert "作り直さないでください" in event["content"]
+    # 失敗の文面（再レンダーの指示）が混ざっていない
+    assert "失敗しました" not in event["content"]
+
+
+def _breaking(module, name: str, monkeypatch):
+    """``module.name`` を「1 回だけ失敗して、あとは素の実装」に差し替える。
+
+    ``monkeypatch.undo()`` は env フィクスチャの差し替え（DB_PATH など）まで
+    戻してしまうので使わない。
+    """
+    original = getattr(module, name)
+    fail = [True]
+
+    async def wrapped(*args, **kwargs):
+        if fail[0]:
+            fail[0] = False
+            raise RuntimeError("disk is on fire")
+        return await original(*args, **kwargs)
+
+    monkeypatch.setattr(module, name, wrapped)
+    return fail
+
+
+def test_a_failed_delivery_leaves_the_take_for_the_next_scan(env, woken, monkeypatch):
+    """配達に失敗したら印を戻す（印だけ残ると永久に通知されない）。"""
+    project = make_project(env)
+    shot = make_shot(env, project["id"])
+    session = start(env)["id"]
+    job_id = fake_job(session)
+    take_id = fake_take(shot, job_id)
+    _breaking(agent_runner, "_event", monkeypatch)
+
+    with pytest.raises(RuntimeError):
+        run_async(agent_runner._on_job_final(job_id, "done"))
+    assert sql(
+        "SELECT agent_notified_at FROM studio_takes WHERE id = ?", take_id
+    )[0][0] is None
+
+    # 印が戻っているので、次のスキャンがちゃんと拾い直す
+    assert run_async(agent_runner.scan_pending_takes()) == 1
+    assert len(take_events(env, session)) == 1
+
+
+def test_a_failed_canvas_delivery_leaves_the_take_for_the_next_scan(
+    env, canvas_woken, monkeypatch
+):
+    project = make_project(env)
+    shot = make_shot(env, project["id"])
+    session_id = canvas_session(env, project["id"])
+    job_id = fake_job(session_id)
+    take_id = fake_take(shot, job_id)
+    _breaking(canvas_agent, "append", monkeypatch)
+
+    with pytest.raises(RuntimeError):
+        run_async(canvas_agent._on_job_final(job_id, "done"))
+    assert sql(
+        "SELECT agent_notified_at FROM studio_takes WHERE id = ?", take_id
+    )[0][0] is None
+
+    assert run_async(canvas_agent.scan_pending_takes()) == 1
+    assert len(canvas_take_events(env, project["id"], session_id)) == 1
+
+
+def test_deleting_a_job_announces_its_pending_take(env, woken):
+    """ジョブを消すと宛先（chat_session_id）が辿れなくなるので、消す前に伝える。"""
+    from app import jobs as jobs_module
+
+    project = make_project(env)
+    shot = make_shot(env, project["id"])
+    session = start(env)["id"]
+    job_id = fake_job(session, status="running")
+    take_id = fake_take(shot, job_id)
+
+    # 走っている最中でも、削除は「結果が分からなくなる」ので伝える
+    assert run_async(jobs_module.delete_job(job_id)) is True
+
+    events = take_events(env, session)
+    assert len(events) == 1
+    assert events[0]["data"]["take_id"] == take_id
+    assert "削除" in events[0]["content"]
+    assert sql(
+        "SELECT agent_notified_at FROM studio_takes WHERE id = ?", take_id
+    )[0][0]
+    # ジョブが消えたあとのスキャンは、この Take をもう見ない
+    assert run_async(agent_runner.scan_pending_takes()) == 0
+
+
+def test_deleting_a_job_announces_its_pending_canvas_take(env, canvas_woken):
+    from app import jobs as jobs_module
+
+    project = make_project(env)
+    shot = make_shot(env, project["id"])
+    session_id = canvas_session(env, project["id"])
+    job_id = fake_job(session_id, status="running")
+    take_id = fake_take(shot, job_id)
+
+    assert run_async(jobs_module.delete_job(job_id)) is True
+
+    events = canvas_take_events(env, project["id"], session_id)
+    assert len(events) == 1
+    assert events[0]["data"]["take_id"] == take_id
+    assert "削除" in events[0]["content"]
+    assert sql(
+        "SELECT agent_notified_at FROM studio_takes WHERE id = ?", take_id
+    )[0][0]
+
+
+def test_deleting_a_job_whose_take_was_already_announced_is_quiet(env, woken):
+    """既に伝えてある Take は、削除でもう一度伝えない。"""
+    from app import jobs as jobs_module
+
+    project = make_project(env)
+    shot = make_shot(env, project["id"])
+    session = start(env)["id"]
+    job_id = fake_job(session)
+    fake_take(shot, job_id)
+
+    run_async(agent_runner._on_job_final(job_id, "done"))
+    assert len(take_events(env, session)) == 1
+
+    run_async(jobs_module.delete_job(job_id))
+    assert len(take_events(env, session)) == 1

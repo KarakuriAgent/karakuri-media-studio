@@ -69,10 +69,13 @@ async def lifespan(app: FastAPI):
     finally:
         await agent_runner.stop_take_watcher()
         await canvas_agent.stop_take_watcher()
+        # ワーカーを先に畳む: これで新しい完了通知（＝エージェントのループ起動）
+        # は配られなくなる（`jobs._final_dispatch_stopped`）。畳んでいる最中に
+        # 書かれた canceled でエージェントを起こし直さないための順序。
+        await runner.stop()
         await agent_runner.stop_all()
         await canvas_agent.stop_all()
         await chat_agent.stop_all()
-        await runner.stop()
 
 
 app = FastAPI(title="Karakuri Media Studio API", version="0.1.0", lifespan=lifespan)

@@ -26,7 +26,9 @@ from starlette.datastructures import UploadFile
 from .. import jobs as job_service
 from .. import library, studio as service
 from ..config import load_settings
+from ..drafting_guide import build_drafting_guide
 from ..models import (
+    DraftingGuide,
     Job,
     StoryCreate,
     StoryResult,
@@ -456,3 +458,18 @@ async def create_story(payload: StoryCreate) -> StoryResult:
         )
     except service.StudioError as exc:
         raise _bad_request(exc) from exc
+
+
+# --------------------------------------------------------------------------
+# 脚本ドラフト作成ガイド
+# --------------------------------------------------------------------------
+
+@router.get("/prompt-guide", response_model=DraftingGuide)
+async def prompt_guide() -> DraftingGuide:
+    """脚本ドラフトの書き方（上の一括投入に渡す脚本を書くための手引き）。
+
+    外部のエージェントがそのままプロンプトに貼れる日本語 Markdown を返す。
+    本文はアプリ内の定数から組み立てるので（:mod:`app.drafting_guide`）、
+    尺の範囲や H3 の規約が変われば、この応答も一緒に変わる。
+    """
+    return build_drafting_guide()

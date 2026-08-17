@@ -412,6 +412,14 @@ export interface WorkflowSelect {
   /** true なら「自動」を選べる（未指定なら入力から決まる）。 */
   auto: boolean
   hint: string
+  /**
+   * **表示だけ**の日本語ラベル（`選ぶ値 -> 画面に出す文字列`、SPEC §3.1）。
+   *
+   * 送る値は `choices` の生のまま。`decode_recommended` のようなノード由来の
+   * enum を読める日本語に置き換えるためのもので、宣言の無い値（や宣言そのものが
+   * 無い選択式）は生の値をそのまま出す。
+   */
+  choice_labels?: Record<string, string>
 }
 
 /** One selectable workflow template (GET /api/options). */

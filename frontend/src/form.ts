@@ -438,6 +438,40 @@ export function referenceFields(
   })
 }
 
+/**
+ * その mode で実際に走るステージが受け取る参照入力（SPEC §3.1）。
+ *
+ * 参照素材は**画像ステージと動画ステージのどちらの入力にもなる**（MiniMax H3
+ * Image r2i の参照画像 / MiniMax H3 r2v の参照画像・動画・音声）。画像ステージは
+ * `full` / `image_only` で走り、動画ステージの参照は「開始フレームの代わり」なので
+ * `i2v` でだけ意味を持つ（`full` の開始フレームは画像ステージが作る）。
+ * 両方が同じ種類を宣言していたら、どちらも通る件数＝小さいほうを上限にする。
+ */
+export function referenceFieldsForMode(
+  mode: JobMode,
+  videoWorkflow?: WorkflowOption | null,
+  imageWorkflow?: WorkflowOption | null,
+): ReferenceField[] {
+  const stages = [
+    mode === 'full' || mode === 'image_only' ? imageWorkflow : null,
+    mode === 'i2v' ? videoWorkflow : null,
+  ]
+  const found = new Map<string, ReferenceField>()
+  for (const stage of stages) {
+    for (const item of referenceFields(stage)) {
+      const seen = found.get(item.name)
+      found.set(
+        item.name,
+        seen ? { ...item, limit: Math.min(seen.limit, item.limit) } : item,
+      )
+    }
+  }
+  return REFERENCE_FIELDS.flatMap((item) => {
+    const picked = found.get(item.name)
+    return picked ? [picked] : []
+  })
+}
+
 /** いまフォームに入っている参照素材の合計件数。 */
 export function referenceCount(form: FormState): number {
   return (
@@ -1013,9 +1047,12 @@ export function hiddenFields(
     startImage: !((mode === 'i2v' && accepts('image')) || imageNeedsSource),
     endImage: !accepts('end_image'),
     referenceVideo: !requires('video'),
-    // マルチモーダル参照は「開始フレームの代わり」なので、開始フレームを渡せる
-    // mode（= i2v）でだけ意味がある。full は画像ステージが開始フレームを作る。
-    references: !(mode === 'i2v' && referenceFields(workflow).length > 0),
+    // マルチモーダル参照は宣言のあるステージが走る mode でだけ出す。動画側の
+    // 参照は「開始フレームの代わり」なので i2v だけ（full は画像ステージが開始
+    // フレームを作る）、画像側の参照（MiniMax H3 Image r2i）は画像ステージが
+    // 走る mode（full / image_only）で出る。
+    references:
+      referenceFieldsForMode(mode, workflow, imageWorkflow).length === 0,
     // ショット割り / Elements は動画ステージのパラメータなので、それが走る
     // mode（full / i2v）で、宣言のあるワークフローのときだけ出す。
     multiShots: !(video && multiShotLimits(workflow) !== null),
@@ -1090,11 +1127,15 @@ export function validateForm(
       'ワークフローです。参照画像を選択してください。'
   }
   // マルチモーダル参照（SPEC §3.1）: 参照専用のワークフローだけの入力で、
-  // 件数に上限がある。欄が出るのも送るのも「動画」モードだけ（`hiddenFields`
-  // の `references` / App のペイロード）なので、検証もそこに揃える。
-  // 他のモードに切り替えても値は FormState に残るが、送られない以上 422 には
-  // ならないし、欄が無い＝直す手立ても無いので止めない（§8）。
-  const references = referenceFields(form.mode === 'i2v' ? videoWorkflow : null)
+  // 件数に上限がある。欄が出るのも送るのも宣言のあるステージが走る mode だけ
+  // （`hiddenFields` の `references` / App のペイロード）なので、検証もそこに
+  // 揃える。他のモードに切り替えても値は FormState に残るが、送られない以上
+  // 422 にはならないし、欄が無い＝直す手立ても無いので止めない（§8）。
+  const references = referenceFieldsForMode(
+    form.mode,
+    videoWorkflow,
+    imageWorkflow,
+  )
   for (const item of references) {
     if (form[item.field].length > item.limit) {
       errors[item.name] = `${item.label}は ${item.limit} 件までです（今は ${

@@ -1112,80 +1112,119 @@ def reference_materials(params: Any) -> dict[str, list[str]]:
     return picked
 
 
-def _missing_reference_problem(mode: str, video_workflow: str | None) -> str | None:
+#: 参照素材を受け取りうるステージ 1 つ ``(ジョブのフィールド名, ステージの日本語名,
+#: マニフェスト)``。参照素材は画像ステージ（MiniMax H3 Image r2i）と動画ステージ
+#: （MiniMax H3 r2v）の**どちらの**入力にもなりうるので、検証はステージの一覧に
+#: 対して回す（``full`` では両方が並ぶ）。
+_ReferenceStage = tuple[str, str, "WorkflowSpec"]
+
+
+def _reference_stages(
+    mode: str, video_workflow: str | None, image_workflow: str | None
+) -> list[_ReferenceStage]:
+    """``mode`` で実際に走る、参照素材を受け取りうるステージ（実行順）。
+
+    ワークフロー id が壊れていれば :class:`WorkflowSpecError` を投げるので、
+    呼び出し側がメッセージにする。
+    """
+    stages: list[_ReferenceStage] = []
+    if mode in ("full", "image_only"):
+        stages.append(
+            ("image workflow", "画像ステージ", get_image_spec(image_workflow))
+        )
+    if mode in ("full", "i2v"):
+        stages.append(
+            ("video workflow", "動画ステージ", get_video_spec(video_workflow))
+        )
+    return stages
+
+
+def _missing_reference_problem(
+    mode: str, video_workflow: str | None, image_workflow: str | None = None
+) -> str | None:
     """参照素材が 1 つも無いときに、それを必須にしているワークフローかを見る。
 
     宣言は :attr:`app.workflows.RefMediaFan.min_refs`（0 なら不問）で、**種類を
     問わない合計**なので画像・動画・音声のどれで満たしてもよい。ここは「参照が
     空のとき」だけを通るので、ワークフロー id が壊れている場合は
-    :func:`video_workflow_problem` に任せて黙って通す。
+    :func:`video_workflow_problem` / :func:`image_workflow_problem` に任せて
+    黙って通す。
     """
-    if mode not in ("full", "i2v"):
-        return None
     try:
-        spec = get_video_spec(video_workflow)
+        stages = _reference_stages(mode, video_workflow, image_workflow)
     except WorkflowSpecError:
         return None
-    fan = spec.ref_media
-    if fan is None or fan.min_refs < 1:
-        return None
-    names = "・".join(
-        f"`{MULTI_INPUT_FIELDS[name]}`（{MULTI_INPUT_LABELS[name]}）"
-        for name in fan.names()
-    )
-    return (
-        f"video workflow '{spec.id}' には参照素材 {names} のいずれかが"
-        f" {fan.min_refs} 件以上必要です"
-    )
+    for kind, _label, spec in stages:
+        fan = spec.ref_media
+        if fan is None or fan.min_refs < 1:
+            continue
+        names = "・".join(
+            f"`{MULTI_INPUT_FIELDS[name]}`（{MULTI_INPUT_LABELS[name]}）"
+            for name in fan.names()
+        )
+        return (
+            f"{kind} '{spec.id}' には参照素材 {names} のいずれかが"
+            f" {fan.min_refs} 件以上必要です"
+        )
+    return None
 
 
 def reference_problem(
     mode: str,
     video_workflow: str | None,
     references: dict[str, list[str]],
+    *,
+    image_workflow: str | None = None,
 ) -> str | None:
     """マルチモーダル参照が使える組み合わせか（None == 問題なし、SPEC §3.1）。
 
-    参照モード（MiniMax H3 r2v の参照素材）
-    は API 側で先頭フレーム i2v と相互排他だが、それは**ワークフローを分けて**
+    参照素材は**画像ステージと動画ステージのどちらの入力にもなる**（MiniMax H3
+    Image r2i の参照画像 / MiniMax H3 r2v の参照画像・動画・音声）ので、その
+    mode で走るステージのうち**どれか 1 つでも宣言していれば通す**。参照モードは
+    API 側で先頭フレーム i2v と相互排他だが、それは**ワークフローを分けて**
     表現してある（参照専用のワークフローだけが ``multi_inputs`` を宣言し、開始
     フレームの受け取り口を持たない）。だからここで見るのは「宣言のないワーク
     フローに渡していないか」「件数の上限」「拡張子」の 3 つだけで、開始フレーム
     との組み合わせは :func:`start_image_problem` が別に断る。
 
     例外は**下限**で、ComfyUI 側で参照素材をグラフに展開するワークフロー
-    （MiniMax H3 r2v、:class:`app.workflows.RefMediaFan`）だけが「種類を問わず
-    合計 1 件以上」を要求する。参照が 1 件も無いと ref2va のウェイトで素の生成を
-    するだけになり、ワークフローを選んだ意味が無くなるため。
+    （MiniMax H3 r2v / r2i、:class:`app.workflows.RefMediaFan`）だけが「種類を
+    問わず合計 1 件以上」を要求する。参照が 1 件も無いと ref2va のウェイトで素の
+    生成をするだけになり、ワークフローを選んだ意味が無くなるため。
 
     サイズ・解像度・尺の細かい制約は外部 API の判断に任せ、失敗メッセージを
     そのまま見せる。
     """
     if not references:
-        return _missing_reference_problem(mode, video_workflow)
+        return _missing_reference_problem(mode, video_workflow, image_workflow)
     names = "・".join(f"`{MULTI_INPUT_FIELDS[name]}`" for name in references)
-    if mode not in ("full", "i2v"):
-        return (
-            f"mode '{mode}' は動画ステージを走らせないので、参照素材"
-            f"（{names}）は使えません"
-        )
     try:
-        spec = get_video_spec(video_workflow)
+        stages = _reference_stages(mode, video_workflow, image_workflow)
     except WorkflowSpecError as exc:
         return str(exc)
+    if not stages:
+        return (
+            f"mode '{mode}' は参照素材を受け取るステージを走らせないので、"
+            f"参照素材（{names}）は使えません"
+        )
     for name, paths in references.items():
-        limit = spec.multi_inputs.get(name)
-        if limit is None:
+        accepting = [
+            (kind, spec) for kind, _label, spec in stages if name in spec.multi_inputs
+        ]
+        if not accepting:
+            where = " / ".join(f"{kind} '{spec.id}'" for kind, _l, spec in stages)
             return (
-                f"video workflow '{spec.id}' は{MULTI_INPUT_LABELS[name]}"
+                f"{where} は{MULTI_INPUT_LABELS[name]}"
                 f"（`{MULTI_INPUT_FIELDS[name]}`）を受け取れません"
             )
-        if len(paths) > limit:
-            return (
-                f"video workflow '{spec.id}' の{MULTI_INPUT_LABELS[name]}は"
-                f" {limit} 件までです"
-                f"（今は {len(paths)} 件）"
-            )
+        for kind, spec in accepting:
+            limit = spec.multi_inputs[name]
+            if len(paths) > limit:
+                return (
+                    f"{kind} '{spec.id}' の{MULTI_INPUT_LABELS[name]}は"
+                    f" {limit} 件までです"
+                    f"（今は {len(paths)} 件）"
+                )
         allowed = MULTI_INPUT_EXTS.get(name, frozenset())
         for path in paths:
             suffix = path[path.rfind("."):].lower() if "." in path else ""
@@ -1585,7 +1624,10 @@ class JobCreate(BaseModel):
                 self.mode, self.video_workflow, self.video_prompt
             )
             or reference_problem(
-                self.mode, self.video_workflow, reference_materials(self)
+                self.mode,
+                self.video_workflow,
+                reference_materials(self),
+                image_workflow=self.image_workflow,
             )
             or start_image_problem(
                 self.mode,
@@ -2231,6 +2273,10 @@ class WorkflowSelect(BaseModel):
     #: True なら「自動」を選べる（未指定で入力から決まる。尺など）
     auto: bool = False
     hint: str = ""
+    #: **表示だけ**の日本語ラベル（``選ぶ値 -> 画面に出す文字列``、SPEC §3.1）。
+    #: 送る値は `choices` の生のままで、フォームの `<option>` の文字だけを差し替える。
+    #: 宣言の無い値はフロントが生の値をそのまま出す（宣言は任意）。
+    choice_labels: dict[str, str] = Field(default_factory=dict)
 
 
 class MultiShotOption(BaseModel):
@@ -3150,6 +3196,38 @@ class StoryResult(BaseModel):
     shot_ids: list[str] = Field(default_factory=list)
     #: 投入できた Take の id（``render`` が false なら空）
     take_ids: list[str] = Field(default_factory=list)
+
+
+# --------------------------------------------------------------------------
+# 脚本ドラフト作成ガイド（外部 API の GET /api/v1/prompt-guide）
+# --------------------------------------------------------------------------
+#
+# 外部のエージェントが上の一括投入に渡す脚本を書くための手引きを、API で配る。
+# 本文は :func:`app.drafting_guide.build_drafting_guide` が既存の定数から
+# 組み立てる（静的なコピーは持たない）。
+
+class DraftingGuideLimits(BaseModel):
+    """ガイド本文と同じ数値を機械可読で渡す（本文を読み解かずに検証できる）。"""
+
+    #: カットの尺として API が受け付ける範囲（``app.studio.SHOT_DURATION_MIN/MAX``）
+    shot_duration_min_seconds: float
+    shot_duration_max_seconds: float
+    #: 実用上おすすめの尺（``"4-15"`` のような範囲の表記）
+    shot_duration_recommended: str
+    #: 1 カットに添付できる参照素材の件数（``app.workflows.MINIMAX_H3_REFERENCE_*``）
+    reference_images_max: int
+    reference_videos_max: int
+    reference_audios_max: int
+
+
+class DraftingGuide(BaseModel):
+    """GET /api/v1/prompt-guide のレスポンス。"""
+
+    #: 中身を変えたら上がる日付ベースの版（受け取り側のキャッシュ判定用）
+    guide_version: str
+    #: LLM のプロンプトへそのまま貼れる日本語 Markdown
+    markdown: str
+    limits: DraftingGuideLimits
 
 
 # --------------------------------------------------------------------------

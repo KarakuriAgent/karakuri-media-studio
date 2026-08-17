@@ -27,7 +27,7 @@ import {
   jobSelects,
   jobSteps,
   jobWorkflowIds,
-  referenceFields,
+  referenceFieldsForMode,
   validateForm,
   type FormState,
 } from './form'
@@ -488,13 +488,13 @@ export default function App() {
             : null,
         end_image: accepts('end_image') ? form.endImage || null : null,
         reference_video: needs('video') ? form.referenceVideo || null : null,
-        // マルチモーダル参照（SPEC §3.1）: そのワークフローが宣言している欄だけを
-        // 送る（宣言していないワークフローに渡すと 422 になる）。
+        // マルチモーダル参照（SPEC §3.1）: そのモードで走るステージ（画像 r2i /
+        // 動画 r2v）が宣言している欄だけを送る（宣言していないワークフローに
+        // 渡すと 422 になる）。
         ...Object.fromEntries(
-          referenceFields(form.mode === 'i2v' ? workflow : null).map((item) => [
-            item.name,
-            form[item.field],
-          ]),
+          referenceFieldsForMode(form.mode, workflow, imageWorkflow).map(
+            (item) => [item.name, form[item.field]],
+          ),
         ),
         // ショット割り / Elements（SPEC §3.1）: 宣言のあるワークフローを動画
         // ステージで走らせるときだけ送る（そうでなければ空 = 送らないのと同じ）。

@@ -11,7 +11,17 @@ import sqlite3
 import pytest
 from fastapi.testclient import TestClient
 
-from app import comfy, config, db, grok, jobs, nsfw, studio
+from app import (
+    comfy,
+    config,
+    db,
+    drafting_guide,
+    grok,
+    jobs,
+    nsfw,
+    studio,
+    workflows,
+)
 from app.ids import new_id
 from app.main import app
 from app.routers import assets as assets_router
@@ -665,3 +675,54 @@ def test_the_limit_is_saved_with_the_settings(env):
     assert settings["external_api_key"] == KEY
     assert settings["external_max_pending_takes"] == 5
     assert config.load_settings().external_max_pending_takes == 5
+
+
+# --------------------------------------------------------------------------
+# 脚本ドラフト作成ガイド
+# --------------------------------------------------------------------------
+
+def test_the_guide_needs_the_key_too(env):
+    assert env.client.get("/api/v1/prompt-guide").status_code == 404  # キー未設定
+    enable(env)
+    assert env.client.get("/api/v1/prompt-guide").status_code == 401
+    wrong = env.client.get("/api/v1/prompt-guide", headers={"X-API-Key": "nope"})
+    assert wrong.status_code == 401
+
+
+def test_the_guide_reports_the_limits_from_the_app_constants(env):
+    enable(env)
+    response = call(env, "GET", "/api/v1/prompt-guide")
+    assert response.status_code == 200, response.text
+    guide = response.json()
+
+    assert guide["guide_version"] == drafting_guide.GUIDE_VERSION
+    assert guide["markdown"].strip()
+    # 数値は本体の定数がそのまま出る（ガイド側で二重管理しない）
+    assert guide["limits"] == {
+        "shot_duration_min_seconds": studio.SHOT_DURATION_MIN,
+        "shot_duration_max_seconds": studio.SHOT_DURATION_MAX,
+        "shot_duration_recommended": "4-15",
+        "reference_images_max": workflows.MINIMAX_H3_REFERENCE_IMAGES,
+        "reference_videos_max": workflows.MINIMAX_H3_REFERENCE_VIDEOS,
+        "reference_audios_max": workflows.MINIMAX_H3_REFERENCE_AUDIOS,
+    }
+
+
+def test_the_guide_covers_the_field_contract_and_the_h3_rules(env):
+    enable(env)
+    markdown = call(env, "GET", "/api/v1/prompt-guide").json()["markdown"]
+    for keyword in (
+        "`prompt`",              # 唯一モデルに届く記述フィールド
+        "`action`",              # 届かないメモ欄
+        "@名前",                  # 素材メンション
+        "(S1)",                  # 話者 ID
+        "overall_soundscape",    # 音のフィールド
+        "non_diegetic_music",
+        "[Shot 1]",              # H3 のタイムライン
+        "<Picture 1>",           # 参照タグ
+        "POST /api/v1/stories",  # 投入先
+    ):
+        assert keyword in markdown, keyword
+    # 本文の値も定数から埋める
+    assert str(workflows.MINIMAX_H3_REFERENCE_IMAGES) in markdown
+    assert studio.EXCLUSION_SENTENCE in markdown

@@ -3028,8 +3028,10 @@ def test_the_system_prompt_lists_the_declared_selects(env):
     system = start(env)["messages"][0]["content"]
     assert "選択項目（ジョブの `selects`" in system
     assert "`low_vram`" in system
-    # 選べる値と、省略したときの既定（OFF）まで書いてある
-    assert "`off`, `on`" in system
+    # 選べる値（**生の値**をバッククォートで。表示用の日本語ラベルは併記される
+    # だけで、エージェントが書くのは値のほう。SPEC §3.1）と、省略したときの
+    # 既定（OFF）まで書いてある
+    assert "`off`（通常）, `on`（VRAM 節約・遅くなる）" in system
     assert "省略すると `off`" in system
 
 
@@ -3138,3 +3140,74 @@ def test_the_comfy_cloud_session_prompt_omits_the_custom_node_workflows(
     system = start(env)["messages"][0]["content"]
     for workflow_id in CUSTOM_NODE_WORKFLOWS:
         assert f"`{workflow_id}`" in system
+
+
+# --------------------------------------------------------------------------
+# 検証の順序（コードレビューで見つかった退行）
+# --------------------------------------------------------------------------
+#
+# `_workflow_detail` はエージェントに「どう直せばいいか」を返す。参照素材の検証を
+# ワークフロー id / モード整合より前に持ってくると、**満たしようのない要求**や
+# 生の例外文字列が返ってしまう。
+
+def test_full_mode_on_a_reference_workflow_explains_the_mode_first(env):
+    """full + r2v は「full にできない」が先。参照素材の下限を先に言っても直せない。
+
+    r2v は開始フレームを受け取らないので `mode: "full"` では使えない。ここで
+    「参照素材が 1 件以上必要」を返すと、素材を足しても通らないまま同じ指摘が
+    繰り返される（エージェントが詰む）。
+    """
+    detail = agent_protocol._workflow_detail(
+        {"mode": "full", "video_workflow": "minimax_h3_r2v"}
+    )
+    assert detail is not None
+    assert "full" in detail
+    assert "参照素材" not in detail
+
+
+def test_an_unknown_workflow_id_lists_the_known_ones(env):
+    """不明な id は一覧つきの案内（生の WorkflowSpecError 文字列ではない）。"""
+    detail = agent_protocol._workflow_detail(
+        {
+            "mode": "i2v",
+            "video_workflow": "nope",
+            "reference_images": ["/assets/image/a.png"],
+        }
+    )
+    assert detail is not None
+    assert "使えるのは" in detail
+    assert "minimax_h3_i2v" in detail
+
+
+def test_reference_material_is_still_checked_for_the_video_stage(env):
+    detail = agent_protocol._workflow_detail(
+        {
+            "mode": "i2v",
+            "video_workflow": "minimax_h3_i2v",
+            "reference_images": ["/assets/image/a.png"],
+        }
+    )
+    assert detail is not None and "reference_images" in detail
+
+
+def test_reference_material_is_checked_for_the_image_stage_too(env):
+    """image_only でも参照素材は見る（MiniMax H3 Image r2i の入力になる）。"""
+    detail = agent_protocol._workflow_detail(
+        {
+            "mode": "image_only",
+            "image_workflow": "krea2_turbo",
+            "reference_images": ["/assets/image/a.png"],
+        }
+    )
+    assert detail is not None and "reference_images" in detail
+    # 受け取れる画像ワークフローなら通る
+    assert (
+        agent_protocol._workflow_detail(
+            {
+                "mode": "image_only",
+                "image_workflow": "minimax_h3_r2i",
+                "reference_images": ["/assets/image/a.png"],
+            }
+        )
+        is None
+    )

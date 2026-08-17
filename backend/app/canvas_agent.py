@@ -609,7 +609,7 @@ _scan_task: asyncio.Task[None] | None = None
 
 #: project_id は**セッション行**から取る（take 側の列ではなく）。起こす相手は
 #: 「その会話が住んでいるキャンバス」なので、両者がずれていたら困るのは前者。
-_TAKE_QUERY = (
+_TAKE_SELECT = (
     "SELECT t.id AS take_id, t.shot_id, t.job_id,"
     "       cs.id AS session_id, cs.project_id AS project_id,"
     "       j.status AS job_status"
@@ -617,13 +617,18 @@ _TAKE_QUERY = (
     "  JOIN jobs j ON j.id = t.job_id"
     "  JOIN canvas_sessions cs ON cs.id = j.chat_session_id"
     " WHERE t.agent_notified_at IS NULL"
-    "   AND j.status IN ('done', 'failed', 'canceled')"
 )
+
+#: 通常の通知は「終端に達したジョブ」だけ（:mod:`app.agent_runner` と同じ）。
+#: ジョブ行が消される直前だけは外す（:func:`_on_job_deleted`）。
+_TERMINAL_ONLY = " AND j.status IN ('done', 'failed', 'canceled')"
+
+_TAKE_QUERY = _TAKE_SELECT + _TERMINAL_ONLY
 
 
 async def _deliver_take_finished(
     take_id: str, shot_id: str, job_id: str, session_id: str,
-    project_id: str, job_status: str,
+    project_id: str, job_status: str, *, deleted: bool = False,
 ) -> None:
     """1 件ぶんの完了通知（会話への追記 → 必要ならループ起動）。"""
     if not await agent_runner._claim_take_notification(take_id):
@@ -631,25 +636,35 @@ async def _deliver_take_finished(
     session = await canvas.get_session(project_id, session_id)
     if session is None:
         return  # 会話ごと消えている（印は付けたので二度と拾わない）
-    take = await studio.get_take(take_id)
-    text = agent_runner._take_finished_text(take, take_id, shot_id, job_id)
-    # append が WS（type: "canvas"）にも流すので、別途 publish は要らない。
-    await append(
-        project_id,
-        "event",
-        text,
-        session_id=session_id,
-        kind="studio_take_finished",
-        data={
-            "shot_id": shot_id,
-            "take_id": take_id,
-            "job_id": job_id,
-            "take_status": take.status if take else "deleted",
-            "job_status": take.job_status if take else None,
-            "error": take.error if take else None,
-        },
-        running=is_running(project_id),
-    )
+    try:
+        take = await studio.get_take(take_id)
+        text = agent_runner._take_finished_text(
+            take, take_id, shot_id, job_id, job_status, deleted=deleted
+        )
+        # append が WS（type: "canvas"）にも流すので、別途 publish は要らない。
+        await append(
+            project_id,
+            "event",
+            text,
+            session_id=session_id,
+            kind="studio_take_finished",
+            data={
+                "shot_id": shot_id,
+                "take_id": take_id,
+                "job_id": job_id,
+                "take_status": (
+                    "deleted" if (deleted or take is None) else take.status
+                ),
+                "job_status": job_status,
+                "error": take.error if take else None,
+            },
+            running=is_running(project_id),
+        )
+    except Exception:
+        # 掴んだまま落ちると印だけ残り、``IS NULL`` を見ている定期スキャンにも
+        # 二度と拾われない。戻して次のスキャンに任せる（agent_runner と同じ）。
+        await agent_runner._release_take_notification(take_id)
+        raise
     if is_running(project_id):
         return  # 走っているループが次のターンでこのイベントを読む
     # ここから下は「止まっているキャンバスを起こしてよいか」。キャンバスの実行
@@ -672,14 +687,32 @@ async def _on_job_final(job_id: str, status: str) -> None:
     await _deliver_pending(" AND t.job_id = ?", (job_id,))
 
 
+async def _on_job_deleted(job_id: str) -> None:
+    """:func:`app.jobs.on_job_deleted`: ジョブ行が消される直前に呼ばれる。
+
+    消したあとでは会話（``canvas_sessions``）への JOIN が切れて宛先が引けなく
+    なるので、まだ終わっていないジョブでも「削除された」ことだけは伝えておく。
+    """
+    await _deliver_pending(
+        " AND t.job_id = ?", (job_id,), terminal_only=False, deleted=True
+    )
+
+
 async def scan_pending_takes() -> int:
     """未通知のまま終端に達した Take を拾い直す（起動時 + 定期実行）。"""
     return await _deliver_pending()
 
 
-async def _deliver_pending(where: str = "", params: tuple = ()) -> int:
+async def _deliver_pending(
+    where: str = "",
+    params: tuple = (),
+    *,
+    terminal_only: bool = True,
+    deleted: bool = False,
+) -> int:
+    base = _TAKE_QUERY if terminal_only else _TAKE_SELECT
     async with get_db() as conn:
-        async with conn.execute(_TAKE_QUERY + where, params) as cur:
+        async with conn.execute(base + where, params) as cur:
             rows = await cur.fetchall()
     for row in rows:
         await _deliver_take_finished(
@@ -689,6 +722,7 @@ async def _deliver_pending(where: str = "", params: tuple = ()) -> int:
             str(row["session_id"]),
             str(row["project_id"]),
             str(row["job_status"]),
+            deleted=deleted,
         )
     return len(rows)
 
@@ -729,6 +763,7 @@ async def stop_take_watcher() -> None:
 
 # ジョブ側は canvas_agent を知らない（import は canvas_agent → jobs の一方向）。
 jobs.on_job_final(_on_job_final)
+jobs.on_job_deleted(_on_job_deleted)
 
 
 async def stop_all() -> None:

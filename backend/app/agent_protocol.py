@@ -339,8 +339,14 @@ def _workflow_detail(raw: dict[str, Any]) -> str | None:
     image_detail = _image_workflow_detail(raw, mode)
     if image_detail:
         return image_detail
+
+    image_workflow = _text(raw.get("image_workflow"))
     if mode == "image_only":
-        return None  # 動画ステージを走らせないのでワークフローは無関係
+        # 動画ワークフローは無関係。ただし**参照素材は画像ステージの入力にも
+        # なる**（MiniMax H3 Image r2i の参照画像）ので、そこだけは見る。
+        return reference_problem(
+            mode, None, reference_materials(raw), image_workflow=image_workflow
+        )
 
     known = ", ".join(f"`{spec.id}`" for spec in video_specs())
     try:
@@ -357,11 +363,14 @@ def _workflow_detail(raw: dict[str, Any]) -> str | None:
     if length:
         return f"{length}。`video_prompt` を短く書き直してください"
 
-    # マルチモーダル参照（参照専用のワークフロー）: 宣言の有無・件数・拡張子と、
-    # 開始フレームを受け取らないワークフローに渡していないか。VIDEO WORKFLOWS の
-    # 説明に戻れるよう、理由をそのまま返す。
+    # マルチモーダル参照（宣言の有無・件数・拡張子）と、開始フレームを受け取らない
+    # ワークフローに渡していないか。VIDEO WORKFLOWS の説明に戻れるよう、理由を
+    # そのまま返す。**ワークフロー id の存在とモード整合を先に見る**のは、
+    # 「full では r2v に生成済み開始フレームを渡せない」のような直せる指摘より
+    # 先に「参照素材が 1 件以上必要」（full の r2v では満たしても通らない）を
+    # 返してしまわないため。
     references = reference_problem(
-        mode, workflow, reference_materials(raw)
+        mode, workflow, reference_materials(raw), image_workflow=image_workflow
     ) or start_image_problem(
         mode,
         workflow,

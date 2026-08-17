@@ -28,6 +28,7 @@ import {
   newShot,
   promptChars,
   referenceFields,
+  referenceFieldsForMode,
   sheetSize,
   toggleReference,
   validateForm,
@@ -474,6 +475,57 @@ describe('マルチモーダル参照', () => {
       referenceVideos: ['a', 'b', 'c', 'd'].map((n) => `/library/video/${n}.mp4`),
     }
     expect(validateForm(overInImage, KREA2, null, SEEDANCE)).toEqual({})
+  })
+
+  // 画像ステージも参照素材を受け取る（MiniMax H3 Image r2i、SPEC §3.1）
+  const H3_R2I = workflow({
+    id: 'minimax_h3_r2i',
+    label: 'MiniMax H3 Image r2i',
+    kind: 'image',
+    family: 'minimax-h3-image',
+    requires: [],
+    accepts_start_image: false,
+    supports: ['prompt', 'seed', 'steps', 'width', 'height', 'reference_images'],
+    multi_inputs: { reference_images: 9 },
+  })
+
+  it('参照画像を取る画像ワークフローでは画像ステージが走る mode で欄を出す', () => {
+    for (const mode of ['full', 'image_only'] as const) {
+      expect(hiddenFields(mode, I2V, H3_R2I).references).toBe(false)
+      expect(
+        referenceFieldsForMode(mode, I2V, H3_R2I).map((item) => item.name),
+      ).toEqual(['reference_images'])
+    }
+    // 動画だけのモードでは画像ステージが走らないので出ない
+    expect(hiddenFields('i2v', I2V, H3_R2I).references).toBe(true)
+    expect(referenceFieldsForMode('i2v', I2V, H3_R2I)).toEqual([])
+    // 宣言の無い画像ワークフローでは今までどおり出ない
+    expect(hiddenFields('image_only', I2V, KREA2).references).toBe(true)
+  })
+
+  it('画像ステージの参照素材も件数超過を断る', () => {
+    const tooMany: FormState = {
+      ...initialForm,
+      mode: 'image_only',
+      imagePrompt: 'keep <Picture 1>',
+      referenceImages: Array.from(
+        { length: 10 },
+        (_, index) => `/library/image/${index}.png`,
+      ),
+    }
+    expect(validateForm(tooMany, H3_R2I, null, null).reference_images).toContain(
+      '9 件までです',
+    )
+  })
+
+  it('画像・動画の両方が同じ種類を宣言していたら小さいほうを上限にする', () => {
+    const narrow = workflow({
+      ...H3_R2I,
+      id: 'narrow_r2i',
+      multi_inputs: { reference_images: 2 },
+    })
+    // full では画像ステージだけが参照を受け取る（動画側は i2v のときだけ）
+    expect(referenceFieldsForMode('full', SEEDANCE, narrow)[0].limit).toBe(2)
   })
 
   it('「動画」モードでは参照素材の件数超過を断る', () => {
@@ -1354,6 +1406,48 @@ describe('jobSelects', () => {
     })
     // 画像だけのモードでは動画側を渡さない（持ち越しの値を送らない）
     expect(jobSelects(form, null, GPT_IMAGE)).toEqual({ size: '1536x1024' })
+  })
+
+  it('MiniMax H3 Image のつまみは選択肢に無い値を送らない', () => {
+    const H3_R2I = workflow({
+      id: 'minimax_h3_r2i',
+      kind: 'image',
+      family: 'minimax-h3-image',
+      selects: [
+        select({
+          name: 'quality_profile',
+          label: 'フレーム枚数（品質）',
+          choices: [
+            'recommended | 5 frames',
+            'extended quality | 9 frames',
+            'high quality | 13 frames',
+            'maximum quality | 20 frames (slow)',
+          ],
+          default: 'recommended | 5 frames',
+        }),
+        select({
+          name: 'source_fidelity',
+          label: '元画像の保持強度',
+          choices: ['0.00', '0.50', '0.75', '1.00'],
+          default: '0.75',
+        }),
+      ],
+    })
+    const form = {
+      ...initialForm,
+      selects: {
+        quality_profile: 'high quality | 13 frames',
+        source_fidelity: '0.50',
+        // 別のワークフローから持ち越した値（選択肢に無いので送らない）
+        low_vram: 'on',
+      },
+    }
+    expect(jobSelects(form, null, H3_R2I)).toEqual({
+      quality_profile: 'high quality | 13 frames',
+      source_fidelity: '0.50',
+    })
+    // 画像ステージを走らせない mode では 1 つも送らない
+    expect(jobSelects(form, null, null)).toEqual({})
   })
 })
 

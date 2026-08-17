@@ -226,29 +226,37 @@ export default function ModelFields({
         </div>
       )}
 
-      {selects.map((select) => (
-        <Field key={select.name} label={select.label}>
-          <NativeSelect
-            aria-label={select.label}
-            value={data.params.selects[select.name] ?? ''}
-            onChange={(event) => {
-              const next = { ...data.params.selects }
-              if (event.target.value) next[select.name] = event.target.value
-              else delete next[select.name]
-              patchParams({ selects: next })
-            }}
-          >
-            <option value="">
-              {select.auto ? '自動（入力に合わせる）' : `既定（${select.default}）`}
-            </option>
-            {select.choices.map((choice) => (
-              <option key={choice} value={choice}>
-                {choice}
+      {selects.map((select) => {
+        // 画面に出す文字だけを日本語に差し替える（送る値は生のまま、SPEC §3.1）。
+        // 生成フォームの `WorkflowSelects` と同じ扱いで、宣言の無い値は生の値。
+        const labelOf = (choice: string) =>
+          select.choice_labels?.[choice] || choice
+        return (
+          <Field key={select.name} label={select.label}>
+            <NativeSelect
+              aria-label={select.label}
+              value={data.params.selects[select.name] ?? ''}
+              onChange={(event) => {
+                const next = { ...data.params.selects }
+                if (event.target.value) next[select.name] = event.target.value
+                else delete next[select.name]
+                patchParams({ selects: next })
+              }}
+            >
+              <option value="">
+                {select.auto
+                  ? '自動（入力に合わせる）'
+                  : `既定（${labelOf(select.default)}）`}
               </option>
-            ))}
-          </NativeSelect>
-        </Field>
-      ))}
+              {select.choices.map((choice) => (
+                <option key={choice} value={choice}>
+                  {labelOf(choice)}
+                </option>
+              ))}
+            </NativeSelect>
+          </Field>
+        )
+      })}
 
       {/* 使用モデルの切り替え（生成フォーム / 設定画面と同じスロット単位）。
           既定のままの選択は保存しない（`model_overrides` は差分だけ持つ）。 */}

@@ -33,6 +33,10 @@ export default function WorkflowSelects({
       {selects.map((select) => {
         // 未指定は「自動」（auto のとき）か、ワークフローの既定値。
         const value = form.selects[select.name] ?? ''
+        // 画面に出す文字だけを日本語に差し替える（送る値は生のまま、SPEC §3.1）。
+        // 宣言の無い値・宣言そのものが無い選択式は生の値をそのまま出す。
+        const labelOf = (choice: string) =>
+          select.choice_labels?.[choice] || choice
         return (
           <div key={select.name}>
             <Label className="mb-1">{select.label}</Label>
@@ -46,11 +50,11 @@ export default function WorkflowSelects({
               }
             >
               <option value="">
-                {select.auto ? AUTO_LABEL : `既定（${select.default}）`}
+                {select.auto ? AUTO_LABEL : `既定（${labelOf(select.default)}）`}
               </option>
               {select.choices.map((choice) => (
                 <option key={choice} value={choice}>
-                  {choice}
+                  {labelOf(choice)}
                 </option>
               ))}
             </NativeSelect>

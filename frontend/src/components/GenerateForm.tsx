@@ -29,7 +29,7 @@ import {
   newElement,
   newShot,
   promptChars,
-  referenceFields,
+  referenceFieldsForMode,
   sheetSize,
   toSelected,
   toggleReference,
@@ -708,7 +708,9 @@ export default function GenerateForm({
     : (workflow?.image_label ?? '開始フレーム')
   // マルチモーダル参照。宣言の無いワークフローでは空なので、
   // 参照素材のセクションそのものが出ない。
-  const references = hidden.references ? [] : referenceFields(workflow)
+  const references = hidden.references
+    ? []
+    : referenceFieldsForMode(form.mode, workflow, imageWorkflow)
   const addReference = (item: ReferenceField, url: string) => {
     if (form[item.field].includes(url) || form[item.field].length >= item.limit) return
     patch({ [item.field]: [...form[item.field], url] } as Partial<FormState>)
@@ -813,17 +815,35 @@ export default function GenerateForm({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form.mode, form.videoWorkflow, videoWorkflows])
 
-  // モデルによって想定している画角が違うので、動画ステージが走るモードで
-  // 動画ワークフローを切り替えたら「メガピクセル」もそのモデルの既定に戻す
-  // （MiniMax H3 は 0.4MP 前提。1.0MP のままだと VRAM が足りない、SPEC §3.1）。
+  // モデルによって想定している画角が違うので、ワークフローを切り替えたら
+  // 「メガピクセル」もそのモデルの既定に戻す（MiniMax H3 の動画は 0.4MP 前提で
+  // 1.0MP のままだと VRAM が足りず、MiniMax H3 Image は逆に native canvas が
+  // 0.98MP なので 0.4MP だと解像度を捨てることになる。SPEC §3.1）。
+  // 見るのは**そのモードで実際に走るステージ**の宣言で、両方走る `full` では
+  // 2 段が同じ値を共有するので**きつい側（小さいほう）**に合わせる。
   // 切り替えたあとに手で変えた値はそのまま（次に切り替えるまで維持される）。
   useEffect(() => {
-    if (form.mode !== 'full' && form.mode !== 'i2v') return
-    if (videoWorkflows.length === 0) return
-    const next = megapixelsFor(workflow)
+    if (form.mode === 'audio') return
+    // 見るのは「そのステージが走る」かつ「選択中のワークフローが引けている」
+    // ものだけ（options がまだ来ていない間に値を触らない）。
+    const declared: number[] = []
+    if ((form.mode === 'full' || form.mode === 'i2v') && workflow) {
+      declared.push(megapixelsFor(workflow))
+    }
+    if ((form.mode === 'full' || form.mode === 'image_only') && imageWorkflow) {
+      declared.push(megapixelsFor(imageWorkflow))
+    }
+    if (declared.length === 0) return
+    const next = Math.min(...declared)
     if (next !== form.megapixels) patch({ megapixels: next })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [form.mode, form.videoWorkflow, videoWorkflows])
+  }, [
+    form.mode,
+    form.videoWorkflow,
+    form.imageWorkflow,
+    videoWorkflows,
+    imageWorkflows,
+  ])
 
   // Switching the image workflow can switch the model family: LoRAs of the old
   // family would be rejected by the backend, so drop them from the selection.

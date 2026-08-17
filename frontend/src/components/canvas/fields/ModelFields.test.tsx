@@ -96,3 +96,68 @@ describe('ModelFields の使用モデル切り替え（model_overrides）', () =
     expect(screen.queryByLabelText('使用モデル: UNet')).toBeNull()
   })
 })
+
+describe('ModelFields の選択式フィールド（表示ラベル、SPEC §3.1）', () => {
+  const WITH_SELECTS = {
+    ...OPTIONS,
+    image_workflows: [
+      {
+        id: 'krea2_turbo',
+        label: 'Krea 2 Turbo',
+        family: 'krea2',
+        selects: [
+          {
+            name: 'quality_profile',
+            label: 'フレーム枚数（品質）',
+            choices: [
+              'recommended | 5 frames',
+              'high quality | 13 frames',
+              'maximum quality | 20 frames (slow)',
+            ],
+            default: 'recommended | 5 frames',
+            auto: false,
+            hint: '',
+            choice_labels: {
+              'recommended | 5 frames': '標準（5 フレーム）',
+              'high quality | 13 frames': '最高品質（13 フレーム）',
+            },
+          },
+        ],
+      },
+    ],
+  } as unknown as Options
+
+  function showSelects() {
+    const onChange = vi.fn()
+    render(
+      <ModelFields data={data()} onChange={onChange} options={WITH_SELECTS} />,
+    )
+    return { onChange }
+  }
+
+  it('生成フォームと同じく、表示だけ日本語にして送る値は生の enum のまま', () => {
+    const { onChange } = showSelects()
+    const select = screen.getByLabelText(
+      'フレーム枚数（品質）',
+    ) as HTMLSelectElement
+    // 見えているのは日本語（「既定（…）」もラベル側）。宣言の無い値は生のまま。
+    expect([...select.options].map((option) => option.text)).toEqual([
+      '既定（標準（5 フレーム））',
+      '標準（5 フレーム）',
+      '最高品質（13 フレーム）',
+      'maximum quality | 20 frames (slow)',
+    ])
+    // 送る値は enum のまま
+    expect([...select.options].map((option) => option.value)).toEqual([
+      '',
+      'recommended | 5 frames',
+      'high quality | 13 frames',
+      'maximum quality | 20 frames (slow)',
+    ])
+
+    fireEvent.change(select, { target: { value: 'high quality | 13 frames' } })
+    expect(onChange.mock.calls[0][0].params.selects).toEqual({
+      quality_profile: 'high quality | 13 frames',
+    })
+  })
+})

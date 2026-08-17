@@ -27,6 +27,7 @@ from typing import Any
 
 from .models import GenerationParams, LoraRef, ModelField, ModelSlot
 from .workflows import (
+    DEFAULT_MEGAPIXELS,
     OPTIONAL_CLASS_TYPES,
     REF_AUDIOS_NAME,
     REF_IMAGES_NAME,
@@ -156,6 +157,9 @@ _INT_INPUTS: set[tuple[str, str]] = {
     # サンプリング回数（SPEC §3.1）。UI が空欄なら注入しない = テンプレート既定。
     ("KSampler", "steps"),
     ("BasicScheduler", "steps"),
+    # MiniMax H3 Image の Advanced Sampling（サンプラー・スケジューラ・ステップ数を
+    # 素の widget で持つので、`steps` の注入先はここになる）
+    ("H3SamplingSettings", "steps"),
 }
 _FLOAT_INPUTS: set[tuple[str, str]] = {
     ("Video Slice", "duration"),
@@ -169,6 +173,19 @@ _FLOAT_INPUTS: set[tuple[str, str]] = {
 #: 文字列を入れると型検証で prompt ごと落ちる。
 _BOOL_INPUTS: set[tuple[str, str]] = {
     ("MiniMaxH3TurboLoRA", "low_vram"),
+    # MiniMax H3 Image: 静止画向けのプロンプト包み（選択式は "on" / "off"）
+    ("H3TextToImagePrepare", "optimize_for_still"),
+    ("H3ImageToImagePrepare", "optimize_for_still"),
+    ("H3ReferenceEditPrepare", "optimize_for_still"),
+}
+
+#: FLOAT を宣言していて、**選択式フィールドが文字列で値を持つ**入力。
+#: :data:`_BOOL_INPUTS` の実数版で、``"0.75"`` -> ``0.75`` に直してから書き込む
+#: （ComfyUI は FLOAT の widget に文字列を入れると型検証で prompt ごと落ちる）。
+#: 数値のまま渡ってくる入力は :data:`_FLOAT_INPUTS` のほうで面倒を見る。
+_FLOAT_SELECT_INPUTS: set[tuple[str, str]] = {
+    ("H3ImageToImagePrepare", "source_fidelity"),
+    ("H3ReferenceEditPrepare", "source_fidelity"),
 }
 
 #: :data:`_BOOL_INPUTS` で「ON」とみなす文字列（大文字小文字は問わない）
@@ -182,12 +199,18 @@ def _coerce(class_type: str, field: str, value: Any) -> Any:
     injected numbers are cast according to the node the manifest points at.
 
     BOOLEAN の入力（:data:`_BOOL_INPUTS`）には、選択式フィールドが持っている
-    文字列を真偽値に直して入れる。
+    文字列を真偽値に直して入れる。FLOAT の入力に選択式の文字列が来るもの
+    （:data:`_FLOAT_SELECT_INPUTS`）は実数に直す。
     """
     if (class_type, field) in _BOOL_INPUTS:
         if isinstance(value, str):
             return value.strip().lower() in _TRUE_WORDS
         return bool(value)
+    if (class_type, field) in _FLOAT_SELECT_INPUTS:
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return value
     if not isinstance(value, (int, float)) or isinstance(value, bool):
         return value
     if class_type == "PrimitiveInt" or (class_type, field) in _INT_INPUTS:
@@ -361,6 +384,27 @@ def resolution_for_image(
     if image_width <= 0 or image_height <= 0:
         raise WorkflowError(f"invalid image size: {image_width}x{image_height}")
     return _fit_ratio(image_width, image_height, megapixels, multiple)
+
+
+def image_megapixels(spec: WorkflowSpec, params: GenerationParams) -> float:
+    """画像ステージの解像度予算（メガピクセル、SPEC §3.1）。
+
+    モデルによって想定している画角は違う（MiniMax H3 Image の native canvas は
+    約 0.98MP で、フォームのグローバル既定 0.4MP のままだと解像度を捨てることに
+    なる）。フォームはワークフローを選んだ時点で
+    :attr:`app.workflows.WorkflowSpec.default_megapixels` に合わせるが、**その値を
+    そもそも送ってこない経路**（外部 API・エージェント・古いジョブの再実行）では
+    ``megapixels`` がグローバル既定のまま届く。
+
+    そこで「グローバル既定そのまま = 明示していない」とみなし、宣言のある
+    ワークフローではその宣言を使う。**明示された値はそのまま尊重する**
+    （0.4MP を意図して選んだジョブを勝手に上げない）ので、宣言を持たない
+    既存のワークフロー（krea2 など）の挙動は変わらない。
+    """
+    asked = float(params.megapixels)
+    if spec.default_megapixels and abs(asked - DEFAULT_MEGAPIXELS) < 1e-9:
+        return float(spec.default_megapixels)
+    return asked
 
 
 def video_resolution(spec: WorkflowSpec, params: GenerationParams) -> tuple[int, int]:
@@ -704,6 +748,10 @@ def _build_ref_media(
     inputs = node.setdefault("inputs", {})
     for key in [key for key in inputs if key.startswith(fan.prefixes())]:
         del inputs[key]
+    # 1 枚目だけを受ける固定の入力（``H3ReferenceEditPrepare.source_image``）も
+    # 雛形のローダーを読んでいるので、番号つきの入力と一緒に落としてから繋ぎ直す
+    if fan.primary_image_field:
+        inputs.pop(fan.primary_image_field, None)
     for loader in fan.loaders():
         wf.pop(loader.node_id, None)
 
@@ -719,7 +767,13 @@ def _build_ref_media(
         wf[node_id] = _loader_node(
             fan.image_loader, image, f"参照画像 {index + 1}（<Picture {index + 1}>）"
         )
-        inputs[f"{fan.image_prefix}{index}"] = [node_id, 0]
+        # 1 枚目に専用の入力を持つノード（``H3ReferenceEditPrepare`` の
+        # ``source_image``）ではそちらへ。2 枚目以降は番号つきの入力で、
+        # 並びが ``reference_image_2`` から始まるぶんだけ番号をずらす。
+        if index == 0 and fan.primary_image_field:
+            inputs[fan.primary_image_field] = [node_id, 0]
+        else:
+            inputs[f"{fan.image_prefix}{index + fan.image_offset}"] = [node_id, 0]
 
     if REF_VIDEOS_NAME in fan.names():
         assert fan.video_loader is not None and fan.video_decoder is not None
@@ -906,16 +960,25 @@ def build_image_workflow(
         template if template is not None else load_template(resolved)
     )
 
-    # After the (non-existent) pruning and before the LoRA chain so that a
-    # user-set placeholder lora_name cannot leak in.
+    # Before the pruning / the reference fan-out and before the LoRA chain, so
+    # that a user-set placeholder lora_name cannot leak in.
     apply_model_overrides(wf, overrides, resolved.id)
 
+    # モデルが想定している画角に合わせる（宣言があって、ジョブが明示していない
+    # ときだけ。:func:`image_megapixels`）
+    megapixels = image_megapixels(resolved, params)
     _inject(wf, resolved, "aspect_ratio", params.aspect_ratio)
-    _inject(wf, resolved, "megapixels", float(params.megapixels))
-    # Templates without a ResolutionSelector (z-image) take plain integers, so
-    # the same computation ComfyUI's node does is done here (SPEC §3.1).
+    _inject(wf, resolved, "megapixels", megapixels)
+    # Templates without a ResolutionSelector (z-image, MiniMax H3 Image) take
+    # plain integers, so the same computation ComfyUI's node does is done here
+    # (SPEC §3.1).  The grid is the workflow's own: MiniMax H3 wants multiples
+    # of 32, everything else the image-side default of 8.
     if resolved.supports("width") or resolved.supports("height"):
-        width, height = resolution(params.aspect_ratio, params.megapixels)
+        width, height = resolution(
+            params.aspect_ratio,
+            megapixels,
+            multiple=resolved.resolution_multiple,
+        )
         _inject(wf, resolved, "width", width)
         _inject(wf, resolved, "height", height)
     # Editing workflows (qwen-image) read the picture the job supplies in
@@ -925,6 +988,20 @@ def build_image_workflow(
     _inject(wf, resolved, "prompt", params.image_prompt)
     _inject(wf, resolved, "seed", params.image_seed)
     _inject_steps(wf, resolved, params)
+    # 渡されなかった任意の入力は、雛形のローダーごとグラフから外す（§3.1）
+    _prune_optional_loaders(wf, resolved, params)
+    # 参照素材（MiniMax H3 Image r2i の参照画像）は 1 つの注入点では表せない:
+    # 渡された件数ぶんノードを生やす（§3.1・動画ステージと同じ仕組み）
+    _build_ref_media(
+        wf,
+        resolved,
+        {
+            REF_IMAGES_NAME: list(params.reference_image_names),
+            REF_VIDEOS_NAME: list(params.reference_video_names),
+            REF_AUDIOS_NAME: list(params.reference_audio_names),
+        },
+    )
+    _inject_selects(wf, resolved, params)
     for name, value in resolved.constants.items():
         _inject(wf, resolved, name, value)
     _inject_triggers(wf, resolved, params)

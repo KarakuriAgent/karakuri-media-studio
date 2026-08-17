@@ -10,7 +10,6 @@ from app.workflows import (
     DEFAULT_VIDEO_WORKFLOW,
     audio_specs,
     get_spec,
-    image_specs,
     video_specs,
 )
 
@@ -41,6 +40,15 @@ def test_workflow_catalogue_is_exposed(client):
         "anima",
         "z_image_turbo",
         "qwen_image_edit_2511",
+        "minimax_h3_t2i",
+        "minimax_h3_t2i_opt",
+        "minimax_h3_t2i_turbo",
+        "minimax_h3_i2i",
+        "minimax_h3_i2i_opt",
+        "minimax_h3_i2i_turbo",
+        "minimax_h3_r2i",
+        "minimax_h3_r2i_opt",
+        "minimax_h3_r2i_turbo",
         "grok_imagine_t2i",
         "grok_imagine_edit",
     ]
@@ -49,6 +57,7 @@ def test_workflow_catalogue_is_exposed(client):
         "anima",
         "z-image",
         "qwen-image",
+        *["minimax-h3-image"] * 9,
         "grok-imagine",
         "grok-imagine",
     ]
@@ -204,10 +213,15 @@ def test_comfy_cloud_hides_the_custom_node_workflows(client, monkeypatch):
     for workflow_id in PLAIN_WORKFLOWS:
         assert workflow_id in ids
     assert options["default_video_workflow"] in ids
-    # 画像・音声のワークフローはカスタムノードを使わないので 1 件も減らない
-    assert [w["id"] for w in options["image_workflows"]] == [
-        spec.id for spec in image_specs()
-    ]
+    # 画像側も同じ判定を通る: MiniMax H3 Image は素の版もカスタムノード
+    # （ComfyUI-MiniMax-H3-Image-Studio）が要るので、base / opt / turbo とも
+    # 丸ごと落ち、他のモデルは残る。
+    image_ids = [w["id"] for w in options["image_workflows"]]
+    for workflow_id in ("minimax_h3_t2i", "minimax_h3_t2i_opt", "minimax_h3_r2i_turbo"):
+        assert workflow_id not in image_ids
+    assert "krea2_turbo" in image_ids
+    assert options["default_image_workflow"] in image_ids
+    # 音声のワークフローはカスタムノードを使わないので 1 件も減らない
     assert [w["id"] for w in options["audio_workflows"]] == [
         spec.id for spec in audio_specs()
     ]

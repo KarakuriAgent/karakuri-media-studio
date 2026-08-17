@@ -24,3 +24,9 @@
 #
 # 例:
 #   https://github.com/ltdrdata/ComfyUI-Manager.git  3a1b2c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b
+
+# MiniMax H3 Image Studio（workflow/image/minimax-h3-image/*.json が使う
+# H3TextToImagePrepare / H3ImageToImagePrepare / H3ReferenceEditPrepare /
+# H3SamplingSettings / H3ImageDecode / H3ImageFrameSelector）。H3 の動画ノードは
+# ComfyUI 本体同梱だが、静止画 1 枚を出すこちらは外部のカスタムノード。
+https://github.com/astropuzzo/ComfyUI-MiniMax-H3-Image-Studio.git  aa1a9c3f3a15550287943809f27b8925db61de8d

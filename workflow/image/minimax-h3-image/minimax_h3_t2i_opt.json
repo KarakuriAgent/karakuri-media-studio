@@ -1,0 +1,248 @@
+{
+  "1": {
+    "inputs": {
+      "unet_name": "minimax_h3_fl2va_pruned_w4a8_mixed.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "拡散モデルを読み込む"
+    }
+  },
+  "2": {
+    "inputs": {
+      "clip_name": "qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors",
+      "type": "minimax",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "テキストエンコーダを読み込む"
+    }
+  },
+  "3": {
+    "inputs": {
+      "vae_name": "minimax_h3_video_vae_int8_convrot.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "動画 VAE を読み込む"
+    }
+  },
+  "151": {
+    "inputs": {
+      "sage_attention": "auto",
+      "allow_compile": false,
+      "model": [
+        "1",
+        0
+      ]
+    },
+    "class_type": "PathchSageAttentionKJ",
+    "_meta": {
+      "title": "Sage Attention"
+    }
+  },
+  "155": {
+    "inputs": {
+      "model": [
+        "151",
+        0
+      ]
+    },
+    "class_type": "MiniMaxH3MemoryEfficientSageAttentionPatch",
+    "_meta": {
+      "title": "Mem Eff Sage Attention"
+    }
+  },
+  "152": {
+    "inputs": {
+      "tau": 1.5,
+      "start_percent": 0.2,
+      "end_percent": 0.9,
+      "min_tokens": 4096,
+      "int8_qk": false,
+      "sink_conditioning": "exact_kv",
+      "morton": false,
+      "morton_curve": "3d",
+      "int8_pv": false,
+      "verbose": false,
+      "use_tma": false,
+      "dense_blocks": "",
+      "model": [
+        "155",
+        0
+      ]
+    },
+    "class_type": "SolAttnPatch",
+    "_meta": {
+      "title": "Sol-Attn"
+    }
+  },
+  "5": {
+    "inputs": {
+      "clip": [
+        "2",
+        0
+      ],
+      "prompt": "",
+      "width": 1344,
+      "height": 768,
+      "quality_profile": "recommended | 5 frames",
+      "optimize_for_still": true
+    },
+    "class_type": "H3TextToImagePrepare",
+    "_meta": {
+      "title": "MiniMax H3 Image・テキスト→画像"
+    }
+  },
+  "6": {
+    "inputs": {
+      "noise_seed": 1
+    },
+    "class_type": "RandomNoise",
+    "_meta": {
+      "title": "ノイズ"
+    }
+  },
+  "8": {
+    "inputs": {
+      "model": [
+        "152",
+        0
+      ],
+      "sampler_name": "res_multistep",
+      "scheduler": "simple",
+      "steps": 20,
+      "denoise": 1.0,
+      "shift_video": 12.0,
+      "shift_audio": 3.0,
+      "beta_alpha": 0.6,
+      "beta_beta": 0.6
+    },
+    "class_type": "H3SamplingSettings",
+    "_meta": {
+      "title": "MiniMax H3 Image・サンプリング設定"
+    }
+  },
+  "154": {
+    "inputs": {
+      "enabled": true,
+      "blend_weight": 0.75,
+      "degree": 4,
+      "ridge_lambda": 0.1,
+      "window_size": 2,
+      "flex_window": 3,
+      "warmup_steps": 5,
+      "tail_actual_steps": 1,
+      "max_history": 8,
+      "debug": false,
+      "history_storage": "system_ram",
+      "bootstrap_first_forecast": true,
+      "model": [
+        "8",
+        0
+      ]
+    },
+    "class_type": "SpectrumApplyMiniMaxH3",
+    "_meta": {
+      "title": "Spectrum"
+    }
+  },
+  "7": {
+    "inputs": {
+      "model": [
+        "154",
+        0
+      ],
+      "conditioning": [
+        "5",
+        0
+      ]
+    },
+    "class_type": "BasicGuider",
+    "_meta": {
+      "title": "ガイダンス"
+    }
+  },
+  "10": {
+    "inputs": {
+      "noise": [
+        "6",
+        0
+      ],
+      "guider": [
+        "7",
+        0
+      ],
+      "sampler": [
+        "8",
+        1
+      ],
+      "sigmas": [
+        "8",
+        2
+      ],
+      "latent_image": [
+        "5",
+        1
+      ]
+    },
+    "class_type": "SamplerCustomAdvanced",
+    "_meta": {
+      "title": "サンプラー"
+    }
+  },
+  "11": {
+    "inputs": {
+      "samples": [
+        "10",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ]
+    },
+    "class_type": "H3ImageDecode",
+    "_meta": {
+      "title": "MiniMax H3 Image・フレームをデコード"
+    }
+  },
+  "12": {
+    "inputs": {
+      "frames": [
+        "11",
+        0
+      ],
+      "strategy": "decode_recommended",
+      "manual_index": 0,
+      "skip_first_frames": 0,
+      "candidate_start": 0.0,
+      "candidate_end": 1.0,
+      "similarity_weight": 0.6,
+      "top_k": 4,
+      "recommended_index": [
+        "11",
+        3
+      ]
+    },
+    "class_type": "H3ImageFrameSelector",
+    "_meta": {
+      "title": "MiniMax H3 Image・静止画 1 枚を出力"
+    }
+  },
+  "13": {
+    "inputs": {
+      "images": [
+        "12",
+        0
+      ],
+      "filename_prefix": "MiniMax_H3_Image"
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "画像を保存"
+    }
+  }
+}

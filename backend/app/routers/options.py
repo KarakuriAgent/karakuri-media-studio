@@ -91,6 +91,7 @@ def _workflow_option(spec: WorkflowSpec) -> WorkflowOption:
                 default=select.fallback,
                 auto=bool(select.auto),
                 hint=select.hint,
+                choice_labels=dict(select.choice_labels),
             )
             for name, select in spec.selects.items()
         ],

@@ -598,10 +598,85 @@ describe('GenerateForm のワークフロー選択（モデル → モード）'
     expect(patch).not.toHaveBeenCalledWith({ megapixels: expect.anything() })
   })
 
-  it('動画ステージが走らないモードでは触らない', () => {
+  it('動画ステージが走らないモードでは動画ワークフローを見ない', () => {
+    // 画像ワークフローが引けない（この options には無い）ので何も触らない
     const { patch } = showVideos({
       mode: 'image_only',
       videoWorkflow: 'minimax_h3_i2v',
+      megapixels: 1,
+    })
+    expect(patch).not.toHaveBeenCalledWith({ megapixels: expect.anything() })
+  })
+
+  // 画像ステージにもモデルごとの想定画角がある（MiniMax H3 Image は native
+  // canvas が 0.98MP。0.4MP のままだと解像度を捨てることになる）。
+  const H3_IMAGE: Options['image_workflows'][number] = {
+    ...IMAGE_WORKFLOWS[0],
+    id: 'minimax_h3_t2i',
+    label: 'MiniMax H3 Image t2i',
+    family: 'minimax-h3-image',
+    default_megapixels: 0.98,
+  }
+
+  function showBothStages(form: Partial<FormState> = {}) {
+    const patch = vi.fn()
+    render(
+      <GenerateForm
+        form={{ ...initialForm, ...form }}
+        patch={patch}
+        options={{
+          ...OPTIONS,
+          video_workflows: VIDEO_WORKFLOWS,
+          image_workflows: [...IMAGE_WORKFLOWS, H3_IMAGE],
+        }}
+        optionsError={null}
+        onReloadOptions={() => {}}
+        onOpenChat={() => {}}
+        onSubmit={() => {}}
+        submitting={false}
+        fieldErrors={{}}
+        comfyTarget="local"
+        onComfyTarget={() => {}}
+        jobs={[]}
+        showNsfw={false}
+      />,
+    )
+    return { patch }
+  }
+
+  it('画像モードでは画像ワークフローの想定解像度に合わせる', () => {
+    const { patch } = showBothStages({
+      mode: 'image_only',
+      imageWorkflow: 'minimax_h3_t2i',
+      megapixels: DEFAULT_MEGAPIXELS,
+    })
+    expect(patch).toHaveBeenCalledWith({ megapixels: 0.98 })
+  })
+
+  it('宣言の無い画像ワークフローではグローバル既定に戻す', () => {
+    const { patch } = showBothStages({
+      mode: 'image_only',
+      imageWorkflow: 'krea2_turbo',
+      megapixels: 1,
+    })
+    expect(patch).toHaveBeenCalledWith({ megapixels: DEFAULT_MEGAPIXELS })
+  })
+
+  it('画像＋動画では 2 段のうちきつい側（小さいほう）に合わせる', () => {
+    // 画像 0.98MP / 動画 0.4MP。値は 1 つしか無いので、動画側で OOM しない側を取る
+    const { patch } = showBothStages({
+      mode: 'full',
+      imageWorkflow: 'minimax_h3_t2i',
+      videoWorkflow: 'minimax_h3_i2v',
+      megapixels: 1,
+    })
+    expect(patch).toHaveBeenCalledWith({ megapixels: 0.4 })
+  })
+
+  it('音声モードでは触らない', () => {
+    const { patch } = showBothStages({
+      mode: 'audio',
+      imageWorkflow: 'minimax_h3_t2i',
       megapixels: 1,
     })
     expect(patch).not.toHaveBeenCalledWith({ megapixels: expect.anything() })
@@ -1482,6 +1557,182 @@ describe('GenerateForm のマルチモーダル参照', () => {
   it('画像＋動画モードでは参照欄そのものを出さない', () => {
     showReferenceForm({ mode: 'full' })
     expect(screen.queryByText(TITLE)).toBeNull()
+  })
+
+  // 画像ステージも参照素材を受け取る（MiniMax H3 Image r2i、SPEC §3.1）
+  const H3_R2I: Options['image_workflows'][number] = {
+    ...IMAGE_WORKFLOWS[0],
+    id: 'minimax_h3_r2i',
+    label: 'MiniMax H3 Image r2i',
+    family: 'minimax-h3-image',
+    supports: ['prompt', 'seed', 'steps', 'width', 'height', 'reference_images'],
+    multi_inputs: { reference_images: 9 },
+    // ノードの widget をそのまま出す選択式（フレーム枚数・保持強度、SPEC §3.1）
+    selects: [
+      {
+        name: 'quality_profile',
+        label: 'フレーム枚数（品質）',
+        choices: [
+          'recommended | 5 frames',
+          'extended quality | 9 frames',
+          'high quality | 13 frames',
+          'maximum quality | 20 frames (slow)',
+        ],
+        default: 'recommended | 5 frames',
+        auto: false,
+        hint: '',
+        // 表示だけ日本語にする（送る値はノードの enum のまま、SPEC §3.1）
+        choice_labels: {
+          'recommended | 5 frames': '標準（5 フレーム）',
+          'extended quality | 9 frames': '高品質（9 フレーム）',
+          'high quality | 13 frames': '最高品質（13 フレーム）',
+          'maximum quality | 20 frames (slow)': '最大品質（20 フレーム・低速）',
+        },
+      },
+      {
+        name: 'frame_strategy',
+        label: '出力フレームの選び方',
+        choices: ['decode_recommended', 'stable_quality', 'most_similar_to_source'],
+        default: 'decode_recommended',
+        auto: false,
+        hint: '',
+        // 一部だけ宣言（残りは生の値のまま出るフォールバック）
+        choice_labels: {
+          decode_recommended: 'おまかせ（推奨フレーム）',
+          most_similar_to_source: '元画像に最も近い',
+        },
+      },
+      {
+        name: 'source_fidelity',
+        label: '元画像の保持強度',
+        choices: ['0.00', '0.25', '0.50', '0.75', '0.90', '1.00'],
+        default: '0.75',
+        auto: false,
+        hint: '',
+      },
+    ],
+  }
+
+  function showImageReferenceForm(form: Partial<FormState> = {}) {
+    vi.mocked(api.listLibrary).mockResolvedValue({
+      items: REFERENCES,
+      total: REFERENCES.length,
+      limit: 50,
+      offset: 0,
+      tags: [],
+    })
+    const patch = vi.fn()
+    render(
+      <GenerateForm
+        form={{
+          ...initialForm,
+          mode: 'image_only',
+          imageWorkflow: 'minimax_h3_r2i',
+          ...form,
+        }}
+        patch={patch}
+        options={{ ...OPTIONS, image_workflows: [...IMAGE_WORKFLOWS, H3_R2I] }}
+        optionsError={null}
+        onReloadOptions={() => {}}
+        onOpenChat={() => {}}
+        onSubmit={() => {}}
+        submitting={false}
+        fieldErrors={{}}
+        comfyTarget="local"
+        onComfyTarget={() => {}}
+        jobs={[]}
+        showNsfw={false}
+      />,
+    )
+    return { patch }
+  }
+
+  it('参照画像を取る画像ワークフローでは画像モードでも参照欄を出す', () => {
+    showImageReferenceForm()
+    const panel = section(TITLE)
+    expect(within(panel).getByText('参照画像')).toBeTruthy()
+    expect(within(panel).getByText('0 / 9 件')).toBeTruthy()
+    // 宣言しているのは参照画像だけなので、動画・音声の欄は出ない
+    expect(within(panel).queryByText('参照音声')).toBeNull()
+
+    cleanup()
+    showImageReferenceForm({ imageWorkflow: 'krea2_turbo' })
+    expect(screen.queryByText(TITLE)).toBeNull()
+  })
+
+  it('H3 のつまみ（フレーム枚数・保持強度）を画像ワークフロー欄に出す', () => {
+    const { patch } = showImageReferenceForm()
+    const frames = screen.getByLabelText(
+      'フレーム枚数（品質）',
+    ) as HTMLSelectElement
+    // 先頭は「既定（…）」で、そのあとにノードの enum がそのまま並ぶ
+    expect([...frames.options].map((option) => option.value)).toEqual([
+      '',
+      'recommended | 5 frames',
+      'extended quality | 9 frames',
+      'high quality | 13 frames',
+      'maximum quality | 20 frames (slow)',
+    ])
+    fireEvent.change(frames, {
+      target: { value: 'high quality | 13 frames' },
+    })
+    expect(patch).toHaveBeenCalledWith({
+      selects: { quality_profile: 'high quality | 13 frames' },
+    })
+    expect(screen.getByLabelText('元画像の保持強度')).toBeTruthy()
+
+    // 宣言のない画像ワークフローには何も出ない
+    cleanup()
+    showImageReferenceForm({ imageWorkflow: 'krea2_turbo' })
+    expect(screen.queryByLabelText('フレーム枚数（品質）')).toBeNull()
+  })
+
+  it('選択肢の表示だけ日本語にし、送る値は生の enum のまま（SPEC §3.1）', () => {
+    showImageReferenceForm()
+    const frames = screen.getByLabelText(
+      'フレーム枚数（品質）',
+    ) as HTMLSelectElement
+    // 見えているのは日本語（先頭の「既定（…）」もラベル側で書く）
+    expect([...frames.options].map((option) => option.text)).toEqual([
+      '既定（標準（5 フレーム））',
+      '標準（5 フレーム）',
+      '高品質（9 フレーム）',
+      '最高品質（13 フレーム）',
+      '最大品質（20 フレーム・低速）',
+    ])
+    // 送る値は enum のまま
+    expect([...frames.options].map((option) => option.value)).toEqual([
+      '',
+      'recommended | 5 frames',
+      'extended quality | 9 frames',
+      'high quality | 13 frames',
+      'maximum quality | 20 frames (slow)',
+    ])
+
+    // 宣言の無い選択肢は生の値のまま出る（フォールバック）
+    const strategy = screen.getByLabelText(
+      '出力フレームの選び方',
+    ) as HTMLSelectElement
+    expect([...strategy.options].map((option) => option.text)).toEqual([
+      '既定（おまかせ（推奨フレーム））',
+      'おまかせ（推奨フレーム）',
+      'stable_quality',
+      '元画像に最も近い',
+    ])
+
+    // ラベルを持たない選択式（保持強度）は今までどおり値をそのまま出す
+    const fidelity = screen.getByLabelText(
+      '元画像の保持強度',
+    ) as HTMLSelectElement
+    expect([...fidelity.options].map((option) => option.text)).toEqual([
+      '既定（0.75）',
+      '0.00',
+      '0.25',
+      '0.50',
+      '0.75',
+      '0.90',
+      '1.00',
+    ])
   })
 
   it('選んだ素材が順番つきで積み上がり、外せる', () => {

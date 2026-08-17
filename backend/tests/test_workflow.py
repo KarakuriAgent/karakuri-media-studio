@@ -11,6 +11,8 @@ from app.models import (
     LoraRef,
     context_latent_problem,
     missing_job_fields,
+    reference_problem,
+    select_problem,
     video_workflow_problem,
 )
 from app.workflow import (
@@ -24,6 +26,7 @@ from app.workflow import (
     WorkflowError,
     all_required_class_types,
     apply_model_overrides,
+    image_megapixels,
     build_image_workflow,
     build_video_workflow,
     build_workflows,
@@ -43,12 +46,22 @@ from app.workflow import (
 from app.workflows import (
     ANIMA,
     DEFAULT_FRAME_GRID,
+    DEFAULT_MEGAPIXELS,
     DEFAULT_IMAGE_WORKFLOW,
     DEFAULT_VIDEO_WORKFLOW,
     GENERATED_AUDIO,
     INPUT_FIELDS,
+    MINIMAX_H3_IMAGE_FIDELITY_NAME,
+    MINIMAX_H3_IMAGE_FIT_NAME,
+    MINIMAX_H3_IMAGE_QUALITY_CHOICES,
+    MINIMAX_H3_IMAGE_QUALITY_LABELS,
+    MINIMAX_H3_IMAGE_QUALITY_NAME,
+    MINIMAX_H3_IMAGE_REF_DETAIL_NAME,
+    MINIMAX_H3_IMAGE_STILL_NAME,
+    MINIMAX_H3_IMAGE_STRATEGY_NAME,
     MINIMAX_H3_LOW_VRAM_NAME,
     OPTIONAL_CLASS_TYPES,
+    SelectSpec,
     QWEN_IMAGE_EDIT,
     SPECS,
     KREA2_TURBO,
@@ -293,12 +306,21 @@ def test_every_image_manifest_validates():
 def test_image_families_are_one_per_folder():
     # LoRA 登録・プロンプトガイドの単位。グラフを持たない外部バックエンドの
     # ファミリー（grok-imagine）は LoRA を差せないので並ばない（SPEC §5.2）。
-    assert image_families() == ["krea2", "anima", "z-image", "qwen-image"]
-    comfy_families = [
-        entry.family
-        for entry in image_catalog()
-        if get_spec(entry.id, "image").backend == "comfyui"
+    assert image_families() == [
+        "krea2",
+        "anima",
+        "z-image",
+        "qwen-image",
+        "minimax-h3-image",
     ]
+    # 1 ファミリーに複数のワークフローがあってもよい（minimax-h3-image は
+    # t2i / i2i / r2i × base / opt / turbo の 9 本）ので、重複を潰して比べる。
+    comfy_families: list[str] = []
+    for entry in image_catalog():
+        if get_spec(entry.id, "image").backend != "comfyui":
+            continue
+        if entry.family not in comfy_families:
+            comfy_families.append(entry.family)
     assert comfy_families == image_families()
     # every image workflow documents itself for the Grok catalog
     for entry in image_catalog():
@@ -869,6 +891,366 @@ def test_surplus_reference_material_is_dropped():
         assert len(grown) == spec.multi_inputs[name]
 
 
+# --- 参照素材の動的展開・画像ステージ（MiniMax H3 Image r2i、SPEC §3.1）------
+
+IMAGE_REF_SPEC_IDS = ("minimax_h3_r2i", "minimax_h3_r2i_opt", "minimax_h3_r2i_turbo")
+
+
+def _image_ref_wf(workflow_id: str, images: int):
+    spec = get_spec(workflow_id, "image")
+    wf = build_image_workflow(
+        params(
+            mode="image_only",
+            image_workflow=workflow_id,
+            reference_image_names=[f"ref{index}.png" for index in range(images)],
+        )
+    )
+    validate_workflow(wf)
+    return spec, wf
+
+
+@pytest.mark.parametrize("workflow_id", IMAGE_REF_SPEC_IDS)
+@pytest.mark.parametrize("count", [1, 2, 9])
+def test_image_reference_images_grow_one_loader_each(workflow_id, count):
+    """1 枚目は必須の source_image、2 枚目以降が reference_image_2 … に繋がる。"""
+    spec, wf = _image_ref_wf(workflow_id, count)
+    fan = spec.ref_media
+    loaders = sorted(key for key in wf if key.startswith(REF_IMAGE_NODE_PREFIX))
+    assert loaders == sorted(
+        f"{REF_IMAGE_NODE_PREFIX}{i}" for i in range(count)
+    )
+    inputs = wf[fan.node.node_id]["inputs"]
+    assert inputs["source_image"] == [f"{REF_IMAGE_NODE_PREFIX}0", 0]
+    for index in range(1, count):
+        node_id = f"{REF_IMAGE_NODE_PREFIX}{index}"
+        assert wf[node_id]["class_type"] == "LoadImage"
+        assert wf[node_id]["inputs"]["image"] == f"ref{index}.png"
+        # ノードの入力名は <Picture N> と同じ番号（index + 1）
+        assert inputs[f"reference_image_{index + 1}"] == [node_id, 0]
+    numbered = [key for key in inputs if key.startswith(fan.image_prefix)]
+    assert len(numbered) == count - 1
+    # テンプレートの雛形ノードは消える（雛形のファイル名で失敗しないように）
+    assert fan.image_loader.node_id not in wf
+
+
+@pytest.mark.parametrize("workflow_id", IMAGE_REF_SPEC_IDS)
+def test_image_reference_surplus_is_dropped(workflow_id):
+    spec, wf = _image_ref_wf(workflow_id, 12)
+    assert spec.multi_inputs == {"reference_images": 9}
+    grown = [key for key in wf if key.startswith(REF_IMAGE_NODE_PREFIX)]
+    assert len(grown) == 9
+
+
+def test_image_workflows_without_a_declaration_ignore_reference_images():
+    """宣言の無い画像ワークフローに参照画像を渡してもグラフは変わらない。"""
+    for workflow_id in ("krea2_turbo", "minimax_h3_t2i", "minimax_h3_i2i"):
+        wf = build_image_workflow(
+            params(
+                mode="image_only",
+                image_workflow=workflow_id,
+                reference_image_names=["ref0.png"],
+            )
+        )
+        assert not [
+            key for key in wf if key.startswith(REF_IMAGE_NODE_PREFIX)
+        ]
+        validate_workflow(wf)
+
+
+# --- MiniMax H3 Image の選択式つまみ（SPEC §3.1）-----------------------------
+
+H3_IMAGE_IDS = [
+    f"minimax_h3_{mode}{suffix}"
+    for mode in ("t2i", "i2i", "r2i")
+    for suffix in ("", "_opt", "_turbo")
+]
+
+
+def _h3_image_wf(workflow_id: str, **selects):
+    """選択式を渡して画像グラフを組む（r2i には最低 1 枚の参照画像が要る）。"""
+    wf = build_image_workflow(
+        params(
+            mode="image_only",
+            image_workflow=workflow_id,
+            reference_image_names=["ref0.png"],
+            selects=selects,
+        )
+    )
+    validate_workflow(wf)
+    return wf
+
+
+@pytest.mark.parametrize("workflow_id", H3_IMAGE_IDS)
+def test_every_h3_image_workflow_offers_the_frame_profile(workflow_id):
+    """フレーム枚数は 3 モード × 3 バリアントすべてで選べる（品質のつまみ）。"""
+    spec = get_spec(workflow_id, "image")
+    select = spec.select(MINIMAX_H3_IMAGE_QUALITY_NAME)
+    assert select is not None
+    assert select.choices == MINIMAX_H3_IMAGE_QUALITY_CHOICES
+    assert select.fallback == "recommended | 5 frames"
+    # ``CustomCombo`` ではないので番号を書く先は持たない
+    assert select.index_field == ""
+
+
+@pytest.mark.parametrize("workflow_id", H3_IMAGE_IDS)
+def test_the_frame_profile_defaults_to_five_frames(workflow_id):
+    """未指定ならテンプレートの現状値（推奨の 5 フレーム）のまま。"""
+    spec = get_spec(workflow_id, "image")
+    target = spec.select(MINIMAX_H3_IMAGE_QUALITY_NAME).target
+    default = load_template(spec)[target.node_id]["inputs"][target.field]
+    assert default == "recommended | 5 frames"
+    assert _h3_image_wf(workflow_id)["5"]["inputs"]["quality_profile"] == default
+
+
+@pytest.mark.parametrize("workflow_id", H3_IMAGE_IDS)
+@pytest.mark.parametrize("choice", MINIMAX_H3_IMAGE_QUALITY_CHOICES)
+def test_the_frame_profile_is_injected_verbatim(workflow_id, choice):
+    """枚数はノードの enum 文字列そのままで入る（デコード側は latent から読む）。"""
+    wf = _h3_image_wf(workflow_id, quality_profile=choice)
+    assert wf["5"]["inputs"]["quality_profile"] == choice
+    # ``H3ImageDecode`` は枚数の入力を持たないので、注入点は 1 つで足りる
+    assert set(wf["11"]["inputs"]) == {"samples", "vae"}
+
+
+@pytest.mark.parametrize("workflow_id", H3_IMAGE_IDS)
+def test_the_frame_strategy_is_injected_into_the_selector(workflow_id):
+    wf = _h3_image_wf(workflow_id, frame_strategy="stable_quality")
+    assert wf["12"]["inputs"]["strategy"] == "stable_quality"
+    assert wf["12"]["class_type"] == "H3ImageFrameSelector"
+
+
+@pytest.mark.parametrize("workflow_id", H3_IMAGE_IDS)
+def test_only_the_editing_modes_offer_the_source_aware_strategies(workflow_id):
+    """元画像との近さを見る選び方は、選択ノードに source_image が来るモードだけ。"""
+    spec = get_spec(workflow_id, "image")
+    choices = spec.select(MINIMAX_H3_IMAGE_STRATEGY_NAME).choices
+    editing = "t2i" not in workflow_id
+    for name in ("balanced_edit", "most_similar_to_source"):
+        assert (name in choices) is editing, workflow_id
+    # 番号のつまみを出していないので manual_index は載せない
+    assert "manual_index" not in choices
+
+
+@pytest.mark.parametrize("workflow_id", H3_IMAGE_IDS)
+@pytest.mark.parametrize(
+    ("choice", "expected"), [("on", True), ("off", False), ("bogus", True)]
+)
+def test_optimize_for_still_is_written_as_a_boolean(workflow_id, choice, expected):
+    """選択式は文字列だが、BOOLEAN の入力には真偽値で入れる（SPEC §3.1）。
+
+    リスト外の値は既定（`on`）に落ちるので `True` になる。
+    """
+    wf = _h3_image_wf(workflow_id, optimize_for_still=choice)
+    assert wf["5"]["inputs"]["optimize_for_still"] is expected
+
+
+@pytest.mark.parametrize("workflow_id", H3_IMAGE_IDS)
+def test_only_the_editing_modes_offer_the_source_knobs(workflow_id):
+    spec = get_spec(workflow_id, "image")
+    editing = "t2i" not in workflow_id
+    for name in (MINIMAX_H3_IMAGE_FIDELITY_NAME, MINIMAX_H3_IMAGE_FIT_NAME):
+        assert (spec.select(name) is not None) is editing, workflow_id
+    # 参照画像の解像度は r2i だけ（参照を複数取るのはこのモードだけ）
+    reference = "r2i" in workflow_id
+    assert (
+        spec.select(MINIMAX_H3_IMAGE_REF_DETAIL_NAME) is not None
+    ) is reference, workflow_id
+
+
+@pytest.mark.parametrize("workflow_id", [i for i in H3_IMAGE_IDS if "t2i" not in i])
+@pytest.mark.parametrize("choice", ["0.00", "0.50", "1.00"])
+def test_source_fidelity_is_written_as_a_float(workflow_id, choice):
+    """FLOAT の widget なので、選択式の文字列は実数に直してから入れる。"""
+    wf = _h3_image_wf(workflow_id, source_fidelity=choice)
+    got = wf["5"]["inputs"]["source_fidelity"]
+    assert isinstance(got, float) and got == pytest.approx(float(choice))
+
+
+@pytest.mark.parametrize("workflow_id", [i for i in H3_IMAGE_IDS if "t2i" not in i])
+def test_source_fit_and_reference_detail_are_injected(workflow_id):
+    wf = _h3_image_wf(workflow_id, source_fit="contain_pad")
+    assert wf["5"]["inputs"]["source_fit"] == "contain_pad"
+    if "r2i" in workflow_id:
+        wf = _h3_image_wf(workflow_id, reference_detail="max_identity_2048")
+        assert wf["5"]["inputs"]["reference_detail"] == "max_identity_2048"
+
+
+def test_the_h3_image_selects_survive_a_rerun():
+    """ジョブの params に残るので、再実行でも同じ値が使われる。"""
+    original = params(
+        mode="image_only",
+        image_workflow="minimax_h3_i2i_turbo",
+        selects={
+            MINIMAX_H3_IMAGE_QUALITY_NAME: "maximum quality | 20 frames (slow)",
+            MINIMAX_H3_IMAGE_FIDELITY_NAME: "0.90",
+        },
+    )
+    restored = GenerationParams(**original.model_dump())
+    inputs = build_image_workflow(restored)["5"]["inputs"]
+    assert inputs["quality_profile"] == "maximum quality | 20 frames (slow)"
+    assert inputs["source_fidelity"] == pytest.approx(0.9)
+
+
+def test_the_h3_image_selects_reach_the_agent_catalog():
+    names = {
+        name: default
+        for name, _l, _c, default, _a, _h, _labels in catalog_entry(
+            get_spec("minimax_h3_r2i", "image")
+        ).selects
+    }
+    assert names == {
+        MINIMAX_H3_IMAGE_QUALITY_NAME: "recommended | 5 frames",
+        MINIMAX_H3_IMAGE_STRATEGY_NAME: "decode_recommended",
+        MINIMAX_H3_IMAGE_STILL_NAME: "on",
+        MINIMAX_H3_IMAGE_FIDELITY_NAME: "0.75",
+        MINIMAX_H3_IMAGE_FIT_NAME: "crop_center",
+        MINIMAX_H3_IMAGE_REF_DETAIL_NAME: "match_generation_area",
+    }
+    # every select carries a hint and a Japanese label for the form
+    for _name, label, choices, _default, _auto, hint, _labels in catalog_entry(
+        get_spec("minimax_h3_r2i", "image")
+    ).selects:
+        assert label.strip() and hint.strip() and choices
+
+
+@pytest.mark.parametrize("workflow_id", H3_IMAGE_IDS)
+def test_the_h3_image_selects_are_accepted_by_the_job_validator(workflow_id):
+    """フォーム / API / エージェントが通る検証も同じ宣言を見る（SPEC §3.1）。"""
+    spec = get_spec(workflow_id, "image")
+    picked = {name: select.choices[-1] for name, select in spec.selects.items()}
+    assert select_problem("image_only", None, picked, image_workflow=workflow_id) is None
+    problem = select_problem(
+        "image_only", None, {"nope": "x"}, image_workflow=workflow_id
+    )
+    assert problem and "nope" in problem
+    bad = select_problem(
+        "image_only",
+        None,
+        {MINIMAX_H3_IMAGE_QUALITY_NAME: "42 frames"},
+        image_workflow=workflow_id,
+    )
+    assert bad and "42 frames" in bad
+
+
+# --- 選択肢の日本語ラベル（表示だけ、SPEC §3.1）------------------------------
+
+@pytest.mark.parametrize("workflow_id", H3_IMAGE_IDS)
+def test_every_h3_image_choice_has_a_japanese_label(workflow_id):
+    """つまみの選択肢はどれも画面用の日本語を持つ（送る値は enum のまま）。"""
+    spec = get_spec(workflow_id, "image")
+    for name, select in spec.selects.items():
+        for choice in select.choices:
+            label = select.label_of(choice)
+            assert label, f"{workflow_id}.{name}: {choice}"
+            # 数字の選択肢（保持強度の 0.50 など）はそのままでも読めるので、
+            # 「生の値と違うこと」を要求するのは英語の enum だけ
+            if name != MINIMAX_H3_IMAGE_FIDELITY_NAME:
+                assert label != choice, f"{workflow_id}.{name}: {choice}"
+        # ラベルは飾りなので、選択肢そのものは生の enum のまま
+        assert set(select.choice_labels) <= set(select.choices)
+
+
+def test_the_frame_strategy_labels_are_readable_japanese():
+    spec = get_spec("minimax_h3_r2i", "image")
+    select = spec.select(MINIMAX_H3_IMAGE_STRATEGY_NAME)
+    assert select.label_of("decode_recommended") == "おまかせ（推奨フレーム）"
+    assert select.label_of("most_similar_to_source") == "元画像に最も近い"
+    # t2i には無い選び方のラベルは、その spec の宣言にも入らない
+    t2i = get_spec("minimax_h3_t2i", "image").select(MINIMAX_H3_IMAGE_STRATEGY_NAME)
+    assert "most_similar_to_source" not in t2i.choice_labels
+
+
+def test_the_frame_profile_labels_name_the_frame_count():
+    select = get_spec("minimax_h3_t2i", "image").select(
+        MINIMAX_H3_IMAGE_QUALITY_NAME
+    )
+    assert select.choice_labels == MINIMAX_H3_IMAGE_QUALITY_LABELS
+    assert select.label_of("recommended | 5 frames") == "標準（5 フレーム）"
+    assert "20 フレーム" in select.label_of("maximum quality | 20 frames (slow)")
+
+
+def test_a_select_without_labels_falls_back_to_the_raw_value():
+    """宣言は任意: 無ければ生の値をそのまま出す（既存の選択式を壊さない）。"""
+    plain = SelectSpec(label="何か", choices=("a", "b"))
+    assert plain.choice_labels == {}
+    assert plain.label_of("a") == "a" and plain.label_of("b") == "b"
+    # 一部だけ宣言しても、残りは生の値のまま
+    partial = SelectSpec(label="何か", choices=("a", "b"), choice_labels={"a": "あ"})
+    assert partial.label_of("a") == "あ"
+    assert partial.label_of("b") == "b"
+    # 知らない値を訊かれても落ちない（フォームの持ち越しの値など）
+    assert partial.label_of("zzz") == "zzz"
+
+
+def test_a_mistyped_label_key_is_a_manifest_error():
+    """ラベルはフォールバックがあるので、打ち間違えても黙って生の値が出るだけ。
+    気づけるようにマニフェスト検証で弾く。"""
+    spec = get_spec("minimax_h3_t2i", "image")
+    select = spec.select(MINIMAX_H3_IMAGE_QUALITY_NAME)
+    broken = replace(
+        spec,
+        selects={
+            **spec.selects,
+            MINIMAX_H3_IMAGE_QUALITY_NAME: replace(
+                select, choice_labels={"7 frames": "ななまい"}
+            ),
+        },
+    )
+    problems = validate_spec(broken)
+    assert any("choice_labels" in problem for problem in problems), problems
+
+
+def test_the_labels_do_not_change_what_is_injected():
+    """ラベルは表示だけ: グラフに入るのは選んだ生の値のまま。"""
+    wf = _h3_image_wf("minimax_h3_r2i", frame_strategy="most_similar_to_source")
+    assert wf["12"]["inputs"]["strategy"] == "most_similar_to_source"
+
+
+def test_the_agent_catalog_shows_the_value_and_the_label():
+    """エージェントが書くのは生の値。日本語は手がかりとして併記されるだけ。"""
+    from app.prompts import image_workflow_catalog_section
+
+    section = image_workflow_catalog_section()
+    line = next(
+        line
+        for line in section.splitlines()
+        if line.strip().startswith(f"- `{MINIMAX_H3_IMAGE_STRATEGY_NAME}`")
+    )
+    assert "`decode_recommended`（おまかせ（推奨フレーム））" in line
+    # 生の値だけでも読めること（バッククォート内は enum のまま）
+    for value in ("stable_quality", "best_quality", "sharpest"):
+        assert f"`{value}`" in line
+
+
+def test_the_options_payload_carries_the_labels():
+    """`GET /api/options` の選択式にラベルが乗る（フロントが描く元）。"""
+    from app.routers.options import _workflow_option
+
+    option = _workflow_option(get_spec("minimax_h3_r2i", "image"))
+    select = next(
+        item for item in option.selects if item.name == MINIMAX_H3_IMAGE_QUALITY_NAME
+    )
+    assert select.choices == list(MINIMAX_H3_IMAGE_QUALITY_CHOICES)
+    assert select.choice_labels == MINIMAX_H3_IMAGE_QUALITY_LABELS
+    # 選択肢に無い値がラベルに混ざっていないこと（マニフェスト検証と同じ約束）
+    assert set(select.choice_labels) <= set(select.choices)
+
+
+def test_the_h3_image_workflows_round_to_a_32_pixel_grid():
+    """幅・高さは spec の resolution_multiple で丸める（H3 は 32、既定は 8）。"""
+    wf = build_image_workflow(
+        params(mode="image_only", image_workflow="minimax_h3_t2i", megapixels=0.98)
+    )
+    got = wf["5"]["inputs"]
+    assert got["width"] % 32 == 0 and got["height"] % 32 == 0
+    assert (got["width"], got["height"]) == (1344, 768)
+    # 既定の 8 グリッドのワークフローは今までどおり
+    z_image = build_image_workflow(
+        params(mode="image_only", image_workflow="z_image_turbo", megapixels=0.98)
+    )
+    assert z_image["57:13"]["inputs"]["width"] % 8 == 0
+
+
 def test_only_the_declared_workflow_grows_reference_loaders():
     """宣言の無いワークフローに参照素材を渡してもグラフは変わらない。"""
     for workflow_id in VIDEO_IDS:
@@ -1037,9 +1419,16 @@ def test_the_optional_custom_nodes_are_not_required_by_the_health_check():
     """任意のカスタムノードなので、入れていない環境でも赤にしない（SPEC §3.1）。"""
     required = all_required_class_types()
     assert not (required & OPTIONAL_CLASS_TYPES)
-    # テンプレート側には確かに載っている（turbo と連続カットで全部そろう）
+    # テンプレート側には確かに載っている（動画は turbo と連続カット、
+    # 画像は t2i / i2i / r2i の 3 モードで全部そろう）
     used: set[str] = set()
-    for workflow_id in ("minimax_h3_r2v_turbo", "minimax_h3_r2v_context"):
+    for workflow_id in (
+        "minimax_h3_r2v_turbo",
+        "minimax_h3_r2v_context",
+        "minimax_h3_t2i",
+        "minimax_h3_i2i",
+        "minimax_h3_r2i",
+    ):
         used |= {node["class_type"] for node in load_template(workflow_id).values()}
     assert OPTIONAL_CLASS_TYPES <= used
 
@@ -1104,7 +1493,8 @@ def test_low_vram_survives_a_rerun():
 def test_low_vram_is_offered_to_the_agent_catalog():
     entry = catalog_entry(get_spec("minimax_h3_r2v_turbo", "video"))
     assert (MINIMAX_H3_LOW_VRAM_NAME, "off") in {
-        (name, default) for name, _label, _choices, default, _auto, _hint in entry.selects
+        (name, default)
+        for name, _l, _c, default, _a, _h, _labels in entry.selects
     }
 
 
@@ -1519,6 +1909,56 @@ def test_start_frame_capable_workflows_are_fine_in_full_mode():
     assert video_workflow_problem("image_only", "nope") is None
 
 
+# --- 参照素材が使える組み合わせ（画像ステージも含む、SPEC §3.1）--------------
+
+def _refs(count: int = 1) -> dict[str, list[str]]:
+    return {"reference_images": [f"ref{i}.png" for i in range(count)]}
+
+
+def test_the_image_stage_can_take_reference_images():
+    """MiniMax H3 Image r2i は画像ステージで参照画像を受け取る。"""
+    for mode in ("image_only", "full"):
+        assert reference_problem(
+            mode,
+            "minimax_h3_i2v",
+            _refs(3),
+            image_workflow="minimax_h3_r2i",
+        ) is None
+
+
+def test_an_image_workflow_without_a_declaration_refuses_reference_images():
+    problem = reference_problem(
+        "image_only", None, _refs(1), image_workflow="krea2_turbo"
+    )
+    assert problem and "krea2_turbo" in problem and "reference_images" in problem
+
+
+def test_the_image_reference_workflow_needs_at_least_one_reference():
+    problem = reference_problem(
+        "image_only", None, {}, image_workflow="minimax_h3_r2i"
+    )
+    assert problem and "minimax_h3_r2i" in problem
+    # 宣言の無い画像ワークフローでは何も言わない
+    assert reference_problem(
+        "image_only", None, {}, image_workflow="krea2_turbo"
+    ) is None
+
+
+def test_too_many_image_reference_images_are_refused():
+    problem = reference_problem(
+        "image_only", None, _refs(10), image_workflow="minimax_h3_r2i"
+    )
+    assert problem and "9 件" in problem
+
+
+def test_the_video_stage_reference_rules_are_unchanged():
+    assert reference_problem("i2v", "minimax_h3_r2v", _refs(2)) is None
+    problem = reference_problem("i2v", "minimax_h3_i2v", _refs(1))
+    assert problem and "minimax_h3_i2v" in problem
+    # 参照素材を受け取るステージを 1 つも走らせない mode
+    assert reference_problem("audio", None, _refs(1))
+
+
 # --------------------------------------------------------------------------
 # validation
 # --------------------------------------------------------------------------
@@ -1568,13 +2008,19 @@ def test_required_class_types_cover_every_built_workflow():
         "LoadVideo",
     } <= types
 
-    built = {node["class_type"] for node in build_image_workflow(params()).values()}
+    built = set()
+    for workflow_id in COMFY_IMAGE_IDS:
+        built |= {
+            node["class_type"]
+            for node in build_image_workflow(params(image_workflow=workflow_id)).values()
+        }
     for workflow_id in VIDEO_IDS:
         built |= {
             node["class_type"]
             for node in build_video_workflow(params(video_workflow=workflow_id)).values()
         }
-    # turbo だけが使う任意のカスタムノードは意図的に外れている（SPEC §3.1）
+    # 任意のカスタムノード（turbo / opt と MiniMax H3 Image）は意図的に
+    # 外れている（SPEC §3.1）
     assert built - types == OPTIONAL_CLASS_TYPES
 
 
@@ -1733,13 +2179,17 @@ STEPS_VIDEO_IDS = [
 
 
 def test_the_steps_targets_are_the_samplers_of_their_template():
-    """`steps` の注入先は必ずサンプラー側（KSampler / BasicScheduler）。"""
+    """`steps` の注入先は必ずサンプラー側（KSampler / BasicScheduler / H3 の Advanced Sampling）。"""
     declared = [spec for spec in SPECS if spec.supports("steps")]
     assert declared, "steps を宣言したワークフローが 1 つも無い"
     for spec in declared:
         target = spec.target("steps")
         assert target.field == "steps"
-        assert target.class_type in ("KSampler", "BasicScheduler"), spec.id
+        assert target.class_type in (
+            "KSampler",
+            "BasicScheduler",
+            "H3SamplingSettings",
+        ), spec.id
 
 
 @pytest.mark.parametrize("workflow_id", STEPS_IMAGE_IDS)
@@ -1962,3 +2412,49 @@ def test_the_context_latent_is_required_by_the_context_workflow_only():
     assert not context_latent_problem("i2v", "minimax_h3_r2v", None)
     # 動画ステージを走らせないモードでは何も言わない
     assert not context_latent_problem("image_only", "minimax_h3_r2v_context", None)
+
+
+# --- 画像ステージの解像度予算（default_megapixels、SPEC §3.1）-----------------
+
+def test_an_unspecified_megapixels_follows_the_image_workflow():
+    """`megapixels` を送ってこないジョブは、そのモデルの想定画角で回す。
+
+    MiniMax H3 Image の native canvas は約 0.98MP。グローバル既定の 0.4MP のまま
+    回すと、ネイティブの 4 割の解像度で生成することになる。
+    """
+    spec = get_spec("minimax_h3_t2i", "image")
+    assert spec.default_megapixels == pytest.approx(0.98)
+    unset = params(mode="image_only", image_workflow=spec.id, megapixels=DEFAULT_MEGAPIXELS)
+    assert image_megapixels(spec, unset) == pytest.approx(0.98)
+    width, height = resolution("16:9 (Widescreen)", 0.98, multiple=32)
+    built = build_image_workflow(unset)
+    assert (built["5"]["inputs"]["width"], built["5"]["inputs"]["height"]) == (
+        width,
+        height,
+    )
+
+
+def test_an_explicit_megapixels_is_respected():
+    """明示した値は勝手に上げ下げしない（0.4MP を選んだジョブは 0.4MP のまま）。"""
+    spec = get_spec("minimax_h3_t2i", "image")
+    for asked in (0.2, 0.7, 2.0):
+        picked = params(mode="image_only", image_workflow=spec.id, megapixels=asked)
+        assert image_megapixels(spec, picked) == pytest.approx(asked)
+
+
+def test_workflows_without_a_declaration_keep_the_global_default():
+    """宣言を持たない既存の画像ワークフローの挙動は変わらない。"""
+    for workflow_id in ("krea2_turbo", "anima", "z_image_turbo"):
+        spec = get_spec(workflow_id, "image")
+        assert spec.default_megapixels == 0.0
+        unset = params(
+            mode="image_only", image_workflow=workflow_id, megapixels=DEFAULT_MEGAPIXELS
+        )
+        assert image_megapixels(spec, unset) == pytest.approx(DEFAULT_MEGAPIXELS)
+    # ResolutionSelector に入る値もグローバル既定のまま
+    wf = build_image_workflow(
+        params(
+            mode="image_only", image_workflow="krea2_turbo", megapixels=DEFAULT_MEGAPIXELS
+        )
+    )
+    assert wf["49"]["inputs"]["megapixels"] == pytest.approx(DEFAULT_MEGAPIXELS)

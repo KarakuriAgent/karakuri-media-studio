@@ -100,6 +100,36 @@ POST /api/v1/stories
   投入に失敗したカットがあっても作成済みの脚本は残し、結果に per-shot の
   成否を入れて返す（生成は GPU / 課金がからむため、二択にしない）。
 
+### 2.1 脚本ドラフト作成ガイド
+
+上の一括投入に渡す脚本を、**スタジオで実際に映像化できる形**で書くための手引き。
+外部の LLM エージェントがそのままプロンプトに貼れる日本語 Markdown を返す。
+
+```
+GET /api/v1/prompt-guide
+{
+  "guide_version": "2026-08-16",     // 中身を変えたら上がる（キャッシュ判定用）
+  "markdown": "# 脚本ドラフト作成ガイド…",
+  "limits": {                        // 本文と同じ数値の機械可読版
+    "shot_duration_min_seconds": 1.0, "shot_duration_max_seconds": 15.0,
+    "shot_duration_recommended": "4-15",
+    "reference_images_max": 9, "reference_videos_max": 3, "reference_audios_max": 3
+  }
+}
+```
+
+- 本文は `backend/app/drafting_guide.py` が**既存の定数から組み立てる**（静的な
+  コピーは持たない）: 尺は `app.studio.SHOT_DURATION_MIN/MAX`、参照素材の上限は
+  `app.workflows.MINIMAX_H3_REFERENCE_*`、H3 の書き方は
+  `app.prompts.MINIMAX_H3_GUIDE_BODY`、実例は `app.prompts.FEW_SHOT_H3` から
+  代表を選抜。内部の規約が変われば配るガイドも一緒に変わる。
+- 中身は「フィールド契約（`prompt` だけがモデルに届く / `title`・`action`・
+  `purpose` はメモ）」「素材メンション `@名前`」「H3 プロンプト規約」「実例」
+  「stories 投入の注意」の 5 節。フィールドの届き方の正本は
+  `app.studio.compose_prompt`（変えたらガイドも直す）。
+- 内蔵エージェント向けの `app.prompts.AGENT_STUDIO` はジョブ実行・Take 管理まで
+  含むので、そのままは配らない（ドラフト作成に要る分だけのサブセット）。
+
 ## 3. 認証
 
 - 設定 `Settings.external_api_key: str = ""` を追加（`SettingsUpdate` にも追加、

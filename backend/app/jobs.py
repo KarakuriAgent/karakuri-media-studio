@@ -351,6 +351,16 @@ _TERMINAL_STATUSES = frozenset({"done", "failed", "canceled"})
 #: 相手を知らないまま `on_job_final()` で受け取る。
 _final_callbacks: list[Callable[[str, str], Awaitable[None]]] = []
 
+#: ジョブ行が**消される直前**に呼ぶコールバック（:func:`on_job_deleted`）。
+#: 削除してしまうと ``chat_session_id`` が辿れず「どの会話のジョブだったか」が
+#: 永久に分からなくなるので、未通知の完了通知はここで配ってもらう。
+_deleted_callbacks: list[Callable[[str], Awaitable[None]]] = []
+
+#: True のあいだは完了通知を配らない。ワーカーを畳んでいる最中
+#: （:meth:`JobRunner.stop`）に run_job の CancelledError 経路が canceled を
+#: 書くと、そこからエージェントのループが立ち上がってしまうため。
+_final_dispatch_stopped = False
+
 
 def on_job_final(callback: Callable[[str, str], Awaitable[None]]) -> None:
     """ジョブが終端状態（done / failed / canceled）に入ったら呼ぶ関数を登録する。
@@ -362,6 +372,12 @@ def on_job_final(callback: Callable[[str, str], Awaitable[None]]) -> None:
         _final_callbacks.append(callback)
 
 
+def on_job_deleted(callback: Callable[[str], Awaitable[None]]) -> None:
+    """ジョブ行が消される**直前**に呼ぶ関数を登録する（:data:`_deleted_callbacks`）。"""
+    if callback not in _deleted_callbacks:
+        _deleted_callbacks.append(callback)
+
+
 async def _fire_job_final(job_id: str, status: str) -> None:
     """登録済みコールバックを順に呼ぶ。失敗はログだけ（ワーカーを落とさない）。"""
     for callback in list(_final_callbacks):
@@ -371,6 +387,37 @@ async def _fire_job_final(job_id: str, status: str) -> None:
             raise
         except Exception:  # noqa: BLE001 - 通知の失敗でジョブを壊さない
             log.exception("job %s の完了コールバックが失敗しました", job_id)
+
+
+async def _fire_job_deleted(job_id: str) -> None:
+    """ジョブ行を消す直前のコールバック。失敗はログだけ（削除は続行する）。"""
+    for callback in list(_deleted_callbacks):
+        try:
+            await callback(job_id)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - 通知の失敗で削除を止めない
+            log.exception("job %s の削除通知が失敗しました", job_id)
+
+
+async def _dispatch_job_final(job_id: str, status: str) -> None:
+    """完了通知を配る。**畳んでいる最中は配らない**（:data:`_final_dispatch_stopped`）。
+
+    ⏹ やシャットダウンで ``run_job`` が CancelledError を拾って canceled を
+    書くとき、そのままだとエージェントのループが立ち上がってしまう（畳んでいる
+    最中に起こし直すことになる）。``JobRunner.stop`` が印を立てるので、その間の
+    終端遷移では誰にも知らせない（イベントは次の起動時のスキャン
+    ``scan_pending_takes`` が拾い直す）。
+
+    配達そのものは**インラインで待つ**。``asyncio.create_task`` に逃がすと、
+    誰も await しないまま捨てられたタスクの中の DB 接続が閉じられず、
+    aiosqlite のワーカースレッドが残ってプロセスが終われなくなる。通知チェーン
+    （DB 1 クエリ → イベント追記 → WS → ``start_loop`` は起動の合図まで）は
+    短いので、キャンセルの HTTP を待たせる時間は問題にならない。
+    """
+    if _final_dispatch_stopped:
+        return
+    await _fire_job_final(job_id, status)
 
 
 async def _job_status(job_id: str) -> str | None:
@@ -423,10 +470,14 @@ async def _set_status(
     await _notify_job(job_id, previous, status)
     # 終端に入った瞬間は 1 回だけ（既に同じ終端なら二重に知らせない）。
     if terminal and previous != status:
-        await _fire_job_final(job_id, status)
+        await _dispatch_job_final(job_id, status)
 
 
 async def delete_job(job_id: str) -> bool:
+    # 消したあとでは ``chat_session_id`` が辿れず「どの会話のジョブだったか」が
+    # 分からなくなるので、未通知の完了通知は**行が在るうちに**配ってもらう
+    # （:func:`on_job_deleted`）。ここだけはインラインで待つ: 順序が意味を持つ。
+    await _fire_job_deleted(job_id)
     async with get_db() as conn:
         cur = await conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
         await conn.commit()
@@ -532,7 +583,12 @@ def _validate(params: dict[str, Any]) -> None:
             image_workflow=image_workflow,
         )
         or prompt_length_problem(mode, video_workflow, params.get("video_prompt"))
-        or reference_problem(mode, video_workflow, reference_materials(params))
+        or reference_problem(
+            mode,
+            video_workflow,
+            reference_materials(params),
+            image_workflow=image_workflow,
+        )
         or context_latent_problem(
             mode, video_workflow, params.get("context_latent_path")
         )
@@ -1581,23 +1637,33 @@ async def _prepare_comfy(job: Job) -> tuple[GenerationParams, dict[str, str]]:
 def _comfy_reference_materials(job: Job) -> dict[str, list[str]]:
     """ComfyUI のグラフに展開する参照素材のパス（並び順そのまま、SPEC §3.1）。
 
-    参照素材を受け取れるのは宣言のあるワークフローだけ（MiniMax H3 r2v の
+    参照素材を受け取れるのは宣言のあるワークフローだけ（MiniMax H3 Image r2i の
+    参照画像 / MiniMax H3 r2v の参照画像・動画・音声、どちらも
     :class:`app.workflows.RefMediaFan`）で、その中でも宣言している種類だけ。
-    宣言の無いものが付いてきたときは、外部 API 用に入れたまま動画ワークフローを
+    **画像ステージと動画ステージのどちらも受け取り口になりうる**ので、その mode
+    で走るステージの宣言を合わせて見る（アップロードはジョブに 1 度でよく、
+    どの種類をどのグラフに繋ぐかは各ビルダーが自分の宣言で決める）。
+    宣言の無いものが付いてきたときは、外部 API 用に入れたままワークフローを
     差し替えたジョブなので、ここで黙って捨てる（投入時の検証は
     :func:`app.models.reference_problem`）。
     """
-    if job.mode not in ("full", "i2v"):
-        return {}
+    specs: list[WorkflowSpec] = []
     try:
-        spec = get_video_spec(job.params.get("video_workflow"))
+        if job.mode in ("full", "image_only"):
+            specs.append(get_image_spec(job.params.get("image_workflow")))
+        if job.mode in ("full", "i2v"):
+            specs.append(get_video_spec(job.params.get("video_workflow")))
     except WorkflowSpecError:
         return {}
-    if spec.backend != "comfyui" or spec.ref_media is None:
+    accepted: set[str] = set()
+    for spec in specs:
+        if spec.backend == "comfyui" and spec.ref_media is not None:
+            accepted |= set(spec.ref_media.names())
+    if not accepted:
         return {}
     picked: dict[str, list[str]] = {}
     for name, paths in reference_materials(job.params).items():
-        if name in spec.ref_media.names():
+        if name in accepted:
             picked[name] = [str(path) for path in paths if str(path).strip()]
     return picked
 
@@ -1905,13 +1971,20 @@ class JobRunner:
         return self._queue
 
     async def start(self) -> None:
+        global _final_dispatch_stopped
         self._ensure_queue()
         self._stopping = False
+        _final_dispatch_stopped = False
         if not self.running:
             self._task = asyncio.create_task(self._worker(), name="job-worker")
 
     async def stop(self) -> None:
+        global _final_dispatch_stopped
         self._stopping = True
+        # 畳んでいる最中に canceled が書かれても、そこから新しい通知（＝
+        # エージェントのループ）を起こさない。取りこぼしたイベントは次の起動時の
+        # スキャン（`agent_runner.scan_pending_takes`）が拾い直す。
+        _final_dispatch_stopped = True
         task, self._task = self._task, None
         current = self._current_task
         if current is not None and not current.done():

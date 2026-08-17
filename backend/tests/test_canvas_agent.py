@@ -872,7 +872,7 @@ def test_existing_messages_move_to_a_default_session(env):
     conn.close()
     import asyncio
 
-    asyncio.get_event_loop().run_until_complete(db.init_db())
+    asyncio.run(db.init_db())
     messages = env.client.get(f"/api/canvas/projects/{project['id']}/messages").json()
     moved = [m for m in messages if m["content"] == "昔の発言"]
     assert moved
@@ -902,7 +902,7 @@ def test_init_db_upgrades_legacy_canvas_messages_without_session_id():
     )
     conn.commit()
     conn.close()
-    asyncio.get_event_loop().run_until_complete(db.init_db())
+    asyncio.run(db.init_db())
     conn = sqlite3.connect(db.DB_PATH)
     columns = {row[1] for row in conn.execute("PRAGMA table_info(canvas_messages)")}
     conn.close()

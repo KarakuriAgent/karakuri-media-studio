@@ -1606,6 +1606,109 @@ def test_too_many_reference_images_are_422(env):
     assert "9 件" in answer.text
 
 
+# --------------------------------------------------------------------------
+# 参照画像を取る**画像**ワークフロー（SPEC §3.1、MiniMax H3 Image r2i）
+# --------------------------------------------------------------------------
+
+IMAGE_REF_WORKFLOW = "minimax_h3_r2i"
+
+
+def image_ref_body(env, count: int, **overrides) -> dict:
+    body = {
+        "mode": "image_only",
+        "image_workflow": IMAGE_REF_WORKFLOW,
+        "image_prompt": "Keep the subject of <Picture 1>, use the coat of <Picture 2>.",
+        "reference_images": _ref_assets(env, count),
+    }
+    body.update(overrides)
+    return body
+
+
+@pytest.mark.parametrize("count", [1, 3])
+def test_image_reference_images_are_uploaded_and_wired(env, count):
+    created = env.client.post("/api/jobs", json=image_ref_body(env, count))
+    assert created.status_code == 201, created.text
+    job = wait_for(env.client, created.json()["id"])
+    assert job["status"] == "done", job["error"]
+
+    uploaded = [Path(path).name for path in env.comfy.uploads]
+    assert [f"ref{index}.png" for index in range(count)] == uploaded
+
+    graph = graph_with(env, "5")
+    loaders = sorted(key for key in graph if key.startswith("app_ref_image_"))
+    assert len(loaders) == count
+    # 1 枚目は必須の source_image（<Picture 1>）、2 枚目以降が reference_image_N+1
+    assert graph["5"]["inputs"]["source_image"] == ["app_ref_image_0", 0]
+    for index in range(1, count):
+        node_id = f"app_ref_image_{index}"
+        assert graph[node_id]["inputs"]["image"] == f"ref{index}.png"
+        assert graph["5"]["inputs"][f"reference_image_{index + 1}"] == [node_id, 0]
+    # 雛形の LoadImage はグラフに残らない
+    assert "0" not in graph
+
+
+def test_the_image_reference_workflow_needs_at_least_one_reference(env):
+    answer = env.client.post("/api/jobs", json=image_ref_body(env, 0))
+    assert answer.status_code == 422
+    assert "reference_images" in answer.text
+
+
+def test_too_many_image_reference_images_are_422(env):
+    answer = env.client.post("/api/jobs", json=image_ref_body(env, 10))
+    assert answer.status_code == 422
+    assert "9 件" in answer.text
+
+
+def test_the_h3_image_selects_reach_comfyui(env):
+    """フレーム枚数などのつまみは `selects` として渡り、グラフに焼き込まれる。"""
+    created = env.client.post(
+        "/api/jobs",
+        json=image_ref_body(
+            env,
+            2,
+            selects={
+                "quality_profile": "high quality | 13 frames",
+                "frame_strategy": "balanced_edit",
+                "optimize_for_still": "off",
+                "source_fidelity": "0.90",
+                "source_fit": "contain_pad",
+                "reference_detail": "max_identity_2048",
+            },
+        ),
+    )
+    assert created.status_code == 201, created.text
+    job = wait_for(env.client, created.json()["id"])
+    assert job["status"] == "done", job["error"]
+
+    graph = graph_with(env, "5")
+    prepare = graph["5"]["inputs"]
+    assert prepare["quality_profile"] == "high quality | 13 frames"
+    # BOOLEAN / FLOAT の widget には型を合わせて入る（文字列だと prompt ごと落ちる）
+    assert prepare["optimize_for_still"] is False
+    assert prepare["source_fidelity"] == 0.9
+    assert prepare["source_fit"] == "contain_pad"
+    assert prepare["reference_detail"] == "max_identity_2048"
+    assert graph["12"]["inputs"]["strategy"] == "balanced_edit"
+
+
+def test_an_unknown_h3_image_select_is_422(env):
+    answer = env.client.post(
+        "/api/jobs",
+        json=image_ref_body(env, 1, selects={"quality_profile": "99 frames"}),
+    )
+    assert answer.status_code == 422
+    assert "99 frames" in answer.text
+
+
+def test_an_image_workflow_without_a_declaration_refuses_reference_images(env):
+    answer = env.client.post(
+        "/api/jobs",
+        json=image_ref_body(env, 1, image_workflow="krea2_turbo"),
+    )
+    assert answer.status_code == 422
+    assert "reference_images" in answer.text
+
+
 @pytest.mark.parametrize(
     ("field", "kind", "ext"),
     [("reference_videos", "video", ".mp4"), ("reference_audios", "audio", ".wav")],
@@ -1821,3 +1924,150 @@ async def test_interrupt_skips_cloud(monkeypatch):
 
     monkeypatch.setattr(comfy, "_request", boom)
     await comfy.interrupt()
+
+
+# --------------------------------------------------------------------------
+# 完了通知（on_job_final）の配り方（コードレビューで見つかった問題）
+# --------------------------------------------------------------------------
+#
+# ワーカーを畳んでいる最中に run_job の CancelledError 経路が canceled を書くと、
+# そこからエージェントのループが立ち上がってしまう（止めたそばから走り出す）。
+
+@pytest.fixture
+def final_calls(monkeypatch):
+    """完了コールバックを 1 本だけ差し替えて、呼ばれた記録を返す。"""
+    seen: list[tuple[str, str]] = []
+
+    async def callback(job_id: str, status: str) -> None:
+        seen.append((job_id, status))
+
+    monkeypatch.setattr(jobs, "_final_callbacks", [callback])
+    monkeypatch.setattr(jobs, "_final_dispatch_stopped", False)
+    return seen
+
+
+def _fake_job_row(job_id: str, status: str = "running") -> None:
+    conn = sqlite3.connect(db.DB_PATH)
+    conn.execute(
+        "INSERT INTO jobs (id, created_at, mode, status, params, workflow_json)"
+        " VALUES (?, '2026-01-01T00:00:00+00:00', 'i2v', ?, '{}', '{}')",
+        (job_id, status),
+    )
+    conn.commit()
+    conn.close()
+
+
+def test_the_final_callbacks_run_on_a_terminal_status(env, final_calls):
+    async def scenario():
+        _fake_job_row("j-final")
+        await jobs._set_status("j-final", "done")
+
+    asyncio.run(scenario())
+    assert final_calls == [("j-final", "done")]
+
+
+def test_no_notification_is_delivered_while_shutting_down(env, final_calls):
+    """畳んでいる最中の canceled では誰にも知らせない（ループを起こし直さない）。
+
+    取りこぼしは次の起動時のスキャン（`scan_pending_takes`）が拾う。
+    """
+    async def scenario():
+        _fake_job_row("j-stop")
+        await jobs.runner.stop()  # _final_dispatch_stopped を立てる
+        assert jobs._final_dispatch_stopped is True
+        await jobs._set_status("j-stop", "canceled")
+
+    asyncio.run(scenario())
+    assert final_calls == []
+
+
+def test_starting_the_runner_allows_notifications_again(env, final_calls):
+    async def scenario():
+        _fake_job_row("j-again")
+        await jobs.runner.stop()
+        await jobs.runner.start()
+        assert jobs._final_dispatch_stopped is False
+        try:
+            await jobs._set_status("j-again", "done")
+        finally:
+            await jobs.runner.stop()
+
+    asyncio.run(scenario())
+    assert final_calls == [("j-again", "done")]
+
+
+def test_the_same_terminal_status_is_only_announced_once(env, final_calls):
+    async def scenario():
+        _fake_job_row("j-twice")
+        await jobs._set_status("j-twice", "failed")
+        await jobs._set_status("j-twice", "failed")
+
+    asyncio.run(scenario())
+    assert final_calls == [("j-twice", "failed")]
+
+
+def test_the_take_notification_backfill_spares_running_jobs(env):
+    """列を足した回の後始末は、**まだ走っているジョブの Take を埋めない**。
+
+    埋めてしまうと（`agent_notified_at` は `IS NULL` でしか拾われないので）
+    移行の瞬間に実行中だったレンダーの完了通知が永久に届かなくなる。
+    """
+    from app.db import _backfill_take_notifications, get_db
+
+    conn = sqlite3.connect(db.DB_PATH)
+    rows = [
+        ("j-done", "done"),
+        ("j-failed", "failed"),
+        ("j-canceled", "canceled"),
+        ("j-queued", "queued"),
+        ("j-prompting", "prompting"),
+        ("j-running", "running"),
+    ]
+    for job_id, status in rows:
+        conn.execute(
+            "INSERT INTO jobs (id, created_at, mode, status, params, workflow_json)"
+            " VALUES (?, '2026-01-01T00:00:00+00:00', 'i2v', ?, '{}', '{}')",
+            (job_id, status),
+        )
+    conn.execute(
+        "INSERT INTO studio_projects (id, name, created_at, updated_at)"
+        " VALUES ('p1', 'P', '2026-01-01T00:00:00+00:00', '2026-01-01T00:00:00+00:00')"
+    )
+    conn.execute(
+        "INSERT INTO studio_shots (id, project_id, sort_order, created_at,"
+        " updated_at) VALUES ('s1', 'p1', 0, '2026-01-01T00:00:00+00:00',"
+        " '2026-01-01T00:00:00+00:00')"
+    )
+    for job_id, _status in rows:
+        conn.execute(
+            "INSERT INTO studio_takes (id, shot_id, project_id, job_id, status,"
+            " created_at) VALUES (?, 's1', 'p1', ?, 'rendering',"
+            " '2026-01-01T00:00:00+00:00')",
+            (f"t-{job_id}", job_id),
+        )
+    # ジョブ行がもう無い Take（結果を辿れないので印を付ける側）
+    conn.execute(
+        "INSERT INTO studio_takes (id, shot_id, project_id, job_id, status,"
+        " created_at) VALUES ('t-orphan', 's1', 'p1', 'j-gone', 'rendering',"
+        " '2026-01-01T00:00:00+00:00')"
+    )
+    conn.commit()
+    conn.close()
+
+    async def scenario():
+        async with get_db() as conn:
+            await _backfill_take_notifications(conn)
+            await conn.commit()
+
+    asyncio.run(scenario())
+
+    conn = sqlite3.connect(db.DB_PATH)
+    marked = {
+        row[0]
+        for row in conn.execute(
+            "SELECT id FROM studio_takes WHERE agent_notified_at IS NOT NULL"
+        )
+    }
+    conn.close()
+    # 終端に達しているジョブと、行が消えているジョブの Take だけが埋まる
+    assert marked == {"t-j-done", "t-j-failed", "t-j-canceled", "t-orphan"}

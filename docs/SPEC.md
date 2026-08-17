@@ -206,6 +206,9 @@
 | `anima` | Anima | `anima` | なし | text-to-image、アニメ・イラスト系（`ResolutionSelector`） |
 | `z_image_turbo` | Z-Image turbo | `z-image` | なし | text-to-image、8 steps 蒸留。ResolutionSelector が無いのでアプリが幅・高さを計算して注入 |
 | `qwen_image_edit_2511` | Qwen-Image Edit 2511 | `qwen-image` | 画像（編集元画像） | **編集系**。`source_image` 必須で、出力解像度は入力画像から決まる（`aspect_ratio` / `megapixels` は無視） |
+| `minimax_h3_t2i` / `_opt` / `_turbo` | MiniMax H3 Image t2i | `minimax-h3-image` | なし | text-to-image。H3（音声つき動画モデル）でフレームのパケットを作り 1 枚を選ぶ（枚数は `selects` の `quality_profile` で 5 / 9 / 13 / 20）。`ResolutionSelector` は無く、アプリが幅・高さを **32 の倍数**で計算して注入（既定 0.98MP） |
+| `minimax_h3_i2i` / `_opt` / `_turbo` | MiniMax H3 Image i2i | `minimax-h3-image` | 画像（編集元画像） | **編集系**。`source_image` を fl2va のフレーム 0 に置く。解像度は `aspect_ratio` + `megapixels`（合わせ方は `selects` の `source_fit`・既定 crop_center） |
+| `minimax_h3_r2i` / `_opt` / `_turbo` | MiniMax H3 Image r2i | `minimax-h3-image` | 参照画像 1〜9 枚 | **参照編集系**（ref2va）。`reference_images` を渡した順に `<Picture 1>` … で参照。開始フレーム（`source_image`）は受け取らない |
 | `grok_imagine_t2i` | Grok Imagine 画像生成（サブスク CLI） | `grok-imagine` | なし | **ComfyUI 非依存**（`backend: "grok_cli"`、§5.2）。text-to-image |
 | `grok_imagine_edit` | Grok Imagine 画像編集（サブスク CLI） | `grok-imagine` | 画像（編集元画像） | **ComfyUI 非依存**の編集系。`source_image` 必須で、出力解像度は入力画像から決まる |
 
@@ -216,6 +219,27 @@
   Grok のシステムプロンプトにはファミリー別のガイドが埋め込まれる（§4.2）。
   `grok-imagine` はグラフを持たず LoRA も差せないので、`image_families()`（LoRA 登録の
   選択肢とプロンプトガイドの単位）には**並ばない**
+- `minimax-h3-image` は外部のカスタムノード（ComfyUI-MiniMax-H3-Image-Studio、
+  `deploy/runpod/custom_nodes.txt` に固定）が要る。`H3*` の 6 クラスを
+  `OPTIONAL_CLASS_TYPES` に載せてあるので、カスタムノードが無い接続先
+  （Comfy Cloud を含む）では base / `_opt` / `_turbo` とも丸ごと選択肢から落ちる
+  （§3.2。`_opt` / `_turbo` は動画側と同じ高速化ノードも焼き込んである）。
+  `_turbo` の Turbo アダプタは `LoraLoaderModelOnly` で読むので設定画面から
+  差し替えできる（§3.3）
+- `minimax_h3_r2i` は**画像ステージが参照素材（`reference_images`）を受け取る**唯一の
+  ワークフロー。`RefMediaFan` の宣言で、渡された枚数ぶん `LoadImage` を生やして
+  1 枚目を `source_image`（= `<Picture 1>`）、2 枚目以降を `reference_image_2` … に
+  繋ぎ直す。1 枚以上必須（`min_refs`）
+- `minimax-h3-image` の 9 本はノードの widget を**選択式フィールド**（`selects`、§3.1）として
+  公開してある。共通が `quality_profile`（フレーム枚数 `recommended | 5 frames` /
+  `extended quality | 9 frames` / `high quality | 13 frames` /
+  `maximum quality | 20 frames (slow)`。**上げるほど H3 が使える時間方向の文脈が増えて
+  品質が上がり、そのぶん遅く VRAM も要る**）・`frame_strategy`（`H3ImageFrameSelector.strategy`。
+  デコードしたパケットから 1 枚を選ぶやり方）・`optimize_for_still`（静止画向けの
+  プロンプト包み・既定 `on`）。i2i / r2i はさらに `source_fidelity`（0.00〜1.00 の段階。
+  **denoise ではなくプロンプトに足す保持要求の強さ**）と `source_fit`、r2i は
+  `reference_detail` を持つ。`H3ImageDecode` はフレーム枚数を latent のメタデータから
+  読むので注入点を持たず、`quality_profile` 1 つで枚数もデコードも決まる
 
 ### 2.4 音声ワークフロー（`workflow/audio/`）
 
@@ -269,7 +293,7 @@ LoRA チェーンも持たない（テンプレートに LoRA ノードが無い
 | LoRA トリガーワード（動画） | 動画プロンプト文字列の先頭に前置 | 同上（自動連結・編集可） |
 | リファレンス音声 | `audio` → `276` (LoadAudio)。要求するワークフローのみ | アップロード（`/upload/image` で送信 → ファイル名を注入） |
 | 開始フレーム / 最終フレーム / 参照動画 | `image` / `end_image` / `video` | ワークフローの必要入力に応じて表示。画像は D&D・履歴のラストフレームからも選べる |
-| マルチモーダル参照（参照画像 / 参照動画 / 参照音声） | `reference_images` / `reference_videos` / `reference_audios`（複数ファイル → 件数ぶんのローダーをグラフに生やす） | 宣言のあるワークフロー（MiniMax H3 r2v は画像 9 / 動画 3 / 音声 3）で `mode: "i2v"` のときだけ表示。1 欄が複数ファイルを持ち、選んだ順がグラフに渡る順序になる。**開始フレーム / 最終フレームとは排他**（下記） |
+| マルチモーダル参照（参照画像 / 参照動画 / 参照音声） | `reference_images` / `reference_videos` / `reference_audios`（複数ファイル → 件数ぶんのローダーをグラフに生やす） | 宣言のあるステージが走るときだけ表示。動画側（MiniMax H3 r2v は画像 9 / 動画 3 / 音声 3）は `mode: "i2v"`、画像側（MiniMax H3 Image r2i は画像 9）は `mode: "full"` / `"image_only"`。1 欄が複数ファイルを持ち、選んだ順がグラフに渡る順序になる。**開始フレーム / 最終フレームとは排他**（下記） |
 | 秒数 (Duration) | `duration` | 数値・**上限なし**。長尺は VRAM 次第で ComfyUI 側エラーになり得ることを UI に注記。`duration` を持たないワークフローでは欄ごと出さない |
 | 選択式フィールド | ワークフローの `selects`（論理名 → CustomCombo 等） | 宣言のあるワークフローだけ、ワークフローセレクトの直下にプルダウンが並ぶ（下記） |
 | フレームレート | `fps` | 数値（既定 25） |
@@ -295,8 +319,12 @@ LoRA チェーンも持たない（テンプレートに LoRA ノードが無い
 
 1 つの入力欄が**複数のファイル**を持つ論理入力の仕組み（MiniMax H3 r2v の参照素材、§2.2）。
 **参照モードと先頭フレームモードは排他**なので、宣言を持つのは**参照専用のワークフロー**
-（`minimax_h3_r2v`）だけで、そちらは `accepts_start_image=False`
-かつ `image` / `end_image` の受け取り口を持たない（マニフェストの検証がこの同居を弾く）。
+（動画の `minimax_h3_r2v` 系と画像の `minimax_h3_r2i` 系）だけで、そちらは
+`accepts_start_image=False` かつ `image` / `end_image` の受け取り口を持たない
+（マニフェストの検証がこの同居を弾く）。参照素材は**画像ステージと動画ステージのどちらの
+入力にもなる**ので、検証（`models.reference_problem`）とアップロード
+（`jobs._comfy_reference_materials`）はその mode で走るステージ全体を見る
+（`full` では画像・動画の両方が並び、どちらかが宣言していれば通る）。
 `multi_inputs = {"reference_images": 9, ...}` をマニフェストに宣言すると、
 
 - ジョブは `reference_images` / `reference_videos` / `reference_audios`（`workflows.MULTI_INPUT_FIELDS`）に
@@ -342,6 +370,14 @@ video_decoder=…, audio_loader=…, min_refs=1)` を宣言すると、`workflow
 `GenerationParams.reference_image_names` / `reference_video_names` / `reference_audio_names` に並ぶ。
 マニフェストの検証は「受け側と雛形が実在し、雛形の class_type が種類と合っていて、本当に `ref_*` に
 繋がっているか」まで見る。
+
+画像ステージ（`minimax_h3_r2i`）も同じ宣言を使う。ただし `H3ReferenceEditPrepare` は
+1 枚目を**必須の `source_image`**（= `<Picture 1>`）で受け、2 枚目以降だけが任意の
+`reference_image_2` … になっている。この形は `RefMediaFan(primary_image_field="source_image",
+image_prefix="reference_image_", image_offset=1)` で宣言し、`_build_ref_media` が 1 枚目を
+`source_image` に、`index` 番目（1 以上）を `reference_image_<index + 1>` に繋ぐ。
+画像ステージのビルダー（`workflow.build_image_workflow`）も動画側と同じ
+`_prune_optional_loaders` / `_build_ref_media` / `_inject_selects` を通る。
 
 ##### 渡されなかった任意入力をグラフから外す（`WorkflowSpec.optional_loaders`）
 
@@ -403,9 +439,10 @@ turbo 版だけは選択式フィールド（下記）で `low_vram`（`MiniMaxH
 （`prompts.workflow_catalog_section(comfy_target)`。ユーザーの明示指定が最優先。システムプロンプトは
 セッション作成時に焼き込むので、途中で接続先を変えても既存セッションには効かない）。
 
-**接続先が `comfy_cloud` のときは turbo / opt を選択肢に出さない**。Comfy Cloud には任意の
-カスタムノードを入れられないためで、判定は id のハードコードではなく「テンプレートが
-`workflows.OPTIONAL_CLASS_TYPES`（turbo / opt だけが使う任意のカスタムノード）を 1 つでも使うか」
+**接続先が `comfy_cloud` のときは turbo / opt（と MiniMax H3 Image の全バリアント）を
+選択肢に出さない**。Comfy Cloud には任意のカスタムノードを入れられないためで、判定は id の
+ハードコードではなく「テンプレートが `workflows.OPTIONAL_CLASS_TYPES`（turbo / opt と
+MiniMax H3 Image だけが使う任意のカスタムノード）を 1 つでも使うか」
 （`workflow.uses_optional_class_types` / `workflow.supported_on_target`。spec ごとにプロセス内
 キャッシュ）。`GET /api/options` の `image_workflows` / `video_workflows` / `audio_workflows` が
 同じ規則で絞られ、フォームの 2 段プルダウンもエージェントのカタログもそれに従う（AGENT-MODE §3.1）。
@@ -431,11 +468,23 @@ turbo 版だけは選択式フィールド（下記）で `low_vram`（`MiniMaxH
 - 書き込み先が **BOOLEAN の widget**（`workflow._BOOL_INPUTS`）なら、選んだ文字列を
   `on` → `true` / それ以外 → `false` に直してから入れる。ComfyUI は BOOLEAN に文字列を入れると
   型検証で prompt ごと落ちるため。MiniMax H3 turbo の `low_vram`（`MiniMaxH3TurboLoRA.low_vram`、
-  4step 蒸留 LoRA を低 VRAM モードで読むか）がこの形で、**既定は `off`**（テンプレートの現状値と同じ）
+  4step 蒸留 LoRA を低 VRAM モードで読むか）と MiniMax H3 Image の `optimize_for_still`
+  （静止画向けのプロンプト包み・既定 `on`）がこの形
+- 書き込み先が **FLOAT の widget** で選択肢が数字の文字列のとき（`workflow._FLOAT_SELECT_INPUTS`）は
+  `float()` に直してから入れる（BOOLEAN と同じ理由）。MiniMax H3 Image の `source_fidelity`
+  （`H3ImageToImagePrepare` / `H3ReferenceEditPrepare`）がこの形で、ノードの 0.00〜1.00・刻み 0.05 の
+  うち実用的な段階（0.00 / 0.25 / 0.50 / 0.75 / 0.90 / 1.00）だけを選択肢にしてある
 - `auto: "audio_duration"` の項目は、**未指定なら入力音声の実長**（`jobs.probe_media_duration`、
   ffprobe）を選択肢に切り上げて決める（上限は最大の選択肢）。決めた値は params に残るので
   再実行でも同じ尺になる。ffprobe が無い・読めない場合は宣言した既定値に落ちる（登録は止めない）
 - UI は `auto` の項目に「自動（入力に合わせる）」、それ以外に「既定（<値>）」を先頭の選択肢として置く
+- **選択肢の表示ラベル**（`SelectSpec.choice_labels`、`選ぶ値 -> 画面に出す文字列`）:
+  `decode_recommended` のようなノード由来の enum を読める日本語に置き換えるための飾り。**送る値も
+  ComfyUI に入る値も `choices` の生のまま**で、`GET /api/options` の `choice_labels` を
+  `WorkflowSelects` が `<option>` の文字にだけ使う（宣言の無い値・宣言そのものが無い選択式は生の値に
+  フォールバックするので、既存の選択式は何も変わらない）。エージェントのカタログは
+  `` `decode_recommended`（おまかせ（推奨フレーム）） `` のように**生の値とラベルを併記**する
+  （書くのは常に生の値）。`choices` に無いキーを書くと黙って効かないので `validate_specs()` が弾く
 - **選択式どうしの相関**（`WorkflowSpec.select_requires`、名前 → `(相手の名前, 相手に必要な値)`）:
   「その項目は相手がこの値のときしか効かない」ことの宣言。相手の値によっては**モデルが黙って無視する**
   項目のために、`{"duration": ("model", "V5_5")}` のように宣言して**既定以外を明示指定したジョブだけ**を
@@ -465,8 +514,12 @@ height = round(h_ratio * scale / 8) * 8
 テンプレートの `ResolutionSelector` がもっと小さい画角を前提にしていて、1.0MP のまま回すと
 VRAM が足りずに CUDA OOM で落ちる。そこで `WorkflowSpec.default_megapixels`（0.0 = 宣言なし）を
 宣言でき、値は `GET /api/options` の `video_workflows[].default_megapixels` に出る。
-宣言を持つのは **MiniMax H3 の 7 つ（t2v / i2v / i2v turbo / i2v opt / r2v / r2v turbo / r2v opt）= 0.4MP**
-（短辺 768px・最大 768x1344 の画角）。
+宣言を持つのは **MiniMax H3 の動画 7 つ（t2v / i2v / i2v turbo / i2v opt / r2v / r2v turbo / r2v opt）
+= 0.4MP**（短辺 768px・最大 768x1344 の画角）と、**MiniMax H3 Image の 9 つ（t2i / i2i / r2i ×
+base / opt / turbo）= 0.98MP**（native canvas 1344x768。こちらは逆に、グローバル既定の 0.4MP の
+ままだとネイティブの 4 割の解像度で生成してしまう）。宣言は動画・画像の両方の
+`GET /api/options` に出る（`video_workflows[].default_megapixels` /
+`image_workflows[].default_megapixels`）。
 
 バックエンド側（`POST /api/jobs` の `megapixels` を省いたとき、および Studio の
 カットもプロジェクトも `megapixels` 未設定のとき）の既定は
@@ -474,11 +527,20 @@ VRAM が足りずに CUDA OOM で落ちる。そこで `WorkflowSpec.default_meg
 8GB 級のローカル GPU で CUDA OOM になるため、フォームが明示的に値を送らない
 経路でも安全側に倒している。
 
-フォーム側は動画ステージが走るモード（`full` / `i2v`）で**動画ワークフローを切り替えた
-タイミング**に `megapixelsFor(workflow)` の値を入れる（宣言が無ければグローバル既定へ戻す）。
+フォーム側は**そのモードで実際に走るステージ**のワークフローを切り替えたタイミングに
+`megapixelsFor(...)` の値を入れる（宣言が無ければグローバル既定へ戻す）: 画像ステージ
+（`full` / `image_only`）は `image_workflow`、動画ステージ（`full` / `i2v`）は `video_workflow`。
+**両方走る `full` では 1 つの値を 2 段が共有するので、きつい側（小さいほう）に合わせる**
+（画像 0.98MP + 動画 0.4MP なら 0.4MP。動画側で CUDA OOM にしないほうを取る）。
 切り替えたあとに手で変えた値はそのまま残り、次に切り替えるまで維持される（音声の
 `clampToWorkflow` と同じ「切り替え時にだけ追随させる」形）。キャンバスの model カードも
 ワークフローを選び直したときに同じ値を入れる。
+
+`megapixels` を**そもそも送ってこない経路**（外部 API・エージェント・古いジョブの再実行）では
+グローバル既定のまま届くので、画像ステージのビルダーが `app.workflow.image_megapixels` で
+「グローバル既定そのまま = 明示していない」とみなして宣言の値に読み替える。**明示された値は
+そのまま尊重する**（0.4MP を意図して選んだジョブを勝手に上げない）ので、宣言を持たない
+ワークフロー（krea2 など）の挙動は変わらない。
 
 ドラマスタジオは生成フォームを通さないので、`megapixels` と `aspect_ratio` はカット投入時に
 `app.studio.render_shot` が組み立てる: **テイク 1 回ぶんの上書き（render のボディ）
@@ -1168,6 +1230,19 @@ Grok エージェントのスタジオ操作（§ドラマスタジオ / `app.ag
 エージェント機構には影響しない。設計・エンドポイント一覧・Cloudflare 越しの公開手順は
 [`docs/EXTERNAL-API.md`](EXTERNAL-API.md)。
 
+ラッパー以外に 2 つだけ独自のエンドポイントを持つ:
+
+- `POST /api/v1/stories` … 話 1 本（話 → 場 → Shot）の一括投入。1 トランザクションで
+  全部作れたか・全く作らなかったかの二択。
+- `GET /api/v1/prompt-guide` … **脚本ドラフト作成ガイド**。外部の LLM エージェントが
+  上の一括投入に渡す脚本を「スタジオで実際に映像化できる形」で書くための日本語
+  Markdown を返す（`guide_version` / `markdown` / `limits`）。本文は
+  `backend/app/drafting_guide.py` が既存の定数から組み立てるので静的コピーを持たない:
+  尺は `app.studio.SHOT_DURATION_MIN/MAX`、参照素材の上限は
+  `app.workflows.MINIMAX_H3_REFERENCE_*`、H3 の書き方は `app.prompts.MINIMAX_H3_GUIDE_BODY`、
+  実例は `app.prompts.FEW_SHOT_H3` から代表を選抜。フィールドがモデルにどう届くかの
+  正本は `app.studio.compose_prompt`（変えたらガイドも直す）。
+
 ### ディレクトリ構成
 
 ```
@@ -1181,6 +1256,7 @@ backend/            FastAPI アプリ
   app/grok_session.py CLI の継続セッション（ACP / ワンショット）のホスト
   app/chat_agent.py 相談チャットの継続セッション・活動通知・停止（§4.3）
   app/prompts.py    チャット / エージェントのシステムプロンプト
+  app/drafting_guide.py  外部エージェント向け脚本ドラフト作成ガイド（GET /api/v1/prompt-guide）
   app/jobs.py       asyncio ジョブキューと実行、成果物取得・ラストフレーム抽出
   app/agent_*.py    エージェントのアクションプロトコル・実行ループ・セッション永続化
   app/library.py    ライブラリ（取っておく素材）の保存・目録

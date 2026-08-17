@@ -2575,15 +2575,25 @@ _scan_task: asyncio.Task[None] | None = None
 #: * ``done``   … 納品済み。次にユーザーが話しかけたターンでイベントが目に入る。
 _WAKEABLE_STATUSES = frozenset({"idle"})
 
-_TAKE_QUERY = (
+#: 未通知の Take とその宛先。``LEFT JOIN`` なのは、通知を配っている途中で
+#: ジョブ行が消えても（``DELETE /api/jobs/{id}``）行が見えなくならないように
+#: するため。行が消えたあとの Take は宛先（``chat_session_id``）が辿れないので、
+#: 削除の通知は**行が在るうちに** :func:`_on_job_deleted` が配る。
+_TAKE_SELECT = (
     "SELECT t.id AS take_id, t.shot_id, t.job_id,"
-    "       j.chat_session_id AS session_id"
+    "       j.chat_session_id AS session_id,"
+    "       j.status AS job_status"
     "  FROM studio_takes t"
-    "  JOIN jobs j ON j.id = t.job_id"
+    "  LEFT JOIN jobs j ON j.id = t.job_id"
     " WHERE t.agent_notified_at IS NULL"
-    "   AND j.status IN ('done', 'failed', 'canceled')"
     "   AND j.chat_session_id IN (SELECT id FROM agent_sessions)"
 )
+
+#: 通常の通知は「終端に達したジョブ」だけ。まだ走っているものはジョブ側の
+#: タイムアウトに任せる（:data:`app.jobs.JOB_WAIT_TIMEOUT`）。
+_TERMINAL_ONLY = " AND j.status IN ('done', 'failed', 'canceled')"
+
+_TAKE_QUERY = _TAKE_SELECT + _TERMINAL_ONLY
 
 
 async def _claim_take_notification(take_id: str) -> bool:
@@ -2591,6 +2601,10 @@ async def _claim_take_notification(take_id: str) -> bool:
 
     イベントと定期スキャンが同時に同じ Take を掴んでも、UPDATE が当たるのは
     片方だけなので、制作記録には 1 件しか積まれない。
+
+    **掴んだあとの配達が失敗したら :func:`_release_take_notification` で戻す**。
+    印だけ残ると、``IS NULL`` を見ている定期スキャンにも二度と拾われず、
+    エージェントは終わったレンダーを永久に待つことになる。
     """
     async with get_db() as conn:
         cur = await conn.execute(
@@ -2602,22 +2616,61 @@ async def _claim_take_notification(take_id: str) -> bool:
         return cur.rowcount > 0
 
 
+async def _release_take_notification(take_id: str) -> None:
+    """掴んだ印を戻す（配達に失敗したとき。次のスキャンで拾い直させる）。"""
+    async with get_db() as conn:
+        await conn.execute(
+            "UPDATE studio_takes SET agent_notified_at = NULL WHERE id = ?",
+            (take_id,),
+        )
+        await conn.commit()
+
+
 def _take_finished_text(
-    take: StudioTake | None, take_id: str, shot_id: str, job_id: str
+    take: StudioTake | None,
+    take_id: str,
+    shot_id: str,
+    job_id: str,
+    job_status: str | None = None,
+    *,
+    deleted: bool = False,
 ) -> str:
-    """LLM が追加のツール呼び出し無しで次を決められるだけの本文を作る。"""
+    """LLM が追加のツール呼び出し無しで次を決められるだけの本文を作る。
+
+    ``deleted`` はジョブ行がこれから消される経路（``DELETE /api/jobs/{id}``）。
+    ``job_status`` は**ジョブ行から読んだ状態**（``None`` = 行がもう無い）。
+    :attr:`StudioTake.status` は ``canceled`` を ``failed`` に潰している
+    （:func:`app.studio._take_status`）ので、キャンセルと本当の失敗を分けるには
+    こちらを見る必要がある。
+    """
     if take is None:  # 通知の直前に消された（消えたものは伝えるだけ）
         return (
             f"Shot `{shot_id}` の Take `{take_id}`（job `{job_id}`）は"
             "生成の完了前に削除されました。"
         )
+    status = job_status if job_status is not None else take.job_status
     head = (
         f"Shot `{shot_id}` の Take `{take_id}`（job `{job_id}`）の生成が"
     )
+    if deleted or status is None:
+        # ジョブが履歴から削除された（結果も進捗ももう辿れない）。
+        return (
+            head + "終わる前に job が履歴から削除されたため、結果を確認できません。"
+            "作り直すなら `studio_render_shot` をもう一度呼んでください。"
+        )
+    if status == "canceled":
+        # ⏹ か手動キャンセル。ここで「作り直せ」と言うと、止めたそばから同じ
+        # レンダーが走り出す（止めた意味が無くなる）。
+        return (
+            head + "**ユーザーの操作で停止されました**（job canceled）。"
+            "これは失敗ではないので、**勝手に作り直さないでください**。"
+            "次に何をするかはユーザーの指示を待ち、訊かれたら"
+            "`studio_render_shot` で回し直せると伝えてください。"
+        )
     if take.status == "failed":
         detail = take.error or "原因は記録されていません"
         return (
-            head + f"失敗しました（job {take.job_status or '不明'}）。エラー: {detail}。"
+            head + f"失敗しました（job {status or '不明'}）。エラー: {detail}。"
             "同じ設定で作り直すなら `studio_render_shot` をもう一度、"
             "本文や seed を変えるなら先に `studio_upsert_shot` で直してください。"
         )
@@ -2631,7 +2684,13 @@ def _take_finished_text(
 
 
 async def _deliver_take_finished(
-    take_id: str, shot_id: str, job_id: str, session_id: str
+    take_id: str,
+    shot_id: str,
+    job_id: str,
+    session_id: str,
+    job_status: str | None = None,
+    *,
+    deleted: bool = False,
 ) -> None:
     """1 件ぶんの完了通知（イベント追記 → 必要ならループ起動）。"""
     if not await _claim_take_notification(take_id):
@@ -2639,42 +2698,87 @@ async def _deliver_take_finished(
     session = await load(session_id)
     if session is None:
         return  # セッションが消えている（印は付けたので二度と拾わない）
-    take = await studio.get_take(take_id)
-    text = _take_finished_text(take, take_id, shot_id, job_id)
-    await _event(
-        session_id,
-        "studio_take_finished",
-        text,
-        shot_id=shot_id,
-        take_id=take_id,
-        job_id=job_id,
-        take_status=take.status if take else "deleted",
-        job_status=take.job_status if take else None,
-        error=take.error if take else None,
-    )
-    # _event は制作記録に書くだけなので、開いている画面には別途流す
-    # （job_id 付きで送ると、その Take の行がそのまま更新される）。
-    await ws.publish_agent(session_id, session.status, job_id=job_id, message=text)
+    try:
+        take = await studio.get_take(take_id)
+        text = _take_finished_text(
+            take, take_id, shot_id, job_id, job_status, deleted=deleted
+        )
+        await _event(
+            session_id,
+            "studio_take_finished",
+            text,
+            shot_id=shot_id,
+            take_id=take_id,
+            job_id=job_id,
+            take_status="deleted" if (deleted or take is None) else take.status,
+            job_status=(job_status if job_status is not None else take.job_status)
+            if take
+            else job_status,
+            error=take.error if take else None,
+        )
+        # _event は制作記録に書くだけなので、開いている画面には別途流す
+        # （job_id 付きで送ると、その Take の行がそのまま更新される）。
+        await ws.publish_agent(
+            session_id, session.status, job_id=job_id, message=text
+        )
+    except Exception:
+        # 掴んだまま落ちると、印だけ残って二度と拾われない（エージェントは
+        # 終わったレンダーを永久に待つ）。戻して次のスキャンに任せる。
+        await _release_take_notification(take_id)
+        raise
     if is_running(session_id):
         return  # 走っているループが次のターンでこのイベントを読む
+    # ここから下は「止まっているセッションを起こしてよいか」。
+    #
+    # * ⏹ の直後（``_stop_requests`` に居る = ループが畳まれる途中）は起こさない。
+    #   ``request_stop`` はこのセッションのジョブも cancel するので、その完了で
+    #   起こすと「止めたのに走り出す」ことになる（``start_loop`` は
+    #   ``_stop_requests`` を捨てるので、止めた印まで消えてしまう）。
+    # * ジョブが canceled のときも同じ理由で起こさない（出所は ⏹ か手動）。
+    #
+    # どちらもイベントは積んであるので、次にユーザーが話しかければ目に入る。
+    if session_id in _stop_requests or job_status == "canceled":
+        return
     # ここに来た時点でループの実体は居ない。status が running のまま残っている
     # のは前のプロセスが落ちた跡なので、待機中と同じように起こしてよい。
     if session.status in _WAKEABLE_STATUSES or session.status == "running":
         await start_loop(session_id)
 
 
-async def _on_job_final(job_id: str, status: str) -> None:
-    """:func:`app.jobs.on_job_final` のコールバック（終端に入った瞬間に 1 回）。"""
+async def _deliver_pending(
+    query: str, params: tuple = (), *, deleted: bool = False
+) -> int:
     async with get_db() as conn:
-        async with conn.execute(_TAKE_QUERY + " AND t.job_id = ?", (job_id,)) as cur:
+        async with conn.execute(query, params) as cur:
             rows = await cur.fetchall()
     for row in rows:
+        job_status = row["job_status"]
         await _deliver_take_finished(
             str(row["take_id"]),
             str(row["shot_id"]),
             str(row["job_id"]),
             str(row["session_id"]),
+            str(job_status) if job_status is not None else None,
+            deleted=deleted,
         )
+    return len(rows)
+
+
+async def _on_job_final(job_id: str, status: str) -> None:
+    """:func:`app.jobs.on_job_final` のコールバック（終端に入った瞬間に 1 回）。"""
+    await _deliver_pending(_TAKE_QUERY + " AND t.job_id = ?", (job_id,))
+
+
+async def _on_job_deleted(job_id: str) -> None:
+    """:func:`app.jobs.on_job_deleted`: ジョブ行が消される直前に呼ばれる。
+
+    消したあとでは ``chat_session_id`` が辿れず、その Take は**どのスキャンにも
+    宛先が引けない**（＝ エージェントが永久に待つ）。まだ終わっていないジョブでも
+    ここで「削除された」ことだけは伝えておく（:data:`_TERMINAL_ONLY` を外す）。
+    """
+    await _deliver_pending(
+        _TAKE_SELECT + " AND t.job_id = ?", (job_id,), deleted=True
+    )
 
 
 async def scan_pending_takes() -> int:
@@ -2684,17 +2788,7 @@ async def scan_pending_takes() -> int:
     ここで回収される。まだ終端に達していない Take は何もしない（ジョブ自体の
     タイムアウトは :data:`app.jobs.JOB_WAIT_TIMEOUT` 側の担当）。
     """
-    async with get_db() as conn:
-        async with conn.execute(_TAKE_QUERY) as cur:
-            rows = await cur.fetchall()
-    for row in rows:
-        await _deliver_take_finished(
-            str(row["take_id"]),
-            str(row["shot_id"]),
-            str(row["job_id"]),
-            str(row["session_id"]),
-        )
-    return len(rows)
+    return await _deliver_pending(_TAKE_QUERY)
 
 
 async def _scan_loop() -> None:
@@ -2734,6 +2828,7 @@ async def stop_take_watcher() -> None:
 # ジョブ側は agent_runner を知らない（import は agent_runner → jobs の一方向）。
 # import された時点で受け口を渡しておく。
 jobs.on_job_final(_on_job_final)
+jobs.on_job_deleted(_on_job_deleted)
 
 
 async def stop_all() -> None:
