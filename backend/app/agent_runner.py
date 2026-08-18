@@ -46,6 +46,7 @@ from . import (
     canvas,
     grok,
     grok_session,
+    h3_examples,
     jobs,
     library,
     prompts,
@@ -983,6 +984,74 @@ async def _library_search(session_id: str, action: AgentAction) -> None:
         total=total,
         offset=action.offset,
         returned=len(items),
+    )
+
+
+#: get_prompt_examples が 1 回で返す本文の上限（索引はここで切らない）
+PROMPT_EXAMPLE_LIMIT = 3
+
+
+def _prompt_example_index_text(examples: list) -> str:
+    """索引（本文なし）を 1 通のイベント本文にする。"""
+    lines = [
+        "MiniMax H3 の実例一覧（本文は id / mode / category を指定して取得）:",
+        "",
+    ]
+    for example in examples:
+        tags = ", ".join(example.categories)
+        lines.append(
+            f"- `{example.id}` — {example.mode} / {example.tier}"
+            f" [{tags}] {example.summary}"
+        )
+    lines += [
+        "",
+        '本文が要るときは `{"action": "get_prompt_examples", "id": "H3-E4"}`'
+        ' か `{"action": "get_prompt_examples", "mode": "r2v",'
+        ' "category": "multi-reference"}` を送ってください。',
+    ]
+    return "\n".join(lines)
+
+
+async def _prompt_examples(session_id: str, action: AgentAction) -> None:
+    """MiniMax H3 の実例を索引 or 本文で返す（承認不要）。
+
+    無指定なら索引だけ（全件の id / モード / カテゴリ / 一行説明）、`id` か
+    `mode` / `category` を指定したときはその本文まで返す。選び方の正本は
+    :mod:`app.h3_examples`（外部 API の ``GET /api/v1/prompt-examples`` と同じ）。
+    """
+    if action.example_id:
+        picked = h3_examples.select_examples(ids=(action.example_id,))
+    elif action.example_mode or action.example_category:
+        limit = action.example_limit or PROMPT_EXAMPLE_LIMIT
+        picked = h3_examples.select_examples(
+            mode=action.example_mode,
+            category=action.example_category,
+            tier=None,
+            limit=limit,
+        )
+    else:
+        await _event(
+            session_id,
+            "prompt_examples_result",
+            _prompt_example_index_text(h3_examples.select_examples(tier=None)),
+            returned=0,
+        )
+        return
+    if not picked:
+        await _event(
+            session_id,
+            "prompt_examples_result",
+            "該当する実例はありませんでした。条件を外して索引を取り直すか"
+            "（`get_prompt_examples` を引数なしで）、近いモードの例を使って"
+            "ください。",
+            returned=0,
+        )
+        return
+    await _event(
+        session_id,
+        "prompt_examples_result",
+        h3_examples.render_examples(picked),
+        returned=len(picked),
     )
 
 
@@ -2197,6 +2266,9 @@ async def apply_action(session_id: str, action: AgentAction) -> bool:
     if action.action == "library_sheet":
         await _library_sheet(session_id, action)
         return False
+    if action.action == "get_prompt_examples":
+        await _prompt_examples(session_id, action)
+        return False
     if action.action == "inspect":
         await _inspect(session_id, action)
         return False
@@ -2336,7 +2408,7 @@ async def _halt(session_id: str, reason: str) -> None:
 IMMEDIATE_ACTIONS = (
     "plan", "checkin", "done", "note", "rename",
     "library", "library_search", "library_sheet", "agent_search_sessions",
-    "agent_read_session",
+    "agent_read_session", "get_prompt_examples",
     *agent_protocol.STUDIO_ACTIONS,
 )
 

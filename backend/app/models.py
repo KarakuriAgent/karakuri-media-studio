@@ -2029,7 +2029,7 @@ AgentCheckinMode = Literal["every_job", "milestone", "auto"]
 AgentActionName = Literal[
     "plan", "run_task", "continue", "rerun", "inspect", "note", "rename",
     "library", "library_search", "library_sheet", "agent_search_sessions",
-    "agent_read_session",
+    "agent_read_session", "get_prompt_examples",
     "checkin", "done",
     # ドラマスタジオ（:mod:`app.studio`）の操作
     "studio_list_projects", "studio_get_project", "studio_create_project",
@@ -2218,6 +2218,12 @@ class AgentAction(BaseModel):
     category: str | None = None
     #: 検索結果の読み出し位置（ページング）
     offset: int = 0
+    #: get_prompt_examples アクション: MiniMax H3 実例の絞り込み
+    #: （:mod:`app.h3_examples` の id / モード / カテゴリ / 件数）
+    example_id: str | None = None
+    example_mode: str | None = None
+    example_category: str | None = None
+    example_limit: int = 0
     #: agent_read_session の対象（他セッション。自分自身は読めない）
     session_id: str | None = None
     # library_sheet アクション: シートに載せる素材の id（並べる順）と大きさ
@@ -3228,6 +3234,40 @@ class DraftingGuide(BaseModel):
     #: LLM のプロンプトへそのまま貼れる日本語 Markdown
     markdown: str
     limits: DraftingGuideLimits
+
+
+class PromptExample(BaseModel):
+    """GET /api/v1/prompt-examples が返す実例 1 件（:mod:`app.h3_examples`）。"""
+
+    #: ``H3-E4`` のような安定した id
+    id: str
+    #: ``t2v`` / ``i2v`` / ``fl2v`` / ``l2v`` / ``r2v`` / ``edit``
+    mode: str
+    #: 題材のタグ（``cinematic`` / ``dialogue`` / ``ui-text`` …）
+    categories: list[str]
+    #: 一行説明（英語）
+    summary: str
+    #: ``canonical``（公式形式の完成例）/ ``inspiration``（rewrite 前の生入力）
+    tier: str
+    #: 出典
+    source: str
+    #: 使いどころの補足（無ければ空文字）
+    note: str = ""
+    #: 例の本文。索引だけを返すとき（絞り込み無し）は ``null``
+    body: str | None = None
+
+
+class PromptExamples(BaseModel):
+    """GET /api/v1/prompt-examples のレスポンス。"""
+
+    #: ガイド本文と同じ版（:data:`app.drafting_guide.GUIDE_VERSION`）
+    guide_version: str
+    #: 実際に例が存在するモード / カテゴリ（絞り込みに使える値）
+    modes: list[str]
+    categories: list[str]
+    #: 返した件数
+    total: int
+    examples: list[PromptExample]
 
 
 # --------------------------------------------------------------------------

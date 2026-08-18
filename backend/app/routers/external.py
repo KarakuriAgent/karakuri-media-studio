@@ -19,17 +19,27 @@ Shot だけ。
 
 import secrets
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 from pydantic import ValidationError
 from starlette.datastructures import UploadFile
 
 from .. import jobs as job_service
 from .. import library, studio as service
 from ..config import load_settings
-from ..drafting_guide import build_drafting_guide
+from ..drafting_guide import GUIDE_VERSION, build_drafting_guide
+from ..h3_examples import (
+    CATEGORIES,
+    MODES,
+    H3Example,
+    available_categories,
+    available_modes,
+    select_examples,
+)
 from ..models import (
     DraftingGuide,
     Job,
+    PromptExample,
+    PromptExamples,
     StoryCreate,
     StoryResult,
     StudioAsset,
@@ -473,3 +483,59 @@ async def prompt_guide() -> DraftingGuide:
     尺の範囲や H3 の規約が変われば、この応答も一緒に変わる。
     """
     return build_drafting_guide()
+
+
+@router.get("/prompt-examples", response_model=PromptExamples)
+async def prompt_examples(
+    mode: str | None = Query(None, description="t2v / i2v / fl2v / l2v / r2v / edit"),
+    category: str | None = Query(None, description="cinematic / dialogue / …"),
+    id: str | None = Query(None, description="H3-E4 のような例の id"),
+    limit: int | None = Query(None, ge=1, le=50),
+) -> PromptExamples:
+    """MiniMax H3 の実例（上のガイドが参照している few-shot の全集）。
+
+    絞り込みを 1 つも指定しなければ**索引**（本文なし）を返し、``id`` か
+    ``mode`` / ``category`` を指定するとその本文まで返す。選び方は内蔵
+    エージェントの `get_prompt_examples` と同じ関数
+    （:func:`app.h3_examples.select_examples`）を通す。
+    """
+    if mode and mode not in MODES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown mode (use one of {', '.join(MODES)})",
+        )
+    if category and category not in CATEGORIES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown category (use one of {', '.join(CATEGORIES)})",
+        )
+    if id:
+        picked = select_examples(ids=(id,))
+        if not picked:
+            raise HTTPException(status_code=404, detail="example not found")
+    else:
+        picked = select_examples(
+            mode=mode, category=category, tier=None, limit=limit
+        )
+    # 索引（絞り込み無し）は本文を落として軽くする
+    with_body = bool(id or mode or category)
+    return PromptExamples(
+        guide_version=GUIDE_VERSION,
+        modes=available_modes(),
+        categories=available_categories(),
+        total=len(picked),
+        examples=[_prompt_example(x, with_body) for x in picked],
+    )
+
+
+def _prompt_example(example: H3Example, with_body: bool) -> PromptExample:
+    return PromptExample(
+        id=example.id,
+        mode=example.mode,
+        categories=list(example.categories),
+        summary=example.summary,
+        tier=example.tier,
+        source=example.source,
+        note=example.note,
+        body=example.body if with_body else None,
+    )

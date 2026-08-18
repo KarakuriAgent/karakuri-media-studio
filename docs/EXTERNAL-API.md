@@ -108,7 +108,7 @@ POST /api/v1/stories
 ```
 GET /api/v1/prompt-guide
 {
-  "guide_version": "2026-08-16",     // 中身を変えたら上がる（キャッシュ判定用）
+  "guide_version": "2026-08-18",     // 中身を変えたら上がる（キャッシュ判定用）
   "markdown": "# 脚本ドラフト作成ガイド…",
   "limits": {                        // 本文と同じ数値の機械可読版
     "shot_duration_min_seconds": 1.0, "shot_duration_max_seconds": 15.0,
@@ -121,14 +121,58 @@ GET /api/v1/prompt-guide
 - 本文は `backend/app/drafting_guide.py` が**既存の定数から組み立てる**（静的な
   コピーは持たない）: 尺は `app.studio.SHOT_DURATION_MIN/MAX`、参照素材の上限は
   `app.workflows.MINIMAX_H3_REFERENCE_*`、H3 の書き方は
-  `app.prompts.MINIMAX_H3_GUIDE_BODY`、実例は `app.prompts.FEW_SHOT_H3` から
+  `app.prompts.MINIMAX_H3_GUIDE_BODY`、実例は `app.h3_examples` から
   代表を選抜。内部の規約が変われば配るガイドも一緒に変わる。
 - 中身は「フィールド契約（`prompt` だけがモデルに届く / `title`・`action`・
-  `purpose` はメモ）」「素材メンション `@名前`」「H3 プロンプト規約」「実例」
-  「stories 投入の注意」の 5 節。フィールドの届き方の正本は
+  `purpose` はメモ）」「素材メンション `@名前`」「H3 プロンプト規約」「実例
+  （代表 2 件 + §2.2 の取得方法）」「stories 投入の注意」の 5 節。フィールドの届き方の正本は
   `app.studio.compose_prompt`（変えたらガイドも直す）。
 - 内蔵エージェント向けの `app.prompts.AGENT_STUDIO` はジョブ実行・Take 管理まで
   含むので、そのままは配らない（ドラフト作成に要る分だけのサブセット）。
+
+### 2.2 プロンプト実例（few-shot）
+
+上のガイドが載せている代表例だけでは足りないとき（アニメ調・商品CM・画面内の
+文字やUI・複数話者・参照素材の多いカット・既存動画の編集など）に、実例を種類で
+引くためのエンドポイント。
+
+```
+GET /api/v1/prompt-examples                       // 索引だけ（本文なし）
+GET /api/v1/prompt-examples?id=H3-E4              // その 1 件を本文つきで
+GET /api/v1/prompt-examples?mode=r2v&category=multi-reference&limit=2
+{
+  "guide_version": "2026-08-18",   // §2.1 のガイドと同じ版
+  "modes": ["t2v", "i2v", "fl2v", "l2v", "r2v", "edit"],
+  "categories": ["cinematic", "dialogue", "anime", "…"],
+  "total": 2,
+  "examples": [
+    {
+      "id": "H3-E7",
+      "mode": "r2v",
+      "categories": ["multi-reference", "dialogue"],
+      "summary": "Ref2VA — picture + video + audio, one job each …",
+      "tier": "canonical",              // canonical = 公式形式の完成例
+      "source": "written for this app from …",
+      "note": "",
+      "body": "subject_definitions:\n…"  // 索引のときは null
+    }
+  ]
+}
+```
+
+- クエリ（`mode` / `category` / `id` / `limit`）を 1 つも付けなければ索引を返す
+  （`body` は `null`）。1 つでも付けると本文まで返る。
+- `mode` は `t2v` / `i2v` / `fl2v` / `l2v` / `r2v` / `edit`、`category` は
+  `cinematic` / `dialogue` / `anime` / `product` / `action` / `ui-text` / `ugc` /
+  `horror` / `multi-reference` / `multilingual`。**有効な値の一覧はレスポンスの
+  `modes` / `categories`** にも入る（ガイド本文にも同じ一覧が載る）。知らない値は
+  400、存在しない `id` は 404。
+- `tier` は 2 種類: `canonical` は公式 rewrite 形式の**完成例**（そのまま真似して
+  よい）、`inspiration` は公式ブログ / コミュニティの**生入力**（発想の素材で、
+  形は真似しない）。
+- データの正本は `backend/app/h3_examples.py`。選び方（`select_examples`）は内蔵
+  エージェントの `get_prompt_examples` アクションと共有していて、外部と内蔵で
+  同じ例が出る。
 
 ## 3. 認証
 

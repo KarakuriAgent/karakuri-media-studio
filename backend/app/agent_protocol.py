@@ -24,6 +24,7 @@ from typing import Any, get_args
 from pydantic import BaseModel, ValidationError
 
 from . import grok
+from . import h3_examples
 from . import library as library_service
 from .config import load_settings
 from .ids import new_id
@@ -126,6 +127,7 @@ ACTION_NAMES = (
     "library_sheet",
     "agent_search_sessions",
     "agent_read_session",
+    "get_prompt_examples",
     "checkin",
     "done",
     *STUDIO_ACTIONS,
@@ -974,6 +976,35 @@ def parse_action(
     elif name == "agent_read_session":
         action.session_id = _studio_id(payload, "session_id", name)
         action.offset = _offset(payload, name)
+    elif name == "get_prompt_examples":
+        example_id = str(payload.get("id") or "").strip()
+        if example_id and example_id not in h3_examples.BY_ID:
+            raise ActionError(
+                f"get_prompt_examples の id '{example_id}' は登録されていません"
+                "（id を省略すると索引が返ります）"
+            )
+        action.example_id = example_id or None
+        mode = str(payload.get("mode") or "").strip().lower()
+        if mode and mode not in h3_examples.MODES:
+            raise ActionError(
+                "get_prompt_examples の mode は"
+                f" {' / '.join(h3_examples.MODES)} のいずれかで指定してください"
+            )
+        action.example_mode = mode or None
+        category = str(payload.get("category") or "").strip().lower()
+        if category and category not in h3_examples.CATEGORIES:
+            raise ActionError(
+                "get_prompt_examples の category は"
+                f" {' / '.join(h3_examples.CATEGORIES)} のいずれかで"
+                "指定してください"
+            )
+        action.example_category = category or None
+        try:
+            action.example_limit = max(0, int(payload.get("limit") or 0))
+        except (TypeError, ValueError) as exc:
+            raise ActionError(
+                "get_prompt_examples の limit は 0 以上の整数で指定してください"
+            ) from exc
     elif name == "library_sheet":
         raw_ids = payload.get("item_ids")
         item_ids = (

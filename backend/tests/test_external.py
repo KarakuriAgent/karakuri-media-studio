@@ -17,6 +17,7 @@ from app import (
     db,
     drafting_guide,
     grok,
+    h3_examples,
     jobs,
     nsfw,
     studio,
@@ -726,3 +727,82 @@ def test_the_guide_covers_the_field_contract_and_the_h3_rules(env):
     # 本文の値も定数から埋める
     assert str(workflows.MINIMAX_H3_REFERENCE_IMAGES) in markdown
     assert studio.EXCLUSION_SENTENCE in markdown
+
+
+def test_the_guide_lists_the_real_example_modes_and_categories(env):
+    enable(env)
+    markdown = call(env, "GET", "/api/v1/prompt-guide").json()["markdown"]
+    # 「実例の追加取得」節は実例データから組み立てるので、実在する値が全部載る
+    assert "GET /api/v1/prompt-examples" in markdown
+    for mode in h3_examples.available_modes():
+        assert f"`{mode}`" in markdown, mode
+    for category in h3_examples.available_categories():
+        assert f"`{category}`" in markdown, category
+    for example in h3_examples.select_examples(tier="canonical"):
+        assert example.id in markdown, example.id
+
+
+# --------------------------------------------------------------------------
+# プロンプト実例
+# --------------------------------------------------------------------------
+
+def test_the_examples_need_the_key_too(env):
+    assert env.client.get("/api/v1/prompt-examples").status_code == 404
+    enable(env)
+    assert env.client.get("/api/v1/prompt-examples").status_code == 401
+
+
+def test_without_a_filter_the_examples_come_back_as_an_index(env):
+    enable(env)
+    payload = call(env, "GET", "/api/v1/prompt-examples").json()
+
+    assert payload["guide_version"] == drafting_guide.GUIDE_VERSION
+    assert payload["modes"] == h3_examples.available_modes()
+    assert payload["categories"] == h3_examples.available_categories()
+    assert payload["total"] == len(h3_examples.EXAMPLES)
+    # 索引なので本文は付かない（載るのは選ぶのに要る分だけ）
+    assert all(item["body"] is None for item in payload["examples"])
+    first = payload["examples"][0]
+    assert first["id"] == "H3-E1"
+    assert first["mode"] == "i2v"
+    assert first["summary"]
+    assert first["tier"] == "canonical"
+
+
+def test_the_examples_can_be_filtered_by_mode_and_category(env):
+    enable(env)
+    payload = call(
+        env,
+        "GET",
+        "/api/v1/prompt-examples?mode=r2v&category=multi-reference",
+    ).json()
+
+    assert payload["total"] >= 1
+    for item in payload["examples"]:
+        assert item["mode"] == "r2v"
+        assert "multi-reference" in item["categories"]
+        assert item["body"]  # 絞り込んだときは本文まで返る
+
+    limited = call(
+        env, "GET", "/api/v1/prompt-examples?mode=t2v&limit=1"
+    ).json()
+    assert limited["total"] == 1
+
+
+def test_one_example_can_be_fetched_by_id(env):
+    enable(env)
+    payload = call(env, "GET", "/api/v1/prompt-examples?id=H3-E6").json()
+
+    assert payload["total"] == 1
+    example = payload["examples"][0]
+    assert example["id"] == "H3-E6"
+    assert example["mode"] == "edit"
+    assert example["body"].startswith("subject_definitions:")
+    assert example["source"]
+
+
+def test_unknown_example_filters_are_rejected(env):
+    enable(env)
+    assert call(env, "GET", "/api/v1/prompt-examples?mode=x2v").status_code == 400
+    assert call(env, "GET", "/api/v1/prompt-examples?category=nope").status_code == 400
+    assert call(env, "GET", "/api/v1/prompt-examples?id=H3-E999").status_code == 404

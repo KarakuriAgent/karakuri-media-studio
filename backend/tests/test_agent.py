@@ -23,6 +23,7 @@ from app import (
     config,
     db,
     grok,
+    h3_examples,
     jobs,
     library,
     lora_samples,
@@ -3211,3 +3212,88 @@ def test_reference_material_is_checked_for_the_image_stage_too(env):
         )
         is None
     )
+
+
+# --------------------------------------------------------------------------
+# get_prompt_examples（MiniMax H3 の実例を取りに行く）
+# --------------------------------------------------------------------------
+
+def test_get_prompt_examples_without_a_filter_returns_the_index(env):
+    session = start(env)
+    env.cli.answers = [
+        action_answer({"action": "get_prompt_examples"}, "例を見ます。")
+    ]
+    settled = say_and_settle(env, session["id"], "どんな例がある？")
+
+    events = [
+        m for m in settled["messages"] if m["kind"] == "prompt_examples_result"
+    ]
+    assert len(events) == 1
+    text = events[0]["content"]
+    # 索引なので全件の id が並び、本文は載らない
+    for example in h3_examples.EXAMPLES:
+        assert example.id in text, example.id
+    assert "integrated_multimodal_description:" not in text
+
+
+def test_get_prompt_examples_returns_the_body_for_an_id(env):
+    session = start(env)
+    env.cli.answers = [
+        action_answer(
+            {"action": "get_prompt_examples", "id": "H3-E10"}, "UI の例を見ます。"
+        )
+    ]
+    settled = say_and_settle(env, session["id"], "UI の例をくれ")
+    text = [
+        m for m in settled["messages"] if m["kind"] == "prompt_examples_result"
+    ][0]["content"]
+    assert "H3-E10" in text
+    assert h3_examples.BY_ID["H3-E10"].body in text
+
+
+def test_get_prompt_examples_filters_by_mode_and_category(env):
+    session = start(env)
+    env.cli.answers = [
+        action_answer(
+            {
+                "action": "get_prompt_examples",
+                "mode": "edit",
+                "category": "product",
+            },
+            "編集の例を見ます。",
+        )
+    ]
+    settled = say_and_settle(env, session["id"], "編集の例は？")
+    event = [
+        m for m in settled["messages"] if m["kind"] == "prompt_examples_result"
+    ][0]
+    assert event["data"]["returned"] == 1
+    assert h3_examples.BY_ID["H3-E6"].body in event["content"]
+
+
+def test_get_prompt_examples_rejects_an_unknown_filter():
+    with pytest.raises(agent_protocol.ActionError):
+        agent_protocol.parse_action('{"action": "get_prompt_examples", "mode": "x2v"}')
+    with pytest.raises(agent_protocol.ActionError):
+        agent_protocol.parse_action(
+            '{"action": "get_prompt_examples", "category": "nope"}'
+        )
+    with pytest.raises(agent_protocol.ActionError):
+        agent_protocol.parse_action('{"action": "get_prompt_examples", "id": "H3-E99"}')
+    action = agent_protocol.parse_action(
+        '{"action": "get_prompt_examples", "mode": "r2v", "limit": 2}'
+    )
+    assert action.example_mode == "r2v"
+    assert action.example_limit == 2
+
+
+def test_the_action_protocol_lists_every_example_mode_and_category():
+    """プロンプトの一覧が実例データと食い違ったまま古くならないように見張る。"""
+    row = [
+        line
+        for line in prompts.AGENT_PROTOCOL.splitlines()
+        if line.startswith("| `get_prompt_examples`")
+    ]
+    assert len(row) == 1
+    for value in (*h3_examples.MODES, *h3_examples.CATEGORIES):
+        assert f"`{value}`" in row[0], value
