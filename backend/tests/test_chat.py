@@ -12,6 +12,7 @@ from app import (
     db,
     grok,
     grok_session,
+    h3_examples,
     jobs,
     library,
     ws,
@@ -938,6 +939,24 @@ def test_a_video_only_session_embeds_no_image_spec():
     )
     assert "IMAGE PROMPT SPEC" not in system
     assert "FEW-SHOT EXAMPLES — MiniMax H3" in system
+
+
+def test_the_few_shot_examples_follow_the_selected_video_workflow():
+    """例は全部貼らず、選んだワークフローに合う 1〜2 本だけを載せる。"""
+    i2v = build_system_prompt(
+        ChatSessionCreate(mode="i2v", video_workflow="minimax_h3_i2v_turbo")
+    )
+    for example in h3_examples.default_examples_for_workflow(
+        "minimax_h3_i2v_turbo"
+    ):
+        assert f"## {example.id} " in i2v, example.id
+    assert "## H3-E3 " not in i2v  # Ref2VA の例は i2v には貼らない
+
+    r2v = build_system_prompt(
+        ChatSessionCreate(mode="i2v", video_workflow="minimax_h3_r2v")
+    )
+    assert "## H3-E7 " in r2v
+    assert "## H3-E4 " not in r2v
 
 
 # --------------------------------------------------------------------------

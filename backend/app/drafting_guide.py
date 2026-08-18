@@ -10,7 +10,7 @@
 - 尺の範囲は :data:`app.studio.SHOT_DURATION_MIN` / :data:`~app.studio.SHOT_DURATION_MAX`
 - 参照素材の上限は :data:`app.workflows.MINIMAX_H3_REFERENCE_IMAGES` ほか
 - H3 の書き方そのものは :data:`app.prompts.MINIMAX_H3_GUIDE_BODY`
-- 実例は :data:`app.prompts.FEW_SHOT_H3`
+- 実例は :mod:`app.h3_examples`（``GET /api/v1/prompt-examples`` と同じデータ）
 
 を**そのまま引いて**組み立て、ここには「stories 投入に要る分だけ」の編成と、
 このアプリ固有の契約（フィールドの届き方・``@名前``）だけを書く。
@@ -26,8 +26,14 @@
 規模はリクエストごとに組み立てて問題ない（キャッシュしない）。
 """
 
+from .h3_examples import (
+    available_categories,
+    available_modes,
+    render_examples,
+    select_examples,
+)
 from .models import DraftingGuide, DraftingGuideLimits
-from .prompts import FEW_SHOT_H3, MINIMAX_H3_GUIDE_BODY
+from .prompts import MINIMAX_H3_GUIDE_BODY
 from .studio import EXCLUSION_SENTENCE, SHOT_DURATION_MAX, SHOT_DURATION_MIN
 from .workflows import (
     MINIMAX_H3_REFERENCE_AUDIOS,
@@ -36,7 +42,7 @@ from .workflows import (
 )
 
 #: ガイド本文の版。中身を変えたら上げる（受け取り側がキャッシュの判定に使う）。
-GUIDE_VERSION = "2026-08-16"
+GUIDE_VERSION = "2026-08-18"
 
 #: 実用上の下限（秒）。:data:`~app.studio.SHOT_DURATION_MIN` は API が受け付ける
 #: 範囲で、H3 は 4 秒を切ると芝居が入りきらない（``MINIMAX_H3_GUIDE_BODY`` の
@@ -54,19 +60,57 @@ def _recommended_range() -> str:
 
 
 def _few_shot(*ids: str) -> str:
-    """:data:`app.prompts.FEW_SHOT_H3` から見出し id の例だけ抜き出す。
+    """:mod:`app.h3_examples` の例を見出し id で切り出す。
 
-    ``FEW_SHOT_H3`` は ``## H3-E1 …`` の節の並び。全部貼るとガイドが長すぎる
-    ので代表だけを選ぶが、本文は写さずあちらから切り出す（例が直れば追随する）。
-    このガイドでは ``### 4.2`` の下に置くので、見出しは 1 段下げる。
+    全部貼るとガイドが長すぎるので代表だけを選ぶが、本文は写さずあちらから
+    組み立てる（例が直れば追随する）。このガイドでは ``### 4.2`` の下に置くので、
+    見出しを 1 段下げ、few-shot 用の前書き（``header``）は付けない。
     """
-    sections = FEW_SHOT_H3.split("\n## ")[1:]
-    picked = [
-        f"#### {section.rstrip()}"
-        for section in sections
-        if section.split(None, 1)[0] in ids
-    ]
-    return "\n\n".join(picked)
+    block = render_examples(select_examples(ids=ids), header=False)
+    return "\n".join(
+        f"##{line}" if line.startswith("## ") else line
+        for line in block.rstrip().splitlines()
+    )
+
+
+def _example_catalog() -> str:
+    """「実例の追加取得」節を実例データから組み立てる。
+
+    モード・カテゴリの一覧は :mod:`app.h3_examples` に**実際に存在する値**だけを
+    出す（手書きの列挙は例が増減したときに黙って古くなる）。
+    """
+    modes = " / ".join(f"`{mode}`" for mode in available_modes())
+    categories = " / ".join(f"`{name}`" for name in available_categories())
+    canonical = select_examples(tier="canonical")
+    inspiration = select_examples(tier="inspiration")
+    index = "\n".join(
+        f"- `{example.id}` — {example.mode} [{', '.join(example.categories)}]"
+        f" {example.summary}"
+        for example in canonical
+    )
+    return f"""\
+`GET /api/v1/prompt-examples` で、上より多くの実例を取れる（`guide_version` は
+このガイドと同じ版）。
+
+- クエリ無し … 索引だけ（`id` / `mode` / `categories` / `summary` / `tier`。本文なし）
+- `?id=H3-E4` … その 1 件を本文つきで
+- `?mode=<モード>&category=<カテゴリ>&limit=<件数>` … 条件に合うものを本文つきで
+
+指定できる `mode`: {modes}
+指定できる `category`: {categories}
+
+`tier` は 2 種類ある。`canonical`（{len(canonical)} 件）は公式 rewrite 形式の
+**完成例**で、`prompt` の書きぶりはこれを真似する。`inspiration`（{len(inspiration)} 件）は
+公式ブログやコミュニティの**生入力**で、発想の素材にはなるが形は真似しない。
+
+使いどころ: 書こうとしているカットが下の代表例とジャンルの違うもの
+（アニメ調・商品CM・画面内の文字やUI・複数話者の会話・参照素材の多いカット・
+既存動画の編集）なら、書き始める前に近いカテゴリの `canonical` を 1 件取って
+形を合わせること。
+
+現在の `canonical` の索引:
+
+{index}"""
 
 
 #: 素材メンション入りの Shot の実例（``app.studio_demo`` のデモ脚本と同じ書き味を、
@@ -160,6 +204,10 @@ def build_drafting_guide() -> DraftingGuide:
 ### 4.2 公式 H3 文書の例（`prompt` が最終的にこう解釈される）
 
 {_few_shot("H3-E2", "H3-E3")}
+
+### 4.3 実例の追加取得（`GET /api/v1/prompt-examples`）
+
+{_example_catalog()}
 
 ## 5. `POST /api/v1/stories` の注意
 

@@ -34,6 +34,13 @@ from __future__ import annotations
 from collections.abc import Collection, Iterable
 from pathlib import Path
 
+from .h3_examples import (
+    DEFAULT_IDS,
+    MORE_EXAMPLES_HINT,
+    default_examples_for_workflow,
+    render_examples,
+    select_examples,
+)
 from .models import (
     AgentMessage,
     AgentSessionCreate,
@@ -862,22 +869,45 @@ and Ref2VA `detailed_description`):
 
 - `[Shot 1]` has **no timestamp**. Later shots: `[Shot 2] At 00:03.500, the
   camera cuts to …` with strictly increasing cut times inside the job
-  `duration`. Prefer `the camera cuts to` for ordinary cuts.
+  `duration`. Prefer `the camera cuts to` for ordinary cuts; `the shot cuts to`,
+  `the shot transitions to`, `the shot changes to` and `the shot switches to`
+  are equally valid. Cross-dissolve, fade and wipe only when the user asked
+  for them.
+- **Cut only for new information** about subject, space, state, viewpoint or
+  time. If just the distance or the angle changes a little, keep one shot and
+  write camera motion instead.
 - Start Shot 1 with style + initial composition
   (`Live-action, cinematic, a medium-wide shot frames…`). Ref2VA puts those 1–2
-  style sentences **before** `[Shot 1]`.
+  style sentences **before** `[Shot 1]`. Common styles: `Cinematic`,
+  `live-action`, `2D-animated`, `3D CG`, `claymation`, `watercolor`,
+  `vintage film`. Derive the style from the attached picture on keyframe /
+  reference tasks; pick it from the user's text on T2VA. One style only,
+  unless the user explicitly wants a mix (then say how the two combine).
 - Camera motion is a **natural English clause inside the shot**, never a
   `Camera:` footer. Vocabulary: Zoom In/Out, Push In / Pull Out, Pan Left/Right,
   Truck Left/Right, Tilt Up/Down, Pedestal Up/Down, Arc Shot, Tracking Shot,
   Static Shot, Shake Slightly/Strongly, POV, Roll Clockwise/Counterclockwise;
-  optional `with small/large amplitude`, `at slow/fast speed`.
+  optional `with small/large amplitude`, `at slow/fast speed`. Add amplitude
+  and speed **only when they mean something** — medium amplitude and normal
+  speed are simply omitted.
 - Speakers: stable `(S1)`, `(S2)`; compound `(S1,S2)` when they speak together.
   Identifying phrase + ID + delivery **outside** `<d>`; inside `<d>` only
   `[Language]` + the user's verbatim words. Do not translate dialogue.
   Example: `The young woman with a quiet, breathy voice (S1) says: <d>[Japanese] いらっしゃい</d>`
+  On a speaker's **first appearance** establish a stable identity from what the
+  material actually shows: character type, age, gender, on-screen or off,
+  pitch, timbre, speaking rate, accent.
   Voiceover: exact phrase `says in an off-screen voiceover`, then state lips
-  remain closed. Cross-cut speech: `<scenetrans>`. Truncated by clip end:
-  `<cutoff>`.
+  remain closed. Cross-cut speech: `<scenetrans>` at both connecting points,
+  plus one of `continues seamlessly across the cut`, `continues uninterrupted
+  into the next shot`, `carries over from the previous shot`, `remains audible
+  across the transition`. Truncated by clip end: `<cutoff>`.
+- Transcribing dialogue from a reference audio: keep the source words and the
+  original language verbatim inside `<d>`, write `[unclear]` for spans you
+  cannot make out (never guess), normalise punctuation to `,` `.` `?` `!`, and
+  drop repeated tildes, emoji and decorative marks. If only the timbre,
+  rhythm or delivery is being referenced, do **not** carry the source lines
+  over.
 - Visible on-screen text stays in English double quotes, original language, no
   translation (`A neon sign reading "営業中"`).
 - `overall_soundscape:` 1–4 English sentences. Ambience + physical + non-verbal
@@ -893,12 +923,15 @@ Hard rules (this app):
 - Duration 4–15s; the app snaps the length up to the model's 17k+5 frame grid
   at 24fps. Do not write frame counts or fps in the text.
 - The native canvas is a **768px short edge (max 768x1344)**: keep `megapixels`
-  around 0.4. Larger costs time and drifts.
+  around 0.4. Larger costs time and drifts. (That is this local install's
+  working size, not the model's ceiling — never write resolution claims into
+  the prompt text.)
 - `duration`, `megapixels` and `aspect_ratio` are job fields, never sentences.
 - There is **no negative prompt** (no CFG). If the body does not already
   mention subtitles/watermarks, finish with
   `No text, subtitles, logos or watermarks.` Official `<d>` is how speech is
-  spoken; that sentence is a safety net against burnt-in captions.
+  spoken; that sentence is a safety net against burnt-in captions. Leave it
+  out when on-screen typography or a UI is the subject of the shot.
 - Number tags **per type, in attach order**: `<Picture 1>`, `<Video 1>`,
   `<Audio 1>`. Never write a tag with nothing behind it.
 """
@@ -984,17 +1017,39 @@ non_diegetic_music:
 - `summary`: one short paragraph starting with `[task type]` or
   `[type + type]`. Types: `keyframe completion`, `reference generation`,
   `video editing`, `video continuation`, `audio reuse`, `audio reference`.
-  Combined with ` + `.
+  Combined with ` + `. **Attachment alone creates no task type**: a reference
+  video that only supplies camera movement, cuts or rhythm is
+  `reference generation`, not `video editing`. Editing a source video whose
+  original audio stays audible adds `audio reuse`; continuing one without
+  copying the signal adds `audio reference`. For an editing task the summary
+  starts, right after the prefix, with
+  `The target video is an edited version of <Video 1>.`
 - `retention_analysis`: one line per label.
   Visible markers: `fully_preserved` / `partially_preserved` /
   `attribute_transfer` / `weak_reference`
   Audio markers: `fully_copy` / `partially_copy` / `reference` /
   `weak_reference`
-  Subject form: `<Subject 1> (appears in [Shot 1], [Shot 3]): fully_preserved - …`
+  The parenthesis differs per label — Subject = where it appears, Picture /
+  Video = what role it plays:
+  `<Subject 1> (appears in [Shot 1], [Shot 3]): fully_preserved - …`
+  `<Picture 2> ([Shot 1] first frame): fully_preserved - …`
+  `<Video 1> (cut and pacing structure): weak_reference - …`
+  `<Audio 1>: reference - …`
+  Never write `(Sx)` in `retention_analysis`.
+- `(Sx)` belongs to the target video's speakers, numbered in the order they
+  actually speak, and is reused everywhere that voice appears — including an
+  `<Audio N>` bound to that speaker in `subject_definitions`, which never
+  assigns a new one. A voice that exists only inside a reused BGM or complete
+  soundtrack gets **no** `(Sx)`: name `<Audio N>` as the source instead.
+- State a copied / referenced audio relationship in the section that carries
+  that layer: ambience and effects in `overall_soundscape`, audience-only
+  score in `non_diegetic_music`, and in both when one audio supplies both.
 - `detailed_description`: style in 1–2 sentences **before** `[Shot 1]`. Then
   the same shot / camera / dialogue rules as base. Insert labels where they
   apply. Generation tasks target ~350–500 English words when the source has
-  enough facts; do not invent plot to pad.
+  enough facts; do not invent plot to pad. With dense dialogue, a complete
+  speech timeline outranks the word count; editing tasks follow the source's
+  complexity instead of the range; a single shot is never a reason to be brief.
 - Do not re-describe a reference as if it were the shot. Name **which
   reference drives which part**.
 
@@ -1005,7 +1060,9 @@ This app's tag numbering (overrides official pairing):
 - **Every reference video is passed with its soundtrack.** Those soundtracks
   **share `<Audio j>` numbering with standalone `reference_audios` and take
   the low numbers.** Example: 2 videos + 1 audio → `<Audio 1>` / `<Audio 2>`
-  are the videos' soundtracks, `<Audio 3>` is the standalone track.
+  are the videos' soundtracks, `<Audio 3>` is the standalone track. (Official
+  Ref2VA says a reference video creates no `<Audio N>` by itself; the ComfyUI
+  graph here always hands the soundtrack over, so this app's rule wins.)
 - Never write a tag with nothing behind it.
 
 Short Ref2VA skeleton (fill from the attached material; do not invent plot):
@@ -1409,61 +1466,10 @@ the official I2VA alignment line with a first-frame opener sentence.
   soundtracks take the low `<Audio j>` numbers.
 """
 
-FEW_SHOT_H3 = """\
-# FEW-SHOT EXAMPLES — MiniMax H3 (official rewrite format)
+#: 従来どおりの代表 3 本（ワークフローが分からない経路のフォールバック）。
+#: 本文は :mod:`app.h3_examples` が正本で、ここでは組み立てるだけ。
+FEW_SHOT_H3 = render_examples(select_examples(ids=DEFAULT_IDS))
 
-Imitate these complete official documents. Do not fall back to one-paragraph
-legacy examples.
-
-## H3-E1 I2VA — hotel-bed i2v (this app's scene; no invented dialogue)
-
-```
-For the target video, at 0.00 seconds into the target video, <Picture 1> (from [Shot 1]) is fully referenced.
-
-integrated_multimodal_description: [Shot 1] Live-action, cinematic, a tight medium shot frames the adult Japanese woman shown in <Picture 1> on a rumpled hotel bed with white sheets. She lies on her back under a man, knees bent, hips raised against his, fingers already gripping the sheet beside her hip. The camera holds a static shot and shakes slightly as the thrusting becomes rapid and intense — short hard strokes in quick succession. Each stroke drives her hips into the mattress; her legs tremble, fingers dig into the sheets, and her back arches off the bed. Her brows lock tight, watery eyes roll upward, mouth open wide. Heavy sweat beads on her flushed skin; messy dark hair sticks to her face and the pillow. Harsh practical bedroom lighting stays on her climaxing face and torso. Bed springs compress and rebound with each stroke; skin slaps at the contact; her breath breaks into shaky high moans between gasps.
-
-overall_soundscape: Fast bed creaks keep time with the thrusts. Skin-on-skin impacts stay sharp and close. Gasping breaths and urgent moans continue through the continuous shot.
-
-non_diegetic_music: N/A
-
-No text, subtitles, logos or watermarks.
-```
-
-## H3-E2 T2VA — two shots, 8s (ramen stall; one user-given line)
-
-```
-integrated_multimodal_description: [Shot 1] Live-action, cinematic, a medium-wide shot frames a late-night ramen stall under a canvas awning, steam rising from a steel pot toward a handwritten sign reading "営業中". A young woman in a dark apron stands behind the counter, wiping a ceramic bowl. The camera pushes in with small amplitude at slow speed as the woman with a quiet, even voice (S1) looks up at the arriving customer and says: <d>[Japanese] いらっしゃい</d> [Shot 2] At 00:05.000, the camera cuts to a close-up of chopsticks lifting noodles from the bowl while broth steam crosses the frame.
-
-overall_soundscape: Rain ticks on the awning. Broth simmers; ceramic bowls clink; traffic passes on the wet street.
-
-non_diegetic_music: Sparse electric-piano notes at a slow tempo, fading under the simmer.
-
-No text, subtitles, logos or watermarks.
-```
-
-## H3-E3 Ref2VA — six sections (one picture as identity; no standalone Picture line)
-
-```
-subject_definitions:
-<Subject 1> is the adult Japanese woman in <Picture 1>, with long dark hair, flushed skin, and the same face, body, and wardrobe shown there.
-
-summary:
-[reference generation] The target video shows <Subject 1> sitting up on a rumpled hotel bed and looking toward the camera.
-
-retention_analysis:
-<Subject 1> (appears in [Shot 1]): fully_preserved - identity, face, hair, body, and wardrobe from <Picture 1> are retained.
-
-detailed_description:
-The target video is live-action and cinematic, lit by a single warm practical lamp that leaves the far wall in shadow.
-[Shot 1] A medium shot frames <Subject 1> sitting on the edge of the rumpled hotel bed, knees together, hands on the mattress. The camera pushes in with small amplitude at slow speed as she lifts her chin, meets the lens, and holds the look. Sheets crease under her palms; her shoulders rise with one breath and settle.
-
-overall_soundscape: Hotel-room tone and the rustle of sheets under her hands. A distant corridor door clicks once.
-
-non_diegetic_music: N/A
-
-No text, subtitles, logos or watermarks.
-```
-"""
 
 # Krea 2 only: the other image families carry their own examples inside their
 # own IMAGE PROMPT SPEC section (their prompt styles are incompatible).
@@ -2091,7 +2097,12 @@ def build_system_prompt(
         except WorkflowSpecError:
             guide = ""
         if guide:
-            parts += [guide, H3_QUALITY_BAR, FEW_SHOT_H3]
+            # 例は選んだワークフローに合う 1〜2 本だけ（全部貼るとセッションの
+            # システムプロンプトが肥大する）。足りなければチャットの相手が
+            # `GET /api/v1/prompt-examples` 相当の索引を持つ内蔵エージェントに
+            # 頼るか、ここの既定表（:mod:`app.h3_examples`）を直す。
+            examples = default_examples_for_workflow(ctx.video_workflow)
+            parts += [guide, H3_QUALITY_BAR, render_examples(examples)]
         else:
             # pre-H3 path: generic paragraph + talkvid template + legacy few-shots
             parts.append(
@@ -2284,6 +2295,7 @@ Available actions:
 | `library_search` | any of `q` (name / tag substring), `tag` (exact), `kind` (`image` / `video` / `audio`), `category` (`character` / `background` / `prop` / `none` = uncategorized), `offset` | search the **whole** library, not just what CHOICES lists; the result arrives next turn as an EVENT with the paths, categories and how many are left. No approval needed |
 | `agent_search_sessions` | `q` (title / message substring), optional `offset` | search **other** agent sessions (not this one) by title or transcript; the result arrives next turn as an EVENT (snippets only — use `agent_read_session` to read a hit). No approval needed |
 | `agent_read_session` | `session_id` (the other session), optional `offset` | read that session's transcript; the result arrives next turn as an EVENT. This session is excluded. No approval needed |
+| `get_prompt_examples` | none (index), or `id` (`H3-E4` …), or `mode` (`t2v` / `i2v` / `fl2v` / `l2v` / `r2v` / `edit`) + optional `category` (`cinematic` / `dialogue` / `anime` / `product` / `action` / `ui-text` / `ugc` / `horror` / `multi-reference` / `multilingual`) + optional `limit` | fetch more MiniMax H3 prompt examples than the FEW-SHOT section carries; with no body you get the index (id, mode, categories, one-line summary), otherwise the full documents arrive next turn as an EVENT. No approval needed |
 | `library_sheet` | `item_ids[]` (library ids, 1–8, **in the order they should be laid out**), optional `name`, optional `width` / `height` | compose those library images into one black-background reference sheet and keep it in the library; its id, path and URL arrive next turn as an EVENT. No approval needed |
 | `studio_*` | see DRAMA STUDIO | build and run a studio project — the way to make a series or any story told in several shots |
 | `checkin` | `question`, `options[]` | ask the user and wait for the answer |
@@ -2398,7 +2410,8 @@ Rules:
   either list out when you do not need it, and never put video LoRAs in a
   `mode: "image_only"` job.
 - Exactly one action per reply — `rename`, `library`, `library_search`,
-  `library_sheet`, `agent_search_sessions` and `agent_read_session` count like
+  `library_sheet`, `agent_search_sessions`, `agent_read_session` and
+  `get_prompt_examples` count like
   `plan` / `checkin` here, so rename, keep, search or
   compose one thing per turn (the app renames every frame of a job at once when
   you target it by `job_id`).
@@ -2980,7 +2993,9 @@ def build_agent_system_prompt(
                  comfy_target, _option_ids(options.audio_workflows)
              ),
              audio_prompt_guides_section(),
-             H3_QUALITY_BAR, FEW_SHOT_H3, FEW_SHOT_IMAGE_KREA2,
+             H3_QUALITY_BAR,
+             FEW_SHOT_H3 + "\n" + MORE_EXAMPLES_HINT,
+             FEW_SHOT_IMAGE_KREA2,
              AGENT_STUDIO,
              _agent_choices(options, lora_samples),
              _agent_guardrails(ctx, max_tasks), AGENT_OUTPUT_RULES]
