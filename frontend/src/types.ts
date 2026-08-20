@@ -1521,17 +1521,45 @@ export interface StudioDemoCreate {
 // 参照するだけで、元が消えても並びは残り `missing` で伝わる。
 // --------------------------------------------------------------------------
 
-/** トラックの種別（フェーズ 1 で実際に使うのは `video` の V1 だけ）。 */
+/** トラックの種別（`video` の V1 / `audio` の A1… / `subtitle` の T1）。 */
 export type TimelineTrackKind = 'video' | 'audio' | 'subtitle'
 
-/** クリップのソース（フェーズ 1 で使うのは `take` と隙間の `gap` だけ）。 */
+/**
+ * クリップのソース。
+ *
+ * `take` は制作タブのテイク、`library` / `job` / `asset_file` は素材ビンから
+ * 足したもの、`image` は静止画（`source_id` は `library:<id>` のように出どころ
+ * の印つき）、`text` はテロップ、`gap` は隙間。
+ */
 export type TimelineClipSource =
   | 'take'
   | 'asset_file'
   | 'library'
   | 'job'
+  | 'image'
   | 'text'
   | 'gap'
+
+/** 繋ぎの種別（ffmpeg の `xfade` にマップされる）。 */
+export type TimelineTransitionKind =
+  | 'crossfade'
+  | 'fadeblack'
+  | 'fadewhite'
+  | 'wipeleft'
+  | 'wiperight'
+  | 'slideleft'
+  | 'slideright'
+  | 'circleopen'
+  | 'pixelize'
+
+/** 書き出しのプリセット（`timeline` = タイムラインの規格そのまま）。 */
+export type TimelineExportPreset = 'timeline' | '1080p' | 'vertical' | '720p'
+
+/** 縦横比が変わるときの収め方。 */
+export type TimelineExportFit = 'pad' | 'crop'
+
+/** 素材ビンに出るものの種別。 */
+export type TimelineMediaKind = 'video' | 'audio' | 'image'
 
 /** 書き出し 1 回の状態。 */
 export type TimelineExportStatus = 'queued' | 'running' | 'done' | 'failed'
@@ -1580,7 +1608,7 @@ export interface TimelineClip {
   timeline_id: string
   /** タイムライン上の開始位置（ミリ秒）。 */
   start_ms: number
-  /** 尺（ミリ秒）。等速なので `out_ms - in_ms` と一致する。 */
+  /** 尺（ミリ秒）。`(out_ms - in_ms) / speed` と一致する。 */
   duration_ms: number
   source_kind: TimelineClipSource
   source_id: string | null
@@ -1590,12 +1618,19 @@ export interface TimelineClip {
   gain_db: number
   fade_in_ms: number
   fade_out_ms: number
+  /**
+   * **前の**クリップとの繋ぎ（null = カット）。オーバーラップ方式なので、
+   * 繋ぎが付くとこのクリップはその分だけ前へ食い込む。
+   */
   transition_kind: string | null
   transition_ms: number
+  /** `text` クリップの中身（`{ text, style }`）。 */
   text_payload: Record<string, unknown> | null
+  /** 再生速度（1.0 = 等速。映像クリップだけ 1 以外を取れる）。 */
+  speed: number
   sort_order: number
   // --- サーバーが読み取りのたびに解決するぶん -------------------------------
-  /** 再生できる URL（`/outputs/…`）。解決できなければ null。 */
+  /** 再生できる URL（`/outputs/…` / `/library/…` / `/assets/…`）。 */
   video_url: string | null
   /** ソースそのものの長さ（ミリ秒）。分からなければ null。 */
   source_duration_ms: number | null
@@ -1644,6 +1679,7 @@ export interface TimelineClipInput {
   transition_kind?: string | null
   transition_ms?: number
   text_payload?: Record<string, unknown> | null
+  speed?: number
 }
 
 /** 書き出し 1 回（`outputs/exports/{id}/final.mp4`）。 */
@@ -1667,6 +1703,137 @@ export interface TimelineExportRequest {
   width?: number
   height?: number
   fps?: number
+  /** 解像度のプリセット（`width` / `height` を直接送ればそちらが勝つ）。 */
+  preset?: TimelineExportPreset
+  /** 縦横比が変わるときの収め方。 */
+  fit?: TimelineExportFit
+  /** ラウドネス正規化（-14 LUFS / TP -1.5 dB）を掛けるか。 */
+  loudnorm?: boolean
+}
+
+// --- トラックの出し入れ ------------------------------------------------------
+
+/** POST /api/studio/timelines/{id}/tracks body。 */
+export interface TimelineTrackCreate {
+  /** `video` は V1 が正なので足せない（400）。 */
+  kind?: TimelineTrackKind
+  /** 省略すると種別ごとの連番（`A2` / `T1`）。 */
+  name?: string
+}
+
+/** PATCH /api/studio/timelines/{id}/tracks/{track_id} body。 */
+export interface TimelineTrackUpdate {
+  name?: string
+  muted?: boolean
+  locked?: boolean
+}
+
+// --- 素材ビン ----------------------------------------------------------------
+
+/** タイムラインへ置ける素材 1 件。 */
+export interface TimelineMediaItem {
+  /** クリップにしたときの `source_kind`。 */
+  source_kind: TimelineClipSource
+  /** その種別の中での id（`source_id` にそのまま入る）。 */
+  source_id: string
+  media_kind: TimelineMediaKind
+  name: string
+  /** 出どころの説明（「ライブラリ」「素材」など）。 */
+  origin: string
+  url: string | null
+  /** 素材そのものの長さ（ミリ秒。静止画と読めなかったものは null）。 */
+  duration_ms: number | null
+  created_at: string
+}
+
+/** GET /api/studio/projects/{id}/media: 素材ビンの 1 ページ。 */
+export interface TimelineMediaPage {
+  items: TimelineMediaItem[]
+  total: number
+  limit: number
+  offset: number
+}
+
+// --- 台詞からのテロップ生成 --------------------------------------------------
+
+/** POST /api/studio/timelines/{id}/generate-subtitles body。 */
+export interface TimelineSubtitleRequest {
+  /** 書き込む字幕トラック（省略すると T1。無ければ作られる）。 */
+  track_id?: string | null
+}
+
+// --- 脚本との差分 ------------------------------------------------------------
+
+/** 増えたカット（採用テイクの動画がある）。 */
+export interface TimelineSyncAdded {
+  shot_id: string
+  take_id: string
+  label: string
+  duration_ms: number
+}
+
+/** クリップが古いテイクを指している。 */
+export interface TimelineSyncRetaken {
+  clip_id: string
+  shot_id: string
+  old_take_id: string
+  new_take_id: string
+  label: string
+  duration_ms: number | null
+}
+
+/** 元のカットが消えた（または採用が外れた）クリップ。 */
+export interface TimelineSyncRemoved {
+  clip_id: string
+  label: string
+  reason: string
+}
+
+/** GET /api/studio/timelines/{id}/sync-preview: 反映できる差分。 */
+export interface TimelineSyncPreview {
+  added: TimelineSyncAdded[]
+  retaken: TimelineSyncRetaken[]
+  removed: TimelineSyncRemoved[]
+}
+
+/** POST /api/studio/timelines/{id}/sync body（選んだ項目だけ反映）。 */
+export interface TimelineSyncRequest {
+  add_shot_ids?: string[]
+  retake_clip_ids?: string[]
+  remove_clip_ids?: string[]
+}
+
+// --- メディア欠落のリカバリ --------------------------------------------------
+
+/** 欠落クリップに充てられる同じカットの別テイク。 */
+export interface TimelineMissingCandidate {
+  take_id: string
+  status: string
+  created_at: string
+  duration_ms: number | null
+}
+
+/** 実ファイルが見つからないクリップ 1 つと、その直し方。 */
+export interface TimelineMissingClip {
+  clip_id: string
+  label: string
+  source_kind: TimelineClipSource
+  source_id: string | null
+  candidates: TimelineMissingCandidate[]
+}
+
+/** GET /api/studio/timelines/{id}/missing: 欠落クリップの一覧。 */
+export interface TimelineMissingReport {
+  clips: TimelineMissingClip[]
+}
+
+/** POST /api/studio/timelines/{id}/missing/resolve body。 */
+export interface TimelineMissingFix {
+  /** `{ クリップ id: 差し替え先の take id }`。 */
+  replace?: Record<string, string>
+  drop_clip_ids?: string[]
+  /** 残っている欠落クリップを全部消す。 */
+  drop_all?: boolean
 }
 
 /** WS /api/ws の書き出し進捗（`type: "timeline_export"`）。 */

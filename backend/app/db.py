@@ -346,16 +346,21 @@ CREATE TABLE IF NOT EXISTS timeline_clips (
   start_ms    INTEGER NOT NULL DEFAULT 0,   -- タイムライン上の開始位置
   duration_ms INTEGER NOT NULL DEFAULT 0,   -- 尺（等速なので out_ms - in_ms と一致する）
   source_kind TEXT NOT NULL
-    CHECK(source_kind IN ('take', 'asset_file', 'library', 'job', 'text', 'gap')),
+    CHECK(source_kind IN ('take', 'asset_file', 'library', 'job', 'image',
+                          'text', 'gap')),
   source_id   TEXT,                         -- 上の種別の中での id（gap / text は NULL）
   in_ms       INTEGER NOT NULL DEFAULT 0,   -- ソースの中の切り出し位置
   out_ms      INTEGER NOT NULL DEFAULT 0,
   gain_db     REAL NOT NULL DEFAULT 0,
   fade_in_ms  INTEGER NOT NULL DEFAULT 0,
   fade_out_ms INTEGER NOT NULL DEFAULT 0,
-  transition_kind TEXT,                     -- NULL = カット（フェーズ 1 は常に NULL）
+  -- 前のクリップとの繋ぎ（NULL = カット）。オーバーラップ方式なので、繋ぎが
+  -- 付くとその分だけこのクリップは前へ食い込み、タイムライン全長は縮む。
+  transition_kind TEXT,
   transition_ms INTEGER NOT NULL DEFAULT 0,
   text_payload TEXT,                        -- text クリップの中身（JSON。他は NULL）
+  -- 再生速度（1.0 = 等速）。duration_ms = (out_ms - in_ms) / speed になる
+  speed       REAL NOT NULL DEFAULT 1,
   sort_order  INTEGER NOT NULL DEFAULT 0
 );
 
@@ -584,6 +589,10 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         # カードはすべて NULL = 作品共通のタブになる。
         ("episode_id", "TEXT REFERENCES studio_episodes(id) ON DELETE SET NULL"),
     ],
+    "timeline_clips": [
+        # リタイム（フェーズ 3）。既存のクリップは 1.0 = 等速のまま。
+        ("speed", "REAL NOT NULL DEFAULT 1"),
+    ],
     "studio_takes": [
         ("prompt", "TEXT NOT NULL DEFAULT ''"),
         ("source_prompt", "TEXT NOT NULL DEFAULT ''"),
@@ -640,8 +649,75 @@ async def _migrate(conn: aiosqlite.Connection) -> None:
     if "agent_notified_at" in added.get("studio_takes", set()):
         await _backfill_take_notifications(conn)
 
+    await _widen_timeline_clip_sources(conn)
     await _backfill_canvas_sessions(conn)
     await _renumber_shots(conn)
+
+
+#: 静止画クリップ（フェーズ 3）を足したあとの ``timeline_clips`` の列。
+#: テーブルを作り直すときに「この順で写す」ための正本。
+_TIMELINE_CLIP_COLUMNS = (
+    "id", "track_id", "timeline_id", "project_id", "start_ms", "duration_ms",
+    "source_kind", "source_id", "in_ms", "out_ms", "gain_db", "fade_in_ms",
+    "fade_out_ms", "transition_kind", "transition_ms", "text_payload", "speed",
+    "sort_order",
+)
+
+
+async def _widen_timeline_clip_sources(conn: aiosqlite.Connection) -> None:
+    """``timeline_clips.source_kind`` の CHECK に ``'image'`` を足す。
+
+    CHECK 制約は ``ALTER TABLE`` では変えられないので（:data:`MIGRATIONS` では
+    拾えない）、古い制約を持つテーブルだけ作り直して中身を写す。編集タブの
+    フェーズ 1〜2 で一度でも起動した DB がここを通る。
+
+    判定は ``sqlite_master`` に残る CREATE 文（= その DB が実際に持っている
+    制約）で行うので、作り直したあとは何もしない（冪等）。
+    """
+    async with conn.execute(
+        "SELECT sql FROM sqlite_master"
+        " WHERE type = 'table' AND name = 'timeline_clips'"
+    ) as cur:
+        row = await cur.fetchone()
+    if row is None or "'image'" in (row["sql"] or ""):
+        return
+
+    columns = ", ".join(_TIMELINE_CLIP_COLUMNS)
+    await conn.execute("""
+        CREATE TABLE timeline_clips_new (
+          id          TEXT PRIMARY KEY,
+          track_id    TEXT NOT NULL,
+          timeline_id TEXT NOT NULL,
+          project_id  TEXT NOT NULL
+            REFERENCES studio_projects(id) ON DELETE CASCADE,
+          start_ms    INTEGER NOT NULL DEFAULT 0,
+          duration_ms INTEGER NOT NULL DEFAULT 0,
+          source_kind TEXT NOT NULL
+            CHECK(source_kind IN ('take', 'asset_file', 'library', 'job',
+                                  'image', 'text', 'gap')),
+          source_id   TEXT,
+          in_ms       INTEGER NOT NULL DEFAULT 0,
+          out_ms      INTEGER NOT NULL DEFAULT 0,
+          gain_db     REAL NOT NULL DEFAULT 0,
+          fade_in_ms  INTEGER NOT NULL DEFAULT 0,
+          fade_out_ms INTEGER NOT NULL DEFAULT 0,
+          transition_kind TEXT,
+          transition_ms INTEGER NOT NULL DEFAULT 0,
+          text_payload TEXT,
+          speed       REAL NOT NULL DEFAULT 1,
+          sort_order  INTEGER NOT NULL DEFAULT 0
+        )
+    """)
+    await conn.execute(
+        f"INSERT INTO timeline_clips_new ({columns})"
+        f" SELECT {columns} FROM timeline_clips"
+    )
+    await conn.execute("DROP TABLE timeline_clips")
+    await conn.execute("ALTER TABLE timeline_clips_new RENAME TO timeline_clips")
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_timeline_clips_timeline"
+        " ON timeline_clips(timeline_id, track_id, start_ms)"
+    )
 
 
 async def _renumber_shots(conn: aiosqlite.Connection) -> None:

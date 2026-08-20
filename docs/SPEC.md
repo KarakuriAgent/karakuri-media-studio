@@ -1139,16 +1139,17 @@ CREATE TABLE timeline_clips (
   start_ms    INTEGER NOT NULL DEFAULT 0,  -- タイムライン上の開始位置
   duration_ms INTEGER NOT NULL DEFAULT 0,  -- 尺（等速なので out_ms - in_ms と一致）
   source_kind TEXT NOT NULL
-    CHECK(source_kind IN ('take','asset_file','library','job','text','gap')),
+    CHECK(source_kind IN ('take','asset_file','library','job','image','text','gap')),
   source_id   TEXT,                        -- 上の種別の中での id（gap / text は NULL）
   in_ms       INTEGER NOT NULL DEFAULT 0,  -- ソースの中の切り出し位置
   out_ms      INTEGER NOT NULL DEFAULT 0,
   gain_db     REAL NOT NULL DEFAULT 0,
   fade_in_ms  INTEGER NOT NULL DEFAULT 0,
   fade_out_ms INTEGER NOT NULL DEFAULT 0,
-  transition_kind TEXT,                    -- NULL = カット（フェーズ 1 は常に NULL）
+  transition_kind TEXT,                    -- **前の**クリップとの繋ぎ（NULL = カット）
   transition_ms INTEGER NOT NULL DEFAULT 0,
   text_payload TEXT,                       -- text クリップの中身（JSON）
+  speed       REAL NOT NULL DEFAULT 1,     -- 再生速度（duration_ms = (out-in)/speed）
   sort_order  INTEGER NOT NULL DEFAULT 0
 );
 
@@ -1166,8 +1167,17 @@ CREATE TABLE timeline_exports (
 ```
 
 - **ソースへの外部キーは張らない**。元のテイクやジョブが消えてもクリップの並びは残し、
-  読み取りのたびに実ファイルの有無を見て `missing`（メディア欠落）として返す。書き出しでも
-  そこで失敗させず、その尺ぶんの黒＋無音に置き換える（欠けている場所が目に見えるほうが直しやすい）
+  読み取りのたびに実ファイルの有無を見て `missing`（メディア欠落）として返す。ただし
+  **欠落が残っているタイムラインは書き出しを受け付けない**（`POST /export` が 400。黙って
+  黒＋無音にすると気づかないまま納品されうる）。直し方は `GET /missing` が返す
+  「同じカットの別テイク」への差し替えか、一括削除（`POST /missing/resolve`）
+- `source_kind='image'` の `source_id` だけは**出どころの印つき**（`library:<id>` /
+  `job:<id>` / `asset_file:<id>`）。1 つの種別に 3 つの出どころがぶら下がるため
+- **繋ぎ（トランジション）はオーバーラップ方式**。`transition_kind` / `transition_ms` は
+  そのクリップの**前の境界**を指し、置くと前後がその長さだけ重なってタイムラインの全長は
+  縮む。置けるのは映像トラックだけ・トラックの先頭以外・長さは 200〜2000ms かつ隣り合う
+  2 つの短いほうの 1/2 まで（`app.timeline.validate_clips` / `relayout`、画面側は
+  `timeline.ts` の `ripple`）
 - **タイムライン削除の後始末はアプリ側**（`app.timeline.delete_timeline`）でトラック・クリップ・
   書き出しの記録を消す。書き出した mp4 は成果物なので残す（ジョブの出力と同じ扱い）
 - `timeline_tracks` / `timeline_clips` が `project_id` を持つのは、リビジョンのスナップショット
@@ -1183,6 +1193,35 @@ CREATE TABLE timeline_exports (
 ものだけを V1 トラックへ**隙間なく**並べる。クリップの尺は ffprobe で読み、読めなければ
 5 秒（`app.timeline.FALLBACK_CLIP_MS`）に落とす。`episode_id` を省くと V1 だけの空のタイムライン。
 
+#### トラックと素材
+
+- **V1（映像）** … 並べ替えの正本。1 本きり（増やせず・消せない）。ここだけがリップル方式
+  （常に先頭から詰まる）で、繋ぎの重なりぶんだけ縮む
+- **A1…（音声）** … `POST /tracks` で何本でも足せる（ミュート・削除・改名は
+  `PATCH` / `DELETE`）。クリップは**自由配置**（隙間は空けられるが、同じトラックの中では
+  重ねられない）。`gain_db` / `fade_in_ms` / `fade_out_ms` が効く
+- **T1（字幕）** … `text` クリップ（`text_payload` = `{text, style}`）。`style` は
+  位置（bottom / top）・大きさ（S / M / L）・色（white / yellow）の 3 つだけ
+- **素材ビン**（`GET /projects/{id}/media?kind=video|audio|image`）はテイク・ライブラリ・
+  終わった**単発**ジョブ（テイクの裏にあるジョブは外す）・作品の素材ファイル
+  （`studio_asset_files`）を新しい順に 1 本へ混ぜて返す。長さの下調べは返すページのぶんだけ
+
+#### 台詞からのテロップ生成
+
+`POST /timelines/{id}/generate-subtitles` は V1 のクリップを Take → Shot と辿って
+`studio_shots.dialogue` を読み、クリップの区間へ**等分**に割り付ける（改行があればそれが
+区切り、無ければ句点・感嘆符・疑問符の後ろで切る。`app/timeline_subtitles.py`）。
+字幕トラックの中身は**置き換える**（積み増すと二重に出る。画面側で確認ダイアログを出す）。
+
+#### 脚本との差分（`sync-preview` / `sync`）
+
+タイムラインを作ったあとに脚本が動いた分を 3 つだけ見る:
+**増えたカット**（その話に採用テイクつきのカットが増えた）/ **採用が変わったカット**
+（クリップが古いテイクを指している）/ **消えたカット**（カットが消えた・採用が外れた）。
+反映は項目ごとに選ぶ（`POST /sync` の body）——増えたものは V1 の末尾へ、差し替えは
+新しいテイクの尺へ切り出しを丸め、消したものは詰める。音声・字幕トラックは動かさない
+（尺に合わせて置いてあるので、勝手にずらすと合っていたものが外れる）。
+
 #### 書き出しエンジン（`app/timeline_export.py`）
 
 EDL → ffmpeg コマンドの**組み立ては純関数**（`build_command`）で、実行（`run_export`）と分けてある。
@@ -1191,30 +1230,56 @@ EDL → ffmpeg コマンドの**組み立ては純関数**（`build_command`）�
   + `pad` + `setsar=1` + `fps` でタイムラインの規格へ正規化（比の違うソースは切らずに黒帯）。
   音声も `atrim` + `asetpts` + `aresample` + `aformat` で 48kHz / stereo に揃える
 - 音声を持たないソースと `gap` には、その尺ぶんの `color`（黒）と `anullsrc`（無音）を `lavfi` から
-  足す。全クリップが「映像 1 本 + 音声 1 本」になるので、そのまま `concat` で繋げる
+  足す。全クリップが「映像 1 本 + 音声 1 本」になるので、繋ぎ方に関わらず形が揃う
+- **繋ぎのないところは `concat` のまま**。繋ぎで区切られた「まとまり」どうしを `xfade`
+  （音声は `acrossfade`）で重ねる。`offset` は純関数 `transition_offsets` が出す
+  （`offset = ここまでの全長 - 重なり`）。種別は `TRANSITIONS` が xfade 名へマップする
+  （crossfade → `fade` / fadeblack / fadewhite / wipeleft / wiperight / slideleft /
+  slideright / circleopen / pixelize）
+- **リタイム**は `setpts=(PTS-STARTPTS)/speed` と `atempo`。`atempo` は 0.5〜2.0 しか
+  取れないので、積が `speed` になる並びへ割る（純関数 `atempo_chain`）
+- **静止画クリップ**は `-loop 1 -t` で尺ぶんの映像にしてから同じ規格へ（音は無音）
+- **音声トラック**は `atrim` + `volume` + `afade` + `adelay` で置き場所へずらし、映像側の音と
+  `amix=duration=first`（＝タイムライン全長で切る。`apad` はしない）
+- **テロップ**は ASS（`app/timeline_subtitles.build_ass`）を書き出して `subtitles` フィルタで
+  焼き込む。スタイルは 1 つだけ置き、位置・大きさ・色は行ごとの上書きタグ
+  （`{\an8\fs48\c&H0000FFFF}`）。文字サイズは出力の高さに対する比なので解像度に依らない
+- **ラウドネス正規化**（既定 ON）は最後に `loudnorm=I=-14:TP=-1.5:LRA=11`（1 パス）
+- **書き出しプリセット**（`preset`）は `timeline`（規格のまま）/ `1080p` / `vertical`
+  (1080x1920) / `720p`。fps はタイムラインの値のまま。縦横比が変わるときの収め方は
+  `fit`: `pad`（レターボックス）/ `crop`（中央クロップ）。どちらも `timeline_exports.params` に残る
 - 出力は `outputs/exports/{export_id}/final.mp4`（H.264 + AAC / yuv420p / `+faststart`）。
   `OUTPUTS_DIR` の下なので `/outputs` でそのまま配信できる
 - 進捗は `-progress pipe:1` の `out_time_us` を読み、`timeline_exports.progress` を更新しつつ
   WS（`type: "timeline_export"`）へ流す。`communicate()` は使わない（stdout を奪い合うため）
 - 同じタイムラインで走っている書き出しがあれば **409**（同時に 2 本焼いても得がない）
+- ソースの下調べ（ffprobe）は**まとめて並列**に走らせ、`(パス, 更新時刻, 大きさ)` で結果を
+  使い回す（`app.timeline.probe_many` / `probe_cached`）。長いタイムラインでも
+  読み取りのたびに何十プロセスも直列に待たない
 
-#### フェーズ 1 の範囲と既知の制限
+#### 既知の制限
 
-扱うのは **V1（映像トラック 1 本）の `source_kind='take'` クリップだけ**。ほかの
-`source_kind` と `audio` / `subtitle` トラックは、後のフェーズのために enum と列だけ通してある。
+- **BGM のループ再生はできない**。尺より短い音は途中で終わるので、繰り返したいときは
+  同じクリップを並べる
+- **プレビューは近似**。繋ぎはクロスフェード / 黒・白フェードだけ 2 枚重ねで近似し、
+  ワイプ・スライド系はカット表示（正確な絵は書き出しで確認する）。テロップも書体と
+  縁取りが焼き込みとは違う。BGM は Web Audio（`AudioBufferSourceNode` + `GainNode`）で
+  再生ヘッドに合わせて鳴らすので、フェードは gain のスケジュールによる近似
+- 映像トラックは **V1 の 1 本きり**（重ね合成・ピクチャインピクチャはスコープ外）
 
-- **等速のみ**: `duration_ms == out_ms - in_ms` をサーバー側で検証する（速度変更は未対応）
-- **リップル方式**: クリップは常に先頭から隙間なく詰まる。自由配置と同一トラック内の重なりは無い
-  （重なりは `PUT /clips` が 400 で断る）。隙間を置きたいときは `gap` クリップで表す
-- **トランジションなし**: `transition_kind` は常に NULL（カットのみ）。フェード（`fade_in_ms` /
-  `fade_out_ms`）と音量（`gain_db`）は列としては持つが、UI からは触らない
-  （`gain_db` だけ書き出しに効く）
-- **プレビューは近似**: 画面はクリップごとの `<video>` を切り替える方式（プレイヤースイッチング）で、
-  境界に一瞬の間が出るし解像度・fps の正規化も入らない。正確な結果は書き出しで確かめる
-  （その旨を画面にも出す）
+#### 画面の持ち方（`frontend/src/components/studio/`）
+
+- 画面の状態は**全トラックのクリップ 1 本の配列**（`EditView` の履歴）。並べ替え・トリム・
+  分割・繋ぎ・リタイムはどれも `timeline.ts` の純関数で、トラック単位に当てる
+  （`applyToTrack`）。V1 だけが `ripple`（詰め直し）を通る
 - **Undo / Redo は画面の中だけ**。サーバーには「今の並び」しか無い（`app.timeline.replace_clips` は
   全置換）。編集は 1〜2 秒のデバウンスで `PUT /clips` に自動保存し、状態をインジケータに出す
-- **字幕・BGM・音量調整・書き出しプリセットは未実装**（フェーズ 2 以降）
+- **トラックの出し入れ（追加・ミュート・削除）とテロップ生成・差分反映・欠落修復は
+  サーバー側の操作**で、返ってくる EDL が画面を丸ごと差し替える。走らせる前に手元の
+  変更を流し切る（`withFlush`）——でないと、まだ送っていない編集がその差し替えで消える
+- **プレビュー**はクリップごとの `<video>` を切り替える方式（プレイヤースイッチング）。
+  次のクリップは先に `in_ms` へシークして待たせてあるので、切り替えの間はそのぶん短い。
+  リタイムは `playbackRate` で追う
 
 ---
 
@@ -1346,8 +1411,17 @@ GET  /api/studio/projects/{id}/timelines … 一覧（中身は含めない）
 GET  /api/studio/timelines/{id}  … トラック・クリップ込みのフル EDL（`video_url` / `source_duration_ms` / `missing` 解決済み）
 PATCH  /api/studio/timelines/{id} … 名前・規格（fps / width / height）の変更
 DELETE /api/studio/timelines/{id} … トラック・クリップ・書き出しの記録ごと削除（mp4 は残る）
-PUT  /api/studio/timelines/{id}/clips  … クリップ全置換（自動保存の受け口。重なり / in>=out / 速度変更は 400）
-POST /api/studio/timelines/{id}/export … 書き出し開始（**202 即受付**。走っているものがあれば 409）
+PUT  /api/studio/timelines/{id}/clips  … クリップ全置換（自動保存の受け口。重なり / in>=out / 尺と速度の不整合 / 繋ぎの置けない境界は 400）
+POST /api/studio/timelines/{id}/tracks … トラック追加（音声 A1… / 字幕 T1。映像は 400）
+PATCH  /api/studio/timelines/{id}/tracks/{track_id} … 名前・ミュート・ロック
+DELETE /api/studio/timelines/{id}/tracks/{track_id} … トラック削除（中のクリップごと。V1 は 400）
+GET  /api/studio/projects/{id}/media?kind=video|audio|image&limit=&offset= … 素材ビン（テイク / ライブラリ / 単発ジョブ / 作品の素材）
+POST /api/studio/timelines/{id}/generate-subtitles … 台詞からテロップを一括生成（字幕トラックは置き換え）
+GET  /api/studio/timelines/{id}/sync-preview … 作成後に起きた脚本の差分（added / retaken / removed）
+POST /api/studio/timelines/{id}/sync … 差分のうち選んだものだけ反映
+GET  /api/studio/timelines/{id}/missing … メディア欠落クリップと同じカットの差し替え候補
+POST /api/studio/timelines/{id}/missing/resolve … 別テイクへ差し替え / 欠落クリップの一括削除
+POST /api/studio/timelines/{id}/export … 書き出し開始（**202 即受付**。`preset` / `fit` / `loudnorm` 指定可。走っているものがあれば 409、メディア欠落が残っていれば 400）
 GET  /api/studio/timelines/{id}/exports … 書き出し履歴（新しい順、`output_url` つき）
 POST /api/studio/exports/{id}/save-to-library … 完成 mp4 を library/video/ へコピーして登録
 
@@ -1398,6 +1472,7 @@ backend/            FastAPI アプリ
   app/library.py    ライブラリ（取っておく素材）の保存・目録
   app/timeline.py   編集タブ: タイムライン（EDL）の CRUD と書き出しの管理（§7.3）
   app/timeline_export.py  EDL → ffmpeg コマンドの組み立て（純関数）と実行・進捗
+  app/timeline_subtitles.py  テロップ → ASS の組み立てと台詞の割り付け（純関数、§7.3）
   app/autotag.py    ライブラリ素材の日本語タグ・表示名の自動生成（Grok）
   app/nsfw.py       ジョブ / セッションの NSFW 判定
   app/model_download.py  不足モデルのダウンロード（models ディレクトリへ直接保存）

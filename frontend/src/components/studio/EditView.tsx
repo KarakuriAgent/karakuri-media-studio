@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { Loader2, Plus, Redo2, Undo2 } from 'lucide-react'
+import { AlertTriangle, Loader2, Plus, Redo2, RefreshCw, Type, Undo2 } from 'lucide-react'
 
 import { ApiError, api, formatDetail } from '../../api'
 import type {
@@ -9,13 +9,22 @@ import type {
   TimelineClip,
   TimelineExport,
   TimelineExportProgress,
+  TimelineExportRequest,
+  TimelineMediaItem,
+  TimelineMissingFix,
+  TimelineMissingReport,
+  TimelineSyncPreview,
+  TimelineSyncRequest,
 } from '../../types'
 import { Banner } from '../ui'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import ClipInspector from './ClipInspector'
 import ExportPanel from './ExportPanel'
+import MediaBin from './MediaBin'
+import MissingDialog from './MissingDialog'
 import PreviewMonitor from './PreviewMonitor'
+import SyncDialog from './SyncDialog'
 import TimelinePane from './TimelinePane'
 import { episodeLabel } from './studio'
 import {
@@ -26,16 +35,31 @@ import {
   ZOOM_DEFAULT,
   type History,
   type SaveState,
+  type SubtitleStyle,
+  allClipsOf,
+  applyToTrack,
+  audioTracksOf,
   canRedo,
   canUndo,
+  clipFromMedia,
+  clipsOfTrack,
+  firstFreeSlot,
   initHistory,
   moveClip,
-  orderedClips,
+  moveClipTo,
+  newSubtitleClip,
+  patchClip,
   pushHistory,
   redo,
   removeClip,
+  removeClipFree,
+  ripple,
   sameClips,
+  setSpeed,
+  setSubtitle,
+  setTransition,
   splitClipAt,
+  subtitleTrackOf,
   toClipInputs,
   totalDuration,
   trimClip,
@@ -51,8 +75,9 @@ import {
  * サーバーへ流す（保存状態はインジケータに出る）。やり直し（Undo / Redo）も
  * 画面の中の履歴で行う。
  *
- * フェーズ 1 が扱うのは V1（映像トラック 1 本）だけで、クリップは常に隙間なく
- * 詰まっている（リップル方式）。
+ * 履歴が持つのは**全トラックのクリップ**（V1 / A1… / T1）で、トラックの出し入れ
+ * だけはサーバー側の操作（`POST /tracks` など）。トラックを触る前には手元の
+ * 変更を流し切ってから走らせる（返ってきた EDL で丸ごと入れ替わるため）。
  */
 export default function EditView({
   projectId,
@@ -81,7 +106,16 @@ export default function EditView({
   const [exports, setExports] = useState<TimelineExport[]>([])
   const [savingId, setSavingId] = useState<string | null>(null)
 
+  const [sync, setSync] = useState<TimelineSyncPreview | null>(null)
+  const [syncOpen, setSyncOpen] = useState(false)
+  const [missing, setMissing] = useState<TimelineMissingReport | null>(null)
+
   const clips = history.present
+  const tracks = timeline?.tracks ?? []
+  const videoTrack = videoTrackOf(timeline)
+  const videoTrackId = videoTrack?.id ?? null
+  const audioTracks = audioTracksOf(timeline)
+  const subtitleTrack = subtitleTrackOf(timeline)
 
   const pushError = useCallback((cause: unknown) => {
     setError(
@@ -125,12 +159,13 @@ export default function EditView({
     setSelectedId(null)
     setPlayheadMs(0)
     setExports([])
+    setSync(null)
   }, [projectId])
 
   /** サーバーの EDL を画面へ入れ直す（履歴もそこで切る）。 */
   const adoptTimeline = useCallback((detail: StudioTimelineDetail) => {
     setTimeline(detail)
-    setHistory(initHistory(orderedClips(videoTrackOf(detail))))
+    setHistory(initHistory(allClipsOf(detail)))
     setSaveState('saved')
   }, [])
 
@@ -140,6 +175,7 @@ export default function EditView({
       try {
         adoptTimeline(await api.getStudioTimeline(id))
         setExports(await api.listStudioTimelineExports(id))
+        setSync(await api.getStudioTimelineSyncPreview(id))
       } catch (cause) {
         pushError(cause)
       } finally {
@@ -154,6 +190,7 @@ export default function EditView({
       setTimeline(null)
       setHistory(initHistory([]))
       setExports([])
+      setSync(null)
       return
     }
     void loadTimeline(timelineId)
@@ -165,38 +202,55 @@ export default function EditView({
   // あった並び」なので、途中の状態は飛ばしてよい。
   const savedRef = useRef<TimelineClip[]>([])
   useEffect(() => {
-    savedRef.current = orderedClips(videoTrackOf(timeline))
+    savedRef.current = allClipsOf(timeline)
   }, [timeline])
+
+  const save = useCallback(
+    async (target: TimelineClip[]) => {
+      if (!timelineId) return null
+      setSaveState('saving')
+      const fresh = await api.replaceStudioTimelineClips(
+        timelineId,
+        toClipInputs(target),
+      )
+      setTimeline(fresh)
+      // サーバーが採番した id を手元へ取り込む（分割した直後の一時 id が
+      // 残っていると、次の保存で毎回作り直しになる）。履歴は切らずに、
+      // 「いまの状態」だけ差し替える。
+      setHistory((current) => ({ ...current, present: allClipsOf(fresh) }))
+      setSaveState('saved')
+      return fresh
+    },
+    [timelineId],
+  )
 
   useEffect(() => {
     if (!timelineId || !timeline) return
     if (sameClips(clips, savedRef.current)) return
     setSaveState('pending')
     const timer = window.setTimeout(() => {
-      void (async () => {
-        setSaveState('saving')
-        try {
-          const fresh = await api.replaceStudioTimelineClips(
-            timelineId,
-            toClipInputs(clips),
-          )
-          setTimeline(fresh)
-          // サーバーが採番した id を手元へ取り込む（分割した直後の一時 id が
-          // 残っていると、次の保存で毎回作り直しになる）。履歴は切らずに、
-          // 「いまの状態」だけ差し替える。
-          setHistory((current) => ({
-            ...current,
-            present: orderedClips(videoTrackOf(fresh)),
-          }))
-          setSaveState('saved')
-        } catch (cause) {
-          setSaveState('failed')
-          pushError(cause)
-        }
-      })()
+      void save(clips).catch((cause) => {
+        setSaveState('failed')
+        pushError(cause)
+      })
     }, AUTOSAVE_DELAY_MS)
     return () => window.clearTimeout(timer)
-  }, [clips, timelineId, timeline, pushError])
+  }, [clips, timelineId, timeline, save, pushError])
+
+  /**
+   * 手元の変更を流し切ってから、トラックを触る操作を走らせる。
+   *
+   * トラックの出し入れはサーバー側の操作で、返ってくるのは「サーバーが持って
+   * いる EDL」。先に保存しておかないと、まだ送っていないクリップの編集が
+   * その差し替えで消える。
+   */
+  const withFlush = useCallback(
+    async (run: () => Promise<StudioTimelineDetail>) => {
+      if (!sameClips(clips, savedRef.current)) await save(clips)
+      adoptTimeline(await run())
+    },
+    [clips, save, adoptTimeline],
+  )
 
   // -------------------------------------------------------- 書き出しの進捗
   //
@@ -247,9 +301,38 @@ export default function EditView({
     [],
   )
 
+  /** V1 の中だけを書き換える（並べ替え・トリム・分割…）。 */
+  const applyVideo = useCallback(
+    (change: (current: TimelineClip[]) => TimelineClip[]) => {
+      if (!videoTrackId) return
+      apply((current) => applyToTrack(current, videoTrackId, change))
+    },
+    [apply, videoTrackId],
+  )
+
   const selected = clips.find((clip) => clip.id === selectedId) ?? null
-  const selectedIndex = clips.findIndex((clip) => clip.id === selectedId)
-  const total = totalDuration(clips)
+  const selectedTrack =
+    tracks.find((track) => track.id === selected?.track_id) ?? null
+  const videoClips = useMemo(
+    () => (videoTrackId ? clipsOfTrack(clips, videoTrackId) : []),
+    [clips, videoTrackId],
+  )
+  const selectedIndex = selected
+    ? clipsOfTrack(clips, selected.track_id).findIndex(
+        (clip) => clip.id === selected.id,
+      )
+    : -1
+  const total = totalDuration(videoClips)
+  const brokenCount = clips.filter((clip) => clip.missing).length
+
+  /** 選んでいるクリップのトラックの中だけを書き換える。 */
+  const applySelectedTrack = useCallback(
+    (change: (current: TimelineClip[]) => TimelineClip[]) => {
+      if (!selected) return
+      apply((current) => applyToTrack(current, selected.track_id, change))
+    },
+    [apply, selected],
+  )
 
   /** 再生ヘッドが選択クリップの中にあり、割っても両側が短くなりすぎないか。 */
   const canSplit = useMemo(() => {
@@ -260,16 +343,19 @@ export default function EditView({
 
   const splitSelected = useCallback(() => {
     if (!selectedId) return
-    apply((current) => splitClipAt(current, selectedId, playheadMs))
-  }, [apply, selectedId, playheadMs])
+    applySelectedTrack((current) => splitClipAt(current, selectedId, playheadMs))
+  }, [applySelectedTrack, selectedId, playheadMs])
 
   const deleteSelected = useCallback(() => {
-    if (!selectedId) return
-    apply((current) => removeClip(current, selectedId))
+    if (!selectedId || !selected) return
+    const rippleTrack = selected.track_id === videoTrackId
+    applySelectedTrack((current) =>
+      rippleTrack ? removeClip(current, selectedId) : removeClipFree(current, selectedId),
+    )
     setSelectedId(null)
-  }, [apply, selectedId])
+  }, [applySelectedTrack, selectedId, selected, videoTrackId])
 
-  // ショートカット。入力欄にフォーカスがあるときは奪わない（作品名の編集など）。
+  // ショートカット。入力欄にフォーカスがあるときは奪わない（本文の編集など）。
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       const target = event.target as HTMLElement | null
@@ -301,20 +387,12 @@ export default function EditView({
   }, [selectedId, deleteSelected])
 
   // ---------------------------------------------------------------- actions
-  const createTimeline = () =>
+  const guard = (run: () => Promise<void>) =>
     void (async () => {
       setBusy(true)
       setError(null)
       try {
-        const created = await api.createStudioTimeline(projectId, {
-          episode_id: episodeId || null,
-        })
-        setTimelines(await api.listStudioTimelines(projectId))
-        setTimelineId(created.id)
-        adoptTimeline(created)
-        setExports([])
-        setSelectedId(null)
-        setPlayheadMs(0)
+        await run()
       } catch (cause) {
         pushError(cause)
       } finally {
@@ -322,20 +400,28 @@ export default function EditView({
       }
     })()
 
-  const startExport = () =>
-    void (async () => {
+  const createTimeline = () =>
+    guard(async () => {
+      const created = await api.createStudioTimeline(projectId, {
+        episode_id: episodeId || null,
+      })
+      setTimelines(await api.listStudioTimelines(projectId))
+      setTimelineId(created.id)
+      adoptTimeline(created)
+      setExports([])
+      setSelectedId(null)
+      setPlayheadMs(0)
+      setSync(null)
+    })
+
+  const startExport = (body: TimelineExportRequest) =>
+    guard(async () => {
       if (!timelineId) return
-      setBusy(true)
-      setError(null)
-      try {
-        await api.exportStudioTimeline(timelineId)
-        setExports(await api.listStudioTimelineExports(timelineId))
-      } catch (cause) {
-        pushError(cause)
-      } finally {
-        setBusy(false)
-      }
-    })()
+      // 書き出しはサーバーが持っている EDL を焼くので、手元の変更を先に流す。
+      if (!sameClips(clips, savedRef.current)) await save(clips)
+      await api.exportStudioTimeline(timelineId, body)
+      setExports(await api.listStudioTimelineExports(timelineId))
+    })
 
   const saveToLibrary = (exportId: string) =>
     void (async () => {
@@ -350,6 +436,107 @@ export default function EditView({
       }
     })()
 
+  // ------------------------------------------------------------ トラック操作
+  const addAudioTrack = () =>
+    guard(async () => {
+      if (!timelineId) return
+      await withFlush(() =>
+        api.addStudioTimelineTrack(timelineId, { kind: 'audio' }),
+      )
+    })
+
+  const toggleMute = (trackId: string, muted: boolean) =>
+    guard(async () => {
+      if (!timelineId) return
+      await withFlush(() =>
+        api.updateStudioTimelineTrack(timelineId, trackId, { muted }),
+      )
+    })
+
+  const deleteTrack = (trackId: string) =>
+    guard(async () => {
+      if (!timelineId) return
+      if (!window.confirm('このトラックとその中のクリップを消します。よいですか？'))
+        return
+      await withFlush(() => api.deleteStudioTimelineTrack(timelineId, trackId))
+      setSelectedId(null)
+    })
+
+  const generateSubtitles = () =>
+    guard(async () => {
+      if (!timelineId) return
+      const warning = subtitleTrack?.clips.length
+        ? '字幕トラックの今のテロップは全部置き換わります。よいですか？'
+        : 'V1 の各カットの台詞からテロップを作ります。よいですか？'
+      if (!window.confirm(warning)) return
+      await withFlush(() => api.generateStudioTimelineSubtitles(timelineId, {}))
+      setSelectedId(null)
+    })
+
+  // ------------------------------------------------------------ 素材ビン
+  const addMedia = (item: TimelineMediaItem) => {
+    if (item.media_kind === 'audio') {
+      const track = audioTracks[0]
+      if (!track || !timelineId) return
+      apply((current) =>
+        applyToTrack(current, track.id, (lane) => {
+          const made = clipFromMedia(item, track.id, 0)
+          return [
+            ...lane,
+            { ...made, start_ms: firstFreeSlot(lane, made.duration_ms, playheadMs) },
+          ].sort((a, b) => a.start_ms - b.start_ms)
+        }),
+      )
+      return
+    }
+    if (!videoTrackId) return
+    // 動画・静止画は V1 の末尾へ（置いてから並べ替え・トリムする）。
+    applyVideo((lane) => ripple([...lane, clipFromMedia(item, videoTrackId, 0)]))
+  }
+
+  const addSubtitle = () => {
+    if (!subtitleTrack) return
+    apply((current) =>
+      applyToTrack(current, subtitleTrack.id, (lane) => {
+        const made = newSubtitleClip(subtitleTrack.id, playheadMs)
+        return [
+          ...lane,
+          { ...made, start_ms: firstFreeSlot(lane, made.duration_ms, playheadMs) },
+        ].sort((a, b) => a.start_ms - b.start_ms)
+      }),
+    )
+  }
+
+  // ------------------------------------------------------------ 脚本との差分
+  const applySync = (request: TimelineSyncRequest) =>
+    guard(async () => {
+      if (!timelineId) return
+      await withFlush(() => api.applyStudioTimelineSync(timelineId, request))
+      setSync(await api.getStudioTimelineSyncPreview(timelineId))
+      setSyncOpen(false)
+      setSelectedId(null)
+    })
+
+  const syncCount = sync
+    ? sync.added.length + sync.retaken.length + sync.removed.length
+    : 0
+
+  // ------------------------------------------------------ メディア欠落の修復
+  const openMissing = () =>
+    guard(async () => {
+      if (!timelineId) return
+      if (!sameClips(clips, savedRef.current)) await save(clips)
+      setMissing(await api.getStudioTimelineMissing(timelineId))
+    })
+
+  const resolveMissing = (fix: TimelineMissingFix) =>
+    guard(async () => {
+      if (!timelineId) return
+      await withFlush(() => api.resolveStudioTimelineMissing(timelineId, fix))
+      setMissing(null)
+      setSelectedId(null)
+    })
+
   // ----------------------------------------------------------------- render
   const banner = error && (
     <Banner onClose={() => setError(null)}>{error}</Banner>
@@ -358,6 +545,47 @@ export default function EditView({
   return (
     <div className="flex flex-col gap-3">
       {banner}
+
+      {timeline && syncCount > 0 && (
+        <Banner tone="info">
+          <div className="flex flex-wrap items-center gap-2">
+            <span>
+              このタイムラインを作ったあとに脚本が {syncCount} 件動いています。
+            </span>
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              onClick={() => setSyncOpen(true)}
+              disabled={busy}
+            >
+              <RefreshCw className="size-4" aria-hidden="true" />
+              変更を確認して反映
+            </Button>
+          </div>
+        </Banner>
+      )}
+
+      {timeline && brokenCount > 0 && (
+        <Banner tone="warn">
+          <div className="flex flex-wrap items-center gap-2">
+            <span>
+              メディアが見つからないクリップが {brokenCount} 件あります
+              （このままでは書き出せません）。
+            </span>
+            <Button
+              type="button"
+              size="sm"
+              variant="secondary"
+              onClick={openMissing}
+              disabled={busy}
+            >
+              <AlertTriangle className="size-4" aria-hidden="true" />
+              修復する
+            </Button>
+          </div>
+        </Banner>
+      )}
 
       {/* 話を選んでタイムラインを作る / 既にあるものを開く */}
       <div className="flex flex-wrap items-center gap-2 rounded-lg border border-border bg-card p-2">
@@ -411,6 +639,20 @@ export default function EditView({
           </>
         )}
 
+        {timeline && (
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            onClick={generateSubtitles}
+            disabled={busy || videoClips.length === 0}
+            title="V1 の各カットの台詞からテロップを作る（今のテロップは置き換わります）"
+          >
+            <Type className="size-4" aria-hidden="true" />
+            テロップを生成
+          </Button>
+        )}
+
         <div className="ml-auto flex items-center gap-2">
           <Button
             type="button"
@@ -456,43 +698,111 @@ export default function EditView({
           <div className="flex min-w-0 flex-1 flex-col gap-3">
             <PreviewMonitor
               clips={clips}
+              tracks={tracks}
               playheadMs={playheadMs}
               onSeek={setPlayheadMs}
             />
             <TimelinePane
+              tracks={tracks}
               clips={clips}
+              videoTrackId={videoTrackId}
               selectedId={selectedId}
               playheadMs={playheadMs}
               zoom={zoom}
               onZoom={setZoom}
               onSelect={setSelectedId}
               onSeek={(ms) => setPlayheadMs(Math.min(ms, Math.max(total, 0)))}
-              onMove={(id, to) => apply((current) => moveClip(current, id, to))}
-              onTrim={(id, edge, deltaMs) =>
-                apply((current) => trimClip(current, id, edge, deltaMs))
+              onMove={(id, to) => applyVideo((current) => moveClip(current, id, to))}
+              onMoveTo={(id, startMs) => {
+                const clip = clips.find((item) => item.id === id)
+                if (!clip) return
+                apply((current) =>
+                  applyToTrack(current, clip.track_id, (lane) =>
+                    moveClipTo(lane, id, startMs),
+                  ),
+                )
+              }}
+              onTrim={(id, edge, deltaMs) => {
+                const clip = clips.find((item) => item.id === id)
+                if (!clip) return
+                apply((current) =>
+                  applyToTrack(current, clip.track_id, (lane) =>
+                    trimClip(lane, id, edge, deltaMs),
+                  ),
+                )
+              }}
+              onSetTransition={(index, kind, ms) =>
+                applyVideo((current) => setTransition(current, index, kind, ms))
               }
+              onAddAudioTrack={addAudioTrack}
+              onToggleMute={toggleMute}
+              onDeleteTrack={deleteTrack}
+              onAddSubtitle={addSubtitle}
             />
           </div>
 
           <div className="flex w-full shrink-0 flex-col gap-3 lg:w-80">
             <ClipInspector
               clip={selected}
+              track={selectedTrack}
               index={selectedIndex}
               canSplit={canSplit}
               onSplit={splitSelected}
               onDelete={deleteSelected}
+              onSpeed={(speed) => {
+                if (!selectedId) return
+                applyVideo((current) => setSpeed(current, selectedId, speed))
+              }}
+              onPatch={(patch: Partial<TimelineClip>) => {
+                if (!selectedId) return
+                applySelectedTrack((current) =>
+                  patchClip(current, selectedId, patch),
+                )
+              }}
+              onSubtitle={(patch: {
+                text?: string
+                style?: Partial<SubtitleStyle>
+              }) => {
+                if (!selectedId) return
+                applySelectedTrack((current) =>
+                  setSubtitle(current, selectedId, patch),
+                )
+              }}
+            />
+            <MediaBin
+              projectId={projectId}
+              canAddAudio={audioTracks.length > 0}
+              onAdd={addMedia}
             />
             <ExportPanel
               exports={exports}
               running={running}
               busy={busy}
               savingId={savingId}
-              canExport={clips.length > 0}
+              canExport={videoClips.length > 0 && brokenCount === 0}
               onExport={startExport}
               onSaveToLibrary={saveToLibrary}
             />
           </div>
         </div>
+      )}
+
+      {syncOpen && sync && (
+        <SyncDialog
+          preview={sync}
+          busy={busy}
+          onApply={applySync}
+          onClose={() => setSyncOpen(false)}
+        />
+      )}
+
+      {missing && (
+        <MissingDialog
+          report={missing}
+          busy={busy}
+          onResolve={resolveMissing}
+          onClose={() => setMissing(null)}
+        />
       )}
     </div>
   )

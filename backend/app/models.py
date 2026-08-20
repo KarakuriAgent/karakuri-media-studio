@@ -3158,12 +3158,37 @@ class StudioAssetFromJob(StudioAssetCreate):
 # Take）とは別の面で、タイムラインはソースの行を**参照するだけ**（元が消えても
 # 並びは残り、読み取りで「メディア欠落」= ``missing`` として見せる）。
 
-#: トラックの種別。フェーズ 1 で実際に使うのは ``video`` の V1 だけ
+#: トラックの種別（``video`` の V1 / ``audio`` の A1… / ``subtitle`` の T1）
 TimelineTrackKind = Literal["video", "audio", "subtitle"]
 
-#: クリップのソース。フェーズ 1 で実際に使うのは ``take``（と隙間の ``gap``）だけで、
-#: 残りは後のフェーズで足す入れ物として値だけ通しておく
-TimelineClipSource = Literal["take", "asset_file", "library", "job", "text", "gap"]
+#: クリップのソース。``take`` は制作タブのテイク、``library`` / ``job`` /
+#: ``asset_file`` は素材ビンから足したもの、``image`` は静止画、``text`` は
+#: テロップ、``gap`` は隙間（ソースを持たない）
+TimelineClipSource = Literal[
+    "take", "asset_file", "library", "job", "image", "text", "gap"
+]
+
+#: 繋ぎの種別（ffmpeg の ``xfade`` にマップする。:data:`app.timeline_export.TRANSITIONS`）
+TimelineTransitionKind = Literal[
+    "crossfade",
+    "fadeblack",
+    "fadewhite",
+    "wipeleft",
+    "wiperight",
+    "slideleft",
+    "slideright",
+    "circleopen",
+    "pixelize",
+]
+
+#: 書き出しのプリセット（``timeline`` = タイムラインの規格そのまま）
+TimelineExportPreset = Literal["timeline", "1080p", "vertical", "720p"]
+
+#: 縦横比が変わるときの収め方（黒帯 / 中央を切り出す）
+TimelineExportFit = Literal["pad", "crop"]
+
+#: 素材ビンに出るものの種別
+TimelineMediaKind = Literal["video", "audio", "image"]
 
 #: 書き出し 1 回の状態（ジョブと違って外部バックエンドは無いので 4 つだけ）
 TimelineExportStatus = Literal["queued", "running", "done", "failed"]
@@ -3217,7 +3242,7 @@ class TimelineClip(BaseModel):
     timeline_id: str
     #: タイムライン上の開始位置（ミリ秒）
     start_ms: int = 0
-    #: 尺（ミリ秒）。等速なので ``out_ms - in_ms`` と一致する
+    #: 尺（ミリ秒）。``(out_ms - in_ms) / speed`` と一致する
     duration_ms: int = 0
     source_kind: TimelineClipSource = "take"
     #: 上の種別の中での id（``gap`` / ``text`` は None）
@@ -3228,14 +3253,18 @@ class TimelineClip(BaseModel):
     gain_db: float = 0.0
     fade_in_ms: int = 0
     fade_out_ms: int = 0
-    #: 次のクリップへの繋ぎ（``None`` = カット。フェーズ 1 は常に None）
+    #: **前の**クリップとの繋ぎ（``None`` = カット）。オーバーラップ方式なので、
+    #: 繋ぎが付くとこのクリップはその分だけ前へ食い込む
     transition_kind: str | None = None
     transition_ms: int = 0
-    #: ``text`` クリップの中身（他の種別では None）
+    #: ``text`` クリップの中身（他の種別では None）。``{"text": …, "style": {…}}``
     text_payload: dict[str, Any] | None = None
+    #: 再生速度（1.0 = 等速。映像クリップだけ 1 以外を取れる）
+    speed: float = 1.0
     sort_order: int = 0
     # --- ここから下は読み取りのたびに解決する（DB には持たない） -------------
-    #: 再生できる URL（``/outputs/…``）。解決できなければ None
+    #: 再生できる URL（``/outputs/…`` / ``/library/…`` / ``/assets/…``）。
+    #: 音声・静止画のクリップもここに入る。解決できなければ None
     video_url: str | None = None
     #: ソースそのものの長さ（ミリ秒）。分からなければ None
     source_duration_ms: int | None = None
@@ -3287,6 +3316,7 @@ class TimelineClipInput(BaseModel):
     transition_kind: str | None = None
     transition_ms: int = 0
     text_payload: dict[str, Any] | None = None
+    speed: float = 1.0
 
 
 class TimelineClipsUpdate(BaseModel):
@@ -3319,6 +3349,12 @@ class TimelineExportRequest(BaseModel):
     width: int | None = None
     height: int | None = None
     fps: float | None = None
+    #: 解像度のプリセット（``width`` / ``height`` を直接送ればそちらが勝つ）
+    preset: TimelineExportPreset = "timeline"
+    #: 縦横比が変わるときの収め方
+    fit: TimelineExportFit = "pad"
+    #: ラウドネス正規化（-14 LUFS / TP -1.5 dB）を掛けるか
+    loudnorm: bool = True
 
 
 class TimelineExportSave(BaseModel):
@@ -3326,6 +3362,171 @@ class TimelineExportSave(BaseModel):
 
     #: ライブラリでの表示名（省略するとタイムライン名から決まる）
     name: str = ""
+
+
+# --------------------------------------------------------------------------
+# トラックの出し入れ（フェーズ 2: 音声 A1… と字幕 T1）
+# --------------------------------------------------------------------------
+
+class TimelineTrackCreate(BaseModel):
+    """POST /api/studio/timelines/{id}/tracks body。"""
+
+    #: ``video`` は V1 が正なので足せない（400）
+    kind: TimelineTrackKind = "audio"
+    #: 省略すると種別ごとの連番（``A2`` / ``T1``）
+    name: str = ""
+
+
+class TimelineTrackUpdate(BaseModel):
+    """PATCH /api/studio/timelines/{id}/tracks/{track_id} body。"""
+
+    name: str | None = None
+    muted: bool | None = None
+    locked: bool | None = None
+
+
+# --------------------------------------------------------------------------
+# 素材ビン（タイムラインへ足せるもの）
+# --------------------------------------------------------------------------
+
+class TimelineMediaItem(BaseModel):
+    """素材ビンの 1 件（タイムラインに置ける素材）。"""
+
+    #: クリップにしたときの ``source_kind``
+    source_kind: TimelineClipSource
+    #: その種別の中での id（``source_id`` にそのまま入る）
+    source_id: str
+    #: 映像 / 音声 / 静止画のどれか（置けるトラックが決まる）
+    media_kind: TimelineMediaKind
+    name: str = ""
+    #: 出どころの説明（「ライブラリ」「素材 / 声」など）
+    origin: str = ""
+    #: 配信 URL（試聴・サムネイル用）
+    url: str | None = None
+    #: 素材そのものの長さ（ミリ秒。静止画と読めなかったものは None）
+    duration_ms: int | None = None
+    created_at: str = ""
+
+
+class TimelineMediaPage(BaseModel):
+    """GET /api/studio/projects/{id}/media: 素材ビンの 1 ページ。"""
+
+    items: list[TimelineMediaItem] = Field(default_factory=list)
+    total: int = 0
+    limit: int = 50
+    offset: int = 0
+
+
+# --------------------------------------------------------------------------
+# 台詞からのテロップ生成
+# --------------------------------------------------------------------------
+
+class TimelineSubtitleRequest(BaseModel):
+    """POST /api/studio/timelines/{id}/generate-subtitles body。
+
+    V1 のクリップの元カット（Take -> Shot）の台詞を、そのクリップの区間へ
+    割り付ける。字幕トラックの既存クリップは**置き換える**（画面側で確認する）。
+    """
+
+    #: 書き込む字幕トラック（省略すると T1。無ければ作る）
+    track_id: str | None = None
+
+
+# --------------------------------------------------------------------------
+# 脚本との差分（作ったあとに脚本が動いた分）
+# --------------------------------------------------------------------------
+
+class TimelineSyncAdded(BaseModel):
+    """タイムラインを作ったあとに増えたカット（採用テイクの動画がある）。"""
+
+    shot_id: str
+    take_id: str
+    label: str = ""
+    duration_ms: int = 0
+
+
+class TimelineSyncRetaken(BaseModel):
+    """クリップが古いテイクを指している（カットの採用が変わった）。"""
+
+    clip_id: str
+    shot_id: str
+    old_take_id: str
+    new_take_id: str
+    label: str = ""
+    #: 新しいテイクの長さ（切り出しはここへ丸める）
+    duration_ms: int | None = None
+
+
+class TimelineSyncRemoved(BaseModel):
+    """元のカットが消えた（または採用が外れた）クリップ。"""
+
+    clip_id: str
+    label: str = ""
+    reason: str = ""
+
+
+class TimelineSyncPreview(BaseModel):
+    """GET /api/studio/timelines/{id}/sync-preview: 反映できる差分。"""
+
+    added: list[TimelineSyncAdded] = Field(default_factory=list)
+    retaken: list[TimelineSyncRetaken] = Field(default_factory=list)
+    removed: list[TimelineSyncRemoved] = Field(default_factory=list)
+
+    @property
+    def empty(self) -> bool:
+        return not (self.added or self.retaken or self.removed)
+
+
+class TimelineSyncRequest(BaseModel):
+    """POST /api/studio/timelines/{id}/sync body（選んだ項目だけ反映）。"""
+
+    #: V1 の末尾へ足すカット（``TimelineSyncAdded.shot_id``）
+    add_shot_ids: list[str] = Field(default_factory=list)
+    #: 新しいテイクへ差し替えるクリップ（``TimelineSyncRetaken.clip_id``）
+    retake_clip_ids: list[str] = Field(default_factory=list)
+    #: 消して詰めるクリップ（``TimelineSyncRemoved.clip_id``）
+    remove_clip_ids: list[str] = Field(default_factory=list)
+
+
+# --------------------------------------------------------------------------
+# メディア欠落のリカバリ
+# --------------------------------------------------------------------------
+
+class TimelineMissingCandidate(BaseModel):
+    """欠落クリップに充てられる同じカットの別テイク。"""
+
+    take_id: str
+    status: str = ""
+    created_at: str = ""
+    duration_ms: int | None = None
+
+
+class TimelineMissingClip(BaseModel):
+    """実ファイルが見つからないクリップ 1 つと、その直し方。"""
+
+    clip_id: str
+    label: str = ""
+    source_kind: TimelineClipSource = "take"
+    source_id: str | None = None
+    #: 同じカットの、動画が実在する別テイク（新しい順）
+    candidates: list[TimelineMissingCandidate] = Field(default_factory=list)
+
+
+class TimelineMissingReport(BaseModel):
+    """GET /api/studio/timelines/{id}/missing: 欠落クリップの一覧。"""
+
+    clips: list[TimelineMissingClip] = Field(default_factory=list)
+
+
+class TimelineMissingFix(BaseModel):
+    """POST /api/studio/timelines/{id}/missing/resolve body。"""
+
+    #: ``{クリップ id: 差し替え先の take id}``
+    replace: dict[str, str] = Field(default_factory=dict)
+    #: 消してしまうクリップ（映像トラックなら後ろを詰める）
+    drop_clip_ids: list[str] = Field(default_factory=list)
+    #: 残っている欠落クリップを全部消す（``drop_clip_ids`` と併用できる）
+    drop_all: bool = False
 
 
 class TimelineExportProgress(BaseModel):

@@ -5,7 +5,7 @@ DB と ffmpeg は :mod:`app.timeline` に集約してあり、ここは HTTP の
 ``/api/studio`` にして、画面から見た住所を 1 つに揃えてある。
 """
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 
 from .. import timeline as service
 from ..models import (
@@ -18,6 +18,14 @@ from ..models import (
     TimelineExport,
     TimelineExportRequest,
     TimelineExportSave,
+    TimelineMediaPage,
+    TimelineMissingFix,
+    TimelineMissingReport,
+    TimelineSubtitleRequest,
+    TimelineSyncPreview,
+    TimelineSyncRequest,
+    TimelineTrackCreate,
+    TimelineTrackUpdate,
 )
 
 router = APIRouter(prefix="/api/studio", tags=["studio"])
@@ -114,6 +122,142 @@ async def replace_clips(
     if detail is None:
         raise HTTPException(status_code=404, detail="timeline not found")
     return detail
+
+
+# --------------------------------------------------------------------------
+# トラック（音声 A1… と字幕 T1）
+# --------------------------------------------------------------------------
+
+@router.post("/timelines/{timeline_id}/tracks", response_model=StudioTimelineDetail,
+             status_code=201)
+async def add_track(
+    timeline_id: str, payload: TimelineTrackCreate | None = None
+) -> StudioTimelineDetail:
+    """トラックを 1 本足す（映像トラックは V1 の 1 本きりなので 400）。"""
+    try:
+        return await service.add_track(timeline_id, payload or TimelineTrackCreate())
+    except service.TimelineError as exc:
+        raise _http_error(exc) from exc
+
+
+@router.patch(
+    "/timelines/{timeline_id}/tracks/{track_id}", response_model=StudioTimelineDetail
+)
+async def update_track(
+    timeline_id: str, track_id: str, payload: TimelineTrackUpdate
+) -> StudioTimelineDetail:
+    """名前・ミュート・ロックを変える（送らなかった項目はそのまま）。"""
+    try:
+        return await service.update_track(timeline_id, track_id, payload)
+    except service.TimelineError as exc:
+        raise _http_error(exc) from exc
+
+
+@router.delete(
+    "/timelines/{timeline_id}/tracks/{track_id}", response_model=StudioTimelineDetail
+)
+async def delete_track(timeline_id: str, track_id: str) -> StudioTimelineDetail:
+    """トラックを 1 本消す（載っていたクリップも一緒に消える）。"""
+    try:
+        return await service.delete_track(timeline_id, track_id)
+    except service.TimelineError as exc:
+        raise _http_error(exc) from exc
+
+
+# --------------------------------------------------------------------------
+# 素材ビン
+# --------------------------------------------------------------------------
+
+@router.get("/projects/{project_id}/media", response_model=TimelineMediaPage)
+async def list_media(
+    project_id: str,
+    kind: str = Query("video", pattern="^(video|audio|image)$"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+) -> TimelineMediaPage:
+    """タイムラインへ足せる素材の 1 ページ。
+
+    テイク（映像のみ）・ライブラリ・終わった単発ジョブ・作品の素材ファイルを
+    新しい順に混ぜて返す。長さ（``duration_ms``）はこのページのぶんだけ調べる。
+    """
+    try:
+        return await service.list_media(project_id, kind, limit=limit, offset=offset)
+    except service.TimelineError as exc:
+        raise _http_error(exc) from exc
+
+
+# --------------------------------------------------------------------------
+# テロップの一括生成
+# --------------------------------------------------------------------------
+
+@router.post(
+    "/timelines/{timeline_id}/generate-subtitles",
+    response_model=StudioTimelineDetail,
+)
+async def generate_subtitles(
+    timeline_id: str, payload: TimelineSubtitleRequest | None = None
+) -> StudioTimelineDetail:
+    """V1 の各クリップの元カットの台詞から、テロップを一括で置き直す。
+
+    字幕トラックの中身は**置き換わる**（積み増さない）。画面側で確認を取る。
+    """
+    body = payload or TimelineSubtitleRequest()
+    try:
+        return await service.generate_subtitles(timeline_id, body.track_id)
+    except service.TimelineError as exc:
+        raise _http_error(exc) from exc
+
+
+# --------------------------------------------------------------------------
+# 脚本との差分
+# --------------------------------------------------------------------------
+
+@router.get("/timelines/{timeline_id}/sync-preview", response_model=TimelineSyncPreview)
+async def sync_preview(timeline_id: str) -> TimelineSyncPreview:
+    """作ったあとに脚本で起きた差分（増えた / 採用が変わった / 消えたカット）。"""
+    try:
+        return await service.sync_preview(timeline_id)
+    except service.TimelineError as exc:
+        raise _http_error(exc) from exc
+
+
+@router.post("/timelines/{timeline_id}/sync", response_model=StudioTimelineDetail)
+async def apply_sync(
+    timeline_id: str, payload: TimelineSyncRequest | None = None
+) -> StudioTimelineDetail:
+    """差分のうち、body で選ばれたものだけ反映する。"""
+    try:
+        return await service.apply_sync(timeline_id, payload or TimelineSyncRequest())
+    except service.TimelineError as exc:
+        raise _http_error(exc) from exc
+
+
+# --------------------------------------------------------------------------
+# メディア欠落のリカバリ
+# --------------------------------------------------------------------------
+
+@router.get("/timelines/{timeline_id}/missing", response_model=TimelineMissingReport)
+async def missing_report(timeline_id: str) -> TimelineMissingReport:
+    """実ファイルが見つからないクリップと、同じカットの差し替え候補。"""
+    try:
+        return await service.missing_report(timeline_id)
+    except service.TimelineError as exc:
+        raise _http_error(exc) from exc
+
+
+@router.post(
+    "/timelines/{timeline_id}/missing/resolve", response_model=StudioTimelineDetail
+)
+async def resolve_missing(
+    timeline_id: str, payload: TimelineMissingFix | None = None
+) -> StudioTimelineDetail:
+    """欠落クリップを別テイクへ差し替える / まとめて消す。"""
+    try:
+        return await service.resolve_missing(
+            timeline_id, payload or TimelineMissingFix()
+        )
+    except service.TimelineError as exc:
+        raise _http_error(exc) from exc
 
 
 # --------------------------------------------------------------------------

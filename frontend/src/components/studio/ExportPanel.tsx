@@ -1,18 +1,37 @@
+import { useState } from 'react'
 import { Download, Film, Library, Loader2 } from 'lucide-react'
 
-import type { TimelineExport } from '../../types'
+import type {
+  TimelineExport,
+  TimelineExportFit,
+  TimelineExportPreset,
+  TimelineExportRequest,
+} from '../../types'
 import { Section } from '../ui'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
+import { Checkbox } from '../ui/checkbox'
 import { Progress } from '../ui/progress'
-import { EXPORT_STATUS_CLASS, EXPORT_STATUS_LABEL } from './timeline'
+import {
+  EXPORT_FITS,
+  EXPORT_PRESETS,
+  EXPORT_STATUS_CLASS,
+  EXPORT_STATUS_LABEL,
+} from './timeline'
 
 /**
- * 書き出しのボタンと履歴。
+ * 書き出しの設定・ボタン・履歴。
  *
  * 押すと 202 で受け付けられ、進捗は WS の `timeline_export` フレームで届く
  * （取りこぼしても親が履歴を取り直す）。終わったら最新の 1 本をその場で
  * 再生でき、ダウンロードとライブラリ登録もここから。
+ *
+ * 設定は 3 つ:
+ *
+ * - **解像度プリセット** … 既定はタイムラインの規格そのまま。fps は変えない。
+ * - **収め方** … 縦横比が変わるときにレターボックス（黒帯）か中央クロップか。
+ *   プリセットが「タイムライン規格」のときは効かないので出さない。
+ * - **ラウドネス正規化** … 既定 ON（-14 LUFS / TP -1.5 dB）。
  */
 export default function ExportPanel({
   exports,
@@ -31,9 +50,12 @@ export default function ExportPanel({
   /** ライブラリへ保存中の書き出し id（ボタンを二度押しさせない）。 */
   savingId: string | null
   canExport: boolean
-  onExport: () => void
+  onExport: (body: TimelineExportRequest) => void
   onSaveToLibrary: (exportId: string) => void
 }) {
+  const [preset, setPreset] = useState<TimelineExportPreset>('timeline')
+  const [fit, setFit] = useState<TimelineExportFit>('pad')
+  const [loudnorm, setLoudnorm] = useState(true)
   const latest = exports[0] ?? null
   const finished = exports.find((item) => item.status === 'done') ?? null
 
@@ -44,7 +66,7 @@ export default function ExportPanel({
         <Button
           type="button"
           size="sm"
-          onClick={onExport}
+          onClick={() => onExport({ preset, fit, loudnorm })}
           disabled={busy || !canExport || running !== null}
           title={
             canExport
@@ -62,6 +84,53 @@ export default function ExportPanel({
       }
     >
       <div className="flex flex-col gap-3">
+        <div className="flex flex-col gap-2 rounded border border-border bg-secondary/30 px-2 py-2 text-[11px]">
+          <label className="flex flex-col gap-1">
+            <span className="text-muted-foreground">解像度</span>
+            <select
+              className="h-7 rounded-md border border-border bg-background px-2 text-[11px]"
+              value={preset}
+              onChange={(event) =>
+                setPreset(event.target.value as TimelineExportPreset)
+              }
+            >
+              {EXPORT_PRESETS.map((option) => (
+                <option key={option.value} value={option.value}>
+                  {option.label}
+                </option>
+              ))}
+            </select>
+          </label>
+          {preset !== 'timeline' && (
+            <label className="flex flex-col gap-1">
+              <span className="text-muted-foreground">縦横比が変わるとき</span>
+              <select
+                className="h-7 rounded-md border border-border bg-background px-2 text-[11px]"
+                value={fit}
+                onChange={(event) =>
+                  setFit(event.target.value as TimelineExportFit)
+                }
+              >
+                {EXPORT_FITS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+          )}
+          <label className="flex cursor-pointer items-center gap-2">
+            <Checkbox
+              checked={loudnorm}
+              onCheckedChange={(value) => setLoudnorm(value === true)}
+            />
+            <span>ラウドネス正規化（-14 LUFS / TP -1.5 dB）</span>
+          </label>
+          <p className="text-[10px] text-muted-foreground">
+            fps はタイムラインの値のままです。
+          </p>
+        </div>
+
         {running && (
           <div className="flex flex-col gap-1">
             <div className="flex items-center justify-between text-xs text-muted-foreground">

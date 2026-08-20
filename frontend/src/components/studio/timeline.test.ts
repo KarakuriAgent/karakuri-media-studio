@@ -1,32 +1,58 @@
 import { describe, expect, it } from 'vitest'
 
-import type { TimelineClip, TimelineTrack } from '../../types'
+import type {
+  TimelineClip,
+  TimelineMediaItem,
+  TimelineTrack,
+  TimelineTransitionKind,
+} from '../../types'
 import {
+  DEFAULT_IMAGE_MS,
+  DEFAULT_MEDIA_MS,
   HISTORY_LIMIT,
   LOCAL_ID_PREFIX,
   MIN_CLIP_MS,
+  SPEED_MAX,
+  SPEED_MIN,
+  SUBTITLE_DEFAULT_STYLE,
   ZOOM_MAX,
   ZOOM_MIN,
+  applyToTrack,
   canRedo,
   canUndo,
+  clampSpeed,
   clampZoom,
   clipAt,
+  clipFromMedia,
+  clipsOfTrack,
+  firstFreeSlot,
   formatSeconds,
   formatTimecode,
   initHistory,
+  isSpanless,
+  maxTransitionMs,
   moveClip,
+  moveClipTo,
   msToPx,
   orderedClips,
   pushHistory,
   pxToMs,
   redo,
   removeClip,
+  removeClipFree,
   ripple,
   rulerStepMs,
   sameClips,
+  setSpeed,
+  setSubtitle,
+  setTransition,
+  spanOf,
   splitClipAt,
+  subtitleStyle,
+  subtitleText,
   toClipInputs,
   totalDuration,
+  transitionAt,
   trimClip,
   undo,
   videoTrackOf,
@@ -51,6 +77,7 @@ function clip(id: string, overrides: Partial<TimelineClip> = {}): TimelineClip {
     transition_kind: null,
     transition_ms: 0,
     text_payload: null,
+    speed: 1,
     sort_order: 0,
     video_url: `/outputs/${id}/video.mp4`,
     source_duration_ms: 10000,
@@ -396,5 +423,308 @@ describe('Undo / Redo', () => {
     }
     expect(history.past).toHaveLength(HISTORY_LIMIT)
     expect(history.present).toBe(HISTORY_LIMIT + 10)
+  })
+})
+
+// --------------------------------------------------------------------------
+// 繋ぎ（トランジション）: オーバーラップ方式
+// --------------------------------------------------------------------------
+
+/** 繋ぎつきのクリップ（`ripple` に通す前の並び）。 */
+function faded(
+  id: string,
+  kind: TimelineTransitionKind | null,
+  ms: number,
+  overrides: Partial<TimelineClip> = {},
+): TimelineClip {
+  return clip(id, { transition_kind: kind, transition_ms: ms, ...overrides })
+}
+
+describe('繋ぎ', () => {
+  it('重なったぶんだけ後ろが前へ食い込み、全長が縮む', () => {
+    const placed = ripple([
+      clip('a', { duration_ms: 2000 }),
+      faded('b', 'crossfade', 500, { duration_ms: 3000 }),
+    ])
+    expect(placed.map((item) => item.start_ms)).toEqual([0, 1500])
+    // 2000 + 3000 - 500
+    expect(totalDuration(placed)).toBe(4500)
+    // 一番後ろの終わりも同じ
+    expect(spanOf(placed)).toBe(4500)
+  })
+
+  it('先頭のクリップの繋ぎは落とす（重なる相手が居ない）', () => {
+    const placed = ripple([faded('a', 'crossfade', 500), clip('b')])
+    expect(placed[0].transition_kind).toBeNull()
+    expect(placed[0].start_ms).toBe(0)
+  })
+
+  it('隣り合う短いほうの半分より長い繋ぎは丸める', () => {
+    const placed = ripple([
+      clip('a', { duration_ms: 2000 }),
+      faded('b', 'crossfade', 1500, { duration_ms: 1000 }),
+    ])
+    expect(placed[1].transition_ms).toBe(500)
+    expect(placed[1].start_ms).toBe(1500)
+  })
+
+  it('最小より短くなる境界は繋ぎをあきらめてカットに戻す', () => {
+    const placed = ripple([
+      clip('a', { duration_ms: 2000 }),
+      faded('b', 'crossfade', 500, { duration_ms: 300 }),
+    ])
+    expect(placed[1].transition_kind).toBeNull()
+    expect(placed[1].transition_ms).toBe(0)
+    expect(placed[1].start_ms).toBe(2000)
+  })
+
+  it('境界に置ける長さの上限は短いほうの半分', () => {
+    const clips = [clip('a', { duration_ms: 2000 }), clip('b', { duration_ms: 1000 })]
+    expect(maxTransitionMs(clips, 1)).toBe(500)
+    // 先頭と範囲外には置けない
+    expect(maxTransitionMs(clips, 0)).toBe(0)
+    expect(maxTransitionMs(clips, 5)).toBe(0)
+  })
+
+  it('setTransition で置いたり、null でカットへ戻したりできる', () => {
+    const clips = [clip('a'), clip('b')]
+    const withFade = setTransition(clips, 1, 'crossfade', 600)
+    expect(withFade[1].transition_kind).toBe('crossfade')
+    expect(withFade[1].transition_ms).toBe(600)
+    expect(withFade[1].start_ms).toBe(1400)
+
+    const cut = setTransition(withFade, 1, null)
+    expect(cut[1].transition_kind).toBeNull()
+    expect(cut[1].start_ms).toBe(2000)
+  })
+
+  it('setTransition は先頭の境界を触らない', () => {
+    const clips = [clip('a'), clip('b')]
+    expect(setTransition(clips, 0, 'crossfade')).toBe(clips)
+  })
+
+  it('transitionAt は重なりの中にいるあいだ進み具合を返す', () => {
+    const placed = ripple([
+      clip('a', { duration_ms: 2000 }),
+      faded('b', 'crossfade', 500, { duration_ms: 2000 }),
+    ])
+    expect(transitionAt(placed, 1000)).toBeNull()
+    const at = transitionAt(placed, 1750)
+    expect(at?.from.id).toBe('a')
+    expect(at?.to.id).toBe('b')
+    expect(at?.progress).toBeCloseTo(0.5)
+    expect(transitionAt(placed, 2100)).toBeNull()
+  })
+})
+
+// --------------------------------------------------------------------------
+// リタイム（速度変更）
+// --------------------------------------------------------------------------
+
+describe('リタイム', () => {
+  it('速度を上げると尺が縮み、切り出しはそのまま', () => {
+    const clips = [clip('a', { in_ms: 0, out_ms: 4000, duration_ms: 4000 })]
+    const fast = setSpeed(clips, 'a', 2)
+    expect(fast[0].speed).toBe(2)
+    expect(fast[0].duration_ms).toBe(2000)
+    expect([fast[0].in_ms, fast[0].out_ms]).toEqual([0, 4000])
+  })
+
+  it('範囲の外は端に寄せる', () => {
+    expect(clampSpeed(0)).toBe(1)
+    expect(clampSpeed(99)).toBe(SPEED_MAX)
+    expect(clampSpeed(0.01)).toBe(SPEED_MIN)
+    expect(clampSpeed(Number.NaN)).toBe(1)
+  })
+
+  it('速度を変えたクリップのトリムはソースの中で速度ぶん動く', () => {
+    const clips = [
+      clip('a', { in_ms: 0, out_ms: 4000, duration_ms: 2000, speed: 2 }),
+    ]
+    // タイムライン上で 500ms 削る = ソースでは 1000ms
+    const trimmed = trimClip(clips, 'a', 'out', -500)
+    expect(trimmed[0].out_ms).toBe(3000)
+    expect(trimmed[0].duration_ms).toBe(1500)
+  })
+
+  it('分割はタイムライン上の位置をソースの位置へ直してから割る', () => {
+    const clips = [
+      clip('a', { in_ms: 0, out_ms: 4000, duration_ms: 2000, speed: 2 }),
+    ]
+    const split = splitClipAt(clips, 'a', 500)
+    expect(split).toHaveLength(2)
+    expect(split[0].out_ms).toBe(1000)
+    expect(split[0].duration_ms).toBe(500)
+    expect(split[1].in_ms).toBe(1000)
+    expect(split[1].duration_ms).toBe(1500)
+  })
+})
+
+// --------------------------------------------------------------------------
+// トラックの出し入れと自由配置
+// --------------------------------------------------------------------------
+
+describe('トラックごとの操作', () => {
+  const mixed = [
+    clip('v1', { track_id: 'V1' }),
+    clip('v2', { track_id: 'V1' }),
+    clip('a1', { track_id: 'A1', start_ms: 4000 }),
+  ]
+
+  it('clipsOfTrack はそのトラックだけを開始位置順で返す', () => {
+    expect(clipsOfTrack(mixed, 'V1').map((item) => item.id)).toEqual(['v1', 'v2'])
+    expect(clipsOfTrack(mixed, 'A1').map((item) => item.id)).toEqual(['a1'])
+  })
+
+  it('applyToTrack は他のトラックを触らない', () => {
+    const next = applyToTrack(mixed, 'V1', (lane) => removeClip(lane, 'v1'))
+    expect(clipsOfTrack(next, 'V1').map((item) => item.id)).toEqual(['v2'])
+    expect(clipsOfTrack(next, 'A1')).toHaveLength(1)
+  })
+
+  it('自由配置は好きな位置へ動かせるが、重なるところへは置けない', () => {
+    const lane = [
+      clip('a', { track_id: 'A1', start_ms: 0, duration_ms: 2000 }),
+      clip('b', { track_id: 'A1', start_ms: 5000, duration_ms: 2000 }),
+    ]
+    const moved = moveClipTo(lane, 'b', 3000)
+    expect(moved.find((item) => item.id === 'b')?.start_ms).toBe(3000)
+    // 前のクリップに掛かる位置は断る（元の配列がそのまま返る）
+    expect(moveClipTo(lane, 'b', 1000)).toBe(lane)
+  })
+
+  it('firstFreeSlot は塞がっているところを飛ばす', () => {
+    const lane = [
+      clip('a', { track_id: 'A1', start_ms: 0, duration_ms: 2000 }),
+      clip('b', { track_id: 'A1', start_ms: 3000, duration_ms: 1000 }),
+    ]
+    expect(firstFreeSlot(lane, 500, 0)).toBe(2000)
+    expect(firstFreeSlot(lane, 2000, 0)).toBe(4000)
+    expect(firstFreeSlot(lane, 500, 4000)).toBe(4000)
+  })
+
+  it('自由配置の削除は後ろを詰めない', () => {
+    const lane = [
+      clip('a', { track_id: 'A1', start_ms: 0 }),
+      clip('b', { track_id: 'A1', start_ms: 5000 }),
+    ]
+    const left = removeClipFree(lane, 'a')
+    expect(left).toHaveLength(1)
+    expect(left[0].start_ms).toBe(5000)
+  })
+})
+
+// --------------------------------------------------------------------------
+// テロップ
+// --------------------------------------------------------------------------
+
+describe('テロップ', () => {
+  it('本文と見た目を読み書きできる（欠けていれば既定）', () => {
+    const empty = clip('t', { source_kind: 'text', text_payload: null })
+    expect(subtitleText(empty)).toBe('')
+    expect(subtitleStyle(empty)).toEqual(SUBTITLE_DEFAULT_STYLE)
+
+    const changed = setSubtitle([empty], 't', {
+      text: 'こんにちは',
+      style: { color: 'yellow' },
+    })
+    expect(subtitleText(changed[0])).toBe('こんにちは')
+    expect(subtitleStyle(changed[0])).toEqual({
+      position: 'bottom',
+      size: 'M',
+      color: 'yellow',
+    })
+  })
+
+  it('知らない見た目の値は既定へ落とす', () => {
+    const odd = clip('t', {
+      source_kind: 'text',
+      text_payload: { text: 'x', style: { position: 'middle', size: 'XL', color: 'red' } },
+    })
+    expect(subtitleStyle(odd)).toEqual(SUBTITLE_DEFAULT_STYLE)
+  })
+
+  it('テロップは切り出しを持たないので、トリムは尺を直に伸ばす', () => {
+    const lane = [
+      clip('t', {
+        source_kind: 'text',
+        in_ms: 0,
+        out_ms: 0,
+        start_ms: 1000,
+        duration_ms: 2000,
+        source_duration_ms: null,
+      }),
+    ]
+    const longer = trimClip(lane, 't', 'out', 500)
+    expect(longer[0].duration_ms).toBe(2500)
+    expect(longer[0].start_ms).toBe(1000)
+    // 頭を縮めると開始位置がずれる
+    const later = trimClip(lane, 't', 'in', 500)
+    expect(later[0].duration_ms).toBe(1500)
+    expect(later[0].start_ms).toBe(1500)
+  })
+})
+
+// --------------------------------------------------------------------------
+// 素材ビンからのクリップ生成
+// --------------------------------------------------------------------------
+
+describe('素材ビン', () => {
+  const media: TimelineMediaItem = {
+    source_kind: 'library',
+    source_id: 'LIB1',
+    media_kind: 'audio',
+    name: '静かなピアノ',
+    origin: 'ライブラリ',
+    url: '/library/audio/x.mp3',
+    duration_ms: 30000,
+    created_at: '2026-01-01T00:00:00+00:00',
+  }
+
+  it('長さが分かっていればその尺で置く', () => {
+    const made = clipFromMedia(media, 'A1', 2000)
+    expect(made.duration_ms).toBe(30000)
+    expect([made.in_ms, made.out_ms]).toEqual([0, 30000])
+    expect(made.start_ms).toBe(2000)
+    expect(made.id.startsWith(LOCAL_ID_PREFIX)).toBe(true)
+  })
+
+  it('長さが分からない素材は既定の尺に落とす', () => {
+    const made = clipFromMedia({ ...media, duration_ms: null }, 'A1', 0)
+    expect(made.duration_ms).toBe(DEFAULT_MEDIA_MS)
+  })
+
+  it('静止画は切り出しを持たず、既定の 3 秒で置く', () => {
+    const made = clipFromMedia(
+      { ...media, source_kind: 'image', media_kind: 'image', source_id: 'library:X' },
+      'V1',
+      0,
+    )
+    expect(made.duration_ms).toBe(DEFAULT_IMAGE_MS)
+    expect([made.in_ms, made.out_ms]).toEqual([0, 0])
+    expect(isSpanless(made)).toBe(true)
+  })
+})
+
+// --------------------------------------------------------------------------
+// 保存の比較（インスペクタの編集も拾う）
+// --------------------------------------------------------------------------
+
+describe('保存の比較', () => {
+  it('音量・繋ぎ・速度・テロップの違いも「変わった」とみなす', () => {
+    const base = [clip('a')]
+    expect(sameClips(base, [clip('a')])).toBe(true)
+    expect(sameClips(base, [clip('a', { gain_db: -6 })])).toBe(false)
+    expect(sameClips(base, [clip('a', { fade_in_ms: 500 })])).toBe(false)
+    expect(sameClips(base, [clip('a', { speed: 2 })])).toBe(false)
+    expect(
+      sameClips(base, [clip('a', { transition_kind: 'crossfade', transition_ms: 500 })]),
+    ).toBe(false)
+    expect(sameClips(base, [clip('a', { text_payload: { text: 'x' } })])).toBe(false)
+  })
+
+  it('保存の body には速度も載る', () => {
+    const [body] = toClipInputs([clip('a', { speed: 1.5 })])
+    expect(body.speed).toBe(1.5)
   })
 })

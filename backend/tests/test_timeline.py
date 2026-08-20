@@ -713,3 +713,1119 @@ def test_save_to_library_refuses_an_unfinished_export(client):
     assert client.post(
         "/api/studio/exports/NOPE/save-to-library", json={}
     ).status_code == 404
+
+
+# --------------------------------------------------------------------------
+# フェーズ 2/3 の純関数（繋ぎ・リタイム・ASS・台詞の割り付け）
+# --------------------------------------------------------------------------
+
+def test_transition_offsets_shrinks_the_timeline_by_each_overlap():
+    # 3 つ（2000 / 3000 / 1000）を 500 ずつ重ねる
+    offsets, total = timeline_export.transition_offsets(
+        [2000, 3000, 1000], [500, 500]
+    )
+    # 1 本目の末尾 500ms 手前から重ね始め、そのあとは積み上がった長さから引く
+    assert offsets == [1500, 4000]
+    assert total == 2000 + 3000 + 1000 - 500 - 500
+
+
+def test_transition_offsets_handles_a_single_run():
+    assert timeline_export.transition_offsets([1234], []) == ([], 1234)
+    assert timeline_export.transition_offsets([], []) == ([], 0)
+
+
+def test_transition_offsets_refuses_a_mismatched_count():
+    with pytest.raises(TimelineExportError):
+        timeline_export.transition_offsets([1000, 1000], [])
+
+
+def test_atempo_chain_splits_beyond_the_filter_range():
+    assert timeline_export.atempo_chain(1.0) == [1.0]
+    assert timeline_export.atempo_chain(1.5) == [1.5]
+    assert timeline_export.atempo_chain(2.0) == [2.0]
+    # 範囲の外は 2 倍・半分に割って、積が元の速度になる
+    for speed in (0.25, 0.3, 4.0, 3.5):
+        chain = timeline_export.atempo_chain(speed)
+        assert all(0.5 - 1e-9 <= factor <= 2.0 + 1e-9 for factor in chain)
+        product = 1.0
+        for factor in chain:
+            product *= factor
+        assert product == pytest.approx(speed)
+
+
+def test_atempo_chain_refuses_a_broken_speed():
+    with pytest.raises(TimelineExportError):
+        timeline_export.atempo_chain(0)
+
+
+def test_resolve_format_uses_the_preset_or_the_timeline():
+    assert timeline_export.resolve_format("timeline", 1280, 720) == (1280, 720)
+    assert timeline_export.resolve_format("1080p", 1280, 720) == (1920, 1080)
+    assert timeline_export.resolve_format("vertical", 1280, 720) == (1080, 1920)
+    assert timeline_export.resolve_format("なにこれ", 640, 360) == (640, 360)
+
+
+def test_escape_filter_path_protects_the_graph_separators():
+    escaped = timeline_export.escape_filter_path("/a:b/c,d[e].ass")
+    assert escaped == "/a\\:b/c\\,d\\[e\\].ass"
+
+
+# --------------------------------------------------------------------------
+# 書き出しコマンド（フェーズ 2/3 の中身）
+# --------------------------------------------------------------------------
+
+def test_build_command_uses_xfade_and_acrossfade_across_a_transition():
+    spec = ExportSpec(
+        width=1280,
+        height=720,
+        fps=24,
+        clips=[
+            _clip("/x/one.mp4", 0, 2000),
+            ExportClip(
+                path="/x/two.mp4",
+                in_ms=0,
+                out_ms=3000,
+                duration_ms=3000,
+                transition_kind="crossfade",
+                transition_ms=500,
+            ),
+        ],
+    )
+    graph = build_command(spec, "/o.mp4")[
+        build_command(spec, "/o.mp4").index("-filter_complex") + 1
+    ]
+    # まとまりは 2 つ（それぞれ concat=n=1 でラベルを揃えてから重ねる）
+    assert graph.count("concat=n=1:v=1:a=1") == 2
+    assert "xfade=transition=fade:duration=0.500:offset=1.500" in graph
+    assert "acrossfade=d=0.500:c1=tri:c2=tri" in graph
+    # 全長は重なったぶん縮む
+    assert spec.duration_ms == 4500
+
+
+def test_build_command_keeps_concat_for_the_clips_around_a_transition():
+    """繋ぎのないところは今までどおり 1 回の concat で繋ぐ。"""
+    spec = ExportSpec(
+        width=640,
+        height=360,
+        fps=24,
+        clips=[
+            _clip("/x/1.mp4"),
+            _clip("/x/2.mp4"),
+            ExportClip(
+                path="/x/3.mp4",
+                in_ms=0,
+                out_ms=2000,
+                duration_ms=2000,
+                transition_kind="wipeleft",
+                transition_ms=400,
+            ),
+            _clip("/x/4.mp4"),
+        ],
+    )
+    command = build_command(spec, "/o.mp4")
+    graph = command[command.index("-filter_complex") + 1]
+    assert "concat=n=2:v=1:a=1[r0v][r0a]" in graph
+    assert "concat=n=2:v=1:a=1[r1v][r1a]" in graph
+    assert "xfade=transition=wipeleft" in graph
+
+
+def test_build_command_ignores_an_unknown_transition():
+    spec = ExportSpec(
+        width=640,
+        height=360,
+        fps=24,
+        clips=[
+            _clip("/x/1.mp4"),
+            ExportClip(
+                path="/x/2.mp4",
+                in_ms=0,
+                out_ms=2000,
+                duration_ms=2000,
+                transition_kind="ワープ",
+                transition_ms=400,
+            ),
+        ],
+    )
+    command = build_command(spec, "/o.mp4")
+    graph = command[command.index("-filter_complex") + 1]
+    assert "xfade" not in graph
+    assert graph.endswith("concat=n=2:v=1:a=1[outv][outa]")
+
+
+def test_build_command_retimes_video_and_audio():
+    spec = ExportSpec(
+        width=640,
+        height=360,
+        fps=24,
+        clips=[
+            ExportClip(
+                path="/x/fast.mp4", in_ms=0, out_ms=4000, duration_ms=1000, speed=4.0
+            )
+        ],
+    )
+    command = build_command(spec, "/o.mp4")
+    graph = command[command.index("-filter_complex") + 1]
+    assert "setpts=(PTS-STARTPTS)/4" in graph
+    # atempo は 2 段（0.5〜2.0 の外なので割る）
+    assert graph.count("atempo=2") == 2
+
+
+def test_build_command_loops_a_still_image_into_a_clip():
+    spec = ExportSpec(
+        width=1280,
+        height=720,
+        fps=24,
+        clips=[
+            ExportClip(
+                path="/x/still.png",
+                in_ms=0,
+                out_ms=3000,
+                duration_ms=3000,
+                kind="image",
+                has_audio=False,
+            )
+        ],
+    )
+    command = build_command(spec, "/o.mp4")
+    assert "-loop" in command
+    assert command[command.index("-loop") + 1] == "1"
+    graph = command[command.index("-filter_complex") + 1]
+    assert "trim=" not in graph  # 尺は -t で決まる
+    assert any("anullsrc" in arg for arg in command)
+
+
+def test_build_command_mixes_the_audio_track_over_the_video():
+    spec = ExportSpec(
+        width=640,
+        height=360,
+        fps=24,
+        clips=[_clip("/x/one.mp4", 0, 5000)],
+        audio_clips=[
+            timeline_export.ExportAudioClip(
+                path="/x/bgm.mp3",
+                start_ms=1000,
+                in_ms=0,
+                out_ms=4000,
+                gain_db=-6.0,
+                fade_in_ms=500,
+                fade_out_ms=800,
+            )
+        ],
+    )
+    command = build_command(spec, "/o.mp4")
+    graph = command[command.index("-filter_complex") + 1]
+    assert "atrim=start=0.000:end=4.000" in graph
+    assert "volume=-6dB" in graph
+    assert "afade=t=in:st=0:d=0.500" in graph
+    assert "afade=t=out:st=3.200:d=0.800" in graph
+    assert "adelay=1000:all=1" in graph
+    # 映像側の音を先頭に置き、全長は映像に合わせて切る
+    assert "amix=inputs=2:duration=first:dropout_transition=0:normalize=0[outa]" in graph
+
+
+def test_build_command_burns_in_the_subtitles_and_normalises_loudness():
+    spec = ExportSpec(
+        width=640,
+        height=360,
+        fps=24,
+        clips=[_clip("/x/one.mp4")],
+        subtitles_path="/tmp/subs.ass",
+        loudnorm=True,
+    )
+    command = build_command(spec, "/o.mp4")
+    graph = command[command.index("-filter_complex") + 1]
+    assert "subtitles=filename=/tmp/subs.ass[outv]" in graph
+    assert "loudnorm=I=-14:TP=-1.5:LRA=11[outa]" in graph
+
+
+def test_build_command_can_crop_instead_of_letterboxing():
+    spec = ExportSpec(
+        width=1080,
+        height=1920,
+        fps=24,
+        clips=[_clip("/x/one.mp4")],
+        fit=timeline_export.FIT_CROP,
+    )
+    command = build_command(spec, "/o.mp4")
+    graph = command[command.index("-filter_complex") + 1]
+    assert "force_original_aspect_ratio=increase" in graph
+    assert "crop=1080:1920" in graph
+    assert "pad=" not in graph
+
+
+# --------------------------------------------------------------------------
+# ASS の組み立てと台詞の割り付け（純関数）
+# --------------------------------------------------------------------------
+
+def test_build_ass_writes_a_header_and_one_line_per_event():
+    from app.timeline_subtitles import SubtitleEvent, build_ass
+
+    ass = build_ass(
+        [
+            SubtitleEvent(0, 1500, "こんにちは"),
+            SubtitleEvent(1500, 3000, "上に黄色で", position="top", color="yellow",
+                          size="L"),
+        ],
+        1920,
+        1080,
+    )
+    assert "PlayResX: 1920" in ass and "PlayResY: 1080" in ass
+    assert ass.count("Dialogue: ") == 2
+    assert "0:00:00.00,0:00:01.50" in ass
+    # 上・黄・大きめが上書きタグで付く
+    assert "{\\an8" in ass and "\\c&H0000FFFF" in ass
+    assert "{\\an2" in ass
+
+
+def test_build_ass_drops_empty_and_zero_length_lines():
+    from app.timeline_subtitles import SubtitleEvent, build_ass
+
+    ass = build_ass(
+        [SubtitleEvent(0, 0, "尺なし"), SubtitleEvent(0, 1000, "   ")], 1280, 720
+    )
+    assert "Dialogue: " not in ass
+
+
+def test_escape_text_folds_newlines_and_neutralises_braces():
+    from app.timeline_subtitles import escape_text
+
+    assert escape_text("上\n下") == "上\\N下"
+    assert escape_text("{\\an8}偽タグ") == "｛\\an8｝偽タグ"
+
+
+def test_format_time_rounds_to_centiseconds():
+    from app.timeline_subtitles import format_time
+
+    assert format_time(0) == "0:00:00.00"
+    assert format_time(1234) == "0:00:01.23"
+    assert format_time(3_661_000) == "1:01:01.00"
+
+
+def test_split_dialogue_prefers_newlines_then_sentence_ends():
+    from app.timeline_subtitles import split_dialogue
+
+    assert split_dialogue("「行こう」") == ["行こう"]
+    assert split_dialogue("一行目\n二行目") == ["一行目", "二行目"]
+    assert split_dialogue("待って。もう遅い！") == ["待って。", "もう遅い！"]
+    assert split_dialogue("   ") == []
+
+
+def test_place_dialogue_divides_the_clip_evenly():
+    from app.timeline_subtitles import place_dialogue
+
+    placed = place_dialogue(1000, 3000, "一つ。二つ。三つ。")
+    assert [(item.start_ms, item.duration_ms) for item in placed] == [
+        (1000, 1000),
+        (2000, 1000),
+        (3000, 1000),
+    ]
+    # 合計はクリップの尺とぴったり合う
+    assert sum(item.duration_ms for item in placed) == 3000
+
+
+def test_place_dialogue_folds_the_tail_when_the_clip_is_short():
+    from app.timeline_subtitles import place_dialogue
+
+    placed = place_dialogue(0, 900, "一つ。二つ。三つ。")
+    assert len(placed) == 1
+    assert placed[0].text == "一つ。二つ。三つ。"
+    assert placed[0].duration_ms == 900
+
+
+def test_place_dialogue_ignores_an_empty_line():
+    from app.timeline_subtitles import place_dialogue
+
+    assert place_dialogue(0, 1000, "") == []
+    assert place_dialogue(0, 0, "台詞") == []
+
+
+# --------------------------------------------------------------------------
+# 検証（繋ぎ・速度・テロップ）
+# --------------------------------------------------------------------------
+
+VIDEO_TRACK = {"T1": "video"}
+
+
+def test_validate_clips_accepts_a_transition_that_overlaps_the_previous_clip():
+    service.validate_clips(
+        [
+            _input(start_ms=0, duration_ms=2000, out_ms=2000),
+            _input(
+                start_ms=1500,
+                duration_ms=2000,
+                out_ms=2000,
+                transition_kind="crossfade",
+                transition_ms=500,
+            ),
+        ],
+        VIDEO_TRACK,
+    )
+
+
+def test_validate_clips_rejects_a_transition_longer_than_half_the_shorter_clip():
+    with pytest.raises(service.TimelineError, match="長すぎ"):
+        service.validate_clips(
+            [
+                _input(start_ms=0, duration_ms=1000, out_ms=1000),
+                _input(
+                    start_ms=400,
+                    duration_ms=2000,
+                    out_ms=2000,
+                    transition_kind="crossfade",
+                    transition_ms=600,
+                ),
+            ],
+            VIDEO_TRACK,
+        )
+
+
+def test_validate_clips_rejects_a_transition_on_the_first_clip():
+    with pytest.raises(service.TimelineError, match="先頭"):
+        service.validate_clips(
+            [_input(transition_kind="crossfade", transition_ms=300)], VIDEO_TRACK
+        )
+
+
+def test_validate_clips_rejects_a_transition_on_an_audio_track():
+    with pytest.raises(service.TimelineError, match="映像トラック"):
+        service.validate_clips(
+            [
+                _input(track_id="A1", start_ms=0, duration_ms=2000, out_ms=2000),
+                _input(
+                    track_id="A1",
+                    start_ms=1500,
+                    duration_ms=2000,
+                    out_ms=2000,
+                    transition_kind="crossfade",
+                    transition_ms=500,
+                ),
+            ],
+            {"A1": "audio"},
+        )
+
+
+def test_validate_clips_rejects_an_unknown_transition():
+    with pytest.raises(service.TimelineError, match="知らない繋ぎ"):
+        service.validate_clips(
+            [
+                _input(start_ms=0, duration_ms=2000, out_ms=2000),
+                _input(
+                    start_ms=1500,
+                    duration_ms=2000,
+                    out_ms=2000,
+                    transition_kind="ワープ",
+                    transition_ms=500,
+                ),
+            ],
+            VIDEO_TRACK,
+        )
+
+
+def test_validate_clips_accepts_a_retimed_clip():
+    # 4 秒ぶんを 2 倍速 = 2 秒
+    service.validate_clips([_input(duration_ms=2000, in_ms=0, out_ms=4000, speed=2.0)])
+
+
+def test_validate_clips_rejects_a_speed_outside_the_range():
+    with pytest.raises(service.TimelineError, match="速度は"):
+        service.validate_clips(
+            [_input(duration_ms=125, in_ms=0, out_ms=1000, speed=8.0)]
+        )
+
+
+def test_validate_clips_rejects_a_retimed_audio_clip():
+    with pytest.raises(service.TimelineError, match="映像クリップ"):
+        service.validate_clips(
+            [_input(track_id="A1", duration_ms=500, in_ms=0, out_ms=1000, speed=2.0)],
+            {"A1": "audio"},
+        )
+
+
+def test_validate_clips_rejects_an_empty_subtitle():
+    with pytest.raises(service.TimelineError, match="本文が空"):
+        service.validate_clips(
+            [
+                _input(
+                    track_id="S1",
+                    source_kind="text",
+                    source_id=None,
+                    in_ms=0,
+                    out_ms=0,
+                    text_payload={"text": "  "},
+                )
+            ],
+            {"S1": "subtitle"},
+        )
+
+
+def test_validate_clips_ignores_the_trim_of_a_text_or_image_clip():
+    service.validate_clips(
+        [
+            _input(
+                track_id="S1",
+                source_kind="text",
+                source_id=None,
+                in_ms=0,
+                out_ms=0,
+                text_payload={"text": "テロップ"},
+            )
+        ],
+        {"S1": "subtitle"},
+    )
+    service.validate_clips(
+        [_input(source_kind="image", source_id="library:X", in_ms=0, out_ms=0)]
+    )
+
+
+def test_relayout_packs_the_track_and_clamps_the_overlap():
+    from app.models import TimelineClipInput
+
+    def clip(duration, transition=None, transition_ms=0):
+        return TimelineClipInput(
+            track_id="V1",
+            start_ms=0,
+            duration_ms=duration,
+            source_kind="take",
+            source_id="T",
+            in_ms=0,
+            out_ms=duration,
+            transition_kind=transition,
+            transition_ms=transition_ms,
+        )
+
+    placed = service.relayout(
+        [clip(2000), clip(3000, "crossfade", 500), clip(1000, "crossfade", 900)]
+    )
+    assert [item.start_ms for item in placed] == [0, 1500, 4000]
+    # 3 本目は 1000ms しかないので、重なりは半分の 500ms へ丸まる
+    assert placed[2].transition_ms == 500
+    # 先頭の繋ぎは落ちる
+    assert placed[0].transition_kind is None
+
+
+def test_relayout_drops_a_transition_that_would_be_too_short():
+    from app.models import TimelineClipInput
+
+    clips = [
+        TimelineClipInput(
+            track_id="V1", start_ms=0, duration_ms=2000, source_kind="take",
+            source_id="A", in_ms=0, out_ms=2000,
+        ),
+        TimelineClipInput(
+            track_id="V1", start_ms=0, duration_ms=300, source_kind="take",
+            source_id="B", in_ms=0, out_ms=300,
+            transition_kind="crossfade", transition_ms=500,
+        ),
+    ]
+    placed = service.relayout(clips)
+    assert placed[1].transition_kind is None
+    assert placed[1].start_ms == 2000
+
+
+def test_split_image_source_reads_the_provider_marker():
+    assert service.split_image_source("library:ABC") == ("library", "ABC")
+    assert service.split_image_source("job:XYZ") == ("job", "XYZ")
+    # 印が無ければライブラリとして読む
+    assert service.split_image_source("PLAIN") == ("library", "PLAIN")
+    # 知らない印は解決させない
+    assert service.split_image_source("なにか:1")[0] == ""
+
+
+# --------------------------------------------------------------------------
+# API（トラック・素材ビン・テロップ生成・差分・欠落）
+# --------------------------------------------------------------------------
+
+def _empty_timeline(client, project_id):
+    return client.post(f"/api/studio/projects/{project_id}/timelines", json={}).json()
+
+
+def test_tracks_can_be_added_renamed_muted_and_removed(client):
+    project_id = _project(client)
+    timeline = _empty_timeline(client, project_id)
+
+    added = client.post(
+        f"/api/studio/timelines/{timeline['id']}/tracks", json={"kind": "audio"}
+    )
+    assert added.status_code == 201
+    tracks = added.json()["tracks"]
+    assert [track["name"] for track in tracks] == ["V1", "A1"]
+
+    second = client.post(
+        f"/api/studio/timelines/{timeline['id']}/tracks", json={"kind": "audio"}
+    ).json()
+    assert [track["name"] for track in second["tracks"]] == ["V1", "A1", "A2"]
+
+    audio_id = second["tracks"][1]["id"]
+    muted = client.patch(
+        f"/api/studio/timelines/{timeline['id']}/tracks/{audio_id}",
+        json={"muted": True, "name": "BGM"},
+    ).json()
+    assert muted["tracks"][1]["muted"] is True
+    assert muted["tracks"][1]["name"] == "BGM"
+
+    left = client.delete(
+        f"/api/studio/timelines/{timeline['id']}/tracks/{audio_id}"
+    ).json()
+    assert [track["name"] for track in left["tracks"]] == ["V1", "A2"]
+
+
+def test_the_video_track_can_neither_be_added_nor_removed(client):
+    project_id = _project(client)
+    timeline = _empty_timeline(client, project_id)
+    assert (
+        client.post(
+            f"/api/studio/timelines/{timeline['id']}/tracks", json={"kind": "video"}
+        ).status_code
+        == 400
+    )
+    video_id = timeline["tracks"][0]["id"]
+    assert (
+        client.delete(
+            f"/api/studio/timelines/{timeline['id']}/tracks/{video_id}"
+        ).status_code
+        == 400
+    )
+
+
+def test_an_audio_clip_may_sit_anywhere_on_its_own_track(client):
+    project_id = _project(client)
+    timeline = _empty_timeline(client, project_id)
+    detail = client.post(
+        f"/api/studio/timelines/{timeline['id']}/tracks", json={"kind": "audio"}
+    ).json()
+    audio_id = detail["tracks"][1]["id"]
+
+    response = client.put(
+        f"/api/studio/timelines/{timeline['id']}/clips",
+        json={
+            "clips": [
+                {
+                    "track_id": audio_id,
+                    "start_ms": 4000,
+                    "duration_ms": 2000,
+                    "source_kind": "library",
+                    "source_id": "BGM",
+                    "in_ms": 0,
+                    "out_ms": 2000,
+                    "gain_db": -3.0,
+                    "fade_in_ms": 400,
+                    "fade_out_ms": 600,
+                }
+            ]
+        },
+    )
+    assert response.status_code == 200
+    clip = response.json()["tracks"][1]["clips"][0]
+    assert (clip["start_ms"], clip["gain_db"], clip["fade_out_ms"]) == (4000, -3.0, 600)
+    # ライブラリに無い id なのでメディア欠落として見える
+    assert clip["missing"] is True
+
+
+def test_media_bin_lists_takes_library_and_jobs(client, tmp_path, monkeypatch):
+    project_id = _project(client)
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"x")
+
+    async def fake_probe(path):
+        return 4321, True
+
+    monkeypatch.setattr(service, "probe_media", fake_probe)
+    monkeypatch.setattr(service, "OUTPUTS_DIR", tmp_path)
+    asyncio.run(_seed_take(project_id, str(video)))
+    asyncio.run(_seed_audio_job(str(tmp_path / "bgm.mp3")))
+    (tmp_path / "bgm.mp3").write_bytes(b"x")
+
+    videos = client.get(
+        f"/api/studio/projects/{project_id}/media", params={"kind": "video"}
+    ).json()
+    assert videos["total"] == 1
+    assert videos["items"][0]["source_kind"] == "take"
+    assert videos["items"][0]["duration_ms"] == 4321
+
+    audio = client.get(
+        f"/api/studio/projects/{project_id}/media", params={"kind": "audio"}
+    ).json()
+    assert [item["source_kind"] for item in audio["items"]] == ["job"]
+    assert audio["items"][0]["origin"] == "ジョブ"
+
+
+def test_media_bin_refuses_an_unknown_project(client):
+    assert (
+        client.get("/api/studio/projects/NOPE/media", params={"kind": "video"}).status_code
+        == 404
+    )
+
+
+async def _seed_audio_job(audio_path: str) -> str:
+    from app.ids import new_id
+
+    job_id = new_id()
+    async with db.get_db() as conn:
+        await conn.execute(
+            "INSERT INTO jobs (id, created_at, mode, status, params, workflow_json,"
+            " audio_output_path, user_input)"
+            " VALUES (?, '2026-01-02T00:00:00+00:00', 'audio', 'done', '{}', '{}',"
+            " ?, '静かなピアノ')",
+            (job_id, audio_path),
+        )
+        await conn.commit()
+    return job_id
+
+
+def test_generate_subtitles_lays_the_dialogue_over_the_cuts(
+    client, tmp_path, monkeypatch
+):
+    project_id = _project(client)
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"x")
+
+    async def fake_probe(path):
+        return 4000, True
+
+    monkeypatch.setattr(service, "probe_media", fake_probe)
+    episode_id, take_id = asyncio.run(_seed_take(project_id, str(video)))
+    asyncio.run(_set_dialogue(take_id, "行こう。もう時間がない。"))
+
+    timeline = client.post(
+        f"/api/studio/projects/{project_id}/timelines",
+        json={"episode_id": episode_id},
+    ).json()
+
+    detail = client.post(
+        f"/api/studio/timelines/{timeline['id']}/generate-subtitles", json={}
+    ).json()
+    subtitle_tracks = [t for t in detail["tracks"] if t["kind"] == "subtitle"]
+    assert len(subtitle_tracks) == 1
+    assert subtitle_tracks[0]["name"] == "T1"
+    clips = subtitle_tracks[0]["clips"]
+    assert [clip["text_payload"]["text"] for clip in clips] == [
+        "行こう。",
+        "もう時間がない。",
+    ]
+    assert [(clip["start_ms"], clip["duration_ms"]) for clip in clips] == [
+        (0, 2000),
+        (2000, 2000),
+    ]
+    assert all(clip["source_kind"] == "text" for clip in clips)
+
+    # もう一度走らせても積み増さない（置き換え）
+    again = client.post(
+        f"/api/studio/timelines/{timeline['id']}/generate-subtitles", json={}
+    ).json()
+    assert len(
+        [t for t in again["tracks"] if t["kind"] == "subtitle"][0]["clips"]
+    ) == 2
+
+
+async def _set_dialogue(take_id: str, dialogue: str) -> None:
+    async with db.get_db() as conn:
+        await conn.execute(
+            "UPDATE studio_shots SET dialogue = ?"
+            " WHERE id = (SELECT shot_id FROM studio_takes WHERE id = ?)",
+            (dialogue, take_id),
+        )
+        await conn.commit()
+
+
+def test_generate_subtitles_refuses_a_track_that_is_not_a_subtitle_track(client):
+    project_id = _project(client)
+    timeline = _empty_timeline(client, project_id)
+    response = client.post(
+        f"/api/studio/timelines/{timeline['id']}/generate-subtitles",
+        json={"track_id": timeline["tracks"][0]["id"]},
+    )
+    assert response.status_code == 400
+
+
+def test_sync_preview_reports_a_new_cut_and_applying_it_appends_a_clip(
+    client, tmp_path, monkeypatch
+):
+    project_id = _project(client)
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"x")
+
+    async def fake_probe(path):
+        return 2000, True
+
+    monkeypatch.setattr(service, "probe_media", fake_probe)
+    episode_id, _ = asyncio.run(_seed_take(project_id, str(video)))
+    timeline = client.post(
+        f"/api/studio/projects/{project_id}/timelines",
+        json={"episode_id": episode_id},
+    ).json()
+    assert len(timeline["tracks"][0]["clips"]) == 1
+
+    # あとから 2 つ目のカットが増えた
+    second = tmp_path / "second.mp4"
+    second.write_bytes(b"y")
+    asyncio.run(_add_shot(project_id, episode_id, str(second), order=1))
+
+    preview = client.get(
+        f"/api/studio/timelines/{timeline['id']}/sync-preview"
+    ).json()
+    assert len(preview["added"]) == 1
+    assert preview["retaken"] == [] and preview["removed"] == []
+
+    applied = client.post(
+        f"/api/studio/timelines/{timeline['id']}/sync",
+        json={"add_shot_ids": [preview["added"][0]["shot_id"]]},
+    ).json()
+    clips = applied["tracks"][0]["clips"]
+    assert len(clips) == 2
+    assert [clip["start_ms"] for clip in clips] == [0, 2000]
+
+
+def test_sync_preview_reports_a_changed_take_and_a_dropped_cut(
+    client, tmp_path, monkeypatch
+):
+    project_id = _project(client)
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"x")
+
+    async def fake_probe(path):
+        return 2000, True
+
+    monkeypatch.setattr(service, "probe_media", fake_probe)
+    episode_id, take_id = asyncio.run(_seed_take(project_id, str(video)))
+    timeline = client.post(
+        f"/api/studio/projects/{project_id}/timelines",
+        json={"episode_id": episode_id},
+    ).json()
+
+    # 同じカットで別のテイクを採用し直した
+    retake = tmp_path / "retake.mp4"
+    retake.write_bytes(b"z")
+    new_take = asyncio.run(_add_take(project_id, take_id, str(retake)))
+
+    preview = client.get(
+        f"/api/studio/timelines/{timeline['id']}/sync-preview"
+    ).json()
+    assert len(preview["retaken"]) == 1
+    assert preview["retaken"][0]["new_take_id"] == new_take
+
+    applied = client.post(
+        f"/api/studio/timelines/{timeline['id']}/sync",
+        json={"retake_clip_ids": [preview["retaken"][0]["clip_id"]]},
+    ).json()
+    assert applied["tracks"][0]["clips"][0]["source_id"] == new_take
+
+    # 採用を外すと「消えたカット」として出る
+    asyncio.run(_clear_selection(new_take))
+    preview = client.get(
+        f"/api/studio/timelines/{timeline['id']}/sync-preview"
+    ).json()
+    assert len(preview["removed"]) == 1
+    emptied = client.post(
+        f"/api/studio/timelines/{timeline['id']}/sync",
+        json={"remove_clip_ids": [preview["removed"][0]["clip_id"]]},
+    ).json()
+    assert emptied["tracks"][0]["clips"] == []
+
+
+async def _add_shot(project_id, episode_id, video_path, order=1) -> str:
+    from app.ids import new_id
+
+    shot_id, job_id, take_id = new_id(), new_id(), new_id()
+    now = "2026-01-03T00:00:00+00:00"
+    async with db.get_db() as conn:
+        async with conn.execute(
+            "SELECT id FROM studio_scenes WHERE episode_id = ?", (episode_id,)
+        ) as cur:
+            scene_id = (await cur.fetchone())["id"]
+        await conn.execute(
+            "INSERT INTO studio_shots (id, project_id, scene_id, sort_order, title,"
+            " selected_take_id, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, 'カット 2', ?, ?, ?)",
+            (shot_id, project_id, scene_id, order, take_id, now, now),
+        )
+        await conn.execute(
+            "INSERT INTO jobs (id, created_at, mode, status, params, workflow_json,"
+            " video_path) VALUES (?, ?, 'video', 'done', '{}', '{}', ?)",
+            (job_id, now, video_path),
+        )
+        await conn.execute(
+            "INSERT INTO studio_takes (id, shot_id, project_id, job_id, status,"
+            " created_at) VALUES (?, ?, ?, ?, 'selected', ?)",
+            (take_id, shot_id, project_id, job_id, now),
+        )
+        await conn.commit()
+    return shot_id
+
+
+async def _add_take(project_id, sibling_take_id, video_path) -> str:
+    """``sibling_take_id`` と同じカットに Take を足して、そちらを採用する。"""
+    from app.ids import new_id
+
+    job_id, take_id = new_id(), new_id()
+    now = "2026-01-04T00:00:00+00:00"
+    async with db.get_db() as conn:
+        async with conn.execute(
+            "SELECT shot_id FROM studio_takes WHERE id = ?", (sibling_take_id,)
+        ) as cur:
+            shot_id = (await cur.fetchone())["shot_id"]
+        await conn.execute(
+            "INSERT INTO jobs (id, created_at, mode, status, params, workflow_json,"
+            " video_path) VALUES (?, ?, 'video', 'done', '{}', '{}', ?)",
+            (job_id, now, video_path),
+        )
+        await conn.execute(
+            "INSERT INTO studio_takes (id, shot_id, project_id, job_id, status,"
+            " created_at) VALUES (?, ?, ?, ?, 'selected', ?)",
+            (take_id, shot_id, project_id, job_id, now),
+        )
+        await conn.execute(
+            "UPDATE studio_shots SET selected_take_id = ? WHERE id = ?",
+            (take_id, shot_id),
+        )
+        await conn.commit()
+    return take_id
+
+
+async def _clear_selection(take_id: str) -> None:
+    async with db.get_db() as conn:
+        await conn.execute(
+            "UPDATE studio_shots SET selected_take_id = NULL"
+            " WHERE id = (SELECT shot_id FROM studio_takes WHERE id = ?)",
+            (take_id,),
+        )
+        await conn.commit()
+
+
+def test_missing_report_offers_another_take_and_resolve_swaps_it(
+    client, tmp_path, monkeypatch
+):
+    project_id = _project(client)
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"x")
+
+    async def fake_probe(path):
+        return 2000, True
+
+    monkeypatch.setattr(service, "probe_media", fake_probe)
+    episode_id, take_id = asyncio.run(_seed_take(project_id, str(video)))
+    timeline = client.post(
+        f"/api/studio/projects/{project_id}/timelines",
+        json={"episode_id": episode_id},
+    ).json()
+
+    spare = tmp_path / "spare.mp4"
+    spare.write_bytes(b"y")
+    spare_take = asyncio.run(_add_take(project_id, take_id, str(spare)))
+    video.unlink()  # 採用テイクの動画が消えた
+
+    report = client.get(f"/api/studio/timelines/{timeline['id']}/missing").json()
+    assert len(report["clips"]) == 1
+    assert [c["take_id"] for c in report["clips"][0]["candidates"]] == [spare_take]
+
+    clip_id = report["clips"][0]["clip_id"]
+    fixed = client.post(
+        f"/api/studio/timelines/{timeline['id']}/missing/resolve",
+        json={"replace": {clip_id: spare_take}},
+    ).json()
+    clip = fixed["tracks"][0]["clips"][0]
+    assert clip["source_id"] == spare_take
+    assert clip["missing"] is False
+
+
+def test_resolve_missing_can_drop_every_broken_clip(client, tmp_path, monkeypatch):
+    project_id = _project(client)
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"x")
+
+    async def fake_probe(path):
+        return 2000, True
+
+    monkeypatch.setattr(service, "probe_media", fake_probe)
+    episode_id, _ = asyncio.run(_seed_take(project_id, str(video)))
+    timeline = client.post(
+        f"/api/studio/projects/{project_id}/timelines",
+        json={"episode_id": episode_id},
+    ).json()
+    video.unlink()
+
+    fixed = client.post(
+        f"/api/studio/timelines/{timeline['id']}/missing/resolve",
+        json={"drop_all": True},
+    ).json()
+    assert fixed["tracks"][0]["clips"] == []
+
+
+def test_export_refuses_a_timeline_with_a_missing_clip(client, tmp_path, monkeypatch):
+    project_id = _project(client)
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"x")
+
+    async def fake_probe(path):
+        return 2000, True
+
+    monkeypatch.setattr(service, "probe_media", fake_probe)
+    episode_id, _ = asyncio.run(_seed_take(project_id, str(video)))
+    timeline = client.post(
+        f"/api/studio/projects/{project_id}/timelines",
+        json={"episode_id": episode_id},
+    ).json()
+    video.unlink()
+
+    response = client.post(f"/api/studio/timelines/{timeline['id']}/export", json={})
+    assert response.status_code == 400
+    assert "メディアが見つからない" in response.json()["detail"]
+
+
+def test_export_carries_the_preset_fit_and_loudnorm_into_the_spec(
+    client, tmp_path, monkeypatch
+):
+    project_id = _project(client)
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"x")
+
+    async def fake_probe(path):
+        return 2000, True
+
+    monkeypatch.setattr(service, "probe_media", fake_probe)
+    episode_id, _ = asyncio.run(_seed_take(project_id, str(video)))
+    timeline = client.post(
+        f"/api/studio/projects/{project_id}/timelines",
+        json={"episode_id": episode_id},
+    ).json()
+
+    seen: dict = {}
+
+    async def fake_run(spec, output, *, on_progress=None):
+        seen["spec"] = spec
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b"final")
+        return output
+
+    monkeypatch.setattr(service, "run_export", fake_run)
+    client.post(
+        f"/api/studio/timelines/{timeline['id']}/export",
+        json={"preset": "vertical", "fit": "crop", "loudnorm": True},
+    )
+    assert wait_for_export(client, timeline["id"])["status"] == "done"
+    spec = seen["spec"]
+    assert (spec.width, spec.height) == (1080, 1920)
+    assert spec.fit == "crop"
+    assert spec.loudnorm is True
+
+
+def test_export_writes_an_ass_file_for_the_subtitle_track(
+    client, tmp_path, monkeypatch
+):
+    project_id = _project(client)
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"x")
+
+    async def fake_probe(path):
+        return 4000, True
+
+    monkeypatch.setattr(service, "probe_media", fake_probe)
+    episode_id, take_id = asyncio.run(_seed_take(project_id, str(video)))
+    asyncio.run(_set_dialogue(take_id, "行こう。"))
+    timeline = client.post(
+        f"/api/studio/projects/{project_id}/timelines",
+        json={"episode_id": episode_id},
+    ).json()
+    client.post(
+        f"/api/studio/timelines/{timeline['id']}/generate-subtitles", json={}
+    )
+
+    seen: dict = {}
+
+    async def fake_run(spec, output, *, on_progress=None):
+        seen["spec"] = spec
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b"final")
+        return output
+
+    monkeypatch.setattr(service, "run_export", fake_run)
+    client.post(f"/api/studio/timelines/{timeline['id']}/export", json={})
+    assert wait_for_export(client, timeline["id"])["status"] == "done"
+
+    path = seen["spec"].subtitles_path
+    assert path is not None
+    from pathlib import Path as _Path
+
+    assert "行こう。" in _Path(path).read_text(encoding="utf-8")
+
+
+def test_generated_subtitles_never_overlap_across_a_transition(
+    client, tmp_path, monkeypatch
+):
+    """繋ぎで映像が重なっていても、テロップどうしは重ねない。
+
+    同じトラックでの重なりは 400 なので、生成したものがそのまま保存できないと
+    画面の自動保存が落ち続ける。
+    """
+    project_id = _project(client)
+    first, second = tmp_path / "a.mp4", tmp_path / "b.mp4"
+    first.write_bytes(b"x")
+    second.write_bytes(b"y")
+
+    async def fake_probe(path):
+        return 4000, True
+
+    monkeypatch.setattr(service, "probe_media", fake_probe)
+    episode_id, take_id = asyncio.run(_seed_take(project_id, str(first)))
+    asyncio.run(_set_dialogue(take_id, "行こう。"))
+    shot_id = asyncio.run(_add_shot(project_id, episode_id, str(second), order=1))
+    asyncio.run(_set_shot_dialogue(shot_id, "急ごう。"))
+
+    timeline = client.post(
+        f"/api/studio/projects/{project_id}/timelines",
+        json={"episode_id": episode_id},
+    ).json()
+    track_id = timeline["tracks"][0]["id"]
+    clips = timeline["tracks"][0]["clips"]
+
+    # 2 本目に 1 秒のクロスフェード（オーバーラップ方式なので前へ食い込む）
+    body = [
+        {
+            "id": clips[0]["id"], "track_id": track_id, "start_ms": 0,
+            "duration_ms": 4000, "source_kind": "take",
+            "source_id": clips[0]["source_id"], "in_ms": 0, "out_ms": 4000,
+        },
+        {
+            "id": clips[1]["id"], "track_id": track_id, "start_ms": 3000,
+            "duration_ms": 4000, "source_kind": "take",
+            "source_id": clips[1]["source_id"], "in_ms": 0, "out_ms": 4000,
+            "transition_kind": "crossfade", "transition_ms": 1000,
+        },
+    ]
+    assert client.put(
+        f"/api/studio/timelines/{timeline['id']}/clips", json={"clips": body}
+    ).status_code == 200
+
+    detail = client.post(
+        f"/api/studio/timelines/{timeline['id']}/generate-subtitles", json={}
+    ).json()
+    subs = [t for t in detail["tracks"] if t["kind"] == "subtitle"][0]["clips"]
+    spans = [(clip["start_ms"], clip["duration_ms"]) for clip in subs]
+    assert spans == [(0, 4000), (4000, 3000)]
+    # そのまま保存し直せる（重なりで 400 にならない）
+    saved = client.put(
+        f"/api/studio/timelines/{timeline['id']}/clips",
+        json={
+            "clips": [
+                {
+                    "id": clip["id"], "track_id": clip["track_id"],
+                    "start_ms": clip["start_ms"], "duration_ms": clip["duration_ms"],
+                    "source_kind": clip["source_kind"], "source_id": clip["source_id"],
+                    "in_ms": clip["in_ms"], "out_ms": clip["out_ms"],
+                    "transition_kind": clip["transition_kind"],
+                    "transition_ms": clip["transition_ms"],
+                    "text_payload": clip["text_payload"], "speed": clip["speed"],
+                }
+                for track in detail["tracks"]
+                for clip in track["clips"]
+            ]
+        },
+    )
+    assert saved.status_code == 200
+
+
+async def _set_shot_dialogue(shot_id: str, dialogue: str) -> None:
+    async with db.get_db() as conn:
+        await conn.execute(
+            "UPDATE studio_shots SET dialogue = ? WHERE id = ?", (dialogue, shot_id)
+        )
+        await conn.commit()

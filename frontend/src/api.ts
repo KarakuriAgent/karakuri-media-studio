@@ -81,6 +81,15 @@ import type {
   TimelineClipInput,
   TimelineExport,
   TimelineExportRequest,
+  TimelineMediaKind,
+  TimelineMediaPage,
+  TimelineMissingFix,
+  TimelineMissingReport,
+  TimelineSubtitleRequest,
+  TimelineSyncPreview,
+  TimelineSyncRequest,
+  TimelineTrackCreate,
+  TimelineTrackUpdate,
 } from './types'
 
 export class ApiError extends Error {
@@ -669,6 +678,71 @@ export const api = {
     json<TimelineExport>('POST', `/api/studio/timelines/${id}/export`, body),
   listStudioTimelineExports: (id: string) =>
     request<TimelineExport[]>(`/api/studio/timelines/${id}/exports`),
+  /** トラックを 1 本足す（音声 A1… / 字幕 T1。映像トラックは 400）。 */
+  addStudioTimelineTrack: (id: string, payload: TimelineTrackCreate = {}) =>
+    json<StudioTimelineDetail>(
+      'POST',
+      `/api/studio/timelines/${id}/tracks`,
+      payload,
+    ),
+  /** 名前・ミュート・ロックを変える（送らなかった項目はそのまま）。 */
+  updateStudioTimelineTrack: (
+    id: string,
+    trackId: string,
+    patch: TimelineTrackUpdate,
+  ) =>
+    json<StudioTimelineDetail>(
+      'PATCH',
+      `/api/studio/timelines/${id}/tracks/${trackId}`,
+      patch,
+    ),
+  /** トラックを 1 本消す（載っていたクリップも一緒に消える）。 */
+  deleteStudioTimelineTrack: (id: string, trackId: string) =>
+    json<StudioTimelineDetail>(
+      'DELETE',
+      `/api/studio/timelines/${id}/tracks/${trackId}`,
+    ),
+  /** 素材ビンの 1 ページ（テイク・ライブラリ・単発ジョブ・作品の素材）。 */
+  listStudioTimelineMedia: (
+    projectId: string,
+    kind: TimelineMediaKind,
+    limit = 50,
+    offset = 0,
+  ) =>
+    request<TimelineMediaPage>(
+      `/api/studio/projects/${projectId}/media` +
+        `?kind=${kind}&limit=${limit}&offset=${offset}`,
+    ),
+  /**
+   * V1 の各クリップの元カットの台詞から、テロップを一括で置き直す。
+   *
+   * 字幕トラックの中身は**置き換わる**（呼ぶ前に確認を取ること）。
+   */
+  generateStudioTimelineSubtitles: (
+    id: string,
+    body: TimelineSubtitleRequest = {},
+  ) =>
+    json<StudioTimelineDetail>(
+      'POST',
+      `/api/studio/timelines/${id}/generate-subtitles`,
+      body,
+    ),
+  /** 作ったあとに脚本で起きた差分（増えた / 採用が変わった / 消えたカット）。 */
+  getStudioTimelineSyncPreview: (id: string) =>
+    request<TimelineSyncPreview>(`/api/studio/timelines/${id}/sync-preview`),
+  /** 差分のうち、選んだものだけ反映する。 */
+  applyStudioTimelineSync: (id: string, body: TimelineSyncRequest) =>
+    json<StudioTimelineDetail>('POST', `/api/studio/timelines/${id}/sync`, body),
+  /** 実ファイルが見つからないクリップと、同じカットの差し替え候補。 */
+  getStudioTimelineMissing: (id: string) =>
+    request<TimelineMissingReport>(`/api/studio/timelines/${id}/missing`),
+  /** 欠落クリップを別テイクへ差し替える / まとめて消す。 */
+  resolveStudioTimelineMissing: (id: string, body: TimelineMissingFix) =>
+    json<StudioTimelineDetail>(
+      'POST',
+      `/api/studio/timelines/${id}/missing/resolve`,
+      body,
+    ),
   /** 完成した mp4 をライブラリ（`library/video/`）へコピーして登録する。 */
   saveStudioExportToLibrary: (exportId: string, name = '') =>
     json<LibraryItem>('POST', `/api/studio/exports/${exportId}/save-to-library`, {

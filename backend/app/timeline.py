@@ -5,13 +5,19 @@
 
 - **タイムライン**（:data:`studio_timelines`）が 1 本の編集。書き出しの規格
   （幅・高さ・fps）を持ち、話（``episode_id``）を組んだものかどうかを覚える。
-- **トラック**（:data:`timeline_tracks`）は並べる段。フェーズ 1 で作るのは
-  ``video`` の ``V1`` だけで、音声・字幕は入れ物として値だけ通してある。
-- **クリップ**（:data:`timeline_clips`）が 1 つの素材の切り出し。ソース
-  （フェーズ 1 は Take だけ）を**参照するだけ**で、元が消えても並びは残り、
-  読み取りのたびに ``missing``（メディア欠落）として見せる。
+- **トラック**（:data:`timeline_tracks`）は並べる段。並べ替えの正本は ``video``
+  の ``V1`` 1 本きりで、音声（``A1`` …）と字幕（``T1``）はあとから足す。
+- **クリップ**（:data:`timeline_clips`）が 1 つの素材の切り出し。ソース（Take・
+  ライブラリ・ジョブ・作品の素材・静止画）を**参照するだけ**で、元が消えても
+  並びは残り、読み取りのたびに ``missing``（メディア欠落）として見せる。欠落が
+  残っているあいだは書き出しを受け付けない（:func:`start_export` が断る）。
 - **書き出し**（:data:`timeline_exports`）は ffmpeg の 1 回の実行。組み立てと
-  実行は :mod:`app.timeline_export`、進捗は WS（``type: "timeline_export"``）。
+  実行は :mod:`app.timeline_export`、テロップの ASS は
+  :mod:`app.timeline_subtitles`、進捗は WS（``type: "timeline_export"``）。
+
+トラックごとに並べ方が違う: **V1 はリップル方式**（常に先頭から詰まり、繋ぎ
+（トランジション）を置くとその分だけ前へ食い込んで全長が縮む）、**音声と字幕は
+自由配置**（隙間は空けられるが、同じトラックの中では重ねられない）。
 
 ルーター（:mod:`app.routers.timelines`）とテストの両方から使うので、DB と
 ffmpeg の呼び出しはこのモジュールに集約する（:mod:`app.studio` と同じ持ち方）。
@@ -40,13 +46,36 @@ from .models import (
     TimelineClip,
     TimelineClipInput,
     TimelineExport,
+    TimelineMediaItem,
+    TimelineMediaPage,
+    TimelineMissingCandidate,
+    TimelineMissingClip,
+    TimelineMissingFix,
+    TimelineMissingReport,
+    TimelineSyncAdded,
+    TimelineSyncPreview,
+    TimelineSyncRemoved,
+    TimelineSyncRequest,
+    TimelineSyncRetaken,
     TimelineTrack,
+    TimelineTrackCreate,
+    TimelineTrackUpdate,
 )
-from .paths import OUTPUTS_DIR, rebase_stored_path
+from .paths import ASSETS_DIR, LIBRARY_DIR, OUTPUTS_DIR, rebase_stored_path
+from . import timeline_subtitles as subtitles
 from .timeline_export import (
+    FIT_CROP,
+    FIT_PAD,
+    SPEED_MAX,
+    SPEED_MIN,
+    TRANSITION_MAX_MS,
+    TRANSITION_MIN_MS,
+    TRANSITIONS,
+    ExportAudioClip,
     ExportClip,
     ExportSpec,
     TimelineExportError,
+    resolve_format,
     run_export,
 )
 
@@ -69,8 +98,26 @@ DEFAULT_HEIGHT = 720
 #: 自動配置で尺が読めなかったカットに充てる長さ（ミリ秒）
 FALLBACK_CLIP_MS = 5000
 
+#: 静止画クリップの既定の尺（ミリ秒）
+DEFAULT_IMAGE_MS = 3000
+
+#: クリップに残せる最小の尺（ミリ秒。画面の ``MIN_CLIP_MS`` と同じ意味）
+MIN_CLIP_MS = 100
+
+#: 書き出しに添える ASS のファイル名
+SUBTITLES_FILENAME = "subtitles.ass"
+
 #: まだ走っている書き出しの状態
 RUNNING_STATUSES = ("queued", "running")
+
+#: ffprobe を同時に何本走らせるか（並列にしても I/O で頭打ちになるので、
+#: 長いタイムラインでプロセスが溢れない程度に抑える）
+PROBE_CONCURRENCY = 8
+
+#: 静止画クリップの ``source_id`` に付ける出どころの印（``library:<id>``）。
+#: 静止画だけは 1 つの ``source_kind`` に 3 つの出どころがぶら下がるので、
+#: id 側に「どこの id か」を持たせる。
+IMAGE_PROVIDERS = ("library", "job", "asset_file")
 
 
 class TimelineError(Exception):
@@ -158,21 +205,109 @@ async def probe_media(path: str | Path) -> tuple[int | None, bool]:
     return duration_ms, has_audio
 
 
+#: ffprobe の結果の使い回し（``(パス, 更新時刻, 大きさ) -> (尺, 音声の有無)``）。
+#: 同じソースを何十本のクリップが指していても ffprobe は 1 回で済む。ファイルが
+#: 書き換われば mtime か大きさが変わるので、古い結果を掴んだままにならない。
+_PROBE_CACHE: dict[tuple[str, int, int], tuple[int | None, bool]] = {}
+
+#: 使い回しの上限（1 プロセスの間だけの目安。超えたら丸ごと捨てる）
+PROBE_CACHE_LIMIT = 2048
+
+
+def _cache_key(path: Path) -> tuple[str, int, int] | None:
+    try:
+        stat = path.stat()
+    except OSError:
+        return None
+    return (str(path), stat.st_mtime_ns, stat.st_size)
+
+
+async def probe_cached(path: str | Path) -> tuple[int | None, bool]:
+    """:func:`probe_media` の結果を使い回す版（同じファイルは 1 回だけ読む）。"""
+    resolved = Path(path)
+    key = _cache_key(resolved)
+    if key is None:
+        return None, False
+    cached = _PROBE_CACHE.get(key)
+    if cached is not None:
+        return cached
+    result = await probe_media(resolved)
+    if len(_PROBE_CACHE) >= PROBE_CACHE_LIMIT:
+        _PROBE_CACHE.clear()
+    _PROBE_CACHE[key] = result
+    return result
+
+
+async def probe_many(paths: list[str]) -> dict[str, tuple[int | None, bool]]:
+    """複数のソースをまとめて下調べする（同時実行数は制限つき）。
+
+    クリップごとに順番へ ffprobe を掛けると、長いタイムラインでは読み取りの
+    たびに何十プロセスも直列に待つことになる。ここで重複を潰してから
+    :data:`PROBE_CONCURRENCY` 本ずつ並べて走らせる。
+    """
+    unique = sorted({path for path in paths if path})
+    if not unique:
+        return {}
+    limit = asyncio.Semaphore(PROBE_CONCURRENCY)
+
+    async def one(path: str) -> tuple[str, tuple[int | None, bool]]:
+        async with limit:
+            return path, await probe_cached(path)
+
+    return dict(await asyncio.gather(*(one(path) for path in unique)))
+
+
 # --------------------------------------------------------------------------
 # クリップの検証（純関数。ルーターとテストの両方から使う）
 # --------------------------------------------------------------------------
 
-def validate_clips(clips: list[TimelineClipInput]) -> None:
-    """フェーズ 1 の約束をひととおり確かめる（破れていたら :class:`TimelineError`）。
+#: 尺と切り出しのつじつまで許す誤差（ミリ秒）。速度で割ると端数が出るため
+DURATION_TOLERANCE_MS = 2
+
+#: 切り出し位置を持たないソース（``duration_ms`` がそのまま尺）
+_SPANLESS_SOURCES = ("gap", "text", "image")
+
+
+def expected_duration_ms(in_ms: int, out_ms: int, speed: float) -> int:
+    """切り出しと速度から決まるタイムライン上の尺。"""
+    if speed <= 0:
+        raise TimelineError(f"速度が不正です: {speed}")
+    return int(round((out_ms - in_ms) / speed))
+
+
+def _overlap_ms(clip: TimelineClipInput) -> int:
+    """前のクリップと重なる長さ（繋ぎが無ければ 0）。"""
+    if not clip.transition_kind or clip.transition_ms <= 0:
+        return 0
+    return int(clip.transition_ms)
+
+
+def validate_clips(
+    clips: list[TimelineClipInput], track_kinds: dict[str, str] | None = None
+) -> None:
+    """タイムラインの約束をひととおり確かめる（破れていたら :class:`TimelineError`）。
+
+    クリップ 1 つずつ:
 
     - ``in_ms < out_ms``（長さ 0 のクリップは置けない）
-    - ``duration_ms == out_ms - in_ms``（等速のみ。速度変更はフェーズ 2）
+    - ``duration_ms == (out_ms - in_ms) / speed``（リタイム込みのつじつま）
+    - ``speed`` は :data:`app.timeline_export.SPEED_MIN` 〜 ``SPEED_MAX``。
+      音声・字幕のクリップは等速のみ
     - ``start_ms >= 0``
-    - 同じトラックの中でクリップが重ならない（隙間は ``gap`` で表す）
+    - ``text`` クリップは本文を持つ
 
-    ``gap`` だけは切り出し位置を持たないので、``in_ms`` / ``out_ms`` は見ない
-    （``duration_ms`` がそのまま尺になる）。
+    トラックの中の並び:
+
+    - 同じトラックの中でクリップが重ならない（隙間は空けてよい）
+    - ただし**繋ぎ（トランジション）を持つクリップだけは前へ食い込む**
+      （オーバーラップ方式）。食い込む量はちょうど ``transition_ms`` で、
+      隣り合う 2 つの短いほうの 1/2 まで
+    - 繋ぎを置けるのは映像トラックだけで、トラックの先頭には置けない
+
+    ``gap`` / ``text`` / ``image`` は切り出し位置を持たないので、``in_ms`` /
+    ``out_ms`` は見ない（``duration_ms`` がそのまま尺になる）。
     """
+    kinds = track_kinds or {}
     for index, clip in enumerate(clips):
         where = f"クリップ {index + 1}"
         if clip.start_ms < 0:
@@ -181,24 +316,79 @@ def validate_clips(clips: list[TimelineClipInput]) -> None:
             raise TimelineError(f"{where}: 尺が 0 以下です")
         if not (clip.track_id or "").strip():
             raise TimelineError(f"{where}: トラックが指定されていません")
-        if clip.source_kind == "gap":
+
+        kind = kinds.get(clip.track_id, "video")
+        speed = float(clip.speed or 1.0)
+        if kind != "video" and abs(speed - 1.0) >= 1e-9:
+            raise TimelineError(f"{where}: 速度を変えられるのは映像クリップだけです")
+        if not (SPEED_MIN - 1e-9 <= speed <= SPEED_MAX + 1e-9):
+            raise TimelineError(
+                f"{where}: 速度は {SPEED_MIN}〜{SPEED_MAX} の範囲です（{speed:g}）"
+            )
+
+        if clip.source_kind == "text":
+            text = ((clip.text_payload or {}).get("text") or "").strip()
+            if not text:
+                raise TimelineError(f"{where}: テロップの本文が空です")
+        if clip.source_kind in ("image", "asset_file", "library", "job", "take"):
+            if not (clip.source_id or "").strip():
+                raise TimelineError(f"{where}: ソースが指定されていません")
+        if clip.source_kind in _SPANLESS_SOURCES:
             continue
+
         if clip.in_ms < 0:
             raise TimelineError(f"{where}: 切り出しの開始位置が負です")
         if clip.in_ms >= clip.out_ms:
             raise TimelineError(f"{where}: 切り出しの範囲が不正です（in < out）")
-        if clip.duration_ms != clip.out_ms - clip.in_ms:
+        expected = expected_duration_ms(clip.in_ms, clip.out_ms, speed)
+        if abs(clip.duration_ms - expected) > DURATION_TOLERANCE_MS:
+            how = "等速" if abs(speed - 1.0) < 1e-9 else f"速度 {speed:g}"
             raise TimelineError(
                 f"{where}: 尺と切り出しの長さが合いません"
-                "（フェーズ 1 は等速のみ）"
+                f"（{how}なら {expected}ms）"
             )
 
     by_track: dict[str, list[TimelineClipInput]] = {}
     for clip in clips:
         by_track.setdefault(clip.track_id, []).append(clip)
     for track_id, group in by_track.items():
+        kind = kinds.get(track_id, "video")
         ordered = sorted(group, key=lambda clip: clip.start_ms)
+        if _overlap_ms(ordered[0]):
+            raise TimelineError(
+                f"トラック {track_id} の先頭のクリップには繋ぎを置けません"
+            )
         for previous, current in zip(ordered, ordered[1:]):
+            overlap = _overlap_ms(current)
+            if overlap and kind != "video":
+                raise TimelineError(
+                    f"トラック {track_id}: 繋ぎを置けるのは映像トラックだけです"
+                )
+            if overlap:
+                if current.transition_kind not in TRANSITIONS:
+                    raise TimelineError(
+                        f"トラック {track_id}: 知らない繋ぎです"
+                        f"（{current.transition_kind}）"
+                    )
+                if not (TRANSITION_MIN_MS <= overlap <= TRANSITION_MAX_MS):
+                    raise TimelineError(
+                        f"トラック {track_id}: 繋ぎの長さは"
+                        f" {TRANSITION_MIN_MS}〜{TRANSITION_MAX_MS}ms です"
+                        f"（{overlap}ms）"
+                    )
+                shortest = min(previous.duration_ms, current.duration_ms)
+                if overlap * 2 > shortest:
+                    raise TimelineError(
+                        f"トラック {track_id}: 繋ぎが長すぎます"
+                        f"（隣り合うクリップの短いほう {shortest}ms の半分まで）"
+                    )
+                wanted = previous.start_ms + previous.duration_ms - overlap
+                if current.start_ms != wanted:
+                    raise TimelineError(
+                        f"トラック {track_id}: 繋ぎのぶんの重なりが合いません"
+                        f"（{wanted}ms から始まるはずが {current.start_ms}ms）"
+                    )
+                continue
             if current.start_ms < previous.start_ms + previous.duration_ms:
                 raise TimelineError(
                     f"トラック {track_id} でクリップが重なっています"
@@ -284,6 +474,185 @@ async def _take_sources(
     return sources
 
 
+def _served_dirs() -> tuple[tuple[str, Path], ...]:
+    """``/outputs`` / ``/library`` / ``/assets`` の配信プレフィックスと置き場。
+
+    毎回モジュール変数を読み直すのは、テストが置き場を差し替えるため
+    （:func:`_output_url` が ``OUTPUTS_DIR`` をその場で見ているのと同じ理由）。
+    """
+    return (
+        ("/outputs", OUTPUTS_DIR),
+        ("/library", LIBRARY_DIR),
+        ("/assets", ASSETS_DIR),
+    )
+
+
+def _media_url(path: str | None) -> str | None:
+    """置き場のどれかに入っているファイルを配信 URL にする（外なら None）。
+
+    :func:`_output_url` の一般化。素材ビンはライブラリ（``/library``）と
+    アップロード素材（``/assets``）も扱うので、置き場ごとに順に当てる。
+    """
+    if not path:
+        return None
+    resolved = rebase_stored_path(path)
+    for prefix, directory in _served_dirs():
+        try:
+            relative = resolved.resolve().relative_to(directory.resolve())
+        except (ValueError, OSError):
+            continue
+        return f"{prefix}/{relative.as_posix()}"
+    return None
+
+
+def split_image_source(source_id: str | None) -> tuple[str, str]:
+    """静止画クリップの ``source_id``（``library:<id>``）を出どころと id に割る。
+
+    印が無いものはライブラリの id として読む（画面が古い形を送ってきても
+    落とさない）。知らない印は空の出どころで返し、呼び出し側が欠落にする。
+    """
+    raw = (source_id or "").strip()
+    provider, _, rest = raw.partition(":")
+    if not rest:
+        return ("library", raw)
+    return (provider if provider in IMAGE_PROVIDERS else "", rest)
+
+
+async def _library_sources(
+    conn: aiosqlite.Connection, item_ids: list[str]
+) -> dict[str, dict[str, Any]]:
+    """ライブラリの id -> ``{"path": …, "label": …}``。"""
+    if not item_ids:
+        return {}
+    placeholders = ", ".join("?" * len(item_ids))
+    async with conn.execute(
+        f"SELECT id, name, path, kind FROM library WHERE id IN ({placeholders})",
+        tuple(item_ids),
+    ) as cur:
+        rows = await cur.fetchall()
+    return {
+        str(row["id"]): {
+            "path": row["path"],
+            "label": f"ライブラリ / {row['name'] or row['id']}",
+        }
+        for row in rows
+    }
+
+
+async def _job_sources(
+    conn: aiosqlite.Connection, job_ids: list[str], column: str
+) -> dict[str, dict[str, Any]]:
+    """ジョブの id -> ``{"path": …, "label": …}``（``column`` の出力を使う）。
+
+    ``column`` は呼び出し側が決める（映像トラックなら ``video_path``、音声なら
+    ``audio_output_path``、静止画なら ``image_path``）。列名は固定の 3 つしか
+    渡らないので、SQL へ埋め込んでよい。
+    """
+    if not job_ids or column not in ("video_path", "audio_output_path", "image_path"):
+        return {}
+    placeholders = ", ".join("?" * len(job_ids))
+    async with conn.execute(
+        f"SELECT id, {column} AS path, mode, user_input, created_at"
+        f"  FROM jobs WHERE id IN ({placeholders})",
+        tuple(job_ids),
+    ) as cur:
+        rows = await cur.fetchall()
+    sources: dict[str, dict[str, Any]] = {}
+    for row in rows:
+        title = (row["user_input"] or "").strip().splitlines()[:1]
+        sources[str(row["id"])] = {
+            "path": row["path"],
+            "label": "ジョブ / " + (title[0][:40] if title else str(row["id"])[:8]),
+        }
+    return sources
+
+
+async def _asset_file_sources(
+    conn: aiosqlite.Connection, file_ids: list[str]
+) -> dict[str, dict[str, Any]]:
+    """素材のリファレンス id -> ``{"path": …, "label": …}``。"""
+    if not file_ids:
+        return {}
+    placeholders = ", ".join("?" * len(file_ids))
+    async with conn.execute(
+        "SELECT f.id AS id, f.path AS path, f.role AS role, f.caption AS caption,"
+        "       a.name AS asset_name"
+        "  FROM studio_asset_files f"
+        "  LEFT JOIN studio_assets a ON a.id = f.asset_id"
+        f" WHERE f.id IN ({placeholders})",
+        tuple(file_ids),
+    ) as cur:
+        rows = await cur.fetchall()
+    return {
+        str(row["id"]): {
+            "path": row["path"],
+            "label": "素材 / "
+            + " / ".join(
+                part
+                for part in (row["asset_name"], row["caption"] or row["role"])
+                if part
+            ),
+        }
+        for row in rows
+    }
+
+
+async def _resolve_sources(
+    conn: aiosqlite.Connection, refs: set[tuple[str, str, str]]
+) -> dict[tuple[str, str], dict[str, Any]]:
+    """クリップのソース参照をまとめて解決する。
+
+    ``refs`` は ``(source_kind, source_id, トラックの種別)`` の集合。同じ
+    ``source_kind='job'`` でも映像トラックなら動画、音声トラックなら生成音声を
+    見るので、トラックの種別まで込みで引く。返る辞書のキーは
+    ``(source_kind, source_id)``。
+    """
+    by_kind: dict[str, set[str]] = {}
+    job_columns: dict[str, set[str]] = {}
+    image_ids: dict[str, set[str]] = {}
+    for source_kind, source_id, track_kind in refs:
+        if source_kind == "image":
+            provider, real_id = split_image_source(source_id)
+            if provider:
+                image_ids.setdefault(provider, set()).add(real_id)
+            continue
+        if source_kind == "job":
+            column = "audio_output_path" if track_kind == "audio" else "video_path"
+            job_columns.setdefault(column, set()).add(source_id)
+            continue
+        by_kind.setdefault(source_kind, set()).add(source_id)
+
+    resolved: dict[tuple[str, str], dict[str, Any]] = {}
+    for take_id, info in (
+        await _take_sources(conn, sorted(by_kind.get("take", ())))
+    ).items():
+        resolved[("take", take_id)] = info
+    for item_id, info in (
+        await _library_sources(conn, sorted(by_kind.get("library", ())))
+    ).items():
+        resolved[("library", item_id)] = info
+    for file_id, info in (
+        await _asset_file_sources(conn, sorted(by_kind.get("asset_file", ())))
+    ).items():
+        resolved[("asset_file", file_id)] = info
+    for column, ids in job_columns.items():
+        for job_id, info in (await _job_sources(conn, sorted(ids), column)).items():
+            resolved[("job", job_id)] = info
+
+    # 静止画は出どころが 3 つあるので、印つきの id のまま引き当てる。
+    for provider, ids in image_ids.items():
+        ordered = sorted(ids)
+        if provider == "library":
+            found = await _library_sources(conn, ordered)
+        elif provider == "asset_file":
+            found = await _asset_file_sources(conn, ordered)
+        else:
+            found = await _job_sources(conn, ordered, "image_path")
+        for real_id, info in found.items():
+            resolved[("image", f"{provider}:{real_id}")] = info
+    return resolved
+
+
 async def timeline_detail(timeline_id: str) -> StudioTimelineDetail | None:
     """トラックとクリップ込みのフル EDL（ソースは解決して返す）。
 
@@ -306,39 +675,43 @@ async def timeline_detail(timeline_id: str) -> StudioTimelineDetail | None:
             (timeline_id,),
         ) as cur:
             clip_rows = await cur.fetchall()
-        take_ids = sorted(
-            {
-                str(row["source_id"])
-                for row in clip_rows
-                if row["source_kind"] == "take" and row["source_id"]
-            }
-        )
-        sources = await _take_sources(conn, take_ids)
+        track_kinds = {str(row["id"]): str(row["kind"]) for row in track_rows}
+        refs = {
+            (
+                str(row["source_kind"]),
+                str(row["source_id"]),
+                track_kinds.get(str(row["track_id"]), "video"),
+            )
+            for row in clip_rows
+            if row["source_kind"] not in ("gap", "text") and row["source_id"]
+        }
+        sources = await _resolve_sources(conn, refs)
 
-    # 同じ Take を何本のクリップが指していても ffprobe は 1 回だけ。
-    probed: dict[str, tuple[int | None, bool]] = {}
-    for take_id, info in sources.items():
+    # 同じソースを何本のクリップが指していても ffprobe は 1 回だけ、まとめて。
+    existing: dict[tuple[str, str], str] = {}
+    for key, info in sources.items():
         path = info.get("path")
         resolved = rebase_stored_path(path) if path else None
-        if resolved is None or not resolved.is_file():
-            continue
-        probed[take_id] = await probe_media(resolved)
+        if resolved is not None and resolved.is_file():
+            existing[key] = str(resolved)
+    probed = await probe_many(list(existing.values()))
 
     clips_by_track: dict[str, list[TimelineClip]] = {}
     for row in clip_rows:
         data = dict(row)
         data.pop("project_id", None)
         data["text_payload"] = json.loads(data["text_payload"] or "null") or None
-        source_id = str(data.get("source_id") or "")
-        info = sources.get(source_id) if data["source_kind"] == "take" else None
-        path = (info or {}).get("path")
-        resolved = rebase_stored_path(path) if path else None
-        exists = bool(resolved and resolved.is_file())
-        data["video_url"] = _output_url(path) if exists else None
-        data["source_duration_ms"] = probed.get(source_id, (None, False))[0]
-        # 隙間（gap）はソースを持たないので欠落にはならない。
-        data["missing"] = data["source_kind"] != "gap" and not exists
+        source_kind = str(data["source_kind"])
+        key = (source_kind, str(data.get("source_id") or ""))
+        info = sources.get(key) if source_kind not in ("gap", "text") else None
+        path = existing.get(key)
+        data["video_url"] = _media_url((info or {}).get("path")) if path else None
+        data["source_duration_ms"] = probed.get(path or "", (None, False))[0]
+        # 隙間（gap）とテロップ（text）はソースを持たないので欠落にはならない。
+        data["missing"] = source_kind not in ("gap", "text") and path is None
         data["label"] = (info or {}).get("label", "")
+        if source_kind == "text":
+            data["label"] = str((data["text_payload"] or {}).get("text") or "")
         clips_by_track.setdefault(str(data["track_id"]), []).append(TimelineClip(**data))
 
     tracks = [
@@ -551,61 +924,73 @@ async def replace_clips(
     画面の自動保存の受け口。1 つのトランザクションで消してから入れ直すので、
     途中で落ちても「前の状態」か「送られた状態」のどちらかになる。
     """
-    validate_clips(clips)
     async with get_db() as conn:
         timeline = await _fetch_timeline(conn, timeline_id)
         if timeline is None:
             return None
         async with conn.execute(
-            "SELECT id FROM timeline_tracks WHERE timeline_id = ?", (timeline_id,)
+            "SELECT id, kind FROM timeline_tracks WHERE timeline_id = ?",
+            (timeline_id,),
         ) as cur:
-            known = {str(row["id"]) for row in await cur.fetchall()}
-        unknown = sorted({clip.track_id for clip in clips} - known)
+            kinds = {str(row["id"]): str(row["kind"]) for row in await cur.fetchall()}
+        unknown = sorted({clip.track_id for clip in clips} - set(kinds))
         if unknown:
             raise TimelineError(
                 f"このタイムラインに無いトラックです: {', '.join(unknown)}"
             )
+        validate_clips(clips, kinds)
 
-        await conn.execute(
-            "DELETE FROM timeline_clips WHERE timeline_id = ?", (timeline_id,)
-        )
-        ordered = sorted(clips, key=lambda clip: (clip.track_id, clip.start_ms))
-        for order, clip in enumerate(ordered):
-            await conn.execute(
-                "INSERT INTO timeline_clips"
-                " (id, track_id, timeline_id, project_id, start_ms, duration_ms,"
-                "  source_kind, source_id, in_ms, out_ms, gain_db, fade_in_ms,"
-                "  fade_out_ms, transition_kind, transition_ms, text_payload,"
-                "  sort_order)"
-                " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
-                    clip.id or new_id(),
-                    clip.track_id,
-                    timeline_id,
-                    timeline.project_id,
-                    clip.start_ms,
-                    clip.duration_ms,
-                    clip.source_kind,
-                    clip.source_id,
-                    clip.in_ms,
-                    clip.out_ms,
-                    clip.gain_db,
-                    clip.fade_in_ms,
-                    clip.fade_out_ms,
-                    clip.transition_kind,
-                    clip.transition_ms,
-                    json.dumps(clip.text_payload, ensure_ascii=False)
-                    if clip.text_payload
-                    else None,
-                    order,
-                ),
-            )
-        await conn.execute(
-            "UPDATE studio_timelines SET updated_at = ? WHERE id = ?",
-            (_now(), timeline_id),
-        )
+        await _write_clips(conn, timeline_id, timeline.project_id, clips)
         await conn.commit()
     return await timeline_detail(timeline_id)
+
+
+async def _write_clips(
+    conn: aiosqlite.Connection,
+    timeline_id: str,
+    project_id: str,
+    clips: list[TimelineClipInput],
+) -> None:
+    """このタイムラインのクリップを ``clips`` の通りに書き直す（commit は呼び出し側）。"""
+    await conn.execute(
+        "DELETE FROM timeline_clips WHERE timeline_id = ?", (timeline_id,)
+    )
+    ordered = sorted(clips, key=lambda clip: (clip.track_id, clip.start_ms))
+    for order, clip in enumerate(ordered):
+        await conn.execute(
+            "INSERT INTO timeline_clips"
+            " (id, track_id, timeline_id, project_id, start_ms, duration_ms,"
+            "  source_kind, source_id, in_ms, out_ms, gain_db, fade_in_ms,"
+            "  fade_out_ms, transition_kind, transition_ms, text_payload, speed,"
+            "  sort_order)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                clip.id or new_id(),
+                clip.track_id,
+                timeline_id,
+                project_id,
+                clip.start_ms,
+                clip.duration_ms,
+                clip.source_kind,
+                clip.source_id,
+                clip.in_ms,
+                clip.out_ms,
+                clip.gain_db,
+                clip.fade_in_ms,
+                clip.fade_out_ms,
+                clip.transition_kind,
+                clip.transition_ms,
+                json.dumps(clip.text_payload, ensure_ascii=False)
+                if clip.text_payload
+                else None,
+                float(clip.speed or 1.0),
+                order,
+            ),
+        )
+    await conn.execute(
+        "UPDATE studio_timelines SET updated_at = ? WHERE id = ?",
+        (_now(), timeline_id),
+    )
 
 
 # --------------------------------------------------------------------------
@@ -654,12 +1039,65 @@ async def _update_export(export_id: str, **fields: Any) -> None:
         await conn.commit()
 
 
-async def build_spec(timeline_id: str, params: dict[str, Any]) -> ExportSpec:
+async def _resolve_clip_paths(
+    detail: StudioTimelineDetail,
+) -> dict[tuple[str, str], str]:
+    """このタイムラインのクリップが指す**実在するファイル**の絶対パス。
+
+    ``timeline_detail`` は配信 URL しか持たないので、書き出しのためにもう一度
+    引き直す（キーは ``(source_kind, source_id)``）。
+    """
+    refs = {
+        (clip.source_kind, clip.source_id or "", track.kind)
+        for track in detail.tracks
+        for clip in track.clips
+        if clip.source_kind not in ("gap", "text") and clip.source_id
+    }
+    if not refs:
+        return {}
+    async with get_db() as conn:
+        sources = await _resolve_sources(conn, refs)
+    paths: dict[tuple[str, str], str] = {}
+    for key, info in sources.items():
+        path = info.get("path")
+        if not path:
+            continue
+        resolved = rebase_stored_path(path)
+        if resolved.is_file():
+            paths[key] = str(resolved)
+    return paths
+
+
+def _subtitle_events(detail: StudioTimelineDetail) -> list[subtitles.SubtitleEvent]:
+    """字幕トラックのテロップを、焼き込む順（時刻順）に並べる。"""
+    events: list[subtitles.SubtitleEvent] = []
+    for track in detail.tracks:
+        if track.kind != "subtitle" or track.muted:
+            continue
+        for clip in track.clips:
+            if clip.source_kind != "text":
+                continue
+            event = subtitles.event_from_clip(
+                clip.start_ms, clip.duration_ms, clip.text_payload
+            )
+            if event is not None:
+                events.append(event)
+    return sorted(events, key=lambda event: (event.start_ms, event.end_ms))
+
+
+async def build_spec(
+    timeline_id: str, params: dict[str, Any], work_dir: Path | None = None
+) -> ExportSpec:
     """このタイムラインの今の中身から、書き出し 1 回ぶんの :class:`ExportSpec`。
 
-    フェーズ 1 は **V1（一番上の video トラック）だけ**を焼く。ソースの実ファイルが
-    無いクリップ（メディア欠落）はその尺の隙間（黒＋無音）に置き換える——
-    途中で失敗させるより、欠けているところが目に見えるほうが直しやすいため。
+    焼くのは **V1（一番上の video トラック）** と、ミュートしていない音声トラック
+    （A1…）・字幕トラック（T1）。ソースの実ファイルが無いクリップ（メディア欠落）は
+    その尺の隙間（黒＋無音）に置き換える——ここまで来て途中で失敗させるより、
+    欠けているところが目に見えるほうが直しやすいため（受付の時点では
+    :func:`start_export` が 400 で断る）。
+
+    テロップは ASS に書き出して ``work_dir`` へ置く（``work_dir`` を渡さないと
+    焼き込みは省く。組み立てだけ見たいテストのため）。
     """
     detail = await timeline_detail(timeline_id)
     if detail is None:
@@ -671,25 +1109,29 @@ async def build_spec(timeline_id: str, params: dict[str, Any]) -> ExportSpec:
     if not clips:
         raise TimelineError("書き出せるクリップがありません")
 
-    # クリップの実ファイルは detail に載っていないので、Take から引き直す。
-    paths: dict[str, str] = {}
-    async with get_db() as conn:
-        take_ids = sorted(
-            {clip.source_id for clip in clips if clip.source_kind == "take" and clip.source_id}
-        )
-        for take_id, info in (await _take_sources(conn, take_ids)).items():
-            path = info.get("path")
-            if not path:
-                continue
-            resolved = rebase_stored_path(path)
-            if resolved.is_file():
-                paths[take_id] = str(resolved)
+    paths = await _resolve_clip_paths(detail)
+    width, height = resolve_format(
+        str(params.get("preset") or "timeline"),
+        int(params.get("width") or detail.width),
+        int(params.get("height") or detail.height),
+    )
+    # 幅・高さを直接指定されたらプリセットより優先する（規格の上書き）。
+    if params.get("width"):
+        width = int(params["width"])
+    if params.get("height"):
+        height = int(params["height"])
 
     export_clips: list[ExportClip] = []
     cursor = 0
-    for clip in clips:
-        # クリップの前に空きがあれば、その尺ぶんの隙間を入れて時間を合わせる。
-        if clip.start_ms > cursor:
+    for index, clip in enumerate(clips):
+        overlap = (
+            clip.transition_ms
+            if index > 0 and clip.transition_kind in TRANSITIONS and clip.transition_ms > 0
+            else 0
+        )
+        # 繋ぎのないところでクリップの前に空きがあれば、その尺ぶんの隙間を
+        # 入れて時間を合わせる（繋ぎがあるところは重なっているので空かない）。
+        if not overlap and clip.start_ms > cursor:
             export_clips.append(
                 ExportClip(
                     path=None,
@@ -700,27 +1142,67 @@ async def build_spec(timeline_id: str, params: dict[str, Any]) -> ExportSpec:
                 )
             )
             cursor = clip.start_ms
-        path = paths.get(clip.source_id or "") if clip.source_kind == "take" else None
+        path = paths.get((clip.source_kind, clip.source_id or ""))
+        is_image = clip.source_kind == "image"
         has_audio = False
-        if path is not None:
-            _, has_audio = await probe_media(path)
+        if path is not None and not is_image:
+            _, has_audio = await probe_cached(path)
         export_clips.append(
             ExportClip(
                 path=path,
-                in_ms=clip.in_ms if path else 0,
-                out_ms=clip.out_ms if path else clip.duration_ms,
+                in_ms=clip.in_ms if path and not is_image else 0,
+                out_ms=(clip.out_ms if path and not is_image else clip.duration_ms),
                 duration_ms=clip.duration_ms,
                 has_audio=has_audio,
                 gain_db=clip.gain_db,
+                speed=clip.speed if path and not is_image else 1.0,
+                kind="image" if (is_image and path) else "video",
+                transition_kind=clip.transition_kind if overlap else None,
+                transition_ms=overlap,
             )
         )
         cursor = clip.start_ms + clip.duration_ms
 
+    audio_clips: list[ExportAudioClip] = []
+    for track in detail.tracks:
+        if track.kind != "audio" or track.muted:
+            continue
+        for clip in sorted(track.clips, key=lambda item: item.start_ms):
+            path = paths.get((clip.source_kind, clip.source_id or ""))
+            if path is None or clip.out_ms <= clip.in_ms:
+                continue
+            audio_clips.append(
+                ExportAudioClip(
+                    path=path,
+                    start_ms=clip.start_ms,
+                    in_ms=clip.in_ms,
+                    out_ms=clip.out_ms,
+                    gain_db=clip.gain_db,
+                    fade_in_ms=clip.fade_in_ms,
+                    fade_out_ms=clip.fade_out_ms,
+                )
+            )
+
+    subtitles_path: str | None = None
+    events = _subtitle_events(detail)
+    if events and work_dir is not None:
+        work_dir.mkdir(parents=True, exist_ok=True)
+        target = work_dir / SUBTITLES_FILENAME
+        target.write_text(
+            subtitles.build_ass(events, width, height), encoding="utf-8"
+        )
+        subtitles_path = str(target)
+
+    fit = str(params.get("fit") or FIT_PAD)
     return ExportSpec(
-        width=int(params.get("width") or detail.width),
-        height=int(params.get("height") or detail.height),
+        width=width,
+        height=height,
         fps=float(params.get("fps") or detail.fps),
         clips=export_clips,
+        audio_clips=audio_clips,
+        subtitles_path=subtitles_path,
+        fit=fit if fit in (FIT_PAD, FIT_CROP) else FIT_PAD,
+        loudnorm=bool(params.get("loudnorm", False)),
     )
 
 
@@ -730,6 +1212,27 @@ async def start_export(timeline_id: str, params: dict[str, Any]) -> TimelineExpo
     同じタイムラインで走っているものがあれば :class:`TimelineConflict`
     （同時に 2 本焼いても得はなく、進捗の見せ方も破綻するため）。
     """
+    detail = await timeline_detail(timeline_id)
+    if detail is None:
+        raise TimelineNotFound("timeline not found")
+    # メディア欠落のまま焼くと、その区間が黙って黒＋無音になる。受け付ける前に
+    # 断って、何が足りないのかを画面へ返す（直し方は GET .../missing）。
+    broken = [
+        clip
+        for track in detail.tracks
+        for clip in track.clips
+        if clip.missing
+    ]
+    if broken:
+        names = "、".join(
+            (clip.label or clip.id)[:30] for clip in broken[:3]
+        )
+        more = f" ほか {len(broken) - 3} 件" if len(broken) > 3 else ""
+        raise TimelineError(
+            f"メディアが見つからないクリップが {len(broken)} 件あります"
+            f"（{names}{more}）。差し替えるか削除してから書き出してください"
+        )
+
     async with get_db() as conn:
         if await _fetch_timeline(conn, timeline_id) is None:
             raise TimelineNotFound("timeline not found")
@@ -745,7 +1248,8 @@ async def start_export(timeline_id: str, params: dict[str, Any]) -> TimelineExpo
         clean = {
             key: value
             for key, value in params.items()
-            if key in ("width", "height", "fps") and value is not None
+            if key in ("width", "height", "fps", "preset", "fit", "loudnorm")
+            and value is not None
         }
         await conn.execute(
             "INSERT INTO timeline_exports"
@@ -786,8 +1290,9 @@ async def _run(export_id: str, timeline_id: str, params: dict[str, Any]) -> None
         )
 
     try:
-        spec = await build_spec(timeline_id, params)
-        output = export_dir(export_id) / EXPORT_FILENAME
+        work_dir = export_dir(export_id)
+        spec = await build_spec(timeline_id, params, work_dir)
+        output = work_dir / EXPORT_FILENAME
         await run_export(spec, output, on_progress=on_progress)
     except (TimelineError, TimelineExportError) as exc:
         await _update_export(
@@ -835,3 +1340,931 @@ async def save_export_to_library(export_id: str, name: str = "") -> LibraryItem:
         return await library_service.add_from_file(source, "video", f"{display}.mp4")
     except library_service.LibraryError as exc:
         raise TimelineError(str(exc)) from exc
+
+
+# --------------------------------------------------------------------------
+# トラックの出し入れ（音声 A1… と字幕 T1）
+# --------------------------------------------------------------------------
+#
+# 映像トラックは V1 の 1 本きり（並べ替えの正本）。音声は何本でも足せて、
+# 字幕は 1 本あれば足りる。名前は種別ごとの連番を既定にする。
+
+#: 種別ごとの名前の頭文字（``A2`` / ``T1``）
+TRACK_PREFIX = {"video": "V", "audio": "A", "subtitle": "T"}
+
+
+def _next_track_name(kind: str, existing: list[str]) -> str:
+    """その種別でまだ使っていない連番の名前（``A1`` / ``A2`` …）。"""
+    prefix = TRACK_PREFIX.get(kind, "X")
+    taken = set(existing)
+    for number in range(1, 100):
+        name = f"{prefix}{number}"
+        if name not in taken:
+            return name
+    return f"{prefix}{len(taken) + 1}"
+
+
+async def _ensure_track(
+    conn: aiosqlite.Connection,
+    timeline: StudioTimeline,
+    kind: str,
+    *,
+    name: str = "",
+) -> str:
+    """その種別のトラックを 1 本用意して id を返す（あれば先頭のものを使う）。"""
+    async with conn.execute(
+        "SELECT id, name, kind, sort_order FROM timeline_tracks"
+        " WHERE timeline_id = ? ORDER BY sort_order, id",
+        (timeline.id,),
+    ) as cur:
+        rows = [dict(row) for row in await cur.fetchall()]
+    for row in rows:
+        if row["kind"] == kind:
+            return str(row["id"])
+    track_id = new_id()
+    await conn.execute(
+        "INSERT INTO timeline_tracks"
+        " (id, timeline_id, project_id, kind, name, sort_order, muted, locked)"
+        " VALUES (?, ?, ?, ?, ?, ?, 0, 0)",
+        (
+            track_id,
+            timeline.id,
+            timeline.project_id,
+            kind,
+            (name or "").strip()
+            or _next_track_name(kind, [str(row["name"]) for row in rows]),
+            max((int(row["sort_order"]) for row in rows), default=-1) + 1,
+        ),
+    )
+    return track_id
+
+
+async def add_track(
+    timeline_id: str, payload: TimelineTrackCreate
+) -> StudioTimelineDetail:
+    """トラックを 1 本足す（音声 A1… / 字幕 T1）。
+
+    映像トラックは足せない: V1 が並べ替えの正本で、2 本目があると「どちらが
+    タイムラインの本体か」が決まらなくなるため（合成はスコープ外）。
+    """
+    if payload.kind == "video":
+        raise TimelineError("映像トラックは V1 の 1 本だけです")
+    async with get_db() as conn:
+        timeline = await _fetch_timeline(conn, timeline_id)
+        if timeline is None:
+            raise TimelineNotFound("timeline not found")
+        async with conn.execute(
+            "SELECT name, sort_order FROM timeline_tracks WHERE timeline_id = ?",
+            (timeline_id,),
+        ) as cur:
+            rows = [dict(row) for row in await cur.fetchall()]
+        await conn.execute(
+            "INSERT INTO timeline_tracks"
+            " (id, timeline_id, project_id, kind, name, sort_order, muted, locked)"
+            " VALUES (?, ?, ?, ?, ?, ?, 0, 0)",
+            (
+                new_id(),
+                timeline_id,
+                timeline.project_id,
+                payload.kind,
+                (payload.name or "").strip()
+                or _next_track_name(
+                    payload.kind, [str(row["name"]) for row in rows]
+                ),
+                max((int(row["sort_order"]) for row in rows), default=-1) + 1,
+            ),
+        )
+        await conn.execute(
+            "UPDATE studio_timelines SET updated_at = ? WHERE id = ?",
+            (_now(), timeline_id),
+        )
+        await conn.commit()
+    detail = await timeline_detail(timeline_id)
+    assert detail is not None
+    return detail
+
+
+async def update_track(
+    timeline_id: str, track_id: str, payload: TimelineTrackUpdate
+) -> StudioTimelineDetail:
+    """名前・ミュート・ロックを変える（送らなかった項目はそのまま）。"""
+    fields: dict[str, Any] = {}
+    if payload.name is not None:
+        fields["name"] = payload.name.strip()
+    if payload.muted is not None:
+        fields["muted"] = int(payload.muted)
+    if payload.locked is not None:
+        fields["locked"] = int(payload.locked)
+    async with get_db() as conn:
+        if await _fetch_timeline(conn, timeline_id) is None:
+            raise TimelineNotFound("timeline not found")
+        async with conn.execute(
+            "SELECT id FROM timeline_tracks WHERE id = ? AND timeline_id = ?",
+            (track_id, timeline_id),
+        ) as cur:
+            if await cur.fetchone() is None:
+                raise TimelineNotFound("track not found")
+        if fields:
+            assignments = ", ".join(f"{name} = ?" for name in fields)
+            await conn.execute(
+                f"UPDATE timeline_tracks SET {assignments} WHERE id = ?",
+                (*fields.values(), track_id),
+            )
+            await conn.execute(
+                "UPDATE studio_timelines SET updated_at = ? WHERE id = ?",
+                (_now(), timeline_id),
+            )
+            await conn.commit()
+    detail = await timeline_detail(timeline_id)
+    assert detail is not None
+    return detail
+
+
+async def delete_track(timeline_id: str, track_id: str) -> StudioTimelineDetail:
+    """トラックを 1 本消す（載っていたクリップも一緒に消える）。"""
+    async with get_db() as conn:
+        if await _fetch_timeline(conn, timeline_id) is None:
+            raise TimelineNotFound("timeline not found")
+        async with conn.execute(
+            "SELECT kind FROM timeline_tracks WHERE id = ? AND timeline_id = ?",
+            (track_id, timeline_id),
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            raise TimelineNotFound("track not found")
+        if row["kind"] == "video":
+            raise TimelineError("映像トラック（V1）は消せません")
+        await conn.execute("DELETE FROM timeline_clips WHERE track_id = ?", (track_id,))
+        await conn.execute("DELETE FROM timeline_tracks WHERE id = ?", (track_id,))
+        await conn.execute(
+            "UPDATE studio_timelines SET updated_at = ? WHERE id = ?",
+            (_now(), timeline_id),
+        )
+        await conn.commit()
+    detail = await timeline_detail(timeline_id)
+    assert detail is not None
+    return detail
+
+
+# --------------------------------------------------------------------------
+# 素材ビン（タイムラインへ足せるもの）
+# --------------------------------------------------------------------------
+#
+# 制作タブのテイクだけでなく、ライブラリ・単発ジョブ・作品の素材ファイルからも
+# 引いてこられるようにする面。1 ページぶんだけ ffprobe を掛けるので、棚が
+# 大きくても一覧が重くならない。
+
+#: 出どころごとに拾う上限（これを超えるぶんは新しい方から切る）
+MEDIA_SCAN_LIMIT = 500
+
+
+async def _media_from_takes(
+    conn: aiosqlite.Connection, project_id: str
+) -> list[TimelineMediaItem]:
+    """この作品のテイク（動画が実在するものだけ）。"""
+    async with conn.execute(
+        "SELECT t.id AS take_id, t.created_at AS created_at, j.video_path AS path,"
+        "       s.title AS shot_title, s.sort_order AS shot_order,"
+        "       sc.title AS scene_title, ep.title AS episode_title"
+        "  FROM studio_takes t"
+        "  JOIN jobs j ON j.id = t.job_id"
+        "  LEFT JOIN studio_shots s ON s.id = t.shot_id"
+        "  LEFT JOIN studio_scenes sc ON sc.id = s.scene_id"
+        "  LEFT JOIN studio_episodes ep ON ep.id = sc.episode_id"
+        " WHERE t.project_id = ? AND j.video_path IS NOT NULL"
+        " ORDER BY t.created_at DESC, t.id DESC LIMIT ?",
+        (project_id, MEDIA_SCAN_LIMIT),
+    ) as cur:
+        rows = await cur.fetchall()
+    items: list[TimelineMediaItem] = []
+    for row in rows:
+        parts = [
+            part
+            for part in (row["episode_title"], row["scene_title"])
+            if part
+        ]
+        if row["shot_order"] is not None:
+            parts.append(
+                f"#{int(row['shot_order']) + 1} {row['shot_title'] or ''}".strip()
+            )
+        items.append(
+            TimelineMediaItem(
+                source_kind="take",
+                source_id=str(row["take_id"]),
+                media_kind="video",
+                name=" / ".join(parts) or str(row["take_id"])[:8],
+                origin="テイク",
+                url=_media_url(row["path"]),
+                created_at=str(row["created_at"] or ""),
+            )
+        )
+    return items
+
+
+async def _media_from_library(
+    conn: aiosqlite.Connection, kind: str
+) -> list[TimelineMediaItem]:
+    async with conn.execute(
+        "SELECT id, name, path, created_at FROM library WHERE kind = ?"
+        " ORDER BY created_at DESC, id DESC LIMIT ?",
+        (kind, MEDIA_SCAN_LIMIT),
+    ) as cur:
+        rows = await cur.fetchall()
+    return [
+        TimelineMediaItem(
+            source_kind="image" if kind == "image" else "library",
+            source_id=(
+                f"library:{row['id']}" if kind == "image" else str(row["id"])
+            ),
+            media_kind=kind,  # type: ignore[arg-type]
+            name=str(row["name"] or row["id"]),
+            origin="ライブラリ",
+            url=_media_url(row["path"]),
+            created_at=str(row["created_at"] or ""),
+        )
+        for row in rows
+    ]
+
+
+#: 素材ビンに出すジョブの出力（種別 -> 見に行く列）
+_JOB_MEDIA_COLUMNS = {
+    "video": "video_path",
+    "audio": "audio_output_path",
+    "image": "image_path",
+}
+
+
+async def _media_from_jobs(
+    conn: aiosqlite.Connection, kind: str
+) -> list[TimelineMediaItem]:
+    """終わった**単発**ジョブの出力。
+
+    テイクの裏にあるジョブは外す（同じ動画がテイクとして既に並んでいるので、
+    2 つ出ると「どちらを置いたか」が分からなくなる）。
+    """
+    column = _JOB_MEDIA_COLUMNS[kind]
+    async with conn.execute(
+        f"SELECT id, {column} AS path, user_input, created_at FROM jobs"
+        f" WHERE status = 'done' AND {column} IS NOT NULL AND {column} <> ''"
+        "   AND id NOT IN (SELECT job_id FROM studio_takes)"
+        " ORDER BY created_at DESC, id DESC LIMIT ?",
+        (MEDIA_SCAN_LIMIT,),
+    ) as cur:
+        rows = await cur.fetchall()
+    items: list[TimelineMediaItem] = []
+    for row in rows:
+        title = (row["user_input"] or "").strip().splitlines()[:1]
+        items.append(
+            TimelineMediaItem(
+                source_kind="image" if kind == "image" else "job",
+                source_id=f"job:{row['id']}" if kind == "image" else str(row["id"]),
+                media_kind=kind,  # type: ignore[arg-type]
+                name=(title[0][:60] if title else str(row["id"])[:8]),
+                origin="ジョブ",
+                url=_media_url(row["path"]),
+                created_at=str(row["created_at"] or ""),
+            )
+        )
+    return items
+
+
+#: 素材ビンに出す素材ファイル（種別 -> ``studio_asset_files.role``）
+_ASSET_ROLES = {"audio": "voice", "image": "image", "video": "video"}
+
+
+async def _media_from_asset_files(
+    conn: aiosqlite.Connection, project_id: str, kind: str
+) -> list[TimelineMediaItem]:
+    async with conn.execute(
+        "SELECT f.id AS id, f.path AS path, f.caption AS caption,"
+        "       f.created_at AS created_at, a.name AS asset_name"
+        "  FROM studio_asset_files f"
+        "  LEFT JOIN studio_assets a ON a.id = f.asset_id"
+        " WHERE f.project_id = ? AND f.role = ?"
+        " ORDER BY f.created_at DESC, f.id DESC LIMIT ?",
+        (project_id, _ASSET_ROLES[kind], MEDIA_SCAN_LIMIT),
+    ) as cur:
+        rows = await cur.fetchall()
+    return [
+        TimelineMediaItem(
+            source_kind="image" if kind == "image" else "asset_file",
+            source_id=(
+                f"asset_file:{row['id']}" if kind == "image" else str(row["id"])
+            ),
+            media_kind=kind,  # type: ignore[arg-type]
+            name=" / ".join(
+                part for part in (row["asset_name"], row["caption"]) if part
+            )
+            or str(row["id"])[:8],
+            origin="素材",
+            url=_media_url(row["path"]),
+            created_at=str(row["created_at"] or ""),
+        )
+        for row in rows
+    ]
+
+
+async def list_media(
+    project_id: str, kind: str, limit: int = 50, offset: int = 0
+) -> TimelineMediaPage:
+    """素材ビンの 1 ページ（``kind`` は video / audio / image）。
+
+    出どころ（テイク・ライブラリ・ジョブ・素材ファイル）をそれぞれ新しい順に
+    :data:`MEDIA_SCAN_LIMIT` 件まで拾ってから、作成時刻で 1 本に混ぜる。実ファイルが
+    無いものは落とす（置いた瞬間に欠落になる素材を並べない）。長さの下調べは
+    **返すページのぶんだけ**まとめて行う。
+    """
+    if kind not in ("video", "audio", "image"):
+        raise TimelineError(f"知らない素材の種別です: {kind}")
+    async with get_db() as conn:
+        async with conn.execute(
+            "SELECT id FROM studio_projects WHERE id = ?", (project_id,)
+        ) as cur:
+            if await cur.fetchone() is None:
+                raise TimelineNotFound("project not found")
+        items: list[TimelineMediaItem] = []
+        if kind == "video":
+            items += await _media_from_takes(conn, project_id)
+        items += await _media_from_library(conn, kind)
+        items += await _media_from_jobs(conn, kind)
+        items += await _media_from_asset_files(conn, project_id, kind)
+
+    # 配信 URL を作れなかった（= 置き場の外・ファイルが無い）ものは並べない。
+    items = [item for item in items if item.url]
+    items.sort(key=lambda item: (item.created_at, item.source_id), reverse=True)
+    total = len(items)
+    page = items[offset : offset + limit]
+
+    if kind != "image":
+        async with get_db() as conn:
+            refs = {
+                (item.source_kind, item.source_id, "audio" if kind == "audio" else "video")
+                for item in page
+            }
+            sources = await _resolve_sources(conn, refs)
+        wanted: dict[str, str] = {}
+        for key, info in sources.items():
+            path = info.get("path")
+            resolved = rebase_stored_path(path) if path else None
+            if resolved is not None and resolved.is_file():
+                wanted[f"{key[0]}:{key[1]}"] = str(resolved)
+        probed = await probe_many(list(wanted.values()))
+        for item in page:
+            path = wanted.get(f"{item.source_kind}:{item.source_id}")
+            if path:
+                item.duration_ms = probed.get(path, (None, False))[0]
+
+    return TimelineMediaPage(items=page, total=total, limit=limit, offset=offset)
+
+
+# --------------------------------------------------------------------------
+# クリップの並べ直し（サーバー側で編集するときの下敷き）
+# --------------------------------------------------------------------------
+
+def to_clip_input(clip: TimelineClip) -> TimelineClipInput:
+    """読み取ったクリップを、書き戻せる形（``PUT /clips`` の 1 件）にする。"""
+    return TimelineClipInput(
+        id=clip.id,
+        track_id=clip.track_id,
+        start_ms=clip.start_ms,
+        duration_ms=clip.duration_ms,
+        source_kind=clip.source_kind,
+        source_id=clip.source_id,
+        in_ms=clip.in_ms,
+        out_ms=clip.out_ms,
+        gain_db=clip.gain_db,
+        fade_in_ms=clip.fade_in_ms,
+        fade_out_ms=clip.fade_out_ms,
+        transition_kind=clip.transition_kind,
+        transition_ms=clip.transition_ms,
+        text_payload=clip.text_payload,
+        speed=clip.speed,
+    )
+
+
+def all_clip_inputs(detail: StudioTimelineDetail) -> list[TimelineClipInput]:
+    """タイムラインの全クリップを書き戻せる形で（トラックの順のまま）。"""
+    return [
+        to_clip_input(clip) for track in detail.tracks for clip in track.clips
+    ]
+
+
+def relayout(clips: list[TimelineClipInput]) -> list[TimelineClipInput]:
+    """映像トラックの並びを、繋ぎの重なりを含めて先頭から詰め直す（純関数）。
+
+    渡された順番がそのままタイムライン上の順番（リップル方式）。繋ぎを持つ
+    クリップは前へ ``transition_ms`` だけ食い込み、長すぎる繋ぎは隣り合う 2 つの
+    短いほうの 1/2 へ丸める。先頭のクリップの繋ぎは落とす（重なる相手が居ない）。
+    """
+    placed: list[TimelineClipInput] = []
+    cursor = 0
+    for index, clip in enumerate(clips):
+        current = clip.model_copy()
+        overlap = 0 if index == 0 else _overlap_ms(current)
+        if overlap:
+            # 隣り合う 2 つの短いほうの 1/2 を超えないところまで丸める。
+            # 最小を割ってしまうなら、繋ぎ自体をあきらめてカットにする。
+            shortest = min(placed[-1].duration_ms, current.duration_ms)
+            overlap = min(overlap, shortest // 2, TRANSITION_MAX_MS)
+            if overlap < TRANSITION_MIN_MS:
+                overlap = 0
+        if overlap:
+            current.transition_ms = overlap
+        else:
+            current.transition_kind = None
+            current.transition_ms = 0
+        current.start_ms = max(0, cursor - overlap)
+        placed.append(current)
+        cursor = current.start_ms + current.duration_ms
+    return placed
+
+
+def _video_track(detail: StudioTimelineDetail) -> TimelineTrack:
+    tracks = [track for track in detail.tracks if track.kind == "video"]
+    if not tracks:
+        raise TimelineError("映像トラックがありません")
+    return tracks[0]
+
+
+# --------------------------------------------------------------------------
+# 台詞からのテロップ生成
+# --------------------------------------------------------------------------
+
+async def generate_subtitles(
+    timeline_id: str, track_id: str | None = None
+) -> StudioTimelineDetail:
+    """V1 のクリップの元カットの台詞から、テロップを一括で置き直す。
+
+    クリップ -> Take -> Shot と辿って ``studio_shots.dialogue`` を読み、その
+    クリップの区間へ等分に割り付ける（:func:`app.timeline_subtitles.place_dialogue`）。
+    **字幕トラックの中身は置き換える**（積み増すと二重に出るため。画面側で
+    確認ダイアログを出している）。台詞が 1 つも無ければ何も置かずに返す。
+    """
+    detail = await timeline_detail(timeline_id)
+    if detail is None:
+        raise TimelineNotFound("timeline not found")
+    video = _video_track(detail)
+    take_ids = sorted(
+        {
+            str(clip.source_id)
+            for clip in video.clips
+            if clip.source_kind == "take" and clip.source_id
+        }
+    )
+
+    async with get_db() as conn:
+        timeline = await _fetch_timeline(conn, timeline_id)
+        assert timeline is not None
+        dialogues: dict[str, str] = {}
+        if take_ids:
+            placeholders = ", ".join("?" * len(take_ids))
+            async with conn.execute(
+                "SELECT t.id AS take_id, s.dialogue AS dialogue"
+                "  FROM studio_takes t"
+                "  LEFT JOIN studio_shots s ON s.id = t.shot_id"
+                f" WHERE t.id IN ({placeholders})",
+                tuple(take_ids),
+            ) as cur:
+                dialogues = {
+                    str(row["take_id"]): str(row["dialogue"] or "")
+                    for row in await cur.fetchall()
+                }
+
+        if track_id:
+            async with conn.execute(
+                "SELECT kind FROM timeline_tracks WHERE id = ? AND timeline_id = ?",
+                (track_id, timeline_id),
+            ) as cur:
+                row = await cur.fetchone()
+            if row is None:
+                raise TimelineNotFound("track not found")
+            if row["kind"] != "subtitle":
+                raise TimelineError("テロップを置けるのは字幕トラックだけです")
+            target = track_id
+        else:
+            target = await _ensure_track(conn, timeline, "subtitle")
+
+        made: list[TimelineClipInput] = []
+        cursor = 0
+        for clip in sorted(video.clips, key=lambda item: item.start_ms):
+            # 繋ぎ（オーバーラップ）があると映像クリップどうしは重なるが、
+            # テロップは重ねられない（同じトラックの重なりは 400）。前のカットの
+            # テロップが終わったところから、このカットの区間を数える。
+            begin = max(clip.start_ms, cursor)
+            span = clip.start_ms + clip.duration_ms - begin
+            cursor = clip.start_ms + clip.duration_ms
+            if span <= 0:
+                continue
+            dialogue = dialogues.get(str(clip.source_id or ""), "")
+            for piece in subtitles.place_dialogue(begin, span, dialogue):
+                made.append(
+                    TimelineClipInput(
+                        track_id=target,
+                        start_ms=piece.start_ms,
+                        duration_ms=piece.duration_ms,
+                        source_kind="text",
+                        source_id=None,
+                        in_ms=0,
+                        out_ms=0,
+                        text_payload={"text": piece.text, "style": piece.style},
+                    )
+                )
+
+        kept = [
+            to_clip_input(clip)
+            for track in detail.tracks
+            for clip in track.clips
+            if track.id != target
+        ]
+        await _write_clips(conn, timeline_id, timeline.project_id, [*kept, *made])
+        await conn.commit()
+
+    fresh = await timeline_detail(timeline_id)
+    assert fresh is not None
+    return fresh
+
+
+# --------------------------------------------------------------------------
+# 脚本との差分（作ったあとに脚本が動いた分）
+# --------------------------------------------------------------------------
+
+async def _shot_state(
+    conn: aiosqlite.Connection, take_ids: list[str]
+) -> dict[str, dict[str, Any]]:
+    """Take id -> その Take が属するカットの今の状態。"""
+    if not take_ids:
+        return {}
+    placeholders = ", ".join("?" * len(take_ids))
+    async with conn.execute(
+        "SELECT t.id AS take_id, t.shot_id AS shot_id,"
+        "       s.id AS shot_exists, s.selected_take_id AS selected_take_id,"
+        "       s.title AS shot_title, s.sort_order AS shot_order,"
+        "       sc.title AS scene_title, ep.title AS episode_title"
+        "  FROM studio_takes t"
+        "  LEFT JOIN studio_shots s ON s.id = t.shot_id"
+        "  LEFT JOIN studio_scenes sc ON sc.id = s.scene_id"
+        "  LEFT JOIN studio_episodes ep ON ep.id = sc.episode_id"
+        f" WHERE t.id IN ({placeholders})",
+        tuple(take_ids),
+    ) as cur:
+        return {str(row["take_id"]): dict(row) for row in await cur.fetchall()}
+
+
+async def sync_preview(timeline_id: str) -> TimelineSyncPreview:
+    """タイムラインを作ったあとに脚本で起きた差分を出す。
+
+    3 つだけ見る:
+
+    - **増えたカット** … その話に採用テイクつきのカットが増えた（動画が実在するもの）
+    - **採用が変わったカット** … クリップが古いテイクを指している
+    - **消えたカット** … 元のカットが消えた / 採用が外れた
+
+    どれも「反映するか」は人が選ぶので、ここでは並べるだけ（:func:`apply_sync`）。
+    """
+    detail = await timeline_detail(timeline_id)
+    if detail is None:
+        raise TimelineNotFound("timeline not found")
+    video = _video_track(detail)
+    take_clips = [
+        clip for clip in video.clips if clip.source_kind == "take" and clip.source_id
+    ]
+
+    async with get_db() as conn:
+        states = await _shot_state(
+            conn, sorted({str(clip.source_id) for clip in take_clips})
+        )
+        covered = {
+            str(state["shot_id"])
+            for state in states.values()
+            if state.get("shot_exists")
+        }
+        added: list[TimelineSyncAdded] = []
+        if detail.episode_id:
+            async with conn.execute(
+                "SELECT s.id AS shot_id, s.title AS shot_title,"
+                "       s.sort_order AS shot_order, s.selected_take_id AS take_id,"
+                "       sc.title AS scene_title, ep.title AS episode_title,"
+                "       j.video_path AS path"
+                "  FROM studio_shots s"
+                "  JOIN studio_scenes sc ON sc.id = s.scene_id"
+                "  LEFT JOIN studio_episodes ep ON ep.id = sc.episode_id"
+                "  JOIN studio_takes t ON t.id = s.selected_take_id"
+                "  LEFT JOIN jobs j ON j.id = t.job_id"
+                " WHERE s.project_id = ? AND sc.episode_id = ?"
+                " ORDER BY sc.sort_order, sc.created_at, sc.id,"
+                "          s.sort_order, s.created_at, s.id",
+                (detail.project_id, detail.episode_id),
+            ) as cur:
+                rows = await cur.fetchall()
+            for row in rows:
+                if str(row["shot_id"]) in covered or not row["path"]:
+                    continue
+                resolved = rebase_stored_path(row["path"])
+                if not resolved.is_file():
+                    continue
+                duration_ms, _ = await probe_cached(resolved)
+                added.append(
+                    TimelineSyncAdded(
+                        shot_id=str(row["shot_id"]),
+                        take_id=str(row["take_id"]),
+                        label=_shot_label(row),
+                        duration_ms=duration_ms or FALLBACK_CLIP_MS,
+                    )
+                )
+
+        retaken: list[TimelineSyncRetaken] = []
+        removed: list[TimelineSyncRemoved] = []
+        for clip in take_clips:
+            take_id = str(clip.source_id)
+            state = states.get(take_id)
+            if state is None or not state.get("shot_exists"):
+                removed.append(
+                    TimelineSyncRemoved(
+                        clip_id=clip.id,
+                        label=clip.label,
+                        reason="元のカットが見つかりません",
+                    )
+                )
+                continue
+            selected = state.get("selected_take_id")
+            if not selected:
+                removed.append(
+                    TimelineSyncRemoved(
+                        clip_id=clip.id,
+                        label=clip.label,
+                        reason="カットの採用テイクが外れています",
+                    )
+                )
+                continue
+            if str(selected) == take_id:
+                continue
+            duration_ms = await _take_duration(conn, str(selected))
+            retaken.append(
+                TimelineSyncRetaken(
+                    clip_id=clip.id,
+                    shot_id=str(state["shot_id"]),
+                    old_take_id=take_id,
+                    new_take_id=str(selected),
+                    label=_shot_label(state),
+                    duration_ms=duration_ms,
+                )
+            )
+
+    return TimelineSyncPreview(added=added, retaken=retaken, removed=removed)
+
+
+def _shot_label(row: Any) -> str:
+    """「第 1 話 / 場 1 / #2 カット名」（差分の見出し）。"""
+    parts = [
+        part
+        for part in (row["episode_title"], row["scene_title"])
+        if part
+    ]
+    if row["shot_order"] is not None:
+        parts.append(f"#{int(row['shot_order']) + 1} {row['shot_title'] or ''}".strip())
+    return " / ".join(parts)
+
+
+async def _take_duration(
+    conn: aiosqlite.Connection, take_id: str
+) -> int | None:
+    """Take の動画の長さ（動画が無ければ None）。"""
+    async with conn.execute(
+        "SELECT j.video_path AS path FROM studio_takes t"
+        "  LEFT JOIN jobs j ON j.id = t.job_id WHERE t.id = ?",
+        (take_id,),
+    ) as cur:
+        row = await cur.fetchone()
+    if row is None or not row["path"]:
+        return None
+    resolved = rebase_stored_path(row["path"])
+    if not resolved.is_file():
+        return None
+    duration_ms, _ = await probe_cached(resolved)
+    return duration_ms
+
+
+async def apply_sync(
+    timeline_id: str, request: TimelineSyncRequest
+) -> StudioTimelineDetail:
+    """:func:`sync_preview` の項目のうち、選ばれたものだけ反映する。
+
+    映像トラックは反映のあとで詰め直す（:func:`relayout`）。他のトラック
+    （BGM・テロップ）は動かさない: 音は尺に合わせて置いてあるので、勝手に
+    ずらすと合っていたものが外れるため。
+    """
+    preview = await sync_preview(timeline_id)
+    detail = await timeline_detail(timeline_id)
+    assert detail is not None
+    video = _video_track(detail)
+
+    retakes = {
+        item.clip_id: item
+        for item in preview.retaken
+        if item.clip_id in set(request.retake_clip_ids)
+    }
+    drops = {
+        item.clip_id
+        for item in preview.removed
+        if item.clip_id in set(request.remove_clip_ids)
+    }
+    additions = [
+        item for item in preview.added if item.shot_id in set(request.add_shot_ids)
+    ]
+
+    async with get_db() as conn:
+        timeline = await _fetch_timeline(conn, timeline_id)
+        if timeline is None:
+            raise TimelineNotFound("timeline not found")
+
+        kept: list[TimelineClipInput] = []
+        for clip in sorted(video.clips, key=lambda item: item.start_ms):
+            if clip.id in drops:
+                continue
+            current = to_clip_input(clip)
+            retake = retakes.get(clip.id)
+            if retake is not None:
+                # 新しいテイクは尺が違うかもしれないので、切り出しを丸める。
+                limit = retake.duration_ms or current.out_ms
+                current.source_id = retake.new_take_id
+                current.in_ms = max(0, min(current.in_ms, max(0, limit - MIN_CLIP_MS)))
+                current.out_ms = max(current.in_ms + MIN_CLIP_MS, min(current.out_ms, limit))
+                current.speed = 1.0
+                current.duration_ms = current.out_ms - current.in_ms
+            kept.append(current)
+
+        for item in additions:
+            kept.append(
+                TimelineClipInput(
+                    track_id=video.id,
+                    start_ms=0,  # relayout が決める
+                    duration_ms=item.duration_ms or FALLBACK_CLIP_MS,
+                    source_kind="take",
+                    source_id=item.take_id,
+                    in_ms=0,
+                    out_ms=item.duration_ms or FALLBACK_CLIP_MS,
+                )
+            )
+
+        others = [
+            to_clip_input(clip)
+            for track in detail.tracks
+            for clip in track.clips
+            if track.id != video.id
+        ]
+        await _write_clips(
+            conn, timeline_id, timeline.project_id, [*relayout(kept), *others]
+        )
+        await conn.commit()
+
+    fresh = await timeline_detail(timeline_id)
+    assert fresh is not None
+    return fresh
+
+
+# --------------------------------------------------------------------------
+# メディア欠落のリカバリ
+# --------------------------------------------------------------------------
+
+async def missing_report(timeline_id: str) -> TimelineMissingReport:
+    """実ファイルが見つからないクリップと、その差し替え候補。
+
+    テイクのクリップは**同じカットの別テイク**（動画が実在するもの）を新しい順に
+    並べる。それ以外（ライブラリ・ジョブ・素材）は差し替え先を機械的に決められ
+    ないので、候補は空で返す（画面では削除だけができる）。
+    """
+    detail = await timeline_detail(timeline_id)
+    if detail is None:
+        raise TimelineNotFound("timeline not found")
+    broken = [
+        clip for track in detail.tracks for clip in track.clips if clip.missing
+    ]
+    if not broken:
+        return TimelineMissingReport()
+
+    take_ids = sorted(
+        {
+            str(clip.source_id)
+            for clip in broken
+            if clip.source_kind == "take" and clip.source_id
+        }
+    )
+    alternatives: dict[str, list[TimelineMissingCandidate]] = {}
+    async with get_db() as conn:
+        states = await _shot_state(conn, take_ids)
+        shot_ids = sorted(
+            {
+                str(state["shot_id"])
+                for state in states.values()
+                if state.get("shot_exists")
+            }
+        )
+        rows: list[Any] = []
+        if shot_ids:
+            placeholders = ", ".join("?" * len(shot_ids))
+            async with conn.execute(
+                "SELECT t.id AS take_id, t.shot_id AS shot_id, t.status AS status,"
+                "       t.created_at AS created_at, j.video_path AS path"
+                "  FROM studio_takes t"
+                "  LEFT JOIN jobs j ON j.id = t.job_id"
+                f" WHERE t.shot_id IN ({placeholders})"
+                " ORDER BY t.created_at DESC, t.id DESC",
+                tuple(shot_ids),
+            ) as cur:
+                rows = list(await cur.fetchall())
+
+    by_shot: dict[str, list[TimelineMissingCandidate]] = {}
+    for row in rows:
+        if not row["path"]:
+            continue
+        resolved = rebase_stored_path(row["path"])
+        if not resolved.is_file():
+            continue
+        duration_ms, _ = await probe_cached(resolved)
+        by_shot.setdefault(str(row["shot_id"]), []).append(
+            TimelineMissingCandidate(
+                take_id=str(row["take_id"]),
+                status=str(row["status"] or ""),
+                created_at=str(row["created_at"] or ""),
+                duration_ms=duration_ms,
+            )
+        )
+    for take_id, state in states.items():
+        alternatives[take_id] = [
+            candidate
+            for candidate in by_shot.get(str(state["shot_id"]), [])
+            if candidate.take_id != take_id
+        ]
+
+    return TimelineMissingReport(
+        clips=[
+            TimelineMissingClip(
+                clip_id=clip.id,
+                label=clip.label,
+                source_kind=clip.source_kind,
+                source_id=clip.source_id,
+                candidates=alternatives.get(str(clip.source_id or ""), []),
+            )
+            for clip in broken
+        ]
+    )
+
+
+async def resolve_missing(
+    timeline_id: str, fix: TimelineMissingFix
+) -> StudioTimelineDetail:
+    """欠落クリップを別テイクへ差し替える / まとめて消す。
+
+    映像トラックは消したあとに詰め直す（:func:`relayout`）。音声・字幕は置き場所を
+    保つ（消えた穴はそのまま空きになる）。
+    """
+    detail = await timeline_detail(timeline_id)
+    if detail is None:
+        raise TimelineNotFound("timeline not found")
+    video = _video_track(detail)
+    broken_ids = {
+        clip.id for track in detail.tracks for clip in track.clips if clip.missing
+    }
+    drops = set(fix.drop_clip_ids) | (broken_ids if fix.drop_all else set())
+
+    async with get_db() as conn:
+        timeline = await _fetch_timeline(conn, timeline_id)
+        assert timeline is not None
+        durations: dict[str, int | None] = {}
+        for take_id in set(fix.replace.values()):
+            durations[take_id] = await _take_duration(conn, take_id)
+
+        kept_video: list[TimelineClipInput] = []
+        for clip in sorted(video.clips, key=lambda item: item.start_ms):
+            if clip.id in drops:
+                continue
+            current = to_clip_input(clip)
+            take_id = fix.replace.get(clip.id)
+            if take_id:
+                limit = durations.get(take_id)
+                if limit is None:
+                    raise TimelineError(
+                        f"差し替え先のテイクの動画が見つかりません: {take_id}"
+                    )
+                current.source_kind = "take"
+                current.source_id = take_id
+                current.in_ms = 0
+                current.out_ms = limit
+                current.speed = 1.0
+                current.duration_ms = limit
+            kept_video.append(current)
+
+        others = [
+            to_clip_input(clip)
+            for track in detail.tracks
+            for clip in track.clips
+            if track.id != video.id and clip.id not in drops
+        ]
+        await _write_clips(
+            conn, timeline_id, timeline.project_id, [*relayout(kept_video), *others]
+        )
+        await conn.commit()
+
+    fresh = await timeline_detail(timeline_id)
+    assert fresh is not None
+    return fresh
