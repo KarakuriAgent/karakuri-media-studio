@@ -12,6 +12,8 @@ import {
   assetKindFromFile,
   assetNameFromFile,
   buildShotTree,
+  countShots,
+  filterShotTree,
   firstShotId,
   formatProjectSettingsSummary,
   isStale,
@@ -21,6 +23,8 @@ import {
   renderingJobIds,
   sceneOptions,
   selectedTakeOf,
+  shotMatches,
+  shotsInSameScene,
   renderFormFromShot,
   renderRequestFromForm,
   shotFormFromShot,
@@ -130,17 +134,61 @@ function asset(name: string, overrides: Partial<StudioAsset> = {}): StudioAsset 
   }
 }
 
-describe('moveShot', () => {
-  const shots = [shot('a'), shot('b'), shot('c')]
+describe('shotsInSameScene', () => {
+  const shots = [
+    shot('a', { scene_id: 'sc1' }),
+    shot('b', { scene_id: null }),
+    shot('c', { scene_id: 'sc1' }),
+    shot('d', { scene_id: 'sc2' }),
+    shot('e', { scene_id: null }),
+  ]
 
-  it('入れ替えた並びを返す', () => {
+  it('同じ場の Shot だけをサーバーの並びのまま返す', () => {
+    expect(shotsInSameScene(shots, 'c').map((item) => item.id)).toEqual(['a', 'c'])
+  })
+
+  it('未分類どうしも 1 つのグループ', () => {
+    expect(shotsInSameScene(shots, 'b').map((item) => item.id)).toEqual(['b', 'e'])
+  })
+
+  it('居ない id は空', () => {
+    expect(shotsInSameScene(shots, 'zzz')).toEqual([])
+  })
+})
+
+describe('moveShot', () => {
+  // 場をまたいで並んでいる（サーバーは 話 -> 場 -> カットの順で返す）
+  const shots = [
+    shot('a', { scene_id: 'sc1' }),
+    shot('b', { scene_id: 'sc1' }),
+    shot('c', { scene_id: 'sc1' }),
+    shot('d', { scene_id: 'sc2' }),
+    shot('e', { scene_id: 'sc2' }),
+  ]
+
+  it('その場の Shot 全件だけを入れ替えて返す（作品全件は送らない）', () => {
     expect(moveShot(shots, 'b', -1)).toEqual(['b', 'a', 'c'])
     expect(moveShot(shots, 'b', 1)).toEqual(['a', 'c', 'b'])
   })
 
-  it('端では null（動かさない）', () => {
+  it('別の場は巻き込まない', () => {
+    expect(moveShot(shots, 'e', -1)).toEqual(['e', 'd'])
+  })
+
+  it('場の端では null（動かさない。場をまたぐ移動は scene_id の PATCH）', () => {
     expect(moveShot(shots, 'a', -1)).toBeNull()
     expect(moveShot(shots, 'c', 1)).toBeNull()
+    // c は作品全体では末尾ではないが、sc1 の中では末尾
+    expect(moveShot(shots, 'd', -1)).toBeNull()
+  })
+
+  it('未分類のグループも並べ替えられる', () => {
+    const mixed = [
+      shot('a', { scene_id: 'sc1' }),
+      shot('u1', { scene_id: null }),
+      shot('u2', { scene_id: null }),
+    ]
+    expect(moveShot(mixed, 'u2', -1)).toEqual(['u2', 'u1'])
   })
 
   it('居ない id は null', () => {
@@ -149,7 +197,7 @@ describe('moveShot', () => {
 
   it('元の配列は書き換えない', () => {
     moveShot(shots, 'a', 1)
-    expect(shots.map((item) => item.id)).toEqual(['a', 'b', 'c'])
+    expect(shots.map((item) => item.id)).toEqual(['a', 'b', 'c', 'd', 'e'])
   })
 })
 
@@ -201,10 +249,12 @@ describe('buildShotTree', () => {
     expect(tree().unassigned.map((node) => node.shot.id)).toEqual(['s2', 's5'])
   })
 
-  it('通し番号はプロジェクト全体の並び順のまま', () => {
+  it('番号は場ごとに 0 から振り直す（作品の通し番号ではない）', () => {
     const built = tree()
-    expect(built.episodes[0].scenes[0].shots.map((node) => node.index)).toEqual([0, 3])
-    expect(built.unassigned.map((node) => node.index)).toEqual([1, 4])
+    expect(built.episodes[0].scenes[0].shots.map((node) => node.index)).toEqual([0, 1])
+    expect(built.episodes[1].scenes[0].shots.map((node) => node.index)).toEqual([0])
+    // 未分類も 1 つのグループとして 0 から数える
+    expect(built.unassigned.map((node) => node.index)).toEqual([0, 1])
   })
 
   it('配下の Shot 数を話ごとに数える', () => {
@@ -247,6 +297,105 @@ describe('firstShotId', () => {
 
   it('カットが 1 つも無ければ null', () => {
     expect(firstShotId(buildShotTree({ episodes: [], scenes: [], shots: [] }))).toBeNull()
+  })
+})
+
+describe('countShots', () => {
+  it('話の下と未分類を足して数える', () => {
+    const built = buildShotTree({
+      episodes: [episode('e1')],
+      scenes: [scene('sc1', 'e1')],
+      shots: [
+        shot('s1', { scene_id: 'sc1' }),
+        shot('s2', { scene_id: 'sc1' }),
+        shot('s3', { scene_id: null }),
+      ],
+    })
+    expect(countShots(built)).toBe(3)
+    expect(countShots(buildShotTree({ episodes: [], scenes: [], shots: [] }))).toBe(0)
+  })
+})
+
+describe('shotMatches', () => {
+  const target = shot('s1', {
+    title: '路地の追跡',
+    dialogue: '待って',
+    action: 'Aki runs',
+  })
+
+  it('タイトル・台詞・アクションのどれかに当たれば真', () => {
+    expect(shotMatches(target, '路地')).toBe(true)
+    expect(shotMatches(target, '待って')).toBe(true)
+    expect(shotMatches(target, 'runs')).toBe(true)
+  })
+
+  it('大文字小文字は無視し、前後の空白も落とす', () => {
+    expect(shotMatches(target, '  AKI ')).toBe(true)
+  })
+
+  it('当たらない語は偽、空の語は全部に当たる', () => {
+    expect(shotMatches(target, '屋上')).toBe(false)
+    expect(shotMatches(target, '')).toBe(true)
+    expect(shotMatches(target, '   ')).toBe(true)
+  })
+})
+
+describe('filterShotTree', () => {
+  const tree = () =>
+    buildShotTree({
+      episodes: [episode('e1', { title: '第一夜' }), episode('e2', { title: '第二夜' })],
+      scenes: [scene('sc1', 'e1'), scene('sc2', 'e1'), scene('sc3', 'e2')],
+      shots: [
+        shot('s1', { scene_id: 'sc1', title: '路地' }),
+        shot('s2', { scene_id: 'sc1', title: '屋上' }),
+        shot('s3', { scene_id: 'sc2', title: '駅前' }),
+        shot('s4', { scene_id: 'sc3', title: '路地の奥' }),
+        shot('s5', { scene_id: null, title: '路地（未分類）' }),
+      ],
+    })
+
+  it('空文字ならそのまま返す', () => {
+    const built = tree()
+    expect(filterShotTree(built, '')).toBe(built)
+    expect(filterShotTree(built, '   ')).toBe(built)
+  })
+
+  it('当たったカットだけ残し、その話と場の見出しは残る', () => {
+    const found = filterShotTree(tree(), '路地')
+    expect(found.episodes.map((node) => node.episode.id)).toEqual(['e1', 'e2'])
+    expect(found.episodes[0].scenes.map((node) => node.scene.id)).toEqual(['sc1'])
+    expect(found.episodes[0].scenes[0].shots.map((node) => node.shot.id)).toEqual([
+      's1',
+    ])
+    expect(found.episodes[1].scenes[0].shots.map((node) => node.shot.id)).toEqual([
+      's4',
+    ])
+    expect(found.unassigned.map((node) => node.shot.id)).toEqual(['s5'])
+  })
+
+  it('1 件も当たらない場と話は落とす', () => {
+    const found = filterShotTree(tree(), '駅前')
+    expect(found.episodes.map((node) => node.episode.id)).toEqual(['e1'])
+    expect(found.episodes[0].scenes.map((node) => node.scene.id)).toEqual(['sc2'])
+    expect(found.unassigned).toEqual([])
+  })
+
+  it('残ったカットの番号は場の中の位置のまま（絞り込みで振り直さない）', () => {
+    const found = filterShotTree(tree(), '屋上')
+    expect(found.episodes[0].scenes[0].shots.map((node) => node.index)).toEqual([1])
+  })
+
+  it('話ごとのカット数は絞り込んだあとの数', () => {
+    expect(filterShotTree(tree(), '路地').episodes.map((node) => node.shotCount)).toEqual(
+      [1, 1],
+    )
+  })
+
+  it('どこにも当たらなければ空のツリー', () => {
+    const found = filterShotTree(tree(), 'まったく無い語')
+    expect(found.episodes).toEqual([])
+    expect(found.unassigned).toEqual([])
+    expect(countShots(found)).toBe(0)
   })
 })
 

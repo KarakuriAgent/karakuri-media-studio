@@ -70,6 +70,8 @@ const mocked = api as unknown as Record<string, ReturnType<typeof vi.fn>>
 // 概要タブは開いたときに接続先のケーパビリティを聞きに行く（ラテント連続性の
 // トグルの出し分け）。既定は「使える」にして、他のテストの邪魔をしない。
 beforeEach(() => {
+  // 話の絞り込みは作品ごとに localStorage に残るので、テスト間で持ち越さない。
+  window.localStorage.clear()
   mocked.getStudioCapabilities.mockResolvedValue({
     latent_continuity: true,
     error: '',
@@ -203,6 +205,11 @@ async function openTab(name: string) {
 /** 左レール（Shot リスト）の中だけを探す。タブや脚本ビューと名前がぶつかるため。 */
 function rail() {
   return within(screen.getByRole('complementary'))
+}
+
+/** 脚本タブの左カラム（話・場・番号が左レールと同じ名前で並ぶため）。 */
+function script() {
+  return within(screen.getByRole('region', { name: '脚本ツリー' }))
 }
 
 function summary(current: StudioProjectDetail): StudioProjectSummary {
@@ -1633,5 +1640,351 @@ describe('StudioView の狭い画面ヘッダー', () => {
     expect(select.value).toBe('runpod')
     fireEvent.change(select, { target: { value: 'local' } })
     expect(onComfyTarget).toHaveBeenCalledWith('local')
+  })
+})
+
+/** 場を 2 つ持ち、それぞれに 2 カット入っている作品（場内の並べ替え用）。 */
+function twoScenes() {
+  return detail({
+    episodes: [episode('e1', '第一夜'), episode('e2', '第二夜')],
+    scenes: [scene('sc1', 'e1', '路地'), scene('sc2', 'e1', '屋上')],
+    // サーバーは 話 -> 場 -> カットの階層順で返す
+    shots: [
+      shot('カットA', { scene_id: 'sc1' }),
+      shot('カットB', { scene_id: 'sc1' }),
+      shot('カットC', { scene_id: 'sc2' }),
+      shot('カットD', { scene_id: 'sc2' }),
+    ],
+    takes: [],
+  })
+}
+
+describe('StudioView: 場の中でのカットの並べ替え', () => {
+  it('reorder にはその場の Shot 全件だけを送る', async () => {
+    await openProject(twoScenes())
+    mocked.reorderStudioShots.mockResolvedValue([])
+    fireEvent.click(rail().getByRole('button', { name: 'カットCを下へ' }))
+    await waitFor(() =>
+      expect(mocked.reorderStudioShots).toHaveBeenCalledWith('p1', [
+        'カットD',
+        'カットC',
+      ]),
+    )
+  })
+
+  it('端の判定は場の中で行う（作品全体の位置では見ない）', async () => {
+    await openProject(twoScenes())
+    // カットB は作品全体では 2 番目だが、路地の中では末尾
+    expect(
+      rail().getByRole('button', { name: 'カットBを下へ' }).hasAttribute('disabled'),
+    ).toBe(true)
+    // カットC は作品全体では 3 番目だが、屋上の中では先頭
+    expect(
+      rail().getByRole('button', { name: 'カットCを上へ' }).hasAttribute('disabled'),
+    ).toBe(true)
+    expect(
+      rail().getByRole('button', { name: 'カットCを下へ' }).hasAttribute('disabled'),
+    ).toBe(false)
+  })
+})
+
+describe('StudioView: 話の絞り込み', () => {
+  it('話タブを押すと episode_id 付きで取り直す', async () => {
+    await openProject(structured())
+    clickTab('脚本')
+    fireEvent.click(await screen.findByRole('tab', { name: '第二夜' }))
+    await waitFor(() =>
+      expect(mocked.getStudioProject).toHaveBeenLastCalledWith('p1', 'e2'),
+    )
+
+    fireEvent.click(screen.getByRole('tab', { name: 'すべて' }))
+    await waitFor(() =>
+      expect(mocked.getStudioProject).toHaveBeenLastCalledWith('p1', null),
+    )
+  })
+
+  it('選んだ話は作品ごとに覚えていて、開き直すとそこから始まる', async () => {
+    await openProject(structured())
+    clickTab('脚本')
+    fireEvent.click(await screen.findByRole('tab', { name: '第二夜' }))
+    await waitFor(() =>
+      expect(mocked.getStudioProject).toHaveBeenLastCalledWith('p1', 'e2'),
+    )
+
+    cleanup()
+    mocked.getStudioProject.mockClear()
+    await openProject(structured())
+    await waitFor(() =>
+      expect(mocked.getStudioProject).toHaveBeenLastCalledWith('p1', 'e2'),
+    )
+  })
+
+  it('操作のあとの取り直しも選んでいる話を保つ', async () => {
+    await openProject(structured())
+    clickTab('脚本')
+    fireEvent.click(await screen.findByRole('tab', { name: '第一夜' }))
+    await waitFor(() =>
+      expect(mocked.getStudioProject).toHaveBeenLastCalledWith('p1', 'e1'),
+    )
+
+    mocked.updateStudioShot.mockResolvedValue({})
+    mocked.getStudioProject.mockClear()
+    fireEvent.click(await screen.findByRole('button', { name: '保存' }))
+    await waitFor(() =>
+      expect(mocked.getStudioProject).toHaveBeenLastCalledWith('p1', 'e1'),
+    )
+  })
+
+  it('覚えていた話が消えていたら、エラーを出さずに作品まるごとへ戻す', async () => {
+    window.localStorage.setItem('studio-episode-filter:p1', 'gone')
+    const current = structured()
+    mocked.listStudioProjects.mockResolvedValue([summary(current)])
+    mocked.getStudioProject.mockImplementation((_id: string, episodeId: string | null) =>
+      episodeId
+        ? Promise.reject(new ApiError(404, 'episode not found'))
+        : Promise.resolve(current),
+    )
+    render(<StudioView progress={{}} />)
+    fireEvent.click(await screen.findByText(current.name))
+    await screen.findByRole('tab', { name: '概要' })
+    await waitFor(() =>
+      expect(mocked.getStudioProject).toHaveBeenLastCalledWith('p1', null),
+    )
+    expect(screen.queryByText('episode not found')).toBeNull()
+  })
+
+  it('概要と World Bible では話タブを出さない', async () => {
+    await openProject(structured())
+    expect(screen.queryByRole('tab', { name: 'すべて' })).toBeNull()
+    clickTab('World Bible')
+    expect(screen.queryByRole('tab', { name: 'すべて' })).toBeNull()
+    clickTab('制作')
+    expect(screen.getByRole('tab', { name: 'すべて' })).toBeTruthy()
+  })
+
+  it('話を選んでいるあいだは左レールの「未分類」を隠す', async () => {
+    await openProject(structured())
+    clickTab('脚本')
+    expect(rail().getByRole('heading', { name: '未分類' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('tab', { name: '第一夜' }))
+    await waitFor(() =>
+      expect(mocked.getStudioProject).toHaveBeenLastCalledWith('p1', 'e1'),
+    )
+    expect(rail().queryByRole('heading', { name: '未分類' })).toBeNull()
+    // 選んでいない話（第二夜）もレールから消える
+    expect(rail().queryByRole('heading', { name: '第二夜' })).toBeNull()
+  })
+
+  it('話を選んでいるあいだは、未分類に入る「カットを追加」を押させない', async () => {
+    await openProject(structured())
+    clickTab('脚本')
+    expect(
+      rail().getByRole('button', { name: 'カットを追加' }).hasAttribute('disabled'),
+    ).toBe(false)
+    fireEvent.click(screen.getByRole('tab', { name: '第一夜' }))
+    await waitFor(() =>
+      expect(mocked.getStudioProject).toHaveBeenLastCalledWith('p1', 'e1'),
+    )
+    expect(
+      rail().getByRole('button', { name: 'カットを追加' }).hasAttribute('disabled'),
+    ).toBe(true)
+    // 場の「＋」からは足せる
+    expect(
+      rail().getByRole('button', { name: '路地にカットを追加' }).hasAttribute('disabled'),
+    ).toBe(false)
+  })
+
+  it('話が 1 つも無ければ話タブは出さない', async () => {
+    await openProject()
+    clickTab('脚本')
+    expect(screen.queryByRole('tab', { name: 'すべて' })).toBeNull()
+  })
+})
+
+describe('StudioView: 脚本タブのツリーと検索', () => {
+  it('話と場の見出しを付けて、カット番号は場の中で振る', async () => {
+    await openProject(twoScenes())
+    clickTab('脚本')
+    // 路地（カットA・カットB）と 屋上（カットC・カットD）が、それぞれ #1 #2
+    expect(script().getAllByText('#1').length).toBe(2)
+    expect(script().getAllByText('#2').length).toBe(2)
+    expect(script().getByRole('heading', { name: '第一夜' })).toBeTruthy()
+    expect(script().getByRole('heading', { name: '路地' })).toBeTruthy()
+    expect(script().getByRole('heading', { name: '屋上' })).toBeTruthy()
+  })
+
+  it('話の見出しを押すと畳める', async () => {
+    await openProject(twoScenes())
+    clickTab('脚本')
+    fireEvent.click(script().getByRole('button', { name: /第一夜/, expanded: true }))
+    expect(script().queryByText('#1')).toBeNull()
+    fireEvent.click(script().getByRole('button', { name: /第一夜/, expanded: false }))
+    expect(script().getAllByText('#1').length).toBe(2)
+  })
+
+  it('検索で当たったカットだけ残し、空にすると戻る', async () => {
+    const current = twoScenes()
+    current.shots[0] = { ...current.shots[0], dialogue: '雨が降ってきた' }
+    await openProject(current)
+    clickTab('脚本')
+    const box = screen.getByLabelText('カットを検索')
+
+    fireEvent.change(box, { target: { value: '雨が降って' } })
+    expect(script().getByText('1 / 4 カット')).toBeTruthy()
+    expect(script().getAllByText('#1').length).toBe(1)
+    // 当たった場（路地）の見出しは残り、当たらなかった場（屋上）は落ちる
+    expect(script().getByRole('heading', { name: '路地' })).toBeTruthy()
+    expect(script().queryByRole('heading', { name: '屋上' })).toBeNull()
+
+    fireEvent.change(box, { target: { value: 'どこにも無い語' } })
+    expect(
+      script().getByText('「どこにも無い語」に当たるカットはありません'),
+    ).toBeTruthy()
+
+    fireEvent.change(box, { target: { value: '' } })
+    expect(script().getAllByText('#1').length).toBe(2)
+  })
+})
+
+describe('StudioView: 制作タブのタイムライン', () => {
+  /** 下段のタイムラインの中だけを探す（左レールと名前がぶつかるため）。 */
+  const timeline = () =>
+    within(screen.getByRole('group', { name: 'タイムライン' }))
+
+  it('「すべて」では話の区切りを差し、番号は場の中で振る', async () => {
+    await openProject(structured())
+    clickTab('制作')
+    expect(timeline().getByText('第一夜')).toBeTruthy()
+    expect(timeline().getByText('第二夜')).toBeTruthy()
+    // 場に属さないカットは末尾に「未分類」として固まる
+    expect(timeline().getByText('未分類')).toBeTruthy()
+    // 場ごとに 1 から数える（第一夜 / 路地 の 1 本目と 第二夜 / 駅前 の 1 本目）
+    expect(timeline().getAllByText('#1 カット1').length).toBe(1)
+    expect(timeline().getAllByText('#1 カット3').length).toBe(1)
+  })
+
+  it('話を選んでいるあいだは区切りを出さない', async () => {
+    await openProject(structured())
+    clickTab('制作')
+    fireEvent.click(screen.getByRole('tab', { name: '第一夜' }))
+    await waitFor(() =>
+      expect(mocked.getStudioProject).toHaveBeenLastCalledWith('p1', 'e1'),
+    )
+    expect(timeline().queryByText('第一夜')).toBeNull()
+    expect(timeline().queryByText('未分類')).toBeNull()
+  })
+})
+
+describe('StudioView: 追い越した取り直しの後始末', () => {
+  /** 好きな順番で解決できる `getStudioProject` のモック。 */
+  function deferred() {
+    const waiting = new Map<string, (value: StudioProjectDetail) => void>()
+    const answers = new Map<string, StudioProjectDetail>()
+    mocked.getStudioProject.mockImplementation(
+      (id: string, episodeId: string | null = null) =>
+        new Promise<StudioProjectDetail>((resolve) =>
+          waiting.set(`${id}/${episodeId ?? 'all'}`, resolve),
+        ),
+    )
+    return {
+      /** 応答を用意する（`resolve` で好きなタイミングに返せる）。 */
+      answer(key: string, value: StudioProjectDetail) {
+        answers.set(key, value)
+      },
+      /** 用意した応答を返す（キューに積まれるまで待つ）。 */
+      async resolve(key: string) {
+        await waitFor(() => expect(waiting.has(key)).toBe(true))
+        waiting.get(key)!(answers.get(key)!)
+      },
+    }
+  }
+
+  it('話を続けて押しても、遅れて届いた古い話の detail は捨てる', async () => {
+    const all = structured()
+    const only = (episodeId: string, title: string, sceneId: string) =>
+      detail({
+        episodes: all.episodes,
+        scenes: all.scenes.filter((item) => item.episode_id === episodeId),
+        shots: [shot(title, { scene_id: sceneId })],
+        takes: [],
+      })
+
+    const fetches = deferred()
+    fetches.answer('p1/all', all)
+    fetches.answer('p1/e1', only('e1', '第一夜のカット', 'sc1'))
+    fetches.answer('p1/e2', only('e2', '第二夜のカット', 'sc3'))
+
+    mocked.listStudioProjects.mockResolvedValue([summary(all)])
+    render(<StudioView progress={{}} />)
+    fireEvent.click(await screen.findByText(all.name))
+    await fetches.resolve('p1/all')
+    await screen.findByRole('tab', { name: '概要' })
+
+    clickTab('脚本')
+    // 連打（どちらの取得もまだ返っていない）
+    fireEvent.click(screen.getByRole('tab', { name: '第一夜' }))
+    fireEvent.click(screen.getByRole('tab', { name: '第二夜' }))
+
+    // 後から押した第二夜が先に返り、第一夜が遅れて後着する
+    await fetches.resolve('p1/e2')
+    await waitFor(() =>
+      expect(rail().getByRole('button', { name: '第二夜のカット' })).toBeTruthy(),
+    )
+    await fetches.resolve('p1/e1')
+
+    // 最後に届いたのは第一夜だが、画面は選んでいる第二夜のまま
+    await waitFor(() =>
+      expect(
+        screen.getByRole('tab', { name: '第二夜' }).getAttribute('aria-selected'),
+      ).toBe('true'),
+    )
+    expect(rail().queryByRole('button', { name: '第一夜のカット' })).toBeNull()
+    expect(rail().getByRole('button', { name: '第二夜のカット' })).toBeTruthy()
+  })
+
+  it('作品を続けて開いても、遅れて届いた前の作品の detail は捨てる', async () => {
+    const first = detail({ id: 'p1', name: '作品A' })
+    const second = detail({ id: 'p2', name: '作品B' })
+
+    const fetches = deferred()
+    fetches.answer('p1/all', first)
+    fetches.answer('p2/all', second)
+
+    mocked.listStudioProjects.mockResolvedValue([summary(first), summary(second)])
+    render(<StudioView progress={{}} />)
+    // どちらもまだ返らないので一覧に留まったまま、続けて別の作品を開ける
+    fireEvent.click(await screen.findByText('作品A'))
+    fireEvent.click(await screen.findByText('作品B'))
+
+    await fetches.resolve('p2/all')
+    await screen.findByRole('tab', { name: '概要' })
+    await fetches.resolve('p1/all')
+
+    await waitFor(() => expect(screen.getByDisplayValue('作品B')).toBeTruthy())
+    expect(screen.queryByDisplayValue('作品A')).toBeNull()
+  })
+
+  it('一覧へ戻ったあとに届いた detail では開き直さない', async () => {
+    const current = structured()
+    const fetches = deferred()
+    fetches.answer('p1/all', current)
+    fetches.answer('p1/e1', current)
+
+    mocked.listStudioProjects.mockResolvedValue([summary(current)])
+    render(<StudioView progress={{}} />)
+    fireEvent.click(await screen.findByText(current.name))
+    await fetches.resolve('p1/all')
+    await screen.findByRole('tab', { name: '概要' })
+
+    // 第一夜の取得が飛んだまま一覧へ戻る
+    clickTab('脚本')
+    fireEvent.click(screen.getByRole('tab', { name: '第一夜' }))
+    fireEvent.click(screen.getByRole('button', { name: 'プロジェクト一覧' }))
+    await waitFor(() => expect(screen.queryByRole('tab', { name: '概要' })).toBeNull())
+
+    // 戻ったあとに届いても、閉じたはずの作品を開き直さない
+    await fetches.resolve('p1/e1')
+    await waitFor(() => expect(mocked.getStudioProject).toHaveBeenCalled())
+    expect(screen.queryByRole('tab', { name: '概要' })).toBeNull()
   })
 })

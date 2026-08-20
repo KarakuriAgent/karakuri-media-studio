@@ -188,6 +188,10 @@ CREATE TABLE IF NOT EXISTS studio_shots (
   id                   TEXT PRIMARY KEY,
   project_id           TEXT NOT NULL REFERENCES studio_projects(id) ON DELETE CASCADE,
   scene_id             TEXT,                       -- 所属する場（NULL = 未分類。FK は張らず、場を消したら NULL に戻す）
+  -- **場の中での**並び順（未分類なら「作品の未分類グループ」の中での並び順）。
+  -- 表示順は 話.sort_order -> 場.sort_order -> この値 の階層で決まり、未分類は
+  -- 作品の末尾にまとまる（app/studio.py の _fetch_shots）。作品全体で 1 本の
+  -- 連番だった頃の DB は起動時に場ごとの 0..n へ振り直す（_renumber_shots）。
   sort_order           INTEGER NOT NULL DEFAULT 0,
   title                TEXT NOT NULL DEFAULT '',
   purpose              TEXT NOT NULL DEFAULT '',   -- 物語上の目的
@@ -307,8 +311,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_studio_assets_name
   ON studio_assets(project_id, name);
 CREATE INDEX IF NOT EXISTS idx_studio_asset_files_asset
   ON studio_asset_files(asset_id, sort_order);
+-- 並び順は場の中のものなので、引き当ても (作品, 場) 単位で引く。
 CREATE INDEX IF NOT EXISTS idx_studio_shots_project
-  ON studio_shots(project_id, sort_order);
+  ON studio_shots(project_id, scene_id, sort_order);
 CREATE INDEX IF NOT EXISTS idx_studio_takes_shot
   ON studio_takes(shot_id, created_at);
 CREATE INDEX IF NOT EXISTS idx_studio_episodes_project
@@ -553,6 +558,55 @@ async def _migrate(conn: aiosqlite.Connection) -> None:
         await _backfill_take_notifications(conn)
 
     await _backfill_canvas_sessions(conn)
+    await _renumber_shots(conn)
+
+
+async def _renumber_shots(conn: aiosqlite.Connection) -> None:
+    """``studio_shots.sort_order`` を「場の中の 0..n」へ振り直す。
+
+    並び順は作品全体で 1 本の連番だったので、話 -> 場 -> カットの階層順に
+    並べるために意味を「場の中での順番」（未分類なら作品の未分類グループの
+    中での順番）へ変えた。既存の DB はその連番を持ったままなので、**今見えて
+    いる順序をそのまま保って**場ごとに 0 から振り直す。
+
+    列は増えないので :data:`MIGRATIONS` では拾えない。代わりに毎回走らせる:
+    振り直したあとの値をもう一度この規則で並べても同じ値になる（冪等）ので、
+    2 回目以降は書き込みが 1 行も出ない。
+    """
+    async with conn.execute(
+        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'studio_shots'"
+    ) as cur:
+        if await cur.fetchone() is None:
+            return
+    # 旧 (project_id, sort_order) のインデックスは場を含まないので張り替える
+    # （CREATE INDEX IF NOT EXISTS は同名の既存インデックスを作り直さない）。
+    async with conn.execute(
+        "SELECT sql FROM sqlite_master"
+        " WHERE type = 'index' AND name = 'idx_studio_shots_project'"
+    ) as cur:
+        row = await cur.fetchone()
+    if row is not None and "scene_id" not in (row["sql"] or ""):
+        await conn.execute("DROP INDEX idx_studio_shots_project")
+        await conn.execute(
+            "CREATE INDEX idx_studio_shots_project"
+            " ON studio_shots(project_id, scene_id, sort_order)"
+        )
+
+    async with conn.execute(
+        "SELECT id, project_id, scene_id, sort_order FROM studio_shots"
+        " ORDER BY project_id, sort_order, created_at, id"
+    ) as cur:
+        rows = await cur.fetchall()
+    counters: dict[tuple[str, str | None], int] = {}
+    for row in rows:
+        key = (row["project_id"], row["scene_id"])
+        order = counters.get(key, 0)
+        counters[key] = order + 1
+        if row["sort_order"] != order:
+            await conn.execute(
+                "UPDATE studio_shots SET sort_order = ? WHERE id = ?",
+                (order, row["id"]),
+            )
 
 
 #: :func:`_backfill_take_notifications` が「まだ終わっていない」とみなすジョブ。

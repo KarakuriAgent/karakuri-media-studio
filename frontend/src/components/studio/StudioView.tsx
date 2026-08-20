@@ -21,6 +21,7 @@ import { ResizeHandle, useIsWide, useResizablePanel } from '../ui/resizable-pane
 import { Tabs, TabsList, TabsTrigger } from '../ui/tabs'
 import TargetSelector from '../TargetSelector'
 import CanvasView from '../canvas/CanvasView'
+import EpisodeFilter, { ALL_EPISODES } from './EpisodeFilter'
 import OverviewView from './OverviewView'
 import ProductionView from './ProductionView'
 import ProjectPicker from './ProjectPicker'
@@ -53,6 +54,27 @@ const TABS: { value: StudioTab; label: string }[] = [
   { value: 'world', label: 'World Bible' },
   { value: 'production', label: '制作' },
 ]
+
+/** 話の絞り込みの置き場（作品ごと。次に開いたときも同じ話から始める）。 */
+const EPISODE_FILTER_KEY = 'studio-episode-filter'
+
+function rememberedEpisode(projectId: string): string {
+  try {
+    return window.localStorage.getItem(`${EPISODE_FILTER_KEY}:${projectId}`) ?? ALL_EPISODES
+  } catch {
+    return ALL_EPISODES /* localStorage が使えない環境では毎回「すべて」から */
+  }
+}
+
+function rememberEpisode(projectId: string, episodeId: string): void {
+  try {
+    const key = `${EPISODE_FILTER_KEY}:${projectId}`
+    if (episodeId === ALL_EPISODES) window.localStorage.removeItem(key)
+    else window.localStorage.setItem(key, episodeId)
+  } catch {
+    /* 覚えられなくても表示には困らない */
+  }
+}
 
 /**
  * ドラマスタジオ画面。
@@ -89,6 +111,9 @@ export default function StudioView({
   const [projectId, setProjectId] = useState<string | null>(null)
   const [detail, setDetail] = useState<StudioProjectDetail | null>(null)
   const [tab, setTab] = useState<StudioTab>('overview')
+  // 脚本・制作タブの話の絞り込み（`ALL_EPISODES` = 作品まるごと）。サーバー側で
+  // 絞るので、値が変わったら詳細を取り直す。
+  const [episodeFilter, setEpisodeFilter] = useState<string>(ALL_EPISODES)
   const [mode, setMode] = useState<StudioProjectMode>('studio')
   const [shotId, setShotId] = useState<string | null>(null)
   const [assetId, setAssetId] = useState<string | null>(null)
@@ -126,14 +151,50 @@ export default function StudioView({
     }
   }, [pushError])
 
+  /**
+   * 発行した取り直しの世代。
+   *
+   * 詳細の取得は作品と話ごとに別のリクエストになるので、話タブを続けて押したり
+   * 作品を続けて開いたりすると複数が同時に飛ぶ。到着した順に `setDetail` して
+   * しまうと、遅れて届いた**古い**リクエストの結果が最後に残る（選んでいる話と
+   * 中身が食い違う）ので、投げた時点の世代を控えておいて、返ってきたときに
+   * 世代が進んでいたら捨てる。
+   */
+  const requestSeq = useRef(0)
+
   const reload = useCallback(async () => {
     if (!projectId) return
+    const seq = ++requestSeq.current
     try {
-      setDetail(await api.getStudioProject(projectId))
+      const fresh = await api.getStudioProject(
+        projectId,
+        episodeFilter === ALL_EPISODES ? null : episodeFilter,
+      )
+      if (seq !== requestSeq.current) return
+      setDetail(fresh)
     } catch (cause) {
+      // 追い越された取り直しの失敗は握りつぶす（いま見ている画面の話ではない）。
+      if (seq !== requestSeq.current) return
+      // 覚えていた話が消えていた（404）ときは、エラーを見せずに「すべて」へ
+      // 落とす（この setState でもう一度ここへ来て、作品まるごとを取り直す）。
+      if (cause instanceof ApiError && cause.status === 404 && episodeFilter !== ALL_EPISODES) {
+        setEpisodeFilter(ALL_EPISODES)
+        return
+      }
       pushError(cause)
     }
-  }, [projectId, pushError])
+  }, [projectId, episodeFilter, pushError])
+
+  /** 作品を開く（前に見ていた話から始める）。null で一覧へ戻る。 */
+  const openProject = useCallback((id: string | null) => {
+    setProjectId(id)
+    setEpisodeFilter(id ? rememberedEpisode(id) : ALL_EPISODES)
+  }, [])
+
+  const changeEpisodeFilter = (value: string) => {
+    if (projectId) rememberEpisode(projectId, value)
+    setEpisodeFilter(value)
+  }
 
   useEffect(() => {
     void loadProjects()
@@ -154,6 +215,9 @@ export default function StudioView({
 
   useEffect(() => {
     if (!projectId) {
+      // 一覧へ戻るのも「取り直しの世代を進める」うちに入れる。飛びっぱなしの
+      // リクエストが後から届いて、閉じたはずの作品が開き直るのを防ぐ。
+      requestSeq.current += 1
       setDetail(null)
       return
     }
@@ -190,7 +254,7 @@ export default function StudioView({
   useEffect(() => {
     if (showNsfw) return
     if (!detailRef.current?.nsfw) return
-    setProjectId(null)
+    openProject(null)
     setDetail(null)
     setShotId(null)
     setAssetId(null)
@@ -240,12 +304,21 @@ export default function StudioView({
     return () => window.clearInterval(timer)
   }, [detail, reload])
 
-  // 左レールに出す 話 -> 場 -> Shot のツリー（Shot の通し番号もここで決まる）。
-  const tree = useMemo(
-    () =>
-      buildShotTree(detail ?? { episodes: [], scenes: [], shots: [] }),
-    [detail],
-  )
+  // 左レールに出す 話 -> 場 -> Shot のツリー（場の中のカット番号もここで決まる）。
+  //
+  // 話を選んでいるあいだは場・カット・テイクがサーバー側で絞られている一方、話は
+  // つねに全件返る（タブバーを出すため）ので、ツリーに載せる話はここで絞る。
+  // 未分類のカットは絞り込みの返り値に入らないので、自然と出なくなる。
+  const tree = useMemo(() => {
+    if (!detail) return buildShotTree({ episodes: [], scenes: [], shots: [] })
+    return buildShotTree({
+      ...detail,
+      episodes:
+        episodeFilter === ALL_EPISODES
+          ? detail.episodes
+          : detail.episodes.filter((episode) => episode.id === episodeFilter),
+    })
+  }, [detail, episodeFilter])
 
   // 選択が空 / 消えたカットを指しているなら、1 話目の最初のカットへ寄せる。
   // 制作タブは選択が無いと何も出せず、狭幅では左レールが畳まれていて行き止まり
@@ -272,7 +345,7 @@ export default function StudioView({
       try {
         const created = await api.createStudioProject(payload)
         await loadProjects()
-        setProjectId(created.id)
+        openProject(created.id)
         setTab('overview')
       } catch (cause) {
         pushError(cause)
@@ -289,7 +362,7 @@ export default function StudioView({
       try {
         const created = await api.createStudioDemoProject(code)
         await loadProjects()
-        setProjectId(created.id)
+        openProject(created.id)
         setShotId(null)
         setAssetId(null)
         setTab('overview')
@@ -315,7 +388,7 @@ export default function StudioView({
       setError(null)
       try {
         await api.deleteStudioProject(projectId)
-        setProjectId(null)
+        openProject(null)
         setDetail(null)
         setShotId(null)
         await loadProjects()
@@ -546,7 +619,7 @@ export default function StudioView({
           loading={loadingProjects}
           busy={busy}
           onOpen={(id) => {
-            setProjectId(id)
+            openProject(id)
             setShotId(null)
             setAssetId(null)
             setTab('overview')
@@ -603,7 +676,7 @@ export default function StudioView({
       isWide={isWide}
       mode={mode}
       onModeChange={setMode}
-      onBack={() => setProjectId(null)}
+      onBack={() => openProject(null)}
       comfyTarget={comfyTarget}
       onComfyTarget={onComfyTarget}
       quality={detail.quality}
@@ -669,6 +742,7 @@ export default function StudioView({
             onEditSceneTimeOfDay={editSceneTimeOfDay}
             onMoveScene={moveSceneBy}
             onDeleteScene={deleteScene}
+            episodeFiltered={episodeFilter !== ALL_EPISODES}
           />
         </aside>
 
@@ -691,6 +765,17 @@ export default function StudioView({
             </Tabs>
           </div>
 
+          {/* 話の絞り込みは脚本・制作でだけ効く（概要と World Bible は
+              作品まるごとの面なので出さない）。 */}
+          {(tab === 'script' || tab === 'production') && (
+            <EpisodeFilter
+              episodes={detail.episodes}
+              value={episodeFilter}
+              busy={busy}
+              onChange={changeEpisodeFilter}
+            />
+          )}
+
           <div className="min-h-0 flex-1 lg:overflow-y-auto lg:pr-1">
             {tab === 'overview' && (
               <OverviewView
@@ -704,7 +789,7 @@ export default function StudioView({
             )}
             {tab === 'script' && (
               <ScriptView
-                shots={detail.shots}
+                tree={tree}
                 episodes={detail.episodes}
                 scenes={detail.scenes}
                 aspectRatios={aspectRatios}
@@ -731,7 +816,7 @@ export default function StudioView({
             )}
             {tab === 'production' && (
               <ProductionView
-                shots={detail.shots}
+                tree={tree}
                 assets={detail.assets}
                 allTakes={detail.takes}
                 selectedShot={selectedShot}
@@ -745,6 +830,7 @@ export default function StudioView({
                 aspectRatios={aspectRatios}
                 latentContinuity={detail.latent_continuity}
                 showNsfw={showNsfw}
+                showEpisodeLabels={episodeFilter === ALL_EPISODES}
                 onSelectShot={setShotId}
                 onRender={render}
                 onSelectTake={selectTake}

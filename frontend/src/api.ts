@@ -469,8 +469,18 @@ export const api = {
   /** デモ作品を 1 本まるごと作る（同じ作品コードが既にあれば 409）。 */
   createStudioDemoProject: (code: string) =>
     json<StudioProjectDetail>('POST', '/api/studio/demo', { code }),
-  getStudioProject: (id: string) =>
-    request<StudioProjectDetail>(`/api/studio/projects/${id}`),
+  /**
+   * 画面 1 枚ぶんの詳細。
+   *
+   * `episodeId` を渡すと **場・カット・テイクだけ**がその話のぶんに絞られる
+   * （話と素材はいつも全件返る）。null = 作品まるごと。
+   */
+  getStudioProject: (id: string, episodeId: string | null = null) =>
+    request<StudioProjectDetail>(
+      `/api/studio/projects/${id}${
+        episodeId ? `?episode_id=${encodeURIComponent(episodeId)}` : ''
+      }`,
+    ),
   updateStudioProject: (id: string, patch: StudioProjectUpdate) =>
     json<StudioProject>('PATCH', `/api/studio/projects/${id}`, patch),
   deleteStudioProject: (id: string) =>

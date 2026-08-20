@@ -59,7 +59,7 @@ function IconButton({
 /** レールの Shot 1 件（サムネイル・状態・上下の並べ替え）。 */
 function ShotItem({
   node,
-  total,
+  siblings,
   takes,
   selectedId,
   onSelect,
@@ -67,7 +67,8 @@ function ShotItem({
   busy,
 }: {
   node: ShotNode
-  total: number
+  /** 同じ場に並んでいるカットの数（上下の端の判定に使う）。 */
+  siblings: number
   takes: StudioTake[]
   selectedId: string | null
   onSelect: (id: string) => void
@@ -99,7 +100,7 @@ function ShotItem({
             />
           ) : (
             <span className="tnum flex h-full w-full items-center justify-center text-[11px] text-muted-foreground">
-              {String(index + 1).padStart(2, '0')}
+              #{index + 1}
             </span>
           )}
         </span>
@@ -130,7 +131,7 @@ function ShotItem({
           label={`${label}を下へ`}
           title="下へ"
           onClick={() => onMove(shot.id, 1)}
-          disabled={busy || index === total - 1}
+          disabled={busy || index === siblings - 1}
         >
           <ChevronDown />
         </IconButton>
@@ -166,15 +167,16 @@ export default function ShotRail({
   onEditSceneTimeOfDay,
   onMoveScene,
   onDeleteScene,
+  episodeFiltered = false,
   busy,
 }: {
   tree: ShotTree
-  /** Shot の総数（並べ替えの端の判定に使う）。 */
+  /** 見出しに出す Shot の総数（話で絞っているならその話のぶん）。 */
   total: number
   takes: StudioTake[]
   selectedId: string | null
   onSelect: (id: string) => void
-  /** delta は -1（上へ）/ +1（下へ）。 */
+  /** delta は -1（上へ）/ +1（下へ）。動けるのは同じ場の中だけ。 */
   onMove: (id: string, delta: number) => void
   onAdd: () => void
   onAddEpisode: () => void
@@ -193,6 +195,12 @@ export default function ShotRail({
   onEditSceneTimeOfDay: (id: string, timeOfDay: string) => void
   onMoveScene: (episodeId: string, id: string, delta: number) => void
   onDeleteScene: (id: string) => void
+  /**
+   * 話で絞り込んでいるか。絞っているあいだは未分類のカットがそもそも降りて
+   * こないので、「未分類」の見出しごと隠す（空の見出しを出すと「未分類が
+   * 無くなった」と読めてしまうため）。
+   */
+  episodeFiltered?: boolean
   busy: boolean
 }) {
   /** lg 未満でのレールの開閉（lg 以上は CSS で常に開いている）。 */
@@ -224,7 +232,7 @@ export default function ShotRail({
           <ShotItem
             key={node.shot.id}
             node={node}
-            total={total}
+            siblings={nodes.length}
             takes={takes}
             selectedId={selectedId}
             onSelect={onSelect}
@@ -261,7 +269,20 @@ export default function ShotRail({
             <Plus />
             話を追加
           </Button>
-          <Button variant="outline" size="sm" onClick={onAdd} disabled={busy}>
+          {/* 話で絞っているあいだは押させない。ここで作るカットは未分類に
+              入るので、絞り込みの向こう側に消えてしまうため（その話に足すなら
+              場の「＋」から）。 */}
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={onAdd}
+            disabled={busy || episodeFiltered}
+            title={
+              episodeFiltered
+                ? '話を選んでいるあいだは、場の「＋」からカットを足してください'
+                : undefined
+            }
+          >
             <Plus />
             カットを追加
           </Button>
@@ -466,7 +487,7 @@ export default function ShotRail({
           )
         })}
 
-        {(tree.unassigned.length > 0 || tree.episodes.length > 0) && (
+        {!episodeFiltered && (tree.unassigned.length > 0 || tree.episodes.length > 0) && (
           <section>
             <div className="flex items-center gap-2 rounded-md bg-surface-sunken px-2 py-1.5">
               <h3 className="min-w-0 flex-1 truncate text-xs font-semibold text-muted-foreground">

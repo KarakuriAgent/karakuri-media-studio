@@ -1863,6 +1863,287 @@ def test_deleting_an_episode_takes_its_scenes_and_unfiles_the_shots(env):
 
 
 # --------------------------------------------------------------------------
+# Shot の並び（話 -> 場 -> カット）
+# --------------------------------------------------------------------------
+
+def test_shots_are_ordered_by_episode_then_scene_then_shot(env):
+    """並びは話 -> 場 -> カット。未分類（場なし）は作品の末尾へ。"""
+    project = make_project(env)
+    first_episode = make_episode(env, project["id"], title="第1話")
+    second_episode = make_episode(env, project["id"], title="第2話")
+    opening = make_scene(env, first_episode["id"], title="屋台")
+    closing = make_scene(env, second_episode["id"], title="路地")
+
+    # わざと「後ろの話 -> 前の話」の順に作る（作成順では並ばない）。
+    late = make_shot(env, project["id"], scene_id=closing["id"], title="ラスト")
+    unfiled = make_shot(env, project["id"], title="未分類")
+    early = make_shot(env, project["id"], scene_id=opening["id"], title="つかみ")
+    second = make_shot(env, project["id"], scene_id=opening["id"], title="転")
+
+    assert [row["id"] for row in detail(env, project["id"])["shots"]] == [
+        early["id"], second["id"], late["id"], unfiled["id"]
+    ]
+
+    # 話を入れ替えれば Shot の並びも付いてくる。
+    env.client.post(
+        f"/api/studio/projects/{project['id']}/episodes/reorder",
+        json={"ids": [second_episode["id"], first_episode["id"]]},
+    )
+    assert [row["id"] for row in detail(env, project["id"])["shots"]] == [
+        late["id"], early["id"], second["id"], unfiled["id"]
+    ]
+
+
+def test_shot_sort_order_is_scoped_to_its_scene(env):
+    """並び順は場の中で 0 から。未分類グループも 1 つのまとまりとして数える。"""
+    project = make_project(env)
+    episode = make_episode(env, project["id"])
+    scene = make_scene(env, episode["id"])
+    other = make_scene(env, episode["id"], title="路地")
+
+    assert make_shot(env, project["id"], scene_id=scene["id"])["sort_order"] == 0
+    assert make_shot(env, project["id"], scene_id=scene["id"])["sort_order"] == 1
+    assert make_shot(env, project["id"], scene_id=other["id"])["sort_order"] == 0
+    assert make_shot(env, project["id"])["sort_order"] == 0
+    assert make_shot(env, project["id"])["sort_order"] == 1
+
+
+def test_moving_a_shot_between_scenes_puts_it_at_the_end(env):
+    project = make_project(env)
+    episode = make_episode(env, project["id"])
+    scene = make_scene(env, episode["id"])
+    other = make_scene(env, episode["id"], title="路地")
+    make_shot(env, project["id"], scene_id=other["id"])
+    moved = make_shot(env, project["id"], scene_id=scene["id"])
+    assert moved["sort_order"] == 0
+
+    joined = env.client.patch(
+        f"/api/studio/shots/{moved['id']}", json={"scene_id": other["id"]}
+    )
+    assert joined.status_code == 200, joined.text
+    assert joined.json()["sort_order"] == 1  # 引っ越し先の末尾
+
+    make_shot(env, project["id"])  # 未分類グループに 1 本
+    detached = env.client.patch(
+        f"/api/studio/shots/{moved['id']}", json={"scene_id": None}
+    )
+    assert detached.json()["scene_id"] is None
+    assert detached.json()["sort_order"] == 1
+
+
+def test_unfiled_shots_keep_their_order_when_a_scene_is_deleted(env):
+    """場を消したら、そこにいた Shot は未分類グループの末尾へ順序ごと移る。"""
+    project = make_project(env)
+    episode = make_episode(env, project["id"])
+    scene = make_scene(env, episode["id"])
+    unfiled = make_shot(env, project["id"], title="未分類")
+    first = make_shot(env, project["id"], scene_id=scene["id"], title="A")
+    second = make_shot(env, project["id"], scene_id=scene["id"], title="B")
+
+    assert env.client.delete(f"/api/studio/scenes/{scene['id']}").status_code == 204
+    shots = detail(env, project["id"])["shots"]
+    assert [row["id"] for row in shots] == [
+        unfiled["id"], first["id"], second["id"]
+    ]
+    assert [row["sort_order"] for row in shots] == [0, 1, 2]
+
+
+def test_shots_can_be_reordered_inside_their_scene(env):
+    project = make_project(env)
+    episode = make_episode(env, project["id"])
+    scene = make_scene(env, episode["id"])
+    other = make_scene(env, episode["id"], title="路地")
+    first = make_shot(env, project["id"], scene_id=scene["id"], title="A")
+    second = make_shot(env, project["id"], scene_id=scene["id"], title="B")
+    outsider = make_shot(env, project["id"], scene_id=other["id"], title="C")
+
+    response = env.client.post(
+        f"/api/studio/projects/{project['id']}/shots/reorder",
+        json={"shot_ids": [second["id"], first["id"]]},
+    )
+    assert response.status_code == 200, response.text
+    # 返るのは作品ぶん全部（並びは話 -> 場 -> カット）。
+    assert [row["id"] for row in response.json()] == [
+        second["id"], first["id"], outsider["id"]
+    ]
+
+
+def test_reorder_rejects_a_mix_of_scenes(env):
+    project = make_project(env)
+    episode = make_episode(env, project["id"])
+    scene = make_scene(env, episode["id"])
+    other = make_scene(env, episode["id"], title="路地")
+    first = make_shot(env, project["id"], scene_id=scene["id"])
+    make_shot(env, project["id"], scene_id=scene["id"])
+    outsider = make_shot(env, project["id"], scene_id=other["id"])
+
+    response = env.client.post(
+        f"/api/studio/projects/{project['id']}/shots/reorder",
+        json={"shot_ids": [outsider["id"], first["id"]]},
+    )
+    assert response.status_code == 400
+
+
+def test_reorder_still_accepts_every_shot_of_the_project(env):
+    """場をまたいだ全件送り（従来の呼び方）は場ごとに切り分けて書き戻す。"""
+    project = make_project(env)
+    episode = make_episode(env, project["id"])
+    scene = make_scene(env, episode["id"])
+    other = make_scene(env, episode["id"], title="路地")
+    first = make_shot(env, project["id"], scene_id=scene["id"], title="A")
+    second = make_shot(env, project["id"], scene_id=scene["id"], title="B")
+    third = make_shot(env, project["id"], scene_id=other["id"], title="C")
+    fourth = make_shot(env, project["id"], scene_id=other["id"], title="D")
+
+    response = env.client.post(
+        f"/api/studio/projects/{project['id']}/shots/reorder",
+        json={
+            "shot_ids": [
+                fourth["id"], third["id"], second["id"], first["id"]
+            ]
+        },
+    )
+    assert response.status_code == 200, response.text
+    rows = response.json()
+    assert [row["id"] for row in rows] == [
+        second["id"], first["id"], fourth["id"], third["id"]
+    ]
+    # 場をまたいだ移動は起きない（所属はそのまま）。
+    assert {row["id"]: row["scene_id"] for row in rows} == {
+        first["id"]: scene["id"],
+        second["id"]: scene["id"],
+        third["id"]: other["id"],
+        fourth["id"]: other["id"],
+    }
+
+
+def test_reorder_rejects_unknown_shots(env):
+    project = make_project(env)
+    shot = make_shot(env, project["id"])
+    response = env.client.post(
+        f"/api/studio/projects/{project['id']}/shots/reorder",
+        json={"shot_ids": [shot["id"], "nope"]},
+    )
+    assert response.status_code == 400
+
+
+def test_project_detail_can_be_narrowed_to_one_episode(env):
+    """``episode_id`` を付けると場・Shot・Take はその話のぶんだけ。"""
+    project = make_project(env)
+    first_episode = make_episode(env, project["id"], title="第1話")
+    second_episode = make_episode(env, project["id"], title="第2話")
+    kept = make_scene(env, first_episode["id"], title="屋台")
+    dropped = make_scene(env, second_episode["id"], title="路地")
+    mine = make_shot(env, project["id"], scene_id=kept["id"])
+    make_shot(env, project["id"], scene_id=dropped["id"])
+    make_shot(env, project["id"])  # 未分類はどの話のものでもない
+    make_asset(env, project["id"], "Neko")
+    take = render(env, mine["id"]).json()
+
+    response = env.client.get(
+        f"/api/studio/projects/{project['id']}",
+        params={"episode_id": first_episode["id"]},
+    )
+    assert response.status_code == 200, response.text
+    context = response.json()
+    assert [row["id"] for row in context["scenes"]] == [kept["id"]]
+    assert [row["id"] for row in context["shots"]] == [mine["id"]]
+    assert [row["id"] for row in context["takes"]] == [take["id"]]
+    # 話タブと素材の表示に要るので、この 2 つは絞っても全件。
+    assert [row["id"] for row in context["episodes"]] == [
+        first_episode["id"], second_episode["id"]
+    ]
+    assert len(context["assets"]) == 1
+
+    # 話を指定しなければ今までどおり作品まるごと。
+    assert len(detail(env, project["id"])["shots"]) == 3
+
+
+def test_project_detail_rejects_an_unknown_episode(env):
+    project = make_project(env)
+    other = make_project(env, name="別の作品")
+    stranger = make_episode(env, other["id"])
+    assert env.client.get(
+        f"/api/studio/projects/{project['id']}", params={"episode_id": "nope"}
+    ).status_code == 404
+    assert env.client.get(
+        f"/api/studio/projects/{project['id']}",
+        params={"episode_id": stranger["id"]},
+    ).status_code == 404
+
+
+def test_projects_are_listed_by_last_update(env):
+    """一覧は最後に触った順（作った順ではない）。"""
+    import sqlite3
+
+    from app import db
+
+    project = make_project(env, name="古い作品")
+    newer = make_project(env, name="新しい作品")
+    assert [row["id"] for row in env.client.get("/api/studio/projects").json()] == [
+        newer["id"], project["id"]
+    ]
+
+    # 同じ秒に作られると updated_at で差が付かないので、時刻は明示して確かめる。
+    conn = sqlite3.connect(db.DB_PATH)
+    conn.execute(
+        "UPDATE studio_projects SET updated_at = ? WHERE id = ?",
+        ("2099-01-01T00:00:00+00:00", project["id"]),
+    )
+    conn.commit()
+    conn.close()
+    assert [row["id"] for row in env.client.get("/api/studio/projects").json()] == [
+        project["id"], newer["id"]
+    ]
+
+
+def test_init_db_renumbers_project_wide_shot_orders_per_scene(env):
+    """作品全体で 1 本だった並び順を、見た目の順序のまま場ごとに振り直す。"""
+    import asyncio
+    import sqlite3
+
+    from app import db
+
+    project = make_project(env)
+    episode = make_episode(env, project["id"])
+    scene = make_scene(env, episode["id"])
+    other = make_scene(env, episode["id"], title="路地")
+    first = make_shot(env, project["id"], scene_id=scene["id"], title="A")
+    second = make_shot(env, project["id"], scene_id=other["id"], title="B")
+    third = make_shot(env, project["id"], scene_id=scene["id"], title="C")
+    unfiled = make_shot(env, project["id"], title="未分類")
+
+    # 旧スキーマの状態（プロジェクト内で 0..n の通し番号）に戻す。
+    conn = sqlite3.connect(db.DB_PATH)
+    for order, shot in enumerate((first, second, third, unfiled)):
+        conn.execute(
+            "UPDATE studio_shots SET sort_order = ? WHERE id = ?",
+            (order, shot["id"]),
+        )
+    conn.commit()
+    conn.close()
+
+    asyncio.run(db.init_db())
+
+    conn = sqlite3.connect(db.DB_PATH)
+    rows = dict(conn.execute("SELECT id, sort_order FROM studio_shots"))
+    index_sql = conn.execute(
+        "SELECT sql FROM sqlite_master WHERE name = 'idx_studio_shots_project'"
+    ).fetchone()[0]
+    conn.close()
+    assert rows[first["id"]] == 0
+    assert rows[third["id"]] == 1     # 同じ場の中で 0..n に詰め直される
+    assert rows[second["id"]] == 0    # 別の場は別のまとまり
+    assert rows[unfiled["id"]] == 0   # 未分類グループも別のまとまり
+    assert "scene_id" in index_sql
+
+    # 見た目の順序（話 -> 場 -> カット）は変わらない。
+    assert [row["id"] for row in detail(env, project["id"])["shots"]] == [
+        first["id"], third["id"], second["id"], unfiled["id"]
+    ]
+
+
+# --------------------------------------------------------------------------
 # 採用の取り消し（null の明示）
 # --------------------------------------------------------------------------
 

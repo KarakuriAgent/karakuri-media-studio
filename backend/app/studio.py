@@ -368,6 +368,10 @@ class StudioError(Exception):
     """スタジオ操作の失敗（ルーターが 400 に変換する）。"""
 
 
+class StudioNotFound(StudioError):
+    """指したものが無い（ルーターが 404 に変換する）。"""
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -460,7 +464,10 @@ def _row_to_shot(row: aiosqlite.Row) -> StudioShot:
 # --------------------------------------------------------------------------
 
 async def list_projects() -> list[StudioProjectSummary]:
-    """一覧。1 行ごとに「どれだけ進んでいるか」の件数を添える。"""
+    """一覧。1 行ごとに「どれだけ進んでいるか」の件数を添える。
+
+    並びは**最後に触った順**（``updated_at``。空なら ``created_at``）。
+    """
     async with get_db() as conn:
         async with conn.execute(
             "SELECT p.*,"
@@ -472,7 +479,9 @@ async def list_projects() -> list[StudioProjectSummary]:
             "   AS take_count,"
             " (SELECT COUNT(*) FROM studio_shots s WHERE s.project_id = p.id"
             "   AND s.selected_take_id IS NOT NULL) AS selected_take_count"
-            " FROM studio_projects p ORDER BY p.created_at DESC, p.id DESC"
+            " FROM studio_projects p"
+            " ORDER BY COALESCE(NULLIF(p.updated_at, ''), p.created_at) DESC,"
+            " p.id DESC"
         ) as cur:
             rows = await cur.fetchall()
     summaries = []
@@ -648,17 +657,42 @@ async def delete_project(project_id: str) -> bool:
         return cur.rowcount > 0
 
 
-async def project_detail(project_id: str) -> StudioProjectDetail | None:
-    """画面 1 枚ぶん（話・場・素材・Shot・Take をジョブの状態つきで）。"""
+async def project_detail(
+    project_id: str, episode_id: str | None = None
+) -> StudioProjectDetail | None:
+    """画面 1 枚ぶん（話・場・素材・Shot・Take をジョブの状態つきで）。
+
+    ``episode_id`` を渡すと**その話のぶんだけ**（場・Shot・Take）に絞る。話が
+    増えても 1 回の取得が重くならないための入り口で、話の一覧と素材は画面
+    （話タブと素材の表示）に要るので絞っても全件返す。話が無ければ ``None``
+    ではなく :class:`StudioNotFound`（ルーターが 404 に変換する）。
+    """
     async with get_db() as conn:
         project = await _fetch_project(conn, project_id)
         if project is None:
             return None
+        if episode_id is not None:
+            episode = await _fetch_episode(conn, episode_id)
+            if episode is None or episode.project_id != project_id:
+                raise StudioNotFound(f"episode not found: {episode_id}")
         assets = await _fetch_assets(conn, project_id)
         episodes = await _fetch_episodes(conn, project_id)
-        scenes = await _fetch_scenes(conn, "project_id = ?", (project_id,))
-        shots = await _fetch_shots(conn, project_id)
-        takes = await _fetch_takes(conn, "project_id = ?", (project_id,))
+        if episode_id is None:
+            scenes = await _fetch_scenes(conn, "project_id = ?", (project_id,))
+        else:
+            scenes = await _fetch_scenes(conn, "episode_id = ?", (episode_id,))
+        shots = await _fetch_shots(conn, project_id, episode_id=episode_id)
+        if episode_id is None:
+            takes = await _fetch_takes(conn, "project_id = ?", (project_id,))
+        elif shots:
+            placeholders = ", ".join("?" * len(shots))
+            takes = await _fetch_takes(
+                conn,
+                f"shot_id IN ({placeholders})",
+                tuple(shot.id for shot in shots),
+            )
+        else:
+            takes = []
         takes = _mark_stale(takes, shots, assets)
     return StudioProjectDetail(
         **project.model_dump(),
@@ -841,13 +875,21 @@ async def restore_revision(project_id: str, seq: int) -> StudioProjectDetail | N
             " AND selected_take_id NOT IN (SELECT id FROM studio_takes)",
             (project_id,),
         )
-        # 復元で消えた場に残った Shot は未分類へ戻す。
+        # 復元で消えた場に残った Shot は未分類へ戻す。並び順は場の中のものなので、
+        # 戻したあとの未分類グループを 0..n に詰め直す（元の相対順は保つ）。
         await conn.execute(
             "UPDATE studio_shots SET scene_id = NULL"
             " WHERE project_id = ? AND scene_id IS NOT NULL"
             " AND scene_id NOT IN (SELECT id FROM studio_scenes)",
             (project_id,),
         )
+        for order, shot_id in enumerate(
+            await _scope_shot_ids(conn, project_id, None)
+        ):
+            await conn.execute(
+                "UPDATE studio_shots SET sort_order = ? WHERE id = ?",
+                (order, shot_id),
+            )
         # スナップショットを取ったあとに参照先（Take など、復元の対象外の行）が
         # 消えていたカードは戻さない（キャンバスに空のカードを残さない）。
         await conn.execute(
@@ -1029,7 +1071,7 @@ async def delete_episode(episode_id: str) -> bool:
             return False
         scenes = await _fetch_scenes(conn, "episode_id = ?", (episode_id,))
         for scene in scenes:
-            await _detach_shots(conn, scene.id)
+            await _detach_shots(conn, episode.project_id, scene.id)
         await conn.execute("DELETE FROM studio_episodes WHERE id = ?", (episode_id,))
         await _record_revision(conn, episode.project_id, "user", "話を削除")
         await conn.commit()
@@ -1130,11 +1172,23 @@ async def update_scene(
         return await _fetch_scene(conn, scene_id)
 
 
-async def _detach_shots(conn: aiosqlite.Connection, scene_id: str) -> None:
-    """場から Shot を外す（Shot 自体は消さない。未分類に戻すだけ）。"""
-    await conn.execute(
-        "UPDATE studio_shots SET scene_id = NULL WHERE scene_id = ?", (scene_id,)
-    )
+async def _detach_shots(
+    conn: aiosqlite.Connection, project_id: str, scene_id: str
+) -> None:
+    """場から Shot を外す（Shot 自体は消さない。未分類に戻すだけ）。
+
+    並び順は場の中のものなので、そのまま外すと未分類グループの番号と混ざる。
+    元の並びを保ったまま未分類グループの末尾へ付け直す。
+    """
+    detached = await _scope_shot_ids(conn, project_id, scene_id)
+    if not detached:
+        return
+    base = await _next_shot_sort_order(conn, project_id, None)
+    for offset, shot_id in enumerate(detached):
+        await conn.execute(
+            "UPDATE studio_shots SET scene_id = NULL, sort_order = ? WHERE id = ?",
+            (base + offset, shot_id),
+        )
 
 
 async def delete_scene(scene_id: str) -> bool:
@@ -1143,7 +1197,7 @@ async def delete_scene(scene_id: str) -> bool:
         scene = await _fetch_scene(conn, scene_id)
         if scene is None:
             return False
-        await _detach_shots(conn, scene_id)
+        await _detach_shots(conn, scene.project_id, scene_id)
         await conn.execute("DELETE FROM studio_scenes WHERE id = ?", (scene_id,))
         await _record_revision(conn, scene.project_id, "user", "場を削除")
         await conn.commit()
@@ -1224,7 +1278,6 @@ async def create_demo_project(code: str) -> StudioProjectDetail:
                 sort_order=order,
             )
         now = _now()
-        shot_order = 0
         for episode_order, episode in enumerate(manifest.get("episodes", ())):
             episode_id = new_id()
             await conn.execute(
@@ -1258,11 +1311,11 @@ async def create_demo_project(code: str) -> StudioProjectDetail:
                         now,
                     ),
                 )
-                for shot in scene.get("shots", ()):
+                # 並び順は場の中のものなので、場ごとに 0 から振る。
+                for shot_order, shot in enumerate(scene.get("shots", ())):
                     await _insert_demo_shot(
                         conn, project.id, scene_id, shot_order, shot, now
                     )
-                    shot_order += 1
         await _record_revision(
             conn, project.id, "user", f"デモ『{manifest['name']}』を作成"
         )
@@ -1636,16 +1689,76 @@ async def delete_asset(asset_id: str) -> bool:
 # Shot（脚本）
 # --------------------------------------------------------------------------
 
+#: Shot の表示順（話 -> 場 -> カット）。``sort_order`` は場の中での順番なので、
+#: 上の 2 段を JOIN してから並べる。どこの場にも入っていない Shot
+#: （``scene_id IS NULL`` = 未分類）は作品の末尾へまとめる。
+_SHOT_ORDER = (
+    " ORDER BY s.scene_id IS NULL,"
+    "  ep.sort_order, ep.created_at, ep.id,"
+    "  sc.sort_order, sc.created_at, sc.id,"
+    "  s.sort_order, s.created_at, s.id"
+)
+
+_SHOT_JOIN = (
+    "SELECT s.* FROM studio_shots s"
+    " LEFT JOIN studio_scenes sc ON sc.id = s.scene_id"
+    " LEFT JOIN studio_episodes ep ON ep.id = sc.episode_id"
+)
+
+
 async def _fetch_shots(
-    conn: aiosqlite.Connection, project_id: str
+    conn: aiosqlite.Connection,
+    project_id: str,
+    *,
+    episode_id: str | None = None,
 ) -> list[StudioShot]:
+    """作品の Shot を話 -> 場 -> カットの順で返す。
+
+    ``episode_id`` を渡すと**その話に属する場の** Shot だけを返す（未分類は
+    どの話のものでもないので入らない）。
+    """
+    where = "WHERE s.project_id = ?"
+    params: tuple[Any, ...] = (project_id,)
+    if episode_id is not None:
+        where += " AND sc.episode_id = ?"
+        params = (project_id, episode_id)
     async with conn.execute(
-        "SELECT * FROM studio_shots WHERE project_id = ?"
-        " ORDER BY sort_order, created_at, id",
-        (project_id,),
+        f"{_SHOT_JOIN} {where}{_SHOT_ORDER}", params
     ) as cur:
         rows = await cur.fetchall()
     return [_row_to_shot(row) for row in rows]
+
+
+async def _scope_shot_ids(
+    conn: aiosqlite.Connection, project_id: str, scene_id: str | None
+) -> list[str]:
+    """1 つの場（``scene_id=None`` なら未分類グループ）の Shot を並び順で。"""
+    if scene_id is None:
+        where, params = "scene_id IS NULL", (project_id,)
+    else:
+        where, params = "scene_id = ?", (project_id, scene_id)
+    async with conn.execute(
+        f"SELECT id FROM studio_shots WHERE project_id = ? AND {where}"
+        " ORDER BY sort_order, created_at, id",
+        params,
+    ) as cur:
+        return [str(row["id"]) for row in await cur.fetchall()]
+
+
+async def _next_shot_sort_order(
+    conn: aiosqlite.Connection, project_id: str, scene_id: str | None
+) -> int:
+    """その場（未分類なら未分類グループ）の末尾の並び順。"""
+    if scene_id is None:
+        where, params = "scene_id IS NULL", (project_id,)
+    else:
+        where, params = "scene_id = ?", (project_id, scene_id)
+    async with conn.execute(
+        "SELECT COALESCE(MAX(sort_order), -1) + 1 AS next FROM studio_shots"
+        f" WHERE project_id = ? AND {where}",
+        params,
+    ) as cur:
+        return int((await cur.fetchone())["next"])
 
 
 async def _fetch_shot(conn: aiosqlite.Connection, shot_id: str) -> StudioShot | None:
@@ -1701,9 +1814,8 @@ async def _insert_shot(
             raise StudioError("scene not found")
     sort_order = payload.sort_order
     if sort_order is None:
-        sort_order = await _next_sort_order(
-            conn, "studio_shots", "project_id", project_id
-        )
+        # 並び順は場の中のものなので、入る場（未分類なら未分類グループ）の末尾。
+        sort_order = await _next_shot_sort_order(conn, project_id, scene_id)
     shot_id = new_id()
     now = _now()
     columns = ("id", "project_id", "scene_id", "sort_order", *_SHOT_TEXT_FIELDS,
@@ -1765,11 +1877,23 @@ async def update_shot(
         shot = await _fetch_shot(conn, shot_id)
         if shot is None:
             return None
-        scene_id = changes.get("scene_id")
-        if scene_id is not None:
-            scene = await _fetch_scene(conn, str(scene_id))
-            if scene is None or scene.project_id != shot.project_id:
-                raise StudioError("scene not found")
+        if "scene_id" in changes:
+            scene_id = changes["scene_id"]
+            if scene_id is not None:
+                scene = await _fetch_scene(conn, str(scene_id))
+                if scene is None or scene.project_id != shot.project_id:
+                    raise StudioError("scene not found")
+            if scene_id != shot.scene_id:
+                # 引っ越し先（未分類なら未分類グループ）の末尾に付け直す。
+                # 元いた場の並びに空きが出るが、順序は変わらないので詰めない。
+                changes.setdefault(
+                    "sort_order",
+                    await _next_shot_sort_order(
+                        conn,
+                        shot.project_id,
+                        str(scene_id) if scene_id is not None else None,
+                    ),
+                )
         if changes:
             now = _now()
             changes["updated_at"] = now
@@ -1800,26 +1924,50 @@ async def delete_shot(shot_id: str, *, actor: str = "user") -> bool:
 async def reorder_shots(project_id: str, shot_ids: list[str]) -> list[StudioShot]:
     """``shot_ids`` の並び順をそのまま ``sort_order`` にする。
 
-    プロジェクトの Shot を**全件、過不足なく**並べたものを受け取る（一部だけ
-    送られると残りの順序が決まらないので、その場で断る）。
+    並び順は**場の中**のものなので、受け取るのは「1 つの場（または未分類
+    グループ）の Shot を全件、過不足なく並べたもの」。一部だけ送られると
+    残りの順序が決まらないので、その場で断る。
+
+    作品の Shot を全件送るのも受ける（場をまたいだ並びを 1 本で送っていた
+    頃の呼び出し）。その場合は場ごとに切り分けて、それぞれの中の相対順を
+    書き戻す（場をまたぐ移動は起きない）。中途半端に複数の場が混ざったものは
+    「どの場を並べたいのか」が決まらないので断る。
     """
     async with get_db() as conn:
         if await _fetch_project(conn, project_id) is None:
             raise StudioError("project not found")
-        current = {shot.id for shot in await _fetch_shots(conn, project_id)}
+        shots = await _fetch_shots(conn, project_id)
+        scene_of = {shot.id: shot.scene_id for shot in shots}
         wanted = list(shot_ids)
         if len(set(wanted)) != len(wanted):
             raise StudioError("shot_ids に同じ id が複数あります")
-        if set(wanted) != current:
+        unknown = [shot_id for shot_id in wanted if shot_id not in scene_of]
+        if unknown:
             raise StudioError(
-                "shot_ids はこのプロジェクトの Shot を全件並べたものにしてください"
+                "shot_ids にこのプロジェクトの Shot でないものが入っています"
             )
+        grouped: dict[str | None, list[str]] = {}
+        for shot_id in wanted:
+            grouped.setdefault(scene_of[shot_id], []).append(shot_id)
+        if len(grouped) > 1 and set(wanted) != set(scene_of):
+            raise StudioError(
+                "shot_ids は 1 つの場の Shot だけ（または作品の Shot 全件）を"
+                "並べたものにしてください"
+            )
+        for scene_id, ids in grouped.items():
+            scope = await _scope_shot_ids(conn, project_id, scene_id)
+            if set(ids) != set(scope):
+                raise StudioError(
+                    "shot_ids はその場の Shot を全件並べたものにしてください"
+                )
         now = _now()
-        for order, shot_id in enumerate(wanted):
-            await conn.execute(
-                "UPDATE studio_shots SET sort_order = ?, updated_at = ? WHERE id = ?",
-                (order, now, shot_id),
-            )
+        for ids in grouped.values():
+            for order, shot_id in enumerate(ids):
+                await conn.execute(
+                    "UPDATE studio_shots SET sort_order = ?, updated_at = ?"
+                    " WHERE id = ?",
+                    (order, now, shot_id),
+                )
         await _record_revision(conn, project_id, "user", "Shot を並べ替え")
         await conn.commit()
         return await _fetch_shots(conn, project_id)

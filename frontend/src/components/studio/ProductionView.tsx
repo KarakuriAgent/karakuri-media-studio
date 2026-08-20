@@ -24,6 +24,8 @@ import RenderDialog from './RenderDialog'
 import {
   TAKE_STATUS_CLASS,
   assetHasFile,
+  countShots,
+  episodeLabel,
   takeActivityLabel,
   isStale,
   selectedTakeOf,
@@ -31,6 +33,8 @@ import {
   takesByShot,
   unresolvedMentions,
   type RenderDefaults,
+  type ShotNode,
+  type ShotTree,
 } from './studio'
 
 function fileNameOf(url: string): string {
@@ -313,13 +317,79 @@ function TakeDetail({ take, index }: { take: StudioTake; index: number }) {
   )
 }
 
+/** タイムラインに差す話の区切り（縦書きのラベル 1 枚）。 */
+function TimelineDivider({ label }: { label: string }) {
+  return (
+    <span className="flex shrink-0 items-center gap-1.5 pl-1 pr-0.5">
+      <span className="h-full w-px bg-border" />
+      <span
+        className="text-[11px] leading-tight text-muted-foreground"
+        style={{ writingMode: 'vertical-rl' }}
+      >
+        {label}
+      </span>
+    </span>
+  )
+}
+
+/**
+ * タイムラインのカット 1 枚。
+ *
+ * 番号（`#n`）は**その場の中での位置**で、作品を通した番号ではない
+ * （どの話かは左の区切りラベルが担う）。
+ */
+function TimelineCard({
+  node,
+  take,
+  active,
+  hideNsfw,
+  onSelect,
+}: {
+  node: ShotNode
+  take: StudioTake | null
+  active: boolean
+  hideNsfw: (take: StudioTake | null) => boolean
+  onSelect: (id: string) => void
+}) {
+  const { shot, index } = node
+  const label = shot.title || `カット ${index + 1}`
+  return (
+    <button
+      className={`w-28 shrink-0 self-start overflow-hidden rounded-md border text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 ${
+        active
+          ? 'border-primary ring-2 ring-primary/60'
+          : 'border-border hover:border-primary/50'
+      }`}
+      onClick={() => onSelect(shot.id)}
+      title={label}
+    >
+      <span className="block h-16 w-full bg-background">
+        {take?.last_frame_url ? (
+          <img
+            src={take.last_frame_url}
+            alt=""
+            className={`h-full w-full object-cover ${hideNsfw(take) ? 'blur-sm' : ''}`}
+          />
+        ) : (
+          <span className="flex h-full w-full items-center justify-center text-[11px] text-muted-foreground">
+            未採用
+          </span>
+        )}
+      </span>
+      <span className="tnum block truncate bg-card px-1.5 py-1 text-[11px] text-foreground/85">
+        #{index + 1} {label}
+      </span>
+    </button>
+  )
+}
+
 /**
  * 制作タブ: 選んだカットのプロンプト確認 -> 生成 -> Take の採用まで。
  *
  * 中央にプレイヤー、右に Take レール、下に全カットのタイムライン。
  */
 export default function ProductionView({
-  shots,
+  tree,
   assets,
   allTakes,
   selectedShot,
@@ -335,8 +405,10 @@ export default function ProductionView({
   aspectRatios = [],
   latentContinuity = false,
   showNsfw = true,
+  showEpisodeLabels = true,
 }: {
-  shots: StudioShot[]
+  /** タイムラインに並べる 話 -> 場 -> カット（サーバーが返した並びのまま）。 */
+  tree: ShotTree
   assets: StudioAsset[]
   allTakes: StudioTake[]
   selectedShot: StudioShot | null
@@ -360,6 +432,12 @@ export default function ProductionView({
    * 続けられるよう隠しはせず、プレビューはクリックで一時的に出せる）。
    */
   showNsfw?: boolean
+  /**
+   * タイムラインに話の区切りを差すか。作品まるごと（「すべて」）を横一列に
+   * 並べると、どこで話が変わったのか見えないため。話で絞っているあいだは
+   * 1 本ぶんしか出ないので落とす。
+   */
+  showEpisodeLabels?: boolean
 }) {
   const grouped = useMemo(() => takesByShot(allTakes), [allTakes])
   // 参照を安定させておく（下の useEffect の依存に入るので、毎回新しい [] を
@@ -518,48 +596,52 @@ export default function ProductionView({
       </div>
 
       <Section title="タイムライン">
-        <div className="flex gap-2 overflow-x-auto pb-1">
-          {shots.length === 0 && (
+        {/* 左レールと同じ話名・カット番号が並ぶので、名前を付けて区別できる
+            ようにしておく。 */}
+        <div
+          className="flex gap-2 overflow-x-auto pb-1"
+          role="group"
+          aria-label="タイムライン"
+        >
+          {countShots(tree) === 0 && (
             <p className="w-full py-4 text-center text-xs text-muted-foreground">
               カットがありません
             </p>
           )}
-          {shots.map((shot, index) => {
-            const take = selectedTakeOf(shot, allTakes)
-            const active = shot.id === selectedShot.id
-            return (
-              <button
-                key={shot.id}
-                className={`w-28 shrink-0 overflow-hidden rounded-md border text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50 ${
-                  active
-                    ? 'border-primary ring-2 ring-primary/60'
-                    : 'border-border hover:border-primary/50'
-                }`}
-                onClick={() => onSelectShot(shot.id)}
-                title={shot.title || `カット ${index + 1}`}
-              >
-                <span className="block h-16 w-full bg-background">
-                  {take?.last_frame_url ? (
-                    <img
-                      src={take.last_frame_url}
-                      alt=""
-                      className={`h-full w-full object-cover ${
-                        shouldHide(take) ? 'blur-sm' : ''
-                      }`}
-                    />
-                  ) : (
-                    <span className="flex h-full w-full items-center justify-center text-[11px] text-muted-foreground">
-                      未採用
-                    </span>
-                  )}
-                </span>
-                <span className="tnum block truncate bg-card px-1.5 py-1 text-[11px] text-foreground/85">
-                  {String(index + 1).padStart(2, '0')}{' '}
-                  {shot.title || `カット ${index + 1}`}
-                </span>
-              </button>
-            )
-          })}
+          {tree.episodes.map((node, episodeIndex) => (
+            <div key={node.episode.id} className="flex shrink-0 items-stretch gap-2">
+              {showEpisodeLabels && (
+                <TimelineDivider label={episodeLabel(node.episode, episodeIndex)} />
+              )}
+              {node.scenes.flatMap((sceneNode) =>
+                sceneNode.shots.map((shotNode) => (
+                  <TimelineCard
+                    key={shotNode.shot.id}
+                    node={shotNode}
+                    take={selectedTakeOf(shotNode.shot, allTakes)}
+                    active={shotNode.shot.id === selectedShot.id}
+                    hideNsfw={shouldHide}
+                    onSelect={onSelectShot}
+                  />
+                )),
+              )}
+            </div>
+          ))}
+          {tree.unassigned.length > 0 && (
+            <div className="flex shrink-0 items-stretch gap-2">
+              {showEpisodeLabels && <TimelineDivider label="未分類" />}
+              {tree.unassigned.map((shotNode) => (
+                <TimelineCard
+                  key={shotNode.shot.id}
+                  node={shotNode}
+                  take={selectedTakeOf(shotNode.shot, allTakes)}
+                  active={shotNode.shot.id === selectedShot.id}
+                  hideNsfw={shouldHide}
+                  onSelect={onSelectShot}
+                />
+              ))}
+            </div>
+          )}
         </div>
       </Section>
 

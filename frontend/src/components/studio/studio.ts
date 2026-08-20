@@ -192,10 +192,27 @@ export function assetNameFromFile(filename: string): string {
 // --------------------------------------------------------------------------
 
 /**
- * `id` の Shot を `delta`（-1 = 上へ / +1 = 下へ）だけ動かした id 配列。
+ * `id` の Shot と**同じ場**に居る Shot だけを取り出す（未分類どうしも 1 group）。
  *
- * 端で動かせないとき・そもそも居ないときは null（呼ぶ側は何もしない）。返す
- * 並びをそのまま `POST /shots/reorder` に渡せる。
+ * サーバーが返す並び（話 -> 場 -> カット）をそのまま保つので、返り値の並びが
+ * その場の正しい順番になる。
+ */
+export function shotsInSameScene(shots: StudioShot[], id: string): StudioShot[] {
+  const target = shots.find((shot) => shot.id === id)
+  if (!target) return []
+  const sceneId = target.scene_id ?? null
+  return shots.filter((shot) => (shot.scene_id ?? null) === sceneId)
+}
+
+/**
+ * `id` の Shot を `delta`（-1 = 上へ / +1 = 下へ）だけ動かした、**その場の
+ * Shot 全件**の id 配列。
+ *
+ * `POST /shots/reorder` は「1 つの場（または未分類グループ）の Shot 全件」を
+ * 受け取る API なので、作品全体ではなく場の中だけを並べて返す。場をまたぐ移動は
+ * `PATCH /shots/{id}` の `scene_id` の仕事。
+ *
+ * 場の端で動かせないとき・そもそも居ないときは null（呼ぶ側は何もしない）。
  */
 export function moveShot(
   shots: StudioShot[],
@@ -203,7 +220,7 @@ export function moveShot(
   delta: number,
 ): string[] | null {
   return moveId(
-    shots.map((shot) => shot.id),
+    shotsInSameScene(shots, id).map((shot) => shot.id),
     id,
     delta,
   )
@@ -230,7 +247,13 @@ export function moveId(ids: string[], id: string, delta: number): string[] | nul
 // 話（Episode）-> 場（Scene）-> Shot のツリー
 // --------------------------------------------------------------------------
 
-/** ツリーの葉。`index` はプロジェクト全体での通し番号（0 起点）。 */
+/**
+ * ツリーの葉。`index` は**その場の中での番号**（0 起点）。
+ *
+ * 作品全体の通し番号にしないのは、サーバー側の `sort_order` が場ごとに 0 から
+ * 振られていて作品全体では一意にならないため。番号だけでは指せないので、UI では
+ * 「第◯話 / 場」の見出しと組にして出す。
+ */
 export interface ShotNode {
   shot: StudioShot
   index: number
@@ -265,14 +288,14 @@ export function buildShotTree(detail: {
   scenes: StudioScene[]
   shots: StudioShot[]
 }): ShotTree {
-  const nodes = detail.shots.map((shot, index) => ({ shot, index }))
   const byScene = new Map<string, ShotNode[]>()
   for (const scene of detail.scenes) byScene.set(scene.id, [])
   const unassigned: ShotNode[] = []
-  for (const node of nodes) {
-    const bucket = node.shot.scene_id ? byScene.get(node.shot.scene_id) : undefined
-    if (bucket) bucket.push(node)
-    else unassigned.push(node)
+  for (const shot of detail.shots) {
+    const bucket = shot.scene_id ? byScene.get(shot.scene_id) : undefined
+    // 番号はグループの中で 0 から振り直す（場スコープの `#n`）。
+    if (bucket) bucket.push({ shot, index: bucket.length })
+    else unassigned.push({ shot, index: unassigned.length })
   }
 
   const episodes = detail.episodes.map((episode) => {
@@ -301,6 +324,61 @@ export function firstShotId(tree: ShotTree): string | null {
     }
   }
   return tree.unassigned[0]?.shot.id ?? null
+}
+
+/** ツリーに載っている Shot の総数（話に属さない未分類も数える）。 */
+export function countShots(tree: ShotTree): number {
+  return (
+    tree.unassigned.length +
+    tree.episodes.reduce((total, node) => total + node.shotCount, 0)
+  )
+}
+
+/** 検索の対象にするカットのテキスト（脚本として読める項目だけ）。 */
+function shotHaystack(shot: StudioShot): string {
+  return [
+    shot.title,
+    shot.purpose,
+    shot.action,
+    shot.dialogue,
+    shot.soundscape,
+    shot.bgm,
+    shot.camera,
+    shot.prompt,
+  ].join('\n')
+}
+
+/** そのカットが検索語に当たるか（大文字小文字は無視。空の語は全部に当たる）。 */
+export function shotMatches(shot: StudioShot, query: string): boolean {
+  const needle = query.trim().toLowerCase()
+  if (!needle) return true
+  return shotHaystack(shot).toLowerCase().includes(needle)
+}
+
+/**
+ * 検索語に当たるカットだけを残したツリー。
+ *
+ * 当たったカットの居場所が分かるよう**話と場の見出しは残す**が、1 件も残らない
+ * 場と話は畳んで落とす（空の見出しばかりの一覧にしないため）。番号はグループの
+ * 中の位置を指したままにしておく（絞り込みで番号が動くと、レールや制作タブと
+ * 食い違って見えるため）。空文字なら素通し。
+ */
+export function filterShotTree(tree: ShotTree, query: string): ShotTree {
+  if (!query.trim()) return tree
+  const hit = (node: ShotNode) => shotMatches(node.shot, query)
+  const episodes = tree.episodes
+    .map((node) => {
+      const scenes = node.scenes
+        .map((sceneNode) => ({ ...sceneNode, shots: sceneNode.shots.filter(hit) }))
+        .filter((sceneNode) => sceneNode.shots.length > 0)
+      return {
+        ...node,
+        scenes,
+        shotCount: scenes.reduce((total, scene) => total + scene.shots.length, 0),
+      }
+    })
+    .filter((node) => node.shotCount > 0)
+  return { episodes, unassigned: tree.unassigned.filter(hit) }
 }
 
 /** 場のセレクトに出す選択肢（`話 / 場` のラベル）。 */

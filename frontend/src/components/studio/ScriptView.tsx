@@ -1,5 +1,5 @@
-import { useEffect, useState } from 'react'
-import { Trash2 } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import { ChevronRight, Search, Trash2 } from 'lucide-react'
 
 import type {
   StudioEpisode,
@@ -21,16 +21,27 @@ import {
   SHOT_STATUS_LABEL,
   WORKFLOW_OVERRIDES,
   WORKFLOW_OVERRIDE_LABEL,
+  countShots,
+  episodeLabel,
+  filterShotTree,
+  sceneLabel,
   sceneOptions,
   shotFormFromShot,
   shotUpdateFromForm,
   validateShotForm,
   type ShotFormState,
+  type ShotNode,
+  type ShotTree,
 } from './studio'
 
 const STATUSES: StudioShotStatus[] = ['draft', 'ready', 'done']
 
-/** 脚本を読むための 1 カット分の表示（台詞は blockquote 風に落とす）。 */
+/**
+ * 脚本を読むための 1 カット分の表示（台詞は blockquote 風に落とす）。
+ *
+ * `index` は**その場の中での位置**なので、番号だけでは作品の中の 1 カットを
+ * 指せない。どの話・どの場かは上の見出しが担う。
+ */
 function ShotScript({
   shot,
   index,
@@ -54,7 +65,7 @@ function ShotScript({
     >
       <div className="flex items-center gap-2">
         <span className="tnum text-[11px] font-semibold tracking-wider text-muted-foreground">
-          #{String(index + 1).padStart(2, '0')}
+          #{index + 1}
         </span>
         <span className="min-w-0 flex-1 truncate text-sm text-foreground">
           {shot.title || `カット ${index + 1}`}
@@ -88,6 +99,26 @@ function ShotScript({
         </p>
       )}
     </button>
+  )
+}
+
+/** ツリーの葉を `ShotScript` に渡すだけの薄い包み（話と未分類で使い回す）。 */
+function ShotCard({
+  node,
+  selectedId,
+  onSelect,
+}: {
+  node: ShotNode
+  selectedId: string | null
+  onSelect: (id: string) => void
+}) {
+  return (
+    <ShotScript
+      shot={node.shot}
+      index={node.index}
+      active={node.shot.id === selectedId}
+      onSelect={() => onSelect(node.shot.id)}
+    />
   )
 }
 
@@ -139,7 +170,7 @@ function Field({
  * 保存は明示ボタンだけ（打つそばから PATCH を投げない）。
  */
 export default function ScriptView({
-  shots,
+  tree,
   episodes,
   scenes,
   aspectRatios,
@@ -149,7 +180,8 @@ export default function ScriptView({
   onDelete,
   busy,
 }: {
-  shots: StudioShot[]
+  /** 話 -> 場 -> カットのツリー（サーバーが返した並びのまま）。 */
+  tree: ShotTree
   episodes: StudioEpisode[]
   scenes: StudioScene[]
   /** 生成フォームと同じアスペクト比の候補（空なら自由入力に落ちる）。 */
@@ -164,6 +196,14 @@ export default function ScriptView({
     selectedShot ? shotFormFromShot(selectedShot) : null,
   )
   const [errors, setErrors] = useState<Record<string, string>>({})
+  /** 左カラムの絞り込み（フロント側だけ。空文字で解除）。 */
+  const [query, setQuery] = useState('')
+  /** 畳んでいる話（この画面を出しているあいだだけ覚える）。 */
+  const [collapsed, setCollapsed] = useState<string[]>([])
+
+  const shown = useMemo(() => filterShotTree(tree, query), [tree, query])
+  const total = countShots(tree)
+  const hits = countShots(shown)
 
   // 選択が変わった / サーバー側の値が変わったら編集中の内容を入れ直す。
   // 依存を id と updated_at にしてあるのは、Take の進捗でプロジェクトを取り直す
@@ -191,25 +231,130 @@ export default function ScriptView({
 
   return (
     <div className="grid min-h-0 gap-3 lg:grid-cols-2">
-      <div className="min-w-0 space-y-2">
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-          脚本
-        </h3>
-        {shots.length === 0 && (
+      {/* 左レール（ShotRail）と同じ話・場・番号が並ぶ面なので、名前を付けて
+          区別できるようにしておく。 */}
+      <section className="min-w-0 space-y-2" aria-label="脚本ツリー">
+        <div className="flex items-center gap-2">
+          <h3 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            脚本
+          </h3>
+          {query.trim() && (
+            <span className="tnum text-[11px] text-muted-foreground">
+              {hits} / {total} カット
+            </span>
+          )}
+        </div>
+
+        {/* 台詞やアクションの断片からカットを手繰るための絞り込み。件数が
+            少ないうちも邪魔にならないよう、1 行だけの軽い入力に留める。 */}
+        <div className="relative">
+          <Search
+            aria-hidden="true"
+            className="pointer-events-none absolute left-2 top-1/2 size-3.5 -translate-y-1/2 text-muted-foreground"
+          />
+          <Input
+            id="studio-script-search"
+            className="pl-7"
+            type="search"
+            aria-label="カットを検索"
+            placeholder="カット名・台詞・アクションで絞り込む"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+          />
+        </div>
+
+        {total === 0 && (
           <p className="rounded-md border border-border bg-surface-sunken px-3 py-6 text-center text-xs text-muted-foreground">
             左のレールの「カットを追加」でカットを作ってください
           </p>
         )}
-        {shots.map((shot, index) => (
-          <ShotScript
-            key={shot.id}
-            shot={shot}
-            index={index}
-            active={shot.id === selectedShot?.id}
-            onSelect={() => onSelectShot(shot.id)}
-          />
-        ))}
-      </div>
+        {total > 0 && hits === 0 && (
+          <p className="rounded-md border border-border bg-surface-sunken px-3 py-6 text-center text-xs text-muted-foreground">
+            「{query.trim()}」に当たるカットはありません
+          </p>
+        )}
+
+        {shown.episodes.map((node, episodeIndex) => {
+          const label = episodeLabel(node.episode, episodeIndex)
+          const open = !collapsed.includes(node.episode.id)
+          return (
+            <section key={node.episode.id} className="space-y-2">
+              <button
+                className="flex w-full items-center gap-1.5 rounded-md bg-surface-sunken px-2 py-1.5 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                aria-expanded={open}
+                onClick={() =>
+                  setCollapsed((previous) =>
+                    open
+                      ? [...previous, node.episode.id]
+                      : previous.filter((id) => id !== node.episode.id),
+                  )
+                }
+              >
+                <ChevronRight
+                  aria-hidden="true"
+                  className={`size-3.5 shrink-0 text-muted-foreground ${
+                    open ? 'rotate-90' : ''
+                  }`}
+                />
+                <h4 className="min-w-0 flex-1 truncate text-xs font-semibold text-foreground/90">
+                  {label}
+                </h4>
+                <span className="tnum shrink-0 text-[11px] text-muted-foreground">
+                  {node.shotCount}
+                </span>
+              </button>
+              {open &&
+                node.scenes.map((sceneNode, sceneIndex) => (
+                  <div key={sceneNode.scene.id} className="space-y-2 pl-2">
+                    <h5 className="border-l-2 border-border pl-2 text-[11px] text-muted-foreground">
+                      {sceneLabel(sceneNode.scene, sceneIndex)}
+                      {sceneNode.scene.time_of_day && (
+                        <span className="ml-1">{sceneNode.scene.time_of_day}</span>
+                      )}
+                    </h5>
+                    {sceneNode.shots.length === 0 ? (
+                      <p className="pl-2 text-[11px] text-muted-foreground">
+                        カットなし
+                      </p>
+                    ) : (
+                      <div className="space-y-2 pl-2">
+                        {sceneNode.shots.map((shotNode) => (
+                          <ShotCard
+                            key={shotNode.shot.id}
+                            node={shotNode}
+                            selectedId={selectedShot?.id ?? null}
+                            onSelect={onSelectShot}
+                          />
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+            </section>
+          )
+        })}
+
+        {shown.unassigned.length > 0 && (
+          <section className="space-y-2">
+            <div className="flex items-center gap-2 rounded-md bg-surface-sunken px-2 py-1.5">
+              <h4 className="min-w-0 flex-1 truncate text-xs font-semibold text-muted-foreground">
+                未分類
+              </h4>
+              <span className="tnum shrink-0 text-[11px] text-muted-foreground">
+                {shown.unassigned.length}
+              </span>
+            </div>
+            {shown.unassigned.map((shotNode) => (
+              <ShotCard
+                key={shotNode.shot.id}
+                node={shotNode}
+                selectedId={selectedShot?.id ?? null}
+                onSelect={onSelectShot}
+              />
+            ))}
+          </section>
+        )}
+      </section>
 
       <div className="min-w-0">
         {!selectedShot || !form ? (

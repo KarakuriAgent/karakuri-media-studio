@@ -130,9 +130,17 @@ async def create_demo_project(payload: StudioDemoCreate) -> StudioProjectDetail:
 
 
 @router.get("/projects/{project_id}", response_model=StudioProjectDetail)
-async def get_project(project_id: str) -> StudioProjectDetail:
+async def get_project(
+    project_id: str,
+    #: 指定すると場・Shot・Take を**その話のぶんだけ**返す（話の一覧と素材は
+    #: 画面に要るので常に全件）。省略すると今までどおり作品まるごと。
+    episode_id: str | None = None,
+) -> StudioProjectDetail:
     """素材・Shot・Take（ジョブの状態と成果物つき）を含む 1 画面ぶん。"""
-    detail = await service.project_detail(project_id)
+    try:
+        detail = await service.project_detail(project_id, episode_id)
+    except service.StudioNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
     if detail is None:
         raise HTTPException(status_code=404, detail="project not found")
     return detail
@@ -420,7 +428,12 @@ async def create_shot(project_id: str, payload: StudioShotCreate) -> StudioShot:
 async def reorder_shots(
     project_id: str, payload: StudioShotReorder
 ) -> list[StudioShot]:
-    """``shot_ids`` の並び順をそのまま ``sort_order`` にする（全件を送る）。"""
+    """``shot_ids`` の並び順をそのまま ``sort_order`` にする。
+
+    並び順は**場の中**のものなので、1 つの場（または未分類グループ）の Shot を
+    全件、過不足なく並べたものを送る。作品の Shot 全件も受け取れる（その場合は
+    場ごとに切り分けて書き戻す）。
+    """
     if await service.get_project(project_id) is None:
         raise HTTPException(status_code=404, detail="project not found")
     try:

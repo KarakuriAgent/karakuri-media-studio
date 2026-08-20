@@ -2827,6 +2827,8 @@ class StudioShot(BaseModel):
     project_id: str
     #: 所属する場（None = まだどの場にも入れていない）
     scene_id: str | None = None
+    #: **場の中での**並び順（未分類なら「作品の未分類グループ」の中での順番）。
+    #: 画面に出る順は 話 -> 場 -> この値 の階層で決まり、未分類は作品の末尾
     sort_order: int = 0
     title: str = ""
     #: 物語上の目的（このカットで何が進むのか）
@@ -2888,7 +2890,7 @@ class StudioShotCreate(BaseModel):
     megapixels: float | None = None
     seed: int | None = None
     workflow_override: StudioWorkflowOverride | None = None
-    #: 並び順（省略すると末尾に足す）
+    #: 場の中での並び順（省略すると入る場の末尾に足す。未分類なら未分類の末尾）
     sort_order: int | None = None
 
 
@@ -2945,8 +2947,10 @@ class StudioShotUpdate(BaseModel):
 class StudioShotReorder(BaseModel):
     """POST /api/studio/projects/{id}/shots/reorder body。
 
-    ``shot_ids`` の**並び順がそのまま** ``sort_order`` になる（プロジェクトの
-    Shot を全件、過不足なく並べたものを送る）。
+    ``shot_ids`` の**並び順がそのまま** ``sort_order`` になる。並び順は場の中の
+    ものなので、**1 つの場**（または未分類グループ）の Shot を全件、過不足なく
+    並べたものを送る。作品の Shot 全件も受け取れる（場ごとに切り分けて書き
+    戻す。場をまたいだ移動は :class:`StudioShotUpdate` の ``scene_id``）。
     """
 
     shot_ids: list[str] = Field(default_factory=list)
@@ -3088,12 +3092,17 @@ class StudioCapabilities(BaseModel):
 
 
 class StudioProjectDetail(StudioProject):
-    """GET /api/studio/projects/{id}: 画面 1 枚を組み立てるのに要るもの一式。"""
+    """GET /api/studio/projects/{id}: 画面 1 枚を組み立てるのに要るもの一式。
+
+    クエリの ``episode_id`` を付けると ``scenes`` / ``shots`` / ``takes`` は
+    **その話のぶんだけ**になる（``assets`` と ``episodes`` は常に全件）。
+    """
 
     assets: list[StudioAsset] = Field(default_factory=list)
     episodes: list[StudioEpisode] = Field(default_factory=list)
     #: プロジェクトの全シーン（話ごとではなく 1 本の配列。``episode_id`` で束ねる）
     scenes: list[StudioScene] = Field(default_factory=list)
+    #: 話 -> 場 -> カットの順（未分類の Shot は末尾にまとまる）
     shots: list[StudioShot] = Field(default_factory=list)
     #: プロジェクトの全 Take（新しい順ではなく Shot ごとに古い順）
     takes: list[StudioTake] = Field(default_factory=list)
