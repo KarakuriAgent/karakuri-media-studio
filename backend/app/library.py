@@ -424,6 +424,41 @@ async def add_from_job(
     )
 
 
+async def add_from_file(
+    origin: str | Path,
+    kind: str,
+    name: str = "",
+    tags: object = None,
+    category: object = None,
+) -> LibraryItem:
+    """アプリが作ったファイルをライブラリへコピーして登録する。
+
+    ジョブの出力（:func:`add_from_job`）でも人のアップロード（:func:`add_upload`）
+    でもない、アプリ内で組み上げた成果物のための入り口——いまは編集タブの書き出し
+    （:mod:`app.timeline`）が使う。元のファイルは動かさずコピーを取る。
+    """
+    resolved_kind = check_kind(kind)
+    resolved_category = check_category(category)
+    source = rebase_stored_path(origin)
+    if not source.is_file():
+        raise LibraryError(f"file not found: {source}")
+    ext = check_extension(resolved_kind, source.suffix)
+    display = (name or "").strip() or source.name
+    dest = kind_dir(resolved_kind) / f"{safe_stem(Path(display).stem)}_{new_id()}{ext}"
+    shutil.copy2(source, dest)
+    return await _insert(
+        kind=resolved_kind,
+        name=display,
+        path=dest,
+        nsfw=False,
+        nsfw_source="",
+        source_job_id=None,
+        source=None,
+        tags=normalize_tags(tags),
+        category=resolved_category,
+    )
+
+
 #: 合成したリファレンスシートに必ず付けるタグ（あとから棚で見つけやすくする）
 SHEET_TAG = "reference-sheet"
 

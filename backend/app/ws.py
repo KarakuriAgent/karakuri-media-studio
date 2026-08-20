@@ -29,6 +29,7 @@ from .models import (
     LibraryProgress,
     ModelDownload,
     ModelDownloadProgress,
+    TimelineExportProgress,
 )
 
 log = logging.getLogger(__name__)
@@ -216,6 +217,42 @@ async def publish_library(item: LibraryItem) -> None:
             "kind": item.kind,
             "name": item.name,
             "tags": list(item.tags),
+        }
+    await hub.broadcast(payload)
+
+
+async def publish_timeline_export(
+    export_id: str,
+    timeline_id: str,
+    status: str,
+    *,
+    progress: float = 0.0,
+    output_url: str | None = None,
+    error: str | None = None,
+) -> None:
+    """編集タブの書き出し進捗を配信（``type: "timeline_export"``）。Never raises.
+
+    書き出しの正は ``timeline_exports`` なので、ここで流すのは状態と進捗だけ。
+    取りこぼしたブラウザは履歴（``GET /timelines/{id}/exports``）で追いつける。
+    """
+    try:
+        payload = TimelineExportProgress(
+            export_id=export_id,
+            timeline_id=timeline_id,
+            status=status,  # type: ignore[arg-type]
+            progress=progress,
+            output_url=output_url,
+            error=error,
+        ).model_dump()
+    except Exception:  # noqa: BLE001 - 通知の失敗で書き出しを壊さない
+        payload = {
+            "type": "timeline_export",
+            "export_id": export_id,
+            "timeline_id": timeline_id,
+            "status": status,
+            "progress": progress,
+            "output_url": output_url,
+            "error": error,
         }
     await hub.broadcast(payload)
 

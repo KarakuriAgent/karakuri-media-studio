@@ -299,6 +299,80 @@ CREATE TABLE IF NOT EXISTS canvas_messages (
   data       TEXT NOT NULL DEFAULT '{}'
 );
 
+-- 編集タブ（スタジオの動画編集）: タイムライン -> トラック -> クリップ。
+-- 焼き上がった Take を並べ直して 1 本の動画に書き出すための EDL で、生成
+-- （studio_*）とは別の面として持つ。フェーズ 1 で実際に使うのは V1 の
+-- video トラックと source_kind='take' のクリップだけ。
+--
+-- ソース（Take・ジョブ・素材）への外部キーは**張らない**: 元が消えても
+-- タイムラインの並びは残し、読み取り時に「メディア欠落」として見せる。
+-- タイムラインを消したときのトラック・クリップ・書き出しの後始末は
+-- アプリ側（app/timeline.py の delete_timeline）で行う。
+--
+-- project_id をトラックとクリップにも持たせてあるのは、リビジョンの
+-- スナップショット（app/studio.py の _SNAPSHOT_TABLES）が project_id で
+-- 束ねて書き戻すため（studio_asset_files と同じ持ち方）。
+CREATE TABLE IF NOT EXISTS studio_timelines (
+  id          TEXT PRIMARY KEY,
+  project_id  TEXT NOT NULL REFERENCES studio_projects(id) ON DELETE CASCADE,
+  episode_id  TEXT,                        -- どの話を組んだものか（NULL = 作品まるごと）
+  name        TEXT NOT NULL DEFAULT '',
+  fps         REAL NOT NULL DEFAULT 24,    -- 書き出しの規格（クリップはここへ揃える）
+  width       INTEGER NOT NULL DEFAULT 1280,
+  height      INTEGER NOT NULL DEFAULT 720,
+  created_at  TEXT NOT NULL,
+  updated_at  TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS timeline_tracks (
+  id          TEXT PRIMARY KEY,
+  timeline_id TEXT NOT NULL,
+  project_id  TEXT NOT NULL REFERENCES studio_projects(id) ON DELETE CASCADE,
+  kind        TEXT NOT NULL CHECK(kind IN ('video', 'audio', 'subtitle')),
+  name        TEXT NOT NULL DEFAULT '',
+  sort_order  INTEGER NOT NULL DEFAULT 0,
+  muted       INTEGER NOT NULL DEFAULT 0,
+  locked      INTEGER NOT NULL DEFAULT 0
+);
+
+-- timeline_id は track から辿れるが**非正規で持つ**: 1 本のタイムラインの
+-- クリップを全部引く／全部差し替える（PUT /clips）のが主な使い道なので、
+-- そのたびにトラックと join しないで済ませる。
+CREATE TABLE IF NOT EXISTS timeline_clips (
+  id          TEXT PRIMARY KEY,
+  track_id    TEXT NOT NULL,
+  timeline_id TEXT NOT NULL,
+  project_id  TEXT NOT NULL REFERENCES studio_projects(id) ON DELETE CASCADE,
+  start_ms    INTEGER NOT NULL DEFAULT 0,   -- タイムライン上の開始位置
+  duration_ms INTEGER NOT NULL DEFAULT 0,   -- 尺（等速なので out_ms - in_ms と一致する）
+  source_kind TEXT NOT NULL
+    CHECK(source_kind IN ('take', 'asset_file', 'library', 'job', 'text', 'gap')),
+  source_id   TEXT,                         -- 上の種別の中での id（gap / text は NULL）
+  in_ms       INTEGER NOT NULL DEFAULT 0,   -- ソースの中の切り出し位置
+  out_ms      INTEGER NOT NULL DEFAULT 0,
+  gain_db     REAL NOT NULL DEFAULT 0,
+  fade_in_ms  INTEGER NOT NULL DEFAULT 0,
+  fade_out_ms INTEGER NOT NULL DEFAULT 0,
+  transition_kind TEXT,                     -- NULL = カット（フェーズ 1 は常に NULL）
+  transition_ms INTEGER NOT NULL DEFAULT 0,
+  text_payload TEXT,                        -- text クリップの中身（JSON。他は NULL）
+  sort_order  INTEGER NOT NULL DEFAULT 0
+);
+
+-- 1 回の書き出し。ffmpeg の実行状態と成果物（outputs/exports/{id}/final.mp4）。
+-- リビジョンのスナップショットには入れない（実行結果は履歴で戻すものではない）。
+CREATE TABLE IF NOT EXISTS timeline_exports (
+  id          TEXT PRIMARY KEY,
+  timeline_id TEXT NOT NULL,
+  status      TEXT NOT NULL DEFAULT 'queued',  -- queued / running / done / failed
+  progress    REAL NOT NULL DEFAULT 0,         -- 0.0〜1.0
+  params      TEXT NOT NULL DEFAULT '{}',      -- 書き出し設定（JSON）
+  output_path TEXT,
+  error       TEXT,
+  created_at  TEXT NOT NULL,
+  finished_at TEXT
+);
+
 CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_library_created_at ON library(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_agent_sessions_created_at
@@ -323,6 +397,15 @@ CREATE INDEX IF NOT EXISTS idx_studio_scenes_episode
 -- リビジョンの連番はプロジェクトごとに 1 本（同じ seq を 2 つ作らない）。
 CREATE UNIQUE INDEX IF NOT EXISTS idx_studio_revisions_seq
   ON studio_revisions(project_id, seq);
+
+CREATE INDEX IF NOT EXISTS idx_studio_timelines_project
+  ON studio_timelines(project_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_timeline_tracks_timeline
+  ON timeline_tracks(timeline_id, sort_order);
+CREATE INDEX IF NOT EXISTS idx_timeline_clips_timeline
+  ON timeline_clips(timeline_id, track_id, start_ms);
+CREATE INDEX IF NOT EXISTS idx_timeline_exports_timeline
+  ON timeline_exports(timeline_id, created_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_canvas_cards_project
   ON canvas_cards(project_id, z);

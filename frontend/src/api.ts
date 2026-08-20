@@ -74,6 +74,13 @@ import type {
   StudioShotPreview,
   StudioShotUpdate,
   StudioTake,
+  StudioTimeline,
+  StudioTimelineCreate,
+  StudioTimelineDetail,
+  StudioTimelineUpdate,
+  TimelineClipInput,
+  TimelineExport,
+  TimelineExportRequest,
 } from './types'
 
 export class ApiError extends Error {
@@ -618,6 +625,55 @@ export const api = {
   cancelStudioTake: (id: string) =>
     json<StudioTake>('POST', `/api/studio/takes/${id}/cancel`),
   deleteStudioTake: (id: string) => json<void>('DELETE', `/api/studio/takes/${id}`),
+
+  // 編集タブ（タイムライン -> クリップ -> 書き出し）。焼き上がった Take を
+  // 並べ直して 1 本の動画にする面で、生成（上の Shot / Take）とは別に持つ。
+  /**
+   * タイムラインを 1 本作る。
+   *
+   * `episode_id` を送ると**自動配置つき**の初期化になる（その話のカットを
+   * 場 -> カット順に走査し、採用 Take の動画があるものを V1 へ隙間なく並べる）。
+   */
+  createStudioTimeline: (projectId: string, payload: StudioTimelineCreate = {}) =>
+    json<StudioTimelineDetail>(
+      'POST',
+      `/api/studio/projects/${projectId}/timelines`,
+      payload,
+    ),
+  listStudioTimelines: (projectId: string) =>
+    request<StudioTimeline[]>(`/api/studio/projects/${projectId}/timelines`),
+  /** トラックとクリップ込みのフル EDL（クリップはソース解決済み）。 */
+  getStudioTimeline: (id: string) =>
+    request<StudioTimelineDetail>(`/api/studio/timelines/${id}`),
+  updateStudioTimeline: (id: string, patch: StudioTimelineUpdate) =>
+    json<StudioTimeline>('PATCH', `/api/studio/timelines/${id}`, patch),
+  deleteStudioTimeline: (id: string) =>
+    json<void>('DELETE', `/api/studio/timelines/${id}`),
+  /**
+   * クリップを丸ごと置き換える（画面の自動保存の受け口）。
+   *
+   * 同じトラックで重なっているもの、`in_ms >= out_ms`、尺と切り出しの長さが
+   * 食い違うもの（フェーズ 1 は等速のみ）は 400 で断られる。
+   */
+  replaceStudioTimelineClips: (id: string, clips: TimelineClipInput[]) =>
+    json<StudioTimelineDetail>('PUT', `/api/studio/timelines/${id}/clips`, {
+      clips,
+    }),
+  /**
+   * 書き出しを 1 本受け付ける（**202 即受付**。ffmpeg は裏で走る）。
+   *
+   * 進捗は WS の `timeline_export` フレームと `listStudioTimelineExports` で追う。
+   * 同じタイムラインで走っているものがあれば 409。
+   */
+  exportStudioTimeline: (id: string, body: TimelineExportRequest = {}) =>
+    json<TimelineExport>('POST', `/api/studio/timelines/${id}/export`, body),
+  listStudioTimelineExports: (id: string) =>
+    request<TimelineExport[]>(`/api/studio/timelines/${id}/exports`),
+  /** 完成した mp4 をライブラリ（`library/video/`）へコピーして登録する。 */
+  saveStudioExportToLibrary: (exportId: string, name = '') =>
+    json<LibraryItem>('POST', `/api/studio/exports/${exportId}/save-to-library`, {
+      name,
+    }),
 
   // キャンバス（スタジオの別ビュー）。カードは「スタジオのどの行か」と「どこに
   // 置いてあるか」だけを持つので、中身は getStudioProject と重ねて使う。

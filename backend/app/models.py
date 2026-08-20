@@ -3151,6 +3151,197 @@ class StudioAssetFromJob(StudioAssetCreate):
 
 
 # --------------------------------------------------------------------------
+# 編集タブ（タイムライン -> トラック -> クリップ -> 書き出し）
+# --------------------------------------------------------------------------
+#
+# 焼き上がった Take を並べ直して 1 本の動画にするための EDL。生成（Shot ->
+# Take）とは別の面で、タイムラインはソースの行を**参照するだけ**（元が消えても
+# 並びは残り、読み取りで「メディア欠落」= ``missing`` として見せる）。
+
+#: トラックの種別。フェーズ 1 で実際に使うのは ``video`` の V1 だけ
+TimelineTrackKind = Literal["video", "audio", "subtitle"]
+
+#: クリップのソース。フェーズ 1 で実際に使うのは ``take``（と隙間の ``gap``）だけで、
+#: 残りは後のフェーズで足す入れ物として値だけ通しておく
+TimelineClipSource = Literal["take", "asset_file", "library", "job", "text", "gap"]
+
+#: 書き出し 1 回の状態（ジョブと違って外部バックエンドは無いので 4 つだけ）
+TimelineExportStatus = Literal["queued", "running", "done", "failed"]
+
+
+class StudioTimeline(BaseModel):
+    """1 本のタイムライン（書き出しの規格を持つ EDL の入れ物）。"""
+
+    id: str
+    project_id: str
+    #: どの話を組んだものか（``None`` = 作品まるごと）
+    episode_id: str | None = None
+    name: str = ""
+    #: 書き出しの規格。クリップはここへ揃えて連結される
+    fps: float = 24.0
+    width: int = 1280
+    height: int = 720
+    created_at: str
+    updated_at: str
+
+
+class StudioTimelineCreate(BaseModel):
+    """POST /api/studio/projects/{id}/timelines body。
+
+    ``episode_id`` を送ると**自動配置つきの初期化**になる: その話のカットを
+    場 -> カット順に走査し、採用 Take の動画があるものを V1 へ隙間なく並べる。
+    """
+
+    episode_id: str | None = None
+    #: 省略すると話の見出し（または作品名）から決まる
+    name: str = ""
+    fps: float | None = None
+    width: int | None = None
+    height: int | None = None
+
+
+class StudioTimelineUpdate(BaseModel):
+    """PATCH /api/studio/timelines/{id} body（指定した項目だけ変える）。"""
+
+    name: str | None = None
+    fps: float | None = None
+    width: int | None = None
+    height: int | None = None
+
+
+class TimelineClip(BaseModel):
+    """トラックに置かれたクリップ 1 つ（ソース解決済み）。"""
+
+    id: str
+    track_id: str
+    timeline_id: str
+    #: タイムライン上の開始位置（ミリ秒）
+    start_ms: int = 0
+    #: 尺（ミリ秒）。等速なので ``out_ms - in_ms`` と一致する
+    duration_ms: int = 0
+    source_kind: TimelineClipSource = "take"
+    #: 上の種別の中での id（``gap`` / ``text`` は None）
+    source_id: str | None = None
+    #: ソースの中の切り出し位置（ミリ秒）
+    in_ms: int = 0
+    out_ms: int = 0
+    gain_db: float = 0.0
+    fade_in_ms: int = 0
+    fade_out_ms: int = 0
+    #: 次のクリップへの繋ぎ（``None`` = カット。フェーズ 1 は常に None）
+    transition_kind: str | None = None
+    transition_ms: int = 0
+    #: ``text`` クリップの中身（他の種別では None）
+    text_payload: dict[str, Any] | None = None
+    sort_order: int = 0
+    # --- ここから下は読み取りのたびに解決する（DB には持たない） -------------
+    #: 再生できる URL（``/outputs/…``）。解決できなければ None
+    video_url: str | None = None
+    #: ソースそのものの長さ（ミリ秒）。分からなければ None
+    source_duration_ms: int | None = None
+    #: ソースの実ファイルが無い（元の Take やジョブが消えた / 失敗した）
+    missing: bool = False
+    #: 画面に出す見出し（Take なら「第 1 話 / 場 1 / #2」のようなカットの位置）
+    label: str = ""
+
+
+class TimelineTrack(BaseModel):
+    """トラック 1 本（クリップ込み）。"""
+
+    id: str
+    timeline_id: str
+    kind: TimelineTrackKind = "video"
+    name: str = ""
+    sort_order: int = 0
+    muted: bool = False
+    locked: bool = False
+    clips: list[TimelineClip] = Field(default_factory=list)
+
+
+class StudioTimelineDetail(StudioTimeline):
+    """GET /api/studio/timelines/{id}: トラックとクリップ込みのフル EDL。"""
+
+    tracks: list[TimelineTrack] = Field(default_factory=list)
+    #: 一番後ろのクリップの終わり（ミリ秒）
+    duration_ms: int = 0
+
+
+class TimelineClipInput(BaseModel):
+    """PUT /api/studio/timelines/{id}/clips の 1 件。
+
+    ``id`` は送れば引き継ぎ、省略すれば新しく振る（画面側で分割した直後の
+    クリップなど）。解決済みの項目（``video_url`` 等）は送っても無視される。
+    """
+
+    id: str | None = None
+    track_id: str
+    start_ms: int = 0
+    duration_ms: int = 0
+    source_kind: TimelineClipSource = "take"
+    source_id: str | None = None
+    in_ms: int = 0
+    out_ms: int = 0
+    gain_db: float = 0.0
+    fade_in_ms: int = 0
+    fade_out_ms: int = 0
+    transition_kind: str | None = None
+    transition_ms: int = 0
+    text_payload: dict[str, Any] | None = None
+
+
+class TimelineClipsUpdate(BaseModel):
+    """PUT /api/studio/timelines/{id}/clips body（クリップ全置換）。"""
+
+    clips: list[TimelineClipInput] = Field(default_factory=list)
+
+
+class TimelineExport(BaseModel):
+    """書き出し 1 回（``outputs/exports/{id}/final.mp4``）。"""
+
+    id: str
+    timeline_id: str
+    status: TimelineExportStatus = "queued"
+    #: 0.0〜1.0（ffmpeg の ``-progress`` から出す目安）
+    progress: float = 0.0
+    params: dict[str, Any] = Field(default_factory=dict)
+    output_path: str | None = None
+    #: ``/outputs/…`` の配信 URL（まだ無ければ None）
+    output_url: str | None = None
+    error: str | None = None
+    created_at: str
+    finished_at: str | None = None
+
+
+class TimelineExportRequest(BaseModel):
+    """POST /api/studio/timelines/{id}/export body（すべて任意の上書き）。"""
+
+    #: 送らなければタイムラインの規格のまま焼く
+    width: int | None = None
+    height: int | None = None
+    fps: float | None = None
+
+
+class TimelineExportSave(BaseModel):
+    """POST /api/studio/exports/{id}/save-to-library body。"""
+
+    #: ライブラリでの表示名（省略するとタイムライン名から決まる）
+    name: str = ""
+
+
+class TimelineExportProgress(BaseModel):
+    """WS /api/ws で流す書き出しの進捗（``type: "timeline_export"``）。"""
+
+    type: Literal["timeline_export"] = "timeline_export"
+    export_id: str
+    timeline_id: str
+    status: TimelineExportStatus
+    progress: float = 0.0
+    #: 完了したときだけ入る配信 URL
+    output_url: str | None = None
+    error: str | None = None
+
+
+# --------------------------------------------------------------------------
 # 一括投入（外部 API の POST /api/v1/stories。docs/EXTERNAL-API.md §2）
 # --------------------------------------------------------------------------
 #

@@ -1101,6 +1101,121 @@ CREATE TABLE library (
   そのパスをジョブの `source_image` に指定して動画化する流れまでを
   システムプロンプトで指示している（承認不要の即時アクション）
 
+### 7.3 編集タブ（タイムライン）
+
+ドラマスタジオの**制作**タブが「1 カットを焼く」ところまでなのに対して、**編集**タブは
+焼き上がったテイクを並べ直して**1 本の動画に書き出す**面。生成（`studio_*`）とは別の
+テーブル群を持ち、クリップはソースの行を**参照するだけ**で複製しない。
+
+```sql
+CREATE TABLE studio_timelines (
+  id          TEXT PRIMARY KEY,
+  project_id  TEXT NOT NULL REFERENCES studio_projects(id) ON DELETE CASCADE,
+  episode_id  TEXT,                        -- どの話を組んだものか（NULL = 作品まるごと）
+  name        TEXT NOT NULL DEFAULT '',
+  fps         REAL NOT NULL DEFAULT 24,    -- 書き出しの規格（クリップはここへ揃える）
+  width       INTEGER NOT NULL DEFAULT 1280,
+  height      INTEGER NOT NULL DEFAULT 720,
+  created_at  TEXT NOT NULL,
+  updated_at  TEXT NOT NULL
+);
+
+CREATE TABLE timeline_tracks (
+  id          TEXT PRIMARY KEY,
+  timeline_id TEXT NOT NULL,
+  project_id  TEXT NOT NULL REFERENCES studio_projects(id) ON DELETE CASCADE,
+  kind        TEXT NOT NULL CHECK(kind IN ('video','audio','subtitle')),
+  name        TEXT NOT NULL DEFAULT '',    -- 'V1' など
+  sort_order  INTEGER NOT NULL DEFAULT 0,
+  muted       INTEGER NOT NULL DEFAULT 0,
+  locked      INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE timeline_clips (
+  id          TEXT PRIMARY KEY,
+  track_id    TEXT NOT NULL,
+  timeline_id TEXT NOT NULL,               -- 非正規（1 本ぶんを join なしで引く / 全置換する）
+  project_id  TEXT NOT NULL REFERENCES studio_projects(id) ON DELETE CASCADE,
+  start_ms    INTEGER NOT NULL DEFAULT 0,  -- タイムライン上の開始位置
+  duration_ms INTEGER NOT NULL DEFAULT 0,  -- 尺（等速なので out_ms - in_ms と一致）
+  source_kind TEXT NOT NULL
+    CHECK(source_kind IN ('take','asset_file','library','job','text','gap')),
+  source_id   TEXT,                        -- 上の種別の中での id（gap / text は NULL）
+  in_ms       INTEGER NOT NULL DEFAULT 0,  -- ソースの中の切り出し位置
+  out_ms      INTEGER NOT NULL DEFAULT 0,
+  gain_db     REAL NOT NULL DEFAULT 0,
+  fade_in_ms  INTEGER NOT NULL DEFAULT 0,
+  fade_out_ms INTEGER NOT NULL DEFAULT 0,
+  transition_kind TEXT,                    -- NULL = カット（フェーズ 1 は常に NULL）
+  transition_ms INTEGER NOT NULL DEFAULT 0,
+  text_payload TEXT,                       -- text クリップの中身（JSON）
+  sort_order  INTEGER NOT NULL DEFAULT 0
+);
+
+CREATE TABLE timeline_exports (
+  id          TEXT PRIMARY KEY,
+  timeline_id TEXT NOT NULL,
+  status      TEXT NOT NULL DEFAULT 'queued',  -- queued | running | done | failed
+  progress    REAL NOT NULL DEFAULT 0,         -- 0.0〜1.0
+  params      TEXT NOT NULL DEFAULT '{}',      -- 書き出し設定（width / height / fps）
+  output_path TEXT,
+  error       TEXT,
+  created_at  TEXT NOT NULL,
+  finished_at TEXT
+);
+```
+
+- **ソースへの外部キーは張らない**。元のテイクやジョブが消えてもクリップの並びは残し、
+  読み取りのたびに実ファイルの有無を見て `missing`（メディア欠落）として返す。書き出しでも
+  そこで失敗させず、その尺ぶんの黒＋無音に置き換える（欠けている場所が目に見えるほうが直しやすい）
+- **タイムライン削除の後始末はアプリ側**（`app.timeline.delete_timeline`）でトラック・クリップ・
+  書き出しの記録を消す。書き出した mp4 は成果物なので残す（ジョブの出力と同じ扱い）
+- `timeline_tracks` / `timeline_clips` が `project_id` を持つのは、リビジョンのスナップショット
+  （`app.studio._SNAPSHOT_TABLES`）が project_id で束ねて書き戻すため（`studio_asset_files` と同じ持ち方）。
+  EDL はリビジョンに載るが、`timeline_exports`（実行結果）は載らない
+- スナップショットに**そのテーブルのキーが無い**（編集タブより前に取ったリビジョン）ときは、
+  その面を「空だった」と読まずに触らない。復元でタイムラインが丸ごと消えるのを防ぐ
+
+#### 自動配置つきの初期化
+
+`POST /projects/{id}/timelines` に `episode_id` を渡すと、その話のカットを **場 → カット順**
+（`app.studio._fetch_shots` と同じ規則）に走査し、`selected_take_id` があって動画が実在する
+ものだけを V1 トラックへ**隙間なく**並べる。クリップの尺は ffprobe で読み、読めなければ
+5 秒（`app.timeline.FALLBACK_CLIP_MS`）に落とす。`episode_id` を省くと V1 だけの空のタイムライン。
+
+#### 書き出しエンジン（`app/timeline_export.py`）
+
+EDL → ffmpeg コマンドの**組み立ては純関数**（`build_command`）で、実行（`run_export`）と分けてある。
+
+- クリップごとに `trim` + `setpts` で切り出し、`scale`（`force_original_aspect_ratio=decrease`）
+  + `pad` + `setsar=1` + `fps` でタイムラインの規格へ正規化（比の違うソースは切らずに黒帯）。
+  音声も `atrim` + `asetpts` + `aresample` + `aformat` で 48kHz / stereo に揃える
+- 音声を持たないソースと `gap` には、その尺ぶんの `color`（黒）と `anullsrc`（無音）を `lavfi` から
+  足す。全クリップが「映像 1 本 + 音声 1 本」になるので、そのまま `concat` で繋げる
+- 出力は `outputs/exports/{export_id}/final.mp4`（H.264 + AAC / yuv420p / `+faststart`）。
+  `OUTPUTS_DIR` の下なので `/outputs` でそのまま配信できる
+- 進捗は `-progress pipe:1` の `out_time_us` を読み、`timeline_exports.progress` を更新しつつ
+  WS（`type: "timeline_export"`）へ流す。`communicate()` は使わない（stdout を奪い合うため）
+- 同じタイムラインで走っている書き出しがあれば **409**（同時に 2 本焼いても得がない）
+
+#### フェーズ 1 の範囲と既知の制限
+
+扱うのは **V1（映像トラック 1 本）の `source_kind='take'` クリップだけ**。ほかの
+`source_kind` と `audio` / `subtitle` トラックは、後のフェーズのために enum と列だけ通してある。
+
+- **等速のみ**: `duration_ms == out_ms - in_ms` をサーバー側で検証する（速度変更は未対応）
+- **リップル方式**: クリップは常に先頭から隙間なく詰まる。自由配置と同一トラック内の重なりは無い
+  （重なりは `PUT /clips` が 400 で断る）。隙間を置きたいときは `gap` クリップで表す
+- **トランジションなし**: `transition_kind` は常に NULL（カットのみ）。フェード（`fade_in_ms` /
+  `fade_out_ms`）と音量（`gain_db`）は列としては持つが、UI からは触らない
+  （`gain_db` だけ書き出しに効く）
+- **プレビューは近似**: 画面はクリップごとの `<video>` を切り替える方式（プレイヤースイッチング）で、
+  境界に一瞬の間が出るし解像度・fps の正規化も入らない。正確な結果は書き出しで確かめる
+  （その旨を画面にも出す）
+- **Undo / Redo は画面の中だけ**。サーバーには「今の並び」しか無い（`app.timeline.replace_clips` は
+  全置換）。編集は 1〜2 秒のデバウンスで `PUT /clips` に自動保存し、状態をインジケータに出す
+- **字幕・BGM・音量調整・書き出しプリセットは未実装**（フェーズ 2 以降）
+
 ---
 
 ## 8. UI 仕様
@@ -1170,6 +1285,15 @@ SPA 1 画面 + 履歴。ダークテーマの生成系ツールらしい見た�
 - **再実行は 2 通り**: [再実行（シード再抽選）] と [再実行（同じシード）]（`JobRerun.randomize_seed`）を結果ペイン・詳細ドロワーの両方に並べる
 - **続き生成は上書きフォーム**: [続きを生成] は `ContinueModal` を開く。全項目の既定が「元ジョブを引き継ぐ」（空欄・プレースホルダに元の値）で、[そのまま続き生成] は空ボディ、[この設定で続き生成] は**埋めた欄だけ**を `JobContinue` として送る。動画ワークフロー・プロンプト・ネガティブ・アスペクト比・メガピクセル・尺・fps・seed・リファレンス音声/最後のフレーム/参照動画のパス・使用モデル（切り替え先ワークフローのスロット）を並べる
 - ヘッダーの NSFW 表示トグルは `sessionStorage` に保持する（既定オフ。タブを開き直すと必ずオフに戻る）
+- **ドラマスタジオのタブは 概要 / 脚本 / World Bible / 制作 / 編集**（`StudioView` の `StudioTab`）。
+  一番右の**編集**（`EditView`、§7.3）は、話を選んで [タイムラインを作成] を押すとその話の採用
+  テイクを並べたタイムラインができ、上に**プレビュー**（`PreviewMonitor`）、下に**V1 のタイムライン**
+  （`TimelinePane`）、右に**クリップの詳細**（`ClipInspector`）と**書き出し**（`ExportPanel`）が並ぶ。
+  操作は「本体ドラッグ = 並べ替え（リップル）」「端ドラッグ = トリム」「Ctrl+ホイール = ズーム
+  （1 秒あたり 20〜200px）」「ルーラーのクリック / ドラッグ = スクラブ」「Delete = 削除」
+  「分割 = 再生ヘッドの位置で 2 つに割る」「Ctrl+Z / Ctrl+Shift+Z = やり直し」。
+  メディア欠落のクリップは赤系で [メディア欠落] と出し、保存状態は [保存済み] / [未保存の変更] /
+  [保存中…] / [保存に失敗] のバッジに出す
 
 ---
 
@@ -1215,8 +1339,20 @@ POST /api/jobs/{id}/rerun        … 再実行（seed 変更オプション）
 POST /api/jobs/{id}/continue     … ラストフレームを開始フレームに新規ジョブ（`video_workflow` / `end_image` / `reference_video` / `model_overrides` 等を差分指定可。開始フレームを取れないワークフローは既定に戻す）
 DELETE /api/jobs/{id}
 POST /api/assets/audio|image|video … アセットアップロード（video は参照動画用）
+
+… 編集タブ（タイムライン。プレフィックスはスタジオと同じ /api/studio、§7.3）
+POST /api/studio/projects/{id}/timelines … タイムライン作成（`episode_id` を送ると自動配置つき初期化）
+GET  /api/studio/projects/{id}/timelines … 一覧（中身は含めない）
+GET  /api/studio/timelines/{id}  … トラック・クリップ込みのフル EDL（`video_url` / `source_duration_ms` / `missing` 解決済み）
+PATCH  /api/studio/timelines/{id} … 名前・規格（fps / width / height）の変更
+DELETE /api/studio/timelines/{id} … トラック・クリップ・書き出しの記録ごと削除（mp4 は残る）
+PUT  /api/studio/timelines/{id}/clips  … クリップ全置換（自動保存の受け口。重なり / in>=out / 速度変更は 400）
+POST /api/studio/timelines/{id}/export … 書き出し開始（**202 即受付**。走っているものがあれば 409）
+GET  /api/studio/timelines/{id}/exports … 書き出し履歴（新しい順、`output_url` つき）
+POST /api/studio/exports/{id}/save-to-library … 完成 mp4 を library/video/ へコピーして登録
+
 GET  /library/…                  … 静的配信（ライブラリの素材、§7.2）
-WS   /api/ws                     … 進捗配信（`type: "job"` / `"agent"` / `"chat"` / `"canvas"` / `"library"` / `"model_download"`）
+WS   /api/ws                     … 進捗配信（`type: "job"` / `"agent"` / `"chat"` / `"canvas"` / `"library"` / `"model_download"` / `"timeline_export"`）
 GET  /outputs/…                  … 静的配信（画像/動画/音声）
 ```
 
@@ -1247,7 +1383,7 @@ Grok エージェントのスタジオ操作（§ドラマスタジオ / `app.ag
 
 ```
 backend/            FastAPI アプリ
-  app/routers/      health / settings / loras / models_config / model_download / assets / options / chat / jobs / agent / studio / canvas / external
+  app/routers/      health / settings / loras / models_config / model_download / assets / options / chat / jobs / agent / studio / timelines / canvas / external
   app/comfy.py      ComfyUI クライアント（/object_info, /upload/image, /prompt, /ws, /history, /view）
   app/workflows.py  ワークフロー登録簿と注入マニフェスト（ノード ID 直指定）+ プロンプト用カタログ
   app/workflow.py   テンプレートへのパラメータ注入・LoRA チェーン動的注入・解像度計算
@@ -1260,6 +1396,8 @@ backend/            FastAPI アプリ
   app/jobs.py       asyncio ジョブキューと実行、成果物取得・ラストフレーム抽出
   app/agent_*.py    エージェントのアクションプロトコル・実行ループ・セッション永続化
   app/library.py    ライブラリ（取っておく素材）の保存・目録
+  app/timeline.py   編集タブ: タイムライン（EDL）の CRUD と書き出しの管理（§7.3）
+  app/timeline_export.py  EDL → ffmpeg コマンドの組み立て（純関数）と実行・進捗
   app/autotag.py    ライブラリ素材の日本語タグ・表示名の自動生成（Grok）
   app/nsfw.py       ジョブ / セッションの NSFW 判定
   app/model_download.py  不足モデルのダウンロード（models ディレクトリへ直接保存）

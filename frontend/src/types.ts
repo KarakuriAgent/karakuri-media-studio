@@ -1514,6 +1514,174 @@ export interface StudioDemoCreate {
 }
 
 // --------------------------------------------------------------------------
+// 編集タブ（タイムライン -> トラック -> クリップ -> 書き出し）
+// backend/app/models.py の Timeline 系モデルの写し。
+//
+// 焼き上がった Take を並べ直して 1 本の動画にするための EDL。クリップはソースを
+// 参照するだけで、元が消えても並びは残り `missing` で伝わる。
+// --------------------------------------------------------------------------
+
+/** トラックの種別（フェーズ 1 で実際に使うのは `video` の V1 だけ）。 */
+export type TimelineTrackKind = 'video' | 'audio' | 'subtitle'
+
+/** クリップのソース（フェーズ 1 で使うのは `take` と隙間の `gap` だけ）。 */
+export type TimelineClipSource =
+  | 'take'
+  | 'asset_file'
+  | 'library'
+  | 'job'
+  | 'text'
+  | 'gap'
+
+/** 書き出し 1 回の状態。 */
+export type TimelineExportStatus = 'queued' | 'running' | 'done' | 'failed'
+
+/** 1 本のタイムライン（書き出しの規格を持つ EDL の入れ物）。 */
+export interface StudioTimeline {
+  id: string
+  project_id: string
+  /** どの話を組んだものか（null = 作品まるごと）。 */
+  episode_id: string | null
+  name: string
+  /** 書き出しの規格。クリップはここへ揃えて連結される。 */
+  fps: number
+  width: number
+  height: number
+  created_at: string
+  updated_at: string
+}
+
+/**
+ * POST /api/studio/projects/{id}/timelines body。
+ *
+ * `episode_id` を送ると自動配置つきの初期化になる（その話の採用 Take を V1 へ
+ * 隙間なく並べる）。
+ */
+export interface StudioTimelineCreate {
+  episode_id?: string | null
+  name?: string
+  fps?: number
+  width?: number
+  height?: number
+}
+
+/** PATCH /api/studio/timelines/{id} body（指定した項目だけ変える）。 */
+export interface StudioTimelineUpdate {
+  name?: string
+  fps?: number
+  width?: number
+  height?: number
+}
+
+/** トラックに置かれたクリップ 1 つ（ソース解決済み）。 */
+export interface TimelineClip {
+  id: string
+  track_id: string
+  timeline_id: string
+  /** タイムライン上の開始位置（ミリ秒）。 */
+  start_ms: number
+  /** 尺（ミリ秒）。等速なので `out_ms - in_ms` と一致する。 */
+  duration_ms: number
+  source_kind: TimelineClipSource
+  source_id: string | null
+  /** ソースの中の切り出し位置（ミリ秒）。 */
+  in_ms: number
+  out_ms: number
+  gain_db: number
+  fade_in_ms: number
+  fade_out_ms: number
+  transition_kind: string | null
+  transition_ms: number
+  text_payload: Record<string, unknown> | null
+  sort_order: number
+  // --- サーバーが読み取りのたびに解決するぶん -------------------------------
+  /** 再生できる URL（`/outputs/…`）。解決できなければ null。 */
+  video_url: string | null
+  /** ソースそのものの長さ（ミリ秒）。分からなければ null。 */
+  source_duration_ms: number | null
+  /** ソースの実ファイルが無い（元の Take が消えた / 失敗した）。 */
+  missing: boolean
+  /** 画面に出す見出し（「第 1 話 / 場 1 / #2 カット名」）。 */
+  label: string
+}
+
+/** トラック 1 本（クリップ込み）。 */
+export interface TimelineTrack {
+  id: string
+  timeline_id: string
+  kind: TimelineTrackKind
+  name: string
+  sort_order: number
+  muted: boolean
+  locked: boolean
+  clips: TimelineClip[]
+}
+
+/** GET /api/studio/timelines/{id}: トラックとクリップ込みのフル EDL。 */
+export interface StudioTimelineDetail extends StudioTimeline {
+  tracks: TimelineTrack[]
+  /** 一番後ろのクリップの終わり（ミリ秒）。 */
+  duration_ms: number
+}
+
+/**
+ * PUT /api/studio/timelines/{id}/clips の 1 件。
+ *
+ * `id` は送れば引き継がれ、省けば新しく振られる（分割した直後のクリップなど）。
+ */
+export interface TimelineClipInput {
+  id?: string | null
+  track_id: string
+  start_ms: number
+  duration_ms: number
+  source_kind: TimelineClipSource
+  source_id?: string | null
+  in_ms: number
+  out_ms: number
+  gain_db?: number
+  fade_in_ms?: number
+  fade_out_ms?: number
+  transition_kind?: string | null
+  transition_ms?: number
+  text_payload?: Record<string, unknown> | null
+}
+
+/** 書き出し 1 回（`outputs/exports/{id}/final.mp4`）。 */
+export interface TimelineExport {
+  id: string
+  timeline_id: string
+  status: TimelineExportStatus
+  /** 0.0〜1.0。 */
+  progress: number
+  params: Record<string, unknown>
+  output_path: string | null
+  /** `/outputs/…` の配信 URL（まだ無ければ null）。 */
+  output_url: string | null
+  error: string | null
+  created_at: string
+  finished_at: string | null
+}
+
+/** POST /api/studio/timelines/{id}/export body（すべて任意の上書き）。 */
+export interface TimelineExportRequest {
+  width?: number
+  height?: number
+  fps?: number
+}
+
+/** WS /api/ws の書き出し進捗（`type: "timeline_export"`）。 */
+export interface TimelineExportProgress {
+  type: 'timeline_export'
+  export_id: string
+  timeline_id: string
+  status: TimelineExportStatus
+  progress: number
+  /** 完了したときだけ入る配信 URL。 */
+  output_url: string | null
+  error: string | null
+}
+
+// --------------------------------------------------------------------------
 // キャンバス（ドラマスタジオの別ビュー）
 // backend/app/models.py のキャンバス系モデルの写し。
 //

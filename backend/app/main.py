@@ -37,6 +37,7 @@ from .routers import (
     push,
     settings,
     studio,
+    timelines,
 )
 from .workflows import validate_specs
 
@@ -100,6 +101,7 @@ app.include_router(chat.router)
 app.include_router(grok.router)
 app.include_router(jobs.router)
 app.include_router(studio.router)
+app.include_router(timelines.router)
 app.include_router(external.router)
 app.include_router(canvas.router)
 app.include_router(agent.router)

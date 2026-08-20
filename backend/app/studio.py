@@ -723,6 +723,11 @@ _SNAPSHOT_TABLES = (
     ("assets", "studio_assets", "sort_order, created_at, id"),
     # 素材のリファレンスは**素材のあと**（親が戻る前に入れると FK で落ちる）。
     ("asset_files", "studio_asset_files", "sort_order, created_at, id"),
+    # 編集タブの EDL（タイムライン -> トラック -> クリップ）。親から順に戻す。
+    # 書き出し（timeline_exports）は実行結果なので対象外（Take と同じ扱い）。
+    ("timelines", "studio_timelines", "created_at, id"),
+    ("timeline_tracks", "timeline_tracks", "sort_order, id"),
+    ("timeline_clips", "timeline_clips", "track_id, start_ms, id"),
     ("cards", "canvas_cards", "z, created_at, id"),
 )
 
@@ -867,6 +872,11 @@ async def restore_revision(project_id: str, seq: int) -> StudioProjectDetail | N
             "UPDATE studio_assets SET name = id WHERE project_id = ?", (project_id,)
         )
         for key, table, _order in _SNAPSHOT_TABLES:
+            # 機能を足す前に取ったスナップショットには、そのテーブルのキーが
+            # そもそも無い。「空だった」と読むとその面（たとえば編集タブの
+            # タイムライン）を丸ごと消してしまうので、載っていない面は触らない。
+            if key not in snapshot:
+                continue
             await _restore_table(conn, project_id, table, snapshot.get(key) or [])
         # 消えた Take を指したままの採用は外す（Take は復元しないため）。
         await conn.execute(

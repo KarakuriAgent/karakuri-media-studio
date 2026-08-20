@@ -15,12 +15,14 @@ import type {
   StudioRenderRequest,
   StudioRevision,
   StudioShotUpdate,
+  TimelineExportProgress,
 } from '../../types'
 import { Banner } from '../ui'
 import { ResizeHandle, useIsWide, useResizablePanel } from '../ui/resizable-panel'
 import { Tabs, TabsList, TabsTrigger } from '../ui/tabs'
 import TargetSelector from '../TargetSelector'
 import CanvasView from '../canvas/CanvasView'
+import EditView from './EditView'
 import EpisodeFilter, { ALL_EPISODES } from './EpisodeFilter'
 import OverviewView from './OverviewView'
 import ProductionView from './ProductionView'
@@ -46,13 +48,15 @@ const ACTIVE_STATUSES = ['queued', 'prompting', 'running']
 const SHOT_RAIL_WIDTH_KEY = 'studioShotRailWidth'
 const SHOT_RAIL_WIDTH = { initial: 256, min: 200, max: 480 }
 
-type StudioTab = 'overview' | 'script' | 'world' | 'production'
+type StudioTab = 'overview' | 'script' | 'world' | 'production' | 'edit'
 
 const TABS: { value: StudioTab; label: string }[] = [
   { value: 'overview', label: '概要' },
   { value: 'script', label: '脚本' },
   { value: 'world', label: 'World Bible' },
   { value: 'production', label: '制作' },
+  // 制作（1 カットを焼く）の次が編集（焼いたものを並べて 1 本にする）。
+  { value: 'edit', label: '編集' },
 ]
 
 /** 話の絞り込みの置き場（作品ごと。次に開いたときも同じ話から始める）。 */
@@ -86,6 +90,7 @@ function rememberEpisode(projectId: string, episodeId: string): void {
 export default function StudioView({
   progress,
   canvasEvent = null,
+  timelineExportEvent = null,
   aspectRatios = [],
   showNsfw = true,
   comfyTarget = null,
@@ -95,6 +100,8 @@ export default function StudioView({
   progress: Record<string, JobProgress>
   /** キャンバスのエージェント実行の最新フレーム（WS）。 */
   canvasEvent?: CanvasProgress | null
+  /** 編集タブの書き出し進捗の最新フレーム（WS）。 */
+  timelineExportEvent?: TimelineExportProgress | null
   /** 生成フォームと同じアスペクト比の候補（無ければ Shot 側は自由入力）。 */
   aspectRatios?: string[]
   /**
@@ -837,6 +844,13 @@ export default function StudioView({
                 onRejectTake={rejectTake}
                 onCancelTake={cancelTake}
                 onDeleteTake={deleteTake}
+              />
+            )}
+            {tab === 'edit' && (
+              <EditView
+                projectId={projectId}
+                episodes={detail.episodes}
+                exportEvent={timelineExportEvent}
               />
             )}
           </div>

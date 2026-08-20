@@ -45,6 +45,7 @@ import type {
   LibraryProgress,
   Options,
   Settings,
+  TimelineExportProgress,
 } from './types'
 
 const ACTIVE_STATUSES = ['queued', 'prompting', 'running']
@@ -96,6 +97,9 @@ export default function App() {
   const [chatSessionId, setChatSessionId] = useState<string | null>(null)
   // 相談チャットの実行状態（活動テキスト。応答待ちのあいだ表示する）
   const [chatEvent, setChatEvent] = useState<ChatProgress | null>(null)
+  // 編集タブの書き出し（進捗と完了。正は timeline_exports なので状態だけ）
+  const [timelineExportEvent, setTimelineExportEvent] =
+    useState<TimelineExportProgress | null>(null)
   const [showNsfw, setShowNsfw] = useState(initialShowNsfw)
   // エラーではない一言（パラメータ復元で LoRA を落としたとき等）。
   const [notice, setNotice] = useState<string | null>(null)
@@ -304,6 +308,7 @@ export default function App() {
             | CanvasProgress
             | ChatProgress
             | LibraryProgress
+            | TimelineExportProgress
           if (frame?.type === 'agent') {
             setAgentEvent(frame)
             return
@@ -314,6 +319,12 @@ export default function App() {
           }
           if (frame?.type === 'chat') {
             setChatEvent(frame)
+            return
+          }
+          // 編集タブの書き出し。進捗の正は timeline_exports なので、ここは
+          // 最新の 1 フレームを渡すだけ（取りこぼしは編集タブが取り直す）。
+          if (frame?.type === 'timeline_export') {
+            setTimelineExportEvent(frame)
             return
           }
           // ライブラリの自動タグ生成が終わった: 選択肢を取り直し、開いている
@@ -751,6 +762,7 @@ export default function App() {
         <StudioView
           progress={progress}
           canvasEvent={canvasEvent}
+          timelineExportEvent={timelineExportEvent}
           aspectRatios={options?.aspect_ratios ?? []}
           showNsfw={showNsfw}
           comfyTarget={settings?.comfy_target ?? null}
