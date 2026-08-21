@@ -639,6 +639,10 @@ class Job(BaseModel):
     #: rest live here (SPEC §6).
     extra_outputs: list[str] = Field(default_factory=list)
     error: str | None = None
+    #: 実行を開始した時刻／終端（done/failed/canceled）に入った時刻。所要時間は
+    #: この 2 つの差として SPA 側で出す。列を足す前に走った履歴は両方 None。
+    started_at: str | None = None
+    finished_at: str | None = None
     #: 外部バックエンドのジョブが消費したクレジット（過去の履歴のためだけに
     #: 残している列。ComfyUI のジョブでは常に None）。
     credits_consumed: float | None = None

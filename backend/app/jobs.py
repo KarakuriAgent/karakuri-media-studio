@@ -1971,13 +1971,28 @@ async def run_job(job_id: str) -> None:
         return
     if job.status in _TERMINAL_STATUSES:
         return
+    # 所要時間の起点。再実行もこの関数を通るので、ここで毎回上書きしておけば
+    # 「今回の実行の開始」が入る（前回の終了時刻は下の finished_at が塗り替える）。
+    await _update(job_id, started_at=_now(), finished_at=None)
     try:
         updates = await _run_job_stages(job)
         await _set_status(
-            job_id, "done", message="done", progress=1.0, error=None, **updates
+            job_id,
+            "done",
+            message="done",
+            progress=1.0,
+            error=None,
+            finished_at=_now(),
+            **updates,
         )
     except asyncio.CancelledError:
-        await _set_status(job_id, "canceled", message="canceled", error="canceled")
+        await _set_status(
+            job_id,
+            "canceled",
+            message="canceled",
+            error="canceled",
+            finished_at=_now(),
+        )
         raise
     except Exception as exc:  # noqa: BLE001 - any failure marks the job failed (§5)
         # RunPod の起動失敗は文言がそのままユーザー向けなので、型名を前置しない。
@@ -1997,7 +2012,9 @@ async def run_job(job_id: str) -> None:
             else f"{type(exc).__name__}: {exc}"
         )
         log.exception("job %s failed", job_id)
-        await _set_status(job_id, "failed", message=detail, error=detail)
+        await _set_status(
+            job_id, "failed", message=detail, error=detail, finished_at=_now()
+        )
 
 
 # --------------------------------------------------------------------------
@@ -2087,7 +2104,11 @@ class JobRunner:
                 if current.status in ("prompting", "running"):
                     await _interrupt_comfy()
                 await _set_status(
-                    job_id, "canceled", message="canceled", error="canceled"
+                    job_id,
+                    "canceled",
+                    message="canceled",
+                    error="canceled",
+                    finished_at=_now(),
                 )
 
         return await get_job(job_id)
@@ -2098,7 +2119,11 @@ class JobRunner:
         job = await get_job(job_id)
         if job is not None and job.status not in _TERMINAL_STATUSES:
             await _set_status(
-                job_id, "canceled", message="canceled", error="canceled"
+                job_id,
+                "canceled",
+                message="canceled",
+                error="canceled",
+                finished_at=_now(),
             )
         return True
 
@@ -2206,4 +2231,5 @@ async def recover_interrupted_jobs() -> None:
                 "failed",
                 message=INTERRUPTED_MESSAGE,
                 error=INTERRUPTED_MESSAGE,
+                finished_at=_now(),
             )

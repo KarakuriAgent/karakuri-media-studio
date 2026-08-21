@@ -505,6 +505,10 @@ export interface Job {
   /** mode 'audio' のジョブが生成した音声ファイル（*出力*）。 */
   audio_output_path: string | null
   error: string | null
+  /** 実行を開始した時刻。列を足す前の履歴には無いので任意（null）。 */
+  started_at?: string | null
+  /** 終端（done/failed/canceled）に入った時刻。所要時間はこの差で出す。 */
+  finished_at?: string | null
   nsfw: boolean
   /** '' = 未判定 / 'auto' = 自動判定 / 'manual' = 手動指定。 */
   nsfw_source: string

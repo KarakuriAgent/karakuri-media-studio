@@ -31,7 +31,9 @@ CREATE TABLE IF NOT EXISTS jobs (
   nsfw          INTEGER NOT NULL DEFAULT 0,
   nsfw_source   TEXT NOT NULL DEFAULT '',
   credits_consumed REAL,                    -- 外部バックエンドが消費したクレジット（§5.2）
-  chat_session_id TEXT                      -- 生成フォームの chat / エージェント session。エージェント発判定に使う
+  chat_session_id TEXT,                     -- 生成フォームの chat / エージェント session。エージェント発判定に使う
+  started_at    TEXT,                       -- 実行を開始した時刻（所要時間の起点）
+  finished_at   TEXT                        -- 終端（done/failed/canceled）に入った時刻
 );
 
 CREATE TABLE IF NOT EXISTS loras (
@@ -479,6 +481,11 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         # 投入元の chat / agent セッション。エージェント発のジョブは
         # agent_sessions.id と一致し、完了通知の対象外になる。
         ("chat_session_id", "TEXT"),
+        # 実行の開始・終了時刻（SPA が「生成にかかった時間」を出すための材料）。
+        # 所要時間そのものは持たず、読み出し側で差を取る。この列を足す前に
+        # 走った既存行は両方 NULL のままでよい = 所要時間を出さない。
+        ("started_at", "TEXT"),
+        ("finished_at", "TEXT"),
     ],
     "chat_sessions": [
         # 続き用の grok セッションと、その cwd（SPEC §4.3）。会話の正本は

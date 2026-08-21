@@ -6,6 +6,7 @@ import shutil
 import sqlite3
 import subprocess
 import time
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -236,6 +237,34 @@ def test_full_job_runs_two_chained_stages(env):
     # the generated still was uploaded and wired in as the start frame
     assert env.comfy.uploads[-1] == job["image_path"]
     assert video_graph["114"]["inputs"]["image"] == Path(job["image_path"]).name
+
+
+def test_a_finished_job_records_when_it_started_and_finished(env):
+    """所要時間の材料（started_at / finished_at）が完了時に入っている。"""
+    created = env.client.post(
+        "/api/jobs", json={"mode": "image_only", "image_prompt": "just an image"}
+    ).json()
+    assert created["started_at"] is None  # 投入直後はまだ走っていない
+    assert created["finished_at"] is None
+
+    job = wait_for(env.client, created["id"])
+    assert job["status"] == "done", job["error"]
+    assert job["started_at"] is not None
+    assert job["finished_at"] is not None
+    started = datetime.fromisoformat(job["started_at"])
+    finished = datetime.fromisoformat(job["finished_at"])
+    assert datetime.fromisoformat(job["created_at"]) <= started <= finished
+
+
+def test_a_failed_job_also_records_when_it_finished(env):
+    env.comfy.queue_error = comfy.ComfyError("ComfyUI is down")
+    created = env.client.post(
+        "/api/jobs", json={"mode": "image_only", "image_prompt": "just an image"}
+    ).json()
+    job = wait_for(env.client, created["id"])
+    assert job["status"] == "failed"
+    assert job["started_at"] is not None
+    assert job["finished_at"] is not None
 
 
 def test_image_only_job_runs_the_image_stage_only(env):

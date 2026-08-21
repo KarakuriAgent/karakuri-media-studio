@@ -2,6 +2,7 @@ import { useEffect, useRef } from 'react'
 import { Film, ImageIcon, Loader2, Music, RefreshCw } from 'lucide-react'
 import type { Job } from '../types'
 import { Button } from '@/components/ui/button'
+import { jobDurationLabel } from '@/lib/duration'
 import { NsfwBadge, STATUS_LABELS, StatusBadge } from './ui'
 
 const PENDING = ['queued', 'running', 'prompting']
@@ -111,6 +112,8 @@ export default function HistoryGallery({
           const active = job.id === selectedId
           const pending = PENDING.includes(job.status)
           const failed = job.status === 'failed'
+          // 完了したジョブだけ、控えめに所要時間を添える。
+          const duration = pending ? null : jobDurationLabel(job)
           // 表示トグルがオフのまま渡ってきた NSFW（このセッションで投げたもの）。
           const blurred = !showNsfw && job.nsfw
           return (
@@ -178,8 +181,14 @@ export default function HistoryGallery({
                   <StatusBadge status={job.status} />
                 </span>
               )}
-              <span className="tnum absolute inset-x-0 bottom-0 truncate bg-black/60 px-1 py-0.5 text-[11px] text-foreground/85">
-                {job.created_at.replace('T', ' ').replace('+00:00', '').slice(5, 16)}
+              <span className="tnum absolute inset-x-0 bottom-0 flex items-center gap-1 truncate bg-black/60 px-1 py-0.5 text-[11px] text-foreground/85">
+                <span className="truncate">
+                  {job.created_at.replace('T', ' ').replace('+00:00', '').slice(5, 16)}
+                </span>
+                {/* 生成にかかった時間（started_at を持たない過去ジョブでは出ない） */}
+                {duration && (
+                  <span className="shrink-0 text-foreground/60">{duration}</span>
+                )}
               </span>
             </button>
           )

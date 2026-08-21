@@ -1,6 +1,7 @@
 import { RotateCcw, Square, Trash2, Undo2, X } from 'lucide-react'
 import type { Job, LibraryItem } from '../types'
 import { Button } from '@/components/ui/button'
+import { jobDurationLabel } from '@/lib/duration'
 import LibraryAddButton, { isInLibrary, librarySourcesOf } from './LibraryAddButton'
 import { PromptBlock } from './ResultPane'
 import { Banner, CopyButton, NsfwBadge, NsfwToggle, StatusBadge } from './ui'
@@ -112,6 +113,20 @@ export default function JobDetail({
               <div className="flex gap-2">
                 <dt className="w-28 shrink-0 text-muted-foreground">created_at</dt>
                 <dd className="break-all text-foreground/85">{job.created_at}</dd>
+              </div>
+              <div className="flex gap-2">
+                <dt className="w-28 shrink-0 text-muted-foreground">started_at</dt>
+                <dd className="break-all text-foreground/85">{job.started_at || '—'}</dd>
+              </div>
+              <div className="flex gap-2">
+                <dt className="w-28 shrink-0 text-muted-foreground">finished_at</dt>
+                <dd className="break-all text-foreground/85">{job.finished_at || '—'}</dd>
+              </div>
+              <div className="flex gap-2">
+                <dt className="w-28 shrink-0 text-muted-foreground">所要時間</dt>
+                <dd className="break-all text-foreground/85">
+                  {jobDurationLabel(job) ?? '—'}
+                </dd>
               </div>
               {entries.map(([key, value]) => (
                 <div key={key} className="flex gap-2">

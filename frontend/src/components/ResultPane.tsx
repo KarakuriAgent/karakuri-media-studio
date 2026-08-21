@@ -24,6 +24,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu'
+import { formatElapsed, isJobFinished, jobDurationLabel } from '@/lib/duration'
 import LibraryAddButton, { isInLibrary } from './LibraryAddButton'
 import { Banner, CopyButton, NsfwBadge, StatusBadge } from './ui'
 
@@ -128,6 +129,35 @@ function fileNameOf(url: string): string {
 
 function formatTime(iso: string): string {
   return iso.replace('T', ' ').replace('+00:00', '').slice(0, 19)
+}
+
+/**
+ * 生成にかかった時間。終わったジョブは確定値（「生成 1分23秒」）、走っている
+ * あいだは 1 秒ごとに伸びる経過（「経過 0:42」）を出す。started_at を持たない
+ * 過去のジョブでは何も出さない。
+ */
+function JobDuration({ job }: { job: Job }) {
+  const running = !isJobFinished(job.status)
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!running || !job.started_at) return
+    const timer = window.setInterval(() => setNow(Date.now()), 1000)
+    return () => window.clearInterval(timer)
+  }, [running, job.started_at])
+
+  if (running) {
+    if (!job.started_at) return null
+    const started = Date.parse(job.started_at)
+    if (Number.isNaN(started)) return null
+    return (
+      <span className="tnum text-xs text-muted-foreground">
+        経過 {formatElapsed(Math.max(0, now - started))}
+      </span>
+    )
+  }
+  const label = jobDurationLabel(job)
+  if (!label) return null
+  return <span className="tnum text-xs text-muted-foreground">生成 {label}</span>
 }
 
 export default function ResultPane({
@@ -353,6 +383,7 @@ export default function ResultPane({
           <span className="tnum text-xs text-muted-foreground">
             {formatTime(job.created_at)}
           </span>
+          <JobDuration job={job} />
           <span className="text-xs text-muted-foreground">{job.mode}</span>
           {job.nsfw && <NsfwBadge />}
 

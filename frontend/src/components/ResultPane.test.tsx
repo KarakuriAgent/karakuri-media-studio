@@ -86,3 +86,40 @@ describe('ResultPane の停止', () => {
     )
   })
 })
+
+describe('ResultPane の所要時間', () => {
+  it('完了したジョブは生成にかかった時間を出す', () => {
+    show(
+      job({
+        started_at: '2026-07-30T10:00:05+00:00',
+        finished_at: '2026-07-30T10:01:28+00:00',
+      }),
+    )
+    expect(screen.queryByText('生成 1分23秒')).not.toBeNull()
+  })
+
+  it('実行中は開始からの経過を出す', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date('2026-07-30T10:00:42+00:00'))
+    try {
+      show(
+        job({
+          status: 'running',
+          started_at: '2026-07-30T10:00:00+00:00',
+          video_url: null,
+          image_url: null,
+          last_frame_url: null,
+        }),
+      )
+      expect(screen.queryByText('経過 0:42')).not.toBeNull()
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('started_at を持たない過去のジョブでは何も出さない', () => {
+    show(job({ started_at: null, finished_at: null }))
+    expect(screen.queryByText(/生成 /)).toBeNull()
+    expect(screen.queryByText(/経過 /)).toBeNull()
+  })
+})
