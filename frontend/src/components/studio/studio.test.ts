@@ -484,6 +484,7 @@ describe('projectSummary / renderingJobIds', () => {
     world_notes: '',
     auto_translate: true,
     latent_continuity: false,
+    latent_upscale: true,
     quality: 'normal',
     megapixels: null,
     aspect_ratio: null,
@@ -588,7 +589,12 @@ describe('validateShotForm', () => {
 })
 
 describe('renderFormFromShot / renderRequestFromForm', () => {
-  const unset = { megapixels: null, aspect_ratio: null, steps: 0 }
+  const unset = {
+    megapixels: null,
+    aspect_ratio: null,
+    steps: 0,
+    latent_upscale: true,
+  }
 
   it('何も設定が無ければ尺だけが埋まる', () => {
     const form = renderFormFromShot(shot('s1', { duration_seconds: 5 }), unset)
@@ -599,6 +605,7 @@ describe('renderFormFromShot / renderRequestFromForm', () => {
       steps: '',
       fixed_seed: false,
       seed: '',
+      latent_upscale: true,
     })
   })
 
@@ -607,6 +614,7 @@ describe('renderFormFromShot / renderRequestFromForm', () => {
       megapixels: 1,
       aspect_ratio: '16:9 (Widescreen)',
       steps: 12,
+      latent_upscale: true,
     })
     expect(form).toMatchObject({
       megapixels: '1',
@@ -618,7 +626,12 @@ describe('renderFormFromShot / renderRequestFromForm', () => {
   it('カット個別の設定はプロジェクトより優先してプレフィルする', () => {
     const form = renderFormFromShot(
       shot('s1', { megapixels: 0.5, aspect_ratio: '1:1 (Square)', seed: 7 }),
-      { megapixels: 1, aspect_ratio: '16:9 (Widescreen)', steps: 12 },
+      {
+        megapixels: 1,
+        aspect_ratio: '16:9 (Widescreen)',
+        steps: 12,
+        latent_upscale: true,
+      },
     )
     expect(form).toMatchObject({
       megapixels: '0.5',
@@ -631,21 +644,24 @@ describe('renderFormFromShot / renderRequestFromForm', () => {
   it('触らなければ従来どおりの投入になる body を作る', () => {
     const form = renderFormFromShot(shot('s1', { duration_seconds: 5 }), unset)
     // 空欄の解像度とシードは送らない（サーバー側の解決に落とす）
-    expect(renderRequestFromForm(form)).toEqual({ duration: 5, steps: 0 })
+    expect(renderRequestFromForm(form, unset)).toEqual({ duration: 5, steps: 0 })
   })
 
   it('入っている項目だけを型を戻して送る', () => {
     const form = renderFormFromShot(shot('s1'), unset)
     expect(
-      renderRequestFromForm({
-        ...form,
-        megapixels: '0.8',
-        aspect_ratio: '16:9 (Widescreen)',
-        duration: '9',
-        steps: '30',
-        fixed_seed: true,
-        seed: '4242',
-      }),
+      renderRequestFromForm(
+        {
+          ...form,
+          megapixels: '0.8',
+          aspect_ratio: '16:9 (Widescreen)',
+          duration: '9',
+          steps: '30',
+          fixed_seed: true,
+          seed: '4242',
+        },
+        unset,
+      ),
     ).toEqual({
       megapixels: 0.8,
       aspect_ratio: '16:9 (Widescreen)',
@@ -655,9 +671,32 @@ describe('renderFormFromShot / renderRequestFromForm', () => {
     })
   })
 
+  it('ラテントアップスケールは作品設定をプレフィルする', () => {
+    const off = renderFormFromShot(shot('s1'), { ...unset, latent_upscale: false })
+    expect(off.latent_upscale).toBe(false)
+  })
+
+  it('作品設定と同じラテントアップスケールは送らない', () => {
+    const form = renderFormFromShot(shot('s1'), unset)
+    expect(renderRequestFromForm(form, unset).latent_upscale).toBeUndefined()
+  })
+
+  it('作品設定から変えたラテントアップスケールだけを送る', () => {
+    const form = renderFormFromShot(shot('s1'), unset)
+    expect(
+      renderRequestFromForm({ ...form, latent_upscale: false }, unset).latent_upscale,
+    ).toBe(false)
+    const offProject = { ...unset, latent_upscale: false }
+    const offForm = renderFormFromShot(shot('s1'), offProject)
+    expect(
+      renderRequestFromForm({ ...offForm, latent_upscale: true }, offProject)
+        .latent_upscale,
+    ).toBe(true)
+  })
+
   it('シードの固定を外せば seed を送らない（= 毎回ランダム）', () => {
     const form = renderFormFromShot(shot('s1', { seed: 7 }), unset)
-    const body = renderRequestFromForm({ ...form, fixed_seed: false })
+    const body = renderRequestFromForm({ ...form, fixed_seed: false }, unset)
     expect(body.seed).toBeUndefined()
   })
 })
@@ -667,6 +706,7 @@ describe('validateRenderForm', () => {
     megapixels: null,
     aspect_ratio: null,
     steps: 0,
+    latent_upscale: true,
   })
 
   it('既定のままなら通る', () => {
@@ -877,5 +917,20 @@ describe('formatProjectSettingsSummary', () => {
         steps: 4,
       }),
     ).toBe('Opt · 既定 · 0.7MP · 4step')
+  })
+
+  it('ラテントアップスケールは切ってあるときだけ末尾に出す', () => {
+    const base = {
+      quality: 'normal' as const,
+      aspectRatio: null,
+      megapixels: null,
+      steps: 0,
+    }
+    expect(formatProjectSettingsSummary({ ...base, latentUpscale: true })).toBe(
+      '通常 · 既定 · 既定 · おまかせ',
+    )
+    expect(formatProjectSettingsSummary({ ...base, latentUpscale: false })).toBe(
+      '通常 · 既定 · 既定 · おまかせ · 拡大なし',
+    )
   })
 })

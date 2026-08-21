@@ -289,6 +289,11 @@ def test_an_end_frame_job_uploads_both_frames(env):
     assert str(env.end_image) in env.comfy.uploads
 
 
+#: 解像度の注入先は「1 パス目」なので、素の解像度を見るテストではラテント
+#: アップスケール（既定 on）を切る（2 パス目は tests/test_workflow.py で見る）
+NO_UPSCALE = {"latent_upscale": "off"}
+
+
 def _submitted_size(workflow: dict, workflow_id: str) -> tuple[int, int]:
     spec = get_video_spec(workflow_id)
     return tuple(
@@ -311,6 +316,7 @@ def test_start_frame_sets_the_output_aspect_ratio(env):
             "source_image": str(portrait),
             "aspect_ratio": "16:9 (Widescreen)",
             "megapixels": 1.0,
+            "selects": NO_UPSCALE,
         },
     ).json()
     job = wait_for(env.client, created["id"])
@@ -331,6 +337,7 @@ def test_unreadable_start_frame_falls_back_to_the_preset(env):
             "source_image": str(env.start_image),
             "aspect_ratio": "16:9 (Widescreen)",
             "megapixels": 1.0,
+            "selects": NO_UPSCALE,
         },
     ).json()
     job = wait_for(env.client, created["id"])
@@ -354,6 +361,7 @@ def test_full_mode_keeps_the_preset_for_the_generated_still(env):
             source_image=str(portrait),
             aspect_ratio="16:9 (Widescreen)",
             megapixels=1.0,
+            selects=NO_UPSCALE,
         ),
     ).json()
     job = wait_for(env.client, created["id"])
@@ -2071,3 +2079,48 @@ def test_the_take_notification_backfill_spares_running_jobs(env):
     conn.close()
     # 終端に達しているジョブと、行が消えているジョブの Take だけが埋まる
     assert marked == {"t-j-done", "t-j-failed", "t-j-canceled", "t-orphan"}
+
+
+# --------------------------------------------------------------------------
+# 接続先で選べない選択肢の固定（SPEC §3.1 / §5.1）
+# --------------------------------------------------------------------------
+
+def _with_target(monkeypatch, target: str) -> None:
+    from app.models import Settings
+
+    monkeypatch.setattr(config, "_settings", Settings(comfy_target=target))
+
+
+def _video_params(**extra) -> dict:
+    return {
+        "mode": "i2v",
+        "video_workflow": "minimax_h3_t2v",
+        "video_prompt": "a cat",
+        **extra,
+    }
+
+
+def test_latent_upscale_is_left_alone_on_a_local_target(monkeypatch):
+    """local では既定（on）のまま params に何も足さない。"""
+    _with_target(monkeypatch, "local")
+    params = _video_params()
+    jobs._pin_target_selects(params)
+    assert "selects" not in params
+    params = _video_params(selects={"latent_upscale": "on"})
+    jobs._pin_target_selects(params)
+    assert params["selects"] == {"latent_upscale": "on"}
+
+
+def test_latent_upscale_is_pinned_off_on_comfy_cloud(monkeypatch):
+    """アップスケーラを入れられない接続先では、既定を off に固定する。"""
+    _with_target(monkeypatch, "comfy_cloud")
+    params = _video_params()
+    jobs._pin_target_selects(params)
+    assert params["selects"] == {"latent_upscale": "off"}
+
+
+def test_latent_upscale_on_is_rejected_on_comfy_cloud(monkeypatch):
+    _with_target(monkeypatch, "comfy_cloud")
+    with pytest.raises(jobs.JobValidationError) as excinfo:
+        jobs._pin_target_selects(_video_params(selects={"latent_upscale": "on"}))
+    assert "latent_upscale" in str(excinfo.value)

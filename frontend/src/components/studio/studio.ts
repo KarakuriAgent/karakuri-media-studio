@@ -130,6 +130,8 @@ export function formatProjectSettingsSummary(input: {
   aspectRatio: string | null
   megapixels: number | null
   steps: number
+  /** ラテントアップスケール（既定の ON は出さず、OFF のときだけ足す）。 */
+  latentUpscale?: boolean
 }): string {
   const parts: string[] = []
   if (input.target) parts.push(COMFY_TARGET_LABELS[input.target])
@@ -143,6 +145,8 @@ export function formatProjectSettingsSummary(input: {
   }
   parts.push(input.megapixels === null ? '既定' : `${input.megapixels}MP`)
   parts.push(input.steps > 0 ? `${input.steps}step` : 'おまかせ')
+  // 既定（ON）は書かない。切ってあるときだけ、狭い画面でも気づけるように出す。
+  if (input.latentUpscale === false) parts.push('拡大なし')
   return parts.join(' · ')
 }
 
@@ -620,6 +624,8 @@ export interface RenderFormState {
   /** シードを固定するか（false = 毎回ランダム）。 */
   fixed_seed: boolean
   seed: string
+  /** ラテントアップスケール（初期値はプロジェクトの設定）。 */
+  latent_upscale: boolean
 }
 
 /** プロジェクト設定のうち、このダイアログが既定値に使うぶん。 */
@@ -627,6 +633,7 @@ export interface RenderDefaults {
   megapixels: number | null
   aspect_ratio: string | null
   steps: number
+  latent_upscale: boolean
 }
 
 /**
@@ -646,6 +653,7 @@ export function renderFormFromShot(
     steps: project.steps > 0 ? String(project.steps) : '',
     fixed_seed: shot.seed != null,
     seed: shot.seed == null ? '' : String(shot.seed),
+    latent_upscale: project.latent_upscale,
   }
 }
 
@@ -680,9 +688,12 @@ export function validateRenderForm(form: RenderFormState): Record<string, string
  * 空欄の項目は**送らない**（サーバー側の従来どおりの解決に落とす）。ただし
  * ステップ数だけは空欄でも `0` を送る: 0 は「テンプレートの既定のまま」を
  * **明示する**値で、プロジェクトの設定より優先されるため。
+ *
+ * ラテントアップスケールも同じ考えで、**作品設定から変えたときだけ**送る。
  */
 export function renderRequestFromForm(
   form: RenderFormState,
+  project: RenderDefaults,
 ): StudioRenderRequest {
   const body: StudioRenderRequest = {
     duration: Number(form.duration),
@@ -691,6 +702,10 @@ export function renderRequestFromForm(
   if (form.megapixels.trim() !== '') body.megapixels = Number(form.megapixels)
   if (form.aspect_ratio.trim() !== '') body.aspect_ratio = form.aspect_ratio.trim()
   if (form.fixed_seed && form.seed.trim() !== '') body.seed = Number(form.seed)
+  // 作品設定と同じなら送らない（サーバー側のいつもの解決に落とす）。
+  if (form.latent_upscale !== project.latent_upscale) {
+    body.latent_upscale = form.latent_upscale
+  }
   return body
 }
 

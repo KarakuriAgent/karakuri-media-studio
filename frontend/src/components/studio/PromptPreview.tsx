@@ -224,8 +224,12 @@ export default function PromptPreview({ shot }: { shot: StudioShot }) {
           )}
           {preview.context_latent && (
             <p className="text-[11px] text-muted-foreground">
-              ラテント引き継ぎ: 有効（引き継ぎ元ラテント:{' '}
+              ラテント引き継ぎ: {preview.context_latent_hires ? '有効（2 段）' : '有効'}
+              （引き継ぎ元ラテント:{' '}
               {fileName(preview.context_latent)}
+              {preview.context_latent_hires
+                ? ` / 高解像度: ${fileName(preview.context_latent_hires)}`
+                : ''}
               {preview.context_video
                 ? ` / 引き継ぎ元動画: ${fileName(preview.context_video)}`
                 : ''}

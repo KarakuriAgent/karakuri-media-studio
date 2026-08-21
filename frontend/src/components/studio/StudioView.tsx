@@ -699,6 +699,8 @@ export default function StudioView({
       stepsDraft={stepsDraft}
       onStepsDraftChange={setStepsDraft}
       onCommitSteps={commitSteps}
+      latentUpscale={detail.latent_upscale}
+      onLatentUpscaleChange={(value) => saveProject({ latent_upscale: value })}
       busy={busy}
     />
   )
@@ -833,6 +835,7 @@ export default function StudioView({
                   megapixels: detail.megapixels,
                   aspect_ratio: detail.aspect_ratio,
                   steps: detail.steps,
+                  latent_upscale: detail.latent_upscale,
                 }}
                 aspectRatios={aspectRatios}
                 latentContinuity={detail.latent_continuity}

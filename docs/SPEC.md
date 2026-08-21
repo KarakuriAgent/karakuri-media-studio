@@ -88,11 +88,11 @@
 | `minimax_h3_i2v_save_opt` | 画像→動画・音声つき・ラテント保存 (MiniMax H3 i2v Optimized + Save Latent) | 同 `minimax_h3_i2v_opt` | 同 `minimax_h3_i2v` | ○ |
 | `minimax_h3_r2v` | 参照素材→動画・音声つき (MiniMax H3 r2v) | minimax_h3 ref2va int8 | `reference_images` 9 枚 / `reference_videos` 3 本 / `reference_audios` 3 本まで・合計 1 件以上（開始フレームは不可） | ✕ |
 | `minimax_h3_r2v_save` | 参照素材→動画・音声つき・ラテント保存 (MiniMax H3 r2v + Save Latent) | 同 `minimax_h3_r2v` | 同 `minimax_h3_r2v` | ✕ |
-| `minimax_h3_r2v_context` | 参照素材→動画・音声つき・連続カット (MiniMax H3 r2v + Motion Context) | minimax_h3 ref2va int8 | 同 `minimax_h3_r2v` に加えて `reference_video`（直前カットの動画）と `context_latent_path`（直前カットの AV ラテント）が必須 | ✕ |
-| `minimax_h3_r2v_turbo` | 参照素材→動画・音声つき (MiniMax H3 r2v Turbo) | minimax_h3 ref2va w4a8 + turbo 4step LoRA | 同 `minimax_h3_r2v` | ✕ |
+| `minimax_h3_r2v_context` | 参照素材→動画・音声つき・連続カット (MiniMax H3 r2v + Motion Context) | minimax_h3 ref2va int8 | 同 `minimax_h3_r2v` に加えて `reference_video`（直前カットの動画）と `context_latent_path`（直前カットの AV ラテント）が必須。`context_latent_hires_path`（2 パス目のラテント）は任意（無ければ 1 段引き継ぎ） | ✕ |
+| `minimax_h3_r2v_turbo` | 参照素材→動画・音声つき (MiniMax H3 r2v Turbo) | minimax_h3 fl2va w4a8 + ref LoRA + turbo 4step LoRA | 同 `minimax_h3_r2v` | ✕ |
 | `minimax_h3_r2v_save_turbo` | 参照素材→動画・音声つき・ラテント保存 (MiniMax H3 r2v Turbo + Save Latent) | 同 `minimax_h3_r2v_turbo` | 同 `minimax_h3_r2v` | ✕ |
 | `minimax_h3_r2v_context_turbo` | 参照素材→動画・音声つき・連続カット (MiniMax H3 r2v Turbo + Motion Context) | 同 `minimax_h3_r2v_turbo` | 同 `minimax_h3_r2v_context` | ✕ |
-| `minimax_h3_r2v_opt` | 参照素材→動画・音声つき (MiniMax H3 r2v Optimized) | minimax_h3 ref2va w4a8（蒸留 LoRA なし・20 steps） | 同 `minimax_h3_r2v` | ✕ |
+| `minimax_h3_r2v_opt` | 参照素材→動画・音声つき (MiniMax H3 r2v Optimized) | minimax_h3 fl2va w4a8 + ref LoRA（蒸留 LoRA なし・20 steps） | 同 `minimax_h3_r2v` | ✕ |
 | `minimax_h3_r2v_save_opt` | 参照素材→動画・音声つき・ラテント保存 (MiniMax H3 r2v Optimized + Save Latent) | 同 `minimax_h3_r2v_opt` | 同 `minimax_h3_r2v` | ✕ |
 | `minimax_h3_r2v_context_opt` | 参照素材→動画・音声つき・連続カット (MiniMax H3 r2v Optimized + Motion Context) | 同 `minimax_h3_r2v_opt` | 同 `minimax_h3_r2v_context` | ✕ |
 
@@ -133,9 +133,18 @@
   宣言している）にだけ注入される。効き方は**テイク 1 回ぶんの上書き → プロジェクト →
   テンプレートの既定**で、Shot 単位の設定は持たない（品質を変えずに刻みだけ増減したい、
   という使い方のための作品共通のつまみ）。
+- **ラテントアップスケール**（`latent_upscale`、既定 **ON**）もプロジェクトの設定として持つ。
+  こちらはワークフロー id を変えず、投入するジョブの選択式
+  （`selects.latent_upscale` = `on` / `off`。§3.1 の「ラテントアップスケール」）に落ちる。
+  効き方は**テイク 1 回ぶんの上書き → プロジェクト → 既定（ON）**で、Shot 単位の設定は持たない。
+  接続先が `MinimaxH3LatentUpscaler3D` を入れられない（`comfy_cloud`）ときは
+  ON を頼んでも **黙って `off` に落とし**（投入そのものは通す）、理由を投入プレビューの
+  `workflow_reason` に足す（`app.studio._resolve_selects`）。宣言を持たないワークフローには
+  `selects` を載せない。**連鎖の途中で on / off を切り替えるとラテント連続性が合わなくなる**
+  （→ §3.1「2 段引き継ぎ」の制約）。
 - テイク 1 回ぶんの上書きは `POST /api/studio/shots/{id}/render` の**任意のボディ**
   （`app.models.StudioRenderRequest`。`megapixels` / `aspect_ratio` / `duration` / `steps` /
-  `seed`、すべて任意）。送った項目だけがその 1 回の投入に効き、**Shot もプロジェクトも
+  `seed` / `latent_upscale`、すべて任意）。送った項目だけがその 1 回の投入に効き、**Shot もプロジェクトも
   書き換えない**（何を使ったかは Take の元ジョブの `params` に残る）。ボディを省けば
   今までどおり。`steps` だけは `0` も「テンプレートの既定のまま」の**明示**として扱い、
   プロジェクトの設定より優先される。範囲外の `steps`（0〜150 の外）と `duration`
@@ -167,7 +176,11 @@
   合わなくなる**（設定変更はそれ以降の生成にしか効かないので、変えるなら連鎖の切れ目で）。
   このカットぶんのラテントは `h3_context/{job_id}` に保存し、パスは `PreviewAny` 経由で `/history`
   から回収して Take の `latent_path` に控える（回収できなければ NULL のままで、次のカットは
-  「引き継ぎ元が無い」として断られる）。連続カット版にも `_turbo` / `_opt`
+  「引き継ぎ元が無い」として断られる）。`latent_upscale` が `on` のときは 2 パス目
+  （最終解像度）のラテントも `h3_context/{job_id}_hires` に保存して Take の `latent_hires_path`
+  に控え、次のカットは 2 本とも受け取る（`context_latent_path` / `context_latent_hires_path`）。
+  2 本目が無い過去テイクからは従来どおりの 1 段引き継ぎになる（→「ラテントアップスケール」の
+  §2 段引き継ぎ）。連続カット版にも `_turbo` / `_opt`
   （`minimax_h3_r2v_context_turbo` / `…_context_opt`）があり、中身は**その品質のテンプレート +
   Motion Context の 5 ノード + 保存の 2 ノード**。ノード ID は素の版の 150〜156 を 10 ずらした
   **160〜166**（品質のテンプレートが 150〜155 を使うため）。
@@ -428,6 +441,88 @@ model を取る。guider だけが末尾の `SpectrumApplyMiniMaxH3` を読む�
 「… (r2v Turbo)」として並ぶ。
 turbo 版だけは選択式フィールド（下記）で `low_vram`（`MiniMaxH3TurboLoRA` の低 VRAM 読み込み）を
 出す。**既定は `off`** で、VRAM が足りずに落ちるときだけ `on` にする。
+
+**r2v の opt / turbo だけは土台が違う**（`_save` / `_context` 版も同じ）。UNET は ref2va では
+なく `minimax_h3_fl2va_pruned_w4a8_mixed` で、そこへ参照 LoRA
+`minimax_h3_ref_lora_rank_256_bf16` を `LoraLoaderModelOnly`（ノード 144・strength 1.0）で
+重ねてから `PathchSageAttentionKJ` 以降の連鎖に流す。turbo はさらに 4step 蒸留 LoRA
+`minimax_h3_fl2v_turbo_4step_v1.1_768p_comfyui_bf16` を `LoraLoaderModelOnly`（ノード 143）で
+UNET 直後に挟み（`UNETLoader → 143 → 144 → PathchSageAttentionKJ → …`）、
+`BasicScheduler.steps` を **4**・`KSamplerSelect.sampler_name` を **`euler`** にする。
+つまり **turbo と opt のテンプレートの差はノード 143 と steps / sampler だけ**。
+`MiniMaxH3TurboLoRA` を使わないので r2v の turbo は **`low_vram` を持たない**。
+
+#### ラテントアップスケール（`latent_upscale`）
+
+**MiniMax H3 の動画ワークフロー全部**（t2v / i2v / r2v × base / opt / turbo、`_save` / `_context`
+版を含む）が選択式フィールド `latent_upscale`（`on` / `off`、**既定 `on`**）を持つ。
+テンプレートはどれも 1 パスのままで、`on` のときだけ**ジョブの組み立てがグラフを 2 パスに
+組み替える**（`workflows.UpscaleSpec` の宣言を `workflow.splice_latent_upscale` が読む）。
+
+- `off`: テンプレートそのまま。指定解像度（`aspect_ratio` + `megapixels`）で 1 パス。
+- `on`:
+  1. `width` / `height` の注入先には **0.2MP** で計算した値を書く（縦横比の決め方は従来どおり。
+     開始フレームがあればその比、無ければプリセット。32 の倍数に丸める）。
+  2. 1 パス目の `SamplerCustomAdvanced` の **denoised_output（出力 1）**を
+     `LTXVSeparateAVLatent` で映像／音声に分ける。
+  3. 映像側だけ `MinimaxH3LatentUpscaler3D` に通す。`model_name` は
+     `minimax_h3_latent_upscaler_3d_bf16.safetensors`（`latent_upscale_models`）、
+     `mode` は **`target dimensions`**（`megapixels` モードではない）で、DynamicCombo の
+     入力名どおり `mode.width` / `mode.height` に**最終解像度**を書く。`align` 32・
+     `device` `cuda`・`precision` `bf16`。
+  4. `LTXVConcatAVLatent` で音声と戻し、`ManualSigmas`
+     （**`0.9035, 0.6316, 0.3158, 0.0000` 固定・全バリアント共通**）で 2 パス目の
+     `SamplerCustomAdvanced` を回す。`noise` / `guider` / `sampler` は 1 パス目と同じものを共有する。
+  5. 1 パス目を `samples` で読んでいた `VAEDecode` / `VAEDecodeAudio` だけを 2 パス目に
+     付け替える。**テンプレートの `MiniMaxH3MotionContextSaveLatent` と 1 個目の Motion Context は
+     入力名が `latent` なので 1 パス目に付いたまま**。
+     `MiniMaxH3MotionContextTrim` はデコード後（＝2 パス目のデコード後）に掛かる既存の配線のまま。
+  6. **2 段引き継ぎ**（ラテント連続性のバリアント、下記）。
+
+##### 2 段引き継ぎ（ラテント連続性 × `latent_upscale` = `on`）
+
+継ぎ目を**最終解像度でも**合わせるため、ラテントを保存する版（`*_save*` / `*_context*`）で
+`on` のときは、**1 パス目（0.2MP）と 2 パス目（最終解像度）のラテントを両方**保存して次のカットに渡す。
+
+- **保存側**（`*_save*` / `*_context*` 共通）: テンプレートの `…SaveLatent`（1 パス目、保存先
+  `h3_context/{job_id}`）に加えて、**2 個目の `…SaveLatent`**（2 パス目の
+  `SamplerCustomAdvanced` の出力 0、保存先 `h3_context/{job_id}_hires`）と、そのパスを持ち帰る
+  **2 個目の `PreviewAny`** を足す。ジョブは 2 本目のパスも `/history` から回収し、Take の
+  `latent_hires_path` に控える（`off` のジョブでは NULL のまま）。
+- **読み込み側**（`*_context*` のみ）: 直前カットに 2 本目があれば、
+  **2 個目の `…LoadLatent`**（`latent_path` = 前カットの `latent_hires_path`）と
+  **2 個目の `MiniMaxH3MotionContext`**（`conditioning` / `vae` / `context_frames` / つまみは
+  1 個目と同じ、`latent` = `LTXVConcatAVLatent` の出力（＝2 パス目の解像度・フレーム数の形状参照）、
+  `context_latent` = 2 個目の `…LoadLatent`）と、**2 個目の `BasicGuider`**（`model` は 1 個目と
+  同じモデル連鎖、`conditioning` は 2 個目の Motion Context）を足し、**2 パス目の
+  `SamplerCustomAdvanced` の `guider` をこちらへ付け替える**（1 パス目の guider 共有をやめる）。
+  `MiniMaxH3MotionContextTrim` の `trim_frames` は 1 個目の Motion Context のまま（値は同じ）。
+- **フォールバック**: 直前カットに 2 本目が無い（`off` で作った過去テイクなど）ときは、
+  読み込み側の 3 ノードを**足さない** = 2 パス目は 1 パス目と同じ guider を共有する
+  従来の 1 段引き継ぎになる（エラーにはしない）。保存側の 2 本目は付くので、次のカットからは
+  2 段になる。
+- **`off` のとき**は完全に従来どおり（1 本保存・1 段引き継ぎ）。
+- **制約**: `MiniMaxH3MotionContext` の `context_latent` は生成するクリップと同じ解像度である
+  必要があるので、**連鎖の途中で解像度（`megapixels` / `aspect_ratio`）や `latent_upscale` の
+  on / off を変えると、次のカットは解像度不一致で ComfyUI 側が止まる**。変えるなら連鎖の切れ目で。
+
+足すノードの id は `UpscaleSpec` が持つ（2 パスぶんが `900`〜`904`、2 段引き継ぎぶんが
+`905`（hires SaveLatent）/ `906`（hires PreviewAny）/ `907`（hires LoadLatent）/
+`908`（hires MotionContext）/ `909`（hires BasicGuider）。テンプレートの最大 166 とも、
+素の t2v / i2v のサブグラフ由来の `105:xx` とも衝突しない）。1 パス目のサンプラーの id も
+`UpscaleSpec.sampler` で宣言する（素の t2v / i2v は `105:14`、それ以外は `125`）。
+組み替えは**モデル指定の差し替え（`apply_model_overrides`）より前**に行うので、
+アップスケーラの `model_name` も設定ページのスロットとして出るし（`workflow.model_fields` が
+テンプレートに `UpscaleSpec` 由来のノードを重ねて見る）、ジョブごとの `model_overrides` も効く。
+
+`MinimaxH3LatentUpscaler3D`（カスタムノード Comfyui_Minimax_h3_latent_Upscaler）は
+**テンプレートに現れない**ので、テンプレート由来の接続先判定
+（`uses_optional_class_types` / `supported_on_target`）では拾えない。代わりに選択式そのものが
+`SelectSpec.requires_class_types` / `restricted_choice` を宣言し、
+`SelectSpec.choices_for_target(comfy_target)` が **`comfy_cloud` では選択肢を `off` だけに絞る**
+（`GET /api/options` の `selects` とエージェントのカタログが同じ一覧になる）。値を送ってこない
+経路（外部 API・エージェント・再実行）のために、ジョブ投入時に `jobs._pin_target_selects` が
+既定を接続先に合わせて params へ固定し、使えない値が明示されていれば 422 で弾く。
 
 さらに turbo から**蒸留 LoRA だけを抜いた** **opt**（`minimax_h3_t2v_opt` / `minimax_h3_i2v_opt` /
 `minimax_h3_r2v_opt` と、その `_save` / `_context` 版）がある。

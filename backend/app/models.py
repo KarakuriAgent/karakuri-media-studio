@@ -578,6 +578,10 @@ class GenerationParams(BaseModel):
     #: 直前カットの AV ラテントのパス（ラテント連続性、SPEC §3.1）。ComfyUI 側の
     #: ファイルなのでアップロードは通さず、文字列をそのままグラフに書く。
     context_latent_path: str = ""
+    #: 同じく、直前カットの **2 パス目（最終解像度）**の AV ラテント。
+    #: ``latent_upscale`` = on の 2 段引き継ぎでだけ使い、空なら 1 段引き継ぎに
+    #: フォールバックする（:func:`app.workflow.splice_latent_upscale`）。
+    context_latent_hires_path: str = ""
 
     filename_prefix: str | None = None  # explicit override
 
@@ -1572,6 +1576,9 @@ class JobCreate(BaseModel):
     #: ファイルではないので、投入前の解決も上げ直しもしない（宣言のある
     #: ワークフローだけが読む、SPEC §3.1）。
     context_latent_path: str | None = None
+    #: 同じく、直前カットの **2 パス目（最終解像度）**の AV ラテント
+    #: （``latent_upscale`` = on の 2 段引き継ぎ）。無ければ 1 段引き継ぎ。
+    context_latent_hires_path: str | None = None
 
     # マルチモーダル参照（SPEC §3.1）。1 つのフィールドが**複数ファイル**を持ち、
     # 宣言しているワークフロー（MiniMax H3 r2v）で
@@ -2465,6 +2472,12 @@ class StudioProject(BaseModel):
     #: ON なら直前カットの動画と AV ラテントを渡す ``minimax_h3_r2v_context``。
     #: カスタムノードが要るので、入っていない接続先では投入時に断られる。
     latent_continuity: bool = False
+    #: ラテントアップスケール（作品単位の既定。ON = 1 パス目を 0.2MP で回して
+    #: から ``MinimaxH3LatentUpscaler3D`` で指定解像度に拡大する 2 パス）。
+    #: テイク生成のたびにジョブの ``selects[latent_upscale]`` へ解決される
+    #: （1 回ぶんの上書きは :class:`StudioRenderRequest`）。カスタムノードが
+    #: 要るので、入れられない接続先（Comfy Cloud）では OFF に落ちる。
+    latent_upscale: bool = True
     #: 動画生成の品質（:data:`StudioVideoQuality`）。テイク生成のたびに、決まった
     #: 論理モードと掛け合わせてワークフローのバリアントへ解決される。
     quality: StudioVideoQuality = "normal"
@@ -2509,6 +2522,8 @@ class StudioProjectCreate(BaseModel):
     #: ON なら直前カットの動画と AV ラテントを渡す ``minimax_h3_r2v_context``。
     #: カスタムノードが要るので、入っていない接続先では投入時に断られる。
     latent_continuity: bool = False
+    #: ラテントアップスケール（ON = 0.2MP の 1 パス目 → 指定解像度へ拡大）
+    latent_upscale: bool = True
     #: 動画生成の品質（:data:`StudioVideoQuality`。既定は素の 20 steps）
     quality: StudioVideoQuality = "normal"
     #: 動画生成の画質＝メガピクセル（``None`` = ワークフローの既定のまま）
@@ -2539,6 +2554,8 @@ class StudioProjectUpdate(BaseModel):
     #: ON なら直前カットの動画と AV ラテントを渡す ``minimax_h3_r2v_context``。
     #: カスタムノードが要るので、入っていない接続先では投入時に断られる。
     latent_continuity: bool | None = None
+    #: ラテントアップスケール（ON = 0.2MP の 1 パス目 → 指定解像度へ拡大）
+    latent_upscale: bool | None = None
     #: 動画生成の品質（:data:`StudioVideoQuality`）
     quality: StudioVideoQuality | None = None
     #: 動画生成の画質＝メガピクセル（null を送ると既定へ戻る）
@@ -2967,6 +2984,7 @@ class StudioRenderRequest(BaseModel):
     - ``duration``: ここ → Shot の ``duration_seconds``
     - ``steps``: ここ → プロジェクトの ``steps`` → テンプレートの既定
     - ``seed``: ここ → Shot の ``seed`` → 毎回ランダム
+    - ``latent_upscale``: ここ → プロジェクトの ``latent_upscale``
 
     ``steps`` は **0 も指定**（＝「テンプレートの既定のまま」を明示する）で、
     プロジェクトの設定より優先される。範囲の検査は
@@ -2981,6 +2999,10 @@ class StudioRenderRequest(BaseModel):
     steps: int | None = None
     #: 乱数の種（未指定 = Shot の設定、それも無ければ毎回ランダム）
     seed: int | None = None
+    #: ラテントアップスケール（未指定 = プロジェクトの ``latent_upscale``）。
+    #: カスタムノードを入れられない接続先では ON を頼んでも OFF に落ちる
+    #: （理由は Take の ``warning`` ではなく投入プレビューの ``workflow_reason``）。
+    latent_upscale: bool | None = None
 
 
 class StudioTake(BaseModel):
@@ -3003,6 +3025,9 @@ class StudioTake(BaseModel):
     #: ラテント連続性で保存した AV ラテント（ComfyUI 側のパス）。次のカットが
     #: ここから続きを作る。使わなかった Take は None。
     latent_path: str | None = None
+    #: 同じく、``latent_upscale`` = on のときに保存した **2 パス目（最終解像度）**
+    #: の AV ラテント。2 段引き継ぎで次のカットが読む（off だった Take は None）。
+    latent_hires_path: str | None = None
     error: str | None = None
     #: 元ジョブの NSFW フラグ（ジョブが消えていれば None）
     nsfw: bool | None = None
@@ -3071,10 +3096,15 @@ class StudioShotPreview(BaseModel):
     #: ``quality`` が実際に効いたか（False = 素へフォールバックした。理由は
     #: ``workflow_reason`` の末尾に入る）
     quality_applied: bool = False
+    #: 実際に投入される ``selects[latent_upscale]``（プロジェクトの設定を接続先と
+    #: ワークフローの宣言で解決したあとの値。宣言の無いワークフローでは False）
+    latent_upscale: bool = False
     #: ラテント連続性で引き継ぐ直前カットの動画（使わないときは None）
     context_video: str | None = None
     #: 同じく、引き継ぎ元の AV ラテント（ComfyUI 側のパス）
     context_latent: str | None = None
+    #: 同じく、引き継ぎ元の 2 パス目（最終解像度）の AV ラテント（2 段引き継ぎ）
+    context_latent_hires: str | None = None
     #: 組み立てられなかった理由（日本語。空なら問題なし）
     error: str = ""
 
@@ -3087,6 +3117,10 @@ class StudioCapabilities(BaseModel):
 
     #: ラテント連続性（``MiniMaxH3MotionContext`` 系のカスタムノードが揃っている）
     latent_continuity: bool = False
+    #: ラテントアップスケール（``MinimaxH3LatentUpscaler3D`` を入れられる接続先か）。
+    #: 接続先の種類だけで決まる（``/object_info`` は聞かない）ので、``error`` が
+    #: 立っていても値は当てになる。
+    latent_upscale: bool = True
     #: 確かめられなかった理由（日本語。空なら判定できている）
     error: str = ""
 

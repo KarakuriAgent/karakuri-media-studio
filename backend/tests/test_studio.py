@@ -640,10 +640,14 @@ def _allow_latent_context(monkeypatch, available: bool = True) -> None:
     monkeypatch.setattr(studio.comfy, "latent_context_support", support)
 
 
-def _finish_context_job(env, take: dict, *, latent: str | None) -> None:
+def _finish_context_job(
+    env, take: dict, *, latent: str | None, latent_hires: str | None = None
+) -> None:
     """ジョブを成功させ、ラテント連続性の成果（AV ラテント）まで揃える。
 
     ``latent`` が None なら「ラテントは残らなかった」ぶんの再現。
+    ``latent_hires`` は 2 段引き継ぎ（``latent_upscale`` = on）で残る
+    2 パス目のラテント（None = off で作った過去テイク）。
     """
     import sqlite3
 
@@ -656,8 +660,9 @@ def _finish_context_job(env, take: dict, *, latent: str | None) -> None:
         return
     with sqlite3.connect(db.DB_PATH) as conn:
         conn.execute(
-            "UPDATE studio_takes SET latent_path = ? WHERE id = ?",
-            (latent, take["id"]),
+            "UPDATE studio_takes SET latent_path = ?, latent_hires_path = ?"
+            " WHERE id = ?",
+            (latent, latent_hires, take["id"]),
         )
 
 
@@ -665,6 +670,7 @@ def _continuity_pair(
     env,
     *,
     latent: str | None = "/comfy/output/h3_context/a_00001_.safetensors",
+    latent_hires: str | None = None,
     quality: str = "normal",
 ):
     """「前カットを採用済み」の状態まで進めた (project, 続きの Shot) を返す。"""
@@ -678,7 +684,7 @@ def _continuity_pair(
         carry_over_end_frame=True,
     )
     take = render(env, first["id"]).json()
-    _finish_context_job(env, take, latent=latent)
+    _finish_context_job(env, take, latent=latent, latent_hires=latent_hires)
     assert env.client.post(f"/api/studio/takes/{take['id']}/select").status_code == 200
     return project, second
 
@@ -702,6 +708,44 @@ def test_latent_continuity_carries_the_previous_video_and_latent(env, monkeypatc
     assert payload.context_latent_path == latent
     # 素材は参照として添付される（連続カットは r2v の上に乗っている）
     assert len(payload.reference_images) == 1
+
+
+def test_latent_continuity_carries_the_hires_latent_too(env, monkeypatch):
+    """2 段引き継ぎ: 前カットに 2 本目があれば、それも次のカットへ渡す。"""
+    _allow_latent_context(monkeypatch)
+    latent = "/comfy/output/h3_context/a_00001_.safetensors"
+    hires = "/comfy/output/h3_context/a_hires_00001_.safetensors"
+    _project, second = _continuity_pair(env, latent=latent, latent_hires=hires)
+
+    assert render(env, second["id"]).status_code == 201
+    payload = env.created[-1]
+    assert payload.context_latent_path == latent
+    assert payload.context_latent_hires_path == hires
+
+
+def test_latent_continuity_without_a_hires_latent_falls_back(env, monkeypatch):
+    """2 本目が無い過去テイク（latent_upscale off）でも断らず 1 段で続ける。"""
+    _allow_latent_context(monkeypatch)
+    _project, second = _continuity_pair(env, latent_hires=None)
+
+    assert render(env, second["id"]).status_code == 201
+    assert env.created[-1].context_latent_hires_path is None
+
+
+def test_the_take_records_both_latents(env, monkeypatch):
+    """ジョブが持ち帰った 2 本のパスは、その Take の 2 列に入る。"""
+    _allow_latent_context(monkeypatch)
+    latent = "/comfy/output/h3_context/a_00001_.safetensors"
+    hires = "/comfy/output/h3_context/a_hires_00001_.safetensors"
+    project = make_project(env, latent_continuity=True)
+    make_asset(env, project["id"], "Neko", kind="image", prompt_caption="a calico cat")
+    shot = make_shot(env, project["id"], prompt="@Neko walks in.")
+    take = render(env, shot["id"]).json()
+    asyncio.run(studio.record_take_latent(take["job_id"], latent, hires))
+    _finish_context_job(env, take, latent=None)
+    stored = env.client.get(f"/api/studio/shots/{shot['id']}/takes").json()[0]
+    assert stored["latent_path"] == latent
+    assert stored["latent_hires_path"] == hires
 
 
 def test_latent_continuity_needs_reference_material(env, monkeypatch):
@@ -862,6 +906,8 @@ def test_the_capabilities_endpoint_reports_the_target(env, monkeypatch):
     comfy.clear_latent_context_cache()
     assert env.client.get("/api/studio/capabilities").json() == {
         "latent_continuity": True,
+        # ローカル ComfyUI ならアップスケーラのカスタムノードも入れられる
+        "latent_upscale": True,
         "error": "",
     }
 
@@ -1117,6 +1163,111 @@ def test_a_forced_workflow_still_gets_the_quality(env, monkeypatch):
     )
     assert render(env, shot["id"]).status_code == 201
     assert env.created[-1].video_workflow == "minimax_h3_r2v_opt"
+
+
+# --------------------------------------------------------------------------
+# ラテントアップスケール（プロジェクトの latent_upscale）
+# --------------------------------------------------------------------------
+#
+# ワークフロー id は変えず、ジョブの `selects[latent_upscale]` に落ちるつまみ。
+# 効き方は **1 回ぶんの上書き > プロジェクト > 既定 ON** で、カスタムノードを
+# 入れられない接続先（Comfy Cloud）では ON を頼んでも off に落ちる。
+
+def test_latent_upscale_is_on_by_default(env):
+    project = make_project(env)
+    assert project["latent_upscale"] is True
+    assert env.client.get("/api/studio/projects").json()[0]["latent_upscale"] is True
+
+
+def test_latent_upscale_is_saved_as_a_project_setting(env):
+    project = make_project(env)
+    updated = env.client.patch(
+        f"/api/studio/projects/{project['id']}", json={"latent_upscale": False}
+    )
+    assert updated.status_code == 200
+    assert updated.json()["latent_upscale"] is False
+    assert detail(env, project["id"])["latent_upscale"] is False
+
+
+def test_latent_upscale_can_be_set_at_creation(env):
+    assert make_project(env, latent_upscale=False)["latent_upscale"] is False
+
+
+def test_a_wrong_typed_latent_upscale_is_refused(env):
+    project = make_project(env)
+    response = env.client.patch(
+        f"/api/studio/projects/{project['id']}", json={"latent_upscale": "うん"}
+    )
+    assert response.status_code == 422
+
+
+def test_the_project_latent_upscale_reaches_the_job(env, monkeypatch):
+    """作品設定がそのままジョブの selects に載る（既定 ON / 明示 OFF）。"""
+    _use_target(monkeypatch, "local")
+    on = make_shot(env, make_project(env)["id"], prompt="A cat walks in.")
+    assert render(env, on["id"]).status_code == 201
+    assert env.created[-1].selects == {"latent_upscale": "on"}
+
+    off = make_shot(
+        env, make_project(env, code="OFF", latent_upscale=False)["id"],
+        prompt="A cat walks in.",
+    )
+    assert render(env, off["id"]).status_code == 201
+    assert env.created[-1].selects == {"latent_upscale": "off"}
+
+
+@pytest.mark.parametrize(
+    ("project_setting", "override", "expected"),
+    [
+        (True, False, "off"),
+        (False, True, "on"),
+        (True, None, "on"),
+        (False, None, "off"),
+    ],
+)
+def test_the_render_body_overrides_the_latent_upscale(
+    env, monkeypatch, project_setting, override, expected
+):
+    """1 回ぶんの上書き > 作品設定。未指定（None）なら作品設定のまま。"""
+    _use_target(monkeypatch, "local")
+    project = make_project(env, latent_upscale=project_setting)
+    shot = make_shot(env, project["id"], prompt="A cat walks in.")
+    body = {} if override is None else {"latent_upscale": override}
+    assert render(env, shot["id"], body).status_code == 201
+    assert env.created[-1].selects == {"latent_upscale": expected}
+    # 作品設定は据え置き
+    assert detail(env, project["id"])["latent_upscale"] is project_setting
+
+
+def test_latent_upscale_falls_back_on_a_target_without_the_custom_nodes(
+    env, monkeypatch
+):
+    """Comfy Cloud にはアップスケーラを入れられないので off に落として断らない。"""
+    _use_target(monkeypatch, "comfy_cloud")
+    project = make_project(env)  # latent_upscale は既定の True
+    shot = make_shot(env, project["id"], prompt="A cat walks in.")
+    assert render(env, shot["id"]).status_code == 201
+    assert env.created[-1].selects == {"latent_upscale": "off"}
+
+    preview = env.client.get(f"/api/studio/shots/{shot['id']}/prompt-preview").json()
+    assert preview["latent_upscale"] is False
+    assert "接続先" in preview["workflow_reason"]
+
+
+def test_the_preview_shows_the_resolved_latent_upscale(env, monkeypatch):
+    _use_target(monkeypatch, "local")
+    project = make_project(env)
+    shot = make_shot(env, project["id"], prompt="A cat walks in.")
+    preview = env.client.get(f"/api/studio/shots/{shot['id']}/prompt-preview").json()
+    assert preview["latent_upscale"] is True
+    assert "接続先" not in preview["workflow_reason"]
+
+
+def test_a_wrong_typed_latent_upscale_in_the_render_body_is_refused(env):
+    project = make_project(env)
+    shot = make_shot(env, project["id"])
+    assert render(env, shot["id"], {"latent_upscale": "うん"}).status_code == 422
+    assert env.created == []
 
 
 # --------------------------------------------------------------------------

@@ -1301,6 +1301,7 @@ async def _studio_create_project(params: dict[str, Any]) -> tuple[str, str, dict
         body.get("megapixels"),
         body.get("aspect_ratio"),
         body.get("steps") or 0,
+        bool(body.get("latent_upscale", True)),
         actor=STUDIO_ACTOR,
     )
     return (

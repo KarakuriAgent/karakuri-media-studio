@@ -23,7 +23,7 @@ import {
  * 「生成」ボタンのダイアログ: そのテイク 1 回ぶんの設定。
  *
  * 初期値はいまの解決結果（解像度はカット → プロジェクト、尺はカット、
- * ステップ数はプロジェクト、シードはカットの設定）なので、**何も触らずに
+ * ステップ数とラテントアップスケールはプロジェクト、シードはカットの設定）なので、**何も触らずに
  * 「この設定で生成」を押せば今までどおりの投入**になる。ここで変えた値は
  * その 1 回にだけ効き、カットもプロジェクトも書き換えない。
  */
@@ -36,7 +36,7 @@ export default function RenderDialog({
   onClose,
 }: {
   shot: StudioShot
-  /** プロジェクト側の既定（解像度・ステップ数）。 */
+  /** プロジェクト側の既定（解像度・ステップ数・ラテントアップスケール）。 */
   project: RenderDefaults
   /** 生成フォームと同じアスペクト比の候補。 */
   aspectRatios?: string[]
@@ -58,7 +58,7 @@ export default function RenderDialog({
       setShowErrors(true)
       return
     }
-    onRender(renderRequestFromForm(form))
+    onRender(renderRequestFromForm(form, project))
   }
   const errorOf = (name: string) => (showErrors ? errors[name] : undefined)
 
@@ -142,7 +142,22 @@ export default function RenderDialog({
           </div>
         </div>
 
-        <div className="space-y-1 rounded-md border border-border bg-surface-sunken p-2">
+        <div className="space-y-2 rounded-md border border-border bg-surface-sunken p-2">
+          <div className="flex items-center gap-2">
+            <Checkbox
+              id="studio-render-latent-upscale"
+              checked={form.latent_upscale}
+              onCheckedChange={(checked) =>
+                patch({ latent_upscale: checked === true })
+              }
+            />
+            <Label
+              htmlFor="studio-render-latent-upscale"
+              className="cursor-pointer text-foreground/85"
+            >
+              ラテントアップスケール（オフ = 指定解像度で 1 パス）
+            </Label>
+          </div>
           <div className="flex items-center gap-2">
             <Checkbox
               id="studio-render-fixed-seed"

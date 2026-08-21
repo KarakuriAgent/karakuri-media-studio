@@ -158,6 +158,7 @@ function detail(overrides: Partial<StudioProjectDetail> = {}): StudioProjectDeta
     world_notes: '',
     auto_translate: true,
     latent_continuity: false,
+    latent_upscale: true,
     quality: 'normal',
     megapixels: null,
     aspect_ratio: null,
@@ -221,6 +222,7 @@ function summary(current: StudioProjectDetail): StudioProjectSummary {
     world_notes: current.world_notes,
     auto_translate: current.auto_translate,
     latent_continuity: current.latent_continuity,
+    latent_upscale: current.latent_upscale,
     quality: current.quality,
     megapixels: current.megapixels,
     aspect_ratio: current.aspect_ratio,
@@ -255,6 +257,7 @@ function shotPreview(
     latent_continuity: false,
     quality: 'normal',
     quality_applied: false,
+    latent_upscale: true,
     context_video: null,
     context_latent: null,
     error: '',
@@ -502,6 +505,42 @@ describe('StudioView', () => {
     // プロジェクトもカットも書き換えない
     expect(mocked.updateStudioProject).not.toHaveBeenCalled()
     expect(mocked.updateStudioShot).not.toHaveBeenCalled()
+  })
+
+  it('生成ダイアログのラテントアップスケールは作品設定から変えたときだけ送る', async () => {
+    await openProject()
+    clickTab('制作')
+    fireEvent.click(rail().getByRole('button', { name: 'カット1' }))
+    mocked.renderStudioShot.mockResolvedValue({})
+    fireEvent.click(await screen.findByRole('button', { name: '生成' }))
+
+    // 初期値は作品設定（既定の ON）
+    const toggle = screen.getByLabelText(
+      'ラテントアップスケール（オフ = 指定解像度で 1 パス）',
+    ) as HTMLInputElement
+    expect(toggle.getAttribute('data-state')).toBe('checked')
+
+    fireEvent.click(toggle)
+    fireEvent.click(screen.getByRole('button', { name: 'この設定で生成' }))
+    await waitFor(() =>
+      expect(mocked.renderStudioShot).toHaveBeenCalledWith('カット1', {
+        duration: 5,
+        steps: 0,
+        latent_upscale: false,
+      }),
+    )
+  })
+
+  it('作品設定のラテントアップスケールを切ると PATCH で保存される', async () => {
+    await openProject()
+    mocked.updateStudioProject.mockResolvedValue({})
+    // 広い画面のバーではラベルは「拡大」（狭い画面のシートでは全文）
+    fireEvent.click(screen.getByLabelText('拡大'))
+    await waitFor(() =>
+      expect(mocked.updateStudioProject).toHaveBeenCalledWith('p1', {
+        latent_upscale: false,
+      }),
+    )
   })
 
   it('生成中は Take レールに進捗が出て、生成ボタンが止まる', async () => {

@@ -100,6 +100,7 @@ CREATE TABLE IF NOT EXISTS studio_projects (
   world_notes TEXT NOT NULL DEFAULT '',   -- World Bible の覚え書き
   auto_translate INTEGER NOT NULL DEFAULT 1, -- 日本語プロンプトを Grok で英訳してから投入
   latent_continuity INTEGER NOT NULL DEFAULT 0, -- 引き継ぎを Motion Context（ラテント連続性）で行う
+  latent_upscale INTEGER NOT NULL DEFAULT 1, -- 1 パス目を低解像度で回してラテントのまま拡大する
   quality     TEXT NOT NULL DEFAULT 'normal', -- 動画生成の品質（normal / opt / turbo）
   megapixels  REAL,                        -- 動画生成のメガピクセル（NULL = ワークフローの既定）
   aspect_ratio TEXT,                       -- 動画生成のアスペクト比（NULL = 既定）
@@ -233,6 +234,7 @@ CREATE TABLE IF NOT EXISTS studio_takes (
   source_prompt TEXT NOT NULL DEFAULT '',  -- 英訳する前の原文（訳していなければ空）
   warning       TEXT NOT NULL DEFAULT '',  -- 投入はできたが伝えたいこと（過去の英訳失敗フォールバックなど）
   latent_path   TEXT,                      -- ラテント連続性で保存した AV ラテント（ComfyUI 側のパス。NULL = 無し）
+  latent_hires_path TEXT,                  -- 同じく 2 パス目（最終解像度）の AV ラテント（latent_upscale on の 2 段引き継ぎ。NULL = 無し）
   -- エージェントに「この Take の生成が終わった」と伝えた時刻（NULL = まだ）。
   -- ジョブ完了イベントと定期スキャンのどちらが先に来ても 1 回しか通知しない
   -- ための印（app/agent_runner.py の _claim_take_notification）。
@@ -535,6 +537,10 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         # 引き継ぎを Motion Context（ラテント連続性）で行うか。既存の
         # プロジェクトは既定 OFF = 今までどおりラストフレームの引き継ぎ。
         ("latent_continuity", "INTEGER NOT NULL DEFAULT 0"),
+        # ラテントアップスケール（1 パス目を 0.2MP で回してから
+        # `MinimaxH3LatentUpscaler3D` で指定解像度に拡大する）。既存の
+        # プロジェクトも既定 ON（ジョブ側の `latent_upscale` の既定と揃える）。
+        ("latent_upscale", "INTEGER NOT NULL DEFAULT 1"),
         # 動画生成の品質（normal / opt / turbo）。既存のプロジェクトは
         # 'normal' = 今までどおり素の MiniMax H3（20 steps）。
         ("quality", "TEXT NOT NULL DEFAULT 'normal'"),
@@ -600,6 +606,9 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         # ラテント連続性で保存した AV ラテントのパス（ComfyUI 側）。既存行と、
         # ラテント連続性を使わなかった Take は NULL のまま。
         ("latent_path", "TEXT"),
+        # 2 段引き継ぎ（latent_upscale on）で保存した 2 パス目のラテント。
+        # 既存行と、off で作った Take は NULL のまま = 1 段引き継ぎに戻る。
+        ("latent_hires_path", "TEXT"),
         # エージェントへ完了を伝えた時刻。既存行は NULL だが、起動時のスキャンが
         # 「終端に達しているのに未通知」の Take を拾うので、移行直後に過去の
         # Take がまとめて通知されないよう、ここで一度だけ現在時刻で埋める

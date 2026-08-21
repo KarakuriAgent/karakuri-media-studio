@@ -132,6 +132,37 @@ class SelectSpec:
     #: 空のままで従来どおり）。エージェントのカタログには生の値と併記する
     #: （:func:`app.prompts._select_lines`）。
     choice_labels: dict[str, str] = field(default_factory=dict)
+    #: **注入先を持たず、ビルダーがグラフを組み替える**選択式か（SPEC §3.1）。
+    #: ``latent_upscale`` のように「選んだ値でノードを足したり配線を変えたり
+    #: する」つまみは 1 つの :class:`Target` では表せないので、
+    #: :attr:`target` を ``None`` のままにしてこちらを立てる
+    #: （:func:`validate_spec` の「注入先が無い」検査を通す印にもなる）。
+    rewrites_graph: bool = False
+    #: **既定以外を選んだときだけ**必要になるカスタムノードの ``class_type``。
+    #: テンプレートには出てこない（組み替えで足す）ので、テンプレート由来の
+    #: 接続先判定（:func:`app.workflow.uses_optional_class_types`）では拾えない。
+    #: 宣言があると Comfy Cloud では :attr:`restricted_choice` に固定する。
+    requires_class_types: tuple[str, ...] = ()
+    #: :attr:`requires_class_types` を入れられない接続先で唯一許す値
+    restricted_choice: str = ""
+
+    def choices_for_target(self, comfy_target: str) -> tuple[str, ...]:
+        """接続先 ``comfy_target`` で実際に選べる値（SPEC §3.1 / §5.1）。
+
+        :func:`app.workflow.supported_on_target` の選択式版。Comfy Cloud には
+        任意のカスタムノードを入れられないので、それを要求する選択式は
+        :attr:`restricted_choice` の 1 つだけに絞る。
+        """
+        if comfy_target != "comfy_cloud" or not self.requires_class_types:
+            return self.choices
+        if self.restricted_choice not in self.choices:  # pragma: no cover - 宣言ミス
+            return self.choices
+        return (self.restricted_choice,)
+
+    def fallback_for_target(self, comfy_target: str) -> str:
+        """接続先 ``comfy_target`` で未指定のときに使う値。"""
+        allowed = self.choices_for_target(comfy_target)
+        return self.fallback if self.fallback in allowed else allowed[0]
 
     @property
     def fallback(self) -> str:
@@ -398,6 +429,106 @@ MINIMAX_H3_FRAME_GRID = FrameGrid(multiple=17, offset=5, round_up=True, fps=24, 
 
 
 @dataclass(frozen=True)
+class UpscaleSpec:
+    """**ラテントアップスケール**（2 パス）にグラフを組み替える宣言（SPEC §3.1）。
+
+    テンプレートは常に 1 パスのままで、選択式 ``latent_upscale`` が ``on`` の
+    ときだけ :func:`app.workflow.splice_latent_upscale` がノードを足す:
+
+    1. 1 パス目は :attr:`first_pass_megapixels` の解像度で回す（``width`` /
+       ``height`` の注入先に低い値を書く）。
+    2. 1 パス目の denoised_output を ``LTXVSeparateAVLatent`` で映像と音声に
+       分け、映像だけ ``MinimaxH3LatentUpscaler3D`` で**最終解像度**に拡大して
+       ``LTXVConcatAVLatent`` で戻す。
+    3. ``ManualSigmas``（:attr:`sigmas`）で 2 パス目の
+       ``SamplerCustomAdvanced`` を回す。noise / guider / sampler は 1 パス目と
+       同じものを共有する。
+    4. 1 パス目を読んでいた ``VAEDecode`` / ``VAEDecodeAudio`` の ``samples``
+       だけを 2 パス目に付け替える。1 パス目のラテントの保存
+       （``MiniMaxH3MotionContextSaveLatent``）と 1 個目の Motion Context は
+       **1 パス目のまま**（入力名が ``latent`` なので付け替えの対象にならない）。
+    5. **2 段引き継ぎ**: ラテント連続性のバリアントでは、2 パス目のラテントも
+       2 個目の ``…SaveLatent``（:attr:`hires_save_node`）で保存し、そのパスを
+       2 個目の ``PreviewAny`` で持ち帰る。連続カット版はさらに、直前カットの
+       高解像度ラテントを 2 個目の ``…LoadLatent`` で読んで 2 個目の
+       ``MiniMaxH3MotionContext`` + ``BasicGuider`` を組み、2 パス目の
+       サンプラーの ``guider`` をそちらへ付け替える。直前カットに高解像度
+       ラテントが無ければ（``off`` で作った過去テイクなど）この 3 ノードは
+       足さず、2 パス目は 1 パス目と同じ guider を共有する = 1 段引き継ぎ。
+
+    ``off`` のときは何もしないので、グラフはテンプレートそのままになる。
+
+    **チェーンの途中で解像度や ``latent_upscale`` を変えられない**:
+    ``MiniMaxH3MotionContext`` の ``context_latent`` は生成するクリップと同じ
+    解像度でなければならないので、前のカットと違う解像度・違う
+    ``latent_upscale`` で続きを作ると ComfyUI 側で落ちる。
+    """
+
+    #: 1 パス目の ``SamplerCustomAdvanced`` のノード ID。素の t2v / i2v は
+    #: サブグラフを展開した ``105:14``、それ以外のテンプレートは ``125``。
+    sampler: str
+    #: 1 パス目を回す解像度（メガピクセル）。縦横比はジョブの指定のまま。
+    first_pass_megapixels: float = 0.2
+    #: ``MinimaxH3LatentUpscaler3D`` のモデルファイル（設定ページで差し替え可）
+    model_name: str = "minimax_h3_latent_upscaler_3d_bf16.safetensors"
+    #: 2 パス目の ``ManualSigmas``（全バリアント共通の固定値）
+    sigmas: str = "0.9035, 0.6316, 0.3158, 0.0000"
+    #: アップスケーラの画素グリッド（32 未満だと下端に光の帯が出る）
+    align: int = 32
+    device: str = "cuda"
+    precision: str = "bf16"
+    #: 足すノードの ID。既存のテンプレート（最大 166）とも、サブグラフ由来の
+    #: ``105:xx`` とも衝突しない数字文字列にしてある。
+    separate_node: str = "900"
+    upscaler_node: str = "901"
+    concat_node: str = "902"
+    sigmas_node: str = "903"
+    second_sampler_node: str = "904"
+
+    # --- 2 段引き継ぎ（ラテント連続性 × ``latent_upscale`` on）---------------
+    #
+    # ラテント連続性のバリアント（``*_save*`` / ``*_context*``）で ``on`` の
+    # ときだけ足す。継ぎ目を**最終解像度でも**合わせるために、1 パス目
+    # （0.2MP）と 2 パス目（最終解像度）の**両方**のラテントを保存し、次の
+    # カットは 2 本とも読む（:func:`app.workflow.splice_latent_upscale`）。
+    #: 2 パス目のラテントを保存する 2 個目の ``…SaveLatent`` と、そのパスを
+    #: 持ち帰る 2 個目の ``PreviewAny``
+    hires_save_node: str = "905"
+    hires_preview_node: str = "906"
+    #: 直前カットの**高解像度**ラテントを読む 2 個目の ``…LoadLatent``
+    hires_load_node: str = "907"
+    #: 2 パス目用の 2 個目の ``MiniMaxH3MotionContext`` と、その
+    #: CONDITIONING を受ける 2 個目の ``BasicGuider``（2 パス目の
+    #: ``SamplerCustomAdvanced`` はこちらの guider を使う）
+    hires_context_node: str = "908"
+    hires_guider_node: str = "909"
+    #: 2 パス目のラテントの保存先に付ける接尾辞（1 本目と別ファイルにする）
+    hires_suffix: str = "_hires"
+
+    def node_ids(self) -> tuple[str, ...]:
+        """組み替えで足すノードの ID（衝突検査用）。"""
+        return (
+            self.separate_node,
+            self.upscaler_node,
+            self.concat_node,
+            self.sigmas_node,
+            self.second_sampler_node,
+            self.hires_save_node,
+            self.hires_preview_node,
+            self.hires_load_node,
+            self.hires_context_node,
+            self.hires_guider_node,
+        )
+
+
+#: ラテントアップスケールの選択式の論理名（ジョブの ``selects`` のキー）
+LATENT_UPSCALE_NAME = "latent_upscale"
+
+#: ラテントアップスケーラのカスタムノード（Comfyui_Minimax_h3_latent_Upscaler）
+LATENT_UPSCALER_CLASS = "MinimaxH3LatentUpscaler3D"
+
+
+@dataclass(frozen=True)
 class ElementsSpec:
     """**Elements**（参照画像を名前つきの要素にまとめる）の宣言（§3.1）。
 
@@ -601,6 +732,10 @@ class WorkflowSpec:
     #: 選択式フィールド（論理名 -> :class:`SelectSpec`）。宣言のないワークフロー
     #: では空なので、フォームにもジョブにも何も増えない。
     selects: dict[str, SelectSpec] = field(default_factory=dict)
+    #: ラテントアップスケール（2 パス）への組み替え方（:class:`UpscaleSpec`、
+    #: ``None`` = 非対応）。宣言があるワークフローだけが選択式 ``latent_upscale``
+    #: を持てる（:func:`validate_spec` が対で宣言されているか見る）。
+    upscale: "UpscaleSpec | None" = None
     #: ``video_prompt`` が必須か。プロンプトをコンボから組み立てるワークフロー
     #: は False で、書かれた場合だけ注入する。
     prompt_required: bool = True
@@ -1563,16 +1698,42 @@ GROK_IMAGINE_EDIT = WorkflowSpec(
 # プロンプト本文に書かせる。
 
 #: 3 つのワークフローで共通の注意書き（モデルの素性と要件）
-_MINIMAX_H3_NOTES = (
+_MINIMAX_H3_BASE_NOTES = (
     "24fps 固定・尺は 17k+5 フレームの格子に切り上げ（5 秒 = 124 フレーム、"
     "学習範囲は約 1〜15 秒）/ 短辺 768px・最大 768x1344 が既定の画角"
     "（幅高さは 32 の倍数）/ negative prompt は無い（CFG 無しの BasicGuider）/"
     " ユーザー LoRA を挿すチェーンは持たない"
 )
 
+#: latent_upscale の注意書き（全 MiniMax H3 動画スペック共通）
+_MINIMAX_H3_UPSCALE_NOTES = (
+    " / `latent_upscale`（既定 **on**）: on だと 1 パス目を **0.2MP**"
+    "（縦横比は指定のまま・32 の倍数）で回し、`LTXVSeparateAVLatent` で映像と"
+    "音声に分けてから `MinimaxH3LatentUpscaler3D`（mode=target dimensions・"
+    "align 32・bf16）で**指定解像度**に拡大 → `LTXVConcatAVLatent` で戻して"
+    "`ManualSigmas`（0.9035 / 0.6316 / 0.3158 / 0.0000）の 3 ステップで仕上げる"
+    "2 パス構成になる（noise / guider / sampler は 1 パス目と共有。組み替えは"
+    "ジョブの組み立て時なのでテンプレート自体は 1 パスのまま）/ off は"
+    "テンプレートそのままで指定解像度を 1 パス / on には"
+    "`MinimaxH3LatentUpscaler3D`（Comfyui_Minimax_h3_latent_Upscaler）と"
+    "`minimax_h3_latent_upscaler_3d_bf16`（latent_upscale_models）が要る。"
+    "入れられない接続先（Comfy Cloud）では off しか選べない /"
+    " ラテント連続性のバリアントで on にすると**2 段引き継ぎ**になる:"
+    "1 パス目（0.2MP）と 2 パス目（最終解像度）のラテントを両方保存し"
+    "（2 本目は保存先の末尾に `_hires`）、連続カット版は 2 本目を読む"
+    "2 個目の `MiniMaxH3MotionContext` + `BasicGuider` を組んで 2 パス目の"
+    "guider に据える。直前カットに 2 本目が無ければ 1 段引き継ぎに戻る /"
+    " **チェーンの途中で解像度や `latent_upscale` を変えると"
+    "`MiniMaxH3MotionContext` が解像度不一致で止まる**"
+    "（`context_latent` は生成するクリップと同じ解像度でなければならない）"
+)
+
+#: 全 MiniMax H3 動画スペックが共通で持つ注意書き
+_MINIMAX_H3_NOTES = _MINIMAX_H3_BASE_NOTES + _MINIMAX_H3_UPSCALE_NOTES
+
 #: turbo 版だけの注意書き（素のものとの差分）
 _MINIMAX_H3_TURBO_NOTES = (
-    " / **turbo**: 4step 蒸留 LoRA（`minimax_h3_turbo_v4_step600_ema`）と"
+    " / **turbo**: 4step 蒸留 LoRA（`minimax_h3_fl2v_turbo_4step_v1.1_768p_comfyui_bf16`）と"
     " Sage Attention / Mem Eff Sage Attention / Sol-Attn / SigmaShift /"
     " Spectrum をテンプレートに"
     "直列で焼き込んだ高速版で、サンプリングは **4 ステップ**固定"
@@ -1585,6 +1746,31 @@ _MINIMAX_H3_TURBO_NOTES = (
 )
 
 #: opt 版だけの注意書き（turbo からの差分）
+#: r2v の opt / turbo は素の r2v と土台が違う: ref2va の量子化ウェイトではなく
+#: **fl2va + 参照 LoRA** の組み合わせで、``LoraLoaderModelOnly`` で重ねる。
+_MINIMAX_H3_R2V_REF_LORA_NOTES = (
+    " / r2v の opt / turbo だけは素の版と土台が違い、"
+    "`minimax_h3_fl2va_pruned_w4a8_mixed` に参照 LoRA"
+    "（`minimax_h3_ref_lora_rank_256_bf16`）を `LoraLoaderModelOnly` で重ねて"
+    "参照モードにする（ref2va の量子化ウェイトは使わない）"
+)
+
+#: r2v turbo だけの注意書き。``MiniMaxH3TurboLoRA`` は使わず、4step 蒸留 LoRA も
+#: 素の ``LoraLoaderModelOnly`` で重ねるので `low_vram` の選択式は持たない。
+#: **opt との差は「蒸留 LoRA を 1 段足して steps 4 / euler にする」だけ**で、
+#: テンプレートは他の版と同じ 1 パス（アップスケールは `latent_upscale` 側）。
+_MINIMAX_H3_R2V_TURBO_NOTES = (
+    " / **turbo**: opt の構成（fl2va + 参照 LoRA）にさらに 4step 蒸留 LoRA"
+    "（`minimax_h3_fl2v_turbo_4step_v1.1_768p_comfyui_bf16`）を"
+    "`LoraLoaderModelOnly` で重ね、サンプリングを **4 ステップ / euler** に"
+    "したもの（`MiniMaxH3TurboLoRA` を使わないので `low_vram` は無い）。"
+    "Sage Attention / Mem Eff Sage Attention / Sol-Attn / SigmaShift /"
+    " Spectrum は opt と同じく焼き込み済みで、入力の形は素の版とまったく同じ。"
+    "`PathchSageAttentionKJ`（ComfyUI-KJNodes + SageAttention）・"
+    "`MiniMaxH3MemoryEfficientSageAttentionPatch`・`SolAttnPatch`・"
+    "`MiniMaxH3SigmaShift`・`SpectrumApplyMiniMaxH3` の"
+    "**カスタムノードと量子化ウェイト一式が入った環境でのみ**動く"
+)
 _MINIMAX_H3_OPT_NOTES = (
     " / **opt**: turbo から 4step 蒸留 LoRA だけを抜いた最適化版で、"
     "サンプリングは素の版と同じ **20 ステップ**（品質は素の版相当のまま）。"
@@ -1644,6 +1830,12 @@ OPTIONAL_CLASS_TYPES: frozenset[str] = frozenset(
         "SolAttnPatch",
         "MiniMaxH3SigmaShift",
         "SpectrumApplyMiniMaxH3",
+        # ラテントアップスケーラ（Comfyui_Minimax_h3_latent_Upscaler）。
+        # テンプレートには出てこない: 選択式 ``latent_upscale`` が on のときだけ
+        # ジョブの組み立てがグラフに足す（:class:`UpscaleSpec`）ので、接続先ごとの
+        # 対応判定は :meth:`SelectSpec.choices_for_target` のほうで行う。
+        # ここに並べてあるのはヘルスチェックの「必ず在るべきノード」から外すため。
+        LATENT_UPSCALER_CLASS,
         # ラテント連続性（ComfyUI-H3-Motion-Context /
         # ComfyUI-MiniMaxH3-Contex-Loop）。:data:`LATENT_CONTEXT_CLASS_TYPES`
         # にも同じものを並べてあり、そちらは接続先ごとの対応判定に使う。
@@ -1668,7 +1860,24 @@ _MINIMAX_H3_TURBO_MODELS = (
     " モデル: minimax_h3_{unet}_pruned_w4a8_mixed（diffusion_models）+"
     " minimax_h3_video_vae_int8_convrot + minimax_h3_audio_vae_fp32 +"
     " qwen3vl_32b_heretic_minimax_h3_nvfp4（text_encoders）+"
-    " minimax_h3_turbo_v4_step600_ema（loras）"
+    " minimax_h3_fl2v_turbo_4step_v1.1_768p_comfyui_bf16（loras）"
+)
+
+#: r2v opt 版のモデルファイル（fl2va ウェイト + 参照 LoRA）
+_MINIMAX_H3_R2V_OPT_MODELS = (
+    " モデル: minimax_h3_fl2va_pruned_w4a8_mixed（diffusion_models）+"
+    " minimax_h3_video_vae_int8_convrot + minimax_h3_audio_vae_fp32 +"
+    " qwen3vl_32b_heretic_minimax_h3_nvfp4（text_encoders）+"
+    " minimax_h3_ref_lora_rank_256_bf16（loras）"
+)
+
+#: r2v turbo 版のモデルファイル（opt に 4step 蒸留 LoRA を足しただけ）
+_MINIMAX_H3_R2V_TURBO_MODELS = (
+    " モデル: minimax_h3_fl2va_pruned_w4a8_mixed（diffusion_models）+"
+    " minimax_h3_video_vae_int8_convrot + minimax_h3_audio_vae_fp32 +"
+    " qwen3vl_32b_heretic_minimax_h3_nvfp4（text_encoders）+"
+    " minimax_h3_fl2v_turbo_4step_v1.1_768p_comfyui_bf16 +"
+    " minimax_h3_ref_lora_rank_256_bf16（loras）"
 )
 
 #: opt 版のモデルファイル（量子化ウェイトのみ・蒸留 LoRA は使わない）
@@ -1698,6 +1907,44 @@ _MINIMAX_H3_LOW_VRAM_SELECT = SelectSpec(
         "（VRAM が足りずに落ちるときだけ。遅くなるので既定は off）"
     ),
 )
+
+#: ラテントアップスケール（``latent_upscale``）の選択式。**全 MiniMax H3 動画
+#: ワークフロー共通**で、既定は ``on``。テンプレートは常に 1 パスのままで、
+#: ``on`` のときだけジョブの組み立てがグラフを 2 パスに組み替える
+#: （:class:`UpscaleSpec` / :func:`app.workflow.splice_latent_upscale`）。
+#: ``MinimaxH3LatentUpscaler3D`` は任意のカスタムノードなので、Comfy Cloud では
+#: 選択肢が ``off`` だけになる（:meth:`SelectSpec.choices_for_target`）。
+_MINIMAX_H3_LATENT_UPSCALE_SELECT = SelectSpec(
+    label="ラテントアップスケール（2 パス）",
+    choices=("on", "off"),
+    default="on",
+    # 1 つの注入先では表せない（ノードを足して配線を変える）ので Target は持たない
+    rewrites_graph=True,
+    index_field="",
+    requires_class_types=(LATENT_UPSCALER_CLASS,),
+    restricted_choice="off",
+    choice_labels={
+        "on": "する（0.2MP で下描き → 指定解像度に拡大）",
+        "off": "しない（指定解像度で 1 パス）",
+    },
+    hint=(
+        "on にすると 1 パス目を 0.2MP（縦横比はそのまま）で回してから"
+        "`MinimaxH3LatentUpscaler3D` でラテントのまま指定解像度に拡大し、"
+        "3 ステップ（ManualSigmas 固定）で仕上げる。同じ解像度を 1 パスで"
+        "回すより速くて破綻しにくい。off はテンプレートそのままの 1 パス"
+    ),
+)
+
+#: MiniMax H3 動画ワークフローが共通で持つ選択式（品質バリアント固有のものは
+#: それぞれの宣言で足す）
+_MINIMAX_H3_VIDEO_SELECTS: dict[str, SelectSpec] = {
+    LATENT_UPSCALE_NAME: _MINIMAX_H3_LATENT_UPSCALE_SELECT,
+}
+
+#: 1 パス目のサンプラーは、素の t2v / i2v だけサブグラフ由来の ``105:14``。
+#: r2v と turbo / opt の全テンプレートは連番に振り直してあるので ``125``。
+_MINIMAX_H3_UPSCALE = UpscaleSpec(sampler="125")
+_MINIMAX_H3_UPSCALE_SUBGRAPH = UpscaleSpec(sampler="105:14")
 
 #: i2v だけの注意書き（任意の最終フレーム）
 _MINIMAX_H3_I2V_NOTES = (
@@ -1792,6 +2039,8 @@ MINIMAX_H3_T2V = WorkflowSpec(
     },
     # 高速化トグル（任意・既定 OFF）: UNETLoader と BasicGuider の間に挟む
     seeds=(T("105:15", "noise_seed", "RandomNoise"),),
+    selects=dict(_MINIMAX_H3_VIDEO_SELECTS),
+    upscale=_MINIMAX_H3_UPSCALE_SUBGRAPH,
     notes=_MINIMAX_H3_NOTES + " /" + _MINIMAX_H3_MODELS.format(unet="fl2va"),
 )
 
@@ -1845,6 +2094,8 @@ MINIMAX_H3_I2V = WorkflowSpec(
     },
     optional_loaders=("end_image",),
     seeds=(T("105:15", "noise_seed", "RandomNoise"),),
+    selects=dict(_MINIMAX_H3_VIDEO_SELECTS),
+    upscale=_MINIMAX_H3_UPSCALE_SUBGRAPH,
     notes=(
         _MINIMAX_H3_NOTES
         + _MINIMAX_H3_I2V_NOTES
@@ -1926,6 +2177,8 @@ MINIMAX_H3_R2V = WorkflowSpec(
         audio_loader=T("142", "audio", "LoadAudio"),
     ),
     seeds=(T("129", "noise_seed", "RandomNoise"),),
+    selects=dict(_MINIMAX_H3_VIDEO_SELECTS),
+    upscale=_MINIMAX_H3_UPSCALE,
     notes=(
         _MINIMAX_H3_NOTES
         + _MINIMAX_H3_R2V_NOTES
@@ -2119,7 +2372,11 @@ MINIMAX_H3_T2V_TURBO = replace(
         "save_prefix": T("92", "filename_prefix", "SaveVideo"),
     },
     seeds=(T("129", "noise_seed", "RandomNoise"),),
-    selects={MINIMAX_H3_LOW_VRAM_NAME: _MINIMAX_H3_LOW_VRAM_SELECT},
+    selects={
+        MINIMAX_H3_LOW_VRAM_NAME: _MINIMAX_H3_LOW_VRAM_SELECT,
+        **_MINIMAX_H3_VIDEO_SELECTS,
+    },
+    upscale=_MINIMAX_H3_UPSCALE,
     notes=(
         _MINIMAX_H3_NOTES
         + _MINIMAX_H3_TURBO_NOTES
@@ -2147,7 +2404,11 @@ MINIMAX_H3_I2V_TURBO = replace(
         "save_prefix": T("92", "filename_prefix", "SaveVideo"),
     },
     seeds=(T("129", "noise_seed", "RandomNoise"),),
-    selects={MINIMAX_H3_LOW_VRAM_NAME: _MINIMAX_H3_LOW_VRAM_SELECT},
+    selects={
+        MINIMAX_H3_LOW_VRAM_NAME: _MINIMAX_H3_LOW_VRAM_SELECT,
+        **_MINIMAX_H3_VIDEO_SELECTS,
+    },
+    upscale=_MINIMAX_H3_UPSCALE,
     notes=(
         _MINIMAX_H3_NOTES
         + _MINIMAX_H3_I2V_NOTES
@@ -2157,20 +2418,30 @@ MINIMAX_H3_I2V_TURBO = replace(
     ),
 )
 
+#: r2v turbo は他の turbo と作りが違う（``MiniMaxH3TurboLoRA`` を使わないので
+#: `low_vram` の選択式も持たない）。ウェイトは fl2va で、参照 LoRA と 4step 蒸留
+#: LoRA を ``LoraLoaderModelOnly`` で 2 段重ねてから高速化パッチの連鎖に流す。
+_MINIMAX_H3_R2V_TURBO_DESCRIPTION = (
+    "サンプリングは 4 ステップ固定で、素の版よりずっと速く上がる"
+    "（fl2va ウェイトに参照 LoRA と 4step 蒸留 LoRA を重ね、Sage Attention /"
+    " Sol-Attn / Spectrum を焼き込んだ高速版）。入力の指定は素の版と"
+    "まったく同じだが、専用の量子化ウェイトと MiniMax H3 系のカスタムノード"
+    "一式が入った環境でのみ動く。"
+)
+
 MINIMAX_H3_R2V_TURBO = replace(
     MINIMAX_H3_R2V,
     id="minimax_h3_r2v_turbo",
     label="参照素材→動画・音声つき (MiniMax H3 r2v Turbo)",
     mode_label="参照素材→動画・音声つき (r2v Turbo)",
     relpath="video/minimax-h3/minimax_h3_r2v_turbo.json",
-    description=MINIMAX_H3_R2V.description + _MINIMAX_H3_TURBO_DESCRIPTION,
-    selects={MINIMAX_H3_LOW_VRAM_NAME: _MINIMAX_H3_LOW_VRAM_SELECT},
+    description=MINIMAX_H3_R2V.description + _MINIMAX_H3_R2V_TURBO_DESCRIPTION,
     notes=(
         _MINIMAX_H3_NOTES
         + _MINIMAX_H3_R2V_NOTES
-        + _MINIMAX_H3_TURBO_NOTES
+        + _MINIMAX_H3_R2V_TURBO_NOTES
         + " /"
-        + _MINIMAX_H3_TURBO_MODELS.format(unet="ref2va")
+        + _MINIMAX_H3_R2V_TURBO_MODELS
     ),
 )
 
@@ -2195,6 +2466,8 @@ MINIMAX_H3_T2V_OPT = replace(
     # テンプレートのノード ID は turbo と同じ連番なので、turbo と同じ宣言を使う
     inject=dict(MINIMAX_H3_T2V_TURBO.inject),
     seeds=MINIMAX_H3_T2V_TURBO.seeds,
+    # 蒸留 LoRA は無いが、テンプレートのサンプラー ID は turbo と同じ 125
+    upscale=_MINIMAX_H3_UPSCALE,
     notes=(
         _MINIMAX_H3_NOTES
         + _MINIMAX_H3_OPT_NOTES
@@ -2213,6 +2486,7 @@ MINIMAX_H3_I2V_OPT = replace(
     # テンプレートのノード ID は turbo と同じ連番なので、turbo と同じ宣言を使う
     inject=dict(MINIMAX_H3_I2V_TURBO.inject),
     seeds=MINIMAX_H3_I2V_TURBO.seeds,
+    upscale=_MINIMAX_H3_UPSCALE,
     notes=(
         _MINIMAX_H3_NOTES
         + _MINIMAX_H3_I2V_NOTES
@@ -2233,8 +2507,9 @@ MINIMAX_H3_R2V_OPT = replace(
         _MINIMAX_H3_NOTES
         + _MINIMAX_H3_R2V_NOTES
         + _MINIMAX_H3_OPT_NOTES
+        + _MINIMAX_H3_R2V_REF_LORA_NOTES
         + " /"
-        + _MINIMAX_H3_OPT_MODELS.format(unet="ref2va")
+        + _MINIMAX_H3_R2V_OPT_MODELS
     ),
 )
 
@@ -2375,9 +2650,9 @@ MINIMAX_H3_R2V_SAVE_TURBO = replace(
         _MINIMAX_H3_NOTES
         + _MINIMAX_H3_R2V_NOTES
         + _MINIMAX_H3_SAVE_NOTES
-        + _MINIMAX_H3_TURBO_NOTES
+        + _MINIMAX_H3_R2V_TURBO_NOTES
         + " /"
-        + _MINIMAX_H3_TURBO_MODELS.format(unet="ref2va")
+        + _MINIMAX_H3_R2V_TURBO_MODELS
     ),
 )
 
@@ -2402,8 +2677,9 @@ MINIMAX_H3_R2V_SAVE_OPT = replace(
         + _MINIMAX_H3_R2V_NOTES
         + _MINIMAX_H3_SAVE_NOTES
         + _MINIMAX_H3_OPT_NOTES
+        + _MINIMAX_H3_R2V_REF_LORA_NOTES
         + " /"
-        + _MINIMAX_H3_OPT_MODELS.format(unet="ref2va")
+        + _MINIMAX_H3_R2V_OPT_MODELS
     ),
 )
 
@@ -2428,7 +2704,7 @@ MINIMAX_H3_R2V_CONTEXT_TURBO = replace(
     mode_label="参照素材→動画・音声つき・連続カット (r2v Turbo context)",
     relpath="video/minimax-h3/minimax_h3_r2v_context_turbo.json",
     description=(
-        MINIMAX_H3_R2V_CONTEXT.description + _MINIMAX_H3_TURBO_DESCRIPTION
+        MINIMAX_H3_R2V_CONTEXT.description + _MINIMAX_H3_R2V_TURBO_DESCRIPTION
     ),
     requires=("video",),
     inject={
@@ -2440,9 +2716,9 @@ MINIMAX_H3_R2V_CONTEXT_TURBO = replace(
         _MINIMAX_H3_NOTES
         + _MINIMAX_H3_R2V_NOTES
         + _MINIMAX_H3_CONTEXT_NOTES
-        + _MINIMAX_H3_TURBO_NOTES
+        + _MINIMAX_H3_R2V_TURBO_NOTES
         + " /"
-        + _MINIMAX_H3_TURBO_MODELS.format(unet="ref2va")
+        + _MINIMAX_H3_R2V_TURBO_MODELS
     ),
 )
 
@@ -2470,8 +2746,9 @@ MINIMAX_H3_R2V_CONTEXT_OPT = replace(
         + _MINIMAX_H3_R2V_NOTES
         + _MINIMAX_H3_CONTEXT_NOTES
         + _MINIMAX_H3_OPT_NOTES
+        + _MINIMAX_H3_R2V_REF_LORA_NOTES
         + " /"
-        + _MINIMAX_H3_OPT_MODELS.format(unet="ref2va")
+        + _MINIMAX_H3_R2V_OPT_MODELS
     ),
 )
 
@@ -2816,8 +3093,13 @@ class CatalogEntry:
         return tuple(field for field, _ in self.required_inputs)
 
 
-def catalog_entry(spec: WorkflowSpec) -> CatalogEntry:
-    """Describe one workflow for the system prompts."""
+def catalog_entry(spec: WorkflowSpec, comfy_target: str = "") -> CatalogEntry:
+    """Describe one workflow for the system prompts.
+
+    ``comfy_target`` を渡すと、その接続先で選べない選択肢を落とす
+    （Comfy Cloud には ``MinimaxH3LatentUpscaler3D`` を入れられないので
+    ``latent_upscale`` が ``off`` だけになる。:meth:`SelectSpec.choices_for_target`）。
+    """
     optional = tuple(
         name for name in INPUT_FIELDS if spec.supports(name) and name not in spec.requires
     )
@@ -2859,8 +3141,8 @@ def catalog_entry(spec: WorkflowSpec) -> CatalogEntry:
             (
                 name,
                 select.label,
-                select.choices,
-                select.fallback,
+                select.choices_for_target(comfy_target),
+                select.fallback_for_target(comfy_target),
                 bool(select.auto),
                 select.hint,
                 dict(select.choice_labels),
@@ -2870,9 +3152,9 @@ def catalog_entry(spec: WorkflowSpec) -> CatalogEntry:
     )
 
 
-def video_catalog() -> list[CatalogEntry]:
+def video_catalog(comfy_target: str = "") -> list[CatalogEntry]:
     """Every selectable video workflow, in UI / prompt order."""
-    return [catalog_entry(spec) for spec in video_specs()]
+    return [catalog_entry(spec, comfy_target) for spec in video_specs()]
 
 
 def audio_catalog() -> list[CatalogEntry]:
@@ -3198,6 +3480,69 @@ def validate_external_spec(spec: WorkflowSpec) -> list[str]:
     return problems
 
 
+def _validate_upscale(spec: WorkflowSpec, tpl: Workflow) -> list[str]:
+    """:attr:`WorkflowSpec.upscale` の宣言がテンプレートと噛み合うか（SPEC §3.1）。
+
+    テンプレート自体は 1 パスのままなので、見るのは「組み替えの足場がある
+    か」だけ: 1 パス目のサンプラーが宣言どおりに居るか、その出力をデコーダが
+    ``samples`` で読んでいるか、足すノードの ID が空いているか、そして
+    1 パス目の解像度を書き換えるための ``width`` / ``height`` があるか。
+    """
+    upscale = spec.upscale
+    select = spec.selects.get(LATENT_UPSCALE_NAME)
+    if upscale is None:
+        if select is not None:
+            return [
+                f"{spec.id}.selects[{LATENT_UPSCALE_NAME}]: declared without an"
+                " `upscale` spec"
+            ]
+        return []
+
+    problems: list[str] = []
+    if select is None:
+        problems.append(
+            f"{spec.id}.upscale: declared without a"
+            f" `selects[{LATENT_UPSCALE_NAME}]` to switch it on"
+        )
+    for name in ("width", "height"):
+        if name not in spec.inject:
+            problems.append(f"{spec.id}.upscale: no {name!r} injection target")
+
+    node = tpl.get(upscale.sampler)
+    if not isinstance(node, dict) or node.get("class_type") != "SamplerCustomAdvanced":
+        problems.append(
+            f"{spec.id}.upscale.sampler: node {upscale.sampler!r} is not a"
+            " SamplerCustomAdvanced"
+        )
+    else:
+        missing = [
+            field_name
+            for field_name in ("noise", "guider", "sampler")
+            if field_name not in (node.get("inputs") or {})
+        ]
+        if missing:
+            problems.append(
+                f"{spec.id}.upscale.sampler: {upscale.sampler} has no"
+                f" {', '.join(missing)}"
+            )
+    link = [upscale.sampler, 0]
+    if not any(
+        isinstance(other, dict) and (other.get("inputs") or {}).get("samples") == link
+        for other in tpl.values()
+    ):
+        problems.append(
+            f"{spec.id}.upscale.sampler: nothing decodes {upscale.sampler!r}"
+        )
+    for node_id in upscale.node_ids():
+        if node_id in tpl:
+            problems.append(
+                f"{spec.id}.upscale: node id {node_id!r} is already taken"
+            )
+    if len(set(upscale.node_ids())) != len(upscale.node_ids()):
+        problems.append(f"{spec.id}.upscale: duplicate node ids")
+    return problems
+
+
 def validate_spec(spec: WorkflowSpec, template: Workflow | None = None) -> list[str]:
     """Problems found in ``spec`` against its template (empty list == fine)."""
     problems: list[str] = []
@@ -3228,7 +3573,27 @@ def validate_spec(spec: WorkflowSpec, template: Workflow | None = None) -> list[
     for index, target in enumerate(spec.seeds):
         check(target, f"seeds[{index}]")
 
+    problems += _validate_upscale(spec, tpl)
+
     for name, select in spec.selects.items():
+        if select.rewrites_graph:
+            # 注入先を持たず、ビルダーがグラフを組み替える選択式（latent_upscale）。
+            # 書き込む先が無いので Target の検査は掛からない。
+            if not select.choices:
+                problems.append(f"{spec.id}.selects[{name}]: no choices declared")
+            if not select.label.strip():
+                problems.append(f"{spec.id}.selects[{name}]: label is empty")
+            if select.default and select.default not in select.choices:
+                problems.append(
+                    f"{spec.id}.selects[{name}]: default {select.default!r} is not"
+                    " one of the choices"
+                )
+            if select.target is not None:
+                problems.append(
+                    f"{spec.id}.selects[{name}]: rewrites_graph selects must not"
+                    " declare an injection target"
+                )
+            continue
         if select.target is None:
             problems.append(f"{spec.id}.selects[{name}]: no injection target")
             continue

@@ -1050,6 +1050,13 @@ export interface StudioProject {
    * ON なら直前カットの動画と AV ラテントを渡す `minimax_h3_r2v_context`。
    */
   latent_continuity: boolean
+  /**
+   * ラテントアップスケール（作品既定）。ON = 1 パス目を 0.2MP で回してから
+   * `MinimaxH3LatentUpscaler3D` で指定解像度に拡大する 2 パス。テイク生成の
+   * たびにジョブの `selects.latent_upscale` へ解決される（1 回ぶんの上書きは
+   * `StudioRenderRequest`）。入れられない接続先では OFF に落ちる。
+   */
+  latent_upscale: boolean
   /** 動画生成の品質（テイク生成のたびにモードと掛け合わせて解決される）。 */
   quality: StudioVideoQuality
   /**
@@ -1097,6 +1104,8 @@ export interface StudioProjectCreate {
    * ON なら直前カットの動画と AV ラテントを渡す `minimax_h3_r2v_context`。
    */
   latent_continuity?: boolean
+  /** ラテントアップスケール（既定 ON = 0.2MP の 1 パス目 → 指定解像度へ拡大）。 */
+  latent_upscale?: boolean
   /** 動画生成の品質（既定は素の 20 steps = `normal`）。 */
   quality?: StudioVideoQuality
   /** 動画生成の画質（メガピクセル）の作品既定（`null` = ワークフローの既定）。 */
@@ -1122,6 +1131,8 @@ export interface StudioProjectUpdate {
    * ON なら直前カットの動画と AV ラテントを渡す `minimax_h3_r2v_context`。
    */
   latent_continuity?: boolean
+  /** ラテントアップスケール（ON = 0.2MP の 1 パス目 → 指定解像度へ拡大）。 */
+  latent_upscale?: boolean
   /** 動画生成の品質。 */
   quality?: StudioVideoQuality
   /** 動画生成の画質（メガピクセル）の作品既定（`null` を送ると既定へ戻る）。 */
@@ -1369,6 +1380,7 @@ export interface StudioShotUpdate {
  * - `duration`: ここ → カットの `duration_seconds`
  * - `steps`: ここ → プロジェクトの `steps` → テンプレートの既定
  * - `seed`: ここ → カットの `seed` → 毎回ランダム
+ * - `latent_upscale`: ここ → プロジェクトの `latent_upscale`
  */
 export interface StudioRenderRequest {
   megapixels?: number
@@ -1379,6 +1391,8 @@ export interface StudioRenderRequest {
   steps?: number
   /** 乱数の種（省略 = カットの設定、それも無ければ毎回ランダム）。 */
   seed?: number
+  /** ラテントアップスケール（省略 = プロジェクトの `latent_upscale`）。 */
+  latent_upscale?: boolean
 }
 
 export interface StudioTake {
@@ -1401,6 +1415,11 @@ export interface StudioTake {
    * ここから続きを作る。使わなかった Take は null。
    */
   latent_path?: string | null
+  /**
+   * 同じく、`latent_upscale` = on のときに保存した 2 パス目（最終解像度）の
+   * AV ラテント。2 段引き継ぎで次のカットが読む（off だった Take は null）。
+   */
+  latent_hires_path?: string | null
   error: string | null
   /** 元ジョブの NSFW フラグ（ジョブが消えていれば null）。 */
   nsfw?: boolean | null
@@ -1467,10 +1486,14 @@ export interface StudioShotPreview {
    * 理由は `workflow_reason` の末尾に入る）。
    */
   quality_applied: boolean
+  /** 実際に投入される `selects.latent_upscale`（接続先とワークフローで解決済み）。 */
+  latent_upscale: boolean
   /** ラテント連続性で引き継ぐ直前カットの動画（使わないときは null）。 */
   context_video: string | null
   /** 同じく、引き継ぎ元の AV ラテント（ComfyUI 側のパス）。 */
   context_latent: string | null
+  /** 同じく、引き継ぎ元の 2 パス目（最終解像度）の AV ラテント（2 段引き継ぎ）。 */
+  context_latent_hires?: string | null
   /** 組み立てられなかった理由（日本語。空なら問題なし）。 */
   error: string
 }
@@ -1479,6 +1502,8 @@ export interface StudioShotPreview {
 export interface StudioCapabilities {
   /** ラテント連続性（MiniMaxH3MotionContext 系のカスタムノードが揃っている）。 */
   latent_continuity: boolean
+  /** ラテントアップスケール（MinimaxH3LatentUpscaler3D を入れられる接続先か）。 */
+  latent_upscale: boolean
   /** 確かめられなかった理由（日本語。空なら判定できている）。 */
   error: string
 }

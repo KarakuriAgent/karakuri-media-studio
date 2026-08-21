@@ -76,7 +76,7 @@ from .models import (
 from .config import load_settings
 from .paths import rebase_stored_path
 from .workflow import WorkflowError, supported_on_target
-from .workflows import WorkflowSpecError, get_video_spec
+from .workflows import LATENT_UPSCALE_NAME, WorkflowSpecError, get_video_spec
 
 log = logging.getLogger(__name__)
 
@@ -247,6 +247,73 @@ def _quality_workflow(workflow: str, quality: str) -> tuple[str, str]:
 
 
 # --------------------------------------------------------------------------
+# ラテントアップスケール（プロジェクトの ``latent_upscale``）
+# --------------------------------------------------------------------------
+#
+# 品質（どのテンプレートで焼くか）や画質（何画素で焼くか）と直交する 3 つめの
+# つまみで、決まったワークフローの **選択式**（``selects[latent_upscale]``）に
+# 落ちる（ワークフロー id は変わらない）。効き方は
+# **この 1 回ぶんの上書き > プロジェクト > 既定（ON）** の順。
+#
+# ON にできるかは接続先次第で、カスタムノード（``MinimaxH3LatentUpscaler3D``）を
+# 入れられない Comfy Cloud では選択肢が ``off`` だけになる。そこへ ``on`` を
+# 送るとジョブ側（:func:`app.jobs._pin_target_selects`）が 422 にするので、
+# スタジオは投入前に off へ落とし、その理由を ``workflow_reason`` に足す。
+
+#: 作品設定を持たない（＝プロジェクトが引けない）ときの既定
+DEFAULT_LATENT_UPSCALE = True
+
+
+def _latent_upscale_choices(workflow: str) -> tuple[str, ...]:
+    """``workflow`` の ``latent_upscale`` で、いまの接続先が選べる値。
+
+    宣言を持たないワークフロー（と、テンプレートが読めない環境）では空タプル
+    ＝「このつまみは効かない」。判定は生成フォームの選択肢を絞るのと同じ
+    :meth:`app.workflows.SelectSpec.choices_for_target` に任せる。
+    """
+    try:
+        select = get_video_spec(workflow).select(LATENT_UPSCALE_NAME)
+        if select is None:
+            return ()
+        return select.choices_for_target(load_settings().comfy_target)
+    except (WorkflowSpecError, WorkflowError, OSError):
+        return ()
+
+
+def latent_upscale_available() -> bool:
+    """いまの接続先でラテントアップスケールを ON にできるか（UI の出し分け用）。"""
+    return "on" in _latent_upscale_choices(WORKFLOW_T2V)
+
+
+def _resolve_selects(
+    workflow: str, latent_upscale: bool
+) -> tuple[dict[str, str], str]:
+    """``(ジョブに載せる selects, 理由に足す一文)``。
+
+    いまのところ中身は ``latent_upscale`` だけだが、選択式が増えても
+    「ワークフローが宣言していて、接続先が許す値だけを載せる」というこの形の
+    まま足せるようにしてある。宣言の無いワークフローには何も載せない
+    （送っても効かないうえ、ジョブ側の検証を無駄に通すことになる）。
+    """
+    selects: dict[str, str] = {}
+    reasons: list[str] = []
+    choices = _latent_upscale_choices(workflow)
+    if choices:
+        wanted = "on" if latent_upscale else "off"
+        if wanted in choices:
+            selects[LATENT_UPSCALE_NAME] = wanted
+        else:
+            # 接続先が許すのは 1 つだけ（Comfy Cloud の "off"）。黙って落とす
+            # のではなく、プレビューに理由を出す。
+            selects[LATENT_UPSCALE_NAME] = choices[0]
+            reasons.append(
+                "いまの接続先はラテントアップスケールのカスタムノードに"
+                "対応しないので、アップスケールなしで投入します"
+            )
+    return selects, " / ".join(reasons)
+
+
+# --------------------------------------------------------------------------
 # 動画生成の画質（プロジェクトの ``megapixels`` / ``aspect_ratio``）
 # --------------------------------------------------------------------------
 #
@@ -385,6 +452,7 @@ def _row_to_project(row: aiosqlite.Row) -> StudioProject:
     data = dict(row)
     data["auto_translate"] = bool(data.get("auto_translate", 1))
     data["latent_continuity"] = bool(data.get("latent_continuity", 0))
+    data["latent_upscale"] = bool(data.get("latent_upscale", 1))
     data["quality"] = normalize_quality(data.get("quality"))
     data["megapixels"] = normalize_megapixels(data.get("megapixels"))
     data["aspect_ratio"] = normalize_aspect_ratio(data.get("aspect_ratio"))
@@ -489,6 +557,7 @@ async def list_projects() -> list[StudioProjectSummary]:
         data = dict(row)
         data["auto_translate"] = bool(data.get("auto_translate", 1))
         data["latent_continuity"] = bool(data.get("latent_continuity", 0))
+        data["latent_upscale"] = bool(data.get("latent_upscale", 1))
         data["quality"] = normalize_quality(data.get("quality"))
         data["megapixels"] = normalize_megapixels(data.get("megapixels"))
         data["aspect_ratio"] = normalize_aspect_ratio(data.get("aspect_ratio"))
@@ -510,6 +579,7 @@ async def create_project(
     megapixels: float | None = None,
     aspect_ratio: str | None = None,
     steps: int = 0,
+    latent_upscale: bool = DEFAULT_LATENT_UPSCALE,
     *,
     actor: str = "user",
 ) -> StudioProject:
@@ -520,7 +590,7 @@ async def create_project(
         project = await _insert_project(
             conn, title, code, synopsis, world_notes, auto_translate,
             latent_continuity, nsfw, quality, megapixels, aspect_ratio,
-            _checked_steps(steps),
+            _checked_steps(steps), latent_upscale,
         )
         await _record_revision(conn, project.id, actor, "プロジェクトを作成")
         await conn.commit()
@@ -540,6 +610,7 @@ async def _insert_project(
     megapixels: float | None = None,
     aspect_ratio: str | None = None,
     steps: int = 0,
+    latent_upscale: bool = DEFAULT_LATENT_UPSCALE,
 ) -> StudioProject:
     project_id = new_id()
     now = _now()
@@ -548,8 +619,8 @@ async def _insert_project(
             "INSERT INTO studio_projects"
             " (id, name, code, synopsis, world_notes, auto_translate,"
             "  latent_continuity, quality, megapixels, aspect_ratio, steps,"
-            "  nsfw, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "  nsfw, latent_upscale, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 project_id,
                 title,
@@ -563,6 +634,7 @@ async def _insert_project(
                 normalize_aspect_ratio(aspect_ratio),
                 normalize_steps(steps),
                 1 if nsfw else 0,
+                1 if latent_upscale else 0,
                 now,
                 now,
             ),
@@ -613,6 +685,8 @@ async def update_project(
         changes["auto_translate"] = 1 if changes["auto_translate"] else 0
     if "latent_continuity" in changes:
         changes["latent_continuity"] = 1 if changes["latent_continuity"] else 0
+    if "latent_upscale" in changes:
+        changes["latent_upscale"] = 1 if changes["latent_upscale"] else 0
     if "quality" in changes:
         changes["quality"] = normalize_quality(changes["quality"])
     if "megapixels" in changes:
@@ -2394,9 +2468,15 @@ class _Plan(NamedTuple):
     context_video: str | None = None
     #: 同じく、直前カットの AV ラテント（ComfyUI 側のパス）
     context_latent: str | None = None
+    #: 同じく、直前カットの 2 パス目（最終解像度）の AV ラテント。
+    #: ``latent_upscale`` = on の 2 段引き継ぎでだけ付く（無ければ 1 段）。
+    context_latent_hires: str | None = None
     #: プロジェクトの ``quality`` が実際にバリアントとして効いたか
     #: （False = ``normal`` だった、または素へフォールバックした）
     quality_applied: bool = False
+    #: ジョブに載せる選択式（いまは ``latent_upscale`` だけ。宣言を持たない
+    #: ワークフローや読めない環境では空 = 何も載せない）
+    selects: dict[str, str] = {}
 
 
 async def _plan_render(
@@ -2404,6 +2484,7 @@ async def _plan_render(
     shot: StudioShot,
     assets: list[StudioAsset],
     project: StudioProject | None = None,
+    latent_upscale: bool | None = None,
 ) -> _Plan:
     """モードを決めて ``@素材名`` を解決し、最終プロンプトまで組み立てる。
 
@@ -2421,6 +2502,11 @@ async def _plan_render(
     3. そこまでで決まった論理ワークフロー × 品質 -> バリアント
        （:func:`_quality_workflow`。接続先が対応しなければ 2 の結果のまま投げ、
        その理由を ``reason`` に足す）
+
+    ワークフローが決まったら、その宣言と接続先に合わせて選択式
+    （``latent_upscale``）を解決する（:func:`_resolve_selects`）。
+    ``latent_upscale`` はその 1 回ぶんの上書きで、``None`` ならプロジェクトの
+    設定（それも無ければ :data:`DEFAULT_LATENT_UPSCALE`）に従う。
     """
     # 添付できる（＝ファイル実体を持つ）素材を呼んでいるか。メタデータだけの
     # 素材はここに出てこないので、r2v の理由にはならない。
@@ -2438,6 +2524,13 @@ async def _plan_render(
     workflow, quality_reason = _quality_workflow(logical, quality)
     quality_applied = workflow != logical
     reason = f"{mode.reason} / {quality_reason}" if quality_reason else mode.reason
+    if latent_upscale is None:
+        latent_upscale = (
+            project.latent_upscale if project is not None else DEFAULT_LATENT_UPSCALE
+        )
+    selects, selects_reason = _resolve_selects(workflow, latent_upscale)
+    if selects_reason:
+        reason = f"{reason} / {selects_reason}"
     resolved = resolve_mentions(shot.prompt, assets, attach=mode.attach)
     return _Plan(
         workflow,
@@ -2448,7 +2541,9 @@ async def _plan_render(
         resolved.tags,
         mode.context_video,
         mode.context_latent,
+        mode.context_latent_hires,
         quality_applied,
+        selects,
     )
 
 
@@ -2483,6 +2578,11 @@ async def preview_shot(shot_id: str) -> StudioShotPreview | None:
                 auto_translate=auto_translate,
                 latent_continuity=latent_continuity,
                 quality=quality,
+                latent_upscale=(
+                    project.latent_upscale
+                    if project is not None
+                    else DEFAULT_LATENT_UPSCALE
+                ),
                 english_prompt=shot.english_prompt,
                 english_stale=bool(shot.english_prompt),
                 english_status=shot.english_status,
@@ -2513,8 +2613,10 @@ async def preview_shot(shot_id: str) -> StudioShotPreview | None:
         latent_continuity=latent_continuity,
         quality=quality,
         quality_applied=plan.quality_applied,
+        latent_upscale=plan.selects.get(LATENT_UPSCALE_NAME) == "on",
         context_video=plan.context_video,
         context_latent=plan.context_latent,
+        context_latent_hires=plan.context_latent_hires,
     )
 
 
@@ -2774,32 +2876,51 @@ async def _previous_selected_take(
 
 async def _carry_over_context(
     conn: aiosqlite.Connection, shot: StudioShot
-) -> tuple[str, str] | None:
-    """ラテント連続性で引き継ぐ ``(直前カットの動画, AV ラテント)``。
+) -> tuple[str, str, str] | None:
+    """ラテント連続性で引き継ぐ ``(直前カットの動画, AV ラテント, 高解像度)``。
 
-    どちらか片方でも欠けていたら None（続きとして生成できないため）。AV ラテントは
-    ComfyUI 側に置きっぱなしのファイルなので複製しないが、動画のほうはジョブの
-    入力になるので ``assets/video/`` に移してから渡す
+    動画と AV ラテントのどちらか片方でも欠けていたら None（続きとして生成できない
+    ため）。AV ラテントは ComfyUI 側に置きっぱなしのファイルなので複製しないが、
+    動画のほうはジョブの入力になるので ``assets/video/`` に移してから渡す
     （:func:`app.jobs.resolve_asset_path` が読めるのは ``assets/`` と
     ``library/`` の中だけ）。
+
+    3 本目は 2 段引き継ぎ（``latent_upscale`` = on）で保存した 2 パス目
+    （最終解像度）のラテント。``off`` で作った過去テイクには無いので、その
+    ときは空文字 = 1 段引き継ぎにフォールバックする。
     """
     take = await _previous_selected_take(conn, shot)
     if take is None or not take.video_path or not take.latent_path:
         return None
-    return str(job_service.copy_into_assets(take.video_path, "video")), take.latent_path
+    return (
+        str(job_service.copy_into_assets(take.video_path, "video")),
+        take.latent_path,
+        take.latent_hires_path or "",
+    )
 
 
-async def record_take_latent(job_id: str, latent_path: str) -> None:
+async def record_take_latent(
+    job_id: str, latent_path: str, hires_path: str = ""
+) -> None:
     """ジョブが保存した AV ラテントのパスを、その Take に控える。
 
     呼ぶのはジョブランナー（:func:`app.jobs._record_take_latent`）で、スタジオ
-    由来でないジョブでは対象の行が無いだけ（何も起きない）。
+    由来でないジョブでは対象の行が無いだけ（何も起きない）。``hires_path`` は
+    2 段引き継ぎ（``latent_upscale`` = on）で保存した 2 パス目のラテントで、
+    ``off`` のジョブでは空 = 列は NULL のままにする。
     """
     async with get_db() as conn:
-        await conn.execute(
-            "UPDATE studio_takes SET latent_path = ? WHERE job_id = ?",
-            (latent_path, job_id),
-        )
+        if hires_path:
+            await conn.execute(
+                "UPDATE studio_takes SET latent_path = ?, latent_hires_path = ?"
+                " WHERE job_id = ?",
+                (latent_path, hires_path, job_id),
+            )
+        else:
+            await conn.execute(
+                "UPDATE studio_takes SET latent_path = ? WHERE job_id = ?",
+                (latent_path, job_id),
+            )
         await conn.commit()
 
 
@@ -2889,8 +3010,9 @@ async def render_shot(
 
     1. モードを決めて ``@素材名`` を解決し、プロンプトを組み立てる
        （:func:`_plan_render`。投入プレビューと同じ経路。未登録の名前は 400）。
-    2. 生成設定（画面比・解像度・尺・ステップ数・シード）を
-       **この 1 回ぶんの上書き > Shot > プロジェクト > 既定** の順に解決する。
+    2. 生成設定（画面比・解像度・尺・ステップ数・シード・ラテント
+       アップスケール）を **この 1 回ぶんの上書き > Shot > プロジェクト >
+       既定** の順に解決する。
     3. 使える英語キャッシュがあればそれを ``video_prompt`` にする。無ければ
        プロジェクトの ``auto_translate`` が有効で本文に日本語が混ざっていれば、
        ジョブ側で英訳する（ここでは待たない。``pending_translate`` を載せる）。
@@ -2907,7 +3029,7 @@ async def render_shot(
             raise StudioError("shot not found")
         project = await _fetch_project(conn, shot.project_id)
         assets = await _fetch_assets(conn, shot.project_id)
-        plan = await _plan_render(conn, shot, assets, project)
+        plan = await _plan_render(conn, shot, assets, project, over.latent_upscale)
         workflow = plan.workflow
         prompt = plan.prompt
 
@@ -2924,6 +3046,11 @@ async def render_shot(
             "duration": duration,
             "user_input": shot.title or None,
         }
+        # 選択式（いまは `latent_upscale` だけ）。**この 1 回ぶんの上書き >
+        # プロジェクト > 既定 ON** で決まった値を :func:`_plan_render` が
+        # 接続先に合わせて解決済み。宣言の無いワークフローには載らない。
+        if plan.selects:
+            fields["selects"] = dict(plan.selects)
         # Shot ごとの生成設定。**H3 が実際に受け取るものだけ**を渡す（否定
         # プロンプトは MiniMax H3 のグラフに注入先が無いので Shot には持たせない）。
         #
@@ -2972,6 +3099,10 @@ async def render_shot(
             fields["reference_video"] = plan.context_video
         if plan.context_latent is not None:
             fields["context_latent_path"] = plan.context_latent
+        # 2 段引き継ぎ（`latent_upscale` = on）で保存されていた 2 パス目の
+        # ラテント。無ければ載せない = 1 段引き継ぎのまま。
+        if plan.context_latent_hires:
+            fields["context_latent_hires_path"] = plan.context_latent_hires
         for asset in plan.references:
             fields.setdefault(REFERENCE_FIELDS[asset.kind], []).append(asset.path)
 
@@ -3055,6 +3186,8 @@ class _Mode(NamedTuple):
     context_video: str | None = None
     #: 同じく、直前カットの AV ラテント（ComfyUI 側のパス）
     context_latent: str | None = None
+    #: 同じく、直前カットの 2 パス目（最終解像度）の AV ラテント（2 段引き継ぎ）
+    context_latent_hires: str | None = None
 
 
 async def _pick_workflow(
@@ -3119,13 +3252,14 @@ async def _pick_workflow(
                 "前 Shot の採用 Take がありません。前 Shot の Take を採用するか、"
                 "carry_over_end_frame をオフにしてください"
             )
-        context_video, context_latent = context
+        context_video, context_latent, context_latent_hires = context
         return _Mode(
             WORKFLOW_R2V_CONTEXT, None, True,
             "直前カットの動きと音をラテントごと引き継ぎます"
             "（ラテント連続性・素材は参照として添付）",
             context_video,
             context_latent,
+            context_latent_hires,
         )
     start_image = (
         await _carry_over_start_frame(conn, shot)

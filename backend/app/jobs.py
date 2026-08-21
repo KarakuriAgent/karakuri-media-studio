@@ -710,6 +710,42 @@ async def _resolve_auto_selects(params: dict[str, Any]) -> None:
         params["selects"] = selects
 
 
+def _pin_target_selects(params: dict[str, Any]) -> None:
+    """接続先で使えない選択肢を弾き、既定を接続先に合わせて固定する（§3.1 / §5.1）。
+
+    ``latent_upscale`` の既定は on だが、Comfy Cloud には
+    ``MinimaxH3LatentUpscaler3D`` を入れられない。生成フォームは選択肢そのものを
+    off だけにして出す（:func:`app.routers.options._workflow_option`）が、外部
+    API・エージェント・古いジョブの再実行は値を送ってこないことがある。そこで
+    ここで params に書き込んでおく（保存されるので再実行しても同じ値で走る）。
+    """
+    try:
+        stages = stage_specs(params.get("mode", ""), params)
+    except WorkflowSpecError:
+        return  # 不正なワークフロー id は _validate が弾く
+    target = load_settings().comfy_target
+    selects = dict(params.get("selects") or {})
+    changed = False
+    for _, spec in stages:
+        for name, select in spec.selects.items():
+            allowed = select.choices_for_target(target)
+            if allowed == select.choices:
+                continue
+            value = str(selects.get(name) or "").strip()
+            if value and value not in allowed:
+                raise JobValidationError(
+                    f"接続先 `{target}` では `{name}` に `{value}` は使えません"
+                    "（選べるのは "
+                    + ", ".join(f"`{choice}`" for choice in allowed)
+                    + "）"
+                )
+            if not value:
+                selects[name] = select.fallback_for_target(target)
+                changed = True
+    if changed:
+        params["selects"] = selects
+
+
 async def _insert_job(
     *,
     mode: str,
@@ -720,6 +756,8 @@ async def _insert_job(
     nsfw_source: str = "",
 ) -> Job:
     """Validate, persist a ``queued`` row and hand it to the worker."""
+    # 接続先で選べない選択肢の始末は、値の検証より先（既定を固定するため）
+    _pin_target_selects(params)
     _validate(params)
     await _validate_lora_families(params)
 
@@ -859,6 +897,9 @@ def _params_from_create(payload: JobCreate) -> dict[str, Any]:
         # 直前カットの AV ラテント（ラテント連続性を宣言しているワークフローだけ
         # が読む、SPEC §3.1）。ComfyUI 側のパスなので上げ直しはしない。
         "context_latent_path": payload.context_latent_path,
+        # 同じく、直前カットの 2 パス目（最終解像度）のラテント
+        # （`latent_upscale` = on の 2 段引き継ぎ。無ければ 1 段引き継ぎ）。
+        "context_latent_hires_path": payload.context_latent_hires_path,
         # マルチモーダル参照（宣言しているワークフローだけが読む、SPEC §3.1）
         "reference_images": list(payload.reference_images),
         "reference_videos": list(payload.reference_videos),
@@ -1213,6 +1254,7 @@ def _generation_params(
         reference_audio_names=list((references or {}).get("reference_audios") or []),
         # 旧ジョブの params には無いので既定は空（= ラテント連続性を使わない）
         context_latent_path=str(p.get("context_latent_path") or ""),
+        context_latent_hires_path=str(p.get("context_latent_hires_path") or ""),
         **{field: uploads.get(field, "") for field in _UPLOADS.values()},
     )
 
@@ -1696,7 +1738,8 @@ async def _run_comfy_stage(
         job_id, stage, spec, workflow, stages, label, overall, stage_index
     )
     if extras is not None and spec.latent_output_node:
-        latent_path = _pick_text(entry.get("outputs") or {}, spec.latent_output_node)
+        outputs = entry.get("outputs") or {}
+        latent_path = _pick_text(outputs, spec.latent_output_node)
         if latent_path:
             extras["context_latent_path"] = latent_path
         else:
@@ -1706,6 +1749,13 @@ async def _run_comfy_stage(
                 job_id,
                 spec.id,
             )
+        # 2 段引き継ぎ（`latent_upscale` = on）のときだけ、2 パス目のラテントを
+        # 保存した 2 個目の `PreviewAny` も読む。off のグラフには無いので、
+        # 取れなくても普通のこと（警告は出さない）。
+        if spec.upscale is not None:
+            hires_path = _pick_text(outputs, spec.upscale.hires_preview_node)
+            if hires_path:
+                extras["context_latent_hires_path"] = hires_path
     kind, stem, _ = _STAGE_ARTIFACTS[stage]
     return await _download_artifact(entry, spec.output_node, job_dir, stem, kind)
 
@@ -1778,16 +1828,19 @@ _STAGE_ARTIFACTS = {
 _STAGE_LABELS = {"image": "画像生成", "video": "動画生成", "audio": "音声生成"}
 
 
-async def _record_take_latent(job_id: str, latent_path: str) -> None:
+async def _record_take_latent(
+    job_id: str, latent_path: str, hires_path: str = ""
+) -> None:
     """保存された AV ラテントのパスを、このジョブの Take に控える。
 
     スタジオ（:mod:`app.studio`）がこちらを import している側なので、逆向きの
     import は関数の中で行う（循環 import を作らない）。ジョブがスタジオ由来で
-    なければ何も起きない。
+    なければ何も起きない。``hires_path`` は 2 段引き継ぎ（``latent_upscale``
+    = on）の 2 パス目のラテント（off なら空）。
     """
     from . import studio
 
-    await studio.record_take_latent(job_id, latent_path)
+    await studio.record_take_latent(job_id, latent_path, hires_path)
 
 
 async def _apply_pending_translate(job: Job) -> None:
@@ -1885,8 +1938,9 @@ async def _run_job_stages(job: Job) -> dict[str, Any]:
             # この ジョブの Take に控えておく（次のカットが読む）。取れなければ
             # 何も書かない = 次のカットは「引き継ぎ元が無い」として断られる。
             latent_path = extras.pop("context_latent_path", "")
+            hires_path = extras.pop("context_latent_hires_path", "")
             if latent_path:
-                await _record_take_latent(job_id, latent_path)
+                await _record_take_latent(job_id, latent_path, hires_path)
         if stage == "image" and index + 1 < total:
             # 2 段目はこの静止画を開始フレームとして読む。
             job.params["source_image"] = str(saved)

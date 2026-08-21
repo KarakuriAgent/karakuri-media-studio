@@ -214,7 +214,7 @@
   },
   "127": {
     "inputs": {
-      "unet_name": "minimax_h3_ref2va_pruned_w4a8_mixed.safetensors",
+      "unet_name": "minimax_h3_fl2va_pruned_w4a8_mixed.safetensors",
       "weight_dtype": "default"
     },
     "class_type": "UNETLoader",
@@ -305,6 +305,20 @@
       "title": "LoadAudio (reference)"
     }
   },
+  "144": {
+    "inputs": {
+      "lora_name": "minimax_h3_ref_lora_rank_256_bf16.safetensors",
+      "strength_model": 1.0,
+      "model": [
+        "127",
+        0
+      ]
+    },
+    "class_type": "LoraLoaderModelOnly",
+    "_meta": {
+      "title": "Ref LoRA"
+    }
+  },
   "132": {
     "inputs": {
       "value": 5
@@ -319,7 +333,7 @@
       "sage_attention": "auto",
       "allow_compile": false,
       "model": [
-        "127",
+        "144",
         0
       ]
     },

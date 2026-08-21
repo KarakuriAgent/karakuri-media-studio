@@ -28,6 +28,7 @@ from app.workflow import (
     apply_model_overrides,
     image_megapixels,
     build_image_workflow,
+    latent_upscale_choice,
     build_video_workflow,
     build_workflows,
     missing_triggers,
@@ -51,6 +52,8 @@ from app.workflows import (
     DEFAULT_VIDEO_WORKFLOW,
     GENERATED_AUDIO,
     INPUT_FIELDS,
+    LATENT_UPSCALE_NAME,
+    LATENT_UPSCALER_CLASS,
     MINIMAX_H3_IMAGE_FIDELITY_NAME,
     MINIMAX_H3_IMAGE_FIT_NAME,
     MINIMAX_H3_IMAGE_QUALITY_CHOICES,
@@ -697,8 +700,12 @@ def test_missing_triggers(trigger_text, prompt, expected):
 
 @pytest.mark.parametrize("workflow_id", VIDEO_IDS)
 def test_video_injection(workflow_id):
+    # 解像度の注入先は「1 パス目」なので、素の挙動を見るためにラテント
+    # アップスケールは切る（on のときの解像度は専用のテストで見る）
     spec = get_spec(workflow_id)
-    wf = build_video_workflow(params(video_workflow=workflow_id))
+    wf = build_video_workflow(
+        params(video_workflow=workflow_id, selects={LATENT_UPSCALE_NAME: "off"})
+    )
     validate_workflow(wf)
 
     assert value(wf, spec, "prompt") == "VIDEO PROMPT"
@@ -1322,6 +1329,13 @@ TURBO_PAIRS = [
     ("minimax_h3_r2v_turbo", "minimax_h3_r2v"),
 ]
 
+#: ``MiniMaxH3TurboLoRA``（と `low_vram` の選択式）を持つ turbo。r2v turbo だけは
+#: ``LoraLoaderModelOnly`` 2 段 + ラテントアップスケールの 2 パス構成なので外す
+#: （そちらは下の r2v turbo 専用のテストで見る）。
+TURBO_LORA_PAIRS = [
+    ("minimax_h3_i2v_turbo", "minimax_h3_i2v"),
+]
+
 #: UNETLoader から BasicGuider までに直列で入っている高速化ノード
 TURBO_CHAIN = [
     "MiniMaxH3TurboLoRA",
@@ -1348,7 +1362,7 @@ def test_the_turbo_workflows_take_the_same_inputs_as_the_plain_ones(
     assert "Turbo" in turbo.label and "Turbo" in turbo.mode_label
 
 
-@pytest.mark.parametrize(("turbo_id", "plain_id"), TURBO_PAIRS)
+@pytest.mark.parametrize(("turbo_id", "plain_id"), TURBO_LORA_PAIRS)
 def test_the_turbo_templates_chain_the_speedup_nodes_in_series(turbo_id, plain_id):
     """UNETLoader -> TurboLoRA -> Sage -> MemEffSage -> SolAttn -> SigmaShift
     -> Spectrum."""
@@ -1395,7 +1409,8 @@ def test_the_turbo_templates_sample_in_four_steps(turbo_id, plain_id):
     ("turbo_id", "unet"),
     [
         ("minimax_h3_i2v_turbo", "minimax_h3_fl2va_pruned_w4a8_mixed.safetensors"),
-        ("minimax_h3_r2v_turbo", "minimax_h3_ref2va_pruned_w4a8_mixed.safetensors"),
+        # r2v turbo は参照 LoRA を重ねるので、ウェイトは ref2va ではなく fl2va
+        ("minimax_h3_r2v_turbo", "minimax_h3_fl2va_pruned_w4a8_mixed.safetensors"),
     ],
 )
 def test_the_turbo_templates_load_the_quantised_weights(turbo_id, unet):
@@ -1419,10 +1434,13 @@ def test_the_optional_custom_nodes_are_not_required_by_the_health_check():
     """任意のカスタムノードなので、入れていない環境でも赤にしない（SPEC §3.1）。"""
     required = all_required_class_types()
     assert not (required & OPTIONAL_CLASS_TYPES)
-    # テンプレート側には確かに載っている（動画は turbo と連続カット、
-    # 画像は t2i / i2i / r2i の 3 モードで全部そろう）
+    # 実際に組み上がるグラフには載っている（動画は turbo と連続カット、
+    # 画像は t2i / i2i / r2i の 3 モードで全部そろう）。
+    # ``MinimaxH3LatentUpscaler3D`` だけはテンプレートに書いておらず、
+    # `latent_upscale` が on のときに組み替えで足される。
     used: set[str] = set()
     for workflow_id in (
+        "minimax_h3_i2v_turbo",
         "minimax_h3_r2v_turbo",
         "minimax_h3_r2v_context",
         "minimax_h3_t2i",
@@ -1430,6 +1448,16 @@ def test_the_optional_custom_nodes_are_not_required_by_the_health_check():
         "minimax_h3_r2i",
     ):
         used |= {node["class_type"] for node in load_template(workflow_id).values()}
+    assert LATENT_UPSCALER_CLASS not in used
+    used |= {
+        node["class_type"]
+        for node in build_video_workflow(
+            params(
+                video_workflow="minimax_h3_r2v_turbo",
+                selects={LATENT_UPSCALE_NAME: "on"},
+            )
+        ).values()
+    }
     assert OPTIONAL_CLASS_TYPES <= used
 
 
@@ -1446,7 +1474,7 @@ def turbo_lora_inputs(wf: dict) -> dict:
     )
 
 
-@pytest.mark.parametrize(("turbo_id", "plain_id"), TURBO_PAIRS)
+@pytest.mark.parametrize(("turbo_id", "plain_id"), TURBO_LORA_PAIRS)
 def test_the_turbo_workflows_offer_the_low_vram_switch(turbo_id, plain_id):
     """turbo だけが `low_vram` を選択式で持つ（素の版はノードごと無い）。"""
     turbo = get_spec(turbo_id, "video")
@@ -1459,7 +1487,7 @@ def test_the_turbo_workflows_offer_the_low_vram_switch(turbo_id, plain_id):
     assert get_spec(plain_id, "video").select(MINIMAX_H3_LOW_VRAM_NAME) is None
 
 
-@pytest.mark.parametrize(("turbo_id", "_plain_id"), TURBO_PAIRS)
+@pytest.mark.parametrize(("turbo_id", "_plain_id"), TURBO_LORA_PAIRS)
 def test_low_vram_defaults_to_off(turbo_id, _plain_id):
     """未指定でもテンプレートの現状値（False）のまま。"""
     assert turbo_lora_inputs(load_template(turbo_id))["low_vram"] is False
@@ -1467,7 +1495,7 @@ def test_low_vram_defaults_to_off(turbo_id, _plain_id):
     assert turbo_lora_inputs(wf)["low_vram"] is False
 
 
-@pytest.mark.parametrize(("turbo_id", "_plain_id"), TURBO_PAIRS)
+@pytest.mark.parametrize(("turbo_id", "_plain_id"), TURBO_LORA_PAIRS)
 @pytest.mark.parametrize(
     ("choice", "expected"), [("on", True), ("off", False), ("bogus", False)]
 )
@@ -1491,11 +1519,572 @@ def test_low_vram_survives_a_rerun():
 
 
 def test_low_vram_is_offered_to_the_agent_catalog():
-    entry = catalog_entry(get_spec("minimax_h3_r2v_turbo", "video"))
+    entry = catalog_entry(get_spec("minimax_h3_i2v_turbo", "video"))
     assert (MINIMAX_H3_LOW_VRAM_NAME, "off") in {
         (name, default)
         for name, _l, _c, default, _a, _h, _labels in entry.selects
     }
+
+
+# --- MiniMax H3 r2v の opt / turbo（fl2va + 参照 LoRA）----------------------
+
+#: r2v の opt / turbo が使う 2 本の LoRA
+REF_LORA = "minimax_h3_ref_lora_rank_256_bf16.safetensors"
+TURBO_LORA = "minimax_h3_fl2v_turbo_4step_v1.1_768p_comfyui_bf16.safetensors"
+
+#: opt テンプレートから r2v turbo を作るときの差分（これ以外は完全に同じ）
+_R2V_TURBO_TWEAKS = {
+    ("144", "model"): ["143", 0],
+    ("124", "steps"): 4,
+    ("123", "sampler_name"): "euler",
+}
+
+#: r2v の opt / turbo / save / context の組（テンプレートは全部 1 パス）
+R2V_QUALITY_PAIRS = [
+    ("minimax_h3_r2v_opt", "minimax_h3_r2v_turbo"),
+    ("minimax_h3_r2v_save_opt", "minimax_h3_r2v_save_turbo"),
+    ("minimax_h3_r2v_context_opt", "minimax_h3_r2v_context_turbo"),
+]
+
+
+@pytest.mark.parametrize(("opt_id", "turbo_id"), R2V_QUALITY_PAIRS)
+def test_the_r2v_turbo_template_is_the_opt_one_plus_the_distilled_lora(
+    opt_id, turbo_id
+):
+    """turbo との差はノード 143（蒸留 LoRA）と steps / sampler だけ。"""
+    opt = load_template(opt_id)
+    turbo = copy.deepcopy(load_template(turbo_id))
+    assert set(turbo) - set(opt) == {"143"}
+    assert turbo["143"]["class_type"] == "LoraLoaderModelOnly"
+    assert turbo["143"]["inputs"] == {
+        "lora_name": TURBO_LORA,
+        "strength_model": 1.0,
+        "model": ["127", 0],
+    }
+    del turbo["143"]
+    for (node_id, field), value_ in _R2V_TURBO_TWEAKS.items():
+        assert turbo[node_id]["inputs"][field] == value_
+        turbo[node_id]["inputs"][field] = opt[node_id]["inputs"][field]
+    assert opt == turbo
+
+
+@pytest.mark.parametrize(
+    "workflow_id",
+    [pair[index] for pair in R2V_QUALITY_PAIRS for index in (0, 1)],
+)
+def test_the_r2v_quality_templates_load_fl2va_with_the_ref_lora(workflow_id):
+    """ref2va の量子化ウェイトではなく fl2va + 参照 LoRA を使う。"""
+    template = load_template(workflow_id)
+    assert template["127"]["inputs"]["unet_name"] == (
+        "minimax_h3_fl2va_pruned_w4a8_mixed.safetensors"
+    )
+    assert template["144"]["class_type"] == "LoraLoaderModelOnly"
+    assert template["144"]["inputs"]["lora_name"] == REF_LORA
+    assert template["144"]["inputs"]["strength_model"] == 1.0
+    # 高速化チェーンの頭は必ず参照 LoRA
+    assert template["151"]["inputs"]["model"] == ["144", 0]
+    # 専用ローダー（MiniMaxH3TurboLoRA）はもう使わない
+    assert "MiniMaxH3TurboLoRA" not in {
+        node["class_type"] for node in template.values()
+    }
+
+
+@pytest.mark.parametrize(
+    "workflow_id",
+    [pair[index] for pair in R2V_QUALITY_PAIRS for index in (0, 1)],
+)
+def test_the_r2v_quality_templates_are_a_single_pass(workflow_id):
+    """テンプレートにアップスケールは焼き込まない（`latent_upscale` の仕事）。"""
+    template = load_template(workflow_id)
+    classes = {node["class_type"] for node in template.values()}
+    assert not (
+        classes
+        & {
+            LATENT_UPSCALER_CLASS,
+            "LTXVSeparateAVLatent",
+            "LTXVConcatAVLatent",
+            "ManualSigmas",
+        }
+    )
+    samplers = [
+        key for key, node in template.items()
+        if node["class_type"] == "SamplerCustomAdvanced"
+    ]
+    assert samplers == ["125"]
+    # デコーダは 1 パス目を直接読む
+    assert template["122"]["inputs"]["samples"] == ["125", 0]
+    assert template["121"]["inputs"]["samples"] == ["125", 0]
+
+
+def test_the_r2v_turbo_stacks_the_two_loras_before_the_speedup_chain():
+    """UNETLoader -> Turbo LoRA -> Ref LoRA -> Sage -> …（opt と同じ連鎖）。"""
+    wf = build_video_workflow(
+        params(
+            video_workflow="minimax_h3_r2v_turbo",
+            selects={LATENT_UPSCALE_NAME: "off"},
+        )
+    )
+    validate_workflow(wf)
+    assert wf["127"]["inputs"]["unet_name"] == (
+        "minimax_h3_fl2va_pruned_w4a8_mixed.safetensors"
+    )
+    assert wf["143"]["inputs"]["lora_name"] == TURBO_LORA
+    assert wf["143"]["inputs"]["model"] == ["127", 0]
+    assert wf["144"]["inputs"]["lora_name"] == REF_LORA
+    assert wf["144"]["inputs"]["model"] == ["143", 0]
+    upstream = ["144", 0]
+    for class_type in OPT_CHAIN:
+        node_id = next(
+            key for key, node in wf.items() if node["class_type"] == class_type
+        )
+        assert wf[node_id]["inputs"]["model"] == upstream, class_type
+        upstream = [node_id, 0]
+    assert "MiniMaxH3TurboLoRA" not in {
+        node["class_type"] for node in wf.values()
+    }
+
+
+@pytest.mark.parametrize(("_opt_id", "turbo_id"), R2V_QUALITY_PAIRS)
+def test_the_r2v_turbo_samples_in_four_euler_steps(_opt_id, turbo_id):
+    template = load_template(turbo_id)
+    assert template["124"]["inputs"]["steps"] == 4
+    assert template["123"]["inputs"]["sampler_name"] == "euler"
+
+
+def test_the_r2v_turbo_has_no_low_vram_switch():
+    """``MiniMaxH3TurboLoRA`` を使わないので書き込む先が無い。"""
+    for _opt_id, turbo_id in R2V_QUALITY_PAIRS:
+        spec = get_spec(turbo_id, "video")
+        assert spec.select(MINIMAX_H3_LOW_VRAM_NAME) is None
+
+
+def test_the_r2v_turbo_takes_the_same_inputs_as_the_plain_r2v():
+    turbo = get_spec("minimax_h3_r2v_turbo", "video")
+    plain = get_spec("minimax_h3_r2v", "video")
+    assert turbo.supported_names() == plain.supported_names()
+    assert turbo.requires == plain.requires
+    assert turbo.multi_inputs == plain.multi_inputs
+
+
+# --- ラテントアップスケール（選択式 `latent_upscale`、SPEC §3.1）------------
+
+#: 対象は minimax-h3 family の**動画**ワークフロー全部（画像は対象外）
+MINIMAX_H3_VIDEO_IDS = [
+    spec.id for spec in specs_of_kind("video") if spec.family == "minimax-h3"
+]
+
+#: 2 パス目の sigmas（全バリアント共通の固定値）
+UPSCALE_SIGMAS = "0.9035, 0.6316, 0.3158, 0.0000"
+
+#: 1 パス目を回す解像度（メガピクセル）
+FIRST_PASS_MEGAPIXELS = 0.2
+
+
+def upscale_params(workflow_id, choice="on", **kwargs):
+    """r2v / context 版も含めて必要な入力がそろったジョブ。"""
+    spec = get_spec(workflow_id, "video")
+    extra = {}
+    if spec.multi_inputs:
+        extra["reference_image_names"] = ["ref0.png"]
+    return params(
+        video_workflow=workflow_id,
+        selects={LATENT_UPSCALE_NAME: choice},
+        **extra,
+        **kwargs,
+    )
+
+
+@pytest.mark.parametrize("workflow_id", MINIMAX_H3_VIDEO_IDS)
+def test_every_minimax_h3_video_workflow_offers_latent_upscale_on_by_default(
+    workflow_id,
+):
+    spec = get_spec(workflow_id, "video")
+    select = spec.select(LATENT_UPSCALE_NAME)
+    assert select is not None
+    assert select.choices == ("on", "off")
+    assert select.fallback == "on"
+    # 注入先ではなくグラフの組み替えで効く
+    assert select.rewrites_graph and select.target is None
+    assert spec.upscale is not None
+    assert spec.upscale.first_pass_megapixels == FIRST_PASS_MEGAPIXELS
+    assert spec.upscale.sigmas == UPSCALE_SIGMAS
+
+
+def test_only_minimax_h3_video_workflows_declare_latent_upscale():
+    declared = {spec.id for spec in SPECS if spec.select(LATENT_UPSCALE_NAME)}
+    assert declared == set(MINIMAX_H3_VIDEO_IDS)
+
+
+@pytest.mark.parametrize("workflow_id", MINIMAX_H3_VIDEO_IDS)
+def test_latent_upscale_off_leaves_the_template_untouched(workflow_id):
+    """off なら組み替えは起きず、on との差はアップスケールのぶんだけ。"""
+    off = build_video_workflow(upscale_params(workflow_id, "off"))
+    template_classes = {
+        node["class_type"] for node in load_template(workflow_id).values()
+    }
+    assert {node["class_type"] for node in off.values()} <= template_classes | {
+        "LoadImage",
+        "LoadVideo",
+        "LoadAudio",
+        "GetVideoComponents",
+    }
+    assert LATENT_UPSCALER_CLASS not in {
+        node["class_type"] for node in off.values()
+    }
+    # 未指定でも既定は on なので、off を選んだときだけこのグラフになる
+    default = build_video_workflow(upscale_params(workflow_id, ""))
+    assert default != off
+
+
+@pytest.mark.parametrize("workflow_id", MINIMAX_H3_VIDEO_IDS)
+def test_latent_upscale_on_runs_the_first_pass_at_a_fifth_of_a_megapixel(
+    workflow_id,
+):
+    spec = get_spec(workflow_id, "video")
+    job = upscale_params(workflow_id, "on")
+    wf = build_video_workflow(job)
+    validate_workflow(wf)
+    first = resolution(
+        job.aspect_ratio,
+        FIRST_PASS_MEGAPIXELS,
+        multiple=spec.resolution_multiple,
+    )
+    final = resolution(
+        job.aspect_ratio, job.megapixels, multiple=spec.resolution_multiple
+    )
+    assert first != final
+    # 注入先（MiniMaxH3ImageToVideo / ReferenceToVideo）は 1 パス目の解像度
+    assert (value(wf, spec, "width"), value(wf, spec, "height")) == first
+    # 最終解像度はアップスケーラが受け取る
+    upscaler = wf[spec.upscale.upscaler_node]["inputs"]
+    assert (upscaler["mode.width"], upscaler["mode.height"]) == final
+
+
+@pytest.mark.parametrize("workflow_id", MINIMAX_H3_VIDEO_IDS)
+def test_latent_upscale_on_wires_the_second_pass(workflow_id):
+    """1 パス目 -> Separate -> Upscaler -> Concat -> 2 パス目 -> デコーダ。"""
+    spec = get_spec(workflow_id, "video")
+    up = spec.upscale
+    wf = build_video_workflow(upscale_params(workflow_id, "on"))
+    validate_workflow(wf)
+
+    assert wf[up.separate_node]["class_type"] == "LTXVSeparateAVLatent"
+    # 分けるのは 1 パス目の denoised_output（出力 1）
+    assert wf[up.separate_node]["inputs"]["av_latent"] == [up.sampler, 1]
+
+    upscaler = wf[up.upscaler_node]
+    assert upscaler["class_type"] == LATENT_UPSCALER_CLASS
+    assert upscaler["inputs"]["model_name"] == (
+        "minimax_h3_latent_upscaler_3d_bf16.safetensors"
+    )
+    # megapixels モードではなく target dimensions（DynamicCombo の入力名）
+    assert upscaler["inputs"]["mode"] == "target dimensions"
+    assert "mode.megapixels" not in upscaler["inputs"]
+    assert upscaler["inputs"]["align"] == 32
+    assert upscaler["inputs"]["device"] == "cuda"
+    assert upscaler["inputs"]["precision"] == "bf16"
+    assert upscaler["inputs"]["latent"] == [up.separate_node, 0]
+
+    concat = wf[up.concat_node]
+    assert concat["class_type"] == "LTXVConcatAVLatent"
+    assert concat["inputs"]["video_latent"] == [up.upscaler_node, 0]
+    assert concat["inputs"]["audio_latent"] == [up.separate_node, 1]
+
+    assert wf[up.sigmas_node]["class_type"] == "ManualSigmas"
+    assert wf[up.sigmas_node]["inputs"]["sigmas"] == UPSCALE_SIGMAS
+
+    # 2 パス目は 1 パス目と noise / guider / sampler を共有する
+    first_inputs = wf[up.sampler]["inputs"]
+    second = wf[up.second_sampler_node]
+    assert second["class_type"] == "SamplerCustomAdvanced"
+    assert second["inputs"] == {
+        "sigmas": [up.sigmas_node, 0],
+        "latent_image": [up.concat_node, 0],
+        "noise": first_inputs["noise"],
+        "guider": first_inputs["guider"],
+        "sampler": first_inputs["sampler"],
+    }
+
+    # デコードするのは 2 パス目の出力だけ
+    decoders = [
+        key
+        for key, node in wf.items()
+        if node["class_type"] in ("VAEDecode", "VAEDecodeAudio")
+    ]
+    assert decoders
+    for key in decoders:
+        assert wf[key]["inputs"]["samples"] == [up.second_sampler_node, 0]
+
+
+@pytest.mark.parametrize(
+    "workflow_id",
+    [wid for wid in MINIMAX_H3_VIDEO_IDS if "_save" in wid or "_context" in wid],
+)
+def test_latent_upscale_keeps_the_saved_latent_on_the_first_pass(workflow_id):
+    """1 本目の保存と 1 個目の Motion Context は 1 パス目のまま。"""
+    spec = get_spec(workflow_id, "video")
+    up = spec.upscale
+    wf = build_video_workflow(upscale_params(workflow_id, "on"))
+    validate_workflow(wf)
+    save = next(
+        node
+        for node in wf.values()
+        if node["class_type"] == "MiniMaxH3MotionContextSaveLatent"
+    )
+    assert save["inputs"]["latent"] == [up.sampler, 0]
+    trim = [
+        node
+        for node in wf.values()
+        if node["class_type"] == "MiniMaxH3MotionContextTrim"
+    ]
+    if trim:
+        # Trim はデコード**後**（= 2 パス目のあと）に掛かる
+        decoders = {
+            key
+            for key, node in wf.items()
+            if node["class_type"] in ("VAEDecode", "VAEDecodeAudio")
+        }
+        assert trim[0]["inputs"]["images"][0] in decoders
+        assert trim[0]["inputs"]["audio"][0] in decoders
+
+
+# --- 2 段引き継ぎ（ラテント連続性 × latent_upscale = on、SPEC §3.1）---------
+
+#: ラテントを保存するバリアント（``*_save*`` / ``*_context*``）
+LATENT_SAVE_IDS = [
+    wid for wid in MINIMAX_H3_VIDEO_IDS if "_save" in wid or "_context" in wid
+]
+#: そのうち連続カット版（Motion Context を持つ）
+LATENT_CONTEXT_IDS = [wid for wid in MINIMAX_H3_VIDEO_IDS if "_context" in wid]
+
+#: 直前カットの 2 本（1 パス目 / 2 パス目）
+PREV_LATENT = "/comfy/output/h3_context/prev_00002_.safetensors"
+PREV_LATENT_HIRES = "/comfy/output/h3_context/prev_hires_00002_.safetensors"
+
+
+def saves(wf: dict) -> list[dict]:
+    return [
+        node
+        for node in wf.values()
+        if node["class_type"] == "MiniMaxH3MotionContextSaveLatent"
+    ]
+
+
+@pytest.mark.parametrize("workflow_id", LATENT_SAVE_IDS)
+def test_latent_upscale_saves_the_second_pass_latent_too(workflow_id):
+    """on なら 1 パス目と 2 パス目のラテントを両方保存する（2 段引き継ぎ）。"""
+    spec = get_spec(workflow_id, "video")
+    up = spec.upscale
+    wf = build_video_workflow(upscale_params(workflow_id, "on"))
+    validate_workflow(wf)
+
+    hires = wf[up.hires_save_node]
+    assert hires["class_type"] == "MiniMaxH3MotionContextSaveLatent"
+    # 保存するのは 2 パス目の出力で、保存先は 1 本目と区別できる名前
+    assert hires["inputs"]["latent"] == [up.second_sampler_node, 0]
+    assert hires["inputs"]["filename_prefix"] == "h3_context/01JOBID_hires"
+    first_save = next(
+        node for node in wf.values()
+        if node["class_type"] == "MiniMaxH3MotionContextSaveLatent"
+    )
+    assert first_save["inputs"]["filename_prefix"] == "h3_context/01JOBID"
+    # パスは 2 本目の PreviewAny 経由で持ち帰る
+    preview = wf[up.hires_preview_node]
+    assert preview["class_type"] == "PreviewAny"
+    assert preview["inputs"]["source"] == [up.hires_save_node, 0]
+    assert len(saves(wf)) == 2
+
+
+@pytest.mark.parametrize("workflow_id", LATENT_SAVE_IDS)
+def test_latent_upscale_off_saves_one_latent(workflow_id):
+    """off は従来どおり 1 本だけ（2 本目のノードも足さない）。"""
+    spec = get_spec(workflow_id, "video")
+    wf = build_video_workflow(upscale_params(workflow_id, "off"))
+    validate_workflow(wf)
+    assert len(saves(wf)) == 1
+    for node_id in spec.upscale.node_ids():
+        assert node_id not in wf
+
+
+@pytest.mark.parametrize("workflow_id", LATENT_CONTEXT_IDS)
+def test_latent_upscale_wires_a_second_motion_context(workflow_id):
+    """連続カット版 + on: 2 パス目は高解像度ラテントの Motion Context で回す。"""
+    spec = get_spec(workflow_id, "video")
+    up = spec.upscale
+    wf = build_video_workflow(
+        upscale_params(
+            workflow_id,
+            "on",
+            reference_video_name="previous.mp4",
+            context_latent_path=PREV_LATENT,
+            context_latent_hires_path=PREV_LATENT_HIRES,
+        )
+    )
+    validate_workflow(wf)
+
+    # 1 個目（1 パス目）は 0.2MP のラテントを読んだまま
+    first_context_id, first_context = next(
+        (key, node)
+        for key, node in wf.items()
+        if node["class_type"] == "MiniMaxH3MotionContext"
+    )
+    first_load_id = spec.inject["context_latent"].node_id
+    assert wf[first_load_id]["inputs"]["latent_path"] == PREV_LATENT
+    assert first_context["inputs"]["context_latent"] == [first_load_id, 0]
+
+    # 2 個目は高解像度のほうを読む
+    load = wf[up.hires_load_node]
+    assert load["class_type"] == "MiniMaxH3MotionContextLoadLatent"
+    assert load["inputs"]["latent_path"] == PREV_LATENT_HIRES
+
+    context = wf[up.hires_context_node]
+    assert context["class_type"] == "MiniMaxH3MotionContext"
+    # conditioning / vae / つまみは 1 個目と同じ
+    assert context["inputs"]["conditioning"] == first_context["inputs"]["conditioning"]
+    assert context["inputs"]["vae"] == first_context["inputs"]["vae"]
+    assert context["inputs"]["context_length"] == "22"
+    assert context["inputs"]["audio_context_length"] == 0
+    # 形の参照先は 2 パス目のラテント（Concat の出力）、読むのは高解像度のほう
+    assert context["inputs"]["latent"] == [up.concat_node, 0]
+    assert context["inputs"]["context_latent"] == [up.hires_load_node, 0]
+
+    # 2 個目の Guider はモデル連鎖を 1 個目と共有し、CONDITIONING だけ差し替え
+    guider = wf[up.hires_guider_node]
+    first_guider = next(
+        node
+        for node in wf.values()
+        if node["class_type"] == "BasicGuider"
+        and node["inputs"]["conditioning"] == [first_context_id, 0]
+    )
+    assert guider["class_type"] == "BasicGuider"
+    assert guider["inputs"]["model"] == first_guider["inputs"]["model"]
+    assert guider["inputs"]["conditioning"] == [up.hires_context_node, 0]
+
+    # 2 パス目のサンプラーだけが 2 個目の Guider を使う（1 パス目は据え置き）
+    assert wf[up.second_sampler_node]["inputs"]["guider"] == [up.hires_guider_node, 0]
+    assert wf[up.sampler]["inputs"]["guider"] != [up.hires_guider_node, 0]
+
+    # Trim は 1 個目の trim_frames のまま
+    trim = next(
+        node
+        for node in wf.values()
+        if node["class_type"] == "MiniMaxH3MotionContextTrim"
+    )
+    assert trim["inputs"]["trim_frames"] == [first_context_id, 1]
+
+
+@pytest.mark.parametrize("workflow_id", LATENT_CONTEXT_IDS)
+def test_latent_upscale_falls_back_to_one_stage_without_a_hires_latent(workflow_id):
+    """前カットに 2 本目が無ければ 2 個目は組まず、1 段引き継ぎで通す。"""
+    spec = get_spec(workflow_id, "video")
+    up = spec.upscale
+    wf = build_video_workflow(
+        upscale_params(
+            workflow_id,
+            "on",
+            reference_video_name="previous.mp4",
+            context_latent_path=PREV_LATENT,
+        )
+    )
+    validate_workflow(wf)
+    for node_id in (up.hires_load_node, up.hires_context_node, up.hires_guider_node):
+        assert node_id not in wf
+    # 2 パス目は 1 パス目と同じ guider を共有したまま
+    assert (
+        wf[up.second_sampler_node]["inputs"]["guider"]
+        == wf[up.sampler]["inputs"]["guider"]
+    )
+    # 2 パス目のラテントの保存だけは付く（次のカットが 2 段で続けられる）
+    assert len(saves(wf)) == 2
+
+
+def test_latent_upscale_adds_no_second_context_without_motion_context():
+    """保存のみの版（``*_save``）は 2 個目の Motion Context を持たない。"""
+    spec = get_spec("minimax_h3_r2v_save", "video")
+    up = spec.upscale
+    wf = build_video_workflow(
+        upscale_params(
+            "minimax_h3_r2v_save",
+            "on",
+            context_latent_hires_path=PREV_LATENT_HIRES,
+        )
+    )
+    validate_workflow(wf)
+    assert up.hires_save_node in wf
+    for node_id in (up.hires_load_node, up.hires_context_node, up.hires_guider_node):
+        assert node_id not in wf
+
+
+def test_latent_upscale_adds_no_hires_save_without_a_save_node():
+    """保存を持たない素の版は、2 段引き継ぎのノードを一切足さない。"""
+    spec = get_spec("minimax_h3_t2v", "video")
+    up = spec.upscale
+    wf = build_video_workflow(
+        upscale_params("minimax_h3_t2v", "on", context_latent_hires_path=PREV_LATENT_HIRES)
+    )
+    validate_workflow(wf)
+    for node_id in (
+        up.hires_save_node,
+        up.hires_preview_node,
+        up.hires_load_node,
+        up.hires_context_node,
+        up.hires_guider_node,
+    ):
+        assert node_id not in wf
+
+
+def test_latent_upscale_is_pinned_off_on_comfy_cloud():
+    """アップスケーラを入れられない接続先では on を選ばせない（SPEC §5.1）。"""
+    select = get_spec("minimax_h3_t2v", "video").select(LATENT_UPSCALE_NAME)
+    assert select.choices_for_target("comfy_cloud") == ("off",)
+    assert select.fallback_for_target("comfy_cloud") == "off"
+    for target in ("local", "runpod", ""):
+        assert select.choices_for_target(target) == ("on", "off")
+        assert select.fallback_for_target(target) == "on"
+    # カタログ（エージェント向け）も同じ一覧になる
+    entry = catalog_entry(get_spec("minimax_h3_t2v", "video"), "comfy_cloud")
+    assert (LATENT_UPSCALE_NAME, ("off",), "off") in {
+        (name, choices, default)
+        for name, _l, choices, default, _a, _h, _labels in entry.selects
+    }
+
+
+def test_latent_upscale_choice_falls_back_to_the_default():
+    spec = get_spec("minimax_h3_t2v", "video")
+    assert latent_upscale_choice(spec, upscale_params("minimax_h3_t2v", "")) == "on"
+    assert (
+        latent_upscale_choice(spec, upscale_params("minimax_h3_t2v", "bogus")) == "on"
+    )
+    assert latent_upscale_choice(spec, upscale_params("minimax_h3_t2v", "off")) == "off"
+    # 宣言を持たないワークフロー（画像側など）は常に空
+    assert latent_upscale_choice(KREA2_TURBO, params()) == ""
+
+
+def test_the_upscaler_model_file_is_a_settings_slot():
+    """テンプレートに無いノードでも設定ページから差し替えられる（SPEC §3.3）。"""
+    spec = get_spec("minimax_h3_r2v_turbo", "video")
+    key = f"{spec.id}/{spec.upscale.upscaler_node}.model_name"
+    fields = {f.key: f for f in model_fields()}
+    assert key in fields
+    assert fields[key].subfolder == "latent_upscale_models"
+    assert fields[key].default == "minimax_h3_latent_upscaler_3d_bf16.safetensors"
+    wf = build_video_workflow(
+        upscale_params("minimax_h3_r2v_turbo", "on"),
+        {key: "other_upscaler.safetensors"},
+    )
+    assert wf[spec.upscale.upscaler_node]["inputs"]["model_name"] == (
+        "other_upscaler.safetensors"
+    )
+
+
+@pytest.mark.parametrize("turbo_id", ["minimax_h3_t2v_turbo", "minimax_h3_i2v_turbo"])
+def test_the_t2v_i2v_turbo_keep_the_low_vram_switch_alongside_latent_upscale(turbo_id):
+    """`latent_upscale` を足しても既存の選択式は残る。"""
+    spec = get_spec(turbo_id, "video")
+    assert set(spec.selects) == {MINIMAX_H3_LOW_VRAM_NAME, LATENT_UPSCALE_NAME}
+    assert spec.select(MINIMAX_H3_LOW_VRAM_NAME).target.class_type == (
+        "MiniMaxH3TurboLoRA"
+    )
 
 
 # --- MiniMax H3 opt（turbo から蒸留 LoRA を抜いた 20 ステップ版）------------
@@ -1536,6 +2125,12 @@ def test_the_opt_templates_drop_the_distilled_lora(opt_id, _plain_id, _turbo_id)
     validate_workflow(wf)
     by_class = {node["class_type"]: key for key, node in wf.items()}
     upstream = [by_class["UNETLoader"], 0]
+    # r2v の opt は fl2va + 参照 LoRA なので、連鎖の頭に LoRA が 1 段入る
+    if "LoraLoaderModelOnly" in by_class:
+        ref_lora = by_class["LoraLoaderModelOnly"]
+        assert wf[ref_lora]["inputs"]["lora_name"] == REF_LORA
+        assert wf[ref_lora]["inputs"]["model"] == upstream
+        upstream = [ref_lora, 0]
     for class_type in OPT_CHAIN:
         node_id = by_class[class_type]
         assert wf[node_id]["inputs"]["model"] == upstream, class_type
@@ -1567,7 +2162,8 @@ def test_the_opt_templates_sample_in_twenty_steps(opt_id, _plain_id, _turbo_id):
     ("opt_id", "unet"),
     [
         ("minimax_h3_i2v_opt", "minimax_h3_fl2va_pruned_w4a8_mixed.safetensors"),
-        ("minimax_h3_r2v_opt", "minimax_h3_ref2va_pruned_w4a8_mixed.safetensors"),
+        # r2v の opt も参照 LoRA を重ねるので、ウェイトは ref2va ではなく fl2va
+        ("minimax_h3_r2v_opt", "minimax_h3_fl2va_pruned_w4a8_mixed.safetensors"),
     ],
 )
 def test_the_opt_templates_keep_the_quantised_weights(opt_id, unet):
@@ -1601,7 +2197,14 @@ def test_the_opt_workflows_share_the_prompt_guide_of_the_plain_ones(
     assert opt_id in prompts.MULTI_CUT_WORKFLOWS
 
 
-@pytest.mark.parametrize(("opt_id", "_plain_id", "turbo_id"), OPT_PAIRS)
+#: opt が「turbo から蒸留 LoRA を抜いただけ」になっている組。r2v は turbo 側が
+#: 2 パス構成に変わったので、逆に opt を土台にした差分を別テストで見る。
+OPT_TURBO_DIFF_PAIRS = [
+    ("minimax_h3_i2v_opt", "minimax_h3_i2v", "minimax_h3_i2v_turbo"),
+]
+
+
+@pytest.mark.parametrize(("opt_id", "_plain_id", "turbo_id"), OPT_TURBO_DIFF_PAIRS)
 def test_the_opt_templates_differ_from_turbo_only_in_the_lora_and_the_steps(
     opt_id, _plain_id, turbo_id
 ):
@@ -1793,6 +2396,7 @@ def test_start_frame_size_overrides_the_aspect_ratio_preset(workflow_id):
             aspect_ratio="16:9 (Widescreen)",
             megapixels=1.0,
             start_image_size=(1000, 1500),
+            selects={LATENT_UPSCALE_NAME: "off"},
         )
     )
     expected = resolution_for_image(
@@ -1814,6 +2418,7 @@ def test_a_workflow_without_a_start_frame_ignores_the_start_frame_size():
             aspect_ratio="16:9 (Widescreen)",
             megapixels=1.0,
             start_image_size=(1000, 1500),
+            selects={LATENT_UPSCALE_NAME: "off"},
         )
     )
     expected = resolution("16:9 (Widescreen)", 1.0, multiple=spec.resolution_multiple)
@@ -1830,6 +2435,7 @@ def test_without_a_start_frame_size_the_preset_is_used():
             aspect_ratio="16:9 (Widescreen)",
             megapixels=1.0,
             start_image_size=None,
+            selects={LATENT_UPSCALE_NAME: "off"},
         )
     )
     expected = resolution("16:9 (Widescreen)", 1.0, multiple=spec.resolution_multiple)
@@ -2261,8 +2867,16 @@ def test_the_minimax_turbo_lora_is_a_switchable_model_field():
 # --------------------------------------------------------------------------
 
 def context_nodes(wf: dict) -> dict:
-    """class_type -> そのノード（連続カットのテンプレートは各 1 個ずつ）。"""
-    return {node["class_type"]: node for node in wf.values()}
+    """class_type -> そのノード（連続カットのテンプレートは各 1 個ずつ）。
+
+    2 段引き継ぎ（``latent_upscale`` = on）が足す 2 個目の SaveLatent /
+    LoadLatent / MotionContext / BasicGuider は**テンプレートのうしろ**に付くので、
+    先に見つけたほう（＝テンプレート側の 1 パス目のノード）を残す。
+    """
+    found: dict = {}
+    for node in wf.values():
+        found.setdefault(node["class_type"], node)
+    return found
 
 
 def test_the_context_workflow_wires_the_previous_clip_in():

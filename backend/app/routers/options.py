@@ -39,7 +39,9 @@ NEGATIVE_PRESETS = {
 }
 
 
-def _workflow_option(spec: WorkflowSpec) -> WorkflowOption:
+def _workflow_option(spec: WorkflowSpec, comfy_target: str = "") -> WorkflowOption:
+    """フォームに出す 1 件。``comfy_target`` はその接続先で選べない選択肢を
+    落とすのに使う（Comfy Cloud では `latent_upscale` が off だけになる）。"""
     return WorkflowOption(
         id=spec.id,
         label=spec.label,
@@ -87,8 +89,8 @@ def _workflow_option(spec: WorkflowSpec) -> WorkflowOption:
             WorkflowSelect(
                 name=name,
                 label=select.label,
-                choices=list(select.choices),
-                default=select.fallback,
+                choices=list(select.choices_for_target(comfy_target)),
+                default=select.fallback_for_target(comfy_target),
                 auto=bool(select.auto),
                 hint=select.hint,
                 choice_labels=dict(select.choice_labels),
@@ -117,15 +119,15 @@ async def get_options() -> Options:
         video_assets=list_assets("video", VIDEO_EXT),
         negative_presets=NEGATIVE_PRESETS,
         image_workflows=[
-            _workflow_option(spec)
+            _workflow_option(spec, target)
             for spec in specs_for_target(image_specs(), target)
         ],
         video_workflows=[
-            _workflow_option(spec)
+            _workflow_option(spec, target)
             for spec in specs_for_target(video_specs(), target)
         ],
         audio_workflows=[
-            _workflow_option(spec)
+            _workflow_option(spec, target)
             for spec in specs_for_target(audio_specs(), target)
         ],
         default_video_workflow=DEFAULT_VIDEO_WORKFLOW,

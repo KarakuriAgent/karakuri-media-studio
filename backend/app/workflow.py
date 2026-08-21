@@ -28,6 +28,8 @@ from typing import Any
 from .models import GenerationParams, LoraRef, ModelField, ModelSlot
 from .workflows import (
     DEFAULT_MEGAPIXELS,
+    LATENT_UPSCALE_NAME,
+    LATENT_UPSCALER_CLASS,
     OPTIONAL_CLASS_TYPES,
     REF_AUDIOS_NAME,
     REF_IMAGES_NAME,
@@ -85,6 +87,8 @@ MODEL_FIELDS: set[tuple[str, str]] = {
     ("CheckpointLoaderSimple", "ckpt_name"),
     ("CLIPVisionLoader", "clip_name"),
     ("LatentUpscaleModelLoader", "model_name"),
+    # MiniMax H3 のラテントアップスケーラ（Comfyui_Minimax_h3_latent_Upscaler）
+    ("MinimaxH3LatentUpscaler3D", "model_name"),
     ("LoadMoGeModel", "model_name"),
     ("LoraLoaderModelOnly", "lora_name"),
     ("LoraLoader", "lora_name"),
@@ -112,6 +116,7 @@ MODEL_SUBFOLDERS: dict[tuple[str, str], str] = {
     ("MiniMaxH3TurboLoRA", "lora_name"): "loras",
     # 空間アップスケーラと MoGe は専用フォルダ（nodes_hunyuan.py / nodes_moge.py）
     ("LatentUpscaleModelLoader", "model_name"): "latent_upscale_models",
+    ("MinimaxH3LatentUpscaler3D", "model_name"): "latent_upscale_models",
     ("LoadMoGeModel", "model_name"): "geometry_estimation",
 }
 
@@ -407,7 +412,9 @@ def image_megapixels(spec: WorkflowSpec, params: GenerationParams) -> float:
     return asked
 
 
-def video_resolution(spec: WorkflowSpec, params: GenerationParams) -> tuple[int, int]:
+def video_resolution(
+    spec: WorkflowSpec, params: GenerationParams, megapixels: float | None = None
+) -> tuple[int, int]:
     """Width / height of the video stage.
 
     A workflow that takes a start frame follows the reference image's aspect
@@ -418,14 +425,256 @@ def video_resolution(spec: WorkflowSpec, params: GenerationParams) -> tuple[int,
     Both edges are rounded to ``spec.resolution_multiple`` rather than the
     image-side default of 8, because video latents use a coarser spatial grid
     than images (MiniMax H3 wants multiples of 32).
+
+    ``megapixels`` を渡すと、**縦横比の決め方はそのまま**に画素数の予算だけ
+    差し替える。ラテントアップスケール（``latent_upscale`` = on）の 1 パス目を
+    0.2MP で回すのに使う（:class:`app.workflows.UpscaleSpec`）。
     """
+    budget = params.megapixels if megapixels is None else megapixels
     size = params.start_image_size
     multiple = spec.resolution_multiple
     if spec.accepts_start_image and size:
-        return resolution_for_image(
-            size[0], size[1], params.megapixels, multiple=multiple
+        return resolution_for_image(size[0], size[1], budget, multiple=multiple)
+    return resolution(params.aspect_ratio, budget, multiple=multiple)
+
+
+# --- latent upscale (SPEC §3.1) --------------------------------------------
+# ``latent_upscale`` が on のとき、テンプレート（常に 1 パス）を 2 パスに組み替える。
+# 宣言は :class:`app.workflows.UpscaleSpec` 側にあり、ここはそれを読んでノードを
+# 足すだけ。off なら何もしないので、グラフはテンプレートそのままになる。
+
+def latent_upscale_choice(spec: WorkflowSpec, params: GenerationParams) -> str:
+    """このジョブで効く ``latent_upscale`` の値（宣言が無ければ空文字）。"""
+    select = spec.select(LATENT_UPSCALE_NAME)
+    if select is None or spec.upscale is None:
+        return ""
+    choice = (params.selects.get(LATENT_UPSCALE_NAME) or "").strip()
+    return choice if choice in select.choices else select.fallback
+
+
+def upscale_nodes(
+    spec: WorkflowSpec, width: int, height: int
+) -> dict[str, dict[str, Any]]:
+    """2 パス目のノード一式（``latent_upscale`` = on のときに足すもの）。
+
+    :func:`splice_latent_upscale` と :func:`model_fields` の両方が使う。後者は
+    アップスケーラの ``model_name`` を設定ページのスロットとして拾うためだけに
+    呼ぶので、``width`` / ``height`` は何でもよい。2 パス目のサンプラーの
+    ``noise`` / ``guider`` / ``sampler`` は 1 パス目から写すため、ここでは空。
+    """
+    up = spec.upscale
+    if up is None:  # pragma: no cover - 呼ぶ側が確かめている
+        return {}
+    return {
+        up.separate_node: {
+            "inputs": {"av_latent": [up.sampler, 1]},
+            "class_type": "LTXVSeparateAVLatent",
+            "_meta": {"title": "LTXVSeparateAVLatent"},
+        },
+        up.upscaler_node: {
+            "inputs": {
+                "model_name": up.model_name,
+                # ComfyUI の DynamicCombo: 選んだモードの入力は ``mode.<名前>``
+                "mode": "target dimensions",
+                "mode.width": int(width),
+                "mode.height": int(height),
+                "align": up.align,
+                "device": up.device,
+                "precision": up.precision,
+                "latent": [up.separate_node, 0],
+            },
+            "class_type": LATENT_UPSCALER_CLASS,
+            "_meta": {"title": "Minimax H3 Latent Upscaler (3D)"},
+        },
+        up.concat_node: {
+            "inputs": {
+                "video_latent": [up.upscaler_node, 0],
+                "audio_latent": [up.separate_node, 1],
+            },
+            "class_type": "LTXVConcatAVLatent",
+            "_meta": {"title": "LTXVConcatAVLatent"},
+        },
+        up.sigmas_node: {
+            "inputs": {"sigmas": up.sigmas},
+            "class_type": "ManualSigmas",
+            "_meta": {"title": "3 step Sigmas"},
+        },
+        up.second_sampler_node: {
+            "inputs": {
+                "sigmas": [up.sigmas_node, 0],
+                "latent_image": [up.concat_node, 0],
+            },
+            "class_type": "SamplerCustomAdvanced",
+            "_meta": {"title": "SamplerCustomAdvanced (upscale pass)"},
+        },
+    }
+
+
+#: 2 段引き継ぎで写す既存ノードの class_type
+SAVE_LATENT_CLASS = "MiniMaxH3MotionContextSaveLatent"
+LOAD_LATENT_CLASS = "MiniMaxH3MotionContextLoadLatent"
+MOTION_CONTEXT_CLASS = "MiniMaxH3MotionContext"
+
+
+def _find_node(wf: Workflow, class_type: str) -> tuple[str, dict[str, Any]] | None:
+    """``class_type`` のノードのうち **id 順で最初**のもの（無ければ None）。
+
+    ラテント連続性のテンプレートはどれも 1 グラフに 1 個ずつしか置いていない
+    ので、これで一意に決まる（2 段引き継ぎで足すぶんはまだ ``wf`` に無い）。
+    """
+    for node_id in sorted(wf):
+        node = wf[node_id]
+        if isinstance(node, dict) and node.get("class_type") == class_type:
+            return node_id, node
+    return None
+
+
+def _hires_carry_over_nodes(
+    wf: Workflow, up: Any, context_latent_hires: str
+) -> dict[str, dict[str, Any]]:
+    """**2 段引き継ぎ**（``latent_upscale`` = on）で足すノード（SPEC §3.1）。
+
+    * ラテントを保存するテンプレート（``*_save*`` / ``*_context*``）には、
+      2 パス目のラテントを保存する 2 個目の ``…SaveLatent`` と、そのパスを
+      持ち帰る 2 個目の ``PreviewAny`` を足す。
+    * さらに Motion Context を持つテンプレート（``*_context*``）で、直前カットの
+      **高解像度**ラテント（``context_latent_hires``）が渡っていれば、それを読む
+      2 個目の ``…LoadLatent`` と、2 パス目の形（``LTXVConcatAVLatent`` の出力）
+      を参照する 2 個目の ``MiniMaxH3MotionContext``、その CONDITIONING を受ける
+      2 個目の ``BasicGuider`` を足す。渡っていなければ**足さない** = 2 パス目は
+      1 パス目と同じ guider を共有する 1 段引き継ぎにフォールバックする
+      （``off`` で作った過去テイクから続けてもエラーにしないため）。
+    """
+    found = _find_node(wf, SAVE_LATENT_CLASS)
+    if found is None:
+        return {}
+    _, save = found
+    save_inputs = dict(save.get("inputs") or {})
+    prefix = str(save_inputs.get("filename_prefix") or "")
+    nodes: dict[str, dict[str, Any]] = {
+        up.hires_save_node: {
+            "inputs": {
+                **save_inputs,
+                "latent": [up.second_sampler_node, 0],
+                "filename_prefix": prefix + up.hires_suffix,
+            },
+            "class_type": SAVE_LATENT_CLASS,
+            "_meta": {"title": "MiniMaxH3MotionContextSaveLatent (upscale pass)"},
+        },
+        up.hires_preview_node: {
+            "inputs": {"source": [up.hires_save_node, 0]},
+            "class_type": "PreviewAny",
+            "_meta": {"title": "PreviewAny (upscale pass latent path)"},
+        },
+    }
+
+    context = _find_node(wf, MOTION_CONTEXT_CLASS)
+    hires_path = (context_latent_hires or "").strip()
+    if context is None or not hires_path:
+        return nodes
+    context_id, context_node = context
+    # 1 個目の Motion Context を受けている BasicGuider（1 パス目のもの）
+    guider = next(
+        (
+            (node_id, node)
+            for node_id, node in sorted(wf.items())
+            if isinstance(node, dict)
+            and node.get("class_type") == "BasicGuider"
+            and (node.get("inputs") or {}).get("conditioning") == [context_id, 0]
+        ),
+        None,
+    )
+    if guider is None:  # pragma: no cover - テンプレートは必ず持っている
+        return nodes
+    _, guider_node = guider
+
+    load = _find_node(wf, LOAD_LATENT_CLASS)
+    clip_index = int(((load[1].get("inputs") or {}) if load else {}).get(
+        "clip_index", 0
+    ) or 0)
+    nodes[up.hires_load_node] = {
+        "inputs": {"latent_path": hires_path, "clip_index": clip_index},
+        "class_type": LOAD_LATENT_CLASS,
+        "_meta": {"title": "MiniMaxH3MotionContextLoadLatent (upscale pass)"},
+    }
+    # conditioning / vae / context_frames / context_length などは 1 個目と同じ。
+    # 違うのは形の参照先（2 パス目の解像度・フレーム数を持つ Concat の出力）と、
+    # 読む context_latent（高解像度のほう）だけ。
+    nodes[up.hires_context_node] = {
+        "inputs": {
+            **(context_node.get("inputs") or {}),
+            "latent": [up.concat_node, 0],
+            "context_latent": [up.hires_load_node, 0],
+        },
+        "class_type": MOTION_CONTEXT_CLASS,
+        "_meta": {"title": "MiniMaxH3MotionContext (upscale pass)"},
+    }
+    nodes[up.hires_guider_node] = {
+        "inputs": {
+            **(guider_node.get("inputs") or {}),
+            "conditioning": [up.hires_context_node, 0],
+        },
+        "class_type": "BasicGuider",
+        "_meta": {"title": "BasicGuider (upscale pass)"},
+    }
+    return nodes
+
+
+def splice_latent_upscale(
+    wf: Workflow,
+    spec: WorkflowSpec,
+    width: int,
+    height: int,
+    *,
+    context_latent_hires: str = "",
+) -> None:
+    """Add the second (upscale) pass to ``wf`` in place. ``width`` / ``height``
+    are the **final** resolution the upscaler has to reach.
+
+    デコーダの付け替えは ``samples`` が 1 パス目を指しているものだけ。1 パス目の
+    ラテントの保存（``MiniMaxH3MotionContextSaveLatent``）と 1 個目の Motion
+    Context は ``latent`` という別の入力名で読んでいるので、**1 パス目に付いた
+    まま**になる。
+
+    ``context_latent_hires`` は直前カットの**高解像度**ラテントのパス
+    （:func:`_hires_carry_over_nodes` の 2 段引き継ぎ）。空なら 1 段引き継ぎ。
+    """
+    up = spec.upscale
+    if up is None:  # pragma: no cover - 呼ぶ側が確かめている
+        return
+    first = wf.get(up.sampler)
+    if not isinstance(first, dict):
+        raise WorkflowError(f"latent upscale: sampler '{up.sampler}' is missing")
+    taken = [node_id for node_id in up.node_ids() if node_id in wf]
+    if taken:
+        raise WorkflowError(
+            "latent upscale: node ids already taken: " + ", ".join(sorted(taken))
         )
-    return resolution(params.aspect_ratio, params.megapixels, multiple=multiple)
+
+    nodes = upscale_nodes(spec, width, height)
+    # ノイズ・ガイダー・サンプラーは 1 パス目と同じものを共有する
+    first_inputs = first.get("inputs") or {}
+    nodes[up.second_sampler_node]["inputs"].update(
+        {key: first_inputs[key] for key in ("noise", "guider", "sampler")}
+    )
+    # 1 パス目をデコードしていたノードだけ 2 パス目に向け直す
+    link = [up.sampler, 0]
+    for node in wf.values():
+        inputs = node.get("inputs") if isinstance(node, dict) else None
+        if isinstance(inputs, dict) and inputs.get("samples") == link:
+            inputs["samples"] = [up.second_sampler_node, 0]
+    # 2 段引き継ぎ（ラテント連続性のバリアントだけ）
+    nodes.update(_hires_carry_over_nodes(wf, up, context_latent_hires))
+    if up.hires_guider_node in nodes:
+        # 2 パス目は 2 個目の Motion Context を通した guider で回す
+        nodes[up.second_sampler_node]["inputs"]["guider"] = [up.hires_guider_node, 0]
+    wf.update(nodes)
+
+
+def hires_latent_prefix(spec: WorkflowSpec, prefix: str) -> str:
+    """2 パス目のラテントの保存先（1 本目の ``prefix`` から作る）。"""
+    suffix = spec.upscale.hires_suffix if spec.upscale is not None else "_hires"
+    return f"{prefix}{suffix}"
 
 
 # --- model file names (SPEC §3.3) ------------------------------------------
@@ -455,10 +704,15 @@ def model_fields(specs: tuple[WorkflowSpec, ...] | None = None) -> list[ModelFie
     The template value becomes the *default*; :func:`apply_model_overrides`
     replaces it with whatever the user configured on the settings page.  Keys are
     scoped by workflow id because the same node id exists in several templates.
+
+    ラテントアップスケール（``latent_upscale``）が足すアップスケーラは
+    テンプレートに書いていないので、その宣言（:class:`app.workflows.UpscaleSpec`）
+    から作ったノードも一緒に見る。こうしないと ``MinimaxH3LatentUpscaler3D`` の
+    ``model_name`` が設定ページのスロットにも取得元一覧にも出てこない。
     """
     found: list[ModelField] = []
     for spec in specs if specs is not None else comfy_specs():
-        template = load_template(spec)
+        template = {**load_template(spec), **upscale_nodes(spec, 0, 0)}
         # the dynamic LoRA chain replaces these, so their names never ship
         excluded = set(spec.lora_chain.placeholders) if spec.lora_chain else set()
         for node_id, node in template.items():
@@ -886,7 +1140,11 @@ def all_required_class_types() -> set[str]:
     """
     types: set[str] = {"LoraLoaderModelOnly"}
     for spec in comfy_specs():
+        # ラテントアップスケール（`latent_upscale` = on）が足すノードもテンプレート
+        # と同じように数える。アップスケーラ本体だけは任意のカスタムノードなので、
+        # 最後の差し引きで落ちる。
         types |= required_class_types(load_template(spec))
+        types |= required_class_types(upscale_nodes(spec, 0, 0))
     return types - OPTIONAL_CLASS_TYPES
 
 
@@ -1027,6 +1285,24 @@ def build_video_workflow(
         template if template is not None else load_template(resolved)
     )
 
+    # ラテントアップスケール（`latent_upscale`、既定 on / SPEC §3.1）。テンプレートは
+    # どれも 1 パスなので、on のときだけここで 2 パスに組み替える: 1 パス目は
+    # 0.2MP で回し、最終解像度はアップスケーラに渡す。**モデル指定の差し替えより
+    # 前**に足すので、アップスケーラの model_name も設定ページから変えられる。
+    width, height = video_resolution(resolved, params)
+    first_width, first_height = width, height
+    if latent_upscale_choice(resolved, params) == "on" and resolved.upscale is not None:
+        first_width, first_height = video_resolution(
+            resolved, params, resolved.upscale.first_pass_megapixels
+        )
+        splice_latent_upscale(
+            wf,
+            resolved,
+            width,
+            height,
+            context_latent_hires=params.context_latent_hires_path,
+        )
+
     apply_model_overrides(wf, overrides, resolved.id)
 
     # The video LoRA's trigger words go in front of the prompt (SPEC §3.4).
@@ -1043,9 +1319,8 @@ def build_video_workflow(
     if params.negative_prompt.strip():
         _inject(wf, resolved, "negative", params.negative_prompt)
 
-    width, height = video_resolution(resolved, params)
-    _inject(wf, resolved, "width", width)
-    _inject(wf, resolved, "height", height)
+    _inject(wf, resolved, "width", first_width)
+    _inject(wf, resolved, "height", first_height)
     _inject(wf, resolved, "duration", params.duration)
     _inject(wf, resolved, "fps", params.fps)
     _inject_steps(wf, resolved, params)
@@ -1064,6 +1339,15 @@ def build_video_workflow(
     # 保存先はジョブ ID から決め、次のカットがそのパスを読む。
     _inject(wf, resolved, "context_latent", params.context_latent_path)
     _inject(wf, resolved, "save_latent_prefix", params.latent_filename_prefix)
+    # 2 段引き継ぎ（`latent_upscale` = on）で足した 2 個目の SaveLatent は
+    # テンプレートに無く注入先も持たないので、ここで 1 本目と同じ規約
+    # （末尾に `_hires`）の保存先を書く。
+    if resolved.upscale is not None:
+        hires_save = wf.get(resolved.upscale.hires_save_node)
+        if isinstance(hires_save, dict):
+            hires_save["inputs"]["filename_prefix"] = hires_latent_prefix(
+                resolved, params.latent_filename_prefix
+            )
     # 渡されなかった任意の入力は、雛形のローダーごとグラフから外す（§3.1）
     _prune_optional_loaders(wf, resolved, params)
     # 参照素材は 1 つの注入点では表せない: 渡された件数ぶんノードを生やす（§3.1）

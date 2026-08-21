@@ -702,7 +702,7 @@ def workflow_catalog_section(
         "PROMPT SPEC disagree, the workflow's note wins.",
         "",
     ]
-    for entry in _catalog_entries(video_catalog(), only, comfy_target):
+    for entry in _catalog_entries(video_catalog(comfy_target), only, comfy_target):
         lines += _catalog_entry_lines(entry)
     lines += [
         "",
@@ -2547,7 +2547,7 @@ Actions — one per reply like every other action, no approval needed:
 |---|---|---|
 | `studio_list_projects` | — | every project with its Shot / asset / Take counts |
 | `studio_get_project` | `project_id` | the whole project: assets, 話 / 場 / Shot, and each Shot's Takes with their status and `stale` |
-| `studio_create_project` | `name`, optional `code`, `synopsis`, `world_notes`, `auto_translate`, `latent_continuity`, `quality` (`normal` / `opt` / `turbo`), `megapixels` (e.g. `0.4`), `aspect_ratio` (e.g. `16:9 (Widescreen)`), `nsfw` | start a work |
+| `studio_create_project` | `name`, optional `code`, `synopsis`, `world_notes`, `auto_translate`, `latent_continuity`, `quality` (`normal` / `opt` / `turbo`), `megapixels` (e.g. `0.4`), `aspect_ratio` (e.g. `16:9 (Widescreen)`), `nsfw`, `latent_upscale` | start a work |
 | `studio_update_project` | `project_id` + any of the above | e.g. keep `world_notes` up to date |
 | `studio_upsert_episode` | `id` to edit, else `project_id`; `title`, `synopsis`, `sort_order` | 話 |
 | `studio_upsert_scene` | `id` to edit, else `episode_id`; `title`, `synopsis`, `time_of_day`, `sort_order`. With `id`, `episode_id` **moves** the 場 to that 話 | 場 |

@@ -76,13 +76,17 @@ async def get_capabilities() -> StudioCapabilities:
     ``/object_info`` をひとつ聞くだけなので、接続できないときは 500 にせず
     「使えない」＋理由を返す（設定していないだけのこともあるため）。
     """
+    latent_upscale = service.latent_upscale_available()
     try:
         return StudioCapabilities(
-            latent_continuity=await comfy.latent_context_support()
+            latent_continuity=await comfy.latent_context_support(),
+            latent_upscale=latent_upscale,
         )
     except comfy.ComfyError as exc:
         return StudioCapabilities(
-            latent_continuity=False, error=comfy.display_error(exc)
+            latent_continuity=False,
+            latent_upscale=latent_upscale,
+            error=comfy.display_error(exc),
         )
 
 
@@ -111,6 +115,7 @@ async def create_project(payload: StudioProjectCreate) -> StudioProject:
             payload.megapixels,
             payload.aspect_ratio,
             payload.steps,
+            payload.latent_upscale,
         )
     except service.StudioError as exc:
         raise _bad_request(exc) from exc

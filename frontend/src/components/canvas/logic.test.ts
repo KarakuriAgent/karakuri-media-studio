@@ -166,6 +166,7 @@ function detailOf(overrides: Partial<StudioProjectDetail> = {}): StudioProjectDe
     world_notes: '',
     auto_translate: true,
     latent_continuity: false,
+    latent_upscale: true,
     quality: 'normal',
     megapixels: null,
     aspect_ratio: null,

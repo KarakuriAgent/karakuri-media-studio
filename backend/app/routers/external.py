@@ -149,6 +149,7 @@ async def create_project(payload: StudioProjectCreate) -> StudioProject:
             payload.megapixels,
             payload.aspect_ratio,
             payload.steps,
+            payload.latent_upscale,
             actor=ACTOR,
         )
     except service.StudioError as exc:

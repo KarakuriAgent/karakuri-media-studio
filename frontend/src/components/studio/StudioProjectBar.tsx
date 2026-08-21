@@ -5,6 +5,7 @@ import { DEFAULT_MEGAPIXELS } from '../../form'
 import type { ComfyTarget, StudioVideoQuality } from '../../types'
 import { Modal } from '../ui'
 import { Button } from '../ui/button'
+import { Checkbox } from '../ui/checkbox'
 import { Input } from '../ui/input'
 import { Label } from '../ui/label'
 import { NativeSelect } from '../NativeSelect'
@@ -51,6 +52,8 @@ export default function StudioProjectBar({
   stepsDraft,
   onStepsDraftChange,
   onCommitSteps,
+  latentUpscale,
+  onLatentUpscaleChange,
   busy,
 }: {
   name: string
@@ -73,6 +76,9 @@ export default function StudioProjectBar({
   stepsDraft: string
   onStepsDraftChange: (value: string) => void
   onCommitSteps: () => void
+  /** ラテントアップスケール（作品既定。テイク生成のたびに上書きできる）。 */
+  latentUpscale: boolean
+  onLatentUpscaleChange: (value: boolean) => void
   busy: boolean
 }) {
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -82,6 +88,7 @@ export default function StudioProjectBar({
     aspectRatio,
     megapixels,
     steps,
+    latentUpscale,
   })
 
   const modeToggle = (
@@ -126,6 +133,8 @@ export default function StudioProjectBar({
       stepsDraft={stepsDraft}
       onStepsDraftChange={onStepsDraftChange}
       onCommitSteps={onCommitSteps}
+      latentUpscale={latentUpscale}
+      onLatentUpscaleChange={onLatentUpscaleChange}
       busy={busy}
     />
   )
@@ -202,6 +211,8 @@ function ProjectSettingsFields({
   stepsDraft,
   onStepsDraftChange,
   onCommitSteps,
+  latentUpscale,
+  onLatentUpscaleChange,
   busy,
 }: {
   stacked: boolean
@@ -218,6 +229,8 @@ function ProjectSettingsFields({
   stepsDraft: string
   onStepsDraftChange: (value: string) => void
   onCommitSteps: () => void
+  latentUpscale: boolean
+  onLatentUpscaleChange: (value: boolean) => void
   busy: boolean
 }) {
   const targetSelector = onComfyTarget ? (
@@ -308,6 +321,28 @@ function ProjectSettingsFields({
     />
   )
 
+  const latentUpscaleToggle = (
+    <div className="flex shrink-0 items-center gap-2">
+      <Checkbox
+        id="studio-latent-upscale"
+        checked={latentUpscale}
+        disabled={busy}
+        onCheckedChange={(checked) => onLatentUpscaleChange(checked === true)}
+      />
+      <Label
+        htmlFor="studio-latent-upscale"
+        className="cursor-pointer text-foreground/85"
+        title={
+          'オン = 1 パス目を 0.2MP で回してからラテントのまま指定解像度へ拡大' +
+          '（速くて破綻しにくい）。オフ = 指定解像度で 1 パス。' +
+          'テイク生成のたびに上書きできます'
+        }
+      >
+        {stacked ? 'ラテントアップスケール' : '拡大'}
+      </Label>
+    </div>
+  )
+
   if (stacked) {
     return (
       <div className="flex flex-col gap-3">
@@ -331,6 +366,7 @@ function ProjectSettingsFields({
           <Label htmlFor="studio-steps">ステップ</Label>
           {stepsInput}
         </div>
+        {latentUpscaleToggle}
       </div>
     )
   }
@@ -358,6 +394,7 @@ function ProjectSettingsFields({
         </Label>
         <div className="w-24">{stepsInput}</div>
       </div>
+      {latentUpscaleToggle}
     </>
   )
 }
