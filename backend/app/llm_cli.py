@@ -15,8 +15,11 @@ CLI      ACP 起動                     ワンショット              契約�
 grok     ``grok agent [-m M] stdio``  ``grok [-p] …``           ``_meta.rules``
 claude   ``claude-agent-acp``         ``claude -p …``           ``CLAUDE.md``
 codex    ``codex-acp``                ``codex exec …``          ``AGENTS.md``
-cursor   ``cursor-agent --acp``       ``cursor-agent -p …``     ``AGENTS.md``
+cursor   ``cursor-agent acp``         ``cursor-agent -p …``     ``AGENTS.md``
 ======== ============================ ========================= ==============
+
+``cursor`` の ACP だけはモデルを起動引数で渡せないので、``session/new`` のあとに
+``session/set_config_option`` で設定する（下記「モデル」の段落）。
 
 契約をファイルで渡す CLI では、ホストを開くたびに作業ディレクトリへその
 ファイルを書き出す（毎回上書き）。``claude`` だけは読み込みが
@@ -29,6 +32,14 @@ cursor   ``cursor-agent --acp``       ``cursor-agent -p …``     ``AGENTS.md``
 追随できる）。ワンショット側だけを変えたいときは ``"<cli>_oneshot"`` のキーに
 書く。モデルは ``agent_cli_models``（``{cli: モデル}``。grok は従来の
 ``grok_model``）で、空なら CLI の既定に任せる。
+
+``cursor`` だけはモデル名に ``grok-4.6[effort=xhigh,fast=false]`` のような
+**括弧付き表記**が書ける。ワンショット（``cursor-agent --model …``）はこの表記を
+そのまま解釈し、ACP（``cursor-agent acp`` は ``--model`` を受け付けない）では
+:meth:`CliAdapter.acp_config_options` が ``model`` / ``effort`` / ``fast`` に
+ばらして ``session/set_config_option`` で渡す。つまり**同じ 1 つの設定値が
+ワンショット・ACP の両方に効く**。素の ``cursor-grok-4.6-xhigh`` 形式も
+そのまま渡すが、ACP 側が受け付けるかは Cursor CLI 次第。
 """
 
 from __future__ import annotations
@@ -63,6 +74,35 @@ COMMON_AUTH_MARKERS: tuple[str, ...] = (
 )
 
 
+def parse_model_spec(model: str) -> tuple[str, list[tuple[str, str]]]:
+    """``"grok-4.6[effort=xhigh,fast=false]"`` を名前とパラメータに割る。
+
+    ``("grok-4.6", [("effort", "xhigh"), ("fast", "false")])`` を返す。括弧が
+    無ければ ``(model, [])``。空白は落とす。閉じ括弧が無い・``=`` が無いなどの
+    壊れた表記は**全体を名前として**返す（勝手に直さず CLI に判断させる）。
+    """
+    raw = (model or "").strip()
+    if not raw:
+        return "", []
+    start = raw.find("[")
+    if start < 0:
+        return raw, []
+    name = raw[:start].strip()
+    if not name or not raw.endswith("]"):
+        return raw, []
+    params: list[tuple[str, str]] = []
+    for chunk in raw[start + 1 : -1].split(","):
+        chunk = chunk.strip()
+        if not chunk:
+            continue
+        key, sep, value = chunk.partition("=")
+        key, value = key.strip(), value.strip()
+        if not sep or not key or not value:
+            return raw, []
+        params.append((key, value))
+    return name, params
+
+
 @dataclass(frozen=True)
 class CliAdapter:
     """1 つのコーディング CLI の回し方。"""
@@ -80,6 +120,11 @@ class CliAdapter:
     acp_suffix: tuple[str, ...] = ()
     #: ACP 起動のモデル指定フラグ（"" = モデルを渡さない）
     acp_model_flag: str = ""
+    #: ACP の ``initialize`` で ``clientCapabilities._meta`` に載せる申告
+    #: （cursor の ``parameterizedModelPicker`` など。空なら ``_meta`` を付けない）
+    acp_client_meta: dict[str, object] = field(default_factory=dict)
+    #: モデルを起動引数ではなく ``session/set_config_option`` で渡すか
+    acp_model_via_config: bool = False
     #: ワンショットのモデル指定フラグ（"" = モデルを渡さない）
     oneshot_model_flag: str = ""
     #: ワンショットでプロンプト本文の直前に置く引数
@@ -96,6 +141,9 @@ class CliAdapter:
     rules_in_prompt: bool = False
     #: この CLI 特有の認証エラー文字列
     auth_markers: tuple[str, ...] = ()
+    #: 「終了コード 0 のまま stdout でモデルを拒否する」ときの書き出し
+    #: （cursor-agent は知らないモデル名でもエラー終了しない）
+    model_error_markers: tuple[str, ...] = ()
     #: コマンドが見つからないときに出す導入手順
     install_hint: str = ""
     #: コマンド名の見分け（``install_hint_for`` が実行ファイル名と突き合わせる）
@@ -139,6 +187,21 @@ class CliAdapter:
         if not custom:
             argv += list(self.acp_suffix)
         return argv
+
+    def acp_config_options(self, model: str) -> list[tuple[str, str]]:
+        """``session/set_config_option`` で送る ``(configId, value)`` の並び。
+
+        ``cursor-agent acp`` は ``--model`` を受け付けないので、モデルは
+        ``session/new`` のあとに 1 件ずつ設定する。``grok-4.6[effort=xhigh]``
+        のような括弧付き表記は ``model`` と各パラメータに割る。素の id
+        （``cursor-grok-4.6-xhigh``）はそのまま ``model`` に渡す。
+        """
+        if not self.acp_model_via_config:
+            return []
+        name, params = parse_model_spec(model)
+        if not name:
+            return []
+        return [("model", name), *params]
 
     def oneshot_argv(
         self,
@@ -190,6 +253,17 @@ class CliAdapter:
         lowered = (text or "").lower()
         markers = (*COMMON_AUTH_MARKERS, *self.auth_markers)
         return any(marker in lowered for marker in markers)
+
+    def looks_like_model_error(self, text: str) -> bool:
+        """モデル名を拒否した出力か（成功扱いにしてはいけない応答）。
+
+        cursor-agent は存在しないモデルを ``--model`` に渡されても終了コード 0 で
+        戻り、``Cannot use this model: …`` を stdout に書いて終わる。そのまま回答
+        として返してしまわないよう、出力の**先頭**だけを見て弾く（本文中で同じ
+        文句が引用されているだけのものを巻き込まないため）。
+        """
+        lowered = (text or "").strip().lower()
+        return any(lowered.startswith(marker) for marker in self.model_error_markers)
 
 
 GROK = CliAdapter(
@@ -256,12 +330,19 @@ CURSOR = CliAdapter(
     label="Cursor",
     default_command="cursor-agent",
     oneshot_command="cursor-agent",
-    acp_suffix=("--acp",),
+    # ACP サーバーは **サブコマンド** で起動する（``--acp`` フラグは無い）。
+    acp_prefix=("acp",),
+    # ACP はモデルを起動引数で受け取らない。initialize でパラメータ付きの
+    # モデル選択を申告すると session/new の configOptions に model / effort /
+    # fast が現れるので、そちらへ 1 件ずつ流す（実機で確認済み）。
+    acp_client_meta={"parameterizedModelPicker": True},
+    acp_model_via_config=True,
     oneshot_model_flag="--model",
     prompt_args=("-p",),
     rules_mode="file",
     rules_filename="AGENTS.md",
     auth_markers=("cursor-agent login",),
+    model_error_markers=("cannot use this model",),
     install_hint=(
         "Cursor CLI をインストール"
         " (curl https://cursor.com/install -fsS | bash) してください"

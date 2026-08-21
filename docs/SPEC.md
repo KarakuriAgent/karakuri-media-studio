@@ -812,11 +812,13 @@ CLI ごとの違いは `backend/app/llm_cli.py` の `CliAdapter` にまとまっ
 | `grok` | `grok agent [-m モデル] stdio` | `grok [--model M] [追加フラグ] [--output-format json] -p <本文> [--resume <id>]` | `session/new` の `_meta.rules` |
 | `claude` | `claude-agent-acp` | `claude [--model M] -p <本文>` | cwd の `CLAUDE.md`（**プロンプトにも埋める二重化**） |
 | `codex` | `codex-acp` | `codex [-m M] exec <本文>` | cwd の `AGENTS.md` |
-| `cursor` | `cursor-agent --acp` | `cursor-agent [--model M] -p <本文>` | cwd の `AGENTS.md` |
+| `cursor` | `cursor-agent acp` | `cursor-agent [--model M] -p <本文>` | cwd の `AGENTS.md` |
 
 - 契約をファイルで渡す CLI は、**ホストを開くたび**に作業ディレクトリへそのファイルを書き出す（毎回上書き。プロセス起動前に置く）。claude は Agent SDK の `settingSources` を省略すれば `CLAUDE.md` を読むが、**ACP ブリッジが何を渡すかはブリッジ側の実装次第**で外から強制する環境変数・フラグは公式ドキュメントに無いため、保険として初回プロンプトにも同じ契約を埋める（`GrokSessionHost.wants_contract()`）
 - 続き（`--resume`）と JSON 包装（`--output-format json`）を使うのは grok だけ。ほかの CLI のワンショットは毎ターン履歴を組み直して投げる（正本は DB なので結果は同じ）
 - コマンド名は `agent_cli_commands`（`{cli: コマンド}`）で上書きできる。値には引数を書いてよく、**2 語以上なら既定の引数を足さずそのまま使う**（`"cursor-agent acp"` のように起動方法が変わっても設定だけで追随できる）。ワンショット側だけを変えたいときは `"<cli>_oneshot"` キー。モデルは `agent_cli_models`（grok は従来の `grok_model`。空なら CLI の既定に任せてフラグごと出さない）
+- **cursor のモデル指定**は `grok-4.6[effort=xhigh,fast=false]` のような括弧付き表記が書ける。ワンショットは `--model` がそのまま解釈し、ACP（`cursor-agent acp` は `--model` を受け付けない）は `initialize` の `clientCapabilities._meta.parameterizedModelPicker` を申告したうえで `session/new` のあと `session/set_config_option`（`model` → `effort` → `fast` の順に 1 件ずつ）で渡す。つまり同じ 1 つの設定値が両経路に効く（素の `cursor-grok-4.6-xhigh` 形式はそのまま `model` に渡すのでワンショット向け）
+- モデル設定が拒否されても（未知の `configId` / 値は `-32602`）警告ログを残して**ターンは続ける**（CLI の既定モデルで動く）
 - **CLI を切り替えると**、保存済みの続き用セッション id（`chat_sessions` / `agent_sessions` / `canvas_sessions` の `grok_session_id`）は別 CLI では通じないので `PUT /api/settings` で空にする。会話そのもの（正本）は残るので、次のターンは履歴を組み直した新しいセッションで続く
 - ヘルスチェック（`GET /api/health`）は選択中の CLI の `--version` を見る。応答の `cli` / `cli_label` が選択中の CLI を表し、ヘッダーの接続状態もその名前で出る
 

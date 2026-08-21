@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Docker コンテナ用の cursor-agent ランチャー。
+#
+# Cursor CLI はホストの ~/.local/share/cursor-agent/versions/<版>/ に入っていて、
+# docker-compose.yml がそれを /home/app/.local/share/cursor-agent にマウントする。
+# 版ディレクトリ名は更新のたびに変わるので、ここで一番新しい版を選んで exec する。
+# （compose の PATH にこのディレクトリを足してある。）
+set -euo pipefail
+root="${CURSOR_AGENT_HOME:-$HOME/.local/share/cursor-agent}/versions"
+latest="$(ls -1d "$root"/*/ 2>/dev/null | sort -V | tail -1)"
+if [ -z "$latest" ]; then
+  echo "cursor-agent が見つかりません: $root（ホストに Cursor CLI を入れて docker-compose.yml のマウントを確認してください）" >&2
+  exit 127
+fi
+exec "${latest%/}/cursor-agent" "$@"

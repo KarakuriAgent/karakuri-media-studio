@@ -31,6 +31,9 @@ services:
       # 不足モデルの自動ダウンロード先（SPEC §3.3）。未設定なら空文字を渡し、
       # 機能ごと無効になる（下の volumes のダミーパスは渡さない）。
       COMFY_MODELS_DIR: ${COMFY_MODELS_DIR:-}
+      # Cursor CLI（deploy/bin/cursor-agent がマウントした本体を起動する）を
+      # PATH に足す。Dockerfile の PATH（~/.grok/bin 先頭）も含めて書き直す。
+      PATH: ${PWD}/deploy/bin:/home/app/.grok/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
     ports:
       - "${HOST:-127.0.0.1}:${PORT:-8000}:${PORT:-8000}"
     volumes:
@@ -40,6 +43,12 @@ services:
       - ${HOME}/.grok:/home/app/.grok
       # codex CLI のサインイン状態（本体はイメージ側、Dockerfile 参照）
       - ${HOME}/.codex:/home/app/.codex
+      # Cursor CLI 本体（~/.local/share/cursor-agent/versions/<版>/）とサインイン
+      # 状態（~/.config/cursor/auth.json）・設定（~/.cursor）。事前にホスト側で
+      # `cursor-agent login` を済ませておくこと。起動は deploy/bin/cursor-agent 経由。
+      - ${HOME}/.local/share/cursor-agent:/home/app/.local/share/cursor-agent
+      - ${HOME}/.config/cursor:/home/app/.config/cursor
+      - ${HOME}/.cursor:/home/app/.cursor
       # 不足モデルの自動ダウンロード先（SPEC §3.3）: ホストの ComfyUI models
       # ディレクトリを**同一絶対パス**でマウントする。アプリは環境変数の値を
       # そのまま開くので、コンテナ内でも同じパスで見えている必要がある。

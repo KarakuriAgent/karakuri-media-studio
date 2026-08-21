@@ -53,6 +53,41 @@ def tool_activity(title: str) -> str:
     return f"ツール実行中: {title}"
 
 
+def initialize_params(adapter: CliAdapter) -> dict[str, Any]:
+    """``initialize`` の params（アダプタ固有の ``_meta`` 申告を含む）。
+
+    cursor は ``clientCapabilities._meta.parameterizedModelPicker`` を申告すると
+    ``session/new`` の ``configOptions`` に ``model`` / ``effort`` / ``fast`` が
+    現れ、``session/set_config_option`` で個別に設定できるようになる。
+    """
+    capabilities: dict[str, Any] = {
+        "fs": {"readTextFile": False, "writeTextFile": False}
+    }
+    if adapter.acp_client_meta:
+        capabilities["_meta"] = dict(adapter.acp_client_meta)
+    return {"protocolVersion": PROTOCOL_VERSION, "clientCapabilities": capabilities}
+
+
+def config_option_params(
+    session_id: str, config_id: str, value: str
+) -> dict[str, Any]:
+    """``session/set_config_option`` の params。"""
+    return {"sessionId": session_id, "configId": config_id, "value": value}
+
+
+def log_config_option_error(
+    adapter: CliAdapter, config_id: str, value: str, detail: str
+) -> None:
+    """モデル設定が拒否されたときの警告（ターンは続ける）。"""
+    log.warning(
+        "%s ACP がモデル設定を受け付けませんでした: configId=%s value=%s detail=%s",
+        adapter.label,
+        config_id,
+        value,
+        detail,
+    )
+
+
 class AcpUnavailable(Exception):
     """ACP を開始できなかった（起動 / initialize / session/new の失敗）。
 
@@ -301,18 +336,33 @@ class AcpAgentClient(LLMClient):
         # tool_call_update / plan / available_commands_update は表示に使わない
 
     async def _converse(self, turn: _Turn, prompt: str) -> str:
-        init_id = turn.request(
-            "initialize",
-            {
-                "protocolVersion": PROTOCOL_VERSION,
-                "clientCapabilities": {
-                    "fs": {"readTextFile": False, "writeTextFile": False}
-                },
-            },
-        )
+        init_id = turn.request("initialize", initialize_params(self.adapter))
         new_id: int | None = None
         prompt_id: int | None = None
         stop_reason: str | None = None
+        session_id = ""
+        # モデルを session/set_config_option で渡す CLI（cursor）向け。1 件ずつ
+        # 送って応答を待ち、全部終わってから session/prompt へ進む。
+        pending_config = self.adapter.acp_config_options(self.model)
+        config_ids: dict[int, tuple[str, str]] = {}
+
+        def send_config_or_prompt() -> None:
+            nonlocal prompt_id
+            if pending_config:
+                config_id, value = pending_config.pop(0)
+                request_id = turn.request(
+                    "session/set_config_option",
+                    config_option_params(session_id, config_id, value),
+                )
+                config_ids[request_id] = (config_id, value)
+                return
+            prompt_id = turn.request(
+                "session/prompt",
+                {
+                    "sessionId": session_id,
+                    "prompt": [{"type": "text", "text": prompt}],
+                },
+            )
 
         while True:
             try:
@@ -363,6 +413,12 @@ class AcpAgentClient(LLMClient):
             # --- こちらのリクエストへの応答
             if "error" in message:
                 detail = str(message["error"])[:500]
+                if message_id in config_ids:
+                    # モデル設定の失敗でターンを落とさない（既定モデルで続ける）。
+                    config_id, value = config_ids.pop(message_id)
+                    log_config_option_error(self.adapter, config_id, value, detail)
+                    send_config_or_prompt()
+                    continue
                 if message_id in (init_id, new_id):
                     raise AcpUnavailable(f"grok ACP の初期化に失敗しました: {detail}")
                 raise LLMError(f"grok ACP エージェントがエラーを返しました: {detail}")
@@ -373,16 +429,13 @@ class AcpAgentClient(LLMClient):
                     "session/new", {"cwd": str(self.workdir), "mcpServers": []}
                 )
             elif message_id == new_id:
-                session_id = (result or {}).get("sessionId")
+                session_id = str((result or {}).get("sessionId") or "")
                 if not session_id:
                     raise AcpUnavailable("grok ACP が sessionId を返しませんでした")
-                prompt_id = turn.request(
-                    "session/prompt",
-                    {
-                        "sessionId": session_id,
-                        "prompt": [{"type": "text", "text": prompt}],
-                    },
-                )
+                send_config_or_prompt()
+            elif message_id in config_ids:
+                config_ids.pop(message_id)
+                send_config_or_prompt()
             elif message_id == prompt_id:
                 stop_reason = (result or {}).get("stopReason")
                 break

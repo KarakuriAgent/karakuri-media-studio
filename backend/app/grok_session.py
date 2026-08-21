@@ -21,11 +21,13 @@ from typing import Any
 
 from . import grok
 from .acp import (
-    PROTOCOL_VERSION,
     AcpAgentClient,
     AcpUnavailable,
     ActivityCallback,
     _Turn,
+    config_option_params,
+    initialize_params,
+    log_config_option_error,
 )
 from .config import load_settings
 from .grok import LLMError, configured_timeout, looks_like_auth_error
@@ -47,6 +49,10 @@ class GrokSessionGone(Exception):
 
 class GrokTurnCancelled(Exception):
     """ユーザー操作で Grok ターンが中断された。"""
+
+
+class _ConfigOptionRejected(Exception):
+    """``session/set_config_option`` が拒否された（ターンは続ける）。"""
 
 
 def _is_cancelled_reason(result: Any) -> bool:
@@ -216,6 +222,9 @@ class GrokSessionHost:
                 self.session_id = session_id
             else:
                 self.session_id = await self._acp_new(turn, self._rules)
+            # 復帰（load）でも設定し直す: 戻った先のセッションが何のモデルで
+            # 動いているかは分からないので、毎回こちらの指定で上書きする。
+            await self._acp_configure(turn)
         except GrokSessionGone:
             await self._acp_close()
             raise
@@ -226,18 +235,26 @@ class GrokSessionHost:
         return self.session_id
 
     async def _acp_initialize(self, turn: _Turn) -> None:
-        req = turn.request(
-            "initialize",
-            {
-                "protocolVersion": PROTOCOL_VERSION,
-                "clientCapabilities": {
-                    "fs": {"readTextFile": False, "writeTextFile": False}
-                },
-            },
-        )
+        req = turn.request("initialize", initialize_params(self.adapter))
         result = await self._acp_wait(turn, req, phase="init")
         if result is None:
             raise AcpUnavailable("grok ACP の initialize が失敗しました")
+
+    async def _acp_configure(self, turn: _Turn) -> None:
+        """モデルを ``session/set_config_option`` で渡す（cursor）。
+
+        1 件ずつ送って応答を待つ（まとめて投げない）。拒否されても CLI の既定
+        モデルで動けるので、警告だけ残してターンは続ける。
+        """
+        for config_id, value in self.adapter.acp_config_options(self.model):
+            req = turn.request(
+                "session/set_config_option",
+                config_option_params(self.session_id, config_id, value),
+            )
+            try:
+                await self._acp_wait(turn, req, phase="config")
+            except _ConfigOptionRejected as exc:
+                log_config_option_error(self.adapter, config_id, value, str(exc))
 
     async def _acp_new(self, turn: _Turn, rules: str) -> str:
         params: dict[str, Any] = {
@@ -537,7 +554,7 @@ class GrokSessionHost:
             try:
                 message = await turn.read()
             except Exception as exc:  # noqa: BLE001
-                if phase in ("init", "load"):
+                if phase in ("init", "load", "config"):
                     raise AcpUnavailable(
                         f"grok ACP の出力を読み取れませんでした: {exc}"
                     ) from exc
@@ -545,7 +562,7 @@ class GrokSessionHost:
                     f"grok ACP エージェントの出力を読み取れませんでした: {exc}"
                 ) from exc
             if message is None:
-                if phase in ("init", "load"):
+                if phase in ("init", "load", "config"):
                     raise AcpUnavailable("grok ACP エージェントが応答せずに終了しました")
                 raise LLMError("grok ACP エージェントが応答途中で終了しました")
 
@@ -557,6 +574,8 @@ class GrokSessionHost:
 
             if "error" in message:
                 detail = str(message["error"])[:500]
+                if phase == "config" and message_id == request_id:
+                    raise _ConfigOptionRejected(detail)
                 if phase == "load" and message_id == request_id:
                     raise GrokSessionGone(f"grok ACP の session/load に失敗しました: {detail}")
                 if phase == "init":

@@ -58,7 +58,7 @@ def test_grok_argv_is_unchanged():
     [
         (llm_cli.CLAUDE, ["claude-agent-acp"], ["claude", "-p", "やあ"]),
         (llm_cli.CODEX, ["codex-acp"], ["codex", "exec", "やあ"]),
-        (llm_cli.CURSOR, ["cursor-agent", "--acp"], ["cursor-agent", "-p", "やあ"]),
+        (llm_cli.CURSOR, ["cursor-agent", "acp"], ["cursor-agent", "-p", "やあ"]),
     ],
 )
 def test_other_clis_have_their_own_argv(adapter, acp, oneshot):
@@ -77,7 +77,10 @@ def test_a_command_with_arguments_replaces_the_defaults():
         "npx", "grok", "agent", "stdio", "-m", "m",
     ]
     # 1 語だけなら既定の引数が付く
-    assert llm_cli.CURSOR.acp_argv("cursor-agent") == ["cursor-agent", "--acp"]
+    assert llm_cli.CURSOR.acp_argv("cursor-agent") == ["cursor-agent", "acp"]
+    assert llm_cli.CURSOR.acp_argv("agent") == ["agent", "acp"]
+    # ACP はサブコマンド。``--acp`` フラグは今の Cursor CLI には無い
+    assert "--acp" not in llm_cli.CURSOR.acp_argv()
 
 
 def test_a_model_is_only_sent_when_the_cli_takes_one():
@@ -86,6 +89,123 @@ def test_a_model_is_only_sent_when_the_cli_takes_one():
     assert llm_cli.CODEX.oneshot_argv("やあ", "codex", "gpt-5") == [
         "codex", "-m", "gpt-5", "exec", "やあ",
     ]
+
+
+def test_oneshot_attempts_drop_the_extra_flags_before_the_model(monkeypatch):
+    """追加フラグは CLI 固有。モデルを残したまま外す形を先に試す。
+
+    ``--permission-mode`` は grok 専用なので cursor では ``unknown option``。
+    ここを飛ばすと、通るのがモデル指定ごと落ちた argv だけになってしまう。
+    """
+    use(monkeypatch)
+    client = grok.GrokCliClient(
+        command="cursor-agent",
+        model="composer-1",
+        extra_args=["--permission-mode", "auto"],
+        adapter=llm_cli.CURSOR,
+    )
+    assert client._attempts("やあ") == [
+        ["cursor-agent", "--model", "composer-1",
+         "--permission-mode", "auto", "-p", "やあ"],
+        ["cursor-agent", "--model", "composer-1", "-p", "やあ"],
+        ["cursor-agent", "--permission-mode", "auto", "-p", "やあ"],
+        ["cursor-agent", "-p", "やあ"],
+    ]
+
+
+def test_oneshot_attempts_stay_short_without_a_model_or_extras(monkeypatch):
+    use(monkeypatch)
+    client = grok.GrokCliClient(
+        command="cursor-agent", model="", extra_args=[], adapter=llm_cli.CURSOR
+    )
+    assert client._attempts("やあ") == [["cursor-agent", "-p", "やあ"]]
+
+
+async def test_a_rejected_model_is_not_returned_as_an_answer(monkeypatch, tmp_path):
+    """cursor-agent は知らないモデルでも exit 0。回答として返してはいけない。"""
+    use(monkeypatch)
+    calls: list[list[str]] = []
+
+    async def fake_exec(argv, cwd, timeout):
+        calls.append(list(argv))
+        if "--model" in argv:
+            return 0, "Cannot use this model: nope. Available models: auto\n", ""
+        return 0, "こんにちは\n", ""
+
+    monkeypatch.setattr(grok, "_exec", fake_exec)
+    client = grok.GrokCliClient(
+        command="cursor-agent",
+        model="nope",
+        workdir=tmp_path,
+        extra_args=[],
+        adapter=llm_cli.CURSOR,
+    )
+    assert await client.complete("やあ") == "こんにちは"
+    assert calls == [
+        ["cursor-agent", "--model", "nope", "-p", "やあ"],
+        ["cursor-agent", "-p", "やあ"],
+    ]
+
+
+def test_only_cursor_screens_stdout_for_a_rejected_model():
+    assert llm_cli.CURSOR.looks_like_model_error(
+        "  Cannot use this model: nope. Available models: auto"
+    )
+    # 本文の途中に出てくるだけのものは巻き込まない
+    assert not llm_cli.CURSOR.looks_like_model_error(
+        "エラーの意味は `Cannot use this model` です"
+    )
+    for adapter in (llm_cli.GROK, llm_cli.CLAUDE, llm_cli.CODEX):
+        assert not adapter.looks_like_model_error("Cannot use this model: nope")
+
+
+# --------------------------------------------------------------------------
+# モデル指定（括弧付き表記と ACP の configOption）
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "spec, expected",
+    [
+        ("grok-4.6[effort=xhigh,fast=false]",
+         ("grok-4.6", [("effort", "xhigh"), ("fast", "false")])),
+        (" grok-4.6 [ effort = xhigh , fast = false ] ",
+         ("grok-4.6", [("effort", "xhigh"), ("fast", "false")])),
+        ("grok-4.6", ("grok-4.6", [])),
+        ("cursor-grok-4.6-xhigh", ("cursor-grok-4.6-xhigh", [])),
+        ("grok-4.6[]", ("grok-4.6", [])),
+        ("", ("", [])),
+        # 壊れた表記は直さず、全体を名前として CLI に渡す
+        ("grok-4.6[effort=xhigh", ("grok-4.6[effort=xhigh", [])),
+        ("grok-4.6[effort]", ("grok-4.6[effort]", [])),
+        ("[effort=xhigh]", ("[effort=xhigh]", [])),
+    ],
+)
+def test_parse_model_spec_splits_the_parameters(spec, expected):
+    assert llm_cli.parse_model_spec(spec) == expected
+
+
+def test_cursor_sends_the_model_as_config_options():
+    """cursor の ACP は --model が無いので model / effort / fast を個別に送る。"""
+    assert llm_cli.CURSOR.acp_config_options("grok-4.6[effort=xhigh,fast=false]") == [
+        ("model", "grok-4.6"),
+        ("effort", "xhigh"),
+        ("fast", "false"),
+    ]
+    # 素の id はそのまま model へ（余計な変換はしない）
+    assert llm_cli.CURSOR.acp_config_options("cursor-grok-4.6-xhigh") == [
+        ("model", "cursor-grok-4.6-xhigh"),
+    ]
+    # モデル未指定なら CLI の既定に任せる
+    assert llm_cli.CURSOR.acp_config_options("") == []
+    assert llm_cli.CURSOR.acp_config_options("  ") == []
+
+
+def test_only_cursor_declares_the_parameterized_model_picker():
+    assert llm_cli.CURSOR.acp_client_meta == {"parameterizedModelPicker": True}
+    assert llm_cli.CURSOR.acp_model_via_config is True
+    for adapter in (llm_cli.GROK, llm_cli.CLAUDE, llm_cli.CODEX):
+        assert adapter.acp_client_meta == {}
+        assert adapter.acp_config_options("grok-4.6[effort=xhigh]") == []
 
 
 # --------------------------------------------------------------------------

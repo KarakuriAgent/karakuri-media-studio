@@ -216,6 +216,8 @@ export const CLI_CHOICES: {
   label: string
   command: string
   note: string
+  /** モデル入力欄の placeholder（書き方に癖がある CLI だけ） */
+  modelHint?: string
 }[] = [
   {
     id: 'grok',
@@ -239,7 +241,8 @@ export const CLI_CHOICES: {
     id: 'cursor',
     label: 'Cursor',
     command: 'cursor-agent',
-    note: '契約は作業ディレクトリの AGENTS.md。',
+    note: '契約は作業ディレクトリの AGENTS.md。モデルは `grok-4.6[effort=xhigh,fast=false]` のように書くとワンショット・ACP の両方に効きます（素の `cursor-grok-4.6-xhigh` 形式はワンショットのみ）。',
+    modelHint: 'grok-4.6[effort=xhigh,fast=false]',
   },
 ]
 
@@ -1362,6 +1365,7 @@ export default function SettingsPage({
                         <Input
                           id="cli-model"
                           value={cliModel}
+                          placeholder={cliChoice.modelHint}
                           onChange={(event) => setCliModel(event.target.value)}
                         />
                       </Field>

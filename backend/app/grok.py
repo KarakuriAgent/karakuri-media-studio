@@ -312,6 +312,12 @@ class GrokCliClient(LLMClient):
 
         if self.model:
             attempts.append(argv(True, True))
+            if extra:
+                # 追加フラグは grok 専用のものが混ざる。他の CLI では
+                # ``unknown option`` で落ちるので、**モデルを残したまま**
+                # フラグだけ落とした形を先に試す（ここを飛ばすと、通るのが
+                # モデル指定ごと落ちた argv だけになってしまう）。
+                attempts.append(argv(True, False))
         attempts.append(argv(False, True))
         if extra:
             # tool-permission flags unknown to an older CLI must degrade to the
@@ -328,13 +334,22 @@ class GrokCliClient(LLMClient):
                 continue
             seen.add(key)
             code, out, err = await _exec(argv, self.workdir, self.timeout)
-            if code == 0 and out.strip():
+            # モデルの拒否は終了コード 0 で来ることがある（cursor-agent）。
+            # 回答として返さず、モデルを落とした次の試行へ進む。
+            rejected_model = self.adapter.looks_like_model_error(out)
+            if code == 0 and out.strip() and not rejected_model:
                 return out.strip()
-            last_failure = (
-                f"{self.adapter.label} CLI が空の応答を返しました"
-                if code == 0
-                else _failure_message(code, out, err, self.adapter)
-            )
+            if rejected_model:
+                last_failure = (
+                    f"{self.adapter.label} CLI がモデルを受け付けませんでした:"
+                    f" {out.strip()[:500]}"
+                )
+            else:
+                last_failure = (
+                    f"{self.adapter.label} CLI が空の応答を返しました"
+                    if code == 0
+                    else _failure_message(code, out, err, self.adapter)
+                )
             # An unknown --model flag must not be fatal, but a genuine auth
             # problem will not be fixed by dropping the flag.
             if looks_like_auth_error(err or out, self.adapter):

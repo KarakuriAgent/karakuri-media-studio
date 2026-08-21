@@ -346,6 +346,9 @@ Grok CLI はファイル操作・シェル・Web 検索ツールを持つエー�
 （`backend/app/llm_cli.py`）で変わり、アクションプロトコル（§4）も実行ループも
 そのまま同じものが動く。契約は grok なら ACP の `_meta.rules`、claude なら
 セッション workdir の `CLAUDE.md`、codex / cursor なら `AGENTS.md`。
+cursor のモデルは `grok-4.6[effort=xhigh,fast=false]` のような括弧付き表記で書くと、
+ワンショット（`--model`）と ACP（`session/set_config_option` で `model` / `effort` /
+`fast` に分けて送る）の両方に効く（SPEC §4.1）。
 `agent_grok_args` は **grok の**ツール許可フラグなので、ほかの CLI を選んだときは
 その CLI の許可フラグを書く（既定のままだと知らないフラグとして落とされ、素の
 実行にフォールバックする）。CLI を切り替えると保存済みのセッション id は捨てられ、

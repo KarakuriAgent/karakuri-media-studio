@@ -7,12 +7,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import stat
 import sys
 
 import pytest
 
-from app import acp
+from app import acp, llm_cli
 from app.acp import AcpAgentClient
 from app.grok import LLMClient, LLMError
 from app.grok_session import GrokSessionGone, GrokSessionHost, GrokTurnCancelled
@@ -206,6 +207,56 @@ for line in sys.stdin:
     elif method == "session/new":
         send({"jsonrpc": "2.0", "id": msg["id"], "result": {"sessionId": "s1"}})
 '''
+
+#: initialize の _meta と、受け取ったメソッドの順番をそのまま答えに載せる。
+#: 環境変数 REJECT に書いた configId はエラー（-32602）で返す。
+CONFIG_AGENT = r"""
+import json, os, sys
+
+reject = set(filter(None, os.environ.get("REJECT", "").split(",")))
+log = []
+meta = None
+
+def send(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+for line in sys.stdin:
+    line = line.strip()
+    if not line:
+        continue
+    msg = json.loads(line)
+    method = msg.get("method")
+    params = msg.get("params") or {}
+    if method == "initialize":
+        meta = (params.get("clientCapabilities") or {}).get("_meta")
+        send({"jsonrpc": "2.0", "id": msg["id"], "result": {"protocolVersion": 1}})
+    elif method == "session/new":
+        log.append("new")
+        send({"jsonrpc": "2.0", "id": msg["id"], "result": {"sessionId": "s1"}})
+    elif method == "session/load":
+        log.append("load")
+        send({"jsonrpc": "2.0", "id": msg["id"],
+              "result": {"sessionId": params["sessionId"]}})
+    elif method == "session/set_config_option":
+        entry = "%s=%s@%s" % (params["configId"], params["value"], params["sessionId"])
+        if params["configId"] in reject:
+            log.append("reject:" + entry)
+            send({"jsonrpc": "2.0", "id": msg["id"],
+                  "error": {"code": -32602, "message": "Invalid params"}})
+        else:
+            log.append("set:" + entry)
+            send({"jsonrpc": "2.0", "id": msg["id"], "result": {"configOptions": []}})
+    elif method == "session/prompt":
+        log.append("prompt")
+        send({"jsonrpc": "2.0", "method": "session/update",
+              "params": {"sessionId": "s1", "update": {
+                  "sessionUpdate": "agent_message_chunk",
+                  "content": {"type": "text",
+                              "text": json.dumps({"meta": meta, "log": log})}}}})
+        send({"jsonrpc": "2.0", "id": msg["id"], "result": {"stopReason": "end_turn"}})
+        log = []
+"""
 
 #: 何も返さず居座る（タイムアウト検証用）。
 HANGING_AGENT = r'''
@@ -499,3 +550,110 @@ async def test_a_host_approves_tool_permissions_by_default(tmp_path):
 async def test_a_tool_free_host_rejects_tool_permissions(tmp_path):
     """相談専用のチャット（``allow_tools=False``）はツールを使わせない。"""
     assert await _permission_choice(tmp_path, allow_tools=False) == "選択=reject-once"
+
+
+# --------------------------------------------------------------------------
+# cursor: モデルは session/set_config_option で渡す
+# --------------------------------------------------------------------------
+
+async def _config_turn(tmp_path, adapter, model, *, reject: str = "") -> dict:
+    """CONFIG_AGENT を 1 ターン回して、記録（meta / メソッドの順番）を返す。"""
+    if reject:
+        monkeypatch = pytest.MonkeyPatch()
+        monkeypatch.setenv("REJECT", reject)
+    else:
+        monkeypatch = None
+    try:
+        agent = AcpAgentClient(
+            command=write_agent(tmp_path, CONFIG_AGENT),
+            model=model,
+            workdir=tmp_path / "workdir",
+            timeout=20.0,
+            adapter=adapter,
+        )
+        return json.loads(await agent.complete("やあ"))
+    finally:
+        if monkeypatch is not None:
+            monkeypatch.undo()
+
+
+@pytest.mark.asyncio
+async def test_cursor_sets_the_model_options_before_prompting(tmp_path):
+    """cursor は _meta を申告し、model → effort → fast の順に設定してから prompt。"""
+    seen = await _config_turn(
+        tmp_path, llm_cli.CURSOR, "grok-4.6[effort=xhigh,fast=false]"
+    )
+
+    assert seen["meta"] == {"parameterizedModelPicker": True}
+    assert seen["log"] == [
+        "new",
+        "set:model=grok-4.6@s1",
+        "set:effort=xhigh@s1",
+        "set:fast=false@s1",
+        "prompt",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_grok_does_not_send_config_options(tmp_path):
+    """--model で渡せる CLI（grok）は set_config_option を使わない。"""
+    seen = await _config_turn(tmp_path, llm_cli.GROK, "grok-4.5")
+
+    assert seen["meta"] is None
+    assert seen["log"] == ["new", "prompt"]
+
+
+@pytest.mark.asyncio
+async def test_a_rejected_config_option_does_not_break_the_turn(tmp_path):
+    """未知の値でモデル設定が落ちても、残りを送ってターンは続ける。"""
+    seen = await _config_turn(
+        tmp_path, llm_cli.CURSOR, "grok-4.6[effort=xhigh,fast=false]", reject="effort"
+    )
+
+    assert seen["log"] == [
+        "new",
+        "set:model=grok-4.6@s1",
+        "reject:effort=xhigh@s1",
+        "set:fast=false@s1",
+        "prompt",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_a_host_sets_the_model_options_for_new_and_loaded_sessions(tmp_path):
+    """ホスト経由でも同じ。``session/load`` で戻ったときも設定し直す。"""
+    command = write_agent(tmp_path, CONFIG_AGENT)
+
+    async def run(session_id: str | None) -> dict:
+        host = GrokSessionHost(
+            tmp_path / "workdir",
+            timeout=20.0,
+            use_acp=True,
+            adapter=llm_cli.CURSOR,
+        )
+        host.command = command
+        host.model = "grok-4.6[effort=xhigh,fast=false]"
+        try:
+            await host.start("契約文", session_id)
+            return json.loads(await host.prompt("# USER\nやあ"))
+        finally:
+            await host.close()
+
+    fresh = await run(None)
+    assert fresh["meta"] == {"parameterizedModelPicker": True}
+    assert fresh["log"] == [
+        "new",
+        "set:model=grok-4.6@s1",
+        "set:effort=xhigh@s1",
+        "set:fast=false@s1",
+        "prompt",
+    ]
+
+    loaded = await run("s1")
+    assert loaded["log"] == [
+        "load",
+        "set:model=grok-4.6@s1",
+        "set:effort=xhigh@s1",
+        "set:fast=false@s1",
+        "prompt",
+    ]
