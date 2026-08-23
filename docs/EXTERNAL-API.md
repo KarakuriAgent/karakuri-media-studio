@@ -283,6 +283,12 @@ queued / running のもの）が上限を超えているとき 429 を返す。
   参照素材（`@素材名`）の指定と直前カットの採用 Take が要り、どちらかが欠けて
   いるカットは黙って別のモードに落とさず 400 で断ります。`MiniMaxH3MotionContext`
   系のカスタムノードが無い接続先（Comfy Cloud）でも 400 です。
+  ただし**直前カットの採用 Take がまだ無いだけ**のときは、
+  `GET /api/v1/shots/{id}/prompt-preview` と `POST /api/v1/shots/{id}/translate`
+  は通ります（本文は `minimax_h3_r2v_context` の形で組み立てます）。前カットの
+  完成を待たずに英訳しておけるようにするためで、プレビューはそのとき
+  `render_blocker` に「まだ投入できない理由」を入れて返します（`error` は
+  組み立てそのものができないときだけ）。投入（`render`）は今までどおり 400 です。
   また `latent_continuity` が立っているあいだは、**通常のカットも AV ラテントを
   保存する版**（`minimax_h3_t2v_save` / `_i2v_save` / `_r2v_save`）で投入します。
   連鎖の起点になるカットがラテントを残さないと、次のカットに引き継ぐものが無く

@@ -774,6 +774,52 @@ def test_latent_continuity_needs_a_selected_previous_take(env, monkeypatch):
     assert "前 Shot の採用 Take がありません" in response.json()["detail"]
 
 
+def _continuity_without_a_previous_take(env, monkeypatch):
+    """前 Shot がまだ採用されていない連続カットを作る。"""
+    _allow_latent_context(monkeypatch)
+    project = make_project(env, latent_continuity=True)
+    make_asset(env, project["id"], "Neko", kind="image", prompt_caption="a calico cat")
+    make_shot(env, project["id"], prompt="@Neko walks in.")
+    return make_shot(
+        env, project["id"], prompt="@Neko が座る。", carry_over_end_frame=True
+    )
+
+
+def test_the_preview_assembles_before_the_previous_take_exists(env, monkeypatch):
+    """引き継ぎ元がまだ無くても、本文は連続カットの形で見せる（投入だけ不可）。"""
+    second = _continuity_without_a_previous_take(env, monkeypatch)
+
+    body = preview(env, second["id"])
+    assert body["error"] == ""
+    assert body["workflow"] == "minimax_h3_r2v_context"
+    assert body["prompt"]
+    assert body["context_latent"] is None
+    assert body["context_video"] is None
+    assert "前 Shot の採用 Take がありません" in body["render_blocker"]
+    # 生成は今までどおり断る
+    response = render(env, second["id"])
+    assert response.status_code == 400
+    assert "前 Shot の採用 Take がありません" in response.json()["detail"]
+
+
+def test_translate_works_before_the_previous_take_exists(env, monkeypatch):
+    """英訳は前カットの完成を待たずにできる（本文の組み立ては同じ）。"""
+    env.llm.error = None
+    env.llm.reply = (
+        "integrated_multimodal_description: <Picture 1> the cat sits down.\n"
+        "No text, subtitles, logos or watermarks."
+    )
+    second = _continuity_without_a_previous_take(env, monkeypatch)
+    assembled = preview(env, second["id"])["prompt"]
+
+    response = _translate(env, second["id"])
+    assert response.status_code == 200, response.text
+    body = wait_translated(env, second["id"])
+    assert body["english_prompt"] == env.llm.reply
+    assert body["render_blocker"]
+    assert assembled in env.llm.prompts[-1]
+
+
 def test_latent_continuity_needs_the_previous_take_to_have_a_latent(env, monkeypatch):
     """採用済みでも AV ラテントが残っていなければ続きにはできない。"""
     _allow_latent_context(monkeypatch)

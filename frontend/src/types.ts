@@ -1542,6 +1542,11 @@ export interface StudioShotPreview {
   context_latent_hires?: string | null
   /** 組み立てられなかった理由（日本語。空なら問題なし）。 */
   error: string
+  /**
+   * 組み立てはできたが**投入だけができない**理由（日本語。空なら投入できる）。
+   * いまは連続カットで前 Shot の採用 Take がまだ無いとき（英訳はできる）。
+   */
+  render_blocker?: string
 }
 
 /** GET /api/studio/capabilities: いまの接続先でスタジオの追加機能が使えるか。 */

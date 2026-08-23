@@ -190,6 +190,11 @@ export default function PromptPreview({ shot }: { shot: StudioShot }) {
 
       {preview && preview.error && <Banner>{preview.error}</Banner>}
 
+      {/* 組み立て（＝英訳）はできるが、投入の材料がまだ足りない */}
+      {preview && !preview.error && preview.render_blocker && (
+        <Banner tone="warn">{preview.render_blocker}</Banner>
+      )}
+
       {preview && !preview.error && (
         <>
           {preview.workflow_reason && (

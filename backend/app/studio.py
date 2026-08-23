@@ -2617,6 +2617,9 @@ class _Plan(NamedTuple):
     #: ジョブに載せる選択式（いまは ``latent_upscale`` だけ。宣言を持たない
     #: ワークフローや読めない環境では空 = 何も載せない）
     selects: dict[str, str] = {}
+    #: 組み立てはできたが投入はできない理由（日本語。``require_context`` を
+    #: 落とした英訳・プレビューでだけ入りうる。空なら投入できる）
+    render_blocker: str = ""
 
 
 async def _plan_render(
@@ -2625,6 +2628,8 @@ async def _plan_render(
     assets: list[StudioAsset],
     project: StudioProject | None = None,
     latent_upscale: bool | None = None,
+    *,
+    require_context: bool = True,
 ) -> _Plan:
     """モードを決めて ``@素材名`` を解決し、最終プロンプトまで組み立てる。
 
@@ -2647,6 +2652,11 @@ async def _plan_render(
     （``latent_upscale``）を解決する（:func:`_resolve_selects`）。
     ``latent_upscale`` はその 1 回ぶんの上書きで、``None`` ならプロジェクトの
     設定（それも無ければ :data:`DEFAULT_LATENT_UPSCALE`）に従う。
+
+    ``require_context`` を False にすると、連続カット（ラテント連続性）の
+    引き継ぎ元が無くても断らず、本文だけ同じ形で組み立てて、投入できない理由を
+    ``render_blocker`` に入れて返す（英訳とプレビューだけが使う。生成は
+    今までどおり断る）。
     """
     # 添付できる（＝ファイル実体を持つ）素材を呼んでいるか。メタデータだけの
     # 素材はここに出てこないので、r2v の理由にはならない。
@@ -2655,6 +2665,7 @@ async def _plan_render(
         shot,
         bool(resolve_mentions(shot.prompt, assets, attach=True).references),
         project,
+        require_context=require_context,
     )
     latent_continuity = project is not None and project.latent_continuity
     quality = normalize_quality(project.quality if project is not None else None)
@@ -2684,6 +2695,7 @@ async def _plan_render(
         mode.context_latent_hires,
         quality_applied,
         selects,
+        mode.blocker,
     )
 
 
@@ -2699,6 +2711,10 @@ async def preview_shot(shot_id: str) -> StudioShotPreview | None:
     （遅く、課金枠を食う）。英訳が入るかどうかは ``will_translate`` で返す
     （使える ``english_prompt`` があれば False）。
     組み立てられないときも 200 で、理由を ``error`` に入れて返す。
+
+    連続カット（ラテント連続性）の引き継ぎ元がまだ無いときは、本文までは
+    生成と同じ形で組み立てて見せ、投入できない理由を ``render_blocker`` に
+    入れる（``error`` は「組み立てそのものができない」ときだけ）。
     """
     async with get_db() as conn:
         shot = await _fetch_shot(conn, shot_id)
@@ -2710,7 +2726,9 @@ async def preview_shot(shot_id: str) -> StudioShotPreview | None:
         latent_continuity = project is not None and project.latent_continuity
         quality = normalize_quality(project.quality if project is not None else None)
         try:
-            plan = await _plan_render(conn, shot, assets, project)
+            plan = await _plan_render(
+                conn, shot, assets, project, require_context=False
+            )
         except StudioError as exc:
             return StudioShotPreview(
                 shot_id=shot.id,
@@ -2757,6 +2775,7 @@ async def preview_shot(shot_id: str) -> StudioShotPreview | None:
         context_video=plan.context_video,
         context_latent=plan.context_latent,
         context_latent_hires=plan.context_latent_hires,
+        render_blocker=plan.render_blocker,
     )
 
 
@@ -2839,7 +2858,9 @@ async def translate_shot(shot_id: str, *, actor: str = "user") -> StudioShot | N
             return None
         project = await _fetch_project(conn, shot.project_id)
         assets = await _fetch_assets(conn, shot.project_id)
-        plan = await _plan_render(conn, shot, assets, project)
+        # 英訳に要るのは本文だけなので、連続カットの引き継ぎ元が無くても
+        # 組み立てて訳す（投入は :func:`render_shot` が今までどおり断る）。
+        plan = await _plan_render(conn, shot, assets, project, require_context=False)
 
     if not has_japanese(plan.prompt):
         now = _now()
@@ -3315,6 +3336,15 @@ async def render_shot(
         return await _fetch_take(conn, take_id)  # type: ignore[return-value]
 
 
+#: 連続カット（ラテント連続性）の材料が揃っていないときの断り文句。
+#: 生成では :class:`StudioError` として投げ、英訳・プレビューでは組み立てを
+#: 通したうえで「投入できない理由」として返す（:func:`_pick_workflow`）。
+NO_CARRY_OVER_CONTEXT = (
+    "前 Shot の採用 Take がありません。前 Shot の Take を採用するか、"
+    "carry_over_end_frame をオフにしてください"
+)
+
+
 class _Mode(NamedTuple):
     """:func:`_pick_workflow` の答え（``reason`` は画面に出す日本語の理由）。"""
 
@@ -3328,6 +3358,9 @@ class _Mode(NamedTuple):
     context_latent: str | None = None
     #: 同じく、直前カットの 2 パス目（最終解像度）の AV ラテント（2 段引き継ぎ）
     context_latent_hires: str | None = None
+    #: 組み立てはできるが投入はできない理由（日本語。``require_context`` を
+    #: 落としたときだけ入りうる。空なら投入できる）
+    blocker: str = ""
 
 
 async def _pick_workflow(
@@ -3335,6 +3368,8 @@ async def _pick_workflow(
     shot: StudioShot,
     has_material: bool,
     project: StudioProject | None = None,
+    *,
+    require_context: bool = True,
 ) -> _Mode:
     """``(ワークフロー, 開始フレーム, 参照として添付するか, 理由)``。
 
@@ -3346,6 +3381,11 @@ async def _pick_workflow(
     開始フレームにする i2v で、ON なら直前カットの動画と AV ラテントを渡す
     ``minimax_h3_r2v_context``。ON のときに材料が揃わなければ、こちらも
     黙って i2v / r2v に落とさずその場で断る（強制指定と同じ考え方）。
+
+    ``require_context`` を False にすると、引き継ぎ元（前 Shot の採用 Take の
+    動画と AV ラテント）が無くても断らず、``minimax_h3_r2v_context`` のまま
+    引き継ぎ材料を ``None`` にして返し、断り文句を ``blocker`` に入れる。
+    本文の組み立てだけが要る英訳・プレビュー用（生成は既定の True のまま）。
 
     返すのは**論理モードのまま**の id で、ラテント連続性が ON のときの保存付き
     バリアントへの読み替えは呼び出し側（:func:`_plan_render`）がやる。
@@ -3388,9 +3428,15 @@ async def _pick_workflow(
             )
         context = await _carry_over_context(conn, shot)
         if context is None:
-            raise StudioError(
-                "前 Shot の採用 Take がありません。前 Shot の Take を採用するか、"
-                "carry_over_end_frame をオフにしてください"
+            if require_context:
+                raise StudioError(NO_CARRY_OVER_CONTEXT)
+            # 英訳・プレビュー: 本文の形は連続カットのままで、引き継ぎ材料が
+            # 無いことは投入できない理由として持ち帰る。
+            return _Mode(
+                WORKFLOW_R2V_CONTEXT, None, True,
+                "直前カットの動きと音をラテントごと引き継ぎます"
+                "（ラテント連続性・素材は参照として添付）",
+                blocker=NO_CARRY_OVER_CONTEXT,
             )
         context_video, context_latent, context_latent_hires = context
         return _Mode(

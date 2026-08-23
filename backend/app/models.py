@@ -3107,7 +3107,9 @@ class StudioShotPreview(BaseModel):
     英訳だけは走らせない（遅く、課金枠を食うため）。英訳が入るかどうかは
     ``will_translate`` で伝える（使える ``english_prompt`` があれば False）。
     組み立てられない Shot はエラーではなく ``error`` に理由を入れて 200 で返す
-    （プレビューで気づけるように）。
+    （プレビューで気づけるように）。組み立てはできるが材料が足りなくて投入
+    だけができない（連続カットの引き継ぎ元がまだ無い）ときは ``error`` では
+    なく ``render_blocker`` に理由が入る。
     """
 
     shot_id: str
@@ -3151,6 +3153,9 @@ class StudioShotPreview(BaseModel):
     context_latent_hires: str | None = None
     #: 組み立てられなかった理由（日本語。空なら問題なし）
     error: str = ""
+    #: 組み立てはできたが**投入だけができない**理由（日本語。空なら投入できる）。
+    #: いまは連続カット（ラテント連続性）で前 Shot の採用 Take がまだ無いとき。
+    render_blocker: str = ""
 
 
 class StudioCapabilities(BaseModel):
