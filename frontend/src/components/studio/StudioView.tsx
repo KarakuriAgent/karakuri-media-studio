@@ -133,6 +133,10 @@ export default function StudioView({
   const [megapixelsDraft, setMegapixelsDraft] = useState('')
   // ヘッダーのステップ数欄。空欄 = 0 = おまかせ（テンプレートの既定のまま）。
   const [stepsDraft, setStepsDraft] = useState('')
+  // 素材の静止画用のメガピクセル欄・ステップ数欄。動画側と同じ扱いだが、値は
+  // 完全に別（静止画に動画用の値は流用しない）。
+  const [imageMegapixelsDraft, setImageMegapixelsDraft] = useState('')
+  const [imageStepsDraft, setImageStepsDraft] = useState('')
   // ショット一覧の列は lg 以上でだけドラッグで広げられる（狭幅は縦積み）。
   const isWide = useIsWide()
   const shotRail = useResizablePanel(SHOT_RAIL_WIDTH_KEY, SHOT_RAIL_WIDTH, 'x')
@@ -219,6 +223,19 @@ export default function StudioView({
   useEffect(() => {
     setStepsDraft(savedSteps > 0 ? String(savedSteps) : '')
   }, [savedSteps])
+
+  // 素材画像の 2 欄も同じ（`null` / `0` = 既定を空欄で見せる）。
+  const savedImageMegapixels = detail?.image_megapixels ?? null
+  useEffect(() => {
+    setImageMegapixelsDraft(
+      savedImageMegapixels === null ? '' : String(savedImageMegapixels),
+    )
+  }, [savedImageMegapixels])
+
+  const savedImageSteps = detail?.image_steps ?? 0
+  useEffect(() => {
+    setImageStepsDraft(savedImageSteps > 0 ? String(savedImageSteps) : '')
+  }, [savedImageSteps])
 
   useEffect(() => {
     if (!projectId) {
@@ -677,6 +694,34 @@ export default function StudioView({
     saveProject({ steps: next })
   }
 
+  /**
+   * 素材の静止画（`mode: "image_only"`）用の画質。動画側とまったく同じ確定の
+   * 仕方で、書き込む先だけが `image_*` になる。
+   */
+  const commitImageMegapixels = () => {
+    const text = imageMegapixelsDraft.trim()
+    const next = text === '' ? null : Number(text)
+    if (next !== null && (!Number.isFinite(next) || next <= 0)) {
+      setImageMegapixelsDraft(
+        savedImageMegapixels === null ? '' : String(savedImageMegapixels),
+      )
+      return
+    }
+    if (next === savedImageMegapixels) return
+    saveProject({ image_megapixels: next })
+  }
+
+  const commitImageSteps = () => {
+    const text = imageStepsDraft.trim()
+    const next = text === '' ? 0 : Number(text)
+    if (!Number.isInteger(next) || next < 0 || next > MAX_STEPS) {
+      setImageStepsDraft(savedImageSteps > 0 ? String(savedImageSteps) : '')
+      return
+    }
+    if (next === savedImageSteps) return
+    saveProject({ image_steps: next })
+  }
+
   const projectBar = (
     <StudioProjectBar
       name={detail.name}
@@ -688,6 +733,8 @@ export default function StudioView({
       onComfyTarget={onComfyTarget}
       quality={detail.quality}
       onQualityChange={(value) => saveProject({ quality: value })}
+      imageQuality={detail.image_quality}
+      onImageQualityChange={(value) => saveProject({ image_quality: value })}
       aspectRatio={detail.aspect_ratio}
       aspectRatios={aspectRatios}
       onAspectRatioChange={(value) => saveProject({ aspect_ratio: value })}
@@ -699,6 +746,18 @@ export default function StudioView({
       stepsDraft={stepsDraft}
       onStepsDraftChange={setStepsDraft}
       onCommitSteps={commitSteps}
+      imageAspectRatio={detail.image_aspect_ratio}
+      onImageAspectRatioChange={(value) =>
+        saveProject({ image_aspect_ratio: value })
+      }
+      imageMegapixels={detail.image_megapixels}
+      imageMegapixelsDraft={imageMegapixelsDraft}
+      onImageMegapixelsDraftChange={setImageMegapixelsDraft}
+      onCommitImageMegapixels={commitImageMegapixels}
+      imageSteps={detail.image_steps}
+      imageStepsDraft={imageStepsDraft}
+      onImageStepsDraftChange={setImageStepsDraft}
+      onCommitImageSteps={commitImageSteps}
       latentUpscale={detail.latent_upscale}
       onLatentUpscaleChange={(value) => saveProject({ latent_upscale: value })}
       busy={busy}

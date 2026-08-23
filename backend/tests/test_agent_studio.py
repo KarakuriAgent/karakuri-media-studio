@@ -267,6 +267,70 @@ def test_create_project_writes_a_project_with_the_agent_as_actor(env):
     assert [r["actor"] for r in revisions(env, project_id)] == ["agent"]
 
 
+def test_create_project_takes_the_image_render_settings(env):
+    """素材画像用の 3 項目もエージェントから作れる（動画側とは別に持つ）。"""
+    reply = studio_action(
+        env,
+        {
+            "action": "studio_create_project",
+            "name": "素材の設定つき",
+            "megapixels": 0.4,
+            "aspect_ratio": "16:9 (Widescreen)",
+            "steps": 4,
+            "image_quality": "turbo",
+            "image_megapixels": 1.0,
+            "image_aspect_ratio": "1:1 (Square)",
+            "image_steps": 8,
+        },
+    )
+    project_id = event_of(reply, "studio_saved")["data"]["project_id"]
+    saved = env.client.get(f"/api/studio/projects/{project_id}").json()
+    assert saved["megapixels"] == 0.4
+    assert saved["aspect_ratio"] == "16:9 (Widescreen)"
+    assert saved["steps"] == 4
+    assert saved["image_quality"] == "turbo"
+    assert saved["image_megapixels"] == 1.0
+    assert saved["image_aspect_ratio"] == "1:1 (Square)"
+    assert saved["image_steps"] == 8
+
+
+def test_update_project_changes_the_image_render_settings(env):
+    project = make_project(env)
+    studio_action(
+        env,
+        {
+            "action": "studio_update_project",
+            "project_id": project["id"],
+            "image_megapixels": 0.5,
+            "image_aspect_ratio": "9:16 (Portrait Widescreen)",
+            "image_steps": 12,
+        },
+    )
+    saved = env.client.get(f"/api/studio/projects/{project['id']}").json()
+    assert saved["image_megapixels"] == 0.5
+    assert saved["image_aspect_ratio"] == "9:16 (Portrait Widescreen)"
+    assert saved["image_steps"] == 12
+
+
+def test_get_project_shows_the_image_render_settings(env):
+    """素材の静止画に動画用の値を流用しないよう、両方を明示して出す。"""
+    project = make_project(
+        env,
+        image_megapixels=1.0,
+        image_aspect_ratio="1:1 (Square)",
+        image_steps=8,
+    )
+    content = event_of(
+        studio_action(
+            env,
+            {"action": "studio_get_project", "project_id": project["id"]},
+        ),
+        "studio_project",
+    )["content"]
+    assert "素材画像の megapixels / aspect_ratio / steps" in content
+    assert "`1.0` / `1:1 (Square)` / `8`" in content
+
+
 def test_list_projects_reports_the_counts(env):
     project = make_project(env)
     make_shot(env, project["id"])

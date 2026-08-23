@@ -24,6 +24,7 @@ from app import (
     workflows,
 )
 from app.ids import new_id
+from app.models import MAX_STEPS
 from app.main import app
 from app.routers import assets as assets_router
 
@@ -225,6 +226,56 @@ def test_a_project_can_be_created_and_read_back(env):
     )
     assert patched.status_code == 200
     assert patched.json()["synopsis"] == "夜の話"
+
+
+def test_the_image_render_settings_go_through_the_external_api(env):
+    """素材画像の 3 項目も外部 API から作成・更新できる（動画側とは別）。"""
+    enable(env)
+    created = call(
+        env,
+        "POST",
+        "/api/v1/projects",
+        json={
+            "name": "素材の設定つき",
+            "code": "IMG",
+            "megapixels": 0.4,
+            "aspect_ratio": "16:9 (Widescreen)",
+            "steps": 4,
+            "image_quality": "opt",
+            "image_megapixels": 1.0,
+            "image_aspect_ratio": "1:1 (Square)",
+            "image_steps": 8,
+        },
+    )
+    assert created.status_code == 201, created.text
+    body = created.json()
+    assert body["megapixels"] == 0.4
+    assert body["image_megapixels"] == 1.0
+    assert body["image_aspect_ratio"] == "1:1 (Square)"
+    assert body["image_steps"] == 8
+
+    # null を明示すると既定へ戻る（動画側の設定は触っていないので残る）
+    cleared = call(
+        env,
+        "PATCH",
+        f"/api/v1/projects/{body['id']}",
+        json={"image_megapixels": None, "image_aspect_ratio": None},
+    )
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["image_megapixels"] is None
+    assert cleared.json()["image_aspect_ratio"] is None
+    assert cleared.json()["image_steps"] == 8
+    assert cleared.json()["megapixels"] == 0.4
+    assert cleared.json()["aspect_ratio"] == "16:9 (Widescreen)"
+
+    # 上限を超えた image_steps は 400（動画側の steps と同じ MAX_STEPS）
+    refused = call(
+        env,
+        "PATCH",
+        f"/api/v1/projects/{body['id']}",
+        json={"image_steps": MAX_STEPS + 1},
+    )
+    assert refused.status_code == 400, refused.text
 
 
 def test_a_duplicate_project_code_is_refused(env):

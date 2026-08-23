@@ -104,9 +104,13 @@ CREATE TABLE IF NOT EXISTS studio_projects (
   latent_continuity INTEGER NOT NULL DEFAULT 0, -- 引き継ぎを Motion Context（ラテント連続性）で行う
   latent_upscale INTEGER NOT NULL DEFAULT 1, -- 1 パス目を低解像度で回してラテントのまま拡大する
   quality     TEXT NOT NULL DEFAULT 'normal', -- 動画生成の品質（normal / opt / turbo）
+  image_quality TEXT NOT NULL DEFAULT 'normal', -- 素材画像（MiniMax H3 Image）の品質（normal / opt / turbo）
   megapixels  REAL,                        -- 動画生成のメガピクセル（NULL = ワークフローの既定）
   aspect_ratio TEXT,                       -- 動画生成のアスペクト比（NULL = 既定）
   steps       INTEGER NOT NULL DEFAULT 0,  -- サンプリング回数（0 = テンプレートの既定のまま）
+  image_megapixels REAL,                   -- 素材画像のメガピクセル（NULL = ワークフローの既定）
+  image_aspect_ratio TEXT,                 -- 素材画像のアスペクト比（NULL = 既定）
+  image_steps INTEGER NOT NULL DEFAULT 0,  -- 素材画像のサンプリング回数（0 = テンプレートの既定のまま）
   nsfw        INTEGER NOT NULL DEFAULT 0,   -- 1 = この作品から投入するジョブはすべて NSFW（0 = 非 NSFW 固定）
   canvas_x    REAL NOT NULL DEFAULT 0,      -- キャンバス（別ビュー）の表示位置
   canvas_y    REAL NOT NULL DEFAULT 0,
@@ -551,6 +555,10 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         # 動画生成の品質（normal / opt / turbo）。既存のプロジェクトは
         # 'normal' = 今までどおり素の MiniMax H3（20 steps）。
         ("quality", "TEXT NOT NULL DEFAULT 'normal'"),
+        # 画像生成の品質（normal / opt / turbo）。動画の `quality` とは独立した
+        # つまみで、素材の静止画を MiniMax H3 Image で焼くときにだけ効く。
+        # 既存のプロジェクトは 'normal' = 素の minimax_h3_{t2i,i2i,r2i}。
+        ("image_quality", "TEXT NOT NULL DEFAULT 'normal'"),
         # 画質（メガピクセル）と画面比。生成フォームと同じ 2 項目を作品単位の
         # 既定として持つ。既存のプロジェクトは NULL = 今までどおりワークフロー
         # 宣言の default_megapixels / グローバル既定に従う。
@@ -566,6 +574,14 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         # （品質 turbo なら 4、normal / opt なら 20）。画質の 2 項目と違って
         # NULL を持たせず、「未指定」は 0 で表す（JobCreate.steps と同じ流儀）。
         ("steps", "INTEGER NOT NULL DEFAULT 0"),
+        # 素材画像の画質（メガピクセル）・画面比・サンプリング回数。動画側の
+        # megapixels / aspect_ratio / steps と同じ 3 項目を、素材の静止画用に
+        # 別で持つ（動画の値を静止画に流用しないため）。既存のプロジェクトは
+        # NULL / 0 = 指定しない＝テンプレートの既定（MiniMax H3 Image は
+        # 約 0.98MP）のまま。
+        ("image_megapixels", "REAL"),
+        ("image_aspect_ratio", "TEXT"),
+        ("image_steps", "INTEGER NOT NULL DEFAULT 0"),
         # この作品から投入するジョブを NSFW 扱いにするか。既存のプロジェクトは
         # 0 = 非 NSFW（投入時に明示するので Grok の自動判定は走らない）。
         ("nsfw", "INTEGER NOT NULL DEFAULT 0"),

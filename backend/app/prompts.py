@@ -675,6 +675,10 @@ def _target_preference_lines(comfy_target: str) -> list[str]:
         "ただし**ユーザーがワークフローを名指ししたとき、あるいは turbo /"
         " opt を明示的に指定したときは、その指定が最優先**でこの既定より優先"
         "される。",
+        "また、**スタジオプロジェクトの素材画像**（MiniMax H3 Image の"
+        " `minimax_h3_{t2i,i2i,r2i}`）を焼くときは、ここの既定より"
+        "**プロジェクトの `image_quality` が優先**される"
+        "（動画の `quality` は画像には流用しない）。",
     ]
     return lines
 
@@ -2511,6 +2515,22 @@ What actually decides the output:
   `_context` builds have no variants), or a ComfyUI that lacks the custom nodes
   (Comfy Cloud) falls back to the plain build; the prompt preview's
   `workflow_reason` says which of those happened.
+- `image_quality` (per project, `normal` by default) is the **same three steps
+  for stills** and is completely independent of `quality` above. When you make
+  one of the project's assets with MiniMax H3 Image, pick the build from
+  `image_quality`: `normal` → `minimax_h3_t2i` / `_i2i` / `_r2i`, `opt` → the
+  `_opt` variant of that same mode, `turbo` → the `_turbo` one. **Never carry
+  the video `quality` over to a still** — a project rendering video on `turbo`
+  still wants its reference stills at `image_quality`, and vice versa. The
+  `_opt` / `_turbo` image builds need the same custom nodes, so on a ComfyUI
+  that lacks them (Comfy Cloud) use the plain build.
+- `image_megapixels`, `image_aspect_ratio` and `image_steps` (per project, unset
+  / unset / `0` by default) are the **stills' own** size, aspect and step count.
+  A still job (`mode: "image_only"`) for one of the project's assets takes its
+  `megapixels` / `aspect_ratio` / `steps` from these `image_*` values — **never
+  reuse the video ones** for a still. Unset (`null`) or `0` means "do not send
+  it": leave the field out and the build's own default applies (about 0.98MP on
+  MiniMax H3 Image). `image_steps` has the same cap as the video `steps` (150).
 - `megapixels` and `aspect_ratio` (per project, both unset by default) are the
   work's own defaults for the same two settings the generate form has, and are
   independent of the workflow. Unset means "leave it to the build" (0.4MP for
@@ -2547,7 +2567,7 @@ Actions — one per reply like every other action, no approval needed:
 |---|---|---|
 | `studio_list_projects` | — | every project with its Shot / asset / Take counts |
 | `studio_get_project` | `project_id` | the whole project: assets, 話 / 場 / Shot, and each Shot's Takes with their status and `stale` |
-| `studio_create_project` | `name`, optional `code`, `synopsis`, `world_notes`, `auto_translate`, `latent_continuity`, `quality` (`normal` / `opt` / `turbo`), `megapixels` (e.g. `0.4`), `aspect_ratio` (e.g. `16:9 (Widescreen)`), `nsfw`, `latent_upscale` | start a work |
+| `studio_create_project` | `name`, optional `code`, `synopsis`, `world_notes`, `auto_translate`, `latent_continuity`, `quality` (`normal` / `opt` / `turbo`), `image_quality` (`normal` / `opt` / `turbo`, stills only), `megapixels` (e.g. `0.4`), `aspect_ratio` (e.g. `16:9 (Widescreen)`), `steps` (`0` = the build's default, cap 150), `image_megapixels` / `image_aspect_ratio` / `image_steps` (the same three **for stills**, `null` / `null` / `0` = the build's default), `nsfw`, `latent_upscale` | start a work |
 | `studio_update_project` | `project_id` + any of the above | e.g. keep `world_notes` up to date |
 | `studio_upsert_episode` | `id` to edit, else `project_id`; `title`, `synopsis`, `sort_order` | 話 |
 | `studio_upsert_scene` | `id` to edit, else `episode_id`; `title`, `synopsis`, `time_of_day`, `sort_order`. With `id`, `episode_id` **moves** the 場 to that 話 | 場 |
@@ -2568,7 +2588,12 @@ Recommended flow:
    and the sets as assets. For a character whose look must stay stable, make a
    still with a normal `mode: "image_only"` job first and register it with
    `studio_register_asset_from_job` — a real file pins the look, a
-   `prompt_caption` only describes it.
+   `prompt_caption` only describes it. When that still is a MiniMax H3 Image
+   job, take the build from the project's **`image_quality`**
+   (`minimax_h3_{t2i,i2i,r2i}` plain / `_opt` / `_turbo`), not from the video
+   `quality`, and its `megapixels` / `aspect_ratio` / `steps` from the project's
+   **`image_megapixels` / `image_aspect_ratio` / `image_steps`** (leave a field
+   out when it is `null` / `0`).
 3. Lay out 話 / 場, then write the Shots in order.
 4. `studio_render_shot`, then **end your turn**. A render takes minutes and you
    must never wait or poll for it. The app appends a `studio_take_finished`

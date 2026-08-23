@@ -486,6 +486,10 @@ describe('projectSummary / renderingJobIds', () => {
     latent_continuity: false,
     latent_upscale: true,
     quality: 'normal',
+    image_quality: 'normal',
+    image_megapixels: null,
+    image_aspect_ratio: null,
+    image_steps: 0,
     megapixels: null,
     aspect_ratio: null,
     steps: 0,
@@ -917,6 +921,48 @@ describe('formatProjectSettingsSummary', () => {
         steps: 4,
       }),
     ).toBe('Opt · 既定 · 0.7MP · 4step')
+  })
+
+  it('画像品質は既定（通常）以外のときだけ動画品質の隣に出す', () => {
+    const base = {
+      quality: 'normal' as const,
+      aspectRatio: null,
+      megapixels: null,
+      steps: 0,
+    }
+    expect(formatProjectSettingsSummary({ ...base, imageQuality: 'normal' })).toBe(
+      '通常 · 既定 · 既定 · おまかせ',
+    )
+    expect(formatProjectSettingsSummary({ ...base, imageQuality: 'turbo' })).toBe(
+      '通常 · 画像Turbo · 既定 · 既定 · おまかせ',
+    )
+  })
+
+  it('素材画像の画質 3 項目は既定以外のときだけ「画像〜」で足す', () => {
+    const base = {
+      quality: 'normal' as const,
+      aspectRatio: null,
+      megapixels: null,
+      steps: 0,
+    }
+    // 既定（null / null / 0）なら動画側の要約と変わらない。
+    expect(
+      formatProjectSettingsSummary({
+        ...base,
+        imageAspectRatio: null,
+        imageMegapixels: null,
+        imageSteps: 0,
+      }),
+    ).toBe('通常 · 既定 · 既定 · おまかせ')
+    // 設定してあるぶんだけ、比率 → MP → steps の順で足す。
+    expect(
+      formatProjectSettingsSummary({
+        ...base,
+        imageAspectRatio: '16:9 (Widescreen)',
+        imageMegapixels: 0.5,
+        imageSteps: 8,
+      }),
+    ).toBe('通常 · 既定 · 既定 · おまかせ · 画像16:9 · 画像0.5MP · 画像8step')
   })
 
   it('ラテントアップスケールは切ってあるときだけ末尾に出す', () => {

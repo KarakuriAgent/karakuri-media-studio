@@ -1111,7 +1111,15 @@ def _studio_project_line(project) -> str:
         f"- `{project.id}` 「{project.name}」{code} — Shot {project.shot_count} 件"
         f" / 素材 {project.asset_count} 件 / Take {project.take_count} 件"
         f"（採用済み {project.selected_take_count} 件）"
+        f" / 動画品質 `{project.quality}` / 画像品質 `{project.image_quality}`"
     )
+
+
+def _studio_render_setting(value: object) -> str:
+    """プロジェクトの画質設定 1 項目を表示用に整える（未設定は「既定」）。"""
+    if value is None or value == "":
+        return "既定"
+    return f"`{value}`"
 
 
 #: 素材のリファレンスの役割 -> プロンプトに書く呼び名
@@ -1218,6 +1226,23 @@ def _studio_detail_text(detail: StudioProjectDetail) -> str:
         f"プロジェクト `{detail.id}` 「{detail.name}」{code} / auto_translate: {translate}",
         f"latent_continuity: {continuity}",
         f"nsfw: {nsfw}",
+        # 動画と画像の品質は別のつまみ。素材の静止画を焼くときに動画側の
+        # `quality` を流用されないよう、どちらも明示して出す。
+        f"quality（動画生成の品質）: `{detail.quality}`",
+        f"image_quality（素材画像の品質。MiniMax H3 Image の"
+        f" `minimax_h3_{{t2i,i2i,r2i}}` の素 / `_opt` / `_turbo` を決める）:"
+        f" `{detail.image_quality}`",
+        # 画質のほうも動画と画像で別のつまみ。素材の静止画ジョブには
+        # image_* のほうを使う（動画用の値は流用しない）。
+        f"動画の megapixels / aspect_ratio / steps:"
+        f" {_studio_render_setting(detail.megapixels)}"
+        f" / {_studio_render_setting(detail.aspect_ratio)}"
+        f" / {_studio_render_setting(detail.steps or None)}",
+        f"素材画像の megapixels / aspect_ratio / steps"
+        f"（`mode: \"image_only\"` のジョブにはこちらを使う）:"
+        f" {_studio_render_setting(detail.image_megapixels)}"
+        f" / {_studio_render_setting(detail.image_aspect_ratio)}"
+        f" / {_studio_render_setting(detail.image_steps or None)}",
     ]
     if detail.synopsis:
         lines.append(f"あらすじ: {detail.synopsis}")
@@ -1302,6 +1327,10 @@ async def _studio_create_project(params: dict[str, Any]) -> tuple[str, str, dict
         body.get("aspect_ratio"),
         body.get("steps") or 0,
         bool(body.get("latent_upscale", True)),
+        str(body.get("image_quality") or studio.DEFAULT_IMAGE_QUALITY),
+        body.get("image_megapixels"),
+        body.get("image_aspect_ratio"),
+        body.get("image_steps") or 0,
         actor=STUDIO_ACTOR,
     )
     return (

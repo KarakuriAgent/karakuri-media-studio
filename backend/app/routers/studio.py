@@ -116,6 +116,10 @@ async def create_project(payload: StudioProjectCreate) -> StudioProject:
             payload.aspect_ratio,
             payload.steps,
             payload.latent_upscale,
+            payload.image_quality,
+            payload.image_megapixels,
+            payload.image_aspect_ratio,
+            payload.image_steps,
         )
     except service.StudioError as exc:
         raise _bad_request(exc) from exc

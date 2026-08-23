@@ -1166,6 +1166,290 @@ def test_a_forced_workflow_still_gets_the_quality(env, monkeypatch):
 
 
 # --------------------------------------------------------------------------
+# 画像生成の品質（プロジェクトの image_quality）
+# --------------------------------------------------------------------------
+#
+# 動画の quality とは独立したつまみで、素材の静止画（MiniMax H3 Image）にだけ
+# 効く。ここで押さえるのは、保存と正規化・動画の品質を巻き込まないこと・
+# 「素 / _opt / _turbo」の解決（studio.image_quality_workflow）。
+
+def test_image_quality_is_normal_by_default(env):
+    project = make_project(env)
+    assert project["image_quality"] == "normal"
+    assert env.client.get("/api/studio/projects").json()[0]["image_quality"] == "normal"
+
+
+def test_image_quality_is_saved_as_a_project_setting(env):
+    project = make_project(env, image_quality="opt")
+    assert project["image_quality"] == "opt"
+    updated = env.client.patch(
+        f"/api/studio/projects/{project['id']}", json={"image_quality": "turbo"}
+    )
+    assert updated.status_code == 200
+    assert updated.json()["image_quality"] == "turbo"
+    assert detail(env, project["id"])["image_quality"] == "turbo"
+
+
+def test_an_unknown_image_quality_is_refused(env):
+    project = make_project(env)
+    response = env.client.patch(
+        f"/api/studio/projects/{project['id']}", json={"image_quality": "ultra"}
+    )
+    assert response.status_code == 422
+
+
+def test_a_project_without_the_image_quality_column_reads_as_normal(env):
+    """列を持たない（画像品質より前に作られた）既存 DB は 'normal' として読む。"""
+    import sqlite3
+
+    project = make_project(env, image_quality="turbo")
+    with sqlite3.connect(db.DB_PATH) as conn:
+        conn.execute(
+            "UPDATE studio_projects SET image_quality = '' WHERE id = ?",
+            (project["id"],),
+        )
+    assert detail(env, project["id"])["image_quality"] == "normal"
+
+
+def test_image_quality_and_video_quality_are_independent(env, monkeypatch):
+    """画像を turbo にしても動画の品質は動かない（その逆も同じ）。"""
+    _use_target(monkeypatch, "local")
+    project = make_project(env, quality="normal", image_quality="turbo")
+    make_asset(env, project["id"], "Neko", kind="image", prompt_caption="a calico cat")
+    shot = make_shot(env, project["id"], prompt="@Neko walks in.")
+    assert render(env, shot["id"]).status_code == 201
+    assert env.created[-1].video_workflow == "minimax_h3_r2v"
+
+    env.client.patch(
+        f"/api/studio/projects/{project['id']}",
+        json={"quality": "turbo", "image_quality": "normal"},
+    )
+    assert detail(env, project["id"])["image_quality"] == "normal"
+    assert render(env, shot["id"]).status_code == 201
+    assert env.created[-1].video_workflow == "minimax_h3_r2v_turbo"
+
+
+@pytest.mark.parametrize(
+    ("workflow", "image_quality", "expected"),
+    [
+        ("minimax_h3_t2i", "normal", "minimax_h3_t2i"),
+        ("minimax_h3_t2i", "opt", "minimax_h3_t2i_opt"),
+        ("minimax_h3_t2i", "turbo", "minimax_h3_t2i_turbo"),
+        ("minimax_h3_i2i", "opt", "minimax_h3_i2i_opt"),
+        ("minimax_h3_i2i", "turbo", "minimax_h3_i2i_turbo"),
+        ("minimax_h3_r2i", "opt", "minimax_h3_r2i_opt"),
+        ("minimax_h3_r2i", "turbo", "minimax_h3_r2i_turbo"),
+    ],
+)
+def test_image_quality_picks_the_image_variant(
+    monkeypatch, workflow, image_quality, expected
+):
+    _use_target(monkeypatch, "local")
+    assert studio.image_quality_workflow(workflow, image_quality) == expected
+
+
+@pytest.mark.parametrize("image_quality", ["opt", "turbo"])
+def test_image_quality_falls_back_without_a_variant(monkeypatch, image_quality):
+    _use_target(monkeypatch, "local")
+    assert (
+        studio.image_quality_workflow("qwen_image", image_quality) == "qwen_image"
+    )
+
+
+@pytest.mark.parametrize("image_quality", ["opt", "turbo"])
+def test_image_quality_falls_back_on_a_target_without_the_custom_nodes(
+    monkeypatch, image_quality
+):
+    """Comfy Cloud には任意のカスタムノードを入れられないので素へ落とす。"""
+    _use_target(monkeypatch, "comfy_cloud")
+    assert (
+        studio.image_quality_workflow("minimax_h3_t2i", image_quality)
+        == "minimax_h3_t2i"
+    )
+
+
+def test_a_broken_image_quality_is_read_as_normal(monkeypatch):
+    _use_target(monkeypatch, "local")
+    assert (
+        studio.image_quality_workflow("minimax_h3_t2i", "ultra") == "minimax_h3_t2i"
+    )
+
+
+def test_every_image_quality_variant_is_a_registered_workflow():
+    """画像品質の表が実在しないテンプレートを指していたら黙って素へ落ちてしまう。"""
+    from app.workflows import get_image_spec
+
+    for table in studio.IMAGE_QUALITY_WORKFLOWS.values():
+        for base, variant in table.items():
+            assert get_image_spec(base).id == base
+            assert get_image_spec(variant).id == variant
+
+
+# --------------------------------------------------------------------------
+# 素材画像の画質（プロジェクトの image_megapixels / image_aspect_ratio /
+# image_steps）
+# --------------------------------------------------------------------------
+#
+# 動画側の megapixels / aspect_ratio / steps と同じ 3 項目を、素材の静止画用に
+# 別で持つ（静止画に動画用の値を流用しないため）。null / 0 = 指定しない＝
+# テンプレートの既定（MiniMax H3 Image は約 0.98MP）。
+
+def test_the_image_render_settings_are_unset_by_default(env):
+    project = make_project(env)
+    assert project["image_megapixels"] is None
+    assert project["image_aspect_ratio"] is None
+    assert project["image_steps"] == 0
+    listed = env.client.get("/api/studio/projects").json()[0]
+    assert listed["image_megapixels"] is None
+    assert listed["image_aspect_ratio"] is None
+    assert listed["image_steps"] == 0
+
+
+def test_the_image_render_settings_can_be_set_at_creation(env):
+    project = make_project(
+        env,
+        image_megapixels=0.5,
+        image_aspect_ratio="9:16 (Portrait Widescreen)",
+        image_steps=8,
+    )
+    assert project["image_megapixels"] == 0.5
+    assert project["image_aspect_ratio"] == "9:16 (Portrait Widescreen)"
+    assert project["image_steps"] == 8
+
+
+def test_the_image_render_settings_are_saved(env):
+    project = make_project(env)
+    updated = env.client.patch(
+        f"/api/studio/projects/{project['id']}",
+        json={
+            "image_megapixels": 1.0,
+            "image_aspect_ratio": "16:9 (Widescreen)",
+            "image_steps": 12,
+        },
+    )
+    assert updated.status_code == 200, updated.text
+    saved = detail(env, project["id"])
+    assert saved["image_megapixels"] == 1.0
+    assert saved["image_aspect_ratio"] == "16:9 (Widescreen)"
+    assert saved["image_steps"] == 12
+
+
+def test_an_explicit_null_puts_the_image_settings_back_to_the_default(env):
+    project = make_project(
+        env, image_megapixels=1.0, image_aspect_ratio="1:1 (Square)", image_steps=8
+    )
+    cleared = env.client.patch(
+        f"/api/studio/projects/{project['id']}",
+        json={
+            "image_megapixels": None,
+            "image_aspect_ratio": None,
+            "image_steps": 0,
+        },
+    )
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["image_megapixels"] is None
+    assert cleared.json()["image_aspect_ratio"] is None
+    assert cleared.json()["image_steps"] == 0
+
+
+def test_not_sending_the_image_settings_leaves_them_alone(env):
+    """送らなかった項目は今の値のまま（null 明示との区別）。"""
+    project = make_project(
+        env, image_megapixels=1.0, image_aspect_ratio="1:1 (Square)", image_steps=8
+    )
+    env.client.patch(f"/api/studio/projects/{project['id']}", json={"name": "別名"})
+    saved = detail(env, project["id"])
+    assert saved["image_megapixels"] == 1.0
+    assert saved["image_aspect_ratio"] == "1:1 (Square)"
+    assert saved["image_steps"] == 8
+
+
+def test_out_of_range_image_steps_are_refused(env):
+    project = make_project(env)
+    for value in (-1, MAX_STEPS + 1):
+        refused = env.client.patch(
+            f"/api/studio/projects/{project['id']}", json={"image_steps": value}
+        )
+        assert refused.status_code == 400, refused.text
+    assert detail(env, project["id"])["image_steps"] == 0
+
+
+def test_a_project_without_the_image_setting_columns_reads_as_unset(env):
+    """列を持たない（この設定より前に作られた）既存 DB は「未指定」として読む。"""
+    import sqlite3
+
+    project = make_project(
+        env, image_megapixels=1.0, image_aspect_ratio="16:9 (Widescreen)",
+        image_steps=8,
+    )
+    with sqlite3.connect(db.DB_PATH) as conn:
+        conn.execute(
+            "UPDATE studio_projects SET image_megapixels = 0,"
+            " image_aspect_ratio = '', image_steps = 0 WHERE id = ?",
+            (project["id"],),
+        )
+    saved = detail(env, project["id"])
+    assert saved["image_megapixels"] is None
+    assert saved["image_aspect_ratio"] is None
+    assert saved["image_steps"] == 0
+
+
+def test_the_image_settings_are_independent_from_the_video_ones(env):
+    """画像側を設定しても動画側は動かない（その逆も同じ）。"""
+    project = make_project(
+        env,
+        megapixels=0.4,
+        aspect_ratio="16:9 (Widescreen)",
+        steps=4,
+        image_megapixels=1.0,
+        image_aspect_ratio="1:1 (Square)",
+        image_steps=20,
+    )
+    shot = make_shot(env, project["id"])
+    assert render(env, shot["id"]).status_code == 201
+    payload = env.created[-1]
+    # 動画ジョブには動画側の値だけが載る
+    assert payload.megapixels == 0.4
+    assert payload.aspect_ratio == "16:9 (Widescreen)"
+    assert payload.steps == 4
+
+
+def test_image_render_defaults_only_carries_the_set_values(env):
+    """未設定（null / 0）の項目は入れない＝テンプレートの既定に任せる。"""
+    from app.models import StudioProject
+
+    project = StudioProject.model_validate(make_project(env))
+    assert studio.image_render_defaults(project) == {}
+
+    project = StudioProject.model_validate(
+        make_project(
+            env,
+            code="IMG-2",
+            image_megapixels=1.0,
+            image_aspect_ratio="1:1 (Square)",
+            image_steps=8,
+        )
+    )
+    assert studio.image_render_defaults(project) == {
+        "megapixels": 1.0,
+        "aspect_ratio": "1:1 (Square)",
+        "steps": 8,
+    }
+
+
+def test_image_render_defaults_ignores_the_video_settings(env):
+    """動画側だけ設定してあっても、静止画には何も渡さない。"""
+    from app.models import StudioProject
+
+    project = StudioProject.model_validate(
+        make_project(
+            env, megapixels=0.4, aspect_ratio="16:9 (Widescreen)", steps=4
+        )
+    )
+    assert studio.image_render_defaults(project) == {}
+
+
+# --------------------------------------------------------------------------
 # ラテントアップスケール（プロジェクトの latent_upscale）
 # --------------------------------------------------------------------------
 #

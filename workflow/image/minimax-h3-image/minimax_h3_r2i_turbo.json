@@ -1,7 +1,7 @@
 {
   "1": {
     "inputs": {
-      "unet_name": "minimax_h3_ref2va_pruned_w4a8_mixed.safetensors",
+      "unet_name": "minimax_h3_fl2va_pruned_w4a8_mixed.safetensors",
       "weight_dtype": "default"
     },
     "class_type": "UNETLoader",
@@ -29,9 +29,9 @@
       "title": "動画 VAE を読み込む"
     }
   },
-  "150": {
+  "143": {
     "inputs": {
-      "lora_name": "minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16.safetensors",
+      "lora_name": "minimax_h3_fl2v_turbo_4step_v1.1_768p_comfyui_bf16.safetensors",
       "strength_model": 1.0,
       "model": [
         "1",
@@ -43,12 +43,26 @@
       "title": "Turbo LoRA"
     }
   },
+  "144": {
+    "inputs": {
+      "lora_name": "minimax_h3_ref_lora_rank_256_bf16.safetensors",
+      "strength_model": 1.0,
+      "model": [
+        "143",
+        0
+      ]
+    },
+    "class_type": "LoraLoaderModelOnly",
+    "_meta": {
+      "title": "Ref LoRA"
+    }
+  },
   "151": {
     "inputs": {
       "sage_attention": "auto",
       "allow_compile": false,
       "model": [
-        "150",
+        "144",
         0
       ]
     },

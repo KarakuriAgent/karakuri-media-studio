@@ -299,6 +299,28 @@ queued / running のもの）が上限を超えているとき 429 を返す。
   （Comfy Cloud）では**品質だけを落として**読み替え済みの版で投入します
   （400 にはしません）。どれに当たったかは
   `GET /api/v1/shots/{id}/prompt-preview` の `workflow_reason` に出ます。
+- プロジェクトの `image_quality`（`POST /api/v1/projects` と
+  `PATCH /api/v1/projects/{id}` で読み書きできます。`"normal"` / `"opt"` /
+  `"turbo"`。既定 `"normal"`）は **画像生成の品質**で、上の `quality` とは
+  **完全に独立**したつまみです。作品の素材となる静止画を MiniMax H3 Image で
+  作るときに、`minimax_h3_{t2i,i2i,r2i}` の素 / `_opt` / `_turbo` のどれを使うかを
+  決めます。**動画の `quality` を静止画に流用しないでください** — 動画を
+  `turbo` で回している作品でも、素材の絵は `image_quality` に従います
+  （その逆も同じ）。`_opt` / `_turbo` は動画側と同じカスタムノード頼みなので、
+  入っていない接続先（Comfy Cloud）では素の版を使います。いまのところ静止画を
+  焼く経路はアプリ側に無く、素材画像を作るのはエージェント（エージェントモード /
+  外部 API 経由の Claude Code・Cursor CLI）なので、この設定は**エージェントへの
+  指示値**として効きます。
+- プロジェクトの `image_megapixels` / `image_aspect_ratio` / `image_steps`
+  （`POST /api/v1/projects` と `PATCH /api/v1/projects/{id}` で読み書きできます。
+  既定はそれぞれ `null` / `null` / `0`）は、**素材の静止画の画質・画面比・
+  サンプリング回数**です。動画側の `megapixels` / `aspect_ratio` / `steps` と
+  同じ 3 項目を静止画用に別で持つもので、素材の静止画ジョブ
+  （`mode: "image_only"`）にはこちらを使い、**動画用の値は流用しません**。
+  `null` / `0` は「指定しない」＝テンプレートの既定のまま（MiniMax H3 Image は
+  約 0.98MP）で、`PATCH` に `null` を明示すると既定へ戻ります（送らなければ
+  今の値のまま）。`image_steps` の上限は動画側の `steps` と同じ 150 で、
+  外れた値は 400 です。
 - プロジェクトの `megapixels` と `aspect_ratio`（`POST /api/v1/projects` と
   `PATCH /api/v1/projects/{id}` で読み書きできます。どちらも既定 `null`）は
   **その作品の画質・画面比の既定値**で、生成フォームと同じ 2 項目です。

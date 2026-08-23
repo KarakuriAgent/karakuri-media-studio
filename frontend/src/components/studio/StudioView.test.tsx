@@ -160,6 +160,10 @@ function detail(overrides: Partial<StudioProjectDetail> = {}): StudioProjectDeta
     latent_continuity: false,
     latent_upscale: true,
     quality: 'normal',
+    image_quality: 'normal',
+    image_megapixels: null,
+    image_aspect_ratio: null,
+    image_steps: 0,
     megapixels: null,
     aspect_ratio: null,
     steps: 0,
@@ -224,6 +228,10 @@ function summary(current: StudioProjectDetail): StudioProjectSummary {
     latent_continuity: current.latent_continuity,
     latent_upscale: current.latent_upscale,
     quality: current.quality,
+    image_quality: current.image_quality,
+    image_megapixels: current.image_megapixels,
+    image_aspect_ratio: current.image_aspect_ratio,
+    image_steps: current.image_steps,
     megapixels: current.megapixels,
     aspect_ratio: current.aspect_ratio,
     steps: current.steps,
@@ -1050,11 +1058,11 @@ describe('StudioView の接続先プルダウン', () => {
   })
 })
 
-describe('StudioView の品質セレクタ', () => {
+describe('StudioView の動画品質セレクタ', () => {
   it('ヘッダーに常時出て、選び直すとプロジェクト設定として保存される', async () => {
     const current = detail()
     await openProject(current)
-    const select = screen.getByLabelText('品質') as HTMLSelectElement
+    const select = screen.getByLabelText('動画品質') as HTMLSelectElement
     expect(select.value).toBe('normal')
     expect(
       Array.from(select.options).map((option) => option.value),
@@ -1071,22 +1079,53 @@ describe('StudioView の品質セレクタ', () => {
 
   it('保存済みの品質をそのまま映す', async () => {
     await openProject(detail({ quality: 'opt' }))
-    expect((screen.getByLabelText('品質') as HTMLSelectElement).value).toBe('opt')
+    expect((screen.getByLabelText('動画品質') as HTMLSelectElement).value).toBe('opt')
   })
 
   it('ラテント連続性が ON でも品質はそのまま効く（注記を出さない）', async () => {
     await openProject(detail({ latent_continuity: true, quality: 'turbo' }))
     expect(screen.queryByText(/連続性が有効なため/)).toBeNull()
-    expect((screen.getByLabelText('品質') as HTMLSelectElement).value).toBe('turbo')
+    expect((screen.getByLabelText('動画品質') as HTMLSelectElement).value).toBe('turbo')
   })
 })
 
-describe('StudioView の画質設定（アスペクト比 / メガピクセル）', () => {
+describe('StudioView の画像品質セレクタ', () => {
+  it('動画品質の隣に出て、選び直すとプロジェクト設定として保存される', async () => {
+    await openProject(detail())
+    const select = screen.getByLabelText('画像品質') as HTMLSelectElement
+    expect(select.value).toBe('normal')
+    expect(Array.from(select.options).map((option) => option.value)).toEqual([
+      'normal',
+      'opt',
+      'turbo',
+    ])
+
+    mocked.updateStudioProject.mockResolvedValue({})
+    fireEvent.change(select, { target: { value: 'opt' } })
+    await waitFor(() =>
+      expect(mocked.updateStudioProject).toHaveBeenCalledWith('p1', {
+        image_quality: 'opt',
+      }),
+    )
+  })
+
+  it('保存済みの画像品質をそのまま映し、動画品質とは独立している', async () => {
+    await openProject(detail({ quality: 'turbo', image_quality: 'normal' }))
+    expect((screen.getByLabelText('動画品質') as HTMLSelectElement).value).toBe(
+      'turbo',
+    )
+    expect((screen.getByLabelText('画像品質') as HTMLSelectElement).value).toBe(
+      'normal',
+    )
+  })
+})
+
+describe('StudioView の動画の画質設定（アスペクト比 / メガピクセル / steps）', () => {
   const ratios = ['4:3 (Standard)', '16:9 (Widescreen)']
 
   it('アスペクト比は生成フォームと同じ候補で、選ぶとプロジェクトへ保存される', async () => {
     await openProject(detail(), { aspectRatios: ratios })
-    const select = screen.getByLabelText('画質') as HTMLSelectElement
+    const select = screen.getByLabelText('動画 比率') as HTMLSelectElement
     expect(select.value).toBe('')
     expect(Array.from(select.options).map((option) => option.value)).toEqual([
       '',
@@ -1106,12 +1145,12 @@ describe('StudioView の画質設定（アスペクト比 / メガピクセル�
     await openProject(detail({ aspect_ratio: '16:9 (Widescreen)' }), {
       aspectRatios: ratios,
     })
-    expect((screen.getByLabelText('画質') as HTMLSelectElement).value).toBe(
+    expect((screen.getByLabelText('動画 比率') as HTMLSelectElement).value).toBe(
       '16:9 (Widescreen)',
     )
 
     mocked.updateStudioProject.mockResolvedValue({})
-    fireEvent.change(screen.getByLabelText('画質'), { target: { value: '' } })
+    fireEvent.change(screen.getByLabelText('動画 比率'), { target: { value: '' } })
     await waitFor(() =>
       expect(mocked.updateStudioProject).toHaveBeenCalledWith('p1', {
         aspect_ratio: null,
@@ -1121,7 +1160,7 @@ describe('StudioView の画質設定（アスペクト比 / メガピクセル�
 
   it('メガピクセルは確定（フォーカスを外す）まで保存しない', async () => {
     await openProject()
-    const input = screen.getByLabelText('メガピクセル') as HTMLInputElement
+    const input = screen.getByLabelText('動画 MP') as HTMLInputElement
     expect(input.value).toBe('')
 
     mocked.updateStudioProject.mockResolvedValue({})
@@ -1138,7 +1177,7 @@ describe('StudioView の画質設定（アスペクト比 / メガピクセル�
 
   it('保存済みのメガピクセルをそのまま映し、空欄にすると既定へ戻す', async () => {
     await openProject(detail({ megapixels: 0.7 }))
-    const input = screen.getByLabelText('メガピクセル') as HTMLInputElement
+    const input = screen.getByLabelText('動画 MP') as HTMLInputElement
     expect(input.value).toBe('0.7')
 
     mocked.updateStudioProject.mockResolvedValue({})
@@ -1153,7 +1192,7 @@ describe('StudioView の画質設定（アスペクト比 / メガピクセル�
 
   it('0 以下のメガピクセルは捨てて保存済みの値に戻す', async () => {
     await openProject(detail({ megapixels: 0.7 }))
-    const input = screen.getByLabelText('メガピクセル') as HTMLInputElement
+    const input = screen.getByLabelText('動画 MP') as HTMLInputElement
     fireEvent.change(input, { target: { value: '0' } })
     fireEvent.blur(input)
     expect(mocked.updateStudioProject).not.toHaveBeenCalled()
@@ -1162,7 +1201,7 @@ describe('StudioView の画質設定（アスペクト比 / メガピクセル�
 
   it('ステップ数は確定まで保存せず、空欄は 0（おまかせ）として送る', async () => {
     await openProject(detail({ steps: 20 }))
-    const input = screen.getByLabelText('ステップ') as HTMLInputElement
+    const input = screen.getByLabelText('動画 steps') as HTMLInputElement
     expect(input.value).toBe('20')
 
     mocked.updateStudioProject.mockResolvedValue({})
@@ -1177,7 +1216,7 @@ describe('StudioView の画質設定（アスペクト比 / メガピクセル�
 
   it('未設定のステップ数は空欄で見せ、入れた値を保存する', async () => {
     await openProject()
-    const input = screen.getByLabelText('ステップ') as HTMLInputElement
+    const input = screen.getByLabelText('動画 steps') as HTMLInputElement
     expect(input.value).toBe('')
 
     mocked.updateStudioProject.mockResolvedValue({})
@@ -1190,13 +1229,127 @@ describe('StudioView の画質設定（アスペクト比 / メガピクセル�
 
   it('範囲外のステップ数は捨てて保存済みの値に戻す', async () => {
     await openProject(detail({ steps: 20 }))
-    const input = screen.getByLabelText('ステップ') as HTMLInputElement
+    const input = screen.getByLabelText('動画 steps') as HTMLInputElement
     for (const value of ['-1', '151', '1.5']) {
       fireEvent.change(input, { target: { value } })
       fireEvent.blur(input)
       expect(mocked.updateStudioProject).not.toHaveBeenCalled()
       expect(input.value).toBe('20')
     }
+  })
+})
+
+describe('StudioView の素材画像の画質設定（image_* の 3 項目）', () => {
+  const ratios = ['4:3 (Standard)', '16:9 (Widescreen)']
+
+  it('比率は動画側と同じ候補で、選ぶと image_aspect_ratio として保存される', async () => {
+    await openProject(detail(), { aspectRatios: ratios })
+    const select = screen.getByLabelText('画像 比率') as HTMLSelectElement
+    expect(select.value).toBe('')
+    expect(Array.from(select.options).map((option) => option.value)).toEqual([
+      '',
+      ...ratios,
+    ])
+
+    mocked.updateStudioProject.mockResolvedValue({})
+    fireEvent.change(select, { target: { value: '16:9 (Widescreen)' } })
+    await waitFor(() =>
+      expect(mocked.updateStudioProject).toHaveBeenCalledWith('p1', {
+        image_aspect_ratio: '16:9 (Widescreen)',
+      }),
+    )
+  })
+
+  it('比率を「既定のまま」に戻すと null を送る', async () => {
+    await openProject(detail({ image_aspect_ratio: '16:9 (Widescreen)' }), {
+      aspectRatios: ratios,
+    })
+    mocked.updateStudioProject.mockResolvedValue({})
+    fireEvent.change(screen.getByLabelText('画像 比率'), {
+      target: { value: '' },
+    })
+    await waitFor(() =>
+      expect(mocked.updateStudioProject).toHaveBeenCalledWith('p1', {
+        image_aspect_ratio: null,
+      }),
+    )
+  })
+
+  it('MP は確定まで保存せず、空欄にすると既定へ戻す', async () => {
+    await openProject(detail({ image_megapixels: 0.7 }))
+    const input = screen.getByLabelText('画像 MP') as HTMLInputElement
+    expect(input.value).toBe('0.7')
+
+    mocked.updateStudioProject.mockResolvedValue({})
+    fireEvent.change(input, { target: { value: '1.2' } })
+    expect(mocked.updateStudioProject).not.toHaveBeenCalled()
+    fireEvent.blur(input)
+    await waitFor(() =>
+      expect(mocked.updateStudioProject).toHaveBeenCalledWith('p1', {
+        image_megapixels: 1.2,
+      }),
+    )
+
+    mocked.updateStudioProject.mockClear()
+    fireEvent.change(input, { target: { value: '' } })
+    fireEvent.blur(input)
+    await waitFor(() =>
+      expect(mocked.updateStudioProject).toHaveBeenCalledWith('p1', {
+        image_megapixels: null,
+      }),
+    )
+  })
+
+  it('0 以下の MP は捨てて保存済みの値に戻す', async () => {
+    await openProject(detail({ image_megapixels: 0.7 }))
+    const input = screen.getByLabelText('画像 MP') as HTMLInputElement
+    fireEvent.change(input, { target: { value: '0' } })
+    fireEvent.blur(input)
+    expect(mocked.updateStudioProject).not.toHaveBeenCalled()
+    expect(input.value).toBe('0.7')
+  })
+
+  it('steps は空欄を 0（おまかせ）として送り、範囲外は捨てる', async () => {
+    await openProject(detail({ image_steps: 20 }))
+    const input = screen.getByLabelText('画像 steps') as HTMLInputElement
+    expect(input.value).toBe('20')
+
+    for (const value of ['-1', '151', '1.5']) {
+      fireEvent.change(input, { target: { value } })
+      fireEvent.blur(input)
+      expect(mocked.updateStudioProject).not.toHaveBeenCalled()
+      expect(input.value).toBe('20')
+    }
+
+    mocked.updateStudioProject.mockResolvedValue({})
+    fireEvent.change(input, { target: { value: '' } })
+    fireEvent.blur(input)
+    await waitFor(() =>
+      expect(mocked.updateStudioProject).toHaveBeenCalledWith('p1', {
+        image_steps: 0,
+      }),
+    )
+  })
+
+  it('動画側の設定とは独立に持つ', async () => {
+    await openProject(
+      detail({
+        aspect_ratio: '16:9 (Widescreen)',
+        megapixels: 0.4,
+        steps: 4,
+        image_aspect_ratio: null,
+        image_megapixels: null,
+        image_steps: 0,
+      }),
+      { aspectRatios: ratios },
+    )
+    expect((screen.getByLabelText('動画 MP') as HTMLInputElement).value).toBe('0.4')
+    expect((screen.getByLabelText('動画 steps') as HTMLInputElement).value).toBe('4')
+    expect((screen.getByLabelText('画像 MP') as HTMLInputElement).value).toBe('')
+    expect((screen.getByLabelText('画像 steps') as HTMLInputElement).value).toBe('')
+    expect(
+      (screen.getByLabelText('画像 比率') as HTMLSelectElement).value,
+    ).toBe('')
   })
 })
 
@@ -1616,16 +1769,19 @@ describe('StudioView の狭い画面ヘッダー', () => {
     expect(chip.textContent).toContain('16:9')
     expect(chip.textContent).toContain('1MP')
     expect(chip.textContent).toContain('20step')
-    expect(screen.queryByLabelText('品質')).toBeNull()
-    expect(screen.queryByLabelText('画質')).toBeNull()
-    expect(screen.queryByLabelText('メガピクセル')).toBeNull()
-    expect(screen.queryByLabelText('ステップ')).toBeNull()
+    expect(screen.queryByLabelText('動画品質')).toBeNull()
+    expect(screen.queryByLabelText('動画 比率')).toBeNull()
+    expect(screen.queryByLabelText('動画 MP')).toBeNull()
+    expect(screen.queryByLabelText('動画 steps')).toBeNull()
+    expect(screen.queryByLabelText('画像 比率')).toBeNull()
+    expect(screen.queryByLabelText('画像 MP')).toBeNull()
+    expect(screen.queryByLabelText('画像 steps')).toBeNull()
   })
 
   it('チップを押すとシートが開き、品質の変更がプロジェクトへ保存される', async () => {
     await openProject(detail({ quality: 'normal' }))
     fireEvent.click(await screen.findByRole('button', { name: /生成設定/ }))
-    const select = await screen.findByLabelText('品質') as HTMLSelectElement
+    const select = await screen.findByLabelText('動画品質') as HTMLSelectElement
     expect(select.value).toBe('normal')
 
     mocked.updateStudioProject.mockResolvedValue({})

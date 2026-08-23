@@ -427,7 +427,7 @@ Grok CLI はステートレスなテキスト入出力なので、ツール呼�
 |---|---|---|
 | `studio_list_projects` | ― | `studio_projects`（件数つき一覧） |
 | `studio_get_project` | `project_id` | `studio_project`（素材・話 / 場 / Shot・Take を stale 込みで 1 通に） |
-| `studio_create_project` | `name` ほか `code` / `synopsis` / `world_notes` / `auto_translate` / `latent_continuity` / `quality`（`normal` / `opt` / `turbo`） / `megapixels`（例 `0.4`） / `aspect_ratio`（例 `16:9 (Widescreen)`） / `steps`（サンプリング回数。`0` = テンプレートの既定のまま、上限 150） / `nsfw` | `studio_saved`（`project_id`） |
+| `studio_create_project` | `name` ほか `code` / `synopsis` / `world_notes` / `auto_translate` / `latent_continuity` / `quality`（動画生成の品質。`normal` / `opt` / `turbo`） / `image_quality`（画像生成の品質。`normal` / `opt` / `turbo`。素材の静止画を `minimax_h3_{t2i,i2i,r2i}` の素 / `_opt` / `_turbo` のどれで焼くかで、動画の `quality` とは独立） / `megapixels`（例 `0.4`） / `aspect_ratio`（例 `16:9 (Widescreen)`） / `steps`（サンプリング回数。`0` = テンプレートの既定のまま、上限 150） / `image_megapixels` / `image_aspect_ratio` / `image_steps`（**素材の静止画用**の同じ 3 項目。`null` / `null` / `0` = テンプレートの既定のまま。素材の静止画ジョブにはこちらを使い、動画用の値は流用しない） / `nsfw` | `studio_saved`（`project_id`） |
 | `studio_update_project` | `project_id` + 上と同じ項目 | `studio_saved` |
 | `studio_upsert_episode` / `studio_upsert_scene` | `id`（更新）か親の id（新規）+ 見出し項目。場の更新で `episode_id` を送ると、その話へ**引っ越す** | `studio_saved` |
 | `studio_upsert_shot` | `id` か `project_id` + **入れ子の `shot`**（Shot の `action` 欄がアクション名と衝突するため） | `studio_saved`（`shot_id`） |

@@ -2455,6 +2455,13 @@ StudioWorkflowOverride = Literal[
 #: なので、条件が揃わなければ素へフォールバックする。
 StudioVideoQuality = Literal["normal", "opt", "turbo"]
 
+#: 画像生成の品質（プロジェクト単位の設定）。動画の :data:`StudioVideoQuality` と
+#: **同じ 3 段だが独立したつまみ**で、素材の静止画を MiniMax H3 Image
+#: （``minimax_h3_t2i`` / ``_i2i`` / ``_r2i``）で焼くときにだけ効く
+#: （:func:`app.studio.image_quality_workflow`）。動画を turbo で回していても
+#: 素材の絵は素で焼きたい、という使い分けのために分けてある。
+StudioImageQuality = Literal["normal", "opt", "turbo"]
+
 #: リビジョンを作った主体（人の操作か、エージェントの操作か）
 StudioRevisionActor = Literal["user", "agent"]
 
@@ -2485,6 +2492,10 @@ class StudioProject(BaseModel):
     #: 動画生成の品質（:data:`StudioVideoQuality`）。テイク生成のたびに、決まった
     #: 論理モードと掛け合わせてワークフローのバリアントへ解決される。
     quality: StudioVideoQuality = "normal"
+    #: 画像生成の品質（:data:`StudioImageQuality`）。動画の ``quality`` とは独立で、
+    #: 素材の静止画を MiniMax H3 Image で焼くときの版
+    #: （素 / ``_opt`` / ``_turbo``）を決める。
+    image_quality: StudioImageQuality = "normal"
     #: 動画生成の画質＝メガピクセル（作品単位の既定）。``None`` = 指定しない
     #: ＝ワークフロー宣言の ``default_megapixels`` / グローバル既定のまま。
     #: Shot 個別の ``megapixels`` があればそちらが勝つ。
@@ -2496,6 +2507,15 @@ class StudioProject(BaseModel):
     #: ＝**テンプレートの既定のまま**（品質 turbo なら 4、normal / opt なら 20）。
     #: ``steps`` を宣言しているワークフローだけが読む（SPEC §3.1）。
     steps: int = 0
+    #: 素材画像の画質＝メガピクセル（作品単位の既定）。``None`` = 指定しない
+    #: ＝テンプレートの既定のまま（MiniMax H3 Image は約 0.98MP）。動画の
+    #: ``megapixels`` とは独立で、静止画に動画側の値は流用しない。
+    image_megapixels: float | None = None
+    #: 素材画像のアスペクト比（``None`` = 指定しない＝既定のまま）
+    image_aspect_ratio: str | None = None
+    #: 素材画像のサンプリング回数（``0`` = 未指定＝テンプレートの既定のまま。
+    #: 上限は動画側と同じ :data:`MAX_STEPS`）
+    image_steps: int = 0
     #: この作品から投入するジョブをすべて NSFW 扱いにする。OFF なら**非 NSFW で
     #: 固定**（投入時に明示するので、Grok の自動判定は走らない）。
     nsfw: bool = False
@@ -2530,12 +2550,20 @@ class StudioProjectCreate(BaseModel):
     latent_upscale: bool = True
     #: 動画生成の品質（:data:`StudioVideoQuality`。既定は素の 20 steps）
     quality: StudioVideoQuality = "normal"
+    #: 画像生成の品質（:data:`StudioImageQuality`。素材の静止画にだけ効く）
+    image_quality: StudioImageQuality = "normal"
     #: 動画生成の画質＝メガピクセル（``None`` = ワークフローの既定のまま）
     megapixels: float | None = None
     #: 動画生成のアスペクト比（``None`` = 既定のまま）
     aspect_ratio: str | None = None
     #: サンプリング回数（``0`` = 未指定＝テンプレートの既定のまま）
     steps: int = 0
+    #: 素材画像の画質＝メガピクセル（``None`` = テンプレートの既定のまま）
+    image_megapixels: float | None = None
+    #: 素材画像のアスペクト比（``None`` = 既定のまま）
+    image_aspect_ratio: str | None = None
+    #: 素材画像のサンプリング回数（``0`` = 未指定＝テンプレートの既定のまま）
+    image_steps: int = 0
     #: この作品から投入するジョブをすべて NSFW 扱いにする（OFF = 非 NSFW 固定）
     nsfw: bool = False
 
@@ -2543,8 +2571,9 @@ class StudioProjectCreate(BaseModel):
 class StudioProjectUpdate(BaseModel):
     """PATCH /api/studio/projects/{id} body（指定した項目だけ変える）。
 
-    ``megapixels`` / ``aspect_ratio`` は **null を明示すると外れる**（送らな
-    ければ今の値のまま）。区別は ``model_fields_set`` で行う（Shot 側の
+    ``megapixels`` / ``aspect_ratio``（と素材画像側の ``image_megapixels`` /
+    ``image_aspect_ratio``）は **null を明示すると外れる**（送らなければ今の値
+    のまま）。区別は ``model_fields_set`` で行う（Shot 側の
     :class:`StudioShotUpdate` と同じ約束）。
     """
 
@@ -2562,6 +2591,8 @@ class StudioProjectUpdate(BaseModel):
     latent_upscale: bool | None = None
     #: 動画生成の品質（:data:`StudioVideoQuality`）
     quality: StudioVideoQuality | None = None
+    #: 画像生成の品質（:data:`StudioImageQuality`。素材の静止画にだけ効く）
+    image_quality: StudioImageQuality | None = None
     #: 動画生成の画質＝メガピクセル（null を送ると既定へ戻る）
     megapixels: float | None = None
     #: 動画生成のアスペクト比（null を送ると既定へ戻る）
@@ -2570,11 +2601,20 @@ class StudioProjectUpdate(BaseModel):
     #: ``megapixels`` などと違って NULL を持たない列なので、未指定を表すのは
     #: null ではなく **0** のほう（送らなければ今の値のまま）。
     steps: int | None = None
+    #: 素材画像の画質＝メガピクセル（null を送ると既定へ戻る）
+    image_megapixels: float | None = None
+    #: 素材画像のアスペクト比（null を送ると既定へ戻る）
+    image_aspect_ratio: str | None = None
+    #: 素材画像のサンプリング回数（``0`` を送ると「テンプレートの既定のまま」
+    #: へ戻る。動画側の ``steps`` と同じで、未指定を表すのは null ではなく 0）
+    image_steps: int | None = None
     #: この作品から投入するジョブをすべて NSFW 扱いにする（OFF = 非 NSFW 固定）
     nsfw: bool | None = None
 
     #: null を明示できる項目（送られたときだけ NULL 書き込みを許す）
-    NULLABLE: ClassVar[tuple[str, ...]] = ("megapixels", "aspect_ratio")
+    NULLABLE: ClassVar[tuple[str, ...]] = (
+        "megapixels", "aspect_ratio", "image_megapixels", "image_aspect_ratio",
+    )
 
     def changes(self) -> dict[str, object]:
         """書き換える項目だけを取り出す（未指定は入らない）。"""

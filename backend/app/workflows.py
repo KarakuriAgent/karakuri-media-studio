@@ -1248,11 +1248,13 @@ _MINIMAX_H3_T2I_COMMON_NOTES = (
     _MINIMAX_H3_IMAGE_NOTES + _MINIMAX_H3_IMAGE_SELECT_NOTES
 )
 
-#: 素の版のモデルファイル（t2i / i2i は fl2va、r2i は ref2va）
+#: 素の版のモデルファイル（t2i / i2i は fl2va、r2i は ref2va）。動画側の素の版と
+#: 同じく量子化ウェイト（w4a8_mixed）と heretic の text encoder を使い、VAE だけ
+#: fp16（int8_convrot は opt / turbo だけ）。
 _MINIMAX_H3_IMAGE_MODELS = (
-    " モデル: minimax_h3_{unet}_pruned_int8_convrot（diffusion_models）+"
+    " モデル: minimax_h3_{unet}_pruned_w4a8_mixed（diffusion_models）+"
     " minimax_h3_video_vae_fp16（vae）+"
-    " qwen3vl_32b_minimax_h3_nvfp4_awq（text_encoders）/"
+    " qwen3vl_32b_heretic_minimax_h3_nvfp4（text_encoders）/"
     " サンプリングは res_multistep・simple・20 ステップ"
 )
 
@@ -1275,13 +1277,24 @@ _MINIMAX_H3_IMAGE_OPT_NOTES = (
     " Advanced Sampling 側が持っている）"
 )
 
+#: r2i の opt / turbo だけの注記。動画の r2v opt / turbo と同じで、ref2va の
+#: 量子化ウェイトではなく **fl2va + 参照 LoRA** で参照モードにする。
+_MINIMAX_H3_IMAGE_REF_LORA_NOTES = (
+    " / r2i の opt / turbo だけは素の版と土台が違い、"
+    "`minimax_h3_fl2va_pruned_w4a8_mixed` に参照 LoRA"
+    "（`minimax_h3_ref_lora_rank_256_bf16`）を `LoraLoaderModelOnly`（ノード 144）で"
+    "重ねてから `PathchSageAttentionKJ` 以降の連鎖に流す"
+    "（ref2va の量子化ウェイトは使わない）"
+)
+
 #: turbo 版だけの注記（opt との差分）
 _MINIMAX_H3_IMAGE_TURBO_NOTES = (
-    " / **turbo**: opt に**公式の Turbo アダプタ**（`LoraLoaderModelOnly` で"
-    "読む。設定画面から差し替え可）を足した高速版で、sampler は euler /"
-    " scheduler は simple。**fl2va と ref2va のアダプタは混ぜられない**"
-    "（t2i・i2i は `minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16` の 8 ステップ、"
-    "r2i は `minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16` の 4 ステップ）"
+    " / **turbo**: opt に**公式の 4step 蒸留 LoRA**"
+    "（`minimax_h3_fl2v_turbo_4step_v1.1_768p_comfyui_bf16`。"
+    "`LoraLoaderModelOnly` で読むので設定画面から差し替え可）を足した高速版で、"
+    "サンプリングは **4 ステップ**（t2i・i2i は res_multistep・simple、"
+    "r2i は euler・simple）。r2i は蒸留 LoRA（ノード 143）→ 参照 LoRA"
+    "（ノード 144）の順で 2 段重ねる"
 )
 
 #: i2i / r2i の共通の注記（source_fidelity はプロンプトの言い回しを変えるだけ）
@@ -1467,11 +1480,10 @@ _MINIMAX_H3_IMAGE_OPT_DESCRIPTION = (
 )
 
 _MINIMAX_H3_IMAGE_TURBO_DESCRIPTION = (
-    " Turbo build: the optimised graph plus the official H3 Turbo adapter"
-    " (euler sampling, 8 steps for fl2va / 4 steps for ref2va), so it finishes"
-    " much faster. Same inputs as the plain workflow, but it only runs on a"
-    " ComfyUI that has the H3 custom nodes, the quantised weights and the"
-    " matching Turbo adapter."
+    " Turbo build: the optimised graph plus the official 4-step distilled H3"
+    " Turbo LoRA (4 sampling steps), so it finishes much faster. Same inputs as"
+    " the plain workflow, but it only runs on a ComfyUI that has the H3 custom"
+    " nodes, the quantised weights and the Turbo LoRA."
 )
 
 MINIMAX_H3_T2I_OPT = replace(
@@ -1502,8 +1514,8 @@ MINIMAX_H3_T2I_TURBO = replace(
         + _MINIMAX_H3_IMAGE_TURBO_NOTES
         + " /"
         + _MINIMAX_H3_IMAGE_FAST_MODELS.format(unet="fl2va")
-        + " + minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16（loras）/"
-        " サンプリングは euler・simple・8 ステップ"
+        + " + minimax_h3_fl2v_turbo_4step_v1.1_768p_comfyui_bf16（loras）/"
+        " サンプリングは res_multistep・simple・4 ステップ"
     ),
 )
 
@@ -1535,8 +1547,8 @@ MINIMAX_H3_I2I_TURBO = replace(
         + _MINIMAX_H3_IMAGE_TURBO_NOTES
         + " /"
         + _MINIMAX_H3_IMAGE_FAST_MODELS.format(unet="fl2va")
-        + " + minimax_h3_fl2v_turbo_8step_v1.0_comfyui_bf16（loras）/"
-        " サンプリングは euler・simple・8 ステップ"
+        + " + minimax_h3_fl2v_turbo_4step_v1.1_768p_comfyui_bf16（loras）/"
+        " サンプリングは res_multistep・simple・4 ステップ"
     ),
 )
 
@@ -1550,8 +1562,10 @@ MINIMAX_H3_R2I_OPT = replace(
     notes=(
         _MINIMAX_H3_R2I_COMMON_NOTES
         + _MINIMAX_H3_IMAGE_OPT_NOTES
+        + _MINIMAX_H3_IMAGE_REF_LORA_NOTES
         + " /"
-        + _MINIMAX_H3_IMAGE_FAST_MODELS.format(unet="ref2va")
+        + _MINIMAX_H3_IMAGE_FAST_MODELS.format(unet="fl2va")
+        + " + minimax_h3_ref_lora_rank_256_bf16（loras）"
     ),
 )
 
@@ -1565,10 +1579,12 @@ MINIMAX_H3_R2I_TURBO = replace(
     notes=(
         _MINIMAX_H3_R2I_COMMON_NOTES
         + _MINIMAX_H3_IMAGE_OPT_NOTES
+        + _MINIMAX_H3_IMAGE_REF_LORA_NOTES
         + _MINIMAX_H3_IMAGE_TURBO_NOTES
         + " /"
-        + _MINIMAX_H3_IMAGE_FAST_MODELS.format(unet="ref2va")
-        + " + minimax_h3_ref2v_turbo_4step_v0.1_comfyui_bf16（loras）/"
+        + _MINIMAX_H3_IMAGE_FAST_MODELS.format(unet="fl2va")
+        + " + minimax_h3_fl2v_turbo_4step_v1.1_768p_comfyui_bf16 +"
+        " minimax_h3_ref_lora_rank_256_bf16（loras）/"
         " サンプリングは euler・simple・4 ステップ"
     ),
 )
@@ -1794,11 +1810,13 @@ MINIMAX_H3_REFERENCE_IMAGES = 9
 MINIMAX_H3_REFERENCE_VIDEOS = 3
 MINIMAX_H3_REFERENCE_AUDIOS = 3
 
-#: モデルファイル（t2v / i2v は fl2va、r2v は ref2va。他は共通）
+#: モデルファイル（t2v / i2v は fl2va、r2v は ref2va。他は共通）。
+#: 素の版も量子化ウェイト（w4a8_mixed）と heretic の text encoder を使い、
+#: opt / turbo との差は動画 VAE（fp16 か int8_convrot か）と焼き込みノードだけ。
 _MINIMAX_H3_MODELS = (
-    " モデル: minimax_h3_{unet}_pruned_int8_convrot（diffusion_models）+"
+    " モデル: minimax_h3_{unet}_pruned_w4a8_mixed（diffusion_models）+"
     " minimax_h3_video_vae_fp16 + minimax_h3_audio_vae_fp32 +"
-    " qwen3vl_32b_minimax_h3_nvfp4_awq（text_encoders）"
+    " qwen3vl_32b_heretic_minimax_h3_nvfp4（text_encoders）"
 )
 
 #: turbo / opt / 連続カットのテンプレートだけが使う**任意のカスタムノード**の

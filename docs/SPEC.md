@@ -120,6 +120,20 @@
   すべてに `_turbo` / `_opt` を持つので、**ラテント連続性が ON でも t2v でも品質は効く**。
   素へ落ちるのは接続先が対応しない（`comfy_cloud`）ときだけで、そのときも 2 段目までの結果
   （＝保存付きの版）は保ったまま品質だけを落とす。理由は投入プレビューの `workflow_reason` に出る。
+- **画像生成品質**（`image_quality` = `normal` / `opt` / `turbo`、既定 `normal`）は、上の
+  「動画生成品質」と**同じ 3 段だが独立したプロジェクト設定**。効くのは作品の素材となる
+  静止画を MiniMax H3 Image で焼くときだけで、`minimax_h3_{t2i,i2i,r2i}` の素 / `_opt` /
+  `_turbo` を選ぶ（`app.studio.image_quality_workflow`。接続先が対応しなければ素へ落とす）。
+  動画の `quality` は静止画には流用しない（動画を turbo で回していても素材の絵は素で焼く、
+  という使い分けのために分けてある）。いまのところアプリ側に静止画を焼く経路は無く、
+  素材画像を作るのはエージェント（エージェントモード / 外部 API 経由の Claude Code・
+  Cursor CLI）なので、この値はまず**エージェントへの指示値**として効く。
+- **素材画像の画質**（`image_megapixels` / `image_aspect_ratio` / `image_steps`、
+  既定は `NULL` / `NULL` / `0`）は、下の動画側の `megapixels` / `aspect_ratio` / `steps` と
+  同じ 3 項目を**素材の静止画用に別で持つ**もの。素材の静止画ジョブ（`mode: "image_only"`）には
+  こちらを使い、**動画用の値は流用しない**。`NULL` / `0` = 指定しない＝テンプレートの既定のまま
+  （MiniMax H3 Image は約 0.98MP）で、`image_steps` の上限は動画側と同じ `MAX_STEPS`（150）。
+  「設定されているものだけを渡す」形にまとめるのは `app.studio.image_render_defaults`。
 - 画質のほうはワークフローを選ばず、プロジェクトの **`megapixels` / `aspect_ratio`**
   （生成フォームと同じ 2 項目を作品単位の既定として持つ）が投入時の値を決める。
   どちらも `NULL` = **明示しない**（＝これまでどおりワークフロー宣言の
@@ -221,7 +235,7 @@
 | `qwen_image_edit_2511` | Qwen-Image Edit 2511 | `qwen-image` | 画像（編集元画像） | **編集系**。`source_image` 必須で、出力解像度は入力画像から決まる（`aspect_ratio` / `megapixels` は無視） |
 | `minimax_h3_t2i` / `_opt` / `_turbo` | MiniMax H3 Image t2i | `minimax-h3-image` | なし | text-to-image。H3（音声つき動画モデル）でフレームのパケットを作り 1 枚を選ぶ（枚数は `selects` の `quality_profile` で 5 / 9 / 13 / 20）。`ResolutionSelector` は無く、アプリが幅・高さを **32 の倍数**で計算して注入（既定 0.98MP） |
 | `minimax_h3_i2i` / `_opt` / `_turbo` | MiniMax H3 Image i2i | `minimax-h3-image` | 画像（編集元画像） | **編集系**。`source_image` を fl2va のフレーム 0 に置く。解像度は `aspect_ratio` + `megapixels`（合わせ方は `selects` の `source_fit`・既定 crop_center） |
-| `minimax_h3_r2i` / `_opt` / `_turbo` | MiniMax H3 Image r2i | `minimax-h3-image` | 参照画像 1〜9 枚 | **参照編集系**（ref2va）。`reference_images` を渡した順に `<Picture 1>` … で参照。開始フレーム（`source_image`）は受け取らない |
+| `minimax_h3_r2i` / `_opt` / `_turbo` | MiniMax H3 Image r2i | `minimax-h3-image` | 参照画像 1〜9 枚 | **参照編集系**（base は ref2va、`_opt` / `_turbo` は fl2va + 参照 LoRA）。`reference_images` を渡した順に `<Picture 1>` … で参照。開始フレーム（`source_image`）は受け取らない |
 | `grok_imagine_t2i` | Grok Imagine 画像生成（サブスク CLI） | `grok-imagine` | なし | **ComfyUI 非依存**（`backend: "grok_cli"`、§5.2）。text-to-image |
 | `grok_imagine_edit` | Grok Imagine 画像編集（サブスク CLI） | `grok-imagine` | 画像（編集元画像） | **ComfyUI 非依存**の編集系。`source_image` 必須で、出力解像度は入力画像から決まる |
 
@@ -237,8 +251,25 @@
   `OPTIONAL_CLASS_TYPES` に載せてあるので、カスタムノードが無い接続先
   （Comfy Cloud を含む）では base / `_opt` / `_turbo` とも丸ごと選択肢から落ちる
   （§3.2。`_opt` / `_turbo` は動画側と同じ高速化ノードも焼き込んである）。
-  `_turbo` の Turbo アダプタは `LoraLoaderModelOnly` で読むので設定画面から
+  `_turbo` の Turbo LoRA は `LoraLoaderModelOnly` で読むので設定画面から
   差し替えできる（§3.3）
+- `minimax-h3-image` のモデル構成は**動画側（`minimax-h3`）とそろえてある**:
+
+  | | base | `_opt` | `_turbo` |
+  |---|---|---|---|
+  | UNET（t2i / i2i） | `minimax_h3_fl2va_pruned_w4a8_mixed` | 同左 | 同左 |
+  | UNET（r2i） | `minimax_h3_ref2va_pruned_w4a8_mixed` | `minimax_h3_fl2va_pruned_w4a8_mixed` | 同左 |
+  | CLIP | `qwen3vl_32b_heretic_minimax_h3_nvfp4` | 同左 | 同左 |
+  | 動画 VAE | `minimax_h3_video_vae_fp16` | `minimax_h3_video_vae_int8_convrot` | 同左 |
+  | LoRA | なし | r2i のみ参照 LoRA（ノード 144） | 4step 蒸留 LoRA（t2i / i2i はノード 150、r2i は 143 → 144 で参照 LoRA と 2 段） |
+  | `H3SamplingSettings` | res_multistep / simple / 20 | 同左 | 4 ステップ（t2i / i2i は res_multistep、r2i は euler） |
+
+  **r2i の `_opt` / `_turbo` だけは土台が違い**、動画の r2v と同じく ref2va の量子化ウェイトではなく
+  `minimax_h3_fl2va_pruned_w4a8_mixed` に参照 LoRA `minimax_h3_ref_lora_rank_256_bf16` を
+  `LoraLoaderModelOnly`（ノード 144・strength 1.0）で重ねて参照モードにする。`_turbo` はさらに
+  4step 蒸留 LoRA `minimax_h3_fl2v_turbo_4step_v1.1_768p_comfyui_bf16` を UNET 直後（ノード 143）に
+  挟む（`UNETLoader → 143 → 144 → PathchSageAttentionKJ → …`）。t2i / i2i の `_turbo` は
+  蒸留 LoRA 1 段だけ（ノード 150）
 - `minimax_h3_r2i` は**画像ステージが参照素材（`reference_images`）を受け取る**唯一の
   ワークフロー。`RefMediaFan` の宣言で、渡された枚数ぶん `LoadImage` を生やして
   1 枚目を `source_image`（= `<Picture 1>`）、2 枚目以降を `reference_image_2` … に
@@ -412,16 +443,22 @@ ComfyUI が「テンプレートにしか無いファイル」を探して落ち
 
 | 差分 | 素の版 | turbo |
 |---|---|---|
-| UNET | `minimax_h3_{fl2va,ref2va}_pruned_int8_convrot` | `minimax_h3_{fl2va,ref2va}_pruned_w4a8_mixed` |
-| CLIP | `qwen3vl_32b_minimax_h3_nvfp4_awq` | `qwen3vl_32b_heretic_minimax_h3_nvfp4` |
+| UNET | `minimax_h3_{fl2va,ref2va}_pruned_w4a8_mixed` | 同左（r2v だけ fl2va + 参照 LoRA。下記） |
+| CLIP | `qwen3vl_32b_heretic_minimax_h3_nvfp4` | 同左 |
 | 動画 VAE | `minimax_h3_video_vae_fp16` | `minimax_h3_video_vae_int8_convrot` |
+| 蒸留 LoRA | なし | `minimax_h3_fl2v_turbo_4step_v1.1_768p_comfyui_bf16` |
 | `BasicScheduler.steps` | 20 | **4** |
+| `KSamplerSelect.sampler_name` | `res_multistep` | 同左（r2v turbo だけ `euler`） |
+
+素の版も**量子化ウェイトと heretic の text encoder**を使うので、素の版と turbo の
+モデルファイルの差は**動画 VAE と蒸留 LoRA だけ**（`opt` は turbo から蒸留 LoRA を抜いて
+steps を 20 に戻したもの）。
 
 UNETLoader と BasicGuider の間には、高速化ノードが**テンプレートに直接**直列で入っている:
 
 ```
 UNETLoader
- → MiniMaxH3TurboLoRA      (minimax_h3_turbo_4step_ema_ckpt850.safetensors, strength 1)
+ → MiniMaxH3TurboLoRA      (minimax_h3_fl2v_turbo_4step_v1.1_768p_comfyui_bf16.safetensors, strength 1)
  → PathchSageAttentionKJ   (sage_attention=auto)
  → MiniMaxH3MemoryEfficientSageAttentionPatch     (入力は model のみ)
  → SolAttnPatch            (tau 1.5 / 0.2〜0.9)   ──→ BasicScheduler.model
@@ -685,7 +722,7 @@ Stable Audio の `reprompt`（内蔵 LLM でのプロンプト展開）だけは
 
 - 画像側: 各ファミリーの UNET / CLIP / VAE（krea2 = `krea2_turbo_fp8_scaled` + `qwen3vl_4b_fp8_scaled` + `qwen_image_vae`、anima = `anima-base-v1.0`、z-image = `z_image_turbo_bf16`、qwen-image = `qwen_image_edit_2511_int8_convrot` + Lightning 4steps LoRA）と KSampler 設定
 - 音声側: MiniMax Music 3 `minimax_music3_dit_fp16` + `minimax_music3_text_encoder_pruned_int8_convrot` + `minimax_music3_dav`、Stable Audio `stable_audio_3_medium_base` + `t5gemma_b_b_ul2` / `qwen3.5_2b_bf16`、およびサンプラー設定
-- 動画側: MiniMax H3 の UNET / CLIP / 映像 VAE / 音声 VAE（`minimax_h3_*` 系。turbo は w4a8 量子化ウェイト + 4step 蒸留 LoRA + Sage Attention / Sol-Attn / SigmaShift / Spectrum）とサンプラー設定
+- 動画側: MiniMax H3 の UNET / CLIP / 映像 VAE / 音声 VAE（`minimax_h3_*` 系。素の版から w4a8 量子化ウェイトで、opt / turbo はさらに int8_convrot の映像 VAE + Sage Attention / Sol-Attn / SigmaShift / Spectrum、turbo は 4step 蒸留 LoRA も）とサンプラー設定
 - **モデルファイル名は利用者の ComfyUI 環境依存**のため、設定ページ（`GET/PUT /api/models`）で上書き可能。既定値は各テンプレートの値。対象は UNETLoader.unet_name / CLIPLoader.clip_name / CLIPVisionLoader.clip_name / VAELoader.vae_name / CheckpointLoaderSimple.ckpt_name / LatentUpscaleModelLoader.model_name / LoadMoGeModel.model_name / LoraLoaderModelOnly.lora_name / LoraLoader.lora_name / MiniMaxH3TurboLoRA.lora_name（§3.4 で削除される画像テンプレートのプレースホルダは除く。テンプレートが持つ固定 LoRA ノード（qwen-image の Lightning LoRA、MiniMax H3 turbo の 4step 蒸留 LoRA）はユーザー LoRA と共存するので上書き対象のまま）
 - **モデルの指定は接続先ごと**（SPEC §5）: `Settings.model_overrides` / `model_choices` は `{"<comfy_target>": {"<スロットキー>": …}}` の 2 段で持つ。どのファイルが在るかは ComfyUI の環境ごとに違うため。`GET/PUT /api/models` は `?target=`（PUT はボディの `target`）で対象環境を選び、省略すると現在の接続先。**書き込みは選んだ環境だけ**で他の環境の指定は残る。ジョブ実行・`/api/options` の `model_slots`・エージェントの検証はすべて「現在の接続先」の値（`Settings.overrides_for()` / `choices_for()`）を使う。接続先を分ける前の設定（1 組だけ）は読み込み時に**3 環境すべてへ複製**される（`config._per_target`）: 分けた瞬間に指定が消えて既定モデルで走り出すのを避けるため
 - 上書きキーは**ワークフロー ID でスコープ**する: `"<workflow_id>/<node_id>.<field>": "<ファイル名>"`。テンプレート間で同じノード ID（例: `340:317` が ia2v と id_lora の両方にある）が衝突しないため。旧レイアウトの非スコープキーは無視される（マイグレーション不要）

@@ -1082,6 +1082,94 @@ def test_source_fit_and_reference_detail_are_injected(workflow_id):
         assert wf["5"]["inputs"]["reference_detail"] == "max_identity_2048"
 
 
+#: 画像テンプレートのモデル構成（UNET / 動画 VAE / UNETLoader から直列に重なる
+#: LoRA / ステップ数 / sampler）。動画側の t2v・r2v とそろえてあり、r2i の
+#: opt / turbo だけは ref2va ではなく **fl2va + 参照 LoRA**（SPEC §2.3）。
+_H3_FL2VA = "minimax_h3_fl2va_pruned_w4a8_mixed.safetensors"
+_H3_REF2VA = "minimax_h3_ref2va_pruned_w4a8_mixed.safetensors"
+_H3_VAE_FP16 = "minimax_h3_video_vae_fp16.safetensors"
+_H3_VAE_INT8 = "minimax_h3_video_vae_int8_convrot.safetensors"
+_H3_TURBO_LORA = "minimax_h3_fl2v_turbo_4step_v1.1_768p_comfyui_bf16.safetensors"
+_H3_REF_LORA = "minimax_h3_ref_lora_rank_256_bf16.safetensors"
+
+H3_IMAGE_MODELS = {
+    "minimax_h3_t2i": (_H3_FL2VA, _H3_VAE_FP16, [], 20, "res_multistep"),
+    "minimax_h3_t2i_opt": (_H3_FL2VA, _H3_VAE_INT8, [], 20, "res_multistep"),
+    "minimax_h3_t2i_turbo": (
+        _H3_FL2VA,
+        _H3_VAE_INT8,
+        [_H3_TURBO_LORA],
+        4,
+        "res_multistep",
+    ),
+    "minimax_h3_i2i": (_H3_FL2VA, _H3_VAE_FP16, [], 20, "res_multistep"),
+    "minimax_h3_i2i_opt": (_H3_FL2VA, _H3_VAE_INT8, [], 20, "res_multistep"),
+    "minimax_h3_i2i_turbo": (
+        _H3_FL2VA,
+        _H3_VAE_INT8,
+        [_H3_TURBO_LORA],
+        4,
+        "res_multistep",
+    ),
+    "minimax_h3_r2i": (_H3_REF2VA, _H3_VAE_FP16, [], 20, "res_multistep"),
+    "minimax_h3_r2i_opt": (
+        _H3_FL2VA,
+        _H3_VAE_INT8,
+        [_H3_REF_LORA],
+        20,
+        "res_multistep",
+    ),
+    # turbo は蒸留 LoRA -> 参照 LoRA の順で 2 段
+    "minimax_h3_r2i_turbo": (
+        _H3_FL2VA,
+        _H3_VAE_INT8,
+        [_H3_TURBO_LORA, _H3_REF_LORA],
+        4,
+        "euler",
+    ),
+}
+
+
+@pytest.mark.parametrize("workflow_id", H3_IMAGE_IDS)
+def test_the_h3_image_templates_load_the_expected_weights(workflow_id):
+    unet, vae, loras, steps, sampler = H3_IMAGE_MODELS[workflow_id]
+    wf = _h3_image_wf(workflow_id)
+    by_class: dict[str, list[str]] = {}
+    for key, node in wf.items():
+        by_class.setdefault(node["class_type"], []).append(key)
+    assert wf[by_class["UNETLoader"][0]]["inputs"]["unet_name"] == unet
+    assert (
+        wf[by_class["CLIPLoader"][0]]["inputs"]["clip_name"]
+        == "qwen3vl_32b_heretic_minimax_h3_nvfp4.safetensors"
+    )
+    # 画像側は音声 VAE を使わないので、VAE は動画のもの 1 つだけ
+    assert {wf[key]["inputs"]["vae_name"] for key in by_class["VAELoader"]} == {vae}
+    # UNETLoader から順に辿って、テンプレートに焼き込んだ LoRA を並べる
+    chain: list[str] = []
+    upstream = by_class["UNETLoader"][0]
+    while True:
+        nxt = [
+            key
+            for key, node in wf.items()
+            if node["class_type"] == "LoraLoaderModelOnly"
+            and node["inputs"].get("model") == [upstream, 0]
+        ]
+        if not nxt:
+            break
+        chain.append(wf[nxt[0]]["inputs"]["lora_name"])
+        upstream = nxt[0]
+    assert chain == loras
+    assert len(by_class.get("LoraLoaderModelOnly", [])) == len(loras)
+    # 高速化ノードの連鎖（opt / turbo）は LoRA の下流から始まる
+    if "_opt" in workflow_id or "_turbo" in workflow_id:
+        sage = by_class["PathchSageAttentionKJ"][0]
+        assert wf[sage]["inputs"]["model"] == [upstream, 0]
+    sampling = wf[by_class["H3SamplingSettings"][0]]["inputs"]
+    assert sampling["steps"] == steps
+    assert sampling["sampler_name"] == sampler
+    assert sampling["scheduler"] == "simple"
+
+
 def test_the_h3_image_selects_survive_a_rerun():
     """ジョブの params に残るので、再実行でも同じ値が使われる。"""
     original = params(

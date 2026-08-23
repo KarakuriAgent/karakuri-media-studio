@@ -76,7 +76,12 @@ from .models import (
 from .config import load_settings
 from .paths import rebase_stored_path
 from .workflow import WorkflowError, supported_on_target
-from .workflows import LATENT_UPSCALE_NAME, WorkflowSpecError, get_video_spec
+from .workflows import (
+    LATENT_UPSCALE_NAME,
+    WorkflowSpecError,
+    get_image_spec,
+    get_video_spec,
+)
 
 log = logging.getLogger(__name__)
 
@@ -244,6 +249,100 @@ def _quality_workflow(workflow: str, quality: str) -> tuple[str, str]:
             "通常品質で投入します"
         )
     return variant, f"品質「{label}」で投入します"
+
+
+# --------------------------------------------------------------------------
+# 画像生成の品質（プロジェクトの ``image_quality``）
+# --------------------------------------------------------------------------
+#
+# 動画の ``quality`` とは**独立したつまみ**。素材の静止画（World Bible の
+# キャラ・場所・小道具）を MiniMax H3 Image で焼くときにだけ効き、動画の品質は
+# 一切見ない（動画を turbo で回していても素材の絵は素で焼きたい、という
+# 使い分けのため）。値の並びと正規化は動画側と同じ（:func:`normalize_quality`）。
+#
+# いまのところプロジェクトから静止画を焼く経路はサーバ側に無く、素材画像を
+# 作るのは**エージェント**（エージェントモード / 外部 API 経由の Claude Code・
+# Cursor CLI）なので、この設定はまず「エージェントに伝える値」として持つ
+# （:mod:`app.prompts` のスタジオ節）。解決そのものは動画側と同じ形で
+# :func:`image_quality_workflow` に置いてあるので、UI から静止画を焼く経路が
+# できたらそのまま使える。
+
+#: 素材の静止画に使う MiniMax H3 Image のワークフロー
+WORKFLOW_T2I = "minimax_h3_t2i"
+WORKFLOW_I2I = "minimax_h3_i2i"
+WORKFLOW_R2I = "minimax_h3_r2i"
+
+#: 既定の画像品質（列が無い / 値が壊れている既存プロジェクトもこれとして扱う）
+DEFAULT_IMAGE_QUALITY = "normal"
+
+#: 画像品質 -> （論理ワークフロー -> そのバリアント id）。動画側の
+#: :data:`QUALITY_WORKFLOWS` と同じ形で、t2i / i2i / r2i の 3 つに
+#: ``_opt`` / ``_turbo`` が揃っている。
+IMAGE_QUALITY_WORKFLOWS: dict[str, dict[str, str]] = {
+    "turbo": {
+        WORKFLOW_T2I: "minimax_h3_t2i_turbo",
+        WORKFLOW_I2I: "minimax_h3_i2i_turbo",
+        WORKFLOW_R2I: "minimax_h3_r2i_turbo",
+    },
+    "opt": {
+        WORKFLOW_T2I: "minimax_h3_t2i_opt",
+        WORKFLOW_I2I: "minimax_h3_i2i_opt",
+        WORKFLOW_R2I: "minimax_h3_r2i_opt",
+    },
+}
+
+
+def _image_quality_supported_on_target(workflow: str) -> bool:
+    """いまの接続先で画像の turbo / opt を投げてよいか。
+
+    動画側の :func:`_quality_supported_on_target` と同じ判定を画像スペックに
+    かけるだけ（対応の定義は :func:`app.workflow.supported_on_target` 1 か所）。
+    """
+    try:
+        spec = get_image_spec(workflow)
+        return supported_on_target(spec, load_settings().comfy_target)
+    except (WorkflowSpecError, WorkflowError, OSError):
+        # テンプレートが読めない環境では素へ落として投入だけは通す
+        return False
+
+
+def image_quality_workflow(workflow_id: str, image_quality: str) -> str:
+    """素材の静止画を焼くワークフロー id を ``image_quality`` で読み替える。
+
+    ``workflow_id`` は素の ``minimax_h3_t2i`` / ``_i2i`` / ``_r2i``。
+    ``image_quality`` が ``normal`` のとき、バリアントが無いとき、いまの接続先が
+    turbo / opt のカスタムノードに対応しない（Comfy Cloud）ときは、渡された
+    id をそのまま返す。**動画の ``quality`` は見ない。**
+    """
+    quality = normalize_quality(image_quality)
+    if quality == DEFAULT_IMAGE_QUALITY:
+        return workflow_id
+    variant = IMAGE_QUALITY_WORKFLOWS[quality].get(workflow_id)
+    if variant is None or not _image_quality_supported_on_target(variant):
+        return workflow_id
+    return variant
+
+
+def image_render_defaults(project: StudioProject) -> dict[str, Any]:
+    """素材の静止画ジョブに渡す画質まわりの値をまとめる。
+
+    プロジェクトの ``image_megapixels`` / ``image_aspect_ratio`` /
+    ``image_steps`` を「**設定されていれば渡す**」形で拾うだけ（未設定＝
+    ``None`` / ``0`` の項目は入れない＝テンプレートの既定に任せる）。
+    動画側の ``megapixels`` / ``aspect_ratio`` / ``steps`` は**見ない**
+    （静止画に動画用の値を流用しないため）。
+    """
+    values: dict[str, Any] = {}
+    megapixels = normalize_megapixels(project.image_megapixels)
+    if megapixels is not None:
+        values["megapixels"] = megapixels
+    aspect_ratio = normalize_aspect_ratio(project.image_aspect_ratio)
+    if aspect_ratio is not None:
+        values["aspect_ratio"] = aspect_ratio
+    steps = normalize_steps(project.image_steps)
+    if steps:
+        values["steps"] = steps
+    return values
 
 
 # --------------------------------------------------------------------------
@@ -454,9 +553,15 @@ def _row_to_project(row: aiosqlite.Row) -> StudioProject:
     data["latent_continuity"] = bool(data.get("latent_continuity", 0))
     data["latent_upscale"] = bool(data.get("latent_upscale", 1))
     data["quality"] = normalize_quality(data.get("quality"))
+    data["image_quality"] = normalize_quality(data.get("image_quality"))
     data["megapixels"] = normalize_megapixels(data.get("megapixels"))
     data["aspect_ratio"] = normalize_aspect_ratio(data.get("aspect_ratio"))
     data["steps"] = normalize_steps(data.get("steps"))
+    data["image_megapixels"] = normalize_megapixels(data.get("image_megapixels"))
+    data["image_aspect_ratio"] = normalize_aspect_ratio(
+        data.get("image_aspect_ratio")
+    )
+    data["image_steps"] = normalize_steps(data.get("image_steps"))
     data["nsfw"] = bool(data.get("nsfw", 0))
     return StudioProject(**data)
 
@@ -559,9 +664,17 @@ async def list_projects() -> list[StudioProjectSummary]:
         data["latent_continuity"] = bool(data.get("latent_continuity", 0))
         data["latent_upscale"] = bool(data.get("latent_upscale", 1))
         data["quality"] = normalize_quality(data.get("quality"))
+        data["image_quality"] = normalize_quality(data.get("image_quality"))
         data["megapixels"] = normalize_megapixels(data.get("megapixels"))
         data["aspect_ratio"] = normalize_aspect_ratio(data.get("aspect_ratio"))
         data["steps"] = normalize_steps(data.get("steps"))
+        data["image_megapixels"] = normalize_megapixels(
+            data.get("image_megapixels")
+        )
+        data["image_aspect_ratio"] = normalize_aspect_ratio(
+            data.get("image_aspect_ratio")
+        )
+        data["image_steps"] = normalize_steps(data.get("image_steps"))
         data["nsfw"] = bool(data.get("nsfw", 0))
         summaries.append(StudioProjectSummary(**data))
     return summaries
@@ -580,6 +693,10 @@ async def create_project(
     aspect_ratio: str | None = None,
     steps: int = 0,
     latent_upscale: bool = DEFAULT_LATENT_UPSCALE,
+    image_quality: str = DEFAULT_IMAGE_QUALITY,
+    image_megapixels: float | None = None,
+    image_aspect_ratio: str | None = None,
+    image_steps: int = 0,
     *,
     actor: str = "user",
 ) -> StudioProject:
@@ -590,7 +707,8 @@ async def create_project(
         project = await _insert_project(
             conn, title, code, synopsis, world_notes, auto_translate,
             latent_continuity, nsfw, quality, megapixels, aspect_ratio,
-            _checked_steps(steps), latent_upscale,
+            _checked_steps(steps), latent_upscale, image_quality,
+            image_megapixels, image_aspect_ratio, _checked_steps(image_steps),
         )
         await _record_revision(conn, project.id, actor, "プロジェクトを作成")
         await conn.commit()
@@ -611,6 +729,10 @@ async def _insert_project(
     aspect_ratio: str | None = None,
     steps: int = 0,
     latent_upscale: bool = DEFAULT_LATENT_UPSCALE,
+    image_quality: str = DEFAULT_IMAGE_QUALITY,
+    image_megapixels: float | None = None,
+    image_aspect_ratio: str | None = None,
+    image_steps: int = 0,
 ) -> StudioProject:
     project_id = new_id()
     now = _now()
@@ -619,8 +741,9 @@ async def _insert_project(
             "INSERT INTO studio_projects"
             " (id, name, code, synopsis, world_notes, auto_translate,"
             "  latent_continuity, quality, megapixels, aspect_ratio, steps,"
-            "  nsfw, latent_upscale, created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "  nsfw, latent_upscale, image_quality, image_megapixels,"
+            "  image_aspect_ratio, image_steps, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 project_id,
                 title,
@@ -635,6 +758,10 @@ async def _insert_project(
                 normalize_steps(steps),
                 1 if nsfw else 0,
                 1 if latent_upscale else 0,
+                normalize_quality(image_quality),
+                normalize_megapixels(image_megapixels),
+                normalize_aspect_ratio(image_aspect_ratio),
+                normalize_steps(image_steps),
                 now,
                 now,
             ),
@@ -664,7 +791,8 @@ async def update_project(
 ) -> StudioProject | None:
     """``None`` の項目は触らない（指定されたものだけ書き換える）。
 
-    ただし ``megapixels`` / ``aspect_ratio`` は「既定へ戻す」を表す必要がある
+    ただし ``megapixels`` / ``aspect_ratio``（と素材画像側の
+    ``image_megapixels`` / ``image_aspect_ratio``）は「既定へ戻す」を表す必要がある
     ので、**入っていれば** ``None``（NULL）も書く。「送らなかった」と「null を
     送った」の区別は :meth:`app.models.StudioProjectUpdate.changes` が済ませて
     いる（Shot 側と同じ約束）。
@@ -689,12 +817,24 @@ async def update_project(
         changes["latent_upscale"] = 1 if changes["latent_upscale"] else 0
     if "quality" in changes:
         changes["quality"] = normalize_quality(changes["quality"])
+    if "image_quality" in changes:
+        changes["image_quality"] = normalize_quality(changes["image_quality"])
     if "megapixels" in changes:
         changes["megapixels"] = normalize_megapixels(changes["megapixels"])
     if "aspect_ratio" in changes:
         changes["aspect_ratio"] = normalize_aspect_ratio(changes["aspect_ratio"])
     if "steps" in changes:
         changes["steps"] = _checked_steps(changes["steps"])
+    if "image_megapixels" in changes:
+        changes["image_megapixels"] = normalize_megapixels(
+            changes["image_megapixels"]
+        )
+    if "image_aspect_ratio" in changes:
+        changes["image_aspect_ratio"] = normalize_aspect_ratio(
+            changes["image_aspect_ratio"]
+        )
+    if "image_steps" in changes:
+        changes["image_steps"] = _checked_steps(changes["image_steps"])
     if "nsfw" in changes:
         changes["nsfw"] = 1 if changes["nsfw"] else 0
     async with get_db() as conn:

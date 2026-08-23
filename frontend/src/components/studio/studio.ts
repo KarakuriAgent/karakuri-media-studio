@@ -12,6 +12,7 @@ import type {
   StudioAssetCategory,
   StudioAssetKind,
   StudioEpisode,
+  StudioImageQuality,
   StudioProjectDetail,
   StudioRenderRequest,
   StudioRevisionActor,
@@ -123,19 +124,50 @@ export const VIDEO_QUALITY_HINT: Record<StudioVideoQuality, string> = {
   turbo: 'Turbo = 4 steps の蒸留 LoRA 版（いちばん速いが粗い）。',
 }
 
+/**
+ * 画像生成の品質（プロジェクト設定）。動画の品質とは独立したつまみで、素材の
+ * 静止画を MiniMax H3 Image で焼くときの版だけを決める。
+ */
+export const IMAGE_QUALITIES: StudioImageQuality[] = ['normal', 'opt', 'turbo']
+
+export const IMAGE_QUALITY_LABEL: Record<StudioImageQuality, string> = {
+  normal: '通常',
+  opt: 'Opt',
+  turbo: 'Turbo',
+}
+
+export const IMAGE_QUALITY_HINT: Record<StudioImageQuality, string> = {
+  normal: '通常 = 素の MiniMax H3 Image。どの接続先でも動く標準の品質。',
+  opt: 'Opt = 量子化と高速化だけを入れた版（品質は通常のまま速い）。',
+  turbo: 'Turbo = 蒸留 LoRA 版（いちばん速いが粗い）。',
+}
+
 /** 狭い画面のヘッダーに出す、プロジェクト生成設定の 1 行要約。 */
 export function formatProjectSettingsSummary(input: {
   target?: ComfyTarget | null
   quality: StudioVideoQuality
+  /** 画像生成の品質（既定の `normal` は出さず、変えてあるときだけ足す）。 */
+  imageQuality?: StudioImageQuality
   aspectRatio: string | null
   megapixels: number | null
   steps: number
+  /** 素材画像の画質（メガピクセル）。既定（`null`）のときは出さない。 */
+  imageMegapixels?: number | null
+  /** 素材画像のアスペクト比。既定（`null`）のときは出さない。 */
+  imageAspectRatio?: string | null
+  /** 素材画像のサンプリング回数。既定（`0`）のときは出さない。 */
+  imageSteps?: number
   /** ラテントアップスケール（既定の ON は出さず、OFF のときだけ足す）。 */
   latentUpscale?: boolean
 }): string {
   const parts: string[] = []
   if (input.target) parts.push(COMFY_TARGET_LABELS[input.target])
   parts.push(VIDEO_QUALITY_LABEL[input.quality])
+  // 画像品質は既定（通常）を書かない。動画と違う設定にしてあるときだけ、
+  // 狭い画面でも気づけるように「画像 Turbo」の形で足す。
+  if (input.imageQuality && input.imageQuality !== 'normal') {
+    parts.push(`画像${IMAGE_QUALITY_LABEL[input.imageQuality]}`)
+  }
   const aspect = input.aspectRatio?.trim() ?? ''
   if (!aspect) {
     parts.push('既定')
@@ -145,6 +177,15 @@ export function formatProjectSettingsSummary(input: {
   }
   parts.push(input.megapixels === null ? '既定' : `${input.megapixels}MP`)
   parts.push(input.steps > 0 ? `${input.steps}step` : 'おまかせ')
+  // 素材画像の画質 3 項目も既定は書かない。動画と別に設定してあるときだけ、
+  // 「画像 16:9」「画像 0.5MP」「画像 8step」の形で足す。
+  const imageAspect = input.imageAspectRatio?.trim() ?? ''
+  if (imageAspect) {
+    const cut = imageAspect.indexOf(' (')
+    parts.push(`画像${cut === -1 ? imageAspect : imageAspect.slice(0, cut)}`)
+  }
+  if (input.imageMegapixels != null) parts.push(`画像${input.imageMegapixels}MP`)
+  if (input.imageSteps) parts.push(`画像${input.imageSteps}step`)
   // 既定（ON）は書かない。切ってあるときだけ、狭い画面でも気づけるように出す。
   if (input.latentUpscale === false) parts.push('拡大なし')
   return parts.join(' · ')

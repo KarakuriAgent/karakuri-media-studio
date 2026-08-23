@@ -1038,6 +1038,14 @@ export type StudioRevisionActor = 'user' | 'agent'
  */
 export type StudioVideoQuality = 'normal' | 'opt' | 'turbo'
 
+/**
+ * 画像生成の品質（プロジェクト単位の設定）。動画の `StudioVideoQuality` と同じ
+ * 3 段だが**独立したつまみ**で、素材の静止画を MiniMax H3 Image
+ * （`minimax_h3_t2i` / `_i2i` / `_r2i` の素 / `_opt` / `_turbo`）で焼くときに
+ * だけ効く。動画を turbo で回していても素材の絵は素で焼ける。
+ */
+export type StudioImageQuality = 'normal' | 'opt' | 'turbo'
+
 export interface StudioProject {
   id: string
   name: string
@@ -1064,6 +1072,11 @@ export interface StudioProject {
   /** 動画生成の品質（テイク生成のたびにモードと掛け合わせて解決される）。 */
   quality: StudioVideoQuality
   /**
+   * 画像生成の品質（動画の `quality` とは独立）。素材の静止画を MiniMax H3
+   * Image で焼くときの版（素 / `_opt` / `_turbo`）を決める。
+   */
+  image_quality: StudioImageQuality
+  /**
    * 動画生成の画質（メガピクセル）の作品既定。`null` = 指定しない＝ワークフローの
    * 既定のまま。Shot 個別の `megapixels` があればそちらが勝つ。
    */
@@ -1078,6 +1091,19 @@ export interface StudioProject {
    * （品質 turbo なら 4、normal / opt なら 20）。
    */
   steps: number
+  /**
+   * 素材画像の画質（メガピクセル）の作品既定。`null` = 指定しない＝テンプレートの
+   * 既定のまま（MiniMax H3 Image は約 0.98MP）。動画の `megapixels` とは独立で、
+   * 静止画に動画用の値は流用しない。
+   */
+  image_megapixels: number | null
+  /** 素材画像のアスペクト比の作品既定（`null` = 既定のまま）。 */
+  image_aspect_ratio: string | null
+  /**
+   * 素材画像のサンプリング回数の作品既定。`0` = 未指定＝テンプレートの既定の
+   * まま。上限は動画側と同じ。
+   */
+  image_steps: number
   /**
    * この作品から投入するジョブをすべて NSFW 扱いにする。OFF なら**非 NSFW で
    * 固定**（投入時に明示するので、Grok の自動判定は走らない）。
@@ -1112,6 +1138,14 @@ export interface StudioProjectCreate {
   latent_upscale?: boolean
   /** 動画生成の品質（既定は素の 20 steps = `normal`）。 */
   quality?: StudioVideoQuality
+  /** 画像生成の品質（素材の静止画にだけ効く。既定 `normal`）。 */
+  image_quality?: StudioImageQuality
+  /** 素材画像の画質（メガピクセル）の作品既定（`null` = テンプレートの既定）。 */
+  image_megapixels?: number | null
+  /** 素材画像のアスペクト比の作品既定（`null` = 既定のまま）。 */
+  image_aspect_ratio?: string | null
+  /** 素材画像のサンプリング回数の作品既定（`0` = テンプレートの既定のまま）。 */
+  image_steps?: number
   /** 動画生成の画質（メガピクセル）の作品既定（`null` = ワークフローの既定）。 */
   megapixels?: number | null
   /** 動画生成のアスペクト比の作品既定（`null` = 既定のまま）。 */
@@ -1139,6 +1173,14 @@ export interface StudioProjectUpdate {
   latent_upscale?: boolean
   /** 動画生成の品質。 */
   quality?: StudioVideoQuality
+  /** 画像生成の品質（素材の静止画にだけ効く）。 */
+  image_quality?: StudioImageQuality
+  /** 素材画像の画質（メガピクセル）の作品既定（`null` を送ると既定へ戻る）。 */
+  image_megapixels?: number | null
+  /** 素材画像のアスペクト比の作品既定（`null` を送ると既定へ戻る）。 */
+  image_aspect_ratio?: string | null
+  /** 素材画像のサンプリング回数の作品既定（`0` = テンプレートの既定のまま）。 */
+  image_steps?: number
   /** 動画生成の画質（メガピクセル）の作品既定（`null` を送ると既定へ戻る）。 */
   megapixels?: number | null
   /** 動画生成のアスペクト比の作品既定（`null` を送ると既定へ戻る）。 */
