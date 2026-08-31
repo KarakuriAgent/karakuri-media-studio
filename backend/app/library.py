@@ -9,8 +9,8 @@
 ``audio_path``）にはライブラリのパスや URL をそのまま指定できる
 （:func:`app.jobs.resolve_asset_path` が ``assets/`` と同じように受け付ける）。
 
-ルーターとエージェント（:mod:`app.agent_runner`）の両方から使うので、DB と
-ファイル操作はここに集約する。
+ルーター（:mod:`app.routers.library`）から使うので、DB とファイル操作はここに
+集約する。
 """
 
 from __future__ import annotations

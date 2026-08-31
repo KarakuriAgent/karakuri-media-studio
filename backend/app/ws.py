@@ -19,10 +19,6 @@ from typing import Any
 from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 
 from .models import (
-    AgentArtifact,
-    AgentProgress,
-    CanvasMessage,
-    CanvasProgress,
     ChatProgress,
     JobProgress,
     LibraryItem,
@@ -101,80 +97,6 @@ async def publish(
             "progress": progress,
             "message": message,
             "nsfw": nsfw,
-        }
-    await hub.broadcast(payload)
-
-
-async def publish_agent(
-    session_id: str,
-    status: str,
-    *,
-    task_id: str | None = None,
-    task_status: str | None = None,
-    job_id: str | None = None,
-    artifact: AgentArtifact | None = None,
-    message: str | None = None,
-    thinking: bool | None = None,
-    activity: str | None = None,
-) -> None:
-    """Broadcast one agent event (``type: "agent"``). Never raises."""
-    try:
-        payload = AgentProgress(
-            session_id=session_id,
-            status=status,  # type: ignore[arg-type]
-            task_id=task_id,
-            task_status=task_status,  # type: ignore[arg-type]
-            job_id=job_id,
-            artifact=artifact,
-            message=message,
-            thinking=thinking,
-            activity=activity,
-        ).model_dump()
-    except Exception:  # noqa: BLE001 - an unknown status must not break the loop
-        payload = {
-            "type": "agent",
-            "session_id": session_id,
-            "status": status,
-            "task_id": task_id,
-            "task_status": task_status,
-            "job_id": job_id,
-            "artifact": artifact.model_dump() if artifact else None,
-            "message": message,
-            "thinking": thinking,
-            "activity": activity,
-        }
-    await hub.broadcast(payload)
-
-
-async def publish_canvas(
-    project_id: str,
-    *,
-    running: bool,
-    activity: str | None = None,
-    message: CanvasMessage | None = None,
-    session_id: str | None = None,
-) -> None:
-    """Broadcast one canvas agent event (``type: "canvas"``). Never raises.
-
-    会話の正は ``canvas_messages`` なので、ここで流すのは「いま足された 1 件」と
-    実行中かどうかだけ。取りこぼしたブラウザは盤面を取り直せば追いつける。
-    """
-    try:
-        payload = CanvasProgress(
-            project_id=project_id,
-            running=running,
-            activity=activity,
-            message=message,
-            session_id=session_id,
-        ).model_dump()
-    except Exception:  # noqa: BLE001 - 通知の失敗で実行を壊さない
-        payload = {
-            "type": "canvas",
-            "project_id": project_id,
-            "running": running,
-            "activity": activity,
-            "message": message.model_dump() if message else None,
-            "session_id": session_id,
         }
     await hub.broadcast(payload)
 

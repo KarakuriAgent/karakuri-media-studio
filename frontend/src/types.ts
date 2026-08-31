@@ -18,8 +18,8 @@ export type JobStatus =
 export type ComfyTarget = 'local' | 'runpod' | 'comfy_cloud'
 
 /**
- * LLM を回すコーディング CLI（SPEC §4.1）。チャット・エージェント・
- * スタジオ会話・キャンバス・英訳・自動タグがこの選択に従う。
+ * LLM を回すコーディング CLI（SPEC §4.1）。チャット・スタジオ会話・
+ * 英訳・自動タグがこの選択に従う。
  * Grok Imagine（画像生成）だけは常に grok。
  */
 export type LlmCli = 'grok' | 'claude' | 'codex' | 'cursor'
@@ -43,7 +43,7 @@ export interface Settings {
   agent_cli_models: Record<string, string>
   grok_command: string
   grok_model: string
-  /** チャット / エージェントが grok CLI を回すときの作業ディレクトリ（空 = 既定）。 */
+  /** チャット・英訳が grok CLI を回すときの作業ディレクトリ（空 = 既定）。 */
   grok_workdir: string
   /**
    * Grok Imagine（画像生成・編集、SPEC §5.2）の作業ディレクトリと制限時間。
@@ -91,41 +91,17 @@ export interface Settings {
   /** 外部 API から積める未完了 Take の上限（0 = 無制限）。 */
   external_max_pending_takes: number
   /**
-   * エージェント / 相談の実行上限（AGENT-MODE §3.4）。どれも **0 = 無制限**で、
-   * 既定値は従来どおり（無制限にしたい人だけが 0 を入れる）。
-   */
-  /**
-   * grok CLI に足す追加フラグ（ツール権限）。**空にするとエージェントのツールが
-   * 丸ごと無効**になり、システムプロンプトからもツールの節が落ちる。
+   * grok CLI に足す追加フラグ（ツール権限）。相談チャットや英訳の呼び出しに
+   * そのまま渡る。**空にすると CLI のツールが丸ごと無効**になる。
    */
   agent_grok_args: string[]
   /**
-   * エージェントのターンを ACP（`grok agent stdio`）で回すか。ON だと実行中の
+   * LLM のターンを ACP（`grok agent stdio`）で回すか。ON だと実行中の
    * 活動（思考 / ツール実行）が UI に出る。OFF は従来のワンショット実行。
    */
   agent_use_acp: boolean
-  /**
-   * inspect の音声解析に文字起こし（STT）を足すか。推論はバックエンドに抱えず
-   * OpenAI 互換の外部エンドポイントへ投げるので、接続先が要る（既定は OFF）。
-   */
-  agent_stt_enabled: boolean
-  /**
-   * 文字起こしサーバーのベース URL（例 `http://localhost:8000/v1`）。
-   * 空なら STT はスキップされる。
-   */
-  agent_stt_base_url: string
-  /** 使うモデル名（空 = サーバー任せ。OpenAI なら `whisper-1`）。 */
-  agent_stt_model: string
-  /** 文字起こしサーバーの API キー（ローカルサーバーなら空でよい）。 */
-  agent_stt_api_key: string
   /** grok CLI 1 回あたりの制限時間（秒）。0 = タイムアウトなし。 */
   agent_grok_timeout: number
-  /** 自走セッションの「1 回のプラン提案で増やせる新規ジョブ数」。0 = 無制限。 */
-  agent_max_plan_tasks: number
-  /** スタジオのエージェントが人間の入力なしに回せる連続ターン数。0 = 無制限。 */
-  agent_max_turns: number
-  /** キャンバスのエージェントが 1 回の発言から回す連続ターン数。0 = 無制限。 */
-  canvas_max_turns: number
   /**
    * 高速化トグルの既定値（SPEC §3.1）。宣言のある動画ワークフロー（`supports`
    * にそれぞれの名前があるもの）だけが読む。生成フォームのトグルがここを
@@ -808,184 +784,6 @@ export interface ChatSessionCreate {
   negative_tags_draft?: string | null
 }
 
-// ---------------------------------------------------------------- agent mode
-// AGENT-MODE §4 / §5 — mirrors the Agent* models of backend/app/models.py.
-
-export type AgentStatus =
-  | 'idle'
-  | 'planning'
-  | 'running'
-  | 'waiting_checkin'
-  | 'stopped'
-  | 'done'
-export type AgentCheckinMode = 'every_job' | 'milestone' | 'auto'
-export type AgentActionName =
-  | 'plan'
-  | 'run_task'
-  | 'continue'
-  | 'rerun'
-  | 'inspect'
-  | 'note'
-  | 'checkin'
-  | 'done'
-export type AgentTaskStatus = 'pending' | 'running' | 'done' | 'failed' | 'skipped'
-
-/** POST /api/agent/sessions/{id}/attachments のレスポンス。 */
-export interface AgentAttachment {
-  name: string
-  /** workdir 相対パス（`attachments/<name>`）。 */
-  path: string
-}
-
-export interface AgentMessage {
-  role: 'system' | 'user' | 'assistant' | 'event' | 'checkin'
-  content: string
-  ts: string
-  /** event / checkin の種別（job_started, inspect_result, checkin …）。 */
-  kind: string | null
-  data: Record<string, unknown>
-}
-
-export interface AgentTask {
-  id: string
-  label: string
-  /** Validated JobCreate snapshot. */
-  job: Record<string, unknown>
-  status: AgentTaskStatus
-  job_id: string | null
-  error: string | null
-  retries: number
-}
-
-export interface AgentPlan {
-  version: number
-  notes: string
-  approved: boolean
-  tasks: AgentTask[]
-}
-
-export interface AgentArtifact {
-  kind: 'plan' | 'note' | 'research' | 'frame' | 'image' | 'video' | 'audio'
-  title: string
-  ts: string
-  /** workdir 相対のファイル名（外部成果物は空）。 */
-  name: string
-  url: string | null
-  job_id: string | null
-  text: string | null
-}
-
-export interface AgentSession {
-  id: string
-  created_at: string
-  title: string
-  status: AgentStatus
-  checkin_mode: AgentCheckinMode
-  auto_limit: number
-  messages: AgentMessage[]
-  plan: AgentPlan
-  artifacts: AgentArtifact[]
-  nsfw: boolean
-  /** '' = 未判定 / 'auto' / 'manual'。 */
-  nsfw_source: string
-  /** Grok ターンの実行中フラグ（バックエンドのインメモリ状態）。 */
-  thinking: boolean
-  /** 実行中の活動（「思考中」「ツール実行中: …」。未実行なら null）。 */
-  activity: string | null
-}
-
-export interface AgentSessionSummary {
-  id: string
-  created_at: string
-  title: string
-  status: AgentStatus
-  checkin_mode: AgentCheckinMode
-  auto_limit: number
-  message_count: number
-  task_count: number
-  artifact_count: number
-  nsfw: boolean
-  nsfw_source: string
-  preview?: string
-}
-
-export interface AgentSessionCreate {
-  title?: string
-  goal?: string
-  checkin_mode?: AgentCheckinMode
-  auto_limit?: number
-}
-
-/**
- * PATCH /api/agent/sessions/{id} body（送った項目だけ変わる）。
- *
- * システムプロンプトは作成時に焼き込むので、指示文に載るのは次のターンから。
- * 生成本数の上限判定だけは実行中のループにも即時に効く。
- */
-export interface AgentSessionUpdate {
-  checkin_mode?: AgentCheckinMode
-  /** 生成本数の上限（0 = 無制限）。 */
-  auto_limit?: number
-}
-
-export interface AgentApprove {
-  approved?: boolean
-  note?: string
-}
-
-export interface AgentCheckinReply {
-  content?: string
-  choice?: string | null
-}
-
-export interface AgentAction {
-  action: AgentActionName
-  notes: string
-  summary: string
-  question: string
-  options: string[]
-  tasks: AgentTask[]
-  task_id: string | null
-  job_id: string | null
-  interval: number
-  title: string
-  filename: string | null
-  content: string
-  /** note アクションの成果物種別（リサーチまとめは research）。 */
-  kind: 'note' | 'research'
-  overrides: Record<string, unknown>
-  /** プラン外 continue / rerun がユーザー承認済みか。 */
-  approved: boolean
-}
-
-/**
- * 発言 / 承認 / チェックイン応答の**受付**レスポンス（202）。
- *
- * ターンはバックグラウンドで回るので `content` と `action` は常に空で、
- * 見るのは受付時点の `session`（`status: "running"`）だけ。返事はそのあとの
- * WS フレームとポーリングで届く。
- */
-export interface AgentReply {
-  content: string
-  action: AgentAction | null
-  session: AgentSession
-}
-
-export interface AgentProgress {
-  type: 'agent'
-  session_id: string
-  status: AgentStatus
-  task_id: string | null
-  task_status: AgentTaskStatus | null
-  job_id: string | null
-  artifact: AgentArtifact | null
-  message: string | null
-  /** Grok ターンが走っているか（null = この通知では変化なし）。 */
-  thinking: boolean | null
-  /** 実行中の活動テキスト（null = 変化なし / ターン終了）。 */
-  activity: string | null
-}
-
 // --------------------------------------------------------------------------
 // ドラマスタジオ（プロジェクト -> 脚本 -> Shot ごとの生成 -> Take の採用）
 // backend/app/models.py 末尾の Studio 系モデルの写し。
@@ -1279,7 +1077,7 @@ export interface StudioAsset {
  *
  * メインのファイル（`StudioAsset.path`）とは別に、キャラの声サンプルや動きの
  * 参照動画・別アングルの画像を何本でも足せる。今の生成ワークフローには自動では
- * 流れない（エージェントとインスペクタの手がかり）。
+ * 流れない（インスペクタの手がかり）。
  */
 export interface StudioAssetFile {
   id: string
@@ -1922,249 +1720,4 @@ export interface TimelineExportProgress {
   /** 完了したときだけ入る配信 URL。 */
   output_url: string | null
   error: string | null
-}
-
-// --------------------------------------------------------------------------
-// キャンバス（ドラマスタジオの別ビュー）
-// backend/app/models.py のキャンバス系モデルの写し。
-//
-// カード 1 枚 = スタジオの 1 エンティティで、カードが持つのは「どの行か」
-// （kind と entity_id）と「どこに置いてあるか」だけ。中身は studio_* が唯一の
-// 正で、text / model のカードだけ中身を `data` に持つ。
-//
-// キャンバスはスタジオの鏡: カードの無いエンティティには board を読んだ時点で
-// サーバーがカードを作るので、「置く / 置かない」という状態は無い。
-// --------------------------------------------------------------------------
-
-/**
- * カードの種別。前半 5 つは素材（studio_assets。分類は
- * character / environment / prop / style / reference に対応づく）、
- * scene / shot / media はそれぞれ場・Shot・Take、text / model はキャンバス専用。
- */
-export type CanvasCardKind =
-  | 'character'
-  | 'location'
-  | 'object'
-  | 'style'
-  | 'reference'
-  | 'scene'
-  | 'shot'
-  | 'media'
-  | 'text'
-  | 'model'
-
-export type CanvasRole = 'user' | 'assistant' | 'event'
-
-/** model カードの生成対象（生成フォームの WorkflowKind と同じ語彙）。 */
-export type CanvasModelTarget = 'image' | 'video' | 'audio'
-
-/** text カードの中身（ただの覚え書き）。 */
-export interface CanvasTextData {
-  body: string
-}
-
-/** model カードに書ける生成パラメータ。 */
-export interface CanvasModelParams {
-  aspect_ratio: string
-  megapixels: number
-  /** 動画の尺 / 音声の長さ（秒）。 */
-  duration: number
-  fps: number
-  /** null = サーバー設定の既定値に任せる。 */
-  loras: LoraRef[]
-  video_loras: LoraRef[]
-  /** 空 = ジョブの既定値に任せる。 */
-  negative_prompt: string
-  selects: Record<string, string>
-  model_overrides: Record<string, string>
-}
-
-/** model カードの中身（「何用の生成設定か」を置いておくカード）。 */
-export interface CanvasModelData {
-  target: CanvasModelTarget
-  /** 既存カタログのワークフロー ID（空 = まだ選んでいない）。 */
-  workflow: string
-  params: CanvasModelParams
-  note: string
-}
-
-/** キャンバスの表示位置（プロジェクトごとに 1 つ）。 */
-export interface CanvasViewport {
-  x: number
-  y: number
-  zoom: number
-}
-
-/** キャンバスに置いた 1 枚。 */
-export interface CanvasCard {
-  id: string
-  project_id: string
-  kind: CanvasCardKind
-  /** 参照しているスタジオ側の行（text / model は null）。 */
-  entity_id: string | null
-  /**
-   * 置いてあるタブ（null = 作品共通）。**参照カードでは常に null** で、
-   * どのタブに出るかはスタジオの所属（場 -> 話）から導く（logic.ts の
-   * `cardEpisode`）。使うのは text / model カードだけ。
-   */
-  episode_id: string | null
-  /** キャンバス専用 kind の中身（参照カードでは空）。 */
-  data: Record<string, unknown>
-  x: number
-  y: number
-  w: number
-  h: number
-  z: number
-  created_at: string
-  updated_at: string
-}
-
-/**
- * POST /api/canvas/projects/{id}/cards body。
- *
- * 作るのは**新しいもの**だけ（参照カードは対応するエンティティも一緒に作る）。
- * 既にあるものはキャンバスを開けば自動で並ぶので、置き直す口は無い
- * （media カードは Take が生まれたときにだけできる）。
- */
-export interface CanvasCardCreate {
-  kind: CanvasCardKind
-  /** 新しく作るエンティティの名前（素材）またはタイトル（場 / Shot）。 */
-  title?: string
-  /** 新しく作る素材の種別。 */
-  asset_kind?: StudioAssetKind
-  /** shot カードを作るとき、どの場に入れるか（null = 未分類）。 */
-  scene_id?: string | null
-  /**
-   * scene カードならどの話に入れるか（null = 先頭の話）、text / model カード
-   * ならどのタブに置くか（null = 作品共通）。
-   */
-  episode_id?: string | null
-  /** text / model の中身。素材カードでは新しい素材の profile として渡る。 */
-  data?: Record<string, unknown>
-  x?: number
-  y?: number
-  w?: number
-  h?: number
-}
-
-/** PATCH /api/canvas/cards/{id} body（`data` は text / model カードのみ）。 */
-export interface CanvasCardUpdate {
-  data?: Record<string, unknown>
-  x?: number
-  y?: number
-  w?: number
-  h?: number
-  z?: number
-}
-
-/** PUT /api/canvas/cards/{id}/position body（置き場所だけ動かす）。 */
-export interface CanvasCardPosition {
-  x: number
-  y: number
-  w?: number
-  h?: number
-  z?: number
-}
-
-/** キャンバスのチャット 1 発言。 */
-export interface CanvasMessage {
-  id: string
-  project_id: string
-  session_id?: string
-  ts: string
-  role: CanvasRole
-  content: string
-  /** event の種別（action_result など。会話なら null）。 */
-  kind: string | null
-  data: Record<string, unknown>
-}
-
-/** POST /api/canvas/projects/{id}/messages body。 */
-export interface CanvasMessageCreate {
-  role?: CanvasRole
-  content: string
-  kind?: string | null
-  data?: Record<string, unknown>
-}
-
-/** 添付ファイルの種別（プレビューの出し分けにだけ使う）。 */
-export type CanvasAttachmentKind = 'image' | 'video' | 'audio' | 'document'
-
-/**
- * POST /api/canvas/projects/{id}/attachments の応答。
- *
- * 実体はキャンバスの作業ディレクトリの `attachments/` に置かれ、エージェント
- * （grok CLI）はそこを根に動くのでそのまま開ける。ブラウザからは
- * `GET /api/canvas/projects/{id}/attachments/{path}` で読める。
- */
-export interface CanvasAttachment {
-  /** 元のファイル名（画面に出す名前）。 */
-  name: string
-  /** workdir 相対パス（`attachments/<file>`）。発言に添えるのはこれ。 */
-  path: string
-  /** 保存先の絶対パス（エージェントにはこちらを伝える）。 */
-  abs_path: string
-  kind: CanvasAttachmentKind
-}
-
-/**
- * GET /api/canvas/projects/{id}: キャンバス **1 タブ**ぶん。
- *
- * カードの中身はスタジオ側（GET /api/studio/projects/{id}）にあるので、ここに
- * 入るのは置き場所と会話だけ。`cards` と `viewport` は開いているタブのもので、
- * 会話（`messages`）はタブによらず作品に 1 本。
- */
-export interface CanvasBoard {
-  project_id: string
-  /** 開いているタブ（null = 作品共通）。 */
-  episode_id: string | null
-  session_id?: string | null
-  viewport: CanvasViewport
-  cards: CanvasCard[]
-  messages: CanvasMessage[]
-}
-
-/** GET /api/canvas/projects/{id}/sessions の 1 行。 */
-export interface CanvasChatSession {
-  id: string
-  project_id: string
-  title: string
-  created_at: string
-  updated_at: string
-  preview: string
-}
-
-/** GET /api/canvas/projects/{id}/sessions/search のヒット。 */
-export interface CanvasSessionSearchHit {
-  session_id: string
-  title: string
-  snippet: string
-  ts: string
-}
-
-/**
- * キャンバスのチャットから走らせたエージェントの状態。
- *
- * セッションは持たない（会話は `canvas_messages` が唯一の正）ので、走っているか
- * どうかと実行中の活動だけ。
- */
-export interface CanvasAgentState {
-  project_id: string
-  running: boolean
-  /** 実行中の活動（「ツール実行中: …」など）。null = 無し。 */
-  activity: string | null
-  session_id?: string | null
-}
-
-/** POST /api/canvas/projects/{id}/agent の応答（保存したユーザー発言つき）。 */
-export interface CanvasAgentRun extends CanvasAgentState {
-  message: CanvasMessage
-}
-
-/** WS /api/ws のキャンバス実行イベント（`type: "canvas"`）。 */
-export interface CanvasProgress extends CanvasAgentState {
-  type: 'canvas'
-  session_id?: string | null
-  /** 会話に足された 1 件（null = 状態が変わっただけ）。 */
-  message: CanvasMessage | null
 }

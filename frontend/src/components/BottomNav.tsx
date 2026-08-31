@@ -1,18 +1,17 @@
-import { Bot, Clapperboard, Sparkles, type LucideIcon } from 'lucide-react'
+import { Clapperboard, Sparkles, type LucideIcon } from 'lucide-react'
 
 import { VIEW_TABS, type View } from './Header'
 
 /** 下部タブのアイコン（ヘッダーのタブと同じ行き先を、狭幅では絵で見せる）。 */
 const ICON: Record<(typeof VIEW_TABS)[number]['value'], LucideIcon> = {
   main: Sparkles,
-  agent: Bot,
   studio: Clapperboard,
 }
 
 /**
  * 狭幅（sm 未満）用の下部固定タブバー。
  *
- * ヘッダーに 3 つのタブを並べると接続状態・NSFW・設定と競って横に溢れるので、
+ * ヘッダーにタブを並べると接続状態・NSFW・設定と競って横に溢れるので、
  * ネイティブアプリと同じく画面下へ逃がす。設定は歯車ボタン側なのでここには
  * 出さず、`view === 'settings'` のあいだはどのタブも選択状態にしない。
  *

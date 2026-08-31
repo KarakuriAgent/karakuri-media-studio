@@ -6,7 +6,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app import (
-    agent_store,
     chat_agent,
     config,
     db,
@@ -88,7 +87,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(jobs, "ASSETS_DIR", assets)
     monkeypatch.setattr(jobs, "LIBRARY_DIR", lib)
     monkeypatch.setattr(library, "LIBRARY_DIR", lib)
-    monkeypatch.setattr(agent_store, "AGENT_SESSIONS_DIR", sessions)
+    monkeypatch.setattr(chat_agent, "CHAT_SESSIONS_DIR", sessions)
     monkeypatch.setattr(
         config,
         "_settings",
@@ -146,7 +145,7 @@ def add_to_library(
 
 def chat_dir(env, session_id: str):
     """そのチャットの作業ディレクトリ（入力画像のコピー先 = grok の cwd）。"""
-    return env.sessions / f"chat-{session_id}"
+    return env.sessions / session_id
 
 
 def start(env, **overrides) -> dict:

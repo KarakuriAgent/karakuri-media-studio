@@ -1,4 +1,4 @@
-"""音声生成（mode='audio'）: マニフェスト・注入・API・エージェント検証。
+"""音声生成（mode='audio'）: マニフェスト・注入・API。
 
 音声は画像→動画の連結とは独立したジョブなので、ここでは「音声ジョブが正しく
 動くこと」と「既存の image / video ジョブに一切影響しないこと」の両方を見る。
@@ -6,7 +6,6 @@
 
 import pytest
 
-from app.agent_protocol import ActionError, validate_job
 from app.models import (
     GenerationParams,
     JobCreate,
@@ -16,9 +15,7 @@ from app.models import (
 from app.prompts import (
     audio_prompt_guides_section,
     audio_workflow_catalog_section,
-    build_agent_system_prompt,
 )
-from app.models import AgentSessionCreate, Options
 from app.workflow import build_audio_workflow, build_workflows, model_fields
 from app.workflows import (
     AUDIO_CATEGORIES,
@@ -258,60 +255,6 @@ def test_existing_modes_are_unaffected_by_the_audio_fields():
 
 
 # --------------------------------------------------------------------------
-# agent protocol
-# --------------------------------------------------------------------------
-
-def test_agent_accepts_a_well_formed_audio_task():
-    job = validate_job(
-        {
-            "mode": "audio",
-            "audio_workflow": SA3,
-            "audio_prompt": "rain on a metal roof. Length: 30 seconds",
-            "audio_category": "SFX",
-            "duration": 30,
-        },
-        where="tasks[1]",
-    )
-    assert job.mode == "audio"
-    assert job.audio_category == "SFX"
-
-
-@pytest.mark.parametrize(
-    "job, needle",
-    [
-        ({"mode": "audio", "audio_prompt": "x", "audio_workflow": "nope"},
-         "使えるのは"),
-        ({"mode": "audio", "duration": 60}, "audio_prompt"),
-        ({"mode": "audio", "audio_prompt": "x", "duration": 1200}, "1-300 seconds"),
-        # テンポ・キー・言語はどの音声モデルにも無いので、スキーマ外として弾く
-        ({"mode": "audio", "audio_prompt": "x", "keyscale": "Am"},
-         "未知のフィールドがあります: keyscale"),
-        ({"mode": "audio", "audio_prompt": "x", "bpm": 92},
-         "未知のフィールドがあります: bpm"),
-        ({"mode": "audio", "audio_prompt": "x", "video_prompt": "she dances"},
-         "独立ジョブ"),
-        ({"mode": "audio", "audio_prompt": "x", "source_image": "/assets/image/a.png"},
-         "独立ジョブ"),
-        ({"mode": "audio", "audio_prompt": "x", "audio_workflow": SA3,
-          "lyrics": "[Verse] la"}, "歌詞を歌えません"),
-        ({"mode": "audio", "audio_prompt": "x", "audio_category": "SFX"},
-         "`audio_category` はありません"),
-    ],
-)
-def test_agent_rejects_bad_audio_tasks_with_a_self_correcting_message(job, needle):
-    with pytest.raises(ActionError) as caught:
-        validate_job(job, where="tasks[1]")
-    assert needle in str(caught.value)
-
-
-def test_agent_still_accepts_the_existing_video_tasks():
-    job = validate_job(
-        {"mode": "image_only", "image_prompt": "a still"}, where="tasks[1]"
-    )
-    assert job.mode == "image_only"
-
-
-# --------------------------------------------------------------------------
 # system prompt
 # --------------------------------------------------------------------------
 
@@ -334,15 +277,6 @@ def test_audio_prompt_guides_cover_every_registered_audio_workflow():
         assert head in guides
     # Stable Audio 公式テンプレートの締めくくり
     assert "Length: Y seconds" in guides
-
-
-def test_agent_system_prompt_embeds_the_audio_sections():
-    prompt = build_agent_system_prompt(AgentSessionCreate(goal="音楽を作りたい"), Options())
-    assert "# AUDIO WORKFLOWS" in prompt
-    assert "# AUDIO PROMPT GUIDES" in prompt
-    # 画像・動画のカタログは今までどおり残っている
-    assert "# IMAGE WORKFLOWS" in prompt
-    assert "# VIDEO WORKFLOWS" in prompt
 
 
 # --------------------------------------------------------------------------

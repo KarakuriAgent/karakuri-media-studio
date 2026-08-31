@@ -1,11 +1,11 @@
 """NSFW 自動判定。
 
-作品には NSFW と非 NSFW が混在するため、ジョブ／エージェントセッションには
-``nsfw`` フラグを持たせ、UI のトグルがオフのあいだは NSFW の存在自体を見せない。
+作品には NSFW と非 NSFW が混在するため、ジョブには ``nsfw`` フラグを持たせ、
+UI のトグルがオフのあいだは NSFW の存在自体を見せない。
 
 判定は **常にベストエフォート**で、生成をブロックしない:
 
-1. ジョブ／セッションは ``nsfw_source = ''``（未判定）で作られ、
+1. ジョブは ``nsfw_source = ''``（未判定）で作られ、
 2. :func:`spawn` の fire-and-forget タスクが Grok にワンショットで尋ね、
 3. 失敗したらキーワードのヒューリスティックに落ち、
 4. ``nsfw_source`` がまだ ''（= 手動指定で上書きされていない）ときだけ
@@ -188,38 +188,7 @@ async def _job_status(job_id: str) -> str | None:
     return row["status"] if row else None
 
 
-async def _session_status(session_id: str) -> str | None:
-    async with get_db() as conn:
-        async with conn.execute(
-            "SELECT status FROM agent_sessions WHERE id = ?", (session_id,)
-        ) as cur:
-            row = await cur.fetchone()
-    return row["status"] if row else None
-
-
-async def escalate_session(session_id: str) -> bool:
-    """セッション内のジョブが NSFW だったら、セッションも NSFW に引き上げる。
-
-    手動指定（``manual``）は尊重する。エージェント以外のセッション ID なら何もしない。
-    """
-    async with get_db() as conn:
-        cur = await conn.execute(
-            "UPDATE agent_sessions SET nsfw = 1, nsfw_source = 'auto'"
-            " WHERE id = ? AND nsfw = 0 AND nsfw_source != 'manual'",
-            (session_id,),
-        )
-        await conn.commit()
-        if cur.rowcount <= 0:
-            return False
-    status = await _session_status(session_id)
-    if status:
-        await ws.publish_agent(session_id, status, message="NSFW と判定しました")
-    return True
-
-
-async def classify_job(
-    job_id: str, text: str, session_id: str | None = None
-) -> None:
+async def classify_job(job_id: str, text: str) -> None:
     """1 ジョブ分の自動判定（バックグラウンドタスクの本体）。例外は投げない。"""
     try:
         nsfw, _ = await classify_or_heuristic(text)
@@ -228,29 +197,10 @@ async def classify_job(
         status = await _job_status(job_id)
         if status:
             await ws.publish(job_id, status, nsfw=nsfw)
-        if nsfw and session_id:
-            await escalate_session(session_id)
     except asyncio.CancelledError:
         raise
     except Exception:  # noqa: BLE001 - 判定の失敗でジョブを壊さない
         log.exception("job %s の NSFW 判定に失敗しました", job_id)
-
-
-async def classify_session(session_id: str, text: str) -> None:
-    """1 セッション分の自動判定（バックグラウンドタスクの本体）。例外は投げない。"""
-    try:
-        nsfw, _ = await classify_or_heuristic(text)
-        if not await _apply("agent_sessions", session_id, nsfw):
-            return
-        status = await _session_status(session_id)
-        if status:
-            await ws.publish_agent(
-                session_id, status, message="NSFW と判定しました" if nsfw else None
-            )
-    except asyncio.CancelledError:
-        raise
-    except Exception:  # noqa: BLE001
-        log.exception("session %s の NSFW 判定に失敗しました", session_id)
 
 
 # --------------------------------------------------------------------------

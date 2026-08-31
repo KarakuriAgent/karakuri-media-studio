@@ -1,27 +1,6 @@
 import type {
-  AgentApprove,
-  AgentAttachment,
-  AgentCheckinReply,
-  AgentReply,
-  AgentSession,
-  AgentSessionCreate,
-  AgentSessionSummary,
-  AgentSessionUpdate,
   Asset,
   AudioJobCreate,
-  CanvasAgentRun,
-  CanvasAgentState,
-  CanvasAttachment,
-  CanvasBoard,
-  CanvasCard,
-  CanvasCardCreate,
-  CanvasCardPosition,
-  CanvasCardUpdate,
-  CanvasChatSession,
-  CanvasMessage,
-  CanvasMessageCreate,
-  CanvasSessionSearchHit,
-  CanvasViewport,
   ChatReply,
   ChatSession,
   ChatState,
@@ -225,19 +204,6 @@ function form<T>(path: string, fields: Record<string, string> = {}): Promise<T> 
   return request<T>(path, { method: 'POST', body: data })
 }
 
-/**
- * キャンバスのタブを指すクエリ（null = 作品共通なので何も付けない）。
- *
- * サーバー側は「省略 = 作品共通」なので、話タブのときだけ `?episode_id=…`。
- */
-function canvasTab(episodeId: string | null, sessionId?: string | null): string {
-  const params = new URLSearchParams()
-  if (episodeId) params.set('episode_id', episodeId)
-  if (sessionId) params.set('session_id', sessionId)
-  const query = params.toString()
-  return query ? `?${query}` : ''
-}
-
 /** multipart のフィールド（未指定は送らず、サーバー側の既定値に任せる）。 */
 function formFields(fields: object): Record<string, string> {
   return Object.fromEntries(
@@ -428,51 +394,6 @@ export const api = {
   /** ⏹: 走っている Grok のターンを止める（次の発言は新しい会話で続く）。 */
   stopChatTurn: (id: string) =>
     json<ChatState>('POST', `/api/chat/sessions/${id}/stop`, {}),
-
-  // agent mode (AGENT-MODE §5.1)
-  createAgentSession: (payload: AgentSessionCreate) =>
-    json<AgentSession>('POST', '/api/agent/sessions', payload),
-  listAgentSessions: (limit = 50) =>
-    request<AgentSessionSummary[]>(`/api/agent/sessions?limit=${limit}`),
-  getAgentSession: (id: string) =>
-    request<AgentSession>(`/api/agent/sessions/${id}`),
-  /**
-   * チェックインモードと生成本数の上限を後から変える。
-   *
-   * 上限の判定には即時に効くが、Grok が読む指示文（作成時に焼き込み）に載るのは
-   * 次のターンから。
-   */
-  updateAgentSession: (id: string, patch: AgentSessionUpdate) =>
-    json<AgentSession>('PATCH', `/api/agent/sessions/${id}`, patch),
-  deleteAgentSession: (id: string) =>
-    json<void>('DELETE', `/api/agent/sessions/${id}`),
-  /**
-   * 発言を残してエージェントを動かす（**202 即受付**）。
-   *
-   * ターンはバックグラウンドで回るので、返るのは受付時点のセッション
-   * （`status: "running"`）だけ。Grok の返事と成果物は WS フレームと
-   * セッションの取り直し（ポーリング）で届く。
-   */
-  sendAgentMessage: (id: string, content: string, attachments: string[] = []) =>
-    json<AgentReply>('POST', `/api/agent/sessions/${id}/messages`, {
-      content,
-      attachments,
-    }),
-  /** 添付ファイルを workdir の attachments/ に置き、相対パスを受け取る。 */
-  uploadAgentAttachment: (id: string, file: File) =>
-    upload<AgentAttachment>(`/api/agent/sessions/${id}/attachments`, file),
-  /** プラン承認（202 即受付。実行の完了は待たない）。 */
-  approveAgentPlan: (id: string, body: AgentApprove = {}) =>
-    json<AgentReply>('POST', `/api/agent/sessions/${id}/approve`, body),
-  /** チェックイン応答（202 即受付。再開はバックグラウンド）。 */
-  replyAgentCheckin: (id: string, body: AgentCheckinReply) =>
-    json<AgentReply>('POST', `/api/agent/sessions/${id}/checkin`, body),
-  setAgentSessionNsfw: (id: string, nsfw: boolean) =>
-    json<AgentSession>('POST', `/api/agent/sessions/${id}/nsfw`, { nsfw }),
-  stopAgentSession: (id: string) =>
-    json<AgentSession>('POST', `/api/agent/sessions/${id}/stop`),
-  agentArtifactUrl: (id: string, name: string) =>
-    `/api/agent/sessions/${id}/artifacts/${name.split('/').map(encodeURIComponent).join('/')}`,
 
   // ドラマスタジオ（プロジェクト -> 脚本 -> Shot ごとの生成 -> Take の採用）。
   // 画面 1 枚は getStudioProject（素材・Shot・Take 込み）で組み立てる。
@@ -748,146 +669,6 @@ export const api = {
     json<LibraryItem>('POST', `/api/studio/exports/${exportId}/save-to-library`, {
       name,
     }),
-
-  // キャンバス（スタジオの別ビュー）。カードは「スタジオのどの行か」と「どこに
-  // 置いてあるか」だけを持つので、中身は getStudioProject と重ねて使う。
-  /**
-   * 盤面 1 タブぶん（読んだ時点でスタジオの中身がカードとして出そろう）。
-   *
-   * `episodeId` は開くタブ（null = 作品共通。素材と未分類のカットが出る）。
-   */
-  getCanvasBoard: (
-    projectId: string,
-    episodeId: string | null = null,
-    sessionId: string | null = null,
-  ) =>
-    request<CanvasBoard>(
-      `/api/canvas/projects/${projectId}${canvasTab(episodeId, sessionId)}`,
-    ),
-  listCanvasSessions: (projectId: string) =>
-    request<CanvasChatSession[]>(`/api/canvas/projects/${projectId}/sessions`),
-  createCanvasSession: (projectId: string, title = '') =>
-    json<CanvasChatSession>('POST', `/api/canvas/projects/${projectId}/sessions`, {
-      title,
-    }),
-  updateCanvasSession: (projectId: string, sessionId: string, title: string) =>
-    json<CanvasChatSession>(
-      'PATCH',
-      `/api/canvas/projects/${projectId}/sessions/${sessionId}`,
-      { title },
-    ),
-  deleteCanvasSession: (projectId: string, sessionId: string) =>
-    json<void>('DELETE', `/api/canvas/projects/${projectId}/sessions/${sessionId}`),
-  searchCanvasSessions: (
-    projectId: string,
-    q: string,
-    sessionId?: string | null,
-  ) =>
-    request<CanvasSessionSearchHit[]>(
-      `/api/canvas/projects/${projectId}/sessions/search?q=${encodeURIComponent(q)}${
-        sessionId ? `&session_id=${encodeURIComponent(sessionId)}` : ''
-      }`,
-    ),
-  /** タブの表示位置を覚える（見え方だけなのでリビジョンには残らない）。 */
-  setCanvasViewport: (
-    projectId: string,
-    viewport: CanvasViewport,
-    episodeId: string | null = null,
-  ) =>
-    json<CanvasViewport>(
-      'PUT',
-      `/api/canvas/projects/${projectId}/viewport${canvasTab(episodeId)}`,
-      viewport,
-    ),
-
-  listCanvasCards: (projectId: string, episodeId: string | null = null) =>
-    request<CanvasCard[]>(
-      `/api/canvas/projects/${projectId}/cards${canvasTab(episodeId)}`,
-    ),
-  /**
-   * カードを 1 枚**新しく作る**（参照カードはスタジオ側の行も一緒に作る）。
-   * 既にあるものは開いた時点で並んでいるので、置き直す口は無い。
-   */
-  createCanvasCard: (projectId: string, payload: CanvasCardCreate) =>
-    json<CanvasCard>('POST', `/api/canvas/projects/${projectId}/cards`, payload),
-  /** カードの中身（text / model の `data`）と大きさを変える。 */
-  updateCanvasCard: (id: string, patch: CanvasCardUpdate) =>
-    json<CanvasCard>('PATCH', `/api/canvas/cards/${id}`, patch),
-  /** 置き場所だけ動かす（エンティティには触れない軽い更新）。 */
-  moveCanvasCard: (id: string, position: CanvasCardPosition) =>
-    json<CanvasCard>('PUT', `/api/canvas/cards/${id}/position`, position),
-  /**
-   * カードを外す。参照カードはスタジオの写しなので `deleteEntity` が要る
-   * （立てないと 400）。text / model カードはそのカードだけを消す。
-   */
-  deleteCanvasCard: (id: string, deleteEntity = false) =>
-    json<void>(
-      'DELETE',
-      `/api/canvas/cards/${id}?delete_entity=${deleteEntity ? 'true' : 'false'}`,
-    ),
-
-  listCanvasMessages: (projectId: string, sessionId?: string | null) =>
-    request<CanvasMessage[]>(
-      `/api/canvas/projects/${projectId}/messages${
-        sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ''
-      }`,
-    ),
-  /** 発言を 1 件残すだけ（エージェントは動かさない）。 */
-  createCanvasMessage: (projectId: string, payload: CanvasMessageCreate) =>
-    json<CanvasMessage>('POST', `/api/canvas/projects/${projectId}/messages`, payload),
-
-  /**
-   * 発言を残してエージェントを走らせる。
-   *
-   * 実行はバックグラウンドで進み、応答とツール実行の結果は会話に足されながら
-   * WS（`type: "canvas"`）で届く。走っている最中の再送は 409。
-   */
-  runCanvasAgent: (
-    projectId: string,
-    content: string,
-    episodeId: string | null = null,
-    attachments: string[] = [],
-    sessionId: string | null = null,
-  ) =>
-    json<CanvasAgentRun>('POST', `/api/canvas/projects/${projectId}/agent`, {
-      content,
-      episode_id: episodeId,
-      attachments,
-      session_id: sessionId,
-    }),
-
-  /**
-   * チャットに添える添付を 1 件アップロードする。
-   *
-   * 返る `path`（workdir 相対）をそのまま `runCanvasAgent` に渡す。
-   */
-  uploadCanvasAttachment: (
-    projectId: string,
-    file: File,
-    sessionId?: string | null,
-  ) =>
-    upload<CanvasAttachment>(
-      `/api/canvas/projects/${projectId}/attachments${
-        sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ''
-      }`,
-      file,
-    ),
-  /** 添付そのものの URL（履歴のサムネイル用）。 */
-  canvasAttachmentUrl: (
-    projectId: string,
-    path: string,
-    sessionId?: string | null,
-  ) =>
-    `/api/canvas/projects/${projectId}/attachments/${path
-      .split('/')
-      .map(encodeURIComponent)
-      .join('/')}${sessionId ? `?session_id=${encodeURIComponent(sessionId)}` : ''}`,
-  /** 実行中かどうか（WS を取りこぼしたときの拾い先）。 */
-  getCanvasAgentState: (projectId: string) =>
-    request<CanvasAgentState>(`/api/canvas/projects/${projectId}/agent`),
-  /** 次のターンの手前で止める（投入済みの生成は止まらない）。 */
-  stopCanvasAgent: (projectId: string) =>
-    json<CanvasAgentState>('POST', `/api/canvas/projects/${projectId}/agent/stop`),
 }
 
 export function wsUrl(path = '/api/ws'): string {

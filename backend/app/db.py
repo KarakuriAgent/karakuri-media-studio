@@ -1,10 +1,13 @@
+import logging
+import shutil
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
 
 import aiosqlite
 
-from .paths import DB_PATH
+from .paths import CHAT_SESSIONS_DIR, DB_PATH, RUNTIME_DIR
+
+log = logging.getLogger(__name__)
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS jobs (
@@ -31,7 +34,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   nsfw          INTEGER NOT NULL DEFAULT 0,
   nsfw_source   TEXT NOT NULL DEFAULT '',
   credits_consumed REAL,                    -- 外部バックエンドが消費したクレジット（§5.2）
-  chat_session_id TEXT,                     -- 生成フォームの chat / エージェント session。エージェント発判定に使う
+  chat_session_id TEXT,                     -- 生成フォームの chat セッション
   started_at    TEXT,                       -- 実行を開始した時刻（所要時間の起点）
   finished_at   TEXT                        -- 終端（done/failed/canceled）に入った時刻
 );
@@ -57,23 +60,6 @@ CREATE TABLE IF NOT EXISTS chat_sessions (
   messages   TEXT NOT NULL,
   grok_session_id TEXT NOT NULL DEFAULT '',  -- 続き用の grok セッション（正本は messages）
   grok_cwd   TEXT NOT NULL DEFAULT ''        -- このチャットの作業ディレクトリ
-);
-
-CREATE TABLE IF NOT EXISTS agent_sessions (
-  id           TEXT PRIMARY KEY,
-  created_at   TEXT NOT NULL,
-  title        TEXT NOT NULL DEFAULT '',
-  status       TEXT NOT NULL DEFAULT 'idle',
-  checkin_mode TEXT NOT NULL DEFAULT 'milestone',
-  auto_limit   INTEGER NOT NULL DEFAULT 5,
-  messages     TEXT NOT NULL DEFAULT '[]',
-  plan         TEXT NOT NULL DEFAULT '{}',
-  artifacts    TEXT NOT NULL DEFAULT '[]',
-  nsfw         INTEGER NOT NULL DEFAULT 0,
-  nsfw_source  TEXT NOT NULL DEFAULT '',
-  grok_session_id TEXT NOT NULL DEFAULT '',
-  grok_cwd     TEXT NOT NULL DEFAULT '',
-  snapshot_key TEXT NOT NULL DEFAULT ''
 );
 
 -- ライブラリ（SPEC §7.2）: 履歴とは別に取っておく素材の目録。ファイル実体は
@@ -112,9 +98,6 @@ CREATE TABLE IF NOT EXISTS studio_projects (
   image_aspect_ratio TEXT,                 -- 素材画像のアスペクト比（NULL = 既定）
   image_steps INTEGER NOT NULL DEFAULT 0,  -- 素材画像のサンプリング回数（0 = テンプレートの既定のまま）
   nsfw        INTEGER NOT NULL DEFAULT 0,   -- 1 = この作品から投入するジョブはすべて NSFW（0 = 非 NSFW 固定）
-  canvas_x    REAL NOT NULL DEFAULT 0,      -- キャンバス（別ビュー）の表示位置
-  canvas_y    REAL NOT NULL DEFAULT 0,
-  canvas_zoom REAL NOT NULL DEFAULT 1,
   created_at  TEXT NOT NULL,
   updated_at  TEXT NOT NULL
 );
@@ -240,71 +223,7 @@ CREATE TABLE IF NOT EXISTS studio_takes (
   source_prompt TEXT NOT NULL DEFAULT '',  -- 英訳する前の原文（訳していなければ空）
   warning       TEXT NOT NULL DEFAULT '',  -- 投入はできたが伝えたいこと（過去の英訳失敗フォールバックなど）
   latent_path   TEXT,                      -- ラテント連続性で保存した AV ラテント（ComfyUI 側のパス。NULL = 無し）
-  latent_hires_path TEXT,                  -- 同じく 2 パス目（最終解像度）の AV ラテント（latent_upscale on の 2 段引き継ぎ。NULL = 無し）
-  -- エージェントに「この Take の生成が終わった」と伝えた時刻（NULL = まだ）。
-  -- ジョブ完了イベントと定期スキャンのどちらが先に来ても 1 回しか通知しない
-  -- ための印（app/agent_runner.py の _claim_take_notification）。
-  agent_notified_at TEXT
-);
-
--- キャンバス: スタジオの中身を「座標を持つカード」として並べる別ビュー。
--- カードは中身のデータを持たず、スタジオ側の行（素材・場・Shot・Take）への
--- 参照と置き場所だけを覚える（唯一の正は studio_* のまま）。対応する
--- エンティティが無い text / model のカードだけ、中身を data に持つ。
-CREATE TABLE IF NOT EXISTS canvas_cards (
-  id         TEXT PRIMARY KEY,
-  project_id TEXT NOT NULL REFERENCES studio_projects(id) ON DELETE CASCADE,
-  kind       TEXT NOT NULL,                -- character / location / object / style /
-                                           -- reference / scene / shot / media / text / model
-  entity_id  TEXT,                         -- スタジオ側の行 ID（text / model は NULL）
-  -- どのタブ（話）に置いてあるか。参照カードの所属はスタジオのデータから
-  -- 導けるので NULL のままで、この列を使うのは text / model カードだけ
-  -- （NULL = 作品共通のタブ）。話ごと消えたら作品共通に戻す。
-  episode_id TEXT REFERENCES studio_episodes(id) ON DELETE SET NULL,
-  data       TEXT NOT NULL DEFAULT '{}',   -- キャンバス専用 kind の中身（JSON）
-  x          REAL NOT NULL DEFAULT 0,
-  y          REAL NOT NULL DEFAULT 0,
-  w          REAL NOT NULL DEFAULT 320,
-  h          REAL NOT NULL DEFAULT 220,
-  z          INTEGER NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL
-);
-
--- キャンバスの表示位置のうち、**話タブ**のぶん。作品共通のタブは
--- studio_projects の canvas_x / canvas_y / canvas_zoom に持つ（キャンバスを
--- 話ごとに分ける前からある列で、既存の作品の表示位置をそのまま引き継ぐ）。
-CREATE TABLE IF NOT EXISTS canvas_viewports (
-  project_id TEXT NOT NULL REFERENCES studio_projects(id) ON DELETE CASCADE,
-  episode_id TEXT NOT NULL REFERENCES studio_episodes(id) ON DELETE CASCADE,
-  x          REAL NOT NULL DEFAULT 0,
-  y          REAL NOT NULL DEFAULT 0,
-  zoom       REAL NOT NULL DEFAULT 1,
-  PRIMARY KEY (project_id, episode_id)
-);
-
--- キャンバスのチャット履歴（エージェント実行は別途。ここは保存だけ）。
--- 同じ作品に複数セッションを持てる。session_id は canvas_sessions を指す。
-CREATE TABLE IF NOT EXISTS canvas_sessions (
-  id              TEXT PRIMARY KEY,
-  project_id      TEXT NOT NULL REFERENCES studio_projects(id) ON DELETE CASCADE,
-  title           TEXT NOT NULL DEFAULT '',
-  created_at      TEXT NOT NULL,
-  updated_at      TEXT NOT NULL,
-  grok_session_id TEXT NOT NULL DEFAULT '',
-  grok_cwd        TEXT NOT NULL DEFAULT '',
-  snapshot_key    TEXT NOT NULL DEFAULT ''
-);
-
-CREATE TABLE IF NOT EXISTS canvas_messages (
-  id         TEXT PRIMARY KEY,
-  project_id TEXT NOT NULL REFERENCES studio_projects(id) ON DELETE CASCADE,
-  session_id TEXT,
-  ts         TEXT NOT NULL,
-  role       TEXT NOT NULL,                -- user / assistant / event
-  content    TEXT NOT NULL,
-  kind       TEXT,                         -- event の種別（action_result 等）
-  data       TEXT NOT NULL DEFAULT '{}'
+  latent_hires_path TEXT                   -- 同じく 2 パス目（最終解像度）の AV ラテント（latent_upscale on の 2 段引き継ぎ。NULL = 無し）
 );
 
 -- 編集タブ（スタジオの動画編集）: タイムライン -> トラック -> クリップ。
@@ -388,8 +307,6 @@ CREATE TABLE IF NOT EXISTS timeline_exports (
 
 CREATE INDEX IF NOT EXISTS idx_jobs_created_at ON jobs(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_library_created_at ON library(created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_agent_sessions_created_at
-  ON agent_sessions(created_at DESC);
 
 -- 作品コードは「付けたなら重複させない」。空文字は未設定なので対象から外す。
 CREATE UNIQUE INDEX IF NOT EXISTS idx_studio_projects_code
@@ -420,20 +337,6 @@ CREATE INDEX IF NOT EXISTS idx_timeline_clips_timeline
 CREATE INDEX IF NOT EXISTS idx_timeline_exports_timeline
   ON timeline_exports(timeline_id, created_at DESC);
 
-CREATE INDEX IF NOT EXISTS idx_canvas_cards_project
-  ON canvas_cards(project_id, z);
--- 同じエンティティを指すカードは 1 枚だけ（キャンバス上の分身を作らない）。
--- text / model は entity_id が NULL なので対象外。
-CREATE UNIQUE INDEX IF NOT EXISTS idx_canvas_cards_entity
-  ON canvas_cards(project_id, entity_id) WHERE entity_id IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_canvas_messages_project
-  ON canvas_messages(project_id, ts);
--- session_id 付きインデックスは SCHEMA に置かない。既存 DB の
--- canvas_messages にはまだ列が無く、executescript が _migrate より先に
--- 落ちる。列を足したあと _backfill_canvas_sessions が作る。
-CREATE INDEX IF NOT EXISTS idx_canvas_sessions_project
-  ON canvas_sessions(project_id, updated_at DESC);
-
 -- Web Push の購読（単一ユーザー。endpoint が識別子）。
 CREATE TABLE IF NOT EXISTS push_subscriptions (
   endpoint   TEXT PRIMARY KEY,
@@ -441,26 +344,6 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
   auth       TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
-
--- 参照先が消えたカードは残さない（孤児化の防止）。スタジオ API 経由の削除
--- だけでなく、親を消した ON DELETE CASCADE やリビジョン復元での行の入れ替えも
--- ここを通るので、消し忘れが出ない。
-CREATE TRIGGER IF NOT EXISTS trg_canvas_cards_asset_deleted
-AFTER DELETE ON studio_assets BEGIN
-  DELETE FROM canvas_cards WHERE entity_id = OLD.id;
-END;
-CREATE TRIGGER IF NOT EXISTS trg_canvas_cards_scene_deleted
-AFTER DELETE ON studio_scenes BEGIN
-  DELETE FROM canvas_cards WHERE entity_id = OLD.id;
-END;
-CREATE TRIGGER IF NOT EXISTS trg_canvas_cards_shot_deleted
-AFTER DELETE ON studio_shots BEGIN
-  DELETE FROM canvas_cards WHERE entity_id = OLD.id;
-END;
-CREATE TRIGGER IF NOT EXISTS trg_canvas_cards_take_deleted
-AFTER DELETE ON studio_takes BEGIN
-  DELETE FROM canvas_cards WHERE entity_id = OLD.id;
-END;
 """
 
 # 既存 DB に後から足したカラム: {テーブル: [(カラム名, 定義), …]}。
@@ -482,8 +365,7 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         # 外部バックエンドのジョブが消費したクレジット（SPEC §5.2）。
         # ComfyUI のジョブは自前 GPU なので NULL のままでよい。
         ("credits_consumed", "REAL"),
-        # 投入元の chat / agent セッション。エージェント発のジョブは
-        # agent_sessions.id と一致し、完了通知の対象外になる。
+        # 投入元の chat セッション（生成フォームの相談チャット）。
         ("chat_session_id", "TEXT"),
         # 実行の開始・終了時刻（SPA が「生成にかかった時間」を出すための材料）。
         # 所要時間そのものは持たず、読み出し側で差を取る。この列を足す前に
@@ -496,16 +378,6 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         # messages なので、消えていれば履歴を組み直して新しい会話を始める。
         ("grok_session_id", "TEXT NOT NULL DEFAULT ''"),
         ("grok_cwd", "TEXT NOT NULL DEFAULT ''"),
-    ],
-    "agent_sessions": [
-        ("nsfw", "INTEGER NOT NULL DEFAULT 0"),
-        ("nsfw_source", "TEXT NOT NULL DEFAULT ''"),
-        ("grok_session_id", "TEXT NOT NULL DEFAULT ''"),
-        ("grok_cwd", "TEXT NOT NULL DEFAULT ''"),
-        ("snapshot_key", "TEXT NOT NULL DEFAULT ''"),
-    ],
-    "canvas_messages": [
-        ("session_id", "TEXT"),
     ],
     "library": [
         # 分類タグ（JSON 配列。loras.sample_images と同じ持ち方）。ライブラリを
@@ -540,11 +412,6 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         # 日本語のプロンプトを Grok で英語に直してから投入するか。既存の
         # プロジェクトも既定 ON（H3 は英語プロンプト前提のモデル）。
         ("auto_translate", "INTEGER NOT NULL DEFAULT 1"),
-        # キャンバスの表示位置（別ビューなのでプロジェクト側に持つ）。既存の
-        # プロジェクトは原点・等倍から始まる。
-        ("canvas_x", "REAL NOT NULL DEFAULT 0"),
-        ("canvas_y", "REAL NOT NULL DEFAULT 0"),
-        ("canvas_zoom", "REAL NOT NULL DEFAULT 1"),
         # 引き継ぎを Motion Context（ラテント連続性）で行うか。既存の
         # プロジェクトは既定 OFF = 今までどおりラストフレームの引き継ぎ。
         ("latent_continuity", "INTEGER NOT NULL DEFAULT 0"),
@@ -612,12 +479,6 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         ("english_status", "TEXT NOT NULL DEFAULT ''"),
         ("english_error", "TEXT NOT NULL DEFAULT ''"),
     ],
-    "canvas_cards": [
-        # カードを置いたタブ（話）。参照カードの所属はスタジオのデータから
-        # 導くので NULL のままで、使うのは text / model カードだけ。既存の
-        # カードはすべて NULL = 作品共通のタブになる。
-        ("episode_id", "TEXT REFERENCES studio_episodes(id) ON DELETE SET NULL"),
-    ],
     "timeline_clips": [
         # リタイム（フェーズ 3）。既存のクリップは 1.0 = 等速のまま。
         ("speed", "REAL NOT NULL DEFAULT 1"),
@@ -632,11 +493,6 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         # 2 段引き継ぎ（latent_upscale on）で保存した 2 パス目のラテント。
         # 既存行と、off で作った Take は NULL のまま = 1 段引き継ぎに戻る。
         ("latent_hires_path", "TEXT"),
-        # エージェントへ完了を伝えた時刻。既存行は NULL だが、起動時のスキャンが
-        # 「終端に達しているのに未通知」の Take を拾うので、移行直後に過去の
-        # Take がまとめて通知されないよう、ここで一度だけ現在時刻で埋める
-        # （下の _migrate を参照）。
-        ("agent_notified_at", "TEXT"),
     ],
 }
 
@@ -676,13 +532,7 @@ async def _migrate(conn: aiosqlite.Connection) -> None:
                 "(SELECT DISTINCT project_id FROM studio_shots WHERE nsfw = 1)"
             )
 
-    # 既存の Take は「もう伝えた」ことにする。列を足した直後のスキャンが、
-    # この機能より前に終わっていた Take をまとめて制作記録へ積むのを防ぐ。
-    if "agent_notified_at" in added.get("studio_takes", set()):
-        await _backfill_take_notifications(conn)
-
     await _widen_timeline_clip_sources(conn)
-    await _backfill_canvas_sessions(conn)
     await _renumber_shots(conn)
 
 
@@ -800,97 +650,105 @@ async def _renumber_shots(conn: aiosqlite.Connection) -> None:
             )
 
 
-#: :func:`_backfill_take_notifications` が「まだ終わっていない」とみなすジョブ。
-#: ここに居るジョブの Take は印を付けない（付けると、いま走っているレンダーの
-#: 完了通知がそのまま消える）。
-_IN_FLIGHT_JOB_STATUSES = ("queued", "prompting", "running")
+# --------------------------------------------------------------------------
+# 撤去した機能（内蔵エージェント / キャンバス）の後始末
+# --------------------------------------------------------------------------
+
+#: 撤去した機能が持っていたテーブル。``canvas_projects`` / ``canvas_nodes`` は
+#: スキーマから既に消えていた頃の遺物で、古い DB にだけ残っている。
+_REMOVED_TABLES = (
+    "agent_sessions",
+    "canvas_cards",
+    "canvas_viewports",
+    "canvas_sessions",
+    "canvas_messages",
+    "canvas_projects",
+    "canvas_nodes",
+)
+
+#: カードの孤児化を防いでいたトリガー。**張られているのは studio_* 側**なので、
+#: canvas_cards を落としても一緒には消えない（残すと DELETE が
+#: 「no such table: canvas_cards」で落ちる）。
+_REMOVED_TRIGGERS = (
+    "trg_canvas_cards_asset_deleted",
+    "trg_canvas_cards_scene_deleted",
+    "trg_canvas_cards_shot_deleted",
+    "trg_canvas_cards_take_deleted",
+)
+
+#: 撤去で使わなくなった列。SQLite 3.35+ の ``DROP COLUMN`` で落とす
+#: （どれも index / trigger から参照されていない）。
+_REMOVED_COLUMNS = (
+    ("studio_projects", "canvas_x"),
+    ("studio_projects", "canvas_y"),
+    ("studio_projects", "canvas_zoom"),
+    ("studio_takes", "agent_notified_at"),
+)
 
 
-async def _backfill_take_notifications(conn: aiosqlite.Connection) -> None:
-    """``agent_notified_at`` を足した回だけ走る後始末（SPEC §2.2）。
+async def _cleanup_removed_features(conn: aiosqlite.Connection) -> None:
+    """内蔵エージェントとキャンバスの残骸を落とす（起動ごとに走る冪等な後始末）。
 
-    この機能より前に終わっていた Take が、列を足した直後のスキャンでまとめて
-    制作記録へ積まれるのを防ぐために「もう伝えた」ことにする。
-
-    ただし**まだ走っているジョブの Take は対象外**。移行の瞬間に実行中だった
-    レンダーまで埋めてしまうと、その完了通知が永久に届かなくなる（印は
-    ``IS NULL`` でしか拾われない）。ジョブ行がもう無い Take は結果を辿れないので
-    印を付ける側に寄せる。
+    片付けるのは **DB の中身だけ**（テーブル・トリガー・列と、保存済みの cwd）。
+    作業ディレクトリの実体は :func:`_move_chat_workdirs` が別に受け持つ（テストが
+    DB を一時ファイルへ差し替えて走るので、ファイルシステムには触らせない）。何も
+    残っていなければ 1 行も書かないので、2 回目以降は実質何もしない。
+    ``VACUUM`` はしない（本番 DB が大きく、起動を止めるほどの利得が無い）。
     """
-    placeholders = ", ".join("?" for _ in _IN_FLIGHT_JOB_STATUSES)
+    for trigger in _REMOVED_TRIGGERS:
+        await conn.execute(f"DROP TRIGGER IF EXISTS {trigger}")
+    for table in _REMOVED_TABLES:
+        await conn.execute(f"DROP TABLE IF EXISTS {table}")
+
+    for table, column in _REMOVED_COLUMNS:
+        async with conn.execute(f"PRAGMA table_info({table})") as cur:
+            columns = {row["name"] for row in await cur.fetchall()}
+        if column in columns:
+            await conn.execute(f"ALTER TABLE {table} DROP COLUMN {column}")
+
+    # プロンプト生成チャットの作業ディレクトリは
+    # ``runtime/agent-sessions/chat-<id>/`` から ``runtime/chat-sessions/<id>/``
+    # へ移した。保存済みの cwd を新しい置き場へ読み替える。
     await conn.execute(
-        "UPDATE studio_takes SET agent_notified_at = ?"
-        " WHERE job_id NOT IN ("
-        f"   SELECT id FROM jobs WHERE status IN ({placeholders})"
-        " )",
-        (
-            datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            *_IN_FLIGHT_JOB_STATUSES,
-        ),
+        "UPDATE chat_sessions"
+        " SET grok_cwd = REPLACE(grok_cwd, '/agent-sessions/chat-', '/chat-sessions/')"
+        " WHERE grok_cwd LIKE '%/agent-sessions/chat-%'"
     )
 
 
-async def _backfill_canvas_sessions(conn: aiosqlite.Connection) -> None:
-    """メッセージがある作品ごとにキャンバスセッションを 1 本作り、session_id を埋める。"""
-    async with conn.execute(
-        "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'canvas_sessions'"
-    ) as cur:
-        if await cur.fetchone() is None:
-            return
-    async with conn.execute("PRAGMA table_info(canvas_messages)") as cur:
-        columns = {row["name"] for row in await cur.fetchall()}
-    if "session_id" not in columns:
-        return
-    await conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_canvas_messages_session"
-        " ON canvas_messages(session_id, ts)"
-    )
-    await conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_canvas_sessions_project"
-        " ON canvas_sessions(project_id, updated_at DESC)"
-    )
+def _move_chat_workdirs() -> None:
+    """``runtime/agent-sessions/chat-*`` を ``runtime/chat-sessions/`` へ移す。
 
-    from .ids import new_id
-    from .paths import AGENT_SESSIONS_DIR
-
-    async with conn.execute(
-        "SELECT DISTINCT m.project_id FROM canvas_messages m"
-        " JOIN studio_projects p ON p.id = m.project_id"
-        " WHERE m.session_id IS NULL OR m.session_id = ''"
-    ) as cur:
-        project_ids = [row["project_id"] for row in await cur.fetchall()]
-    for project_id in project_ids:
-        async with conn.execute(
-            "SELECT content, ts FROM canvas_messages"
-            " WHERE project_id = ? AND role = 'user'"
-            " ORDER BY ts, id LIMIT 1",
-            (project_id,),
-        ) as cur:
-            first = await cur.fetchone()
-        async with conn.execute(
-            "SELECT MIN(ts) AS created_at, MAX(ts) AS updated_at"
-            " FROM canvas_messages WHERE project_id = ?",
-            (project_id,),
-        ) as cur:
-            times = await cur.fetchone()
-        title = "チャット"
-        if first and (first["content"] or "").strip():
-            title = first["content"].strip().splitlines()[0][:40]
-        session_id = new_id()
-        created = (times["created_at"] if times else None) or ""
-        updated = (times["updated_at"] if times else None) or created
-        cwd = str(AGENT_SESSIONS_DIR / f"canvas-{project_id}")
-        await conn.execute(
-            "INSERT INTO canvas_sessions"
-            " (id, project_id, title, created_at, updated_at, grok_cwd)"
-            " VALUES (?, ?, ?, ?, ?, ?)",
-            (session_id, project_id, title, created, updated, cwd),
-        )
-        await conn.execute(
-            "UPDATE canvas_messages SET session_id = ?"
-            " WHERE project_id = ? AND (session_id IS NULL OR session_id = '')",
-            (session_id, project_id),
-        )
+    実ファイルを動かすのでサーバー起動時（lifespan）にだけ呼ぶ。撤去した機能の
+    置き場（``agent-sessions`` の chat 以外と ``canvas-projects``）は消すが、
+    **移せなかったチャットが 1 つでも残るうちは ``agent-sessions/`` 自体を消さない**
+    （ユーザーの作業ディレクトリを道連れにしないため）。存在しなければ何もしない。
+    """
+    old_root = RUNTIME_DIR / "agent-sessions"
+    if old_root.is_dir():
+        CHAT_SESSIONS_DIR.mkdir(parents=True, exist_ok=True)
+        for entry in old_root.iterdir():
+            if entry.is_dir() and entry.name.startswith("chat-"):
+                target = CHAT_SESSIONS_DIR / entry.name[len("chat-"):]
+                if target.exists():
+                    continue  # 移動済み（冪等）。中身は残したままにする
+                try:
+                    shutil.move(str(entry), str(target))
+                except OSError:
+                    log.warning("チャットの作業ディレクトリを移せませんでした: %s", entry)
+                continue
+            # 旧エージェントセッションなど、撤去済み機能の残骸は個別に消す。
+            if entry.is_dir():
+                shutil.rmtree(entry, ignore_errors=True)
+            else:
+                entry.unlink(missing_ok=True)
+        try:
+            old_root.rmdir()  # 空になったときだけ消える
+        except OSError:
+            log.warning(
+                "移せなかった作業ディレクトリが残るので %s は残します", old_root
+            )
+    shutil.rmtree(RUNTIME_DIR / "canvas-projects", ignore_errors=True)
 
 
 async def init_db() -> None:
@@ -899,4 +757,5 @@ async def init_db() -> None:
     async with get_db() as conn:
         await conn.executescript(SCHEMA)
         await _migrate(conn)
+        await _cleanup_removed_features(conn)
         await conn.commit()

@@ -9,7 +9,6 @@ import HistoryGallery from './components/HistoryGallery'
 import JobDetail from './components/JobDetail'
 import ResultPane from './components/ResultPane'
 import SettingsPage from './components/SettingsPage'
-import AgentView from './components/agent/AgentView'
 import StudioView from './components/studio/StudioView'
 import { Banner } from './components/ui'
 import {
@@ -33,8 +32,6 @@ import {
 } from './form'
 import { ensurePushSubscription } from './push'
 import type {
-  AgentProgress,
-  CanvasProgress,
   ChatProgress,
   ComfyTarget,
   Health,
@@ -90,10 +87,7 @@ export default function App() {
   const [detailBusy, setDetailBusy] = useState(false)
   const [detailError, setDetailError] = useState<string | null>(null)
   const [chatOpen, setChatOpen] = useState(false)
-  const [view, setView] = useState<'main' | 'agent' | 'studio' | 'settings'>('main')
-  const [agentEvent, setAgentEvent] = useState<AgentProgress | null>(null)
-  // キャンバスのエージェント実行（会話に足された 1 件と実行中フラグ）
-  const [canvasEvent, setCanvasEvent] = useState<CanvasProgress | null>(null)
+  const [view, setView] = useState<'main' | 'studio' | 'settings'>('main')
   const [chatSessionId, setChatSessionId] = useState<string | null>(null)
   // 相談チャットの実行状態（活動テキスト。応答待ちのあいだ表示する）
   const [chatEvent, setChatEvent] = useState<ChatProgress | null>(null)
@@ -304,19 +298,9 @@ export default function App() {
         try {
           const frame = JSON.parse(event.data as string) as
             | JobProgress
-            | AgentProgress
-            | CanvasProgress
             | ChatProgress
             | LibraryProgress
             | TimelineExportProgress
-          if (frame?.type === 'agent') {
-            setAgentEvent(frame)
-            return
-          }
-          if (frame?.type === 'canvas') {
-            setCanvasEvent(frame)
-            return
-          }
           if (frame?.type === 'chat') {
             setChatEvent(frame)
             return
@@ -746,22 +730,11 @@ export default function App() {
         />
       )}
 
-      {view === 'agent' && (
-        <AgentView
-          event={agentEvent}
-          progress={progress}
-          showNsfw={showNsfw}
-          comfyTarget={settings?.comfy_target ?? null}
-          onComfyTarget={(target) => void changeComfyTarget(target)}
-        />
-      )}
-
       {/* ドラマスタジオ（プロジェクト -> 脚本 -> Shot ごとの生成 -> Take の採用）。
           Take の進捗は生成フォームと同じ WS のジョブフレームで届く。 */}
       {view === 'studio' && (
         <StudioView
           progress={progress}
-          canvasEvent={canvasEvent}
           timelineExportEvent={timelineExportEvent}
           aspectRatios={options?.aspect_ratios ?? []}
           showNsfw={showNsfw}

@@ -366,10 +366,6 @@ async def test_switching_the_cli_forgets_saved_sessions(monkeypatch, tmp_path):
             "INSERT INTO chat_sessions (id, created_at, job_id, messages,"
             " grok_session_id, grok_cwd) VALUES ('c1','t',NULL,'[]','s-1','/w')"
         )
-        await conn.execute(
-            "INSERT INTO agent_sessions (id, created_at, grok_session_id)"
-            " VALUES ('a1','t','s-2')"
-        )
         await conn.commit()
 
     await llm_cli.forget_saved_sessions()
@@ -381,10 +377,6 @@ async def test_switching_the_cli_forgets_saved_sessions(monkeypatch, tmp_path):
             row = await cur.fetchone()
         assert row["grok_session_id"] == ""
         assert row["grok_cwd"] == "/w"  # 作業ディレクトリと会話はそのまま
-        async with conn.execute(
-            "SELECT grok_session_id FROM agent_sessions WHERE id='a1'"
-        ) as cur:
-            assert (await cur.fetchone())["grok_session_id"] == ""
 
 
 # --------------------------------------------------------------------------

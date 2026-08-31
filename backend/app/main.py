@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import agent_runner, canvas_agent, chat_agent, ws
+from . import chat_agent, db, ws
 from .config import load_settings
 from .db import init_db
 from .jobs import recover_interrupted_jobs, runner
@@ -21,9 +21,7 @@ from .paths import (
     ensure_dirs,
 )
 from .routers import (
-    agent,
     assets,
-    canvas,
     chat,
     external,
     grok,
@@ -48,6 +46,9 @@ log = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     ensure_dirs()
     await init_db()
+    # 撤去した機能の作業ディレクトリの引っ越し。実ファイルを触るので、DB だけを
+    # 初期化するテストには走らせない（起動時のここでだけ呼ぶ）。
+    db._move_chat_workdirs()
     load_settings()
     # A hand-edited workflow/*.json that no longer matches its manifest would
     # otherwise only surface as a failed job (SPEC §3); surface it at startup
@@ -58,24 +59,10 @@ async def lifespan(app: FastAPI):
     # 前回のプロセスが落ちたときに残った queued / running を拾い直す（SPEC §5）。
     await recover_interrupted_jobs()
     await recover_interrupted_translates()
-    # スタジオのレンダー完了はジョブ側のイベントでエージェントに届く。ここでは
-    # 取りこぼし（プロセスが落ちているあいだに終わったジョブなど）を回収する
-    # 定期スキャンを 1 本だけ回す。
-    await agent_runner.start_take_watcher()
-    # キャンバスのチャットから投入したレンダーも同じ仕組みで届く（積む先が
-    # canvas_messages なので、スキャンはモジュールごとに 1 本）。
-    await canvas_agent.start_take_watcher()
     try:
         yield
     finally:
-        await agent_runner.stop_take_watcher()
-        await canvas_agent.stop_take_watcher()
-        # ワーカーを先に畳む: これで新しい完了通知（＝エージェントのループ起動）
-        # は配られなくなる（`jobs._final_dispatch_stopped`）。畳んでいる最中に
-        # 書かれた canceled でエージェントを起こし直さないための順序。
         await runner.stop()
-        await agent_runner.stop_all()
-        await canvas_agent.stop_all()
         await chat_agent.stop_all()
 
 
@@ -103,8 +90,6 @@ app.include_router(jobs.router)
 app.include_router(studio.router)
 app.include_router(timelines.router)
 app.include_router(external.router)
-app.include_router(canvas.router)
-app.include_router(agent.router)
 app.include_router(push.router)
 app.include_router(ws.router)
 

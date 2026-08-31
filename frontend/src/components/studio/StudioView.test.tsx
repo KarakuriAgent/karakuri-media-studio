@@ -55,10 +55,6 @@ vi.mock('../../api', async () => {
       rejectStudioTake: vi.fn(),
       cancelStudioTake: vi.fn(),
       deleteStudioTake: vi.fn(),
-      // キャンバス表示に切り替えたとき CanvasView が叩く。狭い画面の切替テスト用。
-      options: vi.fn(),
-      getCanvasBoard: vi.fn(),
-      getCanvasAgentState: vi.fn(),
     },
   }
 })
@@ -1791,33 +1787,6 @@ describe('StudioView の狭い画面ヘッダー', () => {
         quality: 'turbo',
       }),
     )
-  })
-
-  it('モードトグルはアイコンのみで、キャンバス表示に切り替えられる', async () => {
-    mocked.options.mockResolvedValue({})
-    mocked.getCanvasBoard.mockResolvedValue({
-      project_id: 'p1',
-      episode_id: null,
-      viewport: { x: 0, y: 0, zoom: 1 },
-      cards: [],
-      messages: [],
-    })
-    mocked.getCanvasAgentState.mockResolvedValue({
-      project_id: 'p1',
-      running: false,
-      activity: null,
-    })
-    await openProject()
-    await screen.findByRole('button', { name: /生成設定/ })
-    expect(screen.queryByText('スタジオ表示')).toBeNull()
-    expect(screen.queryByText('キャンバス表示')).toBeNull()
-
-    fireEvent.click(screen.getByRole('button', { name: 'キャンバス表示' }))
-    expect(screen.queryByRole('tab', { name: '概要' })).toBeNull()
-    expect(
-      screen.getByRole('button', { name: 'キャンバス表示' }).getAttribute('aria-pressed'),
-    ).toBe('true')
-    expect(screen.getByRole('button', { name: /生成設定/ })).toBeTruthy()
   })
 
   it('接続先を渡しているとシート内のセレクトを操作できる', async () => {

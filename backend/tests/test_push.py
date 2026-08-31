@@ -1,14 +1,12 @@
-"""Web Push: VAPID, 購読、ジョブ / エージェント / キャンバスからの通知フック。"""
+"""Web Push: VAPID, 購読、ジョブからの通知フック。"""
 
-import asyncio
 import json
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app import agent_runner, canvas_agent, db, jobs, push
+from app import db, jobs, push
 from app.main import app
-from app.models import AgentAction
 
 
 @pytest.fixture
@@ -47,15 +45,6 @@ async def _insert_job(
                 "{}",
                 chat_session_id,
             ),
-        )
-        await conn.commit()
-
-
-async def _insert_agent(session_id: str, *, status: str = "idle") -> None:
-    async with db.get_db() as conn:
-        await conn.execute(
-            "INSERT INTO agent_sessions (id, created_at, status) VALUES (?, ?, ?)",
-            (session_id, "2026-01-01T00:00:00Z", status),
         )
         await conn.commit()
 
@@ -215,13 +204,6 @@ async def test_same_job_status_is_not_notified_twice(client, notifications):
     assert notifications == []
 
 
-async def test_agent_job_does_not_notify(client, notifications):
-    await _insert_agent("agent-1")
-    await _insert_job("job-agent", chat_session_id="agent-1")
-    await jobs._set_status("job-agent", "done")
-    assert notifications == []
-
-
 async def test_chat_session_job_does_notify(client, notifications):
     await _insert_chat("chat-1")
     await _insert_job("job-chat", chat_session_id="chat-1")
@@ -232,83 +214,4 @@ async def test_chat_session_job_does_notify(client, notifications):
 async def test_running_status_does_not_notify(client, notifications):
     await _insert_job("job-run", status="queued")
     await jobs._set_status("job-run", "running")
-    assert notifications == []
-
-
-# --------------------------------------------------------------------------
-# エージェント
-# --------------------------------------------------------------------------
-
-
-async def test_agent_waiting_checkin_done_and_stopped_notify(client, notifications):
-    await _insert_agent("sess-1", status="running")
-    await agent_runner._set_status("sess-1", "waiting_checkin")
-    await agent_runner._set_status("sess-1", "waiting_checkin")
-    await agent_runner._set_status("sess-1", "done")
-    await agent_runner._set_status("sess-1", "stopped")
-    assert [item["tag"] for item in notifications] == [
-        "agent-waiting_checkin",
-        "agent-done",
-        "agent-stopped",
-    ]
-    assert notifications[0]["title"] == "エージェントが確認を待っています"
-    assert notifications[1]["title"] == "エージェントの処理が終わりました"
-    assert notifications[2]["title"] == "処理が止まりました"
-
-
-async def test_agent_planning_notifies_once(client, notifications):
-    await _insert_agent("sess-plan", status="running")
-    await agent_runner._apply_plan(
-        "sess-plan", AgentAction(action="plan", notes="2本の案です")
-    )
-    await agent_runner._apply_plan(
-        "sess-plan", AgentAction(action="plan", notes="改訂")
-    )
-    assert [item["tag"] for item in notifications] == ["agent-planning"]
-    assert notifications[0]["title"] == "プランの承認待ちです"
-
-
-async def test_agent_idle_does_not_notify(client, notifications):
-    await _insert_agent("sess-idle", status="running")
-    await agent_runner._set_status("sess-idle", "idle")
-    assert notifications == []
-
-
-# --------------------------------------------------------------------------
-# キャンバス
-# --------------------------------------------------------------------------
-
-
-async def test_canvas_loop_end_notifies(client, notifications, monkeypatch):
-    async def fake_loop(project_id, session_id):
-        return "done"
-
-    monkeypatch.setattr(canvas_agent, "_loop", fake_loop)
-    await canvas_agent._run("proj-1", "sess-1")
-    assert notifications == [
-        {
-            "title": "スタジオの作業が終わりました",
-            "body": "スタジオの作業が終わりました",
-            "url": "/",
-            "tag": "canvas",
-        }
-    ]
-
-
-async def test_canvas_stop_and_error_notify(client, notifications, monkeypatch):
-    async def stopped(project_id, session_id):
-        return "stopped"
-
-    monkeypatch.setattr(canvas_agent, "_loop", stopped)
-    await canvas_agent._run("proj-2", "sess-2")
-    assert notifications[-1]["title"] == "スタジオの作業が止まりました"
-
-
-async def test_canvas_lifespan_cancel_does_not_notify(client, notifications, monkeypatch):
-    async def cancelled(project_id, session_id):
-        raise asyncio.CancelledError
-
-    monkeypatch.setattr(canvas_agent, "_loop", cancelled)
-    with pytest.raises(asyncio.CancelledError):
-        await canvas_agent._run("proj-3", "sess-3")
     assert notifications == []

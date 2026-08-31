@@ -432,7 +432,7 @@ def label_for(command: str) -> str:
 # --------------------------------------------------------------------------
 
 #: 保存済みの続き用セッション id を持つテーブル（CLI を変えると全部無効になる）
-_SESSION_TABLES = ("chat_sessions", "agent_sessions", "canvas_sessions")
+_SESSION_TABLES = ("chat_sessions",)
 
 
 async def forget_saved_sessions() -> None:

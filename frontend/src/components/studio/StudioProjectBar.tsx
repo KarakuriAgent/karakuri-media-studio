@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ArrowLeft, ClipboardList, LayoutGrid, SlidersHorizontal } from 'lucide-react'
+import { ArrowLeft, SlidersHorizontal } from 'lucide-react'
 
 import { DEFAULT_MEGAPIXELS } from '../../form'
 import type { ComfyTarget, StudioImageQuality, StudioVideoQuality } from '../../types'
@@ -21,13 +21,6 @@ import {
   formatProjectSettingsSummary,
 } from './studio'
 
-export type StudioProjectMode = 'studio' | 'canvas'
-
-const MODES: { value: StudioProjectMode; label: string; icon: typeof ClipboardList }[] = [
-  { value: 'studio', label: 'スタジオ表示', icon: ClipboardList },
-  { value: 'canvas', label: 'キャンバス表示', icon: LayoutGrid },
-]
-
 /**
  * プロジェクトを開いたあとの上段バー。
  *
@@ -37,8 +30,6 @@ const MODES: { value: StudioProjectMode; label: string; icon: typeof ClipboardLi
 export default function StudioProjectBar({
   name,
   isWide,
-  mode,
-  onModeChange,
   onBack,
   comfyTarget = null,
   onComfyTarget,
@@ -73,8 +64,6 @@ export default function StudioProjectBar({
 }: {
   name: string
   isWide: boolean
-  mode: StudioProjectMode
-  onModeChange: (mode: StudioProjectMode) => void
   onBack: () => void
   comfyTarget?: ComfyTarget | null
   onComfyTarget?: (target: ComfyTarget) => void
@@ -123,32 +112,6 @@ export default function StudioProjectBar({
     imageSteps,
     latentUpscale,
   })
-
-  const modeToggle = (
-    <div
-      role="group"
-      aria-label="表示モード"
-      className="flex shrink-0 items-center gap-0.5 rounded-md border border-border bg-card p-0.5"
-    >
-      {MODES.map((item) => {
-        const current = item.value === mode
-        return (
-          <Button
-            key={item.value}
-            variant={current ? 'secondary' : 'ghost'}
-            size={isWide ? 'sm' : 'icon-sm'}
-            aria-pressed={current}
-            aria-label={item.label}
-            title={item.label}
-            onClick={() => onModeChange(item.value)}
-          >
-            <item.icon />
-            {isWide ? item.label : null}
-          </Button>
-        )
-      })}
-    </div>
-  )
 
   const fields = (
     <ProjectSettingsFields
@@ -205,7 +168,6 @@ export default function StudioProjectBar({
                 className="w-52 shrink-0"
               />
             )}
-            {modeToggle}
           </div>
         </div>
         <div className="flex flex-wrap justify-end gap-x-3 gap-y-2">{fields}</div>
@@ -228,7 +190,6 @@ export default function StudioProjectBar({
         <h2 className="min-w-0 flex-1 truncate text-base font-semibold text-foreground">
           {name}
         </h2>
-        {modeToggle}
       </div>
       <Button
         variant="outline"

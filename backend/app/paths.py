@@ -14,8 +14,8 @@ GROK_WORKDIR = RUNTIME_DIR / "grok-workdir"
 # 作成のチャットとは別にする: CLI はコーディングエージェントで、生成物や
 # セッションを作業ディレクトリの下に書き散らすため、取り違えないよう分ける。
 GROK_MEDIA_WORKDIR = RUNTIME_DIR / "grok-media-workdir"
-# One work dir per agent session (AGENT-MODE §5.2).
-AGENT_SESSIONS_DIR = RUNTIME_DIR / "agent-sessions"
+# プロンプト生成チャット 1 セッションにつき 1 つの作業ディレクトリ（SPEC §4.3）。
+CHAT_SESSIONS_DIR = RUNTIME_DIR / "chat-sessions"
 
 FRONTEND_DIST_DIR = ROOT / "frontend" / "dist"
 
@@ -90,6 +90,6 @@ def ensure_dirs() -> None:
         RUNTIME_DIR,
         GROK_WORKDIR,
         GROK_MEDIA_WORKDIR,
-        AGENT_SESSIONS_DIR,
+        CHAT_SESSIONS_DIR,
     ):
         d.mkdir(parents=True, exist_ok=True)

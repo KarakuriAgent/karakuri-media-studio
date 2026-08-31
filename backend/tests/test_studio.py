@@ -2678,12 +2678,11 @@ def test_a_revision_carries_the_whole_project_but_no_takes(env):
     assert snapshot["project"]["name"] == project["name"]
     assert [row["prompt"] for row in snapshot["shots"]] == ["A cat walks in."]
     assert [row["name"] for row in snapshot["assets"]] == ["Neko"]
-    # cards はキャンバス（別ビュー）の置き場所、asset_files は素材の
-    # リファレンス、timeline* は編集タブの EDL。Take と書き出し（実行結果）
-    # だけが入らない。
+    # asset_files は素材のリファレンス、timeline* は編集タブの EDL。
+    # Take と書き出し（実行結果）だけが入らない。
     assert set(snapshot) == {
         "project", "episodes", "scenes", "shots", "assets", "asset_files",
-        "timelines", "timeline_tracks", "timeline_clips", "cards",
+        "timelines", "timeline_tracks", "timeline_clips",
     }
 
 

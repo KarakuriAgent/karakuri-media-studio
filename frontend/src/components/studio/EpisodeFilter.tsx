@@ -7,8 +7,7 @@ export const ALL_EPISODES = 'all'
 /**
  * 脚本・制作タブの上に出す話の絞り込み（`[すべて][第1話][第2話]…`）。
  *
- * キャンバスのタブ（`CanvasTabs`）と同じ見た目にしてある。押すと親が
- * `GET /api/studio/projects/{id}?episode_id=…` で取り直すので、ここは選択を
+ * 押すと親が `GET /api/studio/projects/{id}?episode_id=…` で取り直すので、選択を
  * 上げるだけ。話が 1 つも無ければ何も出さない（絞る先が無いため）。
  */
 export default function EpisodeFilter({

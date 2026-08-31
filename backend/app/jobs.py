@@ -40,7 +40,6 @@ import logging
 import random
 import shutil
 import uuid
-from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -343,81 +342,8 @@ _JOB_NOTIFY = {
     "canceled": ("生成がキャンセルされました", "生成がキャンセルされました"),
 }
 
-#: これ以上は動かない状態。ここへの遷移だけが :data:`_final_callbacks` を呼ぶ。
+#: これ以上は動かない状態。
 _TERMINAL_STATUSES = frozenset({"done", "failed", "canceled"})
-
-#: 終端に達したジョブを知りたいモジュール（agent_runner）が起動時に積む
-#: コールバック。import は agent_runner → jobs の一方向なので、こちらからは
-#: 相手を知らないまま `on_job_final()` で受け取る。
-_final_callbacks: list[Callable[[str, str], Awaitable[None]]] = []
-
-#: ジョブ行が**消される直前**に呼ぶコールバック（:func:`on_job_deleted`）。
-#: 削除してしまうと ``chat_session_id`` が辿れず「どの会話のジョブだったか」が
-#: 永久に分からなくなるので、未通知の完了通知はここで配ってもらう。
-_deleted_callbacks: list[Callable[[str], Awaitable[None]]] = []
-
-#: True のあいだは完了通知を配らない。ワーカーを畳んでいる最中
-#: （:meth:`JobRunner.stop`）に run_job の CancelledError 経路が canceled を
-#: 書くと、そこからエージェントのループが立ち上がってしまうため。
-_final_dispatch_stopped = False
-
-
-def on_job_final(callback: Callable[[str, str], Awaitable[None]]) -> None:
-    """ジョブが終端状態（done / failed / canceled）に入ったら呼ぶ関数を登録する。
-
-    同じ関数を二重に登録しても 1 回しか呼ばれない（import の順序で
-    登録が複数回走っても事故にしないため）。
-    """
-    if callback not in _final_callbacks:
-        _final_callbacks.append(callback)
-
-
-def on_job_deleted(callback: Callable[[str], Awaitable[None]]) -> None:
-    """ジョブ行が消される**直前**に呼ぶ関数を登録する（:data:`_deleted_callbacks`）。"""
-    if callback not in _deleted_callbacks:
-        _deleted_callbacks.append(callback)
-
-
-async def _fire_job_final(job_id: str, status: str) -> None:
-    """登録済みコールバックを順に呼ぶ。失敗はログだけ（ワーカーを落とさない）。"""
-    for callback in list(_final_callbacks):
-        try:
-            await callback(job_id, status)
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001 - 通知の失敗でジョブを壊さない
-            log.exception("job %s の完了コールバックが失敗しました", job_id)
-
-
-async def _fire_job_deleted(job_id: str) -> None:
-    """ジョブ行を消す直前のコールバック。失敗はログだけ（削除は続行する）。"""
-    for callback in list(_deleted_callbacks):
-        try:
-            await callback(job_id)
-        except asyncio.CancelledError:
-            raise
-        except Exception:  # noqa: BLE001 - 通知の失敗で削除を止めない
-            log.exception("job %s の削除通知が失敗しました", job_id)
-
-
-async def _dispatch_job_final(job_id: str, status: str) -> None:
-    """完了通知を配る。**畳んでいる最中は配らない**（:data:`_final_dispatch_stopped`）。
-
-    ⏹ やシャットダウンで ``run_job`` が CancelledError を拾って canceled を
-    書くとき、そのままだとエージェントのループが立ち上がってしまう（畳んでいる
-    最中に起こし直すことになる）。``JobRunner.stop`` が印を立てるので、その間の
-    終端遷移では誰にも知らせない（イベントは次の起動時のスキャン
-    ``scan_pending_takes`` が拾い直す）。
-
-    配達そのものは**インラインで待つ**。``asyncio.create_task`` に逃がすと、
-    誰も await しないまま捨てられたタスクの中の DB 接続が閉じられず、
-    aiosqlite のワーカースレッドが残ってプロセスが終われなくなる。通知チェーン
-    （DB 1 クエリ → イベント追記 → WS → ``start_loop`` は起動の合図まで）は
-    短いので、キャンセルの HTTP を待たせる時間は問題にならない。
-    """
-    if _final_dispatch_stopped:
-        return
-    await _fire_job_final(job_id, status)
 
 
 async def _job_status(job_id: str) -> str | None:
@@ -429,27 +355,9 @@ async def _job_status(job_id: str) -> str | None:
     return row["status"] if row else None
 
 
-async def _is_agent_job(job_id: str) -> bool:
-    """``jobs.chat_session_id`` が ``agent_sessions.id`` ならエージェント発。"""
-    async with get_db() as conn:
-        async with conn.execute(
-            "SELECT chat_session_id FROM jobs WHERE id = ?", (job_id,)
-        ) as cur:
-            row = await cur.fetchone()
-        session_id = (row["chat_session_id"] if row else None) or ""
-        if not session_id:
-            return False
-        async with conn.execute(
-            "SELECT 1 FROM agent_sessions WHERE id = ?", (session_id,)
-        ) as cur:
-            return await cur.fetchone() is not None
-
-
 async def _notify_job(job_id: str, previous: str | None, status: str) -> None:
     copy = _JOB_NOTIFY.get(status)
     if copy is None or previous == status:
-        return
-    if await _is_agent_job(job_id):
         return
     title, body = copy
     await push.notify_all(title, body, url="/", tag=f"job-{status}")
@@ -463,21 +371,13 @@ async def _set_status(
     progress: float | None = None,
     **fields: Any,
 ) -> None:
-    terminal = status in _TERMINAL_STATUSES
-    previous = await _job_status(job_id) if status in _JOB_NOTIFY or terminal else None
+    previous = await _job_status(job_id) if status in _JOB_NOTIFY else None
     await _update(job_id, status=status, **fields)
     await ws.publish(job_id, status, message=message, progress=progress)
     await _notify_job(job_id, previous, status)
-    # 終端に入った瞬間は 1 回だけ（既に同じ終端なら二重に知らせない）。
-    if terminal and previous != status:
-        await _dispatch_job_final(job_id, status)
 
 
 async def delete_job(job_id: str) -> bool:
-    # 消したあとでは ``chat_session_id`` が辿れず「どの会話のジョブだったか」が
-    # 分からなくなるので、未通知の完了通知は**行が在るうちに**配ってもらう
-    # （:func:`on_job_deleted`）。ここだけはインラインで待つ: 順序が意味を持つ。
-    await _fire_job_deleted(job_id)
     async with get_db() as conn:
         cur = await conn.execute("DELETE FROM jobs WHERE id = ?", (job_id,))
         await conn.commit()
@@ -851,7 +751,6 @@ async def _insert_job(
                     user_input,
                     params.get("audio_prompt"),
                 ),
-                session_id=chat_session_id,
             ),
             key=f"job:{job_id}",
         )
@@ -2042,20 +1941,13 @@ class JobRunner:
         return self._queue
 
     async def start(self) -> None:
-        global _final_dispatch_stopped
         self._ensure_queue()
         self._stopping = False
-        _final_dispatch_stopped = False
         if not self.running:
             self._task = asyncio.create_task(self._worker(), name="job-worker")
 
     async def stop(self) -> None:
-        global _final_dispatch_stopped
         self._stopping = True
-        # 畳んでいる最中に canceled が書かれても、そこから新しい通知（＝
-        # エージェントのループ）を起こさない。取りこぼしたイベントは次の起動時の
-        # スキャン（`agent_runner.scan_pending_takes`）が拾い直す。
-        _final_dispatch_stopped = True
         task, self._task = self._task, None
         current = self._current_task
         if current is not None and not current.done():

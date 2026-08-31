@@ -30,8 +30,8 @@ import logging
 from pathlib import Path
 
 from . import grok, grok_session, prompts, ws
-from .agent_store import session_dir
 from .models import ChatMessage, ChatState
+from .paths import CHAT_SESSIONS_DIR
 
 log = logging.getLogger(__name__)
 
@@ -43,15 +43,21 @@ _activity: dict[str, str] = {}
 _running: set[str] = set()
 
 
-def workdir(session_id: str, stored: str = "") -> str:
-    """このチャットの作業ディレクトリ（``runtime/agent-sessions/chat-<id>/``）。
+def _session_dir(session_id: str) -> Path:
+    """``runtime/chat-sessions/<id>/``（必要になった時点で作る）。"""
+    path = CHAT_SESSIONS_DIR / session_id
+    path.mkdir(parents=True, exist_ok=True)
+    return path
 
-    エージェント / キャンバスと同じ置き場を借りる（セッション行は作らない）。
+
+def workdir(session_id: str, stored: str = "") -> str:
+    """このチャットの作業ディレクトリ（``runtime/chat-sessions/<id>/``）。
+
     入力画像のコピー先でもあるので、grok の cwd と必ず同じ場所にする。
     """
     if stored:
         return stored
-    return str(session_dir(f"chat-{session_id}"))
+    return str(_session_dir(session_id))
 
 
 def workdir_path(session_id: str, stored: str = "") -> Path:

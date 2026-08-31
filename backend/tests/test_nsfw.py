@@ -8,10 +8,9 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from app import agent_runner, agent_store, comfy, config, db, grok, jobs, nsfw
+from app import comfy, config, db, grok, jobs, nsfw
 from app.main import app
-from app.models import AgentSession, AgentTask, JobCreate, Settings
-from app.routers import agent as agent_router
+from app.models import Settings
 
 from conftest import fake_outputs
 
@@ -90,18 +89,14 @@ def env(tmp_path, monkeypatch, request):
 
     assets = tmp_path / "assets"
     outputs = tmp_path / "outputs"
-    sessions = tmp_path / "agent-sessions"
     (assets / "audio").mkdir(parents=True)
     (assets / "image").mkdir(parents=True)
     outputs.mkdir()
-    sessions.mkdir()
 
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.db")
     monkeypatch.setattr(jobs, "ASSETS_DIR", assets)
     monkeypatch.setattr(jobs, "OUTPUTS_DIR", outputs)
     monkeypatch.setattr(jobs, "POLL_INTERVAL", 0.02)
-    monkeypatch.setattr(agent_store, "AGENT_SESSIONS_DIR", sessions)
-    monkeypatch.setattr(agent_runner, "POLL_INTERVAL", 0.02)
     monkeypatch.setattr(
         config,
         "_settings",
@@ -143,17 +138,6 @@ def wait_job(client, job_id, predicate, timeout: float = 10.0) -> dict:
             return job
         time.sleep(0.02)
     raise AssertionError(f"job {job_id} が条件を満たしませんでした: {job}")
-
-
-def wait_session(client, session_id, predicate, timeout: float = 10.0) -> dict:
-    deadline = time.time() + timeout
-    session = {}
-    while time.time() < deadline:
-        session = client.get(f"/api/agent/sessions/{session_id}").json()
-        if predicate(session):
-            return session
-        time.sleep(0.02)
-    raise AssertionError(f"session {session_id} が条件を満たしませんでした")
 
 
 def judged(job: dict) -> bool:
@@ -294,113 +278,3 @@ def test_continue_inherits_the_nsfw_flag(env):
     assert second["nsfw"] is True
     assert second["nsfw_source"] == "auto"
     assert env.cli.calls == 0
-
-
-# --------------------------------------------------------------------------
-# エージェントセッション（§4）
-# --------------------------------------------------------------------------
-
-def start_session(env, goal: str = "ダンス動画を作りたい") -> dict:
-    response = env.client.post(
-        "/api/agent/sessions",
-        json={"goal": goal, "checkin_mode": "milestone", "auto_limit": 5},
-    )
-    assert response.status_code == 201, response.text
-    return response.json()
-
-
-def test_session_goal_is_classified_in_the_background(env):
-    created = start_session(env)
-    assert created["nsfw"] is False
-    assert created["nsfw_source"] == ""
-
-    session = wait_session(env.client, created["id"], lambda s: s["nsfw_source"] != "")
-    assert session["nsfw"] is True
-    assert session["nsfw_source"] == "auto"
-
-    summary = env.client.get("/api/agent/sessions").json()[0]
-    assert summary["nsfw"] is True
-
-
-def test_session_nsfw_endpoint_toggles_manually(env):
-    created = start_session(env, goal="")
-    assert created["nsfw_source"] == ""  # goal が空なので判定は走らない
-    assert env.cli.calls == 0
-
-    session = env.client.post(
-        f"/api/agent/sessions/{created['id']}/nsfw", json={"nsfw": True}
-    ).json()
-    assert session["nsfw"] is True
-    assert session["nsfw_source"] == "manual"
-
-    assert (
-        env.client.post("/api/agent/sessions/nope/nsfw", json={"nsfw": True}).status_code
-        == 404
-    )
-
-
-def test_jobs_of_an_nsfw_session_inherit_the_flag(env):
-    created = start_session(env, goal="")
-    env.client.post(f"/api/agent/sessions/{created['id']}/nsfw", json={"nsfw": True})
-
-    task = AgentTask(id="t1", label="①", job=image_body())
-
-    async def run():
-        await agent_runner.execute_task(created["id"], task)
-
-    env.client.portal.call(run)  # type: ignore[attr-defined]
-
-    assert task.job_id
-    job = env.client.get(f"/api/jobs/{task.job_id}").json()
-    assert job["nsfw"] is True
-    assert job["nsfw_source"] == "auto"
-    assert env.cli.calls == 0  # セッションからの継承なので判定は走らない
-
-
-def test_an_auto_flagged_job_raises_its_session(env):
-    created = start_session(env, goal="")
-
-    async def create():
-        return await jobs.create_job(
-            JobCreate(**image_body(), chat_session_id=created["id"])
-        )
-
-    job = env.client.portal.call(create)  # type: ignore[attr-defined]
-    wait_job(env.client, job.id, judged)
-
-    session = wait_session(env.client, created["id"], lambda s: s["nsfw"])
-    assert session["nsfw"] is True
-    assert session["nsfw_source"] == "auto"
-
-
-def test_manual_session_flag_survives_an_auto_job(env):
-    created = start_session(env, goal="")
-    env.client.post(f"/api/agent/sessions/{created['id']}/nsfw", json={"nsfw": False})
-
-    async def create():
-        # 継承しない（inherit_nsfw=False）ので判定が走り、auto で NSFW になる
-        return await jobs.create_job(
-            JobCreate(**image_body(), chat_session_id=created["id"])
-        )
-
-    job = env.client.portal.call(create)  # type: ignore[attr-defined]
-    wait_job(env.client, job.id, judged)
-    time.sleep(0.2)
-
-    session = env.client.get(f"/api/agent/sessions/{created['id']}").json()
-    assert session["nsfw"] is False
-    assert session["nsfw_source"] == "manual"
-
-
-def test_first_message_classifies_a_session_created_without_a_goal(env):
-    created = start_session(env, goal="")
-    session = AgentSession(**created)
-
-    async def classify():
-        # send_message は Grok ターンも回すので、判定の仕掛けだけを直接確かめる
-        agent_router._classify_session(session, "全裸のシーンにして")
-
-    env.client.portal.call(classify)  # type: ignore[attr-defined]
-    updated = wait_session(env.client, created["id"], lambda s: s["nsfw_source"] != "")
-    assert updated["nsfw"] is True
-    assert updated["nsfw_source"] == "auto"

@@ -2,7 +2,6 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { ApiError, api, formatDetail } from '../../api'
 import type {
-  CanvasProgress,
   ComfyTarget,
   JobProgress,
   StudioAssetCategory,
@@ -21,7 +20,6 @@ import { Banner } from '../ui'
 import { ResizeHandle, useIsWide, useResizablePanel } from '../ui/resizable-panel'
 import { Tabs, TabsList, TabsTrigger } from '../ui/tabs'
 import TargetSelector from '../TargetSelector'
-import CanvasView from '../canvas/CanvasView'
 import EditView from './EditView'
 import EpisodeFilter, { ALL_EPISODES } from './EpisodeFilter'
 import OverviewView from './OverviewView'
@@ -30,7 +28,7 @@ import ProjectPicker from './ProjectPicker'
 import RevisionsModal from './RevisionsModal'
 import ScriptView from './ScriptView'
 import ShotRail from './ShotRail'
-import StudioProjectBar, { type StudioProjectMode } from './StudioProjectBar'
+import StudioProjectBar from './StudioProjectBar'
 import WorldView from './WorldView'
 import {
   MAX_STEPS,
@@ -89,7 +87,6 @@ function rememberEpisode(projectId: string, episodeId: string): void {
  */
 export default function StudioView({
   progress,
-  canvasEvent = null,
   timelineExportEvent = null,
   aspectRatios = [],
   showNsfw = true,
@@ -98,8 +95,6 @@ export default function StudioView({
 }: {
   /** App が WS から集めているジョブ進捗（Take の生成中表示に使う）。 */
   progress: Record<string, JobProgress>
-  /** キャンバスのエージェント実行の最新フレーム（WS）。 */
-  canvasEvent?: CanvasProgress | null
   /** 編集タブの書き出し進捗の最新フレーム（WS）。 */
   timelineExportEvent?: TimelineExportProgress | null
   /** 生成フォームと同じアスペクト比の候補（無ければ Shot 側は自由入力）。 */
@@ -121,7 +116,6 @@ export default function StudioView({
   // 脚本・制作タブの話の絞り込み（`ALL_EPISODES` = 作品まるごと）。サーバー側で
   // 絞るので、値が変わったら詳細を取り直す。
   const [episodeFilter, setEpisodeFilter] = useState<string>(ALL_EPISODES)
-  const [mode, setMode] = useState<StudioProjectMode>('studio')
   const [shotId, setShotId] = useState<string | null>(null)
   const [assetId, setAssetId] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -726,8 +720,6 @@ export default function StudioView({
     <StudioProjectBar
       name={detail.name}
       isWide={isWide}
-      mode={mode}
-      onModeChange={setMode}
       onBack={() => openProject(null)}
       comfyTarget={comfyTarget}
       onComfyTarget={onComfyTarget}
@@ -763,23 +755,6 @@ export default function StudioView({
       busy={busy}
     />
   )
-
-  if (mode === 'canvas') {
-    return (
-      <main className="flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden">
-        {banner}
-        <div className="flex min-h-0 min-w-0 flex-1 flex-col gap-2 p-3">
-          {projectBar}
-          <CanvasView
-            detail={detail}
-            event={canvasEvent}
-            progress={progress}
-            onReloadStudio={reload}
-          />
-        </div>
-      </main>
-    )
-  }
 
   return (
     <main className="flex min-h-0 flex-1 flex-col">

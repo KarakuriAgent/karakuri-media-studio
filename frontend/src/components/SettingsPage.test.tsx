@@ -81,14 +81,7 @@ function settings(): Settings {
     external_max_pending_takes: 20,
     agent_grok_args: ['--permission-mode', 'auto'],
     agent_use_acp: true,
-    agent_stt_enabled: false,
-    agent_stt_base_url: '',
-    agent_stt_model: '',
-    agent_stt_api_key: '',
     agent_grok_timeout: 300,
-    agent_max_plan_tasks: 5,
-    agent_max_turns: 20,
-    canvas_max_turns: 8,
   }
 }
 
@@ -505,40 +498,6 @@ describe('SettingsPage: ComfyUI 接続先（3 プロファイル）', () => {
     expect(sent.agent_use_acp).toBe(false)
   })
 
-  it('STT を有効にすると接続先の欄が出て、URL・モデル・キーを保存できる', async () => {
-    putSettings.mockResolvedValue(settings())
-    await openSettings()
-
-    // 無効のあいだは接続先の欄を出さない（接続先は STT のためだけの設定）
-    expect(
-      screen.queryByLabelText('文字起こしサーバーの URL（OpenAI 互換）'),
-    ).toBeNull()
-
-    fireEvent.click(
-      screen.getByRole('switch', { name: '音声文字起こし（STT）を有効にする' }),
-    )
-    fireEvent.change(
-      screen.getByLabelText('文字起こしサーバーの URL（OpenAI 互換）'),
-      { target: { value: 'http://host.docker.internal:8000/v1' } },
-    )
-    fireEvent.change(screen.getByLabelText('STT モデル（空 = サーバー任せ）'), {
-      target: { value: 'whisper-1' },
-    })
-    fireEvent.change(
-      screen.getByLabelText('STT の API キー（ローカルサーバーなら空）'),
-      { target: { value: 'sk-test' } },
-    )
-    screen.getByRole('button', { name: '保存' }).click()
-
-    await waitFor(() => expect(putSettings).toHaveBeenCalled())
-    expect(putSettings.mock.calls[0][0]).toMatchObject({
-      agent_stt_enabled: true,
-      agent_stt_base_url: 'http://host.docker.internal:8000/v1',
-      agent_stt_model: 'whisper-1',
-      agent_stt_api_key: 'sk-test',
-    })
-  })
-
   it('使う CLI を切り替えると、その CLI のコマンド / モデル欄になる', async () => {
     putSettings.mockResolvedValue(settings())
     await openSettings()
@@ -585,7 +544,7 @@ describe('SettingsPage: ComfyUI 接続先（3 プロファイル）', () => {
       target: { value: '   ' },
     })
     expect(
-      screen.getByText('空にするとエージェントのツールが無効になります'),
+      screen.getByText('空にすると CLI のツールが無効になります'),
     ).toBeTruthy()
     screen.getByRole('button', { name: '保存' }).click()
 
@@ -1164,22 +1123,10 @@ describe('SettingsPage: Grok Build CLI（Grok Imagine のバックエンド、SP
     expect(putSettings.mock.calls[0][0]).toMatchObject({ grok_media_timeout: 600 })
   })
 
-  it('実行上限は 0（無制限）を含めて保存される', async () => {
+  it('grok の制限時間を保存する', async () => {
     putSettings.mockResolvedValue(settings())
     await openSettings()
 
-    fireEvent.change(
-      screen.getByLabelText('エージェントの連続ターン上限（0 = 無制限）'),
-      { target: { value: '0' } },
-    )
-    fireEvent.change(
-      screen.getByLabelText('キャンバスの連続ターン上限（0 = 無制限）'),
-      { target: { value: '0' } },
-    )
-    fireEvent.change(
-      screen.getByLabelText('1 プラン提案の新規ジョブ上限（自走時・0 = 無制限）'),
-      { target: { value: '0' } },
-    )
     fireEvent.change(
       screen.getByLabelText('grok の制限時間（秒・0 = タイムアウトなし）'),
       { target: { value: '900' } },
@@ -1188,9 +1135,6 @@ describe('SettingsPage: Grok Build CLI（Grok Imagine のバックエンド、SP
 
     await waitFor(() => expect(putSettings).toHaveBeenCalled())
     expect(putSettings.mock.calls[0][0]).toMatchObject({
-      agent_max_turns: 0,
-      canvas_max_turns: 0,
-      agent_max_plan_tasks: 0,
       agent_grok_timeout: 900,
     })
   })

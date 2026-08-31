@@ -927,9 +927,6 @@ async def project_detail(
 # Take とジョブから導出する値は入れない: 実行結果は「戻す」対象ではないため。
 
 #: スナップショットに入れるテーブルと、その主キー以外の並び順。
-#: キャンバスのカード（:mod:`app.canvas`）は**最後**に書き戻す: エンティティを
-#: 先に戻しておかないと、行を消したときのトリガーが戻したばかりのカードを
-#: 巻き添えで消してしまう。表示位置（`canvas_*`）は project 行に入っている。
 _SNAPSHOT_TABLES = (
     ("episodes", "studio_episodes", "sort_order, created_at, id"),
     ("scenes", "studio_scenes", "sort_order, created_at, id"),
@@ -942,7 +939,6 @@ _SNAPSHOT_TABLES = (
     ("timelines", "studio_timelines", "created_at, id"),
     ("timeline_tracks", "timeline_tracks", "sort_order, id"),
     ("timeline_clips", "timeline_clips", "track_id, start_ms, id"),
-    ("cards", "canvas_cards", "z, created_at, id"),
 )
 
 
@@ -1114,16 +1110,6 @@ async def restore_revision(project_id: str, seq: int) -> StudioProjectDetail | N
                 "UPDATE studio_shots SET sort_order = ? WHERE id = ?",
                 (order, shot_id),
             )
-        # スナップショットを取ったあとに参照先（Take など、復元の対象外の行）が
-        # 消えていたカードは戻さない（キャンバスに空のカードを残さない）。
-        await conn.execute(
-            "DELETE FROM canvas_cards WHERE project_id = ? AND entity_id IS NOT NULL"
-            " AND entity_id NOT IN ("
-            "   SELECT id FROM studio_assets UNION ALL SELECT id FROM studio_scenes"
-            "   UNION ALL SELECT id FROM studio_shots"
-            "   UNION ALL SELECT id FROM studio_takes)",
-            (project_id,),
-        )
         await _record_revision(
             conn, project_id, "user", f"リビジョン {seq} を復元"
         )

@@ -3,9 +3,8 @@
 外部サービスの LLM エージェントが ``POST /api/v1/stories`` に脚本を納品する
 とき、そのプロンプトへそのまま貼れる日本語 Markdown を組み立てる。
 
-**静的なコピーは置かない。** 内蔵エージェント向けの :data:`app.prompts.AGENT_STUDIO`
-はジョブ実行や Take 管理まで含むのでそのままでは配れず、かといってガイドを
-手書きで複製すると本体の定数が変わったときに黙って古くなる。そこで
+**静的なコピーは置かない。** ガイドを手書きで複製すると、本体の定数が変わった
+ときに黙って古くなる。そこで
 
 - 尺の範囲は :data:`app.studio.SHOT_DURATION_MIN` / :data:`~app.studio.SHOT_DURATION_MAX`
 - 参照素材の上限は :data:`app.workflows.MINIMAX_H3_REFERENCE_IMAGES` ほか

@@ -302,7 +302,7 @@ function PushSettingsCard() {
   return (
     <SettingsCard
       title="プッシュ通知"
-      description="生成の完了やエージェントの確認待ちを、この端末の通知として受け取ります。"
+      description="生成の完了を、この端末の通知として受け取ります。"
     >
       <p className="text-sm">
         いまの許可状態:{' '}
@@ -779,10 +779,6 @@ export default function SettingsPage({
           // 空白区切りの入力欄をフラグの配列に戻す（空 = ツール無効）
           agent_grok_args: splitGrokArgs(grokArgsDraft),
           agent_use_acp: settings.agent_use_acp,
-          agent_stt_enabled: settings.agent_stt_enabled,
-          agent_stt_base_url: settings.agent_stt_base_url,
-          agent_stt_model: settings.agent_stt_model,
-          agent_stt_api_key: settings.agent_stt_api_key,
           hf_token: settings.hf_token,
           civitai_api_key: settings.civitai_api_key,
           runpod_enabled: settings.runpod_enabled,
@@ -793,9 +789,6 @@ export default function SettingsPage({
           external_api_key: settings.external_api_key,
           external_max_pending_takes: settings.external_max_pending_takes,
           agent_grok_timeout: settings.agent_grok_timeout,
-          agent_max_plan_tasks: settings.agent_max_plan_tasks,
-          agent_max_turns: settings.agent_max_turns,
-          canvas_max_turns: settings.canvas_max_turns,
         }),
       )
       setNotice('設定を保存しました')
@@ -1323,8 +1316,8 @@ export default function SettingsPage({
                   </SettingsCard>
 
                   <SettingsCard
-                    title="LLM CLI / エージェント"
-                    description="チャット・エージェント・スタジオ会話・英訳が回す CLI の設定です。Grok Imagine（画像生成）は常に Grok CLI を使います。"
+                    title="LLM CLI"
+                    description="チャット・スタジオ会話・英訳が回す CLI の設定です。Grok Imagine（画像生成）は常に Grok CLI を使います。"
                   >
                     <div className="grid gap-2 sm:grid-cols-2">
                       <Field
@@ -1390,7 +1383,7 @@ export default function SettingsPage({
                       <Field
                         label="CLI の作業ディレクトリ（空 = 既定）"
                         htmlFor="grok-workdir"
-                        hint="チャット / エージェントが CLI を回すディレクトリの根です（セッションごとに下へ掘ります）。"
+                        hint="チャット・英訳が CLI を回すディレクトリの根です（セッションごとに下へ掘ります）。"
                       >
                         <Input
                           id="grok-workdir"
@@ -1421,7 +1414,7 @@ export default function SettingsPage({
                         hintTone="warn"
                         hint={
                           <>
-                            <strong>空にするとエージェントのツールが無効になります</strong>
+                            <strong>空にすると CLI のツールが無効になります</strong>
                             （ファイルの読み書き・画像の確認・Web 検索ができなくなり、
                             システムプロンプトからもツールの節が落ちます）。
                           </>
@@ -1442,62 +1435,6 @@ export default function SettingsPage({
                       checked={settings.agent_use_acp}
                       onCheckedChange={(checked) => update({ agent_use_acp: checked })}
                     />
-                    {/* 検分（inspect）の音声解析に文字起こしを足すか。推論は
-                        外部の OpenAI 互換サーバーに出すので、接続先が要る。 */}
-                    <ToggleRow
-                      id="agent-stt-enabled"
-                      label="音声文字起こし（STT）を有効にする"
-                      description="検分（inspect）でセリフをタイムスタンプつきに書き起こします。OpenAI 互換の文字起こしサーバー（speaches / whisper.cpp server / OpenAI API など）が必要です。URL が空のときはスキップし、検分レポートにその旨が出ます。"
-                      checked={settings.agent_stt_enabled}
-                      onCheckedChange={(checked) =>
-                        update({ agent_stt_enabled: checked })
-                      }
-                    />
-                    {settings.agent_stt_enabled && (
-                      <div className="grid gap-2 sm:grid-cols-2">
-                        <Field
-                          label="文字起こしサーバーの URL（OpenAI 互換）"
-                          htmlFor="agent-stt-base-url"
-                          hint="/v1/audio/transcriptions を持つサーバーのベース URL。Docker で動かしていてホスト側のサーバーを使う場合は http://host.docker.internal:8000/v1 のように指定してください。"
-                        >
-                          <Input
-                            id="agent-stt-base-url"
-                            value={settings.agent_stt_base_url}
-                            placeholder="http://localhost:8000/v1"
-                            onChange={(event) =>
-                              update({ agent_stt_base_url: event.target.value })
-                            }
-                          />
-                        </Field>
-                        <Field
-                          label="STT モデル（空 = サーバー任せ）"
-                          htmlFor="agent-stt-model"
-                        >
-                          <Input
-                            id="agent-stt-model"
-                            value={settings.agent_stt_model}
-                            placeholder="whisper-1"
-                            onChange={(event) =>
-                              update({ agent_stt_model: event.target.value })
-                            }
-                          />
-                        </Field>
-                        <Field
-                          label="STT の API キー（ローカルサーバーなら空）"
-                          htmlFor="agent-stt-api-key"
-                        >
-                          <Input
-                            id="agent-stt-api-key"
-                            type="password"
-                            value={settings.agent_stt_api_key}
-                            placeholder="（任意）"
-                            onChange={(event) =>
-                              update({ agent_stt_api_key: event.target.value })
-                            }
-                          />
-                        </Field>
-                      </div>
-                    )}
                     <div className="flex items-center gap-2">
                       <Button
                         variant="outline"
@@ -1520,63 +1457,12 @@ export default function SettingsPage({
                       )}
                     </div>
                   </SettingsCard>
-                  {/* エージェント / 相談の実行上限（AGENT-MODE §3.4）。
-                      既定値は従来どおりで、0 を入れたときだけ無制限になる。 */}
+                  {/* LLM CLI の実行上限。0 を入れたときだけ無制限になる。 */}
                   <SettingsCard
                     title="実行上限（0 = 無制限）"
                     description="暴走防止の上限です。0 を入れるとその項目だけ無制限になります（止めたいときは各画面の「停止」で止めてください）。"
                   >
                     <div className="grid gap-2 sm:grid-cols-2">
-                      <Field
-                        label="エージェントの連続ターン上限（0 = 無制限）"
-                        htmlFor="agent-max-turns"
-                      >
-                        <Input
-                          id="agent-max-turns"
-                          className="tnum"
-                          type="number"
-                          min="0"
-                          step="1"
-                          value={settings.agent_max_turns}
-                          onChange={(event) =>
-                            update({ agent_max_turns: Number(event.target.value) || 0 })
-                          }
-                        />
-                      </Field>
-                      <Field
-                        label="キャンバスの連続ターン上限（0 = 無制限）"
-                        htmlFor="canvas-max-turns"
-                      >
-                        <Input
-                          id="canvas-max-turns"
-                          className="tnum"
-                          type="number"
-                          min="0"
-                          step="1"
-                          value={settings.canvas_max_turns}
-                          onChange={(event) =>
-                            update({ canvas_max_turns: Number(event.target.value) || 0 })
-                          }
-                        />
-                      </Field>
-                      <Field
-                        label="1 プラン提案の新規ジョブ上限（自走時・0 = 無制限）"
-                        htmlFor="agent-max-plan-tasks"
-                      >
-                        <Input
-                          id="agent-max-plan-tasks"
-                          className="tnum"
-                          type="number"
-                          min="0"
-                          step="1"
-                          value={settings.agent_max_plan_tasks}
-                          onChange={(event) =>
-                            update({
-                              agent_max_plan_tasks: Number(event.target.value) || 0,
-                            })
-                          }
-                        />
-                      </Field>
                       <Field
                         label="grok の制限時間（秒・0 = タイムアウトなし）"
                         htmlFor="agent-grok-timeout"
