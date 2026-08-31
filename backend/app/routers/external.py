@@ -3,9 +3,10 @@
 外部のエージェントが、脚本づくりから生成・検分・素材の整理・つなぎまでを
 自分で回すための API。公開するのは話づくり（プロジェクト / 話 / 場 / Shot /
 素材）と生成（Shot のレンダリングと汎用ジョブ）とライブラリ、それに編集タブ
-一式（タイムライン / トラック / クリップ / 書き出し）で、**削除はプロジェクト
-以外**。プロジェクトだけはリビジョンごとカスケードで消えて復元できないので、
-外部には出さず人に頼む運用にする。
+一式（タイムライン / トラック / クリップ / 書き出し）と、リビジョン履歴
+（一覧 / 差分 / 復元）で、**削除はプロジェクト以外**。プロジェクトだけは
+リビジョンごとカスケードで消えて復元できないので、外部には出さず人に頼む
+運用にする。
 
 ここに置くのは HTTP の入り口と 2 つの安全弁だけで、ビジネスロジックは持たない:
 
@@ -91,6 +92,9 @@ from ..models import (
     StudioProjectUpdate,
     StudioRenderRequest,
     StudioReorder,
+    StudioRevision,
+    StudioRevisionDiff,
+    StudioRevisionRestore,
     StudioScene,
     StudioSceneCreate,
     StudioSceneUpdate,
@@ -254,6 +258,70 @@ async def update_project(
     if project is None:
         raise HTTPException(status_code=404, detail="project not found")
     return project
+
+
+# --------------------------------------------------------------------------
+# リビジョン履歴（409 の読み解きと、消したものの戻し道）
+# --------------------------------------------------------------------------
+
+@router.get("/projects/{project_id}/revisions", response_model=list[StudioRevision])
+async def list_revisions(
+    project_id: str,
+    entity_kind: str | None = Query(
+        None, description="shot / asset など。entity_id と併せて 1 件の履歴に絞る"
+    ),
+    entity_id: str | None = Query(None),
+) -> list[StudioRevision]:
+    """新しい順の見出し一覧（中身は含めない）。
+
+    PATCH が 409 で弾かれたら、ここで**そのエンティティの履歴**
+    （``entity_kind`` / ``entity_id``）を引き、下の ``diff`` で人が何を変えたかを
+    読んでから書き直す。
+    """
+    if await service.get_project(project_id) is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    return await service.list_revisions(
+        project_id, entity_kind=entity_kind, entity_id=entity_id
+    )
+
+
+@router.get("/projects/{project_id}/revisions/{seq}/diff",
+            response_model=StudioRevisionDiff)
+async def diff_revision(project_id: str, seq: int) -> StudioRevisionDiff:
+    """そのリビジョンで**何が変わったか**（直前のリビジョンとの差分）。"""
+    diff = await service.diff_revision(project_id, seq)
+    if diff is None:
+        raise HTTPException(status_code=404, detail="revision not found")
+    return diff
+
+
+@router.post("/projects/{project_id}/revisions/{seq}/restore",
+             response_model=StudioProjectDetail)
+async def restore_revision(
+    project_id: str, seq: int, payload: StudioRevisionRestore | None = None
+) -> StudioProjectDetail:
+    """そのリビジョンの内容へ書き戻す（ファイル実体とジョブは残る）。
+
+    ボディは任意で、``entity`` / ``id``（と ``fields``）を送るとその 1 件
+    （その項目だけ）の部分復元になる。送らなければプロジェクト丸ごと。
+    消しすぎたカットや素材はこれで戻せる（書き換える前の状態も 1 リビジョンとして
+    残るので、復元そのものもやり直せる）。
+    """
+    target = payload or StudioRevisionRestore()
+    try:
+        detail = await service.restore_revision(
+            project_id,
+            seq,
+            entity=target.entity,
+            entity_id=target.id,
+            fields=target.fields,
+            actor=ACTOR,
+        )
+    except service.StudioError as exc:
+        raise _bad_request(exc) from exc
+    if detail is None:
+        raise HTTPException(status_code=404, detail="revision not found")
+    return detail
 
 
 # --------------------------------------------------------------------------

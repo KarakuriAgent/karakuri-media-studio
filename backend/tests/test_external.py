@@ -944,6 +944,98 @@ def test_external_patches_take_a_base_revision(env):
 
 
 # --------------------------------------------------------------------------
+# リビジョン履歴（409 の読み解きと、消したものの戻し道）
+# --------------------------------------------------------------------------
+
+def test_revisions_can_be_listed_and_filtered_to_one_entity(env):
+    """409 のあと、そのカットの履歴だけを引ける。"""
+    enable(env)
+    project = make_project(env)
+    shot = call(
+        env, "POST", f"/api/v1/projects/{project['id']}/shots",
+        json={"title": "決裂", "prompt": "One man leaves."},
+    ).json()
+    call(env, "PATCH", f"/api/v1/shots/{shot['id']}", json={"prompt": "He walks out."})
+
+    rows = call(env, "GET", f"/api/v1/projects/{project['id']}/revisions").json()
+    assert [row["actor"] for row in rows] == ["external", "external", "external"]
+
+    mine = call(
+        env, "GET",
+        f"/api/v1/projects/{project['id']}/revisions"
+        f"?entity_kind=shot&entity_id={shot['id']}",
+    ).json()
+    assert [row["entity_id"] for row in mine] == [shot["id"], shot["id"]]
+    assert mine[0]["action"] == "カット『決裂』を更新(prompt)"
+
+
+def test_a_revision_diff_shows_what_the_other_side_changed(env):
+    """人が UI から直した内容を、項目ごとの差分で読める。"""
+    enable(env)
+    project = make_project(env)
+    shot = call(
+        env, "POST", f"/api/v1/projects/{project['id']}/shots",
+        json={"title": "決裂", "prompt": "One man leaves."},
+    ).json()
+    env.client.patch(f"/api/studio/shots/{shot['id']}", json={"prompt": "人の推敲"})
+
+    seq = call(env, "GET", f"/api/v1/projects/{project['id']}/revisions").json()[0]
+    assert seq["actor"] == "user"
+    diff = call(
+        env, "GET", f"/api/v1/projects/{project['id']}/revisions/{seq['seq']}/diff"
+    )
+    assert diff.status_code == 200, diff.text
+    changed = diff.json()["changes"]
+    assert [(c["entity"], c["op"]) for c in changed] == [("shot", "update")]
+    fields = {f["field"]: (f["before"], f["after"]) for f in changed[0]["fields"]}
+    assert fields["prompt"] == ("One man leaves.", "人の推敲")
+
+
+def test_a_deleted_shot_can_be_restored_field_by_field(env):
+    """消したカットを部分復元で戻せる（復元の前後も履歴に残る）。"""
+    enable(env)
+    project = make_project(env)
+    shot = call(
+        env, "POST", f"/api/v1/projects/{project['id']}/shots",
+        json={"title": "決裂", "prompt": "One man leaves."},
+    ).json()
+    before = call(env, "GET", f"/api/v1/projects/{project['id']}/revisions").json()[0]
+    assert call(env, "DELETE", f"/api/v1/shots/{shot['id']}").status_code == 204
+    assert call(env, "GET", f"/api/v1/projects/{project['id']}").json()["shots"] == []
+
+    restored = call(
+        env, "POST",
+        f"/api/v1/projects/{project['id']}/revisions/{before['seq']}/restore",
+        json={"entity": "shot", "id": shot["id"], "fields": ["title", "prompt"]},
+    )
+    assert restored.status_code == 200, restored.text
+    shots = restored.json()["shots"]
+    assert [(s["id"], s["title"], s["prompt"]) for s in shots] == [
+        (shot["id"], "決裂", "One man leaves.")
+    ]
+    # 復元も外部の変更として残り、書き換える前の状態も 1 件取ってある
+    rows = call(env, "GET", f"/api/v1/projects/{project['id']}/revisions").json()
+    assert rows[0]["actor"] == "external"
+    assert studio.RESTORE_BACKUP_ACTION in [row["action"] for row in rows]
+
+
+def test_the_revision_endpoints_need_the_key_and_something_that_exists(env):
+    assert env.client.get("/api/v1/projects/x/revisions").status_code == 404
+    enable(env)
+    assert env.client.get("/api/v1/projects/x/revisions").status_code == 401
+    assert env.client.post("/api/v1/projects/x/revisions/1/restore").status_code == 401
+    assert call(env, "GET", "/api/v1/projects/nope/revisions").status_code == 404
+
+    project = make_project(env)
+    assert call(
+        env, "GET", f"/api/v1/projects/{project['id']}/revisions/999/diff"
+    ).status_code == 404
+    assert call(
+        env, "POST", f"/api/v1/projects/{project['id']}/revisions/999/restore"
+    ).status_code == 404
+
+
+# --------------------------------------------------------------------------
 # レンダリング前確認（prompt-preview）
 # --------------------------------------------------------------------------
 
