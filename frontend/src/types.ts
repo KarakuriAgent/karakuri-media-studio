@@ -820,8 +820,25 @@ export type StudioWorkflowOverride =
   | 'minimax_h3_i2v'
   | 'minimax_h3_r2v'
 
-/** リビジョンを作った主体（人の操作か、エージェントの操作か）。 */
-export type StudioRevisionActor = 'user' | 'agent'
+/**
+ * リビジョンを作った主体。`user` = UI からの操作、`external` = 外部 API
+ * （`/api/v1`）、`chat` = 内蔵チャット。`agent` は外部 API を `external` へ
+ * 分ける前に書かれた過去行のためだけに残っている。
+ */
+export type StudioRevisionActor = 'user' | 'agent' | 'external' | 'chat'
+
+/** リビジョンの差分に出るエンティティの種別。 */
+export type StudioRevisionEntity =
+  | 'project'
+  | 'episode'
+  | 'scene'
+  | 'shot'
+  | 'asset'
+  | 'asset_file'
+  | 'timeline'
+  | 'timeline_track'
+  | 'timeline_clip'
+  | 'take'
 
 /**
  * 動画生成の品質（プロジェクト単位の設定）。論理モード（t2v / i2v / r2v）とは
@@ -954,8 +971,19 @@ export interface StudioProjectCreate {
   nsfw?: boolean
 }
 
+/**
+ * PATCH 系の body に共通の「書き換える項目ではない」欄。
+ *
+ * `base_revision` は読んだときの `revision_seq`。送ると、それ以降に**同じ
+ * エンティティへの変更**があったときだけ 409 になる（別のカットを直しただけ
+ * なら通る）。送らなければ今までどおり無条件に書き込む。
+ */
+export interface StudioUpdateBase {
+  base_revision?: number
+}
+
 /** PATCH /api/studio/projects/{id}（送った項目だけ変わる）。 */
-export interface StudioProjectUpdate {
+export interface StudioProjectUpdate extends StudioUpdateBase {
   name?: string
   code?: string
   synopsis?: string
@@ -1007,7 +1035,7 @@ export interface StudioEpisodeCreate {
 }
 
 /** PATCH /api/studio/episodes/{id}（送った項目だけ変わる）。 */
-export interface StudioEpisodeUpdate {
+export interface StudioEpisodeUpdate extends StudioUpdateBase {
   title?: string
   synopsis?: string
   sort_order?: number
@@ -1034,7 +1062,7 @@ export interface StudioSceneCreate {
 }
 
 /** PATCH /api/studio/scenes/{id}（送った項目だけ変わる）。 */
-export interface StudioSceneUpdate {
+export interface StudioSceneUpdate extends StudioUpdateBase {
   title?: string
   synopsis?: string
   time_of_day?: string
@@ -1107,7 +1135,7 @@ export interface StudioAssetCreate {
 }
 
 /** PATCH /api/studio/assets/{id}（送った項目だけ変わる）。 */
-export interface StudioAssetUpdate {
+export interface StudioAssetUpdate extends StudioUpdateBase {
   name?: string
   category?: StudioAssetCategory
   caption?: string
@@ -1191,7 +1219,7 @@ export interface StudioShotCreate {
  *
  * `scene_id` / 生成設定は **null を明示すると外れる**（送らなければ今の値のまま）。
  */
-export interface StudioShotUpdate {
+export interface StudioShotUpdate extends StudioUpdateBase {
   title?: string
   purpose?: string
   action?: string
@@ -1366,6 +1394,11 @@ export interface StudioProjectDetail extends StudioProject {
   shots: StudioShot[]
   /** プロジェクトの全 Take（Shot ごとに古い順）。 */
   takes: StudioTake[]
+  /**
+   * いまのリビジョン連番（0 = まだ履歴が無い）。PATCH の `base_revision` に
+   * そのまま渡すと「読んだあとに他所が触っていたら 409」にできる。
+   */
+  revision_seq: number
 }
 
 /** リビジョン 1 件の見出し（GET .../revisions の 1 行）。 */
@@ -1374,12 +1407,54 @@ export interface StudioRevision {
   actor: StudioRevisionActor
   /** 変更内容の短い説明（日本語）。 */
   action: string
+  /**
+   * 触ったエンティティ（1 件だけを触る操作のときだけ入る）。並べ替えや一括
+   * 作成のように複数へ跨る操作と、この列を足す前の行は空。
+   */
+  entity_kind: string
+  entity_id: string
   created_at: string
 }
 
 /** GET .../revisions/{seq}: そのときのプロジェクト全体つき。 */
 export interface StudioRevisionDetail extends StudioRevision {
   snapshot: Record<string, unknown>
+}
+
+/** 1 項目ぶんの差分（`StudioRevisionEntityDiff` の中身）。 */
+export interface StudioRevisionFieldDiff {
+  field: string
+  /** 直前のリビジョンでの値（`op` が `create` なら入らない）。 */
+  before: unknown
+  /** このリビジョンでの値（`op` が `delete` なら入らない）。 */
+  after: unknown
+}
+
+/** 1 エンティティぶんの差分（作成・削除は `fields` が空）。 */
+export interface StudioRevisionEntityDiff {
+  entity: StudioRevisionEntity
+  id: string
+  /** 見出し（title / name 相当。持たないエンティティは id）。 */
+  name: string
+  op: 'create' | 'update' | 'delete'
+  fields: StudioRevisionFieldDiff[]
+}
+
+/** GET .../revisions/{seq}/diff: **直前のリビジョンとの**差分。 */
+export interface StudioRevisionDiff extends StudioRevision {
+  changes: StudioRevisionEntityDiff[]
+}
+
+/**
+ * POST .../revisions/{seq}/restore body（すべて任意）。
+ *
+ * 何も送らなければプロジェクト丸ごとの復元。`entity` と `id` を送るとその 1 件
+ * だけを戻し、`fields` まで送るとその項目だけを戻す。
+ */
+export interface StudioRevisionRestore {
+  entity?: StudioRevisionEntity
+  id?: string
+  fields?: string[]
 }
 
 /** POST /api/studio/demo body。 */

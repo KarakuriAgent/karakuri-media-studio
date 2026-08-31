@@ -125,14 +125,24 @@ CREATE TABLE IF NOT EXISTS studio_scenes (
 );
 
 -- リビジョン履歴（軽量版）: プロジェクトの状態を変えるたびに、その時点の
--- projects / episodes / scenes / shots / assets を丸ごと JSON で残す。Take と
--- ファイル実体は対象外（実行結果は履歴で戻すものではない。app/studio.py）。
+-- projects / episodes / scenes / shots / assets / takes / 編集タブの EDL を
+-- 丸ごと JSON で残す。ファイル実体（assets/ と outputs/）とジョブの実行状態は
+-- 対象外（消さないので戻す必要がない。app/studio.py の _SNAPSHOT_TABLES）。
+-- Take だけは復元でも**消さない**（載っている行を戻すだけ。生成はリビジョンを
+-- 作らないので、消すと直後に焼いた Take を辿れなくなる。_KEEP_UNKNOWN_ROWS）。
 CREATE TABLE IF NOT EXISTS studio_revisions (
   id            TEXT PRIMARY KEY,
   project_id    TEXT NOT NULL REFERENCES studio_projects(id) ON DELETE CASCADE,
   seq           INTEGER NOT NULL,           -- プロジェクトごとの 1 始まりの連番
-  actor         TEXT NOT NULL DEFAULT 'user',  -- user / agent
+  -- 変更した主体。user = UI からの操作 / external = 外部 API（/api/v1）/
+  -- chat = 内蔵チャット。'agent' は external に分ける前の過去行に残る。
+  actor         TEXT NOT NULL DEFAULT 'user',
   action        TEXT NOT NULL DEFAULT '',   -- 変更内容の短い説明（日本語）
+  -- 触ったエンティティ（1 件だけを触る操作のときに入る。並べ替えや一括作成の
+  -- ように複数へ跨る操作は空）。「このカットの履歴」の絞り込みはこれで引く:
+  -- 説明文のタイトル一致だと同名や改名で取りこぼす（app/studio.py）。
+  entity_kind   TEXT NOT NULL DEFAULT '',   -- project / episode / scene / shot / asset …
+  entity_id     TEXT NOT NULL DEFAULT '',
   snapshot_json TEXT NOT NULL,
   created_at    TEXT NOT NULL
 );
@@ -327,6 +337,8 @@ CREATE INDEX IF NOT EXISTS idx_studio_scenes_episode
 -- リビジョンの連番はプロジェクトごとに 1 本（同じ seq を 2 つ作らない）。
 CREATE UNIQUE INDEX IF NOT EXISTS idx_studio_revisions_seq
   ON studio_revisions(project_id, seq);
+-- 「このカットの履歴」で引く entity_kind / entity_id の索引は、その 2 列が
+-- ALTER で足るものなので _migrate の中で作る（ここで作ると古い DB で落ちる）。
 
 CREATE INDEX IF NOT EXISTS idx_studio_timelines_project
   ON studio_timelines(project_id, created_at);
@@ -483,6 +495,13 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         # リタイム（フェーズ 3）。既存のクリップは 1.0 = 等速のまま。
         ("speed", "REAL NOT NULL DEFAULT 1"),
     ],
+    "studio_revisions": [
+        # 触ったエンティティ（「このカットの履歴」の絞り込み用）。この列を足す
+        # 前の行は空のまま = どのエンティティのものか分からないので絞り込みには
+        # 出てこない（一覧には今までどおり出る）。
+        ("entity_kind", "TEXT NOT NULL DEFAULT ''"),
+        ("entity_id", "TEXT NOT NULL DEFAULT ''"),
+    ],
     "studio_takes": [
         ("prompt", "TEXT NOT NULL DEFAULT ''"),
         ("source_prompt", "TEXT NOT NULL DEFAULT ''"),
@@ -531,6 +550,13 @@ async def _migrate(conn: aiosqlite.Connection) -> None:
                 "UPDATE studio_projects SET nsfw = 1 WHERE id IN "
                 "(SELECT DISTINCT project_id FROM studio_shots WHERE nsfw = 1)"
             )
+
+    # entity_kind / entity_id は ALTER で足す列なので、索引はここで作る
+    # （SCHEMA に書くと、その列がまだ無い古い DB の起動で落ちる）。
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_studio_revisions_entity"
+        " ON studio_revisions(project_id, entity_kind, entity_id)"
+    )
 
     await _widen_timeline_clip_sources(conn)
     await _renumber_shots(conn)

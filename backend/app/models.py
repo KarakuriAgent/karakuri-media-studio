@@ -2188,8 +2188,29 @@ StudioVideoQuality = Literal["normal", "opt", "turbo"]
 #: 素材の絵は素で焼きたい、という使い分けのために分けてある。
 StudioImageQuality = Literal["normal", "opt", "turbo"]
 
-#: リビジョンを作った主体（人の操作か、エージェントの操作か）
-StudioRevisionActor = Literal["user", "agent"]
+#: リビジョンを作った主体。``user`` = UI からの操作、``external`` = 外部 API
+#: （``/api/v1``）、``chat`` = 内蔵チャット。``agent`` は外部 API を ``external``
+#: へ分ける前に書かれた過去行のためだけに残してある（新しく書くことはない）。
+StudioRevisionActor = Literal["user", "agent", "external", "chat"]
+
+#: :data:`StudioRevisionActor` のうち、いま書き込むもの（:func:`app.studio._record_revision`）
+STUDIO_REVISION_ACTORS: tuple[str, ...] = ("user", "external", "chat")
+
+#: PATCH の body に混ざるが**書き換える項目ではない**もの（``changes()`` が外す）
+CONTROL_FIELDS: frozenset[str] = frozenset({"base_revision"})
+
+#: ``base_revision`` の意味（各 PATCH モデルで同じなので 1 か所に書く）。
+#: 読んだときの ``revision_seq`` を送ると、それ以降に**同じエンティティを触った
+#: 変更**があったときだけ 409 になる（別のカットを直しただけなら通る）。
+BASE_REVISION_DOC = (
+    "読んだときの revision_seq。それ以降に同じエンティティへの変更があれば 409"
+)
+
+#: リビジョンの差分に出るエンティティの種別（:class:`StudioRevisionEntityDiff`）
+StudioRevisionEntity = Literal[
+    "project", "episode", "scene", "shot", "asset", "asset_file",
+    "timeline", "timeline_track", "timeline_clip", "take",
+]
 
 
 class StudioProject(BaseModel):
@@ -2294,7 +2315,33 @@ class StudioProjectCreate(BaseModel):
     nsfw: bool = False
 
 
-class StudioProjectUpdate(BaseModel):
+class _StudioUpdate(BaseModel):
+    """``None`` を「送らなかった」とみなす PATCH body の土台。
+
+    ``base_revision`` は書き換える項目ではないので :meth:`changes` から外す
+    （:data:`BASE_REVISION_DOC`）。``NULLABLE`` に挙げた項目だけは、**送られた
+    ときに限り** ``None``（NULL 書き込み＝「既定へ戻す」）も通す。
+    """
+
+    #: 楽観ロック（:data:`BASE_REVISION_DOC`）
+    base_revision: int | None = None
+
+    #: null を明示できる項目（送られたときだけ NULL 書き込みを許す）
+    NULLABLE: ClassVar[tuple[str, ...]] = ()
+
+    def changes(self) -> dict[str, object]:
+        """書き換える項目だけを取り出す（未指定と ``base_revision`` は入らない）。"""
+        return {
+            name: value
+            for name, value in self.model_dump().items()
+            if name not in CONTROL_FIELDS and (
+                value is not None
+                or (name in self.NULLABLE and name in self.model_fields_set)
+            )
+        }
+
+
+class StudioProjectUpdate(_StudioUpdate):
     """PATCH /api/studio/projects/{id} body（指定した項目だけ変える）。
 
     ``megapixels`` / ``aspect_ratio``（と素材画像側の ``image_megapixels`` /
@@ -2337,20 +2384,9 @@ class StudioProjectUpdate(BaseModel):
     #: この作品から投入するジョブをすべて NSFW 扱いにする（OFF = 非 NSFW 固定）
     nsfw: bool | None = None
 
-    #: null を明示できる項目（送られたときだけ NULL 書き込みを許す）
     NULLABLE: ClassVar[tuple[str, ...]] = (
         "megapixels", "aspect_ratio", "image_megapixels", "image_aspect_ratio",
     )
-
-    def changes(self) -> dict[str, object]:
-        """書き換える項目だけを取り出す（未指定は入らない）。"""
-        return {
-            name: value
-            for name, value in self.model_dump().items()
-            if value is not None or (
-                name in self.NULLABLE and name in self.model_fields_set
-            )
-        }
 
 
 class StudioEpisode(BaseModel):
@@ -2373,7 +2409,7 @@ class StudioEpisodeCreate(BaseModel):
     sort_order: int | None = None
 
 
-class StudioEpisodeUpdate(BaseModel):
+class StudioEpisodeUpdate(_StudioUpdate):
     """PATCH /api/studio/episodes/{id} body（指定した項目だけ変える）。"""
 
     title: str | None = None
@@ -2404,7 +2440,7 @@ class StudioSceneCreate(BaseModel):
     sort_order: int | None = None
 
 
-class StudioSceneUpdate(BaseModel):
+class StudioSceneUpdate(_StudioUpdate):
     """PATCH /api/studio/scenes/{id} body（指定した項目だけ変える）。"""
 
     title: str | None = None
@@ -2588,7 +2624,7 @@ class StudioAssetCreate(BaseModel):
     sort_order: int | None = None
 
 
-class StudioAssetUpdate(BaseModel):
+class StudioAssetUpdate(_StudioUpdate):
     """PATCH /api/studio/assets/{id} body（指定した項目だけ変える）。"""
 
     name: str | None = None
@@ -2681,7 +2717,7 @@ class StudioShotCreate(BaseModel):
     sort_order: int | None = None
 
 
-class StudioShotUpdate(BaseModel):
+class StudioShotUpdate(_StudioUpdate):
     """PATCH /api/studio/shots/{id} body（指定した項目だけ変える）。
 
     ``scene_id`` / ``selected_take_id`` / 生成設定は **null を明示すると外れる**
@@ -2709,7 +2745,6 @@ class StudioShotUpdate(BaseModel):
     #: 英語キャッシュ。空文字または null 明示で消す（``english_source`` は書けない）
     english_prompt: str | None = None
 
-    #: null を明示できる項目（送られたときだけ NULL 書き込みを許す）
     NULLABLE: ClassVar[tuple[str, ...]] = (
         "scene_id",
         "selected_take_id",
@@ -2719,16 +2754,6 @@ class StudioShotUpdate(BaseModel):
         "workflow_override",
         "english_prompt",
     )
-
-    def changes(self) -> dict[str, object]:
-        """書き換える項目だけを取り出す（未指定は入らない）。"""
-        return {
-            name: value
-            for name, value in self.model_dump().items()
-            if value is not None or (
-                name in self.NULLABLE and name in self.model_fields_set
-            )
-        }
 
 
 class StudioShotReorder(BaseModel):
@@ -2915,6 +2940,9 @@ class StudioProjectDetail(StudioProject):
     shots: list[StudioShot] = Field(default_factory=list)
     #: プロジェクトの全 Take（新しい順ではなく Shot ごとに古い順）
     takes: list[StudioTake] = Field(default_factory=list)
+    #: いまのリビジョン連番（0 = まだ履歴が無い）。PATCH の ``base_revision``
+    #: にそのまま渡すと「読んだあとに他所が触っていたら 409」にできる
+    revision_seq: int = 0
 
 
 class StudioRevision(BaseModel):
@@ -2924,6 +2952,10 @@ class StudioRevision(BaseModel):
     actor: StudioRevisionActor = "user"
     #: 変更内容の短い説明（日本語）
     action: str = ""
+    #: 触ったエンティティ（1 件だけを触る操作のときだけ入る。並べ替えや一括作成の
+    #: ように複数へ跨る操作と、この列を足す前の行は空）
+    entity_kind: str = ""
+    entity_id: str = ""
     created_at: str
 
 
@@ -2931,8 +2963,57 @@ class StudioRevisionDetail(StudioRevision):
     """GET .../revisions/{seq}: 中身（そのときのプロジェクト全体）つき。"""
 
     #: ``{"project": {...}, "episodes": [...], "scenes": [...],
-    #: "shots": [...], "assets": [...]}``。Take と実行状態は入らない
+    #: "shots": [...], "assets": [...], "takes": [...]}``。ジョブの実行状態と
+    #: ファイル実体は入らない（:data:`app.studio._SNAPSHOT_TABLES`）
     snapshot: dict[str, Any] = Field(default_factory=dict)
+
+
+class StudioRevisionFieldDiff(BaseModel):
+    """1 項目ぶんの差分（:class:`StudioRevisionEntityDiff` の中身）。"""
+
+    field: str
+    #: 直前のリビジョンでの値（``op`` が ``create`` なら入らない）
+    before: Any = None
+    #: このリビジョンでの値（``op`` が ``delete`` なら入らない）
+    after: Any = None
+
+
+class StudioRevisionEntityDiff(BaseModel):
+    """1 エンティティぶんの差分（作成・削除は ``fields`` が空）。"""
+
+    entity: StudioRevisionEntity
+    id: str
+    #: 見出し（title / name 相当。持たないエンティティは id）
+    name: str = ""
+    op: Literal["create", "update", "delete"]
+    fields: list[StudioRevisionFieldDiff] = Field(default_factory=list)
+
+
+class StudioRevisionDiff(StudioRevision):
+    """GET .../revisions/{seq}/diff: **直前のリビジョンとの**差分。
+
+    ``seq - 1`` が無ければ「空から作った」とみなす（最初のリビジョンは全件が
+    ``create`` になる）。値の変わらなかった列と、記録用の列
+    （``created_at`` / ``updated_at`` など）は出ない。
+    """
+
+    changes: list[StudioRevisionEntityDiff] = Field(default_factory=list)
+
+
+class StudioRevisionRestore(BaseModel):
+    """POST .../revisions/{seq}/restore body（**すべて任意**）。
+
+    何も送らなければ今までどおりプロジェクト丸ごとの復元。``entity`` と ``id``
+    を送るとその 1 件だけを戻し、``fields`` まで送るとその項目だけを戻す
+    （行が今は無ければスナップショットの行を作り直す）。
+    """
+
+    #: 戻す対象の種別（``shot`` / ``asset`` など）
+    entity: StudioRevisionEntity | None = None
+    #: 戻す対象の id（``entity`` を送るなら必須。``project`` だけ省ける）
+    id: str | None = None
+    #: 戻す項目（省略するとその行のすべての項目）
+    fields: list[str] | None = None
 
 
 class StudioDemoCreate(BaseModel):

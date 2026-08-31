@@ -65,8 +65,9 @@ from ..models import (
 from .assets import save_upload
 from .studio import _kind_of
 
-#: 外部 API の操作は履歴に「エージェントの変更」として残す（UI 由来と区別する）
-ACTOR = "agent"
+#: 外部 API の操作は履歴に「外部エージェントの変更」として残す（UI 由来と
+#: 区別する）。過去行に残る 'agent' はこれを分ける前の書き込み。
+ACTOR = "external"
 
 
 def require_external_key(
@@ -136,25 +137,7 @@ async def list_projects() -> list[StudioProjectSummary]:
 @router.post("/projects", response_model=StudioProject, status_code=201)
 async def create_project(payload: StudioProjectCreate) -> StudioProject:
     try:
-        return await service.create_project(
-            payload.name,
-            payload.code,
-            payload.synopsis,
-            payload.world_notes,
-            payload.auto_translate,
-            payload.latent_continuity,
-            payload.nsfw,
-            payload.quality,
-            payload.megapixels,
-            payload.aspect_ratio,
-            payload.steps,
-            payload.latent_upscale,
-            payload.image_quality,
-            payload.image_megapixels,
-            payload.image_aspect_ratio,
-            payload.image_steps,
-            actor=ACTOR,
-        )
+        return await service.create_project(payload, actor=ACTOR)
     except service.StudioError as exc:
         raise _bad_request(exc) from exc
 
@@ -173,7 +156,10 @@ async def update_project(
 ) -> StudioProject:
     try:
         project = await service.update_project(
-            project_id, actor=ACTOR, **payload.changes()
+            project_id,
+            actor=ACTOR,
+            base_revision=payload.base_revision,
+            **payload.changes(),
         )
     except service.StudioError as exc:
         raise _bad_request(exc) from exc
@@ -201,9 +187,15 @@ async def create_episode(
 async def update_episode(
     episode_id: str, payload: StudioEpisodeUpdate
 ) -> StudioEpisode:
-    episode = await service.update_episode(
-        episode_id, actor=ACTOR, **payload.model_dump()
-    )
+    try:
+        episode = await service.update_episode(
+            episode_id,
+            actor=ACTOR,
+            base_revision=payload.base_revision,
+            **payload.changes(),
+        )
+    except service.StudioError as exc:
+        raise _bad_request(exc) from exc
     if episode is None:
         raise HTTPException(status_code=404, detail="episode not found")
     return episode
@@ -223,7 +215,10 @@ async def update_scene(scene_id: str, payload: StudioSceneUpdate) -> StudioScene
     """指定した項目だけ変える（``episode_id`` を送ると別の話へ引っ越す）。"""
     try:
         scene = await service.update_scene(
-            scene_id, actor=ACTOR, **payload.model_dump()
+            scene_id,
+            actor=ACTOR,
+            base_revision=payload.base_revision,
+            **payload.changes(),
         )
     except service.StudioError as exc:
         raise _bad_request(exc) from exc
@@ -249,7 +244,12 @@ async def create_shot(project_id: str, payload: StudioShotCreate) -> StudioShot:
 async def update_shot(shot_id: str, payload: StudioShotUpdate) -> StudioShot:
     """指定した項目だけ変える（``scene_id`` などは null を明示すると外れる）。"""
     try:
-        shot = await service.update_shot(shot_id, payload.changes(), actor=ACTOR)
+        shot = await service.update_shot(
+            shot_id,
+            payload.changes(),
+            actor=ACTOR,
+            base_revision=payload.base_revision,
+        )
     except service.StudioError as exc:
         raise _bad_request(exc) from exc
     if shot is None:
@@ -370,7 +370,10 @@ async def add_asset_from_job(
 async def update_asset(asset_id: str, payload: StudioAssetUpdate) -> StudioAsset:
     try:
         asset = await service.update_asset(
-            asset_id, actor=ACTOR, **payload.model_dump()
+            asset_id,
+            actor=ACTOR,
+            base_revision=payload.base_revision,
+            **payload.changes(),
         )
     except service.StudioError as exc:
         raise _bad_request(exc) from exc

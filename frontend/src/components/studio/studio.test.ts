@@ -496,6 +496,7 @@ describe('projectSummary / renderingJobIds', () => {
     nsfw: false,
     created_at: '2026-01-01T00:00:00+00:00',
     updated_at: '2026-01-01T00:00:00+00:00',
+    revision_seq: 3,
     assets: [asset('アキ'), asset('路地')],
     episodes: [],
     scenes: [],

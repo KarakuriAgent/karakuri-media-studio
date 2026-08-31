@@ -16,6 +16,7 @@ import type {
   StudioProjectDetail,
   StudioRenderRequest,
   StudioRevisionActor,
+  StudioRevisionEntity,
   StudioScene,
   StudioShot,
   StudioShotStatus,
@@ -193,12 +194,55 @@ export function formatProjectSettingsSummary(input: {
 
 export const REVISION_ACTOR_LABEL: Record<StudioRevisionActor, string> = {
   user: 'ユーザー',
+  // 外部 API を external へ分ける前に書かれた過去行のためのラベル。
   agent: 'エージェント',
+  external: '外部エージェント',
+  chat: 'チャット',
 }
 
 export const REVISION_ACTOR_CLASS: Record<StudioRevisionActor, string> = {
   user: 'border-sky-800 bg-sky-950 text-sky-300',
   agent: 'border-violet-800 bg-violet-950 text-violet-300',
+  external: 'border-violet-800 bg-violet-950 text-violet-300',
+  chat: 'border-emerald-800 bg-emerald-950 text-emerald-300',
+}
+
+/** 差分に出るエンティティの日本語の呼び名（backend の `_ENTITIES` の写し）。 */
+export const REVISION_ENTITY_LABEL: Record<StudioRevisionEntity, string> = {
+  project: 'プロジェクト',
+  episode: '話',
+  scene: '場',
+  shot: 'カット',
+  take: 'Take',
+  asset: '素材',
+  asset_file: '素材のリファレンス',
+  timeline: 'タイムライン',
+  timeline_track: 'トラック',
+  timeline_clip: 'クリップ',
+}
+
+/** 差分の op の見せ方（作成 / 更新 / 削除）。 */
+export const REVISION_OP_LABEL: Record<'create' | 'update' | 'delete', string> = {
+  create: '追加',
+  update: '更新',
+  delete: '削除',
+}
+
+export const REVISION_OP_CLASS: Record<'create' | 'update' | 'delete', string> = {
+  create: 'border-emerald-800 bg-emerald-950 text-emerald-300',
+  update: 'border-sky-800 bg-sky-950 text-sky-300',
+  delete: 'border-rose-800 bg-rose-950 text-rose-300',
+}
+
+/**
+ * 差分の値を 1 行に落とす（`null` / 空文字 / 真偽値も見えるように）。
+ *
+ * 中身の型はサーバーの列そのままなので、文字列でないものは JSON にして出す。
+ */
+export function revisionValueText(value: unknown): string {
+  if (value === null || value === undefined) return '（なし）'
+  if (typeof value === 'string') return value === '' ? '（空）' : value
+  return JSON.stringify(value)
 }
 
 /** 作れるデモ作品（backend/app/studio_demo.py の DEMO_PROJECTS の写し）。 */

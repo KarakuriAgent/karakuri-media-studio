@@ -13,6 +13,7 @@ import type {
   StudioProjectUpdate,
   StudioRenderRequest,
   StudioRevision,
+  StudioRevisionRestore,
   StudioShotUpdate,
   TimelineExportProgress,
 } from '../../types'
@@ -25,7 +26,7 @@ import EpisodeFilter, { ALL_EPISODES } from './EpisodeFilter'
 import OverviewView from './OverviewView'
 import ProductionView from './ProductionView'
 import ProjectPicker from './ProjectPicker'
-import RevisionsModal from './RevisionsModal'
+import RevisionsModal, { type RevisionFilter } from './RevisionsModal'
 import ScriptView from './ScriptView'
 import ShotRail from './ShotRail'
 import StudioProjectBar from './StudioProjectBar'
@@ -122,6 +123,8 @@ export default function StudioView({
   const [error, setError] = useState<string | null>(null)
   const [revisions, setRevisions] = useState<StudioRevision[] | null>(null)
   const [loadingRevisions, setLoadingRevisions] = useState(false)
+  // 「このカットの履歴」で開いたときの絞り込み（null = 作品まるごと）。
+  const [revisionFilter, setRevisionFilter] = useState<RevisionFilter | null>(null)
   // ヘッダーのメガピクセル欄。1 文字打つたびに PATCH しないよう、確定
   // （フォーカスを外す / Enter）までは打った文字列をここに置いて映す。
   const [megapixelsDraft, setMegapixelsDraft] = useState('')
@@ -527,13 +530,21 @@ export default function StudioView({
   }
 
   // --------------------------------------------------------- リビジョン履歴
-  const openRevisions = () => {
+  const openRevisions = (filter: RevisionFilter | null = null) => {
     if (!projectId) return
+    setRevisionFilter(filter)
     setRevisions([])
     setLoadingRevisions(true)
     void (async () => {
       try {
-        setRevisions(await api.listStudioRevisions(projectId))
+        // 絞り込みはサーバー側（entity_kind / entity_id）。名前ではなく id で
+        // 引くので、同名のカットが混ざらず、改名しても履歴が付いてくる。
+        setRevisions(
+          await api.listStudioRevisions(
+            projectId,
+            filter ? { kind: filter.kind, id: filter.id } : undefined,
+          ),
+        )
       } catch (cause) {
         setRevisions(null)
         pushError(cause)
@@ -552,6 +563,22 @@ export default function StudioView({
       await loadProjects()
     })
   }
+
+  /** そのリビジョンの 1 件（項目まで指定できる）だけを戻す。 */
+  const restoreRevisionPart = (seq: number, target: StudioRevisionRestore) => {
+    if (!projectId) return
+    const what = target.fields?.length ? target.fields.join('・') : 'この 1 件'
+    if (!window.confirm(`${what} を #${seq} の値に戻しますか？`)) return
+    void run(async () => {
+      await api.restoreStudioRevision(projectId, seq, target)
+      await loadProjects()
+    })
+  }
+
+  const loadRevisionDiff = useCallback(
+    (seq: number) => api.getStudioRevisionDiff(projectId ?? '', seq),
+    [projectId],
+  )
 
   const addAsset = (
     file: File | null,
@@ -826,7 +853,7 @@ export default function StudioView({
                 busy={busy}
                 onSave={saveProject}
                 onDelete={deleteProject}
-                onOpenRevisions={openRevisions}
+                onOpenRevisions={() => openRevisions()}
                 comfyTarget={comfyTarget}
               />
             )}
@@ -841,6 +868,9 @@ export default function StudioView({
                 onSelectShot={setShotId}
                 onSave={saveShot}
                 onDelete={deleteShot}
+                onOpenHistory={(shot) =>
+                  openRevisions({ kind: 'shot', id: shot.id, label: shot.title })
+                }
               />
             )}
             {tab === 'world' && (
@@ -899,7 +929,11 @@ export default function StudioView({
           revisions={revisions}
           loading={loadingRevisions}
           busy={busy}
+          filter={revisionFilter}
+          onShowAll={() => openRevisions()}
+          loadDiff={loadRevisionDiff}
           onRestore={restoreRevision}
+          onRestorePart={restoreRevisionPart}
           onClose={() => setRevisions(null)}
         />
       )}

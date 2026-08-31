@@ -195,6 +195,27 @@ queued / running のもの）が上限を超えているとき 429 を返す。
 - バグったブリッジの無限投入が GPU キュー占有と課金（RunPod / Comfy Cloud）に
   直結するのを防ぐ最小の安全弁。**内部 API（UI からの操作）には掛けない**。
 
+### 楽観ロック（`base_revision`）
+
+外部エージェントが**人の変更を黙って上書きする**のを防ぐ安全弁。`GET
+/api/v1/projects/{id}` の応答に入る `revision_seq`（そのプロジェクトの履歴の
+連番）を控えておき、PATCH のボディに `base_revision` として送り返す:
+
+```json
+PATCH /api/v1/shots/sht_x  {"prompt": "…", "base_revision": 42}
+```
+
+`base_revision` 以降に**同じエンティティ（entity + id）を触った変更**があると
+409（`detail` に現在の連番と衝突した項目名）。別のカットや別の素材が動いた
+だけなら通る（プロジェクト全体の連番だけで比べると、並行編集がすべて 409 に
+なってしまうため）。省略すれば今までどおり無条件に書き込む。まだ存在しない
+連番（現在より大きい値）を送ると 400。
+
+履歴そのものは内部 API で読める: `GET /api/studio/projects/{id}/revisions`
+（`entity_kind` / `entity_id` で「そのカットの履歴」に絞れる）と
+`.../{seq}/diff`（項目ごとの before / after）。外部 API の変更は
+`actor = "external"` で残る。
+
 ## 4. ファイルの受け渡し
 
 - **読み**: API レスポンスの `url` 欄（`/outputs/...` / `/assets/...` /

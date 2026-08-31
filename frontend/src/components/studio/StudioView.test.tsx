@@ -43,6 +43,7 @@ vi.mock('../../api', async () => {
       deleteStudioScene: vi.fn(),
       listStudioRevisions: vi.fn(),
       getStudioRevision: vi.fn(),
+      getStudioRevisionDiff: vi.fn(),
       restoreStudioRevision: vi.fn(),
       createStudioShot: vi.fn(),
       reorderStudioShots: vi.fn(),
@@ -166,6 +167,7 @@ function detail(overrides: Partial<StudioProjectDetail> = {}): StudioProjectDeta
     nsfw: false,
     created_at: '2026-01-01T00:00:00+00:00',
     updated_at: '2026-01-01T00:00:00+00:00',
+    revision_seq: 7,
     episodes: [],
     scenes: [],
     assets: [
@@ -1398,12 +1400,16 @@ describe('StudioView: 概要タブと変更履歴', () => {
         seq: 2,
         actor: 'agent',
         action: 'カットを 1 つ足しました',
+        entity_kind: 'shot',
+        entity_id: 'カット1',
         created_at: '2026-08-01T12:34:56+00:00',
       },
       {
         seq: 1,
         actor: 'user',
         action: 'プロジェクトを作りました',
+        entity_kind: '',
+        entity_id: '',
         created_at: '2026-07-31T09:00:00+00:00',
       },
     ])
@@ -1423,10 +1429,112 @@ describe('StudioView: 概要タブと変更履歴', () => {
     confirm.mockRestore()
   })
 
+  it('行を開くと差分が出て、項目単位で戻せる', async () => {
+    await openProject()
+    mocked.listStudioRevisions.mockResolvedValue([
+      {
+        seq: 2,
+        actor: 'external',
+        action: 'カット『カット1』を更新(prompt)',
+        entity_kind: 'shot',
+        entity_id: 'カット1',
+        created_at: '2026-08-01T12:34:56+00:00',
+      },
+    ])
+    mocked.getStudioRevisionDiff.mockResolvedValue({
+      seq: 2,
+      actor: 'external',
+      action: 'カット『カット1』を更新(prompt)',
+      entity_kind: 'shot',
+      entity_id: 'カット1',
+      created_at: '2026-08-01T12:34:56+00:00',
+      changes: [
+        {
+          entity: 'shot',
+          id: 'カット1',
+          name: 'カット1',
+          op: 'update',
+          fields: [
+            { field: 'prompt', before: '前のプロンプト', after: '後のプロンプト' },
+          ],
+        },
+      ],
+    })
+    fireEvent.click(screen.getByRole('button', { name: '変更履歴' }))
+    await screen.findByText('カット『カット1』を更新(prompt)')
+    // 外部 API の変更は「外部エージェント」として見える
+    expect(screen.getByText('外部エージェント')).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: '#2 の差分' }))
+    expect(await screen.findByText('prompt')).toBeTruthy()
+    expect(screen.getByText('前のプロンプト')).toBeTruthy()
+    expect(screen.getByText('後のプロンプト')).toBeTruthy()
+    expect(mocked.getStudioRevisionDiff).toHaveBeenCalledWith('p1', 2)
+
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    mocked.restoreStudioRevision.mockResolvedValue(detail())
+    fireEvent.click(screen.getByRole('button', { name: '#2 の prompt だけ戻す' }))
+    await waitFor(() =>
+      expect(mocked.restoreStudioRevision).toHaveBeenCalledWith('p1', 2, {
+        entity: 'shot',
+        id: 'カット1',
+        fields: ['prompt'],
+      }),
+    )
+    confirm.mockRestore()
+  })
+
+  it('カットのインスペクタからそのカットの履歴を開く（絞り込みはサーバー側）', async () => {
+    await openProject()
+    clickTab('脚本')
+    fireEvent.click(rail().getByRole('button', { name: 'カット1' }))
+    const mine = {
+      seq: 3,
+      actor: 'user',
+      action: 'カット『カット1』を更新(prompt)',
+      entity_kind: 'shot',
+      entity_id: 'カット1',
+      created_at: '2026-08-01T12:34:56+00:00',
+    }
+    const other = {
+      seq: 2,
+      actor: 'user',
+      action: 'カット『カット2』を更新(prompt)',
+      entity_kind: 'shot',
+      entity_id: 'カット2',
+      created_at: '2026-08-01T12:00:00+00:00',
+    }
+    // 絞り込みは id でサーバーが行うので、フェイクもそれに合わせて返す
+    mocked.listStudioRevisions.mockImplementation(
+      async (_projectId: string, entity?: { kind: string; id: string }) =>
+        entity ? [mine] : [other, mine],
+    )
+    fireEvent.click(screen.getByRole('button', { name: 'このカットの履歴' }))
+
+    expect(await screen.findByText('カット『カット1』を更新(prompt)')).toBeTruthy()
+    expect(mocked.listStudioRevisions).toHaveBeenCalledWith('p1', {
+      kind: 'shot',
+      id: 'カット1',
+    })
+    // 他のカットの履歴は出ない（「すべて表示」で取り直せる）
+    expect(screen.queryByText('カット『カット2』を更新(prompt)')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'すべて表示' }))
+    expect(
+      await screen.findByText('カット『カット2』を更新(prompt)'),
+    ).toBeTruthy()
+  })
+
   it('確認をキャンセルしたら書き戻さない', async () => {
     await openProject()
     mocked.listStudioRevisions.mockResolvedValue([
-      { seq: 1, actor: 'user', action: '作成', created_at: '2026-07-31T09:00:00+00:00' },
+      {
+        seq: 1,
+        actor: 'user',
+        action: '作成',
+        entity_kind: '',
+        entity_id: '',
+        created_at: '2026-07-31T09:00:00+00:00',
+      },
     ])
     fireEvent.click(screen.getByRole('button', { name: '変更履歴' }))
     await screen.findByText('作成')

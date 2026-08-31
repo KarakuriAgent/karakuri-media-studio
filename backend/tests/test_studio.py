@@ -7,6 +7,7 @@ Grok（日本語 -> 英語の変換）も呼ばせず、既定では「使えな
 """
 
 import asyncio
+import json
 import threading
 import time
 from pathlib import Path
@@ -2656,17 +2657,22 @@ def revisions(env, project_id: str) -> list[dict]:
 
 def test_every_change_leaves_a_revision(env):
     project = make_project(env)
-    shot = make_shot(env, project["id"], prompt="A cat walks in.")
-    env.client.patch(f"/api/studio/shots/{shot['id']}", json={"prompt": "B"})
+    shot = make_shot(env, project["id"], title="決裂", prompt="A cat walks in.")
+    env.client.patch(
+        f"/api/studio/shots/{shot['id']}", json={"prompt": "B", "dialogue": "ねえ"}
+    )
 
     rows = revisions(env, project["id"])
     assert [row["seq"] for row in rows] == [3, 2, 1]  # 新しい順
-    assert rows[-1]["action"] == "プロジェクトを作成"
+    assert rows[-1]["action"] == "プロジェクト『深夜のラーメン屋』を作成"
+    assert rows[1]["action"] == "カット『決裂』を追加"
+    # どの項目を変えたかまで説明に入る（差分を開かなくても見当がつく）
+    assert rows[0]["action"] == "カット『決裂』を更新(dialogue, prompt)"
     assert all(row["actor"] == "user" for row in rows)
     assert "snapshot" not in rows[0]  # 一覧に中身は載せない
 
 
-def test_a_revision_carries_the_whole_project_but_no_takes(env):
+def test_a_revision_carries_the_whole_project(env):
     project = make_project(env)
     make_shot(env, project["id"], prompt="A cat walks in.")
     make_asset(env, project["id"], "Neko")
@@ -2679,21 +2685,30 @@ def test_a_revision_carries_the_whole_project_but_no_takes(env):
     assert [row["prompt"] for row in snapshot["shots"]] == ["A cat walks in."]
     assert [row["name"] for row in snapshot["assets"]] == ["Neko"]
     # asset_files は素材のリファレンス、timeline* は編集タブの EDL。
-    # Take と書き出し（実行結果）だけが入らない。
+    # 入らないのは実行状態（ジョブ）と書き出しだけ。
     assert set(snapshot) == {
-        "project", "episodes", "scenes", "shots", "assets", "asset_files",
-        "timelines", "timeline_tracks", "timeline_clips",
+        "project", "episodes", "scenes", "shots", "takes", "assets",
+        "asset_files", "timelines", "timeline_tracks", "timeline_clips",
     }
 
 
-def test_restoring_puts_the_script_back_and_keeps_the_takes(env):
+def test_restoring_puts_the_script_and_the_deleted_takes_back(env):
+    """脚本は書き戻し、スナップショットに載っている Take は元の状態へ戻す。
+
+    Take は**消さない**（次のテスト）ので、ここで見るのは「載っている行が
+    戻ること」まで。
+    """
     project = make_project(env)
     shot = make_shot(env, project["id"], prompt="A cat walks in.")
     take = render(env, shot["id"]).json()
+    # Take を採用したところまで戻せる（生成そのものは履歴を作らないので、
+    # Take が載る最初のリビジョンは採用）。
+    env.client.post(f"/api/studio/takes/{take['id']}/select")
     seq = revisions(env, project["id"])[0]["seq"]
 
     env.client.patch(f"/api/studio/shots/{shot['id']}", json={"prompt": "壊した"})
     doomed = make_shot(env, project["id"], prompt="あとから足した Shot")
+    env.client.delete(f"/api/studio/takes/{take['id']}")
 
     restored = env.client.post(
         f"/api/studio/projects/{project['id']}/revisions/{seq}/restore"
@@ -2702,10 +2717,125 @@ def test_restoring_puts_the_script_back_and_keeps_the_takes(env):
     context = restored.json()
     assert [row["prompt"] for row in context["shots"]] == ["A cat walks in."]
     assert doomed["id"] not in [row["id"] for row in context["shots"]]
-    # Take は復元の対象外＝そのまま残る
+    # 消した Take も行ごと戻る（成果物のファイルは消していないので見られる）
     assert [row["id"] for row in context["takes"]] == [take["id"]]
+    assert context["takes"][0]["status"] == "selected"
+    assert context["shots"][0]["selected_take_id"] == take["id"]
     # 復元そのものも履歴になる
     assert revisions(env, project["id"])[0]["action"] == f"リビジョン {seq} を復元"
+
+
+def test_restoring_never_deletes_a_take_it_does_not_know(env):
+    """復元の意味論は「載っているものは戻す・知らないものは消さない」。
+
+    生成はリビジョンを作らないので、脚本をひとつ戻しただけで直後に焼いた Take の
+    目録が消えると事故になる（成果物は残るのに辿れなくなる）。
+    """
+    project = make_project(env)
+    shot = make_shot(env, project["id"], prompt="A cat walks in.")
+    first = render(env, shot["id"]).json()
+    env.client.post(f"/api/studio/takes/{first['id']}/select")
+    seq = revisions(env, project["id"])[0]["seq"]
+
+    # このリビジョンのあとに焼いた Take（スナップショットには載っていない）
+    env.client.patch(f"/api/studio/shots/{shot['id']}", json={"prompt": "書き直した"})
+    later = render(env, shot["id"]).json()
+
+    context = env.client.post(
+        f"/api/studio/projects/{project['id']}/revisions/{seq}/restore"
+    ).json()
+    assert [row["id"] for row in context["takes"]] == [first["id"], later["id"]]
+    # 採用はスナップショット側の値に戻り、あとの Take は候補としてぶら下がる
+    assert context["shots"][0]["selected_take_id"] == first["id"]
+    assert {row["id"]: row["status"] for row in context["takes"]}[later["id"]] != (
+        "selected"
+    )
+
+
+def test_a_restore_leaves_a_way_back_for_what_it_deletes(env):
+    """復元は「消す」ことがあるので、触る前の状態を必ず 1 件残す。
+
+    生成（Take）は履歴を作らないので、復元で消えたカットにぶら下がっていた
+    Take は、この自動スナップショットが無いとどのリビジョンにも載らない。
+    """
+    project = make_project(env)
+    make_shot(env, project["id"], title="残るカット")
+    old = revisions(env, project["id"])[0]["seq"]
+
+    later = make_shot(env, project["id"], title="あとのカット")
+    take = render(env, later["id"]).json()
+
+    env.client.post(f"/api/studio/projects/{project['id']}/revisions/{old}/restore")
+    # 古い脚本に戻ったので、あとのカットは Take ごと消えている
+    context = detail(env, project["id"])
+    assert [row["title"] for row in context["shots"]] == ["残るカット"]
+    assert context["takes"] == []
+
+    # 直前の自動スナップショットへ戻せば、カットも Take も帰ってくる
+    rows = revisions(env, project["id"])
+    backup = next(
+        row["seq"] for row in rows if row["action"] == studio.RESTORE_BACKUP_ACTION
+    )
+    back = env.client.post(
+        f"/api/studio/projects/{project['id']}/revisions/{backup}/restore"
+    ).json()
+    assert [row["title"] for row in back["shots"]] == ["残るカット", "あとのカット"]
+    assert [row["id"] for row in back["takes"]] == [take["id"]]
+
+
+def test_a_partial_restore_also_leaves_a_way_back(env):
+    project = make_project(env)
+    shot = make_shot(env, project["id"], title="決裂", prompt="元のプロンプト")
+    seq = revisions(env, project["id"])[0]["seq"]
+    env.client.patch(f"/api/studio/shots/{shot['id']}", json={"prompt": "書き換えた"})
+
+    env.client.post(
+        f"/api/studio/projects/{project['id']}/revisions/{seq}/restore",
+        json={"entity": "shot", "id": shot["id"], "fields": ["prompt"]},
+    )
+    rows = revisions(env, project["id"])
+    assert rows[1]["action"] == studio.RESTORE_BACKUP_ACTION
+    # 自動スナップショットは戻す前（＝書き換えたあと）の値を持っている
+    snapshot = env.client.get(
+        f"/api/studio/projects/{project['id']}/revisions/{rows[1]['seq']}"
+    ).json()["snapshot"]
+    assert [row["prompt"] for row in snapshot["shots"]] == ["書き換えた"]
+
+
+def test_an_old_snapshot_without_takes_leaves_them_alone(env):
+    """takes を記録する前のスナップショットでは Take を消さない。"""
+    project = make_project(env)
+    shot = make_shot(env, project["id"], prompt="A cat walks in.")
+    seq = revisions(env, project["id"])[0]["seq"]
+    _drop_snapshot_key(env, project["id"], seq, "takes")
+    take = render(env, shot["id"]).json()
+
+    context = env.client.post(
+        f"/api/studio/projects/{project['id']}/revisions/{seq}/restore"
+    ).json()
+    assert [row["id"] for row in context["takes"]] == [take["id"]]
+
+
+def _drop_snapshot_key(env, project_id: str, seq: int, key: str) -> None:
+    """スナップショットからキーを 1 つ落とす（古い履歴の再現）。"""
+
+    async def edit() -> None:
+        async with db.get_db() as conn:
+            async with conn.execute(
+                "SELECT id, snapshot_json FROM studio_revisions"
+                " WHERE project_id = ? AND seq = ?",
+                (project_id, seq),
+            ) as cur:
+                row = await cur.fetchone()
+            snapshot = json.loads(row["snapshot_json"])
+            snapshot.pop(key, None)
+            await conn.execute(
+                "UPDATE studio_revisions SET snapshot_json = ? WHERE id = ?",
+                (json.dumps(snapshot, ensure_ascii=False), row["id"]),
+            )
+            await conn.commit()
+
+    asyncio.run(edit())
 
 
 def test_restoring_brings_deleted_records_back(env):
@@ -2761,7 +2891,253 @@ def test_an_unknown_revision_is_a_404(env):
     assert env.client.post(
         f"/api/studio/projects/{project['id']}/revisions/999/restore"
     ).status_code == 404
+    assert env.client.get(
+        f"/api/studio/projects/{project['id']}/revisions/999/diff"
+    ).status_code == 404
     assert env.client.get("/api/studio/projects/nope/revisions").status_code == 404
+
+
+# --------------------------------------------------------------------------
+# リビジョンの差分と部分復元
+# --------------------------------------------------------------------------
+
+def diff(env, project_id: str, seq: int) -> dict:
+    response = env.client.get(
+        f"/api/studio/projects/{project_id}/revisions/{seq}/diff"
+    )
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_the_diff_shows_which_fields_an_update_moved(env):
+    project = make_project(env)
+    shot = make_shot(env, project["id"], title="決裂", prompt="A cat walks in.")
+    env.client.patch(
+        f"/api/studio/shots/{shot['id']}",
+        json={"prompt": "A dog walks in.", "dialogue": "行くよ"},
+    )
+    seq = revisions(env, project["id"])[0]["seq"]
+
+    body = diff(env, project["id"], seq)
+    assert body["seq"] == seq
+    assert body["actor"] == "user"
+    assert body["changes"] == [
+        {
+            "entity": "shot",
+            "id": shot["id"],
+            "name": "決裂",
+            "op": "update",
+            "fields": [
+                {
+                    "field": "dialogue",
+                    "before": "",
+                    "after": "行くよ",
+                },
+                {
+                    "field": "prompt",
+                    "before": "A cat walks in.",
+                    "after": "A dog walks in.",
+                },
+            ],
+        }
+    ]
+
+
+def test_the_diff_shows_creates_and_deletes(env):
+    project = make_project(env)
+    asset = make_metadata_asset(env, project["id"], "凛")
+    created = diff(env, project["id"], revisions(env, project["id"])[0]["seq"])
+    assert created["changes"] == [
+        {"entity": "asset", "id": asset["id"], "name": "凛", "op": "create",
+         "fields": []}
+    ]
+
+    episode = make_episode(env, project["id"], title="第1話")
+    scene = make_scene(env, episode["id"], title="酒場・夜")
+    env.client.delete(f"/api/studio/scenes/{scene['id']}")
+    deleted = diff(env, project["id"], revisions(env, project["id"])[0]["seq"])
+    assert deleted["changes"] == [
+        {"entity": "scene", "id": scene["id"], "name": "酒場・夜", "op": "delete",
+         "fields": []}
+    ]
+
+
+def test_the_first_revision_is_all_creates(env):
+    project = make_project(env)
+    body = diff(env, project["id"], 1)
+    assert body["changes"] == [
+        {"entity": "project", "id": project["id"], "name": project["name"],
+         "op": "create", "fields": []}
+    ]
+
+
+def test_restoring_one_field_leaves_the_rest_alone(env):
+    project = make_project(env)
+    shot = make_shot(env, project["id"], title="決裂", prompt="元のプロンプト")
+    seq = revisions(env, project["id"])[0]["seq"]
+    env.client.patch(
+        f"/api/studio/shots/{shot['id']}",
+        json={"prompt": "書き換えた", "dialogue": "残したい"},
+    )
+
+    restored = env.client.post(
+        f"/api/studio/projects/{project['id']}/revisions/{seq}/restore",
+        json={"entity": "shot", "id": shot["id"], "fields": ["prompt"]},
+    )
+    assert restored.status_code == 200, restored.text
+    back = restored.json()["shots"][0]
+    assert back["prompt"] == "元のプロンプト"
+    assert back["dialogue"] == "残したい"  # 指定していない項目は触らない
+    assert revisions(env, project["id"])[0]["action"] == (
+        f"カット『決裂』の prompt をリビジョン {seq} へ戻す"
+    )
+
+
+def test_restoring_one_row_brings_a_deleted_shot_back(env):
+    project = make_project(env)
+    shot = make_shot(env, project["id"], title="決裂", prompt="元のプロンプト")
+    seq = revisions(env, project["id"])[0]["seq"]
+    env.client.delete(f"/api/studio/shots/{shot['id']}")
+
+    restored = env.client.post(
+        f"/api/studio/projects/{project['id']}/revisions/{seq}/restore",
+        json={"entity": "shot", "id": shot["id"]},
+    )
+    assert restored.status_code == 200, restored.text
+    shots = restored.json()["shots"]
+    assert [row["id"] for row in shots] == [shot["id"]]
+    assert shots[0]["prompt"] == "元のプロンプト"
+    assert revisions(env, project["id"])[0]["action"] == (
+        f"カット『決裂』をリビジョン {seq} へ戻す"
+    )
+
+
+def test_a_partial_restore_of_something_unknown_is_a_400(env):
+    project = make_project(env)
+    shot = make_shot(env, project["id"], title="決裂")
+    seq = revisions(env, project["id"])[0]["seq"]
+    missing = env.client.post(
+        f"/api/studio/projects/{project['id']}/revisions/{seq}/restore",
+        json={"entity": "shot", "id": "sht_nope"},
+    )
+    assert missing.status_code == 400
+    bad_field = env.client.post(
+        f"/api/studio/projects/{project['id']}/revisions/{seq}/restore",
+        json={"entity": "shot", "id": shot["id"], "fields": ["nope"]},
+    )
+    assert bad_field.status_code == 400
+
+
+# --------------------------------------------------------------------------
+# 楽観ロック（base_revision）
+# --------------------------------------------------------------------------
+
+def test_base_revision_lets_unrelated_edits_through(env):
+    project = make_project(env)
+    first = make_shot(env, project["id"], title="出会い")
+    second = make_shot(env, project["id"], title="決裂")
+    base = detail(env, project["id"])["revision_seq"]
+
+    # 別のカットが動いても、こちらの更新はぶつからない
+    env.client.patch(f"/api/studio/shots/{second['id']}", json={"prompt": "別のカット"})
+    response = env.client.patch(
+        f"/api/studio/shots/{first['id']}",
+        json={"prompt": "こちらの変更", "base_revision": base},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["prompt"] == "こちらの変更"
+
+
+def test_base_revision_refuses_when_the_same_shot_moved(env):
+    project = make_project(env)
+    shot = make_shot(env, project["id"], title="決裂")
+    base = detail(env, project["id"])["revision_seq"]
+
+    env.client.patch(f"/api/studio/shots/{shot['id']}", json={"prompt": "誰かの変更"})
+    response = env.client.patch(
+        f"/api/studio/shots/{shot['id']}",
+        json={"prompt": "あとから来た変更", "base_revision": base},
+    )
+    assert response.status_code == 409, response.text
+    message = response.json()["detail"]
+    assert "決裂" in message
+    assert str(detail(env, project["id"])["revision_seq"]) in message
+    assert "prompt" in message
+    # 断られたので中身は変わっていない
+    assert detail(env, project["id"])["shots"][0]["prompt"] == "誰かの変更"
+
+
+def test_a_base_revision_from_the_future_is_a_400(env):
+    """まだ存在しない連番は「過去に読んだ状態」ではないので素通しさせない。"""
+    project = make_project(env)
+    shot = make_shot(env, project["id"], title="決裂")
+    current = detail(env, project["id"])["revision_seq"]
+
+    response = env.client.patch(
+        f"/api/studio/shots/{shot['id']}",
+        json={"prompt": "未来から来た変更", "base_revision": current + 5},
+    )
+    assert response.status_code == 400, response.text
+    assert str(current) in response.json()["detail"]
+    assert detail(env, project["id"])["shots"][0]["prompt"] != "未来から来た変更"
+
+
+def test_revisions_can_be_narrowed_to_one_shot(env):
+    """「このカットの履歴」は説明文ではなく記録した id で引く。"""
+    project = make_project(env)
+    first = make_shot(env, project["id"], title="同じ名前")
+    second = make_shot(env, project["id"], title="同じ名前")
+    env.client.patch(f"/api/studio/shots/{first['id']}", json={"prompt": "こちら"})
+    env.client.patch(f"/api/studio/shots/{second['id']}", json={"prompt": "あちら"})
+    # 並べ替えは複数のカットに跨るので、どのカットの履歴にも出さない
+    env.client.post(
+        f"/api/studio/projects/{project['id']}/shots/reorder",
+        json={"shot_ids": [second["id"], first["id"]]},
+    )
+
+    response = env.client.get(
+        f"/api/studio/projects/{project['id']}/revisions",
+        params={"entity_kind": "shot", "entity_id": first["id"]},
+    )
+    assert response.status_code == 200, response.text
+    rows = response.json()
+    assert all(row["entity_id"] == first["id"] for row in rows)
+    assert [row["action"] for row in rows] == [
+        "カット『同じ名前』を更新(prompt)",
+        "カット『同じ名前』を追加",
+    ]
+    # 改名しても履歴は付いてくる（id で引いているため）
+    env.client.patch(f"/api/studio/shots/{first['id']}", json={"title": "改名した"})
+    renamed = env.client.get(
+        f"/api/studio/projects/{project['id']}/revisions",
+        params={"entity_kind": "shot", "entity_id": first["id"]},
+    ).json()
+    assert len(renamed) == 3
+
+
+def test_take_changes_show_up_in_the_shot_history(env):
+    """Take の採用・削除はカットの中の出来事（そのカットの履歴に出す）。"""
+    project = make_project(env)
+    shot = make_shot(env, project["id"], title="決裂")
+    take = render(env, shot["id"]).json()
+    env.client.post(f"/api/studio/takes/{take['id']}/select")
+
+    rows = env.client.get(
+        f"/api/studio/projects/{project['id']}/revisions",
+        params={"entity_kind": "shot", "entity_id": shot["id"]},
+    ).json()
+    assert rows[0]["action"] == "カット『決裂』の Take を採用"
+
+
+def test_base_revision_is_not_sent_to_the_database(env):
+    """``base_revision`` は書き換える項目ではない（列にしない）。"""
+    project = make_project(env)
+    response = env.client.patch(
+        f"/api/studio/projects/{project['id']}",
+        json={"synopsis": "夜食の話", "base_revision": 1},
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["synopsis"] == "夜食の話"
 
 
 # --------------------------------------------------------------------------

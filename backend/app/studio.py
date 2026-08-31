@@ -60,13 +60,18 @@ from .models import (
     StudioAssetFile,
     StudioEpisode,
     StudioProject,
+    StudioProjectCreate,
     StudioProjectDetail,
     StudioProjectSummary,
+    STUDIO_REVISION_ACTORS,
     StudioProjectUpdate,
     StudioPromptReference,
     StudioRenderRequest,
     StudioRevision,
     StudioRevisionDetail,
+    StudioRevisionDiff,
+    StudioRevisionEntityDiff,
+    StudioRevisionFieldDiff,
     StudioScene,
     StudioShot,
     StudioShotPreview,
@@ -514,8 +519,10 @@ _WORD_CHAR = re.compile(r"[A-Za-z0-9_]")
 #: 日本語（ひらがな・カタカナ・漢字）が 1 文字でもあるか。英訳の要否の判定に使う。
 _JAPANESE = re.compile("[\\u3040-\\u30ff\\u3400-\\u4dbf\\u4e00-\\u9fff]")
 
-#: 1 プロジェクトが持てるリビジョンの数（超えたぶんは古いものから捨てる）
-REVISION_LIMIT = 200
+#: 1 プロジェクトが持てるリビジョンの数（超えたぶんは古いものから捨てる）。
+#: 外部エージェントが脚本を書き換える運用では 1 セッションで何十件も積むので、
+#: 「人の手が入った日まで戻れる」程度の深さを持たせてある。
+REVISION_LIMIT = 1000
 
 #: Shot のうち、書き換えると**プロンプトが変わる**項目。ここが動いたときだけ
 #: `prompt_updated_at` を進め、それより古い Take が stale になる（採用・並べ替え
@@ -681,61 +688,36 @@ async def list_projects() -> list[StudioProjectSummary]:
 
 
 async def create_project(
-    name: str,
-    code: str,
-    synopsis: str,
-    world_notes: str,
-    auto_translate: bool = True,
-    latent_continuity: bool = False,
-    nsfw: bool = False,
-    quality: str = DEFAULT_QUALITY,
-    megapixels: float | None = None,
-    aspect_ratio: str | None = None,
-    steps: int = 0,
-    latent_upscale: bool = DEFAULT_LATENT_UPSCALE,
-    image_quality: str = DEFAULT_IMAGE_QUALITY,
-    image_megapixels: float | None = None,
-    image_aspect_ratio: str | None = None,
-    image_steps: int = 0,
-    *,
-    actor: str = "user",
+    payload: StudioProjectCreate, *, actor: str = "user"
 ) -> StudioProject:
-    title = (name or "").strip()
-    if not title:
+    """プロジェクトを 1 本作る（body をそのまま受ける）。
+
+    項目が多い（画質だけで動画・静止画の 2 系統ある）ので、ルーターからは
+    :class:`app.models.StudioProjectCreate` を丸ごと渡す約束にしてある。
+    """
+    if not (payload.name or "").strip():
         raise StudioError("プロジェクト名を入れてください")
     async with get_db() as conn:
-        project = await _insert_project(
-            conn, title, code, synopsis, world_notes, auto_translate,
-            latent_continuity, nsfw, quality, megapixels, aspect_ratio,
-            _checked_steps(steps), latent_upscale, image_quality,
-            image_megapixels, image_aspect_ratio, _checked_steps(image_steps),
+        project = await _insert_project(conn, payload)
+        await _record_revision(
+            conn,
+            project.id,
+            actor,
+            f"{_titled('プロジェクト', project.name)}を作成",
+            entity_kind="project",
+            entity_id=project.id,
         )
-        await _record_revision(conn, project.id, actor, "プロジェクトを作成")
         await conn.commit()
         return project
 
 
 async def _insert_project(
-    conn: aiosqlite.Connection,
-    title: str,
-    code: str,
-    synopsis: str,
-    world_notes: str,
-    auto_translate: bool,
-    latent_continuity: bool = False,
-    nsfw: bool = False,
-    quality: str = DEFAULT_QUALITY,
-    megapixels: float | None = None,
-    aspect_ratio: str | None = None,
-    steps: int = 0,
-    latent_upscale: bool = DEFAULT_LATENT_UPSCALE,
-    image_quality: str = DEFAULT_IMAGE_QUALITY,
-    image_megapixels: float | None = None,
-    image_aspect_ratio: str | None = None,
-    image_steps: int = 0,
+    conn: aiosqlite.Connection, payload: StudioProjectCreate
 ) -> StudioProject:
+    """プロジェクトを 1 行書く（``commit`` とリビジョンは呼び出し側）。"""
     project_id = new_id()
     now = _now()
+    code = (payload.code or "").strip()
     try:
         await conn.execute(
             "INSERT INTO studio_projects"
@@ -746,22 +728,22 @@ async def _insert_project(
             " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 project_id,
-                title,
-                (code or "").strip(),
-                synopsis or "",
-                world_notes or "",
-                1 if auto_translate else 0,
-                1 if latent_continuity else 0,
-                normalize_quality(quality),
-                normalize_megapixels(megapixels),
-                normalize_aspect_ratio(aspect_ratio),
-                normalize_steps(steps),
-                1 if nsfw else 0,
-                1 if latent_upscale else 0,
-                normalize_quality(image_quality),
-                normalize_megapixels(image_megapixels),
-                normalize_aspect_ratio(image_aspect_ratio),
-                normalize_steps(image_steps),
+                (payload.name or "").strip(),
+                code,
+                payload.synopsis or "",
+                payload.world_notes or "",
+                1 if payload.auto_translate else 0,
+                1 if payload.latent_continuity else 0,
+                normalize_quality(payload.quality),
+                normalize_megapixels(payload.megapixels),
+                normalize_aspect_ratio(payload.aspect_ratio),
+                normalize_steps(_checked_steps(payload.steps)),
+                1 if payload.nsfw else 0,
+                1 if payload.latent_upscale else 0,
+                normalize_quality(payload.image_quality),
+                normalize_megapixels(payload.image_megapixels),
+                normalize_aspect_ratio(payload.image_aspect_ratio),
+                normalize_steps(_checked_steps(payload.image_steps)),
                 now,
                 now,
             ),
@@ -787,7 +769,11 @@ async def get_project(project_id: str) -> StudioProject | None:
 
 
 async def update_project(
-    project_id: str, *, actor: str = "user", **fields: Any
+    project_id: str,
+    *,
+    actor: str = "user",
+    base_revision: int | None = None,
+    **fields: Any,
 ) -> StudioProject | None:
     """``None`` の項目は触らない（指定されたものだけ書き換える）。
 
@@ -838,9 +824,15 @@ async def update_project(
     if "nsfw" in changes:
         changes["nsfw"] = 1 if changes["nsfw"] else 0
     async with get_db() as conn:
-        if await _fetch_project(conn, project_id) is None:
+        project = await _fetch_project(conn, project_id)
+        if project is None:
             return None
         if changes:
+            await _check_base_revision(
+                conn, project_id, base_revision, "project", project_id,
+                project.name,
+            )
+            written = list(changes)
             changes["updated_at"] = _now()
             assignments = ", ".join(f"{key} = ?" for key in changes)
             try:
@@ -852,7 +844,15 @@ async def update_project(
                 raise StudioError(
                     f"作品コード '{changes.get('code')}' は既に使われています"
                 ) from exc
-            await _record_revision(conn, project_id, actor, "プロジェクトを更新")
+            await _record_revision(
+                conn,
+                project_id,
+                actor,
+                f"{_titled('プロジェクト', project.name)}を更新"
+                f"{_changed_note(written)}",
+                entity_kind="project",
+                entity_id=project_id,
+            )
             await conn.commit()
         return await _fetch_project(conn, project_id)
 
@@ -908,6 +908,7 @@ async def project_detail(
         else:
             takes = []
         takes = _mark_stale(takes, shots, assets)
+        revision_seq = await _revision_seq(conn, project_id)
     return StudioProjectDetail(
         **project.model_dump(),
         assets=assets,
@@ -915,6 +916,7 @@ async def project_detail(
         scenes=scenes,
         shots=shots,
         takes=takes,
+        revision_seq=revision_seq,
     )
 
 
@@ -923,23 +925,69 @@ async def project_detail(
 # --------------------------------------------------------------------------
 #
 # プロジェクトの状態を変える操作のたびに、その**後**の状態を丸ごと 1 行に残す。
-# 残すのは DB の行そのもの（projects / episodes / scenes / shots / assets）で、
-# Take とジョブから導出する値は入れない: 実行結果は「戻す」対象ではないため。
+# 残すのは DB の行そのもの（projects / episodes / scenes / shots / assets /
+# takes / 編集タブの EDL）で、ジョブから導出する実行状態とファイル実体は
+# 入れない: どちらも履歴では消えないので、戻す必要がない。
 
-#: スナップショットに入れるテーブルと、その主キー以外の並び順。
+#: スナップショットに入れるテーブルと、その主キー以外の並び順。**親から順**に
+#: 並べる（書き戻しはこの順に DELETE -> INSERT するので、子が先に入ると FK で
+#: 落ちる）。
 _SNAPSHOT_TABLES = (
     ("episodes", "studio_episodes", "sort_order, created_at, id"),
     ("scenes", "studio_scenes", "sort_order, created_at, id"),
     ("shots", "studio_shots", "sort_order, created_at, id"),
+    # Take は Shot にぶら下がる（studio_takes.shot_id -> studio_shots.id）ので
+    # **Shot のあと**。成果物のファイルとジョブは消さないので、行さえ戻せば
+    # 「消した Take を取り消す」まで辿れる（戻し方は _KEEP_UNKNOWN_ROWS）。
+    ("takes", "studio_takes", "shot_id, created_at, id"),
     ("assets", "studio_assets", "sort_order, created_at, id"),
     # 素材のリファレンスは**素材のあと**（親が戻る前に入れると FK で落ちる）。
     ("asset_files", "studio_asset_files", "sort_order, created_at, id"),
     # 編集タブの EDL（タイムライン -> トラック -> クリップ）。親から順に戻す。
-    # 書き出し（timeline_exports）は実行結果なので対象外（Take と同じ扱い）。
+    # 書き出し（timeline_exports）は実行結果なので対象外。
     ("timelines", "studio_timelines", "created_at, id"),
     ("timeline_tracks", "timeline_tracks", "sort_order, id"),
     ("timeline_clips", "timeline_clips", "track_id, start_ms, id"),
 )
+
+#: 復元の直前に自動で残すリビジョンの説明。復元は行を消しうるうえ、生成
+#: （Take）は履歴を作らないので、これが無いと「復元で消えた Take」を戻せない。
+RESTORE_BACKUP_ACTION = "復元前の自動スナップショット"
+
+#: 丸ごと復元で**スナップショットに無い行を消さない**テーブル。
+#:
+#: Take は実行結果で、しかも**生成そのものはリビジョンを作らない**（焼いても
+#: 履歴は増えない）。素直に DELETE -> INSERT すると、脚本をひとつ戻しただけで
+#: その直後に焼いた Take の目録が消えてしまう。復元の意味論は「載っているものは
+#: その時点の状態へ戻す・知らないものは触らない」にする。採用（``selected_take_id``）
+#: はスナップショット側の値に戻るので、残った新しい Take は候補としてぶら下がる
+#: だけになる。
+_KEEP_UNKNOWN_ROWS = frozenset({"studio_takes"})
+
+#: エンティティの種別 -> （スナップショットのキー, テーブル, 見出しの列,
+#: 日本語の呼び名）。差分（:func:`diff_revision`）と部分復元
+#: （:func:`restore_revision`）の両方がこの 1 枚を見る。並び順は差分に出す順
+#: （大きい入れ物から順）で、``project`` だけは行の配列ではなく 1 件の dict。
+_ENTITIES: dict[str, tuple[str, str, str, str]] = {
+    "project": ("project", "studio_projects", "name", "プロジェクト"),
+    "episode": ("episodes", "studio_episodes", "title", "話"),
+    "scene": ("scenes", "studio_scenes", "title", "場"),
+    "shot": ("shots", "studio_shots", "title", "カット"),
+    "take": ("takes", "studio_takes", "", "Take"),
+    "asset": ("assets", "studio_assets", "name", "素材"),
+    "asset_file": ("asset_files", "studio_asset_files", "caption",
+                   "素材のリファレンス"),
+    "timeline": ("timelines", "studio_timelines", "name", "タイムライン"),
+    "timeline_track": ("timeline_tracks", "timeline_tracks", "name", "トラック"),
+    "timeline_clip": ("timeline_clips", "timeline_clips", "", "クリップ"),
+}
+
+#: 差分に出さない列。id は突き合わせのキーで、残りは「いつ書いたか」の記録
+#: （中身が変わっていなくても毎回動くので、出すと差分がノイズだらけになる）。
+_DIFF_NOISE = frozenset({
+    "id", "project_id", "created_at", "updated_at", "prompt_updated_at",
+    "snapshot_json",
+})
 
 
 async def _snapshot(conn: aiosqlite.Connection, project_id: str) -> dict[str, Any]:
@@ -957,10 +1005,42 @@ async def _snapshot(conn: aiosqlite.Connection, project_id: str) -> dict[str, An
     return snapshot
 
 
+def _titled(label: str, name: str, fallback: str = "") -> str:
+    """``カット『決裂』`` の形。名前が空なら id（それも無ければ呼び名だけ）。"""
+    text = (name or "").strip() or (fallback or "").strip()
+    return f"{label}『{text}』" if text else label
+
+
+def _changed_note(changes: Any) -> str:
+    """``(prompt, dialogue)``。書き換えた項目を履歴の説明に足すための添え字。
+
+    ``updated_at`` のような記録用の列は落とす（人が読んで意味のある項目だけ）。
+    """
+    names = [str(name) for name in changes if str(name) not in _DIFF_NOISE]
+    return f"({', '.join(names)})" if names else ""
+
+
 async def _record_revision(
-    conn: aiosqlite.Connection, project_id: str, actor: str, action: str
+    conn: aiosqlite.Connection,
+    project_id: str,
+    actor: str,
+    action: str,
+    *,
+    entity_kind: str = "",
+    entity_id: str = "",
 ) -> None:
-    """今のプロジェクト状態を 1 リビジョンとして残す（commit は呼び出し側）。"""
+    """今のプロジェクト状態を 1 リビジョンとして残す（commit は呼び出し側）。
+
+    ``action`` は「どのエンティティのどの項目を変えたか」まで書く
+    （``カット『決裂』を更新(prompt, dialogue)``）。差分エンドポイントを開かなく
+    ても一覧だけで何が起きたか見当がつくようにするため。
+
+    ``entity_kind`` / ``entity_id`` は**1 件だけを触る操作**のときに入れる
+    （「このカットの履歴」の絞り込みに使う）。並べ替えや一括作成のように複数へ
+    跨る操作は空のままにする: 代表を 1 つ選ぶと、選ばれなかったほうの履歴から
+    その変更が消えてしまうため。Take の操作はぶら下がっている**カット**として
+    記録する（Take はカットの中の出来事で、そのカットの履歴に出したいもの）。
+    """
     snapshot = await _snapshot(conn, project_id)
     if not snapshot["project"]:  # 消えたプロジェクトには何も残さない
         return
@@ -972,14 +1052,17 @@ async def _record_revision(
         seq = int((await cur.fetchone())["next"])
     await conn.execute(
         "INSERT INTO studio_revisions"
-        " (id, project_id, seq, actor, action, snapshot_json, created_at)"
-        " VALUES (?, ?, ?, ?, ?, ?, ?)",
+        " (id, project_id, seq, actor, action, entity_kind, entity_id,"
+        "  snapshot_json, created_at)"
+        " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
         (
             new_id(),
             project_id,
             seq,
-            actor if actor in ("user", "agent") else "user",
+            actor if actor in STUDIO_REVISION_ACTORS else "user",
             action,
+            entity_kind if entity_kind in _ENTITIES else "",
+            entity_id or "",
             json.dumps(snapshot, ensure_ascii=False),
             _now(),
         ),
@@ -992,24 +1075,48 @@ async def _record_revision(
     )
 
 
-async def current_revision_seq(project_id: str) -> int:
-    """いまのリビジョン連番（無ければ 0）。スナップショットの鮮度判定用。"""
-    async with get_db() as conn:
-        async with conn.execute(
-            "SELECT COALESCE(MAX(seq), 0) AS seq FROM studio_revisions"
-            " WHERE project_id = ?",
-            (project_id,),
-        ) as cur:
-            row = await cur.fetchone()
+async def _revision_seq(conn: aiosqlite.Connection, project_id: str) -> int:
+    async with conn.execute(
+        "SELECT COALESCE(MAX(seq), 0) AS seq FROM studio_revisions"
+        " WHERE project_id = ?",
+        (project_id,),
+    ) as cur:
+        row = await cur.fetchone()
     return int(row["seq"] if row else 0)
 
 
-async def list_revisions(project_id: str) -> list[StudioRevision]:
+async def current_revision_seq(project_id: str) -> int:
+    """いまのリビジョン連番（無ければ 0）。スナップショットの鮮度判定用。"""
+    async with get_db() as conn:
+        return await _revision_seq(conn, project_id)
+
+
+async def list_revisions(
+    project_id: str,
+    *,
+    entity_kind: str | None = None,
+    entity_id: str | None = None,
+) -> list[StudioRevision]:
+    """新しい順の見出し一覧。
+
+    ``entity_kind`` / ``entity_id`` を渡すと**その 1 件を触った履歴だけ**に絞る
+    （「このカットの履歴」）。絞り込みは記録した id で行うので、同じ名前のカットが
+    あっても混ざらず、改名しても履歴が消えない。
+    """
+    where = ["project_id = ?"]
+    params: list[Any] = [project_id]
+    if entity_kind:
+        where.append("entity_kind = ?")
+        params.append(entity_kind)
+    if entity_id:
+        where.append("entity_id = ?")
+        params.append(entity_id)
     async with get_db() as conn:
         async with conn.execute(
-            "SELECT seq, actor, action, created_at FROM studio_revisions"
-            " WHERE project_id = ? ORDER BY seq DESC",
-            (project_id,),
+            "SELECT seq, actor, action, entity_kind, entity_id, created_at"
+            f" FROM studio_revisions WHERE {' AND '.join(where)}"
+            " ORDER BY seq DESC",
+            tuple(params),
         ) as cur:
             rows = await cur.fetchall()
     return [StudioRevision(**dict(row)) for row in rows]
@@ -1032,8 +1139,195 @@ async def get_revision(project_id: str, seq: int) -> StudioRevisionDetail | None
         seq=row["seq"],
         actor=row["actor"],
         action=row["action"],
+        entity_kind=row["entity_kind"],
+        entity_id=row["entity_id"],
         created_at=row["created_at"],
         snapshot=snapshot if isinstance(snapshot, dict) else {},
+    )
+
+
+# --------------------------------------------------------------------------
+# リビジョンの差分
+# --------------------------------------------------------------------------
+#
+# スナップショット 2 枚を id で突き合わせて、「どのエンティティの何が動いたか」
+# にほどく。履歴の一覧から 1 行ぶんの中身を見るため（GET .../{seq}/diff）と、
+# 楽観ロックが「この更新とぶつかる変更が入っていたか」を判定するため
+# （:func:`_check_base_revision`）の両方で使う。
+
+def _entity_name(row: dict[str, Any], column: str) -> str:
+    """そのエンティティの見出し（title / name 相当。無ければ id）。"""
+    if column:
+        text = str(row.get(column) or "").strip()
+        if text:
+            return text
+    return str(row.get("id") or "")
+
+
+def _field_diffs(
+    before: dict[str, Any], after: dict[str, Any]
+) -> list[StudioRevisionFieldDiff]:
+    """値の違う列だけを並べる（記録用の列は見ない）。"""
+    return [
+        StudioRevisionFieldDiff(
+            field=name, before=before.get(name), after=after.get(name)
+        )
+        for name in dict.fromkeys((*before, *after))
+        if name not in _DIFF_NOISE and before.get(name) != after.get(name)
+    ]
+
+
+def _rows_by_id(rows: Any) -> dict[str, dict[str, Any]]:
+    if not isinstance(rows, list):
+        return {}
+    return {
+        str(row["id"]): row
+        for row in rows
+        if isinstance(row, dict) and row.get("id")
+    }
+
+
+def _snapshot_changes(
+    before: dict[str, Any], after: dict[str, Any]
+) -> list[StudioRevisionEntityDiff]:
+    """スナップショット 2 枚の差分（``before`` が空なら全件 ``create``）。
+
+    ``before`` に**そもそも無いキー**（その面を記録する前に取ったスナップ
+    ショット）は触らない: 「空だった」と読むと、機能を足しただけで全件が
+    作成・削除に見えてしまう。
+    """
+    changes: list[StudioRevisionEntityDiff] = []
+    fresh = not before  # 直前が無い = 最初のリビジョン
+    for entity, (key, _table, name_column, _label) in _ENTITIES.items():
+        if not fresh and key not in before and key in after:
+            continue
+        if entity == "project":
+            old = before.get(key) or {}
+            new = after.get(key) or {}
+            old_rows = {str(old["id"]): old} if old.get("id") else {}
+            new_rows = {str(new["id"]): new} if new.get("id") else {}
+        else:
+            old_rows = _rows_by_id(before.get(key))
+            new_rows = _rows_by_id(after.get(key))
+        for row_id, new_row in new_rows.items():
+            old_row = old_rows.get(row_id)
+            if old_row is None:
+                changes.append(StudioRevisionEntityDiff(
+                    entity=entity,
+                    id=row_id,
+                    name=_entity_name(new_row, name_column),
+                    op="create",
+                ))
+                continue
+            fields = _field_diffs(old_row, new_row)
+            if fields:
+                changes.append(StudioRevisionEntityDiff(
+                    entity=entity,
+                    id=row_id,
+                    name=_entity_name(new_row, name_column),
+                    op="update",
+                    fields=fields,
+                ))
+        for row_id, old_row in old_rows.items():
+            if row_id not in new_rows:
+                changes.append(StudioRevisionEntityDiff(
+                    entity=entity,
+                    id=row_id,
+                    name=_entity_name(old_row, name_column),
+                    op="delete",
+                ))
+    return changes
+
+
+async def _snapshot_of(
+    conn: aiosqlite.Connection, project_id: str, seq: int
+) -> dict[str, Any] | None:
+    """``seq`` のスナップショット（無ければ ``None``）。"""
+    if seq <= 0:
+        return {}
+    async with conn.execute(
+        "SELECT snapshot_json FROM studio_revisions"
+        " WHERE project_id = ? AND seq = ?",
+        (project_id, seq),
+    ) as cur:
+        row = await cur.fetchone()
+    if row is None:
+        return None
+    try:
+        snapshot = json.loads(row["snapshot_json"])
+    except ValueError:  # pragma: no cover - 自分で書いた JSON なので通らない
+        return {}
+    return snapshot if isinstance(snapshot, dict) else {}
+
+
+async def diff_revision(project_id: str, seq: int) -> StudioRevisionDiff | None:
+    """``seq`` と**その直前**（``seq - 1``、無ければ空）の差分。"""
+    revision = await get_revision(project_id, seq)
+    if revision is None:
+        return None
+    async with get_db() as conn:
+        before = await _snapshot_of(conn, project_id, seq - 1)
+    return StudioRevisionDiff(
+        seq=revision.seq,
+        actor=revision.actor,
+        action=revision.action,
+        entity_kind=revision.entity_kind,
+        entity_id=revision.entity_id,
+        created_at=revision.created_at,
+        changes=_snapshot_changes(before or {}, revision.snapshot),
+    )
+
+
+async def _check_base_revision(
+    conn: aiosqlite.Connection,
+    project_id: str,
+    base_revision: int | None,
+    entity: str,
+    entity_id: str,
+    name: str,
+) -> None:
+    """``base_revision`` 以降に**同じエンティティ**が触られていたら 409。
+
+    プロジェクト全体の連番だけで比べると、別のカットを直しただけの並行編集まで
+    全部ぶつかってしまう。差分を取り直して、対象の ``entity`` + ``id`` が動いて
+    いるときだけ :class:`StudioConflict` を投げる。
+
+    比べる相手のリビジョンが（古すぎて）残っていないときは「変わっていない」と
+    言い切れないので、こちらもぶつかったものとして扱う。
+
+    まだ存在しない連番（現在より**大きい**値）は「過去に読んだ状態」ではありえ
+    ないので、素通しせず :class:`StudioError`（400）にする。
+    """
+    if base_revision is None:
+        return
+    current = await _revision_seq(conn, project_id)
+    if base_revision > current:
+        raise StudioError(
+            f"base_revision {base_revision} はまだ存在しません"
+            f"（現在のリビジョン {current}）"
+        )
+    if base_revision == current:
+        return
+    base = await _snapshot_of(conn, project_id, base_revision)
+    label = _ENTITIES[entity][3]
+    if base is None:
+        raise StudioConflict(
+            f"リビジョン {base_revision} は履歴に残っていないので"
+            f"{_titled(label, name, entity_id)}の変更を確かめられません"
+            f"（現在のリビジョン {current}）"
+        )
+    changed = [
+        change
+        for change in _snapshot_changes(base, await _snapshot(conn, project_id))
+        if change.entity == entity and change.id == entity_id
+    ]
+    if not changed:
+        return
+    fields = [field.field for change in changed for field in change.fields]
+    note = f"（衝突: {', '.join(fields)}）" if fields else ""
+    raise StudioConflict(
+        f"{_titled(label, name, entity_id)}は他の変更で更新されています"
+        f"（現在のリビジョン {current}）{note}"
     )
 
 
@@ -1049,20 +1343,41 @@ async def _table_columns(conn: aiosqlite.Connection, table: str) -> set[str]:
         return {row["name"] for row in await cur.fetchall()}
 
 
-async def restore_revision(project_id: str, seq: int) -> StudioProjectDetail | None:
+async def restore_revision(
+    project_id: str,
+    seq: int,
+    *,
+    entity: str | None = None,
+    entity_id: str | None = None,
+    fields: list[str] | None = None,
+    actor: str = "user",
+) -> StudioProjectDetail | None:
     """``seq`` のスナップショットの内容でプロジェクトを書き戻す。
 
-    Take と実ファイルは対象外で、そのまま残る（実行結果は履歴で戻すものでは
-    ない）。復元後の状態も 1 リビジョンとして記録するので、「復元をやめる」も
-    履歴から辿れる。
+    ``entity`` を渡すと**その 1 件だけ**（``fields`` まで渡すとその項目だけ）を
+    戻す部分復元になる（:func:`_restore_one`）。渡さなければ今までどおり丸ごと。
+
+    Take だけはスナップショットに無い行を消さない（:data:`_KEEP_UNKNOWN_ROWS`）。
+    ファイル実体（``assets/`` と ``outputs/``）とジョブはどちらの経路でも触らない。
+
+    書き換える**前**に今の状態を 1 リビジョンとして残し（:data:`RESTORE_BACKUP_ACTION`）、
+    復元後の状態ももう 1 件残す。前者が要るのは、生成（Take）が履歴を作らない
+    ため: 復元でカットが消えるとぶら下がっていた Take も一緒に落ち、直前の
+    リビジョンにも載っていないと二度と辿れなくなる。
     """
     revision = await get_revision(project_id, seq)
     if revision is None:
         return None
     snapshot = revision.snapshot
+    if entity is not None:
+        return await _restore_one(
+            project_id, seq, snapshot, entity, entity_id, fields, actor
+        )
     async with get_db() as conn:
         if await _fetch_project(conn, project_id) is None:
             return None
+        # 触る前の状態を 1 件残す（この復元で消えるものへの戻り道）。
+        await _record_revision(conn, project_id, actor, RESTORE_BACKUP_ACTION)
         project_row = snapshot.get("project") or {}
         columns = await _table_columns(conn, "studio_projects")
         fields = [
@@ -1087,8 +1402,16 @@ async def restore_revision(project_id: str, seq: int) -> StudioProjectDetail | N
             # タイムライン）を丸ごと消してしまうので、載っていない面は触らない。
             if key not in snapshot:
                 continue
-            await _restore_table(conn, project_id, table, snapshot.get(key) or [])
-        # 消えた Take を指したままの採用は外す（Take は復元しないため）。
+            await _restore_table(
+                conn,
+                project_id,
+                table,
+                snapshot.get(key) or [],
+                prune=table not in _KEEP_UNKNOWN_ROWS,
+            )
+        # 採用したまま消えてしまった Take への参照を外す。Take もスナップ
+        # ショットに入るようになったので普段は空振りするが、takes を記録する
+        # 前の古いスナップショット（= Take を触らない復元）ではまだ起こる。
         await conn.execute(
             "UPDATE studio_shots SET selected_take_id = NULL"
             " WHERE project_id = ? AND selected_take_id IS NOT NULL"
@@ -1111,7 +1434,98 @@ async def restore_revision(project_id: str, seq: int) -> StudioProjectDetail | N
                 (order, shot_id),
             )
         await _record_revision(
-            conn, project_id, "user", f"リビジョン {seq} を復元"
+            conn, project_id, actor, f"リビジョン {seq} を復元"
+        )
+        await conn.commit()
+    return await project_detail(project_id)
+
+
+async def _restore_one(
+    project_id: str,
+    seq: int,
+    snapshot: dict[str, Any],
+    entity: str,
+    entity_id: str | None,
+    fields: list[str] | None,
+    actor: str,
+) -> StudioProjectDetail | None:
+    """スナップショットの 1 行（``fields`` を渡せばその項目だけ）を書き戻す。
+
+    今その行が無ければスナップショットの行をそのまま INSERT で作り直す
+    （「消したカットのこの 1 項目だけ戻す」も同じ入り口で通る）。
+    """
+    if entity not in _ENTITIES:
+        raise StudioError(f"戻せない種別です: '{entity}'")
+    key, table, name_column, label = _ENTITIES[entity]
+    if key not in snapshot:
+        raise StudioError(
+            f"リビジョン {seq} は{label}を記録していません（古い履歴）"
+        )
+    if entity == "project":
+        row = snapshot.get(key) or {}
+        entity_id = str(row.get("id") or project_id)
+    else:
+        rows = _rows_by_id(snapshot.get(key))
+        if not entity_id:
+            raise StudioError("戻す対象の id を指定してください")
+        row = rows.get(entity_id) or {}
+    if not row:
+        raise StudioError(
+            f"リビジョン {seq} にその{label}（{entity_id}）はありません"
+        )
+    async with get_db() as conn:
+        if await _fetch_project(conn, project_id) is None:
+            return None
+        # 丸ごと復元と同じで、書き換える前の状態を 1 件残す（戻り道）。
+        await _record_revision(conn, project_id, actor, RESTORE_BACKUP_ACTION)
+        columns = await _table_columns(conn, table)
+        async with conn.execute(
+            f"SELECT id FROM {table} WHERE id = ?", (entity_id,)
+        ) as cur:
+            exists = await cur.fetchone() is not None
+        if fields is None:
+            names = [name for name in row if name in columns and name != "id"]
+        else:
+            unknown = [
+                name for name in fields if name not in columns or name not in row
+            ]
+            if unknown:
+                raise StudioError(
+                    f"{label}に無い項目です: {', '.join(unknown)}"
+                )
+            names = [name for name in fields if name != "id"]
+        if not names:
+            raise StudioError("戻す項目がありません")
+        try:
+            if exists:
+                assignments = ", ".join(f"{name} = ?" for name in names)
+                await conn.execute(
+                    f"UPDATE {table} SET {assignments} WHERE id = ?",
+                    (*(row[name] for name in names), entity_id),
+                )
+            else:
+                # 行ごと消えているので作り直す。指定された項目だけでは NOT NULL
+                # を満たせないので、スナップショットにある列は全部入れる。
+                insert = [name for name in row if name in columns]
+                placeholders = ", ".join("?" * len(insert))
+                await conn.execute(
+                    f"INSERT INTO {table} ({', '.join(insert)})"
+                    f" VALUES ({placeholders})",
+                    [row[name] for name in insert],
+                )
+        except aiosqlite.IntegrityError as exc:
+            raise StudioError(
+                f"{label}を戻せませんでした（{exc}）"
+            ) from exc
+        note = f"の {', '.join(fields)} " if fields else ""
+        await _record_revision(
+            conn,
+            project_id,
+            actor,
+            f"{_titled(label, _entity_name(row, name_column), entity_id)}"
+            f"{note}をリビジョン {seq} へ戻す",
+            entity_kind=entity,
+            entity_id=entity_id or "",
         )
         await conn.commit()
     return await project_detail(project_id)
@@ -1122,8 +1536,14 @@ async def _restore_table(
     project_id: str,
     table: str,
     rows: list[dict[str, Any]],
+    *,
+    prune: bool = True,
 ) -> None:
-    """``table`` のプロジェクトぶんの行を ``rows`` の通りにする。"""
+    """``table`` のプロジェクトぶんの行を ``rows`` の通りにする。
+
+    ``prune`` を降ろすと**スナップショットに無い行を消さない**（載っている行を
+    戻すだけ）。:data:`_KEEP_UNKNOWN_ROWS` の実行結果向け。
+    """
     columns = await _table_columns(conn, table)
     names = _restore_columns(rows, columns)
     wanted = {str(row["id"]) for row in rows if row.get("id")}
@@ -1131,8 +1551,9 @@ async def _restore_table(
         f"SELECT id FROM {table} WHERE project_id = ?", (project_id,)
     ) as cur:
         current = {str(row["id"]) for row in await cur.fetchall()}
-    for stale_id in current - wanted:
-        await conn.execute(f"DELETE FROM {table} WHERE id = ?", (stale_id,))
+    if prune:
+        for stale_id in current - wanted:
+            await conn.execute(f"DELETE FROM {table} WHERE id = ?", (stale_id,))
     for row in rows:
         row_id = str(row.get("id") or "")
         if not row_id:
@@ -1249,13 +1670,24 @@ async def create_episode(
 ) -> StudioEpisode:
     async with get_db() as conn:
         episode = await _insert_episode(conn, project_id, payload)
-        await _record_revision(conn, project_id, actor, "話を追加")
+        await _record_revision(
+            conn,
+            project_id,
+            actor,
+            f"{_titled('話', episode.title)}を追加",
+            entity_kind="episode",
+            entity_id=episode.id,
+        )
         await conn.commit()
         return episode
 
 
 async def update_episode(
-    episode_id: str, *, actor: str = "user", **fields: Any
+    episode_id: str,
+    *,
+    actor: str = "user",
+    base_revision: int | None = None,
+    **fields: Any,
 ) -> StudioEpisode | None:
     changes = {key: value for key, value in fields.items() if value is not None}
     async with get_db() as conn:
@@ -1263,12 +1695,24 @@ async def update_episode(
         if episode is None:
             return None
         if changes:
+            await _check_base_revision(
+                conn, episode.project_id, base_revision, "episode", episode_id,
+                episode.title,
+            )
             assignments = ", ".join(f"{key} = ?" for key in changes)
             await conn.execute(
                 f"UPDATE studio_episodes SET {assignments} WHERE id = ?",
                 (*changes.values(), episode_id),
             )
-            await _record_revision(conn, episode.project_id, actor, "話を更新")
+            await _record_revision(
+                conn,
+                episode.project_id,
+                actor,
+                f"{_titled('話', episode.title, episode_id)}を更新"
+                f"{_changed_note(changes)}",
+                entity_kind="episode",
+                entity_id=episode_id,
+            )
             await conn.commit()
         return await _fetch_episode(conn, episode_id)
 
@@ -1283,7 +1727,15 @@ async def delete_episode(episode_id: str) -> bool:
         for scene in scenes:
             await _detach_shots(conn, episode.project_id, scene.id)
         await conn.execute("DELETE FROM studio_episodes WHERE id = ?", (episode_id,))
-        await _record_revision(conn, episode.project_id, "user", "話を削除")
+        await _record_revision(
+            conn,
+            episode.project_id,
+            "user",
+            f"{_titled('話', episode.title, episode_id)}を削除"
+            f"（場 {len(scenes)} 件ごと）",
+            entity_kind="episode",
+            entity_id=episode_id,
+        )
         await conn.commit()
         return True
 
@@ -1299,7 +1751,9 @@ async def reorder_episodes(project_id: str, ids: list[str]) -> list[StudioEpisod
                 "UPDATE studio_episodes SET sort_order = ? WHERE id = ?",
                 (order, episode_id),
             )
-        await _record_revision(conn, project_id, "user", "話を並べ替え")
+        await _record_revision(
+            conn, project_id, "user", f"話を並べ替え（{len(ids)} 件）"
+        )
         await conn.commit()
         return await _fetch_episodes(conn, project_id)
 
@@ -1341,13 +1795,24 @@ async def create_scene(
 ) -> StudioScene:
     async with get_db() as conn:
         scene = await _insert_scene(conn, episode_id, payload)
-        await _record_revision(conn, scene.project_id, actor, "場を追加")
+        await _record_revision(
+            conn,
+            scene.project_id,
+            actor,
+            f"{_titled('場', scene.title)}を追加",
+            entity_kind="scene",
+            entity_id=scene.id,
+        )
         await conn.commit()
         return scene
 
 
 async def update_scene(
-    scene_id: str, *, actor: str = "user", **fields: Any
+    scene_id: str,
+    *,
+    actor: str = "user",
+    base_revision: int | None = None,
+    **fields: Any,
 ) -> StudioScene | None:
     """場の項目を変える。
 
@@ -1372,12 +1837,24 @@ async def update_scene(
                 ),
             )
         if changes:
+            await _check_base_revision(
+                conn, scene.project_id, base_revision, "scene", scene_id,
+                scene.title,
+            )
             assignments = ", ".join(f"{key} = ?" for key in changes)
             await conn.execute(
                 f"UPDATE studio_scenes SET {assignments} WHERE id = ?",
                 (*changes.values(), scene_id),
             )
-            await _record_revision(conn, scene.project_id, actor, "場を更新")
+            await _record_revision(
+                conn,
+                scene.project_id,
+                actor,
+                f"{_titled('場', scene.title, scene_id)}を更新"
+                f"{_changed_note(changes)}",
+                entity_kind="scene",
+                entity_id=scene_id,
+            )
             await conn.commit()
         return await _fetch_scene(conn, scene_id)
 
@@ -1409,7 +1886,14 @@ async def delete_scene(scene_id: str) -> bool:
             return False
         await _detach_shots(conn, scene.project_id, scene_id)
         await conn.execute("DELETE FROM studio_scenes WHERE id = ?", (scene_id,))
-        await _record_revision(conn, scene.project_id, "user", "場を削除")
+        await _record_revision(
+            conn,
+            scene.project_id,
+            "user",
+            f"{_titled('場', scene.title, scene_id)}を削除",
+            entity_kind="scene",
+            entity_id=scene_id,
+        )
         await conn.commit()
         return True
 
@@ -1428,7 +1912,13 @@ async def reorder_scenes(episode_id: str, ids: list[str]) -> list[StudioScene]:
                 "UPDATE studio_scenes SET sort_order = ? WHERE id = ?",
                 (order, scene_id),
             )
-        await _record_revision(conn, episode.project_id, "user", "場を並べ替え")
+        await _record_revision(
+            conn,
+            episode.project_id,
+            "user",
+            f"{_titled('話', episode.title, episode_id)}の場を並べ替え"
+            f"（{len(ids)} 件）",
+        )
         await conn.commit()
         return await _fetch_scenes(conn, "episode_id = ?", (episode_id,))
 
@@ -1469,11 +1959,12 @@ async def create_demo_project(code: str) -> StudioProjectDetail:
                 )
         project = await _insert_project(
             conn,
-            manifest["name"],
-            manifest["code"],
-            manifest.get("synopsis", ""),
-            manifest.get("world_notes", ""),
-            True,
+            StudioProjectCreate(
+                name=manifest["name"],
+                code=manifest["code"],
+                synopsis=manifest.get("synopsis", ""),
+                world_notes=manifest.get("world_notes", ""),
+            ),
         )
         for order, asset in enumerate(manifest.get("assets", ())):
             await _insert_asset(
@@ -1680,6 +2171,8 @@ async def add_asset_file(
             asset.project_id,
             actor,
             f"素材『{asset.name}』にリファレンスを追加",
+            entity_kind="asset",
+            entity_id=asset_id,
         )
         await conn.commit()
         async with conn.execute(
@@ -1702,7 +2195,12 @@ async def delete_asset_file(file_id: str) -> bool:
             "DELETE FROM studio_asset_files WHERE id = ?", (file_id,)
         )
         await _record_revision(
-            conn, row["project_id"], "user", "素材のリファレンスを削除"
+            conn,
+            row["project_id"],
+            "user",
+            f"素材のリファレンス（{row['role']}）を削除",
+            entity_kind="asset",
+            entity_id=row["asset_id"],
         )
         await conn.commit()
         return True
@@ -1751,7 +2249,14 @@ async def add_asset(
             locked=locked,
             sort_order=sort_order,
         )
-        await _record_revision(conn, project_id, actor, f"素材『{label}』を追加")
+        await _record_revision(
+            conn,
+            project_id,
+            actor,
+            f"素材『{label}』を追加",
+            entity_kind="asset",
+            entity_id=asset.id,
+        )
         await conn.commit()
         return asset
 
@@ -1825,7 +2330,11 @@ def _validated_profile(
 
 
 async def update_asset(
-    asset_id: str, *, actor: str = "user", **fields: Any
+    asset_id: str,
+    *,
+    actor: str = "user",
+    base_revision: int | None = None,
+    **fields: Any,
 ) -> StudioAsset | None:
     changes = {key: value for key, value in fields.items() if value is not None}
     if "name" in changes:
@@ -1858,6 +2367,11 @@ async def update_asset(
                 ensure_ascii=False,
             )
         if changes:
+            await _check_base_revision(
+                conn, asset.project_id, base_revision, "asset", asset_id,
+                asset.name,
+            )
+            written = list(changes)
             now = _now()
             changes["updated_at"] = now
             if ASSET_PROMPT_FIELDS & set(changes):
@@ -1875,7 +2389,13 @@ async def update_asset(
                     f"素材名 '{changes.get('name')}' は既にあります"
                 ) from exc
             await _record_revision(
-                conn, asset.project_id, actor, f"素材『{asset.name}』を更新"
+                conn,
+                asset.project_id,
+                actor,
+                f"{_titled('素材', asset.name, asset_id)}を更新"
+                f"{_changed_note(written)}",
+                entity_kind="asset",
+                entity_id=asset_id,
             )
             await conn.commit()
         return await _fetch_asset(conn, asset_id)
@@ -1889,7 +2409,12 @@ async def delete_asset(asset_id: str) -> bool:
             return False
         await conn.execute("DELETE FROM studio_assets WHERE id = ?", (asset_id,))
         await _record_revision(
-            conn, asset.project_id, "user", f"素材『{asset.name}』を削除"
+            conn,
+            asset.project_id,
+            "user",
+            f"素材『{asset.name}』を削除",
+            entity_kind="asset",
+            entity_id=asset_id,
         )
         await conn.commit()
         return True
@@ -2059,13 +2584,24 @@ async def create_shot(
 ) -> StudioShot:
     async with get_db() as conn:
         shot = await _insert_shot(conn, project_id, payload)
-        await _record_revision(conn, project_id, actor, "Shot を追加")
+        await _record_revision(
+            conn,
+            project_id,
+            actor,
+            f"{_titled('カット', shot.title)}を追加",
+            entity_kind="shot",
+            entity_id=shot.id,
+        )
         await conn.commit()
         return shot
 
 
 async def update_shot(
-    shot_id: str, changes: dict[str, Any], *, actor: str = "user"
+    shot_id: str,
+    changes: dict[str, Any],
+    *,
+    actor: str = "user",
+    base_revision: int | None = None,
 ) -> StudioShot | None:
     """``changes`` に入っている項目だけ書き換える。
 
@@ -2105,6 +2641,10 @@ async def update_shot(
                     ),
                 )
         if changes:
+            await _check_base_revision(
+                conn, shot.project_id, base_revision, "shot", shot_id, shot.title,
+            )
+            written = list(changes)
             now = _now()
             changes["updated_at"] = now
             if PROMPT_FIELDS & set(changes):
@@ -2114,7 +2654,15 @@ async def update_shot(
                 f"UPDATE studio_shots SET {assignments} WHERE id = ?",
                 (*changes.values(), shot_id),
             )
-            await _record_revision(conn, shot.project_id, actor, "Shot を更新")
+            await _record_revision(
+                conn,
+                shot.project_id,
+                actor,
+                f"{_titled('カット', shot.title, shot_id)}を更新"
+                f"{_changed_note(written)}",
+                entity_kind="shot",
+                entity_id=shot_id,
+            )
             await conn.commit()
         return await _fetch_shot(conn, shot_id)
 
@@ -2126,7 +2674,14 @@ async def delete_shot(shot_id: str, *, actor: str = "user") -> bool:
         if shot is None:
             return False
         await conn.execute("DELETE FROM studio_shots WHERE id = ?", (shot_id,))
-        await _record_revision(conn, shot.project_id, actor, "Shot を削除")
+        await _record_revision(
+            conn,
+            shot.project_id,
+            actor,
+            f"{_titled('カット', shot.title, shot_id)}を削除",
+            entity_kind="shot",
+            entity_id=shot_id,
+        )
         await conn.commit()
         return True
 
@@ -2178,7 +2733,9 @@ async def reorder_shots(project_id: str, shot_ids: list[str]) -> list[StudioShot
                     " WHERE id = ?",
                     (order, now, shot_id),
                 )
-        await _record_revision(conn, project_id, "user", "Shot を並べ替え")
+        await _record_revision(
+            conn, project_id, "user", f"カットを並べ替え（{len(wanted)} 件）"
+        )
         await conn.commit()
         return await _fetch_shots(conn, project_id)
 
@@ -2811,7 +3368,13 @@ async def _run_translate(
                     (english, assembled, now, now, shot_id),
                 )
                 await _record_revision(
-                    conn, shot.project_id, actor, "英語プロンプトを作成"
+                    conn,
+                    shot.project_id,
+                    actor,
+                    f"{_titled('カット', shot.title, shot_id)}を更新"
+                    "(english_prompt)",
+                    entity_kind="shot",
+                    entity_id=shot_id,
                 )
             await conn.commit()
     except asyncio.CancelledError:
@@ -2857,7 +3420,14 @@ async def translate_shot(shot_id: str, *, actor: str = "user") -> StudioShot | N
                 " updated_at = ?, prompt_updated_at = ? WHERE id = ?",
                 (plan.prompt, plan.prompt, now, now, shot_id),
             )
-            await _record_revision(conn, shot.project_id, actor, "英語プロンプトを作成")
+            await _record_revision(
+                conn,
+                shot.project_id,
+                actor,
+                f"{_titled('カット', shot.title, shot_id)}を更新(english_prompt)",
+                entity_kind="shot",
+                entity_id=shot_id,
+            )
             await conn.commit()
             return await _fetch_shot(conn, shot_id)
 
@@ -3481,7 +4051,16 @@ async def select_take(take_id: str, *, actor: str = "user") -> StudioTake | None
             " updated_at = ? WHERE id = ?",
             (take_id, _now(), take.shot_id),
         )
-        await _record_revision(conn, take.project_id, actor, "Take を採用")
+        shot = await _fetch_shot(conn, take.shot_id)
+        await _record_revision(
+            conn,
+            take.project_id,
+            actor,
+            f"{_titled('カット', shot.title if shot else '', take.shot_id)}"
+            "の Take を採用",
+            entity_kind="shot",
+            entity_id=take.shot_id,
+        )
         await conn.commit()
         return await _fetch_take(conn, take_id)
 
@@ -3500,7 +4079,16 @@ async def reject_take(take_id: str, *, actor: str = "user") -> StudioTake | None
             " updated_at = ? WHERE id = ? AND selected_take_id = ?",
             (_now(), take.shot_id, take_id),
         )
-        await _record_revision(conn, take.project_id, actor, "Take を不採用に")
+        shot = await _fetch_shot(conn, take.shot_id)
+        await _record_revision(
+            conn,
+            take.project_id,
+            actor,
+            f"{_titled('カット', shot.title if shot else '', take.shot_id)}"
+            "の Take を不採用に",
+            entity_kind="shot",
+            entity_id=take.shot_id,
+        )
         await conn.commit()
         return await _fetch_take(conn, take_id)
 
@@ -3554,7 +4142,7 @@ async def _story_project(
 
 
 async def create_story(
-    payload: StoryCreate, *, actor: str = "agent", pending_limit: int = 0
+    payload: StoryCreate, *, actor: str = "external", pending_limit: int = 0
 ) -> StoryResult:
     """話 1 本ぶん（話 -> 場 -> Shot）をまとめて作る（外部 API の一括投入）。
 
@@ -3582,7 +4170,12 @@ async def create_story(
                 ]
                 created.append((scene, shots))
             await _record_revision(
-                conn, project.id, actor, f"話「{episode.title}」を一括作成"
+                conn,
+                project.id,
+                actor,
+                f"{_titled('話', episode.title)}を一括作成"
+                f"（場 {len(created)} 件・カット"
+                f" {sum(len(shots) for _scene, shots in created)} 件）",
             )
         except Exception:
             await conn.rollback()
@@ -3675,6 +4268,15 @@ async def delete_take(take_id: str) -> bool:
             " WHERE id = ? AND selected_take_id = ?",
             (_now(), shot_id, take_id),
         )
-        await _record_revision(conn, project_id, "user", "Take を削除")
+        shot = await _fetch_shot(conn, shot_id)
+        await _record_revision(
+            conn,
+            project_id,
+            "user",
+            f"{_titled('カット', shot.title if shot else '', shot_id)}"
+            "の Take を削除",
+            entity_kind="shot",
+            entity_id=shot_id,
+        )
         await conn.commit()
         return True

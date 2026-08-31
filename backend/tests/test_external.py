@@ -857,3 +857,42 @@ def test_unknown_example_filters_are_rejected(env):
     assert call(env, "GET", "/api/v1/prompt-examples?mode=x2v").status_code == 400
     assert call(env, "GET", "/api/v1/prompt-examples?category=nope").status_code == 400
     assert call(env, "GET", "/api/v1/prompt-examples?id=H3-E999").status_code == 404
+
+
+def test_external_changes_are_recorded_as_external(env):
+    """外部 API の変更は履歴で 'external'（UI の 'user' と区別できる）。"""
+    enable(env)
+    project = make_project(env)
+    shot = call(
+        env, "POST", f"/api/v1/projects/{project['id']}/shots",
+        json={"title": "決裂", "prompt": "One man leaves."},
+    ).json()
+    call(
+        env, "PATCH", f"/api/v1/shots/{shot['id']}", json={"prompt": "He walks out."}
+    )
+
+    rows = env.client.get(
+        f"/api/studio/projects/{project['id']}/revisions"
+    ).json()
+    assert [row["actor"] for row in rows] == ["external", "external", "external"]
+    assert rows[0]["action"] == "カット『決裂』を更新(prompt)"
+
+
+def test_external_patches_take_a_base_revision(env):
+    """楽観ロックは外部 API でも効く（人の変更を黙って上書きしない）。"""
+    enable(env)
+    project = make_project(env)
+    shot = call(
+        env, "POST", f"/api/v1/projects/{project['id']}/shots",
+        json={"title": "決裂", "prompt": "One man leaves."},
+    ).json()
+    base = call(env, "GET", f"/api/v1/projects/{project['id']}").json()["revision_seq"]
+    # 人が UI から先に直した
+    env.client.patch(f"/api/studio/shots/{shot['id']}", json={"prompt": "人の推敲"})
+
+    conflict = call(
+        env, "PATCH", f"/api/v1/shots/{shot['id']}",
+        json={"prompt": "エージェントの上書き", "base_revision": base},
+    )
+    assert conflict.status_code == 409, conflict.text
+    assert "決裂" in conflict.json()["detail"]

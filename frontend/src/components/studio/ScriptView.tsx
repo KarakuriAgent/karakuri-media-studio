@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ChevronRight, Search, Trash2 } from 'lucide-react'
+import { ChevronRight, History, Search, Trash2 } from 'lucide-react'
 
 import type {
   StudioEpisode,
@@ -178,6 +178,7 @@ export default function ScriptView({
   onSelectShot,
   onSave,
   onDelete,
+  onOpenHistory,
   busy,
 }: {
   /** 話 -> 場 -> カットのツリー（サーバーが返した並びのまま）。 */
@@ -190,6 +191,8 @@ export default function ScriptView({
   onSelectShot: (id: string) => void
   onSave: (id: string, patch: StudioShotUpdate) => void
   onDelete: (id: string) => void
+  /** そのカットに絞った変更履歴を開く。 */
+  onOpenHistory: (shot: StudioShot) => void
   busy: boolean
 }) {
   const [form, setForm] = useState<ShotFormState | null>(
@@ -588,6 +591,14 @@ export default function ScriptView({
               <div className="flex items-center gap-2">
                 <Button onClick={save} disabled={busy}>
                   保存
+                </Button>
+                <Button
+                  variant="outline"
+                  onClick={() => onOpenHistory(selectedShot)}
+                  disabled={busy}
+                >
+                  <History />
+                  このカットの履歴
                 </Button>
                 <Button
                   variant="destructive"

@@ -30,6 +30,8 @@ from ..models import (
     StudioReorder,
     StudioRevision,
     StudioRevisionDetail,
+    StudioRevisionDiff,
+    StudioRevisionRestore,
     StudioScene,
     StudioSceneCreate,
     StudioSceneUpdate,
@@ -103,24 +105,7 @@ async def list_projects() -> list[StudioProjectSummary]:
 @router.post("/projects", response_model=StudioProject, status_code=201)
 async def create_project(payload: StudioProjectCreate) -> StudioProject:
     try:
-        return await service.create_project(
-            payload.name,
-            payload.code,
-            payload.synopsis,
-            payload.world_notes,
-            payload.auto_translate,
-            payload.latent_continuity,
-            payload.nsfw,
-            payload.quality,
-            payload.megapixels,
-            payload.aspect_ratio,
-            payload.steps,
-            payload.latent_upscale,
-            payload.image_quality,
-            payload.image_megapixels,
-            payload.image_aspect_ratio,
-            payload.image_steps,
-        )
+        return await service.create_project(payload)
     except service.StudioError as exc:
         raise _bad_request(exc) from exc
 
@@ -160,7 +145,9 @@ async def update_project(
     project_id: str, payload: StudioProjectUpdate
 ) -> StudioProject:
     try:
-        project = await service.update_project(project_id, **payload.changes())
+        project = await service.update_project(
+            project_id, base_revision=payload.base_revision, **payload.changes()
+        )
     except service.StudioError as exc:
         raise _bad_request(exc) from exc
     if project is None:
@@ -223,7 +210,9 @@ async def add_asset(
 @router.patch("/assets/{asset_id}", response_model=StudioAsset)
 async def update_asset(asset_id: str, payload: StudioAssetUpdate) -> StudioAsset:
     try:
-        asset = await service.update_asset(asset_id, **payload.model_dump())
+        asset = await service.update_asset(
+            asset_id, base_revision=payload.base_revision, **payload.changes()
+        )
     except service.StudioError as exc:
         raise _bad_request(exc) from exc
     if asset is None:
@@ -335,7 +324,12 @@ async def reorder_episodes(
 async def update_episode(
     episode_id: str, payload: StudioEpisodeUpdate
 ) -> StudioEpisode:
-    episode = await service.update_episode(episode_id, **payload.model_dump())
+    try:
+        episode = await service.update_episode(
+            episode_id, base_revision=payload.base_revision, **payload.changes()
+        )
+    except service.StudioError as exc:
+        raise _bad_request(exc) from exc
     if episode is None:
         raise HTTPException(status_code=404, detail="episode not found")
     return episode
@@ -373,7 +367,9 @@ async def reorder_scenes(episode_id: str, payload: StudioReorder) -> list[Studio
 async def update_scene(scene_id: str, payload: StudioSceneUpdate) -> StudioScene:
     """指定した項目だけ変える（``episode_id`` を送ると別の話へ引っ越す）。"""
     try:
-        scene = await service.update_scene(scene_id, **payload.model_dump())
+        scene = await service.update_scene(
+            scene_id, base_revision=payload.base_revision, **payload.changes()
+        )
     except service.StudioError as exc:
         raise _bad_request(exc) from exc
     if scene is None:
@@ -393,11 +389,19 @@ async def delete_scene(scene_id: str) -> None:
 # --------------------------------------------------------------------------
 
 @router.get("/projects/{project_id}/revisions", response_model=list[StudioRevision])
-async def list_revisions(project_id: str) -> list[StudioRevision]:
+async def list_revisions(
+    project_id: str,
+    #: 絞り込み（``shot`` / ``asset`` など）。``entity_id`` と一緒に送ると
+    #: 「このカットの履歴」になる。並べ替えのように複数へ跨る変更は出ない
+    entity_kind: str | None = None,
+    entity_id: str | None = None,
+) -> list[StudioRevision]:
     """新しい順の見出し一覧（中身は含めない）。"""
     if await service.get_project(project_id) is None:
         raise HTTPException(status_code=404, detail="project not found")
-    return await service.list_revisions(project_id)
+    return await service.list_revisions(
+        project_id, entity_kind=entity_kind, entity_id=entity_id
+    )
 
 
 @router.get("/projects/{project_id}/revisions/{seq}",
@@ -409,11 +413,37 @@ async def get_revision(project_id: str, seq: int) -> StudioRevisionDetail:
     return revision
 
 
+@router.get("/projects/{project_id}/revisions/{seq}/diff",
+            response_model=StudioRevisionDiff)
+async def diff_revision(project_id: str, seq: int) -> StudioRevisionDiff:
+    """そのリビジョンで**何が変わったか**（直前のリビジョンとの差分）。"""
+    diff = await service.diff_revision(project_id, seq)
+    if diff is None:
+        raise HTTPException(status_code=404, detail="revision not found")
+    return diff
+
+
 @router.post("/projects/{project_id}/revisions/{seq}/restore",
              response_model=StudioProjectDetail)
-async def restore_revision(project_id: str, seq: int) -> StudioProjectDetail:
-    """そのリビジョンの内容へ書き戻す（Take と実ファイルは残る）。"""
-    detail = await service.restore_revision(project_id, seq)
+async def restore_revision(
+    project_id: str, seq: int, payload: StudioRevisionRestore | None = None
+) -> StudioProjectDetail:
+    """そのリビジョンの内容へ書き戻す（ファイル実体とジョブは残る）。
+
+    ボディは任意で、``entity`` / ``id``（と ``fields``）を送るとその 1 件
+    （その項目だけ）の部分復元になる。送らなければプロジェクト丸ごと。
+    """
+    target = payload or StudioRevisionRestore()
+    try:
+        detail = await service.restore_revision(
+            project_id,
+            seq,
+            entity=target.entity,
+            entity_id=target.id,
+            fields=target.fields,
+        )
+    except service.StudioError as exc:
+        raise _bad_request(exc) from exc
     if detail is None:
         raise HTTPException(status_code=404, detail="revision not found")
     return detail
@@ -459,7 +489,9 @@ async def update_shot(shot_id: str, payload: StudioShotUpdate) -> StudioShot:
     （送らなければ今の値のまま）。
     """
     try:
-        shot = await service.update_shot(shot_id, payload.changes())
+        shot = await service.update_shot(
+            shot_id, payload.changes(), base_revision=payload.base_revision
+        )
     except service.StudioError as exc:
         raise _bad_request(exc) from exc
     if shot is None:

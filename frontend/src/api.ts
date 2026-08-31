@@ -45,6 +45,8 @@ import type {
   StudioRenderRequest,
   StudioRevision,
   StudioRevisionDetail,
+  StudioRevisionDiff,
+  StudioRevisionRestore,
   StudioScene,
   StudioSceneCreate,
   StudioSceneUpdate,
@@ -503,16 +505,43 @@ export const api = {
   deleteStudioScene: (id: string) => json<void>('DELETE', `/api/studio/scenes/${id}`),
 
   // リビジョン履歴（新しい順の見出し -> 中身 -> その時点への書き戻し）。
-  listStudioRevisions: (projectId: string) =>
-    request<StudioRevision[]>(`/api/studio/projects/${projectId}/revisions`),
+  /**
+   * 新しい順の見出し一覧。`entity` を渡すとその 1 件を触った履歴だけに絞る
+   * （「このカットの履歴」。絞り込みは名前ではなく id で行う）。
+   */
+  listStudioRevisions: (
+    projectId: string,
+    entity?: { kind: string; id: string },
+  ) => {
+    const query = entity
+      ? `?${new URLSearchParams({ entity_kind: entity.kind, entity_id: entity.id })}`
+      : ''
+    return request<StudioRevision[]>(
+      `/api/studio/projects/${projectId}/revisions${query}`,
+    )
+  },
   getStudioRevision: (projectId: string, seq: number) =>
     request<StudioRevisionDetail>(
       `/api/studio/projects/${projectId}/revisions/${seq}`,
     ),
-  restoreStudioRevision: (projectId: string, seq: number) =>
+  /** そのリビジョンで何が変わったか（直前のリビジョンとの差分）。 */
+  getStudioRevisionDiff: (projectId: string, seq: number) =>
+    request<StudioRevisionDiff>(
+      `/api/studio/projects/${projectId}/revisions/${seq}/diff`,
+    ),
+  /**
+   * その時点へ書き戻す。`target` を渡すとその 1 件（`fields` まで渡すとその
+   * 項目だけ）の部分復元になる。
+   */
+  restoreStudioRevision: (
+    projectId: string,
+    seq: number,
+    target?: StudioRevisionRestore,
+  ) =>
     json<StudioProjectDetail>(
       'POST',
       `/api/studio/projects/${projectId}/revisions/${seq}/restore`,
+      target ?? {},
     ),
 
   createStudioShot: (projectId: string, payload: StudioShotCreate = {}) =>
