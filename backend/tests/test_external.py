@@ -701,7 +701,8 @@ def test_a_story_stops_submitting_once_the_limit_is_reached(env, monkeypatch):
         pending["n"] += 1
         return await real_render(shot_id)
 
-    monkeypatch.setattr(studio, "count_pending_takes", counted)
+    # 数えるのは未完了ジョブ（Shot の Take と汎用ジョブで同じプール）
+    monkeypatch.setattr(studio.job_service, "count_pending_jobs", counted)
     monkeypatch.setattr(studio, "render_shot", render_and_count)
 
     response = call(
@@ -718,6 +719,49 @@ def test_a_story_stops_submitting_once_the_limit_is_reached(env, monkeypatch):
     ]
     assert errors[:2] == ["", ""]
     assert "上限" in errors[2]
+    detail = env.client.get(f"/api/studio/projects/{project['id']}").json()
+    assert len(detail["shots"]) == 3
+
+
+def test_a_story_shares_the_pending_pool_with_plain_jobs(env, monkeypatch):
+    """カットごとのガードも「未完了ジョブ」を数える（汎用ジョブと同じプール）。
+
+    入口のガードを通れる 1 件だけ空きがある状態から始め、Shot 由来でない
+    ジョブが 1 本走っているせいで 2 カット目以降が止まることを見る。
+    """
+    enable(env, external_max_pending_takes=2)
+    project = make_project(env)
+
+    # Shot 由来でない未完了ジョブが 1 本ある + 投入したぶんが積み上がる
+    pending = {"n": 1}
+
+    async def counted() -> int:
+        return pending["n"]
+
+    real_render = studio.render_shot
+
+    async def render_and_count(shot_id: str):
+        pending["n"] += 1
+        return await real_render(shot_id)
+
+    monkeypatch.setattr(studio.job_service, "count_pending_jobs", counted)
+    monkeypatch.setattr(studio, "render_shot", render_and_count)
+
+    response = call(
+        env,
+        "POST",
+        "/api/v1/stories",
+        json=story_body(project_id=project["id"], render=True),
+    )
+    assert response.status_code == 201, response.text
+    result = response.json()
+    # 汎用ジョブの 1 本ぶん枠が埋まっているので、投入できるのは 1 カットだけ
+    assert len(result["take_ids"]) == 1
+    errors = [
+        shot["error"] for scene in result["scenes"] for shot in scene["shots"]
+    ]
+    assert errors[0] == ""
+    assert all("上限" in error for error in errors[1:]), errors
     detail = env.client.get(f"/api/studio/projects/{project['id']}").json()
     assert len(detail["shots"]) == 3
 

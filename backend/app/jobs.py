@@ -392,6 +392,13 @@ async def _set_status(
     await _update(job_id, status=status, **fields)
     await ws.publish(job_id, status, message=message, progress=progress)
     await _notify_job(job_id, previous, status)
+    if status in _TERMINAL_STATUSES and previous != status:
+        # このジョブがスタジオの Take なら、状態（候補 / 失敗）が変わったことに
+        # なる。DB には何も書かれないので、ここから画面へ知らせる（studio は
+        # こちらを import している側なので、逆向きの import は関数の中で）。
+        from . import studio
+
+        await studio.notify_job_settled(job_id)
 
 
 async def delete_job(job_id: str) -> bool:

@@ -25,7 +25,10 @@ from .models import (
     LibraryProgress,
     ModelDownload,
     ModelDownloadProgress,
+    StudioEvent,
     TimelineExportProgress,
+    UiFormProgress,
+    UiNavigateEvent,
 )
 
 log = logging.getLogger(__name__)
@@ -200,6 +203,79 @@ async def publish_model_download(state: ModelDownload) -> None:
             "received": state.received,
             "total": state.total,
             "error": state.error,
+        }
+    await hub.broadcast(payload)
+
+
+async def publish_studio(
+    project_id: str,
+    entity: str,
+    entity_id: str = "",
+    op: str = "update",
+) -> None:
+    """スタジオの更新を配信（``type: "studio"``）。Never raises.
+
+    外部エージェントが API から脚本や素材を書き換えたときに、開いているブラウザへ
+    「その作品が動いた」とだけ伝える。正本は DB なので、受け取り側は詳細を取り
+    直すだけ。取りこぼしより重複のほうが安いので、迷ったら流す。
+    """
+    try:
+        payload = StudioEvent(
+            project_id=project_id,
+            entity=entity,  # type: ignore[arg-type]
+            id=entity_id,
+            op=op,  # type: ignore[arg-type]
+        ).model_dump()
+    except Exception:  # noqa: BLE001 - 通知の失敗で編集を壊さない
+        payload = {
+            "type": "studio",
+            "project_id": project_id,
+            "entity": entity,
+            "id": entity_id,
+            "op": op,
+        }
+    await hub.broadcast(payload)
+
+
+async def publish_form(
+    revision: int, updated_by: str, values: dict[str, Any]
+) -> None:
+    """生成フォームの下書きが変わったことを配信（``type: "form"``）。Never raises.
+
+    値そのものを載せる（正本は ``ui_state`` だが、フォームは 1 件しかなく小さい）。
+    自分が書いた ``revision`` は送り主のブラウザ側で読み飛ばす。
+    """
+    try:
+        payload = UiFormProgress(
+            revision=revision, updated_by=updated_by, values=values
+        ).model_dump()
+    except Exception:  # noqa: BLE001 - 通知の失敗で保存を壊さない
+        payload = {
+            "type": "form",
+            "revision": revision,
+            "updated_by": updated_by,
+            "values": values,
+        }
+    await hub.broadcast(payload)
+
+
+async def publish_navigate(
+    view: str, project_id: str | None = None, shot_id: str | None = None
+) -> None:
+    """ブラウザの画面を動かす指示を配信（``type: "ui"``、``op: "navigate"``）。"""
+    try:
+        payload = UiNavigateEvent(
+            view=view,  # type: ignore[arg-type]
+            project_id=project_id,
+            shot_id=shot_id,
+        ).model_dump()
+    except Exception:  # noqa: BLE001 - 通知の失敗で API を壊さない
+        payload = {
+            "type": "ui",
+            "op": "navigate",
+            "view": view,
+            "project_id": project_id,
+            "shot_id": shot_id,
         }
     await hub.broadcast(payload)
 

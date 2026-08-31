@@ -71,6 +71,7 @@ import type {
   TimelineSyncRequest,
   TimelineTrackCreate,
   TimelineTrackUpdate,
+  UiFormState,
 } from './types'
 
 export class ApiError extends Error {
@@ -396,6 +397,18 @@ export const api = {
   /** ⏹: 走っている Grok のターンを止める（次の発言は新しい会話で続く）。 */
   stopChatTurn: (id: string) =>
     json<ChatState>('POST', `/api/chat/sessions/${id}/stop`, {}),
+
+  // 生成フォームの下書き（外部エージェントと共有する画面の状態）。保存すると
+  // WS の `form` フレームが全ブラウザへ飛ぶ（自分が出した revision は読み飛ばす）。
+  getGenerateForm: () => request<UiFormState>('/api/ui/generate-form'),
+  putGenerateForm: (
+    values: Record<string, unknown>,
+    baseRevision: number | null = null,
+  ) =>
+    json<UiFormState>('PUT', '/api/ui/generate-form', {
+      values,
+      base_revision: baseRevision,
+    }),
 
   // ドラマスタジオ（プロジェクト -> 脚本 -> Shot ごとの生成 -> Take の採用）。
   // 画面 1 枚は getStudioProject（素材・Shot・Take 込み）で組み立てる。

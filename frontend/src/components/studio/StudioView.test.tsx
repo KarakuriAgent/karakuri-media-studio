@@ -1473,15 +1473,109 @@ describe('StudioView: 概要タブと変更履歴', () => {
 
     const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
     mocked.restoreStudioRevision.mockResolvedValue(detail())
-    fireEvent.click(screen.getByRole('button', { name: '#2 の prompt だけ戻す' }))
+    // 差分は「#1 -> #2」の変化なので、戻し先は 1 つ前（#1）
+    fireEvent.click(
+      screen.getByRole('button', { name: '#2 の prompt を変更前に戻す' }),
+    )
     await waitFor(() =>
-      expect(mocked.restoreStudioRevision).toHaveBeenCalledWith('p1', 2, {
+      expect(mocked.restoreStudioRevision).toHaveBeenCalledWith('p1', 1, {
         entity: 'shot',
         id: 'カット1',
         fields: ['prompt'],
       }),
     )
     confirm.mockRestore()
+  })
+
+  it('消えた行も 1 つ前のリビジョンから戻す', async () => {
+    await openProject()
+    mocked.listStudioRevisions.mockResolvedValue([
+      {
+        seq: 3,
+        actor: 'external',
+        action: 'カット『カット1』を削除',
+        entity_kind: 'shot',
+        entity_id: 'カット1',
+        created_at: '2026-08-01T12:34:56+00:00',
+      },
+    ])
+    mocked.getStudioRevisionDiff.mockResolvedValue({
+      seq: 3,
+      actor: 'external',
+      action: 'カット『カット1』を削除',
+      entity_kind: 'shot',
+      entity_id: 'カット1',
+      created_at: '2026-08-01T12:34:56+00:00',
+      changes: [
+        {
+          entity: 'shot',
+          id: 'カット1',
+          name: 'カット1',
+          op: 'delete',
+          fields: [],
+        },
+      ],
+    })
+    fireEvent.click(screen.getByRole('button', { name: '変更履歴' }))
+    await screen.findByText('カット『カット1』を削除')
+    fireEvent.click(screen.getByRole('button', { name: '#3 の差分' }))
+
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    mocked.restoreStudioRevision.mockResolvedValue(detail())
+    fireEvent.click(
+      await screen.findByRole('button', {
+        name: '#3 のカット『カット1』を変更前に戻す',
+      }),
+    )
+    // #3 には消えた行が無い。戻せるのは 1 つ前（#2）
+    await waitFor(() =>
+      expect(mocked.restoreStudioRevision).toHaveBeenCalledWith('p1', 2, {
+        entity: 'shot',
+        id: 'カット1',
+      }),
+    )
+    confirm.mockRestore()
+  })
+
+  it('最初のリビジョンには「変更前」が無いので戻すボタンを出さない', async () => {
+    await openProject()
+    mocked.listStudioRevisions.mockResolvedValue([
+      {
+        seq: 1,
+        actor: 'user',
+        action: 'プロジェクトを作成',
+        entity_kind: 'project',
+        entity_id: 'p1',
+        created_at: '2026-07-31T09:00:00+00:00',
+      },
+    ])
+    mocked.getStudioRevisionDiff.mockResolvedValue({
+      seq: 1,
+      actor: 'user',
+      action: 'プロジェクトを作成',
+      entity_kind: 'project',
+      entity_id: 'p1',
+      created_at: '2026-07-31T09:00:00+00:00',
+      changes: [
+        {
+          entity: 'shot',
+          id: 'カット1',
+          name: 'カット1',
+          op: 'update',
+          fields: [
+            { field: 'prompt', before: '前のプロンプト', after: '後のプロンプト' },
+          ],
+        },
+      ],
+    })
+    fireEvent.click(screen.getByRole('button', { name: '変更履歴' }))
+    await screen.findByText('プロジェクトを作成')
+    fireEvent.click(screen.getByRole('button', { name: '#1 の差分' }))
+
+    expect(await screen.findByText('prompt')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /変更前に戻す/ })).toBeNull()
+    // 行ごとの「この時点に戻す」（丸ごと巻き戻し）はそのまま出る
+    expect(screen.getByRole('button', { name: '#1 の時点に戻す' })).toBeTruthy()
   })
 
   it('カットのインスペクタからそのカットの履歴を開く（絞り込みはサーバー側）', async () => {
@@ -2258,5 +2352,48 @@ describe('StudioView: 追い越した取り直しの後始末', () => {
     await fetches.resolve('p1/e1')
     await waitFor(() => expect(mocked.getStudioProject).toHaveBeenCalled())
     expect(screen.queryByRole('tab', { name: '概要' })).toBeNull()
+  })
+})
+
+describe('StudioView: 外部からの更新通知', () => {
+  /** プロジェクトを 1 つ開いた状態にして、rerender できるようにする。 */
+  async function open() {
+    const current = detail()
+    mocked.listStudioProjects.mockResolvedValue([summary(current)])
+    mocked.getStudioProject.mockResolvedValue(current)
+    mocked.previewStudioShotPrompt.mockResolvedValue(shotPreview())
+    const view = render(<StudioView progress={{}} />)
+    fireEvent.click(await screen.findByText(current.name))
+    await screen.findByRole('tab', { name: '概要' })
+    return { ...view, current }
+  }
+
+  function event(projectId: string) {
+    return {
+      type: 'studio' as const,
+      project_id: projectId,
+      entity: 'shot' as const,
+      id: 's1',
+      op: 'update' as const,
+    }
+  }
+
+  it('開いている作品の通知で読み直す', async () => {
+    const { rerender, current } = await open()
+    const before = mocked.getStudioProject.mock.calls.length
+
+    rerender(<StudioView progress={{}} studioEvent={event(current.id)} />)
+    await waitFor(() =>
+      expect(mocked.getStudioProject.mock.calls.length).toBeGreaterThan(before),
+    )
+  })
+
+  it('別の作品の通知では読み直さない', async () => {
+    const { rerender } = await open()
+    const before = mocked.getStudioProject.mock.calls.length
+
+    rerender(<StudioView progress={{}} studioEvent={event('別の作品')} />)
+    await new Promise((resolve) => setTimeout(resolve, 400))
+    expect(mocked.getStudioProject.mock.calls.length).toBe(before)
   })
 })

@@ -46,6 +46,7 @@ from . import grok
 from . import jobs as job_service
 from . import nsfw
 from . import studio_demo
+from . import ws
 from .db import get_db
 from .ids import new_id
 from .models import (
@@ -549,6 +550,52 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+# --------------------------------------------------------------------------
+# 画面への通知（WS ``type: "studio"``）
+# --------------------------------------------------------------------------
+#
+# 外部エージェントが API から書き換えても、開いているブラウザがすぐ追いつける
+# ようにするための配信。**書き込みが確定してから**流したいので、いったん接続に
+# 積んでおいて :func:`_commit` が commit の後にまとめて流す（先に流すと、受け
+# 取ったブラウザが古い状態を読み直してしまう）。
+
+#: :func:`_queue_event` が積んだイベントの置き場（接続オブジェクトの属性名）。
+_EVENTS_ATTR = "_studio_events"
+
+
+def _queue_event(
+    conn: aiosqlite.Connection,
+    project_id: str,
+    entity: str,
+    entity_id: str = "",
+    op: str = "update",
+) -> None:
+    """commit 後に流すスタジオイベントを 1 件積む。"""
+    if not project_id:
+        return
+    events: list[tuple[str, str, str, str]] = getattr(conn, _EVENTS_ATTR, [])
+    events.append((project_id, entity, entity_id, op))
+    setattr(conn, _EVENTS_ATTR, events)
+
+
+async def _commit(conn: aiosqlite.Connection) -> None:
+    """commit して、この接続に積まれたスタジオイベントを流す。
+
+    スタジオの書き込みはすべてここを通す（``conn.commit()`` を直に呼ばない）。
+    配信に失敗しても書き込みは済んでいるので、例外は握りつぶして進む。
+    """
+    await conn.commit()
+    events: list[tuple[str, str, str, str]] = getattr(conn, _EVENTS_ATTR, [])
+    if not events:
+        return
+    setattr(conn, _EVENTS_ATTR, [])
+    for project_id, entity, entity_id, op in events:
+        try:
+            await ws.publish_studio(project_id, entity, entity_id, op)
+        except Exception:  # noqa: BLE001 - 通知の失敗で編集を壊さない
+            log.debug("studio イベントを配信できませんでした: %s", project_id)
+
+
 def _asset_url(kind: str, path: str) -> str:
     """静的配信 URL。メタデータのみの素材（パスなし）は空。"""
     return f"/assets/{kind}/{Path(path).name}" if path else ""
@@ -706,8 +753,9 @@ async def create_project(
             f"{_titled('プロジェクト', project.name)}を作成",
             entity_kind="project",
             entity_id=project.id,
+            op="create",
         )
-        await conn.commit()
+        await _commit(conn)
         return project
 
 
@@ -853,7 +901,7 @@ async def update_project(
                 entity_kind="project",
                 entity_id=project_id,
             )
-            await conn.commit()
+            await _commit(conn)
         return await _fetch_project(conn, project_id)
 
 
@@ -867,7 +915,10 @@ async def delete_project(project_id: str) -> bool:
         cur = await conn.execute(
             "DELETE FROM studio_projects WHERE id = ?", (project_id,)
         )
-        await conn.commit()
+        # リビジョンごと消える操作なので、通知はここで直に積む。
+        if cur.rowcount > 0:
+            _queue_event(conn, project_id, "project", project_id, "delete")
+        await _commit(conn)
         return cur.rowcount > 0
 
 
@@ -1028,6 +1079,7 @@ async def _record_revision(
     *,
     entity_kind: str = "",
     entity_id: str = "",
+    op: str = "update",
 ) -> None:
     """今のプロジェクト状態を 1 リビジョンとして残す（commit は呼び出し側）。
 
@@ -1040,7 +1092,13 @@ async def _record_revision(
     跨る操作は空のままにする: 代表を 1 つ選ぶと、選ばれなかったほうの履歴から
     その変更が消えてしまうため。Take の操作はぶら下がっている**カット**として
     記録する（Take はカットの中の出来事で、そのカットの履歴に出したいもの）。
+
+    リビジョンが 1 つ残るような変更は、そのまま「画面を読み直す理由」でもある
+    ので、ここで WS のスタジオイベント（``type: "studio"``）も積む。``op`` は
+    その 1 件が create / update / delete のどれだったか（受け取り側は読み直す
+    だけなので、厳密でなくても困らない）。
     """
+    _queue_event(conn, project_id, entity_kind or "project", entity_id, op)
     snapshot = await _snapshot(conn, project_id)
     if not snapshot["project"]:  # 消えたプロジェクトには何も残さない
         return
@@ -1436,7 +1494,7 @@ async def restore_revision(
         await _record_revision(
             conn, project_id, actor, f"リビジョン {seq} を復元"
         )
-        await conn.commit()
+        await _commit(conn)
     return await project_detail(project_id)
 
 
@@ -1527,7 +1585,7 @@ async def _restore_one(
             entity_kind=entity,
             entity_id=entity_id or "",
         )
-        await conn.commit()
+        await _commit(conn)
     return await project_detail(project_id)
 
 
@@ -1677,8 +1735,9 @@ async def create_episode(
             f"{_titled('話', episode.title)}を追加",
             entity_kind="episode",
             entity_id=episode.id,
+            op="create",
         )
-        await conn.commit()
+        await _commit(conn)
         return episode
 
 
@@ -1713,7 +1772,7 @@ async def update_episode(
                 entity_kind="episode",
                 entity_id=episode_id,
             )
-            await conn.commit()
+            await _commit(conn)
         return await _fetch_episode(conn, episode_id)
 
 
@@ -1735,8 +1794,9 @@ async def delete_episode(episode_id: str, *, actor: str = "user") -> bool:
             f"（場 {len(scenes)} 件ごと）",
             entity_kind="episode",
             entity_id=episode_id,
+            op="delete",
         )
-        await conn.commit()
+        await _commit(conn)
         return True
 
 
@@ -1756,7 +1816,7 @@ async def reorder_episodes(
         await _record_revision(
             conn, project_id, actor, f"話を並べ替え（{len(ids)} 件）"
         )
-        await conn.commit()
+        await _commit(conn)
         return await _fetch_episodes(conn, project_id)
 
 
@@ -1804,8 +1864,9 @@ async def create_scene(
             f"{_titled('場', scene.title)}を追加",
             entity_kind="scene",
             entity_id=scene.id,
+            op="create",
         )
-        await conn.commit()
+        await _commit(conn)
         return scene
 
 
@@ -1857,7 +1918,7 @@ async def update_scene(
                 entity_kind="scene",
                 entity_id=scene_id,
             )
-            await conn.commit()
+            await _commit(conn)
         return await _fetch_scene(conn, scene_id)
 
 
@@ -1895,8 +1956,9 @@ async def delete_scene(scene_id: str, *, actor: str = "user") -> bool:
             f"{_titled('場', scene.title, scene_id)}を削除",
             entity_kind="scene",
             entity_id=scene_id,
+            op="delete",
         )
-        await conn.commit()
+        await _commit(conn)
         return True
 
 
@@ -1923,7 +1985,7 @@ async def reorder_scenes(
             f"{_titled('話', episode.title, episode_id)}の場を並べ替え"
             f"（{len(ids)} 件）",
         )
-        await conn.commit()
+        await _commit(conn)
         return await _fetch_scenes(conn, "episode_id = ?", (episode_id,))
 
 
@@ -2022,9 +2084,13 @@ async def create_demo_project(code: str) -> StudioProjectDetail:
                         conn, project.id, scene_id, shot_order, shot, now
                     )
         await _record_revision(
-            conn, project.id, "user", f"デモ『{manifest['name']}』を作成"
+            conn,
+            project.id,
+            "user",
+            f"デモ『{manifest['name']}』を作成",
+            op="create",
         )
-        await conn.commit()
+        await _commit(conn)
     detail = await project_detail(project.id)
     assert detail is not None
     return detail
@@ -2177,8 +2243,9 @@ async def add_asset_file(
             f"素材『{asset.name}』にリファレンスを追加",
             entity_kind="asset",
             entity_id=asset_id,
+            op="create",
         )
-        await conn.commit()
+        await _commit(conn)
         async with conn.execute(
             "SELECT * FROM studio_asset_files WHERE id = ?", (file_id,)
         ) as cur:
@@ -2205,8 +2272,9 @@ async def delete_asset_file(file_id: str, *, actor: str = "user") -> bool:
             f"素材のリファレンス（{row['role']}）を削除",
             entity_kind="asset",
             entity_id=row["asset_id"],
+            op="delete",
         )
-        await conn.commit()
+        await _commit(conn)
         return True
 
 
@@ -2260,8 +2328,9 @@ async def add_asset(
             f"素材『{label}』を追加",
             entity_kind="asset",
             entity_id=asset.id,
+            op="create",
         )
-        await conn.commit()
+        await _commit(conn)
         return asset
 
 
@@ -2401,7 +2470,7 @@ async def update_asset(
                 entity_kind="asset",
                 entity_id=asset_id,
             )
-            await conn.commit()
+            await _commit(conn)
         return await _fetch_asset(conn, asset_id)
 
 
@@ -2419,8 +2488,9 @@ async def delete_asset(asset_id: str, *, actor: str = "user") -> bool:
             f"素材『{asset.name}』を削除",
             entity_kind="asset",
             entity_id=asset_id,
+            op="delete",
         )
-        await conn.commit()
+        await _commit(conn)
         return True
 
 
@@ -2595,8 +2665,9 @@ async def create_shot(
             f"{_titled('カット', shot.title)}を追加",
             entity_kind="shot",
             entity_id=shot.id,
+            op="create",
         )
-        await conn.commit()
+        await _commit(conn)
         return shot
 
 
@@ -2667,7 +2738,7 @@ async def update_shot(
                 entity_kind="shot",
                 entity_id=shot_id,
             )
-            await conn.commit()
+            await _commit(conn)
         return await _fetch_shot(conn, shot_id)
 
 
@@ -2685,8 +2756,9 @@ async def delete_shot(shot_id: str, *, actor: str = "user") -> bool:
             f"{_titled('カット', shot.title, shot_id)}を削除",
             entity_kind="shot",
             entity_id=shot_id,
+            op="delete",
         )
-        await conn.commit()
+        await _commit(conn)
         return True
 
 
@@ -2742,7 +2814,7 @@ async def reorder_shots(
         await _record_revision(
             conn, project_id, actor, f"カットを並べ替え（{len(wanted)} 件）"
         )
-        await conn.commit()
+        await _commit(conn)
         return await _fetch_shots(conn, project_id)
 
 
@@ -3336,7 +3408,7 @@ async def recover_interrupted_translates() -> None:
             " english_error='英訳が中断されました。もう一度英訳してください'"
             " WHERE english_status='translating'"
         )
-        await conn.commit()
+        await _commit(conn)
 
 
 async def _run_translate(
@@ -3382,7 +3454,7 @@ async def _run_translate(
                     entity_kind="shot",
                     entity_id=shot_id,
                 )
-            await conn.commit()
+            await _commit(conn)
     except asyncio.CancelledError:
         raise
     except Exception:  # noqa: BLE001 - 英訳の失敗で HTTP を壊さない
@@ -3395,7 +3467,7 @@ async def _run_translate(
                     " WHERE id = ? AND english_status = 'translating'",
                     ("英訳に失敗しました", _now(), shot_id),
                 )
-                await conn.commit()
+                await _commit(conn)
         except Exception:  # noqa: BLE001
             log.exception("shot %s の英訳失敗を記録できませんでした", shot_id)
 
@@ -3434,7 +3506,7 @@ async def translate_shot(shot_id: str, *, actor: str = "user") -> StudioShot | N
                 entity_kind="shot",
                 entity_id=shot_id,
             )
-            await conn.commit()
+            await _commit(conn)
             return await _fetch_shot(conn, shot_id)
 
     async with get_db() as conn:
@@ -3448,7 +3520,7 @@ async def translate_shot(shot_id: str, *, actor: str = "user") -> StudioShot | N
             " english_error = '' WHERE id = ?",
             (shot_id,),
         )
-        await conn.commit()
+        await _commit(conn)
         shot = await _fetch_shot(conn, shot_id)
     if shot is None:
         return None
@@ -3644,7 +3716,7 @@ async def record_take_latent(
                 "UPDATE studio_takes SET latent_path = ? WHERE job_id = ?",
                 (latent_path, job_id),
             )
-        await conn.commit()
+        await _commit(conn)
 
 
 async def record_translated_prompt(job_id: str, translated: str) -> None:
@@ -3653,11 +3725,34 @@ async def record_translated_prompt(job_id: str, translated: str) -> None:
     呼ぶのはジョブランナー。スタジオ由来でないジョブでは対象の行が無いだけ。
     """
     async with get_db() as conn:
+        async with conn.execute(
+            "SELECT id, project_id FROM studio_takes WHERE job_id = ?", (job_id,)
+        ) as cur:
+            rows = await cur.fetchall()
         await conn.execute(
             "UPDATE studio_takes SET prompt = ? WHERE job_id = ?",
             (translated, job_id),
         )
-        await conn.commit()
+        for row in rows:
+            _queue_event(conn, row["project_id"], "take", row["id"], "update")
+        await _commit(conn)
+
+
+async def notify_job_settled(job_id: str) -> None:
+    """終わったジョブがスタジオの Take なら、その作品へ更新を流す。
+
+    Take の状態（``candidate`` / ``failed``）はジョブの状態から導出するので、
+    完了しても ``studio_takes`` には 1 行も書かれない = 上の :func:`_commit`
+    経由の通知が出ない。ジョブランナー（:func:`app.jobs._set_status`）が終端に
+    入ったときだけここを呼んで、開いているブラウザに読み直させる。
+    """
+    async with get_db() as conn:
+        async with conn.execute(
+            "SELECT id, project_id FROM studio_takes WHERE job_id = ?", (job_id,)
+        ) as cur:
+            rows = await cur.fetchall()
+    for row in rows:
+        await ws.publish_studio(row["project_id"], "take", row["id"], "update")
 
 
 async def _carry_over_start_frame(
@@ -3881,7 +3976,10 @@ async def render_shot(
                 warning,
             ),
         )
-        await conn.commit()
+        # Take はリビジョンを残さない（生成物であって脚本ではない）ので、
+        # 画面への通知だけここで積む。
+        _queue_event(conn, shot.project_id, "take", take_id, "create")
+        await _commit(conn)
 
     # ランナーが Take 作成より先に英訳を済ませていることがある。
     if extra_params and extra_params.get("pending_translate"):
@@ -4067,7 +4165,7 @@ async def select_take(take_id: str, *, actor: str = "user") -> StudioTake | None
             entity_kind="shot",
             entity_id=take.shot_id,
         )
-        await conn.commit()
+        await _commit(conn)
         return await _fetch_take(conn, take_id)
 
 
@@ -4095,7 +4193,7 @@ async def reject_take(take_id: str, *, actor: str = "user") -> StudioTake | None
             entity_kind="shot",
             entity_id=take.shot_id,
         )
-        await conn.commit()
+        await _commit(conn)
         return await _fetch_take(conn, take_id)
 
 
@@ -4109,25 +4207,12 @@ PENDING_JOB_STATUSES = job_service.PENDING_STATUSES
 #: 数えたあとに投入するまでのあいだ（英訳の待ちを含む）に別のリクエストが
 #: 割り込むと、上限に達していても全部すり抜けてしまう。バックエンドは 1 本の
 #: プロセスで動かすので、プロセス内の錠で足りる。
-#: **投入する側だけが取る**（:func:`count_pending_takes` 自体は錠を取らない）。
+#: **投入する側だけが取る**（数えるほう自体は錠を取らない）。
 #:
 #: 括るのは「生成の投入」だけ（Shot のレンダリングと汎用ジョブ。どちらも同じ
 #: 未完了ジョブのプールを数える）。書き出しのように別のプールを見るガードは、
 #: この錠に相乗りさせず自前の錠を持つこと（遅い投入が無関係な投入を塞ぐ）。
 PENDING_JOBS_LOCK = asyncio.Lock()
-
-
-async def count_pending_takes() -> int:
-    """元ジョブがまだ走っている Take の数（外部 API の投入上限に使う）。"""
-    placeholders = ", ".join("?" * len(PENDING_JOB_STATUSES))
-    async with get_db() as conn:
-        async with conn.execute(
-            "SELECT COUNT(*) AS pending FROM studio_takes t"
-            " JOIN jobs j ON j.id = t.job_id"
-            f" WHERE j.status IN ({placeholders})",
-            PENDING_JOB_STATUSES,
-        ) as cur:
-            return int((await cur.fetchone())["pending"])
 
 
 async def _story_project(
@@ -4187,11 +4272,12 @@ async def create_story(
                 f"{_titled('話', episode.title)}を一括作成"
                 f"（場 {len(created)} 件・カット"
                 f" {sum(len(shots) for _scene, shots in created)} 件）",
+                op="create",
             )
         except Exception:
             await conn.rollback()
             raise
-        await conn.commit()
+        await _commit(conn)
 
     result = StoryResult(
         project_id=project.id,
@@ -4216,9 +4302,16 @@ async def create_story(
             # 数えてから投入するまでを錠で括る（同時に走っている別の一括投入と
             # 数え合いになって、両方すり抜けるのを防ぐ）
             async with PENDING_JOBS_LOCK:
-                if pending_limit > 0 and await count_pending_takes() >= pending_limit:
+                # 数えるのは**未完了ジョブ**（:func:`app.jobs.count_pending_jobs`）。
+                # Shot のレンダリングと汎用ジョブは 1 つのプールを分け合うので、
+                # 外部 API 側のガード（``external._check_pending_jobs``）と同じ
+                # 数え方にしておかないと、汎用ジョブで埋まっているときに一括
+                # 投入だけが上限を素通りしてしまう。
+                pending = await job_service.count_pending_jobs()
+                if pending_limit > 0 and pending >= pending_limit:
                     shot_result.error = (
-                        f"未完了の Take が上限（{pending_limit} 件）に達しているので"
+                        f"未完了のジョブが {pending} 件あります"
+                        f"（上限 {pending_limit} 件）。"
                         "投入を見送りました"
                     )
                     continue
@@ -4288,6 +4381,7 @@ async def delete_take(take_id: str, *, actor: str = "user") -> bool:
             "の Take を削除",
             entity_kind="shot",
             entity_id=shot_id,
+            op="delete",
         )
-        await conn.commit()
+        await _commit(conn)
         return True

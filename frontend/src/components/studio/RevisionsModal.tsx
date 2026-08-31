@@ -44,15 +44,26 @@ export type RevisionFilter = {
   label: string
 }
 
+/**
+ * 1 リビジョンぶんの差分の 1 行（エンティティ単位）。
+ *
+ * 戻し先は**このリビジョンの 1 つ前**（`seq - 1`）。差分は「`seq - 1` →
+ * `seq`」の変化なので、`seq` へ戻すと変化後の値をもう一度書くだけになり、
+ * 消えた行に至ってはそのリビジョンに存在しない（400 になる）。`restorable`
+ * が false（`seq` が 1 = 前が無い）のときは戻すボタンを出さない。
+ */
 function EntityDiff({
   change,
   seq,
   busy,
+  restorable,
   onRestorePart,
 }: {
   change: StudioRevisionEntityDiff
   seq: number
   busy: boolean
+  restorable: boolean
+  /** 呼ぶと `seq - 1`（変更前）の状態へ戻る。 */
   onRestorePart: (target: StudioRevisionRestore) => void
 }) {
   const label = REVISION_ENTITY_LABEL[change.entity] ?? change.entity
@@ -69,19 +80,21 @@ function EntityDiff({
         <span className="min-w-0 flex-1 truncate text-xs text-foreground/90">
           {label}『{change.name || change.id}』
         </span>
-        {change.op !== 'create' && change.fields.length === 0 && (
+        {restorable && change.op !== 'create' && change.fields.length === 0 && (
           <Button
             variant="outline"
             size="xs"
             className="shrink-0"
-            aria-label={`#${seq} の${label}『${change.name || change.id}』を戻す`}
+            aria-label={`#${seq} の${label}『${
+              change.name || change.id
+            }』を変更前に戻す`}
             onClick={() =>
               onRestorePart({ entity: change.entity, id: change.id })
             }
             disabled={busy}
           >
             <Undo2 />
-            この{label}を戻す
+            この{label}を変更前に戻す
           </Button>
         )}
       </div>
@@ -102,23 +115,25 @@ function EntityDiff({
                 {' → '}
                 <span>{revisionValueText(field.after)}</span>
               </span>
-              <Button
-                variant="outline"
-                size="xs"
-                className="shrink-0"
-                aria-label={`#${seq} の ${field.field} だけ戻す`}
-                onClick={() =>
-                  onRestorePart({
-                    entity: change.entity,
-                    id: change.id,
-                    fields: [field.field],
-                  })
-                }
-                disabled={busy}
-              >
-                <Undo2 />
-                この項目だけ戻す
-              </Button>
+              {restorable && (
+                <Button
+                  variant="outline"
+                  size="xs"
+                  className="shrink-0"
+                  aria-label={`#${seq} の ${field.field} を変更前に戻す`}
+                  onClick={() =>
+                    onRestorePart({
+                      entity: change.entity,
+                      id: change.id,
+                      fields: [field.field],
+                    })
+                  }
+                  disabled={busy}
+                >
+                  <Undo2 />
+                  この項目だけ変更前に戻す
+                </Button>
+              )}
             </li>
           ))}
         </ul>
@@ -132,8 +147,10 @@ function EntityDiff({
  *
  * 新しい順に「いつ・誰が・何を」を並べ、行を開くと**そのリビジョンで何が
  * 変わったか**（エンティティ別・項目別の before → after）を出す。戻し方は 2 つ:
- * 行ごとの「この時点に戻す」（プロジェクト丸ごと）と、項目ごとの「この項目
- * だけ戻す」（部分復元）。差分は開いた行のぶんだけ取りに行く。
+ * 行ごとの「この時点に戻す」（そのリビジョンの状態へプロジェクト丸ごと）と、
+ * 差分の中の「変更前に戻す」（そのエンティティ / 項目だけを **1 つ前** の状態
+ * へ）。前者は「そこまで巻き戻す」、後者は「この変更を取り消す」で戻し先が
+ * 1 つずれることに注意。差分は開いた行のぶんだけ取りに行く。
  */
 export default function RevisionsModal({
   revisions,
@@ -306,8 +323,11 @@ export default function RevisionsModal({
                             change={change}
                             seq={revision.seq}
                             busy={busy}
+                            // 差分は「1 つ前 → このリビジョン」なので、戻し先は
+                            // 1 つ前。最初のリビジョンには前が無い。
+                            restorable={revision.seq > 1}
                             onRestorePart={(target) =>
-                              onRestorePart(revision.seq, target)
+                              onRestorePart(revision.seq - 1, target)
                             }
                           />
                         ))}

@@ -770,6 +770,21 @@ async def _selected_take_videos(
     return found
 
 
+async def _publish_timeline(
+    project_id: str, timeline_id: str, op: str = "update"
+) -> None:
+    """編集タブの変更を画面へ流す（WS ``type: "studio"``、``entity: "timeline"``）。
+
+    外部エージェントがつなぎを触ったときに、開いているブラウザがすぐ追いつける
+    ようにするためのもの。正本は DB なので、流すのは「どの作品のどのタイムライン
+    が動いたか」だけで、受け取り側は取り直す。**commit のあと**に呼ぶ。
+    """
+    try:
+        await ws.publish_studio(project_id, "timeline", timeline_id, op)
+    except Exception:  # noqa: BLE001 - 通知の失敗で編集を壊さない
+        log.debug("timeline イベントを配信できませんでした: %s", timeline_id)
+
+
 async def create_timeline(
     project_id: str, payload: StudioTimelineCreate
 ) -> StudioTimelineDetail:
@@ -864,6 +879,7 @@ async def create_timeline(
             )
             start += duration_ms
         await conn.commit()
+    await _publish_timeline(project_id, timeline_id, "create")
 
     detail = await timeline_detail(timeline_id)
     assert detail is not None
@@ -880,7 +896,8 @@ async def update_timeline(
         if name in ("name", "fps", "width", "height") and value is not None
     }
     async with get_db() as conn:
-        if await _fetch_timeline(conn, timeline_id) is None:
+        timeline = await _fetch_timeline(conn, timeline_id)
+        if timeline is None:
             return None
         if fields:
             assignments = ", ".join(f"{name} = ?" for name in fields)
@@ -890,6 +907,7 @@ async def update_timeline(
                 (*fields.values(), _now(), timeline_id),
             )
             await conn.commit()
+            await _publish_timeline(timeline.project_id, timeline_id)
         return await _fetch_timeline(conn, timeline_id)
 
 
@@ -900,7 +918,8 @@ async def delete_timeline(timeline_id: str) -> bool:
     ファイル（``outputs/exports/…``）は成果物なので残す（ジョブの出力と同じ扱い）。
     """
     async with get_db() as conn:
-        if await _fetch_timeline(conn, timeline_id) is None:
+        timeline = await _fetch_timeline(conn, timeline_id)
+        if timeline is None:
             return False
         await conn.execute(
             "DELETE FROM timeline_clips WHERE timeline_id = ?", (timeline_id,)
@@ -913,6 +932,7 @@ async def delete_timeline(timeline_id: str) -> bool:
         )
         await conn.execute("DELETE FROM studio_timelines WHERE id = ?", (timeline_id,))
         await conn.commit()
+    await _publish_timeline(timeline.project_id, timeline_id, "delete")
     return True
 
 
@@ -942,6 +962,7 @@ async def replace_clips(
 
         await _write_clips(conn, timeline_id, timeline.project_id, clips)
         await conn.commit()
+    await _publish_timeline(timeline.project_id, timeline_id)
     return await timeline_detail(timeline_id)
 
 
@@ -1456,6 +1477,7 @@ async def add_track(
             (_now(), timeline_id),
         )
         await conn.commit()
+    await _publish_timeline(timeline.project_id, timeline_id)
     detail = await timeline_detail(timeline_id)
     assert detail is not None
     return detail
@@ -1473,7 +1495,8 @@ async def update_track(
     if payload.locked is not None:
         fields["locked"] = int(payload.locked)
     async with get_db() as conn:
-        if await _fetch_timeline(conn, timeline_id) is None:
+        timeline = await _fetch_timeline(conn, timeline_id)
+        if timeline is None:
             raise TimelineNotFound("timeline not found")
         async with conn.execute(
             "SELECT id FROM timeline_tracks WHERE id = ? AND timeline_id = ?",
@@ -1492,6 +1515,7 @@ async def update_track(
                 (_now(), timeline_id),
             )
             await conn.commit()
+            await _publish_timeline(timeline.project_id, timeline_id)
     detail = await timeline_detail(timeline_id)
     assert detail is not None
     return detail
@@ -1500,7 +1524,8 @@ async def update_track(
 async def delete_track(timeline_id: str, track_id: str) -> StudioTimelineDetail:
     """トラックを 1 本消す（載っていたクリップも一緒に消える）。"""
     async with get_db() as conn:
-        if await _fetch_timeline(conn, timeline_id) is None:
+        timeline = await _fetch_timeline(conn, timeline_id)
+        if timeline is None:
             raise TimelineNotFound("timeline not found")
         async with conn.execute(
             "SELECT kind FROM timeline_tracks WHERE id = ? AND timeline_id = ?",
@@ -1518,6 +1543,7 @@ async def delete_track(timeline_id: str, track_id: str) -> StudioTimelineDetail:
             (_now(), timeline_id),
         )
         await conn.commit()
+    await _publish_timeline(timeline.project_id, timeline_id)
     detail = await timeline_detail(timeline_id)
     assert detail is not None
     return detail
@@ -1895,6 +1921,7 @@ async def generate_subtitles(
         ]
         await _write_clips(conn, timeline_id, timeline.project_id, [*kept, *made])
         await conn.commit()
+    await _publish_timeline(timeline.project_id, timeline_id)
 
     fresh = await timeline_detail(timeline_id)
     assert fresh is not None
@@ -2133,6 +2160,7 @@ async def apply_sync(
             conn, timeline_id, timeline.project_id, [*relayout(kept), *others]
         )
         await conn.commit()
+    await _publish_timeline(timeline.project_id, timeline_id)
 
     fresh = await timeline_detail(timeline_id)
     assert fresh is not None
@@ -2281,6 +2309,7 @@ async def resolve_missing(
             conn, timeline_id, timeline.project_id, [*relayout(kept_video), *others]
         )
         await conn.commit()
+    await _publish_timeline(timeline.project_id, timeline_id)
 
     fresh = await timeline_detail(timeline_id)
     assert fresh is not None

@@ -44,6 +44,7 @@ from starlette.datastructures import UploadFile as FormUploadFile
 from .. import autotag
 from .. import jobs as job_service
 from .. import library, sheets, studio as service, timeline as timeline_service
+from .. import ui_state, ws
 from ..config import load_settings
 from ..drafting_guide import GUIDE_VERSION, build_drafting_guide
 from ..h3_examples import (
@@ -60,6 +61,7 @@ from ..models import (
     Job,
     JobContinue,
     JobCreate,
+    JobFromForm,
     JobRerun,
     LibraryFromJob,
     LibraryItem,
@@ -112,6 +114,9 @@ from ..models import (
     TimelineSyncRequest,
     TimelineTrackCreate,
     TimelineTrackUpdate,
+    UiFormState,
+    UiFormUpdate,
+    UiNavigate,
 )
 from .assets import save_upload
 from .library import MAX_LIMIT as LIBRARY_MAX_LIMIT
@@ -164,6 +169,13 @@ def _bad_request(exc: service.StudioError) -> HTTPException:
     if isinstance(exc, service.StudioConflict):
         return HTTPException(status_code=409, detail=str(exc))
     return HTTPException(status_code=400, detail=str(exc))
+
+
+def _first_message(exc: ValidationError) -> str:
+    """pydantic の検証エラーを 1 行のメッセージにする（スタジオ側と同じ形）。"""
+    for error in exc.errors():
+        return str(error.get("msg", "")).removeprefix("Value error, ")
+    return str(exc)
 
 
 def _pending_limit() -> int:
@@ -696,13 +708,20 @@ async def list_jobs(
 
 
 @router.post("/jobs", response_model=Job, status_code=201)
-async def create_job(payload: JobCreate) -> Job:
+async def create_job(payload: JobFromForm | JobCreate) -> Job:
     """ジョブを 1 件作ってキューに載せる（未完了ジョブが上限に達していれば 429）。
 
     Shot を通さない生成の入り口で、素材にする静止画（``image_only``）や
     BGM / SE（``audio``）もここから作る。モードごとの必須項目を満たして
     いなければ 422。
+
+    ``{"from_form": true}`` を入れると、いま画面に出ている**生成フォームの
+    下書き**（``/api/v1/ui/generate-form``）をそのまま投入する。一緒に送った
+    項目はその上から重ねる（「今のフォームで、尺だけ 5 秒にして流して」）。
+    写せない下書き（ワークフロー id が壊れている等）は 400。
     """
+    if isinstance(payload, JobFromForm):
+        payload = await _from_form_job(payload)
     # 数えてから投入するまでを錠で括る（並行リクエストが数え合いになって、
     # 上限に達していても全部すり抜けるのを防ぐ）
     async with service.PENDING_JOBS_LOCK:
@@ -711,6 +730,24 @@ async def create_job(payload: JobCreate) -> Job:
             return await job_service.create_job(payload)
         except job_service.JobValidationError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+async def _from_form_job(payload: JobFromForm) -> JobCreate:
+    """保存中の下書きに、一緒に送られた項目を重ねて :class:`JobCreate` にする。
+
+    一緒に送られた項目だけを上書きに使いたいので、既定値で埋まったモデルでは
+    なく ``extra``（宣言していないキー）をそのまま重ねる。
+    """
+    draft = await ui_state.get()
+    try:
+        fields = ui_state.job_fields(draft.values)
+    except ui_state.UiStateError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    overrides = dict(payload.model_extra or {})
+    try:
+        return JobCreate(**{**fields, **overrides})
+    except ValidationError as exc:
+        raise HTTPException(status_code=400, detail=_first_message(exc)) from exc
 
 
 @router.get("/jobs/{job_id}", response_model=Job)
@@ -877,6 +914,80 @@ async def update_library_item(item_id: str, payload: LibraryUpdate) -> LibraryIt
     if item is None:
         raise HTTPException(status_code=404, detail="library item not found")
     return item
+
+
+# --------------------------------------------------------------------------
+# 画面（生成フォームの下書きと、ブラウザの画面移動）
+# --------------------------------------------------------------------------
+#
+# 「エージェントがフォームを埋めて、人が確かめてから押す」「エージェントが人の
+# 画面を目的の場所へ連れて行く」ための 2 本。どちらも DB / WS を経由して、開いて
+# いるブラウザへ届く（:mod:`app.ui_state` / :mod:`app.routers.ui`）。
+
+@router.get("/ui/generate-form", response_model=UiFormState)
+async def get_generate_form() -> UiFormState:
+    """生成フォームの下書き（値と ``revision``）。
+
+    ``revision`` は保存のたびに 1 つ上がる連番。書き換えるときに
+    ``base_revision`` として返すと、その間に人が触っていれば 409 で弾かれる。
+    """
+    return await ui_state.get()
+
+
+@router.patch("/ui/generate-form", response_model=UiFormState)
+async def patch_generate_form(payload: UiFormUpdate) -> UiFormState:
+    """下書きの**送ったキーだけ**を書き換える（触れなかった項目は今のまま）。
+
+    ``base_revision`` を省略すると現在値を見ずに上書きする。付けた場合、それが
+    今より古ければ 409（body に現在値が入る）、未来なら 400。
+    """
+    try:
+        state = await ui_state.patch(
+            payload.values,
+            updated_by="external",
+            base_revision=payload.base_revision,
+        )
+    except ui_state.UiStateConflict as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"message": str(exc), "current": exc.current.model_dump()},
+        ) from exc
+    except ui_state.UiStateError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    await ws.publish_form(state.revision, state.updated_by, state.values)
+    return state
+
+
+@router.post("/ui/navigate", status_code=204)
+async def navigate(payload: UiNavigate) -> None:
+    """開いているブラウザの表示を切り替えさせる（生成 / スタジオ / 設定）。
+
+    ``project_id`` / ``shot_id`` は実在と噛み合わせを確かめてから流す
+    （存在しないものへ飛ばして画面を空にしないため）。ブラウザが 1 つも
+    開いていなくても成功する（誰も受け取らないだけ）。
+    """
+    project_id = (payload.project_id or "").strip() or None
+    shot_id = (payload.shot_id or "").strip() or None
+    if payload.view != "studio" and (project_id or shot_id):
+        raise HTTPException(
+            status_code=400,
+            detail=f"view '{payload.view}' では project_id / shot_id は指定できません",
+        )
+    if shot_id and not project_id:
+        raise HTTPException(
+            status_code=400, detail="shot_id を渡すなら project_id も必要です"
+        )
+    if project_id and await service.get_project(project_id) is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    if shot_id:
+        shot = await service.get_shot(shot_id)
+        if shot is None:
+            raise HTTPException(status_code=404, detail="shot not found")
+        if shot.project_id != project_id:
+            raise HTTPException(
+                status_code=400, detail="そのカットは指定の作品のものではありません"
+            )
+    await ws.publish_navigate(payload.view, project_id, shot_id)
 
 
 # --------------------------------------------------------------------------

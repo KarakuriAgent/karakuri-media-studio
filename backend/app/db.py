@@ -356,6 +356,17 @@ CREATE TABLE IF NOT EXISTS push_subscriptions (
   auth       TEXT NOT NULL,
   created_at TEXT NOT NULL
 );
+
+-- 画面の状態（いまは生成フォームの下書きだけ）を置く kv。外部エージェントが
+-- 触った値をブラウザへ流し込むための共有場所で、``revision`` が上書き合戦の
+-- 判定に使う連番、``updated_by`` が最後に書いた側（'ui' / 'external'）。
+CREATE TABLE IF NOT EXISTS ui_state (
+  key        TEXT PRIMARY KEY,
+  value      TEXT NOT NULL,
+  revision   INTEGER NOT NULL,
+  updated_by TEXT NOT NULL,
+  updated_at TEXT NOT NULL
+);
 """
 
 # 既存 DB に後から足したカラム: {テーブル: [(カラム名, 定義), …]}。

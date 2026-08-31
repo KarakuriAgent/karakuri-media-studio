@@ -14,6 +14,7 @@ import type {
   StudioRenderRequest,
   StudioRevision,
   StudioRevisionRestore,
+  StudioEvent,
   StudioShotUpdate,
   TimelineExportProgress,
 } from '../../types'
@@ -43,6 +44,9 @@ import {
 
 /** ジョブがまだ動いている状態（App.tsx と同じ定義）。 */
 const ACTIVE_STATUSES = ['queued', 'prompting', 'running']
+
+/** 外からの書き換え通知をまとめる待ち時間（連続イベントで取り直しが暴れないように）。 */
+const STUDIO_EVENT_DEBOUNCE_MS = 300
 
 const SHOT_RAIL_WIDTH_KEY = 'studioShotRailWidth'
 const SHOT_RAIL_WIDTH = { initial: 256, min: 200, max: 480 }
@@ -89,6 +93,8 @@ function rememberEpisode(projectId: string, episodeId: string): void {
 export default function StudioView({
   progress,
   timelineExportEvent = null,
+  studioEvent = null,
+  navigate = null,
   aspectRatios = [],
   showNsfw = true,
   comfyTarget = null,
@@ -98,6 +104,16 @@ export default function StudioView({
   progress: Record<string, JobProgress>
   /** 編集タブの書き出し進捗の最新フレーム（WS）。 */
   timelineExportEvent?: TimelineExportProgress | null
+  /**
+   * 外部からスタジオが書き換わったことの通知（WS の `studio` フレーム）。
+   * 開いている作品と `project_id` が一致したら詳細を取り直す。
+   */
+  studioEvent?: StudioEvent | null
+  /**
+   * 外からの画面移動（`POST /api/v1/ui/navigate`）。同じ行き先を続けて指示
+   * できるよう、受け取るたびに増える `seq` つきで渡ってくる。
+   */
+  navigate?: { projectId: string | null; shotId: string | null; seq: number } | null
   /** 生成フォームと同じアスペクト比の候補（無ければ Shot 側は自由入力）。 */
   aspectRatios?: string[]
   /**
@@ -325,6 +341,48 @@ export default function StudioView({
     return () => window.clearInterval(timer)
   }, [detail, reload])
 
+  // 外部エージェントの書き換え（WS の `studio` フレーム）に追随する。1 回の操作で
+  // 何本も飛んでくることがあるので、少し待って**まとめて 1 回**取り直す。
+  useEffect(() => {
+    if (!studioEvent || !projectId) return
+    if (studioEvent.project_id !== projectId) return
+    const timer = window.setTimeout(() => void reload(), STUDIO_EVENT_DEBOUNCE_MS)
+    return () => window.clearTimeout(timer)
+  }, [studioEvent, projectId, reload])
+
+  // 外からの画面移動（`POST /api/v1/ui/navigate`）。作品を開き、カットが指定
+  // されていれば選んで、描かれたところでレールをそこまでスクロールする。
+  //
+  // まだ開いていない作品を指されたときは、ここで選んでも作品の切り替え
+  // （`[projectId]` の選択リセット）に消されるので、**要求として覚えておいて**
+  // 詳細が届いた時点で当てる（下の「選択の正規化」が読む）。
+  const scrollTarget = useRef<string | null>(null)
+  const requestedShot = useRef<{ projectId: string; shotId: string } | null>(null)
+  useEffect(() => {
+    if (!navigate) return
+    if (navigate.projectId) openProject(navigate.projectId)
+    if (navigate.shotId) {
+      // 覚えている話の絞り込みで隠れていることがあるので「すべて」に戻す。
+      setEpisodeFilter(ALL_EPISODES)
+      requestedShot.current = {
+        projectId: navigate.projectId ?? '',
+        shotId: navigate.shotId,
+      }
+      setShotId(navigate.shotId)
+      scrollTarget.current = navigate.shotId
+    }
+  }, [navigate, openProject])
+
+  useEffect(() => {
+    const target = scrollTarget.current
+    if (!target || !detail) return
+    const row = document.querySelector(`[data-shot-id="${target}"]`)
+    if (!row) return
+    scrollTarget.current = null
+    // jsdom には scrollIntoView が無い（テストでは選択だけできていればよい）。
+    row.scrollIntoView?.({ block: 'nearest' })
+  }, [detail, shotId])
+
   // 左レールに出す 話 -> 場 -> Shot のツリー（場の中のカット番号もここで決まる）。
   //
   // 話を選んでいるあいだは場・カット・テイクがサーバー側で絞られている一方、話は
@@ -350,6 +408,16 @@ export default function StudioView({
   // 選択を奪ってしまうため。
   useEffect(() => {
     if (!detail) return
+    // 外からの画面移動で名指しされたカットが最優先。指された作品の詳細が届く
+    // までは要求を持ち越し、届いたら（在れば）それを選んで要求を畳む。
+    const requested = requestedShot.current
+    if (requested && (!requested.projectId || requested.projectId === detail.id)) {
+      requestedShot.current = null
+      if (detail.shots.some((shot) => shot.id === requested.shotId)) {
+        setShotId(requested.shotId)
+        return
+      }
+    }
     setShotId((current) =>
       current && detail.shots.some((shot) => shot.id === current)
         ? current

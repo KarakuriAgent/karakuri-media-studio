@@ -1796,3 +1796,53 @@ export interface TimelineExportProgress {
   output_url: string | null
   error: string | null
 }
+
+// ------------------------------------------------ 画面のリアルタイム化（WS）
+
+/**
+ * スタジオの更新（`type: "studio"`）。外部エージェントが API から脚本や素材を
+ * 書き換えたときに届く。正は DB なので、載っているのは「どの作品の何が動いたか」
+ * だけ（受け取った画面はその作品を取り直す）。
+ */
+export interface StudioEvent {
+  type: 'studio'
+  project_id: string
+  entity:
+    | 'project'
+    | 'episode'
+    | 'scene'
+    | 'shot'
+    | 'asset'
+    | 'asset_file'
+    | 'take'
+    | 'timeline'
+  id: string
+  op: 'create' | 'update' | 'delete'
+}
+
+/** 生成フォームの下書き（`GET/PUT /api/ui/generate-form`）。 */
+export interface UiFormState {
+  values: Record<string, unknown>
+  /** 保存のたびに 1 つ上がる連番（0 = まだ一度も保存されていない）。 */
+  revision: number
+  /** 最後に書いた側（`ui` = ブラウザ / `external` = 外部 API）。 */
+  updated_by: string
+  updated_at: string
+}
+
+/** 下書きが変わったことの通知（`type: "form"`）。値そのものが載る。 */
+export interface UiFormProgress {
+  type: 'form'
+  revision: number
+  updated_by: string
+  values: Record<string, unknown>
+}
+
+/** 外部からの画面移動の指示（`type: "ui"`、`op: "navigate"`）。 */
+export interface UiNavigateEvent {
+  type: 'ui'
+  op: 'navigate'
+  view: 'main' | 'studio' | 'settings'
+  project_id: string | null
+  shot_id: string | null
+}

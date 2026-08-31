@@ -3559,3 +3559,109 @@ class PromptExamples(BaseModel):
     #: 返した件数
     total: int
     examples: list[PromptExample]
+
+
+# --------------------------------------------------------------------------
+# 画面のリアルタイム化（WS のスタジオ / フォーム / 画面遷移イベントと、
+# 生成フォームの下書き。docs/EXTERNAL-API.md の /api/v1/ui/…）
+# --------------------------------------------------------------------------
+
+#: ``StudioEvent.entity`` に入りうるもの。受け取り側は「その作品を読み直す」しか
+#: しないので、細かい種別は「何が動いたか」を人が読むためのラベルでしかない。
+StudioEventEntity = Literal[
+    "project",
+    "episode",
+    "scene",
+    "shot",
+    "asset",
+    "asset_file",
+    "take",
+    "timeline",
+]
+StudioEventOp = Literal["create", "update", "delete"]
+
+
+class StudioEvent(BaseModel):
+    """WS /api/ws に流すスタジオの更新（``type: "studio"``）。
+
+    正本は DB なので、流すのは「どの作品の何が動いたか」だけ。ブラウザは開いて
+    いる作品と ``project_id`` が一致したら詳細を取り直す。
+    """
+
+    type: Literal["studio"] = "studio"
+    project_id: str
+    entity: StudioEventEntity
+    id: str = ""
+    op: StudioEventOp = "update"
+
+
+class JobFromForm(BaseModel):
+    """``POST /api/v1/jobs`` の「保存中の下書きから投入する」版の body。
+
+    ``{"from_form": true}`` だけ送ればフォームに出ているままを投入し、一緒に
+    書いた項目（:class:`JobCreate` のキー）はその上から重なる。土台と重ねた
+    あとで :class:`JobCreate` として検証し直すので、ここでは何も必須にしない。
+    """
+
+    model_config = ConfigDict(extra="allow", protected_namespaces=())
+
+    #: 下書きから組み立てる合図（``true`` 固定）
+    from_form: Literal[True]
+
+
+class UiFormState(BaseModel):
+    """生成フォームの下書き（``GET/PUT /api/ui/generate-form`` の返り）。
+
+    ``values`` のスキーマの正本はフロントの ``FormState`` で、ここでは JSON の
+    辞書として素通しする（項目が増えてもバックエンドを直さずに済む）。
+    """
+
+    values: dict[str, Any] = Field(default_factory=dict)
+    #: 保存のたびに 1 つ上がる連番（0 = まだ一度も保存されていない）
+    revision: int = 0
+    #: 最後に書いた側（``ui`` = ブラウザ / ``external`` = 外部 API）
+    updated_by: str = ""
+    updated_at: str = ""
+
+
+class UiFormUpdate(BaseModel):
+    """``PUT /api/ui/generate-form`` と ``PATCH /api/v1/ui/generate-form`` の body。
+
+    ``base_revision`` は「これを見て書いている」という申告。省略すると強制上書き
+    （外部エージェントが現在値を知らずに投げるときのため）。
+    """
+
+    values: dict[str, Any] = Field(default_factory=dict)
+    base_revision: int | None = None
+
+
+class UiFormProgress(BaseModel):
+    """WS /api/ws に流すフォーム下書きの更新（``type: "form"``）。"""
+
+    type: Literal["form"] = "form"
+    revision: int
+    updated_by: str
+    values: dict[str, Any] = Field(default_factory=dict)
+
+
+UiView = Literal["main", "studio", "settings"]
+
+
+class UiNavigate(BaseModel):
+    """``POST /api/v1/ui/navigate`` の body（外部からブラウザの画面を動かす）。"""
+
+    view: UiView
+    #: ``view='studio'`` のときに開く作品（``shot_id`` を渡すなら必須）
+    project_id: str | None = None
+    #: 開いた作品の中で選ぶカット
+    shot_id: str | None = None
+
+
+class UiNavigateEvent(BaseModel):
+    """WS /api/ws に流す画面遷移の指示（``type: "ui"``）。"""
+
+    type: Literal["ui"] = "ui"
+    op: Literal["navigate"] = "navigate"
+    view: UiView
+    project_id: str | None = None
+    shot_id: str | None = None

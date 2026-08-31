@@ -30,6 +30,7 @@ import {
   validateForm,
   type FormState,
 } from './form'
+import { useGenerateFormSync } from './formSync'
 import { ensurePushSubscription } from './push'
 import type {
   ChatProgress,
@@ -42,7 +43,10 @@ import type {
   LibraryProgress,
   Options,
   Settings,
+  StudioEvent,
   TimelineExportProgress,
+  UiFormProgress,
+  UiNavigateEvent,
 } from './types'
 
 const ACTIVE_STATUSES = ['queued', 'prompting', 'running']
@@ -94,6 +98,14 @@ export default function App() {
   // 編集タブの書き出し（進捗と完了。正は timeline_exports なので状態だけ）
   const [timelineExportEvent, setTimelineExportEvent] =
     useState<TimelineExportProgress | null>(null)
+  // 外部 API でスタジオが書き換わったことの通知（最新の 1 フレーム）。
+  const [studioEvent, setStudioEvent] = useState<StudioEvent | null>(null)
+  // 生成フォームの下書きが外から書き換わったことの通知（値ごと届く）。
+  const [formEvent, setFormEvent] = useState<UiFormProgress | null>(null)
+  // 外からの画面移動。同じ行き先を続けて指示できるよう連番を添える。
+  const [navigate, setNavigate] = useState<
+    { projectId: string | null; shotId: string | null; seq: number } | null
+  >(null)
   const [showNsfw, setShowNsfw] = useState(initialShowNsfw)
   // エラーではない一言（パラメータ復元で LoRA を落としたとき等）。
   const [notice, setNotice] = useState<string | null>(null)
@@ -164,6 +176,9 @@ export default function App() {
           : String(error)
     setErrors((previous) => [...previous.slice(-4), message])
   }, [])
+
+  // 生成フォームの下書き同期（外部エージェントと双方向、`/api/ui/generate-form`）。
+  useGenerateFormSync({ form, patch, event: formEvent, onNotice: setNotice })
 
   // ---------------------------------------------------------------- loaders
 
@@ -300,7 +315,33 @@ export default function App() {
             | JobProgress
             | ChatProgress
             | LibraryProgress
+            | StudioEvent
             | TimelineExportProgress
+            | UiFormProgress
+            | UiNavigateEvent
+          // スタジオの更新はそのまま渡し、読み直すかどうかは開いている作品を
+          // 知っている StudioView に決めさせる。
+          if (frame?.type === 'studio') {
+            setStudioEvent(frame)
+            return
+          }
+          // 生成フォームの下書き（自分が出した更新かどうかは同期フックが見る）。
+          if (frame?.type === 'form') {
+            setFormEvent(frame)
+            return
+          }
+          // 外からの画面移動。スタジオなら作品とカットまで指定されうる。
+          if (frame?.type === 'ui' && frame.op === 'navigate') {
+            setView(frame.view)
+            if (frame.view === 'studio') {
+              setNavigate((previous) => ({
+                projectId: frame.project_id,
+                shotId: frame.shot_id,
+                seq: (previous?.seq ?? 0) + 1,
+              }))
+            }
+            return
+          }
           if (frame?.type === 'chat') {
             setChatEvent(frame)
             return
@@ -736,6 +777,8 @@ export default function App() {
         <StudioView
           progress={progress}
           timelineExportEvent={timelineExportEvent}
+          studioEvent={studioEvent}
+          navigate={navigate}
           aspectRatios={options?.aspect_ratios ?? []}
           showNsfw={showNsfw}
           comfyTarget={settings?.comfy_target ?? null}
