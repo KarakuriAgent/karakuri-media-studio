@@ -1242,6 +1242,7 @@ export const MODE_LABELS: Record<JobMode, string> = {
   i2v: '動画',
   image_only: '画像',
   audio: '音声',
+  remotion: 'Remotion',
 }
 
 export const MODE_HINTS: Record<JobMode, string> = {
@@ -1249,6 +1250,7 @@ export const MODE_HINTS: Record<JobMode, string> = {
   i2v: '選択した動画ワークフローを単発実行',
   image_only: '画像のみ生成',
   audio: '音声のみ生成（画像・動画とは連結しない単独実行）',
+  remotion: '構築済み Remotion プロジェクトで動画を書き出す（外部 API から投入）',
 }
 
 /** Workflows that can be used in `mode` (full needs a start-frame input). */

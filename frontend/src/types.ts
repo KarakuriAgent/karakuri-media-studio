@@ -1,8 +1,10 @@
 // Mirrors backend/app/models.py
 
 /** `audio` は独立モード: 音声ワークフローを 1 本だけ走らせ、画像→動画の連結
- *  （full）とは一切繋がらない。 */
-export type JobMode = 'full' | 'i2v' | 'image_only' | 'audio'
+ *  （full）とは一切繋がらない。`remotion` も同じく独立で、構築済み Remotion
+ *  プロジェクトに mp4 を書かせるだけ（生成フォームからは選べず、外部 API か
+ *  ら投入されて履歴に出る）。 */
+export type JobMode = 'full' | 'i2v' | 'image_only' | 'audio' | 'remotion'
 export type JobStatus =
   | 'queued'
   | 'prompting'
@@ -51,6 +53,11 @@ export interface Settings {
    */
   grok_media_workdir: string
   grok_media_timeout: number
+  /**
+   * 構築済み Remotion プロジェクト（Node のリポジトリ）のパス。
+   * 空 = Remotion 連携を無効（一覧も投入も 400）。
+   */
+  remotion_project_dir: string
   /**
    * 接続先ごとのモデル指定（SPEC §3.3 / §5）。
    * `{"local": {"<workflow_id>/<node_id>.<field>": "file.safetensors"}, …}` で、

@@ -20,9 +20,15 @@ def _validation_error(exc: service.JobValidationError) -> HTTPException:
 
 @router.post("", response_model=Job, status_code=201)
 async def create_job(payload: JobCreate) -> Job:
-    """Create a job and put it on the queue (per-mode requirements -> 422)."""
+    """Create a job and put it on the queue (per-mode requirements -> 422).
+
+    使えないバックエンドを指した投入（Remotion 連携が未設定のまま
+    ``mode: "remotion"``）は 400: 入力ではなく設定が足りていない。
+    """
     try:
         return await service.create_job(payload)
+    except service.JobBackendUnavailable as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except service.JobValidationError as exc:
         raise _validation_error(exc) from exc
 
@@ -74,6 +80,8 @@ async def rerun_job(job_id: str, payload: JobRerun | None = None) -> Job:
         return await service.rerun_job(job_id, payload or JobRerun())
     except LookupError as exc:
         raise HTTPException(status_code=404, detail="job not found") from exc
+    except service.JobBackendUnavailable as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
     except service.JobValidationError as exc:
         raise _validation_error(exc) from exc
 

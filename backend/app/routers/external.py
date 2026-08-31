@@ -43,6 +43,7 @@ from starlette.datastructures import UploadFile as FormUploadFile
 
 from .. import autotag
 from .. import jobs as job_service
+from .. import remotion as remotion_service
 from .. import library, sheets, studio as service, timeline as timeline_service
 from .. import ui_state, ws
 from ..config import load_settings
@@ -71,6 +72,7 @@ from ..models import (
     Options,
     PromptExample,
     PromptExamples,
+    RemotionCompositions,
     StoryCreate,
     StoryResult,
     StudioAsset,
@@ -715,6 +717,11 @@ async def create_job(payload: JobFromForm | JobCreate) -> Job:
     BGM / SE（``audio``）もここから作る。モードごとの必須項目を満たして
     いなければ 422。
 
+    ``mode: "remotion"`` は構築済み Remotion プロジェクトのレンダリング
+    （SPEC §5.2）。``remotion_composition``（``GET /remotion/compositions``
+    に出る ID）と ``remotion_props`` が要り、連携が設定されていなければ 400。
+    出来た mp4 はほかのジョブと同じく ``video_url`` に出る。
+
     ``{"from_form": true}`` を入れると、いま画面に出ている**生成フォームの
     下書き**（``/api/v1/ui/generate-form``）をそのまま投入する。一緒に送った
     項目はその上から重ねる（「今のフォームで、尺だけ 5 秒にして流して」）。
@@ -728,6 +735,8 @@ async def create_job(payload: JobFromForm | JobCreate) -> Job:
         await _check_pending_jobs()
         try:
             return await job_service.create_job(payload)
+        except job_service.JobBackendUnavailable as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         except job_service.JobValidationError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -777,6 +786,8 @@ async def rerun_job(job_id: str, payload: JobRerun | None = None) -> Job:
             return await job_service.rerun_job(job_id, payload or JobRerun())
         except LookupError as exc:
             raise HTTPException(status_code=404, detail="job not found") from exc
+        except job_service.JobBackendUnavailable as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
         except job_service.JobValidationError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -792,6 +803,27 @@ async def continue_job(job_id: str, payload: JobContinue | None = None) -> Job:
             raise HTTPException(status_code=404, detail="job not found") from exc
         except job_service.JobValidationError as exc:
             raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+# --------------------------------------------------------------------------
+# Remotion（SPEC §5.2）
+# --------------------------------------------------------------------------
+
+@router.get("/remotion/compositions", response_model=RemotionCompositions)
+async def remotion_compositions() -> RemotionCompositions:
+    """構築済み Remotion プロジェクトが持つ composition の ID 一覧。
+
+    ここに出た ID を ``POST /api/v1/jobs`` に ``{"mode": "remotion",
+    "remotion_composition": …, "remotion_props": {…}}`` で渡すとレンダリングが
+    ふつうのジョブとしてキューに載る（進捗は ``GET /api/v1/jobs/{id}``）。
+
+    連携が設定されていない・プロジェクトが見つからない・``npx remotion`` が
+    失敗した場合は 400（理由をそのまま返す）。
+    """
+    try:
+        return RemotionCompositions(compositions=await remotion_service.list_compositions())
+    except remotion_service.RemotionError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 # --------------------------------------------------------------------------

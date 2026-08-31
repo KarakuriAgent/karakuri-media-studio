@@ -16,6 +16,11 @@ GROK_WORKDIR = RUNTIME_DIR / "grok-workdir"
 GROK_MEDIA_WORKDIR = RUNTIME_DIR / "grok-media-workdir"
 # プロンプト生成チャット 1 セッションにつき 1 つの作業ディレクトリ（SPEC §4.3）。
 CHAT_SESSIONS_DIR = RUNTIME_DIR / "chat-sessions"
+# Remotion に渡す props の一時 JSON を置く場所（:mod:`app.remotion`）。中身は
+# レンダリングのあいだしか要らないので、終わったら消す。scratch ではなく
+# runtime/ に置くのは、Remotion プロジェクトが別リポジトリにあってもアプリ側の
+# 置き場だけで完結させるため。
+REMOTION_TMP_DIR = RUNTIME_DIR / "remotion"
 
 FRONTEND_DIST_DIR = ROOT / "frontend" / "dist"
 
@@ -91,5 +96,6 @@ def ensure_dirs() -> None:
         GROK_WORKDIR,
         GROK_MEDIA_WORKDIR,
         CHAT_SESSIONS_DIR,
+        REMOTION_TMP_DIR,
     ):
         d.mkdir(parents=True, exist_ok=True)

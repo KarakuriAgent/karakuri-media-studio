@@ -776,6 +776,7 @@ export default function SettingsPage({
           grok_workdir: settings.grok_workdir,
           grok_media_workdir: settings.grok_media_workdir,
           grok_media_timeout: settings.grok_media_timeout,
+          remotion_project_dir: settings.remotion_project_dir,
           // 空白区切りの入力欄をフラグの配列に戻す（空 = ツール無効）
           agent_grok_args: splitGrokArgs(grokArgsDraft),
           agent_use_acp: settings.agent_use_acp,
@@ -1272,6 +1273,28 @@ export default function SettingsPage({
                         />
                       </Field>
                     </SubGroup>
+                  </SettingsCard>
+                  {/* Remotion 連携（SPEC §5.2）。ComfyUI と同じく「外で構築した
+                      バックエンドを指すだけ」で、プロジェクトは別リポジトリに
+                      ある。空のあいだは機能ごと無効。 */}
+                  <SettingsCard
+                    title="Remotion 連携"
+                    description="React で組んだ動画のレンダリングを、ふつうのジョブとして流します。空のあいだは無効です。"
+                  >
+                    <Field
+                      label="Remotion プロジェクトのパス（空 = 無効）"
+                      htmlFor="remotion-project-dir"
+                      hint="構築済み Remotion プロジェクト（Node のリポジトリ）の場所です。`npx remotion` をこのディレクトリで実行します。"
+                    >
+                      <Input
+                        id="remotion-project-dir"
+                        placeholder="/path/to/karakuri-remotion"
+                        value={settings.remotion_project_dir}
+                        onChange={(event) =>
+                          update({ remotion_project_dir: event.target.value })
+                        }
+                      />
+                    </Field>
                   </SettingsCard>
                   {/* 不足モデルの自動ダウンロード（SPEC §3.3）。トークンは
                       ローカルにも RunPod の Pod にも要るので常に出す。保存先の

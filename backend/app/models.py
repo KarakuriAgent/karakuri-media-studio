@@ -25,7 +25,10 @@ from .workflows import (
 #: ``audio`` is a stand-alone mode: it runs one audio graph and is never
 #: chained with the image / video stages (which is why every ``mode in (...)``
 #: test below simply does not list it).
-JobMode = Literal["full", "i2v", "image_only", "audio"]
+#: ``remotion`` も同じく独立したモード（SPEC §5.2）: ComfyUI のグラフを 1 つも
+#: 通さず、外で構築した Remotion プロジェクト（:mod:`app.remotion`）に mp4 を
+#: 作らせるだけ。ワークフロー・LoRA・プロンプトの検証はどれも当たらない。
+JobMode = Literal["full", "i2v", "image_only", "audio", "remotion"]
 JobStatus = Literal["queued", "prompting", "running", "done", "failed", "canceled"]
 
 #: ComfyUI の接続先プロファイル（SPEC §5）。設定には 3 つ分の接続情報を持ち、
@@ -73,6 +76,10 @@ class Settings(BaseModel):
     # と共有し、作業ディレクトリと制限時間だけ専用に持つ。
     grok_media_workdir: str = ""
     grok_media_timeout: float = 300.0
+    # Remotion（React で組んだ動画のレンダリング、SPEC §5.2）。ComfyUI と同じく
+    # **外で構築したバックエンドを参照するだけ**で、プロジェクト（Node のリポジトリ）
+    # は別の場所にある。空 = 機能ごと無効（一覧も投入も 400）。
+    remotion_project_dir: str = ""
     # Agent mode (AGENT-MODE §3.4): extra CLI flags (tool permissions) and the
     # longer timeout research / inspection turns need. `--permission-mode auto`
     # is confirmed on grok 0.2.112 to enable file read/write (incl. viewing
@@ -181,6 +188,7 @@ class SettingsUpdate(BaseModel):
     grok_workdir: str | None = None
     grok_media_workdir: str | None = None
     grok_media_timeout: float | None = None
+    remotion_project_dir: str | None = None
     model_overrides: dict[ComfyTarget, dict[str, str]] | None = None
     model_choices: dict[ComfyTarget, dict[str, list[str]]] | None = None
     hf_token: str | None = None
@@ -651,6 +659,8 @@ def missing_job_fields(
     video_workflow: str | None = None,
     image_workflow: str | None = None,
     audio_prompt: str | None = None,
+    remotion_composition: str | None = None,
+    remotion_props: dict[str, Any] | None = None,
 ) -> list[str]:
     """Required fields for a mode + image / video workflow (SPEC §2 / §3.1).
 
@@ -663,7 +673,20 @@ def missing_job_fields(
 
     ``mode: "audio"`` is stand-alone: it runs one audio graph, needs nothing but
     an ``audio_prompt`` and never touches the image / video requirements below.
+
+    ``mode: "remotion"`` も同じく独立で（SPEC §5.2）、要るのは「どの
+    composition を」「どんな props で」の 2 つだけ。``remotion_props`` は
+    **空のオブジェクトなら足りている**（props を取らない composition がある）
+    ので、``None``（未指定）だけを不足として数える。
     """
+    if mode == "remotion":
+        missing = [] if (remotion_composition or "").strip() else [
+            "remotion_composition"
+        ]
+        if remotion_props is None:
+            missing.append("remotion_props")
+        return missing
+
     if mode == "audio":
         return [] if (audio_prompt or "").strip() else ["audio_prompt"]
 
@@ -1587,6 +1610,13 @@ class JobCreate(BaseModel):
     # あるファイル名。設定の `model_overrides` の上に重ねられる。
     model_overrides: dict[str, str] = Field(default_factory=dict)
 
+    # --- mode 'remotion' only（SPEC §5.2）---------------------------------
+    #: レンダリングする composition の ID
+    #: （``GET /api/v1/remotion/compositions`` に出るもの）
+    remotion_composition: str | None = None
+    #: composition に渡す props（``--props`` の中身。空オブジェクトも可）
+    remotion_props: dict[str, Any] | None = None
+
     chat_session_id: str | None = None
     user_input: str | None = None
 
@@ -1648,6 +1678,8 @@ class JobCreate(BaseModel):
             video_workflow=self.video_workflow,
             image_workflow=self.image_workflow,
             audio_prompt=self.audio_prompt,
+            remotion_composition=self.remotion_composition,
+            remotion_props=self.remotion_props,
         )
         if missing:
             raise ValueError(
@@ -1693,6 +1725,16 @@ class NsfwUpdate(BaseModel):
     """POST /api/jobs/{id}/nsfw と POST /api/agent/sessions/{id}/nsfw の body。"""
 
     nsfw: bool
+
+
+class RemotionCompositions(BaseModel):
+    """``GET /api/v1/remotion/compositions`` の応答（SPEC §5.2）。
+
+    ``mode: "remotion"`` のジョブに渡せる composition の ID を、プロジェクトが
+    並べた順で返す。
+    """
+
+    compositions: list[str] = Field(default_factory=list)
 
 
 class JobProgress(BaseModel):

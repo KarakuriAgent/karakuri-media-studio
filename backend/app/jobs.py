@@ -47,7 +47,7 @@ from typing import Any
 import aiosqlite
 from PIL import Image
 
-from . import comfy, grok_media, nsfw as nsfw_service, push, runpod, ws
+from . import comfy, grok_media, nsfw as nsfw_service, push, remotion, runpod, ws
 from .config import load_settings
 from .db import get_db
 from .ids import new_id
@@ -132,6 +132,15 @@ class JobError(Exception):
 
 class JobValidationError(Exception):
     """Invalid job request (mapped to HTTP 422 by the router)."""
+
+
+class JobBackendUnavailable(Exception):
+    """指した生成バックエンドがそもそも使えない（ルーターが 400 にする）。
+
+    入力そのものは正しいのに設定が足りていない場合（Remotion 連携を設定して
+    いないのに ``mode: "remotion"`` で投げた等）はこちら。値の誤りを表す
+    :class:`JobValidationError`（422）とは分ける。
+    """
 
 
 def _now() -> str:
@@ -470,19 +479,38 @@ def stage_specs(mode: str, params: dict[str, Any]) -> list[tuple[str, WorkflowSp
     return stages
 
 
-def job_backends(mode: str, params: dict[str, Any]) -> list[str]:
-    """ステージごとのバックエンド（SPEC §5.2）。実行順に並ぶ。"""
-    return [spec.backend for _, spec in stage_specs(mode, params)]
+def _validate_remotion(params: dict[str, Any]) -> None:
+    """``mode: "remotion"`` の投入を確かめる（SPEC §5.2）。
 
-
-def job_backend(mode: str, params: dict[str, Any]) -> str:
-    """このジョブの代表バックエンド（1 段目のもの。表示・ログ用）。"""
-    used = job_backends(mode, params)
-    return used[0] if used else "comfyui"
+    足りない項目は 422（:class:`JobValidationError`）、連携そのものが使えない
+    （パス未設定・ディレクトリが無い）のは 400
+    （:class:`JobBackendUnavailable`）。**投入の時点で**弾くのは、走らせてから
+    失敗させると履歴に無駄なジョブが残るため。
+    """
+    missing = missing_job_fields(
+        "remotion",
+        image_prompt=None,
+        video_prompt=None,
+        audio_path=None,
+        source_image=None,
+        remotion_composition=params.get("remotion_composition"),
+        remotion_props=params.get("remotion_props"),
+    )
+    if missing:
+        raise JobValidationError(f"mode 'remotion' requires: {', '.join(missing)}")
+    try:
+        remotion.project_dir()
+    except remotion.RemotionError as exc:
+        raise JobBackendUnavailable(str(exc)) from exc
 
 
 def _validate(params: dict[str, Any]) -> None:
     mode = params.get("mode", "")
+    if mode == "remotion":
+        # ワークフローも LoRA もプロンプトも通らない独立した経路（SPEC §5.2）。
+        # 見るのは「必須項目が揃っているか」と「連携が設定されているか」だけ。
+        _validate_remotion(params)
+        return
     video_workflow = params.get("video_workflow")
     image_workflow = params.get("image_workflow")
     problem = (
@@ -551,6 +579,8 @@ def _validate(params: dict[str, Any]) -> None:
             video_workflow=video_workflow,
             image_workflow=image_workflow,
             audio_prompt=params.get("audio_prompt"),
+            remotion_composition=params.get("remotion_composition"),
+            remotion_props=params.get("remotion_props"),
         )
     except WorkflowSpecError as exc:
         raise JobValidationError(str(exc)) from exc
@@ -594,12 +624,22 @@ async def _validate_lora_families(params: dict[str, Any]) -> None:
         raise JobValidationError(problem)
 
 
-def _resolve_nsfw(explicit: bool | None, inherit: bool) -> tuple[bool | None, str]:
-    """明示指定は manual、継承は auto、未指定は判定待ち（'' + バックグラウンド判定）。"""
+def _resolve_nsfw(
+    explicit: bool | None, inherit: bool, *, mode: str = ""
+) -> tuple[bool | None, str]:
+    """明示指定は manual、継承は auto、未指定は判定待ち（'' + バックグラウンド判定）。
+
+    ``mode: "remotion"`` だけは判定に掛けるプロンプトが無い（出力は手元の
+    Remotion プロジェクトが組んだ画）ので、未指定なら **false で確定**させて
+    バックグラウンド判定を走らせない。投入も再実行もここを通るので、焼き直しで
+    フラグが元ジョブとずれることがない（手動トグルと継承はこれまでどおり）。
+    """
     if explicit is not None:
         return explicit, "manual"
     if inherit:
         return True, "auto"
+    if mode == "remotion":
+        return False, ""
     return None, ""
 
 
@@ -836,6 +876,10 @@ def _params_from_create(payload: JobCreate) -> dict[str, Any]:
         "selects": dict(payload.selects),
         # このジョブだけのモデル指定（設定の model_overrides の上に重ねる、§3.3）
         "model_overrides": dict(payload.model_overrides),
+        # Remotion（mode 'remotion' だけが読む、SPEC §5.2）。params に残すので
+        # 再実行は同じ composition・同じ props でもう一度書き出す。
+        "remotion_composition": payload.remotion_composition,
+        "remotion_props": payload.remotion_props,
     }
     params.update(_seeds(payload.seed))
     return params
@@ -852,7 +896,7 @@ async def create_job(
     ``extra_params`` は JobCreate に無い内部フラグ（``pending_translate`` など）を
     params に足す。
     """
-    nsfw, source = _resolve_nsfw(payload.nsfw, inherit_nsfw)
+    nsfw, source = _resolve_nsfw(payload.nsfw, inherit_nsfw, mode=payload.mode)
     params = _params_from_create(payload)
     if extra_params:
         params.update(extra_params)
@@ -977,9 +1021,10 @@ async def rerun_job(job_id: str, payload: JobRerun, *, inherit_nsfw: bool = Fals
         params.update(_seeds(None))
     else:
         params.update(_seeds(params.get("seed")))
-    nsfw, nsfw_source = _resolve_nsfw(None, source.nsfw or inherit_nsfw)
+    mode = params.get("mode", source.mode)
+    nsfw, nsfw_source = _resolve_nsfw(None, source.nsfw or inherit_nsfw, mode=mode)
     return await _insert_job(
-        mode=params.get("mode", source.mode),
+        mode=mode,
         params=params,
         user_input=source.user_input,
         chat_session_id=None,
@@ -1738,6 +1783,73 @@ async def _run_grok_stage(
     return saved
 
 
+#: WS に流す Remotion の出力行の上限（進捗バーの 1 行が長くなりすぎないように）
+_REMOTION_LINE = 200
+
+
+async def _run_remotion_job(job: Job) -> dict[str, Any]:
+    """``mode: "remotion"`` を走らせて ``{"video_path": …}`` を返す（SPEC §5.2）。
+
+    ComfyUI のステージ経路（:func:`_run_job_stages`）は 1 つも通らない: グラフも
+    ワークフローのマニフェストも無いので、外の Remotion プロジェクトに mp4 を
+    書かせるだけ。それでも置き場（``outputs/{job_id}/video.mp4``）と jobs 行の列
+    （``video_path``）と WS の流し方は ComfyUI 経路と同じなので、履歴・ライブラリ・
+    素材登録・タイムラインの素材ビンからは区別が付かない。
+
+    「何を頼んだか」は ``workflow_json`` に残す（ComfyUI のグラフ、Grok の指示文
+    と同じ役目）。
+    """
+    job_id = job.id
+    composition = str(job.params.get("remotion_composition") or "")
+    props = job.params.get("remotion_props") or {}
+    job_dir = OUTPUTS_DIR / job_id
+    output = job_dir / "video.mp4"
+
+    await _update(
+        job_id,
+        workflow_json=json.dumps(
+            {"remotion": {"composition": composition, "props": props}},
+            ensure_ascii=False,
+        ),
+    )
+    overall = OverallProgress(1)
+    await _set_status(
+        job_id,
+        "running",
+        message=f"Remotion: {composition} をレンダリング中",
+        progress=overall.stage_fraction(0.0),
+    )
+
+    async def on_progress(fraction: float | None, line: str) -> None:
+        await ws.publish(
+            job_id,
+            "running",
+            message=f"Remotion: {line}"[:_REMOTION_LINE],
+            progress=(
+                overall.stage_fraction(fraction)
+                if fraction is not None
+                else overall.value
+            ),
+        )
+
+    try:
+        saved = await remotion.render(
+            job_id, composition, props, output, on_progress=on_progress
+        )
+    except remotion.RemotionError as exc:
+        raise JobError(str(exc)) from exc
+    overall.stage_finished()
+    # ComfyUI の動画ステージと同じくラストフレームを抜く: 履歴のサムネイルと
+    # 「続き生成」がこの 1 枚を前提にしているので、ここで作らないと Remotion の
+    # ジョブだけ絵が出ず、続き生成が 422 になる。
+    return {
+        "video_path": str(saved),
+        "last_frame_path": str(
+            await extract_last_frame(saved, job_dir / "last_frame.png")
+        ),
+    }
+
+
 #: ステージ名 -> (成果物の種類, outputs/ に置くときのファイル名, jobs の列)。
 #: バックエンドに依らず同じ置き場・同じ命名なので、履歴と UI からは区別が付かない。
 _STAGE_ARTIFACTS = {
@@ -1898,7 +2010,13 @@ async def run_job(job_id: str) -> None:
     # 「今回の実行の開始」が入る（前回の終了時刻は下の finished_at が塗り替える）。
     await _update(job_id, started_at=_now(), finished_at=None)
     try:
-        updates = await _run_job_stages(job)
+        # Remotion はステージ（ComfyUI のグラフ）を 1 つも持たない独立した経路
+        # （SPEC §5.2）。終端の書き込み・キャンセル・失敗の記録はここで共通。
+        updates = (
+            await _run_remotion_job(job)
+            if job.mode == "remotion"
+            else await _run_job_stages(job)
+        )
         await _set_status(
             job_id,
             "done",

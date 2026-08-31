@@ -67,6 +67,7 @@ function settings(): Settings {
     grok_workdir: '/repo/runtime/grok-workdir',
     grok_media_workdir: '/repo/runtime/grok-media-workdir',
     grok_media_timeout: 300,
+    remotion_project_dir: '',
     model_overrides: {},
     model_choices: {},
     hf_token: '',
@@ -470,6 +471,22 @@ describe('SettingsPage: ComfyUI 接続先（3 プロファイル）', () => {
     // 他のプロファイルも一緒に保存される（切り替えてすぐ使えるように）
     expect(sent.local_comfy_url).toBe('http://127.0.0.1:8188')
     expect(sent.comfy_cloud_api_key).toBe('')
+  })
+
+  it('Remotion プロジェクトのパスを編集して保存できる', async () => {
+    putSettings.mockResolvedValue(settings())
+    await openSettings()
+
+    fireEvent.change(
+      screen.getByLabelText('Remotion プロジェクトのパス（空 = 無効）'),
+      { target: { value: '/repo/karakuri-remotion' } },
+    )
+    screen.getByRole('button', { name: '保存' }).click()
+
+    await waitFor(() => expect(putSettings).toHaveBeenCalled())
+    expect(putSettings.mock.calls[0][0].remotion_project_dir).toBe(
+      '/repo/karakuri-remotion',
+    )
   })
 
   it('Grok の workdir / 追加フラグ / ACP を編集して保存できる', async () => {
