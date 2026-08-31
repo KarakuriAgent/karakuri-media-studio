@@ -51,6 +51,7 @@
 | 動画生成 | `i2v` | 選択した動画ワークフローのみ | ワークフローが要求する入力（アップロード / 履歴 / なし） |
 | 画像のみ | `image_only` | 選択した画像ワークフローのみ | ― |
 | 音声 | `audio` | 選択した音声ワークフローのみ（独立ジョブ） | ― |
+| Remotion | `remotion` | ComfyUI を通さず、外部の Remotion プロジェクトを `npx remotion render`（§5.2） | ― |
 
 `audio` は他の 3 モードと連結しない独立モード。画像・動画のフィールド（`video_workflow` /
 `source_image` / `loras` など）は一切使わず、指定すると 422 で拒否される（§2.4）。
@@ -97,7 +98,7 @@
 | `minimax_h3_r2v_context_opt` | 参照素材→動画・音声つき・連続カット (MiniMax H3 r2v Optimized + Motion Context) | 同 `minimax_h3_r2v_opt` | 同 `minimax_h3_r2v_context` | ✕ |
 
 - id はファイル名（拡張子なし）
-- **`_save` / `_context` は手動の生成フォームにもエージェントのカタログにも出ない**
+- **`_save` / `_context` は手動の生成フォームにもプロンプト用のカタログにも出ない**
   （`WorkflowSpec.studio_only`）。この 12 個はドラマスタジオが
   「ラテント連続性」×「動画生成品質」から id を組み立てて使うだけの版で、入力の形も
   仕上がりも素の版と同じなので人が手で選ぶ意味が無く、選べると「ラテント連続性 OFF
@@ -126,8 +127,9 @@
   `_turbo` を選ぶ（`app.studio.image_quality_workflow`。接続先が対応しなければ素へ落とす）。
   動画の `quality` は静止画には流用しない（動画を turbo で回していても素材の絵は素で焼く、
   という使い分けのために分けてある）。いまのところアプリ側に静止画を焼く経路は無く、
-  素材画像を作るのはエージェント（エージェントモード / 外部 API 経由の Claude Code・
-  Cursor CLI）なので、この値はまず**エージェントへの指示値**として効く。
+  素材画像を作るのは**外部エージェント**（SKILL 経由で `/api/v1` を叩く Claude Code /
+  Codex / Cursor CLI など、§9「外部公開 API」）なので、この値はまず**外部エージェントへの
+  指示値**として効く。
 - **素材画像の画質**（`image_megapixels` / `image_aspect_ratio` / `image_steps`、
   既定は `NULL` / `NULL` / `0`）は、下の動画側の `megapixels` / `aspect_ratio` / `steps` と
   同じ 3 項目を**素材の静止画用に別で持つ**もの。素材の静止画ジョブ（`mode: "image_only"`）には
@@ -381,8 +383,8 @@ LoRA チェーンも持たない（テンプレートに LoRA ノードが無い
 そのものが表現している: 参照版に `source_image` / `end_image` を渡せば「受け取りません」
 （`models.start_image_problem`）、`mode: "full"` は `accepts_start_image=False` を見て
 `models.video_workflow_problem` が断る。フレーム版に `reference_*` を渡せば「受け取れません」
-（`models.reference_problem`）。検証は Web UI（`form.validateForm` + `jobs._validate`）・
-API（`JobCreate` の検証）・エージェント（`agent_protocol._workflow_detail`）の 3 経路で同じ関数を通る。
+（`models.reference_problem`）。検証は Web UI（`form.validateForm` + `jobs._validate`）と
+API（`JobCreate` の検証。内部 API と外部 API で共通）の 2 経路で同じ関数を通る。
 素材のサイズ・解像度・尺の細かい制約はモデル側の判断に任せ、失敗理由をそのまま見せる。
 
 ##### ComfyUI 側で参照素材をグラフに展開する（`WorkflowSpec.ref_media` / `RefMediaFan`）
@@ -557,8 +559,8 @@ UNET 直後に挟み（`UNETLoader → 143 → 144 → PathchSageAttentionKJ →
 （`uses_optional_class_types` / `supported_on_target`）では拾えない。代わりに選択式そのものが
 `SelectSpec.requires_class_types` / `restricted_choice` を宣言し、
 `SelectSpec.choices_for_target(comfy_target)` が **`comfy_cloud` では選択肢を `off` だけに絞る**
-（`GET /api/options` の `selects` とエージェントのカタログが同じ一覧になる）。値を送ってこない
-経路（外部 API・エージェント・再実行）のために、ジョブ投入時に `jobs._pin_target_selects` が
+（`GET /api/options` の `selects` が接続先に合わせて絞られる）。値を送ってこない
+経路（外部 API・再実行）のために、ジョブ投入時に `jobs._pin_target_selects` が
 既定を接続先に合わせて params へ固定し、使えない値が明示されていれば 422 で弾く。
 
 さらに turbo から**蒸留 LoRA だけを抜いた** **opt**（`minimax_h3_t2v_opt` / `minimax_h3_i2v_opt` /
@@ -566,10 +568,7 @@ UNET 直後に挟み（`UNETLoader → 143 → 144 → PathchSageAttentionKJ →
 `MiniMaxH3TurboLoRA` を持たず（`PathchSageAttentionKJ` が UNETLoader 直結）、
 `BasicScheduler.steps` は素の版と同じ **20**。量子化ウェイトとアテンション系パッチはそのままなので、
 品質は素の版相当のまま実行だけが速い。書き込む先のノードが無いので **`low_vram` は持たない**。
-エージェント（AGENT モード）がワークフローを自分で選ぶときは、接続先が `local` なら opt を、
-`runpod` なら素の版を優先するようシステムプロンプトに書く
-（`prompts.workflow_catalog_section(comfy_target)`。ユーザーの明示指定が最優先。システムプロンプトは
-セッション作成時に焼き込むので、途中で接続先を変えても既存セッションには効かない）。
+ドラマスタジオからはプロジェクトの「動画生成品質」（`quality`）として選ぶ（§2.2）。
 
 **接続先が `comfy_cloud` のときは turbo / opt（と MiniMax H3 Image の全バリアント）を
 選択肢に出さない**。Comfy Cloud には任意のカスタムノードを入れられないためで、判定は id の
@@ -577,14 +576,14 @@ UNET 直後に挟み（`UNETLoader → 143 → 144 → PathchSageAttentionKJ →
 MiniMax H3 Image だけが使う任意のカスタムノード）を 1 つでも使うか」
 （`workflow.uses_optional_class_types` / `workflow.supported_on_target`。spec ごとにプロセス内
 キャッシュ）。`GET /api/options` の `image_workflows` / `video_workflows` / `audio_workflows` が
-同じ規則で絞られ、フォームの 2 段プルダウンもエージェントのカタログもそれに従う（AGENT-MODE §3.1）。
+同じ規則で絞られ、フォームの 2 段プルダウンも外部 API の `GET /api/v1/options` もそれに従う。
 `local` / `runpod` は自前の ComfyUI なので従来どおり全件出す（入っていなければ実行時に ComfyUI 側で
 エラーになる）。保存済みの選択が消えた場合、フロントは `default_video_workflow`（または先頭）へ
 自動的に戻す（`App.tsx` の `loadOptions`）。
 
 - ジョブは `selects: {"<論理名>": "<選んだ値>"}` で値を持ち（宣言外の名前・選択肢外の値は 422。
-  検証は `models.select_problem` で Web UI とエージェント共通）、
-- エージェントのワークフローカタログにも選択肢がそのまま載る（`prompts._select_lines`）。
+  検証は `models.select_problem` で Web UI・内部 API・外部 API に共通）、
+- `GET /api/options`（＝外部 API の `GET /api/v1/options`）にも選択肢がそのまま載る。
 
 宣言していないワークフローでは何も増えないので、既存の挙動は変わらない。**動画・音声だけの
 仕組みではなく、画像ワークフローも宣言できる**。ジョブの
@@ -614,15 +613,15 @@ MiniMax H3 Image だけが使う任意のカスタムノード）を 1 つでも
   `decode_recommended` のようなノード由来の enum を読める日本語に置き換えるための飾り。**送る値も
   ComfyUI に入る値も `choices` の生のまま**で、`GET /api/options` の `choice_labels` を
   `WorkflowSelects` が `<option>` の文字にだけ使う（宣言の無い値・宣言そのものが無い選択式は生の値に
-  フォールバックするので、既存の選択式は何も変わらない）。エージェントのカタログは
-  `` `decode_recommended`（おまかせ（推奨フレーム）） `` のように**生の値とラベルを併記**する
-  （書くのは常に生の値）。`choices` に無いキーを書くと黙って効かないので `validate_specs()` が弾く
+  フォールバックするので、既存の選択式は何も変わらない）。**API に送る値は常に生のほう**で、
+  ラベルは画面の表示だけに使う。`choices` に無いキーを書くと黙って効かないので
+  `validate_specs()` が弾く
 - **選択式どうしの相関**（`WorkflowSpec.select_requires`、名前 → `(相手の名前, 相手に必要な値)`）:
   「その項目は相手がこの値のときしか効かない」ことの宣言。相手の値によっては**モデルが黙って無視する**
   項目のために、`{"duration": ("model", "V5_5")}` のように宣言して**既定以外を明示指定したジョブだけ**を
   422 で断る（`models.select_requires_problem`。
-  既定のままなら無視されても困らないので何も言わない）。検証は Web UI（`form.selectRequiresErrors`）・
-  API・エージェントの 3 経路で同じ理由になり、フォームはその選択式の直下にエラーを出す
+  既定のままなら無視されても困らないので何も言わない）。検証は Web UI（`form.selectRequiresErrors`）と
+  API の 2 経路で同じ理由になり、フォームはその選択式の直下にエラーを出す
 
 #### 解像度の計算
 
@@ -665,10 +664,9 @@ base / opt / turbo）= 0.98MP**（native canvas 1344x768。こちらは逆に、
 **両方走る `full` では 1 つの値を 2 段が共有するので、きつい側（小さいほう）に合わせる**
 （画像 0.98MP + 動画 0.4MP なら 0.4MP。動画側で CUDA OOM にしないほうを取る）。
 切り替えたあとに手で変えた値はそのまま残り、次に切り替えるまで維持される（音声の
-`clampToWorkflow` と同じ「切り替え時にだけ追随させる」形）。キャンバスの model カードも
-ワークフローを選び直したときに同じ値を入れる。
+`clampToWorkflow` と同じ「切り替え時にだけ追随させる」形）。
 
-`megapixels` を**そもそも送ってこない経路**（外部 API・エージェント・古いジョブの再実行）では
+`megapixels` を**そもそも送ってこない経路**（外部 API・古いジョブの再実行）では
 グローバル既定のまま届くので、画像ステージのビルダーが `app.workflow.image_megapixels` で
 「グローバル既定そのまま = 明示していない」とみなして宣言の値に読み替える。**明示された値は
 そのまま尊重する**（0.4MP を意図して選んだジョブを勝手に上げない）ので、宣言を持たない
@@ -724,9 +722,9 @@ Stable Audio の `reprompt`（内蔵 LLM でのプロンプト展開）だけは
 - 音声側: MiniMax Music 3 `minimax_music3_dit_fp16` + `minimax_music3_text_encoder_pruned_int8_convrot` + `minimax_music3_dav`、Stable Audio `stable_audio_3_medium_base` + `t5gemma_b_b_ul2` / `qwen3.5_2b_bf16`、およびサンプラー設定
 - 動画側: MiniMax H3 の UNET / CLIP / 映像 VAE / 音声 VAE（`minimax_h3_*` 系。素の版から w4a8 量子化ウェイトで、opt / turbo はさらに int8_convrot の映像 VAE + Sage Attention / Sol-Attn / SigmaShift / Spectrum、turbo は 4step 蒸留 LoRA も）とサンプラー設定
 - **モデルファイル名は利用者の ComfyUI 環境依存**のため、設定ページ（`GET/PUT /api/models`）で上書き可能。既定値は各テンプレートの値。対象は UNETLoader.unet_name / CLIPLoader.clip_name / CLIPVisionLoader.clip_name / VAELoader.vae_name / CheckpointLoaderSimple.ckpt_name / LatentUpscaleModelLoader.model_name / LoadMoGeModel.model_name / LoraLoaderModelOnly.lora_name / LoraLoader.lora_name / MiniMaxH3TurboLoRA.lora_name（§3.4 で削除される画像テンプレートのプレースホルダは除く。テンプレートが持つ固定 LoRA ノード（qwen-image の Lightning LoRA、MiniMax H3 turbo の 4step 蒸留 LoRA）はユーザー LoRA と共存するので上書き対象のまま）
-- **モデルの指定は接続先ごと**（SPEC §5）: `Settings.model_overrides` / `model_choices` は `{"<comfy_target>": {"<スロットキー>": …}}` の 2 段で持つ。どのファイルが在るかは ComfyUI の環境ごとに違うため。`GET/PUT /api/models` は `?target=`（PUT はボディの `target`）で対象環境を選び、省略すると現在の接続先。**書き込みは選んだ環境だけ**で他の環境の指定は残る。ジョブ実行・`/api/options` の `model_slots`・エージェントの検証はすべて「現在の接続先」の値（`Settings.overrides_for()` / `choices_for()`）を使う。接続先を分ける前の設定（1 組だけ）は読み込み時に**3 環境すべてへ複製**される（`config._per_target`）: 分けた瞬間に指定が消えて既定モデルで走り出すのを避けるため
+- **モデルの指定は接続先ごと**（SPEC §5）: `Settings.model_overrides` / `model_choices` は `{"<comfy_target>": {"<スロットキー>": …}}` の 2 段で持つ。どのファイルが在るかは ComfyUI の環境ごとに違うため。`GET/PUT /api/models` は `?target=`（PUT はボディの `target`）で対象環境を選び、省略すると現在の接続先。**書き込みは選んだ環境だけ**で他の環境の指定は残る。ジョブ実行・`/api/options` の `model_slots`・投入時の検証はすべて「現在の接続先」の値（`Settings.overrides_for()` / `choices_for()`）を使う。接続先を分ける前の設定（1 組だけ）は読み込み時に**3 環境すべてへ複製**される（`config._per_target`）: 分けた瞬間に指定が消えて既定モデルで走り出すのを避けるため
 - 上書きキーは**ワークフロー ID でスコープ**する: `"<workflow_id>/<node_id>.<field>": "<ファイル名>"`。テンプレート間で同じノード ID（例: `340:317` が ia2v と id_lora の両方にある）が衝突しないため。旧レイアウトの非スコープキーは無視される（マイグレーション不要）
-- **実行ごとのモデル切り替え**: 同じキー形式で「そのスロットで選べるファイル名」を設定に持てる（`Settings.model_choices`、`GET/PUT /api/models` で読み書き）。既定値（`model_overrides` → 無ければテンプレート値）と合わせて **2 件以上**になったスロットは *switchable* とみなし、`GET /api/options` の `model_slots`（キー・ラベル・既定値・候補一覧）に出す。ジョブは `model_overrides`（`JobCreate` / `JobContinue` のフィールド）で 1 回ぶんだけ差し替えられ、実行時に設定の既定値の上へマージされる（`jobs.run_job`）。検証（`models.model_override_problem`、Web UI とエージェントで共通）は「キーが `model_fields()` に存在」「そのジョブが走らせるワークフロー（`models.job_workflow_ids`）に属する」「値が候補（既定値を含む）に入っている」を満たさないものを 422 で拒否する。再実行は params ごと引き継ぎ、続き生成は動画ワークフローぶんのキーだけを引き継ぐ（`workflow.scoped_model_overrides`）
+- **実行ごとのモデル切り替え**: 同じキー形式で「そのスロットで選べるファイル名」を設定に持てる（`Settings.model_choices`、`GET/PUT /api/models` で読み書き）。既定値（`model_overrides` → 無ければテンプレート値）と合わせて **2 件以上**になったスロットは *switchable* とみなし、`GET /api/options` の `model_slots`（キー・ラベル・既定値・候補一覧）に出す。ジョブは `model_overrides`（`JobCreate` / `JobContinue` のフィールド）で 1 回ぶんだけ差し替えられ、実行時に設定の既定値の上へマージされる（`jobs.run_job`）。検証（`models.model_override_problem`、Web UI と API で共通）は「キーが `model_fields()` に存在」「そのジョブが走らせるワークフロー（`models.job_workflow_ids`）に属する」「値が候補（既定値を含む）に入っている」を満たさないものを 422 で拒否する。再実行は params ごと引き継ぎ、続き生成は動画ワークフローぶんのキーだけを引き継ぐ（`workflow.scoped_model_overrides`）
 - **不足モデルの自動ダウンロード**: ComfyUI 本体にも Comfy Cloud にもモデル取得 API は無いので、**落とし先の環境に合わせて**取ってくる（`POST /api/models/download` の `target`、省略時は現在の接続先）。設定ページは「その行の値が `GET /api/options` の `model_files` の該当リストに無い」ことを不足の判定に使い、**未検出**バッジ・URL 入力欄・[DL] ボタンを出す（`model_files` が空＝ComfyUI 未接続のときは判定しない）
   - `local` … バックエンドが自分でダウンロードして ComfyUI の models ディレクトリ（**環境変数 `COMFY_MODELS_DIR`**）へ直接置く（ComfyUI はフォルダの mtime を見て一覧を作り直すので再起動は不要）
   - `runpod` … Pod の中で動く小さな API（`deploy/runpod/model_api.py`、`127.0.0.1:8190`。caddy が ComfyUI と同じ認証で `/studio/models/*` だけを通す）に `POST /download` で依頼し、`GET /downloads` を 2 秒ごとにポーリングして**ローカルと同じ WS フレーム**に変換して流す。アプリを再起動しても Pod 側は走り続けるので、`GET /api/models/downloads?target=runpod` は Pod の一覧を取り込んで見張りを再開する。Pod が古いイメージ（この API を持たない）なら 404 を「イメージを作り直してください」という 400 にして返す
@@ -736,7 +734,7 @@ Stable Audio の `reprompt`（内蔵 LLM でのプロンプト展開）だけは
   - `POST /api/models/download` は保存先を検証（`..` / 絶対パス / パス区切りを拒否し、`resolve()` 後に models ディレクトリ配下であることを確認）してからバックグラウンドタスクを起こす。httpx のストリームをチャンクで `<ファイル名>.part` に書き、完走したときだけ本来の名前に `rename` する（失敗・中断時は `.part` を削除）。進捗は WS `/api/ws` に `type: "model_download"` として流れる。同じファイル名の同時ダウンロードは 409
   - 認証は URL のホストで出し分ける: huggingface.co / hf.co（サブドメイン含む）は `Settings.hf_token`、civitai.com は `Settings.civitai_api_key` を `Authorization: Bearer …` として付ける（未設定なら付けない）。**リダイレクトは httpx に任せず自分で追う**（最大 10 ホップ、相対 `Location` は urljoin で解決、301/302/303/307/308 を GET のまま追う）: クライアント既定ヘッダに認証を載せると転送先の別ホストにトークンが漏れるため、ホップごとに URL を再検証して認証ヘッダを計算し直し、そのリクエストにだけ渡す（HF → `*.hf.co` の CDN には付き、無関係なホストには付かない）。URL はファイル名ごとに `Settings.model_download_urls` へ保存する（同じファイルが複数スロットに出るため、キーはスロットではなくファイル名）
   - 保存先は**環境変数 `COMFY_MODELS_DIR` だけ**が決める（設定 `runtime/config.json` には持たない）。UI からパスを入れられても、Docker で同じ絶対パスをマウントしていなければ書けないため。`.env` に書けば `run.sh`（ホスト実行、`.env` を読んで `export`）と `docker compose`（同一パスのマウント＋`environment:` で受け渡し）の双方に効く。設定に残すのは `hf_token` / `civitai_api_key` / `model_download_urls` だけで、旧バージョンが書いた `comfy_models_dir` キーは読み込み時に捨てる
-  - **取得元ページ（エージェント用）**: 登録した URL はダウンロード用の直リンクなので、そのままではエージェントが使い方を調べられない。`app/model_sources.py` が配布ページ URL に変換し、エージェントのシステムプロンプトへ焼き込む（AGENT-MODE §3.1）。Hugging Face は `…/resolve|blob|raw|tree/<rev>/<path>` から `https://huggingface.co/<org>/<repo>` を切り出すだけ（`datasets/` 名前空間も対応。`cdn-lfs.hf.co` 等の CDN 直リンクはリポジトリ名が読めないので変換しない）。Civitai の `…/api/download/models/<versionId>` は modelId を含まないので `https://civitai.com/api/v1/model-versions/<versionId>` を 1 回だけ叩いて引き、`https://civitai.com/models/<modelId>?modelVersionId=<versionId>` を組み立てる（認証は `model_download.auth_headers` と共通）。結果は `Settings.model_page_urls`（ダウンロード URL → ページ URL）にキャッシュするので 2 回目以降は API を叩かない。失敗しても例外は投げず、ページ URL 無し（＝ダウンロード URL だけ）として扱う。`model_page_urls` は自動生成のキャッシュなので `SettingsUpdate` には無く、設定ページからは触らない
+  - **取得元ページ**: 登録した URL はダウンロード用の直リンクなので、そのままでは配布元の使い方を調べられない。`app/model_sources.py` が配布ページ URL に変換する。Hugging Face は `…/resolve|blob|raw|tree/<rev>/<path>` から `https://huggingface.co/<org>/<repo>` を切り出すだけ（`datasets/` 名前空間も対応。`cdn-lfs.hf.co` 等の CDN 直リンクはリポジトリ名が読めないので変換しない）。Civitai の `…/api/download/models/<versionId>` は modelId を含まないので `https://civitai.com/api/v1/model-versions/<versionId>` を 1 回だけ叩いて引き、`https://civitai.com/models/<modelId>?modelVersionId=<versionId>` を組み立てる（認証は `model_download.auth_headers` と共通）。結果は `Settings.model_page_urls`（ダウンロード URL → ページ URL）にキャッシュするので 2 回目以降は API を叩かない。失敗しても例外は投げず、ページ URL 無し（＝ダウンロード URL だけ）として扱う。`model_page_urls` は自動生成のキャッシュなので `SettingsUpdate` には無く、設定ページからは触らない
   - `GET /api/models/dir-status` が `{configured, exists, writable, path}` を返す。これは**ローカルに落とすときだけ**の話（RunPod では Pod 側の models ディレクトリに置く）。**UI はこの状態でダウンロード機能を隠さない**: [DL] / [全DL] は常に出し、落とせない事情（`COMFY_MODELS_DIR` 未設定・存在しない・書けない）は押したときの 400 の本文で知らせる。ローカルを選んでいるあいだは同じ理由をタブ上部の警告にも出す（`comfy_cloud` を選んだときだけダウンロード関連を出さない）
 
 #### ローカル ComfyUI でモデル名が違うときの直し方
@@ -768,7 +766,7 @@ LoRA は**登録時に対象（`target`）を選ぶ**: `image` なら画像ワ�
 `z-image` / `qwen-image`）を選ぶ。別ファミリーの LoRA はロードできても破綻した出力になるため、
 `loras` に選択中の `image_workflow` と違うファミリーが混ざったジョブは 422 で拒否する
 （`models.image_lora_family_problem`）。フォームの LoRA ピッカーも同じファミリーのものだけを出し、
-エージェントのシステムプロンプトには LoRA ごとのファミリーが明記される。
+`GET /api/options` の LoRA 一覧にもファミリーが入る。
 動画 LoRA はファミリーを使わない。
 
 #### 3.4.1 画像 LoRA チェーン
@@ -839,7 +837,7 @@ Cookie ベースの非公式 API は規約リスクがあるため**使わない
 
 #### 使う CLI を選ぶ（`agent_cli`）
 
-LLM を回す CLI は設定 `agent_cli`（既定 `grok`）で選ぶ。**チャット・エージェントモード・スタジオ会話・キャンバス・英訳・自動タグ・ヘルスチェックのすべてが同じ選択に従う**。
+LLM を回す CLI は設定 `agent_cli`（既定 `grok`）で選ぶ。**プロンプト作成チャット（§4.3）・スタジオの英訳・ライブラリの自動タグ・ヘルスチェックのすべてが同じ選択に従う**（アプリ内で LLM を呼ぶのはこの 4 つだけで、制作そのものを回すのは外部エージェント＝ SKILL 経由の `/api/v1`）。
 **例外: Grok Imagine（画像生成・編集、§5.2 の `app.grok_media`）は常に Grok CLI**（内蔵ツールに乗っているため、`grok_command` を直接見る）。
 
 CLI ごとの違いは `backend/app/llm_cli.py` の `CliAdapter` にまとまっている（起動 argv・契約の渡し方・認証エラーの文字列・`--version`）。
@@ -856,7 +854,7 @@ CLI ごとの違いは `backend/app/llm_cli.py` の `CliAdapter` にまとまっ
 - コマンド名は `agent_cli_commands`（`{cli: コマンド}`）で上書きできる。値には引数を書いてよく、**2 語以上なら既定の引数を足さずそのまま使う**（`"cursor-agent acp"` のように起動方法が変わっても設定だけで追随できる）。ワンショット側だけを変えたいときは `"<cli>_oneshot"` キー。モデルは `agent_cli_models`（grok は従来の `grok_model`。空なら CLI の既定に任せてフラグごと出さない）
 - **cursor のモデル指定**は `grok-4.6[effort=xhigh,fast=false]` のような括弧付き表記が書ける。ワンショットは `--model` がそのまま解釈し、ACP（`cursor-agent acp` は `--model` を受け付けない）は `initialize` の `clientCapabilities._meta.parameterizedModelPicker` を申告したうえで `session/new` のあと `session/set_config_option`（`model` → `effort` → `fast` の順に 1 件ずつ）で渡す。つまり同じ 1 つの設定値が両経路に効く（素の `cursor-grok-4.6-xhigh` 形式はそのまま `model` に渡すのでワンショット向け）
 - モデル設定が拒否されても（未知の `configId` / 値は `-32602`）警告ログを残して**ターンは続ける**（CLI の既定モデルで動く）
-- **CLI を切り替えると**、保存済みの続き用セッション id（`chat_sessions` / `agent_sessions` / `canvas_sessions` の `grok_session_id`）は別 CLI では通じないので `PUT /api/settings` で空にする。会話そのもの（正本）は残るので、次のターンは履歴を組み直した新しいセッションで続く
+- **CLI を切り替えると**、保存済みの続き用セッション id（`chat_sessions.grok_session_id`）は別 CLI では通じないので `PUT /api/settings` で空にする。会話そのもの（正本）は残るので、次のターンは履歴を組み直した新しいセッションで続く
 - ヘルスチェック（`GET /api/health`）は選択中の CLI の `--version` を見る。応答の `cli` / `cli_label` が選択中の CLI を表し、ヘッダーの接続状態もその名前で出る
 
 ### 4.2 プロンプト生成の仕様
@@ -864,9 +862,8 @@ CLI ごとの違いは `backend/app/llm_cli.py` の `CliAdapter` にまとまっ
 プロンプト作成は**手動が基本**。Grok を使う場合はチャット形式（§4.3）で要件を掘り下げ、最終的に JSON（`image_prompt`, `video_prompt`, `notes`。`mode: "audio"` では `audio_prompt`, `lyrics`, `negative_tags`, `notes`）を出力させてフォームに反映する。システムプロンプトに各モデルのプロンプト仕様を埋め込む。
 
 チャットのシステムプロンプトには**選択中のワークフローに対応する仕様だけ**を入れる
-（画像はファミリー別、動画はワークフロー別、音声はモデル別）。エージェントは 1 セッションで
-複数のワークフローを使い分けるので、全ファミリー・全モデルのガイドをまとめて焼き込む
-（`prompts.image_prompt_guides_section()` / `audio_prompt_guides_section()`）。
+（画像はファミリー別、動画はワークフロー別、音声はモデル別）。外部エージェントには
+同じ内容を `GET /api/v1/prompt-guide` / `prompt-examples` として配る（§9「外部公開 API」）。
 
 **実例集**: 画像（Krea 2）の few-shot は Civitai 公開ギャラリー由来で `docs/prompt-samples.md` に残してある。動画の few-shot は公式 MiniMax H3 文書（`prompts.FEW_SHOT_H3`）で、古い Civitai 1 段落は埋め込まない。
 
@@ -941,12 +938,12 @@ CLI ごとの違いは `backend/app/llm_cli.py` の `CliAdapter` にまとまっ
 
 - **会話履歴はアプリ側（`chat_sessions.messages`）が正本**。Grok へは `app/chat_agent.py` が **ACP の継続セッション**（`app/grok_session.py` の `GrokSessionHost`）で渡す: セッションを開くときにシステムプロンプトを**契約**（`session/new` の `_meta.rules`）として渡し、2 通目以降は**新しい発言だけ**を `session/prompt` で送る（履歴の再送はしない）。`session/load` による再開はせず、Grok 側のセッションが消えていたら（`GrokSessionGone`・アプリ再起動）DB の履歴を組み直して新しいセッションの初回プロンプトに詰める
   - 相談は**ツールを使わない**: `--permission-mode auto` は付けず、ACP の `session/request_permission` は拒否する
-  - 作業ディレクトリはチャットごと（`runtime/agent-sessions/chat-<session_id>/`）。入力画像のコピー先でもあり、grok の cwd と同じ場所。`chat_sessions.grok_session_id` / `grok_cwd` に控える
+  - 作業ディレクトリはチャットごと（`runtime/chat-sessions/<session_id>/`、`paths.CHAT_SESSIONS_DIR`）。入力画像のコピー先でもあり、CLI の cwd と同じ場所。`chat_sessions.grok_session_id` / `grok_cwd` に控える
   - 実行中の活動（「思考中」「ツール実行中: …」）は WS `type: "chat"` で流し、`POST /api/chat/sessions/{id}/stop` でターンを止められる（ACP は `session/cancel`、ワンショットはプロセス中断）
   - 設定 `agent_use_acp` がオフ・ACP を起動できない環境では従来どおり `grok -p` のワンショット実行にフォールバックし、毎ターン「システムプロンプト + 履歴全文 + 最新発言」を組み立てて渡す
 - システムプロンプトの構成: ①役割（プロンプトエンジニア兼インタビュアー）②各モデルのプロンプト仕様（§4.2。画像は選択中ワークフローのファミリーのものだけ。動画は公式 H3 契約 + `FEW_SHOT_H3`）③ヒアリング項目チェックリスト ④選択中の画像・動画ワークフローの特性（下記）⑤最終出力は ```json フェンス内の `{image_prompt, video_prompt, notes}` のみ、というルール
 - `mode: "audio"` では専用のシステムプロンプト（`build_audio_system_prompt`）に切り替わる: 選択中の音声ワークフローの仕様とそのモデルが読むフィールドだけを提示し、出力は `{audio_prompt, lyrics, negative_tags, notes}`。画像・動画のプロンプトは書かせない。フォーム側も、選択中のワークフローが持たないつまみ（Stable Audio の `lyrics` など）は反映しない
-- **ワークフロー特性の反映**: CONTEXT には選択中の `video_workflow` の用途・必要入力・音声の扱い・`video_prompt` の書き方と、`image_workflow` の用途・ファミリー・必要入力・`image_prompt` の書き方を出す。文面は `app/workflows.py` の `WorkflowSpec`（`description` / `audio_role` / `prompt_hint`）から自動生成する単一情報源なので、ワークフローを追加したらマニフェスト側に書けばチャット・エージェント両方に反映される（未記入は `validate_specs()` = ヘルスチェックで検出）。例: flf2v なら開始→終了フレーム間の遷移を書かせる、t2v / リファレンスシート IC-LoRA なら開始フレーム前提にしない、ia2v なら渡した音声がそのまま音声トラックになるのでセリフをプロンプトに書かせない、ic_lora_motion ならカメラ・テンポは参照動画由来なので書かせない
+- **ワークフロー特性の反映**: CONTEXT には選択中の `video_workflow` の用途・必要入力・音声の扱い・`video_prompt` の書き方と、`image_workflow` の用途・ファミリー・必要入力・`image_prompt` の書き方を出す。文面は `app/workflows.py` の `WorkflowSpec`（`description` / `audio_role` / `prompt_hint`）から自動生成する単一情報源なので、ワークフローを追加したらマニフェスト側に書けばチャットにも反映される（未記入は `validate_specs()` = ヘルスチェックで検出）。例: flf2v なら開始→終了フレーム間の遷移を書かせる、t2v / リファレンスシート IC-LoRA なら開始フレーム前提にしない、ia2v なら渡した音声がそのまま音声トラックになるのでセリフをプロンプトに書かせない、ic_lora_motion ならカメラ・テンポは参照動画由来なので書かせない
 - 応答の判定: 応答に JSON フェンスがあれば「最終案の提示」、なければ「質問継続」として UI に表示
 - 十分詳細な初回入力なら Grok は質問を飛ばして即 JSON を返してよい（ワンショット生成はチャットの特殊ケースとして自然に実現）
 - モード B ではスタートフレーム画像を grok 作業ディレクトリにコピーし、CLI に読ませて内容を踏まえた `video_prompt` を作らせる（読めない場合はテキストのみでフォールバック）。ワークフローが開始フレームを取らない場合（t2v 等）はモード B でも「見た目もプロンプトで決める」指示に切り替わる
@@ -1017,6 +1014,8 @@ Pod 側のイメージ（Dockerfile / entrypoint / 認証つき Caddy プロキ�
 | `comfyui` | `workflow/*.json` のテンプレートを `/prompt` に投入（§5） | 既定。画像・動画・音声のすべて |
 | `grok_cli` | Grok Build CLI をヘッドレスで叩く（`app.grok_media`） | `grok_imagine_t2i` / `grok_imagine_edit` |
 
+ワークフローを 1 つも通さない経路として、**Remotion**（`mode: "remotion"`）もある（下記）。
+
 #### Grok Imagine（`backend: "grok_cli"`）
 
 xAI の従量課金 API（`XAI_API_KEY`）ではなく、**SuperGrok / X Premium+ の
@@ -1059,6 +1058,25 @@ xAI の従量課金 API（`XAI_API_KEY`）ではなく、**SuperGrok / X Premium
 疎通は 2 段階: `GET /api/grok/status` は枠を使わない軽い確認（コマンドが在るか・
 `~/.grok/auth.json` が在るか）、`POST /api/grok/check` は実際に 1 ターン回す
 （設定ページの「grok CLI の接続確認」ボタン。生成はしないので消費は最小）。
+
+#### Remotion（`mode: "remotion"`、`app/remotion.py`）
+
+React で組んだ動画（テロップ・図表・MV のような**決まった絵**）をレンダリングする、
+ComfyUI と並ぶもう 1 つの生成経路。ComfyUI とまったく同じ考え方で、**外で構築した
+バックエンドをアプリが参照するだけ**: Remotion プロジェクト（Node のリポジトリ）は
+このリポジトリの外にあり、設定 `remotion_project_dir` がその場所を指す
+（**空 = 機能ごと無効**で、一覧も投入も 400）。
+
+- `GET /api/v1/remotion/compositions` … `npx remotion compositions <entry>` を叩いて
+  composition の ID を並べる（短時間キャッシュ）。エントリポイントは `src/index.ts` を
+  既定とし、プロジェクトの `package.json` に `config.remotionEntry` があればそちら
+- ジョブは `{"mode": "remotion", "remotion_composition": "<ID>", "remotion_props": {…}}`
+  の 2 項目だけを取る（画像・動画・音声のフィールドは使わない）。`npx remotion render` を
+  サブプロセスで回し、標準出力の進捗を WS へ流す
+- `props` は CLI 引数に直接埋めると長さと引用符で壊れるので、**一時 JSON ファイル**
+  （`runtime/remotion/`）に書いて `--props=<file>` で渡す
+- 出来た mp4 は他のジョブと同じ `outputs/{job_id}/` に置くので、履歴・WS・ライブラリ・
+  素材登録・タイムラインの素材ビンには何も足さずに乗る
 
 ## 6. 成果物の取得
 
@@ -1219,21 +1237,19 @@ CREATE TABLE library (
   「まだ何件あるか」が分かり、`tags` は補完用の全タグ一覧。`kind` と `category` だけ SQL で絞り、
   `q` / `tag` は Python 側で判定する（タグは 1 カラムに JSON 配列で持っており、LIKE では誤検出
   しやすいため。個人利用の規模なら読み切ってから絞るほうが確実）
-- フォーム / エージェント用に `GET /api/options` の `library` には全件が入る。表示名・NSFW・タグ・
+- フォーム用に `GET /api/options` の `library` には全件が入る。表示名・NSFW・タグ・
   カテゴリは `PATCH /api/library/{id}`、登録解除は `DELETE /api/library/{id}`（ファイルも消す）。
   `LibraryPickerModal` のタイルには [名前] / [🫣 NSFW]（ジョブと同じ `NsfwToggle`。manual 扱い）/
   [タグ] / [削除] を並べる
 - ジョブ出力の [☆ ライブラリに登録]（`LibraryAddButton`）はカテゴリのプルダウンの隣に [▾] を持ち、
   開くと**表示名とタグ**（カンマ区切り、`LibraryFromJob.name` / `tags`）を入れてから登録できる。
   開かずに押せば従来どおり空のまま即登録（名前はプロンプトから決まり、タグは自動生成に任せる）
-- DB とファイル操作は `app/library.py` に集約し、ルーターとエージェント（`library` /
-  `library_search` / `library_sheet` アクション）が共用する
-- **エージェントからも同じ棚を使える**（AGENT-MODE §3.1）: `library` は登録時に `category` を、
-  `library_search` は絞り込みに `kind` / `category` を取り、検索結果の各行には分類を
-  `（image / character）`（未分類は `none`）の形で出す。`library_sheet` は `add_sheet` をそのまま
-  呼ぶアクションで、成功すると `library_sheet_added` イベントにシートの id・パス・URL が入り、
-  そのパスをジョブの `source_image` に指定して動画化する流れまでを
-  システムプロンプトで指示している（承認不要の即時アクション）
+- DB とファイル操作は `app/library.py` に集約し、内部 API（`app/routers/library.py`）と
+  外部 API（`app/routers/external.py`）のルーターが共用する
+- **外部エージェントからも同じ棚を使える**: `GET /api/v1/library`（`kind` / `category` /
+  `q` / `tag` で絞り込み）・`POST /api/v1/library/from-job`・`POST /api/v1/library/sheet`・
+  `PATCH /api/v1/library/{id}` を公開している（**削除は公開しない**）。シートを作って
+  そのパスをジョブの `source_image` に渡す、という流れまで外から回せる
 
 ### 7.3 編集タブ（タイムライン）
 
@@ -1415,15 +1431,84 @@ EDL → ffmpeg コマンドの**組み立ては純関数**（`build_command`）�
   次のクリップは先に `in_ms` へシークして待たせてあるので、切り替えの間はそのぶん短い。
   リタイムは `playbackRate` で追う
 
+### 7.4 編集履歴（リビジョン）
+
+人と外部エージェントが**同じ作品を同時に触る**前提の安全網。スタジオへの書き込みは
+1 操作 = 1 リビジョンとして `studio_revisions` に積む（実装は `app/studio.py` の
+`_record_revision` / `diff_revision` / `restore_revision`）。
+
+```sql
+CREATE TABLE studio_revisions (
+  id            TEXT PRIMARY KEY,
+  project_id    TEXT NOT NULL REFERENCES studio_projects(id) ON DELETE CASCADE,
+  seq           INTEGER NOT NULL,           -- プロジェクトごとの 1 始まりの連番
+  actor         TEXT NOT NULL DEFAULT 'user',  -- user / external / chat
+  action        TEXT NOT NULL DEFAULT '',   -- 変更内容の短い説明（日本語）
+  entity_kind   TEXT NOT NULL DEFAULT '',   -- project / episode / scene / shot / asset …
+  entity_id     TEXT NOT NULL DEFAULT '',
+  snapshot_json TEXT NOT NULL,              -- その時点のプロジェクト全体
+  created_at    TEXT NOT NULL
+);
+```
+
+- **actor は 3 種**（`models.STUDIO_REVISION_ACTORS`）: `user` = UI からの操作、
+  `external` = 外部 API（`/api/v1`）、`chat` = アプリ内のチャット。分ける前に書かれた
+  過去行の `agent` はそのまま残る
+- **スナップショットはプロジェクト全体**（`_SNAPSHOT_TABLES`）: 話 / 場 / カット /
+  **Take** / 素材 / 素材のリファレンス / タイムライン・トラック・クリップ。書き出しの
+  記録（`timeline_exports`）は実行結果なので入れない
+- **差分**（`GET .../revisions/{seq}/diff`）は直前のリビジョンとの項目単位の
+  before / after。`id` や `updated_at` のような「毎回動く列」は `_DIFF_NOISE` で落とす
+- **復元**（`POST .../revisions/{seq}/restore`）は丸ごとでも、ボディに `entity` / `id`
+  （＋ `fields`）を送って**その 1 件・その項目だけ**の部分復元でもよい。書き換える**前**の
+  状態を 1 リビジョン残す（`RESTORE_BACKUP_ACTION` = 「復元前の自動スナップショット」）ので、
+  復元そのものもやり直せる
+- **Take は「載っているものは戻す・知らないものは触らない」**（`_KEEP_UNKNOWN_ROWS`）:
+  生成そのものはリビジョンを作らないので、素直に全置換すると脚本を 1 つ戻しただけで
+  その後に焼いた Take の目録が消える。採用（`selected_take_id`）はスナップショット側の
+  値に戻り、新しい Take は候補としてぶら下がったまま残る
+- **`base_revision`（楽観ロック）**: PATCH のボディに「これを見て書いた」連番を添えると、
+  それ以降に**同じエンティティ**が触られていた場合だけ 409（`_check_base_revision`）。
+  別のカットが動いただけなら通る。省略すれば無条件に書き込む
+- **深さは `REVISION_LIMIT`（1000 件）**。超えたぶんは古いものから捨てる（外部エージェントが
+  脚本を書き換える運用では 1 セッションで何十件も積むため）
+
+読み書きは内部 API（`GET/POST /api/studio/projects/{id}/revisions…`）と外部 API
+（`/api/v1/…` の同じ 3 本）の両方に出ている。
+
+### 7.5 画面の状態（`ui_state`）
+
+「外部エージェントがフォームを埋めて、人が確かめてから押す」ための共有置き場
+（`app/ui_state.py`、テーブル `ui_state`）。いま置いているのは**生成フォームの下書き
+1 件だけ**（キー `generate_form`）。
+
+- 値のスキーマの正本は**フロントの `FormState`** で、バックエンドは JSON の辞書として
+  素通しする（項目が増えてもバックエンドを直さずに済む）。守るのは大きさの上限
+  （`MAX_VALUE_BYTES` = 64KB）と `revision` だけ
+- `revision` は保存のたびに 1 つ上がる連番。書き手は `base_revision` を添えられ、その間に
+  誰かが書いていれば 409（本文に現在値が入る）。省略すると強制上書き
+- 双方向: 外部エージェントが `PATCH /api/v1/ui/generate-form` で値を入れるとブラウザは
+  WS（`type: "form"`）で受け取ってフォームへ流し込み、人がフォームを触れば
+  `PUT /api/ui/generate-form` で書き戻る。**自分が書いた `revision` は送り主が読み飛ばす**
+- `POST /api/v1/jobs` に `{"from_form": true}` を入れると、この下書きをそのまま投入できる
+  （一緒に送った項目はその上から重ねる）
+- 画面そのものを動かす `POST /api/v1/ui/navigate` は DB を使わず WS（`type: "ui"`、
+  `op: "navigate"`）だけを流す。行き先は 生成 / スタジオ / 設定 で、`project_id` /
+  `shot_id` は実在と噛み合わせを確かめてから流す
+
 ---
 
 ## 8. UI 仕様
 
 SPA 1 画面 + 履歴。ダークテーマの生成系ツールらしい見た目。
 
+画面は **[生成] と [スタジオ] の 2 タブ**（`Header.tsx` の `VIEWS`）＋ 右端の歯車から開く
+**設定ページ**。外部エージェントは `POST /api/v1/ui/navigate` でこの 3 つの行き先へ
+ブラウザを連れて行ける（§7.5）。
+
 ```
 ┌────────────────────────────────────────────────────────┐
-│ ヘッダー: 接続状態(ComfyUI ● / Grok ●)   [設定]          │
+│ ヘッダー: [生成 | スタジオ]  接続状態(ComfyUI ● / CLI ●)  [⚙]│
 ├───────────────────────────┬────────────────────────────┤
 │ 左ペイン(入力)              │ 右ペイン(結果)               │
 │ ◦ モード切替 [画像＋動画|動画生成|画像のみ|音声]             │
@@ -1469,16 +1554,16 @@ SPA 1 画面 + 履歴。ダークテーマの生成系ツールらしい見た�
   - **選択した動画ワークフローのマニフェスト**に従い、音声入力を持たないワークフローでは音声欄を出さず、必要な入力（最終フレーム / 参照動画）の欄だけを出す。**必須ではないが受け取れる入力**（任意の開始フレーム・最終フレーム画像）も欄は出す（`requires` だけでなく `supports` を見る）。渡すかどうかはユーザー次第で、空なら送らない
   - **画像ワークフロー**も同様で、編集系（qwen-image）では参照画像の欄が出る代わりにアスペクト比 / メガピクセルが消える
   - 音声モードでは画像・動画のセクション一式を出さず、音声ワークフローと、そのワークフローが露出しているつまみだけを出す
-- **ワークフローの選択は「モデル → モード」の 2 段プルダウン**（動画 / 画像 / 音声のどのセクションでも同じ `WorkflowPicker`）: 1 段目がモデル（= ファミリー。表示名は `/api/options` の `family_label` で、外部 API・サブスク CLI といった供給元の注記もここに付く）、2 段目がそのモデルのモード（t2v / i2v / 素材参照 …。表示名は `mode_label` で、1 段目と重複するモデル名は入らない）。フォームが持つ状態は今までどおりワークフロー id 1 つだけで、1 段目はそこから引く（前回選択の復元・ライブラリからの連鎖・エージェントのプリセットは id を入れるだけで両方のセレクトが揃う）。モデルを変えるとそのモデルの先頭モードへ切り替わるので、存在しない id のまま送信されることはない。モードが 1 つしかないモデルでも 2 段目は消さず無効化して出す。選択肢そのものが取れないとき（ComfyUI に繋がらない）は従来どおり id の手入力欄になる
+- **ワークフローの選択は「モデル → モード」の 2 段プルダウン**（動画 / 画像 / 音声のどのセクションでも同じ `WorkflowPicker`）: 1 段目がモデル（= ファミリー。表示名は `/api/options` の `family_label` で、外部 API・サブスク CLI といった供給元の注記もここに付く）、2 段目がそのモデルのモード（t2v / i2v / 素材参照 …。表示名は `mode_label` で、1 段目と重複するモデル名は入らない）。フォームが持つ状態は今までどおりワークフロー id 1 つだけで、1 段目はそこから引く（前回選択の復元・ライブラリからの連鎖・外部 API からの下書き反映は id を入れるだけで両方のセレクトが揃う）。モデルを変えるとそのモデルの先頭モードへ切り替わるので、存在しない id のまま送信されることはない。モードが 1 つしかないモデルでも 2 段目は消さず無効化して出す。選択肢そのものが取れないとき（ComfyUI に繋がらない）は従来どおり id の手入力欄になる
 - 「画像＋動画」モードのプルダウンには開始フレームを受け取れる動画ワークフローのみを出す（選択中のものが対象外になったら自動で切り替える。モードが 1 つも残らないモデルは 1 段目からも消える）
 - **選択式フィールド**を宣言しているワークフローでは、ワークフローセレクトの直下にその選択肢のプルダウンが並ぶ（§3.1）。自動決定できる項目には「自動（入力に合わせる）」、それ以外には「既定（<値>）」が先頭に入る。`video_prompt` が任意のワークフローではプロンプト欄に「（任意）」と出す
 - LoRA チェーンを持たないワークフローでは LoRA（動画）セクションを出さない（挿せないため。指定したジョブはバックエンドが 422 にする）
 - 動画ネガティブはプリセット選択（ワークフロー既定 / 現行値 / モデル作者版）+ 編集可（詳細設定アコーディオン内）
 - 設定は**モーダルではなく専用ページ（フルページ）**。ヘッダーの [設定] で画面遷移し、ページ左上の [← 戻る] で生成画面に復帰する。3 タブ構成:
-  - **接続 / LLM CLI**: 「ComfyUI 接続先」（[接続先] のプルダウン + ComfyCloud / RunPod / ローカルのサブセクション。RunPod のサブセクションには Pod の ComfyUI URL・APIキーに続けて §5.1 の自動起動の設定を置く） / **使う CLI**のプルダウン（`agent_cli`。grok / claude / codex / cursor）とその CLI の**コマンド**（空 = 既定。placeholder に既定のコマンド名を出す）・**モデル**（grok は既定 grok-4.5、ほかは空 = CLI の既定）・**CLI の作業ディレクトリ**（`grok_workdir`）・**Grok Imagine の作業ディレクトリ**（`grok_media_workdir`）・**CLI の追加フラグ**（`agent_grok_args`。空白区切りで入力し、**空にするとエージェントのツールが丸ごと無効**になる旨を警告として添える）・**ACP でターンを回す**トグル（`agent_use_acp`。オンだと実行中の活動がチャットに出る）  / **モデル自動ダウンロード**のブロック（常に表示。ローカルの保存先パスは環境変数由来なので読み取り専用で見せ、「書き込み可 ✓」「パスが見つかりません」等の状態と、**Hugging Face トークン**・**Civitai APIキー**（どちらも `type="password"`。RunPod へ落とすときは Pod 側の環境変数が使われる）を並べる、§3.3）
+  - **接続 / LLM CLI**: 「ComfyUI 接続先」（[接続先] のプルダウン + ComfyCloud / RunPod / ローカルのサブセクション。RunPod のサブセクションには Pod の ComfyUI URL・APIキーに続けて §5.1 の自動起動の設定を置く） / **使う CLI**のプルダウン（`agent_cli`。grok / claude / codex / cursor）とその CLI の**コマンド**（空 = 既定。placeholder に既定のコマンド名を出す）・**モデル**（grok は既定 grok-4.5、ほかは空 = CLI の既定）・**CLI の作業ディレクトリ**（`grok_workdir`）・**Grok Imagine の作業ディレクトリ**（`grok_media_workdir`）・**CLI の追加フラグ**（`agent_grok_args`。空白区切りで入力し、**空にすると CLI のツールが丸ごと無効**になる旨を警告として添える）・**ACP でターンを回す**トグル（`agent_use_acp`。オンだと実行中の活動がチャットに出る）  / **モデル自動ダウンロード**のブロック（常に表示。ローカルの保存先パスは環境変数由来なので読み取り専用で見せ、「書き込み可 ✓」「パスが見つかりません」等の状態と、**Hugging Face トークン**・**Civitai APIキー**（どちらも `type="password"`。RunPod へ落とすときは Pod 側の環境変数が使われる）を並べる、§3.3）
   - **LoRA 管理**: 表示名・ファイル名・**対象ワークフロー（画像用 / 動画用）**・**モデルファミリー（画像用のみ）**・トリガーワード・既定強度・既定音声・並び順・**取得元 URL（任意）**の CRUD とサンプル画像の登録。一覧のバッジには対象とファミリーを出し、取得元 URL が登録済みなら `URL ✓`（title に URL）を添える。取得元 URL は LoRA 本体と同じ [追加] / [更新] で保存し、保存先はモデルタブと同じ `model_download_urls`（キーは `lora_name`）。**空欄で保存するとキーを消し**、**ファイル名を変えた場合は旧キーを消して新キーへ移す**（URL に変化が無ければ設定は PUT しない）。ここではダウンロードせず、モデルタブと同じく [DL] / [全DL]（§3.3）の取得元として使う
   - **モデル** / **LoRA 管理**: どちらもタブの先頭に [対象の接続先]（ComfyCloud / RunPod / ローカル。現在の接続先には「（現在の接続先）」を添える）のプルダウンを置き、選んだ環境の登録を読み書きする（初期値は現在の接続先。繋いでいない環境も整理できるよう、接続先そのものとは独立に切り替えられる。切り替えると未保存の編集は捨てて読み直す、§5）
-  - **モデル**: 全ワークフローのモデルファイル名一覧を **画像 / 動画 / 音声の大分類 → ワークフローごとの折りたたみ**（既定は閉じ、見出しに項目数・未保存件数・既定から変更した件数のバッジ）に整理し、行ごとにテキスト入力で上書き。変更行はハイライト、[既定に戻す] で復帰、[保存] で全行を一括 PUT。各行にはさらに**候補リスト**（チップ + 追加/削除）があり、既定値と合わせて 2 件以上にすると生成フォーム / エージェントが実行ごとに選べるようになる。既定値入力・候補追加入力はどちらも `/api/options` の `model_files`（`"<class_type>.<field>"` ごとの ComfyUI ファイル一覧。LoRA は従来の `lora_files` で補う）があれば datalist で補完。さらに各行には**不足モデルのダウンロード**の UI がある: 値が `model_files` の該当リストに無ければ**未検出**バッジ、URL 入力欄（`model_download_urls`。キーはファイル名なので同じファイルを使う行では共有）と [DL] ボタン、進行中は進捗バーと取得済みバイト数（WS の `model_download` を購読）。**取得元 URL の登録・編集は環境や `COMFY_MODELS_DIR` の有無に関係なく常に使える**（いま繋いでいない環境ぶんの URL も先に登録しておけるため）。[DL] と、タブ上部の **[全DL]**（未検出かつ URL 登録済みを一括開始）は `comfy_cloud` 以外で常に出し、落とせない事情は押したときの 400 で知らせる（ローカル選択中は `dir-status` の理由をタブ上部の警告にも出す、§3.3）。**未検出バッジは「いま繋いでいる環境」を編集しているときだけ**出す（`model_files` は接続中の ComfyUI のものなので、他の環境の在庫は分からない）。バッジが出ない行でも [取得元 URL] を開けば [URL保存] と [DL] が並ぶ。**検出済みの行**でも取得元 URL は登録できる（手元には在るが RunPod の Pod には無いモデルを、あとで [DL] / [全DL] で入れるため）: 表がうるさくならないよう既定は畳んでおき、[▸ 取得元 URL]（登録済みならアクセント色 + ✓）を押すと URL 欄と [URL保存] が開く。[URL保存] はダウンロードせず `model_download_urls` だけを PUT し、**空欄で保存するとそのファイル名のキーを消す**（登録解除）
+  - **モデル**: 全ワークフローのモデルファイル名一覧を **画像 / 動画 / 音声の大分類 → ワークフローごとの折りたたみ**（既定は閉じ、見出しに項目数・未保存件数・既定から変更した件数のバッジ）に整理し、行ごとにテキスト入力で上書き。変更行はハイライト、[既定に戻す] で復帰、[保存] で全行を一括 PUT。各行にはさらに**候補リスト**（チップ + 追加/削除）があり、既定値と合わせて 2 件以上にすると生成フォーム / API が実行ごとに選べるようになる。既定値入力・候補追加入力はどちらも `/api/options` の `model_files`（`"<class_type>.<field>"` ごとの ComfyUI ファイル一覧。LoRA は従来の `lora_files` で補う）があれば datalist で補完。さらに各行には**不足モデルのダウンロード**の UI がある: 値が `model_files` の該当リストに無ければ**未検出**バッジ、URL 入力欄（`model_download_urls`。キーはファイル名なので同じファイルを使う行では共有）と [DL] ボタン、進行中は進捗バーと取得済みバイト数（WS の `model_download` を購読）。**取得元 URL の登録・編集は環境や `COMFY_MODELS_DIR` の有無に関係なく常に使える**（いま繋いでいない環境ぶんの URL も先に登録しておけるため）。[DL] と、タブ上部の **[全DL]**（未検出かつ URL 登録済みを一括開始）は `comfy_cloud` 以外で常に出し、落とせない事情は押したときの 400 で知らせる（ローカル選択中は `dir-status` の理由をタブ上部の警告にも出す、§3.3）。**未検出バッジは「いま繋いでいる環境」を編集しているときだけ**出す（`model_files` は接続中の ComfyUI のものなので、他の環境の在庫は分からない）。バッジが出ない行でも [取得元 URL] を開けば [URL保存] と [DL] が並ぶ。**検出済みの行**でも取得元 URL は登録できる（手元には在るが RunPod の Pod には無いモデルを、あとで [DL] / [全DL] で入れるため）: 表がうるさくならないよう既定は畳んでおき、[▸ 取得元 URL]（登録済みならアクセント色 + ✓）を押すと URL 欄と [URL保存] が開く。[URL保存] はダウンロードせず `model_download_urls` だけを PUT し、**空欄で保存するとそのファイル名のキーを消す**（登録解除）
 - **実行ごとのモデル切り替え**: 選択中のワークフローに候補が 2 件以上あるスロットがあれば、そのワークフローセレクトの直下に「使用モデル: <ノード名>」のセレクトを出す（画像 / 動画 / 音声それぞれのセクション内）。候補が 1 件以下のスロットは何も出さない。送信時は**走らせるワークフローのぶんだけ**、かつ既定値と違う選択だけを `params.model_overrides` に載せる（§3.3）
 - **投入時の NSFW 指定**: [実行] の直上に「🫣 NSFW として投入（オフなら生成後に自動判定）」のチェックボックスを置く。**チェックしたときだけ** `JobCreate.nsfw = true`（manual 扱いで自動判定をスキップ）を送り、オフのままなら何も送らず従来どおり生成後の自動判定に任せる（既定オフ）
 - **再実行は 2 通り**: [再実行（シード再抽選）] と [再実行（同じシード）]（`JobRerun.randomize_seed`）を結果ペイン・詳細ドロワーの両方に並べる
@@ -1493,6 +1578,11 @@ SPA 1 画面 + 履歴。ダークテーマの生成系ツールらしい見た�
   「分割 = 再生ヘッドの位置で 2 つに割る」「Ctrl+Z / Ctrl+Shift+Z = やり直し」。
   メディア欠落のクリップは赤系で [メディア欠落] と出し、保存状態は [保存済み] / [未保存の変更] /
   [保存中…] / [保存に失敗] のバッジに出す
+- **外部エージェントの操作がそのまま画面に出る**（§9 の WS フレーム）: 外部 API で脚本や素材が
+  書き換われば `type: "studio"` が飛んで開いているスタジオが読み直し、生成フォームの下書きが
+  書き換われば `type: "form"` がフォームへ流し込まれ（§7.5）、`type: "ui"` の `navigate` は
+  ブラウザの表示そのものを 生成 / スタジオ / 設定 へ切り替える。人が同じ画面を触っていても
+  壊れないよう、書き込みには `base_revision`（スタジオは §7.4、フォームは §7.5）がある
 
 ---
 
@@ -1538,6 +1628,8 @@ POST /api/jobs/{id}/rerun        … 再実行（seed 変更オプション）
 POST /api/jobs/{id}/continue     … ラストフレームを開始フレームに新規ジョブ（`video_workflow` / `end_image` / `reference_video` / `model_overrides` 等を差分指定可。開始フレームを取れないワークフローは既定に戻す）
 DELETE /api/jobs/{id}
 POST /api/assets/audio|image|video … アセットアップロード（video は参照動画用）
+GET  /api/ui/generate-form       … 生成フォームの下書き（値 + revision、§7.5）
+PUT  /api/ui/generate-form       … 下書きの保存（`base_revision` を省くと強制上書き。保存後に WS `type: "form"`）
 
 … 編集タブ（タイムライン。プレフィックスはスタジオと同じ /api/studio、§7.3）
 POST /api/studio/projects/{id}/timelines … タイムライン作成（`episode_id` を送ると自動配置つき初期化）
@@ -1560,38 +1652,64 @@ GET  /api/studio/timelines/{id}/exports … 書き出し履歴（新しい順、
 POST /api/studio/exports/{id}/save-to-library … 完成 mp4 を library/video/ へコピーして登録
 
 GET  /library/…                  … 静的配信（ライブラリの素材、§7.2）
-WS   /api/ws                     … 進捗配信（`type: "job"` / `"agent"` / `"chat"` / `"canvas"` / `"library"` / `"model_download"` / `"timeline_export"`）
+WS   /api/ws                     … 進捗と更新の配信。種別は `type: "job"`（ジョブの状態と進捗）/ `"chat"`（プロンプト作成チャットのターン）/ `"library"`（自動タグの書き戻し）/ `"model_download"`（不足モデルの取得）/ `"timeline_export"`（書き出し）/ **`"studio"`**（外部 API による脚本・素材の更新。`project_id` / `entity` / `id` / `op` だけを流し、正本は DB）/ **`"form"`**（生成フォームの下書き。`revision` / `updated_by` / `values`、§7.5）/ **`"ui"`**（`op: "navigate"` で画面を切り替えさせる）。配信は `app/ws.py` の `publish*` 関数で、**どれも例外を投げない**（通知の失敗で生成や編集を壊さない）
 GET  /outputs/…                  … 静的配信（画像/動画/音声）
 ```
 
 ### 外部公開 API（`/api/v1`）
 
-内部 API（`/api/…`）とは別系統に、外部のエージェント向けの API を持つ。公開範囲は
-Grok エージェントのスタジオ操作（§ドラマスタジオ / `app.agent_protocol.STUDIO_ACTIONS`）と
-同じで、認証は設定 `external_api_key` と突き合わせる `X-API-Key` ヘッダ。キーが空の
-あいだは `/api/v1` ごと 404 を返す（既定は無効）。実体は `app.studio` / `app.jobs` を
-呼ぶだけの薄いラッパー（`backend/app/routers/external.py`）で、内部 API・UI・
-エージェント機構には影響しない。設計・エンドポイント一覧・Cloudflare 越しの公開手順は
+内部 API（`/api/…`）とは別系統に、**外部エージェント向け**の API を持つ。制作を回すのは
+このアプリの中の機構ではなく、**外から `/api/v1` を叩くコーディングエージェント**
+（Claude Code / Codex / Cursor CLI など）で、その段取りは
+[`.agents/skills/karakuri-studio/SKILL.md`](../.agents/skills/karakuri-studio/SKILL.md) に置いてある
+（`AGENTS.md` / `CLAUDE.md` からリンク）。
+
+認証は設定 `external_api_key` と突き合わせる `X-API-Key` ヘッダ。キーが空のあいだは
+`/api/v1` ごと 404 を返す（既定は無効）。実体は `app.studio` / `app.jobs` /
+`app.timeline` を呼ぶだけの薄いラッパー（`backend/app/routers/external.py`）で、内部 API と
+UI には影響しない。設計・公開範囲の詳細・Cloudflare 越しの公開手順は
 [`docs/EXTERNAL-API.md`](EXTERNAL-API.md)。
 
-ラッパー以外に 2 つだけ独自のエンドポイントを持つ:
+公開しているのは、人が UI でできることのほぼ全部:
 
-- `POST /api/v1/stories` … 話 1 本（話 → 場 → Shot）の一括投入。1 トランザクションで
-  全部作れたか・全く作らなかったかの二択。
-- `GET /api/v1/prompt-guide` … **脚本ドラフト作成ガイド**。外部の LLM エージェントが
-  上の一括投入に渡す脚本を「スタジオで実際に映像化できる形」で書くための日本語
-  Markdown を返す（`guide_version` / `markdown` / `limits`）。本文は
-  `backend/app/drafting_guide.py` が既存の定数から組み立てるので静的コピーを持たない:
+- 脚本（プロジェクト / 話 / 場 / カット / 素材）の CRUD と並べ替え、投入前の
+  `GET /api/v1/shots/{id}/prompt-preview`（実際に投入されるプロンプトとワークフロー）
+- 生成（`POST /api/v1/shots/{id}/render` と Take の採否／汎用ジョブの
+  `POST /api/v1/jobs`・`cancel`・`rerun`・`continue`）、ライブラリ、
+  編集タブ一式（タイムライン / トラック / クリップ / 書き出し）
+- 編集履歴（`revisions` の一覧 / `diff` / `restore`、§7.4）と画面の操作
+  （`ui/generate-form` / `ui/navigate`、§7.5）、Remotion の composition 一覧（§5.2）
+- **削除はプロジェクト以外**。プロジェクトはリビジョンごとカスケードで消えて復元
+  できないので、外には出さず人に頼む運用にする
+
+エージェントが最初に読むための参照系が 4 本ある:
+
+- `GET /api/v1/openapi.json` … **公開範囲の正本**。アプリ全体のスキーマから `/api/v1` の
+  パスと、そこから `$ref` で辿れるスキーマだけを抜き出した縮小版
+- `GET /api/v1/capabilities` … いまの接続先でラテント連続性 / アップスケールが使えるか
+- `GET /api/v1/options` … 生成フォームと同じ選択肢（`comfy_url` は伏せる）
+- `GET /api/v1/prompt-guide` / `prompt-examples` … **脚本ドラフト作成ガイド**と H3 の実例。
+  本文は `backend/app/drafting_guide.py` が既存の定数から組み立てるので静的コピーを持たない:
   尺は `app.studio.SHOT_DURATION_MIN/MAX`、参照素材の上限は
   `app.workflows.MINIMAX_H3_REFERENCE_*`、H3 の書き方は `app.prompts.MINIMAX_H3_GUIDE_BODY`、
-  実例は `app.prompts.FEW_SHOT_H3` から代表を選抜。フィールドがモデルにどう届くかの
-  正本は `app.studio.compose_prompt`（変えたらガイドも直す）。
+  実例は `app.h3_examples` から代表を選抜。フィールドがモデルにどう届くかの
+  正本は `app.studio.compose_prompt`（変えたらガイドも直す）
+
+ラッパーでない独自のエンドポイントは `POST /api/v1/stories`（話 1 本＝話 → 場 → Shot の
+一括投入。1 トランザクションで全部作れたか・全く作らなかったかの二択）。
+
+**暴走ガード**は「生成（ジョブ + Take）」と「書き出し」の**2 つのプール**で、それぞれが
+`external_max_pending_takes`（既定 20 / 0 = 無制限）に達しているあいだは 429。数えてから
+投入するまでを別々の錠で括る（生成は `studio.PENDING_JOBS_LOCK`、書き出しは
+`external._EXPORTS_LOCK`）。**内部 API（UI からの操作）には掛けない**。
 
 ### ディレクトリ構成
 
 ```
 backend/            FastAPI アプリ
-  app/routers/      health / settings / loras / models_config / model_download / assets / options / chat / jobs / agent / studio / timelines / canvas / external
+  app/routers/      health / settings / loras / models_config / model_download / library /
+                    assets / options / chat / grok / jobs / studio / timelines / ui /
+                    external / push
   app/comfy.py      ComfyUI クライアント（/object_info, /upload/image, /prompt, /ws, /history, /view）
   app/workflows.py  ワークフロー登録簿と注入マニフェスト（ノード ID 直指定）+ プロンプト用カタログ
   app/workflow.py   テンプレートへのパラメータ注入・LoRA チェーン動的注入・解像度計算
@@ -1599,10 +1717,13 @@ backend/            FastAPI アプリ
   app/llm_cli.py    CLI アダプタ（grok / claude / codex / cursor の起動と契約の渡し方、§4.1）
   app/grok_session.py CLI の継続セッション（ACP / ワンショット）のホスト
   app/chat_agent.py 相談チャットの継続セッション・活動通知・停止（§4.3）
-  app/prompts.py    チャット / エージェントのシステムプロンプト
+  app/prompts.py    プロンプト作成チャットのシステムプロンプト
   app/drafting_guide.py  外部エージェント向け脚本ドラフト作成ガイド（GET /api/v1/prompt-guide）
   app/jobs.py       asyncio ジョブキューと実行、成果物取得・ラストフレーム抽出
-  app/agent_*.py    エージェントのアクションプロトコル・実行ループ・セッション永続化
+  app/studio.py     ドラマスタジオ（脚本 / 素材 / Take / 編集履歴 §7.4）
+  app/remotion.py   Remotion プロジェクトの composition 一覧とレンダリング（§5.2）
+  app/ui_state.py   生成フォームの下書きの共有（§7.5）
+  app/ws.py         ブラウザへの配信（job / chat / studio / form / ui / …）
   app/library.py    ライブラリ（取っておく素材）の保存・目録
   app/timeline.py   編集タブ: タイムライン（EDL）の CRUD と書き出しの管理（§7.3）
   app/timeline_export.py  EDL → ffmpeg コマンドの組み立て（純関数）と実行・進捗
@@ -1610,15 +1731,16 @@ backend/            FastAPI アプリ
   app/autotag.py    ライブラリ素材の日本語タグ・表示名の自動生成（Grok）
   app/nsfw.py       ジョブ / セッションの NSFW 判定
   app/model_download.py  不足モデルのダウンロード（models ディレクトリへ直接保存）
-  app/model_sources.py   取得元 URL → 配布ページ URL（エージェントの調べ先、§3.3）
+  app/model_sources.py   取得元 URL → 配布ページ URL（§3.3）
   tests/            pytest
 frontend/           React + Vite + Tailwind の SPA（ビルド成果物は frontend/dist）
   public/           PWA のアイコン（icon.svg / pwa-192x192.png / pwa-512x512.png /
                     maskable-512x512.png / apple-touch-icon.png）
   src/components/   GenerateForm / AudioFields / ResultPane / HistoryGallery / ChatModal /
-                    SettingsPage / agent/
+                    SettingsPage / studio/（ドラマスタジオと編集タブ）
 docs/SPEC.md        仕様書
-docs/AGENT-MODE.md  エージェントモード設計書
+docs/EXTERNAL-API.md  外部公開 API（/api/v1）の設計
+.agents/skills/karakuri-studio/  外部エージェント向け SKILL（AGENTS.md / CLAUDE.md からリンク）
 workflow/           ComfyUI ワークフロー（API フォーマット）テンプレート ※実行の正
   image/            krea2/ anima/ z-image/ qwen-image/（モデルファミリーごと）
   video/minimax-h3/ minimax_h3_t2v / minimax_h3_i2v / minimax_h3_r2v（音声つき）
@@ -1627,11 +1749,13 @@ workflow/           ComfyUI ワークフロー（API フォーマット）テン
                     …_turbo（4 ステップ版）/ …_opt（蒸留 LoRA なしの 20 ステップ最適化版）
                     ※ turbo / opt は上の 7 通り（素 3 / _save 3 / _r2v_context）すべてに揃えてある
   audio/            minimax_music_3.json / stable_audio_3_medium_base.json
-app.db              SQLite（jobs / loras / library / chat_sessions / agent_sessions）
+app.db              SQLite（jobs / loras / library / chat_sessions / studio_*（脚本・Take・
+                    編集履歴）/ timeline_* / ui_state）
 outputs/            生成物（/outputs で静的配信）
 assets/             アップロードした画像・音声・参照動画・LoRA サンプル（/assets で静的配信）
 library/            ライブラリ（取っておいた素材。image/ video/ audio/、/library で静的配信）
-runtime/            config.json / grok 作業ディレクトリ（プロンプト用）/ agent-sessions/
+runtime/            config.json / grok 作業ディレクトリ（プロンプト用）/
+                    chat-sessions/（チャットごとの cwd）/ remotion/（props の一時 JSON）
 ```
 
 ---
@@ -1666,5 +1790,20 @@ runtime/            config.json / grok 作業ディレクトリ（プロンプ�
 12. 画像 LoRA: **モデルファミリーで仕分け**、`image_workflow` と一致するものだけ使用可（§3.4）
 13. 音声生成: **独立モード**（画像・動画とは連結しない）。MiniMax Music 3 / Stable Audio 3（ComfyUI）、出力は mp3（§2.4）
 14. 未使用項目: **グレーアウトではなく非表示**（値はフォーム状態として保持）（§8）
+
+決定済み（v0.4 — 制作の主体を外へ出す）:
+
+15. **内蔵エージェントモードとキャンバスは撤去**。制作を回すのは外から `/api/v1` を叩く
+    コーディングエージェント（SKILL = `.agents/skills/karakuri-studio/`）に一本化する。
+    アプリ内に残る LLM 用途は**プロンプト作成チャット・英訳・自動タグ・ヘルスチェック**の
+    4 つだけ（§4.1）
+16. **外部 API は「人が UI でできること」とほぼ同じ範囲**まで広げる。ただし
+    **削除はプロジェクト以外**、暴走ガードは「生成」「書き出し」の 2 プール（§9）
+17. **人と外部エージェントの同時編集は履歴で守る**: 1 操作 = 1 リビジョン、差分・部分復元・
+    復元前の自動スナップショット、`base_revision` の楽観ロック（§7.4）
+18. **画面はリアルタイムに追随する**: WS の `studio` / `form` / `ui` フレームと `ui_state`
+    による生成フォームの双方向同期（§7.5 / §8）
+19. **Remotion 連携**: React で組んだ動画も 1 つの生成経路（`mode: "remotion"`）として扱い、
+    プロジェクト本体はリポジトリの外（設定 `remotion_project_dir`。§5.2）
 
 残課題: なし（実装着手可能）

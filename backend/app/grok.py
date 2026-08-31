@@ -133,8 +133,8 @@ def iter_json_objects(text: str):
     """Yield every JSON value found in ``text``, best candidate first.
 
     ```json fences win, then any other fence, then the balanced ``{…}`` blocks.
-    Shared by the chat result parser and the agent action protocol
-    (AGENT-MODE §4).
+    Used by the chat result parser (SPEC §4.3), which has to read a JSON draft
+    out of prose the CLI wrote around it.
     """
     for candidate in _candidates(text or ""):
         candidate = candidate.strip()
@@ -289,8 +289,8 @@ class GrokCliClient(LLMClient):
             workdir or settings.grok_workdir, GROK_WORKDIR
         )
         self.timeout = timeout
-        # Tool-permission flags for agent mode (AGENT-MODE §3.4). The CLI is
-        # beta, so the flags stay configurable instead of hard coded.
+        # Tool-permission flags for the CLI (`agent_grok_args`, SPEC §4.1).
+        # The CLI is beta, so the flags stay configurable instead of hard coded.
         self.extra_args = list(extra_args or [])
 
     def _attempts(self, prompt: str) -> list[list[str]]:
@@ -397,11 +397,11 @@ def get_agent_client(
     workdir: str | Path,
     on_activity: "Callable[[str | None], Any] | None" = None,
 ) -> LLMClient:
-    """Client for one agent session (AGENT-MODE §3.4 / §6).
+    """Client for one CLI session with tools allowed (SPEC §4.1).
 
-    Runs inside the session work dir with the longer agent timeout and the
-    configured tool-permission flags (empty by default -> same safe ``-p`` run
-    as the chat flow).
+    Runs inside the session work dir with the longer timeout
+    (``agent_grok_timeout``) and the configured tool-permission flags
+    (``agent_grok_args``; empty -> same safe ``-p`` run as the chat flow).
 
     ``agent_use_acp``（既定 True）のときは ``grok agent stdio``（ACP）で回し、
     実行中の活動を ``on_activity`` に流す。ACP を開始できなければ内部で従来の

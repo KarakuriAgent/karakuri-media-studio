@@ -55,6 +55,11 @@ services:
       # .env に COMFY_MODELS_DIR=/path/to/ComfyUI/models を書く。未設定のときは
       # 無害なダミーパスがマウントされるだけ（機能は UI ごと出ない）。
       - ${COMFY_MODELS_DIR:-/tmp/karakuri-no-models-dir}:${COMFY_MODELS_DIR:-/tmp/karakuri-no-models-dir}
+      # Remotion 連携（設定 remotion_project_dir）: 外部構築の Remotion
+      # プロジェクトを同一絶対パスでマウントする。.env に
+      # REMOTION_PROJECT_DIR=/path/to/karakuri-remotion を書く。未設定なら
+      # 無害なダミーパスがマウントされるだけ（機能は設定が空なら無効）。
+      - ${REMOTION_PROJECT_DIR:-/tmp/karakuri-no-remotion}:${REMOTION_PROJECT_DIR:-/tmp/karakuri-no-remotion}
     # ローカルの ComfyUI を使う場合に host.docker.internal で届くようにする
     extra_hosts:
       - "host.docker.internal:host-gateway"

@@ -1,13 +1,14 @@
 # 外部公開 API（/api/v1）設計
 
-外部のエージェント（例: karakuri-world のログを監視するブリッジ）から、スタジオの
-話づくりとレンダリングを行えるようにする API。**Grok エージェントに許している操作
-（`app.agent_protocol.STUDIO_ACTIONS`）と同じ範囲**を、API キー認証付きの REST と
-して公開する。
+外部のエージェント（手元の Claude Code / Codex / Cursor CLI や、karakuri-world の
+ログを監視するブリッジなど）が、脚本づくりから生成・素材の整理・つなぎ・書き出しまでを
+自分で回すための API。**制作を回す主体はアプリの中ではなく外**にあり、その段取りは
+[`.agents/skills/karakuri-studio/SKILL.md`](../.agents/skills/karakuri-studio/SKILL.md)
+（`AGENTS.md` / `CLAUDE.md` からリンク）に置いてある。
 
-- 既存の内部 API（`/api/studio` など）と UI・エージェント機構には手を入れない。
-- 実体は薄いラッパー: 既存の `app.studio` サービス関数と Pydantic モデルを
-  そのまま呼ぶだけ。ビジネスロジックはここに書かない。
+- 既存の内部 API（`/api/studio` など）と UI には手を入れない。
+- 実体は薄いラッパー: 既存の `app.studio` / `app.jobs` / `app.timeline` のサービス関数と
+  Pydantic モデルをそのまま呼ぶだけ。ビジネスロジックはここに書かない。
 
 実装は完了し、実機で一通り動作を確認済みです（§8）。
 
@@ -18,31 +19,40 @@
 | プレフィックス | `/api/v1`（内部 API の `/api/...` とは別系統。バージョンを持つ） |
 | 認証 | `X-API-Key` ヘッダ。設定 `external_api_key` と定数時間比較 |
 | 既定状態 | `external_api_key` が空 = **外部 API 全体が無効**（404 を返す） |
-| 公開範囲 | Grok エージェントのスタジオ操作と同等（下表）。削除はカット（Shot）のみ |
+| 公開範囲 | 人が UI でできることのほぼ全部（下表）。**削除はプロジェクト以外** |
+| 正本 | 公開範囲は `GET /api/v1/openapi.json`（この API だけの縮小版 OpenAPI） |
 | 想定配置 | ループバック直結、または Cloudflare Tunnel + Access 経由（§5） |
-| 完了通知 | ポーリングのみ（Take / Job の GET）。webhook は将来課題 |
-| 暴走ガード | 未完了 Take が上限（既定 20）を超えたらレンダリング投入を 429 で拒む |
+| 完了通知 | ポーリングのみ（Take / Job / Export の GET）。webhook は将来課題 |
+| 暴走ガード | 「生成」と「書き出し」の 2 プール。上限（既定 20）に達していたら投入を 429 で拒む |
 
-### Grok エージェントの操作との対応
+### 公開している範囲
 
-| agent_protocol のアクション | 外部 API |
+正本は `GET /api/v1/openapi.json`（アプリ全体のスキーマから `/api/v1` のパスと、そこから
+`$ref` で辿れるスキーマだけを抜き出した縮小版。内部 API は載らない）。ここでは何が
+どこまで見えているかの目安だけを並べる。
+
+| 群 | 代表的なエンドポイント |
 |---|---|
-| `studio_list_projects` | `GET /api/v1/projects` |
-| `studio_get_project` | `GET /api/v1/projects/{id}` |
-| `studio_create_project` | `POST /api/v1/projects` |
-| `studio_update_project` | `PATCH /api/v1/projects/{id}` |
-| `studio_upsert_episode` | `POST /api/v1/projects/{id}/episodes` / `PATCH /api/v1/episodes/{id}` |
-| `studio_upsert_scene` | `POST /api/v1/episodes/{id}/scenes` / `PATCH /api/v1/scenes/{id}` |
-| `studio_upsert_shot` | `POST /api/v1/projects/{id}/shots` / `PATCH /api/v1/shots/{id}` |
-| `studio_delete_shot` | `DELETE /api/v1/shots/{id}` |
-| `studio_upsert_asset` | `POST /api/v1/projects/{id}/assets` / `PATCH /api/v1/assets/{id}` |
-| `studio_register_asset_from_job` | `POST /api/v1/projects/{id}/assets/from-job` |
-| `studio_render_shot` | `POST /api/v1/shots/{id}/render`（ボディは任意、下記） |
-| `studio_get_takes` | `GET /api/v1/shots/{id}/takes` |
-| `studio_translate_shot` | `POST /api/v1/shots/{id}/translate` |
-| `studio_select_take` | `POST /api/v1/takes/{id}/select` |
-| `studio_reject_take` | `POST /api/v1/takes/{id}/reject` |
-| （ジョブ状態の参照） | `GET /api/v1/jobs/{id}`（読み取りのみ） |
+| プロジェクト | `GET/POST /projects`・`GET/PATCH /projects/{id}` |
+| 話 / 場 / カット | `POST /projects/{id}/episodes`・`POST /episodes/{id}/scenes`・`POST /projects/{id}/shots` と各 `PATCH` / `DELETE`、`POST .../reorder`（並べ替え） |
+| 投入前の確認 | `GET /shots/{id}/prompt-preview`（実際に投入されるプロンプト・ワークフロー・その理由・`render_blocker`）・`POST /shots/{id}/translate` |
+| 素材（World Bible） | `POST /projects/{id}/assets`（JSON / multipart）・`assets/from-job`・`PATCH/DELETE /assets/{id}`・素材のリファレンス（`/assets/{id}/files`・`DELETE /asset-files/{id}`） |
+| 生成と Take | `POST /shots/{id}/render`・`GET /shots/{id}/takes`・`POST /takes/{id}/select`・`reject`・`cancel`・`DELETE /takes/{id}` |
+| 汎用ジョブ | `GET/POST /jobs`・`GET /jobs/{id}`・`POST /jobs/{id}/cancel`・`rerun`・`continue` |
+| ライブラリ | `GET /library`・`POST /library/from-job`・`POST /library/sheet`・`PATCH /library/{id}`（**削除は非公開**） |
+| 編集（タイムライン） | `POST /projects/{id}/timelines`・`GET/PATCH/DELETE /timelines/{id}`・`PUT /timelines/{id}/clips`・トラック CRUD・`generate-subtitles`・`sync-preview` / `sync`・`missing` / `missing/resolve`・`GET /projects/{id}/media` |
+| 書き出し | `POST /timelines/{id}/export`（202）・`GET /exports/{id}`・`POST /exports/{id}/save-to-library` |
+| 編集履歴 | `GET /projects/{id}/revisions`・`GET .../{seq}/diff`・`POST .../{seq}/restore`（§3.1） |
+| 画面 | `GET/PATCH /ui/generate-form`・`POST /ui/navigate`（§3.2） |
+| Remotion | `GET /remotion/compositions`（§3.3） |
+| 参照系 | `GET /openapi.json`・`capabilities`・`options`・`prompt-guide`・`prompt-examples` |
+| 一括投入 | `POST /stories`（§2） |
+
+`GET /api/v1/capabilities` は「いまの接続先でラテント連続性 / ラテントアップスケールが
+使えるか」を、`GET /api/v1/options` は生成フォームと同じ選択肢（アスペクト比の表記・
+ワークフローの一覧と制約・LoRA・ライブラリ）を返す。`options` は ComfyUI の所在を
+外に出さないため `comfy_url` を空にして返し、ComfyUI が落ちていても `comfy_error` を
+入れた 200 になる。
 
 `POST /api/v1/shots/{id}/render` は**任意の JSON ボディ**を取る（内部 API の
 `POST /api/studio/shots/{id}/render` と同じ `StudioRenderRequest`）。送った項目だけが
@@ -55,14 +65,15 @@
 | `duration` | カットの `duration_seconds`（1〜15 秒） |
 | `steps` | プロジェクトの `steps` → テンプレートの既定（0〜150。`0` を送れば「既定のまま」の明示で、プロジェクトの設定より優先） |
 | `seed` | カットの `seed` → 毎回ランダム |
+| `latent_upscale` | プロジェクトの `latent_upscale`（既定 ON。接続先が対応しなければ黙って `off`） |
 
 ボディごと省けば従来どおりの投入。範囲外の値は 400（`StudioError`）で、実際に使われた
 値は Take の元ジョブの `params`（`GET /api/v1/jobs/{id}`）に残る。
 
-**公開しないもの**: プロジェクト / エピソード / シーン / Take の削除、設定
-（`/api/settings`）、モデルダウンロード、汎用ジョブ投入（`/api/jobs` POST）、
-キャンバス操作、エージェントセッション（`/api/agent`）。必要になった時点で
-個別に追加を検討する。
+**公開しないもの**: **プロジェクトの削除**（リビジョンごとカスケードで消えて復元できない
+ので、外には出さず人に頼む運用にする）、ライブラリ素材の削除、設定（`/api/settings`）、
+モデルのダウンロード、プロンプト作成チャット（`/api/chat`）。必要になった時点で個別に
+追加を検討する。
 
 ## 2. 追加エンドポイント: 一括投入
 
@@ -127,8 +138,9 @@ GET /api/v1/prompt-guide
   `purpose` はメモ）」「素材メンション `@名前`」「H3 プロンプト規約」「実例
   （代表 2 件 + §2.2 の取得方法）」「stories 投入の注意」の 5 節。フィールドの届き方の正本は
   `app.studio.compose_prompt`（変えたらガイドも直す）。
-- 内蔵エージェント向けの `app.prompts.AGENT_STUDIO` はジョブ実行・Take 管理まで
-  含むので、そのままは配らない（ドラフト作成に要る分だけのサブセット）。
+- 段取りそのもの（何から読み、どういう順で作り、どこで人に確認するか）はガイドではなく
+  SKILL（`.agents/skills/karakuri-studio/SKILL.md`）が持つ。ここで配るのは
+  **脚本とプロンプトの書き方**だけ。
 
 ### 2.2 プロンプト実例（few-shot）
 
@@ -170,11 +182,10 @@ GET /api/v1/prompt-examples?mode=r2v&category=multi-reference&limit=2
 - `tier` は 2 種類: `canonical` は公式 rewrite 形式の**完成例**（そのまま真似して
   よい）、`inspiration` は公式ブログ / コミュニティの**生入力**（発想の素材で、
   形は真似しない）。
-- データの正本は `backend/app/h3_examples.py`。選び方（`select_examples`）は内蔵
-  エージェントの `get_prompt_examples` アクションと共有していて、外部と内蔵で
-  同じ例が出る。
+- データの正本は `backend/app/h3_examples.py`。§2.1 のガイドが載せる代表例も同じ
+  ところから選ぶ（`select_examples`）ので、ガイドと実例集で食い違わない。
 
-## 3. 認証
+## 3. 認証・安全弁・横断的な仕組み
 
 - 設定 `Settings.external_api_key: str = ""` を追加（`SettingsUpdate` にも追加、
   設定画面に入力欄を出す）。
@@ -185,13 +196,23 @@ GET /api/v1/prompt-examples?mode=r2v&category=multi-reference&limit=2
 - 待受は今までどおり `127.0.0.1` を既定とする。ネット越しの公開は §5 の
   Cloudflare 構成で行い、アプリを直接 `0.0.0.0` に開けない。
 
-### 暴走ガード（投入上限）
+### 暴走ガード（投入上限。2 つのプール）
 
-外部からのレンダリング投入（`POST /api/v1/shots/{id}/render` と
-`POST /api/v1/stories` の `render: true`）は、**未完了の Take**（ジョブが
-queued / running のもの）が上限を超えているとき 429 を返す。
+外部からの投入は 2 つのプールで見張り、そのプールが上限に達しているあいだは 429。
 
-- 上限は設定 `external_max_pending_takes: int = 20`（0 = 無制限）。
+| プール | 数えるもの | 掛かるエンドポイント |
+|---|---|---|
+| 生成 | 未完了のジョブ（queued / running。Take は必ずジョブを 1 本持つので Take も含む） | `POST /shots/{id}/render`・`POST /stories`（`render: true`）・`POST /jobs`・`jobs/{id}/rerun`・`continue` |
+| 書き出し | 走っている書き出し（ffmpeg） | `POST /timelines/{id}/export` |
+
+- 上限はどちらも設定 `external_max_pending_takes: int = 20`（0 = 無制限）。
+- **プールを分ける**理由: 走るものが GPU（生成）と CPU（ffmpeg）で詰まり方が違い、
+  互いの枠を食い合うと片方が動かなくなる。**Shot のレンダリングと汎用ジョブは同じ
+  プールを分け合う**（別々に数えると、どちらも上限まで投入できてしまう）。
+- 「数えてから投入する」までは錠で括る（並行リクエストが数え合いになって、上限に
+  達していても全部すり抜けるのを防ぐ）。錠はプールごとに別で、生成は
+  `app.studio.PENDING_JOBS_LOCK`、書き出しは `external._EXPORTS_LOCK`。書き出しの受付は
+  初回に ffprobe を回して遅いので、同じ錠に相乗りさせると無関係な生成まで待たせてしまう。
 - バグったブリッジの無限投入が GPU キュー占有と課金（RunPod / Comfy Cloud）に
   直結するのを防ぐ最小の安全弁。**内部 API（UI からの操作）には掛けない**。
 
@@ -211,10 +232,72 @@ PATCH /api/v1/shots/sht_x  {"prompt": "…", "base_revision": 42}
 なってしまうため）。省略すれば今までどおり無条件に書き込む。まだ存在しない
 連番（現在より大きい値）を送ると 400。
 
-履歴そのものは内部 API で読める: `GET /api/studio/projects/{id}/revisions`
-（`entity_kind` / `entity_id` で「そのカットの履歴」に絞れる）と
-`.../{seq}/diff`（項目ごとの before / after）。外部 API の変更は
-`actor = "external"` で残る。
+### 3.1 編集履歴（リビジョン）の API
+
+上の 409 から立ち直るための 3 本。スタジオへの書き込みは 1 操作 = 1 リビジョンとして
+積まれていて（SPEC §7.4）、外部 API の変更は `actor = "external"` で残る（`user` = UI /
+`chat` = アプリ内のチャット）。
+
+```
+GET  /api/v1/projects/{id}/revisions?entity_kind=shot&entity_id=sht_x
+GET  /api/v1/projects/{id}/revisions/{seq}/diff
+POST /api/v1/projects/{id}/revisions/{seq}/restore
+```
+
+- **一覧**は新しい順の見出しだけ（中身は含めない）。`entity_kind` / `entity_id` で
+  「そのカットの履歴」に絞れる。409 で弾かれたらここを引き、次の `diff` で**人が何を
+  変えたか**を読んでから書き直す。
+- **差分**は直前のリビジョンとの項目単位の before / after。`updated_at` のような毎回
+  動く列は落としてある。
+- **復元**はボディ無しならプロジェクト丸ごと。`{"entity": "shot", "id": "sht_x",
+  "fields": ["prompt"]}` のように送ると**その 1 件・その項目だけ**の部分復元になる。
+  書き換える**前**の状態も 1 リビジョン残る（「復元前の自動スナップショット」）ので、
+  復元そのものもやり直せる。消しすぎたカットや素材はこれで戻せる。
+- **Take は「載っているものは戻す・知らないものは触らない」**: 生成そのものはリビジョンを
+  作らないので、脚本を 1 つ戻しただけで直後に焼いた Take の目録が消えないようにしてある。
+  採用（`selected_take_id`）はスナップショット側の値に戻り、新しい Take は候補として
+  ぶら下がったまま残る。
+- 履歴の深さは 1 プロジェクトあたり 1000 件（`app.studio.REVISION_LIMIT`）。超えたぶんは
+  古いものから捨てる。
+- 同じ 3 本は内部 API（`/api/studio/projects/{id}/revisions…`）にも出ている。
+
+### 3.2 画面の操作（`ui/generate-form` / `ui/navigate`）
+
+「エージェントがフォームを埋めて、人が確かめてから押す」「エージェントが人の画面を
+目的の場所へ連れて行く」ための 2 本（SPEC §7.5）。
+
+```
+GET   /api/v1/ui/generate-form            → {"values": {…}, "revision": 7, "updated_by": "ui"}
+PATCH /api/v1/ui/generate-form            {"values": {"duration": 5}, "base_revision": 7}
+POST  /api/v1/ui/navigate                 {"view": "studio", "project_id": "prj_x", "shot_id": "sht_y"}
+```
+
+- `PATCH` は**送ったキーだけ**を書き換える（触れなかった項目は今のまま）。`base_revision`
+  を付けるとその間に人が触っていた場合 409（本文に現在値が入るので取り直さずに済む）、
+  未来の連番なら 400。省略すると強制上書き。
+- 保存に成功すると WS（`type: "form"`）で開いているブラウザのフォームへ流し込まれる。
+  人がフォームを触れば `PUT /api/ui/generate-form` で書き戻るので、双方向に同期する。
+- そのまま投入したいときは `POST /api/v1/jobs` に `{"from_form": true}`。一緒に送った
+  項目はその上から重ねる（「今のフォームで、尺だけ 5 秒にして流して」）。写せない下書き
+  （ワークフロー id が壊れている等）は 400。
+- `navigate` の行き先は `main`（生成）/ `studio` / `settings`。`project_id` / `shot_id` は
+  `studio` のときだけ渡せ、実在と噛み合わせを確かめてから流す（存在しないものへ飛ばして
+  画面を空にしないため）。ブラウザが 1 つも開いていなくても 204（誰も受け取らないだけ）。
+
+### 3.3 Remotion
+
+React で組んだ動画のレンダリングも、ふつうのジョブとして投げられる（SPEC §5.2）。
+
+```
+GET  /api/v1/remotion/compositions        → {"compositions": ["Opening", "Credits"]}
+POST /api/v1/jobs  {"mode": "remotion", "remotion_composition": "Opening",
+                    "remotion_props": {"title": "第3話"}}
+```
+
+- Remotion プロジェクト（Node のリポジトリ）は**このアプリの外**にあり、設定
+  `remotion_project_dir` がその場所を指す。**空 = 機能ごと無効**で、一覧も投入も 400。
+- 出来た mp4 は他のジョブと同じく `GET /api/v1/jobs/{id}` の `video_url` に出るので、
+  ライブラリ登録・素材登録・タイムラインへの取り込みもそのまま使える。
 
 ## 4. ファイルの受け渡し
 
@@ -230,7 +313,7 @@ PATCH /api/v1/shots/sht_x  {"prompt": "…", "base_revision": 42}
 
 **アプリをそのまま公開してはいけない**: `/api/v1` 以外の内部 API は無認証で、
 `PUT /api/settings`（保存済み API キーの読み書き）・`/docs`（全エンドポイントの
-列挙と実行）・エージェント API（ホスト上で grok CLI を起動）・生成物の静的配信が
+列挙と実行）・チャット API（ホスト上で LLM CLI を起動）・生成物の静的配信が
 すべて晒される。認証はアプリに足すのではなく **Cloudflare の入口で全体に掛ける**。
 
 構成（RunPod 連携ですでに使っている Cloudflare Tunnel と同じ道具立て）:
@@ -268,18 +351,23 @@ PATCH /api/v1/shots/sht_x  {"prompt": "…", "base_revision": 42}
 
 | ファイル | 変更 |
 |---|---|
-| `backend/app/routers/external.py` | 新設。`APIRouter(prefix="/api/v1", dependencies=[Depends(require_external_key)])`。各ハンドラは `app.studio` / `app.jobs` の既存関数を呼ぶだけ |
-| `backend/app/models.py` | `Settings.external_api_key` / `SettingsUpdate` 追加。一括投入の `StoryCreate` / `StoryResult` モデル追加 |
-| `backend/app/studio.py` | 一括投入 `create_story()` を追加（既存の create_episode / create_scene / create_shot を 1 接続でまとめる） |
+| `backend/app/routers/external.py` | ルーター本体。`APIRouter(prefix="/api/v1", dependencies=[Depends(require_external_key)])`。各ハンドラは `app.studio` / `app.jobs` / `app.timeline` / `app.library` / `app.ui_state` / `app.remotion` の既存関数を呼ぶだけ |
+| `backend/app/models.py` | `Settings.external_api_key` / `external_max_pending_takes`。一括投入の `StoryCreate` / `StoryResult`、`UiFormState` / `UiFormUpdate` / `UiNavigate` などのモデル |
+| `backend/app/studio.py` | 一括投入 `create_story()`、編集履歴（`_record_revision` / `diff_revision` / `restore_revision`、§3.1） |
+| `backend/app/ui_state.py` | 生成フォームの下書きの共有（§3.2） |
+| `backend/app/ws.py` | ブラウザへの配信（`studio` / `form` / `ui` フレーム） |
+| `backend/app/remotion.py` | Remotion の composition 一覧とレンダリング（§3.3） |
 | `backend/app/main.py` | `external.router` の include（1 行） |
-| `frontend/`（設定画面） | `external_api_key` の入力欄（生成ボタン付きだと親切） |
-| `README.md` / `docs/SPEC.md` | 外部 API の節を追記（有効化の手順と公開時の注意） |
+| `frontend/`（設定画面） | `external_api_key` の入力欄（[生成] ボタン付き） |
+| `.agents/skills/karakuri-studio/` | 外部エージェント向けの SKILL と curl ラッパー（`AGENTS.md` / `CLAUDE.md` からリンク） |
+| `README.md` / `docs/SPEC.md` | 外部 API の節（有効化の手順と公開時の注意） |
 
 ## 8. 動作確認（2026-08-10 / ローカル ComfyUI + MiniMax H3）
 
-ローカルの ComfyUI（MiniMax H3）に接続した実機で、全エンドポイントを `X-API-Key`
+ローカルの ComfyUI（MiniMax H3）に接続した実機で、当時のエンドポイントを `X-API-Key`
 付きで通し、**素材登録からレンダリング・Take 採否まで一連の流れが動くことを確認
-済み**です。
+済み**です（**この記録は公開範囲を広げる前のもの**で、あとから足した汎用ジョブ・
+ライブラリ・タイムライン・リビジョン・`ui/*`・Remotion はこの表には入っていません）。
 
 | 範囲 | 状態 |
 |---|---|
@@ -291,7 +379,8 @@ PATCH /api/v1/shots/sht_x  {"prompt": "…", "base_revision": 42}
 | 素材登録 3 方式（JSON の `path` 複製 / multipart 添付 / `assets/from-job`） | 確認済み。`PATCH /assets/{id}` も含む |
 | プロンプト中の `@素材名` 参照 | 確認済み。画像素材を参照したカットは自動で `minimax_h3_r2v` に切り替わり、`reference_images` に添付される |
 | レンダリングと Take（`POST /shots/{id}/render` → `GET /shots/{id}/takes`・`GET /jobs/{id}` → `POST /takes/{id}/select` / `reject`） | 確認済み。864x480 / 5 秒 / h264 + aac 音声つきの動画が生成され、採用でカットが `done` に |
-| 暴走ガードの 429（`external_max_pending_takes` 超過） | **未テスト**（実装のみ） |
+| 投入前の確認 `GET /shots/{id}/prompt-preview` | 実装済み。実際に投入されるプロンプト・ワークフローとその理由（`workflow_reason`）・`will_translate` を読み取りだけで返す（組み立てられないカットも 400 ではなく `error` 入りの 200） |
+| 暴走ガードの 429（`external_max_pending_takes` 超過） | **未テスト**（実装のみ。生成 / 書き出しの 2 プールとも） |
 
 補足:
 
@@ -335,8 +424,8 @@ PATCH /api/v1/shots/sht_x  {"prompt": "…", "base_revision": 42}
   `turbo` で回している作品でも、素材の絵は `image_quality` に従います
   （その逆も同じ）。`_opt` / `_turbo` は動画側と同じカスタムノード頼みなので、
   入っていない接続先（Comfy Cloud）では素の版を使います。いまのところ静止画を
-  焼く経路はアプリ側に無く、素材画像を作るのはエージェント（エージェントモード /
-  外部 API 経由の Claude Code・Cursor CLI）なので、この設定は**エージェントへの
+  焼く経路はアプリ側に無く、素材画像を作るのは**外部エージェント**（この API 経由の
+  Claude Code / Codex / Cursor CLI など）なので、この設定は**外部エージェントへの
   指示値**として効きます。
 - プロジェクトの `image_megapixels` / `image_aspect_ratio` / `image_steps`
   （`POST /api/v1/projects` と `PATCH /api/v1/projects/{id}` で読み書きできます。
@@ -380,5 +469,5 @@ PATCH /api/v1/shots/sht_x  {"prompt": "…", "base_revision": 42}
 - 静的配信の**アプリ内**認証（ネット越しは §5 の Cloudflare Access で守るため、
   Cloudflare を使わない公開形態が必要になったときだけ）
 - 複数 API キー / スコープ付きキー
-- 汎用ジョブ投入・キャンバス操作・エージェントセッション起動の公開
+- プロジェクトの削除とライブラリ素材の削除（どちらも取り返しがつかないので保留）
 - リクエスト回数のレート制限（投入キュー上限は §3 の暴走ガードとして v1 に含む）

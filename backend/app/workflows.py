@@ -3053,7 +3053,7 @@ def get_audio_spec(workflow_id: str | None) -> WorkflowSpec:
 
 @dataclass(frozen=True)
 class CatalogEntry:
-    """One workflow as the system prompts describe it (SPEC §4.3 / AGENT-MODE §3.1).
+    """One workflow as the system prompts describe it (SPEC §4.2 / §4.3).
 
     Everything here is derived from the :class:`WorkflowSpec`, so the prompts,
     the UI and the validators cannot drift apart.
@@ -3240,8 +3240,8 @@ def clear_cache() -> None:
 def _validate_common(spec: WorkflowSpec) -> list[str]:
     """バックエンドに依らない決まりごと（カタログに出せる説明があるか等）。"""
     problems: list[str] = []
-    # the catalog embedded in the Grok system prompts is generated from these,
-    # so a new workflow must document itself (SPEC §4.3 / AGENT-MODE §3.1)
+    # the catalog embedded in the chat system prompts is generated from these,
+    # so a new workflow must document itself (SPEC §4.2 / §4.3)
     if not spec.description.strip():
         problems.append(f"{spec.id}: description is empty")
     if spec.kind in ("video", "audio") and not spec.prompt_hint.strip():

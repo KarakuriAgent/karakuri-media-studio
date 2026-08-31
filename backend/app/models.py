@@ -80,10 +80,9 @@ class Settings(BaseModel):
     # **外で構築したバックエンドを参照するだけ**で、プロジェクト（Node のリポジトリ）
     # は別の場所にある。空 = 機能ごと無効（一覧も投入も 400）。
     remotion_project_dir: str = ""
-    # Agent mode (AGENT-MODE §3.4): extra CLI flags (tool permissions) and the
-    # longer timeout research / inspection turns need. `--permission-mode auto`
-    # is confirmed on grok 0.2.112 to enable file read/write (incl. viewing
-    # images) and web search in headless `-p` runs.
+    # LLM CLI の追加フラグ（ツール権限）と、1 ターンあたりの制限時間（SPEC §4.1）。
+    # `--permission-mode auto` は grok 0.2.112 でファイルの読み書き（画像を見るのを
+    # 含む）と web 検索を headless `-p` 実行で有効にすることを確認済み。
     agent_grok_args: list[str] = Field(
         default_factory=lambda: ["--permission-mode", "auto"]
     )
@@ -357,12 +356,12 @@ class ModelDownload(ModelDownloadProgress):
 
 
 class ModelSource(BaseModel):
-    """1 ファイルの取得元（エージェントに渡す「調べに行けるページ」、AGENT-MODE §3.1）。
+    """1 ファイルの取得元（「調べに行けるページ」、SPEC §3.3）。
 
-    ``model_download_urls`` に登録されたダウンロード URL を、そのまま渡しても
-    調べ物には使えないので、可能なら配布ページ（Hugging Face のリポジトリページ /
-    Civitai のモデルページ）へ変換したものを ``page_url`` に入れる。変換できな
-    かったときは空で、エージェントにはダウンロード URL だけが見える。
+    ``model_download_urls`` に登録されたダウンロード URL は調べ物には使えないので、
+    可能なら配布ページ（Hugging Face のリポジトリページ / Civitai のモデルページ）へ
+    変換したものを ``page_url`` に入れる。変換できなかったときは空で、そのときは
+    ダウンロード URL だけが見える。
     """
 
     filename: str

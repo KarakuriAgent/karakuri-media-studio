@@ -7,12 +7,13 @@ Grok Imagine（画像 2 種）を Web UI から実行し、プロンプト作成
 ![生成画面](docs/images/screen-image.png)
 
 - バックエンド: Python 3.12 + FastAPI + SQLite（`app.db`）
-- フロントエンド: React + Vite + Tailwind（ダークテーマの SPA。「生成」と「エージェント」の 2 ビュー + 設定ページ）
-- 生成本体: ComfyUI（ローカル / LAN 上の別 PC / Comfy Cloud）＋ Grok Imagine（Grok Build CLI 経由・画像のみ）
+- フロントエンド: React + Vite + Tailwind（ダークテーマの SPA。「生成」と「スタジオ」の 2 タブ + 設定ページ）
+- 生成本体: ComfyUI（ローカル / LAN 上の別 PC / Comfy Cloud）＋ Grok Imagine（Grok Build CLI 経由・画像のみ）＋ Remotion（任意）
 - プロンプト生成: Grok Build CLI（サブスクリプション認証、API キー不要）
 
-仕様・設計・API の詳細は [`docs/SPEC.md`](docs/SPEC.md)、エージェントモードは
-[`docs/AGENT-MODE.md`](docs/AGENT-MODE.md)、外部公開 API（`/api/v1`・`X-API-Key`）は
+仕様・設計・API の詳細は [`docs/SPEC.md`](docs/SPEC.md)、外部エージェントから
+制作を回すための SKILL は [`.agents/skills/karakuri-studio/SKILL.md`](.agents/skills/karakuri-studio/SKILL.md)、
+外部公開 API（`/api/v1`・`X-API-Key`）は
 [`docs/EXTERNAL-API.md`](docs/EXTERNAL-API.md)、プロンプト実例は
 [`docs/prompt-samples.md`](docs/prompt-samples.md) にあります。この README は
 「起動して使い始めるまで」に絞っています。
@@ -78,6 +79,7 @@ npm --prefix frontend install && npm --prefix frontend run build  # 初回のみ
 - ComfyUI に `http://127.0.0.1:8188` を使っている場合、コンテナからは届きません。設定画面の
   ComfyUI URL を `http://host.docker.internal:8188` か LAN の IP に変えてください
 - `.env` の `COMFY_MODELS_DIR` は、同じ絶対パスでコンテナにもマウントされます
+  （Remotion 連携を使う場合の `REMOTION_PROJECT_DIR` も同じ扱いです）
 - `docker compose` を直接使うときは、リポジトリの実体パスから
   `UID=$(id -u) GID=$(id -g) docker compose up -d` のように実行してください
   （サービス名は `media-studio`。旧名 `video-studio` のコンテナが残っていれば `docker rm -f` で片付けます）
@@ -233,41 +235,30 @@ Stable Audio 3 Medium（効果音・環境音・単一楽器）の 2 種です�
 不足情報を質問し、まとまったら画像 / 動画 / 音声プロンプトの案を提示 → [フォームに反映] で
 プロンプト欄に入ります。
 
-### エージェントモード
+### 外部エージェントでの制作（SKILL）
 
-ヘッダーの「エージェント」タブでは、Grok が**同僚のように制作を回します**。「ダンス動画を 3 本」の
-ような目標を伝えるとプランを提示し、**承認するまで生成しません**。承認後はジョブを順に実行し、
-結果を見て再抽選・続き生成まで自分で進めます（⏹ でいつでも停止）。詳細は
-[`docs/AGENT-MODE.md`](docs/AGENT-MODE.md)。
+「話を書いて、カットを焼いて、採用して、並べて書き出す」までを**手元のコーディング
+エージェント**（Claude Code / Codex / Cursor CLI など）に任せられます。アプリの中に
+エージェントを抱えるのではなく、外部 API（`/api/v1`）を叩いてもらう形です。
 
-**検分（inspect）は頼んだときだけ**走ります。「確認して」「分析して」と言うと、その動画を
-ffmpeg でフレーム分解し、あわせて音声も解析します（無音区間の時刻・統合ラウドネス LUFS・
-ピーク / クリッピング判定・実尺、波形とスペクトログラムの PNG）。音声トラックが無ければ
-「音声トラックなし」と報告します。
+1. 設定 →「接続 / Grok」タブの **外部 API（/api/v1）** で APIキーを保存する
+   （[生成] でランダムなキーを作れます。空のあいだは `/api/v1` は丸ごと 404 です）
+2. エージェントに接続先とキーを渡す（環境変数 `KARAKURI_STUDIO_URL` /
+   `KARAKURI_STUDIO_API_KEY`。省略時はリポジトリ直下の `.env` と
+   `runtime/config.json` から解決されます）
+3. このリポジトリで作業させるだけで、[`AGENTS.md`](AGENTS.md) / [`CLAUDE.md`](CLAUDE.md) から
+   [`.agents/skills/karakuri-studio/SKILL.md`](.agents/skills/karakuri-studio/SKILL.md) に誘導されます
 
-#### 音声文字起こし（STT、オプション）
+SKILL には接続とキーの解決、最初に読む API（`openapi.json` / `prompt-guide` /
+`capabilities` / `options`）、制作の段取り、`base_revision` や削除まわりの鉄則が書いて
+あります。curl ラッパーと動画検分スクリプトは
+[`.agents/skills/karakuri-studio/scripts/`](.agents/skills/karakuri-studio/scripts) にあります。
 
-検分でセリフをタイムスタンプつきに書き起こしたい場合は、**OpenAI 互換の文字起こし
-エンドポイント**（`POST {base_url}/audio/transcriptions`）を用意して、設定 > 接続 / Grok の
-「音声文字起こし（STT）を有効にする」をオンにし、そのサーバーの URL を入れてください。
-ComfyUI や LLM CLI と同じで、重い推論はこのアプリの外に置きます（バックエンドに ML
-ランタイムを抱えません）。使えるサーバーの例:
-
-- [speaches](https://github.com/speaches-ai/speaches)（旧 faster-whisper-server。Docker で起動）
-- [whisper.cpp](https://github.com/ggml-org/whisper.cpp) の `whisper-server`（`--convert` つきで OpenAI 互換）
-- OpenAI API（`https://api.openai.com/v1` + API キー、モデル `whisper-1`）
-
-設定は 3 つです: **URL**（例 `http://localhost:8000/v1`）、**モデル名**（空ならサーバー任せ。
-OpenAI なら `whisper-1`）、**API キー**（ローカルサーバーなら空でかまいません）。
-**このアプリを Docker で動かしていてホスト側のサーバーを使う場合は、`localhost` ではなく
-`http://host.docker.internal:8000/v1` を指定してください**（コンテナ内の `localhost` は
-コンテナ自身を指すため）。
-
-有効にすると次の検分から `t=1.2-2.4s: 「…」` の形式でレポートに載ります
-（タイムスタンプを返さないサーバーなら全文のみ）。URL 未設定・接続不能・エラー応答の
-どれでも検分は止まらず、「STT の接続先 URL が未設定のためスキップしました」のように
-理由がレポートに残り、ほかの解析はそのまま行われます。台本との照合はエージェントが
-読んで判断します。
+エージェントが書き換えた脚本・素材・生成フォームは、開いているブラウザに WebSocket で
+そのまま反映されます（`POST /api/v1/ui/navigate` で画面を目的の場所へ動かすこともできます）。
+人が同時に編集していても上書きし合わないよう、書き込みには編集履歴の連番
+（`base_revision`）による楽観ロックが掛かります。消しすぎたカットや素材は
+スタジオの編集履歴（差分・部分復元）から戻せます。
 
 ### LoRA
 
@@ -303,21 +294,21 @@ OpenAI なら `whisper-1`）、**API キー**（ローカルサーバーなら�
 | `runpod_comfy_url` / `runpod_comfy_api_key` | RunPod の Pod 上の ComfyUI の URL と API キー（任意） | 空 |
 | `comfy_cloud_api_key` | ComfyCloud の API キー（エンドポイントは `https://cloud.comfy.org` 固定） | 空 |
 | `grok_command` / `grok_model` | grok CLI のコマンドと使用モデル | `grok` / `grok-4.5` |
-| `grok_workdir` | チャット / エージェントが grok CLI を回す作業ディレクトリ | `runtime/grok-workdir` |
+| `grok_workdir` | プロンプト作成チャットが LLM CLI を回す作業ディレクトリ | `runtime/grok-workdir` |
 | `grok_media_timeout` / `grok_media_workdir` | Grok Imagine の 1 枚あたりの制限時間（秒）と専用の作業ディレクトリ（プロンプト作成のチャットとは分けます） | `300` / `runtime/grok-media-workdir` |
-| `agent_grok_args` | grok CLI に足すフラグ（ツール権限）。**空にするとエージェントのツールが無効**になります | `--permission-mode auto` |
-| `agent_use_acp` | エージェントのターンを ACP で回す（実行中の活動をチャットに出す） | オン |
-| `agent_stt_enabled` / `agent_stt_base_url` / `agent_stt_model` / `agent_stt_api_key` | 検分（inspect）の音声解析に文字起こしを足すか、と OpenAI 互換の文字起こしサーバーの URL・モデル名・API キー（Docker からホストのサーバーを指すなら `host.docker.internal`） | オフ / 空 / 空 / 空 |
+| `remotion_project_dir` | 構築済み Remotion プロジェクト（Node のリポジトリ）の場所。**空なら Remotion 連携ごと無効** | 空 |
+| `agent_grok_args` | LLM CLI に足すフラグ（ツール権限）。**空にすると CLI のツールが無効**になります | `--permission-mode auto` |
+| `agent_use_acp` | CLI のターンを ACP で回す（実行中の活動をチャットに出す） | オン |
 | `hf_token` / `civitai_api_key` | モデルダウンロード用のトークン | 空 |
 | `model_overrides` / `model_choices` | **接続先ごと**のモデルファイル名の上書きと、実行ごとに選べる候補リスト | `{}` |
 | `runpod_*` | RunPod Pod の自動起動（有効化 / APIキー / テンプレート ID / GPU 種別 / Network Volume ID） | 無効 |
-| `agent_grok_timeout` / `agent_max_*` / `canvas_max_turns` | エージェントのタイムアウトと実行上限（どれも 0 = 無制限） | SPEC 参照 |
-| `external_api_key` / `external_max_pending_takes` | 外部 API（`/api/v1`）の共有キーと、未完了 Take の上限 | 空 / `20` |
+| `agent_grok_timeout` | LLM CLI 1 回あたりの制限時間（秒。0 = 無制限） | `300` |
+| `external_api_key` / `external_max_pending_takes` | 外部 API（`/api/v1`）の共有キーと、未完了ジョブ・走っている書き出しの上限（0 = 無制限） | 空 / `20` |
 
 **モデルタブ**と**LoRA 管理タブ**の先頭には [対象の接続先] のプルダウンがあり、
 **モデルの指定と LoRA 登録は接続先ごとに保存されます**（環境によって入っているファイルが
 違うため）。既定値はテンプレートの値（＝ Comfy Cloud で動作確認済みの構成）で、同じ行の
-**候補リスト**に別のファイル名を足すと、そのスロットは生成フォームとエージェントで
+**候補リスト**に別のファイル名を足すと、そのスロットは生成フォームと API から
 **実行ごとに切り替え**られるようになります。詳細は SPEC §3.3。
 
 不足しているモデル（**未検出**バッジ）は行の [DL]、まとめてなら [全DL] で落とせます。
@@ -351,24 +342,34 @@ Pod 側の models ディレクトリです（RunPod は Pod のダウンロー�
 curl -H "X-API-Key: <保存したキー>" http://127.0.0.1:8000/api/v1/projects
 ```
 
-公開しているのは Grok エージェントに許しているスタジオ操作と同じ範囲
-（プロジェクト / 話 / 場 / カット / 素材の作成・更新、カットの削除、生成の投入と Take の
-採否、ジョブ状態の参照）と、話 1 本を 1 リクエストで納品する `POST /api/v1/stories` です。
-壊れた連携先が生成を積み続けないよう、**未完了 Take が上限**（`external_max_pending_takes`、
-既定 20 / 0 で無制限）に達しているあいだは投入を 429 で拒みます（UI からの生成には
-掛かりません）。
+**公開範囲の正本は `GET /api/v1/openapi.json`** です（この API だけに絞った縮小版の
+OpenAPI で、エージェントにはこれを読ませます）。おおまかには、人が UI でできることの
+ほぼ全部が入っています:
 
-認証・CRUD・素材登録・`POST /api/v1/stories` での一括投入から、レンダリングと Take の
-採否までは**ローカルの ComfyUI（MiniMax H3）で実機確認済み**です（429 のガードのみ未検証）。
+- 脚本（プロジェクト / 話 / 場 / カット / 素材）の作成・更新・並べ替えと、投入前の
+  `GET /api/v1/shots/{id}/prompt-preview`
+- 生成（`POST /api/v1/shots/{id}/render` と Take の採否 / 汎用ジョブの `POST /api/v1/jobs`・
+  キャンセル・再実行・続き生成）、ライブラリ、タイムラインの編集と mp4 書き出し
+- 編集履歴（一覧 / 差分 / 復元）、生成フォームの下書き（`ui/generate-form`）と画面移動
+  （`ui/navigate`）、Remotion の composition 一覧
+- 参照系: `capabilities`（いまの接続先で使える機能）/ `options`（フォームと同じ選択肢）/
+  `prompt-guide`・`prompt-examples`（脚本とプロンプトの書き方）
+- 話 1 本を 1 リクエストで納品する `POST /api/v1/stories`
+- **削除はプロジェクト以外**（プロジェクトは履歴ごと消えて戻せないので、外には出していません）
+
+壊れた連携先が積み続けないよう、**未完了のジョブ**と**走っている書き出し**をそれぞれ
+上限（`external_max_pending_takes`、既定 20 / 0 で無制限）で見張り、達しているあいだは
+投入を 429 で拒みます（UI からの操作には掛かりません）。
+
 プロンプトに `@素材名` を書いて画像素材を参照すると、ワークフローは自動で参照素材版
 （r2v）に切り替わります。カットの `megapixels` を省略するとバックエンドの既定値になるので、
-VRAM の小さい GPU では小さめの値を明示してください。確認済みの範囲と運用上の注意は
+VRAM の小さい GPU では小さめの値を明示してください。実機確認の記録と運用上の注意は
 [`docs/EXTERNAL-API.md`](docs/EXTERNAL-API.md) §8 にまとめてあります。
 
 **ネット越しに公開する場合はアプリをそのまま外に出さないでください**: `/api/v1` 以外の
 内部 API・`/docs`・生成物の静的配信は無認証です。Cloudflare Tunnel + Access を前に置く
 構成を [`docs/EXTERNAL-API.md`](docs/EXTERNAL-API.md) §5 に書いてあります。エンドポイントの
-一覧と本文の形も同じドキュメントを参照してください。
+一覧と本文の形は `GET /api/v1/openapi.json` を参照してください。
 
 ---
 

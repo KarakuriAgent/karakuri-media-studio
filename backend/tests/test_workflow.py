@@ -181,7 +181,7 @@ def test_templates_are_not_mutated():
 
 
 # --------------------------------------------------------------------------
-# prompt catalog (SPEC §4.3 / AGENT-MODE §3.1)
+# prompt catalog (SPEC §4.2 / §4.3)
 # --------------------------------------------------------------------------
 
 def test_every_workflow_documents_itself():

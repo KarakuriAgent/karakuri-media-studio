@@ -54,15 +54,27 @@ scripts/studio.sh wait-export <export_id> [interval_sec]
 ## 3. 制作フロー
 
 1. **既存を確かめる**: `GET /projects` → `GET /projects/{id}`。すでにある作品を
-   作り直さない（`GET /projects/{id}` は素材・話・場・カット・Take と
-   `revision_seq` を一度に返す）。
+   作り直さない。応答は**すべてトップレベルの配列**で、`assets` / `episodes` /
+   `scenes` / `shots` / `takes` と `revision_seq` が並ぶ。
+   - **`takes` はトップレベルの 1 本の配列**。`shots[].takes` は無い。Shot 側に
+     あるのは `selected_take_id` だけなので、カットの Take を見たいときは
+     `takes` を `shot_id` で自分で束ねる（`scenes` も同じく `episode_id` で束ねる）。
+   - **タイムラインは入らない**。編集面は別で `GET /projects/{id}/timelines`。
 2. **作品を作る**: `POST /projects`。`synopsis` / `world_notes` を書く。
 3. **素材を用意する**（見た目を固定したいものは必ずファイル実体を持たせる）
+   - **`kind` と `category` は別物**。`kind` は**メディア種別**で
+     `image` / `video` / `audio` の 3 つだけ。キャラ・場所・小道具の分類は
+     `category` で `character` / `environment` / `prop` / `style` / `reference`。
+     `kind:"character"` のように混ぜると **422**。
    - 生成して登録: `POST /jobs {"mode":"image_only", …}` → `wait-job` →
      `POST /projects/{id}/assets/from-job {"job_id":…,"name":"アリス",
-     "source":"image"}`。
+     "category":"character","source":"image"}`
+     （`from-job` の `kind` と `path` は `source` が選んだ出力から決まるので、
+     書いても無視される）。
    - 手元のファイル: `POST /projects/{id}/assets` に multipart（`file=@…`）、
-     または同じマシンの絶対パスを JSON の `path` で。
+     または同じマシンの絶対パスを JSON の `path` で。JSON なら例えば
+     `{"name":"アリスの部屋","kind":"image","category":"environment",
+     "path":"/abs/room.png"}`。既定は `kind:"image"` / `category:"reference"`。
    - メタデータだけの素材は `prompt_caption`（英語）を必ず書く。書かないと本文の
      `@名前` は何も足さない。
 4. **脚本**: `POST /projects/{id}/episodes` → `.../episodes/{id}/scenes` →
@@ -116,11 +128,24 @@ scripts/studio.sh wait-export <export_id> [interval_sec]
 - `auto_translate`（既定 on）: **日本語で書く**。投入時に英訳が走る。
   完成した英文を `prompt` に入れない。`@名前` を英語の説明文に置き換えない
   （参照が外れる）。
+- Shot の `camera` は `The camera <camera>.` という**英文の一部として本文に
+  合成される**ので、`auto_translate` が off の作品では camera も英語で書く
+  （`pushes in with small amplitude at slow speed` のように動詞から書く）。on なら
+  日本語で書いても英訳が直す。
 
 ## 6. 鉄則
 
-- **テキスト項目の PATCH には必ず `base_revision`。** 取得系が返す
-  `revision_seq` をそのまま渡す。付けないと人の編集を黙って踏み潰す。
+- **テキスト項目の PATCH には必ず `base_revision`。** 渡す値は
+  **`GET /projects/{id}` のトップレベル `revision_seq`**。付けないと人の編集を
+  黙って踏み潰す。
+  - **プロジェクト単位の連番**であって、Shot / Scene / Episode ごとの版数では
+    ない。どのエンティティの PATCH でも同じ値（直前に読んだ
+    `GET /projects/{id}` の `revision_seq`）を渡す。409 になるのは
+    「読んだあとに**同じエンティティ**が触られたとき」だけで、別のカットが
+    動いただけなら通る。
+  - `POST /projects` の応答には `revision_seq` が**入らない**（null 扱い）。
+    作った直後も含め、PATCH の前に必ず `GET /projects/{id}` で読み直す。
+  - Shot / Scene / Take の一覧にも `revision_seq` は無い。探しに行かない。
   409 が返ったら
   `GET /projects/{id}/revisions?entity_kind=shot&entity_id=…` で**そのカットの
   履歴**を引き、`GET /projects/{id}/revisions/{seq}/diff` で人が何を変えたかを

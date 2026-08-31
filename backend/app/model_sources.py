@@ -1,9 +1,8 @@
-"""登録済みモデル・LoRA の「取得元ページ」（AGENT-MODE §3.1）。
+"""登録済みモデル・LoRA の「取得元ページ」（SPEC §3.3）。
 
-設定の ``model_download_urls``（ファイル名 -> ダウンロード URL、SPEC §3.3）は
-ダウンロード用の直リンクなので、そのままエージェントに渡しても**使い方を調べる**
-役には立たない。ここでは配布ページ URL に変換し、エージェントのシステムプロンプト
-（CHOICES の隣、MODEL SOURCES セクション）に焼き込むための一覧を組み立てる。
+設定の ``model_download_urls``（ファイル名 -> ダウンロード URL）はダウンロード用の
+直リンクなので、そのままでは**配布元の使い方を調べる**役には立たない。ここでは
+配布ページ URL に変換し、「そのモデルについて調べに行ける場所」の一覧を組み立てる。
 
 変換のしかた:
 
@@ -193,10 +192,10 @@ def _model_usage(options: Options) -> dict[str, list[str]]:
 
 
 async def collect(options: Options) -> list[ModelSource]:
-    """エージェントに見せる取得元一覧（LoRA が先、次にモデルファイル）。
+    """取得元の一覧（LoRA が先、次にモデルファイル）。
 
     設定に取得元 URL が登録されているファイルだけが対象。URL が 1 件も無ければ
-    空リストを返し、プロンプトにはセクションごと出さない。
+    空リストを返す（呼び出し側はその項目ごと出さない）。
     """
     urls = load_settings().model_download_urls
     if not urls:

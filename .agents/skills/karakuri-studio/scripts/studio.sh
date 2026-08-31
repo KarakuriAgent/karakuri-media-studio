@@ -10,6 +10,9 @@
 #   studio.sh wait-job <job_id> [interval_sec]   ジョブの完了まで待つ (既定 10 秒)
 #   studio.sh wait-export <export_id> [interval_sec]
 #
+# 応答の body は標準出力へ、HTTP ステータスは成否によらず標準エラーへ 1 行
+# (`-> 204`) 出す。body が空の 204 でも成否をこのラッパーだけで確かめられる。
+#
 # 接続先とキーの解決:
 #   BASE = $KARAKURI_STUDIO_URL、無ければ <repo>/.env の HOST/PORT (既定 127.0.0.1:8000)
 #   KEY  = $KARAKURI_STUDIO_API_KEY、無ければ <repo>/runtime/config.json の external_api_key
@@ -85,7 +88,9 @@ call() {
   pretty < "$tmp"
   rm -f "$tmp"
   case "$status" in
-    2*) return 0 ;;
+    # ステータスは常に stderr に出す（204 のようにボディが無い応答でも、
+    # 成否をこのラッパーだけで確かめられるように）。stdout は body のまま。
+    2*) printf -- '-> %s\n' "$status" >&2; return 0 ;;
     404) printf 'studio.sh: HTTP 404 (パスが違うか、外部 API キーが未設定です)\n' >&2 ;;
     401) printf 'studio.sh: HTTP 401 (API キーが一致しません)\n' >&2 ;;
     409) printf 'studio.sh: HTTP 409 (base_revision が古い。取得しなおしてから出し直す)\n' >&2 ;;
@@ -119,7 +124,7 @@ except Exception:
 
 case "${1:-}" in
   ""|-h|--help)
-    sed -n '2,20p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,23p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
     exit 0 ;;
   wait-job)
     [[ -n "${2:-}" ]] || die "使い方: studio.sh wait-job <job_id> [interval_sec]"

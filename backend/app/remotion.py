@@ -50,8 +50,21 @@ DEFAULT_ENTRY = "src/index.ts"
 #: Remotion を起動するコマンド（``npx remotion …`` を実行する）
 NPX = "npx"
 
-#: 失敗理由に載せる stderr の長さ（そのままユーザーに出る）
-ERROR_TAIL = 800
+#: 失敗理由に載せる文字数の上限（そのままユーザーに出る）
+ERROR_TAIL = 400
+#: 失敗理由に載せる行数（要点だけ。スタックトレース全文はサーバーログへ）
+ERROR_LINES = 2
+
+#: 要点らしい行（``Error: …`` / ``TypeError: …`` / Remotion の ``✕`` 見出し）
+_ERROR_LINE_RE = re.compile(
+    r"(?:^|\s)(?:[A-Za-z_$][\w$]*)?Error\b|^\s*[✕✖×]|^\s*(?:Failed|FATAL)\b",
+    re.IGNORECASE,
+)
+#: スタックトレースの構成要素（``at foo (…)`` / ``node:internal/…`` / 桁合わせの
+#: ``^^^``）。ユーザー向けの文言には出さない
+_STACK_LINE_RE = re.compile(
+    r"^(?:at\s|\.{3}\s|node:internal|Require stack:|-\s+/|\^+$|\|)"
+)
 
 #: 進捗の見出しとして無視できない行の目印。Remotion の出力は版によって
 #: 「Rendered 120/300」「Rendering frames | ██ | 120/300」などまちまちなので、
@@ -242,8 +255,38 @@ async def _kill(process: asyncio.subprocess.Process) -> None:
         await process.wait()
 
 
+def summarize_error(stdout: str, stderr: str) -> str:
+    """CLI の出力から**ユーザーに見せる 1〜2 行**を抜く。
+
+    Node のスタックトレースをそのまま外部 API の 400 本文に載せると読めないので、
+    スタックのフレーム（``at foo (…)``）を落としたうえで、末尾に一番近い
+    「``Error:`` らしい行」とその次の行だけを返す。それらしい行が無ければ末尾の
+    数行に倒す。全文は :func:`_failure` がサーバーログへ流す。
+    """
+    text = stderr.strip() or stdout.strip()
+    lines = [
+        line
+        for line in (_strip_ansi(raw).strip() for raw in text.splitlines())
+        if line and not _STACK_LINE_RE.match(line)
+    ]
+    if not lines:
+        return "(no output)"
+    for index in range(len(lines) - 1, -1, -1):
+        if _ERROR_LINE_RE.search(lines[index]):
+            start = index
+            break
+    else:
+        start = max(0, len(lines) - ERROR_LINES)
+    detail = " / ".join(lines[start : start + ERROR_LINES])
+    return detail[:ERROR_TAIL]
+
+
 def _failure(action: str, code: int, stdout: str, stderr: str) -> RemotionError:
-    detail = (stderr.strip() or stdout.strip() or "(no output)")[-ERROR_TAIL:]
+    log.error(
+        "remotion %s failed (exit %s)\n--- stdout ---\n%s\n--- stderr ---\n%s",
+        action, code, stdout.strip(), stderr.strip(),
+    )
+    detail = summarize_error(stdout, stderr)
     return RemotionError(f"Remotion の{action}に失敗しました (exit {code}): {detail}")
 
 
@@ -269,12 +312,19 @@ def parse_compositions(stdout: str) -> list[str]:
     - 先頭トークンが Remotion の ID 文法（:data:`_ID_RE`）に収まっていて、
       英数字を 1 文字以上含み（``-----`` のような罫線を捨てる）、
     - 見出し（``Composition``）ではなく、
-    - 続きのトークンが**すべて数字らしい**（表の行）か、そもそも無い（``--quiet``）
+    - 続きのトークンが**すべて数字らしい**（表の行）か、そもそも無い、
+      または**すべて ID 文法に収まる**（``--quiet`` は 1 行に空白区切りで
+      全 ID を並べる: ``MusicVideo Slate``）
 
-    行だけ。``Bundling video 100%`` のようなログ行は 2 つ目が数字でないので
-    落ちる。重複は先勝ちで落とす。
+    行だけ。``Bundling video 100%`` のようなログ行は 2 つ目が ID 文法にも
+    数字にも収まらないので落ちる。重複は先勝ちで落とす。
     """
     ids: list[str] = []
+
+    def _add(token: str) -> None:
+        if token not in ids:
+            ids.append(token)
+
     for raw in stdout.splitlines():
         line = _strip_ansi(raw).strip()
         if not line:
@@ -284,10 +334,15 @@ def parse_compositions(stdout: str) -> list[str]:
             continue
         if not _ID_RE.fullmatch(token) or not any(c.isalnum() for c in token):
             continue
-        if rest and not all(_NUMERIC_RE.fullmatch(word) for word in rest):
+        if not rest or all(_NUMERIC_RE.fullmatch(word) for word in rest):
+            _add(token)
             continue
-        if token not in ids:
-            ids.append(token)
+        if all(
+            _ID_RE.fullmatch(word) and any(c.isalnum() for c in word)
+            for word in rest
+        ):
+            for word in (token, *rest):
+                _add(word)
     return ids
 
 
