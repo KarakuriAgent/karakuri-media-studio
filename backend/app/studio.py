@@ -1717,7 +1717,7 @@ async def update_episode(
         return await _fetch_episode(conn, episode_id)
 
 
-async def delete_episode(episode_id: str) -> bool:
+async def delete_episode(episode_id: str, *, actor: str = "user") -> bool:
     """配下の場ごと消す。場にいた Shot は未分類（``scene_id = NULL``）に戻る。"""
     async with get_db() as conn:
         episode = await _fetch_episode(conn, episode_id)
@@ -1730,7 +1730,7 @@ async def delete_episode(episode_id: str) -> bool:
         await _record_revision(
             conn,
             episode.project_id,
-            "user",
+            actor,
             f"{_titled('話', episode.title, episode_id)}を削除"
             f"（場 {len(scenes)} 件ごと）",
             entity_kind="episode",
@@ -1740,7 +1740,9 @@ async def delete_episode(episode_id: str) -> bool:
         return True
 
 
-async def reorder_episodes(project_id: str, ids: list[str]) -> list[StudioEpisode]:
+async def reorder_episodes(
+    project_id: str, ids: list[str], *, actor: str = "user"
+) -> list[StudioEpisode]:
     async with get_db() as conn:
         if await _fetch_project(conn, project_id) is None:
             raise StudioError("project not found")
@@ -1752,7 +1754,7 @@ async def reorder_episodes(project_id: str, ids: list[str]) -> list[StudioEpisod
                 (order, episode_id),
             )
         await _record_revision(
-            conn, project_id, "user", f"話を並べ替え（{len(ids)} 件）"
+            conn, project_id, actor, f"話を並べ替え（{len(ids)} 件）"
         )
         await conn.commit()
         return await _fetch_episodes(conn, project_id)
@@ -1878,7 +1880,7 @@ async def _detach_shots(
         )
 
 
-async def delete_scene(scene_id: str) -> bool:
+async def delete_scene(scene_id: str, *, actor: str = "user") -> bool:
     """場だけ消す。そこにいた Shot は未分類（``scene_id = NULL``）に戻る。"""
     async with get_db() as conn:
         scene = await _fetch_scene(conn, scene_id)
@@ -1889,7 +1891,7 @@ async def delete_scene(scene_id: str) -> bool:
         await _record_revision(
             conn,
             scene.project_id,
-            "user",
+            actor,
             f"{_titled('場', scene.title, scene_id)}を削除",
             entity_kind="scene",
             entity_id=scene_id,
@@ -1898,7 +1900,9 @@ async def delete_scene(scene_id: str) -> bool:
         return True
 
 
-async def reorder_scenes(episode_id: str, ids: list[str]) -> list[StudioScene]:
+async def reorder_scenes(
+    episode_id: str, ids: list[str], *, actor: str = "user"
+) -> list[StudioScene]:
     async with get_db() as conn:
         episode = await _fetch_episode(conn, episode_id)
         if episode is None:
@@ -1915,7 +1919,7 @@ async def reorder_scenes(episode_id: str, ids: list[str]) -> list[StudioScene]:
         await _record_revision(
             conn,
             episode.project_id,
-            "user",
+            actor,
             f"{_titled('話', episode.title, episode_id)}の場を並べ替え"
             f"（{len(ids)} 件）",
         )
@@ -2182,7 +2186,7 @@ async def add_asset_file(
     return _row_to_asset_file(row)  # type: ignore[arg-type]
 
 
-async def delete_asset_file(file_id: str) -> bool:
+async def delete_asset_file(file_id: str, *, actor: str = "user") -> bool:
     """リファレンスを 1 本外す（ファイル実体は ``assets/`` に残す）。"""
     async with get_db() as conn:
         async with conn.execute(
@@ -2197,7 +2201,7 @@ async def delete_asset_file(file_id: str) -> bool:
         await _record_revision(
             conn,
             row["project_id"],
-            "user",
+            actor,
             f"素材のリファレンス（{row['role']}）を削除",
             entity_kind="asset",
             entity_id=row["asset_id"],
@@ -2401,7 +2405,7 @@ async def update_asset(
         return await _fetch_asset(conn, asset_id)
 
 
-async def delete_asset(asset_id: str) -> bool:
+async def delete_asset(asset_id: str, *, actor: str = "user") -> bool:
     """目録から外す（ファイル実体は ``assets/`` に残す）。"""
     async with get_db() as conn:
         asset = await _fetch_asset(conn, asset_id)
@@ -2411,7 +2415,7 @@ async def delete_asset(asset_id: str) -> bool:
         await _record_revision(
             conn,
             asset.project_id,
-            "user",
+            actor,
             f"素材『{asset.name}』を削除",
             entity_kind="asset",
             entity_id=asset_id,
@@ -2686,7 +2690,9 @@ async def delete_shot(shot_id: str, *, actor: str = "user") -> bool:
         return True
 
 
-async def reorder_shots(project_id: str, shot_ids: list[str]) -> list[StudioShot]:
+async def reorder_shots(
+    project_id: str, shot_ids: list[str], *, actor: str = "user"
+) -> list[StudioShot]:
     """``shot_ids`` の並び順をそのまま ``sort_order`` にする。
 
     並び順は**場の中**のものなので、受け取るのは「1 つの場（または未分類
@@ -2734,7 +2740,7 @@ async def reorder_shots(project_id: str, shot_ids: list[str]) -> list[StudioShot
                     (order, now, shot_id),
                 )
         await _record_revision(
-            conn, project_id, "user", f"カットを並べ替え（{len(wanted)} 件）"
+            conn, project_id, actor, f"カットを並べ替え（{len(wanted)} 件）"
         )
         await conn.commit()
         return await _fetch_shots(conn, project_id)
@@ -4095,15 +4101,20 @@ async def reject_take(take_id: str, *, actor: str = "user") -> StudioTake | None
 
 #: 「まだ終わっていない」とみなすジョブの状態（暴走ガードの数え方）。
 #: docs/EXTERNAL-API.md §3 は queued / running と書いているが、その 2 つの
-#: 間に一瞬だけ通る prompting も走っている最中なので同じ扱いにする。
-PENDING_JOB_STATUSES = ("queued", "prompting", "running")
+#: 間に一瞬だけ通る prompting も走っている最中なので同じ扱いにする
+#: （正本は :data:`app.jobs.PENDING_STATUSES`）。
+PENDING_JOB_STATUSES = job_service.PENDING_STATUSES
 
 #: 暴走ガードの「数えてから投入する」を直列化する錠（外部 API 用）。
 #: 数えたあとに投入するまでのあいだ（英訳の待ちを含む）に別のリクエストが
 #: 割り込むと、上限に達していても全部すり抜けてしまう。バックエンドは 1 本の
 #: プロセスで動かすので、プロセス内の錠で足りる。
 #: **投入する側だけが取る**（:func:`count_pending_takes` 自体は錠を取らない）。
-PENDING_TAKES_LOCK = asyncio.Lock()
+#:
+#: 括るのは「生成の投入」だけ（Shot のレンダリングと汎用ジョブ。どちらも同じ
+#: 未完了ジョブのプールを数える）。書き出しのように別のプールを見るガードは、
+#: この錠に相乗りさせず自前の錠を持つこと（遅い投入が無関係な投入を塞ぐ）。
+PENDING_JOBS_LOCK = asyncio.Lock()
 
 
 async def count_pending_takes() -> int:
@@ -4204,7 +4215,7 @@ async def create_story(
         for shot_result in scene_result.shots:
             # 数えてから投入するまでを錠で括る（同時に走っている別の一括投入と
             # 数え合いになって、両方すり抜けるのを防ぐ）
-            async with PENDING_TAKES_LOCK:
+            async with PENDING_JOBS_LOCK:
                 if pending_limit > 0 and await count_pending_takes() >= pending_limit:
                     shot_result.error = (
                         f"未完了の Take が上限（{pending_limit} 件）に達しているので"
@@ -4237,7 +4248,7 @@ async def cancel_take(take_id: str) -> StudioTake | None:
     return await get_take(take_id)
 
 
-async def delete_take(take_id: str) -> bool:
+async def delete_take(take_id: str, *, actor: str = "user") -> bool:
     """Take を目録から外す（実行中ならジョブも止める。成果物は履歴に残す）。"""
     async with get_db() as conn:
         async with conn.execute(
@@ -4253,7 +4264,7 @@ async def delete_take(take_id: str) -> bool:
 
     if job_id:
         job = await job_service.get_job(job_id, include_workflow=False)
-        if job is not None and job.status in ("queued", "prompting", "running"):
+        if job is not None and job.status in PENDING_JOB_STATUSES:
             await job_service.cancel_job(job_id)
 
     async with get_db() as conn:
@@ -4272,7 +4283,7 @@ async def delete_take(take_id: str) -> bool:
         await _record_revision(
             conn,
             project_id,
-            "user",
+            actor,
             f"{_titled('カット', shot.title if shot else '', shot_id)}"
             "の Take を削除",
             entity_kind="shot",

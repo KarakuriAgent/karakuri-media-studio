@@ -1,29 +1,49 @@
 """外部公開 API（``/api/v1``。docs/EXTERNAL-API.md）。
 
-外部のエージェント（ログを監視して話を納品するブリッジなど）から、スタジオの
-話づくりとレンダリングを行うための API。公開するのは話づくり（プロジェクト /
-話 / 場 / Shot / 素材）とレンダリング周りの操作で、削除は Shot だけ。
+外部のエージェントが、脚本づくりから生成・検分・素材の整理・つなぎまでを
+自分で回すための API。公開するのは話づくり（プロジェクト / 話 / 場 / Shot /
+素材）と生成（Shot のレンダリングと汎用ジョブ）とライブラリ、それに編集タブ
+一式（タイムライン / トラック / クリップ / 書き出し）で、**削除はプロジェクト
+以外**。プロジェクトだけはリビジョンごとカスケードで消えて復元できないので、
+外部には出さず人に頼む運用にする。
 
 ここに置くのは HTTP の入り口と 2 つの安全弁だけで、ビジネスロジックは持たない:
 
 - **API キー**（:func:`require_external_key`）: 設定 ``external_api_key`` が空なら
   外部 API という機能ごと存在しないふるまい（404）、キーが違えば 401。
-- **暴走ガード**（:func:`_check_pending_takes`）: 未完了 Take が
-  ``external_max_pending_takes`` に達していたらレンダリング投入を 429 で拒む。
-  内部 API（UI からの操作）には掛けない。
+- **暴走ガード**（:func:`_check_pending_jobs` / :func:`_check_running_exports`）:
+  未完了のジョブ（Shot の Take を含む）や走っている書き出しが
+  ``external_max_pending_takes`` に達していたら投入を 429 で拒む。数えるプールは
+  「生成」と「書き出し」の 2 つで、それぞれ別の錠で直列化する。内部 API
+  （UI からの操作）には掛けない。
 
-残りは :mod:`app.studio` / :mod:`app.jobs` の既存関数をそのまま呼ぶだけの
-薄いラッパーで、エラーの移し方も内部 API（:mod:`app.routers.studio`）と揃える。
+残りは :mod:`app.studio` / :mod:`app.jobs` / :mod:`app.timeline` の既存関数を
+そのまま呼ぶだけの薄いラッパーで、エラーの移し方も内部 API
+（:mod:`app.routers.studio` / :mod:`app.routers.timelines`）と揃える。
 """
 
+import asyncio
 import secrets
+from collections.abc import Awaitable, Callable
+from typing import Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
 from pydantic import ValidationError
-from starlette.datastructures import UploadFile
+from starlette.datastructures import UploadFile as FormUploadFile
 
+from .. import autotag
 from .. import jobs as job_service
-from .. import library, studio as service
+from .. import library, sheets, studio as service, timeline as timeline_service
 from ..config import load_settings
 from ..drafting_guide import GUIDE_VERSION, build_drafting_guide
 from ..h3_examples import (
@@ -35,16 +55,28 @@ from ..h3_examples import (
     select_examples,
 )
 from ..models import (
+    ASSET_FILE_ROLE_KINDS,
     DraftingGuide,
     Job,
+    JobContinue,
+    JobCreate,
+    JobRerun,
+    LibraryFromJob,
+    LibraryItem,
+    LibraryPage,
+    LibrarySheet,
+    LibraryUpdate,
+    Options,
     PromptExample,
     PromptExamples,
     StoryCreate,
     StoryResult,
     StudioAsset,
     StudioAssetCreate,
+    StudioAssetFile,
     StudioAssetFromJob,
     StudioAssetUpdate,
+    StudioCapabilities,
     StudioEpisode,
     StudioEpisodeCreate,
     StudioEpisodeUpdate,
@@ -54,20 +86,50 @@ from ..models import (
     StudioProjectSummary,
     StudioProjectUpdate,
     StudioRenderRequest,
+    StudioReorder,
     StudioScene,
     StudioSceneCreate,
     StudioSceneUpdate,
     StudioShot,
     StudioShotCreate,
+    StudioShotPreview,
+    StudioShotReorder,
     StudioShotUpdate,
     StudioTake,
+    StudioTimeline,
+    StudioTimelineCreate,
+    StudioTimelineDetail,
+    StudioTimelineUpdate,
+    TimelineClipsUpdate,
+    TimelineExport,
+    TimelineExportRequest,
+    TimelineExportSave,
+    TimelineMediaPage,
+    TimelineMissingFix,
+    TimelineMissingReport,
+    TimelineSubtitleRequest,
+    TimelineSyncPreview,
+    TimelineSyncRequest,
+    TimelineTrackCreate,
+    TimelineTrackUpdate,
 )
 from .assets import save_upload
-from .studio import _kind_of
+from .library import MAX_LIMIT as LIBRARY_MAX_LIMIT
+from .library import _bad_request as _library_bad_request
+from .options import get_options
+from .studio import _kind_of, get_capabilities
+from .timelines import _http_error as _timeline_error
 
 #: 外部 API の操作は履歴に「外部エージェントの変更」として残す（UI 由来と
 #: 区別する）。過去行に残る 'agent' はこれを分ける前の書き込み。
 ACTOR = "external"
+
+#: 書き出しの「数えてから投入する」を直列化する錠。生成の錠
+#: （:data:`app.studio.PENDING_JOBS_LOCK`）とは分ける: 書き出しの受付は初回に
+#: ffprobe を回して遅く、同じ錠に相乗りさせると無関係なレンダリング投入まで
+#: 待たせてしまう。数えるプールが別（:func:`_check_running_exports`）なので、
+#: 錠を分けても数え落としは起きない。
+_EXPORTS_LOCK = asyncio.Lock()
 
 
 def require_external_key(
@@ -108,21 +170,33 @@ def _pending_limit() -> int:
     return max(0, int(load_settings().external_max_pending_takes or 0))
 
 
-async def _check_pending_takes() -> int:
-    """未完了 Take が上限に達していたら 429（0 = 無制限）。返り値は上限。"""
+async def _check_running(
+    count: Callable[[], Awaitable[int]], noun: str
+) -> int:
+    """走っているものが上限に達していたら 429（0 = 無制限）。返り値は上限。"""
     limit = _pending_limit()
     if limit <= 0:
         return 0
-    pending = await service.count_pending_takes()
-    if pending >= limit:
+    running = await count()
+    if running >= limit:
         raise HTTPException(
             status_code=429,
             detail=(
-                f"未完了の Take が {pending} 件あります"
+                f"{noun}が {running} 件あります"
                 f"（上限 {limit} 件）。完了を待ってから投入してください"
             ),
         )
     return limit
+
+
+async def _check_pending_jobs() -> int:
+    """未完了ジョブ（Shot の Take を含む）のガード。返り値は上限。
+
+    Take は必ずジョブを 1 本持つので、未完了ジョブを数えれば Take も数えた
+    ことになる。Shot のレンダリングと汎用ジョブで**同じプールを分け合う**
+    （別々に数えると、どちらも上限まで投入できてしまう）。
+    """
+    return await _check_running(job_service.count_pending_jobs, "未完了のジョブ")
 
 
 # --------------------------------------------------------------------------
@@ -201,6 +275,27 @@ async def update_episode(
     return episode
 
 
+@router.delete("/episodes/{episode_id}", status_code=204)
+async def delete_episode(episode_id: str) -> None:
+    """配下の場ごと消す（そこにいた Shot は未分類に戻る）。"""
+    if not await service.delete_episode(episode_id, actor=ACTOR):
+        raise HTTPException(status_code=404, detail="episode not found")
+
+
+@router.post("/projects/{project_id}/episodes/reorder",
+             response_model=list[StudioEpisode])
+async def reorder_episodes(
+    project_id: str, payload: StudioReorder
+) -> list[StudioEpisode]:
+    """``ids`` の並び順をそのまま ``sort_order`` にする（この作品の話を全件送る）。"""
+    if await service.get_project(project_id) is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    try:
+        return await service.reorder_episodes(project_id, payload.ids, actor=ACTOR)
+    except service.StudioError as exc:
+        raise _bad_request(exc) from exc
+
+
 @router.post("/episodes/{episode_id}/scenes", response_model=StudioScene,
              status_code=201)
 async def create_scene(episode_id: str, payload: StudioSceneCreate) -> StudioScene:
@@ -225,6 +320,25 @@ async def update_scene(scene_id: str, payload: StudioSceneUpdate) -> StudioScene
     if scene is None:
         raise HTTPException(status_code=404, detail="scene not found")
     return scene
+
+
+@router.delete("/scenes/{scene_id}", status_code=204)
+async def delete_scene(scene_id: str) -> None:
+    """場だけ消す（そこにいた Shot は未分類に戻る）。"""
+    if not await service.delete_scene(scene_id, actor=ACTOR):
+        raise HTTPException(status_code=404, detail="scene not found")
+
+
+@router.post("/episodes/{episode_id}/scenes/reorder",
+             response_model=list[StudioScene])
+async def reorder_scenes(episode_id: str, payload: StudioReorder) -> list[StudioScene]:
+    """``ids`` の並び順をそのまま ``sort_order`` にする（この話の場を全件送る）。"""
+    if await service.get_episode(episode_id) is None:
+        raise HTTPException(status_code=404, detail="episode not found")
+    try:
+        return await service.reorder_scenes(episode_id, payload.ids, actor=ACTOR)
+    except service.StudioError as exc:
+        raise _bad_request(exc) from exc
 
 
 # --------------------------------------------------------------------------
@@ -255,6 +369,42 @@ async def update_shot(shot_id: str, payload: StudioShotUpdate) -> StudioShot:
     if shot is None:
         raise HTTPException(status_code=404, detail="shot not found")
     return shot
+
+
+@router.post("/projects/{project_id}/shots/reorder",
+             response_model=list[StudioShot])
+async def reorder_shots(
+    project_id: str, payload: StudioShotReorder
+) -> list[StudioShot]:
+    """``shot_ids`` の並び順をそのまま ``sort_order`` にする。
+
+    並び順は**場の中**のものなので、1 つの場（または未分類グループ）の Shot を
+    全件、過不足なく並べたものを送る。作品の Shot 全件も受け取れる（その場合は
+    場ごとに切り分けて書き戻す）。
+    """
+    if await service.get_project(project_id) is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    try:
+        return await service.reorder_shots(project_id, payload.shot_ids, actor=ACTOR)
+    except service.StudioError as exc:
+        raise _bad_request(exc) from exc
+
+
+@router.get("/shots/{shot_id}/prompt-preview", response_model=StudioShotPreview)
+async def preview_shot_prompt(shot_id: str) -> StudioShotPreview:
+    """このカットを今生成したら**実際に投入されるもの**（読み取りだけ）。
+
+    レンダリングの前にここで確認する。生成と同じ組み立てを通すが、Grok の
+    英訳は走らせない（``will_translate`` で入るかどうかだけ伝える。使える
+    英語キャッシュがあれば False）。組み立てられないカットも 400 ではなく、
+    理由を ``error`` に入れた 200 で返す。組み立てはできるが材料が足りなくて
+    投入だけができない（連続カットの引き継ぎ元がまだ無い）ときは ``error``
+    ではなく ``render_blocker`` に理由が入る。
+    """
+    preview = await service.preview_shot(shot_id)
+    if preview is None:
+        raise HTTPException(status_code=404, detail="shot not found")
+    return preview
 
 
 @router.delete("/shots/{shot_id}", status_code=204)
@@ -296,7 +446,7 @@ async def add_asset(project_id: str, request: Request) -> StudioAsset:
             key: value for key, value in form.items() if isinstance(value, str)
         }
         fields.pop("project_id", None)
-        if isinstance(upload, UploadFile) and upload.filename:
+        if isinstance(upload, FormUploadFile) and upload.filename:
             fields.setdefault("kind", _kind_of(upload.filename))
             saved = await save_upload(upload, str(fields["kind"]))
             path = saved.path
@@ -382,6 +532,80 @@ async def update_asset(asset_id: str, payload: StudioAssetUpdate) -> StudioAsset
     return asset
 
 
+@router.post("/assets/{asset_id}/file", response_model=StudioAsset)
+async def replace_asset_file(
+    asset_id: str, file: UploadFile = File(...)
+) -> StudioAsset:
+    """素材のメインのファイルを差し替える（メタデータのみの素材にも付けられる）。
+
+    実体は ``assets/<kind>/`` に置き、種別は添付の拡張子から決まる。
+    """
+    if await service.get_asset(asset_id) is None:
+        raise HTTPException(status_code=404, detail="studio asset not found")
+    kind = _kind_of(file.filename or "")
+    saved = await save_upload(file, kind)
+    try:
+        asset = await service.update_asset(
+            asset_id, actor=ACTOR, path=saved.path, kind=kind
+        )
+    except service.StudioError as exc:
+        raise _bad_request(exc) from exc
+    if asset is None:
+        raise HTTPException(status_code=404, detail="studio asset not found")
+    return asset
+
+
+@router.get("/assets/{asset_id}/files", response_model=list[StudioAssetFile])
+async def list_asset_files(asset_id: str) -> list[StudioAssetFile]:
+    """素材に付いている追加リファレンスの一覧（メインのファイルは含まない）。"""
+    files = await service.list_asset_files(asset_id)
+    if files is None:
+        raise HTTPException(status_code=404, detail="studio asset not found")
+    return files
+
+
+@router.post("/assets/{asset_id}/files", response_model=StudioAssetFile,
+             status_code=201)
+async def add_asset_file(
+    asset_id: str,
+    file: UploadFile = File(...),
+    #: image = 追加画像 / voice = 声サンプル / video = 動画リファレンス
+    role: str = Form("image"),
+    caption: str = Form(""),
+) -> StudioAssetFile:
+    """素材にリファレンスを 1 本足す（別アングルなど。メインのファイルは変わらない）。"""
+    if await service.get_asset(asset_id) is None:
+        raise HTTPException(status_code=404, detail="studio asset not found")
+    kind = ASSET_FILE_ROLE_KINDS.get(role)
+    if kind is None:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unknown role '{role}'"
+            f" (allowed: {', '.join(ASSET_FILE_ROLE_KINDS)})",
+        )
+    saved = await save_upload(file, kind)
+    try:
+        return await service.add_asset_file(
+            asset_id, role=role, path=saved.path, caption=caption, actor=ACTOR
+        )
+    except service.StudioError as exc:
+        raise _bad_request(exc) from exc
+
+
+@router.delete("/asset-files/{file_id}", status_code=204)
+async def delete_asset_file(file_id: str) -> None:
+    """リファレンスを 1 本外す（ファイル実体は ``assets/`` に残る）。"""
+    if not await service.delete_asset_file(file_id, actor=ACTOR):
+        raise HTTPException(status_code=404, detail="studio asset file not found")
+
+
+@router.delete("/assets/{asset_id}", status_code=204)
+async def delete_asset(asset_id: str) -> None:
+    """素材を目録から外す（ファイル実体は ``assets/`` に残る）。"""
+    if not await service.delete_asset(asset_id, actor=ACTOR):
+        raise HTTPException(status_code=404, detail="studio asset not found")
+
+
 # --------------------------------------------------------------------------
 # Take（Shot の生成）
 # --------------------------------------------------------------------------
@@ -418,8 +642,8 @@ async def render_shot(
         raise HTTPException(status_code=404, detail="shot not found")
     # 数えてから投入するまでを錠で括る（並行リクエストが数え合いになって、
     # 上限に達していても全部すり抜けるのを防ぐ）
-    async with service.PENDING_TAKES_LOCK:
-        await _check_pending_takes()
+    async with service.PENDING_JOBS_LOCK:
+        await _check_pending_jobs()
         try:
             return await service.render_shot(shot_id, payload)
         except service.StudioError as exc:
@@ -442,6 +666,53 @@ async def reject_take(take_id: str) -> StudioTake:
     return take
 
 
+@router.post("/takes/{take_id}/cancel", response_model=StudioTake)
+async def cancel_take(take_id: str) -> StudioTake:
+    """走っている Take を止める（行は残る。状態はジョブから導出される）。"""
+    take = await service.cancel_take(take_id)
+    if take is None:
+        raise HTTPException(status_code=404, detail="take not found")
+    return take
+
+
+@router.delete("/takes/{take_id}", status_code=204)
+async def delete_take(take_id: str) -> None:
+    """Take を目録から外す（実行中ならジョブも止める。成果物は履歴に残る）。"""
+    if not await service.delete_take(take_id, actor=ACTOR):
+        raise HTTPException(status_code=404, detail="take not found")
+
+
+# --------------------------------------------------------------------------
+# 汎用ジョブ（素材の静止画・BGM / SE など、Shot を通さない生成）
+# --------------------------------------------------------------------------
+
+@router.get("/jobs", response_model=list[Job])
+async def list_jobs(
+    limit: int = Query(50, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+) -> list[Job]:
+    """新しい順のジョブ一覧（ワークフロー JSON は含まない）。"""
+    return await job_service.list_jobs(limit=limit, offset=offset)
+
+
+@router.post("/jobs", response_model=Job, status_code=201)
+async def create_job(payload: JobCreate) -> Job:
+    """ジョブを 1 件作ってキューに載せる（未完了ジョブが上限に達していれば 429）。
+
+    Shot を通さない生成の入り口で、素材にする静止画（``image_only``）や
+    BGM / SE（``audio``）もここから作る。モードごとの必須項目を満たして
+    いなければ 422。
+    """
+    # 数えてから投入するまでを錠で括る（並行リクエストが数え合いになって、
+    # 上限に達していても全部すり抜けるのを防ぐ）
+    async with service.PENDING_JOBS_LOCK:
+        await _check_pending_jobs()
+        try:
+            return await job_service.create_job(payload)
+        except job_service.JobValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
 @router.get("/jobs/{job_id}", response_model=Job)
 async def get_job(job_id: str) -> Job:
     """ジョブの状態と成果物（読み取りのみ。完了待ちはここをポーリングする）。"""
@@ -449,6 +720,41 @@ async def get_job(job_id: str) -> Job:
     if job is None:
         raise HTTPException(status_code=404, detail="job not found")
     return job
+
+
+@router.post("/jobs/{job_id}/cancel", response_model=Job)
+async def cancel_job(job_id: str) -> Job:
+    """実行中・待ちのジョブを 1 件止める。終端状態は冪等にそのまま返す。"""
+    job = await job_service.cancel_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    return job
+
+
+@router.post("/jobs/{job_id}/rerun", response_model=Job, status_code=201)
+async def rerun_job(job_id: str, payload: JobRerun | None = None) -> Job:
+    """保存したパラメータからワークフローを組み直して焼き直す（既定はシード振り直し）。"""
+    async with service.PENDING_JOBS_LOCK:
+        await _check_pending_jobs()
+        try:
+            return await job_service.rerun_job(job_id, payload or JobRerun())
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail="job not found") from exc
+        except job_service.JobValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.post("/jobs/{job_id}/continue", response_model=Job, status_code=201)
+async def continue_job(job_id: str, payload: JobContinue | None = None) -> Job:
+    """このジョブの最終フレームから続きを生成する（SPEC §2 のモード B）。"""
+    async with service.PENDING_JOBS_LOCK:
+        await _check_pending_jobs()
+        try:
+            return await job_service.continue_job(job_id, payload or JobContinue())
+        except LookupError as exc:
+            raise HTTPException(status_code=404, detail="job not found") from exc
+        except job_service.JobValidationError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
 # --------------------------------------------------------------------------
@@ -468,13 +774,178 @@ async def create_story(payload: StoryCreate) -> StoryResult:
         # ここは「そもそも受け付けるか」の門前払い（429）。実効的な上限は
         # :func:`app.studio.create_story` がカットごとに錠の中で見ているので、
         # ここでは錠を取らない（取ると中で取り直せずデッドロックする）。
-        limit = await _check_pending_takes()
+        limit = await _check_pending_jobs()
     try:
         return await service.create_story(
             payload, actor=ACTOR, pending_limit=limit
         )
     except service.StudioError as exc:
         raise _bad_request(exc) from exc
+
+
+# --------------------------------------------------------------------------
+# ライブラリ（履歴とは別に取っておく素材の棚。削除は公開しない）
+# --------------------------------------------------------------------------
+
+@router.get("/library", response_model=LibraryPage)
+async def list_library(
+    kind: str | None = Query(None, pattern="^(image|video|audio)$"),
+    #: 分類（未指定 = 全件 / 'none' = 未分類のみ）
+    category: str | None = Query(None),
+    #: 表示名とタグへの部分一致（大文字小文字は無視）
+    q: str = Query(""),
+    #: タグの完全一致
+    tag: str | None = Query(None),
+    limit: int = Query(library.DEFAULT_LIMIT, ge=1, le=LIBRARY_MAX_LIMIT),
+    offset: int = Query(0, ge=0),
+) -> LibraryPage:
+    """絞り込んだ 1 ページ分（``total`` で「まだ何件あるか」が分かる）。"""
+    try:
+        items, total = await library.search_items(
+            kind=kind, category=category, query=q, tag=tag, limit=limit, offset=offset
+        )
+    except library.LibraryError as exc:
+        raise _library_bad_request(exc) from exc
+    return LibraryPage(
+        items=items,
+        total=total,
+        limit=limit,
+        offset=offset,
+        tags=await library.all_tags(),
+    )
+
+
+@router.post("/library/from-job", response_model=LibraryItem, status_code=201)
+async def add_library_from_job(payload: LibraryFromJob) -> LibraryItem:
+    """ジョブの出力をライブラリへ登録する（NSFW フラグは元ジョブを引き継ぐ）。
+
+    同じ出力が既に棚にあれば 409（本文に既存のアイテムを添える）。
+    """
+    job = await job_service.get_job(payload.job_id, include_workflow=False)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    try:
+        item = await library.add_from_job(
+            job, payload.source, payload.name, payload.tags, payload.category
+        )
+    except library.LibraryDuplicate as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"message": str(exc), "item": exc.item.model_dump(mode="json")},
+        ) from exc
+    except library.LibraryError as exc:
+        raise _library_bad_request(exc) from exc
+    # 表示名とタグを Grok に考えさせる（指定済みのものは触らない、SPEC §7.2）
+    autotag.spawn_for(item, job, named=bool(payload.name.strip()))
+    return item
+
+
+@router.post("/library/sheet", response_model=LibraryItem, status_code=201)
+async def create_library_sheet(payload: LibrarySheet) -> LibraryItem:
+    """ライブラリの画像を 1 枚のリファレンスシートに合成して登録する。
+
+    ``item_ids`` の並び順に左上から置き、``character`` の素材だけ大きい
+    パネルになる。``/library/{item_id}`` より先に定義しておく。
+    """
+    try:
+        return await library.add_sheet(
+            payload.item_ids,
+            payload.name,
+            payload.width or sheets.DEFAULT_WIDTH,
+            payload.height or sheets.DEFAULT_HEIGHT,
+        )
+    except library.LibraryError as exc:
+        raise _library_bad_request(exc) from exc
+
+
+@router.patch("/library/{item_id}", response_model=LibraryItem)
+async def update_library_item(item_id: str, payload: LibraryUpdate) -> LibraryItem:
+    """表示名 / NSFW フラグ / タグ / 分類の変更（指定した項目だけ）。
+
+    ``category`` に ``"none"`` を送ると未分類に戻す（送らなければそのまま）。
+    """
+    try:
+        item = await library.update_item(
+            item_id,
+            name=payload.name,
+            nsfw=payload.nsfw,
+            tags=payload.tags,
+            category=payload.category,
+        )
+    except library.LibraryError as exc:
+        raise _library_bad_request(exc) from exc
+    if item is None:
+        raise HTTPException(status_code=404, detail="library item not found")
+    return item
+
+
+# --------------------------------------------------------------------------
+# 参照系（接続先でできること・フォームの選択肢・この API の仕様書）
+# --------------------------------------------------------------------------
+
+@router.get("/capabilities", response_model=StudioCapabilities)
+async def capabilities() -> StudioCapabilities:
+    """いまの接続先でスタジオの追加機能（ラテント連続性 / アップスケール）が
+    使えるか。接続できないときも 500 にはせず「使えない」＋理由を返す。"""
+    return await get_capabilities()
+
+
+@router.get("/options", response_model=Options)
+async def options() -> Options:
+    """生成フォームの選択肢（読み取り専用）。
+
+    ``aspect_ratio`` の正しい表記・ワークフローの一覧と制約・LoRA・ライブラリ
+    などが入る。接続先の URL は外に出さない（ComfyUI の所在は秘密のため
+    ``comfy_url`` は空にする）。ComfyUI が落ちていることは ``comfy_error`` に
+    入って 200 で返る。
+    """
+    payload = await get_options()
+    payload.comfy_url = ""
+    return payload
+
+
+def _collect_schema_refs(node: Any, schemas: dict[str, Any], kept: set[str]) -> None:
+    """``node`` から辿れる ``#/components/schemas/...`` を再帰的に集める。"""
+    if isinstance(node, dict):
+        ref = node.get("$ref")
+        if isinstance(ref, str) and ref.startswith("#/components/schemas/"):
+            name = ref.rsplit("/", 1)[-1]
+            if name not in kept and name in schemas:
+                kept.add(name)
+                _collect_schema_refs(schemas[name], schemas, kept)
+        for value in node.values():
+            _collect_schema_refs(value, schemas, kept)
+    elif isinstance(node, list):
+        for value in node:
+            _collect_schema_refs(value, schemas, kept)
+
+
+@router.get("/openapi.json")
+async def openapi_subset(request: Request) -> dict[str, Any]:
+    """この API（``/api/v1``）だけに絞った OpenAPI（エージェントに読ませる用）。
+
+    アプリ全体のスキーマから ``/api/v1`` で始まるパスと、そこから ``$ref`` で
+    辿れるスキーマだけを抜き出した縮小版。内部 API（UI 用）は載らない。
+    """
+    full = request.app.openapi()
+    paths = {
+        path: item
+        for path, item in full.get("paths", {}).items()
+        if path.startswith(f"{router.prefix}/")
+    }
+    schemas = full.get("components", {}).get("schemas", {})
+    kept: set[str] = set()
+    _collect_schema_refs(paths, schemas, kept)
+    subset: dict[str, Any] = {
+        "openapi": full.get("openapi", "3.1.0"),
+        "info": full.get("info", {}),
+        "paths": paths,
+    }
+    if kept:
+        subset["components"] = {
+            "schemas": {name: schemas[name] for name in sorted(kept)}
+        }
+    return subset
 
 
 # --------------------------------------------------------------------------
@@ -546,3 +1017,280 @@ def _prompt_example(example: H3Example, with_body: bool) -> PromptExample:
         note=example.note,
         body=example.body if with_body else None,
     )
+
+
+# --------------------------------------------------------------------------
+# 編集タブ（タイムライン -> トラック -> クリップ -> 書き出し）
+# --------------------------------------------------------------------------
+
+async def _check_running_exports() -> int:
+    """走っている書き出しのガード。返り値は上限。
+
+    :func:`_check_pending_jobs` と同じ ``external_max_pending_takes`` を、
+    ffmpeg を回す書き出しにも掛ける。ただし**数えるプールは別**で、GPU を使う
+    生成（ジョブ / Take）とは互いの枠を食い合わない（走るのが CPU の ffmpeg で、
+    生成の待ち行列とは詰まり方が違うため）。同じタイムラインの二重書き出しは
+    :func:`app.timeline.start_export` が 409 で断るが、別々のタイムラインへ
+    次々投入されるぶんはここで止める。
+    """
+    return await _check_running(
+        timeline_service.count_running_exports, "走っている書き出し"
+    )
+
+
+@router.post(
+    "/projects/{project_id}/timelines",
+    response_model=StudioTimelineDetail,
+    status_code=201,
+)
+async def create_timeline(
+    project_id: str, payload: StudioTimelineCreate | None = None
+) -> StudioTimelineDetail:
+    """タイムラインを 1 本作る。
+
+    ``episode_id`` を送ると**自動配置つきの初期化**になる: その話のカットを
+    場 -> カット順に走査し、採用 Take の動画が実在するものを V1 へ隙間なく並べる。
+    省略すれば V1 だけの空のタイムライン。
+    """
+    try:
+        return await timeline_service.create_timeline(
+            project_id, payload or StudioTimelineCreate()
+        )
+    except timeline_service.TimelineError as exc:
+        raise _timeline_error(exc) from exc
+
+
+@router.get("/projects/{project_id}/timelines", response_model=list[StudioTimeline])
+async def list_timelines(project_id: str) -> list[StudioTimeline]:
+    """その作品のタイムライン（古い順。中身は含めない）。"""
+    if await service.get_project(project_id) is None:
+        raise HTTPException(status_code=404, detail="project not found")
+    return await timeline_service.list_timelines(project_id)
+
+
+@router.get("/timelines/{timeline_id}", response_model=StudioTimelineDetail)
+async def get_timeline(timeline_id: str) -> StudioTimelineDetail:
+    """トラックとクリップ込みのフル EDL。
+
+    クリップにはソースを解決した ``video_url`` / ``source_duration_ms`` と、
+    実ファイルが無いことを示す ``missing`` が付く。
+    """
+    detail = await timeline_service.timeline_detail(timeline_id)
+    if detail is None:
+        raise HTTPException(status_code=404, detail="timeline not found")
+    return detail
+
+
+@router.patch("/timelines/{timeline_id}", response_model=StudioTimeline)
+async def update_timeline(
+    timeline_id: str, payload: StudioTimelineUpdate
+) -> StudioTimeline:
+    """指定した項目だけ変える（送らなければ今の値のまま）。"""
+    try:
+        timeline = await timeline_service.update_timeline(
+            timeline_id, payload.model_dump()
+        )
+    except timeline_service.TimelineError as exc:
+        raise _timeline_error(exc) from exc
+    if timeline is None:
+        raise HTTPException(status_code=404, detail="timeline not found")
+    return timeline
+
+
+@router.delete("/timelines/{timeline_id}", status_code=204)
+async def delete_timeline(timeline_id: str) -> None:
+    """タイムラインとその中身を消す（書き出したファイルは残る）。
+
+    脚本や素材と違って作り直しが利く（同じ話からいつでも組み直せる）ので、
+    これだけは外部にも開ける。
+    """
+    if not await timeline_service.delete_timeline(timeline_id):
+        raise HTTPException(status_code=404, detail="timeline not found")
+
+
+@router.put("/timelines/{timeline_id}/clips", response_model=StudioTimelineDetail)
+async def replace_clips(
+    timeline_id: str, payload: TimelineClipsUpdate
+) -> StudioTimelineDetail:
+    """クリップを丸ごと置き換える（EDL 全置換）。
+
+    同じトラックの中で重なっているもの、``in_ms >= out_ms`` のもの、尺と切り出しの
+    長さが食い違うもの（フェーズ 1 は等速のみ）は 400 で断る。
+    """
+    try:
+        detail = await timeline_service.replace_clips(timeline_id, payload.clips)
+    except timeline_service.TimelineError as exc:
+        raise _timeline_error(exc) from exc
+    if detail is None:
+        raise HTTPException(status_code=404, detail="timeline not found")
+    return detail
+
+
+@router.post(
+    "/timelines/{timeline_id}/tracks",
+    response_model=StudioTimelineDetail,
+    status_code=201,
+)
+async def add_track(
+    timeline_id: str, payload: TimelineTrackCreate | None = None
+) -> StudioTimelineDetail:
+    """トラックを 1 本足す（映像トラックは V1 の 1 本きりなので 400）。"""
+    try:
+        return await timeline_service.add_track(
+            timeline_id, payload or TimelineTrackCreate()
+        )
+    except timeline_service.TimelineError as exc:
+        raise _timeline_error(exc) from exc
+
+
+@router.patch(
+    "/timelines/{timeline_id}/tracks/{track_id}", response_model=StudioTimelineDetail
+)
+async def update_track(
+    timeline_id: str, track_id: str, payload: TimelineTrackUpdate
+) -> StudioTimelineDetail:
+    """名前・ミュート・ロックを変える（送らなかった項目はそのまま）。"""
+    try:
+        return await timeline_service.update_track(timeline_id, track_id, payload)
+    except timeline_service.TimelineError as exc:
+        raise _timeline_error(exc) from exc
+
+
+@router.delete(
+    "/timelines/{timeline_id}/tracks/{track_id}", response_model=StudioTimelineDetail
+)
+async def delete_track(timeline_id: str, track_id: str) -> StudioTimelineDetail:
+    """トラックを 1 本消す（載っていたクリップも一緒に消える）。"""
+    try:
+        return await timeline_service.delete_track(timeline_id, track_id)
+    except timeline_service.TimelineError as exc:
+        raise _timeline_error(exc) from exc
+
+
+@router.get("/projects/{project_id}/media", response_model=TimelineMediaPage)
+async def list_timeline_media(
+    project_id: str,
+    kind: str = Query("video", pattern="^(video|audio|image)$"),
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+) -> TimelineMediaPage:
+    """タイムラインへ足せる素材の 1 ページ。
+
+    テイク（映像のみ）・ライブラリ・終わった単発ジョブ・作品の素材ファイルを
+    新しい順に混ぜて返す。長さ（``duration_ms``）はこのページのぶんだけ調べる。
+    """
+    try:
+        return await timeline_service.list_media(
+            project_id, kind, limit=limit, offset=offset
+        )
+    except timeline_service.TimelineError as exc:
+        raise _timeline_error(exc) from exc
+
+
+@router.post(
+    "/timelines/{timeline_id}/generate-subtitles",
+    response_model=StudioTimelineDetail,
+)
+async def generate_subtitles(
+    timeline_id: str, payload: TimelineSubtitleRequest | None = None
+) -> StudioTimelineDetail:
+    """V1 の各クリップの元カットの台詞から、テロップを一括で置き直す。
+
+    字幕トラックの中身は**置き換わる**（積み増さない）。
+    """
+    body = payload or TimelineSubtitleRequest()
+    try:
+        return await timeline_service.generate_subtitles(timeline_id, body.track_id)
+    except timeline_service.TimelineError as exc:
+        raise _timeline_error(exc) from exc
+
+
+@router.get("/timelines/{timeline_id}/sync-preview", response_model=TimelineSyncPreview)
+async def sync_preview(timeline_id: str) -> TimelineSyncPreview:
+    """作ったあとに脚本で起きた差分（増えた / 採用が変わった / 消えたカット）。"""
+    try:
+        return await timeline_service.sync_preview(timeline_id)
+    except timeline_service.TimelineError as exc:
+        raise _timeline_error(exc) from exc
+
+
+@router.post("/timelines/{timeline_id}/sync", response_model=StudioTimelineDetail)
+async def apply_sync(
+    timeline_id: str, payload: TimelineSyncRequest | None = None
+) -> StudioTimelineDetail:
+    """上の差分のうち、body で選ばれたものだけ反映する。"""
+    try:
+        return await timeline_service.apply_sync(
+            timeline_id, payload or TimelineSyncRequest()
+        )
+    except timeline_service.TimelineError as exc:
+        raise _timeline_error(exc) from exc
+
+
+@router.get("/timelines/{timeline_id}/missing", response_model=TimelineMissingReport)
+async def missing_report(timeline_id: str) -> TimelineMissingReport:
+    """実ファイルが見つからないクリップと、同じカットの差し替え候補。"""
+    try:
+        return await timeline_service.missing_report(timeline_id)
+    except timeline_service.TimelineError as exc:
+        raise _timeline_error(exc) from exc
+
+
+@router.post(
+    "/timelines/{timeline_id}/resolve-missing", response_model=StudioTimelineDetail
+)
+async def resolve_missing(
+    timeline_id: str, payload: TimelineMissingFix | None = None
+) -> StudioTimelineDetail:
+    """欠落クリップを別テイクへ差し替える / まとめて消す。"""
+    try:
+        return await timeline_service.resolve_missing(
+            timeline_id, payload or TimelineMissingFix()
+        )
+    except timeline_service.TimelineError as exc:
+        raise _timeline_error(exc) from exc
+
+
+@router.post(
+    "/timelines/{timeline_id}/export", response_model=TimelineExport, status_code=202
+)
+async def start_export(
+    timeline_id: str, payload: TimelineExportRequest | None = None
+) -> TimelineExport:
+    """書き出しを 1 本受け付ける（**202 即受付**。ffmpeg は裏で走る）。
+
+    進捗は ``GET /api/v1/exports/{id}`` をポーリングして追う。同じタイムライン
+    で走っているものがあれば 409、走っている書き出しが上限に達していれば 429。
+    メディア欠落のまま焼こうとすると 400（直し方は ``GET .../missing``）。
+    """
+    body = payload or TimelineExportRequest()
+    # 数えてから投入するまでを錠で括る（並行リクエストが数え合いになって、
+    # 上限に達していても全部すり抜けるのを防ぐ）
+    async with _EXPORTS_LOCK:
+        await _check_running_exports()
+        try:
+            return await timeline_service.start_export(timeline_id, body.model_dump())
+        except timeline_service.TimelineError as exc:
+            raise _timeline_error(exc) from exc
+
+
+@router.get("/exports/{export_id}", response_model=TimelineExport)
+async def get_export(export_id: str) -> TimelineExport:
+    """書き出しの状態と成果物（完了待ちはここをポーリングする）。"""
+    export = await timeline_service.get_export(export_id)
+    if export is None:
+        raise HTTPException(status_code=404, detail="export not found")
+    return export
+
+
+@router.post("/exports/{export_id}/save-to-library", response_model=LibraryItem,
+             status_code=201)
+async def save_export_to_library(
+    export_id: str, payload: TimelineExportSave | None = None
+) -> LibraryItem:
+    """完成した mp4 をライブラリ（``library/video/``）へコピーして登録する。"""
+    body = payload or TimelineExportSave()
+    try:
+        return await timeline_service.save_export_to_library(export_id, body.name)
+    except timeline_service.TimelineError as exc:
+        raise _timeline_error(exc) from exc

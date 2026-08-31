@@ -41,7 +41,7 @@ from .workflows import (
 )
 
 #: ガイド本文の版。中身を変えたら上げる（受け取り側がキャッシュの判定に使う）。
-GUIDE_VERSION = "2026-08-18"
+GUIDE_VERSION = "2026-09-01"
 
 #: 実用上の下限（秒）。:data:`~app.studio.SHOT_DURATION_MIN` は API が受け付ける
 #: 範囲で、H3 は 4 秒を切ると芝居が入りきらない（``MINIMAX_H3_GUIDE_BODY`` の
@@ -213,8 +213,14 @@ def build_drafting_guide() -> DraftingGuide:
 - 話 1 本（話 → 場 → カット）を 1 リクエストで納品する。作成は **1 トランザクションで
   all-or-nothing**: 途中の検証に落ちたら全部ロールバックして 400 になり、
   中途半端な脚本は残らない。
-- `render` は立てない（外部からの一括レンダリングは使わない前提。生成は
-  スタジオ側で 1 カットずつ確認しながら回す）。
+- `render` は立てない。生成は脚本を入れてから**1 カットずつ**回す:
+  `GET /api/v1/shots/{{id}}/prompt-preview` で実際に投入される本文と
+  `render_blocker` を確かめる → `POST /api/v1/shots/{{id}}/render` →
+  `GET /api/v1/jobs/{{job_id}}` をポーリングして完了を待つ → 出来を見て
+  `POST /api/v1/takes/{{id}}/select`（採用）か `/reject`（不採用）。
+- 直しは PATCH（`base_revision` を必ず付ける）。削除はカット・場・話・素材・
+  Take まで自分でできるが、**作品（プロジェクト）の削除だけは API に無い**
+  ので人に頼むこと（履歴ごと消えて復元できないため）。
 - 各カットには `title` / `purpose` / `action` / `prompt` / `dialogue` / `camera` /
   `soundscape` / `bgm` / `duration_seconds` / `status` を指定できる。`soundscape` と
   `bgm` はカットごとの音の指定で、書いておくと上の公式フィールドになる。

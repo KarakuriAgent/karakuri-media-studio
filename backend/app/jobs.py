@@ -325,6 +325,23 @@ async def list_jobs(limit: int = 50, offset: int = 0) -> list[Job]:
     return [row_to_job(r, include_workflow=False) for r in rows]
 
 
+#: 「まだ終わっていない」とみなすジョブの状態。queued と running のあいだに
+#: 一瞬だけ通る prompting も走っている最中なので同じ扱いにする
+#: （外部 API の暴走ガードと :data:`app.studio.PENDING_JOB_STATUSES` の正本）。
+PENDING_STATUSES = ("queued", "prompting", "running")
+
+
+async def count_pending_jobs() -> int:
+    """まだ終わっていないジョブの数（外部 API の投入上限に使う）。"""
+    placeholders = ", ".join("?" * len(PENDING_STATUSES))
+    async with get_db() as conn:
+        async with conn.execute(
+            f"SELECT COUNT(*) AS pending FROM jobs WHERE status IN ({placeholders})",
+            PENDING_STATUSES,
+        ) as cur:
+            return int((await cur.fetchone())["pending"])
+
+
 async def _update(job_id: str, **fields: Any) -> None:
     if not fields:
         return

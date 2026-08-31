@@ -1027,6 +1027,23 @@ async def list_exports(timeline_id: str) -> list[TimelineExport]:
     return [_row_to_export(row) for row in rows]
 
 
+async def count_running_exports() -> int:
+    """まだ終わっていない書き出しの数（外部 API の投入上限に使う）。
+
+    同じタイムラインの二重書き出しは :func:`start_export` が 409 で断るが、
+    別々のタイムラインへ次々投入されると ffmpeg が並ぶだけ並んでしまう。
+    数え方は :func:`app.jobs.count_pending_jobs` と揃える。
+    """
+    placeholders = ", ".join("?" * len(RUNNING_STATUSES))
+    async with get_db() as conn:
+        async with conn.execute(
+            "SELECT COUNT(*) AS pending FROM timeline_exports"
+            f" WHERE status IN ({placeholders})",
+            RUNNING_STATUSES,
+        ) as cur:
+            return int((await cur.fetchone())["pending"])
+
+
 async def _update_export(export_id: str, **fields: Any) -> None:
     if not fields:
         return
