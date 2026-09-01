@@ -12,6 +12,7 @@ ComfyUI を 1 度も通らずに ``video_path`` が入って done になるこ�
 import asyncio
 import json
 import os
+import shutil
 import sys
 import time
 from pathlib import Path
@@ -753,3 +754,152 @@ def test_external_jobs_share_the_pending_pool(env, monkeypatch):
     assert second.status_code == 429, second.text
 
     env.client.post(f"/api/jobs/{first.json()['id']}/cancel")
+
+
+# --------------------------------------------------------------------------
+# 音声の焼き直し（Remotion の 1 フレーム遅れの補正、SPEC §5.2）
+# --------------------------------------------------------------------------
+
+has_ffmpeg = pytest.mark.skipif(
+    not (shutil.which("ffmpeg") and shutil.which("ffprobe")),
+    reason="ffmpeg / ffprobe が無い環境では焼き直せない",
+)
+
+
+def test_remux_command_copies_the_video_and_re_encodes_the_audio():
+    argv = remotion.build_remux_command("v.mp4", "a.wav", "out.mp4")
+    assert argv[:5] == ["ffmpeg", "-v", "error", "-y", "-i"]
+    # 映像は 0 番目の入力から丸ごとコピー、音声は 1 番目の入力から焼き直す
+    assert argv[argv.index("-map") : argv.index("-map") + 4] == [
+        "-map", "0:v:0", "-map", "1:a:0"
+    ]
+    assert "-c:v" in argv and argv[argv.index("-c:v") + 1] == "copy"
+    assert argv[argv.index("-c:a") + 1] == "aac"
+    assert argv[argv.index("-b:a") + 1] == remotion.AUDIO_BITRATE
+    assert "-shortest" in argv and argv[-1] == "out.mp4"
+    # 音源が映像より短くても末尾が無音にならないよう apad を掛ける
+    assert argv[argv.index("-af") + 1] == "apad"
+
+
+def test_remux_command_reproduces_start_volume_and_fade():
+    argv = remotion.build_remux_command(
+        "v.mp4", "a.wav", "out.mp4",
+        start_from=2.5, volume=0.5, fade_out=1.5, duration=10.0,
+    )
+    # -ss は音源側の入力の直前（映像には掛からない）
+    assert argv[argv.index("-ss") + 1] == "2.500"
+    assert argv.index("-ss") > argv.index("v.mp4")
+    assert argv.index("-ss") < argv.index("a.wav")
+    assert argv[argv.index("-af") + 1] == (
+        "volume=0.5000,afade=t=out:st=8.500:d=1.500,apad"
+    )
+
+
+def test_the_fade_is_skipped_when_the_duration_is_unknown():
+    assert remotion.audio_filters(1.0, 1.5, None) == ["apad"]
+    assert remotion.audio_filters(1.0, 0.0, 10.0) == ["apad"]
+
+
+def test_only_local_media_is_remuxed(tmp_path, monkeypatch):
+    outputs = tmp_path / "outputs"
+    (outputs / "ab12").mkdir(parents=True)
+    track = outputs / "ab12" / "audio.wav"
+    track.write_bytes(b"RIFF")
+    monkeypatch.setattr(remotion, "AUDIO_ROOTS", {"/outputs/": outputs})
+
+    # 配信 URL でも、パスでも、絶対パスでも同じファイルに解決する
+    assert remotion.local_audio_path("http://host:8000/outputs/ab12/audio.wav") == track
+    assert remotion.local_audio_path("/outputs/ab12/audio.wav") == track
+    assert remotion.local_audio_path(str(track)) == track
+    # 置き場の外・外部 URL・無いファイル・空はどれも None（黙って諦める）
+    assert remotion.local_audio_path(str(tmp_path / "elsewhere.wav")) is None
+    assert remotion.local_audio_path("https://example.com/bgm.mp3") is None
+    assert remotion.local_audio_path("/outputs/ab12/missing.wav") is None
+    assert remotion.local_audio_path("") is None
+
+
+async def test_remux_does_nothing_without_a_local_audio(tmp_path):
+    output = tmp_path / "video.mp4"
+    output.write_bytes(b"mp4")
+    assert await remotion.remux_audio(output, {}) is False
+    assert await remotion.remux_audio(
+        output, {"audio": {"src": "https://example.com/bgm.mp3"}}
+    ) is False
+    assert output.read_bytes() == b"mp4"
+
+
+async def test_a_failing_ffmpeg_keeps_the_original_file(tmp_path, monkeypatch):
+    outputs = tmp_path / "outputs"
+    outputs.mkdir()
+    track = outputs / "audio.wav"
+    track.write_bytes(b"RIFF")
+    output = outputs / "video.mp4"
+    output.write_bytes(b"original")
+    monkeypatch.setattr(remotion, "AUDIO_ROOTS", {"/outputs/": outputs})
+    monkeypatch.setattr(remotion, "FFMPEG", "definitely-not-ffmpeg")
+
+    assert await remotion.remux_audio(output, {"audio": {"src": str(track)}}) is False
+    # 焼き直せなくても mp4 はそのまま（ジョブは失敗させない）
+    assert output.read_bytes() == b"original"
+    assert not list(outputs.glob("*.remux.mp4"))
+
+
+async def test_render_remuxes_the_audio(tmp_path, monkeypatch):
+    """``render()`` の後処理として呼ばれる（composition は問わない）。"""
+    use_project(make_project(tmp_path))
+    monkeypatch.setattr(remotion, "REMOTION_TMP_DIR", tmp_path / "runtime")
+    output = tmp_path / "out.mp4"
+    monkeypatch.setattr(remotion, "_run", FakeRun(writes=output))
+    seen: list[dict] = []
+
+    async def spy(path, props):
+        seen.append(props)
+        return True
+
+    monkeypatch.setattr(remotion, "remux_audio", spy)
+    props = {"audio": {"src": "/outputs/ab12/audio.wav"}}
+    await remotion.render("job-1", "FxOverlay", props, output)
+    assert seen == [props]
+
+
+@has_ffmpeg
+async def test_the_remuxed_audio_matches_the_video_length(tmp_path, monkeypatch):
+    """焼き直したあと、音声の尺が映像の尺と一致する（1 フレーム遅れの補正）。"""
+    outputs = tmp_path / "outputs"
+    outputs.mkdir()
+    monkeypatch.setattr(remotion, "AUDIO_ROOTS", {"/outputs/": outputs})
+    video = outputs / "video.mp4"
+    track = outputs / "audio.wav"
+    await _lavfi(["-f", "lavfi", "-i", "testsrc=size=160x90:rate=24:duration=4",
+                  "-pix_fmt", "yuv420p"], video)
+    await _lavfi(["-f", "lavfi", "-i", "sine=frequency=440:duration=4"], track)
+
+    assert await remotion.remux_audio(video, {"audio": {"src": str(track)}}) is True
+    video_length = await _stream_duration(video, "v")
+    audio_length = await _stream_duration(video, "a")
+    assert video_length is not None and audio_length is not None
+    # AAC のフレーム境界ぶん（<= 1 フレーム）のずれは残る
+    assert abs(audio_length - video_length) < 1 / 24
+
+
+async def _lavfi(arguments: list[str], dest: Path) -> None:
+    process = await asyncio.create_subprocess_exec(
+        "ffmpeg", "-v", "error", "-y", *arguments, str(dest),
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await process.communicate()
+    assert process.returncode == 0, stderr.decode()
+
+
+async def _stream_duration(path: Path, kind: str) -> float | None:
+    process = await asyncio.create_subprocess_exec(
+        "ffprobe", "-v", "error", "-select_streams", kind,
+        "-show_entries", "stream=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1", str(path),
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+    )
+    stdout, _ = await process.communicate()
+    try:
+        return float(stdout.decode().strip().splitlines()[0])
+    except (ValueError, IndexError):
+        return None

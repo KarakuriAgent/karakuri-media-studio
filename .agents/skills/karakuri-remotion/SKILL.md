@@ -173,6 +173,13 @@ props スキーマの正本は **`remotion/src/schema.ts`(zod)**。迷ったら�
   `collapse` / `crtOff` / `sprite` / `stickerStack` / `credits` / `lyric` / `endCard` /
   `beatMarker` / `shape`。**各型のフィールドと既定値は `remotion/src/schema.ts` を読む**
   (ここには写さない。増減する)。
+- `sprite` / `imageSlam` / `stickerStack` の `src` に渡す**透過 PNG は、スタジオの
+  透過キー API で作る**(`POST /api/v1/library/{id}/key`、または生成画像から直接抜く
+  `POST /api/v1/library/key-from-job`)。文字だけの素材は `POST /api/v1/images/text`
+  でフォントから組める。作り方と抜き方の選び方は
+  `.agents/skills/karakuri-studio/SKILL.md` §10。自分で PNG を探しに行かない。
+- **雷・ハート・集中線・吹き出しのような単純な記号は `shape` で描く。**
+  画像生成 → 透過キーに回すのは、キャラ・小物・ロゴ文字だけ。
 - 色は `theme.palette` の役割名(`accent` / `fg` / `bg`)か番号、または CSS の色。
 - 位置と大きさは**画面比(0..1)**、`fontSize` は 1080p 基準。縦動画でも書き方は変わらない。
 - 尺は `durationInSeconds` を書かなければ `base` の尺と `events` の終端の大きいほう。
@@ -187,6 +194,9 @@ props スキーマの正本は **`remotion/src/schema.ts`(zod)**。迷ったら�
 - **決め台詞の画像は顔(特に主役)と楽器の手元を避け、画面の下 1/3 に、できるだけ大きく。**
   目安は `w` >= 0.45、`cx` は 0.28〜0.72、`cy` は 0.7 前後。小さく置くと何も言っていないのと同じ。
   はみ出すと `imageSlam` がレンダリング時にコンソールへ警告を出す。
+- **配置(`cx` / `cy` / `w`)を触ったら必ずコンタクトシートで確認する。**
+  `POST /api/v1/videos/contact-sheet` に焼いたジョブと該当の秒を渡し、返ってきた
+  画像を自分の目で見る(スタジオ SKILL §10)。数字だけで詰めない。
 - **無音区間には何も乗せない。** 音が止まっているところに絵の情報を足すと嘘になる。
   `events` をそこに書かなければよい(`ambient` も切る)。
 - **補助効果(`invertShake` / `glitchCut` / クロマ収差)は「決め」だけに使う。**

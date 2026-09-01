@@ -21,7 +21,8 @@ import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
-from . import sheets
+from . import contact_sheet as contact_sheets
+from . import sheets, sprites, textimage
 from .db import get_db
 from .ids import new_id
 from .models import (
@@ -524,6 +525,187 @@ async def add_sheet(
         tags=[SHEET_TAG],
         category="character",
     )
+
+
+#: スプライト（背景を抜いた透過 PNG）に必ず付けるタグと ``source``
+SPRITE_TAG = "sprite"
+SPRITE_SOURCE: LibraryOrigin = "sprite"
+
+#: フォント画像に必ず付けるタグと ``source``
+TEXT_TAG = "text-image"
+TEXT_SOURCE: LibraryOrigin = "text"
+
+#: コンタクトシートに必ず付けるタグと ``source``
+CONTACT_SHEET_TAG = "contact-sheet"
+CONTACT_SHEET_SOURCE: LibraryOrigin = "contact-sheet"
+
+
+async def _add_bytes(
+    *,
+    kind: LibraryKind,
+    data: bytes,
+    ext: str,
+    stem: str,
+    name: str,
+    source: LibraryOrigin,
+    tags: list[str],
+    category: LibraryCategory | None = None,
+    nsfw: bool = False,
+    source_job_id: str | None = None,
+) -> LibraryItem:
+    """アプリが作ったバイト列を ``library/{kind}/`` に置いて登録する。
+
+    :func:`add_sheet` と同じ流儀の内部ヘルパー（スプライト・フォント画像・
+    コンタクトシートが共用する）。NSFW は元素材から引き継ぐので、立っていても
+    手動指定ではなく auto 扱いにする。
+    """
+    dest = kind_dir(kind) / f"{safe_stem(stem)}_{new_id()}{ext}"
+    dest.write_bytes(data)
+    return await _insert(
+        kind=kind,
+        name=name,
+        path=dest,
+        nsfw=nsfw,
+        nsfw_source="auto" if nsfw else "",
+        source_job_id=source_job_id,
+        source=source,
+        tags=tags,
+        category=category,
+    )
+
+
+def sprite_name(origin_name: str) -> str:
+    """スプライトの既定の表示名（元の名前 +「（スプライト）」）。"""
+    stem = (origin_name or "スプライト").strip()
+    return f"{stem}（スプライト）"
+
+
+async def add_keyed(
+    origin: str | Path,
+    *,
+    name: str = "",
+    method: str = "black",
+    color: object = sprites.DEFAULT_COLOR,
+    tolerance: object = sprites.DEFAULT_TOLERANCE,
+    trim: bool = True,
+    tags: object = None,
+    category: object = None,
+    nsfw: bool = False,
+    source_job_id: str | None = None,
+) -> LibraryItem:
+    """画像の背景を抜いて、透過 PNG を**新しい素材**として登録する（SPEC §7.2）。
+
+    元のファイルは触らない。抜き方（floodfill 方式のルミナンスキー / クロマキー /
+    rembg）は :mod:`app.sprites` にあり、抜けなければ :class:`LibraryError`
+    （ルーターは 400）。タグには :data:`SPRITE_TAG` を必ず足すので、あとから
+    「棚のスプライトだけ」を ``GET /api/v1/library?tag=sprite`` で引ける。
+    """
+    resolved_category = check_category(category)
+    source = rebase_stored_path(origin)
+    if not source.is_file():
+        raise LibraryError(f"file not found: {source}")
+    try:
+        data = sprites.key_image(
+            source, method=method, color=color, tolerance=tolerance, trim=trim
+        )
+    except sprites.SpriteError as exc:
+        raise LibraryError(str(exc)) from exc
+    display = (name or "").strip() or sprite_name(source.stem)
+    marked = normalize_tags(tags)
+    if not any(tag.casefold() == SPRITE_TAG for tag in marked):
+        marked.append(SPRITE_TAG)
+    return await _add_bytes(
+        kind="image",
+        data=data,
+        ext=".png",
+        stem=Path(display).stem,
+        name=display,
+        source=SPRITE_SOURCE,
+        tags=marked,
+        category=resolved_category,
+        nsfw=nsfw,
+        source_job_id=source_job_id,
+    )
+
+
+def text_image_name(text: str) -> str:
+    """フォント画像の既定の表示名（本文の 1 行目）。"""
+    head = (text or "").strip().splitlines()
+    return f"{head[0][:30]}（文字）" if head else "フォント画像"
+
+
+async def add_text_image(
+    text: str,
+    *,
+    name: str = "",
+    tags: object = None,
+    category: object = None,
+    **options: object,
+) -> LibraryItem:
+    """フォントで組んだ文字を画像にして登録する（SPEC §7.2）。
+
+    ``options`` はそのまま :func:`app.textimage.render_text` に渡る
+    （``font`` / ``size`` / ``color`` / ``outline_color`` / ``outline_width`` /
+    ``background`` / ``rotate`` / ``padding`` / ``align``）。
+    """
+    resolved_category = check_category(category)
+    try:
+        data = textimage.render_text(text, **options)  # type: ignore[arg-type]
+    except textimage.TextImageError as exc:
+        raise LibraryError(str(exc)) from exc
+    display = (name or "").strip() or text_image_name(text)
+    marked = normalize_tags(tags)
+    if not any(tag.casefold() == TEXT_TAG for tag in marked):
+        marked.append(TEXT_TAG)
+    return await _add_bytes(
+        kind="image",
+        data=data,
+        ext=".png",
+        stem=Path(display).stem,
+        name=display,
+        source=TEXT_SOURCE,
+        tags=marked,
+        category=resolved_category,
+    )
+
+
+async def add_contact_sheet(
+    video: str | Path,
+    *,
+    name: str = "",
+    tags: object = None,
+    nsfw: bool = False,
+    **options: object,
+) -> tuple[LibraryItem, list[float]]:
+    """動画のコマを 1 枚のシートにして登録し、``(素材, 抜いた秒)`` を返す。
+
+    ``options`` はそのまま :func:`app.contact_sheet.render_contact_sheet` に渡る
+    （``seconds`` / ``span`` / ``frames`` / ``columns`` / ``width`` / ``labels``）。
+    """
+    source = rebase_stored_path(video)
+    if not source.is_file():
+        raise LibraryError(f"file not found: {source}")
+    try:
+        data, seconds = await contact_sheets.render_contact_sheet(
+            source, **options  # type: ignore[arg-type]
+        )
+    except contact_sheets.ContactSheetError as exc:
+        raise LibraryError(str(exc)) from exc
+    display = (name or "").strip() or f"{source.stem}（コンタクトシート）"
+    marked = normalize_tags(tags)
+    if not any(tag.casefold() == CONTACT_SHEET_TAG for tag in marked):
+        marked.append(CONTACT_SHEET_TAG)
+    item = await _add_bytes(
+        kind="image",
+        data=data,
+        ext=".jpg",
+        stem=Path(display).stem,
+        name=display,
+        source=CONTACT_SHEET_SOURCE,
+        tags=marked,
+        nsfw=nsfw,
+    )
+    return item, seconds
 
 
 async def update_item(

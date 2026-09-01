@@ -1913,9 +1913,13 @@ LibraryKind = Literal["image", "video", "audio"]
 LibrarySource = Literal["image", "last_frame", "video", "audio"]
 
 #: 素材の出どころ（``LibraryItem.source``）。ジョブの出力 4 種に、アプリ内で
-#: 合成したリファレンスシート（'sheet'、SPEC §7.2）を足したもの。from-job で
-#: 指定できるのは :data:`LibrarySource` のほうだけ
-LibraryOrigin = Literal["image", "last_frame", "video", "audio", "sheet"]
+#: 作ったもの（リファレンスシート 'sheet' / 透過スプライト 'sprite' /
+#: フォント画像 'text' / コンタクトシート 'contact-sheet'、SPEC §7.2）を
+#: 足したもの。from-job で指定できるのは :data:`LibrarySource` のほうだけ
+LibraryOrigin = Literal[
+    "image", "last_frame", "video", "audio",
+    "sheet", "sprite", "text", "contact-sheet",
+]
 
 #: 素材の分類（棚の仕切り）。None は「未分類」で、DB では NULL。
 #: 後段のキャラクターシート合成で character は大パネル、background / prop は
@@ -1987,6 +1991,165 @@ class LibrarySheet(BaseModel):
     #: シートの大きさ（省略すると 1280x720。出力動画と同じ縦横比が望ましい）
     width: int | None = None
     height: int | None = None
+
+
+#: 透過キーの抜き方（``POST /api/v1/library/{id}/key``。:mod:`app.sprites`）
+LibraryKeyMethod = Literal["black", "white", "chroma", "rembg"]
+
+
+class LibraryKey(BaseModel):
+    """POST /api/library/{id}/key body（素材の背景を抜いてスプライトにする）。
+
+    元の素材は触らず、抜いた RGBA PNG を**新しいライブラリ項目**にする
+    （SPEC §7.2）。検証は :mod:`app.sprites` が行い、外れていれば 400。
+    """
+
+    #: 抜き方。``black`` / ``white`` は floodfill 方式のルミナンスキー（文字の
+    #: 内側の同色は穴として残る）、``chroma`` は ``color`` との距離、
+    #: ``rembg`` は任意依存（入っていなければ 400）
+    method: LibraryKeyMethod = "black"
+    #: ``chroma`` のときに抜く色（CSS 表記）
+    color: str = "#00ff00"
+    #: 許容差（0..1）。既定 0.1 は 255 階調の 26 相当
+    tolerance: float = 0.1
+    #: 不透明な部分の bbox に切り詰めるか
+    trim: bool = True
+    #: 表示名（空なら元の素材の名前 +「（スプライト）」）
+    name: str = ""
+    tags: list[str] = Field(default_factory=list)
+    #: 分類（省略・空・'none' なら未分類）
+    category: str | None = None
+
+
+class LibraryKeyFromJob(LibraryKey):
+    """POST /api/library/key-from-job body（ジョブの出力を直接抜く）。
+
+    ライブラリに入れてから抜く手間を省く入り口。``source`` は
+    :data:`LibrarySource`（``image`` / ``last_frame`` …）で、
+    :data:`app.library.SOURCES` の仕組みにそのまま乗る。
+    """
+
+    job_id: str
+    source: LibrarySource = "image"
+
+
+class TextImageOutline(BaseModel):
+    """フォント画像の縁取り。"""
+
+    color: str = "#000000"
+    #: 太さ（px）。0 なら縁取り無し
+    width: int = 0
+
+
+class TextImage(BaseModel):
+    """POST /api/images/text body（フォントで組んだ文字を画像にする）。
+
+    用途は「そのままスプライトにする」と「画像生成の**字形参照**として渡す」の
+    2 つ（SPEC §7.2）。検証は :mod:`app.textimage` が行い、外れていれば 400。
+    """
+
+    #: 描く文字（``\n`` で改行）
+    text: str
+    #: 書体。``GET /api/v1/images/text/fonts`` の ``name`` を書く（空なら既定）
+    font: str = ""
+    #: 文字の大きさ（px）
+    size: int = 160
+    color: str = "#ffffff"
+    outline: TextImageOutline | None = None
+    #: 背景。``transparent``（既定）か色
+    bg: str = "transparent"
+    #: 回転（度、反時計回りが正）
+    rotate: float = 0
+    #: 文字の周りに空ける余白（px）
+    padding: int = 24
+    #: 行揃え（``left`` / ``center`` / ``right``）
+    align: Literal["left", "center", "right"] = "center"
+    #: 表示名（空なら本文の 1 行目から決める）
+    name: str = ""
+    tags: list[str] = Field(default_factory=list)
+
+
+class FontFace(BaseModel):
+    """インストール済みの書体 1 面（``GET /api/images/text/fonts``）。"""
+
+    #: ``TextImage.font`` に書く表示名
+    name: str
+    family: str
+    style: str = ""
+    path: str
+    #: TrueType コレクションの面番号
+    index: int = 0
+
+
+class FontList(BaseModel):
+    """GET /api/images/text/fonts のレスポンス。"""
+
+    fonts: list[FontFace] = Field(default_factory=list)
+    #: ``font`` を省いたときに使われる書体の名前（1 つも無ければ空）
+    default: str = ""
+
+
+class MediaRef(BaseModel):
+    """動画の指し方（ジョブの出力 / ライブラリの素材 / 書き出し / パス・URL）。
+
+    **どれか 1 つだけ**を書く。2 つ以上書いた、または 1 つも書かなければ 400。
+    """
+
+    #: ジョブの出力（``source`` でどの出力かを選ぶ）
+    job_id: str = ""
+    source: LibrarySource = "video"
+    #: ライブラリの素材
+    item_id: str = ""
+    #: タイムラインの書き出し
+    export_id: str = ""
+    #: ``/outputs/…`` / ``/library/…`` / ``/assets/…`` の URL か、その中の絶対パス
+    path: str = ""
+
+
+class ContactSheetRange(BaseModel):
+    """コンタクトシートの区間指定（``end`` を含む）。"""
+
+    start: float = 0
+    end: float = 0
+    step: float = 1
+
+
+class ContactSheetResult(BaseModel):
+    """POST /api/videos/contact-sheet のレスポンス。
+
+    ライブラリ項目そのものではなく**実際に抜いた秒**も返す（``range`` や既定の
+    等間隔で頼んだとき、どのコマが載っているかが分からないと読めないため）。
+    """
+
+    item: "LibraryItem"
+    #: 左上から並んでいる順の秒
+    seconds: list[float] = Field(default_factory=list)
+    columns: int = 0
+
+
+class ContactSheet(BaseModel):
+    """POST /api/videos/contact-sheet body（動画のコマを 1 枚のグリッドにする）。
+
+    抜く秒は ``seconds`` → ``range`` → ``frames`` の順に見て、どれも無ければ
+    尺を等分した位置になる（SPEC §7.2）。検証は :mod:`app.contact_sheet`。
+    """
+
+    source: MediaRef
+    #: 抜く秒（そのまま）
+    seconds: list[float] = Field(default_factory=list)
+    #: 区間と間隔で指定する
+    range: ContactSheetRange | None = None
+    #: フレーム番号で指定する（動画から fps が読めるときだけ）
+    frames: list[int] = Field(default_factory=list)
+    #: 列数
+    columns: int = 4
+    #: 1 コマの幅（px）。高さは元の縦横比から決まる
+    width: int = 480
+    #: 各コマの下に秒とフレーム番号を焼くか
+    labels: bool = True
+    #: 表示名（空なら元の動画の名前から決める）
+    name: str = ""
+    tags: list[str] = Field(default_factory=list)
 
 
 class LibraryProgress(BaseModel):

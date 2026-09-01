@@ -202,7 +202,75 @@ scripts/studio.sh wait-export <export_id> [interval_sec]
 `run.sh` が初回に入れている）。エージェント側から `PUT /api/settings` で
 勝手に有効化しない。
 
-## 10. やってはいけない
+## 10. 演出用スプライトと検分（指示があったときだけ）
+
+**MV・モーショングラフィックスを求められたとき、または明示的に指示されたときだけ
+使う。** 通常のドラマ制作で勝手にスプライトを足さない。
+
+### スプライト（透過 PNG）の作り方
+
+素材の出どころは 3 通り。**まず「本当に画像が要るか」を考える**: 雷・ハート・
+集中線・吹き出しのような単純な記号は Remotion の `shape` イベント（SVG）で描ける。
+**生成するのはキャラ・小物・ロゴ文字だけ。**
+
+1. **画像生成 → 抜く**（いちばん多い）
+   - プロンプトの定型: **黒背景・被写体は単体・中央・影なし**（英語で
+     `on a pure black background, single subject, centered, no shadow, no text` を
+     足す）。キャラの見た目を合わせたいときは World Bible の素材を参照に渡して r2i
+   - `POST /jobs {"mode":"image_only", …}` → `wait-job` →
+     `POST /library/key-from-job {"job_id":"…","source":"image","method":"black"}`
+2. **フォント画像**（下記）をそのまま使う
+3. **手持ちの PNG**: `POST /library/image` に multipart → `POST /library/{id}/key`
+
+### 抜き方（`method`）の選び方
+
+| 元の背景 | `method` | 補足 |
+|---|---|---|
+| 黒（生成時に指定したもの） | `black` | 既定。**文字やロゴの内側の黒は穴として残る**（外側から floodfill するため） |
+| 白 | `white` | 上の明るさを反転しただけ |
+| 単色（グリーンバック等） | `chroma` + `color` | 内側の同色も抜ける。ロゴ文字には向かない |
+| 写真・複雑な背景 | `rembg` | 任意依存。入っていなければ 400 が返るので、そのときは諦めるか人に頼む |
+
+- 抜けが甘い / 抜きすぎるときは `tolerance`（0..1、既定 0.1）を動かす。
+- `trim`（既定 true）で余白が落ちる。**余白を残したまま Remotion に渡すと、
+  `w` を大きくしても絵が小さく見える。**
+- 結果の `url`（`/library/image/….png`）をそのまま `sprite` / `imageSlam` /
+  `stickerStack` の `src` に書く。
+
+### フォント画像
+
+```bash
+scripts/studio.sh GET /images/text/fonts
+scripts/studio.sh POST /images/text '{"text":"撃ち抜け","size":220,"color":"#f5f5f5","outline":{"color":"#08080a","width":10}}'
+```
+
+用途は 2 つ。
+
+1. **そのままスプライトにする**（決め台詞・カードの文字）。背景は既定で透明。
+2. **画像生成の字形参照**。日本語を描かせて誤字になったら、同じ文言をフォントで
+   組んだ画像を参照画像として添える（`reference_images` / 素材の `@名前`）と字形が
+   直る。
+
+`font` は `GET /images/text/fonts` の `name` をそのまま書く（省略すると
+Noto Sans CJK JP Bold 相当）。存在しない名前は 400。
+
+### コンタクトシートで検分する
+
+```bash
+scripts/studio.sh POST /videos/contact-sheet '{"source":{"job_id":"<job>"},"seconds":[43.9,44.2,46.0],"columns":3}'
+```
+
+- `source` は `job_id` / `item_id` / `export_id` / `path` の**どれか 1 つだけ**。
+- 秒は `seconds` / `range{start,end,step}` / `frames`（フレーム番号）で指定でき、
+  どれも書かなければ尺を 12 等分した位置。
+- 応答の `item.url` を GET して **自分の目で見る**。`seconds` に実際に抜いた秒が
+  並ぶ。
+- **演出の配置（`cx` / `cy` / `w`）を触ったら必ずこれで確かめる。**
+- 手元で 1 秒ごとのフレームを並べて見たいときは `scripts/inspect.sh`（人が手元で
+  使う道具）。API のコンタクトシートは**外部エージェントが必要な秒だけ束ねて見る**
+  ためのもので、役割が違う。
+
+## 11. やってはいけない
 
 - 静的配信（`/outputs` など）は**無認証**。ネット越しに晒さない。生成物の URL を
   外部に配らない。
@@ -211,3 +279,5 @@ scripts/studio.sh wait-export <export_id> [interval_sec]
 - ポーリング間隔を 5 秒未満にしない。
 - プロジェクトを消そうとしない（API に無い＝人の仕事）。
 - 生成物を見ずに採用しない。
+- 指示されていないのに演出用スプライトを足さない（§10）。`shape` で描ける記号を
+  わざわざ画像生成しない。

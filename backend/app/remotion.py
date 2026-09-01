@@ -5,12 +5,14 @@ ComfyUI とまったく同じ考え方で、**Remotion プロジェクトをア�
 に同梱してあり、常にそこを使う（composition を足す・直すときは
 ``remotion/src/`` を編集する）。**Remotion は独自ライセンス**
 （個人・従業員 3 名以下の会社は無償、それ以上は会社ライセンスが必要）なので、
-連携そのものは ``remotion_enabled`` が **既定 OFF**。ここがやるのは 2 つだけ:
+連携そのものは ``remotion_enabled`` が **既定 OFF**。ここがやるのは 3 つだけ:
 
 - :func:`list_compositions` — ``npx remotion compositions <entry>`` を叩いて、
   そのプロジェクトが持つ composition の ID を並べる（短時間キャッシュ）。
 - :func:`render` — ``npx remotion render`` をサブプロセスで回し、標準出力の
   進捗を呼び出し元（:mod:`app.jobs`）へ流し、出来上がった mp4 のパスを返す。
+- :func:`remux_audio` — その mp4 の**音声だけ元音源から焼き直す**（Remotion の
+  出力は音声が 1 フレームぶん遅れるため。後述）。
 
 **ジョブとして扱う**のが要点で、レンダリングは ComfyUI / Grok と並ぶもう 1 つの
 生成経路として ``outputs/{job_id}/`` に成果物を置く。そのため履歴・WS・ライブラリ・
@@ -29,6 +31,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import re
 import time
 from collections.abc import Awaitable, Callable
@@ -37,7 +40,14 @@ from pathlib import Path
 from typing import Any
 
 from .config import load_settings
-from .paths import REMOTION_BUNDLED_DIR, REMOTION_TMP_DIR
+from .paths import (
+    ASSETS_DIR,
+    LIBRARY_DIR,
+    OUTPUTS_DIR,
+    REMOTION_BUNDLED_DIR,
+    REMOTION_TMP_DIR,
+    rebase_stored_path,
+)
 
 log = logging.getLogger(__name__)
 
@@ -475,4 +485,219 @@ async def render(
         raise RemotionError(
             f"Remotion は成功しましたが出力ファイルがありません: {output}"
         )
+    await remux_audio(output, props or {})
     return output
+
+
+# --------------------------------------------------------------------------
+# 音声の焼き直し（Remotion の 1 フレーム遅れの補正）
+# --------------------------------------------------------------------------
+#
+# Remotion が書き出す mp4 は **音声が 2,048 サンプル（48kHz で 42.67ms ≒ 1 フレーム）
+# 遅れる**（AAC のプライミングが実体として入り、edit list で相殺されない）。
+# BAN!BAN!BAN! の `fx/remotion/tools/mux_audio.py` で実測して確かめた挙動で、
+# 決めの効果を 1 フレーム単位で合わせている映像ではそのまま音ズレになる。
+#
+# そこで**映像はストリームコピーのまま、音声だけ元音源から焼き直す**。props の
+# ``audio.src`` がローカルの置き場（``outputs/`` / ``library/`` / ``assets/``）に
+# 解決できるときだけ働き、それ以外（外部 URL・音声なし）は何もしない。
+# ``MusicVideo`` / ``FxOverlay`` のどちらも props の形は同じ（``audioSchema``）
+# なので、composition で分ける必要はない。
+#
+# **失敗してもジョブは失敗させない**: 焼き直せなくても mp4 自体は出来ているので、
+# 元のまま残してログに残すだけにする。
+
+#: ffmpeg / ffprobe の呼び出し名（:mod:`app.jobs` と同じ流儀でテストが差し替える）
+FFMPEG = "ffmpeg"
+FFPROBE = "ffprobe"
+
+#: 焼き直しに許す秒数（映像はコピーなので音声の長さぶんしか掛からない）
+REMUX_TIMEOUT = 600.0
+
+#: 焼き直す音声のビットレート（BAN の `encode()` と同じ）
+AUDIO_BITRATE = "320k"
+
+#: ``audio.src`` に許す配信 URL の接頭辞 -> 置き場
+AUDIO_ROOTS: dict[str, Path] = {
+    "/outputs/": OUTPUTS_DIR,
+    "/library/": LIBRARY_DIR,
+    "/assets/": ASSETS_DIR,
+}
+
+
+def local_audio_path(src: object) -> Path | None:
+    """``audio.src`` をローカルのファイルに解決する（できなければ None）。
+
+    受けるのは ``http://…/outputs/…`` のような配信 URL、``/outputs/…`` の
+    パス、そして置き場の中の絶対パス。**置き場の外は受けない**（焼き直しは
+    サーバー内のファイルにしか掛けない）。
+    """
+    text = str(src or "").strip()
+    if not text:
+        return None
+    candidate: Path | None = None
+    for prefix, directory in AUDIO_ROOTS.items():
+        index = text.find(prefix)
+        if index >= 0:
+            candidate = directory / text[index + len(prefix):].split("?", 1)[0]
+            break
+    if candidate is None:
+        if text.startswith(("http://", "https://", "data:")):
+            return None
+        candidate = Path(text)
+    resolved = rebase_stored_path(candidate)
+    try:
+        resolved = resolved.resolve()
+    except OSError:
+        return None
+    allowed = [directory.resolve() for directory in AUDIO_ROOTS.values()]
+    if not any(root in resolved.parents for root in allowed):
+        return None
+    return resolved if resolved.is_file() else None
+
+
+def audio_filters(
+    volume: float, fade_out: float, duration: float | None
+) -> list[str]:
+    """``-af`` に渡すフィルタの並び（音量 → フェードアウト → 尺合わせ）。
+
+    ``apad`` を最後に置いて ``-shortest`` と組ませるのは、音源が映像よりわずかに
+    短いときに末尾のフレームが音無しにならないようにするため（BAN と同じ）。
+    フェードアウトは映像の尺が分かるときだけ掛けられる。
+    """
+    filters: list[str] = []
+    if volume != 1.0:
+        filters.append(f"volume={volume:.4f}")
+    if fade_out > 0:
+        if duration and duration > 0:
+            start = max(0.0, duration - fade_out)
+            filters.append(f"afade=t=out:st={start:.3f}:d={fade_out:.3f}")
+        else:
+            log.info("映像の尺が読めないので audio.fadeOut は掛けません")
+    filters.append("apad")
+    return filters
+
+
+def build_remux_command(
+    video: str | Path,
+    audio: str | Path,
+    dest: str | Path,
+    *,
+    start_from: float = 0.0,
+    volume: float = 1.0,
+    fade_out: float = 0.0,
+    duration: float | None = None,
+) -> list[str]:
+    """音声だけ焼き直す ffmpeg のコマンドライン（純関数。テストで固定できる）。
+
+    映像は ``-c:v copy``（再エンコードしない）。``start_from`` は**音源側の入力の
+    前**に ``-ss`` として置くので、その入力だけの頭出しになる。
+    """
+    argv = [FFMPEG, "-v", "error", "-y", "-i", str(video)]
+    if start_from > 0:
+        argv += ["-ss", f"{start_from:.3f}"]
+    argv += [
+        "-i", str(audio),
+        "-map", "0:v:0",
+        "-map", "1:a:0",
+        "-c:v", "copy",
+    ]
+    filters = audio_filters(volume, fade_out, duration)
+    if filters:
+        argv += ["-af", ",".join(filters)]
+    argv += [
+        "-c:a", "aac",
+        "-b:a", AUDIO_BITRATE,
+        "-shortest",
+        "-movflags", "+faststart",
+        str(dest),
+    ]
+    return argv
+
+
+async def probe_duration(path: str | Path) -> float | None:
+    """メディアの長さ（秒。読めなければ None）。"""
+    try:
+        process = await asyncio.create_subprocess_exec(
+            FFPROBE, "-v", "error",
+            "-show_entries", "format=duration",
+            "-of", "default=noprint_wrappers=1:nokey=1",
+            str(path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except (OSError, ValueError) as exc:
+        log.info("ffprobe を実行できませんでした（%s）: %s", path, exc)
+        return None
+    stdout, _ = await process.communicate()
+    try:
+        seconds = float(stdout.decode("utf-8", "replace").strip())
+    except ValueError:
+        return None
+    return seconds if seconds > 0 else None
+
+
+async def remux_audio(output: Path, props: dict[str, Any]) -> bool:
+    """出来上がった mp4 の音声を、props の音源から焼き直す（できたら True）。
+
+    props に ``audio.src`` が無い / ローカルに解決できない / ffmpeg が無い、の
+    どれでも静かに諦める（False）。**ジョブは失敗させない**。
+    """
+    audio = props.get("audio") if isinstance(props, dict) else None
+    if not isinstance(audio, dict):
+        return False
+    source = local_audio_path(audio.get("src"))
+    if source is None:
+        return False
+    try:
+        volume = float(audio.get("volume", 1) or 0)
+        start_from = max(0.0, float(audio.get("startFrom", 0) or 0))
+        fade_out = max(0.0, float(audio.get("fadeOut", 0) or 0))
+    except (TypeError, ValueError):
+        log.warning("audio の値を読めないので音声の焼き直しをやめます: %s", audio)
+        return False
+
+    duration = await probe_duration(output) if fade_out > 0 else None
+    temporary = output.with_suffix(output.suffix + ".remux.mp4")
+    argv = build_remux_command(
+        output, source, temporary,
+        start_from=start_from, volume=volume, fade_out=fade_out, duration=duration,
+    )
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *argv,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        _, stderr = await asyncio.wait_for(
+            process.communicate(), timeout=REMUX_TIMEOUT
+        )
+    except asyncio.CancelledError:
+        with suppress(OSError):
+            temporary.unlink(missing_ok=True)
+        raise
+    except (OSError, ValueError, asyncio.TimeoutError) as exc:
+        log.warning(
+            "音声の焼き直しをやめました（元の mp4 のままにします）: %s", exc
+        )
+        with suppress(OSError):
+            temporary.unlink(missing_ok=True)
+        return False
+    if process.returncode != 0 or not temporary.is_file() or not temporary.stat().st_size:
+        log.warning(
+            "ffmpeg が音声を焼き直せませんでした（元の mp4 のままにします）: %s",
+            stderr.decode("utf-8", "replace").strip()[:400],
+        )
+        with suppress(OSError):
+            temporary.unlink(missing_ok=True)
+        return False
+    try:
+        os.replace(temporary, output)
+    except OSError as exc:
+        log.warning("焼き直した mp4 を差し替えられませんでした: %s", exc)
+        with suppress(OSError):
+            temporary.unlink(missing_ok=True)
+        return False
+    log.info("Remotion の音声を %s から焼き直しました: %s", source, output)
+    return True

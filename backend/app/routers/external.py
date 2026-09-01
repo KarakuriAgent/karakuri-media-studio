@@ -59,7 +59,10 @@ from ..h3_examples import (
 )
 from ..models import (
     ASSET_FILE_ROLE_KINDS,
+    ContactSheet,
+    ContactSheetResult,
     DraftingGuide,
+    FontList,
     Job,
     JobContinue,
     JobCreate,
@@ -67,6 +70,8 @@ from ..models import (
     JobRerun,
     LibraryFromJob,
     LibraryItem,
+    LibraryKey,
+    LibraryKeyFromJob,
     LibraryPage,
     LibrarySheet,
     LibraryUpdate,
@@ -108,6 +113,7 @@ from ..models import (
     StudioTimelineCreate,
     StudioTimelineDetail,
     StudioTimelineUpdate,
+    TextImage,
     TimelineClipsUpdate,
     TimelineExport,
     TimelineExportRequest,
@@ -127,6 +133,8 @@ from ..models import (
 from .assets import save_upload
 from .library import MAX_LIMIT as LIBRARY_MAX_LIMIT
 from .library import _bad_request as _library_bad_request
+from .library import key_job_output, key_library_item
+from .media import create_contact_sheet, create_text_image, font_list
 from .options import get_options
 from .studio import _kind_of, get_capabilities
 from .timelines import _http_error as _timeline_error
@@ -1014,6 +1022,62 @@ async def update_library_item(item_id: str, payload: LibraryUpdate) -> LibraryIt
     if item is None:
         raise HTTPException(status_code=404, detail="library item not found")
     return item
+
+
+@router.post("/library/key-from-job", response_model=LibraryItem, status_code=201)
+async def key_library_from_job(payload: LibraryKeyFromJob) -> LibraryItem:
+    """ジョブの生成画像の背景を抜いてスプライトにする（SPEC §7.2）。
+
+    棚に入れてから抜く 2 手を 1 手にする入り口。``/library/{item_id}`` より先に
+    定義しておく。
+    """
+    return await key_job_output(payload)
+
+
+@router.post("/library/{item_id}/key", response_model=LibraryItem, status_code=201)
+async def key_library_item_route(
+    item_id: str, payload: LibraryKey | None = None
+) -> LibraryItem:
+    """棚の画像の背景を抜いて、透過 PNG の**新しい素材**にする（元は触らない）。
+
+    ``method`` は ``black`` / ``white``（floodfill 方式のルミナンスキー。文字の
+    内側の同色は穴として残る）/ ``chroma``（``color`` との距離）/ ``rembg``
+    （任意依存。入っていなければ 400）。できた PNG の ``url`` を Remotion の
+    ``sprite`` / ``imageSlam`` の ``src`` にそのまま書ける。
+    """
+    return await key_library_item(item_id, payload or LibraryKey())
+
+
+# --------------------------------------------------------------------------
+# 素材の下ごしらえ（フォント画像とコンタクトシート）
+# --------------------------------------------------------------------------
+
+@router.get("/images/text/fonts", response_model=FontList)
+async def list_text_fonts() -> FontList:
+    """使える書体の一覧（``POST /images/text`` の ``font`` に書く名前）。"""
+    return font_list()
+
+
+@router.post("/images/text", response_model=LibraryItem, status_code=201)
+async def create_text_image_route(payload: TextImage) -> LibraryItem:
+    """フォントで組んだ文字を PNG にしてライブラリへ登録する（SPEC §7.2）。
+
+    背景は既定で透明なので、そのままスプライトとして貼れる。日本語が誤字になる
+    画像生成に**字形の参照**として添えるのにも使う。
+    """
+    return await create_text_image(payload)
+
+
+@router.post("/videos/contact-sheet", response_model=ContactSheetResult,
+             status_code=201)
+async def create_contact_sheet_route(payload: ContactSheet) -> ContactSheetResult:
+    """動画のコマを 1 枚のグリッド画像に束ねてライブラリへ登録する（SPEC §7.2）。
+
+    ``source`` は ``job_id`` / ``item_id`` / ``export_id`` / ``path`` のどれか
+    1 つ。抜く秒は ``seconds`` → ``range`` → ``frames`` の順に見て、どれも
+    無ければ尺を等分した位置になる。**演出の配置を触ったら必ずこれで確かめる。**
+    """
+    return await create_contact_sheet(payload)
 
 
 # --------------------------------------------------------------------------

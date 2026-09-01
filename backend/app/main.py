@@ -29,6 +29,7 @@ from .routers import (
     jobs,
     library,
     loras,
+    media,
     model_download,
     models_config,
     options,
@@ -83,6 +84,8 @@ app.include_router(loras.router)
 app.include_router(models_config.router)
 app.include_router(model_download.router)
 app.include_router(library.router)
+app.include_router(media.images_router)
+app.include_router(media.videos_router)
 app.include_router(assets.router)
 app.include_router(options.router)
 app.include_router(chat.router)

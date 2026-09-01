@@ -39,7 +39,8 @@
 | 素材（World Bible） | `POST /projects/{id}/assets`（JSON / multipart）・`assets/from-job`・`PATCH/DELETE /assets/{id}`・素材のリファレンス（`/assets/{id}/files`・`DELETE /asset-files/{id}`） |
 | 生成と Take | `POST /shots/{id}/render`・`GET /shots/{id}/takes`・`POST /takes/{id}/select`・`reject`・`cancel`・`DELETE /takes/{id}` |
 | 汎用ジョブ | `GET/POST /jobs`・`GET /jobs/{id}`・`POST /jobs/{id}/cancel`・`rerun`・`continue` |
-| ライブラリ | `GET /library`・`POST /library/from-job`・`POST /library/sheet`・`PATCH /library/{id}`（**削除は非公開**） |
+| ライブラリ | `GET /library`・`POST /library/from-job`・`POST /library/sheet`・`POST /library/{id}/key`・`POST /library/key-from-job`・`PATCH /library/{id}`（**削除は非公開**） |
+| 素材の下ごしらえ | `POST /images/text`・`GET /images/text/fonts`・`POST /videos/contact-sheet`（§3.4） |
 | 編集（タイムライン） | `POST /projects/{id}/timelines`・`GET/PATCH/DELETE /timelines/{id}`・`PUT /timelines/{id}/clips`・トラック CRUD・`generate-subtitles`・`sync-preview` / `sync`・`missing` / `missing/resolve`・`GET /projects/{id}/media` |
 | 書き出し | `POST /timelines/{id}/export`（202）・`GET /exports/{id}`・`POST /exports/{id}/save-to-library` |
 | 編集履歴 | `GET /projects/{id}/revisions`・`GET .../{seq}/diff`・`POST .../{seq}/restore`（§3.1） |
@@ -303,6 +304,55 @@ POST /api/v1/jobs  {"mode": "remotion", "remotion_composition": "Opening",
   `remotion/README.md`（正本は `remotion/src/schema.ts`）。
 - 出来た mp4 は他のジョブと同じく `GET /api/v1/jobs/{id}` の `video_url` に出るので、
   ライブラリ登録・素材登録・タイムラインへの取り込みもそのまま使える。
+- **音声はアプリ側で焼き直す**。Remotion の mp4 は音声が 2,048 サンプル
+  （48kHz で約 42.67ms ≒ 1 フレーム）遅れるので、`remotion_props` の `audio.src`
+  が同じマシンの `/outputs/…` などに解決できるときは、レンダリング後に
+  **映像はコピーのまま音声だけ元音源から焼き直す**（`audio.startFrom` /
+  `volume` / `fadeOut` も再現する）。焼き直せなかったときは元の mp4 のまま
+  （ジョブは失敗しない）。
+
+### 3.4 素材の下ごしらえ（スプライト / フォント画像 / コンタクトシート）
+
+演出用の素材を作るための 4 本。**MV・モーショングラフィックスを求められたとき、
+または明示的に指示されたときだけ使う**（通常のドラマ制作では出番が無い）。
+
+```
+POST /api/v1/library/{id}/key       {"method":"black","tolerance":0.1,"trim":true}
+POST /api/v1/library/key-from-job   {"job_id":"…","source":"image","method":"black"}
+GET  /api/v1/images/text/fonts      → {"fonts":[{"name":"Noto Sans CJK JP Bold",…}],"default":"…"}
+POST /api/v1/images/text            {"text":"撃ち抜け","size":220,"outline":{"color":"#08080a","width":10}}
+POST /api/v1/videos/contact-sheet   {"source":{"job_id":"…"},"seconds":[43.9,44.2],"columns":4}
+```
+
+- **透過キー**（`library/{id}/key`）… 棚の画像の背景を抜いて、**新しいライブラリ
+  項目**（RGBA PNG、タグ `sprite`、`source: "sprite"`）にする。元の素材は触らない。
+  `method` は
+  - `black` / `white` … ルミナンスキー。**外側から floodfill** するので、文字や
+    ロゴの**内側の同じ色は穴として残る**（縁取りの中が抜けない）。`tolerance`
+    （0..1、既定 0.1）で明るさの閾値を動かす
+  - `chroma` … `color`（既定 `#00ff00`）との距離で抜く。内側の同色も抜ける
+  - `rembg` … 任意依存。入っていなければ **400** で入れ方を返す
+    （`pip install -r backend/requirements-optional.txt`）
+  - `trim`（既定 true）… 不透明な部分の bbox に切り詰める
+  応答の `url`（`/library/image/….png`）を Remotion の `sprite` / `imageSlam` /
+  `stickerStack` の `src` にそのまま書ける。ジョブの生成画像を棚に入れずに
+  直接抜きたいときは `library/key-from-job`（`source` は `image` / `last_frame`）。
+- **フォント画像**（`images/text`）… インストール済みの書体で文字を組んで
+  RGBA PNG にする（タグ `text-image`、`source: "text"`）。`font` は
+  `GET /images/text/fonts` の `name` をそのまま書く（省略すると Noto Sans CJK JP
+  Bold 相当）。`size` / `color` / `outline{color,width}` / `bg`（`transparent`
+  か色）/ `rotate` / `padding` / `align` と、本文の改行が使える。用途は 2 つ:
+  そのままスプライトとして貼る／**画像生成の字形参照**として参照画像に添える
+  （日本語が誤字になるモデルでも字形が直る）。
+- **コンタクトシート**（`videos/contact-sheet`）… 動画のコマを 1 枚の jpg に
+  束ねる（タグ `contact-sheet`）。`source` は `job_id`（+ `source`、既定
+  `video`）/ `item_id` / `export_id` / `path`（`/outputs/…` の URL か置き場の中の
+  絶対パス）の**どれか 1 つだけ**。抜く秒は `seconds` → `range{start,end,step}`
+  → `frames`（fps が読めるときだけ）の順に見て、どれも無ければ尺を 12 等分した
+  位置。`columns` / `width`（1 コマの幅）/ `labels`（秒とフレーム番号を焼く、
+  既定 true）。応答は `{item, seconds, columns}` で、`seconds` に**実際に抜いた
+  秒**が左上から順に並ぶ。**演出の配置（`cx` / `cy` / `w`）を触ったら必ずこれで
+  確かめる。**
 
 ## 4. ファイルの受け渡し
 

@@ -1095,6 +1095,17 @@ ComfyUI と並ぶもう 1 つの生成経路。Remotion プロジェクト（Nod
   （`runtime/remotion/`）に書いて `--props=<file>` で渡す
 - 出来た mp4 は他のジョブと同じ `outputs/{job_id}/` に置くので、履歴・WS・ライブラリ・
   素材登録・タイムラインの素材ビンには何も足さずに乗る
+- **音声の焼き直し**（`remotion.remux_audio`）: Remotion の出力は音声が
+  **2,048 サンプル（48kHz で約 42.67ms ≒ 1 フレーム）遅れる**（AAC のプライミングが
+  実体として入り、edit list で相殺されない）。決めの効果を 1 フレーム単位で合わせた
+  映像ではそのまま音ズレになるので、レンダリングの後処理で **映像は `-c:v copy` の
+  まま、音声だけ元音源から焼き直す**（`ffmpeg -i video.mp4 -i <audio> -map 0:v -map 1:a
+  -c:v copy -af "…,apad" -c:a aac -b:a 320k -shortest`）。props の `audio.src` が
+  `outputs/` / `library/` / `assets/` の中に解決できるときだけ働き、`audio.startFrom`
+  （音源側の入力の直前に `-ss`）・`volume`・`fadeOut`（`afade`。映像の尺が読めるとき
+  だけ）も再現する。`MusicVideo` / `FxOverlay` で props の形（`audioSchema`）は同じ
+  なので composition では分けない。**失敗してもジョブは失敗させない**（mp4 自体は
+  出来ているので、元のまま残してログにだけ書く）
 
 ## 6. 成果物の取得
 
@@ -1268,6 +1279,54 @@ CREATE TABLE library (
   `q` / `tag` で絞り込み）・`POST /api/v1/library/from-job`・`POST /api/v1/library/sheet`・
   `PATCH /api/v1/library/{id}` を公開している（**削除は公開しない**）。シートを作って
   そのパスをジョブの `source_image` に渡す、という流れまで外から回せる
+
+#### 素材の下ごしらえ（スプライト / フォント画像 / コンタクトシート）
+
+MV・モーショングラフィックス（Remotion の `FxOverlay`、§5.2）で使う**演出用の素材**を、
+棚の上で作るための 3 つ。**通常のドラマ制作では使わない**（指示があったときだけ）。
+実装は `app/sprites.py` / `app/textimage.py` / `app/contact_sheet.py`（どれも純関数の
+モジュールで、DB は知らない）と、登録側の `app/library.py`、入り口の
+`app/routers/library.py` / `app/routers/media.py`。
+
+- **透過キー**（`POST /api/library/{id}/key`、`app/sprites.py`）: 画像素材の背景を抜いて
+  **RGBA PNG の新しい素材**（`kind='image'` / タグ `sprite` / `source='sprite'`）にする。
+  元の素材は触らない。NSFW は元素材から引き継ぐ（`auto`）。抜き方（`method`）は
+  1. `black` / `white` … **ルミナンスキー**。明るさ（各画素の最大チャンネル）で前景と背景を
+     分けるが、単純な閾値だと文字の内側の黒（縁取りの中や「の」の穴）まで抜けてしまう。
+     そこで**周囲に余白を足して外側から floodfill** し、「画像の縁と地続きの背景」だけを
+     背景と見なす。内側の同じ色は**穴として残る**。境界は閾値の前後を α の傾斜にして
+     滑らかにし、最後に 0.6px だけぼかす（BAN!BAN!BAN! の `key_black()` と同じ考え方）
+  2. `chroma` … `color`（既定 `#00ff00`）からの距離で α を決める。floodfill は使わないので
+     内側の同色も抜ける（単色背景ではそれでよい）
+  3. `rembg` … **任意依存**（`backend/requirements-optional.txt`。`requirements.txt` には
+     入れない）。import できなければ **400** で入れ方を返す
+  `tolerance`（0..1、既定 0.1 = 255 階調の 26）で閾値を、`trim`（既定 true）で不透明部分の
+  bbox への切り詰めを指定する。抜いた結果が空なら 400。ジョブの生成画像を棚に入れずに
+  直接抜く入り口として `POST /api/library/key-from-job`（`{job_id, source}`。`source` は
+  `library.SOURCES` の `image` / `last_frame`。動画・音声は 400）もある。
+  出来上がりの `url`（`/library/image/….png`）は Remotion の `sprite` / `imageSlam` /
+  `stickerStack` の `src` にそのまま書ける
+- **フォント画像**（`POST /api/images/text`、`app/textimage.py`）: インストール済みの書体で
+  文字を組んで RGBA PNG にする（タグ `text-image` / `source='text'`）。書体の一覧は
+  `GET /api/images/text/fonts`（fontconfig の `fc-list` から `file` / `index` / `family` /
+  `style` を拾い、無ければ `/usr/share/fonts` などを走査する。TrueType コレクションは面
+  ごとに 1 件、面が分からなければ 0）。既定は Noto Sans CJK JP Bold 相当
+  （`textimage.DEFAULT_FAMILIES` の先頭から探す）。`text`（改行可）/ `font` / `size` /
+  `color` / `outline{color,width}` / `bg`（`transparent` か色）/ `rotate` / `padding` /
+  `align` を取り、回転は文字を組んだあとに `expand=True` で掛けるので端が切れない。
+  用途は 2 つ: **そのままスプライトとして貼る**のと、**画像生成の字形参照**として参照画像に
+  添えるの（日本語が誤字になるモデルでも字形が直る。BAN!BAN!BAN! で確立した運用）
+- **コンタクトシート**（`POST /api/videos/contact-sheet`、`app/contact_sheet.py`）: 動画の
+  コマを ffmpeg で 1 枚ずつ抜いて、PIL で 1 枚の jpg に束ねる（タグ `contact-sheet` /
+  `source='contact-sheet'`）。`source` は `job_id`（+ どの出力か）/ `item_id` / `export_id` /
+  `path` の**どれか 1 つだけ**（解決は `app/media_ref.py`。`outputs/` / `library/` /
+  `assets/` の**外は開かない**）。抜く秒は `seconds` → `range{start,end,step}` →
+  `frames`（fps が読めるときだけ）の順に見て、どれも無ければ尺を 12 等分した位置。
+  `columns` / `width`（1 コマの幅。高さは元の縦横比から決まる）/ `labels`（各コマの下に
+  秒とフレーム番号を焼く、既定 true）。応答は `{item, seconds, columns}` で、`seconds` に
+  **実際に抜いた秒**が左上から順に並ぶ。手元で見る `scripts/inspect.sh`（1 秒ごとの PNG を
+  一時ディレクトリに出す）との棲み分けは「`inspect.sh` は人が手元で、この API は外部
+  エージェントが**演出の配置を確かめる**ため」
 
 ### 7.3 編集タブ（タイムライン）
 
@@ -1627,8 +1686,13 @@ GET  /api/library                … ライブラリ検索（kind / category / q
 POST /api/library/{kind}         … ファイルをアップロードして登録
 POST /api/library/from-job       … ジョブの出力（image / last_frame / video / audio）を登録
 POST /api/library/sheet          … 画像素材を 1 枚のリファレンスシートに合成して登録（item_ids の順に配置、§7.2）
+POST /api/library/{id}/key       … 素材の背景を抜いて透過 PNG の新しい素材にする（スプライト、§7.2）
+POST /api/library/key-from-job   … ジョブの生成画像を直接抜いてスプライトにする（§7.2）
 PATCH  /api/library/{id}         … 表示名 / NSFW フラグ / タグ / カテゴリの変更
 DELETE /api/library/{id}         … 登録解除（ファイルも削除）
+GET  /api/images/text/fonts      … インストール済みの書体一覧（§7.2）
+POST /api/images/text            … フォントで組んだ文字を PNG にして登録（§7.2）
+POST /api/videos/contact-sheet   … 動画のコマを 1 枚のグリッド画像にして登録（§7.2）
 GET  /api/models                 … 全ワークフローのモデルファイル名一覧（既定値+現在値+候補リスト、キーは workflow_id でスコープ。`?target=` でその接続先のもの、省略時は現在の接続先）
 PUT  /api/models                 … モデルファイル名の上書きと候補リストの保存（既定値と同値/空は削除、候補が空のキーは削除。`choices` 省略時は保存済みの候補を保持。`target` の環境だけを書き換える）
 GET  /api/models/dir-status      … ローカルの models ディレクトリの状態（configured / exists / writable / path、§3.3）
@@ -1743,6 +1807,10 @@ backend/            FastAPI アプリ
   app/ui_state.py   生成フォームの下書きの共有（§7.5）
   app/ws.py         ブラウザへの配信（job / chat / studio / form / ui / …）
   app/library.py    ライブラリ（取っておく素材）の保存・目録
+  app/sprites.py    透過キー（floodfill 方式のルミナンスキー / クロマキー / rembg、§7.2）
+  app/textimage.py  フォント画像の生成と書体の一覧（§7.2）
+  app/contact_sheet.py  動画のコマ抜きとグリッド合成（§7.2）
+  app/media_ref.py  ジョブ / 素材 / 書き出し / パスの指し方を実ファイルに解決する（§7.2）
   app/timeline.py   編集タブ: タイムライン（EDL）の CRUD と書き出しの管理（§7.3）
   app/timeline_export.py  EDL → ffmpeg コマンドの組み立て（純関数）と実行・進捗
   app/timeline_subtitles.py  テロップ → ASS の組み立てと台詞の割り付け（純関数、§7.3）

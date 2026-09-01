@@ -14,6 +14,8 @@ from .. import sheets
 from ..models import (
     LibraryFromJob,
     LibraryItem,
+    LibraryKey,
+    LibraryKeyFromJob,
     LibraryPage,
     LibrarySheet,
     LibraryUpdate,
@@ -100,6 +102,84 @@ async def create_sheet(payload: LibrarySheet) -> LibraryItem:
         )
     except service.LibraryError as exc:
         raise _bad_request(exc) from exc
+
+
+# --------------------------------------------------------------------------
+# 透過キー（スプライトの下ごしらえ、SPEC §7.2）
+# --------------------------------------------------------------------------
+#
+# 中身は :func:`app.library.add_keyed` にあり、内部 API と外部 API
+# （:mod:`app.routers.external`）がこの 2 つのヘルパーを共用する。
+
+
+async def key_library_item(item_id: str, payload: LibraryKey) -> LibraryItem:
+    """ライブラリの画像素材の背景を抜いて、新しい素材として登録する。"""
+    item = await service.get_item(item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="library item not found")
+    if item.kind != "image":
+        raise _bad_request(
+            service.LibraryError(f"「{item.name}」は画像ではありません（{item.kind}）")
+        )
+    try:
+        return await service.add_keyed(
+            item.path,
+            name=payload.name or service.sprite_name(item.name),
+            method=payload.method,
+            color=payload.color,
+            tolerance=payload.tolerance,
+            trim=payload.trim,
+            tags=payload.tags,
+            category=payload.category,
+            nsfw=item.nsfw,
+            source_job_id=item.source_job_id,
+        )
+    except service.LibraryError as exc:
+        raise _bad_request(exc) from exc
+
+
+async def key_job_output(payload: LibraryKeyFromJob) -> LibraryItem:
+    """ジョブの出力（``outputs/{job_id}/…``）の背景を直接抜いて登録する。"""
+    job = await job_service.get_job(payload.job_id, include_workflow=False)
+    if job is None:
+        raise HTTPException(status_code=404, detail="job not found")
+    try:
+        origin = service.job_output(job, payload.source)
+        _, kind, _ = service.SOURCES[payload.source]
+        if kind != "image":
+            raise service.LibraryError(
+                f"source '{payload.source}' は画像ではありません（{kind}）"
+            )
+        return await service.add_keyed(
+            origin,
+            name=payload.name
+            or service.sprite_name(service.default_name(job, payload.source)),
+            method=payload.method,
+            color=payload.color,
+            tolerance=payload.tolerance,
+            trim=payload.trim,
+            tags=payload.tags,
+            category=payload.category,
+            nsfw=job.nsfw,
+            source_job_id=job.id,
+        )
+    except service.LibraryError as exc:
+        raise _bad_request(exc) from exc
+
+
+@router.post("/key-from-job", response_model=LibraryItem, status_code=201)
+async def key_from_job(payload: LibraryKeyFromJob) -> LibraryItem:
+    """ジョブの生成画像の背景を抜いてスプライトにする（棚に入れる手間を省く）。
+
+    ``/{kind}`` より先に定義しておく（後ろだと `kind='key-from-job'` として食われる）。
+    """
+    return await key_job_output(payload)
+
+
+@router.post("/{item_id}/key", response_model=LibraryItem, status_code=201)
+async def key_item(item_id: str, payload: LibraryKey | None = None) -> LibraryItem:
+    """素材の背景を抜いて透過 PNG の**新しい素材**にする（元は触らない）。"""
+    return await key_library_item(item_id, payload or LibraryKey())
 
 
 @router.post("/{kind}", response_model=LibraryItem, status_code=201)

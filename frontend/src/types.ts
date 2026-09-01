@@ -256,10 +256,17 @@ export type LibrarySource = 'image' | 'last_frame' | 'video' | 'audio'
 /**
  * 素材の出どころ（`LibraryItem.source`）。
  *
- * ジョブの出力 4 種に加えて、アプリ内で合成したリファレンスシート（`'sheet'`、
- * SPEC §7.2）を取る。from-job で指定できるのは `LibrarySource` のほうだけ。
+ * ジョブの出力 4 種に加えて、アプリ内で作ったもの（リファレンスシート `'sheet'` /
+ * 透過スプライト `'sprite'` / フォント画像 `'text'` / コンタクトシート
+ * `'contact-sheet'`、SPEC §7.2）を取る。from-job で指定できるのは
+ * `LibrarySource` のほうだけ。
  */
-export type LibraryOrigin = LibrarySource | 'sheet'
+export type LibraryOrigin =
+  | LibrarySource
+  | 'sheet'
+  | 'sprite'
+  | 'text'
+  | 'contact-sheet'
 
 /** 素材の分類（棚の仕切り。1 件に 1 つだけ。null = 未分類）。 */
 export type LibraryCategory = 'character' | 'background' | 'prop'
@@ -289,7 +296,8 @@ export interface LibraryItem {
   source_job_id: string | null
   /**
    * 元ジョブのどの出力か（重複登録の判定に使う。アップロード・旧行は null）。
-   * 合成したリファレンスシートは `'sheet'`（元ジョブを持たない）。
+   * アプリ内で作ったものは `'sheet'` / `'sprite'` / `'text'` / `'contact-sheet'`
+   * （スプライトだけは、抜いた元がジョブ出力なら `source_job_id` を引き継ぐ）。
    */
   source: LibraryOrigin | null
   /** 分類タグ（検索・絞り込み用）。 */

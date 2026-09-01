@@ -1,0 +1,11 @@
+# 任意の追加依存（`requirements.txt` には入れない）。
+#
+# 入れなくてもアプリは動き、対応する機能だけが「使えない」と 400 で断る。
+# 重い（数百 MB のモデルを落とす）ので、必要になってから入れる:
+#
+#   .venv/bin/pip install -r backend/requirements-optional.txt
+#
+# rembg … 透過キー（`POST /api/v1/library/{id}/key`）の method 'rembg'。
+# 学習済みモデルで被写体を切り抜く。黒背景・単色背景の素材なら 'black' /
+# 'white' / 'chroma' で足りるので、写真から人物を抜くときだけ要る。
+rembg==2.0.59
