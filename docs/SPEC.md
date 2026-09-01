@@ -51,7 +51,7 @@
 | 動画生成 | `i2v` | 選択した動画ワークフローのみ | ワークフローが要求する入力（アップロード / 履歴 / なし） |
 | 画像のみ | `image_only` | 選択した画像ワークフローのみ | ― |
 | 音声 | `audio` | 選択した音声ワークフローのみ（独立ジョブ） | ― |
-| Remotion | `remotion` | ComfyUI を通さず、外部の Remotion プロジェクトを `npx remotion render`（§5.2） | ― |
+| Remotion | `remotion` | ComfyUI を通さず、同梱の Remotion プロジェクトを `npx remotion render`（§5.2。既定 OFF） | ― |
 
 `audio` は他の 3 モードと連結しない独立モード。画像・動画のフィールド（`video_workflow` /
 `source_image` / `loras` など）は一切使わず、指定すると 422 で拒否される（§2.4）。
@@ -1062,10 +1062,24 @@ xAI の従量課金 API（`XAI_API_KEY`）ではなく、**SuperGrok / X Premium
 #### Remotion（`mode: "remotion"`、`app/remotion.py`）
 
 React で組んだ動画（テロップ・図表・MV のような**決まった絵**）をレンダリングする、
-ComfyUI と並ぶもう 1 つの生成経路。ComfyUI とまったく同じ考え方で、**外で構築した
-バックエンドをアプリが参照するだけ**: Remotion プロジェクト（Node のリポジトリ）は
-このリポジトリの外にあり、設定 `remotion_project_dir` がその場所を指す
-（**空 = 機能ごと無効**で、一覧も投入も 400）。
+ComfyUI と並ぶもう 1 つの生成経路。Remotion プロジェクト（Node のリポジトリ）は
+リポジトリルートの **`remotion/` に同梱**してあり、アプリはそれを ComfyUI と同じく
+「レンダリングバックエンド」として参照する。
+
+- 連携は設定 `remotion_enabled` が持ち、**既定は OFF**（ライセンスの都合、下記）。
+  無効のあいだは一覧も投入も 400
+- 使うプロジェクトは**常に同梱の `remotion/`**（場所の設定は持たない）。composition を
+  足す・直すときは `remotion/src/` を編集する
+- 依存（`remotion/node_modules/`）は `run.sh` が初回に入れる（Docker で動かす場合は
+  ホスト側で `npm --prefix remotion install`）。入っていなければその旨のエラーで
+  400 になる
+
+> **ライセンス**: Remotion は MIT などのオープンソースライセンスではなく、独自の
+> Remotion License で提供されている。個人利用および従業員 3 名以下の会社は無償だが、
+> それ以上の規模の会社での利用には会社ライセンス（有償）の購入が必要
+> （<https://www.remotion.dev/license>）。同梱はしても**既定 OFF** にし、設定ページの
+> 「Remotion 連携」に注意書きを出して、利用者が条件を確かめてから有効にする形にしている。
+> 依存の導入自体は使用にはあたらないので、`npm install` は `run.sh` が初回に行う。
 
 - `GET /api/v1/remotion/compositions` … `npx remotion compositions <entry>` を叩いて
   composition の ID を並べる（短時間キャッシュ）。エントリポイントは `src/index.ts` を
@@ -1721,7 +1735,7 @@ backend/            FastAPI アプリ
   app/drafting_guide.py  外部エージェント向け脚本ドラフト作成ガイド（GET /api/v1/prompt-guide）
   app/jobs.py       asyncio ジョブキューと実行、成果物取得・ラストフレーム抽出
   app/studio.py     ドラマスタジオ（脚本 / 素材 / Take / 編集履歴 §7.4）
-  app/remotion.py   Remotion プロジェクトの composition 一覧とレンダリング（§5.2）
+  app/remotion.py   Remotion プロジェクト（同梱の remotion/）の composition 一覧とレンダリング（§5.2）
   app/ui_state.py   生成フォームの下書きの共有（§7.5）
   app/ws.py         ブラウザへの配信（job / chat / studio / form / ui / …）
   app/library.py    ライブラリ（取っておく素材）の保存・目録
@@ -1741,6 +1755,7 @@ frontend/           React + Vite + Tailwind の SPA（ビルド成果物は fron
 docs/SPEC.md        仕様書
 docs/EXTERNAL-API.md  外部公開 API（/api/v1）の設計
 .agents/skills/karakuri-studio/  外部エージェント向け SKILL（AGENTS.md / CLAUDE.md からリンク）
+remotion/           同梱の Remotion プロジェクト（composition は remotion/src/。§5.2）
 workflow/           ComfyUI ワークフロー（API フォーマット）テンプレート ※実行の正
   image/            krea2/ anima/ z-image/ qwen-image/（モデルファミリーごと）
   video/minimax-h3/ minimax_h3_t2v / minimax_h3_i2v / minimax_h3_r2v（音声つき）
@@ -1804,6 +1819,7 @@ runtime/            config.json / grok 作業ディレクトリ（プロンプ�
 18. **画面はリアルタイムに追随する**: WS の `studio` / `form` / `ui` フレームと `ui_state`
     による生成フォームの双方向同期（§7.5 / §8）
 19. **Remotion 連携**: React で組んだ動画も 1 つの生成経路（`mode: "remotion"`）として扱い、
-    プロジェクト本体はリポジトリの外（設定 `remotion_project_dir`。§5.2）
+    プロジェクト本体は `remotion/` に同梱。ただし Remotion のライセンスの都合で
+    **既定 OFF**（設定 `remotion_enabled`。§5.2）
 
 残課題: なし（実装着手可能）

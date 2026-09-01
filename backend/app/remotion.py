@@ -1,9 +1,11 @@
 """Remotion（React で組んだ動画）のレンダリング（SPEC §5.2）。
 
-ComfyUI とまったく同じ考え方で、**外で構築したバックエンドをアプリが参照する**
-だけの薄い層。Remotion プロジェクト（Node のリポジトリ）はこのリポジトリの外に
-あり、設定 ``remotion_project_dir`` がその場所を指す（空 = 機能ごと無効）。ここが
-やるのは 2 つだけ:
+ComfyUI とまったく同じ考え方で、**Remotion プロジェクトをアプリが参照する**
+だけの薄い層。プロジェクト（Node のリポジトリ）はリポジトリルートの ``remotion/``
+に同梱してあり、常にそこを使う（composition を足す・直すときは
+``remotion/src/`` を編集する）。**Remotion は独自ライセンス**
+（個人・従業員 3 名以下の会社は無償、それ以上は会社ライセンスが必要）なので、
+連携そのものは ``remotion_enabled`` が **既定 OFF**。ここがやるのは 2 つだけ:
 
 - :func:`list_compositions` — ``npx remotion compositions <entry>`` を叩いて、
   そのプロジェクトが持つ composition の ID を並べる（短時間キャッシュ）。
@@ -35,7 +37,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import load_settings
-from .paths import REMOTION_TMP_DIR, rebase_stored_path
+from .paths import REMOTION_BUNDLED_DIR, REMOTION_TMP_DIR
 
 log = logging.getLogger(__name__)
 
@@ -74,13 +76,20 @@ _FRACTION_RE = re.compile(r"(\d+)\s*/\s*(\d+)")
 #: ANSI エスケープ（進捗バーの色・カーソル移動）
 _ANSI_RE = re.compile(r"\x1b\[[0-9;?]*[a-zA-Z]")
 
-#: 一覧の表形式（``--quiet`` が効かない版）で読み飛ばす見出し
+#: 一覧の表形式で読み飛ばす見出し
 _TABLE_HEADERS = frozenset({"composition", "id"})
+#: 表の直前に必ず出る見出し行。この行より後ろだけが表なので、ブラウザの
+#: ダウンロードログ（``Got Headless Shell`` など）を丸ごと切り落とせる。
+#: 版によって末尾のコロンや大文字小文字が違いうるので寛容に見る。
+_HEADING_RE = re.compile(r"the following compositions are available:?$", re.IGNORECASE)
 #: composition の ID に Remotion が許す文字（``^[a-zA-Z0-9-]+$``）。数字始まり
 #: （``4kIntro``）は通し、アンダースコアは Remotion 側が拒むので通さない。
 _ID_RE = re.compile(r"[A-Za-z0-9-]+")
-#: 一覧の表の 2 列目以降（フレーム数・FPS・``1920x1080``）らしいトークン
-_NUMERIC_RE = re.compile(r"[\d.]+(x[\d.]+)?%?")
+#: 一覧の表の 2 列目以降らしいトークン。実際の 1 行は
+#: ``MusicVideo    30      1920x1080      240 (8.00 sec)`` なので、FPS・
+#: ``1920x1080`` に加えて括弧付きの秒数（``(8.00`` / ``sec)``）と、静止画の
+#: ``Still`` まで数え方に入れる。
+_TABLE_CELL_RE = re.compile(r"\(?[\d.]+(?:x[\d.]+)?%?\)?|sec\)?|still", re.IGNORECASE)
 
 #: 進捗の中継先（``(0..1 の割合 or None, 出力行)``）
 ProgressCallback = Callable[[float | None, str], Awaitable[None]]
@@ -91,7 +100,7 @@ class RemotionError(Exception):
 
 
 class RemotionNotConfigured(RemotionError):
-    """``remotion_project_dir`` が空 = 機能が無効（呼び出し側は 400 にする）。"""
+    """``remotion_enabled`` が false = 機能が無効（呼び出し側は 400 にする）。"""
 
 
 # --------------------------------------------------------------------------
@@ -99,23 +108,28 @@ class RemotionNotConfigured(RemotionError):
 # --------------------------------------------------------------------------
 
 def project_dir() -> Path:
-    """設定が指す Remotion プロジェクトのディレクトリ。
+    """いま使う Remotion プロジェクトのディレクトリ（同梱の ``remotion/``）。
 
-    空なら :class:`RemotionNotConfigured`、実在しなければ :class:`RemotionError`。
-    記録されたパスは :func:`app.paths.rebase_stored_path` を通す（Docker の中と
-    ホストでプレフィックスが違う構成でも同じ設定で動くように、ほかの作業
-    ディレクトリと揃える）。
+    連携が無効（``remotion_enabled`` が false）なら :class:`RemotionNotConfigured`。
+    有効なら :data:`app.paths.REMOTION_BUNDLED_DIR` を返す。依存が入っていなければ
+    :class:`RemotionError`。
     """
-    stored = (load_settings().remotion_project_dir or "").strip()
-    if not stored:
+    settings = load_settings()
+    if not settings.remotion_enabled:
         raise RemotionNotConfigured(
-            "Remotion プロジェクトのパスが設定されていません"
-            "（設定ページの「接続」で構築済みプロジェクトの場所を指定してください）"
+            "Remotion 連携が無効です"
+            "（設定ページの「Remotion 連携」で有効にしてください。"
+            "ライセンスの注意書きも確認してください）"
         )
-    directory = rebase_stored_path(Path(stored).expanduser())
-    if not directory.is_dir():
+    directory = REMOTION_BUNDLED_DIR
+    # 依存（node_modules/）は通常 ``run.sh`` が初回に入れるが、手で起動した場合や
+    # Docker のようにホスト側で入れ忘れた場合は無いことがある。入っていないと
+    # ``npx remotion`` が意味不明なエラーで落ちるので、ここで何をすればよいかまで言う。
+    if not (directory / "node_modules").is_dir():
         raise RemotionError(
-            f"Remotion プロジェクトのディレクトリがありません: {directory}"
+            f"Remotion の依存が入っていません: {directory}"
+            "（`npm --prefix remotion install` を実行してください。"
+            "通常は `run.sh` が自動で行います）"
         )
     return directory
 
@@ -210,6 +224,7 @@ async def _run(
         raise RemotionError(
             f"'{argv[0]}' コマンドが見つかりません。Node.js を入れて"
             " Remotion プロジェクトで `npm install` を済ませてください"
+            "（通常は `run.sh` が自動で行います）"
         ) from exc
     except OSError as exc:
         raise RemotionError(f"'{argv[0]}' を起動できませんでした: {exc}") from exc
@@ -303,46 +318,57 @@ def clear_cache() -> None:
     _cache.clear()
 
 
-def parse_compositions(stdout: str) -> list[str]:
-    """``remotion compositions`` の出力から ID を拾う（寛容に）。
+def _row_id(line: str) -> str | None:
+    """一覧の 1 行から composition の ID を読む（表の行でなければ None）。
 
-    ``--quiet`` なら 1 行 1 ID だが、効かない版は表（ID・フレーム数・FPS・
-    寸法）を出す。そこで拾うのは
-
-    - 先頭トークンが Remotion の ID 文法（:data:`_ID_RE`）に収まっていて、
-      英数字を 1 文字以上含み（``-----`` のような罫線を捨てる）、
-    - 見出し（``Composition``）ではなく、
-    - 続きのトークンが**すべて数字らしい**（表の行）か、そもそも無い、
-      または**すべて ID 文法に収まる**（``--quiet`` は 1 行に空白区切りで
-      全 ID を並べる: ``MusicVideo Slate``）
-
-    行だけ。``Bundling video 100%`` のようなログ行は 2 つ目が ID 文法にも
-    数字にも収まらないので落ちる。重複は先勝ちで落とす。
+    通すのは「先頭トークンが Remotion の ID 文法（:data:`_ID_RE`）に収まり、
+    英数字を 1 文字以上含み（``-----`` のような罫線を捨てる）、見出し
+    （``Composition``）ではなく、続きのトークンが**すべて表のセルらしい**
+    （:data:`_TABLE_CELL_RE`）か、そもそも無い」行だけ。
+    ``Bundling code 100%`` のようなログ行は 2 つ目（``code``）がセルに収まらない
+    ので落ちる。
     """
+    token, *rest = line.split()
+    if token.lower() in _TABLE_HEADERS:
+        return None
+    if not _ID_RE.fullmatch(token) or not any(c.isalnum() for c in token):
+        return None
+    if not all(_TABLE_CELL_RE.fullmatch(word) for word in rest):
+        return None
+    return token
+
+
+def parse_compositions(stdout: str) -> list[str]:
+    """``remotion compositions`` の出力から ID を拾う。
+
+    Remotion は ``The following compositions are available:`` の見出しの後ろに
+    表（ID・FPS・寸法・尺）を出す。**見出しがあればその後ろだけ**を見るのが要点で、
+    初回実行時に混ざるブラウザ取得のログ（``Downloading Chrome Headless Shell …``
+    / ``Got Headless Shell``）や bundle の進捗は見出しより前なので丸ごと落ちる。
+
+    見出しが無い版のために出力全体を舐める道も残すが、拾うのは
+    :func:`_row_id` が通す行（1 行 1 ID か、表の行）だけにする。かつては
+    「行の全トークンが ID 文法なら全部 ID」という ``--quiet`` 向けの救済も
+    持っていたが、``Got Headless Shell`` をそのまま ID として拾ってしまったので
+    やめた（``--quiet`` は :func:`list_compositions` からも外してある）。
+
+    重複は先勝ちで落とす。
+    """
+    lines = [
+        line
+        for line in (_strip_ansi(raw).strip() for raw in stdout.splitlines())
+        if line
+    ]
+    for index, line in enumerate(lines):
+        if _HEADING_RE.search(line):
+            lines = lines[index + 1 :]
+            break
+
     ids: list[str] = []
-
-    def _add(token: str) -> None:
-        if token not in ids:
+    for line in lines:
+        token = _row_id(line)
+        if token is not None and token not in ids:
             ids.append(token)
-
-    for raw in stdout.splitlines():
-        line = _strip_ansi(raw).strip()
-        if not line:
-            continue
-        token, *rest = line.split()
-        if token.lower() in _TABLE_HEADERS:
-            continue
-        if not _ID_RE.fullmatch(token) or not any(c.isalnum() for c in token):
-            continue
-        if not rest or all(_NUMERIC_RE.fullmatch(word) for word in rest):
-            _add(token)
-            continue
-        if all(
-            _ID_RE.fullmatch(word) and any(c.isalnum() for c in word)
-            for word in rest
-        ):
-            for word in (token, *rest):
-                _add(word)
     return ids
 
 
@@ -356,7 +382,10 @@ async def list_compositions(*, use_cache: bool = True) -> list[str]:
         return list(cached[1])
 
     code, stdout, stderr = await _run(
-        [NPX, "remotion", "compositions", entry, "--quiet"],
+        # ``--quiet`` は付けない: 版によっては全 ID を空白区切りで 1 行に並べる
+        # だけになり、初回のブラウザ取得ログ（``Got Headless Shell``）と見分けが
+        # 付かなくなる。見出し + 表のまま読むほうが確実（:func:`parse_compositions`）。
+        [NPX, "remotion", "compositions", entry],
         directory,
         timeout=LIST_TIMEOUT,
     )

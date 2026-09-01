@@ -67,7 +67,7 @@ function settings(): Settings {
     grok_workdir: '/repo/runtime/grok-workdir',
     grok_media_workdir: '/repo/runtime/grok-media-workdir',
     grok_media_timeout: 300,
-    remotion_project_dir: '',
+    remotion_enabled: false,
     model_overrides: {},
     model_choices: {},
     hf_token: '',
@@ -473,20 +473,27 @@ describe('SettingsPage: ComfyUI 接続先（3 プロファイル）', () => {
     expect(sent.comfy_cloud_api_key).toBe('')
   })
 
-  it('Remotion プロジェクトのパスを編集して保存できる', async () => {
+  it('Remotion 連携のトグルを ON にして保存できる', async () => {
     putSettings.mockResolvedValue(settings())
     await openSettings()
 
-    fireEvent.change(
-      screen.getByLabelText('Remotion プロジェクトのパス（空 = 無効）'),
-      { target: { value: '/repo/karakuri-remotion' } },
-    )
+    fireEvent.click(screen.getByLabelText('Remotion 連携を有効にする'))
     screen.getByRole('button', { name: '保存' }).click()
 
     await waitFor(() => expect(putSettings).toHaveBeenCalled())
-    expect(putSettings.mock.calls[0][0].remotion_project_dir).toBe(
-      '/repo/karakuri-remotion',
-    )
+    expect(putSettings.mock.calls[0][0].remotion_enabled).toBe(true)
+  })
+
+  it('Remotion 連携にライセンスの注意書きを出す', async () => {
+    await openSettings()
+
+    // 既定 OFF のあいだも出す（有効にする前に読ませるのが目的）
+    expect(screen.getByText(/Remotion License/)).toBeTruthy()
+    const link = screen.getByRole('link', {
+      name: 'https://www.remotion.dev/license',
+    })
+    expect(link.getAttribute('target')).toBe('_blank')
+    expect(link.getAttribute('rel')).toBe('noreferrer')
   })
 
   it('Grok の workdir / 追加フラグ / ACP を編集して保存できる', async () => {

@@ -785,9 +785,9 @@ async def create_job(payload: JobFromForm | JobCreate) -> Job:
     BGM / SE（``audio``）もここから作る。モードごとの必須項目を満たして
     いなければ 422。
 
-    ``mode: "remotion"`` は構築済み Remotion プロジェクトのレンダリング
-    （SPEC §5.2）。``remotion_composition``（``GET /remotion/compositions``
-    に出る ID）と ``remotion_props`` が要り、連携が設定されていなければ 400。
+    ``mode: "remotion"`` は同梱の Remotion プロジェクトのレンダリング（SPEC §5.2）。
+    ``remotion_composition``（``GET /remotion/compositions`` に出る ID）と
+    ``remotion_props`` が要り、連携が有効でなければ 400。
     出来た mp4 はほかのジョブと同じく ``video_url`` に出る。
 
     ``{"from_form": true}`` を入れると、いま画面に出ている**生成フォームの
@@ -879,14 +879,14 @@ async def continue_job(job_id: str, payload: JobContinue | None = None) -> Job:
 
 @router.get("/remotion/compositions", response_model=RemotionCompositions)
 async def remotion_compositions() -> RemotionCompositions:
-    """構築済み Remotion プロジェクトが持つ composition の ID 一覧。
+    """同梱の Remotion プロジェクト（``remotion/``）が持つ composition の ID 一覧。
 
     ここに出た ID を ``POST /api/v1/jobs`` に ``{"mode": "remotion",
     "remotion_composition": …, "remotion_props": {…}}`` で渡すとレンダリングが
     ふつうのジョブとしてキューに載る（進捗は ``GET /api/v1/jobs/{id}``）。
 
-    連携が設定されていない・プロジェクトが見つからない・``npx remotion`` が
-    失敗した場合は 400（理由をそのまま返す）。
+    連携が有効でない・依存が入っていない・``npx remotion`` が失敗した場合は
+    400（理由をそのまま返す）。
     """
     try:
         return RemotionCompositions(compositions=await remotion_service.list_compositions())

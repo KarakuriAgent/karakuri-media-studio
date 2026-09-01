@@ -60,6 +60,14 @@ if [[ ! -d "$ROOT/frontend/node_modules" ]]; then
   (cd "$ROOT/frontend" && npm install)
 fi
 
+# Remotion は設定で ON にするまで使われない。依存だけ先に入れておく
+# （Chrome Headless Shell は初回レンダ時に Remotion が自動で落とす）。
+if [[ ! -d "$ROOT/remotion/node_modules" ]]; then
+  need_node
+  log "npm install (remotion)"
+  (cd "$ROOT/remotion" && npm install)
+fi
+
 if [[ $DEV -eq 0 && ! -f "$ROOT/frontend/dist/index.html" ]]; then
   need_node
   log "npm run build"

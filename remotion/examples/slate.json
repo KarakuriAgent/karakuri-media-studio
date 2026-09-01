@@ -1,0 +1,10 @@
+{
+  "text": "karakuri-remotion",
+  "subtitle": "Remotion レンダリング動作確認用スレート",
+  "fps": 30,
+  "width": 1920,
+  "height": 1080,
+  "durationInSeconds": 5,
+  "backgroundColor": "#101820",
+  "color": "#ffffff"
+}

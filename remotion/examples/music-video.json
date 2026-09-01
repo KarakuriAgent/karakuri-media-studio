@@ -1,0 +1,81 @@
+{
+  "fps": 30,
+  "width": 1920,
+  "height": 1080,
+  "backgroundColor": "#05070d",
+  "beatPulse": true,
+  "beatPulseScale": 1.02,
+  "beats": [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5],
+  "cuts": [
+    {
+      "src": "gradient:200:#1b2a4a,#0a0f1c",
+      "start": 0.0,
+      "duration": 2.0,
+      "fit": "cover",
+      "kenBurns": { "from": 1.0, "to": 1.12 }
+    },
+    {
+      "src": "color:#223344",
+      "start": 2.0,
+      "duration": 2.0,
+      "fit": "cover",
+      "transition": { "type": "crossfade", "duration": 0.4 }
+    },
+    {
+      "src": "gradient:135:#5b2a6b,#12203f",
+      "start": 4.0,
+      "duration": 2.0,
+      "fit": "cover",
+      "kenBurns": { "from": 1.1, "to": 1.0 },
+      "transition": { "type": "slide", "duration": 0.4, "direction": "left" }
+    },
+    {
+      "src": "gradient:20:#0f3d3e,#08131c",
+      "start": 6.0,
+      "duration": 2.0,
+      "fit": "cover",
+      "transition": { "type": "fadeblack", "duration": 0.5 }
+    }
+  ],
+  "lyrics": [
+    {
+      "text": "夜をなぞる光",
+      "start": 0.5,
+      "end": 2.5,
+      "style": "karaoke",
+      "position": "bottom",
+      "fontSize": 64
+    },
+    {
+      "text": "まだ名前のない歌",
+      "start": 2.6,
+      "end": 4.5,
+      "style": "karaoke",
+      "position": "bottom",
+      "fontSize": 64
+    },
+    {
+      "text": "からくり、鳴りはじめる",
+      "start": 4.6,
+      "end": 6.4,
+      "style": "pop",
+      "position": "bottom",
+      "fontSize": 60
+    },
+    {
+      "text": "Fade to the next scene",
+      "start": 6.6,
+      "end": 8.0,
+      "style": "fade",
+      "position": "center",
+      "fontSize": 56
+    }
+  ],
+  "title": {
+    "text": "サンプル MV",
+    "artist": "karakuri-remotion",
+    "showUntil": 2.5,
+    "position": "bottomLeft",
+    "fontSize": 72
+  }
+}

@@ -776,7 +776,7 @@ export default function SettingsPage({
           grok_workdir: settings.grok_workdir,
           grok_media_workdir: settings.grok_media_workdir,
           grok_media_timeout: settings.grok_media_timeout,
-          remotion_project_dir: settings.remotion_project_dir,
+          remotion_enabled: settings.remotion_enabled,
           // 空白区切りの入力欄をフラグの配列に戻す（空 = ツール無効）
           agent_grok_args: splitGrokArgs(grokArgsDraft),
           agent_use_acp: settings.agent_use_acp,
@@ -1274,27 +1274,47 @@ export default function SettingsPage({
                       </Field>
                     </SubGroup>
                   </SettingsCard>
-                  {/* Remotion 連携（SPEC §5.2）。ComfyUI と同じく「外で構築した
-                      バックエンドを指すだけ」で、プロジェクトは別リポジトリに
-                      ある。空のあいだは機能ごと無効。 */}
+                  {/* Remotion 連携（SPEC §5.2）。プロジェクトはリポジトリに
+                      同梱してある（`remotion/`）ものを常に使うが、Remotion は
+                      独自ライセンスなので既定は OFF: 注意書きを読んだうえで
+                      利用者が有効にする。 */}
                   <SettingsCard
                     title="Remotion 連携"
-                    description="React で組んだ動画のレンダリングを、ふつうのジョブとして流します。空のあいだは無効です。"
+                    description="React で組んだ動画のレンダリングを、ふつうのジョブとして流します。既定は無効です。"
                   >
-                    <Field
-                      label="Remotion プロジェクトのパス（空 = 無効）"
-                      htmlFor="remotion-project-dir"
-                      hint="構築済み Remotion プロジェクト（Node のリポジトリ）の場所です。`npx remotion` をこのディレクトリで実行します。"
-                    >
-                      <Input
-                        id="remotion-project-dir"
-                        placeholder="/path/to/karakuri-remotion"
-                        value={settings.remotion_project_dir}
-                        onChange={(event) =>
-                          update({ remotion_project_dir: event.target.value })
-                        }
-                      />
-                    </Field>
+                    <ToggleRow
+                      id="remotion-enabled"
+                      label="Remotion 連携を有効にする"
+                      description="有効にすると composition の一覧取得と mode 'remotion' のジョブ投入ができます。"
+                      checked={settings.remotion_enabled}
+                      onCheckedChange={(checked) =>
+                        update({ remotion_enabled: checked })
+                      }
+                    />
+                    {/* ライセンスの注意書き。OFF のときも常に出す（有効に
+                        する前に読ませるのが目的なので隠さない）。 */}
+                    <p className="rounded-md border border-amber-500/40 bg-amber-500/10 p-2 text-[11px] text-amber-300">
+                      Remotion は MIT
+                      などのオープンソースライセンスではなく、独自の Remotion
+                      License で提供されています。個人利用および従業員 3
+                      名以下の会社は無償ですが、それ以上の規模の会社での利用には会社ライセンス（有償）の購入が必要です。有効にする前に{' '}
+                      <a
+                        href="https://www.remotion.dev/license"
+                        target="_blank"
+                        rel="noreferrer"
+                        className="underline underline-offset-2"
+                      >
+                        https://www.remotion.dev/license
+                      </a>{' '}
+                      を確認し、条件を満たすことを確かめてください。
+                    </p>
+                    {/* 使うのは常に同梱の `remotion/`。依存の入れ方だけ添える。 */}
+                    <p className="text-[11px] text-muted-foreground">
+                      レンダリングには同梱の <code>remotion/</code>{' '}
+                      を使います。依存は <code>run.sh</code>{' '}
+                      が初回に入れます（Docker ではホストで{' '}
+                      <code>npm --prefix remotion install</code>）。
+                    </p>
                   </SettingsCard>
                   {/* 不足モデルの自動ダウンロード（SPEC §3.3）。トークンは
                       ローカルにも RunPod の Pod にも要るので常に出す。保存先の

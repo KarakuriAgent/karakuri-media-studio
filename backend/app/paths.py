@@ -18,9 +18,13 @@ GROK_MEDIA_WORKDIR = RUNTIME_DIR / "grok-media-workdir"
 CHAT_SESSIONS_DIR = RUNTIME_DIR / "chat-sessions"
 # Remotion に渡す props の一時 JSON を置く場所（:mod:`app.remotion`）。中身は
 # レンダリングのあいだしか要らないので、終わったら消す。scratch ではなく
-# runtime/ に置くのは、Remotion プロジェクトが別リポジトリにあってもアプリ側の
-# 置き場だけで完結させるため。
+# runtime/ に置くのは、Remotion プロジェクト側を汚さずアプリ側の置き場だけで
+# 完結させるため。
 REMOTION_TMP_DIR = RUNTIME_DIR / "remotion"
+# 同梱の Remotion プロジェクト（:mod:`app.remotion`）。Remotion のレンダリングは
+# 常にここを使う（composition を足す・直すときは ``remotion/src/`` を編集する）。
+# 依存（``node_modules/``）は ``run.sh`` が初回に入れる。
+REMOTION_BUNDLED_DIR = ROOT / "remotion"
 
 FRONTEND_DIST_DIR = ROOT / "frontend" / "dist"
 

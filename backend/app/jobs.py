@@ -137,8 +137,8 @@ class JobValidationError(Exception):
 class JobBackendUnavailable(Exception):
     """指した生成バックエンドがそもそも使えない（ルーターが 400 にする）。
 
-    入力そのものは正しいのに設定が足りていない場合（Remotion 連携を設定して
-    いないのに ``mode: "remotion"`` で投げた等）はこちら。値の誤りを表す
+    入力そのものは正しいのに設定が足りていない場合（Remotion 連携を有効に
+    していないのに ``mode: "remotion"`` で投げた等）はこちら。値の誤りを表す
     :class:`JobValidationError`（422）とは分ける。
     """
 
@@ -483,7 +483,7 @@ def _validate_remotion(params: dict[str, Any]) -> None:
     """``mode: "remotion"`` の投入を確かめる（SPEC §5.2）。
 
     足りない項目は 422（:class:`JobValidationError`）、連携そのものが使えない
-    （パス未設定・ディレクトリが無い）のは 400
+    （設定で無効・同梱プロジェクトの依存が入っていない）のは 400
     （:class:`JobBackendUnavailable`）。**投入の時点で**弾くのは、走らせてから
     失敗させると履歴に無駄なジョブが残るため。
     """
@@ -508,7 +508,7 @@ def _validate(params: dict[str, Any]) -> None:
     mode = params.get("mode", "")
     if mode == "remotion":
         # ワークフローも LoRA もプロンプトも通らない独立した経路（SPEC §5.2）。
-        # 見るのは「必須項目が揃っているか」と「連携が設定されているか」だけ。
+        # 見るのは「必須項目が揃っているか」と「連携が使えるか」だけ。
         _validate_remotion(params)
         return
     video_workflow = params.get("video_workflow")
@@ -629,7 +629,7 @@ def _resolve_nsfw(
 ) -> tuple[bool | None, str]:
     """明示指定は manual、継承は auto、未指定は判定待ち（'' + バックグラウンド判定）。
 
-    ``mode: "remotion"`` だけは判定に掛けるプロンプトが無い（出力は手元の
+    ``mode: "remotion"`` だけは判定に掛けるプロンプトが無い（出力は同梱の
     Remotion プロジェクトが組んだ画）ので、未指定なら **false で確定**させて
     バックグラウンド判定を走らせない。投入も再実行もここを通るので、焼き直しで
     フラグが元ジョブとずれることがない（手動トグルと継承はこれまでどおり）。
@@ -1791,7 +1791,7 @@ async def _run_remotion_job(job: Job) -> dict[str, Any]:
     """``mode: "remotion"`` を走らせて ``{"video_path": …}`` を返す（SPEC §5.2）。
 
     ComfyUI のステージ経路（:func:`_run_job_stages`）は 1 つも通らない: グラフも
-    ワークフローのマニフェストも無いので、外の Remotion プロジェクトに mp4 を
+    ワークフローのマニフェストも無いので、同梱の Remotion プロジェクトに mp4 を
     書かせるだけ。それでも置き場（``outputs/{job_id}/video.mp4``）と jobs 行の列
     （``video_path``）と WS の流し方は ComfyUI 経路と同じなので、履歴・ライブラリ・
     素材登録・タイムラインの素材ビンからは区別が付かない。

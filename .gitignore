@@ -12,3 +12,5 @@ library/
 runtime/
 models.local.txt
 .env
+remotion/out/
+remotion/.remotion/

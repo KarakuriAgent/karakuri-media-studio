@@ -294,8 +294,13 @@ POST /api/v1/jobs  {"mode": "remotion", "remotion_composition": "Opening",
                     "remotion_props": {"title": "第3話"}}
 ```
 
-- Remotion プロジェクト（Node のリポジトリ）は**このアプリの外**にあり、設定
-  `remotion_project_dir` がその場所を指す。**空 = 機能ごと無効**で、一覧も投入も 400。
+- Remotion プロジェクトはリポジトリの `remotion/` に**同梱**されている。連携は
+  設定 `remotion_enabled` が持ち、**既定は OFF**（Remotion が独自ライセンスのため）。
+  無効のあいだは一覧も投入も 400。使うのは**常に同梱の `remotion/`**で、composition を
+  足す・直すときは `remotion/src/` を編集する。
+- 依存が入っていない（通常は `run.sh` が初回に入れる）ときも 400 で、その旨を返す。
+- `remotion_props` の書き方は `.agents/skills/karakuri-remotion/SKILL.md` と
+  `remotion/README.md`（正本は `remotion/src/schema.ts`）。
 - 出来た mp4 は他のジョブと同じく `GET /api/v1/jobs/{id}` の `video_url` に出るので、
   ライブラリ登録・素材登録・タイムラインへの取り込みもそのまま使える。
 
@@ -356,7 +361,7 @@ POST /api/v1/jobs  {"mode": "remotion", "remotion_composition": "Opening",
 | `backend/app/studio.py` | 一括投入 `create_story()`、編集履歴（`_record_revision` / `diff_revision` / `restore_revision`、§3.1） |
 | `backend/app/ui_state.py` | 生成フォームの下書きの共有（§3.2） |
 | `backend/app/ws.py` | ブラウザへの配信（`studio` / `form` / `ui` フレーム） |
-| `backend/app/remotion.py` | Remotion の composition 一覧とレンダリング（§3.3） |
+| `backend/app/remotion.py` | Remotion（同梱の `remotion/`）の composition 一覧とレンダリング（§3.3） |
 | `backend/app/main.py` | `external.router` の include（1 行） |
 | `frontend/`（設定画面） | `external_api_key` の入力欄（[生成] ボタン付き） |
 | `.agents/skills/karakuri-studio/` | 外部エージェント向けの SKILL と curl ラッパー（`AGENTS.md` / `CLAUDE.md` からリンク） |

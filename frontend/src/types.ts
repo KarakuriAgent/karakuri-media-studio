@@ -54,10 +54,11 @@ export interface Settings {
   grok_media_workdir: string
   grok_media_timeout: number
   /**
-   * 構築済み Remotion プロジェクト（Node のリポジトリ）のパス。
-   * 空 = Remotion 連携を無効（一覧も投入も 400）。
+   * Remotion 連携（SPEC §5.2）を使うか。Remotion は独自ライセンス（個人・従業員
+   * 3 名以下の会社は無償、それ以上は会社ライセンスが必要）なので **既定は OFF**。
+   * false のあいだは一覧も投入も 400。
    */
-  remotion_project_dir: string
+  remotion_enabled: boolean
   /**
    * 接続先ごとのモデル指定（SPEC §3.3 / §5）。
    * `{"local": {"<workflow_id>/<node_id>.<field>": "file.safetensors"}, …}` で、

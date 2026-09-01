@@ -76,10 +76,13 @@ class Settings(BaseModel):
     # と共有し、作業ディレクトリと制限時間だけ専用に持つ。
     grok_media_workdir: str = ""
     grok_media_timeout: float = 300.0
-    # Remotion（React で組んだ動画のレンダリング、SPEC §5.2）。ComfyUI と同じく
-    # **外で構築したバックエンドを参照するだけ**で、プロジェクト（Node のリポジトリ）
-    # は別の場所にある。空 = 機能ごと無効（一覧も投入も 400）。
-    remotion_project_dir: str = ""
+    # Remotion（React で組んだ動画のレンダリング、SPEC §5.2）。プロジェクトは
+    # リポジトリに同梱してある（`remotion/`）が、**Remotion は MIT などの
+    # オープンソースライセンスではなく独自ライセンス**（個人・従業員 3 名以下の
+    # 会社は無償、それ以上は会社ライセンスの購入が必要）なので、**既定は OFF**:
+    # 利用者がライセンス条件を確かめたうえで設定ページから有効にする。
+    #: Remotion 連携を使うか（false なら一覧も投入も 400）
+    remotion_enabled: bool = False
     # LLM CLI の追加フラグ（ツール権限）と、1 ターンあたりの制限時間（SPEC §4.1）。
     # `--permission-mode auto` は grok 0.2.112 でファイルの読み書き（画像を見るのを
     # 含む）と web 検索を headless `-p` 実行で有効にすることを確認済み。
@@ -187,7 +190,7 @@ class SettingsUpdate(BaseModel):
     grok_workdir: str | None = None
     grok_media_workdir: str | None = None
     grok_media_timeout: float | None = None
-    remotion_project_dir: str | None = None
+    remotion_enabled: bool | None = None
     model_overrides: dict[ComfyTarget, dict[str, str]] | None = None
     model_choices: dict[ComfyTarget, dict[str, list[str]]] | None = None
     hf_token: str | None = None

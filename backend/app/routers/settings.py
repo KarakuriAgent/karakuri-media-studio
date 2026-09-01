@@ -16,8 +16,8 @@ async def get_settings() -> Settings:
 async def put_settings(payload: SettingsUpdate) -> Settings:
     before = load_settings().agent_cli
     saved = update_settings(payload.model_dump(exclude_unset=True))
-    # Remotion のプロジェクトを指し替えたかもしれないので、composition の
-    # 一覧キャッシュは捨てる（TTL を待たずに新しい場所を読み直す）。
+    # Remotion 連携の有効/無効を切り替えたかもしれないので、composition の
+    # 一覧キャッシュは捨てる（TTL を待たずに読み直す）。
     remotion.clear_cache()
     if saved.agent_cli != before:
         # CLI が変わった: 保存済みの続き用セッション id は別 CLI では通じない

@@ -8,7 +8,7 @@ Grok Imagine（画像 2 種）を Web UI から実行し、プロンプト作成
 
 - バックエンド: Python 3.12 + FastAPI + SQLite（`app.db`）
 - フロントエンド: React + Vite + Tailwind（ダークテーマの SPA。「生成」と「スタジオ」の 2 タブ + 設定ページ）
-- 生成本体: ComfyUI（ローカル / LAN 上の別 PC / Comfy Cloud）＋ Grok Imagine（Grok Build CLI 経由・画像のみ）＋ Remotion（任意）
+- 生成本体: ComfyUI（ローカル / LAN 上の別 PC / Comfy Cloud）＋ Grok Imagine（Grok Build CLI 経由・画像のみ）＋ Remotion（同梱の `remotion/`。**既定 OFF**）
 - プロンプト生成: Grok Build CLI（サブスクリプション認証、API キー不要）
 
 仕様・設計・API の詳細は [`docs/SPEC.md`](docs/SPEC.md)、外部エージェントから
@@ -49,7 +49,8 @@ cd karakuri-media-studio
 ./run.sh --dev    # 開発: uvicorn --reload (:8000) と vite dev (:5173) を並行起動
 ```
 
-`run.sh` は初回に venv 作成・`npm install`・`npm run build` まで面倒を見ます。
+`run.sh` は初回に venv 作成・`npm install`（frontend と remotion）・`npm run build`
+まで面倒を見ます。
 待受などの設定は環境変数か、リポジトリ直下の `.env`（gitignore 済み）で渡します
 （シェルの環境変数が優先）。
 
@@ -64,6 +65,7 @@ COMFY_MODELS_DIR=/path/to/ComfyUI/models   # 任意（後述の自動ダウン�
 
 ```bash
 npm --prefix frontend install && npm --prefix frontend run build  # 初回のみ
+npm --prefix remotion install                                     # Remotion を使うなら
 
 ./compose.sh up -d --build   # 起動
 ./compose.sh logs -f         # ログ
@@ -79,7 +81,8 @@ npm --prefix frontend install && npm --prefix frontend run build  # 初回のみ
 - ComfyUI に `http://127.0.0.1:8188` を使っている場合、コンテナからは届きません。設定画面の
   ComfyUI URL を `http://host.docker.internal:8188` か LAN の IP に変えてください
 - `.env` の `COMFY_MODELS_DIR` は、同じ絶対パスでコンテナにもマウントされます
-  （Remotion 連携を使う場合の `REMOTION_PROJECT_DIR` も同じ扱いです）
+  （Remotion は同梱の `remotion/` をリポジトリごとマウントするので設定は要りません。
+  依存だけはホストで `npm --prefix remotion install` を済ませてください）
 - `docker compose` を直接使うときは、リポジトリの実体パスから
   `UID=$(id -u) GID=$(id -g) docker compose up -d` のように実行してください
   （サービス名は `media-studio`。旧名 `video-studio` のコンテナが残っていれば `docker rm -f` で片付けます）
@@ -89,7 +92,23 @@ npm --prefix frontend install && npm --prefix frontend run build  # 初回のみ
 ```bash
 cd backend && ../.venv/bin/pytest                  # バックエンド
 cd frontend && npm run build && npx vitest run     # フロントエンド（型チェック込み）
+cd remotion && npm run typecheck                   # Remotion（使う場合のみ）
 ```
+
+### Remotion 連携（同梱・既定 OFF）
+
+MV やモーショングラフィックスを焼く Remotion プロジェクトを `remotion/` に同梱して
+います。依存は `run.sh` が初回に入れる（Docker で動かす場合はホスト側で
+`npm --prefix remotion install`）ので、設定画面の「Remotion 連携」を **ON** にすれば
+使えます（使うのは常に同梱の `remotion/` です）。書き方は
+[`.agents/skills/karakuri-remotion/SKILL.md`](.agents/skills/karakuri-remotion/SKILL.md) と
+[`remotion/README.md`](remotion/README.md) にあります。
+
+> **ライセンスの注意**: Remotion は MIT などのオープンソースライセンスではなく、独自の
+> Remotion License で提供されています。個人利用および従業員 3 名以下の会社は無償ですが、
+> それ以上の規模の会社での利用には会社ライセンス（有償）の購入が必要です。既定を OFF に
+> しているのはこのためです。有効にする前に
+> <https://www.remotion.dev/license> を確認し、条件を満たすことを確かめてください。
 
 `run.sh` を使わず手で起動する場合:
 
@@ -296,7 +315,7 @@ SKILL には接続とキーの解決、最初に読む API（`openapi.json` / `p
 | `grok_command` / `grok_model` | grok CLI のコマンドと使用モデル | `grok` / `grok-4.5` |
 | `grok_workdir` | プロンプト作成チャットが LLM CLI を回す作業ディレクトリ | `runtime/grok-workdir` |
 | `grok_media_timeout` / `grok_media_workdir` | Grok Imagine の 1 枚あたりの制限時間（秒）と専用の作業ディレクトリ（プロンプト作成のチャットとは分けます） | `300` / `runtime/grok-media-workdir` |
-| `remotion_project_dir` | 構築済み Remotion プロジェクト（Node のリポジトリ）の場所。**空なら Remotion 連携ごと無効** | 空 |
+| `remotion_enabled` | Remotion 連携（`mode: "remotion"`）を使うか。**ライセンスの都合で既定 OFF**（下記） | 無効 |
 | `agent_grok_args` | LLM CLI に足すフラグ（ツール権限）。**空にすると CLI のツールが無効**になります | `--permission-mode auto` |
 | `agent_use_acp` | CLI のターンを ACP で回す（実行中の活動をチャットに出す） | オン |
 | `hf_token` / `civitai_api_key` | モデルダウンロード用のトークン | 空 |

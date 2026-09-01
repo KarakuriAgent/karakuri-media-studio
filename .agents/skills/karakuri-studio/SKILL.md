@@ -193,8 +193,14 @@ scripts/studio.sh wait-export <export_id> [interval_sec]
 2. `POST /jobs {"mode":"remotion","remotion_composition":"…","remotion_props":{…}}`
 3. 進捗はふつうのジョブと同じ（`GET /jobs/{id}`）。mp4 は `video_url`。
 
-`remotion_props` の中身の正本は **Remotion プロジェクト側のリポジトリ**（アプリの
-設定 `remotion_project_dir` が指す先）の SKILL / README。そこを読んでから書く。
+`remotion_props` の中身の正本は Studio に同梱された **`remotion/`**（スキーマは
+`remotion/src/schema.ts`）と **`.agents/skills/karakuri-remotion/SKILL.md`**。
+そこを読んでから書く。
+
+連携は**既定 OFF**（Remotion が独自ライセンスのため）。一覧が 400 で「Remotion 連携が
+無効です」と返るときは、設定ページの「Remotion 連携」を有効にしてもらう（依存は
+`run.sh` が初回に入れている）。エージェント側から `PUT /api/settings` で
+勝手に有効化しない。
 
 ## 10. やってはいけない
 

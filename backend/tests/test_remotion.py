@@ -27,9 +27,11 @@ KEY = "remotion-test-key"
 
 @pytest.fixture(autouse=True)
 def clear_cache():
-    """composition 一覧のキャッシュをテストごとに捨てる。"""
+    """composition 一覧のキャッシュと同梱プロジェクトの場所を毎回もとに戻す。"""
+    original = remotion.REMOTION_BUNDLED_DIR
     remotion.clear_cache()
     yield
+    remotion.REMOTION_BUNDLED_DIR = original
     remotion.clear_cache()
 
 
@@ -38,11 +40,13 @@ async def _no_llm(text: str) -> None:
 
 
 def make_project(tmp_path: Path, *, entry: str = "src/index.ts", package=None) -> Path:
-    """構築済み Remotion プロジェクトのふり（entry と package.json だけ）。"""
+    """Remotion プロジェクトのふり（entry・package.json・node_modules だけ）。"""
     root = tmp_path / "remotion-project"
     target = root / entry
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text("// entry", encoding="utf-8")
+    # `npm install` 済みのふり（:func:`app.remotion.project_dir` が見る）
+    (root / "node_modules").mkdir(exist_ok=True)
     if package is not None:
         (root / "package.json").write_text(
             json.dumps(package), encoding="utf-8"
@@ -50,8 +54,11 @@ def make_project(tmp_path: Path, *, entry: str = "src/index.ts", package=None) -
     return root
 
 
-def use_project(directory: Path | str) -> None:
-    config.update_settings({"remotion_project_dir": str(directory)})
+def use_project(directory: Path | None = None, *, enabled: bool = True) -> None:
+    """連携の ON / OFF と、同梱プロジェクトの場所（テスト用の偽物）を差し替える。"""
+    if directory is not None:
+        remotion.REMOTION_BUNDLED_DIR = Path(directory)
+    config.update_settings({"remotion_enabled": enabled})
     remotion.clear_cache()
 
 
@@ -91,17 +98,28 @@ class FakeRun:
 # 設定とエントリポイント
 # --------------------------------------------------------------------------
 
-def test_unset_project_dir_is_not_configured():
-    use_project("")
+def test_disabled_by_default_is_not_configured():
+    """既定（`remotion_enabled` が false）では機能ごと無効。"""
+    use_project(enabled=False)
     with pytest.raises(remotion.RemotionNotConfigured):
         remotion.project_dir()
 
 
-def test_missing_project_dir_says_which_path(tmp_path):
-    use_project(tmp_path / "nope")
+def test_enabled_uses_the_bundled_project(tmp_path):
+    """有効にすれば同梱の `remotion/` を使う。"""
+    bundled = make_project(tmp_path)
+    use_project(bundled)
+    assert remotion.project_dir() == bundled
+
+
+def test_missing_node_modules_tells_you_to_npm_install(tmp_path):
+    """依存が入っていなければ、何をすればよいかまで言う。"""
+    bundled = make_project(tmp_path)
+    (bundled / "node_modules").rmdir()
+    use_project(bundled)
     with pytest.raises(remotion.RemotionError) as caught:
         remotion.project_dir()
-    assert "nope" in str(caught.value)
+    assert "npm --prefix remotion install" in str(caught.value)
 
 
 def test_entry_point_defaults_to_src_index(tmp_path):
@@ -162,6 +180,47 @@ def test_parse_compositions_survives_a_table_and_log_noise():
     assert remotion.parse_compositions(stdout) == ["Intro", "Main"]
 
 
+#: 実機（4.0.519）の `npx remotion compositions src/index.ts` の出力そのまま。
+#: 初回は Chrome Headless Shell のダウンロードログが前に混ざる。
+REAL_STDOUT = """\
+Version mismatch: zod: installed 3.22.3, required 4.4.3
+For zod, install exact version 4.4.3 (run: npx remotion add zod).
+Downloading Chrome Headless Shell https://www.remotion.dev/chrome-headless-shell
+Customize this behavior by adding a onBrowserDownload function to renderMedia().
+Getting Headless Shell - 40.5 MB/98.4 MB
+Got Headless Shell
+Ensuring browser
+Bundling code        \u2501\u2501\u2501   6%
+Bundled code         \u2501\u2501\u2501\u2501 917ms
+
+The following compositions are available:
+
+MusicVideo    30      1920x1080      240 (8.00 sec)
+Slate         30      1920x1080      150 (5.00 sec)
+"""
+
+
+def test_parse_compositions_reads_the_real_cli_output():
+    """見出しの後ろだけを見るので、ダウンロードログの英単語は混ざらない。"""
+    assert remotion.parse_compositions(REAL_STDOUT) == ["MusicVideo", "Slate"]
+
+
+def test_parse_compositions_reads_a_still_row():
+    """静止画（durationInFrames が 1）の行は FPS が空で尺が ``Still``。"""
+    stdout = (
+        "The following compositions are available:\n"
+        "\n"
+        "Logo                  1920x1080      Still\n"
+    )
+    assert remotion.parse_compositions(stdout) == ["Logo"]
+
+
+def test_parse_compositions_never_takes_words_from_a_log_line():
+    """``Got Headless Shell`` のような英文は 1 語も ID にしない。"""
+    stdout = "Downloading Chrome Headless Shell https://www.remotion.dev/x\nGot Headless Shell\n"
+    assert remotion.parse_compositions(stdout) == []
+
+
 async def test_list_compositions_runs_npx_in_the_project(tmp_path, monkeypatch):
     root = make_project(tmp_path)
     use_project(root)
@@ -170,8 +229,10 @@ async def test_list_compositions_runs_npx_in_the_project(tmp_path, monkeypatch):
 
     assert await remotion.list_compositions() == ["Intro", "Main"]
     argv, cwd = fake.calls[0]
-    assert argv[:4] == ["npx", "remotion", "compositions", "src/index.ts"]
-    assert "--quiet" in argv
+    assert argv == ["npx", "remotion", "compositions", "src/index.ts"]
+    # ``--quiet`` は付けない（付けると見出しごと消えて、ダウンロードログと
+    # 見分けが付かない 1 行になる）
+    assert "--quiet" not in argv
     assert cwd == root
 
 
@@ -201,7 +262,7 @@ async def test_list_compositions_reports_stderr_on_failure(tmp_path, monkeypatch
 
 
 async def test_list_compositions_needs_the_setting():
-    use_project("")
+    use_project(enabled=False)
     with pytest.raises(remotion.RemotionNotConfigured):
         await remotion.list_compositions()
 
@@ -382,6 +443,7 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(nsfw, "classify", _no_llm)
 
     project = make_project(tmp_path)
+    monkeypatch.setattr(remotion, "REMOTION_BUNDLED_DIR", project)
     with TestClient(app) as client:
         yield type(
             "Env",
@@ -397,7 +459,7 @@ def env(tmp_path, monkeypatch):
 
 
 def enable(env, **settings) -> None:
-    body = {"remotion_project_dir": str(env.project)}
+    body = {"remotion_enabled": True}
     body.update(settings)
     response = env.client.put("/api/settings", json=body)
     assert response.status_code == 200, response.text
@@ -532,11 +594,22 @@ def test_remotion_job_cancel_stops_the_render(env, monkeypatch):
     assert state["cancelled"] is True
 
 
-def test_remotion_job_needs_the_project_dir(env):
-    """設定が空のまま投げたら 400（値ではなく設定が足りていない）。"""
+def test_remotion_job_needs_the_integration_enabled(env):
+    """連携が無効のまま投げたら 400（値ではなく設定が足りていない）。"""
     response = env.client.post("/api/jobs", json=body())
     assert response.status_code == 400, response.text
     assert "Remotion" in response.json()["detail"]
+
+
+def test_remotion_job_uses_the_bundled_project(env, monkeypatch):
+    """有効にすれば同梱の `remotion/` で走る。"""
+    enable(env)
+    stub_render(monkeypatch)
+    stub_last_frame(monkeypatch)
+
+    created = env.client.post("/api/jobs", json=body())
+    assert created.status_code == 201, created.text
+    assert wait_for(env.client, created.json()["id"])["status"] == "done"
 
 
 def test_remotion_job_requires_composition_and_props(env):
@@ -624,7 +697,7 @@ def test_external_compositions_needs_the_setting(env):
     env.client.put("/api/settings", json={"external_api_key": KEY})
     response = call(env, "GET", "/api/v1/remotion/compositions")
     assert response.status_code == 400, response.text
-    assert "設定されていません" in response.json()["detail"]
+    assert "無効です" in response.json()["detail"]
 
 
 def test_external_compositions_lists_the_ids(env, monkeypatch):
