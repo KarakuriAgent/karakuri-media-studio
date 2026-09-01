@@ -72,6 +72,7 @@ from ..models import (
     LibraryItem,
     LibraryKey,
     LibraryKeyFromJob,
+    LibraryKeySource,
     LibraryPage,
     LibrarySheet,
     LibraryUpdate,
@@ -134,7 +135,8 @@ from ..models import (
 from .assets import save_upload
 from .library import MAX_LIMIT as LIBRARY_MAX_LIMIT
 from .library import _bad_request as _library_bad_request
-from .library import key_job_output, key_library_item
+from .library import key_job_output, key_library_item, key_media_source
+from .library import upload_to_library
 from .media import create_contact_sheet, create_text_image, font_list
 from .options import get_options
 from .studio import _kind_of, get_capabilities
@@ -1035,6 +1037,39 @@ async def update_library_item(item_id: str, payload: LibraryUpdate) -> LibraryIt
     return item
 
 
+@router.post("/library/image", response_model=LibraryItem, status_code=201)
+async def upload_library_image(
+    file: UploadFile = File(...),
+    #: 表示名（空なら元のファイル名）
+    name: str = Form(""),
+    #: multipart はリストを送りにくいのでカンマ区切りで受ける
+    tags: str = Form(""),
+    #: 分類（空なら未分類）
+    category: str = Form(""),
+    nsfw: bool = Form(False),
+) -> LibraryItem:
+    """手元の画像をライブラリへ入れる（multipart。``/library/{item_id}`` より先）。
+
+    Docker で動かしているときは、ホストの絶対パスはアプリから見えないので
+    **こちらを使う**（JSON の ``path`` はコンテナの中のパスとして解釈される）。
+    入れた項目の ``id`` をそのまま ``POST /library/{id}/key`` に渡せる。
+    """
+    return await upload_to_library(
+        "image", file, name=name, tags=tags, category=category, nsfw=nsfw
+    )
+
+
+@router.post("/library/key", response_model=LibraryItem, status_code=201)
+async def key_library_source(payload: LibraryKeySource) -> LibraryItem:
+    """``source`` で指した画像の背景を抜いてスプライトにする（SPEC §7.2）。
+
+    ``source`` は ``job_id``（+ ``source``）/ ``item_id`` / ``export_id`` /
+    ``path``（``/assets/…`` の World Bible 素材も指せる）のどれか 1 つ。
+    ``/library/{item_id}`` より先に定義しておく。
+    """
+    return await key_media_source(payload)
+
+
 @router.post("/library/key-from-job", response_model=LibraryItem, status_code=201)
 async def key_library_from_job(payload: LibraryKeyFromJob) -> LibraryItem:
     """ジョブの生成画像の背景を抜いてスプライトにする（SPEC §7.2）。
@@ -1054,7 +1089,8 @@ async def key_library_item_route(
     ``method`` は ``black`` / ``white``（floodfill 方式のルミナンスキー。文字の
     内側の同色は穴として残る）/ ``chroma``（``color`` との距離）/ ``rembg``
     （任意依存。入っていなければ 400）。できた PNG の ``url`` を Remotion の
-    ``sprite`` / ``imageSlam`` の ``src`` にそのまま書ける。
+    ``sprite`` / ``imageSlam`` の ``src`` にそのまま書ける。``flatten`` に色を
+    書くと、抜いたあとの不透明部分をその色一色に塗る（白抜きロゴ用）。
     """
     return await key_library_item(item_id, payload or LibraryKey())
 

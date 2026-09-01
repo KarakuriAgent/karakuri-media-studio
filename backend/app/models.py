@@ -2048,6 +2048,9 @@ class LibraryKey(BaseModel):
     tolerance: float = 0.1
     #: 不透明な部分の bbox に切り詰めるか
     trim: bool = True
+    #: 抜いたあとに残った部分を単色で塗り潰す色（CSS 表記。空なら元の色のまま）。
+    #: α は保つので、白抜きロゴのように「形だけ使う」素材が作れる
+    flatten: str = ""
     #: 表示名（空なら元の素材の名前 +「（スプライト）」）
     name: str = ""
     tags: list[str] = Field(default_factory=list)
@@ -2138,6 +2141,17 @@ class MediaRef(BaseModel):
     export_id: str = ""
     #: ``/outputs/…`` / ``/library/…`` / ``/assets/…`` の URL か、その中の絶対パス
     path: str = ""
+
+
+class LibraryKeySource(LibraryKey):
+    """POST /library/key body（``MediaRef`` で指した画像の背景を抜く）。
+
+    棚に入っていない画像——ジョブの出力・World Bible の素材（``assets/``）・
+    書き出し・置き場の中のパス——を 1 手で抜くための入り口
+    （:class:`MediaRef` の解決は :mod:`app.media_ref`）。
+    """
+
+    source: MediaRef
 
 
 #: 音源解析（``mode: "audio_analysis"``、SPEC §5.2）で回せる解析。

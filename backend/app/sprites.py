@@ -205,6 +205,17 @@ def chroma_alpha(
     return _ramp(distance_to(image, color), low, high)
 
 
+def flatten_to_color(image: Image.Image, color: tuple[int, int, int]) -> Image.Image:
+    """α はそのままに、RGB だけを単色で塗り替える（RGBA 画像）。
+
+    白抜きロゴのような「形だけ使いたい」素材のための後処理。抜いたあとに掛ける
+    ので、境界の半透明はそのまま残り、輪郭のなじみも変わらない。
+    """
+    solid = Image.new("RGBA", image.size, (*color, 255))
+    solid.putalpha(image.getchannel("A"))
+    return solid
+
+
 def trim_to_content(image: Image.Image) -> Image.Image:
     """不透明な部分の bbox に切り詰める（全部透明なら :class:`SpriteError`）。"""
     alpha = image.getchannel("A")
@@ -248,10 +259,13 @@ def key_image(
     color: object = DEFAULT_COLOR,
     tolerance: object = DEFAULT_TOLERANCE,
     trim: bool = True,
+    flatten: str | None = None,
 ) -> bytes:
     """``source`` の背景を抜いて **RGBA PNG のバイト列**を返す。
 
     元のファイルは触らない（呼び出し側が新しいライブラリ項目にする）。
+    ``flatten`` に色（CSS 表記）を渡すと、抜いたあとに残った部分を**その色一色**に
+    塗る（α は保つ）。白抜きロゴのように「形だけ欲しい」ときに使う。
     """
     name = check_method(method)
     amount = check_tolerance(tolerance)
@@ -267,6 +281,8 @@ def key_image(
             alpha = alpha.filter(ImageFilter.GaussianBlur(EDGE_BLUR))
         keyed = image.convert("RGBA")
         keyed.putalpha(alpha)
+    if str(flatten or "").strip():
+        keyed = flatten_to_color(keyed, check_color(flatten))
     if trim:
         keyed = trim_to_content(keyed)
     buffer = BytesIO()

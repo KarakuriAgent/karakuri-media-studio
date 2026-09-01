@@ -10,12 +10,13 @@ from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from .. import autotag
 from .. import jobs as job_service
 from .. import library as service
-from .. import sheets
+from .. import media_ref, sheets
 from ..models import (
     LibraryFromJob,
     LibraryItem,
     LibraryKey,
     LibraryKeyFromJob,
+    LibraryKeySource,
     LibraryPage,
     LibrarySheet,
     LibraryUpdate,
@@ -109,7 +110,7 @@ async def create_sheet(payload: LibrarySheet) -> LibraryItem:
 # --------------------------------------------------------------------------
 #
 # 中身は :func:`app.library.add_keyed` にあり、内部 API と外部 API
-# （:mod:`app.routers.external`）がこの 2 つのヘルパーを共用する。
+# （:mod:`app.routers.external`）が下のヘルパーを共用する。
 
 
 async def key_library_item(item_id: str, payload: LibraryKey) -> LibraryItem:
@@ -129,6 +130,7 @@ async def key_library_item(item_id: str, payload: LibraryKey) -> LibraryItem:
             color=payload.color,
             tolerance=payload.tolerance,
             trim=payload.trim,
+            flatten=payload.flatten,
             tags=payload.tags,
             category=payload.category,
             nsfw=item.nsfw,
@@ -158,6 +160,7 @@ async def key_job_output(payload: LibraryKeyFromJob) -> LibraryItem:
             color=payload.color,
             tolerance=payload.tolerance,
             trim=payload.trim,
+            flatten=payload.flatten,
             tags=payload.tags,
             category=payload.category,
             nsfw=job.nsfw,
@@ -165,6 +168,73 @@ async def key_job_output(payload: LibraryKeyFromJob) -> LibraryItem:
         )
     except service.LibraryError as exc:
         raise _bad_request(exc) from exc
+
+
+async def key_media_source(payload: LibraryKeySource) -> LibraryItem:
+    """``MediaRef`` で指した画像（棚の外でもよい）の背景を抜いて登録する。
+
+    ``path`` は :func:`app.media_ref.resolve_path` の関門を通るので、
+    ``outputs/`` / ``library/`` / ``assets/`` の中しか開けない。
+    """
+    try:
+        media = await media_ref.resolve(payload.source)
+    except media_ref.MediaRefNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except media_ref.MediaRefError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    try:
+        return await service.add_keyed(
+            media.path,
+            name=payload.name or service.sprite_name(media.name),
+            method=payload.method,
+            color=payload.color,
+            tolerance=payload.tolerance,
+            trim=payload.trim,
+            flatten=payload.flatten,
+            tags=payload.tags,
+            category=payload.category,
+            nsfw=media.nsfw,
+            source_job_id=media.job_id,
+        )
+    except service.LibraryError as exc:
+        raise _bad_request(exc) from exc
+
+
+# --------------------------------------------------------------------------
+# 手元のファイルの登録（内部 API と外部 API が共用する）
+# --------------------------------------------------------------------------
+
+async def upload_to_library(
+    kind: str,
+    file: UploadFile,
+    *,
+    name: str = "",
+    tags: str = "",
+    category: str = "",
+    nsfw: bool = False,
+) -> LibraryItem:
+    """multipart で送られたファイルを ``library/{kind}/`` に入れる。"""
+    try:
+        return await service.add_upload(
+            kind,
+            file.filename or "upload",
+            await file.read(),
+            tags,
+            category,
+            name=name,
+            nsfw=nsfw,
+        )
+    except service.LibraryError as exc:
+        raise _bad_request(exc) from exc
+
+
+@router.post("/key", response_model=LibraryItem, status_code=201)
+async def key_source(payload: LibraryKeySource) -> LibraryItem:
+    """``source``（``job_id`` / ``item_id`` / ``export_id`` / ``path``）の画像を抜く。
+
+    ``/{kind}`` より先に定義しておく（後ろだと `kind='key'` として食われる）。
+    """
+    return await key_media_source(payload)
 
 
 @router.post("/key-from-job", response_model=LibraryItem, status_code=201)
@@ -190,14 +260,14 @@ async def upload(
     tags: str = Form(""),
     #: 分類（空なら未分類）
     category: str = Form(""),
+    #: 表示名（空なら元のファイル名）
+    name: str = Form(""),
+    nsfw: bool = Form(False),
 ) -> LibraryItem:
     """手元のファイルをライブラリに追加する（種別ごとの拡張子のみ）。"""
-    try:
-        return await service.add_upload(
-            kind, file.filename or "upload", await file.read(), tags, category
-        )
-    except service.LibraryError as exc:
-        raise _bad_request(exc) from exc
+    return await upload_to_library(
+        kind, file, name=name, tags=tags, category=category, nsfw=nsfw
+    )
 
 
 @router.patch("/{item_id}", response_model=LibraryItem)

@@ -93,6 +93,35 @@ def test_chroma_key_keeps_the_inner_colour_too(tmp_path):
 
 
 # --------------------------------------------------------------------------
+# 単色化（flatten）
+# --------------------------------------------------------------------------
+
+def test_flatten_repaints_the_kept_part_in_one_colour(tmp_path):
+    # 赤い的を黒背景から抜いて、残った部分だけを白く塗る（白抜きロゴ）
+    path = ring(tmp_path, "red.png", ink=(220, 40, 40))
+    result = keyed(path, method="black", trim=False, flatten="#ffffff")
+    assert result.getpixel((60, 60)) == (255, 255, 255, 255)
+    # α は塗り替えない（外は透明、内側の穴は残る）
+    alpha = result.getchannel("A")
+    assert alpha.getpixel((5, 5)) == 0
+    assert alpha.getpixel((100, 100)) == 255
+    # 透明なところも色だけは差し替わる（見えないので害は無い）
+    assert result.getpixel((5, 5))[:3] == (255, 255, 255)
+
+
+def test_flatten_is_off_unless_a_colour_is_given(tmp_path):
+    path = ring(tmp_path, "red2.png", ink=(220, 40, 40))
+    for flatten in (None, "", "  "):
+        result = keyed(path, method="black", trim=False, flatten=flatten)
+        assert result.getpixel((60, 60))[:3] == (220, 40, 40)
+
+
+def test_a_bad_flatten_colour_is_rejected(tmp_path):
+    with pytest.raises(sprites.SpriteError):
+        sprites.key_image(ring(tmp_path), method="black", flatten="not-a-colour")
+
+
+# --------------------------------------------------------------------------
 # トリムと検証
 # --------------------------------------------------------------------------
 

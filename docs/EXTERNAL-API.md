@@ -39,7 +39,7 @@
 | 素材（World Bible） | `POST /projects/{id}/assets`（JSON / multipart）・`assets/from-job`・`PATCH/DELETE /assets/{id}`・素材のリファレンス（`/assets/{id}/files`・`DELETE /asset-files/{id}`） |
 | 生成と Take | `POST /shots/{id}/render`・`GET /shots/{id}/takes`・`POST /takes/{id}/select`・`reject`・`cancel`・`DELETE /takes/{id}` |
 | 汎用ジョブ | `GET/POST /jobs`・`GET /jobs/{id}`・`POST /jobs/{id}/cancel`・`rerun`・`continue` |
-| ライブラリ | `GET /library`・`POST /library/from-job`・`POST /library/sheet`・`POST /library/{id}/key`・`POST /library/key-from-job`・`PATCH /library/{id}`（**削除は非公開**） |
+| ライブラリ | `GET /library`・`POST /library/image`（multipart）・`POST /library/from-job`・`POST /library/sheet`・`POST /library/{id}/key`・`POST /library/key`・`POST /library/key-from-job`・`PATCH /library/{id}`（**削除は非公開**） |
 | 素材の下ごしらえ | `POST /images/text`・`GET /images/text/fonts`・`POST /videos/contact-sheet`（§3.4） |
 | 編集（タイムライン） | `POST /projects/{id}/timelines`・`GET/PATCH/DELETE /timelines/{id}`・`PUT /timelines/{id}/clips`・`POST /timelines/{id}/clips/insert`・トラック CRUD・`generate-subtitles`・`sync-preview` / `sync`・`missing` / `missing/resolve`・`GET /projects/{id}/media` |
 | 書き出し | `POST /timelines/{id}/export`（202）・`GET /exports/{id}`・`POST /exports/{id}/save-to-library` |
@@ -401,12 +401,19 @@ GET /api/v1/jobs/{id}   → {"status": "done",
 または明示的に指示されたときだけ使う**（通常のドラマ制作では出番が無い）。
 
 ```
+POST /api/v1/library/image          multipart（file / name / tags / category / nsfw）
 POST /api/v1/library/{id}/key       {"method":"black","tolerance":0.1,"trim":true}
+POST /api/v1/library/key            {"source":{"path":"/assets/image/logo.png"},"method":"white"}
 POST /api/v1/library/key-from-job   {"job_id":"…","source":"image","method":"black"}
 GET  /api/v1/images/text/fonts      → {"fonts":[{"name":"Noto Sans CJK JP Bold",…}],"default":"…"}
 POST /api/v1/images/text            {"text":"撃ち抜け","size":220,"outline":{"color":"#08080a","width":10}}
 POST /api/v1/videos/contact-sheet   {"source":{"job_id":"…"},"seconds":[43.9,44.2],"columns":4}
 ```
+
+- **手持ちの画像の登録**（`library/image`）… multipart（`file`）で棚に入れる。
+  `name`（空なら元のファイル名）/ `tags`（カンマ区切り）/ `category` / `nsfw` を
+  フォームで添えられる。**Docker で動かしているアプリにはホストの絶対パスは
+  見えない**ので、手元のファイルを渡すときはこちらを使う。
 
 - **透過キー**（`library/{id}/key`）… 棚の画像の背景を抜いて、**新しいライブラリ
   項目**（RGBA PNG、タグ `sprite`、`source: "sprite"`）にする。元の素材は触らない。
@@ -418,9 +425,14 @@ POST /api/v1/videos/contact-sheet   {"source":{"job_id":"…"},"seconds":[43.9,4
   - `rembg` … 任意依存。入っていなければ **400** で入れ方を返す
     （`pip install -r backend/requirements-optional.txt`）
   - `trim`（既定 true）… 不透明な部分の bbox に切り詰める
+  - `flatten`（既定なし）… 抜いたあとに残った部分を**その色一色**に塗る
+    （`"#ffffff"` など。α はそのままなので、白抜きロゴが 1 手で作れる）
   応答の `url`（`/library/image/….png`）を Remotion の `sprite` / `imageSlam` /
   `stickerStack` の `src` にそのまま書ける。ジョブの生成画像を棚に入れずに
   直接抜きたいときは `library/key-from-job`（`source` は `image` / `last_frame`）。
+  棚にもジョブにも無い画像——World Bible の素材や書き出し——は
+  `POST /library/key` に `source`（`job_id` / `item_id` / `export_id` / `path` の
+  どれか 1 つ。コンタクトシートと同じ `MediaRef`）を書く。
 - **フォント画像**（`images/text`）… インストール済みの書体で文字を組んで
   RGBA PNG にする（タグ `text-image`、`source: "text"`）。`font` は
   `GET /images/text/fonts` の `name` をそのまま書く（省略すると Noto Sans CJK JP
@@ -444,9 +456,15 @@ POST /api/v1/videos/contact-sheet   {"source":{"job_id":"…"},"seconds":[43.9,4
   `/library/...`）をそのまま GET する。静的配信には認証が無いので、ループバック
   運用が前提（ネット越し公開時はプロキシで守る）。
 - **書き（素材登録）**: 2 ルート。
-  - JSON: `POST /api/v1/projects/{id}/assets`（`StudioAssetCreate`）。`path` に
-    同一マシン上の絶対パスを書くと `assets/<kind>/` へ複製される。
-  - multipart: 同 URL にファイル添付（内部 API と同じ受け口を流用）。
+  - multipart: `POST /api/v1/projects/{id}/assets` にファイル添付（内部 API と
+    同じ受け口を流用）。ライブラリへ直接入れるなら `POST /api/v1/library/image`。
+    **どちらの置き場でも、手元のファイルを渡すときはこちらが確実。**
+  - JSON: 同 URL（`StudioAssetCreate`）の `path` に書いたパスから
+    `assets/<kind>/` へ複製される。ここでいうパスは
+    **アプリのプロセスから見えるパス**で、Docker で動かしているなら
+    **コンテナの中のパス**。ホスト側の絶対パスを書いても見つからない
+    （`compose.yml` でマウントしていない限り）ので、**Docker 運用では multipart
+    を使うこと**。
 
 ## 5. デプロイ: Cloudflare 越しの公開
 
@@ -515,7 +533,7 @@ POST /api/v1/videos/contact-sheet   {"source":{"job_id":"…"},"seconds":[43.9,4
 | 話・場（`POST .../episodes`・`PATCH /episodes/{id}`・`POST .../scenes`・`PATCH /scenes/{id}`） | 確認済み |
 | カット（`POST .../shots`・`PATCH /shots/{id}`・`DELETE /shots/{id}`） | 確認済み。削除は 204、再削除で 404 |
 | 一括投入 `POST /stories` | 確認済み。`render: true` で話 → 場 → カット作成からレンダリング投入まで 1 リクエスト |
-| 素材登録 3 方式（JSON の `path` 複製 / multipart 添付 / `assets/from-job`） | 確認済み。`PATCH /assets/{id}` も含む |
+| 素材登録 3 方式（JSON の `path` 複製 / multipart 添付 / `assets/from-job`） | 確認済み。`PATCH /assets/{id}` も含む。`path` はアプリのプロセスから見えるパス（Docker ならコンテナ内） |
 | プロンプト中の `@素材名` 参照 | 確認済み。画像素材を参照したカットは自動で `minimax_h3_r2v` に切り替わり、`reference_images` に添付される |
 | レンダリングと Take（`POST /shots/{id}/render` → `GET /shots/{id}/takes`・`GET /jobs/{id}` → `POST /takes/{id}/select` / `reject`） | 確認済み。864x480 / 5 秒 / h264 + aac 音声つきの動画が生成され、採用でカットが `done` に |
 | 投入前の確認 `GET /shots/{id}/prompt-preview` | 実装済み。実際に投入されるプロンプト・ワークフローとその理由（`workflow_reason`）・`will_translate` を読み取りだけで返す（組み立てられないカットも 400 ではなく `error` 入りの 200） |
@@ -591,6 +609,8 @@ POST /api/v1/videos/contact-sheet   {"source":{"job_id":"…"},"seconds":[43.9,4
   プロジェクトから投入するジョブはすべて NSFW（`nsfw_source: "manual"`）になり、
   オフなら非 NSFW で固定されます（どちらも明示なので、Grok の自動判定は走りません）。
 - ファイル添付（multipart）は拡張子から `kind` を自動判定します。
+- JSON の `path` による素材登録は、**アプリのプロセスから見えるパス**を指します
+  （Docker ならコンテナ内のパス）。ホストのパスを渡したいときは multipart で。
 
 ### 運用上の注意（実機テストで判明）
 

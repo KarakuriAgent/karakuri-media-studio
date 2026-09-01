@@ -48,6 +48,12 @@ MAX_FRAMES = 64
 #: 秒の指定が無いときに等間隔で抜く枚数
 DEFAULT_COUNT = 12
 
+#: フレーム番号を出すときに許す端数（フレーム単位）。:func:`plan_seconds` は
+#: 秒を小数第 3 位で丸めるので、``n / fps`` ちょうどの秒がわずかに手前に落ちる
+#: （30fps の 1054 コマ目 = 35.13333… → 35.133 → 1053.99 コマ目）。この分を
+#: 足してから切り捨てることで、丸めの前後で同じコマを指せるようにする。
+FRAME_EPSILON = 0.05
+
 #: ラベル帯の高さ（コマの幅に対する比）と、その中の文字の大きさ
 LABEL_RATIO = 0.075
 LABEL_TEXT_RATIO = 0.55
@@ -171,11 +177,41 @@ def plan_seconds(
     return values
 
 
+def frame_index(second: float, fps: float | None) -> int | None:
+    """``second`` が乗っているコマの番号（fps が分からなければ None）。
+
+    そのコマは ``[n / fps, (n + 1) / fps)`` を占めるので、番号は**切り捨て**で
+    出す（四捨五入だと秒の後半が次のコマの番号になる）。
+    """
+    if not fps or fps <= 0:
+        return None
+    return max(0, math.floor(second * fps + FRAME_EPSILON))
+
+
+def seek_second(second: float, fps: float | None) -> float:
+    """``second`` のコマを抜くために ffmpeg へ渡す秒（**ひとつ前のコマの中央**）。
+
+    ffmpeg の入力シーク（``-ss`` を ``-i`` より前に置く形）が返すのは
+    **pts が指定秒以上の最初のコマ**で、「指定秒に映っているコマ」ではない。
+    ``n / fps`` ちょうどを渡すと、秒を小数第 3 位に丸めた分だけ上に振れたときに
+    ひとつ後ろのコマが出てしまう（``frames:[1054]`` を頼んだのに #1055 が
+    返っていた）。狙うコマの pts より**半コマ手前**（``(n - 0.5) / fps``）を
+    渡せば、丸めが前後どちらに転んでも最初に拾われるのは狙ったコマになる。
+
+    fps が読めない動画は指定された秒をそのまま渡す（それ以上できることが無い）。
+    """
+    index = frame_index(second, fps)
+    if index is None or not fps:
+        return max(0.0, second)
+    return max(0.0, (index - 0.5) / fps)
+
+
 def frame_label(second: float, fps: float | None) -> str:
     """コマに焼くラベル（秒と、fps が分かればフレーム番号）。"""
-    if fps and fps > 0:
-        return f"{second:.2f}s  #{round(second * fps)}"
-    return f"{second:.2f}s"
+    index = frame_index(second, fps)
+    if index is None:
+        return f"{second:.2f}s"
+    return f"{second:.2f}s  #{index}"
 
 
 def cell_size(
@@ -313,11 +349,17 @@ async def probe_video(path: str | Path) -> tuple[float | None, float | None]:
     return duration, fps
 
 
-async def extract_frame(video: str | Path, second: float, dest: Path) -> Image.Image:
-    """``second`` のコマを 1 枚抜いて開く。"""
+async def extract_frame(
+    video: str | Path, second: float, dest: Path, fps: float | None = None
+) -> Image.Image:
+    """``second`` が乗っているコマを 1 枚抜いて開く。
+
+    ``fps`` を渡すと、そのコマがきっかり出る位置（:func:`seek_second`）へ
+    シークする（渡さないと ffmpeg の都合でひとつ後ろのコマが出ることがある）。
+    """
     code, output = await _run([
         FFMPEG, "-v", "error", "-y",
-        "-ss", f"{max(0.0, second):.3f}",
+        "-ss", f"{seek_second(second, fps):.4f}",
         "-i", str(video),
         "-frames:v", "1",
         str(dest),
@@ -359,7 +401,10 @@ async def render_contact_sheet(
         for index, second in enumerate(wanted):
             dest = Path(workdir) / f"frame_{index:03d}.png"
             cells.append(
-                (await extract_frame(source, second, dest), frame_label(second, fps))
+                (
+                    await extract_frame(source, second, dest, fps),
+                    frame_label(second, fps),
+                )
             )
         sheet = build_grid(cells, columns=cols, width=cell, labels=labels)
     buffer = BytesIO()

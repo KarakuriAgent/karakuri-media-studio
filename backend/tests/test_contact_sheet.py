@@ -75,6 +75,25 @@ def test_too_many_frames_are_rejected():
 def test_labels_carry_the_second_and_the_frame_number():
     assert contact_sheet.frame_label(1.5, 24) == "1.50s  #36"
     assert contact_sheet.frame_label(1.5, None) == "1.50s"
+    # コマは [n/fps, (n+1)/fps) を占めるので、番号は切り捨てで出す
+    assert contact_sheet.frame_label(1.51, 24) == "1.51s  #36"
+
+
+def test_the_frame_number_survives_the_rounding_of_the_second():
+    # plan_seconds は秒を小数第 3 位で丸めるので、n/fps ちょうどがわずかに
+    # 手前に落ちる（30fps の #1054 = 35.13333… → 35.133）。それでも #1054。
+    second = contact_sheet.plan_seconds(frames=[1054], fps=30)[0]
+    assert second == 35.133
+    assert contact_sheet.frame_index(second, 30) == 1054
+
+
+def test_the_seek_aims_half_a_frame_before_the_wanted_frame():
+    # ffmpeg の入力シークは「pts が指定秒以上の最初のコマ」を返すので、
+    # 狙うコマの pts より半コマ手前を渡す（先頭は 0 で止める）。
+    assert contact_sheet.seek_second(1.0, 24) == pytest.approx(23.5 / 24)
+    assert contact_sheet.seek_second(0.0, 24) == 0.0
+    # fps が読めなければ指定された秒をそのまま渡すしかない
+    assert contact_sheet.seek_second(1.0, None) == 1.0
 
 
 # --------------------------------------------------------------------------
@@ -135,6 +154,79 @@ def test_a_real_video_becomes_a_sheet(tmp_path):
     sheet = Image.open(BytesIO(data))
     assert sheet.format == "JPEG"
     assert sheet.width == 3 * 160
+
+
+@has_ffmpeg
+def test_the_wanted_frame_is_the_frame_that_comes_out(tmp_path):
+    """``frames`` で頼んだ番号のコマが、そのまま抜けてくる（#52 の 1f ズレ）。
+
+    フレームごとに明るさを変えた動画を焼き、抜いたコマの明るさから
+    「何コマ目が出たか」を逆算して確かめる（OCR は要らない）。
+    """
+    video = tmp_path / "counted.mp4"
+    levels = asyncio.run(_make_counted_video(video))
+    duration, fps = asyncio.run(contact_sheet.probe_video(video))
+    assert fps is not None and round(fps) == COUNTED_FPS
+
+    for number in (0, 1, 17, 33, COUNTED_FRAMES - 1):
+        second = contact_sheet.plan_seconds(frames=[number], fps=fps)[0]
+        frame = asyncio.run(
+            contact_sheet.extract_frame(video, second, tmp_path / f"{number}.png", fps)
+        )
+        assert _which_frame(frame, levels) == number
+        assert contact_sheet.frame_label(second, fps) == f"{second:.2f}s  #{number}"
+
+
+#: フレーム番号入りの動画（1 コマごとに明るさが GRAY_STEP ずつ上がるだけ）
+COUNTED_FPS = 24
+COUNTED_FRAMES = 48
+GRAY_STEP = 5
+
+
+def _which_frame(frame: Image.Image, levels: list[int]) -> int:
+    """抜けたコマの明るさから「何コマ目か」を逆算する。"""
+    gray = frame.convert("RGB").getpixel((frame.width // 2, frame.height // 2))[0]
+    return min(range(len(levels)), key=lambda index: abs(levels[index] - gray))
+
+
+async def _make_counted_video(dest) -> list[int]:
+    """``n`` コマ目が灰色 ``n * GRAY_STEP`` の動画を焼き、**復号後の**明るさを返す。
+
+    yuv420p を通ると明るさは 1 前後ずれるので、期待値は焼いた動画から読み直す
+    （こうしておけば ffmpeg の版が変わっても判定が壊れない）。
+    """
+    source = dest.parent / "frames"
+    source.mkdir()
+    for number in range(COUNTED_FRAMES):
+        level = number * GRAY_STEP
+        Image.new("RGB", (160, 90), (level, level, level)).save(
+            source / f"f{number:03d}.png"
+        )
+    process = await asyncio.create_subprocess_exec(
+        "ffmpeg", "-v", "error", "-y",
+        "-framerate", str(COUNTED_FPS), "-i", str(source / "f%03d.png"),
+        "-c:v", "libx264", "-qp", "0", "-pix_fmt", "yuv420p", str(dest),
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await process.communicate()
+    assert process.returncode == 0, stderr.decode()
+
+    decoded = dest.parent / "decoded"
+    decoded.mkdir()
+    process = await asyncio.create_subprocess_exec(
+        "ffmpeg", "-v", "error", "-y", "-i", str(dest), str(decoded / "d%03d.png"),
+        stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+    )
+    _, stderr = await process.communicate()
+    assert process.returncode == 0, stderr.decode()
+    files = sorted(decoded.glob("d*.png"))
+    assert len(files) == COUNTED_FRAMES
+    levels = [
+        Image.open(path).convert("RGB").getpixel((80, 45))[0] for path in files
+    ]
+    # 逆算できる程度に離れていること（隣り合うコマの差が十分にある）
+    assert all(b - a >= 3 for a, b in zip(levels, levels[1:]))
+    return levels
 
 
 async def _make_video(dest) -> None:

@@ -202,6 +202,119 @@ def test_keying_a_job_output_directly(env):
     ).status_code == 404
 
 
+def test_keying_a_media_ref(env):
+    """``POST /library/key`` は ``MediaRef`` で指した画像を抜く（棚の外でもよい）。"""
+    path = env.assets / "image" / "logo.png"
+    path.write_bytes(ring_png())
+
+    response = env.client.post(
+        "/api/library/key", json={"source": {"path": "/assets/image/logo.png"}}
+    )
+    assert response.status_code == 201, response.text
+    sprite = response.json()
+    assert sprite["source"] == "sprite"
+    assert library.SPRITE_TAG in sprite["tags"]
+    assert sprite["name"] == "logo（スプライト）"
+    # 元の素材はそのまま（コピーではなく、抜いた PNG が別に増える）
+    assert path.is_file()
+
+    # ジョブの出力も同じ入り口で抜ける（NSFW と元ジョブを引き継ぐ）
+    output = env.outputs / "job9" / "image.png"
+    output.parent.mkdir(parents=True)
+    output.write_bytes(ring_png())
+    asyncio.run(_insert_job("job9", image_path=str(output), nsfw=1))
+    from_job = env.client.post(
+        "/api/library/key", json={"source": {"job_id": "job9", "source": "image"}}
+    )
+    assert from_job.status_code == 201, from_job.text
+    assert from_job.json()["source_job_id"] == "job9"
+    assert from_job.json()["nsfw"] is True
+
+
+def test_keying_a_media_ref_refuses_the_outside_and_the_missing(env):
+    # 置き場の外は開かない（media_ref の関門）
+    assert env.client.post(
+        "/api/library/key", json={"source": {"path": "/etc/passwd"}}
+    ).status_code == 400
+    # 指定が無い / 2 つある
+    assert env.client.post(
+        "/api/library/key", json={"source": {}}
+    ).status_code == 400
+    assert env.client.post(
+        "/api/library/key", json={"source": {"job_id": "a", "item_id": "b"}}
+    ).status_code == 400
+    assert env.client.post(
+        "/api/library/key", json={"source": {"item_id": "ghost"}}
+    ).status_code == 404
+
+
+def test_flatten_repaints_the_sprite_in_one_colour(env):
+    """``flatten`` は不透明部分を単色に塗る（白抜きロゴ用）。"""
+    origin = upload_image(env, "mark.png", data=ring_png(ink=(220, 40, 40)))
+    response = env.client.post(
+        f"/api/library/{origin['id']}/key",
+        json={"trim": False, "flatten": "#ffffff"},
+    )
+    assert response.status_code == 201, response.text
+    keyed = Image.open(stored(env, response.json())).convert("RGBA")
+    assert keyed.getpixel((30, 30)) == (255, 255, 255, 255)
+    assert keyed.getchannel("A").getpixel((2, 2)) == 0
+
+    assert env.client.post(
+        f"/api/library/{origin['id']}/key", json={"flatten": "nope"}
+    ).status_code == 400
+
+
+def test_uploading_an_image_from_multipart(env):
+    """``POST /library/image`` は手持ちの画像をそのまま棚に入れる。"""
+    response = env.client.post(
+        "/api/v1/library/image",
+        files={"file": ("logo.png", ring_png(), "image/png")},
+        data={"name": "ロゴ", "tags": "logo, ban", "nsfw": "true"},
+        headers={"X-API-Key": KEY},
+    )
+    assert response.status_code == 201, response.text
+    item = response.json()
+    assert item["kind"] == "image"
+    assert item["name"] == "ロゴ"
+    assert item["tags"] == ["logo", "ban"]
+    assert item["nsfw"] is True and item["nsfw_source"] == "manual"
+    assert item["url"].startswith("/library/image/")
+    assert stored(env, item).is_file()
+
+    # そのまま抜ける（SKILL §10 の「手持ちの PNG」の段取り）
+    keyed = env.client.post(
+        f"/api/v1/library/{item['id']}/key", json={}, headers={"X-API-Key": KEY}
+    )
+    assert keyed.status_code == 201, keyed.text
+    assert keyed.json()["nsfw"] is True
+
+    # 鍵が無ければ 401、画像でない拡張子は 400
+    assert env.client.post(
+        "/api/v1/library/image", files={"file": ("a.png", ring_png(), "image/png")}
+    ).status_code == 401
+    assert env.client.post(
+        "/api/v1/library/image",
+        files={"file": ("clip.mp4", b"nope", "video/mp4")},
+        headers={"X-API-Key": KEY},
+    ).status_code == 400
+
+
+def test_the_external_api_exposes_the_key_from_a_source(env):
+    path = env.assets / "image" / "ext.png"
+    path.write_bytes(ring_png())
+    assert env.client.post(
+        "/api/v1/library/key", json={"source": {"path": "/assets/image/ext.png"}}
+    ).status_code == 401
+    response = env.client.post(
+        "/api/v1/library/key",
+        json={"source": {"path": "/assets/image/ext.png"}, "flatten": "#00ffff"},
+        headers={"X-API-Key": KEY},
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["source"] == "sprite"
+
+
 def test_the_external_api_exposes_the_same_key_endpoint(env):
     origin = upload_image(env)
     unauthorised = env.client.post(f"/api/v1/library/{origin['id']}/key", json={})

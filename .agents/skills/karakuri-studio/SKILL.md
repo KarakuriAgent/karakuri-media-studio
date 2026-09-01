@@ -71,10 +71,13 @@ scripts/studio.sh wait-export <export_id> [interval_sec]
      "category":"character","source":"image"}`
      （`from-job` の `kind` と `path` は `source` が選んだ出力から決まるので、
      書いても無視される）。
-   - 手元のファイル: `POST /projects/{id}/assets` に multipart（`file=@…`）、
-     または同じマシンの絶対パスを JSON の `path` で。JSON なら例えば
-     `{"name":"アリスの部屋","kind":"image","category":"environment",
-     "path":"/abs/room.png"}`。既定は `kind:"image"` / `category:"reference"`。
+   - 手元のファイル: `POST /projects/{id}/assets` に multipart（`file=@…`）。
+     JSON の `path` でも登録できるが、そこに書くのは**アプリのプロセスから
+     見えるパス**（Docker で動いているなら**コンテナの中のパス**）で、手元の
+     マシンの絶対パスではない。**Docker 運用では multipart を使うこと。**
+     JSON なら例えば `{"name":"アリスの部屋","kind":"image",
+     "category":"environment","path":"/app/assets/image/room.png"}`。
+     既定は `kind:"image"` / `category:"reference"`。
    - メタデータだけの素材は `prompt_caption`（英語）を必ず書く。書かないと本文の
      `@名前` は何も足さない。
 4. **脚本**: `POST /projects/{id}/episodes` → `.../episodes/{id}/scenes` →
@@ -260,7 +263,7 @@ POST /jobs {"mode":"audio_analysis",
 
 ### スプライト（透過 PNG）の作り方
 
-素材の出どころは 3 通り。**まず「本当に画像が要るか」を考える**: 雷・ハート・
+素材の出どころは 4 通り。**まず「本当に画像が要るか」を考える**: 雷・ハート・
 集中線・吹き出しのような単純な記号は Remotion の `shape` イベント（SVG）で描ける。
 **生成するのはキャラ・小物・ロゴ文字だけ。**
 
@@ -271,7 +274,14 @@ POST /jobs {"mode":"audio_analysis",
    - `POST /jobs {"mode":"image_only", …}` → `wait-job` →
      `POST /library/key-from-job {"job_id":"…","source":"image","method":"black"}`
 2. **フォント画像**（下記）をそのまま使う
-3. **手持ちの PNG**: `POST /library/image` に multipart → `POST /library/{id}/key`
+3. **手持ちの PNG**: `POST /library/image` に multipart（`file=@logo.png`。
+   `name` / `tags` / `category` / `nsfw` をフォームで添えられる）→ 返った `id` を
+   `POST /library/{id}/key`。**Docker で動いているアプリにホストの絶対パスは
+   見えない**ので、手元のファイルは必ずこの multipart で渡す。
+4. **棚にもジョブにも無い画像**（World Bible の素材・書き出し）:
+   `POST /library/key {"source":{"path":"/assets/image/logo.png"}}`。`source` は
+   コンタクトシートと同じ指し方（`job_id` / `item_id` / `export_id` / `path` の
+   どれか 1 つ）で、`path` は `outputs/` `library/` `assets/` の中だけ
 
 ### 抜き方（`method`）の選び方
 
@@ -285,6 +295,8 @@ POST /jobs {"mode":"audio_analysis",
 - 抜けが甘い / 抜きすぎるときは `tolerance`（0..1、既定 0.1）を動かす。
 - `trim`（既定 true）で余白が落ちる。**余白を残したまま Remotion に渡すと、
   `w` を大きくしても絵が小さく見える。**
+- `flatten`（例 `"#ffffff"`）で、抜いたあとに残った部分を**その色一色**に塗れる
+  （α はそのまま）。色つきのロゴから白抜きロゴを 1 手で作るとき。
 - 結果の `url`（`/library/image/….png`）をそのまま `sprite` / `imageSlam` /
   `stickerStack` の `src` に書く。
 
@@ -313,7 +325,8 @@ scripts/studio.sh POST /videos/contact-sheet '{"source":{"job_id":"<job>"},"seco
 
 - `source` は `job_id` / `item_id` / `export_id` / `path` の**どれか 1 つだけ**。
 - 秒は `seconds` / `range{start,end,step}` / `frames`（フレーム番号）で指定でき、
-  どれも書かなければ尺を 12 等分した位置。
+  どれも書かなければ尺を 12 等分した位置。`frames` で頼んだ番号のコマがそのまま
+  抜ける（コマの下のラベル `#1054` と絵は一致する）。
 - 応答の `item.url` を GET して **自分の目で見る**。`seconds` に実際に抜いた秒が
   並ぶ。
 - **演出の配置（`cx` / `cy` / `w`）を触ったら必ずこれで確かめる。**

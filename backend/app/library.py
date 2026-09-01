@@ -328,10 +328,15 @@ async def add_upload(
     data: bytes,
     tags: object = None,
     category: object = None,
+    *,
+    name: str = "",
+    nsfw: bool = False,
 ) -> LibraryItem:
     """アップロードされたファイルを ``library/{kind}/`` に保存して登録する。
 
-    ``category`` を省く（または空 / ``"none"``）と未分類になる。
+    ``category`` を省く（または空 / ``"none"``）と未分類になる。``name`` を
+    省くと元のファイル名が表示名になる。``nsfw`` は手で立てるものなので
+    ``nsfw_source`` は ``manual``。
     """
     resolved = check_kind(kind)
     resolved_category = check_category(category)
@@ -341,10 +346,10 @@ async def add_upload(
     dest.write_bytes(data)
     return await _insert(
         kind=resolved,
-        name=original.name,
+        name=(name or "").strip() or original.name,
         path=dest,
-        nsfw=False,
-        nsfw_source="",
+        nsfw=nsfw,
+        nsfw_source="manual" if nsfw else "",
         source_job_id=None,
         source=None,
         tags=normalize_tags(tags),
@@ -588,6 +593,7 @@ async def add_keyed(
     color: object = sprites.DEFAULT_COLOR,
     tolerance: object = sprites.DEFAULT_TOLERANCE,
     trim: bool = True,
+    flatten: str | None = None,
     tags: object = None,
     category: object = None,
     nsfw: bool = False,
@@ -599,6 +605,9 @@ async def add_keyed(
     rembg）は :mod:`app.sprites` にあり、抜けなければ :class:`LibraryError`
     （ルーターは 400）。タグには :data:`SPRITE_TAG` を必ず足すので、あとから
     「棚のスプライトだけ」を ``GET /api/v1/library?tag=sprite`` で引ける。
+
+    ``flatten`` に色を渡すと、抜いたあとの不透明部分をその色一色に塗る
+    （白抜きロゴなど）。
     """
     resolved_category = check_category(category)
     source = rebase_stored_path(origin)
@@ -606,7 +615,12 @@ async def add_keyed(
         raise LibraryError(f"file not found: {source}")
     try:
         data = sprites.key_image(
-            source, method=method, color=color, tolerance=tolerance, trim=trim
+            source,
+            method=method,
+            color=color,
+            tolerance=tolerance,
+            trim=trim,
+            flatten=flatten,
         )
     except sprites.SpriteError as exc:
         raise LibraryError(str(exc)) from exc
