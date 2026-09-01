@@ -3,7 +3,8 @@
 // 「何秒に何を出すか」はすべて props(events)にあり、ここには一般化した効果しか無い。
 // 単位は秒、位置は画面比、フォントサイズは 1080p 基準(解像度・fps に依存しない)。
 //
-// レイヤーの重なりは EVENT_LAYER の順(小さいほど下)。同じ層なら events に書いた順。
+// レイヤーの重なりは各イベントの z(省略時は EVENT_LAYER の型ごとの既定、小さいほど下)。
+// 同じ層なら events に書いた順。screen(黒画面)の上に歌詞やランプを出したいときだけ z を書く。
 
 import React from 'react';
 import { AbsoluteFill, Audio, Sequence, interpolate, useCurrentFrame, useVideoConfig } from 'remotion';
@@ -28,6 +29,7 @@ import { FxStickerStack } from './fx/StickerStack';
 import { FxTerminalText } from './fx/TerminalText';
 import {
   FxCtxProvider,
+  chromaPixels,
   eventSeed,
   eventSpan,
   eventsEndSeconds,
@@ -37,7 +39,7 @@ import {
 import { isColorSource, resolveMediaUrl } from './media';
 import { fxOverlaySchema, type FxEvent, type FxOverlayProps } from './schema';
 
-/** 重なりの順(小さいほど下)。 */
+/** 型ごとの既定の重なり順(小さいほど下)。イベントに z があればそちらが優先。 */
 const EVENT_LAYER: Record<FxEvent['type'], number> = {
   invertShake: 0, // base を触るだけで、上には何も出さない
   collapse: 0, // base の差し替え
@@ -137,6 +139,7 @@ export const FxOverlay: React.FC<FxOverlayProps> = (props) => {
   let invert = false;
   let flash = 0;
   let chroma = 0;
+  let scale = 1;
   let glitch: [number, number] | null = null;
 
   for (const p of prepared) {
@@ -149,6 +152,8 @@ export const FxOverlay: React.FC<FxOverlayProps> = (props) => {
       dy += state.dy;
       invert = invert || state.invert;
       flash = Math.max(flash, state.flash);
+      scale = Math.max(scale, state.scale);
+      chroma = Math.max(chroma, chromaPixels(state.chroma, ctx.scale));
     } else if (p.ev.type === 'glitchCut') {
       const state = glitchCutState(p.ev, frame - p.from, width, p.seed);
       glitch = state.glitch;
@@ -159,9 +164,9 @@ export const FxOverlay: React.FC<FxOverlayProps> = (props) => {
   // --- collapse が走っているあいだは base をタイルに差し替える
   const collapsing = prepared.find((p) => p.ev.type === 'collapse' && isActive(p, frame));
 
-  const overlays = [...prepared].sort(
-    (a, b) => EVENT_LAYER[a.ev.type] - EVENT_LAYER[b.ev.type] || a.index - b.index,
-  );
+  // z を書いたイベントはその層へ。書かなければ型ごとの既定層。同じ層なら events に書いた順。
+  const layerOf = (p: Prepared) => p.ev.z ?? EVENT_LAYER[p.ev.type];
+  const overlays = [...prepared].sort((a, b) => layerOf(a) - layerOf(b) || a.index - b.index);
 
   return (
     <FxCtxProvider value={ctx}>
@@ -187,6 +192,7 @@ export const FxOverlay: React.FC<FxOverlayProps> = (props) => {
             flash={flash}
             chroma={chroma}
             glitch={glitch}
+            scale={scale}
           />
         )}
 

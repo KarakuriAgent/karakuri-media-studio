@@ -211,6 +211,54 @@ export const cornerStyle = (corner: FxCorner, marginPx: number): React.CSSProper
   }
 };
 
+/**
+ * cx / cy(画面比)が書かれていればそこを中心に、無ければ corner に寄せる。
+ * 片方だけ書かれたときは、書かれていないほうを 0.5(画面中央)とみなす。
+ * 文字の寄せ(textAlign)は corner のものを引き継ぐ。
+ */
+export const placeStyle = (args: {
+  corner: FxCorner;
+  marginPx: number;
+  width: number;
+  height: number;
+  cx?: number;
+  cy?: number;
+}): React.CSSProperties => {
+  const { corner, marginPx, width, height, cx, cy } = args;
+  if (cx === undefined && cy === undefined) {
+    return cornerStyle(corner, marginPx);
+  }
+  return {
+    left: (cx ?? 0.5) * width,
+    top: (cy ?? 0.5) * height,
+    transform: 'translate(-50%, -50%)',
+    textAlign: cornerStyle(corner, marginPx).textAlign ?? 'center',
+  };
+};
+
+/** クロマ収差の量(0..1)をピクセルに直す。1 が 1080p の 14px。 */
+export const CHROMA_UNIT_PX = 14;
+export const chromaPixels = (amount: number, scale: number): number =>
+  amount > 0 ? Math.max(1, Math.round(amount * CHROMA_UNIT_PX * scale)) : 0;
+
+/** 微振動(jitter)のずれ。phase をずらすと積んだカードがばらばらに揺れる。 */
+export const jitterOffset = (
+  jitter: { px: number; hz: number; rotDeg: number } | undefined,
+  t: number,
+  phase: number,
+  scale: number,
+): { dx: number; dy: number; rot: number } => {
+  if (!jitter) {
+    return { dx: 0, dy: 0, rot: 0 };
+  }
+  const px = jitter.px * scale;
+  return {
+    dx: px * Math.sin(t * jitter.hz * 2 * Math.PI + phase),
+    dy: px * 0.7 * Math.cos(t * jitter.hz * 1.4 * Math.PI + phase),
+    rot: jitter.rotDeg * Math.sin(t * jitter.hz * Math.PI + phase),
+  };
+};
+
 /** 縁取りを text-shadow で作る(8 方向)。 */
 export const outlineShadow = (color: string, px: number): string | undefined => {
   if (!color || color === 'transparent' || px <= 0) {

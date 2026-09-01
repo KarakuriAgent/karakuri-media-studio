@@ -22,6 +22,7 @@ export const FxEndCard: React.FC<{ ev: FxEventOf<'endCard'> }> = ({ ev }) => {
           cy={ctx.height / 2}
           width={ctx.width * ev.logo.w}
           maxHeight={ctx.height * 0.6}
+          tint={ev.logo.tint ? ctx.color(ev.logo.tint) : undefined}
         />
       ) : null}
       {shown && ev.text ? (

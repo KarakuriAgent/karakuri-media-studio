@@ -18,6 +18,7 @@
       "typing": true,
       "cursor": true,
       "corner": "topLeft",
+      "margin": 0.03,
       "fontSize": 30,
       "opacity": 0.8
     },
@@ -38,7 +39,8 @@
       "anchor": "bottomLeft",
       "w": 0.22,
       "maxH": 0.09,
-      "motion": "stamp"
+      "motion": "stamp",
+      "tint": "accent"
     },
     {
       "t": 3.0,
@@ -50,14 +52,44 @@
       "glitch": true
     },
     {
+      "t": 3.1,
+      "until": 4.2,
+      "type": "lyric",
+      "text": "黒画面の上に残る歌詞",
+      "style": "line",
+      "position": "bottom",
+      "fontSize": 44,
+      "z": 6.5
+    },
+    {
+      "t": 3.1,
+      "until": 4.2,
+      "type": "shape",
+      "shape": "circle",
+      "cx": 0.9,
+      "cy": 0.12,
+      "size": 0.05,
+      "fill": "accent",
+      "motion": "pop",
+      "z": 6.5
+    },
+    {
       "t": 4.2,
       "type": "card",
       "text": "BAN",
       "frames": 4,
       "sequence": ["accent/fg", "fg/accent", "bg/fg"],
-      "fontSize": 420
+      "fontSize": 420,
+      "wipe": { "angle": -22, "frames": 6, "color": "#5ad7ff" },
+      "chroma": 0.6
     },
-    { "t": 4.7, "type": "invertShake", "frames": 3, "shakeTail": 0.2 },
+    {
+      "t": 4.7,
+      "type": "invertShake",
+      "frames": 3,
+      "shakeTail": 0.2,
+      "hitStop": { "scale": 1.08, "chroma": 0.5, "frames": 1 }
+    },
     {
       "t": 5.0,
       "until": 6.4,
@@ -112,10 +144,14 @@
         "space": "px",
         "keyframes": [
           { "t": 7.6, "x": 320, "y": 250, "w": 110, "rot": -8 },
+          { "t": 8.2, "x": 480, "y": 280, "w": 120, "rot": 0, "visible": false },
           { "t": 8.6, "x": 640, "y": 300, "w": 130, "rot": 4 },
           { "t": 9.2, "x": 900, "y": 230, "w": 110, "rot": -6 }
         ]
       },
+      "border": { "color": "accent", "width": 3 },
+      "halftone": 0.6,
+      "jitter": { "px": 2.2, "hz": 3.1, "rotDeg": 0.9 },
       "pop": 1.6,
       "blowOutAt": 9.5,
       "blowOutSeconds": 0.5
@@ -125,16 +161,29 @@
       "t": 10.2,
       "until": 11.8,
       "type": "credits",
-      "lines": ["#カラクリスタジオ", "FxOverlay sample"],
+      "lines": [
+        "#カラクリスタジオ",
+        { "text": "FxOverlay sample", "fontSize": 22, "color": "accent" }
+      ],
       "corner": "topRight",
       "fontSize": 34
+    },
+    {
+      "t": 10.4,
+      "until": 11.8,
+      "type": "terminalText",
+      "lines": ["> RENDER OK"],
+      "cx": 0.5,
+      "cy": 0.86,
+      "fontSize": 28,
+      "opacity": 0.9
     },
     { "t": 11.8, "type": "crtOff", "frames": 8 },
     {
       "t": 12.2,
       "type": "endCard",
       "black": 0.6,
-      "logo": { "src": "fx-sample-logo.png", "duration": 1.2, "w": 0.36 },
+      "logo": { "src": "fx-sample-logo.png", "duration": 1.2, "w": 0.36, "tint": "accent" },
       "text": "karakuri media studio"
     }
   ]

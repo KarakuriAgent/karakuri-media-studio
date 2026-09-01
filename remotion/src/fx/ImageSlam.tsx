@@ -63,6 +63,7 @@ export const FxImageSlam: React.FC<{ ev: FxEventOf<'imageSlam'> }> = ({ ev }) =>
       rot={ev.rot}
       scale={scale * outScale}
       whiten={frame === 0 ? ev.flash : 0}
+      tint={ev.tint ? ctx.color(ev.tint) : undefined}
     />
   );
 };

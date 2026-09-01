@@ -5,7 +5,7 @@
 
 import React from 'react';
 import { AbsoluteFill, useCurrentFrame } from 'remotion';
-import { cornerStyle, useFxCtx } from '../lib/fx';
+import { placeStyle, useFxCtx } from '../lib/fx';
 import type { FxEventOf } from '../schema';
 
 export const FxTerminalText: React.FC<{ ev: FxEventOf<'terminalText'> }> = ({ ev }) => {
@@ -19,7 +19,7 @@ export const FxTerminalText: React.FC<{ ev: FxEventOf<'terminalText'> }> = ({ ev
     : ev.lines.map((text) => ({ text, color: ctx.color(ev.color) }));
 
   const fontSize = ctx.fs(ev.fontSize);
-  const margin = ctx.width * 0.045;
+  const margin = ctx.width * ev.margin;
   const cursorOn = ev.cursor && Math.floor((frame / ctx.fps) * 3) % 2 === 0;
   const startFrame = stage2 ? ev.frames : 0;
 
@@ -28,7 +28,14 @@ export const FxTerminalText: React.FC<{ ev: FxEventOf<'terminalText'> }> = ({ ev
       <div
         style={{
           position: 'absolute',
-          ...cornerStyle(ev.corner, margin),
+          ...placeStyle({
+            corner: ev.corner,
+            marginPx: margin,
+            width: ctx.width,
+            height: ctx.height,
+            cx: ev.cx,
+            cy: ev.cy,
+          }),
           fontFamily: ctx.monoFamily,
           fontSize,
           fontWeight: 700,

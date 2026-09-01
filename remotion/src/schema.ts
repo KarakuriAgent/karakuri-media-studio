@@ -208,13 +208,50 @@ export const fxMotionSchema = z.enum(['none', 'pop', 'float', 'spin', 'shake', '
  * - `t`: 開始秒(必須)
  * - `until` / `duration`: 終わり。どちらも無ければ型ごとの既定尺
  * - `seed`: 乱数の種。省略時は配列内の位置から決まる(props が同じなら毎回同じ絵)
+ * - `z`: 重なりの順。省略時は型ごとの既定層(FxOverlay.tsx の EVENT_LAYER)
  */
 const fxEventCommon = {
   t: z.number().min(0),
   until: z.number().min(0).optional(),
   duration: z.number().min(0).optional(),
   seed: z.number().int().optional(),
+  /**
+   * 重なりの順(小さいほど下)。省略時は型ごとの既定層。
+   * 型の既定は invertShake/collapse=0, glitchCut=1, beatMarker=2,
+   * sprite/stickerStack/shape=3, imageSlam=4, lyric/terminalText/credits=5,
+   * screen=6, card=7, endCard=8, crtOff=9。
+   * 同じ層なら events に書いた順。小数も書ける(例: screen の上なら 6.5)。
+   */
+  z: z.number().optional(),
 };
+
+/** 画像の不透明部分に薄く敷くハーフトーン・枠・微振動(積んだカードの見た目)。 */
+const fxSpriteLookCommon = {
+  /** 画像の輪郭(アルファ)に沿って付ける枠。color: の疑似素材では箱の外周に引く。 */
+  border: z
+    .object({
+      color: fxColorSchema.default('fg'),
+      /** 1080p 基準の太さ px。 */
+      width: z.number().min(0).default(2),
+    })
+    .optional(),
+  /** 不透明部分に敷くハーフトーンの濃さ(0 で無効)。点の色は border.color、無ければ fg。 */
+  halftone: z.number().min(0).max(1).default(0),
+  /** 貼ったあとの微振動(積んだカードが小刻みに揺れる)。 */
+  jitter: z
+    .object({
+      /** 揺れ幅(1080p 基準 px)。 */
+      px: z.number().min(0).default(2.2),
+      /** 揺れの周期(Hz)。 */
+      hz: z.number().min(0).default(3.1),
+      /** 併せて振る角度(度)。 */
+      rotDeg: z.number().min(0).default(0.9),
+    })
+    .optional(),
+};
+
+/** 不透明部分をこの色 1 色で塗る(白抜きロゴを配色に合わせるとき)。 */
+const fxTintField = fxColorSchema.optional();
 
 /** 全画面の色地に極太文字を数フレームだけ叩き込む。決めの起点。 */
 export const fxCardEventSchema = z.object({
@@ -233,6 +270,22 @@ export const fxCardEventSchema = z.object({
   fontSize: z.number().min(1).default(420),
   /** 背景に薄くハーフトーンの点を敷く。 */
   halftone: z.boolean().default(true),
+  /**
+   * 斜めのカラーワイプで入る(既定は無効)。
+   * 通り過ぎたところだけ文字と斜線が color に置き換わり、境界に線が走る。
+   */
+  wipe: z
+    .object({
+      /** ワイプの角度(度)。負で左下から右上へ。 */
+      angle: z.number().default(-22),
+      /** 渡りきるまでのフレーム数(カードの先頭から数える)。 */
+      frames: z.number().int().min(1).default(5),
+      /** ワイプの色。 */
+      color: fxColorSchema.default('accent'),
+    })
+    .optional(),
+  /** 端(画面の外周)のクロマ収差。0 で無効。1 が 1080p の 14px 相当。 */
+  chroma: z.number().min(0).max(1).default(0),
 });
 
 /** 反転(ネガ)を数フレーム入れ、そのあと減衰しながら画面を揺らす。card の直後に置く。 */
@@ -247,6 +300,20 @@ export const fxInvertShakeEventSchema = z.object({
   amplitude: z.number().min(0).default(0.0094),
   /** 反転の代わりに白飛ばしにする。 */
   mode: z.enum(['invert', 'flash']).default('invert'),
+  /**
+   * 反転が明けた最初の数フレームだけ base を拡大 + クロマ収差(既定は無効)。
+   * 決めの「止め」。BAN!BAN!BAN! では 1f だけ 1.08 倍にしている。
+   */
+  hitStop: z
+    .object({
+      /** 拡大率。 */
+      scale: z.number().min(1).default(1.08),
+      /** クロマ収差の量(0..1)。1 が 1080p の 14px 相当。 */
+      chroma: z.number().min(0).max(1).default(0.5),
+      /** 何フレーム続けるか。 */
+      frames: z.number().int().min(1).default(1),
+    })
+    .optional(),
 });
 
 /** 決め台詞の画像を叩き込む。位置と大きさは画面比で書く。 */
@@ -273,6 +340,7 @@ export const fxImageSlamEventSchema = z.object({
   rot: z.number().default(0),
   /** 引きぎわに少しだけ縮める倍率。 */
   outScale: z.number().min(0.1).default(1.0),
+  tint: fxTintField,
 });
 
 /** 等幅フォントの端末表示。lines を出し、then があれば同じ場所で差し替える。 */
@@ -287,6 +355,11 @@ export const fxTerminalTextEventSchema = z.object({
   /** 1 段あたりのフレーム数。 */
   frames: z.number().int().min(1).default(5),
   corner: fxCornerSchema.default('topLeft'),
+  /** 中心の位置(画面比)。どちらかを書くと corner より優先される(書かないほうは 0.5)。 */
+  cx: z.number().optional(),
+  cy: z.number().optional(),
+  /** corner に寄せるときの余白(画面幅に対する比)。 */
+  margin: z.number().min(0).default(0.045),
   color: fxColorSchema.default('fg'),
   /** 1080p 基準の文字サイズ。 */
   fontSize: z.number().min(1).default(34),
@@ -374,6 +447,8 @@ export const fxSpriteEventSchema = z.object({
   motion: fxMotionSchema.default('stamp'),
   /** 出入りのフェード秒(0 で瞬間)。決めでは 0 のまま。 */
   fade: z.number().min(0).default(0),
+  ...fxSpriteLookCommon,
+  tint: fxTintField,
 });
 
 /** 同じ画像を、キーフレームで指定した位置へ次々に貼って積む。 */
@@ -406,14 +481,33 @@ export const fxStickerStackEventSchema = z.object({
   blowOutAt: z.number().min(0).optional(),
   blowOutSeconds: z.number().min(0.05).default(0.5),
   opacity: z.number().min(0).max(1).default(1),
+  ...fxSpriteLookCommon,
 });
 
 /** 隅に出す小さなクレジット。白 + 縁取り。 */
 export const fxCreditsEventSchema = z.object({
   ...fxEventCommon,
   type: z.literal('credits'),
-  lines: z.array(z.string()).default([]),
+  /**
+   * 行。文字列だけなら 1 行目が fontSize、2 行目以降は 0.82 倍で出る。
+   * 行ごとに変えたいときは {text, fontSize, color} で書く(fontSize は 1080p 基準)。
+   */
+  lines: z
+    .array(
+      z.union([
+        z.string(),
+        z.object({
+          text: z.string(),
+          fontSize: z.number().min(1).optional(),
+          color: fxColorSchema.optional(),
+        }),
+      ]),
+    )
+    .default([]),
   corner: fxCornerSchema.default('topRight'),
+  /** 中心の位置(画面比)。どちらかを書くと corner より優先される(書かないほうは 0.5)。 */
+  cx: z.number().optional(),
+  cy: z.number().optional(),
   /** 1080p 基準の文字サイズ。 */
   fontSize: z.number().min(1).default(34),
   color: fxColorSchema.default('fg'),
@@ -461,6 +555,7 @@ export const fxEndCardEventSchema = z.object({
       duration: z.number().min(0.1).default(2.0),
       /** 幅(画面幅に対する比)。 */
       w: z.number().min(0.01).max(2).default(0.34),
+      tint: fxTintField,
     })
     .optional(),
   text: z.string().default(''),

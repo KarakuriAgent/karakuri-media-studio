@@ -207,6 +207,52 @@ props スキーマの正本は **`remotion/src/schema.ts`(zod)**。迷ったら�
 - 位置と大きさは**画面比(0..1)**、`fontSize` は 1080p 基準。縦動画でも書き方は変わらない。
 - 尺は `durationInSeconds` を書かなければ `base` の尺と `events` の終端の大きいほう。
 
+### 重なり(`z`)
+
+イベントの重なりは**型ごとの既定層**で決まる(下から `invertShake`/`collapse` → `glitchCut` →
+`beatMarker` → `sprite`/`stickerStack`/`shape` → `imageSlam` →
+`lyric`/`terminalText`/`credits` → `screen` → `card` → `endCard` → `crtOff`。
+同じ層なら `events` に書いた順)。ふつうはこれで足りるので **`z` は書かない**。
+
+**`z` を書くのは「`screen`(全画面の板)の上に何か出したいとき」だけ。**
+`screen` は既定で歌詞・記号より上なので、黒画面の上に歌詞を残す・ランプを点滅させる、は
+`z` 無しでは書けない。そのときだけ、上に出したいイベントに `screen` より大きい `z` を書く。
+
+```jsonc
+{ "t": 60.0, "until": 64.0, "type": "screen", "bg": "bg" },
+{ "t": 60.2, "until": 64.0, "type": "lyric",  "text": "…", "z": 6.5 },
+{ "t": 60.2, "until": 64.0, "type": "shape", "shape": "circle", "cx": 0.9, "cy": 0.12,
+  "size": 0.05, "fill": "accent", "z": 6.5 }
+```
+
+`z` は小数で書ける(`screen`=6 と `card`=7 のあいだなら 6.5)。既定層の番号は
+`remotion/src/FxOverlay.tsx` の `EVENT_LAYER`、または `schema.ts` の `z` のコメントにある。
+
+### 決めを強くするオプション(どれも既定は無効)
+
+BAN!BAN!BAN! の実装から移したもの。**書かなければ従来どおりの絵**なので、
+「もう一段強くしたい」ところにだけ足す。
+
+| 型 | フィールド | 何が起きるか |
+|---|---|---|
+| `card` | `wipe: {angle, frames, color}` | 斜めのカラーワイプが渡り、通り過ぎたところだけ文字と斜線が `color` になる |
+| `card` | `chroma: 0..1` | 画面の端(外周)だけ RGB 分離。1 が 1080p の 14px 相当。0.6 前後が目安 |
+| `invertShake` | `hitStop: {scale, chroma, frames}` | 反転が明けた最初の 1f だけ base を拡大 + クロマ収差(決めの「止め」) |
+| `sprite` / `stickerStack` | `border: {color, width}` | 画像の輪郭(アルファ)に沿った枠。`width` は 1080p 基準 px |
+| `sprite` / `stickerStack` | `halftone: 0..1` | 不透明部分にハーフトーンの点。点の色は `border.color`(無ければ `fg`) |
+| `sprite` / `stickerStack` | `jitter: {px, hz, rotDeg}` | 貼ったあとの微振動。積んだカードが小刻みに揺れる |
+| `sprite` / `imageSlam` / `endCard.logo` | `tint: "#ffffff"` | 不透明部分を 1 色で塗る(白抜きロゴを配色に合わせる) |
+
+### 位置まわりの追加
+
+- `terminalText` / `credits` に `cx` / `cy`(画面比)。**書くと `corner` より優先**され、そこが中心になる
+  (片方だけ書いたら、もう片方は 0.5 = 画面中央)。隅ではなく画面の任意の場所に置きたいときだけ使う。
+- `terminalText` の `margin`(画面幅に対する比、既定 0.045)で `corner` に寄せるときの余白を変えられる。
+- `credits` の `lines` は文字列のほかに `{"text": "…", "fontSize": 40, "color": "accent"}` で書ける
+  (`fontSize` は 1080p 基準)。文字列だけのときは従来どおり 1 行目が大きく、以降 0.82 倍。
+- `stickerStack` の キーフレームの `visible: false` で、その秒から消える
+  (次に `visible: true` のキーフレームが来たらそこでまた貼り直す)。「途中で消して再登場」用。
+
 ### 配置ルール(BAN!BAN!BAN! で確立したもの)
 
 守らないと「盛った」ではなく「散らかった」になる。
@@ -235,6 +281,7 @@ npx remotion render src/index.ts FxOverlay out/fx.mp4 --props=examples/fx-overla
 ```
 
 `examples/fx-overlay.json` は全イベント型を 1 回ずつ含む 14 秒のサンプル(外部素材ゼロ)。
+上の `z` と新オプションも一通り入っているので、見た目を確かめるならここを引くのが速い。
 効果の見た目を確かめたいときは、これを複製して該当イベントだけ残すのが速い。
 
 ## 手元で確認する(開発時のみ)

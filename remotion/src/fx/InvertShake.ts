@@ -13,6 +13,10 @@ export type InvertShakeState = {
   /** シェイク量(px) */
   dx: number;
   dy: number;
+  /** hitStop の拡大率(1 = 等倍) */
+  scale: number;
+  /** hitStop のクロマ収差(0..1。px への換算は呼び出し側) */
+  chroma: number;
 };
 
 export const invertShakeState = (
@@ -32,11 +36,18 @@ export const invertShakeState = (
       flash: ev.mode === 'flash' ? 0.9 : 0,
       dx: Math.round(r.range(-amplitude, amplitude)),
       dy: Math.round(r.range(-amplitude, amplitude)),
+      scale: 1,
+      chroma: 0,
     };
   }
+  // hitStop: 反転が明けた最初の数フレームだけ拡大 + クロマ収差(決めの「止め」)
+  const hit =
+    ev.hitStop && fi < ev.frames + ev.hitStop.frames
+      ? { scale: ev.hitStop.scale, chroma: ev.hitStop.chroma }
+      : { scale: 1, chroma: 0 };
   const dt = (fi - ev.frames) / fps;
   if (ev.shakeTail <= 0 || dt >= ev.shakeTail) {
-    return { invert: false, flash: 0, dx: 0, dy: 0 };
+    return { invert: false, flash: 0, dx: 0, dy: 0, ...hit };
   }
   const amp = amplitude * (1 - dt / ev.shakeTail);
   return {
@@ -44,5 +55,6 @@ export const invertShakeState = (
     flash: 0,
     dx: Math.round(r.range(-amp, amp)),
     dy: Math.round(r.range(-amp, amp)),
+    ...hit,
   };
 };

@@ -4,7 +4,7 @@
 import React from 'react';
 import { interpolate, useCurrentFrame, useVideoConfig } from 'remotion';
 import { FxSprite } from '../components/FxSprite';
-import { anchorCenter, motionTransform, useFxCtx } from '../lib/fx';
+import { anchorCenter, jitterOffset, motionTransform, useFxCtx } from '../lib/fx';
 import { rng } from '../lib/rng';
 import type { FxEventOf } from '../schema';
 
@@ -14,8 +14,10 @@ export const FxSpriteEvent: React.FC<{ ev: FxEventOf<'sprite'>; seed: number }> 
   const ctx = useFxCtx();
 
   const anchored = anchorCenter(ev.anchor, ev.w, ev.maxH, ev.margin);
-  const cx = (ev.cx ?? anchored.cx) * ctx.width;
-  const cy = (ev.cy ?? anchored.cy) * ctx.height;
+  // 微振動(貼ったあと小刻みに揺れる)。jitter を書かなければ 0。
+  const jitter = jitterOffset(ev.jitter, frame / fps, seed % 7, ctx.scale);
+  const cx = (ev.cx ?? anchored.cx) * ctx.width + jitter.dx;
+  const cy = (ev.cy ?? anchored.cy) * ctx.height + jitter.dy;
 
   const r = rng(seed + frame * 97);
   const motion = motionTransform(ev.motion, frame, fps, ctx.fs(10), r.next);
@@ -32,17 +34,26 @@ export const FxSpriteEvent: React.FC<{ ev: FxEventOf<'sprite'>; seed: number }> 
         )
       : ev.opacity;
 
+  const spriteWidth = ctx.width * ev.w;
+  const borderColor = ctx.color(ev.border?.color ?? 'fg');
   return (
     <div style={{ position: 'absolute', inset: 0, transform: motion.transform || undefined }}>
       <FxSprite
         src={ev.src}
         cx={cx}
         cy={cy}
-        width={ctx.width * ev.w}
+        width={spriteWidth}
         maxHeight={ctx.height * ev.maxH}
-        rot={ev.rot}
+        rot={ev.rot + jitter.rot}
         scale={motion.scale}
         opacity={opacity}
+        tint={ev.tint ? ctx.color(ev.tint) : undefined}
+        border={ev.border ? { color: borderColor, width: ctx.fs(ev.border.width) } : undefined}
+        halftone={
+          ev.halftone > 0
+            ? { amount: ev.halftone, color: borderColor, dot: Math.max(4, spriteWidth / 26) }
+            : undefined
+        }
       />
     </div>
   );
