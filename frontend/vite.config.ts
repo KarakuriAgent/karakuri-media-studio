@@ -4,6 +4,12 @@ import { defineConfig } from 'vitest/config'
 import react from '@vitejs/plugin-react'
 import { VitePWA } from 'vite-plugin-pwa'
 
+const ROOT = path.dirname(fileURLToPath(import.meta.url))
+
+// 同梱の Remotion プロジェクト（リポジトリルートの `remotion/`）の src。
+// FxOverlay をプレビューへ重ねるために frontend からバンドルする。
+const REMOTION_SRC = path.resolve(ROOT, '../remotion/src')
+
 // run.sh --dev が HOST/PORT を export するため、バックエンドのポート変更に追従する
 const BACKEND =
   process.env.VITE_BACKEND_URL ??
@@ -69,11 +75,21 @@ export default defineConfig({
       devOptions: { enabled: false },
     }),
   ],
-  // `@/…` で src 配下を参照できるようにする（shadcn/ui の標準的な書式に合わせる）
+  // `@/…` で src 配下を、`@fx/…` で同梱 Remotion プロジェクトの src を参照する。
+  // FX トラックのプレビューは `remotion/src/FxOverlay.tsx` を**そのまま**描くので、
+  // 演出の実装を SPA 側へ写さない（写すと 2 か所を直すことになる）。
   resolve: {
     alias: {
-      '@': path.resolve(path.dirname(fileURLToPath(import.meta.url)), './src'),
+      '@': path.resolve(ROOT, './src'),
+      '@fx': REMOTION_SRC,
     },
+    // remotion/node_modules と frontend/node_modules の両方に React が
+    // 入っているので、束ねるときは 1 つに寄せる（2 つ載ると hooks が壊れる）。
+    dedupe: ['react', 'react-dom', 'remotion'],
+  },
+  // 上の alias で外（frontend/ の外）のファイルを読むので、dev サーバーにも許す。
+  optimizeDeps: {
+    include: ['remotion', '@remotion/player', '@remotion/media-utils'],
   },
   // `/assets` is taken by the backend's uploaded-asset mount, so build bundles
   // into dist/static/ instead to avoid shadowing them in production serving.
@@ -87,6 +103,8 @@ export default defineConfig({
   },
   server: {
     port: 5173,
+    // `@fx/…`（frontend の外）を dev サーバーからも読めるようにする
+    fs: { allow: [ROOT, REMOTION_SRC] },
     proxy: {
       '/api': { target: BACKEND, changeOrigin: true, ws: true },
       '/outputs': { target: BACKEND, changeOrigin: true },

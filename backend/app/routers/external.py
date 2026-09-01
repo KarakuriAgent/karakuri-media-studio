@@ -120,6 +120,10 @@ from ..models import (
     TimelineExport,
     TimelineExportRequest,
     TimelineExportSave,
+    TimelineFx,
+    TimelineFxEventCreate,
+    TimelineFxEventUpdate,
+    TimelineFxUpdate,
     TimelineMediaPage,
     TimelineMissingFix,
     TimelineMissingReport,
@@ -140,7 +144,7 @@ from .library import upload_detecting_kind, upload_to_library
 from .media import create_contact_sheet, create_text_image, font_list
 from .options import get_options
 from .studio import _kind_of, get_capabilities
-from .timelines import _http_error as _timeline_error
+from .timelines import _http_error as _timeline_error, _serving_base_url
 
 #: 外部 API の操作は履歴に「外部エージェントの変更」として残す（UI 由来と
 #: 区別する）。過去行に残る 'agent' はこれを分ける前の書き込み。
@@ -1551,6 +1555,95 @@ async def delete_track(timeline_id: str, track_id: str) -> StudioTimelineDetail:
         raise _timeline_error(exc) from exc
 
 
+# --------------------------------------------------------------------------
+# FX トラック（タイムラインに載せる演出。SPEC §7.3）
+# --------------------------------------------------------------------------
+#
+# 演出は**タイムラインに保存する**のが正: ここへ入れておけば編集画面のプレビュー
+# に重なり、人が秒・位置を直したり要らないものを消したりでき、``fx: true`` の
+# 書き出しでそのまま焼ける。``mode: "remotion"`` のジョブへ props を直接投げる
+# のは、手元で 1 本だけ確かめたいときの近道。
+
+@router.get("/timelines/{timeline_id}/fx", response_model=TimelineFx)
+async def get_fx(timeline_id: str) -> TimelineFx:
+    """このタイムラインに載せた演出。
+
+    ``theme`` / ``seed`` / ``ambient`` / ``backgroundColor`` は ``FxOverlay`` の
+    props と同じ名前。``events`` は ``{id, enabled, event}`` の配列で、``event``
+    が ``FxOverlay`` の 1 イベントそのもの。
+    """
+    fx = await timeline_service.get_fx(timeline_id)
+    if fx is None:
+        raise HTTPException(status_code=404, detail="timeline not found")
+    return fx
+
+
+@router.put("/timelines/{timeline_id}/fx", response_model=TimelineFx)
+async def replace_fx(timeline_id: str, payload: TimelineFxUpdate) -> TimelineFx:
+    """演出を丸ごと置き換える（``FxOverlay`` の props をそのまま投げられる）。
+
+    ``events`` は生のイベント（``{"type": …, "t": …}``）でも、GET が返す
+    ``{"id", "enabled", "event"}`` の形でも受ける（``id`` を省略すると採番）。
+    ``base`` / ``audio`` / ``fps`` / ``width`` / ``height`` /
+    ``durationInSeconds`` は**タイムラインが持っている**ので無視する。
+
+    検証は「``event`` がオブジェクトで ``type`` が文字列・``t`` が数値」まで。
+    中身の正本は Remotion の zod スキーマなので、細かい誤りはプレビューと
+    レンダで出る。
+    """
+    try:
+        return await timeline_service.replace_fx(
+            timeline_id, payload, actor="external"
+        )
+    except timeline_service.TimelineError as exc:
+        raise _timeline_error(exc) from exc
+
+
+@router.post(
+    "/timelines/{timeline_id}/fx/events", response_model=TimelineFx, status_code=201
+)
+async def add_fx_event(
+    timeline_id: str, payload: TimelineFxEventCreate
+) -> TimelineFx:
+    """演出のイベントを 1 つ足す（``sort_order`` を省略すると末尾）。"""
+    try:
+        return await timeline_service.add_fx_event(
+            timeline_id, payload, actor="external"
+        )
+    except timeline_service.TimelineError as exc:
+        raise _timeline_error(exc) from exc
+
+
+@router.patch(
+    "/timelines/{timeline_id}/fx/events/{event_id}", response_model=TimelineFx
+)
+async def update_fx_event(
+    timeline_id: str, event_id: str, payload: TimelineFxEventUpdate
+) -> TimelineFx:
+    """イベントを 1 件だけ書き換える（``event`` は浅いマージ・``enabled``）。"""
+    try:
+        return await timeline_service.update_fx_event(
+            timeline_id, event_id, payload, actor="external"
+        )
+    except timeline_service.TimelineError as exc:
+        raise _timeline_error(exc) from exc
+
+
+@router.delete(
+    "/timelines/{timeline_id}/fx/events/{event_id}", response_model=TimelineFx
+)
+async def delete_fx_event(
+    timeline_id: str, event_id: str, base_revision: int | None = None
+) -> TimelineFx:
+    """イベントを 1 件消す。"""
+    try:
+        return await timeline_service.delete_fx_event(
+            timeline_id, event_id, base_revision=base_revision, actor="external"
+        )
+    except timeline_service.TimelineError as exc:
+        raise _timeline_error(exc) from exc
+
+
 @router.get("/projects/{project_id}/media", response_model=TimelineMediaPage)
 async def list_timeline_media(
     project_id: str,
@@ -1639,13 +1732,19 @@ async def resolve_missing(
     "/timelines/{timeline_id}/export", response_model=TimelineExport, status_code=202
 )
 async def start_export(
-    timeline_id: str, payload: TimelineExportRequest | None = None
+    request: Request,
+    timeline_id: str,
+    payload: TimelineExportRequest | None = None,
 ) -> TimelineExport:
     """書き出しを 1 本受け付ける（**202 即受付**。ffmpeg は裏で走る）。
 
     進捗は ``GET /api/v1/exports/{id}`` をポーリングして追う。同じタイムライン
     で走っているものがあれば 409、走っている書き出しが上限に達していれば 429。
     メディア欠落のまま焼こうとすると 400（直し方は ``GET .../missing``）。
+
+    ``fx: true`` を付けると、焼き上がった mp4 を下地に FX トラックの演出を載せる
+    Remotion ジョブが続けて走る（``fx_job_id`` / ``fx_status`` / ``fx_video_url``
+    に出る）。Remotion 連携が無効なら 400。
     """
     body = payload or TimelineExportRequest()
     # 数えてから投入するまでを錠で括る（並行リクエストが数え合いになって、
@@ -1653,7 +1752,11 @@ async def start_export(
     async with _EXPORTS_LOCK:
         await _check_running_exports()
         try:
-            return await timeline_service.start_export(timeline_id, body.model_dump())
+            return await timeline_service.start_export(
+                timeline_id,
+                body.model_dump(),
+                base_url=_serving_base_url(request),
+            )
         except timeline_service.TimelineError as exc:
             raise _timeline_error(exc) from exc
 

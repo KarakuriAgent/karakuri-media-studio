@@ -11,6 +11,11 @@ karakuri-media-studio に同梱された `remotion/` ディレクトリが、こ
 
 ## 運用の原則
 
+- **`FxOverlay` の演出はタイムラインに保存する**(`PUT /api/v1/timelines/{id}/fx`)。
+  そこに入れておくと編集画面の FX トラックに帯として並び、人がプレビューを見ながら
+  秒・位置を直したり要らないものを消したりできて、`POST /timelines/{id}/export` の
+  `{"fx": true}` でそのまま焼ける。**ジョブに props を直接投げるのは、手元で 1 本だけ
+  確かめたいときだけ**(詳しくは `.agents/skills/karakuri-studio/SKILL.md` §8)。
 - **レンダリングは原則アプリ側の `POST /api/v1/jobs`(`mode: "remotion"`)経由で投入する。**
   出力が `outputs/` に入り、履歴・ライブラリ・素材登録・タイムラインの素材ビンに自動で乗るため。
   完了待ちは既存の `GET /api/v1/jobs/{id}` をポーリング。
@@ -179,6 +184,12 @@ props スキーマの正本は **`remotion/src/schema.ts`(zod)**。迷ったら�
 `MusicVideo` が「カットを並べて 1 本にする」のに対し、`FxOverlay` は
 **もう出来ている 1 本(`base`)の上に演出を足す**。ふつうはタイムラインの書き出し mp4 を
 `base.src` に渡し、元音源を `audio.src` に渡す。
+
+**制作の本筋では `base` / `audio` / `fps` / `width` / `height` / `durationInSeconds` を
+自分で書かない**: `events` と `theme` / `seed` / `ambient` を
+`PUT /api/v1/timelines/{id}/fx` に入れておけば、`{"fx": true}` の書き出しが
+「焼いた mp4 を下地に・A1 の音を乗せて・タイムラインの規格で」レンダリングする。
+下の JSON は**手元で 1 本だけ確かめるとき**の形。
 
 ```jsonc
 {

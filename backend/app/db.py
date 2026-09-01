@@ -317,6 +317,33 @@ CREATE TABLE IF NOT EXISTS timeline_clips (
   sort_order  INTEGER NOT NULL DEFAULT 0
 );
 
+-- タイムラインに載せる演出（Remotion の `FxOverlay` の props、SPEC §7.3）。
+-- 1 本のタイムラインに 1 行だけの「全体設定」（theme / seed / ambient /
+-- backgroundColor）で、`settings` は FxOverlay の props からその 4 つだけを
+-- 抜いた JSON。イベント（何秒に何を出すか）は timeline_fx_events が持つ。
+--
+-- 中身の正本は Remotion 側の zod スキーマ（remotion/src/schema.ts）なので、
+-- バックエンドは JSON として読めるかどうかまでしか見ない（厳密な検証は
+-- プレビューとレンダの zod に任せる）。
+CREATE TABLE IF NOT EXISTS timeline_fx (
+  timeline_id TEXT PRIMARY KEY,
+  project_id  TEXT NOT NULL REFERENCES studio_projects(id) ON DELETE CASCADE,
+  settings    TEXT NOT NULL DEFAULT '{}',   -- theme / seed / ambient / backgroundColor（JSON）
+  updated_at  TEXT NOT NULL
+);
+
+-- 演出のイベント 1 つ（FxOverlay の events[] の 1 要素）。`enabled` を降ろすと
+-- プレビューにも書き出しにも出さない（消さずに外しておくため）。並びは
+-- sort_order（同じ層の重なり順は events に書いた順で決まる）。
+CREATE TABLE IF NOT EXISTS timeline_fx_events (
+  id          TEXT PRIMARY KEY,
+  timeline_id TEXT NOT NULL,
+  project_id  TEXT NOT NULL REFERENCES studio_projects(id) ON DELETE CASCADE,
+  sort_order  INTEGER NOT NULL DEFAULT 0,
+  enabled     INTEGER NOT NULL DEFAULT 1,
+  event       TEXT NOT NULL                 -- イベント 1 つぶんの JSON（type / t / …）
+);
+
 -- 1 回の書き出し。ffmpeg の実行状態と成果物（outputs/exports/{id}/final.mp4）。
 -- リビジョンのスナップショットには入れない（実行結果は履歴で戻すものではない）。
 CREATE TABLE IF NOT EXISTS timeline_exports (
@@ -335,6 +362,11 @@ CREATE TABLE IF NOT EXISTS timeline_exports (
   frames      INTEGER,
   duration_ms INTEGER,
   warnings    TEXT NOT NULL DEFAULT '[]',      -- PAD / フレーム数のずれ（JSON 配列）
+  -- 演出付き書き出し（fx: true）で続けて投入した Remotion ジョブ（SPEC §7.3）。
+  -- 演出を載せない書き出しでは 3 つとも NULL のまま。
+  fx_job_id   TEXT,
+  fx_status   TEXT,                            -- queued / running / done / failed
+  fx_video_path TEXT,
   created_at  TEXT NOT NULL,
   finished_at TEXT
 );
@@ -372,6 +404,8 @@ CREATE INDEX IF NOT EXISTS idx_timeline_clips_timeline
   ON timeline_clips(timeline_id, track_id, start_ms);
 CREATE INDEX IF NOT EXISTS idx_timeline_exports_timeline
   ON timeline_exports(timeline_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_timeline_fx_events_timeline
+  ON timeline_fx_events(timeline_id, sort_order, id);
 
 -- Web Push の購読（単一ユーザー。endpoint が識別子）。
 CREATE TABLE IF NOT EXISTS push_subscriptions (
@@ -555,6 +589,11 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         ("frames", "INTEGER"),
         ("duration_ms", "INTEGER"),
         ("warnings", "TEXT NOT NULL DEFAULT '[]'"),
+        # 演出付き書き出し（fx: true、SPEC §7.3）で続けて投入した Remotion
+        # ジョブ。演出を載せない書き出しではどれも NULL / '' のまま。
+        ("fx_job_id", "TEXT"),
+        ("fx_status", "TEXT"),
+        ("fx_video_path", "TEXT"),
     ],
     "studio_revisions": [
         # 触ったエンティティ（「このカットの履歴」の絞り込み用）。この列を足す

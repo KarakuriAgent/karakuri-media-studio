@@ -11,9 +11,22 @@ import {
   VolumeX,
 } from 'lucide-react'
 
-import type { TimelineClip, TimelineTrack, TimelineTransitionKind } from '../../types'
+import type {
+  TimelineClip,
+  TimelineFxEvent,
+  TimelineTrack,
+  TimelineTransitionKind,
+} from '../../types'
 import { Button } from '../ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '../ui/popover'
+import {
+  FX_TONE,
+  FX_TONE_FALLBACK,
+  fxDurationMs,
+  fxLabel,
+  fxStartMs,
+  fxType,
+} from './fx'
 import {
   TRANSITION_DEFAULT_MS,
   TRANSITION_LABEL,
@@ -46,6 +59,9 @@ const DRAG_THRESHOLD_PX = 4
 /** トラック 1 段の高さ（px）。映像だけ厚く見せる。 */
 const LANE_HEIGHT = { video: 80, audio: 56, subtitle: 48 } as const
 
+/** FX トラック（演出）1 段の高さ（px）。 */
+const FX_LANE_HEIGHT = 48
+
 /** 左のトラック見出しの幅（px）。 */
 const HEADER_PX = 84
 
@@ -61,6 +77,16 @@ interface DragState {
   /** つかんだ時点のクリップの並び順 / 開始位置。 */
   index: number
   startMs: number
+  moved: boolean
+}
+
+interface FxDragState {
+  kind: 'move' | 'resize'
+  eventId: string
+  startX: number
+  /** つかんだ時点の帯の左右（ミリ秒）。 */
+  startMs: number
+  endMs: number
   moved: boolean
 }
 
@@ -97,6 +123,10 @@ export default function TimelinePane({
   onToggleMute,
   onDeleteTrack,
   onAddSubtitle,
+  fxEvents,
+  fxSelectedId,
+  onFxSelect,
+  onFxDrag,
 }: {
   tracks: TimelineTrack[]
   clips: TimelineClip[]
@@ -124,9 +154,26 @@ export default function TimelinePane({
   onDeleteTrack: (trackId: string) => void
   /** 再生ヘッドの位置にテロップを 1 枚足す。 */
   onAddSubtitle: () => void
+  /**
+   * FX トラック（演出）のイベント。`undefined` なら段そのものを出さない
+   * （Remotion 連携が OFF のとき）。
+   */
+  fxEvents?: TimelineFxEvent[]
+  fxSelectedId?: string | null
+  onFxSelect?: (id: string | null) => void
+  /**
+   * 帯を動かした / 端を引っぱった。`done` はマウスを離した合図
+   * （途中は手元の表示だけ動かし、離したときにサーバーへ流す）。
+   */
+  onFxDrag?: (
+    id: string,
+    change: { startMs?: number; endMs?: number },
+    done: boolean,
+  ) => void
 }) {
   const laneRef = useRef<HTMLDivElement | null>(null)
   const [drag, setDrag] = useState<DragState | null>(null)
+  const [fxDrag, setFxDrag] = useState<FxDragState | null>(null)
   const [scrubbing, setScrubbing] = useState(false)
 
   const videoClips = useMemo(
@@ -210,6 +257,57 @@ export default function TimelinePane({
       window.removeEventListener('mouseup', up)
     }
   }, [drag, videoClips, zoom, msAtClientX, onMove, onMoveTo, onTrim])
+
+  // --------------------------------------------------- FX の帯のドラッグ操作
+  //
+  // 本体を掴めば `t`（`until` を持つイベントは尺を保ったまま）、右端を掴めば
+  // `until`。途中は親が手元の表示だけ動かし、離したときに PATCH が飛ぶ。
+  useEffect(() => {
+    if (!fxDrag || !onFxDrag) return
+    const at = (event: MouseEvent) => {
+      const deltaMs = Math.round(((event.clientX - fxDrag.startX) / zoom) * 1000)
+      return fxDrag.kind === 'move'
+        ? { startMs: Math.max(0, fxDrag.startMs + deltaMs) }
+        : { endMs: Math.max(fxDrag.startMs, fxDrag.endMs + deltaMs) }
+    }
+    const move = (event: MouseEvent) => {
+      if (
+        !fxDrag.moved &&
+        Math.abs(event.clientX - fxDrag.startX) < DRAG_THRESHOLD_PX
+      )
+        return
+      onFxDrag(fxDrag.eventId, at(event), false)
+      if (!fxDrag.moved) setFxDrag({ ...fxDrag, moved: true })
+    }
+    const up = (event: MouseEvent) => {
+      if (fxDrag.moved) onFxDrag(fxDrag.eventId, at(event), true)
+      setFxDrag(null)
+    }
+    window.addEventListener('mousemove', move)
+    window.addEventListener('mouseup', up)
+    return () => {
+      window.removeEventListener('mousemove', move)
+      window.removeEventListener('mouseup', up)
+    }
+  }, [fxDrag, zoom, onFxDrag])
+
+  const startFxDrag = (
+    event: React.MouseEvent,
+    kind: 'move' | 'resize',
+    item: TimelineFxEvent,
+  ) => {
+    event.preventDefault()
+    event.stopPropagation()
+    onFxSelect?.(item.id)
+    setFxDrag({
+      kind,
+      eventId: item.id,
+      startX: event.clientX,
+      startMs: fxStartMs(item),
+      endMs: fxStartMs(item) + fxDurationMs(item),
+      moved: false,
+    })
+  }
 
   const startDrag = (
     event: React.MouseEvent,
@@ -325,6 +423,17 @@ export default function TimelinePane({
               )}
             </div>
           ))}
+          {fxEvents && (
+            <div
+              className="flex flex-col justify-center gap-1 border-b border-border px-2"
+              style={{ height: FX_LANE_HEIGHT }}
+            >
+              <span className="truncate text-[11px] font-semibold">FX</span>
+              <span className="truncate text-[10px] text-muted-foreground">
+                {fxEvents.length} 件
+              </span>
+            </div>
+          )}
         </div>
 
         <div
@@ -420,6 +529,35 @@ export default function TimelinePane({
                 </div>
               )
             })}
+
+            {/* FX トラック（演出の帯。作るのは外部 API で、ここでは調整と削除） */}
+            {fxEvents && (
+              <div
+                className="relative border-b border-border bg-background/40"
+                style={{ height: FX_LANE_HEIGHT }}
+                onMouseDown={() => onFxSelect?.(null)}
+              >
+                {fxEvents.map((item) => (
+                  <FxRect
+                    key={item.id}
+                    item={item}
+                    zoom={zoom}
+                    height={FX_LANE_HEIGHT - 8}
+                    selected={item.id === fxSelectedId}
+                    dragging={fxDrag?.eventId === item.id && fxDrag.moved}
+                    onBody={(event) => startFxDrag(event, 'move', item)}
+                    onEnd={(event) => startFxDrag(event, 'resize', item)}
+                  />
+                ))}
+                {fxEvents.length === 0 && (
+                  <p className="px-3 py-3 text-[11px] text-muted-foreground">
+                    演出はまだありません（外部 API の
+                    <code className="px-1">PUT /timelines/{'{id}'}/fx</code>
+                    で入れると、ここに帯が並びます）。
+                  </p>
+                )}
+              </div>
+            )}
 
             {/* 再生ヘッド（ルーラーとすべてのトラックを貫く 1 本） */}
             <div
@@ -522,6 +660,66 @@ function ClipRect({
         style={{ width: HANDLE_PX }}
         aria-label={`クリップ ${index + 1} の終わりをトリム`}
         onMouseDown={onOut}
+      />
+    </div>
+  )
+}
+
+/**
+ * FX トラックの帯 1 つ（演出のイベント）。
+ *
+ * 本体を掴めば `t`、右端を掴めば `until`（クリップの帯と同じ流儀）。外して
+ * ある（`enabled: false`）イベントは薄く出す——消さずに「今は出さない」と
+ * 決めたものが見えている必要があるため。
+ */
+function FxRect({
+  item,
+  zoom,
+  height,
+  selected,
+  dragging,
+  onBody,
+  onEnd,
+}: {
+  item: TimelineFxEvent
+  zoom: number
+  height: number
+  selected: boolean
+  dragging: boolean
+  onBody: (event: React.MouseEvent) => void
+  onEnd: (event: React.MouseEvent) => void
+}) {
+  const startMs = fxStartMs(item)
+  const durationMs = fxDurationMs(item)
+  const left = msToPx(startMs, zoom)
+  const width = Math.max(msToPx(durationMs, zoom), 10)
+  const tone = selected
+    ? 'border-accent-400 bg-accent-500/25 text-foreground'
+    : (FX_TONE[fxType(item)] ?? FX_TONE_FALLBACK)
+
+  return (
+    <div
+      className={`absolute top-1 flex items-stretch overflow-hidden rounded border ${tone} ${
+        item.enabled ? '' : 'opacity-40'
+      } ${dragging ? 'opacity-60' : ''}`}
+      style={{ left, width, height }}
+      title={`${fxLabel(item)} / ${formatSeconds(durationMs)}${
+        item.enabled ? '' : '（外してあります）'
+      }`}
+      onMouseDown={onBody}
+    >
+      <div className="min-w-0 flex-1 cursor-grab px-1.5 py-1">
+        <div className="truncate text-[11px] font-medium">{fxLabel(item)}</div>
+        <p className="truncate text-[10px] text-muted-foreground">
+          {formatSeconds(durationMs)}
+        </p>
+      </div>
+      <button
+        type="button"
+        className="shrink-0 cursor-e-resize bg-foreground/10 hover:bg-accent-400/50"
+        style={{ width: HANDLE_PX }}
+        aria-label={`${fxLabel(item)} の終わりを動かす`}
+        onMouseDown={onEnd}
       />
     </div>
   )

@@ -3620,6 +3620,14 @@ class TimelineExport(BaseModel):
     duration_ms: int | None = None
     #: 書き出しで気づいたこと（``PAD カット名 0.42s`` / フレーム数のずれ）
     warnings: list[str] = Field(default_factory=list)
+    # --- 演出付き書き出し（``fx: true``、SPEC §7.3）。ffmpeg の mp4 を下地に
+    #     FX トラックを載せる Remotion ジョブを続けて投入したときだけ入る ----
+    #: 続けて投入した Remotion ジョブの id（演出なしの書き出しでは None）
+    fx_job_id: str | None = None
+    #: そのジョブの状態（queued / running / done / failed）
+    fx_status: TimelineExportStatus | None = None
+    #: 演出まで載った mp4 の配信 URL（まだ焼けていなければ None）
+    fx_video_url: str | None = None
     created_at: str
     finished_at: str | None = None
 
@@ -3637,6 +3645,10 @@ class TimelineExportRequest(BaseModel):
     fit: TimelineExportFit = "pad"
     #: ラウドネス正規化（-14 LUFS / TP -1.5 dB）を掛けるか
     loudnorm: bool = True
+    #: 焼き上がった mp4 を下地に、FX トラックの演出まで載せるか（SPEC §7.3）。
+    #: ffmpeg の書き出しが終わってから ``FxOverlay`` の Remotion ジョブを続けて
+    #: 投入する。Remotion 連携が OFF（``remotion_enabled``）なら 400
+    fx: bool = False
 
 
 class TimelineExportSave(BaseModel):
@@ -3644,6 +3656,88 @@ class TimelineExportSave(BaseModel):
 
     #: ライブラリでの表示名（省略するとタイムライン名から決まる）
     name: str = ""
+
+
+# --------------------------------------------------------------------------
+# FX トラック（タイムラインに載せる演出。SPEC §7.3）
+# --------------------------------------------------------------------------
+
+class TimelineFxEvent(BaseModel):
+    """FX トラックのイベント 1 つ（``FxOverlay`` の ``events[]`` の 1 要素）。"""
+
+    id: str
+    #: 降ろすとプレビューにも書き出しにも出さない（消さずに外しておく）
+    enabled: bool = True
+    #: イベントそのもの（``{"type": "lyric", "t": 45.96, …}``）。中身の正本は
+    #: Remotion 側の zod スキーマで、ここは ``type`` と ``t`` しか見ない
+    event: dict[str, Any] = Field(default_factory=dict)
+
+
+class TimelineFx(BaseModel):
+    """GET /api/studio/timelines/{id}/fx: そのタイムラインに載せた演出。
+
+    ``theme`` / ``seed`` / ``ambient`` / ``backgroundColor`` は ``FxOverlay`` の
+    props と同じ名前・同じ意味（そのまま渡せる形）。``fps`` / ``width`` /
+    ``height`` / ``durationInSeconds`` / ``base`` / ``audio`` はタイムラインが
+    持っているので、ここには入れない。
+    """
+
+    timeline_id: str
+    #: 配色とフォント（``{"palette": [...]}`` など。省略すると Remotion の既定）
+    theme: dict[str, Any] | None = None
+    #: 全体の乱数の種
+    seed: int | None = None
+    #: 全編に薄く掛ける系（走査線・ビネット）
+    ambient: dict[str, Any] | None = None
+    #: base が透けるところの色（プレビューでは常に透明で描く）
+    backgroundColor: str | None = None  # noqa: N815 - FxOverlay の props に合わせる
+    events: list[TimelineFxEvent] = Field(default_factory=list)
+
+
+class TimelineFxUpdate(BaseModel):
+    """PUT /api/studio/timelines/{id}/fx body（全置換）。
+
+    ``FxOverlay`` の props をそのまま投げられる形。``events`` は
+    **生のイベント**（``{"type": …, "t": …}``）でも、GET が返す
+    ``{"id": …, "enabled": …, "event": {…}}`` の形でも受ける（``id`` は省略
+    すると採番）。``base`` / ``audio`` / ``fps`` / ``width`` / ``height`` /
+    ``durationInSeconds`` は送られても**無視**する（タイムラインが持つ値）。
+    """
+
+    theme: dict[str, Any] | None = None
+    seed: int | None = None
+    ambient: dict[str, Any] | None = None
+    backgroundColor: str | None = None  # noqa: N815 - FxOverlay の props に合わせる
+    events: list[dict[str, Any]] = Field(default_factory=list)
+    #: 楽観ロック（:data:`BASE_REVISION_DOC`）
+    base_revision: int | None = None
+
+    model_config = ConfigDict(extra="ignore")
+
+
+class TimelineFxEventCreate(BaseModel):
+    """POST /api/studio/timelines/{id}/fx/events body（1 つ足す）。"""
+
+    #: イベントそのもの（``type`` が文字列・``t`` が数値であることだけ見る）
+    event: dict[str, Any] = Field(default_factory=dict)
+    enabled: bool = True
+    #: 差し込む位置（省略すると末尾）
+    sort_order: int | None = None
+    #: 楽観ロック（:data:`BASE_REVISION_DOC`）
+    base_revision: int | None = None
+
+
+class TimelineFxEventUpdate(BaseModel):
+    """PATCH /api/studio/timelines/{id}/fx/events/{event_id} body。
+
+    ``event`` は**浅いマージ**（送った項目だけ上書き。``null`` を送るとその項目
+    を消す）。送らなければ今のまま。
+    """
+
+    event: dict[str, Any] | None = None
+    enabled: bool | None = None
+    #: 楽観ロック（:data:`BASE_REVISION_DOC`）
+    base_revision: int | None = None
 
 
 # --------------------------------------------------------------------------

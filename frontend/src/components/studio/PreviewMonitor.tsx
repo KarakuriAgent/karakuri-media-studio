@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { AlertTriangle, Pause, Play, SkipBack } from 'lucide-react'
 
-import type { TimelineClip, TimelineTrack } from '../../types'
+import type { TimelineClip, TimelineFx, TimelineTrack } from '../../types'
 import { Button } from '../ui/button'
+import FxPreviewOverlay from './FxPreviewOverlay'
 import {
   SUBTITLE_SIZE_RATIO,
   clipAt,
@@ -39,14 +40,29 @@ export default function PreviewMonitor({
   tracks,
   playheadMs,
   onSeek,
+  fx,
+  fps,
+  width,
+  height,
 }: {
   /** タイムラインの全クリップ（トラックはここから引く）。 */
   clips: TimelineClip[]
   tracks: TimelineTrack[]
   playheadMs: number
   onSeek: (ms: number) => void
+  /**
+   * FX トラックの演出（`null` / 省略なら重ねない）。Remotion 連携が OFF の
+   * ときは親が渡さないので、`@remotion/player` の読み込みごと起きない。
+   */
+  fx?: TimelineFx | null
+  /** タイムラインの規格（演出を描く座標系）。 */
+  fps?: number
+  width?: number
+  height?: number
 }) {
   const [playing, setPlaying] = useState(false)
+  /** 演出のうち、Remotion の zod を通らずに落としたイベントの数。 */
+  const [fxDropped, setFxDropped] = useState(0)
   const videos = useRef(new Map<string, HTMLVideoElement>())
 
   const videoTrack = tracks.find((track) => track.kind === 'video') ?? null
@@ -252,6 +268,19 @@ export default function PreviewMonitor({
           />
         )}
 
+        {fx && fx.events.length > 0 && (
+          <FxPreviewOverlay
+            fx={fx}
+            fps={fps ?? 24}
+            width={width ?? 1280}
+            height={height ?? 720}
+            durationMs={Math.max(total, 1000)}
+            playheadMs={playheadMs}
+            playing={playing}
+            onDropped={setFxDropped}
+          />
+        )}
+
         <SubtitleOverlay clips={subtitleClips} playheadMs={playheadMs} />
 
         {videoClips.length === 0 && (
@@ -298,6 +327,8 @@ export default function PreviewMonitor({
         プレビューは近似です（ワイプ・スライド系の繋ぎはカット表示、テロップの
         書体と縁取りも書き出しとは違います）。正確な結果は書き出しで確認してください。
         {audio.error && ` BGM を読めませんでした: ${audio.error}`}
+        {fxDropped > 0 &&
+          ` 演出のうち ${fxDropped} 件は形が合わないので出していません（項目名や値を直してください）。`}
       </p>
     </div>
   )

@@ -1728,6 +1728,13 @@ export interface TimelineExport {
   duration_ms: number | null
   /** 書き出しで気づいたこと（`PAD カット名 0.42s` / フレーム数のずれ）。 */
   warnings: string[]
+  // --- 演出付き書き出し（`fx: true`）。演出なしではどれも null ----------------
+  /** 続けて投入した Remotion（FxOverlay）ジョブの id。 */
+  fx_job_id: string | null
+  /** そのジョブの状態。 */
+  fx_status: TimelineExportStatus | null
+  /** 演出まで載った mp4 の配信 URL（まだ焼けていなければ null）。 */
+  fx_video_url: string | null
   created_at: string
   finished_at: string | null
 }
@@ -1743,6 +1750,54 @@ export interface TimelineExportRequest {
   fit?: TimelineExportFit
   /** ラウドネス正規化（-14 LUFS / TP -1.5 dB）を掛けるか。 */
   loudnorm?: boolean
+  /**
+   * 焼き上がった mp4 を下地に、FX トラックの演出まで載せるか。
+   * ffmpeg の書き出しのあとに `FxOverlay` の Remotion ジョブが続けて走る
+   * （Remotion 連携が OFF なら 400）。
+   */
+  fx?: boolean
+}
+
+// --- FX トラック（タイムラインに載せる演出。SPEC §7.3） ---------------------
+
+/** FX トラックのイベント 1 つ（`FxOverlay` の `events[]` の 1 要素）。 */
+export interface TimelineFxEvent {
+  id: string
+  /** 降ろすとプレビューにも書き出しにも出さない（消さずに外しておく）。 */
+  enabled: boolean
+  /** イベントそのもの（`{"type": "lyric", "t": 45.96, …}`）。 */
+  event: Record<string, unknown>
+}
+
+/** GET /api/studio/timelines/{id}/fx: そのタイムラインに載せた演出。 */
+export interface TimelineFx {
+  timeline_id: string
+  /** 配色とフォント（`FxOverlay` の props と同じ名前）。 */
+  theme: Record<string, unknown> | null
+  seed: number | null
+  ambient: Record<string, unknown> | null
+  backgroundColor: string | null
+  events: TimelineFxEvent[]
+}
+
+/** PUT /api/studio/timelines/{id}/fx body（全置換）。 */
+export interface TimelineFxUpdate {
+  theme?: Record<string, unknown> | null
+  seed?: number | null
+  ambient?: Record<string, unknown> | null
+  backgroundColor?: string | null
+  /** 生のイベントでも `{id, enabled, event}` の形でも送れる。 */
+  events?: Record<string, unknown>[]
+  /** 楽観ロック（読んだときの `revision_seq`）。 */
+  base_revision?: number | null
+}
+
+/** PATCH /api/studio/timelines/{id}/fx/events/{event_id} body。 */
+export interface TimelineFxEventUpdate {
+  /** 浅いマージ（送った項目だけ上書き。null を送るとその項目を消す）。 */
+  event?: Record<string, unknown> | null
+  enabled?: boolean | null
+  base_revision?: number | null
 }
 
 // --- トラックの出し入れ ------------------------------------------------------

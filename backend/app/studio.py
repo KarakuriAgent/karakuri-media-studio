@@ -999,7 +999,15 @@ _SNAPSHOT_TABLES = (
     ("timelines", "studio_timelines", "created_at, id"),
     ("timeline_tracks", "timeline_tracks", "sort_order, id"),
     ("timeline_clips", "timeline_clips", "track_id, start_ms, id"),
+    # タイムラインに載せた演出（FX トラック、SPEC §7.3）。全体設定はタイム
+    # ラインに 1 行、イベントは並び順で戻す。
+    ("timeline_fx", "timeline_fx", "timeline_id"),
+    ("timeline_fx_events", "timeline_fx_events", "timeline_id, sort_order, id"),
 )
+
+#: 行の突き合わせに ``id`` 以外の列を使うテーブル（:func:`_restore_table`）。
+#: ``timeline_fx`` は 1 タイムラインに 1 行なので、主キーが ``timeline_id``。
+_SNAPSHOT_KEYS = {"timeline_fx": "timeline_id"}
 
 #: 復元の直前に自動で残すリビジョンの説明。復元は行を消しうるうえ、生成
 #: （Take）は履歴を作らないので、これが無いと「復元で消えた Take」を戻せない。
@@ -1466,6 +1474,7 @@ async def restore_revision(
                 table,
                 snapshot.get(key) or [],
                 prune=table not in _KEEP_UNKNOWN_ROWS,
+                key_column=_SNAPSHOT_KEYS.get(table, "id"),
             )
         # 採用したまま消えてしまった Take への参照を外す。Take もスナップ
         # ショットに入るようになったので普段は空振りするが、takes を記録する
@@ -1596,31 +1605,38 @@ async def _restore_table(
     rows: list[dict[str, Any]],
     *,
     prune: bool = True,
+    key_column: str = "id",
 ) -> None:
     """``table`` のプロジェクトぶんの行を ``rows`` の通りにする。
 
     ``prune`` を降ろすと**スナップショットに無い行を消さない**（載っている行を
     戻すだけ）。:data:`_KEEP_UNKNOWN_ROWS` の実行結果向け。
+
+    ``key_column`` は行の突き合わせに使う列（既定は ``id``）。1 タイムラインに
+    1 行しか無い ``timeline_fx`` だけ ``timeline_id`` で突き合わせる。
     """
     columns = await _table_columns(conn, table)
     names = _restore_columns(rows, columns)
-    wanted = {str(row["id"]) for row in rows if row.get("id")}
+    wanted = {str(row[key_column]) for row in rows if row.get(key_column)}
     async with conn.execute(
-        f"SELECT id FROM {table} WHERE project_id = ?", (project_id,)
+        f"SELECT {key_column} AS key FROM {table} WHERE project_id = ?", (project_id,)
     ) as cur:
-        current = {str(row["id"]) for row in await cur.fetchall()}
+        current = {str(row["key"]) for row in await cur.fetchall()}
     if prune:
         for stale_id in current - wanted:
-            await conn.execute(f"DELETE FROM {table} WHERE id = ?", (stale_id,))
+            await conn.execute(
+                f"DELETE FROM {table} WHERE {key_column} = ?", (stale_id,)
+            )
     for row in rows:
-        row_id = str(row.get("id") or "")
+        row_id = str(row.get(key_column) or "")
         if not row_id:
             continue
         values = [row[name] for name in names]
         if row_id in current:
             assignments = ", ".join(f"{name} = ?" for name in names)
             await conn.execute(
-                f"UPDATE {table} SET {assignments} WHERE id = ?", (*values, row_id)
+                f"UPDATE {table} SET {assignments} WHERE {key_column} = ?",
+                (*values, row_id),
             )
         else:
             placeholders = ", ".join("?" * len(names))

@@ -62,6 +62,9 @@ import type {
   TimelineClipInput,
   TimelineExport,
   TimelineExportRequest,
+  TimelineFx,
+  TimelineFxEventUpdate,
+  TimelineFxUpdate,
   TimelineMediaKind,
   TimelineMediaPage,
   TimelineMissingFix,
@@ -705,6 +708,38 @@ export const api = {
       'POST',
       `/api/studio/timelines/${id}/missing/resolve`,
       body,
+    ),
+  // --- FX トラック（タイムラインに載せる演出。SPEC §7.3）-------------------
+  //
+  // 作るのは外部 API（AI）。画面からは調整（`t` / `until` などの部分更新）と
+  // 削除だけで、新規作成の入り口は持たない。
+  /** このタイムラインに載せた演出（`FxOverlay` の props と同じ名前）。 */
+  getStudioTimelineFx: (id: string) =>
+    request<TimelineFx>(`/api/studio/timelines/${id}/fx`),
+  /** 演出を丸ごと置き換える。 */
+  replaceStudioTimelineFx: (id: string, body: TimelineFxUpdate) =>
+    json<TimelineFx>('PUT', `/api/studio/timelines/${id}/fx`, body),
+  /** イベントを 1 件だけ書き換える（`event` は浅いマージ）。 */
+  updateStudioTimelineFxEvent: (
+    id: string,
+    eventId: string,
+    body: TimelineFxEventUpdate,
+  ) =>
+    json<TimelineFx>(
+      'PATCH',
+      `/api/studio/timelines/${id}/fx/events/${eventId}`,
+      body,
+    ),
+  /** イベントを 1 件消す（`base_revision` を添えると楽観ロック）。 */
+  deleteStudioTimelineFxEvent: (
+    id: string,
+    eventId: string,
+    baseRevision?: number | null,
+  ) =>
+    json<TimelineFx>(
+      'DELETE',
+      `/api/studio/timelines/${id}/fx/events/${eventId}` +
+        (baseRevision == null ? '' : `?base_revision=${baseRevision}`),
     ),
   /** 完成した mp4 をライブラリ（`library/video/`）へコピーして登録する。 */
   saveStudioExportToLibrary: (exportId: string, name = '') =>

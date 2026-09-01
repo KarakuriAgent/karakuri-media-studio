@@ -17,7 +17,8 @@
     "noFallthroughCasesInSwitch": true,
     "baseUrl": ".",
     "paths": {
-      "@/*": ["./src/*"]
+      "@/*": ["./src/*"],
+      "@fx/*": ["../remotion/src/*"]
     }
   },
   "include": ["src", "vite.config.ts"]

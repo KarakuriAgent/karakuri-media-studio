@@ -34,12 +34,15 @@ from typing import Any, NamedTuple
 
 import aiosqlite
 
+from . import jobs as job_service
 from . import library as library_service
 from . import studio as studio_service
 from . import ws
+from .config import load_settings
 from .db import get_db
 from .ids import new_id
 from .models import (
+    JobCreate,
     LibraryItem,
     StudioTimeline,
     StudioTimelineCreate,
@@ -48,6 +51,11 @@ from .models import (
     TimelineClipInput,
     TimelineClipInsert,
     TimelineExport,
+    TimelineFx,
+    TimelineFxEvent,
+    TimelineFxEventCreate,
+    TimelineFxEventUpdate,
+    TimelineFxUpdate,
     TimelineMediaItem,
     TimelineMediaPage,
     TimelineMissingCandidate,
@@ -1005,6 +1013,12 @@ async def delete_timeline(timeline_id: str) -> bool:
         await conn.execute(
             "DELETE FROM timeline_exports WHERE timeline_id = ?", (timeline_id,)
         )
+        await conn.execute(
+            "DELETE FROM timeline_fx_events WHERE timeline_id = ?", (timeline_id,)
+        )
+        await conn.execute(
+            "DELETE FROM timeline_fx WHERE timeline_id = ?", (timeline_id,)
+        )
         await conn.execute("DELETE FROM studio_timelines WHERE id = ?", (timeline_id,))
         await conn.commit()
     await _publish_timeline(timeline.project_id, timeline_id, "delete")
@@ -1090,6 +1104,346 @@ async def _write_clips(
 
 
 # --------------------------------------------------------------------------
+# FX トラック（タイムラインに載せる演出。SPEC §7.3）
+# --------------------------------------------------------------------------
+#
+# 演出の正本は Remotion 側の zod スキーマ（``remotion/src/schema.ts``）なので、
+# ここでの検証は**軽い**: イベントが JSON のオブジェクトで、``type`` が文字列・
+# ``t`` が数値であることまでしか見ない。厳密な検証はプレビュー（``@remotion/player``）
+# とレンダ（``npx remotion render``）の zod に任せる——ここで真似ると、演出を
+# 足すたびに 2 か所を直すことになるため。
+#
+# 作るのは外部 API（AI）、人が画面でやるのは調整と削除（issue #56）。
+
+#: ``timeline_fx.settings`` に入れる項目（``FxOverlay`` の props と同じ名前）
+FX_SETTING_KEYS = ("theme", "seed", "ambient", "backgroundColor")
+
+
+def _validate_fx_event(raw: Any) -> dict[str, Any]:
+    """イベント 1 つぶんの軽い検証（通れば dict をそのまま返す）。"""
+    if not isinstance(raw, dict):
+        raise TimelineError("イベントは JSON のオブジェクトで送ってください")
+    kind = raw.get("type")
+    if not isinstance(kind, str) or not kind.strip():
+        raise TimelineError("イベントに type（文字列）がありません")
+    seconds = raw.get("t")
+    if isinstance(seconds, bool) or not isinstance(seconds, (int, float)):
+        raise TimelineError(f"イベント '{kind}' の t（秒・数値）がありません")
+    return raw
+
+
+def _fx_event_input(item: Any) -> tuple[str, bool, dict[str, Any]]:
+    """PUT で送られた 1 件を ``(id, enabled, event)`` にほどく。
+
+    ``FxOverlay`` の props をそのまま投げられるよう、**生のイベント**
+    （``{"type": …}``）と、GET が返す ``{"id", "enabled", "event"}`` の
+    どちらの形でも受ける。
+    """
+    if not isinstance(item, dict):
+        raise TimelineError("events は JSON のオブジェクトの配列で送ってください")
+    if isinstance(item.get("event"), dict):
+        return (
+            str(item.get("id") or ""),
+            bool(item.get("enabled", True)),
+            _validate_fx_event(item["event"]),
+        )
+    raw = dict(item)
+    event_id = str(raw.pop("id", "") or "")
+    enabled = bool(raw.pop("enabled", True))
+    return event_id, enabled, _validate_fx_event(raw)
+
+
+def _row_to_fx_event(row: aiosqlite.Row) -> TimelineFxEvent:
+    try:
+        event = json.loads(row["event"] or "{}")
+    except ValueError:  # pragma: no cover - 自分で書いた JSON なので通らない
+        event = {}
+    return TimelineFxEvent(
+        id=str(row["id"]),
+        enabled=bool(row["enabled"]),
+        event=event if isinstance(event, dict) else {},
+    )
+
+
+async def _fetch_fx(
+    conn: aiosqlite.Connection, timeline_id: str
+) -> TimelineFx:
+    """そのタイムラインの演出（1 行も無ければ空の :class:`TimelineFx`）。"""
+    async with conn.execute(
+        "SELECT settings FROM timeline_fx WHERE timeline_id = ?", (timeline_id,)
+    ) as cur:
+        row = await cur.fetchone()
+    settings: dict[str, Any] = {}
+    if row is not None:
+        try:
+            parsed = json.loads(row["settings"] or "{}")
+        except ValueError:  # pragma: no cover - 同上
+            parsed = {}
+        if isinstance(parsed, dict):
+            settings = parsed
+    async with conn.execute(
+        "SELECT * FROM timeline_fx_events WHERE timeline_id = ?"
+        " ORDER BY sort_order, id",
+        (timeline_id,),
+    ) as cur:
+        rows = await cur.fetchall()
+    return TimelineFx(
+        timeline_id=timeline_id,
+        theme=settings.get("theme"),
+        seed=settings.get("seed"),
+        ambient=settings.get("ambient"),
+        backgroundColor=settings.get("backgroundColor"),
+        events=[_row_to_fx_event(row) for row in rows],
+    )
+
+
+async def get_fx(timeline_id: str) -> TimelineFx | None:
+    """GET /timelines/{id}/fx（タイムラインが無ければ None）。"""
+    async with get_db() as conn:
+        if await _fetch_timeline(conn, timeline_id) is None:
+            return None
+        return await _fetch_fx(conn, timeline_id)
+
+
+async def _write_fx_settings(
+    conn: aiosqlite.Connection,
+    timeline_id: str,
+    project_id: str,
+    settings: dict[str, Any],
+) -> None:
+    """全体設定（theme / seed / ambient / backgroundColor）を 1 行に書く。"""
+    await conn.execute(
+        "INSERT INTO timeline_fx (timeline_id, project_id, settings, updated_at)"
+        " VALUES (?, ?, ?, ?)"
+        " ON CONFLICT(timeline_id) DO UPDATE SET"
+        "   settings = excluded.settings, updated_at = excluded.updated_at",
+        (
+            timeline_id,
+            project_id,
+            json.dumps(settings, ensure_ascii=False),
+            _now(),
+        ),
+    )
+
+
+async def _fx_touched(
+    conn: aiosqlite.Connection,
+    timeline: StudioTimeline,
+    actor: str,
+    action: str,
+) -> None:
+    """演出を書き換えたことをリビジョンへ残す（commit は呼び出し側）。"""
+    await studio_service._record_revision(
+        conn,
+        timeline.project_id,
+        actor,
+        action,
+        entity_kind="timeline",
+        entity_id=timeline.id,
+    )
+
+
+async def replace_fx(
+    timeline_id: str, payload: TimelineFxUpdate, *, actor: str = "user"
+) -> TimelineFx:
+    """PUT /timelines/{id}/fx: 演出を丸ごと置き換える。
+
+    ``FxOverlay`` の props をそのまま投げられる（``base`` / ``audio`` / ``fps``
+    などタイムラインが持っているものは無視する）。``events[].id`` を送れば
+    引き継ぎ、省略すれば採番する。
+    """
+    parsed = [_fx_event_input(item) for item in payload.events]
+    settings = {
+        key: value
+        for key, value in (
+            ("theme", payload.theme),
+            ("seed", payload.seed),
+            ("ambient", payload.ambient),
+            ("backgroundColor", payload.backgroundColor),
+        )
+        if value is not None
+    }
+    async with get_db() as conn:
+        timeline = await _fetch_timeline(conn, timeline_id)
+        if timeline is None:
+            raise TimelineNotFound("timeline not found")
+        await _check_edl_revision(
+            conn, timeline_id, timeline.project_id, timeline.name,
+            payload.base_revision,
+        )
+        await _write_fx_settings(
+            conn, timeline_id, timeline.project_id, settings
+        )
+        await conn.execute(
+            "DELETE FROM timeline_fx_events WHERE timeline_id = ?", (timeline_id,)
+        )
+        for order, (event_id, enabled, event) in enumerate(parsed):
+            await conn.execute(
+                "INSERT INTO timeline_fx_events"
+                " (id, timeline_id, project_id, sort_order, enabled, event)"
+                " VALUES (?, ?, ?, ?, ?, ?)",
+                (
+                    event_id or new_id(),
+                    timeline_id,
+                    timeline.project_id,
+                    order,
+                    1 if enabled else 0,
+                    json.dumps(event, ensure_ascii=False),
+                ),
+            )
+        await _fx_touched(
+            conn,
+            timeline,
+            actor,
+            f"タイムライン『{timeline.name}』の演出を差し替え"
+            f"（{len(parsed)} 件）",
+        )
+        await studio_service._commit(conn)
+        fresh = await _fetch_fx(conn, timeline_id)
+    await _publish_timeline(timeline.project_id, timeline_id)
+    return fresh
+
+
+async def add_fx_event(
+    timeline_id: str, payload: TimelineFxEventCreate, *, actor: str = "user"
+) -> TimelineFx:
+    """POST /timelines/{id}/fx/events: イベントを 1 つ足す。"""
+    event = _validate_fx_event(payload.event)
+    async with get_db() as conn:
+        timeline = await _fetch_timeline(conn, timeline_id)
+        if timeline is None:
+            raise TimelineNotFound("timeline not found")
+        await _check_edl_revision(
+            conn, timeline_id, timeline.project_id, timeline.name,
+            payload.base_revision,
+        )
+        async with conn.execute(
+            "SELECT COALESCE(MAX(sort_order), -1) + 1 AS next"
+            "  FROM timeline_fx_events WHERE timeline_id = ?",
+            (timeline_id,),
+        ) as cur:
+            tail = int((await cur.fetchone())["next"])
+        order = tail if payload.sort_order is None else int(payload.sort_order)
+        await conn.execute(
+            "INSERT INTO timeline_fx_events"
+            " (id, timeline_id, project_id, sort_order, enabled, event)"
+            " VALUES (?, ?, ?, ?, ?, ?)",
+            (
+                new_id(),
+                timeline_id,
+                timeline.project_id,
+                order,
+                1 if payload.enabled else 0,
+                json.dumps(event, ensure_ascii=False),
+            ),
+        )
+        await _fx_touched(
+            conn,
+            timeline,
+            actor,
+            f"タイムライン『{timeline.name}』に演出"
+            f"（{event.get('type')}）を追加",
+        )
+        await studio_service._commit(conn)
+        fresh = await _fetch_fx(conn, timeline_id)
+    await _publish_timeline(timeline.project_id, timeline_id)
+    return fresh
+
+
+async def update_fx_event(
+    timeline_id: str,
+    event_id: str,
+    payload: TimelineFxEventUpdate,
+    *,
+    actor: str = "user",
+) -> TimelineFx:
+    """PATCH /timelines/{id}/fx/events/{event_id}: 1 件だけ書き換える。
+
+    ``event`` は**浅いマージ**（送った項目だけ上書き、``null`` はその項目を
+    消す）。画面の帯のドラッグはこの入り口で ``t`` / ``until`` を動かす。
+    """
+    async with get_db() as conn:
+        timeline = await _fetch_timeline(conn, timeline_id)
+        if timeline is None:
+            raise TimelineNotFound("timeline not found")
+        async with conn.execute(
+            "SELECT * FROM timeline_fx_events WHERE id = ? AND timeline_id = ?",
+            (event_id, timeline_id),
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            raise TimelineNotFound("fx event not found")
+        await _check_edl_revision(
+            conn, timeline_id, timeline.project_id, timeline.name,
+            payload.base_revision,
+        )
+        current = _row_to_fx_event(row)
+        event = dict(current.event)
+        if payload.event is not None:
+            for name, value in payload.event.items():
+                if value is None:
+                    event.pop(name, None)
+                else:
+                    event[name] = value
+            _validate_fx_event(event)
+        enabled = current.enabled if payload.enabled is None else payload.enabled
+        await conn.execute(
+            "UPDATE timeline_fx_events SET enabled = ?, event = ? WHERE id = ?",
+            (1 if enabled else 0, json.dumps(event, ensure_ascii=False), event_id),
+        )
+        await _fx_touched(
+            conn,
+            timeline,
+            actor,
+            f"タイムライン『{timeline.name}』の演出"
+            f"（{event.get('type')}）を更新",
+        )
+        await studio_service._commit(conn)
+        fresh = await _fetch_fx(conn, timeline_id)
+    await _publish_timeline(timeline.project_id, timeline_id)
+    return fresh
+
+
+async def delete_fx_event(
+    timeline_id: str,
+    event_id: str,
+    *,
+    base_revision: int | None = None,
+    actor: str = "user",
+) -> TimelineFx:
+    """DELETE /timelines/{id}/fx/events/{event_id}: 1 件消す。"""
+    async with get_db() as conn:
+        timeline = await _fetch_timeline(conn, timeline_id)
+        if timeline is None:
+            raise TimelineNotFound("timeline not found")
+        async with conn.execute(
+            "SELECT * FROM timeline_fx_events WHERE id = ? AND timeline_id = ?",
+            (event_id, timeline_id),
+        ) as cur:
+            row = await cur.fetchone()
+        if row is None:
+            raise TimelineNotFound("fx event not found")
+        await _check_edl_revision(
+            conn, timeline_id, timeline.project_id, timeline.name, base_revision,
+        )
+        removed = _row_to_fx_event(row)
+        await conn.execute(
+            "DELETE FROM timeline_fx_events WHERE id = ?", (event_id,)
+        )
+        await _fx_touched(
+            conn,
+            timeline,
+            actor,
+            f"タイムライン『{timeline.name}』の演出"
+            f"（{removed.event.get('type')}）を削除",
+        )
+        await studio_service._commit(conn)
+        fresh = await _fetch_fx(conn, timeline_id)
+    await _publish_timeline(timeline.project_id, timeline_id)
+    return fresh
+
+
+# --------------------------------------------------------------------------
 # 書き出し
 # --------------------------------------------------------------------------
 
@@ -1104,6 +1458,7 @@ def _row_to_export(row: aiosqlite.Row) -> TimelineExport:
     except ValueError:  # pragma: no cover - 同上
         data["warnings"] = []
     data["output_url"] = _output_url(data.get("output_path"))
+    data["fx_video_url"] = _output_url(data.get("fx_video_path"))
     return TimelineExport(**data)
 
 
@@ -1326,11 +1681,17 @@ async def build_spec(
     )
 
 
-async def start_export(timeline_id: str, params: dict[str, Any]) -> TimelineExport:
+async def start_export(
+    timeline_id: str, params: dict[str, Any], *, base_url: str = ""
+) -> TimelineExport:
     """書き出しを 1 本受け付ける（実行はバックグラウンド）。
 
     同じタイムラインで走っているものがあれば :class:`TimelineConflict`
     （同時に 2 本焼いても得はなく、進捗の見せ方も破綻するため）。
+
+    ``base_url`` は演出付き（``fx: true``）のときだけ使う「レンダラーから見た
+    このアプリ」の URL（:func:`local_base_url`）。ルーターが待受のポートから
+    組み立てて渡す。
     """
     detail = await timeline_detail(timeline_id)
     if detail is None:
@@ -1353,6 +1714,13 @@ async def start_export(timeline_id: str, params: dict[str, Any]) -> TimelineExpo
             f"（{names}{more}）。差し替えるか削除してから書き出してください"
         )
 
+    # 演出付き（fx: true）は Remotion のレンダリングを続けて投入するので、
+    # 連携が OFF のまま受け付けない（Remotion のライセンス、SPEC §5.2）。
+    if params.get("fx") and not load_settings().remotion_enabled:
+        raise TimelineError(
+            "Remotion 連携が無効です（設定で有効にすると演出付きで書き出せます）"
+        )
+
     async with get_db() as conn:
         if await _fetch_timeline(conn, timeline_id) is None:
             raise TimelineNotFound("timeline not found")
@@ -1368,9 +1736,11 @@ async def start_export(timeline_id: str, params: dict[str, Any]) -> TimelineExpo
         clean = {
             key: value
             for key, value in params.items()
-            if key in ("width", "height", "fps", "preset", "fit", "loudnorm")
+            if key in ("width", "height", "fps", "preset", "fit", "loudnorm", "fx")
             and value is not None
         }
+        if clean.get("fx"):
+            clean["fx_base_url"] = base_url or local_base_url(None)
         await conn.execute(
             "INSERT INTO timeline_exports"
             " (id, timeline_id, status, progress, params, created_at)"
@@ -1453,6 +1823,163 @@ async def _run(export_id: str, timeline_id: str, params: dict[str, Any]) -> None
     finished = await get_export(export_id)
     if finished is not None:
         await _publish(finished)
+        # 演出付き（fx: true）は、焼き上がった mp4 を下地に FxOverlay の
+        # Remotion ジョブを続けて投入する（失敗しても mp4 は残す）。
+        if finished.status == "done" and params.get("fx"):
+            try:
+                await start_fx_render(export_id)
+            except Exception as exc:  # noqa: BLE001 - 演出は落ちても mp4 は残す
+                log.exception("演出付き書き出しを投入できませんでした: %s", export_id)
+                await _update_export(
+                    export_id, fx_status="failed", error=f"演出の投入に失敗: {exc}"
+                )
+
+
+# --------------------------------------------------------------------------
+# 演出付き書き出し（ffmpeg の mp4 を下地に FxOverlay を載せる。SPEC §7.3）
+# --------------------------------------------------------------------------
+
+#: 演出を載せる composition（``remotion/src/Root.tsx``）
+FX_COMPOSITION = "FxOverlay"
+
+#: 演出ジョブの終わりを見張る間隔（秒）
+FX_POLL_SECONDS = 3.0
+
+
+def local_base_url(port: int | None) -> str:
+    """自分自身（このアプリ）を指す配信 URL の頭。
+
+    Remotion の ``OffthreadVideo`` / ``Audio`` は **http(s) の URL しか読めない**
+    （``file://`` は「Can only download URLs starting with http://」で落ちる）。
+    レンダリングは同じ機械で走るので、素材は**自分の静的配信**（``/outputs`` /
+    ``/library`` / ``/assets``）を通して渡す。宛先は待受のポートから組み立てる
+    （ホスト名は経路によって変わるが、レンダラーから見た自分は常にループバック）。
+    """
+    return f"http://127.0.0.1:{port or 8000}"
+
+
+def _serve_url(path: str | None, base_url: str) -> str | None:
+    """置き場の中のファイルを、Remotion が読める配信 URL にする（外なら None）。"""
+    relative = _media_url(path)
+    if relative is None:
+        return None
+    return f"{base_url.rstrip('/')}{relative}"
+
+
+async def fx_props(timeline_id: str, export: TimelineExport) -> dict[str, Any]:
+    """``FxOverlay`` に渡す props を組み立てる。
+
+    下地（``base``）は焼き上がった mp4、音（``audio``）は A1 の最初の音声
+    クリップ、規格（``fps`` / ``width`` / ``height`` / ``durationInSeconds``）は
+    その書き出しの実測値（無ければタイムラインの規格）。イベントは FX トラック
+    の ``enabled`` なものだけを並び順に並べる。
+    """
+    detail = await timeline_detail(timeline_id)
+    if detail is None:
+        raise TimelineNotFound("timeline not found")
+    fx = await get_fx(timeline_id)
+    if fx is None:
+        raise TimelineNotFound("timeline not found")
+
+    props: dict[str, Any] = {
+        "fps": float(export.fps or detail.fps),
+        "width": int(export.width or detail.width),
+        "height": int(export.height or detail.height),
+        "events": [item.event for item in fx.events if item.enabled],
+    }
+    seconds = (export.duration_ms or detail.duration_ms or 0) / 1000
+    if seconds > 0:
+        props["durationInSeconds"] = round(seconds, 3)
+    for key in FX_SETTING_KEYS:
+        value = getattr(fx, key)
+        if value is not None:
+            props[key] = value
+
+    base_url = str(export.params.get("fx_base_url") or local_base_url(None))
+    base = _serve_url(export.output_path, base_url)
+    if base is None:
+        raise TimelineError("書き出した mp4 が見つかりません")
+    # 下地の音は鳴らさない（音は audio で別に足す。FxOverlay の既定と同じ）。
+    props["base"] = {"src": base, "fit": "fill", "muted": True}
+
+    # A1（最初の音声トラック）の最初のクリップを音として渡す（無ければ省略）。
+    paths = await _resolve_clip_paths(detail)
+    for track in detail.tracks:
+        if track.kind != "audio" or track.muted:
+            continue
+        clips = sorted(track.clips, key=lambda clip: clip.start_ms)
+        if not clips:
+            continue
+        src = _serve_url(
+            paths.get((clips[0].source_kind, clips[0].source_id or "")), base_url
+        )
+        if src is None:
+            continue
+        audio: dict[str, Any] = {"src": src}
+        if clips[0].in_ms:
+            audio["startFrom"] = round(clips[0].in_ms / 1000, 3)
+        props["audio"] = audio
+        break
+    return props
+
+
+async def start_fx_render(export_id: str) -> TimelineExport:
+    """焼き上がった書き出しに、FX トラックの演出を載せるジョブを投入する。
+
+    ジョブは ``mode: "remotion"`` の 1 本（履歴・WS・ライブラリからは他の生成
+    ジョブと区別が付かない）。ここは投入して見張り役を立てるだけで、成果物の
+    mp4 は ``outputs/{job_id}/video.mp4`` に落ちる。
+    """
+    export = await get_export(export_id)
+    if export is None:
+        raise TimelineNotFound("export not found")
+    if export.status != "done":
+        raise TimelineError("まだ書き出しが終わっていません")
+    if not load_settings().remotion_enabled:
+        raise TimelineError("Remotion 連携が無効です")
+    props = await fx_props(export.timeline_id, export)
+    job = await job_service.create_job(
+        JobCreate(
+            mode="remotion",
+            remotion_composition=FX_COMPOSITION,
+            remotion_props=props,
+            user_input=f"タイムラインの演出付き書き出し（{export.timeline_id}）",
+        )
+    )
+    await _update_export(export_id, fx_job_id=job.id, fx_status="queued")
+    asyncio.create_task(_watch_fx_job(export_id, job.id))
+    fresh = await get_export(export_id)
+    assert fresh is not None
+    await _publish(fresh)
+    return fresh
+
+
+async def _watch_fx_job(export_id: str, job_id: str) -> None:
+    """演出ジョブの終わりを見張って、書き出しの行へ結果を書き戻す。
+
+    ジョブの進捗そのものは既存の WS（``type: "job"``）に流れているので、ここは
+    終端だけを拾う（取りこぼしても ``GET .../exports`` を引き直せば追いつく）。
+    """
+    while True:
+        await asyncio.sleep(FX_POLL_SECONDS)
+        job = await job_service.get_job(job_id, include_workflow=False)
+        if job is None:
+            await _update_export(export_id, fx_status="failed")
+            break
+        if job.status in ("queued", "running"):
+            if job.status == "running":
+                await _update_export(export_id, fx_status="running")
+            continue
+        if job.status == "done" and job.video_path:
+            await _update_export(
+                export_id, fx_status="done", fx_video_path=job.video_path
+            )
+        else:
+            await _update_export(export_id, fx_status="failed")
+        break
+    export = await get_export(export_id)
+    if export is not None:
+        await _publish(export)
 
 
 async def save_export_to_library(export_id: str, name: str = "") -> LibraryItem:
@@ -2124,12 +2651,13 @@ async def _check_edl_revision(
     name: str,
     base_revision: int | None,
 ) -> None:
-    """``base_revision`` 以降に**このタイムラインの EDL** が触られていたら 409。
+    """``base_revision`` 以降に**このタイムラインの中身**が触られていたら 409。
 
     :func:`app.studio._check_base_revision` はエンティティ 1 件（``timeline`` の
     行そのもの）しか見ないので、クリップだけが動いた並行編集をすり抜ける。
-    ここではリビジョンのスナップショットからこのタイムラインのクリップだけを
-    取り出して突き合わせる（意味は §7.4 の楽観ロックと同じ）。
+    ここではリビジョンのスナップショットからこのタイムラインのクリップと
+    演出（FX トラック）だけを取り出して突き合わせる（意味は §7.4 の楽観ロックと
+    同じ）。
 
     比べる相手のスナップショットが残っていない・編集タブより前で EDL を持って
     いないときは「変わっていない」と言い切れないので、ぶつかったものとして扱う。
@@ -2145,13 +2673,13 @@ async def _check_edl_revision(
     if base_revision == current:
         return
 
-    def edl(snapshot: dict[str, Any] | None) -> list[str] | None:
-        """スナップショットから、このタイムラインのクリップだけを比べられる形に。
+    def rows_of(snapshot: dict[str, Any] | None, table: str) -> list[str] | None:
+        """スナップショットから、このタイムラインの行だけを比べられる形に。
 
         値に None が混ざる列（``source_id`` など）があるので、行そのものを
         比べずに JSON 文字列へ落としてから並べる。
         """
-        rows = (snapshot or {}).get("timeline_clips")
+        rows = (snapshot or {}).get(table)
         if rows is None:
             return None
         return sorted(
@@ -2160,18 +2688,27 @@ async def _check_edl_revision(
             if str(row.get("timeline_id")) == timeline_id
         )
 
-    before = edl(await studio_service._snapshot_of(conn, project_id, base_revision))
-    if before is None:
+    before = await studio_service._snapshot_of(conn, project_id, base_revision)
+    if rows_of(before, "timeline_clips") is None:
         raise TimelineConflict(
             f"リビジョン {base_revision} は履歴に残っていないので"
             f"タイムライン『{name}』の変更を確かめられません"
             f"（現在のリビジョン {current}）"
         )
-    if before != edl(await studio_service._snapshot(conn, project_id)):
-        raise TimelineConflict(
-            f"タイムライン『{name}』は他の変更で更新されています"
-            f"（現在のリビジョン {current}）"
-        )
+    after = await studio_service._snapshot(conn, project_id)
+    # FX トラックを足す前に取ったスナップショットには演出のキーが無い。
+    # 「空だった」と読むと機能を足しただけで全件が衝突に見えるので、
+    # 載っていない面は突き合わせない（:func:`app.studio._snapshot_changes` と
+    # 同じ考え方）。
+    for table in ("timeline_clips", "timeline_fx", "timeline_fx_events"):
+        old_rows = rows_of(before, table)
+        if old_rows is None:
+            continue
+        if old_rows != rows_of(after, table):
+            raise TimelineConflict(
+                f"タイムライン『{name}』は他の変更で更新されています"
+                f"（現在のリビジョン {current}）"
+            )
 
 
 async def insert_clip(

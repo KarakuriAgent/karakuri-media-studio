@@ -42,7 +42,8 @@
 | ライブラリ | `GET /library`・`POST /library/image` / `POST /library/audio` / `POST /library/upload`（multipart）・`POST /library/from-job`・`POST /library/sheet`・`POST /library/{id}/key`・`POST /library/key`・`POST /library/key-from-job`・`PATCH /library/{id}`（**削除は非公開**） |
 | 素材の下ごしらえ | `POST /images/text`・`GET /images/text/fonts`・`POST /videos/contact-sheet`（§3.4） |
 | 編集（タイムライン） | `POST /projects/{id}/timelines`・`GET/PATCH/DELETE /timelines/{id}`・`PUT /timelines/{id}/clips`・`POST /timelines/{id}/clips/insert`・トラック CRUD・`generate-subtitles`・`sync-preview` / `sync`・`missing` / `missing/resolve`・`GET /projects/{id}/media` |
-| 書き出し | `POST /timelines/{id}/export`（202）・`GET /timelines/{id}/exports`・`GET /exports/{id}`・`POST /exports/{id}/save-to-library` |
+| 演出（FX トラック） | `GET/PUT /timelines/{id}/fx`・`POST /timelines/{id}/fx/events`・`PATCH/DELETE /timelines/{id}/fx/events/{event_id}`（§3.3） |
+| 書き出し | `POST /timelines/{id}/export`（202。`fx: true` で演出付き）・`GET /timelines/{id}/exports`・`GET /exports/{id}`・`POST /exports/{id}/save-to-library` |
 | 編集履歴 | `GET /projects/{id}/revisions`・`GET .../{seq}/diff`・`POST .../{seq}/restore`（§3.1） |
 | 画面 | `GET/PATCH /ui/generate-form`・`POST /ui/navigate`（§3.2） |
 | Remotion | `GET /remotion/compositions`（§3.3） |
@@ -311,6 +312,42 @@ POST /api/v1/jobs  {"mode": "remotion", "remotion_composition": "Opening",
   **映像はコピーのまま音声だけ元音源から焼き直す**（`audio.startFrom` /
   `volume` / `fadeOut` も再現する）。焼き直せなかったときは元の mp4 のまま
   （ジョブは失敗しない）。
+
+#### 演出はタイムラインに保存する（FX トラック）
+
+`FxOverlay` の演出は、ジョブの props に置きっぱなしにせず**タイムラインへ保存する**
+（SPEC §7.3）。そうすると編集画面の FX トラックに帯として並び、人がプレビューを見ながら
+秒・位置を直したり要らないものを消したりできて、そのまま演出付きで書き出せる。
+**ジョブへ props を直接投げるのは、手元で 1 本だけ確かめたいときの近道**。
+
+```
+GET  /api/v1/timelines/{id}/fx
+  → {"timeline_id": "…", "theme": {…}, "seed": 1, "ambient": {…},
+     "backgroundColor": "#000000",
+     "events": [{"id": "…", "enabled": true, "event": {"type": "lyric", "t": 45.96, …}}]}
+
+PUT  /api/v1/timelines/{id}/fx        # 全置換。FxOverlay の props をそのまま投げられる
+  {"theme": {…}, "seed": 1, "ambient": {…}, "events": [{"type": "lyric", "t": 45.96, …}, …],
+   "base_revision": 12}
+
+POST   /api/v1/timelines/{id}/fx/events            {"event": {…}, "enabled": true}
+PATCH  /api/v1/timelines/{id}/fx/events/{event_id} {"event": {"t": 46.5}, "enabled": false}
+DELETE /api/v1/timelines/{id}/fx/events/{event_id}?base_revision=12
+```
+
+- `PUT` の `events` は**生のイベント**でも、`GET` が返す `{id, enabled, event}` の形でも
+  受ける（`id` を省くと採番）。`base` / `audio` / `fps` / `width` / `height` /
+  `durationInSeconds` は**タイムラインが持っている**ので、送られても無視する
+- `PATCH` の `event` は**浅いマージ**（送った項目だけ上書き。`null` を送るとその項目が
+  消える）。`enabled: false` は「消さずに外しておく」
+- 検証は「`event` がオブジェクトで `type` が文字列・`t` が数値」まで。中身の正本は
+  `remotion/src/schema.ts`（zod）なので、細かい誤りはプレビューとレンダで出る
+- `base_revision` は他と同じ楽観ロック（§3 の楽観ロック）。演出も EDL と同じく
+  リビジョンのスナップショットに載る
+- **演出付き書き出し**: `POST /api/v1/timelines/{id}/export` に `{"fx": true}`。ffmpeg の
+  mp4 が焼き上がったあと、それを下地に `FxOverlay` の Remotion ジョブが続けて走る。
+  結果は書き出しの `fx_job_id` / `fx_status` / `fx_video_url` に出る（`GET /exports/{id}`
+  をポーリングする）。Remotion 連携が無効なら 400
 
 ### 3.3.1 音源基準のタイムライン（MV のときだけ）
 

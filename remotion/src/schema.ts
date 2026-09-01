@@ -710,7 +710,12 @@ export const fxOverlaySchema = z.object({
   height: z.number().min(16).default(1080),
   /** 明示的に尺を決めたいとき(秒)。省略時は base の尺と events の終端から自動算出。 */
   durationInSeconds: z.number().min(0.1).optional(),
-  /** base が無いところ・base が透けるところの色。 */
+  /**
+   * base が無いところ・base が透けるところの色。
+   *
+   * `"transparent"` を書くと**下地を塗らない**（base を省略すれば全面が透ける）。
+   * 編集画面のプレビューはこれで、既存のプレビュー映像の上に演出だけを重ねる。
+   */
   backgroundColor: z.string().default('#000000'),
   /** 全体の乱数の種。イベント側で seed を書かなければ、これと並び順から決まる。 */
   seed: z.number().int().default(1),

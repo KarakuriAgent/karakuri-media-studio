@@ -1112,6 +1112,10 @@ ComfyUI と並ぶもう 1 つの生成経路。Remotion プロジェクト（Nod
   だけ）も再現する。`MusicVideo` / `FxOverlay` で props の形（`audioSchema`）は同じ
   なので composition では分けない。**失敗してもジョブは失敗させない**（mp4 自体は
   出来ているので、元のまま残してログにだけ書く）
+- **演出はタイムラインに保存する**（§7.3 の FX トラック）。`FxOverlay` の props を
+  ジョブへ直接投げるのは、手元で 1 本だけ確かめたいときの近道で、制作の本筋は
+  `PUT /timelines/{id}/fx` に入れてから `POST /timelines/{id}/export` の `fx: true`
+  （編集画面のプレビューに重なり、人が秒を直したり要らないものを消したりできる）
 
 #### 音源解析（`mode: "audio_analysis"`、`app/audio_analysis.py`）
 
@@ -1467,8 +1471,28 @@ CREATE TABLE timeline_exports (
   frames      INTEGER,                         -- 総フレーム数（ffprobe -count_frames の実測）
   duration_ms INTEGER,
   warnings    TEXT NOT NULL DEFAULT '[]',      -- PAD / フレーム数のずれ（JSON 配列）
+  fx_job_id   TEXT,                            -- 演出付き書き出し（fx: true）の Remotion ジョブ
+  fx_status   TEXT,                            -- queued | running | done | failed
+  fx_video_path TEXT,                          -- 演出まで載った mp4
   created_at  TEXT NOT NULL,
   finished_at TEXT
+);
+
+-- FX トラック（タイムラインに載せる演出。Remotion の `FxOverlay` の props）
+CREATE TABLE timeline_fx (
+  timeline_id TEXT PRIMARY KEY,
+  project_id  TEXT NOT NULL REFERENCES studio_projects(id) ON DELETE CASCADE,
+  settings    TEXT NOT NULL DEFAULT '{}',   -- theme / seed / ambient / backgroundColor（JSON）
+  updated_at  TEXT NOT NULL
+);
+
+CREATE TABLE timeline_fx_events (
+  id          TEXT PRIMARY KEY,
+  timeline_id TEXT NOT NULL,
+  project_id  TEXT NOT NULL REFERENCES studio_projects(id) ON DELETE CASCADE,
+  sort_order  INTEGER NOT NULL DEFAULT 0,
+  enabled     INTEGER NOT NULL DEFAULT 1,   -- 降ろすとプレビューにも書き出しにも出さない
+  event       TEXT NOT NULL                 -- イベント 1 つぶんの JSON（type / t / …）
 );
 ```
 
@@ -1640,6 +1664,60 @@ EDL → ffmpeg コマンドの**組み立ては純関数**（`build_command`）�
 - ソースの下調べ（ffprobe）は**まとめて並列**に走らせ、`(パス, 更新時刻, 大きさ)` で結果を
   使い回す（`app.timeline.probe_many` / `probe_cached`）。長いタイムラインでも
   読み取りのたびに何十プロセスも直列に待たない
+
+#### FX トラック（演出をタイムラインに保存する）
+
+演出（`FxOverlay` の 1 イベント）を**タイムラインの一部**として持つ段。ここに入れて
+おけば編集画面のプレビューに重なり、人が秒・位置を直したり要らないものを消したりでき、
+`fx: true` の書き出しでそのまま焼ける。Remotion 連携（`remotion_enabled`）が OFF の
+あいだは、FX トラックもプレビューも演出付き書き出しも**一切出さない**（§5.2 のライセンス）。
+
+- **作るのは外部 API（AI）、人がやるのは調整と削除**。UI からの新規作成は持たない
+- **中身の正本は Remotion 側の zod スキーマ**（`remotion/src/schema.ts`）。バックエンドの
+  検証は「`event` がオブジェクトで `type` が文字列・`t` が数値」まで。細かい誤りは
+  プレビュー（`@remotion/player`）とレンダの zod で出る（2 か所に同じ検証を書かない）
+- `timeline_fx` はタイムラインに 1 行の全体設定（`theme` / `seed` / `ambient` /
+  `backgroundColor`）。`fps` / `width` / `height` / `durationInSeconds` / `base` / `audio`
+  は**タイムラインが持っている**ので入れない（PUT で送られても無視する）
+- EDL と同じくリビジョンのスナップショットに載り、`base_revision` で楽観ロックできる
+  （`app.timeline._check_edl_revision` はクリップと演出の両方を突き合わせる）
+- API（内部 `/api/studio`・外部 `/api/v1` の両方に同じ形で生えている）:
+  - `GET /timelines/{id}/fx` → `{timeline_id, theme, seed, ambient, backgroundColor,
+    events: [{id, enabled, event}]}`
+  - `PUT /timelines/{id}/fx`（全置換。`FxOverlay` の props をそのまま投げられる。
+    `events` は生のイベントでも `{id, enabled, event}` の形でも受ける）
+  - `POST /timelines/{id}/fx/events` / `PATCH …/fx/events/{event_id}`（`event` は浅い
+    マージ。`null` を送るとその項目が消える）/ `DELETE …/fx/events/{event_id}`
+
+**画面**（`FxTrack` は `TimelinePane` の中の 1 段、パネルは `FxInspector`）:
+
+- イベントを `t` 〜（`until` / `duration` / 型ごとの既定尺）の帯で並べ、型ごとに色を変える。
+  `enabled: false` は薄く出す（消さずに「今は出さない」と決めたものが見えている必要がある）
+- 帯の**本体ドラッグで `t`**（`until` を持つものは尺を保ったまま）、**右端ドラッグで `until`**。
+  離した時点で `PATCH`（`base_revision` つき）。クリップの帯と同じ流儀
+- 選ぶと右ペインに共通（`t` / `until` / `duration` / `z` / 出す・出さない）＋型ごとの主要項目
+  （`text` / `lines` / `src` / `cx` / `cy` / `w` / `color`）＋**残りは JSON のテキスト欄**。
+  空にした項目は `null` で送られて消える。**削除**ボタンもここ
+- **プレビュー**は `@remotion/player` に `FxOverlay` を**そのまま**描かせて、既存の
+  プレビュー映像の上に重ねる（`remotion/src` を Vite の `@fx` エイリアスで共有するので、
+  演出の実装を SPA 側へ写さない）。`base` は渡さず `backgroundColor: "transparent"`、音も
+  渡さない（既存のプレビューが鳴らしている）。再生位置は既存のプレビューが正で `seekTo`
+  で追いかける。zod を通らないイベントは落として数だけ画面に出す。`@remotion/player` の
+  `import()` は**この段を出すときだけ**走る（OFF ならコードごと落ちない）
+
+#### 演出付き書き出し（`POST /timelines/{id}/export` の `fx: true`）
+
+ffmpeg の書き出し（上）が終わったあと、その mp4 を**下地**にして `FxOverlay` の Remotion
+ジョブ（`mode: "remotion"`、§5.2）を続けて投入する。
+
+- props は `base.src` = 焼き上がった mp4 の絶対パス（`remotion/src/media.ts` が先頭 `/` を
+  `file://` に読み替えるので、レンダに HTTP サーバーを挟まない）・`audio.src` = **A1 の
+  最初の音声クリップ**（無ければ省略）・`fps` / `width` / `height` / `durationInSeconds` =
+  その書き出しの実測値・`events` = `enabled` のものだけ・残りは `timeline_fx` の全体設定
+- ジョブ id と状態と成果物は `timeline_exports.fx_job_id` / `fx_status` / `fx_video_path`
+  に残り、書き出し履歴に「演出付き」として並ぶ（`GET .../exports` の `fx_video_url`）
+- 演出のレンダで失敗しても**mp4 そのものは残る**（`fx_status` が `failed` になるだけ）
+- Remotion 連携が OFF なら **400**
 
 #### 既知の制限
 
@@ -1886,7 +1964,12 @@ GET  /api/studio/timelines/{id}/sync-preview … 作成後に起きた脚本の�
 POST /api/studio/timelines/{id}/sync … 差分のうち選んだものだけ反映
 GET  /api/studio/timelines/{id}/missing … メディア欠落クリップと同じカットの差し替え候補
 POST /api/studio/timelines/{id}/missing/resolve … 別テイクへ差し替え / 欠落クリップの一括削除
-POST /api/studio/timelines/{id}/export … 書き出し開始（**202 即受付**。`preset` / `fit` / `loudnorm` 指定可。走っているものがあれば 409、メディア欠落が残っていれば 400）
+GET  /api/studio/timelines/{id}/fx … FX トラック（演出。`FxOverlay` の props と同じ名前、§7.3）
+PUT  /api/studio/timelines/{id}/fx … 演出の全置換（`base` / `audio` / 規格は無視。`base_revision` で楽観ロック）
+POST /api/studio/timelines/{id}/fx/events … 演出のイベントを 1 つ追加
+PATCH  /api/studio/timelines/{id}/fx/events/{event_id} … 1 件だけ書き換え（`event` は浅いマージ・`enabled`）
+DELETE /api/studio/timelines/{id}/fx/events/{event_id} … 1 件削除
+POST /api/studio/timelines/{id}/export … 書き出し開始（**202 即受付**。`preset` / `fit` / `loudnorm` / `fx` 指定可。走っているものがあれば 409、メディア欠落が残っていれば 400、`fx: true` で Remotion 連携が無効なら 400）
 GET  /api/studio/timelines/{id}/exports … 書き出し履歴（新しい順、`output_url` つき）
 POST /api/studio/exports/{id}/save-to-library … 完成 mp4 を library/video/ へコピーして登録
 

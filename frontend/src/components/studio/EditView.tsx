@@ -10,6 +10,7 @@ import type {
   TimelineExport,
   TimelineExportProgress,
   TimelineExportRequest,
+  TimelineFx,
   TimelineMediaItem,
   TimelineMissingFix,
   TimelineMissingReport,
@@ -21,11 +22,13 @@ import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
 import ClipInspector from './ClipInspector'
 import ExportPanel from './ExportPanel'
+import FxInspector from './FxInspector'
 import MediaBin from './MediaBin'
 import MissingDialog from './MissingDialog'
 import PreviewMonitor from './PreviewMonitor'
 import SyncDialog from './SyncDialog'
 import TimelinePane from './TimelinePane'
+import { fxApplyLocal, fxMovedTo, fxResizedTo } from './fx'
 import { episodeLabel } from './studio'
 import {
   AUTOSAVE_DELAY_MS,
@@ -110,6 +113,15 @@ export default function EditView({
   const [syncOpen, setSyncOpen] = useState(false)
   const [missing, setMissing] = useState<TimelineMissingReport | null>(null)
 
+  // FX トラック（演出）。Remotion 連携が OFF のあいだは段ごと出さない
+  // （プレビューの `@remotion/player` も読み込まない）。
+  const [fxEnabled, setFxEnabled] = useState(false)
+  const [fx, setFx] = useState<TimelineFx | null>(null)
+  const [fxSelectedId, setFxSelectedId] = useState<string | null>(null)
+  const [fxBusy, setFxBusy] = useState(false)
+  /** 演出を書き換えるときに添える `base_revision`（§7.4 の楽観ロック）。 */
+  const baseRevision = useRef<number | null>(null)
+
   const clips = history.present
   const tracks = timeline?.tracks ?? []
   const videoTrack = videoTrackOf(timeline)
@@ -151,6 +163,14 @@ export default function EditView({
     void loadTimelines()
   }, [loadTimelines])
 
+  // Remotion 連携の ON / OFF（FX トラックを出すかどうか）。
+  useEffect(() => {
+    void api
+      .getSettings()
+      .then((settings) => setFxEnabled(settings.remotion_enabled))
+      .catch(() => setFxEnabled(false))
+  }, [])
+
   // 作品を切り替えたら編集の状態は持ち越さない。
   useEffect(() => {
     setTimelineId(null)
@@ -169,6 +189,12 @@ export default function EditView({
     setSaveState('saved')
   }, [])
 
+  /** いまのリビジョン連番を控える（次の演出の書き換えに添える）。 */
+  const refreshRevision = useCallback(async () => {
+    const rows = await api.listStudioRevisions(projectId)
+    baseRevision.current = rows[0]?.seq ?? 0
+  }, [projectId])
+
   const loadTimeline = useCallback(
     async (id: string) => {
       setLoading(true)
@@ -176,13 +202,17 @@ export default function EditView({
         adoptTimeline(await api.getStudioTimeline(id))
         setExports(await api.listStudioTimelineExports(id))
         setSync(await api.getStudioTimelineSyncPreview(id))
+        if (fxEnabled) {
+          setFx(await api.getStudioTimelineFx(id))
+          await refreshRevision()
+        }
       } catch (cause) {
         pushError(cause)
       } finally {
         setLoading(false)
       }
     },
-    [adoptTimeline, pushError],
+    [adoptTimeline, pushError, fxEnabled, refreshRevision],
   )
 
   useEffect(() => {
@@ -191,6 +221,8 @@ export default function EditView({
       setHistory(initHistory([]))
       setExports([])
       setSync(null)
+      setFx(null)
+      setFxSelectedId(null)
       return
     }
     void loadTimeline(timelineId)
@@ -284,14 +316,25 @@ export default function EditView({
     [exports],
   )
 
+  /** 演出（`fx: true`）のレンダリングが続いている書き出し。 */
+  const fxRunning = useMemo(
+    () =>
+      exports.find(
+        (item) => item.fx_status === 'queued' || item.fx_status === 'running',
+      ) ?? null,
+    [exports],
+  )
+
   // WS を取りこぼしても止まらないように、走っているあいだは定期的に取り直す。
+  // 演出付きの Remotion レンダリングは WS の書き出しフレームに乗らない
+  // （別のジョブとして走る）ので、そのあいだも同じ間隔で取り直す。
   useEffect(() => {
-    if (!timelineId || !running) return
+    if (!timelineId || (!running && !fxRunning)) return
     const timer = window.setInterval(() => {
       void api.listStudioTimelineExports(timelineId).then(setExports, () => undefined)
     }, 3000)
     return () => window.clearInterval(timer)
-  }, [timelineId, running])
+  }, [timelineId, running, fxRunning])
 
   // ---------------------------------------------------------------- 編集操作
   const apply = useCallback(
@@ -472,6 +515,99 @@ export default function EditView({
       await withFlush(() => api.generateStudioTimelineSubtitles(timelineId, {}))
       setSelectedId(null)
     })
+
+  // ------------------------------------------------------------ FX トラック
+  //
+  // 演出を**作る**のは外部 API（AI）。ここでできるのは調整（帯のドラッグと
+  // プロパティ）と削除だけで、どちらも `base_revision` を添えて 1 件ずつ送る。
+  const fxSelected =
+    fx?.events.find((item) => item.id === fxSelectedId) ?? null
+
+  /** サーバーの応答を採り、次に添える `base_revision` を取り直す。 */
+  const adoptFx = useCallback(
+    async (fresh: TimelineFx) => {
+      setFx(fresh)
+      await refreshRevision()
+    },
+    [refreshRevision],
+  )
+
+  const patchFxEvent = useCallback(
+    (
+      eventId: string,
+      patch: Record<string, unknown>,
+      enabled?: boolean,
+    ) =>
+      void (async () => {
+        if (!timelineId) return
+        setFxBusy(true)
+        setError(null)
+        try {
+          await adoptFx(
+            await api.updateStudioTimelineFxEvent(timelineId, eventId, {
+              ...(Object.keys(patch).length > 0 ? { event: patch } : {}),
+              ...(enabled === undefined ? {} : { enabled }),
+              base_revision: baseRevision.current,
+            }),
+          )
+        } catch (cause) {
+          pushError(cause)
+          // ぶつかった / 弾かれたときは手元を捨ててサーバーの中身へ戻す。
+          try {
+            await adoptFx(await api.getStudioTimelineFx(timelineId))
+          } catch {
+            /* 読み直しにも失敗したら、次の操作で追いつく */
+          }
+        } finally {
+          setFxBusy(false)
+        }
+      })(),
+    [timelineId, adoptFx, pushError],
+  )
+
+  /** 帯のドラッグ（本体で `t`、右端で `until`）。離すまでは手元だけ動かす。 */
+  const dragFxEvent = useCallback(
+    (
+      eventId: string,
+      change: { startMs?: number; endMs?: number },
+      done: boolean,
+    ) => {
+      const item = fx?.events.find((event) => event.id === eventId)
+      if (!item) return
+      const patch =
+        change.startMs !== undefined
+          ? fxMovedTo(item, change.startMs)
+          : fxResizedTo(item, change.endMs ?? 0)
+      setFx((current) =>
+        current
+          ? { ...current, events: fxApplyLocal(current.events, eventId, patch) }
+          : current,
+      )
+      if (done) patchFxEvent(eventId, patch)
+    },
+    [fx, patchFxEvent],
+  )
+
+  const deleteFxEvent = () =>
+    void (async () => {
+      if (!timelineId || !fxSelectedId) return
+      setFxBusy(true)
+      setError(null)
+      try {
+        await adoptFx(
+          await api.deleteStudioTimelineFxEvent(
+            timelineId,
+            fxSelectedId,
+            baseRevision.current,
+          ),
+        )
+        setFxSelectedId(null)
+      } catch (cause) {
+        pushError(cause)
+      } finally {
+        setFxBusy(false)
+      }
+    })()
 
   // ------------------------------------------------------------ 素材ビン
   const addMedia = (item: TimelineMediaItem) => {
@@ -701,6 +837,10 @@ export default function EditView({
               tracks={tracks}
               playheadMs={playheadMs}
               onSeek={setPlayheadMs}
+              fx={fxEnabled ? fx : null}
+              fps={timeline.fps}
+              width={timeline.width}
+              height={timeline.height}
             />
             <TimelinePane
               tracks={tracks}
@@ -710,7 +850,10 @@ export default function EditView({
               playheadMs={playheadMs}
               zoom={zoom}
               onZoom={setZoom}
-              onSelect={setSelectedId}
+              onSelect={(id) => {
+                setSelectedId(id)
+                if (id) setFxSelectedId(null)
+              }}
               onSeek={(ms) => setPlayheadMs(Math.min(ms, Math.max(total, 0)))}
               onMove={(id, to) => applyVideo((current) => moveClip(current, id, to))}
               onMoveTo={(id, startMs) => {
@@ -738,10 +881,28 @@ export default function EditView({
               onToggleMute={toggleMute}
               onDeleteTrack={deleteTrack}
               onAddSubtitle={addSubtitle}
+              fxEvents={fxEnabled && fx ? fx.events : undefined}
+              fxSelectedId={fxSelectedId}
+              onFxSelect={(id) => {
+                setFxSelectedId(id)
+                if (id) setSelectedId(null)
+              }}
+              onFxDrag={dragFxEvent}
             />
           </div>
 
           <div className="flex w-full shrink-0 flex-col gap-3 lg:w-80">
+            {fxEnabled && fxSelectedId ? (
+              <FxInspector
+                item={fxSelected}
+                busy={fxBusy}
+                onPatch={(patch) => patchFxEvent(fxSelectedId, patch)}
+                onEnabled={(enabled) =>
+                  patchFxEvent(fxSelectedId, {}, enabled)
+                }
+                onDelete={deleteFxEvent}
+              />
+            ) : null}
             <ClipInspector
               clip={selected}
               track={selectedTrack}
@@ -780,6 +941,7 @@ export default function EditView({
               busy={busy}
               savingId={savingId}
               canExport={videoClips.length > 0 && brokenCount === 0}
+              canExportFx={fxEnabled && (fx?.events.length ?? 0) > 0}
               onExport={startExport}
               onSaveToLibrary={saveToLibrary}
             />

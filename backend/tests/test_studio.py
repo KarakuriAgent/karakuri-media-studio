@@ -2718,11 +2718,12 @@ def test_a_revision_carries_the_whole_project(env):
     assert snapshot["project"]["name"] == project["name"]
     assert [row["prompt"] for row in snapshot["shots"]] == ["A cat walks in."]
     assert [row["name"] for row in snapshot["assets"]] == ["Neko"]
-    # asset_files は素材のリファレンス、timeline* は編集タブの EDL。
-    # 入らないのは実行状態（ジョブ）と書き出しだけ。
+    # asset_files は素材のリファレンス、timeline* は編集タブの EDL と
+    # FX トラック（演出）。入らないのは実行状態（ジョブ）と書き出しだけ。
     assert set(snapshot) == {
         "project", "episodes", "scenes", "shots", "takes", "assets",
         "asset_files", "timelines", "timeline_tracks", "timeline_clips",
+        "timeline_fx", "timeline_fx_events",
     }
 
 

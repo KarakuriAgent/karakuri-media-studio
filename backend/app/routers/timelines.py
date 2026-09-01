@@ -5,7 +5,7 @@ DB と ffmpeg は :mod:`app.timeline` に集約してあり、ここは HTTP の
 ``/api/studio`` にして、画面から見た住所を 1 つに揃えてある。
 """
 
-from fastapi import APIRouter, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from .. import timeline as service
 from ..models import (
@@ -19,6 +19,10 @@ from ..models import (
     TimelineExport,
     TimelineExportRequest,
     TimelineExportSave,
+    TimelineFx,
+    TimelineFxEventCreate,
+    TimelineFxEventUpdate,
+    TimelineFxUpdate,
     TimelineMediaPage,
     TimelineMissingFix,
     TimelineMissingReport,
@@ -30,6 +34,16 @@ from ..models import (
 )
 
 router = APIRouter(prefix="/api/studio", tags=["studio"])
+
+
+def _serving_base_url(request: Request) -> str:
+    """レンダラー（同じ機械で走る Remotion）から見た、このアプリの URL。
+
+    Host ヘッダではなく**待受のポート**から組み立てる（リバースプロキシ越しの
+    ホスト名を渡すと、自分の素材を外まで取りに行くことになるため）。
+    """
+    server = request.scope.get("server") or (None, None)
+    return service.local_base_url(server[1])
 
 
 def _http_error(exc: service.TimelineError) -> HTTPException:
@@ -184,6 +198,71 @@ async def delete_track(timeline_id: str, track_id: str) -> StudioTimelineDetail:
 
 
 # --------------------------------------------------------------------------
+# FX トラック（タイムラインに載せる演出。SPEC §7.3）
+# --------------------------------------------------------------------------
+
+@router.get("/timelines/{timeline_id}/fx", response_model=TimelineFx)
+async def get_fx(timeline_id: str) -> TimelineFx:
+    """このタイムラインに載せた演出（``FxOverlay`` の props と同じ名前）。"""
+    fx = await service.get_fx(timeline_id)
+    if fx is None:
+        raise HTTPException(status_code=404, detail="timeline not found")
+    return fx
+
+
+@router.put("/timelines/{timeline_id}/fx", response_model=TimelineFx)
+async def replace_fx(timeline_id: str, payload: TimelineFxUpdate) -> TimelineFx:
+    """演出を丸ごと置き換える（``FxOverlay`` の props をそのまま投げられる）。"""
+    try:
+        return await service.replace_fx(timeline_id, payload, actor="user")
+    except service.TimelineError as exc:
+        raise _http_error(exc) from exc
+
+
+@router.post(
+    "/timelines/{timeline_id}/fx/events", response_model=TimelineFx, status_code=201
+)
+async def add_fx_event(
+    timeline_id: str, payload: TimelineFxEventCreate
+) -> TimelineFx:
+    """演出のイベントを 1 つ足す。"""
+    try:
+        return await service.add_fx_event(timeline_id, payload, actor="user")
+    except service.TimelineError as exc:
+        raise _http_error(exc) from exc
+
+
+@router.patch(
+    "/timelines/{timeline_id}/fx/events/{event_id}", response_model=TimelineFx
+)
+async def update_fx_event(
+    timeline_id: str, event_id: str, payload: TimelineFxEventUpdate
+) -> TimelineFx:
+    """イベントを 1 件だけ書き換える（``event`` は浅いマージ）。"""
+    try:
+        return await service.update_fx_event(
+            timeline_id, event_id, payload, actor="user"
+        )
+    except service.TimelineError as exc:
+        raise _http_error(exc) from exc
+
+
+@router.delete(
+    "/timelines/{timeline_id}/fx/events/{event_id}", response_model=TimelineFx
+)
+async def delete_fx_event(
+    timeline_id: str, event_id: str, base_revision: int | None = None
+) -> TimelineFx:
+    """イベントを 1 件消す。"""
+    try:
+        return await service.delete_fx_event(
+            timeline_id, event_id, base_revision=base_revision, actor="user"
+        )
+    except service.TimelineError as exc:
+        raise _http_error(exc) from exc
+
+
+# --------------------------------------------------------------------------
 # 素材ビン
 # --------------------------------------------------------------------------
 
@@ -287,16 +366,19 @@ async def resolve_missing(
     "/timelines/{timeline_id}/export", response_model=TimelineExport, status_code=202
 )
 async def start_export(
-    timeline_id: str, payload: TimelineExportRequest | None = None
+    request: Request, timeline_id: str, payload: TimelineExportRequest | None = None
 ) -> TimelineExport:
     """書き出しを 1 本受け付ける（**202 即受付**。ffmpeg は裏で走る）。
 
     進捗は WS の ``timeline_export`` フレームと ``GET .../exports`` で追う。
-    同じタイムラインで走っているものがあれば 409。
+    同じタイムラインで走っているものがあれば 409。``fx: true`` なら焼き上がった
+    mp4 に演出を載せる Remotion ジョブが続けて走る（Remotion 連携が OFF なら 400）。
     """
     body = payload or TimelineExportRequest()
     try:
-        return await service.start_export(timeline_id, body.model_dump())
+        return await service.start_export(
+            timeline_id, body.model_dump(), base_url=_serving_base_url(request)
+        )
     except service.TimelineError as exc:
         raise _http_error(exc) from exc
 

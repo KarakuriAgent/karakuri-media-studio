@@ -187,8 +187,10 @@ scripts/studio.sh wait-export <export_id> [interval_sec]
    `POST /timelines/{id}/sync`
 6. 欠落メディア: `GET /timelines/{id}/missing` →
    `POST /timelines/{id}/resolve-missing`
-7. `POST /timelines/{id}/export`（202 即受付）→ `GET /exports/{id}` を
-   ポーリング（`scripts/studio.sh wait-export <id>`）→
+7. 演出（MV のときだけ）: `PUT /timelines/{id}/fx` に `FxOverlay` の props を入れる
+   （下の「演出はタイムラインに保存する」）
+8. `POST /timelines/{id}/export`（202 即受付。演出まで焼くなら `{"fx": true}`）→
+   `GET /exports/{id}` をポーリング（`scripts/studio.sh wait-export <id>`）→
    `POST /exports/{id}/save-to-library`
 
 書き出しの結果には焼き上がりの `fps` / `width` / `height` / `frames` /
@@ -208,6 +210,36 @@ scripts/studio.sh wait-export <export_id> [interval_sec]
 - **音源は `POST /library/audio`（multipart）で棚に入れて A1 に置く**。
   タイムラインに置けるのは棚の音だけで、作品の素材（`assets`）に上げた音は
   素材ビンに出てこない（`scripts/studio.sh upload /library/audio file=@ban.wav`）
+
+### 演出はタイムラインに保存する（FX トラック。MV のときだけ）
+
+**鉄則: `FxOverlay` の演出はタイムラインに保存する。ジョブに props を直接投げるのは
+手元で 1 本だけ確かめたいときだけ。**
+
+タイムラインに入れておくと編集画面の **FX トラック**に帯として並び、人がプレビューを
+見ながら秒・位置を直したり要らないものを消したりできる。そのまま演出付きで書き出せる。
+
+```
+PUT /timelines/{id}/fx        # 全置換。FxOverlay の props をそのまま投げてよい
+  {"theme": {…}, "seed": 1, "ambient": {…},
+   "events": [{"type":"lyric","t":45.96,"until":47.5,…}, …]}
+GET    /timelines/{id}/fx                            # {events:[{id, enabled, event}], …}
+POST   /timelines/{id}/fx/events   {"event": {…}}     # 1 つ足す
+PATCH  /timelines/{id}/fx/events/{event_id} {"event": {"t": 46.5}}   # 浅いマージ
+DELETE /timelines/{id}/fx/events/{event_id}
+POST   /timelines/{id}/export      {"fx": true}       # 演出付きで焼く
+```
+
+- `base` / `audio` / `fps` / `width` / `height` / `durationInSeconds` は**送らなくてよい**
+  （タイムラインが持っているので無視される）。下地は書き出した mp4、音は A1 の
+  最初の音声クリップが自動で入る
+- `fx: true` の書き出しは、ffmpeg の mp4 のあとに Remotion が続けて走る。結果は
+  `GET /exports/{id}` の `fx_status` / `fx_video_url`（レンダは数分〜十数分かかる）
+- 検証は `type` と `t` だけ。中身の正本は `remotion/src/schema.ts`（zod）で、
+  書き方は `.agents/skills/karakuri-remotion/SKILL.md`
+- 直したいイベントだけ `PATCH`（`event` は浅いマージ、`null` でその項目を削除）。
+  消さずに外したいときは `{"enabled": false}`
+- Remotion 連携が無効なら `fx: true` は 400。設定は人に頼む
 
 ### 音源解析（歌詞つきの MV。指示があったときだけ）
 
@@ -260,9 +292,11 @@ POST /jobs {"mode":"audio_analysis",
 4. 短いカットを割り込ませるなら `POST /timelines/{id}/clips/insert`
    （下のクリップが前後に割れるだけで、トラックの全長は変わらない）。
    **`sync` を済ませてから**行う
-5. `POST /timelines/{id}/export` の結果（`/outputs/exports/{id}/final.mp4`）を
-   Remotion `FxOverlay` の `base.src` に渡す。**props の fps / 解像度は書き出しの
-   `fps` / `width` / `height` に合わせる**（ずれると演出の秒が合わない）
+5. 演出は `PUT /timelines/{id}/fx` に入れて `POST /timelines/{id}/export`
+   の `{"fx": true}` で焼く（下地・fps・解像度・尺はタイムラインの値が自動で入るので、
+   props に書かなくてよい）。手元で 1 本だけ確かめたいときに限り、書き出した
+   `/outputs/exports/{id}/final.mp4` を `base.src` にしてジョブへ直接投げる
+   （そのときは props の fps / 解像度を書き出しの値に合わせる）
 
 ## 9. Remotion（MV・モーショングラフィックス）
 
@@ -273,6 +307,10 @@ POST /jobs {"mode":"audio_analysis",
 `remotion_props` の中身の正本は Studio に同梱された **`remotion/`**（スキーマは
 `remotion/src/schema.ts`）と **`.agents/skills/karakuri-remotion/SKILL.md`**。
 そこを読んでから書く。
+
+**ただし `FxOverlay` の演出はタイムラインに保存する**（§8「演出はタイムラインに保存
+する」）。ジョブへ props を直接投げるのは手元で 1 本だけ確かめたいときで、制作の
+本筋は `PUT /timelines/{id}/fx` → `POST /timelines/{id}/export {"fx": true}`。
 
 連携は**既定 OFF**（Remotion が独自ライセンスのため）。一覧が 400 で「Remotion 連携が
 無効です」と返るときは、設定ページの「Remotion 連携」を有効にしてもらう（依存は

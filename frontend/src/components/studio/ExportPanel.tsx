@@ -39,6 +39,7 @@ export default function ExportPanel({
   busy,
   savingId,
   canExport,
+  canExportFx,
   onExport,
   onSaveToLibrary,
 }: {
@@ -50,14 +51,24 @@ export default function ExportPanel({
   /** ライブラリへ保存中の書き出し id（ボタンを二度押しさせない）。 */
   savingId: string | null
   canExport: boolean
+  /**
+   * 演出付き（FX トラックを載せた）書き出しを選べるか。Remotion 連携が ON で、
+   * 演出が 1 件以上あるときだけ。
+   */
+  canExportFx?: boolean
   onExport: (body: TimelineExportRequest) => void
   onSaveToLibrary: (exportId: string) => void
 }) {
   const [preset, setPreset] = useState<TimelineExportPreset>('timeline')
   const [fit, setFit] = useState<TimelineExportFit>('pad')
   const [loudnorm, setLoudnorm] = useState(true)
+  const [fx, setFx] = useState(true)
   const latest = exports[0] ?? null
   const finished = exports.find((item) => item.status === 'done') ?? null
+  /** 演出まで載った mp4 のうち、いちばん新しいもの。 */
+  const finishedFx =
+    exports.find((item) => item.fx_status === 'done' && item.fx_video_url) ?? null
+  const withFx = Boolean(canExportFx && fx)
 
   return (
     <Section
@@ -66,7 +77,7 @@ export default function ExportPanel({
         <Button
           type="button"
           size="sm"
-          onClick={() => onExport({ preset, fit, loudnorm })}
+          onClick={() => onExport({ preset, fit, loudnorm, fx: withFx })}
           disabled={busy || !canExport || running !== null}
           title={
             canExport
@@ -126,6 +137,15 @@ export default function ExportPanel({
             />
             <span>ラウドネス正規化（-14 LUFS / TP -1.5 dB）</span>
           </label>
+          {canExportFx && (
+            <label className="flex cursor-pointer items-center gap-2">
+              <Checkbox
+                checked={fx}
+                onCheckedChange={(value) => setFx(value === true)}
+              />
+              <span>FX トラックの演出も載せる（Remotion。数分かかります）</span>
+            </label>
+          )}
           <p className="text-[10px] text-muted-foreground">
             fps はタイムラインの値のままです。
           </p>
@@ -140,6 +160,37 @@ export default function ExportPanel({
               </span>
             </div>
             <Progress value={Math.round((running.progress ?? 0) * 100)} />
+          </div>
+        )}
+
+        {latest?.fx_status === 'queued' || latest?.fx_status === 'running' ? (
+          <p className="rounded border border-border bg-secondary/40 px-2 py-1.5 text-xs text-muted-foreground">
+            演出を載せています（Remotion のレンダリング。数分かかります）…
+          </p>
+        ) : null}
+
+        {latest?.fx_status === 'failed' && (
+          <p className="rounded border border-amber-900/70 bg-amber-950/40 px-2 py-1.5 text-xs text-amber-200">
+            演出を載せられませんでした（mp4 そのものは書き出せています。
+            履歴の Remotion ジョブに理由が出ます）。
+          </p>
+        )}
+
+        {finishedFx?.fx_video_url && (
+          <div className="flex flex-col gap-2">
+            <p className="text-[11px] text-muted-foreground">演出付き</p>
+            <video
+              src={finishedFx.fx_video_url}
+              controls
+              preload="metadata"
+              className="w-full rounded border border-border bg-black"
+            />
+            <Button asChild size="sm" variant="secondary">
+              <a href={finishedFx.fx_video_url} download="final-fx.mp4">
+                <Download className="size-4" aria-hidden="true" />
+                ダウンロード（演出付き）
+              </a>
+            </Button>
           </div>
         )}
 
@@ -208,6 +259,7 @@ export default function ExportPanel({
                   {EXPORT_STATUS_LABEL[item.status] ?? item.status}
                 </Badge>
                 <span className="truncate font-mono">
+                  {item.fx_job_id ? '演出付き / ' : ''}
                   {item.frames == null
                     ? (item.finished_at ?? item.created_at)
                     : `${item.width}x${item.height} ${item.fps}fps ${item.frames}f`}
