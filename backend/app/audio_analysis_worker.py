@@ -31,7 +31,9 @@ WS へ流す）。それ以外の行はそのままログとして扱われる�
 依存の要否はタスクごとに違う:
 
 - ``align`` … stable-ts（+ openai-whisper）。無ければ 3
-- ``transcribe`` … faster-whisper。無ければ 3
+- ``transcribe`` … faster-whisper。無ければ 3。GPU で回すには裏の ctranslate2 が
+  要る CUDA 12 の cuBLAS と cuDNN 9（``nvidia-cublas-cu12`` /
+  ``nvidia-cudnn-cu12``）も要る。**無ければ CPU に落として続ける**
 - ``onsets`` / ``beats`` … librosa。**無ければそのタスクだけ飛ばして
   ``warnings`` に書く**（歌詞まわりが動けば大半の用は足りるため）
 - ``silence`` … ffmpeg だけ。同じく無ければ飛ばして ``warnings`` に書く
@@ -40,8 +42,10 @@ WS へ流す）。それ以外の行はそのままログとして扱われる�
 from __future__ import annotations
 
 import argparse
+import ctypes
 import importlib.util
 import json
+import os
 import re
 import shutil
 import subprocess
@@ -78,6 +82,100 @@ SILENCE_MIN_DURATION = 0.5
 
 #: onset / beat 検出に使うサンプリングレート（ffmpeg で落としてから渡す）
 ANALYSIS_SR = 22050
+
+#: 先読みする CUDA ライブラリ ``[(nvidia/ 配下のディレクトリ名, soname, pip 名)]``
+#:
+#: faster-whisper の裏の ctranslate2 は **CUDA 12 の cuBLAS と cuDNN 9** を要求する
+#: （torch がどの CUDA 版でも変わらない）。torch が CUDA 13 版だと ``libcublas.so.12``
+#: が同梱されないので、`requirements-optional.txt` で入れた pip の wheel を
+#: :func:`preload_cuda_libraries` で先に開いてやる必要がある。
+CTRANSLATE2_CUDA_LIBS: tuple[tuple[str, str, str], ...] = (
+    # cuDNN が cuBLAS に依存するので **cuBLAS を先に**開く
+    ("cublas", "libcublas.so.12", "nvidia-cublas-cu12"),
+    ("cudnn", "libcudnn.so.9", "nvidia-cudnn-cu12"),
+)
+
+#: 1 にすると CUDA ライブラリの先読みをしない（CPU フォールバックの動作確認用）
+SKIP_CUDA_PRELOAD_ENV = "KARAKURI_AUDIO_SKIP_CUDA_PRELOAD"
+
+
+# --------------------------------------------------------------------------
+# CUDA ライブラリの先読み（ctranslate2 が要る cuBLAS / cuDNN）
+# --------------------------------------------------------------------------
+
+def nvidia_lib_dirs() -> list[Path]:
+    """venv の ``site-packages/nvidia/<名前>/lib`` のうち実在するもの。
+
+    :data:`CTRANSLATE2_CUDA_LIBS` の順（cuBLAS → cuDNN）で返す。pip の
+    ``nvidia-*`` wheel が入っていなければ空。
+    """
+    try:
+        spec = importlib.util.find_spec("nvidia")
+    except (ImportError, ValueError):
+        return []
+    if spec is None:
+        return []
+    roots = [Path(path) for path in (spec.submodule_search_locations or [])]
+    dirs: list[Path] = []
+    for name, _soname, _package in CTRANSLATE2_CUDA_LIBS:
+        for root in roots:
+            lib = root / name / "lib"
+            if lib.is_dir():
+                dirs.append(lib)
+    return dirs
+
+
+def preload_cuda_libraries() -> list[str]:
+    """faster-whisper を import する前に cuBLAS / cuDNN を開いておく。
+
+    ctranslate2 は wheel に ``rpath`` を持たないので、pip で入れた
+    ``nvidia-cublas-cu12`` / ``nvidia-cudnn-cu12`` は放っておくと見つからない
+    （faster-whisper 公式の回避策と同じことをする）。``RTLD_GLOBAL`` で開いておけば、
+    あとから読まれる ctranslate2 の ``.so`` がそのシンボルを解決できる。
+
+    **入っていなければ何もしない**（GPU の無い環境・CPU で回す環境では素通り）。
+    戻り値は開けたファイル名（ログとテスト用）。
+    """
+    if os.environ.get(SKIP_CUDA_PRELOAD_ENV, "").strip() not in ("", "0"):
+        return []
+    loaded: list[str] = []
+    for lib in nvidia_lib_dirs():
+        for path in sorted(lib.glob("*.so*")):
+            try:
+                ctypes.CDLL(str(path), mode=ctypes.RTLD_GLOBAL)
+            except OSError:
+                # 開けない .so は飛ばす（依存が足りないものが混じっていても、
+                # 本命が開ければ書き起こしは動く）
+                continue
+            loaded.append(path.name)
+    return loaded
+
+
+def _cuda_driver_available() -> bool:
+    """NVIDIA のドライバが読めるか（torch を import せずに済ませるための判定）。"""
+    try:
+        ctypes.CDLL("libcuda.so.1")
+    except OSError:
+        return False
+    return True
+
+
+def missing_cuda_libraries() -> list[str]:
+    """GPU で書き起こすのに足りない pip 名（GPU が無ければ空）。
+
+    先読みしてから ``soname`` で開き直す（dlopen は読み込み済みの ``.so`` を
+    soname で拾えるので、これで「venv かシステムのどちらかにある」が見られる）。
+    """
+    if not _cuda_driver_available():
+        return []
+    preload_cuda_libraries()
+    missing: list[str] = []
+    for _name, soname, package in CTRANSLATE2_CUDA_LIBS:
+        try:
+            ctypes.CDLL(soname)
+        except OSError:
+            missing.append(package)
+    return missing
 
 
 # --------------------------------------------------------------------------
@@ -277,21 +375,51 @@ def _is_out_of_memory(exc: BaseException) -> bool:
     return "OutOfMemory" in type(exc).__name__ or "out of memory" in str(exc).lower()
 
 
-def with_cpu_fallback(load, warnings: list[str], label: str):
-    """``load(device)`` を GPU で試し、メモリ不足なら CPU でやり直す。
+def _is_missing_cuda_library(exc: BaseException) -> bool:
+    """CUDA のライブラリ（cuBLAS / cuDNN）が読めないことによる失敗か。
 
-    GPU は ComfyUI と取り合いになる（生成が走っているあいだは空きが数百 MB しか
-    無い）ので、**落とさずに遅くする**ほうが解析としては使える。
+    ctranslate2 は ``RuntimeError: Library libcublas.so.12 is not found or cannot
+    be loaded`` のように投げる（ローダーが直接落ちれば ``OSError``）。
+    """
+    if not isinstance(exc, (RuntimeError, OSError)):
+        return False
+    text = str(exc).lower()
+    if "libcublas" in text or "libcudnn" in text or "libcuda" in text:
+        return True
+    return "cannot open shared object file" in text
+
+
+def _fallback_reason(exc: BaseException, label: str) -> str:
+    """CPU でやり直す理由（やり直さずに投げ直すなら空文字）。"""
+    if _is_out_of_memory(exc):
+        return f"GPU のメモリが足りないので {label} は CPU で実行しました"
+    if _is_missing_cuda_library(exc):
+        return (
+            f"CUDA のライブラリ（cuBLAS / cuDNN）が読めないので {label} は CPU で"
+            "実行しました（nvidia-cublas-cu12 / nvidia-cudnn-cu12 を入れてください）"
+        )
+    return ""
+
+
+def with_cpu_fallback(load, warnings: list[str], label: str):
+    """``load(device)`` を GPU で試し、駄目なら CPU でやり直す。
+
+    CPU に倒すのは 2 つの場合:
+
+    - **メモリ不足** … GPU は ComfyUI と取り合いになる（生成が走っているあいだは
+      空きが数百 MB しか無い）ので、**落とさずに遅くする**ほうが解析としては使える
+    - **CUDA のライブラリが読めない** … ctranslate2 が要る cuBLAS 12 / cuDNN 9 が
+      venv に無い場合。これも設定の話でジョブの失敗ではないので、警告を残して続ける
     """
     device = torch_device()
     if device == "cpu":
         return load("cpu"), "cpu"
     try:
         return load(device), device
-    except Exception as exc:  # noqa: BLE001 - OOM だけを CPU に倒す
-        if not _is_out_of_memory(exc):
+    except Exception as exc:  # noqa: BLE001 - 倒せる失敗だけを CPU に倒す
+        message = _fallback_reason(exc, label)
+        if not message:
             raise
-        message = f"GPU のメモリが足りないので {label} は CPU で実行しました"
         warnings.append(message)
         log(message)
         try:
@@ -388,6 +516,9 @@ def transcribe(
     path: Path, *, language: str, model_name: str, warnings: list[str]
 ) -> list[dict]:
     """歌詞が無いときの自由書き起こし（``chars`` は語単位）。"""
+    # ctranslate2 の .so を読ませる前に cuBLAS / cuDNN を開いておく（無ければ素通り）
+    preload_cuda_libraries()
+
     from faster_whisper import WhisperModel
 
     progress(0.1, f"書き起こし: モデル {model_name} を読み込み中")
@@ -502,6 +633,17 @@ def run(args: argparse.Namespace) -> int:
         )
         return EXIT_MISSING_DEPENDENCY
     if args.check:
+        # GPU があるのに ctranslate2 が要る CUDA ライブラリが無い場合の一言。
+        # **依存不足ではない**（CPU に倒して書き起こせる）ので exit は 0 のまま、
+        # `setup.sh status` や人が気づけるように標準出力へ出すだけにする。
+        if "transcribe" in tasks:
+            lacking = missing_cuda_libraries()
+            if lacking:
+                log(
+                    f"警告: {' / '.join(lacking)} が入っていないので、GPU があっても"
+                    "書き起こしは CPU で動きます"
+                    "（`pip install -r backend/requirements-optional.txt` で入ります）"
+                )
         return 0
 
     if not args.audio or not args.out:

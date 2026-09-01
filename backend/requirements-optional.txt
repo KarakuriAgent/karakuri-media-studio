@@ -25,3 +25,12 @@ stable-ts==2.19.1
 openai-whisper==20250625
 faster-whisper==1.2.1
 librosa==1.0.0
+
+# GPU で書き起こす（`transcribe`）ための CUDA ライブラリ。faster-whisper の裏の
+# ctranslate2 は **CUDA 12 の cuBLAS と cuDNN 9** を要求し、これは torch がどの
+# CUDA 版でも変わらない（torch が CUDA 13 版だと `libcublas.so.12` が同梱されず、
+# `RuntimeError: Library libcublas.so.12 is not found or cannot be loaded` で落ちる）。
+# ワーカーが faster-whisper を import する前にこれらを先読みする。
+# 入れなくてもジョブは失敗せず、書き起こしが CPU に落ちるだけ（警告が残る）。
+nvidia-cublas-cu12==12.9.2.10
+nvidia-cudnn-cu12==9.25.1.1

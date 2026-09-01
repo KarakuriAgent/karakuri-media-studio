@@ -81,6 +81,123 @@ def test_missing_requirements_only_looks_at_the_tasks_that_need_them():
 
 
 # --------------------------------------------------------------------------
+# CUDA ライブラリの先読みと CPU フォールバック
+# --------------------------------------------------------------------------
+
+def test_preloading_cuda_libraries_is_a_no_op_without_the_wheels(monkeypatch):
+    """`nvidia-*` の wheel が無ければ何も開かない（GPU 無しの環境では素通り）。"""
+    monkeypatch.setattr(worker, "nvidia_lib_dirs", list)
+    assert worker.preload_cuda_libraries() == []
+
+
+def test_preloading_opens_every_shared_object_in_order(monkeypatch, tmp_path):
+    """cuBLAS → cuDNN の順に、ディレクトリの .so を全部開く。"""
+    opened: list[str] = []
+
+    def fake_cdll(path, mode=None):
+        if path.endswith("broken.so"):
+            raise OSError("cannot open shared object file")
+        opened.append(Path(path).name)
+        return object()
+
+    cublas = tmp_path / "cublas" / "lib"
+    cudnn = tmp_path / "cudnn" / "lib"
+    for directory in (cublas, cudnn):
+        directory.mkdir(parents=True)
+    (cublas / "libcublas.so.12").write_bytes(b"")
+    (cudnn / "libcudnn.so.9").write_bytes(b"")
+    # 開けない .so が混じっていても本命は開く（飛ばすだけ）
+    (cudnn / "broken.so").write_bytes(b"")
+
+    monkeypatch.setattr(worker, "nvidia_lib_dirs", lambda: [cublas, cudnn])
+    monkeypatch.setattr(worker.ctypes, "CDLL", fake_cdll)
+    assert worker.preload_cuda_libraries() == ["libcublas.so.12", "libcudnn.so.9"]
+    assert opened == ["libcublas.so.12", "libcudnn.so.9"]
+
+
+def test_preloading_can_be_turned_off_by_the_environment(monkeypatch, tmp_path):
+    """CPU フォールバックの確認用に先読みを止められる。"""
+    monkeypatch.setattr(worker, "nvidia_lib_dirs", lambda: [tmp_path])
+    monkeypatch.setenv(worker.SKIP_CUDA_PRELOAD_ENV, "1")
+    assert worker.preload_cuda_libraries() == []
+    # 0 と空文字は「止めない」
+    monkeypatch.setenv(worker.SKIP_CUDA_PRELOAD_ENV, "0")
+    assert worker.preload_cuda_libraries() == []  # tmp_path に .so が無いだけ
+
+
+def test_nvidia_lib_dirs_only_returns_directories_that_exist():
+    """この環境に wheel が無くても落ちない（返るのは実在するものだけ）。"""
+    for directory in worker.nvidia_lib_dirs():
+        assert directory.is_dir()
+        assert directory.name == "lib"
+
+
+def test_missing_cuda_libraries_is_empty_without_a_gpu(monkeypatch):
+    """GPU が無い環境では「足りない」と言わない（CPU で回るのが正しい）。"""
+    monkeypatch.setattr(worker, "_cuda_driver_available", lambda: False)
+    assert worker.missing_cuda_libraries() == []
+
+
+def test_missing_cuda_libraries_names_the_pip_packages(monkeypatch):
+    """GPU があるのに cuBLAS 12 / cuDNN 9 が開けなければ pip 名を返す。"""
+    monkeypatch.setattr(worker, "_cuda_driver_available", lambda: True)
+    monkeypatch.setattr(worker, "preload_cuda_libraries", list)
+
+    def fake_cdll(name, mode=None):
+        raise OSError(f"{name}: cannot open shared object file")
+
+    monkeypatch.setattr(worker.ctypes, "CDLL", fake_cdll)
+    assert worker.missing_cuda_libraries() == [
+        "nvidia-cublas-cu12", "nvidia-cudnn-cu12"
+    ]
+
+
+def test_a_missing_cuda_library_falls_back_to_the_cpu(monkeypatch):
+    """ctranslate2 の「libcublas.so.12 が読めない」はジョブを失敗させない。"""
+    monkeypatch.setattr(worker, "torch_device", lambda: "cuda")
+    devices: list[str] = []
+
+    def load(device: str) -> str:
+        devices.append(device)
+        if device == "cuda":
+            raise RuntimeError(
+                "Library libcublas.so.12 is not found or cannot be loaded"
+            )
+        return "ok"
+
+    warnings: list[str] = []
+    assert worker.with_cpu_fallback(load, warnings, "書き起こし") == ("ok", "cpu")
+    assert devices == ["cuda", "cpu"]
+    assert len(warnings) == 1
+    assert "CUDA のライブラリ" in warnings[0]
+    assert "書き起こし" in warnings[0]
+
+
+def test_an_out_of_memory_still_falls_back_with_its_own_message(monkeypatch):
+    monkeypatch.setattr(worker, "torch_device", lambda: "cuda")
+
+    def load(device: str) -> str:
+        if device == "cuda":
+            raise RuntimeError("CUDA failed with error out of memory")
+        return "ok"
+
+    warnings: list[str] = []
+    assert worker.with_cpu_fallback(load, warnings, "アライン") == ("ok", "cpu")
+    assert warnings == ["GPU のメモリが足りないので アライン は CPU で実行しました"]
+
+
+def test_other_failures_are_not_swallowed(monkeypatch):
+    """関係のない失敗まで CPU で回し直さない（黙って遅くなるのを防ぐ）。"""
+    monkeypatch.setattr(worker, "torch_device", lambda: "cuda")
+
+    def load(device: str):
+        raise RuntimeError("model small is not available")
+
+    with pytest.raises(RuntimeError, match="not available"):
+        worker.with_cpu_fallback(load, [], "書き起こし")
+
+
+# --------------------------------------------------------------------------
 # ワーカーの実行（ffmpeg だけで動く silence）
 # --------------------------------------------------------------------------
 

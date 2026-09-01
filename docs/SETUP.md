@@ -132,6 +132,11 @@ docker exec video-studio-media-studio-1 bash -c \
    && .venv-audio/bin/pip install -r backend/requirements-optional.txt"
 ```
 
+GPU で書き起こし（`transcribe`）をするには、faster-whisper の裏の ctranslate2 が要る
+CUDA 12 の cuBLAS と cuDNN 9（`nvidia-cublas-cu12` / `nvidia-cudnn-cu12`）も入ります
+（`requirements-optional.txt` に含めました。torch がどの CUDA 版でも要ります）。無ければ
+書き起こしは CPU に落ちます（`analysis.json` の `warnings` にその旨が残ります）。
+
 作ったら設定の「接続 / Grok」タブの `audio_analysis_python` に **その venv の python の
 絶対パス**（例 `/path/to/video-studio/.venv-audio/bin/python`）を入れて保存します。
 空のままだとアプリ自身の python で回そうとして、依存が無ければ 400 で断ります。
