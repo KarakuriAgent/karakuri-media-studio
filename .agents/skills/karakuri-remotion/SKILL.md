@@ -1,6 +1,6 @@
 ---
 name: karakuri-remotion
-description: karakuri-media-studio から焼く Remotion コンポジション(MusicVideo / Slate)の props を書くためのスキル。MV・歌詞アニメーション・ビート同期・トランジションを JSON で組む必要があるときに使う。
+description: karakuri-media-studio から焼く Remotion コンポジション(MusicVideo / FxOverlay / Slate)の props を書くためのスキル。MV・歌詞アニメーション・ビート同期・トランジション・文字演出レイヤーを JSON で組む必要があるときに使う。
 ---
 
 # karakuri-remotion: MV / モーショングラフィックスの props を書く
@@ -26,11 +26,12 @@ karakuri-media-studio に同梱された `remotion/` ディレクトリが、こ
 | ID | 用途 |
 |---|---|
 | `MusicVideo` | 本命。カット割り + トランジション + 歌詞 + タイトル + BGM |
+| `FxOverlay` | 出来上がった 1 本の mp4 の上に、イベントで文字演出・エフェクトを載せる |
 | `Slate` | 疎通確認用。テキストを出すだけ |
 
 props スキーマの正本は **`remotion/src/schema.ts`(zod)**。迷ったらこれを読む。
-サンプルは `remotion/examples/music-video.json` / `remotion/examples/slate.json`
-(どちらも外部素材ゼロで焼ける)。
+サンプルは `remotion/examples/music-video.json` / `remotion/examples/fx-overlay.json` /
+`remotion/examples/slate.json`(どれも外部素材ゼロで焼ける)。
 
 ## 単位と座標系
 
@@ -140,6 +141,68 @@ props スキーマの正本は **`remotion/src/schema.ts`(zod)**。迷ったら�
 - `"src": "gradient:135:#223344,#5566aa"` — グラデーション(角度は省略可)
 
 `remotion/examples/music-video.json` はこれだけで組んであるので、雛形として複製して使う。
+
+## `FxOverlay`: 演出レイヤーを載せる
+
+### 使ってよいとき
+
+**MV・モーショングラフィックスを求められたとき、または明示的に指示されたときだけ。**
+ドラマ制作の通常フロー(脚本 → Take → タイムライン → ffmpeg 書き出し)では**使わない**。
+「テロップを入れて」程度ならアプリ内蔵の ffmpeg エクスポートで足りる。呼ぶのは
+「MV にして」「エフェクトを盛って」「決め台詞を叩き込んで」と言われたときだけ。
+
+### 何をするコンポジションか
+
+`MusicVideo` が「カットを並べて 1 本にする」のに対し、`FxOverlay` は
+**もう出来ている 1 本(`base`)の上に演出を足す**。ふつうはタイムラインの書き出し mp4 を
+`base.src` に渡し、元音源を `audio.src` に渡す。
+
+```jsonc
+{
+  "fps": 24, "width": 1280, "height": 720,
+  "base":  { "src": "http://…/outputs/<export>/video.mp4", "muted": true },
+  "audio": { "src": "http://…/outputs/<audio>/audio.wav" },
+  "theme": { "palette": ["#dc1428", "#f5f5f5", "#08080a"] },
+  "seed": 1,
+  "events": [ { "t": 43.9, "type": "card", "text": "BAN", "frames": 5 } ]
+}
+```
+
+- `events[]` は `type` で形が変わる。共通は `t`(開始秒・必須)と `until` / `duration`(省略可)と `seed`。
+- 型は 15 種: `card` / `invertShake` / `imageSlam` / `terminalText` / `screen` / `glitchCut` /
+  `collapse` / `crtOff` / `sprite` / `stickerStack` / `credits` / `lyric` / `endCard` /
+  `beatMarker` / `shape`。**各型のフィールドと既定値は `remotion/src/schema.ts` を読む**
+  (ここには写さない。増減する)。
+- 色は `theme.palette` の役割名(`accent` / `fg` / `bg`)か番号、または CSS の色。
+- 位置と大きさは**画面比(0..1)**、`fontSize` は 1080p 基準。縦動画でも書き方は変わらない。
+- 尺は `durationInSeconds` を書かなければ `base` の尺と `events` の終端の大きいほう。
+
+### 配置ルール(BAN!BAN!BAN! で確立したもの)
+
+守らないと「盛った」ではなく「散らかった」になる。
+
+- **文字は短く、出る時間も短く。** 決めのカード(`card`)は 5 フレーム前後。単語 1 つ。
+- **フェード禁止。** 出現は 2〜3 フレームでスナップさせる(`imageSlam` の `snap` / `spring`)。
+  じわっと出るのは弱さにしか見えない。
+- **決め台詞の画像は顔(特に主役)と楽器の手元を避け、画面の下 1/3 に、できるだけ大きく。**
+  目安は `w` >= 0.45、`cx` は 0.28〜0.72、`cy` は 0.7 前後。小さく置くと何も言っていないのと同じ。
+  はみ出すと `imageSlam` がレンダリング時にコンソールへ警告を出す。
+- **無音区間には何も乗せない。** 音が止まっているところに絵の情報を足すと嘘になる。
+  `events` をそこに書かなければよい(`ambient` も切る)。
+- **補助効果(`invertShake` / `glitchCut` / クロマ収差)は「決め」だけに使う。**
+  常時掛けると効果ではなく画質の劣化になる。`ambient` の走査線・ビネットも既定 OFF のままが基本。
+- `invertShake` の起点は**カードが明けたところ**。`card` の `t` + カードの尺に置く。
+- 秒は決め打ちせず、**音源解析の結果(歌詞アライン・onset・ビート)から算出する**。
+
+### 手元で確認する
+
+```bash
+cd remotion
+npx remotion render src/index.ts FxOverlay out/fx.mp4 --props=examples/fx-overlay.json
+```
+
+`examples/fx-overlay.json` は全イベント型を 1 回ずつ含む 14 秒のサンプル(外部素材ゼロ)。
+効果の見た目を確かめたいときは、これを複製して該当イベントだけ残すのが速い。
 
 ## 手元で確認する(開発時のみ)
 

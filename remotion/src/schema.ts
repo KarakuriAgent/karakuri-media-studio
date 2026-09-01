@@ -148,3 +148,445 @@ export type TitleProps = z.infer<typeof titleSchema>;
 export type AudioProps = z.infer<typeof audioSchema>;
 export type MusicVideoProps = z.infer<typeof musicVideoSchema>;
 export type SlateProps = z.infer<typeof slateSchema>;
+
+// ---------------------------------------------------------------------------
+// FxOverlay: 出来上がった映像(base)の上に、イベントで演出を載せるコンポジション
+// ---------------------------------------------------------------------------
+//
+// すべてのイベントは「秒」で置き、フレーム換算は round(t * fps)。
+// 位置・大きさは画面比(0..1)で書くので、解像度・fps に依存しない。
+// フォントサイズだけは 1080p 基準のピクセル値で、height に応じて自動スケールされる。
+
+/**
+ * 色の書き方。
+ * - CSS の色そのまま: "#dc1428" / "red" / "rgba(0,0,0,0.5)"
+ * - theme.palette の番号: "0" / "1" / "2"
+ * - theme.palette の役割名: "accent"(=0) / "fg"(=1) / "bg"(=2)
+ */
+export const fxColorSchema = z.string();
+
+/** 画面の 9 か所。sprite の貼り付け位置に使う。 */
+export const fxAnchorSchema = z.enum([
+  'topLeft',
+  'top',
+  'topRight',
+  'left',
+  'center',
+  'right',
+  'bottomLeft',
+  'bottom',
+  'bottomRight',
+]);
+
+/** テキストを寄せる隅。 */
+export const fxCornerSchema = z.enum([
+  'topLeft',
+  'topRight',
+  'bottomLeft',
+  'bottomRight',
+  'center',
+]);
+
+/** SVG で描ける記号。生成せずに済むものはここで賄う。 */
+export const fxShapeKindSchema = z.enum([
+  'bolt', // 雷
+  'heart', // ハート
+  'speedlines', // 集中線
+  'bubble', // 吹き出し
+  'star', // 星
+  'circle', // 円(囲み)
+  'arrow', // 矢印
+  'burst', // 爆発(ギザギザの囲み)
+  'cross', // ばつ印
+]);
+
+/** 記号・スプライトの動き。 */
+export const fxMotionSchema = z.enum(['none', 'pop', 'float', 'spin', 'shake', 'stamp']);
+
+/**
+ * すべてのイベントに共通のフィールド。
+ * - `t`: 開始秒(必須)
+ * - `until` / `duration`: 終わり。どちらも無ければ型ごとの既定尺
+ * - `seed`: 乱数の種。省略時は配列内の位置から決まる(props が同じなら毎回同じ絵)
+ */
+const fxEventCommon = {
+  t: z.number().min(0),
+  until: z.number().min(0).optional(),
+  duration: z.number().min(0).optional(),
+  seed: z.number().int().optional(),
+};
+
+/** 全画面の色地に極太文字を数フレームだけ叩き込む。決めの起点。 */
+export const fxCardEventSchema = z.object({
+  ...fxEventCommon,
+  type: z.literal('card'),
+  text: z.string().default(''),
+  /** 1 枚あたりのフレーム数。 */
+  frames: z.number().int().min(1).default(5),
+  /** "背景色/文字色" を並べる。並べたぶんだけ frames ごとに切り替わる。 */
+  sequence: z.array(z.string()).default(['accent/fg', 'fg/accent', 'bg/fg']),
+  /** 傾きの振れ幅(度)。seed から ±jitterDeg の範囲で決まる。 */
+  jitterDeg: z.number().min(0).default(6),
+  /** 横ずれの振れ幅。画面幅に対する比。 */
+  jitterPx: z.number().min(0).default(0.047),
+  /** 1080p 基準の文字サイズ。 */
+  fontSize: z.number().min(1).default(420),
+  /** 背景に薄くハーフトーンの点を敷く。 */
+  halftone: z.boolean().default(true),
+});
+
+/** 反転(ネガ)を数フレーム入れ、そのあと減衰しながら画面を揺らす。card の直後に置く。 */
+export const fxInvertShakeEventSchema = z.object({
+  ...fxEventCommon,
+  type: z.literal('invertShake'),
+  /** 反転させるフレーム数(0 でシェイクだけ)。 */
+  frames: z.number().int().min(0).default(3),
+  /** 反転が明けてからシェイクが収まるまでの秒数。 */
+  shakeTail: z.number().min(0).default(0.15),
+  /** 揺れ幅。画面幅に対する比。 */
+  amplitude: z.number().min(0).default(0.0094),
+  /** 反転の代わりに白飛ばしにする。 */
+  mode: z.enum(['invert', 'flash']).default('invert'),
+});
+
+/** 決め台詞の画像を叩き込む。位置と大きさは画面比で書く。 */
+export const fxImageSlamEventSchema = z.object({
+  ...fxEventCommon,
+  type: z.literal('imageSlam'),
+  src: z.string(),
+  /** 中心の位置(画面比)。 */
+  cx: z.number().default(0.5),
+  cy: z.number().default(0.76),
+  /** 表示幅(画面幅に対する比)。 */
+  w: z.number().min(0.01).max(4).default(0.62),
+  /** 高さの上限(画面高に対する比)。超えるときは幅を詰める。 */
+  maxH: z.number().min(0.01).max(4).default(0.4),
+  /** [叩き込みはじめの倍率, 着地の倍率]。 */
+  snap: z.tuple([z.number(), z.number()]).default([1.35, 1.0]),
+  /** 叩き込みにかけるフレーム数(spring が false のときだけ使う)。 */
+  snapFrames: z.number().int().min(1).default(3),
+  /** true なら spring(行き過ぎて数フレーム揺れて着地)で入る。 */
+  spring: z.boolean().default(true),
+  /** 出た瞬間だけ白く飛ばす量(0..1)。 */
+  flash: z.number().min(0).max(1).default(0.55),
+  /** 傾き(度、反時計回りが正)。 */
+  rot: z.number().default(0),
+  /** 引きぎわに少しだけ縮める倍率。 */
+  outScale: z.number().min(0.1).default(1.0),
+});
+
+/** 等幅フォントの端末表示。lines を出し、then があれば同じ場所で差し替える。 */
+export const fxTerminalTextEventSchema = z.object({
+  ...fxEventCommon,
+  type: z.literal('terminalText'),
+  lines: z.array(z.string()).default([]),
+  /** lines のあとに差し替えて出す行。 */
+  then: z
+    .array(z.object({ text: z.string(), color: fxColorSchema.default('accent') }))
+    .default([]),
+  /** 1 段あたりのフレーム数。 */
+  frames: z.number().int().min(1).default(5),
+  corner: fxCornerSchema.default('topLeft'),
+  color: fxColorSchema.default('fg'),
+  /** 1080p 基準の文字サイズ。 */
+  fontSize: z.number().min(1).default(34),
+  opacity: z.number().min(0).max(1).default(1),
+  /** 1 文字ずつ打ち出す(起動シーケンス風)。 */
+  typing: z.boolean().default(false),
+  /** typing のときの打鍵速度(文字/秒)。 */
+  cps: z.number().min(1).default(24),
+  /** 末尾にカーソルを点滅させる。 */
+  cursor: z.boolean().default(false),
+});
+
+/** 全画面を塗りつぶす板。ブレイクの黒画面・タイトルカード・章の切れ目に使う。 */
+export const fxScreenEventSchema = z.object({
+  ...fxEventCommon,
+  type: z.literal('screen'),
+  bg: fxColorSchema.default('bg'),
+  text: z.string().default(''),
+  textColor: fxColorSchema.default('fg'),
+  /** 1080p 基準の文字サイズ。 */
+  fontSize: z.number().min(1).default(40),
+  /** 等幅で描くか(端末風)。false なら見出し用のゴシック。 */
+  mono: z.boolean().default(true),
+  /** 中央に貼るロゴなどの画像(任意)。 */
+  src: z.string().optional(),
+  /** 画像の幅(画面幅に対する比)。 */
+  imageWidth: z.number().min(0.01).max(2).default(0.44),
+  /** 頭の数フレームを走査線ずれ + RGB 分離で荒らしてから確定させる。 */
+  glitch: z.boolean().default(false),
+  glitchFrames: z.number().int().min(1).default(3),
+});
+
+/** 走査線ずれ + ブロックノイズを数フレーム。カットの継ぎ目に差す。 */
+export const fxGlitchCutEventSchema = z.object({
+  ...fxEventCommon,
+  type: z.literal('glitchCut'),
+  frames: z.number().int().min(1).default(3),
+  /** 走査線ずれの量。画面幅に対する比。 */
+  displace: z.number().min(0).default(0.02),
+  /** ブロックノイズの枚数。 */
+  blocks: z.number().int().min(0).default(14),
+  /** RGB 分離の量。画面幅に対する比。 */
+  chroma: z.number().min(0).default(0.004),
+});
+
+/** 画面をタイルに割って落とす。ベースの絵は割れる直前で止める。 */
+export const fxCollapseEventSchema = z.object({
+  ...fxEventCommon,
+  type: z.literal('collapse'),
+  cols: z.number().int().min(1).max(24).default(6),
+  rows: z.number().int().min(1).max(24).default(4),
+  /** 落ちきるまでの秒数(duration を書かなければこれが尺)。 */
+  fallSeconds: z.number().min(0.05).default(0.6),
+  background: fxColorSchema.default('bg'),
+});
+
+/** CRT の電源断。横一線に潰れて白点になって消える。 */
+export const fxCrtOffEventSchema = z.object({
+  ...fxEventCommon,
+  type: z.literal('crtOff'),
+  frames: z.number().int().min(2).default(8),
+  color: fxColorSchema.default('#ffffff'),
+});
+
+/** 透過画像を 1 枚貼る。ロゴ押印・小物・キャラの立ち絵。 */
+export const fxSpriteEventSchema = z.object({
+  ...fxEventCommon,
+  type: z.literal('sprite'),
+  src: z.string(),
+  /** anchor を書くと隅・辺に寄せる。cx / cy を書けばそちらが優先。 */
+  anchor: fxAnchorSchema.default('center'),
+  cx: z.number().optional(),
+  cy: z.number().optional(),
+  /** anchor で寄せるときの余白(画面幅に対する比)。 */
+  margin: z.number().min(0).default(0.05),
+  /** 表示幅(画面幅に対する比)。 */
+  w: z.number().min(0.01).max(4).default(0.18),
+  /**
+   * 高さの上限(画面高に対する比)。anchor で寄せるときの「箱」の高さでもあるので、
+   * 素材の見た目の高さに近い値にしておくと隅にきちんと付く。
+   */
+  maxH: z.number().min(0.01).max(4).default(0.18),
+  rot: z.number().default(0),
+  opacity: z.number().min(0).max(1).default(1),
+  motion: fxMotionSchema.default('stamp'),
+  /** 出入りのフェード秒(0 で瞬間)。決めでは 0 のまま。 */
+  fade: z.number().min(0).default(0),
+});
+
+/** 同じ画像を、キーフレームで指定した位置へ次々に貼って積む。 */
+export const fxStickerStackEventSchema = z.object({
+  ...fxEventCommon,
+  type: z.literal('stickerStack'),
+  src: z.string(),
+  target: z.object({
+    /** 座標の単位。px はコンポジションのピクセル空間、ratio は画面比。 */
+    space: z.enum(['px', 'ratio']).default('px'),
+    keyframes: z
+      .array(
+        z.object({
+          /** この位置になる秒。 */
+          t: z.number().min(0),
+          x: z.number(),
+          y: z.number(),
+          /** 表示幅。 */
+          w: z.number().min(0),
+          rot: z.number().default(0),
+          /** この時刻に貼るか(false のキーフレームでは消える)。 */
+          visible: z.boolean().default(true),
+        }),
+      )
+      .default([]),
+  }),
+  /** 貼った直後の 3 フレームで大きめから落として着地させる倍率。 */
+  pop: z.number().min(1).default(1.5),
+  /** この秒から外へ吹き飛ばして消す(省略時は吹き飛ばさない)。 */
+  blowOutAt: z.number().min(0).optional(),
+  blowOutSeconds: z.number().min(0.05).default(0.5),
+  opacity: z.number().min(0).max(1).default(1),
+});
+
+/** 隅に出す小さなクレジット。白 + 縁取り。 */
+export const fxCreditsEventSchema = z.object({
+  ...fxEventCommon,
+  type: z.literal('credits'),
+  lines: z.array(z.string()).default([]),
+  corner: fxCornerSchema.default('topRight'),
+  /** 1080p 基準の文字サイズ。 */
+  fontSize: z.number().min(1).default(34),
+  color: fxColorSchema.default('fg'),
+  outlineColor: fxColorSchema.default('accent'),
+  /** 縁取りの太さ(1080p 基準 px、0 で無効)。 */
+  outlineWidth: z.number().min(0).default(4),
+  margin: z.number().min(0).default(0.045),
+  opacity: z.number().min(0).max(1).default(1),
+});
+
+/** 歌詞テロップ。行そのままか、1 文字ずつ送るか。 */
+export const fxLyricEventSchema = z.object({
+  ...fxEventCommon,
+  type: z.literal('lyric'),
+  text: z.string(),
+  /** karaoke のときの 1 文字ごとの発音秒。省略時は表示区間を等分する。 */
+  chars: z.array(z.object({ c: z.string(), s: z.number().min(0) })).default([]),
+  style: z.enum(['line', 'karaoke']).default('line'),
+  position: z.enum(['top', 'center', 'bottom']).default('bottom'),
+  /** 1080p 基準の文字サイズ。 */
+  fontSize: z.number().min(1).default(56),
+  color: fxColorSchema.default('fg'),
+  /** karaoke で「まだ歌っていない」文字の色。 */
+  pendingColor: fxColorSchema.default('rgb(168,170,175)'),
+  outlineColor: fxColorSchema.default('accent'),
+  /** 発音した瞬間の縁の色。 */
+  activeColor: fxColorSchema.default('#5ad7ff'),
+  outlineWidth: z.number().min(0).default(7),
+  /** 行頭の数フレームだけ少し大きく出す。 */
+  snapFrames: z.number().int().min(0).default(2),
+  opacity: z.number().min(0).max(1).default(1),
+});
+
+/** 終わりの黒 + ロゴ。 */
+export const fxEndCardEventSchema = z.object({
+  ...fxEventCommon,
+  type: z.literal('endCard'),
+  /** ロゴが出るまでの黒の秒数。 */
+  black: z.number().min(0).default(1.5),
+  bg: fxColorSchema.default('bg'),
+  logo: z
+    .object({
+      src: z.string(),
+      /** ロゴを出しておく秒数。 */
+      duration: z.number().min(0.1).default(2.0),
+      /** 幅(画面幅に対する比)。 */
+      w: z.number().min(0.01).max(2).default(0.34),
+    })
+    .optional(),
+  text: z.string().default(''),
+  textColor: fxColorSchema.default('fg'),
+  fontSize: z.number().min(1).default(44),
+});
+
+/** 隅で拍を刻むマーカー列。間奏の「間」を持たせるのに使う。 */
+export const fxBeatMarkerEventSchema = z.object({
+  ...fxEventCommon,
+  type: z.literal('beatMarker'),
+  /** 1 拍の秒数。 */
+  beat: z.number().min(0.02).default(0.5),
+  /** マーカーの数。 */
+  count: z.number().int().min(1).max(32).default(8),
+  corner: fxCornerSchema.default('bottomRight'),
+  color: fxColorSchema.default('accent'),
+  idleColor: fxColorSchema.default('fg'),
+  /** 1080p 基準のマーカー 1 個の大きさ。 */
+  size: z.number().min(1).default(18),
+  /** 隅に添える等幅のラベル。 */
+  label: z.string().default(''),
+  /** この拍数ごとにブロックノイズを 1 回差す(0 で無効)。 */
+  glitchEvery: z.number().int().min(0).default(8),
+  opacity: z.number().min(0).max(1).default(0.9),
+});
+
+/** SVG で描く記号。生成した素材を使うまでもないものはこれで足りる。 */
+export const fxShapeEventSchema = z.object({
+  ...fxEventCommon,
+  type: z.literal('shape'),
+  shape: fxShapeKindSchema.default('bolt'),
+  /** 中心(画面比)。 */
+  cx: z.number().default(0.5),
+  cy: z.number().default(0.5),
+  /** 大きさ(画面幅に対する比)。 */
+  size: z.number().min(0.01).max(3).default(0.2),
+  /** 塗りの色("none" で塗らない)。 */
+  fill: fxColorSchema.default('accent'),
+  /** 線の色("none" で描かない)。 */
+  stroke: fxColorSchema.default('none'),
+  /** 線の太さ(1080p 基準 px)。 */
+  strokeWidth: z.number().min(0).default(8),
+  rot: z.number().default(0),
+  opacity: z.number().min(0).max(1).default(1),
+  motion: fxMotionSchema.default('pop'),
+  /** bubble のときに中に入れる文字。 */
+  text: z.string().default(''),
+  textColor: fxColorSchema.default('bg'),
+  fontSize: z.number().min(1).default(48),
+});
+
+export const fxEventSchema = z.discriminatedUnion('type', [
+  fxCardEventSchema,
+  fxInvertShakeEventSchema,
+  fxImageSlamEventSchema,
+  fxTerminalTextEventSchema,
+  fxScreenEventSchema,
+  fxGlitchCutEventSchema,
+  fxCollapseEventSchema,
+  fxCrtOffEventSchema,
+  fxSpriteEventSchema,
+  fxStickerStackEventSchema,
+  fxCreditsEventSchema,
+  fxLyricEventSchema,
+  fxEndCardEventSchema,
+  fxBeatMarkerEventSchema,
+  fxShapeEventSchema,
+]);
+
+/** 全編に薄く掛ける系。BAN では最終的に OFF にした。既定も OFF。 */
+export const fxAmbientSchema = z.object({
+  scanline: z.boolean().default(false),
+  vignette: z.boolean().default(false),
+  scanlineAlpha: z.number().min(0).max(1).default(0.05),
+  /** 走査線の周期(1080p 基準 px)。 */
+  scanlinePeriod: z.number().min(2).default(4),
+  vignetteAlpha: z.number().min(0).max(1).default(0.35),
+});
+
+/** 配色とフォント。イベントの色は "accent" / "fg" / "bg" / "0" / "1" / "2" で参照できる。 */
+export const fxThemeSchema = z.object({
+  /** [accent(0), fg(1), bg(2)] の順。4 つ目以降は "3" … で参照する。 */
+  palette: z.array(z.string()).default(['#dc1428', '#f5f5f5', '#08080a']),
+  /** 見出し・歌詞のフォント(空なら fonts.ts の既定)。 */
+  fontFamily: z.string().default(''),
+  /** 端末表示のフォント(空なら fonts.ts の既定)。 */
+  monoFamily: z.string().default(''),
+});
+
+/** 演出を載せる下地。書かなければ backgroundColor だけの素の板になる。 */
+export const fxBaseSchema = z.object({
+  src: z.string(),
+  /** 素材側の頭出し秒(動画のみ)。 */
+  in: z.number().min(0).default(0),
+  fit: z.enum(['cover', 'contain', 'fill']).default('fill'),
+  /** 動画の音を鳴らすか。既定は鳴らさない(音は audio で別に足す)。 */
+  muted: z.boolean().default(true),
+  volume: z.number().min(0).max(1).default(0),
+  playbackRate: z.number().min(0.1).max(4).default(1),
+});
+
+export const fxOverlaySchema = z.object({
+  fps: z.number().min(1).max(120).default(30),
+  width: z.number().min(16).default(1920),
+  height: z.number().min(16).default(1080),
+  /** 明示的に尺を決めたいとき(秒)。省略時は base の尺と events の終端から自動算出。 */
+  durationInSeconds: z.number().min(0.1).optional(),
+  /** base が無いところ・base が透けるところの色。 */
+  backgroundColor: z.string().default('#000000'),
+  /** 全体の乱数の種。イベント側で seed を書かなければ、これと並び順から決まる。 */
+  seed: z.number().int().default(1),
+  base: fxBaseSchema.optional(),
+  audio: audioSchema.optional(),
+  theme: fxThemeSchema.default(() => fxThemeSchema.parse({})),
+  ambient: fxAmbientSchema.default(() => fxAmbientSchema.parse({})),
+  events: z.array(fxEventSchema).default([]),
+});
+
+export type FxAnchor = z.infer<typeof fxAnchorSchema>;
+export type FxCorner = z.infer<typeof fxCornerSchema>;
+export type FxShapeKind = z.infer<typeof fxShapeKindSchema>;
+export type FxMotion = z.infer<typeof fxMotionSchema>;
+export type FxEvent = z.infer<typeof fxEventSchema>;
+export type FxEventOf<T extends FxEvent['type']> = Extract<FxEvent, { type: T }>;
+export type FxTheme = z.infer<typeof fxThemeSchema>;
+export type FxAmbient = z.infer<typeof fxAmbientSchema>;
+export type FxBase = z.infer<typeof fxBaseSchema>;
+export type FxOverlayProps = z.infer<typeof fxOverlaySchema>;

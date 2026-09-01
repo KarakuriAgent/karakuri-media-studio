@@ -13,3 +13,18 @@ export const FONT_FAMILY = [
   'system-ui',
   'sans-serif',
 ].join(', ');
+
+/**
+ * 端末表示・カウンタなど「等幅で出したい」ところで使う。
+ * こちらもインストール済みのフォントだけを並べる(Web フォントは使わない)。
+ */
+export const MONO_FONT_FAMILY = [
+  '"DejaVu Sans Mono"',
+  '"Noto Sans Mono CJK JP"',
+  '"Noto Sans Mono"',
+  '"Liberation Mono"',
+  '"Menlo"',
+  '"Consolas"',
+  'ui-monospace',
+  'monospace',
+].join(', ');

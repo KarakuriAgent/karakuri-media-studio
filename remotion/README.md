@@ -38,6 +38,7 @@ npx remotion studio
 | ID | 用途 | 尺 |
 |---|---|---|
 | `MusicVideo` | カット割り・トランジション・歌詞・BGM を props で組み上げる MV 本体 | props から自動算出 |
+| `FxOverlay` | 出来上がった映像(mp4)の上に、イベント駆動で文字演出・エフェクトを載せる | props から自動算出 |
 | `Slate` | 動作確認用。props のテキストを表示するだけ | `durationInSeconds`(既定 5 秒) |
 
 解像度・fps・尺はすべて props から `calculateMetadata` で決まります。
@@ -51,6 +52,9 @@ npx remotion render src/index.ts Slate out/slate.mp4 --props=examples/slate.json
 
 # サンプル MV(外部素材に依存しない 8 秒)
 npx remotion render src/index.ts MusicVideo out/music-video.mp4 --props=examples/music-video.json
+
+# 演出レイヤーのサンプル(全イベント型を 1 回ずつ含む 14 秒)
+npx remotion render src/index.ts FxOverlay out/fx-overlay.mp4 --props=examples/fx-overlay.json
 
 # コンポジション一覧(アプリ側の一覧取得 API と同じもの)
 npx remotion compositions src/index.ts
@@ -161,6 +165,78 @@ npx remotion compositions src/index.ts
 | 疑似ソース(グラデーション) | `gradient:135:#223344,#5566aa` | 角度は省略可(既定 180) |
 
 拡張子が `.mp4` / `.webm` / `.mov` / `.mkv` / `.m4v` / `.avi` なら動画、それ以外は静止画として扱います。
+
+### `FxOverlay`
+
+**タイムラインで組み上げた mp4 の上に、演出のレイヤーを載せる**ためのコンポジション。
+`MusicVideo` が「カットを並べて 1 本にする」のに対して、こちらは「もう出来ている 1 本に
+文字とエフェクトを足す」。BAN!BAN!BAN! の MV で使った演出コードを props 駆動に一般化したもの。
+
+- 時間は秒、位置と大きさは**画面比(0..1)**、`fontSize` は 1080p 基準。解像度・fps に依存しない
+- 秒 → フレームの変換は `round(t * fps)`(切り上げると決めが 1 フレーム遅れる)
+- 傾き・横ずれ・ノイズの位置は `seed` から決まるので、同じ props なら毎回同じ絵になる
+- **イベントを書かなければ何も乗らない**。無音区間・見せ場でない所には単に置かない
+
+```jsonc
+{
+  "fps": 24, "width": 1280, "height": 720,
+  "base":  { "src": "http://localhost:8000/outputs/xxxx/video.mp4", "muted": true },
+  "audio": { "src": "http://localhost:8000/outputs/yyyy/audio.wav", "startFrom": 0 },
+  "durationInSeconds": 197.0,        // 省略時は base の尺と events の終端の大きいほう
+  "theme": {
+    "palette": ["#dc1428", "#f5f5f5", "#08080a"],   // [accent, fg, bg]
+    "fontFamily": "", "monoFamily": ""              // 空なら src/fonts.ts の既定
+  },
+  "ambient": { "scanline": false, "vignette": false },
+  "seed": 1,
+  "events": [
+    { "t": 43.9, "type": "card", "text": "BAN", "frames": 5,
+      "sequence": ["accent/fg", "fg/accent", "bg/fg"] },
+    { "t": 44.11, "type": "invertShake", "frames": 3, "shakeTail": 0.15 },
+    { "t": 45.96, "until": 47.9, "type": "imageSlam",
+      "src": "http://localhost:8000/outputs/zzzz/logo.png",
+      "cx": 0.5, "cy": 0.76, "w": 0.62, "maxH": 0.4, "flash": 0.55, "spring": true }
+  ]
+}
+```
+
+`events[]` は `type` で形が変わる(zod の discriminated union)。共通のフィールドは
+
+| フィールド | 意味 |
+|---|---|
+| `t` | 開始秒(**必須**) |
+| `until` / `duration` | 終わり。どちらも書かなければ型ごとの既定尺 |
+| `seed` | 乱数の種。省略時は `seed`(全体)と並び順と `t` から決まる |
+
+イベント型は次の 15 種。
+
+| type | 何が起きるか | よく使うフィールド |
+|---|---|---|
+| `card` | 全画面の色地に極太文字を数フレーム叩き込む | `text` / `frames` / `sequence`("背景色/文字色") / `jitterDeg` / `jitterPx` |
+| `invertShake` | 反転(ネガ)数フレーム + 減衰シェイク。`card` の直後に置く | `frames` / `shakeTail` / `amplitude` / `mode`(`invert` \| `flash`) |
+| `imageSlam` | 決め台詞の画像を叩き込む | `src` / `cx` / `cy` / `w` / `maxH` / `snap` / `spring` / `flash` |
+| `terminalText` | 等幅の端末表示。`then` で同じ場所を差し替え | `lines` / `then` / `frames` / `corner` / `typing` / `cps` / `cursor` |
+| `screen` | 全画面を塗る板(黒画面・タイトルカード) | `bg` / `text` / `src` / `glitch` |
+| `glitchCut` | 走査線ずれ + ブロックノイズを数フレーム | `frames` / `displace` / `blocks` / `chroma` |
+| `collapse` | 画面をタイルに割って落とす | `cols` / `rows` / `fallSeconds` |
+| `crtOff` | CRT の電源断(横一線 → 白点 → 消灯) | `frames` |
+| `sprite` | 透過画像を 1 枚貼る | `src` / `anchor` または `cx`/`cy` / `w` / `maxH` / `motion` |
+| `stickerStack` | 同じ画像をキーフレームの位置へ次々に貼って積む | `src` / `target.keyframes[]`(`t`/`x`/`y`/`w`/`rot`) / `blowOutAt` |
+| `credits` | 隅の小さなクレジット(白 + 縁取り) | `lines` / `corner` / `fontSize` |
+| `lyric` | 歌詞テロップ。行そのまま or 1 文字送り | `text` / `chars[]`(`c`/`s`) / `style`(`line` \| `karaoke`) / `position` |
+| `endCard` | 終わりの黒 + ロゴ | `black` / `logo`(`src`/`duration`/`w`) / `text` |
+| `beatMarker` | 隅で拍を刻むマーカー列(間奏の間つなぎ) | `beat` / `count` / `corner` / `label` / `glitchEvery` |
+| `shape` | SVG で描く記号 | `shape` / `cx` / `cy` / `size` / `fill` / `stroke` / `motion` |
+
+`shape` で描けるもの: `bolt`(雷) / `heart` / `speedlines`(集中線) / `bubble`(吹き出し・`text` 可) /
+`star` / `circle` / `arrow` / `burst`(爆発) / `cross`(ばつ)。
+`motion` は `none` / `pop` / `float` / `spin` / `shake` / `stamp`。
+
+色は `theme.palette` の役割名(`accent` = 0 / `fg` = 1 / `bg` = 2)か番号(`"0"`)で書けるほか、
+CSS の色(`#dc1428` / `red`)をそのまま書いてもよい。
+
+`base.src` / `sprite.src` などに書けるものは `MusicVideo` の `cuts[].src` と同じ(上の「`src` に書けるもの」)。
+サンプルは `examples/fx-overlay.json`(外部素材ゼロ・全イベント型を 1 回ずつ・14 秒)。
 
 ### `Slate`
 

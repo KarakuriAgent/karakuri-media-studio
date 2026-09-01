@@ -1070,6 +1070,10 @@ ComfyUI と並ぶもう 1 つの生成経路。Remotion プロジェクト（Nod
   無効のあいだは一覧も投入も 400
 - 使うプロジェクトは**常に同梱の `remotion/`**（場所の設定は持たない）。composition を
   足す・直すときは `remotion/src/` を編集する
+- 同梱の composition は 3 つ: `MusicVideo`（カット割り・トランジション・歌詞・BGM）/
+  `FxOverlay`（出来上がった mp4 の上にイベント駆動で文字演出・エフェクトを載せる。
+  `card` / `imageSlam` / `glitchCut` / `lyric` など 15 種のイベント）/ `Slate`（疎通確認）。
+  props の正本は `remotion/src/schema.ts`（zod）
 - 依存（`remotion/node_modules/`）は `run.sh` が初回に入れる（Docker で動かす場合は
   ホスト側で `npm --prefix remotion install`）。入っていなければその旨のエラーで
   400 になる

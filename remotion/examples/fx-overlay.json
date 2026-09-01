@@ -1,0 +1,141 @@
+{
+  "fps": 24,
+  "width": 1280,
+  "height": 720,
+  "backgroundColor": "#08080a",
+  "seed": 7,
+  "base": { "src": "gradient:200:#1b2a4a,#0a0f1c" },
+  "theme": {
+    "palette": ["#dc1428", "#f5f5f5", "#08080a"]
+  },
+  "ambient": { "scanline": true, "vignette": true, "scanlineAlpha": 0.05, "vignetteAlpha": 0.3 },
+  "events": [
+    {
+      "t": 0.0,
+      "until": 2.6,
+      "type": "terminalText",
+      "lines": ["> BOOT karakuri-fx", "> LOAD overlay.json", "> READY"],
+      "typing": true,
+      "cursor": true,
+      "corner": "topLeft",
+      "fontSize": 30,
+      "opacity": 0.8
+    },
+    {
+      "t": 0.4,
+      "until": 3.0,
+      "type": "beatMarker",
+      "beat": 0.5,
+      "count": 8,
+      "corner": "bottomRight",
+      "label": "INTRO"
+    },
+    {
+      "t": 1.2,
+      "until": 3.0,
+      "type": "sprite",
+      "src": "fx-sample-logo.png",
+      "anchor": "bottomLeft",
+      "w": 0.22,
+      "maxH": 0.09,
+      "motion": "stamp"
+    },
+    {
+      "t": 3.0,
+      "until": 4.2,
+      "type": "screen",
+      "bg": "bg",
+      "text": "> ADMIN OVERRIDE ... OK",
+      "fontSize": 38,
+      "glitch": true
+    },
+    {
+      "t": 4.2,
+      "type": "card",
+      "text": "BAN",
+      "frames": 4,
+      "sequence": ["accent/fg", "fg/accent", "bg/fg"],
+      "fontSize": 420
+    },
+    { "t": 4.7, "type": "invertShake", "frames": 3, "shakeTail": 0.2 },
+    {
+      "t": 5.0,
+      "until": 6.4,
+      "type": "shape",
+      "shape": "speedlines",
+      "cx": 0.5,
+      "cy": 0.72,
+      "size": 1.1,
+      "fill": "accent",
+      "strokeWidth": 6,
+      "opacity": 0.45,
+      "motion": "spin"
+    },
+    {
+      "t": 5.0,
+      "until": 7.0,
+      "type": "imageSlam",
+      "src": "fx-sample-logo.png",
+      "cx": 0.5,
+      "cy": 0.72,
+      "w": 0.52,
+      "maxH": 0.22,
+      "flash": 0.55,
+      "spring": true
+    },
+    {
+      "t": 6.6,
+      "until": 9.0,
+      "type": "lyric",
+      "text": "今日も見張ってる",
+      "style": "karaoke",
+      "position": "bottom",
+      "fontSize": 56,
+      "chars": [
+        { "c": "今", "s": 6.6 },
+        { "c": "日", "s": 6.85 },
+        { "c": "も", "s": 7.1 },
+        { "c": "見", "s": 7.4 },
+        { "c": "張", "s": 7.7 },
+        { "c": "っ", "s": 7.95 },
+        { "c": "て", "s": 8.2 },
+        { "c": "る", "s": 8.5 }
+      ]
+    },
+    { "t": 7.2, "type": "glitchCut", "frames": 3 },
+    {
+      "t": 7.6,
+      "until": 10.0,
+      "type": "stickerStack",
+      "src": "fx-sample-sticker.png",
+      "target": {
+        "space": "px",
+        "keyframes": [
+          { "t": 7.6, "x": 320, "y": 250, "w": 110, "rot": -8 },
+          { "t": 8.6, "x": 640, "y": 300, "w": 130, "rot": 4 },
+          { "t": 9.2, "x": 900, "y": 230, "w": 110, "rot": -6 }
+        ]
+      },
+      "pop": 1.6,
+      "blowOutAt": 9.5,
+      "blowOutSeconds": 0.5
+    },
+    { "t": 9.4, "type": "collapse", "cols": 6, "rows": 4, "fallSeconds": 0.7 },
+    {
+      "t": 10.2,
+      "until": 11.8,
+      "type": "credits",
+      "lines": ["#カラクリスタジオ", "FxOverlay sample"],
+      "corner": "topRight",
+      "fontSize": 34
+    },
+    { "t": 11.8, "type": "crtOff", "frames": 8 },
+    {
+      "t": 12.2,
+      "type": "endCard",
+      "black": 0.6,
+      "logo": { "src": "fx-sample-logo.png", "duration": 1.2, "w": 0.36 },
+      "text": "karakuri media studio"
+    }
+  ]
+}
