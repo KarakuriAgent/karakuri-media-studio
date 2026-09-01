@@ -109,7 +109,7 @@ export default function ProjectPicker({
   }
 
   return (
-    <div className="mx-auto w-full max-w-3xl space-y-3 p-4">
+    <div className="w-full space-y-3 p-4">
       {/* この画面そのものの名前（下の Section 見出しはフォームの見出しなので、
           ページの名前としては弱い）。 */}
       <div className="space-y-1">
