@@ -2,11 +2,18 @@
 //
 // - chroma: RGB 分離(赤を右・青を左へずらして screen 合成)
 // - displace: feTurbulence を横方向だけの変位に潰した「走査線ずれ」
+// - insetBorder: 画像のアルファを削って、輪郭の内側に残る縁(罫線)だけを取り出す
+//
+// この 2 つを重ねた「出際に飛ばして消す」ラッパー(FxOutGlitch)もここに置く。
 //
 // id は内容(量・seed)から作る。フレームごとに seed が変われば id も変わるので、
 // 前のフレームの定義を掴んだままになることがない。
 
 import React from 'react';
+import { useCurrentFrame, useVideoConfig } from 'remotion';
+import { chromaPixels, useFxCtx } from '../lib/fx';
+import { rng } from '../lib/rng';
+import type { FxOutGlitch as OutGlitchSpec } from '../schema';
 
 export const chromaId = (amount: number) => `fx-chroma-${Math.round(amount * 10)}`;
 export const displaceId = (scale: number, seed: number) => `fx-disp-${Math.round(scale)}-${seed}`;
@@ -75,3 +82,71 @@ export const DisplaceDefs: React.FC<{ scale: number; seed: number }> = ({ scale,
     </defs>
   </svg>
 );
+
+/** 内側罫線のフィルタ id。太さと色が同じなら使い回せる。 */
+export const insetBorderId = (width: number, color: string) =>
+  `fx-inset-${Math.round(width * 10)}-${color.replace(/[^a-zA-Z0-9]/g, '')}`;
+
+/**
+ * 輪郭の内側の罫線。
+ * アルファを width だけ削った芯を作り、元のシルエットから芯を抜いてリングだけ残す。
+ * 元絵に重ねて使う(元絵そのものは触らない)。
+ */
+export const InsetBorderDefs: React.FC<{ width: number; color: string }> = ({ width, color }) => (
+  <svg width={0} height={0} style={{ position: 'absolute' }} aria-hidden>
+    <defs>
+      <filter id={insetBorderId(width, color)} x="0%" y="0%" width="100%" height="100%">
+        <feFlood floodColor={color} result="col" />
+        <feComposite in="col" in2="SourceAlpha" operator="in" result="sil" />
+        <feMorphology in="SourceAlpha" operator="erode" radius={width} result="core" />
+        <feComposite in="sil" in2="core" operator="out" />
+      </filter>
+    </defs>
+  </svg>
+);
+
+/**
+ * 出際の数フレームだけ、走査線ずれ + RGB 分離で children を飛ばして消す。
+ * BAN!BAN!BAN! の breakCarryLyric(黒画面に残した歌詞を 2f のグリッチで消す)と同じ消し方。
+ *
+ * out が無ければ children をそのまま返す(既定は無効)。イベントの Sequence の中で使う。
+ */
+export const FxOutGlitch: React.FC<{
+  out?: OutGlitchSpec;
+  seed: number;
+  children: React.ReactNode;
+}> = ({ out, seed, children }) => {
+  const frame = useCurrentFrame();
+  const { durationInFrames } = useVideoConfig();
+  const ctx = useFxCtx();
+  // 出際からのフレーム数。0 未満(まだ出際ではない)なら素通し。
+  const gi = frame - (durationInFrames - (out?.frames ?? 0));
+  if (!out || gi < 0) {
+    return <>{children}</>;
+  }
+  // 1f 目が荒れて、最後の 1f でほぼ飛ぶ
+  const k = 1 - gi / out.frames;
+  const disp = Math.max(2, Math.round(out.displace * ctx.scale * (1.2 - k)));
+  const chroma = Math.max(1, Math.round(chromaPixels(out.chroma, ctx.scale) * (1.2 - k)));
+  const r = rng(seed + gi * 3313 + 11);
+  const shake = 14 * ctx.scale;
+  return (
+    <>
+      <DisplaceDefs scale={disp} seed={gi + 41} />
+      <ChromaDefs amount={chroma} />
+      <div
+        style={{
+          position: 'absolute',
+          inset: 0,
+          opacity: 0.9 * k,
+          filter: `url(#${displaceId(disp, gi + 41)}) url(#${chromaId(chroma)})`,
+          transform: `translate(${Math.round(r.range(-shake, shake))}px, ${Math.round(
+            r.range(-shake / 4, shake / 4),
+          )}px)`,
+        }}
+      >
+        {children}
+      </div>
+    </>
+  );
+};

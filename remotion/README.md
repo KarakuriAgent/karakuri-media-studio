@@ -219,18 +219,18 @@ npx remotion compositions src/index.ts
 
 | type | 何が起きるか | よく使うフィールド |
 |---|---|---|
-| `card` | 全画面の色地に極太文字を数フレーム叩き込む | `text` / `frames` / `sequence`("背景色/文字色") / `jitterDeg` / `jitterPx` / `wipe` / `chroma` |
+| `card` | 全画面の色地に極太文字を数フレーム叩き込む | `text` / `frames` / `sequence`("背景色/文字色") / `jitterDeg` / `jitterPx` / `wipe` / `chroma` / `halftone`(`true` or `{alpha,dot}`) |
 | `invertShake` | 反転(ネガ)数フレーム + 減衰シェイク。`card` の直後に置く | `frames` / `shakeTail` / `amplitude` / `mode`(`invert` \| `flash`) / `hitStop` |
-| `imageSlam` | 決め台詞の画像を叩き込む | `src` / `cx` / `cy` / `w` / `maxH` / `snap` / `spring` / `flash` / `tint` |
-| `terminalText` | 等幅の端末表示。`then` で同じ場所を差し替え | `lines` / `then` / `frames` / `corner` または `cx`/`cy` / `margin` / `typing` / `cps` / `cursor` |
+| `imageSlam` | 決め台詞の画像を叩き込む | `src` / `cx` / `cy` / `w` / `maxH` / `snap` / `spring` / `flash` / `tint` / `outGlitch` |
+| `terminalText` | 等幅の端末表示。`then` で同じ場所を差し替え | `lines` / `then` / `frames` / `corner` または `cx`/`cy` / `margin` / `typing` / `cps` / `cursor` / `outGlitch` |
 | `screen` | 全画面を塗る板(黒画面・タイトルカード) | `bg` / `text` / `src` / `glitch` |
 | `glitchCut` | 走査線ずれ + ブロックノイズを数フレーム | `frames` / `displace` / `blocks` / `chroma` |
 | `collapse` | 画面をタイルに割って落とす | `cols` / `rows` / `fallSeconds` |
 | `crtOff` | CRT の電源断(横一線 → 白点 → 消灯) | `frames` |
-| `sprite` | 透過画像を 1 枚貼る | `src` / `anchor` または `cx`/`cy` / `w` / `maxH` / `motion` / `tint` / `border` / `halftone` / `jitter` |
-| `stickerStack` | 同じ画像をキーフレームの位置へ次々に貼って積む | `src` / `target.keyframes[]`(`t`/`x`/`y`/`w`/`rot`/`visible`) / `blowOutAt` / `border` / `halftone` / `jitter` |
+| `sprite` | 透過画像を 1 枚貼る | `src` / `anchor` または `cx`/`cy` / `w` / `maxH` / `motion` / `tint` / `border`(`inset` 可) / `halftone`(`0..1` or `{alpha,dot}`) / `jitter` / `outGlitch` |
+| `stickerStack` | 同じ画像をキーフレームの位置へ次々に貼って積む | `src` / `target.keyframes[]`(`t`/`x`/`y`/`w`/`rot`/`visible`/`pop`) / `blowOutAt` / `border`(`inset` 可) / `halftone`(`0..1` or `{alpha,dot}`) / `jitter` |
 | `credits` | 隅の小さなクレジット(白 + 縁取り) | `lines`(文字列 or `{text,fontSize,color}`) / `corner` または `cx`/`cy` / `fontSize` |
-| `lyric` | 歌詞テロップ。行そのまま or 1 文字送り | `text` / `chars[]`(`c`/`s`) / `style`(`line` \| `karaoke`) / `position` |
+| `lyric` | 歌詞テロップ。行そのまま or 1 文字送り | `text` / `chars[]`(`c`/`s`) / `style`(`line` \| `karaoke`) / `position` / `outGlitch` |
 | `endCard` | 終わりの黒 + ロゴ | `black` / `logo`(`src`/`duration`/`w`/`tint`) / `text` |
 | `beatMarker` | 隅で拍を刻むマーカー列(間奏の間つなぎ) | `beat` / `count` / `corner` / `label` / `glitchEvery` |
 | `shape` | SVG で描く記号 | `shape` / `cx` / `cy` / `size` / `fill` / `stroke` / `motion` |
@@ -244,7 +244,8 @@ CSS の色(`#dc1428` / `red`)をそのまま書いてもよい。
 
 `base.src` / `sprite.src` などに書けるものは `MusicVideo` の `cuts[].src` と同じ(上の「`src` に書けるもの」)。
 サンプルは `examples/fx-overlay.json`(外部素材ゼロ・全イベント型を 1 回ずつ・14 秒。
-`z` / `card.wipe` / `invertShake.hitStop` / `sticker` の `border`・`halftone`・`jitter` / `tint` など
+`z` / `card.wipe` / `invertShake.hitStop` / `sticker` の `border`・`halftone`・`jitter` / `tint` /
+`outGlitch`(出際を走査線ずれ + RGB 分離で飛ばして消す)・`border.inset`・キーフレームの `pop: false` など
 追加オプションも一通り入っている)。
 
 ### `Slate`

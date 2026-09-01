@@ -18,6 +18,7 @@ import { FxCollapse } from './fx/Collapse';
 import { FxCredits } from './fx/Credits';
 import { FxCrtOff } from './fx/CrtOff';
 import { FxEndCard } from './fx/EndCard';
+import { FxOutGlitch } from './fx/filters';
 import { FxGlitchCut, glitchCutState } from './fx/GlitchCut';
 import { FxImageSlam } from './fx/ImageSlam';
 import { invertShakeState } from './fx/InvertShake';
@@ -81,16 +82,29 @@ const prepare = (events: readonly FxEvent[], fps: number, globalSeed: number): P
 const isActive = (p: Prepared, frame: number) =>
   frame >= p.from && frame < p.from + p.durationInFrames;
 
-/** イベント 1 つぶんの見た目。base を触るだけの型はここでは何も返さない。 */
+/**
+ * イベント 1 つぶんの見た目。base を触るだけの型はここでは何も返さない。
+ *
+ * outGlitch を書ける型(lyric / sprite / imageSlam / terminalText)は
+ * FxOutGlitch で包み、出際の数フレームを走査線ずれ + RGB 分離で飛ばす。
+ */
 const FxEventView: React.FC<{ prepared: Prepared }> = ({ prepared }) => {
   const { ev, seed } = prepared;
   switch (ev.type) {
     case 'card':
       return <FxCard ev={ev} seed={seed} />;
     case 'imageSlam':
-      return <FxImageSlam ev={ev} />;
+      return (
+        <FxOutGlitch out={ev.outGlitch} seed={seed}>
+          <FxImageSlam ev={ev} />
+        </FxOutGlitch>
+      );
     case 'terminalText':
-      return <FxTerminalText ev={ev} />;
+      return (
+        <FxOutGlitch out={ev.outGlitch} seed={seed}>
+          <FxTerminalText ev={ev} />
+        </FxOutGlitch>
+      );
     case 'screen':
       return <FxScreen ev={ev} seed={seed} />;
     case 'glitchCut':
@@ -98,13 +112,21 @@ const FxEventView: React.FC<{ prepared: Prepared }> = ({ prepared }) => {
     case 'crtOff':
       return <FxCrtOff ev={ev} />;
     case 'sprite':
-      return <FxSpriteEvent ev={ev} seed={seed} />;
+      return (
+        <FxOutGlitch out={ev.outGlitch} seed={seed}>
+          <FxSpriteEvent ev={ev} seed={seed} />
+        </FxOutGlitch>
+      );
     case 'stickerStack':
       return <FxStickerStack ev={ev} seed={seed} />;
     case 'credits':
       return <FxCredits ev={ev} />;
     case 'lyric':
-      return <FxLyric ev={ev} />;
+      return (
+        <FxOutGlitch out={ev.outGlitch} seed={seed}>
+          <FxLyric ev={ev} />
+        </FxOutGlitch>
+      );
     case 'endCard':
       return <FxEndCard ev={ev} />;
     case 'beatMarker':

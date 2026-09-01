@@ -238,10 +238,13 @@ BAN!BAN!BAN! の実装から移したもの。**書かなければ従来どお�
 | `card` | `wipe: {angle, frames, color}` | 斜めのカラーワイプが渡り、通り過ぎたところだけ文字と斜線が `color` になる |
 | `card` | `chroma: 0..1` | 画面の端(外周)だけ RGB 分離。1 が 1080p の 14px 相当。0.6 前後が目安 |
 | `invertShake` | `hitStop: {scale, chroma, frames}` | 反転が明けた最初の 1f だけ base を拡大 + クロマ収差(決めの「止め」) |
-| `sprite` / `stickerStack` | `border: {color, width}` | 画像の輪郭(アルファ)に沿った枠。`width` は 1080p 基準 px |
-| `sprite` / `stickerStack` | `halftone: 0..1` | 不透明部分にハーフトーンの点。点の色は `border.color`(無ければ `fg`) |
+| `card` | `halftone: {alpha, dot}` | 背景の点の濃さと細かさ。`dot` は点の間隔(1080p 基準 px)。BAN は `{alpha: 0.18, dot: 21}`。`true` のままなら従来どおり薄く粗い |
+| `sprite` / `stickerStack` | `border: {color, width, inset}` | 画像の輪郭(アルファ)に沿った枠。`width` は 1080p 基準 px。`inset: true` で輪郭の**内側**に引く(`color:` の色面と同じ見た目) |
+| `sprite` / `stickerStack` | `halftone: 0..1` または `{alpha, dot}` | 不透明部分にハーフトーンの点。点の色は `border.color`(無ければ `fg`)。数値は従来どおり薄め、`{alpha, dot}` は書いたとおりの濃さ・細かさ |
 | `sprite` / `stickerStack` | `jitter: {px, hz, rotDeg}` | 貼ったあとの微振動。積んだカードが小刻みに揺れる |
 | `sprite` / `imageSlam` / `endCard.logo` | `tint: "#ffffff"` | 不透明部分を 1 色で塗る(白抜きロゴを配色に合わせる) |
+| `lyric` / `sprite` / `imageSlam` / `terminalText` | `outGlitch: {frames, displace, chroma}` | 出際の `frames` フレームを走査線ずれ + RGB 分離で飛ばして消す。フェードではなく「電波が切れる」消え方。既定は `{frames: 2, displace: 39, chroma: 0.85}`(BAN の消し方) |
+| `stickerStack` | キーフレームの `pop: false` | そのキーフレームで貼り直すときに大きく出さない(等倍のまま)。同じ絵を消して再登場させるときに、毎回跳ねさせたくないところへ書く |
 
 ### 位置まわりの追加
 
@@ -252,6 +255,33 @@ BAN!BAN!BAN! の実装から移したもの。**書かなければ従来どお�
   (`fontSize` は 1080p 基準)。文字列だけのときは従来どおり 1 行目が大きく、以降 0.82 倍。
 - `stickerStack` の キーフレームの `visible: false` で、その秒から消える
   (次に `visible: true` のキーフレームが来たらそこでまた貼り直す)。「途中で消して再登場」用。
+  再登場で跳ねさせたくないときは、そのキーフレームに `pop: false` を書く。
+
+### 単位・座標・書き分けの落とし穴
+
+数字の意味を取り違えると、絵は出るのに「なんとなく違う」ものになる。焼く前にここを確認する。
+
+| 書くもの | 単位 | 720p の値からの直し方 |
+|---|---|---|
+| `chroma`(`card` / `invertShake.hitStop` / `outGlitch`) | 0..1。**1 = 1080p の 14px** | 720p の px ÷ 14 × 1.5 |
+| `outGlitch.displace` | 1080p 基準 px | 720p の px × 1.5(BAN の 26px → 39) |
+| `jitter.px` / `border.width` / `fontSize` / `halftone.dot` / `beatMarker.size` | 1080p 基準 px | 720p の px × 1.5(BAN の dot 14px → 21) |
+| `cx` / `cy` / `w` / `maxH` / `size` / `margin` | 画面比(0..1) | 解像度に依らない。そのまま |
+
+- **`terminalText` / `credits` の `cx` / `cy` は「文字ブロックの中心」**(隅寄せの `corner` とは
+  基準が違う)。左上を (x, y) に置きたいなら `cx = x + ブロック幅/2`、`cy = y + ブロック高/2`。
+  ブロック高はおおよそ `行数 × fontSize × 1.45 / 高さ`(`lineHeight` は 1.45)。
+  合っているかはコンタクトシートで確かめる。数字だけで詰めない。
+- **`stickerStack` は「同じ絵は 1 イベントにまとめる」。** 消える・再登場するところは
+  `visible: false` / `true` のキーフレームで書く。イベントを分けて書くと、
+  分けたほうの尺が終わった時点で絵が消える(積んだものが途中で欠ける)。
+- **外部の実装や台本から秒を移すときは、`round(t * fps)` でフレームに直してから秒に戻す。**
+  `FxOverlay` は秒をフレームに丸めてから並べるので、元が別 fps の秒だと 1 フレームずれる。
+  決めの 1 フレームずれは、見れば分かるくらい効く。
+- **`flatten`(スタジオの透過キー)と `sprite.tint` は「輝度を捨てるベタ塗り」**で、乗算ではない。
+  塗ったあとに元の陰影は残らない。陰影を残したい絵に掛けない。
+- **透過 PNG の源は「抜く前」の画像を渡す。** 抜いた RGBA をもう一度 `key` に通すと、
+  白背景に合成されてから抜かれるので、`flatten` が白い四角になる。詳しくはスタジオ SKILL §10。
 
 ### 配置ルール(BAN!BAN!BAN! で確立したもの)
 
@@ -281,7 +311,8 @@ npx remotion render src/index.ts FxOverlay out/fx.mp4 --props=examples/fx-overla
 ```
 
 `examples/fx-overlay.json` は全イベント型を 1 回ずつ含む 14 秒のサンプル(外部素材ゼロ)。
-上の `z` と新オプションも一通り入っているので、見た目を確かめるならここを引くのが速い。
+上の `z` と新オプション(`outGlitch` / `halftone: {alpha, dot}` / `border.inset` /
+キーフレームの `pop: false`)も一通り入っているので、見た目を確かめるならここを引くのが速い。
 効果の見た目を確かめたいときは、これを複製して該当イベントだけ残すのが速い。
 
 ## 手元で確認する(開発時のみ)

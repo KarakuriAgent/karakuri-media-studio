@@ -297,6 +297,13 @@ POST /jobs {"mode":"audio_analysis",
   `w` を大きくしても絵が小さく見える。**
 - `flatten`（例 `"#ffffff"`）で、抜いたあとに残った部分を**その色一色**に塗れる
   （α はそのまま）。色つきのロゴから白抜きロゴを 1 手で作るとき。
+- **`flatten` と Remotion の `sprite.tint` は「輝度を捨てるベタ塗り」**で、乗算ではない。
+  塗った時点で元の陰影は消える。陰影を残したい絵には掛けない。
+- **抜くときの源は必ず「抜く前」の画像を渡す。** 一度抜いた RGBA をもう一度
+  `key` / `key-from-job` に通すと、白背景に合成されてから抜き直されるので、
+  `flatten` を足したときに**白い四角**になる。白抜きロゴが要るなら、
+  抜いた PNG からではなく**元ジョブの画像**に対して
+  `key-from-job` + `"method":"black"` + `"flatten":"#ffffff"` を 1 回で掛ける。
 - 結果の `url`（`/library/image/….png`）をそのまま `sprite` / `imageSlam` /
   `stickerStack` の `src` に書く。
 

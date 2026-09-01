@@ -1,5 +1,6 @@
 import React from 'react';
 import { Img } from 'remotion';
+import { InsetBorderDefs, insetBorderId } from '../fx/filters';
 import { resolveSource } from '../media';
 
 /**
@@ -31,10 +32,13 @@ export const FxSprite: React.FC<{
   whiten?: number;
   /** 不透明部分をこの色 1 色で塗る(白抜きロゴの色替え)。 */
   tint?: string;
-  /** 画像の輪郭(アルファ)に沿って付ける枠。width は px。色面のときは箱の外周。 */
-  border?: { color: string; width: number };
-  /** 不透明部分に敷くハーフトーンの濃さ(0..1)と点の色。 */
-  halftone?: { amount: number; color: string; dot: number };
+  /**
+   * 画像の輪郭(アルファ)に沿って付ける枠。width は px。色面のときは箱の内側。
+   * inset を立てると、画像でも輪郭の内側に引く(色面の見た目と揃う)。
+   */
+  border?: { color: string; width: number; inset?: boolean };
+  /** 不透明部分に敷くハーフトーン(濃さ・点の色・点の間隔 px・点の半径 px)。 */
+  halftone?: { alpha: number; color: string; dot: number; radius: number };
 }> = ({
   src,
   cx,
@@ -67,9 +71,11 @@ export const FxSprite: React.FC<{
     transform: transforms.join(' '),
     opacity,
   };
+  // inset なら輪郭の内側(SVG フィルタで縁を削り出す)、そうでなければ外側に付ける。
+  const insetBorder = border && border.width > 0 && border.inset === true ? border : undefined;
   // 枠は画像のアルファの外側に付ける(箱の外周ではないので、透過 PNG でも輪郭に沿う)。
   const borderFilter =
-    border && border.width > 0
+    border && border.width > 0 && !insetBorder
       ? [
           [1, 0],
           [-1, 0],
@@ -88,17 +94,17 @@ export const FxSprite: React.FC<{
           )
           .join(' ')
       : undefined;
-  // ハーフトーンの点。amount をそのまま不透明度にすると濃すぎるので 0.2 を上限にする。
+  // ハーフトーンの点。濃さと点の大きさは呼び出し側で解決済み(lib/fx の spriteHalftone)。
   const dots =
-    halftone && halftone.amount > 0
+    halftone && halftone.alpha > 0
       ? {
           position: 'absolute' as const,
           inset: 0,
           backgroundImage: `radial-gradient(circle at 50% 50%, ${halftone.color} 0 ${
-            halftone.dot * 0.2
-          }px, transparent ${halftone.dot * 0.2 + 0.5}px)`,
+            halftone.radius
+          }px, transparent ${halftone.radius + 0.5}px)`,
           backgroundSize: `${halftone.dot}px ${halftone.dot}px`,
-          opacity: Math.min(1, halftone.amount) * 0.2,
+          opacity: Math.min(1, halftone.alpha),
         }
       : null;
 
@@ -138,6 +144,19 @@ export const FxSprite: React.FC<{
   return (
     <div style={box}>
       <Img src={source.url} style={{ ...imgStyle, filter: borderFilter }} />
+      {insetBorder ? (
+        // 輪郭の内側の罫線。同じ画像をもう 1 枚重ね、縁のリングだけを残す。
+        <>
+          <InsetBorderDefs width={insetBorder.width} color={insetBorder.color} />
+          <Img
+            src={source.url}
+            style={{
+              ...imgStyle,
+              filter: `url(#${insetBorderId(insetBorder.width, insetBorder.color)})`,
+            }}
+          />
+        </>
+      ) : null}
       {tint ? <div style={{ ...maskStyle, backgroundColor: tint }} /> : null}
       {dots ? <div style={{ ...maskStyle, ...dots }} /> : null}
       {whiten > 0 ? (

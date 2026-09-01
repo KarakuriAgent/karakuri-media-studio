@@ -8,7 +8,7 @@
  */
 import React from 'react';
 import { FONT_FAMILY, MONO_FONT_FAMILY } from '../fonts';
-import type { FxAnchor, FxCorner, FxEvent, FxTheme } from '../schema';
+import type { FxAnchor, FxCorner, FxEvent, FxHalftone, FxTheme } from '../schema';
 
 /** 秒をフレームに直す。切り上げると決めが 1 フレーム遅れるので必ず round。 */
 export const toFrames = (seconds: number, fps: number): number => Math.round(seconds * fps);
@@ -240,6 +240,39 @@ export const placeStyle = (args: {
 export const CHROMA_UNIT_PX = 14;
 export const chromaPixels = (amount: number, scale: number): number =>
   amount > 0 ? Math.max(1, Math.round(amount * CHROMA_UNIT_PX * scale)) : 0;
+
+/**
+ * ハーフトーンの点の半径(点の間隔に対する比)。
+ * BAN!BAN!BAN! のカード(720p で dot 14px・半径 2.7px)に合わせている。
+ */
+export const HALFTONE_RADIUS_RATIO = 0.193;
+
+/** 実際に描くハーフトーン(濃さ・点の間隔 px・点の半径 px)。 */
+export type ResolvedHalftone = { alpha: number; dot: number; radius: number };
+
+/**
+ * sprite / stickerStack の halftone を、実際に描く値へ直す。
+ * 数値で書かれたときは従来どおり(濃さは 0.2 倍・点の間隔は表示幅の 1/26)。
+ * {alpha, dot} で書かれたときは alpha をそのまま濃さに、dot は 1080p 基準 px として使う。
+ */
+export const spriteHalftone = (
+  value: number | FxHalftone,
+  widthPx: number,
+  scale: number,
+): ResolvedHalftone | undefined => {
+  if (typeof value === 'number') {
+    if (value <= 0) {
+      return undefined;
+    }
+    const dot = Math.max(4, widthPx / 26);
+    return { alpha: Math.min(1, value) * 0.2, dot, radius: dot * 0.2 };
+  }
+  if (value.alpha <= 0) {
+    return undefined;
+  }
+  const dot = Math.max(2, value.dot * scale);
+  return { alpha: value.alpha, dot, radius: dot * HALFTONE_RADIUS_RATIO };
+};
 
 /** 微振動(jitter)のずれ。phase をずらすと積んだカードがばらばらに揺れる。 */
 export const jitterOffset = (

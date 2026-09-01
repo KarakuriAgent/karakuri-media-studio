@@ -9,12 +9,36 @@
 
 import React from 'react';
 import { AbsoluteFill, useCurrentFrame } from 'remotion';
-import { chromaPixels, useFxCtx } from '../lib/fx';
+import { HALFTONE_RADIUS_RATIO, chromaPixels, useFxCtx } from '../lib/fx';
 import { rng } from '../lib/rng';
 import { ChromaDefs, chromaId } from './filters';
 import type { FxEventOf } from '../schema';
 
+// 従来の(halftone: true の)見た目。点は薄く粗い。
 const HALFTONE_ALPHA = 0.13;
+const HALFTONE_DOT = 26;
+
+/**
+ * halftone の指定を、実際に描く濃さ・点の間隔 px・点の半径 px に直す。
+ * true / false は従来どおり、{alpha, dot} は書かれたとおり(dot は 1080p 基準 px)。
+ */
+const cardHalftone = (
+  value: FxEventOf<'card'>['halftone'],
+  fs: (size: number) => number,
+): { alpha: number; dot: number; radius: number } | null => {
+  if (typeof value === 'boolean') {
+    if (!value) {
+      return null;
+    }
+    const dot = Math.max(6, fs(HALFTONE_DOT));
+    return { alpha: HALFTONE_ALPHA, dot, radius: dot * 0.1 };
+  }
+  if (value.alpha <= 0) {
+    return null;
+  }
+  const dot = Math.max(2, fs(value.dot));
+  return { alpha: value.alpha, dot, radius: dot * HALFTONE_RADIUS_RATIO };
+};
 
 /** カードの中身(背景色は外側が塗る)。クロマ収差用に 2 回描くので id を分ける。 */
 const CardBody: React.FC<{
@@ -32,7 +56,7 @@ const CardBody: React.FC<{
 }> = ({ ev, fg, cx, cy, rot, p, wipeColor, idp, bg }) => {
   const ctx = useFxCtx();
   const { width, height } = ctx;
-  const dot = Math.max(6, ctx.fs(26));
+  const halftone = cardHalftone(ev.halftone, ctx.fs);
   const stripe = Math.max(6, ctx.fs(22));
   const angle = ev.wipe?.angle ?? 0;
   // 回転した座標系で画面を渡りきる幅。足りないとワイプが途中で終わる。
@@ -67,9 +91,19 @@ const CardBody: React.FC<{
       style={{ position: 'absolute', inset: 0 }}
     >
       <defs>
-        {ev.halftone ? (
-          <pattern id={`${idp}-dot`} width={dot} height={dot} patternUnits="userSpaceOnUse">
-            <circle cx={dot / 2} cy={dot / 2} r={dot * 0.1} fill={fg} />
+        {halftone ? (
+          <pattern
+            id={`${idp}-dot`}
+            width={halftone.dot}
+            height={halftone.dot}
+            patternUnits="userSpaceOnUse"
+          >
+            <circle
+              cx={halftone.dot / 2}
+              cy={halftone.dot / 2}
+              r={halftone.radius}
+              fill={fg}
+            />
           </pattern>
         ) : null}
         {ev.wipe ? (
@@ -97,14 +131,14 @@ const CardBody: React.FC<{
         ) : null}
       </defs>
       {bg ? <rect x={0} y={0} width={width} height={height} fill={bg} /> : null}
-      {ev.halftone ? (
+      {halftone ? (
         <rect
           x={0}
           y={0}
           width={width}
           height={height}
           fill={`url(#${idp}-dot)`}
-          opacity={HALFTONE_ALPHA}
+          opacity={halftone.alpha}
         />
       ) : null}
       {ev.wipe ? (

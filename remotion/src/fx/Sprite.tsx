@@ -4,7 +4,7 @@
 import React from 'react';
 import { interpolate, useCurrentFrame, useVideoConfig } from 'remotion';
 import { FxSprite } from '../components/FxSprite';
-import { anchorCenter, jitterOffset, motionTransform, useFxCtx } from '../lib/fx';
+import { anchorCenter, jitterOffset, motionTransform, spriteHalftone, useFxCtx } from '../lib/fx';
 import { rng } from '../lib/rng';
 import type { FxEventOf } from '../schema';
 
@@ -36,6 +36,7 @@ export const FxSpriteEvent: React.FC<{ ev: FxEventOf<'sprite'>; seed: number }> 
 
   const spriteWidth = ctx.width * ev.w;
   const borderColor = ctx.color(ev.border?.color ?? 'fg');
+  const halftone = spriteHalftone(ev.halftone, spriteWidth, ctx.scale);
   return (
     <div style={{ position: 'absolute', inset: 0, transform: motion.transform || undefined }}>
       <FxSprite
@@ -48,12 +49,12 @@ export const FxSpriteEvent: React.FC<{ ev: FxEventOf<'sprite'>; seed: number }> 
         scale={motion.scale}
         opacity={opacity}
         tint={ev.tint ? ctx.color(ev.tint) : undefined}
-        border={ev.border ? { color: borderColor, width: ctx.fs(ev.border.width) } : undefined}
-        halftone={
-          ev.halftone > 0
-            ? { amount: ev.halftone, color: borderColor, dot: Math.max(4, spriteWidth / 26) }
+        border={
+          ev.border
+            ? { color: borderColor, width: ctx.fs(ev.border.width), inset: ev.border.inset }
             : undefined
         }
+        halftone={halftone ? { ...halftone, color: borderColor } : undefined}
       />
     </div>
   );

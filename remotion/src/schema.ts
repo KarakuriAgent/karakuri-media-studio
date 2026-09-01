@@ -225,6 +225,33 @@ const fxEventCommon = {
   z: z.number().optional(),
 };
 
+/**
+ * ハーフトーンの細かさを明示する書き方。
+ * - `alpha`: 点そのものの不透明度(そのまま使う)
+ * - `dot`: 点の間隔(1080p 基準 px)。小さいほど細かい
+ * 既定は BAN!BAN!BAN! の値(720p で alpha 0.18 / dot 14px)。
+ */
+export const fxHalftoneSchema = z.object({
+  alpha: z.number().min(0).max(1).default(0.18),
+  dot: z.number().min(1).default(21),
+});
+
+/**
+ * 出際の数フレームを走査線ずれ + RGB 分離で飛ばして消す(書かなければ無効)。
+ * フェードではなく「電波が切れる」消え方。歌詞を黒画面の上から消すときなど。
+ */
+export const fxOutGlitchSchema = z.object({
+  /** 終わりから数えて何フレーム荒らすか。 */
+  frames: z.number().int().min(1).default(2),
+  /** 走査線ずれの量(1080p 基準 px)。 */
+  displace: z.number().min(0).default(39),
+  /** RGB 分離の量。1 が 1080p の 14px 相当。 */
+  chroma: z.number().min(0).max(1).default(0.85),
+});
+
+/** 出際のグリッチ。4 つの型(lyric / sprite / imageSlam / terminalText)で共通。 */
+const fxOutGlitchField = { outGlitch: fxOutGlitchSchema.optional() };
+
 /** 画像の不透明部分に薄く敷くハーフトーン・枠・微振動(積んだカードの見た目)。 */
 const fxSpriteLookCommon = {
   /** 画像の輪郭(アルファ)に沿って付ける枠。color: の疑似素材では箱の外周に引く。 */
@@ -233,10 +260,19 @@ const fxSpriteLookCommon = {
       color: fxColorSchema.default('fg'),
       /** 1080p 基準の太さ px。 */
       width: z.number().min(0).default(2),
+      /**
+       * 罫線を輪郭の「内側」に引く(既定 false = 外側)。
+       * color: の疑似素材は箱の内側に引くので、画像をそれに揃えたいときに true。
+       */
+      inset: z.boolean().default(false),
     })
     .optional(),
-  /** 不透明部分に敷くハーフトーンの濃さ(0 で無効)。点の色は border.color、無ければ fg。 */
-  halftone: z.number().min(0).max(1).default(0),
+  /**
+   * 不透明部分に敷くハーフトーン。点の色は border.color、無ければ fg。
+   * - 数値(0..1): 従来どおりの薄さと粗さ(0 で無効)
+   * - {alpha, dot}: 濃さと細かさを直接指定する
+   */
+  halftone: z.union([z.number().min(0).max(1), fxHalftoneSchema]).default(0),
   /** 貼ったあとの微振動(積んだカードが小刻みに揺れる)。 */
   jitter: z
     .object({
@@ -268,8 +304,12 @@ export const fxCardEventSchema = z.object({
   jitterPx: z.number().min(0).default(0.047),
   /** 1080p 基準の文字サイズ。 */
   fontSize: z.number().min(1).default(420),
-  /** 背景に薄くハーフトーンの点を敷く。 */
-  halftone: z.boolean().default(true),
+  /**
+   * 背景に敷くハーフトーンの点。
+   * - true / false: 従来どおり(薄く粗い点)
+   * - {alpha, dot}: 濃さと細かさを直接指定する(BAN!BAN!BAN! は alpha 0.18 / dot 21)
+   */
+  halftone: z.union([z.boolean(), fxHalftoneSchema]).default(true),
   /**
    * 斜めのカラーワイプで入る(既定は無効)。
    * 通り過ぎたところだけ文字と斜線が color に置き換わり、境界に線が走る。
@@ -340,6 +380,7 @@ export const fxImageSlamEventSchema = z.object({
   rot: z.number().default(0),
   /** 引きぎわに少しだけ縮める倍率。 */
   outScale: z.number().min(0.1).default(1.0),
+  ...fxOutGlitchField,
   tint: fxTintField,
 });
 
@@ -370,6 +411,7 @@ export const fxTerminalTextEventSchema = z.object({
   cps: z.number().min(1).default(24),
   /** 末尾にカーソルを点滅させる。 */
   cursor: z.boolean().default(false),
+  ...fxOutGlitchField,
 });
 
 /** 全画面を塗りつぶす板。ブレイクの黒画面・タイトルカード・章の切れ目に使う。 */
@@ -449,6 +491,7 @@ export const fxSpriteEventSchema = z.object({
   fade: z.number().min(0).default(0),
   ...fxSpriteLookCommon,
   tint: fxTintField,
+  ...fxOutGlitchField,
 });
 
 /** 同じ画像を、キーフレームで指定した位置へ次々に貼って積む。 */
@@ -471,6 +514,8 @@ export const fxStickerStackEventSchema = z.object({
           rot: z.number().default(0),
           /** この時刻に貼るか(false のキーフレームでは消える)。 */
           visible: z.boolean().default(true),
+          /** このキーフレームで貼り直すときに pop させるか(false で等倍のまま出す)。 */
+          pop: z.boolean().default(true),
         }),
       )
       .default([]),
@@ -539,6 +584,7 @@ export const fxLyricEventSchema = z.object({
   /** 行頭の数フレームだけ少し大きく出す。 */
   snapFrames: z.number().int().min(0).default(2),
   opacity: z.number().min(0).max(1).default(1),
+  ...fxOutGlitchField,
 });
 
 /** 終わりの黒 + ロゴ。 */
@@ -681,6 +727,8 @@ export type FxShapeKind = z.infer<typeof fxShapeKindSchema>;
 export type FxMotion = z.infer<typeof fxMotionSchema>;
 export type FxEvent = z.infer<typeof fxEventSchema>;
 export type FxEventOf<T extends FxEvent['type']> = Extract<FxEvent, { type: T }>;
+export type FxHalftone = z.infer<typeof fxHalftoneSchema>;
+export type FxOutGlitch = z.infer<typeof fxOutGlitchSchema>;
 export type FxTheme = z.infer<typeof fxThemeSchema>;
 export type FxAmbient = z.infer<typeof fxAmbientSchema>;
 export type FxBase = z.infer<typeof fxBaseSchema>;

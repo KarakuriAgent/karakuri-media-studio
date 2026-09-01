@@ -9,13 +9,16 @@
 import React from 'react';
 import { useCurrentFrame, useVideoConfig } from 'remotion';
 import { FxSprite } from '../components/FxSprite';
-import { jitterOffset, useFxCtx } from '../lib/fx';
+import { jitterOffset, spriteHalftone, useFxCtx } from '../lib/fx';
 import { rng } from '../lib/rng';
 import type { FxEventOf } from '../schema';
 
 type Keyframes = FxEventOf<'stickerStack'>['target']['keyframes'];
-/** born は「今の表示区間が始まったキーフレームの秒」。pop の起点に使う。 */
-type Placed = { x: number; y: number; w: number; rot: number; born: number };
+/**
+ * born は「今の表示区間が始まったキーフレームの秒」。pop の起点に使う。
+ * pop はその起点のキーフレームの pop(false なら貼り直しても等倍のまま出す)。
+ */
+type Placed = { x: number; y: number; w: number; rot: number; born: number; pop: boolean };
 
 const lerp = (a: number, b: number, u: number) => a + (b - a) * u;
 
@@ -36,16 +39,18 @@ const placeAt = (keyframes: Keyframes, t: number): Placed | null => {
   }
   // 今の表示区間の頭(visible: false を跨いだら、その次の true が起点)
   let born = prev.t;
+  let pop = prev.pop;
   for (let i = prevIndex; i >= 0; i--) {
     if (!keyframes[i].visible) {
       break;
     }
     born = keyframes[i].t;
+    pop = keyframes[i].pop;
   }
   const next = keyframes[prevIndex + 1];
   // 次が消えるキーフレームなら、そこまでは動かさずに止めておく
   if (!next || !next.visible) {
-    return { x: prev.x, y: prev.y, w: prev.w, rot: prev.rot, born };
+    return { x: prev.x, y: prev.y, w: prev.w, rot: prev.rot, born, pop };
   }
   const u = next.t === prev.t ? 0 : Math.max(0, Math.min(1, (t - prev.t) / (next.t - prev.t)));
   return {
@@ -54,6 +59,7 @@ const placeAt = (keyframes: Keyframes, t: number): Placed | null => {
     w: lerp(prev.w, next.w, u),
     rot: lerp(prev.rot, next.rot, u),
     born,
+    pop,
   };
 };
 
@@ -81,7 +87,8 @@ export const FxStickerStack: React.FC<{ ev: FxEventOf<'stickerStack'>; seed: num
   const width = toPx(place.w, ctx.width);
 
   const fi = Math.round((time - place.born) * fps);
-  let scale = fi < POP_FRAMES ? 1 + (ev.pop - 1) * (1 - fi / POP_FRAMES) : 1;
+  // キーフレームに pop: false と書かれていれば、貼り直しでも大きくならない
+  let scale = place.pop && fi < POP_FRAMES ? 1 + (ev.pop - 1) * (1 - fi / POP_FRAMES) : 1;
   let rot = place.rot;
   let opacity = ev.opacity;
 
@@ -107,6 +114,7 @@ export const FxStickerStack: React.FC<{ ev: FxEventOf<'stickerStack'>; seed: num
   }
 
   const borderColor = ev.border ? ctx.color(ev.border.color) : ctx.color('fg');
+  const halftone = spriteHalftone(ev.halftone, width, ctx.scale);
   return (
     <FxSprite
       src={ev.src}
@@ -117,12 +125,12 @@ export const FxStickerStack: React.FC<{ ev: FxEventOf<'stickerStack'>; seed: num
       rot={rot}
       scale={scale}
       opacity={opacity}
-      border={ev.border ? { color: borderColor, width: ctx.fs(ev.border.width) } : undefined}
-      halftone={
-        ev.halftone > 0
-          ? { amount: ev.halftone, color: borderColor, dot: Math.max(4, width / 26) }
+      border={
+        ev.border
+          ? { color: borderColor, width: ctx.fs(ev.border.width), inset: ev.border.inset }
           : undefined
       }
+      halftone={halftone ? { ...halftone, color: borderColor } : undefined}
     />
   );
 };
