@@ -6,6 +6,15 @@ Karakuri Media Studio は、ComfyUI（ローカル / RunPod / Comfy Cloud）を�
 タイムライン編集と mp4 書き出し、Remotion 連携までを 1 つのアプリで持つ。外部の
 エージェントは API キー付きの外部 API（`/api/v1`）から同じことができる。
 
+## このアプリをセットアップするとき
+
+`.agents/skills/karakuri-setup/SKILL.md` を読むこと。新しいマシンへの導入・中断した
+セットアップの再開・「起動しない / 繋がらない」の点検を、S0〜S8 の段階に分けて進める。
+最初にやるのは `.agents/skills/karakuri-setup/scripts/setup.sh status` で、保存状態
+（`runtime/setup-state.json`）と自動検出を見て**未完了の最初の段階から**再開する。
+人にしかできない作業（grok CLI のサインイン、API キーの用意、ライセンス確認）は
+そこで待つ。手順の詳細は `docs/SETUP.md`。
+
 ## このアプリを操作して映像を作るとき
 
 `.agents/skills/karakuri-studio/SKILL.md` を読むこと。接続先とキーの解決、

@@ -2068,6 +2068,8 @@ frontend/           React + Vite + Tailwind の SPA（ビルド成果物は fron
                     SettingsPage / studio/（ドラマスタジオと編集タブ）
 docs/SPEC.md        仕様書
 docs/EXTERNAL-API.md  外部公開 API（/api/v1）の設計
+.agents/skills/karakuri-setup/   外部エージェント向け SKILL: 導入・再開・点検
+                    （scripts/setup.sh が状態と自動検出を出す。AGENTS.md からリンク）
 .agents/skills/karakuri-studio/  外部エージェント向け SKILL（AGENTS.md / CLAUDE.md からリンク）
 remotion/           同梱の Remotion プロジェクト（composition は remotion/src/。§5.2）
 workflow/           ComfyUI ワークフロー（API フォーマット）テンプレート ※実行の正
@@ -2083,8 +2085,10 @@ app.db              SQLite（jobs / loras / library / chat_sessions / studio_*�
 outputs/            生成物（/outputs で静的配信）
 assets/             アップロードした画像・音声・参照動画・LoRA サンプル（/assets で静的配信）
 library/            ライブラリ（取っておいた素材。image/ video/ audio/、/library で静的配信）
-runtime/            config.json / grok 作業ディレクトリ（プロンプト用）/
-                    chat-sessions/（チャットごとの cwd）/ remotion/（props の一時 JSON）/
+runtime/            config.json / setup-state.json（セットアップの段階と選択。
+                    karakuri-setup スキルが読み書きする）/ grok 作業ディレクトリ
+                    （プロンプト用）/ chat-sessions/（チャットごとの cwd）/
+                    remotion/（props の一時 JSON）/
                     audio-analysis/（解析に渡す歌詞の一時ファイル）
 ```
 

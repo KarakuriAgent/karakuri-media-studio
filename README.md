@@ -1,438 +1,69 @@
 # Karakuri Media Studio
 
-`workflow/` 配下の ComfyUI ワークフロー（画像 13 種 / 動画 12 種 / 音声 2 種）と
-Grok Imagine（画像 2 種）を Web UI から実行し、プロンプト作成を Grok に委譲、
-生成物と履歴をローカルに保存する個人利用向けのメディア生成アプリです。
+動画・画像・音声を制作できるメディア制作ツールです。スタジオ機能では
+「作品 → 話 → 場 → カット」の脚本から、カットごとの Take、タイムライン編集、演出、
+mp4 書き出しまでを通して、**長編の映像も 1 つのアプリで**作れます。
+
+生成のバックエンドは **ComfyUI**（ローカル / RunPod / Comfy Cloud）を基本に、
+**Remotion**（MV・モーショングラフィックスの演出）や **Whisper**（歌詞のアライン・
+音源解析）などの補助ツールも内包しています。
+
+人間が直接使うこともできますが、UI は基本的に**閲覧・確認用**で、制作は
+**外部の AI エージェント**が API キー付きの外部 API（`/api/v1`）から操作する前提で
+設計しています。
 
 ![生成画面](docs/images/screen-image.png)
 
-- バックエンド: Python 3.12 + FastAPI + SQLite（`app.db`）
-- フロントエンド: React + Vite + Tailwind（ダークテーマの SPA。「生成」と「スタジオ」の 2 タブ + 設定ページ）
-- 生成本体: ComfyUI（ローカル / LAN 上の別 PC / Comfy Cloud）＋ Grok Imagine（Grok Build CLI 経由・画像のみ）＋ Remotion（同梱の `remotion/`。**既定 OFF**）
-- プロンプト生成: Grok Build CLI（サブスクリプション認証、API キー不要）
-
-仕様・設計・API の詳細は [`docs/SPEC.md`](docs/SPEC.md)、外部エージェントから
-制作を回すための SKILL は [`.agents/skills/karakuri-studio/SKILL.md`](.agents/skills/karakuri-studio/SKILL.md)、
-外部公開 API（`/api/v1`・`X-API-Key`）は
-[`docs/EXTERNAL-API.md`](docs/EXTERNAL-API.md)、プロンプト実例は
-[`docs/prompt-samples.md`](docs/prompt-samples.md) にあります。この README は
-「起動して使い始めるまで」に絞っています。
-
 ---
 
-## 前提条件
+## クイックスタート
 
-| 依存 | 内容 |
-|---|---|
-| ComfyUI | 稼働中であること（既定 `http://127.0.0.1:8188`）。Comfy Cloud も可 |
-| custom nodes | ResolutionSelector / ComfySwitchNode / CustomCombo / MiniMaxH3 系 / ComfyMath / ResizeImage 系 / ResizeAndPadImage / MoGe 系 / LoadVideo など、`workflow/` 配下のワークフローが使うノード一式 |
-| custom nodes | MiniMax H3 Image（t2i / i2i / r2i）を使う場合は [ComfyUI-MiniMax-H3-Image-Studio](https://github.com/astropuzzo/ComfyUI-MiniMax-H3-Image-Studio)（`H3TextToImagePrepare` / `H3ImageToImagePrepare` / `H3ReferenceEditPrepare` / `H3SamplingSettings` / `H3ImageDecode` / `H3ImageFrameSelector`）。`deploy/runpod/custom_nodes.txt` にコミットを固定してあるので RunPod では自動で入ります |
-| custom nodes（任意） | MiniMax H3 の Turbo / Optimized ワークフロー（動画の i2v / r2v・画像の t2i / i2i / r2i）を使う場合のみ SageAttention 本体と [ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes)、および `SolAttnPatch` / `MiniMaxH3TurboLoRA` / `MiniMaxH3MemoryEfficientSageAttentionPatch` / `MiniMaxH3SigmaShift` / `SpectrumApplyMiniMaxH3` を提供する custom node。Turbo / Optimized 以外のワークフローには不要（Optimized は `MiniMaxH3TurboLoRA` だけ使わない） |
-| custom nodes（任意） | ドラマスタジオの「ラテント連続性」（連続カット・`minimax_h3_r2v_context` と、起点になる通常カットの `minimax_h3_*_save`）を使う場合のみ、`MiniMaxH3MotionContext` / `MiniMaxH3MotionContextLoadLatent` / `MiniMaxH3MotionContextSaveLatent` を提供する [ComfyUI-H3-Motion-Context](https://github.com/NikoDemon80/ComfyUI-H3-Motion-Context) と、`MiniMaxH3MotionContextTrim` を提供する ComfyUI-MiniMaxH3-Contex-Loop。Comfy Cloud には入れられないので、その接続先ではこの機能が使えません |
-| モデル | **使うワークフローのぶんだけ**あれば十分です（各テンプレートの既定ファイル名は SPEC §3.3）。足りないものは後述の「不足モデルの自動ダウンロード」で取得できます |
-| grok CLI | `curl -fsSL https://x.ai/cli/install.sh \| bash` でインストール後、一度 `grok` を起動してブラウザでサインイン（サーバーでは `grok --device-auth`）。SuperGrok / X Premium+ のサブスクリプションで利用可。**プロンプト作成のチャットに加えて、画像ワークフローの「Grok Imagine」もこの CLI で走ります**（サインインしていないとそちらは失敗します。設定ページの「grok CLI の接続確認」で確かめられます） |
-| ffmpeg | 動画からのラストフレーム抽出に使用（PATH にあること） |
-| Python / Node.js | 3.12 以上 / 18 以上 |
-
-不足している custom node やワークフローのノード ID ズレは、起動時とヘッダーの接続
-インジケーター（`GET /api/health`）が検出して警告します。
-
----
-
-## セットアップと起動
+**自分でやる**
 
 ```bash
 git clone https://github.com/KarakuriAgent/karakuri-media-studio.git
-cd karakuri-media-studio
-
-./run.sh          # 本番: 依存を整えて frontend をビルドし http://127.0.0.1:8000 で起動
-./run.sh --dev    # 開発: uvicorn --reload (:8000) と vite dev (:5173) を並行起動
+cd karakuri-media-studio && ./run.sh    # 依存を整えて http://127.0.0.1:8000 で起動
 ```
 
-`run.sh` は初回に venv 作成・`npm install`（frontend と remotion）・`npm run build`
-まで面倒を見ます。
-待受などの設定は環境変数か、リポジトリ直下の `.env`（gitignore 済み）で渡します
-（シェルの環境変数が優先）。
+ブラウザで `http://127.0.0.1:8000` を開き、設定ページで ComfyUI の接続先を入れます。
+前提条件・Docker・任意機能は [`docs/SETUP.md`](docs/SETUP.md) を参照してください。
+
+**エージェントに任せる**
 
 ```bash
-# .env
-HOST=0.0.0.0
-PORT=8080
-COMFY_MODELS_DIR=/path/to/ComfyUI/models   # 任意（後述の自動ダウンロード用）
+git clone https://github.com/KarakuriAgent/karakuri-media-studio.git
+cd karakuri-media-studio && claude      # Codex / Cursor CLI などでも可
 ```
 
-### Docker (docker compose) で起動する
-
-```bash
-npm --prefix frontend install && npm --prefix frontend run build  # 初回のみ
-npm --prefix remotion install                                     # Remotion を使うなら
-
-./compose.sh up -d --build   # 起動
-./compose.sh logs -f         # ログ
-./compose.sh down            # 停止
-```
-
-「ランタイムだけコンテナ、データとワークスペースはローカル」という設計で、`compose.sh` が
-リポジトリをホストと同じ絶対パスにマウントし、コンテナをローカルユーザーの `UID:GID` で
-動かします（`./run.sh` 実行と行き来でき、生成ファイルの所有者も変わりません）。
-
-- grok CLI はホストの `~/.grok` をマウントして使うので、**事前にホスト側でインストールと
-  サインイン**を済ませてください
-- ComfyUI に `http://127.0.0.1:8188` を使っている場合、コンテナからは届きません。設定画面の
-  ComfyUI URL を `http://host.docker.internal:8188` か LAN の IP に変えてください
-- `.env` の `COMFY_MODELS_DIR` は、同じ絶対パスでコンテナにもマウントされます
-  （Remotion は同梱の `remotion/` をリポジトリごとマウントするので設定は要りません。
-  依存だけはホストで `npm --prefix remotion install` を済ませてください）
-- `docker compose` を直接使うときは、リポジトリの実体パスから
-  `UID=$(id -u) GID=$(id -g) docker compose up -d` のように実行してください
-  （サービス名は `media-studio`。旧名 `video-studio` のコンテナが残っていれば `docker rm -f` で片付けます）
-
-### 開発
-
-```bash
-cd backend && ../.venv/bin/pytest                  # バックエンド
-cd frontend && npm run build && npx vitest run     # フロントエンド（型チェック込み）
-cd remotion && npm run typecheck                   # Remotion（使う場合のみ）
-```
-
-### Remotion 連携（同梱・既定 OFF）
-
-MV やモーショングラフィックスを焼く Remotion プロジェクトを `remotion/` に同梱して
-います。依存は `run.sh` が初回に入れる（Docker で動かす場合はホスト側で
-`npm --prefix remotion install`）ので、設定画面の「Remotion 連携」を **ON** にすれば
-使えます（使うのは常に同梱の `remotion/` です）。書き方は
-[`.agents/skills/karakuri-remotion/SKILL.md`](.agents/skills/karakuri-remotion/SKILL.md) と
-[`remotion/README.md`](remotion/README.md) にあります。
-
-> **ライセンスの注意**: Remotion は MIT などのオープンソースライセンスではなく、独自の
-> Remotion License で提供されています。個人利用および従業員 3 名以下の会社は無償ですが、
-> それ以上の規模の会社での利用には会社ライセンス（有償）の購入が必要です。既定を OFF に
-> しているのはこのためです。有効にする前に
-> <https://www.remotion.dev/license> を確認し、条件を満たすことを確かめてください。
-
-### 音源解析（歌詞つき MV。オプトイン）
-
-MV の秒（歌詞のアライン・onset・ビート）を出す音源解析（`mode: "audio_analysis"`）は、
-重い依存（torch / faster-whisper / stable-ts / librosa）を使うのでアプリの環境とは
-**別の venv** で回します。
-
-```bash
-python3.12 -m venv .venv-audio
-.venv-audio/bin/pip install -r backend/requirements-optional.txt
-```
-
-作ったら設定の「接続 / Grok」タブの `audio_analysis_python` に **その venv の python の
-絶対パス**（例 `/path/to/video-studio/.venv-audio/bin/python`）を入れて保存します。
-空のままだとアプリ自身の python で回そうとして、依存が無ければ 400 で断ります。
-
-Docker で動かしている場合は、その venv が**コンテナの中でも同じ絶対パスで見えている**
-必要があります。リポジトリの中（上の例の `.venv-audio/`）に作れば `.:${PWD}` の
-マウントで既に見えているので、そのままで動きます。外に置くときは
-`docker-compose.yml` のコメントアウトしてある `AUDIO_ANALYSIS_VENV` の行を有効にして、
-`.env` に `AUDIO_ANALYSIS_VENV=/path/to/venv` を書いてください（マウント先はホストと
-同じ絶対パスです）。
-
-`run.sh` を使わず手で起動する場合:
-
-```bash
-python3.12 -m venv .venv && .venv/bin/pip install -r backend/requirements.txt
-cd frontend && npm install && npm run build && cd ..
-PYTHONPATH=backend .venv/bin/uvicorn app.main:app --port 8000
-```
+「セットアップして」と頼めば、[`karakuri-setup`](.agents/skills/karakuri-setup/SKILL.md)
+スキルが `scripts/setup.sh status` で保存状態と環境を見て、**未完了の段階から**
+環境確認・起動・ComfyUI 接続・キー発行・動作確認まで進めます（人にしかできない作業
+—— サインイン、キーの用意、ライセンス確認 —— だけは指示して待ちます）。
 
 ---
 
-## 不足モデルの自動ダウンロード（オプトイン）
+## ドキュメント
 
-ワークフローが使うモデルが手元に無いとき、設定ページからダウンロードして ComfyUI の
-models ディレクトリへ直接置けます（ComfyUI の再起動は不要）。**`.env` に
-`COMFY_MODELS_DIR` を書いたときだけ**設定画面に現れる機能で、書かなければ UI には一切出ません。
-
-1. `.env` に `COMFY_MODELS_DIR=/path/to/ComfyUI/models` を書く
-2. 再起動する（ホスト: `./run.sh` / Docker: `./compose.sh up -d` — compose が同じパスを
-   コンテナにマウントします）
-3. gated な Hugging Face リポジトリや要ログインの Civitai ファイルを使うなら、設定ページの
-   「接続 / Grok」タブで **Hugging Face トークン** / **Civitai APIキー** を入れる
-4. 「モデル」タブで **未検出** バッジが付いた行に URL を入れて [DL]。進捗はその行に出ます
-
-保存先（`checkpoints` / `diffusion_models` / `loras` など）はローダーの種類から自動で決まります。
-Comfy Cloud 接続では ComfyUI のファイルシステムに届かないため使えません（UI にも出ません）。
-配置先の対応表や認証・リダイレクトの扱いは SPEC §3.3 を参照してください。
-
----
-
-## ComfyUI を RunPod で動かす（オプトイン）
-
-手元に GPU が無い / 大きいモデルを回したい場合、ComfyUI を **RunPod の Pod
-（GPU 時間貸し）**に置けます。ジョブを実行したときに ComfyUI へ繋がらなければ
-アプリが Pod を立ち上げ、繋がるまで待ってから投入します。使い終わった Pod は
-Pod 自身の watchdog がアイドル 10 分で terminate するので、消し忘れで課金が
-続くことはありません。
-
-1. RunPod に Network Volume とテンプレートを登録する（イメージは公開済みの
-   `ghcr.io/karakuriagent/karakuri-comfyui:latest` をそのまま使えばビルド不要）
-2. 設定 →「接続 / Grok」で **RunPod の Pod を自動起動する** をオンにし、
-   API キー / テンプレート ID / GPU 種別 / Network Volume ID を入れる
-3. RunPod ComfyUI URL には Pod の Cloudflare Tunnel のホスト名を入れ、接続先を
-   **RunPod** にする（自動起動は接続先が RunPod のときだけ働きます）
-
-セットアップ手順は
-[`docs/RUNPOD-QUICKSTART.md`](docs/RUNPOD-QUICKSTART.md)（公開イメージを
-そのまま使う人向け）にまとめてあります。イメージを自分で変えたい場合の
-ビルド・push を含むフル手順は [`deploy/runpod/README.md`](deploy/runpod/README.md)、
-設計上の決め事は SPEC §5.1 を参照してください。
-
----
-
-## 使い方
-
-左ペインでモードとワークフローを選び、プロンプトや必要な入力を埋めて「実行」。進捗は
-WebSocket で右ペインにリアルタイム表示され、完了すると生成物がプレビューされます。
-**現在のモード・ワークフローが使わない項目はフォームに出ません**（入力値は保持され、戻れば復元されます）。
-
-| モード | 内容 |
+| 文書 | 内容 |
 |---|---|
-| 画像＋動画 | 画像を生成し、その画像を開始フレームにして動画を生成（同一ジョブで 2 段実行。画像は 1 段目で確定保存） |
-| 動画生成 | 動画ワークフローを単発実行 |
-| 画像のみ | 画像生成だけを実行（開始フレーム候補の量産に） |
-| 音声 | 音声ワークフローを単発実行（画像・動画とは連結しない） |
-
-**画像**は Krea 2 turbo（既定）/ Anima / Z-Image turbo / Qwen-Image Edit 2511（画像編集。参照画像必須）
-/ MiniMax H3 Image（t2i / i2i / r2i、各 3 バリアント）/ Grok Imagine（テキスト→画像・画像編集）
-から選びます。
-
-**MiniMax H3 Image** は音声つき動画モデルの MiniMax H3 で**静止画 1 枚**を作るワークフローです
-（複数フレームのパケットを作って 1 枚を選ぶ）。テキスト→画像 (t2i)・画像編集 (i2i)・参照編集
-(r2i、参照画像 1〜9 枚を `<Picture 1>` … として渡す) の 3 モードがあり、それぞれ素の版 /
-**Optimized**（20 ステップのまま実行だけ速い）/ **Turbo**（公式 Turbo アダプタつき。t2i・i2i は
-8 ステップ、r2i は 4 ステップ）の 3 バリアントです。実行には
-[ComfyUI-MiniMax-H3-Image-Studio](https://github.com/astropuzzo/ComfyUI-MiniMax-H3-Image-Studio)
-が必要で（`deploy/runpod/custom_nodes.txt` に固定済み）、Optimized / Turbo はさらに動画側の
-Turbo と同じ custom node 一式と量子化ウェイトが必要です。Turbo アダプタは設定ページの
-モデルスロットから差し替えられます。
-
-生成フォームの「画像ワークフロー」セクションには、H3 のつまみがプルダウンで並びます
-（選択肢は「標準（5 フレーム）」「安定重視」のような日本語で表示されます。ComfyUI に送る値は
-ノード側の英語のまま変わりません）。
-
-| つまみ | 対象 | 内容 |
-|---|---|---|
-| フレーム枚数（品質） | 全モード | 5（既定）/ 9 / 13 / 20 フレーム。**上げるほど H3 が使える時間方向の文脈が増えて仕上がりが良くなり、そのぶん遅く VRAM も要ります** |
-| 出力フレームの選び方 | 全モード | デコードしたパケットから 1 枚を選ぶやり方（既定はノードの推奨フレーム）。枚数を増やしたときに効きます |
-| 静止画プロンプト補正 | 全モード | ノードが「カメラ固定の 1 枚絵」を要求する文をプロンプトに足すか（既定 on） |
-| 元画像の保持強度 | i2i / r2i | 0.00〜1.00（既定 0.75）。**denoise ではなく**「元をどれだけ保て」とプロンプトに書き足す強さです |
-| 元画像の合わせ方 | i2i / r2i | 生成キャンバスへの合わせ方（中央切り抜き / 余白を足す / 引き伸ばす） |
-| 参照画像の解像度 | r2i | 生成解像度に合わせて縮小（既定・速い）か、短辺 2048px まで残して同一性を上げるか |
-
-**Grok Imagine** は ComfyUI ではなく **grok CLI のサブスクリプション枠**で走る外部生成です
-（GPU もモデルファイルも不要）。テキスト→画像と画像編集の 2 種があり、生成物は他の
-ワークフローとまったく同じように outputs / 履歴 / ライブラリに入ります。ただしグラフが
-無いので **LoRA は使えず、解像度も選べません**（アスペクト比だけが `1:1` / `16:9` / `9:16`
-/ `3:2` / `2:3` の近いものに寄せて渡り、メガピクセルは無視されます）。モデルのバージョンも
-指定できません。枠は Grok チャットと共有で、実在人物・著名人・商標はモデレーションで
-弾かれます。
-
-**動画**は MiniMax H3 の 7 種から選び、必要な入力の欄だけが出ます。
-
-| ワークフロー | 必要な入力 |
-|---|---|
-| テキスト→動画・音声つき (MiniMax H3 t2v) | なし |
-| 画像→動画・音声つき (MiniMax H3 i2v)（既定） | 開始フレーム（最後のフレームは任意） |
-| 画像→動画・音声つき (MiniMax H3 i2v Turbo) | 同上（4 ステップの高速版） |
-| 画像→動画・音声つき (MiniMax H3 i2v Optimized) | 同上（蒸留 LoRA なし・20 ステップのまま実行だけ速い版） |
-| 参照素材→動画・音声つき (MiniMax H3 r2v) | 参照画像 9 枚 / 参照動画 3 本 / 参照音声 3 本まで（合計 1 件以上） |
-| 参照素材→動画・音声つき (MiniMax H3 r2v Turbo) | 同上（4 ステップの高速版） |
-| 参照素材→動画・音声つき (MiniMax H3 r2v Optimized) | 同上（蒸留 LoRA なし・20 ステップのまま実行だけ速い版） |
-
-MiniMax H3 の 7 種は映像とステレオ音声（台詞・効果音・音楽）を同時生成します。
-実行には MiniMaxH3 ノードを含む新しめの ComfyUI 本体が必要です（SPEC §2.2）。
-**Turbo**（i2v / r2v）は 4 ステップ蒸留 LoRA と Sage Attention / Sol-Attn / Spectrum を
-ワークフローに焼き込んだ高速版で、入力の指定は素の版とまったく同じです。専用の量子化ウェイト
-（`*_pruned_w4a8_mixed` / `qwen3vl_32b_heretic_minimax_h3_nvfp4` / `minimax_h3_video_vae_int8_convrot`）と
-上記 custom node 一式が入った環境でのみ動きます。Turbo を選ぶと生成フォームに **Low VRAM**
-のプルダウンが出ます（既定 `off`。VRAM が足りずに落ちるときだけ `on` にすると、4 ステップ蒸留
-LoRA を低 VRAM モードで読み込みます）。
-
-**音声**は MiniMax Music 3（歌もの・インスト。キャプションと歌詞を指定）と
-Stable Audio 3 Medium（効果音・環境音・単一楽器）の 2 種です。
-
-各ワークフローの用途・音声の扱い・プロンプトの書き方は SPEC §2 を参照してください。
-
-### 入力ファイル
-
-画像・音声・参照動画は**ドラッグ&ドロップ**か [アップロード] で指定でき、`assets/` に
-保存されて再利用できます。**[履歴から選択]** で過去の生成物を、**[ライブラリから選択]** で
-取っておいた素材をそのまま入力に使えます。
-
-### ライブラリ
-
-履歴はジョブを消すと成果物も消えますが、**ライブラリ**は「残す」と決めた画像・動画・音声を
-置いておく棚です（`library/`）。結果ペインや履歴詳細の [☆ ライブラリに登録] で保存でき、
-タグ（未指定なら Grok が日本語タグを自動生成）と検索で探せます。
-
-### Grok チャットでプロンプト作成
-
-「Grokで生成」ボタンでチャットモーダルが開きます。フォームの現在値を踏まえて Grok が
-不足情報を質問し、まとまったら画像 / 動画 / 音声プロンプトの案を提示 → [フォームに反映] で
-プロンプト欄に入ります。
-
-### 外部エージェントでの制作（SKILL）
-
-「話を書いて、カットを焼いて、採用して、並べて書き出す」までを**手元のコーディング
-エージェント**（Claude Code / Codex / Cursor CLI など）に任せられます。アプリの中に
-エージェントを抱えるのではなく、外部 API（`/api/v1`）を叩いてもらう形です。
-
-1. 設定 →「接続 / Grok」タブの **外部 API（/api/v1）** で APIキーを保存する
-   （[生成] でランダムなキーを作れます。空のあいだは `/api/v1` は丸ごと 404 です）
-2. エージェントに接続先とキーを渡す（環境変数 `KARAKURI_STUDIO_URL` /
-   `KARAKURI_STUDIO_API_KEY`。省略時はリポジトリ直下の `.env` と
-   `runtime/config.json` から解決されます）
-3. このリポジトリで作業させるだけで、[`AGENTS.md`](AGENTS.md) / [`CLAUDE.md`](CLAUDE.md) から
-   [`.agents/skills/karakuri-studio/SKILL.md`](.agents/skills/karakuri-studio/SKILL.md) に誘導されます
-
-SKILL には接続とキーの解決、最初に読む API（`openapi.json` / `prompt-guide` /
-`capabilities` / `options`）、制作の段取り、`base_revision` や削除まわりの鉄則が書いて
-あります。curl ラッパーと動画検分スクリプトは
-[`.agents/skills/karakuri-studio/scripts/`](.agents/skills/karakuri-studio/scripts) にあります。
-
-エージェントが書き換えた脚本・素材・生成フォームは、開いているブラウザに WebSocket で
-そのまま反映されます（`POST /api/v1/ui/navigate` で画面を目的の場所へ動かすこともできます）。
-人が同時に編集していても上書きし合わないよう、書き込みには編集履歴の連番
-（`base_revision`）による楽観ロックが掛かります。消しすぎたカットや素材は
-スタジオの編集履歴（差分・部分復元）から戻せます。
-
-### LoRA
-
-設定画面の「LoRA 管理」タブで人物 LoRA を登録します（表示名 / ファイル名 / 対象（画像用・動画用）/
-画像用はモデルファミリー / トリガーワード / 既定強度 / 既定リファレンス音声 / サンプル画像）。
-生成フォームでは複数を同時適用でき、**選択中の画像ワークフローと同じファミリーの LoRA だけ**が候補に出ます。
-
-### 履歴・NSFW
-
-履歴ギャラリーのサムネイルから詳細を開き、**再実行**（seed ランダム化 / 同じシードの 2 通り）・
-**続きを生成**（ラストフレームを開始フレームに）・**削除**ができます。[続きを生成] は上書きフォームを
-開き、そのまま押せば元ジョブの設定を丸ごと引き継ぎ、埋めた欄（プロンプト・尺・ワークフローなど）
-だけが上書きされます。履歴は無制限に保存され、削除は手動のみです。
-ジョブとセッションには NSFW フラグが付き（Grok の自動判定、手動上書き可）、ヘッダーの NSFW トグルが
-オフのあいだは履歴・ビューアから除外されます（トグルはタブを開き直すと必ずオフに戻ります）。
-生成フォームの [実行] の上にある「🫣 NSFW として投入」をオンにすると、そのジョブは自動判定を
-待たずに最初から NSFW 扱いになります（オフのままなら従来どおり生成後に自動判定）。
-ドラマスタジオは**プロジェクト単位**で NSFW を決めます（概要タブの「🫣 NSFW プロジェクト」）。
-オンならその作品から投入するジョブはすべて NSFW、オフなら非 NSFW で固定され、
-どちらの場合も自動判定は走りません。
+| [`docs/SETUP.md`](docs/SETUP.md) | 前提条件・起動・Docker・任意機能（Remotion / 音源解析 / RunPod / モデル DL）・設定キー・トラブル |
+| [`docs/USAGE.md`](docs/USAGE.md) | 使い方（モード・ワークフロー・ライブラリ・LoRA・履歴 / NSFW）と外部 API の概要 |
+| [`docs/SPEC.md`](docs/SPEC.md) | 仕様・設計・内部 API |
+| [`docs/EXTERNAL-API.md`](docs/EXTERNAL-API.md) | 外部公開 API（`/api/v1`・`X-API-Key`）の設計とデプロイ |
+| [`docs/RUNPOD-QUICKSTART.md`](docs/RUNPOD-QUICKSTART.md) | ComfyUI を RunPod の Pod で動かす手順 |
+| [`docs/prompt-samples.md`](docs/prompt-samples.md) | プロンプトの実例 |
+| [`.agents/skills/karakuri-setup/SKILL.md`](.agents/skills/karakuri-setup/SKILL.md) | エージェント向け: 導入・再開・点検 |
+| [`.agents/skills/karakuri-studio/SKILL.md`](.agents/skills/karakuri-studio/SKILL.md) | エージェント向け: 外部 API で映像を作る |
+| [`.agents/skills/karakuri-remotion/SKILL.md`](.agents/skills/karakuri-remotion/SKILL.md) | エージェント向け: Remotion の props を書く |
 
 ---
 
-## 設定
+## ライセンスの注意
 
-ヘッダーの「設定」から開き、`runtime/config.json` に保存されます。タブは「接続 / Grok」
-「LoRA 管理」「モデル」の 3 つです。
-
-| キー | 内容 | 既定 |
-|---|---|---|
-| `comfy_target` | 使う接続先（`comfy_cloud` / `runpod` / `local`）。生成フォーム上部のプルダウンと同じ値 | `local` |
-| `local_comfy_url` | ローカル / LAN の ComfyUI の URL（API キーなし） | `http://127.0.0.1:8188` |
-| `runpod_comfy_url` / `runpod_comfy_api_key` | RunPod の Pod 上の ComfyUI の URL と API キー（任意） | 空 |
-| `comfy_cloud_api_key` | ComfyCloud の API キー（エンドポイントは `https://cloud.comfy.org` 固定） | 空 |
-| `grok_command` / `grok_model` | grok CLI のコマンドと使用モデル | `grok` / `grok-4.5` |
-| `grok_workdir` | プロンプト作成チャットが LLM CLI を回す作業ディレクトリ | `runtime/grok-workdir` |
-| `grok_media_timeout` / `grok_media_workdir` | Grok Imagine の 1 枚あたりの制限時間（秒）と専用の作業ディレクトリ（プロンプト作成のチャットとは分けます） | `300` / `runtime/grok-media-workdir` |
-| `remotion_enabled` | Remotion 連携（`mode: "remotion"`）を使うか。**ライセンスの都合で既定 OFF**（下記） | 無効 |
-| `audio_analysis_python` | 音源解析（`mode: "audio_analysis"`）を回す python の絶対パス。重い依存（torch / faster-whisper / stable-ts / librosa）はアプリの環境に入れず、`backend/requirements-optional.txt` を入れた別の venv をここで指す | 空（アプリ自身の python） |
-| `agent_grok_args` | LLM CLI に足すフラグ（ツール権限）。**空にすると CLI のツールが無効**になります | `--permission-mode auto` |
-| `agent_use_acp` | CLI のターンを ACP で回す（実行中の活動をチャットに出す） | オン |
-| `hf_token` / `civitai_api_key` | モデルダウンロード用のトークン | 空 |
-| `model_overrides` / `model_choices` | **接続先ごと**のモデルファイル名の上書きと、実行ごとに選べる候補リスト | `{}` |
-| `runpod_*` | RunPod Pod の自動起動（有効化 / APIキー / テンプレート ID / GPU 種別 / Network Volume ID） | 無効 |
-| `agent_grok_timeout` | LLM CLI 1 回あたりの制限時間（秒。0 = 無制限） | `300` |
-| `external_api_key` / `external_max_pending_takes` | 外部 API（`/api/v1`）の共有キーと、未完了ジョブ・走っている書き出しの上限（0 = 無制限） | 空 / `20` |
-
-**モデルタブ**と**LoRA 管理タブ**の先頭には [対象の接続先] のプルダウンがあり、
-**モデルの指定と LoRA 登録は接続先ごとに保存されます**（環境によって入っているファイルが
-違うため）。既定値はテンプレートの値（＝ Comfy Cloud で動作確認済みの構成）で、同じ行の
-**候補リスト**に別のファイル名を足すと、そのスロットは生成フォームと API から
-**実行ごとに切り替え**られるようになります。詳細は SPEC §3.3。
-
-不足しているモデル（**未検出**バッジ）は行の [DL]、まとめてなら [全DL] で落とせます。
-落とし先は選んでいる接続先で、**ローカル**なら `.env` の `COMFY_MODELS_DIR`、**RunPod**なら
-Pod 側の models ディレクトリです（RunPod は Pod のダウンロード API を使うので、
-`deploy/runpod` のイメージを作り直す必要があります。Pod 起動時の一括ダウンロードは
-行いません）。ComfyCloud はモデルが Comfy Cloud 側の
-管理なのでダウンロードできません。
-
-**接続先**は ComfyCloud / RunPod / ローカルの 3 プロファイルを設定に持ち、「接続 / Grok」
-タブの「ComfyUI 接続先」でそれぞれの URL・API キーを登録します。実際にどれを使うかは
-同じ場所の [接続先] か、**生成フォーム最上部のプルダウン**で切り替えます（サーバー側の
-設定に保存されるので、次回起動時も前回の選択が使われます）。
-
-**Comfy Cloud** を使う場合は ComfyCloud の APIキーに
-[発行したキー](https://docs.comfy.org/development/cloud/overview)を入れて接続先を ComfyCloud に
-します（エンドポイントは `https://cloud.comfy.org` 固定。API アクセスは Standard 以上のプランが
-必要）。旧バージョンの `comfy_url` / `comfy_api_key` は、初回読み込み
-時にどれか 1 つのプロファイルへ自動で移されます。
-
----
-
-## 外部 API（/api/v1）
-
-外部のエージェント（ログを見て話を納品するブリッジなど）から、スタジオの脚本づくりと
-生成を行うための API です。**既定では無効**で、設定の「接続 / Grok」タブにある
-**外部 API（/api/v1）** の APIキー欄にキーを入れて保存すると有効になります（[生成] で
-ランダムなキーを作れます）。キーが空のあいだは `/api/v1` は丸ごと 404 を返します。
-
-```bash
-curl -H "X-API-Key: <保存したキー>" http://127.0.0.1:8000/api/v1/projects
-```
-
-**公開範囲の正本は `GET /api/v1/openapi.json`** です（この API だけに絞った縮小版の
-OpenAPI で、エージェントにはこれを読ませます）。おおまかには、人が UI でできることの
-ほぼ全部が入っています:
-
-- 脚本（プロジェクト / 話 / 場 / カット / 素材）の作成・更新・並べ替えと、投入前の
-  `GET /api/v1/shots/{id}/prompt-preview`
-- 生成（`POST /api/v1/shots/{id}/render` と Take の採否 / 汎用ジョブの `POST /api/v1/jobs`・
-  キャンセル・再実行・続き生成）、ライブラリ、タイムラインの編集と mp4 書き出し
-- 編集履歴（一覧 / 差分 / 復元）、生成フォームの下書き（`ui/generate-form`）と画面移動
-  （`ui/navigate`）、Remotion の composition 一覧
-- 参照系: `capabilities`（いまの接続先で使える機能）/ `options`（フォームと同じ選択肢）/
-  `prompt-guide`・`prompt-examples`（脚本とプロンプトの書き方）
-- 話 1 本を 1 リクエストで納品する `POST /api/v1/stories`
-- **削除はプロジェクト以外**（プロジェクトは履歴ごと消えて戻せないので、外には出していません）
-
-壊れた連携先が積み続けないよう、**未完了のジョブ**と**走っている書き出し**をそれぞれ
-上限（`external_max_pending_takes`、既定 20 / 0 で無制限）で見張り、達しているあいだは
-投入を 429 で拒みます（UI からの操作には掛かりません）。
-
-プロンプトに `@素材名` を書いて画像素材を参照すると、ワークフローは自動で参照素材版
-（r2v）に切り替わります。カットの `megapixels` を省略するとバックエンドの既定値になるので、
-VRAM の小さい GPU では小さめの値を明示してください。実機確認の記録と運用上の注意は
-[`docs/EXTERNAL-API.md`](docs/EXTERNAL-API.md) §8 にまとめてあります。
-
-**ネット越しに公開する場合はアプリをそのまま外に出さないでください**: `/api/v1` 以外の
-内部 API・`/docs`・生成物の静的配信は無認証です。Cloudflare Tunnel + Access を前に置く
-構成を [`docs/EXTERNAL-API.md`](docs/EXTERNAL-API.md) §5 に書いてあります。エンドポイントの
-一覧と本文の形は `GET /api/v1/openapi.json` を参照してください。
-
----
-
-## よくあるトラブル
-
-| 症状 | 対処 |
-|---|---|
-| RunPod 接続で「ComfyUI が起動していません」と出る | Pod を落としている間は正常な表示。自動起動が有効ならジョブ投入時に Pod が立ち上がります（モデル名は手入力でも続行可） |
-| ヘッダーの接続インジケーターが赤い | ComfyUI が起動しているか、選んでいる接続先の URL が正しいか確認。Docker からは `127.0.0.1` が届かないので `host.docker.internal` か LAN IP に |
-| ジョブが「ファイルが見つからない」で失敗する | モデルのファイル名が環境と違う可能性。設定の「モデル」タブで上書きするか、[DL] で取得（SPEC §3.3） |
-| custom node 不足・ノード ID ズレの警告が出る | 不足ノードを ComfyUI に導入。テンプレートを差し替えた場合は `backend/app/workflows.py` のマニフェストを合わせる（SPEC §3.0） |
-| Grok が応答しない / 認証エラー | ホスト側で `grok` を一度起動してサインイン。Docker では `~/.grok` のマウントが必要 |
-| ラストフレームが取れない | `ffmpeg` が PATH にあるか確認 |
-
----
-
-## 注意事項
-
+- **Remotion は既定 OFF**です。MIT などのオープンソースライセンスではなく独自の
+  Remotion License で提供されており、個人利用および従業員 3 名以下の会社は無償ですが、
+  それ以上の規模では会社ライセンス（有償）が必要です。有効にする前に
+  <https://www.remotion.dev/license> を確認してください
 - 本アプリは成人向けコンテンツをローカル生成する個人利用ツールです。生成物・プロンプトは
-  すべてローカルにのみ保存され、ComfyUI と Grok CLI 以外へは送信されません
+  すべてローカルにのみ保存され、ComfyUI と LLM CLI 以外へは送信されません
 - LoRA で実在人物を無断利用しないでください（利用者責任）
-- grok CLI はベータのため出力形式が変わる可能性があります
-- 生成物 (`outputs/`, `assets/`, `library/`)、`app.db`、`runtime/`、`.venv/`、`node_modules/`、
-  `frontend/dist/` はすべて `.gitignore` 済みです
