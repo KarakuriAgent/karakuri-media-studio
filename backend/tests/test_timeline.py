@@ -46,8 +46,8 @@ def test_build_command_normalises_and_concats_every_clip():
     assert command.count("-i") == 2
     graph = command[command.index("-filter_complex") + 1]
     # 切り出しは 1 フレームぶん余分に取り（2.000 + 1/24 秒）、フレーム数で切る
-    assert "[0:v]trim=start=0.000:end=2.042" in graph
-    assert "[1:v]trim=start=0.500:end=1.542" in graph
+    assert "[0:v]trim=start=0.000000:end=2.041667" in graph
+    assert "[1:v]trim=start=0.500000:end=1.541667" in graph
     assert graph.count("trim=end_frame=48") == 1  # 2 秒 = 48f
     assert graph.count("trim=end_frame=24") == 1  # 1 秒 = 24f
     assert graph.count("tpad=stop_mode=clone") == 2
@@ -55,8 +55,8 @@ def test_build_command_normalises_and_concats_every_clip():
     assert graph.count("pad=1280:720:(ow-iw)/2:(oh-ih)/2") == 2
     assert graph.count("setsar=1,fps=24") == 2
     # 音声も同じ規格へ揃え、映像とちょうど同じ長さにしてから連結
-    assert "atrim=start=0.000:end=2.000" in graph
-    assert "atrim=start=0.500:end=1.500" in graph
+    assert "atrim=start=0.000000:end=2.000000" in graph
+    assert "atrim=start=0.500000:end=1.500000" in graph
     assert graph.count("apad=whole_dur=2.000000,atrim=end=2.000000") == 1
     assert graph.count(f"aresample={timeline_export.AUDIO_RATE}") == 2
     # 出力そのものもフレーム数で締める（2 秒 + 1 秒 = 72f）
@@ -394,6 +394,93 @@ def test_build_command_freezes_the_tail_of_a_short_source():
     # 不足 0.5 秒 + 余裕（丸めのぶん）を末尾フレームの静止で埋める
     assert "tpad=stop_mode=clone:stop_duration=0.750" in graph
     assert "trim=end_frame=48" in graph
+
+
+#: BAN!BAN!BAN! の PLAN をタイムラインで再現した EDL（43 カット + 差し込み 8 =
+#: 51 クリップ）の尺。合計 193,480ms = 24fps で 4,644 枚（#53）。
+BAN_DURATIONS_MS = [
+    4000, 6000, 6600, 3700, 4100, 3100, 5700, 3600, 2800, 4300,
+    1500, 1300, 1500, 1100, 3900, 2400, 1500, 800, 1500, 1100,
+    5600, 2900, 4000, 3100, 5900, 5600, 5200, 5800, 1500, 1000,
+    1500, 1100, 6300, 1500, 800, 1500, 800, 11100, 5800, 5300,
+    6200, 4200, 5800, 4100, 5900, 7300, 4200, 6000, 4800, 5200,
+    2980,
+]
+
+
+def test_frame_plan_counts_the_boundaries_not_the_durations():
+    """境界を量子化するので、クリップの丸めが積み上がらない（#53）。"""
+    clips = [
+        ExportClip(path=f"/x/{index}.mp4", in_ms=0, out_ms=duration, duration_ms=duration)
+        for index, duration in enumerate(BAN_DURATIONS_MS)
+    ]
+    spec = ExportSpec(width=1280, height=720, fps=24, clips=clips)
+
+    assert spec.total_frames == round(193.48 * 24) == 4644
+    # 尺をひとつずつ丸めると 4 枚足りない（元のバグ）
+    assert sum(timeline_export.frame_count(d, 24) for d in BAN_DURATIONS_MS) == 4640
+
+    plan = spec.frames
+    # 枚数の足し上げは境界と一致し、隣どうしは境界を共有する
+    assert sum(item.count for item in plan) == spec.total_frames
+    assert [item.start for item in plan[1:]] == [item.end for item in plan[:-1]]
+    for index, item in enumerate(plan):
+        start_ms = sum(BAN_DURATIONS_MS[:index])
+        assert item.start == timeline_export.frame_count(start_ms, 24)
+        assert item.end == timeline_export.frame_count(
+            start_ms + BAN_DURATIONS_MS[index], 24
+        )
+
+
+def test_build_command_drops_the_clips_that_are_shorter_than_a_frame():
+    """1 フレームに満たない隙間は落とす（``concat`` に尺 0 を渡さない。#53）。"""
+    spec = ExportSpec(
+        width=1280,
+        height=720,
+        fps=24,
+        clips=[
+            _clip("/x/one.mp4", 0, 2000),
+            # 自動配置が作ってしまう数ミリ秒の隙間（どちらも 24fps で 0 枚）
+            ExportClip(path=None, in_ms=0, out_ms=17, duration_ms=17, has_audio=False),
+            _clip("/x/two.mp4", 0, 1000),
+            ExportClip(path=None, in_ms=0, out_ms=3, duration_ms=3, has_audio=False),
+            _clip("/x/three.mp4", 0, 1000),
+        ],
+    )
+    assert [item.count for item in spec.frames] == [48, 0, 24, 0, 24]
+    command = build_command(spec, "/o.mp4")
+    graph = command[command.index("-filter_complex") + 1]
+
+    # 黒も無音も作らない（0 枚のセグメントは出てこない）
+    assert "color=c=black" not in " ".join(command)
+    assert "anullsrc" not in " ".join(command)
+    assert "trim=end_frame=0" not in graph
+    assert "atrim=end=0.000000" not in graph
+    assert graph.endswith("[v0][a0][v1][a1][v2][a2]concat=n=3:v=1:a=1[outv][outa]")
+    # 落としても全長は変わらない（境界基準なので隙間のぶんは隣が吸う）
+    assert spec.total_frames == timeline_export.frame_count(4020, 24) == 96
+    assert command[command.index("-frames:v") + 1] == "96"
+
+
+def test_plan_layout_never_leaves_a_gap_shorter_than_a_frame():
+    """1 フレーム未満の隙間は前のカットへ寄せる（書き出しが落ちないように。#53）。"""
+    placed = service.plan_layout(
+        [_planned(0.0, source_ms=983, source_id="a"), _planned(1.0, source_id="b")],
+        "V1",
+        24.0,
+    )
+    # 17ms の隙間は gap にせず、前のカットが吸う
+    assert [
+        (clip.source_kind, clip.start_ms, clip.duration_ms) for clip in placed
+    ] == [("take", 0, 1000), ("take", 1000, 5000)]
+    assert placed[0].out_ms == 1000
+    # 1 フレームを超える隙間は今までどおり gap で埋まる
+    spaced = service.plan_layout(
+        [_planned(0.0, source_ms=900, source_id="a"), _planned(1.0, source_id="b")],
+        "V1",
+        24.0,
+    )
+    assert [clip.source_kind for clip in spaced] == ["take", "gap", "take"]
 
 
 def test_frame_warning_only_fires_on_a_mismatch():

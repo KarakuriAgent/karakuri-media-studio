@@ -915,7 +915,10 @@ async def create_timeline(
             # 計画開始秒を持つカットがあれば音源基準（隙間は gap で埋まる）、
             # 無ければ今までどおり先頭から隙間なく詰める。
             await _write_clips(
-                conn, timeline_id, project_id, plan_layout(placed, track_id)
+                conn,
+                timeline_id,
+                project_id,
+                plan_layout(placed, track_id, float(payload.fps or DEFAULT_FPS)),
             )
         await conn.commit()
     await _publish_timeline(project_id, timeline_id, "create")
@@ -1906,7 +1909,7 @@ class PlannedClip(NamedTuple):
 
 
 def plan_layout(
-    items: list[PlannedClip], track_id: str
+    items: list[PlannedClip], track_id: str, fps: float = DEFAULT_FPS
 ) -> list[TimelineClipInput]:
     """計画秒つきのカットを音源上の位置へ置く（純関数）。
 
@@ -1914,7 +1917,9 @@ def plan_layout(
       **次の計画秒までの間隔**（最後のカットは Take の尺）を上限に、Take の尺で
       切る（短い Take のときは足りないぶんが隙間になる）
     - 空いたところは ``gap`` クリップ（黒＋無音）で埋めるので、次のカットの頭は
-      必ず計画どおりの秒から始まる
+      必ず計画どおりの秒から始まる。ただし **1 フレームに満たない隙間は作らない**
+      （前のクリップへ寄せる）——書き出しで 0 フレームのセグメントになって
+      ffmpeg が落ちるため（``fps`` はそのタイムラインの規格）
     - 計画秒を持たないクリップは、計画の終わったところから従来どおり順に詰める
       （繋ぎの重なりの扱いも :func:`relayout` と同じ）
     - 計画を 1 つも持たないときは :func:`relayout` そのもの
@@ -1933,6 +1938,8 @@ def plan_layout(
         max(0, int(round(float(item.planned_start_seconds or 0.0) * 1000)))
         for item in planned
     ]
+    # 1 フレームの長さ（これに満たない隙間は作らない）。
+    frame_ms = 1000 / float(fps) if fps and fps > 0 else 1000 / DEFAULT_FPS
     placed: list[TimelineClipInput] = []
     cursor = 0
     for index, item in enumerate(planned):
@@ -1949,16 +1956,25 @@ def plan_layout(
                 f"計画開始秒が詰まりすぎています（{start / 1000:g} 秒のカットに"
                 f" {span}ms しか置けません）"
             )
-        if start > cursor:
+        hole = start - cursor
+        if hole > 0 and hole < frame_ms:
+            # 1 フレームに満たない隙間は置かない（gap を挟むと書き出しで
+            # 0 フレームのセグメントになる）。前のクリップへ寄せる。
+            if placed:
+                placed[-1].duration_ms += hole
+                placed[-1].out_ms += hole
+            else:
+                start = cursor  # 先頭の端数はそのまま頭へ寄せる
+        elif hole > 0:
             placed.append(
                 TimelineClipInput(
                     track_id=track_id,
                     start_ms=cursor,
-                    duration_ms=start - cursor,
+                    duration_ms=hole,
                     source_kind="gap",
                     source_id=None,
                     in_ms=0,
-                    out_ms=start - cursor,
+                    out_ms=hole,
                 )
             )
         clip.start_ms = start
@@ -2538,7 +2554,7 @@ async def apply_sync(
                         await _take_duration(conn, str(clip.source_id)) or 0
                     )
                 items.append(PlannedClip(clip, planned, source_ms))
-            laid = plan_layout(items, video.id)
+            laid = plan_layout(items, video.id, float(timeline.fps or DEFAULT_FPS))
         else:
             laid = relayout(kept)
 

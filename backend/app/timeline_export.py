@@ -23,11 +23,14 @@
 （``color``）と無音（``anullsrc``）を ``lavfi`` から作って充てる。全クリップが
 「映像 1 本 + 音声 1 本」になるので、繋ぎ方に関わらず形が揃う。
 
-**境界はすべてフレーム番号が正本**（:func:`frame_count`）。秒のまま切ると端数
-フレームが捨てられて連結後に映像が先走るので、各クリップは 1 フレームぶん余分に
-取ってから ``trim=end_frame=<枚数>`` でちょうどその枚数に切る。音も
+**境界はすべてフレーム番号が正本**（:func:`frame_count` / :func:`frame_plan`）。
+量子化するのはクリップの**尺ではなくタイムライン上の位置**で、クリップの枚数は
+隣の境界との差にする（尺をひとつずつ丸めると誤差がクリップの数だけ積み上がる）。
+秒のまま切ると端数フレームが捨てられて連結後に映像が先走るので、各クリップは
+1 フレームぶん余分に取ってから ``trim=end_frame=<枚数>`` でちょうどその枚数に
+切る。素材の切り出し位置（``in_ms``）も同じ規則でフレーム番号にする。音も
 ``apad`` + ``atrim`` で同じ長さへ揃える（映像と音の尺がずれたまま ``concat`` に
-渡さない）。素材の実尺が「切り出し位置 + 尺」に届かないクリップは
+渡さない）。1 フレームに満たないクリップ（数ミリ秒の隙間）は落とす。素材の実尺が「切り出し位置 + 尺」に届かないクリップは
 ``tpad=stop_mode=clone`` の末尾静止で埋め、どれだけ足りなかったかを
 :func:`pad_warnings` が ``PAD <クリップ名> <不足秒>s`` として返す。
 
@@ -43,6 +46,7 @@ import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import NamedTuple
 
 log = logging.getLogger(__name__)
 
@@ -190,21 +194,23 @@ class ExportSpec:
     loudnorm: bool = False
 
     @property
+    def frames(self) -> list[ClipFrames]:
+        """クリップごとのフレーム番号（:func:`frame_plan`）。"""
+        if self.fps <= 0:
+            return []
+        return frame_plan(self.clips, self.fps)
+
+    @property
     def total_frames(self) -> int:
         """繋ぎの重なりを引いた**フレーム数**（焼き上がりの正本）。
 
-        クリップごとに :func:`frame_count` で量子化してから足し引きするので、
-        ここで出る枚数が ``ffprobe -count_frames`` の実測と一致するはず
-        （合わなければ :func:`frame_warning` が警告を出す）。
+        最後のクリップの終わりのフレーム番号、つまり ``round(全長 * fps)`` そのもの
+        （:func:`frame_plan` は境界を量子化するので、途中のクリップの丸めは
+        ここへ効いてこない）。``ffprobe -count_frames`` の実測と一致するはずで、
+        合わなければ :func:`frame_warning` が警告を出す。
         """
-        if self.fps <= 0:
-            return 0
-        total = 0
-        for index, clip in enumerate(self.clips):
-            total += frame_count(clip.duration_ms, self.fps)
-            if index > 0:
-                total -= frame_count(clip.overlap_ms, self.fps)
-        return max(0, total)
+        plan = self.frames
+        return max(0, plan[-1].end) if plan else 0
 
     @property
     def duration_ms(self) -> int:
@@ -223,19 +229,78 @@ def _seconds(ms: int) -> str:
     return f"{ms / 1000:.3f}"
 
 
-def frame_count(duration_ms: int, fps: float) -> int:
-    """ミリ秒をフレーム数へ量子化する（境界の正本。``round(t * fps)``）。
+def frame_count(position_ms: int, fps: float) -> int:
+    """ミリ秒を**フレーム番号**へ量子化する（境界の正本。``round(t * fps)``）。
 
     秒のまま ``-ss`` / ``-t`` に渡すと端数フレームが捨てられて、連結後に映像が
     最大 2 フレーム先走る（BAN!BAN!BAN! で実測）。書き出しの長さに関わる計算は
     すべてここを通してフレーム番号にしてから行う。
+
+    渡すのは**タイムライン上の位置**（またはソースの中の切り出し位置）であって
+    尺ではない。クリップの枚数は :func:`frame_plan` が「隣との差」として出す。
     """
     if fps <= 0:
         raise TimelineExportError(f"fps が不正です: {fps}")
-    return max(0, int(round(max(0, duration_ms) / 1000 * fps)))
+    return max(0, int(round(max(0, position_ms) / 1000 * fps)))
 
 
-def _frame_seconds(frames: int, fps: float) -> str:
+class ClipFrames(NamedTuple):
+    """クリップ 1 つが焼き上がりの中で占めるフレーム番号（``[start, end)``）。"""
+
+    #: タイムライン上の開始フレーム番号
+    start: int
+    #: 終わりのフレーム番号（この番号は含まない）
+    end: int
+    #: 前のクリップと重なる枚数（繋ぎが無ければ 0）
+    overlap: int = 0
+
+    @property
+    def count(self) -> int:
+        """このクリップの枚数（``end - start``）。"""
+        return max(0, self.end - self.start)
+
+
+def frame_plan(clips: list[ExportClip], fps: float) -> list[ClipFrames]:
+    """クリップの並びを**境界**でフレーム番号へ量子化する（純関数）。
+
+    クリップごとに ``round(尺 * fps)`` すると丸め誤差がクリップの数だけ積み上がる
+    （BAN!BAN!BAN! の 51 クリップで 4 フレーム不足した）。タイムライン上の
+    **位置**を量子化して隣との差を枚数にすれば、隣り合うクリップは境界を共有する
+    ので誤差は累積せず、総枚数は必ず ``round(全長 * fps)`` になる。
+
+    繋ぎ（トランジション）のあるところは、前のクリップの終わりと自分の始まりが
+    重なる。その重なりも同じ境界から出す（``overlap = 前の終わり - 自分の始まり``）
+    ので、``xfade`` を挟んでも全長は 1 フレームもずれない。
+    """
+    if fps <= 0:
+        raise TimelineExportError(f"fps が不正です: {fps}")
+    plan: list[ClipFrames] = []
+    cursor_ms = 0  # 直前のクリップの終わり（ミリ秒）
+    previous_end = 0  # 直前のクリップの終わり（フレーム番号）
+    for index, clip in enumerate(clips):
+        duration_ms = max(0, int(clip.duration_ms))
+        overlap_ms = 0
+        if index > 0 and clip.transition_kind in TRANSITIONS:
+            # 重なりは前のクリップの尺までしか取れない（build_command と同じ）。
+            overlap_ms = max(
+                0, min(clip.overlap_ms, max(0, int(clips[index - 1].duration_ms)))
+            )
+        start_ms = max(0, cursor_ms - overlap_ms)
+        end_ms = start_ms + duration_ms
+        start = frame_count(start_ms, fps)
+        plan.append(
+            ClipFrames(
+                start,
+                frame_count(end_ms, fps),
+                max(0, previous_end - start) if index > 0 else 0,
+            )
+        )
+        cursor_ms = end_ms
+        previous_end = plan[-1].end
+    return plan
+
+
+def _frame_seconds(frames: float, fps: float) -> str:
     """フレーム数を ffmpeg のフィルタに書ける秒表記にする（小数 6 桁）。
 
     フレーム境界は 3 桁では割り切れない（1/30 秒 = 0.0333…）ので、秒表記へ
@@ -276,7 +341,10 @@ def frame_warning(expected: int, actual: int | None) -> str | None:
     """焼き上がりの総フレーム数が計画と違ったときの警告（同じなら None）。"""
     if actual is None or actual == expected:
         return None
-    return f"フレーム数が計画と違います（計画 {expected}f / 実測 {actual}f）"
+    return (
+        f"フレーム数が計画と違います（計画 {expected}f / 実測 {actual}f"
+        f" / 差 {actual - expected:+d}f）"
+    )
 
 
 def _fps(value: float) -> str:
@@ -398,6 +466,7 @@ def _add_clip(
     graph: _Graph,
     clip: ExportClip,
     position: int,
+    frames: int,
     width: int,
     height: int,
     fps_value: float,
@@ -405,12 +474,12 @@ def _add_clip(
 ) -> tuple[str, str]:
     """クリップ 1 つを規格へ正規化して ``(映像ラベル, 音声ラベル)`` を返す。
 
-    尺の正本はフレーム数（:func:`frame_count`）。**1 フレームぶん余分に取ってから
+    枚数（``frames``）は :func:`frame_plan` が境界から出したものを受け取る
+    （ここで尺を量子化し直すと丸めが累積する）。**1 フレームぶん余分に取ってから
     ``trim=end_frame`` でちょうどその枚数に切る**ので、端数フレームが捨てられて
     連結後に先走ることがない。音も同じ長さへ ``apad`` + ``atrim`` で揃える。
     """
     fps = _fps(fps_value)
-    frames = frame_count(clip.duration_ms, fps_value)
     duration = _frame_seconds(frames, fps_value)
     # 余分に取ったぶんを落として、ちょうど frames 枚にする最後の段
     exact = f"trim=end_frame={frames},setpts=PTS-STARTPTS"
@@ -443,10 +512,13 @@ def _add_clip(
 
     source_index = graph.add_input("-i", str(clip.path))
     speed = float(clip.speed or 1.0)
-    start = _seconds(clip.in_ms)
+    # 切り出し位置もタイムラインと同じ規則でフレーム番号にする（秒のまま渡すと
+    # フレームの途中から切り出されて、境界基準で数えた枚数と噛み合わない）。
+    start_frame = frame_count(clip.in_ms, fps_value)
+    start = _frame_seconds(start_frame, fps_value)
     # 出口は ``out_ms`` ではなくフレーム数から逆算する（丸めた尺をそのまま渡すと
     # 最後の 1 フレームが落ちる）。素材側は速度ぶん伸びるので掛け戻す。
-    end = f"{(clip.in_ms + (frames + 1) / fps_value * 1000 * speed) / 1000:.3f}"
+    end = _frame_seconds(start_frame + (frames + 1) * speed, fps_value)
     # 素材が足りないぶんは末尾フレームの静止（tpad）で埋める。足りていても
     # 丸めのぶんだけは伸ばしておく（余りは exact が切り落とす）。
     stop = shortfall_ms(clip) / 1000 + PAD_MARGIN_SECONDS
@@ -468,7 +540,7 @@ def _add_clip(
     if clip.has_audio:
         # 音は素材の尺ぶんだけ切り出し、足りなければ無音で埋めてから映像と
         # 同じ長さに切る（映像と音の長さが違うまま concat に渡さない）。
-        audio_end = f"{(clip.in_ms + frames / fps_value * 1000 * speed) / 1000:.3f}"
+        audio_end = _frame_seconds(start_frame + frames * speed, fps_value)
         chain = (
             f"[{source_index}:a]atrim=start={start}:end={audio_end},"
             f"asetpts=PTS-STARTPTS,"
@@ -514,12 +586,20 @@ def build_command(spec: ExportSpec, output: str | Path) -> list[str]:
 
     純関数（ファイルも ffmpeg も触らない）なのでテストで固定できる。クリップが
     1 つも無い（または尺が全部 0）なら :class:`TimelineExportError`。
+
+    **1 フレームに満たないクリップは落とす**（自動配置や差し込みが作る数ミリ秒の
+    隙間がこれになる）。``concat`` に尺 0 のセグメントを渡すと ffmpeg が
+    ``Invalid argument`` で落ちるうえ、境界基準で数えているので落としても全長は
+    変わらない。
     """
-    clips = [clip for clip in spec.clips if clip.duration_ms > 0]
-    if not clips:
-        raise TimelineExportError("書き出せるクリップがありません")
     if spec.width <= 0 or spec.height <= 0 or spec.fps <= 0:
         raise TimelineExportError("タイムラインの規格（幅・高さ・fps）が不正です")
+    plan = frame_plan(spec.clips, spec.fps)
+    kept = [(clip, item) for clip, item in zip(spec.clips, plan) if item.count > 0]
+    if not kept:
+        raise TimelineExportError("書き出せるクリップがありません")
+    clips = [clip for clip, _ in kept]
+    counts = [item for _, item in kept]
 
     width, height = spec.width, spec.height
     fps = _fps(spec.fps)
@@ -528,7 +608,10 @@ def build_command(spec: ExportSpec, output: str | Path) -> list[str]:
 
     # 1) クリップごとに規格へ正規化する（尺はフレーム数へ量子化される）。
     labels = [
-        _add_clip(graph, clip, position, width, height, spec.fps, fit)
+        _add_clip(
+            graph, clip, position, counts[position].count,
+            width, height, spec.fps, fit,
+        )
         for position, clip in enumerate(clips)
     ]
 
@@ -536,12 +619,13 @@ def build_command(spec: ExportSpec, output: str | Path) -> list[str]:
     #    これまでどおり concat のままなので、繋ぎを使わないタイムラインの
     #    コマンドはフェーズ 1 と 1 文字も変わらない。
     runs: list[list[int]] = [[0]]
-    overlaps: list[int] = []
+    # 重なりもフレーム数（:func:`frame_plan` が境界から出したもの）で持つ。
+    overlap_frames: list[int] = []
     for position, clip in enumerate(clips[1:], start=1):
-        overlap = min(clip.overlap_ms, clips[position - 1].duration_ms)
+        overlap = counts[position].overlap
         if overlap > 0 and clip.transition_kind in TRANSITIONS:
             runs.append([position])
-            overlaps.append(overlap)
+            overlap_frames.append(overlap)
         else:
             runs[-1].append(position)
 
@@ -560,12 +644,10 @@ def build_command(spec: ExportSpec, output: str | Path) -> list[str]:
         )
         for number, run in enumerate(runs)
     ]
-    # 重なりと offset もフレーム数で数える（クリップ側の量子化と揃えないと、
-    # 繋ぎのあるタイムラインだけ全長が 1 フレームずれる）。
-    overlap_frames = [frame_count(overlap, spec.fps) for overlap in overlaps]
+    # offset もフレーム数で数える（クリップ側の量子化と揃えないと、繋ぎのある
+    # タイムラインだけ全長が 1 フレームずれる）。
     run_durations = [
-        sum(frame_count(clips[position].duration_ms, spec.fps) for position in run)
-        for run in runs
+        sum(counts[position].count for position in run) for run in runs
     ]
     offsets, _total = transition_offsets(run_durations, overlap_frames)
 
