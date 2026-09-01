@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS jobs (
   source_image  TEXT,
   audio_path    TEXT,
   audio_output_path TEXT,
+  analysis_path TEXT,                       -- 音源解析の analysis.json（§5.2）
   extra_outputs TEXT,                       -- 主成果物に収まらない出力（JSON 配列）
   error         TEXT,
   nsfw          INTEGER NOT NULL DEFAULT 0,
@@ -392,6 +393,9 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         # 入力のリファレンス音声を保持する audio_path とは別物。
         ("audio_prompt", "TEXT"),
         ("audio_output_path", "TEXT"),
+        # 音源解析ジョブ（mode='audio_analysis'、SPEC §5.2）が書いた
+        # analysis.json のパス。画像も動画も作らないジョブなので成果物はこれだけ。
+        ("analysis_path", "TEXT"),
         # 主成果物（image_path / video_path / audio_output_path）に収まらない
         # 追加の出力のパス（JSON 配列）。1 回の生成で複数返すモデル（たとえば
         # 1 リクエストで 2 曲）のため。既存行は NULL = 追加成果物なし。

@@ -191,6 +191,37 @@ scripts/studio.sh wait-export <export_id> [interval_sec]
 `duration_ms` と `warnings` が入る。`warnings` の `PAD <カット> <不足秒>s` は
 「素材が足りずに末尾を静止で埋めた」印なので、気になるならそのカットを焼き直す。
 
+### 音源解析（歌詞つきの MV。指示があったときだけ）
+
+**通常のドラマ制作からは呼ばない。** 歌詞つきの MV・モーショングラフィックスを
+頼まれたとき、または明示的に指示されたときだけ。
+
+**鉄則: 歌詞つきの MV を作るときは先に音源解析を回し、演出の秒は決め打ちしない。**
+
+```
+POST /jobs {"mode":"audio_analysis",
+            "analysis":{"audio":{"item_id":"<音源>"},
+                        "lyrics":"1 行目\n2 行目\n…",
+                        "stems":[{"item_id":"<ボーカルステム>"}],
+                        "align_substitutions":{"BAN!":"バン"},
+                        "model":"medium"}}
+→ wait-job → GET /jobs/{id} の analysis_url（/outputs/{id}/analysis.json）
+```
+
+- `lyrics` があれば行と 1 文字ごとの秒（アライン）、無ければ自由書き起こし。
+  `stems`（ボーカルだけの音源）を渡せるなら渡す（伴奏に埋もれず精度が上がる）
+- **前処理の置換**: `BAN!` のような英字＋感嘆符は whisper が読みを当てられない。
+  `align_substitutions` に `{"BAN!": "バン"}` のように**仮名の読み**を書く
+  （`？` `…` `「」` などの記号は既定で落ちる）
+- **アラインの秒より実測 onset を優先する**。アラインの語頭は実際の発音より
+  100〜250ms 遅れることがあるので、叩き込む演出（カード・シェイク）の秒は
+  `onsets[].t` に寄せる。歌詞テロップは `lines[].start` / `end` でよい
+- 使い道は `.agents/skills/karakuri-remotion/SKILL.md`「秒の出どころ:
+  `analysis.json`」の対応表のとおり（`lyric.chars` / `beatMarker` /
+  `MusicVideo.beats` / カットの `planned_start_seconds`）
+- 解析用の依存が入っていないと **400**（何を入れればよいかが本文に出る）。
+  そのときは人に頼む。エージェント側から `PUT /api/settings` で設定を変えない
+
 ### 音源基準で組むとき（MV のときだけ）
 
 **通常のドラマ制作では使わない。** カットの並び順で十分で、計画秒を勝手に足さない。
@@ -303,3 +334,5 @@ scripts/studio.sh POST /videos/contact-sheet '{"source":{"job_id":"<job>"},"seco
   わざわざ画像生成しない。
 - 通常のドラマ制作でカットに `planned_start_seconds`（音源基準の計画秒）を書かない。
   並び順で足りる。音に映像を合わせる制作で、秒を音源解析から出せるときだけ使う（§8）。
+- 指示されていないのに音源解析（`mode: "audio_analysis"`）を回さない（§8）。
+  逆に、**歌詞つきの MV で解析を回さずに演出の秒を決め打ちしない**。

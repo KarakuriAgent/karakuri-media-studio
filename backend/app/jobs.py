@@ -46,12 +46,23 @@ from typing import Any
 
 import aiosqlite
 from PIL import Image
+from pydantic import ValidationError
 
-from . import comfy, grok_media, nsfw as nsfw_service, push, remotion, runpod, ws
+from . import (
+    audio_analysis,
+    comfy,
+    grok_media,
+    nsfw as nsfw_service,
+    push,
+    remotion,
+    runpod,
+    ws,
+)
 from .config import load_settings
 from .db import get_db
 from .ids import new_id
 from .models import (
+    AudioAnalysisRequest,
     GenerationParams,
     Job,
     JobContinue,
@@ -59,6 +70,7 @@ from .models import (
     JobRerun,
     LoraRef,
     MultiShot,
+    audio_analysis_problem,
     audio_lora_problem,
     audio_workflow_problem,
     context_latent_problem,
@@ -308,6 +320,7 @@ def row_to_job(row: aiosqlite.Row, *, include_workflow: bool = True) -> Job:
     data["video_url"] = _output_url(data.get("video_path"))
     data["last_frame_url"] = _output_url(data.get("last_frame_path"))
     data["audio_output_url"] = _output_url(data.get("audio_output_path"))
+    data["analysis_url"] = _output_url(data.get("analysis_path"))
     # 主成果物（jobs の列）に収まらない出力。列は JSON 配列の文字列。
     data["extra_outputs"] = _loads_paths(data.get("extra_outputs"))
     data["extra_output_urls"] = [
@@ -504,8 +517,72 @@ def _validate_remotion(params: dict[str, Any]) -> None:
         raise JobBackendUnavailable(str(exc)) from exc
 
 
+def analysis_request(params: dict[str, Any]) -> AudioAnalysisRequest | None:
+    """params の ``analysis`` を :class:`AudioAnalysisRequest` に戻す。
+
+    保存済みの params には、投入時に解決した実ファイルのパス
+    （``audio_path`` / ``stem_paths``）も入っているが、モデルは宣言していない
+    キーを黙って捨てるのでそのまま渡してよい。
+    """
+    raw = params.get("analysis")
+    if not isinstance(raw, dict):
+        return None
+    try:
+        return AudioAnalysisRequest(**raw)
+    except ValidationError as exc:
+        raise JobValidationError(str(exc)) from exc
+
+
+def _validate_audio_analysis(params: dict[str, Any]) -> AudioAnalysisRequest:
+    """``mode: "audio_analysis"`` の投入を確かめる（SPEC §5.2）。"""
+    request = analysis_request(params)
+    problem = audio_analysis_problem("audio_analysis", request)
+    if problem:
+        raise JobValidationError(problem)
+    assert request is not None  # audio_analysis_problem が None を弾いている
+    return request
+
+
+async def _prepare_audio_analysis(params: dict[str, Any]) -> None:
+    """音源とステムを実ファイルに解決し、依存が入っているかまで確かめる。
+
+    **投入の時点で**弾くのが要点で、走らせてから失敗させると履歴に無駄なジョブが
+    残る。解決した絶対パスは params に焼き込むので、再実行は同じファイルを解析する
+    （``_UPLOADS`` の素材と同じ扱い）。依存が入っていなければ
+    :class:`JobBackendUnavailable`（400）。
+    """
+    if params.get("mode") != "audio_analysis":
+        return
+    from . import media_ref  # 逆向きの import（media_ref はこの層を使う）
+
+    request = _validate_audio_analysis(params)
+    analysis = dict(params["analysis"])
+    try:
+        assert request.audio is not None
+        analysis["audio_path"] = str((await media_ref.resolve(request.audio)).path)
+        analysis["stem_paths"] = [
+            str((await media_ref.resolve(stem)).path) for stem in request.stems
+        ]
+    except media_ref.MediaRefError as exc:
+        raise JobValidationError(str(exc)) from exc
+    params["analysis"] = analysis
+    try:
+        await audio_analysis.check_dependencies(
+            request.resolved_tasks(), has_lyrics=bool(request.lyrics.strip())
+        )
+    except audio_analysis.AudioAnalysisError as exc:
+        # 依存不足も「ワーカーがそもそも起動しない」も、入力ではなく環境の問題
+        # なので 400（:class:`JobBackendUnavailable`）にまとめる。
+        raise JobBackendUnavailable(str(exc)) from exc
+
+
 def _validate(params: dict[str, Any]) -> None:
     mode = params.get("mode", "")
+    if mode == "audio_analysis":
+        # 生成を 1 つもしない独立した経路（SPEC §5.2）。ワークフローもプロンプトも
+        # 通らないので、見るのは analysis の中身だけ。
+        _validate_audio_analysis(params)
+        return
     if mode == "remotion":
         # ワークフローも LoRA もプロンプトも通らない独立した経路（SPEC §5.2）。
         # 見るのは「必須項目が揃っているか」と「連携が使えるか」だけ。
@@ -629,8 +706,9 @@ def _resolve_nsfw(
 ) -> tuple[bool | None, str]:
     """明示指定は manual、継承は auto、未指定は判定待ち（'' + バックグラウンド判定）。
 
-    ``mode: "remotion"`` だけは判定に掛けるプロンプトが無い（出力は同梱の
-    Remotion プロジェクトが組んだ画）ので、未指定なら **false で確定**させて
+    ``mode: "remotion"`` と ``mode: "audio_analysis"`` だけは判定に掛ける
+    プロンプトが無い（前者の出力は同梱の Remotion プロジェクトが組んだ画、
+    後者はそもそも絵を作らず JSON を書くだけ）ので、未指定なら **false で確定**させて
     バックグラウンド判定を走らせない。投入も再実行もここを通るので、焼き直しで
     フラグが元ジョブとずれることがない（手動トグルと継承はこれまでどおり）。
     """
@@ -638,7 +716,7 @@ def _resolve_nsfw(
         return explicit, "manual"
     if inherit:
         return True, "auto"
-    if mode == "remotion":
+    if mode in ("remotion", "audio_analysis"):
         return False, ""
     return None, ""
 
@@ -724,6 +802,8 @@ async def _insert_job(
     _pin_target_selects(params)
     _validate(params)
     await _validate_lora_families(params)
+    # 音源解析は素材の解決と依存の確認まで投入時に済ませる（SPEC §5.2）
+    await _prepare_audio_analysis(params)
 
     # Fail fast on unusable asset paths (422 rather than a failed job).
     for field in _UPLOADS:
@@ -880,6 +960,11 @@ def _params_from_create(payload: JobCreate) -> dict[str, Any]:
         # 再実行は同じ composition・同じ props でもう一度書き出す。
         "remotion_composition": payload.remotion_composition,
         "remotion_props": payload.remotion_props,
+        # 音源解析（mode 'audio_analysis' だけが読む、SPEC §5.2）。params に残すので
+        # 再実行は同じ音源・同じ解析をやり直す。
+        "analysis": (
+            payload.analysis.model_dump() if payload.analysis is not None else None
+        ),
     }
     params.update(_seeds(payload.seed))
     return params
@@ -1850,6 +1935,87 @@ async def _run_remotion_job(job: Job) -> dict[str, Any]:
     }
 
 
+#: WS に流す解析ワーカーの出力行の上限
+_ANALYSIS_LINE = 200
+
+
+async def _run_audio_analysis_job(job: Job) -> dict[str, Any]:
+    """``mode: "audio_analysis"`` を走らせて ``{"analysis_path": …}`` を返す（§5.2）。
+
+    Remotion と同じく ComfyUI のステージ経路（:func:`_run_job_stages`）は 1 つも
+    通らない。作るのは ``outputs/{job_id}/analysis.json`` だけで、画像も動画も
+    出さない（履歴・外部 API では ``analysis_url`` として出る）。
+
+    重い依存はアプリの環境に入れないので、解析そのものは別の venv の python で
+    ワーカーを回す（:mod:`app.audio_analysis`）。
+    """
+    job_id = job.id
+    request = _validate_audio_analysis(job.params)
+    raw = job.params.get("analysis") or {}
+    audio = rebase_stored_path(str(raw.get("audio_path") or ""))
+    stems = [rebase_stored_path(str(path)) for path in raw.get("stem_paths") or []]
+    tasks = request.resolved_tasks()
+    output = OUTPUTS_DIR / job_id / "analysis.json"
+
+    await _update(
+        job_id,
+        workflow_json=json.dumps(
+            {
+                "audio_analysis": {
+                    "audio": str(audio),
+                    "stems": [str(stem) for stem in stems],
+                    "tasks": tasks,
+                    "language": request.language,
+                    "model": request.model,
+                    "align_substitutions": request.align_substitutions,
+                }
+            },
+            ensure_ascii=False,
+        ),
+    )
+    overall = OverallProgress(1)
+    await _set_status(
+        job_id,
+        "running",
+        message=f"音源解析: {', '.join(tasks)}",
+        progress=overall.stage_fraction(0.0),
+    )
+
+    async def on_progress(fraction: float | None, line: str) -> None:
+        await ws.publish(
+            job_id,
+            "running",
+            message=f"音源解析: {line}"[:_ANALYSIS_LINE],
+            progress=(
+                overall.stage_fraction(fraction)
+                if fraction is not None
+                else overall.value
+            ),
+        )
+
+    try:
+        saved = await audio_analysis.analyze(
+            job_id,
+            audio=audio,
+            output=output,
+            tasks=tasks,
+            lyrics=request.lyrics,
+            stems=stems,
+            language=request.language,
+            model=request.model,
+            substitutions=(
+                json.dumps(request.align_substitutions, ensure_ascii=False)
+                if request.align_substitutions
+                else ""
+            ),
+            on_progress=on_progress,
+        )
+    except audio_analysis.AudioAnalysisError as exc:
+        raise JobError(str(exc)) from exc
+    overall.stage_finished()
+    return {"analysis_path": str(saved)}
+
+
 #: ステージ名 -> (成果物の種類, outputs/ に置くときのファイル名, jobs の列)。
 #: バックエンドに依らず同じ置き場・同じ命名なので、履歴と UI からは区別が付かない。
 _STAGE_ARTIFACTS = {
@@ -2010,13 +2176,15 @@ async def run_job(job_id: str) -> None:
     # 「今回の実行の開始」が入る（前回の終了時刻は下の finished_at が塗り替える）。
     await _update(job_id, started_at=_now(), finished_at=None)
     try:
-        # Remotion はステージ（ComfyUI のグラフ）を 1 つも持たない独立した経路
-        # （SPEC §5.2）。終端の書き込み・キャンセル・失敗の記録はここで共通。
-        updates = (
-            await _run_remotion_job(job)
-            if job.mode == "remotion"
-            else await _run_job_stages(job)
-        )
+        # Remotion と音源解析はステージ（ComfyUI のグラフ）を 1 つも持たない
+        # 独立した経路（SPEC §5.2）。終端の書き込み・キャンセル・失敗の記録は
+        # ここで共通。
+        if job.mode == "remotion":
+            updates = await _run_remotion_job(job)
+        elif job.mode == "audio_analysis":
+            updates = await _run_audio_analysis_job(job)
+        else:
+            updates = await _run_job_stages(job)
         await _set_status(
             job_id,
             "done",

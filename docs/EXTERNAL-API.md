@@ -46,6 +46,7 @@
 | 編集履歴 | `GET /projects/{id}/revisions`・`GET .../{seq}/diff`・`POST .../{seq}/restore`（§3.1） |
 | 画面 | `GET/PATCH /ui/generate-form`・`POST /ui/navigate`（§3.2） |
 | Remotion | `GET /remotion/compositions`（§3.3） |
+| 音源解析 | `POST /jobs` の `mode: "audio_analysis"`（§3.3.2）。成果物は `analysis_url` |
 | 参照系 | `GET /openapi.json`・`capabilities`・`options`・`prompt-guide`・`prompt-examples` |
 | 一括投入 | `POST /stories`（§2） |
 
@@ -340,6 +341,59 @@ GET   /api/v1/exports/{id}          → {"fps":24,"width":1280,"height":720,
    `FxOverlay` の `base`（`{"src": "<output_url>", …}`）と props の規格に使う。
    素材が足りずに末尾静止で埋めたところは `warnings` に `PAD <カット> <不足秒>s`、
    総フレーム数が計画とずれたときもここに出る
+
+### 3.3.2 音源解析（MV のときだけ・指示があったときだけ）
+
+演出の秒を決め打ちしないための材料を音源から出す（SPEC §5.2）。**ふつうのジョブ**
+として投げ、成果物は JSON 1 つ。
+
+```
+POST /api/v1/jobs
+  {"mode": "audio_analysis",
+   "analysis": {"audio": {"item_id": "<ライブラリの音源>"},
+                "lyrics": "今日も見張ってる 24時間 ログの海\n質問 挨拶 お世話 全部 わたしの仕事\n…",
+                "stems": [{"item_id": "<ボーカルステム>"}],
+                "tasks": ["align", "onsets", "beats", "silence"],
+                "language": "ja",
+                "align_substitutions": {"BAN!": "バン"},
+                "model": "medium"}}
+
+GET /api/v1/jobs/{id}   → {"status": "done",
+                           "analysis_url": "/outputs/{id}/analysis.json"}
+```
+
+- `analysis.audio` は必須（`MediaRef`: `job_id` / `item_id` / `export_id` / `path` の
+  どれか 1 つ）。ジョブの出力を指すときは**どの出力か**も書く
+  （音声ジョブなら `{"job_id": "…", "source": "audio"}`。既定は `video`）。
+  `stems` を渡すとアラインと onset はステムから採る（精度が上がる）
+- `lyrics` があれば `align`（行と 1 文字ごとの秒）、無ければ `transcribe`（自由書き起こし）。
+  `tasks` を省くと回せるものを全部回す
+- `align_substitutions` は**アラインの前処理**。`BAN!` のような英字＋感嘆符は読みが
+  当たりにくいので `{"BAN!": "バン"}` のように仮名へ直す（`？` `…` `「」` などの記号は
+  既定で落ちる）。置換で当てた文字列が元の行と変わった行には `aligned_text` が付く
+- `model` は `small`（既定）/ `medium` / `large-v2`。GPU が無ければ CPU で動く（遅い）
+- **解析用の依存が入っていなければ 400**（何をどこに入れればよいかを本文で返す）。
+  依存はアプリの環境ではなく専用の venv に入れ、設定 `audio_analysis_python` で指す
+- `librosa` が無いときは `onsets` / `beats` だけ、ffmpeg が無いときは `silence` だけを
+  飛ばして `warnings` に理由が入る（ジョブは成功する）
+
+`analysis.json` の中身:
+
+```jsonc
+{ "duration": 193.48, "sample_rate": 48000,
+  "lines":  [{ "i": 1, "start": 16.6, "end": 20.3, "text": "今日も見張ってる",
+               "chars": [{ "c": "今", "s": 16.6, "e": 16.8 }] }],
+  "onsets": [{ "t": 43.90, "strength": 0.9 }],
+  "beats":  { "bpm": 116, "times": [0.0, 0.52] },
+  "silence": [{ "start": 180.5, "end": 185.3 }],
+  "sections": [],          // 手で書き足す欄
+  "warnings": [] }
+```
+
+使い道はそのまま渡すだけ: `lines[].chars` → `FxOverlay` の `lyric.chars`、
+`beats` → `MusicVideo.beats` / `FxOverlay` の `beatMarker`、`onsets` → 決めの演出の秒、
+`lines[].start` → カットの `planned_start_seconds`（§3.3.1）。
+**アラインの秒より実測 onset を優先する**（アラインは 100〜250ms 遅れることがある）。
 
 ### 3.4 素材の下ごしらえ（スプライト / フォント画像 / コンタクトシート）
 

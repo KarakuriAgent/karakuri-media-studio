@@ -3,6 +3,7 @@ import {
   Clapperboard,
   Download,
   EyeOff,
+  FileJson,
   Film,
   Loader2,
   MoreHorizontal,
@@ -249,7 +250,23 @@ export default function ResultPane({
           </div>
         )}
 
-        {job && !current && !running && (
+        {/* 音源解析（mode 'audio_analysis'）は絵も音も作らないので、成果物は
+            analysis.json へのリンクとして出す（SPEC §5.2）。 */}
+        {job && !current && !running && job.analysis_url && (
+          <div className="flex flex-col items-center gap-2 px-6 text-center">
+            <FileJson className="size-10 text-muted-foreground-subtle" />
+            <a
+              href={job.analysis_url}
+              target="_blank"
+              rel="noreferrer"
+              className="text-sm underline underline-offset-2"
+            >
+              解析結果（analysis.json）を開く
+            </a>
+          </div>
+        )}
+
+        {job && !current && !running && !job.analysis_url && (
           <p className="px-6 text-center text-sm text-muted-foreground">
             {job.status === 'failed' ? '成果物はありません' : 'メディアがありません'}
           </p>

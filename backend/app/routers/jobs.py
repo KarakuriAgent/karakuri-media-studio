@@ -23,7 +23,8 @@ async def create_job(payload: JobCreate) -> Job:
     """Create a job and put it on the queue (per-mode requirements -> 422).
 
     使えないバックエンドを指した投入（Remotion 連携が未設定のまま
-    ``mode: "remotion"``）は 400: 入力ではなく設定が足りていない。
+    ``mode: "remotion"``、解析の依存が入っていないまま
+    ``mode: "audio_analysis"``）は 400: 入力ではなく設定が足りていない。
     """
     try:
         return await service.create_job(payload)

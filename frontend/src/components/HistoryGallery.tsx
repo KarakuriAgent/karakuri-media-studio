@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import { Film, ImageIcon, Loader2, Music, RefreshCw } from 'lucide-react'
+import { FileJson, Film, ImageIcon, Loader2, Music, RefreshCw } from 'lucide-react'
 import type { Job } from '../types'
 import { Button } from '@/components/ui/button'
 import { jobDurationLabel } from '@/lib/duration'
@@ -147,6 +147,9 @@ export default function HistoryGallery({
                   ) : job.audio_output_url ? (
                     // 音声ジョブには映像が無いので、サムネイルの代わりに音符を出す
                     <Music className="size-6 opacity-60" />
+                  ) : job.analysis_url ? (
+                    // 音源解析は JSON しか作らないので、その印を出す（SPEC §5.2）
+                    <FileJson className="size-6 opacity-60" />
                   ) : (
                     'サムネなし'
                   )}

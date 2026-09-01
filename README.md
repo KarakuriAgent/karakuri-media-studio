@@ -316,6 +316,7 @@ SKILL には接続とキーの解決、最初に読む API（`openapi.json` / `p
 | `grok_workdir` | プロンプト作成チャットが LLM CLI を回す作業ディレクトリ | `runtime/grok-workdir` |
 | `grok_media_timeout` / `grok_media_workdir` | Grok Imagine の 1 枚あたりの制限時間（秒）と専用の作業ディレクトリ（プロンプト作成のチャットとは分けます） | `300` / `runtime/grok-media-workdir` |
 | `remotion_enabled` | Remotion 連携（`mode: "remotion"`）を使うか。**ライセンスの都合で既定 OFF**（下記） | 無効 |
+| `audio_analysis_python` | 音源解析（`mode: "audio_analysis"`）を回す python の絶対パス。重い依存（torch / faster-whisper / stable-ts / librosa）はアプリの環境に入れず、`backend/requirements-optional.txt` を入れた別の venv をここで指す | 空（アプリ自身の python） |
 | `agent_grok_args` | LLM CLI に足すフラグ（ツール権限）。**空にすると CLI のツールが無効**になります | `--permission-mode auto` |
 | `agent_use_acp` | CLI のターンを ACP で回す（実行中の活動をチャットに出す） | オン |
 | `hf_token` / `civitai_api_key` | モデルダウンロード用のトークン | 空 |

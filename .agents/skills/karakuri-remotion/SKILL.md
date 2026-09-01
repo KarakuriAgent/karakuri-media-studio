@@ -73,6 +73,29 @@ props スキーマの正本は **`remotion/src/schema.ts`(zod)**。迷ったら�
 
 多用すると散らかる。**基本 `cut`、サビ頭に `fadewhite`、間奏に `crossfade`** くらいの配分でよい。
 
+## 秒の出どころ: `analysis.json`
+
+**歌詞つきの MV で秒を決め打ちしない。** スタジオの音源解析ジョブ
+(`mode: "audio_analysis"`、karakuri-studio SKILL §8)が出す
+`/outputs/{job_id}/analysis.json` をそのまま props に写す。
+
+| analysis.json | 写す先 |
+|---|---|
+| `lines[].start` / `end` | `MusicVideo.lyrics[].start` / `end`、`FxOverlay` の `lyric` の `start` / `end` |
+| `lines[].text` | 同 `text` |
+| `lines[].chars`(`{c,s,e}`) | `FxOverlay` の `lyric.chars`(`{c,s}` だけ使う。`style: "karaoke"` のとき) |
+| `beats.times` | `MusicVideo.beats`、`FxOverlay` の `beatMarker` の `start` と `beat`(= 拍の間隔) |
+| `beats.bpm` | `beatMarker.beat` を `60 / bpm` で出す |
+| `onsets[].t` | 決めの演出(`card` / `imageSlam` / `glitchCut`)の `start` |
+| `silence[]` | 間奏・無音の扱い(そこに文字を置かない / `beatMarker` で間を持たせる) |
+
+- **アラインの秒より実測 onset を優先する。** アラインの語頭は実際の発音より
+  100〜250ms 遅れることがある(BAN!BAN!BAN! の実測)。歌詞テロップはアライン秒、
+  叩き込む演出は onset 秒、と使い分ける。
+- `lines[].aligned_text` が付いている行は、置換(`{"BAN!": "バン"}`)を当てて
+  アラインした行。`chars` はその読みなので、**`text` をそのまま出すなら
+  `style: "line"`**(カラオケの文字送りは字数が合わない)。
+
 ## ビート同期の作法
 
 **ビート同期は Remotion 側ではなくあなたがやる。** `beats` を貰ったら、

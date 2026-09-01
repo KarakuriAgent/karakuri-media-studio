@@ -1,5 +1,5 @@
 import re
-from typing import Any, ClassVar, Literal
+from typing import Any, ClassVar, Literal, get_args
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -28,7 +28,13 @@ from .workflows import (
 #: ``remotion`` も同じく独立したモード（SPEC §5.2）: ComfyUI のグラフを 1 つも
 #: 通さず、外で構築した Remotion プロジェクト（:mod:`app.remotion`）に mp4 を
 #: 作らせるだけ。ワークフロー・LoRA・プロンプトの検証はどれも当たらない。
-JobMode = Literal["full", "i2v", "image_only", "audio", "remotion"]
+#: ``audio_analysis`` も独立したモード（SPEC §5.2 / §2）: 生成は何もせず、音源を
+#: 解析して ``outputs/{job_id}/analysis.json`` だけを置く。解析の重い依存は
+#: アプリの環境に入れず、外で構築した venv の python でワーカーを走らせる
+#: （:mod:`app.audio_analysis`）。
+JobMode = Literal[
+    "full", "i2v", "image_only", "audio", "remotion", "audio_analysis"
+]
 JobStatus = Literal["queued", "prompting", "running", "done", "failed", "canceled"]
 
 #: ComfyUI の接続先プロファイル（SPEC §5）。設定には 3 つ分の接続情報を持ち、
@@ -83,6 +89,12 @@ class Settings(BaseModel):
     # 利用者がライセンス条件を確かめたうえで設定ページから有効にする。
     #: Remotion 連携を使うか（false なら一覧も投入も 400）
     remotion_enabled: bool = False
+    # 音源解析（``mode: "audio_analysis"``、SPEC §5.2）。歌詞アラインと onset に要る
+    # 依存（torch / faster-whisper / stable-ts / librosa）は数 GB になるので**アプリの
+    # 環境には入れない**: 外で作った venv の python を指しておき、解析ワーカー
+    # （`app/audio_analysis_worker.py`）だけをそれで走らせる。
+    #: 解析用 venv の python の**絶対パス**（空 = アプリ自身の interpreter）
+    audio_analysis_python: str = ""
     # LLM CLI の追加フラグ（ツール権限）と、1 ターンあたりの制限時間（SPEC §4.1）。
     # `--permission-mode auto` は grok 0.2.112 でファイルの読み書き（画像を見るのを
     # 含む）と web 検索を headless `-p` 実行で有効にすることを確認済み。
@@ -191,6 +203,7 @@ class SettingsUpdate(BaseModel):
     grok_media_workdir: str | None = None
     grok_media_timeout: float | None = None
     remotion_enabled: bool | None = None
+    audio_analysis_python: str | None = None
     model_overrides: dict[ComfyTarget, dict[str, str]] | None = None
     model_choices: dict[ComfyTarget, dict[str, list[str]]] | None = None
     hf_token: str | None = None
@@ -619,6 +632,9 @@ class Job(BaseModel):
     audio_path: str | None = None
     #: the track a mode 'audio' job produced (an output)
     audio_output_path: str | None = None
+    #: ``mode: "audio_analysis"`` が書いた ``analysis.json``（SPEC §5.2）。
+    #: 画像も動画も作らないジョブなので、成果物はこの 1 つだけ。
+    analysis_path: str | None = None
     #: outputs that do not fit the columns above, in the order the backend
     #: produced them.  The first one goes in the column for its stage and the
     #: rest live here (SPEC §6).
@@ -641,6 +657,8 @@ class Job(BaseModel):
     video_url: str | None = None
     last_frame_url: str | None = None
     audio_output_url: str | None = None
+    #: :attr:`analysis_path` の配信 URL（``/outputs/{job_id}/analysis.json``）
+    analysis_url: str | None = None
     #: URLs of :attr:`extra_outputs`, in the same order
     extra_output_urls: list[str] = Field(default_factory=list)
 
@@ -663,6 +681,7 @@ def missing_job_fields(
     audio_prompt: str | None = None,
     remotion_composition: str | None = None,
     remotion_props: dict[str, Any] | None = None,
+    analysis: "AudioAnalysisRequest | None" = None,
 ) -> list[str]:
     """Required fields for a mode + image / video workflow (SPEC §2 / §3.1).
 
@@ -676,11 +695,20 @@ def missing_job_fields(
     ``mode: "audio"`` is stand-alone: it runs one audio graph, needs nothing but
     an ``audio_prompt`` and never touches the image / video requirements below.
 
+    ``mode: "audio_analysis"`` は生成を 1 つもしない独立モード（SPEC §5.2）で、
+    要るのは解析する音源（``analysis.audio``）だけ。
+
     ``mode: "remotion"`` も同じく独立で（SPEC §5.2）、要るのは「どの
     composition を」「どんな props で」の 2 つだけ。``remotion_props`` は
     **空のオブジェクトなら足りている**（props を取らない composition がある）
     ので、``None``（未指定）だけを不足として数える。
     """
+    if mode == "audio_analysis":
+        # 中身の検証は audio_analysis_problem が持つ（ここは「在るか」だけ）
+        return [] if analysis is not None and analysis.audio is not None else [
+            "analysis.audio"
+        ]
+
     if mode == "remotion":
         missing = [] if (remotion_composition or "").strip() else [
             "remotion_composition"
@@ -1619,6 +1647,10 @@ class JobCreate(BaseModel):
     #: composition に渡す props（``--props`` の中身。空オブジェクトも可）
     remotion_props: dict[str, Any] | None = None
 
+    # --- mode 'audio_analysis' only（SPEC §5.2）---------------------------
+    #: 何をどう解析するか。params に残るので再実行は同じ解析をやり直す
+    analysis: "AudioAnalysisRequest | None" = None
+
     chat_session_id: str | None = None
     user_input: str | None = None
 
@@ -1628,7 +1660,8 @@ class JobCreate(BaseModel):
     @model_validator(mode="after")
     def _check_required(self) -> "JobCreate":
         problem = (
-            image_workflow_problem(self.mode, self.image_workflow)
+            audio_analysis_problem(self.mode, self.analysis)
+            or image_workflow_problem(self.mode, self.image_workflow)
             or video_workflow_problem(self.mode, self.video_workflow)
             or audio_workflow_problem(
                 self.mode,
@@ -1682,6 +1715,7 @@ class JobCreate(BaseModel):
             audio_prompt=self.audio_prompt,
             remotion_composition=self.remotion_composition,
             remotion_props=self.remotion_props,
+            analysis=self.analysis,
         )
         if missing:
             raise ValueError(
@@ -2104,6 +2138,65 @@ class MediaRef(BaseModel):
     export_id: str = ""
     #: ``/outputs/…`` / ``/library/…`` / ``/assets/…`` の URL か、その中の絶対パス
     path: str = ""
+
+
+#: 音源解析（``mode: "audio_analysis"``、SPEC §5.2）で回せる解析。
+#: ``align`` は歌詞テキストがあるときだけ（無ければ ``transcribe`` に倒す）。
+AudioAnalysisTask = Literal["align", "transcribe", "onsets", "beats", "silence"]
+AUDIO_ANALYSIS_TASKS: tuple[str, ...] = get_args(AudioAnalysisTask)
+
+#: アライン / 書き起こしに使う whisper のモデル（GPU が無ければ ``small`` が現実的）
+AudioAnalysisModel = Literal["small", "medium", "large-v2"]
+
+
+class AudioAnalysisRequest(BaseModel):
+    """``mode: "audio_analysis"`` の ``analysis``（SPEC §5.2）。
+
+    歌詞つきの映像は演出の秒を決め打ちできないので、まずここで音源から
+    「行と 1 文字ごとの秒（アライン）」「実測の立ち上がり（onset）」「ビート」
+    「無音区間」を出す。結果は ``outputs/{job_id}/analysis.json``。
+    """
+
+    #: 解析する音源（フルミックス）。ジョブの出力・ライブラリ・書き出し・パスの
+    #: どれで指しても同じ（:class:`MediaRef`）
+    audio: MediaRef | None = None
+    #: 行区切りの歌詞。**あれば ``align``、無ければ ``transcribe``**
+    lyrics: str = ""
+    #: ボーカルステムなど。あれば onset はこの先頭から採る（アラインもこちらで行う）
+    stems: list[MediaRef] = Field(default_factory=list)
+    #: 回す解析（空 = 全部）。``align`` は ``lyrics`` があるときだけ効く
+    tasks: list[AudioAnalysisTask] = Field(default_factory=list)
+    language: str = "ja"
+    #: アラインの前に当てる置換（``{"BAN!": "バン"}``）。英字＋感嘆符のような
+    #: 「読みが当てにくい語」を仮名に直しておくと行の秒が安定する
+    align_substitutions: dict[str, str] = Field(default_factory=dict)
+    model: AudioAnalysisModel = "small"
+
+    def resolved_tasks(self) -> list[str]:
+        """実際に回すタスク（既定は全部。歌詞の有無で align / transcribe を決める）。"""
+        names = list(dict.fromkeys(self.tasks)) or list(AUDIO_ANALYSIS_TASKS)
+        if self.lyrics.strip():
+            # 歌詞があるならアラインが本命（自由書き起こしは秒が甘い）
+            if "align" in names:
+                names = [name for name in names if name != "transcribe"]
+        else:
+            names = [name for name in names if name != "align"]
+        return names
+
+
+def audio_analysis_problem(
+    mode: str, analysis: "AudioAnalysisRequest | None"
+) -> str | None:
+    """``mode: "audio_analysis"`` の内容の不備（無ければ None）。"""
+    if mode != "audio_analysis":
+        return None if analysis is None else (
+            "analysis は mode 'audio_analysis' でだけ使えます"
+        )
+    if analysis is None or analysis.audio is None:
+        return "mode 'audio_analysis' requires: analysis.audio"
+    if not analysis.resolved_tasks():
+        return "回せる解析がありません（tasks を見直してください）"
+    return None
 
 
 class ContactSheetRange(BaseModel):
@@ -3919,3 +4012,9 @@ class UiNavigateEvent(BaseModel):
     view: UiView
     project_id: str | None = None
     shot_id: str | None = None
+
+
+
+# ``JobCreate`` は自分より後ろで定義される :class:`AudioAnalysisRequest` を参照
+# している（``MediaRef`` がファイルの後半にあるため）ので、ここで解決しておく。
+JobCreate.model_rebuild()

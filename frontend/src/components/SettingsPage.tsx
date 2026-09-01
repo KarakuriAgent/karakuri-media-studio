@@ -777,6 +777,7 @@ export default function SettingsPage({
           grok_media_workdir: settings.grok_media_workdir,
           grok_media_timeout: settings.grok_media_timeout,
           remotion_enabled: settings.remotion_enabled,
+          audio_analysis_python: settings.audio_analysis_python,
           // 空白区切りの入力欄をフラグの配列に戻す（空 = ツール無効）
           agent_grok_args: splitGrokArgs(grokArgsDraft),
           agent_use_acp: settings.agent_use_acp,
@@ -1314,6 +1315,33 @@ export default function SettingsPage({
                       を使います。依存は <code>run.sh</code>{' '}
                       が初回に入れます（Docker ではホストで{' '}
                       <code>npm --prefix remotion install</code>）。
+                    </p>
+                  </SettingsCard>
+                  {/* 音源解析（SPEC §5.2）。歌詞アライン・onset に要る依存は
+                      数 GB あるのでアプリの環境には入れず、外で作った venv の
+                      python をここで指す（ComfyUI・Remotion と同じ考え方）。 */}
+                  <SettingsCard
+                    title="音源解析"
+                    description="歌詞アライン・onset・ビート・無音区間を音源から出すジョブ（mode 'audio_analysis'）の実行環境です。"
+                  >
+                    <Field
+                      label="解析用 python の絶対パス"
+                      htmlFor="audio-analysis-python"
+                      hint="重い依存（torch / faster-whisper / stable-ts / librosa）はアプリの環境に入れず、別の venv を指します。空ならアプリ自身の python を使います（依存が無ければジョブ投入が 400 になります）。"
+                    >
+                      <Input
+                        id="audio-analysis-python"
+                        placeholder="/path/to/analysis-venv/bin/python"
+                        value={settings.audio_analysis_python}
+                        onChange={(event) =>
+                          update({ audio_analysis_python: event.target.value })
+                        }
+                      />
+                    </Field>
+                    <p className="text-[11px] text-muted-foreground">
+                      依存は{' '}
+                      <code>pip install -r backend/requirements-optional.txt</code>{' '}
+                      で入ります（無音区間だけなら ffmpeg があれば動きます）。
                     </p>
                   </SettingsCard>
                   {/* 不足モデルの自動ダウンロード（SPEC §3.3）。トークンは

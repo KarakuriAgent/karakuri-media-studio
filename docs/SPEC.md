@@ -52,6 +52,11 @@
 | 画像のみ | `image_only` | 選択した画像ワークフローのみ | ― |
 | 音声 | `audio` | 選択した音声ワークフローのみ（独立ジョブ） | ― |
 | Remotion | `remotion` | ComfyUI を通さず、同梱の Remotion プロジェクトを `npx remotion render`（§5.2。既定 OFF） | ― |
+| 音源解析 | `audio_analysis` | 何も生成せず、音源から歌詞アライン・onset・ビート・無音区間を出す（§5.2。依存は別 venv） | ― |
+
+`audio_analysis` は生成を 1 つも行わない解析モード。成果物は
+`outputs/{job_id}/analysis.json` だけで、`GET /api/v1/jobs/{id}` の `analysis_url` に出る。
+歌詞つきの映像で「何秒に何を出すか」を決め打ちしないための材料を作る（§5.2）。
 
 `audio` は他の 3 モードと連結しない独立モード。画像・動画のフィールド（`video_workflow` /
 `source_image` / `loras` など）は一切使わず、指定すると 422 で拒否される（§2.4）。
@@ -1014,7 +1019,8 @@ Pod 側のイメージ（Dockerfile / entrypoint / 認証つき Caddy プロキ�
 | `comfyui` | `workflow/*.json` のテンプレートを `/prompt` に投入（§5） | 既定。画像・動画・音声のすべて |
 | `grok_cli` | Grok Build CLI をヘッドレスで叩く（`app.grok_media`） | `grok_imagine_t2i` / `grok_imagine_edit` |
 
-ワークフローを 1 つも通さない経路として、**Remotion**（`mode: "remotion"`）もある（下記）。
+ワークフローを 1 つも通さない経路として、**Remotion**（`mode: "remotion"`）と
+**音源解析**（`mode: "audio_analysis"`）もある（どちらも下記）。
 
 #### Grok Imagine（`backend: "grok_cli"`）
 
@@ -1107,6 +1113,70 @@ ComfyUI と並ぶもう 1 つの生成経路。Remotion プロジェクト（Nod
   なので composition では分けない。**失敗してもジョブは失敗させない**（mp4 自体は
   出来ているので、元のまま残してログにだけ書く）
 
+#### 音源解析（`mode: "audio_analysis"`、`app/audio_analysis.py`）
+
+歌詞つきの映像（MV・モーショングラフィックス）は、演出の秒を決め打ちできない。
+歌詞のアライン（行と 1 文字ごとの秒）・実測の onset・ビート・無音区間を音源から
+出しておき、`FxOverlay` の `lyric.chars` / `beatMarker` / `MusicVideo.beats` や
+タイムラインの計画秒（`planned_start_seconds`）はその結果から算出する。
+
+**重い依存はアプリの環境に入れない**のがこの経路の要点で、ComfyUI・Remotion と
+同じ「外で構築したバックエンドを参照する」形をとる:
+
+- 解析の本体は `backend/app/audio_analysis_worker.py`。**`app` パッケージに依存
+  しない単独のスクリプト**で、torch / faster-whisper / stable-ts / librosa を
+  import するのはここだけ
+- アプリ側（`app/audio_analysis.py`）は設定 `audio_analysis_python`（解析用 venv の
+  python の絶対パス。空ならアプリ自身の interpreter）でそのスクリプトをサブプロセス
+  実行し、標準出力の `PROGRESS <0..1> <文言>` を WS へ流す（Remotion と同じ流儀）
+- 依存が入っていなければワーカーは**終了コード 3** で落ちる。それはジョブの失敗では
+  なく設定不足なので **400** にして「`pip install -r backend/requirements-optional.txt`
+  を解析用の venv で実行し、`audio_analysis_python` を指す」ことまで本文で返す。
+  同じ確認（`--check`。import せず `find_spec` で見るだけ）は**ジョブ投入の時点**でも
+  走るので、履歴に無駄な失敗ジョブは残らない
+- GPU が無ければ CPU で動く（faster-whisper は `compute_type=int8`、モデルは既定 `small`）。
+  GPU はあっても ComfyUI と取り合いになるので、**メモリ不足で落ちたら CPU でやり直す**
+  （遅くなるだけで結果は同じ。`warnings` にその旨が入る）
+
+ジョブの `params` は `analysis` の 1 つだけ:
+
+| 項目 | 内容 |
+|---|---|
+| `audio` | 解析する音源（`MediaRef`: `job_id` / `item_id` / `export_id` / `path` のどれか 1 つ） |
+| `lyrics` | 行区切りの歌詞（任意）。**あれば `align`、無ければ `transcribe`** |
+| `stems` | ボーカルステムなど（任意、`MediaRef` の配列）。あればアラインと onset はこの先頭から |
+| `tasks` | `align` / `transcribe` / `onsets` / `beats` / `silence` の部分集合（既定は全部） |
+| `language` | 既定 `ja` |
+| `align_substitutions` | アライン前の置換（`{"BAN!": "バン"}`）。英字＋感嘆符のような読みの当たりにくい語を仮名に直す |
+| `model` | `small`（既定）/ `medium` / `large-v2` |
+
+出力は `outputs/{job_id}/analysis.json`:
+
+```jsonc
+{ "duration": 193.48, "sample_rate": 48000,
+  "lines":  [{ "i": 1, "start": 16.6, "end": 20.3, "text": "今日も見張ってる",
+               "chars": [{ "c": "今", "s": 16.6, "e": 16.8 }] }],
+  "onsets": [{ "t": 43.90, "strength": 0.9 }],
+  "beats":  { "bpm": 116, "times": [0.0, 0.52] },
+  "silence": [{ "start": 180.5, "end": 185.3 }],
+  "sections": [],          // 手で書き足す欄（解析では埋めない）
+  "warnings": [] }
+```
+
+- `align` は stable-ts（openai-whisper のモデル）で行ごとに当てる。`chars` は語の
+  秒を 1 文字ずつに等分したもの（**語の頭は実測**、ずれるのは語の中だけ）。置換や
+  記号落としで当てた文字列が元の行と変わったときは `aligned_text` が付く
+- `transcribe` は faster-whisper の自由書き起こし（`chars` は語単位でよい）
+- `onsets` / `beats` は librosa、`silence` は ffmpeg の `silencedetect`
+  （`noise=-40dB:d=0.5`）。**librosa / ffmpeg が無いときはそのタスクだけ飛ばして
+  `warnings` に書く**（400 にするのは whisper 系が要る `align` / `transcribe` だけ）
+- 絵も音も作らないので NSFW 判定は Remotion と同じく **false で確定**（判定に掛ける
+  プロンプトが無い）。履歴・外部 API では `analysis_url` として JSON へのリンクが出る
+
+> **アラインの秒より実測 onset を優先する**。BAN!BAN!BAN! では「バン」のアライン秒が
+> 実際の発音より 100〜250ms ずれたので、決めの演出（カード・叩き込み）の秒は
+> ステムから採った onset に寄せた（`EDITING.md` §3.2）。
+
 ## 6. 成果物の取得
 
 | 成果物 | 取得方法 |
@@ -1115,6 +1185,7 @@ ComfyUI と並ぶもう 1 つの生成経路。Remotion プロジェクト（Nod
 | 動画 | 動画ワークフローの `SaveVideo` の出力ファイルを `/view` でダウンロードし `outputs/{job_id}/video.mp4` に保存。出力ノード ID はワークフローごとに異なる（`75` / `341` / `68`）ためマニフェストの `output_node` を使う |
 | 音声 | 音声ワークフローの `SaveAudioMP3`（`107` / `19`）の出力を `outputs/{job_id}/audio.mp3` に保存し `jobs.audio_output_path` に記録する |
 | 追加の成果物 | 1 回の生成で複数返るモデルの 2 つめ以降を `outputs/{job_id}/audio_2.mp3` … に保存し、パスの JSON 配列を `jobs.extra_outputs` に記録する（API では `extra_output_urls` として返り、結果パネルのタブと履歴のバッジに出る）。主成果物の列（`image_path` / `video_path` / `audio_output_path`）に入るのは常に 1 つめ |
+| 音源解析の結果 | `mode: "audio_analysis"` のワーカーが書いた JSON を `outputs/{job_id}/analysis.json` に置き `jobs.analysis_path` に記録する（API では `analysis_url`。§5.2） |
 | ラストフレーム | ダウンロードした動画から ffmpeg で抽出: `ffmpeg -sseof -0.5 -i video.mp4 -update 1 -q:v 1 last_frame.png`（次回生成の開始フレームに再利用可能） |
 
 ---
@@ -1859,6 +1930,8 @@ backend/            FastAPI アプリ
   app/jobs.py       asyncio ジョブキューと実行、成果物取得・ラストフレーム抽出
   app/studio.py     ドラマスタジオ（脚本 / 素材 / Take / 編集履歴 §7.4）
   app/remotion.py   Remotion プロジェクト（同梱の remotion/）の composition 一覧とレンダリング（§5.2）
+  app/audio_analysis.py        音源解析ワーカーの起動と進捗の中継（別 venv の python で回す、§5.2）
+  app/audio_analysis_worker.py 解析の本体（歌詞アライン / 書き起こし / onset / ビート / 無音）。app に依存しない単独スクリプト
   app/ui_state.py   生成フォームの下書きの共有（§7.5）
   app/ws.py         ブラウザへの配信（job / chat / studio / form / ui / …）
   app/library.py    ライブラリ（取っておく素材）の保存・目録
@@ -1897,7 +1970,8 @@ outputs/            生成物（/outputs で静的配信）
 assets/             アップロードした画像・音声・参照動画・LoRA サンプル（/assets で静的配信）
 library/            ライブラリ（取っておいた素材。image/ video/ audio/、/library で静的配信）
 runtime/            config.json / grok 作業ディレクトリ（プロンプト用）/
-                    chat-sessions/（チャットごとの cwd）/ remotion/（props の一時 JSON）
+                    chat-sessions/（チャットごとの cwd）/ remotion/（props の一時 JSON）/
+                    audio-analysis/（解析に渡す歌詞の一時ファイル）
 ```
 
 ---

@@ -68,6 +68,7 @@ function settings(): Settings {
     grok_media_workdir: '/repo/runtime/grok-media-workdir',
     grok_media_timeout: 300,
     remotion_enabled: false,
+    audio_analysis_python: '',
     model_overrides: {},
     model_choices: {},
     hf_token: '',

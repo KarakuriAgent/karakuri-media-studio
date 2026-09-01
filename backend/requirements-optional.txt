@@ -9,3 +9,19 @@
 # 学習済みモデルで被写体を切り抜く。黒背景・単色背景の素材なら 'black' /
 # 'white' / 'chroma' で足りるので、写真から人物を抜くときだけ要る。
 rembg==2.0.59
+
+# 音源解析（`mode: "audio_analysis"`、SPEC §5.2）。歌詞アライン・書き起こし・
+# onset・ビートを出す。**アプリの環境ではなく、解析用に作った別の venv**へ入れ、
+# 設定の `audio_analysis_python` にその venv の python を指す（torch を引き連れて
+# 数 GB になるため）。無音区間（silence）だけなら ffmpeg があれば動く。
+#
+#   python -m venv ~/analysis-venv
+#   ~/analysis-venv/bin/pip install -r backend/requirements-optional.txt
+#
+# stable-ts … 歌詞テキストを音源に当てる（`align`）。openai-whisper のモデルを読む
+# faster-whisper … 歌詞が無いときの自由書き起こし（`transcribe`）
+# librosa … onset とビート（無ければその 2 つだけ飛ばす）
+stable-ts==2.19.1
+openai-whisper==20250625
+faster-whisper==1.2.1
+librosa==1.0.0

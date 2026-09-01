@@ -25,6 +25,10 @@ REMOTION_TMP_DIR = RUNTIME_DIR / "remotion"
 # 常にここを使う（composition を足す・直すときは ``remotion/src/`` を編集する）。
 # 依存（``node_modules/``）は ``run.sh`` が初回に入れる。
 REMOTION_BUNDLED_DIR = ROOT / "remotion"
+# 音源解析（:mod:`app.audio_analysis`）に渡す歌詞テキストの一時置き場。歌詞は
+# 改行を含むのでコマンドライン引数には埋められず、ファイルにして渡す。中身は
+# 解析のあいだしか要らないので、終わったら消す（Remotion の props と同じ扱い）。
+AUDIO_ANALYSIS_TMP_DIR = RUNTIME_DIR / "audio-analysis"
 
 FRONTEND_DIST_DIR = ROOT / "frontend" / "dist"
 
@@ -101,5 +105,6 @@ def ensure_dirs() -> None:
         GROK_MEDIA_WORKDIR,
         CHAT_SESSIONS_DIR,
         REMOTION_TMP_DIR,
+        AUDIO_ANALYSIS_TMP_DIR,
     ):
         d.mkdir(parents=True, exist_ok=True)

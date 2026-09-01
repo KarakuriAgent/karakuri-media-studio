@@ -799,6 +799,12 @@ async def create_job(payload: JobFromForm | JobCreate) -> Job:
     ``remotion_props`` が要り、連携が有効でなければ 400。
     出来た mp4 はほかのジョブと同じく ``video_url`` に出る。
 
+    ``mode: "audio_analysis"`` は音源解析（SPEC §5.2）。``analysis`` に解析する
+    音源（``audio``）と、あれば歌詞（``lyrics``）・ステム（``stems``）・回す解析
+    （``tasks``）を渡す。生成物は ``outputs/{job_id}/analysis.json`` 1 つで、
+    ``GET /jobs/{id}`` の ``analysis_url`` に出る。解析用の依存が入っていなければ
+    400（何を入れればよいかを本文で返す）。
+
     ``{"from_form": true}`` を入れると、いま画面に出ている**生成フォームの
     下書き**（``/api/v1/ui/generate-form``）をそのまま投入する。一緒に送った
     項目はその上から重ねる（「今のフォームで、尺だけ 5 秒にして流して」）。
@@ -838,7 +844,11 @@ async def _from_form_job(payload: JobFromForm) -> JobCreate:
 
 @router.get("/jobs/{job_id}", response_model=Job)
 async def get_job(job_id: str) -> Job:
-    """ジョブの状態と成果物（読み取りのみ。完了待ちはここをポーリングする）。"""
+    """ジョブの状態と成果物（読み取りのみ。完了待ちはここをポーリングする）。
+
+    成果物は種類ごとに別の項目に出る: 画像は ``image_url``、動画は ``video_url``、
+    音声は ``audio_output_url``、音源解析の JSON は ``analysis_url``。
+    """
     job = await job_service.get_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="job not found")

@@ -3,8 +3,15 @@
 /** `audio` は独立モード: 音声ワークフローを 1 本だけ走らせ、画像→動画の連結
  *  （full）とは一切繋がらない。`remotion` も同じく独立で、構築済み Remotion
  *  プロジェクトに mp4 を書かせるだけ（生成フォームからは選べず、外部 API か
- *  ら投入されて履歴に出る）。 */
-export type JobMode = 'full' | 'i2v' | 'image_only' | 'audio' | 'remotion'
+ *  ら投入されて履歴に出る）。`audio_analysis` は生成を 1 つもしない解析ジョブで、
+ *  成果物は `analysis_url`（analysis.json）だけ。 */
+export type JobMode =
+  | 'full'
+  | 'i2v'
+  | 'image_only'
+  | 'audio'
+  | 'remotion'
+  | 'audio_analysis'
 export type JobStatus =
   | 'queued'
   | 'prompting'
@@ -59,6 +66,12 @@ export interface Settings {
    * false のあいだは一覧も投入も 400。
    */
   remotion_enabled: boolean
+  /**
+   * 音源解析（`mode: "audio_analysis"`、SPEC §5.2）を回す python の絶対パス。
+   * 重い依存（torch / faster-whisper / stable-ts / librosa）はアプリの環境には
+   * 入れず、外で作った venv をここで指す。空 = アプリ自身の interpreter。
+   */
+  audio_analysis_python: string
   /**
    * 接続先ごとのモデル指定（SPEC §3.3 / §5）。
    * `{"local": {"<workflow_id>/<node_id>.<field>": "file.safetensors"}, …}` で、
@@ -496,6 +509,8 @@ export interface Job {
   audio_path: string | null
   /** mode 'audio' のジョブが生成した音声ファイル（*出力*）。 */
   audio_output_path: string | null
+  /** mode 'audio_analysis' が書いた analysis.json。古い応答には無い。 */
+  analysis_path?: string | null
   error: string | null
   /** 実行を開始した時刻。列を足す前の履歴には無いので任意（null）。 */
   started_at?: string | null
@@ -508,6 +523,8 @@ export interface Job {
   video_url: string | null
   last_frame_url: string | null
   audio_output_url: string | null
+  /** `analysis_path` の配信 URL（`/outputs/{job_id}/analysis.json`）。 */
+  analysis_url?: string | null
   /**
    * 主成果物の列に収まらない出力（1 リクエストで複数返るモデルの 2 つめ
    * 以降がここに入る）。古いレスポンスには無いので任意。
