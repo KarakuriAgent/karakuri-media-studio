@@ -41,7 +41,7 @@
 | 汎用ジョブ | `GET/POST /jobs`・`GET /jobs/{id}`・`POST /jobs/{id}/cancel`・`rerun`・`continue` |
 | ライブラリ | `GET /library`・`POST /library/from-job`・`POST /library/sheet`・`POST /library/{id}/key`・`POST /library/key-from-job`・`PATCH /library/{id}`（**削除は非公開**） |
 | 素材の下ごしらえ | `POST /images/text`・`GET /images/text/fonts`・`POST /videos/contact-sheet`（§3.4） |
-| 編集（タイムライン） | `POST /projects/{id}/timelines`・`GET/PATCH/DELETE /timelines/{id}`・`PUT /timelines/{id}/clips`・トラック CRUD・`generate-subtitles`・`sync-preview` / `sync`・`missing` / `missing/resolve`・`GET /projects/{id}/media` |
+| 編集（タイムライン） | `POST /projects/{id}/timelines`・`GET/PATCH/DELETE /timelines/{id}`・`PUT /timelines/{id}/clips`・`POST /timelines/{id}/clips/insert`・トラック CRUD・`generate-subtitles`・`sync-preview` / `sync`・`missing` / `missing/resolve`・`GET /projects/{id}/media` |
 | 書き出し | `POST /timelines/{id}/export`（202）・`GET /exports/{id}`・`POST /exports/{id}/save-to-library` |
 | 編集履歴 | `GET /projects/{id}/revisions`・`GET .../{seq}/diff`・`POST .../{seq}/restore`（§3.1） |
 | 画面 | `GET/PATCH /ui/generate-form`・`POST /ui/navigate`（§3.2） |
@@ -310,6 +310,36 @@ POST /api/v1/jobs  {"mode": "remotion", "remotion_composition": "Opening",
   **映像はコピーのまま音声だけ元音源から焼き直す**（`audio.startFrom` /
   `volume` / `fadeOut` も再現する）。焼き直せなかったときは元の mp4 のまま
   （ジョブは失敗しない）。
+
+### 3.3.1 音源基準のタイムライン（MV のときだけ）
+
+**通常のドラマ制作では使わない**（カットの並び順で十分）。音源に映像を合わせる制作
+（MV・モーショングラフィックス）でだけ使う（SPEC §7.3「音源基準の配置」）。
+
+```
+PATCH /api/v1/shots/{id}            {"planned_start_seconds": 16.6}
+POST  /api/v1/timelines/{id}/sync   {}
+POST  /api/v1/timelines/{id}/clips/insert
+      {"track_id":"…","start_ms":43900,"duration_ms":1500,
+       "source_kind":"take","source_id":"…","in_ms":0}
+POST  /api/v1/timelines/{id}/export {}
+GET   /api/v1/exports/{id}          → {"fps":24,"width":1280,"height":720,
+                                       "frames":4728,"duration_ms":197000,"warnings":[]}
+```
+
+1. カットに **音源上の開始秒**（`planned_start_seconds`）を書く。音源解析の結果
+   （歌詞のアライン・onset・ビート）から出した秒で、**決め打ちしない**
+2. `POST /timelines/{id}/sync` を 1 回。計画秒つきのカットはその位置に置かれ、空いた
+   ところは `gap`（黒＋無音）で埋まる。尺は次の計画秒までを上限に Take の尺で切られ、
+   **採用 Take を差し替えても同じ秒へ置き直される**。計画秒を持たないカットは今までどおり
+   末尾へ詰む。`planned_start_seconds` に `null` を送れば並び順に戻る
+3. 短いカットを割り込ませたいときは `clips/insert`。下のクリップが前後に割れるだけで
+   **トラックの全長は変わらない**（`base_revision` を添えれば楽観ロック）
+4. `POST /timelines/{id}/export` → `GET /exports/{id}`。焼き上がりの
+   `fps` / `width` / `height` / `frames` / `duration_ms` が返るので、そのまま Remotion の
+   `FxOverlay` の `base`（`{"src": "<output_url>", …}`）と props の規格に使う。
+   素材が足りずに末尾静止で埋めたところは `warnings` に `PAD <カット> <不足秒>s`、
+   総フレーム数が計画とずれたときもここに出る
 
 ### 3.4 素材の下ごしらえ（スプライト / フォント画像 / コンタクトシート）
 

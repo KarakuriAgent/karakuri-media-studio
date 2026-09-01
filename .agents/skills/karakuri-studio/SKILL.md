@@ -187,6 +187,26 @@ scripts/studio.sh wait-export <export_id> [interval_sec]
    ポーリング（`scripts/studio.sh wait-export <id>`）→
    `POST /exports/{id}/save-to-library`
 
+書き出しの結果には焼き上がりの `fps` / `width` / `height` / `frames` /
+`duration_ms` と `warnings` が入る。`warnings` の `PAD <カット> <不足秒>s` は
+「素材が足りずに末尾を静止で埋めた」印なので、気になるならそのカットを焼き直す。
+
+### 音源基準で組むとき（MV のときだけ）
+
+**通常のドラマ制作では使わない。** カットの並び順で十分で、計画秒を勝手に足さない。
+音に映像を合わせる制作（MV・モーショングラフィックス）で、しかも秒が音源解析から
+出せるときだけ:
+
+1. `PATCH /shots/{id}` の `planned_start_seconds` に**音源上の開始秒**を書く
+   （秒は決め打ちせず、歌詞のアライン・onset・ビートから出す。`null` で解除）
+2. `POST /timelines/{id}/sync` を 1 回。計画秒つきのカットはその位置に置かれ、
+   空いたところは `gap`（黒）で埋まる。採用 Take を差し替えても同じ秒へ置き直る
+3. 短いカットを割り込ませるなら `POST /timelines/{id}/clips/insert`
+   （下のクリップが前後に割れるだけで、トラックの全長は変わらない）
+4. `POST /timelines/{id}/export` の結果（`/outputs/exports/{id}/final.mp4`）を
+   Remotion `FxOverlay` の `base.src` に渡す。**props の fps / 解像度は書き出しの
+   `fps` / `width` / `height` に合わせる**（ずれると演出の秒が合わない）
+
 ## 9. Remotion（MV・モーショングラフィックス）
 
 1. `GET /api/v1/remotion/compositions` で composition ID の一覧
@@ -281,3 +301,5 @@ scripts/studio.sh POST /videos/contact-sheet '{"source":{"job_id":"<job>"},"seco
 - 生成物を見ずに採用しない。
 - 指示されていないのに演出用スプライトを足さない（§10）。`shape` で描ける記号を
   わざわざ画像生成しない。
+- 通常のドラマ制作でカットに `planned_start_seconds`（音源基準の計画秒）を書かない。
+  並び順で足りる。音に映像を合わせる制作で、秒を音源解析から出せるときだけ使う（§8）。

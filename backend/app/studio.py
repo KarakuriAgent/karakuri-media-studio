@@ -2628,9 +2628,12 @@ async def _insert_shot(
     shot_id = new_id()
     now = _now()
     columns = ("id", "project_id", "scene_id", "sort_order", *_SHOT_TEXT_FIELDS,
-               "duration_seconds", "carry_over_end_frame",
+               "duration_seconds", "planned_start_seconds", "carry_over_end_frame",
                *_SHOT_SETTING_FIELDS,
                "created_at", "updated_at", "prompt_updated_at")
+    planned = getattr(payload, "planned_start_seconds", None)
+    if planned is not None and float(planned) < 0:
+        raise StudioError("計画開始秒は 0 以上で指定してください")
     values = (
         shot_id,
         project_id,
@@ -2638,6 +2641,7 @@ async def _insert_shot(
         sort_order,
         *(getattr(payload, name) for name in _SHOT_TEXT_FIELDS),
         float(payload.duration_seconds),
+        None if planned is None else float(planned),
         1 if payload.carry_over_end_frame else 0,
         *(getattr(payload, name, None) for name in _SHOT_SETTING_FIELDS),
         now,
@@ -2689,6 +2693,12 @@ async def update_shot(
         changes["carry_over_end_frame"] = 1 if changes["carry_over_end_frame"] else 0
     if changes.get("duration_seconds") is not None:
         changes["duration_seconds"] = float(changes["duration_seconds"])
+    if changes.get("planned_start_seconds") is not None:
+        # 音源上の秒なので負の位置は無い（0 秒 = 曲の頭）。
+        planned = float(changes["planned_start_seconds"])
+        if planned < 0:
+            raise StudioError("計画開始秒は 0 以上で指定してください")
+        changes["planned_start_seconds"] = planned
     if "english_prompt" in changes and not changes.get("english_prompt"):
         changes["english_prompt"] = ""
         changes["english_source"] = ""

@@ -114,6 +114,7 @@ from ..models import (
     StudioTimelineDetail,
     StudioTimelineUpdate,
     TextImage,
+    TimelineClipInsert,
     TimelineClipsUpdate,
     TimelineExport,
     TimelineExportRequest,
@@ -1399,6 +1400,27 @@ async def replace_clips(
     if detail is None:
         raise HTTPException(status_code=404, detail="timeline not found")
     return detail
+
+
+@router.post(
+    "/timelines/{timeline_id}/clips/insert", response_model=StudioTimelineDetail
+)
+async def insert_clip(
+    timeline_id: str, payload: TimelineClipInsert
+) -> StudioTimelineDetail:
+    """クリップを 1 つ差し込む（重なる既存クリップを前後に分割して割り込む）。
+
+    下のクリップの切り出しは動かさないので**トラックの全長は変わらない**。
+    音源基準で組んだ並びを崩さずに、短いカットを割り込ませるための入り口。
+    ``base_revision`` を添えると、それ以降に同じタイムラインが触られていた
+    場合だけ 409。
+    """
+    try:
+        return await timeline_service.insert_clip(
+            timeline_id, payload, actor="external"
+        )
+    except timeline_service.TimelineError as exc:
+        raise _timeline_error(exc) from exc
 
 
 @router.post(

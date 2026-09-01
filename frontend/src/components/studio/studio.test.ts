@@ -53,6 +53,7 @@ function shot(id: string, overrides: Partial<StudioShot> = {}): StudioShot {
     bgm: '',
     camera: '',
     duration_seconds: 5,
+    planned_start_seconds: null,
     prompt: '',
     status: 'draft',
     selected_take_id: null,

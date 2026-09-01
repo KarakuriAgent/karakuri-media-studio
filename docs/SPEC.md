@@ -1388,6 +1388,12 @@ CREATE TABLE timeline_exports (
   params      TEXT NOT NULL DEFAULT '{}',      -- 書き出し設定（width / height / fps）
   output_path TEXT,
   error       TEXT,
+  fps         REAL,                            -- 焼き上がりの規格（走り終わるまで NULL）
+  width       INTEGER,
+  height      INTEGER,
+  frames      INTEGER,                         -- 総フレーム数（ffprobe -count_frames の実測）
+  duration_ms INTEGER,
+  warnings    TEXT NOT NULL DEFAULT '[]',      -- PAD / フレーム数のずれ（JSON 配列）
   created_at  TEXT NOT NULL,
   finished_at TEXT
 );
@@ -1419,6 +1425,8 @@ CREATE TABLE timeline_exports (
 （`app.studio._fetch_shots` と同じ規則）に走査し、`selected_take_id` があって動画が実在する
 ものだけを V1 トラックへ**隙間なく**並べる。クリップの尺は ffprobe で読み、読めなければ
 5 秒（`app.timeline.FALLBACK_CLIP_MS`）に落とす。`episode_id` を省くと V1 だけの空のタイムライン。
+カットが `planned_start_seconds` を持っていれば、隙間なくではなく**音源上のその秒**へ置く
+（下の「音源基準の配置」）。
 
 #### トラックと素材
 
@@ -1449,6 +1457,40 @@ CREATE TABLE timeline_exports (
 新しいテイクの尺へ切り出しを丸め、消したものは詰める。音声・字幕トラックは動かさない
 （尺に合わせて置いてあるので、勝手にずらすと合っていたものが外れる）。
 
+#### 音源基準の配置（`studio_shots.planned_start_seconds`）
+
+**通常のドラマ制作では使わない**（並び順で十分）。MV のように「音源に映像を合わせる」
+制作でだけ、カットに **音源上の計画開始秒**（`planned_start_seconds`。`NULL` = 未使用）を
+書いておくと、自動配置と `sync` がその秒へカットを置く（`app.timeline.plan_layout`）。
+
+- 計画秒を持つカットは `start_ms = round(計画秒 * 1000)` に置く。尺は**次の計画秒までの
+  間隔**（最後のカットは Take の尺）を上限に、Take の尺で切る
+- 空いたところ（先頭まで・短い Take のうしろ）は `gap` クリップ（黒＋無音）で埋まるので、
+  次のカットの頭は必ず計画どおりの秒から始まる
+- **採用 Take を差し替えても同じ計画秒へ置き直す**（`sync` は「新しいテイクの尺へ丸める」
+  ではなく計画を正本にする）。人が手でトリムした値も計画で上書きされる
+- 計画秒を持たないカットは、計画の終わったところから**今までどおり**順に詰む
+  （`sync` の「増えたカットは V1 の末尾へ」はそのまま）
+- 音源基準では**繋ぎ（トランジション）を持てない**（重なるとその先の位置が全部ずれる）
+  ので、計画秒つきのクリップからは落とす
+- 計画秒が詰まりすぎていて `MIN_CLIP_MS` も置けないときは 400
+
+外部エージェントは `PATCH /shots/{id}` の `planned_start_seconds` に音源解析の結果
+（歌詞のアライン・onset）から出した秒を書き、`POST /timelines/{id}/sync` を 1 回呼べば
+音源基準のタイムラインができる。
+
+#### 差し込みクリップ（`POST /timelines/{id}/clips/insert`）
+
+指定した位置に重なる既存クリップを**前後に分割**して割り込む
+（`app.timeline.insert_into`）。body は `{track_id, start_ms, duration_ms, source_kind,
+source_id, in_ms, base_revision}`。
+
+- 下のクリップの**切り出しは動かさない**（後半は `in_ms` をずらして続きから再生される）
+  ので、**トラックの全長は変わらない**（前後へ押し出さない）
+- 完全に覆われたクリップは消え、`MIN_CLIP_MS` に満たない切れ端も落ちる（そのぶんは隙間）
+- 分割された後半は前の境界が変わるので、繋ぎ（`transition_kind`）を持ち越さない
+- `base_revision` は他の PATCH と同じ楽観ロック（§7.4）。成功すると 1 リビジョン積む
+
 #### 書き出しエンジン（`app/timeline_export.py`）
 
 EDL → ffmpeg コマンドの**組み立ては純関数**（`build_command`）で、実行（`run_export`）と分けてある。
@@ -1475,6 +1517,19 @@ EDL → ffmpeg コマンドの**組み立ては純関数**（`build_command`）�
 - **書き出しプリセット**（`preset`）は `timeline`（規格のまま）/ `1080p` / `vertical`
   (1080x1920) / `720p`。fps はタイムラインの値のまま。縦横比が変わるときの収め方は
   `fit`: `pad`（レターボックス）/ `crop`（中央クロップ）。どちらも `timeline_exports.params` に残る
+- **フレーム精度**: 境界はすべて `round(t * fps)` でフレーム番号に量子化する
+  （`frame_count`）。秒のまま切ると端数フレームが捨てられて連結後に最大 2 フレーム先走る
+  ので、各クリップは 1 フレームぶん余分に取ってから `trim=end_frame=<枚数>` でちょうど
+  その枚数に切り、音も `apad` + `atrim` で同じ長さへ揃える。繋ぎの `offset` / `duration` も
+  フレーム数から出し、出力そのものも `-frames:v` で締める
+- **不足尺の保険**: 素材の実尺が「切り出し位置 + 尺」に届かないクリップは
+  `tpad=stop_mode=clone` の末尾静止で埋める（`ffprobe` で測った実尺との差 + 余裕）。
+  1 フレームを超える不足は `PAD <カットの見出し> <不足秒>s` として書き出しの `warnings` に出る
+- **焼き上がりの検算**: `ffprobe -count_frames` で総フレーム数を数え、計画
+  （`round(全長 * fps)`）と違えば `warnings` とログに出す。結果は `timeline_exports` の
+  `fps` / `width` / `height` / `frames` / `duration_ms` / `warnings` に残り、
+  `GET /timelines/{id}/exports` から読める（Remotion の `FxOverlay` の `base` に渡すとき、
+  props と規格を揃えるために要る）
 - 出力は `outputs/exports/{export_id}/final.mp4`（H.264 + AAC / yuv420p / `+faststart`）。
   `OUTPUTS_DIR` の下なので `/outputs` でそのまま配信できる
 - 進捗は `-progress pipe:1` の `out_time_us` を読み、`timeline_exports.progress` を更新しつつ

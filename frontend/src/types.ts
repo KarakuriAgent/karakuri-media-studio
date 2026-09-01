@@ -1180,6 +1180,13 @@ export interface StudioShot {
   camera: string
   /** 尺（MiniMax H3 は 1〜15 秒）。 */
   duration_seconds: number
+  /**
+   * **音源上の**計画開始秒（null = 並び順で置く従来どおり）。
+   *
+   * MV のように「音に映像を合わせる」制作でだけ使い、タイムラインの sync が
+   * この秒へカットを置く。通常のドラマ制作では空のままでよい。
+   */
+  planned_start_seconds: number | null
   /** 生成プロンプトの本文（`@素材名` メンション可）。 */
   prompt: string
   status: StudioShotStatus
@@ -1218,6 +1225,8 @@ export interface StudioShotCreate {
   bgm?: string
   camera?: string
   duration_seconds?: number
+  /** 音源上の計画開始秒（null = 並び順で置く従来どおり）。 */
+  planned_start_seconds?: number | null
   prompt?: string
   status?: StudioShotStatus
   carry_over_end_frame?: boolean
@@ -1244,6 +1253,8 @@ export interface StudioShotUpdate extends StudioUpdateBase {
   bgm?: string
   camera?: string
   duration_seconds?: number
+  /** 音源上の計画開始秒（**null を明示すると外れる**＝並び順に戻る）。 */
+  planned_start_seconds?: number | null
   prompt?: string
   status?: StudioShotStatus
   carry_over_end_frame?: boolean
@@ -1659,6 +1670,17 @@ export interface TimelineExport {
   /** `/outputs/…` の配信 URL（まだ無ければ null）。 */
   output_url: string | null
   error: string | null
+  // --- 焼き上がりの規格と検算（走り終わるまではどれも null） ------------------
+  /** 実際に焼いた fps / 幅 / 高さ（Remotion の `base` に渡すとき props と揃える）。 */
+  fps: number | null
+  width: number | null
+  height: number | null
+  /** 焼き上がりの総フレーム数（`ffprobe -count_frames` の実測）。 */
+  frames: number | null
+  /** 焼き上がりの総尺（ミリ秒）。 */
+  duration_ms: number | null
+  /** 書き出しで気づいたこと（`PAD カット名 0.42s` / フレーム数のずれ）。 */
+  warnings: string[]
   created_at: string
   finished_at: string | null
 }

@@ -258,6 +258,40 @@ def test_shot_crud_and_ordering(env):
     assert [row["id"] for row in detail(env, project["id"])["shots"]] == [second["id"]]
 
 
+
+
+def test_a_shot_can_carry_a_planned_start_second(env):
+    """音源上の計画開始秒は、書けて・null で外せて・負の値は断られる。
+
+    通常のドラマ制作では使わない項目（並び順で足りる）。MV のように音源が正本
+    の制作で、タイムラインの sync がこの秒へカットを置く。
+    """
+    project = make_project(env)
+    shot = make_shot(env, project["id"], planned_start_seconds=16.6)
+    assert shot["planned_start_seconds"] == 16.6
+
+    plain = make_shot(env, project["id"])
+    assert plain["planned_start_seconds"] is None
+
+    moved = env.client.patch(
+        f"/api/studio/shots/{shot['id']}", json={"planned_start_seconds": 20.3}
+    )
+    assert moved.status_code == 200, moved.text
+    assert moved.json()["planned_start_seconds"] == 20.3
+
+    cleared = env.client.patch(
+        f"/api/studio/shots/{shot['id']}", json={"planned_start_seconds": None}
+    )
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["planned_start_seconds"] is None
+
+    refused = env.client.patch(
+        f"/api/studio/shots/{shot['id']}", json={"planned_start_seconds": -1}
+    )
+    assert refused.status_code == 400
+
+
+
 def test_reorder_needs_every_shot_of_the_project(env):
     project = make_project(env)
     first = make_shot(env, project["id"])

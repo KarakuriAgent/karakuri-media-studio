@@ -30,11 +30,12 @@ import json
 import logging
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 import aiosqlite
 
 from . import library as library_service
+from . import studio as studio_service
 from . import ws
 from .db import get_db
 from .ids import new_id
@@ -45,6 +46,7 @@ from .models import (
     StudioTimelineDetail,
     TimelineClip,
     TimelineClipInput,
+    TimelineClipInsert,
     TimelineExport,
     TimelineMediaItem,
     TimelineMediaPage,
@@ -75,6 +77,8 @@ from .timeline_export import (
     ExportClip,
     ExportSpec,
     TimelineExportError,
+    frame_warning,
+    pad_warnings,
     resolve_format,
     run_export,
 )
@@ -212,6 +216,36 @@ _PROBE_CACHE: dict[tuple[str, int, int], tuple[int | None, bool]] = {}
 
 #: 使い回しの上限（1 プロセスの間だけの目安。超えたら丸ごと捨てる）
 PROBE_CACHE_LIMIT = 2048
+
+
+async def probe_frames(path: str | Path) -> int | None:
+    """焼き上がった動画の**総フレーム数**（``ffprobe -count_frames``）。
+
+    フレーム数の照合（計画どおりの尺で焼けたか）にだけ使う。全フレームを数える
+    ので速くはないが、書き出し 1 回につき 1 度なので許容する。読めなければ None。
+    """
+    try:
+        process = await asyncio.create_subprocess_exec(
+            FFPROBE,
+            "-v", "error",
+            "-select_streams", "v:0",
+            "-count_frames",
+            "-show_entries", "stream=nb_read_frames",
+            "-of", "csv=p=0",
+            str(path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except (OSError, ValueError) as exc:
+        log.info("ffprobe を実行できませんでした（%s）: %s", path, exc)
+        return None
+    stdout, _ = await process.communicate()
+    if process.returncode != 0:
+        return None
+    try:
+        return int(stdout.decode("utf-8", "replace").strip().split(",")[0])
+    except (ValueError, IndexError):
+        return None
 
 
 def _cache_key(path: Path) -> tuple[str, int, int] | None:
@@ -740,14 +774,17 @@ async def timeline_detail(timeline_id: str) -> StudioTimelineDetail | None:
 
 async def _selected_take_videos(
     conn: aiosqlite.Connection, project_id: str, episode_id: str
-) -> list[tuple[str, str]]:
-    """その話の「採用 Take の動画があるカット」を場 -> カット順で ``(take_id, path)``。
+) -> list[tuple[str, str, float | None]]:
+    """その話の「採用 Take の動画があるカット」を場 -> カット順に並べる。
 
-    並び順は :func:`app.studio._fetch_shots` と同じ規則（話 -> 場 -> カット）。
-    ここは 1 つの話に絞ってあるので、場の並び順とカットの並び順で決まる。
+    返すのは ``(take_id, path, 計画開始秒)``。並び順は
+    :func:`app.studio._fetch_shots` と同じ規則（話 -> 場 -> カット）で、ここは
+    1 つの話に絞ってあるので場の並び順とカットの並び順で決まる。計画開始秒は
+    音源基準で組むときだけ入っている（None = 並び順で置く従来どおり）。
     """
     async with conn.execute(
-        "SELECT s.selected_take_id AS take_id, j.video_path AS video_path"
+        "SELECT s.selected_take_id AS take_id, j.video_path AS video_path,"
+        "       s.planned_start_seconds AS planned"
         "  FROM studio_shots s"
         "  JOIN studio_scenes sc ON sc.id = s.scene_id"
         "  JOIN studio_takes t ON t.id = s.selected_take_id"
@@ -758,7 +795,7 @@ async def _selected_take_videos(
         (project_id, episode_id),
     ) as cur:
         rows = await cur.fetchall()
-    found: list[tuple[str, str]] = []
+    found: list[tuple[str, str, float | None]] = []
     for row in rows:
         path = row["video_path"]
         if not path:
@@ -766,7 +803,12 @@ async def _selected_take_videos(
         resolved = rebase_stored_path(path)
         if not resolved.is_file():
             continue
-        found.append((str(row["take_id"]), str(resolved)))
+        planned = row["planned"]
+        found.append((
+            str(row["take_id"]),
+            str(resolved),
+            None if planned is None else float(planned),
+        ))
     return found
 
 
@@ -847,37 +889,34 @@ async def create_timeline(
             (track_id, timeline_id, project_id),
         )
 
-        placed: list[tuple[str, int]] = []
+        placed: list[PlannedClip] = []
         if episode_id is not None:
-            for take_id, path in await _selected_take_videos(
+            for take_id, path, planned in await _selected_take_videos(
                 conn, project_id, episode_id
             ):
                 duration_ms, _ = await probe_media(path)
-                placed.append((take_id, duration_ms or FALLBACK_CLIP_MS))
-
-        start = 0
-        for order, (take_id, duration_ms) in enumerate(placed):
-            await conn.execute(
-                "INSERT INTO timeline_clips"
-                " (id, track_id, timeline_id, project_id, start_ms, duration_ms,"
-                "  source_kind, source_id, in_ms, out_ms, gain_db, fade_in_ms,"
-                "  fade_out_ms, transition_kind, transition_ms, text_payload,"
-                "  sort_order)"
-                " VALUES (?, ?, ?, ?, ?, ?, 'take', ?, 0, ?, 0, 0, 0, NULL, 0,"
-                "         NULL, ?)",
-                (
-                    new_id(),
-                    track_id,
-                    timeline_id,
-                    project_id,
-                    start,
-                    duration_ms,
-                    take_id,
-                    duration_ms,
-                    order,
-                ),
+                duration_ms = duration_ms or FALLBACK_CLIP_MS
+                placed.append(
+                    PlannedClip(
+                        TimelineClipInput(
+                            track_id=track_id,
+                            start_ms=0,  # plan_layout / relayout が決める
+                            duration_ms=duration_ms,
+                            source_kind="take",
+                            source_id=take_id,
+                            in_ms=0,
+                            out_ms=duration_ms,
+                        ),
+                        planned,
+                        duration_ms,
+                    )
+                )
+        if placed:
+            # 計画開始秒を持つカットがあれば音源基準（隙間は gap で埋まる）、
+            # 無ければ今までどおり先頭から隙間なく詰める。
+            await _write_clips(
+                conn, timeline_id, project_id, plan_layout(placed, track_id)
             )
-            start += duration_ms
         await conn.commit()
     await _publish_timeline(project_id, timeline_id, "create")
 
@@ -1024,6 +1063,10 @@ def _row_to_export(row: aiosqlite.Row) -> TimelineExport:
         data["params"] = json.loads(data.get("params") or "{}")
     except ValueError:  # pragma: no cover - 自分で書いた JSON なので通らない
         data["params"] = {}
+    try:
+        data["warnings"] = json.loads(data.get("warnings") or "[]")
+    except ValueError:  # pragma: no cover - 同上
+        data["warnings"] = []
     data["output_url"] = _output_url(data.get("output_path"))
     return TimelineExport(**data)
 
@@ -1183,8 +1226,9 @@ async def build_spec(
         path = paths.get((clip.source_kind, clip.source_id or ""))
         is_image = clip.source_kind == "image"
         has_audio = False
+        source_duration_ms: int | None = None
         if path is not None and not is_image:
-            _, has_audio = await probe_cached(path)
+            source_duration_ms, has_audio = await probe_cached(path)
         export_clips.append(
             ExportClip(
                 path=path,
@@ -1197,6 +1241,8 @@ async def build_spec(
                 kind="image" if (is_image and path) else "video",
                 transition_kind=clip.transition_kind if overlap else None,
                 transition_ms=overlap,
+                source_duration_ms=source_duration_ms,
+                name=clip.label or clip.source_id or "",
             )
         )
         cursor = clip.start_ms + clip.duration_ms
@@ -1342,12 +1388,30 @@ async def _run(export_id: str, timeline_id: str, params: dict[str, Any]) -> None
             export_id, status="failed", error=str(exc), finished_at=_now()
         )
     else:
+        # 焼き上がりの検算: 総フレーム数が計画（round(全長 * fps)）と合うか。
+        # 素材が足りずに末尾静止で埋めたところも警告として残す。
+        planned = spec.total_frames
+        frames = await probe_frames(output)
+        warnings = pad_warnings(spec)
+        mismatch = frame_warning(planned, frames)
+        if mismatch:
+            log.warning("書き出し %s: %s", export_id, mismatch)
+            warnings.append(mismatch)
+        for note in warnings:
+            log.info("書き出し %s: %s", export_id, note)
+        total = frames if frames is not None else planned
         await _update_export(
             export_id,
             status="done",
             progress=1.0,
             output_path=str(output),
             error=None,
+            fps=spec.fps,
+            width=spec.width,
+            height=spec.height,
+            frames=total,
+            duration_ms=int(round(total / spec.fps * 1000)) if spec.fps > 0 else 0,
+            warnings=json.dumps(warnings, ensure_ascii=False),
             finished_at=_now(),
         )
     finished = await get_export(export_id)
@@ -1822,6 +1886,266 @@ def relayout(clips: list[TimelineClipInput]) -> list[TimelineClipInput]:
     return placed
 
 
+# --------------------------------------------------------------------------
+# 音源基準の配置（計画開始秒）
+# --------------------------------------------------------------------------
+#
+# 通常のドラマ制作では使わない（並び順で足りる）。MV のように**音源の秒が正本**
+# の制作でだけ、カット（``studio_shots.planned_start_seconds``）に音源上の開始秒
+# を書いておくと、sync がその位置へカットを置く。
+
+
+class PlannedClip(NamedTuple):
+    """:func:`plan_layout` に渡す 1 件（クリップと、その元カットの計画）。"""
+
+    clip: TimelineClipInput
+    #: 音源上の計画開始秒（None = 計画を持たない＝並び順で置く）
+    planned_start_seconds: float | None = None
+    #: ソース（Take）の実尺（ミリ秒。0 = いまの切り出しの長さをそのまま使う）
+    source_ms: int = 0
+
+
+def plan_layout(
+    items: list[PlannedClip], track_id: str
+) -> list[TimelineClipInput]:
+    """計画秒つきのカットを音源上の位置へ置く（純関数）。
+
+    - 計画秒を持つクリップは ``start_ms = round(計画秒 * 1000)`` に置く。尺は
+      **次の計画秒までの間隔**（最後のカットは Take の尺）を上限に、Take の尺で
+      切る（短い Take のときは足りないぶんが隙間になる）
+    - 空いたところは ``gap`` クリップ（黒＋無音）で埋めるので、次のカットの頭は
+      必ず計画どおりの秒から始まる
+    - 計画秒を持たないクリップは、計画の終わったところから従来どおり順に詰める
+      （繋ぎの重なりの扱いも :func:`relayout` と同じ）
+    - 計画を 1 つも持たないときは :func:`relayout` そのもの
+
+    音源基準では繋ぎ（トランジション）を持てない（重なるとその先の位置が全部
+    ずれる）ので、計画秒つきのクリップからは落とす。
+    """
+    planned = sorted(
+        (item for item in items if item.planned_start_seconds is not None),
+        key=lambda item: float(item.planned_start_seconds or 0.0),
+    )
+    if not planned:
+        return relayout([item.clip for item in items])
+
+    starts = [
+        max(0, int(round(float(item.planned_start_seconds or 0.0) * 1000)))
+        for item in planned
+    ]
+    placed: list[TimelineClipInput] = []
+    cursor = 0
+    for index, item in enumerate(planned):
+        start = starts[index]
+        clip = item.clip.model_copy()
+        available = item.source_ms or max(0, clip.out_ms - clip.in_ms)
+        if available <= 0:
+            available = FALLBACK_CLIP_MS
+        # 次の計画秒までが上限（最後のカットは Take の尺いっぱい）。
+        limit = starts[index + 1] - start if index + 1 < len(planned) else available
+        span = min(limit, available)
+        if span < MIN_CLIP_MS:
+            raise TimelineError(
+                f"計画開始秒が詰まりすぎています（{start / 1000:g} 秒のカットに"
+                f" {span}ms しか置けません）"
+            )
+        if start > cursor:
+            placed.append(
+                TimelineClipInput(
+                    track_id=track_id,
+                    start_ms=cursor,
+                    duration_ms=start - cursor,
+                    source_kind="gap",
+                    source_id=None,
+                    in_ms=0,
+                    out_ms=start - cursor,
+                )
+            )
+        clip.start_ms = start
+        clip.duration_ms = span
+        clip.speed = 1.0
+        clip.transition_kind = None
+        clip.transition_ms = 0
+        clip.out_ms = clip.in_ms + span
+        placed.append(clip)
+        cursor = start + span
+
+    # 計画を持たないカットは、計画の終わったところから今までどおり詰める。
+    rest = relayout(
+        [item.clip for item in items if item.planned_start_seconds is None]
+    )
+    for clip in rest:
+        clip.start_ms += cursor
+    return [*placed, *rest]
+
+
+def insert_into(
+    clips: list[TimelineClipInput], inserted: TimelineClipInput
+) -> list[TimelineClipInput]:
+    """``inserted`` の区間に重なる既存クリップを前後に分割して差し込む（純関数）。
+
+    下のクリップの**切り出しは動かさない**（後半は ``in_ms`` をずらして続きから
+    再生される）ので、トラック全体の長さは変わらない。:data:`MIN_CLIP_MS` に
+    満たない切れ端は残せないので落とす（そのぶんは隙間になる）。
+    """
+    start = inserted.start_ms
+    end = start + inserted.duration_ms
+    kept: list[TimelineClipInput] = []
+    for clip in sorted(clips, key=lambda item: item.start_ms):
+        finish = clip.start_ms + clip.duration_ms
+        if finish <= start or clip.start_ms >= end:
+            kept.append(clip.model_copy())
+            continue
+        speed = float(clip.speed or 1.0)
+        spanless = clip.source_kind in _SPANLESS_SOURCES
+        head_ms = start - clip.start_ms
+        if head_ms >= MIN_CLIP_MS:
+            head = clip.model_copy()
+            head.duration_ms = head_ms
+            if not spanless:
+                head.out_ms = clip.in_ms + int(round(head_ms * speed))
+            kept.append(head)
+        tail_ms = finish - end
+        if tail_ms >= MIN_CLIP_MS:
+            tail = clip.model_copy()
+            # 分割で増えたほうは新しいクリップ（id は書き込みのときに振る）。
+            tail.id = None
+            tail.start_ms = end
+            tail.duration_ms = tail_ms
+            if not spanless:
+                tail.in_ms = clip.out_ms - int(round(tail_ms * speed))
+            # 前の境界が差し込んだクリップに変わったので、繋ぎは持ち越さない。
+            tail.transition_kind = None
+            tail.transition_ms = 0
+            kept.append(tail)
+    kept.append(inserted.model_copy())
+    return sorted(kept, key=lambda item: item.start_ms)
+
+
+async def _check_edl_revision(
+    conn: aiosqlite.Connection,
+    timeline_id: str,
+    project_id: str,
+    name: str,
+    base_revision: int | None,
+) -> None:
+    """``base_revision`` 以降に**このタイムラインの EDL** が触られていたら 409。
+
+    :func:`app.studio._check_base_revision` はエンティティ 1 件（``timeline`` の
+    行そのもの）しか見ないので、クリップだけが動いた並行編集をすり抜ける。
+    ここではリビジョンのスナップショットからこのタイムラインのクリップだけを
+    取り出して突き合わせる（意味は §7.4 の楽観ロックと同じ）。
+
+    比べる相手のスナップショットが残っていない・編集タブより前で EDL を持って
+    いないときは「変わっていない」と言い切れないので、ぶつかったものとして扱う。
+    """
+    if base_revision is None:
+        return
+    current = await studio_service._revision_seq(conn, project_id)
+    if base_revision > current:
+        raise TimelineError(
+            f"base_revision {base_revision} はまだ存在しません"
+            f"（現在のリビジョン {current}）"
+        )
+    if base_revision == current:
+        return
+
+    def edl(snapshot: dict[str, Any] | None) -> list[str] | None:
+        """スナップショットから、このタイムラインのクリップだけを比べられる形に。
+
+        値に None が混ざる列（``source_id`` など）があるので、行そのものを
+        比べずに JSON 文字列へ落としてから並べる。
+        """
+        rows = (snapshot or {}).get("timeline_clips")
+        if rows is None:
+            return None
+        return sorted(
+            json.dumps(row, sort_keys=True, ensure_ascii=False, default=str)
+            for row in rows
+            if str(row.get("timeline_id")) == timeline_id
+        )
+
+    before = edl(await studio_service._snapshot_of(conn, project_id, base_revision))
+    if before is None:
+        raise TimelineConflict(
+            f"リビジョン {base_revision} は履歴に残っていないので"
+            f"タイムライン『{name}』の変更を確かめられません"
+            f"（現在のリビジョン {current}）"
+        )
+    if before != edl(await studio_service._snapshot(conn, project_id)):
+        raise TimelineConflict(
+            f"タイムライン『{name}』は他の変更で更新されています"
+            f"（現在のリビジョン {current}）"
+        )
+
+
+async def insert_clip(
+    timeline_id: str, payload: TimelineClipInsert, *, actor: str = "user"
+) -> StudioTimelineDetail:
+    """クリップを 1 つ差し込む（重なる既存クリップは前後に分割される）。
+
+    BAN!BAN!BAN! の「決めポーズを 1.5 秒だけ割り込ませる」ような編集のための
+    入り口。トラックの全長は変わらないので、音源基準で組んだ並びが崩れない。
+    """
+    detail = await timeline_detail(timeline_id)
+    if detail is None:
+        raise TimelineNotFound("timeline not found")
+    tracks = {track.id: track for track in detail.tracks}
+    track = tracks.get(payload.track_id)
+    if track is None:
+        raise TimelineNotFound("track not found")
+    if track.locked:
+        raise TimelineError("ロックされたトラックには差し込めません")
+    if payload.duration_ms <= 0:
+        raise TimelineError("差し込むクリップの尺が 0 以下です")
+    if payload.start_ms < 0:
+        raise TimelineError("差し込む位置が負です")
+
+    inserted = TimelineClipInput(
+        track_id=track.id,
+        start_ms=payload.start_ms,
+        duration_ms=payload.duration_ms,
+        source_kind=payload.source_kind,
+        source_id=payload.source_id,
+        in_ms=payload.in_ms,
+        out_ms=payload.in_ms + payload.duration_ms,
+        text_payload=payload.text_payload,
+    )
+    updated = insert_into([to_clip_input(clip) for clip in track.clips], inserted)
+    others = [
+        to_clip_input(clip)
+        for other in detail.tracks
+        for clip in other.clips
+        if other.id != track.id
+    ]
+
+    async with get_db() as conn:
+        timeline = await _fetch_timeline(conn, timeline_id)
+        if timeline is None:
+            raise TimelineNotFound("timeline not found")
+        kinds = {item.id: item.kind for item in detail.tracks}
+        validate_clips([*updated, *others], kinds)
+        # 楽観ロックと履歴はスタジオ側と同じ仕掛けを使う（EDL もリビジョンの
+        # スナップショットに載っているので、ここだけ別扱いにしない）。
+        await _check_edl_revision(
+            conn, timeline_id, timeline.project_id, timeline.name,
+            payload.base_revision,
+        )
+        await _write_clips(conn, timeline_id, timeline.project_id, [*updated, *others])
+        await studio_service._record_revision(
+            conn,
+            timeline.project_id,
+            actor,
+            f"タイムライン『{timeline.name}』にクリップを差し込み",
+            entity_kind="timeline",
+            entity_id=timeline_id,
+        )
+        await studio_service._commit(conn)
+
+    fresh = await timeline_detail(timeline_id)
+    assert fresh is not None
+    return fresh
+
 def _video_track(detail: StudioTimelineDetail) -> TimelineTrack:
     tracks = [track for track in detail.tracks if track.kind == "video"]
     if not tracks:
@@ -1942,6 +2266,7 @@ async def _shot_state(
     async with conn.execute(
         "SELECT t.id AS take_id, t.shot_id AS shot_id,"
         "       s.id AS shot_exists, s.selected_take_id AS selected_take_id,"
+        "       s.planned_start_seconds AS planned,"
         "       s.title AS shot_title, s.sort_order AS shot_order,"
         "       sc.title AS scene_title, ep.title AS episode_title"
         "  FROM studio_takes t"
@@ -1987,6 +2312,7 @@ async def sync_preview(timeline_id: str) -> TimelineSyncPreview:
             async with conn.execute(
                 "SELECT s.id AS shot_id, s.title AS shot_title,"
                 "       s.sort_order AS shot_order, s.selected_take_id AS take_id,"
+                "       s.planned_start_seconds AS planned,"
                 "       sc.title AS scene_title, ep.title AS episode_title,"
                 "       j.video_path AS path"
                 "  FROM studio_shots s"
@@ -2013,6 +2339,9 @@ async def sync_preview(timeline_id: str) -> TimelineSyncPreview:
                         take_id=str(row["take_id"]),
                         label=_shot_label(row),
                         duration_ms=duration_ms or FALLBACK_CLIP_MS,
+                        planned_start_seconds=(
+                            None if row["planned"] is None else float(row["planned"])
+                        ),
                     )
                 )
 
@@ -2051,6 +2380,11 @@ async def sync_preview(timeline_id: str) -> TimelineSyncPreview:
                     new_take_id=str(selected),
                     label=_shot_label(state),
                     duration_ms=duration_ms,
+                    planned_start_seconds=(
+                        None
+                        if state.get("planned") is None
+                        else float(state["planned"])
+                    ),
                 )
             )
 
@@ -2067,6 +2401,32 @@ def _shot_label(row: Any) -> str:
     if row["shot_order"] is not None:
         parts.append(f"#{int(row['shot_order']) + 1} {row['shot_title'] or ''}".strip())
     return " / ".join(parts)
+
+
+async def _shot_plans(
+    conn: aiosqlite.Connection, take_ids: list[str]
+) -> dict[str, float | None]:
+    """Take id -> その Take の元カットの計画開始秒（持たなければ None）。
+
+    音源基準で組んでいるタイムラインかどうかは、ここが 1 つでも値を返すかで
+    決まる（:func:`apply_sync`）。
+    """
+    if not take_ids:
+        return {}
+    placeholders = ", ".join("?" * len(take_ids))
+    async with conn.execute(
+        "SELECT t.id AS take_id, s.planned_start_seconds AS planned"
+        "  FROM studio_takes t"
+        "  LEFT JOIN studio_shots s ON s.id = t.shot_id"
+        f" WHERE t.id IN ({placeholders})",
+        tuple(take_ids),
+    ) as cur:
+        return {
+            str(row["take_id"]): (
+                None if row["planned"] is None else float(row["planned"])
+            )
+            for row in await cur.fetchall()
+        }
 
 
 async def _take_duration(
@@ -2093,9 +2453,11 @@ async def apply_sync(
 ) -> StudioTimelineDetail:
     """:func:`sync_preview` の項目のうち、選ばれたものだけ反映する。
 
-    映像トラックは反映のあとで詰め直す（:func:`relayout`）。他のトラック
-    （BGM・テロップ）は動かさない: 音は尺に合わせて置いてあるので、勝手に
-    ずらすと合っていたものが外れるため。
+    映像トラックは反映のあとで詰め直す（:func:`relayout`）。元カットが
+    **計画開始秒**を持っているときは、そちらが正本になって音源上の位置へ置き直す
+    （:func:`plan_layout`。差し替えた Take も同じ位置に置き直される）。他の
+    トラック（BGM・テロップ）は動かさない: 音は尺に合わせて置いてあるので、
+    勝手にずらすと合っていたものが外れるため。
     """
     preview = await sync_preview(timeline_id)
     detail = await timeline_detail(timeline_id)
@@ -2150,6 +2512,36 @@ async def apply_sync(
                 )
             )
 
+        # 音源基準で組んであるか（元カットが計画開始秒を持つか）を見る。
+        plans = await _shot_plans(
+            conn,
+            sorted({
+                str(clip.source_id)
+                for clip in kept
+                if clip.source_kind == "take" and clip.source_id
+            }),
+        )
+        if any(value is not None for value in plans.values()):
+            items: list[PlannedClip] = []
+            for clip in kept:
+                # 前に埋めた隙間は計画から作り直すので、ここで落とす。
+                if clip.source_kind == "gap":
+                    continue
+                planned = (
+                    plans.get(str(clip.source_id or ""))
+                    if clip.source_kind == "take"
+                    else None
+                )
+                source_ms = 0
+                if planned is not None:
+                    source_ms = (
+                        await _take_duration(conn, str(clip.source_id)) or 0
+                    )
+                items.append(PlannedClip(clip, planned, source_ms))
+            laid = plan_layout(items, video.id)
+        else:
+            laid = relayout(kept)
+
         others = [
             to_clip_input(clip)
             for track in detail.tracks
@@ -2157,7 +2549,7 @@ async def apply_sync(
             if track.id != video.id
         ]
         await _write_clips(
-            conn, timeline_id, timeline.project_id, [*relayout(kept), *others]
+            conn, timeline_id, timeline.project_id, [*laid, *others]
         )
         await conn.commit()
     await _publish_timeline(timeline.project_id, timeline_id)

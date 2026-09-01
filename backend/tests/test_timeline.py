@@ -45,15 +45,22 @@ def test_build_command_normalises_and_concats_every_clip():
     # 入力は 2 本（どちらも音声を持つので lavfi の穴埋めは要らない）
     assert command.count("-i") == 2
     graph = command[command.index("-filter_complex") + 1]
-    # 切り出し -> 解像度・SAR・fps の正規化
-    assert "trim=start=0.000:end=2.000" in graph
-    assert "trim=start=0.500:end=1.500" in graph
+    # 切り出しは 1 フレームぶん余分に取り（2.000 + 1/24 秒）、フレーム数で切る
+    assert "[0:v]trim=start=0.000:end=2.042" in graph
+    assert "[1:v]trim=start=0.500:end=1.542" in graph
+    assert graph.count("trim=end_frame=48") == 1  # 2 秒 = 48f
+    assert graph.count("trim=end_frame=24") == 1  # 1 秒 = 24f
+    assert graph.count("tpad=stop_mode=clone") == 2
     assert graph.count("scale=1280:720:force_original_aspect_ratio=decrease") == 2
     assert graph.count("pad=1280:720:(ow-iw)/2:(oh-ih)/2") == 2
     assert graph.count("setsar=1,fps=24") == 2
-    # 音声も同じ規格へ揃えてから連結
-    assert graph.count("atrim=") == 2
+    # 音声も同じ規格へ揃え、映像とちょうど同じ長さにしてから連結
+    assert "atrim=start=0.000:end=2.000" in graph
+    assert "atrim=start=0.500:end=1.500" in graph
+    assert graph.count("apad=whole_dur=2.000000,atrim=end=2.000000") == 1
     assert graph.count(f"aresample={timeline_export.AUDIO_RATE}") == 2
+    # 出力そのものもフレーム数で締める（2 秒 + 1 秒 = 72f）
+    assert command[command.index("-frames:v") + 1] == "72"
     assert graph.endswith("[v0][a0][v1][a1]concat=n=2:v=1:a=1[outv][outa]")
     # 出力は H.264 + AAC / yuv420p / faststart
     assert command[-1] == "/out/final.mp4"
@@ -197,6 +204,202 @@ def test_validate_clips_ignores_the_trim_of_a_gap():
     service.validate_clips(
         [_input(source_kind="gap", source_id=None, in_ms=0, out_ms=0)]
     )
+
+
+# --------------------------------------------------------------------------
+# 音源基準の配置と差し込み（どちらも純関数）
+# --------------------------------------------------------------------------
+
+def _planned(seconds, source_ms=5000, **kwargs):
+    """計画秒つきのテイククリップ 1 件（:func:`app.timeline.plan_layout` に渡す形）。"""
+    return service.PlannedClip(
+        _input(duration_ms=source_ms, in_ms=0, out_ms=source_ms, **kwargs),
+        seconds,
+        source_ms,
+    )
+
+
+def test_plan_layout_places_each_clip_at_its_planned_second():
+    """計画秒があれば、並び順ではなく音源上の秒がそのまま置き場所になる。"""
+    placed = service.plan_layout(
+        [_planned(10.0, source_id="b"), _planned(0.0, source_id="a")], "V1"
+    )
+    # 5 秒の Take のうしろ（5000〜10000）は隙間になる
+    assert [(clip.source_id, clip.start_ms) for clip in placed] == [
+        ("a", 0),
+        (None, 5000),
+        ("b", 10000),
+    ]
+    # 前のカットは Take の尺どおり（次の計画秒 10000 までは届かない）
+    assert placed[0].duration_ms == 5000
+    assert (placed[0].in_ms, placed[0].out_ms) == (0, 5000)
+
+
+def test_plan_layout_cuts_a_clip_at_the_next_planned_second():
+    placed = service.plan_layout(
+        [_planned(0.0, source_id="a"), _planned(1.5, source_id="b")], "V1"
+    )
+    assert [(clip.start_ms, clip.duration_ms) for clip in placed] == [
+        (0, 1500),
+        (1500, 5000),
+    ]
+    assert placed[0].out_ms == 1500  # 切り出しも詰められる
+
+
+def test_plan_layout_fills_the_holes_with_a_gap():
+    """短い Take のうしろと、先頭までの空きは gap（黒＋無音）で埋まる。"""
+    placed = service.plan_layout(
+        [_planned(2.0, source_ms=1000, source_id="a"), _planned(5.0, source_id="b")],
+        "V1",
+    )
+    assert [
+        (clip.source_kind, clip.start_ms, clip.duration_ms) for clip in placed
+    ] == [
+        ("gap", 0, 2000),
+        ("take", 2000, 1000),
+        ("gap", 3000, 2000),
+        ("take", 5000, 5000),
+    ]
+
+
+def test_plan_layout_appends_the_clips_without_a_plan_after_the_plan():
+    placed = service.plan_layout(
+        [
+            _planned(0.0, source_ms=2000, source_id="a"),
+            service.PlannedClip(_input(duration_ms=1000, out_ms=1000, source_id="b")),
+        ],
+        "V1",
+    )
+    assert [(clip.source_id, clip.start_ms) for clip in placed] == [
+        ("a", 0),
+        ("b", 2000),
+    ]
+
+
+def test_plan_layout_without_any_plan_is_the_old_ripple():
+    clips = [_input(duration_ms=1000, out_ms=1000), _input(duration_ms=2000, out_ms=2000)]
+    placed = service.plan_layout(
+        [service.PlannedClip(clip) for clip in clips], "V1"
+    )
+    assert [clip.start_ms for clip in placed] == [0, 1000]
+
+
+def test_plan_layout_refuses_planned_seconds_that_are_too_close():
+    with pytest.raises(service.TimelineError):
+        service.plan_layout(
+            [_planned(0.0, source_id="a"), _planned(0.01, source_id="b")], "V1"
+        )
+
+
+def test_insert_into_splits_the_clip_underneath():
+    """差し込むと下のクリップは前後に割れ、後半は切り出しの続きから鳴る。"""
+    under = _input(start_ms=0, duration_ms=4000, in_ms=1000, out_ms=5000, source_id="a")
+    inserted = _input(
+        start_ms=1000, duration_ms=1500, in_ms=0, out_ms=1500, source_id="dr"
+    )
+    placed = service.insert_into([under], inserted)
+
+    assert [
+        (clip.source_id, clip.start_ms, clip.duration_ms, clip.in_ms, clip.out_ms)
+        for clip in placed
+    ] == [
+        ("a", 0, 1000, 1000, 2000),
+        ("dr", 1000, 1500, 0, 1500),
+        ("a", 2500, 1500, 3500, 5000),
+    ]
+    # トラックの全長は変わらない（前後へ押し出さない）
+    assert placed[-1].start_ms + placed[-1].duration_ms == 4000
+    # 分割で増えたほうは新しいクリップとして振り直す
+    assert placed[-1].id is None
+
+
+def test_insert_into_drops_a_clip_it_covers_completely():
+    placed = service.insert_into(
+        [_input(start_ms=1000, duration_ms=500, out_ms=500, source_id="a")],
+        _input(start_ms=0, duration_ms=3000, out_ms=3000, source_id="dr"),
+    )
+    assert [clip.source_id for clip in placed] == ["dr"]
+
+
+def test_insert_into_leaves_the_clips_it_does_not_touch():
+    before = _input(start_ms=0, duration_ms=1000, out_ms=1000, source_id="a")
+    after = _input(start_ms=2000, duration_ms=1000, out_ms=1000, source_id="b")
+    placed = service.insert_into(
+        [before, after],
+        _input(start_ms=1000, duration_ms=1000, out_ms=1000, source_id="dr"),
+    )
+    assert [clip.source_id for clip in placed] == ["a", "dr", "b"]
+    assert placed[2].start_ms == 2000
+
+
+# --------------------------------------------------------------------------
+# フレーム精度と不足尺の保険（純関数）
+# --------------------------------------------------------------------------
+
+def test_frame_count_quantises_to_the_nearest_frame():
+    assert timeline_export.frame_count(1000, 24) == 24
+    assert timeline_export.frame_count(1001, 24) == 24
+    assert timeline_export.frame_count(1042, 24) == 25
+    assert timeline_export.frame_count(-5, 24) == 0
+    with pytest.raises(TimelineExportError):
+        timeline_export.frame_count(1000, 0)
+
+
+def test_total_frames_counts_the_overlap_only_once():
+    spec = ExportSpec(
+        width=640,
+        height=360,
+        fps=24,
+        clips=[
+            _clip("/x/1.mp4", 0, 2000),
+            ExportClip(
+                path="/x/2.mp4",
+                in_ms=0,
+                out_ms=3000,
+                duration_ms=3000,
+                transition_kind="crossfade",
+                transition_ms=500,
+            ),
+        ],
+    )
+    assert spec.total_frames == 48 + 72 - 12
+    assert spec.duration_ms == 4500
+
+
+def test_pad_warnings_reports_a_source_that_is_too_short():
+    spec = ExportSpec(
+        width=640,
+        height=360,
+        fps=24,
+        clips=[
+            _clip("/x/short.mp4", 0, 2000, source_duration_ms=1580, name="A-1"),
+            # 1 フレームぶんの不足は丸めの範囲なので黙って埋める
+            _clip("/x/edge.mp4", 0, 2000, source_duration_ms=1970, name="A-2"),
+            _clip("/x/ok.mp4", 0, 2000, source_duration_ms=4000, name="A-3"),
+        ],
+    )
+    assert timeline_export.pad_warnings(spec) == ["PAD A-1 0.42s"]
+
+
+def test_build_command_freezes_the_tail_of_a_short_source():
+    spec = ExportSpec(
+        width=640,
+        height=360,
+        fps=24,
+        clips=[_clip("/x/short.mp4", 0, 2000, source_duration_ms=1500)],
+    )
+    graph = build_command(spec, "/o.mp4")[
+        build_command(spec, "/o.mp4").index("-filter_complex") + 1
+    ]
+    # 不足 0.5 秒 + 余裕（丸めのぶん）を末尾フレームの静止で埋める
+    assert "tpad=stop_mode=clone:stop_duration=0.750" in graph
+    assert "trim=end_frame=48" in graph
+
+
+def test_frame_warning_only_fires_on_a_mismatch():
+    assert timeline_export.frame_warning(4728, 4728) is None
+    assert timeline_export.frame_warning(4728, None) is None
+    assert "4727" in (timeline_export.frame_warning(4728, 4727) or "")
 
 
 # --------------------------------------------------------------------------
@@ -573,6 +776,241 @@ async def _strip_timeline_keys(project_id: str, seq: int) -> None:
         await conn.commit()
 
 
+
+
+# --------------------------------------------------------------------------
+# 音源基準の配置と差し込み（API）
+# --------------------------------------------------------------------------
+
+async def _seed_planned_takes(
+    project_id: str, video_path: str, plans: list[float | None]
+) -> tuple[str, list[str]]:
+    """計画開始秒つきのカットを ``plans`` の数だけ並べた話を作る。
+
+    返りは ``(episode_id, [shot_id, …])``。Take は採用済みで、動画は全部同じ
+    ``video_path`` を指す（尺は ffprobe の差し替えで決める）。
+    """
+    from app.ids import new_id
+
+    episode_id, scene_id = new_id(), new_id()
+    now = "2026-01-01T00:00:00+00:00"
+    shot_ids: list[str] = []
+    async with db.get_db() as conn:
+        await conn.execute(
+            "INSERT INTO studio_episodes (id, project_id, sort_order, title,"
+            " synopsis, created_at) VALUES (?, ?, 0, '第 1 話', '', ?)",
+            (episode_id, project_id, now),
+        )
+        await conn.execute(
+            "INSERT INTO studio_scenes (id, episode_id, project_id, sort_order,"
+            " title, synopsis, time_of_day, created_at)"
+            " VALUES (?, ?, ?, 0, '場 1', '', '', ?)",
+            (scene_id, episode_id, project_id, now),
+        )
+        for order, planned in enumerate(plans):
+            shot_id, job_id, take_id = new_id(), new_id(), new_id()
+            await conn.execute(
+                "INSERT INTO studio_shots (id, project_id, scene_id, sort_order,"
+                " title, planned_start_seconds, selected_take_id, created_at,"
+                " updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    shot_id, project_id, scene_id, order,
+                    f"カット {order + 1}", planned, take_id, now, now,
+                ),
+            )
+            await conn.execute(
+                "INSERT INTO jobs (id, created_at, mode, status, params,"
+                " workflow_json, video_path)"
+                " VALUES (?, ?, 'video', 'done', '{}', '{}', ?)",
+                (job_id, now, video_path),
+            )
+            await conn.execute(
+                "INSERT INTO studio_takes (id, shot_id, project_id, job_id, status,"
+                " created_at) VALUES (?, ?, ?, ?, 'selected', ?)",
+                (take_id, shot_id, project_id, job_id, now),
+            )
+            shot_ids.append(shot_id)
+        await conn.commit()
+    return episode_id, shot_ids
+
+
+def test_a_planned_shot_lands_on_its_second_with_a_gap_in_front(
+    client, tmp_path, monkeypatch
+):
+    """計画秒つきのカットは音源上の位置に置かれ、手前は gap で埋まる。"""
+    project_id = _project(client)
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"x")
+
+    async def fake_probe(path):
+        return 5000, True
+
+    monkeypatch.setattr(service, "probe_media", fake_probe)
+    episode_id, shot_ids = asyncio.run(
+        _seed_planned_takes(project_id, str(video), [1.0, 4.0])
+    )
+
+    detail = client.post(
+        f"/api/studio/projects/{project_id}/timelines",
+        json={"episode_id": episode_id},
+    ).json()
+    clips = detail["tracks"][0]["clips"]
+    assert [
+        (clip["source_kind"], clip["start_ms"], clip["duration_ms"]) for clip in clips
+    ] == [("gap", 0, 1000), ("take", 1000, 3000), ("take", 4000, 5000)]
+    # 次の計画秒までで切られたぶんは切り出しにも出る
+    assert (clips[1]["in_ms"], clips[1]["out_ms"]) == (0, 3000)
+
+
+def test_sync_moves_a_clip_when_the_planned_second_changes(
+    client, tmp_path, monkeypatch
+):
+    """計画秒を書き換えて sync すると、その位置へ置き直されて隙間が空く。"""
+    project_id = _project(client)
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"x")
+
+    async def fake_probe(path):
+        return 5000, True
+
+    monkeypatch.setattr(service, "probe_media", fake_probe)
+    episode_id, shot_ids = asyncio.run(
+        _seed_planned_takes(project_id, str(video), [0.0, 3.0])
+    )
+    timeline = client.post(
+        f"/api/studio/projects/{project_id}/timelines",
+        json={"episode_id": episode_id},
+    ).json()
+    assert [clip["start_ms"] for clip in timeline["tracks"][0]["clips"]] == [0, 3000]
+
+    patched = client.patch(
+        f"/api/studio/shots/{shot_ids[1]}", json={"planned_start_seconds": 4.0}
+    )
+    assert patched.status_code == 200
+    assert patched.json()["planned_start_seconds"] == 4.0
+
+    # 計画が正本なので、前のカットは次の計画秒（4 秒）まで伸びる（Take は 5 秒
+    # あるので隙間は空かない）。
+    detail = client.post(f"/api/studio/timelines/{timeline['id']}/sync", json={}).json()
+    assert [
+        (clip["source_kind"], clip["start_ms"], clip["duration_ms"])
+        for clip in detail["tracks"][0]["clips"]
+    ] == [("take", 0, 4000), ("take", 4000, 5000)]
+
+    # 逆に Take より先の秒へ動かすと、届かないぶんが gap で埋まる
+    client.patch(
+        f"/api/studio/shots/{shot_ids[1]}", json={"planned_start_seconds": 7.0}
+    )
+    detail = client.post(f"/api/studio/timelines/{timeline['id']}/sync", json={}).json()
+    assert [
+        (clip["source_kind"], clip["start_ms"], clip["duration_ms"])
+        for clip in detail["tracks"][0]["clips"]
+    ] == [("take", 0, 5000), ("gap", 5000, 2000), ("take", 7000, 5000)]
+
+
+def test_insert_clip_splits_the_clip_under_it(client, tmp_path, monkeypatch):
+    """差し込むと下のクリップが 2 つに割れ、トラックの全長は変わらない。"""
+    project_id = _project(client)
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"x")
+
+    async def fake_probe(path):
+        return 4000, True
+
+    monkeypatch.setattr(service, "probe_media", fake_probe)
+    episode_id, take_id = asyncio.run(_seed_take(project_id, str(video)))
+    timeline = client.post(
+        f"/api/studio/projects/{project_id}/timelines",
+        json={"episode_id": episode_id},
+    ).json()
+    track_id = timeline["tracks"][0]["id"]
+
+    response = client.post(
+        f"/api/studio/timelines/{timeline['id']}/clips/insert",
+        json={
+            "track_id": track_id,
+            "start_ms": 1000,
+            "duration_ms": 1500,
+            "source_kind": "take",
+            "source_id": take_id,
+            "in_ms": 0,
+        },
+    )
+    assert response.status_code == 200
+    clips = response.json()["tracks"][0]["clips"]
+    assert [(clip["start_ms"], clip["duration_ms"]) for clip in clips] == [
+        (0, 1000),
+        (1000, 1500),
+        (2500, 1500),
+    ]
+    # 後半は切り出しの続きから（下のクリップの尺は変えない）
+    assert (clips[2]["in_ms"], clips[2]["out_ms"]) == (2500, 4000)
+    assert response.json()["duration_ms"] == 4000
+
+
+
+
+def test_insert_clip_refuses_a_stale_base_revision(client, tmp_path, monkeypatch):
+    """差し込みの base_revision は、EDL が動いていれば 409（§7.4 の楽観ロック）。"""
+    project_id = _project(client)
+    video = tmp_path / "video.mp4"
+    video.write_bytes(b"x")
+
+    async def fake_probe(path):
+        return 4000, True
+
+    monkeypatch.setattr(service, "probe_media", fake_probe)
+    episode_id, take_id = asyncio.run(_seed_take(project_id, str(video)))
+    timeline = client.post(
+        f"/api/studio/projects/{project_id}/timelines",
+        json={"episode_id": episode_id},
+    ).json()
+    track_id = timeline["tracks"][0]["id"]
+    seq = client.get(f"/api/studio/projects/{project_id}").json()["revision_seq"]
+
+    body = {
+        "track_id": track_id,
+        "start_ms": 1000,
+        "duration_ms": 500,
+        "source_kind": "gap",
+        "source_id": None,
+    }
+    first = client.post(
+        f"/api/studio/timelines/{timeline['id']}/clips/insert",
+        json={**body, "base_revision": seq},
+    )
+    assert first.status_code == 200, first.text
+
+    # 同じ連番でもう一度 = 途中で EDL が動いているので断られる
+    stale = client.post(
+        f"/api/studio/timelines/{timeline['id']}/clips/insert",
+        json={**body, "start_ms": 2000, "base_revision": seq},
+    )
+    assert stale.status_code == 409, stale.text
+
+    # まだ無い連番は 400
+    future = client.post(
+        f"/api/studio/timelines/{timeline['id']}/clips/insert",
+        json={**body, "start_ms": 2000, "base_revision": seq + 100},
+    )
+    assert future.status_code == 400
+
+
+
+def test_insert_clip_rejects_an_unknown_track(client):
+    project_id = _project(client)
+    timeline = client.post(
+        f"/api/studio/projects/{project_id}/timelines", json={}
+    ).json()
+    response = client.post(
+        f"/api/studio/timelines/{timeline['id']}/clips/insert",
+        json={"track_id": "nope", "start_ms": 0, "duration_ms": 1000,
+              "source_kind": "gap", "source_id": None},
+    )
+    assert response.status_code == 404
+
+
+
 def test_export_runs_in_the_background_and_lands_in_the_history(
     client, tmp_path, monkeypatch
 ):
@@ -612,6 +1050,11 @@ def test_export_runs_in_the_background_and_lands_in_the_history(
     assert done["progress"] == 1.0
     assert done["output_url"] == f"/outputs/exports/{export_id}/final.mp4"
     assert done["error"] is None
+    # 焼き上がりの規格と検算（Remotion の base に渡すとき props と揃えるため）
+    assert (done["fps"], done["width"], done["height"]) == (24.0, 1280, 720)
+    assert done["frames"] == 48  # 2 秒 * 24fps
+    assert done["duration_ms"] == 2000
+    assert done["warnings"] == []
 
     # 焼く直前の EDL がタイムラインどおりに組み立てられている
     spec = seen["spec"]
@@ -796,8 +1239,8 @@ def test_build_command_uses_xfade_and_acrossfade_across_a_transition():
     ]
     # まとまりは 2 つ（それぞれ concat=n=1 でラベルを揃えてから重ねる）
     assert graph.count("concat=n=1:v=1:a=1") == 2
-    assert "xfade=transition=fade:duration=0.500:offset=1.500" in graph
-    assert "acrossfade=d=0.500:c1=tri:c2=tri" in graph
+    assert "xfade=transition=fade:duration=0.500000:offset=1.500000" in graph
+    assert "acrossfade=d=0.500000:c1=tri:c2=tri" in graph
     # 全長は重なったぶん縮む
     assert spec.duration_ms == 4500
 
@@ -890,7 +1333,9 @@ def test_build_command_loops_a_still_image_into_a_clip():
     assert "-loop" in command
     assert command[command.index("-loop") + 1] == "1"
     graph = command[command.index("-filter_complex") + 1]
-    assert "trim=" not in graph  # 尺は -t で決まる
+    # 尺は -t（1 フレーム余分）と trim=end_frame で決まる（3 秒 = 72f）
+    assert "trim=start=" not in graph
+    assert "trim=end_frame=72" in graph
     assert any("anullsrc" in arg for arg in command)
 
 
@@ -950,7 +1395,8 @@ def test_build_command_can_crop_instead_of_letterboxing():
     graph = command[command.index("-filter_complex") + 1]
     assert "force_original_aspect_ratio=increase" in graph
     assert "crop=1080:1920" in graph
-    assert "pad=" not in graph
+    # 黒帯は付かない（tpad / apad は尺を揃えるためのものなので数に入れない）
+    assert "pad=1080:1920" not in graph
 
 
 # --------------------------------------------------------------------------

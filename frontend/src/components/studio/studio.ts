@@ -602,6 +602,8 @@ export interface ShotFormState {
   bgm: string
   camera: string
   duration_seconds: string
+  /** 音源上の計画開始秒（空文字 = 未設定＝並び順で置く）。 */
+  planned_start_seconds: string
   prompt: string
   status: StudioShotStatus
   carry_over_end_frame: boolean
@@ -625,6 +627,8 @@ export function shotFormFromShot(shot: StudioShot): ShotFormState {
     bgm: shot.bgm,
     camera: shot.camera,
     duration_seconds: String(shot.duration_seconds),
+    planned_start_seconds:
+      shot.planned_start_seconds == null ? '' : String(shot.planned_start_seconds),
     prompt: shot.prompt,
     status: shot.status,
     carry_over_end_frame: shot.carry_over_end_frame,
@@ -643,6 +647,13 @@ export function validateShotForm(form: ShotFormState): Record<string, string> {
     errors.duration_seconds = '尺は数値で入れてください'
   } else if (duration < SHOT_DURATION_MIN || duration > SHOT_DURATION_MAX) {
     errors.duration_seconds = `尺は ${SHOT_DURATION_MIN}〜${SHOT_DURATION_MAX} 秒です`
+  }
+  const planned = Number(form.planned_start_seconds)
+  if (
+    form.planned_start_seconds.trim() !== '' &&
+    (Number.isNaN(planned) || planned < 0)
+  ) {
+    errors.planned_start_seconds = '計画開始秒は 0 以上の数値です（空欄で未使用）'
   }
   if (!form.prompt.trim() && !form.action.trim()) {
     errors.prompt = 'プロンプトかアクションのどちらかは書いてください'
@@ -674,6 +685,10 @@ export function shotUpdateFromForm(form: ShotFormState): StudioShotUpdate {
     bgm: form.bgm,
     camera: form.camera,
     duration_seconds: Number(form.duration_seconds),
+    planned_start_seconds:
+      form.planned_start_seconds.trim() === ''
+        ? null
+        : Number(form.planned_start_seconds),
     prompt: form.prompt,
     status: form.status,
     carry_over_end_frame: form.carry_over_end_frame,

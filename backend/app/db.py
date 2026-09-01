@@ -201,6 +201,9 @@ CREATE TABLE IF NOT EXISTS studio_shots (
   bgm                  TEXT NOT NULL DEFAULT '',
   camera               TEXT NOT NULL DEFAULT '',
   duration_seconds     REAL NOT NULL DEFAULT 5.0,  -- MiniMax H3 は 1〜15 秒
+  -- 音源上の計画開始秒（NULL = 並び順で置く従来どおり）。MV のように音に映像を
+  -- 合わせる制作でだけ使い、タイムラインの sync がこの秒へカットを置く。
+  planned_start_seconds REAL,
   prompt               TEXT NOT NULL DEFAULT '',   -- `@素材名` メンション可
   status               TEXT NOT NULL DEFAULT 'draft',
   selected_take_id     TEXT,                       -- 採用した Take（FK は張らない: 相互参照になるため）
@@ -311,6 +314,14 @@ CREATE TABLE IF NOT EXISTS timeline_exports (
   params      TEXT NOT NULL DEFAULT '{}',      -- 書き出し設定（JSON）
   output_path TEXT,
   error       TEXT,
+  -- 焼き上がりの規格と検算（Remotion の base に渡すとき props と揃えるため）。
+  -- 走り終わるまでは NULL。frames は ffprobe -count_frames の実測。
+  fps         REAL,
+  width       INTEGER,
+  height      INTEGER,
+  frames      INTEGER,
+  duration_ms INTEGER,
+  warnings    TEXT NOT NULL DEFAULT '[]',      -- PAD / フレーム数のずれ（JSON 配列）
   created_at  TEXT NOT NULL,
   finished_at TEXT
 );
@@ -487,6 +498,8 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
     ],
     "studio_shots": [
         ("scene_id", "TEXT"),
+        # 音源上の計画開始秒。既存行は NULL = 今までどおり並び順で置く。
+        ("planned_start_seconds", "REAL"),
         # Shot ごとの生成設定。既存行は NULL = 今までどおり JobCreate の既定値。
         ("aspect_ratio", "TEXT"),
         ("megapixels", "REAL"),
@@ -505,6 +518,16 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
     "timeline_clips": [
         # リタイム（フェーズ 3）。既存のクリップは 1.0 = 等速のまま。
         ("speed", "REAL NOT NULL DEFAULT 1"),
+    ],
+    "timeline_exports": [
+        # 焼き上がりの規格と検算。この列を足す前に走った書き出しは NULL のまま
+        # （後から測り直すことはしない。成果物そのものは残っている）。
+        ("fps", "REAL"),
+        ("width", "INTEGER"),
+        ("height", "INTEGER"),
+        ("frames", "INTEGER"),
+        ("duration_ms", "INTEGER"),
+        ("warnings", "TEXT NOT NULL DEFAULT '[]'"),
     ],
     "studio_revisions": [
         # 触ったエンティティ（「このカットの履歴」の絞り込み用）。この列を足す

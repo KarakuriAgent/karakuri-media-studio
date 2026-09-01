@@ -89,6 +89,7 @@ function shot(id: string, overrides: Partial<StudioShot> = {}): StudioShot {
     bgm: '',
     camera: '',
     duration_seconds: 5,
+    planned_start_seconds: null,
     prompt: 'a quiet street',
     status: 'draft',
     selected_take_id: null,
@@ -362,6 +363,37 @@ describe('StudioView', () => {
       expect(mocked.updateStudioShot).toHaveBeenCalledWith(
         'カット1',
         expect.objectContaining({ duration_seconds: 8 }),
+      ),
+    )
+  })
+
+  it('計画開始秒（音源基準）を書くと PATCH に数値で載る', async () => {
+    await openProject()
+    clickTab('脚本')
+    fireEvent.click(rail().getByRole('button', { name: 'カット1' }))
+    fireEvent.change(await screen.findByLabelText('計画開始秒（音源基準）'), {
+      target: { value: '16.6' },
+    })
+    mocked.updateStudioShot.mockResolvedValue({})
+    fireEvent.click(screen.getByRole('button', { name: '保存' }))
+    await waitFor(() =>
+      expect(mocked.updateStudioShot).toHaveBeenCalledWith(
+        'カット1',
+        expect.objectContaining({ planned_start_seconds: 16.6 }),
+      ),
+    )
+  })
+
+  it('計画開始秒は空欄なら null（並び順に戻す）', async () => {
+    await openProject()
+    clickTab('脚本')
+    fireEvent.click(rail().getByRole('button', { name: 'カット1' }))
+    mocked.updateStudioShot.mockResolvedValue({})
+    fireEvent.click(screen.getByRole('button', { name: '保存' }))
+    await waitFor(() =>
+      expect(mocked.updateStudioShot).toHaveBeenCalledWith(
+        'カット1',
+        expect.objectContaining({ planned_start_seconds: null }),
       ),
     )
   })

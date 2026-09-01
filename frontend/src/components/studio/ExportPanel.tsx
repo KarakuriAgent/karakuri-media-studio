@@ -149,6 +149,14 @@ export default function ExportPanel({
           </p>
         )}
 
+        {finished && finished.warnings.length > 0 && (
+          <ul className="rounded border border-amber-900/70 bg-amber-950/40 px-2 py-1.5 text-xs text-amber-200">
+            {finished.warnings.map((warning) => (
+              <li key={warning}>{warning}</li>
+            ))}
+          </ul>
+        )}
+
         {finished?.output_url && (
           <div className="flex flex-col gap-2">
             <video
@@ -200,7 +208,9 @@ export default function ExportPanel({
                   {EXPORT_STATUS_LABEL[item.status] ?? item.status}
                 </Badge>
                 <span className="truncate font-mono">
-                  {item.finished_at ?? item.created_at}
+                  {item.frames == null
+                    ? (item.finished_at ?? item.created_at)
+                    : `${item.width}x${item.height} ${item.fps}fps ${item.frames}f`}
                 </span>
               </li>
             ))}

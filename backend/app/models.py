@@ -2872,6 +2872,10 @@ class StudioShot(BaseModel):
     camera: str = ""
     #: 尺（MiniMax H3 は 1〜15 秒）
     duration_seconds: float = 5.0
+    #: **音源上の**計画開始秒（None = 並び順で置く従来どおり）。MV のように
+    #: 「音に映像を合わせる」制作でだけ使い、タイムラインの sync がこの秒へ
+    #: カットを置く（SPEC §7.3「音源基準の配置」）。通常のドラマ制作では使わない
+    planned_start_seconds: float | None = None
     #: 生成プロンプトの本文（`@素材名` メンション可）
     prompt: str = ""
     status: StudioShotStatus = "draft"
@@ -2912,6 +2916,8 @@ class StudioShotCreate(BaseModel):
     bgm: str = ""
     camera: str = ""
     duration_seconds: float = 5.0
+    #: 音源上の計画開始秒（None = 並び順で置く従来どおり）
+    planned_start_seconds: float | None = None
     prompt: str = ""
     status: StudioShotStatus = "draft"
     carry_over_end_frame: bool = False
@@ -2939,6 +2945,8 @@ class StudioShotUpdate(_StudioUpdate):
     bgm: str | None = None
     camera: str | None = None
     duration_seconds: float | None = None
+    #: 音源上の計画開始秒（**null を明示すると外れる** = 並び順に戻る）
+    planned_start_seconds: float | None = None
     prompt: str | None = None
     status: StudioShotStatus | None = None
     carry_over_end_frame: bool | None = None
@@ -2960,6 +2968,7 @@ class StudioShotUpdate(_StudioUpdate):
         "seed",
         "workflow_override",
         "english_prompt",
+        "planned_start_seconds",
     )
 
 
@@ -3422,6 +3431,28 @@ class TimelineClipsUpdate(BaseModel):
     clips: list[TimelineClipInput] = Field(default_factory=list)
 
 
+class TimelineClipInsert(BaseModel):
+    """POST /api/studio/timelines/{id}/clips/insert body（差し込み）。
+
+    指定した位置に重なる既存クリップを**前後に分割**して割り込む。下のクリップ
+    の尺は変えない（後半は ``in_ms`` をずらして続きから）ので、トラック全体の
+    長さは変わらない（SPEC §7.3「差し込みクリップ」）。
+    """
+
+    track_id: str
+    #: 差し込む位置（タイムライン上のミリ秒）
+    start_ms: int = 0
+    #: 差し込む尺（ミリ秒）
+    duration_ms: int = 0
+    source_kind: TimelineClipSource = "take"
+    source_id: str | None = None
+    #: ソースの中の切り出し開始位置（``out_ms`` は ``in_ms + duration_ms``）
+    in_ms: int = 0
+    text_payload: dict[str, Any] | None = None
+    #: 楽観ロック（:data:`BASE_REVISION_DOC`）
+    base_revision: int | None = None
+
+
 class TimelineExport(BaseModel):
     """書き出し 1 回（``outputs/exports/{id}/final.mp4``）。"""
 
@@ -3435,6 +3466,18 @@ class TimelineExport(BaseModel):
     #: ``/outputs/…`` の配信 URL（まだ無ければ None）
     output_url: str | None = None
     error: str | None = None
+    # --- 焼き上がりの規格と検算（Remotion の `FxOverlay` の base に渡すとき、
+    #     props と揃えるために要る。走り終わるまではどれも None） -------------
+    #: 実際に焼いた fps / 幅 / 高さ
+    fps: float | None = None
+    width: int | None = None
+    height: int | None = None
+    #: 焼き上がりの総フレーム数（``ffprobe -count_frames``）
+    frames: int | None = None
+    #: 焼き上がりの総尺（ミリ秒。``round(frames / fps * 1000)``）
+    duration_ms: int | None = None
+    #: 書き出しで気づいたこと（``PAD カット名 0.42s`` / フレーム数のずれ）
+    warnings: list[str] = Field(default_factory=list)
     created_at: str
     finished_at: str | None = None
 
@@ -3540,6 +3583,8 @@ class TimelineSyncAdded(BaseModel):
     take_id: str
     label: str = ""
     duration_ms: int = 0
+    #: カットの音源上の計画開始秒（None = 並び順で V1 の末尾へ）
+    planned_start_seconds: float | None = None
 
 
 class TimelineSyncRetaken(BaseModel):
@@ -3552,6 +3597,8 @@ class TimelineSyncRetaken(BaseModel):
     label: str = ""
     #: 新しいテイクの長さ（切り出しはここへ丸める）
     duration_ms: int | None = None
+    #: カットの音源上の計画開始秒（None = 置き場所は動かさない）
+    planned_start_seconds: float | None = None
 
 
 class TimelineSyncRemoved(BaseModel):

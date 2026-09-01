@@ -433,6 +433,24 @@ export default function ScriptView({
                   />
                   <FieldError message={errors.duration_seconds} />
                 </div>
+                <div className="space-y-1">
+                  <Label htmlFor="studio-shot-planned-start">
+                    計画開始秒（音源基準）
+                  </Label>
+                  <Input
+                    id="studio-shot-planned-start"
+                    className="tnum"
+                    type="number"
+                    min={0}
+                    step={0.1}
+                    placeholder="空欄 = 並び順で置く"
+                    value={form.planned_start_seconds}
+                    onChange={(event) =>
+                      patch({ planned_start_seconds: event.target.value })
+                    }
+                  />
+                  <FieldError message={errors.planned_start_seconds} />
+                </div>
               </div>
 
               <Field

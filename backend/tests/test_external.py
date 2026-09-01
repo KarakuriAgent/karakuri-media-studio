@@ -1614,6 +1614,24 @@ def test_a_timeline_can_be_built_edited_and_deleted(timeline_env):
     )
     assert overlapped.status_code == 400
 
+    # 差し込み: 下のクリップが前後に割れ、トラックの全長は変わらない
+    inserted = call(
+        env, "POST", f"/api/v1/timelines/{timeline_id}/clips/insert",
+        json={
+            "track_id": v1,
+            "start_ms": 500,
+            "duration_ms": 500,
+            "source_kind": "gap",
+            "source_id": None,
+        },
+    )
+    assert inserted.status_code == 200, inserted.text
+    clips = [t for t in inserted.json()["tracks"] if t["id"] == v1][0]["clips"]
+    assert [(c["start_ms"], c["duration_ms"]) for c in clips] == [
+        (0, 500), (500, 500), (1000, 1000), (2000, 1000)
+    ]
+    assert inserted.json()["duration_ms"] == 3000
+
     # 消せる（タイムラインは同じ話からいつでも組み直せるので外部にも開ける）
     assert call(env, "DELETE", f"/api/v1/timelines/{timeline_id}").status_code == 204
     assert call(env, "GET", f"/api/v1/timelines/{timeline_id}").status_code == 404

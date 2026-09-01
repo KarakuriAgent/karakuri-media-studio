@@ -23,6 +23,14 @@
 （``color``）と無音（``anullsrc``）を ``lavfi`` から作って充てる。全クリップが
 「映像 1 本 + 音声 1 本」になるので、繋ぎ方に関わらず形が揃う。
 
+**境界はすべてフレーム番号が正本**（:func:`frame_count`）。秒のまま切ると端数
+フレームが捨てられて連結後に映像が先走るので、各クリップは 1 フレームぶん余分に
+取ってから ``trim=end_frame=<枚数>`` でちょうどその枚数に切る。音も
+``apad`` + ``atrim`` で同じ長さへ揃える（映像と音の尺がずれたまま ``concat`` に
+渡さない）。素材の実尺が「切り出し位置 + 尺」に届かないクリップは
+``tpad=stop_mode=clone`` の末尾静止で埋め、どれだけ足りなかったかを
+:func:`pad_warnings` が ``PAD <クリップ名> <不足秒>s`` として返す。
+
 出力は H.264 + AAC / yuv420p / faststart で ``outputs/exports/{export_id}/final.mp4``
 （``/outputs`` で配信できる）。進捗は ``-progress pipe:1`` の ``out_time_us`` を
 読んで ``timeline_exports.progress`` に書き、WS（``type: "timeline_export"``）へ流す。
@@ -80,6 +88,11 @@ LOUDNORM_TARGET_LUFS = -14.0
 LOUDNORM_TRUE_PEAK_DB = -1.5
 LOUDNORM_RANGE = 11.0
 
+#: 末尾静止（``tpad``）に持たせる余裕（秒）。素材がちょうど足りている場合でも、
+#: 丸めで最後の 1 フレームが出ないことがあるので必ずこれだけは伸ばしておく
+#: （伸ばしたぶんは ``trim=end_frame`` で切り落とされるので害はない）。
+PAD_MARGIN_SECONDS = 0.25
+
 #: 縦横比が変わるときの収め方（黒帯 / 中央を切り出す）
 FIT_PAD = "pad"
 FIT_CROP = "crop"
@@ -122,6 +135,11 @@ class ExportClip:
     #: **前の**クリップとの繋ぎ（None = カット）
     transition_kind: str | None = None
     transition_ms: int = 0
+    #: ソースそのものの長さ（ミリ秒）。``out_ms`` に届かないときは末尾静止
+    #: （``tpad``）で埋めて :func:`pad_warnings` に出す。None = 測れていない
+    source_duration_ms: int | None = None
+    #: 警告に出すときの呼び名（カットの見出し。空なら通し番号で呼ぶ）
+    name: str = ""
 
     @property
     def overlap_ms(self) -> int:
@@ -172,14 +190,28 @@ class ExportSpec:
     loudnorm: bool = False
 
     @property
-    def duration_ms(self) -> int:
-        """繋ぎの重なりを引いたタイムラインの全長。"""
+    def total_frames(self) -> int:
+        """繋ぎの重なりを引いた**フレーム数**（焼き上がりの正本）。
+
+        クリップごとに :func:`frame_count` で量子化してから足し引きするので、
+        ここで出る枚数が ``ffprobe -count_frames`` の実測と一致するはず
+        （合わなければ :func:`frame_warning` が警告を出す）。
+        """
+        if self.fps <= 0:
+            return 0
         total = 0
         for index, clip in enumerate(self.clips):
-            total += max(0, clip.duration_ms)
+            total += frame_count(clip.duration_ms, self.fps)
             if index > 0:
-                total -= clip.overlap_ms
+                total -= frame_count(clip.overlap_ms, self.fps)
         return max(0, total)
+
+    @property
+    def duration_ms(self) -> int:
+        """繋ぎの重なりを引いたタイムラインの全長（フレーム数から逆算）。"""
+        if self.fps <= 0:
+            return 0
+        return int(round(self.total_frames / self.fps * 1000))
 
 
 # --------------------------------------------------------------------------
@@ -189,6 +221,62 @@ class ExportSpec:
 def _seconds(ms: int) -> str:
     """ミリ秒を ffmpeg のフィルタに書ける秒表記にする（小数 3 桁）。"""
     return f"{ms / 1000:.3f}"
+
+
+def frame_count(duration_ms: int, fps: float) -> int:
+    """ミリ秒をフレーム数へ量子化する（境界の正本。``round(t * fps)``）。
+
+    秒のまま ``-ss`` / ``-t`` に渡すと端数フレームが捨てられて、連結後に映像が
+    最大 2 フレーム先走る（BAN!BAN!BAN! で実測）。書き出しの長さに関わる計算は
+    すべてここを通してフレーム番号にしてから行う。
+    """
+    if fps <= 0:
+        raise TimelineExportError(f"fps が不正です: {fps}")
+    return max(0, int(round(max(0, duration_ms) / 1000 * fps)))
+
+
+def _frame_seconds(frames: int, fps: float) -> str:
+    """フレーム数を ffmpeg のフィルタに書ける秒表記にする（小数 6 桁）。
+
+    フレーム境界は 3 桁では割り切れない（1/30 秒 = 0.0333…）ので、秒表記へ
+    落とすところだけ桁を増やす。
+    """
+    return f"{frames / fps:.6f}"
+
+
+def shortfall_ms(clip: ExportClip) -> int:
+    """素材の実尺が「切り出し位置 + 尺」にどれだけ届いていないか（足りていれば 0）。
+
+    測れていない（``source_duration_ms`` が None）・隙間・静止画は 0。
+    """
+    if clip.path is None or clip.kind == "image" or clip.source_duration_ms is None:
+        return 0
+    return max(0, int(clip.out_ms) - int(clip.source_duration_ms))
+
+
+def pad_warnings(spec: ExportSpec) -> list[str]:
+    """末尾静止で埋めたクリップの警告（``PAD カット名 0.42s``）を並べる。
+
+    1 フレームぶんの不足は丸めの範囲なので黙って埋める（警告にしない）。
+    """
+    if spec.fps <= 0:
+        return []
+    frame_ms = 1000 / spec.fps
+    warnings: list[str] = []
+    for index, clip in enumerate(spec.clips):
+        short = shortfall_ms(clip)
+        if short <= frame_ms:
+            continue
+        name = clip.name or f"クリップ {index + 1}"
+        warnings.append(f"PAD {name} {short / 1000:.2f}s")
+    return warnings
+
+
+def frame_warning(expected: int, actual: int | None) -> str | None:
+    """焼き上がりの総フレーム数が計画と違ったときの警告（同じなら None）。"""
+    if actual is None or actual == expected:
+        return None
+    return f"フレーム数が計画と違います（計画 {expected}f / 実測 {actual}f）"
 
 
 def _fps(value: float) -> str:
@@ -312,41 +400,56 @@ def _add_clip(
     position: int,
     width: int,
     height: int,
-    fps: str,
+    fps_value: float,
     fit: str,
 ) -> tuple[str, str]:
-    """クリップ 1 つを規格へ正規化して ``(映像ラベル, 音声ラベル)`` を返す。"""
-    duration = _seconds(clip.duration_ms)
+    """クリップ 1 つを規格へ正規化して ``(映像ラベル, 音声ラベル)`` を返す。
+
+    尺の正本はフレーム数（:func:`frame_count`）。**1 フレームぶん余分に取ってから
+    ``trim=end_frame`` でちょうどその枚数に切る**ので、端数フレームが捨てられて
+    連結後に先走ることがない。音も同じ長さへ ``apad`` + ``atrim`` で揃える。
+    """
+    fps = _fps(fps_value)
+    frames = frame_count(clip.duration_ms, fps_value)
+    duration = _frame_seconds(frames, fps_value)
+    # 余分に取ったぶんを落として、ちょうど frames 枚にする最後の段
+    exact = f"trim=end_frame={frames},setpts=PTS-STARTPTS"
     video_label = f"v{position}"
     audio_label = f"a{position}"
     scale = _scale_chain(width, height, fit)
 
     if clip.path is None:
-        # 隙間: 黒 + 無音をその尺ぶん作る（ソースが無いので trim は要らない）。
+        # 隙間: 黒 + 無音をその尺ぶん作る（ソースが無いので切り出しは要らない）。
         index = graph.add_input(
             "-f", "lavfi",
-            "-t", duration,
+            "-t", _frame_seconds(frames + 1, fps_value),
             "-i", f"color=c=black:s={width}x{height}:r={fps}",
         )
-        graph.filters.append(f"[{index}:v]setsar=1[{video_label}]")
+        graph.filters.append(f"[{index}:v]setsar=1,{exact}[{video_label}]")
         graph.silence(duration, audio_label)
         return video_label, audio_label
 
     if clip.kind == "image":
         # 静止画: ``-loop 1`` で尺ぶんの映像にしてから規格へ。音は必ず無音。
         index = graph.add_input(
-            "-loop", "1", "-t", duration, "-i", str(clip.path)
+            "-loop", "1", "-t", _frame_seconds(frames + 1, fps_value),
+            "-i", str(clip.path),
         )
         graph.filters.append(
-            f"[{index}:v]{scale},setsar=1,fps={fps},setpts=PTS-STARTPTS"
-            f"[{video_label}]"
+            f"[{index}:v]{scale},setsar=1,fps={fps},{exact}[{video_label}]"
         )
         graph.silence(duration, audio_label)
         return video_label, audio_label
 
     source_index = graph.add_input("-i", str(clip.path))
-    start, end = _seconds(clip.in_ms), _seconds(clip.out_ms)
     speed = float(clip.speed or 1.0)
+    start = _seconds(clip.in_ms)
+    # 出口は ``out_ms`` ではなくフレーム数から逆算する（丸めた尺をそのまま渡すと
+    # 最後の 1 フレームが落ちる）。素材側は速度ぶん伸びるので掛け戻す。
+    end = f"{(clip.in_ms + (frames + 1) / fps_value * 1000 * speed) / 1000:.3f}"
+    # 素材が足りないぶんは末尾フレームの静止（tpad）で埋める。足りていても
+    # 丸めのぶんだけは伸ばしておく（余りは exact が切り落とす）。
+    stop = shortfall_ms(clip) / 1000 + PAD_MARGIN_SECONDS
     # 切り出し -> タイムラインの解像度へ収める -> SAR と fps を揃える。
     # 既定（pad）は force_original_aspect_ratio=decrease + pad なので、比の違う
     # ソースは切らずに黒帯が付く（crop を選べば中央を切り出す）。
@@ -357,12 +460,17 @@ def _add_clip(
         f"[{source_index}:v]trim=start={start}:end={end},"
         f"setpts={setpts},"
         f"{scale},"
-        f"setsar=1,fps={fps}[{video_label}]"
+        f"setsar=1,fps={fps},"
+        f"tpad=stop_mode=clone:stop_duration={stop:.3f},"
+        f"{exact}[{video_label}]"
     )
 
     if clip.has_audio:
+        # 音は素材の尺ぶんだけ切り出し、足りなければ無音で埋めてから映像と
+        # 同じ長さに切る（映像と音の長さが違うまま concat に渡さない）。
+        audio_end = f"{(clip.in_ms + frames / fps_value * 1000 * speed) / 1000:.3f}"
         chain = (
-            f"[{source_index}:a]atrim=start={start}:end={end},"
+            f"[{source_index}:a]atrim=start={start}:end={audio_end},"
             f"asetpts=PTS-STARTPTS,"
             f"aresample={AUDIO_RATE},"
             f"aformat=sample_fmts=fltp:channel_layouts={AUDIO_LAYOUT}"
@@ -373,6 +481,7 @@ def _add_clip(
                     chain += f",atempo={_number(factor)}"
         if clip.gain_db:
             chain += f",volume={clip.gain_db:g}dB"
+        chain += f",apad=whole_dur={duration},atrim=end={duration},asetpts=PTS-STARTPTS"
         graph.filters.append(f"{chain}[{audio_label}]")
     else:
         # 音声を持たないソース。繋ぎ方に関わらず全クリップに同じ本数の
@@ -417,9 +526,9 @@ def build_command(spec: ExportSpec, output: str | Path) -> list[str]:
     fit = spec.fit if spec.fit in (FIT_PAD, FIT_CROP) else FIT_PAD
     graph = _Graph()
 
-    # 1) クリップごとに規格へ正規化する。
+    # 1) クリップごとに規格へ正規化する（尺はフレーム数へ量子化される）。
     labels = [
-        _add_clip(graph, clip, position, width, height, fps, fit)
+        _add_clip(graph, clip, position, width, height, spec.fps, fit)
         for position, clip in enumerate(clips)
     ]
 
@@ -451,25 +560,33 @@ def build_command(spec: ExportSpec, output: str | Path) -> list[str]:
         )
         for number, run in enumerate(runs)
     ]
+    # 重なりと offset もフレーム数で数える（クリップ側の量子化と揃えないと、
+    # 繋ぎのあるタイムラインだけ全長が 1 フレームずれる）。
+    overlap_frames = [frame_count(overlap, spec.fps) for overlap in overlaps]
     run_durations = [
-        sum(clips[position].duration_ms for position in run) for run in runs
+        sum(frame_count(clips[position].duration_ms, spec.fps) for position in run)
+        for run in runs
     ]
-    offsets, _total = transition_offsets(run_durations, overlaps)
+    offsets, _total = transition_offsets(run_durations, overlap_frames)
 
     # 3) まとまりどうしを xfade / acrossfade で重ねていく。
     video_label, audio_label = run_labels[0]
-    for number, (offset, overlap) in enumerate(zip(offsets, overlaps), start=1):
+    for number, (offset, overlap) in enumerate(
+        zip(offsets, overlap_frames), start=1
+    ):
         kind = TRANSITIONS[clips[runs[number][0]].transition_kind or ""]
         next_video, next_audio = run_labels[number]
         merged_video, merged_audio = f"x{number}v", f"x{number}a"
         graph.filters.append(
             f"[{video_label}][{next_video}]xfade=transition={kind}"
-            f":duration={_seconds(overlap)}:offset={_seconds(offset)}"
+            f":duration={_frame_seconds(overlap, spec.fps)}"
+            f":offset={_frame_seconds(offset, spec.fps)}"
             f"[{merged_video}]"
         )
         graph.filters.append(
             f"[{audio_label}][{next_audio}]"
-            f"acrossfade=d={_seconds(overlap)}:c1=tri:c2=tri[{merged_audio}]"
+            f"acrossfade=d={_frame_seconds(overlap, spec.fps)}"
+            f":c1=tri:c2=tri[{merged_audio}]"
         )
         video_label, audio_label = merged_video, merged_audio
 
@@ -535,6 +652,10 @@ def build_command(spec: ExportSpec, output: str | Path) -> list[str]:
     if audio_label != "outa":
         graph.filters.append(f"[{audio_label}]anull[outa]")
 
+    # 出力そのものもフレーム数で締める（フィルタ側で 1 枚多く出ても、
+    # ここで計画どおりの枚数に落ちる）。
+    total_frames = spec.total_frames
+
     return [
         FFMPEG,
         "-hide_banner",
@@ -550,6 +671,7 @@ def build_command(spec: ExportSpec, output: str | Path) -> list[str]:
         *VIDEO_CODEC[1:],
         "-pix_fmt", "yuv420p",
         "-r", fps,
+        *(("-frames:v", str(total_frames)) if total_frames > 0 else ()),
         "-c:a", "aac",
         "-b:a", AUDIO_BITRATE,
         "-movflags", "+faststart",
