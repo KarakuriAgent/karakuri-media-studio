@@ -205,6 +205,11 @@ CREATE TABLE IF NOT EXISTS studio_shots (
   -- 音源上の計画開始秒（NULL = 並び順で置く従来どおり）。MV のように音に映像を
   -- 合わせる制作でだけ使い、タイムラインの sync がこの秒へカットを置く。
   planned_start_seconds REAL,
+  -- タイムラインの自動配置での扱い（SPEC §7.3）。
+  --   auto        … 今までどおり自動配置・sync の対象
+  --   insert_only … 差し込み（clips/insert）専用。自動配置にも sync にも出さない
+  --   skip        … このタイムラインでは使わない（同上）
+  timeline_role        TEXT NOT NULL DEFAULT 'auto',
   prompt               TEXT NOT NULL DEFAULT '',   -- `@素材名` メンション可
   status               TEXT NOT NULL DEFAULT 'draft',
   selected_take_id     TEXT,                       -- 採用した Take（FK は張らない: 相互参照になるため）
@@ -261,6 +266,13 @@ CREATE TABLE IF NOT EXISTS studio_timelines (
   fps         REAL NOT NULL DEFAULT 24,    -- 書き出しの規格（クリップはここへ揃える）
   width       INTEGER NOT NULL DEFAULT 1280,
   height      INTEGER NOT NULL DEFAULT 720,
+  -- 音源基準の配置で計画秒どうしの隙間をどう埋めるか（SPEC §7.3）。
+  --   clone … 前のクリップを末尾静止で伸ばす（既定。MV では黒コマが事故になる）
+  --   black … gap クリップ（黒＋無音）で埋める（従来の挙動）
+  gap_fill    TEXT NOT NULL DEFAULT 'clone',
+  -- 音源の尺（秒）。自動配置の最後のクリップをここで締める（NULL = A1 の
+  -- 最初の音声クリップ、それも無ければ Take の尺いっぱい）
+  planned_end_seconds REAL,
   created_at  TEXT NOT NULL,
   updated_at  TEXT NOT NULL
 );
@@ -504,6 +516,9 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         ("scene_id", "TEXT"),
         # 音源上の計画開始秒。既存行は NULL = 今までどおり並び順で置く。
         ("planned_start_seconds", "REAL"),
+        # タイムラインの自動配置での扱い（auto / insert_only / skip）。既存行は
+        # 'auto' = 今までどおり自動配置・sync の対象。
+        ("timeline_role", "TEXT NOT NULL DEFAULT 'auto'"),
         # Shot ごとの生成設定。既存行は NULL = 今までどおり JobCreate の既定値。
         ("aspect_ratio", "TEXT"),
         ("megapixels", "REAL"),
@@ -518,6 +533,14 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         ("english_source", "TEXT NOT NULL DEFAULT ''"),
         ("english_status", "TEXT NOT NULL DEFAULT ''"),
         ("english_error", "TEXT NOT NULL DEFAULT ''"),
+    ],
+    "studio_timelines": [
+        # 計画秒どうしの隙間の埋め方（clone / black）。既存のタイムラインも
+        # 既定 'clone' = 前のクリップを末尾静止で伸ばす（黒コマを作らない）。
+        ("gap_fill", "TEXT NOT NULL DEFAULT 'clone'"),
+        # 音源の尺（秒）。既存のタイムラインは NULL = 今までどおり Take の尺で
+        # 最後のクリップが終わる。
+        ("planned_end_seconds", "REAL"),
     ],
     "timeline_clips": [
         # リタイム（フェーズ 3）。既存のクリップは 1.0 = 等速のまま。

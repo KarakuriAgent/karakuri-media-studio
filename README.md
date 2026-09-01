@@ -110,6 +110,28 @@ MV やモーショングラフィックスを焼く Remotion プロジェクト�
 > しているのはこのためです。有効にする前に
 > <https://www.remotion.dev/license> を確認し、条件を満たすことを確かめてください。
 
+### 音源解析（歌詞つき MV。オプトイン）
+
+MV の秒（歌詞のアライン・onset・ビート）を出す音源解析（`mode: "audio_analysis"`）は、
+重い依存（torch / faster-whisper / stable-ts / librosa）を使うのでアプリの環境とは
+**別の venv** で回します。
+
+```bash
+python3.12 -m venv .venv-audio
+.venv-audio/bin/pip install -r backend/requirements-optional.txt
+```
+
+作ったら設定の「接続 / Grok」タブの `audio_analysis_python` に **その venv の python の
+絶対パス**（例 `/path/to/video-studio/.venv-audio/bin/python`）を入れて保存します。
+空のままだとアプリ自身の python で回そうとして、依存が無ければ 400 で断ります。
+
+Docker で動かしている場合は、その venv が**コンテナの中でも同じ絶対パスで見えている**
+必要があります。リポジトリの中（上の例の `.venv-audio/`）に作れば `.:${PWD}` の
+マウントで既に見えているので、そのままで動きます。外に置くときは
+`docker-compose.yml` のコメントアウトしてある `AUDIO_ANALYSIS_VENV` の行を有効にして、
+`.env` に `AUDIO_ANALYSIS_VENV=/path/to/venv` を書いてください（マウント先はホストと
+同じ絶対パスです）。
+
 `run.sh` を使わず手で起動する場合:
 
 ```bash

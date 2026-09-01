@@ -127,6 +127,30 @@ def check_category(value: object) -> LibraryCategory | None:
     return text  # type: ignore[return-value]
 
 
+def detect_kind(filename: str, content_type: str | None = None) -> str:
+    """ファイル名（と MIME）から棚の種別を当てる（当たらなければエラー）。
+
+    まず拡張子を :data:`ALLOWED_EXT` と突き合わせ、当たらなければ MIME の頭
+    （``image/`` / ``audio/`` / ``video/``）で決める。``POST /library/upload``
+    のように「kind を書かずに投げたい」入り口のためのもので、種別が決まった
+    あとの拡張子の検査（:func:`check_extension`）はそのまま通る。
+    """
+    ext = Path(filename or "").suffix.lower()
+    for kind in KINDS:
+        if ext in ALLOWED_EXT[kind]:
+            return kind
+    head = (content_type or "").split("/")[0].strip().lower()
+    if head in KINDS:
+        return head
+    shown_ext = ext or "なし"
+    shown_mime = content_type or "なし"
+    raise LibraryError(
+        f"ファイルの種別が分かりません（拡張子 '{shown_ext}'"
+        f" / MIME '{shown_mime}'）。"
+        "image / video / audio のいずれかの拡張子を付けて送ってください"
+    )
+
+
 def check_extension(kind: str, suffix: str) -> str:
     ext = suffix.lower()
     if ext not in ALLOWED_EXT[kind]:

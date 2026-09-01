@@ -7,6 +7,8 @@
 #   studio.sh POST /jobs @/path/to/body.json
 #   studio.sh PATCH /shots/<id> '{"prompt":"…","base_revision":12}'
 #   studio.sh DELETE /takes/<id>
+#   studio.sh upload /library/audio file=@/path/to/ban.wav [name=BAN …]
+#                                               multipart (curl -F) で送る
 #   studio.sh wait-job <job_id> [interval_sec]   ジョブの完了まで待つ (既定 10 秒)
 #   studio.sh wait-export <export_id> [interval_sec]
 #
@@ -100,6 +102,37 @@ call() {
   return 1
 }
 
+# multipart (curl -F) で 1 回叩く。$1 パス / $2… は field=value か field=@file。
+# ファイルの中身もキーもログに出さない（-F の指定だけを curl に渡す）。
+form() {
+  local path="$1"; shift
+  local tmp status field
+  [[ "$path" == /* ]] || path="/$path"
+  [[ "$path" == /api/v1/* ]] || path="/api/v1$path"
+  local -a args=(-sS -X POST -H "X-API-Key: $KEY" -H "Accept: application/json")
+  for field in "$@"; do
+    [[ "$field" == *=* ]] || die "フィールドは field=value か field=@file の形で: $field"
+    # file=@/path の実体だけは先に確かめる（curl のエラーは分かりにくいので）
+    if [[ "${field#*=}" == @* ]]; then
+      local local_path="${field#*=@}"
+      [[ -f "$local_path" ]] || die "ファイルが見つかりません: $local_path"
+    fi
+    args+=(-F "$field")
+  done
+  tmp="$(mktemp)"
+  args+=(-o "$tmp" -w '%{http_code}')
+  status="$(curl "${args[@]}" "$BASE$path" 2>&1)" || {
+    rm -f "$tmp"
+    die "接続できません ($BASE$path)。アプリが起動していなければ $REPO/run.sh を実行してください。"
+  }
+  pretty < "$tmp"
+  rm -f "$tmp"
+  case "$status" in
+    2*) printf -- '-> %s\n' "$status" >&2; return 0 ;;
+    *)  printf 'studio.sh: HTTP %s\n' "$status" >&2; return 1 ;;
+  esac
+}
+
 # $1 パス / $2 終端状態の正規表現 / $3 間隔秒
 poll() {
   local path="$1" terminal="$2" interval="$3" out status
@@ -124,7 +157,7 @@ except Exception:
 
 case "${1:-}" in
   ""|-h|--help)
-    sed -n '2,23p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
     exit 0 ;;
   wait-job)
     [[ -n "${2:-}" ]] || die "使い方: studio.sh wait-job <job_id> [interval_sec]"
@@ -132,9 +165,14 @@ case "${1:-}" in
   wait-export)
     [[ -n "${2:-}" ]] || die "使い方: studio.sh wait-export <export_id> [interval_sec]"
     poll "/exports/$2" '^(done|failed)$' "${3:-10}" ;;
+  upload)
+    [[ -n "${2:-}" && -n "${3:-}" ]] ||
+      die "使い方: studio.sh upload <path> file=@<local> [field=value …]"
+    path="$2"; shift 2
+    form "$path" "$@" ;;
   GET|POST|PATCH|PUT|DELETE|HEAD)
     [[ -n "${2:-}" ]] || die "使い方: studio.sh $1 <path> [json|@file]"
     call "$1" "$2" "${3:-}" ;;
   *)
-    die "不明なコマンド '$1'（GET/POST/PATCH/PUT/DELETE か wait-job / wait-export）" ;;
+    die "不明なコマンド '$1'（GET/POST/PATCH/PUT/DELETE か upload / wait-job / wait-export）" ;;
 esac

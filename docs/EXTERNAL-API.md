@@ -39,10 +39,10 @@
 | 素材（World Bible） | `POST /projects/{id}/assets`（JSON / multipart）・`assets/from-job`・`PATCH/DELETE /assets/{id}`・素材のリファレンス（`/assets/{id}/files`・`DELETE /asset-files/{id}`） |
 | 生成と Take | `POST /shots/{id}/render`・`GET /shots/{id}/takes`・`POST /takes/{id}/select`・`reject`・`cancel`・`DELETE /takes/{id}` |
 | 汎用ジョブ | `GET/POST /jobs`・`GET /jobs/{id}`・`POST /jobs/{id}/cancel`・`rerun`・`continue` |
-| ライブラリ | `GET /library`・`POST /library/image`（multipart）・`POST /library/from-job`・`POST /library/sheet`・`POST /library/{id}/key`・`POST /library/key`・`POST /library/key-from-job`・`PATCH /library/{id}`（**削除は非公開**） |
+| ライブラリ | `GET /library`・`POST /library/image` / `POST /library/audio` / `POST /library/upload`（multipart）・`POST /library/from-job`・`POST /library/sheet`・`POST /library/{id}/key`・`POST /library/key`・`POST /library/key-from-job`・`PATCH /library/{id}`（**削除は非公開**） |
 | 素材の下ごしらえ | `POST /images/text`・`GET /images/text/fonts`・`POST /videos/contact-sheet`（§3.4） |
 | 編集（タイムライン） | `POST /projects/{id}/timelines`・`GET/PATCH/DELETE /timelines/{id}`・`PUT /timelines/{id}/clips`・`POST /timelines/{id}/clips/insert`・トラック CRUD・`generate-subtitles`・`sync-preview` / `sync`・`missing` / `missing/resolve`・`GET /projects/{id}/media` |
-| 書き出し | `POST /timelines/{id}/export`（202）・`GET /exports/{id}`・`POST /exports/{id}/save-to-library` |
+| 書き出し | `POST /timelines/{id}/export`（202）・`GET /timelines/{id}/exports`・`GET /exports/{id}`・`POST /exports/{id}/save-to-library` |
 | 編集履歴 | `GET /projects/{id}/revisions`・`GET .../{seq}/diff`・`POST .../{seq}/restore`（§3.1） |
 | 画面 | `GET/PATCH /ui/generate-form`・`POST /ui/navigate`（§3.2） |
 | Remotion | `GET /remotion/compositions`（§3.3） |
@@ -318,7 +318,11 @@ POST /api/v1/jobs  {"mode": "remotion", "remotion_composition": "Opening",
 （MV・モーショングラフィックス）でだけ使う（SPEC §7.3「音源基準の配置」）。
 
 ```
+POST  /api/v1/library/audio         multipart（file=@ban.wav）→ 棚の音源（A1 に置く）
+POST  /api/v1/projects/{id}/timelines
+      {"episode_id":"…","planned_end_seconds":193.48}
 PATCH /api/v1/shots/{id}            {"planned_start_seconds": 16.6}
+PATCH /api/v1/shots/{id}            {"timeline_role": "insert_only"}
 POST  /api/v1/timelines/{id}/sync   {}
 POST  /api/v1/timelines/{id}/clips/insert
       {"track_id":"…","start_ms":43900,"duration_ms":1500,
@@ -326,17 +330,29 @@ POST  /api/v1/timelines/{id}/clips/insert
 POST  /api/v1/timelines/{id}/export {}
 GET   /api/v1/exports/{id}          → {"fps":24,"width":1280,"height":720,
                                        "frames":4728,"duration_ms":197000,"warnings":[]}
+GET   /api/v1/timelines/{id}/exports → 上の履歴（id を控え損ねたときの拾い先）
 ```
 
-1. カットに **音源上の開始秒**（`planned_start_seconds`）を書く。音源解析の結果
+1. **音源は `POST /library/audio`（multipart）で棚に入れる**。タイムラインに置けるのは
+   棚の音だけで、作品の素材（`assets`）に上げた音は素材ビンに出てこない。返った `id` を
+   `PUT /clips` の `source_kind: "library"` / `source_id` に渡して A1 へ置く
+2. カットに **音源上の開始秒**（`planned_start_seconds`）を書く。音源解析の結果
    （歌詞のアライン・onset・ビート）から出した秒で、**決め打ちしない**
-2. `POST /timelines/{id}/sync` を 1 回。計画秒つきのカットはその位置に置かれ、空いた
-   ところは `gap`（黒＋無音）で埋まる。尺は次の計画秒までを上限に Take の尺で切られ、
-   **採用 Take を差し替えても同じ秒へ置き直される**。計画秒を持たないカットは今までどおり
-   末尾へ詰む。`planned_start_seconds` に `null` を送れば並び順に戻る
-3. 短いカットを割り込ませたいときは `clips/insert`。下のクリップが前後に割れるだけで
-   **トラックの全長は変わらない**（`base_revision` を添えれば楽観ロック）
-4. `POST /timelines/{id}/export` → `GET /exports/{id}`。焼き上がりの
+3. `POST /timelines/{id}/sync` を 1 回。計画秒つきのカットはその位置に置かれ、素材が
+   計画尺に届かないぶんは**前のカットの末尾静止で埋まる**（タイムラインの
+   `gap_fill`。既定 `clone`。書き出しの `warnings` に `PAD …` が出る。`black` にすると
+   今までどおり黒＋無音の `gap`）。**採用 Take を差し替えても同じ秒へ置き直される**。
+   計画秒を持たないカットは今までどおり末尾へ詰む。`planned_start_seconds` に `null` を
+   送れば並び順に戻る
+4. 最後のカットは**音源の尺で締まる**（タイムラインの `planned_end_seconds` → 無ければ
+   A1 の最初のクリップの終わり → それも無ければ Take の尺）。曲より長い尻尾を残さない
+5. 差し込み専用のカット（決めポーズなど計画秒を持たないもの）は
+   `PATCH /shots/{id}` で `timeline_role: "insert_only"` にする。自動配置にも
+   `sync-preview` にも出てこなくなり、末尾へ押し出されない
+6. 短いカットを割り込ませたいときは `clips/insert`。下のクリップが前後に割れるだけで
+   **トラックの全長は変わらない**（`base_revision` を添えれば楽観ロック）。
+   **差し込みは `sync` を済ませてから**（`sync` は並べ直しなので、順番が逆だと手間が増える）
+7. `POST /timelines/{id}/export` → `GET /exports/{id}`。焼き上がりの
    `fps` / `width` / `height` / `frames` / `duration_ms` が返るので、そのまま Remotion の
    `FxOverlay` の `base`（`{"src": "<output_url>", …}`）と props の規格に使う。
    素材が足りずに末尾静止で埋めたところは `warnings` に `PAD <カット> <不足秒>s`、
@@ -402,6 +418,8 @@ GET /api/v1/jobs/{id}   → {"status": "done",
 
 ```
 POST /api/v1/library/image          multipart（file / name / tags / category / nsfw）
+POST /api/v1/library/audio          multipart（同上。MV の音源はここから入れる）
+POST /api/v1/library/upload         multipart（kind は拡張子 / MIME で自動判定）
 POST /api/v1/library/{id}/key       {"method":"black","tolerance":0.1,"trim":true}
 POST /api/v1/library/key            {"source":{"path":"/assets/image/logo.png"},"method":"white"}
 POST /api/v1/library/key-from-job   {"job_id":"…","source":"image","method":"black"}
@@ -410,10 +428,12 @@ POST /api/v1/images/text            {"text":"撃ち抜け","size":220,"outline":
 POST /api/v1/videos/contact-sheet   {"source":{"job_id":"…"},"seconds":[43.9,44.2],"columns":4}
 ```
 
-- **手持ちの画像の登録**（`library/image`）… multipart（`file`）で棚に入れる。
-  `name`（空なら元のファイル名）/ `tags`（カンマ区切り）/ `category` / `nsfw` を
-  フォームで添えられる。**Docker で動かしているアプリにはホストの絶対パスは
-  見えない**ので、手元のファイルを渡すときはこちらを使う。
+- **手持ちのファイルの登録**（`library/image` / `library/audio` / `library/upload`）…
+  multipart（`file`）で棚に入れる。`name`（空なら元のファイル名）/ `tags`（カンマ区切り）
+  / `category` / `nsfw` をフォームで添えられる。**Docker で動かしているアプリにはホストの
+  絶対パスは見えない**ので、手元のファイルを渡すときはこちらを使う
+  （`scripts/studio.sh upload /library/audio file=@ban.wav`）。種別を書きたくない
+  ときは `library/upload`（拡張子 → MIME の順で image / video / audio に振り分ける）。
 
 - **透過キー**（`library/{id}/key`）… 棚の画像の背景を抜いて、**新しいライブラリ
   項目**（RGBA PNG、タグ `sprite`、`source: "sprite"`）にする。元の素材は触らない。

@@ -2473,6 +2473,14 @@ ASSET_FILE_ROLE_KINDS: dict[str, str] = {
 #: Shot の進み具合（'draft' = 執筆中 / 'ready' = 生成してよい / 'done' = 採用済み）
 StudioShotStatus = Literal["draft", "ready", "done"]
 
+#: Shot をタイムラインの自動配置でどう扱うか（SPEC §7.3）。
+#:
+#: - ``auto``: 今までどおり自動配置・``sync`` の対象
+#: - ``insert_only``: 差し込み（``POST /clips/insert``）専用。計画秒を持たない
+#:   カットが末尾へ押し出されるのを防ぐため、自動配置にも差分にも出さない
+#: - ``skip``: このタイムラインでは使わない（同上）
+StudioTimelineRole = Literal["auto", "insert_only", "skip"]
+
 #: Take の状態。'rendering' / 'failed' はジョブから導出した値で、DB に残るのは
 #: 人が決めた 'selected' / 'rejected' だけ（:mod:`app.studio`）。
 StudioTakeStatus = Literal["rendering", "candidate", "selected", "rejected", "failed"]
@@ -2983,6 +2991,9 @@ class StudioShot(BaseModel):
     #: 「音に映像を合わせる」制作でだけ使い、タイムラインの sync がこの秒へ
     #: カットを置く（SPEC §7.3「音源基準の配置」）。通常のドラマ制作では使わない
     planned_start_seconds: float | None = None
+    #: タイムラインの自動配置での扱い（``insert_only`` / ``skip`` は自動配置・
+    #: ``sync`` の対象から外れる。差し込み専用のカット用、SPEC §7.3）
+    timeline_role: StudioTimelineRole = "auto"
     #: 生成プロンプトの本文（`@素材名` メンション可）
     prompt: str = ""
     status: StudioShotStatus = "draft"
@@ -3025,6 +3036,8 @@ class StudioShotCreate(BaseModel):
     duration_seconds: float = 5.0
     #: 音源上の計画開始秒（None = 並び順で置く従来どおり）
     planned_start_seconds: float | None = None
+    #: タイムラインの自動配置での扱い（``auto`` / ``insert_only`` / ``skip``）
+    timeline_role: StudioTimelineRole = "auto"
     prompt: str = ""
     status: StudioShotStatus = "draft"
     carry_over_end_frame: bool = False
@@ -3054,6 +3067,8 @@ class StudioShotUpdate(_StudioUpdate):
     duration_seconds: float | None = None
     #: 音源上の計画開始秒（**null を明示すると外れる** = 並び順に戻る）
     planned_start_seconds: float | None = None
+    #: タイムラインの自動配置での扱い（``auto`` / ``insert_only`` / ``skip``）
+    timeline_role: StudioTimelineRole | None = None
     prompt: str | None = None
     status: StudioShotStatus | None = None
     carry_over_end_frame: bool | None = None
@@ -3381,6 +3396,13 @@ TimelineClipSource = Literal[
     "take", "asset_file", "library", "job", "image", "text", "gap"
 ]
 
+#: 音源基準の配置で、計画秒どうしの隙間の埋め方（SPEC §7.3）。
+#:
+#: - ``clone``: 前のクリップを計画尺まで伸ばす（書き出しが末尾静止で埋め、
+#:   ``PAD`` 警告を出す）。MV では黒コマが事故になるのでこちらが既定
+#: - ``black``: ``gap`` クリップ（黒＋無音）で埋める
+TimelineGapFill = Literal["clone", "black"]
+
 #: 繋ぎの種別（ffmpeg の ``xfade`` にマップする。:data:`app.timeline_export.TRANSITIONS`）
 TimelineTransitionKind = Literal[
     "crossfade",
@@ -3419,6 +3441,12 @@ class StudioTimeline(BaseModel):
     fps: float = 24.0
     width: int = 1280
     height: int = 720
+    #: 音源基準の配置で、計画秒どうしの隙間をどう埋めるか（SPEC §7.3）。
+    #: ``clone`` = 前のクリップを末尾静止で伸ばす（既定）/ ``black`` = 黒＋無音
+    gap_fill: TimelineGapFill = "clone"
+    #: 音源の尺（秒）。自動配置の最後のクリップをここで締める
+    #: （None = A1 の最初の音声クリップ、それも無ければ Take の尺いっぱい）
+    planned_end_seconds: float | None = None
     created_at: str
     updated_at: str
 
@@ -3436,6 +3464,10 @@ class StudioTimelineCreate(BaseModel):
     fps: float | None = None
     width: int | None = None
     height: int | None = None
+    #: 計画秒どうしの隙間の埋め方（省略すると ``clone``）
+    gap_fill: TimelineGapFill | None = None
+    #: 音源の尺（秒）。自動配置の最後のクリップをここで締める
+    planned_end_seconds: float | None = None
 
 
 class StudioTimelineUpdate(BaseModel):
@@ -3445,6 +3477,9 @@ class StudioTimelineUpdate(BaseModel):
     fps: float | None = None
     width: int | None = None
     height: int | None = None
+    gap_fill: TimelineGapFill | None = None
+    #: 音源の尺（秒）。``0`` 以下を送ると外れる（= Take の尺いっぱいに戻る）
+    planned_end_seconds: float | None = None
 
 
 class TimelineClip(BaseModel):

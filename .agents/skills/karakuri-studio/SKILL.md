@@ -33,6 +33,7 @@ description: Karakuri Media Studio（動画・画像・音声生成スタジオ�
 scripts/studio.sh GET /projects
 scripts/studio.sh POST /projects '{"name":"新作","auto_translate":true}'
 scripts/studio.sh PATCH /shots/<id> '{"prompt":"…","base_revision":12}'
+scripts/studio.sh upload /library/audio file=@/path/to/ban.wav name=BAN  # multipart
 scripts/studio.sh wait-job <job_id> [interval_sec]     # 完了まで待つ（既定 10 秒）
 scripts/studio.sh wait-export <export_id> [interval_sec]
 ```
@@ -194,6 +195,20 @@ scripts/studio.sh wait-export <export_id> [interval_sec]
 `duration_ms` と `warnings` が入る。`warnings` の `PAD <カット> <不足秒>s` は
 「素材が足りずに末尾を静止で埋めた」印なので、気になるならそのカットを焼き直す。
 
+**運用の注意（音源基準で組むときは特に）**
+
+- **差し込み（`clips/insert`）は `sync` を済ませてから**。`sync` は並べ直しなので、
+  先に差し込むと二度手間になる。差し込み専用のカットは
+  `PATCH /shots/{id}` で `timeline_role: "insert_only"` にしておく
+  （自動配置にも `sync-preview` にも出てこなくなる）
+- **`POST /export` が返す `id` を控える**。控え損ねたら
+  `GET /timelines/{id}/exports`（新しい順）から拾う
+- **書き出したら `frames` を検算する**: `round(音源の尺 * fps)` と突き合わせて、
+  合わなければ音とずれている（`warnings` にも「フレーム数が計画と違います」が出る）
+- **音源は `POST /library/audio`（multipart）で棚に入れて A1 に置く**。
+  タイムラインに置けるのは棚の音だけで、作品の素材（`assets`）に上げた音は
+  素材ビンに出てこない（`scripts/studio.sh upload /library/audio file=@ban.wav`）
+
 ### 音源解析（歌詞つきの MV。指示があったときだけ）
 
 **通常のドラマ制作からは呼ばない。** 歌詞つきの MV・モーショングラフィックスを
@@ -231,13 +246,21 @@ POST /jobs {"mode":"audio_analysis",
 音に映像を合わせる制作（MV・モーショングラフィックス）で、しかも秒が音源解析から
 出せるときだけ:
 
+0. 音源を `POST /library/audio` で棚に入れ、A1（`POST /timelines/{id}/tracks`）へ
+   `source_kind: "library"` のクリップとして置く
 1. `PATCH /shots/{id}` の `planned_start_seconds` に**音源上の開始秒**を書く
-   （秒は決め打ちせず、歌詞のアライン・onset・ビートから出す。`null` で解除）
+   （秒は決め打ちせず、歌詞のアライン・onset・ビートから出す。`null` で解除）。
+   計画秒を持たない差し込み用のカットは `timeline_role: "insert_only"` にする
 2. `POST /timelines/{id}/sync` を 1 回。計画秒つきのカットはその位置に置かれ、
-   空いたところは `gap`（黒）で埋まる。採用 Take を差し替えても同じ秒へ置き直る
-3. 短いカットを割り込ませるなら `POST /timelines/{id}/clips/insert`
-   （下のクリップが前後に割れるだけで、トラックの全長は変わらない）
-4. `POST /timelines/{id}/export` の結果（`/outputs/exports/{id}/final.mp4`）を
+   素材が足りないぶんは**前のカットの末尾静止で埋まる**（黒コマは作らない。
+   書き出しの `warnings` に `PAD …` が出る。黒で埋めたいときはタイムラインの
+   `gap_fill: "black"`）。採用 Take を差し替えても同じ秒へ置き直る
+3. 最後のカットは音源の尺で締まる（タイムラインの `planned_end_seconds` →
+   無ければ A1 の最初のクリップの終わり）。曲より長い尻尾を残さない
+4. 短いカットを割り込ませるなら `POST /timelines/{id}/clips/insert`
+   （下のクリップが前後に割れるだけで、トラックの全長は変わらない）。
+   **`sync` を済ませてから**行う
+5. `POST /timelines/{id}/export` の結果（`/outputs/exports/{id}/final.mp4`）を
    Remotion `FxOverlay` の `base.src` に渡す。**props の fps / 解像度は書き出しの
    `fps` / `width` / `height` に合わせる**（ずれると演出の秒が合わない）
 
@@ -275,7 +298,9 @@ POST /jobs {"mode":"audio_analysis",
      `POST /library/key-from-job {"job_id":"…","source":"image","method":"black"}`
 2. **フォント画像**（下記）をそのまま使う
 3. **手持ちの PNG**: `POST /library/image` に multipart（`file=@logo.png`。
-   `name` / `tags` / `category` / `nsfw` をフォームで添えられる）→ 返った `id` を
+   `name` / `tags` / `category` / `nsfw` をフォームで添えられる。
+   `scripts/studio.sh upload /library/image file=@logo.png` で送れる。種別を
+   書きたくないときは `POST /library/upload`）→ 返った `id` を
    `POST /library/{id}/key`。**Docker で動いているアプリにホストの絶対パスは
    見えない**ので、手元のファイルは必ずこの multipart で渡す。
 4. **棚にもジョブにも無い画像**（World Bible の素材・書き出し）:

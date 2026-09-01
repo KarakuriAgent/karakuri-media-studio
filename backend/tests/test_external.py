@@ -21,6 +21,7 @@ from app import (
     grok,
     h3_examples,
     jobs,
+    library,
     nsfw,
     studio,
     timeline,
@@ -1441,6 +1442,35 @@ def test_the_openapi_subset_only_has_the_external_api(env):
     assert set(schemas) == set(seen)
 
 
+def test_audio_and_generic_uploads_land_in_the_library(env, tmp_path, monkeypatch):
+    """音源は ``/library/audio``、種別を書かないときは ``/library/upload``。"""
+    # 実体の置き場だけはテスト用に逃がす（env は DB と assets しか閉じ込めない）
+    monkeypatch.setattr(library, "LIBRARY_DIR", tmp_path / "library")
+    enable(env)
+    audio = call(
+        env, "POST", "/api/v1/library/audio",
+        files={"file": ("ban.wav", b"RIFF", "audio/wav")},
+        data={"name": "BAN 本チャン"},
+    )
+    assert audio.status_code == 201, audio.text
+    assert audio.json()["kind"] == "audio"
+    assert audio.json()["name"] == "BAN 本チャン"
+
+    guessed = call(
+        env, "POST", "/api/v1/library/upload",
+        files={"file": ("logo.png", b"PNG", "image/png")},
+    )
+    assert guessed.status_code == 201, guessed.text
+    assert guessed.json()["kind"] == "image"
+
+    unknown = call(
+        env, "POST", "/api/v1/library/upload",
+        files={"file": ("notes.txt", b"x", "text/plain")},
+    )
+    assert unknown.status_code == 400
+    assert "種別が分かりません" in unknown.text
+
+
 def test_the_new_endpoints_need_the_key_too(env):
     for path in (
         "/api/v1/jobs",
@@ -1677,6 +1707,12 @@ def test_an_export_runs_in_the_background_and_can_be_polled(
     assert done["error"] is None
     assert done["output_url"] == f"/outputs/exports/{export_id}/final.mp4"
     assert (seen["spec"].width, seen["spec"].height) == (1280, 720)
+
+    # 書き出しの履歴も外部 API から読める（id を控え損ねたときの拾い先）
+    listed = call(env, "GET", f"/api/v1/timelines/{detail['id']}/exports")
+    assert listed.status_code == 200, listed.text
+    assert [item["id"] for item in listed.json()] == [export_id]
+    assert call(env, "GET", "/api/v1/timelines/nope/exports").status_code == 404
 
     saved = call(env, "POST", f"/api/v1/exports/{export_id}/save-to-library", json={})
     assert saved.status_code == 201, saved.text

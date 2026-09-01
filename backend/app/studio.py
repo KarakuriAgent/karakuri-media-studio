@@ -2628,7 +2628,8 @@ async def _insert_shot(
     shot_id = new_id()
     now = _now()
     columns = ("id", "project_id", "scene_id", "sort_order", *_SHOT_TEXT_FIELDS,
-               "duration_seconds", "planned_start_seconds", "carry_over_end_frame",
+               "duration_seconds", "planned_start_seconds", "timeline_role",
+               "carry_over_end_frame",
                *_SHOT_SETTING_FIELDS,
                "created_at", "updated_at", "prompt_updated_at")
     planned = getattr(payload, "planned_start_seconds", None)
@@ -2642,6 +2643,7 @@ async def _insert_shot(
         *(getattr(payload, name) for name in _SHOT_TEXT_FIELDS),
         float(payload.duration_seconds),
         None if planned is None else float(planned),
+        getattr(payload, "timeline_role", None) or "auto",
         1 if payload.carry_over_end_frame else 0,
         *(getattr(payload, name, None) for name in _SHOT_SETTING_FIELDS),
         now,

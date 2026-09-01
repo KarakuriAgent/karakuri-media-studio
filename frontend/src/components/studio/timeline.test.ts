@@ -163,6 +163,8 @@ describe('トラックの取り出し', () => {
       fps: 24,
       width: 1280,
       height: 720,
+      gap_fill: 'clone' as const,
+      planned_end_seconds: null,
       created_at: '',
       updated_at: '',
       duration_ms: 0,

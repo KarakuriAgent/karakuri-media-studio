@@ -837,6 +837,15 @@ export type StudioAssetKind = 'image' | 'video' | 'audio'
 export type StudioShotStatus = 'draft' | 'ready' | 'done'
 
 /**
+ * カットをタイムラインの自動配置でどう扱うか（SPEC §7.3）。
+ *
+ * - `auto` … 今までどおり自動配置・`sync` の対象
+ * - `insert_only` … 差し込み（`clips/insert`）専用。自動配置にも差分にも出さない
+ * - `skip` … このタイムラインでは使わない（同上）
+ */
+export type StudioTimelineRole = 'auto' | 'insert_only' | 'skip'
+
+/**
  * Take の状態。'rendering' / 'candidate' / 'failed' はジョブから導出した値で、
  * DB に残るのは人が決めた 'selected' / 'rejected' だけ。
  */
@@ -1204,6 +1213,8 @@ export interface StudioShot {
    * この秒へカットを置く。通常のドラマ制作では空のままでよい。
    */
   planned_start_seconds: number | null
+  /** タイムラインの自動配置での扱い（`insert_only` / `skip` は対象外）。 */
+  timeline_role: StudioTimelineRole
   /** 生成プロンプトの本文（`@素材名` メンション可）。 */
   prompt: string
   status: StudioShotStatus
@@ -1244,6 +1255,8 @@ export interface StudioShotCreate {
   duration_seconds?: number
   /** 音源上の計画開始秒（null = 並び順で置く従来どおり）。 */
   planned_start_seconds?: number | null
+  /** タイムラインの自動配置での扱い。 */
+  timeline_role?: StudioTimelineRole
   prompt?: string
   status?: StudioShotStatus
   carry_over_end_frame?: boolean
@@ -1272,6 +1285,8 @@ export interface StudioShotUpdate extends StudioUpdateBase {
   duration_seconds?: number
   /** 音源上の計画開始秒（**null を明示すると外れる**＝並び順に戻る）。 */
   planned_start_seconds?: number | null
+  /** タイムラインの自動配置での扱い。 */
+  timeline_role?: StudioTimelineRole
   prompt?: string
   status?: StudioShotStatus
   carry_over_end_frame?: boolean
@@ -1558,6 +1573,9 @@ export type TimelineMediaKind = 'video' | 'audio' | 'image'
 export type TimelineExportStatus = 'queued' | 'running' | 'done' | 'failed'
 
 /** 1 本のタイムライン（書き出しの規格を持つ EDL の入れ物）。 */
+/** 計画秒どうしの隙間の埋め方（`clone` = 末尾静止で伸ばす / `black` = 黒）。 */
+export type TimelineGapFill = 'clone' | 'black'
+
 export interface StudioTimeline {
   id: string
   project_id: string
@@ -1568,6 +1586,13 @@ export interface StudioTimeline {
   fps: number
   width: number
   height: number
+  /**
+   * 音源基準の配置で、計画秒どうしの隙間の埋め方（SPEC §7.3）。
+   * `clone` = 前のクリップを末尾静止で伸ばす（既定）/ `black` = 黒＋無音。
+   */
+  gap_fill: TimelineGapFill
+  /** 音源の尺（秒）。自動配置の最後のクリップをここで締める（null = 未指定）。 */
+  planned_end_seconds: number | null
   created_at: string
   updated_at: string
 }
@@ -1584,6 +1609,8 @@ export interface StudioTimelineCreate {
   fps?: number
   width?: number
   height?: number
+  gap_fill?: TimelineGapFill
+  planned_end_seconds?: number | null
 }
 
 /** PATCH /api/studio/timelines/{id} body（指定した項目だけ変える）。 */
@@ -1592,6 +1619,9 @@ export interface StudioTimelineUpdate {
   fps?: number
   width?: number
   height?: number
+  gap_fill?: TimelineGapFill
+  /** 音源の尺（秒）。0 以下を送ると外れる（= Take の尺いっぱいに戻る）。 */
+  planned_end_seconds?: number | null
 }
 
 /** トラックに置かれたクリップ 1 つ（ソース解決済み）。 */

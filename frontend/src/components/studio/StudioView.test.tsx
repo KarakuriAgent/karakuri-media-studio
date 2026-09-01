@@ -90,6 +90,7 @@ function shot(id: string, overrides: Partial<StudioShot> = {}): StudioShot {
     camera: '',
     duration_seconds: 5,
     planned_start_seconds: null,
+    timeline_role: 'auto',
     prompt: 'a quiet street',
     status: 'draft',
     selected_take_id: null,

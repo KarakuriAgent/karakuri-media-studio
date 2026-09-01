@@ -228,6 +228,41 @@ async def upload_to_library(
         raise _bad_request(exc) from exc
 
 
+async def upload_detecting_kind(
+    file: UploadFile,
+    *,
+    name: str = "",
+    tags: str = "",
+    category: str = "",
+    nsfw: bool = False,
+) -> LibraryItem:
+    """種別を書かずに送られたファイルを、拡張子 / MIME で振り分けて入れる。"""
+    try:
+        kind = service.detect_kind(file.filename or "", file.content_type)
+    except service.LibraryError as exc:
+        raise _bad_request(exc) from exc
+    return await upload_to_library(
+        kind, file, name=name, tags=tags, category=category, nsfw=nsfw
+    )
+
+
+@router.post("/upload", response_model=LibraryItem, status_code=201)
+async def upload_any(
+    file: UploadFile = File(...),
+    tags: str = Form(""),
+    category: str = Form(""),
+    name: str = Form(""),
+    nsfw: bool = Form(False),
+) -> LibraryItem:
+    """種別を指定せずに 1 ファイル入れる（拡張子 / MIME で image / video / audio）。
+
+    ``/{kind}`` より先に定義しておく（後ろだと `kind='upload'` として食われる）。
+    """
+    return await upload_detecting_kind(
+        file, name=name, tags=tags, category=category, nsfw=nsfw
+    )
+
+
 @router.post("/key", response_model=LibraryItem, status_code=201)
 async def key_source(payload: LibraryKeySource) -> LibraryItem:
     """``source``（``job_id`` / ``item_id`` / ``export_id`` / ``path``）の画像を抜く。

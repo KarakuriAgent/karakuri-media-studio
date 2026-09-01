@@ -111,6 +111,35 @@ def test_upload_rejects_a_wrong_extension(env):
     assert items(env) == []
 
 
+def test_upload_sorts_a_file_into_its_shelf_by_extension(env):
+    """``POST /library/upload`` は拡張子で image / video / audio へ振り分ける。"""
+    for name, kind in (("ref.png", "image"), ("bgm.wav", "audio"), ("cut.mp4", "video")):
+        created = env.client.post(
+            "/api/library/upload",
+            files={"file": (name, b"data", "application/octet-stream")},
+        )
+        assert created.status_code == 201, created.text
+        assert created.json()["kind"] == kind
+        assert created.json()["url"].startswith(f"/library/{kind}/")
+
+
+def test_upload_says_so_when_it_cannot_tell_the_kind(env):
+    """拡張子でも MIME でも決まらないファイルは、その旨を書いて断る。"""
+    unknown = env.client.post(
+        "/api/library/upload",
+        files={"file": ("notes.txt", b"data", "text/plain")},
+    )
+    assert unknown.status_code == 400
+    assert "種別が分かりません" in unknown.text
+
+    # 種別が MIME で分かっても、拡張子が無ければ置けない（棚は拡張子で分ける）
+    extensionless = env.client.post(
+        "/api/library/upload", files={"file": ("bgm", b"data", "audio/wav")}
+    )
+    assert extensionless.status_code == 400
+    assert "unsupported extension" in extensionless.text
+
+
 def test_upload_rejects_an_unknown_kind(env):
     assert upload(env, "model", "x.png").status_code == 400
 

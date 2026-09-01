@@ -102,6 +102,10 @@ DEFAULT_HEIGHT = 720
 #: 自動配置で尺が読めなかったカットに充てる長さ（ミリ秒）
 FALLBACK_CLIP_MS = 5000
 
+#: 計画秒どうしの隙間の既定の埋め方（``clone`` = 前のクリップの末尾静止で伸ばす。
+#: MV では黒コマが事故になるので、黒で埋めたいときだけ ``black`` を選ぶ）
+DEFAULT_GAP_FILL = "clone"
+
 #: 静止画クリップの既定の尺（ミリ秒）
 DEFAULT_IMAGE_MS = 3000
 
@@ -781,6 +785,9 @@ async def _selected_take_videos(
     :func:`app.studio._fetch_shots` と同じ規則（話 -> 場 -> カット）で、ここは
     1 つの話に絞ってあるので場の並び順とカットの並び順で決まる。計画開始秒は
     音源基準で組むときだけ入っている（None = 並び順で置く従来どおり）。
+
+    ``timeline_role`` が ``auto`` でないカット（差し込み専用・使わない）は
+    自動配置の対象外なので外す（SPEC §7.3）。
     """
     async with conn.execute(
         "SELECT s.selected_take_id AS take_id, j.video_path AS video_path,"
@@ -790,6 +797,7 @@ async def _selected_take_videos(
         "  JOIN studio_takes t ON t.id = s.selected_take_id"
         "  LEFT JOIN jobs j ON j.id = t.job_id"
         " WHERE s.project_id = ? AND sc.episode_id = ?"
+        "   AND s.timeline_role = 'auto'"
         " ORDER BY sc.sort_order, sc.created_at, sc.id,"
         "          s.sort_order, s.created_at, s.id",
         (project_id, episode_id),
@@ -864,11 +872,14 @@ async def create_timeline(
         )
         timeline_id = new_id()
         now = _now()
+        planned_end = payload.planned_end_seconds
+        if planned_end is not None and float(planned_end) <= 0:
+            planned_end = None
         await conn.execute(
             "INSERT INTO studio_timelines"
             " (id, project_id, episode_id, name, fps, width, height,"
-            "  created_at, updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "  gap_fill, planned_end_seconds, created_at, updated_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 timeline_id,
                 project_id,
@@ -877,6 +888,8 @@ async def create_timeline(
                 float(payload.fps or DEFAULT_FPS),
                 int(payload.width or DEFAULT_WIDTH),
                 int(payload.height or DEFAULT_HEIGHT),
+                payload.gap_fill or DEFAULT_GAP_FILL,
+                None if planned_end is None else float(planned_end),
                 now,
                 now,
             ),
@@ -912,13 +925,23 @@ async def create_timeline(
                     )
                 )
         if placed:
-            # 計画開始秒を持つカットがあれば音源基準（隙間は gap で埋まる）、
-            # 無ければ今までどおり先頭から隙間なく詰める。
+            # 計画開始秒を持つカットがあれば音源基準（足りないぶんは gap_fill の
+            # 通りに埋まる）、無ければ今までどおり先頭から隙間なく詰める。
             await _write_clips(
                 conn,
                 timeline_id,
                 project_id,
-                plan_layout(placed, track_id, float(payload.fps or DEFAULT_FPS)),
+                plan_layout(
+                    placed,
+                    track_id,
+                    float(payload.fps or DEFAULT_FPS),
+                    gap_fill=payload.gap_fill or DEFAULT_GAP_FILL,
+                    end_ms=(
+                        None
+                        if planned_end is None
+                        else int(round(float(planned_end) * 1000))
+                    ),
+                ),
             )
         await conn.commit()
     await _publish_timeline(project_id, timeline_id, "create")
@@ -931,12 +954,22 @@ async def create_timeline(
 async def update_timeline(
     timeline_id: str, changes: dict[str, Any]
 ) -> StudioTimeline | None:
-    """指定された項目だけ書き換える（送られなかった項目は今のまま）。"""
+    """指定された項目だけ書き換える（送られなかった項目は今のまま）。
+
+    ``planned_end_seconds`` だけは **0 以下を送ると外れる**（音源の尺は正の数
+    しか意味を持たないので、「未指定へ戻す」をこの値で表す）。
+    """
     fields = {
         name: value
         for name, value in changes.items()
-        if name in ("name", "fps", "width", "height") and value is not None
+        if name in ("name", "fps", "width", "height", "gap_fill")
+        and value is not None
     }
+    planned_end = changes.get("planned_end_seconds")
+    if planned_end is not None:
+        fields["planned_end_seconds"] = (
+            None if float(planned_end) <= 0 else float(planned_end)
+        )
     async with get_db() as conn:
         timeline = await _fetch_timeline(conn, timeline_id)
         if timeline is None:
@@ -1909,17 +1942,32 @@ class PlannedClip(NamedTuple):
 
 
 def plan_layout(
-    items: list[PlannedClip], track_id: str, fps: float = DEFAULT_FPS
+    items: list[PlannedClip],
+    track_id: str,
+    fps: float = DEFAULT_FPS,
+    *,
+    gap_fill: str = "clone",
+    end_ms: int | None = None,
 ) -> list[TimelineClipInput]:
     """計画秒つきのカットを音源上の位置へ置く（純関数）。
 
     - 計画秒を持つクリップは ``start_ms = round(計画秒 * 1000)`` に置く。尺は
-      **次の計画秒までの間隔**（最後のカットは Take の尺）を上限に、Take の尺で
-      切る（短い Take のときは足りないぶんが隙間になる）
-    - 空いたところは ``gap`` クリップ（黒＋無音）で埋めるので、次のカットの頭は
-      必ず計画どおりの秒から始まる。ただし **1 フレームに満たない隙間は作らない**
-      （前のクリップへ寄せる）——書き出しで 0 フレームのセグメントになって
-      ffmpeg が落ちるため（``fps`` はそのタイムラインの規格）
+      **次の計画秒までの間隔**（最後のカットは ``end_ms``、無ければ Take の尺）
+      が上限
+    - 素材（Take）が計画尺に届かないぶんの埋め方は ``gap_fill``:
+
+      - ``"clone"``（既定）… クリップの尺を**計画尺のまま**にして、足りないぶんは
+        書き出しの ``tpad``（末尾静止）に埋めさせる。書き出しの ``warnings`` に
+        ``PAD …`` が出る（:func:`app.timeline_export.pad_warnings`）。MV では
+        黒コマが事故になるのでこちらが既定
+      - ``"black"`` … 足りないぶんを ``gap`` クリップ（黒＋無音）で埋める（従来）
+
+    - 先頭の計画秒までの空きは、埋める材料が無いのでどちらでも ``gap``。
+      ただし **1 フレームに満たない隙間は作らない**（前のクリップへ寄せる）
+      ——書き出しで 0 フレームのセグメントになって ffmpeg が落ちるため
+      （``fps`` はそのタイムラインの規格）
+    - ``end_ms`` を渡すと**最後の計画クリップをそこで締める**（音源の尺。
+      渡さなければ今までどおり Take の尺いっぱい）
     - 計画秒を持たないクリップは、計画の終わったところから従来どおり順に詰める
       （繋ぎの重なりの扱いも :func:`relayout` と同じ）
     - 計画を 1 つも持たないときは :func:`relayout` そのもの
@@ -1948,24 +1996,33 @@ def plan_layout(
         available = item.source_ms or max(0, clip.out_ms - clip.in_ms)
         if available <= 0:
             available = FALLBACK_CLIP_MS
-        # 次の計画秒までが上限（最後のカットは Take の尺いっぱい）。
-        limit = starts[index + 1] - start if index + 1 < len(planned) else available
-        span = min(limit, available)
+        # 次の計画秒までが上限（最後のカットは end_ms、無ければ Take の尺）。
+        if index + 1 < len(planned):
+            limit = starts[index + 1] - start
+        elif end_ms is not None and end_ms - start >= MIN_CLIP_MS:
+            limit = end_ms - start
+        else:
+            limit = available
+        # クローン埋めでは計画尺をそのままクリップの尺にする（足りないぶんは
+        # 書き出しが末尾静止で埋め、PAD 警告になる）。黒埋めでは Take の尺で
+        # 切って、余ったところを下の gap が埋める。
+        span = limit if gap_fill == "clone" else min(limit, available)
         if span < MIN_CLIP_MS:
             raise TimelineError(
                 f"計画開始秒が詰まりすぎています（{start / 1000:g} 秒のカットに"
                 f" {span}ms しか置けません）"
             )
         hole = start - cursor
-        if hole > 0 and hole < frame_ms:
+        if hole > 0 and placed and (hole < frame_ms or gap_fill == "clone"):
             # 1 フレームに満たない隙間は置かない（gap を挟むと書き出しで
-            # 0 フレームのセグメントになる）。前のクリップへ寄せる。
-            if placed:
-                placed[-1].duration_ms += hole
-                placed[-1].out_ms += hole
-            else:
-                start = cursor  # 先頭の端数はそのまま頭へ寄せる
+            # 0 フレームのセグメントになる）。クローン埋めのときは隙間そのものを
+            # 前のクリップの末尾静止で埋める。
+            placed[-1].duration_ms += hole
+            placed[-1].out_ms += hole
+        elif hole > 0 and hole < frame_ms:
+            start = cursor  # 先頭の端数はそのまま頭へ寄せる
         elif hole > 0:
+            # 先頭の空きは伸ばす材料が無いので、どちらの埋め方でも黒になる。
             placed.append(
                 TimelineClipInput(
                     track_id=track_id,
@@ -1995,14 +2052,33 @@ def plan_layout(
     return [*placed, *rest]
 
 
+def quantize_ms(value: int, fps: float) -> int:
+    """ミリ秒を**フレーム境界**へ丸める（純関数）。
+
+    書き出しは切り出し位置もフレーム番号（``round(t * fps)``）で扱うので、
+    境界から外れた ``in_ms`` を持つクリップは 1 フレーム短く（長く）焼ける。
+    分割で作った ``in_ms`` はここを通してから保存する。
+    """
+    if fps <= 0:
+        return max(0, int(value))
+    frame = round(max(0, int(value)) * fps / 1000)
+    return int(round(frame * 1000 / fps))
+
+
 def insert_into(
-    clips: list[TimelineClipInput], inserted: TimelineClipInput
+    clips: list[TimelineClipInput],
+    inserted: TimelineClipInput,
+    fps: float = DEFAULT_FPS,
 ) -> list[TimelineClipInput]:
     """``inserted`` の区間に重なる既存クリップを前後に分割して差し込む（純関数）。
 
     下のクリップの**切り出しは動かさない**（後半は ``in_ms`` をずらして続きから
     再生される）ので、トラック全体の長さは変わらない。:data:`MIN_CLIP_MS` に
     満たない切れ端は残せないので落とす（そのぶんは隙間になる）。
+
+    分割した後半の ``in_ms`` は :func:`quantize_ms` でフレーム境界へ量子化する
+    （ミリ秒のまま持つと書き出しで 1 フレーム落ちる）。尺は位置で決まっている
+    ので動かさず、``out_ms`` を新しい ``in_ms`` から測り直す。
     """
     start = inserted.start_ms
     end = start + inserted.duration_ms
@@ -2029,7 +2105,10 @@ def insert_into(
             tail.start_ms = end
             tail.duration_ms = tail_ms
             if not spanless:
-                tail.in_ms = clip.out_ms - int(round(tail_ms * speed))
+                tail.in_ms = quantize_ms(
+                    clip.out_ms - int(round(tail_ms * speed)), fps
+                )
+                tail.out_ms = tail.in_ms + int(round(tail_ms * speed))
             # 前の境界が差し込んだクリップに変わったので、繋ぎは持ち越さない。
             tail.transition_kind = None
             tail.transition_ms = 0
@@ -2127,7 +2206,11 @@ async def insert_clip(
         out_ms=payload.in_ms + payload.duration_ms,
         text_payload=payload.text_payload,
     )
-    updated = insert_into([to_clip_input(clip) for clip in track.clips], inserted)
+    updated = insert_into(
+        [to_clip_input(clip) for clip in track.clips],
+        inserted,
+        float(detail.fps or DEFAULT_FPS),
+    )
     others = [
         to_clip_input(clip)
         for other in detail.tracks
@@ -2283,6 +2366,7 @@ async def _shot_state(
         "SELECT t.id AS take_id, t.shot_id AS shot_id,"
         "       s.id AS shot_exists, s.selected_take_id AS selected_take_id,"
         "       s.planned_start_seconds AS planned,"
+        "       s.timeline_role AS timeline_role,"
         "       s.title AS shot_title, s.sort_order AS shot_order,"
         "       sc.title AS scene_title, ep.title AS episode_title"
         "  FROM studio_takes t"
@@ -2305,6 +2389,8 @@ async def sync_preview(timeline_id: str) -> TimelineSyncPreview:
     - **消えたカット** … 元のカットが消えた / 採用が外れた
 
     どれも「反映するか」は人が選ぶので、ここでは並べるだけ（:func:`apply_sync`）。
+    ``timeline_role`` が ``auto`` でないカット（差し込み専用・使わない）は
+    どの欄にも出さない（SPEC §7.3）。
     """
     detail = await timeline_detail(timeline_id)
     if detail is None:
@@ -2337,6 +2423,7 @@ async def sync_preview(timeline_id: str) -> TimelineSyncPreview:
                 "  JOIN studio_takes t ON t.id = s.selected_take_id"
                 "  LEFT JOIN jobs j ON j.id = t.job_id"
                 " WHERE s.project_id = ? AND sc.episode_id = ?"
+                "   AND s.timeline_role = 'auto'"
                 " ORDER BY sc.sort_order, sc.created_at, sc.id,"
                 "          s.sort_order, s.created_at, s.id",
                 (detail.project_id, detail.episode_id),
@@ -2366,6 +2453,12 @@ async def sync_preview(timeline_id: str) -> TimelineSyncPreview:
         for clip in take_clips:
             take_id = str(clip.source_id)
             state = states.get(take_id)
+            if state is not None and state.get("timeline_role") not in (
+                None, "auto",
+            ):
+                # 差し込み専用（insert_only）・使わない（skip）カットのクリップは
+                # 人が置いたものなので、差し替えも削除も勧めない（SPEC §7.3）。
+                continue
             if state is None or not state.get("shot_exists"):
                 removed.append(
                     TimelineSyncRemoved(
@@ -2445,6 +2538,55 @@ async def _shot_plans(
         }
 
 
+async def _shot_roles(
+    conn: aiosqlite.Connection, take_ids: list[str]
+) -> dict[str, str]:
+    """Take id -> その Take の元カットの ``timeline_role``（既定 ``auto``）。"""
+    if not take_ids:
+        return {}
+    placeholders = ", ".join("?" * len(take_ids))
+    async with conn.execute(
+        "SELECT t.id AS take_id, s.timeline_role AS role"
+        "  FROM studio_takes t"
+        "  LEFT JOIN studio_shots s ON s.id = t.shot_id"
+        f" WHERE t.id IN ({placeholders})",
+        tuple(take_ids),
+    ) as cur:
+        return {
+            str(row["take_id"]): str(row["role"] or "auto")
+            for row in await cur.fetchall()
+        }
+
+
+def audio_end_ms(detail: StudioTimelineDetail) -> int | None:
+    """A1（最初の音声トラック）の最初のクリップの終わり（無ければ None）。
+
+    音源基準では A1 に曲を 1 本置くので、``planned_end_seconds`` が書かれて
+    いないタイムラインではここが「音源の尺」の代わりになる。
+    """
+    for track in detail.tracks:
+        if track.kind != "audio":
+            continue
+        clips = sorted(track.clips, key=lambda clip: clip.start_ms)
+        if not clips:
+            return None
+        return clips[0].start_ms + clips[0].duration_ms
+    return None
+
+
+def planned_end_ms(
+    timeline: StudioTimeline, detail: StudioTimelineDetail
+) -> int | None:
+    """自動配置の最後のクリップを締める位置（ミリ秒。決まらなければ None）。
+
+    ``planned_end_seconds`` -> A1 の最初の音声クリップ -> None（＝ Take の尺
+    いっぱい）の順に決まる（SPEC §7.3）。
+    """
+    if timeline.planned_end_seconds:
+        return int(round(float(timeline.planned_end_seconds) * 1000))
+    return audio_end_ms(detail)
+
+
 async def _take_duration(
     conn: aiosqlite.Connection, take_id: str
 ) -> int | None:
@@ -2471,7 +2613,10 @@ async def apply_sync(
 
     映像トラックは反映のあとで詰め直す（:func:`relayout`）。元カットが
     **計画開始秒**を持っているときは、そちらが正本になって音源上の位置へ置き直す
-    （:func:`plan_layout`。差し替えた Take も同じ位置に置き直される）。他の
+    （:func:`plan_layout`。差し替えた Take も同じ位置に置き直される。隙間の
+    埋め方は ``gap_fill``、最後のクリップは :func:`planned_end_ms` で締める）。
+    ``timeline_role`` が ``auto`` でないカットのクリップは動かさず、並べ直した
+    あとで元の位置へ差し込み直す。他の
     トラック（BGM・テロップ）は動かさない: 音は尺に合わせて置いてあるので、
     勝手にずらすと合っていたものが外れるため。
     """
@@ -2528,18 +2673,36 @@ async def apply_sync(
                 )
             )
 
-        # 音源基準で組んであるか（元カットが計画開始秒を持つか）を見る。
-        plans = await _shot_plans(
-            conn,
-            sorted({
+        # 差し込み専用（insert_only）・使わない（skip）カットのクリップは、人が
+        # 置いた位置のまま動かさない（並べ直しの対象から外して、あとで同じ位置へ
+        # 差し込み直す）。自動配置に混ぜると末尾へ押し出されてしまうため。
+        take_ids = sorted({
+            str(clip.source_id)
+            for clip in kept
+            if clip.source_kind == "take" and clip.source_id
+        })
+        roles = await _shot_roles(conn, take_ids)
+        held = [
+            clip
+            for clip in kept
+            if clip.source_kind == "take"
+            and roles.get(str(clip.source_id or ""), "auto") != "auto"
+        ]
+        if held:
+            holding = {id(clip) for clip in held}
+            kept = [clip for clip in kept if id(clip) not in holding]
+            take_ids = sorted({
                 str(clip.source_id)
                 for clip in kept
                 if clip.source_kind == "take" and clip.source_id
-            }),
-        )
+            })
+
+        # 音源基準で組んであるか（元カットが計画開始秒を持つか）を見る。
+        plans = await _shot_plans(conn, take_ids)
         if any(value is not None for value in plans.values()):
             items: list[PlannedClip] = []
-            for clip in kept:
+            seen: set[str] = set()
+            for clip in sorted(kept, key=lambda item: item.start_ms):
                 # 前に埋めた隙間は計画から作り直すので、ここで落とす。
                 if clip.source_kind == "gap":
                     continue
@@ -2548,15 +2711,32 @@ async def apply_sync(
                     if clip.source_kind == "take"
                     else None
                 )
+                if planned is not None:
+                    # 差し込みで前後に割れた同じ Take は 1 本に戻す（計画が正本
+                    # なので、割れたぶんは差し込み直しでもう一度作られる）。
+                    if str(clip.source_id) in seen:
+                        continue
+                    seen.add(str(clip.source_id))
                 source_ms = 0
                 if planned is not None:
                     source_ms = (
                         await _take_duration(conn, str(clip.source_id)) or 0
                     )
                 items.append(PlannedClip(clip, planned, source_ms))
-            laid = plan_layout(items, video.id, float(timeline.fps or DEFAULT_FPS))
+            laid = plan_layout(
+                items,
+                video.id,
+                float(timeline.fps or DEFAULT_FPS),
+                gap_fill=timeline.gap_fill or DEFAULT_GAP_FILL,
+                end_ms=planned_end_ms(timeline, detail),
+            )
         else:
             laid = relayout(kept)
+
+        # 外しておいた差し込みクリップを、元の位置へ差し込み直す（下のクリップが
+        # 前後に割れるだけなので、トラックの全長は変わらない）。
+        for clip in sorted(held, key=lambda item: item.start_ms):
+            laid = insert_into(laid, clip, float(timeline.fps or DEFAULT_FPS))
 
         others = [
             to_clip_input(clip)

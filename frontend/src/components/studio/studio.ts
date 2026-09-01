@@ -23,6 +23,7 @@ import type {
   StudioShotUpdate,
   StudioTake,
   StudioTakeStatus,
+  StudioTimelineRole,
   StudioVideoQuality,
   StudioWorkflowOverride,
 } from '../../types'
@@ -65,6 +66,19 @@ export const SHOT_STATUS_CLASS: Record<StudioShotStatus, string> = {
   draft: 'border-border bg-secondary text-muted-foreground',
   ready: 'border-sky-800 bg-sky-950 text-sky-300',
   done: 'border-emerald-800 bg-emerald-950 text-emerald-300',
+}
+
+/** タイムラインの自動配置での扱い（音源基準で組むときだけ意味がある）。 */
+export const TIMELINE_ROLES: StudioTimelineRole[] = [
+  'auto',
+  'insert_only',
+  'skip',
+]
+
+export const TIMELINE_ROLE_LABEL: Record<StudioTimelineRole, string> = {
+  auto: '自動配置する',
+  insert_only: '差し込み専用（自動配置しない）',
+  skip: 'タイムラインで使わない',
 }
 
 export const ASSET_CATEGORY_LABEL: Record<StudioAssetCategory, string> = {
@@ -604,6 +618,8 @@ export interface ShotFormState {
   duration_seconds: string
   /** 音源上の計画開始秒（空文字 = 未設定＝並び順で置く）。 */
   planned_start_seconds: string
+  /** タイムラインの自動配置での扱い（`insert_only` / `skip` は対象外）。 */
+  timeline_role: StudioTimelineRole
   prompt: string
   status: StudioShotStatus
   carry_over_end_frame: boolean
@@ -629,6 +645,7 @@ export function shotFormFromShot(shot: StudioShot): ShotFormState {
     duration_seconds: String(shot.duration_seconds),
     planned_start_seconds:
       shot.planned_start_seconds == null ? '' : String(shot.planned_start_seconds),
+    timeline_role: shot.timeline_role ?? 'auto',
     prompt: shot.prompt,
     status: shot.status,
     carry_over_end_frame: shot.carry_over_end_frame,
@@ -689,6 +706,7 @@ export function shotUpdateFromForm(form: ShotFormState): StudioShotUpdate {
       form.planned_start_seconds.trim() === ''
         ? null
         : Number(form.planned_start_seconds),
+    timeline_role: form.timeline_role,
     prompt: form.prompt,
     status: form.status,
     carry_over_end_frame: form.carry_over_end_frame,

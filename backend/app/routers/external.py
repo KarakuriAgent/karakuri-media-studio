@@ -136,7 +136,7 @@ from .assets import save_upload
 from .library import MAX_LIMIT as LIBRARY_MAX_LIMIT
 from .library import _bad_request as _library_bad_request
 from .library import key_job_output, key_library_item, key_media_source
-from .library import upload_to_library
+from .library import upload_detecting_kind, upload_to_library
 from .media import create_contact_sheet, create_text_image, font_list
 from .options import get_options
 from .studio import _kind_of, get_capabilities
@@ -1059,6 +1059,47 @@ async def upload_library_image(
     )
 
 
+@router.post("/library/audio", response_model=LibraryItem, status_code=201)
+async def upload_library_audio(
+    file: UploadFile = File(...),
+    #: 表示名（空なら元のファイル名）
+    name: str = Form(""),
+    #: multipart はリストを送りにくいのでカンマ区切りで受ける
+    tags: str = Form(""),
+    #: 分類（空なら未分類）
+    category: str = Form(""),
+    nsfw: bool = Form(False),
+) -> LibraryItem:
+    """手元の音源をライブラリへ入れる（multipart。``/library/{item_id}`` より先）。
+
+    **タイムラインに置ける音は棚（library）の音だけ**なので、MV の音源はここから
+    入れる（作品の素材 ``assets`` に上げた音は素材ビンに出てこない）。返った
+    ``id`` を ``PUT /timelines/{id}/clips`` の ``source_kind: "library"`` /
+    ``source_id`` に渡して A1 へ置く。
+    """
+    return await upload_to_library(
+        "audio", file, name=name, tags=tags, category=category, nsfw=nsfw
+    )
+
+
+@router.post("/library/upload", response_model=LibraryItem, status_code=201)
+async def upload_library_any(
+    file: UploadFile = File(...),
+    name: str = Form(""),
+    tags: str = Form(""),
+    category: str = Form(""),
+    nsfw: bool = Form(False),
+) -> LibraryItem:
+    """種別を書かずに 1 ファイル入れる（拡張子 / MIME で image / video / audio）。
+
+    ``/library/image`` と ``/library/audio`` の汎用版（``/library/{item_id}``
+    より先に定義しておく）。
+    """
+    return await upload_detecting_kind(
+        file, name=name, tags=tags, category=category, nsfw=nsfw
+    )
+
+
 @router.post("/library/key", response_model=LibraryItem, status_code=201)
 async def key_library_source(payload: LibraryKeySource) -> LibraryItem:
     """``source`` で指した画像の背景を抜いてスプライトにする（SPEC §7.2）。
@@ -1615,6 +1656,21 @@ async def start_export(
             return await timeline_service.start_export(timeline_id, body.model_dump())
         except timeline_service.TimelineError as exc:
             raise _timeline_error(exc) from exc
+
+
+@router.get(
+    "/timelines/{timeline_id}/exports", response_model=list[TimelineExport]
+)
+async def list_exports(timeline_id: str) -> list[TimelineExport]:
+    """このタイムラインの書き出しの履歴（新しい順）。
+
+    焼き上がりの ``fps`` / ``width`` / ``height`` / ``frames`` / ``duration_ms``
+    と ``warnings`` が入っているので、``POST /export`` の ``id`` を控え損ねた
+    ときはここから拾える。
+    """
+    if await timeline_service.get_timeline(timeline_id) is None:
+        raise HTTPException(status_code=404, detail="timeline not found")
+    return await timeline_service.list_exports(timeline_id)
 
 
 @router.get("/exports/{export_id}", response_model=TimelineExport)

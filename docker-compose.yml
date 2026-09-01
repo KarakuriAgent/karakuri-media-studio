@@ -58,6 +58,13 @@ services:
       # .env に COMFY_MODELS_DIR=/path/to/ComfyUI/models を書く。未設定のときは
       # 無害なダミーパスがマウントされるだけ（機能は UI ごと出ない）。
       - ${COMFY_MODELS_DIR:-/tmp/karakuri-no-models-dir}:${COMFY_MODELS_DIR:-/tmp/karakuri-no-models-dir}
+      # 音源解析（SPEC §5.2）用の venv。torch / faster-whisper / stable-ts /
+      # librosa はアプリの環境には入れず、backend/requirements-optional.txt を
+      # 入れた別の venv を**同一絶対パス**でマウントして、設定
+      # `audio_analysis_python` にその中の python を書く（README「音源解析」）。
+      # リポジトリの中（例 .venv-audio/）に作れば `.:${PWD}` で既に見えている
+      # ので、この行は外に置いたときだけ使う。
+      # - ${AUDIO_ANALYSIS_VENV:-/tmp/karakuri-no-audio-venv}:${AUDIO_ANALYSIS_VENV:-/tmp/karakuri-no-audio-venv}
     # ローカルの ComfyUI を使う場合に host.docker.internal で届くようにする
     extra_hosts:
       - "host.docker.internal:host-gateway"

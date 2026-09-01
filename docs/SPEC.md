@@ -1414,6 +1414,8 @@ CREATE TABLE studio_timelines (
   fps         REAL NOT NULL DEFAULT 24,    -- 書き出しの規格（クリップはここへ揃える）
   width       INTEGER NOT NULL DEFAULT 1280,
   height      INTEGER NOT NULL DEFAULT 720,
+  gap_fill    TEXT NOT NULL DEFAULT 'clone', -- 計画秒どうしの隙間の埋め方（clone | black）
+  planned_end_seconds REAL,                 -- 音源の尺（NULL = A1 の音源 → Take の尺）
   created_at  TEXT NOT NULL,
   updated_at  TEXT NOT NULL
 );
@@ -1497,7 +1499,8 @@ CREATE TABLE timeline_exports (
 ものだけを V1 トラックへ**隙間なく**並べる。クリップの尺は ffprobe で読み、読めなければ
 5 秒（`app.timeline.FALLBACK_CLIP_MS`）に落とす。`episode_id` を省くと V1 だけの空のタイムライン。
 カットが `planned_start_seconds` を持っていれば、隙間なくではなく**音源上のその秒**へ置く
-（下の「音源基準の配置」）。
+（下の「音源基準の配置」）。`timeline_role` が `auto` でないカット（差し込み専用・使わない）は
+最初から並べない。
 
 #### トラックと素材
 
@@ -1535,12 +1538,28 @@ CREATE TABLE timeline_exports (
 書いておくと、自動配置と `sync` がその秒へカットを置く（`app.timeline.plan_layout`）。
 
 - 計画秒を持つカットは `start_ms = round(計画秒 * 1000)` に置く。尺は**次の計画秒までの
-  間隔**（最後のカットは Take の尺）を上限に、Take の尺で切る
-- 空いたところ（先頭まで・短い Take のうしろ）は `gap` クリップ（黒＋無音）で埋まるので、
-  次のカットの頭は必ず計画どおりの秒から始まる。ただし **1 フレームに満たない隙間は
-  作らない**（前のカットへ寄せる）——書き出しで 0 フレームのセグメントになるため
+  間隔**が上限（最後のカットは下の「音源の尺で締める」）
+- **素材が計画尺に届かないぶんの埋め方**は `studio_timelines.gap_fill`:
+  - `clone`（既定）… クリップの尺を**計画尺のまま**にして、足りないぶんは書き出しの
+    `tpad=stop_mode=clone`（末尾静止）に埋めさせる。書き出しの `warnings` に
+    `PAD <カット> <不足秒>s` が出る。MV では黒コマが事故になるのでこちらが既定
+  - `black` … 足りないぶんを `gap` クリップ（黒＋無音）で埋める
+- 先頭の計画秒までの空きは、伸ばす材料が無いのでどちらでも `gap`。ただし
+  **1 フレームに満たない隙間は作らない**（前のカットへ寄せる）——書き出しで 0 フレームの
+  セグメントになるため
+- **音源の尺で締める**: 自動配置の最後のクリップは `studio_timelines.planned_end_seconds`
+  → 無ければ **A1（最初の音声トラック）の最初のクリップの終わり** → それも無ければ
+  Take の尺、の順で決めた位置で切る（`app.timeline.planned_end_ms`）。曲より長い
+  尻尾が残らない
+- **配置対象から外す印**: `studio_shots.timeline_role`（`auto` / `insert_only` / `skip`。
+  既定 `auto`）。`insert_only` は差し込み（`clips/insert`）専用のカット、`skip` はこの
+  タイムラインで使わないカットで、どちらも**自動配置・`sync`・`sync-preview` の対象外**。
+  すでに置いてあるクリップは `sync` でも動かさず、並べ直したあとで元の位置へ差し込み直す
+  （計画秒を持たないカットが末尾へ押し出され、`sync` のたびに差し込みが消えるのを防ぐ）
 - **採用 Take を差し替えても同じ計画秒へ置き直す**（`sync` は「新しいテイクの尺へ丸める」
-  ではなく計画を正本にする）。人が手でトリムした値も計画で上書きされる
+  ではなく計画を正本にする）。人が手でトリムした値も計画で上書きされる。差し込みで前後に
+  割れた同じ Take は 1 本に戻してから置き直し、外しておいた差し込みクリップをそのあとで
+  元の位置へ入れ直す（`sync` を何度呼んでも同じ形になる）
 - 計画秒を持たないカットは、計画の終わったところから**今までどおり**順に詰む
   （`sync` の「増えたカットは V1 の末尾へ」はそのまま）
 - 音源基準では**繋ぎ（トランジション）を持てない**（重なるとその先の位置が全部ずれる）
@@ -1561,6 +1580,8 @@ source_id, in_ms, base_revision}`。
   ので、**トラックの全長は変わらない**（前後へ押し出さない）
 - 完全に覆われたクリップは消え、`MIN_CLIP_MS` に満たない切れ端も落ちる（そのぶんは隙間）
 - 分割された後半は前の境界が変わるので、繋ぎ（`transition_kind`）を持ち越さない
+- 分割された後半の `in_ms` は**フレーム境界へ量子化**する（`app.timeline.quantize_ms`）。
+  ミリ秒のまま持つと、書き出しがフレーム番号へ丸めるところで 1 フレーム落ちる
 - `base_revision` は他の PATCH と同じ楽観ロック（§7.4）。成功すると 1 リビジョン積む
 
 #### 書き出しエンジン（`app/timeline_export.py`）

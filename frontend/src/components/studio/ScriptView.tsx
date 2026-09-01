@@ -7,6 +7,7 @@ import type {
   StudioShot,
   StudioShotStatus,
   StudioShotUpdate,
+  StudioTimelineRole,
 } from '../../types'
 import { FieldError, Section } from '../ui'
 import { NativeSelect } from '../NativeSelect'
@@ -19,6 +20,8 @@ import PromptPreview from './PromptPreview'
 import {
   SHOT_STATUS_CLASS,
   SHOT_STATUS_LABEL,
+  TIMELINE_ROLES,
+  TIMELINE_ROLE_LABEL,
   WORKFLOW_OVERRIDES,
   WORKFLOW_OVERRIDE_LABEL,
   countShots,
@@ -450,6 +453,27 @@ export default function ScriptView({
                     }
                   />
                   <FieldError message={errors.planned_start_seconds} />
+                </div>
+                <div className="space-y-1">
+                  <Label htmlFor="studio-shot-timeline-role">
+                    タイムラインでの扱い
+                  </Label>
+                  <NativeSelect
+                    id="studio-shot-timeline-role"
+                    value={form.timeline_role}
+                    onChange={(event) =>
+                      patch({
+                        timeline_role: event.target
+                          .value as StudioTimelineRole,
+                      })
+                    }
+                  >
+                    {TIMELINE_ROLES.map((role) => (
+                      <option key={role} value={role}>
+                        {TIMELINE_ROLE_LABEL[role]}
+                      </option>
+                    ))}
+                  </NativeSelect>
                 </div>
               </div>
 
