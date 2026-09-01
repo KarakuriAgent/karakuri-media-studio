@@ -115,21 +115,33 @@ MV の秒（歌詞のアライン・onset・ビート）を出す音源解析（
 重い依存（torch / faster-whisper / stable-ts / librosa）を使うのでアプリの環境とは
 **別の venv** で回します。
 
+ホストで動かしている（`./run.sh`）場合:
+
 ```bash
 python3.12 -m venv .venv-audio
 .venv-audio/bin/pip install -r backend/requirements-optional.txt
+```
+
+Docker で動かしている場合は、**コンテナの中の python で** venv を作ります（ホストの
+python で作った venv は、コンテナに無い `/usr/bin/python3.12` を指すので中では動き
+ません）。リポジトリの中に作れば、ホストと同じ絶対パスでコンテナからも見えます:
+
+```bash
+docker exec video-studio-media-studio-1 bash -c \
+  "cd $(pwd -P) && python3.12 -m venv .venv-audio \
+   && .venv-audio/bin/pip install -r backend/requirements-optional.txt"
 ```
 
 作ったら設定の「接続 / Grok」タブの `audio_analysis_python` に **その venv の python の
 絶対パス**（例 `/path/to/video-studio/.venv-audio/bin/python`）を入れて保存します。
 空のままだとアプリ自身の python で回そうとして、依存が無ければ 400 で断ります。
 
-Docker で動かしている場合は、その venv が**コンテナの中でも同じ絶対パスで見えている**
-必要があります。リポジトリの中（上の例の `.venv-audio/`）に作れば `.:${PWD}` の
-マウントで既に見えているので、そのままで動きます。外に置くときは
-`docker-compose.yml` のコメントアウトしてある `AUDIO_ANALYSIS_VENV` の行を有効にして、
-`.env` に `AUDIO_ANALYSIS_VENV=/path/to/venv` を書いてください（マウント先はホストと
-同じ絶対パスです）。
+GPU は `docker-compose.yml` の `deploy.resources.reservations.devices`（nvidia）で
+コンテナに渡しています。nvidia-container-toolkit が無い環境では compose が起動を
+拒むので、その 6 行を消してください（解析は CPU で動きます。GPU が ComfyUI と競合して
+メモリ不足になったときも、ワーカーが自動で CPU にやり直します）。venv をリポジトリの
+外に置くときは `AUDIO_ANALYSIS_VENV` の行を有効にして、`.env` に
+`AUDIO_ANALYSIS_VENV=/path/to/venv` を書いてください（マウント先はホストと同じ絶対パス）。
 
 ---
 

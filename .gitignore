@@ -1,6 +1,7 @@
 __pycache__/
 *.pyc
 .venv/
+.venv-audio/
 node_modules/
 dist/
 app.db

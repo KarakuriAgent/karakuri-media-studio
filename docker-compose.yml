@@ -60,11 +60,24 @@ services:
       - ${COMFY_MODELS_DIR:-/tmp/karakuri-no-models-dir}:${COMFY_MODELS_DIR:-/tmp/karakuri-no-models-dir}
       # 音源解析（SPEC §5.2）用の venv。torch / faster-whisper / stable-ts /
       # librosa はアプリの環境には入れず、backend/requirements-optional.txt を
-      # 入れた別の venv を**同一絶対パス**でマウントして、設定
-      # `audio_analysis_python` にその中の python を書く（README「音源解析」）。
-      # リポジトリの中（例 .venv-audio/）に作れば `.:${PWD}` で既に見えている
-      # ので、この行は外に置いたときだけ使う。
+      # 入れた別の venv を用意して、設定 `audio_analysis_python` にその中の python
+      # を書く（docs/SETUP.md「音源解析」）。**venv はコンテナの中の python で
+      # 作ること**（ホストの python で作った venv は中では動かない）:
+      #   docker exec <container> bash -c "cd $PWD && python3.12 -m venv .venv-audio \
+      #     && .venv-audio/bin/pip install -r backend/requirements-optional.txt"
+      # リポジトリの中（.venv-audio/）に作れば `.:${PWD}` で既に見えているので、
+      # 下の行は外に置いたときだけ使う。
       # - ${AUDIO_ANALYSIS_VENV:-/tmp/karakuri-no-audio-venv}:${AUDIO_ANALYSIS_VENV:-/tmp/karakuri-no-audio-venv}
+    # GPU を音源解析（torch / whisper）に使う。nvidia-container-toolkit が入って
+    # いれば効く。無い環境では compose が起動を拒むので、この 6 行を消すか
+    # コメントアウトする（解析は CPU で動く）。
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
     # ローカルの ComfyUI を使う場合に host.docker.internal で届くようにする
     extra_hosts:
       - "host.docker.internal:host-gateway"

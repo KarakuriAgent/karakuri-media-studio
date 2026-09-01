@@ -149,7 +149,7 @@ setup.sh reset                             # 状態ファイルを消す（確�
 | 機能 | やること | 完了の判定 |
 |---|---|---|
 | Remotion（MV・演出） | **ライセンス確認は人**。Remotion は独自ライセンス（個人・従業員 3 名以下は無償、それ以上は会社ライセンスが有償）。<https://www.remotion.dev/license> を確認して**同意を得てから** `PUT /api/settings {"remotion_enabled": true}` | `remotion_enabled` が `yes` で、composition 一覧が引ける |
-| 音源解析（歌詞つき MV） | `python3.12 -m venv .venv-audio` → `.venv-audio/bin/pip install -r backend/requirements-optional.txt` → `PUT /api/settings {"audio_analysis_python": "<絶対パス>"}`。Docker ならコンテナから**同じ絶対パスで見える**場所に作る（リポジトリの中なら既にマウント済み） | `setup.sh status` の `audio_analysis_python` が実在 `yes` |
+| 音源解析（歌詞つき MV） | リポジトリ直下に `.venv-audio` を作り `backend/requirements-optional.txt` を入れ、`PUT /api/settings {"audio_analysis_python": "<実体の絶対パス>/.venv-audio/bin/python"}`。**Docker ならコンテナの中の python で作る**（`docker exec <container> bash -c "cd <実体パス> && python3.12 -m venv .venv-audio && .venv-audio/bin/pip install -r backend/requirements-optional.txt"`。ホストの python で作った venv は中で動かない。パスはシンボリックリンクでなく実体 `pwd -P`）。数 GB 落ちるので先に伝える。GPU は compose の `deploy.resources` で渡してある | `setup.sh status` の `audio_analysis_python` が実在 `yes` |
 | RunPod 自動起動 | [`docs/RUNPOD-QUICKSTART.md`](../../../docs/RUNPOD-QUICKSTART.md) の手順。Network Volume・テンプレート・Cloudflare Tunnel は**人の作業**、設定の保存は自動でよい | 接続先 RunPod で `comfyui` が `ok` |
 | 不足モデルの自動 DL | `.env` に `COMFY_MODELS_DIR` を書いて再起動。gated なら設定に HF トークン / Civitai キー（**人が用意**） | 設定ページの「モデル」タブに一覧が出る |
 
