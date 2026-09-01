@@ -1,10 +1,12 @@
-// グリッチ系で使う SVG フィルタ。CSS の filter: url(#id) から参照する。
+// グリッチ系・スプライト系で使う SVG フィルタ。
+// CSS の filter: url(#id) からも、SVG の <image filter="url(#id)"> からも参照する。
 //
 // - chroma: RGB 分離(赤を右・青を左へずらして screen 合成)
 // - displace: feTurbulence を横方向だけの変位に潰した「走査線ずれ」
 // - insetBorder: 画像のアルファを削って、輪郭の内側に残る縁(罫線)だけを取り出す
+// - alphaWhite: 画像を「元のアルファを保った白」にする(SVG の輝度マスク用)
 //
-// この 2 つを重ねた「出際に飛ばして消す」ラッパー(FxOutGlitch)もここに置く。
+// chroma と displace を重ねた「出際に飛ばして消す」ラッパー(FxOutGlitch)もここに置く。
 //
 // id は内容(量・seed)から作る。フレームごとに seed が変われば id も変わるので、
 // 前のフレームの定義を掴んだままになることがない。
@@ -91,18 +93,53 @@ export const insetBorderId = (width: number, color: string) =>
  * 輪郭の内側の罫線。
  * アルファを width だけ削った芯を作り、元のシルエットから芯を抜いてリングだけ残す。
  * 元絵に重ねて使う(元絵そのものは触らない)。
+ *
+ * <filter> 単体を返すので、呼び出し側の <defs> の中に置くこと。
  */
-export const InsetBorderDefs: React.FC<{ width: number; color: string }> = ({ width, color }) => (
-  <svg width={0} height={0} style={{ position: 'absolute' }} aria-hidden>
-    <defs>
-      <filter id={insetBorderId(width, color)} x="0%" y="0%" width="100%" height="100%">
-        <feFlood floodColor={color} result="col" />
-        <feComposite in="col" in2="SourceAlpha" operator="in" result="sil" />
-        <feMorphology in="SourceAlpha" operator="erode" radius={width} result="core" />
-        <feComposite in="sil" in2="core" operator="out" />
-      </filter>
-    </defs>
-  </svg>
+export const InsetBorderFilter: React.FC<{ width: number; color: string }> = ({ width, color }) => (
+  <filter id={insetBorderId(width, color)} x="0%" y="0%" width="100%" height="100%">
+    <feFlood floodColor={color} result="col" />
+    <feComposite in="col" in2="SourceAlpha" operator="in" result="sil" />
+    <feMorphology in="SourceAlpha" operator="erode" radius={width} result="core" />
+    <feComposite in="sil" in2="core" operator="out" />
+  </filter>
+);
+
+/** シルエット塗りのフィルタ id。色が同じなら使い回せる。 */
+export const silhouetteId = (color: string) => `fx-sil-${color.replace(/[^a-zA-Z0-9]/g, '')}`;
+
+/**
+ * 画像のアルファを 1 色で塗りつぶす(tint)。
+ * CSS の mask-image は Chromium が no-cors で取りにいくので、別オリジンの画像だと
+ * 不透明レスポンスになって何も描かれない。アルファはフィルタ側で読む。
+ *
+ * <filter> 単体を返すので、呼び出し側の <defs> の中に置くこと。
+ */
+export const SilhouetteFilter: React.FC<{ color: string }> = ({ color }) => (
+  <filter id={silhouetteId(color)} x="0%" y="0%" width="100%" height="100%">
+    <feFlood floodColor={color} result="col" />
+    <feComposite in="col" in2="SourceAlpha" operator="in" />
+  </filter>
+);
+
+/** 「アルファを保った白」フィルタの id。 */
+export const alphaWhiteId = 'fx-alpha-white';
+
+/**
+ * 画像を、元のアルファを保ったまま真っ白にする。
+ * SVG の <mask> は既定で輝度マスクなので、これを通した画像を入れると
+ * マスクの濃度 = 元画像のアルファになる(ハーフトーンの点を輪郭内に収めるのに使う)。
+ *
+ * <filter> 単体を返すので、呼び出し側の <defs> の中に置くこと。
+ */
+export const AlphaWhiteFilter: React.FC = () => (
+  <filter id={alphaWhiteId} x="0%" y="0%" width="100%" height="100%">
+    <feColorMatrix
+      in="SourceGraphic"
+      type="matrix"
+      values="0 0 0 0 1  0 0 0 0 1  0 0 0 0 1  0 0 0 1 0"
+    />
+  </filter>
 );
 
 /**
