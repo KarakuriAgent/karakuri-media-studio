@@ -15,4 +15,5 @@ models.local.txt
 .env
 remotion/out/
 remotion/.remotion/
+.agents/skills/video-direction-dictionary
 .claude/skills/video-direction-dictionary
