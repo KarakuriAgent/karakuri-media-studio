@@ -13,19 +13,22 @@
 #   S4 custom node とモデル / S5 grok CLI / S6 外部 API キー /
 #   S7 任意機能 / S8 動作確認
 #
-# 状態ファイル: <repo>/runtime/setup-state.json（gitignore 済み）
+# 状態ファイル: <repo>/runtime/setup-state.json
 #   {"version":1,"choices":{…},"steps":{"S0":{"status":"done","updated_at":…,"note":…}}}
 #
 # 接続先の解決は studio.sh と同じ:
 #   BASE = $KARAKURI_STUDIO_URL、無ければ <repo>/.env の HOST/PORT（既定 127.0.0.1:8000）
-#   <repo> は $KARAKURI_STUDIO_REPO、無ければこのスクリプトの 4 つ上。
+#   <repo> は $KARAKURI_STUDIO_REPO、無ければこのスクリプトの 5 つ上。
+#   <workspace> (作業フォルダ) は $KARAKURI_WORKSPACE、
+#   無ければこのスクリプトの 4 つ上（<repo>/workspace）。
 # **API キーやトークンの値は絶対に表示しない**（有無だけを出す）。
 set -euo pipefail
 
 die() { printf 'setup.sh: %s\n' "$*" >&2; exit 2; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-REPO="${KARAKURI_STUDIO_REPO:-$(cd "$SCRIPT_DIR/../../../.." && pwd -P)}"
+WORKSPACE="${KARAKURI_WORKSPACE:-$(cd "$SCRIPT_DIR/../../../.." && pwd -P)}"
+REPO="${KARAKURI_STUDIO_REPO:-$(cd "$SCRIPT_DIR/../../../../.." && pwd -P)}"
 STATE="$REPO/runtime/setup-state.json"
 CONFIG="$REPO/runtime/config.json"
 
@@ -337,7 +340,7 @@ for k, v in ch.items():
 
 case "${1:-}" in
   ""|-h|--help)
-    sed -n '2,26p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,24p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
     exit 0 ;;
   status)
     print_check

@@ -7,12 +7,17 @@ description: Karakuri Media Studio を新しいマシンに導入・再開・点
 
 このアプリの導入は **S0〜S8 の 9 段階**に分かれている。段階ごとに「自動でできること」と
 「人にしかできないこと」が決まっていて、どこまで済んだかは
-`runtime/setup-state.json`（gitignore 済みの `runtime/` 配下）に残る。
+`../runtime/setup-state.json` に残る。
 **どこからでも再開できる**のがこの仕組みの目的で、途中で会話が切れても、別の日に
 続きをやることになっても、状態ファイルを読めば同じところから続けられる。
 
-手順の詳細・設定キーの一覧・トラブル対処は [`docs/SETUP.md`](../../../docs/SETUP.md)。
+手順の詳細・設定キーの一覧・トラブル対処は [`docs/SETUP.md`](../../../../docs/SETUP.md)。
 このファイルは段取りと判定だけを書く。
+
+**作業フォルダはこのワークスペース（`workspace/`）で、リポジトリ本体は 1 つ上
+（`..`）**。以下で `.env` / `run.sh` / `compose.sh` / `runtime/` / `docs/` と
+書いてあるのは**リポジトリ直下**のもので、ワークスペースからは `../.env`
+`../run.sh` のように 1 つ上を指す。cd するなら `cd ..` してから実行する。
 
 ## 最初にやること
 
@@ -52,8 +57,8 @@ setup.sh reset                             # 状態ファイルを消す（確�
 ### S1 起動方法の選択
 
 - 人: **ホスト（`./run.sh`）か Docker（`./compose.sh up -d --build`）か**を決めてもらう。
-  ホストは手軽、Docker は依存をコンテナに閉じ込められる（データとワークスペースは
-  ローカルのまま）。待受も聞く（`.env` の `HOST` / `PORT`、既定 `127.0.0.1:8000`）。
+  ホストは手軽、Docker は依存をコンテナに閉じ込められる（データはどちらも
+  ローカルに残る）。待受も聞く（`.env` の `HOST` / `PORT`、既定 `127.0.0.1:8000`）。
 - 自動: 決まったら `.env` に `HOST` / `PORT` を書く（`.env` は gitignore 済み）。
 - 完了: 選択が決まって `.env` が書けた。
 - 記録: `setup.sh choose launch host`（または `docker`）→ `setup.sh mark S1 done`
@@ -80,7 +85,7 @@ setup.sh reset                             # 状態ファイルを消す（確�
   - `comfy_cloud` … Comfy Cloud（API キーが要る。Standard 以上のプラン）
   - `runpod` … RunPod の Pod（URL・Pod の API キー・RunPod API キー・
     テンプレート ID・Network Volume ID。手順は
-    [`docs/RUNPOD-QUICKSTART.md`](../../../docs/RUNPOD-QUICKSTART.md)）
+    [`docs/RUNPOD-QUICKSTART.md`](../../../../docs/RUNPOD-QUICKSTART.md)）
 - 自動: 受け取った値を `PUT /api/settings` で保存する（`comfy_target` と、その
   プロファイルの URL / キー）。**キーの値はログ・返答・コミットに貼らない。**
   設定ページから人に入れてもらってもよい。
@@ -97,7 +102,7 @@ setup.sh reset                             # 状態ファイルを消す（確�
 - 人: 不足ノードの導入（ComfyUI Manager か git clone）。どのノードが要るかは
   detail に列挙されるので、そのまま伝える。
 - モデルは**使うワークフローのぶんだけ**でよい（全部は要らない。既定ファイル名は
-  SPEC §3.3）。`.env` に `COMFY_MODELS_DIR=/path/to/ComfyUI/models` を書いて再起動すると、
+  `../docs/SPEC.md` §3.3）。`.env` に `COMFY_MODELS_DIR=/path/to/ComfyUI/models` を書いて再起動すると、
   設定ページの「モデル」タブから未検出のファイルをダウンロードできる（任意）。
 - 完了: `comfyui` が `ok`（`… node classes verified` が出る）。
 - 記録: `setup.sh mark S4 done`（モデルは後回しにするなら note に書く）
@@ -117,7 +122,7 @@ setup.sh reset                             # 状態ファイルを消す（確�
 ### S6 外部 API キー
 
 外部 API（`/api/v1`）はキーが空のあいだ**丸ごと 404**。ここで発行すると、以後
-`karakuri-studio` スキルの `scripts/studio.sh` がそのまま使えるようになる。
+`.agents/skills/karakuri-studio/scripts/studio.sh` がそのまま使えるようになる。
 
 - 自動: ランダムな 32 文字以上のキーを生成して `PUT /api/settings` で保存する。
   **生成した値を標準出力・返答・コミットに出さない**（保存先は `.env` ではなく
@@ -139,7 +144,7 @@ setup.sh reset                             # 状態ファイルを消す（確�
 - 人: 別マシンのエージェントにも渡したい場合は、**設定 →「接続 / Grok」タブの
   外部 API（/api/v1）** で値を自分で確認してもらう（こちらからは貼らない）。
 - 完了: `setup.sh status` の「外部 API キー」が「設定済み」／
-  `scripts/studio.sh GET /projects` が 200。
+  `studio.sh GET /projects` が 200。
 - 記録: `setup.sh mark S6 done`
 
 ### S7 任意機能
@@ -150,7 +155,7 @@ setup.sh reset                             # 状態ファイルを消す（確�
 |---|---|---|
 | Remotion（MV・演出） | **ライセンス確認は人**。Remotion は独自ライセンス（個人・従業員 3 名以下は無償、それ以上は会社ライセンスが有償）。<https://www.remotion.dev/license> を確認して**同意を得てから** `PUT /api/settings {"remotion_enabled": true}` | `remotion_enabled` が `yes` で、composition 一覧が引ける |
 | 音源解析（歌詞つき MV） | リポジトリ直下に `.venv-audio` を作り `backend/requirements-optional.txt` を入れ、`PUT /api/settings {"audio_analysis_python": "<実体の絶対パス>/.venv-audio/bin/python"}`。**Docker ならコンテナの中の python で作る**（`docker exec <container> bash -c "cd <実体パス> && python3.12 -m venv .venv-audio && .venv-audio/bin/pip install -r backend/requirements-optional.txt"`。ホストの python で作った venv は中で動かない。パスはシンボリックリンクでなく実体 `pwd -P`）。数 GB 落ちるので先に伝える。GPU は compose の `deploy.resources` で渡してある。GPU で書き起こしするには `nvidia-cublas-cu12` / `nvidia-cudnn-cu12` も入る（requirements-optional に含めた）。無ければ CPU に落ちる | `setup.sh status` の `audio_analysis_python` が実在 `yes` |
-| RunPod 自動起動 | [`docs/RUNPOD-QUICKSTART.md`](../../../docs/RUNPOD-QUICKSTART.md) の手順。Network Volume・テンプレート・Cloudflare Tunnel は**人の作業**、設定の保存は自動でよい | 接続先 RunPod で `comfyui` が `ok` |
+| RunPod 自動起動 | [`docs/RUNPOD-QUICKSTART.md`](../../../../docs/RUNPOD-QUICKSTART.md) の手順。Network Volume・テンプレート・Cloudflare Tunnel は**人の作業**、設定の保存は自動でよい | 接続先 RunPod で `comfyui` が `ok` |
 | 不足モデルの自動 DL | `.env` に `COMFY_MODELS_DIR` を書いて再起動。gated なら設定に HF トークン / Civitai キー（**人が用意**） | 設定ページの「モデル」タブに一覧が出る |
 
 - 記録: `setup.sh mark S7 done`（一部だけ入れたなら note に何を入れたか書く）
@@ -162,13 +167,11 @@ setup.sh reset                             # 状態ファイルを消す（確�
   Krea 2 turbo など）を選び、`megapixels` は小さめ（0.4）にする。
 
   ```bash
-  studio.sh POST /jobs '{"mode":"image_only","image_workflow":"z_image_turbo",
-                         "image_prompt":"a red apple on a wooden table",
-                         "megapixels":0.4}'
-  studio.sh wait-job <job_id>
+  .agents/skills/karakuri-studio/scripts/studio.sh POST /jobs \
+    '{"mode":"image_only","image_workflow":"z_image_turbo",
+      "image_prompt":"a red apple on a wooden table","megapixels":0.4}'
+  .agents/skills/karakuri-studio/scripts/studio.sh wait-job <job_id>
   ```
-
-  （`studio.sh` は `.agents/skills/karakuri-studio/scripts/studio.sh`）
 - S7 で Remotion を ON にしたなら、`Slate` の composition も 1 本焼いて確かめる。
 - 失敗したら detail を読む: モデルのファイル名違い（S4 に戻る）/ VRAM 不足
   （`megapixels` を下げる）/ 接続先の URL（S3 に戻る）。

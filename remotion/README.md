@@ -284,9 +284,9 @@ ON にする前に、**Remotion のライセンス**(このファイル末尾)�
 
 ## エージェント向け SKILL
 
-props の書き方・ビート同期の作法・運用ルールはリポジトリルートの
-[`.agents/skills/karakuri-remotion/SKILL.md`](../.agents/skills/karakuri-remotion/SKILL.md) にまとめてあります。
-`.claude/skills/karakuri-remotion` はそこへのシンボリックリンクです。
+props の書き方・ビート同期の作法・運用ルールは外部エージェントの作業フォルダにある
+[`workspace/.agents/skills/karakuri-remotion/SKILL.md`](../workspace/.agents/skills/karakuri-remotion/SKILL.md) にまとめてあります。
+`workspace/.claude/skills/karakuri-remotion` はそこへのシンボリックリンクです。
 
 ## フォント
 

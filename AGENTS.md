@@ -6,21 +6,25 @@ Karakuri Media Studio は、ComfyUI（ローカル / RunPod / Comfy Cloud）を�
 タイムライン編集と mp4 書き出し、Remotion 連携までを 1 つのアプリで持つ。外部の
 エージェントは API キー付きの外部 API（`/api/v1`）から同じことができる。
 
+**外部エージェントの作業場所は `workspace/`**（`cd workspace && claude`）。スキルと
+作業ファイルはそこに置く。リポジトリ本体の開発はこのルートで行う。
+
 ## このアプリをセットアップするとき
 
-`.agents/skills/karakuri-setup/SKILL.md` を読むこと。新しいマシンへの導入・中断した
+`workspace/.agents/skills/karakuri-setup/SKILL.md` を読むこと。新しいマシンへの導入・中断した
 セットアップの再開・「起動しない / 繋がらない」の点検を、S0〜S8 の段階に分けて進める。
-最初にやるのは `.agents/skills/karakuri-setup/scripts/setup.sh status` で、保存状態
+最初にやるのは `workspace/.agents/skills/karakuri-setup/scripts/setup.sh status`
+（`workspace/` を cwd にして実行）で、保存状態
 （`runtime/setup-state.json`）と自動検出を見て**未完了の最初の段階から**再開する。
 人にしかできない作業（grok CLI のサインイン、API キーの用意、ライセンス確認）は
 そこで待つ。手順の詳細は `docs/SETUP.md`。
 
 ## このアプリを操作して映像を作るとき
 
-`.agents/skills/karakuri-studio/SKILL.md` を読むこと。接続先とキーの解決、
+`workspace/.agents/skills/karakuri-studio/SKILL.md` を読むこと。接続先とキーの解決、
 最初に読むべき API（`openapi.json` / `prompt-guide` / `capabilities` / `options`）、
 制作の段取り、`base_revision` や削除まわりの鉄則がそこにある。curl ラッパーと
-動画検分スクリプトは `.agents/skills/karakuri-studio/scripts/` にある。
+動画検分スクリプトは `workspace/.agents/skills/karakuri-studio/scripts/` にある。
 
 ## このリポジトリを開発するとき
 
@@ -34,7 +38,7 @@ cd remotion && npm run typecheck                   # Remotion（同梱・既定 
 
 - 待受は `.env` の `HOST` / `PORT`（既定 `127.0.0.1:8000`）。
 - Remotion のプロジェクトは `remotion/` に同梱（props の書き方は
-  `.agents/skills/karakuri-remotion/SKILL.md`）。ただし Remotion は独自ライセンス
+  `workspace/.agents/skills/karakuri-remotion/SKILL.md`）。ただし Remotion は独自ライセンス
   （個人・従業員 3 名以下は無償、それ以上は会社ライセンスが必要）なので、
   **連携は既定 OFF**。依存は `run.sh` が初回に入れる（Docker の場合はホスト側で
   `npm --prefix remotion install`）。

@@ -9,6 +9,11 @@ karakuri-media-studio に同梱された `remotion/` ディレクトリが、こ
 **Remotion レンダリングバックエンド**。
 あなたの仕事は `.mp4` を自分で焼くことではなく、**コンポジションに渡す props(JSON)を書くこと**。
 
+作業フォルダはこのワークスペース(`workspace/`)で、リポジトリ本体は 1 つ上(`..`)。
+以下の `remotion/…` はリポジトリ直下のものを指すので、ワークスペースからは
+`../remotion/…` と読む。書いた props の JSON はこのワークスペースに置いてよい
+(コミットされない)。
+
 ## 運用の原則
 
 - **`FxOverlay` の演出はタイムラインに保存する**(`PUT /api/v1/timelines/{id}/fx`)。
@@ -19,12 +24,13 @@ karakuri-media-studio に同梱された `remotion/` ディレクトリが、こ
 - **レンダリングは原則アプリ側の `POST /api/v1/jobs`(`mode: "remotion"`)経由で投入する。**
   出力が `outputs/` に入り、履歴・ライブラリ・素材登録・タイムラインの素材ビンに自動で乗るため。
   完了待ちは既存の `GET /api/v1/jobs/{id}` をポーリング。
-- `remotion/` で直接 `npx remotion render` を叩くのは、**コンポジションを開発・改修しているときと、
-  props の見た目を手元で確かめたいときだけ**。成果物をアプリの外に置いても納品フローに乗らない。
+- `remotion/` で直接 `npx remotion render` を叩くのは、**props の見た目を手元で
+  確かめたいときだけ**。成果物をアプリの外に置いても納品フローに乗らない。
 - 素材は **アプリの `/outputs` URL をそのまま `src` に書ける**。ダウンロードもコピーも不要。
   (`http://<studio>/outputs/xxxx/clip1.mp4` のような URL。静的配信は無認証)
-- 新しい表現がどうしても props で書けないときは、コンポジション側(`src/`)を直す。
-  その場合は既存 props の後方互換を壊さないこと(フィールドは追加のみ、既定値つきで)。
+- 表現は **props で書ける範囲でつくる**。コンポジション側(`../remotion/src/`)は
+  読んで確かめる正本であって、ここから書き換えるものではない。props でどうしても
+  書けない表現は、その旨を人に伝えて代案(別のイベント型・別の演出)で組む。
 
 ## コンポジション
 
@@ -241,7 +247,7 @@ props スキーマの正本は **`remotion/src/schema.ts`(zod)**。迷ったら�
 
 ### 決めを強くするオプション(どれも既定は無効)
 
-BAN!BAN!BAN! の実装から移したもの。**書かなければ従来どおりの絵**なので、
+BAN!BAN!BAN!(過去に作った MV)で確立したもの。**書かなければ従来どおりの絵**なので、
 「もう一段強くしたい」ところにだけ足す。
 
 | 型 | フィールド | 何が起きるか |
@@ -317,8 +323,8 @@ BAN!BAN!BAN! の実装から移したもの。**書かなければ従来どお�
 ### 手元で確認する
 
 ```bash
-cd remotion
-npx remotion render src/index.ts FxOverlay out/fx.mp4 --props=examples/fx-overlay.json
+cd ../remotion
+npx remotion render src/index.ts FxOverlay ../workspace/tmp/fx.mp4 --props=examples/fx-overlay.json
 ```
 
 `examples/fx-overlay.json` は全イベント型を 1 回ずつ含む 14 秒のサンプル(外部素材ゼロ)。
@@ -326,16 +332,18 @@ npx remotion render src/index.ts FxOverlay out/fx.mp4 --props=examples/fx-overla
 キーフレームの `pop: false`)も一通り入っているので、見た目を確かめるならここを引くのが速い。
 効果の見た目を確かめたいときは、これを複製して該当イベントだけ残すのが速い。
 
-## 手元で確認する(開発時のみ)
+## 手元で尺と見た目を確かめる(任意)
 
-以下は**リポジトリの `remotion/` ディレクトリで**実行する(`cd remotion`)。
+以下は**リポジトリの `remotion/` ディレクトリで**実行する(ワークスペースからは
+`cd ../remotion`。依存は `run.sh` が入れているので `npm install` は不要)。
 
 ```bash
-npm install                                     # 通常は run.sh が入れる(手動起動時のみ)
 npx remotion compositions src/index.ts          # 一覧と尺の確認
-npx remotion render src/index.ts MusicVideo out/mv.mp4 --props=examples/music-video.json
+npx remotion render src/index.ts MusicVideo ../workspace/tmp/mv.mp4 --props=examples/music-video.json
 npx remotion studio                             # ブラウザでプレビュー
 ```
+
+焼いた mp4 はワークスペースの `tmp/` に出す(リポジトリ側に作業ファイルを残さない)。
 
 - **props を書いたら、まず `npx remotion compositions` で尺が意図どおりか確認する。**
   `durationInSeconds` の書き忘れ・`start` の桁違いはここで出る。

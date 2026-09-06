@@ -2,7 +2,7 @@
 
 外部エージェントが「いま焼いた mp4 で、演出が狙った位置・狙った秒に出ているか」を
 **1 リクエストで目視できる**ようにするための道具。手元で見るときは
-``.agents/skills/karakuri-studio/scripts/inspect.sh``（1 秒ごとの PNG を並べる）が
+``workspace/.agents/skills/karakuri-studio/scripts/inspect.sh``（1 秒ごとの PNG を並べる）が
 あるが、API から使うにはコマを 1 枚ずつ取りに行くのは重いので、こちらは**必要な
 秒だけを 1 枚の jpg に束ねて**返す。
 

@@ -15,27 +15,32 @@ description: Karakuri Media Studio（動画・画像・音声生成スタジオ�
 
 ## 1. 接続
 
-- BASE: 環境変数 `KARAKURI_STUDIO_URL`。無ければリポジトリ直下 `.env` の
+**作業フォルダはこのワークスペース（`workspace/`）**。リポジトリ本体は 1 つ上
+（`..`）にある。リクエストの JSON、落とした動画、切り出した PNG、メモの類は
+ここに置いてよい（コミットされない）。コマンドの例はすべてこのワークスペースを
+cwd として書いてある。
+
+- BASE: 環境変数 `KARAKURI_STUDIO_URL`。無ければリポジトリ直下（`..`）の `.env` の
   `HOST` / `PORT` から `http://HOST:PORT`（既定 `127.0.0.1:8000`。`HOST=0.0.0.0`
   は待受の意味なので宛先は `127.0.0.1` に読み替える）。
-- キー: 環境変数 `KARAKURI_STUDIO_API_KEY`。無ければ `runtime/config.json` の
+- キー: 環境変数 `KARAKURI_STUDIO_API_KEY`。無ければ `../runtime/config.json` の
   `external_api_key`。`X-API-Key` ヘッダで送る。
 - **キーの値をログ・返答・コミットに貼らない。**
 - 応答の読み方: **404 = キーが未設定**（外部 API 自体が無効。アプリの設定画面で
   発行してもらう）/ **401 = キー不一致** / 429 = 未完了ジョブか書き出しが上限
   （完了を待つ）/ 409 = `base_revision` が古い。
-- 接続できない＝アプリが起動していない。リポジトリ直下で `./run.sh`（開発時は
-  `./run.sh --dev`）を人に実行してもらう。
+- 接続できない＝アプリが起動していない。リポジトリ直下（`..`）で `./run.sh` を
+  人に実行してもらう。
 
 同梱のラッパーが上の解決を全部やる:
 
 ```bash
-scripts/studio.sh GET /projects
-scripts/studio.sh POST /projects '{"name":"新作","auto_translate":true}'
-scripts/studio.sh PATCH /shots/<id> '{"prompt":"…","base_revision":12}'
-scripts/studio.sh upload /library/audio file=@/path/to/ban.wav name=BAN  # multipart
-scripts/studio.sh wait-job <job_id> [interval_sec]     # 完了まで待つ（既定 10 秒）
-scripts/studio.sh wait-export <export_id> [interval_sec]
+.agents/skills/karakuri-studio/scripts/studio.sh GET /projects
+.agents/skills/karakuri-studio/scripts/studio.sh POST /projects '{"name":"新作","auto_translate":true}'
+.agents/skills/karakuri-studio/scripts/studio.sh PATCH /shots/<id> '{"prompt":"…","base_revision":12}'
+.agents/skills/karakuri-studio/scripts/studio.sh upload /library/audio file=@/path/to/ban.wav name=BAN  # multipart
+.agents/skills/karakuri-studio/scripts/studio.sh wait-job <job_id> [interval_sec]     # 完了まで待つ（既定 10 秒）
+.agents/skills/karakuri-studio/scripts/studio.sh wait-export <export_id> [interval_sec]
 ```
 
 ## 2. 最初に読むもの（毎セッション）
@@ -90,7 +95,7 @@ scripts/studio.sh wait-export <export_id> [interval_sec]
    または「誰がどこに立ち、カメラがどう動くか」を言葉だけで詰め切れないとき）:
    - `POST /library/blocking` に原始形状（四角・丸・円柱・簡易人型）だけの 3D
      シーン定義を投げると、24fps の mp4 がライブラリに登録される
-     （書式は `docs/EXTERNAL-API.md` §3.5。座標は m・Y 上・床が `y=0`、
+     （書式は `../docs/EXTERNAL-API.md` §3.5。座標は m・Y 上・床が `y=0`、
      `position` は**底面中心**）。焼く前に `POST /library/blocking/location-map`
      で文章だけ見ると安い。
    - 応答の `location_map` を**カット本文へ写す**（`hero at x 50%, y 56%` の形。
@@ -117,12 +122,12 @@ scripts/studio.sh wait-export <export_id> [interval_sec]
    - `will_translate` / `english_stale` … 英訳がこれから走るか
 7. **焼く**: `POST /shots/{id}/render`（ボディで解像度・尺・steps・seed を上書き可）。
    返る Take の `job_id` を `GET /jobs/{id}` で **5〜15 秒間隔**でポーリング
-   （`scripts/studio.sh wait-job <job_id>`）。status は
+   （`.agents/skills/karakuri-studio/scripts/studio.sh wait-job <job_id>`）。status は
    `queued` / `prompting` / `running` / `done` / `failed` / `canceled`。
 8. **検分**: 完了したジョブ / Take の `video_url` を必ず自分で見る。
 
    ```bash
-   scripts/inspect.sh <video_url> 1     # 尺・音声の有無 + 1 秒ごとのフレーム PNG
+   .agents/skills/karakuri-studio/scripts/inspect.sh <video_url> 1     # 尺・音声の有無 + 1 秒ごとのフレーム PNG
    ```
 
    出た PNG を読んで、指示どおりの人物・動き・カメラになっているか、音声が
@@ -147,6 +152,10 @@ scripts/studio.sh wait-export <export_id> [interval_sec]
 
 - `quality`（動画）と `image_quality`（静止画）は**独立**。動画を turbo で回して
   いても、素材の静止画は `image_quality` に従う。逆も同じ。
+- `turbo` は **t2v / t2i には効かない**（蒸留 LoRA が fl2v 用）。`quality: "turbo"` でも
+  t2v になるカットは `minimax_h3_t2v_opt` で投入され、理由が `prompt-preview` の
+  `workflow_reason` に出る。`image_quality: "turbo"` の t2i も同じく `_opt` に落ちる。
+  Turbo をそのまま効かせたいなら、引き継ぎ（i2v）か `@素材`（r2v）のあるカットにする。
 - `megapixels` / `image_megapixels` は未設定ならビルド既定。ローカル GPU の VRAM が
   小さいなら `0.4` あたりに落とす（大きいほど遅く、落ちやすい）。
   `aspect_ratio` の表記は `GET /options` のものをそのまま使う。
@@ -188,8 +197,6 @@ scripts/studio.sh wait-export <export_id> [interval_sec]
   作品ごと消す必要があるときは**必ず人に依頼する**。
 - Take の `stale: true` は、その Take を焼いたあとに脚本か参照素材が変わった印。
   **採用する前に焼き直す**。
-- `workflow/` の JSON はプロセス内キャッシュ。編集したらサーバーを再起動しないと
-  反映されない。
 - 生成は時間と GPU を食う。まとめて焼く前にカット一覧を人に見せて確認する。
 
 ## 7. 生成フォームと画面操作
@@ -215,7 +222,7 @@ scripts/studio.sh wait-export <export_id> [interval_sec]
 7. 演出（MV のときだけ）: `PUT /timelines/{id}/fx` に `FxOverlay` の props を入れる
    （下の「演出はタイムラインに保存する」）
 8. `POST /timelines/{id}/export`（202 即受付。演出まで焼くなら `{"fx": true}`）→
-   `GET /exports/{id}` をポーリング（`scripts/studio.sh wait-export <id>`）→
+   `GET /exports/{id}` をポーリング（`.agents/skills/karakuri-studio/scripts/studio.sh wait-export <id>`）→
    `POST /exports/{id}/save-to-library`
 
 書き出しの結果には焼き上がりの `fps` / `width` / `height` / `frames` /
@@ -234,7 +241,7 @@ scripts/studio.sh wait-export <export_id> [interval_sec]
   合わなければ音とずれている（`warnings` にも「フレーム数が計画と違います」が出る）
 - **音源は `POST /library/audio`（multipart）で棚に入れて A1 に置く**。
   タイムラインに置けるのは棚の音だけで、作品の素材（`assets`）に上げた音は
-  素材ビンに出てこない（`scripts/studio.sh upload /library/audio file=@ban.wav`）
+  素材ビンに出てこない（`.agents/skills/karakuri-studio/scripts/studio.sh upload /library/audio file=@ban.wav`）
 
 ### 演出はタイムラインに保存する（FX トラック。MV のときだけ）
 
@@ -260,7 +267,7 @@ POST   /timelines/{id}/export      {"fx": true}       # 演出付きで焼く
   最初の音声クリップが自動で入る
 - `fx: true` の書き出しは、ffmpeg の mp4 のあとに Remotion が続けて走る。結果は
   `GET /exports/{id}` の `fx_status` / `fx_video_url`（レンダは数分〜十数分かかる）
-- 検証は `type` と `t` だけ。中身の正本は `remotion/src/schema.ts`（zod）で、
+- 検証は `type` と `t` だけ。中身の正本は `../remotion/src/schema.ts`（zod）で、
   書き方は `.agents/skills/karakuri-remotion/SKILL.md`
 - 直したいイベントだけ `PATCH`（`event` は浅いマージ、`null` でその項目を削除）。
   消さずに外したいときは `{"enabled": false}`
@@ -329,8 +336,8 @@ POST /jobs {"mode":"audio_analysis",
 2. `POST /jobs {"mode":"remotion","remotion_composition":"…","remotion_props":{…}}`
 3. 進捗はふつうのジョブと同じ（`GET /jobs/{id}`）。mp4 は `video_url`。
 
-`remotion_props` の中身の正本は Studio に同梱された **`remotion/`**（スキーマは
-`remotion/src/schema.ts`）と **`.agents/skills/karakuri-remotion/SKILL.md`**。
+`remotion_props` の中身の正本は Studio に同梱された **`../remotion/`**（スキーマは
+`../remotion/src/schema.ts`）と **`.agents/skills/karakuri-remotion/SKILL.md`**。
 そこを読んでから書く。
 
 **ただし `FxOverlay` の演出はタイムラインに保存する**（§8「演出はタイムラインに保存
@@ -362,7 +369,7 @@ POST /jobs {"mode":"audio_analysis",
 2. **フォント画像**（下記）をそのまま使う
 3. **手持ちの PNG**: `POST /library/image` に multipart（`file=@logo.png`。
    `name` / `tags` / `category` / `nsfw` をフォームで添えられる。
-   `scripts/studio.sh upload /library/image file=@logo.png` で送れる。種別を
+   `.agents/skills/karakuri-studio/scripts/studio.sh upload /library/image file=@logo.png` で送れる。種別を
    書きたくないときは `POST /library/upload`）→ 返った `id` を
    `POST /library/{id}/key`。**Docker で動いているアプリにホストの絶対パスは
    見えない**ので、手元のファイルは必ずこの multipart で渡す。
@@ -398,8 +405,8 @@ POST /jobs {"mode":"audio_analysis",
 ### フォント画像
 
 ```bash
-scripts/studio.sh GET /images/text/fonts
-scripts/studio.sh POST /images/text '{"text":"撃ち抜け","size":220,"color":"#f5f5f5","outline":{"color":"#08080a","width":10}}'
+.agents/skills/karakuri-studio/scripts/studio.sh GET /images/text/fonts
+.agents/skills/karakuri-studio/scripts/studio.sh POST /images/text '{"text":"撃ち抜け","size":220,"color":"#f5f5f5","outline":{"color":"#08080a","width":10}}'
 ```
 
 用途は 2 つ。
@@ -415,7 +422,7 @@ Noto Sans CJK JP Bold 相当）。存在しない名前は 400。
 ### コンタクトシートで検分する
 
 ```bash
-scripts/studio.sh POST /videos/contact-sheet '{"source":{"job_id":"<job>"},"seconds":[43.9,44.2,46.0],"columns":3}'
+.agents/skills/karakuri-studio/scripts/studio.sh POST /videos/contact-sheet '{"source":{"job_id":"<job>"},"seconds":[43.9,44.2,46.0],"columns":3}'
 ```
 
 - `source` は `job_id` / `item_id` / `export_id` / `path` の**どれか 1 つだけ**。
@@ -425,9 +432,10 @@ scripts/studio.sh POST /videos/contact-sheet '{"source":{"job_id":"<job>"},"seco
 - 応答の `item.url` を GET して **自分の目で見る**。`seconds` に実際に抜いた秒が
   並ぶ。
 - **演出の配置（`cx` / `cy` / `w`）を触ったら必ずこれで確かめる。**
-- 手元で 1 秒ごとのフレームを並べて見たいときは `scripts/inspect.sh`（人が手元で
-  使う道具）。API のコンタクトシートは**外部エージェントが必要な秒だけ束ねて見る**
-  ためのもので、役割が違う。
+- 使い分け: 全体をざっと通して見るなら
+  `.agents/skills/karakuri-studio/scripts/inspect.sh`（1 秒ごとの全フレームを
+  `tmp/` に出す）。演出の秒や配置を詰めるなら API のコンタクトシート
+  （必要な秒だけ 1 枚に束ねて見る）。
 
 ## 11. やってはいけない
 

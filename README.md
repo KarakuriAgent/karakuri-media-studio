@@ -32,10 +32,11 @@ cd karakuri-media-studio && ./run.sh    # 依存を整えて http://127.0.0.1:80
 
 ```bash
 git clone https://github.com/KarakuriAgent/karakuri-media-studio.git
-cd karakuri-media-studio && claude      # Codex / Cursor CLI などでも可
+cd karakuri-media-studio/workspace && claude   # Codex / Cursor CLI などでも可
 ```
 
-「セットアップして」と頼めば、[`karakuri-setup`](.agents/skills/karakuri-setup/SKILL.md)
+エージェントの作業フォルダは [`workspace/`](workspace/AGENTS.md) です。
+「セットアップして」と頼めば、[`karakuri-setup`](workspace/.agents/skills/karakuri-setup/SKILL.md)
 スキルが `scripts/setup.sh status` で保存状態と環境を見て、**未完了の段階から**
 環境確認・起動・ComfyUI 接続・キー発行・動作確認まで進めます（人にしかできない作業
 —— サインイン、キーの用意、ライセンス確認 —— だけは指示して待ちます）。
@@ -52,9 +53,9 @@ cd karakuri-media-studio && claude      # Codex / Cursor CLI などでも可
 | [`docs/EXTERNAL-API.md`](docs/EXTERNAL-API.md) | 外部公開 API（`/api/v1`・`X-API-Key`）の設計とデプロイ |
 | [`docs/RUNPOD-QUICKSTART.md`](docs/RUNPOD-QUICKSTART.md) | ComfyUI を RunPod の Pod で動かす手順 |
 | [`docs/prompt-samples.md`](docs/prompt-samples.md) | プロンプトの実例 |
-| [`.agents/skills/karakuri-setup/SKILL.md`](.agents/skills/karakuri-setup/SKILL.md) | エージェント向け: 導入・再開・点検 |
-| [`.agents/skills/karakuri-studio/SKILL.md`](.agents/skills/karakuri-studio/SKILL.md) | エージェント向け: 外部 API で映像を作る |
-| [`.agents/skills/karakuri-remotion/SKILL.md`](.agents/skills/karakuri-remotion/SKILL.md) | エージェント向け: Remotion の props を書く |
+| [`workspace/.agents/skills/karakuri-setup/SKILL.md`](workspace/.agents/skills/karakuri-setup/SKILL.md) | エージェント向け: 導入・再開・点検 |
+| [`workspace/.agents/skills/karakuri-studio/SKILL.md`](workspace/.agents/skills/karakuri-studio/SKILL.md) | エージェント向け: 外部 API で映像を作る |
+| [`workspace/.agents/skills/karakuri-remotion/SKILL.md`](workspace/.agents/skills/karakuri-remotion/SKILL.md) | エージェント向け: Remotion の props を書く |
 
 ---
 

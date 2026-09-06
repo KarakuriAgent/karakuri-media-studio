@@ -1,0 +1,30 @@
+# Karakuri Media Studio を操作するエージェントの作業フォルダ。
+# 既定でこの中はすべて無視し、案内ファイルとスキル本体だけを例外で追跡する。
+# （リクエスト JSON・落とした動画・切り出した PNG・メモ・tmp/ などは
+#   ここに自由に置いてよく、コミットされない）
+*
+
+# --- 案内 ----------------------------------------------------------------
+!/.gitignore
+!/AGENTS.md
+!/CLAUDE.md
+
+# --- スキル本体 ----------------------------------------------------------
+# 親ディレクトリを一段ずつ無視解除しないと、中のファイルまで届かない。
+!/.agents/
+!/.agents/skills/
+!/.agents/skills/karakuri-*/
+!/.agents/skills/karakuri-*/**
+
+# --- 各エージェント用の置き場 ---------------------------------------------
+!/.claude/
+!/.claude/skills/
+!/.claude/skills/karakuri-*
+
+!/.cursor/
+!/.cursor/skills/
+!/.cursor/skills/karakuri-*
+
+!/.grok/
+!/.grok/skills/
+!/.grok/skills/karakuri-*

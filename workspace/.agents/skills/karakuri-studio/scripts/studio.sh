@@ -18,14 +18,17 @@
 # 接続先とキーの解決:
 #   BASE = $KARAKURI_STUDIO_URL、無ければ <repo>/.env の HOST/PORT (既定 127.0.0.1:8000)
 #   KEY  = $KARAKURI_STUDIO_API_KEY、無ければ <repo>/runtime/config.json の external_api_key
-#   <repo> は $KARAKURI_STUDIO_REPO、無ければこのスクリプトの 4 つ上。
+#   <repo> は $KARAKURI_STUDIO_REPO、無ければこのスクリプトの 5 つ上。
+#   <workspace> (作業フォルダ) は $KARAKURI_WORKSPACE、
+#   無ければこのスクリプトの 4 つ上（<repo>/workspace）。
 # キーの値は表示しない。
 set -euo pipefail
 
 die() { printf 'studio.sh: %s\n' "$*" >&2; exit 2; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
-REPO="${KARAKURI_STUDIO_REPO:-$(cd "$SCRIPT_DIR/../../../.." && pwd -P)}"
+WORKSPACE="${KARAKURI_WORKSPACE:-$(cd "$SCRIPT_DIR/../../../.." && pwd -P)}"
+REPO="${KARAKURI_STUDIO_REPO:-$(cd "$SCRIPT_DIR/../../../../.." && pwd -P)}"
 
 # --- BASE ----------------------------------------------------------------
 BASE="${KARAKURI_STUDIO_URL:-}"
@@ -157,7 +160,7 @@ except Exception:
 
 case "${1:-}" in
   ""|-h|--help)
-    sed -n '2,22p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
+    sed -n '2,24p' "${BASH_SOURCE[0]}" | sed 's/^# \{0,1\}//'
     exit 0 ;;
   wait-job)
     [[ -n "${2:-}" ]] || die "使い方: studio.sh wait-job <job_id> [interval_sec]"
