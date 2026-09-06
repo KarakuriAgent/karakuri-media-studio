@@ -82,8 +82,6 @@
 |---|---|---|---|---|
 | `minimax_h3_t2v` | テキスト→動画・音声つき (MiniMax H3 t2v) | minimax_h3 fl2va int8 | なし | ✕ |
 | `minimax_h3_t2v_save` | テキスト→動画・音声つき・ラテント保存 (MiniMax H3 t2v + Save Latent) | 同 `minimax_h3_t2v` | 同 `minimax_h3_t2v` | ✕ |
-| `minimax_h3_t2v_turbo` | テキスト→動画・音声つき (MiniMax H3 t2v Turbo) | minimax_h3 fl2va w4a8 + turbo 4step LoRA | 同 `minimax_h3_t2v` | ✕ |
-| `minimax_h3_t2v_save_turbo` | テキスト→動画・音声つき・ラテント保存 (MiniMax H3 t2v Turbo + Save Latent) | 同 `minimax_h3_t2v_turbo` | 同 `minimax_h3_t2v` | ✕ |
 | `minimax_h3_t2v_opt` | テキスト→動画・音声つき (MiniMax H3 t2v Optimized) | minimax_h3 fl2va w4a8（蒸留 LoRA なし・20 steps） | 同 `minimax_h3_t2v` | ✕ |
 | `minimax_h3_t2v_save_opt` | テキスト→動画・音声つき・ラテント保存 (MiniMax H3 t2v Optimized + Save Latent) | 同 `minimax_h3_t2v_opt` | 同 `minimax_h3_t2v` | ✕ |
 | `minimax_h3_i2v` | 画像→動画・音声つき (MiniMax H3 i2v) | minimax_h3 fl2va int8 | 画像（最終フレーム画像は任意） | ○（既定） |
@@ -104,14 +102,14 @@
 
 - id はファイル名（拡張子なし）
 - **`_save` / `_context` は手動の生成フォームにもプロンプト用のカタログにも出ない**
-  （`WorkflowSpec.studio_only`）。この 12 個はドラマスタジオが
+  （`WorkflowSpec.studio_only`）。この 11 個はドラマスタジオが
   「ラテント連続性」×「動画生成品質」から id を組み立てて使うだけの版で、入力の形も
   仕上がりも素の版と同じなので人が手で選ぶ意味が無く、選べると「ラテント連続性 OFF
   なのに保存版」のような矛盾だけが増える。落としているのは
   `app.workflows.selectable_specs`（＝ `/api/options` とプロンプトのカタログ）だけで、
   **id 直指定（`get_spec`）は従来どおり通る**: スタジオの解決（`_plan_render`）・
   ジョブの実行・マニフェスト検証（`validate_specs`）・外部 API の `video_workflow`
-  直指定はどれも 21 件すべてを見る
+  直指定はどれも 19 件すべてを見る
 - `_turbo` / `_opt` / `_context` / `_save` はカスタムノード前提なので、**接続先が `comfy_cloud` のときは選択肢に出ない**（§3.1）
 - **`_turbo` / `_opt`** はドラマスタジオからは直接選ばず、プロジェクトの
   **「動画生成品質」**（`quality` = `normal` / `opt` / `turbo`）として持つ。品質は論理モード
@@ -123,13 +121,21 @@
 
   3 段目の表（`app.studio.QUALITY_WORKFLOWS`）は 7 つの論理ワークフロー
   （`minimax_h3_{t2v,i2v,r2v}` / `minimax_h3_{t2v,i2v,r2v}_save` / `minimax_h3_r2v_context`）
-  すべてに `_turbo` / `_opt` を持つので、**ラテント連続性が ON でも t2v でも品質は効く**。
-  素へ落ちるのは接続先が対応しない（`comfy_cloud`）ときだけで、そのときも 2 段目までの結果
-  （＝保存付きの版）は保ったまま品質だけを落とす。理由は投入プレビューの `workflow_reason` に出る。
+  すべてに `_opt` を持つので、**ラテント連続性が ON でも t2v でも品質は効く**。
+  ただし **`_turbo` は t2v 系（`minimax_h3_t2v` / `_t2v_save`）には無い**: 4step 蒸留 LoRA
+  （`minimax_h3_fl2v_turbo_*`）は fl2v（フレーム条件つき）用で、テキストだけの生成には
+  効かないため、そのテンプレート自体を置いていない。品質 `turbo` の作品でも t2v になる
+  カットは **`_opt` へ落として**投入し（`app.studio.TURBO_FALLBACK_QUALITY`）、
+  `workflow_reason` に「t2v は Turbo 非対応（蒸留 LoRA が fl2v 用）なので Optimized で
+  投入します」と出す。素へ落ちるのは接続先が対応しない（`comfy_cloud`）ときだけで、
+  そのときも 2 段目までの結果（＝保存付きの版）は保ったまま品質だけを落とす。
+  理由は投入プレビューの `workflow_reason` に出る。
 - **画像生成品質**（`image_quality` = `normal` / `opt` / `turbo`、既定 `normal`）は、上の
   「動画生成品質」と**同じ 3 段だが独立したプロジェクト設定**。効くのは作品の素材となる
   静止画を MiniMax H3 Image で焼くときだけで、`minimax_h3_{t2i,i2i,r2i}` の素 / `_opt` /
   `_turbo` を選ぶ（`app.studio.image_quality_workflow`。接続先が対応しなければ素へ落とす）。
+  動画の t2v と同じ理由で **`minimax_h3_t2i_turbo` は無い**ので、`turbo` の作品でも t2i は
+  `_opt` へ落ちる（`app.studio.IMAGE_TURBO_FALLBACK_QUALITY`）。
   動画の `quality` は静止画には流用しない（動画を turbo で回していても素材の絵は素で焼く、
   という使い分けのために分けてある）。いまのところアプリ側に静止画を焼く経路は無く、
   素材画像を作るのは**外部エージェント**（SKILL 経由で `/api/v1` を叩く Claude Code /
@@ -240,7 +246,7 @@
 | `anima` | Anima | `anima` | なし | text-to-image、アニメ・イラスト系（`ResolutionSelector`） |
 | `z_image_turbo` | Z-Image turbo | `z-image` | なし | text-to-image、8 steps 蒸留。ResolutionSelector が無いのでアプリが幅・高さを計算して注入 |
 | `qwen_image_edit_2511` | Qwen-Image Edit 2511 | `qwen-image` | 画像（編集元画像） | **編集系**。`source_image` 必須で、出力解像度は入力画像から決まる（`aspect_ratio` / `megapixels` は無視） |
-| `minimax_h3_t2i` / `_opt` / `_turbo` | MiniMax H3 Image t2i | `minimax-h3-image` | なし | text-to-image。H3（音声つき動画モデル）でフレームのパケットを作り 1 枚を選ぶ（枚数は `selects` の `quality_profile` で 5 / 9 / 13 / 20）。`ResolutionSelector` は無く、アプリが幅・高さを **32 の倍数**で計算して注入（既定 0.98MP） |
+| `minimax_h3_t2i` / `_opt` | MiniMax H3 Image t2i | `minimax-h3-image` | なし | text-to-image。H3（音声つき動画モデル）でフレームのパケットを作り 1 枚を選ぶ（枚数は `selects` の `quality_profile` で 5 / 9 / 13 / 20）。`ResolutionSelector` は無く、アプリが幅・高さを **32 の倍数**で計算して注入（既定 0.98MP）。**`_turbo` は無い**（蒸留 LoRA が fl2v 用でテキストだけの生成に効かない。品質 `turbo` でも `_opt` に落ちる） |
 | `minimax_h3_i2i` / `_opt` / `_turbo` | MiniMax H3 Image i2i | `minimax-h3-image` | 画像（編集元画像） | **編集系**。`source_image` を fl2va のフレーム 0 に置く。解像度は `aspect_ratio` + `megapixels`（合わせ方は `selects` の `source_fit`・既定 crop_center） |
 | `minimax_h3_r2i` / `_opt` / `_turbo` | MiniMax H3 Image r2i | `minimax-h3-image` | 参照画像 1〜9 枚 | **参照編集系**（base は ref2va、`_opt` / `_turbo` は fl2va + 参照 LoRA）。`reference_images` を渡した順に `<Picture 1>` … で参照。開始フレーム（`source_image`）は受け取らない |
 | `grok_imagine_t2i` | Grok Imagine 画像生成（サブスク CLI） | `grok-imagine` | なし | **ComfyUI 非依存**（`backend: "grok_cli"`、§5.2）。text-to-image |
@@ -274,7 +280,7 @@
   **r2i の `_opt` / `_turbo` だけは土台が違い**、動画の r2v と同じく ref2va の量子化ウェイトではなく
   `minimax_h3_fl2va_pruned_w4a8_mixed` に参照 LoRA `minimax_h3_ref_lora_rank_256_bf16` を
   `LoraLoaderModelOnly`（ノード 144・strength 1.0）で重ねて参照モードにする。`_turbo` はさらに
-  4step 蒸留 LoRA `minimax_h3_fl2v_turbo_4step_v1.1_768p_comfyui_bf16` を UNET 直後（ノード 143）に
+  4step 蒸留 LoRA `minimax_h3_fl2v_turbo_4step_v1.2_768p_comfyui_bf16` を UNET 直後（ノード 143）に
   挟む（`UNETLoader → 143 → 144 → PathchSageAttentionKJ → …`）。t2i / i2i の `_turbo` は
   蒸留 LoRA 1 段だけ（ノード 150）
 - `minimax_h3_r2i` は**画像ステージが参照素材（`reference_images`）を受け取る**唯一の
@@ -442,9 +448,13 @@ ComfyUI が「テンプレートにしか無いファイル」を探して落ち
 ##### MiniMax H3 Turbo: 高速化をテンプレートに焼き込む
 
 生成そのものを速くする仕掛けは**実行時オプションではなくテンプレート**が持つ。MiniMax H3 には
-素の t2v / i2v / r2v と対になる **turbo** テンプレート（`minimax_h3_t2v_turbo` /
-`minimax_h3_i2v_turbo` / `minimax_h3_r2v_turbo`）があり、ラテント保存版・連続カット版にも同じ差分を
-当てた turbo（`minimax_h3_*_save_turbo` / `minimax_h3_r2v_context_turbo`）がある。
+素の i2v / r2v と対になる **turbo** テンプレート（`minimax_h3_i2v_turbo` /
+`minimax_h3_r2v_turbo`）があり、ラテント保存版・連続カット版にも同じ差分を
+当てた turbo（`minimax_h3_{i2v,r2v}_save_turbo` / `minimax_h3_r2v_context_turbo`）がある。
+**t2v に turbo は無い**: 4step 蒸留 LoRA（`minimax_h3_fl2v_turbo_*`）は fl2v
+（フレーム条件つき）用で、テキストだけの生成には効かないため。t2v は素と `opt`
+（と、そのラテント保存版）だけで、品質 `turbo` の作品でも t2v になるカットは
+`opt` へ落として投入する（画像側の t2i も同じで、`minimax_h3_t2i_turbo` は無い）。
 受け取る論理入力・プロンプトの書き方・`multi_inputs` は素の版と**完全に同じ**で、
 違うのは中身だけ:
 
@@ -453,9 +463,9 @@ ComfyUI が「テンプレートにしか無いファイル」を探して落ち
 | UNET | `minimax_h3_{fl2va,ref2va}_pruned_w4a8_mixed` | 同左（r2v だけ fl2va + 参照 LoRA。下記） |
 | CLIP | `qwen3vl_32b_heretic_minimax_h3_nvfp4` | 同左 |
 | 動画 VAE | `minimax_h3_video_vae_fp16` | `minimax_h3_video_vae_int8_convrot` |
-| 蒸留 LoRA | なし | `minimax_h3_fl2v_turbo_4step_v1.1_768p_comfyui_bf16` |
+| 蒸留 LoRA | なし | `minimax_h3_fl2v_turbo_4step_v1.2_768p_comfyui_bf16` |
 | `BasicScheduler.steps` | 20 | **4** |
-| `KSamplerSelect.sampler_name` | `res_multistep` | 同左（r2v turbo だけ `euler`） |
+| `KSamplerSelect.sampler_name` | `res_multistep` | **`euler`**（turbo は全部） |
 
 素の版も**量子化ウェイトと heretic の text encoder**を使うので、素の版と turbo の
 モデルファイルの差は**動画 VAE と蒸留 LoRA だけ**（`opt` は turbo から蒸留 LoRA を抜いて
@@ -465,17 +475,19 @@ UNETLoader と BasicGuider の間には、高速化ノードが**テンプレー
 
 ```
 UNETLoader
- → MiniMaxH3TurboLoRA      (minimax_h3_fl2v_turbo_4step_v1.1_768p_comfyui_bf16.safetensors, strength 1)
+ → LoraLoaderModelOnly     (minimax_h3_fl2v_turbo_4step_v1.2_768p_comfyui_bf16.safetensors, strength_model 1.0)
  → PathchSageAttentionKJ   (sage_attention=auto)
  → MiniMaxH3MemoryEfficientSageAttentionPatch     (入力は model のみ)
- → SolAttnPatch            (tau 1.5 / 0.2〜0.9)   ──→ BasicScheduler.model
+ → BlockSparseAttention    (Sol-Attn tau 1.5 / 0.2〜0.9) ──→ BasicScheduler.model
  → MiniMaxH3SigmaShift     (video 12 / audio 3)
  → SpectrumApplyMiniMaxH3  (blend_weight 0.75)    ──→ BasicGuider.model
 ```
 
-`BasicScheduler` は sigmas を作るだけなので **SigmaShift の手前**（`SolAttnPatch` の出力）から
-model を取る。guider だけが末尾の `SpectrumApplyMiniMaxH3` を読む。これらは**任意のカスタム
-ノード**なので、入れていない環境でヘルスチェックが赤くならないよう、turbo を選ばないかぎり
+`BasicScheduler` は sigmas を作るだけなので **SigmaShift の手前**
+（`BlockSparseAttention` の出力）から model を取る。guider だけが末尾の
+`SpectrumApplyMiniMaxH3` を読む。`BlockSparseAttention` は ComfyUI 本体
+（v0.34.5 以降 / comfy-kitchen 0.2.33 以降）同梱で、それ以外は**任意のカスタム
+ノード**。入れていない環境でヘルスチェックが赤くならないよう、turbo を選ばないかぎり
 グラフには現れない。
 
 ワークフローの宣言は `dataclasses.replace` で素の版との差分だけを書く（`workflows.py` の
@@ -483,18 +495,17 @@ model を取る。guider だけが末尾の `SpectrumApplyMiniMaxH3` を読む�
 さらに `replace` した `…_SAVE_TURBO` / `MINIMAX_H3_R2V_CONTEXT_TURBO`）。family は素の版と同じ
 `minimax-h3` なので、2 段プルダウン（モデル → モード）の 2 段目に「… (i2v Turbo)」
 「… (r2v Turbo)」として並ぶ。
-turbo 版だけは選択式フィールド（下記）で `low_vram`（`MiniMaxH3TurboLoRA` の低 VRAM 読み込み）を
-出す。**既定は `off`** で、VRAM が足りずに落ちるときだけ `on` にする。
+蒸留 LoRA は本体標準の `LoraLoaderModelOnly` で重ねるので、turbo 専用の custom node は要らない。
 
 **r2v の opt / turbo だけは土台が違う**（`_save` / `_context` 版も同じ）。UNET は ref2va では
 なく `minimax_h3_fl2va_pruned_w4a8_mixed` で、そこへ参照 LoRA
 `minimax_h3_ref_lora_rank_256_bf16` を `LoraLoaderModelOnly`（ノード 144・strength 1.0）で
 重ねてから `PathchSageAttentionKJ` 以降の連鎖に流す。turbo はさらに 4step 蒸留 LoRA
-`minimax_h3_fl2v_turbo_4step_v1.1_768p_comfyui_bf16` を `LoraLoaderModelOnly`（ノード 143）で
+`minimax_h3_fl2v_turbo_4step_v1.2_768p_comfyui_bf16` を `LoraLoaderModelOnly`（ノード 143）で
 UNET 直後に挟み（`UNETLoader → 143 → 144 → PathchSageAttentionKJ → …`）、
 `BasicScheduler.steps` を **4**・`KSamplerSelect.sampler_name` を **`euler`** にする。
 つまり **turbo と opt のテンプレートの差はノード 143 と steps / sampler だけ**。
-`MiniMaxH3TurboLoRA` を使わないので r2v の turbo は **`low_vram` を持たない**。
+蒸留 LoRA の重ね方は t2v / i2v の turbo（ノード 150）と同じで、r2v だけ参照 LoRA が 1 段多い。
 
 #### ラテントアップスケール（`latent_upscale`）
 
@@ -570,9 +581,10 @@ UNET 直後に挟み（`UNETLoader → 143 → 144 → PathchSageAttentionKJ →
 
 さらに turbo から**蒸留 LoRA だけを抜いた** **opt**（`minimax_h3_t2v_opt` / `minimax_h3_i2v_opt` /
 `minimax_h3_r2v_opt` と、その `_save` / `_context` 版）がある。
-`MiniMaxH3TurboLoRA` を持たず（`PathchSageAttentionKJ` が UNETLoader 直結）、
-`BasicScheduler.steps` は素の版と同じ **20**。量子化ウェイトとアテンション系パッチはそのままなので、
-品質は素の版相当のまま実行だけが速い。書き込む先のノードが無いので **`low_vram` は持たない**。
+蒸留 LoRA の `LoraLoaderModelOnly` を持たず（`PathchSageAttentionKJ` が UNETLoader 直結）、
+`BasicScheduler.steps` は素の版と同じ **20**・`KSamplerSelect.sampler_name` も素の版と同じ
+`res_multistep`。量子化ウェイトとアテンション系パッチはそのままなので、
+品質は素の版相当のまま実行だけが速い。
 ドラマスタジオからはプロジェクトの「動画生成品質」（`quality`）として選ぶ（§2.2）。
 
 **接続先が `comfy_cloud` のときは turbo / opt（と MiniMax H3 Image の全バリアント）を
@@ -603,8 +615,7 @@ MiniMax H3 Image だけが使う任意のカスタムノード）を 1 つでも
   両方に入れないと映像だけ伸びてしまう項目のため）
 - 書き込み先が **BOOLEAN の widget**（`workflow._BOOL_INPUTS`）なら、選んだ文字列を
   `on` → `true` / それ以外 → `false` に直してから入れる。ComfyUI は BOOLEAN に文字列を入れると
-  型検証で prompt ごと落ちるため。MiniMax H3 turbo の `low_vram`（`MiniMaxH3TurboLoRA.low_vram`、
-  4step 蒸留 LoRA を低 VRAM モードで読むか）と MiniMax H3 Image の `optimize_for_still`
+  型検証で prompt ごと落ちるため。MiniMax H3 Image の `optimize_for_still`
   （静止画向けのプロンプト包み・既定 `on`）がこの形
 - 書き込み先が **FLOAT の widget** で選択肢が数字の文字列のとき（`workflow._FLOAT_SELECT_INPUTS`）は
   `float()` に直してから入れる（BOOLEAN と同じ理由）。MiniMax H3 Image の `source_fidelity`
@@ -726,7 +737,7 @@ Stable Audio の `reprompt`（内蔵 LLM でのプロンプト展開）だけは
 - 画像側: 各ファミリーの UNET / CLIP / VAE（krea2 = `krea2_turbo_fp8_scaled` + `qwen3vl_4b_fp8_scaled` + `qwen_image_vae`、anima = `anima-base-v1.0`、z-image = `z_image_turbo_bf16`、qwen-image = `qwen_image_edit_2511_int8_convrot` + Lightning 4steps LoRA）と KSampler 設定
 - 音声側: MiniMax Music 3 `minimax_music3_dit_fp16` + `minimax_music3_text_encoder_pruned_int8_convrot` + `minimax_music3_dav`、Stable Audio `stable_audio_3_medium_base` + `t5gemma_b_b_ul2` / `qwen3.5_2b_bf16`、およびサンプラー設定
 - 動画側: MiniMax H3 の UNET / CLIP / 映像 VAE / 音声 VAE（`minimax_h3_*` 系。素の版から w4a8 量子化ウェイトで、opt / turbo はさらに int8_convrot の映像 VAE + Sage Attention / Sol-Attn / SigmaShift / Spectrum、turbo は 4step 蒸留 LoRA も）とサンプラー設定
-- **モデルファイル名は利用者の ComfyUI 環境依存**のため、設定ページ（`GET/PUT /api/models`）で上書き可能。既定値は各テンプレートの値。対象は UNETLoader.unet_name / CLIPLoader.clip_name / CLIPVisionLoader.clip_name / VAELoader.vae_name / CheckpointLoaderSimple.ckpt_name / LatentUpscaleModelLoader.model_name / LoadMoGeModel.model_name / LoraLoaderModelOnly.lora_name / LoraLoader.lora_name / MiniMaxH3TurboLoRA.lora_name（§3.4 で削除される画像テンプレートのプレースホルダは除く。テンプレートが持つ固定 LoRA ノード（qwen-image の Lightning LoRA、MiniMax H3 turbo の 4step 蒸留 LoRA）はユーザー LoRA と共存するので上書き対象のまま）
+- **モデルファイル名は利用者の ComfyUI 環境依存**のため、設定ページ（`GET/PUT /api/models`）で上書き可能。既定値は各テンプレートの値。対象は UNETLoader.unet_name / CLIPLoader.clip_name / CLIPVisionLoader.clip_name / VAELoader.vae_name / CheckpointLoaderSimple.ckpt_name / LatentUpscaleModelLoader.model_name / LoadMoGeModel.model_name / LoraLoaderModelOnly.lora_name / LoraLoader.lora_name（§3.4 で削除される画像テンプレートのプレースホルダは除く。テンプレートが持つ固定 LoRA ノード（qwen-image の Lightning LoRA、MiniMax H3 turbo の 4step 蒸留 LoRA）はユーザー LoRA と共存するので上書き対象のまま）
 - **モデルの指定は接続先ごと**（SPEC §5）: `Settings.model_overrides` / `model_choices` は `{"<comfy_target>": {"<スロットキー>": …}}` の 2 段で持つ。どのファイルが在るかは ComfyUI の環境ごとに違うため。`GET/PUT /api/models` は `?target=`（PUT はボディの `target`）で対象環境を選び、省略すると現在の接続先。**書き込みは選んだ環境だけ**で他の環境の指定は残る。ジョブ実行・`/api/options` の `model_slots`・投入時の検証はすべて「現在の接続先」の値（`Settings.overrides_for()` / `choices_for()`）を使う。接続先を分ける前の設定（1 組だけ）は読み込み時に**3 環境すべてへ複製**される（`config._per_target`）: 分けた瞬間に指定が消えて既定モデルで走り出すのを避けるため
 - 上書きキーは**ワークフロー ID でスコープ**する: `"<workflow_id>/<node_id>.<field>": "<ファイル名>"`。テンプレート間で同じノード ID（例: `340:317` が ia2v と id_lora の両方にある）が衝突しないため。旧レイアウトの非スコープキーは無視される（マイグレーション不要）
 - **実行ごとのモデル切り替え**: 同じキー形式で「そのスロットで選べるファイル名」を設定に持てる（`Settings.model_choices`、`GET/PUT /api/models` で読み書き）。既定値（`model_overrides` → 無ければテンプレート値）と合わせて **2 件以上**になったスロットは *switchable* とみなし、`GET /api/options` の `model_slots`（キー・ラベル・既定値・候補一覧）に出す。ジョブは `model_overrides`（`JobCreate` / `JobContinue` のフィールド）で 1 回ぶんだけ差し替えられ、実行時に設定の既定値の上へマージされる（`jobs.run_job`）。検証（`models.model_override_problem`、Web UI と API で共通）は「キーが `model_fields()` に存在」「そのジョブが走らせるワークフロー（`models.job_workflow_ids`）に属する」「値が候補（既定値を含む）に入っている」を満たさないものを 422 で拒否する。再実行は params ごと引き継ぎ、続き生成は動画ワークフローぶんのキーだけを引き継ぐ（`workflow.scoped_model_overrides`）
@@ -735,7 +746,7 @@ Stable Audio の `reprompt`（内蔵 LLM でのプロンプト展開）だけは
   - `runpod` … Pod の中で動く小さな API（`deploy/runpod/model_api.py`、`127.0.0.1:8190`。caddy が ComfyUI と同じ認証で `/studio/models/*` だけを通す）に `POST /download` で依頼し、`GET /downloads` を 2 秒ごとにポーリングして**ローカルと同じ WS フレーム**に変換して流す。アプリを再起動しても Pod 側は走り続けるので、`GET /api/models/downloads?target=runpod` は Pod の一覧を取り込んで見張りを再開する。Pod が古いイメージ（この API を持たない）なら 404 を「イメージを作り直してください」という 400 にして返す
   - `comfy_cloud` … ファイルシステムに触れないので 400（モデルは Comfy Cloud 側の管理）
   - **一括ダウンロード**（[全DL]、`POST /api/models/download-all`）: 選んだ環境の `/object_info` と比べて未検出、かつ `model_download_urls` に URL があるものをまとめて開始する。対象はワークフローの各スロットの実効値・候補リストと、その環境の LoRA 登録。URL が無いものは `missing_urls` として返して UI が知らせる。ComfyUI に繋がらないときは 400（何が足りないか判定できないため）
-  - 置き場所は `class_type`＋入力フィールドから決める（`workflow.MODEL_SUBFOLDERS` → `ModelField.subfolder`）: checkpoints = CheckpointLoaderSimple.ckpt_name、diffusion_models = UNETLoader.unet_name、text_encoders = CLIPLoader.clip_name / DualCLIPLoader.clip_name1・clip_name2、clip_vision = CLIPVisionLoader.clip_name、vae = VAELoader.vae_name、loras = LoraLoader.lora_name / LoraLoaderModelOnly.lora_name / MiniMaxH3TurboLoRA.lora_name、latent_upscale_models = LatentUpscaleModelLoader.model_name、geometry_estimation = LoadMoGeModel.model_name。未知のローダーは空（＝ UI で入力させる。当てずっぽうに置いても ComfyUI からは見えない）
+  - 置き場所は `class_type`＋入力フィールドから決める（`workflow.MODEL_SUBFOLDERS` → `ModelField.subfolder`）: checkpoints = CheckpointLoaderSimple.ckpt_name、diffusion_models = UNETLoader.unet_name、text_encoders = CLIPLoader.clip_name / DualCLIPLoader.clip_name1・clip_name2、clip_vision = CLIPVisionLoader.clip_name、vae = VAELoader.vae_name、loras = LoraLoader.lora_name / LoraLoaderModelOnly.lora_name、latent_upscale_models = LatentUpscaleModelLoader.model_name、geometry_estimation = LoadMoGeModel.model_name。未知のローダーは空（＝ UI で入力させる。当てずっぽうに置いても ComfyUI からは見えない）
   - `POST /api/models/download` は保存先を検証（`..` / 絶対パス / パス区切りを拒否し、`resolve()` 後に models ディレクトリ配下であることを確認）してからバックグラウンドタスクを起こす。httpx のストリームをチャンクで `<ファイル名>.part` に書き、完走したときだけ本来の名前に `rename` する（失敗・中断時は `.part` を削除）。進捗は WS `/api/ws` に `type: "model_download"` として流れる。同じファイル名の同時ダウンロードは 409
   - 認証は URL のホストで出し分ける: huggingface.co / hf.co（サブドメイン含む）は `Settings.hf_token`、civitai.com は `Settings.civitai_api_key` を `Authorization: Bearer …` として付ける（未設定なら付けない）。**リダイレクトは httpx に任せず自分で追う**（最大 10 ホップ、相対 `Location` は urljoin で解決、301/302/303/307/308 を GET のまま追う）: クライアント既定ヘッダに認証を載せると転送先の別ホストにトークンが漏れるため、ホップごとに URL を再検証して認証ヘッダを計算し直し、そのリクエストにだけ渡す（HF → `*.hf.co` の CDN には付き、無関係なホストには付かない）。URL はファイル名ごとに `Settings.model_download_urls` へ保存する（同じファイルが複数スロットに出るため、キーはスロットではなくファイル名）
   - 保存先は**環境変数 `COMFY_MODELS_DIR` だけ**が決める（設定 `runtime/config.json` には持たない）。UI からパスを入れられても、Docker で同じ絶対パスをマウントしていなければ書けないため。`.env` に書けば `run.sh`（ホスト実行、`.env` を読んで `export`）と `docker compose`（同一パスのマウント＋`environment:` で受け渡し）の双方に効く。設定に残すのは `hf_token` / `civitai_api_key` / `model_download_urls` だけで、旧バージョンが書いた `comfy_models_dir` キーは読み込み時に捨てる
@@ -2187,8 +2198,8 @@ GET  /outputs/…                  … 静的配信（画像/動画/音声）
 内部 API（`/api/…`）とは別系統に、**外部エージェント向け**の API を持つ。制作を回すのは
 このアプリの中の機構ではなく、**外から `/api/v1` を叩くコーディングエージェント**
 （Claude Code / Codex / Cursor CLI など）で、その段取りは
-[`.agents/skills/karakuri-studio/SKILL.md`](../.agents/skills/karakuri-studio/SKILL.md) に置いてある
-（`AGENTS.md` / `CLAUDE.md` からリンク）。
+[`workspace/.agents/skills/karakuri-studio/SKILL.md`](../workspace/.agents/skills/karakuri-studio/SKILL.md) に置いてある
+（`workspace/AGENTS.md` / `CLAUDE.md` からリンク）。
 
 認証は設定 `external_api_key` と突き合わせる `X-API-Key` ヘッダ。キーが空のあいだは
 `/api/v1` ごと 404 を返す（既定は無効）。実体は `app.studio` / `app.jobs` /
@@ -2272,9 +2283,11 @@ frontend/           React + Vite + Tailwind の SPA（ビルド成果物は fron
                     SettingsPage / studio/（ドラマスタジオと編集タブ）
 docs/SPEC.md        仕様書
 docs/EXTERNAL-API.md  外部公開 API（/api/v1）の設計
-.agents/skills/karakuri-setup/   外部エージェント向け SKILL: 導入・再開・点検
+workspace/          外部エージェントの作業フォルダ（cd workspace && claude。スキルと
+                    案内以外はコミットしない = workspace/.gitignore はホワイトリスト）
+  .agents/skills/karakuri-setup/   外部エージェント向け SKILL: 導入・再開・点検
                     （scripts/setup.sh が状態と自動検出を出す。AGENTS.md からリンク）
-.agents/skills/karakuri-studio/  外部エージェント向け SKILL（AGENTS.md / CLAUDE.md からリンク）
+  .agents/skills/karakuri-studio/  外部エージェント向け SKILL（AGENTS.md / CLAUDE.md からリンク）
 remotion/           同梱の Remotion プロジェクト（composition は remotion/src/。§5.2）
 workflow/           ComfyUI ワークフロー（API フォーマット）テンプレート ※実行の正
   image/            krea2/ anima/ z-image/ qwen-image/（モデルファミリーごと）
@@ -2332,7 +2345,7 @@ runtime/            config.json / setup-state.json（セットアップの段階
 決定済み（v0.4 — 制作の主体を外へ出す）:
 
 15. **内蔵エージェントモードとキャンバスは撤去**。制作を回すのは外から `/api/v1` を叩く
-    コーディングエージェント（SKILL = `.agents/skills/karakuri-studio/`）に一本化する。
+    コーディングエージェント（SKILL = `workspace/.agents/skills/karakuri-studio/`）に一本化する。
     アプリ内に残る LLM 用途は**プロンプト作成チャット・英訳・自動タグ・ヘルスチェック**の
     4 つだけ（§4.1）
 16. **外部 API は「人が UI でできること」とほぼ同じ範囲**まで広げる。ただし

@@ -92,8 +92,6 @@ MODEL_FIELDS: set[tuple[str, str]] = {
     ("LoadMoGeModel", "model_name"),
     ("LoraLoaderModelOnly", "lora_name"),
     ("LoraLoader", "lora_name"),
-    # MiniMax H3 turbo の 4step 蒸留 LoRA（専用ローダーだが中身はただの LoRA）
-    ("MiniMaxH3TurboLoRA", "lora_name"),
 }
 
 # 不足モデルをダウンロードするときの既定の置き場所（SPEC §3.3）。値は ComfyUI 側の
@@ -113,7 +111,6 @@ MODEL_SUBFOLDERS: dict[tuple[str, str], str] = {
     ("VAELoader", "vae_name"): "vae",
     ("LoraLoader", "lora_name"): "loras",
     ("LoraLoaderModelOnly", "lora_name"): "loras",
-    ("MiniMaxH3TurboLoRA", "lora_name"): "loras",
     # 空間アップスケーラと MoGe は専用フォルダ（nodes_hunyuan.py / nodes_moge.py）
     ("LatentUpscaleModelLoader", "model_name"): "latent_upscale_models",
     ("MinimaxH3LatentUpscaler3D", "model_name"): "latent_upscale_models",
@@ -177,7 +174,6 @@ _FLOAT_INPUTS: set[tuple[str, str]] = {
 #: （``"on"`` -> ``True`` / それ以外 -> ``False``）。ComfyUI は BOOLEAN の widget に
 #: 文字列を入れると型検証で prompt ごと落ちる。
 _BOOL_INPUTS: set[tuple[str, str]] = {
-    ("MiniMaxH3TurboLoRA", "low_vram"),
     # MiniMax H3 Image: 静止画向けのプロンプト包み（選択式は "on" / "off"）
     ("H3TextToImagePrepare", "optimize_for_still"),
     ("H3ImageToImagePrepare", "optimize_for_still"),

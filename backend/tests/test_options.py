@@ -42,7 +42,6 @@ def test_workflow_catalogue_is_exposed(client):
         "qwen_image_edit_2511",
         "minimax_h3_t2i",
         "minimax_h3_t2i_opt",
-        "minimax_h3_t2i_turbo",
         "minimax_h3_i2i",
         "minimax_h3_i2i_opt",
         "minimax_h3_i2i_turbo",
@@ -57,7 +56,7 @@ def test_workflow_catalogue_is_exposed(client):
         "anima",
         "z-image",
         "qwen-image",
-        *["minimax-h3-image"] * 9,
+        *["minimax-h3-image"] * 8,
         "grok-imagine",
         "grok-imagine",
     ]
@@ -171,10 +170,13 @@ PLAIN_WORKFLOWS = ("minimax_h3_t2v", "minimax_h3_i2v", "minimax_h3_r2v")
 #: ドラマスタジオが内部で解決するだけのバリアント（`WorkflowSpec.studio_only`）。
 #: プロジェクトの「ラテント連続性」×「動画生成品質」から `app.studio._plan_render`
 #: が id を組み立てるもので、手動の生成フォームには出さない（SPEC §2.2）。
+#: t2v だけは `_turbo` が無い（蒸留 LoRA が fl2v 用なので t2v の turbo は
+#: そもそも用意していない。品質 turbo の t2v は `_opt` に落ちる）。
 STUDIO_ONLY_WORKFLOWS = tuple(
     f"minimax_h3_{mode}_save{suffix}"
     for mode in ("t2v", "i2v", "r2v")
     for suffix in ("", "_turbo", "_opt")
+    if not (mode == "t2v" and suffix == "_turbo")
 ) + tuple(
     f"minimax_h3_r2v_context{suffix}" for suffix in ("", "_turbo", "_opt")
 )

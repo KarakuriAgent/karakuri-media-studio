@@ -2725,15 +2725,17 @@ StudioWorkflowOverride = Literal[
 #:   焼き込んだ最適化版（品質は素相当で実行が速い）。
 #: - ``turbo``: 4 steps の蒸留 LoRA 版（いちばん速いが粗い）。
 #:
-#: ``opt`` / ``turbo`` は i2v / r2v にしかバリアントが無く、カスタムノード頼み
-#: なので、条件が揃わなければ素へフォールバックする。
+#: ``opt`` / ``turbo`` はカスタムノード頼みなので、接続先が対応しなければ素へ
+#: フォールバックする。``turbo`` は **t2v には無い**（蒸留 LoRA が fl2v 用で
+#: テキストだけの生成に効かない）ので、t2v になるカットは ``opt`` へ落ちる。
 StudioVideoQuality = Literal["normal", "opt", "turbo"]
 
 #: 画像生成の品質（プロジェクト単位の設定）。動画の :data:`StudioVideoQuality` と
 #: **同じ 3 段だが独立したつまみ**で、素材の静止画を MiniMax H3 Image
 #: （``minimax_h3_t2i`` / ``_i2i`` / ``_r2i``）で焼くときにだけ効く
 #: （:func:`app.studio.image_quality_workflow`）。動画を turbo で回していても
-#: 素材の絵は素で焼きたい、という使い分けのために分けてある。
+#: 素材の絵は素で焼きたい、という使い分けのために分けてある。動画側と同じく
+#: ``turbo`` は t2i には無く、t2i は ``opt`` へ落ちる。
 StudioImageQuality = Literal["normal", "opt", "turbo"]
 
 #: リビジョンを作った主体。``user`` = UI からの操作、``external`` = 外部 API

@@ -270,26 +270,23 @@
   },
   "152": {
     "inputs": {
-      "tau": 1.5,
-      "start_percent": 0.2,
-      "end_percent": 0.9,
-      "min_tokens": 4096,
-      "int8_qk": false,
-      "sink_conditioning": "exact_kv",
-      "morton": false,
-      "morton_curve": "3d",
-      "int8_pv": false,
-      "verbose": false,
-      "use_tma": false,
-      "dense_blocks": "",
       "model": [
         "155",
         0
-      ]
+      ],
+      "selection": "Sol-Attn (adaptive tau)",
+      "selection.tau": 1.5,
+      "start_percent": 0.2,
+      "end_percent": 0.9,
+      "dense_blocks": "",
+      "min_tokens": 4096,
+      "extra_tokens": 256,
+      "sink_conditioning": "exact_kv",
+      "verbose": false
     },
-    "class_type": "SolAttnPatch",
+    "class_type": "BlockSparseAttention",
     "_meta": {
-      "title": "SolAttnPatch"
+      "title": "Block Sparse Attention"
     }
   },
   "153": {

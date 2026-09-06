@@ -172,7 +172,7 @@ def test_select_examples_honours_the_limit_and_explicit_ids():
     "workflow, expected",
     [
         ("minimax_h3_t2v", ["H3-E2", "H3-E8"]),
-        ("minimax_h3_t2v_turbo", ["H3-E2", "H3-E8"]),
+        ("minimax_h3_t2v_save_opt", ["H3-E2", "H3-E8"]),
         ("minimax_h3_i2v", ["H3-E1", "H3-E4"]),
         ("minimax_h3_i2v_save_opt", ["H3-E1", "H3-E4"]),
         ("minimax_h3_r2v", ["H3-E3", "H3-E7"]),

@@ -136,7 +136,9 @@ export const VIDEO_QUALITY_LABEL: Record<StudioVideoQuality, string> = {
 export const VIDEO_QUALITY_HINT: Record<StudioVideoQuality, string> = {
   normal: '通常 = 素の MiniMax H3（20 steps）。どの接続先でも動く標準の品質。',
   opt: 'Opt = 20 steps のまま量子化と高速化だけを入れた版（品質は通常のまま速い）。',
-  turbo: 'Turbo = 4 steps の蒸留 LoRA 版（いちばん速いが粗い）。',
+  turbo:
+    'Turbo = 4 steps の蒸留 LoRA 版（いちばん速いが粗い）。' +
+    '蒸留 LoRA は fl2v 用なので t2v には効かず、t2v になるカットは Opt で投入する。',
 }
 
 /**
@@ -154,7 +156,9 @@ export const IMAGE_QUALITY_LABEL: Record<StudioImageQuality, string> = {
 export const IMAGE_QUALITY_HINT: Record<StudioImageQuality, string> = {
   normal: '通常 = 素の MiniMax H3 Image。どの接続先でも動く標準の品質。',
   opt: 'Opt = 量子化と高速化だけを入れた版（品質は通常のまま速い）。',
-  turbo: 'Turbo = 蒸留 LoRA 版（いちばん速いが粗い）。',
+  turbo:
+    'Turbo = 蒸留 LoRA 版（いちばん速いが粗い）。' +
+    '蒸留 LoRA は fl2v 用なので t2i には効かず、t2i は Opt で焼く。',
 }
 
 /** 狭い画面のヘッダーに出す、プロジェクト生成設定の 1 行要約。 */

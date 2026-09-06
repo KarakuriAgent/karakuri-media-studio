@@ -137,7 +137,7 @@
   },
   "123": {
     "inputs": {
-      "sampler_name": "res_multistep"
+      "sampler_name": "euler"
     },
     "class_type": "KSamplerSelect",
     "_meta": {
@@ -270,17 +270,16 @@
   },
   "150": {
     "inputs": {
-      "lora_name": "minimax_h3_fl2v_turbo_4step_v1.1_768p_comfyui_bf16.safetensors",
-      "strength": 1,
-      "low_vram": false,
+      "lora_name": "minimax_h3_fl2v_turbo_4step_v1.2_768p_comfyui_bf16.safetensors",
+      "strength_model": 1.0,
       "model": [
         "127",
         0
       ]
     },
-    "class_type": "MiniMaxH3TurboLoRA",
+    "class_type": "LoraLoaderModelOnly",
     "_meta": {
-      "title": "MiniMaxH3TurboLoRA"
+      "title": "LoraLoaderModelOnly"
     }
   },
   "151": {
@@ -311,26 +310,23 @@
   },
   "152": {
     "inputs": {
-      "tau": 1.5,
-      "start_percent": 0.2,
-      "end_percent": 0.9,
-      "min_tokens": 4096,
-      "int8_qk": false,
-      "sink_conditioning": "exact_kv",
-      "morton": false,
-      "morton_curve": "3d",
-      "int8_pv": false,
-      "verbose": false,
-      "use_tma": false,
-      "dense_blocks": "",
       "model": [
         "155",
         0
-      ]
+      ],
+      "selection": "Sol-Attn (adaptive tau)",
+      "selection.tau": 1.5,
+      "start_percent": 0.2,
+      "end_percent": 0.9,
+      "dense_blocks": "",
+      "min_tokens": 4096,
+      "extra_tokens": 256,
+      "sink_conditioning": "exact_kv",
+      "verbose": false
     },
-    "class_type": "SolAttnPatch",
+    "class_type": "BlockSparseAttention",
     "_meta": {
-      "title": "SolAttnPatch"
+      "title": "Block Sparse Attention"
     }
   },
   "153": {

@@ -2,7 +2,7 @@
 
 このアプリを新しいマシンに導入して起動するまでと、環境まわりの設定・トラブル対処を
 まとめたものです。**エージェントに任せるなら
-[`.agents/skills/karakuri-setup/SKILL.md`](../.agents/skills/karakuri-setup/SKILL.md)**
+[`workspace/.agents/skills/karakuri-setup/SKILL.md`](../workspace/.agents/skills/karakuri-setup/SKILL.md)**
 （`scripts/setup.sh status` から未完了の段階だけを進めてくれます）。
 
 ---
@@ -14,7 +14,7 @@
 | ComfyUI | 稼働中であること（既定 `http://127.0.0.1:8188`）。Comfy Cloud も可 |
 | custom nodes | ResolutionSelector / ComfySwitchNode / CustomCombo / MiniMaxH3 系 / ComfyMath / ResizeImage 系 / ResizeAndPadImage / MoGe 系 / LoadVideo など、`workflow/` 配下のワークフローが使うノード一式 |
 | custom nodes | MiniMax H3 Image（t2i / i2i / r2i）を使う場合は [ComfyUI-MiniMax-H3-Image-Studio](https://github.com/astropuzzo/ComfyUI-MiniMax-H3-Image-Studio)（`H3TextToImagePrepare` / `H3ImageToImagePrepare` / `H3ReferenceEditPrepare` / `H3SamplingSettings` / `H3ImageDecode` / `H3ImageFrameSelector`）。`deploy/runpod/custom_nodes.txt` にコミットを固定してあるので RunPod では自動で入ります |
-| custom nodes（任意） | MiniMax H3 の Turbo / Optimized ワークフロー（動画の i2v / r2v・画像の t2i / i2i / r2i）を使う場合のみ SageAttention 本体と [ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes)、および `SolAttnPatch` / `MiniMaxH3TurboLoRA` / `MiniMaxH3MemoryEfficientSageAttentionPatch` / `MiniMaxH3SigmaShift` / `SpectrumApplyMiniMaxH3` を提供する custom node。Turbo / Optimized 以外のワークフローには不要（Optimized は `MiniMaxH3TurboLoRA` だけ使わない） |
+| custom nodes（任意） | MiniMax H3 の Turbo / Optimized ワークフロー（Turbo は動画の i2v / r2v・画像の i2i / r2i、Optimized は動画の t2v / i2v / r2v・画像の t2i / i2i / r2i。t2v / t2i に Turbo は無く、品質 Turbo でも Optimized に落ちる）を使う場合のみ SageAttention 本体と [ComfyUI-KJNodes](https://github.com/kijai/ComfyUI-KJNodes)（`PathchSageAttentionKJ`）、および `MiniMaxH3MemoryEfficientSageAttentionPatch` / `MiniMaxH3SigmaShift` / `SpectrumApplyMiniMaxH3` を提供する custom node。Turbo の 4step 蒸留 LoRA は ComfyUI 本体標準の `LoraLoaderModelOnly` で当てるので custom node は不要。ブロックスパースアテンションの `BlockSparseAttention` は ComfyUI 本体 **v0.34.5 以降**（comfy-kitchen 0.2.33 以降）に同梱なので custom node は不要（本体がそれより古い場合は更新してください）。Turbo / Optimized 以外のワークフローには不要（Optimized は 4step 蒸留 LoRA だけ使わない） |
 | custom nodes（任意） | ドラマスタジオの「ラテント連続性」（連続カット・`minimax_h3_r2v_context` と、起点になる通常カットの `minimax_h3_*_save`）を使う場合のみ、`MiniMaxH3MotionContext` / `MiniMaxH3MotionContextLoadLatent` / `MiniMaxH3MotionContextSaveLatent` を提供する [ComfyUI-H3-Motion-Context](https://github.com/NikoDemon80/ComfyUI-H3-Motion-Context) と、`MiniMaxH3MotionContextTrim` を提供する ComfyUI-MiniMaxH3-Contex-Loop。Comfy Cloud には入れられないので、その接続先ではこの機能が使えません |
 | モデル | **使うワークフローのぶんだけ**あれば十分です（各テンプレートの既定ファイル名は SPEC §3.3）。足りないものは後述の「不足モデルの自動ダウンロード」で取得できます |
 | grok CLI | `curl -fsSL https://x.ai/cli/install.sh \| bash` でインストール後、一度 `grok` を起動してブラウザでサインイン（サーバーでは `grok --device-auth`）。SuperGrok / X Premium+ のサブスクリプションで利用可。**プロンプト作成のチャットに加えて、画像ワークフローの「Grok Imagine」もこの CLI で走ります**（サインインしていないとそちらは失敗します。設定ページの「grok CLI の接続確認」で確かめられます） |
@@ -98,7 +98,7 @@ MV やモーショングラフィックスを焼く Remotion プロジェクト�
 います。依存は `run.sh` が初回に入れる（Docker で動かす場合はホスト側で
 `npm --prefix remotion install`）ので、設定画面の「Remotion 連携」を **ON** にすれば
 使えます（使うのは常に同梱の `remotion/` です）。書き方は
-[`.agents/skills/karakuri-remotion/SKILL.md`](../.agents/skills/karakuri-remotion/SKILL.md) と
+[`workspace/.agents/skills/karakuri-remotion/SKILL.md`](../workspace/.agents/skills/karakuri-remotion/SKILL.md) と
 [`remotion/README.md`](../remotion/README.md) にあります。
 
 > **ライセンスの注意**: Remotion は MIT などのオープンソースライセンスではなく、独自の

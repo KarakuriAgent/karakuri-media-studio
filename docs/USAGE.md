@@ -15,14 +15,16 @@ WebSocket で右ペインにリアルタイム表示され、完了すると生�
 | 音声 | 音声ワークフローを単発実行（画像・動画とは連結しない） |
 
 **画像**は Krea 2 turbo（既定）/ Anima / Z-Image turbo / Qwen-Image Edit 2511（画像編集。参照画像必須）
-/ MiniMax H3 Image（t2i / i2i / r2i、各 3 バリアント）/ Grok Imagine（テキスト→画像・画像編集）
+/ MiniMax H3 Image（t2i は 2 バリアント、i2i / r2i は各 3 バリアント）/ Grok Imagine（テキスト→画像・画像編集）
 から選びます。
 
 **MiniMax H3 Image** は音声つき動画モデルの MiniMax H3 で**静止画 1 枚**を作るワークフローです
 （複数フレームのパケットを作って 1 枚を選ぶ）。テキスト→画像 (t2i)・画像編集 (i2i)・参照編集
 (r2i、参照画像 1〜9 枚を `<Picture 1>` … として渡す) の 3 モードがあり、それぞれ素の版 /
-**Optimized**（20 ステップのまま実行だけ速い）/ **Turbo**（公式 Turbo アダプタつき。t2i・i2i は
-8 ステップ、r2i は 4 ステップ）の 3 バリアントです。実行には
+**Optimized**（20 ステップのまま実行だけ速い）/ **Turbo**（公式 Turbo アダプタつき。i2i は
+8 ステップ、r2i は 4 ステップ）のバリアントがあります。ただし **t2i に Turbo はありません**
+（Turbo アダプタは fl2v（フレーム条件つき）用で、テキストだけの生成には効かないため）。
+プロジェクトの画像品質を Turbo にしていても、t2i は Optimized で焼かれます。実行には
 [ComfyUI-MiniMax-H3-Image-Studio](https://github.com/astropuzzo/ComfyUI-MiniMax-H3-Image-Studio)
 が必要で（`deploy/runpod/custom_nodes.txt` に固定済み）、Optimized / Turbo はさらに動画側の
 Turbo と同じ custom node 一式と量子化ウェイトが必要です。Turbo アダプタは設定ページの
@@ -49,11 +51,12 @@ Turbo と同じ custom node 一式と量子化ウェイトが必要です。Turb
 指定できません。枠は Grok チャットと共有で、実在人物・著名人・商標はモデレーションで
 弾かれます。
 
-**動画**は MiniMax H3 の 7 種から選び、必要な入力の欄だけが出ます。
+**動画**は MiniMax H3 の 8 種から選び、必要な入力の欄だけが出ます。
 
 | ワークフロー | 必要な入力 |
 |---|---|
 | テキスト→動画・音声つき (MiniMax H3 t2v) | なし |
+| テキスト→動画・音声つき (MiniMax H3 t2v Optimized) | なし（蒸留 LoRA なし・20 ステップのまま実行だけ速い版） |
 | 画像→動画・音声つき (MiniMax H3 i2v)（既定） | 開始フレーム（最後のフレームは任意） |
 | 画像→動画・音声つき (MiniMax H3 i2v Turbo) | 同上（4 ステップの高速版） |
 | 画像→動画・音声つき (MiniMax H3 i2v Optimized) | 同上（蒸留 LoRA なし・20 ステップのまま実行だけ速い版） |
@@ -61,14 +64,15 @@ Turbo と同じ custom node 一式と量子化ウェイトが必要です。Turb
 | 参照素材→動画・音声つき (MiniMax H3 r2v Turbo) | 同上（4 ステップの高速版） |
 | 参照素材→動画・音声つき (MiniMax H3 r2v Optimized) | 同上（蒸留 LoRA なし・20 ステップのまま実行だけ速い版） |
 
-MiniMax H3 の 7 種は映像とステレオ音声（台詞・効果音・音楽）を同時生成します。
+MiniMax H3 の 8 種は映像とステレオ音声（台詞・効果音・音楽）を同時生成します。
 実行には MiniMaxH3 ノードを含む新しめの ComfyUI 本体が必要です（SPEC §2.2）。
 **Turbo**（i2v / r2v）は 4 ステップ蒸留 LoRA と Sage Attention / Sol-Attn / Spectrum を
-ワークフローに焼き込んだ高速版で、入力の指定は素の版とまったく同じです。専用の量子化ウェイト
+ワークフローに焼き込んだ高速版で、入力の指定は素の版とまったく同じです。**t2v に Turbo は
+ありません**（蒸留 LoRA が fl2v（フレーム条件つき）用で、テキストだけの生成には効かないため）。
+プロジェクトの動画品質を Turbo にしていても、t2v になるカットは Optimized で投入されます。専用の量子化ウェイト
 （`*_pruned_w4a8_mixed` / `qwen3vl_32b_heretic_minimax_h3_nvfp4` / `minimax_h3_video_vae_int8_convrot`）と
-上記 custom node 一式が入った環境でのみ動きます。Turbo を選ぶと生成フォームに **Low VRAM**
-のプルダウンが出ます（既定 `off`。VRAM が足りずに落ちるときだけ `on` にすると、4 ステップ蒸留
-LoRA を低 VRAM モードで読み込みます）。
+上記 custom node 一式が入った環境でのみ動きます（4 ステップ蒸留 LoRA は ComfyUI 標準の
+`LoraLoaderModelOnly` で当てるので、Turbo 専用の custom node はありません）。
 
 **音声**は MiniMax Music 3（歌もの・インスト。キャプションと歌詞を指定）と
 Stable Audio 3 Medium（効果音・環境音・単一楽器）の 2 種です。
@@ -105,13 +109,14 @@ Stable Audio 3 Medium（効果音・環境音・単一楽器）の 2 種です�
 2. エージェントに接続先とキーを渡す（環境変数 `KARAKURI_STUDIO_URL` /
    `KARAKURI_STUDIO_API_KEY`。省略時はリポジトリ直下の `.env` と
    `runtime/config.json` から解決されます）
-3. このリポジトリで作業させるだけで、[`AGENTS.md`](../AGENTS.md) / [`CLAUDE.md`](../CLAUDE.md) から
-   [`.agents/skills/karakuri-studio/SKILL.md`](../.agents/skills/karakuri-studio/SKILL.md) に誘導されます
+3. `workspace/` を cwd にして作業させるだけで、[`workspace/AGENTS.md`](../workspace/AGENTS.md) /
+   [`workspace/CLAUDE.md`](../workspace/CLAUDE.md) から
+   [`.agents/skills/karakuri-studio/SKILL.md`](../workspace/.agents/skills/karakuri-studio/SKILL.md) に誘導されます
 
 SKILL には接続とキーの解決、最初に読む API（`openapi.json` / `prompt-guide` /
 `capabilities` / `options`）、制作の段取り、`base_revision` や削除まわりの鉄則が書いて
 あります。curl ラッパーと動画検分スクリプトは
-[`.agents/skills/karakuri-studio/scripts/`](../.agents/skills/karakuri-studio/scripts) にあります。
+[`workspace/.agents/skills/karakuri-studio/scripts/`](../workspace/.agents/skills/karakuri-studio/scripts) にあります。
 
 エージェントが書き換えた脚本・素材・生成フォームは、開いているブラウザに WebSocket で
 そのまま反映されます（`POST /api/v1/ui/navigate` で画面を目的の場所へ動かすこともできます）。

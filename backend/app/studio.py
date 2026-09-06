@@ -142,7 +142,8 @@ def _latent_save_workflow(workflow: str, latent_continuity: bool) -> str:
 # 仕事で、そのあとにラテント連続性の読み替え（:func:`_latent_save_workflow`）を
 # かけ、最後に「そこまでで決まった論理ワークフロー × 品質 -> バリアント id」を
 # ここで解決する（:func:`_quality_workflow`）。ラテント保存版・連続カット版にも
-# turbo / opt のテンプレートがあるので、品質はどの組み合わせでも効く。
+# turbo / opt のテンプレートがあるので、品質はどの組み合わせでも効く（ただし
+# t2v の turbo だけは存在せず opt に落ちる: :data:`TURBO_FALLBACK_QUALITY`）。
 # Shot の ``workflow_override`` は素のモード id しか取らないままでよく、品質を
 # 掛け合わせても強制指定の意味は変わらない。
 
@@ -158,15 +159,15 @@ QUALITY_LABELS: dict[str, str] = {
 
 #: 品質 -> （論理ワークフロー -> そのバリアント id）。論理ワークフローは
 #: :func:`_pick_workflow` と :func:`_latent_save_workflow` を通ったあとの id
-#: （素の t2v / i2v / r2v、ラテント保存版、連続カット版）で、全 7 通りに
-#: turbo / opt のテンプレートが揃っている。ここに無い組み合わせは
+#: （素の t2v / i2v / r2v、ラテント保存版、連続カット版）。opt は全 7 通りに
+#: 揃っているが、turbo は t2v 系の 2 つが無い。ここに無い組み合わせは
 #: 「バリアントが存在しない」＝素へフォールバックする。
 QUALITY_WORKFLOWS: dict[str, dict[str, str]] = {
     "turbo": {
-        WORKFLOW_T2V: "minimax_h3_t2v_turbo",
+        # t2v（と、そのラテント保存版）に turbo は無い: 下の
+        # :data:`TURBO_FALLBACK_QUALITY` で opt に落とす
         WORKFLOW_I2V: "minimax_h3_i2v_turbo",
         WORKFLOW_R2V: "minimax_h3_r2v_turbo",
-        "minimax_h3_t2v_save": "minimax_h3_t2v_save_turbo",
         "minimax_h3_i2v_save": "minimax_h3_i2v_save_turbo",
         "minimax_h3_r2v_save": "minimax_h3_r2v_save_turbo",
         WORKFLOW_R2V_CONTEXT: "minimax_h3_r2v_context_turbo",
@@ -181,6 +182,22 @@ QUALITY_WORKFLOWS: dict[str, dict[str, str]] = {
         WORKFLOW_R2V_CONTEXT: "minimax_h3_r2v_context_opt",
     },
 }
+
+#: turbo のテンプレートを持たない論理ワークフロー -> 代わりに使う品質。
+#: MiniMax H3 の 4step 蒸留 LoRA（``minimax_h3_fl2v_turbo_*``）は fl2v
+#: （フレーム条件つき）用で、テキストだけの生成には効かない。なので t2v には
+#: turbo のテンプレートを置いていない（i2v / r2v は開始フレームや参照素材が
+#: あるのでそのまま効く）。品質「Turbo」の作品でも、t2v になるカットだけは
+#: opt（蒸留 LoRA を使わない最適化版）へ落として投入する。
+TURBO_FALLBACK_QUALITY: dict[str, str] = {
+    WORKFLOW_T2V: "opt",
+    "minimax_h3_t2v_save": "opt",
+}
+
+#: 上のフォールバックが効いたときに ``workflow_reason`` へ足す一文
+TURBO_FALLBACK_REASON = (
+    "t2v は Turbo 非対応（蒸留 LoRA が fl2v 用）なので Optimized で投入します"
+)
 
 #: スタジオが投げうる turbo / opt のワークフロー id（接続先の対応判定用）
 QUALITY_VARIANT_WORKFLOWS: frozenset[str] = frozenset(
@@ -240,13 +257,18 @@ def _quality_workflow(workflow: str, quality: str) -> tuple[str, str]:
     1. そのワークフローに turbo / opt のバリアントが無い（:data:`QUALITY_WORKFLOWS`）
     2. いまの接続先が turbo / opt のカスタムノードに対応しない（Comfy Cloud）
 
+    ``turbo`` × t2v だけは 1 に落ちる前に **opt へ読み替える**
+    （:data:`TURBO_FALLBACK_QUALITY`。蒸留 LoRA が fl2v 用でテキストだけの
+    生成に効かないので、t2v の turbo は用意していない）。
+
     黙って落とすのではなく、必ず ``workflow_reason`` に理由を出す。
     """
     quality = normalize_quality(quality)
     if quality == DEFAULT_QUALITY:
         return workflow, ""
     label = QUALITY_LABELS[quality]
-    variant = QUALITY_WORKFLOWS[quality].get(workflow)
+    fallback = TURBO_FALLBACK_QUALITY.get(workflow) if quality == "turbo" else None
+    variant = QUALITY_WORKFLOWS[fallback or quality].get(workflow)
     if variant is None:
         return workflow, (
             f"品質「{label}」はこのモードに用意が無いので、通常品質で投入します"
@@ -256,6 +278,8 @@ def _quality_workflow(workflow: str, quality: str) -> tuple[str, str]:
             f"いまの接続先は品質「{label}」のカスタムノードに対応しないので、"
             "通常品質で投入します"
         )
+    if fallback:
+        return variant, TURBO_FALLBACK_REASON
     return variant, f"品質「{label}」で投入します"
 
 
@@ -284,11 +308,12 @@ WORKFLOW_R2I = "minimax_h3_r2i"
 DEFAULT_IMAGE_QUALITY = "normal"
 
 #: 画像品質 -> （論理ワークフロー -> そのバリアント id）。動画側の
-#: :data:`QUALITY_WORKFLOWS` と同じ形で、t2i / i2i / r2i の 3 つに
-#: ``_opt`` / ``_turbo`` が揃っている。
+#: :data:`QUALITY_WORKFLOWS` と同じ形。``_opt`` は t2i / i2i / r2i の 3 つに
+#: 揃っているが、``_turbo`` は t2i だけ無い（動画の t2v と同じ理由）。
 IMAGE_QUALITY_WORKFLOWS: dict[str, dict[str, str]] = {
     "turbo": {
-        WORKFLOW_T2I: "minimax_h3_t2i_turbo",
+        # t2i に turbo は無い（動画の t2v と同じ理由）。
+        # :data:`IMAGE_TURBO_FALLBACK_QUALITY` で opt に落とす
         WORKFLOW_I2I: "minimax_h3_i2i_turbo",
         WORKFLOW_R2I: "minimax_h3_r2i_turbo",
     },
@@ -298,6 +323,11 @@ IMAGE_QUALITY_WORKFLOWS: dict[str, dict[str, str]] = {
         WORKFLOW_R2I: "minimax_h3_r2i_opt",
     },
 }
+
+
+#: 画像側の turbo -> opt フォールバック（動画の :data:`TURBO_FALLBACK_QUALITY`
+#: と同じ理由: 蒸留 LoRA が fl2v 用なので、参照画像を取らない t2i には効かない）。
+IMAGE_TURBO_FALLBACK_QUALITY: dict[str, str] = {WORKFLOW_T2I: "opt"}
 
 
 def _image_quality_supported_on_target(workflow: str) -> bool:
@@ -320,11 +350,14 @@ def image_quality_workflow(workflow_id: str, image_quality: str) -> str:
     ``workflow_id`` は素の ``minimax_h3_t2i`` / ``_i2i`` / ``_r2i``。
     ``image_quality`` が ``normal`` のとき、バリアントが無いとき、いまの接続先が
     turbo / opt のカスタムノードに対応しない（Comfy Cloud）ときは、渡された
-    id をそのまま返す。**動画の ``quality`` は見ない。**
+    id をそのまま返す。``turbo`` × t2i だけは opt へ読み替える
+    （:data:`IMAGE_TURBO_FALLBACK_QUALITY`）。**動画の ``quality`` は見ない。**
     """
     quality = normalize_quality(image_quality)
     if quality == DEFAULT_IMAGE_QUALITY:
         return workflow_id
+    if quality == "turbo":
+        quality = IMAGE_TURBO_FALLBACK_QUALITY.get(workflow_id, quality)
     variant = IMAGE_QUALITY_WORKFLOWS[quality].get(workflow_id)
     if variant is None or not _image_quality_supported_on_target(variant):
         return workflow_id

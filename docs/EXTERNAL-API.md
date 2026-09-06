@@ -3,8 +3,8 @@
 外部のエージェント（手元の Claude Code / Codex / Cursor CLI や、karakuri-world の
 ログを監視するブリッジなど）が、脚本づくりから生成・素材の整理・つなぎ・書き出しまでを
 自分で回すための API。**制作を回す主体はアプリの中ではなく外**にあり、その段取りは
-[`.agents/skills/karakuri-studio/SKILL.md`](../.agents/skills/karakuri-studio/SKILL.md)
-（`AGENTS.md` / `CLAUDE.md` からリンク）に置いてある。
+[`workspace/.agents/skills/karakuri-studio/SKILL.md`](../workspace/.agents/skills/karakuri-studio/SKILL.md)
+（`workspace/AGENTS.md` / `CLAUDE.md` からリンク）に置いてある。
 
 - 既存の内部 API（`/api/studio` など）と UI には手を入れない。
 - 実体は薄いラッパー: 既存の `app.studio` / `app.jobs` / `app.timeline` のサービス関数と
@@ -142,7 +142,7 @@ GET /api/v1/prompt-guide
   （代表 2 件 + §2.2 の取得方法）」「stories 投入の注意」の 5 節。フィールドの届き方の正本は
   `app.studio.compose_prompt`（変えたらガイドも直す）。
 - 段取りそのもの（何から読み、どういう順で作り、どこで人に確認するか）はガイドではなく
-  SKILL（`.agents/skills/karakuri-studio/SKILL.md`）が持つ。ここで配るのは
+  SKILL（`workspace/.agents/skills/karakuri-studio/SKILL.md`）が持つ。ここで配るのは
   **脚本とプロンプトの書き方**だけ。
 
 ### 2.2 プロンプト実例（few-shot）
@@ -302,7 +302,7 @@ POST /api/v1/jobs  {"mode": "remotion", "remotion_composition": "Opening",
   無効のあいだは一覧も投入も 400。使うのは**常に同梱の `remotion/`**で、composition を
   足す・直すときは `remotion/src/` を編集する。
 - 依存が入っていない（通常は `run.sh` が初回に入れる）ときも 400 で、その旨を返す。
-- `remotion_props` の書き方は `.agents/skills/karakuri-remotion/SKILL.md` と
+- `remotion_props` の書き方は `workspace/.agents/skills/karakuri-remotion/SKILL.md` と
   `remotion/README.md`（正本は `remotion/src/schema.ts`）。
 - 出来た mp4 は他のジョブと同じく `GET /api/v1/jobs/{id}` の `video_url` に出るので、
   ライブラリ登録・素材登録・タイムラインへの取り込みもそのまま使える。
@@ -685,7 +685,7 @@ GET /api/v1/jobs?q=かおり&kind=video&nsfw=false&limit=48&offset=0
 | `backend/app/remotion.py` | Remotion（同梱の `remotion/`）の composition 一覧とレンダリング（§3.3） |
 | `backend/app/main.py` | `external.router` の include（1 行） |
 | `frontend/`（設定画面） | `external_api_key` の入力欄（[生成] ボタン付き） |
-| `.agents/skills/karakuri-studio/` | 外部エージェント向けの SKILL と curl ラッパー（`AGENTS.md` / `CLAUDE.md` からリンク） |
+| `workspace/.agents/skills/karakuri-studio/` | 外部エージェント向けの SKILL と curl ラッパー（`workspace/AGENTS.md` / `CLAUDE.md` からリンク） |
 | `README.md` / `docs/SPEC.md` | 外部 API の節（有効化の手順と公開時の注意） |
 
 ## 8. 動作確認（2026-08-10 / ローカル ComfyUI + MiniMax H3）
@@ -737,7 +737,12 @@ GET /api/v1/jobs?q=かおり&kind=video&nsfw=false&limit=48&offset=0
   読み替えが済んだあとに掛け合わせて、`minimax_h3_{t2v,i2v,r2v}_{turbo,opt}` /
   `minimax_h3_{t2v,i2v,r2v}_save_{turbo,opt}` / `minimax_h3_r2v_context_{turbo,opt}`
   へ解決されます。`turbo` は 4step 蒸留 LoRA 版（速いが粗い）、`opt` は 20 steps の
-  まま量子化と高速化だけを入れた版です。カスタムノードの無い接続先
+  まま量子化と高速化だけを入れた版です。ただし **t2v に `turbo` はありません**
+  （蒸留 LoRA が fl2v（フレーム条件つき）用で、テキストだけの生成には効かないため）。
+  `quality` が `"turbo"` でも、t2v になるカット（開始フレームの引き継ぎも参照素材も
+  無いカット）は `minimax_h3_t2v_opt`（ラテント連続性が ON なら
+  `minimax_h3_t2v_save_opt`）で投入され、その旨が `workflow_reason` に出ます。
+  カスタムノードの無い接続先
   （Comfy Cloud）では**品質だけを落として**読み替え済みの版で投入します
   （400 にはしません）。どれに当たったかは
   `GET /api/v1/shots/{id}/prompt-preview` の `workflow_reason` に出ます。
@@ -746,7 +751,8 @@ GET /api/v1/jobs?q=かおり&kind=video&nsfw=false&limit=48&offset=0
   `"turbo"`。既定 `"normal"`）は **画像生成の品質**で、上の `quality` とは
   **完全に独立**したつまみです。作品の素材となる静止画を MiniMax H3 Image で
   作るときに、`minimax_h3_{t2i,i2i,r2i}` の素 / `_opt` / `_turbo` のどれを使うかを
-  決めます。**動画の `quality` を静止画に流用しないでください** — 動画を
+  決めます（動画の t2v と同じ理由で **t2i に `_turbo` はなく**、`"turbo"` のときは
+  `minimax_h3_t2i_opt` になります）。**動画の `quality` を静止画に流用しないでください** — 動画を
   `turbo` で回している作品でも、素材の絵は `image_quality` に従います
   （その逆も同じ）。`_opt` / `_turbo` は動画側と同じカスタムノード頼みなので、
   入っていない接続先（Comfy Cloud）では素の版を使います。いまのところ静止画を

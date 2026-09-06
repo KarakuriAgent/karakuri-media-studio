@@ -46,6 +46,7 @@ from app.workflow import (
 )
 from app.workflows import (
     ANIMA,
+    BY_ID,
     DEFAULT_FRAME_GRID,
     DEFAULT_MEGAPIXELS,
     DEFAULT_IMAGE_WORKFLOW,
@@ -62,7 +63,6 @@ from app.workflows import (
     MINIMAX_H3_IMAGE_REF_DETAIL_NAME,
     MINIMAX_H3_IMAGE_STILL_NAME,
     MINIMAX_H3_IMAGE_STRATEGY_NAME,
-    MINIMAX_H3_LOW_VRAM_NAME,
     OPTIONAL_CLASS_TYPES,
     SelectSpec,
     QWEN_IMAGE_EDIT,
@@ -966,10 +966,13 @@ def test_image_workflows_without_a_declaration_ignore_reference_images():
 
 # --- MiniMax H3 Image の選択式つまみ（SPEC §3.1）-----------------------------
 
+#: t2i に `_turbo` は無い（蒸留 LoRA が fl2v 用で、参照画像を取らない t2i には
+#: 効かないので廃止した。品質 turbo のときは `_opt` に落ちる）。
 H3_IMAGE_IDS = [
     f"minimax_h3_{mode}{suffix}"
     for mode in ("t2i", "i2i", "r2i")
     for suffix in ("", "_opt", "_turbo")
+    if not (mode == "t2i" and suffix == "_turbo")
 ]
 
 
@@ -1089,19 +1092,12 @@ _H3_FL2VA = "minimax_h3_fl2va_pruned_w4a8_mixed.safetensors"
 _H3_REF2VA = "minimax_h3_ref2va_pruned_w4a8_mixed.safetensors"
 _H3_VAE_FP16 = "minimax_h3_video_vae_fp16.safetensors"
 _H3_VAE_INT8 = "minimax_h3_video_vae_int8_convrot.safetensors"
-_H3_TURBO_LORA = "minimax_h3_fl2v_turbo_4step_v1.1_768p_comfyui_bf16.safetensors"
+_H3_TURBO_LORA = "minimax_h3_fl2v_turbo_4step_v1.2_768p_comfyui_bf16.safetensors"
 _H3_REF_LORA = "minimax_h3_ref_lora_rank_256_bf16.safetensors"
 
 H3_IMAGE_MODELS = {
     "minimax_h3_t2i": (_H3_FL2VA, _H3_VAE_FP16, [], 20, "res_multistep"),
     "minimax_h3_t2i_opt": (_H3_FL2VA, _H3_VAE_INT8, [], 20, "res_multistep"),
-    "minimax_h3_t2i_turbo": (
-        _H3_FL2VA,
-        _H3_VAE_INT8,
-        [_H3_TURBO_LORA],
-        4,
-        "res_multistep",
-    ),
     "minimax_h3_i2i": (_H3_FL2VA, _H3_VAE_FP16, [], 20, "res_multistep"),
     "minimax_h3_i2i_opt": (_H3_FL2VA, _H3_VAE_INT8, [], 20, "res_multistep"),
     "minimax_h3_i2i_turbo": (
@@ -1417,8 +1413,8 @@ TURBO_PAIRS = [
     ("minimax_h3_r2v_turbo", "minimax_h3_r2v"),
 ]
 
-#: ``MiniMaxH3TurboLoRA``（と `low_vram` の選択式）を持つ turbo。r2v turbo だけは
-#: ``LoraLoaderModelOnly`` 2 段 + ラテントアップスケールの 2 パス構成なので外す
+#: 蒸留 LoRA を ``LoraLoaderModelOnly`` 1 段で重ねる turbo。r2v turbo だけは
+#: ``LoraLoaderModelOnly`` 2 段（蒸留 LoRA + 参照 LoRA）なので外す
 #: （そちらは下の r2v turbo 専用のテストで見る）。
 TURBO_LORA_PAIRS = [
     ("minimax_h3_i2v_turbo", "minimax_h3_i2v"),
@@ -1426,10 +1422,10 @@ TURBO_LORA_PAIRS = [
 
 #: UNETLoader から BasicGuider までに直列で入っている高速化ノード
 TURBO_CHAIN = [
-    "MiniMaxH3TurboLoRA",
+    "LoraLoaderModelOnly",
     "PathchSageAttentionKJ",
     "MiniMaxH3MemoryEfficientSageAttentionPatch",
-    "SolAttnPatch",
+    "BlockSparseAttention",
     "MiniMaxH3SigmaShift",
     "SpectrumApplyMiniMaxH3",
 ]
@@ -1452,7 +1448,7 @@ def test_the_turbo_workflows_take_the_same_inputs_as_the_plain_ones(
 
 @pytest.mark.parametrize(("turbo_id", "plain_id"), TURBO_LORA_PAIRS)
 def test_the_turbo_templates_chain_the_speedup_nodes_in_series(turbo_id, plain_id):
-    """UNETLoader -> TurboLoRA -> Sage -> MemEffSage -> SolAttn -> SigmaShift
+    """UNETLoader -> 蒸留 LoRA -> Sage -> MemEffSage -> BlockSparse -> SigmaShift
     -> Spectrum."""
     wf = build_video_workflow(params(video_workflow=turbo_id))
     validate_workflow(wf)
@@ -1462,13 +1458,13 @@ def test_the_turbo_templates_chain_the_speedup_nodes_in_series(turbo_id, plain_i
         node_id = by_class[class_type]
         assert wf[node_id]["inputs"]["model"] == upstream, class_type
         upstream = [node_id, 0]
-    # guider は末尾（Spectrum）、scheduler は SigmaShift の手前（Sol-Attn）
+    # guider は末尾（Spectrum）、scheduler は SigmaShift の手前（BlockSparse）
     assert wf[by_class["BasicGuider"]]["inputs"]["model"] == [
         by_class["SpectrumApplyMiniMaxH3"],
         0,
     ]
     assert wf[by_class["BasicScheduler"]]["inputs"]["model"] == [
-        by_class["SolAttnPatch"],
+        by_class["BlockSparseAttention"],
         0,
     ]
 
@@ -1491,6 +1487,10 @@ def test_the_turbo_templates_sample_in_four_steps(turbo_id, plain_id):
     assert scheduler["inputs"]["steps"] == 4
     assert scheduler["inputs"]["scheduler"] == "simple"
     assert scheduler["inputs"]["denoise"] == 1
+    sampler = next(
+        node for node in wf.values() if node["class_type"] == "KSamplerSelect"
+    )
+    assert sampler["inputs"]["sampler_name"] == "euler"
 
 
 @pytest.mark.parametrize(
@@ -1554,71 +1554,11 @@ def test_the_turbo_templates_have_plain_numeric_node_ids():
         assert all(key.isdigit() for key in load_template(turbo_id))
 
 
-def turbo_lora_inputs(wf: dict) -> dict:
-    return next(
-        node["inputs"]
-        for node in wf.values()
-        if node["class_type"] == "MiniMaxH3TurboLoRA"
-    )
-
-
-@pytest.mark.parametrize(("turbo_id", "plain_id"), TURBO_LORA_PAIRS)
-def test_the_turbo_workflows_offer_the_low_vram_switch(turbo_id, plain_id):
-    """turbo だけが `low_vram` を選択式で持つ（素の版はノードごと無い）。"""
-    turbo = get_spec(turbo_id, "video")
-    select = turbo.select(MINIMAX_H3_LOW_VRAM_NAME)
-    assert select is not None
-    assert select.choices == ("off", "on")
-    assert select.fallback == "off"
-    # ``CustomCombo`` ではないので番号を書く先は持たない
-    assert select.index_field == ""
-    assert get_spec(plain_id, "video").select(MINIMAX_H3_LOW_VRAM_NAME) is None
-
-
-@pytest.mark.parametrize(("turbo_id", "_plain_id"), TURBO_LORA_PAIRS)
-def test_low_vram_defaults_to_off(turbo_id, _plain_id):
-    """未指定でもテンプレートの現状値（False）のまま。"""
-    assert turbo_lora_inputs(load_template(turbo_id))["low_vram"] is False
-    wf = build_video_workflow(params(video_workflow=turbo_id))
-    assert turbo_lora_inputs(wf)["low_vram"] is False
-
-
-@pytest.mark.parametrize(("turbo_id", "_plain_id"), TURBO_LORA_PAIRS)
-@pytest.mark.parametrize(
-    ("choice", "expected"), [("on", True), ("off", False), ("bogus", False)]
-)
-def test_low_vram_is_written_as_a_boolean(turbo_id, _plain_id, choice, expected):
-    """選択式は文字列だが、BOOLEAN の入力には真偽値で入れる（SPEC §3.1）。"""
-    wf = build_video_workflow(
-        params(video_workflow=turbo_id, selects={MINIMAX_H3_LOW_VRAM_NAME: choice})
-    )
-    validate_workflow(wf)
-    assert turbo_lora_inputs(wf)["low_vram"] is expected
-
-
-def test_low_vram_survives_a_rerun():
-    """ジョブの params に残るので、再実行でも同じ値が使われる。"""
-    original = params(
-        video_workflow="minimax_h3_i2v_turbo",
-        selects={MINIMAX_H3_LOW_VRAM_NAME: "on"},
-    )
-    restored = GenerationParams(**original.model_dump())
-    assert turbo_lora_inputs(build_video_workflow(restored))["low_vram"] is True
-
-
-def test_low_vram_is_offered_to_the_agent_catalog():
-    entry = catalog_entry(get_spec("minimax_h3_i2v_turbo", "video"))
-    assert (MINIMAX_H3_LOW_VRAM_NAME, "off") in {
-        (name, default)
-        for name, _l, _c, default, _a, _h, _labels in entry.selects
-    }
-
-
 # --- MiniMax H3 r2v の opt / turbo（fl2va + 参照 LoRA）----------------------
 
 #: r2v の opt / turbo が使う 2 本の LoRA
 REF_LORA = "minimax_h3_ref_lora_rank_256_bf16.safetensors"
-TURBO_LORA = "minimax_h3_fl2v_turbo_4step_v1.1_768p_comfyui_bf16.safetensors"
+TURBO_LORA = "minimax_h3_fl2v_turbo_4step_v1.2_768p_comfyui_bf16.safetensors"
 
 #: opt テンプレートから r2v turbo を作るときの差分（これ以外は完全に同じ）
 _R2V_TURBO_TWEAKS = {
@@ -1671,10 +1611,6 @@ def test_the_r2v_quality_templates_load_fl2va_with_the_ref_lora(workflow_id):
     assert template["144"]["inputs"]["strength_model"] == 1.0
     # 高速化チェーンの頭は必ず参照 LoRA
     assert template["151"]["inputs"]["model"] == ["144", 0]
-    # 専用ローダー（MiniMaxH3TurboLoRA）はもう使わない
-    assert "MiniMaxH3TurboLoRA" not in {
-        node["class_type"] for node in template.values()
-    }
 
 
 @pytest.mark.parametrize(
@@ -1727,9 +1663,6 @@ def test_the_r2v_turbo_stacks_the_two_loras_before_the_speedup_chain():
         )
         assert wf[node_id]["inputs"]["model"] == upstream, class_type
         upstream = [node_id, 0]
-    assert "MiniMaxH3TurboLoRA" not in {
-        node["class_type"] for node in wf.values()
-    }
 
 
 @pytest.mark.parametrize(("_opt_id", "turbo_id"), R2V_QUALITY_PAIRS)
@@ -1737,13 +1670,6 @@ def test_the_r2v_turbo_samples_in_four_euler_steps(_opt_id, turbo_id):
     template = load_template(turbo_id)
     assert template["124"]["inputs"]["steps"] == 4
     assert template["123"]["inputs"]["sampler_name"] == "euler"
-
-
-def test_the_r2v_turbo_has_no_low_vram_switch():
-    """``MiniMaxH3TurboLoRA`` を使わないので書き込む先が無い。"""
-    for _opt_id, turbo_id in R2V_QUALITY_PAIRS:
-        spec = get_spec(turbo_id, "video")
-        assert spec.select(MINIMAX_H3_LOW_VRAM_NAME) is None
 
 
 def test_the_r2v_turbo_takes_the_same_inputs_as_the_plain_r2v():
@@ -2165,14 +2091,20 @@ def test_the_upscaler_model_file_is_a_settings_slot():
     )
 
 
-@pytest.mark.parametrize("turbo_id", ["minimax_h3_t2v_turbo", "minimax_h3_i2v_turbo"])
-def test_the_t2v_i2v_turbo_keep_the_low_vram_switch_alongside_latent_upscale(turbo_id):
-    """`latent_upscale` を足しても既存の選択式は残る。"""
-    spec = get_spec(turbo_id, "video")
-    assert set(spec.selects) == {MINIMAX_H3_LOW_VRAM_NAME, LATENT_UPSCALE_NAME}
-    assert spec.select(MINIMAX_H3_LOW_VRAM_NAME).target.class_type == (
-        "MiniMaxH3TurboLoRA"
-    )
+def test_the_i2v_turbo_only_offers_latent_upscale():
+    """蒸留 LoRA が本体標準の `LoraLoaderModelOnly` になり、選択式はこれだけ。"""
+    spec = get_spec("minimax_h3_i2v_turbo", "video")
+    assert set(spec.selects) == {LATENT_UPSCALE_NAME}
+
+
+@pytest.mark.parametrize(
+    "workflow_id",
+    ["minimax_h3_t2v_turbo", "minimax_h3_t2v_save_turbo", "minimax_h3_t2i_turbo"],
+)
+def test_the_t2v_t2i_turbo_variants_do_not_exist(workflow_id):
+    """t2v / t2i に turbo は無い（蒸留 LoRA が fl2v 用で、テキストだけの生成には
+    効かないので廃止した。品質 turbo のときは opt に落ちる）。"""
+    assert workflow_id not in BY_ID
 
 
 # --- MiniMax H3 opt（turbo から蒸留 LoRA を抜いた 20 ステップ版）------------
@@ -2183,8 +2115,10 @@ OPT_PAIRS = [
     ("minimax_h3_r2v_opt", "minimax_h3_r2v", "minimax_h3_r2v_turbo"),
 ]
 
-#: opt の高速化ノード（turbo から ``MiniMaxH3TurboLoRA`` を抜いたもの）
-OPT_CHAIN = [class_type for class_type in TURBO_CHAIN if class_type != "MiniMaxH3TurboLoRA"]
+#: opt の高速化ノード（turbo から蒸留 LoRA の ``LoraLoaderModelOnly`` を抜いたもの）
+OPT_CHAIN = [
+    class_type for class_type in TURBO_CHAIN if class_type != "LoraLoaderModelOnly"
+]
 
 
 @pytest.mark.parametrize(("opt_id", "plain_id", "_turbo_id"), OPT_PAIRS)
@@ -2204,10 +2138,10 @@ def test_the_opt_workflows_take_the_same_inputs_as_the_plain_ones(
 
 @pytest.mark.parametrize(("opt_id", "_plain_id", "_turbo_id"), OPT_PAIRS)
 def test_the_opt_templates_drop_the_distilled_lora(opt_id, _plain_id, _turbo_id):
-    """UNETLoader -> Sage -> MemEffSage -> SolAttn -> SigmaShift -> Spectrum。"""
+    """UNETLoader -> Sage -> MemEffSage -> BlockSparse -> SigmaShift -> Spectrum。"""
     template = load_template(opt_id)
-    assert "MiniMaxH3TurboLoRA" not in {
-        node["class_type"] for node in template.values()
+    assert TURBO_LORA not in {
+        node["inputs"].get("lora_name") for node in template.values()
     }
     wf = build_video_workflow(params(video_workflow=opt_id))
     validate_workflow(wf)
@@ -2229,7 +2163,7 @@ def test_the_opt_templates_drop_the_distilled_lora(opt_id, _plain_id, _turbo_id)
         0,
     ]
     assert wf[by_class["BasicScheduler"]]["inputs"]["model"] == [
-        by_class["SolAttnPatch"],
+        by_class["BlockSparseAttention"],
         0,
     ]
 
@@ -2271,12 +2205,6 @@ def test_the_opt_templates_keep_the_quantised_weights(opt_id, unet):
     }
 
 
-@pytest.mark.parametrize(("opt_id", "_plain_id", "_turbo_id"), OPT_PAIRS)
-def test_the_opt_workflows_have_no_low_vram_switch(opt_id, _plain_id, _turbo_id):
-    """書き込む先の ``MiniMaxH3TurboLoRA`` がテンプレートに無いので持たない。"""
-    assert get_spec(opt_id, "video").select(MINIMAX_H3_LOW_VRAM_NAME) is None
-
-
 @pytest.mark.parametrize(("opt_id", "plain_id", "_turbo_id"), OPT_PAIRS)
 def test_the_opt_workflows_share_the_prompt_guide_of_the_plain_ones(
     opt_id, plain_id, _turbo_id
@@ -2296,13 +2224,19 @@ OPT_TURBO_DIFF_PAIRS = [
 def test_the_opt_templates_differ_from_turbo_only_in_the_lora_and_the_steps(
     opt_id, _plain_id, turbo_id
 ):
-    """テンプレートの差分はノード 150 の削除・151 の付け替え・steps だけ。"""
+    """差分はノード 150 の削除・151 の付け替え・steps・サンプラーだけ。
+
+    turbo は 4 ステップ蒸留 LoRA に合わせて `euler` を使うが、20 ステップに
+    戻る opt は素の版と同じ `res_multistep` のまま。
+    """
     opt = load_template(opt_id)
     turbo = copy.deepcopy(load_template(turbo_id))
     assert "150" in turbo and "150" not in opt
     del turbo["150"]
     turbo["151"]["inputs"]["model"] = ["127", 0]
     turbo["124"]["inputs"]["steps"] = 20
+    assert turbo["123"]["inputs"]["sampler_name"] == "euler"
+    turbo["123"]["inputs"]["sampler_name"] = "res_multistep"
     assert opt == turbo
 
 
@@ -2941,7 +2875,7 @@ def test_the_minimax_turbo_lora_is_a_switchable_model_field():
     fields = {f.key: f for f in model_fields()}
     key = "minimax_h3_i2v_turbo/150.lora_name"
     assert key in fields
-    assert fields[key].class_type == "MiniMaxH3TurboLoRA"
+    assert fields[key].class_type == "LoraLoaderModelOnly"
     assert fields[key].default.endswith(".safetensors")
 
     wf = build_video_workflow(

@@ -1118,8 +1118,9 @@ export type StudioRevisionEntity =
  * - `opt`: 20 steps のまま、量子化と高速化パッチだけを焼き込んだ最適化版。
  * - `turbo`: 4 steps の蒸留 LoRA 版（いちばん速いが粗い）。
  *
- * `opt` / `turbo` は i2v / r2v にしかバリアントが無く、カスタムノード頼みなので、
- * 条件が揃わなければ素へフォールバックする（理由は `workflow_reason`）。
+ * `opt` / `turbo` はカスタムノード頼みなので、接続先が対応しなければ素へ
+ * フォールバックする（理由は `workflow_reason`）。`turbo` は **t2v には無い**
+ * （蒸留 LoRA が fl2v 用）ので、t2v になるカットは `opt` へ落ちる。
  */
 export type StudioVideoQuality = 'normal' | 'opt' | 'turbo'
 
@@ -1127,7 +1128,8 @@ export type StudioVideoQuality = 'normal' | 'opt' | 'turbo'
  * 画像生成の品質（プロジェクト単位の設定）。動画の `StudioVideoQuality` と同じ
  * 3 段だが**独立したつまみ**で、素材の静止画を MiniMax H3 Image
  * （`minimax_h3_t2i` / `_i2i` / `_r2i` の素 / `_opt` / `_turbo`）で焼くときに
- * だけ効く。動画を turbo で回していても素材の絵は素で焼ける。
+ * だけ効く。動画を turbo で回していても素材の絵は素で焼ける。動画側と同じく
+ * `turbo` は t2i には無く、t2i は `opt` へ落ちる。
  */
 export type StudioImageQuality = 'normal' | 'opt' | 'turbo'
 

@@ -1444,16 +1444,56 @@ def test_quality_picks_the_i2v_variant(env, monkeypatch, quality, expected):
     [
         ("normal", "minimax_h3_t2v"),
         ("opt", "minimax_h3_t2v_opt"),
-        ("turbo", "minimax_h3_t2v_turbo"),
+        # turbo は t2v に無いので opt に落ちる
+        ("turbo", "minimax_h3_t2v_opt"),
     ],
 )
 def test_quality_picks_the_t2v_variant(env, monkeypatch, quality, expected):
-    """t2v にも turbo / opt のテンプレートがある。"""
+    """t2v には opt のテンプレートがあり、turbo は opt へ落ちる。"""
     _use_target(monkeypatch, "local")
     project = make_project(env, quality=quality)
     shot = make_shot(env, project["id"], prompt="A cat walks in.")
     assert render(env, shot["id"]).status_code == 201
     assert env.created[-1].video_workflow == expected
+
+
+def test_turbo_falls_back_to_opt_on_a_t2v_shot(env, monkeypatch):
+    """蒸留 LoRA は fl2v 用なので、t2v になるカットは Turbo でも opt で投入する。"""
+    _use_target(monkeypatch, "local")
+    project = make_project(env, quality="turbo")
+    shot = make_shot(env, project["id"], prompt="A cat walks in.")
+    assert render(env, shot["id"]).status_code == 201
+    assert env.created[-1].video_workflow == "minimax_h3_t2v_opt"
+
+    preview = env.client.get(f"/api/studio/shots/{shot['id']}/prompt-preview").json()
+    assert preview["workflow"] == "minimax_h3_t2v_opt"
+    assert preview["quality_applied"] is True
+    assert "t2v は Turbo 非対応" in preview["workflow_reason"]
+    assert "Optimized で投入します" in preview["workflow_reason"]
+
+
+def test_turbo_stays_turbo_on_a_shot_with_a_reference(env, monkeypatch):
+    """参照素材があれば r2v なので、Turbo はそのまま効く。"""
+    _use_target(monkeypatch, "local")
+    project = make_project(env, quality="turbo")
+    make_asset(env, project["id"], "Neko", kind="image", prompt_caption="a calico cat")
+    shot = make_shot(env, project["id"], prompt="@Neko walks in.")
+    assert render(env, shot["id"]).status_code == 201
+    assert env.created[-1].video_workflow == "minimax_h3_r2v_turbo"
+
+    preview = env.client.get(f"/api/studio/shots/{shot['id']}/prompt-preview").json()
+    assert "Turbo" in preview["workflow_reason"]
+    assert "t2v は Turbo 非対応" not in preview["workflow_reason"]
+
+
+def test_turbo_falls_back_to_opt_on_the_latent_saving_t2v(env, monkeypatch):
+    """ラテント連続性 ON の t2v 起点カットも、保存付きの opt に落ちる。"""
+    _allow_latent_context(monkeypatch)
+    _use_target(monkeypatch, "local")
+    project = make_project(env, quality="turbo", latent_continuity=True)
+    shot = make_shot(env, project["id"], prompt="A cat walks in.")
+    assert render(env, shot["id"]).status_code == 201
+    assert env.created[-1].video_workflow == "minimax_h3_t2v_save_opt"
 
 
 @pytest.mark.parametrize(
@@ -1646,7 +1686,8 @@ def test_image_quality_and_video_quality_are_independent(env, monkeypatch):
     [
         ("minimax_h3_t2i", "normal", "minimax_h3_t2i"),
         ("minimax_h3_t2i", "opt", "minimax_h3_t2i_opt"),
-        ("minimax_h3_t2i", "turbo", "minimax_h3_t2i_turbo"),
+        # t2i に turbo は無いので opt に落ちる（動画の t2v と同じ理由）
+        ("minimax_h3_t2i", "turbo", "minimax_h3_t2i_opt"),
         ("minimax_h3_i2i", "opt", "minimax_h3_i2i_opt"),
         ("minimax_h3_i2i", "turbo", "minimax_h3_i2i_turbo"),
         ("minimax_h3_r2i", "opt", "minimax_h3_r2i_opt"),
