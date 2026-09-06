@@ -662,6 +662,16 @@ class Job(BaseModel):
     #: URLs of :attr:`extra_outputs`, in the same order
     extra_output_urls: list[str] = Field(default_factory=list)
 
+    # Take 経由で分かる出どころ（読み取り専用。一覧 ``GET /api/jobs`` だけが
+    # 埋める。スタジオを通していないジョブと、詳細 ``GET /api/jobs/{id}`` では
+    # 常に None）。英語プロンプトしか持たないジョブを作品名で探すための材料。
+    project_id: str | None = None
+    project_name: str | None = None
+    #: 元になったカット（``shot_title`` はその題名）。ファイルタブの
+    #: [スタジオで開く] がこの 2 つで画面を移す。
+    shot_id: str | None = None
+    shot_title: str | None = None
+
 
 # --------------------------------------------------------------------------
 # job API payloads (SPEC §9)
@@ -1952,13 +1962,167 @@ LibrarySource = Literal["image", "last_frame", "video", "audio"]
 #: 足したもの。from-job で指定できるのは :data:`LibrarySource` のほうだけ
 LibraryOrigin = Literal[
     "image", "last_frame", "video", "audio",
-    "sheet", "sprite", "text", "contact-sheet",
+    "sheet", "sprite", "text", "contact-sheet", "blocking",
 ]
 
 #: 素材の分類（棚の仕切り）。None は「未分類」で、DB では NULL。
 #: 後段のキャラクターシート合成で character は大パネル、background / prop は
 #: 小パネルに割り当てる（SPEC §7.2）。
 LibraryCategory = Literal["character", "background", "prop"]
+
+
+# --- 構図リファレンス動画（ブロッキング、SPEC §7.2） ---------------------
+#
+# 原始形状だけの 3D シーン定義。座標は**メートル・Y 上・床が y=0**、
+# オブジェクトの ``position`` は**底面中心**、角度は度。上限と描画は
+# :mod:`app.blocking`（そちらが正本で、外れた値は 400）。
+
+#: 形状。``figure`` は人物用（箱の胴 + 球の頭 + 正面の小さな鼻）
+BlockingShape = Literal["box", "sphere", "cylinder", "capsule", "figure"]
+
+#: 向きの決め方（``camera`` = 常にカメラを見る / ``path`` = 進行方向）
+BlockingFacing = Literal["keyframe", "camera", "path"]
+
+#: キーフレーム間の補間
+BlockingEasing = Literal["linear", "ease_in_out"]
+
+#: カメラプリセット（:data:`app.blocking.MOVES`）
+BlockingMoveType = Literal[
+    "static", "push_in", "pull_out", "pan_left", "pan_right",
+    "tilt_up", "tilt_down", "truck_left", "truck_right",
+    "arc_left", "arc_right", "follow",
+]
+
+#: 出力のアスペクト比（:data:`app.blocking.ASPECT_RATIOS`）
+BlockingAspectRatio = Literal["16:9", "9:16", "1:1", "4:3", "3:4", "21:9"]
+
+
+class BlockingCameraKeyframe(BaseModel):
+    """カメラの 1 点（``t`` 秒での位置・注視点・画角）。"""
+
+    #: 時刻（秒。0 から尺まで。昇順、先頭は 0）
+    t: float = 0.0
+    #: カメラ位置 ``[x, y, z]``（m）
+    position: list[float] = Field(default_factory=lambda: [0.0, 1.6, 5.0])
+    #: 注視点 ``[x, y, z]``（m）
+    look_at: list[float] = Field(default_factory=lambda: [0.0, 1.0, 0.0])
+    #: **対角**画角（度。20〜110。H3 ガイドの "47 degree diagonal FOV" と同じ意味）
+    fov_deg: float = 47.0
+    #: カメラの傾き（度。正で画面の絵が時計回りに回る）
+    roll_deg: float = 0.0
+
+
+class BlockingCameraMove(BaseModel):
+    """カメラの動きのプリセット（指定すると ``keyframes`` を上書きする）。"""
+
+    type: BlockingMoveType = "static"
+    #: push / pull / truck は移動距離（m）、pan / tilt / arc は角度（度）
+    amount: float = 0.0
+    #: ``follow`` / ``arc_*`` の注視対象（オブジェクトの id）
+    target: str | None = None
+
+
+class BlockingCamera(BaseModel):
+    """カメラ（キーフレームか、``move`` のプリセット）。"""
+
+    #: 1〜32 点。``t`` は昇順で、先頭は必ず 0
+    keyframes: list[BlockingCameraKeyframe] = Field(
+        default_factory=lambda: [BlockingCameraKeyframe()]
+    )
+    easing: BlockingEasing = "ease_in_out"
+    #: 指定すると ``keyframes[0]`` を起点に展開して ``keyframes`` を置き換える
+    move: BlockingCameraMove | None = None
+
+
+class BlockingObjectKeyframe(BaseModel):
+    """オブジェクトの 1 点（``t`` 秒での底面中心と向き）。"""
+
+    t: float = 0.0
+    #: 底面中心 ``[x, y, z]``（m。床に置くなら y=0）
+    position: list[float] = Field(default_factory=lambda: [0.0, 0.0, 0.0])
+    #: 向き（度。0 で +Z を向く。``facing`` が ``keyframe`` のときだけ効く）
+    yaw_deg: float = 0.0
+
+
+class BlockingObject(BaseModel):
+    """シーンに置く原始形状 1 つ。"""
+
+    #: 英数字と ``_``（objects の中で一意）
+    id: str
+    #: 画面上の呼び名（``location_map`` にこの名前で出る。空なら id）
+    label: str = ""
+    shape: BlockingShape = "box"
+    #: ``[w, h, d]``（m）。省略すると形状ごとの既定
+    #: （:data:`app.blocking.DEFAULT_SIZES`）。球・円柱・カプセルは w が直径
+    size: list[float] | None = None
+    #: 色（``#rrggbb``）。人物の識別用に低彩度の色を想定
+    color: str = "#9a9a9a"
+    #: 1〜32 点。``t`` は昇順（先頭が 0 でなくてもよい。その手前は静止）
+    keyframes: list[BlockingObjectKeyframe] = Field(
+        default_factory=lambda: [BlockingObjectKeyframe()]
+    )
+    facing: BlockingFacing = "keyframe"
+
+
+class BlockingBackground(BaseModel):
+    """背景（低彩度に固定して、H3 に余計な意味を拾わせない）。"""
+
+    #: 1m 間隔の床グリッドを引くか
+    floor_grid: bool = True
+    color: str = "#e6e6e6"
+
+
+class BlockingScene(BaseModel):
+    """構図・カメラワークの参照動画（ブロッキング）のシーン定義。
+
+    上限（尺 / オブジェクト数 / キーフレーム数）と検証は :mod:`app.blocking`
+    が持ち、外れていれば **400**。書き出しは 24fps 固定・長辺 768px。
+    """
+
+    aspect_ratio: BlockingAspectRatio = "16:9"
+    #: 尺（秒。0.5〜10）
+    duration: float = 5.0
+    background: BlockingBackground = Field(default_factory=BlockingBackground)
+    camera: BlockingCamera = Field(default_factory=BlockingCamera)
+    #: 1〜20 件
+    objects: list[BlockingObject] = Field(default_factory=list)
+
+
+class BlockingScreenPoint(BaseModel):
+    """画面上の 1 点（% と px）。"""
+
+    #: 左端からの割合（%）。画面外なら 0 未満・100 超もありうる
+    x_percent: float = 0.0
+    #: 上端からの割合（%）
+    y_percent: float = 0.0
+    x_px: float = 0.0
+    y_px: float = 0.0
+    #: カメラの前にあるか（後ろなら % は当てにならない）
+    visible: bool = True
+
+
+class BlockingObjectScreen(BaseModel):
+    """1 オブジェクトの画面上の位置（底面中心 / 中心 / 上端）。"""
+
+    id: str
+    label: str = ""
+    shape: BlockingShape = "box"
+    #: カメラから中心までの距離（m）
+    distance_m: float = 0.0
+    base: BlockingScreenPoint = Field(default_factory=BlockingScreenPoint)
+    center: BlockingScreenPoint = Field(default_factory=BlockingScreenPoint)
+    top: BlockingScreenPoint = Field(default_factory=BlockingScreenPoint)
+
+
+class BlockingPositions(BaseModel):
+    """ある瞬間の画面（``POST /library/blocking/location-map`` の ``positions``）。"""
+
+    t: float = 0.0
+    width: int = 0
+    height: int = 0
+    #: 地平線の y（%。真上・真下を向いていて引けなければ None）
+    horizon_y_percent: float | None = None
+    objects: list[BlockingObjectScreen] = Field(default_factory=list)
 
 
 class LibraryItem(BaseModel):
@@ -1985,6 +2149,11 @@ class LibraryItem(BaseModel):
     tags: list[str] = Field(default_factory=list)
     #: 素材の分類（None = 未分類。アップロード時に指定しなければ未分類）
     category: LibraryCategory | None = None
+    #: 構図リファレンス動画（ブロッキング）のシーン定義。ふつうの素材は None で、
+    #: これを持つ項目だけが同じ id のまま再レンダできる（SPEC §7.2）
+    blocking: BlockingScene | None = None
+    #: 再レンダの版番号（1 = 作ったまま。ブロッキングでない項目は 0）
+    blocking_version: int = 0
 
 
 class LibraryFromJob(BaseModel):
@@ -2152,6 +2321,63 @@ class LibraryKeySource(LibraryKey):
     """
 
     source: MediaRef
+
+
+class LibraryBlockingCreate(BaseModel):
+    """POST /api/library/blocking body（ブロッキング動画を作って棚に入れる）。"""
+
+    scene: BlockingScene
+    #: 表示名（空ならオブジェクトの並びから決める）
+    name: str = ""
+    tags: list[str] = Field(default_factory=list)
+    #: 分類（省略・空・'none' なら未分類）
+    category: str | None = None
+
+
+class LibraryBlockingRerender(BaseModel):
+    """POST /api/library/{id}/blocking body（同じ項目を作り直す）。"""
+
+    scene: BlockingScene
+
+
+class LibraryBlockingPreview(BaseModel):
+    """POST /api/library/blocking/preview body（1 コマだけ描いて返す）。"""
+
+    scene: BlockingScene
+    #: 何秒目を描くか
+    t: float = 0.0
+
+
+class LibraryBlockingMap(BaseModel):
+    """POST /api/library/blocking/location-map body（文章だけ組み立てる）。"""
+
+    scene: BlockingScene
+    #: ``reference_note`` に埋める参照番号（``<Video k>``）
+    video_index: int = 1
+
+
+class LibraryBlockingMapResult(BaseModel):
+    """レンダせずに返す文章と画面上の位置。"""
+
+    #: H3 のプロンプトへ写す英文（LOCATION MAP + CAMERA）
+    location_map: str = ""
+    #: 参照として渡すときの ``retention_analysis`` の 1 行
+    reference_note: str = ""
+    #: t=0 / 中間 / 終端の画面上の位置
+    positions: list[BlockingPositions] = Field(default_factory=list)
+
+
+class LibraryBlockingResult(BaseModel):
+    """POST /api/library/blocking の応答（棚の項目 + プロンプトに写す文章）。"""
+
+    item: LibraryItem
+    location_map: str = ""
+    reference_note: str = ""
+    width: int = 0
+    height: int = 0
+    fps: int = 24
+    frames: int = 0
+    duration: float = 0.0
 
 
 #: 音源解析（``mode: "audio_analysis"``、SPEC §5.2）で回せる解析。
@@ -2922,6 +3148,19 @@ class StudioAsset(BaseModel):
     #: プロンプトに効く項目（名前・キャプション・ファイル）を最後に書き換えた
     #: 時刻。Take の stale 判定に使う
     prompt_updated_at: str = ""
+    #: 取り込み元のライブラリ項目（None = ライブラリ由来ではない）。実体は
+    #: **コピー**なので、元を作り直しても自動では追従しない（SPEC §7.2）
+    source_library_id: str | None = None
+    #: 取り込んだ時点の ``library.blocking_version``（ライブラリ由来でなければ None）
+    source_library_version: int | None = None
+    #: 元のライブラリ項目の版が進んでいる（読み取りで導出）。人が
+    #: ``POST /assets/{id}/refresh-from-library`` を叩いたときだけコピーし直す
+    library_update_available: bool = False
+    #: 元のライブラリ項目が構図リファレンス動画（ブロッキング）か
+    #: （``source_library_version`` から導出。元の項目を消しても消えない）。
+    #: ``@名前`` の展開でこの素材には :func:`app.blocking.reference_note`
+    #: が自動で添えられる
+    library_blocking: bool = False
 
 
 class StudioAssetCreate(BaseModel):
@@ -2931,7 +3170,9 @@ class StudioAssetCreate(BaseModel):
     ときは同じ URL に multipart で投げる）。
     """
 
-    name: str
+    #: ``@名前`` で呼ぶ識別名。``library_id`` を指定したときだけ省略でき、
+    #: そのときはライブラリの項目名を引き継ぐ
+    name: str = ""
     kind: StudioAssetKind = "image"
     category: StudioAssetCategory = "reference"
     caption: str = ""
@@ -2942,6 +3183,11 @@ class StudioAssetCreate(BaseModel):
     #: ``assets/<kind>/`` へ複製されるので、チャットの添付や生成結果を
     #: そのまま素材にできる
     path: str = ""
+    #: ライブラリ（§7.2）の項目から取り込む。指定するとその項目のファイルが
+    #: ``path`` の代わりになり、``kind`` と名前（``name`` が空なら項目名）も
+    #: 引き継ぐ。出どころ（``source_library_id`` / ``source_library_version``）を
+    #: 控えるので、あとから「更新あり」と反映（``refresh-from-library``）が効く
+    library_id: str = ""
     locked: bool = False
     sort_order: int | None = None
 
@@ -2963,6 +3209,34 @@ class StudioAssetUpdate(_StudioUpdate):
     kind: StudioAssetKind | None = None
     locked: bool | None = None
     sort_order: int | None = None
+
+
+class StudioAssetItem(StudioAsset):
+    """全プロジェクト横断の素材一覧（``GET /api/studio/assets``）に出す 1 件。
+
+    素材そのものは :class:`StudioAsset` のまま。作品をまたいで並べると
+    ``project_id`` だけでは「どの作品のものか」が読めないので、作品の名前と
+    NSFW 印だけを添える（一覧の見出しと、NSFW を伏せる判断に使う）。
+    """
+
+    #: 持ち主の作品名（``studio_projects.name``）
+    project_name: str = ""
+    #: 持ち主の作品が NSFW 指定か（一覧で伏せるかの判断に使う）
+    project_nsfw: bool = False
+
+
+class StudioAssetPage(BaseModel):
+    """GET /api/studio/assets のレスポンス（絞り込み結果の 1 ページ）。
+
+    ``total`` は絞り込み後の総件数で、``items`` を数えるだけでは分からない
+    「まだ何件あるか」を伝える（:class:`LibraryPage` と同じ持ち方）。
+    """
+
+    items: list[StudioAssetItem] = Field(default_factory=list)
+    #: 絞り込み条件に合う総件数（このページの件数ではない）
+    total: int = 0
+    limit: int = 0
+    offset: int = 0
 
 
 class StudioShot(BaseModel):
@@ -3247,6 +3521,29 @@ class StudioShotPreview(BaseModel):
     render_blocker: str = ""
 
 
+class BlockingCapabilities(BaseModel):
+    """構図リファレンス動画（ブロッキング、SPEC §7.2）が使えるか + 上限。
+
+    値の正本は :mod:`app.blocking` の定数なので、ここは写しではなく
+    :func:`app.routers.studio.get_capabilities` が実物から組み立てる。
+    """
+
+    #: mp4 を焼けるか（ffmpeg が要る。false でも preview / location-map は使える）
+    available: bool = False
+    #: 焼けない理由（日本語。空なら使える）
+    error: str = ""
+    fps: int = 24
+    long_edge: int = 768
+    min_duration: float = 0.5
+    max_duration: float = 10.0
+    max_objects: int = 20
+    max_keyframes: int = 32
+    aspect_ratios: list[str] = Field(default_factory=list)
+    shapes: list[str] = Field(default_factory=list)
+    facings: list[str] = Field(default_factory=list)
+    camera_moves: list[str] = Field(default_factory=list)
+
+
 class StudioCapabilities(BaseModel):
     """GET /api/studio/capabilities: いまの接続先でスタジオの追加機能が使えるか。
 
@@ -3261,6 +3558,9 @@ class StudioCapabilities(BaseModel):
     latent_upscale: bool = True
     #: 確かめられなかった理由（日本語。空なら判定できている）
     error: str = ""
+    #: 構図リファレンス動画（ブロッキング、SPEC §7.2）の可否と上限。
+    #: 接続先とは関係なくローカルで焼くので、``error`` が立っていても当てになる
+    blocking: BlockingCapabilities = Field(default_factory=BlockingCapabilities)
 
 
 class StudioProjectDetail(StudioProject):
@@ -3372,6 +3672,8 @@ class StudioAssetFromJob(StudioAssetCreate):
     ``source`` が選んだ出力から決まるので、書いても無視される。
     """
 
+    #: ``@名前`` で呼ぶ識別名（こちらはライブラリ取り込みではないので必須）
+    name: str
     #: 出力を取ってくるジョブ
     job_id: str
     #: そのジョブのどの出力か
@@ -3649,6 +3951,37 @@ class TimelineExportRequest(BaseModel):
     #: ffmpeg の書き出しが終わってから ``FxOverlay`` の Remotion ジョブを続けて
     #: 投入する。Remotion 連携が OFF（``remotion_enabled``）なら 400
     fx: bool = False
+
+
+class TimelineExportItem(TimelineExport):
+    """作品をまたいだ書き出し一覧（``GET /api/studio/exports``）に出す 1 件。
+
+    書き出しそのものは :class:`TimelineExport` のまま。タイムラインをまたいで
+    並べると ``timeline_id`` だけでは「どの作品のどのタイムラインか」が読めない
+    ので、タイムライン名と持ち主の作品だけを添える（:class:`StudioAssetItem`
+    と同じ持ち方）。
+    """
+
+    #: 焼いたタイムラインの名前（``studio_timelines.name``）
+    timeline_name: str = ""
+    #: そのタイムラインの作品（一覧の絞り込みと [編集タブで開く] に使う）
+    project_id: str = ""
+    project_name: str = ""
+    #: 持ち主の作品が NSFW 指定か（一覧で伏せるかの判断に使う）
+    project_nsfw: bool = False
+
+
+class TimelineExportPage(BaseModel):
+    """GET /api/studio/exports のレスポンス（絞り込み結果の 1 ページ）。
+
+    ``total`` は絞り込み後の総件数（:class:`StudioAssetPage` と同じ持ち方）。
+    """
+
+    items: list[TimelineExportItem] = Field(default_factory=list)
+    #: 絞り込み条件に合う総件数（このページの件数ではない）
+    total: int = 0
+    limit: int = 0
+    offset: int = 0
 
 
 class TimelineExportSave(BaseModel):

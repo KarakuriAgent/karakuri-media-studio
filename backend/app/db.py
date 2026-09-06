@@ -76,7 +76,9 @@ CREATE TABLE IF NOT EXISTS library (
   source_job_id TEXT,
   source        TEXT,                       -- 元ジョブのどの出力か（image/last_frame/video/audio）
   tags          TEXT NOT NULL DEFAULT '[]',
-  category      TEXT                        -- 分類（character/background/prop。NULL = 未分類）
+  category      TEXT,                       -- 分類（character/background/prop。NULL = 未分類）
+  blocking      TEXT,                       -- 構図リファレンス動画のシーン定義 JSON（通常の項目は NULL）
+  blocking_version INTEGER NOT NULL DEFAULT 0  -- 再レンダの版番号（0 = ブロッキングではない）
 );
 
 -- ドラマスタジオ: プロジェクト（1 本の作品）。脚本（studio_shots）と素材
@@ -164,7 +166,13 @@ CREATE TABLE IF NOT EXISTS studio_assets (
   sort_order     INTEGER NOT NULL DEFAULT 0,
   created_at     TEXT NOT NULL,
   updated_at     TEXT,                        -- 最後に書き換えた時刻（NULL = 作成のまま）
-  prompt_updated_at TEXT                      -- プロンプトに効く項目を変えた時刻（stale 判定用）
+  prompt_updated_at TEXT,                     -- プロンプトに効く項目を変えた時刻（stale 判定用）
+  -- ライブラリ（§7.2）から取り込んだ素材の出どころ。実体はコピーなので、元の
+  -- 項目を作り直しても追従しない。版番号を控えておいて「更新あり」を出し、
+  -- 人が [反映] を押したときだけ改めてコピーし直す（FK は張らない: 元を消しても
+  -- 素材は生き続ける）。
+  source_library_id TEXT,                     -- 元のライブラリ項目（NULL = 取り込みではない）
+  source_library_version INTEGER              -- 取り込んだ時点の blocking_version
 );
 
 -- 素材にぶら下がる追加リファレンス（キャラの声サンプル・動画リファレンス・
@@ -386,6 +394,9 @@ CREATE INDEX IF NOT EXISTS idx_studio_shots_project
   ON studio_shots(project_id, scene_id, sort_order);
 CREATE INDEX IF NOT EXISTS idx_studio_takes_shot
   ON studio_takes(shot_id, created_at);
+-- ジョブ一覧（app/jobs.py の _JOB_JOIN）が「このジョブは Take か」を引くための索引。
+CREATE INDEX IF NOT EXISTS idx_studio_takes_job
+  ON studio_takes(job_id);
 CREATE INDEX IF NOT EXISTS idx_studio_episodes_project
   ON studio_episodes(project_id, sort_order);
 CREATE INDEX IF NOT EXISTS idx_studio_scenes_episode
@@ -474,6 +485,11 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         # 素材の分類（character / background / prop）。既存行は NULL＝未分類の
         # ままでよい（タグと違って 1 件に 1 つだけ持つ、棚の仕切りにあたる値）。
         ("category", "TEXT"),
+        # 構図リファレンス動画（ブロッキング、SPEC §7.2）のシーン定義 JSON と、
+        # 再レンダの版番号。ふつうの素材は NULL / 0 のままでよい（この 2 列が
+        # 入っている項目だけが「同じ id のまま mp4 を作り直せる」）。
+        ("blocking", "TEXT"),
+        ("blocking_version", "INTEGER NOT NULL DEFAULT 0"),
     ],
     "loras": [
         ("sample_images", "TEXT NOT NULL DEFAULT '[]'"),
@@ -545,6 +561,11 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         # 分類ごとの拡張項目（キャラの外見・声、画風のパレットなど）。既存行は
         # 空の JSON で、検証スキーマは :data:`app.models.ASSET_PROFILE_MODELS`。
         ("profile", "TEXT NOT NULL DEFAULT '{}'"),
+        # ライブラリから取り込んだ素材の出どころと、取り込んだ時点の版番号
+        # （SPEC §7.2）。既存行は NULL / NULL = 取り込みではない（更新の通知も
+        # 反映もしない）。
+        ("source_library_id", "TEXT"),
+        ("source_library_version", "INTEGER"),
     ],
     "studio_shots": [
         ("scene_id", "TEXT"),
@@ -614,6 +635,32 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         ("latent_hires_path", "TEXT"),
     ],
 }
+
+
+# --------------------------------------------------------------------------
+# 部分一致検索（LIKE）の共通の作法
+# --------------------------------------------------------------------------
+
+#: ``LIKE`` 句に必ず添えるエスケープ指定。SQLite の既定ではエスケープ文字が
+#: 無いので、これを付けないと :func:`like_pattern` の ``\`` が効かない
+LIKE_ESCAPE = " ESCAPE '\\'"
+
+
+def like_pattern(text: str) -> str:
+    r"""部分一致検索の ``LIKE`` パターン（``%`` ``_`` ``\`` は打ち消す）。
+
+    利用者が入れた ``_`` や ``%`` はワイルドカードではなく**その文字**として
+    探す（``q=_`` で全件が出ないように）。使う側は必ず
+    ``LIKE ?`` の後ろに :data:`LIKE_ESCAPE` を付けること。
+
+    小文字化は **ASCII の範囲だけ**にする: 突き合わせる SQL 側が
+    ``LOWER()``（SQLite の組み込みは ASCII しか畳まない）なので、Python 側で
+    非 ASCII まで畳むと「Ä」で「Ä」が引けなくなってしまう。
+    """
+    lowered = "".join(char.lower() if char.isascii() else char for char in text)
+    for special in ("\\", "%", "_"):
+        lowered = lowered.replace(special, f"\\{special}")
+    return f"%{lowered}%"
 
 
 @asynccontextmanager

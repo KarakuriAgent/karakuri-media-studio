@@ -9,9 +9,9 @@
 
 import { act, cleanup, render, screen, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
-import App from './App'
+import App, { jobsSignature } from './App'
 import { api } from './api'
-import type { StudioProjectDetail } from './types'
+import type { Job, StudioProjectDetail } from './types'
 
 vi.mock('./api', async () => {
   const actual = await vi.importActual<typeof import('./api')>('./api')
@@ -157,6 +157,39 @@ afterEach(() => {
   cleanup()
   vi.unstubAllGlobals()
   vi.clearAllMocks()
+})
+
+/** 指紋の材料になるところだけを持ったジョブ。 */
+function job(overrides: Partial<Job> = {}): Job {
+  return {
+    id: 'j1',
+    status: 'running',
+    image_url: null,
+    last_frame_url: null,
+    video_url: null,
+    audio_output_url: null,
+    nsfw: false,
+    ...overrides,
+  } as unknown as Job
+}
+
+it('ジョブ一覧が変わらなければ指紋も変わらない（ファイルタブを読み直さない）', () => {
+  const before = [job(), job({ id: 'j2', status: 'done' })]
+  // 5 秒ごとの取り直しで、同じ内容が返ってきただけのとき
+  expect(jobsSignature(before)).toBe(
+    jobsSignature([job(), job({ id: 'j2', status: 'done' })]),
+  )
+  // 状態・成果物・件数のどれかが動いたときは変わる
+  expect(jobsSignature(before)).not.toBe(
+    jobsSignature([job({ status: 'done' }), job({ id: 'j2', status: 'done' })]),
+  )
+  expect(jobsSignature(before)).not.toBe(
+    jobsSignature([
+      job({ video_url: '/outputs/j1/clip.mp4' }),
+      job({ id: 'j2', status: 'done' }),
+    ]),
+  )
+  expect(jobsSignature(before)).not.toBe(jobsSignature([job()]))
 })
 
 it('まだ開いていない作品でも、navigate で指定のカットが選ばれる', async () => {

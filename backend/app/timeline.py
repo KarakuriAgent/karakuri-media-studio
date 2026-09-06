@@ -39,7 +39,7 @@ from . import library as library_service
 from . import studio as studio_service
 from . import ws
 from .config import load_settings
-from .db import get_db
+from .db import LIKE_ESCAPE, get_db, like_pattern
 from .ids import new_id
 from .models import (
     JobCreate,
@@ -51,6 +51,7 @@ from .models import (
     TimelineClipInput,
     TimelineClipInsert,
     TimelineExport,
+    TimelineExportItem,
     TimelineFx,
     TimelineFxEvent,
     TimelineFxEventCreate,
@@ -1480,6 +1481,81 @@ async def list_exports(timeline_id: str) -> list[TimelineExport]:
         ) as cur:
             rows = await cur.fetchall()
     return [_row_to_export(row) for row in rows]
+
+
+#: 横断一覧（:func:`search_exports`）の 1 行。書き出しに、焼いたタイムラインと
+#: 持ち主の作品を添える（どちらも消えていれば行ごと残らないので内部結合でよいが、
+#: 古い DB の取りこぼしを避けて外部結合にしてある）。
+_EXPORT_CROSS_SELECT = (
+    "SELECT e.*, t.name AS timeline_name, t.project_id AS project_id,"
+    " p.name AS project_name, p.nsfw AS project_nsfw"
+    " FROM timeline_exports e"
+    " LEFT JOIN studio_timelines t ON t.id = e.timeline_id"
+    " LEFT JOIN studio_projects p ON p.id = t.project_id"
+)
+
+#: 横断一覧に出す条件: **焼き上がったファイルがあるものだけ**（1 ファイル =
+#: 1 タイルで並べる場所なので、待ち行列と失敗は出さない）。
+_EXPORT_CROSS_WHERE = "e.status = 'done' AND e.output_path IS NOT NULL"
+
+
+def _row_to_export_item(row: aiosqlite.Row) -> TimelineExportItem:
+    """横断一覧の 1 行（書き出し + タイムライン名 + 持ち主の作品）。"""
+    export = _row_to_export(row)
+    data = dict(row)
+    return TimelineExportItem(
+        **export.model_dump(),
+        timeline_name=data.get("timeline_name") or "",
+        project_id=data.get("project_id") or "",
+        project_name=data.get("project_name") or "",
+        project_nsfw=bool(data.get("project_nsfw", 0)),
+    )
+
+
+async def search_exports(
+    *,
+    project_id: str | None = None,
+    query: str = "",
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[list[TimelineExportItem], int]:
+    """タイムラインをまたいだ**書き出し済み mp4** の 1 ページと、総件数。
+
+    ファイルタブ（§8）の出どころ「書き出し」が読む一覧。1 本 = 1 ファイルなので、
+    まだ焼けていないもの（``queued`` / ``running``）と失敗は出さない。
+    ``query`` はタイムライン名・作品名への部分一致（ASCII の大文字小文字は
+    無視。``%`` ``_`` はその文字として探す）。並びは新しい順。
+    """
+    conditions: list[str] = [_EXPORT_CROSS_WHERE]
+    params: list[Any] = []
+    if project_id:
+        conditions.append("t.project_id = ?")
+        params.append(project_id)
+    wanted = (query or "").strip()
+    if wanted:
+        like = like_pattern(wanted)
+        conditions.append(
+            f"(LOWER(t.name) LIKE ?{LIKE_ESCAPE} OR LOWER(p.name) LIKE ?{LIKE_ESCAPE})"
+        )
+        params.extend([like, like])
+    where = f" WHERE {' AND '.join(conditions)}"
+    async with get_db() as conn:
+        async with conn.execute(
+            "SELECT COUNT(*) FROM timeline_exports e"
+            " LEFT JOIN studio_timelines t ON t.id = e.timeline_id"
+            " LEFT JOIN studio_projects p ON p.id = t.project_id" + where,
+            tuple(params),
+        ) as cur:
+            total = int((await cur.fetchone())[0])
+        async with conn.execute(
+            f"{_EXPORT_CROSS_SELECT}{where}"
+            # 同じ秒に焼いたものの順を安定させる決め手は、乱数の id ではなく
+            # 挿入順（rowid）。ページの境目で取りこぼしや重複を出さないため。
+            " ORDER BY e.created_at DESC, e.rowid DESC LIMIT ? OFFSET ?",
+            (*params, max(1, limit), max(0, offset)),
+        ) as cur:
+            rows = await cur.fetchall()
+    return [_row_to_export_item(row) for row in rows], total
 
 
 async def count_running_exports() -> int:

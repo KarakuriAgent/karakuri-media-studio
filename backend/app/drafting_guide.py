@@ -41,7 +41,7 @@ from .workflows import (
 )
 
 #: ガイド本文の版。中身を変えたら上げる（受け取り側がキャッシュの判定に使う）。
-GUIDE_VERSION = "2026-09-01"
+GUIDE_VERSION = "2026-09-06"
 
 #: 実用上の下限（秒）。:data:`~app.studio.SHOT_DURATION_MIN` は API が受け付ける
 #: 範囲で、H3 は 4 秒を切ると芝居が入りきらない（``MINIMAX_H3_GUIDE_BODY`` の
@@ -193,6 +193,31 @@ def build_drafting_guide() -> DraftingGuide:
 
 尺は API としては {duration_range}（`duration_seconds`）を受けるが、実質は
 **{_recommended_range()} 秒**で書くこと。
+
+### 3.1 構図が難しいカットはブロッキング動画を作る
+
+「誰が画面のどこに立ち、カメラがどう動くか」を言葉だけで詰め切れないカットは、
+**構図リファレンス動画（ブロッキング）**を先に作る。四角・丸・簡易人型だけの
+3D シーン定義を `POST /api/v1/library/blocking` に投げると、24fps の mp4 が
+ライブラリの動画素材として登録される（詳細は `docs/EXTERNAL-API.md` §3.5）。
+
+- 応答の `location_map`（`hero at x 50%, y 56%` の形の英文）を**カット本文へ
+  写す**。数字は実際に描かれた絵から出しているので、書きぶりと画がずれない。
+- 動画そのものは作品の素材に登録して（`POST /api/v1/projects/{{id}}/assets` に
+  `library_id` を書けばライブラリの項目をそのまま取り込める）`@名前` で参照する。
+  参照素材が付くカットは r2v になり、`reference_note`
+  （`<Video k> (camera path and blocking only): weak_reference - …`）は
+  **`retention_analysis` の 1 行として自動で足される**ので手で書かなくてよい
+  （番号 `k` も実際の添付順に合わせて振られる）。言い回しを変えたいときだけ
+  自分で書く（同じ番号の注記があれば二重にはならない）。
+- ブロッキングは**グレーのマネキンのプレビズ**なので、見た目・色・素材は
+  絶対に真似させない（それを言い切るのが `reference_note` の役目）。人物の顔や
+  衣装は今までどおり本文と `<Picture n>` で決める。
+- 構図を直したいときは同じ項目に `POST /api/v1/library/{{id}}/blocking` を投げる
+  （mp4 のパスも id も変わらないので、カット側は直さなくてよい）。ただし**作品の
+  素材はコピー**なので追従しない: `library_update_available` が立つので
+  `POST /api/v1/assets/{{id}}/refresh-from-library` で取り直す（取り直した素材を
+  使った Take は stale になる = 焼き直しが要る）。
 
 ## 4. 実例
 

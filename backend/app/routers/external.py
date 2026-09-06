@@ -26,7 +26,7 @@
 import asyncio
 import secrets
 from collections.abc import Awaitable, Callable
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import (
     APIRouter,
@@ -37,6 +37,7 @@ from fastapi import (
     HTTPException,
     Query,
     Request,
+    Response,
     UploadFile,
 )
 from pydantic import ValidationError
@@ -68,6 +69,12 @@ from ..models import (
     JobCreate,
     JobFromForm,
     JobRerun,
+    LibraryBlockingCreate,
+    LibraryBlockingMap,
+    LibraryBlockingMapResult,
+    LibraryBlockingPreview,
+    LibraryBlockingRerender,
+    LibraryBlockingResult,
     LibraryFromJob,
     LibraryItem,
     LibraryKey,
@@ -86,6 +93,7 @@ from ..models import (
     StudioAssetCreate,
     StudioAssetFile,
     StudioAssetFromJob,
+    StudioAssetPage,
     StudioAssetUpdate,
     StudioCapabilities,
     StudioEpisode,
@@ -118,6 +126,7 @@ from ..models import (
     TimelineClipInsert,
     TimelineClipsUpdate,
     TimelineExport,
+    TimelineExportPage,
     TimelineExportRequest,
     TimelineExportSave,
     TimelineFx,
@@ -139,6 +148,12 @@ from ..models import (
 from .assets import save_upload
 from .library import MAX_LIMIT as LIBRARY_MAX_LIMIT
 from .library import _bad_request as _library_bad_request
+from .library import (
+    blocking_location_map,
+    blocking_preview,
+    create_blocking,
+    rerender_blocking,
+)
 from .library import key_job_output, key_library_item, key_media_source
 from .library import upload_detecting_kind, upload_to_library
 from .media import create_contact_sheet, create_text_image, font_list
@@ -521,6 +536,25 @@ def _asset_body(data: dict) -> StudioAssetCreate:
         raise HTTPException(status_code=422, detail=exc.errors()) from exc
 
 
+@router.get("/assets", response_model=StudioAssetPage)
+async def list_all_assets(
+    project_id: str | None = None,
+    kind: str | None = None,
+    q: str = "",
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+) -> StudioAssetPage:
+    """World Bible の素材を作品をまたいで探す（内部 API と同じ）。
+
+    どの作品にどんな素材があるかを 1 回で見たいとき用。件ごとに持ち主の
+    作品名（``project_name``）が付き、並びは新しい順。
+    """
+    items, total = await service.search_assets(
+        project_id=project_id, kind=kind, query=q, limit=limit, offset=offset
+    )
+    return StudioAssetPage(items=items, total=total, limit=limit, offset=offset)
+
+
 @router.post("/projects/{project_id}/assets", response_model=StudioAsset,
              status_code=201)
 async def add_asset(project_id: str, request: Request) -> StudioAsset:
@@ -531,6 +565,11 @@ async def add_asset(project_id: str, request: Request) -> StudioAsset:
       メタデータのみの素材）。
     - multipart: ``file`` にファイルを添付する（内部 API と同じ受け口）。
       種別は添付の拡張子から決め、``name`` を省くとファイル名の主部になる。
+
+    どちらの経路でも ``library_id`` にライブラリ（§7.2）の項目を書けば、その
+    ファイル・種別・（``name`` が空なら）名前を引き継いで取り込む。実体はコピー
+    なので、元を焼き直したら ``POST /assets/{id}/refresh-from-library``。
+    ``library_id`` と ``file`` / ``path`` は**どちらか一方**（両方は 400）。
     """
     if await service.get_project(project_id) is None:
         raise HTTPException(status_code=404, detail="project not found")
@@ -544,6 +583,13 @@ async def add_asset(project_id: str, request: Request) -> StudioAsset:
         }
         fields.pop("project_id", None)
         if isinstance(upload, FormUploadFile) and upload.filename:
+            if fields.get("library_id"):
+                # 受け取ってから断ると、使わないファイルが置き去りになる。
+                raise HTTPException(
+                    status_code=400,
+                    detail="file と library_id は同時に指定できません"
+                    "（どちらか一方）",
+                )
             fields.setdefault("kind", _kind_of(upload.filename))
             saved = await save_upload(upload, str(fields["kind"]))
             path = saved.path
@@ -560,6 +606,7 @@ async def add_asset(project_id: str, request: Request) -> StudioAsset:
             name=payload.name,
             kind=payload.kind,
             path=path,
+            library_id=payload.library_id,
             category=payload.category,
             caption=payload.caption,
             prompt_caption=payload.prompt_caption,
@@ -645,6 +692,23 @@ async def replace_asset_file(
         asset = await service.update_asset(
             asset_id, actor=ACTOR, path=saved.path, kind=kind
         )
+    except service.StudioError as exc:
+        raise _bad_request(exc) from exc
+    if asset is None:
+        raise HTTPException(status_code=404, detail="studio asset not found")
+    return asset
+
+
+@router.post("/assets/{asset_id}/refresh-from-library", response_model=StudioAsset)
+async def refresh_asset_from_library(asset_id: str) -> StudioAsset:
+    """取り込み元のライブラリ項目から実体をコピーし直す（SPEC §7.2）。
+
+    ``library_id`` で取り込んだ素材だけが対象（それ以外は 400）。素材の
+    ``library_update_available`` が立っていたら、これを叩くと今の版に揃う。
+    ファイルが変わるので、その素材を参照した Take は stale になる。
+    """
+    try:
+        asset = await service.refresh_asset_from_library(asset_id, actor=ACTOR)
     except service.StudioError as exc:
         raise _bad_request(exc) from exc
     if asset is None:
@@ -785,11 +849,25 @@ async def delete_take(take_id: str) -> None:
 
 @router.get("/jobs", response_model=list[Job])
 async def list_jobs(
+    response: Response,
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
+    q: str | None = Query(None, description="プロンプト・作品名・カット題名への部分一致"),
+    kind: Literal["image", "video", "audio"] | None = Query(
+        None, description="その成果物を持つジョブだけ"
+    ),
+    project_id: str | None = Query(
+        None, description="その作品の Take になっているジョブだけ"
+    ),
+    nsfw: bool | None = Query(None, description="true = NSFW のみ / false = 除外"),
 ) -> list[Job]:
-    """新しい順のジョブ一覧（ワークフロー JSON は含まない）。"""
-    return await job_service.list_jobs(limit=limit, offset=offset)
+    """新しい順のジョブ一覧（ワークフロー JSON は含まない）。
+
+    絞り込みは SPA の ``GET /api/jobs`` と同じで、総件数は ``X-Total-Count``。
+    """
+    filters = {"q": q, "kind": kind, "project_id": project_id, "nsfw": nsfw}
+    response.headers["X-Total-Count"] = str(await job_service.count_jobs(**filters))
+    return await job_service.list_jobs(limit=limit, offset=offset, **filters)
 
 
 @router.post("/jobs", response_model=Job, status_code=201)
@@ -1123,6 +1201,52 @@ async def key_library_from_job(payload: LibraryKeyFromJob) -> LibraryItem:
     定義しておく。
     """
     return await key_job_output(payload)
+
+
+# --------------------------------------------------------------------------
+# 構図リファレンス動画（ブロッキング、SPEC §7.2）
+# --------------------------------------------------------------------------
+#
+# ``/library/{item_id}`` より先に定義しておく（後ろだと item_id として食われる）。
+
+
+@router.post("/library/blocking", response_model=LibraryBlockingResult,
+             status_code=201)
+async def create_blocking_video(payload: LibraryBlockingCreate) -> LibraryBlockingResult:
+    """原始形状だけの 3D シーンから**構図・カメラワークの参照動画**を焼く。
+
+    出来上がった mp4 はふつうの動画素材（``kind='video'`` / タグ ``blocking``）
+    として棚に入り、``@名前`` でカットに添えられる。応答の ``location_map`` を
+    カット本文へ写し、``reference_note`` を ``retention_analysis`` の 1 行として
+    書けば、H3 には**構図とカメラの動きだけ**が伝わる（見た目は真似させない）。
+    シーン定義は項目に残るので、``POST /library/{id}/blocking`` で作り直せる。
+    """
+    return await create_blocking(payload)
+
+
+@router.post("/library/blocking/preview")
+async def preview_blocking_video(payload: LibraryBlockingPreview) -> Response:
+    """シーン定義の 1 コマだけを PNG で返す（棚には入れない。確認用）。"""
+    return blocking_preview(payload)
+
+
+@router.post("/library/blocking/location-map", response_model=LibraryBlockingMapResult)
+async def blocking_location_map_route(
+    payload: LibraryBlockingMap,
+) -> LibraryBlockingMapResult:
+    """レンダせずに ``location_map`` と画面上の位置だけ返す（安い）。"""
+    return blocking_location_map(payload)
+
+
+@router.post("/library/{item_id}/blocking", response_model=LibraryBlockingResult)
+async def rerender_blocking_video(
+    item_id: str, payload: LibraryBlockingRerender
+) -> LibraryBlockingResult:
+    """ブロッキング項目の mp4 を作り直す（``id`` と URL はそのまま、版番号 +1）。
+
+    ブロッキングではない素材に投げると 400。
+    """
+    return await rerender_blocking(item_id, payload)
 
 
 @router.post("/library/{item_id}/key", response_model=LibraryItem, status_code=201)
@@ -1774,6 +1898,28 @@ async def list_exports(timeline_id: str) -> list[TimelineExport]:
     if await timeline_service.get_timeline(timeline_id) is None:
         raise HTTPException(status_code=404, detail="timeline not found")
     return await timeline_service.list_exports(timeline_id)
+
+
+@router.get("/exports", response_model=TimelineExportPage)
+async def list_all_exports(
+    #: この作品のタイムラインの書き出しだけに絞る（省略 = 全作品横断）
+    project_id: str | None = None,
+    #: タイムライン名・作品名への部分一致
+    q: str = "",
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+) -> TimelineExportPage:
+    """書き出した mp4 を**タイムラインをまたいで**一覧する。
+
+    **焼き上がったものだけ**（1 ファイル = 1 件）を新しい順に返す。各件に
+    ``output_url`` とタイムライン名・持ち主の作品が付くので、「この作品の
+    最新の書き出しを取ってくる」が 1 回で済む。1 本ぶんの履歴（失敗も含む）は
+    ``GET /timelines/{id}/exports``。
+    """
+    items, total = await timeline_service.search_exports(
+        project_id=project_id, query=q, limit=limit, offset=offset
+    )
+    return TimelineExportPage(items=items, total=total, limit=limit, offset=offset)
 
 
 @router.get("/exports/{export_id}", response_model=TimelineExport)

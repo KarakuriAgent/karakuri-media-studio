@@ -1,14 +1,19 @@
 import { useEffect, useRef, useState } from 'react'
 import {
   FileText,
+  Library,
   Lock,
   Music,
   Paperclip,
+  RefreshCw,
   Trash2,
   Unlock,
+  Video,
 } from 'lucide-react'
 
 import type {
+  LibraryItem,
+  LibraryKind,
   StudioAsset,
   StudioAssetCategory,
   StudioAssetFileRole,
@@ -21,6 +26,7 @@ import { Button } from '../ui/button'
 import { Input } from '../ui/input'
 import { Label } from '../ui/label'
 import { Textarea } from '../ui/textarea'
+import LibraryPickerModal from '../LibraryPickerModal'
 import AssetFilesPanel from './AssetFilesPanel'
 import {
   ASSET_CATEGORIES,
@@ -119,6 +125,25 @@ function AssetCard({
             {asset.files?.length}
           </Badge>
         )}
+        {asset.library_blocking && (
+          <Badge
+            variant="outline"
+            className="bg-card px-1.5 py-0 text-[11px] font-normal"
+            title="ライブラリの構図リファレンス動画（ブロッキング）から取り込んだ素材です"
+          >
+            <Video className="size-2.5" />
+            構図リファレンス
+          </Badge>
+        )}
+        {asset.library_update_available && (
+          <Badge
+            variant="warning"
+            className="px-1.5 py-0 text-[11px] font-normal"
+            title="ライブラリの元の項目が焼き直されています。詳細の [反映] で取り直せます"
+          >
+            更新あり
+          </Badge>
+        )}
       </span>
       <span className="block truncate bg-card px-2 py-1 text-[11px] text-foreground/90">
         @{asset.name}
@@ -135,6 +160,7 @@ function AssetInspector({
   onUploadFile,
   onAddReference,
   onRemoveReference,
+  onRefreshFromLibrary,
   busy,
 }: {
   asset: StudioAsset
@@ -148,6 +174,8 @@ function AssetInspector({
     caption: string,
   ) => void
   onRemoveReference: (fileId: string) => void
+  /** ライブラリの元の項目から実体を取り直す。 */
+  onRefreshFromLibrary: () => void
   busy: boolean
 }) {
   const [caption, setCaption] = useState(asset.caption)
@@ -191,6 +219,43 @@ function AssetInspector({
             </span>
           )}
         </div>
+
+        {asset.source_library_id && (
+          <div className="space-y-1 rounded-md border border-border bg-surface-sunken px-3 py-2 text-[11px]">
+            <p className="flex flex-wrap items-center gap-1 text-muted-foreground">
+              <Library className="size-3" />
+              ライブラリから取り込んだ素材（取り込んだ版: v
+              {asset.source_library_version ?? '?'}）
+              {asset.library_blocking && (
+                <Badge
+                  variant="outline"
+                  className="bg-card px-1.5 py-0 text-[11px] font-normal"
+                >
+                  構図リファレンス
+                </Badge>
+              )}
+            </p>
+            {asset.library_update_available && (
+              <div className="flex flex-wrap items-center gap-2">
+                <Badge variant="warning" className="px-1.5 py-0 text-[11px] font-normal">
+                  更新あり
+                </Badge>
+                <span className="text-muted-foreground">
+                  ライブラリ側が焼き直されています
+                </span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={onRefreshFromLibrary}
+                >
+                  <RefreshCw />
+                  反映
+                </Button>
+              </div>
+            )}
+          </div>
+        )}
 
         <AssetFilesPanel
           asset={asset}
@@ -282,11 +347,14 @@ export default function WorldView({
   selectedId,
   onSelect,
   onAdd,
+  onAddFromLibrary,
+  onRefreshFromLibrary,
   onSave,
   onDelete,
   onUploadFile,
   onAddReference,
   onRemoveReference,
+  showNsfw,
   busy,
 }: {
   assets: StudioAsset[]
@@ -299,6 +367,10 @@ export default function WorldView({
     category: StudioAssetCategory,
     caption: string,
   ) => void
+  /** ライブラリ（§7.2）の項目を素材として取り込む（実体はコピー）。 */
+  onAddFromLibrary: (item: LibraryItem) => void
+  /** ライブラリの元の項目から実体を取り直す。 */
+  onRefreshFromLibrary: (id: string) => void
   onSave: (id: string, patch: StudioAssetUpdate) => void
   onDelete: (id: string) => void
   /** 素材のメインのファイルを付ける / 差し替える。 */
@@ -311,6 +383,8 @@ export default function WorldView({
     caption: string,
   ) => void
   onRemoveReference: (fileId: string) => void
+  /** ヘッダーの NSFW 表示トグル（ライブラリのモーダルへ初期値として渡す）。 */
+  showNsfw: boolean
   busy: boolean
 }) {
   const fileRef = useRef<HTMLInputElement>(null)
@@ -318,6 +392,10 @@ export default function WorldView({
   const [name, setName] = useState('')
   const [caption, setCaption] = useState('')
   const [category, setCategory] = useState<StudioAssetCategory>('character')
+  // ライブラリから取り込むときの種別（モーダルは 1 種別ずつ出す）。構図
+  // リファレンス動画を入れるのが主な用途なので既定は動画。
+  const [libraryKind, setLibraryKind] = useState<LibraryKind>('video')
+  const [picking, setPicking] = useState(false)
 
   const selected = assets.find((asset) => asset.id === selectedId) ?? null
 
@@ -429,6 +507,40 @@ export default function WorldView({
             </Button>
           </div>
         </Section>
+
+        <Section title="ライブラリから追加">
+          <div className="space-y-2">
+            <p className="text-[11px] text-muted-foreground">
+              取っておいた素材（構図リファレンス動画など）をこの作品に取り込みます。
+              実体はコピーなので、ライブラリ側を焼き直しても勝手には変わりません。
+              素材に「更新あり」が出るので、[反映] を押したときだけ取り直します。
+            </p>
+            <div className="flex flex-wrap items-end gap-2">
+              <div className="space-y-1">
+                <Label htmlFor="studio-library-kind">種別</Label>
+                <NativeSelect
+                  id="studio-library-kind"
+                  value={libraryKind}
+                  onChange={(event) =>
+                    setLibraryKind(event.target.value as LibraryKind)
+                  }
+                >
+                  <option value="video">動画</option>
+                  <option value="image">画像</option>
+                  <option value="audio">音声</option>
+                </NativeSelect>
+              </div>
+              <Button
+                variant="outline"
+                disabled={busy}
+                onClick={() => setPicking(true)}
+              >
+                <Library />
+                ライブラリから追加
+              </Button>
+            </div>
+          </div>
+        </Section>
       </div>
 
       <div>
@@ -443,6 +555,7 @@ export default function WorldView({
               onAddReference(selected.id, file, role, caption)
             }
             onRemoveReference={onRemoveReference}
+            onRefreshFromLibrary={() => onRefreshFromLibrary(selected.id)}
           />
         ) : (
           <p className="rounded-md border border-border bg-surface-sunken px-3 py-6 text-center text-xs text-muted-foreground">
@@ -450,6 +563,20 @@ export default function WorldView({
           </p>
         )}
       </div>
+
+      {picking && (
+        <LibraryPickerModal
+          kind={libraryKind}
+          title="ライブラリから素材を追加"
+          showNsfw={showNsfw}
+          onSelect={(item) => {
+            setPicking(false)
+            onAddFromLibrary(item)
+          }}
+          onClose={() => setPicking(false)}
+          onChanged={() => {}}
+        />
+      )}
     </div>
   )
 }

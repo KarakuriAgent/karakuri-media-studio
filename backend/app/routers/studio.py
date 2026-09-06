@@ -5,16 +5,20 @@
 入り口だけを担当する（:mod:`app.routers.library` と同じ持ち方）。
 """
 
+import shutil
 from pathlib import Path
 
-from fastapi import APIRouter, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 
+from .. import blocking
 from .. import comfy
 from .. import studio as service
 from ..models import (
     ASSET_FILE_ROLE_KINDS,
+    BlockingCapabilities,
     StudioAsset,
     StudioAssetFile,
+    StudioAssetPage,
     StudioAssetUpdate,
     StudioCapabilities,
     StudioDemoCreate,
@@ -83,13 +87,42 @@ async def get_capabilities() -> StudioCapabilities:
         return StudioCapabilities(
             latent_continuity=await comfy.latent_context_support(),
             latent_upscale=latent_upscale,
+            blocking=blocking_capabilities(),
         )
     except comfy.ComfyError as exc:
         return StudioCapabilities(
             latent_continuity=False,
             latent_upscale=latent_upscale,
             error=comfy.display_error(exc),
+            blocking=blocking_capabilities(),
         )
+
+
+def blocking_capabilities() -> BlockingCapabilities:
+    """構図リファレンス動画（ブロッキング、SPEC §7.2）の可否と上限。
+
+    値は :mod:`app.blocking` の定数からそのまま組み立てる（写しを置かない）。
+    mp4 を焼くのに ffmpeg が要るだけで、接続先（ComfyUI）とは関係なく動く。
+    """
+    has_ffmpeg = bool(shutil.which(blocking.FFMPEG))
+    return BlockingCapabilities(
+        available=has_ffmpeg,
+        error=(
+            ""
+            if has_ffmpeg
+            else "ffmpeg が見つかりません（プレビューと location_map だけ使えます）"
+        ),
+        fps=blocking.FPS,
+        long_edge=blocking.LONG_EDGE,
+        min_duration=blocking.MIN_DURATION,
+        max_duration=blocking.MAX_DURATION,
+        max_objects=blocking.MAX_OBJECTS,
+        max_keyframes=blocking.MAX_KEYFRAMES,
+        aspect_ratios=list(blocking.ASPECT_RATIOS),
+        shapes=list(blocking.SHAPES),
+        facings=list(blocking.FACINGS),
+        camera_moves=list(blocking.MOVES),
+    )
 
 
 # --------------------------------------------------------------------------
@@ -165,6 +198,29 @@ async def delete_project(project_id: str) -> None:
 # World Bible の素材
 # --------------------------------------------------------------------------
 
+@router.get("/assets", response_model=StudioAssetPage)
+async def list_all_assets(
+    #: この作品の素材だけに絞る（省略 = 全プロジェクト横断）
+    project_id: str | None = None,
+    #: image / video / audio で絞る（省略 = すべての種別）
+    kind: str | None = None,
+    #: 名前・キャプション・プロンプト用キャプションへの部分一致
+    q: str = "",
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+) -> StudioAssetPage:
+    """World Bible の素材を**作品をまたいで**一覧する（ファイルタブ用）。
+
+    1 作品ぶんの素材は `GET /api/studio/projects/{id}` が丸ごと返すので、こちらは
+    「どの作品にどんな素材があるか」を横断で眺めるための入り口。並びは新しい順で、
+    各件に持ち主の作品名（``project_name``）が付く。
+    """
+    items, total = await service.search_assets(
+        project_id=project_id, kind=kind, query=q, limit=limit, offset=offset
+    )
+    return StudioAssetPage(items=items, total=total, limit=limit, offset=offset)
+
+
 @router.post("/projects/{project_id}/assets", response_model=StudioAsset,
              status_code=201)
 async def add_asset(
@@ -178,15 +234,27 @@ async def add_asset(
     caption: str = Form(""),
     prompt_caption: str = Form(""),
     locked: bool = Form(False),
+    #: ライブラリ（§7.2）の項目から取り込む（ファイルと `kind`・名前を引き継ぐ）
+    library_id: str = Form(""),
 ) -> StudioAsset:
     """素材を World Bible に登録する。
 
     ファイルを付ければ実体を既存のアップロード先（``assets/<kind>/``）に置き、
     付けなければ「設定だけ書いた素材」として登録する。後者は参照には添付
     されず、``@名前`` は投入時に説明文へ展開される。
+
+    ``library_id`` を渡すとライブラリの項目を取り込む（実体はコピーなので、
+    元が作り直されたら ``refresh-from-library`` で改めて取り直す）。ファイルの
+    添付とは**どちらか一方**（両方送られたら 400。片方は必ず使われないまま
+    アップロード先に残るので、受け取る前に断る）。
     """
     if await service.get_project(project_id) is None:
         raise HTTPException(status_code=404, detail="project not found")
+    if library_id and file is not None and file.filename:
+        raise HTTPException(
+            status_code=400,
+            detail="file と library_id は同時に指定できません（どちらか一方）",
+        )
     path = ""
     if file is not None and file.filename:
         saved = await save_upload(file, kind)
@@ -198,6 +266,7 @@ async def add_asset(
             name=name,
             kind=kind,
             path=path,
+            library_id=library_id,
             category=category,
             caption=caption,
             prompt_caption=prompt_caption,
@@ -235,6 +304,23 @@ async def replace_asset_file(
     saved = await save_upload(file, kind)
     try:
         asset = await service.update_asset(asset_id, path=saved.path, kind=kind)
+    except service.StudioError as exc:
+        raise _bad_request(exc) from exc
+    if asset is None:
+        raise HTTPException(status_code=404, detail="studio asset not found")
+    return asset
+
+
+@router.post("/assets/{asset_id}/refresh-from-library", response_model=StudioAsset)
+async def refresh_asset_from_library(asset_id: str) -> StudioAsset:
+    """取り込み元のライブラリ項目から実体をコピーし直す（SPEC §7.2）。
+
+    ライブラリで構図を焼き直しても素材（コピー）は追従しないので、
+    ``library_update_available`` が立った素材をここで取り直す。ファイルが
+    変わるぶん、その素材を使った Take は stale になる（差し替えと同じ扱い）。
+    """
+    try:
+        asset = await service.refresh_asset_from_library(asset_id)
     except service.StudioError as exc:
         raise _bad_request(exc) from exc
     if asset is None:

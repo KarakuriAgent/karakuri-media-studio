@@ -17,6 +17,7 @@ from ..models import (
     TimelineClipInsert,
     TimelineClipsUpdate,
     TimelineExport,
+    TimelineExportPage,
     TimelineExportRequest,
     TimelineExportSave,
     TimelineFx,
@@ -389,6 +390,28 @@ async def list_exports(timeline_id: str) -> list[TimelineExport]:
     if await service.get_timeline(timeline_id) is None:
         raise HTTPException(status_code=404, detail="timeline not found")
     return await service.list_exports(timeline_id)
+
+
+@router.get("/exports", response_model=TimelineExportPage)
+async def list_all_exports(
+    #: この作品のタイムラインの書き出しだけに絞る（省略 = 全作品横断）
+    project_id: str | None = None,
+    #: タイムライン名・作品名への部分一致
+    q: str = "",
+    limit: int = Query(50, ge=1, le=200),
+    offset: int = Query(0, ge=0),
+) -> TimelineExportPage:
+    """書き出した mp4 を**タイムラインをまたいで**一覧する（ファイルタブ用）。
+
+    1 本ぶんの履歴は `GET /api/studio/timelines/{id}/exports` が返すので、
+    こちらは「手元にどんな書き出しがあるか」を横断で眺めるための入り口。
+    **焼き上がったものだけ**（1 ファイル = 1 件）を新しい順に返し、各件に
+    タイムライン名と持ち主の作品（``project_id`` / ``project_name``）が付く。
+    """
+    items, total = await service.search_exports(
+        project_id=project_id, query=q, limit=limit, offset=offset
+    )
+    return TimelineExportPage(items=items, total=total, limit=limit, offset=offset)
 
 
 @router.get("/exports/{export_id}", response_model=TimelineExport)

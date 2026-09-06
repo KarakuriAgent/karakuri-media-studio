@@ -1,6 +1,10 @@
 import type {
   Asset,
   AudioJobCreate,
+  BlockingCreateRequest,
+  BlockingMapResult,
+  BlockingResult,
+  BlockingScene,
   ChatReply,
   ChatSession,
   ChatState,
@@ -11,6 +15,8 @@ import type {
   Job,
   JobContinue,
   JobCreate,
+  JobPage,
+  JobQuery,
   LibraryCategoryValue,
   LibraryItem,
   LibraryKind,
@@ -32,6 +38,8 @@ import type {
   StudioAssetCreate,
   StudioAssetFile,
   StudioAssetFileRole,
+  StudioAssetPage,
+  StudioAssetQuery,
   StudioAssetUpdate,
   StudioCapabilities,
   StudioEpisode,
@@ -61,6 +69,8 @@ import type {
   StudioTimelineUpdate,
   TimelineClipInput,
   TimelineExport,
+  TimelineExportPage,
+  TimelineExportQuery,
   TimelineExportRequest,
   TimelineFx,
   TimelineFxEventUpdate,
@@ -156,10 +166,11 @@ export function fieldErrorsFromError(error: unknown): Record<string, string> {
   return fields
 }
 
-async function request<T>(
+/** 1 回叩いて、エラーだけ :class:`ApiError` に均す（本文は呼び出し側で読む）。 */
+async function send(
   path: string,
   init?: RequestInit & { raw?: BodyInit },
-): Promise<T> {
+): Promise<Response> {
   let response: Response
   try {
     response = await fetch(path, init)
@@ -179,9 +190,27 @@ async function request<T>(
     }
     throw new ApiError(response.status, detail)
   }
+  return response
+}
+
+async function request<T>(
+  path: string,
+  init?: RequestInit & { raw?: BodyInit },
+): Promise<T> {
+  const response = await send(path, init)
   if (response.status === 204) return undefined as T
   const text = await response.text()
   return (text ? JSON.parse(text) : undefined) as T
+}
+
+/** クエリ文字列（空・undefined の項目は落とす）。 */
+function searchOf(query: object): string {
+  const params = new URLSearchParams()
+  for (const [key, value] of Object.entries(query)) {
+    if (value !== undefined && value !== '') params.set(key, String(value))
+  }
+  const search = params.toString()
+  return search ? `?${search}` : ''
 }
 
 function json<T>(method: string, path: string, body?: unknown): Promise<T> {
@@ -201,6 +230,38 @@ function upload<T>(
   data.append('file', file)
   for (const [key, value] of Object.entries(fields)) data.append(key, value)
   return request<T>(path, { method: 'POST', body: data })
+}
+
+/**
+ * JSON を送って**ファイルそのもの**を受け取る（構図リファレンスのプレビュー PNG）。
+ *
+ * :func:`request` は本文を JSON として読むので、画像を返す受け口はこちらを使う。
+ * エラーの読み取り方（`{detail}`）は :func:`request` と揃えてある。
+ */
+async function postForBlob(path: string, body: unknown): Promise<Blob> {
+  let response: Response
+  try {
+    response = await fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+  } catch (cause) {
+    throw new ApiError(0, `バックエンドに接続できません (${String(cause)})`)
+  }
+  if (!response.ok) {
+    let detail: unknown = response.statusText
+    const text = await response.text().catch(() => '')
+    if (text) {
+      try {
+        detail = (JSON.parse(text) as { detail?: unknown })?.detail ?? text
+      } catch {
+        detail = text
+      }
+    }
+    throw new ApiError(response.status, detail)
+  }
+  return response.blob()
 }
 
 /** ファイルを伴わない multipart（受け口が Form のままのものに使う）。 */
@@ -322,6 +383,20 @@ export const api = {
       tags: tags.join(','),
       category,
     }),
+  /**
+   * 種別を指定せずに 1 ファイル入れる（拡張子 / MIME で image / video / audio）。
+   *
+   * ファイルタブのアップロード（画像も動画も音声も同じ枠に落とす）で使う。
+   */
+  uploadAnyToLibrary: (
+    file: File,
+    tags: string[] = [],
+    category: LibraryCategoryValue = 'none',
+  ) =>
+    upload<LibraryItem>('/api/library/upload', file, {
+      tags: tags.join(','),
+      category,
+    }),
   /** ジョブの出力をライブラリに取っておく（NSFW は元ジョブを引き継ぐ）。 */
   addJobToLibrary: (
     jobId: string,
@@ -363,6 +438,35 @@ export const api = {
   ) => json<LibraryItem>('PATCH', `/api/library/${id}`, patch),
   deleteLibraryItem: (id: string) => json<void>('DELETE', `/api/library/${id}`),
 
+  // 構図リファレンス動画（ブロッキング、SPEC §7.2 / EXTERNAL-API §3.5）。
+  // 原始形状だけの 3D シーン定義から 24fps の mp4 を焼き、ふつうの動画素材
+  // （タグ `blocking`）としてライブラリに入れる。
+  /** シーン定義から焼いて登録する（応答にプロンプトへ写す文章が付く）。 */
+  createLibraryBlocking: (payload: BlockingCreateRequest) =>
+    json<BlockingResult>('POST', '/api/library/blocking', payload),
+  /**
+   * 同じ項目を焼き直す（版番号 +1）。
+   *
+   * mp4 のパスも id も変わらないので、参照している側は直さなくてよい。
+   */
+  rerenderLibraryBlocking: (id: string, scene: BlockingScene) =>
+    json<BlockingResult>('POST', `/api/library/${id}/blocking`, { scene }),
+  /**
+   * 1 コマだけ描いた PNG の blob URL（保存しない。画面のライブプレビュー用）。
+   *
+   * 返った URL は使い終わったら `URL.revokeObjectURL` で捨てること。
+   */
+  blockingPreview: async (scene: BlockingScene, t = 0) =>
+    URL.createObjectURL(
+      await postForBlob('/api/library/blocking/preview', { scene, t }),
+    ),
+  /** レンダせずに文章と画面上の位置だけ組み立てる（安い）。 */
+  blockingLocationMap: (scene: BlockingScene, videoIndex = 1) =>
+    json<BlockingMapResult>('POST', '/api/library/blocking/location-map', {
+      scene,
+      video_index: videoIndex,
+    }),
+
   listAudio: () => request<Asset[]>('/api/assets/audio'),
   listImages: () => request<Asset[]>('/api/assets/image'),
   listVideos: () => request<Asset[]>('/api/assets/video'),
@@ -371,6 +475,18 @@ export const api = {
   uploadVideo: (file: File) => upload<Asset>('/api/assets/video', file),
 
   listJobs: (limit = 60) => request<Job[]>(`/api/jobs?limit=${limit}`),
+  /**
+   * 絞り込み（プロンプト・作品名・カット題名への部分一致、種別、作品、NSFW）
+   * つきの 1 ページと、絞り込み後の総件数（`X-Total-Count`）。
+   *
+   * レスポンスの形は `listJobs` と同じ `Job[]` なので、件数だけヘッダーで拾う。
+   */
+  listJobPage: async (query: JobQuery = {}): Promise<JobPage> => {
+    const response = await send(`/api/jobs${searchOf(query)}`)
+    const items = (await response.json()) as Job[]
+    const header = response.headers.get('X-Total-Count')
+    return { items, total: header === null ? items.length : Number(header) }
+  },
   getJob: (id: string) => request<Job>(`/api/jobs/${id}`),
   createJob: (payload: JobCreate | AudioJobCreate) =>
     json<Job>('POST', '/api/jobs', payload),
@@ -475,6 +591,33 @@ export const api = {
    */
   uploadStudioAssetFile: (assetId: string, file: File) =>
     upload<StudioAsset>(`/api/studio/assets/${assetId}/file`, file),
+
+  /**
+   * ライブラリから取り込んだ素材を、元の項目の今の版でコピーし直す。
+   *
+   * 素材はコピーなので、ライブラリで焼き直しても自動では追従しない
+   * （`library_update_available` が立つだけ）。押したときだけ取り直す。
+   */
+  refreshStudioAssetFromLibrary: (assetId: string) =>
+    json<StudioAsset>(
+      'POST',
+      `/api/studio/assets/${assetId}/refresh-from-library`,
+    ),
+
+  /**
+   * World Bible の素材を**作品をまたいで**探す（ファイルタブの
+   * 「プロジェクト素材」）。1 件ずつに持ち主の作品名が付く。
+   */
+  listStudioAssets: (query: StudioAssetQuery = {}) => {
+    const params = new URLSearchParams()
+    for (const [key, value] of Object.entries(query)) {
+      if (value !== undefined && value !== '') params.set(key, String(value))
+    }
+    const search = params.toString()
+    return request<StudioAssetPage>(
+      `/api/studio/assets${search ? `?${search}` : ''}`,
+    )
+  },
 
   /** 素材にぶら下がるリファレンス（声サンプル・動画・追加画像）。 */
   listStudioAssetFiles: (assetId: string) =>
@@ -644,6 +787,28 @@ export const api = {
     json<TimelineExport>('POST', `/api/studio/timelines/${id}/export`, body),
   listStudioTimelineExports: (id: string) =>
     request<TimelineExport[]>(`/api/studio/timelines/${id}/exports`),
+  /**
+   * 書き出した mp4 を**タイムラインをまたいで**一覧する（ファイルタブの
+   * 出どころ「書き出し」）。焼き上がったものだけが 1 ファイル = 1 件で返る。
+   */
+  listStudioExports: (query: TimelineExportQuery = {}) => {
+    const params = new URLSearchParams()
+    for (const [key, value] of Object.entries(query)) {
+      if (value !== undefined && value !== '') params.set(key, String(value))
+    }
+    const search = params.toString()
+    return request<TimelineExportPage>(
+      `/api/studio/exports${search ? `?${search}` : ''}`,
+    )
+  },
+  /**
+   * 完成した mp4 をライブラリ（`library/video/`）へコピーして登録する。
+   * 同じものが既に棚にあれば 409（失敗ではなく「登録済みです」）。
+   */
+  saveExportToLibrary: (exportId: string, name = '') =>
+    json<LibraryItem>('POST', `/api/studio/exports/${exportId}/save-to-library`, {
+      name,
+    }),
   /** トラックを 1 本足す（音声 A1… / 字幕 T1。映像トラックは 400）。 */
   addStudioTimelineTrack: (id: string, payload: TimelineTrackCreate = {}) =>
     json<StudioTimelineDetail>(

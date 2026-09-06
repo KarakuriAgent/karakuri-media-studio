@@ -92,6 +92,19 @@
 }
 
 @layer utilities {
+  /*
+   * 横スクロールさせる細い行（タグ列・出どころタブ・狭幅の操作列）で、
+   * スクロールバーぶんの高さを取らせないための指定。指やホイールでは今までどおり
+   * スクロールできる。
+   */
+  .scrollbar-none {
+    scrollbar-width: none;
+    -ms-overflow-style: none;
+  }
+  .scrollbar-none::-webkit-scrollbar {
+    width: 0;
+    height: 0;
+  }
   /* 数値の桁が揃うので、進捗・秒数・解像度などの表示に使う。 */
   .tnum {
     font-variant-numeric: tabular-nums;

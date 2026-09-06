@@ -59,7 +59,7 @@ from . import (
     ws,
 )
 from .config import load_settings
-from .db import get_db
+from .db import LIKE_ESCAPE, get_db, like_pattern
 from .ids import new_id
 from .models import (
     AudioAnalysisRequest,
@@ -336,11 +336,125 @@ async def get_job(job_id: str, *, include_workflow: bool = True) -> Job | None:
     return row_to_job(row, include_workflow=include_workflow) if row else None
 
 
-async def list_jobs(limit: int = 50, offset: int = 0) -> list[Job]:
+#: 一覧の絞り込みで使う ``kind``（その成果物を持つジョブだけに絞る）。画像は
+#: 生成画像とラストフレームのどちらかがあれば「画像を持つ」とみなす（ライブラリ
+#: タブが両方を画像タイルに展開するのに合わせる）。
+_KIND_CONDITIONS = {
+    "image": "(j.image_path IS NOT NULL OR j.last_frame_path IS NOT NULL)",
+    "video": "j.video_path IS NOT NULL",
+    "audio": "j.audio_output_path IS NOT NULL",
+}
+
+#: Take 経由で作品・カットを引き当てる JOIN。1 ジョブに Take が複数ぶら下がる
+#: ことがある（同じジョブを別のカットが指す作りにはなっていないが、履歴の
+#: 作り直しで増えうる）ので、読み出し側では ``GROUP BY j.id`` で 1 行に畳む。
+_JOB_JOIN = (
+    " FROM jobs j"
+    " LEFT JOIN studio_takes t ON t.job_id = j.id"
+    " LEFT JOIN studio_shots s ON s.id = t.shot_id"
+    " LEFT JOIN studio_projects p ON p.id = t.project_id"
+)
+
+
+def _job_filters(
+    *,
+    q: str | None = None,
+    kind: str | None = None,
+    project_id: str | None = None,
+    nsfw: bool | None = None,
+) -> tuple[str, list[Any], bool]:
+    """一覧の絞り込みを ``WHERE`` 句とパラメータにする（SPEC §9）。
+
+    ``q`` はプロンプト（動画・画像・音声・入力文）と、Take 経由の**作品名・
+    カット題名**への部分一致（ASCII の大文字小文字は無視）。英語のプロンプト
+    しか持たないジョブでも、作品名（日本語）で引けるようにするための JOIN。
+
+    返すのは ``(WHERE 句, パラメータ, Take 側の JOIN が要るか)``。``q`` と
+    ``project_id`` のどちらも無ければ ``jobs`` だけで絞り込めるので、数える
+    ときは JOIN を省ける（:func:`count_jobs`）。
+    """
+    conditions: list[str] = []
+    params: list[Any] = []
+    wanted = (q or "").strip()
+    if wanted:
+        like = like_pattern(wanted)
+        columns = (
+            "j.video_prompt",
+            "j.image_prompt",
+            "j.user_input",
+            "j.audio_prompt",
+            "p.name",
+            "s.title",
+        )
+        conditions.append(
+            "("
+            + " OR ".join(
+                f"LOWER({column}) LIKE ?{LIKE_ESCAPE}" for column in columns
+            )
+            + ")"
+        )
+        params.extend([like] * len(columns))
+    if kind:
+        condition = _KIND_CONDITIONS.get(kind)
+        if condition is None:
+            raise JobValidationError(f"unknown kind: {kind}")
+        conditions.append(condition)
+    if project_id:
+        conditions.append("t.project_id = ?")
+        params.append(project_id)
+    if nsfw is not None:
+        conditions.append("j.nsfw = ?")
+        params.append(1 if nsfw else 0)
+    where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+    return where, params, bool(wanted or project_id)
+
+
+async def count_jobs(
+    *,
+    q: str | None = None,
+    kind: str | None = None,
+    project_id: str | None = None,
+    nsfw: bool | None = None,
+) -> int:
+    """:func:`list_jobs` と同じ絞り込みでの総件数（``X-Total-Count``）。"""
+    where, params, needs_join = _job_filters(
+        q=q, kind=kind, project_id=project_id, nsfw=nsfw
+    )
+    # Take 側を見ない絞り込み（kind / nsfw だけ）なら jobs を数えるだけで足りる。
+    sql = (
+        "SELECT COUNT(*) FROM (SELECT j.id" + _JOB_JOIN + where + " GROUP BY j.id)"
+        if needs_join
+        else "SELECT COUNT(*) FROM jobs j" + where
+    )
+    async with get_db() as conn:
+        async with conn.execute(sql, tuple(params)) as cur:
+            return int((await cur.fetchone())[0])
+
+
+async def list_jobs(
+    limit: int = 50,
+    offset: int = 0,
+    *,
+    q: str | None = None,
+    kind: str | None = None,
+    project_id: str | None = None,
+    nsfw: bool | None = None,
+) -> list[Job]:
+    """新しい順のジョブ一覧（絞り込みは SQL 側。SPEC §9）。
+
+    Take になっているジョブには作品名・カット題名が付く（:class:`Job` の
+    ``project_id`` / ``project_name`` / ``shot_title`` は読み取り専用）。
+    """
+    where, params, _ = _job_filters(q=q, kind=kind, project_id=project_id, nsfw=nsfw)
     async with get_db() as conn:
         async with conn.execute(
-            "SELECT * FROM jobs ORDER BY created_at DESC, id DESC LIMIT ? OFFSET ?",
-            (limit, offset),
+            "SELECT j.*, t.project_id AS project_id, p.name AS project_name,"
+            " t.shot_id AS shot_id, s.title AS shot_title" + _JOB_JOIN + where
+            # Take が複数ぶら下がっても 1 ジョブ 1 行にする（どの Take の
+            # 作品・カットを載せるかは SQLite に任せる: 実運用では 1 つ）。
+            + " GROUP BY j.id ORDER BY j.created_at DESC, j.id DESC"
+            " LIMIT ? OFFSET ?",
+            (*params, limit, offset),
         ) as cur:
             rows = await cur.fetchall()
     # The full API JSON is large; the list view only needs the metadata.

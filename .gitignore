@@ -9,7 +9,7 @@ app.db-*
 *.bak
 outputs/
 assets/
-library/
+/library/
 runtime/
 models.local.txt
 .env

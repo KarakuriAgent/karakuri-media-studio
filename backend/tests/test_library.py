@@ -404,7 +404,11 @@ def test_json_payload_shape_is_stable(env):
         "source",
         "tags",
         "category",
+        # 構図リファレンス動画（SPEC §7.2）。ふつうの素材は null / 0
+        "blocking",
+        "blocking_version",
     }
+    assert item["blocking"] is None and item["blocking_version"] == 0
     assert json.loads(json.dumps(item)) == item
 
 

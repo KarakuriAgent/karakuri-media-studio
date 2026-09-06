@@ -1,4 +1,4 @@
-import { Clapperboard, Sparkles, type LucideIcon } from 'lucide-react'
+import { Clapperboard, Files, Sparkles, type LucideIcon } from 'lucide-react'
 
 import { VIEW_TABS, type View } from './Header'
 
@@ -6,6 +6,7 @@ import { VIEW_TABS, type View } from './Header'
 const ICON: Record<(typeof VIEW_TABS)[number]['value'], LucideIcon> = {
   main: Sparkles,
   studio: Clapperboard,
+  library: Files,
 }
 
 /**

@@ -1495,6 +1495,92 @@ def test_save_to_library_copies_the_finished_mp4(client, tmp_path, monkeypatch):
     assert service.export_dir(export_id).joinpath("final.mp4").is_file()
 
 
+async def _seed_export(
+    timeline_id: str,
+    export_id: str,
+    created_at: str,
+    *,
+    status: str = "done",
+    with_file: bool = True,
+) -> None:
+    """書き出しの行を 1 つ置く（ffmpeg は走らせない。横断一覧を見るため）。"""
+    output = str(service.export_dir(export_id) / "final.mp4") if with_file else None
+    async with db.get_db() as conn:
+        await conn.execute(
+            "INSERT INTO timeline_exports (id, timeline_id, status, progress, params,"
+            " output_path, fps, width, height, duration_ms, created_at)"
+            " VALUES (?, ?, ?, 1.0, '{}', ?, 24, 1280, 720, 4000, ?)",
+            (export_id, timeline_id, status, output, created_at),
+        )
+        await conn.commit()
+
+
+def test_exports_can_be_listed_across_timelines(client):
+    """``GET /api/studio/exports``: 焼けたものだけを新しい順に、作品名つきで。"""
+    left = _project(client, "深夜のラーメン屋")
+    right = _project(client, "かおりプロジェクト")
+    ramen = client.post(
+        f"/api/studio/projects/{left}/timelines", json={"name": "本編"}
+    ).json()
+    kaori = client.post(
+        f"/api/studio/projects/{right}/timelines", json={"name": "MV"}
+    ).json()
+    asyncio.run(_seed_export(ramen["id"], "E1", "2026-01-01T00:00:00+00:00"))
+    asyncio.run(_seed_export(kaori["id"], "E2", "2026-01-02T00:00:00+00:00"))
+    # 焼き上がっていないものと、ファイルの無いものは一覧に出ない
+    asyncio.run(
+        _seed_export(ramen["id"], "E3", "2026-01-03T00:00:00+00:00", status="running")
+    )
+    asyncio.run(
+        _seed_export(ramen["id"], "E4", "2026-01-04T00:00:00+00:00", with_file=False)
+    )
+
+    page = client.get("/api/studio/exports").json()
+    assert page["total"] == 2
+    assert [item["id"] for item in page["items"]] == ["E2", "E1"]
+    first = page["items"][0]
+    assert first["timeline_name"] == "MV"
+    assert first["project_id"] == right
+    assert first["project_name"] == "かおりプロジェクト"
+    assert first["output_url"] == "/outputs/exports/E2/final.mp4"
+    assert (first["width"], first["height"], first["duration_ms"]) == (1280, 720, 4000)
+
+
+def test_the_export_list_pages_and_filters(client):
+    project_id = _project(client, "深夜のラーメン屋")
+    other = _project(client, "かおりプロジェクト")
+    ramen = client.post(
+        f"/api/studio/projects/{project_id}/timelines", json={"name": "本編"}
+    ).json()
+    kaori = client.post(
+        f"/api/studio/projects/{other}/timelines", json={"name": "MV"}
+    ).json()
+    for index in range(3):
+        asyncio.run(
+            _seed_export(ramen["id"], f"R{index}", f"2026-02-0{index + 1}T00:00:00+00:00")
+        )
+    asyncio.run(_seed_export(kaori["id"], "K1", "2026-02-09T00:00:00+00:00"))
+
+    # ページング（total は絞り込み後の総件数）
+    page = client.get("/api/studio/exports?limit=2").json()
+    assert page["total"] == 4
+    assert [item["id"] for item in page["items"]] == ["K1", "R2"]
+    assert page["limit"] == 2 and page["offset"] == 0
+    rest = client.get("/api/studio/exports?limit=2&offset=2").json()
+    assert [item["id"] for item in rest["items"]] == ["R1", "R0"]
+
+    # 作品で絞る
+    only = client.get(f"/api/studio/exports?project_id={other}").json()
+    assert [item["id"] for item in only["items"]] == ["K1"]
+
+    # q はタイムライン名と作品名に当たる
+    assert client.get("/api/studio/exports?q=本編").json()["total"] == 3
+    assert client.get("/api/studio/exports?q=かおり").json()["total"] == 1
+    assert client.get("/api/studio/exports?q=ghost").json()["total"] == 0
+    # `_` はワイルドカードではないので、全件が出たりしない
+    assert client.get("/api/studio/exports?q=_").json()["total"] == 0
+
+
 def test_save_to_library_refuses_an_unfinished_export(client):
     project_id = _project(client)
     timeline = client.post(

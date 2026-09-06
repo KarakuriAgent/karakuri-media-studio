@@ -36,14 +36,14 @@
 | プロジェクト | `GET/POST /projects`・`GET/PATCH /projects/{id}` |
 | 話 / 場 / カット | `POST /projects/{id}/episodes`・`POST /episodes/{id}/scenes`・`POST /projects/{id}/shots` と各 `PATCH` / `DELETE`、`POST .../reorder`（並べ替え） |
 | 投入前の確認 | `GET /shots/{id}/prompt-preview`（実際に投入されるプロンプト・ワークフロー・その理由・`render_blocker`）・`POST /shots/{id}/translate` |
-| 素材（World Bible） | `POST /projects/{id}/assets`（JSON / multipart）・`assets/from-job`・`PATCH/DELETE /assets/{id}`・素材のリファレンス（`/assets/{id}/files`・`DELETE /asset-files/{id}`） |
+| 素材（World Bible） | `GET /assets`（**全作品横断**の素材検索。`project_id` / `kind` / `q` / `limit` / `offset`）・`POST /projects/{id}/assets`（JSON / multipart。`library_id` でライブラリから取り込み）・`assets/from-job`・`PATCH/DELETE /assets/{id}`・`POST /assets/{id}/refresh-from-library`（取り込み元の今の版で取り直す）・素材のリファレンス（`/assets/{id}/files`・`DELETE /asset-files/{id}`） |
 | 生成と Take | `POST /shots/{id}/render`・`GET /shots/{id}/takes`・`POST /takes/{id}/select`・`reject`・`cancel`・`DELETE /takes/{id}` |
-| 汎用ジョブ | `GET/POST /jobs`・`GET /jobs/{id}`・`POST /jobs/{id}/cancel`・`rerun`・`continue` |
-| ライブラリ | `GET /library`・`POST /library/image` / `POST /library/audio` / `POST /library/upload`（multipart）・`POST /library/from-job`・`POST /library/sheet`・`POST /library/{id}/key`・`POST /library/key`・`POST /library/key-from-job`・`PATCH /library/{id}`（**削除は非公開**） |
+| 汎用ジョブ | `GET/POST /jobs`（一覧は `q` / `kind` / `project_id` / `nsfw` / `limit` / `offset` で絞れる。§3.6）・`GET /jobs/{id}`・`POST /jobs/{id}/cancel`・`rerun`・`continue` |
+| ライブラリ | `GET /library`・`POST /library/image` / `POST /library/audio` / `POST /library/upload`（multipart）・`POST /library/from-job`・`POST /library/sheet`・`POST /library/{id}/key`・`POST /library/key`・`POST /library/key-from-job`・`POST /library/blocking`・`POST /library/{id}/blocking`・`POST /library/blocking/preview`・`POST /library/blocking/location-map`・`PATCH /library/{id}`（**削除は非公開**） |
 | 素材の下ごしらえ | `POST /images/text`・`GET /images/text/fonts`・`POST /videos/contact-sheet`（§3.4） |
 | 編集（タイムライン） | `POST /projects/{id}/timelines`・`GET/PATCH/DELETE /timelines/{id}`・`PUT /timelines/{id}/clips`・`POST /timelines/{id}/clips/insert`・トラック CRUD・`generate-subtitles`・`sync-preview` / `sync`・`missing` / `missing/resolve`・`GET /projects/{id}/media` |
 | 演出（FX トラック） | `GET/PUT /timelines/{id}/fx`・`POST /timelines/{id}/fx/events`・`PATCH/DELETE /timelines/{id}/fx/events/{event_id}`（§3.3） |
-| 書き出し | `POST /timelines/{id}/export`（202。`fx: true` で演出付き）・`GET /timelines/{id}/exports`・`GET /exports/{id}`・`POST /exports/{id}/save-to-library` |
+| 書き出し | `POST /timelines/{id}/export`（202。`fx: true` で演出付き）・`GET /timelines/{id}/exports`・**`GET /exports`（タイムライン横断の一覧）**・`GET /exports/{id}`・`POST /exports/{id}/save-to-library` |
 | 編集履歴 | `GET /projects/{id}/revisions`・`GET .../{seq}/diff`・`POST .../{seq}/restore`（§3.1） |
 | 画面 | `GET/PATCH /ui/generate-form`・`POST /ui/navigate`（§3.2） |
 | Remotion | `GET /remotion/compositions`（§3.3） |
@@ -368,6 +368,13 @@ POST  /api/v1/timelines/{id}/export {}
 GET   /api/v1/exports/{id}          → {"fps":24,"width":1280,"height":720,
                                        "frames":4728,"duration_ms":197000,"warnings":[]}
 GET   /api/v1/timelines/{id}/exports → 上の履歴（id を控え損ねたときの拾い先）
+GET   /api/v1/exports?project_id=&q=&limit=&offset=
+                                    → {"items":[…],"total":16,"limit":50,"offset":0}
+                                      タイムライン横断。**焼き上がったものだけ**を
+                                      新しい順に返し、各件に `output_url` と
+                                      `timeline_name` / `project_id` / `project_name` /
+                                      `project_nsfw` が付く（`q` はタイムライン名・
+                                      作品名への部分一致）
 ```
 
 1. **音源は `POST /library/audio`（multipart）で棚に入れる**。タイムラインに置けるのは
@@ -506,6 +513,111 @@ POST /api/v1/videos/contact-sheet   {"source":{"job_id":"…"},"seconds":[43.9,4
   既定 true）。応答は `{item, seconds, columns}` で、`seconds` に**実際に抜いた
   秒**が左上から順に並ぶ。**演出の配置（`cx` / `cy` / `w`）を触ったら必ずこれで
   確かめる。**
+
+### 3.5 構図リファレンス動画（ブロッキング）
+
+**構図とカメラワークだけ**を H3 に渡したいときに使う。四角・丸・円柱・簡易人型
+だけの 3D シーン定義（JSON）を投げると、サーバーが 24fps の mp4 に焼いて
+ライブラリの動画素材（タグ `blocking`）として登録する。それを作品の素材に入れて
+カットで `@名前` で参照し、応答の `reference_note`（`weak_reference`）を
+`retention_analysis` に、`location_map` をカット本文に写す。**「誰がどこに立ち、
+カメラがどう動くか」を言葉だけで詰められないカットにだけ使う。**
+
+```
+POST /api/v1/library/blocking              {"scene":{…},"name":"","tags":[],"category":null}
+POST /api/v1/library/{id}/blocking         {"scene":{…}}   ← 同じ項目を焼き直す（版番号 +1）
+POST /api/v1/library/blocking/preview      {"scene":{…},"t":0}  → image/png（保存しない）
+POST /api/v1/library/blocking/location-map {"scene":{…}}   → 文章だけ（レンダしないので安い）
+```
+
+シーン定義の最小例（カメラの正面 5m に人がひとり、カメラは 1.5m 寄る）:
+
+```json
+{
+  "scene": {
+    "aspect_ratio": "16:9",
+    "duration": 5,
+    "camera": {
+      "keyframes": [
+        {"t": 0, "position": [0, 1.6, 5], "look_at": [0, 1.2, 0], "fov_deg": 47}
+      ],
+      "move": {"type": "push_in", "amount": 1.5}
+    },
+    "objects": [
+      {
+        "id": "hero", "label": "hero", "shape": "figure", "facing": "camera",
+        "keyframes": [
+          {"t": 0, "position": [0, 0, 0]},
+          {"t": 5, "position": [0.8, 0, -1.2]}
+        ]
+      }
+    ]
+  }
+}
+```
+
+- **座標はメートル・Y 上・床が `y=0`**、`position` は**底面中心**、角度は度、
+  正面はローカルの `+Z`。`fov_deg` は**対角**画角（既定 47）。
+- `shape` は `box` / `sphere`（`size` の `w` が直径）/ `cylinder` / `capsule` /
+  `figure`（人物用。頭と鼻が付くので向きが読める）。`size` を省くと形状ごとの
+  既定（`figure` は `[0.45, 1.7, 0.3]`）。`facing` は `keyframe` / `camera`
+  （常にカメラを見る）/ `path`（進行方向）。
+- カメラは `keyframes`（`t` 昇順、先頭は `t=0`）を書くか、`move` にプリセット
+  （`static` / `push_in` / `pull_out` / `pan_left|right` / `tilt_up|down` /
+  `truck_left|right` / `arc_left|right` / `follow`）を書く。`amount` は
+  push / pull / truck が m、pan / tilt / arc が度。`follow` は `target` に
+  オブジェクトの `id` が要る。
+- 上限は尺 0.5〜10 秒 / オブジェクト 1〜20 件 / キーフレーム 32 点まで、
+  アスペクト比は `16:9` `9:16` `1:1` `4:3` `3:4` `21:9`（`GET /capabilities` の
+  `blocking` に出る）。外れていれば **400**。
+- 応答は `{item, location_map, reference_note, width, height, fps, frames,
+  duration}`。`item.blocking` にシーン定義が、`item.blocking_version` に版番号が
+  残るので、**構図を直したいときは同じ項目に `POST /library/{id}/blocking`**
+  （mp4 のパスも `id` も変わらないので、参照している側は直さなくてよい）。
+- 焼く前に確かめたいときは `blocking/location-map`（文章と画面上の % だけ。
+  レンダしない）と `blocking/preview`（1 コマの PNG）。
+- **作品の素材にするときは `library_id` で取り込む**:
+  `POST /projects/{id}/assets` に `{"library_id":"<項目の id>"}`
+  （JSON / multipart どちらでも）。ファイル・`kind`・（`name` を省けば）項目名を
+  引き継ぎ、実体は `assets/video/` へ**コピー**される。`library_id` と
+  `file` / `path` の**同時指定は 400**（どちらか一方）。返る素材には
+  `source_library_id` / `source_library_version`（取り込んだ版）と、
+  `library_blocking`（元が構図リファレンス動画か。取り込んだ版から導くので、
+  **元の項目を消しても残る**）/ `library_update_available`（元の版が進んで
+  いるか。元が消えていれば false）が付く。
+- **焼き直したら `POST /assets/{id}/refresh-from-library`**: 素材はコピーなので
+  `POST /library/{id}/blocking` で版を上げても追従しない。`library_update_available`
+  が `true` の素材にこれを叩くと実体を取り直し、版を今の値に揃える。**ファイルが
+  変わるので、その素材を参照した Take は stale になる**（作り直しの合図）。版が
+  進んでいなければ何もせず、今の素材をそのまま返す（Take も stale にならない）。
+  ライブラリ由来でない素材・元が消えている素材は 400、素材が無ければ 404。
+- 素材として参照したカットでは、`reference_note` を**手で書かなくても**
+  `retention_analysis` の 1 行として自動で足される（`<Video k>` の番号は本文に
+  実際に書かれたタグに合わせる）。同じ番号の注記を自分で書いていれば二重には
+  ならないので、言い回しを変えたいときは自分で書けばそちらが残る。
+
+### 3.6 ジョブの履歴を探す（`GET /jobs`）
+
+過去の生成を探すときは、全部読んで手元で絞らずに**クエリで絞る**。
+
+```
+GET /api/v1/jobs?q=かおり&kind=video&nsfw=false&limit=48&offset=0
+  → 200 [ {…Job…}, … ]   （ヘッダー X-Total-Count: 絞り込み後の総件数）
+```
+
+| クエリ | 意味 |
+|---|---|
+| `q` | プロンプト（`video_prompt` / `image_prompt` / `user_input` / `audio_prompt`）と、Take 経由の**作品名・カット題名**への部分一致（**ASCII の**大文字小文字は無視。`%` `_` はワイルドカードではなくその文字として探す） |
+| `kind` | `image` / `video` / `audio`。**その成果物を持つ**ジョブだけ（`image` は生成画像かラストフレームのどちらか） |
+| `project_id` | その作品の Take になっているジョブだけ |
+| `nsfw` | `true` = NSFW のみ / `false` = 除外 / 省略 = 全部 |
+| `limit` / `offset` | ページング（新しい順。既定 50、最大 500） |
+
+- 絞り込み後の**総件数**は本文ではなく `X-Total-Count` ヘッダーに入る（レスポンスの形は
+  今までどおり `Job` の配列）。次のページがあるかはこれで判る。
+- Take 由来のジョブには `project_id` / `project_name` / `shot_id` / `shot_title` が付く
+  （スタジオを通していないジョブと、`GET /jobs/{id}` では null）。英語プロンプトしか
+  持たないジョブを**日本語の作品名で**引けるのはこの JOIN のおかげ。
 
 ## 4. ファイルの受け渡し
 

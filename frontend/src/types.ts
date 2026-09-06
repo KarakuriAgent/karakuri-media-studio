@@ -292,6 +292,199 @@ export type LibraryCategory = 'character' | 'background' | 'prop'
  */
 export type LibraryCategoryValue = LibraryCategory | 'none'
 
+// --------------------------------------- 構図リファレンス動画（ブロッキング）
+// SPEC §7.2 / EXTERNAL-API §3.5 — 原始形状だけの 3D シーン定義。正本は
+// `backend/app/blocking.py`（上限と検証もそちら。外れた値は 400）。
+// 座標は**メートル・Y 上・床が y=0**、`position` は**底面中心**、角度は度、
+// 正面はローカルの +Z。`fov_deg` は**対角**画角。
+
+/** 位置 `[x, y, z]`（m）。 */
+export type BlockingVec3 = [number, number, number]
+
+/** 形状（`figure` は人物用: 箱の胴 + 球の頭 + 正面の小さな鼻）。 */
+export type BlockingShape = 'box' | 'sphere' | 'cylinder' | 'capsule' | 'figure'
+
+/** 向きの決め方（`camera` = 常にカメラを見る / `path` = 進行方向）。 */
+export type BlockingFacing = 'keyframe' | 'camera' | 'path'
+
+/** キーフレーム間の補間。 */
+export type BlockingEasing = 'linear' | 'ease_in_out'
+
+/** カメラプリセット（`app.blocking.MOVES`）。 */
+export type BlockingMoveType =
+  | 'static'
+  | 'push_in'
+  | 'pull_out'
+  | 'pan_left'
+  | 'pan_right'
+  | 'tilt_up'
+  | 'tilt_down'
+  | 'truck_left'
+  | 'truck_right'
+  | 'arc_left'
+  | 'arc_right'
+  | 'follow'
+
+/** 出力のアスペクト比。 */
+export type BlockingAspectRatio = '16:9' | '9:16' | '1:1' | '4:3' | '3:4' | '21:9'
+
+/** カメラの 1 点（`t` 秒での位置・注視点・画角）。 */
+export interface BlockingCameraKeyframe {
+  /** 時刻（秒。0 から尺まで。昇順で、先頭は必ず 0）。 */
+  t: number
+  position: BlockingVec3
+  look_at: BlockingVec3
+  /** **対角**画角（度。20〜110）。 */
+  fov_deg: number
+  /** カメラの傾き（度。正で画面の絵が時計回りに回る）。 */
+  roll_deg: number
+}
+
+/** カメラの動きのプリセット（指定すると `keyframes` を上書きする）。 */
+export interface BlockingCameraMove {
+  type: BlockingMoveType
+  /** push / pull / truck は移動距離（m）、pan / tilt / arc は角度（度）。 */
+  amount: number
+  /** `follow` / `arc_*` の注視対象（オブジェクトの id）。 */
+  target: string | null
+}
+
+/** カメラ（キーフレームか、`move` のプリセット）。 */
+export interface BlockingCamera {
+  /** 1〜32 点。`t` は昇順で、先頭は必ず 0。 */
+  keyframes: BlockingCameraKeyframe[]
+  easing: BlockingEasing
+  /** 指定すると `keyframes[0]` を起点に展開して `keyframes` を置き換える。 */
+  move: BlockingCameraMove | null
+}
+
+/** オブジェクトの 1 点（`t` 秒での底面中心と向き）。 */
+export interface BlockingObjectKeyframe {
+  t: number
+  /** 底面中心（床に置くなら y=0）。 */
+  position: BlockingVec3
+  /** 向き（度。0 で +Z を向く。`facing` が `keyframe` のときだけ効く）。 */
+  yaw_deg: number
+}
+
+/** シーンに置く原始形状 1 つ。 */
+export interface BlockingObject {
+  /** 英数字と `_`（objects の中で一意）。 */
+  id: string
+  /** 画面上の呼び名（`location_map` にこの名前で出る。空なら id）。 */
+  label: string
+  shape: BlockingShape
+  /** `[w, h, d]`（m）。null なら形状ごとの既定。球・円柱・カプセルは w が直径。 */
+  size: BlockingVec3 | null
+  /** 色（`#rrggbb`）。人物の識別用に低彩度の色を想定。 */
+  color: string
+  /** 1〜32 点。`t` は昇順（先頭が 0 でなくてもよい。その手前は静止）。 */
+  keyframes: BlockingObjectKeyframe[]
+  facing: BlockingFacing
+}
+
+/** 背景（低彩度に固定して、H3 に余計な意味を拾わせない）。 */
+export interface BlockingBackground {
+  /** 1m 間隔の床グリッドを引くか。 */
+  floor_grid: boolean
+  color: string
+}
+
+/** 構図・カメラワークの参照動画（ブロッキング）のシーン定義。 */
+export interface BlockingScene {
+  aspect_ratio: BlockingAspectRatio
+  /** 尺（秒。0.5〜10）。 */
+  duration: number
+  background: BlockingBackground
+  camera: BlockingCamera
+  /** 1〜20 件。 */
+  objects: BlockingObject[]
+}
+
+/** 画面上の 1 点（% と px）。 */
+export interface BlockingScreenPoint {
+  /** 左端からの割合（%）。画面外なら 0 未満・100 超もありうる。 */
+  x_percent: number
+  /** 上端からの割合（%）。 */
+  y_percent: number
+  x_px: number
+  y_px: number
+  /** カメラの前にあるか（後ろなら % は当てにならない）。 */
+  visible: boolean
+}
+
+/** 1 オブジェクトの画面上の位置（底面中心 / 中心 / 上端）。 */
+export interface BlockingObjectScreen {
+  id: string
+  label: string
+  shape: BlockingShape
+  /** カメラから中心までの距離（m）。 */
+  distance_m: number
+  base: BlockingScreenPoint
+  center: BlockingScreenPoint
+  top: BlockingScreenPoint
+}
+
+/** ある瞬間の画面（location-map の `positions`）。 */
+export interface BlockingPositions {
+  t: number
+  width: number
+  height: number
+  /** 地平線の y（%。真上・真下を向いていて引けなければ null）。 */
+  horizon_y_percent: number | null
+  objects: BlockingObjectScreen[]
+}
+
+/** POST /api/library/blocking の body。 */
+export interface BlockingCreateRequest {
+  scene: BlockingScene
+  /** 表示名（空ならオブジェクトの並びから決まる）。 */
+  name?: string
+  tags?: string[]
+  /** 分類（省略・'none' なら未分類）。 */
+  category?: LibraryCategoryValue | null
+}
+
+/** POST /api/library/blocking/location-map の応答（レンダしない）。 */
+export interface BlockingMapResult {
+  /** H3 のプロンプトへ写す英文（LOCATION MAP + CAMERA）。 */
+  location_map: string
+  /** 参照として渡すときの `retention_analysis` の 1 行。 */
+  reference_note: string
+  /** t=0 / 中間 / 終端の画面上の位置。 */
+  positions: BlockingPositions[]
+}
+
+/** POST /api/library/blocking（と再レンダ）の応答。 */
+export interface BlockingResult {
+  item: LibraryItem
+  location_map: string
+  reference_note: string
+  width: number
+  height: number
+  fps: number
+  frames: number
+  duration: number
+}
+
+/** GET /api/studio/capabilities の `blocking`（可否と上限）。 */
+export interface BlockingCapabilities {
+  /** mp4 を焼けるか（ffmpeg が要る。false でも preview / location-map は使える）。 */
+  available: boolean
+  /** 焼けない理由（日本語。空なら使える）。 */
+  error: string
+  fps: number
+  long_edge: number
+  min_duration: number
+  max_duration: number
+  max_objects: number
+  max_keyframes: number
+  aspect_ratios: string[]
+  shapes: string[]
+  facings: string[]
+  camera_moves: string[]
+}
+
 export interface LibraryItem {
   id: string
   created_at: string
@@ -317,6 +510,13 @@ export interface LibraryItem {
   tags: string[]
   /** 素材の分類（null = 未分類。カラムを足す前の行も null）。 */
   category: LibraryCategory | null
+  /**
+   * 構図リファレンス（シーン JSON、SPEC §7.2）。ブロッキング以外の素材では
+   * 載らない（版は `blocking_version`）。
+   */
+  blocking?: BlockingScene | null
+  /** 構図リファレンスの版（1 始まり。作り直すたびに上がる）。 */
+  blocking_version?: number
 }
 
 /** GET /api/library のレスポンス（絞り込み結果の 1 ページ）。 */
@@ -532,6 +732,34 @@ export interface Job {
   extra_outputs?: string[]
   /** `extra_outputs` の URL（同じ並び）。 */
   extra_output_urls?: string[]
+  /**
+   * Take 経由で分かる出どころ（読み取り専用）。一覧 `GET /api/jobs` だけが
+   * 埋め、スタジオを通していないジョブと詳細では null。
+   */
+  project_id?: string | null
+  project_name?: string | null
+  /** 元になったカット（[スタジオで開く] の行き先）。 */
+  shot_id?: string | null
+  shot_title?: string | null
+}
+
+/** ジョブ一覧（`GET /api/jobs`）の絞り込み。 */
+export interface JobQuery {
+  /** プロンプト・作品名・カット題名への部分一致。 */
+  q?: string
+  kind?: LibraryKind
+  /** その作品の Take になっているジョブだけ。 */
+  project_id?: string
+  /** true = NSFW のみ / false = 除外 / 省略 = 全部。 */
+  nsfw?: boolean
+  limit?: number
+  offset?: number
+}
+
+/** ジョブ一覧の 1 ページ（`total` は `X-Total-Count`）。 */
+export interface JobPage {
+  items: Job[]
+  total: number
 }
 
 export interface JobCreate {
@@ -1140,6 +1368,47 @@ export interface StudioAsset {
   updated_at?: string
   /** プロンプトに効く項目を最後に書き換えた時刻（Take の stale 判定に使う）。 */
   prompt_updated_at?: string
+  /** 取り込み元のライブラリ項目（null = ライブラリ由来ではない）。実体はコピー。 */
+  source_library_id?: string | null
+  /** 取り込んだ時点の `blocking_version`（ライブラリ由来でなければ null）。 */
+  source_library_version?: number | null
+  /** 元のライブラリ項目の版が進んでいる（[反映] で取り直せる）。 */
+  library_update_available?: boolean
+  /** 元のライブラリ項目が構図リファレンス動画（ブロッキング）か。 */
+  library_blocking?: boolean
+}
+
+/**
+ * 全プロジェクト横断の素材一覧（`GET /api/studio/assets`）の 1 件。
+ *
+ * 素材そのものは `StudioAsset` のままで、作品をまたいで並べるときに要る
+ * 「どの作品のものか」だけを添える（ファイルタブの「プロジェクト素材」）。
+ */
+export interface StudioAssetItem extends StudioAsset {
+  /** 持ち主の作品名。 */
+  project_name: string
+  /** 持ち主の作品が NSFW 指定か（一覧で伏せるかの判断に使う）。 */
+  project_nsfw: boolean
+}
+
+/** GET /api/studio/assets のレスポンス（絞り込み結果の 1 ページ）。 */
+export interface StudioAssetPage {
+  items: StudioAssetItem[]
+  /** 絞り込み条件に合う総件数（このページの件数ではない）。 */
+  total: number
+  limit: number
+  offset: number
+}
+
+/** GET /api/studio/assets の絞り込み（すべて任意）。 */
+export interface StudioAssetQuery {
+  /** この作品の素材だけに絞る（省略 = 全プロジェクト横断）。 */
+  project_id?: string
+  kind?: StudioAssetKind
+  /** 名前・キャプションへの部分一致。 */
+  q?: string
+  limit?: number
+  offset?: number
 }
 
 /**
@@ -1174,6 +1443,11 @@ export interface StudioAssetCreate {
   caption?: string
   prompt_caption?: string
   locked?: boolean
+  /**
+   * ライブラリ（§7.2）の項目から取り込む。ファイル・種別・（`name` が空なら）
+   * 名前を引き継ぎ、出どころと版番号を控える（あとで [反映] が効く）。
+   */
+  library_id?: string
 }
 
 /** PATCH /api/studio/assets/{id}（送った項目だけ変わる）。 */
@@ -1442,6 +1716,11 @@ export interface StudioCapabilities {
   latent_upscale: boolean
   /** 確かめられなかった理由（日本語。空なら判定できている）。 */
   error: string
+  /**
+   * 構図リファレンス動画（ブロッキング、SPEC §7.2）の可否と上限。接続先とは
+   * 関係なくローカルで焼くので、`error` が立っていても当てになる。
+   */
+  blocking: BlockingCapabilities
 }
 
 /** GET /api/studio/projects/{id}: 画面 1 枚を組み立てるのに要るもの一式。 */
@@ -1737,6 +2016,41 @@ export interface TimelineExport {
   fx_video_url: string | null
   created_at: string
   finished_at: string | null
+}
+
+/**
+ * 作品をまたいだ書き出し一覧（`GET /api/studio/exports`）の 1 件。
+ *
+ * 書き出しそのものは `TimelineExport` のままで、タイムラインをまたいで
+ * 並べるときに要る「どの作品のどのタイムラインか」だけを添えたもの。
+ */
+export interface TimelineExportItem extends TimelineExport {
+  /** 焼いたタイムラインの名前。 */
+  timeline_name: string
+  /** そのタイムラインの作品（[編集タブで開く] の行き先）。 */
+  project_id: string
+  project_name: string
+  /** 持ち主の作品が NSFW 指定か（一覧で伏せるかの判断に使う）。 */
+  project_nsfw: boolean
+}
+
+/** `GET /api/studio/exports` のレスポンス（絞り込み結果の 1 ページ）。 */
+export interface TimelineExportPage {
+  items: TimelineExportItem[]
+  /** 絞り込み条件に合う総件数（このページの件数ではない）。 */
+  total: number
+  limit: number
+  offset: number
+}
+
+/** `GET /api/studio/exports` のクエリ。 */
+export interface TimelineExportQuery {
+  /** この作品のタイムラインの書き出しだけに絞る（省略 = 全作品横断）。 */
+  project_id?: string
+  /** タイムライン名・作品名への部分一致。 */
+  q?: string
+  limit?: number
+  offset?: number
 }
 
 /** POST /api/studio/timelines/{id}/export body（すべて任意の上書き）。 */

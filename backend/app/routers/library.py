@@ -5,13 +5,22 @@
 HTTP の入り口だけを担当する。
 """
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
+from io import BytesIO
+
+from fastapi import APIRouter, File, Form, HTTPException, Query, Response, UploadFile
 
 from .. import autotag
+from .. import blocking as blocking_render
 from .. import jobs as job_service
 from .. import library as service
 from .. import media_ref, sheets
 from ..models import (
+    LibraryBlockingCreate,
+    LibraryBlockingMap,
+    LibraryBlockingMapResult,
+    LibraryBlockingPreview,
+    LibraryBlockingRerender,
+    LibraryBlockingResult,
     LibraryFromJob,
     LibraryItem,
     LibraryKey,
@@ -285,6 +294,111 @@ async def key_from_job(payload: LibraryKeyFromJob) -> LibraryItem:
 async def key_item(item_id: str, payload: LibraryKey | None = None) -> LibraryItem:
     """素材の背景を抜いて透過 PNG の**新しい素材**にする（元は触らない）。"""
     return await key_library_item(item_id, payload or LibraryKey())
+
+
+# --------------------------------------------------------------------------
+# 構図リファレンス動画（ブロッキング、SPEC §7.2）
+# --------------------------------------------------------------------------
+#
+# 描画は :mod:`app.blocking`（純粋モジュール）、登録は :mod:`app.library` にあり、
+# 内部 API と外部 API（:mod:`app.routers.external`）が下のヘルパーを共用する。
+
+
+def _blocking_result(item: LibraryItem, result) -> LibraryBlockingResult:
+    """レンダ結果に、プロンプトへ写す英文を添えて返す。"""
+    scene = item.blocking
+    assert scene is not None
+    return LibraryBlockingResult(
+        item=item,
+        location_map=blocking_render.location_map(scene),
+        reference_note=blocking_render.reference_note(),
+        width=result.width,
+        height=result.height,
+        fps=result.fps,
+        frames=result.frames,
+        duration=result.duration,
+    )
+
+
+async def create_blocking(payload: LibraryBlockingCreate) -> LibraryBlockingResult:
+    """シーン定義から mp4 を焼いて、棚の動画素材として登録する。"""
+    try:
+        item, result = await service.add_blocking(
+            payload.scene, payload.name, payload.tags, payload.category
+        )
+    except service.LibraryError as exc:
+        raise _bad_request(exc) from exc
+    return _blocking_result(item, result)
+
+
+async def rerender_blocking(
+    item_id: str, payload: LibraryBlockingRerender
+) -> LibraryBlockingResult:
+    """同じ項目の mp4 を作り直す（``id`` と URL は変わらない）。"""
+    if await service.get_item(item_id) is None:
+        raise HTTPException(status_code=404, detail="library item not found")
+    try:
+        item, result = await service.rerender_blocking(item_id, payload.scene)
+    except service.LibraryError as exc:
+        raise _bad_request(exc) from exc
+    return _blocking_result(item, result)
+
+
+def blocking_preview(payload: LibraryBlockingPreview) -> Response:
+    """1 コマだけ描いて PNG で返す（保存しない。画面のライブプレビュー用）。"""
+    try:
+        frame = blocking_render.render_frame(payload.scene, payload.t)
+    except blocking_render.BlockingError as exc:
+        raise _bad_request(service.LibraryError(str(exc))) from exc
+    buffer = BytesIO()
+    frame.save(buffer, format="PNG")
+    return Response(content=buffer.getvalue(), media_type="image/png")
+
+
+def blocking_location_map(payload: LibraryBlockingMap) -> LibraryBlockingMapResult:
+    """レンダせずに、プロンプトへ写す英文と画面上の位置だけを返す（安い）。"""
+    try:
+        scene = blocking_render.prepare_scene(payload.scene)
+        moments = sorted({0.0, round(scene.duration / 2, 3), float(scene.duration)})
+        return LibraryBlockingMapResult(
+            location_map=blocking_render.location_map(scene, prepared=True),
+            reference_note=blocking_render.reference_note(payload.video_index),
+            positions=[
+                blocking_render.screen_positions(scene, moment, prepared=True)
+                for moment in moments
+            ],
+        )
+    except blocking_render.BlockingError as exc:
+        raise _bad_request(service.LibraryError(str(exc))) from exc
+
+
+@router.post("/blocking", response_model=LibraryBlockingResult, status_code=201)
+async def create_blocking_video(payload: LibraryBlockingCreate) -> LibraryBlockingResult:
+    """原始形状のシーン定義から構図リファレンス動画を作って登録する。
+
+    ``/{kind}`` より先に定義しておく（後ろだと `kind='blocking'` として食われる）。
+    """
+    return await create_blocking(payload)
+
+
+@router.post("/blocking/preview")
+async def preview_blocking(payload: LibraryBlockingPreview) -> Response:
+    """シーン定義の 1 コマを PNG で返す（保存しない）。"""
+    return blocking_preview(payload)
+
+
+@router.post("/blocking/location-map", response_model=LibraryBlockingMapResult)
+async def blocking_map(payload: LibraryBlockingMap) -> LibraryBlockingMapResult:
+    """レンダせずに location_map と画面上の位置だけ返す。"""
+    return blocking_location_map(payload)
+
+
+@router.post("/{item_id}/blocking", response_model=LibraryBlockingResult)
+async def rerender_blocking_video(
+    item_id: str, payload: LibraryBlockingRerender
+) -> LibraryBlockingResult:
+    """ブロッキング項目の mp4 を作り直す（版番号が 1 つ上がる）。"""
+    return await rerender_blocking(item_id, payload)
 
 
 @router.post("/{kind}", response_model=LibraryItem, status_code=201)

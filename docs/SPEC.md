@@ -1403,6 +1403,87 @@ MV・モーショングラフィックス（Remotion の `FxOverlay`、§5.2）�
   一時ディレクトリに出す）との棲み分けは「`inspect.sh` は人が手元で、この API は外部
   エージェントが**演出の配置を確かめる**ため」
 
+
+#### 構図リファレンス動画（ブロッキング）
+
+「誰が画面のどこに立ち、カメラがどう動くか」を言葉だけで H3 に伝えるのは難しい。そこで
+**原始形状（四角・丸・円柱・カプセル・簡易人型）だけで組んだプレビズ動画**をサーバー側で
+レンダし、r2v の参照動画として `<Video k> … weak_reference` で添えられるようにする。
+実装は `app/blocking.py`（純関数のモジュール。DB もライブラリ登録も知らない）と、
+登録側の `app/library.py`、入り口の `app/routers/library.py` / `app/routers/external.py`。
+
+- **描画方式**: 外部ネイティブ依存を増やさない（pyrender / OpenGL は使わない。Docker でも
+  headless で確実に動くことを優先）。Pillow だけの**自前ソフトウェアラスタライザ**で、
+  透視投影 → 背面カリング → 面ごとの奥行きでソート（painter's algorithm）→ 固定方向光の
+  平面シェーディング → `ImageDraw.polygon`。法線は**パーツの重心から外向きへ揃える**ので、
+  巻き順を間違えて裏返ることがない。原始形状は交差しない前提（交差すると前後が乱れる）
+- **座標系**: メートル・**Y 上**・床が `y=0`。オブジェクトの `position` は**底面中心**、
+  角度は度、正面はローカルの `+Z`（`yaw_deg` は `atan2(dx, dz)`）。画角 `fov_deg` は
+  **対角**（H3 ガイドの "47 degree diagonal field of view" と同じ意味）
+- **絵づくり**: 無地の明るいグレー背景（`#e6e6e6`）・1m 間隔の床グリッド・地平線。
+  H3 に余計な意味（色・素材・光）を拾わせないよう、背景と床は**低彩度に固定**する
+- **書き出し**: ffmpeg で libx264 / yuv420p / **24fps 固定**（H3 の参照動画は 24fps 前提。
+  尺 × 24 がそのままフレーム数になる）。解像度は長辺 768px を 32 の倍数に丸める
+  （16:9 なら 768x448）。アスペクト比は `16:9` / `9:16` / `1:1` / `4:3` / `3:4` / `21:9`
+- **上限**（`blocking.py` の定数。`GET /api/studio/capabilities` の `blocking` に出る）:
+  尺 0.5〜10 秒、オブジェクト 1〜20 件、キーフレームは対象ごとに 1〜32 点（`t` は昇順で、
+  カメラは `t=0` を含むこと）。外れていれば **400**（`BlockingError` → `LibraryError`）
+- **形状**: `box` / `sphere`（`w` が直径）/ `cylinder` / `capsule`（円柱 + 半球）/
+  `figure`（人物用: 箱の胴 + 球の頭 + 正面の小さな鼻。向きが読める）。`facing` は
+  `keyframe`（`yaw_deg` のまま）/ `camera`（常にカメラを見る）/ `path`（進行方向）
+- **カメラ**: キーフレーム（位置・注視点・画角・ロール）を `linear` / `ease_in_out` で補間する。
+  `move` にプリセット（`static` / `push_in` / `pull_out` / `pan_*` / `tilt_*` / `truck_*` /
+  `arc_*` / `follow`）を書くと、`keyframes[0]` を起点に展開して `keyframes` を上書きする
+  （`amount` は push / pull / truck が m、pan / tilt / arc が度。`follow` は `target` 必須）
+- **項目は「mp4 + シーン定義 + 版番号」**: 出来上がった mp4 は `library/video/` に置いて
+  ふつうの動画素材として登録し（`kind='video'` / タグ `blocking` / `source='blocking'`）、
+  `library.blocking`（シーン JSON）と `library.blocking_version` を一緒に持つ。
+  保存するのは**送られたままのシーン定義**で、`camera.move`（プリセット）は展開せずに
+  残す（展開した 2 点を保存すると、次に開いたときプリセットの起点が変わってしまう。
+  展開は描くときだけの一時的なもの）。
+  `POST /api/library/{id}/blocking` は**同じファイル・同じ id のまま**焼き直して版番号を
+  1 つ上げるので、カットや素材から参照したまま構図だけ直せる（レンダは一意な名前で隣に
+  作ってから差し替え、版番号は SQL の中で進めるので、同じ項目を同時に焼き直しても
+  壊れない。失敗すれば前の mp4 も版番号もそのまま）
+- **プロンプトへ写す文章**: 応答には `location_map`（t=0 / 中間 / 終端の各オブジェクトの
+  画面位置・地平線・カメラの距離と画角と動きを英文にしたもの。数字は投影から出すので
+  絵と必ず一致する）と `reference_note`（`<Video k> (camera path and blocking only):
+  weak_reference - …`。「グレーのマネキンによるプレビズなので見た目は再現しない」旨）が付く
+- **スタジオの素材への取り込み（`studio_assets.source_library_id` / `source_library_version`）**:
+  World Bible の素材にライブラリの項目を入れるときは `POST /projects/{id}/assets` に
+  `library_id` を書く（JSON / multipart のどちらでも。内部・外部 API 共通）。その項目の
+  ファイルを `assets/<kind>/` へ複製し、`kind` と（`name` が空なら）項目名を引き継いで、
+  **出どころの id と取り込んだ時点の `blocking_version`** を素材に控える。
+  素材はあくまで**コピー**なので、ライブラリ側を焼き直しても**自動では追従しない**
+  （採用済み Take が参照している絵が、知らないうちに変わるのを避けるため）
+- **更新の通知と反映**: 素材の読み取りでは元の項目と突き合わせて、版が進んでいれば
+  `library_update_available: true` を返す（元が消えていれば false。読み取りで導出）。
+  `library_blocking: true`（元が構図リファレンス動画）は**素材側に控えた
+  `source_library_version > 0`** だけで決めるので、元の項目を消しても消えない
+  （消えると `@素材名` の注記まで消えてしまうため）。
+  取り直すのは人が `POST /assets/{id}/refresh-from-library` を叩いたときだけで、
+  実体をコピーし直して `source_library_version` を今の版に合わせ、**前のコピーは
+  `assets/` から消す**。差し替えは素材のファイル差し替えと同じ経路（`path` は
+  `ASSET_PROMPT_FIELDS`）を通るので `prompt_updated_at` が進み、**それより古い Take は
+  stale になる**。版が進んでいなければ何もしない（コピーも `prompt_updated_at` の更新も
+  しないので、焼き上がっている Take が理由もなく stale にならない）。ライブラリ由来でない
+  素材・元が消えている素材は 400、素材そのものが無ければ 404。なお `library_id` と
+  ファイル（`file` / `path`）の同時指定は 400（使われないアップロードを残さないため）
+- **`@素材名` の展開に注記が自動で付く**: ブロッキング項目から取り込んだ素材を r2v の参照
+  として添付したカットでは、`app.blocking.reference_note(k)`（`k` は本文に書いた
+  `<Video k>` の番号）を `retention_analysis` の 1 行として**自動で足す**
+  （`app.studio._blocking_notes` / `_append_reference_notes`）。既に同じ `<Video k>` の注記が
+  本文にあれば足さない（二重にならない。判定は**行頭の `<Video k>` + コロン**まで
+  なので、言い回しを変えて手で書いた注記でも二重にならず、説明文の途中で
+  `<Video 1>` に触れているだけなら注記は付く）。参照を添付しないモード（t2v / i2v）では
+  タグが付かないので何も足さない
+- API は 4 本（内部 `/api/library` と外部 `/api/v1/library` の両方）:
+  `POST /library/blocking`（201。`{scene, name?, tags?, category?}` → 素材 + 文章）/
+  `POST /library/{id}/blocking`（再レンダ。ブロッキングでない項目は 400、無ければ 404）/
+  `POST /library/blocking/preview`（`{scene, t}` → `image/png` の 1 コマ。保存しない。
+  画面のライブプレビュー用）/ `POST /library/blocking/location-map`（`{scene}` →
+  `{location_map, reference_note, positions}`。レンダしないので安い）
+
 ### 7.3 編集タブ（タイムライン）
 
 ドラマスタジオの**制作**タブが「1 カットを焼く」ところまでなのに対して、**編集**タブは
@@ -1657,7 +1738,10 @@ EDL → ffmpeg コマンドの**組み立ては純関数**（`build_command`）�
   `GET /timelines/{id}/exports` から読める（Remotion の `FxOverlay` の `base` に渡すとき、
   props と規格を揃えるために要る）
 - 出力は `outputs/exports/{export_id}/final.mp4`（H.264 + AAC / yuv420p / `+faststart`）。
-  `OUTPUTS_DIR` の下なので `/outputs` でそのまま配信できる
+  `OUTPUTS_DIR` の下なので `/outputs` でそのまま配信できる。焼き上がったものは
+  `GET /api/studio/exports`（外部 API は `GET /api/v1/exports`）で**タイムライン横断**に
+  一覧できる（`{items, total, limit, offset}` / `project_id` / `q` / `limit` / `offset`。
+  1 ファイル = 1 件で、タイムライン名と持ち主の作品が付く。ファイルタブの「書き出し」、§8）
 - 進捗は `-progress pipe:1` の `out_time_us` を読み、`timeline_exports.progress` を更新しつつ
   WS（`type: "timeline_export"`）へ流す。`communicate()` は使わない（stdout を奪い合うため）
 - 同じタイムラインで走っている書き出しがあれば **409**（同時に 2 本焼いても得がない）
@@ -1814,13 +1898,14 @@ CREATE TABLE studio_revisions (
 
 SPA 1 画面 + 履歴。ダークテーマの生成系ツールらしい見た目。
 
-画面は **[生成] と [スタジオ] の 2 タブ**（`Header.tsx` の `VIEWS`）＋ 右端の歯車から開く
-**設定ページ**。外部エージェントは `POST /api/v1/ui/navigate` でこの 3 つの行き先へ
+画面は **[生成] / [スタジオ] / [ファイル] の 3 タブ**（`Header.tsx` の `VIEW_TABS`）＋ 右端の歯車から開く
+**設定ページ**。狭幅（sm 未満）では同じ行き先を下部タブバー（`BottomNav.tsx`）に出す。
+外部エージェントは `POST /api/v1/ui/navigate` で 生成 / スタジオ / 設定 の 3 つの行き先へ
 ブラウザを連れて行ける（§7.5）。
 
 ```
 ┌────────────────────────────────────────────────────────┐
-│ ヘッダー: [生成 | スタジオ]  接続状態(ComfyUI ● / CLI ●)  [⚙]│
+│ ヘッダー: [生成|スタジオ|ファイル] 接続状態(ComfyUI ●/CLI ●) [⚙]│
 ├───────────────────────────┬────────────────────────────┤
 │ 左ペイン(入力)              │ 右ペイン(結果)               │
 │ ◦ モード切替 [画像＋動画|動画生成|画像のみ|音声]             │
@@ -1890,6 +1975,112 @@ SPA 1 画面 + 履歴。ダークテーマの生成系ツールらしい見た�
   「分割 = 再生ヘッドの位置で 2 つに割る」「Ctrl+Z / Ctrl+Shift+Z = やり直し」。
   メディア欠落のクリップは赤系で [メディア欠落] と出し、保存状態は [保存済み] / [未保存の変更] /
   [保存中…] / [保存に失敗] のバッジに出す
+- **World Bible タブの素材はライブラリからも足せる**（`components/studio/WorldView.tsx`、§7.2）:
+  [ライブラリから追加]（種別のプルダウン + `LibraryPickerModal`）で 1 件選ぶと `library_id`
+  つきで素材を作る。ライブラリ由来の素材はカードに [構図リファレンス] / [更新あり] の
+  バッジが出て、詳細に出どころ（取り込んだ版）と、更新があるときだけ [反映] ボタンが並ぶ
+  （確認ダイアログのうえで `refresh-from-library` を呼び、一覧を読み直す）
+- **ファイルタブ**（`components/library/LibraryView.tsx`、§7.2）: **このアプリが持っている
+  ファイルを全部**（素材・生成物・書き出し）眺めて手入れする場所で、「ライブラリ
+  （取っておく棚）」はその**出どころの 1 つ**。タブ名が [ライブラリ] だと棚そのものと
+  紛らわしいので [ファイル] と呼ぶ（`View` の内部値は `library` のまま）。最上段が
+  **出どころの切り替え**
+  （[すべて] / [ライブラリ] / [生成履歴] / [プロジェクト素材] / [書き出し]）で、その下に絞り込み
+  （**テキスト検索**・**種別**（すべて / 画像 / 動画 / 音声）・**カテゴリ**・**タグチップ**）と
+  [アップロード] [構図リファレンスを作る] [生成履歴から登録] [更新]、右端に
+  **作品**（すべての作品 / `GET /api/studio/projects` の一覧）と
+  [アップロード] [構図リファレンスを作る] [生成履歴から登録] [更新]、右端に
+  この画面かぎりの [NSFW表示] トグル（**ヘッダーのグローバルトグルに追従**し、この画面での
+  上書きも効く。オフのあいだは NSFW を一覧から隠し、隠した件数を件数表示に添える）を置く
+  - **出どころ**は 4 つ。**ライブラリ**は `GET /api/library`（従来どおり）、**生成履歴**は
+    `GET /api/jobs` を**成果物 1 ファイル = 1 タイル**に展開したもの（画像・最終フレーム・
+    動画・音声。1 ジョブに 3 つ揃っていれば 3 タイル。`extra_outputs` はライブラリに登録する
+    経路が無いので並べない）、**プロジェクト素材**は `GET /api/studio/assets`（全作品の
+    World Bible 横断）、**書き出し**は `GET /api/studio/exports`（編集タブで焼いた mp4 を
+    タイムライン横断で。**焼き上がったものだけ** = 1 本 1 タイルなので、待ち行列と失敗は
+    出さない）。[すべて] は 4 つをクライアント側で混ぜて**日時の新しい順**に並べる
+  - 絞り込みは出どころに応じて効くものだけ有効にする: **検索は 4 つとも**に効き（書き出しの
+    検索はタイムライン名・作品名に当たる。書き出しは必ず mp4 なので**種別を画像・音声に
+    絞っているあいだは読まない**）、**種別は残る 3 つ**に効き、
+    履歴も**サーバー側**（`GET /api/jobs` の `q` / `kind` / `nsfw`）で絞る（1000 件を超える
+    履歴をスクロールで手繰らずに済ませるため。検索は英語プロンプトだけでなく
+    **Take 経由の作品名・カット題名**にも当たる。`kind` はジョブ単位なので、成果物へ
+    展開したタイル側でその種別でないものを落とす）。**作品**は履歴（Take 経由の
+    `project_id`）とプロジェクト素材に効き、**カテゴリとタグはライブラリ項目にしか無い**
+    のでライブラリを含まないあいだは無効。**書き出し**も作品（`project_id`）で絞れる
+  - 一覧はサムネイルのグリッド。画像はそのまま、動画は `<video preload="metadata">` の
+    1 コマ目にフィルムの印、音声は音符アイコン、ファイルを持たない素材は画像アイコンで出し、
+    名前（履歴はプロンプトの先頭）・補足（種別 / 分類・成果物の種類と日時・作品名 / 分類）・
+    タグ・日時を添える。ライブラリ以外のタイルには
+    [生成履歴] / [プロジェクト素材] / [書き出し] の印を出す。
+    **ライブラリだけ**を見ているときは今までどおり `GET /api/library` から **48 件ずつ**読んで
+    [前へ] / [次へ] で `offset` を進め（件数は「n–m 件 / 全 N 件」）、混ざるときは出どころごとに
+    同じ件数を読んで**無限スクロール**で 48 件ずつ伸ばす（履歴に残りがあるかは
+    `X-Total-Count` で判る）。一覧の末尾に番兵を置いて `IntersectionObserver` で見張り、
+    スクロール枠（グリッドを包む `overflow-y-auto`）を `root`・`rootMargin` を 400px にして
+    **末尾に着く前に**次の 48 件を読み始める。読み込み中は末尾に小さな印を出し、
+    読み残しが無くなれば番兵ごと消える（1 ページが画面に収まってしまうときは、
+    番兵が見えたままなので続けて次のページを読む）。履歴のタイルには Take 由来なら**作品名・カット題名**も添える
+  - タイルを選ぶと**詳細**が開き（lg 以上は右のパネル、狭幅はモーダル）、中身は出どころで変わる
+    - **ライブラリ項目**: プレビューとファイル情報（種別・作成日・出どころ・パス）に続けて、
+      **名前・タグ・分類・NSFW** を編集できる。[保存] を押したときだけ 1 回の
+      `PATCH /api/library/{id}` にまとめて送り（タイルごとに即時 PATCH する
+      `LibraryPickerModal` とはここが違う）、[削除] は確認してから消す。
+      [生成の入力にする] は素材の `/library/…` URL を種別に応じた欄
+      （画像 = 開始フレーム / 動画 = 参照動画 / 音声 = リファレンス音声）に入れて [生成] タブへ移る
+    - **生成履歴の成果物**（`JobOutputDetail.tsx`）: プレビューとジョブの情報（成果物の種類・
+      モード・ワークフロー・**作品・カット**（Take 由来のときだけ）・生成日時・ジョブ id・
+      プロンプト）に、[ライブラリに登録]
+      （`LibraryAddButton` をそのまま置く。`POST /api/library/from-job` を成果物の
+      `source` = image / last_frame / video / audio で呼び、**409 は失敗ではなく「登録済みです」**）・
+      [生成の入力にする]・[ジョブを開く]（[生成] タブでそのジョブを選び直す）・
+      [スタジオで開く]（Take 由来のときだけ。スタジオタブでその作品を開き、`shot_id` の
+      カットを選ぶ = `POST /api/v1/ui/navigate` と同じ経路）
+    - **プロジェクト素材**（`ProjectAssetDetail.tsx`）: プレビューと作品名・分類・種別・
+      キャプション・出どころ（ライブラリ由来なら取り込んだ版と [更新あり] / [構図リファレンス]）。
+      メインのファイルに足した**追加リファレンス**（`GET /api/studio/assets/{id}/files` と
+      同じ中身。横断一覧が素材ごとに載せてくるので読み直さない）も、役割のラベル
+      （声サンプル / 動画リファレンス / 追加画像）つきで並べる（声と動画はその場で再生できる）。
+      **読み取りだけ**で、[スタジオで開く] がスタジオタブのその作品の World Bible へ移る
+      （素材の編集はプロンプトと Take の stale 判定に効くので、スタジオ側に任せる）
+    - **書き出し**（`ExportDetail.tsx`）: mp4 のプレビュー（演出まで焼けていれば
+      `fx_video_url` のほう）と、タイムライン名・作品・解像度と fps・尺・演出の状態・
+      書き出し日時・書き出し id・`warnings`。[ライブラリに登録]
+      （`POST /api/studio/exports/{id}/save-to-library`。**409 は失敗ではなく「登録済みです」**）・
+      [編集タブで開く]（スタジオタブでその作品を開き、編集タブへ）・[生成の入力にする]
+      （参照動画の欄に入れて [生成] タブへ）
+  - **登録**は 3 経路: [アップロード]（ファイル選択とグリッドへのドラッグ&ドロップ。
+    `POST /api/library/upload` で種別はサーバーが拡張子 / MIME から決める。絞り込み中の
+    カテゴリがそのまま付く）と、[生成履歴から登録]（出どころを [生成履歴] に切り替え、
+    成果物を選んで [ライブラリに登録]）、そして [書き出し] の詳細からの [ライブラリに登録]
+  - WS の `type: "library"`（自動タグの書き戻し）とジョブ一覧の更新を受け取ると、
+    その出どころを読み直す
+  - **構図リファレンス動画（ブロッキング、§7.2）**は上部バーの [構図リファレンスを作る] から
+    組む（`components/library/BlockingBuilderModal.tsx`）。素材に `blocking`（シーン JSON）が
+    載っていれば、詳細に **[構図リファレンス（版 N）]** のバッジ（`blocking_version`）と
+    [構図を編集] が出て、同じモーダルがその項目の**焼き直し**として開く
+    - モーダルは lg 以上で 3 列（狭幅は縦積み）。**左**はオブジェクトの一覧と属性
+      （形状を選んで [追加] / 削除、id・表示名・形状・色・向きの決め方・大きさ・
+      キーフレーム（t / X / Z / yaw / Y の編集と追加・削除））。色は**人物の識別用に
+      低彩度のプリセット**から選ぶ（彩度を上げると H3 が色そのものを拾う）。
+      **中央**は上から見た平面図（`BlockingPlanView.tsx`、SVG）で、1m の床グリッドと原点、
+      キーフレームを結ぶ経路（点と線）、カメラ・注視点・水平画角の扇形（視錐台）を描き、
+      図形とカメラと注視点は**ドラッグで動かせる**（動くのは選択中のキーフレーム、無ければ
+      今の時刻に一番近いもの）。ズームは 1m = 8〜80px。**右**はカメラのつまみ
+      （`BlockingCameraPanel.tsx`: 高さ・注視点の高さ・fov・roll・`move` プリセットと
+      `amount` / `target`・補間・アスペクト比・尺）と、**時刻スライダー付きのプレビュー**
+      （`POST /library/blocking/preview` の PNG）と `location_map` / `reference_note`
+      （`POST /library/blocking/location-map`）
+    - プレビューと文章はつまみを動かすたびに投げず **150ms 待ってから**（連続操作は最後の
+      1 回だけ。追い越された応答は捨てる）。上限（オブジェクト数・キーフレーム数・尺・
+      アスペクト比）は `GET /api/studio/capabilities` の `blocking` から取り、UI 側でも守る
+      （ffmpeg が無ければ [保存] を押せなくし、プレビューと文章だけ使える）
+    - 初期シーンは 16:9 / 4 秒 / カメラ `(0, 1.6, 6)` → 注視点 `(0, 1.0, 0)` / fov 47 で、
+      原点に `figure` を 1 体。[保存] は新規が `POST /api/library/blocking`、編集が
+      `POST /api/library/{id}/blocking`。焼き上がったら `location_map` と `reference_note` を
+      コピーボタン付きで出してから閉じ、一覧を読み直す。検証エラー（400 / 422）は
+      モーダルの中のバナーに出す
+  - 自動タグ生成などの WS 通知（`type: "library"`）が来たら一覧を読み直す
 - **外部エージェントの操作がそのまま画面に出る**（§9 の WS フレーム）: 外部 API で脚本や素材が
   書き換われば `type: "studio"` が飛んで開いているスタジオが読み直し、生成フォームの下書きが
   書き換われば `type: "form"` がフォームへ流し込まれ（§7.5）、`type: "ui"` の `navigate` は
@@ -1923,6 +2114,10 @@ POST /api/library/from-job       … ジョブの出力（image / last_frame / v
 POST /api/library/sheet          … 画像素材を 1 枚のリファレンスシートに合成して登録（item_ids の順に配置、§7.2）
 POST /api/library/{id}/key       … 素材の背景を抜いて透過 PNG の新しい素材にする（スプライト、§7.2）
 POST /api/library/key-from-job   … ジョブの生成画像を直接抜いてスプライトにする（§7.2）
+POST /api/library/blocking       … 原始形状のシーン定義から構図リファレンス動画を焼いて登録（§7.2）
+POST /api/library/{id}/blocking  … 同じ項目の構図リファレンス動画を焼き直す（版番号 +1、§7.2）
+POST /api/library/blocking/preview      … シーン定義の 1 コマを PNG で返す（保存しない、§7.2）
+POST /api/library/blocking/location-map … レンダせずに location_map と画面上の位置だけ返す（§7.2）
 PATCH  /api/library/{id}         … 表示名 / NSFW フラグ / タグ / カテゴリの変更
 DELETE /api/library/{id}         … 登録解除（ファイルも削除）
 GET  /api/images/text/fonts      … インストール済みの書体一覧（§7.2）
@@ -1939,7 +2134,11 @@ POST /api/chat/sessions/{id}/messages … 発言送信 → Grok 応答（質問 
 POST /api/chat/sessions/{id}/stop … ⏹ 走っている Grok のターンを止める（次の発言は履歴を組み直した新しい会話で続く）
 GET  /api/chat/sessions/{id}     … 履歴取得
 POST /api/jobs                   … ジョブ作成・実行（プロンプト確定値+パラメータ。`selects` で選択式フィールド §3.1、`model_overrides` でそのジョブだけモデルを差し替え可 §3.3、`reference_images` / `reference_videos` / `reference_audios` でマルチモーダル参照 §3.1）
-GET  /api/jobs?limit=…           … 履歴一覧
+GET  /api/jobs?limit=&offset=&q=&kind=&project_id=&nsfw=…
+                                 … 履歴一覧（`q` はプロンプトと Take 経由の作品名・カット題名への部分一致、
+                                   `kind` は image/video/audio の成果物を持つジョブ、`project_id` はその作品の Take、
+                                   `nsfw` は true=NSFW のみ / false=除外。絞り込み後の総件数は `X-Total-Count` ヘッダー。
+                                   Take 由来のジョブには `project_id` / `project_name` / `shot_id` / `shot_title` が付く）
 GET  /api/jobs/{id}              … 詳細
 POST /api/jobs/{id}/rerun        … 再実行（seed 変更オプション）
 POST /api/jobs/{id}/continue     … ラストフレームを開始フレームに新規ジョブ（`video_workflow` / `end_image` / `reference_video` / `model_overrides` 等を差分指定可。開始フレームを取れないワークフローは既定に戻す）
@@ -1947,6 +2146,9 @@ DELETE /api/jobs/{id}
 POST /api/assets/audio|image|video … アセットアップロード（video は参照動画用）
 GET  /api/ui/generate-form       … 生成フォームの下書き（値 + revision、§7.5）
 PUT  /api/ui/generate-form       … 下書きの保存（`base_revision` を省くと強制上書き。保存後に WS `type: "form"`）
+
+… スタジオ（§7.1。プロジェクト・脚本・素材・Take の CRUD は openapi.json を正とする）
+GET  /api/studio/assets?project_id=&kind=&q=&limit=&offset= … World Bible の素材を**全作品横断**で一覧（`{items, total, limit, offset}`。各件に持ち主の `project_name` / `project_nsfw` が付く。ファイルタブの「プロジェクト素材」、§8）
 
 … 編集タブ（タイムライン。プレフィックスはスタジオと同じ /api/studio、§7.3）
 POST /api/studio/projects/{id}/timelines … タイムライン作成（`episode_id` を送ると自動配置つき初期化）
@@ -1970,7 +2172,9 @@ POST /api/studio/timelines/{id}/fx/events … 演出のイベントを 1 つ追�
 PATCH  /api/studio/timelines/{id}/fx/events/{event_id} … 1 件だけ書き換え（`event` は浅いマージ・`enabled`）
 DELETE /api/studio/timelines/{id}/fx/events/{event_id} … 1 件削除
 POST /api/studio/timelines/{id}/export … 書き出し開始（**202 即受付**。`preset` / `fit` / `loudnorm` / `fx` 指定可。走っているものがあれば 409、メディア欠落が残っていれば 400、`fx: true` で Remotion 連携が無効なら 400）
-GET  /api/studio/timelines/{id}/exports … 書き出し履歴（新しい順、`output_url` つき）
+GET  /api/studio/timelines/{id}/exports … 書き出し履歴（新しい順、`output_url` つき。失敗・実行中も含む）
+GET  /api/studio/exports?project_id=&q=&limit=&offset= … 書き出した mp4 を**タイムライン横断**で一覧（`{items, total, limit, offset}`。**焼き上がったものだけ** = 1 ファイル 1 件で、各件に `timeline_name` / `project_id` / `project_name` / `project_nsfw` が付く。ファイルタブの「書き出し」、§8）
+GET  /api/studio/exports/{id}   … 書き出し 1 件の状態と成果物
 POST /api/studio/exports/{id}/save-to-library … 完成 mp4 を library/video/ へコピーして登録
 
 GET  /library/…                  … 静的配信（ライブラリの素材、§7.2）

@@ -41,13 +41,14 @@ from typing import Any, NamedTuple
 import aiosqlite
 from pydantic import ValidationError
 
+from . import blocking as blocking_render
 from . import comfy
 from . import grok
 from . import jobs as job_service
 from . import nsfw
 from . import studio_demo
 from . import ws
-from .db import get_db
+from .db import LIKE_ESCAPE, get_db, like_pattern
 from .ids import new_id
 from .models import (
     ASSET_FILE_ROLE_KINDS,
@@ -59,6 +60,7 @@ from .models import (
     StoryShotResult,
     StudioAsset,
     StudioAssetFile,
+    StudioAssetItem,
     StudioEpisode,
     StudioProject,
     StudioProjectCreate,
@@ -635,6 +637,19 @@ def _row_to_asset(
     row: aiosqlite.Row, files: list[StudioAssetFile] | None = None
 ) -> StudioAsset:
     data = dict(row)
+    # 「更新あり」はライブラリとの突き合わせ（:data:`_ASSET_SELECT` の LEFT
+    # JOIN）。行に無ければ「元が消えた / そもそも取り込みではない」ので立てない。
+    version = data.pop("library_blocking_version", None)
+    taken = data.get("source_library_version")
+    # ブロッキングかどうかは取り込んだ時点の版（0 より大きい = ブロッキング
+    # 項目から取り込んだ）だけで決める。元の項目を消しても、この素材が構図
+    # リファレンス動画であることは変わらない（注記が消えては困る）。
+    data["library_blocking"] = int(taken or 0) > 0
+    data["library_update_available"] = (
+        version is not None
+        and taken is not None
+        and int(version) > int(taken)
+    )
     data["locked"] = bool(data["locked"])
     data["path"] = data.get("path") or ""
     data["profile"] = _load_json(data.get("profile"))
@@ -2149,12 +2164,24 @@ async def _insert_demo_shot(
 # World Bible の素材
 # --------------------------------------------------------------------------
 
+#: 素材 1 行 + 取り込み元のライブラリ項目（§7.2）の版。素材の実体はコピーな
+#: ので追従しないが、「元の版が進んでいる」ことだけは読み取りのたびに突き
+#: 合わせて伝える（:func:`_row_to_asset`）。元が消えた行は LEFT JOIN の右が
+#: NULL になり、「更新あり」は立たない。**ブロッキングかどうかは JOIN に頼ら
+#: ず素材側の ``source_library_version``（0 より大きい = ブロッキング項目から
+#: 取り込んだ）で決める**: 元を消しても参照の注記は付け続ける必要がある。
+_ASSET_SELECT = (
+    "SELECT a.*, l.blocking_version AS library_blocking_version"
+    " FROM studio_assets a LEFT JOIN library l ON l.id = a.source_library_id"
+)
+
+
 async def _fetch_assets(
     conn: aiosqlite.Connection, project_id: str
 ) -> list[StudioAsset]:
     async with conn.execute(
-        "SELECT * FROM studio_assets WHERE project_id = ?"
-        " ORDER BY sort_order, created_at, id",
+        f"{_ASSET_SELECT} WHERE a.project_id = ?"
+        " ORDER BY a.sort_order, a.created_at, a.id",
         (project_id,),
     ) as cur:
         rows = await cur.fetchall()
@@ -2174,7 +2201,7 @@ async def _fetch_asset(
     conn: aiosqlite.Connection, asset_id: str
 ) -> StudioAsset | None:
     async with conn.execute(
-        "SELECT * FROM studio_assets WHERE id = ?", (asset_id,)
+        f"{_ASSET_SELECT} WHERE a.id = ?", (asset_id,)
     ) as cur:
         row = await cur.fetchone()
     if row is None:
@@ -2196,6 +2223,95 @@ async def _fetch_asset_files(
 async def get_asset(asset_id: str) -> StudioAsset | None:
     async with get_db() as conn:
         return await _fetch_asset(conn, asset_id)
+
+
+#: 全プロジェクト横断の素材一覧（``GET /api/studio/assets``）。作品名を添えるので
+#: :data:`_ASSET_SELECT` に作品を内部結合したもの（作品が消えた素材は
+#: ``ON DELETE CASCADE`` で残らないので、内部結合で取りこぼしは起きない）。
+_ASSET_CROSS_SELECT = (
+    "SELECT a.*, p.name AS project_name, p.nsfw AS project_nsfw,"
+    " l.blocking_version AS library_blocking_version"
+    " FROM studio_assets a"
+    " JOIN studio_projects p ON p.id = a.project_id"
+    " LEFT JOIN library l ON l.id = a.source_library_id"
+)
+
+
+def _row_to_asset_item(
+    row: aiosqlite.Row, files: list[StudioAssetFile] | None = None
+) -> StudioAssetItem:
+    """横断一覧の 1 行（素材 + 持ち主の作品名）。"""
+    asset = _row_to_asset(row, files)
+    data = dict(row)
+    return StudioAssetItem(
+        **asset.model_dump(),
+        project_name=data.get("project_name") or "",
+        project_nsfw=bool(data.get("project_nsfw", 0)),
+    )
+
+
+async def search_assets(
+    *,
+    project_id: str | None = None,
+    kind: str | None = None,
+    query: str = "",
+    limit: int = 50,
+    offset: int = 0,
+) -> tuple[list[StudioAssetItem], int]:
+    """作品をまたいだ World Bible 素材の 1 ページと、絞り込み後の総件数。
+
+    ライブラリ（:func:`app.library.search_items`）と違って件数が読めない
+    （作品 × 素材で増える）ので、絞り込みもページングも SQL 側で行う。
+    ``query`` は名前・キャプション・プロンプト用キャプションへの部分一致
+    （ASCII の大文字小文字は無視。``%`` ``_`` はその文字として探す）。
+    並びは新しい順（``created_at`` の降順）。
+    """
+    conditions: list[str] = []
+    params: list[Any] = []
+    if project_id:
+        conditions.append("a.project_id = ?")
+        params.append(project_id)
+    if kind:
+        conditions.append("a.kind = ?")
+        params.append(kind)
+    wanted = (query or "").strip()
+    if wanted:
+        like = like_pattern(wanted)
+        conditions.append(
+            f"(LOWER(a.name) LIKE ?{LIKE_ESCAPE}"
+            f" OR LOWER(a.caption) LIKE ?{LIKE_ESCAPE}"
+            f" OR LOWER(a.prompt_caption) LIKE ?{LIKE_ESCAPE})"
+        )
+        params.extend([like, like, like])
+    where = f" WHERE {' AND '.join(conditions)}" if conditions else ""
+    async with get_db() as conn:
+        async with conn.execute(
+            "SELECT COUNT(*) FROM studio_assets a"
+            " JOIN studio_projects p ON p.id = a.project_id" + where,
+            tuple(params),
+        ) as cur:
+            total = int((await cur.fetchone())[0])
+        async with conn.execute(
+            f"{_ASSET_CROSS_SELECT}{where}"
+            # 同じ秒に作った素材（``created_at`` は秒まで）の順を安定させるため、
+            # 並びの決め手は id ではなく挿入順（rowid）にしておく: 乱数の id で
+            # 決めるとページの境目で取りこぼしや重複が起きる。
+            " ORDER BY a.created_at DESC, a.rowid DESC LIMIT ? OFFSET ?",
+            (*params, max(1, limit), max(0, offset)),
+        ) as cur:
+            rows = await cur.fetchall()
+        files: dict[str, list[StudioAssetFile]] = {}
+        if rows:
+            marks = ",".join("?" for _ in rows)
+            async with conn.execute(
+                f"SELECT * FROM studio_asset_files WHERE asset_id IN ({marks})"
+                " ORDER BY sort_order, created_at, id",
+                tuple(row["id"] for row in rows),
+            ) as cur:
+                for file_row in await cur.fetchall():
+                    reference = _row_to_asset_file(file_row)
+                    files.setdefault(reference.asset_id, []).append(reference)
+    return [_row_to_asset_item(row, files.get(row["id"])) for row in rows], total
 
 
 async def list_asset_files(asset_id: str) -> list[StudioAssetFile] | None:
@@ -2294,12 +2410,44 @@ async def delete_asset_file(file_id: str, *, actor: str = "user") -> bool:
         return True
 
 
+class _LibrarySource(NamedTuple):
+    """取り込み元のライブラリ項目（:func:`_fetch_library_item` の結果）。"""
+
+    id: str
+    name: str
+    kind: str
+    path: str
+    version: int
+
+
+async def _fetch_library_item(
+    conn: aiosqlite.Connection, item_id: str
+) -> _LibrarySource | None:
+    """ライブラリ（§7.2）の 1 件。素材の取り込みと反映でしか見ないので、
+    :mod:`app.library` を通さず同じ DB の目録を直に引く。"""
+    async with conn.execute(
+        "SELECT id, name, kind, path, blocking_version FROM library WHERE id = ?",
+        (item_id,),
+    ) as cur:
+        row = await cur.fetchone()
+    if row is None:
+        return None
+    return _LibrarySource(
+        row["id"],
+        row["name"] or "",
+        row["kind"],
+        row["path"] or "",
+        int(row["blocking_version"] or 0),
+    )
+
+
 async def add_asset(
     project_id: str,
     *,
     name: str,
     kind: str,
     path: str = "",
+    library_id: str = "",
     category: str = "reference",
     caption: str = "",
     prompt_caption: str = "",
@@ -2316,7 +2464,31 @@ async def add_asset(
 
     ``path`` を渡したときは ``assets/`` の外のファイル（チャットの添付など）で
     あれば複製してから参照する（:func:`_stored_asset_path`）。
+
+    ``library_id`` を渡すとライブラリ（§7.2）の項目から取り込む: その項目の
+    ファイルが ``path`` になり、``kind`` と（``name`` が空なら）名前も引き継ぐ。
+    実体は今までどおり ``assets/`` への**コピー**なので元を直しても追従しないが、
+    出どころと版番号を控えるので「更新あり」と
+    :func:`refresh_asset_from_library` が効くようになる。``path`` とは
+    **どちらか一方**（両方あると渡したファイルが使われないまま残る）。
     """
+    source: _LibrarySource | None = None
+    if library_id and str(path or "").strip():
+        raise StudioError(
+            "ファイルと library_id は同時に指定できません（どちらか一方）"
+        )
+    if library_id:
+        async with get_db() as conn:
+            source = await _fetch_library_item(conn, library_id)
+        if source is None:
+            raise StudioError(f"ライブラリ項目 `{library_id}` が見つかりません")
+        if not source.path:
+            raise StudioError(
+                f"ライブラリ項目『{source.name}』にはファイルがありません"
+            )
+        path = source.path
+        kind = source.kind
+        name = (name or "").strip() or source.name
     label = (name or "").strip()
     if not label:
         raise StudioError("素材の名前を入れてください")
@@ -2336,6 +2508,8 @@ async def add_asset(
             profile=profile,
             locked=locked,
             sort_order=sort_order,
+            source_library_id=source.id if source else None,
+            source_library_version=source.version if source else None,
         )
         await _record_revision(
             conn,
@@ -2363,6 +2537,8 @@ async def _insert_asset(
     profile: dict[str, Any] | None = None,
     locked: bool = False,
     sort_order: int | None = None,
+    source_library_id: str | None = None,
+    source_library_version: int | None = None,
 ) -> StudioAsset:
     if await _fetch_project(conn, project_id) is None:
         raise StudioError("project not found")
@@ -2381,8 +2557,8 @@ async def _insert_asset(
             "INSERT INTO studio_assets"
             " (id, project_id, name, category, caption, prompt_caption, profile,"
             "  kind, path, locked, sort_order, created_at, updated_at,"
-            "  prompt_updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "  prompt_updated_at, source_library_id, source_library_version)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 asset_id,
                 project_id,
@@ -2398,6 +2574,8 @@ async def _insert_asset(
                 now,
                 now,
                 now,
+                source_library_id,
+                source_library_version,
             ),
         )
     except aiosqlite.IntegrityError as exc:
@@ -2488,6 +2666,78 @@ async def update_asset(
             )
             await _commit(conn)
         return await _fetch_asset(conn, asset_id)
+
+
+async def refresh_asset_from_library(
+    asset_id: str, *, actor: str = "user"
+) -> StudioAsset | None:
+    """取り込み元のライブラリ項目から実体をコピーし直す（素材が無ければ None）。
+
+    ライブラリで構図を直して焼き直しても（``POST /library/{id}/blocking`` は
+    同じ id・同じファイルのまま版番号を上げる）、素材はコピーなので追従しない。
+    **人がここを叩いたときだけ**新しい実体を取り直し、控えてある
+    ``source_library_version`` を今の版に合わせる。
+
+    版が変わっていなければ**何もしない**（そのままの素材を返す）: コピーし
+    直しても中身は同じなのに ``prompt_updated_at`` だけ進んで、焼き上がって
+    いる Take が理由もなく stale になってしまうため。
+
+    差し替えは :func:`update_asset` に通す（``path`` は
+    :data:`ASSET_PROMPT_FIELDS` に入っているので ``prompt_updated_at`` が進み、
+    それより古い Take は stale になる）。素材のファイルを差し替えたときと
+    同じ扱いで、参照している絵が変わった以上は作り直しを促すのが筋。差し替え
+    たら**前のコピーは消す**（``assets/`` に誰も見ない mp4 が溜まらないように）。
+
+    ライブラリ由来でない素材と、元が消えている / ファイルを持たない項目は
+    :class:`StudioError`（ルーターが 400 にする）。
+    """
+    async with get_db() as conn:
+        asset = await _fetch_asset(conn, asset_id)
+        if asset is None:
+            return None
+        if not asset.source_library_id:
+            raise StudioError(
+                f"素材『{asset.name}』はライブラリから取り込んだものではありません"
+            )
+        source = await _fetch_library_item(conn, asset.source_library_id)
+    if source is None:
+        raise StudioError(
+            f"取り込み元のライブラリ項目 `{asset.source_library_id}` は"
+            "見つかりません（消されたか、別の環境の項目です）"
+        )
+    if not source.path:
+        raise StudioError(
+            f"ライブラリ項目『{source.name}』にはファイルがありません"
+        )
+    if asset.source_library_version == source.version:
+        return asset  # 版が同じ = 取り直すものがない
+    previous = asset.path
+    updated = await update_asset(
+        asset_id,
+        actor=actor,
+        path=source.path,
+        kind=source.kind,
+        source_library_version=source.version,
+    )
+    if updated is not None and previous and updated.path != previous:
+        _discard_asset_copy(previous)
+    return updated
+
+
+def _discard_asset_copy(path: str) -> None:
+    """素材が持っていた ``assets/`` のコピーを消す（他所のファイルは触らない）。
+
+    取り込み直しで差し替えた前のコピー専用。``assets/`` の外を指していれば
+    「元から他所にあったファイル」なので、そのままにしておく。
+    """
+    stored = rebase_stored_path(path)
+    assets_root = job_service.ASSETS_DIR.resolve()
+    try:
+        resolved = stored.resolve()
+    except OSError:  # pragma: no cover - 壊れたパスは放っておく
+        return
+    if assets_root in resolved.parents:
+        resolved.unlink(missing_ok=True)
 
 
 async def delete_asset(asset_id: str, *, actor: str = "user") -> bool:
@@ -3054,7 +3304,63 @@ def _append_to_description(text: str, extra: str) -> str:
     return f"{text[:end].rstrip()} {extra}{text[end:]}"
 
 
-def compose_prompt(shot: StudioShot, body: str, *, workflow: str = "") -> str:
+#: ``retention_analysis`` フィールドの行頭（参照の注記を足す先を探すのに使う）。
+_RETENTION_FIELD = re.compile(r"(?im)^retention_analysis\s*:")
+
+
+#: 既に書かれている参照の注記。``<Video k> (…): weak_reference - …`` の形を
+#: **行頭で**探すので、``like <Video 1>.`` のように本文の途中で番号に触れて
+#: いるだけの文とは区別できる（``k`` は呼ぶ側が埋める）
+_NOTE_LINE = r"(?m)^[ \t>*-]*<Video\s*{index}\s*>[^\n:]*:"
+
+#: 注記の先頭から参照番号を取る（:func:`app.blocking.reference_note` の形）
+_NOTE_INDEX = re.compile(r"^<Video\s*(\d+)\s*>")
+
+
+def _note_already_written(text: str, note: str) -> bool:
+    """``note`` と同じ ``<Video k>`` の注記が本文に書かれているか。"""
+    match = _NOTE_INDEX.match(note.strip())
+    if match is None:  # pragma: no cover - 注記は必ずこの形で作る
+        return note.split(":", 1)[0] in text
+    return re.search(_NOTE_LINE.format(index=match.group(1)), text) is not None
+
+
+def _append_reference_notes(text: str, notes: list[str]) -> str:
+    """参照素材の注記（:func:`app.blocking.reference_note`）を本文へ足す。
+
+    ``retention_analysis`` が既にあればその節の末尾（次のフィールドの直前）へ、
+    無ければ新しい節として本文の末尾へ置く。**同じ ``<Video k>`` の注記が既に
+    書かれていれば足さない**（判定するのは行頭の ``<Video k>`` + コロンまでな
+    ので、人が言い回しを変えて書いた注記でも二重にならない。逆に説明文の中で
+    ``<Video 1>`` に触れているだけなら注記は付く）。
+    """
+    fresh = [
+        note
+        for note in notes
+        if note.strip() and not _note_already_written(text, note)
+    ]
+    if not fresh:
+        return text
+    added = "\n".join(fresh)
+    start = _RETENTION_FIELD.search(text)
+    if start is None:
+        return f"{text.rstrip()}\n\nretention_analysis:\n{added}"
+    following = [
+        match for match in _H3_FIELD.finditer(text) if match.start() > start.start()
+    ]
+    end = following[0].start() if following else len(text)
+    head, tail = text[:end].rstrip(), text[end:]
+    joined = f"{head}\n{added}"
+    return f"{joined}\n\n{tail.lstrip()}" if tail.strip() else joined
+
+
+def compose_prompt(
+    shot: StudioShot,
+    body: str,
+    *,
+    workflow: str = "",
+    reference_notes: list[str] | None = None,
+) -> str:
     """メンション解決済みの本文を公式 MiniMax H3 契約へ組み立てる。
 
     本文が既に ``integrated_multimodal_description:`` /
@@ -3063,6 +3369,9 @@ def compose_prompt(shot: StudioShot, body: str, *, workflow: str = "") -> str:
     ``integrated_multimodal_description:`` で包む。
     ``subject_definitions`` / ``summary`` / ``retention_analysis`` は
     一行の本文から作らない。カメラ・台詞・音は**本文が既に書いていれば足さない**。
+    例外は ``reference_notes``（構図リファレンス動画を参照しているカットに
+    :func:`app.blocking.reference_note` を自動で添える。SPEC §7.2）で、これだけは
+    ``retention_analysis`` の行として足す（既に書かれていれば足さない）。
 
     ここが「どのフィールドがモデルに届くか」の正本。挙動を変えたら、外部 API が
     配る脚本ガイド（:mod:`app.drafting_guide` の「1. フィールド契約」）も直すこと。
@@ -3094,6 +3403,9 @@ def compose_prompt(shot: StudioShot, body: str, *, workflow: str = "") -> str:
         extras.append(f"(S1) says: <d>[{lang}] {spoken}</d>")
     if extras:
         text = _append_to_description(text, " ".join(extras))
+        lowered = text.lower()
+    if reference_notes:
+        text = _append_reference_notes(text, reference_notes)
         lowered = text.lower()
 
     parts = [text]
@@ -3335,7 +3647,12 @@ async def _plan_render(
     return _Plan(
         workflow,
         reason,
-        compose_prompt(shot, resolved.text, workflow=workflow),
+        compose_prompt(
+            shot,
+            resolved.text,
+            workflow=workflow,
+            reference_notes=_blocking_notes(resolved),
+        ),
         mode.start_image,
         resolved.references,
         resolved.tags,
@@ -3346,6 +3663,26 @@ async def _plan_render(
         selects,
         mode.blocker,
     )
+
+
+#: 本文に書かれた参照動画のタグ（``<Video 3>`` の 3 を取る）。
+_VIDEO_TAG = re.compile(r"^<Video (\d+)>$")
+
+
+def _blocking_notes(resolved: Resolved) -> list[str]:
+    """構図リファレンス動画を参照しているぶんの注記（SPEC §7.2）。
+
+    添付した素材のうち、ライブラリの**ブロッキング項目**から取り込んだ動画
+    （``library_blocking``）にだけ :func:`app.blocking.reference_note` を付ける。
+    番号は本文に実際に書いたタグ（``<Video k>``）から取るので、添付順が変わって
+    もずれない。参照を添付しないモード（t2v / i2v）ではタグが空なので何も出ない。
+    """
+    notes: list[str] = []
+    for asset, tag in zip(resolved.references, resolved.tags):
+        match = _VIDEO_TAG.match(tag)
+        if asset.library_blocking and match is not None:
+            notes.append(blocking_render.reference_note(int(match.group(1))))
+    return notes
 
 
 def _english_cache_usable(shot: StudioShot, assembled: str) -> bool:

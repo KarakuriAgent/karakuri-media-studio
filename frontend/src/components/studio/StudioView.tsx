@@ -4,6 +4,7 @@ import { ApiError, api, formatDetail } from '../../api'
 import type {
   ComfyTarget,
   JobProgress,
+  LibraryItem,
   StudioAssetCategory,
   StudioAssetFileRole,
   StudioAssetUpdate,
@@ -113,7 +114,15 @@ export default function StudioView({
    * 外からの画面移動（`POST /api/v1/ui/navigate`）。同じ行き先を続けて指示
    * できるよう、受け取るたびに増える `seq` つきで渡ってくる。
    */
-  navigate?: { projectId: string | null; shotId: string | null; seq: number } | null
+  navigate?: {
+    projectId: string | null
+    shotId: string | null
+    /** World Bible タブで開く素材（ファイルタブの [スタジオで開く]）。 */
+    assetId?: string | null
+    /** 名指しで開くタブ（ファイルタブの書き出しの [編集タブで開く] は 'edit'）。 */
+    tab?: 'edit' | null
+    seq: number
+  } | null
   /** 生成フォームと同じアスペクト比の候補（無ければ Shot 側は自由入力）。 */
   aspectRatios?: string[]
   /**
@@ -358,9 +367,22 @@ export default function StudioView({
   // 詳細が届いた時点で当てる（下の「選択の正規化」が読む）。
   const scrollTarget = useRef<string | null>(null)
   const requestedShot = useRef<{ projectId: string; shotId: string } | null>(null)
+  // 素材を名指しされたとき（ファイルタブの [スタジオで開く]）も同じ持ち越し方。
+  // 作品を開くと選択がいったん消えるので、詳細が届いてから当てる。
+  const requestedAsset = useRef<{ projectId: string; assetId: string } | null>(null)
   useEffect(() => {
     if (!navigate) return
     if (navigate.projectId) openProject(navigate.projectId)
+    // タブの名指しは素材・カットより先に当てる（下でどちらかが上書きする）。
+    if (navigate.tab) setTab(navigate.tab)
+    if (navigate.assetId) {
+      setTab('world')
+      requestedAsset.current = {
+        projectId: navigate.projectId ?? '',
+        assetId: navigate.assetId,
+      }
+      setAssetId(navigate.assetId)
+    }
     if (navigate.shotId) {
       // 覚えている話の絞り込みで隠れていることがあるので「すべて」に戻す。
       setEpisodeFilter(ALL_EPISODES)
@@ -408,6 +430,13 @@ export default function StudioView({
   // 選択を奪ってしまうため。
   useEffect(() => {
     if (!detail) return
+    const asset = requestedAsset.current
+    if (asset && (!asset.projectId || asset.projectId === detail.id)) {
+      requestedAsset.current = null
+      if (detail.assets.some((row) => row.id === asset.assetId)) {
+        setAssetId(asset.assetId)
+      }
+    }
     // 外からの画面移動で名指しされたカットが最優先。指された作品の詳細が届く
     // までは要求を持ち越し、届いたら（在れば）それを選んで要求を畳む。
     const requested = requestedShot.current
@@ -666,6 +695,29 @@ export default function StudioView({
         : await api.createStudioAsset(projectId, { name, category, caption })
       setAssetId(created.id)
     })
+
+  /** ライブラリの項目を素材として取り込む（実体は assets/ へのコピー）。 */
+  const addAssetFromLibrary = (item: LibraryItem) =>
+    void run(async () => {
+      if (!projectId) return
+      const created = await api.createStudioAsset(projectId, {
+        name: '',
+        library_id: item.id,
+      })
+      setAssetId(created.id)
+    })
+
+  /** ライブラリの元の項目から実体を取り直す（採用済み Take は stale になる）。 */
+  const refreshAssetFromLibrary = (id: string) => {
+    if (
+      !window.confirm(
+        'ライブラリの今の版で素材を取り直しますか？'
+        + '（この素材を参照したテイクは作り直しが要ります）',
+      )
+    )
+      return
+    void run(() => api.refreshStudioAssetFromLibrary(id))
+  }
 
   const saveAsset = (id: string, patch: StudioAssetUpdate) =>
     void run(() => api.updateStudioAsset(id, patch))
@@ -948,11 +1000,14 @@ export default function StudioView({
                 busy={busy}
                 onSelect={setAssetId}
                 onAdd={addAsset}
+                onAddFromLibrary={addAssetFromLibrary}
+                onRefreshFromLibrary={refreshAssetFromLibrary}
                 onSave={saveAsset}
                 onDelete={deleteAsset}
                 onUploadFile={uploadAssetFile}
                 onAddReference={addAssetReference}
                 onRemoveReference={removeAssetReference}
+                showNsfw={showNsfw}
               />
             )}
             {tab === 'production' && (

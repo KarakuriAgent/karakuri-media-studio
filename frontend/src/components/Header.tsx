@@ -6,7 +6,7 @@ import { Popover, PopoverContent, PopoverTrigger } from './ui/popover'
 import { Switch } from './ui/switch'
 import { Tabs, TabsList, TabsTrigger } from './ui/tabs'
 
-export type View = 'main' | 'studio' | 'settings'
+export type View = 'main' | 'studio' | 'library' | 'settings'
 
 /**
  * 画面切替の行き先（設定は歯車ボタン側なのでここには出さない）。
@@ -16,6 +16,7 @@ export type View = 'main' | 'studio' | 'settings'
 export const VIEW_TABS: { value: Exclude<View, 'settings'>; label: string }[] = [
   { value: 'main', label: '生成' },
   { value: 'studio', label: 'スタジオ' },
+  { value: 'library', label: 'ファイル' },
 ]
 
 type Tone = 'ok' | 'warn' | 'error' | 'unknown'
@@ -207,7 +208,7 @@ function NsfwToggle({
 }
 
 /**
- * [生成 | スタジオ] tab toggle（ヘッダーの画面切替）。
+ * [生成 | スタジオ | ファイル] tab toggle（ヘッダーの画面切替）。
  *
  * 設定は右端の歯車ボタンへ一本化したのでタブには出さない（`view === 'settings'`
  * のあいだはどのタブも選択状態にならない）。

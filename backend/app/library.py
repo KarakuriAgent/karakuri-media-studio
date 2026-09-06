@@ -15,17 +15,21 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import os
 import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
+from . import blocking as blocking_render
 from . import contact_sheet as contact_sheets
 from . import sheets, sprites, textimage
 from .db import get_db
 from .ids import new_id
 from .models import (
+    BlockingScene,
     Job,
     LibraryCategory,
     LibraryItem,
@@ -210,7 +214,24 @@ def row_to_item(row) -> LibraryItem:
         source=data.get("source") or None,
         tags=_load_tags(data.get("tags")),
         category=data.get("category") or None,
+        blocking=_load_blocking(data.get("blocking")),
+        blocking_version=int(data.get("blocking_version") or 0),
     )
+
+
+def _load_blocking(raw: object) -> BlockingScene | None:
+    """``blocking`` 列（シーン定義の JSON）を読む（壊れていれば None）。
+
+    列を足す前の行は NULL で、そこは「ブロッキングではない項目」になる。
+    保存したあとにモデルの形が変わっても一覧が落ちないよう、読めなければ
+    黙って None に倒す（作り直しは新しい定義を送ってもらえばよい）。
+    """
+    if not raw:
+        return None
+    try:
+        return BlockingScene.model_validate(json.loads(raw))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
 
 
 def matches(item: LibraryItem, query: str) -> bool:
@@ -319,13 +340,17 @@ async def _insert(
     tags: list[str],
     #: 分類（省略時は未分類。後から足したカラムなので既定値を持たせておく）
     category: LibraryCategory | None = None,
+    #: ブロッキング動画のシーン定義（ふつうの素材は None）と、その版番号
+    blocking: BlockingScene | None = None,
+    blocking_version: int = 0,
 ) -> LibraryItem:
     item_id = new_id()
     async with get_db() as conn:
         await conn.execute(
             "INSERT INTO library (id, created_at, kind, name, path, nsfw,"
-            " nsfw_source, source_job_id, source, tags, category)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " nsfw_source, source_job_id, source, tags, category,"
+            " blocking, blocking_version)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 item_id,
                 _now(),
@@ -338,12 +363,19 @@ async def _insert(
                 source,
                 json.dumps(tags, ensure_ascii=False),
                 category,
+                _dump_blocking(blocking),
+                blocking_version,
             ),
         )
         await conn.commit()
     item = await get_item(item_id)
     assert item is not None
     return item
+
+
+def _dump_blocking(scene: BlockingScene | None) -> str | None:
+    """シーン定義を DB に入れる JSON にする（None はそのまま NULL）。"""
+    return None if scene is None else scene.model_dump_json()
 
 
 async def add_upload(
@@ -744,6 +776,144 @@ async def add_contact_sheet(
         nsfw=nsfw,
     )
     return item, seconds
+
+
+# --------------------------------------------------------------------------
+# 構図リファレンス動画（ブロッキング、SPEC §7.2）
+# --------------------------------------------------------------------------
+
+#: ブロッキング動画に必ず付けるタグと ``source``
+BLOCKING_TAG = "blocking"
+BLOCKING_SOURCE: LibraryOrigin = "blocking"
+
+
+def blocking_name(scene: BlockingScene) -> str:
+    """ブロッキング動画の既定の表示名（登場するものと尺）。"""
+    labels = [obj.label or obj.id for obj in scene.objects][:3]
+    rest = f"ほか{len(scene.objects) - 3}件" if len(scene.objects) > 3 else ""
+    head = "・".join(labels) + rest if labels else "ブロッキング"
+    return f"{head}（ブロッキング {scene.duration:g}秒）"
+
+
+#: 項目ごとの再レンダーの錠（:func:`rerender_blocking`）。同じ項目を同時に
+#: 焼き直すと、ファイルの差し替えと版番号の更新が入り乱れるので直列にする
+#: （別々の項目は今までどおり並行に焼ける）。項目の数だけしか増えないので
+#: 使い終わった錠は残したままにしてよい
+_RERENDER_LOCKS: dict[str, asyncio.Lock] = {}
+
+
+def _rerender_lock(item_id: str) -> asyncio.Lock:
+    lock = _RERENDER_LOCKS.get(item_id)
+    if lock is None:
+        lock = _RERENDER_LOCKS[item_id] = asyncio.Lock()
+    return lock
+
+
+async def _render_blocking(
+    scene: BlockingScene, dest: Path
+) -> blocking_render.BlockingRenderResult:
+    """mp4 を焼く（重い処理なのでスレッドへ逃がす）。
+
+    途中で失敗しても既存のファイルを壊さないよう、**隣に作ってから差し替える**
+    （再レンダは同じパスを上書きするため）。隣に置く名前は毎回新しい id を
+    混ぜて一意にする: 同じ項目を同時に焼き直しても、互いの途中の出力を
+    上書きし合わない。ffmpeg の失敗でも取り消しでも、中間ファイルは残さない。
+    """
+    staging = dest.with_name(f"{dest.stem}.{new_id()}.rendering{dest.suffix}")
+    try:
+        result = await asyncio.to_thread(blocking_render.render_video, scene, staging)
+    except blocking_render.BlockingError as exc:
+        staging.unlink(missing_ok=True)
+        raise LibraryError(str(exc)) from exc
+    except BaseException:
+        # 取り消し（CancelledError）や想定外の例外でも置き土産を作らない。
+        staging.unlink(missing_ok=True)
+        raise
+    os.replace(staging, dest)
+    return result
+
+
+async def add_blocking(
+    scene: BlockingScene,
+    name: str = "",
+    tags: object = None,
+    category: object = None,
+) -> tuple[LibraryItem, blocking_render.BlockingRenderResult]:
+    """シーン定義から mp4 を焼いて、``kind='video'`` の素材として登録する。
+
+    返すのは ``(素材, レンダ結果)``。素材の ``blocking`` にシーン定義がそのまま
+    入り（``camera.move`` は書かれたまま残す。展開したキーフレームを保存すると
+    次に開いたときにプリセットの起点が変わってしまう）、``blocking_version`` は
+    1 から始まる（作り直すたびに 1 つ上がる）。タグには :data:`BLOCKING_TAG` を
+    必ず足すので、あとから ``GET /api/v1/library?tag=blocking`` で引ける。
+    """
+    resolved_category = check_category(category)
+    try:
+        # 保存するのは書かれたまま（move は展開しない）、焼くのは展開した形。
+        stored = blocking_render.prepare_scene(scene, expand_move=False)
+        prepared = blocking_render.prepare_scene(stored)
+    except blocking_render.BlockingError as exc:
+        raise LibraryError(str(exc)) from exc
+    display = (name or "").strip() or blocking_name(prepared)
+    dest = kind_dir("video") / f"{safe_stem(Path(display).stem)}_{new_id()}.mp4"
+    result = await _render_blocking(prepared, dest)
+    marked = normalize_tags(tags)
+    if not any(tag.casefold() == BLOCKING_TAG for tag in marked):
+        marked.append(BLOCKING_TAG)
+    item = await _insert(
+        kind="video",
+        name=display,
+        path=dest,
+        nsfw=False,
+        nsfw_source="",
+        source_job_id=None,
+        source=BLOCKING_SOURCE,
+        tags=marked,
+        category=resolved_category,
+        blocking=stored,
+        blocking_version=1,
+    )
+    return item, result
+
+
+async def rerender_blocking(
+    item_id: str, scene: BlockingScene
+) -> tuple[LibraryItem, blocking_render.BlockingRenderResult]:
+    """既存のブロッキング項目の mp4 を作り直す（``(素材, レンダ結果)``）。
+
+    ファイルのパスと ``id`` はそのままなので、**参照している側を書き換えずに
+    構図だけ直せる**。``blocking`` を持たない項目は :class:`LibraryError`。
+
+    保存するのは :func:`add_blocking` と同じく書かれたままのシーン定義
+    （``camera.move`` は展開しない）。版番号は読んだ値に 1 を足すのではなく
+    SQL の中で進めるので、同じ項目を続けて焼き直しても飛ばない。
+    """
+    async with _rerender_lock(item_id):
+        item = await get_item(item_id)
+        if item is None:
+            raise LibraryError(f"library item not found: {item_id}")
+        if item.blocking is None:
+            raise LibraryError(
+                f"「{item.name}」はブロッキング動画ではありません"
+                "（作り直せるのは POST /library/blocking で作った項目だけです）"
+            )
+        try:
+            stored = blocking_render.prepare_scene(scene, expand_move=False)
+            prepared = blocking_render.prepare_scene(stored)
+        except blocking_render.BlockingError as exc:
+            raise LibraryError(str(exc)) from exc
+        dest = rebase_stored_path(item.path)
+        result = await _render_blocking(prepared, dest)
+        async with get_db() as conn:
+            await conn.execute(
+                "UPDATE library SET blocking = ?,"
+                " blocking_version = blocking_version + 1 WHERE id = ?",
+                (_dump_blocking(stored), item_id),
+            )
+            await conn.commit()
+        updated = await get_item(item_id)
+        assert updated is not None
+        return updated, result
 
 
 async def update_item(

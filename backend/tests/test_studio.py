@@ -15,10 +15,11 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-from app import comfy, db, grok, jobs, nsfw, studio, workflows
+from app import blocking, comfy, db, grok, jobs, library, nsfw, studio, workflows
 from app.main import app
 from app.models import MAX_STEPS, StudioShot
 from app.routers import assets as assets_router
+from tests.test_blocking import scene as blocking_scene
 from tests.test_jobs import _hang_until_cancelled, wait_for
 
 
@@ -58,13 +59,17 @@ def env(tmp_path, monkeypatch):
     """DB・assets をテスト用ディレクトリに閉じ込め、投入されたジョブを記録する。"""
     assets = tmp_path / "assets"
     outputs = tmp_path / "outputs"
+    lib = tmp_path / "library"
     for kind in ("image", "video", "audio"):
         (assets / kind).mkdir(parents=True)
+        (lib / kind).mkdir(parents=True)
     outputs.mkdir()
 
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.db")
     monkeypatch.setattr(jobs, "ASSETS_DIR", assets)
     monkeypatch.setattr(jobs, "OUTPUTS_DIR", outputs)
+    monkeypatch.setattr(jobs, "LIBRARY_DIR", lib)
+    monkeypatch.setattr(library, "LIBRARY_DIR", lib)
     monkeypatch.setattr(assets_router, "ASSETS_DIR", assets)
     monkeypatch.setattr(nsfw, "classify", _no_llm)
 
@@ -115,6 +120,7 @@ def env(tmp_path, monkeypatch):
                 "client": client,
                 "assets": assets,
                 "outputs": outputs,
+                "library": lib,
                 "created": created,
                 "extras": extras,
                 "llm": llm,
@@ -358,6 +364,74 @@ def test_a_metadata_only_asset_can_get_its_file_later(env):
     assert swapped.json()["url"].startswith("/assets/audio/")
 
 
+def test_assets_can_be_listed_across_projects(env):
+    """横断の素材一覧（ライブラリタブの「プロジェクト素材」）。"""
+    left = make_project(env, name="深夜のラーメン屋", code="RAMEN")
+    right = make_project(env, name="屋上の猫", code="NEKO")
+    make_asset(env, left["id"], "Neko", caption="看板猫")
+    make_asset(env, left["id"], "Yatai", kind="video")
+    make_asset(env, right["id"], "Roof")
+
+    page = env.client.get("/api/studio/assets").json()
+    assert page["total"] == 3
+    assert page["limit"] == 50 and page["offset"] == 0
+    # 新しい順。どの作品のものかが 1 件ずつに付く
+    assert [row["name"] for row in page["items"]] == ["Roof", "Yatai", "Neko"]
+    assert {row["project_name"] for row in page["items"]} == {
+        "深夜のラーメン屋",
+        "屋上の猫",
+    }
+    assert page["items"][0]["project_id"] == right["id"]
+    assert page["items"][0]["project_nsfw"] is False
+    # 既存の素材モデルの項目もそのまま載る
+    assert page["items"][0]["library_update_available"] is False
+    assert page["items"][0]["url"].startswith("/assets/image/")
+
+    # 作品・種別・検索語で絞れる
+    only_left = env.client.get(
+        f"/api/studio/assets?project_id={left['id']}"
+    ).json()
+    assert [row["name"] for row in only_left["items"]] == ["Yatai", "Neko"]
+    assert env.client.get("/api/studio/assets?kind=video").json()["total"] == 1
+    # キャプションへの部分一致も拾う
+    by_caption = env.client.get("/api/studio/assets?q=看板").json()
+    assert [row["name"] for row in by_caption["items"]] == ["Neko"]
+    assert env.client.get("/api/studio/assets?q=ghost").json()["total"] == 0
+
+
+def test_wildcards_in_the_asset_query_are_plain_characters(env):
+    """``_`` や ``%`` は LIKE のワイルドカードではなく、その文字として探す。"""
+    project = make_project(env)
+    make_asset(env, project["id"], "Neko", caption="看板猫")
+    make_asset(env, project["id"], "Under_score", caption="下線つき")
+    make_asset(env, project["id"], "Half", caption="50% の力で")
+
+    assert env.client.get("/api/studio/assets?q=_").json()["total"] == 1
+    assert [
+        row["name"] for row in env.client.get("/api/studio/assets?q=_").json()["items"]
+    ] == ["Under_score"]
+    assert env.client.get("/api/studio/assets?q=%25").json()["total"] == 1
+    assert env.client.get("/api/studio/assets?q=50%25 の").json()["total"] == 1
+    # ASCII の大文字小文字は今までどおり無視する
+    assert env.client.get("/api/studio/assets?q=UNDER_SCORE").json()["total"] == 1
+
+
+def test_cross_project_assets_are_paged(env):
+    """limit / offset は総件数を保ったまま 1 ページずつ返す。"""
+    project = make_project(env)
+    for index in range(3):
+        make_asset(env, project["id"], f"Asset{index}")
+
+    first = env.client.get("/api/studio/assets?limit=2").json()
+    assert first["total"] == 3 and len(first["items"]) == 2
+    second = env.client.get("/api/studio/assets?limit=2&offset=2").json()
+    assert second["total"] == 3 and len(second["items"]) == 1
+    ids = [row["id"] for row in first["items"] + second["items"]]
+    assert len(set(ids)) == 3
+    # 上限の外は 422（ページングの取り違えを黙って通さない）
+    assert env.client.get("/api/studio/assets?limit=0").status_code == 422
+
+
 def test_asset_references_are_listed_with_the_asset(env):
     """声・動画・追加画像は素材にぶら下がり、素材と一緒に返る。"""
     project = make_project(env)
@@ -452,6 +526,259 @@ def test_an_unsupported_extension_is_refused(env):
     )
     assert response.status_code == 400
 
+
+# --------------------------------------------------------------------------
+# ライブラリから取り込んだ素材（出どころ・更新の反映・自動の注記）
+# --------------------------------------------------------------------------
+
+def make_blocking_item(env, name: str = "Blocking", data: bytes = b"MP4") -> dict:
+    """ライブラリのブロッキング項目を 1 件でっち上げる（mp4 は焼かない）。
+
+    ffmpeg 無しでも回せるよう、実体はダミーのバイト列を置くだけにして、目録の
+    行（``blocking`` と ``blocking_version``）だけ本物と同じ形にする。
+    """
+    path = env.library / "video" / f"{name}.mp4"
+    path.write_bytes(data)
+    item = asyncio.run(
+        library._insert(
+            kind="video",
+            name=name,
+            path=path,
+            nsfw=False,
+            nsfw_source="",
+            source_job_id=None,
+            source="blocking",
+            tags=["blocking"],
+            blocking=blocking_scene(),
+            blocking_version=1,
+        )
+    )
+    return item.model_dump()
+
+
+def rerender_library_item(env, item_id: str, data: bytes = b"MP4-v2") -> None:
+    """ライブラリ側の焼き直し（同じ id・同じファイルのまま版番号 +1）を真似る。"""
+
+    async def go() -> None:
+        item = await library.get_item(item_id)
+        assert item is not None
+        Path(item.path).write_bytes(data)
+        async with db.get_db() as conn:
+            await conn.execute(
+                "UPDATE library SET blocking_version = blocking_version + 1"
+                " WHERE id = ?",
+                (item_id,),
+            )
+            await conn.commit()
+
+    asyncio.run(go())
+
+
+def add_from_library(env, project_id: str, item_id: str, **form) -> dict:
+    data = {"library_id": item_id}
+    data.update(form)
+    response = env.client.post(
+        f"/api/studio/projects/{project_id}/assets", data=data
+    )
+    assert response.status_code == 201, response.text
+    return response.json()
+
+
+def test_an_asset_taken_from_the_library_records_where_it_came_from(env):
+    project = make_project(env)
+    item = make_blocking_item(env)
+    asset = add_from_library(env, project["id"], item["id"])
+
+    # 名前・種別・ファイルは項目から引き継ぎ、実体は assets/ へのコピー。
+    assert asset["name"] == "Blocking" and asset["kind"] == "video"
+    assert asset["url"].startswith("/assets/video/")
+    assert Path(asset["path"]).read_bytes() == b"MP4"
+    assert Path(asset["path"]) != Path(item["path"])
+    assert asset["source_library_id"] == item["id"]
+    assert asset["source_library_version"] == 1
+    assert asset["library_blocking"] is True
+    assert asset["library_update_available"] is False
+
+
+def test_an_unknown_library_id_is_a_400(env):
+    project = make_project(env)
+    response = env.client.post(
+        f"/api/studio/projects/{project['id']}/assets", data={"library_id": "nope"}
+    )
+    assert response.status_code == 400
+
+
+def test_a_rerendered_library_item_shows_up_as_an_update(env):
+    project = make_project(env)
+    item = make_blocking_item(env)
+    asset = add_from_library(env, project["id"], item["id"], name="Previz")
+
+    rerender_library_item(env, item["id"])
+    listed = detail(env, project["id"])["assets"][0]
+    assert listed["library_update_available"] is True
+    assert listed["source_library_version"] == 1
+    assert Path(listed["path"]).read_bytes() == b"MP4"  # まだ追従していない
+
+    response = env.client.post(
+        f"/api/studio/assets/{asset['id']}/refresh-from-library"
+    )
+    assert response.status_code == 200, response.text
+    updated = response.json()
+    assert updated["library_update_available"] is False
+    assert updated["source_library_version"] == 2
+    assert Path(updated["path"]).read_bytes() == b"MP4-v2"
+    # ファイルが変わったので、素材の差し替えと同じく Take は stale 側に倒れる。
+    assert updated["prompt_updated_at"] > asset["prompt_updated_at"]
+
+
+def test_refreshing_needs_an_asset_that_came_from_the_library(env):
+    project = make_project(env)
+    asset = make_asset(env, project["id"], "Neko")
+    response = env.client.post(
+        f"/api/studio/assets/{asset['id']}/refresh-from-library"
+    )
+    assert response.status_code == 400
+    missing = env.client.post("/api/studio/assets/nope/refresh-from-library")
+    assert missing.status_code == 404
+
+
+def test_a_deleted_library_item_stops_asking_for_an_update(env):
+    project = make_project(env)
+    item = make_blocking_item(env)
+    asset = add_from_library(env, project["id"], item["id"])
+    assert env.client.delete(f"/api/library/{item['id']}").status_code == 204
+
+    listed = detail(env, project["id"])["assets"][0]
+    assert listed["library_update_available"] is False
+    # ブロッキングかどうかは素材側に控えた版番号で決まるので、元が消えても残る。
+    assert listed["library_blocking"] is True
+    response = env.client.post(
+        f"/api/studio/assets/{asset['id']}/refresh-from-library"
+    )
+    assert response.status_code == 400
+
+
+def test_a_deleted_library_item_still_gets_the_reference_note(env):
+    """元のライブラリ項目を消しても、参照の注記は付き続ける。"""
+    project = make_project(env)
+    item = make_blocking_item(env)
+    add_from_library(env, project["id"], item["id"], name="Previz")
+    assert env.client.delete(f"/api/library/{item['id']}").status_code == 204
+
+    shot = make_shot(env, project["id"], prompt="Two men argue like @Previz.")
+    assert render(env, shot["id"]).status_code == 201
+    assert env.created[-1].video_prompt.count(blocking.reference_note(1)) == 1
+
+
+def test_refreshing_at_the_same_version_leaves_everything_alone(env):
+    """版が進んでいなければコピーし直さない（Take を無駄に stale にしない）。"""
+    project = make_project(env)
+    item = make_blocking_item(env)
+    asset = add_from_library(env, project["id"], item["id"])
+
+    response = env.client.post(
+        f"/api/studio/assets/{asset['id']}/refresh-from-library"
+    )
+    assert response.status_code == 200, response.text
+    same = response.json()
+    assert same["path"] == asset["path"]
+    assert same["prompt_updated_at"] == asset["prompt_updated_at"]
+    assert same["source_library_version"] == 1
+
+
+def test_refreshing_throws_away_the_previous_copy(env):
+    """取り直したら、前のコピーは assets/ に残さない。"""
+    project = make_project(env)
+    item = make_blocking_item(env)
+    asset = add_from_library(env, project["id"], item["id"])
+    stale = Path(asset["path"])
+    assert stale.is_file()
+
+    rerender_library_item(env, item["id"])
+    response = env.client.post(
+        f"/api/studio/assets/{asset['id']}/refresh-from-library"
+    )
+    assert response.status_code == 200, response.text
+    updated = response.json()
+    assert Path(updated["path"]) != stale
+    assert not stale.exists()
+
+
+def test_a_file_and_a_library_id_together_are_a_400(env):
+    """両方送られたら、アップロードを受け取る前に断る（孤児を作らない）。"""
+    project = make_project(env)
+    item = make_blocking_item(env)
+    response = env.client.post(
+        f"/api/studio/projects/{project['id']}/assets",
+        data={"library_id": item["id"]},
+        files={"file": ("extra.png", b"PNG", "image/png")},
+    )
+    assert response.status_code == 400
+    assert detail(env, project["id"])["assets"] == []
+
+
+def test_a_blocking_asset_adds_the_reference_note_to_the_prompt(env):
+    project = make_project(env)
+    item = make_blocking_item(env)
+    add_from_library(env, project["id"], item["id"], name="Previz")
+    shot = make_shot(env, project["id"], prompt="Two men argue like @Previz.")
+    assert render(env, shot["id"]).status_code == 201
+
+    prompt = env.created[-1].video_prompt
+    assert prompt.startswith("detailed_description: Two men argue like <Video 1>.")
+    assert prompt.count(blocking.reference_note(1)) == 1
+    assert "retention_analysis:" in prompt
+    # 締めの一文は今までどおり最後に来る。
+    assert prompt.endswith(studio.EXCLUSION_SENTENCE)
+
+
+def test_the_reference_note_is_not_written_twice(env):
+    """本文が既に同じ ``<Video k>`` の注記を書いていたら足さない。"""
+    project = make_project(env)
+    item = make_blocking_item(env)
+    add_from_library(env, project["id"], item["id"], name="Previz")
+    shot = make_shot(
+        env,
+        project["id"],
+        prompt=(
+            "detailed_description: Two men argue like @Previz.\n\n"
+            f"retention_analysis:\n{blocking.reference_note(1)}"
+        ),
+    )
+    assert render(env, shot["id"]).status_code == 201
+
+    prompt = env.created[-1].video_prompt
+    assert prompt.count("(camera path and blocking only)") == 1
+
+
+def test_a_reworded_note_is_not_duplicated(env):
+    """人が言い回しを変えて書いた注記でも、同じ ``<Video k>`` なら足さない。"""
+    project = make_project(env)
+    item = make_blocking_item(env)
+    add_from_library(env, project["id"], item["id"], name="Previz")
+    shot = make_shot(
+        env,
+        project["id"],
+        prompt=(
+            "detailed_description: Two men argue like @Previz.\n\n"
+            "retention_analysis:\n"
+            "<Video 1> (previz blocking): weak_reference - framing only."
+        ),
+    )
+    assert render(env, shot["id"]).status_code == 201
+
+    prompt = env.created[-1].video_prompt
+    assert prompt.count("<Video 1> (") == 1
+    assert "camera path and blocking only" not in prompt
+
+
+def test_a_plain_library_video_gets_no_reference_note(env):
+    """ブロッキングでない素材には注記を付けない（ふつうの参照動画）。"""
+    project = make_project(env)
+    make_asset(env, project["id"], "Odori", kind="video")
+    shot = make_shot(env, project["id"], prompt="He moves like @Odori.")
+    assert render(env, shot["id"]).status_code == 201
+    assert "camera path and blocking only" not in env.created[-1].video_prompt
 
 # --------------------------------------------------------------------------
 # モードの自動選択とメンション解決
@@ -985,12 +1312,16 @@ def test_the_capabilities_endpoint_reports_the_target(env, monkeypatch):
 
     monkeypatch.setattr(comfy, "get_object_info", object_info)
     comfy.clear_latent_context_cache()
-    assert env.client.get("/api/studio/capabilities").json() == {
+    capabilities = env.client.get("/api/studio/capabilities").json()
+    # ブロッキング（SPEC §7.2）は接続先と無関係なので、ここでは切り離して見る
+    blocking = capabilities.pop("blocking")
+    assert capabilities == {
         "latent_continuity": True,
         # ローカル ComfyUI ならアップスケーラのカスタムノードも入れられる
         "latent_upscale": True,
         "error": "",
     }
+    assert blocking["fps"] == 24 and blocking["max_objects"] > 0
 
 
 def test_a_job_records_its_latent_on_the_take(env, monkeypatch):

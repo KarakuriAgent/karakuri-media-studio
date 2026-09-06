@@ -1,6 +1,8 @@
 """Job API (SPEC §9)."""
 
-from fastapi import APIRouter, HTTPException, Query
+from typing import Literal
+
+from fastapi import APIRouter, HTTPException, Query, Response
 
 from .. import jobs as service
 from ..models import (
@@ -36,10 +38,23 @@ async def create_job(payload: JobCreate) -> Job:
 
 @router.get("", response_model=list[Job])
 async def list_jobs(
+    response: Response,
     limit: int = Query(50, ge=1, le=500),
     offset: int = Query(0, ge=0),
+    q: str | None = Query(None, description="プロンプト・作品名・カット題名への部分一致"),
+    kind: Literal["image", "video", "audio"] | None = Query(
+        None, description="その成果物を持つジョブだけ"
+    ),
+    project_id: str | None = Query(None, description="その作品の Take になっているジョブだけ"),
+    nsfw: bool | None = Query(None, description="true = NSFW のみ / false = 除外"),
 ) -> list[Job]:
-    return await service.list_jobs(limit=limit, offset=offset)
+    """新しい順のジョブ一覧。絞り込み後の総件数は ``X-Total-Count`` に入れる。
+
+    レスポンスの形（``list[Job]``）は生成タブが使っているので変えない。
+    """
+    filters = {"q": q, "kind": kind, "project_id": project_id, "nsfw": nsfw}
+    response.headers["X-Total-Count"] = str(await service.count_jobs(**filters))
+    return await service.list_jobs(limit=limit, offset=offset, **filters)
 
 
 @router.get("/{job_id}", response_model=Job)

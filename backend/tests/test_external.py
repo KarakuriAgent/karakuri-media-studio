@@ -9,6 +9,7 @@
 import asyncio
 import sqlite3
 import time
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -31,6 +32,7 @@ from app.ids import new_id
 from app.models import MAX_STEPS
 from app.main import app
 from app.routers import assets as assets_router
+from tests.test_blocking import scene as blocking_scene
 
 KEY = "external-test-key"
 
@@ -355,6 +357,35 @@ def test_an_asset_can_be_uploaded_as_multipart(env):
     asset = response.json()
     assert asset["name"] == "ramen"
     assert asset["path"]
+
+
+def test_assets_can_be_searched_across_projects(env):
+    """横断の素材一覧（内部 API と同じサービスにつながっていることだけ見る）。"""
+    enable(env)
+    left = make_project(env, name="深夜のラーメン屋", code="RAMEN")
+    right = make_project(env, name="屋上の猫", code="NEKO")
+    for project_id, name in ((left["id"], "タカシ"), (right["id"], "ミケ")):
+        call(
+            env,
+            "POST",
+            f"/api/v1/projects/{project_id}/assets",
+            json={"name": name},
+        ).raise_for_status()
+
+    page = call(env, "GET", "/api/v1/assets").json()
+    assert page["total"] == 2
+    assert {row["project_name"] for row in page["items"]} == {
+        "深夜のラーメン屋",
+        "屋上の猫",
+    }
+
+    only_right = call(
+        env, "GET", f"/api/v1/assets?project_id={right['id']}"
+    ).json()
+    assert [row["name"] for row in only_right["items"]] == ["ミケ"]
+    assert call(env, "GET", "/api/v1/assets?q=タカ").json()["total"] == 1
+    # キー無しでは他の外部 API と同じく機能ごと無い
+    assert env.client.get("/api/v1/assets").status_code == 401
 
 
 def test_registering_from_an_unknown_job_is_a_404(env):
@@ -1089,6 +1120,23 @@ def test_a_job_can_be_created_and_listed(env):
     assert call(env, "GET", f"/api/v1/jobs/{job['id']}").status_code == 200
 
 
+def test_the_job_listing_can_be_filtered_and_counts_the_matches(env):
+    """外部 API の一覧も SPA と同じ絞り込みを受ける（EXTERNAL-API §3.6）。"""
+    enable(env)
+    job = call(
+        env, "POST", "/api/v1/jobs",
+        json={"mode": "image_only", "image_prompt": "a bowl of ramen"},
+    ).json()
+
+    hit = call(env, "GET", "/api/v1/jobs?q=RAMEN")
+    assert [row["id"] for row in hit.json()] == [job["id"]]
+    assert hit.headers["X-Total-Count"] == "1"
+
+    miss = call(env, "GET", "/api/v1/jobs?q=curry")
+    assert miss.json() == []
+    assert miss.headers["X-Total-Count"] == "0"
+
+
 def test_a_job_with_a_broken_mode_is_422(env):
     enable(env)
     response = call(
@@ -1471,6 +1519,145 @@ def test_audio_and_generic_uploads_land_in_the_library(env, tmp_path, monkeypatc
     assert "種別が分かりません" in unknown.text
 
 
+def test_an_asset_can_come_from_the_library_and_be_refreshed(env, tmp_path, monkeypatch):
+    """``library_id`` での素材登録と ``refresh-from-library``（SPEC §7.2）。"""
+    lib = tmp_path / "library"
+    (lib / "video").mkdir(parents=True)
+    monkeypatch.setattr(library, "LIBRARY_DIR", lib)
+    enable(env)
+    project = make_project(env)
+
+    path = lib / "video" / "previz.mp4"
+    path.write_bytes(b"MP4")
+    item = asyncio.run(
+        library._insert(
+            kind="video",
+            name="Blocking",
+            path=path,
+            nsfw=False,
+            nsfw_source="",
+            source_job_id=None,
+            source="blocking",
+            tags=["blocking"],
+            blocking=blocking_scene(),
+            blocking_version=1,
+        )
+    )
+
+    created = call(
+        env, "POST", f"/api/v1/projects/{project['id']}/assets",
+        json={"name": "Previz", "library_id": item.id},
+    )
+    assert created.status_code == 201, created.text
+    asset = created.json()
+    assert asset["kind"] == "video"
+    assert asset["source_library_id"] == item.id
+    assert asset["source_library_version"] == 1
+    assert asset["library_blocking"] is True
+    assert asset["library_update_available"] is False
+
+    async def rerender() -> None:
+        path.write_bytes(b"MP4-v2")
+        async with db.get_db() as conn:
+            await conn.execute(
+                "UPDATE library SET blocking_version = 2 WHERE id = ?", (item.id,)
+            )
+            await conn.commit()
+
+    asyncio.run(rerender())
+    listed = call(env, "GET", f"/api/v1/projects/{project['id']}").json()["assets"]
+    assert listed[0]["library_update_available"] is True
+
+    refreshed = call(
+        env, "POST", f"/api/v1/assets/{asset['id']}/refresh-from-library"
+    )
+    assert refreshed.status_code == 200, refreshed.text
+    assert refreshed.json()["source_library_version"] == 2
+    assert refreshed.json()["library_update_available"] is False
+    assert Path(refreshed.json()["path"]).read_bytes() == b"MP4-v2"
+
+
+def test_a_library_asset_can_leave_the_name_out(env, tmp_path, monkeypatch):
+    """``library_id`` を指定したときは ``name`` を省ける（項目名を引き継ぐ）。"""
+    lib = tmp_path / "library"
+    (lib / "video").mkdir(parents=True)
+    monkeypatch.setattr(library, "LIBRARY_DIR", lib)
+    enable(env)
+    project = make_project(env)
+
+    path = lib / "video" / "previz.mp4"
+    path.write_bytes(b"MP4")
+    item = asyncio.run(
+        library._insert(
+            kind="video",
+            name="Blocking",
+            path=path,
+            nsfw=False,
+            nsfw_source="",
+            source_job_id=None,
+            source="blocking",
+            tags=["blocking"],
+            blocking=blocking_scene(),
+            blocking_version=1,
+        )
+    )
+
+    created = call(
+        env, "POST", f"/api/v1/projects/{project['id']}/assets",
+        json={"library_id": item.id},
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["name"] == "Blocking"
+
+    # ライブラリ由来でなければ今までどおり名前は要る（400）
+    nameless = call(
+        env, "POST", f"/api/v1/projects/{project['id']}/assets", json={},
+    )
+    assert nameless.status_code == 400
+
+
+def test_a_file_and_a_library_id_together_are_refused(env, tmp_path, monkeypatch):
+    """``file`` / ``path`` と ``library_id`` の同時指定は 400（孤児を作らない）。"""
+    lib = tmp_path / "library"
+    (lib / "video").mkdir(parents=True)
+    monkeypatch.setattr(library, "LIBRARY_DIR", lib)
+    enable(env)
+    project = make_project(env)
+
+    path = lib / "video" / "previz.mp4"
+    path.write_bytes(b"MP4")
+    item = asyncio.run(
+        library._insert(
+            kind="video",
+            name="Blocking",
+            path=path,
+            nsfw=False,
+            nsfw_source="",
+            source_job_id=None,
+            source="blocking",
+            tags=["blocking"],
+            blocking=blocking_scene(),
+            blocking_version=1,
+        )
+    )
+
+    multipart = call(
+        env, "POST", f"/api/v1/projects/{project['id']}/assets",
+        data={"library_id": item.id, "name": "Previz"},
+        files={"file": ("extra.png", b"PNG", "image/png")},
+    )
+    assert multipart.status_code == 400
+
+    other = tmp_path / "hand.png"
+    other.write_bytes(b"PNG")
+    both = call(
+        env, "POST", f"/api/v1/projects/{project['id']}/assets",
+        json={"name": "Previz", "library_id": item.id, "path": str(other)},
+    )
+    assert both.status_code == 400
+    assert call(env, "GET", f"/api/v1/projects/{project['id']}").json()["assets"] == []
+
+
 def test_the_new_endpoints_need_the_key_too(env):
     for path in (
         "/api/v1/jobs",
@@ -1717,6 +1904,52 @@ def test_an_export_runs_in_the_background_and_can_be_polled(
     saved = call(env, "POST", f"/api/v1/exports/{export_id}/save-to-library", json={})
     assert saved.status_code == 201, saved.text
     assert saved.json()["kind"] == "video"
+
+
+def test_finished_exports_can_be_listed_across_timelines(timeline_env, monkeypatch):
+    """``GET /api/v1/exports``: 焼けた mp4 を作品・タイムライン名つきで横断一覧。"""
+    env = timeline_env
+    enable(env)
+    project = make_project(env)
+    detail = call(
+        env, "POST", f"/api/v1/projects/{project['id']}/timelines",
+        json={"name": "本編"},
+    ).json()
+    call(
+        env, "PUT", f"/api/v1/timelines/{detail['id']}/clips",
+        json={"clips": [gap_clip(video_track_id(detail))]},
+    )
+
+    async def fake_run(spec, output, *, on_progress=None):
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b"final")
+        return output
+
+    monkeypatch.setattr(timeline, "run_export", fake_run)
+    export_id = call(
+        env, "POST", f"/api/v1/timelines/{detail['id']}/export", json={}
+    ).json()["id"]
+    assert wait_for_export(env, export_id)["status"] == "done"
+
+    listed = call(env, "GET", "/api/v1/exports")
+    assert listed.status_code == 200, listed.text
+    page = listed.json()
+    assert page["total"] == 1
+    item = page["items"][0]
+    assert item["id"] == export_id
+    assert item["timeline_name"] == "本編"
+    assert item["project_id"] == project["id"]
+    assert item["project_name"] == project["name"]
+    assert item["output_url"] == f"/outputs/exports/{export_id}/final.mp4"
+
+    # 作品と検索で絞れる
+    assert call(env, "GET", f"/api/v1/exports?project_id={project['id']}").json()[
+        "total"
+    ] == 1
+    assert call(env, "GET", "/api/v1/exports?q=本編").json()["total"] == 1
+    assert call(env, "GET", "/api/v1/exports?q=ghost").json()["total"] == 0
+    # キー無しは他の /api/v1 と同じく 401
+    assert env.client.get("/api/v1/exports").status_code == 401
 
 
 def test_a_second_export_of_the_same_timeline_is_a_conflict(timeline_env, monkeypatch):

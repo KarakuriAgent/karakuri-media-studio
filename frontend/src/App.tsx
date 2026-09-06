@@ -4,9 +4,10 @@ import BottomNav from './components/BottomNav'
 import ChatModal from './components/ChatModal'
 import ContinueModal from './components/ContinueModal'
 import GenerateForm from './components/GenerateForm'
-import Header from './components/Header'
+import Header, { type View } from './components/Header'
 import HistoryGallery from './components/HistoryGallery'
 import JobDetail from './components/JobDetail'
+import LibraryView from './components/library/LibraryView'
 import ResultPane from './components/ResultPane'
 import SettingsPage from './components/SettingsPage'
 import StudioView from './components/studio/StudioView'
@@ -40,6 +41,8 @@ import type {
   JobContinue,
   JobCreate,
   JobProgress,
+  LibraryItem,
+  LibraryKind,
   LibraryProgress,
   Options,
   Settings,
@@ -60,6 +63,29 @@ function initialShowNsfw(): boolean {
   } catch {
     return false
   }
+}
+
+/**
+ * ジョブ一覧の指紋（ファイルタブへ「変わった」と伝えるかの判定に使う）。
+ *
+ * 5 秒ごとの取り直しで毎回伝えると、レンダ中はファイルタブが 1 ページ目から
+ * 読み直され続ける。id の並びと状態・成果物の URL が同じなら、一覧の見た目は
+ * 変わっていないので伝えない。
+ */
+export function jobsSignature(jobs: Job[]): string {
+  return jobs
+    .map((job) =>
+      [
+        job.id,
+        job.status,
+        job.image_url ?? '',
+        job.last_frame_url ?? '',
+        job.video_url ?? '',
+        job.audio_output_url ?? '',
+        job.nsfw ? '1' : '0',
+      ].join(':'),
+    )
+    .join(',')
 }
 
 const SIDEBAR_WIDTH_KEY = 'sidebarWidth'
@@ -91,7 +117,7 @@ export default function App() {
   const [detailBusy, setDetailBusy] = useState(false)
   const [detailError, setDetailError] = useState<string | null>(null)
   const [chatOpen, setChatOpen] = useState(false)
-  const [view, setView] = useState<'main' | 'studio' | 'settings'>('main')
+  const [view, setView] = useState<View>('main')
   const [chatSessionId, setChatSessionId] = useState<string | null>(null)
   // 相談チャットの実行状態（活動テキスト。応答待ちのあいだ表示する）
   const [chatEvent, setChatEvent] = useState<ChatProgress | null>(null)
@@ -104,13 +130,25 @@ export default function App() {
   const [formEvent, setFormEvent] = useState<UiFormProgress | null>(null)
   // 外からの画面移動。同じ行き先を続けて指示できるよう連番を添える。
   const [navigate, setNavigate] = useState<
-    { projectId: string | null; shotId: string | null; seq: number } | null
+    {
+      projectId: string | null
+      shotId: string | null
+      /** World Bible タブで開く素材（ファイルタブの [スタジオで開く]）。 */
+      assetId?: string | null
+      /** 開くタブ（ファイルタブの書き出しからは 'edit'）。 */
+      tab?: 'edit' | null
+      seq: number
+    } | null
   >(null)
   const [showNsfw, setShowNsfw] = useState(initialShowNsfw)
   // エラーではない一言（パラメータ復元で LoRA を落としたとき等）。
   const [notice, setNotice] = useState<string | null>(null)
   // ライブラリが変わるたびに増える。開いているモーダルの読み直しに使う。
   const [libraryVersion, setLibraryVersion] = useState(0)
+  // ジョブ一覧の中身が変わるたびに増える（ファイルタブの「生成履歴」の読み直し）。
+  const [jobsVersion, setJobsVersion] = useState(0)
+  // 直前に伝えたジョブ一覧の指紋（同じなら `jobsVersion` を進めない）。
+  const jobsSignatureRef = useRef('')
   // エラーバナーの展開（既定は最新 1 件だけ出す）。
   const [errorsExpanded, setErrorsExpanded] = useState(false)
   // 狭幅（lg 未満）でのフォーム / 結果の切り替え。lg 以上では 2 カラムのまま。
@@ -268,6 +306,13 @@ export default function App() {
     try {
       const next = await api.listJobs()
       setJobs(next)
+      // ファイルタブの「生成履歴」には、一覧が**変わったときだけ**伝える
+      // （毎回伝えると、レンダ中は 5 秒ごとに全ページ読み直しになる）。
+      const signature = jobsSignature(next)
+      if (signature !== jobsSignatureRef.current) {
+        jobsSignatureRef.current = signature
+        setJobsVersion((previous) => previous + 1)
+      }
       setActiveJob((current) =>
         current ? (next.find((job) => job.id === current.id) ?? current) : current,
       )
@@ -641,6 +686,39 @@ export default function App() {
     setNarrowPane('form')
   }
 
+  /**
+   * ライブラリの素材 / 履歴の成果物を生成フォームの入力欄に入れて [生成] タブへ移る。
+   *
+   * 入れ先は種別で決める（画像 = 開始フレーム / 動画 = 参照動画 / 音声 =
+   * リファレンス音声）。`/library/…` も `/outputs/…` もそのまま配信されている
+   * ので、履歴モーダルからの選択と違ってコピーは要らない。
+   */
+  const sendMediaToForm = ({
+    kind,
+    url,
+    name,
+  }: {
+    kind: LibraryKind
+    url: string
+    name: string
+  }) => {
+    const field =
+      kind === 'image'
+        ? '開始フレーム'
+        : kind === 'video'
+          ? '参照動画'
+          : 'リファレンス音声'
+    if (kind === 'image') patch({ sourceImage: url })
+    else if (kind === 'video') patch({ referenceVideo: url })
+    else patch({ audioPath: url })
+    setView('main')
+    setNarrowPane('form')
+    setNotice(`「${name}」を${field}の欄に入れました。`)
+  }
+
+  const useLibraryItem = (item: LibraryItem) =>
+    sendMediaToForm({ kind: item.kind, url: item.url, name: item.name })
+
   const remove = async (job: Job) => {
     if (!window.confirm('このジョブを削除しますか？')) return
     setDetailBusy(true)
@@ -783,6 +861,51 @@ export default function App() {
           showNsfw={showNsfw}
           comfyTarget={settings?.comfy_target ?? null}
           onComfyTarget={(target) => void changeComfyTarget(target)}
+        />
+      )}
+
+      {/* ファイル（素材・生成物・書き出しの全部。SPEC §7.2 / §8）。 */}
+      {view === 'library' && (
+        <LibraryView
+          showNsfw={showNsfw}
+          reloadKey={libraryVersion}
+          jobsReloadKey={jobsVersion}
+          onChanged={() => void loadOptions()}
+          onUseInGenerate={useLibraryItem}
+          onUseMedia={sendMediaToForm}
+          onOpenJob={(job) => {
+            setView('main')
+            setNarrowPane('result')
+            selectJob(job)
+          }}
+          onOpenStudioAsset={(asset) => {
+            setView('studio')
+            setNavigate((previous) => ({
+              projectId: asset.project_id,
+              shotId: null,
+              assetId: asset.id,
+              seq: (previous?.seq ?? 0) + 1,
+            }))
+          }}
+          onOpenStudioShot={(job) => {
+            setView('studio')
+            setNavigate((previous) => ({
+              projectId: job.project_id ?? null,
+              shotId: job.shot_id ?? null,
+              assetId: null,
+              seq: (previous?.seq ?? 0) + 1,
+            }))
+          }}
+          onOpenStudioTimeline={(item) => {
+            setView('studio')
+            setNavigate((previous) => ({
+              projectId: item.project_id || null,
+              shotId: null,
+              assetId: null,
+              tab: 'edit',
+              seq: (previous?.seq ?? 0) + 1,
+            }))
+          }}
         />
       )}
 

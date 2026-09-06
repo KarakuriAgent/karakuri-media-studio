@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ApiError, api } from '../../api'
 import type {
   ComfyTarget,
+  StudioAsset,
   StudioEpisode,
   StudioProjectDetail,
   StudioProjectSummary,
@@ -33,6 +34,8 @@ vi.mock('../../api', async () => {
       deleteStudioAssetFile: vi.fn(),
       updateStudioAsset: vi.fn(),
       deleteStudioAsset: vi.fn(),
+      refreshStudioAssetFromLibrary: vi.fn(),
+      listLibrary: vi.fn(),
       createStudioEpisode: vi.fn(),
       reorderStudioEpisodes: vi.fn(),
       updateStudioEpisode: vi.fn(),
@@ -1763,6 +1766,106 @@ describe('StudioView: メタデータのみの素材', () => {
     )
   })
 
+})
+
+describe('StudioView: ライブラリから取り込んだ素材', () => {
+  /** ライブラリの構図リファレンス動画から取り込んだ素材（更新あり）。 */
+  const fromLibrary = (overrides: Partial<StudioAsset> = {}) =>
+    detail({
+      assets: [
+        {
+          id: 'a9',
+          project_id: 'p1',
+          name: '構図メモ',
+          category: 'reference',
+          caption: '',
+          prompt_caption: '',
+          kind: 'video',
+          path: '/repo/assets/video/previz.mp4',
+          url: '/assets/video/previz.mp4',
+          locked: false,
+          sort_order: 0,
+          created_at: '2026-01-01T00:00:00+00:00',
+          source_library_id: 'l7',
+          source_library_version: 1,
+          library_blocking: true,
+          library_update_available: true,
+          ...overrides,
+        },
+      ],
+      shots: [shot('カット1', { prompt: '@構図メモ の構図で' })],
+      takes: [],
+    })
+
+  it('更新ありのバッジを出し、[反映] で取り直す', async () => {
+    const confirm = vi.spyOn(window, 'confirm').mockReturnValue(true)
+    await openProject(fromLibrary())
+    clickTab('World Bible')
+    // カードには「構図リファレンス」と「更新あり」が並ぶ
+    expect(await screen.findByText('構図リファレンス')).toBeTruthy()
+    expect(screen.getAllByText('更新あり').length).toBeGreaterThan(0)
+
+    fireEvent.click(screen.getByRole('button', { name: /@構図メモ/ }))
+    expect(await screen.findByText(/ライブラリから取り込んだ素材/)).toBeTruthy()
+    mocked.refreshStudioAssetFromLibrary.mockResolvedValue({})
+    fireEvent.click(screen.getByRole('button', { name: '反映' }))
+
+    await waitFor(() =>
+      expect(mocked.refreshStudioAssetFromLibrary).toHaveBeenCalledWith('a9'),
+    )
+    expect(confirm).toHaveBeenCalled()
+    confirm.mockRestore()
+  })
+
+  it('更新が無ければ [反映] は出さない', async () => {
+    await openProject(
+      fromLibrary({ library_update_available: false, source_library_version: 2 }),
+    )
+    clickTab('World Bible')
+    fireEvent.click(await screen.findByRole('button', { name: /@構図メモ/ }))
+    expect(await screen.findByText(/ライブラリから取り込んだ素材/)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: '反映' })).toBeNull()
+  })
+
+  it('[ライブラリから追加] で選んだ項目を library_id で作る', async () => {
+    await openProject(fromLibrary())
+    clickTab('World Bible')
+    mocked.listLibrary.mockResolvedValue({
+      items: [
+        {
+          id: 'l7',
+          created_at: '2026-01-01T00:00:00+00:00',
+          kind: 'video',
+          name: '構図メモ',
+          path: '/repo/library/video/previz.mp4',
+          url: '/library/video/previz.mp4',
+          nsfw: false,
+          nsfw_source: '',
+          source_job_id: null,
+          source: 'blocking',
+          tags: ['blocking'],
+          category: null,
+        },
+      ],
+      total: 1,
+      limit: 50,
+      offset: 0,
+      tags: ['blocking'],
+    })
+    mocked.createStudioAsset.mockResolvedValue({ id: 'a10' })
+
+    fireEvent.click(
+      await screen.findByRole('button', { name: 'ライブラリから追加' }),
+    )
+    fireEvent.click(await screen.findByRole('button', { name: /構図メモ/ }))
+
+    await waitFor(() =>
+      expect(mocked.createStudioAsset).toHaveBeenCalledWith('p1', {
+        name: '',
+        library_id: 'l7',
+      }),
+    )
+  })
 })
 
 describe('StudioView: 投入プレビュー', () => {

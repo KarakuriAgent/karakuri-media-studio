@@ -44,11 +44,13 @@ scripts/studio.sh wait-export <export_id> [interval_sec]
 |---|---|
 | `GET /api/v1/openapi.json` | 全エンドポイントとリクエスト/レスポンス schema |
 | `GET /api/v1/prompt-guide` | 脚本・プロンプトの書き方。`guide_version` が同じならキャッシュを使い回してよい |
-| `GET /api/v1/capabilities` | この接続先でラテント連続性 / ラテントアップスケールが使えるか |
+| `GET /api/v1/capabilities` | この接続先でラテント連続性 / ラテントアップスケールが使えるか。`blocking` に構図リファレンス動画（ブロッキング）の可否と上限・使える形状・カメラプリセットの一覧 |
 | `GET /api/v1/options` | `aspect_ratio` の正しい表記、ワークフロー一覧と制約、LoRA、ライブラリ |
 
 補助: `GET /api/v1/prompt-examples`（MiniMax H3 の実例。`mode` / `category` /
-`id` で絞ると本文まで返る）。
+`id` で絞ると本文まで返る）。`GET /api/v1/assets`（どのプロジェクトにどんな素材が
+あるかを**作品をまたいで**探す。`kind` / `q` / `project_id` で絞れて、1 件ずつに
+`project_name` が付く）。
 
 エンドポイントを推測で叩かない。OpenAPI に無いものは無い。
 
@@ -84,17 +86,40 @@ scripts/studio.sh wait-export <export_id> [interval_sec]
 4. **脚本**: `POST /projects/{id}/episodes` → `.../episodes/{id}/scenes` →
    `POST /projects/{id}/shots`。話 1 本を丸ごと入れるなら **`POST /stories`**
    （話→場→カットを 1 トランザクションで作る。途中で落ちたら全部ロールバック）。
-5. **焼く前に必ず `GET /shots/{id}/prompt-preview`**。実際に投入される本文・
+5. **構図が難しいカットはブロッキング動画を先に作る**（指示があったとき、
+   または「誰がどこに立ち、カメラがどう動くか」を言葉だけで詰め切れないとき）:
+   - `POST /library/blocking` に原始形状（四角・丸・円柱・簡易人型）だけの 3D
+     シーン定義を投げると、24fps の mp4 がライブラリに登録される
+     （書式は `docs/EXTERNAL-API.md` §3.5。座標は m・Y 上・床が `y=0`、
+     `position` は**底面中心**）。焼く前に `POST /library/blocking/location-map`
+     で文章だけ見ると安い。
+   - 応答の `location_map` を**カット本文へ写す**（`hero at x 50%, y 56%` の形。
+     数字は実際に描かれた絵から出しているので画とずれない）。
+   - 動画は `POST /projects/{id}/assets` に **`{"library_id":"<項目の id>"}`**
+     を送ってスタジオ素材に取り込み（ファイル・`kind`・`name` を省けば項目名も
+     引き継ぐ。`file` / `path` との同時指定は 400）、
+     カット本文で `@名前` として参照する。参照が付くのでそのカットは r2v になり、
+     `reference_note`（`<Video k> … weak_reference`）は**自動で
+     `retention_analysis` に足される**ので手で書かなくてよい（言い回しを変えたい
+     ときだけ自分で書く。同じ番号なら二重にはならない）。
+   - **グレーのマネキンのプレビズなので、見た目・色・素材は真似させない。**
+     構図を直したくなったら同じ項目へ `POST /library/{id}/blocking`（版番号が
+     上がるだけで、mp4 のパスも id も変わらない）。**素材はコピーなので追従しない**:
+     焼き直したら素材の `library_update_available` が `true` になるので、
+     `POST /assets/{id}/refresh-from-library` で取り直す（ファイルが変わるぶん、
+     その素材を使った Take は stale になる = 焼き直しが要る。版が進んでいない
+     ときに叩いても何も起きないので、無駄に stale にはならない）。
+6. **焼く前に必ず `GET /shots/{id}/prompt-preview`**。実際に投入される本文・
    ワークフロー・参照素材が出る。見るところ:
    - `error` … 組み立てられない（直してから焼く）
    - `render_blocker` … 組み立てはできるが投入できない（引き継ぎ元の Take がまだ無い等）
    - `workflow_reason` … どのモード・品質になったか、フォールバックしたか
    - `will_translate` / `english_stale` … 英訳がこれから走るか
-6. **焼く**: `POST /shots/{id}/render`（ボディで解像度・尺・steps・seed を上書き可）。
+7. **焼く**: `POST /shots/{id}/render`（ボディで解像度・尺・steps・seed を上書き可）。
    返る Take の `job_id` を `GET /jobs/{id}` で **5〜15 秒間隔**でポーリング
    （`scripts/studio.sh wait-job <job_id>`）。status は
    `queued` / `prompting` / `running` / `done` / `failed` / `canceled`。
-7. **検分**: 完了したジョブ / Take の `video_url` を必ず自分で見る。
+8. **検分**: 完了したジョブ / Take の `video_url` を必ず自分で見る。
 
    ```bash
    scripts/inspect.sh <video_url> 1     # 尺・音声の有無 + 1 秒ごとのフレーム PNG
@@ -102,7 +127,7 @@ scripts/studio.sh wait-export <export_id> [interval_sec]
 
    出た PNG を読んで、指示どおりの人物・動き・カメラになっているか、音声が
    入っているかを確かめる。焼きっぱなしで採用しない。
-8. **採否**: `POST /takes/{id}/select` / `POST /takes/{id}/reject`。
+9. **採否**: `POST /takes/{id}/select` / `POST /takes/{id}/reject`。
    採用 Take がそのカットの完成尺になる。
 
 ## 4. モードは自動で決まる
