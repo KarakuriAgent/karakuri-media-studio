@@ -314,7 +314,7 @@
         "155",
         0
       ],
-      "selection": "Sol-Attn (adaptive tau)",
+      "selection": "sol-attn",
       "selection.tau": 1.5,
       "start_percent": 0.2,
       "end_percent": 0.9,
