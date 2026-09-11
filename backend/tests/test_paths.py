@@ -6,6 +6,7 @@ DB には成果物の**絶対パス**が入るが、リポジトリの見え方�
 記録された行でも履歴の URL とファイル読み出しが壊れないことを確かめる。
 """
 
+import importlib
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,7 @@ def root(tmp_path, monkeypatch):
     outputs = tmp_path / "outputs"
     (outputs / "job1").mkdir(parents=True)
     monkeypatch.setattr(paths, "ROOT", tmp_path)
+    monkeypatch.setattr(paths, "DATA_DIR", tmp_path)
     monkeypatch.setattr(jobs, "OUTPUTS_DIR", outputs)
     return tmp_path
 
@@ -127,3 +129,105 @@ def test_settings_workdir_outside_the_repo_is_kept(root, monkeypatch):
     outside = root.parent / "elsewhere" / "grok"
     monkeypatch.setattr(config, "_settings", Settings(grok_workdir=str(outside)))
     assert grok.GrokCliClient().workdir == outside
+
+
+# ------------------------------------------------ データの置き場（KARAKURI_DATA_DIR）
+# ``outputs/`` ``assets/`` ``library/`` は環境変数でリポジトリの外（NAS など）へ
+# 移せる（:data:`app.paths.DATA_DIR`）。``app.db`` と ``runtime/`` は対象外。
+# モジュール定数はインポート時に決まるので、環境変数を変えたら読み直して見る。
+
+
+@pytest.fixture
+def reload_paths(monkeypatch):
+    """``KARAKURI_DATA_DIR`` を差し替えて :mod:`app.paths` を読み直す。
+
+    後片付けで環境変数を消してもう一度読み直すので、他のテストには漏れない
+    （``from .paths import OUTPUTS_DIR`` で値をコピーしている他モジュールは
+    読み直しの影響を受けないが、このテストは :mod:`app.paths` しか見ない）。
+    """
+
+    def reload_with(value: str | None):
+        if value is None:
+            monkeypatch.delenv("KARAKURI_DATA_DIR", raising=False)
+        else:
+            monkeypatch.setenv("KARAKURI_DATA_DIR", value)
+        return importlib.reload(paths)
+
+    yield reload_with
+    monkeypatch.delenv("KARAKURI_DATA_DIR", raising=False)
+    importlib.reload(paths)
+
+
+def test_data_dir_defaults_to_the_repository(reload_paths):
+    """未設定ならこれまでどおり ROOT 直下。"""
+    reloaded = reload_paths(None)
+    assert reloaded.DATA_DIR == reloaded.ROOT
+    assert reloaded.OUTPUTS_DIR == reloaded.ROOT / "outputs"
+
+
+def test_data_dir_env_moves_the_file_stores(reload_paths, tmp_path):
+    """環境変数を書くと 3 つの置き場だけが外に出る（DB と runtime/ は残る）。"""
+    nas = tmp_path / "nas"
+    reloaded = reload_paths(str(nas))
+    assert reloaded.DATA_DIR == nas
+    assert reloaded.OUTPUTS_DIR == nas / "outputs"
+    assert reloaded.ASSETS_DIR == nas / "assets"
+    assert reloaded.LIBRARY_DIR == nas / "library"
+    assert reloaded.RUNTIME_DIR == reloaded.ROOT / "runtime"
+    assert reloaded.DB_PATH == reloaded.ROOT / "app.db"
+
+
+def test_data_dir_env_blank_is_unset(reload_paths):
+    """空文字は未設定扱い（compose が ``${KARAKURI_DATA_DIR:-}`` を渡すため）。"""
+    reloaded = reload_paths("  ")
+    assert reloaded.DATA_DIR == reloaded.ROOT
+
+
+def test_ensure_dirs_creates_both_sides(reload_paths, tmp_path, monkeypatch):
+    """``ensure_dirs`` は外に出した置き場と ROOT 側の runtime/ を両方作る。"""
+    reloaded = reload_paths(str(tmp_path / "nas"))
+    monkeypatch.setattr(reloaded, "RUNTIME_DIR", tmp_path / "repo" / "runtime")
+    monkeypatch.setattr(reloaded, "GROK_WORKDIR", tmp_path / "repo" / "runtime" / "g")
+    monkeypatch.setattr(
+        reloaded, "GROK_MEDIA_WORKDIR", tmp_path / "repo" / "runtime" / "gm"
+    )
+    monkeypatch.setattr(
+        reloaded, "CHAT_SESSIONS_DIR", tmp_path / "repo" / "runtime" / "chat"
+    )
+    monkeypatch.setattr(
+        reloaded, "REMOTION_TMP_DIR", tmp_path / "repo" / "runtime" / "remotion"
+    )
+    monkeypatch.setattr(
+        reloaded, "AUDIO_ANALYSIS_TMP_DIR", tmp_path / "repo" / "runtime" / "audio"
+    )
+    reloaded.ensure_dirs()
+    assert (tmp_path / "nas" / "outputs").is_dir()
+    assert (tmp_path / "nas" / "assets").is_dir()
+    assert (tmp_path / "nas" / "library").is_dir()
+    assert (tmp_path / "repo" / "runtime" / "chat").is_dir()
+
+
+@pytest.fixture
+def split_dirs(tmp_path, monkeypatch):
+    """置き場を外に出した構成（ROOT と DATA_DIR が別）。"""
+    repo, data = tmp_path / "repo", tmp_path / "nas"
+    (data / "outputs" / "job1").mkdir(parents=True)
+    (repo / "runtime" / "grok-workdir").mkdir(parents=True)
+    monkeypatch.setattr(paths, "ROOT", repo)
+    monkeypatch.setattr(paths, "DATA_DIR", data)
+    return repo, data
+
+
+def test_rebase_moves_outputs_onto_the_data_dir(split_dirs):
+    """旧 ROOT 配下で記録された成果物は、いまの DATA_DIR 側に載せ替わる。"""
+    repo, data = split_dirs
+    (data / "outputs" / "job1" / "video.mp4").write_bytes(b"x")
+    stored = str(repo / "outputs" / "job1" / "video.mp4")
+    assert paths.rebase_stored_path(stored) == data / "outputs" / "job1" / "video.mp4"
+
+
+def test_rebase_keeps_runtime_on_the_root(split_dirs):
+    """``runtime/`` は置き場の引っ越しの対象外なので ROOT 側のまま。"""
+    repo, data = split_dirs
+    stored = "/home/someone/workspace/video-studio/runtime/grok-workdir"
+    assert paths.rebase_stored_path(stored) == repo / "runtime" / "grok-workdir"

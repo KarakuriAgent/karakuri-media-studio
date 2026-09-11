@@ -10,6 +10,10 @@
 #   （outputs/ や app.db など）の所有者はローカルユーザーのままになる。
 #   UID/GID が 1000 以外の場合は .env に UID=…/GID=… を書くか、
 #   `UID=$(id -u) GID=$(id -g) docker compose up` のように渡す。
+# - outputs/ assets/ library/ は .env の KARAKURI_DATA_DIR でリポジトリの外
+#   （NAS など）に移せる。指定した絶対パスをコンテナにも同じ絶対パスで
+#   マウントする（DB に絶対パスが残るため）。app.db と runtime/ は対象外で
+#   リポジトリの中のまま（SQLite を NAS に置くとロックが壊れる）。
 # - grok CLI はホストの ~/.grok（バイナリ＋サインイン状態）をそのまま
 #   マウントして使う。事前にホスト側で `grok` のサインインを済ませておくこと。
 # - フロントエンドのビルド (frontend/dist) はホスト側で行う:
@@ -34,6 +38,9 @@ services:
       # 不足モデルの自動ダウンロード先（SPEC §3.3）。未設定なら空文字を渡し、
       # 機能ごと無効になる（下の volumes のダミーパスは渡さない）。
       COMFY_MODELS_DIR: ${COMFY_MODELS_DIR:-}
+      # outputs/ assets/ library/ の置き場（未設定ならリポジトリ直下）。
+      # 下の volumes で同一絶対パスにマウントする。
+      KARAKURI_DATA_DIR: ${KARAKURI_DATA_DIR:-}
       # Cursor CLI（deploy/bin/cursor-agent がマウントした本体を起動する）を
       # PATH に足す。Dockerfile の PATH（~/.grok/bin 先頭）も含めて書き直す。
       PATH: ${PWD}/deploy/bin:/home/app/.grok/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
@@ -58,6 +65,12 @@ services:
       # .env に COMFY_MODELS_DIR=/path/to/ComfyUI/models を書く。未設定のときは
       # 無害なダミーパスがマウントされるだけ（機能は UI ごと出ない）。
       - ${COMFY_MODELS_DIR:-/tmp/karakuri-no-models-dir}:${COMFY_MODELS_DIR:-/tmp/karakuri-no-models-dir}
+      # データの置き場（outputs / assets / library）をリポジトリの外に出す場合:
+      # COMFY_MODELS_DIR と同じく**同一絶対パス**でマウントする。DB には成果物の
+      # 絶対パスが入るので、ホストとコンテナで同じパスに見えている必要がある。
+      # .env に KARAKURI_DATA_DIR=/mnt/nas/karakuri-media-studio を書く。未設定の
+      # ときは無害なダミーパスがマウントされるだけ（置き場はリポジトリ直下のまま）。
+      - ${KARAKURI_DATA_DIR:-/tmp/karakuri-no-data-dir}:${KARAKURI_DATA_DIR:-/tmp/karakuri-no-data-dir}
       # 音源解析（SPEC §5.2）用の venv。torch / faster-whisper / stable-ts /
       # librosa はアプリの環境には入れず、backend/requirements-optional.txt を
       # 入れた別の venv を用意して、設定 `audio_analysis_python` にその中の python

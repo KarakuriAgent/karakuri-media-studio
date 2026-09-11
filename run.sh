@@ -10,6 +10,9 @@
 #   COMFY_MODELS_DIR   ComfyUI の models ディレクトリ (不足モデルの自動ダウンロード
 #                      先。未設定ならその機能ごと UI に出ない。値はクォート無しの
 #                      絶対パスで書く)
+#   KARAKURI_DATA_DIR  outputs/ assets/ library/ の置き場 (未設定ならリポジトリ
+#                      直下。NAS などリポジトリの外に置きたいときに絶対パスを
+#                      書く。app.db と runtime/ はリポジトリの中のまま)
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

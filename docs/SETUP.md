@@ -46,6 +46,7 @@ cd karakuri-media-studio
 HOST=0.0.0.0
 PORT=8080
 COMFY_MODELS_DIR=/path/to/ComfyUI/models   # 任意（後述の自動ダウンロード用）
+KARAKURI_DATA_DIR=/mnt/nas/karakuri-media-studio   # 任意（後述のデータの置き場）
 ```
 
 `run.sh` を使わず手で起動する場合:
@@ -75,7 +76,8 @@ npm --prefix remotion install                                     # Remotion を
   サインイン**を済ませてください
 - ComfyUI に `http://127.0.0.1:8188` を使っている場合、コンテナからは届きません。設定画面の
   ComfyUI URL を `http://host.docker.internal:8188` か LAN の IP に変えてください
-- `.env` の `COMFY_MODELS_DIR` は、同じ絶対パスでコンテナにもマウントされます
+- `.env` の `COMFY_MODELS_DIR` と `KARAKURI_DATA_DIR` は、同じ絶対パスでコンテナにも
+  マウントされます（`KARAKURI_DATA_DIR` は後述の「データの置き場を移す」）
   （Remotion は同梱の `remotion/` をリポジトリごとマウントするので設定は要りません。
   依存だけはホストで `npm --prefix remotion install` を済ませてください）
 - `docker compose` を直接使うときは、リポジトリの実体パスから
@@ -147,6 +149,50 @@ GPU は `docker-compose.yml` の `deploy.resources.reservations.devices`（nvidi
 メモリ不足になったときも、ワーカーが自動で CPU にやり直します）。venv をリポジトリの
 外に置くときは `AUDIO_ANALYSIS_VENV` の行を有効にして、`.env` に
 `AUDIO_ANALYSIS_VENV=/path/to/venv` を書いてください（マウント先はホストと同じ絶対パス）。
+
+---
+
+## データの置き場を移す（NAS など・任意）
+
+生成物・素材・ライブラリ（`outputs/` `assets/` `library/`）は、既定ではリポジトリ直下に
+たまります。動画が増えて手元のディスクが厳しくなったら、`.env` に
+`KARAKURI_DATA_DIR` を書いてリポジトリの外（NAS など）へ移せます。
+
+```bash
+# .env
+KARAKURI_DATA_DIR=/mnt/ds224plus/home/karakuri-media-studio
+```
+
+書かなければこれまでどおりリポジトリ直下です。**`app.db` と `runtime/` は対象外**で、
+常にリポジトリの中に残ります（`app.db` は SQLite なので、CIFS/NFS に置くとファイル
+ロックが正しく効かず壊れます。`runtime/` は CLI の作業ディレクトリなのでローカルが速い）。
+
+移行の手順（既にデータがある場合）:
+
+1. アプリを止める（`./compose.sh down`、ホスト実行なら `./run.sh` を Ctrl-C）
+2. 移し先へコピーする（消すのは動作確認のあと。`-a` で更新日時と権限を保つ）
+
+   ```bash
+   NAS=/mnt/ds224plus/home/karakuri-media-studio
+   mkdir -p "$NAS"
+   rsync -a outputs/  "$NAS/outputs/"
+   rsync -a assets/   "$NAS/assets/"
+   rsync -a library/  "$NAS/library/"
+   ```
+
+3. `.env` に `KARAKURI_DATA_DIR=$NAS` を書く
+4. 起動する（`./compose.sh up -d` / `./run.sh`）
+5. 履歴とライブラリを開いて、過去の動画・画像が再生できることを確かめる
+6. 確認できたら元の `outputs/` `assets/` `library/` を消す
+
+DB には成果物の**絶対パス**が旧プレフィックス（`<リポジトリ>/outputs/…`）のまま
+残りますが、アプリが読み出しのたびに新しい置き場へ載せ替える（`app/paths.py` の
+`rebase_stored_path`）ので、履歴がリンク切れになることはありません。
+
+Docker で動かす場合、`docker-compose.yml` が `KARAKURI_DATA_DIR` を**同じ絶対パス**で
+コンテナにマウントします（ホストと同じパスで見えている必要があるため）。NAS は先に
+ホスト側でマウントしておき、コンテナのユーザー（`UID:GID`）で書き込めることを
+確かめてください。
 
 ---
 
