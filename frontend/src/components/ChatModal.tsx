@@ -96,8 +96,8 @@ export default function ChatModal({
         lyrics_draft: form.lyrics,
         prompt_template: form.promptTemplate,
         // 入力画像は「欄が出ているかどうか」で決める: i2v の開始フレームだけ
-        // でなく、編集系の画像ワークフロー（qwen-image-edit など）の編集元も
-        // 見せたい。
+        // でなく、編集元を 1 枚で受ける画像ワークフロー（minimax_h3_i2i など）の
+        // 編集元も見せたい。
         start_image_path: hidden.startImage ? null : form.sourceImage || null,
         end_image_path: hidden.endImage ? null : form.endImage || null,
         reference_images: hidden.references ? [] : form.referenceImages,

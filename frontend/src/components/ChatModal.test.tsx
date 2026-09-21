@@ -76,10 +76,10 @@ const I2V = workflow({
 
 /** 入力画像を編集する画像ワークフロー（LoRA チェーンは持たない）。 */
 const EDIT = workflow({
-  id: 'qwen_image_edit_2511',
-  label: 'Qwen Image Edit',
+  id: 'minimax_h3_i2i',
+  label: 'MiniMax H3 Image i2i',
   kind: 'image',
-  family: 'qwen-image',
+  family: 'minimax-h3-image',
   requires: ['image'],
   supports: ['prompt', 'image'],
   accepts_video_loras: false,

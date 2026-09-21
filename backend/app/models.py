@@ -698,8 +698,11 @@ def missing_job_fields(
     The asset requirements come from the selected workflows' manifests, so e.g.
     t2v needs no start frame while i2v needs one.  In ``full`` mode the
     *video* start frame is produced by the image stage and therefore not
-    required as an input — but an **editing** image workflow (qwen-image) still
-    needs its own ``source_image`` in every mode that runs the image stage.
+    required as an input — but an image workflow that edits **one input
+    picture** (``minimax_h3_i2i``) still needs its own ``source_image`` in every
+    mode that runs the image stage.  編集を参照画像のリストで受けるワークフロー
+    （``qwen_image_21_edit``）はここではなく :func:`reference_problem` の
+    「参照は合計 1 件以上」で足りているかを見る。
     Empty list == valid.
 
     ``mode: "audio"`` is stand-alone: it runs one audio graph, needs nothing but

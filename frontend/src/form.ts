@@ -66,7 +66,7 @@ export const FAMILY_LABELS: Record<string, string> = {
   krea2: 'Krea 2',
   anima: 'Anima',
   'z-image': 'Z-Image',
-  'qwen-image': 'Qwen-Image Edit',
+  'qwen-image': 'Qwen-Image 2.1',
   'minimax-h3': 'MiniMax H3',
 }
 
@@ -993,8 +993,10 @@ export function formStateFromParams(
  * Both sides are driven by the workflow manifests: a video workflow that
  * declares no audio input hides the audio picker, one that needs a closing
  * frame or a reference clip shows the matching picker, t2v needs no start frame
- * at all — and an *editing* image workflow (qwen-image) needs an input picture
- * of its own while ignoring the aspect ratio / megapixel target.
+ * at all — and an image workflow that edits a single input picture
+ * (`minimax_h3_i2i`) needs one of its own while ignoring the aspect ratio /
+ * megapixel target。編集元を参照画像のリストで受けるもの（`qwen_image_21_edit`）
+ * は代わりに参照素材の欄が出る。
  *
  * `audio` は独立ジョブなので、画像・動画のつまみは丸ごと落ちる。
  */

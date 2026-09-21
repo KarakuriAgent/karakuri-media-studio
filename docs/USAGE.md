@@ -14,9 +14,18 @@ WebSocket で右ペインにリアルタイム表示され、完了すると生�
 | 画像のみ | 画像生成だけを実行（開始フレーム候補の量産に） |
 | 音声 | 音声ワークフローを単発実行（画像・動画とは連結しない） |
 
-**画像**は Krea 2 turbo（既定）/ Anima / Z-Image turbo / Qwen-Image Edit 2511（画像編集。参照画像必須）
-/ MiniMax H3 Image（t2i は 2 バリアント、i2i / r2i は各 3 バリアント）/ Grok Imagine（テキスト→画像・画像編集）
-から選びます。
+**画像**は Krea 2 turbo（既定）/ Anima / Z-Image turbo / Qwen-Image 2.1（テキスト→画像と
+参照編集の 2 本）/ MiniMax H3 Image（t2i は 2 バリアント、i2i / r2i は各 3 バリアント）/
+Grok Imagine（テキスト→画像・画像編集）から選びます。
+
+**Qwen-Image 2.1** は生成と編集が 1 つに統合されたモデルで、`qwen_image_21_t2i`
+（テキスト→画像。ネイティブ 1024x1024、2K まで）と `qwen_image_21_edit`（参照編集。
+参照画像 1〜10 枚が必須で、2 枚以上ならプロンプトから `<image1>` `<image2>` … と呼び、
+1 枚ならタグを使わない。1 枚目が編集キャンバスで出力の縦横比もそれに従う）の 2 本です。
+どちらも cfg 1 で動くのでネガティブプロンプトは効きません。ウェイトは
+`qwen_image_2.1_int8_convrot`（diffusion_models）/ `qwen3vl_8b_int8_convrot`（text_encoders）
+/ `qwen_image_2.1_vae_bf16`（vae）。**Qwen Research License** で配布されているので、
+商用利用には別途ライセンスが必要です。
 
 **MiniMax H3 Image** は音声つき動画モデルの MiniMax H3 で**静止画 1 枚**を作るワークフローです
 （複数フレームのパケットを作って 1 枚を選ぶ）。テキスト→画像 (t2i)・画像編集 (i2i)・参照編集

@@ -65,7 +65,9 @@ from app.workflows import (
     MINIMAX_H3_IMAGE_STRATEGY_NAME,
     OPTIONAL_CLASS_TYPES,
     SelectSpec,
-    QWEN_IMAGE_EDIT,
+    QWEN_IMAGE_21_EDIT,
+    QWEN_IMAGE_21_REFERENCES,
+    QWEN_IMAGE_21_T2I,
     SPECS,
     KREA2_TURBO,
     T,
@@ -385,45 +387,140 @@ def test_z_image_lora_chain():
     assert wf["57:11"]["inputs"]["model"] == ["app_lora_0", 0]
 
 
-def test_qwen_edit_injection():
+def _qwen_edit(images: int = 1, **overrides):
+    """Qwen-Image 2.1 編集を ``images`` 枚の参照画像で組む。"""
     wf = build_image_workflow(
-        params(image_workflow="qwen_image_edit_2511"), spec=QWEN_IMAGE_EDIT
+        params(
+            image_workflow=QWEN_IMAGE_21_EDIT.id,
+            reference_image_names=[f"ref{index}.png" for index in range(images)],
+            **overrides,
+        ),
+        spec=QWEN_IMAGE_21_EDIT,
     )
-    # the picture to edit comes from the uploaded source_image
-    assert value(wf, QWEN_IMAGE_EDIT, "image") == "start.png"
-    assert value(wf, QWEN_IMAGE_EDIT, "prompt") == "IMAGE PROMPT"
-    assert value(wf, QWEN_IMAGE_EDIT, "seed") == 1234
-    assert value(wf, QWEN_IMAGE_EDIT, "save_prefix") == "images/01JOBID"
-    # the size follows the input picture, so no aspect ratio is injected
-    assert not QWEN_IMAGE_EDIT.supports("aspect_ratio")
-    assert not QWEN_IMAGE_EDIT.supports("megapixels")
+    validate_workflow(wf)
+    return wf
+
+
+def test_qwen_21_edit_injection():
+    wf = _qwen_edit()
+    assert value(wf, QWEN_IMAGE_21_EDIT, "prompt") == "IMAGE PROMPT"
+    assert value(wf, QWEN_IMAGE_21_EDIT, "seed") == 1234
+    assert value(wf, QWEN_IMAGE_21_EDIT, "save_prefix") == "images/01JOBID"
+    # 編集は 1 枚目の縦横比に追従するので、縦横比は受け取らない
+    assert not QWEN_IMAGE_21_EDIT.supports("aspect_ratio")
+    assert not QWEN_IMAGE_21_EDIT.supports("width")
+    assert not QWEN_IMAGE_21_EDIT.supports("height")
+    # 編集元は `source_image` ではなく参照画像のリスト
+    assert not QWEN_IMAGE_21_EDIT.supports("image")
+    assert QWEN_IMAGE_21_EDIT.requires == ()
+    assert QWEN_IMAGE_21_EDIT.multi_inputs == {
+        "reference_images": QWEN_IMAGE_21_REFERENCES
+    }
+    # ネガティブは cfg 1 では効かないので、テンプレートの空のまま
+    assert wf["5"]["inputs"]["negative_prompt"] == ""
+    assert wf["6"]["inputs"]["cfg"] == 1
+
+
+@pytest.mark.parametrize("count", [1, 2, 3, QWEN_IMAGE_21_REFERENCES])
+def test_qwen_21_edit_reference_images_are_wired_in_order(count):
+    wf = _qwen_edit(images=count)
+    fan = QWEN_IMAGE_21_EDIT.ref_media
+    loaders = sorted(key for key in wf if key.startswith(REF_IMAGE_NODE_PREFIX))
+    assert loaders == [f"{REF_IMAGE_NODE_PREFIX}{i}" for i in range(count)]
+    inputs = wf[fan.node.node_id]["inputs"]
+    for index in range(count):
+        node_id = f"{REF_IMAGE_NODE_PREFIX}{index}"
+        assert wf[node_id]["class_type"] == "LoadImage"
+        assert wf[node_id]["inputs"]["image"] == f"ref{index}.png"
+        # ノード側の入力は 1 始まり（images.image_1 …）
+        assert inputs[f"images.image_{index + 1}"] == [node_id, 0]
+        # プロンプトから呼ぶときの書き方がそのままローダーの名前になる
+        assert wf[node_id]["_meta"]["title"] == f"参照画像 {index + 1}（<image{index + 1}>）"
+    assert len([k for k in inputs if k.startswith("images.image_")]) == count
+    # 雛形の LoadImage は必ず消える
+    assert "0" not in wf
+
+
+def test_qwen_21_edit_refuses_zero_references():
+    """参照が 1 枚も無ければ編集にならないので、投入前に断る。"""
+    assert QWEN_IMAGE_21_EDIT.ref_media.min_refs == 1
+    assert reference_problem(
+        "image_only", None, {}, image_workflow=QWEN_IMAGE_21_EDIT.id
+    )
+    assert (
+        reference_problem(
+            "image_only",
+            None,
+            {"reference_images": ["a.png"]},
+            image_workflow=QWEN_IMAGE_21_EDIT.id,
+        )
+        is None
+    )
+    # 上限を超えたら断る
+    assert reference_problem(
+        "image_only",
+        None,
+        {"reference_images": [f"a{i}.png" for i in range(QWEN_IMAGE_21_REFERENCES + 1)]},
+        image_workflow=QWEN_IMAGE_21_EDIT.id,
+    )
+
+
+@pytest.mark.parametrize(
+    "megapixels,expected",
+    [(1.0, 1024), (0.25, 512), (2.0, 1440), (4.0, 2048)],
+)
+def test_qwen_21_edit_megapixels_become_a_resolution_edge(megapixels, expected):
+    """``megapixels`` は 1 辺の長さ（32 の倍数）に直して resolution へ入る。"""
+    wf = _qwen_edit(megapixels=megapixels)
+    assert value(wf, QWEN_IMAGE_21_EDIT, "megapixels") == expected
+    assert expected % 32 == 0
+
+
+def test_qwen_21_edit_default_megapixels_is_the_native_canvas():
+    """既定のまま（グローバル既定 0.4MP）届いたら native の 1024 にする。"""
+    wf = _qwen_edit(megapixels=DEFAULT_MEGAPIXELS)
+    assert value(wf, QWEN_IMAGE_21_EDIT, "megapixels") == 1024
+
+
+def test_qwen_21_t2i_injection():
+    wf = build_image_workflow(
+        params(image_workflow=QWEN_IMAGE_21_T2I.id), spec=QWEN_IMAGE_21_T2I
+    )
+    assert value(wf, QWEN_IMAGE_21_T2I, "prompt") == "IMAGE PROMPT"
+    assert value(wf, QWEN_IMAGE_21_T2I, "seed") == 1234
+    assert value(wf, QWEN_IMAGE_21_T2I, "save_prefix") == "images/01JOBID"
+    # 幅・高さはアプリが縦横比 + メガピクセルから計算して入れる（32 の倍数）
+    width = value(wf, QWEN_IMAGE_21_T2I, "width")
+    height = value(wf, QWEN_IMAGE_21_T2I, "height")
+    assert (width, height) == resolution("16:9 (Widescreen)", 1.5, multiple=32)
+    assert width % 32 == 0 and height % 32 == 0
+    # t2i は参照画像を受け取らない
+    assert QWEN_IMAGE_21_T2I.multi_inputs == {}
+    assert QWEN_IMAGE_21_T2I.ref_media is None
     validate_workflow(wf)
 
 
-def test_qwen_edit_user_lora_applies_to_both_switch_branches():
-    """The 4-steps Lightning LoRA stays; the user chain goes in front of it."""
+@pytest.mark.parametrize("spec", [QWEN_IMAGE_21_EDIT, QWEN_IMAGE_21_T2I])
+def test_qwen_21_user_lora_sits_between_the_unet_and_the_cache(spec):
     wf = build_image_workflow(
         params(
-            image_workflow="qwen_image_edit_2511",
+            image_workflow=spec.id,
+            reference_image_names=["ref0.png"],
             loras=[LoraRef(lora_name="a.safetensors", strength=0.6)],
         ),
-        spec=QWEN_IMAGE_EDIT,
+        spec=spec,
     )
-    # the template's own Lightning loader is NOT a placeholder
-    assert wf["170:153"]["inputs"]["lora_name"].startswith("Qwen-Image-Edit-2511")
-    assert wf["app_lora_0"]["inputs"]["model"] == ["170:152", 0]
-    # both branches of the Switch (Model) read the user chain
-    assert wf["170:153"]["inputs"]["model"] == ["app_lora_0", 0]
-    assert wf["170:163"]["inputs"]["on_false"] == ["app_lora_0", 0]
-    assert wf["170:163"]["inputs"]["on_true"] == ["170:153", 0]
+    assert wf["app_lora_0"]["inputs"]["model"] == ["1", 0]
+    assert wf["app_lora_0"]["inputs"]["lora_name"] == "a.safetensors"
+    assert wf["4"]["inputs"]["model"] == ["app_lora_0", 0]
+    assert wf["4"]["class_type"] == "QwenImage21Cache"
     validate_workflow(wf)
 
     empty = build_image_workflow(
-        params(image_workflow="qwen_image_edit_2511", loras=[]),
-        spec=QWEN_IMAGE_EDIT,
+        params(image_workflow=spec.id, reference_image_names=["ref0.png"], loras=[]),
+        spec=spec,
     )
-    assert empty["170:153"]["inputs"]["model"] == ["170:152", 0]
-    assert empty["170:163"]["inputs"]["on_false"] == ["170:152", 0]
+    assert empty["4"]["inputs"]["model"] == ["1", 0]
 
 
 def test_image_workflow_is_selected_by_id():

@@ -910,19 +910,28 @@ def test_the_image_prompt_spec_follows_the_selected_image_workflow():
     assert "Never write a negative prompt" in z_image
 
     qwen = build_system_prompt(
-        ChatSessionCreate(mode="image_only", image_workflow="qwen_image_edit_2511")
+        ChatSessionCreate(mode="image_only", image_workflow="qwen_image_21_edit")
     )
-    assert "IMAGE PROMPT SPEC — Qwen-Image Edit 2511" in qwen
+    assert "IMAGE PROMPT SPEC — Qwen-Image 2.1" in qwen
+    # 1 つの SPEC に t2i と編集の両方の節がある（family 単位なので）
+    assert "`qwen_image_21_edit` — editing" in qwen
+    assert "`qwen_image_21_t2i` — text to image" in qwen
     assert "edit instruction" in qwen
+    # SPEC は family 単位なので、t2i を選んでも同じ節が両方載る
+    qwen_t2i = build_system_prompt(
+        ChatSessionCreate(mode="image_only", image_workflow="qwen_image_21_t2i")
+    )
+    assert "`qwen_image_21_t2i` — text to image" in qwen_t2i
+    assert "`qwen_image_21_edit` — editing" in qwen_t2i
 
 
 def test_the_selected_image_workflow_is_named_in_the_context():
     system = build_system_prompt(
-        ChatSessionCreate(mode="image_only", image_workflow="qwen_image_edit_2511")
+        ChatSessionCreate(mode="image_only", image_workflow="qwen_image_21_edit")
     )
-    assert "Selected image workflow: **`qwen_image_edit_2511`**" in system
+    assert "Selected image workflow: **`qwen_image_21_edit`**" in system
     assert "model family `qwen-image`" in system
-    assert "`source_image`" in system
+    assert "`reference_images`" in system
 
 
 def test_an_unknown_image_workflow_falls_back_to_the_default_spec():
@@ -1168,7 +1177,7 @@ def test_an_editing_image_workflow_gets_its_input_picture(env):
     session = start(
         env,
         mode="image_only",
-        image_workflow="qwen_image_edit_2511",
+        image_workflow="minimax_h3_i2i",
         start_image_path=str(env.start_image),
     )
     system = session["messages"][0]["content"]

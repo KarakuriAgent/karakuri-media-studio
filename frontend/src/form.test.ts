@@ -285,11 +285,11 @@ const ANIMA = workflow({
   family: 'anima',
   supports: ['aspect_ratio', 'megapixels', 'prompt', 'seed'],
 })
-const QWEN = workflow({
-  id: 'qwen_image_edit_2511',
-  label: 'Qwen-Image Edit 2511',
+const H3_EDIT = workflow({
+  id: 'minimax_h3_i2i',
+  label: 'MiniMax H3 Image i2i',
   kind: 'image',
-  family: 'qwen-image',
+  family: 'minimax-h3-image',
   requires: ['image'],
   supports: ['image', 'prompt', 'seed'],
   image_label: '編集元画像',
@@ -341,25 +341,25 @@ describe('image LoRA families', () => {
 
 describe('editing image workflows', () => {
   it('knows which image workflows edit a given picture', () => {
-    expect(imageWorkflowNeedsSource(QWEN)).toBe(true)
+    expect(imageWorkflowNeedsSource(H3_EDIT)).toBe(true)
     expect(imageWorkflowNeedsSource(KREA2)).toBe(false)
     expect(imageWorkflowNeedsSource(ANIMA)).toBe(false)
     expect(imageWorkflowNeedsSource(null)).toBe(false)
   })
 
   it('asks for a reference image in every mode that runs the image stage', () => {
-    expect(hiddenFields('image_only', ID_LORA, QWEN).startImage).toBe(false)
-    // full mode: the video start frame is generated, but qwen still needs input
-    expect(hiddenFields('full', I2V, QWEN).startImage).toBe(false)
+    expect(hiddenFields('image_only', ID_LORA, H3_EDIT).startImage).toBe(false)
+    // full mode: the video start frame is generated, but the edit still needs input
+    expect(hiddenFields('full', I2V, H3_EDIT).startImage).toBe(false)
     expect(hiddenFields('full', I2V, KREA2).startImage).toBe(true)
     // i2v runs no image stage at all
-    expect(hiddenFields('i2v', T2V, QWEN).startImage).toBe(true)
+    expect(hiddenFields('i2v', T2V, H3_EDIT).startImage).toBe(true)
   })
 
   it('drops the resolution controls when nothing else uses them', () => {
-    expect(hiddenFields('image_only', ID_LORA, QWEN).resolution).toBe(true)
+    expect(hiddenFields('image_only', ID_LORA, H3_EDIT).resolution).toBe(true)
     // in full mode the video stage still needs the aspect ratio
-    expect(hiddenFields('full', I2V, QWEN).resolution).toBe(false)
+    expect(hiddenFields('full', I2V, H3_EDIT).resolution).toBe(false)
     expect(hiddenFields('image_only', ID_LORA, KREA2).resolution).toBe(false)
   })
 
@@ -384,12 +384,12 @@ describe('editing image workflows', () => {
 
   it('rejects a submit without the picture the editing workflow needs', () => {
     const form = { ...initialForm, mode: 'image_only' as const, sourceImage: '' }
-    expect(validateForm(form, QWEN).source_image).toContain('参照画像')
-    expect(validateForm({ ...form, sourceImage: '/assets/image/a.png' }, QWEN))
+    expect(validateForm(form, H3_EDIT).source_image).toContain('参照画像')
+    expect(validateForm({ ...form, sourceImage: '/assets/image/a.png' }, H3_EDIT))
       .toEqual({})
     expect(validateForm(form, KREA2)).toEqual({})
     // no image stage -> nothing to validate
-    expect(validateForm({ ...form, mode: 'i2v' }, QWEN)).toEqual({})
+    expect(validateForm({ ...form, mode: 'i2v' }, H3_EDIT)).toEqual({})
   })
 })
 
@@ -1031,9 +1031,9 @@ describe('validateForm — audio mode', () => {
   })
 
   it('does not run the image-workflow check in audio mode', () => {
-    // qwen-image が選ばれたままでも、音声ジョブは参照画像を要求しない
+    // 編集系の画像ワークフローが選ばれたままでも、音声ジョブは参照画像を要求しない
     expect(
-      validateForm(audioForm({ audioDuration: 120, sourceImage: '' }), QWEN, MMM3),
+      validateForm(audioForm({ audioDuration: 120, sourceImage: '' }), H3_EDIT, MMM3),
     ).toEqual({})
   })
 })
@@ -1500,7 +1500,7 @@ function restoreOptions(overrides: Partial<Options> = {}): Options {
     comfy_error: null,
     comfy_target: 'local',
     comfy_url: '',
-    image_workflows: [KREA2, ANIMA, QWEN],
+    image_workflows: [KREA2, ANIMA, H3_EDIT],
     video_workflows: [T2V, I2V, ID_LORA, WAN],
     audio_workflows: [MMM3, SA3],
     default_video_workflow: ID_LORA.id,

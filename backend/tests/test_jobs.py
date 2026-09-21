@@ -1193,12 +1193,13 @@ def test_an_unknown_image_workflow_is_rejected(env):
 
 
 def test_the_editing_workflow_requires_a_source_image(env):
+    """単数の編集元を取るワークフロー（h3 i2i）は source_image が要る。"""
     for mode, extra in (("image_only", {}), ("full", {"video_prompt": "a video"})):
         response = env.client.post(
             "/api/jobs",
             json={
                 "mode": mode,
-                "image_workflow": "qwen_image_edit_2511",
+                "image_workflow": "minimax_h3_i2i",
                 "image_prompt": "make the coat red",
                 "audio_path": str(env.audio),
                 **extra,
@@ -1208,40 +1209,69 @@ def test_the_editing_workflow_requires_a_source_image(env):
         assert "source_image" in response.text
 
 
-def test_the_editing_workflow_uses_the_source_image_as_its_input(env):
-    response = env.client.post(
-        "/api/jobs",
-        json={
-            "mode": "image_only",
-            "image_workflow": "qwen_image_edit_2511",
-            "image_prompt": "make the coat red",
-            "source_image": str(env.start_image),
-        },
-    )
+def _qwen_image_graph(env) -> dict:
+    """Qwen-Image 2.1 の画像ステージのグラフ（テキストエンコーダで見分ける）。"""
+    for workflow in reversed(env.comfy.queued):
+        node = workflow.get("5")
+        if isinstance(node, dict) and node.get("class_type") == "TextEncodeQwenImage21":
+            return workflow
+    raise AssertionError("no submitted workflow is a Qwen-Image 2.1 graph")
+
+
+def qwen_edit_body(env, count: int = 2, **overrides) -> dict:
+    body = {
+        "mode": "image_only",
+        "image_workflow": "qwen_image_21_edit",
+        "image_prompt": "Put the coat from <image2> on the woman in <image1>.",
+        "reference_images": _ref_assets(env, count),
+    }
+    body.update(overrides)
+    return body
+
+
+def test_the_editing_workflow_uses_its_reference_images_as_the_input(env):
+    """Qwen-Image 2.1 の編集は参照画像のリストを images.image_N に順に繋ぐ。"""
+    response = env.client.post("/api/jobs", json=qwen_edit_body(env, 2))
     assert response.status_code == 201, response.text
     job = wait_for(env.client, response.json()["id"])
     assert job["status"] == "done", job["error"]
-    graph = graph_with(env, "41")
-    assert graph["41"]["inputs"]["image"] == env.start_image.name
-    assert graph["170:151"]["inputs"]["prompt"] == "make the coat red"
+
+    uploaded = [Path(path).name for path in env.comfy.uploads]
+    assert uploaded == ["ref0.png", "ref1.png"]
+
+    graph = _qwen_image_graph(env)
+    inputs = graph["5"]["inputs"]
+    assert inputs["prompt"] == "Put the coat from <image2> on the woman in <image1>."
+    for index in range(2):
+        node_id = f"app_ref_image_{index}"
+        assert graph[node_id]["inputs"]["image"] == f"ref{index}.png"
+        assert inputs[f"images.image_{index + 1}"] == [node_id, 0]
+    # 雛形の LoadImage はグラフに残らない
+    assert "0" not in graph
+
+
+def test_the_editing_workflow_needs_at_least_one_reference_image(env):
+    answer = env.client.post("/api/jobs", json=qwen_edit_body(env, 0))
+    assert answer.status_code == 422
+    assert "reference_images" in answer.text
 
 
 @needs_ffmpeg
-def test_full_mode_edits_the_source_image_then_animates_it(env):
-    """qwen + full: source_image feeds the edit, the edited still the video."""
+def test_full_mode_edits_the_reference_images_then_animates_the_still(env):
+    """qwen 2.1 + full: 参照画像を編集し、その静止画が動画の開始フレームになる。"""
     response = env.client.post(
         "/api/jobs",
         json=full_body(
             env,
-            image_workflow="qwen_image_edit_2511",
-            source_image=str(env.start_image),
+            image_workflow="qwen_image_21_edit",
+            reference_images=_ref_assets(env, 1),
         ),
     )
     assert response.status_code == 201, response.text
     job = wait_for(env.client, response.json()["id"])
     assert job["status"] == "done", job["error"]
-    image_graph = graph_with(env, "41")
-    assert image_graph["41"]["inputs"]["image"] == env.start_image.name
+    image_graph = _qwen_image_graph(env)
+    assert image_graph["app_ref_image_0"]["inputs"]["image"] == "ref0.png"
     # the video stage starts from the *generated* still, not the input picture
     video_graph = graph_with(env, "114")
     assert video_graph["114"]["inputs"]["image"] == Path(job["image_path"]).name

@@ -39,7 +39,8 @@ def test_workflow_catalogue_is_exposed(client):
         "krea2_turbo",
         "anima",
         "z_image_turbo",
-        "qwen_image_edit_2511",
+        "qwen_image_21_t2i",
+        "qwen_image_21_edit",
         "minimax_h3_t2i",
         "minimax_h3_t2i_opt",
         "minimax_h3_i2i",
@@ -56,23 +57,32 @@ def test_workflow_catalogue_is_exposed(client):
         "anima",
         "z-image",
         "qwen-image",
+        "qwen-image",
         *["minimax-h3-image"] * 8,
         "grok-imagine",
         "grok-imagine",
     ]
     # 編集系のワークフローだけが入力画像を必要とする
     assert images["krea2_turbo"]["requires"] == []
-    assert images["qwen_image_edit_2511"]["requires"] == ["image"]
-    assert images["qwen_image_edit_2511"]["image_label"] == "編集元画像"
+    # Qwen-Image 2.1 の編集は単数の source_image ではなく参照画像のリストで
+    # 編集元を受ける（`requires` ではなく `multi_inputs` に出る）
+    assert images["qwen_image_21_edit"]["requires"] == []
+    assert images["qwen_image_21_edit"]["multi_inputs"] == {"reference_images": 10}
+    assert "reference_images" in images["qwen_image_21_edit"]["supports"]
+    assert images["qwen_image_21_t2i"]["multi_inputs"] == {}
     assert images["grok_imagine_edit"]["requires"] == ["image"]
     assert images["grok_imagine_edit"]["image_label"] == "編集元画像"
     # ComfyUI 非依存のワークフローは backend でそれと分かる（SPEC §5.2）
     assert images["krea2_turbo"]["backend"] == "comfyui"
     assert images["grok_imagine_t2i"]["backend"] == "grok_cli"
     assert images["grok_imagine_edit"]["backend"] == "grok_cli"
-    # …and the only one that does not take an aspect ratio / megapixel target
-    assert "aspect_ratio" not in images["qwen_image_edit_2511"]["supports"]
+    # 編集は 1 枚目の縦横比に追従するので幅・高さを受け取らない（画素数の予算
+    # だけを `megapixels` から受ける）
+    assert "aspect_ratio" not in images["qwen_image_21_edit"]["supports"]
+    assert not {"width", "height"} & set(images["qwen_image_21_edit"]["supports"])
+    assert "megapixels" in images["qwen_image_21_edit"]["supports"]
     assert {"width", "height"} <= set(images["z_image_turbo"]["supports"])
+    assert {"width", "height"} <= set(images["qwen_image_21_t2i"]["supports"])
 
     videos = {w["id"]: w for w in options["video_workflows"]}
     assert set(videos) == {spec.id for spec in video_specs()}
@@ -413,6 +423,8 @@ def test_steps_are_advertised_only_where_the_template_has_a_sampler_knob(client)
         "krea2_turbo",
         "anima",
         "z_image_turbo",
+        "qwen_image_21_t2i",
+        "qwen_image_21_edit",
         "minimax_h3_t2v",
         "minimax_h3_i2v",
         "minimax_h3_r2v",
@@ -422,6 +434,6 @@ def test_steps_are_advertised_only_where_the_template_has_a_sampler_knob(client)
         "stable_audio_3_medium_base",
     ):
         assert "steps" in supports[workflow_id], workflow_id
-    # ManualSigmas / PrimitiveInt スイッチ構成のものは steps の概念を持たない
-    for workflow_id in ("qwen_image_edit_2511",):
+    # テンプレートを持たない外部バックエンド（Grok CLI）は steps を持たない
+    for workflow_id in ("grok_imagine_t2i", "grok_imagine_edit"):
         assert "steps" not in supports[workflow_id], workflow_id

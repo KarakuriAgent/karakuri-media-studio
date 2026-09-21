@@ -441,7 +441,7 @@ def test_the_draft_maps_the_way_the_form_submits():
     edit = ui_state.job_fields(
         {
             "mode": "image_only",
-            "imageWorkflow": "qwen_image_edit_2511",
+            "imageWorkflow": "minimax_h3_i2i",
             "imagePrompt": "make it night",
             "sourceImage": "/assets/image/a.png",
         }

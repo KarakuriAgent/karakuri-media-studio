@@ -408,6 +408,19 @@ def image_megapixels(spec: WorkflowSpec, params: GenerationParams) -> float:
     return asked
 
 
+def megapixels_edge(megapixels: float, multiple: int) -> int:
+    """メガピクセルを「正方形の 1 辺の長さ」（px）に直す（SPEC §3.1）。
+
+    ``width`` / ``height`` ではなく**画素数の予算を 1 つの整数で**取るノード用。
+    Qwen-Image 2.1 の ``TextEncodeQwenImage21.resolution`` がそれで、ノード側は
+    この値を使って ``resolution * resolution * 縦横比`` から各辺を 32 の倍数に
+    丸める（参照画像の縦横比はそのまま残る）。ここは :func:`_fit_ratio` と同じ
+    「1MP = 1024x1024」の換算なので、1.0MP はちょうど既定の 1024 になる。
+    """
+    edge = math.sqrt(max(0.1, float(megapixels)) * 1024 * 1024)
+    return max(multiple, round(edge / multiple) * multiple)
+
+
 def video_resolution(
     spec: WorkflowSpec, params: GenerationParams, megapixels: float | None = None
 ) -> tuple[int, int]:
@@ -1014,8 +1027,9 @@ def _build_ref_media(
     wired[REF_IMAGES_NAME] = picked(REF_IMAGES_NAME)
     for index, image in enumerate(wired[REF_IMAGES_NAME]):
         node_id = f"{REF_IMAGE_NODE_PREFIX}{index}"
+        tag = fan.tag_format.format(n=index + 1)
         wf[node_id] = _loader_node(
-            fan.image_loader, image, f"参照画像 {index + 1}（<Picture {index + 1}>）"
+            fan.image_loader, image, f"参照画像 {index + 1}（{tag}）"
         )
         # 1 枚目に専用の入力を持つノード（``H3ReferenceEditPrepare`` の
         # ``source_image``）ではそちらへ。2 枚目以降は番号つきの入力で、
@@ -1222,7 +1236,17 @@ def build_image_workflow(
     # ときだけ。:func:`image_megapixels`）
     megapixels = image_megapixels(resolved, params)
     _inject(wf, resolved, "aspect_ratio", params.aspect_ratio)
-    _inject(wf, resolved, "megapixels", megapixels)
+    # 注入先が「正方形の 1 辺の長さ」を取るノード（Qwen-Image 2.1 の
+    # ``TextEncodeQwenImage21.resolution``）では、そこへ入れる前に辺の長さに
+    # 直す（:func:`megapixels_edge`）。宣言が無ければメガピクセルのまま。
+    _inject(
+        wf,
+        resolved,
+        "megapixels",
+        megapixels_edge(megapixels, resolved.megapixels_edge_multiple)
+        if resolved.megapixels_edge_multiple
+        else megapixels,
+    )
     # Templates without a ResolutionSelector (z-image, MiniMax H3 Image) take
     # plain integers, so the same computation ComfyUI's node does is done here
     # (SPEC §3.1).  The grid is the workflow's own: MiniMax H3 wants multiples
@@ -1235,9 +1259,12 @@ def build_image_workflow(
         )
         _inject(wf, resolved, "width", width)
         _inject(wf, resolved, "height", height)
-    # Editing workflows (qwen-image) read the picture the job supplies in
-    # `source_image`; the job runner uploads it under `start_image_name` before
-    # the image stage runs, exactly like the video stage's start frame.
+    # Editing workflows that take a single input picture (MiniMax H3 Image i2i)
+    # read the one the job supplies in `source_image`; the job runner uploads it
+    # under `start_image_name` before the image stage runs, exactly like the
+    # video stage's start frame.  Qwen-Image 2.1 の編集は代わりに参照画像の
+    # リスト（`reference_images`）を取るので、ここではなく `_build_ref_media`
+    # のほうで繋がる。
     _inject(wf, resolved, "image", params.start_image_name)
     _inject(wf, resolved, "prompt", params.image_prompt)
     _inject(wf, resolved, "seed", params.image_seed)

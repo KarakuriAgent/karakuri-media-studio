@@ -180,10 +180,10 @@ in CONTEXT (see the rules there).
 #              "Prompting" section: tags, natural language or both)
 # * z-image  — https://huggingface.co/Tongyi-MAI/Z-Image-Turbo plus the Tongyi
 #              team's own prompting note in discussion #8 of that repo
-# * qwen-image — https://huggingface.co/Qwen/Qwen-Image-Edit-2511 and the
-#              official edit-prompt rewriter system prompt in
-#              https://github.com/QwenLM/Qwen-Image
-#              (src/examples/tools/prompt_utils.py, ``polish_edit_prompt``)
+# * qwen-image — https://huggingface.co/Qwen/Qwen-Image-2.1 and the two
+#              official prompt-rewriter system prompts shipped with it
+#              (https://github.com/QwenLM/Qwen-Image): the edit enhancer and the
+#              text-to-image rewriting expert
 
 ANIMA_SPEC = """\
 # IMAGE PROMPT SPEC — Anima (anime base, TE: Qwen3 0.6B)
@@ -256,43 +256,130 @@ A candid photorealistic portrait of an adult Japanese woman in a small evening k
 """
 
 QWEN_IMAGE_SPEC = """\
-# IMAGE PROMPT SPEC — Qwen-Image Edit 2511 (image **editing**, TE: Qwen2.5-VL 7B)
+# IMAGE PROMPT SPEC — Qwen-Image 2.1 (t2i **and** editing, TE: Qwen3-VL 8B)
 
-This workflow does not generate a picture from nothing: it edits the picture the
-job passes in `source_image`. `image_prompt` is therefore an **edit
-instruction**, not a scene description. A full scene paragraph here makes the
-model rebuild the image and lose the original — do not write one.
+One model, two workflows, and they want **opposite** kinds of prompt:
 
-1. **One direct imperative instruction**, naming the task (replace / add /
-   remove / restyle), the target, its position and its attributes.
-2. **Say explicitly what must stay** — this is the officially modelled pattern:
-   "…keep her face, hairstyle, pose and the background unchanged."
-3. **Be concrete, never vague**: not "add an animal" but "add a light-grey cat
-   sitting in the bottom-right corner, facing the camera".
-4. **Replacements**: "Replace Y with X", plus two or three visual features of X.
-5. **Text edits**: put the literal text in double quotes and keep the original
-   language and capitalisation — `Replace the sign text with "OPEN"`, adding
-   that font, size, colour and perspective stay as they are.
-6. **People**: require preservation of ethnicity, gender, age, hairstyle,
-   expression and outfit unless the user asked to change exactly that; describe
-   expression / makeup changes as natural and subtle.
-7. **Style transfer**: name the style with three to five concrete visual
-   features and put that clause last when other edits are requested too.
-8. **Never contradict yourself** ("remove all trees but keep the trees") and
-   keep the instruction under ~200 words.
-9. The output size follows the input picture, so never describe a framing or an
-   aspect ratio the source does not have.
+* `qwen_image_21_t2i` — text to image. `image_prompt` is a long
+  **observational description** of the finished picture.
+* `qwen_image_21_edit` — editing from 1 to 10 `reference_images`.
+  `image_prompt` is a short **edit instruction**. A full scene paragraph here
+  makes the model rebuild the picture and lose the original — never write one.
+
+Neither has a negative prompt: both templates run at cfg 1, where a negative
+has nothing to act on. Express exclusions positively instead.
+
+## `qwen_image_21_edit` — editing
+
+1. **One continuous paragraph, no line breaks**, and lead with the *operation*
+   (replace / add / remove / restyle / relight), not with a description of the
+   finished picture. Write it as if you were holding only the input pictures.
+2. **Name only the attributes that change**, and push each to an unmistakable
+   degree. An edit a viewer could mistake for the original is a failed edit —
+   preservation locks content, never edit strength.
+3. **Say what stays without repainting it.** Name untargeted content by type,
+   position and role ("the background", "the sign above the door"), never by
+   its appearance: a concrete description of something you meant to keep reads
+   to the model as an instruction to regenerate it. Prefer one blanket clause —
+   "keep everything else unchanged" — over walking the frame.
+4. **Identity is the hardest invariant.** A person's face and the accessories
+   that make them recognizable, a product's exact design, markings and count,
+   and the input's rendering medium (photograph, anime, illustration, sketch,
+   3D render, painting) all survive every edit unless the user targeted exactly
+   that. When identity comes from a reference, **point at the reference** and do
+   not describe the features in words.
+5. **Tagging is decided by the count, and it is not optional.** With two or more
+   references, refer to every one of them as `<image1>`, `<image2>`, … in the
+   order they were given — never "the first image" or "image A". With exactly
+   one reference, do **not** use a tag: refer to it naturally ("the image").
+6. **State every reference's role**: which one is the canvas whose composition
+   and untargeted content survive (that is `<image1>`), and what each of the
+   others contributes. Describe them one by one; never compress several into a
+   range. Never write a tag with no reference behind it.
+7. **Text in the picture is literal**: put the exact characters in double
+   quotes, in the language the input establishes, and say that font, size,
+   colour and perspective stay as they are. Text you cannot commit to should
+   not be added at all.
+8. **Affirmative, decisive, unhedged**: "keep the background identical to the
+   input", not "do not change the background"; no unresolved alternatives, no
+   vague degree words. Do not add operations the user did not ask for and do not
+   tidy up unmentioned clutter, however prominent.
+9. **Never write an aspect ratio, a resolution or a pixel count** ("16:9", "2K",
+   "1920x1080"). The size follows `<image1>`; `megapixels` sets the budget.
+   Quality boosters ("masterpiece", "8K", "highly detailed") do nothing here.
 10. **Adults only**: never an instruction that would make a depicted person read
-    as a minor (de-aging, "make her look like a schoolgirl", …).
+    as a minor (de-aging, "make her look like a schoolgirl", …). Nudity and
+    explicit anatomy may be described directly when the user asks for them.
 
-Example (attribute edit):
+Example (two references, official):
 ```
-Replace the woman's black coat with a cream oversized knit sweater, keeping her face, hairstyle, expression, pose and the street background exactly unchanged.
+Keep the character and pose in <image1> unchanged, put this light blue denim shirt from <image2> on the character, preserve the original facial features, hair, body shape and pose, the denim shirt fits naturally on the body, realistic denim fabric texture, natural clothing folds, keep the original background and original lighting, high fashion editorial photography, sharp details.
+```
+
+Example (one reference, no tags):
+```
+Replace the woman's black coat with a cream oversized knit sweater, matching its drape and folds to her pose and to the existing light, and keep her face, hairstyle, expression, pose and the street background exactly as they are in the image.
 ```
 
 Example (text edit):
 ```
-Replace the text on the shop sign with "MORNING LIGHT COFFEE", keeping the original font, size, colour and perspective unchanged, and leave the rest of the photo untouched.
+Replace the text on the shop sign with "MORNING LIGHT COFFEE", keeping the original font, size, colour and perspective, and keep everything else in the image unchanged.
+```
+
+## `qwen_image_21_t2i` — text to image
+
+Write as an **observer reporting what is in the frame**, not as someone giving
+orders. About twenty sentences, four to five hundred words, one paragraph — and
+that is the same size whether the brief was three words or three hundred.
+
+1. **Opening sentence, around twenty words**: medium, style, subject, and the
+   background or palette. The medium noun is never omitted — "A vertical
+   realistic photograph of …", "The image is a wide flat-vector poster of …".
+   Name the style word once here.
+2. **The background comes immediately after the opening sentence**, not at the
+   end: the surface, the space and how far it falls off.
+3. **Walk the frame with positional phrases** — eight to fourteen of them,
+   reaching the corners, the edges and the centre, not clustered in the middle.
+   Roughly a third of the sentences open on the phrase itself ("On the right
+   side of the frame, …", "Across the lower third, …"). A divided layout is
+   walked region by region (top band, left / centre / right, bottom band); a
+   single subject is walked from the background to the pose, the head and face,
+   each garment, then what is held or touching it.
+4. **Every legible string in reading order, in straight double quotes**, with
+   its position, weight, colour, case and relative size — text rendering is a
+   strength of this model, including Chinese, Japanese, Korean and Arabic, which
+   stay in their own script. A mark that is not meant to be read is called
+   blurred or too small to read, never invented. About a third of images have no
+   text at all: skip this entirely for those rather than inventing signage.
+5. **Lighting gets its own sentence**: source, direction, quality, and the
+   shadows and highlights it leaves.
+6. **Close with exactly one whole-frame sentence** — "The overall composition
+   is …" — covering balance, palette, style and mood. Never a second summary.
+7. **Present tense, third person, declarative.** No "you", no "create", no "make
+   sure". **No quality boosters** ("masterpiece", "8K", "award-winning",
+   "highly detailed") and no aspect-ratio or resolution words — the canvas comes
+   from `aspect_ratio` + `megapixels`.
+8. **Colours take a modifier**, almost never bare: deep navy, muted olive, pale
+   cream, warm terracotta, blue-grey, off-white, charcoal. **Give the material,
+   not just the noun**: brushed metal, coarse linen, frosted glass, weathered
+   wood, visible brush strokes.
+9. **Enumerate, never summarise.** "Several items" is not a description. Say
+   what each thing is, write small counts as words, and say when something is
+   partly hidden. Hedging is the natural register for an observer — "appears to
+   be", "a notebook or a tablet" — for everything the user did not fix.
+10. **Adults only**: every depicted person is an adult (early twenties or older)
+    with an unambiguously adult body and face; age is a life stage, never a
+    number of years. Explicit anatomy may be described plainly when asked for.
+
+Transparent (RGBA) output is native to this model. To get it, wrap the
+description in the official phrasing:
+```
+This is an RGBA image with transparency. <description>. The image has alpha channel and the background is transparent.
+```
+
+Example (t2i):
+```
+The image is a vertical realistic photograph of an adult Japanese woman standing in a narrow evening kitchen, against a warm off-white wall and pale wood cabinetry. The background falls off into soft focus about a metre behind her, where a window shows blue dusk and the faint outline of a neighbouring roof. She stands slightly left of centre, turned three-quarters toward the camera, holding a chipped cream ceramic mug in both hands at chest height. Her black hair is loosely tied back with a few strands across her cheek, and she looks slightly off-camera with a tired, warm half-smile. She wears an oversized cream knit sweater of coarse, visibly fibrous wool over dark indigo jeans, the cuffs pushed back to her forearms. In the lower third of the frame, a worn wooden countertop carries a steel kettle, three clean bowls stacked beside a drying rack, and a folded blue-grey dish towel. Along the upper-left edge, an open cabinet shows two rows of mismatched plates, most of them partly hidden by the door. The lighting is a single warm tungsten pendant just above and in front of her, throwing soft shadows down the sweater's folds and a bright rim along the mug's lip, with cool dusk light filling the left side of her face. The overall composition is quiet and slightly off-balance, built on warm cream and amber against the cool blue of the window, with a candid, domestic mood.
 ```
 """
 
@@ -367,9 +454,15 @@ IMAGE_PROMPT_HINTS: dict[str, str] = {
         " without CFG."
     ),
     "qwen-image": (
-        "An EDIT instruction for `source_image`, not a scene description:"
-        ' "change X to Y, keep everything else unchanged". Output size follows'
-        " the input picture."
+        "Two opposite prompts in one family. `qwen_image_21_t2i`: one long"
+        " observational English paragraph describing the finished picture"
+        " (medium and style, background, eight to fourteen positional phrases,"
+        " quoted text, lighting, one closing composition sentence)."
+        " `qwen_image_21_edit`: a short EDIT instruction for"
+        " `reference_images` — lead with the operation, keep everything else"
+        " unchanged, and tag the references as `<image1>`, `<image2>`, … when"
+        " there are two or more (no tags with a single one; the output follows"
+        " image 1). Neither has a negative prompt."
     ),
     "minimax-h3-image": (
         "A **still-image** prompt in English prose (subject, wardrobe, pose,"
@@ -790,6 +883,21 @@ def image_workflow_catalog_section(
         "拒否されます）。",
     ]
     return "\n".join(lines)
+
+
+def _edits_its_input(workflow_id: str) -> bool:
+    """その画像ワークフローが**渡した絵を編集する**ものか（SPEC §3.1）。
+
+    編集元の受け取り方は 2 通りある: 単数の ``source_image``（``requires`` に
+    ``image``）と、参照画像のリスト（:class:`app.workflows.RefMediaFan`。
+    Qwen-Image 2.1 の編集がこれ）。どちらでもなければ t2i なので、添えられた絵は
+    ただの参考画像として扱う。
+    """
+    try:
+        spec = get_image_spec(workflow_id)
+    except WorkflowSpecError:
+        return False
+    return "image" in spec.requires or spec.ref_media is not None
 
 
 def _image_workflow_context_lines(workflow_id: str) -> list[str]:
@@ -2020,9 +2128,11 @@ def _context_section(
             "actually shows. If you cannot read it, just continue from the "
             "user's description without mentioning the file."
         )
-        if ctx.mode == "image_only":
-            # 編集系の画像ワークフロー（qwen-image-edit など）。生成ではなく
-            # 「この画像をどう変えるか」を書かせる。
+        if ctx.mode == "image_only" and _edits_its_input(ctx.image_workflow):
+            # 編集系の画像ワークフロー（minimax_h3_i2i / qwen_image_21_edit
+            # など）。生成ではなく「この画像をどう変えるか」を書かせる。
+            # t2i のワークフローに絵を添えただけのとき（参考画像）は、編集指示に
+            # 寄せると情景の描写そのものが書けなくなるので言わない。
             lines.append(
                 "この画像ワークフローは**入力画像を編集する**ものなので、"
                 "`image_prompt` は情景の描写ではなく**編集指示**として書くこと"

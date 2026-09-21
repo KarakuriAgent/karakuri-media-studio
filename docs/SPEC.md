@@ -8,7 +8,7 @@
 > 「画像＋動画」モード（内部名 `full`）は「画像ワークフロー → 生成画像をアップロード →
 > 動画ワークフロー」の **2 ジョブ連結**になった。
 >
-> v0.3 での変更: 画像ワークフローを 4 種（krea2 / anima / z-image / qwen-image-edit）から
+> v0.3 での変更: 画像ワークフローを 4 種（krea2 / anima / z-image / qwen-image）から
 > 選択式にし、画像 LoRA を**モデルファミリー**で仕分けるようにした。あわせて**音声モード**
 > （MiniMax Music 3 / Stable Audio 3）を追加した。音声は画像・動画と連結しない独立ジョブ。
 
@@ -257,7 +257,8 @@
 | `krea2_turbo` | Krea 2 turbo | `krea2` | なし | 既定。text-to-image（`ResolutionSelector`） |
 | `anima` | Anima | `anima` | なし | text-to-image、アニメ・イラスト系（`ResolutionSelector`） |
 | `z_image_turbo` | Z-Image turbo | `z-image` | なし | text-to-image、8 steps 蒸留。ResolutionSelector が無いのでアプリが幅・高さを計算して注入 |
-| `qwen_image_edit_2511` | Qwen-Image Edit 2511 | `qwen-image` | 画像（編集元画像） | **編集系**。`source_image` 必須で、出力解像度は入力画像から決まる（`aspect_ratio` / `megapixels` は無視） |
+| `qwen_image_21_t2i` | Qwen-Image 2.1 生成 | `qwen-image` | なし | text-to-image。`ResolutionSelector` は無くアプリが幅・高さを **32 の倍数**で計算して `EmptyLatentImage` に注入（既定 1.0MP = 1024x1024、ネイティブ 2K まで） |
+| `qwen_image_21_edit` | Qwen-Image 2.1 編集 | `qwen-image` | 参照画像 1〜10 枚 | **参照編集系**。`source_image` ではなく `reference_images` を渡した順に `images.image_1` … へ繋ぎ、プロンプトからは 2 枚以上なら `<image1>` `<image2>` … で呼ぶ（1 枚なら**タグを使わない**）。1 枚目が編集キャンバスで、出力の縦横比はそれに追従（`aspect_ratio` は無視。`megapixels` は「1 辺の長さ」に直して `TextEncodeQwenImage21.resolution` へ入る） |
 | `minimax_h3_t2i` / `_opt` | MiniMax H3 Image t2i | `minimax-h3-image` | なし | text-to-image。H3（音声つき動画モデル）でフレームのパケットを作り 1 枚を選ぶ（枚数は `selects` の `quality_profile` で 5 / 9 / 13 / 20）。`ResolutionSelector` は無く、アプリが幅・高さを **32 の倍数**で計算して注入（既定 0.98MP）。**`_turbo` は無い**（蒸留 LoRA が fl2v 用でテキストだけの生成に効かない。品質 `turbo` でも `_opt` に落ちる） |
 | `minimax_h3_i2i` / `_opt` / `_turbo` | MiniMax H3 Image i2i | `minimax-h3-image` | 画像（編集元画像） | **編集系**。`source_image` を fl2va のフレーム 0 に置く。解像度は `aspect_ratio` + `megapixels`（合わせ方は `selects` の `source_fit`・既定 crop_center） |
 | `minimax_h3_r2i` / `_opt` / `_turbo` | MiniMax H3 Image r2i | `minimax-h3-image` | 参照画像 1〜9 枚 | **参照編集系**（base は ref2va、`_opt` / `_turbo` は fl2va + 参照 LoRA）。`reference_images` を渡した順に `<Picture 1>` … で参照。開始フレーム（`source_image`）は受け取らない |
@@ -265,9 +266,20 @@
 | `grok_imagine_edit` | Grok Imagine 画像編集（サブスク CLI） | `grok-imagine` | 画像（編集元画像） | **ComfyUI 非依存**の編集系。`source_image` 必須で、出力解像度は入力画像から決まる |
 
 - 既定は `krea2_turbo`（選択式になる前の唯一の画像ワークフロー）
-- `qwen_image_edit_2511` は画像ステージが走るモード（`full` / `image_only`）で必ず `source_image` を要求する。
+- `qwen_image_21_edit` は画像ステージが走るモード（`full` / `image_only`）で
+  `reference_images` を**合計 1 件以上**要求する（`RefMediaFan.min_refs`）。
   `full` では編集結果がそのまま 2 段目の開始フレームになる
-- `image_prompt` の書き方はファミリーごとに違い（krea2 は長い自然文、qwen は編集指示）、
+- `qwen-image` は生成と編集が 1 つのモデル（Qwen-Image 2.1、7B DiT + Qwen3-VL 8B +
+  64ch RGBA VAE）に統合されているので、t2i と編集で**テンプレートの形は同じ**:
+  `TextEncodeQwenImage21` が positive / negative / 空ラテントを一度に返し、編集では
+  参照画像を繋いでそのラテントを、t2i では `EmptyLatentImage` を KSampler に渡す。
+  どちらも cfg 1（**ネガティブプロンプトは効かない**）・euler / simple・25 steps。
+  ウェイトは `qwen_image_2.1_int8_convrot`（diffusion_models）/
+  `qwen3vl_8b_int8_convrot`（text_encoders、`CLIPLoader` の type は `qwen_image`）/
+  `qwen_image_2.1_vae_bf16`（vae）。**Qwen-Image 2.1 は Apache 2.0 ではなく
+  Qwen Research License** で配布されているので、商用利用には別途ライセンスが要る
+- `image_prompt` の書き方はファミリーごとに違い（krea2 は長い自然文、qwen は t2i が
+  観察者視点の描写・編集が編集指示）、
   Grok のシステムプロンプトにはファミリー別のガイドが埋め込まれる（§4.2）。
   `grok-imagine` はグラフを持たず LoRA も差せないので、`image_families()`（LoRA 登録の
   選択肢とプロンプトガイドの単位）には**並ばない**
@@ -354,7 +366,7 @@ LoRA チェーンも持たない（テンプレートに LoRA ノードが無い
 | 動画ワークフロー | ― | プルダウン（`/api/options` の `video_workflows`）。選択に応じて必要入力の欄が出る |
 | 画像ワークフロー | ― | プルダウン（`/api/options` の `image_workflows`）。画像ステージが走るモードでのみ表示 |
 | 音声ワークフロー | ― | プルダウン（`/api/options` の `audio_workflows`）。`mode: "audio"` でのみ表示 |
-| アスペクト比 / メガピクセル | 画像: `aspect_ratio` / `megapixels` → ResolutionSelector（krea2 は `49`、anima は `91`）。z-image と動画: アプリが幅・高さを計算して `width` / `height` に注入。qwen-image-edit は入力画像から決まるので注入しない | セレクト（選択肢は `/object_info` の ResolutionSelector から動的取得）+ 数値。メガピクセルの既定は 1.0 だが、`default_megapixels` を宣言するワークフローを選ぶとその値になる（下記） |
+| アスペクト比 / メガピクセル | 画像: `aspect_ratio` / `megapixels` → ResolutionSelector（krea2 は `49`、anima は `91`）。z-image・qwen-image 2.1 t2i と動画: アプリが幅・高さを計算して `width` / `height` に注入。qwen-image 2.1 の編集は 1 枚目の参照画像から縦横比が決まるので `aspect_ratio` は注入せず、`megapixels` だけを「1 辺の長さ」（√(MP×1024²) を 32 の倍数に丸めた整数）に直して `TextEncodeQwenImage21.resolution` に入れる | セレクト（選択肢は `/object_info` の ResolutionSelector から動的取得）+ 数値。メガピクセルの既定は 1.0 だが、`default_megapixels` を宣言するワークフローを選ぶとその値になる（下記） |
 | 音声プロンプト・歌詞・除外タグ・カテゴリ・展開 | `prompt` / `lyrics` / `negative_tags` / `audio_category` / `reprompt` | `mode: "audio"` のみ。選択中の音声ワークフローが露出しているつまみだけ表示（数値の長さを宣言しないモデルでは秒数欄も出ない）。選択式フィールド（§3.1）も音声ワークフローの宣言に従って描画する |
 | LoRA（画像・複数可） | 画像ワークフローの `lora_chain` を動的構築（§3.4） | 「LoRA（画像）」セクション。登録 LoRA のうち `target = 'image'` かつ**選択中の画像ワークフローと同じファミリー**のものを複数選択＋強度スライダー |
 | LoRA トリガーワード（画像） | `trigger_concat` → `30:27` (StringConcatenate) / `trigger_switch` → `30:28`。この 2 つを持つのは krea2 テンプレートだけで、他の画像ワークフローには自動前置の口が無い（トリガーワードは `image_prompt` 本文に書く） | 選択 LoRA のトリガーワードを自動連結（編集可） |
@@ -381,7 +393,7 @@ LoRA チェーンも持たない（テンプレートに LoRA ノードが無い
   未指定ならテンプレートの値がそのまま残る
 - 上限は `models.MAX_STEPS`（150）で、範囲外は 422
 - サンプラーの `steps` は INT なので、注入時に整数へ丸める（`workflow._INT_INPUTS`）
-- ステップ数の概念を持たないテンプレート（qwen-image-edit の PrimitiveInt スイッチなど）は
+- ステップ数の概念を持たないテンプレート（テンプレートを持たない Grok CLI など）は
   宣言を持たず、欄も出ない
 
 #### 複数ファイルの参照入力（`WorkflowSpec.multi_inputs`）
@@ -655,7 +667,7 @@ MiniMax H3 Image だけが使う任意のカスタムノード）を 1 つでも
 
 画像側は ResolutionSelector を持つテンプレート（krea2 の `49` / anima の `91`）にアスペクト比と
 メガピクセルをそのまま渡す。ResolutionSelector を持たない z-image は、下の式で計算した幅・高さを
-`EmptySD3LatentImage` に直接注入する。qwen-image-edit は入力画像から解像度が決まる
+`EmptySD3LatentImage` に直接注入する。qwen-image 2.1 の編集は 1 枚目の参照画像から解像度が決まる
 （`FluxKontextImageScale`）ので、どちらも注入しない。
 動画側の新テンプレートは幅・高さの `PrimitiveInt` 指定になったため、アプリが同じ式で計算する
 （開始フレームがあればその実比に従う）
@@ -718,7 +730,7 @@ base / opt / turbo）= 0.98MP**（native canvas 1344x768。こちらは逆に、
 読めなかった場合はプリセットにフォールバックする。`full` モードでは 1 段目の生成画像を
 2 段目に渡す時点で `start_image_size` を捨てるので、2 段目はプリセットで計算する
 （生成画像はプリセット通りの比で出るため。ただし解像度が入力画像依存の
-`qwen_image_edit_2511` を 1 段目に選んだ場合だけは、両者がずれることがある）。
+`qwen_image_21_edit` を 1 段目に選んだ場合だけは、両者がずれることがある）。
 
 #### フレーム数
 
@@ -746,10 +758,10 @@ Stable Audio の `reprompt`（内蔵 LLM でのプロンプト展開）だけは
 
 ### 3.3 固定（触らない）ノード
 
-- 画像側: 各ファミリーの UNET / CLIP / VAE（krea2 = `krea2_turbo_fp8_scaled` + `qwen3vl_4b_fp8_scaled` + `qwen_image_vae`、anima = `anima-base-v1.0`、z-image = `z_image_turbo_bf16`、qwen-image = `qwen_image_edit_2511_int8_convrot` + Lightning 4steps LoRA）と KSampler 設定
+- 画像側: 各ファミリーの UNET / CLIP / VAE（krea2 = `krea2_turbo_fp8_scaled` + `qwen3vl_4b_fp8_scaled` + `qwen_image_vae`、anima = `anima-base-v1.0`、z-image = `z_image_turbo_bf16`、qwen-image = `qwen_image_2.1_int8_convrot` + `qwen3vl_8b_int8_convrot` + `qwen_image_2.1_vae_bf16`）と KSampler 設定
 - 音声側: MiniMax Music 3 `minimax_music3_dit_fp16` + `minimax_music3_text_encoder_pruned_int8_convrot` + `minimax_music3_dav`、Stable Audio `stable_audio_3_medium_base` + `t5gemma_b_b_ul2` / `qwen3.5_2b_bf16`、およびサンプラー設定
 - 動画側: MiniMax H3 の UNET / CLIP / 映像 VAE / 音声 VAE（`minimax_h3_*` 系。素の版から w4a8 量子化ウェイトで、opt / turbo はさらに int8_convrot の映像 VAE + Sage Attention / Sol-Attn / SigmaShift / Spectrum、turbo は 4step 蒸留 LoRA も）とサンプラー設定
-- **モデルファイル名は利用者の ComfyUI 環境依存**のため、設定ページ（`GET/PUT /api/models`）で上書き可能。既定値は各テンプレートの値。対象は UNETLoader.unet_name / CLIPLoader.clip_name / CLIPVisionLoader.clip_name / VAELoader.vae_name / CheckpointLoaderSimple.ckpt_name / LatentUpscaleModelLoader.model_name / LoadMoGeModel.model_name / LoraLoaderModelOnly.lora_name / LoraLoader.lora_name（§3.4 で削除される画像テンプレートのプレースホルダは除く。テンプレートが持つ固定 LoRA ノード（qwen-image の Lightning LoRA、MiniMax H3 turbo の 4step 蒸留 LoRA）はユーザー LoRA と共存するので上書き対象のまま）
+- **モデルファイル名は利用者の ComfyUI 環境依存**のため、設定ページ（`GET/PUT /api/models`）で上書き可能。既定値は各テンプレートの値。対象は UNETLoader.unet_name / CLIPLoader.clip_name / CLIPVisionLoader.clip_name / VAELoader.vae_name / CheckpointLoaderSimple.ckpt_name / LatentUpscaleModelLoader.model_name / LoadMoGeModel.model_name / LoraLoaderModelOnly.lora_name / LoraLoader.lora_name（§3.4 で削除される画像テンプレートのプレースホルダは除く。テンプレートが持つ固定 LoRA ノード（MiniMax H3 turbo の 4step 蒸留 LoRA）はユーザー LoRA と共存するので上書き対象のまま）
 - **モデルの指定は接続先ごと**（SPEC §5）: `Settings.model_overrides` / `model_choices` は `{"<comfy_target>": {"<スロットキー>": …}}` の 2 段で持つ。どのファイルが在るかは ComfyUI の環境ごとに違うため。`GET/PUT /api/models` は `?target=`（PUT はボディの `target`）で対象環境を選び、省略すると現在の接続先。**書き込みは選んだ環境だけ**で他の環境の指定は残る。ジョブ実行・`/api/options` の `model_slots`・投入時の検証はすべて「現在の接続先」の値（`Settings.overrides_for()` / `choices_for()`）を使う。接続先を分ける前の設定（1 組だけ）は読み込み時に**3 環境すべてへ複製**される（`config._per_target`）: 分けた瞬間に指定が消えて既定モデルで走り出すのを避けるため
 - 上書きキーは**ワークフロー ID でスコープ**する: `"<workflow_id>/<node_id>.<field>": "<ファイル名>"`。テンプレート間で同じノード ID（例: `340:317` が ia2v と id_lora の両方にある）が衝突しないため。旧レイアウトの非スコープキーは無視される（マイグレーション不要）
 - **実行ごとのモデル切り替え**: 同じキー形式で「そのスロットで選べるファイル名」を設定に持てる（`Settings.model_choices`、`GET/PUT /api/models` で読み書き）。既定値（`model_overrides` → 無ければテンプレート値）と合わせて **2 件以上**になったスロットは *switchable* とみなし、`GET /api/options` の `model_slots`（キー・ラベル・既定値・候補一覧）に出す。ジョブは `model_overrides`（`JobCreate` / `JobContinue` のフィールド）で 1 回ぶんだけ差し替えられ、実行時に設定の既定値の上へマージされる（`jobs.run_job`）。検証（`models.model_override_problem`、Web UI と API で共通）は「キーが `model_fields()` に存在」「そのジョブが走らせるワークフロー（`models.job_workflow_ids`）に属する」「値が候補（既定値を含む）に入っている」を満たさないものを 422 で拒否する。再実行は params ごと引き継ぎ、続き生成は動画ワークフローぶんのキーだけを引き継ぐ（`workflow.scoped_model_overrides`）
@@ -819,8 +831,8 @@ LoRA は**登録時に対象（`target`）を選ぶ**: `image` なら画像ワ�
   - `trigger_concat` / `prompt_source` を持つのは krea2 テンプレートだけなので、**他の画像ワークフローではトリガーワードの自動前置は行われない**（Grok には `image_prompt` 本文でトリガーワードを主語として使うよう指示している）
 - ファミリー別の head / consumers: anima は `90:78` (UNETLoader) → `90:76` KSampler.model、
   z-image は `57:28` (UNETLoader) → `57:11` ModelSamplingAuraFlow.model、
-  qwen-image は `170:152` (CFGNorm) → `170:153` Lightning LoRA.model と `170:163` Switch.on_false
-  （Lightning 4steps LoRA の前段に挿し、4steps のオン / オフどちらでもユーザー LoRA が効く）
+  qwen-image（2.1 t2i / 編集とも）は `1` (UNETLoader) → `4` QwenImage21Cache.model
+  （`QwenImage21Cache` は KV キャッシュの設定を足すだけなので、その前段に挿す）
 
 #### 3.4.2 動画 LoRA チェーン
 
@@ -930,7 +942,7 @@ CLI ごとの違いは `backend/app/llm_cli.py` の `CliAdapter` にまとまっ
 | `krea2` | 自然文 1 段落・長く詳細に（下記） |
 | `anima` | 品質＋レーティングタグ → Danbooru 系タグ（小文字・アンダースコアなし、絵師タグは `@` 前置）。自然文の併記も可。ネガティブはテンプレート固定なので書かない |
 | `z-image` | 長く密度の高い自然文 1 段落（フォトリアル寄り、英中の文字描画が得意）。CFG 蒸留なのでネガティブは書かない |
-| `qwen-image` | シーン描写ではなく**編集指示**（「X を Y に変える、それ以外は変えない」）。出力サイズは入力画像に従うので構図・比率は指示しない |
+| `qwen-image` | 1 つの family に 2 通り。`qwen_image_21_t2i` は**観察者視点の描写**（英語 1 段落・約 20 文 400〜500 語。媒体と様式 → 背景 → 位置句で画面を歩く → 画像内テキストは二重引用符 → 照明 1 文 → 全体構図 1 文。命令形・品質ブースター禁止）。`qwen_image_21_edit` は**編集指示**（操作を先頭に、変える属性だけ名指しし、残りは「それ以外は変えない」の一節で保持。参照が 2 枚以上なら `<image1>` `<image2>` … 必須・1 枚ならタグ禁止）。どちらも比率・解像度の語は書かず、ネガティブプロンプトは無い |
 
 **画像プロンプト（krea2 = Krea 2 turbo、TE は Qwen3-VL 4B）**
 
@@ -1998,7 +2010,7 @@ SPA 1 画面 + 履歴。ダークテーマの生成系ツールらしい見た�
 - **モードとワークフローに応じた項目の非表示**（`form.hiddenFields`）: 使わない項目はグレーアウトではなく**その欄ごと表示しない**。ただし値は `FormState` に残るので、その項目を使うモード / ワークフローへ戻せば入力内容が復元される
   - 動画生成モードでは画像ワークフロー・画像プロンプト・LoRA（画像）・トリガーワードを出さない（LoRA（動画）は出す）。画像のみモードでは動画ワークフロー・動画プロンプト・ネガティブ・リファレンス音声・秒数・fps・LoRA（動画）を出さない
   - **選択した動画ワークフローのマニフェスト**に従い、音声入力を持たないワークフローでは音声欄を出さず、必要な入力（最終フレーム / 参照動画）の欄だけを出す。**必須ではないが受け取れる入力**（任意の開始フレーム・最終フレーム画像）も欄は出す（`requires` だけでなく `supports` を見る）。渡すかどうかはユーザー次第で、空なら送らない
-  - **画像ワークフロー**も同様で、編集系（qwen-image）では参照画像の欄が出る代わりにアスペクト比 / メガピクセルが消える
+  - **画像ワークフロー**も同様で、単数の編集元を取る編集系（`minimax_h3_i2i`）では編集元画像の欄が出る代わりにアスペクト比 / メガピクセルが消える。`qwen_image_21_edit` は編集元を参照画像のリストで受けるので、参照素材の欄が出る（メガピクセルは効くので残る）
   - 音声モードでは画像・動画のセクション一式を出さず、音声ワークフローと、そのワークフローが露出しているつまみだけを出す
 - **ワークフローの選択は「モデル → モード」の 2 段プルダウン**（動画 / 画像 / 音声のどのセクションでも同じ `WorkflowPicker`）: 1 段目がモデル（= ファミリー。表示名は `/api/options` の `family_label` で、外部 API・サブスク CLI といった供給元の注記もここに付く）、2 段目がそのモデルのモード（t2v / i2v / 素材参照 …。表示名は `mode_label` で、1 段目と重複するモデル名は入らない）。フォームが持つ状態は今までどおりワークフロー id 1 つだけで、1 段目はそこから引く（前回選択の復元・ライブラリからの連鎖・外部 API からの下書き反映は id を入れるだけで両方のセレクトが揃う）。モデルを変えるとそのモデルの先頭モードへ切り替わるので、存在しない id のまま送信されることはない。モードが 1 つしかないモデルでも 2 段目は消さず無効化して出す。選択肢そのものが取れないとき（ComfyUI に繋がらない）は従来どおり id の手入力欄になる
 - 「画像＋動画」モードのプルダウンには開始フレームを受け取れる動画ワークフローのみを出す（選択中のものが対象外になったら自動で切り替える。モードが 1 つも残らないモデルは 1 段目からも消える）
@@ -2373,7 +2385,7 @@ runtime/            config.json / setup-state.json（セットアップの段階
 
 決定済み（v0.3）:
 
-11. 画像ワークフロー: **選択式**（krea2 / anima / z-image / qwen-image-edit）。`image_prompt` の
+11. 画像ワークフロー: **選択式**（krea2 / anima / z-image / qwen-image 2.1）。`image_prompt` の
     仕様はファミリーごとに別物として扱う（§2.3 / §4.2）
 12. 画像 LoRA: **モデルファミリーで仕分け**、`image_workflow` と一致するものだけ使用可（§3.4）
 13. 音声生成: **独立モード**（画像・動画とは連結しない）。MiniMax Music 3 / Stable Audio 3（ComfyUI）、出力は mp3（§2.4）

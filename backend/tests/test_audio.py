@@ -183,13 +183,13 @@ _EMPTY = dict(
 
 
 def test_audio_mode_ignores_the_image_and_video_requirements():
-    """qwen-image / i2v の必須入力は音声ジョブには一切効かない。"""
+    """画像編集 / i2v の必須入力は音声ジョブには一切効かない。"""
     assert (
         missing_job_fields(
             "audio",
             **_EMPTY,
             audio_prompt="a song",
-            image_workflow="qwen_image_edit_2511",
+            image_workflow="minimax_h3_i2i",
             video_workflow="minimax_h3_i2v",
         )
         == []

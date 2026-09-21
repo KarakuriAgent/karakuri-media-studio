@@ -280,10 +280,10 @@ const IMAGE_WORKFLOWS: Options['image_workflows'] = [
     default_duration: 0,
   },
   {
-    id: 'qwen_image_edit_2511',
-    label: 'Qwen-Image Edit 2511',
+    id: 'minimax_h3_i2i',
+    label: 'MiniMax H3 Image i2i',
     kind: 'image',
-    family: 'qwen-image',
+    family: 'minimax-h3-image',
     notes: '',
     requires: ['image'],
     supports: ['image', 'prompt', 'seed'],
@@ -350,7 +350,7 @@ function showImages(form: Partial<FormState> = {}) {
         image_workflows: IMAGE_WORKFLOWS,
         loras: [
           lora(1, 'サクラ', 'image', 'krea2'),
-          lora(3, 'ハナ', 'image', 'qwen-image'),
+          lora(3, 'ハナ', 'image', 'minimax-h3-image'),
           lora(2, 'スローモ', 'video'),
         ],
       }}
@@ -385,14 +385,14 @@ describe('GenerateForm の画像ワークフロー', () => {
     expect(screen.queryByRole('button', { name: 'ハナ' })).toBeNull()
 
     cleanup()
-    showImages({ imageWorkflow: 'qwen_image_edit_2511' })
+    showImages({ imageWorkflow: 'minimax_h3_i2i' })
     openLoraPicker('LoRA（画像）')
     expect(screen.getByRole('button', { name: 'ハナ' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'サクラ' })).toBeNull()
   })
 
   it('編集系を選ぶと参照画像ピッカーが必須表示になる', () => {
-    showImages({ imageWorkflow: 'qwen_image_edit_2511', mode: 'image_only' })
+    showImages({ imageWorkflow: 'minimax_h3_i2i', mode: 'image_only' })
     expect(section('編集元画像')).toBeTruthy()
     expect(
       screen.getAllByText(/入力画像を編集するワークフロー/).length,
@@ -926,11 +926,11 @@ describe('GenerateForm は使わない項目を出さない', () => {
   })
 
   it('編集系ワークフロー + 画像のみでは解像度セクションを消す', () => {
-    showImages({ mode: 'image_only', imageWorkflow: 'qwen_image_edit_2511' })
+    showImages({ mode: 'image_only', imageWorkflow: 'minimax_h3_i2i' })
     expect(screen.queryByText('解像度')).toBeNull()
     // 画像＋動画なら動画側に効くので残る
     cleanup()
-    showImages({ mode: 'full', imageWorkflow: 'qwen_image_edit_2511' })
+    showImages({ mode: 'full', imageWorkflow: 'minimax_h3_i2i' })
     expect(screen.getByText('解像度')).toBeTruthy()
   })
 

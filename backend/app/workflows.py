@@ -1,8 +1,8 @@
 """Workflow template registry and per-template injection manifests (SPEC §3).
 
 The app ships a folder of independent ComfyUI API-format graphs under
-``workflow/``: four plain image workflows (Krea 2 turbo, Anima, Z-Image turbo and
-Qwen-Image Edit 2511) plus MiniMax H3 Image (t2i / i2i / r2i × base / opt /
+``workflow/``: five plain image workflows (Krea 2 turbo, Anima, Z-Image turbo and
+Qwen-Image 2.1 t2i / edit) plus MiniMax H3 Image (t2i / i2i / r2i × base / opt /
 turbo), the MiniMax H3 video workflows and two audio workflows
 (MiniMax Music 3 and Stable Audio 3 Medium).  Each one is described here by a
 :class:`WorkflowSpec` whose ``inject`` map names every node/field the app writes
@@ -285,6 +285,11 @@ class RefMediaFan:
     #: 雛形の ``LoadAudio``（``None`` = 単独の参照音声は受け取らない）
     audio_loader: Target | None = None
     audio_prefix: str = "ref_audios.ref_audio_"
+    #: 参照画像のタグ書式（``{n}`` が 1 始まりの番号）。ローダーのノード名に
+    #: 出すだけの飾りだが、プロンプトから呼ぶときの書き方そのものなので
+    #: モデルごとに違う（MiniMax H3 は ``<Picture 1>``、Qwen-Image 2.1 は
+    #: ``<image1>``）。
+    tag_format: str = "<Picture {n}>"
     #: 参照素材の最低件数（種類を問わない合計。0 = 参照なしでも走らせてよい）
     min_refs: int = 1
 
@@ -328,7 +333,7 @@ FAMILY_LABELS: dict[str, str] = {
     "krea2": "Krea 2",
     "anima": "Anima",
     "z-image": "Z-Image",
-    "qwen-image": "Qwen-Image Edit",
+    "qwen-image": "Qwen-Image 2.1",
     "minimax-h3-image": "MiniMax H3 Image",
     "minimax-h3": "MiniMax H3",
     "minimax-music": "MiniMax Music 3",
@@ -701,6 +706,12 @@ class WorkflowSpec:
     accepts_start_image: bool = False
     #: UI label of the primary image input
     image_label: str = "開始フレーム"
+    #: ``megapixels`` の注入先が「メガピクセル」ではなく**正方形の 1 辺の長さ**
+    #: （px）を取るときの、その辺を丸める単位（0 = そのままメガピクセルを入れる）。
+    #: Qwen-Image 2.1 の ``TextEncodeQwenImage21.resolution`` がこれで、
+    #: 「この正方形ぶんの画素数」に参照画像を合わせる入力になっている
+    #: （:func:`app.workflow.megapixels_edge`）。
+    megapixels_edge_multiple: int = 0
     #: 動画の幅・高さを丸める単位。動画モデルの latent は空間方向にも粗い格子を
     #: 持つので、その倍数でないと端が数 px 欠けたり latent の形が合わずに実行時に
     #: 落ちたりする（MiniMax H3 は 32 の倍数）。
@@ -884,46 +895,146 @@ Z_IMAGE_TURBO = WorkflowSpec(
     notes="z_image_turbo_bf16 / 8 steps・CFG 1（ネガティブは ConditioningZeroOut）",
 )
 
-QWEN_IMAGE_EDIT = WorkflowSpec(
-    id="qwen_image_edit_2511",
-    label="Qwen-Image Edit 2511",
-    mode_label="画像編集 (2511)",
+# --------------------------------------------------------------------------
+# image: workflow/image/qwen-image/*.json
+# --------------------------------------------------------------------------
+#
+# Qwen-Image 2.1（生成と編集が 1 つのモデルに統合された 7B の DiT。テキスト
+# エンコーダは Qwen3-VL 8B、VAE は 64ch RGBA）。ComfyUI 本体の
+# ``TextEncodeQwenImage21`` が「プロンプト + 参照画像 0〜16 枚」を受けて
+# positive / negative / 空ラテントの 3 つを一度に返すので、テンプレートは
+# t2i と編集で**同じ形**になり、違いは次の 2 点だけ:
+#
+# * 編集 … ``images.image_1`` … に参照画像を繋ぎ、KSampler のラテントは
+#   テキストエンコーダの出力（1 枚目の寸法の空ラテント）を使う
+# * t2i  … 参照画像を繋がず、``EmptyLatentImage`` を KSampler に繋ぐ
+#
+# どちらも cfg 1（ネガティブプロンプトは効かない）、euler / simple。
+# ``QwenImage21Cache`` は KV キャッシュの置き場所と精度を決めるだけのノードで、
+# ユーザー LoRA のチェーンは ``UNETLoader`` とこのノードの間に挟む。
+
+#: 編集（参照画像）で受け取れる枚数の上限。ノード側は image_1〜image_16 まで
+#: 持つが、公式テンプレートと同じ 10 枚を上限にしてある。
+QWEN_IMAGE_21_REFERENCES = 10
+
+#: Qwen-Image 2.1 の native canvas（1024x1024 = 1.0MP）。``TextEncodeQwenImage21``
+#: の ``resolution`` も ``EmptyLatentImage`` も、これを基準に決める。
+QWEN_IMAGE_21_MEGAPIXELS = 1.0
+
+QWEN_IMAGE_21_EDIT = WorkflowSpec(
+    id="qwen_image_21_edit",
+    label="Qwen-Image 2.1 編集",
+    mode_label="参照画像→画像・編集",
     kind="image",
     family="qwen-image",
-    relpath="image/qwen-image/qwen_image_edit_2511.json",
-    output_node="195",
-    requires=("image",),
+    relpath="image/qwen-image/qwen_image_21_edit.json",
+    output_node="8",
     description=(
-        "Image **editing**, not text-to-image: it rewrites the picture given in"
-        " `source_image` following the instruction in `image_prompt`, so"
-        " `source_image` is REQUIRED in every mode that runs the image stage"
-        " (including `mode: \"full\"`, where the edited still then becomes the"
-        " video's start frame). The output resolution is derived from the input"
-        " image (FluxKontextImageScale), so `aspect_ratio` / `megapixels` are"
-        " ignored by this workflow. Write `image_prompt` as an edit instruction"
-        ' ("change X to Y, keep everything else unchanged"), never as a full'
-        " scene description."
+        f"Image **editing** with Qwen-Image 2.1: 1〜{QWEN_IMAGE_21_REFERENCES}"
+        " reference pictures (`reference_images`) are rewritten into one new"
+        " still following the instruction in `image_prompt`. The references are"
+        " an **ordered list**, not a single `source_image`: the prompt refers to"
+        " them as `<image1>`, `<image2>`, … in the order they were given, and"
+        " **image 1 is the edit canvas** — its composition and its untargeted"
+        " content survive, the others only supply material. With exactly one"
+        " reference, do NOT use the tags at all and refer to the picture"
+        ' naturally ("the image"). The output follows the aspect ratio of image'
+        " 1, so `aspect_ratio` does nothing here; `megapixels` sets the size"
+        " budget the references are resized to (1.0MP = 1024, on a 32px grid)."
+        " There is no negative prompt (the template runs at cfg 1)."
     ),
-    image_label="編集元画像",
+    prompt_hint=(
+        "An English EDIT instruction, not a scene description: lead with the"
+        " operation, name only the attributes that change, and hold everything"
+        " else with one blanket clause (\"keep everything else unchanged\")."
+        " Name what stays by type, position and role — never re-describe its"
+        " appearance. With two or more references, tag every one of them"
+        " (`<image1>`, `<image2>`, …) and say what each contributes; with a"
+        " single reference use no tags. Never mention an aspect ratio or a"
+        " resolution. There is no negative prompt."
+    ),
+    default_megapixels=QWEN_IMAGE_21_MEGAPIXELS,
+    # ``TextEncodeQwenImage21.resolution`` は「1 辺の長さ」（この正方形ぶんの
+    # 画素数に参照画像を合わせる）なので、メガピクセルを辺の長さに直して入れる
+    # （:func:`app.workflow.megapixels_edge`）。ノード側の刻みは 32。
+    megapixels_edge_multiple=32,
+    multi_inputs={REF_IMAGES_NAME: QWEN_IMAGE_21_REFERENCES},
     inject={
-        "image": T("41", "image", "LoadImage"),
-        "prompt": T("170:151", "prompt", "TextEncodeQwenImageEditPlus"),
-        "seed": T("170:169", "seed", "KSampler"),
-        "save_prefix": T("195", "filename_prefix", "SaveImageAdvanced"),
+        "prompt": T("5", "prompt", "TextEncodeQwenImage21"),
+        "megapixels": T("5", "resolution", "TextEncodeQwenImage21"),
+        "seed": T("6", "seed", "KSampler"),
+        "steps": T("6", "steps", "KSampler"),
+        "save_prefix": T("8", "filename_prefix", "SaveImageAdvanced"),
     },
-    # The template's own `170:153` LoraLoaderModelOnly is the Lightning 4-steps
-    # speed LoRA and must stay, so it is *not* a placeholder.  The user chain is
-    # spliced in front of it — at the CFGNorm output both branches of the
-    # `170:163` Switch (Model) read — so the user LoRA applies whether the
-    # 4-steps LoRA is switched on or off.
-    lora_chain=LoraChain(
-        head="170:152",
-        consumers=(
-            T("170:153", "model", "LoraLoaderModelOnly"),
-            T("170:163", "on_false", "ComfySwitchNode"),
-        ),
+    # 参照画像は ``images.image_1`` から始まる可変入力（1 始まりなので
+    # ``image_offset`` は 1）。雛形の ``LoadImage`` 1 つだけを繋いだ状態で持ち、
+    # ビルダー（:func:`app.workflow._build_ref_media`）が枚数ぶんに組み直す。
+    ref_media=RefMediaFan(
+        node=T("5", "", "TextEncodeQwenImage21"),
+        image_loader=T("0", "image", "LoadImage"),
+        image_prefix="images.image_",
+        image_offset=1,
+        tag_format="<image{n}>",
+        min_refs=1,
     ),
-    notes="qwen_image_edit_2511 + Lightning 4steps LoRA / 解像度は入力画像から自動",
+    # ``QwenImage21Cache`` はモデルの ``transformer_options`` を足すだけなので、
+    # ユーザー LoRA は**その前**（UNETLoader の直後）に挟む。
+    lora_chain=LoraChain(
+        head="1",
+        consumers=(T("4", "model", "QwenImage21Cache"),),
+    ),
+    notes=(
+        "qwen_image_2.1_int8_convrot + qwen3vl_8b_int8_convrot +"
+        " qwen_image_2.1_vae_bf16 / 25 steps・CFG 1（ネガティブ無し）"
+        " / 出力の縦横比は image_1 追従"
+    ),
+)
+
+QWEN_IMAGE_21_T2I = WorkflowSpec(
+    id="qwen_image_21_t2i",
+    label="Qwen-Image 2.1 生成",
+    mode_label="テキスト→画像",
+    kind="image",
+    family="qwen-image",
+    relpath="image/qwen-image/qwen_image_21_t2i.json",
+    output_node="8",
+    description=(
+        "Text-to-image with Qwen-Image 2.1: `image_prompt` alone, no reference"
+        " picture. The canvas comes from `aspect_ratio` + `megapixels` on a"
+        " 32px grid (the model's native size is 1024x1024 = 1.0MP and it goes"
+        " up to 2K). Write `image_prompt` as one long observational paragraph"
+        " describing the finished picture, never as an instruction. Text inside"
+        " the picture is rendered accurately, so quote it literally. There is"
+        " no negative prompt (the template runs at cfg 1). Usable for"
+        ' `mode: "image_only"` and as the first stage of `mode: "full"`.'
+    ),
+    prompt_hint=(
+        "One long English paragraph in the present tense that describes the"
+        " finished image as an observer sees it: medium and style first, then"
+        " the background, then eight to fourteen positional phrases walking the"
+        " frame, any legible text in double quotes, one sentence for the"
+        " lighting and one closing sentence for the whole composition. No"
+        ' imperatives ("create", "make"), no quality boosters, no aspect ratio'
+        " or resolution words. There is no negative prompt."
+    ),
+    resolution_multiple=32,
+    default_megapixels=QWEN_IMAGE_21_MEGAPIXELS,
+    inject={
+        "width": T("9", "width", "EmptyLatentImage"),
+        "height": T("9", "height", "EmptyLatentImage"),
+        "prompt": T("5", "prompt", "TextEncodeQwenImage21"),
+        "seed": T("6", "seed", "KSampler"),
+        "steps": T("6", "steps", "KSampler"),
+        "save_prefix": T("8", "filename_prefix", "SaveImageAdvanced"),
+    },
+    lora_chain=LoraChain(
+        head="1",
+        consumers=(T("4", "model", "QwenImage21Cache"),),
+    ),
+    notes=(
+        "qwen_image_2.1_int8_convrot + qwen3vl_8b_int8_convrot +"
+        " qwen_image_2.1_vae_bf16 / 25 steps・CFG 1（ネガティブ無し）"
+    ),
 )
 
 
@@ -2851,7 +2962,8 @@ SPECS: tuple[WorkflowSpec, ...] = (
     KREA2_TURBO,
     ANIMA,
     Z_IMAGE_TURBO,
-    QWEN_IMAGE_EDIT,
+    QWEN_IMAGE_21_T2I,
+    QWEN_IMAGE_21_EDIT,
     MINIMAX_H3_T2I,
     MINIMAX_H3_T2I_OPT,
     MINIMAX_H3_I2I,
