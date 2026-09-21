@@ -338,7 +338,7 @@ def test_install_hints_and_labels_come_from_the_command_name():
 
 @pytest.mark.asyncio
 async def test_the_oneshot_client_runs_the_selected_cli(monkeypatch, tmp_path):
-    """英訳・自動タグ・ヘルスチェックが通るワンショット経路も選択に従う。"""
+    """ヘルスチェックなどが通るワンショット経路も選択に従う。"""
     use(monkeypatch, agent_cli="codex", grok_workdir=str(tmp_path))
     calls: list[list[str]] = []
 

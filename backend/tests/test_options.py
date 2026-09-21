@@ -141,6 +141,15 @@ def test_the_minimax_workflows_declare_their_own_megapixels(client):
     assert images["krea2_turbo"]["default_megapixels"] == 0.0
 
 
+def test_every_minimax_video_workflow_accepts_video_loras(client):
+    """H3 の動画は全バリアントが LoRA チェーンを持つので、フォームに欄が出る。"""
+    options = client.get("/api/options").json()
+    videos = options["video_workflows"]
+    assert videos
+    for workflow in videos:
+        assert workflow["accepts_video_loras"] is True, workflow["id"]
+
+
 def test_the_minimax_turbo_workflows_are_offered(client):
     """turbo（4 ステップ版）も一覧に出て、素の版と同じ入力を受け取る。"""
     videos = {w["id"]: w for w in client.get("/api/options").json()["video_workflows"]}

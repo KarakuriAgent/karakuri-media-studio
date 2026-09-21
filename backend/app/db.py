@@ -89,9 +89,10 @@ CREATE TABLE IF NOT EXISTS studio_projects (
   code        TEXT NOT NULL DEFAULT '',   -- 作品コード（任意。空でよい）
   synopsis    TEXT NOT NULL DEFAULT '',
   world_notes TEXT NOT NULL DEFAULT '',   -- World Bible の覚え書き
-  auto_translate INTEGER NOT NULL DEFAULT 1, -- 日本語プロンプトを Grok で英訳してから投入
+  auto_translate INTEGER NOT NULL DEFAULT 1, -- 旧・アプリ内英訳の名残で未使用
   latent_continuity INTEGER NOT NULL DEFAULT 0, -- 引き継ぎを Motion Context（ラテント連続性）で行う
   latent_upscale INTEGER NOT NULL DEFAULT 1, -- 1 パス目を低解像度で回してラテントのまま拡大する
+  video_loras TEXT NOT NULL DEFAULT '[]',   -- 作品共通の動画 LoRA（LoraRef の JSON 配列。[] = 使わない）
   quality     TEXT NOT NULL DEFAULT 'normal', -- 動画生成の品質（normal / opt / turbo）
   image_quality TEXT NOT NULL DEFAULT 'normal', -- 素材画像（MiniMax H3 Image）の品質（normal / opt / turbo）
   megapixels  REAL,                        -- 動画生成のメガピクセル（NULL = ワークフローの既定）
@@ -228,10 +229,10 @@ CREATE TABLE IF NOT EXISTS studio_shots (
   megapixels           REAL,                       -- 解像度の目安（比と合わせて幅×高さになる）
   seed                 INTEGER,                    -- NULL = 毎回ランダム
   workflow_override    TEXT,                       -- NULL = t2v/i2v/r2v を自動選択
-  english_prompt       TEXT NOT NULL DEFAULT '',   -- 訳した（または人が直した）英語。公式フィールド込みの完成文
+  english_prompt       TEXT NOT NULL DEFAULT '',   -- 外部エージェント（または人）が書いた英語。公式フィールド込みの完成文
   english_source       TEXT NOT NULL DEFAULT '',   -- その英語の元になった組み立て済み日本語
-  english_status       TEXT NOT NULL DEFAULT '',   -- '' / translating / failed
-  english_error        TEXT NOT NULL DEFAULT '',
+  english_status       TEXT NOT NULL DEFAULT '',   -- 旧・アプリ内英訳の名残で未使用
+  english_error        TEXT NOT NULL DEFAULT '',   -- 同上
   created_at           TEXT NOT NULL,
   updated_at           TEXT NOT NULL,
   prompt_updated_at    TEXT                        -- プロンプトに効く項目を変えた時刻（stale 判定用）
@@ -247,8 +248,8 @@ CREATE TABLE IF NOT EXISTS studio_takes (
   status     TEXT NOT NULL DEFAULT 'rendering',
   created_at TEXT NOT NULL,
   prompt        TEXT NOT NULL DEFAULT '',  -- 実際に投入した本文
-  source_prompt TEXT NOT NULL DEFAULT '',  -- 英訳する前の原文（訳していなければ空）
-  warning       TEXT NOT NULL DEFAULT '',  -- 投入はできたが伝えたいこと（過去の英訳失敗フォールバックなど）
+  source_prompt TEXT NOT NULL DEFAULT '',  -- 英語を投入したときの組み立て済み日本語（英語で書いていれば空）
+  warning       TEXT NOT NULL DEFAULT '',  -- 投入はできたが伝えたいこと
   latent_path   TEXT,                      -- ラテント連続性で保存した AV ラテント（ComfyUI 側のパス。NULL = 無し）
   latent_hires_path TEXT                   -- 同じく 2 パス目（最終解像度）の AV ラテント（latent_upscale on の 2 段引き継ぎ。NULL = 無し）
 );
@@ -509,8 +510,8 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
     ],
     # ドラマスタジオ（studio_* は先に作られている DB があるので ALTER が要る）
     "studio_projects": [
-        # 日本語のプロンプトを Grok で英語に直してから投入するか。既存の
-        # プロジェクトも既定 ON（H3 は英語プロンプト前提のモデル）。
+        # 旧・アプリ内英訳（Grok）の名残で未使用。SQLite では列を落とせない
+        # ので、既存 DB との互換のために置いたままにしてある。
         ("auto_translate", "INTEGER NOT NULL DEFAULT 1"),
         # 引き継ぎを Motion Context（ラテント連続性）で行うか。既存の
         # プロジェクトは既定 OFF = 今までどおりラストフレームの引き継ぎ。
@@ -552,6 +553,10 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         # この作品から投入するジョブを NSFW 扱いにするか。既存のプロジェクトは
         # 0 = 非 NSFW（投入時に明示するので Grok の自動判定は走らない）。
         ("nsfw", "INTEGER NOT NULL DEFAULT 0"),
+        # 作品共通の動画 LoRA（LoraRef の JSON 配列）。テイク生成のたびに
+        # ジョブの `video_loras` に載る。既存のプロジェクトは '[]' = 今までどおり
+        # LoRA なし。
+        ("video_loras", "TEXT NOT NULL DEFAULT '[]'"),
     ],
     "studio_assets": [
         # ファイル実体を持たない「名前とキャプションだけ」の素材を許すので、
@@ -583,9 +588,10 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         # 起動した DB には Shot 側の nsfw 列が残るが、読み書きしないので放置する
         # （SQLite では列を落とせず、落とす価値もない）。
         ("prompt_updated_at", "TEXT"),
-        # 組み立て済み本文の英語キャッシュ。既存行は空 = 今までどおり投入時に訳す。
+        # 組み立て済み本文の英語キャッシュ（外部エージェントが書く）。
         ("english_prompt", "TEXT NOT NULL DEFAULT ''"),
         ("english_source", "TEXT NOT NULL DEFAULT ''"),
+        # 以下 2 つは旧・アプリ内英訳の名残で未使用（列だけ残してある）。
         ("english_status", "TEXT NOT NULL DEFAULT ''"),
         ("english_error", "TEXT NOT NULL DEFAULT ''"),
     ],

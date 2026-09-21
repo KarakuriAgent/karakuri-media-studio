@@ -11,7 +11,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import ValidationError
 
-from app import autotag, blocking, comfy, db, jobs, library
+from app import blocking, comfy, db, jobs, library
 from app.main import app
 from app.models import (
     BlockingCamera,
@@ -312,10 +312,6 @@ def test_a_missing_ffmpeg_is_reported_as_a_plain_error(tmp_path, monkeypatch):
 # API
 # --------------------------------------------------------------------------
 
-async def _no_llm(text: str) -> tuple[str, list[str]]:
-    return "", []
-
-
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     """DB と library をテスト用ディレクトリに閉じ込めたクライアント。"""
@@ -329,7 +325,6 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(jobs, "LIBRARY_DIR", lib)
     monkeypatch.setattr(jobs, "ASSETS_DIR", assets)
     monkeypatch.setattr(assets_router, "ASSETS_DIR", assets)
-    monkeypatch.setattr(autotag, "describe", _no_llm)
 
     async def offline():
         raise comfy.ComfyError("ComfyUI is down")

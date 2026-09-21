@@ -106,11 +106,6 @@ class FakeComfy:
         self.interrupts += 1
 
 
-async def _no_llm(text: str) -> None:
-    """NSFW 判定の LLM を使わない差し替え（ヒューリスティックに落ちる）。"""
-    return None
-
-
 @pytest.fixture
 def env(tmp_path, monkeypatch, request):
     """Isolated DB / assets / outputs plus a mocked ComfyUI, wrapped in a client."""
@@ -130,7 +125,6 @@ def env(tmp_path, monkeypatch, request):
     monkeypatch.setattr(jobs, "POLL_INTERVAL", 0.02)
     # NSFW 自動判定は test_nsfw.py で検証する。ここでは Grok を呼ばせない
     # （ヒューリスティックだけが走る）。
-    monkeypatch.setattr(nsfw, "classify", _no_llm)
 
     fake = FakeComfy(video)
     for name in (
@@ -655,8 +649,21 @@ VIDEO_LORA = {
 }
 
 
-def test_video_loras_need_a_workflow_with_a_lora_chain(env):
-    """今ある動画ワークフローは LoRA を挿せる場所を持たないので 422（SPEC §3.4）。"""
+def test_video_loras_are_accepted_by_the_minimax_workflows(env):
+    """MiniMax H3 は LoRA チェーンを宣言しているので受け付ける（SPEC §3.4.2）。"""
+    response = env.client.post("/api/jobs", json=full_body(env, video_loras=[VIDEO_LORA]))
+    assert response.status_code == 201, response.text
+    assert response.json()["params"]["video_loras"] == [VIDEO_LORA]
+
+
+def test_video_loras_need_a_workflow_with_a_lora_chain(env, monkeypatch):
+    """チェーンを宣言していないワークフローに渡すと 422（黙って捨てない）。"""
+    from dataclasses import replace
+
+    from app import workflows
+
+    spec = workflows.get_video_spec("minimax_h3_i2v")
+    monkeypatch.setitem(workflows.BY_ID, spec.id, replace(spec, lora_chain=None))
     response = env.client.post("/api/jobs", json=full_body(env, video_loras=[VIDEO_LORA]))
     assert response.status_code == 422
     assert "video_loras" in response.text
@@ -727,9 +734,9 @@ def _retire(env, **extra) -> str:
 def test_rerun_falls_back_when_the_workflow_is_gone(env):
     params = env.client.post(f"/api/jobs/{_retire(env)}/rerun", json={}).json()["params"]
     assert params["video_workflow"] == "minimax_h3_i2v"
-    # 寄せ先が LoRA チェーンを持たないので、本文ごと落ちる（残ると 422）
-    assert params["video_loras"] == []
-    assert params["video_trigger_text"] == ""
+    # 寄せ先（MiniMax H3）も LoRA チェーンを持つので、LoRA とトリガーは引き継ぐ
+    assert params["video_loras"] == [VIDEO_LORA]
+    assert params["video_trigger_text"] == "slowmo"
     # 1.0MP のままだと 8GB 級の GPU で CUDA OOM になる
     assert params["megapixels"] == get_video_spec("minimax_h3_i2v").default_megapixels
 
@@ -753,9 +760,24 @@ def test_continue_refits_the_params_of_a_retired_workflow(env):
     assert response.status_code == 201, response.text
     params = response.json()["params"]
     assert params["video_workflow"] == "minimax_h3_i2v"
-    assert params["video_loras"] == []
-    assert params["video_trigger_text"] == ""
+    assert params["video_loras"] == [VIDEO_LORA]
+    assert params["video_trigger_text"] == "slowmo"
     assert params["megapixels"] == get_video_spec("minimax_h3_i2v").default_megapixels
+
+
+def test_carried_video_loras_are_dropped_for_a_workflow_without_a_chain(monkeypatch):
+    """付け替え先がチェーンを持たなければ本文（トリガー）ごと落とす（残ると 422）。"""
+    from dataclasses import replace
+
+    from app import workflows
+
+    spec = workflows.get_video_spec("minimax_h3_i2v")
+    assert jobs._carried_video_loras(spec.id, [VIDEO_LORA], "slowmo") == (
+        [VIDEO_LORA],
+        "slowmo",
+    )
+    monkeypatch.setitem(workflows.BY_ID, spec.id, replace(spec, lora_chain=None))
+    assert jobs._carried_video_loras(spec.id, [VIDEO_LORA], "slowmo") == ([], "")
 
 
 @needs_ffmpeg

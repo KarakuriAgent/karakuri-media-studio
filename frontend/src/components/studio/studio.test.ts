@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import type {
+  Lora,
   StudioAsset,
   StudioEpisode,
   StudioProjectDetail,
@@ -15,7 +16,12 @@ import {
   countShots,
   filterShotTree,
   firstShotId,
+  formatLoraList,
   formatProjectSettingsSummary,
+  joinLoraTriggers,
+  loraRefFromEntry,
+  refsFromSelected,
+  selectedFromRefs,
   isStale,
   moveId,
   moveShot,
@@ -484,7 +490,6 @@ describe('projectSummary / renderingJobIds', () => {
     code: '',
     synopsis: '',
     world_notes: '',
-    auto_translate: true,
     latent_continuity: false,
     latent_upscale: true,
     quality: 'normal',
@@ -528,14 +533,14 @@ describe('projectSummary / renderingJobIds', () => {
 describe('takeActivityLabel', () => {
   it('rendering 中は進捗メッセージを優先する', () => {
     expect(
-      takeActivityLabel(take('t1', { status: 'rendering' }), { message: '英訳作成中' }),
-    ).toBe('英訳作成中')
+      takeActivityLabel(take('t1', { status: 'rendering' }), { message: '動画生成' }),
+    ).toBe('動画生成')
   })
 
   it('メッセージが無ければ状態ラベル', () => {
     expect(takeActivityLabel(take('t1', { status: 'rendering' }))).toBe('生成中')
     expect(
-      takeActivityLabel(take('t1', { status: 'failed' }), { message: '英訳作成中' }),
+      takeActivityLabel(take('t1', { status: 'failed' }), { message: '動画生成' }),
     ).toBe('失敗')
   })
 })
@@ -613,7 +618,36 @@ describe('renderFormFromShot / renderRequestFromForm', () => {
       fixed_seed: false,
       seed: '',
       latent_upscale: true,
+      video_lora_mode: 'project',
+      video_loras: [],
     })
+  })
+
+  it('動画 LoRA は「作品の既定を使う」で始まり、送らない', () => {
+    const loras = [{ lora_name: 'style.safetensors', trigger_word: 'ink', strength: 0.7 }]
+    const project = { ...unset, video_loras: loras }
+    const form = renderFormFromShot(shot('s1', { duration_seconds: 5 }), project)
+    expect(form.video_lora_mode).toBe('project')
+    // 作品の既定の写し（「この回だけ指定」に切り替えたときの初期値）
+    expect(form.video_loras).toEqual(loras)
+    expect(form.video_loras[0]).not.toBe(loras[0])
+    expect(renderRequestFromForm(form, project)).toEqual({ duration: 5, steps: 0 })
+  })
+
+  it('「この回だけ指定」なら video_loras を送る（空なら LoRA なしの明示）', () => {
+    const loras = [{ lora_name: 'style.safetensors', trigger_word: 'ink', strength: 0.7 }]
+    const project = { ...unset, video_loras: loras }
+    const form = renderFormFromShot(shot('s1', { duration_seconds: 5 }), project)
+    const other = { lora_name: 'motion.safetensors', trigger_word: '', strength: 1.2 }
+    expect(
+      renderRequestFromForm(
+        { ...form, video_lora_mode: 'custom', video_loras: [other] },
+        project,
+      ),
+    ).toEqual({ duration: 5, steps: 0, video_loras: [other] })
+    expect(
+      renderRequestFromForm({ ...form, video_lora_mode: 'custom', video_loras: [] }, project),
+    ).toEqual({ duration: 5, steps: 0, video_loras: [] })
   })
 
   it('解像度とステップ数はプロジェクトの設定をプレフィルする', () => {
@@ -981,5 +1015,64 @@ describe('formatProjectSettingsSummary', () => {
     expect(formatProjectSettingsSummary({ ...base, latentUpscale: false })).toBe(
       '通常 · 既定 · 既定 · おまかせ · 拡大なし',
     )
+  })
+})
+
+describe('動画 LoRA の変換', () => {
+  const registry: Lora[] = [
+    {
+      id: 3,
+      display_name: 'インク調',
+      lora_name: 'style.safetensors',
+      trigger_word: 'ink',
+      default_strength: 0.8,
+      default_audio: null,
+      sort_order: 0,
+      target: 'video',
+      family: '',
+      sample_images: [],
+    },
+  ]
+
+  it('登録から id と表示名を補い、見当たらないものも名前のまま残す', () => {
+    const selected = selectedFromRefs(
+      [
+        { lora_name: 'style.safetensors', trigger_word: 'ink', strength: 0.5 },
+        { lora_name: 'gone.safetensors', trigger_word: '', strength: 1 },
+      ],
+      registry,
+    )
+    expect(selected.map((item) => [item.id, item.display_name, item.strength])).toEqual([
+      [3, 'インク調', 0.5],
+      [-2, 'gone.safetensors', 1],
+    ])
+    expect(refsFromSelected(selected)).toEqual([
+      { lora_name: 'style.safetensors', trigger_word: 'ink', strength: 0.5 },
+      { lora_name: 'gone.safetensors', trigger_word: '', strength: 1 },
+    ])
+  })
+
+  it('登録の行は既定の強度で LoraRef になる', () => {
+    expect(loraRefFromEntry(registry[0])).toEqual({
+      lora_name: 'style.safetensors',
+      trigger_word: 'ink',
+      strength: 0.8,
+    })
+  })
+
+  it('トリガーワードと一覧の表示', () => {
+    const refs = [
+      { lora_name: 'a.safetensors', trigger_word: ' ink ', strength: 0.5 },
+      { lora_name: 'b.safetensors', trigger_word: '', strength: 1 },
+    ]
+    expect(joinLoraTriggers(refs)).toBe('ink')
+    expect(formatLoraList(refs)).toBe('a.safetensors ×0.50, b.safetensors ×1.00')
+    expect(formatLoraList(undefined)).toBe('')
+  })
+
+  it('作品設定の要約には LoRA の件数を足す（0 件は出さない）', () => {
+    const base = { quality: 'normal' as const, aspectRatio: null, megapixels: null, steps: 0 }
+    expect(formatProjectSettingsSummary({ ...base, videoLoraCount: 2 })).toContain('LoRA 2')
+    expect(formatProjectSettingsSummary({ ...base, videoLoraCount: 0 })).not.toContain('LoRA')
   })
 })

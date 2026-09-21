@@ -9,14 +9,9 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from app import autotag, comfy, db, jobs, library, sheets
+from app import comfy, db, jobs, library, sheets
 from app.main import app
 from app.routers import assets as assets_router
-
-
-async def _no_llm(text: str) -> tuple[str, list[str]]:
-    """タグ自動生成の Grok 呼び出しを潰す差し替え。"""
-    return "", []
 
 
 @pytest.fixture
@@ -37,8 +32,6 @@ def env(tmp_path, monkeypatch):
         raise comfy.ComfyError("ComfyUI is down")
 
     monkeypatch.setattr(comfy, "get_object_info", lambda *a, **k: offline())
-    # タグの自動生成は test_autotag.py で検証する。ここでは Grok を呼ばせない。
-    monkeypatch.setattr(autotag, "describe", _no_llm)
 
     with TestClient(app) as client:
         yield type(

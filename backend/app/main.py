@@ -12,7 +12,6 @@ from . import chat_agent, db, ws
 from .config import load_settings
 from .db import init_db
 from .jobs import recover_interrupted_jobs, runner
-from .studio import recover_interrupted_translates
 from .paths import (
     ASSETS_DIR,
     FRONTEND_DIST_DIR,
@@ -60,7 +59,6 @@ async def lifespan(app: FastAPI):
     await runner.start()
     # 前回のプロセスが落ちたときに残った queued / running を拾い直す（SPEC §5）。
     await recover_interrupted_jobs()
-    await recover_interrupted_translates()
     try:
         yield
     finally:

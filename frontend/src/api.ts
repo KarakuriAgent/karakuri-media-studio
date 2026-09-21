@@ -716,15 +716,12 @@ export const api = {
   /**
    * このカットを今生成したら**実際に投入されるもの**（読み取りだけ）。
    *
-   * 生成と同じ組み立てを通るが、英訳は走らない（入るかどうかは
-   * `will_translate`。使える英語キャッシュがあれば false）。組み立てられない
-   * カットも 200 で `error` に理由が入る。
+   * 生成と同じ組み立てを通る。本文に日本語が残っていて使える英語キャッシュが
+   * 無ければ `needs_translation` が true（このままでは投入できない）。
+   * 組み立てられないカットも 200 で `error` に理由が入る。
    */
   previewStudioShotPrompt: (id: string) =>
     request<StudioShotPreview>(`/api/studio/shots/${id}/prompt-preview`),
-  /** 組み立て済み本文を英語の公式 H3 文書にして Shot に保存する。 */
-  translateStudioShotPrompt: (id: string) =>
-    json<StudioShot>('POST', `/api/studio/shots/${id}/translate`),
 
   listStudioTakes: (shotId: string) =>
     request<StudioTake[]>(`/api/studio/shots/${shotId}/takes`),

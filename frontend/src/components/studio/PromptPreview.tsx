@@ -6,6 +6,7 @@ import type { StudioShot, StudioShotPreview } from '../../types'
 import { Banner, CopyButton } from '../ui'
 import { Badge } from '../ui/badge'
 import { Button } from '../ui/button'
+import { formatLoraList } from './studio'
 
 /**
  * 論理ワークフロー ID -> 画面に出す名前（`WORKFLOW_OVERRIDE_LABEL` の短い版）。
@@ -63,19 +64,18 @@ function failureMessage(error: unknown): string {
  * ここに出るものと投入されるものは食い違わない。
  *
  * 取り直すのは保存のあと（`shot.updated_at` が動いたとき）と「再取得」ボタン。
- * 英訳の作成・削除はプレビューだけ取り直し、親のプロジェクトは再読込しない。
+ * アプリは英訳をしないので、日本語のままのカットは `needs_translation` の注意を
+ * 出すだけ（英語版は外部エージェントが `english_prompt` に保存する）。
+ * 「英語を消す」はプレビューだけ取り直し、親のプロジェクトは再読込しない。
  */
 export default function PromptPreview({ shot }: { shot: StudioShot }) {
   const [preview, setPreview] = useState<StudioShotPreview | null>(null)
   const [loading, setLoading] = useState(false)
-  const [translating, setTranslating] = useState(false)
   const [clearing, setClearing] = useState(false)
   const [failure, setFailure] = useState<string | null>(null)
 
   const shotId = shot.id
   const updatedAt = shot.updated_at
-  const pending = preview?.english_status === 'translating'
-  const busyTranslate = translating || pending
 
   const load = useCallback(async () => {
     setLoading(true)
@@ -93,18 +93,6 @@ export default function PromptPreview({ shot }: { shot: StudioShot }) {
     setPreview(await api.previewStudioShotPrompt(shotId))
     setFailure(null)
   }, [shotId])
-
-  const translate = useCallback(async () => {
-    setTranslating(true)
-    try {
-      await api.translateStudioShotPrompt(shotId)
-      await refreshPreview()
-    } catch (error) {
-      setFailure(failureMessage(error))
-    } finally {
-      setTranslating(false)
-    }
-  }, [shotId, refreshPreview])
 
   const clearEnglish = useCallback(async () => {
     setClearing(true)
@@ -124,14 +112,6 @@ export default function PromptPreview({ shot }: { shot: StudioShot }) {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shotId, updatedAt])
 
-  useEffect(() => {
-    if (!pending) return
-    const timer = window.setInterval(() => {
-      void refreshPreview()
-    }, 2000)
-    return () => window.clearInterval(timer)
-  }, [pending, refreshPreview])
-
   return (
     <div
       className="space-y-2 rounded-md border border-border bg-surface-sunken p-2"
@@ -149,23 +129,12 @@ export default function PromptPreview({ shot }: { shot: StudioShot }) {
         )}
         <div className="ml-auto flex flex-wrap items-center justify-end gap-1">
           {preview && preview.prompt && <CopyButton text={preview.prompt} />}
-          <Button
-            variant="outline"
-            size="xs"
-            onClick={() => void translate()}
-            disabled={
-              loading || busyTranslate || clearing || !preview || Boolean(preview.error)
-            }
-          >
-            {busyTranslate && <Loader2 className="animate-spin" />}
-            {busyTranslate ? '英訳中…' : '英訳する'}
-          </Button>
           {preview?.english_prompt ? (
             <Button
               variant="outline"
               size="xs"
               onClick={() => void clearEnglish()}
-              disabled={loading || busyTranslate || clearing}
+              disabled={loading || clearing}
             >
               英語を消す
             </Button>
@@ -183,10 +152,6 @@ export default function PromptPreview({ shot }: { shot: StudioShot }) {
       </div>
 
       {failure && <Banner>{failure}</Banner>}
-
-      {preview?.english_status === 'failed' && (
-        <Banner>{preview.english_error || '英訳に失敗しました'}</Banner>
-      )}
 
       {preview && preview.error && <Banner>{preview.error}</Banner>}
 
@@ -227,6 +192,18 @@ export default function PromptPreview({ shot }: { shot: StudioShot }) {
               開始フレーム: {fileName(preview.start_frame)}
             </p>
           )}
+          {/* 作品の動画 LoRA（生成ダイアログで 1 回だけ変えたぶんは反映しない） */}
+          {(preview.video_loras ?? []).length > 0 && (
+            <p className="text-[11px] text-muted-foreground">
+              動画 LoRA（作品の既定）: {formatLoraList(preview.video_loras)}
+              {preview.video_trigger_text
+                ? ` / トリガーワード（先頭に付く）: ${preview.video_trigger_text}`
+                : ''}
+            </p>
+          )}
+          {preview.video_lora_warning && (
+            <Banner tone="warn">{preview.video_lora_warning}</Banner>
+          )}
           {preview.context_latent && (
             <p className="text-[11px] text-muted-foreground">
               ラテント引き継ぎ: {preview.context_latent_hires ? '有効（2 段）' : '有効'}
@@ -241,9 +218,9 @@ export default function PromptPreview({ shot }: { shot: StudioShot }) {
               ）
             </p>
           )}
-          {preview.will_translate && !(preview.english_prompt && !preview.english_stale) && (
+          {preview.needs_translation && (
             <p className="text-[11px] text-amber-300">
-              投入時に英語へ自動変換されます（引用符の中の台詞と参照タグはそのまま）。変換できなければ投入しません。
+              日本語が含まれています。生成には英語版（english_prompt）が必要です。外部エージェントに英訳を依頼するか、英語で書いてください。
             </p>
           )}
         </>
@@ -253,11 +230,11 @@ export default function PromptPreview({ shot }: { shot: StudioShot }) {
         <>
           {preview.english_stale || preview.error ? (
             <p className="text-[11px] text-amber-300">
-              脚本が変わったのでこの英語は使いません。投入時に訳し直すか、もう一度英訳してください
+              脚本が変わったのでこの英語は使いません。english_prompt を書き直してください
             </p>
           ) : (
             <p className="text-[11px] text-muted-foreground">
-              この英語を投入します（投入時の自動英訳はしません）
+              この英語を投入します
             </p>
           )}
           <div className="flex justify-end">

@@ -26,7 +26,10 @@ import type {
   StudioTimelineRole,
   StudioVideoQuality,
   StudioWorkflowOverride,
+  Lora,
+  LoraRef,
 } from '../../types'
+import type { SelectedLora } from '../../form'
 
 // --------------------------------------------------------------------------
 // ラベルと見た目
@@ -178,6 +181,8 @@ export function formatProjectSettingsSummary(input: {
   imageSteps?: number
   /** ラテントアップスケール（既定の ON は出さず、OFF のときだけ足す）。 */
   latentUpscale?: boolean
+  /** 作品共通の動画 LoRA の件数（0 のときは出さない）。 */
+  videoLoraCount?: number
 }): string {
   const parts: string[] = []
   if (input.target) parts.push(COMFY_TARGET_LABELS[input.target])
@@ -207,6 +212,8 @@ export function formatProjectSettingsSummary(input: {
   if (input.imageSteps) parts.push(`画像${input.imageSteps}step`)
   // 既定（ON）は書かない。切ってあるときだけ、狭い画面でも気づけるように出す。
   if (input.latentUpscale === false) parts.push('拡大なし')
+  // 動画 LoRA は付けているときだけ件数を出す。
+  if (input.videoLoraCount) parts.push(`LoRA ${input.videoLoraCount}`)
   return parts.join(' · ')
 }
 
@@ -596,7 +603,6 @@ export interface ProjectFormState {
   code: string
   synopsis: string
   world_notes: string
-  auto_translate: boolean
   /** 引き継ぎを Motion Context で行う（ラテント連続性）。 */
   latent_continuity: boolean
   /** この作品から投入するジョブをすべて NSFW 扱いにする（OFF = 非 NSFW 固定）。 */
@@ -748,6 +754,13 @@ export interface RenderFormState {
   seed: string
   /** ラテントアップスケール（初期値はプロジェクトの設定）。 */
   latent_upscale: boolean
+  /**
+   * 動画 LoRA の決め方。`project` = 作品の既定を使う（何も送らない）、
+   * `custom` = この回だけ `video_loras` を使う（空なら「LoRA なし」を明示）。
+   */
+  video_lora_mode: 'project' | 'custom'
+  /** `custom` のときに送る動画 LoRA（初期値は作品の既定の写し）。 */
+  video_loras: LoraRef[]
 }
 
 /** プロジェクト設定のうち、このダイアログが既定値に使うぶん。 */
@@ -756,6 +769,8 @@ export interface RenderDefaults {
   aspect_ratio: string | null
   steps: number
   latent_upscale: boolean
+  /** 作品共通の動画 LoRA（省略 = なし）。 */
+  video_loras?: LoraRef[]
 }
 
 /**
@@ -776,6 +791,8 @@ export function renderFormFromShot(
     fixed_seed: shot.seed != null,
     seed: shot.seed == null ? '' : String(shot.seed),
     latent_upscale: project.latent_upscale,
+    video_lora_mode: 'project',
+    video_loras: (project.video_loras ?? []).map((lora) => ({ ...lora })),
   }
 }
 
@@ -812,6 +829,8 @@ export function validateRenderForm(form: RenderFormState): Record<string, string
  * **明示する**値で、プロジェクトの設定より優先されるため。
  *
  * ラテントアップスケールも同じ考えで、**作品設定から変えたときだけ**送る。
+ * 動画 LoRA は「この回だけ指定」を選んだときだけ送る（空の配列も「この回は
+ * LoRA なし」の明示として送る）。
  */
 export function renderRequestFromForm(
   form: RenderFormState,
@@ -828,7 +847,74 @@ export function renderRequestFromForm(
   if (form.latent_upscale !== project.latent_upscale) {
     body.latent_upscale = form.latent_upscale
   }
+  if (form.video_lora_mode === 'custom') {
+    body.video_loras = form.video_loras.map((lora) => ({ ...lora }))
+  }
   return body
+}
+
+// --------------------------------------------------------------------------
+// 動画 LoRA（作品共通 / 1 回ぶん）
+// --------------------------------------------------------------------------
+//
+// スタジオは LoRA を登録の行（`Lora`）ではなく、ジョブと同じスナップショット
+// （`LoraRef`）で持つ。ピッカー（`LoraPicker`）は登録 id で選択状態を見るので、
+// ここで両者を行き来させる。
+
+/**
+ * 保存済みの `LoraRef` をピッカーの選択状態にする。
+ *
+ * 登録（`registry`）から `lora_name` で引いて id と表示名を補う。いまの接続先の
+ * 登録に見当たらないもの（別環境で登録した・消した）も**名前のまま残す**
+ * （id は負の仮番号）。黙って落とすと保存し直したときに消えてしまうため。
+ */
+export function selectedFromRefs(
+  refs: LoraRef[] | undefined,
+  registry: Lora[],
+): SelectedLora[] {
+  return (refs ?? []).map((ref, index) => {
+    const known = registry.find((lora) => lora.lora_name === ref.lora_name)
+    return {
+      id: known ? known.id : -(index + 1),
+      display_name: known ? known.display_name : ref.lora_name,
+      lora_name: ref.lora_name,
+      trigger_word: ref.trigger_word,
+      strength: ref.strength,
+    }
+  })
+}
+
+/** ピッカーの選択状態を、保存・送信する `LoraRef` に戻す。 */
+export function refsFromSelected(selected: SelectedLora[]): LoraRef[] {
+  return selected.map(({ lora_name, trigger_word, strength }) => ({
+    lora_name,
+    trigger_word,
+    strength,
+  }))
+}
+
+/** 登録の行を 1 件ぶんの `LoraRef` にする（強度は登録の既定値）。 */
+export function loraRefFromEntry(lora: Lora): LoraRef {
+  return {
+    lora_name: lora.lora_name,
+    trigger_word: lora.trigger_word,
+    strength: lora.default_strength ?? 1,
+  }
+}
+
+/** トリガーワードを `", "` で連結する（生成フォームと同じ形）。 */
+export function joinLoraTriggers(refs: LoraRef[] | undefined): string {
+  return (refs ?? [])
+    .map((lora) => lora.trigger_word.trim())
+    .filter(Boolean)
+    .join(', ')
+}
+
+/** 画面に出す 1 行（`a.safetensors ×0.80, b.safetensors ×1.00`）。 */
+export function formatLoraList(refs: LoraRef[] | undefined): string {
+  return (refs ?? [])
+    .map((lora) => `${lora.lora_name} ×${lora.strength.toFixed(2)}`)
+    .join(', ')
 }
 
 // --------------------------------------------------------------------------

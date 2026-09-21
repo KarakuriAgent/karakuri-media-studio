@@ -397,7 +397,7 @@ export default function App() {
             setTimelineExportEvent(frame)
             return
           }
-          // ライブラリの自動タグ生成が終わった: 選択肢を取り直し、開いている
+          // ライブラリが更新された: 選択肢を取り直し、開いている
           // モーダルにも読み直させる（SPEC §7.2）。
           if (frame?.type === 'library') {
             setLibraryVersion((previous) => previous + 1)

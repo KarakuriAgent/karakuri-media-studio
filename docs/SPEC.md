@@ -169,9 +169,21 @@
   `workflow_reason` に足す（`app.studio._resolve_selects`）。宣言を持たないワークフローには
   `selects` を載せない。**連鎖の途中で on / off を切り替えるとラテント連続性が合わなくなる**
   （→ §3.1「2 段引き継ぎ」の制約）。
+- **動画 LoRA**（`video_loras`、`LoraRef` の配列・既定 `[]`）もプロジェクトの設定として持つ
+  （`studio_projects.video_loras` に JSON で保存。作成・更新・一覧・リビジョンの復元・外部 API の
+  `/api/v1/projects` で読み書きでき、更新は**丸ごと置き換え**で `[]` を送ると外れる）。
+  テイク生成のたびにジョブの `video_loras` と `video_trigger_text`（トリガーワードの連結。
+  投入時に本文の先頭へ未出現の語だけ付く、§3.4.2）に載る。効き方は**テイク 1 回ぶんの上書き →
+  プロジェクト**で、上書きの `null`（省略）は「作品の既定を使う」、`[]` は「この回は LoRA なし」の
+  明示。決まったワークフローが `lora_chain` を持たないときは **422 にせず LoRA を外して投入し**、
+  理由を Take の `warning` に残す（`app.studio._resolve_video_loras`）。投入プレビューは作品の既定を
+  解決した結果を `video_loras` / `video_trigger_text` / `video_lora_warning` で返す（本文の
+  `prompt` にはトリガーワードを混ぜない）。画面ではプロジェクトバーの「LoRA」ボタンで作品共通の
+  LoRA を選び（生成フォームと同じピッカー。強度・並べ替えつき、「保存」で確定）、生成ダイアログで
+  「作品の既定を使う / この回だけ指定」を選ぶ。
 - テイク 1 回ぶんの上書きは `POST /api/studio/shots/{id}/render` の**任意のボディ**
   （`app.models.StudioRenderRequest`。`megapixels` / `aspect_ratio` / `duration` / `steps` /
-  `seed` / `latent_upscale`、すべて任意）。送った項目だけがその 1 回の投入に効き、**Shot もプロジェクトも
+  `seed` / `latent_upscale` / `video_loras`、すべて任意）。送った項目だけがその 1 回の投入に効き、**Shot もプロジェクトも
   書き換えない**（何を使ったかは Take の元ジョブの `params` に残る）。ボディを省けば
   今までどおり。`steps` だけは `0` も「テンプレートの既定のまま」の**明示**として扱い、
   プロジェクトの設定より優先される。範囲外の `steps`（0〜150 の外）と `duration`
@@ -228,8 +240,8 @@
   `reference_videos`（3 本）/ `reference_audios`（3 本）で受け取る（合計 1 件以上必須）。プロンプトからは種類ごとに
   渡した順で `<Picture i>` / `<Video k>` / `<Audio j>` と呼び、**参照動画のサウンドトラックは常に一緒に渡されて
   `<Audio j>` の連番を単独音声と共有する**（動画のぶんが先に番号を消費する）。参照動画は 24fps 前提で fps 変換は
-  しない。**件数ぶんのローダーはビルダーがグラフに生やす**（`RefMediaFan`、下記）。ユーザー LoRA を挿すチェーンは
-  持たない。
+  しない。**件数ぶんのローダーはビルダーがグラフに生やす**（`RefMediaFan`、下記）。ユーザーの動画 LoRA
+  （`video_loras`）は全バリアントで挿せる（§3.4.2）。
   MiniMaxH3 系ノードは新しめの ComfyUI master にしか無いので、ヘルスチェックが「custom node なし」と出たら
   ComfyUI を更新する
 - 既定は `minimax_h3_i2v`（開始フレームを受け取れて `full` の 2 段目になれる、いちばん素直な構成）
@@ -817,11 +829,26 @@ LoRA は**登録時に対象（`target`）を選ぶ**: `image` なら画像ワ�
 読んでいた入力（`consumers`）をチェーン末尾に付け替える」という 1 本の辺の切り開きとして
 表現する。
 
-**現在、`lora_chain` を宣言する動画ワークフローは無い**（MiniMax H3 の 5 種はどれも
-ユーザー LoRA を挿せる場所を持たない）ので、`video_loras` を指定したジョブはすべて 422 で
-拒否される（`models.video_lora_problem`）。フォームも欄ごと出さない
-（`/api/options` の `accepts_video_loras` が false）。仕組み自体は画像側と共通なので、
-チェーンを持つ動画モデルを足せばそのまま効く。
+**MiniMax H3 の動画は全バリアント（t2v / i2v / r2v と、その `_save*` / `_context*` /
+`_opt` / `_turbo`）が `lora_chain` を宣言する**ので、`/api/options` の
+`accepts_video_loras` は true になり、生成フォームに「LoRA（動画）」欄が出る。
+テンプレートはどれも UNETLoader から始まる MODEL の 1 本道なので、そこを 1 か所
+切り開いて挿す。固定の `LoraLoaderModelOnly`（4step 蒸留 LoRA・参照 LoRA）は外せないので
+**その後ろ**に、高速化パッチ（`PathchSageAttentionKJ` → … → `SpectrumApplyMiniMaxH3`）は
+**チェーンの後ろ**に残す:
+
+| ワークフロー | head | consumers |
+| --- | --- | --- |
+| `minimax_h3_t2v` / `_t2v_save` / `_i2v` / `_i2v_save`（サブグラフ展開後の ID） | `105:6`（UNETLoader） | `105:16` BasicGuider.model、`105:9` BasicScheduler.model |
+| `minimax_h3_r2v` / `_r2v_save` / `_r2v_context` | `127`（UNETLoader） | `126` BasicGuider.model、`124` BasicScheduler.model |
+| `minimax_h3_t2v_opt` / `_t2v_save_opt` / `_i2v_opt` / `_i2v_save_opt` | `127`（UNETLoader。固定 LoRA なし） | `151` PathchSageAttentionKJ.model |
+| `minimax_h3_i2v_turbo` / `_i2v_save_turbo` | `150`（4step 蒸留 LoRA） | `151` PathchSageAttentionKJ.model |
+| `minimax_h3_r2v_opt` / `_turbo` と、その `_save*` / `_context*` | `144`（参照 LoRA。turbo はその前に蒸留 LoRA `143`） | `151` PathchSageAttentionKJ.model |
+
+opt / turbo の Guider / Scheduler は高速化パッチの出力を読んでいるので付け替えない（パッチ越しに
+チェーンの結果を読む）。チェーンは**ラテントアップスケールの組み替えより前**に組む: 2 段引き継ぎ
+（§3.1）で足す 2 個目の BasicGuider は 1 パス目の guider の入力を写して作るので、先に通して
+おかないと 2 パス目だけユーザー LoRA を素通りする。
 
 - ノード ID は `app_video_lora_0`, `app_video_lora_1`, … と採番する
 - 0 件選択時は consumers が `head` を直接指す（テンプレートと同一のグラフ）
@@ -833,6 +860,11 @@ LoRA は**登録時に対象（`target`）を選ぶ**: `image` なら画像ワ�
   プレースホルダ）を読んでいるかまで確認する。読んでいなければ健全性エラーになる
 - `video_loras` は動画ステージが走るモード（`full` / `i2v`）でのみ有効。`image_only` や
   `lora_chain` を持たないワークフローに指定するとジョブ作成が 422 で拒否される
+- 再実行・続き生成・ワークフロー付け替えでは、付け替え先が `lora_chain` を宣言しているときだけ
+  `video_loras` / `video_trigger_text` を引き継ぐ（`jobs._carried_video_loras`。持たなければ本文ごと落とす）
+- スタジオでは作品の `video_loras`（既定）と `StudioRenderRequest.video_loras`（1 回ぶんの上書き）から
+  決まる（§7 のスタジオ）。こちらは挿せないワークフローに決まっても 422 にせず、LoRA を外して Take の
+  `warning` に理由を残す
 - 人物の同一性は、画像 LoRA → 生成画像 → 開始フレームという経路で動画にも引き継がれる
 
 ---

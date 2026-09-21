@@ -1,4 +1,8 @@
-"""NSFW フラグのテスト（NSFW §2 / §3 / §4）。Grok と ComfyUI は完全にモックする。"""
+"""NSFW フラグのテスト（NSFW §2 / §3 / §4）。ComfyUI は完全にモックする。
+
+自動判定はプロンプトのキーワードだけで決まる（LLM は呼ばない、SPEC §4.1）ので、
+``FakeCli`` は「LLM が呼ばれていないこと」を見るためだけに差してある。
+"""
 
 import shutil
 import subprocess
@@ -23,7 +27,7 @@ needs_ffmpeg = pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg is not installe
 # --------------------------------------------------------------------------
 
 class FakeCli:
-    """`grok -p` の応答を固定で返す（判定は毎回同じ答えでよい）。"""
+    """`grok -p` の差し替え。呼ばれたら ``calls`` が増える（呼ばれない確認用）。"""
 
     def __init__(self, answer: str = '```json\n{"nsfw": true}\n```'):
         self.answer: str | Exception = answer
@@ -165,37 +169,14 @@ def test_heuristic(text, expected):
     assert nsfw.heuristic(text) is expected
 
 
-async def test_classify_reads_the_json_answer(monkeypatch):
-    monkeypatch.setattr(grok, "_exec", FakeCli('```json\n{"nsfw": true}\n```'))
-    assert await nsfw.classify("something") is True
-
-    monkeypatch.setattr(grok, "_exec", FakeCli('{"nsfw": false}'))
-    assert await nsfw.classify("something") is False
-
-
-async def test_classify_returns_none_when_it_cannot_decide(monkeypatch):
-    # CLI が失敗した
-    monkeypatch.setattr(grok, "_exec", FakeCli(grok.LLMError("grok CLI が失敗しました")))
-    assert await nsfw.classify("something") is None
-
-    # JSON が取り出せない
-    monkeypatch.setattr(grok, "_exec", FakeCli("わかりません"))
-    assert await nsfw.classify("something") is None
-
-    # 空文字は Grok を呼ばずに None
+async def test_classify_or_heuristic_never_calls_an_llm(monkeypatch):
+    """判定はキーワードだけ（LLM は呼ばない）。"""
     cli = FakeCli()
     monkeypatch.setattr(grok, "_exec", cli)
-    assert await nsfw.classify("   ") is None
-    assert cli.calls == 0
-
-
-async def test_classify_or_heuristic_falls_back(monkeypatch):
-    monkeypatch.setattr(grok, "_exec", FakeCli(grok.LLMError("down")))
     assert await nsfw.classify_or_heuristic("a nude woman") == (True, "auto")
     assert await nsfw.classify_or_heuristic("a cat") == (False, "auto")
-
-    monkeypatch.setattr(grok, "_exec", FakeCli('{"nsfw": true}'))
-    assert await nsfw.classify_or_heuristic("a cat") == (True, "auto")
+    assert await nsfw.classify_or_heuristic("") == (False, "auto")
+    assert cli.calls == 0
 
 
 # --------------------------------------------------------------------------
@@ -203,7 +184,9 @@ async def test_classify_or_heuristic_falls_back(monkeypatch):
 # --------------------------------------------------------------------------
 
 def test_job_is_created_unjudged_then_flagged_by_the_background_check(env):
-    created = env.client.post("/api/jobs", json=image_body()).json()
+    created = env.client.post(
+        "/api/jobs", json=image_body(image_prompt="a nude woman on a bed")
+    ).json()
     # 判定は生成をブロックしない: 作成時点では未判定
     assert created["nsfw"] is False
     assert created["nsfw_source"] == ""
@@ -211,12 +194,21 @@ def test_job_is_created_unjudged_then_flagged_by_the_background_check(env):
     job = wait_job(env.client, created["id"], judged)
     assert job["nsfw"] is True
     assert job["nsfw_source"] == "auto"
-    assert env.cli.calls >= 1
+    assert env.cli.calls == 0  # 判定に LLM は使わない
+
+
+def test_a_harmless_prompt_is_judged_non_nsfw(env):
+    created = env.client.post("/api/jobs", json=image_body()).json()
+    job = wait_job(env.client, created["id"], judged)
+    assert job["nsfw"] is False
+    assert job["nsfw_source"] == "auto"
 
 
 def test_manual_flag_is_not_overwritten_by_the_auto_check(env):
-    # Grok は true と答えるが、明示指定（manual）が勝つ
-    created = env.client.post("/api/jobs", json=image_body(nsfw=False)).json()
+    # キーワード判定なら true になる本文でも、明示指定（manual）が勝つ
+    created = env.client.post(
+        "/api/jobs", json=image_body(image_prompt="a nude woman", nsfw=False)
+    ).json()
     assert created["nsfw"] is False
     assert created["nsfw_source"] == "manual"
 
@@ -225,7 +217,6 @@ def test_manual_flag_is_not_overwritten_by_the_auto_check(env):
     job = env.client.get(f"/api/jobs/{created['id']}").json()
     assert job["nsfw"] is False
     assert job["nsfw_source"] == "manual"
-    assert env.cli.calls == 0  # 判定そのものが走らない
 
 
 def test_explicit_nsfw_true_is_manual(env):

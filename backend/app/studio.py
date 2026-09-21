@@ -33,7 +33,6 @@ import asyncio
 import json
 import logging
 import re
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -43,9 +42,7 @@ from pydantic import ValidationError
 
 from . import blocking as blocking_render
 from . import comfy
-from . import grok
 from . import jobs as job_service
-from . import nsfw
 from . import studio_demo
 from . import ws
 from .db import LIKE_ESCAPE, get_db, like_pattern
@@ -54,6 +51,7 @@ from .models import (
     ASSET_FILE_ROLE_KINDS,
     MAX_STEPS,
     JobCreate,
+    LoraRef,
     StoryCreate,
     StoryResult,
     StorySceneResult,
@@ -638,9 +636,9 @@ def _asset_url(kind: str, path: str) -> str:
 
 def _row_to_project(row: aiosqlite.Row) -> StudioProject:
     data = dict(row)
-    data["auto_translate"] = bool(data.get("auto_translate", 1))
     data["latent_continuity"] = bool(data.get("latent_continuity", 0))
     data["latent_upscale"] = bool(data.get("latent_upscale", 1))
+    data["video_loras"] = _load_video_loras(data.get("video_loras"))
     data["quality"] = normalize_quality(data.get("quality"))
     data["image_quality"] = normalize_quality(data.get("image_quality"))
     data["megapixels"] = normalize_megapixels(data.get("megapixels"))
@@ -664,6 +662,37 @@ def _load_json(raw: Any) -> dict[str, Any]:
     except ValueError:  # pragma: no cover - 自分で書いた JSON なので通らない
         return {}
     return value if isinstance(value, dict) else {}
+
+
+def _load_video_loras(raw: Any) -> list[LoraRef]:
+    """``video_loras`` 列（:class:`LoraRef` の JSON 配列）を戻す。
+
+    列の無い古いスナップショットや壊れた値は空、形の合わない要素だけを捨てる
+    （1 つ壊れていても残りの LoRA は使えるように）。
+    """
+    if not raw:
+        return []
+    try:
+        value = json.loads(raw) if isinstance(raw, str) else raw
+    except ValueError:
+        return []
+    if not isinstance(value, list):
+        return []
+    loras: list[LoraRef] = []
+    for item in value:
+        try:
+            loras.append(LoraRef.model_validate(item))
+        except ValidationError:
+            continue
+    return loras
+
+
+def _dump_video_loras(loras: Any) -> str:
+    """``video_loras`` を列に書く形（JSON 配列）にする。"""
+    return json.dumps(
+        [LoraRef.model_validate(lora).model_dump() for lora in loras or []],
+        ensure_ascii=False,
+    )
 
 
 def _row_to_asset(
@@ -729,8 +758,6 @@ def _row_to_shot(row: aiosqlite.Row) -> StudioShot:
     data["prompt_updated_at"] = data.get("prompt_updated_at") or data["updated_at"]
     data["english_prompt"] = data.get("english_prompt") or ""
     data["english_source"] = data.get("english_source") or ""
-    data["english_status"] = data.get("english_status") or ""
-    data["english_error"] = data.get("english_error") or ""
     return StudioShot(**data)
 
 
@@ -762,9 +789,9 @@ async def list_projects() -> list[StudioProjectSummary]:
     summaries = []
     for row in rows:
         data = dict(row)
-        data["auto_translate"] = bool(data.get("auto_translate", 1))
         data["latent_continuity"] = bool(data.get("latent_continuity", 0))
         data["latent_upscale"] = bool(data.get("latent_upscale", 1))
+        data["video_loras"] = _load_video_loras(data.get("video_loras"))
         data["quality"] = normalize_quality(data.get("quality"))
         data["image_quality"] = normalize_quality(data.get("image_quality"))
         data["megapixels"] = normalize_megapixels(data.get("megapixels"))
@@ -817,10 +844,11 @@ async def _insert_project(
     try:
         await conn.execute(
             "INSERT INTO studio_projects"
-            " (id, name, code, synopsis, world_notes, auto_translate,"
+            " (id, name, code, synopsis, world_notes,"
             "  latent_continuity, quality, megapixels, aspect_ratio, steps,"
             "  nsfw, latent_upscale, image_quality, image_megapixels,"
-            "  image_aspect_ratio, image_steps, created_at, updated_at)"
+            "  image_aspect_ratio, image_steps, video_loras, created_at,"
+            "  updated_at)"
             " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 project_id,
@@ -828,7 +856,6 @@ async def _insert_project(
                 code,
                 payload.synopsis or "",
                 payload.world_notes or "",
-                1 if payload.auto_translate else 0,
                 1 if payload.latent_continuity else 0,
                 normalize_quality(payload.quality),
                 normalize_megapixels(payload.megapixels),
@@ -840,6 +867,7 @@ async def _insert_project(
                 normalize_megapixels(payload.image_megapixels),
                 normalize_aspect_ratio(payload.image_aspect_ratio),
                 normalize_steps(_checked_steps(payload.image_steps)),
+                _dump_video_loras(payload.video_loras),
                 now,
                 now,
             ),
@@ -891,8 +919,6 @@ async def update_project(
             raise StudioError("プロジェクト名を空にはできません")
     if "code" in changes:
         changes["code"] = str(changes["code"]).strip()
-    if "auto_translate" in changes:
-        changes["auto_translate"] = 1 if changes["auto_translate"] else 0
     if "latent_continuity" in changes:
         changes["latent_continuity"] = 1 if changes["latent_continuity"] else 0
     if "latent_upscale" in changes:
@@ -919,6 +945,9 @@ async def update_project(
         changes["image_steps"] = _checked_steps(changes["image_steps"])
     if "nsfw" in changes:
         changes["nsfw"] = 1 if changes["nsfw"] else 0
+    if "video_loras" in changes:
+        # 並べ替え・強度の変更も含めて丸ごと置き換える（部分更新はしない）
+        changes["video_loras"] = _dump_video_loras(changes["video_loras"])
     async with get_db() as conn:
         project = await _fetch_project(conn, project_id)
         if project is None:
@@ -3003,8 +3032,6 @@ async def update_shot(
     if "english_prompt" in changes and not changes.get("english_prompt"):
         changes["english_prompt"] = ""
         changes["english_source"] = ""
-        changes["english_status"] = ""
-        changes["english_error"] = ""
     async with get_db() as conn:
         shot = await _fetch_shot(conn, shot_id)
         if shot is None:
@@ -3026,6 +3053,30 @@ async def update_shot(
                         str(scene_id) if scene_id is not None else None,
                     ),
                 )
+        if changes.get("english_prompt"):
+            # 英語版を保存するのは外部エージェント（アプリは英訳しない）。
+            # 「どの本文に対する英語か」は保存する側に書かせず、この PATCH の
+            # あとの姿で組み立て直して ``english_source`` に控える
+            # （:func:`_english_cache_usable` はこれと突き合わせる）。
+            updated = shot.model_copy(
+                update={
+                    key: value
+                    for key, value in changes.items()
+                    if key in type(shot).model_fields
+                }
+            )
+            assets = await _fetch_assets(conn, shot.project_id)
+            project = await _fetch_project(conn, shot.project_id)
+            try:
+                plan = await _plan_render(
+                    conn, updated, assets, project, require_context=False
+                )
+            except StudioError:
+                # 組み立てられない（未登録の ``@名前`` など）なら、突き合わせ
+                # 相手が無い = 常に stale として扱う。
+                changes["english_source"] = ""
+            else:
+                changes["english_source"] = plan.prompt
         if changes:
             await _check_base_revision(
                 conn, shot.project_id, base_revision, "shot", shot_id, shot.title,
@@ -3463,124 +3514,21 @@ def compose_prompt(
 
 
 # --------------------------------------------------------------------------
-# 日本語 -> 英語の変換（Grok）
+# 英語プロンプト（英訳は外部エージェントの仕事）
 # --------------------------------------------------------------------------
 #
 # MiniMax H3 は英語プロンプト前提のモデルなので、日本語で書いた脚本はそのまま
-# 投げると精度が落ちる。Shot に使える英語キャッシュ（``english_prompt`` があり
-# ``english_source`` が今の組み立て文と一致）があればそれを投入し、Grok は走らない。
-# 無ければプロジェクトの `auto_translate` が有効なら、ジョブランナーが組み立て済み
-# 本文を Grok に「公式 H3 文書へ書き直す」仕事をさせてから投入する。
-# 直訳ではなく、事実はそのまま、欠ける公式フィールドと観測できる演出を足す。
-# 壊してはいけないもの:
-#   - `<Picture N>` / `<Video N>` / `<Audio N>` / `<Subject N>`（参照タグ）
-#   - 引用符の中の台詞と `<d>…</d>` の中身（H3 はこれをそのまま喋るので、原語）
-#   - ユーザーが書いていない人物・場所・衣装・台詞・筋（発明しない）
-#   - 除外文があればそのまま
-
-#: 変換指示のひな形。``{hint}`` に投入先ワークフローの `prompt_hint` が入る。
-TRANSLATION_INSTRUCTION = (
-    "You rewrite a Japanese video prompt into a complete official English"
-    " MiniMax H3 document. Output **only** the rewritten prompt — no"
-    " preamble, no explanation, no markdown fences. You are an official"
-    " rewriter, not a literal translator: keep every stated fact, and fill"
-    " the official fields and observable staging the source omitted.\n\n"
-    "Hard rules:\n"
-    "- Keep every reference tag (`<Picture 1>`, `<Video 2>`, `<Audio 1>`,"
-    " `<Subject 1>`, …) exactly as written. Never renumber, translate or"
-    " drop one, and never invent a new one.\n"
-    "- Keep spoken lines inside double quotes **and** the contents of every"
-    " `<d>…</d>` block **in their original language** (Japanese stays"
-    " Japanese); translate only the words around them. Do not invent"
-    " dialogue.\n"
-    "- Do not invent characters, locations, wardrobe, spoken lines, or plot"
-    " events the source did not state.\n"
-    "- Keep the closing exclusion sentence if present.\n\n"
-    "You must now do:\n"
-    "- Emit a complete official document (base 3 fields or Ref2VA 6 fields,"
-    " from the workflow hint below).\n"
-    "- Add missing field headers, `[Shot 1]`, official camera clauses, and"
-    " `overall_soundscape` / `non_diegetic_music` derived from the stated"
-    " action and any `soundscape` / `bgm` already in the source.\n"
-    "- Develop observable staging of **stated** actions (body, contact,"
-    " eyeline, resulting state, lighting already implied).\n"
-    "- I2VA: keep or add the official alignment first line when the source"
-    " is a first-frame job.\n"
-    "- Ref2VA: if tags are present but analysis sections are missing, write"
-    " **minimal** `subject_definitions` / `summary` /"
-    " `retention_analysis` / `detailed_description` **only from those tags"
-    " and stated facts** (do not invent extra subjects).\n"
-    "- Keep `[Shot N]` and `At MM:SS.mmm`. Do **not** convert into"
-    " `Camera:` / `Audio:` lines.\n\n"
-    "How an H3 prompt should read:\n{hint}\n\n"
-    "Source prompt:\n{prompt}"
-)
-
-#: 応答が ```…``` で包まれていたときに中身だけ取り出す
-_FENCE = re.compile(r"^```[a-zA-Z0-9_-]*\s*(.*?)\s*```$", re.DOTALL)
-
-#: Grok CLI が公式文書の前に独り言を付けることがある。最初の公式フィールド
-#: （または i2v の alignment 行）からを本文とする。
-_H3_DOCUMENT_START = re.compile(
-    r"(?is)("
-    r"For the target video, at 0\.00 seconds into the target video,"
-    r"|How the reference pictures align with the target video"
-    r"|integrated_multimodal_description\s*:"
-    r"|detailed_description\s*:"
-    r"|subject_definitions\s*:"
-    r"|summary\s*:"
-    r"|retention_analysis\s*:"
-    r"|overall_soundscape\s*:"
-    r"|non_diegetic_music\s*:"
-    r")"
-)
-
-_DIALOGUE_LANG = (
-    (re.compile(r"(<d>\[)日本語(\])"), r"\1Japanese\2"),
-    (re.compile(r"(<d>\[)英語(\])"), r"\1English\2"),
-)
+# 投げると精度が落ちる。アプリ内では英訳しない（LLM を呼ぶのはプロンプト作成
+# チャットとヘルスチェックだけ）。Shot に使える英語キャッシュ
+# （``english_prompt`` があり ``english_source`` が今の組み立て文と一致）が
+# あればそれを投入し、無くて本文に日本語が混ざっていれば投入を断る。
+# 英語版は外部エージェント（`/api/v1` を叩く Claude Code など）が
+# ``PATCH /shots/{id}`` の ``english_prompt`` に保存する（書き方は
+# :mod:`app.drafting_guide` の「日本語で書いた場合の英訳手順」）。
 
 
 def has_japanese(text: str) -> bool:
     return bool(_JAPANESE.search(text or ""))
-
-
-def _unfence(text: str) -> str:
-    match = _FENCE.match((text or "").strip())
-    return (match.group(1) if match else text).strip()
-
-
-def extract_h3_document(text: str) -> str:
-    """フェンスと先頭の独り言を落とし、公式 H3 文書だけ残す。
-
-    公式フィールドが一つも無い応答は空文字（呼び出し側が失敗にする）。
-    """
-    body = _unfence(text)
-    match = _H3_DOCUMENT_START.search(body)
-    if match is None:
-        return ""
-    body = body[match.start() :].strip()
-    for pattern, repl in _DIALOGUE_LANG:
-        body = pattern.sub(repl, body)
-    return body
-
-
-async def translate_prompt(prompt: str, workflow_id: str) -> str:
-    """日本語まじりの本文を H3 用の英語プロンプトへ直す。
-
-    :class:`app.grok.LLMError` はそのまま投げる（呼び出し側がジョブを失敗させる）。
-    空の応答も同じ扱いにする。待ち時間は相談と同じ ``agent_grok_timeout``。
-    """
-    hint = get_video_spec(workflow_id).prompt_hint
-    started = time.monotonic()
-    answer = await grok.get_client(timeout=grok.configured_timeout()).complete(
-        TRANSLATION_INSTRUCTION.format(hint=hint, prompt=prompt)
-    )
-    translated = extract_h3_document(answer)
-    if not translated:
-        raise grok.LLMError("grok が空のプロンプトを返しました")
-    log.info("translate_prompt took %.1fs", time.monotonic() - started)
-    return translated
 
 
 # --------------------------------------------------------------------------
@@ -3592,7 +3540,7 @@ class _Plan(NamedTuple):
 
     workflow: str
     reason: str
-    #: 実際に投入する本文（公式フィールドと除外文まで込み。英訳の前）
+    #: 実際に投入する本文（公式フィールドと除外文まで込み。日本語のまま）
     prompt: str
     start_image: str | None
     references: list[StudioAsset]
@@ -3612,8 +3560,50 @@ class _Plan(NamedTuple):
     #: ワークフローや読めない環境では空 = 何も載せない）
     selects: dict[str, str] = {}
     #: 組み立てはできたが投入はできない理由（日本語。``require_context`` を
-    #: 落とした英訳・プレビューでだけ入りうる。空なら投入できる）
+    #: 落としたプレビューでだけ入りうる。空なら投入できる）
     render_blocker: str = ""
+
+
+def _joined_triggers(loras: list[LoraRef]) -> str:
+    """LoRA のトリガーワードを ``", "`` で連結する（生成フォームと同じ形）。"""
+    return ", ".join(
+        lora.trigger_word.strip() for lora in loras if lora.trigger_word.strip()
+    )
+
+
+def _resolve_video_loras(
+    workflow: str,
+    project: StudioProject | None,
+    override: list[LoraRef] | None = None,
+) -> tuple[list[LoraRef], str]:
+    """この回に挿す動画 LoRA と、落としたときの理由（SPEC §3.4.2）。
+
+    **この 1 回ぶんの上書き > プロジェクトの既定** の順で決める。上書きの
+    ``None`` は「作品の既定を使う」、``[]`` は「この回は LoRA なし」の明示。
+
+    決まったワークフローが ``lora_chain`` を宣言していなければ、そのまま
+    渡すとジョブが 422（:func:`app.models.video_lora_problem`）になるので、
+    LoRA を落として理由を返す（Take の ``warning`` とプレビューの
+    ``video_lora_warning`` に出す）。脚本の都合で決まるワークフローが原因で
+    投入そのものが止まるのは困るため、断らずに知らせる側に倒している。
+    """
+    if override is not None:
+        loras = list(override)
+    else:
+        loras = list(project.video_loras) if project is not None else []
+    if not loras:
+        return [], ""
+    try:
+        chain = get_video_spec(workflow).lora_chain
+    except WorkflowSpecError:
+        chain = None
+    if chain is None:
+        names = ", ".join(lora.lora_name for lora in loras)
+        return [], (
+            f"ワークフロー {workflow} は動画 LoRA を挿せないため、"
+            f"動画 LoRA（{names}）を外して投入します"
+        )
+    return loras, ""
 
 
 async def _plan_render(
@@ -3649,7 +3639,7 @@ async def _plan_render(
 
     ``require_context`` を False にすると、連続カット（ラテント連続性）の
     引き継ぎ元が無くても断らず、本文だけ同じ形で組み立てて、投入できない理由を
-    ``render_blocker`` に入れて返す（英訳とプレビューだけが使う。生成は
+    ``render_blocker`` に入れて返す（プレビューだけが使う。生成は
     今までどおり断る）。
     """
     # 添付できる（＝ファイル実体を持つ）素材を呼んでいるか。メタデータだけの
@@ -3726,9 +3716,9 @@ def _english_cache_usable(shot: StudioShot, assembled: str) -> bool:
 async def preview_shot(shot_id: str) -> StudioShotPreview | None:
     """この Shot を今生成したら何が投入されるか（Shot が無ければ None）。
 
-    生成と同じ :func:`_plan_render` を通すが、**Grok の英訳は走らせない**
-    （遅く、課金枠を食う）。英訳が入るかどうかは ``will_translate`` で返す
-    （使える ``english_prompt`` があれば False）。
+    生成と同じ :func:`_plan_render` を通す。英語版が要るかどうかは
+    ``needs_translation`` で返す（本文に日本語があり、使える
+    ``english_prompt`` が無いとき True = このままでは投入できない）。
     組み立てられないときも 200 で、理由を ``error`` に入れて返す。
 
     連続カット（ラテント連続性）の引き継ぎ元がまだ無いときは、本文までは
@@ -3741,7 +3731,6 @@ async def preview_shot(shot_id: str) -> StudioShotPreview | None:
             return None
         project = await _fetch_project(conn, shot.project_id)
         assets = await _fetch_assets(conn, shot.project_id)
-        auto_translate = project is not None and project.auto_translate
         latent_continuity = project is not None and project.latent_continuity
         quality = normalize_quality(project.quality if project is not None else None)
         try:
@@ -3752,7 +3741,6 @@ async def preview_shot(shot_id: str) -> StudioShotPreview | None:
             return StudioShotPreview(
                 shot_id=shot.id,
                 workflow=shot.workflow_override,
-                auto_translate=auto_translate,
                 latent_continuity=latent_continuity,
                 quality=quality,
                 latent_upscale=(
@@ -3762,11 +3750,10 @@ async def preview_shot(shot_id: str) -> StudioShotPreview | None:
                 ),
                 english_prompt=shot.english_prompt,
                 english_stale=bool(shot.english_prompt),
-                english_status=shot.english_status,
-                english_error=shot.english_error,
                 error=str(exc),
             )
     usable = _english_cache_usable(shot, plan.prompt)
+    video_loras, lora_warning = _resolve_video_loras(plan.workflow, project)
     return StudioShotPreview(
         shot_id=shot.id,
         workflow=plan.workflow,
@@ -3779,155 +3766,21 @@ async def preview_shot(shot_id: str) -> StudioShotPreview | None:
             for asset, tag in zip(plan.references, plan.tags)
         ],
         start_frame=plan.start_image,
-        auto_translate=auto_translate,
-        will_translate=(
-            not usable and auto_translate and has_japanese(plan.prompt)
-        ),
+        needs_translation=not usable and has_japanese(plan.prompt),
         english_prompt=shot.english_prompt,
         english_stale=bool(shot.english_prompt) and not usable,
-        english_status=shot.english_status,
-        english_error=shot.english_error,
         latent_continuity=latent_continuity,
         quality=quality,
         quality_applied=plan.quality_applied,
         latent_upscale=plan.selects.get(LATENT_UPSCALE_NAME) == "on",
+        video_loras=video_loras,
+        video_trigger_text=_joined_triggers(video_loras),
+        video_lora_warning=lora_warning,
         context_video=plan.context_video,
         context_latent=plan.context_latent,
         context_latent_hires=plan.context_latent_hires,
         render_blocker=plan.render_blocker,
     )
-
-
-async def recover_interrupted_translates() -> None:
-    """再起動で残った ``translating`` を失敗にする（起動時に 1 回だけ呼ぶ）。"""
-    async with get_db() as conn:
-        await conn.execute(
-            "UPDATE studio_shots SET english_status='failed',"
-            " english_error='英訳が中断されました。もう一度英訳してください'"
-            " WHERE english_status='translating'"
-        )
-        await _commit(conn)
-
-
-async def _run_translate(
-    shot_id: str, assembled: str, workflow_id: str, actor: str
-) -> None:
-    """Grok 英訳の本体。例外は投げない（autotag と同じ）。"""
-    try:
-        error = ""
-        english = ""
-        try:
-            english = await translate_prompt(assembled, workflow_id)
-        except asyncio.CancelledError:
-            raise
-        except grok.LLMError as exc:
-            error = (
-                "英語プロンプトへの変換ができないので保存しませんでした"
-                f"（{exc}）"
-            )
-        async with get_db() as conn:
-            shot = await _fetch_shot(conn, shot_id)
-            if shot is None or shot.english_status != "translating":
-                return
-            now = _now()
-            if error:
-                await conn.execute(
-                    "UPDATE studio_shots SET english_status = 'failed',"
-                    " english_error = ?, updated_at = ? WHERE id = ?",
-                    (error, now, shot_id),
-                )
-            else:
-                await conn.execute(
-                    "UPDATE studio_shots SET english_prompt = ?, english_source = ?,"
-                    " english_status = '', english_error = '',"
-                    " updated_at = ?, prompt_updated_at = ? WHERE id = ?",
-                    (english, assembled, now, now, shot_id),
-                )
-                await _record_revision(
-                    conn,
-                    shot.project_id,
-                    actor,
-                    f"{_titled('カット', shot.title, shot_id)}を更新"
-                    "(english_prompt)",
-                    entity_kind="shot",
-                    entity_id=shot_id,
-                )
-            await _commit(conn)
-    except asyncio.CancelledError:
-        raise
-    except Exception:  # noqa: BLE001 - 英訳の失敗で HTTP を壊さない
-        log.exception("shot %s の英訳に失敗しました", shot_id)
-        try:
-            async with get_db() as conn:
-                await conn.execute(
-                    "UPDATE studio_shots SET english_status = 'failed',"
-                    " english_error = ?, updated_at = ?"
-                    " WHERE id = ? AND english_status = 'translating'",
-                    ("英訳に失敗しました", _now(), shot_id),
-                )
-                await _commit(conn)
-        except Exception:  # noqa: BLE001
-            log.exception("shot %s の英訳失敗を記録できませんでした", shot_id)
-
-
-async def translate_shot(shot_id: str, *, actor: str = "user") -> StudioShot | None:
-    """組み立て済み本文の英訳を開始して Shot を返す。
-
-    組み立て不能なら :class:`StudioError`。英語だけなら Grok は呼ばず、その
-    組み立て文をキャッシュとして残して返す。日本語があるときは
-    ``english_status='translating'`` にして Grok を裏で走らせ、すぐ返す。
-    """
-    async with get_db() as conn:
-        shot = await _fetch_shot(conn, shot_id)
-        if shot is None:
-            return None
-        project = await _fetch_project(conn, shot.project_id)
-        assets = await _fetch_assets(conn, shot.project_id)
-        # 英訳に要るのは本文だけなので、連続カットの引き継ぎ元が無くても
-        # 組み立てて訳す（投入は :func:`render_shot` が今までどおり断る）。
-        plan = await _plan_render(conn, shot, assets, project, require_context=False)
-
-    if not has_japanese(plan.prompt):
-        now = _now()
-        async with get_db() as conn:
-            await conn.execute(
-                "UPDATE studio_shots SET english_prompt = ?, english_source = ?,"
-                " english_status = '', english_error = '',"
-                " updated_at = ?, prompt_updated_at = ? WHERE id = ?",
-                (plan.prompt, plan.prompt, now, now, shot_id),
-            )
-            await _record_revision(
-                conn,
-                shot.project_id,
-                actor,
-                f"{_titled('カット', shot.title, shot_id)}を更新(english_prompt)",
-                entity_kind="shot",
-                entity_id=shot_id,
-            )
-            await _commit(conn)
-            return await _fetch_shot(conn, shot_id)
-
-    async with get_db() as conn:
-        shot = await _fetch_shot(conn, shot_id)
-        if shot is None:
-            return None
-        if shot.english_status == "translating":
-            return shot
-        await conn.execute(
-            "UPDATE studio_shots SET english_status = 'translating',"
-            " english_error = '' WHERE id = ?",
-            (shot_id,),
-        )
-        await _commit(conn)
-        shot = await _fetch_shot(conn, shot_id)
-    if shot is None:
-        return None
-
-    nsfw.spawn(
-        _run_translate(shot_id, plan.prompt, plan.workflow, actor),
-        key=f"translate:{shot_id}",
-    )
-    return shot
 
 
 # --------------------------------------------------------------------------
@@ -4117,25 +3970,6 @@ async def record_take_latent(
         await _commit(conn)
 
 
-async def record_translated_prompt(job_id: str, translated: str) -> None:
-    """英訳が終わった本文を、そのジョブの Take に書き戻す。
-
-    呼ぶのはジョブランナー。スタジオ由来でないジョブでは対象の行が無いだけ。
-    """
-    async with get_db() as conn:
-        async with conn.execute(
-            "SELECT id, project_id FROM studio_takes WHERE job_id = ?", (job_id,)
-        ) as cur:
-            rows = await cur.fetchall()
-        await conn.execute(
-            "UPDATE studio_takes SET prompt = ? WHERE job_id = ?",
-            (translated, job_id),
-        )
-        for row in rows:
-            _queue_event(conn, row["project_id"], "take", row["id"], "update")
-        await _commit(conn)
-
-
 async def notify_job_settled(job_id: str) -> None:
     """終わったジョブがスタジオの Take なら、その作品へ更新を流す。
 
@@ -4229,9 +4063,9 @@ async def render_shot(
     2. 生成設定（画面比・解像度・尺・ステップ数・シード・ラテント
        アップスケール）を **この 1 回ぶんの上書き > Shot > プロジェクト >
        既定** の順に解決する。
-    3. 使える英語キャッシュがあればそれを ``video_prompt`` にする。無ければ
-       プロジェクトの ``auto_translate`` が有効で本文に日本語が混ざっていれば、
-       ジョブ側で英訳する（ここでは待たない。``pending_translate`` を載せる）。
+    3. 使える英語キャッシュがあればそれを ``video_prompt`` にする。無くて本文に
+       日本語が混ざっていれば投入しない（アプリ内では英訳しない。英語版は外部
+       エージェントが ``english_prompt`` に保存する）。
     4. :func:`app.jobs.create_job` にそのまま渡す（HTTP は経由しない）。
 
     ``overrides``（:class:`app.models.StudioRenderRequest`）はそのテイクにだけ
@@ -4267,6 +4101,15 @@ async def render_shot(
         # 接続先に合わせて解決済み。宣言の無いワークフローには載らない。
         if plan.selects:
             fields["selects"] = dict(plan.selects)
+        # 動画 LoRA は **この 1 回ぶんの上書き > プロジェクトの既定**（SPEC §3.4.2）。
+        # トリガーワードも明示して載せる（ジョブの params に何が付いたか残るように）。
+        # 挿せないワークフローに決まったときは落として、Take の warning で知らせる。
+        video_loras, lora_warning = _resolve_video_loras(
+            workflow, project, over.video_loras
+        )
+        if video_loras:
+            fields["video_loras"] = [lora.model_dump() for lora in video_loras]
+            fields["video_trigger_text"] = _joined_triggers(video_loras)
         # Shot ごとの生成設定。**H3 が実際に受け取るものだけ**を渡す（否定
         # プロンプトは MiniMax H3 のグラフに注入先が無いので Shot には持たせない）。
         #
@@ -4327,20 +4170,18 @@ async def render_shot(
     if workflow in LATENT_CONTEXT_WORKFLOWS:
         await _require_latent_context()
 
-    # 使える英語キャッシュがあればそれを投入する（投入時の Grok は走らない）。
-    # 無ければ今までどおり、auto_translate かつ日本語ならジョブランナー側で
-    # 英訳する（HTTP を待たせない。``pending_translate`` だけ載せる）。
+    # 使える英語キャッシュがあればそれを投入し、元の日本語は ``source_prompt``
+    # に残す。キャッシュが無くて本文に日本語が混ざっていれば投入しない
+    # （アプリ内では英訳しない。SPEC §4.1）。
     source_prompt = ""
-    warning = ""
-    extra_params: dict[str, Any] | None = None
+    warning = lora_warning
     submitted = prompt
     if _english_cache_usable(shot, prompt):
         submitted = shot.english_prompt
         fields["video_prompt"] = submitted
         source_prompt = prompt
-    elif project is not None and project.auto_translate and has_japanese(prompt):
-        source_prompt = prompt
-        extra_params = {"pending_translate": True}
+    elif has_japanese(prompt):
+        raise StudioError(NEEDS_ENGLISH_PROMPT)
 
     if chat_session_id:
         fields["chat_session_id"] = chat_session_id
@@ -4352,7 +4193,7 @@ async def render_shot(
     except ValidationError as exc:
         raise StudioError(_first_message(exc)) from exc
     try:
-        job = await job_service.create_job(payload, extra_params=extra_params)
+        job = await job_service.create_job(payload)
     except job_service.JobValidationError as exc:
         raise StudioError(str(exc)) from exc
 
@@ -4379,23 +4220,19 @@ async def render_shot(
         _queue_event(conn, shot.project_id, "take", take_id, "create")
         await _commit(conn)
 
-    # ランナーが Take 作成より先に英訳を済ませていることがある。
-    if extra_params and extra_params.get("pending_translate"):
-        current = await job_service.get_job(job.id, include_workflow=False)
-        translated = ""
-        if current is not None:
-            translated = str(
-                current.params.get("video_prompt") or current.video_prompt or ""
-            )
-        if translated and translated != prompt:
-            await record_translated_prompt(job.id, translated)
-
     async with get_db() as conn:
         return await _fetch_take(conn, take_id)  # type: ignore[return-value]
 
 
+#: 本文に日本語が混ざっていて、使える英語キャッシュが無いときの断り文句。
+#: アプリ内では英訳しないので、英語版は外部エージェントに書いてもらう。
+NEEDS_ENGLISH_PROMPT = (
+    "プロンプトに日本語が含まれています。english_prompt に英語版を保存してから"
+    "生成してください（外部エージェントに英訳を依頼するか、英語で書いてください）"
+)
+
 #: 連続カット（ラテント連続性）の材料が揃っていないときの断り文句。
-#: 生成では :class:`StudioError` として投げ、英訳・プレビューでは組み立てを
+#: 生成では :class:`StudioError` として投げ、プレビューでは組み立てを
 #: 通したうえで「投入できない理由」として返す（:func:`_pick_workflow`）。
 NO_CARRY_OVER_CONTEXT = (
     "前 Shot の採用 Take がありません。前 Shot の Take を採用するか、"
@@ -4443,7 +4280,7 @@ async def _pick_workflow(
     ``require_context`` を False にすると、引き継ぎ元（前 Shot の採用 Take の
     動画と AV ラテント）が無くても断らず、``minimax_h3_r2v_context`` のまま
     引き継ぎ材料を ``None`` にして返し、断り文句を ``blocker`` に入れる。
-    本文の組み立てだけが要る英訳・プレビュー用（生成は既定の True のまま）。
+    本文の組み立てだけが要るプレビュー用（生成は既定の True のまま）。
 
     返すのは**論理モードのまま**の id で、ラテント連続性が ON のときの保存付き
     バリアントへの読み替えは呼び出し側（:func:`_plan_render`）がやる。
@@ -4488,7 +4325,7 @@ async def _pick_workflow(
         if context is None:
             if require_context:
                 raise StudioError(NO_CARRY_OVER_CONTEXT)
-            # 英訳・プレビュー: 本文の形は連続カットのままで、引き継ぎ材料が
+            # プレビュー: 本文の形は連続カットのままで、引き継ぎ材料が
             # 無いことは投入できない理由として持ち帰る。
             return _Mode(
                 WORKFLOW_R2V_CONTEXT, None, True,
@@ -4602,7 +4439,7 @@ async def reject_take(take_id: str, *, actor: str = "user") -> StudioTake | None
 PENDING_JOB_STATUSES = job_service.PENDING_STATUSES
 
 #: 暴走ガードの「数えてから投入する」を直列化する錠（外部 API 用）。
-#: 数えたあとに投入するまでのあいだ（英訳の待ちを含む）に別のリクエストが
+#: 数えたあとに投入するまでのあいだに別のリクエストが
 #: 割り込むと、上限に達していても全部すり抜けてしまう。バックエンドは 1 本の
 #: プロセスで動かすので、プロセス内の錠で足りる。
 #: **投入する側だけが取る**（数えるほう自体は錠を取らない）。

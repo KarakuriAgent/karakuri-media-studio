@@ -43,7 +43,6 @@ from fastapi import (
 from pydantic import ValidationError
 from starlette.datastructures import UploadFile as FormUploadFile
 
-from .. import autotag
 from .. import jobs as job_service
 from .. import remotion as remotion_service
 from .. import library, sheets, studio as service, timeline as timeline_service
@@ -506,9 +505,10 @@ async def reorder_shots(
 async def preview_shot_prompt(shot_id: str) -> StudioShotPreview:
     """このカットを今生成したら**実際に投入されるもの**（読み取りだけ）。
 
-    レンダリングの前にここで確認する。生成と同じ組み立てを通すが、Grok の
-    英訳は走らせない（``will_translate`` で入るかどうかだけ伝える。使える
-    英語キャッシュがあれば False）。組み立てられないカットも 400 ではなく、
+    レンダリングの前にここで確認する。生成と同じ組み立てを通す。本文に日本語が
+    混ざっていて使える英語キャッシュが無いときは ``needs_translation`` が True
+    （このままでは投入できない。英語版を書いて ``PATCH /shots/{id}`` の
+    ``english_prompt`` に保存する）。組み立てられないカットも 400 ではなく、
     理由を ``error`` に入れた 200 で返す。組み立てはできるが材料が足りなくて
     投入だけができない（連続カットの引き継ぎ元がまだ無い）ときは ``error``
     ではなく ``render_blocker`` に理由が入る。
@@ -770,18 +770,6 @@ async def delete_asset(asset_id: str) -> None:
 # --------------------------------------------------------------------------
 # Take（Shot の生成）
 # --------------------------------------------------------------------------
-
-@router.post("/shots/{shot_id}/translate", response_model=StudioShot)
-async def translate_shot(shot_id: str) -> StudioShot:
-    """組み立て済み本文の英訳を開始する（Grok は裏で走り、完了は Shot を見る）。"""
-    try:
-        shot = await service.translate_shot(shot_id, actor=ACTOR)
-    except service.StudioError as exc:
-        raise _bad_request(exc) from exc
-    if shot is None:
-        raise HTTPException(status_code=404, detail="shot not found")
-    return shot
-
 
 @router.get("/shots/{shot_id}/takes", response_model=list[StudioTake])
 async def list_takes(shot_id: str) -> list[StudioTake]:
@@ -1075,8 +1063,6 @@ async def add_library_from_job(payload: LibraryFromJob) -> LibraryItem:
         ) from exc
     except library.LibraryError as exc:
         raise _library_bad_request(exc) from exc
-    # 表示名とタグを Grok に考えさせる（指定済みのものは触らない、SPEC §7.2）
-    autotag.spawn_for(item, job, named=bool(payload.name.strip()))
     return item
 
 

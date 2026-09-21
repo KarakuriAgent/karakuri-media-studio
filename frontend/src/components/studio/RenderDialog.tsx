@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Loader2 } from 'lucide-react'
 
-import type { StudioRenderRequest, StudioShot } from '../../types'
+import type { Lora, StudioRenderRequest, StudioShot } from '../../types'
 import { FieldError, Modal } from '../ui'
 import { NativeSelect } from '../NativeSelect'
 import { Button } from '../ui/button'
@@ -12,24 +12,27 @@ import {
   MAX_STEPS,
   SHOT_DURATION_MAX,
   SHOT_DURATION_MIN,
+  formatLoraList,
   renderFormFromShot,
   renderRequestFromForm,
   validateRenderForm,
   type RenderDefaults,
   type RenderFormState,
 } from './studio'
+import VideoLoraEditor from './VideoLoraEditor'
 
 /**
  * 「生成」ボタンのダイアログ: そのテイク 1 回ぶんの設定。
  *
  * 初期値はいまの解決結果（解像度はカット → プロジェクト、尺はカット、
- * ステップ数とラテントアップスケールはプロジェクト、シードはカットの設定）なので、**何も触らずに
+ * ステップ数・ラテントアップスケール・動画 LoRA はプロジェクト、シードはカットの設定）なので、**何も触らずに
  * 「この設定で生成」を押せば今までどおりの投入**になる。ここで変えた値は
  * その 1 回にだけ効き、カットもプロジェクトも書き換えない。
  */
 export default function RenderDialog({
   shot,
   project,
+  registeredVideoLoras = [],
   aspectRatios = [],
   busy,
   onRender,
@@ -38,6 +41,8 @@ export default function RenderDialog({
   shot: StudioShot
   /** プロジェクト側の既定（解像度・ステップ数・ラテントアップスケール）。 */
   project: RenderDefaults
+  /** 動画用に登録された LoRA（「この回だけ指定」で選ぶ）。 */
+  registeredVideoLoras?: Lora[]
   /** 生成フォームと同じアスペクト比の候補。 */
   aspectRatios?: string[]
   busy: boolean
@@ -187,6 +192,43 @@ export default function RenderDialog({
               <FieldError message={errorOf('seed')} />
             </div>
           )}
+        </div>
+
+        <div className="space-y-2 rounded-md border border-border bg-surface-sunken p-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <Label htmlFor="studio-render-video-lora-mode">動画 LoRA</Label>
+            <div className="w-48">
+              <NativeSelect
+                id="studio-render-video-lora-mode"
+                value={form.video_lora_mode}
+                onChange={(event) =>
+                  patch({
+                    video_lora_mode: event.target.value === 'custom' ? 'custom' : 'project',
+                  })
+                }
+              >
+                <option value="project">作品の既定を使う</option>
+                <option value="custom">この回だけ指定</option>
+              </NativeSelect>
+            </div>
+          </div>
+          {form.video_lora_mode === 'project' ? (
+            <p className="text-[11px] text-muted-foreground">
+              {(project.video_loras ?? []).length > 0
+                ? `作品の既定: ${formatLoraList(project.video_loras)}`
+                : '作品の既定: なし'}
+            </p>
+          ) : (
+            <VideoLoraEditor
+              registered={registeredVideoLoras}
+              value={form.video_loras}
+              onChange={(video_loras) => patch({ video_loras })}
+              searchId="studio-render-lora-search"
+            />
+          )}
+          <p className="text-[11px] text-muted-foreground-subtle">
+            LoRA を挿せないワークフローになったときは外して投入され、Take に警告が出ます。
+          </p>
         </div>
 
         <div className="flex items-center justify-end gap-2">

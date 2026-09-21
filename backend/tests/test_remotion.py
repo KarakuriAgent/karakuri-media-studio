@@ -36,10 +36,6 @@ def clear_cache():
     remotion.clear_cache()
 
 
-async def _no_llm(text: str) -> None:
-    return None
-
-
 def make_project(tmp_path: Path, *, entry: str = "src/index.ts", package=None) -> Path:
     """Remotion プロジェクトのふり（entry・package.json・node_modules だけ）。"""
     root = tmp_path / "remotion-project"
@@ -441,7 +437,6 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.db")
     monkeypatch.setattr(jobs, "OUTPUTS_DIR", outputs)
     monkeypatch.setattr(jobs, "ASSETS_DIR", assets)
-    monkeypatch.setattr(nsfw, "classify", _no_llm)
 
     project = make_project(tmp_path)
     monkeypatch.setattr(remotion, "REMOTION_BUNDLED_DIR", project)

@@ -10,6 +10,7 @@ import {
 } from 'lucide-react'
 
 import type {
+  Lora,
   JobProgress,
   StudioAsset,
   StudioRenderRequest,
@@ -270,10 +271,10 @@ function TakeCard({
 }
 
 /**
- * 選んでいる Take の詳細: 実際に投入した本文と、英訳する前の原文。
+ * 選んでいる Take の詳細: 実際に投入した本文と、その元になった日本語。
  *
- * 自動英訳をオンにしていると投入本文は英語になるので、原文を畳んで併記して
- * 「どこがどう訳されたのか」を後から追えるようにする。
+ * 英語版（`english_prompt`）を投入したときは本文が英語になるので、組み立て
+ * 済みの日本語を畳んで併記して「どこがどう訳されたのか」を後から追えるようにする。
  */
 function TakeDetail({ take, index }: { take: StudioTake; index: number }) {
   if (!take.prompt && !take.source_prompt && !take.warning) return null
@@ -306,7 +307,7 @@ function TakeDetail({ take, index }: { take: StudioTake; index: number }) {
       {take.source_prompt && (
         <details className="mt-2">
           <summary className="cursor-pointer text-[11px] text-muted-foreground">
-            英訳する前の原文を見る
+            元になった日本語を見る
           </summary>
           <p className="mt-1 whitespace-pre-wrap break-words rounded-md border border-border bg-surface-sunken p-2 text-xs leading-relaxed text-muted-foreground">
             {take.source_prompt}
@@ -402,6 +403,7 @@ export default function ProductionView({
   onDeleteTake,
   busy,
   projectDefaults,
+  registeredVideoLoras = [],
   aspectRatios = [],
   latentContinuity = false,
   showNsfw = true,
@@ -423,6 +425,8 @@ export default function ProductionView({
   busy: boolean
   /** 生成ダイアログの初期値に使うプロジェクト設定（解像度・ステップ数）。 */
   projectDefaults: RenderDefaults
+  /** 動画用に登録された LoRA（生成ダイアログの「この回だけ指定」で選ぶ）。 */
+  registeredVideoLoras?: Lora[]
   /** 生成フォームと同じアスペクト比の候補。 */
   aspectRatios?: string[]
   /** プロジェクトの設定（引き継ぎを Motion Context で行う = ラテント連続性）。 */
@@ -650,6 +654,7 @@ export default function ProductionView({
           key={selectedShot.id}
           shot={selectedShot}
           project={projectDefaults}
+          registeredVideoLoras={registeredVideoLoras}
           aspectRatios={aspectRatios}
           busy={busy}
           onClose={() => setRenderOpen(false)}

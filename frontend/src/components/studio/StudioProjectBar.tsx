@@ -2,7 +2,13 @@ import { useState } from 'react'
 import { ArrowLeft, SlidersHorizontal } from 'lucide-react'
 
 import { DEFAULT_MEGAPIXELS } from '../../form'
-import type { ComfyTarget, StudioImageQuality, StudioVideoQuality } from '../../types'
+import type {
+  ComfyTarget,
+  Lora,
+  LoraRef,
+  StudioImageQuality,
+  StudioVideoQuality,
+} from '../../types'
 import { Modal } from '../ui'
 import { Button } from '../ui/button'
 import { Checkbox } from '../ui/checkbox'
@@ -10,6 +16,7 @@ import { Input } from '../ui/input'
 import { Label } from '../ui/label'
 import { NativeSelect } from '../NativeSelect'
 import TargetSelector from '../TargetSelector'
+import VideoLoraEditor from './VideoLoraEditor'
 import {
   IMAGE_QUALITIES,
   IMAGE_QUALITY_HINT,
@@ -18,6 +25,7 @@ import {
   VIDEO_QUALITIES,
   VIDEO_QUALITY_HINT,
   VIDEO_QUALITY_LABEL,
+  formatLoraList,
   formatProjectSettingsSummary,
 } from './studio'
 
@@ -60,6 +68,9 @@ export default function StudioProjectBar({
   imageSteps,
   latentUpscale,
   onLatentUpscaleChange,
+  videoLoras = [],
+  registeredVideoLoras = [],
+  onVideoLorasChange,
   busy,
 }: {
   name: string
@@ -97,6 +108,12 @@ export default function StudioProjectBar({
   /** ラテントアップスケール（作品既定。テイク生成のたびに上書きできる）。 */
   latentUpscale: boolean
   onLatentUpscaleChange: (value: boolean) => void
+  /** 作品共通の動画 LoRA（テイク生成のたびに上書きできる）。 */
+  videoLoras?: LoraRef[]
+  /** 動画用に登録された LoRA（いまの接続先のぶん）。 */
+  registeredVideoLoras?: Lora[]
+  /** 省略すると動画 LoRA の欄を出さない。 */
+  onVideoLorasChange?: (loras: LoraRef[]) => void
   busy: boolean
 }) {
   const [settingsOpen, setSettingsOpen] = useState(false)
@@ -111,6 +128,7 @@ export default function StudioProjectBar({
     imageMegapixels,
     imageSteps,
     latentUpscale,
+    videoLoraCount: onVideoLorasChange ? videoLoras.length : 0,
   })
 
   const fields = (
@@ -141,6 +159,9 @@ export default function StudioProjectBar({
       onCommitImageSteps={onCommitImageSteps}
       latentUpscale={latentUpscale}
       onLatentUpscaleChange={onLatentUpscaleChange}
+      videoLoras={videoLoras}
+      registeredVideoLoras={registeredVideoLoras}
+      onVideoLorasChange={onVideoLorasChange}
       busy={busy}
     />
   )
@@ -242,6 +263,9 @@ function ProjectSettingsFields({
   onCommitImageSteps,
   latentUpscale,
   onLatentUpscaleChange,
+  videoLoras,
+  registeredVideoLoras,
+  onVideoLorasChange,
   busy,
 }: {
   stacked: boolean
@@ -272,8 +296,14 @@ function ProjectSettingsFields({
   onCommitImageSteps: () => void
   latentUpscale: boolean
   onLatentUpscaleChange: (value: boolean) => void
+  videoLoras: LoraRef[]
+  registeredVideoLoras: Lora[]
+  onVideoLorasChange?: (loras: LoraRef[]) => void
   busy: boolean
 }) {
+  // 動画 LoRA は強度のスライダーを動かすたびに PATCH しないよう、モーダルの中で
+  // 下書きを持ち、「保存」で丸ごと置き換える。
+  const [loraDraft, setLoraDraft] = useState<LoraRef[] | null>(null)
   // 広い画面の接続先は上段バー側（StudioProjectBar）に置くので、ここでは
   // シート（stacked）のときだけ出す。
   const targetSelector =
@@ -476,6 +506,57 @@ function ProjectSettingsFields({
     </div>
   )
 
+  const videoLoraButton = onVideoLorasChange ? (
+    <Button
+      variant="outline"
+      size="sm"
+      className="shrink-0"
+      disabled={busy}
+      aria-haspopup="dialog"
+      title={
+        videoLoras.length > 0
+          ? `作品共通の動画 LoRA: ${formatLoraList(videoLoras)}`
+          : '作品共通の動画 LoRA（未設定）。テイク生成のたびに上書きできます'
+      }
+      onClick={() => setLoraDraft(videoLoras.map((lora) => ({ ...lora })))}
+    >
+      {stacked ? '動画 LoRA' : 'LoRA'}{' '}
+      <span className="tnum text-muted-foreground">{videoLoras.length}</span>
+    </Button>
+  ) : null
+
+  const videoLoraModal =
+    onVideoLorasChange && loraDraft !== null ? (
+      <Modal title="動画 LoRA（作品共通）" onClose={() => setLoraDraft(null)}>
+        <p className="mb-3 text-xs text-muted-foreground">
+          この作品のカットを焼くたびに挿す動画 LoRA です（上から順に直列で挿さり、
+          トリガーワードはプロンプトの先頭に付きます）。生成ダイアログで 1 回だけ
+          変えることもできます。LoRA を挿せないワークフローになったカットでは外して
+          投入され、Take に警告が出ます。
+        </p>
+        <VideoLoraEditor
+          registered={registeredVideoLoras}
+          value={loraDraft}
+          onChange={setLoraDraft}
+          searchId="studio-project-lora-search"
+        />
+        <div className="mt-4 flex items-center justify-end gap-2">
+          <Button variant="outline" onClick={() => setLoraDraft(null)}>
+            やめる
+          </Button>
+          <Button
+            disabled={busy}
+            onClick={() => {
+              onVideoLorasChange(loraDraft)
+              setLoraDraft(null)
+            }}
+          >
+            保存
+          </Button>
+        </div>
+      </Modal>
+    ) : null
+
   if (stacked) {
     return (
       <div className="flex flex-col gap-3">
@@ -506,6 +587,7 @@ function ProjectSettingsFields({
               {stepsInput}
             </div>
             <div className="col-span-2">{latentUpscaleToggle}</div>
+            {videoLoraButton && <div className="col-span-2">{videoLoraButton}</div>}
           </div>
         </fieldset>
         <fieldset className="rounded-md border border-border px-3 pb-3">
@@ -535,6 +617,7 @@ function ProjectSettingsFields({
             </div>
           </div>
         </fieldset>
+        {videoLoraModal}
       </div>
     )
   }
@@ -560,6 +643,7 @@ function ProjectSettingsFields({
         </Label>
         <div className="w-24">{stepsInput}</div>
         {latentUpscaleToggle}
+        {videoLoraButton}
       </fieldset>
       <fieldset className="flex shrink-0 flex-nowrap items-center gap-2 rounded-md border border-border px-2 py-1">
         <legend className="px-1 text-[11px] text-muted-foreground">画像</legend>
@@ -578,6 +662,7 @@ function ProjectSettingsFields({
         </Label>
         <div className="w-24">{imageStepsInput}</div>
       </fieldset>
+      {videoLoraModal}
     </>
   )
 }

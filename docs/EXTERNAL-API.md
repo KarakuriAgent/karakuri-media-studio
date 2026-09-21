@@ -35,7 +35,7 @@
 |---|---|
 | プロジェクト | `GET/POST /projects`・`GET/PATCH /projects/{id}` |
 | 話 / 場 / カット | `POST /projects/{id}/episodes`・`POST /episodes/{id}/scenes`・`POST /projects/{id}/shots` と各 `PATCH` / `DELETE`、`POST .../reorder`（並べ替え） |
-| 投入前の確認 | `GET /shots/{id}/prompt-preview`（実際に投入されるプロンプト・ワークフロー・その理由・`render_blocker`）・`POST /shots/{id}/translate` |
+| 投入前の確認 | `GET /shots/{id}/prompt-preview`（実際に投入されるプロンプト・ワークフロー・その理由・`needs_translation`・`render_blocker`）。英語版の保存は `PATCH /shots/{id}` の `english_prompt` |
 | 素材（World Bible） | `GET /assets`（**全作品横断**の素材検索。`project_id` / `kind` / `q` / `limit` / `offset`）・`POST /projects/{id}/assets`（JSON / multipart。`library_id` でライブラリから取り込み）・`assets/from-job`・`PATCH/DELETE /assets/{id}`・`POST /assets/{id}/refresh-from-library`（取り込み元の今の版で取り直す）・素材のリファレンス（`/assets/{id}/files`・`DELETE /asset-files/{id}`） |
 | 生成と Take | `POST /shots/{id}/render`・`GET /shots/{id}/takes`・`POST /takes/{id}/select`・`reject`・`cancel`・`DELETE /takes/{id}` |
 | 汎用ジョブ | `GET/POST /jobs`（一覧は `q` / `kind` / `project_id` / `nsfw` / `limit` / `offset` で絞れる。§3.6）・`GET /jobs/{id}`・`POST /jobs/{id}/cancel`・`rerun`・`continue` |
@@ -69,6 +69,7 @@
 | `steps` | プロジェクトの `steps` → テンプレートの既定（0〜150。`0` を送れば「既定のまま」の明示で、プロジェクトの設定より優先） |
 | `seed` | カットの `seed` → 毎回ランダム |
 | `latent_upscale` | プロジェクトの `latent_upscale`（既定 ON。接続先が対応しなければ黙って `off`） |
+| `video_loras` | プロジェクトの `video_loras`（`LoraRef` の配列。`[]` を送ると「この回は LoRA なし」の明示）。挿せないワークフローに決まったときは 422 にせず外して投入し、Take の `warning` に理由が出る |
 
 ボディごと省けば従来どおりの投入。範囲外の値は 400（`StudioError`）で、実際に使われた
 値は Take の元ジョブの `params`（`GET /api/v1/jobs/{id}`）に残る。
@@ -705,13 +706,28 @@ GET /api/v1/jobs?q=かおり&kind=video&nsfw=false&limit=48&offset=0
 | 素材登録 3 方式（JSON の `path` 複製 / multipart 添付 / `assets/from-job`） | 確認済み。`PATCH /assets/{id}` も含む。`path` はアプリのプロセスから見えるパス（Docker ならコンテナ内） |
 | プロンプト中の `@素材名` 参照 | 確認済み。画像素材を参照したカットは自動で `minimax_h3_r2v` に切り替わり、`reference_images` に添付される |
 | レンダリングと Take（`POST /shots/{id}/render` → `GET /shots/{id}/takes`・`GET /jobs/{id}` → `POST /takes/{id}/select` / `reject`） | 確認済み。864x480 / 5 秒 / h264 + aac 音声つきの動画が生成され、採用でカットが `done` に |
-| 投入前の確認 `GET /shots/{id}/prompt-preview` | 実装済み。実際に投入されるプロンプト・ワークフローとその理由（`workflow_reason`）・`will_translate` を読み取りだけで返す（組み立てられないカットも 400 ではなく `error` 入りの 200） |
+| 投入前の確認 `GET /shots/{id}/prompt-preview` | 実装済み。実際に投入されるプロンプト・ワークフローとその理由（`workflow_reason`）・`needs_translation` / `english_stale` を読み取りだけで返す（組み立てられないカットも 400 ではなく `error` 入りの 200） |
 | 暴走ガードの 429（`external_max_pending_takes` 超過） | **未テスト**（実装のみ。生成 / 書き出しの 2 プールとも） |
 
 補足:
 
-- 日本語のプロンプトは `auto_translate` により Grok が英訳したうえでワークフローへ
-  渡ることを確認しました。
+- **英訳はエージェントの仕事です。** アプリは英訳をしません（アプリ内で LLM を
+  呼ぶのはプロンプト作成チャットとヘルスチェックだけ）。脚本は日本語で書いて
+  かまいませんが、**日本語のまま `render` すると 400 で断られます**。手順は
+  `GET /api/v1/prompt-guide` の §3.2 が正本で、要点は次のとおりです。
+  1. `GET /api/v1/shots/{id}/prompt-preview` の `prompt` が組み立て済みの本文。
+     `needs_translation` が `true` なら英語版が要ります。
+  2. その本文を**公式 H3 文書として英語で書き直す**（直訳ではありません。参照タグ
+     `<Picture 1>` などは一字一句そのまま、二重引用符の中の台詞と `<d>…</d>` の
+     中身は原語のまま、事実は足さない）。
+  3. `PATCH /api/v1/shots/{id}` の `english_prompt` に保存します（`base_revision`
+     を忘れずに）。サーバーは「どの本文に対する英語か」を `english_source` に
+     控えます。
+  4. `prompt-preview` の `needs_translation` と `english_stale` が両方 `false` に
+     なったら `render`。脚本を直すと `english_stale` が `true` に戻るので、
+     そのときは書き直します（`english_prompt` に空文字を PATCH すれば消せます）。
+  投入されるのは英語版（`english_prompt`）で、元の日本語は Take の
+  `source_prompt` に残ります。
 - プロジェクトの `latent_continuity`（`POST /api/v1/projects` と
   `PATCH /api/v1/projects/{id}` で読み書きできます。既定 `false`）を立てると、
   `carry_over_end_frame` を立てたカットの引き継ぎが**ラストフレーム 1 枚から
@@ -720,9 +736,10 @@ GET /api/v1/jobs?q=かおり&kind=video&nsfw=false&limit=48&offset=0
   いるカットは黙って別のモードに落とさず 400 で断ります。`MiniMaxH3MotionContext`
   系のカスタムノードが無い接続先（Comfy Cloud）でも 400 です。
   ただし**直前カットの採用 Take がまだ無いだけ**のときは、
-  `GET /api/v1/shots/{id}/prompt-preview` と `POST /api/v1/shots/{id}/translate`
-  は通ります（本文は `minimax_h3_r2v_context` の形で組み立てます）。前カットの
-  完成を待たずに英訳しておけるようにするためで、プレビューはそのとき
+  `GET /api/v1/shots/{id}/prompt-preview` と `english_prompt` の保存
+  （`PATCH /api/v1/shots/{id}`）は通ります（本文は `minimax_h3_r2v_context` の形で
+  組み立てます）。前カットの完成を待たずに英語版を用意しておけるようにするためで、
+  プレビューはそのとき
   `render_blocker` に「まだ投入できない理由」を入れて返します（`error` は
   組み立てそのものができないときだけ）。投入（`render`）は今までどおり 400 です。
   また `latent_continuity` が立っているあいだは、**通常のカットも AV ラテントを
@@ -759,6 +776,16 @@ GET /api/v1/jobs?q=かおり&kind=video&nsfw=false&limit=48&offset=0
   焼く経路はアプリ側に無く、素材画像を作るのは**外部エージェント**（この API 経由の
   Claude Code / Codex / Cursor CLI など）なので、この設定は**外部エージェントへの
   指示値**として効きます。
+- プロジェクトの `video_loras`（`POST /api/v1/projects` と `PATCH /api/v1/projects/{id}` で
+  読み書きできます。既定 `[]`）は**作品共通の動画 LoRA** で、
+  `{"lora_name": …, "trigger_word": …, "strength": …}` の配列です（`lora_name` は
+  `GET /api/v1/options` の `loras` のうち `target: "video"` のもの）。カットを焼くたびに
+  ジョブの `video_loras` に載り、トリガーワードは本文の先頭に自動で付きます（本文に
+  既にある語は付けません）。`PATCH` は**丸ごと置き換え**で、`[]` を送ると外れます。
+  1 回だけ変えるなら `POST /shots/{id}/render` の `video_loras`（上の表）を使います。
+  決まったワークフローが LoRA を挿せないときは外して投入され、Take の `warning` に
+  理由が出ます。何が付くかは `GET /shots/{id}/prompt-preview` の `video_loras` /
+  `video_trigger_text` / `video_lora_warning` で確かめられます。
 - プロジェクトの `image_megapixels` / `image_aspect_ratio` / `image_steps`
   （`POST /api/v1/projects` と `PATCH /api/v1/projects/{id}` で読み書きできます。
   既定はそれぞれ `null` / `null` / `0`）は、**素材の静止画の画質・画面比・

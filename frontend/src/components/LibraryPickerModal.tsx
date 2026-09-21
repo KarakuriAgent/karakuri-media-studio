@@ -92,7 +92,7 @@ export default function LibraryPickerModal({
   onClose: () => void
   /** 追加・削除の後に、フォーム側の選択肢も取り直してもらう */
   onChanged: () => void
-  /** 値が変わると一覧を読み直す（自動タグ生成の WS 通知で使う） */
+  /** 値が変わると一覧を読み直す（ライブラリ更新の WS 通知で使う） */
   reloadKey?: number
   /**
    * 複数選択モード（リファレンスシートの合成、SPEC §7.2）: 選択中の id を

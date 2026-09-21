@@ -37,12 +37,8 @@ from tests.test_blocking import scene as blocking_scene
 KEY = "external-test-key"
 
 
-async def _no_llm(text: str) -> None:
-    return None
-
-
 class FakeLLM:
-    """Grok の差し替え（既定では使えない。日本語の auto_translate は投入しない）。"""
+    """Grok の差し替え（既定では使えない。生成の経路では呼ばれない）。"""
 
     def __init__(self) -> None:
         self.reply: str | None = None
@@ -71,7 +67,6 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(jobs, "ASSETS_DIR", assets)
     monkeypatch.setattr(jobs, "OUTPUTS_DIR", outputs)
     monkeypatch.setattr(assets_router, "ASSETS_DIR", assets)
-    monkeypatch.setattr(nsfw, "classify", _no_llm)
 
     async def offline(*args, **kwargs):
         raise comfy.ComfyError("ComfyUI is down")
@@ -400,21 +395,32 @@ def test_registering_from_an_unknown_job_is_a_404(env):
     assert response.status_code == 404
 
 
-def test_a_shot_can_be_translated(env):
+def test_an_english_version_can_be_saved_on_a_shot(env):
+    """英訳はエージェントの仕事。アプリは PATCH で受け取って控えるだけ。"""
     enable(env)
     project = make_project(env)
     shot = call(
         env,
         "POST",
         f"/api/v1/projects/{project['id']}/shots",
-        json={"prompt": "A cat walks in."},
+        json={"prompt": "猫が歩いてくる。"},
     ).json()
-    response = call(env, "POST", f"/api/v1/shots/{shot['id']}/translate")
+    preview = call(env, "GET", f"/api/v1/shots/{shot['id']}/prompt-preview").json()
+    assert preview["needs_translation"] is True
+
+    english = "integrated_multimodal_description: A cat walks in."
+    response = call(
+        env, "PATCH", f"/api/v1/shots/{shot['id']}", json={"english_prompt": english}
+    )
     assert response.status_code == 200, response.text
     body = response.json()
-    assert body["english_prompt"]
-    assert body["english_source"] == body["english_prompt"]
-    assert body["prompt"] == "A cat walks in."
+    assert body["english_prompt"] == english
+    assert body["english_source"] == preview["prompt"]
+    assert body["prompt"] == "猫が歩いてくる。"
+
+    after = call(env, "GET", f"/api/v1/shots/{shot['id']}/prompt-preview").json()
+    assert after["needs_translation"] is False
+    assert after["english_stale"] is False
 
 
 def test_a_take_job_can_be_read(env):
@@ -2170,3 +2176,19 @@ def test_deletes_and_reorders_are_recorded_as_external(env):
         f"/api/studio/projects/{project['id']}/revisions"
     ).json()
     assert rows[0]["actor"] == "user"
+
+
+def test_project_video_loras_can_be_written_and_read_over_the_external_api(env):
+    """外部 API（/api/v1）でも作品共通の動画 LoRA を読み書きできる（SPEC §3.4.2）。"""
+    enable(env)
+    lora = {"lora_name": "style.safetensors", "trigger_word": "inkstyle", "strength": 0.7}
+    project = make_project(env, video_loras=[lora])
+    assert project["video_loras"] == [lora]
+    listed = call(env, "GET", "/api/v1/projects").json()
+    assert [row["video_loras"] for row in listed] == [[lora]]
+
+    updated = call(
+        env, "PATCH", f"/api/v1/projects/{project['id']}", json={"video_loras": []}
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["video_loras"] == []

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { ApiError, api, formatDetail } from '../../api'
 import type {
+  Lora,
   ComfyTarget,
   JobProgress,
   LibraryItem,
@@ -32,6 +33,7 @@ import RevisionsModal, { type RevisionFilter } from './RevisionsModal'
 import ScriptView from './ScriptView'
 import ShotRail from './ShotRail'
 import StudioProjectBar from './StudioProjectBar'
+import { lorasForTarget } from '../../form'
 import WorldView from './WorldView'
 import {
   MAX_STEPS,
@@ -138,6 +140,25 @@ export default function StudioView({
   const [loadingProjects, setLoadingProjects] = useState(false)
   const [projectId, setProjectId] = useState<string | null>(null)
   const [detail, setDetail] = useState<StudioProjectDetail | null>(null)
+  // 動画用に登録された LoRA（いまの接続先のぶん）。作品設定と生成ダイアログの
+  // 動画 LoRA 欄が使う。取れなければ空（欄は「登録がありません」になるだけ）。
+  const [videoLoraRegistry, setVideoLoraRegistry] = useState<Lora[]>([])
+  useEffect(() => {
+    let alive = true
+    Promise.resolve()
+      .then(() => api.listLoras(comfyTarget ?? undefined))
+      .then((list) => {
+        if (alive) {
+          setVideoLoraRegistry(Array.isArray(list) ? lorasForTarget(list, 'video') : [])
+        }
+      })
+      .catch(() => {
+        if (alive) setVideoLoraRegistry([])
+      })
+    return () => {
+      alive = false
+    }
+  }, [comfyTarget])
   const [tab, setTab] = useState<StudioTab>('overview')
   // 脚本・制作タブの話の絞り込み（`ALL_EPISODES` = 作品まるごと）。サーバー側で
   // 絞るので、値が変わったら詳細を取り直す。
@@ -899,6 +920,9 @@ export default function StudioView({
       onCommitImageSteps={commitImageSteps}
       latentUpscale={detail.latent_upscale}
       onLatentUpscaleChange={(value) => saveProject({ latent_upscale: value })}
+      videoLoras={detail.video_loras ?? []}
+      registeredVideoLoras={videoLoraRegistry}
+      onVideoLorasChange={(value) => saveProject({ video_loras: value })}
       busy={busy}
     />
   )
@@ -1023,7 +1047,9 @@ export default function StudioView({
                   aspect_ratio: detail.aspect_ratio,
                   steps: detail.steps,
                   latent_upscale: detail.latent_upscale,
+                  video_loras: detail.video_loras ?? [],
                 }}
+                registeredVideoLoras={videoLoraRegistry}
                 aspectRatios={aspectRatios}
                 latentContinuity={detail.latent_continuity}
                 showNsfw={showNsfw}

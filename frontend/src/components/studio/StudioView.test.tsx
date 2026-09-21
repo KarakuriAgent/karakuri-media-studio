@@ -53,8 +53,8 @@ vi.mock('../../api', async () => {
       updateStudioShot: vi.fn(),
       deleteStudioShot: vi.fn(),
       previewStudioShotPrompt: vi.fn(),
-      translateStudioShotPrompt: vi.fn(),
       renderStudioShot: vi.fn(),
+      listLoras: vi.fn(),
       selectStudioTake: vi.fn(),
       rejectStudioTake: vi.fn(),
       cancelStudioTake: vi.fn(),
@@ -64,6 +64,17 @@ vi.mock('../../api', async () => {
 })
 
 afterEach(cleanup)
+
+// 動画 LoRA 欄の強度スライダー（Radix Slider）は ResizeObserver を使うが、jsdom には
+// 無い。寸法は見ないので、何もしない代わりを置いておく。
+if (!('ResizeObserver' in globalThis)) {
+  class NoopResizeObserver {
+    observe() {}
+    unobserve() {}
+    disconnect() {}
+  }
+  ;(globalThis as { ResizeObserver?: unknown }).ResizeObserver = NoopResizeObserver
+}
 
 const mocked = api as unknown as Record<string, ReturnType<typeof vi.fn>>
 
@@ -76,7 +87,49 @@ beforeEach(() => {
     latent_continuity: true,
     error: '',
   })
+  // 動画 LoRA 欄の候補（画像用の行は動画の欄に出ない）
+  mocked.listLoras.mockResolvedValue(REGISTERED_LORAS)
 })
+
+/** 登録済みの LoRA（動画 2 件 + 画像 1 件）。 */
+const REGISTERED_LORAS = [
+  {
+    id: 1,
+    display_name: 'インク調',
+    lora_name: 'style.safetensors',
+    trigger_word: 'ink',
+    default_strength: 0.8,
+    default_audio: null,
+    sort_order: 0,
+    target: 'video',
+    family: '',
+    sample_images: [],
+  },
+  {
+    id: 2,
+    display_name: 'スローモーション',
+    lora_name: 'motion.safetensors',
+    trigger_word: 'slowmo',
+    default_strength: 1,
+    default_audio: null,
+    sort_order: 1,
+    target: 'video',
+    family: '',
+    sample_images: [],
+  },
+  {
+    id: 3,
+    display_name: '画像用キャラ',
+    lora_name: 'kaori.safetensors',
+    trigger_word: 'kaori',
+    default_strength: 1,
+    default_audio: null,
+    sort_order: 2,
+    target: 'image',
+    family: 'krea2',
+    sample_images: [],
+  },
+]
 
 function shot(id: string, overrides: Partial<StudioShot> = {}): StudioShot {
   return {
@@ -158,7 +211,6 @@ function detail(overrides: Partial<StudioProjectDetail> = {}): StudioProjectDeta
     code: 'EP01',
     synopsis: 'あらすじ',
     world_notes: '',
-    auto_translate: true,
     latent_continuity: false,
     latent_upscale: true,
     quality: 'normal',
@@ -227,7 +279,6 @@ function summary(current: StudioProjectDetail): StudioProjectSummary {
     code: current.code,
     synopsis: current.synopsis,
     world_notes: current.world_notes,
-    auto_translate: current.auto_translate,
     latent_continuity: current.latent_continuity,
     latent_upscale: current.latent_upscale,
     quality: current.quality,
@@ -259,12 +310,9 @@ function shotPreview(
     prompt: 'a quiet street\nCamera: slow dolly in\nNo text, subtitles, logos or watermarks.',
     references: [],
     start_frame: null,
-    auto_translate: true,
-    will_translate: false,
+    needs_translation: false,
     english_prompt: '',
     english_stale: false,
-    english_status: '',
-    english_error: '',
     latent_continuity: false,
     quality: 'normal',
     quality_applied: false,
@@ -327,7 +375,6 @@ describe('StudioView', () => {
         synopsis: '',
         // 折りたたみの初期設定は既定値のまま送られる
         world_notes: '',
-        auto_translate: true,
         latent_continuity: false,
         nsfw: false,
       }),
@@ -573,6 +620,73 @@ describe('StudioView', () => {
     )
   })
 
+  it('作品共通の動画 LoRA を選んで保存すると video_loras を PATCH する', async () => {
+    await openProject()
+    mocked.updateStudioProject.mockResolvedValue({})
+    fireEvent.click(screen.getByRole('button', { name: 'LoRA 0' }))
+    const sheet = within(await screen.findByRole('dialog', { name: '動画 LoRA（作品共通）' }))
+    expect(sheet.getByText('動画 LoRA なし')).toBeTruthy()
+
+    fireEvent.click(await sheet.findByRole('button', { name: 'LoRAを選ぶ' }))
+    const picker = within(await screen.findByRole('dialog', { name: 'LoRAを選択' }))
+    // 動画用だけが候補に出る
+    expect(picker.queryByRole('button', { name: '画像用キャラ' })).toBeNull()
+    fireEvent.click(picker.getByRole('button', { name: 'スローモーション' }))
+    fireEvent.click(picker.getByRole('button', { name: 'インク調' }))
+    fireEvent.click(picker.getByRole('button', { name: '選択を完了' }))
+
+    // 選んだ順に並び、並べ替えもできる
+    fireEvent.click(sheet.getByRole('button', { name: 'インク調 を上へ' }))
+    expect(sheet.getByText('トリガーワード（プロンプトの先頭に付く）: ink, slowmo')).toBeTruthy()
+    // 強度のスライダーを動かしても、保存を押すまで PATCH しない
+    expect(mocked.updateStudioProject).not.toHaveBeenCalled()
+
+    fireEvent.click(sheet.getByRole('button', { name: '保存' }))
+    await waitFor(() =>
+      expect(mocked.updateStudioProject).toHaveBeenCalledWith('p1', {
+        video_loras: [
+          { lora_name: 'style.safetensors', trigger_word: 'ink', strength: 0.8 },
+          { lora_name: 'motion.safetensors', trigger_word: 'slowmo', strength: 1 },
+        ],
+      }),
+    )
+  })
+
+  it('生成ダイアログの動画 LoRA は既定のままなら送らず、この回だけ指定すると送る', async () => {
+    const projectLora = { lora_name: 'style.safetensors', trigger_word: 'ink', strength: 0.7 }
+    await openProject(detail({ video_loras: [projectLora] }))
+    // 作品の既定があるので、バーの件数は 1
+    expect(screen.getByRole('button', { name: 'LoRA 1' })).toBeTruthy()
+    clickTab('制作')
+    fireEvent.click(rail().getByRole('button', { name: 'カット1' }))
+    mocked.renderStudioShot.mockResolvedValue({})
+    fireEvent.click(await screen.findByRole('button', { name: '生成' }))
+
+    expect(screen.getByText('作品の既定: style.safetensors ×0.70')).toBeTruthy()
+    fireEvent.change(screen.getByLabelText('動画 LoRA'), {
+      target: { value: 'custom' },
+    })
+    // 初期値は作品の既定の写し。そこへこの回だけ 1 つ足す
+    fireEvent.click(await screen.findByRole('button', { name: 'LoRAを選ぶ' }))
+    const picker = within(await screen.findByRole('dialog', { name: 'LoRAを選択' }))
+    fireEvent.click(picker.getByRole('button', { name: 'スローモーション' }))
+    fireEvent.click(picker.getByRole('button', { name: '選択を完了' }))
+
+    fireEvent.click(screen.getByRole('button', { name: 'この設定で生成' }))
+    await waitFor(() =>
+      expect(mocked.renderStudioShot).toHaveBeenCalledWith('カット1', {
+        duration: 5,
+        steps: 0,
+        video_loras: [
+          projectLora,
+          { lora_name: 'motion.safetensors', trigger_word: 'slowmo', strength: 1 },
+        ],
+      }),
+    )
+    // 作品の設定は書き換えない
+    expect(mocked.updateStudioProject).not.toHaveBeenCalled()
+  })
+
   it('作品設定のラテントアップスケールを切ると PATCH で保存される', async () => {
     await openProject()
     mocked.updateStudioProject.mockResolvedValue({})
@@ -608,7 +722,7 @@ describe('StudioView', () => {
     expect(within(takeRail).getByText('40%')).toBeTruthy()
   })
 
-  it('progress.message が英訳作成中なら制作タブに出す', async () => {
+  it('progress.message をそのまま制作タブに出す', async () => {
     const current = detail({
       takes: [take('t1', { status: 'rendering', job_status: 'running' })],
     })
@@ -622,7 +736,7 @@ describe('StudioView', () => {
             job_id: 'job-t1',
             status: 'running',
             progress: 0,
-            message: '英訳作成中',
+            message: '動画生成',
           },
         }}
       />,
@@ -631,7 +745,7 @@ describe('StudioView', () => {
     await openTab('制作')
     fireEvent.click(rail().getByRole('button', { name: 'カット1' }))
 
-    expect(await screen.findAllByText('英訳作成中')).not.toHaveLength(0)
+    expect(await screen.findAllByText('動画生成')).not.toHaveLength(0)
   })
 
   it('生成中の Take に停止が出て、押すと cancel する', async () => {
@@ -1388,19 +1502,6 @@ describe('StudioView の素材画像の画質設定（image_* の 3 項目）', 
 })
 
 describe('StudioView: 概要タブと変更履歴', () => {
-  it('自動英訳のトグルを保存する', async () => {
-    await openProject()
-    mocked.updateStudioProject.mockResolvedValue({})
-    fireEvent.click(screen.getByLabelText('日本語プロンプトを自動で英訳して投入'))
-    fireEvent.click(screen.getByRole('button', { name: '保存' }))
-    await waitFor(() =>
-      expect(mocked.updateStudioProject).toHaveBeenCalledWith(
-        'p1',
-        expect.objectContaining({ auto_translate: false }),
-      ),
-    )
-  })
-
   it('NSFW プロジェクトのトグルを保存する', async () => {
     await openProject()
     mocked.updateStudioProject.mockResolvedValue({})
@@ -1701,7 +1802,7 @@ describe('StudioView: stale と自動英訳の見せ方', () => {
           take('t1', {
             prompt: 'a woman walks down a quiet street',
             source_prompt: '女がひとけのない通りを歩く',
-            warning: '英訳に失敗したので原文のまま投入しました',
+            warning: '前の Take の設定を引き継げませんでした',
           }),
         ],
       }),
@@ -1709,10 +1810,10 @@ describe('StudioView: stale と自動英訳の見せ方', () => {
     clickTab('制作')
     fireEvent.click(rail().getByRole('button', { name: 'カット1' }))
     expect(await screen.findByText('a woman walks down a quiet street')).toBeTruthy()
-    expect(screen.getByText('英訳する前の原文を見る')).toBeTruthy()
+    expect(screen.getByText('元になった日本語を見る')).toBeTruthy()
     expect(screen.getByText('女がひとけのない通りを歩く')).toBeTruthy()
     expect(
-      screen.getAllByText('英訳に失敗したので原文のまま投入しました').length,
+      screen.getAllByText('前の Take の設定を引き継げませんでした').length,
     ).toBeGreaterThan(0)
   })
 })
@@ -1884,7 +1985,7 @@ describe('StudioView: 投入プレビュー', () => {
     expect(body.textContent).toContain('No text, subtitles, logos or watermarks.')
   })
 
-  it('参照素材と英訳の注記を出す', async () => {
+  it('参照素材と英語版が要る注記を出す', async () => {
     await openProject()
     mocked.previewStudioShotPrompt.mockResolvedValue(
       shotPreview({
@@ -1898,7 +1999,7 @@ describe('StudioView: 投入プレビュー', () => {
             path: '/assets/image/aki.png',
           },
         ],
-        will_translate: true,
+        needs_translation: true,
       }),
     )
     clickTab('脚本')
@@ -1908,7 +2009,7 @@ describe('StudioView: 投入プレビュー', () => {
     await waitFor(() => expect(panel.getByText('r2v（参照素材から）')).toBeTruthy())
     expect(panel.getByText('<Picture 1>')).toBeTruthy()
     expect(panel.getByText(/アキ（image \/ aki\.png）/)).toBeTruthy()
-    expect(panel.getByText(/投入時に英語へ自動変換されます/)).toBeTruthy()
+    expect(panel.getByText(/日本語が含まれています/)).toBeTruthy()
   })
 
   it('組み立てられないカットは理由を出す', async () => {
@@ -1929,70 +2030,13 @@ describe('StudioView: 投入プレビュー', () => {
     expect(screen.queryByLabelText('投入される最終プロンプト')).toBeNull()
   })
 
-  it('英訳するを押すと選んでいるカットを訳し、プレビューを取り直す', async () => {
-    await openProject()
-    clickTab('脚本')
-    fireEvent.click(rail().getByRole('button', { name: 'カット1' }))
-    const panel = within(await screen.findByRole('group', { name: '投入プレビュー' }))
-    await waitFor(() =>
-      expect(mocked.previewStudioShotPrompt).toHaveBeenCalledWith('カット1'),
-    )
-
-    mocked.translateStudioShotPrompt.mockResolvedValue(shot('カット1'))
-    mocked.previewStudioShotPrompt.mockResolvedValue(
-      shotPreview({
-        english_prompt: 'A quiet street in English.',
-        english_stale: false,
-        will_translate: false,
-      }),
-    )
-    fireEvent.click(panel.getByRole('button', { name: '英訳する' }))
-    await waitFor(() =>
-      expect(mocked.translateStudioShotPrompt).toHaveBeenCalledWith('カット1'),
-    )
-    await waitFor(() =>
-      expect(mocked.previewStudioShotPrompt.mock.calls.length).toBeGreaterThan(1),
-    )
-  })
-
-  it('preview が英訳中ならボタンを止める', async () => {
-    await openProject()
-    mocked.previewStudioShotPrompt.mockResolvedValue(
-      shotPreview({ english_status: 'translating' }),
-    )
-    clickTab('脚本')
-    fireEvent.click(rail().getByRole('button', { name: 'カット1' }))
-
-    const panel = within(await screen.findByRole('group', { name: '投入プレビュー' }))
-    const button = await panel.findByRole('button', { name: '英訳中…' })
-    expect(button).toHaveProperty('disabled', true)
-  })
-
-  it('英訳失敗なら Banner に理由を出す', async () => {
-    await openProject()
-    mocked.previewStudioShotPrompt.mockResolvedValue(
-      shotPreview({
-        english_status: 'failed',
-        english_error: '英語プロンプトへの変換ができないので保存しませんでした（grok CLI が見つかりません）',
-      }),
-    )
-    clickTab('脚本')
-    fireEvent.click(rail().getByRole('button', { name: 'カット1' }))
-
-    expect(
-      await screen.findByText(
-        '英語プロンプトへの変換ができないので保存しませんでした（grok CLI が見つかりません）',
-      ),
-    ).toBeTruthy()
-  })
-
-  it('使える英語キャッシュがあれば投入時変換の注記を出さない', async () => {
+  it('使える英語キャッシュがあれば注意を出さない', async () => {
     await openProject()
     mocked.previewStudioShotPrompt.mockResolvedValue(
       shotPreview({
         english_prompt: 'A quiet street in English.',
         english_stale: false,
-        will_translate: false,
+        needs_translation: false,
       }),
     )
     clickTab('脚本')
@@ -2000,7 +2044,7 @@ describe('StudioView: 投入プレビュー', () => {
 
     const panel = within(await screen.findByRole('group', { name: '投入プレビュー' }))
     expect(await panel.findByText(/この英語を投入します/)).toBeTruthy()
-    expect(panel.queryByText(/投入時に英語へ自動変換されます/)).toBeNull()
+    expect(panel.queryByText(/日本語が含まれています/)).toBeNull()
   })
 
   it('古い英語キャッシュには使いませんという注記を出す', async () => {
@@ -2009,7 +2053,7 @@ describe('StudioView: 投入プレビュー', () => {
       shotPreview({
         english_prompt: 'old English.',
         english_stale: true,
-        will_translate: true,
+        needs_translation: true,
       }),
     )
     clickTab('脚本')
@@ -2028,7 +2072,7 @@ describe('StudioView: 投入プレビュー', () => {
         error: '解決できない素材メンションです: @Inu',
         english_prompt: 'A quiet street in English.',
         english_stale: true,
-        will_translate: false,
+        needs_translation: false,
       }),
     )
     mocked.updateStudioShot.mockResolvedValue(shot('カット1'))
@@ -2051,7 +2095,7 @@ describe('StudioView: 投入プレビュー', () => {
       shotPreview({
         english_prompt: 'A quiet street in English.',
         english_stale: false,
-        will_translate: false,
+        needs_translation: false,
       }),
     )
     mocked.updateStudioShot.mockResolvedValue(shot('カット1'))

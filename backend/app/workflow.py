@@ -1281,6 +1281,14 @@ def build_video_workflow(
         template if template is not None else load_template(resolved)
     )
 
+    # 動画 LoRA のチェーン（SPEC §3.4.2）は**ラテントアップスケールの組み替えより
+    # 前**に組む。2 段引き継ぎで足す 2 個目の BasicGuider は 1 パス目の guider の
+    # 入力（model を含む）を写して作るので、先にチェーンを通しておかないと
+    # 2 パス目だけユーザー LoRA を素通りしてしまう。
+    _build_lora_chain(
+        wf, resolved.lora_chain, params.video_loras, prefix=VIDEO_LORA_NODE_PREFIX
+    )
+
     # ラテントアップスケール（`latent_upscale`、既定 on / SPEC §3.1）。テンプレートは
     # どれも 1 パスなので、on のときだけここで 2 パスに組み替える: 1 パス目は
     # 0.2MP で回し、最終解像度はアップスケーラに渡す。**モデル指定の差し替えより
@@ -1355,9 +1363,6 @@ def build_video_workflow(
             REF_VIDEOS_NAME: list(params.reference_video_names),
             REF_AUDIOS_NAME: list(params.reference_audio_names),
         },
-    )
-    _build_lora_chain(
-        wf, resolved.lora_chain, params.video_loras, prefix=VIDEO_LORA_NODE_PREFIX
     )
     _inject_selects(wf, resolved, params)
     for name, value in resolved.constants.items():

@@ -25,10 +25,6 @@ from app.main import app
 KEY = "analysis-test-key"
 
 
-async def _no_llm(text: str) -> None:
-    return None
-
-
 # --------------------------------------------------------------------------
 # ワーカーの純関数
 # --------------------------------------------------------------------------
@@ -404,7 +400,6 @@ def env(tmp_path, monkeypatch):
         media_ref, "URL_ROOTS",
         {"/outputs/": outputs, "/library/": library, "/assets/": assets},
     )
-    monkeypatch.setattr(nsfw, "classify", _no_llm)
 
     song = assets / "song.wav"
     song.write_bytes(b"RIFF....WAVE")

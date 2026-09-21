@@ -48,7 +48,6 @@ export default function OverviewView({
     code: detail.code,
     synopsis: detail.synopsis,
     world_notes: detail.world_notes,
-    auto_translate: detail.auto_translate,
     latent_continuity: detail.latent_continuity,
     nsfw: detail.nsfw,
   })
@@ -81,8 +80,7 @@ export default function OverviewView({
       code: detail.code,
       synopsis: detail.synopsis,
       world_notes: detail.world_notes,
-      auto_translate: detail.auto_translate,
-      latent_continuity: detail.latent_continuity,
+        latent_continuity: detail.latent_continuity,
       nsfw: detail.nsfw,
     })
     setErrors({})
@@ -92,7 +90,6 @@ export default function OverviewView({
     detail.code,
     detail.synopsis,
     detail.world_notes,
-    detail.auto_translate,
     detail.latent_continuity,
     detail.nsfw,
   ])
@@ -167,19 +164,6 @@ export default function OverviewView({
           </div>
 
           <div className="space-y-3">
-            <div className="flex items-center gap-2">
-              <Switch
-                id="studio-project-auto-translate"
-                checked={form.auto_translate}
-                onCheckedChange={(checked) => patch({ auto_translate: checked })}
-              />
-              <Label
-                htmlFor="studio-project-auto-translate"
-                className="cursor-pointer text-foreground/85"
-              >
-                日本語プロンプトを自動で英訳して投入
-              </Label>
-            </div>
             <div>
               <div
                 className={`flex items-center gap-2 ${

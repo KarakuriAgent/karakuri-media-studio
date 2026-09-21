@@ -9,7 +9,6 @@ from io import BytesIO
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Response, UploadFile
 
-from .. import autotag
 from .. import blocking as blocking_render
 from .. import jobs as job_service
 from .. import library as service
@@ -88,8 +87,6 @@ async def add_from_job(payload: LibraryFromJob) -> LibraryItem:
         ) from exc
     except service.LibraryError as exc:
         raise _bad_request(exc) from exc
-    # 表示名とタグを Grok に考えさせる（指定済みのものは触らない、SPEC §7.2）
-    autotag.spawn_for(item, job, named=bool(payload.name.strip()))
     return item
 
 

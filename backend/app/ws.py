@@ -129,7 +129,7 @@ async def publish_chat(
 async def publish_library(item: LibraryItem) -> None:
     """Broadcast one library update (``type: "library"``). Never raises.
 
-    自動タグ生成のように、登録のあとから内容が変わったことを画面に伝える。
+    登録のあとから内容が変わったことを画面に伝える。
     """
     try:
         payload = LibraryProgress(

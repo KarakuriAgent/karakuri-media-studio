@@ -72,7 +72,6 @@ export default function ProjectPicker({
   // 作品の初期設定（あとから作品設定でも変えられるので、ここでは折りたたむ）。
   // 既定値はバックエンドの StudioProjectCreate と揃えてある。
   const [worldNotes, setWorldNotes] = useState('')
-  const [autoTranslate, setAutoTranslate] = useState(true)
   const [latentContinuity, setLatentContinuity] = useState(false)
   const [nsfw, setNsfw] = useState(false)
   const [demoCode, setDemoCode] = useState(DEMO_PROJECTS[0].code)
@@ -95,7 +94,6 @@ export default function ProjectPicker({
       code: code.trim(),
       synopsis,
       world_notes: worldNotes,
-      auto_translate: autoTranslate,
       latent_continuity: latentContinuity,
       nsfw,
     })
@@ -103,7 +101,6 @@ export default function ProjectPicker({
     setCode('')
     setSynopsis('')
     setWorldNotes('')
-    setAutoTranslate(true)
     setLatentContinuity(false)
     setNsfw(false)
   }
@@ -228,13 +225,6 @@ export default function ProjectPicker({
                   onChange={(event) => setWorldNotes(event.target.value)}
                 />
               </div>
-              <ToggleRow
-                id="studio-new-auto-translate"
-                checked={autoTranslate}
-                onChange={setAutoTranslate}
-              >
-                日本語のプロンプトを投入時に英訳する
-              </ToggleRow>
               <ToggleRow
                 id="studio-new-latent-continuity"
                 checked={latentContinuity}

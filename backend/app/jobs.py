@@ -1092,8 +1092,7 @@ async def create_job(
 ) -> Job:
     """``inherit_nsfw``: 呼び出し元（エージェントセッション等）が NSFW のとき True。
 
-    ``extra_params`` は JobCreate に無い内部フラグ（``pending_translate`` など）を
-    params に足す。
+    ``extra_params`` は JobCreate に無い内部フラグを params に足す。
     """
     nsfw, source = _resolve_nsfw(payload.nsfw, inherit_nsfw, mode=payload.mode)
     params = _params_from_create(payload)
@@ -2158,33 +2157,6 @@ async def _record_take_latent(
     await studio.record_take_latent(job_id, latent_path, hires_path)
 
 
-async def _apply_pending_translate(job: Job) -> None:
-    """スタジオが後回しにした英訳を、Comfy に投げる前に済ませる。"""
-    if not job.params.get("pending_translate"):
-        return
-    from . import grok, studio
-
-    await _set_status(job.id, "running", message="英訳作成中")
-    prompt = str(job.params.get("video_prompt") or job.video_prompt or "")
-    workflow_id = str(job.params.get("video_workflow") or "")
-    try:
-        translated = await studio.translate_prompt(prompt, workflow_id)
-    except grok.LLMError as exc:
-        raise JobError(
-            "英語プロンプトへの変換ができないので中止しました"
-            f"（{exc}）"
-        ) from exc
-    job.params["video_prompt"] = translated
-    job.params["pending_translate"] = False
-    job.video_prompt = translated
-    await _update(
-        job.id,
-        video_prompt=translated,
-        params=json.dumps(job.params, ensure_ascii=False),
-    )
-    await studio.record_translated_prompt(job.id, translated)
-
-
 def _stage_label(stage: str, index: int, total: int) -> str:
     """「画像生成 (1/2)」のような見出し（1 段のジョブでは番号を付けない）。"""
     label = _STAGE_LABELS.get(stage, stage)
@@ -2213,8 +2185,6 @@ async def _run_job_stages(job: Job) -> dict[str, Any]:
     overrides: dict[str, str] = {}
     # 成果物のファイル以外に ComfyUI から拾えたもの（ラテント連続性のパス）
     extras: dict[str, str] = {}
-
-    await _apply_pending_translate(job)
 
     all_stages = stage_specs(job.mode, job.params)
     total = len(all_stages)

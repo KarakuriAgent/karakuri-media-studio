@@ -2,8 +2,8 @@
 
 ComfyUI には繋がない（接続確認を潰してあるので投入したジョブは失敗する）。
 ここで見るのは「どのワークフローに何を渡してジョブを作ったか」まで。
-Grok（日本語 -> 英語の変換）も呼ばせず、既定では「使えない環境」として扱う
-（auto_translate の日本語 Shot は受け付けるが、ジョブ側の英訳で失敗する）。
+LLM（Grok）は既定で「使えない環境」として扱う（アプリ内で LLM を呼ぶのは
+プロンプト作成チャットとヘルスチェックだけで、生成の経路では呼ばない）。
 """
 
 import asyncio
@@ -21,11 +21,6 @@ from app.models import MAX_STEPS, StudioShot
 from app.routers import assets as assets_router
 from tests.test_blocking import scene as blocking_scene
 from tests.test_jobs import _hang_until_cancelled, wait_for
-
-
-async def _no_llm(text: str) -> None:
-    """NSFW 判定の LLM を呼ばせない差し替え（ヒューリスティックに落ちる）。"""
-    return None
 
 
 class FakeLLM:
@@ -71,7 +66,6 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setattr(jobs, "LIBRARY_DIR", lib)
     monkeypatch.setattr(library, "LIBRARY_DIR", lib)
     monkeypatch.setattr(assets_router, "ASSETS_DIR", assets)
-    monkeypatch.setattr(nsfw, "classify", _no_llm)
 
     async def offline(*args, **kwargs):
         raise comfy.ComfyError("ComfyUI is down")
@@ -94,8 +88,7 @@ def env(tmp_path, monkeypatch):
 
     monkeypatch.setattr(studio.job_service, "create_job", recording_create_job)
 
-    # 日本語 -> 英語の変換は既定で「Grok が使えない」= ジョブが失敗する。
-    # 変換そのものを見るテストは `llm.error = None` と `llm.reply` を差す。
+    # 生成の経路では LLM を呼ばない。呼んでいないことを見るために差しておく。
     llm = FakeLLM()
     monkeypatch.setattr(grok, "get_client", lambda *a, **k: llm)
 
@@ -785,17 +778,23 @@ def test_a_plain_library_video_gets_no_reference_note(env):
 # --------------------------------------------------------------------------
 
 def test_a_shot_without_material_renders_as_t2v(env):
-    # 台詞が日本語なので、組み立て検証のために英訳は切る。
-    project = make_project(env, auto_translate=False)
+    project = make_project(env)
     shot = make_shot(
         env,
         project["id"],
         prompt="A cat walks into a ramen shop.",
         camera="handheld, low angle",
+        # 台詞は原語のまま残るので、組み立て済み本文には日本語が入る。
+        # ここで見たいのは組み立てのほうなので、英語版として本文そのものを積む
+        # （英語キャッシュがあれば日本語が混ざっていても投入できる）。
         dialogue="いらっしゃい",
         soundscape="rain on the awning",
         bgm="slow jazz",
     )
+    assembled = preview(env, shot["id"])["prompt"]
+    assert env.client.patch(
+        f"/api/studio/shots/{shot['id']}", json={"english_prompt": assembled}
+    ).status_code == 200
     response = render(env, shot["id"])
     assert response.status_code == 201, response.text
     take = response.json()
@@ -1164,22 +1163,22 @@ def test_the_preview_assembles_before_the_previous_take_exists(env, monkeypatch)
     assert "前 Shot の採用 Take がありません" in response.json()["detail"]
 
 
-def test_translate_works_before_the_previous_take_exists(env, monkeypatch):
-    """英訳は前カットの完成を待たずにできる（本文の組み立ては同じ）。"""
-    env.llm.error = None
-    env.llm.reply = (
+def test_english_can_be_saved_before_the_previous_take_exists(env, monkeypatch):
+    """英語版の保存は前カットの完成を待たずにできる（本文の組み立ては同じ）。"""
+    english = (
         "integrated_multimodal_description: <Picture 1> the cat sits down.\n"
         "No text, subtitles, logos or watermarks."
     )
     second = _continuity_without_a_previous_take(env, monkeypatch)
-    assembled = preview(env, second["id"])["prompt"]
 
-    response = _translate(env, second["id"])
+    response = env.client.patch(
+        f"/api/studio/shots/{second['id']}", json={"english_prompt": english}
+    )
     assert response.status_code == 200, response.text
-    body = wait_translated(env, second["id"])
-    assert body["english_prompt"] == env.llm.reply
+    body = preview(env, second["id"])
+    assert body["english_prompt"] == english
+    assert body["english_stale"] is False
     assert body["render_blocker"]
-    assert assembled in env.llm.prompts[-1]
 
 
 def test_latent_continuity_needs_the_previous_take_to_have_a_latent(env, monkeypatch):
@@ -2534,11 +2533,11 @@ def test_a_plain_project_pins_its_jobs_to_non_nsfw(env):
 def test_a_plain_project_never_runs_the_auto_classifier(env, monkeypatch):
     calls: list[str] = []
 
-    async def spy(text: str) -> bool | None:
+    async def spy(text: str) -> tuple[bool, str]:
         calls.append(text)
-        return True
+        return True, "auto"
 
-    monkeypatch.setattr(nsfw, "classify", spy)
+    monkeypatch.setattr(nsfw, "classify_or_heuristic", spy)
     project = make_project(env)
     shot = make_shot(env, project["id"])
     assert render(env, shot["id"]).status_code == 201
@@ -3145,7 +3144,9 @@ def test_restoring_never_deletes_a_take_it_does_not_know(env):
     seq = revisions(env, project["id"])[0]["seq"]
 
     # このリビジョンのあとに焼いた Take（スナップショットには載っていない）
-    env.client.patch(f"/api/studio/shots/{shot['id']}", json={"prompt": "書き直した"})
+    env.client.patch(
+        f"/api/studio/shots/{shot['id']}", json={"prompt": "A dog runs in."}
+    )
     later = render(env, shot["id"]).json()
 
     context = env.client.post(
@@ -3662,61 +3663,23 @@ def test_a_material_without_a_file_still_needs_a_name(env):
 
 
 # --------------------------------------------------------------------------
-# 日本語 -> 英語の変換（Grok）
+# 日本語プロンプトの扱い（アプリは英訳しない）
 # --------------------------------------------------------------------------
 
-def test_a_japanese_prompt_is_translated_before_it_is_submitted(env):
-    env.llm.error = None
-    env.llm.reply = (
-        "detailed_description: A cat walks into <Picture 1>. "
-        "(S1) says: <d>[Japanese] いらっしゃい</d>"
-    )
+def test_a_japanese_prompt_is_not_submitted(env):
     project = make_project(env)
     make_asset(env, project["id"], "Yatai", kind="image")
     shot = make_shot(
         env, project["id"], prompt="猫が @Yatai に入ってくる。", dialogue="いらっしゃい"
     )
-    take = render(env, shot["id"])
-    assert take.status_code == 201, take.text
-
-    payload = env.created[-1]
-    assert payload.video_prompt.startswith(
-        "detailed_description: 猫が <Picture 1> に入ってくる。"
-    )
-    assert "<d>[Japanese] いらっしゃい</d>" in payload.video_prompt
-    assert env.extras[-1] == {"pending_translate": True}
-
-    body = take.json()
-    assert body["source_prompt"].startswith(
-        "detailed_description: 猫が <Picture 1> に入ってくる。"
-    )
-    assert "<d>[Japanese] いらっしゃい</d>" in body["source_prompt"]
-    assert body["warning"] == ""
-
-    job = wait_for(env.client, body["job_id"])
-    assert job["params"]["video_prompt"] == env.llm.reply
-    assert not job["params"].get("pending_translate")
-
-    # 変換の指示にはワークフローの書き方の規約とタグの取り扱いが入る
-    instruction = env.llm.prompts[-1]
-    assert "<Picture 1>" in instruction
-    assert "reference tag" in instruction
-    assert "original language" in instruction
-    assert "<d>" in instruction
-    assert "detailed_description" in instruction
-    assert "complete official" in instruction
-    assert "Do not invent dialogue" in instruction
-
-    takes = env.client.get(f"/api/studio/shots/{shot['id']}/takes").json()
-    assert takes[0]["source_prompt"].startswith(
-        "detailed_description: 猫が <Picture 1> に入ってくる。"
-    )
-    assert takes[0]["prompt"] == env.llm.reply
+    response = render(env, shot["id"])
+    assert response.status_code == 400, response.text
+    assert "english_prompt" in response.json()["detail"]
+    assert env.created == []
+    assert env.llm.prompts == []
 
 
 def test_an_english_prompt_is_submitted_as_is(env):
-    env.llm.error = None
-    env.llm.reply = "should not be used"
     project = make_project(env)
     shot = make_shot(env, project["id"], prompt="A cat walks in.")
     take = render(env, shot["id"]).json()
@@ -3725,123 +3688,15 @@ def test_an_english_prompt_is_submitted_as_is(env):
     assert env.created[-1].video_prompt.startswith(
         "integrated_multimodal_description: A cat walks in."
     )
-    assert env.extras[-1] is None
 
 
-def test_translation_can_be_turned_off_per_project(env):
-    env.llm.error = None
-    env.llm.reply = "should not be used"
-    project = make_project(env, auto_translate=False)
-    shot = make_shot(env, project["id"], prompt="猫が入ってくる。")
-    assert render(env, shot["id"]).status_code == 201
-    assert env.llm.prompts == []
-    assert env.created[-1].video_prompt.startswith(
-        "integrated_multimodal_description: 猫が入ってくる。"
-    )
-    assert env.extras[-1] is None
-
-
-def test_a_broken_grok_does_not_submit(env):
-    project = make_project(env)  # fixture の既定は「grok が使えない」
-    shot = make_shot(env, project["id"], prompt="猫が入ってくる。")
-    response = render(env, shot["id"])
-    assert response.status_code == 201, response.text
-    body = response.json()
-    assert env.created
-    job = wait_for(env.client, body["job_id"])
-    assert job["status"] == "failed"
-    error = job["error"] or ""
-    assert "中止しました" in error
-    assert "grok CLI が見つかりません" in error
-    takes = env.client.get(f"/api/studio/shots/{shot['id']}/takes").json()
-    assert takes[0]["status"] == "failed"
-
-
-def test_an_empty_translation_does_not_submit(env):
-    env.llm.error = None
-    env.llm.reply = ""
+def test_a_japanese_dialogue_alone_also_needs_an_english_prompt(env):
+    """台詞だけが日本語でも、組み立て済み本文には日本語が残る。"""
     project = make_project(env)
-    shot = make_shot(env, project["id"], prompt="猫が入ってくる。")
-    response = render(env, shot["id"])
-    assert response.status_code == 201, response.text
-    body = response.json()
-    assert env.created
-    job = wait_for(env.client, body["job_id"])
-    assert job["status"] == "failed"
-    error = job["error"] or ""
-    assert "中止しました" in error
-    assert "空のプロンプト" in error
-    takes = env.client.get(f"/api/studio/shots/{shot['id']}/takes").json()
-    assert takes[0]["status"] == "failed"
-
-
-def test_translation_uses_the_configured_grok_timeout(env, monkeypatch):
-    """英訳の待ち時間は相談と同じ agent_grok_timeout。"""
-    from app import config
-
-    seen: list[float | None] = []
-    env.llm.error = None
-    env.llm.reply = "integrated_multimodal_description: A cat walks in."
-
-    def capture(*args, **kwargs):
-        if "timeout" in kwargs:
-            seen.append(kwargs["timeout"])
-        elif args:
-            seen.append(args[0])
-        else:
-            seen.append(grok.DEFAULT_TIMEOUT)
-        return env.llm
-
-    monkeypatch.setattr(
-        config,
-        "_settings",
-        config.load_settings().model_copy(update={"agent_grok_timeout": 900.0}),
+    shot = make_shot(
+        env, project["id"], prompt="A cat walks in.", dialogue="いらっしゃい"
     )
-    monkeypatch.setattr(grok, "get_client", capture)
-    project = make_project(env)
-    shot = make_shot(env, project["id"], prompt="猫が入ってくる。")
-    take = render(env, shot["id"])
-    assert take.status_code == 201
-    wait_for(env.client, take.json()["job_id"])
-    assert seen == [grok.configured_timeout()]
-    assert seen == [900.0]
-
-
-def test_extract_h3_document_drops_a_grok_preamble():
-    raw = (
-        "I'll load the official MiniMax H3 rewrite rules so the English "
-        "document matches the required fields and constraints."
-        "subject_definitions:\n<Subject 1> is in <Picture 1>.\n\n"
-        "detailed_description:\n[Shot 1] A cat walks in.\n"
-        "(S1) says: <d>[日本語] 痛ぁ！</d>"
-    )
-    text = studio.extract_h3_document(raw)
-    assert text.startswith("subject_definitions:")
-    assert "I'll load" not in text
-    assert "<d>[Japanese] 痛ぁ！</d>" in text
-
-
-def test_extract_h3_document_rejects_chatter_without_fields():
-    assert studio.extract_h3_document(
-        "I'll load the official MiniMax H3 rewrite rules and emit only "
-        "the completed English document."
-    ) == ""
-
-
-def test_a_fenced_answer_is_unwrapped(env):
-    env.llm.error = None
-    env.llm.reply = "```\nintegrated_multimodal_description: A cat walks in.\n```"
-    project = make_project(env)
-    shot = make_shot(env, project["id"], prompt="猫が入ってくる。")
-    take = render(env, shot["id"])
-    assert take.status_code == 201
-    assert env.created[-1].video_prompt.startswith(
-        "integrated_multimodal_description: 猫が入ってくる。"
-    )
-    job = wait_for(env.client, take.json()["job_id"])
-    assert job["params"]["video_prompt"] == (
-        "integrated_multimodal_description: A cat walks in."
-    )
+    assert render(env, shot["id"]).status_code == 400
 
 
 # --------------------------------------------------------------------------
@@ -3853,7 +3708,6 @@ def test_the_demo_builds_a_whole_project(env):
     assert response.status_code == 201, response.text
     context = response.json()
     assert context["name"] == "夜明けの鋼"
-    assert context["auto_translate"] is True
     assert len(context["episodes"]) == 1
     assert len(context["scenes"]) == 1
     assert len(context["shots"]) == 6
@@ -3873,15 +3727,23 @@ def test_the_demo_builds_a_whole_project(env):
     assert all(shot["scene_id"] == scene_id for shot in context["shots"])
     assert "@凛" in context["shots"][0]["prompt"]
 
-    # そのまま投入できる（メタデータのみの素材は説明文に展開される）
-    env.llm.error = None
-    env.llm.reply = "detailed_description: A mechanic walks into the hangar at dawn."
-    take = render(env, context["shots"][0]["id"])
+    # デモの本文は日本語なので、英語版を保存するまでは投入できない
+    # （メタデータのみの素材は説明文に展開される）。
+    shot_id = context["shots"][0]["id"]
+    body = preview(env, shot_id)
+    assert body["needs_translation"] is True
+    assert "young Japanese mechanic" in body["prompt"]
+    assert render(env, shot_id).status_code == 400
+
+    english = "detailed_description: A mechanic walks into the hangar at dawn."
+    assert env.client.patch(
+        f"/api/studio/shots/{shot_id}", json={"english_prompt": english}
+    ).status_code == 200
+    take = render(env, shot_id)
     assert take.status_code == 201, take.text
     assert env.created[-1].video_workflow == "minimax_h3_t2v"
     assert "young Japanese mechanic" in take.json()["source_prompt"]
-    job = wait_for(env.client, take.json()["job_id"])
-    assert job["params"]["video_prompt"] == env.llm.reply
+    assert env.created[-1].video_prompt == english
 
 
 def test_every_demo_can_be_created(env):
@@ -4012,35 +3874,23 @@ def test_the_preview_reports_an_empty_prompt(env):
     assert preview(env, shot["id"])["error"]
 
 
-def test_the_preview_says_the_prompt_will_be_translated_but_does_not_call_grok(env):
+def test_the_preview_says_the_prompt_needs_an_english_version(env):
     project = make_project(env)
-    env.llm.error = None
-    env.llm.reply = "A cat walks in."
     shot = make_shot(env, project["id"], prompt="猫が歩いてくる。")
 
     body = preview(env, shot["id"])
-    assert body["auto_translate"] is True
-    assert body["will_translate"] is True
+    assert body["needs_translation"] is True
     assert body["prompt"].startswith(
         "integrated_multimodal_description: 猫が歩いてくる。"
-    )  # 訳す前の姿
+    )  # 組み立てたままの姿（アプリは訳さない）
     assert env.llm.prompts == []
 
 
-def test_an_english_prompt_is_not_marked_for_translation(env):
+def test_an_english_prompt_does_not_need_a_translation(env):
     project = make_project(env)
     shot = make_shot(env, project["id"], prompt="A cat walks in.")
     body = preview(env, shot["id"])
-    assert body["auto_translate"] is True
-    assert body["will_translate"] is False
-
-
-def test_translation_turned_off_shows_in_the_preview(env):
-    project = make_project(env, auto_translate=False)
-    shot = make_shot(env, project["id"], prompt="猫が歩いてくる。")
-    body = preview(env, shot["id"])
-    assert body["auto_translate"] is False
-    assert body["will_translate"] is False
+    assert body["needs_translation"] is False
 
 
 def test_the_preview_matches_what_is_actually_submitted(env):
@@ -4068,115 +3918,69 @@ def test_the_preview_of_an_unknown_shot_is_a_404(env):
 
 
 # --------------------------------------------------------------------------
-# 事前英訳キャッシュ（english_prompt / english_source）
+# 英語キャッシュ（english_prompt / english_source）
 # --------------------------------------------------------------------------
+#
+# 英語版を書くのは外部エージェント。アプリは ``PATCH /shots/{id}`` で受け取り、
+# 「どの本文に対する英語か」を ``english_source`` に控えるだけ。
 
-def _translate(env, shot_id: str):
-    return env.client.post(f"/api/studio/shots/{shot_id}/translate")
+ENGLISH = "integrated_multimodal_description: ENGLISH CACHE"
 
 
-def wait_translated(env, shot_id, timeout=5.0) -> dict:
-    """preview をポーリングし、英訳が終わったらそのプレビューを返す。"""
-    deadline = time.time() + timeout
-    body: dict = {}
-    while time.time() < deadline:
-        body = preview(env, shot_id)
-        status = body.get("english_status") or ""
-        if status != "translating" and (body.get("english_prompt") or status == "failed"):
-            return body
-        time.sleep(0.05)
-    raise AssertionError(
-        f"translate {shot_id} stuck in {body.get('english_status')!r}"
+def save_english(env, shot_id: str, english: str = ENGLISH):
+    """外部エージェントの代わりに英語版を保存する。"""
+    return env.client.patch(
+        f"/api/studio/shots/{shot_id}", json={"english_prompt": english}
     )
 
 
-def test_translate_saves_the_assembled_english(env):
-    env.llm.error = None
-    env.llm.reply = (
-        "integrated_multimodal_description: A cat walks in.\n"
-        "No text, subtitles, logos or watermarks."
-    )
+def test_saving_english_records_the_assembled_source(env):
     project = make_project(env)
     shot = make_shot(env, project["id"], prompt="猫が歩いてくる。")
     assembled = preview(env, shot["id"])["prompt"]
 
-    response = _translate(env, shot["id"])
+    response = save_english(env, shot["id"])
     assert response.status_code == 200, response.text
-    wait_translated(env, shot["id"])
     stored = detail(env, project["id"])["shots"][0]
-    assert stored["english_prompt"] == env.llm.reply
+    assert stored["english_prompt"] == ENGLISH
     assert stored["english_source"] == assembled
     assert stored["prompt"] == "猫が歩いてくる。"
-    assert assembled in env.llm.prompts[-1]
+    assert env.llm.prompts == []
 
 
-def test_translate_returns_before_grok_finishes(env):
-    env.llm.error = None
-    env.llm.reply = "integrated_multimodal_description: ENGLISH CACHE"
-    env.llm.hold = threading.Event()
-    project = make_project(env)
-    shot = make_shot(env, project["id"], prompt="猫が歩いてくる。")
-    try:
-        response = _translate(env, shot["id"])
-        assert response.status_code == 200, response.text
-        body = response.json()
-        assert body["english_status"] == "translating"
-        assert body["english_prompt"] == ""
-        assert not env.llm.hold.is_set()
-
-        env.llm.hold.set()
-        done = wait_translated(env, shot["id"])
-        assert done["english_prompt"] == "integrated_multimodal_description: ENGLISH CACHE"
-        assert done["english_status"] == ""
-    finally:
-        env.llm.hold.set()
-
-
-def test_a_usable_english_cache_is_submitted_without_pending_translate(env):
-    env.llm.error = None
-    env.llm.reply = "integrated_multimodal_description: ENGLISH CACHE"
+def test_a_usable_english_cache_is_submitted(env):
     project = make_project(env)
     shot = make_shot(env, project["id"], prompt="猫が歩いてくる。")
     assembled = preview(env, shot["id"])["prompt"]
-    assert _translate(env, shot["id"]).status_code == 200
-    wait_translated(env, shot["id"])
-    env.llm.prompts.clear()
+    assert save_english(env, shot["id"]).status_code == 200
 
     take = render(env, shot["id"])
     assert take.status_code == 201, take.text
-    assert env.extras[-1] is None
-    assert env.created[-1].video_prompt == "integrated_multimodal_description: ENGLISH CACHE"
+    assert env.created[-1].video_prompt == ENGLISH
     assert env.llm.prompts == []
     body = take.json()
-    assert body["prompt"] == "integrated_multimodal_description: ENGLISH CACHE"
+    assert body["prompt"] == ENGLISH
     assert body["source_prompt"] == assembled
 
 
-def test_a_stale_english_cache_falls_back_to_pending_translate(env):
-    env.llm.error = None
-    env.llm.reply = "integrated_multimodal_description: ENGLISH CACHE"
+def test_a_stale_english_cache_is_not_submitted(env):
     project = make_project(env)
     shot = make_shot(env, project["id"], prompt="猫が歩いてくる。")
-    assert _translate(env, shot["id"]).status_code == 200
-    wait_translated(env, shot["id"])
+    assert save_english(env, shot["id"]).status_code == 200
 
     patched = env.client.patch(
         f"/api/studio/shots/{shot['id']}", json={"prompt": "犬が走ってくる。"}
     )
     assert patched.status_code == 200
-    take = render(env, shot["id"])
-    assert take.status_code == 201, take.text
-    assert env.extras[-1] == {"pending_translate": True}
+    response = render(env, shot["id"])
+    assert response.status_code == 400, response.text
+    assert "english_prompt" in response.json()["detail"]
 
 
 def test_changing_seed_alone_keeps_the_english_cache(env):
-    env.llm.error = None
-    env.llm.reply = "integrated_multimodal_description: ENGLISH CACHE"
     project = make_project(env)
     shot = make_shot(env, project["id"], prompt="猫が歩いてくる。")
-    assert _translate(env, shot["id"]).status_code == 200
-    wait_translated(env, shot["id"])
-    env.llm.prompts.clear()
+    assert save_english(env, shot["id"]).status_code == 200
 
     patched = env.client.patch(
         f"/api/studio/shots/{shot['id']}", json={"seed": 42}
@@ -4184,90 +3988,55 @@ def test_changing_seed_alone_keeps_the_english_cache(env):
     assert patched.status_code == 200
     take = render(env, shot["id"])
     assert take.status_code == 201, take.text
-    assert env.extras[-1] is None
-    assert env.created[-1].video_prompt == "integrated_multimodal_description: ENGLISH CACHE"
+    assert env.created[-1].video_prompt == ENGLISH
     assert env.created[-1].seed == 42
-    assert env.llm.prompts == []
 
 
-def test_auto_translate_off_still_submits_a_usable_english_cache(env):
-    env.llm.error = None
-    env.llm.reply = "integrated_multimodal_description: ENGLISH CACHE"
-    project = make_project(env, auto_translate=False)
-    shot = make_shot(env, project["id"], prompt="猫が歩いてくる。")
-    assert _translate(env, shot["id"]).status_code == 200
-    wait_translated(env, shot["id"])
-    env.llm.prompts.clear()
-
-    take = render(env, shot["id"])
-    assert take.status_code == 201, take.text
-    assert env.extras[-1] is None
-    assert env.created[-1].video_prompt == "integrated_multimodal_description: ENGLISH CACHE"
-    assert env.llm.prompts == []
-
-
-def test_no_cache_and_japanese_still_sets_pending_translate(env):
+def test_english_and_prompt_in_one_patch_are_consistent(env):
+    """同じ PATCH で本文と英語版を差し替えたら、英語は新しい本文のもの。"""
     project = make_project(env)
     shot = make_shot(env, project["id"], prompt="猫が歩いてくる。")
-    take = render(env, shot["id"])
-    assert take.status_code == 201, take.text
-    assert env.extras[-1] == {"pending_translate": True}
-
-
-def test_a_failed_translate_does_not_write_the_cache(env):
-    project = make_project(env)
-    shot = make_shot(env, project["id"], prompt="猫が歩いてくる。")
-    response = _translate(env, shot["id"])
-    assert response.status_code == 200, response.text
-    body = wait_translated(env, shot["id"])
-    assert body["english_status"] == "failed"
-    assert body["english_prompt"] == ""
-    assert "保存しませんでした" in (body.get("english_error") or "")
-    stored = detail(env, project["id"])["shots"][0]
-    assert stored["english_prompt"] == ""
-    assert stored["english_source"] == ""
-    assert stored["english_status"] == "failed"
-    assert "保存しませんでした" in stored["english_error"]
+    patched = env.client.patch(
+        f"/api/studio/shots/{shot['id']}",
+        json={"prompt": "犬が走ってくる。", "english_prompt": ENGLISH},
+    )
+    assert patched.status_code == 200, patched.text
+    body = preview(env, shot["id"])
+    assert body["needs_translation"] is False
+    assert body["english_stale"] is False
+    assert render(env, shot["id"]).status_code == 201
+    assert env.created[-1].video_prompt == ENGLISH
 
 
 def test_preview_reports_a_usable_english_cache(env):
-    env.llm.error = None
-    env.llm.reply = "integrated_multimodal_description: ENGLISH CACHE"
     project = make_project(env)
     shot = make_shot(env, project["id"], prompt="猫が歩いてくる。")
-    assert _translate(env, shot["id"]).status_code == 200
-    wait_translated(env, shot["id"])
+    assert save_english(env, shot["id"]).status_code == 200
 
     body = preview(env, shot["id"])
-    assert body["will_translate"] is False
+    assert body["needs_translation"] is False
     assert body["english_stale"] is False
-    assert body["english_prompt"] == "integrated_multimodal_description: ENGLISH CACHE"
+    assert body["english_prompt"] == ENGLISH
 
 
 def test_preview_marks_a_stale_english_cache(env):
-    env.llm.error = None
-    env.llm.reply = "integrated_multimodal_description: ENGLISH CACHE"
     project = make_project(env)
     shot = make_shot(env, project["id"], prompt="猫が歩いてくる。")
-    assert _translate(env, shot["id"]).status_code == 200
-    wait_translated(env, shot["id"])
+    assert save_english(env, shot["id"]).status_code == 200
     env.client.patch(
         f"/api/studio/shots/{shot['id']}", json={"prompt": "犬が走ってくる。"}
     )
 
     body = preview(env, shot["id"])
-    assert body["will_translate"] is True
+    assert body["needs_translation"] is True
     assert body["english_stale"] is True
-    assert body["english_prompt"] == "integrated_multimodal_description: ENGLISH CACHE"
+    assert body["english_prompt"] == ENGLISH
 
 
 def test_clearing_english_prompt_clears_the_source_too(env):
-    env.llm.error = None
-    env.llm.reply = "integrated_multimodal_description: ENGLISH CACHE"
     project = make_project(env)
     shot = make_shot(env, project["id"], prompt="猫が歩いてくる。")
-    assert _translate(env, shot["id"]).status_code == 200
-    wait_translated(env, shot["id"])
+    assert save_english(env, shot["id"]).status_code == 200
 
     patched = env.client.patch(
         f"/api/studio/shots/{shot['id']}", json={"english_prompt": ""}
@@ -4275,46 +4044,19 @@ def test_clearing_english_prompt_clears_the_source_too(env):
     assert patched.status_code == 200
     assert patched.json()["english_prompt"] == ""
     assert patched.json()["english_source"] == ""
-    assert patched.json()["english_status"] == ""
-    assert patched.json()["english_error"] == ""
 
-    take = render(env, shot["id"])
-    assert take.status_code == 201, take.text
-    assert env.extras[-1] == {"pending_translate": True}
+    assert render(env, shot["id"]).status_code == 400
 
 
-def test_an_english_only_prompt_is_cached_without_grok(env):
-    env.llm.error = None
-    env.llm.reply = "should not be used"
+def test_saving_english_on_a_broken_assembly_leaves_it_stale(env):
+    """組み立てられないカット（未登録の ``@名前``）は突き合わせ相手が無い。"""
     project = make_project(env)
-    shot = make_shot(env, project["id"], prompt="A cat walks in.")
-    assembled = preview(env, shot["id"])["prompt"]
-
-    response = _translate(env, shot["id"])
-    assert response.status_code == 200, response.text
-    assert env.llm.prompts == []
-    assert response.json()["english_prompt"] == assembled
-    assert response.json()["english_source"] == assembled
-
-
-def test_translating_an_unknown_shot_is_a_404(env):
-    assert env.client.post("/api/studio/shots/nope/translate").status_code == 404
-
-
-def test_preview_keeps_cached_english_when_assembly_fails(env):
-    env.llm.error = None
-    env.llm.reply = "integrated_multimodal_description: ENGLISH CACHE"
-    project = make_project(env)
-    shot = make_shot(env, project["id"], prompt="猫が歩いてくる。")
-    assert _translate(env, shot["id"]).status_code == 200
-    wait_translated(env, shot["id"])
-    env.client.patch(
-        f"/api/studio/shots/{shot['id']}", json={"prompt": "@Inu が吠える。"}
-    )
+    shot = make_shot(env, project["id"], prompt="@Inu が吠える。")
+    assert save_english(env, shot["id"]).status_code == 200
 
     body = preview(env, shot["id"])
     assert body["error"]
-    assert body["english_prompt"] == "integrated_multimodal_description: ENGLISH CACHE"
+    assert body["english_prompt"] == ENGLISH
     assert body["english_stale"] is True
 
 
@@ -4420,3 +4162,168 @@ def test_compose_prompt_keeps_camera_when_body_only_cuts():
     )
     text = studio.compose_prompt(shot, body, workflow="minimax_h3_t2v")
     assert "The camera Push In at slow speed." in text
+
+
+# --------------------------------------------------------------------------
+# 動画 LoRA（プロジェクトの video_loras と 1 回ぶんの上書き、SPEC §3.4.2）
+# --------------------------------------------------------------------------
+
+PROJECT_LORA = {"lora_name": "style.safetensors", "trigger_word": "inkstyle", "strength": 0.7}
+OVERRIDE_LORA = {"lora_name": "motion.safetensors", "trigger_word": "slowmo", "strength": 1.2}
+
+
+def test_a_project_has_no_video_loras_by_default(env):
+    project = make_project(env)
+    assert project["video_loras"] == []
+    assert env.client.get("/api/studio/projects").json()[0]["video_loras"] == []
+
+
+def test_video_loras_are_saved_as_a_project_setting(env):
+    project = make_project(env, video_loras=[PROJECT_LORA])
+    assert project["video_loras"] == [PROJECT_LORA]
+    assert detail(env, project["id"])["video_loras"] == [PROJECT_LORA]
+    assert env.client.get("/api/studio/projects").json()[0]["video_loras"] == [
+        PROJECT_LORA
+    ]
+
+    # 並べ替え・強度の変更も丸ごと置き換え
+    both = [OVERRIDE_LORA, {**PROJECT_LORA, "strength": 0.4}]
+    updated = env.client.patch(
+        f"/api/studio/projects/{project['id']}", json={"video_loras": both}
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["video_loras"] == both
+
+    # 送らなければそのまま、[] を送れば外れる
+    env.client.patch(
+        f"/api/studio/projects/{project['id']}", json={"name": "改題"}
+    ).raise_for_status()
+    assert detail(env, project["id"])["video_loras"] == both
+    cleared = env.client.patch(
+        f"/api/studio/projects/{project['id']}", json={"video_loras": []}
+    )
+    assert cleared.json()["video_loras"] == []
+
+
+def test_a_malformed_video_lora_is_refused(env):
+    project = make_project(env)
+    response = env.client.patch(
+        f"/api/studio/projects/{project['id']}",
+        json={"video_loras": [{"strength": 1.0}]},
+    )
+    assert response.status_code == 422
+
+
+def test_restoring_a_revision_puts_the_video_loras_back(env):
+    project = make_project(env, video_loras=[PROJECT_LORA])
+    seq = revisions(env, project["id"])[0]["seq"]
+    env.client.patch(
+        f"/api/studio/projects/{project['id']}", json={"video_loras": []}
+    ).raise_for_status()
+    restored = env.client.post(
+        f"/api/studio/projects/{project['id']}/revisions/{seq}/restore"
+    )
+    assert restored.status_code == 200, restored.text
+    assert restored.json()["video_loras"] == [PROJECT_LORA]
+
+
+def test_the_project_video_loras_reach_the_job(env):
+    """作品の既定がジョブの video_loras とトリガーワードに載る。"""
+    project = make_project(env, video_loras=[PROJECT_LORA])
+    shot = make_shot(env, project["id"])
+    response = render(env, shot["id"])
+    assert response.status_code == 201, response.text
+    payload = env.created[-1]
+    assert [lora.model_dump() for lora in payload.video_loras] == [PROJECT_LORA]
+    assert payload.video_trigger_text == "inkstyle"
+    assert response.json()["warning"] == ""
+
+
+def test_a_project_without_video_loras_sends_none(env):
+    shot = make_shot(env, make_project(env)["id"])
+    assert render(env, shot["id"]).status_code == 201
+    assert env.created[-1].video_loras == []
+    assert env.created[-1].video_trigger_text == ""
+
+
+@pytest.mark.parametrize(
+    ("override", "expected"),
+    [
+        # 送らない = 作品の既定
+        (None, [PROJECT_LORA]),
+        # この回だけ別の LoRA
+        ([OVERRIDE_LORA], [OVERRIDE_LORA]),
+        # [] = この回は LoRA なしを明示（作品の既定より優先）
+        ([], []),
+    ],
+)
+def test_the_render_override_wins_over_the_project_video_loras(env, override, expected):
+    project = make_project(env, video_loras=[PROJECT_LORA])
+    shot = make_shot(env, project["id"])
+    body = {} if override is None else {"video_loras": override}
+    assert render(env, shot["id"], body).status_code == 201
+    payload = env.created[-1]
+    assert [lora.model_dump() for lora in payload.video_loras] == expected
+    assert payload.video_trigger_text == ", ".join(
+        lora["trigger_word"] for lora in expected
+    )
+    # 上書きはプロジェクトを書き換えない
+    assert detail(env, project["id"])["video_loras"] == [PROJECT_LORA]
+
+
+def test_the_override_applies_to_a_project_without_video_loras(env):
+    shot = make_shot(env, make_project(env)["id"])
+    assert render(env, shot["id"], {"video_loras": [OVERRIDE_LORA]}).status_code == 201
+    assert [lora.model_dump() for lora in env.created[-1].video_loras] == [OVERRIDE_LORA]
+
+
+def test_video_loras_are_dropped_with_a_warning_when_the_workflow_has_no_chain(
+    env, monkeypatch
+):
+    """挿せないワークフローに決まったら 422 にせず、外して Take に警告を残す。"""
+    from dataclasses import replace
+
+    from app import workflows
+
+    spec = workflows.get_video_spec("minimax_h3_t2v")
+    monkeypatch.setitem(workflows.BY_ID, spec.id, replace(spec, lora_chain=None))
+
+    project = make_project(env, video_loras=[PROJECT_LORA])
+    shot = make_shot(env, project["id"])
+    response = render(env, shot["id"])
+    assert response.status_code == 201, response.text
+    assert env.created[-1].video_workflow == "minimax_h3_t2v"
+    assert env.created[-1].video_loras == []
+    assert env.created[-1].video_trigger_text == ""
+    warning = response.json()["warning"]
+    assert "style.safetensors" in warning
+    assert "minimax_h3_t2v" in warning
+
+    preview = env.client.get(f"/api/studio/shots/{shot['id']}/prompt-preview").json()
+    assert preview["video_loras"] == []
+    assert "style.safetensors" in preview["video_lora_warning"]
+
+
+def test_the_prompt_preview_shows_the_project_video_loras(env):
+    project = make_project(env, video_loras=[PROJECT_LORA, OVERRIDE_LORA])
+    shot = make_shot(env, project["id"])
+    preview = env.client.get(f"/api/studio/shots/{shot['id']}/prompt-preview").json()
+    assert preview["video_loras"] == [PROJECT_LORA, OVERRIDE_LORA]
+    assert preview["video_trigger_text"] == "inkstyle, slowmo"
+    assert preview["video_lora_warning"] == ""
+    # 本文そのものにはトリガーワードを混ぜない（投入時に先頭へ付く）
+    assert "inkstyle" not in preview["prompt"]
+
+
+def test_an_old_row_without_video_loras_still_loads(env):
+    """列が壊れていても（手で書き換えた DB など）作品は開ける。"""
+    import sqlite3
+
+    project = make_project(env, video_loras=[PROJECT_LORA])
+    with sqlite3.connect(db.DB_PATH) as conn:
+        conn.execute(
+            "UPDATE studio_projects SET video_loras = ? WHERE id = ?",
+            ('[{"lora_name": "ok.safetensors"}, {"strength": 1}, 3]', project["id"]),
+        )
+    loaded = detail(env, project["id"])["video_loras"]
+    assert loaded == [{"lora_name": "ok.safetensors", "trigger_word": "", "strength": 1.0}]

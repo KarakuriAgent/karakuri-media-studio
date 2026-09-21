@@ -14,7 +14,7 @@ import pytest
 from fastapi.testclient import TestClient
 from PIL import Image, ImageDraw
 
-from app import autotag, comfy, config, db, jobs, library
+from app import comfy, config, db, jobs, library
 from app.main import app
 from app.routers import assets as assets_router
 from tests.test_library import _insert_job
@@ -25,10 +25,6 @@ has_ffmpeg = pytest.mark.skipif(
     not (shutil.which("ffmpeg") and shutil.which("ffprobe")),
     reason="ffmpeg / ffprobe が無い環境ではコマを抜けない",
 )
-
-
-async def _no_llm(text: str) -> tuple[str, list[str]]:
-    return "", []
 
 
 @pytest.fixture
@@ -59,7 +55,6 @@ def env(tmp_path, monkeypatch):
         raise comfy.ComfyError("ComfyUI is down")
 
     monkeypatch.setattr(comfy, "get_object_info", lambda *a, **k: offline())
-    monkeypatch.setattr(autotag, "describe", _no_llm)
     config.update_settings({"external_api_key": KEY})
 
     with TestClient(app) as client:

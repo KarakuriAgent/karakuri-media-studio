@@ -12,16 +12,11 @@ from app import comfy, db, jobs, nsfw
 from app.main import app
 
 
-async def _no_llm(*args, **kwargs):
-    return False, ""
-
-
 @pytest.fixture
 def env(tmp_path, monkeypatch):
     """空の DB を持つクライアント（ComfyUI へは繋がない）。"""
     monkeypatch.setattr(db, "DB_PATH", tmp_path / "test.db")
     monkeypatch.setattr(jobs, "OUTPUTS_DIR", tmp_path / "outputs")
-    monkeypatch.setattr(nsfw, "classify", _no_llm)
 
     async def offline(*args, **kwargs):
         raise comfy.ComfyError("ComfyUI is down")

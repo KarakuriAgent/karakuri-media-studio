@@ -1388,7 +1388,7 @@ export default function SettingsPage({
 
                   <SettingsCard
                     title="LLM CLI"
-                    description="チャット・スタジオ会話・英訳が回す CLI の設定です。Grok Imagine（画像生成）は常に Grok CLI を使います。"
+                    description="チャット・スタジオ会話が回す CLI の設定です。Grok Imagine（画像生成）は常に Grok CLI を使います。"
                   >
                     <div className="grid gap-2 sm:grid-cols-2">
                       <Field
@@ -1454,7 +1454,7 @@ export default function SettingsPage({
                       <Field
                         label="CLI の作業ディレクトリ（空 = 既定）"
                         htmlFor="grok-workdir"
-                        hint="チャット・英訳が CLI を回すディレクトリの根です（セッションごとに下へ掘ります）。"
+                        hint="チャットが CLI を回すディレクトリの根です（セッションごとに下へ掘ります）。"
                       >
                         <Input
                           id="grok-workdir"

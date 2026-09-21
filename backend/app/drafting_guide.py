@@ -41,7 +41,7 @@ from .workflows import (
 )
 
 #: ガイド本文の版。中身を変えたら上げる（受け取り側がキャッシュの判定に使う）。
-GUIDE_VERSION = "2026-09-06"
+GUIDE_VERSION = "2026-09-07"
 
 #: 実用上の下限（秒）。:data:`~app.studio.SHOT_DURATION_MIN` は API が受け付ける
 #: 範囲で、H3 は 4 秒を切ると芝居が入りきらない（``MINIMAX_H3_GUIDE_BODY`` の
@@ -168,8 +168,9 @@ def build_drafting_guide() -> DraftingGuide:
   自動で付くので書かなくてよい。
 - **ネガティブプロンプトは存在しない。** 「〜を写さない」は指定できないので、
   写したいものを本文で描写して表現する。
-- 日本語で書いてよい。作品の `auto_translate` が有効なら、投入前に公式の英語
-  H3 文書へ書き直される（固有名詞・台詞はそのまま保たれる）。
+- 日本語で書いてよい。ただし**投入されるのは英語だけ**で、アプリは英訳を
+  しない。日本語のまま生成しようとすると 400 で断られる。英語版を書くのは
+  エージェント自身の仕事（手順は §3.2）。
 
 ## 2. 素材メンション（`@名前`）
 
@@ -219,6 +220,46 @@ def build_drafting_guide() -> DraftingGuide:
   `POST /api/v1/assets/{{id}}/refresh-from-library` で取り直す（取り直した素材を
   使った Take は stale になる = 焼き直しが要る）。
 
+### 3.2 日本語で書いた場合の英訳手順
+
+MiniMax H3 は英語プロンプト前提のモデルで、**アプリは英訳をしない**（アプリ内で
+LLM を呼ぶのはプロンプト作成チャットとヘルスチェックだけ）。脚本は日本語で
+書いてよいが、生成の前に**あなたが英語版を書いて保存する**。
+
+1. `GET /api/v1/shots/{{id}}/prompt-preview` を見る。`prompt` が実際に組み立て
+   られた本文（公式フィールド・`@名前` の展開・除外文まで込み）で、
+   `needs_translation` が `true` なら**このままでは投入できない**（本文に日本語が
+   あり、使える英語キャッシュが無い）。
+2. その `prompt` を**英語の公式 H3 文書として書き直す**（下の鉄則）。
+3. `PATCH /api/v1/shots/{{id}}` の `english_prompt` に保存する（`base_revision` を
+   忘れずに）。元になった本文は `english_source` としてサーバー側が控える。
+4. もう一度 `prompt-preview` を見て `needs_translation` が `false`、
+   `english_stale` が `false` になっていることを確かめてから
+   `POST /api/v1/shots/{{id}}/render`。
+5. 脚本を直すと本文が変わるので `english_stale` が `true` に戻る。そのときは
+   1 からやり直す（`english_prompt` に空文字を PATCH すればキャッシュを消せる）。
+
+書き直しの鉄則（**直訳ではなく、公式 H3 文書として書き直す**）:
+
+- 事実は 1 つも足さず減らさない。書かれていない人物・場所・衣装・台詞・筋を
+  **発明しない**。
+- 参照タグ（`<Picture 1>` / `<Video 2>` / `<Audio 1>` / `<Subject 1>` …）は
+  **一字一句そのまま**。振り直さない、訳さない、消さない、増やさない。
+- **二重引用符の中の台詞と `<d>…</d>` の中身は原語のまま**（日本語は日本語で
+  残す。H3 はここをそのまま喋る）。訳すのはその周りの地の文だけ。
+- 末尾の除外文（字幕・ロゴの禁止文）があればそのまま残す。
+- 公式フィールドを**揃った形**で出す（基本 3 フィールド、または参照素材つきの
+  Ref2VA なら 6 フィールド。どちらかは `prompt-preview` の `workflow` で分かる）。
+  足りないフィールド見出し・`[Shot 1]`・公式のカメラ節・書かれた動きから導ける
+  `overall_soundscape` / `non_diegetic_music` は**補う**。
+- **書かれている**動作の観測可能な段取り（身体・接触・視線・結果の状態・すでに
+  含意されている光）は膨らませてよい。
+- i2v（開始フレームつき）では公式の alignment 行を先頭に置いたままにする。
+- Ref2VA でタグはあるのに分析セクションが無いときは、**そのタグと書かれた事実
+  だけから** `subject_definitions` / `summary` / `retention_analysis` /
+  `detailed_description` を**最小限**書く（被写体を勝手に増やさない）。
+- `[Shot N]` と `At MM:SS.mmm` はそのまま。`Camera:` / `Audio:` 行に変換しない。
+
 ## 4. 実例
 
 ### 4.1 素材メンション入りのカット（このアプリの脚本の形）
@@ -240,7 +281,8 @@ def build_drafting_guide() -> DraftingGuide:
   中途半端な脚本は残らない。
 - `render` は立てない。生成は脚本を入れてから**1 カットずつ**回す:
   `GET /api/v1/shots/{{id}}/prompt-preview` で実際に投入される本文と
-  `render_blocker` を確かめる → `POST /api/v1/shots/{{id}}/render` →
+  `needs_translation` / `render_blocker` を確かめる（日本語が残っていれば §3.2 の
+  手順で `english_prompt` を保存してから）→ `POST /api/v1/shots/{{id}}/render` →
   `GET /api/v1/jobs/{{job_id}}` をポーリングして完了を待つ → 出来を見て
   `POST /api/v1/takes/{{id}}/select`（採用）か `/reject`（不採用）。
 - 直しは PATCH（`base_revision` を必ず付ける）。削除はカット・場・話・素材・

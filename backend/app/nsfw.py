@@ -6,11 +6,13 @@ UI のトグルがオフのあいだは NSFW の存在自体を見せない。
 判定は **常にベストエフォート**で、生成をブロックしない:
 
 1. ジョブは ``nsfw_source = ''``（未判定）で作られ、
-2. :func:`spawn` の fire-and-forget タスクが Grok にワンショットで尋ね、
-3. 失敗したらキーワードのヒューリスティックに落ち、
-4. ``nsfw_source`` がまだ ''（= 手動指定で上書きされていない）ときだけ
+2. :func:`spawn` の fire-and-forget タスクがキーワードで判定し、
+3. ``nsfw_source`` がまだ ''（= 手動指定で上書きされていない）ときだけ
    ``auto`` として書き戻し、WS で画面に伝える。
 
+判定に LLM は使わない（アプリ内で LLM を呼ぶのはプロンプト作成チャットと
+ヘルスチェックだけ。SPEC §4.1）ので、語彙に無い書き方は取りこぼす。人が
+トグルで直せば ``nsfw_source = 'manual'`` になり、以後は自動判定に触られない。
 判定そのものが失敗してもジョブは一切失敗しない（例外は握って捨てる）。
 """
 
@@ -21,33 +23,12 @@ import logging
 from collections.abc import Coroutine
 from typing import Any
 
-from . import grok, ws
+from . import ws
 from .db import get_db
 
 log = logging.getLogger(__name__)
 
-# 判定はおまけなので、チャット用の既定 (120s) より短く切り上げる。
-CLASSIFY_TIMEOUT = 60.0
-
-CLASSIFY_PROMPT = """\
-あなたは画像／動画生成プロンプトの内容審査です。次のテキストが性的・露骨な
-（いわゆる NSFW / R-18 の）内容かどうかだけを判定してください。
-
-- ヌード、性行為、性器・胸部の露出、下着姿の強調などがあれば nsfw は true
-- 水着や軽い露出のみ、暴力・グロのみ、健全な内容は false
-- 説明や前置きは書かず、JSON オブジェクトだけを 1 つ返してください
-
-出力形式:
-```json
-{"nsfw": true}
-```
-
---- 判定対象のテキスト ---
-%s
---- ここまで ---
-"""
-
-# ヒューリスティック用の語彙（判定に失敗したときのフォールバック）。
+# 判定に使う語彙（この語のどれかを含めば NSFW とみなす）。
 KEYWORDS: tuple[str, ...] = (
     # 英語
     "nsfw",
@@ -116,39 +97,14 @@ KEYWORDS: tuple[str, ...] = (
 # --------------------------------------------------------------------------
 
 def heuristic(text: str) -> bool:
-    """キーワード判定（Grok が使えないときのフォールバック）。"""
+    """キーワード判定（自動判定はこれだけ）。"""
     lowered = (text or "").lower()
     return any(word in lowered for word in KEYWORDS)
 
 
-async def classify(text: str) -> bool | None:
-    """Grok にワンショットで尋ねる。判定できなければ None（失敗を隠さない）。"""
-    body = (text or "").strip()
-    if not body:
-        return None
-    client = grok.get_client()
-    # 判定はおまけなので待ち時間を短くする（CLI 実装のみ timeout を持つ）。
-    timeout = getattr(client, "timeout", None)
-    if isinstance(timeout, (int, float)) and timeout > CLASSIFY_TIMEOUT:
-        client.timeout = CLASSIFY_TIMEOUT  # type: ignore[attr-defined]
-    try:
-        answer = await client.complete(CLASSIFY_PROMPT % body[:4000])
-    except grok.LLMError as exc:
-        log.info("NSFW 判定に Grok を使えませんでした: %s", exc)
-        return None
-    for parsed in grok.iter_json_objects(answer):
-        if isinstance(parsed, dict) and isinstance(parsed.get("nsfw"), bool):
-            return bool(parsed["nsfw"])
-    log.info("NSFW 判定の応答から JSON を取り出せませんでした")
-    return None
-
-
 async def classify_or_heuristic(text: str) -> tuple[bool, str]:
-    """``(nsfw, 'auto')``。Grok が判定できなければキーワード判定に落とす。"""
-    verdict = await classify(text)
-    if verdict is None:
-        verdict = heuristic(text)
-    return verdict, "auto"
+    """``(nsfw, 'auto')``。キーワードだけで判定する（LLM は呼ばない）。"""
+    return heuristic(text), "auto"
 
 
 def job_text(
@@ -218,7 +174,7 @@ def spawn(
 ) -> asyncio.Task[None] | None:
     """判定タスクを投げっぱなしで開始する。
 
-    ``key`` が同じ判定がまだ走っているときは何もしない（Grok の二重呼び出し防止）。
+    ``key`` が同じ判定がまだ走っているときは何もしない（二重実行の防止）。
     イベントループの外（同期スクリプト等）では判定を諦める。
     """
     if key is not None and key in _inflight:

@@ -36,7 +36,7 @@ cwd として書いてある。
 
 ```bash
 .agents/skills/karakuri-studio/scripts/studio.sh GET /projects
-.agents/skills/karakuri-studio/scripts/studio.sh POST /projects '{"name":"新作","auto_translate":true}'
+.agents/skills/karakuri-studio/scripts/studio.sh POST /projects '{"name":"新作"}'
 .agents/skills/karakuri-studio/scripts/studio.sh PATCH /shots/<id> '{"prompt":"…","base_revision":12}'
 .agents/skills/karakuri-studio/scripts/studio.sh upload /library/audio file=@/path/to/ban.wav name=BAN  # multipart
 .agents/skills/karakuri-studio/scripts/studio.sh wait-job <job_id> [interval_sec]     # 完了まで待つ（既定 10 秒）
@@ -119,12 +119,30 @@ cwd として書いてある。
    - `error` … 組み立てられない（直してから焼く）
    - `render_blocker` … 組み立てはできるが投入できない（引き継ぎ元の Take がまだ無い等）
    - `workflow_reason` … どのモード・品質になったか、フォールバックしたか
-   - `will_translate` / `english_stale` … 英訳がこれから走るか
-7. **焼く**: `POST /shots/{id}/render`（ボディで解像度・尺・steps・seed を上書き可）。
+   - `needs_translation` / `english_stale` … 英語版が要る / 保存済みの英語が
+     古い（どちらかが `true` なら **7 の英訳**を先に済ませる。日本語のまま
+     焼こうとすると 400）
+7. **英訳する（アプリはやらない。あなたの仕事）**。`prompt-preview` の `prompt`
+   を**公式 H3 文書として英語で書き直し**、`PATCH /shots/{id}` の
+   `english_prompt` に保存する（`base_revision` を忘れずに）。書き方の正本は
+   `GET /prompt-guide` の §3.2。要点:
+   - 直訳ではなく**公式文書として書き直す**。書かれていない人物・場所・衣装・
+     台詞・筋は**足さない**。
+   - 参照タグ（`<Picture 1>` / `<Video 2>` / `<Audio 1>` / `<Subject 1>`）は
+     **一字一句そのまま**（振り直さない・訳さない・増やさない）。
+   - **二重引用符の中の台詞と `<d>…</d>` の中身は原語のまま**（日本語は日本語で
+     残す。H3 はここをそのまま喋る）。訳すのは周りの地の文だけ。
+   - 末尾の除外文はそのまま残す。足りない公式フィールド・`[Shot 1]`・カメラ節・
+     `overall_soundscape` / `non_diegetic_music` は補う。
+   - 保存したらもう一度 `prompt-preview` を見て、`needs_translation` と
+     `english_stale` が両方 `false` になったことを確かめる。
+   - 脚本を直すと `english_stale` が `true` に戻る = 書き直し。
+     （`english_prompt` に `""` を PATCH すれば消せる）
+8. **焼く**: `POST /shots/{id}/render`（ボディで解像度・尺・steps・seed・動画 LoRA を上書き可）。
    返る Take の `job_id` を `GET /jobs/{id}` で **5〜15 秒間隔**でポーリング
    （`.agents/skills/karakuri-studio/scripts/studio.sh wait-job <job_id>`）。status は
    `queued` / `prompting` / `running` / `done` / `failed` / `canceled`。
-8. **検分**: 完了したジョブ / Take の `video_url` を必ず自分で見る。
+9. **検分**: 完了したジョブ / Take の `video_url` を必ず自分で見る。
 
    ```bash
    .agents/skills/karakuri-studio/scripts/inspect.sh <video_url> 1     # 尺・音声の有無 + 1 秒ごとのフレーム PNG
@@ -132,7 +150,7 @@ cwd として書いてある。
 
    出た PNG を読んで、指示どおりの人物・動き・カメラになっているか、音声が
    入っているかを確かめる。焼きっぱなしで採用しない。
-9. **採否**: `POST /takes/{id}/select` / `POST /takes/{id}/reject`。
+10. **採否**: `POST /takes/{id}/select` / `POST /takes/{id}/reject`。
    採用 Take がそのカットの完成尺になる。
 
 ## 4. モードは自動で決まる
@@ -156,6 +174,12 @@ cwd として書いてある。
   t2v になるカットは `minimax_h3_t2v_opt` で投入され、理由が `prompt-preview` の
   `workflow_reason` に出る。`image_quality: "turbo"` の t2i も同じく `_opt` に落ちる。
   Turbo をそのまま効かせたいなら、引き継ぎ（i2v）か `@素材`（r2v）のあるカットにする。
+- `video_loras`（作品共通の動画 LoRA。`{lora_name, trigger_word, strength}` の配列）を
+  入れると、すべてのカットのジョブに載り、トリガーワードは本文の先頭に自動で付く
+  （本文に同じ語があれば付けない）。1 回だけ変えたいときは `POST /shots/{id}/render` の
+  `video_loras` で上書きし、`[]` を送ればその回は LoRA なし。`lora_name` は
+  `GET /options` の `loras`（`target: "video"`）から選ぶ。何が付くかは
+  `prompt-preview` の `video_loras` / `video_trigger_text` で確かめられる。
 - `megapixels` / `image_megapixels` は未設定ならビルド既定。ローカル GPU の VRAM が
   小さいなら `0.4` あたりに落とす（大きいほど遅く、落ちやすい）。
   `aspect_ratio` の表記は `GET /options` のものをそのまま使う。
@@ -163,13 +187,12 @@ cwd として書いてある。
   本文に**ファイル実体のある `@素材`** があること、途中で解像度・アスペクトを
   変えないこと、接続先に専用カスタムノードがあること（`GET /capabilities` で確認。
   無い接続先では使えない）。条件が欠けると降格せず拒否される。
-- `auto_translate`（既定 on）: **日本語で書く**。投入時に英訳が走る。
-  完成した英文を `prompt` に入れない。`@名前` を英語の説明文に置き換えない
-  （参照が外れる）。
+- **英訳はアプリではなくあなたがやる**（3 章の 7）。脚本（`prompt` / `dialogue`
+  など）は日本語で書いてよいが、焼く前に `english_prompt` を保存する。
+  `@名前` を英語の説明文に置き換えない（参照が外れる）。
 - Shot の `camera` は `The camera <camera>.` という**英文の一部として本文に
-  合成される**ので、`auto_translate` が off の作品では camera も英語で書く
-  （`pushes in with small amplitude at slow speed` のように動詞から書く）。on なら
-  日本語で書いても英訳が直す。
+  合成される**ので、**camera は英語で書く**
+  （`pushes in with small amplitude at slow speed` のように動詞から書く）。
 
 ## 6. 鉄則
 

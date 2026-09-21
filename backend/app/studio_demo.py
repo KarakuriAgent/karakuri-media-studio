@@ -10,8 +10,9 @@ TopView 風ドラマスタジオ（`sidecar/seed_projects.py`）の UI デモ 3 
 状態のほうだから。ファイルを持たない素材は投入時に説明文へ展開される
 （:func:`app.studio.resolve_mentions`）。
 
-プロンプトは日本語のまま置いてある。プロジェクトの ``auto_translate`` が既定で
-有効なので、投入すると Grok が H3 用の英語プロンプトへ直してから走る。
+プロンプトは日本語のまま置いてある。アプリは英訳をしないので、そのまま生成
+しようとすると断られる: 外部エージェント（または人）が ``english_prompt`` に
+英語版を保存してから生成する（:mod:`app.drafting_guide` の §3.2）。
 """
 
 from __future__ import annotations

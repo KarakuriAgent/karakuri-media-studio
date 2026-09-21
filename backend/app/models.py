@@ -66,8 +66,8 @@ class Settings(BaseModel):
     runpod_comfy_api_key: str = ""
     #: ComfyCloud の API キー（URL は `COMFY_CLOUD_URL` 固定なので設定に持たない）
     comfy_cloud_api_key: str = ""
-    # LLM を回すコーディング CLI（SPEC §4.1）。チャット・エージェント・スタジオ
-    # 会話・キャンバス・英訳・自動タグ・ヘルスチェックがこの選択に従う。
+    # LLM を回すコーディング CLI（SPEC §4.1）。プロンプト作成チャット
+    # （スタジオ会話を含む）とヘルスチェックがこの選択に従う。
     # **Grok Imagine（画像生成）だけは常に grok**（内蔵ツールに乗っているため）。
     agent_cli: LlmCli = "grok"
     #: CLI ごとのコマンド上書き（``{cli: コマンド}``。空 = アダプタの既定）。
@@ -2486,7 +2486,7 @@ class ContactSheet(BaseModel):
 
 
 class LibraryProgress(BaseModel):
-    """WS /api/ws に流すライブラリの更新（自動タグ生成の反映など、SPEC §7.2）。"""
+    """WS /api/ws に流すライブラリの更新（登録後の書き換えなど、SPEC §7.2）。"""
 
     type: Literal["library"] = "library"
     item_id: str
@@ -2773,8 +2773,6 @@ class StudioProject(BaseModel):
     synopsis: str = ""
     #: World Bible の覚え書き（作品全体の設定）
     world_notes: str = ""
-    #: 日本語のプロンプトを Grok で英語に直してから投入する（MiniMax H3 は英語前提）
-    auto_translate: bool = True
     #: 引き継ぎ（`carry_over_end_frame`）を Motion Context で行う（ラテント連続性）。
     #: OFF なら直前カットのラストフレーム 1 枚を開始フレームにする従来の i2v、
     #: ON なら直前カットの動画と AV ラテントを渡す ``minimax_h3_r2v_context``。
@@ -2786,6 +2784,11 @@ class StudioProject(BaseModel):
     #: （1 回ぶんの上書きは :class:`StudioRenderRequest`）。カスタムノードが
     #: 要るので、入れられない接続先（Comfy Cloud）では OFF に落ちる。
     latent_upscale: bool = True
+    #: 作品共通の動画 LoRA（SPEC §3.4.2）。テイク生成のたびにジョブの
+    #: ``video_loras`` とトリガーワードに載る（1 回ぶんの上書きは
+    #: :class:`StudioRenderRequest`）。決まったワークフローが LoRA チェーンを
+    #: 持たなければ落として Take の ``warning`` で知らせる。``[]`` = 使わない。
+    video_loras: list[LoraRef] = Field(default_factory=list)
     #: 動画生成の品質（:data:`StudioVideoQuality`）。テイク生成のたびに、決まった
     #: 論理モードと掛け合わせてワークフローのバリアントへ解決される。
     quality: StudioVideoQuality = "normal"
@@ -2837,7 +2840,6 @@ class StudioProjectCreate(BaseModel):
     code: str = ""
     synopsis: str = ""
     world_notes: str = ""
-    auto_translate: bool = True
     #: 引き継ぎ（`carry_over_end_frame`）を Motion Context で行う（ラテント連続性）。
     #: OFF なら直前カットのラストフレーム 1 枚を開始フレームにする従来の i2v、
     #: ON なら直前カットの動画と AV ラテントを渡す ``minimax_h3_r2v_context``。
@@ -2845,6 +2847,8 @@ class StudioProjectCreate(BaseModel):
     latent_continuity: bool = False
     #: ラテントアップスケール（ON = 0.2MP の 1 パス目 → 指定解像度へ拡大）
     latent_upscale: bool = True
+    #: 作品共通の動画 LoRA（``[]`` = 使わない）
+    video_loras: list[LoraRef] = Field(default_factory=list)
     #: 動画生成の品質（:data:`StudioVideoQuality`。既定は素の 20 steps）
     quality: StudioVideoQuality = "normal"
     #: 画像生成の品質（:data:`StudioImageQuality`。素材の静止画にだけ効く）
@@ -2904,7 +2908,6 @@ class StudioProjectUpdate(_StudioUpdate):
     code: str | None = None
     synopsis: str | None = None
     world_notes: str | None = None
-    auto_translate: bool | None = None
     #: 引き継ぎ（`carry_over_end_frame`）を Motion Context で行う（ラテント連続性）。
     #: OFF なら直前カットのラストフレーム 1 枚を開始フレームにする従来の i2v、
     #: ON なら直前カットの動画と AV ラテントを渡す ``minimax_h3_r2v_context``。
@@ -2912,6 +2915,8 @@ class StudioProjectUpdate(_StudioUpdate):
     latent_continuity: bool | None = None
     #: ラテントアップスケール（ON = 0.2MP の 1 パス目 → 指定解像度へ拡大）
     latent_upscale: bool | None = None
+    #: 作品共通の動画 LoRA（**丸ごと置き換え**。``[]`` を送ると外れる）
+    video_loras: list[LoraRef] | None = None
     #: 動画生成の品質（:data:`StudioVideoQuality`）
     quality: StudioVideoQuality | None = None
     #: 画像生成の品質（:data:`StudioImageQuality`。素材の静止画にだけ効く）
@@ -3285,14 +3290,10 @@ class StudioShot(BaseModel):
     seed: int | None = None
     #: ワークフローの強制指定（None = t2v / i2v / r2v を自動で決める）
     workflow_override: StudioWorkflowOverride | None = None
-    #: 訳した（または人が直した）英語。公式フィールド込みの完成文
+    #: 外部エージェント（または人）が書いた英語。公式フィールド込みの完成文
     english_prompt: str = ""
     #: その英語の元になった組み立て済み日本語（``preview.prompt`` と同じもの）
     english_source: str = ""
-    #: 英訳の進行（``''`` / ``translating`` / ``failed``）
-    english_status: str = ""
-    #: 英訳失敗の理由（日本語。成功時・未実施は空）
-    english_error: str = ""
     created_at: str
     updated_at: str
     #: プロンプトに効く項目を最後に書き換えた時刻（Take の stale 判定に使う）
@@ -3394,6 +3395,8 @@ class StudioRenderRequest(BaseModel):
     - ``steps``: ここ → プロジェクトの ``steps`` → テンプレートの既定
     - ``seed``: ここ → Shot の ``seed`` → 毎回ランダム
     - ``latent_upscale``: ここ → プロジェクトの ``latent_upscale``
+    - ``video_loras``: ここ → プロジェクトの ``video_loras``（``[]`` は「この回は
+      LoRA なし」の明示で、プロジェクトの設定より優先）
 
     ``steps`` は **0 も指定**（＝「テンプレートの既定のまま」を明示する）で、
     プロジェクトの設定より優先される。範囲の検査は
@@ -3412,6 +3415,10 @@ class StudioRenderRequest(BaseModel):
     #: カスタムノードを入れられない接続先では ON を頼んでも OFF に落ちる
     #: （理由は Take の ``warning`` ではなく投入プレビューの ``workflow_reason``）。
     latent_upscale: bool | None = None
+    #: 動画 LoRA（``None`` = プロジェクトの ``video_loras``、``[]`` = この回は
+    #: LoRA なしを明示）。決まったワークフローが LoRA チェーンを持たなければ
+    #: 422 にはせず、LoRA を落として Take の ``warning`` で知らせる。
+    video_loras: list[LoraRef] | None = None
 
 
 class StudioTake(BaseModel):
@@ -3442,11 +3449,11 @@ class StudioTake(BaseModel):
     nsfw: bool | None = None
     #: その判定の出どころ（'' = 未判定 / 'auto' / 'manual'）
     nsfw_source: str = ""
-    #: 実際に投入した本文（英訳したときは訳したあとのもの）
+    #: 実際に投入した本文（英語キャッシュを使ったときはその英語）
     prompt: str = ""
-    #: 英訳する前の原文（英訳していなければ空）
+    #: 英語を投入したときの組み立て済み日本語（英語で書いていれば空）
     source_prompt: str = ""
-    #: 投入はできたが伝えたいこと（過去 Take の英訳失敗フォールバックなど）
+    #: 投入はできたが伝えたいこと
     warning: str = ""
     #: この Take を作ったあとに脚本や素材が変わった（保存はせず読み取りで導出）
     stale: bool = False
@@ -3468,9 +3475,10 @@ class StudioPromptReference(BaseModel):
 class StudioShotPreview(BaseModel):
     """GET /api/studio/shots/{id}/prompt-preview: **投入される最終形**。
 
-    生成（:func:`app.studio.render_shot`）と同じ組み立てを通した結果で、Grok の
-    英訳だけは走らせない（遅く、課金枠を食うため）。英訳が入るかどうかは
-    ``will_translate`` で伝える（使える ``english_prompt`` があれば False）。
+    生成（:func:`app.studio.render_shot`）と同じ組み立てを通した結果。
+    アプリ内で英訳はしないので、本文に日本語があって使える ``english_prompt``
+    が無いときは ``needs_translation`` を True にして伝える（このままでは
+    投入できない = 外部エージェントに英語版を書いてもらう）。
     組み立てられない Shot はエラーではなく ``error`` に理由を入れて 200 で返す
     （プレビューで気づけるように）。組み立てはできるが材料が足りなくて投入
     だけができない（連続カットの引き継ぎ元がまだ無い）ときは ``error`` では
@@ -3488,18 +3496,12 @@ class StudioShotPreview(BaseModel):
     references: list[StudioPromptReference] = Field(default_factory=list)
     #: 開始フレームに使われるファイル（i2v のときだけ）
     start_frame: str | None = None
-    #: プロジェクトの設定（日本語まじりなら投入時に英訳する）
-    auto_translate: bool = False
-    #: 使える英語キャッシュが無く、``auto_translate`` かつ日本語を含むときだけ True
-    will_translate: bool = False
+    #: 本文に日本語が混ざっていて、使える英語キャッシュが無い（= 投入できない）
+    needs_translation: bool = False
     #: 保存済みの英語（古くても出す）
     english_prompt: str = ""
     #: 英語はあるが ``english_source`` が今の組み立てと一致しない
     english_stale: bool = False
-    #: 英訳の進行（``''`` / ``translating`` / ``failed``）
-    english_status: str = ""
-    #: 英訳失敗の理由（日本語。成功時・未実施は空）
-    english_error: str = ""
     #: プロジェクトの設定（引き継ぎを Motion Context で行う = ラテント連続性）
     latent_continuity: bool = False
     #: プロジェクトの設定（動画生成の品質）
@@ -3510,6 +3512,15 @@ class StudioShotPreview(BaseModel):
     #: 実際に投入される ``selects[latent_upscale]``（プロジェクトの設定を接続先と
     #: ワークフローの宣言で解決したあとの値。宣言の無いワークフローでは False）
     latent_upscale: bool = False
+    #: 実際に挿される動画 LoRA（プロジェクトの ``video_loras`` をワークフローの
+    #: 宣言で解決したあと。挿せないワークフローなら空で、理由は
+    #: ``video_lora_warning``）。1 回ぶんの上書きはプレビューには反映しない
+    video_loras: list[LoraRef] = Field(default_factory=list)
+    #: その LoRA のトリガーワード（投入時に ``prompt`` の先頭へ、未出現の語だけ
+    #: 付く。``prompt`` 自体には含めない）
+    video_trigger_text: str = ""
+    #: 作品の動画 LoRA を落とす理由（日本語。空なら落とさない）
+    video_lora_warning: str = ""
     #: ラテント連続性で引き継ぐ直前カットの動画（使わないときは None）
     context_video: str | None = None
     #: 同じく、引き継ぎ元の AV ラテント（ComfyUI 側のパス）

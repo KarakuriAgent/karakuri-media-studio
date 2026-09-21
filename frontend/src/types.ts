@@ -27,8 +27,8 @@ export type JobStatus =
 export type ComfyTarget = 'local' | 'runpod' | 'comfy_cloud'
 
 /**
- * LLM を回すコーディング CLI（SPEC §4.1）。チャット・スタジオ会話・
- * 英訳・自動タグがこの選択に従う。
+ * LLM を回すコーディング CLI（SPEC §4.1）。チャット・スタジオ会話と
+ * ヘルスチェックがこの選択に従う（アプリ内の LLM 用途はこれだけ）。
  * Grok Imagine（画像生成）だけは常に grok。
  */
 export type LlmCli = 'grok' | 'claude' | 'codex' | 'cursor'
@@ -52,7 +52,7 @@ export interface Settings {
   agent_cli_models: Record<string, string>
   grok_command: string
   grok_model: string
-  /** チャット・英訳が grok CLI を回すときの作業ディレクトリ（空 = 既定）。 */
+  /** チャットが grok CLI を回すときの作業ディレクトリ（空 = 既定）。 */
   grok_workdir: string
   /**
    * Grok Imagine（画像生成・編集、SPEC §5.2）の作業ディレクトリと制限時間。
@@ -112,7 +112,7 @@ export interface Settings {
   /** 外部 API から積める未完了 Take の上限（0 = 無制限）。 */
   external_max_pending_takes: number
   /**
-   * grok CLI に足す追加フラグ（ツール権限）。相談チャットや英訳の呼び出しに
+   * grok CLI に足す追加フラグ（ツール権限）。相談チャットの呼び出しに
    * そのまま渡る。**空にすると CLI のツールが丸ごと無効**になる。
    */
   agent_grok_args: string[]
@@ -880,7 +880,7 @@ export interface JobContinue {
   model_overrides?: Record<string, string>
 }
 
-/** WS /api/ws のライブラリ更新（自動タグ生成の反映など）。 */
+/** WS /api/ws のライブラリ更新（登録後の書き換えなど）。 */
 export interface LibraryProgress {
   type: 'library'
   item_id: string
@@ -1141,8 +1141,6 @@ export interface StudioProject {
   synopsis: string
   /** World Bible の覚え書き（作品全体の設定）。 */
   world_notes: string
-  /** 日本語のプロンプトを Grok で英訳してから投入する（MiniMax H3 は英語前提）。 */
-  auto_translate: boolean
   /**
    * 引き継ぎ（`carry_over_end_frame`）を Motion Context で行う（ラテント連続性）。
    * OFF なら直前カットのラストフレーム 1 枚を開始フレームにする従来の i2v、
@@ -1156,6 +1154,13 @@ export interface StudioProject {
    * `StudioRenderRequest`）。入れられない接続先では OFF に落ちる。
    */
   latent_upscale: boolean
+  /**
+   * 作品共通の動画 LoRA（SPEC §3.4.2）。テイク生成のたびにジョブの
+   * `video_loras` とトリガーワードに載る（1 回ぶんの上書きは
+   * `StudioRenderRequest.video_loras`）。挿せないワークフローに決まったときは
+   * 外して投入され、Take の `warning` に出る。古いサーバーの応答には無い。
+   */
+  video_loras?: LoraRef[]
   /** 動画生成の品質（テイク生成のたびにモードと掛け合わせて解決される）。 */
   quality: StudioVideoQuality
   /**
@@ -1214,7 +1219,6 @@ export interface StudioProjectCreate {
   code?: string
   synopsis?: string
   world_notes?: string
-  auto_translate?: boolean
   /**
    * 引き継ぎ（`carry_over_end_frame`）を Motion Context で行う（ラテント連続性）。
    * OFF なら直前カットのラストフレーム 1 枚を開始フレームにする従来の i2v、
@@ -1223,6 +1227,8 @@ export interface StudioProjectCreate {
   latent_continuity?: boolean
   /** ラテントアップスケール（既定 ON = 0.2MP の 1 パス目 → 指定解像度へ拡大）。 */
   latent_upscale?: boolean
+  /** 作品共通の動画 LoRA（省略 = なし）。 */
+  video_loras?: LoraRef[]
   /** 動画生成の品質（既定は素の 20 steps = `normal`）。 */
   quality?: StudioVideoQuality
   /** 画像生成の品質（素材の静止画にだけ効く。既定 `normal`）。 */
@@ -1260,7 +1266,6 @@ export interface StudioProjectUpdate extends StudioUpdateBase {
   code?: string
   synopsis?: string
   world_notes?: string
-  auto_translate?: boolean
   /**
    * 引き継ぎ（`carry_over_end_frame`）を Motion Context で行う（ラテント連続性）。
    * OFF なら直前カットのラストフレーム 1 枚を開始フレームにする従来の i2v、
@@ -1269,6 +1274,8 @@ export interface StudioProjectUpdate extends StudioUpdateBase {
   latent_continuity?: boolean
   /** ラテントアップスケール（ON = 0.2MP の 1 パス目 → 指定解像度へ拡大）。 */
   latent_upscale?: boolean
+  /** 作品共通の動画 LoRA（丸ごと置き換え。`[]` を送ると外れる）。 */
+  video_loras?: LoraRef[]
   /** 動画生成の品質。 */
   quality?: StudioVideoQuality
   /** 画像生成の品質（素材の静止画にだけ効く）。 */
@@ -1506,14 +1513,10 @@ export interface StudioShot {
   seed: number | null
   /** ワークフローの強制指定（null = t2v / i2v / r2v を自動で決める）。 */
   workflow_override: StudioWorkflowOverride | null
-  /** 訳した（または人が直した）英語。公式フィールド込みの完成文。 */
+  /** 外部エージェント（または人）が書いた英語。公式フィールド込みの完成文。 */
   english_prompt?: string
   /** その英語の元になった組み立て済み日本語。 */
   english_source?: string
-  /** 英訳の進行（`''` / `translating` / `failed`）。 */
-  english_status?: string
-  /** 英訳失敗の理由（日本語。成功時・未実施は空）。 */
-  english_error?: string
   created_at: string
   updated_at: string
   /** プロンプトに効く項目を最後に書き換えた時刻（Take の stale 判定に使う）。 */
@@ -1588,6 +1591,7 @@ export interface StudioShotUpdate extends StudioUpdateBase {
  * - `steps`: ここ → プロジェクトの `steps` → テンプレートの既定
  * - `seed`: ここ → カットの `seed` → 毎回ランダム
  * - `latent_upscale`: ここ → プロジェクトの `latent_upscale`
+ * - `video_loras`: ここ → プロジェクトの `video_loras`（`[]` = この回は LoRA なし）
  */
 export interface StudioRenderRequest {
   megapixels?: number
@@ -1600,6 +1604,12 @@ export interface StudioRenderRequest {
   seed?: number
   /** ラテントアップスケール（省略 = プロジェクトの `latent_upscale`）。 */
   latent_upscale?: boolean
+  /**
+   * 動画 LoRA（省略 = プロジェクトの `video_loras`、`[]` = この回は LoRA なしを
+   * 明示）。挿せないワークフローに決まったときは外して投入され、Take の
+   * `warning` に出る。
+   */
+  video_loras?: LoraRef[]
 }
 
 export interface StudioTake {
@@ -1632,11 +1642,11 @@ export interface StudioTake {
   nsfw?: boolean | null
   /** その判定の出どころ（'' = 未判定 / 'auto' / 'manual'）。 */
   nsfw_source?: string
-  /** 実際に投入した本文（英訳したときは訳したあとのもの）。 */
+  /** 実際に投入した本文（英語キャッシュを使ったときはその英語）。 */
   prompt?: string
-  /** 英訳する前の原文（英訳していなければ空）。 */
+  /** 英語を投入したときの組み立て済み日本語（英語で書いていれば空）。 */
   source_prompt?: string
-  /** 投入はできたが伝えたいこと（過去 Take の英訳失敗フォールバックなど）。 */
+  /** 投入はできたが伝えたいこと。 */
   warning?: string
   /** この Take を作ったあとに脚本や素材が変わった。 */
   stale?: boolean
@@ -1657,9 +1667,10 @@ export interface StudioPromptReference {
 /**
  * GET /api/studio/shots/{id}/prompt-preview: 投入される最終形。
  *
- * 生成と同じ組み立てを通した結果で、Grok の英訳だけは走らせない（入るかどうかは
- * `will_translate`。使える英語キャッシュがあれば false）。組み立てられないカットは
- * 400 ではなく `error` 付きで返る。
+ * 生成と同じ組み立てを通した結果。アプリは英訳をしないので、本文に日本語が
+ * 残っていて使える英語キャッシュが無いときは `needs_translation` が true
+ * （このままでは投入できない）。組み立てられないカットは 400 ではなく
+ * `error` 付きで返る。
  */
 export interface StudioShotPreview {
   shot_id: string
@@ -1672,18 +1683,12 @@ export interface StudioShotPreview {
   references: StudioPromptReference[]
   /** 開始フレームに使われるファイル（i2v のときだけ）。 */
   start_frame: string | null
-  /** プロジェクトの設定（日本語まじりなら投入時に英訳する）。 */
-  auto_translate: boolean
-  /** 使える英語キャッシュが無く、auto_translate かつ日本語を含むときだけ true。 */
-  will_translate: boolean
+  /** 本文に日本語が混ざっていて、使える英語キャッシュが無い（= 投入できない）。 */
+  needs_translation: boolean
   /** 保存済みの英語（古くても出す）。 */
   english_prompt: string
   /** 英語はあるが脚本の組み立てが変わっている。 */
   english_stale: boolean
-  /** 英訳の進行（`''` / `translating` / `failed`）。 */
-  english_status?: string
-  /** 英訳失敗の理由（日本語。成功時・未実施は空）。 */
-  english_error?: string
   /** プロジェクトの設定（引き継ぎを Motion Context で行う = ラテント連続性）。 */
   latent_continuity: boolean
   /** プロジェクトの設定（動画生成の品質）。 */
@@ -1695,6 +1700,15 @@ export interface StudioShotPreview {
   quality_applied: boolean
   /** 実際に投入される `selects.latent_upscale`（接続先とワークフローで解決済み）。 */
   latent_upscale: boolean
+  /**
+   * 実際に挿される動画 LoRA（作品の `video_loras` をワークフローの宣言で
+   * 解決したあと。1 回ぶんの上書きは反映しない）。
+   */
+  video_loras?: LoraRef[]
+  /** その LoRA のトリガーワード（投入時に本文の先頭へ未出現の語だけ付く）。 */
+  video_trigger_text?: string
+  /** 作品の動画 LoRA を外す理由（挿せないワークフローのとき。空なら外さない）。 */
+  video_lora_warning?: string
   /** ラテント連続性で引き継ぐ直前カットの動画（使わないときは null）。 */
   context_video: string | null
   /** 同じく、引き継ぎ元の AV ラテント（ComfyUI 側のパス）。 */
@@ -1705,7 +1719,7 @@ export interface StudioShotPreview {
   error: string
   /**
    * 組み立てはできたが**投入だけができない**理由（日本語。空なら投入できる）。
-   * いまは連続カットで前 Shot の採用 Take がまだ無いとき（英訳はできる）。
+   * いまは連続カットで前 Shot の採用 Take がまだ無いとき（英語版の保存はできる）。
    */
   render_blocker?: string
 }

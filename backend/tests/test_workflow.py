@@ -524,13 +524,167 @@ LORA_VIDEO_IDS = [
 ]
 
 
-def test_no_video_workflow_declares_a_lora_chain_today():
-    """今ある動画モデル（MiniMax H3）は LoRA を挿せる場所を持たない。
+def test_every_minimax_video_workflow_declares_a_lora_chain():
+    """MiniMax H3 の動画は全バリアントがユーザー LoRA を挿せる（SPEC §3.4.2）。"""
+    assert LORA_VIDEO_IDS == VIDEO_IDS
+    assert all(workflow_id.startswith("minimax_h3_") for workflow_id in VIDEO_IDS)
 
-    宣言を持つワークフローが増えたらこの一覧が埋まり、以下のパラメトライズ済みの
-    テストがそのまま効く。
-    """
-    assert LORA_VIDEO_IDS == []
+
+#: 各スペックが「どこに挿すか」の決定（テンプレートを読んで決めたもの）。
+#: head = チェーンの起点（UNETLoader か、固定 LoRA の最後の 1 段）、
+#: consumers = その MODEL を直接読んでいた入力。
+EXPECTED_VIDEO_LORA_CHAINS = {
+    # 素の t2v / i2v（サブグラフ展開後の ID）: UNETLoader -> Guider / Scheduler
+    **{
+        workflow_id: ("105:6", {"105:16.model", "105:9.model"})
+        for workflow_id in (
+            "minimax_h3_t2v",
+            "minimax_h3_t2v_save",
+            "minimax_h3_i2v",
+            "minimax_h3_i2v_save",
+        )
+    },
+    # 素の r2v: UNETLoader(127) -> Guider(126) / Scheduler(124)
+    **{
+        workflow_id: ("127", {"126.model", "124.model"})
+        for workflow_id in (
+            "minimax_h3_r2v",
+            "minimax_h3_r2v_save",
+            "minimax_h3_r2v_context",
+        )
+    },
+    # opt（固定 LoRA なし）: UNETLoader(127) -> 高速化パッチの先頭(151)
+    **{
+        workflow_id: ("127", {"151.model"})
+        for workflow_id in (
+            "minimax_h3_t2v_opt",
+            "minimax_h3_t2v_save_opt",
+            "minimax_h3_i2v_opt",
+            "minimax_h3_i2v_save_opt",
+        )
+    },
+    # i2v turbo: 4step 蒸留 LoRA(150) の後ろ
+    **{
+        workflow_id: ("150", {"151.model"})
+        for workflow_id in ("minimax_h3_i2v_turbo", "minimax_h3_i2v_save_turbo")
+    },
+    # r2v opt / turbo: 参照 LoRA(144) の後ろ
+    **{
+        workflow_id: ("144", {"151.model"})
+        for workflow_id in (
+            "minimax_h3_r2v_turbo",
+            "minimax_h3_r2v_save_turbo",
+            "minimax_h3_r2v_context_turbo",
+            "minimax_h3_r2v_opt",
+            "minimax_h3_r2v_save_opt",
+            "minimax_h3_r2v_context_opt",
+        )
+    },
+}
+
+
+def test_the_expected_chain_table_covers_every_video_workflow():
+    assert sorted(EXPECTED_VIDEO_LORA_CHAINS) == sorted(VIDEO_IDS)
+
+
+@pytest.mark.parametrize("workflow_id", VIDEO_IDS)
+def test_each_minimax_chain_is_where_the_template_says(workflow_id):
+    spec = get_spec(workflow_id, "video")
+    head, consumers = EXPECTED_VIDEO_LORA_CHAINS[workflow_id]
+    assert spec.lora_chain.head == head
+    assert {c.key for c in spec.lora_chain.consumers} == consumers
+    # ユーザー LoRA は固定 LoRA を消さない（プレースホルダは持たない）
+    assert spec.lora_chain.placeholders == ()
+
+
+def _model_path(wf: dict, start: str) -> list[str]:
+    """``start`` から MODEL を上流へ辿ったノード ID の並び（UNETLoader まで）。"""
+    path = [start]
+    node = wf[start]
+    while isinstance(node.get("inputs", {}).get("model"), list):
+        upstream = node["inputs"]["model"][0]
+        path.append(upstream)
+        node = wf[upstream]
+    return path
+
+
+@pytest.mark.parametrize("workflow_id", VIDEO_IDS)
+def test_user_loras_sit_after_the_fixed_loras_and_before_the_patches(workflow_id):
+    """UNET → 固定 LoRA → ユーザー LoRA → 高速化パッチ → Guider の順になる。"""
+    loras = [LoraRef(lora_name="v0.safetensors"), LoraRef(lora_name="v1.safetensors")]
+    wf = _video(workflow_id, video_loras=loras)
+    guider = next(
+        node_id
+        for node_id, node in wf.items()
+        if node.get("class_type") == "BasicGuider"
+    )
+    path = list(reversed(_model_path(wf, guider)))  # UNETLoader が先頭
+    classes = [wf[node_id]["class_type"] for node_id in path]
+    assert classes[0] == "UNETLoader"
+    user = [path.index("app_video_lora_0"), path.index("app_video_lora_1")]
+    assert user[1] == user[0] + 1
+    fixed = [
+        index
+        for index, node_id in enumerate(path)
+        if classes[index] == "LoraLoaderModelOnly"
+        and not node_id.startswith(VIDEO_LORA_NODE_PREFIX)
+    ]
+    patches = [
+        index
+        for index, class_type in enumerate(classes)
+        if class_type
+        not in ("UNETLoader", "LoraLoaderModelOnly", "BasicGuider")
+    ]
+    assert all(index < user[0] for index in fixed)
+    assert all(index > user[1] for index in patches)
+    # テンプレートの固定 LoRA はそのまま残る
+    template = load_template(get_spec(workflow_id, "video"))
+    for node_id, node in template.items():
+        if node.get("class_type") == "LoraLoaderModelOnly":
+            assert wf[node_id]["inputs"]["lora_name"] == node["inputs"]["lora_name"]
+
+
+@pytest.mark.parametrize("workflow_id", VIDEO_IDS)
+def test_no_video_lora_leaves_the_graph_identical_to_the_template(workflow_id):
+    """LoRA 未選択なら、組み立てたグラフの MODEL の配線はテンプレートのまま。"""
+    spec = get_spec(workflow_id, "video")
+    template = load_template(spec)
+    wf = _video(
+        workflow_id, video_loras=[], selects={LATENT_UPSCALE_NAME: "off"}
+    )
+    for node_id, node in template.items():
+        model = node.get("inputs", {}).get("model")
+        if isinstance(model, list):
+            assert wf[node_id]["inputs"]["model"] == model, node_id
+
+
+def test_the_hires_guider_of_the_two_stage_carry_over_reads_the_lora_tail():
+    """2 段引き継ぎで足す 2 個目の Guider も、ユーザー LoRA を通ったモデルを読む。"""
+    spec = get_spec("minimax_h3_r2v_context", "video")
+    wf = _video(
+        spec.id,
+        video_loras=[LoraRef(lora_name="v0.safetensors")],
+        selects={"latent_upscale": "on"},
+        context_latent_path="latents/prev.latent",
+        context_latent_hires_path="latents/prev_hires.latent",
+        reference_video_name="prev.mp4",
+        reference_image_names=["a.png"],
+    )
+    hires = wf[spec.upscale.hires_guider_node]
+    assert hires["class_type"] == "BasicGuider"
+    assert hires["inputs"]["model"] == ["app_video_lora_0", 0]
+    assert wf["126"]["inputs"]["model"] == ["app_video_lora_0", 0]
+
+
+def test_minimax_video_triggers_are_prepended_to_the_r2v_prompt_too():
+    """r2v はプロンプトが PrimitiveStringMultiline だが、同じく先頭に付く。"""
+    got = _video_prompt(
+        "minimax_h3_r2v",
+        video_loras=[LoraRef(lora_name="v.safetensors", trigger_word="slowmo")],
+        video_prompt="subject_definitions: a woman",
+        reference_image_names=["a.png"],
+    )
+    assert got == "slowmo, subject_definitions: a woman"
 
 
 @pytest.mark.parametrize("workflow_id", LORA_VIDEO_IDS)

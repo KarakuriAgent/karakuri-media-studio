@@ -65,7 +65,6 @@ function detail(projectId: string): StudioProjectDetail {
     code: 'KW',
     synopsis: '',
     world_notes: '',
-    auto_translate: true,
     latent_continuity: false,
     latent_upscale: true,
     quality: 'normal',

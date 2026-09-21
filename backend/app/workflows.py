@@ -1702,7 +1702,9 @@ _MINIMAX_H3_BASE_NOTES = (
     "24fps 固定・尺は 17k+5 フレームの格子に切り上げ（5 秒 = 124 フレーム、"
     "学習範囲は約 1〜15 秒）/ 短辺 768px・最大 768x1344 が既定の画角"
     "（幅高さは 32 の倍数）/ negative prompt は無い（CFG 無しの BasicGuider）/"
-    " ユーザー LoRA を挿すチェーンは持たない"
+    " ユーザーの動画 LoRA（`video_loras`）は UNETLoader の直後（固定の蒸留 LoRA・"
+    "参照 LoRA があればその後ろ、高速化パッチの手前）に `LoraLoaderModelOnly` を"
+    "直列に挿す。トリガーワードはプロンプトの先頭に付く"
 )
 
 #: latent_upscale の注意書き（全 MiniMax H3 動画スペック共通）
@@ -1931,6 +1933,51 @@ _MINIMAX_H3_VIDEO_SELECTS: dict[str, SelectSpec] = {
 _MINIMAX_H3_UPSCALE = UpscaleSpec(sampler="125")
 _MINIMAX_H3_UPSCALE_SUBGRAPH = UpscaleSpec(sampler="105:14")
 
+#: ユーザーの動画 LoRA（``video_loras``）を挿す場所（:class:`LoraChain`、SPEC §3.4.2）。
+#: どのテンプレートも **UNETLoader から始まる MODEL の 1 本道**なので、そこを 1 か所
+#: 切り開いてチェーンを挟む。テンプレートが持つ固定の ``LoraLoaderModelOnly``
+#: （4step 蒸留 LoRA・参照 LoRA）は外せないので、ユーザー LoRA は**その後ろ**に挿し、
+#: 高速化パッチ（``PathchSageAttentionKJ`` 以降の直列）は**チェーンの後ろ**に残す
+#: （パッチは最後に載ったモデル全体に掛かる）。LoRA を選ばなければ consumers が head を
+#: 直接指すので、グラフはテンプレートと同一になる。
+#:
+#: 素の t2v / i2v（``*_save`` も）: サブグラフ展開後の ID。UNETLoader（105:6）を
+#: BasicGuider と BasicScheduler の両方が直接読んでいる。
+_MINIMAX_H3_SUBGRAPH_LORA_CHAIN = LoraChain(
+    head="105:6",
+    consumers=(
+        T("105:16", "model", "BasicGuider"),
+        T("105:9", "model", "BasicScheduler"),
+    ),
+)
+#: 素の r2v（``*_save`` / ``*_context`` も）: 連番の ID で形は素の t2v / i2v と同じ
+_MINIMAX_H3_R2V_LORA_CHAIN = LoraChain(
+    head="127",
+    consumers=(
+        T("126", "model", "BasicGuider"),
+        T("124", "model", "BasicScheduler"),
+    ),
+)
+#: t2v / i2v の opt: 固定 LoRA が無いので UNETLoader（127）の直後、高速化パッチの
+#: 先頭（151）の手前に挿す。Guider / Scheduler はパッチの出力を読んでいるので
+#: 付け替えない（パッチ越しにチェーンの結果を読む）。
+_MINIMAX_H3_OPT_LORA_CHAIN = LoraChain(
+    head="127",
+    consumers=(T("151", "model", "PathchSageAttentionKJ"),),
+)
+#: i2v の turbo: 4step 蒸留 LoRA（150）の後ろ、高速化パッチの手前
+_MINIMAX_H3_TURBO_LORA_CHAIN = LoraChain(
+    head="150",
+    consumers=(T("151", "model", "PathchSageAttentionKJ"),),
+)
+#: r2v の opt / turbo: 参照 LoRA（144。turbo はその手前に蒸留 LoRA 143）の後ろ、
+#: 高速化パッチの手前。fl2va を参照モードにする参照 LoRA より前に挿すと、
+#: ユーザー LoRA の効きが参照 LoRA に上書きされうるので必ず後ろに置く。
+_MINIMAX_H3_REF_LORA_CHAIN = LoraChain(
+    head="144",
+    consumers=(T("151", "model", "PathchSageAttentionKJ"),),
+)
+
 #: i2v だけの注意書き（任意の最終フレーム）
 _MINIMAX_H3_I2V_NOTES = (
     " / `end_image` は任意（渡すと `last_frame` に繋いで最終フレーム指定に"
@@ -1992,6 +2039,7 @@ MINIMAX_H3_T2V = WorkflowSpec(
     kind="video",
     family="minimax-h3",
     relpath="video/minimax-h3/minimax_h3_t2v.json",
+    lora_chain=_MINIMAX_H3_SUBGRAPH_LORA_CHAIN,
     output_node="92",
     requires=(),
     description=(
@@ -2036,6 +2084,7 @@ MINIMAX_H3_I2V = WorkflowSpec(
     kind="video",
     family="minimax-h3",
     relpath="video/minimax-h3/minimax_h3_i2v.json",
+    lora_chain=_MINIMAX_H3_SUBGRAPH_LORA_CHAIN,
     output_node="92",
     requires=("image",),
     description=(
@@ -2096,6 +2145,7 @@ MINIMAX_H3_R2V = WorkflowSpec(
     kind="video",
     family="minimax-h3",
     relpath="video/minimax-h3/minimax_h3_r2v.json",
+    lora_chain=_MINIMAX_H3_R2V_LORA_CHAIN,
     output_node="92",
     requires=(),
     description=(
@@ -2346,6 +2396,7 @@ MINIMAX_H3_I2V_TURBO = replace(
     label="画像→動画・音声つき (MiniMax H3 i2v Turbo)",
     mode_label="画像→動画・音声つき (i2v Turbo)",
     relpath="video/minimax-h3/minimax_h3_i2v_turbo.json",
+    lora_chain=_MINIMAX_H3_TURBO_LORA_CHAIN,
     description=MINIMAX_H3_I2V.description + _MINIMAX_H3_TURBO_DESCRIPTION,
     inject={
         "prompt": T("136", "prompt", "MiniMaxH3ImageToVideo"),
@@ -2387,6 +2438,7 @@ MINIMAX_H3_R2V_TURBO = replace(
     label="参照素材→動画・音声つき (MiniMax H3 r2v Turbo)",
     mode_label="参照素材→動画・音声つき (r2v Turbo)",
     relpath="video/minimax-h3/minimax_h3_r2v_turbo.json",
+    lora_chain=_MINIMAX_H3_REF_LORA_CHAIN,
     description=MINIMAX_H3_R2V.description + _MINIMAX_H3_R2V_TURBO_DESCRIPTION,
     notes=(
         _MINIMAX_H3_NOTES
@@ -2413,6 +2465,7 @@ MINIMAX_H3_T2V_OPT = replace(
     label="テキスト→動画・音声つき (MiniMax H3 t2v Optimized)",
     mode_label="テキスト→動画・音声つき (t2v Optimized)",
     relpath="video/minimax-h3/minimax_h3_t2v_opt.json",
+    lora_chain=_MINIMAX_H3_OPT_LORA_CHAIN,
     description=MINIMAX_H3_T2V.description + _MINIMAX_H3_OPT_DESCRIPTION,
     # テンプレートのノード ID は素の版（サブグラフ）と違って連番に振り直して
     # あるので、i2v turbo / opt と同じ形で宣言し直す
@@ -2441,6 +2494,7 @@ MINIMAX_H3_I2V_OPT = replace(
     label="画像→動画・音声つき (MiniMax H3 i2v Optimized)",
     mode_label="画像→動画・音声つき (i2v Optimized)",
     relpath="video/minimax-h3/minimax_h3_i2v_opt.json",
+    lora_chain=_MINIMAX_H3_OPT_LORA_CHAIN,
     description=MINIMAX_H3_I2V.description + _MINIMAX_H3_OPT_DESCRIPTION,
     # テンプレートのノード ID は turbo と同じ連番なので、turbo と同じ宣言を使う
     inject=dict(MINIMAX_H3_I2V_TURBO.inject),
@@ -2461,6 +2515,7 @@ MINIMAX_H3_R2V_OPT = replace(
     label="参照素材→動画・音声つき (MiniMax H3 r2v Optimized)",
     mode_label="参照素材→動画・音声つき (r2v Optimized)",
     relpath="video/minimax-h3/minimax_h3_r2v_opt.json",
+    lora_chain=_MINIMAX_H3_REF_LORA_CHAIN,
     description=MINIMAX_H3_R2V.description + _MINIMAX_H3_OPT_DESCRIPTION,
     notes=(
         _MINIMAX_H3_NOTES
