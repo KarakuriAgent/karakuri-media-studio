@@ -324,6 +324,49 @@ async def test_render_passes_props_as_a_temp_file_and_removes_it(
     assert not Path(props_arg.split("=", 1)[1]).exists()
 
 
+def test_output_suffix_follows_the_codec():
+    """``--codec`` と入れ物が合っていないと Remotion が走らないので拡張子で合わせる。"""
+    assert remotion.output_suffix(None) == ".mp4"
+    assert remotion.output_suffix({}) == ".mp4"
+    assert remotion.output_suffix({"codec": "h264"}) == ".mp4"
+    assert remotion.output_suffix({"codec": "prores"}) == ".mov"
+    assert remotion.output_suffix({"codec": "vp8"}) == ".webm"
+    # 知らない値は既定に倒す（値の検証は models の Literal が持つ）
+    assert remotion.output_suffix({"codec": "nope"}) == ".mp4"
+
+
+def test_render_flags_only_carries_what_was_written():
+    assert remotion.render_flags(None) == []
+    assert remotion.render_flags({"codec": None, "image_format": ""}) == []
+    assert remotion.render_flags(
+        {"codec": "prores", "prores_profile": "4444", "image_format": "png"}
+    ) == ["--codec=prores", "--image-format=png", "--prores-profile=4444"]
+
+
+async def test_render_passes_the_options_as_cli_flags(tmp_path, monkeypatch):
+    """透過（ProRes 4444）で焼くときのフラグが ``npx remotion render`` に乗る。"""
+    use_project(make_project(tmp_path))
+    monkeypatch.setattr(remotion, "REMOTION_TMP_DIR", tmp_path / "runtime")
+    output = tmp_path / "out.mov"
+    fake = FakeRun(writes=output)
+    monkeypatch.setattr(remotion, "_run", fake)
+
+    await remotion.render(
+        "job-1", "Intro", {}, output,
+        options={
+            "codec": "prores",
+            "prores_profile": "4444",
+            "image_format": "png",
+            "pixel_format": "yuva444p10le",
+        },
+    )
+    argv, _ = fake.calls[0]
+    assert "--codec=prores" in argv
+    assert "--prores-profile=4444" in argv
+    assert "--image-format=png" in argv
+    assert "--pixel-format=yuva444p10le" in argv
+
+
 async def test_render_streams_progress_to_the_caller(tmp_path, monkeypatch):
     use_project(make_project(tmp_path))
     monkeypatch.setattr(remotion, "REMOTION_TMP_DIR", tmp_path / "runtime")
@@ -461,12 +504,17 @@ def enable(env, **settings) -> None:
     assert response.status_code == 200, response.text
 
 
-def stub_render(monkeypatch) -> list[tuple[str, str, dict, Path]]:
-    """``remotion.render`` の代役（mp4 らしいバイト列を置くだけ）。"""
-    calls: list[tuple[str, str, dict, Path]] = []
+def stub_render(monkeypatch) -> list[tuple[str, str, dict, Path, dict]]:
+    """``remotion.render`` の代役（mp4 らしいバイト列を置くだけ）。
 
-    async def fake_render(job_id, composition, props, output_path, *, on_progress=None):
-        calls.append((job_id, composition, props, Path(output_path)))
+    ``options``（``remotion_render_options``。透過や中間コーデック）も記録する。
+    """
+    calls: list[tuple[str, str, dict, Path, dict]] = []
+
+    async def fake_render(
+        job_id, composition, props, output_path, *, on_progress=None, options=None
+    ):
+        calls.append((job_id, composition, props, Path(output_path), options or {}))
         if on_progress is not None:
             await on_progress(0.5, "Rendered 150/300")
         output = Path(output_path)
@@ -535,16 +583,50 @@ def test_remotion_job_renders_and_records_the_video(env, monkeypatch):
         "props": {"title": "第3話"},
     }
 
-    job_id, composition, props, output = calls[0]
+    job_id, composition, props, output, options = calls[0]
     assert job_id == created["id"]
     assert composition == "Intro"
     assert props == {"title": "第3話"}
     assert output == env.outputs / created["id"] / "video.mp4"
+    # remotion_render_options を書かなければ既定（h264 / mp4）のまま
+    assert options == {}
 
     # ComfyUI の動画ジョブと同じくラストフレームも残る（サムネイル / 続き生成）
     assert frames == [(output, env.outputs / created["id"] / "last_frame.png")]
     assert Path(job["last_frame_path"]).is_file()
     assert job["last_frame_url"] == f"/outputs/{job['id']}/last_frame.png"
+
+
+def test_remotion_job_with_transparency_writes_a_mov(env, monkeypatch):
+    """``remotion_render_options`` を付けると、その形で焼いて拡張子も合わせる。"""
+    enable(env)
+    calls = stub_render(monkeypatch)
+    stub_last_frame(monkeypatch)
+
+    options = {
+        "codec": "prores",
+        "prores_profile": "4444",
+        "image_format": "png",
+        "pixel_format": "yuva444p10le",
+    }
+    created = env.client.post(
+        "/api/jobs", json=body(remotion_render_options=options)
+    ).json()
+    job = wait_for(env.client, created["id"])
+    assert job["status"] == "done", job["error"]
+
+    _, _, _, output, passed = calls[0]
+    assert output == env.outputs / created["id"] / "video.mov"
+    assert passed == options
+    assert job["video_url"] == f"/outputs/{job['id']}/video.mov"
+
+
+def test_remotion_job_rejects_an_unknown_codec(env):
+    enable(env)
+    response = env.client.post(
+        "/api/jobs", json=body(remotion_render_options={"codec": "av1"})
+    )
+    assert response.status_code == 422, response.text
 
 
 def test_remotion_job_failure_is_recorded(env, monkeypatch):
@@ -566,7 +648,9 @@ def test_remotion_job_cancel_stops_the_render(env, monkeypatch):
     started = asyncio.Event()
     state = {"cancelled": False}
 
-    async def slow(job_id, composition, props, output_path, *, on_progress=None):
+    async def slow(
+        job_id, composition, props, output_path, *, on_progress=None, options=None
+    ):
         started.set()
         try:
             await asyncio.sleep(30)
@@ -736,7 +820,9 @@ def test_external_jobs_share_the_pending_pool(env, monkeypatch):
     enable(env, external_api_key=KEY, external_max_pending_takes=1)
     started = asyncio.Event()
 
-    async def slow(job_id, composition, props, output_path, *, on_progress=None):
+    async def slow(
+        job_id, composition, props, output_path, *, on_progress=None, options=None
+    ):
         started.set()
         await asyncio.sleep(30)
         return Path(output_path)

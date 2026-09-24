@@ -57,6 +57,14 @@ def _revision(client, project_id) -> int:
 
 LYRIC = {"type": "lyric", "t": 45.96, "until": 47.5, "text": "撃ち抜け"}
 SPRITE = {"type": "sprite", "t": 10.0, "until": 16.2, "src": "logo.png", "w": 0.3}
+LYRIC_MOTION = {
+    "lyrics": "[00:00.30]夜明けの色を\n[00:01.40]ほどけた声が",
+    "style": "noir",
+    "seed": 20260922,
+    "timing": {"bpm": 120},
+    "overrides": {"0": {"layout": "center"}},
+    "audio": {"beats": [0.0, 0.5, 1.0]},
+}
 
 
 # --------------------------------------------------------------------------
@@ -72,6 +80,8 @@ def test_a_fresh_timeline_has_no_fx(client):
         "seed": None,
         "ambient": None,
         "backgroundColor": None,
+        "lyric": None,
+        "lyric_enabled": True,
         "events": [],
     }
 
@@ -209,6 +219,120 @@ def test_deleting_a_timeline_takes_its_fx_with_it(client):
 # --------------------------------------------------------------------------
 # リビジョン（楽観ロック）
 # --------------------------------------------------------------------------
+
+# --------------------------------------------------------------------------
+# 歌詞モーション（JIZURA の層。SPEC §7.3）
+# --------------------------------------------------------------------------
+
+def test_put_fx_lyric_saves_and_removes_the_lyric_motion(client):
+    """``PUT …/fx/lyric`` は歌詞モーションだけを差し替える（events に触らない）。"""
+    timeline = _timeline(client, _project(client))
+    client.put(
+        f"/api/studio/timelines/{timeline['id']}/fx", json={"events": [LYRIC]}
+    )
+
+    saved = client.put(
+        f"/api/studio/timelines/{timeline['id']}/fx/lyric",
+        json={"lyric": LYRIC_MOTION},
+    )
+    assert saved.status_code == 200
+    fx = saved.json()
+    assert fx["lyric"] == LYRIC_MOTION
+    assert fx["lyric_enabled"] is True
+    # 演出のイベントは巻き添えにしない
+    assert [item["event"] for item in fx["events"]] == [LYRIC]
+
+    # 消さずに外す
+    off = client.put(
+        f"/api/studio/timelines/{timeline['id']}/fx/lyric",
+        json={"lyric": LYRIC_MOTION, "lyric_enabled": False},
+    ).json()
+    assert off["lyric"] == LYRIC_MOTION and off["lyric_enabled"] is False
+
+    # null で外す（``lyric_enabled`` も既定へ戻る）
+    gone = client.put(
+        f"/api/studio/timelines/{timeline['id']}/fx/lyric", json={"lyric": None}
+    ).json()
+    assert gone["lyric"] is None and gone["lyric_enabled"] is True
+    assert [item["event"] for item in gone["events"]] == [LYRIC]
+
+
+def test_put_fx_takes_the_lyric_too(client):
+    """全置換（``PUT …/fx``）でも ``lyric`` を受ける（送らなければ外れる）。"""
+    timeline = _timeline(client, _project(client))
+    fx = client.put(
+        f"/api/studio/timelines/{timeline['id']}/fx",
+        json={"lyric": LYRIC_MOTION, "lyric_enabled": False, "events": [LYRIC]},
+    ).json()
+    assert fx["lyric"] == LYRIC_MOTION and fx["lyric_enabled"] is False
+
+    # 全置換なので、送らなかった全体設定と同じく落ちる
+    again = client.put(
+        f"/api/studio/timelines/{timeline['id']}/fx", json={"events": [LYRIC]}
+    ).json()
+    assert again["lyric"] is None and again["lyric_enabled"] is True
+
+
+def test_fx_lyric_validation_stops_at_the_lyrics_string(client):
+    """検証は「オブジェクトで ``lyrics`` が文字列」まで（正本は Remotion の zod）。"""
+    timeline = _timeline(client, _project(client))
+    url = f"/api/studio/timelines/{timeline['id']}/fx/lyric"
+    assert client.put(url, json={"lyric": {"style": "noir"}}).status_code == 400
+    assert client.put(url, json={"lyric": {"lyrics": 12}}).status_code == 400
+    # 知らない項目は素通し（新しい部品を足すたびに 2 か所を直さないため）
+    ok = client.put(url, json={"lyric": {"lyrics": "あ", "newThing": 1}})
+    assert ok.status_code == 200
+    assert ok.json()["lyric"] == {"lyrics": "あ", "newThing": 1}
+
+
+def test_fx_lyric_on_an_unknown_timeline_is_404(client):
+    response = client.put(
+        "/api/studio/timelines/nope/fx/lyric", json={"lyric": LYRIC_MOTION}
+    )
+    assert response.status_code == 404
+
+
+def test_fx_lyric_lands_in_the_revision_snapshot_and_locks(client):
+    """リビジョンに積まれ、古い ``base_revision`` は 409。"""
+    project_id = _project(client)
+    timeline = _timeline(client, project_id)
+    stale = _revision(client, project_id)
+
+    client.put(
+        f"/api/studio/timelines/{timeline['id']}/fx/lyric",
+        json={"lyric": LYRIC_MOTION},
+    )
+    after = _revision(client, project_id)
+    assert after > stale
+
+    snapshot = client.get(
+        f"/api/studio/projects/{project_id}/revisions/{after}"
+    ).json()["snapshot"]
+    settings = json.loads(snapshot["timeline_fx"][0]["settings"])
+    assert settings["lyric"] == LYRIC_MOTION
+
+    conflict = client.put(
+        f"/api/studio/timelines/{timeline['id']}/fx/lyric",
+        json={"lyric": LYRIC_MOTION, "base_revision": stale},
+    )
+    assert conflict.status_code == 409
+
+
+def test_external_api_can_set_the_lyric_too(client):
+    """外部 API（``/api/v1``）にも同じ形で生えている。"""
+    from app import config as app_config
+
+    app_config.update_settings({"external_api_key": "k"})
+    project_id = _project(client)
+    timeline = _timeline(client, project_id)
+    response = client.put(
+        f"/api/v1/timelines/{timeline['id']}/fx/lyric",
+        json={"lyric": LYRIC_MOTION},
+        headers={"X-API-Key": "k"},
+    )
+    assert response.status_code == 200
+    assert response.json()["lyric"] == LYRIC_MOTION
+
 
 def test_fx_lands_in_the_revision_snapshot(client):
     project_id = _project(client)
@@ -370,6 +494,10 @@ def test_fx_export_queues_a_remotion_job_with_the_timelines_events(
             ],
         },
     )
+    client.put(
+        f"/api/studio/timelines/{timeline['id']}/fx/lyric",
+        json={"lyric": LYRIC_MOTION},
+    )
     # 外したイベント（enabled: false）は props に載せない
     fx = client.get(f"/api/studio/timelines/{timeline['id']}/fx").json()
     off = fx["events"][1]["id"]
@@ -387,7 +515,9 @@ def test_fx_export_queues_a_remotion_job_with_the_timelines_events(
 
     rendered: dict = {}
 
-    async def fake_render(job_id, composition, props, output, *, on_progress=None):
+    async def fake_render(
+        job_id, composition, props, output, *, on_progress=None, options=None
+    ):
         rendered["composition"] = composition
         rendered["props"] = props
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -434,6 +564,24 @@ def test_fx_export_queues_a_remotion_job_with_the_timelines_events(
     assert (props["fps"], props["width"], props["height"]) == (24.0, 1280, 720)
     assert props["durationInSeconds"] == 2.0
     assert props["seed"] == 7 and props["theme"] == {"palette": ["#dc1428"]}
+    # 歌詞モーションは層として重ねるので、合成用背景はつねに透過に倒す
+    assert props["lyric"] == {**LYRIC_MOTION, "keyBg": "transparent"}
+
+    # 外して（lyric_enabled: false）焼き直すと props から落ちる
+    client.put(
+        f"/api/studio/timelines/{timeline['id']}/fx/lyric",
+        json={"lyric": LYRIC_MOTION, "lyric_enabled": False},
+    )
+    second = client.post(
+        f"/api/studio/timelines/{timeline['id']}/export", json={"fx": True}
+    ).json()["id"]
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        again = client.get(f"/api/studio/exports/{second}").json()
+        if again["fx_status"] in ("done", "failed"):
+            break
+        time.sleep(0.1)
+    assert "lyric" not in rendered["props"]
 
 
 def test_fx_export_is_refused_while_remotion_is_off(client, tmp_path, monkeypatch):

@@ -1131,10 +1131,30 @@ ComfyUI と並ぶもう 1 つの生成経路。Remotion プロジェクト（Nod
   無効のあいだは一覧も投入も 400
 - 使うプロジェクトは**常に同梱の `remotion/`**（場所の設定は持たない）。composition を
   足す・直すときは `remotion/src/` を編集する
-- 同梱の composition は 3 つ: `MusicVideo`（カット割り・トランジション・歌詞・BGM）/
+- 同梱の composition は 4 つ: `MusicVideo`（カット割り・トランジション・歌詞・BGM）/
   `FxOverlay`（出来上がった mp4 の上にイベント駆動で文字演出・エフェクトを載せる。
-  `card` / `imageSlam` / `glitchCut` / `lyric` など 15 種のイベント）/ `Slate`（疎通確認）。
+  `card` / `imageSlam` / `glitchCut` / `lyric` など 15 種のイベント）/ `LyricMotion`
+  （歌詞だけから文字PV を自動構成。後述）/ `Slate`（疎通確認）。
   props の正本は `remotion/src/schema.ts`（zod）
+- **`LyricMotion`（文字PV）**: 素材を 1 枚も使わず、歌詞テキストだけで 1 本組む
+  composition。中身は OSS の自動構成エンジン **JIZURA 字面**（MIT,
+  <https://github.com/852wa/JIZURA>）で、ソースは `remotion/vendor/jizura/` に**無改変**
+  で置き（取り込み元・除外・更新手順は `vendor/jizura/UPSTREAM.md`、ライセンス全文は
+  同 `LICENSE`）、`scripts/build-jizura-bundle.mjs` が JIZURA 本体の `build.py` と同じ
+  順で結合した ESM（`vendor/jizura/dist/jizura.js`、**生成物も git に入れる**）を
+  webpack から読む。props（`lyricMotionSchema`）は歌詞・スタイル・雰囲気・種・部品の
+  絞り込み・行ごとの上書きで、`calculateMetadata` が画面比と `res` から実寸を、構成
+  （`J.plan`）の終端から尺を決める。部品キー 707・スタイル 24・書体 23 の一覧は
+  `scripts/export-jizura-catalog.mjs` が
+  `workspace/.agents/skills/karakuri-remotion/jizura-catalog.json` に出す（エージェントが
+  キーを推測しないため）。書体は Google Fonts から実行時に取る（同梱していない。
+  ローカル化の手順は `remotion/README.md`）
+- **`remotion_render_options`（任意）**: props とは別に「どう焼くか」を渡せる
+  （`codec` / `image_format` / `pixel_format` / `prores_profile`）。透過（アルファ付き）の
+  書き出しに要る最小限で、未指定なら Remotion プロジェクトの既定（h264 / mp4）のまま。
+  `--codec` と入れ物が合っていないと Remotion が走らないので、**成果物の拡張子は
+  コーデックから決める**（`remotion.output_suffix`。prores → `video.mov`、
+  vp8 / vp9 → `video.webm`）
 - 依存（`remotion/node_modules/`）は `run.sh` が初回に入れる（Docker で動かす場合は
   ホスト側で `npm --prefix remotion install`）。入っていなければその旨のエラーで
   400 になる
@@ -1150,7 +1170,8 @@ ComfyUI と並ぶもう 1 つの生成経路。Remotion プロジェクト（Nod
   composition の ID を並べる（短時間キャッシュ）。エントリポイントは `src/index.ts` を
   既定とし、プロジェクトの `package.json` に `config.remotionEntry` があればそちら
 - ジョブは `{"mode": "remotion", "remotion_composition": "<ID>", "remotion_props": {…}}`
-  の 2 項目だけを取る（画像・動画・音声のフィールドは使わない）。`npx remotion render` を
+  の 2 項目（＋任意の `remotion_render_options`）だけを取る（画像・動画・音声の
+  フィールドは使わない）。`npx remotion render` を
   サブプロセスで回し、標準出力の進捗を WS へ流す
 - `props` は CLI 引数に直接埋めると長さと引用符で壊れるので、**一時 JSON ファイル**
   （`runtime/remotion/`）に書いて `--props=<file>` で渡す
@@ -1834,6 +1855,25 @@ EDL → ffmpeg コマンドの**組み立ては純関数**（`build_command`）�
   - `POST /timelines/{id}/fx/events` / `PATCH …/fx/events/{event_id}`（`event` は浅い
     マージ。`null` を送るとその項目が消える）/ `DELETE …/fx/events/{event_id}`
 
+#### 歌詞モーション（`timeline_fx.lyric`。JIZURA の層）
+
+文字PV エンジン **JIZURA**（`remotion/vendor/jizura/`、MIT）の絵を、FX トラックに
+**1 本だけ**相乗りさせる段。イベントと違って「何秒に出す」ものではなく、
+**タイムライン全長に掛かる 1 枚の層**（`base` の上・`events` の下に透過で重なる）。
+
+- `timeline_fx.settings` の `lyric` / `lyric_enabled` に入る（イベントの表とは別）。
+  中身は `FxOverlay` の `lyric` = `remotion/src/schema.ts` の `lyricOverlaySchema`
+  （`lyricMotionSchema` から `fps` / `res` / `aspect` / `durationInSeconds` と
+  `audio` の再生まわりを落とした派生。**二重定義しない**）
+- **持たないもの**は「タイムラインが持っている値」: 画の大きさ（`width` / `height` →
+  いちばん近い `aspect` を選んでデザインサイズを cover で収める）・`fps`・尺・BGM の
+  音そのもの。`audio.beats` のような**拍の情報は持ってよい**（演出が拍に乗る）
+- バックエンドの検証は「オブジェクトで `lyrics` が文字列」まで（イベントと同じ理屈）
+- API: `PUT /timelines/{id}/fx/lyric`（`{lyric, lyric_enabled?, base_revision?}`。
+  `lyric: null` で外す）。`PUT /timelines/{id}/fx`（全置換）でも `lyric` を受ける
+- `fx: true` の書き出しでは、`lyric_enabled` かつ `lyric` があれば props の `lyric` に
+  載る（`keyBg` は層として重ねる以上つねに `transparent`）
+
 **画面**（`FxTrack` は `TimelinePane` の中の 1 段、パネルは `FxInspector`）:
 
 - イベントを `t` 〜（`until` / `duration` / 型ごとの既定尺）の帯で並べ、型ごとに色を変える。
@@ -1843,6 +1883,15 @@ EDL → ffmpeg コマンドの**組み立ては純関数**（`build_command`）�
 - 選ぶと右ペインに共通（`t` / `until` / `duration` / `z` / 出す・出さない）＋型ごとの主要項目
   （`text` / `lines` / `src` / `cx` / `cy` / `w` / `color`）＋**残りは JSON のテキスト欄**。
   空にした項目は `null` で送られて消える。**削除**ボタンもここ
+- **歌詞モーション**があれば、FX トラックの**先頭にタイムライン全長の帯**「歌詞モーション」
+  を 1 本出す（`lyric_enabled: false` は薄く）。押すと右ペインが `LyricInspector` になり、
+  スタイル・雰囲気・シード（振り直し）・追加分/和風・演出の強さ（スライダー）・歌詞
+  （LRC 記法のまま）と、**行ごとの上書き**（JIZURA の対応範囲と同じく行単位のみ。
+  レイアウト / 入り / 保持 / 抜け / 文字の処理 / 背景 / カメラ・装飾の複数選択・
+  1 カットに固定・その行だけのシード）を触れる。選択肢の名前は**実行時に JIZURA の
+  登録一覧から**取り（`J.order()` / `J.registry()`）、`extra: false` のときは追加分を
+  薄く出す。`lock` / `lockedSeed` は画面に出さない（AI 用）。変更は
+  `PUT …/fx/lyric`（select は即時、テキストは 1.5 秒のデバウンス）
 - **プレビュー**は `@remotion/player` に `FxOverlay` を**そのまま**描かせて、既存の
   プレビュー映像の上に重ねる（`remotion/src` を Vite の `@fx` エイリアスで共有するので、
   演出の実装を SPA 側へ写さない）。`base` は渡さず `backgroundColor: "transparent"`、音も
@@ -1858,7 +1907,8 @@ ffmpeg の書き出し（上）が終わったあと、その mp4 を**下地**�
 - props は `base.src` = 焼き上がった mp4 の絶対パス（`remotion/src/media.ts` が先頭 `/` を
   `file://` に読み替えるので、レンダに HTTP サーバーを挟まない）・`audio.src` = **A1 の
   最初の音声クリップ**（無ければ省略）・`fps` / `width` / `height` / `durationInSeconds` =
-  その書き出しの実測値・`events` = `enabled` のものだけ・残りは `timeline_fx` の全体設定
+  その書き出しの実測値・`events` = `enabled` のものだけ・`lyric` = `lyric_enabled` なら
+  歌詞モーション（`keyBg` は `transparent`）・残りは `timeline_fx` の全体設定
 - ジョブ id と状態と成果物は `timeline_exports.fx_job_id` / `fx_status` / `fx_video_path`
   に残り、書き出し履歴に「演出付き」として並ぶ（`GET .../exports` の `fx_video_url`）
 - 演出のレンダで失敗しても**mp4 そのものは残る**（`fx_status` が `failed` になるだけ）
@@ -2229,6 +2279,7 @@ GET  /api/studio/timelines/{id}/missing … メディア欠落クリップと同
 POST /api/studio/timelines/{id}/missing/resolve … 別テイクへ差し替え / 欠落クリップの一括削除
 GET  /api/studio/timelines/{id}/fx … FX トラック（演出。`FxOverlay` の props と同じ名前、§7.3）
 PUT  /api/studio/timelines/{id}/fx … 演出の全置換（`base` / `audio` / 規格は無視。`base_revision` で楽観ロック）
+PUT  /api/studio/timelines/{id}/fx/lyric … 歌詞モーションだけ差し替え（`lyric: null` で外す。`events` には触らない）
 POST /api/studio/timelines/{id}/fx/events … 演出のイベントを 1 つ追加
 PATCH  /api/studio/timelines/{id}/fx/events/{event_id} … 1 件だけ書き換え（`event` は浅いマージ・`enabled`）
 DELETE /api/studio/timelines/{id}/fx/events/{event_id} … 1 件削除

@@ -150,6 +150,230 @@ export type MusicVideoProps = z.infer<typeof musicVideoSchema>;
 export type SlateProps = z.infer<typeof slateSchema>;
 
 // ---------------------------------------------------------------------------
+// LyricMotion: JIZURA（文字PV 自動構成エンジン, MIT）を Canvas2D で焼くコンポジション
+// ---------------------------------------------------------------------------
+//
+// エンジンは remotion/vendor/jizura/（無改変。取り込み元は vendor/jizura/UPSTREAM.md）。
+// props は JIZURA の project オブジェクトとほぼ 1 対 1 で、書かなかったところは
+// `J.defaultProject()` の既定に落ちる。部品のキー（layout / enter / … の中身）は
+// workspace/.agents/skills/karakuri-remotion/jizura-catalog.json にすべて並んでいる。
+
+/** 画面比。JIZURA の `J.designSize()` が知っているものだけ。 */
+export const lyricAspectSchema = z.enum([
+  '16:9',
+  '9:16',
+  '4:3',
+  '3:4',
+  '1:1',
+  '4:5',
+  '21:9',
+]);
+
+/**
+ * 合成用の背景。
+ * - `off`: ふつうに描く（スタイルの配色のまま）
+ * - `green` / `black`: 全カットを白文字 + 単色背景にして、キーヤー / スクリーン合成に回せる形で焼く
+ * - `transparent`: 背景を塗らずアルファを残す（`--codec=prores --prores-profile=4444` などと組む）
+ */
+export const lyricKeyBgSchema = z.enum(['off', 'green', 'black', 'transparent']);
+
+/**
+ * 演出の強さ（JIZURA の `project.fx`）。部分指定でよく、書かなかったものは
+ * `J.defaultProject().fx` の既定に落ちる。
+ */
+export const lyricFxSchema = z.object({
+  /** 動きの量 0..1 */
+  motion: z.number().min(0).max(1).optional(),
+  /** グリッチの量 0..1 */
+  glitch: z.number().min(0).max(1).optional(),
+  /** 色ズレの量 0..1 */
+  chroma: z.number().min(0).max(1).optional(),
+  /** 装飾の量 0..1 */
+  decor: z.number().min(0).max(1).optional(),
+  /** 画面の密度 0..1 */
+  density: z.number().min(0).max(1).optional(),
+  /** 質感（紙・グレイン・走査線・ビネット）0..1 */
+  texture: z.number().min(0).max(1).optional(),
+  /** 背景グラフィックの切り替わりやすさ 0..1 */
+  bgSwitch: z.number().min(0).max(1).optional(),
+  /** 決めのフラッシュを入れるか */
+  flash: z.boolean().optional(),
+  /** 1 秒あたりの作画枚数（24fps 基準。12 = 2 コマ打ち、0 = 毎フレーム） */
+  koma: z.number().min(0).max(60).optional(),
+  /** koma の旧称。koma が無いときだけ見る（true = 2 コマ打ち） */
+  onTwos: z.boolean().optional(),
+  /** 画面端の HUD。auto はスタイル任せ */
+  hud: z.enum(['auto', 'on', 'off']).optional(),
+});
+
+/** 1 行だけ部品を指名する上書き（`overrides` の値）。 */
+export const lyricOverrideSchema = z.object({
+  /** レイアウト（例 "center" / "vcols" / "huge"） */
+  layout: z.string().optional(),
+  /** 入り（例 "slice" / "type" / "pop"） */
+  enter: z.string().optional(),
+  /** 保持（例 "still" / "drift" / "breathe"） */
+  hold: z.string().optional(),
+  /** 抜け（例 "blur" / "explode" / "wipe"） */
+  exit: z.string().optional(),
+  /** 装飾。複数載せられる */
+  decor: z.array(z.string()).optional(),
+  /** 文字の処理（縁取り・押し出しなど） */
+  treat: z.string().optional(),
+  /** 背景グラフィック */
+  bg: z.string().optional(),
+  /** カメラの寄り引き */
+  cam: z.string().optional(),
+  /** このカットへの入り方（前カットとの合成） */
+  trans: z.string().optional(),
+  /** 行を分割せず 1 カットに収める */
+  single: z.boolean().optional(),
+  /** この行だけの乱数の種 */
+  seed: z.number().int().optional(),
+  /** おまかせを掛け直しても保つ */
+  lock: z.boolean().optional(),
+  lockedSeed: z.number().int().optional(),
+});
+
+/** 行の出る時刻（JIZURA の `project.timing`）。 */
+export const lyricTimingSchema = z.object({
+  /** BPM。0 なら拍に合わせない */
+  bpm: z.number().min(0).max(400).default(0),
+  /** 1 行目が出るまでの秒（LRC タイムスタンプがあれば無視される） */
+  offset: z.number().min(0).default(0.4),
+  /** カットの境目をビートに吸わせる */
+  snap: z.boolean().default(true),
+  /** 最後の行が消えたあとの余白（秒） */
+  tail: z.number().min(0).default(0.9),
+  /** 自動で決まる行の長さの倍率 */
+  lineScale: z.number().min(0.1).max(5).default(1),
+  /** 行番号（0 始まり）→ 開始秒。LRC を書かずにここで指定してもよい */
+  lineTimes: z.record(z.string(), z.number().min(0)).default({}),
+});
+
+/**
+ * BGM と、その解析結果。
+ *
+ * `src` は既存の `audioSchema` と同じ流儀（`/outputs/…` の配信 URL・絶対パス・
+ * `public/` 相対）で、**mp4 に BGM を載せる**ために使う。`beats` / `energy` は
+ * 演出をビートに乗せるための解析結果で、`mode: "audio_analysis"` のジョブの
+ * 出力（`beats.times` / エネルギー包絡）をそのまま渡せる。
+ */
+export const lyricAudioSchema = z.object({
+  src: z.string(),
+  volume: z.number().min(0).max(1).default(1),
+  /** 音源側の頭出し秒。 */
+  startFrom: z.number().min(0).default(0),
+  /** 末尾のフェードアウト秒(0 で無効)。 */
+  fadeOut: z.number().min(0).default(0),
+  /** ビート時刻(秒)。カットの境目をここへ吸わせ、拍で脈を打たせる。 */
+  beats: z.array(z.number().min(0)).default([]),
+  /** 音源の長さ(秒)。尺の下限になる。 */
+  duration: z.number().min(0).optional(),
+  /** エネルギー包絡(0..1)。演出の強さが音量に追従する。 */
+  energy: z.array(z.number()).optional(),
+  /** energy の 1 秒あたりのサンプル数（JIZURA の解析は 50）。 */
+  energyRate: z.number().min(1).optional(),
+});
+
+export const lyricMotionSchema = z.object({
+  /**
+   * 歌詞。1 行 1 フレーズで、書ける記法は
+   * - `[mm:ss.xx]` 行頭のタイムスタンプ（LRC。**全行に付ければ**そのまま時刻になる）
+   * - `/` でその行をカットに割る
+   * - `*強調*` でその語を強く出す
+   * - 行末の `!` で決めのカットにする
+   * - `歌詞|注釈` で小さな注釈を添える
+   * - `#` で始まる行はコメント、空行は間
+   */
+  lyrics: z.string().default(''),
+  /**
+   * 配色と質感。キーは jizura-catalog.json の `styles`。
+   * **空文字なら任せる**: `mood` があればその雰囲気に合うものが選ばれ、無ければ "noir"。
+   */
+  style: z.string().default(''),
+  /**
+   * 雰囲気。`glitch` / `calm` / `pop` / `graphic` / `editorial` / `emotional` /
+   * `chaos` のどれかを書くと、**その雰囲気に合う部品とスライダーを自動で選ぶ**
+   * （= おまかせ）。`style` / `fx` / `enabled` / `fonts` / `colors` に自分で書いた
+   * 値のほうが強い。null なら何もしない。
+   */
+  mood: z.string().nullable().default(null),
+  /** 乱数の種。同じ種・同じ歌詞なら毎回同じ絵になる。 */
+  seed: z.number().int().default(20260922),
+  aspect: lyricAspectSchema.default('16:9'),
+  /** 短辺のピクセル数。実寸は aspect のデザインサイズをこれに合わせて拡縮する。 */
+  res: z.number().int().min(240).max(4320).default(1080),
+  fps: z.number().int().min(1).max(120).default(24),
+  keyBg: lyricKeyBgSchema.default('off'),
+  /** 初版より後に足された部品（追加分）もランダムに選ぶ。 */
+  extra: z.boolean().default(false),
+  /** 和風モチーフ（提灯・障子・家紋…）をランダムに選ぶ。 */
+  wa: z.boolean().default(true),
+  /** 歌詞の言語（書体の選び方が変わる）。auto は自動判定。 */
+  lang: z.enum(['auto', 'ja', 'zh-Hant', 'zh-Hans', 'ko', 'en']).default('auto'),
+  /** 演出の強さ。**書いたところだけ**が既定（や mood の選択）を上書きする。 */
+  fx: lyricFxSchema.default(() => lyricFxSchema.parse({})),
+  /**
+   * 使ってよい部品の絞り込み。`{グループ: {キー: false}}` の部分指定で、
+   * **書かなかったものは使ってよい**扱い。グループは layout / enter / hold /
+   * exit / decor / treat / bg / cam / fx / trans。
+   */
+  enabled: z
+    .record(z.string(), z.record(z.string(), z.boolean()))
+    .default({}),
+  /** 行番号（0 始まりの文字列キー）→ その行だけの指名。 */
+  overrides: z.record(z.string(), lyricOverrideSchema).default({}),
+  /**
+   * 配色の上書き。`{enabled: true, bg, fg, accent, …}`。
+   * 書かなければスタイルの配色のまま。
+   */
+  colors: z.record(z.string(), z.unknown()).default({}),
+  /**
+   * 書体の役割ごとの差し替え。`{display: "dela", serif: "shippori"}` のように、
+   * jizura-catalog.json の `fonts` のキーを入れる。
+   */
+  fonts: z.record(z.string(), z.string()).default({}),
+  timing: lyricTimingSchema.default(() => lyricTimingSchema.parse({})),
+  audio: lyricAudioSchema.optional(),
+  /** 明示的に尺を決めたいとき(秒)。省略時は plan の終端。 */
+  durationInSeconds: z.number().min(0.1).optional(),
+});
+
+export type LyricAspect = z.infer<typeof lyricAspectSchema>;
+export type LyricKeyBg = z.infer<typeof lyricKeyBgSchema>;
+export type LyricFx = z.infer<typeof lyricFxSchema>;
+export type LyricOverride = z.infer<typeof lyricOverrideSchema>;
+export type LyricTiming = z.infer<typeof lyricTimingSchema>;
+export type LyricAudio = z.infer<typeof lyricAudioSchema>;
+export type LyricMotionProps = z.infer<typeof lyricMotionSchema>;
+
+/**
+ * `FxOverlay` に相乗りさせるときの歌詞モーション（タイムラインの FX トラックに
+ * 保存するのはこの形）。
+ *
+ * `lyricMotionSchema` から**タイムラインが持っている値**を落としただけの派生で、
+ * 二重定義はしない（落とすのは `fps` / `res` / `aspect` / `durationInSeconds` と
+ * `audio` の再生まわり）。画の大きさは `FxOverlay` の `width` / `height` から
+ * 決まり、BGM は `FxOverlay` の `audio` が鳴らす。
+ */
+export const lyricOverlayAudioSchema = lyricAudioSchema.omit({
+  src: true,
+  volume: true,
+  startFrom: true,
+  fadeOut: true,
+});
+
+export const lyricOverlaySchema = lyricMotionSchema
+  .omit({ fps: true, res: true, aspect: true, durationInSeconds: true, audio: true })
+  .extend({
+    /** 拍とエネルギー（音そのものは `FxOverlay` の `audio` が鳴らす）。 */
+    audio: lyricOverlayAudioSchema.optional(),
+  });
+
+export type LyricOverlayProps = z.infer<typeof lyricOverlaySchema>;
+
+// ---------------------------------------------------------------------------
 // FxOverlay: 出来上がった映像(base)の上に、イベントで演出を載せるコンポジション
 // ---------------------------------------------------------------------------
 //
@@ -724,6 +948,12 @@ export const fxOverlaySchema = z.object({
   theme: fxThemeSchema.default(() => fxThemeSchema.parse({})),
   ambient: fxAmbientSchema.default(() => fxAmbientSchema.parse({})),
   events: z.array(fxEventSchema).default([]),
+  /**
+   * 歌詞モーション（JIZURA）の層。`base` の上・`events` の下に透過で重なる。
+   * 画の大きさ・fps・尺はこの props（`width` / `height` / `fps` /
+   * `durationInSeconds`）が正で、`lyric` 側には持たせない。
+   */
+  lyric: lyricOverlaySchema.optional(),
 });
 
 export type FxAnchor = z.infer<typeof fxAnchorSchema>;
@@ -738,3 +968,4 @@ export type FxTheme = z.infer<typeof fxThemeSchema>;
 export type FxAmbient = z.infer<typeof fxAmbientSchema>;
 export type FxBase = z.infer<typeof fxBaseSchema>;
 export type FxOverlayProps = z.infer<typeof fxOverlaySchema>;
+

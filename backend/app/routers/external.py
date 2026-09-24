@@ -131,6 +131,7 @@ from ..models import (
     TimelineFx,
     TimelineFxEventCreate,
     TimelineFxEventUpdate,
+    TimelineFxLyricUpdate,
     TimelineFxUpdate,
     TimelineMediaPage,
     TimelineMissingFix,
@@ -1703,6 +1704,29 @@ async def replace_fx(timeline_id: str, payload: TimelineFxUpdate) -> TimelineFx:
     """
     try:
         return await timeline_service.replace_fx(
+            timeline_id, payload, actor="external"
+        )
+    except timeline_service.TimelineError as exc:
+        raise _timeline_error(exc) from exc
+
+
+@router.put("/timelines/{timeline_id}/fx/lyric", response_model=TimelineFx)
+async def set_fx_lyric(
+    timeline_id: str, payload: TimelineFxLyricUpdate
+) -> TimelineFx:
+    """歌詞モーション（JIZURA）だけ差し替える。
+
+    ``lyric`` は ``FxOverlay`` の ``lyric``（= ``LyricMotion`` の props から
+    ``fps`` / ``width`` / ``height`` / ``durationInSeconds`` / ``res`` /
+    ``aspect`` / ``audio.src`` を抜いたもの）。画の大きさと尺はタイムラインが
+    持っていて、BGM はタイムラインの A1 が鳴らす——``audio.beats`` のような
+    拍の情報だけはここに置ける。
+
+    ``lyric: null`` で外し、``lyric_enabled: false`` で**消さずに出さない**。
+    検証は「オブジェクトで ``lyrics`` が文字列」まで（正本は Remotion の zod）。
+    """
+    try:
+        return await timeline_service.set_fx_lyric(
             timeline_id, payload, actor="external"
         )
     except timeline_service.TimelineError as exc:

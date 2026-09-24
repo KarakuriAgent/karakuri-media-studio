@@ -39,6 +39,7 @@ npx remotion studio
 |---|---|---|
 | `MusicVideo` | カット割り・トランジション・歌詞・BGM を props で組み上げる MV 本体 | props から自動算出 |
 | `FxOverlay` | 出来上がった映像(mp4)の上に、イベント駆動で文字演出・エフェクトを載せる | props から自動算出 |
+| `LyricMotion` | 歌詞から文字PV(リリックモーション)を自動で組み立てる。中身は OSS の [JIZURA 字面](https://github.com/852wa/JIZURA)(MIT) | props から自動算出 |
 | `Slate` | 動作確認用。props のテキストを表示するだけ | `durationInSeconds`(既定 5 秒) |
 
 解像度・fps・尺はすべて props から `calculateMetadata` で決まります。
@@ -55,6 +56,9 @@ npx remotion render src/index.ts MusicVideo out/music-video.mp4 --props=examples
 
 # 演出レイヤーのサンプル(全イベント型を 1 回ずつ含む 14 秒)
 npx remotion render src/index.ts FxOverlay out/fx-overlay.mp4 --props=examples/fx-overlay.json
+
+# 文字PV のサンプル(外部素材に依存しない 5 秒)
+npx remotion render src/index.ts LyricMotion out/lyric-motion.mp4 --props=examples/lyric-motion.json
 
 # コンポジション一覧(アプリ側の一覧取得 API と同じもの)
 npx remotion compositions src/index.ts
@@ -248,6 +252,125 @@ CSS の色(`#dc1428` / `red`)をそのまま書いてもよい。
 `outGlitch`(出際を走査線ずれ + RGB 分離で飛ばして消す)・`border.inset`・キーフレームの `pop: false` など
 追加オプションも一通り入っている)。
 
+#### `lyric`: 歌詞モーション(JIZURA)の層を重ねる
+
+`lyric` を書くと、`base` の上・`events` の下に **JIZURA の文字PV が透過で 1 枚**重なります
+(`src/LyricCanvas.tsx`。`LyricMotion` と同じ描画を共有していて、違うのはキャンバスの
+実寸の決め方だけ)。中身は下の `LyricMotion` の props から、**この props が持っている値**
+——`fps` / `width` / `height` / `durationInSeconds` / `res` / `aspect` と `audio` の再生
+まわり(`src` / `volume` / `startFrom` / `fadeOut`)——を抜いたもの(`src/schema.ts` の
+`lyricOverlaySchema` = `lyricMotionSchema` からの派生)。拍(`audio.beats`)とエネルギーは
+そのまま置けます。
+
+画面比は `width` / `height` にいちばん近い `aspect` を選び、そのデザインサイズを
+**cover** で収めます(`keyBg` は層として重ねる以上つねに透過)。サンプルは
+`examples/fx-overlay-lyric.json`:
+
+```bash
+npx remotion render src/index.ts FxOverlay out/fx-lyric.mp4 --props=examples/fx-overlay-lyric.json
+```
+
+編集画面(タイムラインの FX トラック)に保存する形も同じで、`PUT /api/v1/timelines/{id}/fx/lyric`
+に `lyric` をそのまま入れます(SPEC §7.3)。
+
+### `LyricMotion`
+
+歌詞テキストを入れると、行を切って・レイアウトを選んで・入り / 保持 / 抜けの
+アニメーションを割り当てて、文字PV を 1 本組み上げます。エンジンは OSS の
+**JIZURA 字面**(MIT)で、ソースは `vendor/jizura/` に**無改変**で置いてあります
+(取り込み元・除外したもの・更新手順は [`vendor/jizura/UPSTREAM.md`](vendor/jizura/UPSTREAM.md))。
+
+props の正本は `src/schema.ts` の `lyricMotionSchema`。最小はこれだけです。
+
+```jsonc
+{
+  "lyrics": "[00:00.30]夜明けの色を/覚えてる\n[00:01.40]ほどけた声が遠くで鳴った",
+  "style": "noir",
+  "seed": 20260922
+}
+```
+
+| props | 意味 |
+|---|---|
+| `lyrics` | 歌詞。1 行 1 フレーズ。記法は下記 |
+| `style` | 配色と質感(24 種)。**空文字なら任せる**(`mood` があればそれに合うものが選ばれる) |
+| `mood` | `glitch` / `calm` / `pop` / `graphic` / `editorial` / `emotional` / `chaos`。書くと「おまかせ」で部品とスライダーをまとめて選ぶ |
+| `seed` | 乱数の種。同じ種・同じ歌詞なら毎回同じ絵 |
+| `aspect` / `res` / `fps` | `16:9` `9:16` `4:3` `3:4` `1:1` `4:5` `21:9` / 短辺のピクセル数 / フレームレート |
+| `keyBg` | `off` / `green`(グリーンバック) / `black`(ブラックバック) / `transparent`(下地を塗らない) |
+| `extra` / `wa` | 初版より後に足された部品(追加分) / 和風モチーフをランダムに選んでよいか |
+| `fx` | 演出の強さ。`motion` `glitch` `chroma` `decor` `density` `texture` `bgSwitch`(0..1)、`koma`(1 秒あたりの作画枚数)、`hud` |
+| `enabled` | 使ってよい部品の絞り込み。`{"layout": {"tile": false}}` のように**書いたところだけ**効く |
+| `overrides` | 行番号(0 始まり)ごとの指名。`{"3": {"layout": "huge", "exit": "explode"}}` |
+| `colors` / `fonts` | 配色 / 書体の役割ごとの差し替え |
+| `timing` | `bpm` `offset` `snap` `tail` `lineScale` `lineTimes` |
+| `audio` | BGM(`src`)と解析結果(`beats` / `duration` / `energy` / `energyRate`) |
+| `durationInSeconds` | 明示的な尺。省略すると構成の終端から決まる |
+
+歌詞の記法:
+
+- `[mm:ss.xx]` 行頭のタイムスタンプ(LRC)。**全行に付ければ**そのまま時刻になる
+- `/` でその行をカットに割る
+- `*強調*` でその語を強く出す
+- 行末の `!` で決めのカットにする
+- `歌詞|注釈` で小さな注釈を添える
+- `#` で始まる行はコメント、空行は間
+
+**部品キーの一覧**(`layout` / `enter` / `hold` / `exit` / `decor` / `treat` / `bg` /
+`cam` / `fx` / `trans` の中身、スタイル、雰囲気、書体)は
+[`workspace/.agents/skills/karakuri-remotion/jizura-catalog.json`](../workspace/.agents/skills/karakuri-remotion/jizura-catalog.json)
+にすべて並んでいます(部品 707・スタイル 24・書体 23)。作り直すには:
+
+```bash
+node scripts/export-jizura-catalog.mjs
+```
+
+#### 透過・グリーンバックで焼く
+
+`keyBg: "transparent"` は下地を塗らずアルファを残すので、アルファを持てる
+コンテナで書き出します(mp4 / h264 はアルファを持てません)。
+
+```bash
+# ProRes 4444(.mov)
+npx remotion render src/index.ts LyricMotion out/lyric.mov --props=examples/lyric-motion.json \
+  --codec=prores --prores-profile=4444 --image-format=png --pixel-format=yuva444p10le
+
+# VP8 の WebM(.webm。軽い)
+npx remotion render src/index.ts LyricMotion out/lyric.webm --props=examples/lyric-motion.json \
+  --codec=vp8 --image-format=png --pixel-format=yuva420p
+```
+
+アプリのジョブから焼くときは `remotion_render_options`(props とは別物)で同じことを
+指定します(下の「karakuri-media-studio 側の設定」)。合成側が透過を扱えないときは
+`keyBg: "green"` / `"black"` で、全カットを白文字 + 単色背景にした形でも出せます。
+
+#### エンジンを更新する
+
+```bash
+scripts/sync-jizura.sh          # upstream を clone して vendor/jizura/src を入れ替える
+node scripts/build-jizura-bundle.mjs   # vendor/jizura/dist/jizura.js を作り直す(git に入れる)
+```
+
+`vendor/jizura/src/*.js` は素のスクリプト(グローバル `J` を共有する前提)なので
+webpack からそのままは読めません。`build-jizura-bundle.mjs` が JIZURA 本体の
+`build.py` と同じ順で結合し、`loadJizura()` を export する ESM にします。
+**生成物 `vendor/jizura/dist/jizura.js` は git に入れてあります**
+(`run.sh` の Remotion 初期化は `npm --prefix remotion install` だけなので、
+Docker やクリーンチェックアウトで手順を増やさないため)。
+
+#### 並列レンダリングと再現性
+
+`frame(ctx, plan, t)` は時刻 t だけから絵を決める作りで、カット間のトランジションも
+前カットの絵を**その場で描き直して**合成します。つまり Remotion が複数のタブに
+フレームをばらまいても構いません。グレインと紙テクスチャだけは `Math.random()` で
+作られるので、`LyricCanvas.tsx` が Renderer を作る間だけ種付きの乱数に差し替えて
+揃えています。
+
+残る差は字形の破片に振られるグローバル連番 id(どの字を先に描いたかで変わる)由来で、
+実測(1920x1080 / 120 フレーム)で `--concurrency=1` と `--concurrency=4` の間に
+差が出たのは 22 枚・最大 19/255・画面平均 0.001/255(PSNR 66〜94dB)でした。目には
+見えませんが、**ビット単位で揃えたいときは `--concurrency=1`** で焼いてください。
+
 ### `Slate`
 
 ```jsonc
@@ -290,9 +413,27 @@ props の書き方・ビート同期の作法・運用ルールは外部エー�
 
 ## フォント
 
-歌詞・タイトルはレンダリングマシンにインストールされている CJK フォントを使います
-(`src/fonts.ts` の `FONT_FAMILY`)。Web フォントは使いません。
-日本語が豆腐になる場合は `fonts-noto-cjk` 等を入れてください。
+`MusicVideo` / `FxOverlay` / `Slate` の歌詞・タイトルは、レンダリングマシンに
+インストールされている CJK フォントを使います(`src/fonts.ts` の `FONT_FAMILY`)。
+Web フォントは使いません。日本語が豆腐になる場合は `fonts-noto-cjk` 等を入れてください。
+
+**`LyricMotion` だけは別**で、JIZURA が持つ書体目録(`vendor/jizura/src/02_fonts.js` の
+`J.FONTS`。Noto Sans/Serif JP・Dela Gothic One・Zen Old Mincho など 23 種)を
+**Google Fonts から実行時に取ってきます**。ネットワークが無い環境ではフォールバックの
+書体で焼かれます(止まりはしません)。
+
+オフラインでも同じ絵にしたい場合は、`J.FONTS[key].gf`(Google Fonts の family 指定)を
+消して、同名のファミリをローカルから読ませます。手順:
+
+1. 必要な書体(すべて SIL Open Font License 1.1)を `public/fonts/` に置く
+2. `src/LyricCanvas.tsx` で `loadJizura()` の直後に、`@font-face` を
+   `staticFile('fonts/…')` で流し込み、`J.FONTS` の各エントリから `gf` を消す
+   (`delete J.FONTS[key].gf`)。`J.ensureFonts()` は `gf` が無いエントリについては
+   `<link>` を足さず、`document.fonts.load()` だけを行うので、ローカルに同名の
+   ファミリが在れば同じ結果になります
+3. OS に入っている書体で済ませたいなら `J.FONTS[key].family` を差し替える手もあります
+
+第 1 段では同梱していません(取り込んでいるのはエンジンのソースだけ)。
 
 ## ライセンス
 
@@ -305,3 +446,14 @@ Remotion は個人・非営利、および従業員 3 人以下の企業であ�
 ライセンス条件を満たしていることを確かめてください。
 
 このディレクトリ自身のコードは karakuri-media-studio プロジェクト内部での利用を想定しています。
+
+### 第三者のソフトウェア
+
+| 取り込んだもの | 場所 | ライセンス |
+|---|---|---|
+| [JIZURA 字面](https://github.com/852wa/JIZURA)(文字PV 自動構成エンジン。`LyricMotion` の中身) | `vendor/jizura/src/` と生成物 `vendor/jizura/dist/jizura.js` | MIT(全文は [`vendor/jizura/LICENSE`](vendor/jizura/LICENSE)。Copyright (c) 2026 hakoniwa) |
+
+取り込んだコミット・取り込んだファイルの範囲・除外したものと理由・更新手順は
+[`vendor/jizura/UPSTREAM.md`](vendor/jizura/UPSTREAM.md) にあります。JIZURA が
+実行時に読む書体(Noto Sans JP ほか)は**同梱しておらず**、いずれも
+SIL Open Font License 1.1 で配布されているものを Google Fonts から取得します。

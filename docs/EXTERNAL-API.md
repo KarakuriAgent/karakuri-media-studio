@@ -42,7 +42,7 @@
 | ライブラリ | `GET /library`・`POST /library/image` / `POST /library/audio` / `POST /library/upload`（multipart）・`POST /library/from-job`・`POST /library/sheet`・`POST /library/{id}/key`・`POST /library/key`・`POST /library/key-from-job`・`POST /library/blocking`・`POST /library/{id}/blocking`・`POST /library/blocking/preview`・`POST /library/blocking/location-map`・`PATCH /library/{id}`（**削除は非公開**） |
 | 素材の下ごしらえ | `POST /images/text`・`GET /images/text/fonts`・`POST /videos/contact-sheet`（§3.4） |
 | 編集（タイムライン） | `POST /projects/{id}/timelines`・`GET/PATCH/DELETE /timelines/{id}`・`PUT /timelines/{id}/clips`・`POST /timelines/{id}/clips/insert`・トラック CRUD・`generate-subtitles`・`sync-preview` / `sync`・`missing` / `missing/resolve`・`GET /projects/{id}/media` |
-| 演出（FX トラック） | `GET/PUT /timelines/{id}/fx`・`POST /timelines/{id}/fx/events`・`PATCH/DELETE /timelines/{id}/fx/events/{event_id}`（§3.3） |
+| 演出（FX トラック） | `GET/PUT /timelines/{id}/fx`・`PUT /timelines/{id}/fx/lyric`（歌詞モーション）・`POST /timelines/{id}/fx/events`・`PATCH/DELETE /timelines/{id}/fx/events/{event_id}`（§3.3） |
 | 書き出し | `POST /timelines/{id}/export`（202。`fx: true` で演出付き）・`GET /timelines/{id}/exports`・**`GET /exports`（タイムライン横断の一覧）**・`GET /exports/{id}`・`POST /exports/{id}/save-to-library` |
 | 編集履歴 | `GET /projects/{id}/revisions`・`GET .../{seq}/diff`・`POST .../{seq}/restore`（§3.1） |
 | 画面 | `GET/PATCH /ui/generate-form`・`POST /ui/navigate`（§3.2） |
@@ -296,6 +296,14 @@ React で組んだ動画のレンダリングも、ふつうのジョブとし�
 GET  /api/v1/remotion/compositions        → {"compositions": ["Opening", "Credits"]}
 POST /api/v1/jobs  {"mode": "remotion", "remotion_composition": "Opening",
                     "remotion_props": {"title": "第3話"}}
+
+# 透過（アルファ付き）で焼くときだけ、props とは別に「どう焼くか」を添える
+POST /api/v1/jobs  {"mode": "remotion", "remotion_composition": "LyricMotion",
+                    "remotion_props": {"lyrics": "…", "keyBg": "transparent"},
+                    "remotion_render_options": {"codec": "prores",
+                                                "prores_profile": "4444",
+                                                "image_format": "png",
+                                                "pixel_format": "yuva444p10le"}}
 ```
 
 - Remotion プロジェクトはリポジトリの `remotion/` に**同梱**されている。連携は
@@ -304,7 +312,14 @@ POST /api/v1/jobs  {"mode": "remotion", "remotion_composition": "Opening",
   足す・直すときは `remotion/src/` を編集する。
 - 依存が入っていない（通常は `run.sh` が初回に入れる）ときも 400 で、その旨を返す。
 - `remotion_props` の書き方は `workspace/.agents/skills/karakuri-remotion/SKILL.md` と
-  `remotion/README.md`（正本は `remotion/src/schema.ts`）。
+  `remotion/README.md`（正本は `remotion/src/schema.ts`）。同梱の composition は
+  `MusicVideo` / `FxOverlay` / `LyricMotion`（歌詞だけで文字PV を組む）/ `Slate`。
+- `remotion_render_options` は**任意**で、`codec`（`h264` `h265` `h264-mkv` `prores`
+  `vp8` `vp9` `gif`）・`image_format`（`jpeg` `png`）・`pixel_format`・`prores_profile`
+  だけを取る（知らない値は 422）。未指定なら h264 / mp4。**指定すると成果物の拡張子が
+  変わる**ので注意（prores → `/outputs/{job_id}/video.mov`、vp8 / vp9 → `video.webm`）。
+  アルファを残すには `keyBg: "transparent"`（`LyricMotion`）や
+  `backgroundColor: "transparent"`（`FxOverlay`）と組み合わせる。
 - 出来た mp4 は他のジョブと同じく `GET /api/v1/jobs/{id}` の `video_url` に出るので、
   ライブラリ登録・素材登録・タイムラインへの取り込みもそのまま使える。
 - **音声はアプリ側で焼き直す**。Remotion の mp4 は音声が 2,048 サンプル
@@ -325,11 +340,16 @@ POST /api/v1/jobs  {"mode": "remotion", "remotion_composition": "Opening",
 GET  /api/v1/timelines/{id}/fx
   → {"timeline_id": "…", "theme": {…}, "seed": 1, "ambient": {…},
      "backgroundColor": "#000000",
+     "lyric": {"lyrics": "…", …} | null, "lyric_enabled": true,
      "events": [{"id": "…", "enabled": true, "event": {"type": "lyric", "t": 45.96, …}}]}
 
 PUT  /api/v1/timelines/{id}/fx        # 全置換。FxOverlay の props をそのまま投げられる
-  {"theme": {…}, "seed": 1, "ambient": {…}, "events": [{"type": "lyric", "t": 45.96, …}, …],
-   "base_revision": 12}
+  {"theme": {…}, "seed": 1, "ambient": {…}, "lyric": {…}, "lyric_enabled": true,
+   "events": [{"type": "lyric", "t": 45.96, …}, …], "base_revision": 12}
+
+PUT  /api/v1/timelines/{id}/fx/lyric  # 歌詞モーションだけ差し替え（events に触らない）
+  {"lyric": {"lyrics": "[00:00.30]夜明けの色を", "style": "noir", …},
+   "lyric_enabled": true, "base_revision": 12}
 
 POST   /api/v1/timelines/{id}/fx/events            {"event": {…}, "enabled": true}
 PATCH  /api/v1/timelines/{id}/fx/events/{event_id} {"event": {"t": 46.5}, "enabled": false}
@@ -345,6 +365,17 @@ DELETE /api/v1/timelines/{id}/fx/events/{event_id}?base_revision=12
   `remotion/src/schema.ts`（zod）なので、細かい誤りはプレビューとレンダで出る
 - `base_revision` は他と同じ楽観ロック（§3 の楽観ロック）。演出も EDL と同じく
   リビジョンのスナップショットに載る
+- **歌詞モーション（JIZURA）も同じタイムラインに載る**。`lyric` は `FxOverlay` の
+  `lyric`（= `LyricMotion` の props から `fps` / `width` / `height` /
+  `durationInSeconds` / `res` / `aspect` / `audio.src` を抜いたもの）。画の大きさと尺は
+  タイムラインが持っていて、BGM は A1 が鳴らす——`audio.beats` のような拍の情報だけは
+  `lyric` に置ける。`base` の上・`events` の下に透過で重なり、`fx: true` の書き出しでも
+  同じ層として焼ける（`keyBg` は書き出し時に `transparent` へ倒す）
+- `PUT …/fx/lyric` は**歌詞モーションだけ**を差し替える（`events` にも他の全体設定にも
+  触らない）。`{"lyric": null}` で外し、`lyric_enabled: false` は「消さずに出さない」。
+  `PUT …/fx`（全置換）でも `lyric` を受けるが、そちらは**送らなければ落ちる**
+- 歌詞モーションの検証は「オブジェクトで `lyrics` が文字列」まで。部品のキー一覧は
+  `workspace/.agents/skills/karakuri-remotion/jizura-catalog.json`
 - **演出付き書き出し**: `POST /api/v1/timelines/{id}/export` に `{"fx": true}`。ffmpeg の
   mp4 が焼き上がったあと、それを下地に `FxOverlay` の Remotion ジョブが続けて走る。
   結果は書き出しの `fx_job_id` / `fx_status` / `fx_video_url` に出る（`GET /exports/{id}`

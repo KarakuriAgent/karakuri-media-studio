@@ -56,6 +56,7 @@ from .models import (
     TimelineFxEvent,
     TimelineFxEventCreate,
     TimelineFxEventUpdate,
+    TimelineFxLyricUpdate,
     TimelineFxUpdate,
     TimelineMediaItem,
     TimelineMediaPage,
@@ -1133,6 +1134,21 @@ def _validate_fx_event(raw: Any) -> dict[str, Any]:
     return raw
 
 
+def _validate_fx_lyric(raw: Any) -> dict[str, Any]:
+    """歌詞モーション（``lyric``）の軽い検証（通れば dict をそのまま返す）。
+
+    イベントと同じで、中身の正本は Remotion 側の zod
+    （``remotion/src/schema.ts`` の ``lyricOverlaySchema``）。ここは
+    「オブジェクトで ``lyrics`` が文字列」までしか見ない。
+    """
+    if not isinstance(raw, dict):
+        raise TimelineError("lyric は JSON のオブジェクトで送ってください")
+    lyrics = raw.get("lyrics")
+    if not isinstance(lyrics, str):
+        raise TimelineError("lyric に lyrics（歌詞の文字列）がありません")
+    return raw
+
+
 def _fx_event_input(item: Any) -> tuple[str, bool, dict[str, Any]]:
     """PUT で送られた 1 件を ``(id, enabled, event)`` にほどく。
 
@@ -1166,34 +1182,43 @@ def _row_to_fx_event(row: aiosqlite.Row) -> TimelineFxEvent:
     )
 
 
-async def _fetch_fx(
+async def _read_fx_settings(
     conn: aiosqlite.Connection, timeline_id: str
-) -> TimelineFx:
-    """そのタイムラインの演出（1 行も無ければ空の :class:`TimelineFx`）。"""
+) -> dict[str, Any]:
+    """``timeline_fx.settings``（1 行も無ければ空の dict）。"""
     async with conn.execute(
         "SELECT settings FROM timeline_fx WHERE timeline_id = ?", (timeline_id,)
     ) as cur:
         row = await cur.fetchone()
-    settings: dict[str, Any] = {}
-    if row is not None:
-        try:
-            parsed = json.loads(row["settings"] or "{}")
-        except ValueError:  # pragma: no cover - 同上
-            parsed = {}
-        if isinstance(parsed, dict):
-            settings = parsed
+    if row is None:
+        return {}
+    try:
+        parsed = json.loads(row["settings"] or "{}")
+    except ValueError:  # pragma: no cover - 同上
+        parsed = {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+async def _fetch_fx(
+    conn: aiosqlite.Connection, timeline_id: str
+) -> TimelineFx:
+    """そのタイムラインの演出（1 行も無ければ空の :class:`TimelineFx`）。"""
+    settings = await _read_fx_settings(conn, timeline_id)
     async with conn.execute(
         "SELECT * FROM timeline_fx_events WHERE timeline_id = ?"
         " ORDER BY sort_order, id",
         (timeline_id,),
     ) as cur:
         rows = await cur.fetchall()
+    lyric = settings.get("lyric")
     return TimelineFx(
         timeline_id=timeline_id,
         theme=settings.get("theme"),
         seed=settings.get("seed"),
         ambient=settings.get("ambient"),
         backgroundColor=settings.get("backgroundColor"),
+        lyric=lyric if isinstance(lyric, dict) else None,
+        lyric_enabled=bool(settings.get("lyric_enabled", True)),
         events=[_row_to_fx_event(row) for row in rows],
     )
 
@@ -1264,6 +1289,11 @@ async def replace_fx(
         )
         if value is not None
     }
+    # 歌詞モーションも全体設定の 1 つ（送らなければ外れる。全置換なので）。
+    if payload.lyric is not None:
+        settings["lyric"] = _validate_fx_lyric(payload.lyric)
+        if payload.lyric_enabled is not None:
+            settings["lyric_enabled"] = bool(payload.lyric_enabled)
     async with get_db() as conn:
         timeline = await _fetch_timeline(conn, timeline_id)
         if timeline is None:
@@ -1298,6 +1328,47 @@ async def replace_fx(
             actor,
             f"タイムライン『{timeline.name}』の演出を差し替え"
             f"（{len(parsed)} 件）",
+        )
+        await studio_service._commit(conn)
+        fresh = await _fetch_fx(conn, timeline_id)
+    await _publish_timeline(timeline.project_id, timeline_id)
+    return fresh
+
+
+async def set_fx_lyric(
+    timeline_id: str, payload: TimelineFxLyricUpdate, *, actor: str = "user"
+) -> TimelineFx:
+    """PUT /timelines/{id}/fx/lyric: 歌詞モーションだけ差し替える。
+
+    演出のイベント（``events``）にも他の全体設定にも触らない。``lyric: null``
+    で外し、``lyric_enabled: false`` で**消さずに出さない**。
+    """
+    lyric = None if payload.lyric is None else _validate_fx_lyric(payload.lyric)
+    async with get_db() as conn:
+        timeline = await _fetch_timeline(conn, timeline_id)
+        if timeline is None:
+            raise TimelineNotFound("timeline not found")
+        await _check_edl_revision(
+            conn, timeline_id, timeline.project_id, timeline.name,
+            payload.base_revision,
+        )
+        settings = await _read_fx_settings(conn, timeline_id)
+        if lyric is None:
+            settings.pop("lyric", None)
+            settings.pop("lyric_enabled", None)
+        else:
+            settings["lyric"] = lyric
+            if payload.lyric_enabled is not None:
+                settings["lyric_enabled"] = bool(payload.lyric_enabled)
+        await _write_fx_settings(
+            conn, timeline_id, timeline.project_id, settings
+        )
+        await _fx_touched(
+            conn,
+            timeline,
+            actor,
+            f"タイムライン『{timeline.name}』の歌詞モーションを"
+            + ("外す" if lyric is None else "更新"),
         )
         await studio_service._commit(conn)
         fresh = await _fetch_fx(conn, timeline_id)
@@ -1970,6 +2041,9 @@ async def fx_props(timeline_id: str, export: TimelineExport) -> dict[str, Any]:
         value = getattr(fx, key)
         if value is not None:
             props[key] = value
+    # 歌詞モーションは層として重ねるので、合成用背景はつねに透過。
+    if fx.lyric_enabled and fx.lyric:
+        props["lyric"] = {**fx.lyric, "keyBg": "transparent"}
 
     base_url = str(export.params.get("fx_base_url") or local_base_url(None))
     base = _serve_url(export.output_path, base_url)

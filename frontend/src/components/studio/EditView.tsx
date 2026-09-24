@@ -23,12 +23,14 @@ import { Button } from '../ui/button'
 import ClipInspector from './ClipInspector'
 import ExportPanel from './ExportPanel'
 import FxInspector from './FxInspector'
+import LyricInspector from './LyricInspector'
 import MediaBin from './MediaBin'
 import MissingDialog from './MissingDialog'
 import PreviewMonitor from './PreviewMonitor'
 import SyncDialog from './SyncDialog'
 import TimelinePane from './TimelinePane'
 import { fxApplyLocal, fxMovedTo, fxResizedTo } from './fx'
+import type { Lyric } from './lyric'
 import { episodeLabel } from './studio'
 import {
   AUTOSAVE_DELAY_MS,
@@ -118,6 +120,7 @@ export default function EditView({
   const [fxEnabled, setFxEnabled] = useState(false)
   const [fx, setFx] = useState<TimelineFx | null>(null)
   const [fxSelectedId, setFxSelectedId] = useState<string | null>(null)
+  const [fxLyricSelected, setFxLyricSelected] = useState(false)
   const [fxBusy, setFxBusy] = useState(false)
   /** 演出を書き換えるときに添える `base_revision`（§7.4 の楽観ロック）。 */
   const baseRevision = useRef<number | null>(null)
@@ -588,6 +591,41 @@ export default function EditView({
     [fx, patchFxEvent],
   )
 
+  /**
+   * 歌詞モーションを保存する（`PUT …/fx/lyric`）。
+   *
+   * `null` を送ると外れる。イベントと同じく `base_revision` を添え、ぶつかったら
+   * 手元を捨ててサーバーの中身へ戻す。
+   */
+  const saveFxLyric = useCallback(
+    (lyric: Lyric | null, lyricEnabled?: boolean) =>
+      void (async () => {
+        if (!timelineId) return
+        setFxBusy(true)
+        setError(null)
+        try {
+          await adoptFx(
+            await api.putStudioTimelineFxLyric(timelineId, {
+              lyric,
+              ...(lyricEnabled === undefined ? {} : { lyric_enabled: lyricEnabled }),
+              base_revision: baseRevision.current,
+            }),
+          )
+          if (lyric === null) setFxLyricSelected(false)
+        } catch (cause) {
+          pushError(cause)
+          try {
+            await adoptFx(await api.getStudioTimelineFx(timelineId))
+          } catch {
+            /* 読み直しにも失敗したら、次の操作で追いつく */
+          }
+        } finally {
+          setFxBusy(false)
+        }
+      })(),
+    [timelineId, adoptFx, pushError],
+  )
+
   const deleteFxEvent = () =>
     void (async () => {
       if (!timelineId || !fxSelectedId) return
@@ -852,7 +890,10 @@ export default function EditView({
               onZoom={setZoom}
               onSelect={(id) => {
                 setSelectedId(id)
-                if (id) setFxSelectedId(null)
+                if (id) {
+                  setFxSelectedId(null)
+                  setFxLyricSelected(false)
+                }
               }}
               onSeek={(ms) => setPlayheadMs(Math.min(ms, Math.max(total, 0)))}
               onMove={(id, to) => applyVideo((current) => moveClip(current, id, to))}
@@ -885,13 +926,34 @@ export default function EditView({
               fxSelectedId={fxSelectedId}
               onFxSelect={(id) => {
                 setFxSelectedId(id)
-                if (id) setSelectedId(null)
+                if (id) {
+                  setSelectedId(null)
+                  setFxLyricSelected(false)
+                }
               }}
               onFxDrag={dragFxEvent}
+              fxLyric={fxEnabled ? (fx?.lyric ?? null) : null}
+              fxLyricEnabled={fx?.lyric_enabled ?? true}
+              fxLyricSelected={fxLyricSelected}
+              onFxLyricSelect={() => {
+                setFxLyricSelected(true)
+                setSelectedId(null)
+                setFxSelectedId(null)
+              }}
             />
           </div>
 
           <div className="flex w-full shrink-0 flex-col gap-3 lg:w-80">
+            {fxEnabled && fxLyricSelected && fx?.lyric ? (
+              <LyricInspector
+                lyric={fx.lyric}
+                enabled={fx.lyric_enabled}
+                busy={fxBusy}
+                onChange={(next) => saveFxLyric(next)}
+                onEnabled={(value) => saveFxLyric(fx.lyric, value)}
+                onDelete={() => saveFxLyric(null)}
+              />
+            ) : null}
             {fxEnabled && fxSelectedId ? (
               <FxInspector
                 item={fxSelected}
@@ -941,7 +1003,10 @@ export default function EditView({
               busy={busy}
               savingId={savingId}
               canExport={videoClips.length > 0 && brokenCount === 0}
-              canExportFx={fxEnabled && (fx?.events.length ?? 0) > 0}
+              canExportFx={
+                fxEnabled &&
+                ((fx?.events.length ?? 0) > 0 || Boolean(fx?.lyric))
+              }
               onExport={startExport}
               onSaveToLibrary={saveToLibrary}
             />

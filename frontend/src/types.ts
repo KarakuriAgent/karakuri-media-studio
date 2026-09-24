@@ -2107,6 +2107,14 @@ export interface TimelineFx {
   seed: number | null
   ambient: Record<string, unknown> | null
   backgroundColor: string | null
+  /**
+   * 歌詞モーション（JIZURA）。`FxOverlay` の `lyric` と同じ形で、`fps` /
+   * `width` / `height` / `durationInSeconds` / `res` / `aspect` / `audio.src`
+   * は持たない（タイムラインが持っている値）。
+   */
+  lyric: Record<string, unknown> | null
+  /** 降ろすとプレビューにも書き出しにも出さない（消さずに外しておく）。 */
+  lyric_enabled: boolean
   events: TimelineFxEvent[]
 }
 
@@ -2116,9 +2124,21 @@ export interface TimelineFxUpdate {
   seed?: number | null
   ambient?: Record<string, unknown> | null
   backgroundColor?: string | null
+  /** 送らなければ外れる（全置換なので他の全体設定と同じ扱い）。 */
+  lyric?: Record<string, unknown> | null
+  lyric_enabled?: boolean | null
   /** 生のイベントでも `{id, enabled, event}` の形でも送れる。 */
   events?: Record<string, unknown>[]
   /** 楽観ロック（読んだときの `revision_seq`）。 */
+  base_revision?: number | null
+}
+
+/** PUT /api/studio/timelines/{id}/fx/lyric body（歌詞モーションだけ差し替え）。 */
+export interface TimelineFxLyricUpdate {
+  /** `null` を送ると歌詞モーションが外れる。 */
+  lyric?: Record<string, unknown> | null
+  /** `false` は消さずに出さない。 */
+  lyric_enabled?: boolean | null
   base_revision?: number | null
 }
 

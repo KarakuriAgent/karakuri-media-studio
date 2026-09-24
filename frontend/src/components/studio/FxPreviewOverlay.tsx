@@ -59,6 +59,7 @@ export default function FxPreviewOverlay({
           FxOverlay: overlay.FxOverlay as FxOverlayComponent,
           parseProps: (raw) => schema.fxOverlaySchema.parse(raw),
           parseEvent: (raw) => schema.fxEventSchema.safeParse(raw).success,
+          parseLyric: (raw) => schema.lyricOverlaySchema.safeParse(raw).success,
         })
       } catch (cause) {
         if (alive) setError(cause instanceof Error ? cause.message : String(cause))
@@ -75,6 +76,10 @@ export default function FxPreviewOverlay({
       .filter((item) => item.enabled)
       .map((item) => item.event)
     const kept = events.filter((event) => loaded.parseEvent(event))
+    // 歌詞モーションも同じ扱い: zod を通らなければ落として件数に数える。
+    const lyric =
+      fx.lyric && fx.lyric_enabled && loaded.parseLyric(fx.lyric) ? fx.lyric : null
+    const droppedLyric = fx.lyric && fx.lyric_enabled && !lyric ? 1 : 0
     try {
       return {
         props: loaded.parseProps({
@@ -86,15 +91,16 @@ export default function FxPreviewOverlay({
           ...(fx.theme ? { theme: fx.theme } : {}),
           ...(fx.ambient ? { ambient: fx.ambient } : {}),
           ...(fx.seed == null ? {} : { seed: fx.seed }),
+          ...(lyric ? { lyric } : {}),
           events: kept,
         }),
-        dropped: events.length - kept.length,
+        dropped: events.length - kept.length + droppedLyric,
         error: null,
       }
     } catch (cause) {
       return {
         props: null,
-        dropped: events.length - kept.length,
+        dropped: events.length - kept.length + droppedLyric,
         error: cause instanceof Error ? cause.message : String(cause),
       }
     }
@@ -187,4 +193,5 @@ interface FxPlayerModule {
   FxOverlay: FxOverlayComponent
   parseProps: (raw: Record<string, unknown>) => Record<string, unknown>
   parseEvent: (raw: unknown) => boolean
+  parseLyric: (raw: unknown) => boolean
 }

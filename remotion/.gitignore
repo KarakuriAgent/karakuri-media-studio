@@ -3,3 +3,7 @@ out/
 .remotion/
 *.log
 .DS_Store
+
+# JIZURA の結合済みバンドル（vendor/jizura/dist/jizura.js）は生成物だが git に入れる。
+# ルートの .gitignore に dist/ があるので、ここで打ち消す（理由は vendor/jizura/UPSTREAM.md）。
+!vendor/jizura/dist/

@@ -101,6 +101,50 @@ _ID_RE = re.compile(r"[A-Za-z0-9-]+")
 #: ``Still`` まで数え方に入れる。
 _TABLE_CELL_RE = re.compile(r"\(?[\d.]+(?:x[\d.]+)?%?\)?|sec\)?|still", re.IGNORECASE)
 
+#: ``npx remotion render`` へ通す任意オプション（``remotion_render_options``）の
+#: キー -> CLI のフラグ。**props とは別物**で、透過（アルファ付き）や中間コーデックで
+#: 書き出したいときだけ使う。値の妥当性は :class:`app.models.RemotionRenderOptions`
+#: （Literal）が持つので、ここは並べ替えるだけ。
+RENDER_FLAGS: dict[str, str] = {
+    "codec": "--codec",
+    "image_format": "--image-format",
+    "pixel_format": "--pixel-format",
+    "prores_profile": "--prores-profile",
+}
+
+#: コーデックごとの入れ物。``--codec`` と拡張子が合っていないと Remotion が
+#: そもそも走らないので、出力先の名前はコーデックから決める。
+CODEC_SUFFIXES: dict[str, str] = {
+    "h264": ".mp4",
+    "h265": ".mp4",
+    "h264-mkv": ".mkv",
+    "prores": ".mov",
+    "vp8": ".webm",
+    "vp9": ".webm",
+    "gif": ".gif",
+}
+
+#: 既定（``--codec`` を書かなかったとき）の入れ物
+DEFAULT_SUFFIX = ".mp4"
+
+
+def output_suffix(options: dict[str, Any] | None) -> str:
+    """このオプションで書き出すファイルの拡張子（既定 ``.mp4``）。"""
+    codec = str((options or {}).get("codec") or "").strip()
+    return CODEC_SUFFIXES.get(codec, DEFAULT_SUFFIX)
+
+
+def render_flags(options: dict[str, Any] | None) -> list[str]:
+    """``remotion_render_options`` を CLI のフラグに並べ替える（未指定は落とす）。"""
+    argv: list[str] = []
+    for key, flag in RENDER_FLAGS.items():
+        value = (options or {}).get(key)
+        if value is None or str(value).strip() == "":
+            continue
+        argv.append(f"{flag}={value}")
+    return argv
+
+
 #: 進捗の中継先（``(0..1 の割合 or None, 出力行)``）
 ProgressCallback = Callable[[float | None, str], Awaitable[None]]
 
@@ -435,6 +479,7 @@ async def render(
     output_path: str | Path,
     *,
     on_progress: ProgressCallback | None = None,
+    options: dict[str, Any] | None = None,
 ) -> Path:
     """``composition`` を ``output_path`` に書き出し、そのパスを返す。
 
@@ -442,6 +487,10 @@ async def render(
     （``fraction`` は読めたときだけ 0..1、読めなければ None）。WS への配信は
     呼び出し元（:mod:`app.jobs`）の仕事にして、この層は ComfyUI 経路と同じく
     「実行して成果物を置く」ことだけをする。
+
+    ``options`` は ``codec`` / ``image_format`` / ``pixel_format`` /
+    ``prores_profile`` の任意指定（:data:`RENDER_FLAGS`）。透過（アルファ付き）で
+    焼きたいときに使う。拡張子は呼び出し元が :func:`output_suffix` で合わせる。
     """
     directory = project_dir()
     entry = resolve_entry(directory)
@@ -472,6 +521,7 @@ async def render(
                 f"--props={props_file}",
                 f"--output={output}",
                 "--overwrite",
+                *render_flags(options),
             ],
             directory,
             on_line=on_line,

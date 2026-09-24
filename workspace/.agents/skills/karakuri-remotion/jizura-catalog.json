@@ -1,0 +1,6748 @@
+{
+  "_note": "remotion/scripts/export-jizura-catalog.mjs が生成。LyricMotion の overrides / style / mood に 書けるキーの一覧。手で編集しないこと。",
+  "generatedFrom": "remotion/vendor/jizura (UPSTREAM.md にコミット SHA)",
+  "counts": {
+    "parts": 707,
+    "styles": 24,
+    "fonts": 23
+  },
+  "groups": {
+    "layout": {
+      "center": {
+        "name": "中央",
+        "pack": "core",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional",
+          "glitch",
+          "pop"
+        ]
+      },
+      "mixed": {
+        "name": "大小ミックス",
+        "pack": "core",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional",
+          "pop"
+        ]
+      },
+      "vcols": {
+        "name": "縦書き",
+        "pack": "core",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional",
+          "glitch"
+        ]
+      },
+      "marquee": {
+        "name": "流れる帯",
+        "pack": "core",
+        "tags": [
+          "glitch",
+          "graphic"
+        ]
+      },
+      "tile": {
+        "name": "敷き詰め",
+        "pack": "core",
+        "tags": [
+          "glitch",
+          "graphic"
+        ]
+      },
+      "scatter": {
+        "name": "散らし",
+        "pack": "core",
+        "tags": [
+          "glitch",
+          "pop"
+        ]
+      },
+      "ring": {
+        "name": "円環",
+        "pack": "core",
+        "tags": [
+          "pop"
+        ]
+      },
+      "wave": {
+        "name": "波の軌跡",
+        "pack": "core",
+        "tags": [
+          "pop"
+        ]
+      },
+      "huge": {
+        "name": "画面突き抜け",
+        "pack": "core",
+        "tags": [
+          "emotional",
+          "glitch",
+          "graphic",
+          "pop"
+        ]
+      },
+      "labels": {
+        "name": "ラベル貼り",
+        "pack": "core",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "condensed": {
+        "name": "縦長圧縮",
+        "pack": "core",
+        "tags": [
+          "emotional",
+          "glitch",
+          "graphic"
+        ]
+      },
+      "gloss": {
+        "name": "注釈",
+        "pack": "core",
+        "tags": [
+          "calm",
+          "editorial"
+        ]
+      },
+      "type": {
+        "name": "タイプ",
+        "pack": "core",
+        "tags": [
+          "calm",
+          "editorial"
+        ]
+      },
+      "diag": {
+        "name": "斜め帯",
+        "pack": "core",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "circle": {
+        "name": "円窓",
+        "pack": "core",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional",
+          "graphic"
+        ]
+      },
+      "stack": {
+        "name": "残像スタック",
+        "pack": "core",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional",
+          "glitch"
+        ]
+      },
+      "pill": {
+        "name": "カプセル",
+        "pack": "core",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "lowerThird": {
+        "name": "下部テロップ",
+        "pack": "layoutsA",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ]
+      },
+      "corners": {
+        "name": "対角配置",
+        "pack": "layoutsA",
+        "tags": [
+          "calm",
+          "editorial",
+          "graphic"
+        ]
+      },
+      "staircase": {
+        "name": "階段",
+        "pack": "layoutsA",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ]
+      },
+      "zigzag": {
+        "name": "ジグザグ",
+        "pack": "layoutsA",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "arcTop": {
+        "name": "虹の弧",
+        "pack": "layoutsA",
+        "tags": [
+          "emotional",
+          "graphic",
+          "pop"
+        ]
+      },
+      "spiral": {
+        "name": "螺旋",
+        "pack": "layoutsA",
+        "tags": [
+          "calm",
+          "emotional",
+          "graphic"
+        ]
+      },
+      "gridCells": {
+        "name": "升目",
+        "pack": "layoutsA",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ]
+      },
+      "dropCap": {
+        "name": "大きな頭文字",
+        "pack": "layoutsA",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ]
+      },
+      "justified": {
+        "name": "版面",
+        "pack": "layoutsA",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ]
+      },
+      "frameBox": {
+        "name": "額縁",
+        "pack": "layoutsA",
+        "tags": [
+          "calm",
+          "editorial",
+          "graphic"
+        ]
+      },
+      "bubble": {
+        "name": "吹き出し",
+        "pack": "layoutsA",
+        "tags": [
+          "emotional",
+          "pop"
+        ]
+      },
+      "subtitleBar": {
+        "name": "字幕帯",
+        "pack": "layoutsA",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ]
+      },
+      "ticker": {
+        "name": "ティッカー",
+        "pack": "layoutsA",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ]
+      },
+      "splitScreen": {
+        "name": "二分割",
+        "pack": "layoutsA",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ]
+      },
+      "mirror": {
+        "name": "鏡像",
+        "pack": "layoutsA",
+        "tags": [
+          "calm",
+          "emotional",
+          "graphic"
+        ]
+      },
+      "sideways": {
+        "name": "縦倒し",
+        "pack": "layoutsA",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ]
+      },
+      "edgeFrame": {
+        "name": "外周",
+        "pack": "layoutsA",
+        "tags": [
+          "editorial",
+          "glitch",
+          "graphic"
+        ]
+      },
+      "perspective": {
+        "name": "奥行き",
+        "pack": "layoutsA",
+        "tags": [
+          "emotional",
+          "glitch",
+          "graphic"
+        ]
+      },
+      "hanko": {
+        "name": "落款",
+        "pack": "layoutsA",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "wa": true
+      },
+      "genkou": {
+        "name": "原稿用紙",
+        "pack": "layoutsA",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "wa": true
+      },
+      "panels": {
+        "name": "コマ割り",
+        "pack": "layoutsA",
+        "tags": [
+          "emotional",
+          "graphic",
+          "pop"
+        ]
+      },
+      "filmstrip": {
+        "name": "フィルム",
+        "pack": "layoutsA",
+        "tags": [
+          "calm",
+          "emotional",
+          "graphic"
+        ]
+      },
+      "quote": {
+        "name": "引用",
+        "pack": "layoutsA",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ]
+      },
+      "ruler": {
+        "name": "寸法線",
+        "pack": "layoutsA",
+        "tags": [
+          "editorial",
+          "glitch",
+          "graphic"
+        ]
+      },
+      "searchBar": {
+        "name": "検索窓",
+        "pack": "layoutsA",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "chat": {
+        "name": "チャット",
+        "pack": "layoutsA",
+        "tags": [
+          "emotional",
+          "pop"
+        ]
+      },
+      "notification": {
+        "name": "通知",
+        "pack": "layoutsA",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ]
+      },
+      "ticket": {
+        "name": "チケット",
+        "pack": "layoutsA",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ]
+      },
+      "rain": {
+        "name": "文字の雨",
+        "pack": "layoutsB",
+        "tags": [
+          "emotional",
+          "glitch",
+          "graphic"
+        ]
+      },
+      "hanging": {
+        "name": "吊り下げ",
+        "pack": "layoutsB",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ]
+      },
+      "orbit": {
+        "name": "周回",
+        "pack": "layoutsB",
+        "tags": [
+          "calm",
+          "emotional",
+          "graphic"
+        ]
+      },
+      "tunnel": {
+        "name": "トンネル",
+        "pack": "layoutsB",
+        "tags": [
+          "emotional",
+          "glitch",
+          "graphic"
+        ]
+      },
+      "wordCloud": {
+        "name": "ワードクラウド",
+        "pack": "layoutsB",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ]
+      },
+      "bounceLine": {
+        "name": "跳ねる",
+        "pack": "layoutsB",
+        "tags": [
+          "pop"
+        ]
+      },
+      "elastic": {
+        "name": "ゴム",
+        "pack": "layoutsB",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "crossBands": {
+        "name": "交差帯",
+        "pack": "layoutsB",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ]
+      },
+      "stickerBomb": {
+        "name": "ステッカー",
+        "pack": "layoutsB",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "neon": {
+        "name": "ネオン",
+        "pack": "layoutsB",
+        "tags": [
+          "calm",
+          "emotional"
+        ]
+      },
+      "keycaps": {
+        "name": "キーキャップ",
+        "pack": "layoutsB",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "bubbles": {
+        "name": "泡",
+        "pack": "layoutsB",
+        "tags": [
+          "calm",
+          "pop"
+        ]
+      },
+      "slotMachine": {
+        "name": "スロット",
+        "pack": "layoutsB",
+        "tags": [
+          "glitch",
+          "pop"
+        ]
+      },
+      "flipBoard": {
+        "name": "パタパタ",
+        "pack": "layoutsB",
+        "tags": [
+          "editorial",
+          "graphic"
+        ]
+      },
+      "credits": {
+        "name": "エンドロール",
+        "pack": "layoutsB",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ]
+      },
+      "zoomRepeat": {
+        "name": "連続拡大",
+        "pack": "layoutsB",
+        "tags": [
+          "emotional",
+          "glitch",
+          "graphic"
+        ]
+      },
+      "splitHalves": {
+        "name": "上下割り",
+        "pack": "layoutsB",
+        "tags": [
+          "editorial",
+          "glitch",
+          "graphic"
+        ]
+      },
+      "columnsBig": {
+        "name": "大小縦組",
+        "pack": "layoutsB",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ]
+      },
+      "circleWords": {
+        "name": "同心円",
+        "pack": "layoutsB",
+        "tags": [
+          "calm",
+          "editorial",
+          "graphic"
+        ]
+      },
+      "dotMatrix": {
+        "name": "ドット表示",
+        "pack": "layoutsB",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ]
+      },
+      "depthStack": {
+        "name": "奥行き重ね",
+        "pack": "layoutsB",
+        "tags": [
+          "emotional",
+          "glitch",
+          "graphic"
+        ]
+      },
+      "typeSpecimen": {
+        "name": "書体見本",
+        "pack": "layoutsB",
+        "tags": [
+          "editorial",
+          "graphic"
+        ]
+      },
+      "kanjiFocus": {
+        "name": "一字強調",
+        "pack": "layoutsB",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ]
+      },
+      "halfVertical": {
+        "name": "縦横混植",
+        "pack": "layoutsB",
+        "tags": [
+          "editorial",
+          "graphic"
+        ]
+      },
+      "curtain": {
+        "name": "幕",
+        "pack": "layoutsB",
+        "tags": [
+          "emotional",
+          "graphic",
+          "pop"
+        ]
+      },
+      "equalizer": {
+        "name": "イコライザー",
+        "pack": "layoutsB",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ]
+      },
+      "tape": {
+        "name": "テープ",
+        "pack": "layoutsB",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ]
+      },
+      "magazine": {
+        "name": "見開き",
+        "pack": "layoutsC",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "headlineDeck": {
+        "name": "見出しとリード",
+        "pack": "layoutsC",
+        "tags": [
+          "calm",
+          "editorial",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "contents": {
+        "name": "目次",
+        "pack": "layoutsC",
+        "tags": [
+          "calm",
+          "editorial"
+        ],
+        "extra": true
+      },
+      "footnote": {
+        "name": "脚注",
+        "pack": "layoutsC",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "proofread": {
+        "name": "校正刷り",
+        "pack": "layoutsC",
+        "tags": [
+          "calm",
+          "editorial",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "numbered": {
+        "name": "番号付き",
+        "pack": "layoutsC",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "poster": {
+        "name": "ポスター",
+        "pack": "layoutsC",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "swissGrid": {
+        "name": "スイスグリッド",
+        "pack": "layoutsC",
+        "tags": [
+          "calm",
+          "editorial",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "dictionary": {
+        "name": "辞書",
+        "pack": "layoutsC",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "ema": {
+        "name": "絵馬",
+        "pack": "layoutsC",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ],
+        "extra": true,
+        "wa": true
+      },
+      "ransom": {
+        "name": "切り抜き文字",
+        "pack": "layoutsC",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "newspaper": {
+        "name": "新聞",
+        "pack": "layoutsC",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "vinyl": {
+        "name": "レコード",
+        "pack": "layoutsC",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "cassette": {
+        "name": "カセット",
+        "pack": "layoutsC",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "bookSpine": {
+        "name": "背表紙",
+        "pack": "layoutsC",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "polaroid": {
+        "name": "ポラロイド",
+        "pack": "layoutsC",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "stampSheet": {
+        "name": "切手シート",
+        "pack": "layoutsC",
+        "tags": [
+          "calm",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "postcard": {
+        "name": "はがき",
+        "pack": "layoutsC",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "extra": true,
+        "wa": true
+      },
+      "letterPaper": {
+        "name": "便箋",
+        "pack": "layoutsC",
+        "tags": [
+          "calm",
+          "emotional"
+        ],
+        "extra": true,
+        "wa": true
+      },
+      "calendar": {
+        "name": "カレンダー",
+        "pack": "layoutsC",
+        "tags": [
+          "calm",
+          "editorial",
+          "pop"
+        ],
+        "extra": true
+      },
+      "chochin": {
+        "name": "提灯",
+        "pack": "layoutsC",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ],
+        "extra": true,
+        "wa": true
+      },
+      "routeMap": {
+        "name": "路線図",
+        "pack": "layoutsC",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "stationSign": {
+        "name": "駅名標",
+        "pack": "layoutsC",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "noren": {
+        "name": "暖簾",
+        "pack": "layoutsC",
+        "tags": [
+          "calm",
+          "emotional",
+          "graphic"
+        ],
+        "extra": true,
+        "wa": true
+      },
+      "tanzaku": {
+        "name": "短冊",
+        "pack": "layoutsC",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ],
+        "extra": true,
+        "wa": true
+      },
+      "omikuji": {
+        "name": "おみくじ",
+        "pack": "layoutsC",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "extra": true,
+        "wa": true
+      },
+      "kakejiku": {
+        "name": "掛け軸",
+        "pack": "layoutsC",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "extra": true,
+        "wa": true
+      },
+      "shoji": {
+        "name": "障子",
+        "pack": "layoutsC",
+        "tags": [
+          "calm",
+          "emotional",
+          "graphic"
+        ],
+        "extra": true,
+        "wa": true
+      },
+      "clapper": {
+        "name": "カチンコ",
+        "pack": "layoutsC",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "warningLabel": {
+        "name": "警告ラベル",
+        "pack": "layoutsC",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "priceTag": {
+        "name": "値札",
+        "pack": "layoutsC",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "nameTag": {
+        "name": "名札",
+        "pack": "layoutsC",
+        "tags": [
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "stickyNotes": {
+        "name": "付箋",
+        "pack": "layoutsC",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "karuta": {
+        "name": "かるた札",
+        "pack": "layoutsC",
+        "tags": [
+          "editorial",
+          "emotional",
+          "pop"
+        ],
+        "extra": true,
+        "wa": true
+      },
+      "cube": {
+        "name": "立方体",
+        "pack": "layoutsD",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "cylinder": {
+        "name": "円筒",
+        "pack": "layoutsD",
+        "tags": [
+          "calm",
+          "emotional",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "flipCards": {
+        "name": "カードめくり",
+        "pack": "layoutsD",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "accordion": {
+        "name": "蛇腹",
+        "pack": "layoutsD",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "flag": {
+        "name": "はためく旗",
+        "pack": "layoutsD",
+        "tags": [
+          "emotional",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "ribbon": {
+        "name": "リボン",
+        "pack": "layoutsD",
+        "tags": [
+          "emotional",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "pendulum": {
+        "name": "振り子",
+        "pack": "layoutsD",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "pile": {
+        "name": "文字の山",
+        "pack": "layoutsD",
+        "tags": [
+          "emotional",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "blocks": {
+        "name": "積み木",
+        "pack": "layoutsD",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "balloons": {
+        "name": "文字風船",
+        "pack": "layoutsD",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "magnets": {
+        "name": "マグネット",
+        "pack": "layoutsD",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "tiles": {
+        "name": "文字タイル",
+        "pack": "layoutsD",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "bulbs": {
+        "name": "電球サイン",
+        "pack": "layoutsD",
+        "tags": [
+          "emotional",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "ledScroll": {
+        "name": "電光掲示板",
+        "pack": "layoutsD",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "billboard": {
+        "name": "看板",
+        "pack": "layoutsD",
+        "tags": [
+          "emotional",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "crowdBubbles": {
+        "name": "吹き出しの群れ",
+        "pack": "layoutsD",
+        "tags": [
+          "editorial",
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "crossword": {
+        "name": "クロスワード",
+        "pack": "layoutsD",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "wordSearch": {
+        "name": "文字探し",
+        "pack": "layoutsD",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "puzzle": {
+        "name": "パズル",
+        "pack": "layoutsD",
+        "tags": [
+          "emotional",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "shadowPlay": {
+        "name": "影絵",
+        "pack": "layoutsD",
+        "tags": [
+          "calm",
+          "emotional",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "kaleido": {
+        "name": "万華鏡",
+        "pack": "layoutsD",
+        "tags": [
+          "emotional",
+          "glitch",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "dominoes": {
+        "name": "ドミノ",
+        "pack": "layoutsD",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "burst": {
+        "name": "ドカン",
+        "pack": "layoutsD",
+        "tags": [
+          "emotional",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "fisheye": {
+        "name": "魚眼レンズ",
+        "pack": "layoutsD",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "wall": {
+        "name": "壁面パース",
+        "pack": "layoutsD",
+        "tags": [
+          "editorial",
+          "emotional",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "origami": {
+        "name": "折り紙",
+        "pack": "layoutsD",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ],
+        "extra": true,
+        "wa": true
+      },
+      "zipper": {
+        "name": "ジッパー",
+        "pack": "layoutsD",
+        "tags": [
+          "emotional",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "sliceStack": {
+        "name": "スライス積層",
+        "pack": "layoutsD",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "glitchGrid": {
+        "name": "グリッチ格子",
+        "pack": "layoutsD",
+        "tags": [
+          "glitch",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "mosaicTiles": {
+        "name": "タイル画",
+        "pack": "layoutsD",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "maskReveal": {
+        "name": "文字窓",
+        "pack": "layoutsD",
+        "tags": [
+          "emotional",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "contour": {
+        "name": "等高線",
+        "pack": "layoutsD",
+        "tags": [
+          "calm",
+          "emotional",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "halftoneBig": {
+        "name": "網点巨大文字",
+        "pack": "layoutsD",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "stencil": {
+        "name": "ステンシル",
+        "pack": "layoutsD",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      }
+    },
+    "enter": {
+      "cut": {
+        "name": "カット",
+        "pack": "core"
+      },
+      "assemble": {
+        "name": "分解→集合",
+        "pack": "core",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional",
+          "glitch"
+        ]
+      },
+      "slice": {
+        "name": "スライス",
+        "pack": "core",
+        "tags": [
+          "emotional",
+          "glitch",
+          "graphic"
+        ]
+      },
+      "type": {
+        "name": "タイプ",
+        "pack": "core",
+        "tags": [
+          "calm",
+          "editorial"
+        ]
+      },
+      "pop": {
+        "name": "ポップ",
+        "pack": "core",
+        "tags": [
+          "pop"
+        ]
+      },
+      "drop": {
+        "name": "落下",
+        "pack": "core",
+        "tags": [
+          "pop"
+        ]
+      },
+      "stretch": {
+        "name": "伸縮",
+        "pack": "core",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ]
+      },
+      "wipe": {
+        "name": "ワイプ",
+        "pack": "core",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional",
+          "graphic"
+        ]
+      },
+      "blur": {
+        "name": "ブラー",
+        "pack": "core",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ]
+      },
+      "spin": {
+        "name": "回転",
+        "pack": "core",
+        "tags": [
+          "pop"
+        ]
+      },
+      "flicker": {
+        "name": "点滅",
+        "pack": "core",
+        "tags": [
+          "glitch"
+        ]
+      },
+      "scramble": {
+        "name": "スクランブル",
+        "pack": "core",
+        "tags": [
+          "glitch"
+        ]
+      },
+      "zoom": {
+        "name": "ズーム",
+        "pack": "core",
+        "tags": [
+          "emotional",
+          "glitch",
+          "graphic",
+          "pop"
+        ]
+      },
+      "riseMask": {
+        "name": "下から出現",
+        "pack": "enter",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional",
+          "graphic"
+        ]
+      },
+      "dropMask": {
+        "name": "上から出現",
+        "pack": "enter",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ]
+      },
+      "slideL": {
+        "name": "左からスライド",
+        "pack": "enter",
+        "tags": [
+          "calm",
+          "editorial",
+          "pop"
+        ]
+      },
+      "slideR": {
+        "name": "右からスライド",
+        "pack": "enter",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ]
+      },
+      "slideWhole": {
+        "name": "全体スライド",
+        "pack": "enter",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "flipX": {
+        "name": "縦軸フリップ",
+        "pack": "enter",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ]
+      },
+      "flipY": {
+        "name": "横軸フリップ",
+        "pack": "enter",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "domino": {
+        "name": "ドミノ",
+        "pack": "enter",
+        "tags": [
+          "pop"
+        ]
+      },
+      "fold": {
+        "name": "折り開き",
+        "pack": "enter",
+        "tags": [
+          "editorial",
+          "graphic"
+        ]
+      },
+      "unroll": {
+        "name": "巻き開き",
+        "pack": "enter",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ]
+      },
+      "strokeDraw": {
+        "name": "線画から塗り",
+        "pack": "enter",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ]
+      },
+      "outlineFill": {
+        "name": "輪郭→塗り",
+        "pack": "enter",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ]
+      },
+      "splitJoin": {
+        "name": "上下合体",
+        "pack": "enter",
+        "tags": [
+          "editorial",
+          "graphic"
+        ]
+      },
+      "vSlice": {
+        "name": "縦スライス",
+        "pack": "enter",
+        "tags": [
+          "glitch",
+          "graphic"
+        ]
+      },
+      "shutter": {
+        "name": "シャッター",
+        "pack": "enter",
+        "tags": [
+          "editorial",
+          "graphic"
+        ]
+      },
+      "iris": {
+        "name": "アイリス",
+        "pack": "enter",
+        "tags": [
+          "emotional",
+          "graphic",
+          "pop"
+        ]
+      },
+      "diagWipe": {
+        "name": "斜めワイプ",
+        "pack": "enter",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ]
+      },
+      "blinds": {
+        "name": "ブラインド",
+        "pack": "enter",
+        "tags": [
+          "editorial",
+          "graphic"
+        ]
+      },
+      "checker": {
+        "name": "市松",
+        "pack": "enter",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ]
+      },
+      "randomOrder": {
+        "name": "ランダム順",
+        "pack": "enter",
+        "tags": [
+          "glitch",
+          "pop"
+        ]
+      },
+      "bounceBig": {
+        "name": "大ジャンプ",
+        "pack": "enter",
+        "tags": [
+          "pop"
+        ]
+      },
+      "squashDrop": {
+        "name": "潰れて着地",
+        "pack": "enter",
+        "tags": [
+          "pop"
+        ]
+      },
+      "rubber": {
+        "name": "ゴム伸び",
+        "pack": "enter",
+        "tags": [
+          "pop"
+        ]
+      },
+      "glitchIn": {
+        "name": "グリッチ出現",
+        "pack": "enter",
+        "tags": [
+          "glitch"
+        ]
+      },
+      "echoIn": {
+        "name": "残像集束",
+        "pack": "enter",
+        "tags": [
+          "emotional",
+          "graphic",
+          "pop"
+        ]
+      },
+      "whip": {
+        "name": "ホイップ",
+        "pack": "enter",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "skewIn": {
+        "name": "スキュー",
+        "pack": "enter",
+        "tags": [
+          "editorial",
+          "graphic"
+        ]
+      },
+      "trackIn": {
+        "name": "字間収束",
+        "pack": "enter",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ]
+      },
+      "trackOut": {
+        "name": "字間拡張",
+        "pack": "enter",
+        "tags": [
+          "calm",
+          "editorial",
+          "pop"
+        ]
+      },
+      "blurStagger": {
+        "name": "ブラー段差",
+        "pack": "enter",
+        "tags": [
+          "calm",
+          "emotional"
+        ]
+      },
+      "fadeStagger": {
+        "name": "字ごとフェード",
+        "pack": "enter",
+        "tags": [
+          "calm",
+          "emotional"
+        ]
+      },
+      "waveIn": {
+        "name": "波立ち",
+        "pack": "enter",
+        "tags": [
+          "emotional",
+          "pop"
+        ]
+      },
+      "spiralIn": {
+        "name": "螺旋集合",
+        "pack": "enter",
+        "tags": [
+          "emotional",
+          "pop"
+        ]
+      },
+      "zoomOut": {
+        "name": "巨大→等倍",
+        "pack": "enter",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ]
+      },
+      "resolve": {
+        "name": "解読",
+        "pack": "enter",
+        "tags": [
+          "editorial",
+          "glitch"
+        ]
+      },
+      "magnet": {
+        "name": "磁石",
+        "pack": "enter",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "inkBleed": {
+        "name": "にじみ",
+        "pack": "enter",
+        "tags": [
+          "calm",
+          "emotional"
+        ]
+      },
+      "neonOn": {
+        "name": "ネオン点灯",
+        "pack": "enter",
+        "tags": [
+          "emotional",
+          "glitch",
+          "pop"
+        ]
+      },
+      "cursorSweep": {
+        "name": "カーソル掃引",
+        "pack": "enter",
+        "tags": [
+          "editorial",
+          "graphic"
+        ]
+      },
+      "stamp": {
+        "name": "スタンプ",
+        "pack": "enter",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "springIn": {
+        "name": "バネ",
+        "pack": "enterB",
+        "tags": [
+          "pop"
+        ],
+        "extra": true
+      },
+      "pendulum": {
+        "name": "振り子",
+        "pack": "enterB",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "rollIn": {
+        "name": "転がり",
+        "pack": "enterB",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "slingshot": {
+        "name": "パチンコ",
+        "pack": "enterB",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "rockSettle": {
+        "name": "ぐらぐら着地",
+        "pack": "enterB",
+        "tags": [
+          "pop"
+        ],
+        "extra": true
+      },
+      "bounceBall": {
+        "name": "バウンドボール",
+        "pack": "enterB",
+        "tags": [
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "snapRail": {
+        "name": "スナップ整列",
+        "pack": "enterB",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "fanOpen": {
+        "name": "扇開き",
+        "pack": "enterB",
+        "tags": [
+          "calm",
+          "emotional",
+          "graphic"
+        ],
+        "extra": true,
+        "wa": true
+      },
+      "cylinder": {
+        "name": "円筒回転",
+        "pack": "enterB",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "shuffle": {
+        "name": "シャッフル",
+        "pack": "enterB",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "stopMotion": {
+        "name": "コマ撮り",
+        "pack": "enterB",
+        "tags": [
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "ripple": {
+        "name": "波紋",
+        "pack": "enterB",
+        "tags": [
+          "calm",
+          "emotional",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "zipper": {
+        "name": "ジッパー",
+        "pack": "enterB",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "zoomAlt": {
+        "name": "交互ズーム",
+        "pack": "enterB",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "tiltUp": {
+        "name": "起立",
+        "pack": "enterB",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "stickerPeel": {
+        "name": "シール貼り",
+        "pack": "enterB",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "crumple": {
+        "name": "くしゃ戻り",
+        "pack": "enterB",
+        "tags": [
+          "emotional",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "noteUnfold": {
+        "name": "手紙開き",
+        "pack": "enterB",
+        "tags": [
+          "calm",
+          "emotional",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "tornJoin": {
+        "name": "破れ合わせ",
+        "pack": "enterB",
+        "tags": [
+          "emotional",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "splitFlap": {
+        "name": "パタパタ",
+        "pack": "enterB",
+        "tags": [
+          "editorial",
+          "glitch",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "overexpose": {
+        "name": "露出オーバー",
+        "pack": "enterB",
+        "tags": [
+          "emotional",
+          "glitch",
+          "pop"
+        ],
+        "extra": true
+      },
+      "glint": {
+        "name": "グリント",
+        "pack": "enterB",
+        "tags": [
+          "editorial",
+          "emotional",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "loupe": {
+        "name": "ルーペ",
+        "pack": "enterB",
+        "tags": [
+          "calm",
+          "editorial",
+          "pop"
+        ],
+        "extra": true
+      },
+      "filmFeed": {
+        "name": "フィルム送り",
+        "pack": "enterB",
+        "tags": [
+          "editorial",
+          "emotional",
+          "glitch"
+        ],
+        "extra": true
+      },
+      "backlight": {
+        "name": "逆光",
+        "pack": "enterB",
+        "tags": [
+          "calm",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "lightLeak": {
+        "name": "光漏れ",
+        "pack": "enterB",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "heatHaze": {
+        "name": "陽炎",
+        "pack": "enterB",
+        "tags": [
+          "calm",
+          "emotional",
+          "glitch"
+        ],
+        "extra": true
+      },
+      "crtOn": {
+        "name": "CRT電源",
+        "pack": "enterB",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "interlace": {
+        "name": "インターレース",
+        "pack": "enterB",
+        "tags": [
+          "editorial",
+          "glitch",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "loadingBar": {
+        "name": "ローディング",
+        "pack": "enterB",
+        "tags": [
+          "editorial",
+          "glitch",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "dither": {
+        "name": "ディザ",
+        "pack": "enterB",
+        "tags": [
+          "glitch",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "odometer": {
+        "name": "ドラム回転",
+        "pack": "enterB",
+        "tags": [
+          "editorial",
+          "glitch",
+          "pop"
+        ],
+        "extra": true
+      },
+      "matrixRain": {
+        "name": "データ降下",
+        "pack": "enterB",
+        "tags": [
+          "glitch",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "hatchFill": {
+        "name": "ハッチ→ベタ",
+        "pack": "enterB",
+        "tags": [
+          "editorial",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "brushReveal": {
+        "name": "筆払い",
+        "pack": "enterB",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "extra": true,
+        "wa": true
+      },
+      "inkDrop": {
+        "name": "インク滴",
+        "pack": "enterB",
+        "tags": [
+          "calm",
+          "emotional",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "quarters": {
+        "name": "四方集結",
+        "pack": "enterB",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "invertBox": {
+        "name": "反転抜け",
+        "pack": "enterB",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "printRegister": {
+        "name": "版ズレ",
+        "pack": "enterB",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "echoCount": {
+        "name": "カウントイン",
+        "pack": "enterB",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "liquidFill": {
+        "name": "水位上昇",
+        "pack": "enterB",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "windBlown": {
+        "name": "風に乗って",
+        "pack": "enterB",
+        "tags": [
+          "calm",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "strokeOrder": {
+        "name": "一画ずつ",
+        "pack": "enterB",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "clockWipe": {
+        "name": "時計回り",
+        "pack": "enterB",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "shadowFirst": {
+        "name": "影落とし",
+        "pack": "enterB",
+        "tags": [
+          "emotional",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "bubbles": {
+        "name": "泡",
+        "pack": "enterB",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "tokoroten": {
+        "name": "ところてん",
+        "pack": "enterB",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      }
+    },
+    "hold": {
+      "still": {
+        "name": "静止",
+        "pack": "core",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional",
+          "graphic"
+        ]
+      },
+      "jitter": {
+        "name": "ジッター",
+        "pack": "core",
+        "tags": [
+          "glitch",
+          "pop"
+        ]
+      },
+      "drift": {
+        "name": "ドリフト",
+        "pack": "core",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ]
+      },
+      "breathe": {
+        "name": "呼吸",
+        "pack": "core",
+        "tags": [
+          "calm",
+          "emotional"
+        ]
+      },
+      "wave": {
+        "name": "ウェーブ",
+        "pack": "core",
+        "tags": [
+          "pop"
+        ]
+      },
+      "glitchtick": {
+        "name": "グリッチ",
+        "pack": "core",
+        "tags": [
+          "glitch"
+        ]
+      },
+      "float": {
+        "name": "ふわふわ",
+        "pack": "exitHold",
+        "tags": [
+          "calm",
+          "emotional"
+        ]
+      },
+      "sway": {
+        "name": "ゆらぎ",
+        "pack": "exitHold",
+        "tags": [
+          "calm",
+          "emotional"
+        ]
+      },
+      "pulse": {
+        "name": "脈動",
+        "pack": "exitHold",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "shimmer": {
+        "name": "きらめき",
+        "pack": "exitHold",
+        "tags": [
+          "calm",
+          "emotional"
+        ]
+      },
+      "colorRun": {
+        "name": "色が走る",
+        "pack": "exitHold",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "rotateSlow": {
+        "name": "ゆっくり回転",
+        "pack": "exitHold",
+        "tags": [
+          "calm",
+          "editorial"
+        ]
+      },
+      "trackBreathe": {
+        "name": "字間の呼吸",
+        "pack": "exitHold",
+        "tags": [
+          "calm",
+          "editorial"
+        ]
+      },
+      "skewWobble": {
+        "name": "斜め揺れ",
+        "pack": "exitHold",
+        "tags": [
+          "glitch",
+          "pop"
+        ]
+      },
+      "beatHop": {
+        "name": "拍で跳ねる",
+        "pack": "exitHold",
+        "tags": [
+          "pop"
+        ]
+      },
+      "hWave": {
+        "name": "横波",
+        "pack": "exitHold",
+        "tags": [
+          "emotional",
+          "pop"
+        ]
+      },
+      "heartbeat": {
+        "name": "鼓動",
+        "pack": "exitHold",
+        "tags": [
+          "emotional",
+          "pop"
+        ]
+      },
+      "orbitSmall": {
+        "name": "小さな円運動",
+        "pack": "exitHold",
+        "tags": [
+          "calm",
+          "pop"
+        ]
+      },
+      "jelly": {
+        "name": "ゼリー",
+        "pack": "exitHold",
+        "tags": [
+          "pop"
+        ]
+      },
+      "scanBand": {
+        "name": "走査帯",
+        "pack": "exitHold",
+        "tags": [
+          "glitch",
+          "graphic"
+        ]
+      },
+      "noiseDrift": {
+        "name": "ノイズ漂流",
+        "pack": "exitHold",
+        "tags": [
+          "calm",
+          "emotional"
+        ]
+      },
+      "tilt": {
+        "name": "シーソー",
+        "pack": "exitHold",
+        "tags": [
+          "calm",
+          "editorial"
+        ]
+      },
+      "zoomSlow": {
+        "name": "じわ寄り",
+        "pack": "exitHold",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ]
+      },
+      "stretchPulse": {
+        "name": "横伸び拍",
+        "pack": "exitHold",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "glitchJump": {
+        "name": "時々ずれる",
+        "pack": "exitHold",
+        "tags": [
+          "glitch"
+        ]
+      },
+      "echoTrail": {
+        "name": "残像を引く",
+        "pack": "exitHold",
+        "tags": [
+          "emotional",
+          "glitch"
+        ]
+      },
+      "glowFlicker": {
+        "name": "灯火のゆらぎ",
+        "pack": "exitB",
+        "tags": [
+          "calm",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "windGust": {
+        "name": "突風",
+        "pack": "exitB",
+        "tags": [
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "dangle": {
+        "name": "ぶら下がり",
+        "pack": "exitB",
+        "tags": [
+          "calm",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "eqBounce": {
+        "name": "音圧で伸びる",
+        "pack": "exitB",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "flashBox": {
+        "name": "拍で反転",
+        "pack": "exitB",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "glintSweep": {
+        "name": "光沢",
+        "pack": "exitB",
+        "tags": [
+          "calm",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "flipSwap": {
+        "name": "時々裏返る",
+        "pack": "exitB",
+        "tags": [
+          "glitch",
+          "pop"
+        ],
+        "extra": true
+      },
+      "shadowSway": {
+        "name": "影が揺れる",
+        "pack": "exitB",
+        "tags": [
+          "calm",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "magnetJiggle": {
+        "name": "磁力",
+        "pack": "exitB",
+        "tags": [
+          "glitch",
+          "pop"
+        ],
+        "extra": true
+      },
+      "typeRattle": {
+        "name": "タイプの震え",
+        "pack": "exitB",
+        "tags": [
+          "editorial",
+          "glitch"
+        ],
+        "extra": true
+      },
+      "focusRack": {
+        "name": "ピント送り",
+        "pack": "exitB",
+        "tags": [
+          "calm",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "pluckString": {
+        "name": "弦の振動",
+        "pack": "exitB",
+        "tags": [
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      }
+    },
+    "exit": {
+      "cut": {
+        "name": "カット",
+        "pack": "core"
+      },
+      "explode": {
+        "name": "爆散",
+        "pack": "core",
+        "tags": [
+          "emotional",
+          "glitch"
+        ]
+      },
+      "fall": {
+        "name": "崩落",
+        "pack": "core",
+        "tags": [
+          "emotional",
+          "glitch"
+        ]
+      },
+      "drift": {
+        "name": "霧散",
+        "pack": "core",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ]
+      },
+      "slice": {
+        "name": "スライス退場",
+        "pack": "core",
+        "tags": [
+          "glitch",
+          "graphic"
+        ]
+      },
+      "wipe": {
+        "name": "ワイプ退場",
+        "pack": "core",
+        "tags": [
+          "calm",
+          "editorial",
+          "graphic"
+        ]
+      },
+      "shrink": {
+        "name": "収縮",
+        "pack": "core",
+        "tags": [
+          "calm",
+          "pop"
+        ]
+      },
+      "blur": {
+        "name": "ブラー退場",
+        "pack": "core",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional",
+          "pop"
+        ]
+      },
+      "stretch": {
+        "name": "伸縮退場",
+        "pack": "core",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "scatter": {
+        "name": "飛散",
+        "pack": "core",
+        "tags": [
+          "pop"
+        ]
+      },
+      "glitch": {
+        "name": "グリッチ退場",
+        "pack": "core",
+        "tags": [
+          "glitch"
+        ]
+      },
+      "sinkMask": {
+        "name": "沈む",
+        "pack": "exitHold",
+        "tags": [
+          "calm",
+          "editorial",
+          "graphic"
+        ]
+      },
+      "riseOut": {
+        "name": "上へ抜ける",
+        "pack": "exitHold",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ]
+      },
+      "slideOutL": {
+        "name": "左へ流れる",
+        "pack": "exitHold",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "slideOutR": {
+        "name": "右へ流れる",
+        "pack": "exitHold",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "flipOutX": {
+        "name": "扉が閉まる",
+        "pack": "exitHold",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ]
+      },
+      "flipOutY": {
+        "name": "パタン倒れ",
+        "pack": "exitHold",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "foldOut": {
+        "name": "折り畳み",
+        "pack": "exitHold",
+        "tags": [
+          "editorial",
+          "graphic"
+        ]
+      },
+      "squash": {
+        "name": "潰れる",
+        "pack": "exitHold",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ]
+      },
+      "trackOutWide": {
+        "name": "字間が開く",
+        "pack": "exitHold",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ]
+      },
+      "collapse": {
+        "name": "吸い込み",
+        "pack": "exitHold",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "zoomThrough": {
+        "name": "手前へ抜ける",
+        "pack": "exitHold",
+        "tags": [
+          "emotional",
+          "pop"
+        ]
+      },
+      "zoomFar": {
+        "name": "奥へ遠ざかる",
+        "pack": "exitHold",
+        "tags": [
+          "calm",
+          "emotional"
+        ]
+      },
+      "spinOut": {
+        "name": "回って消える",
+        "pack": "exitHold",
+        "tags": [
+          "pop"
+        ]
+      },
+      "twist": {
+        "name": "ねじれ",
+        "pack": "exitHold",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "waveOut": {
+        "name": "波で崩れる",
+        "pack": "exitHold",
+        "tags": [
+          "emotional",
+          "pop"
+        ]
+      },
+      "blurOutStagger": {
+        "name": "字ごとボケ",
+        "pack": "exitHold",
+        "tags": [
+          "calm",
+          "emotional"
+        ]
+      },
+      "undraw": {
+        "name": "線に戻る",
+        "pack": "exitHold",
+        "tags": [
+          "calm",
+          "editorial",
+          "graphic"
+        ]
+      },
+      "outlineOut": {
+        "name": "塗りが抜ける",
+        "pack": "exitHold",
+        "tags": [
+          "emotional",
+          "graphic"
+        ]
+      },
+      "irisClose": {
+        "name": "アイリス",
+        "pack": "exitHold",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ]
+      },
+      "diagWipeOut": {
+        "name": "斜めワイプ",
+        "pack": "exitHold",
+        "tags": [
+          "editorial",
+          "graphic"
+        ]
+      },
+      "blindsClose": {
+        "name": "ブラインド",
+        "pack": "exitHold",
+        "tags": [
+          "editorial",
+          "graphic"
+        ]
+      },
+      "checkerOut": {
+        "name": "市松",
+        "pack": "exitHold",
+        "tags": [
+          "glitch",
+          "graphic"
+        ]
+      },
+      "splitApart": {
+        "name": "上下に割れる",
+        "pack": "exitHold",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "vSliceDrop": {
+        "name": "縦スライス落下",
+        "pack": "exitHold",
+        "tags": [
+          "glitch",
+          "graphic"
+        ]
+      },
+      "melt": {
+        "name": "溶ける",
+        "pack": "exitHold",
+        "tags": [
+          "emotional",
+          "glitch"
+        ]
+      },
+      "dissolve": {
+        "name": "ほろほろ",
+        "pack": "exitHold",
+        "tags": [
+          "calm",
+          "emotional"
+        ]
+      },
+      "backspace": {
+        "name": "バックスペース",
+        "pack": "exitHold",
+        "tags": [
+          "editorial",
+          "glitch"
+        ]
+      },
+      "scrambleOut": {
+        "name": "記号化",
+        "pack": "exitHold",
+        "tags": [
+          "glitch"
+        ]
+      },
+      "glitchDissolve": {
+        "name": "ブロック化",
+        "pack": "exitHold",
+        "tags": [
+          "glitch"
+        ]
+      },
+      "echoOut": {
+        "name": "残響",
+        "pack": "exitHold",
+        "tags": [
+          "calm",
+          "emotional"
+        ]
+      },
+      "whipOut": {
+        "name": "ホイップ",
+        "pack": "exitHold",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "gravity": {
+        "name": "重力落下",
+        "pack": "exitHold",
+        "tags": [
+          "emotional",
+          "pop"
+        ]
+      },
+      "popOut": {
+        "name": "弾ける",
+        "pack": "exitHold",
+        "tags": [
+          "pop"
+        ]
+      },
+      "burn": {
+        "name": "焼失",
+        "pack": "exitHold",
+        "tags": [
+          "emotional",
+          "glitch"
+        ]
+      },
+      "sweepCover": {
+        "name": "バーで隠す",
+        "pack": "exitHold",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ]
+      },
+      "shatterLite": {
+        "name": "四分割飛散",
+        "pack": "exitHold",
+        "tags": [
+          "glitch",
+          "pop"
+        ]
+      },
+      "peelOff": {
+        "name": "ステッカー剥がし",
+        "pack": "exitB",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "crumpleOut": {
+        "name": "丸めて捨てる",
+        "pack": "exitB",
+        "tags": [
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "tearOut": {
+        "name": "破り捨て",
+        "pack": "exitB",
+        "tags": [
+          "emotional",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "scorchOut": {
+        "name": "焦げて消える",
+        "pack": "exitB",
+        "tags": [
+          "emotional",
+          "glitch"
+        ],
+        "extra": true
+      },
+      "overexposeOut": {
+        "name": "白飛び",
+        "pack": "exitB",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "scanOut": {
+        "name": "走査線消去",
+        "pack": "exitB",
+        "tags": [
+          "glitch",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "stripesOut": {
+        "name": "ストライプ消去",
+        "pack": "exitB",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "halftoneOut": {
+        "name": "網点に消える",
+        "pack": "exitB",
+        "tags": [
+          "calm",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "eraserOut": {
+        "name": "黒板消し",
+        "pack": "exitB",
+        "tags": [
+          "calm",
+          "editorial"
+        ],
+        "extra": true
+      },
+      "vacuumOut": {
+        "name": "一点に吸われる",
+        "pack": "exitB",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "sandOut": {
+        "name": "砂になって飛ぶ",
+        "pack": "exitB",
+        "tags": [
+          "calm",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "shredOut": {
+        "name": "シュレッダー",
+        "pack": "exitB",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "dominoOut": {
+        "name": "ドミノ倒し",
+        "pack": "exitB",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "hingeOut": {
+        "name": "片留めが外れる",
+        "pack": "exitB",
+        "tags": [
+          "editorial",
+          "pop"
+        ],
+        "extra": true
+      },
+      "rocketOff": {
+        "name": "打ち上げ",
+        "pack": "exitB",
+        "tags": [
+          "pop"
+        ],
+        "extra": true
+      },
+      "bounceOff": {
+        "name": "弾んで去る",
+        "pack": "exitB",
+        "tags": [
+          "pop"
+        ],
+        "extra": true
+      },
+      "balloonOff": {
+        "name": "風船で飛ぶ",
+        "pack": "exitB",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "deflateOut": {
+        "name": "しぼんで飛ぶ",
+        "pack": "exitB",
+        "tags": [
+          "pop"
+        ],
+        "extra": true
+      },
+      "hazeOut": {
+        "name": "陽炎に消える",
+        "pack": "exitB",
+        "tags": [
+          "calm",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "glassBreak": {
+        "name": "ガラス割れ",
+        "pack": "exitB",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "zipOut": {
+        "name": "ジッパー",
+        "pack": "exitB",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "clapShut": {
+        "name": "中央で閉じる",
+        "pack": "exitB",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "lampOff": {
+        "name": "消灯",
+        "pack": "exitB",
+        "tags": [
+          "emotional",
+          "glitch"
+        ],
+        "extra": true
+      },
+      "slotOut": {
+        "name": "スロット回転",
+        "pack": "exitB",
+        "tags": [
+          "glitch",
+          "pop"
+        ],
+        "extra": true
+      },
+      "clockOut": {
+        "name": "時計ワイプ",
+        "pack": "exitB",
+        "tags": [
+          "editorial",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "matrixOut": {
+        "name": "デジタル雨",
+        "pack": "exitB",
+        "tags": [
+          "glitch"
+        ],
+        "extra": true
+      },
+      "tornadoOut": {
+        "name": "竜巻",
+        "pack": "exitB",
+        "tags": [
+          "pop"
+        ],
+        "extra": true
+      },
+      "rollUpOut": {
+        "name": "巻き取る",
+        "pack": "exitB",
+        "tags": [
+          "editorial",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "snakeOut": {
+        "name": "列になって去る",
+        "pack": "exitB",
+        "tags": [
+          "calm",
+          "pop"
+        ],
+        "extra": true
+      },
+      "flutterOut": {
+        "name": "ひらひら落ちる",
+        "pack": "exitB",
+        "tags": [
+          "calm",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "rollOff": {
+        "name": "転がって去る",
+        "pack": "exitB",
+        "tags": [
+          "pop"
+        ],
+        "extra": true
+      },
+      "fanClose": {
+        "name": "扇を閉じる",
+        "pack": "exitB",
+        "tags": [
+          "editorial",
+          "emotional",
+          "graphic"
+        ],
+        "extra": true,
+        "wa": true
+      },
+      "rgbSplitOut": {
+        "name": "色分解",
+        "pack": "exitB",
+        "tags": [
+          "glitch",
+          "pop"
+        ],
+        "extra": true
+      },
+      "shockOut": {
+        "name": "衝撃波",
+        "pack": "exitB",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "floodOut": {
+        "name": "水没",
+        "pack": "exitB",
+        "tags": [
+          "calm",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "slashOut": {
+        "name": "一刀両断",
+        "pack": "exitB",
+        "tags": [
+          "emotional",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "mosaicOut": {
+        "name": "モザイク",
+        "pack": "exitB",
+        "tags": [
+          "glitch",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "scribbleOut": {
+        "name": "ぐしゃぐしゃ消し",
+        "pack": "exitB",
+        "tags": [
+          "editorial",
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "candleOut": {
+        "name": "吹き消す",
+        "pack": "exitB",
+        "tags": [
+          "calm",
+          "emotional"
+        ],
+        "extra": true
+      }
+    },
+    "decor": {
+      "brackets": {
+        "name": "枠マーク",
+        "pack": "core",
+        "tags": [
+          "editorial",
+          "graphic"
+        ]
+      },
+      "rings": {
+        "name": "座標の円",
+        "pack": "core",
+        "tags": [
+          "emotional",
+          "graphic"
+        ]
+      },
+      "dots": {
+        "name": "ドットの輪",
+        "pack": "core",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "arrows": {
+        "name": "矢印",
+        "pack": "core",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "slash": {
+        "name": "スラッシュ",
+        "pack": "core",
+        "tags": [
+          "glitch",
+          "graphic"
+        ]
+      },
+      "sparks": {
+        "name": "スパーク",
+        "pack": "core",
+        "tags": [
+          "pop"
+        ]
+      },
+      "leaders": {
+        "name": "引き出し線",
+        "pack": "core",
+        "tags": [
+          "calm",
+          "editorial"
+        ]
+      },
+      "waveform": {
+        "name": "波形",
+        "pack": "core",
+        "tags": [
+          "calm",
+          "emotional"
+        ]
+      },
+      "barcode": {
+        "name": "バーコード",
+        "pack": "core",
+        "tags": [
+          "glitch",
+          "graphic"
+        ]
+      },
+      "grid": {
+        "name": "グリッド",
+        "pack": "core",
+        "tags": [
+          "editorial",
+          "graphic"
+        ]
+      },
+      "stripes": {
+        "name": "ストライプ",
+        "pack": "core",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "blobs": {
+        "name": "インクの染み",
+        "pack": "core",
+        "tags": [
+          "emotional",
+          "pop"
+        ]
+      },
+      "bars": {
+        "name": "荒い帯",
+        "pack": "core",
+        "tags": [
+          "glitch",
+          "graphic"
+        ]
+      },
+      "shapes": {
+        "name": "図形",
+        "pack": "core",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "counter": {
+        "name": "大きな数字",
+        "pack": "core",
+        "tags": [
+          "editorial",
+          "graphic"
+        ]
+      },
+      "crosshair": {
+        "name": "照準線",
+        "pack": "decor",
+        "tags": [
+          "editorial",
+          "glitch",
+          "graphic"
+        ]
+      },
+      "cropMarks": {
+        "name": "トンボ",
+        "pack": "decor",
+        "tags": [
+          "calm",
+          "editorial",
+          "graphic"
+        ]
+      },
+      "reticle": {
+        "name": "ロックオン",
+        "pack": "decor",
+        "tags": [
+          "glitch",
+          "graphic"
+        ]
+      },
+      "radar": {
+        "name": "レーダー",
+        "pack": "decor",
+        "tags": [
+          "glitch",
+          "graphic"
+        ]
+      },
+      "progressRing": {
+        "name": "進行リング",
+        "pack": "decor",
+        "tags": [
+          "calm",
+          "editorial",
+          "graphic"
+        ]
+      },
+      "timecodeBar": {
+        "name": "タイムコード",
+        "pack": "decor",
+        "tags": [
+          "editorial",
+          "glitch",
+          "graphic"
+        ]
+      },
+      "rulerEdge": {
+        "name": "端の定規",
+        "pack": "decor",
+        "tags": [
+          "calm",
+          "editorial",
+          "graphic"
+        ]
+      },
+      "dimension": {
+        "name": "寸法線",
+        "pack": "decor",
+        "tags": [
+          "editorial",
+          "graphic"
+        ]
+      },
+      "indexNum": {
+        "name": "通し番号",
+        "pack": "decor",
+        "tags": [
+          "calm",
+          "editorial",
+          "graphic"
+        ]
+      },
+      "dateStamp": {
+        "name": "日付写真",
+        "pack": "decor",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ]
+      },
+      "qrBlock": {
+        "name": "QR風ブロック",
+        "pack": "decor",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ]
+      },
+      "glitchRects": {
+        "name": "グリッチ片",
+        "pack": "decor",
+        "tags": [
+          "glitch"
+        ]
+      },
+      "concentricSquares": {
+        "name": "同心四角",
+        "pack": "decor",
+        "tags": [
+          "calm",
+          "editorial",
+          "graphic"
+        ]
+      },
+      "triangleSpin": {
+        "name": "回転三角",
+        "pack": "decor",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ]
+      },
+      "lineBurst": {
+        "name": "放射線",
+        "pack": "decor",
+        "tags": [
+          "emotional",
+          "graphic",
+          "pop"
+        ]
+      },
+      "plusGrid": {
+        "name": "プラス格子",
+        "pack": "decor",
+        "tags": [
+          "calm",
+          "editorial",
+          "graphic"
+        ]
+      },
+      "guides": {
+        "name": "ガイド線",
+        "pack": "decor",
+        "tags": [
+          "calm",
+          "editorial",
+          "graphic"
+        ]
+      },
+      "waveLine": {
+        "name": "波線",
+        "pack": "decor",
+        "tags": [
+          "calm",
+          "emotional",
+          "graphic"
+        ]
+      },
+      "spiralLine": {
+        "name": "渦巻き",
+        "pack": "decor",
+        "tags": [
+          "calm",
+          "graphic",
+          "pop"
+        ]
+      },
+      "halftonePatch": {
+        "name": "網点",
+        "pack": "decor",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ]
+      },
+      "checkerStrip": {
+        "name": "市松の帯",
+        "pack": "decor",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "beatRing": {
+        "name": "拍の輪",
+        "pack": "decor",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ]
+      },
+      "orbitDots": {
+        "name": "周回する点",
+        "pack": "decor",
+        "tags": [
+          "calm",
+          "emotional",
+          "graphic"
+        ]
+      },
+      "constellation": {
+        "name": "星座",
+        "pack": "decor",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ]
+      },
+      "confetti": {
+        "name": "紙吹雪",
+        "pack": "decor",
+        "tags": [
+          "emotional",
+          "pop"
+        ]
+      },
+      "petals": {
+        "name": "花びら",
+        "pack": "decor",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ],
+        "wa": true
+      },
+      "rainStreaks": {
+        "name": "雨の筋",
+        "pack": "decor",
+        "tags": [
+          "calm",
+          "emotional",
+          "glitch"
+        ]
+      },
+      "snow": {
+        "name": "雪",
+        "pack": "decor",
+        "tags": [
+          "calm",
+          "emotional"
+        ]
+      },
+      "lightLeak": {
+        "name": "光漏れ",
+        "pack": "decor",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ]
+      },
+      "bokeh": {
+        "name": "ボケ玉",
+        "pack": "decor",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ]
+      },
+      "speedCorner": {
+        "name": "集中線",
+        "pack": "decor",
+        "tags": [
+          "emotional",
+          "glitch",
+          "pop"
+        ]
+      },
+      "risingParticles": {
+        "name": "立ち上る粒",
+        "pack": "decor",
+        "tags": [
+          "calm",
+          "emotional",
+          "glitch"
+        ]
+      },
+      "twinkle": {
+        "name": "きらめき",
+        "pack": "decor",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ]
+      },
+      "brushStroke": {
+        "name": "筆の払い",
+        "pack": "decor",
+        "tags": [
+          "editorial",
+          "emotional",
+          "pop"
+        ],
+        "wa": true
+      },
+      "tapePieces": {
+        "name": "マスキングテープ",
+        "pack": "decor",
+        "tags": [
+          "editorial",
+          "emotional",
+          "pop"
+        ]
+      },
+      "scribbleCircle": {
+        "name": "手描きの囲み",
+        "pack": "decor",
+        "tags": [
+          "editorial",
+          "emotional",
+          "pop"
+        ]
+      },
+      "scribbleUnder": {
+        "name": "手描き下線",
+        "pack": "decor",
+        "tags": [
+          "editorial",
+          "emotional",
+          "pop"
+        ]
+      },
+      "crossOut": {
+        "name": "推敲の走り書き",
+        "pack": "decor",
+        "tags": [
+          "editorial",
+          "emotional"
+        ]
+      },
+      "highlightMark": {
+        "name": "蛍光マーカー",
+        "pack": "decor",
+        "tags": [
+          "editorial",
+          "emotional",
+          "pop"
+        ]
+      },
+      "heartsStars": {
+        "name": "ハートと星",
+        "pack": "decor",
+        "tags": [
+          "emotional",
+          "pop"
+        ]
+      },
+      "watermarkKanji": {
+        "name": "透かし大漢字",
+        "pack": "decor",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ]
+      },
+      "verticalStrip": {
+        "name": "縦書き帯",
+        "pack": "decor",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ]
+      },
+      "romajiLine": {
+        "name": "ローマ字",
+        "pack": "decor",
+        "tags": [
+          "calm",
+          "editorial",
+          "graphic"
+        ]
+      },
+      "bracketsJP": {
+        "name": "隅付き括弧",
+        "pack": "decor",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ]
+      },
+      "seal": {
+        "name": "落款",
+        "pack": "decor",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "wa": true
+      },
+      "kamon": {
+        "name": "家紋",
+        "pack": "decorB",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "extra": true,
+        "wa": true
+      },
+      "seigaiha": {
+        "name": "青海波",
+        "pack": "decorB",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "extra": true,
+        "wa": true
+      },
+      "asanoha": {
+        "name": "麻の葉",
+        "pack": "decorB",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "extra": true,
+        "wa": true
+      },
+      "hanabi": {
+        "name": "花火",
+        "pack": "decorB",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "chochin": {
+        "name": "提灯",
+        "pack": "decorB",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ],
+        "extra": true,
+        "wa": true
+      },
+      "shimenawa": {
+        "name": "注連縄",
+        "pack": "decorB",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "extra": true,
+        "wa": true
+      },
+      "sensu": {
+        "name": "扇",
+        "pack": "decorB",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "extra": true,
+        "wa": true
+      },
+      "tsukiKumo": {
+        "name": "月に雲",
+        "pack": "decorB",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "extra": true,
+        "wa": true
+      },
+      "momiji": {
+        "name": "紅葉",
+        "pack": "decorB",
+        "tags": [
+          "calm",
+          "emotional"
+        ],
+        "extra": true,
+        "wa": true
+      },
+      "namiGashira": {
+        "name": "波頭",
+        "pack": "decorB",
+        "tags": [
+          "editorial",
+          "emotional",
+          "graphic"
+        ],
+        "extra": true,
+        "wa": true
+      },
+      "kasumi": {
+        "name": "霞",
+        "pack": "decorB",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "extra": true,
+        "wa": true
+      },
+      "hexGrid": {
+        "name": "六角格子",
+        "pack": "decorB",
+        "tags": [
+          "glitch",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "spectrumRing": {
+        "name": "円形スペクトラム",
+        "pack": "decorB",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "dataColumns": {
+        "name": "データ列",
+        "pack": "decorB",
+        "tags": [
+          "editorial",
+          "glitch",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "spinner": {
+        "name": "読み込み",
+        "pack": "decorB",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "headingTape": {
+        "name": "方位テープ",
+        "pack": "decorB",
+        "tags": [
+          "editorial",
+          "glitch",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "glyphLock": {
+        "name": "文字ロック",
+        "pack": "decorB",
+        "tags": [
+          "editorial",
+          "glitch",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "atomOrbit": {
+        "name": "原子軌道",
+        "pack": "decorB",
+        "tags": [
+          "calm",
+          "glitch",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "sonarArcs": {
+        "name": "音波",
+        "pack": "decorB",
+        "tags": [
+          "emotional",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "circuit": {
+        "name": "回路",
+        "pack": "decorB",
+        "tags": [
+          "glitch",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "swatches": {
+        "name": "色見本",
+        "pack": "decorB",
+        "tags": [
+          "editorial",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "ruledLines": {
+        "name": "罫線ノート",
+        "pack": "decorB",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "registration": {
+        "name": "見当合わせ",
+        "pack": "decorB",
+        "tags": [
+          "editorial",
+          "glitch",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "punchHoles": {
+        "name": "パンチ穴",
+        "pack": "decorB",
+        "tags": [
+          "calm",
+          "editorial",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "staple": {
+        "name": "ホチキス",
+        "pack": "decorB",
+        "tags": [
+          "editorial",
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "paperClip": {
+        "name": "クリップ",
+        "pack": "decorB",
+        "tags": [
+          "editorial",
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "indexTabs": {
+        "name": "見出しタブ",
+        "pack": "decorB",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "vines": {
+        "name": "蔓",
+        "pack": "decorB",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "cloudPuffs": {
+        "name": "雲",
+        "pack": "decorB",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "starField": {
+        "name": "星空",
+        "pack": "decorB",
+        "tags": [
+          "calm",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "moonPhases": {
+        "name": "月齢",
+        "pack": "decorB",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "sunRays": {
+        "name": "陽射し",
+        "pack": "decorB",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "rainRipples": {
+        "name": "雨の波紋",
+        "pack": "decorB",
+        "tags": [
+          "calm",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "bubbles": {
+        "name": "シャボン玉",
+        "pack": "decorB",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "smoke": {
+        "name": "煙",
+        "pack": "decorB",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "dandelion": {
+        "name": "綿毛",
+        "pack": "decorB",
+        "tags": [
+          "calm",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "fireflies": {
+        "name": "蛍",
+        "pack": "decorB",
+        "tags": [
+          "calm",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "memphis": {
+        "name": "メンフィス",
+        "pack": "decorB",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "zigzagRibbon": {
+        "name": "ジグザグリボン",
+        "pack": "decorB",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "polkaPatch": {
+        "name": "水玉",
+        "pack": "decorB",
+        "tags": [
+          "calm",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "stripeCircle": {
+        "name": "縞の円",
+        "pack": "decorB",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "decoCorners": {
+        "name": "装飾コーナー",
+        "pack": "decorB",
+        "tags": [
+          "calm",
+          "editorial",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "halfCircles": {
+        "name": "半円の積層",
+        "pack": "decorB",
+        "tags": [
+          "calm",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "loopArrows": {
+        "name": "循環矢印",
+        "pack": "decorB",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "starburst": {
+        "name": "スターバースト",
+        "pack": "decorB",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "tally": {
+        "name": "正の字",
+        "pack": "decorB",
+        "tags": [
+          "editorial",
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "cursorClick": {
+        "name": "カーソル",
+        "pack": "decorB",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "windowChrome": {
+        "name": "ウィンドウ",
+        "pack": "decorB",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "progressBar": {
+        "name": "読み込みバー",
+        "pack": "decorB",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "toggleSwitch": {
+        "name": "トグル",
+        "pack": "decorB",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "notifBell": {
+        "name": "通知",
+        "pack": "decorB",
+        "tags": [
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "likeCounter": {
+        "name": "いいね",
+        "pack": "decorB",
+        "tags": [
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "mediaControls": {
+        "name": "再生ボタン",
+        "pack": "decorB",
+        "tags": [
+          "emotional",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "volumeBars": {
+        "name": "音量",
+        "pack": "decorB",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "musicNotes": {
+        "name": "音符",
+        "pack": "decorB",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      }
+    },
+    "treat": {
+      "none": {
+        "name": "なし",
+        "pack": "core"
+      },
+      "outline": {
+        "name": "袋文字",
+        "pack": "looks",
+        "tags": [
+          "emotional",
+          "glitch",
+          "graphic",
+          "pop"
+        ]
+      },
+      "outlineFill": {
+        "name": "縁取り",
+        "pack": "looks",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "doubleOutline": {
+        "name": "二重縁",
+        "pack": "looks",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "extrude": {
+        "name": "立体",
+        "pack": "looks",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "longShadow": {
+        "name": "長い影",
+        "pack": "looks",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "hardShadow": {
+        "name": "ずらし影",
+        "pack": "looks",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ]
+      },
+      "softShadow": {
+        "name": "ぼかし影",
+        "pack": "looks",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ]
+      },
+      "glow": {
+        "name": "発光",
+        "pack": "looks",
+        "tags": [
+          "calm",
+          "emotional",
+          "glitch"
+        ]
+      },
+      "marker": {
+        "name": "マーカー",
+        "pack": "looks",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ]
+      },
+      "underline": {
+        "name": "下線",
+        "pack": "looks",
+        "tags": [
+          "calm",
+          "editorial",
+          "graphic"
+        ]
+      },
+      "strike": {
+        "name": "取り消し線",
+        "pack": "looks",
+        "tags": [
+          "editorial",
+          "emotional",
+          "glitch"
+        ]
+      },
+      "boxed": {
+        "name": "箱組",
+        "pack": "looks",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ]
+      },
+      "gradientV": {
+        "name": "縦グラデ",
+        "pack": "looks",
+        "tags": [
+          "emotional",
+          "pop"
+        ]
+      },
+      "splitColor": {
+        "name": "上下二色",
+        "pack": "looks",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "halftone": {
+        "name": "網点",
+        "pack": "looks",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "stripes": {
+        "name": "ストライプ",
+        "pack": "looks",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "hatch": {
+        "name": "斜線",
+        "pack": "looks",
+        "tags": [
+          "editorial",
+          "glitch",
+          "graphic"
+        ]
+      },
+      "dotted": {
+        "name": "点線輪郭",
+        "pack": "looks",
+        "tags": [
+          "calm",
+          "editorial",
+          "graphic"
+        ]
+      },
+      "alternate": {
+        "name": "交互色",
+        "pack": "looks",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "italic": {
+        "name": "斜体",
+        "pack": "looks",
+        "tags": [
+          "editorial",
+          "emotional",
+          "pop"
+        ]
+      },
+      "wide": {
+        "name": "平体",
+        "pack": "looks",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "tall": {
+        "name": "長体",
+        "pack": "looks",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional",
+          "graphic"
+        ]
+      },
+      "echoOutline": {
+        "name": "輪郭の残響",
+        "pack": "looks",
+        "tags": [
+          "emotional",
+          "glitch",
+          "graphic"
+        ]
+      },
+      "emphasisDots": {
+        "name": "傍点",
+        "pack": "looks",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ]
+      },
+      "neonOutline": {
+        "name": "ネオン管",
+        "pack": "treattrans",
+        "tags": [
+          "emotional",
+          "glitch",
+          "pop"
+        ],
+        "extra": true
+      },
+      "chrome": {
+        "name": "クローム",
+        "pack": "treattrans",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "rainbow": {
+        "name": "虹色",
+        "pack": "treattrans",
+        "tags": [
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "glitchSplit": {
+        "name": "色版ズレ",
+        "pack": "treattrans",
+        "tags": [
+          "glitch",
+          "pop"
+        ],
+        "extra": true
+      },
+      "shadowStack": {
+        "name": "多重影",
+        "pack": "treattrans",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "stencilGap": {
+        "name": "ステンシル字",
+        "pack": "treattrans",
+        "tags": [
+          "editorial",
+          "glitch",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "waterline": {
+        "name": "水位",
+        "pack": "treattrans",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "karaoke": {
+        "name": "カラオケ",
+        "pack": "treattrans",
+        "tags": [
+          "editorial",
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "sizeWave": {
+        "name": "大小リズム",
+        "pack": "treattrans",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "rotateAlt": {
+        "name": "揺れ字",
+        "pack": "treattrans",
+        "tags": [
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "baselineShift": {
+        "name": "段違い",
+        "pack": "treattrans",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "fauxBold": {
+        "name": "極太",
+        "pack": "treattrans",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "circled": {
+        "name": "丸囲み",
+        "pack": "treattrans",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "bracketsQuote": {
+        "name": "かぎ括弧",
+        "pack": "treattrans",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "reflection": {
+        "name": "映り込み",
+        "pack": "treattrans",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "inline": {
+        "name": "インライン",
+        "pack": "treattrans",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "sticker": {
+        "name": "シール縁",
+        "pack": "treattrans",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "gradientSweep": {
+        "name": "光沢スイープ",
+        "pack": "treattrans",
+        "tags": [
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "kerningWide": {
+        "name": "字間広め",
+        "pack": "treattrans",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "monoGrid": {
+        "name": "原稿用紙風",
+        "pack": "treattrans",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "extra": true,
+        "wa": true
+      },
+      "outlineOffset": {
+        "name": "版ズレ袋文字",
+        "pack": "treattrans",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "toneShadow": {
+        "name": "トーン影",
+        "pack": "treattrans",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "fadeChars": {
+        "name": "余韻",
+        "pack": "treattrans",
+        "tags": [
+          "calm",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "cutShift": {
+        "name": "断ち切り",
+        "pack": "treattrans",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "focusPull": {
+        "name": "ぼかし送り",
+        "pack": "treattrans",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "spotChar": {
+        "name": "一字マーク",
+        "pack": "treattrans",
+        "tags": [
+          "editorial",
+          "emotional",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "ransom": {
+        "name": "切り貼り文字",
+        "pack": "treattrans",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      }
+    },
+    "bg": {
+      "none": {
+        "name": "無地",
+        "pack": "core"
+      },
+      "auroraRibbons": {
+        "name": "オーロラ",
+        "pack": "bgcamB",
+        "tags": [
+          "calm",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "meshBlobs": {
+        "name": "メッシュグラデ",
+        "pack": "bgcamB",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "duotoneSweep": {
+        "name": "二色スイープ",
+        "pack": "bgcamB",
+        "tags": [
+          "calm",
+          "emotional",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "horizonGlow": {
+        "name": "惑星の縁",
+        "pack": "bgcamB",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "seigaiha": {
+        "name": "青海波",
+        "pack": "bgcamB",
+        "tags": [
+          "calm",
+          "editorial",
+          "graphic"
+        ],
+        "extra": true,
+        "wa": true
+      },
+      "asanoha": {
+        "name": "麻の葉",
+        "pack": "bgcamB",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional",
+          "graphic"
+        ],
+        "extra": true,
+        "wa": true
+      },
+      "houndstooth": {
+        "name": "千鳥格子",
+        "pack": "bgcamB",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "herringbone": {
+        "name": "ヘリンボーン",
+        "pack": "bgcamB",
+        "tags": [
+          "calm",
+          "editorial",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "argyle": {
+        "name": "アーガイル",
+        "pack": "bgcamB",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "tartan": {
+        "name": "タータン",
+        "pack": "bgcamB",
+        "tags": [
+          "calm",
+          "editorial",
+          "pop"
+        ],
+        "extra": true
+      },
+      "chevron": {
+        "name": "山形",
+        "pack": "bgcamB",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "isoCubes": {
+        "name": "立方体",
+        "pack": "bgcamB",
+        "tags": [
+          "calm",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "hexGrid": {
+        "name": "六角格子",
+        "pack": "bgcamB",
+        "tags": [
+          "calm",
+          "glitch",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "triTess": {
+        "name": "三角モザイク",
+        "pack": "bgcamB",
+        "tags": [
+          "calm",
+          "emotional",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "moire": {
+        "name": "モアレ",
+        "pack": "bgcamB",
+        "tags": [
+          "calm",
+          "glitch",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "squareTunnel": {
+        "name": "四角トンネル",
+        "pack": "bgcamB",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "spiralArms": {
+        "name": "渦巻き",
+        "pack": "bgcamB",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "topoLines": {
+        "name": "等高線",
+        "pack": "bgcamB",
+        "tags": [
+          "calm",
+          "editorial",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "ridgePlot": {
+        "name": "稜線グラフ",
+        "pack": "bgcamB",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "starfield": {
+        "name": "星空",
+        "pack": "bgcamB",
+        "tags": [
+          "calm",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "nightMoon": {
+        "name": "月夜",
+        "pack": "bgcamB",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "skyline": {
+        "name": "街並み",
+        "pack": "bgcamB",
+        "tags": [
+          "editorial",
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "sunsetSun": {
+        "name": "夕日",
+        "pack": "bgcamB",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "oceanWaves": {
+        "name": "海の波",
+        "pack": "bgcamB",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "rainWindow": {
+        "name": "雨の窓",
+        "pack": "bgcamB",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "snowLayers": {
+        "name": "雪",
+        "pack": "bgcamB",
+        "tags": [
+          "calm",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "fireworks": {
+        "name": "花火",
+        "pack": "bgcamB",
+        "tags": [
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "cloudLayers": {
+        "name": "雲",
+        "pack": "bgcamB",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "mountains": {
+        "name": "山並み",
+        "pack": "bgcamB",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "filmStrip": {
+        "name": "フィルム",
+        "pack": "bgcamB",
+        "tags": [
+          "editorial",
+          "emotional",
+          "glitch"
+        ],
+        "extra": true
+      },
+      "vhsBand": {
+        "name": "VHSノイズ",
+        "pack": "bgcamB",
+        "tags": [
+          "emotional",
+          "glitch"
+        ],
+        "extra": true
+      },
+      "tornPaper": {
+        "name": "破れ紙",
+        "pack": "bgcamB",
+        "tags": [
+          "editorial",
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "godRays": {
+        "name": "光芒",
+        "pack": "bgcamB",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "vignettePulse": {
+        "name": "色の周辺光",
+        "pack": "bgcamB",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "kaleidoscope": {
+        "name": "万華鏡",
+        "pack": "bgcamB",
+        "tags": [
+          "emotional",
+          "glitch",
+          "pop"
+        ],
+        "extra": true
+      },
+      "marble": {
+        "name": "大理石",
+        "pack": "bgcamB",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "paperCut": {
+        "name": "切り絵",
+        "pack": "bgcamB",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "sunburst": {
+        "name": "放射",
+        "pack": "looks",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "concentric": {
+        "name": "同心円",
+        "pack": "looks",
+        "tags": [
+          "calm",
+          "emotional",
+          "graphic"
+        ]
+      },
+      "halftoneFade": {
+        "name": "網点グラデ",
+        "pack": "looks",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ]
+      },
+      "bigStripes": {
+        "name": "大きな斜線",
+        "pack": "looks",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "splitV": {
+        "name": "左右二色",
+        "pack": "looks",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ]
+      },
+      "splitH": {
+        "name": "上下二色",
+        "pack": "looks",
+        "tags": [
+          "calm",
+          "editorial",
+          "graphic"
+        ]
+      },
+      "splitDiag": {
+        "name": "斜め二色",
+        "pack": "looks",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "gradientSweep": {
+        "name": "グラデ",
+        "pack": "looks",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ]
+      },
+      "spotlight": {
+        "name": "スポットライト",
+        "pack": "looks",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ]
+      },
+      "tvBars": {
+        "name": "テレビの帯",
+        "pack": "looks",
+        "tags": [
+          "emotional",
+          "glitch",
+          "graphic"
+        ]
+      },
+      "checker": {
+        "name": "市松",
+        "pack": "looks",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "bigChar": {
+        "name": "巨大文字",
+        "pack": "looks",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional",
+          "graphic"
+        ]
+      },
+      "speedLines": {
+        "name": "集中線",
+        "pack": "looks",
+        "tags": [
+          "emotional",
+          "graphic",
+          "pop"
+        ]
+      },
+      "scanBars": {
+        "name": "走査線の帯",
+        "pack": "looks",
+        "tags": [
+          "calm",
+          "editorial",
+          "glitch"
+        ]
+      },
+      "dotGrid": {
+        "name": "ドット格子",
+        "pack": "looks",
+        "tags": [
+          "calm",
+          "editorial",
+          "graphic"
+        ]
+      },
+      "retroGrid": {
+        "name": "レトロ格子",
+        "pack": "looks",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ]
+      },
+      "bokehBg": {
+        "name": "ボケ玉",
+        "pack": "looks",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ]
+      },
+      "particlesBg": {
+        "name": "舞い上がる粒",
+        "pack": "looks",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ]
+      },
+      "ripples": {
+        "name": "波紋",
+        "pack": "looks",
+        "tags": [
+          "calm",
+          "emotional",
+          "graphic"
+        ]
+      },
+      "polka": {
+        "name": "水玉",
+        "pack": "looks",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "eqBars": {
+        "name": "背景イコライザー",
+        "pack": "looks",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ]
+      },
+      "borderFrame": {
+        "name": "太枠",
+        "pack": "looks",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ]
+      },
+      "letterbox": {
+        "name": "シネスコ帯",
+        "pack": "looks",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ]
+      },
+      "noiseField": {
+        "name": "ノイズの揺らぎ",
+        "pack": "looks",
+        "tags": [
+          "emotional",
+          "glitch"
+        ]
+      }
+    },
+    "cam": {
+      "push": {
+        "name": "ゆっくり寄る",
+        "pack": "core",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional",
+          "glitch",
+          "graphic",
+          "pop"
+        ]
+      },
+      "orbitDrift": {
+        "name": "周回",
+        "pack": "bgcamB",
+        "tags": [
+          "calm",
+          "emotional",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "barrelRoll": {
+        "name": "バレルロール",
+        "pack": "bgcamB",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "pendulumSway": {
+        "name": "振り子",
+        "pack": "bgcamB",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "focusIn": {
+        "name": "ピント合わせ",
+        "pack": "bgcamB",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "rackFocus": {
+        "name": "ピンぼけ",
+        "pack": "bgcamB",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "earthquake": {
+        "name": "地震",
+        "pack": "bgcamB",
+        "tags": [
+          "emotional",
+          "glitch",
+          "pop"
+        ],
+        "extra": true
+      },
+      "floatNoise": {
+        "name": "浮遊",
+        "pack": "bgcamB",
+        "tags": [
+          "calm",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "vertigo": {
+        "name": "めまい",
+        "pack": "bgcamB",
+        "tags": [
+          "emotional",
+          "glitch"
+        ],
+        "extra": true
+      },
+      "tiltDown": {
+        "name": "ティルトダウン",
+        "pack": "bgcamB",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "spiralIn": {
+        "name": "渦ズーム",
+        "pack": "bgcamB",
+        "tags": [
+          "emotional",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "snapPan": {
+        "name": "スナップパン",
+        "pack": "bgcamB",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "jelly": {
+        "name": "ぷるん",
+        "pack": "bgcamB",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "pullOut": {
+        "name": "引き",
+        "pack": "looks",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ]
+      },
+      "panL": {
+        "name": "左パン",
+        "pack": "looks",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional",
+          "graphic"
+        ]
+      },
+      "panR": {
+        "name": "右パン",
+        "pack": "looks",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional",
+          "graphic"
+        ]
+      },
+      "tiltUp": {
+        "name": "ティルト",
+        "pack": "looks",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ]
+      },
+      "dutch": {
+        "name": "ダッチ",
+        "pack": "looks",
+        "tags": [
+          "emotional",
+          "glitch",
+          "graphic"
+        ]
+      },
+      "handheld": {
+        "name": "手持ち",
+        "pack": "looks",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ]
+      },
+      "beatPunch": {
+        "name": "拍でズーム",
+        "pack": "looks",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ]
+      },
+      "whipIn": {
+        "name": "ホイップイン",
+        "pack": "looks",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ]
+      },
+      "crashZoom": {
+        "name": "クラッシュズーム",
+        "pack": "looks",
+        "tags": [
+          "emotional",
+          "glitch",
+          "pop"
+        ]
+      },
+      "bounce": {
+        "name": "バウンス",
+        "pack": "looks",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "roll": {
+        "name": "ロール",
+        "pack": "looks",
+        "tags": [
+          "calm",
+          "emotional",
+          "glitch"
+        ]
+      },
+      "driftDiag": {
+        "name": "斜めドリフト",
+        "pack": "looks",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional",
+          "graphic"
+        ]
+      },
+      "shakeHard": {
+        "name": "強い揺れ",
+        "pack": "looks",
+        "tags": [
+          "emotional",
+          "glitch",
+          "pop"
+        ]
+      },
+      "dollyIn": {
+        "name": "ドリー",
+        "pack": "looks",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ]
+      },
+      "stepZoom": {
+        "name": "段階ズーム",
+        "pack": "looks",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ]
+      }
+    },
+    "fx": {
+      "chroma": {
+        "name": "色ズレの跳ね",
+        "pack": "core",
+        "tags": [
+          "emotional",
+          "glitch",
+          "graphic",
+          "pop"
+        ]
+      },
+      "shake": {
+        "name": "揺れ",
+        "pack": "core",
+        "tags": [
+          "emotional",
+          "glitch",
+          "pop"
+        ]
+      },
+      "slice": {
+        "name": "スライスグリッチ",
+        "pack": "core",
+        "tags": [
+          "glitch"
+        ]
+      },
+      "block": {
+        "name": "ブロックグリッチ",
+        "pack": "core",
+        "tags": [
+          "glitch"
+        ]
+      },
+      "invert": {
+        "name": "反転",
+        "pack": "core",
+        "tags": [
+          "glitch",
+          "graphic"
+        ]
+      },
+      "flash": {
+        "name": "フラッシュ",
+        "pack": "core",
+        "tags": [
+          "emotional",
+          "glitch",
+          "pop"
+        ]
+      },
+      "zoom": {
+        "name": "ズームブラー",
+        "pack": "core",
+        "tags": [
+          "emotional",
+          "pop"
+        ]
+      },
+      "mosaic": {
+        "name": "モザイク",
+        "pack": "core",
+        "tags": [
+          "glitch"
+        ]
+      },
+      "radialChroma": {
+        "name": "放射色収差",
+        "pack": "fxB",
+        "tags": [
+          "emotional",
+          "glitch",
+          "pop"
+        ],
+        "extra": true
+      },
+      "bloomFlash": {
+        "name": "ブルーム",
+        "pack": "fxB",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "bulge": {
+        "name": "魚眼",
+        "pack": "fxB",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "pixelSort": {
+        "name": "ピクセルソート",
+        "pack": "fxB",
+        "tags": [
+          "glitch"
+        ],
+        "extra": true
+      },
+      "interlace": {
+        "name": "インターレース",
+        "pack": "fxB",
+        "tags": [
+          "emotional",
+          "glitch"
+        ],
+        "extra": true
+      },
+      "macroBlock": {
+        "name": "ブロックノイズ",
+        "pack": "fxB",
+        "tags": [
+          "glitch"
+        ],
+        "extra": true
+      },
+      "halftone": {
+        "name": "網点",
+        "pack": "fxB",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "duotone": {
+        "name": "ダブルトーン",
+        "pack": "fxB",
+        "tags": [
+          "emotional",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "ditherBit": {
+        "name": "1bitディザ",
+        "pack": "fxB",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "rotateSnap": {
+        "name": "傾きスナップ",
+        "pack": "fxB",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "echoFrames": {
+        "name": "残像エコー",
+        "pack": "fxB",
+        "tags": [
+          "emotional",
+          "glitch",
+          "pop"
+        ],
+        "extra": true
+      },
+      "kaleido": {
+        "name": "万華鏡",
+        "pack": "fxB",
+        "tags": [
+          "emotional",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "bandInvert": {
+        "name": "帯反転",
+        "pack": "fxB",
+        "tags": [
+          "glitch",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "lightRays": {
+        "name": "光芒",
+        "pack": "fxB",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "anamorphic": {
+        "name": "アナモフレア",
+        "pack": "fxB",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "heartbeat": {
+        "name": "鼓動",
+        "pack": "fxB",
+        "tags": [
+          "calm",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "tvStatic": {
+        "name": "砂嵐",
+        "pack": "fxB",
+        "tags": [
+          "emotional",
+          "glitch"
+        ],
+        "extra": true
+      },
+      "dustScratches": {
+        "name": "フィルム傷",
+        "pack": "fxB",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "filmAdvance": {
+        "name": "フィルム送り",
+        "pack": "fxB",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "perspectiveTilt": {
+        "name": "パース揺れ",
+        "pack": "fxB",
+        "tags": [
+          "emotional",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "ripple": {
+        "name": "波紋",
+        "pack": "fxB",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "focusLines": {
+        "name": "集中線",
+        "pack": "fxB",
+        "tags": [
+          "emotional",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "speedLines": {
+        "name": "流線",
+        "pack": "fxB",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "starGlint": {
+        "name": "キラッ",
+        "pack": "fxB",
+        "tags": [
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "colorBars": {
+        "name": "カラーバー",
+        "pack": "fxB",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "zoomStutter": {
+        "name": "ズーム連打",
+        "pack": "fxB",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "negativeRing": {
+        "name": "反転リング",
+        "pack": "fxB",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "edgeDetect": {
+        "name": "輪郭抽出",
+        "pack": "fxB",
+        "tags": [
+          "editorial",
+          "glitch",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "shatter": {
+        "name": "ガラス割れ",
+        "pack": "fxB",
+        "tags": [
+          "emotional",
+          "glitch",
+          "pop"
+        ],
+        "extra": true
+      },
+      "defocus": {
+        "name": "ピンぼけ",
+        "pack": "fxB",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "snapshot": {
+        "name": "シャッター",
+        "pack": "fxB",
+        "tags": [
+          "editorial",
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "squash": {
+        "name": "伸縮",
+        "pack": "fxB",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "scanBar": {
+        "name": "スキャン",
+        "pack": "fxB",
+        "tags": [
+          "editorial",
+          "glitch",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "loopScroll": {
+        "name": "横ループ",
+        "pack": "fxB",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "panelWipe": {
+        "name": "パネルワイプ",
+        "pack": "looks",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "irisTrans": {
+        "name": "アイリス",
+        "pack": "looks",
+        "tags": [
+          "editorial",
+          "pop"
+        ]
+      },
+      "doors": {
+        "name": "扉",
+        "pack": "looks",
+        "tags": [
+          "graphic",
+          "pop"
+        ]
+      },
+      "blindsTrans": {
+        "name": "ブラインド",
+        "pack": "looks",
+        "tags": [
+          "editorial",
+          "graphic"
+        ]
+      },
+      "rgbSplit": {
+        "name": "RGB分離",
+        "pack": "looks",
+        "tags": [
+          "emotional",
+          "glitch"
+        ]
+      },
+      "smear": {
+        "name": "横スミア",
+        "pack": "looks",
+        "tags": [
+          "glitch"
+        ]
+      },
+      "vhsRoll": {
+        "name": "VHSロール",
+        "pack": "looks",
+        "tags": [
+          "emotional",
+          "glitch"
+        ]
+      },
+      "trackingNoise": {
+        "name": "トラッキングノイズ",
+        "pack": "looks",
+        "tags": [
+          "emotional",
+          "glitch"
+        ]
+      },
+      "mirrorFlash": {
+        "name": "ミラー",
+        "pack": "looks",
+        "tags": [
+          "glitch",
+          "graphic"
+        ]
+      },
+      "strobe": {
+        "name": "ストロボ",
+        "pack": "looks",
+        "tags": [
+          "glitch",
+          "pop"
+        ]
+      },
+      "posterize": {
+        "name": "ポスタリゼ",
+        "pack": "looks",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ]
+      },
+      "hueShift": {
+        "name": "色相シフト",
+        "pack": "looks",
+        "tags": [
+          "emotional",
+          "glitch",
+          "pop"
+        ]
+      },
+      "tileShift": {
+        "name": "タイルずらし",
+        "pack": "looks",
+        "tags": [
+          "glitch",
+          "graphic"
+        ]
+      },
+      "filmBurn": {
+        "name": "フィルム焼け",
+        "pack": "looks",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ]
+      },
+      "whipBlur": {
+        "name": "ホイップブラー",
+        "pack": "looks",
+        "tags": [
+          "emotional",
+          "graphic",
+          "pop"
+        ]
+      },
+      "blackFrame": {
+        "name": "黒コマ",
+        "pack": "looks",
+        "tags": [
+          "editorial",
+          "emotional",
+          "glitch"
+        ]
+      },
+      "whiteFrame": {
+        "name": "白コマ",
+        "pack": "looks",
+        "tags": [
+          "emotional",
+          "pop"
+        ]
+      },
+      "gridRepeat": {
+        "name": "画面分割",
+        "pack": "looks",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ]
+      },
+      "waveWarp": {
+        "name": "波ゆがみ",
+        "pack": "looks",
+        "tags": [
+          "emotional",
+          "glitch"
+        ]
+      },
+      "pixelDrift": {
+        "name": "ピクセルずれ",
+        "pack": "looks",
+        "tags": [
+          "glitch"
+        ]
+      },
+      "zoomPunch": {
+        "name": "ズームパンチ",
+        "pack": "looks",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ]
+      },
+      "lightSweep": {
+        "name": "光の筋",
+        "pack": "looks",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ]
+      },
+      "crtOff": {
+        "name": "ブラウン管オフ",
+        "pack": "looks",
+        "tags": [
+          "emotional",
+          "glitch"
+        ]
+      },
+      "splitSlide": {
+        "name": "上下スライド",
+        "pack": "looks",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ]
+      }
+    },
+    "trans": {
+      "wipe": {
+        "name": "エッジワイプ",
+        "pack": "treattrans",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "diagonalWipe": {
+        "name": "斜め帯ワイプ",
+        "pack": "treattrans",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "clockWipe": {
+        "name": "クロックワイプ",
+        "pack": "treattrans",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "irisOpen": {
+        "name": "アイリスイン",
+        "pack": "treattrans",
+        "tags": [
+          "editorial",
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "pushSlide": {
+        "name": "プッシュ",
+        "pack": "treattrans",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "cover": {
+        "name": "カバー",
+        "pack": "treattrans",
+        "tags": [
+          "calm",
+          "editorial",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "uncover": {
+        "name": "アンカバー",
+        "pack": "treattrans",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "extra": true
+      },
+      "zoomThrough": {
+        "name": "ズームスルー",
+        "pack": "treattrans",
+        "tags": [
+          "emotional",
+          "glitch",
+          "pop"
+        ],
+        "extra": true
+      },
+      "doorsOpen": {
+        "name": "観音開き",
+        "pack": "treattrans",
+        "tags": [
+          "emotional",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "blinds": {
+        "name": "ブラインド転換",
+        "pack": "treattrans",
+        "tags": [
+          "calm",
+          "editorial",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "checker": {
+        "name": "市松転換",
+        "pack": "treattrans",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "blockDissolve": {
+        "name": "ブロック崩し",
+        "pack": "treattrans",
+        "tags": [
+          "glitch",
+          "graphic"
+        ],
+        "extra": true
+      },
+      "whipPan": {
+        "name": "ホイップパン",
+        "pack": "treattrans",
+        "tags": [
+          "emotional",
+          "glitch",
+          "pop"
+        ],
+        "extra": true
+      },
+      "spinOut": {
+        "name": "回転アウト",
+        "pack": "treattrans",
+        "tags": [
+          "glitch",
+          "pop"
+        ],
+        "extra": true
+      },
+      "inkBlob": {
+        "name": "インク",
+        "pack": "treattrans",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "shatterTiles": {
+        "name": "タイル崩落",
+        "pack": "treattrans",
+        "tags": [
+          "emotional",
+          "glitch",
+          "pop"
+        ],
+        "extra": true
+      },
+      "sliceShift": {
+        "name": "短冊ずらし",
+        "pack": "treattrans",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "cubeTurn": {
+        "name": "キューブ",
+        "pack": "treattrans",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "extra": true
+      },
+      "flashCross": {
+        "name": "フラッシュ転換",
+        "pack": "treattrans",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ],
+        "extra": true
+      },
+      "pixelate": {
+        "name": "モザイク転換",
+        "pack": "treattrans",
+        "tags": [
+          "glitch",
+          "pop"
+        ],
+        "extra": true
+      }
+    }
+  },
+  "styles": {
+    "noir": {
+      "name": "ノワール・クロマ"
+    },
+    "crimson": {
+      "name": "クリムゾン・シグナル"
+    },
+    "caution": {
+      "name": "コーション"
+    },
+    "magenta": {
+      "name": "ポップ・マゼンタ"
+    },
+    "paper": {
+      "name": "ペーパー・インク"
+    },
+    "hud": {
+      "name": "ダークHUD"
+    },
+    "mint": {
+      "name": "ミント・ターミナル"
+    },
+    "specimen": {
+      "name": "スペシメン"
+    },
+    "transit": {
+      "name": "トランジット"
+    },
+    "blueprint": {
+      "name": "ブループリント"
+    },
+    "rouge": {
+      "name": "ルージュ・グラデ"
+    },
+    "mono": {
+      "name": "モノ・RGB"
+    },
+    "sakura": {
+      "name": "サクラ",
+      "moods": [
+        "emotional",
+        "calm"
+      ],
+      "extra": true,
+      "wa": true
+    },
+    "ocean": {
+      "name": "深海",
+      "moods": [
+        "calm",
+        "emotional"
+      ],
+      "extra": true
+    },
+    "sunset": {
+      "name": "夕焼けグラデ",
+      "moods": [
+        "emotional",
+        "pop"
+      ],
+      "extra": true
+    },
+    "forest": {
+      "name": "森の手帖",
+      "moods": [
+        "calm",
+        "editorial",
+        "emotional"
+      ],
+      "extra": true
+    },
+    "vapor": {
+      "name": "ヴェイパー",
+      "moods": [
+        "pop",
+        "emotional",
+        "glitch"
+      ],
+      "extra": true
+    },
+    "newsprint": {
+      "name": "新聞",
+      "moods": [
+        "editorial",
+        "graphic"
+      ],
+      "extra": true
+    },
+    "synth80": {
+      "name": "シンセ80s",
+      "moods": [
+        "pop",
+        "glitch",
+        "emotional"
+      ],
+      "extra": true
+    },
+    "kraft": {
+      "name": "クラフト紙",
+      "moods": [
+        "pop",
+        "editorial",
+        "graphic"
+      ],
+      "extra": true
+    },
+    "candy": {
+      "name": "キャンディ",
+      "moods": [
+        "pop"
+      ],
+      "extra": true
+    },
+    "acid": {
+      "name": "アシッド",
+      "moods": [
+        "glitch",
+        "graphic"
+      ],
+      "extra": true
+    },
+    "sumi": {
+      "name": "墨と朱",
+      "moods": [
+        "calm",
+        "emotional",
+        "editorial"
+      ],
+      "extra": true,
+      "wa": true
+    },
+    "gold": {
+      "name": "金夜",
+      "moods": [
+        "emotional",
+        "calm",
+        "editorial"
+      ],
+      "extra": true
+    }
+  },
+  "moods": {
+    "glitch": {
+      "name": "グリッチ"
+    },
+    "calm": {
+      "name": "しっとり"
+    },
+    "pop": {
+      "name": "ポップ"
+    },
+    "graphic": {
+      "name": "グラフィック"
+    },
+    "editorial": {
+      "name": "エディトリアル"
+    },
+    "emotional": {
+      "name": "エモーショナル"
+    },
+    "chaos": {
+      "name": "全部入り"
+    }
+  },
+  "fonts": {
+    "gothic_black": {
+      "label": "Noto Sans JP Black",
+      "kind": "gothic"
+    },
+    "gothic_bold": {
+      "label": "Noto Sans JP Bold",
+      "kind": "gothic"
+    },
+    "gothic_med": {
+      "label": "Noto Sans JP Medium",
+      "kind": "gothic"
+    },
+    "gothic_light": {
+      "label": "Noto Sans JP Light",
+      "kind": "gothic"
+    },
+    "dela": {
+      "label": "Dela Gothic One",
+      "kind": "display"
+    },
+    "zenkaku": {
+      "label": "Zen Kaku Gothic New Black",
+      "kind": "gothic"
+    },
+    "mincho_black": {
+      "label": "Zen Old Mincho Black",
+      "kind": "mincho"
+    },
+    "mincho_bold": {
+      "label": "Noto Serif JP Bold",
+      "kind": "mincho"
+    },
+    "mincho": {
+      "label": "Noto Serif JP Medium",
+      "kind": "mincho"
+    },
+    "mincho_light": {
+      "label": "Noto Serif JP Light",
+      "kind": "mincho"
+    },
+    "tokumin": {
+      "label": "Kaisei Tokumin",
+      "kind": "mincho"
+    },
+    "round": {
+      "label": "M PLUS Rounded 1c",
+      "kind": "round"
+    },
+    "pop": {
+      "label": "Mochiy Pop One",
+      "kind": "display"
+    },
+    "dot": {
+      "label": "DotGothic16",
+      "kind": "pixel"
+    },
+    "brush": {
+      "label": "Yuji Syuku",
+      "kind": "brush"
+    },
+    "mono": {
+      "label": "IBM Plex Mono",
+      "kind": "mono"
+    },
+    "reggae": {
+      "label": "Reggae One",
+      "kind": "display",
+      "extra": true
+    },
+    "rampart": {
+      "label": "Rampart One",
+      "kind": "display",
+      "extra": true
+    },
+    "potta": {
+      "label": "Potta One",
+      "kind": "brush",
+      "extra": true
+    },
+    "kiwi": {
+      "label": "Kiwi Maru",
+      "kind": "round",
+      "extra": true
+    },
+    "klee": {
+      "label": "Klee One",
+      "kind": "hand",
+      "extra": true
+    },
+    "shippori": {
+      "label": "Shippori Mincho B1",
+      "kind": "mincho",
+      "extra": true
+    },
+    "sansui": {
+      "label": "IBM Plex Sans JP",
+      "kind": "gothic"
+    }
+  },
+  "aspects": {
+    "16:9": {
+      "designWidth": 1920,
+      "designHeight": 1080
+    },
+    "9:16": {
+      "designWidth": 1080,
+      "designHeight": 1920
+    },
+    "4:3": {
+      "designWidth": 1440,
+      "designHeight": 1080
+    },
+    "3:4": {
+      "designWidth": 1080,
+      "designHeight": 1440
+    },
+    "1:1": {
+      "designWidth": 1440,
+      "designHeight": 1440
+    },
+    "4:5": {
+      "designWidth": 1440,
+      "designHeight": 1800
+    },
+    "21:9": {
+      "designWidth": 2520,
+      "designHeight": 1080
+    }
+  },
+  "sampleLyrics": "夜明けの色を/覚えてる\nほどけた声が遠くで鳴った\nねえ、まだ間に合うかな\n*透明*なままじゃ終われない!"
+}

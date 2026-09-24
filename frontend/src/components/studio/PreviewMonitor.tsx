@@ -268,7 +268,8 @@ export default function PreviewMonitor({
           />
         )}
 
-        {fx && fx.events.length > 0 && (
+        {/* 演出のイベントか歌詞モーションがあれば重ねる（どちらも FxOverlay の層） */}
+        {fx && (fx.events.length > 0 || Boolean(fx.lyric)) && (
           <FxPreviewOverlay
             fx={fx}
             fps={fps ?? 24}

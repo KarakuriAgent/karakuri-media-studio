@@ -1,6 +1,6 @@
 ---
 name: karakuri-remotion
-description: karakuri-media-studio から焼く Remotion コンポジション(MusicVideo / FxOverlay / Slate)の props を書くためのスキル。MV・歌詞アニメーション・ビート同期・トランジション・文字演出レイヤーを JSON で組む必要があるときに使う。
+description: karakuri-media-studio から焼く Remotion コンポジション(MusicVideo / FxOverlay / LyricMotion / Slate)の props を書くためのスキル。MV・歌詞アニメーション・文字PV(リリックモーション)・ビート同期・トランジション・文字演出レイヤーを JSON で組む必要があるときに使う。
 ---
 
 # karakuri-remotion: MV / モーショングラフィックスの props を書く
@@ -21,6 +21,13 @@ karakuri-media-studio に同梱された `remotion/` ディレクトリが、こ
   秒・位置を直したり要らないものを消したりできて、`POST /timelines/{id}/export` の
   `{"fx": true}` でそのまま焼ける。**ジョブに props を直接投げるのは、手元で 1 本だけ
   確かめたいときだけ**(詳しくは `.agents/skills/karakuri-studio/SKILL.md` §8)。
+- **歌詞モーション(JIZURA)もタイムラインに保存する**(`PUT /api/v1/timelines/{id}/fx/lyric`)。
+  同じ FX トラックに**全長 1 本の層**として乗り、編集画面で人がスタイル・雰囲気・種と
+  **行ごとの指名**を直せて、`{"fx": true}` の書き出しでそのまま焼ける。`lyric` は
+  `LyricMotion` の props から `fps` / `width` / `height` / `durationInSeconds` / `res` /
+  `aspect` / `audio.src` を抜いたもの(画の大きさ・尺・BGM はタイムラインが持つ。
+  `audio.beats` のような拍の情報だけは載せてよい)。**`LyricMotion` のジョブを直接
+  投げるのは、素材の無い単体の文字PV を 1 本焼くときだけ**。
 - **レンダリングは原則アプリ側の `POST /api/v1/jobs`(`mode: "remotion"`)経由で投入する。**
   出力が `outputs/` に入り、履歴・ライブラリ・素材登録・タイムラインの素材ビンに自動で乗るため。
   完了待ちは既存の `GET /api/v1/jobs/{id}` をポーリング。
@@ -38,11 +45,17 @@ karakuri-media-studio に同梱された `remotion/` ディレクトリが、こ
 |---|---|
 | `MusicVideo` | 本命。カット割り + トランジション + 歌詞 + タイトル + BGM |
 | `FxOverlay` | 出来上がった 1 本の mp4 の上に、イベントで文字演出・エフェクトを載せる |
+| `LyricMotion` | 歌詞だけから**文字PV(リリックモーション)**を自動で組む。素材(映像・画像)は要らない |
 | `Slate` | 疎通確認用。テキストを出すだけ |
 
 props スキーマの正本は **`remotion/src/schema.ts`(zod)**。迷ったらこれを読む。
 サンプルは `remotion/examples/music-video.json` / `remotion/examples/fx-overlay.json` /
-`remotion/examples/slate.json`(どれも外部素材ゼロで焼ける)。
+`remotion/examples/lyric-motion.json` / `remotion/examples/slate.json`
+(どれも外部素材ゼロで焼ける)。
+
+**どれを使うか**: 撮った / 生成した素材を並べるなら `MusicVideo`、出来上がった 1 本の
+上に演出を載せるなら `FxOverlay`、**素材が無く歌詞だけで 1 本にするなら
+`LyricMotion`**(§`LyricMotion`)。
 
 ## 単位と座標系
 
@@ -320,6 +333,18 @@ BAN!BAN!BAN!(過去に作った MV)で確立したもの。**書かなければ�
 - `invertShake` の起点は**カードが明けたところ**。`card` の `t` + カードの尺に置く。
 - 秒は決め打ちせず、**音源解析の結果(歌詞アライン・onset・ビート)から算出する**。
 
+### `lyric`: 歌詞モーションの層
+
+`FxOverlay` の props に `lyric` を書くと、`base` の上・`events` の下に **JIZURA の
+文字PV が透過で 1 枚**重なる(`LyricMotion` と同じエンジン)。中身は `LyricMotion` の
+props から `fps` / `width` / `height` / `durationInSeconds` / `res` / `aspect` と
+`audio` の再生まわりを抜いたもの——画の大きさ・尺・BGM は `FxOverlay` 側が持つ
+(`audio.beats` のような拍の情報だけは `lyric` に置いてよい)。画面比は
+`width` / `height` にいちばん近いものが自動で選ばれ、cover で収まる。
+
+**タイムラインに保存するのが原則**(`PUT /api/v1/timelines/{id}/fx/lyric`)。ここに props
+として直接書くのは、手元で 1 本焼いて見た目を確かめるときだけ。
+
 ### 手元で確認する
 
 ```bash
@@ -327,10 +352,164 @@ cd ../remotion
 npx remotion render src/index.ts FxOverlay ../workspace/tmp/fx.mp4 --props=examples/fx-overlay.json
 ```
 
+```bash
+# 歌詞モーション(JIZURA)の層を重ねた版
+npx remotion render src/index.ts FxOverlay ../workspace/tmp/fx-lyric.mp4 \
+  --props=examples/fx-overlay-lyric.json
+```
+
 `examples/fx-overlay.json` は全イベント型を 1 回ずつ含む 14 秒のサンプル(外部素材ゼロ)。
 上の `z` と新オプション(`outGlitch` / `halftone: {alpha, dot}` / `border.inset` /
 キーフレームの `pop: false`)も一通り入っているので、見た目を確かめるならここを引くのが速い。
 効果の見た目を確かめたいときは、これを複製して該当イベントだけ残すのが速い。
+
+## `LyricMotion`: 歌詞だけで文字PV を組む
+
+素材(映像・画像)が 1 枚も無くても、**歌詞テキストだけ**で 1 本焼けるコンポジション。
+中身は OSS の自動構成エンジン **JIZURA 字面**(MIT)で、行を切って・レイアウトを選んで・
+入り / 保持 / 抜けのアニメーションを割り当てるところまで自動でやる。あなたの仕事は
+**歌詞と雰囲気と種を渡し、気に入らない行だけ指名し直すこと**。
+
+タイムラインの上に文字PV を重ねたいときは、このコンポジションを単体で焼くのではなく
+**`FxOverlay` の `lyric` に入れてタイムラインへ保存する**(`PUT /api/v1/timelines/{id}/fx/lyric`。
+props はこの節のものから `fps` / `res` / `aspect` / `durationInSeconds` / `audio.src` を
+抜いた形)。ジョブへ直接投げるのは**素材の無い単体 PV を 1 本焼くとき**だけ。
+
+### いちばん短い形
+
+```jsonc
+{
+  "mode": "remotion",
+  "remotion_composition": "LyricMotion",
+  "remotion_props": {
+    "lyrics": "[00:00.30]夜明けの色を/覚えてる\n[00:01.40]ほどけた声が遠くで鳴った",
+    "mood": "emotional",
+    "seed": 20260922
+  }
+}
+```
+
+### 歌詞の記法(1 行 1 フレーズ)
+
+| 書き方 | 意味 |
+|---|---|
+| `[mm:ss.xx]歌詞` | その行が出る時刻(LRC)。**全行に付ければ**そのまま時刻になる |
+| `前半/後半` | その行を 2 カットに割る |
+| `*強調*` | その語を強く出す |
+| `歌詞!` | 決めのカットにする(行末の `!`) |
+| `歌詞\|注釈` | 小さな注釈を添える(英訳・読みなど) |
+| 空行 | 間(前の行との間を空ける) |
+| `#` 始まり | コメント |
+
+### 段取り
+
+1. **秒を作る。** 音源解析ジョブ(`mode: "audio_analysis"`)の
+   `/outputs/{job_id}/analysis.json` から、`lines[].start` を LRC のタイムスタンプに、
+   `beats.times` を `audio.beats` に写す。ここが他のコンポジションと同じ流儀。
+
+   ```python
+   # analysis.json → LyricMotion の props(抜粋)
+   def lrc(t):  # 12.34 -> "[00:12.34]"
+       return f"[{int(t // 60):02d}:{t % 60:05.2f}]"
+
+   props = {
+       "lyrics": "\n".join(lrc(l["start"]) + l["text"] for l in a["lines"]),
+       "audio": {
+           "src": f"/outputs/{job_id}/vocal.wav",   # BGM を mp4 に載せる
+           "beats": a["beats"]["times"],            # カットの境目を拍に吸わせる
+           "duration": a["duration"],
+       },
+       "timing": {"bpm": a["beats"]["bpm"], "snap": True},
+   }
+   ```
+
+   解析が無いときは LRC を書かず `timing.lineTimes`(`{"0": 0.4, "1": 2.1}`)で
+   秒を入れてもよい。どちらも無ければ字数から自動で決まる(尺合わせは
+   `timing.lineScale`)。
+
+2. **まず `mood` と `seed` でおまかせ。** `glitch` / `calm` / `pop` / `graphic` /
+   `editorial` / `emotional` / `chaos` のどれかを書けば、それに合うスタイル・部品・
+   スライダーがまとめて決まる。`seed` を変えると別の案が出る(同じ種なら毎回同じ絵)。
+   **最初から `overrides` を書き並べない。** 種を 3〜4 回振って、いちばん近いものを選ぶ。
+
+3. **気になる行だけ `overrides`。** キーは**行番号(0 始まりの文字列)**。
+
+   ```jsonc
+   "overrides": {
+     "0": { "layout": "center", "enter": "blur", "exit": "drift" },
+     "3": { "layout": "huge", "enter": "slice", "exit": "explode", "decor": ["sparks"] }
+   }
+   ```
+
+   指名できるのは `layout` / `enter` / `hold` / `exit` / `decor`(配列) / `treat` /
+   `bg` / `cam` / `trans` と、`single`(行を割らず 1 カットに収める) / `seed`(この行だけ
+   振り直す) / `lock`。
+
+4. **全体の当たりを調整する。** `fx` は**書いたところだけ**効く部分指定。
+   `{"fx": {"glitch": 0.2, "texture": 0.8}}` のように 1〜2 個だけ触る。
+   `koma` は 1 秒あたりの作画枚数(12 = 2 コマ打ち、0 = 毎フレーム)。
+
+5. **出したくない部品を外す。** `enabled` も部分指定で、
+   `{"enabled": {"layout": {"tile": false, "marquee": false}}}` のように
+   **落としたいものだけ** `false` を書く。
+
+### 部品キーの調べ方
+
+**キーは推測しない。** 全部このファイルに並んでいる:
+
+```
+.agents/skills/karakuri-remotion/jizura-catalog.json
+```
+
+構造は `{groups: {layout: {center: {name, tags, pack, extra?, wa?}, …}, enter: …},
+styles, moods, fonts, aspects, sampleLyrics}`。`tags` は雰囲気(mood)で、
+`mood` を書いたときに優先して選ばれる目印。`extra: true` は初版より後に足された部品で、
+**ランダムには `"extra": true` を書かないと選ばれない**(手で `overrides` に指名するのは
+いつでもできる)。`wa: true` は和風モチーフで、`"wa": false` でランダムから外れる。
+
+```bash
+# 例: 「縦書き」系のレイアウトを探す
+jq -r '.groups.layout | to_entries[] | select(.value.name | test("縦")) | "\(.key)\t\(.value.name)"' \
+  .agents/skills/karakuri-remotion/jizura-catalog.json
+
+# 例: emotional に向くという印の付いた入り
+jq -r '.groups.enter | to_entries[] | select(.value.tags // [] | index("emotional")) | .key' \
+  .agents/skills/karakuri-remotion/jizura-catalog.json
+```
+
+カタログが無い / 古いときは `node remotion/scripts/export-jizura-catalog.mjs` で出し直す。
+
+### 画面の大きさ・透過
+
+- `aspect`(`16:9` `9:16` `4:3` `3:4` `1:1` `4:5` `21:9`)と `res`(短辺のピクセル数)で
+  実寸が決まる。`width` / `height` は書かない。
+- 合成用に抜きたいときは `keyBg`:
+  `"green"` / `"black"` はそのまま mp4 で焼ける。`"transparent"` は**アルファを持てる
+  コンテナが要る**ので、ジョブ側で `remotion_render_options` を添える。
+
+  ```jsonc
+  {
+    "mode": "remotion",
+    "remotion_composition": "LyricMotion",
+    "remotion_props": { "keyBg": "transparent", "lyrics": "…" },
+    "remotion_render_options": {
+      "codec": "prores", "prores_profile": "4444",
+      "image_format": "png", "pixel_format": "yuva444p10le"
+    }
+  }
+  ```
+
+  このとき成果物は `video.mp4` ではなく **`video.mov`**(vp8 なら `video.webm`)。
+
+### やりがちな失敗(LyricMotion)
+
+- **`style` と `mood` を両方書いて悩む。** `mood` に任せるなら `style` は書かない
+  (空文字が「任せる」)。逆に配色を決め打ちしたいなら `style` を書く。
+- **`overrides` のキーを 1 始まりにする。** 0 始まり。
+- **`fx` や `enabled` を全部書く。** どちらも部分指定。書いたところだけ効く。
+- **知らない部品キーを書く。** そのキーは無視されるだけで警告も出ない。
+  必ず `jizura-catalog.json` から取る。
+- **`res` を上げすぎる。** 1080 で 1920x1080。2160 は 4 倍重い。確認は 540 で十分。
 
 ## 手元で尺と見た目を確かめる(任意)
 

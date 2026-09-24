@@ -1,0 +1,39 @@
+{
+  "lyrics": "[00:00.30]夜明けの色を/覚えてる\n[00:01.40]ほどけた声が遠くで鳴った\n[00:02.60]ねえ、まだ間に合うかな|still in time\n[00:03.70]*透明*なままじゃ終われない!",
+  "style": "noir",
+  "mood": null,
+  "seed": 20260922,
+  "aspect": "16:9",
+  "res": 1080,
+  "fps": 24,
+  "keyBg": "off",
+  "extra": false,
+  "wa": true,
+  "lang": "ja",
+  "fx": {
+    "motion": 0.7,
+    "glitch": 0.55,
+    "chroma": 0.7,
+    "decor": 0.5,
+    "density": 0.55,
+    "texture": 0.6,
+    "koma": 12,
+    "hud": "auto"
+  },
+  "enabled": {},
+  "overrides": {
+    "0": { "layout": "center", "enter": "blur", "exit": "drift" },
+    "3": { "layout": "huge", "enter": "slice", "exit": "explode" }
+  },
+  "colors": {},
+  "fonts": {},
+  "timing": {
+    "bpm": 120,
+    "offset": 0.3,
+    "snap": true,
+    "tail": 0.9,
+    "lineScale": 0.7,
+    "lineTimes": {}
+  },
+  "durationInSeconds": 5
+}

@@ -1074,6 +1074,12 @@ def _params_from_create(payload: JobCreate) -> dict[str, Any]:
         # 再実行は同じ composition・同じ props でもう一度書き出す。
         "remotion_composition": payload.remotion_composition,
         "remotion_props": payload.remotion_props,
+        # 「どう焼くか」（透過・中間コーデック）。props とは別物で、未指定なら None
+        "remotion_render_options": (
+            payload.remotion_render_options.model_dump(exclude_none=True)
+            if payload.remotion_render_options is not None
+            else None
+        ),
         # 音源解析（mode 'audio_analysis' だけが読む、SPEC §5.2）。params に残すので
         # 再実行は同じ音源・同じ解析をやり直す。
         "analysis": (
@@ -2000,8 +2006,11 @@ async def _run_remotion_job(job: Job) -> dict[str, Any]:
     job_id = job.id
     composition = str(job.params.get("remotion_composition") or "")
     props = job.params.get("remotion_props") or {}
+    # 「どう焼くか」（任意。透過や中間コーデック）。``--codec`` と拡張子が合っていないと
+    # Remotion が走らないので、入れ物はコーデックから決める。
+    options = job.params.get("remotion_render_options") or {}
     job_dir = OUTPUTS_DIR / job_id
-    output = job_dir / "video.mp4"
+    output = job_dir / f"video{remotion.output_suffix(options)}"
 
     await _update(
         job_id,
@@ -2032,7 +2041,12 @@ async def _run_remotion_job(job: Job) -> dict[str, Any]:
 
     try:
         saved = await remotion.render(
-            job_id, composition, props, output, on_progress=on_progress
+            job_id,
+            composition,
+            props,
+            output,
+            on_progress=on_progress,
+            options=options,
         )
     except remotion.RemotionError as exc:
         raise JobError(str(exc)) from exc

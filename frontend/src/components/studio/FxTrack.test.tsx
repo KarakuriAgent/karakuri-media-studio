@@ -25,6 +25,7 @@ vi.mock('../../api', async () => {
       getStudioTimelineFx: vi.fn(),
       updateStudioTimelineFxEvent: vi.fn(),
       deleteStudioTimelineFxEvent: vi.fn(),
+      putStudioTimelineFxLyric: vi.fn(),
       replaceStudioTimelineClips: vi.fn(),
     },
   }
@@ -79,6 +80,8 @@ const FX: TimelineFx = {
   seed: 1,
   ambient: null,
   backgroundColor: '#000000',
+  lyric: null,
+  lyric_enabled: true,
   events: [
     fxEvent('E1', {
       type: 'lyric',
@@ -213,4 +216,79 @@ it('削除ボタンでその演出だけ消える', async () => {
   await waitFor(() =>
     expect(screen.queryByTitle(/lyric: 撃ち抜け/)).toBeNull(),
   )
+})
+
+// --------------------------------------------------------------------------
+// 歌詞モーション（FX トラックに相乗りする JIZURA の層）
+// --------------------------------------------------------------------------
+
+const LYRIC_MOTION = {
+  lyrics: '夜明けの色を\nほどけた声が',
+  style: 'noir',
+  seed: 7,
+  extra: false,
+  fx: { motion: 0.7 },
+  overrides: {},
+}
+
+it('lyric があれば FX トラックの先頭に「歌詞モーション」の帯が 1 本出る', async () => {
+  mocked.getStudioTimelineFx.mockResolvedValue({ ...FX, lyric: LYRIC_MOTION })
+  open()
+  expect(await screen.findByText('歌詞モーション')).toBeTruthy()
+  expect(screen.getByText('2 件 + 歌詞')).toBeTruthy()
+})
+
+it('外してある歌詞モーションは薄く出る', async () => {
+  mocked.getStudioTimelineFx.mockResolvedValue({
+    ...FX,
+    lyric: LYRIC_MOTION,
+    lyric_enabled: false,
+  })
+  open()
+  const band = await screen.findByTitle(/歌詞モーション（タイムライン全長）（外してあります）/)
+  expect(band.className).toContain('opacity-40')
+})
+
+it('帯を押すと LyricInspector が出て、直すと fx/lyric へ PUT する', async () => {
+  const fx = { ...FX, lyric: LYRIC_MOTION }
+  mocked.getStudioTimelineFx.mockResolvedValue(fx)
+  mocked.putStudioTimelineFxLyric.mockResolvedValue(fx)
+  open()
+  fireEvent.mouseDown(await screen.findByText('歌詞モーション'))
+
+  // 部品の一覧（JIZURA のバンドル）は動的 import なので、ここでは読み込みを
+  // 待たずに触れるものだけを試す。選択肢そのものは LyricInspector.test.tsx で。
+  fireEvent.click(
+    await screen.findByTitle('シードを振り直す（絵の選び方が変わる）'),
+  )
+  await waitFor(() => expect(mocked.putStudioTimelineFxLyric).toHaveBeenCalled())
+  const [timelineId, body] = mocked.putStudioTimelineFxLyric.mock.calls[0]
+  expect(timelineId).toBe('TL1')
+  expect(body.base_revision).toBe(12)
+  expect(body.lyric.seed).not.toBe(7)
+  expect(body.lyric.lyrics).toBe(LYRIC_MOTION.lyrics)
+})
+
+it('削除ボタンは lyric: null を送る（帯も消える）', async () => {
+  mocked.getStudioTimelineFx.mockResolvedValue({ ...FX, lyric: LYRIC_MOTION })
+  mocked.putStudioTimelineFxLyric.mockResolvedValue({ ...FX, lyric: null })
+  open()
+  fireEvent.mouseDown(await screen.findByText('歌詞モーション'))
+  fireEvent.click(await screen.findByTitle('歌詞モーションを消す'))
+  await waitFor(() =>
+    expect(mocked.putStudioTimelineFxLyric).toHaveBeenCalledWith('TL1', {
+      lyric: null,
+      base_revision: 12,
+    }),
+  )
+  await waitFor(() => expect(screen.queryByText('歌詞モーション')).toBeNull())
+})
+
+it('Remotion 連携が OFF なら歌詞モーションの帯も出ない', async () => {
+  mocked.getSettings.mockResolvedValue({ remotion_enabled: false })
+  mocked.getStudioTimelineFx.mockResolvedValue({ ...FX, lyric: LYRIC_MOTION })
+  open()
+  await screen.findByText('BAN E2E')
+  await waitFor(() => expect(mocked.getStudioTimeline).toHaveBeenCalled())
+  expect(screen.queryByText('歌詞モーション')).toBeNull()
 })

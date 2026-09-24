@@ -23,6 +23,7 @@ from ..models import (
     TimelineFx,
     TimelineFxEventCreate,
     TimelineFxEventUpdate,
+    TimelineFxLyricUpdate,
     TimelineFxUpdate,
     TimelineMediaPage,
     TimelineMissingFix,
@@ -216,6 +217,17 @@ async def replace_fx(timeline_id: str, payload: TimelineFxUpdate) -> TimelineFx:
     """演出を丸ごと置き換える（``FxOverlay`` の props をそのまま投げられる）。"""
     try:
         return await service.replace_fx(timeline_id, payload, actor="user")
+    except service.TimelineError as exc:
+        raise _http_error(exc) from exc
+
+
+@router.put("/timelines/{timeline_id}/fx/lyric", response_model=TimelineFx)
+async def set_fx_lyric(
+    timeline_id: str, payload: TimelineFxLyricUpdate
+) -> TimelineFx:
+    """歌詞モーション（JIZURA）だけ差し替える（``lyric: null`` で外す）。"""
+    try:
+        return await service.set_fx_lyric(timeline_id, payload, actor="user")
     except service.TimelineError as exc:
         raise _http_error(exc) from exc
 

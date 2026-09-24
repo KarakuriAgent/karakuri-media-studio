@@ -1659,6 +1659,9 @@ class JobCreate(BaseModel):
     remotion_composition: str | None = None
     #: composition に渡す props（``--props`` の中身。空オブジェクトも可）
     remotion_props: dict[str, Any] | None = None
+    #: 「どう焼くか」の任意オプション（透過・中間コーデック）。props とは別物で、
+    #: 未指定なら Remotion プロジェクトの既定（h264 / mp4）のまま
+    remotion_render_options: "RemotionRenderOptions | None" = None
 
     # --- mode 'audio_analysis' only（SPEC §5.2）---------------------------
     #: 何をどう解析するか。params に残るので再実行は同じ解析をやり直す
@@ -1774,6 +1777,48 @@ class NsfwUpdate(BaseModel):
     """POST /api/jobs/{id}/nsfw と POST /api/agent/sessions/{id}/nsfw の body。"""
 
     nsfw: bool
+
+
+class RemotionRenderOptions(BaseModel):
+    """``npx remotion render`` に足す任意のオプション（SPEC §5.2）。
+
+    ``remotion_props``（composition が読む値）とは**別物**で、こちらは
+    「どう焼くか」。透過（アルファ付き）の書き出しに要る最小限だけを通す:
+
+    - ProRes 4444: ``{"codec": "prores", "prores_profile": "4444",
+      "image_format": "png", "pixel_format": "yuva444p10le"}`` → ``.mov``
+    - VP8 の WebM: ``{"codec": "vp8", "image_format": "png",
+      "pixel_format": "yuva420p"}`` → ``.webm``
+
+    出力の拡張子はコーデックから決まる（:func:`app.remotion.output_suffix`）ので、
+    ``h264`` 以外を指定したジョブの成果物は ``video.mp4`` ではないことに注意。
+    未指定（None）のところは Remotion の既定（``remotion.config.ts``）のまま。
+    """
+
+    #: 映像コーデック（未指定なら ``remotion.config.ts`` の h264）
+    codec: Literal["h264", "h265", "h264-mkv", "prores", "vp8", "vp9", "gif"] | None = (
+        None
+    )
+    #: フレームの取り込み形式。アルファを残すには ``png``
+    image_format: Literal["jpeg", "png"] | None = None
+    #: ピクセルフォーマット。``yuva…`` がアルファ付き
+    pixel_format: (
+        Literal[
+            "yuv420p",
+            "yuva420p",
+            "yuv422p",
+            "yuv444p",
+            "yuv420p10le",
+            "yuv422p10le",
+            "yuv444p10le",
+            "yuva444p10le",
+        ]
+        | None
+    ) = None
+    #: ``codec: "prores"`` のときのプロファイル（透過は ``4444`` 系だけ）
+    prores_profile: (
+        Literal["4444", "4444-xq", "hq", "light", "proxy", "standard"] | None
+    ) = None
 
 
 class RemotionCompositions(BaseModel):
@@ -4040,6 +4085,13 @@ class TimelineFx(BaseModel):
     ambient: dict[str, Any] | None = None
     #: base が透けるところの色（プレビューでは常に透明で描く）
     backgroundColor: str | None = None  # noqa: N815 - FxOverlay の props に合わせる
+    #: 歌詞モーション（JIZURA）。``FxOverlay`` の ``lyric`` と同じ形で、
+    #: ``fps`` / ``width`` / ``height`` / ``durationInSeconds`` / ``res`` /
+    #: ``aspect`` / ``audio.src`` は**持たない**（タイムラインが持つ値）。
+    #: 中身の正本は Remotion 側の zod（``lyricOverlaySchema``）
+    lyric: dict[str, Any] | None = None
+    #: 降ろすとプレビューにも書き出しにも出さない（消さずに外しておく）
+    lyric_enabled: bool = True
     events: list[TimelineFxEvent] = Field(default_factory=list)
 
 
@@ -4057,11 +4109,29 @@ class TimelineFxUpdate(BaseModel):
     seed: int | None = None
     ambient: dict[str, Any] | None = None
     backgroundColor: str | None = None  # noqa: N815 - FxOverlay の props に合わせる
+    #: 歌詞モーション（省略すると消える。全置換なので他の全体設定と同じ扱い）
+    lyric: dict[str, Any] | None = None
+    #: 省略すると出す（``lyric`` が無ければ意味を持たない）
+    lyric_enabled: bool | None = None
     events: list[dict[str, Any]] = Field(default_factory=list)
     #: 楽観ロック（:data:`BASE_REVISION_DOC`）
     base_revision: int | None = None
 
     model_config = ConfigDict(extra="ignore")
+
+
+class TimelineFxLyricUpdate(BaseModel):
+    """PUT /api/studio/timelines/{id}/fx/lyric body（歌詞モーションだけ差し替え）。
+
+    演出のイベント（``events``）には触らない。``lyric`` に ``null`` を送ると
+    歌詞モーションが外れる（``lyric_enabled: false`` は**消さずに出さない**）。
+    """
+
+    #: ``FxOverlay`` の ``lyric``（``lyrics`` が文字列であることだけ見る）
+    lyric: dict[str, Any] | None = None
+    lyric_enabled: bool | None = None
+    #: 楽観ロック（:data:`BASE_REVISION_DOC`）
+    base_revision: int | None = None
 
 
 class TimelineFxEventCreate(BaseModel):

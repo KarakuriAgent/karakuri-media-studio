@@ -1,0 +1,70 @@
+{
+  "fps": 24,
+  "width": 1280,
+  "height": 720,
+  "durationInSeconds": 5,
+  "backgroundColor": "#08080a",
+  "seed": 7,
+  "base": { "src": "gradient:200:#1b2a4a,#0a0f1c" },
+  "theme": { "palette": ["#dc1428", "#f5f5f5", "#08080a"] },
+  "ambient": { "scanline": true, "vignette": true, "scanlineAlpha": 0.05, "vignetteAlpha": 0.25 },
+  "lyric": {
+    "lyrics": "[00:00.30]夜明けの色を/覚えてる\n[00:01.40]ほどけた声が遠くで鳴った\n[00:02.60]ねえ、まだ間に合うかな|still in time\n[00:03.70]*透明*なままじゃ終われない!",
+    "style": "noir",
+    "mood": null,
+    "seed": 20260922,
+    "keyBg": "off",
+    "extra": false,
+    "wa": true,
+    "lang": "ja",
+    "fx": {
+      "motion": 0.7,
+      "glitch": 0.55,
+      "chroma": 0.7,
+      "decor": 0.5,
+      "density": 0.55,
+      "texture": 0.6,
+      "koma": 12,
+      "hud": "auto"
+    },
+    "enabled": {},
+    "overrides": {
+      "0": { "layout": "center", "enter": "blur", "exit": "drift" },
+      "3": { "layout": "huge", "enter": "slice", "exit": "explode" }
+    },
+    "colors": {},
+    "fonts": {},
+    "timing": {
+      "bpm": 120,
+      "offset": 0.3,
+      "snap": true,
+      "tail": 0.9,
+      "lineScale": 0.7,
+      "lineTimes": {}
+    },
+    "audio": { "beats": [0.0, 0.5, 1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5], "duration": 5 }
+  },
+  "events": [
+    {
+      "t": 0.0,
+      "until": 2.0,
+      "type": "terminalText",
+      "lines": ["> LOAD lyric.json", "> READY"],
+      "typing": true,
+      "cursor": true,
+      "corner": "topLeft",
+      "margin": 0.03,
+      "fontSize": 26,
+      "opacity": 0.8
+    },
+    {
+      "t": 3.6,
+      "until": 5.0,
+      "type": "card",
+      "text": "KARAKURI",
+      "cx": 0.5,
+      "cy": 0.88,
+      "fontSize": 40
+    }
+  ]
+}

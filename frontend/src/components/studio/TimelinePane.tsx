@@ -62,6 +62,12 @@ const LANE_HEIGHT = { video: 80, audio: 56, subtitle: 48 } as const
 /** FX トラック（演出）1 段の高さ（px）。 */
 const FX_LANE_HEIGHT = 48
 
+/** 歌詞モーションの帯の高さ（FX トラックの先頭に 1 本ぶん足す）。 */
+const FX_LYRIC_HEIGHT = 24
+
+/** 歌詞モーションの帯の色（イベントの帯と見分けが付くように）。 */
+const FX_LYRIC_TONE = 'border-sky-800 bg-sky-950/70 text-sky-100'
+
 /** 左のトラック見出しの幅（px）。 */
 const HEADER_PX = 84
 
@@ -127,6 +133,10 @@ export default function TimelinePane({
   fxSelectedId,
   onFxSelect,
   onFxDrag,
+  fxLyric,
+  fxLyricEnabled = true,
+  fxLyricSelected = false,
+  onFxLyricSelect,
 }: {
   tracks: TimelineTrack[]
   clips: TimelineClip[]
@@ -170,6 +180,15 @@ export default function TimelinePane({
     change: { startMs?: number; endMs?: number },
     done: boolean,
   ) => void
+  /**
+   * 歌詞モーション（JIZURA）。あればタイムライン全長の帯を FX トラックの
+   * 先頭に 1 本出す（`null` なら出さない）。
+   */
+  fxLyric?: Record<string, unknown> | null
+  /** `false` は薄く出す（消さずに「今は出さない」と決めたもの）。 */
+  fxLyricEnabled?: boolean
+  fxLyricSelected?: boolean
+  onFxLyricSelect?: () => void
 }) {
   const laneRef = useRef<HTMLDivElement | null>(null)
   const [drag, setDrag] = useState<DragState | null>(null)
@@ -426,11 +445,11 @@ export default function TimelinePane({
           {fxEvents && (
             <div
               className="flex flex-col justify-center gap-1 border-b border-border px-2"
-              style={{ height: FX_LANE_HEIGHT }}
+              style={{ height: FX_LANE_HEIGHT + (fxLyric ? FX_LYRIC_HEIGHT : 0) }}
             >
               <span className="truncate text-[11px] font-semibold">FX</span>
               <span className="truncate text-[10px] text-muted-foreground">
-                {fxEvents.length} 件
+                {fxEvents.length} 件{fxLyric ? ' + 歌詞' : ''}
               </span>
             </div>
           )}
@@ -534,14 +553,38 @@ export default function TimelinePane({
             {fxEvents && (
               <div
                 className="relative border-b border-border bg-background/40"
-                style={{ height: FX_LANE_HEIGHT }}
+                style={{ height: FX_LANE_HEIGHT + (fxLyric ? FX_LYRIC_HEIGHT : 0) }}
                 onMouseDown={() => onFxSelect?.(null)}
               >
+                {/* 歌詞モーションはタイムライン全長に掛かるので、先頭に 1 本 */}
+                {fxLyric && (
+                  <button
+                    type="button"
+                    className={`absolute left-0 top-1 flex items-center overflow-hidden rounded border px-2 text-left ${
+                      fxLyricSelected
+                        ? 'border-accent-400 bg-accent-500/25 text-foreground'
+                        : FX_LYRIC_TONE
+                    } ${fxLyricEnabled ? '' : 'opacity-40'}`}
+                    style={{ width: Math.max(width, 40), height: FX_LYRIC_HEIGHT - 6 }}
+                    title={`歌詞モーション（タイムライン全長）${
+                      fxLyricEnabled ? '' : '（外してあります）'
+                    }`}
+                    onMouseDown={(event) => {
+                      event.stopPropagation()
+                      onFxLyricSelect?.()
+                    }}
+                  >
+                    <span className="truncate text-[11px] font-medium">
+                      歌詞モーション
+                    </span>
+                  </button>
+                )}
                 {fxEvents.map((item) => (
                   <FxRect
                     key={item.id}
                     item={item}
                     zoom={zoom}
+                    top={4 + (fxLyric ? FX_LYRIC_HEIGHT : 0)}
                     height={FX_LANE_HEIGHT - 8}
                     selected={item.id === fxSelectedId}
                     dragging={fxDrag?.eventId === item.id && fxDrag.moved}
@@ -550,7 +593,11 @@ export default function TimelinePane({
                   />
                 ))}
                 {fxEvents.length === 0 && (
-                  <p className="px-3 py-3 text-[11px] text-muted-foreground">
+                  <p
+                    className="px-3 py-3 text-[11px] text-muted-foreground"
+                    // margin だと親の上端へ抜けてしまう（マージンの相殺）ので padding
+                    style={{ paddingTop: fxLyric ? FX_LYRIC_HEIGHT : 0 }}
+                  >
                     演出はまだありません（外部 API の
                     <code className="px-1">PUT /timelines/{'{id}'}/fx</code>
                     で入れると、ここに帯が並びます）。
@@ -675,6 +722,7 @@ function ClipRect({
 function FxRect({
   item,
   zoom,
+  top,
   height,
   selected,
   dragging,
@@ -683,6 +731,8 @@ function FxRect({
 }: {
   item: TimelineFxEvent
   zoom: number
+  /** 段の中の縦位置（歌詞モーションの帯があるぶん下がる）。 */
+  top: number
   height: number
   selected: boolean
   dragging: boolean
@@ -699,10 +749,10 @@ function FxRect({
 
   return (
     <div
-      className={`absolute top-1 flex items-stretch overflow-hidden rounded border ${tone} ${
+      className={`absolute flex items-stretch overflow-hidden rounded border ${tone} ${
         item.enabled ? '' : 'opacity-40'
       } ${dragging ? 'opacity-60' : ''}`}
-      style={{ left, width, height }}
+      style={{ left, top, width, height }}
       title={`${fxLabel(item)} / ${formatSeconds(durationMs)}${
         item.enabled ? '' : '（外してあります）'
       }`}

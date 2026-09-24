@@ -11,6 +11,7 @@ import { AbsoluteFill, Audio, Sequence, interpolate, useCurrentFrame, useVideoCo
 import type { CalculateMetadataFunction } from 'remotion';
 import { getVideoMetadata } from '@remotion/media-utils';
 import { FxBaseLayer } from './components/FxBaseLayer';
+import { LyricCanvas, coverCanvas, loadJizura, nearestAspect } from './LyricCanvas';
 import { FxAmbientLayer } from './fx/Ambient';
 import { FxBeatMarker } from './fx/BeatMarker';
 import { FxCard } from './fx/Card';
@@ -38,7 +39,67 @@ import {
   toFrames,
 } from './lib/fx';
 import { isColorSource, resolveMediaUrl } from './media';
-import { fxOverlaySchema, type FxEvent, type FxOverlayProps } from './schema';
+import {
+  fxOverlaySchema,
+  lyricMotionSchema,
+  type FxEvent,
+  type FxOverlayProps,
+  type LyricMotionProps,
+  type LyricOverlayProps,
+} from './schema';
+
+/**
+ * 歌詞モーション（JIZURA）の層。`base` の上・`events` の下に**透過で**重なる。
+ *
+ * JIZURA はデザインサイズ（`aspect` ごとの固定サイズ）で組むので、この props の
+ * `width` / `height` にいちばん近い `aspect` を選び、そのデザインサイズを
+ * **cover** で画面へ収める（`Renderer#frame` が自分で `setTransform` を掛ける都合、
+ * ずらすのはキャンバスの側。`LyricCanvas.tsx` の `coverCanvas` を参照）。
+ *
+ * `res` は実寸に効かない（キャンバスの実寸はここで決める）ので、デザインサイズの
+ * 短辺をそのまま渡す。`keyBg` は層として重ねる以上つねに `transparent`。
+ */
+const FxLyricLayer: React.FC<{
+  lyric: LyricOverlayProps;
+  width: number;
+  height: number;
+  fps: number;
+}> = ({ lyric, width, height, fps }) => {
+  const canvas = React.useMemo(() => {
+    const J = loadJizura();
+    const aspect = nearestAspect(J, width, height);
+    const props: LyricMotionProps = lyricMotionSchema.parse({
+      ...lyric,
+      aspect,
+      // 実寸はこのキャンバスが決めるので、res はデザインサイズそのまま（等倍）
+      res: Math.min(...J.designSize(aspect)),
+      fps,
+      keyBg: 'transparent',
+      // 音は FxOverlay の audio が鳴らす。ここは拍とエネルギーだけ使う
+      audio: lyric.audio ? { ...lyric.audio, src: '' } : undefined,
+    });
+    return { props, size: coverCanvas(J, aspect, width, height) };
+  }, [lyric, width, height, fps]);
+
+  return (
+    <AbsoluteFill
+      style={{ overflow: 'hidden', alignItems: 'center', justifyContent: 'center' }}
+    >
+      <LyricCanvas
+        props={canvas.props}
+        width={canvas.size.width}
+        height={canvas.size.height}
+        transparent
+        style={{
+          width: canvas.size.width,
+          height: canvas.size.height,
+          display: 'block',
+          flex: 'none',
+        }}
+      />
+    </AbsoluteFill>
+  );
+};
 
 /** 型ごとの既定の重なり順(小さいほど下)。イベントに z があればそちらが優先。 */
 const EVENT_LAYER: Record<FxEvent['type'], number> = {
@@ -217,6 +278,15 @@ export const FxOverlay: React.FC<FxOverlayProps> = (props) => {
             scale={scale}
           />
         )}
+
+        {props.lyric ? (
+          <FxLyricLayer
+            lyric={props.lyric}
+            width={width}
+            height={height}
+            fps={fps}
+          />
+        ) : null}
 
         {overlays.map((p) => {
           if (p.ev.type === 'invertShake' || p.ev.type === 'collapse') {

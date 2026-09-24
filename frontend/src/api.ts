@@ -74,6 +74,7 @@ import type {
   TimelineExportRequest,
   TimelineFx,
   TimelineFxEventUpdate,
+  TimelineFxLyricUpdate,
   TimelineFxUpdate,
   TimelineMediaKind,
   TimelineMediaPage,
@@ -881,6 +882,9 @@ export const api = {
   /** 演出を丸ごと置き換える。 */
   replaceStudioTimelineFx: (id: string, body: TimelineFxUpdate) =>
     json<TimelineFx>('PUT', `/api/studio/timelines/${id}/fx`, body),
+  /** 歌詞モーション（JIZURA）だけ差し替える（`lyric: null` で外す）。 */
+  putStudioTimelineFxLyric: (id: string, body: TimelineFxLyricUpdate) =>
+    json<TimelineFx>('PUT', `/api/studio/timelines/${id}/fx/lyric`, body),
   /** イベントを 1 件だけ書き換える（`event` は浅いマージ）。 */
   updateStudioTimelineFxEvent: (
     id: string,
