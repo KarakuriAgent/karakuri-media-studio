@@ -204,6 +204,13 @@ export const lyricFxSchema = z.object({
   onTwos: z.boolean().optional(),
   /** 画面端の HUD。auto はスタイル任せ */
   hud: z.enum(['auto', 'on', 'off']).optional(),
+  /**
+   * 飾りの数字（`No.01` / `#03` / `128` など）を出さない。そのカットの歌詞に含まれる
+   * 文字は歌詞なので消さない（JIZURA v0.10。既定 false）
+   */
+  hideNo: z.boolean().optional(),
+  /** 飾りの時刻（`00:12.34` / `REC 1:05` など）を出さない。歌詞の扱いは hideNo と同じ */
+  hideTime: z.boolean().optional(),
 });
 
 /**
@@ -282,13 +289,19 @@ export const lyricOverrideSchema = z.object({
   scale: z.number().min(0.3).max(2).optional(),
   /** カット番号（0 始まりの文字列キー）→ そのカットだけの位置ずらし（手元パッチ） */
   cutOffsets: z.record(z.string(), lyricCutOffsetSchema).optional(),
+  /**
+   * カット番号（0 始まりの文字列キー。0 番は常に行の頭なので "1" から）→ そのカットの
+   * 開始秒（**行の頭からの秒**）。前後のカットとは 0.22 秒離れるように詰められる
+   * （JIZURA v0.10）
+   */
+  cutTime: z.record(z.string(), z.number().min(0)).optional(),
 });
 
 /** 行の出る時刻（JIZURA の `project.timing`）。 */
 export const lyricTimingSchema = z.object({
   /** BPM。0 なら拍に合わせない */
   bpm: z.number().min(0).max(400).default(0),
-  /** 1 行目が出るまでの秒（LRC タイムスタンプがあれば無視される） */
+  /** 1 行目が出るまでの秒（1 行目に時刻 = LRC タイムスタンプか lineTimes があれば無視される） */
   offset: z.number().min(0).default(0.4),
   /** カットの境目をビートに吸わせる */
   snap: z.boolean().default(true),
@@ -296,7 +309,10 @@ export const lyricTimingSchema = z.object({
   tail: z.number().min(0).default(0.9),
   /** 自動で決まる行の長さの倍率 */
   lineScale: z.number().min(0.1).max(5).default(1),
-  /** 行番号（0 始まり）→ 開始秒。LRC を書かずにここで指定してもよい */
+  /**
+   * 行番号（0 始まり。数え方は `overrides` と同じ）→ 開始秒。LRC を書かずにここで
+   * 指定してもよく、LRC の時刻より強い
+   */
   lineTimes: z.record(z.string(), z.number().min(0)).default({}),
 });
 
@@ -328,7 +344,9 @@ export const lyricAudioSchema = z.object({
 export const lyricMotionSchema = z.object({
   /**
    * 歌詞。1 行 1 フレーズで、書ける記法は
-   * - `[mm:ss.xx]` 行頭のタイムスタンプ（LRC。**全行に付ければ**そのまま時刻になる）
+   * - `[mm:ss.xx]` 行頭のタイムスタンプ（LRC）。付けた行はその時刻に出る。付けて
+   *   いない行は前後の時刻のあいだに字数から割り付ける（JIZURA v0.10。それより前は
+   *   全行に付けないと時刻を使わなかった）
    * - `/` でその行をカットに割る
    * - `*強調*` でその語を強く出す
    * - 行末の `!` で決めのカットにする
@@ -348,6 +366,18 @@ export const lyricMotionSchema = z.object({
    * 値のほうが強い。null なら何もしない。
    */
   mood: z.string().nullable().default(null),
+  /**
+   * おまかせのテーマ（JIZURA v0.10 の `J.THEMES`）。`lyricpv`（文字PV）/ `kinetic`
+   * （キネティック）/ `wa`（和風）/ `horror`（ホラー）/ `pop`（ポップ）/ `ballad`
+   * （バラード）のどれかを書くと、**そのテーマの雰囲気の中から**おまかせを掛け、
+   * テーマに要る部品セット・和風（`wa` と追加分 `extra`）を ON にしてその部品を
+   * 優先する。`mood` も書けば雰囲気は `mood` のもの（テーマは部品とスイッチだけ効く）。
+   * テーマが ON にするスイッチは props の値より強い（`mood: "horror"` が `horror` を
+   * ON にするのと同じ）。`style` / `fx` / `enabled` / `fonts` / `colors` に自分で
+   * 書いた値はテーマのおまかせより強い。null なら何もしない。
+   * `FxOverlay` の `theme`（配色の palette）とは別物（こちらは `lyric.theme`）。
+   */
+  theme: z.string().nullable().default(null),
   /** 乱数の種。同じ種・同じ歌詞なら毎回同じ絵になる。 */
   seed: z.number().int().default(20260922),
   aspect: lyricAspectSchema.default('16:9'),
@@ -397,6 +427,14 @@ export const lyricMotionSchema = z.object({
    * 行番号（0 始まりの文字列キー）→ その行だけの指名。`cutTech` / `cutLayouts` で
    * 行の中の 1 カットだけを指名でき、`offset` / `scale` / `cutOffsets` で位置を
    * ずらせる（位置ずらしは手元パッチ。`remotion/src/lib/jizuraOffset.ts`）。
+   *
+   * **行番号の数え方**（`timing.lineTimes` も同じ）は `J.parseLyrics()` の並びで、
+   * コメント・空行・`/` の割りは数えない。LRC の時刻タグがある歌詞は時刻順に並べ替わり、
+   * タグの無い行は**書いた位置の直前の行の後ろ**に付く（JIZURA v0.10 から。それより
+   * 前は末尾へ回っていた）。タグの有る行と無い行が混ざった歌詞では、v0.10 より前に
+   * 書いた行番号が別の行を指すことがある。移し替えはしない（エンジンの既定どおり
+   * いまの並びで読む）ので、そういう props は行番号を数え直すこと。全行にタグが
+   * ある・全行に無い歌詞は並びが変わらない。
    */
   overrides: z.record(z.string(), lyricOverrideSchema).default({}),
   /**

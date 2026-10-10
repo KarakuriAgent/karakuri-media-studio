@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  LYRIC_DECO_HIDES,
   LYRIC_SETS,
   lyricFlag,
   lyricFxValue,
@@ -9,6 +10,7 @@ import {
   lyricRest,
   lyricSeed,
   lyricText,
+  lyricTheme,
   rollSeed,
   setLyricFx,
   setLyricOverride,
@@ -46,6 +48,22 @@ describe('演出の強さ（fx）', () => {
     expect(two.fx).toEqual({ motion: 0.7, glitch: 0.2 })
 
     expect(setLyricFx(two, 'motion', undefined).fx).toEqual({ glitch: 0.2 })
+  })
+
+  it('飾りの数字・時刻を隠すは fx の hideNo / hideTime（本家 v0.10 のキー）', () => {
+    expect(LYRIC_DECO_HIDES.map((item) => item.name)).toEqual(['hideNo', 'hideTime'])
+    const hidden = setLyricFx({ fx: { motion: 0.7 } }, 'hideNo', true)
+    expect(hidden.fx).toEqual({ motion: 0.7, hideNo: true })
+    expect(lyricFxValue(hidden, 'hideTime')).toBeUndefined()
+  })
+})
+
+describe('おまかせのテーマ', () => {
+  it('文字列だけを読み、無い・壊れた値は空（テーマなし）', () => {
+    expect(lyricTheme({ theme: 'wa' })).toBe('wa')
+    expect(lyricTheme({})).toBe('')
+    expect(lyricTheme({ theme: null })).toBe('')
+    expect(lyricTheme({ theme: 3 })).toBe('')
   })
 })
 
@@ -153,6 +171,7 @@ describe('残りの項目（JSON の生編集欄）', () => {
         typeset: false,
         centerFree: true,
         centerDir: 'lr',
+        theme: 'horror',
       }),
     ).toEqual({ lang: 'ja', colors: { bg: '#000' } })
   })

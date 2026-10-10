@@ -49,6 +49,7 @@ import {
   type JizuraPlan,
   type JizuraProject,
   type JizuraRenderer,
+  type JizuraSetKey,
 } from './lib/jizura';
 import type { LyricAspect, LyricMotionProps } from './schema';
 
@@ -80,7 +81,7 @@ function defined<T extends object>(source: T): Partial<T> {
 }
 
 /**
- * 指定した雰囲気で「おまかせ」を掛ける。
+ * 指定した雰囲気・テーマで「おまかせ」を掛ける。
  *
  * `J.omakase()` は**いま設定されている雰囲気以外**からランダムに選ぶ作り（編集画面で
  * 押すたびに変わるボタンなので）。こちらは雰囲気を指名したいので、呼んでいる間だけ
@@ -89,24 +90,40 @@ function defined<T extends object>(source: T): Partial<T> {
  * 雰囲気でだけ使う」を `J.MOODS` から判定するため（残さないと、ホラーの部品が
  * ほかの雰囲気でも選ばれうる）。残したほうが選ばれないよう、おまかせに見せる
  * project ではそのセットを OFF にしておく（指名した雰囲気のセットは ON）。
+ *
+ * テーマ（JIZURA v0.10 の `J.THEMES`）は `J.omakase()` の第 3 引数でそのまま渡す。
+ * テーマはふつう自分の雰囲気の中から選ぶので、雰囲気も指名されているときは
+ * 呼んでいる間だけそのテーマの雰囲気の候補を「指名した 1 つ」に差し替える
+ * （テーマの部品セット・和風の優先とスイッチはそのまま効く）。雰囲気が無ければ
+ * `J.MOODS` は絞らず、テーマの雰囲気から種で選ばせる。
+ *
  * エンジンには一切手を入れずに済ませるための細工で、終わったら必ず元に戻す。
  */
-function omakaseWithMood(
+function omakaseWith(
   J: Jizura,
   project: JizuraProject,
-  mood: string,
+  mood: string | null,
+  theme: string | null,
   rnd: () => number,
-): Partial<JizuraProject> {
-  const all = J.MOODS;
-  const chosen = all[mood];
-  if (!chosen) {
+): ReturnType<Jizura['omakase']> {
+  const allMoods = J.MOODS;
+  const allThemes = J.THEMES;
+  if (theme && !allThemes[theme]) {
     throw new Error(
-      `mood '${mood}' は知らない雰囲気です（${Object.keys(all).join(' / ')} のどれか）`,
+      `theme '${theme}' は知らないテーマです（${J.THEME_ORDER.join(' / ')} のどれか）`,
     );
   }
-  const view: typeof all = {};
+  if (!mood) return J.omakase({ ...project, mood: null }, rnd, theme);
+
+  const chosen = allMoods[mood];
+  if (!chosen) {
+    throw new Error(
+      `mood '${mood}' は知らない雰囲気です（${Object.keys(allMoods).join(' / ')} のどれか）`,
+    );
+  }
+  const view: typeof allMoods = {};
   const seen: JizuraProject = { ...project, mood: null };
-  for (const [key, entry] of Object.entries(all)) {
+  for (const [key, entry] of Object.entries(allMoods)) {
     if (key === mood) view[key] = entry;
     else if (entry.set) {
       view[key] = entry;
@@ -115,25 +132,37 @@ function omakaseWithMood(
   }
   if (chosen.set) seen[chosen.set] = true;
   try {
-    (J as { MOODS: typeof all }).MOODS = view;
-    return J.omakase(seen, rnd);
+    (J as { MOODS: typeof allMoods }).MOODS = view;
+    if (theme) {
+      (J as { THEMES: typeof allThemes }).THEMES = {
+        ...allThemes,
+        [theme]: { ...allThemes[theme], moods: [mood] },
+      };
+    }
+    return J.omakase(seen, rnd, theme);
   } finally {
-    (J as { MOODS: typeof all }).MOODS = all;
+    (J as { MOODS: typeof allMoods }).MOODS = allMoods;
+    (J as { THEMES: typeof allThemes }).THEMES = allThemes;
   }
 }
 
 /**
  * props を JIZURA の project に組み直す。
  *
- * 重ねる順は「既定 → mood のおまかせ → props に書いてあるもの」。`fx` / `enabled` /
- * `fonts` / `colors` は**書いたキーだけ**を重ねるので、雰囲気に任せつつ 1 か所だけ
- * 直す、という書き方ができる。
+ * 重ねる順は「既定 → mood / theme のおまかせ → props に書いてあるもの」。`fx` /
+ * `enabled` / `fonts` / `colors` は**書いたキーだけ**を重ねるので、雰囲気に任せつつ
+ * 1 か所だけ直す、という書き方ができる。ただし部品セット・和風・追加分のスイッチは、
+ * mood（ホラー）や theme が要るものを **ON にする**（props の既定値と書いた値を
+ * 見分けられないため。本家の雰囲気の振り直しも `true` のものだけ写す）。
  *
  * 本家 v0.9 で増えた設定（部品セット `typo` / `kinetic` / `horror`、`unify`、
  * `typeset`、`centerFree` / `centerDir`）は props の既定が `J.defaultProject()` と
  * 同じなので、書かなければエンジンの既定どおりに描く。overrides の位置ずらし
  * （`offset` / `scale` / `cutOffsets`）は planner に渡さない（`prepare()` が plan の
  * カットに紐づける）。
+ *
+ * 本家 v0.10 で増えた `fx.hideNo` / `fx.hideTime` は `fx` と一緒に重ね、テーマは
+ * `project.themeId` にも写す（エンジンで読むのはおまかせだけ）。
  */
 export function buildProject(J: Jizura, props: LyricMotionProps): JizuraProject {
   const project = J.defaultProject();
@@ -164,13 +193,16 @@ export function buildProject(J: Jizura, props: LyricMotionProps): JizuraProject 
     lineTimes: { ...props.timing.lineTimes },
   };
   project.overrides = splitPlacement(props.overrides).overrides;
+  project.themeId = props.theme;
 
-  if (props.mood) {
+  if (props.mood || props.theme) {
     // 部品セットに結び付いた雰囲気（ホラー）を指名したら、そのセットも使う
-    const moodSet = J.MOODS[props.mood]?.set;
+    const moodSet = props.mood ? J.MOODS[props.mood]?.set : undefined;
     if (moodSet) project[moodSet] = true;
-    const rolled = omakaseWithMood(J, project, props.mood, mulberry32(props.seed));
-    project.mood = props.mood;
+    const rolled = omakaseWith(J, project, props.mood, props.theme, mulberry32(props.seed));
+    project.mood = props.mood || rolled.mood;
+    // テーマが要るスイッチ（部品セット・和風・追加分）。戻りには ON にするものだけが入る
+    for (const key of themeSwitches(J)) if (rolled[key] === true) project[key] = true;
     if (rolled.style) project.style = rolled.style;
     if (rolled.fx) project.fx = { ...project.fx, ...rolled.fx };
     if (rolled.enabled) project.enabled = rolled.enabled;
@@ -186,6 +218,11 @@ export function buildProject(J: Jizura, props: LyricMotionProps): JizuraProject 
   project.fonts = { ...project.fonts, ...props.fonts };
   project.colors = { ...project.colors, ...props.colors };
   return project;
+}
+
+/** テーマが ON にしうるスイッチ（`J.omakase()` の戻りに `true` で入る）。 */
+function themeSwitches(J: Jizura): Array<'wa' | 'extra' | JizuraSetKey> {
+  return ['wa', 'extra', ...J.SET_ORDER];
 }
 
 /** props の `audio` を `J.plan()` が読む形にする（拍もエネルギーも無ければ null）。 */

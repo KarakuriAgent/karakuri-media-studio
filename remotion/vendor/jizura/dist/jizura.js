@@ -831,11 +831,30 @@ function drawItemLayered(env, it) {
 }
 
 /* draw one text item. env = {ctx, pass, passColor, scale}. Returns design-space bbox + glyph boxes. */
+/* 飾りの数字・時刻を出さない: decorative copy that is only a number (No.01, #03, 128) or a time (00:12.34, REC 1:05).
+   Anything that also appears in the lyric of the cut is lyric, and stays. */
+const CJK = /[\u3040-\u30ff\u3400-\u9fff\uf900-\ufaff\uac00-\ud7af]/;
+J.decoTextKind = (t) => {
+  t = String(t || '').trim();
+  if (!t || !/\d/.test(t) || CJK.test(t)) return null;
+  if (/\d{1,2}[:：]\d{2}/.test(t) && /^[A-Za-z]{0,4}[\s.#]*[\d:：.;'"\s\/\-–—+]+[A-Za-z]{0,3}$/.test(t)) return 'time';
+  if ((t.match(/[A-Za-z]/g) || []).length <= 5 && /^[A-Za-z#№.\s\d\/\-–—+×x%:,'°]+$/.test(t)) return 'no';
+  return null;
+};
+J.hideDecoText = (env, text) => {
+  const fx = env.fx || {};
+  if (!fx.hideNo && !fx.hideTime) return false;
+  const k = J.decoTextKind(text);
+  if (!k || !(k === 'no' ? fx.hideNo : fx.hideTime)) return false;
+  const lyr = env.cut ? String(env.cut.lineText || env.cut.text || '') : '';
+  return !lyr.includes(String(text).trim());
+};
 J.drawItem = (env, it) => {
   const ctx = env.ctx;
   const ghostPass = env.pass !== 'main';
   if (ghostPass && it.ghost === false) return null;
   if (!it.text || it.size <= 0.5) return null;
+  if (J.hideDecoText(env, it.text)) return null;
   if (!env.inLayer && !env.glyphLog && !env.hideText && env.allowFilter && !it.pieceFn && ((it.blur || 0) > 0.4 || (it.shadow && !ghostPass && (it.shadow.blur || 0) * (env.scale || 1) > 6))) {
     const r = drawItemLayered(env, it);
     if (r !== undefined) return r;
@@ -1836,10 +1855,31 @@ J.drawFx = (env, it) => {
 
 const unionBB = (a, b) => !a ? b : !b ? a : { x0: Math.min(a.x0, b.x0), y0: Math.min(a.y0, b.y0), x1: Math.max(a.x1, b.x1), y1: Math.max(a.y1, b.y1), boxes: [], cx: (Math.min(a.x0, b.x0) + Math.max(a.x1, b.x1)) / 2, cy: (Math.min(a.y0, b.y0) + Math.max(a.y1, b.y1)) / 2 };
 
+/* Latin text: break between words only, into as few balanced lines as fit (never more lines than words) */
+const splitWords = (text, maxPer) => {
+  const ws = text.trim().split(/\s+/), n = ws.length;
+  const total = ws.reduce((a, w) => a + [...w].length, 0) + n - 1;
+  const nLines = Math.min(n, Math.ceil(total / maxPer));
+  if (nLines <= 1) return ws.join(' ');
+  // balanced split: minimise the squared difference to the ideal line length
+  const len = (a, b) => ws.slice(a, b).reduce((s, w) => s + [...w].length, 0) + (b - a - 1);
+  const ideal = total / nLines, memo = new Map();
+  const best = (i, l) => {
+    if (l === 1) { const d = len(i, n) - ideal; return { c: d * d, cuts: [] }; }
+    const key = i + "," + l; if (memo.has(key)) return memo.get(key);
+    let r = { c: Infinity, cuts: [] };
+    for (let j = i + 1; j <= n - l + 1; j++) { const d = len(i, j) - ideal, sub = best(j, l - 1), c = d * d + sub.c; if (c < r.c) r = { c, cuts: [j, ...sub.cuts] }; }
+    memo.set(key, r); return r;
+  };
+  const cuts = [0, ...best(0, nLines).cuts, n], out = [];
+  for (let k = 0; k < cuts.length - 1; k++) out.push(ws.slice(cuts[k], cuts[k + 1]).join(' '));
+  return out.join('\n');
+};
 /* split long text into balanced lines, preferring script boundaries */
 J.splitLines = (text, maxPer) => {
   const arr = [...text];
   if (arr.length <= maxPer) return text;
+  if (J.isLatinText && J.isLatinText(text)) return /\s/.test(text.trim()) ? splitWords(text, maxPer) : text;   // one word stays whole
   const nLines = Math.ceil(arr.length / maxPer);
   const per = arr.length / nLines;
   const out = []; let start = 0;
@@ -2673,6 +2713,8 @@ J.SAMPLE_LYRICS = `夜明けの色を/覚えてる
 
 J.defaultProject = () => ({
   version: 1,
+  timingOrder: 2,                 // lyric lines keep their written order around LRC-tagged lines (v0.10)
+  themeId: null,                  // おまかせのテーマ (J.THEMES key) — only おまかせ reads it
   title: '', artist: '',
   lyrics: J.SAMPLE_LYRICS,
   style: 'noir', mood: null,
@@ -2689,7 +2731,7 @@ J.defaultProject = () => ({
   centerFree: false,              // 中央を空ける: lay the cuts out in side bands (left / right or top / bottom) around a character
   seed: 20260922,
   aspect: '16:9', res: 1080, fps: 24,
-  fx: { motion: 0.7, glitch: 0.55, chroma: 0.7, decor: 0.5, density: 0.55, texture: 0.6, flash: true, onTwos: true, koma: 12, hud: 'auto', bgSwitch: 0.35 },
+  fx: { motion: 0.7, glitch: 0.55, chroma: 0.7, decor: 0.5, density: 0.55, texture: 0.6, flash: true, onTwos: true, koma: 12, hud: 'auto', bgSwitch: 0.35, hideNo: false, hideTime: false },
   enabled: Object.fromEntries(J.GROUP_KEYS.map(g => [g, Object.fromEntries(J.order(g).map(k => [k, true]))])),
   timing: { bpm: 0, offset: 0.4, snap: true, tail: 0.9, lineTimes: {}, lineScale: 1 },
   overrides: {},
@@ -2748,8 +2790,23 @@ J.parseLyrics = (raw) => {
     if (times.length) times.forEach(t => lines.push(Object.assign({}, base, { lrc: t })));
     else lines.push(Object.assign({}, base, { lrc: null }));
   }
-  if (lines.some(l => l.lrc != null)) lines.sort((a, b) => (a.lrc ?? 1e9) - (b.lrc ?? 1e9));
+  // LRC: order by time. A line without a tag (an interlude, a line added by hand) stays right after the line it
+  // follows in the text — it used to be moved to the very end.
+  if (lines.some(l => l.lrc != null)) {
+    let key = -1, k = 0;
+    lines.forEach(l => { if (l.lrc != null) { key = l.lrc; k = 0; l._key = l.lrc; } else l._key = key + 1e-6 * ++k; });
+    lines.sort((a, b) => a._key - b._key);
+    lines.forEach(l => { delete l._key; });
+  }
   return { lines, meta };
+};
+/* the order the lyric lines had before v0.10 (untagged lines last) — used once to move saved per-line settings of old projects */
+J.parseOrderV1 = (raw) => {
+  const p = J.parseLyrics(raw), lines = p.lines.slice();
+  if (!lines.some(l => l.lrc != null) || lines.every(l => l.lrc != null)) return null;
+  const byRow = lines.map((l, i) => ({ l, i }));
+  const old = byRow.slice().sort((a, b) => ((a.l.lrc ?? 1e9) - (b.l.lrc ?? 1e9)) || (a.l.src - b.l.src));
+  return old.map(x => x.i);          // old index -> new index
 };
 
 /* ---------------- chunking (bunsetsu-ish) ---------------- */
@@ -2781,6 +2838,20 @@ J.segments = (text) => {
   if (cur) out.push(cur);
   return out;
 };
+/* Latin / Hangul helpers: words are joined with a space, except right after a dash (never- + ending → never-ending) */
+const WORDCH = /[A-Za-z\u00c0-\u024f0-9\uac00-\ud7af\u1100-\u11ff\u3130-\u318f]/;
+J.isWordLike = t => /^[A-Za-z\u00c0-\u024f0-9\uac00-\ud7af'’.,!?‐–—-]+$/.test(t) && WORDCH.test(t);
+J.joinWords = arr => {
+  const latin = /[A-Za-z]/.test(arr.join('')), HG = /[\uac00-\ud7af]/;
+  return arr.reduce((acc, w, i) => {
+    if (!i) return w;
+    if (/[-‐–—]$/.test(acc)) return acc + w;
+    return acc + (latin || (HG.test([...acc].pop()) && HG.test([...w][0])) ? ' ' : '') + w;
+  }, '');
+};
+/* mostly Latin letters (English, Indonesian, Vietnamese … lyrics) */
+J.isLatinText = t => { const s = String(t || '').replace(/\s/g, ''); if (!s) return false; const n = (s.match(/[A-Za-z\u00c0-\u024f\u1e00-\u1eff]/g) || []).length; return n / [...s].length >= 0.6; };
+
 J.chunkText = (text) => {
   const segs = J.segments(text);
   const chunks = []; let cur = null;
@@ -2805,11 +2876,15 @@ J.chunkText = (text) => {
   const out = [];
   for (const c of chunks) {
     const n = [...c].length;
-    if (n > 10) { J.splitLines(c, Math.ceil(n / Math.ceil(n / 8))).split('\n').forEach(x => out.push(x)); }
+    if (n > 10 && J.isWordLike(c)) {
+      // one long Latin / Hangul word: never cut inside it — only after its dashes (never-ending → never- / ending)
+      const parts = c.split(/(?<=[-‐–—])(?=\S)/);
+      if (parts.length > 1) parts.forEach(x => out.push(x)); else out.push(c);
+    } else if (n > 10) { J.splitLines(c, Math.ceil(n / Math.ceil(n / 8))).split('\n').forEach(x => out.push(x)); }
     else out.push(c);
   }
   for (let i = out.length - 1; i > 0; i--) {
-    if ([...out[i]].length === 1 && !J.isKanji(out[i])) { out[i - 1] += out[i]; out.splice(i, 1); }
+    if ([...out[i]].length === 1 && !J.isKanji(out[i])) { out[i - 1] += (WORDCH.test([...out[i - 1]].pop()) && WORDCH.test(out[i]) && !/[-‐–—]$/.test(out[i - 1]) ? ' ' : '') + out[i]; out.splice(i, 1); }
   }
   return out.length ? out : [text];
 };
@@ -2817,7 +2892,7 @@ J.chunkText = (text) => {
 /* English lyrics: cut by short phrases, not word by word (a Japanese chunk holds about as much as 2–3 English words) */
 J.phraseChunks = (words) => {
   const out = []; let cur = [], letters = 0;
-  const flush = () => { if (cur.length) out.push(cur.join(' ')); cur = []; letters = 0; };
+  const flush = () => { if (cur.length) out.push(J.joinWords(cur)); cur = []; letters = 0; };
   for (const w of words) {
     const n = (w.match(/[A-Za-z\u00c0-\u024f0-9]/g) || []).length;
     cur.push(w); letters += n;
@@ -2825,7 +2900,7 @@ J.phraseChunks = (words) => {
   }
   flush();
   // a lone short word at the end joins the previous phrase
-  if (out.length >= 2 && out[out.length - 1].replace(/[^A-Za-z]/g, '').length <= 4) { const last = out.pop(); out[out.length - 1] += ' ' + last; }
+  if (out.length >= 2 && out[out.length - 1].replace(/[^A-Za-z]/g, '').length <= 4) { const last = out.pop(); out[out.length - 1] = J.joinWords([out[out.length - 1], last]); }
   return out.length ? out : words;
 };
 
@@ -2834,24 +2909,43 @@ J.computeTiming = (project, parsed, audio) => {
   const T = project.timing || {};
   const lines = parsed.lines;
   const beat = T.bpm > 0 ? 60 / T.bpm : 0;
-  const starts = [];
-  const allLrc = lines.length && lines.every(l => l.lrc != null);
-  let t = T.offset ?? 0.4;
-  lines.forEach((l, i) => {
+  // fixed times: a hand-set time (typed, tapped, dragged) wins over the LRC tag; the rest is estimated
+  const fixed = lines.map((l, i) => {
     const man = T.lineTimes && T.lineTimes[i] != null ? +T.lineTimes[i] : null;
-    let s;
-    if (man != null && isFinite(man)) s = man;          // a hand-set time (typed, tapped, dragged) wins over the LRC tag
-    else if (allLrc) s = l.lrc;
-    else {
-      if (i > 0) {
-        const n = [...lines[i - 1].text].length, pl = lines[i - 1];
-        let d = pl.interlude ? (pl.secs > 0 ? pl.secs : 4) : J.clamp(0.8 + n * 0.17, 1.3, 5.2) * (T.lineScale || 1);
-        if (beat && !(pl.interlude && pl.secs > 0)) d = Math.max(2, Math.round(d / beat)) * beat;
-        s = starts[i - 1] + d + (l.gapBefore ? (beat ? beat * 2 : 0.8) : 0);
-      } else s = t;
-    }
-    starts.push(s);
+    if (man != null && isFinite(man)) return Math.max(0, man);
+    return l.lrc != null && isFinite(l.lrc) ? l.lrc : null;
   });
+  // a fixed time may not go back past an earlier one (the saved value itself is left alone)
+  let lastFix = -Infinity;
+  for (let i = 0; i < fixed.length; i++) if (fixed[i] != null) { if (fixed[i] < lastFix + 0.05) fixed[i] = lastFix + 0.05; lastFix = fixed[i]; }
+  const natural = i => {         // estimated length of line i
+    const n = [...lines[i].text].length, L = lines[i];
+    let d = L.interlude ? (L.secs > 0 ? L.secs : 4) : J.clamp(0.8 + n * 0.17, 1.3, 5.2) * (T.lineScale || 1);
+    if (beat && !(L.interlude && L.secs > 0)) d = Math.max(2, Math.round(d / beat)) * beat;
+    return d;
+  };
+  const gapOf = i => (i > 0 && i < lines.length && lines[i].gapBefore ? (beat ? beat * 2 : 0.8) : 0);
+  const starts = new Array(lines.length);
+  let i = 0, t = T.offset ?? 0.4;
+  if (fixed.length && fixed[0] != null) t = fixed[0];
+  while (i < lines.length) {
+    if (fixed[i] != null) { starts[i] = fixed[i]; t = fixed[i]; i++; continue; }
+    // a run of estimated lines [i, j) between the previous start and the next fixed time (if any)
+    let j = i; while (j < lines.length && fixed[j] == null) j++;
+    if (i === 0 && j < lines.length && t >= fixed[j]) t = 0;
+    const from = i > 0 ? starts[i - 1] : t;
+    // chained the same way as before (so plans without fixed times stay exactly the same)
+    for (let k = i; k < j; k++) starts[k] = k > 0 ? starts[k - 1] + natural(k - 1) + gapOf(k) : t;
+    if (j < lines.length) {
+      // they must all start before the next fixed time: squeeze them into the room there is
+      const room = fixed[j] - from, need = starts[j - 1] + natural(j - 1) + gapOf(j) - from;
+      if (need > room) {
+        const f = room > 0 ? room / need : 0;
+        for (let k = i; k < j; k++) starts[k] = from + (starts[k] - from) * f;
+      }
+    }
+    i = j;
+  }
   const ends = starts.map((s, i) => {
     if (i < starts.length - 1) return Math.max(s + 0.35, starts[i + 1]);
     const n = [...lines[i].text].length, L = lines[i];
@@ -2922,6 +3016,7 @@ J.plan = (project, audio) => {
   let schemeIdx = 0;
   const nSchemes = st.schemes.length;
   const addEvent = (t, type, amp, dur) => plan.events.push({ t, type, amp, dur });
+  const evOwner = new WeakMap(); Object.defineProperty(plan, 'evOwner', { value: evOwner });
 
   // title card
   const firstStart = tm.starts.length ? tm.starts[0] : 0;
@@ -2938,7 +3033,7 @@ J.plan = (project, audio) => {
     const lineSeed = ov.lock && ov.lockedSeed != null ? ov.lockedSeed : J.h(project.seed, li + 1, ov.seed | 0);
     const rng = J.rng(lineSeed);
     if (ln.interlude) {                                    // [間奏]: background, decorations and screen effects only
-      plan.lines.push({ index: li, src: ln.src, text: '', interlude: true, secs: ln.secs, start: s, end: e, visEnd: e, note: null, impact: false, emph: [], chunks: [], seed: lineSeed });
+      plan.lines.push({ index: li, src: ln.src, lrc: ln.lrc, text: '', interlude: true, secs: ln.secs, start: s, end: e, visEnd: e, note: null, impact: false, emph: [], chunks: [], seed: lineSeed });
       const bg = ov.bg && J.BG[ov.bg] ? ov.bg : pickBg(rng, st, en, fx, bgHistory); bgHistory.push(bg);
       const dur = e - s, showTitle = dur >= 6 && !!(title || artist);
       plan.cuts.push(makeCut({ text: '', lineText: '', line: li, start: s, end: e, layout: 'interlude', enter: 'blur', exit: 'blur', hold: 'still', inDur: 0.4, outDur: 0.4,
@@ -2954,14 +3049,14 @@ J.plan = (project, audio) => {
     const n = [...ln.text.replace(/\s+/g, '')].length;
     const visEnd = Math.min(e, s + Math.max(3.6, n * 0.5 + 1.2));
     const D = visEnd - s;
-    plan.lines.push({ index: li, src: ln.src, text: ln.text, start: s, end: e, visEnd, note: ln.note, impact: ln.impact, emph: ln.emph, chunks: null, seed: lineSeed });
+    plan.lines.push({ index: li, src: ln.src, lrc: ln.lrc, text: ln.text, start: s, end: e, visEnd, note: ln.note, impact: ln.impact, emph: ln.emph, chunks: null, seed: lineSeed });
     const chunks = ln.manual || (plan.lang === 'en' ? J.phraseChunks(J.chunkText(ln.text)) : J.chunkText(ln.text));
     plan.lines[li].chunks = chunks;
     const L = J.lerp(1.3, 0.5, fx.density);
     let nC = Math.round(D / L);
     const maxC = chunks.length + (chunks.length >= 2 && D > 2.0 ? 1 : 0);
     nC = J.clamp(nC, 1, Math.max(1, maxC));
-    const ovAny = Object.keys(ov).some(k2 => !['lock', 'lockedSeed', 'seed', 'cutTech', 'cutLayouts', 'cutQuiet'].includes(k2));
+    const ovAny = Object.keys(ov).some(k2 => !['lock', 'lockedSeed', 'seed', 'cutTech', 'cutLayouts', 'cutQuiet', 'cutTime'].includes(k2));
     const kime = !!(U && U.kime.has(li) && !ov.cuts);
     if (ov.single || kime) nC = 1;
     if (zones) nC = Math.max(1, Math.min(nC, Math.floor(chunks.length / 2)));   // 中央を空ける: each cut is split in two, so keep ≥ 2 words per cut
@@ -2973,7 +3068,7 @@ J.plan = (project, audio) => {
     let groups;
     const nG = Math.min(nC, chunks2.length);
     if (nG <= 1) groups = [ln.text];
-    else groups = partition(chunks2, nG).map(g => g.join(/[A-Za-z]/.test(g.join('')) ? ' ' : ''));
+    else groups = partition(chunks2, nG).map(g => J.joinWords(g));
     const recap = !fixedN && nC > groups.length && groups.length >= 2;
     let units = groups.map(g => ({ text: g, w: [...g].length + 1.6 }));
     if (recap) units.push({ text: ln.text, w: (units.reduce((a, u) => a + u.w, 0) / units.length) * 1.25, recap: true });
@@ -2988,6 +3083,13 @@ J.plan = (project, audio) => {
     let acc = s; const bounds = [s];
     units.forEach((u, k) => { acc += D * u.w / tot; bounds.push(k === units.length - 1 ? visEnd : acc); });
     for (let k = 1; k < bounds.length - 1; k++) bounds[k] = J.clamp(snap(bounds[k]), bounds[k - 1] + 0.22, bounds[k + 1] - 0.22);
+    // カットの開始時刻 (詳細モード): seconds from the line start, set by hand or by tapping — kept in order, 0.22 s apart
+    if (ov.cutTime && typeof ov.cutTime === 'object') {
+      const nb = bounds.length - 1;
+      for (let k = 1; k < nb; k++) { const d = +ov.cutTime[k]; if (ov.cutTime[k] != null && isFinite(d)) bounds[k] = J.clamp(s + d, s + 0.22 * k, visEnd - 0.22 * (nb - k)); }
+      for (let k = 1; k < nb; k++) if (bounds[k] < bounds[k - 1] + 0.22) bounds[k] = bounds[k - 1] + 0.22;
+      for (let k = nb - 1; k >= 1; k--) if (bounds[k] > bounds[k + 1] - 0.22) bounds[k] = bounds[k + 1] - 0.22;
+    }
     // scheme per line
     if (nSchemes > 1 && li > 0 && (U ? U.sectionStart(li) && rng.chance(0.25 + fx.bgSwitch) : rng.chance(fx.bgSwitch * (ln.impact ? 1.8 : 1)))) schemeIdx = (schemeIdx + 1 + rng.int(0, nSchemes - 2)) % nSchemes;
     const emphLine = ln.impact || ln.emph.length > 0;
@@ -3185,6 +3287,7 @@ J.plan = (project, audio) => {
         let extra = 0;
         for (const e of mine) if (e.type === 'chroma' || e.type === 'shake' && emph || extra++ < 1) plan.events.push(e);
       }
+      for (let q = evMark; q < plan.events.length; q++) evOwner.set(plan.events[q], cut);   // which cut each accent came from (for ロック)
     });
     // interlude in long gaps
     const nextStart = li < parsed.lines.length - 1 ? tm.starts[li + 1] : null;
@@ -3355,6 +3458,9 @@ J.lineSnapshot = (plan, li) => {
     trans: c.trans, transP: c.transP, transDur: c.transDur, morph: c.morph || null, weightGrow: !!c.weightGrow, kime: !!c.kime, recap: !!c.recap, twinParams: c.companion ? c.companion.params : null, events: [] }))));
   // each accent belongs to the cut it plays in (the ones just before a cut start belong to that cut)
   for (const e of plan.events) {
+    // an accent belongs to the cut that made it — also one that plays after the line ends (an exit accent)
+    const own = plan.evOwner && plan.evOwner.get(e);
+    if (own) { const k = cuts.indexOf(own); if (k >= 0) S[k].events.push({ dt: +(e.t - cuts[k].start).toFixed(4), type: e.type, amp: e.amp, dur: e.dur }); continue; }
     let k = -1;
     // [start − 0.25, next start − 0.25): an accent just before the following cut belongs to that cut
     for (let j = 0; j < cuts.length; j++) { const until = j < cuts.length - 1 ? cuts[j + 1].start - 0.25 : cuts[j].end - 0.3; if (e.t >= cuts[j].start - 0.25 && e.t < until) k = j; }
@@ -3685,13 +3791,32 @@ J.MOODS = {
   for (const [g, map] of Object.entries(extra)) for (const [k, ms] of Object.entries(map)) ms.forEach(m => add(g, k, m));
 })();
 
-J.omakase = (project, rnd = Math.random) => {
+/* テーマ: おまかせ within one direction. A theme picks among its moods, turns on the part switches it needs
+   (returned with the result) and always keeps the parts of its set / 和風 as candidates. No theme = the usual おまかせ. */
+J.THEMES = {
+  lyricpv: { name: '文字PV', moods: ['editorial', 'graphic', 'emotional'], set: 'typo' },
+  kinetic: { name: 'キネティック', moods: ['pop', 'graphic', 'glitch'], set: 'kinetic' },
+  wa:      { name: '和風', moods: ['calm', 'emotional', 'editorial'], wa: true },
+  horror:  { name: 'ホラー', moods: ['horror'], set: 'horror' },
+  pop:     { name: 'ポップ', moods: ['pop'] },
+  ballad:  { name: 'バラード', moods: ['calm', 'emotional'], koma: [0, 0, 12] },
+};
+J.THEME_ORDER = Object.keys(J.THEMES);
+
+J.omakase = (project, rnd = Math.random, themeId = null) => {
+  const T = themeId && J.THEMES[themeId] ? J.THEMES[themeId] : null;
+  const switches = {};
+  if (T && T.set) switches[T.set] = true;
+  if (T && T.wa) { switches.wa = true; switches.extra = true; }     // most 和風 parts belong to 追加分
+  if (T) project = Object.assign({}, project, switches);
+  const themePart = d => !!(T && d && ((T.set && d.set === T.set) || (T.wa && d.wa)));
   const pick = a => a[Math.floor(rnd() * a.length) % a.length];
   const range = r => +(r[0] + (r[1] - r[0]) * rnd()).toFixed(2);
   const moodOk = k => !J.MOODS[k].set || (J.setOn && J.setOn(project, J.MOODS[k].set));
-  const moods = Object.keys(J.MOODS).filter(k => k !== project.mood && moodOk(k));
+  let moods = Object.keys(J.MOODS).filter(k => k !== project.mood && moodOk(k));
+  if (T) { const tm = T.moods.filter(k => J.MOODS[k] && moodOk(k)); moods = tm.filter(k => k !== project.mood); if (!moods.length) moods = tm.length ? tm : Object.keys(J.MOODS).filter(moodOk); }
   // with the ホラー switch on, おまかせ leans to the ホラー mood (it may repeat)
-  const mood = moodOk('horror') && rnd() < 0.55 ? 'horror' : pick(moods), M = J.MOODS[mood];
+  const mood = !T && moodOk('horror') && rnd() < 0.55 ? 'horror' : pick(moods), M = J.MOODS[mood];
   // a set tied to a mood (ホラー) is only used in that mood
   const moodSetOk = d => !(d && d.set) || !Object.values(J.MOODS).some(m => m.set === d.set) || M.set === d.set;
   // style: mostly one that suits the mood, sometimes anything; never the same twice in a row
@@ -3699,12 +3824,13 @@ J.omakase = (project, rnd = Math.random) => {
   const okStyle = k => J.STYLES[k] && (!J.randomOk || J.randomOk(project, 'style', k)) && moodSetOk(J.STYLES[k]);
   const moodStyles = [...new Set([...(M.styles || []), ...J.STYLE_ORDER.filter(k => (J.STYLES[k].moods || []).includes(mood))])].filter(okStyle);
   let pool = (moodStyles.length && rnd() < 0.72 ? moodStyles : J.STYLE_ORDER.filter(okStyle)).filter(k => k !== project.style);
+  if (T) { const ts = J.STYLE_ORDER.filter(k => okStyle(k) && themePart(J.STYLES[k]) && k !== project.style); if (ts.length && rnd() < 0.8) pool = ts; }
   if (!pool.length) pool = J.STYLE_ORDER.filter(k => k !== project.style && okStyle(k));
   if (!pool.length) pool = J.STYLE_ORDER.filter(k => k !== project.style);
   const style = pick(pool);
   const fx = Object.assign({}, project.fx);
   for (const k of Object.keys(M.fx)) fx[k] = range(M.fx[k]);
-  fx.koma = pick({ horror: [12, 8, 0], glitch: [12, 12, 8], pop: [12, 12, 8, 0], calm: [0, 0, 12], editorial: [0, 12], emotional: [12, 0], graphic: [12, 12, 0] }[mood] || [12, 8, 0]);
+  fx.koma = pick(T && T.koma ? T.koma : { horror: [12, 8, 0], glitch: [12, 12, 8], pop: [12, 12, 8, 0], calm: [0, 0, 12], editorial: [0, 12], emotional: [12, 0], graphic: [12, 12, 0] }[mood] || [12, 8, 0]);
   fx.onTwos = fx.koma > 0; fx.flash = rnd() < 0.65; fx.hud = pick(['auto', 'auto', 'on', 'off']);
   // technique subset per group: everything tagged with the mood (plus the mood's hand-picked core items),
   // a sprinkle of everything else, and a minimum count so the planner always has room to vary
@@ -3714,6 +3840,7 @@ J.omakase = (project, rnd = Math.random) => {
     const order = J.order(g).filter(k => !(J.registry(g)[k] || {}).special && (!J.randomOk || J.randomOk(project, g, k)) && moodSetOk(J.registry(g)[k]));
     const hand = ['layout', 'enter', 'exit'].includes(g) && Array.isArray(M[g]) ? M[g] : [];   // (M.fx holds slider ranges, not a list)
     const prefer = mood === 'chaos' ? null : new Set([...hand, ...J.taggedWith(g, mood)]);
+    if (prefer && T) for (const k of order) if (themePart(J.registry(g)[k])) prefer.add(k);   // the theme's own parts stay in
     const on = {};
     // entries of a set tied to another mood are switched off explicitly (a missing key would count as enabled)
     for (const k of J.order(g)) if (!moodSetOk(J.registry(g)[k])) on[k] = false;
@@ -3744,8 +3871,8 @@ J.omakase = (project, rnd = Math.random) => {
   }
   // keep locked lines, drop other per-line picks
   const overrides = {};
-  for (const [i, o] of Object.entries(project.overrides || {})) if (o.lock) overrides[i] = o;
-  return { mood, style, fx, enabled, fonts, colors, overrides, seed: Math.floor(rnd() * 1e9) };
+  for (const [i, o] of Object.entries(project.overrides || {})) if (o.lock) overrides[i] = o; else if (o.cutTime) overrides[i] = { cutTime: o.cutTime };   // cut times are timing, not the look
+  return Object.assign({ mood, style, fx, enabled, fonts, colors, overrides, seed: Math.floor(rnd() * 1e9) }, switches);
 };
 })();
 
@@ -19821,7 +19948,7 @@ function splitK(text, k, force) {
     words.forEach((w, i) => { const l = J.glyphCount(w); if (l > bl && !hard.has(w)) { bl = l; bi = i; } });
     if (bi < 0) break;
     let parts = latin ? [words[bi]] : split2(words[bi]);
-    if (parts.length < 2 && force && words.length < force) parts = split2(words[bi], true);
+    if (parts.length < 2 && force && words.length < force && !latin) parts = split2(words[bi], true);   // never cut inside a Latin word
     if (parts.length < 2) { hard.add(words[bi]); continue; }
     words.splice(bi, 1, ...parts);
   }
@@ -19904,7 +20031,7 @@ function dash(env, x0, y0, x1, y1, d, g, col, lw, a = 1) {
 const closeLoop = pts => pts.concat([pts[0], pts[1]]);
 /* one-call text row for dense secondary copy (main pass only); sp = extra px after each glyph */
 function fastRow(env, text, font, size, x, y, sp, color, alpha, align = 'left') {
-  if (env.pass !== 'main' || alpha <= 0.01 || !text) return;
+  if (env.pass !== 'main' || alpha <= 0.01 || !text || J.hideDecoText(env, text)) return;
   const ctx = env.ctx;
   if (!('letterSpacing' in ctx)) { env.draw({ text, font, size, x, y, align, track: sp / size, color, alpha, ghost: false }); return; }
   ctx.save();
@@ -21151,6 +21278,7 @@ reg('panels', {
   plan: (rng, cut, st) => { const k = cut.n >= 6 ? 3 : 2; return { chunks: splitK(cut.text, k, 2), font: rng.pick(fontsOf(st, ['display', 'serif'])), acc: rng.int(0, 2), fx: rng.pick(['focus', 'tone', 'focus', 'none']), slant: rng.range(5, 11), widths: [rng.range(0.8, 1.25), rng.range(0.8, 1.25), rng.range(0.8, 1.25)] }; },
   render(env) {
     const { W, H, sc, ctx } = env, p = env.cut.params, u = U(env), port = isPort(env);
+    const ltr = !port && J.isLatinText && J.isLatinText(env.cut.text);   // Latin lyrics read left → right
     let ch = p.chunks && p.chunks.length ? p.chunks : splitK(env.cut.text, 2, 2);
     const k = ch.length;
     const m = u * 0.05, g = u * 0.028, lw = Math.max(3, u * 0.0065);
@@ -21168,7 +21296,7 @@ reg('panels', {
       const a0 = a + (i === 0 ? 0 : g / 2), b0 = b - (i === k - 1 ? 0 : g / 2);
       // in reading-axis coordinates: (t, c) with c in [0, cross]
       const q = [[a0 + sa, 0], [b0 + sb, 0], [b0 - sb, cross], [a0 - sa, cross]];
-      const poly = q.map(([t, c]) => (port ? [m + c, m + t] : [W - m - t, m + c]));
+      const poly = q.map(([t, c]) => (port ? [m + c, m + t] : ltr ? [m + t, m + c] : [W - m - t, m + c]));
       poly.along = Math.min((b0 + sb) - (a0 + sa), (b0 - sb) - (a0 - sa));
       polys.push(poly);
     }
@@ -21180,8 +21308,8 @@ reg('panels', {
       // wipe along the reading direction
       let rev = poly;
       if (e < 1) {
-        const xs = poly.map(q => (port ? q[1] : -q[0])), lo = Math.min(...xs), hi = Math.max(...xs);
-        rev = clipHalf(poly, port ? 0 : -1, port ? 1 : 0, lo + (hi - lo) * e);
+        const xs = poly.map(q => (port ? q[1] : ltr ? q[0] : -q[0])), lo = Math.min(...xs), hi = Math.max(...xs);
+        rev = clipHalf(poly, port ? 0 : ltr ? 1 : -1, port ? 1 : 0, lo + (hi - lo) * e);
       }
       if (rev.length < 3) return;
       const accent = i === p.acc % k;
@@ -23779,7 +23907,7 @@ function fitBlock(text, font, aw, ah, o = {}, maxLines = 4) {
 const rowW = (text, font, size) => { let w = 0; for (const ch of text) w += J.metrics.adv(font, ch) * size; return w; };
 /* one-call text row for dense secondary copy (main pass only); sp = extra px after each glyph */
 function fastRow(env, text, font, size, x, y, sp, color, alpha, align = 'left') {
-  if (env.pass !== 'main' || alpha <= 0.01 || !text) return;
+  if (env.pass !== 'main' || alpha <= 0.01 || !text || J.hideDecoText(env, text)) return;
   const ctx = env.ctx;
   if (!('letterSpacing' in ctx)) { env.draw({ text, font, size, x, y, align, track: sp / size, color, alpha, ghost: false }); return; }
   ctx.save();

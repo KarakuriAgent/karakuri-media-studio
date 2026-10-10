@@ -4,8 +4,8 @@
  * 中身の正本は Remotion 側の zod（`remotion/src/schema.ts` の
  * `lyricOverlaySchema`）で、ここは**画面が触る項目を出し入れする**だけ:
  *
- * - 全体（スタイル・雰囲気・シード・部品セット・統一感・文字整列・中央を空ける・
- *   スライダー・歌詞テキスト）
+ * - 全体（スタイル・雰囲気・テーマ・シード・部品セット・統一感・文字整列・中央を空ける・
+ *   スライダー・飾りの数字 / 時刻を隠す・歌詞テキスト）
  * - 行ごとの上書き（`overrides["0"]` … 部品の指名と位置ずらし `offset` / `scale`）
  *
  * カット単位の指名（`cutTech` / `cutLayouts` / `cutOffsets`）は画面には出さないが、
@@ -68,6 +68,23 @@ export const LYRIC_SWITCHES = [
     name: 'typeset',
     label: '文字整列',
     title: 'カナの詰め・助詞を小さく・0.2 秒先出し・装飾と演出を控えめに',
+  },
+] as const
+
+/**
+ * 飾りの数字・時刻を隠す（本家 v0.10 の `fx.hideNo` / `fx.hideTime`。既定はどちらも
+ * OFF）。そのカットの歌詞に含まれる文字は歌詞なので消えない。
+ */
+export const LYRIC_DECO_HIDES = [
+  {
+    name: 'hideNo',
+    label: '数字を隠す',
+    title: '飾りの数字（No.01 / #03 / 128 など）を出さない。歌詞の中の数字は消さない',
+  },
+  {
+    name: 'hideTime',
+    label: '時刻を隠す',
+    title: '飾りの時刻（00:12.34 / REC 1:05 など）を出さない。歌詞の中の時刻は消さない',
   },
 ] as const
 
@@ -224,6 +241,11 @@ export function lyricSeed(lyric: Lyric): number {
     : 0
 }
 
+/** `lyric.theme`（おまかせのテーマ。無ければ空文字 = テーマなし）。 */
+export function lyricTheme(lyric: Lyric): string {
+  return typeof lyric.theme === 'string' ? lyric.theme : ''
+}
+
 /** `lyric.lyrics`（無ければ空文字）。 */
 export function lyricText(lyric: Lyric): string {
   return typeof lyric.lyrics === 'string' ? lyric.lyrics : ''
@@ -239,6 +261,7 @@ export const LYRIC_SHOWN_KEYS = [
   'lyrics',
   'style',
   'mood',
+  'theme',
   'seed',
   'extra',
   'wa',

@@ -5,8 +5,8 @@
 のソース。**無改変**で置いてある（足りないところは下の「手元パッチ」でエンジンの外から補う）。
 
 - 取り込み元: <https://github.com/852wa/JIZURA>
-- コミット: `bae339e450512435b829a717248ea92ae5b44899`
-- 取り込み日: 2026-09-26
+- コミット: `fc16bfe43ea4a6c25a21f1caf04d17326de14f00`
+- 取り込み日: 2026-10-10
 - ファイル: `src/*.js` のうち 38 本
 - ライセンス: MIT（全文は隣の `LICENSE`。Copyright (c) 2026 hakoniwa）
 
@@ -16,6 +16,7 @@
 | --- | --- | --- | --- |
 | 2026-09-24 | `1b48bea` | 29 | 初回 |
 | 2026-09-26 | `bae339e`（v0.9.0） | 38 | 部品セット 3 つ（文字PV系 `11p_typo*` / キネティック `11p_kinetic*` / ホラー `11p_horror*`、+153 部品・スタイル 3・雰囲気 `horror`、`11q_sets.js` の `J.SETS`）。`J.defaultProject()` に `typo` / `kinetic` / `horror` / `unify`（統一感）/ `typeset`（文字整列）/ `centerFree` / `centerDir`（中央を空ける）/ `locks`。overrides にカット単位の指名（`cuts` / `cutLayouts` / `cutTech`）とロックの中身（`lockedCuts`）。歌詞の `[間奏]` 行、モーフ（統一感）。トランジションは 20 → 27 種 |
+| 2026-10-10 | `fc16bfe`（v0.10.1） | 38 | 本数・部品キー（860）・スタイル（27）は変わらず、変わったのは `03_text.js` / `06_layouts.js` / `08_planner.js` / `08b_omakase.js` / `11p_layoutsA.js` / `11p_layoutsC.js`（`09_render.js` は無変更）。おまかせのテーマ `J.THEMES` / `J.THEME_ORDER`（`J.omakase(project, rnd, themeId)` の第 3 引数）と `project.themeId`、飾りの数字・時刻を出さない `fx.hideNo` / `fx.hideTime`、overrides のカットの開始秒 `cutTime`、ラテン文字歌詞の単語単位の改行。LRC の時刻タグの無い行が末尾へ回らず直前の行の後ろに残る（`project.timingOrder: 2`、旧順との対応は `J.parseOrderV1`）、行の開始時刻は固定時刻（LRC・`lineTimes`）と推定の混在で解く。**前回の `bae339e` は本家の履歴から消えている**（履歴が書き換えられた模様。本家での v0.9.0 は `55817c4`） |
 
 ## 何を取ったか
 
@@ -36,7 +37,7 @@ upstream の `src/` にある「エンジン」だけ。`src/*.js` は
 | `05b_registry.js` | 部品グループの登録簿（`J.register` / `J.order`） |
 | `06_layouts.js` `07_decor.js` | 基本のレイアウトと装飾 |
 | `08_planner.js` | 歌詞 → 行 → カット → イベントの構成（`J.plan`） |
-| `08b_omakase.js` | おまかせ（雰囲気からまとめて決める） |
+| `08b_omakase.js` | おまかせ（雰囲気からまとめて決める）とテーマ（`J.THEMES`） |
 | `09_render.js` | 1 フレームの描画（`J.Renderer#frame`） |
 | `10_audio.js` | 音源解析とビートグリッド（`J.beatGrid`） |
 | `11p_*.js` | 表現パック 15 本（レイアウト・入り・抜け・装飾・質感・背景・カメラ・FX） |
@@ -162,6 +163,18 @@ p, {cw, ch, sc, scPrev, st, tmp, …})`」の形か。新しく増えたトラ�
 いないか）。全トランジションを透過で描いて、色の付いた下地に重ねたときに全面単色のフレームが
 出ないことを数値で確かめる（下地と焼き上がりを 64x36 に縮め、最多色の割合が下地より大きく
 跳ねたフレームを数える。2026-09-26 の取り込みでは 27 種 × 4 スタイルで跳ね 0.03 以下）。
+
+2026-10-10（v0.10.1）のやり方と結果: `FxOverlay`（640x360・24fps、`base` は
+`gradient:135:#1f7a8c,#e2a03f`、`ambient` なし）の `lyric` に、28 行の歌詞を 1.6 秒おきに
+`timing.lineTimes` で置き、全行 `layout: "center"` / `single: true` / `bg: "none"`、
+2 行目以降の `trans` に 27 種を 1 つずつ割り当て（`fx.flash: false`、`horror: true`）、
+スタイル noir / paper / hrNightRec / candy で 1 本ずつ焼く。`lyric` を抜いた下地だけの
+1 本と並べ、各フレームを 64x36 に縮めて RGB を各 3 ビットに丸めた最多色の割合の差を取り、
+各トランジションの窓（カットの頭から 1.2 秒）の最大を見る。結果は全 108 通りで 0.006 以下
+（下地の最多色割合は 0.25）。同じ props を透過パッチを外して焼くと 0.63（`whipPan` /
+`uncover` / `inkBlob` …、跳ね 0.1 超のフレーム 78）なので、この測り方で塗りつぶしは拾える。
+窓の外では noir の 1 か所（行の終わりに画面が割れて落ちる絵柄）で 0.044 が出たが、
+パッチを外しても v0.9 のエンジンでも同じ値で、トランジションではない。
 
 **包んでいないもの:** レイアウト・装飾などの本体の絵柄は透過でもそのまま描く。幕（`curtain`）・
 ジッパー（`zipper`）・障子（`shoji`）・新聞（`newspaper`）・ホラーの懐中電灯（`hrFlashlight`）や

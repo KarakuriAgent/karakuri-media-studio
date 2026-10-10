@@ -12,11 +12,11 @@
     "upgrade": "remotion upgrade"
   },
   "dependencies": {
-    "@remotion/cli": "4.0.519",
-    "@remotion/media-utils": "4.0.519",
+    "@remotion/cli": "4.0.534",
+    "@remotion/media-utils": "4.0.534",
     "react": "19.0.0",
     "react-dom": "19.0.0",
-    "remotion": "4.0.519",
+    "remotion": "4.0.534",
     "zod": "4.4.3"
   },
   "devDependencies": {

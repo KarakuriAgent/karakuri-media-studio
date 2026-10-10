@@ -9,6 +9,7 @@
  *   groups  … `J.order(group)` の順で `{key: {name, tags, pack, extra, wa, set}}`
  *   styles  … `J.STYLE_ORDER` の順
  *   moods   … `J.MOODS`（おまかせの雰囲気）
+ *   themes  … `J.THEMES`（おまかせのテーマ。`J.THEME_ORDER` の順。v0.10）
  *   sets    … 部品セット（`J.SETS`。`typo` / `kinetic` / `horror` と既定の ON / OFF）
  *   fonts   … `J.FONTS`（`project.fonts` に指定できるフォントキー）
  *   aspects … `J.designSize()` が知っているアスペクト比とデザインサイズ
@@ -96,6 +97,17 @@ async function main() {
     if (mood.set) moods[key].set = mood.set;   // そのセットの部品を使う雰囲気（ホラー）
   }
 
+  // おまかせのテーマ（雰囲気の候補・ON にする部品セット / 和風・作画枚数の候補）
+  const themes = {};
+  for (const key of J.THEME_ORDER || Object.keys(J.THEMES || {})) {
+    const theme = J.THEMES[key];
+    if (!theme) continue;
+    themes[key] = { name: theme.name, moods: [...theme.moods] };
+    if (theme.set) themes[key].set = theme.set;
+    if (theme.wa) themes[key].wa = true;     // 和風（wa と追加分 extra を ON にする）
+    if (theme.koma) themes[key].koma = [...theme.koma];
+  }
+
   // 部品セットと既定の ON / OFF（本家の UI ラベルは 12_ui.js にあるので、ここで名前を添える）
   const SET_NAMES = { typo: '文字PV系', kinetic: 'キネティック', horror: 'ホラー' };
   const sets = {};
@@ -118,11 +130,11 @@ async function main() {
   const total = Object.values(groups).reduce((n, g) => n + Object.keys(g).length, 0);
   const catalog = {
     _note:
-      'remotion/scripts/export-jizura-catalog.mjs が生成。LyricMotion の overrides / style / mood に'
+      'remotion/scripts/export-jizura-catalog.mjs が生成。LyricMotion の overrides / style / mood / theme に'
       + ' 書けるキーの一覧。手で編集しないこと。',
     generatedFrom: 'remotion/vendor/jizura (UPSTREAM.md にコミット SHA)',
     counts: { parts: total, styles: Object.keys(styles).length, fonts: Object.keys(fonts).length },
-    groups, styles, moods, sets, fonts, aspects,
+    groups, styles, moods, themes, sets, fonts, aspects,
     sampleLyrics: J.SAMPLE_LYRICS,
   };
 

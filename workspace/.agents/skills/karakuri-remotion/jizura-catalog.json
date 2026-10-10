@@ -1,5 +1,5 @@
 {
-  "_note": "remotion/scripts/export-jizura-catalog.mjs が生成。LyricMotion の overrides / style / mood に 書けるキーの一覧。手で編集しないこと。",
+  "_note": "remotion/scripts/export-jizura-catalog.mjs が生成。LyricMotion の overrides / style / mood / theme に 書けるキーの一覧。手で編集しないこと。",
   "generatedFrom": "remotion/vendor/jizura (UPSTREAM.md にコミット SHA)",
   "counts": {
     "parts": 860,
@@ -8123,6 +8123,60 @@
     },
     "chaos": {
       "name": "全部入り"
+    }
+  },
+  "themes": {
+    "lyricpv": {
+      "name": "文字PV",
+      "moods": [
+        "editorial",
+        "graphic",
+        "emotional"
+      ],
+      "set": "typo"
+    },
+    "kinetic": {
+      "name": "キネティック",
+      "moods": [
+        "pop",
+        "graphic",
+        "glitch"
+      ],
+      "set": "kinetic"
+    },
+    "wa": {
+      "name": "和風",
+      "moods": [
+        "calm",
+        "emotional",
+        "editorial"
+      ],
+      "wa": true
+    },
+    "horror": {
+      "name": "ホラー",
+      "moods": [
+        "horror"
+      ],
+      "set": "horror"
+    },
+    "pop": {
+      "name": "ポップ",
+      "moods": [
+        "pop"
+      ]
+    },
+    "ballad": {
+      "name": "バラード",
+      "moods": [
+        "calm",
+        "emotional"
+      ],
+      "koma": [
+        0,
+        0,
+        12
+      ]
     }
   },
   "sets": {

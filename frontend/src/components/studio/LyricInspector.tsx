@@ -6,6 +6,7 @@ import { Button } from '../ui/button'
 import { Checkbox } from '../ui/checkbox'
 import {
   LYRIC_CENTER_DIRS,
+  LYRIC_DECO_HIDES,
   LYRIC_FX_SLIDERS,
   LYRIC_KOMA_OPTIONS,
   LYRIC_OFFSET_RANGE,
@@ -23,6 +24,7 @@ import {
   lyricRest,
   lyricSeed,
   lyricText,
+  lyricTheme,
   rollSeed,
   setLyricFx,
   setLyricOverride,
@@ -35,10 +37,10 @@ import {
  *
  * `FxInspector` と同じ流儀で、出すのは 3 段:
  *
- * - **全体** … 出す・出さない / スタイル / 雰囲気 / シード / 追加分・和風 /
+ * - **全体** … 出す・出さない / スタイル / 雰囲気 / テーマ / シード / 追加分・和風 /
  *   部品セット（文字PV系・キネティック・ホラー）/ 統一感・文字整列 /
- *   中央を空ける（縦長のときの向き）/ 演出の強さ（スライダー）/ 歌詞テキスト
- *   （LRC 記法のまま）
+ *   中央を空ける（縦長のときの向き）/ 演出の強さ（スライダー、飾りの数字・時刻を
+ *   隠す）/ 歌詞テキスト（LRC 記法のまま）
  * - **行ごとの上書き** … レイアウト・入り・保持・抜け・文字の処理・背景・カメラの
  *   指名（既定は「自動」）と装飾の複数選択、1 カットに固定、その行だけのシード、
  *   位置 X / Y・拡大率（手元パッチの `offset` / `scale`）とそのプリセット
@@ -130,6 +132,19 @@ export default function LyricInspector({
             disabled={busy || !engine}
             onChange={(value) =>
               onChange({ ...lyric, mood: value === '' ? null : value })
+            }
+          />
+          {/* テーマは雰囲気の候補と、ON にする部品セット・和風を決める（本家 v0.10） */}
+          <Picker
+            label="テーマ"
+            value={lyricTheme(lyric)}
+            autoLabel="なし"
+            options={engine?.themes ?? []}
+            extra
+            sets={sets}
+            disabled={busy || !engine}
+            onChange={(value) =>
+              onChange({ ...lyric, theme: value === '' ? null : value })
             }
           />
         </div>
@@ -311,6 +326,25 @@ export default function LyricInspector({
                 ))}
               </select>
             </label>
+          </div>
+          <div className="flex flex-wrap gap-3">
+            {LYRIC_DECO_HIDES.map((item) => (
+              <label
+                key={item.name}
+                className="flex cursor-pointer items-center gap-2 text-[11px]"
+              >
+                <Checkbox
+                  checked={lyricFxValue(lyric, item.name) === true}
+                  disabled={busy}
+                  onCheckedChange={(value) =>
+                    onChange(
+                      setLyricFx(lyric, item.name, value === true ? true : undefined),
+                    )
+                  }
+                />
+                <span title={item.title}>{item.label}</span>
+              </label>
+            ))}
           </div>
         </div>
 
@@ -890,6 +924,8 @@ interface Engine {
   groups: Record<string, Option[]>
   styles: Option[]
   moods: Option[]
+  /** おまかせのテーマ（`J.THEME_ORDER` の順。本家 v0.10 より前なら空）。 */
+  themes: Option[]
   parseLyrics: (raw: string) => { lines: { text: string; interlude?: boolean }[] }
 }
 
@@ -941,6 +977,11 @@ function useJizura(): Engine | null {
           moods: Object.entries(J.MOODS).map(([key, mood]) => ({
             key,
             name: mood.name,
+            extra: false,
+          })),
+          themes: (J.THEME_ORDER ?? []).map((key) => ({
+            key,
+            name: J.THEMES[key]?.name ?? key,
             extra: false,
           })),
           parseLyrics: (raw) => J.parseLyrics(raw),

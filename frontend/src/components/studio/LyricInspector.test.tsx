@@ -35,6 +35,11 @@ vi.mock('@fx/lib/jizura', () => {
       STYLE_ORDER: ['noir', 'paper'],
       STYLES: { noir: { name: 'ノワール' }, paper: { name: '紙' } },
       MOODS: { calm: { name: 'しっとり' } },
+      THEME_ORDER: ['lyricpv', 'wa'],
+      THEMES: {
+        lyricpv: { name: '文字PV', moods: ['editorial'], set: 'typo' },
+        wa: { name: '和風', moods: ['calm'], wa: true },
+      },
       parseLyrics: (raw: string) => ({
         lines: String(raw)
           .split('\n')
@@ -120,6 +125,41 @@ describe('LyricInspector', () => {
 
     fireEvent.click(screen.getByTitle('シードを振り直す（絵の選び方が変わる）'))
     expect(onChange.mock.calls[2][0].seed).not.toBe(7)
+  })
+
+  it('テーマは選べば theme に載り、「なし」で null に戻す', async () => {
+    const { onChange } = show()
+    const theme = (await screen.findByLabelText('テーマ')) as HTMLSelectElement
+    await waitFor(() => expect(theme.disabled).toBe(false))
+    expect(
+      Array.from(theme.querySelectorAll('option')).map((option) => option.textContent),
+    ).toEqual(['なし', '文字PV', '和風'])
+    expect(theme.value).toBe('')
+
+    fireEvent.change(theme, { target: { value: 'wa' } })
+    expect(onChange.mock.calls[0][0].theme).toBe('wa')
+    cleanup()
+
+    const again = show({ theme: 'wa' })
+    const picked = (await screen.findByLabelText('テーマ')) as HTMLSelectElement
+    await waitFor(() => expect(picked.value).toBe('wa'))
+    fireEvent.change(picked, { target: { value: '' } })
+    expect(again.onChange.mock.calls[0][0].theme).toBeNull()
+  })
+
+  it('数字・時刻を隠すは fx の hideNo / hideTime（外すと項目ごと消す）', async () => {
+    const { onChange } = show()
+    await screen.findAllByLabelText('レイアウト')
+    fireEvent.click(screen.getByText('数字を隠す'))
+    expect(onChange.mock.calls[0][0].fx).toEqual({ motion: 0.7, hideNo: true })
+    fireEvent.click(screen.getByText('時刻を隠す'))
+    expect(onChange.mock.calls[1][0].fx).toEqual({ motion: 0.7, hideTime: true })
+    cleanup()
+
+    const on = show({ fx: { motion: 0.7, hideNo: true } })
+    await screen.findAllByLabelText('レイアウト')
+    fireEvent.click(screen.getByText('数字を隠す'))
+    expect(on.onChange.mock.calls[0][0].fx).toEqual({ motion: 0.7 })
   })
 
   it('演出の強さのスライダーは fx の中だけを書き換える', async () => {

@@ -54,11 +54,26 @@ export interface JizuraOverride {
   lockedSeed?: number;
   /** ロック時に保存したカットの中身（本家エディタが書く。`J.lineSnapshot`）。 */
   lockedCuts?: Array<Record<string, unknown>>;
+  /**
+   * カット番号（0 始まりの文字列キー。`cutTech` と同じ数え方。0 番は常に行の頭なので
+   * 1 から）→ そのカットの開始秒（行の頭からの秒）。v0.10。前後のカットとは 0.22 秒離す。
+   * おまかせを掛け直しても残る。
+   */
+  cutTime?: Record<string, number>;
 }
 
 /** `J.defaultProject()` が返すプロジェクト。 */
 export interface JizuraProject {
   version: number;
+  /**
+   * 歌詞の行の並べ方の版（v0.10 から 2）。2 = LRC の時刻タグの無い行は、書いた位置の
+   * 直前の行の後ろに残る（1 = 末尾へ回る）。エンジンは常に 2 の並びで解き、この値は
+   * 本家エディタが古いプロジェクトの行番号キーを移すとき（`J.parseOrderV1`）だけ読む
+   * （ここでは移さない。理由は `remotion/src/schema.ts` の `lyricMotionSchema.overrides`）。
+   */
+  timingOrder: number;
+  /** おまかせのテーマ（`J.THEMES` のキー）。読むのはおまかせだけ。 */
+  themeId: string | null;
   title: string;
   artist: string;
   lyrics: string;
@@ -84,6 +99,10 @@ export interface JizuraProject {
   aspect: string;
   res: number;
   fps: number;
+  /**
+   * 演出の強さ。v0.10 で `hideNo` / `hideTime`（飾りの数字・時刻を出さない。そのカットの
+   * 歌詞に含まれる文字は消さない）が増えた。
+   */
   fx: Record<string, number | boolean | string>;
   enabled: Record<string, Record<string, boolean>>;
   timing: {
@@ -268,6 +287,19 @@ export interface JizuraEntry {
   [key: string]: unknown;
 }
 
+/**
+ * おまかせのテーマ（`J.THEMES` の値）。`moods` の中から雰囲気を選び、`set` の部品セット・
+ * `wa`（和風。追加分 `extra` も一緒に）を ON にして、その部品を候補に残す。`koma` は
+ * 作画枚数の候補（バラード）。
+ */
+export interface JizuraTheme {
+  name: string;
+  moods: string[];
+  set?: JizuraSetKey;
+  wa?: boolean;
+  koma?: number[];
+}
+
 /** JIZURA の名前空間（`window.J`）。 */
 export interface Jizura {
   SAMPLE_LYRICS: string;
@@ -276,6 +308,10 @@ export interface Jizura {
   FONTS: Record<string, JizuraEntry>;
   /** おまかせの雰囲気。`set` があるもの（ホラー）はそのセットが ON のときだけ選ばれる。 */
   MOODS: Record<string, { name: string; set?: JizuraSetKey; [key: string]: unknown }>;
+  /** おまかせのテーマ（v0.10。`08b_omakase.js`）。 */
+  THEMES: Record<string, JizuraTheme>;
+  /** テーマの並び（`lyricpv` / `kinetic` / `wa` / `horror` / `pop` / `ballad`）。 */
+  THEME_ORDER: string[];
   GROUP_KEYS: JizuraGroup[];
   KEY_BG: Record<string, string>;
   /** 部品セットと既定の ON / OFF（`11q_sets.js`）。 */
@@ -322,7 +358,15 @@ export interface Jizura {
   beatGrid(bpm: number, offset: number, duration: number): number[];
   ensureFonts(text: string, keys?: string[] | null): Promise<void>;
   fontsOfPlan(plan: JizuraPlan): string[];
-  omakase(project: JizuraProject, rnd?: () => number): Partial<JizuraProject>;
+  /**
+   * おまかせ。`themeId` を渡すとそのテーマの雰囲気から選び、テーマが要るスイッチ
+   * （部品セット・`wa`・`extra`）を ON にした値も戻りに入れる（`true` のものだけ）。
+   */
+  omakase(
+    project: JizuraProject,
+    rnd?: () => number,
+    themeId?: string | null,
+  ): Partial<JizuraProject> & { mood: string };
   [key: string]: unknown;
 }
 

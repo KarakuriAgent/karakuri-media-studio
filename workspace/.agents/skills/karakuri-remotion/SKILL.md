@@ -341,6 +341,8 @@ props から `fps` / `width` / `height` / `durationInSeconds` / `res` / `aspect`
 `audio` の再生まわりを抜いたもの——画の大きさ・尺・BGM は `FxOverlay` 側が持つ
 (`audio.beats` のような拍の情報だけは `lyric` に置いてよい)。画面比は
 `width` / `height` にいちばん近いものが自動で選ばれ、cover で収まる。
+`lyric.theme`(おまかせのテーマ。`"wa"` のような文字列)は `FxOverlay` の `theme`
+(配色の `palette`)とは別物なので、入れる階層を取り違えないこと。
 
 透過で重ねるので、**カット間のトランジション(`trans`)は画面を塗らない**(手元パッチ。
 本家の JIZURA は背景色や黒で全面を塗ってつなぐが、ここでは背景色・黒の塗りは
@@ -401,13 +403,20 @@ props はこの節のものから `fps` / `res` / `aspect` / `durationInSeconds`
 
 | 書き方 | 意味 |
 |---|---|
-| `[mm:ss.xx]歌詞` | その行が出る時刻(LRC)。**全行に付ければ**そのまま時刻になる |
+| `[mm:ss.xx]歌詞` | その行が出る時刻(LRC)。付けた行はその時刻に出る。付けていない行は前後の時刻のあいだに字数から割り付く(下の注意も) |
 | `前半/後半` | その行を 2 カットに割る |
 | `*強調*` | その語を強く出す |
 | `歌詞!` | 決めのカットにする(行末の `!`) |
 | `歌詞\|注釈` | 小さな注釈を添える(英訳・読みなど) |
 | 空行 | 間(前の行との間を空ける) |
 | `#` 始まり | コメント |
+
+**行番号の数え方(`overrides` と `timing.lineTimes` のキー)。** コメント・空行は数えず、
+LRC のタグがある歌詞は時刻順に並べ替えたあとの順。**タグの無い行(`[間奏]` や手で足した行)は
+書いた位置のまま、直前の行の後ろに付く**(JIZURA v0.10 から。それより前は末尾へ回っていた)。
+タグの有る行と無い行が混ざった歌詞で v0.10 より前に書いた行番号は、別の行を指すことがある
+——古い props を直すときは数え直すこと(自動で移し替えはしない)。全行にタグがある・
+全行に無い歌詞は並びが変わらない。
 
 ### 段取り
 
@@ -439,6 +448,24 @@ props はこの節のものから `fps` / `res` / `aspect` / `durationInSeconds`
    `editorial` / `emotional` / `horror` / `chaos` のどれかを書けば、それに合うスタイル・部品・
    スライダーがまとめて決まる(`horror` を書くとホラーの部品セットも ON になる)。`seed` を変えると別の案が出る(同じ種なら毎回同じ絵)。
    **最初から `overrides` を書き並べない。** 種を 3〜4 回振って、いちばん近いものを選ぶ。
+
+   方向性だけ決めて雰囲気も任せたいときは **`theme`**(JIZURA v0.10)。そのテーマの雰囲気の
+   中からおまかせし、テーマに要る部品セット・和風を ON にしてその部品を優先する。
+
+   | `theme` | 名前 | 雰囲気の候補 | ON にするもの |
+   |---|---|---|---|
+   | `lyricpv` | 文字PV | `editorial` / `graphic` / `emotional` | `typo` |
+   | `kinetic` | キネティック | `pop` / `graphic` / `glitch` | `kinetic` |
+   | `wa` | 和風 | `calm` / `emotional` / `editorial` | `wa`・`extra`(和風の部品の多くは追加分) |
+   | `horror` | ホラー | `horror` | `horror` |
+   | `pop` | ポップ | `pop` | — |
+   | `ballad` | バラード | `calm` / `emotional`(作画は毎フレーム寄り) | — |
+
+   `{"theme": "wa", "seed": 7}` のように書く。`mood` も書けば雰囲気は `mood` に固定され、
+   テーマは部品の優先とスイッチだけに効く。テーマが ON にするスイッチは props に
+   `false` と書いても ON になる(`mood: "horror"` と同じ)。`style` / `fx` / `enabled` /
+   `fonts` / `colors` に書いた値はテーマより強い。キーはカタログの `themes`
+   (`FxOverlay` の `lyric` に書くときも `lyric.theme`。`FxOverlay` 自身の `theme` は配色で別物)。
 
 3. **気になる行だけ `overrides`。** キーは**行番号(0 始まりの文字列)**。
 
@@ -481,9 +508,22 @@ props はこの節のものから `fps` / `res` / `aspect` / `durationInSeconds`
    }
    ```
 
+   **行の中のカットの切り替わりを秒で決める**(`cutTime`。JIZURA v0.10)。キーはカット番号
+   (0 始まり。0 番は常に行の頭なので `"1"` から)、値は**行の頭からの秒**。歌詞の語に
+   カットを合わせたいときに使う。前後のカットとは 0.22 秒離れるように詰められる。
+
+   ```jsonc
+   "overrides": {
+     "5": { "cuts": 3, "cutTime": { "1": 0.8, "2": 1.6 } }   // 0.8 秒・1.6 秒で切り替える
+   }
+   ```
+
 4. **全体の当たりを調整する。** `fx` は**書いたところだけ**効く部分指定。
    `{"fx": {"glitch": 0.2, "texture": 0.8}}` のように 1〜2 個だけ触る。
    `koma` は 1 秒あたりの作画枚数(12 = 2 コマ打ち、0 = 毎フレーム)。
+   レイアウトや HUD が飾りに出す数字(`No.01` / `#03`)・時刻(`00:12.34` / `REC 1:05`)が
+   邪魔なら `{"fx": {"hideNo": true, "hideTime": true}}`(JIZURA v0.10。歌詞に含まれる
+   文字は消えない)。
 
 5. **出したくない部品を外す。** `enabled` も部分指定で、
    `{"enabled": {"layout": {"tile": false, "marquee": false}}}` のように
@@ -514,7 +554,7 @@ props はこの節のものから `fps` / `res` / `aspect` / `durationInSeconds`
 ```
 
 構造は `{groups: {layout: {center: {name, tags, pack, extra?, wa?, set?}, …}, enter: …},
-styles, moods, sets, fonts, aspects, sampleLyrics}`。`tags` は雰囲気(mood)で、
+styles, moods, themes, sets, fonts, aspects, sampleLyrics}`。`tags` は雰囲気(mood)で、
 `mood` を書いたときに優先して選ばれる目印。`extra: true` は初版より後に足された部品で、
 **ランダムには `"extra": true` を書かないと選ばれない**(手で `overrides` に指名するのは
 いつでもできる)。`wa: true` は和風モチーフで、`"wa": false` でランダムから外れる。
