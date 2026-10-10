@@ -146,7 +146,7 @@ export const VIDEO_QUALITY_HINT: Record<StudioVideoQuality, string> = {
 
 /**
  * 画像生成の品質（プロジェクト設定）。動画の品質とは独立したつまみで、素材の
- * 静止画を MiniMax H3 Image で焼くときの版だけを決める。
+ * 静止画を MiniMax H3 Image / Qwen-Image 2.1 で焼くときの版だけを決める。
  */
 export const IMAGE_QUALITIES: StudioImageQuality[] = ['normal', 'opt', 'turbo']
 
@@ -157,11 +157,15 @@ export const IMAGE_QUALITY_LABEL: Record<StudioImageQuality, string> = {
 }
 
 export const IMAGE_QUALITY_HINT: Record<StudioImageQuality, string> = {
-  normal: '通常 = 素の MiniMax H3 Image。どの接続先でも動く標準の品質。',
-  opt: 'Opt = 量子化と高速化だけを入れた版（品質は通常のまま速い）。',
+  normal:
+    '通常 = 素の MiniMax H3 Image / Qwen-Image 2.1。どの接続先でも動く標準の品質。',
+  opt:
+    'Opt = 量子化と高速化だけを入れた版（品質は通常のまま速い）。' +
+    'Qwen-Image 2.1 には無いので通常で焼く。',
   turbo:
-    'Turbo = 蒸留 LoRA 版（いちばん速いが粗い）。' +
-    '蒸留 LoRA は fl2v 用なので t2i には効かず、t2i は Opt で焼く。',
+    'Turbo = 蒸留版（いちばん速いが粗い）。' +
+    'MiniMax H3 は蒸留 LoRA が fl2v 用なので t2i には効かず、t2i は Opt で焼く。' +
+    'Qwen-Image 2.1 は t2i・編集とも 8 steps の公式 Turbo。',
 }
 
 /** 狭い画面のヘッダーに出す、プロジェクト生成設定の 1 行要約。 */

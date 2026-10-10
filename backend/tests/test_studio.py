@@ -1620,8 +1620,8 @@ def test_a_forced_workflow_still_gets_the_quality(env, monkeypatch):
 # 画像生成の品質（プロジェクトの image_quality）
 # --------------------------------------------------------------------------
 #
-# 動画の quality とは独立したつまみで、素材の静止画（MiniMax H3 Image）にだけ
-# 効く。ここで押さえるのは、保存と正規化・動画の品質を巻き込まないこと・
+# 動画の quality とは独立したつまみで、素材の静止画（MiniMax H3 Image /
+# Qwen-Image 2.1）にだけ効く。ここで押さえるのは、保存と正規化・動画の品質を巻き込まないこと・
 # 「素 / _opt / _turbo」の解決（studio.image_quality_workflow）。
 
 def test_image_quality_is_normal_by_default(env):
@@ -1691,6 +1691,15 @@ def test_image_quality_and_video_quality_are_independent(env, monkeypatch):
         ("minimax_h3_i2i", "turbo", "minimax_h3_i2i_turbo"),
         ("minimax_h3_r2i", "opt", "minimax_h3_r2i_opt"),
         ("minimax_h3_r2i", "turbo", "minimax_h3_r2i_turbo"),
+        # Qwen-Image 2.1 は t2i にも turbo（8 steps 蒸留の重み）がある。
+        # MiniMax H3 の t2i -> opt フォールバックは効かない
+        ("qwen_image_21_t2i", "normal", "qwen_image_21_t2i"),
+        ("qwen_image_21_t2i", "turbo", "qwen_image_21_t2i_turbo"),
+        ("qwen_image_21_edit", "normal", "qwen_image_21_edit"),
+        ("qwen_image_21_edit", "turbo", "qwen_image_21_edit_turbo"),
+        # Qwen-Image 2.1 に opt は無いので素のまま
+        ("qwen_image_21_t2i", "opt", "qwen_image_21_t2i"),
+        ("qwen_image_21_edit", "opt", "qwen_image_21_edit"),
     ],
 )
 def test_image_quality_picks_the_image_variant(
@@ -1718,6 +1727,21 @@ def test_image_quality_falls_back_on_a_target_without_the_custom_nodes(
         studio.image_quality_workflow("minimax_h3_t2i", image_quality)
         == "minimax_h3_t2i"
     )
+
+
+@pytest.mark.parametrize(
+    ("workflow", "expected"),
+    [
+        ("qwen_image_21_t2i", "qwen_image_21_t2i_turbo"),
+        ("qwen_image_21_edit", "qwen_image_21_edit_turbo"),
+    ],
+)
+def test_qwen_image_turbo_stays_on_a_target_without_the_custom_nodes(
+    monkeypatch, workflow, expected
+):
+    """Qwen-Image 2.1 の turbo は ComfyUI 本体のノードだけなので Comfy Cloud でも使う。"""
+    _use_target(monkeypatch, "comfy_cloud")
+    assert studio.image_quality_workflow(workflow, "turbo") == expected
 
 
 def test_a_broken_image_quality_is_read_as_normal(monkeypatch):

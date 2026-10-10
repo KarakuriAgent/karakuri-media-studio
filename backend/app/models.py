@@ -701,8 +701,8 @@ def missing_job_fields(
     required as an input — but an image workflow that edits **one input
     picture** (``minimax_h3_i2i``) still needs its own ``source_image`` in every
     mode that runs the image stage.  編集を参照画像のリストで受けるワークフロー
-    （``qwen_image_21_edit``）はここではなく :func:`reference_problem` の
-    「参照は合計 1 件以上」で足りているかを見る。
+    （``qwen_image_21_edit`` / ``_turbo``）はここではなく
+    :func:`reference_problem` の「参照は合計 1 件以上」で足りているかを見る。
     Empty list == valid.
 
     ``mode: "audio"`` is stand-alone: it runs one audio graph, needs nothing but
@@ -2780,10 +2780,12 @@ StudioVideoQuality = Literal["normal", "opt", "turbo"]
 
 #: 画像生成の品質（プロジェクト単位の設定）。動画の :data:`StudioVideoQuality` と
 #: **同じ 3 段だが独立したつまみ**で、素材の静止画を MiniMax H3 Image
-#: （``minimax_h3_t2i`` / ``_i2i`` / ``_r2i``）で焼くときにだけ効く
+#: （``minimax_h3_t2i`` / ``_i2i`` / ``_r2i``）や Qwen-Image 2.1
+#: （``qwen_image_21_t2i`` / ``_edit``）で焼くときにだけ効く
 #: （:func:`app.studio.image_quality_workflow`）。動画を turbo で回していても
 #: 素材の絵は素で焼きたい、という使い分けのために分けてある。動画側と同じく
-#: ``turbo`` は t2i には無く、t2i は ``opt`` へ落ちる。
+#: MiniMax H3 の ``turbo`` は t2i には無く、t2i は ``opt`` へ落ちる
+#: （Qwen-Image 2.1 は t2i にも ``turbo`` があり、``opt`` は無いので素のまま）。
 StudioImageQuality = Literal["normal", "opt", "turbo"]
 
 #: リビジョンを作った主体。``user`` = UI からの操作、``external`` = 外部 API
@@ -2841,7 +2843,7 @@ class StudioProject(BaseModel):
     #: 論理モードと掛け合わせてワークフローのバリアントへ解決される。
     quality: StudioVideoQuality = "normal"
     #: 画像生成の品質（:data:`StudioImageQuality`）。動画の ``quality`` とは独立で、
-    #: 素材の静止画を MiniMax H3 Image で焼くときの版
+    #: 素材の静止画を MiniMax H3 Image / Qwen-Image 2.1 で焼くときの版
     #: （素 / ``_opt`` / ``_turbo``）を決める。
     image_quality: StudioImageQuality = "normal"
     #: 動画生成の画質＝メガピクセル（作品単位の既定）。``None`` = 指定しない

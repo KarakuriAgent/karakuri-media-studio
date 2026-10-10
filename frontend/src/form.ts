@@ -995,8 +995,8 @@ export function formStateFromParams(
  * frame or a reference clip shows the matching picker, t2v needs no start frame
  * at all — and an image workflow that edits a single input picture
  * (`minimax_h3_i2i`) needs one of its own while ignoring the aspect ratio /
- * megapixel target。編集元を参照画像のリストで受けるもの（`qwen_image_21_edit`）
- * は代わりに参照素材の欄が出る。
+ * megapixel target。編集元を参照画像のリストで受けるもの（`qwen_image_21_edit`
+ * / `_turbo`）は代わりに参照素材の欄が出る。
  *
  * `audio` は独立ジョブなので、画像・動画のつまみは丸ごと落ちる。
  */

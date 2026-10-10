@@ -66,8 +66,10 @@ from app.workflows import (
     OPTIONAL_CLASS_TYPES,
     SelectSpec,
     QWEN_IMAGE_21_EDIT,
+    QWEN_IMAGE_21_EDIT_TURBO,
     QWEN_IMAGE_21_REFERENCES,
     QWEN_IMAGE_21_T2I,
+    QWEN_IMAGE_21_T2I_TURBO,
     SPECS,
     KREA2_TURBO,
     T,
@@ -500,7 +502,15 @@ def test_qwen_21_t2i_injection():
     validate_workflow(wf)
 
 
-@pytest.mark.parametrize("spec", [QWEN_IMAGE_21_EDIT, QWEN_IMAGE_21_T2I])
+@pytest.mark.parametrize(
+    "spec",
+    [
+        QWEN_IMAGE_21_EDIT,
+        QWEN_IMAGE_21_T2I,
+        QWEN_IMAGE_21_EDIT_TURBO,
+        QWEN_IMAGE_21_T2I_TURBO,
+    ],
+)
 def test_qwen_21_user_lora_sits_between_the_unet_and_the_cache(spec):
     wf = build_image_workflow(
         params(
@@ -521,6 +531,111 @@ def test_qwen_21_user_lora_sits_between_the_unet_and_the_cache(spec):
         spec=spec,
     )
     assert empty["4"]["inputs"]["model"] == ["1", 0]
+
+
+#: Qwen-Image 2.1 の素の版 -> turbo 版
+QWEN_IMAGE_21_TURBO_PAIRS = [
+    (QWEN_IMAGE_21_T2I, QWEN_IMAGE_21_T2I_TURBO),
+    (QWEN_IMAGE_21_EDIT, QWEN_IMAGE_21_EDIT_TURBO),
+]
+
+
+@pytest.mark.parametrize(("plain", "turbo"), QWEN_IMAGE_21_TURBO_PAIRS)
+def test_qwen_21_turbo_template_only_swaps_the_weights_and_the_steps(plain, turbo):
+    """turbo のテンプレートは素の版のコピーで、違いは重みと steps（8）だけ。
+
+    公式の推奨どおり CFG 1・euler / simple のまま。ノード ID も揃えてあるので
+    ``inject`` / ``ref_media`` / ``lora_chain`` は素の版の宣言をそのまま使える。
+    """
+    base = load_template(plain)
+    fast = load_template(turbo)
+    assert set(fast) == set(base)
+    assert fast["1"]["class_type"] == "UNETLoader"
+    assert base["1"]["inputs"]["unet_name"] == "qwen_image_2.1_int8_convrot.safetensors"
+    assert (
+        fast["1"]["inputs"]["unet_name"]
+        == "qwen_image_2.1_turbo_int8_convrot.safetensors"
+    )
+    assert base["6"]["inputs"]["steps"] == 25
+    assert fast["6"]["inputs"]["steps"] == 8
+    sampler = fast["6"]["inputs"]
+    assert (sampler["cfg"], sampler["sampler_name"], sampler["scheduler"]) == (
+        1,
+        "euler",
+        "simple",
+    )
+    # テキストエンコーダ・VAE・KV キャッシュは共通
+    for node_id in ("2", "3", "4"):
+        assert fast[node_id] == base[node_id]
+    rest = copy.deepcopy(fast)
+    rest["1"]["inputs"]["unet_name"] = base["1"]["inputs"]["unet_name"]
+    rest["6"]["inputs"]["steps"] = base["6"]["inputs"]["steps"]
+    assert rest == base
+    # 宣言も id・表示名・テンプレート・説明以外は素の版と同じ
+    assert turbo.inject == plain.inject
+    assert turbo.ref_media == plain.ref_media
+    assert turbo.lora_chain == plain.lora_chain
+    assert turbo.multi_inputs == plain.multi_inputs
+    assert turbo.family == plain.family == "qwen-image"
+    assert turbo.description.startswith(plain.description)
+    assert "8 steps" in turbo.notes
+
+
+@pytest.mark.parametrize(("plain", "turbo"), QWEN_IMAGE_21_TURBO_PAIRS)
+def test_qwen_21_turbo_builds_the_same_graph_as_the_plain_workflow(plain, turbo):
+    """同じ入力から組んだグラフは、重みと steps 以外は素の版と一致する。"""
+    names = ["ref0.png", "ref1.png", "ref2.png"]
+    graphs = [
+        build_image_workflow(
+            params(image_workflow=spec.id, reference_image_names=names), spec=spec
+        )
+        for spec in (plain, turbo)
+    ]
+    base, fast = graphs
+    validate_workflow(fast)
+    assert fast["1"]["inputs"]["unet_name"].startswith("qwen_image_2.1_turbo_")
+    # steps は未指定ならテンプレートの既定（turbo は 8）のまま
+    assert value(fast, turbo, "steps") == 8
+    fast["1"]["inputs"]["unet_name"] = base["1"]["inputs"]["unet_name"]
+    fast["6"]["inputs"]["steps"] = base["6"]["inputs"]["steps"]
+    assert fast == base
+
+
+def test_qwen_21_edit_turbo_wires_the_references_like_the_plain_edit():
+    wf = build_image_workflow(
+        params(
+            image_workflow=QWEN_IMAGE_21_EDIT_TURBO.id,
+            reference_image_names=["a.png", "b.png"],
+        ),
+        spec=QWEN_IMAGE_21_EDIT_TURBO,
+    )
+    inputs = wf["5"]["inputs"]
+    assert inputs["images.image_1"] == [f"{REF_IMAGE_NODE_PREFIX}0", 0]
+    assert inputs["images.image_2"] == [f"{REF_IMAGE_NODE_PREFIX}1", 0]
+    assert wf[f"{REF_IMAGE_NODE_PREFIX}1"]["inputs"]["image"] == "b.png"
+    # 雛形の LoadImage は消え、KSampler はテキストエンコーダの空ラテントを使う
+    assert "0" not in wf
+    assert wf["6"]["inputs"]["latent_image"] == ["5", 2]
+    # 参照の枚数の検証も素の版と同じ（1〜10 枚）
+    assert reference_problem(
+        "image_only", None, {}, image_workflow=QWEN_IMAGE_21_EDIT_TURBO.id
+    )
+    assert (
+        reference_problem(
+            "image_only",
+            None,
+            {"reference_images": ["a.png"]},
+            image_workflow=QWEN_IMAGE_21_EDIT_TURBO.id,
+        )
+        is None
+    )
+
+
+@pytest.mark.parametrize("spec", [QWEN_IMAGE_21_T2I_TURBO, QWEN_IMAGE_21_EDIT_TURBO])
+def test_qwen_21_turbo_is_offered_on_every_target(spec):
+    """ComfyUI 本体のノードだけなので、素の版と同じく Comfy Cloud でも選べる。"""
+    for target in ("local", "runpod", "comfy_cloud"):
+        assert supported_on_target(spec, target), target
 
 
 def test_image_workflow_is_selected_by_id():

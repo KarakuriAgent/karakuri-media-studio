@@ -15,7 +15,7 @@ WebSocket で右ペインにリアルタイム表示され、完了すると生�
 | 音声 | 音声ワークフローを単発実行（画像・動画とは連結しない） |
 
 **画像**は Krea 2 turbo（既定）/ Anima / Z-Image turbo / Qwen-Image 2.1（テキスト→画像と
-参照編集の 2 本）/ MiniMax H3 Image（t2i は 2 バリアント、i2i / r2i は各 3 バリアント）/
+参照編集の 2 本 × 素 / Turbo）/ MiniMax H3 Image（t2i は 2 バリアント、i2i / r2i は各 3 バリアント）/
 Grok Imagine（テキスト→画像・画像編集）から選びます。
 
 **Qwen-Image 2.1** は生成と編集が 1 つに統合されたモデルで、`qwen_image_21_t2i`
@@ -26,6 +26,15 @@ Grok Imagine（テキスト→画像・画像編集）から選びます。
 `qwen_image_2.1_int8_convrot`（diffusion_models）/ `qwen3vl_8b_int8_convrot`（text_encoders）
 / `qwen_image_2.1_vae_bf16`（vae）。**Qwen Research License** で配布されているので、
 商用利用には別途ライセンスが必要です。
+
+どちらにも公式の 8 steps 蒸留版（Qwen-Image 2.1 Turbo）を使う **Turbo** 版
+（`qwen_image_21_t2i_turbo` / `qwen_image_21_edit_turbo`）があります。入力もプロンプトの
+書き方も素の版と同じで、サンプリングが 25 → 8 steps になるぶん速く焼けます（CFG は 1 の
+まま）。重みは `qwen_image_2.1_turbo_int8_convrot`（diffusion_models）を置くだけで、
+テキストエンコーダと VAE は素の版と共通です（bf16 版の `qwen_image_2.1_turbo_bf16` を
+使うなら設定ページのモデルスロットで差し替え）。プロジェクトの画像品質を Turbo にすると、
+Qwen-Image 2.1 の素材画像は t2i・編集とも Turbo 版で焼かれます（Qwen-Image 2.1 に
+Optimized は無いので、Optimized のときは素の版のままです）。
 
 **MiniMax H3 Image** は音声つき動画モデルの MiniMax H3 で**静止画 1 枚**を作るワークフローです
 （複数フレームのパケットを作って 1 枚を選ぶ）。テキスト→画像 (t2i)・画像編集 (i2i)・参照編集

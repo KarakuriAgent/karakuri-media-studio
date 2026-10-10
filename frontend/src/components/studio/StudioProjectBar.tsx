@@ -338,7 +338,7 @@ function ProjectSettingsFields({
       value={imageQuality}
       disabled={busy}
       title={[
-        '素材の静止画（MiniMax H3 Image）の品質。動画の品質とは独立です。',
+        '素材の静止画（MiniMax H3 Image / Qwen-Image 2.1）の品質。動画の品質とは独立です。',
         ...IMAGE_QUALITIES.map((value) => IMAGE_QUALITY_HINT[value]),
       ].join('\n')}
       onChange={(event) =>

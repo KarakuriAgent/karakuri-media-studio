@@ -1,9 +1,9 @@
 """Workflow template registry and per-template injection manifests (SPEC §3).
 
 The app ships a folder of independent ComfyUI API-format graphs under
-``workflow/``: five plain image workflows (Krea 2 turbo, Anima, Z-Image turbo and
-Qwen-Image 2.1 t2i / edit) plus MiniMax H3 Image (t2i / i2i / r2i × base / opt /
-turbo), the MiniMax H3 video workflows and two audio workflows
+``workflow/``: the plain image workflows (Krea 2 turbo, Anima, Z-Image turbo and
+Qwen-Image 2.1 t2i / edit × base / turbo) plus MiniMax H3 Image (t2i / i2i / r2i
+× base / opt / turbo), the MiniMax H3 video workflows and two audio workflows
 (MiniMax Music 3 and Stable Audio 3 Medium).  Each one is described here by a
 :class:`WorkflowSpec` whose ``inject`` map names every node/field the app writes
 to.
@@ -912,6 +912,12 @@ Z_IMAGE_TURBO = WorkflowSpec(
 # どちらも cfg 1（ネガティブプロンプトは効かない）、euler / simple。
 # ``QwenImage21Cache`` は KV キャッシュの置き場所と精度を決めるだけのノードで、
 # ユーザー LoRA のチェーンは ``UNETLoader`` とこのノードの間に挟む。
+#
+# 公式の 8 steps 蒸留版（Qwen-Image 2.1 Turbo）も t2i / 編集の両方に置いてある
+# （``*_turbo``）。重みは素の版と同じ構成に層ごとの attention 設定が足された
+# だけで、テキストエンコーダ・VAE・KV キャッシュ・sampler は共通。テンプレートの
+# 違いは ``UNETLoader`` のファイル名と KSampler の steps（25 -> 8）だけで、
+# 公式の推奨どおり CFG 1 のまま（1 より上げるとアーティファクトが出る）。
 
 #: 編集（参照画像）で受け取れる枚数の上限。ノード側は image_1〜image_16 まで
 #: 持つが、公式テンプレートと同じ 10 枚を上限にしてある。
@@ -1035,6 +1041,42 @@ QWEN_IMAGE_21_T2I = WorkflowSpec(
         "qwen_image_2.1_int8_convrot + qwen3vl_8b_int8_convrot +"
         " qwen_image_2.1_vae_bf16 / 25 steps・CFG 1（ネガティブ無し）"
     ),
+)
+
+#: turbo は素の版と**入力の形もプロンプトの書き方も完全に同じ**（ノード ID も
+#: 揃えてあるので ``inject`` / ``ref_media`` / ``lora_chain`` はそのまま使い
+#: 回せる）ので、宣言は :func:`dataclasses.replace` で差分だけを書く。
+#: ComfyUI 本体のノードしか使わないので、接続先の扱い（Comfy Cloud でも出す）も
+#: 素の版と同じ。
+_QWEN_IMAGE_21_TURBO_DESCRIPTION = (
+    " Turbo build: the official 8-step distilled Qwen-Image 2.1 Turbo weights"
+    " (8 sampling steps, still cfg 1), so it finishes much faster. Same inputs"
+    " and the same way of writing `image_prompt` as the plain workflow."
+)
+
+_QWEN_IMAGE_21_TURBO_NOTES = (
+    "qwen_image_2.1_turbo_int8_convrot + qwen3vl_8b_int8_convrot +"
+    " qwen_image_2.1_vae_bf16 / 8 steps・CFG 1（公式の蒸留版。ネガティブ無し）"
+)
+
+QWEN_IMAGE_21_EDIT_TURBO = replace(
+    QWEN_IMAGE_21_EDIT,
+    id="qwen_image_21_edit_turbo",
+    label="Qwen-Image 2.1 編集 Turbo",
+    mode_label="参照画像→画像・編集 (Turbo)",
+    relpath="image/qwen-image/qwen_image_21_edit_turbo.json",
+    description=QWEN_IMAGE_21_EDIT.description + _QWEN_IMAGE_21_TURBO_DESCRIPTION,
+    notes=_QWEN_IMAGE_21_TURBO_NOTES + " / 出力の縦横比は image_1 追従",
+)
+
+QWEN_IMAGE_21_T2I_TURBO = replace(
+    QWEN_IMAGE_21_T2I,
+    id="qwen_image_21_t2i_turbo",
+    label="Qwen-Image 2.1 生成 Turbo",
+    mode_label="テキスト→画像 (Turbo)",
+    relpath="image/qwen-image/qwen_image_21_t2i_turbo.json",
+    description=QWEN_IMAGE_21_T2I.description + _QWEN_IMAGE_21_TURBO_DESCRIPTION,
+    notes=_QWEN_IMAGE_21_TURBO_NOTES,
 )
 
 
@@ -2963,7 +3005,9 @@ SPECS: tuple[WorkflowSpec, ...] = (
     ANIMA,
     Z_IMAGE_TURBO,
     QWEN_IMAGE_21_T2I,
+    QWEN_IMAGE_21_T2I_TURBO,
     QWEN_IMAGE_21_EDIT,
+    QWEN_IMAGE_21_EDIT_TURBO,
     MINIMAX_H3_T2I,
     MINIMAX_H3_T2I_OPT,
     MINIMAX_H3_I2I,

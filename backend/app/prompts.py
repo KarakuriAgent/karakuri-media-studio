@@ -269,6 +269,12 @@ One model, two workflows, and they want **opposite** kinds of prompt:
 Neither has a negative prompt: both templates run at cfg 1, where a negative
 has nothing to act on. Express exclusions positively instead.
 
+Each one also has a **Turbo** build — `qwen_image_21_t2i_turbo` and
+`qwen_image_21_edit_turbo` — running the official 8-step distilled weights
+(still cfg 1), so it finishes much faster. Inputs and prompt are **exactly the
+same** as the plain workflow: everything below applies to the turbo ids
+unchanged.
+
 ## `qwen_image_21_edit` — editing
 
 1. **One continuous paragraph, no line breaks**, and lead with the *operation*
@@ -462,7 +468,8 @@ IMAGE_PROMPT_HINTS: dict[str, str] = {
         " `reference_images` — lead with the operation, keep everything else"
         " unchanged, and tag the references as `<image1>`, `<image2>`, … when"
         " there are two or more (no tags with a single one; the output follows"
-        " image 1). Neither has a negative prompt."
+        " image 1). Neither has a negative prompt. The `_turbo` builds"
+        " (8-step distilled) take exactly the same prompt as the plain ones."
     ),
     "minimax-h3-image": (
         "A **still-image** prompt in English prose (subject, wardrobe, pose,"
@@ -732,7 +739,7 @@ def _target_preference_lines(comfy_target: str) -> list[str]:
         # 上のカタログからも消えている（:func:`_catalog_entries`）。
         lines += [
             "Comfy Cloud には MiniMax H3 系のカスタムノードと量子化ウェイトを"
-            "入れられないので、`_turbo` / `_opt` は選ばないこと"
+            "入れられないので、MiniMax H3 の `_turbo` / `_opt` は選ばないこと"
             "（上のカタログにも載せていない）。MiniMax H3 は **素の版"
             "（`minimax_h3_i2v` / `minimax_h3_r2v` / `minimax_h3_t2v`）だけ**を"
             "使う。",
@@ -761,9 +768,11 @@ def _target_preference_lines(comfy_target: str) -> list[str]:
         " opt を明示的に指定したときは、その指定が最優先**でこの既定より優先"
         "される。",
         "また、**スタジオプロジェクトの素材画像**（MiniMax H3 Image の"
-        " `minimax_h3_{t2i,i2i,r2i}`）を焼くときは、ここの既定より"
+        " `minimax_h3_{t2i,i2i,r2i}`、Qwen-Image 2.1 の"
+        " `qwen_image_21_{t2i,edit}`）を焼くときは、ここの既定より"
         "**プロジェクトの `image_quality` が優先**される"
-        "（動画の `quality` は画像には流用しない）。",
+        "（動画の `quality` は画像には流用しない。Qwen-Image 2.1 には"
+        " `_opt` が無く、`turbo` のときだけ `_turbo` 版になる）。",
     ]
     return lines
 
@@ -2130,7 +2139,8 @@ def _context_section(
         )
         if ctx.mode == "image_only" and _edits_its_input(ctx.image_workflow):
             # 編集系の画像ワークフロー（minimax_h3_i2i / qwen_image_21_edit
-            # など）。生成ではなく「この画像をどう変えるか」を書かせる。
+            # / その _turbo など）。生成ではなく「この画像をどう変えるか」を
+            # 書かせる。
             # t2i のワークフローに絵を添えただけのとき（参考画像）は、編集指示に
             # 寄せると情景の描写そのものが書けなくなるので言わない。
             lines.append(

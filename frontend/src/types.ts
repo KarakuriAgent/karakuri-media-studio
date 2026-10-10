@@ -1127,9 +1127,11 @@ export type StudioVideoQuality = 'normal' | 'opt' | 'turbo'
 /**
  * 画像生成の品質（プロジェクト単位の設定）。動画の `StudioVideoQuality` と同じ
  * 3 段だが**独立したつまみ**で、素材の静止画を MiniMax H3 Image
- * （`minimax_h3_t2i` / `_i2i` / `_r2i` の素 / `_opt` / `_turbo`）で焼くときに
+ * （`minimax_h3_t2i` / `_i2i` / `_r2i` の素 / `_opt` / `_turbo`）や
+ * Qwen-Image 2.1（`qwen_image_21_t2i` / `_edit` の素 / `_turbo`）で焼くときに
  * だけ効く。動画を turbo で回していても素材の絵は素で焼ける。動画側と同じく
- * `turbo` は t2i には無く、t2i は `opt` へ落ちる。
+ * MiniMax H3 の `turbo` は t2i には無く、t2i は `opt` へ落ちる（Qwen-Image 2.1
+ * は t2i にも `turbo` があり、`opt` は無いので素のまま）。
  */
 export type StudioImageQuality = 'normal' | 'opt' | 'turbo'
 
@@ -1165,7 +1167,7 @@ export interface StudioProject {
   quality: StudioVideoQuality
   /**
    * 画像生成の品質（動画の `quality` とは独立）。素材の静止画を MiniMax H3
-   * Image で焼くときの版（素 / `_opt` / `_turbo`）を決める。
+   * Image / Qwen-Image 2.1 で焼くときの版（素 / `_opt` / `_turbo`）を決める。
    */
   image_quality: StudioImageQuality
   /**

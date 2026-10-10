@@ -925,6 +925,24 @@ def test_the_image_prompt_spec_follows_the_selected_image_workflow():
     assert "`qwen_image_21_edit` — editing" in qwen_t2i
 
 
+@pytest.mark.parametrize(
+    "workflow_id", ["qwen_image_21_t2i_turbo", "qwen_image_21_edit_turbo"]
+)
+def test_a_qwen_turbo_session_gets_the_same_qwen_guide(workflow_id):
+    """turbo はプロンプトの書き方が素の版と完全に同じなので、同じ SPEC が載る。"""
+    system = build_system_prompt(
+        ChatSessionCreate(mode="image_only", image_workflow=workflow_id)
+    )
+    assert "IMAGE PROMPT SPEC — Qwen-Image 2.1" in system
+    assert "`qwen_image_21_edit` — editing" in system
+    assert "`qwen_image_21_t2i` — text to image" in system
+    # SPEC 自体も turbo の id を名指しして「同じ書き方」と言っている
+    assert "`qwen_image_21_t2i_turbo`" in system
+    assert "`qwen_image_21_edit_turbo`" in system
+    assert f"Selected image workflow: **`{workflow_id}`**" in system
+    assert "model family `qwen-image`" in system
+
+
 def test_the_selected_image_workflow_is_named_in_the_context():
     system = build_system_prompt(
         ChatSessionCreate(mode="image_only", image_workflow="qwen_image_21_edit")

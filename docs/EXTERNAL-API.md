@@ -800,10 +800,14 @@ GET /api/v1/jobs?q=かおり&kind=video&nsfw=false&limit=48&offset=0
   **完全に独立**したつまみです。作品の素材となる静止画を MiniMax H3 Image で
   作るときに、`minimax_h3_{t2i,i2i,r2i}` の素 / `_opt` / `_turbo` のどれを使うかを
   決めます（動画の t2v と同じ理由で **t2i に `_turbo` はなく**、`"turbo"` のときは
-  `minimax_h3_t2i_opt` になります）。**動画の `quality` を静止画に流用しないでください** — 動画を
+  `minimax_h3_t2i_opt` になります）。Qwen-Image 2.1 で作るときも同じつまみで、
+  `"turbo"` なら `qwen_image_21_t2i_turbo` / `qwen_image_21_edit_turbo`（公式の
+  8 steps 蒸留版。t2i にもあります）を使います。Qwen-Image 2.1 に `_opt` は無いので、
+  `"opt"` のときは素の版のままです。**動画の `quality` を静止画に流用しないでください** — 動画を
   `turbo` で回している作品でも、素材の絵は `image_quality` に従います
-  （その逆も同じ）。`_opt` / `_turbo` は動画側と同じカスタムノード頼みなので、
-  入っていない接続先（Comfy Cloud）では素の版を使います。いまのところ静止画を
+  （その逆も同じ）。MiniMax H3 の `_opt` / `_turbo` は動画側と同じカスタムノード頼み
+  なので、入っていない接続先（Comfy Cloud）では素の版を使います（Qwen-Image 2.1 の
+  `_turbo` は ComfyUI 本体のノードだけなので、どの接続先でも使えます）。いまのところ静止画を
   焼く経路はアプリ側に無く、素材画像を作るのは**外部エージェント**（この API 経由の
   Claude Code / Codex / Cursor CLI など）なので、この設定は**外部エージェントへの
   指示値**として効きます。

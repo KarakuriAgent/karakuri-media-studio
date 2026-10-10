@@ -40,7 +40,9 @@ def test_workflow_catalogue_is_exposed(client):
         "anima",
         "z_image_turbo",
         "qwen_image_21_t2i",
+        "qwen_image_21_t2i_turbo",
         "qwen_image_21_edit",
+        "qwen_image_21_edit_turbo",
         "minimax_h3_t2i",
         "minimax_h3_t2i_opt",
         "minimax_h3_i2i",
@@ -56,8 +58,7 @@ def test_workflow_catalogue_is_exposed(client):
         "krea2",
         "anima",
         "z-image",
-        "qwen-image",
-        "qwen-image",
+        *["qwen-image"] * 4,
         *["minimax-h3-image"] * 8,
         "grok-imagine",
         "grok-imagine",
@@ -83,6 +84,12 @@ def test_workflow_catalogue_is_exposed(client):
     assert "megapixels" in images["qwen_image_21_edit"]["supports"]
     assert {"width", "height"} <= set(images["z_image_turbo"]["supports"])
     assert {"width", "height"} <= set(images["qwen_image_21_t2i"]["supports"])
+    # turbo は素の版と入力の形が完全に同じ（8 steps 蒸留の重みに替わるだけ）
+    for base in ("qwen_image_21_t2i", "qwen_image_21_edit"):
+        turbo = images[f"{base}_turbo"]
+        for key in ("family", "requires", "multi_inputs", "supports", "backend"):
+            assert turbo[key] == images[base][key], (base, key)
+        assert turbo["mode_label"].endswith("(Turbo)")
 
     videos = {w["id"]: w for w in options["video_workflows"]}
     assert set(videos) == {spec.id for spec in video_specs()}
@@ -241,6 +248,15 @@ def test_comfy_cloud_hides_the_custom_node_workflows(client, monkeypatch):
     for workflow_id in ("minimax_h3_t2i", "minimax_h3_t2i_opt", "minimax_h3_r2i_turbo"):
         assert workflow_id not in image_ids
     assert "krea2_turbo" in image_ids
+    # Qwen-Image 2.1 は turbo も ComfyUI 本体のノードだけで組んであるので、
+    # 素の版と同じく Comfy Cloud でも残る
+    for workflow_id in (
+        "qwen_image_21_t2i",
+        "qwen_image_21_t2i_turbo",
+        "qwen_image_21_edit",
+        "qwen_image_21_edit_turbo",
+    ):
+        assert workflow_id in image_ids
     assert options["default_image_workflow"] in image_ids
     # 音声のワークフローはカスタムノードを使わないので 1 件も減らない
     assert [w["id"] for w in options["audio_workflows"]] == [
@@ -424,7 +440,9 @@ def test_steps_are_advertised_only_where_the_template_has_a_sampler_knob(client)
         "anima",
         "z_image_turbo",
         "qwen_image_21_t2i",
+        "qwen_image_21_t2i_turbo",
         "qwen_image_21_edit",
+        "qwen_image_21_edit_turbo",
         "minimax_h3_t2v",
         "minimax_h3_i2v",
         "minimax_h3_r2v",

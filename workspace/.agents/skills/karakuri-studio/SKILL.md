@@ -170,10 +170,13 @@ cwd として書いてある。
 
 - `quality`（動画）と `image_quality`（静止画）は**独立**。動画を turbo で回して
   いても、素材の静止画は `image_quality` に従う。逆も同じ。
-- `turbo` は **t2v / t2i には効かない**（蒸留 LoRA が fl2v 用）。`quality: "turbo"` でも
+- MiniMax H3 の `turbo` は **t2v / t2i には効かない**（蒸留 LoRA が fl2v 用）。`quality: "turbo"` でも
   t2v になるカットは `minimax_h3_t2v_opt` で投入され、理由が `prompt-preview` の
   `workflow_reason` に出る。`image_quality: "turbo"` の t2i も同じく `_opt` に落ちる。
   Turbo をそのまま効かせたいなら、引き継ぎ（i2v）か `@素材`（r2v）のあるカットにする。
+- Qwen-Image 2.1 は t2i・編集とも公式の 8 steps 蒸留版があり、`image_quality: "turbo"` なら
+  `qwen_image_21_t2i_turbo` / `qwen_image_21_edit_turbo` を使う（入力とプロンプトの書き方は
+  素の版と同じ。`_opt` は無いので `"opt"` なら素の版）。
 - `video_loras`（作品共通の動画 LoRA。`{lora_name, trigger_word, strength}` の配列）を
   入れると、すべてのカットのジョブに載り、トリガーワードは本文の先頭に自動で付く
   （本文に同じ語があれば付けない）。1 回だけ変えたいときは `POST /shots/{id}/render` の
