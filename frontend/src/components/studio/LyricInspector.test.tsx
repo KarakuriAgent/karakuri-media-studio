@@ -7,8 +7,15 @@ import LyricInspector from './LyricInspector'
 // 本物を読むかどうかは `@fx/lib/jizura` の動的 import 1 か所に閉じているので、
 // ここを差し替えればパネルの中身はそのまま試せる。
 vi.mock('@fx/lib/jizura', () => {
-  const groups: Record<string, Record<string, { name: string; extra?: boolean }>> = {
-    layout: { center: { name: '中央' }, ema: { name: '絵馬', extra: true } },
+  const groups: Record<
+    string,
+    Record<string, { name: string; extra?: boolean; set?: string }>
+  > = {
+    layout: {
+      center: { name: '中央' },
+      ema: { name: '絵馬', extra: true },
+      hrDoorGap: { name: '扉の隙間', set: 'horror' },
+    },
     enter: { slice: { name: 'スライス' } },
     hold: { still: { name: '静止' } },
     exit: { blur: { name: 'ブラー' } },
@@ -23,6 +30,8 @@ vi.mock('@fx/lib/jizura', () => {
       registry: (group: string) => groups[group] ?? {},
       isExtra: (group: string, key: string) =>
         group === 'style' ? false : Boolean(groups[group]?.[key]?.extra),
+      setOf: (group: string, key: string) =>
+        group === 'style' ? null : (groups[group]?.[key]?.set ?? null),
       STYLE_ORDER: ['noir', 'paper'],
       STYLES: { noir: { name: 'ノワール' }, paper: { name: '紙' } },
       MOODS: { calm: { name: 'しっとり' } },
@@ -134,6 +143,110 @@ describe('LyricInspector', () => {
     } finally {
       vi.useRealTimers()
     }
+  })
+
+  it('OFF の部品セットの部品には印を付け、ON なら外す', async () => {
+    show()
+    const layout = (await screen.findAllByLabelText('レイアウト'))[0]
+    const labels = Array.from(layout.querySelectorAll('option')).map(
+      (option) => option.textContent,
+    )
+    expect(labels).toContain('扉の隙間（ホラー・OFF）')
+    cleanup()
+
+    show({ horror: true })
+    const on = (await screen.findAllByLabelText('レイアウト'))[0]
+    expect(
+      Array.from(on.querySelectorAll('option')).map((option) => option.textContent),
+    ).toContain('扉の隙間')
+  })
+
+  it('部品セット・統一感・文字整列・中央を空けるは全体の値として載る', async () => {
+    const { onChange } = show()
+    await screen.findAllByLabelText('レイアウト')
+
+    // 書いていなければ本家の既定（文字PV系・キネティックは ON、ホラーは OFF）
+    fireEvent.click(screen.getByText('キネティック'))
+    expect(onChange.mock.calls[0][0].kinetic).toBe(false)
+    fireEvent.click(screen.getByText('ホラー'))
+    expect(onChange.mock.calls[1][0].horror).toBe(true)
+    fireEvent.click(screen.getByText('統一感'))
+    expect(onChange.mock.calls[2][0].unify).toBe(true)
+    fireEvent.click(screen.getByText('文字整列'))
+    expect(onChange.mock.calls[3][0].typeset).toBe(true)
+
+    // 向きは中央を空けるが OFF のあいだは触れない
+    const dir = screen.getByLabelText('縦長のときの向き') as HTMLSelectElement
+    expect(dir.disabled).toBe(true)
+    fireEvent.click(screen.getByText('中央を空ける'))
+    expect(onChange.mock.calls[4][0].centerFree).toBe(true)
+  })
+
+  it('中央を空けるが ON なら縦長のときの向きを選べる', async () => {
+    const { onChange } = show({ centerFree: true })
+    const dir = (await screen.findByLabelText('縦長のときの向き')) as HTMLSelectElement
+    expect(dir.disabled).toBe(false)
+    expect(dir.value).toBe('tb')
+    fireEvent.change(dir, { target: { value: 'lr' } })
+    expect(onChange.mock.calls[0][0].centerDir).toBe('lr')
+  })
+
+  it('行の位置と拡大率は overrides の offset / scale に入る（外れたときに保存）', async () => {
+    const { onChange } = show()
+    const x = await screen.findByLabelText('2 行目の位置 X')
+    fireEvent.change(x, { target: { value: '0.3' } })
+    expect(onChange).not.toHaveBeenCalled()
+    fireEvent.blur(x)
+    expect(onChange).toHaveBeenCalledTimes(1)
+    expect(onChange.mock.calls[0][0].overrides).toEqual({
+      '1': { offset: { x: 0.3, y: 0 } },
+    })
+
+    const scale = screen.getByLabelText('1 行目の拡大率')
+    fireEvent.change(scale, { target: { value: '0.5' } })
+    fireEvent.keyDown(scale, { key: 'Enter' })
+    expect(onChange.mock.calls[1][0].overrides).toEqual({ '0': { scale: 0.5 } })
+  })
+
+  it('位置の数値欄は打ち終わりを待って保存し、読めない中身は保存しない', async () => {
+    const { onChange } = show()
+    const y = await screen.findByLabelText('1 行目の位置 Y')
+    vi.useFakeTimers()
+    try {
+      fireEvent.change(y, { target: { value: '-0.2' } })
+      vi.advanceTimersByTime(500)
+      expect(onChange).not.toHaveBeenCalled()
+      vi.advanceTimersByTime(400)
+      expect(onChange).toHaveBeenCalledTimes(1)
+      expect(onChange.mock.calls[0][0].overrides).toEqual({
+        '0': { offset: { x: 0, y: -0.2 } },
+      })
+
+      fireEvent.change(y, { target: { value: '' } })
+      vi.advanceTimersByTime(1000)
+      fireEvent.blur(y)
+      expect(onChange).toHaveBeenCalledTimes(1)
+      expect((y as HTMLInputElement).value).toBe('0')
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('位置のプリセットは書いた軸だけを変え、リセットで位置と拡大率を消す', async () => {
+    const { onChange } = show({
+      overrides: {
+        '0': { layout: 'center', offset: { x: 0, y: 0.25 }, scale: 0.8 },
+      },
+    })
+    fireEvent.click(await screen.findByLabelText('1 行目を左寄せ'))
+    expect(onChange.mock.calls[0][0].overrides['0']).toEqual({
+      layout: 'center',
+      offset: { x: -0.25, y: 0.25 },
+      scale: 0.8,
+    })
+
+    fireEvent.click(screen.getByLabelText('1 行目をリセット'))
+    expect(onChange.mock.calls[1][0].overrides['0']).toEqual({ layout: 'center' })
   })
 
   it('出す・出さないと削除はそのまま親へ渡す', async () => {

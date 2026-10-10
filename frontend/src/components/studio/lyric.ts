@@ -4,8 +4,12 @@
  * 中身の正本は Remotion 側の zod（`remotion/src/schema.ts` の
  * `lyricOverlaySchema`）で、ここは**画面が触る項目を出し入れする**だけ:
  *
- * - 全体（スタイル・雰囲気・シード・スライダー・歌詞テキスト）
- * - 行ごとの上書き（`overrides["0"]` … JIZURA の対応範囲と同じく**行単位のみ**）
+ * - 全体（スタイル・雰囲気・シード・部品セット・統一感・文字整列・中央を空ける・
+ *   スライダー・歌詞テキスト）
+ * - 行ごとの上書き（`overrides["0"]` … 部品の指名と位置ずらし `offset` / `scale`）
+ *
+ * カット単位の指名（`cutTech` / `cutLayouts` / `cutOffsets`）は画面には出さないが、
+ * 行の上書きを浅くマージするので、AI が書いたものは消さずに持ち回る。
  *
  * 知らない項目はそのまま持ち回る（AI が書いた新しい指定をこちらが知らなくても、
  * 人がスタイルを変えたり行を指名したりはできる）。
@@ -42,6 +46,63 @@ export const LYRIC_KOMA_OPTIONS = [
   { value: 24, label: '1 コマ打ち（24）' },
   { value: 0, label: '毎フレーム（0）' },
 ] as const
+
+/**
+ * 部品セット（本家 v0.9 の `typo` / `kinetic` / `horror`）。`fallback` は書いて
+ * いないときの値で、本家の `J.SETS` の既定と同じ（文字PV系・キネティックは ON）。
+ */
+export const LYRIC_SETS = [
+  { name: 'typo', label: '文字PV系', fallback: true },
+  { name: 'kinetic', label: 'キネティック', fallback: true },
+  { name: 'horror', label: 'ホラー', fallback: false },
+] as const
+
+/** 全体の ON / OFF（既定はどちらも OFF）。 */
+export const LYRIC_SWITCHES = [
+  {
+    name: 'unify',
+    label: '統一感',
+    title: 'パートごとに部品を揃え、繰り返す行を同じ絵で出し、カットの間をモーフでつなぐ',
+  },
+  {
+    name: 'typeset',
+    label: '文字整列',
+    title: 'カナの詰め・助詞を小さく・0.2 秒先出し・装飾と演出を控えめに',
+  },
+] as const
+
+/** 中央を空けるときの縦長画面での向き（`centerDir`）。 */
+export const LYRIC_CENTER_DIRS = [
+  { value: 'tb', label: '上下' },
+  { value: 'lr', label: '左右' },
+] as const
+
+/** 行の位置ずらし（x / y は画面比、scale は拡大率）。 */
+export interface LyricPlace {
+  x: number
+  y: number
+  scale: number
+}
+
+/** 位置ずらしの範囲（Remotion の zod と同じ）。 */
+export const LYRIC_OFFSET_RANGE = { min: -1, max: 1 } as const
+export const LYRIC_SCALE_RANGE = { min: 0.3, max: 2 } as const
+
+/**
+ * 位置のプリセット。書いた軸だけを変える（左寄せ + 上 で左上になる）。
+ * `place: null` は位置と拡大率を両方消す（リセット）。
+ */
+export const LYRIC_PLACE_PRESETS: ReadonlyArray<{
+  name: string
+  label: string
+  place: Partial<LyricPlace> | null
+}> = [
+  { name: 'left', label: '左寄せ', place: { x: -0.25 } },
+  { name: 'right', label: '右寄せ', place: { x: 0.25 } },
+  { name: 'top', label: '上', place: { y: -0.25 } },
+  { name: 'bottom', label: '下', place: { y: 0.25 } },
+  { name: 'reset', label: 'リセット', place: null },
+]
 
 const isObject = (value: unknown): value is Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value)
@@ -100,6 +161,57 @@ export function setLyricOverride(
   return { ...lyric, overrides: next }
 }
 
+/** 全体の真偽値（書いていなければ `fallback`）。 */
+export function lyricFlag(lyric: Lyric, name: string, fallback: boolean): boolean {
+  const value = lyric[name]
+  return typeof value === 'boolean' ? value : fallback
+}
+
+const finiteOr = (value: unknown, fallback: number): number =>
+  typeof value === 'number' && Number.isFinite(value) ? value : fallback
+
+const clamp = (value: number, min: number, max: number): number =>
+  Math.min(max, Math.max(min, value))
+
+/** `index` 行目の位置ずらし（書いていなければ 0, 0, 1）。 */
+export function lyricPlace(lyric: Lyric, index: number): LyricPlace {
+  const override = lyricOverride(lyric, index)
+  const offset = isObject(override.offset) ? override.offset : {}
+  return {
+    x: finiteOr(offset.x, 0),
+    y: finiteOr(offset.y, 0),
+    scale: finiteOr(override.scale, 1),
+  }
+}
+
+/**
+ * `index` 行目の位置ずらしを書き換えた新しい `lyric`。
+ *
+ * `patch` に書いた軸だけを変え、範囲（x / y は ±1、scale は 0.3〜2）に収める。
+ * 位置が 0, 0 に戻れば `offset` を、拡大率が 1 に戻れば `scale` を消す。
+ * `patch` が null なら両方消す（リセット）。ほかの指名はそのまま。
+ */
+export function setLyricPlace(
+  lyric: Lyric,
+  index: number,
+  patch: Partial<LyricPlace> | null,
+): Lyric {
+  if (patch === null) {
+    return setLyricOverride(lyric, index, { offset: undefined, scale: undefined })
+  }
+  const current = lyricPlace(lyric, index)
+  const round = (value: number) => Math.round(value * 1000) / 1000
+  const x = round(clamp(finiteOr(patch.x, current.x), LYRIC_OFFSET_RANGE.min, LYRIC_OFFSET_RANGE.max))
+  const y = round(clamp(finiteOr(patch.y, current.y), LYRIC_OFFSET_RANGE.min, LYRIC_OFFSET_RANGE.max))
+  const scale = round(
+    clamp(finiteOr(patch.scale, current.scale), LYRIC_SCALE_RANGE.min, LYRIC_SCALE_RANGE.max),
+  )
+  return setLyricOverride(lyric, index, {
+    offset: x === 0 && y === 0 ? undefined : { x, y },
+    scale: scale === 1 ? undefined : scale,
+  })
+}
+
 /** シードの振り直し（0 〜 2^31-1 の整数）。 */
 export function rollSeed(): number {
   return Math.floor(Math.random() * 0x7fffffff)
@@ -130,6 +242,13 @@ export const LYRIC_SHOWN_KEYS = [
   'seed',
   'extra',
   'wa',
+  'typo',
+  'kinetic',
+  'horror',
+  'unify',
+  'typeset',
+  'centerFree',
+  'centerDir',
   'fx',
   'overrides',
 ]

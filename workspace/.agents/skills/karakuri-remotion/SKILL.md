@@ -342,6 +342,14 @@ props から `fps` / `width` / `height` / `durationInSeconds` / `res` / `aspect`
 (`audio.beats` のような拍の情報だけは `lyric` に置いてよい)。画面比は
 `width` / `height` にいちばん近いものが自動で選ばれ、cover で収まる。
 
+透過で重ねるので、**カット間のトランジション(`trans`)は画面を塗らない**(手元パッチ。
+本家の JIZURA は背景色や黒で全面を塗ってつなぐが、ここでは背景色・黒の塗りは
+「消す」、フラッシュや砂嵐は文字の上だけに掛かる)。下の映像が一瞬暗転することは無い。
+ただし**レイアウトの絵柄として画面の大半を覆う部品**はそのまま描かれる
+(`curtain` `zipper` `shoji` `newspaper` `magnets` `hrFlashlight` `hrDoorGap` `hrCctv` など。
+幕・紙・暗闇が映像を隠す)。映像を見せたい MV では
+`"enabled": {"layout": {"curtain": false, …}}` で外しておく。
+
 **タイムラインに保存するのが原則**(`PUT /api/v1/timelines/{id}/fx/lyric`)。ここに props
 として直接書くのは、手元で 1 本焼いて見た目を確かめるときだけ。
 
@@ -428,8 +436,8 @@ props はこの節のものから `fps` / `res` / `aspect` / `durationInSeconds`
    `timing.lineScale`)。
 
 2. **まず `mood` と `seed` でおまかせ。** `glitch` / `calm` / `pop` / `graphic` /
-   `editorial` / `emotional` / `chaos` のどれかを書けば、それに合うスタイル・部品・
-   スライダーがまとめて決まる。`seed` を変えると別の案が出る(同じ種なら毎回同じ絵)。
+   `editorial` / `emotional` / `horror` / `chaos` のどれかを書けば、それに合うスタイル・部品・
+   スライダーがまとめて決まる(`horror` を書くとホラーの部品セットも ON になる)。`seed` を変えると別の案が出る(同じ種なら毎回同じ絵)。
    **最初から `overrides` を書き並べない。** 種を 3〜4 回振って、いちばん近いものを選ぶ。
 
 3. **気になる行だけ `overrides`。** キーは**行番号(0 始まりの文字列)**。
@@ -445,6 +453,34 @@ props はこの節のものから `fps` / `res` / `aspect` / `durationInSeconds`
    `bg` / `cam` / `trans` と、`single`(行を割らず 1 カットに収める) / `seed`(この行だけ
    振り直す) / `lock`。
 
+   **行の中の 1 カットだけ**を指名するときは、カット番号(その行の 0 始まり)をキーに書く。
+   そのカットだけ別の乱数で引き直すので、ほかのカットの絵は動かない。
+
+   ```jsonc
+   "overrides": {
+     "5": {
+       "cuts": 3,                                     // この行を 3 カットに割る(1〜12)
+       "cutLayouts": { "0": "huge" },                 // 1 カット目のレイアウト
+       "cutTech": {                                   // カットごとの指名
+         "1": { "enter": "stamp", "decor": "none" },  // decor は 1 つだけ(文字列)、"none" で無し
+         "2": { "trans": "none" }                     // trans: "none" で前のカットとつながない
+       }
+     }
+   }
+   ```
+
+   **位置をずらす**(手元パッチ。JIZURA 本体には無い)。`offset` は画面比で、`x: 0.25` なら
+   画面幅の 1/4 右、`y: -0.2` なら高さの 1/5 上。`scale` は拡大率(0.3〜2、既定 1)。
+   `cutOffsets` でカット単位に上書きできる(書いた項目だけ)。キャラクターの顔に歌詞が
+   かぶる行だけ脇へ寄せる、といった使い方。行が替わると次の位置へ瞬時に移る。
+
+   ```jsonc
+   "overrides": {
+     "2": { "offset": { "x": -0.25, "y": 0 }, "scale": 0.7 },           // 左へ寄せて小さく
+     "4": { "cutOffsets": { "1": { "y": 0.3 } } }                       // 2 カット目だけ下へ
+   }
+   ```
+
 4. **全体の当たりを調整する。** `fx` は**書いたところだけ**効く部分指定。
    `{"fx": {"glitch": 0.2, "texture": 0.8}}` のように 1〜2 個だけ触る。
    `koma` は 1 秒あたりの作画枚数(12 = 2 コマ打ち、0 = 毎フレーム)。
@@ -452,6 +488,22 @@ props はこの節のものから `fps` / `res` / `aspect` / `durationInSeconds`
 5. **出したくない部品を外す。** `enabled` も部分指定で、
    `{"enabled": {"layout": {"tile": false, "marquee": false}}}` のように
    **落としたいものだけ** `false` を書く。
+
+### 全体の設定(JIZURA v0.9 で増えたもの)
+
+どれも書かなければ本家の既定のまま。
+
+| キー | 既定 | 意味 |
+|---|---|---|
+| `centerFree` | `false` | **中央を空ける**(キャラクター用)。各カットの歌詞を 2 つに割り、左右の帯(縦長は `centerDir` の向き)に分けて組む。中央には画面効果だけが残る。`offset` はこのとき**帯に対する比**になる |
+| `centerDir` | `"tb"` | 縦長画面での帯の向き。`"tb"` = 上下、`"lr"` = 左右(横長は常に左右) |
+| `typo` / `kinetic` / `horror` | `true` / `true` / `false` | **部品セット**(文字PV系 / キネティック / ホラー)。`false` のセットの部品はランダムには選ばれない(指名はできる)。カタログの `set` がそのセット |
+| `unify` | `false` | **統一感**。空行で区切ったパートごとに部品を揃え、繰り返す行(サビ)を初回と同じ絵で出し、`!` の行をキメにする |
+| `typeset` | `false` | **文字整列**。カナの詰め・助詞を小さく・0.2 秒先出し・装飾と演出を控えめに |
+
+`typo` / `kinetic` は既定で ON なので、**JIZURA 更新前に作った props は同じ種でも
+部品の選ばれ方が変わる**。更新前の絵に寄せたいときは `"typo": false, "kinetic": false` を書く
+(選ばれる部品は更新前と同じになる)。
 
 ### 部品キーの調べ方
 
@@ -461,11 +513,13 @@ props はこの節のものから `fps` / `res` / `aspect` / `durationInSeconds`
 .agents/skills/karakuri-remotion/jizura-catalog.json
 ```
 
-構造は `{groups: {layout: {center: {name, tags, pack, extra?, wa?}, …}, enter: …},
-styles, moods, fonts, aspects, sampleLyrics}`。`tags` は雰囲気(mood)で、
+構造は `{groups: {layout: {center: {name, tags, pack, extra?, wa?, set?}, …}, enter: …},
+styles, moods, sets, fonts, aspects, sampleLyrics}`。`tags` は雰囲気(mood)で、
 `mood` を書いたときに優先して選ばれる目印。`extra: true` は初版より後に足された部品で、
 **ランダムには `"extra": true` を書かないと選ばれない**(手で `overrides` に指名するのは
 いつでもできる)。`wa: true` は和風モチーフで、`"wa": false` でランダムから外れる。
+`set` は部品セット(`typo` / `kinetic` / `horror`)で、そのセットを `false` にすると
+ランダムから外れる(`sets` に既定の ON / OFF)。
 
 ```bash
 # 例: 「縦書き」系のレイアウトを探す
@@ -500,6 +554,7 @@ jq -r '.groups.enter | to_entries[] | select(.value.tags // [] | index("emotiona
   ```
 
   このとき成果物は `video.mp4` ではなく **`video.mov`**(vp8 なら `video.webm`)。
+  透過で焼くときも `FxOverlay` の `lyric` と同じく、トランジションは画面を塗らない。
 
 ### やりがちな失敗(LyricMotion)
 

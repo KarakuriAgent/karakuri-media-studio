@@ -9,10 +9,14 @@
  *   デザインサイズを **cover** で収める（:func:`coverCanvas`）
  *
  * エンジンのソースは `remotion/vendor/jizura/` に**無改変**で置いてある（取り込み元と
- * ライセンスは `vendor/jizura/UPSTREAM.md` / `vendor/jizura/LICENSE`）。ここがやるのは:
+ * ライセンスは `vendor/jizura/UPSTREAM.md` / `vendor/jizura/LICENSE`）。読むのは必ず
+ * `./lib/jizura` の `loadJizura()` から（手元パッチ = 位置ずらしと透過時の
+ * トランジションはそこで 1 回だけ掛かる。編集画面の部品一覧も同じ入口）。
+ * ここがやるのは:
  *
  *   1. props（zod で検証済み）を JIZURA の project オブジェクトに組み直す
- *   2. `J.plan(project, audioLike)` で歌詞 → カット → イベントに構成する
+ *   2. `J.plan(project, audioLike)` で歌詞 → カット → イベントに構成し、
+ *      行・カットの位置ずらし（`offset` / `scale` / `cutOffsets`）をカットに紐づける
  *   3. `new J.Renderer().frame(ctx, plan, t, {scale})` を 1 フレームずつ描く
  *
  * **フレームの時刻独立性**: `frame()` は時刻 t だけから絵を決める。カット間の
@@ -37,13 +41,15 @@
 import React, { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { continueRender, delayRender, useCurrentFrame, useVideoConfig } from 'remotion';
 import {
+  attachPlacement,
   loadJizura,
+  splitPlacement,
   type Jizura,
   type JizuraAudioLike,
   type JizuraPlan,
   type JizuraProject,
   type JizuraRenderer,
-} from '../vendor/jizura/dist/jizura.js';
+} from './lib/jizura';
 import type { LyricAspect, LyricMotionProps } from './schema';
 
 export { loadJizura };
@@ -78,8 +84,12 @@ function defined<T extends object>(source: T): Partial<T> {
  *
  * `J.omakase()` は**いま設定されている雰囲気以外**からランダムに選ぶ作り（編集画面で
  * 押すたびに変わるボタンなので）。こちらは雰囲気を指名したいので、呼んでいる間だけ
- * `J.MOODS` をその 1 つに絞る。エンジンには一切手を入れずに済ませるための細工で、
- * 終わったら必ず元に戻す。
+ * `J.MOODS` を「指名した 1 つ」と「部品セットに結び付いた雰囲気（ホラー）」に絞る。
+ * セットに結び付いた雰囲気を残すのは、`J.omakase()` が「そのセットの部品はその
+ * 雰囲気でだけ使う」を `J.MOODS` から判定するため（残さないと、ホラーの部品が
+ * ほかの雰囲気でも選ばれうる）。残したほうが選ばれないよう、おまかせに見せる
+ * project ではそのセットを OFF にしておく（指名した雰囲気のセットは ON）。
+ * エンジンには一切手を入れずに済ませるための細工で、終わったら必ず元に戻す。
  */
 function omakaseWithMood(
   J: Jizura,
@@ -88,14 +98,25 @@ function omakaseWithMood(
   rnd: () => number,
 ): Partial<JizuraProject> {
   const all = J.MOODS;
-  if (!all[mood]) {
+  const chosen = all[mood];
+  if (!chosen) {
     throw new Error(
       `mood '${mood}' は知らない雰囲気です（${Object.keys(all).join(' / ')} のどれか）`,
     );
   }
+  const view: typeof all = {};
+  const seen: JizuraProject = { ...project, mood: null };
+  for (const [key, entry] of Object.entries(all)) {
+    if (key === mood) view[key] = entry;
+    else if (entry.set) {
+      view[key] = entry;
+      seen[entry.set] = false;
+    }
+  }
+  if (chosen.set) seen[chosen.set] = true;
   try {
-    (J as { MOODS: typeof all }).MOODS = { [mood]: all[mood] };
-    return J.omakase({ ...project, mood: null }, rnd);
+    (J as { MOODS: typeof all }).MOODS = view;
+    return J.omakase(seen, rnd);
   } finally {
     (J as { MOODS: typeof all }).MOODS = all;
   }
@@ -107,6 +128,12 @@ function omakaseWithMood(
  * 重ねる順は「既定 → mood のおまかせ → props に書いてあるもの」。`fx` / `enabled` /
  * `fonts` / `colors` は**書いたキーだけ**を重ねるので、雰囲気に任せつつ 1 か所だけ
  * 直す、という書き方ができる。
+ *
+ * 本家 v0.9 で増えた設定（部品セット `typo` / `kinetic` / `horror`、`unify`、
+ * `typeset`、`centerFree` / `centerDir`）は props の既定が `J.defaultProject()` と
+ * 同じなので、書かなければエンジンの既定どおりに描く。overrides の位置ずらし
+ * （`offset` / `scale` / `cutOffsets`）は planner に渡さない（`prepare()` が plan の
+ * カットに紐づける）。
  */
 export function buildProject(J: Jizura, props: LyricMotionProps): JizuraProject {
   const project = J.defaultProject();
@@ -117,6 +144,13 @@ export function buildProject(J: Jizura, props: LyricMotionProps): JizuraProject 
   project.fps = props.fps;
   project.extra = props.extra;
   project.wa = props.wa;
+  project.typo = props.typo;
+  project.kinetic = props.kinetic;
+  project.horror = props.horror;
+  project.unify = props.unify;
+  project.typeset = props.typeset;
+  project.centerFree = props.centerFree;
+  project.centerDir = props.centerDir;
   project.lang = props.lang;
   // 'transparent' は JIZURA の project には無い（描画側の opt.transparent で出す）
   project.keyBg = props.keyBg === 'transparent' ? 'off' : props.keyBg;
@@ -129,9 +163,12 @@ export function buildProject(J: Jizura, props: LyricMotionProps): JizuraProject 
     lineScale: props.timing.lineScale,
     lineTimes: { ...props.timing.lineTimes },
   };
-  project.overrides = { ...props.overrides };
+  project.overrides = splitPlacement(props.overrides).overrides;
 
   if (props.mood) {
+    // 部品セットに結び付いた雰囲気（ホラー）を指名したら、そのセットも使う
+    const moodSet = J.MOODS[props.mood]?.set;
+    if (moodSet) project[moodSet] = true;
     const rolled = omakaseWithMood(J, project, props.mood, mulberry32(props.seed));
     project.mood = props.mood;
     if (rolled.style) project.style = rolled.style;
@@ -236,7 +273,10 @@ function makeRenderer(J: Jizura, plan: JizuraPlan, seed: number): JizuraRenderer
   }
 }
 
-/** props から plan を作る（フォントを読んでから組み直すので 2 回 plan する）。 */
+/**
+ * props から plan を作る（フォントを読んでから組み直すので 2 回 plan する）。
+ * 組み上がった plan には overrides の位置ずらしを紐づける（`lib/jizuraOffset.ts`）。
+ */
 export async function prepare(
   J: Jizura,
   props: LyricMotionProps,
@@ -252,6 +292,7 @@ export async function prepare(
     // フォントが取れなくてもフォールバックの書体で焼く（ネットの無い環境でも止めない）
   }
   plan = J.plan(project, audio);
+  attachPlacement(plan, splitPlacement(props.overrides).placement);
   return { project, plan };
 }
 

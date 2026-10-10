@@ -1155,9 +1155,13 @@ ComfyUI と並ぶもう 1 つの生成経路。Remotion プロジェクト（Nod
   で置き（取り込み元・除外・更新手順は `vendor/jizura/UPSTREAM.md`、ライセンス全文は
   同 `LICENSE`）、`scripts/build-jizura-bundle.mjs` が JIZURA 本体の `build.py` と同じ
   順で結合した ESM（`vendor/jizura/dist/jizura.js`、**生成物も git に入れる**）を
-  webpack から読む。props（`lyricMotionSchema`）は歌詞・スタイル・雰囲気・種・部品の
-  絞り込み・行ごとの上書きで、`calculateMetadata` が画面比と `res` から実寸を、構成
-  （`J.plan`）の終端から尺を決める。部品キー 707・スタイル 24・書体 23 の一覧は
+  webpack から読む。読む入口は `remotion/src/lib/jizura.ts` の 1 か所で、エンジンに無い
+  機能（行・カット単位の位置ずらし `offset` / `scale`、透過で描くときにカット間の
+  トランジションが画面を塗らない読み替え）はそこでエンジンの外から包んで足す（手元パッチ。
+  仕組みは `vendor/jizura/UPSTREAM.md`）。props（`lyricMotionSchema`）は歌詞・スタイル・
+  雰囲気・種・部品の絞り込み・部品セット（文字PV系 / キネティック / ホラー）・統一感・
+  文字整列・中央を空ける・行とカットごとの上書きで、`calculateMetadata` が画面比と `res`
+  から実寸を、構成（`J.plan`）の終端から尺を決める。部品キー 860・スタイル 27・書体 23 の一覧は
   `scripts/export-jizura-catalog.mjs` が
   `workspace/.agents/skills/karakuri-remotion/jizura-catalog.json` に出す（エージェントが
   キーを推測しないため）。書体は Google Fonts から実行時に取る（同梱していない。

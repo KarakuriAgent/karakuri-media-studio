@@ -263,8 +263,10 @@ CSS の色(`#dc1428` / `red`)をそのまま書いてもよい。
 そのまま置けます。
 
 画面比は `width` / `height` にいちばん近い `aspect` を選び、そのデザインサイズを
-**cover** で収めます(`keyBg` は層として重ねる以上つねに透過)。サンプルは
-`examples/fx-overlay-lyric.json`:
+**cover** で収めます(`keyBg` は層として重ねる以上つねに透過)。透過で描くときは
+カット間のトランジションが背景色や黒で画面を塗らないよう、手元パッチで読み替えています
+(`src/lib/jizuraTransparent.ts`。仕組みは [`vendor/jizura/UPSTREAM.md`](vendor/jizura/UPSTREAM.md)
+の「手元パッチ」)。サンプルは `examples/fx-overlay-lyric.json`:
 
 ```bash
 npx remotion render src/index.ts FxOverlay out/fx-lyric.mp4 --props=examples/fx-overlay-lyric.json
@@ -279,6 +281,8 @@ npx remotion render src/index.ts FxOverlay out/fx-lyric.mp4 --props=examples/fx-
 アニメーションを割り当てて、文字PV を 1 本組み上げます。エンジンは OSS の
 **JIZURA 字面**(MIT)で、ソースは `vendor/jizura/` に**無改変**で置いてあります
 (取り込み元・除外したもの・更新手順は [`vendor/jizura/UPSTREAM.md`](vendor/jizura/UPSTREAM.md))。
+読む入口は `src/lib/jizura.ts` の `loadJizura()` 1 か所で、エンジンに無い機能
+(行・カットの位置ずらし、透過時のトランジション)はそこでエンジンの外から包んで足します。
 
 props の正本は `src/schema.ts` の `lyricMotionSchema`。最小はこれだけです。
 
@@ -293,15 +297,18 @@ props の正本は `src/schema.ts` の `lyricMotionSchema`。最小はこれだ�
 | props | 意味 |
 |---|---|
 | `lyrics` | 歌詞。1 行 1 フレーズ。記法は下記 |
-| `style` | 配色と質感(24 種)。**空文字なら任せる**(`mood` があればそれに合うものが選ばれる) |
-| `mood` | `glitch` / `calm` / `pop` / `graphic` / `editorial` / `emotional` / `chaos`。書くと「おまかせ」で部品とスライダーをまとめて選ぶ |
+| `style` | 配色と質感(27 種)。**空文字なら任せる**(`mood` があればそれに合うものが選ばれる) |
+| `mood` | `glitch` / `calm` / `pop` / `graphic` / `editorial` / `emotional` / `horror` / `chaos`。書くと「おまかせ」で部品とスライダーをまとめて選ぶ(`horror` はホラーの部品セットも ON にする) |
 | `seed` | 乱数の種。同じ種・同じ歌詞なら毎回同じ絵 |
 | `aspect` / `res` / `fps` | `16:9` `9:16` `4:3` `3:4` `1:1` `4:5` `21:9` / 短辺のピクセル数 / フレームレート |
 | `keyBg` | `off` / `green`(グリーンバック) / `black`(ブラックバック) / `transparent`(下地を塗らない) |
 | `extra` / `wa` | 初版より後に足された部品(追加分) / 和風モチーフをランダムに選んでよいか |
+| `typo` / `kinetic` / `horror` | 部品セット(文字PV系 / キネティック / ホラー)をランダムに選んでよいか。既定は `true` / `true` / `false` |
+| `unify` / `typeset` | 統一感(パートごとに部品を揃える・繰り返す行を同じ絵で出す・キメ・モーフ) / 文字整列(カナの詰め・助詞を小さく・0.2 秒先出し)。既定はどちらも `false` |
+| `centerFree` / `centerDir` | 中央を空ける(歌詞を 2 つに割って左右の帯に組む。キャラクター用) / 縦長のときの帯の向き(`tb` 上下・`lr` 左右)。既定は `false` / `tb` |
 | `fx` | 演出の強さ。`motion` `glitch` `chroma` `decor` `density` `texture` `bgSwitch`(0..1)、`koma`(1 秒あたりの作画枚数)、`hud` |
 | `enabled` | 使ってよい部品の絞り込み。`{"layout": {"tile": false}}` のように**書いたところだけ**効く |
-| `overrides` | 行番号(0 始まり)ごとの指名。`{"3": {"layout": "huge", "exit": "explode"}}` |
+| `overrides` | 行番号(0 始まり)ごとの指名。`{"3": {"layout": "huge", "exit": "explode"}}`。カット単位の指名(`cuts` / `cutLayouts` / `cutTech`)と、位置ずらし(`offset: {x, y}` は画面比、`scale`、`cutOffsets`。手元パッチ)も書ける |
 | `colors` / `fonts` | 配色 / 書体の役割ごとの差し替え |
 | `timing` | `bpm` `offset` `snap` `tail` `lineScale` `lineTimes` |
 | `audio` | BGM(`src`)と解析結果(`beats` / `duration` / `energy` / `energyRate`) |
@@ -319,7 +326,7 @@ props の正本は `src/schema.ts` の `lyricMotionSchema`。最小はこれだ�
 **部品キーの一覧**(`layout` / `enter` / `hold` / `exit` / `decor` / `treat` / `bg` /
 `cam` / `fx` / `trans` の中身、スタイル、雰囲気、書体)は
 [`workspace/.agents/skills/karakuri-remotion/jizura-catalog.json`](../workspace/.agents/skills/karakuri-remotion/jizura-catalog.json)
-にすべて並んでいます(部品 707・スタイル 24・書体 23)。作り直すには:
+にすべて並んでいます(部品 860・スタイル 27・書体 23。部品セットに属する部品には `set`)。作り直すには:
 
 ```bash
 node scripts/export-jizura-catalog.mjs

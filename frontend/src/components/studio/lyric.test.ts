@@ -1,14 +1,18 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  LYRIC_SETS,
+  lyricFlag,
   lyricFxValue,
   lyricOverride,
+  lyricPlace,
   lyricRest,
   lyricSeed,
   lyricText,
   rollSeed,
   setLyricFx,
   setLyricOverride,
+  setLyricPlace,
   withLyricRest,
 } from './lyric'
 
@@ -69,6 +73,63 @@ describe('行ごとの上書き', () => {
   })
 })
 
+describe('全体の真偽値（部品セット・統一感・中央を空ける）', () => {
+  it('書いていなければ既定（部品セットは本家の J.SETS と同じ）', () => {
+    const defaults = Object.fromEntries(
+      LYRIC_SETS.map((set) => [set.name, lyricFlag({}, set.name, set.fallback)]),
+    )
+    expect(defaults).toEqual({ typo: true, kinetic: true, horror: false })
+    expect(lyricFlag({}, 'centerFree', false)).toBe(false)
+    expect(lyricFlag({ centerFree: 'yes' }, 'centerFree', false)).toBe(false)
+    expect(lyricFlag({ kinetic: false }, 'kinetic', true)).toBe(false)
+  })
+})
+
+describe('行の位置ずらし（offset / scale）', () => {
+  const base = { lyrics: 'あ\nい', overrides: { '1': { layout: 'huge' } } }
+
+  it('書いていなければ 0, 0, 1。壊れた値も既定へ落ちる', () => {
+    expect(lyricPlace(base, 0)).toEqual({ x: 0, y: 0, scale: 1 })
+    expect(
+      lyricPlace({ overrides: { '0': { offset: { x: 'a', y: 0.2 }, scale: null } } }, 0),
+    ).toEqual({ x: 0, y: 0.2, scale: 1 })
+  })
+
+  it('書いた軸だけを変え、ほかの指名は残す', () => {
+    const one = setLyricPlace(base, 1, { x: 0.25 })
+    expect(one.overrides).toEqual({ '1': { layout: 'huge', offset: { x: 0.25, y: 0 } } })
+    const two = setLyricPlace(one, 1, { y: -0.5, scale: 0.6 })
+    expect(two.overrides).toEqual({
+      '1': { layout: 'huge', offset: { x: 0.25, y: -0.5 }, scale: 0.6 },
+    })
+  })
+
+  it('範囲（±1 / 0.3〜2）に収め、既定に戻ったものは消す', () => {
+    const wide = setLyricPlace(base, 0, { x: 3, y: -9, scale: 10 })
+    expect(wide.overrides).toMatchObject({ '0': { offset: { x: 1, y: -1 }, scale: 2 } })
+    const back = setLyricPlace(wide, 0, { x: 0, y: 0, scale: 1 })
+    expect(back.overrides).toEqual({ '1': { layout: 'huge' } })
+  })
+
+  it('null（リセット）で位置と拡大率を両方消す', () => {
+    const placed = setLyricPlace(base, 1, { x: 0.1, scale: 0.5 })
+    expect(setLyricPlace(placed, 1, null).overrides).toEqual({ '1': { layout: 'huge' } })
+  })
+
+  it('カット単位の指定（cutOffsets / cutTech）は触らずに持ち回る', () => {
+    const lyric = {
+      overrides: { '0': { cutOffsets: { '1': { x: 0.2 } }, cutTech: { '0': { enter: 'pop' } } } },
+    }
+    expect(setLyricPlace(lyric, 0, { y: 0.1 }).overrides).toEqual({
+      '0': {
+        cutOffsets: { '1': { x: 0.2 } },
+        cutTech: { '0': { enter: 'pop' } },
+        offset: { x: 0, y: 0.1 },
+      },
+    })
+  })
+})
+
 describe('残りの項目（JSON の生編集欄）', () => {
   const lyric = {
     lyrics: 'あ',
@@ -82,6 +143,18 @@ describe('残りの項目（JSON の生編集欄）', () => {
 
   it('個別に出している項目は残りに出さない', () => {
     expect(lyricRest(lyric)).toEqual({ lang: 'ja', colors: { bg: '#000' } })
+    expect(
+      lyricRest({
+        ...lyric,
+        typo: false,
+        kinetic: true,
+        horror: true,
+        unify: true,
+        typeset: false,
+        centerFree: true,
+        centerDir: 'lr',
+      }),
+    ).toEqual({ lang: 'ja', colors: { bg: '#000' } })
   })
 
   it('書き戻しても個別の項目は保たれ、消した残りは落ちる', () => {

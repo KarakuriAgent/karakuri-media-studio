@@ -2,8 +2,8 @@
   "_note": "remotion/scripts/export-jizura-catalog.mjs が生成。LyricMotion の overrides / style / mood に 書けるキーの一覧。手で編集しないこと。",
   "generatedFrom": "remotion/vendor/jizura (UPSTREAM.md にコミット SHA)",
   "counts": {
-    "parts": 707,
-    "styles": 24,
+    "parts": 860,
+    "styles": 27,
     "fonts": 23
   },
   "groups": {
@@ -16,6 +16,7 @@
           "editorial",
           "emotional",
           "glitch",
+          "horror",
           "pop"
         ]
       },
@@ -36,7 +37,8 @@
           "calm",
           "editorial",
           "emotional",
-          "glitch"
+          "glitch",
+          "horror"
         ]
       },
       "marquee": {
@@ -84,6 +86,7 @@
           "emotional",
           "glitch",
           "graphic",
+          "horror",
           "pop"
         ]
       },
@@ -117,7 +120,8 @@
         "pack": "core",
         "tags": [
           "calm",
-          "editorial"
+          "editorial",
+          "horror"
         ]
       },
       "diag": {
@@ -145,7 +149,8 @@
           "calm",
           "editorial",
           "emotional",
-          "glitch"
+          "glitch",
+          "horror"
         ]
       },
       "pill": {
@@ -155,6 +160,251 @@
           "graphic",
           "pop"
         ]
+      },
+      "hrFlashlight": {
+        "name": "懐中電灯",
+        "pack": "horror",
+        "tags": [
+          "emotional",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "hrDoorGap": {
+        "name": "扉の隙間",
+        "pack": "horror",
+        "tags": [
+          "editorial",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "hrWallScrawl": {
+        "name": "壁の落書き",
+        "pack": "horror",
+        "tags": [
+          "glitch",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "hrCctv": {
+        "name": "監視モニター",
+        "pack": "horror",
+        "tags": [
+          "editorial",
+          "glitch",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "hrOuija": {
+        "name": "降霊盤",
+        "pack": "horror",
+        "tags": [
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "hrMissing": {
+        "name": "尋ね人",
+        "pack": "horror",
+        "tags": [
+          "editorial",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "hrWrongOne": {
+        "name": "一字だけ違う",
+        "pack": "horror",
+        "tags": [
+          "calm",
+          "editorial",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "hrRisingDark": {
+        "name": "闇から這い出る",
+        "pack": "horror",
+        "tags": [
+          "emotional",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "hrRedacted": {
+        "name": "黒塗り文書",
+        "pack": "horror",
+        "tags": [
+          "editorial",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "hrStaticTv": {
+        "name": "砂嵐のテレビ",
+        "pack": "horror",
+        "tags": [
+          "glitch",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "hrSpiritPhoto": {
+        "name": "心霊写真",
+        "pack": "horror",
+        "tags": [
+          "emotional",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "hrWrongShadow": {
+        "name": "影が違う",
+        "pack": "horror",
+        "tags": [
+          "emotional",
+          "graphic",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "knSlamStack": {
+        "name": "積み上げ",
+        "pack": "kinetic",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
+      "knQuarterTurn": {
+        "name": "直角ターン",
+        "pack": "kinetic",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
+      "knSwapCenter": {
+        "name": "入れ替わり",
+        "pack": "kinetic",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
+      "knZoomDive": {
+        "name": "文字へ潜る",
+        "pack": "kinetic",
+        "tags": [
+          "emotional",
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
+      "knFlowSnap": {
+        "name": "流れて整列",
+        "pack": "kinetic",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
+      "knSeesaw": {
+        "name": "シーソー",
+        "pack": "kinetic",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
+      "knTypeSlam": {
+        "name": "タイプ→スラム",
+        "pack": "kinetic",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
+      "knRhythmCuts": {
+        "name": "語のカット割り",
+        "pack": "kinetic",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
+      "knPathRide": {
+        "name": "ループ軌道",
+        "pack": "kinetic",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
+      "knGearWords": {
+        "name": "歯車",
+        "pack": "kinetic",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
+      "knCollide": {
+        "name": "正面衝突",
+        "pack": "kinetic",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
+      "knTumble": {
+        "name": "箱転がし",
+        "pack": "kinetic",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
+      "knReflow": {
+        "name": "縦から横へ",
+        "pack": "kinetic",
+        "tags": [
+          "editorial",
+          "emotional",
+          "graphic"
+        ],
+        "set": "kinetic"
+      },
+      "knPadGrid": {
+        "name": "パッド",
+        "pack": "kinetic",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
       },
       "lowerThird": {
         "name": "下部テロップ",
@@ -1318,6 +1568,184 @@
           "pop"
         ],
         "extra": true
+      },
+      "tyKeySplit": {
+        "name": "大字挟み",
+        "pack": "typo",
+        "tags": [
+          "editorial",
+          "emotional",
+          "graphic"
+        ],
+        "set": "typo"
+      },
+      "tyCropGiant": {
+        "name": "見切れ大文字",
+        "pack": "typo",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "set": "typo"
+      },
+      "tyCross": {
+        "name": "十字組",
+        "pack": "typo",
+        "tags": [
+          "editorial",
+          "graphic"
+        ],
+        "set": "typo"
+      },
+      "tyBandHide": {
+        "name": "帯隠れ",
+        "pack": "typo",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "set": "typo"
+      },
+      "tyRuby": {
+        "name": "ルビ振り",
+        "pack": "typo",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "set": "typo"
+      },
+      "tyBaseline": {
+        "name": "罫線組",
+        "pack": "typo",
+        "tags": [
+          "calm",
+          "editorial",
+          "graphic"
+        ],
+        "set": "typo"
+      },
+      "tyScaleSteps": {
+        "name": "級数上げ",
+        "pack": "typo",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "set": "typo"
+      },
+      "tyJustify": {
+        "name": "幅揃え",
+        "pack": "typo",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "set": "typo"
+      },
+      "tyIndexTable": {
+        "name": "一覧表",
+        "pack": "typo",
+        "tags": [
+          "calm",
+          "editorial",
+          "graphic"
+        ],
+        "set": "typo"
+      },
+      "tySplitType": {
+        "name": "断ち割り",
+        "pack": "typo",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "set": "typo"
+      },
+      "tyErode": {
+        "name": "削り反復",
+        "pack": "typo",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "set": "typo"
+      },
+      "tyVRuler": {
+        "name": "縦目盛り",
+        "pack": "typo",
+        "tags": [
+          "calm",
+          "editorial",
+          "graphic"
+        ],
+        "set": "typo"
+      },
+      "tyFullTrack": {
+        "name": "全幅字送り",
+        "pack": "typo",
+        "tags": [
+          "calm",
+          "editorial",
+          "graphic"
+        ],
+        "set": "typo"
+      },
+      "tyStatCount": {
+        "name": "字数表示",
+        "pack": "typo",
+        "tags": [
+          "editorial",
+          "graphic"
+        ],
+        "set": "typo"
+      },
+      "tyMargin": {
+        "name": "余白",
+        "pack": "typo",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "set": "typo"
+      },
+      "tyRotBlock": {
+        "name": "回転ブロック",
+        "pack": "typo",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "set": "typo"
+      },
+      "tySquare": {
+        "name": "方形組",
+        "pack": "typo",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "set": "typo"
+      },
+      "tyLineFocus": {
+        "name": "行中強調",
+        "pack": "typo",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "set": "typo"
       }
     },
     "enter": {
@@ -1349,7 +1777,8 @@
         "pack": "core",
         "tags": [
           "calm",
-          "editorial"
+          "editorial",
+          "horror"
         ]
       },
       "pop": {
@@ -1391,7 +1820,8 @@
         "tags": [
           "calm",
           "editorial",
-          "emotional"
+          "emotional",
+          "horror"
         ]
       },
       "spin": {
@@ -1405,14 +1835,16 @@
         "name": "点滅",
         "pack": "core",
         "tags": [
-          "glitch"
+          "glitch",
+          "horror"
         ]
       },
       "scramble": {
         "name": "スクランブル",
         "pack": "core",
         "tags": [
-          "glitch"
+          "glitch",
+          "horror"
         ]
       },
       "zoom": {
@@ -2212,6 +2644,247 @@
           "pop"
         ],
         "extra": true
+      },
+      "hrBlinkCreep": {
+        "name": "瞬きの間に",
+        "pack": "horror",
+        "tags": [
+          "emotional",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "hrJumpScare": {
+        "name": "飛び出し",
+        "pack": "horror",
+        "tags": [
+          "glitch",
+          "horror",
+          "pop"
+        ],
+        "set": "horror"
+      },
+      "hrUneasy": {
+        "name": "間の悪い出現",
+        "pack": "horror",
+        "tags": [
+          "editorial",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "hrVhold": {
+        "name": "垂直同期",
+        "pack": "horror",
+        "tags": [
+          "glitch",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "hrMirrorSnap": {
+        "name": "鏡文字",
+        "pack": "horror",
+        "tags": [
+          "glitch",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "hrManifest": {
+        "name": "浮かび上がる",
+        "pack": "horror",
+        "tags": [
+          "calm",
+          "emotional",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "hrClawReveal": {
+        "name": "爪痕から",
+        "pack": "horror",
+        "tags": [
+          "graphic",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "knWordSlam": {
+        "name": "語ごとスラム",
+        "pack": "kinetic",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
+      "knTypeToSlam": {
+        "name": "打鍵→拡大",
+        "pack": "kinetic",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
+      "knReplaceIn": {
+        "name": "入れ替わり登場",
+        "pack": "kinetic",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
+      "knHingeDrop": {
+        "name": "蝶番おろし",
+        "pack": "kinetic",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
+      "knLoopIn": {
+        "name": "ループ入り",
+        "pack": "kinetic",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
+      "knPushIn": {
+        "name": "押し込み",
+        "pack": "kinetic",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
+      "knInertia": {
+        "name": "急ブレーキ",
+        "pack": "kinetic",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
+      "knWordSpin": {
+        "name": "語ごと回転",
+        "pack": "kinetic",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
+      "knDiveIn": {
+        "name": "手前から語",
+        "pack": "kinetic",
+        "tags": [
+          "emotional",
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
+      "knStretchOut": {
+        "name": "伸び出し",
+        "pack": "kinetic",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
+      "tyKeyFirst": {
+        "name": "キー字先行",
+        "pack": "typo",
+        "tags": [
+          "editorial",
+          "emotional",
+          "graphic",
+          "pop"
+        ],
+        "set": "typo"
+      },
+      "tyLineWipe": {
+        "name": "行送りワイプ",
+        "pack": "typo",
+        "tags": [
+          "calm",
+          "editorial",
+          "graphic"
+        ],
+        "set": "typo"
+      },
+      "tyZoomOne": {
+        "name": "一字ずつ拡大",
+        "pack": "typo",
+        "tags": [
+          "emotional",
+          "graphic",
+          "pop"
+        ],
+        "set": "typo"
+      },
+      "tyUnderLift": {
+        "name": "下線から立つ",
+        "pack": "typo",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "set": "typo"
+      },
+      "tyDotGrow": {
+        "name": "点から字",
+        "pack": "typo",
+        "tags": [
+          "calm",
+          "graphic",
+          "pop"
+        ],
+        "set": "typo"
+      },
+      "tyBracketOpen": {
+        "name": "括弧が開く",
+        "pack": "typo",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "set": "typo"
+      },
+      "tyRetype": {
+        "name": "打ち直し",
+        "pack": "typo",
+        "tags": [
+          "editorial",
+          "emotional",
+          "glitch"
+        ],
+        "set": "typo"
+      },
+      "tyRubyDrop": {
+        "name": "ルビから",
+        "pack": "typo",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "set": "typo"
       }
     },
     "hold": {
@@ -2530,6 +3203,142 @@
           "pop"
         ],
         "extra": true
+      },
+      "hrTwitch": {
+        "name": "痙攣",
+        "pack": "horror",
+        "tags": [
+          "glitch",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "hrStare": {
+        "name": "見つめる字",
+        "pack": "horror",
+        "tags": [
+          "emotional",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "hrLagOne": {
+        "name": "遅れる一字",
+        "pack": "horror",
+        "tags": [
+          "calm",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "hrFlickerLight": {
+        "name": "切れかけの灯",
+        "pack": "horror",
+        "tags": [
+          "emotional",
+          "glitch",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "knWordPulse": {
+        "name": "語ごとの拍",
+        "pack": "kinetic",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
+      "knCounterRock": {
+        "name": "逆回転ゆれ",
+        "pack": "kinetic",
+        "tags": [
+          "calm",
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
+      "knWordRide": {
+        "name": "語の波乗り",
+        "pack": "kinetic",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
+      "knTickShift": {
+        "name": "刻みシフト",
+        "pack": "kinetic",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
+      "knBeatLean": {
+        "name": "拍で傾く",
+        "pack": "kinetic",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
+      "knGapBreath": {
+        "name": "語間の呼吸",
+        "pack": "kinetic",
+        "tags": [
+          "calm",
+          "editorial",
+          "emotional"
+        ],
+        "set": "kinetic"
+      },
+      "tyKeyPulse": {
+        "name": "一字の鼓動",
+        "pack": "typo",
+        "tags": [
+          "calm",
+          "emotional",
+          "pop"
+        ],
+        "set": "typo"
+      },
+      "tyReadCursor": {
+        "name": "読み送り",
+        "pack": "typo",
+        "tags": [
+          "calm",
+          "editorial",
+          "pop"
+        ],
+        "set": "typo"
+      },
+      "tyOutlineBlink": {
+        "name": "白抜き明滅",
+        "pack": "typo",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "set": "typo"
+      },
+      "tyTrackStep": {
+        "name": "字間ステップ",
+        "pack": "typo",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "set": "typo"
       }
     },
     "exit": {
@@ -2550,7 +3359,8 @@
         "pack": "core",
         "tags": [
           "emotional",
-          "glitch"
+          "glitch",
+          "horror"
         ]
       },
       "drift": {
@@ -2559,7 +3369,8 @@
         "tags": [
           "calm",
           "editorial",
-          "emotional"
+          "emotional",
+          "horror"
         ]
       },
       "slice": {
@@ -2594,6 +3405,7 @@
           "calm",
           "editorial",
           "emotional",
+          "horror",
           "pop"
         ]
       },
@@ -2616,7 +3428,8 @@
         "name": "グリッチ退場",
         "pack": "core",
         "tags": [
-          "glitch"
+          "glitch",
+          "horror"
         ]
       },
       "sinkMask": {
@@ -3262,6 +4075,229 @@
           "emotional"
         ],
         "extra": true
+      },
+      "hrPulledDown": {
+        "name": "引きずり込み",
+        "pack": "horror",
+        "tags": [
+          "emotional",
+          "glitch",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "hrLookBack": {
+        "name": "一字残る",
+        "pack": "horror",
+        "tags": [
+          "emotional",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "hrTurnAway": {
+        "name": "背を向ける",
+        "pack": "horror",
+        "tags": [
+          "calm",
+          "emotional",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "hrShiver": {
+        "name": "震えて消える",
+        "pack": "horror",
+        "tags": [
+          "glitch",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "hrSwallow": {
+        "name": "闇に呑まれる",
+        "pack": "horror",
+        "tags": [
+          "emotional",
+          "graphic",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "hrFlickerDie": {
+        "name": "明滅して消える",
+        "pack": "horror",
+        "tags": [
+          "glitch",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "hrDrain": {
+        "name": "滴り落ちる",
+        "pack": "horror",
+        "tags": [
+          "emotional",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "knWordKick": {
+        "name": "語ごと蹴り出し",
+        "pack": "kinetic",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
+      "knPushOut": {
+        "name": "押し出し退場",
+        "pack": "kinetic",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
+      "knDiveGlyph": {
+        "name": "一字へ突入",
+        "pack": "kinetic",
+        "tags": [
+          "emotional",
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
+      "knLaunch": {
+        "name": "急発進",
+        "pack": "kinetic",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
+      "knWordBlink": {
+        "name": "一語ずつ消灯",
+        "pack": "kinetic",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
+      "knCloseGap": {
+        "name": "詰めて消える",
+        "pack": "kinetic",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
+      "knJumpCutOut": {
+        "name": "ジャンプカット",
+        "pack": "kinetic",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
+      "knStackAway": {
+        "name": "積んで落とす",
+        "pack": "kinetic",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
+      "tyStrike": {
+        "name": "線で消す",
+        "pack": "typo",
+        "tags": [
+          "editorial",
+          "emotional",
+          "graphic"
+        ],
+        "set": "typo"
+      },
+      "tyToDot": {
+        "name": "点に戻る",
+        "pack": "typo",
+        "tags": [
+          "calm",
+          "graphic",
+          "pop"
+        ],
+        "set": "typo"
+      },
+      "tyLineFeed": {
+        "name": "改行送り",
+        "pack": "typo",
+        "tags": [
+          "calm",
+          "editorial",
+          "graphic"
+        ],
+        "set": "typo"
+      },
+      "tyBracketClose": {
+        "name": "括弧閉じ",
+        "pack": "typo",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "set": "typo"
+      },
+      "tyToIndex": {
+        "name": "番号に変わる",
+        "pack": "typo",
+        "tags": [
+          "editorial",
+          "glitch",
+          "graphic"
+        ],
+        "set": "typo"
+      },
+      "tyKeyLast": {
+        "name": "一字残し",
+        "pack": "typo",
+        "tags": [
+          "emotional",
+          "graphic",
+          "pop"
+        ],
+        "set": "typo"
+      },
+      "tyUnderSink": {
+        "name": "下線へ沈む",
+        "pack": "typo",
+        "tags": [
+          "calm",
+          "editorial",
+          "graphic"
+        ],
+        "set": "typo"
+      },
+      "tyFoldVert": {
+        "name": "縦組に折れる",
+        "pack": "typo",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "set": "typo"
       }
     },
     "decor": {
@@ -4326,12 +5362,214 @@
           "pop"
         ],
         "extra": true
+      },
+      "hrScratches": {
+        "name": "引っ掻き傷",
+        "pack": "horror",
+        "tags": [
+          "glitch",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "hrSigil": {
+        "name": "魔法陣",
+        "pack": "horror",
+        "tags": [
+          "graphic",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "hrWatchEye": {
+        "name": "見ている目",
+        "pack": "horror",
+        "tags": [
+          "graphic",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "hrStaticPatch": {
+        "name": "砂嵐の欠片",
+        "pack": "horror",
+        "tags": [
+          "glitch",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "hrDustBeam": {
+        "name": "光の筋と埃",
+        "pack": "horror",
+        "tags": [
+          "calm",
+          "emotional",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "hrDrips": {
+        "name": "垂れる墨",
+        "pack": "horror",
+        "tags": [
+          "emotional",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "hrCracks": {
+        "name": "ひび割れ",
+        "pack": "horror",
+        "tags": [
+          "glitch",
+          "graphic",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "knSpeedTrail": {
+        "name": "追従スピード線",
+        "pack": "kinetic",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
+      "knWordTicks": {
+        "name": "語カウンター",
+        "pack": "kinetic",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
+      "tyColophon": {
+        "name": "奥付",
+        "pack": "typo",
+        "tags": [
+          "calm",
+          "editorial",
+          "graphic"
+        ],
+        "set": "typo"
+      },
+      "tyRunningHead": {
+        "name": "柱とノンブル",
+        "pack": "typo",
+        "tags": [
+          "calm",
+          "editorial"
+        ],
+        "set": "typo"
+      },
+      "tyGlyphBody": {
+        "name": "字割り線",
+        "pack": "typo",
+        "tags": [
+          "calm",
+          "editorial",
+          "graphic"
+        ],
+        "set": "typo"
+      },
+      "tyTextRule": {
+        "name": "文字罫",
+        "pack": "typo",
+        "tags": [
+          "calm",
+          "editorial",
+          "graphic"
+        ],
+        "set": "typo"
+      },
+      "tyTypeScale": {
+        "name": "級数見本",
+        "pack": "typo",
+        "tags": [
+          "editorial",
+          "graphic"
+        ],
+        "set": "typo"
+      },
+      "tyBigPunct": {
+        "name": "大きな約物",
+        "pack": "typo",
+        "tags": [
+          "editorial",
+          "emotional",
+          "graphic"
+        ],
+        "set": "typo"
       }
     },
     "treat": {
       "none": {
         "name": "なし",
         "pack": "core"
+      },
+      "hrInkBleed": {
+        "name": "滲み垂れ",
+        "pack": "horror",
+        "tags": [
+          "emotional",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "hrEroded": {
+        "name": "風化",
+        "pack": "horror",
+        "tags": [
+          "editorial",
+          "graphic",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "hrRedact": {
+        "name": "黒塗り",
+        "pack": "horror",
+        "tags": [
+          "editorial",
+          "graphic",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "hrDoubleExp": {
+        "name": "二重露光",
+        "pack": "horror",
+        "tags": [
+          "emotional",
+          "glitch",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "knWordScale": {
+        "name": "大小語",
+        "pack": "kinetic",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
+      "knWordPlate": {
+        "name": "語ごと反転",
+        "pack": "kinetic",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
       },
       "outline": {
         "name": "袋文字",
@@ -4803,6 +6041,45 @@
           "pop"
         ],
         "extra": true
+      },
+      "tyHollowKey": {
+        "name": "一字抜き",
+        "pack": "typo",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "set": "typo"
+      },
+      "tyHeadRules": {
+        "name": "天地罫",
+        "pack": "typo",
+        "tags": [
+          "calm",
+          "editorial",
+          "graphic"
+        ],
+        "set": "typo"
+      },
+      "tyHeadBig": {
+        "name": "頭字強調",
+        "pack": "typo",
+        "tags": [
+          "editorial",
+          "emotional",
+          "pop"
+        ],
+        "set": "typo"
+      },
+      "tyIndexSup": {
+        "name": "字番号",
+        "pack": "typo",
+        "tags": [
+          "editorial",
+          "graphic"
+        ],
+        "set": "typo"
       }
     },
     "bg": {
@@ -5178,6 +6455,43 @@
         ],
         "extra": true
       },
+      "hrFailingLamp": {
+        "name": "切れかけの灯",
+        "pack": "horror",
+        "tags": [
+          "emotional",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "hrCorridor": {
+        "name": "暗い廊下",
+        "pack": "horror",
+        "tags": [
+          "graphic",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "hrMold": {
+        "name": "広がる染み",
+        "pack": "horror",
+        "tags": [
+          "emotional",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "hrDeadTrees": {
+        "name": "枯れ木の森",
+        "pack": "horror",
+        "tags": [
+          "calm",
+          "emotional",
+          "horror"
+        ],
+        "set": "horror"
+      },
       "sunburst": {
         "name": "放射",
         "pack": "looks",
@@ -5519,6 +6833,85 @@
           "pop"
         ],
         "extra": true
+      },
+      "hrNervous": {
+        "name": "怯えた手持ち",
+        "pack": "horror",
+        "tags": [
+          "emotional",
+          "glitch",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "hrDutchSnap": {
+        "name": "不意の傾き",
+        "pack": "horror",
+        "tags": [
+          "emotional",
+          "graphic",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "knReadPan": {
+        "name": "読み追い",
+        "pack": "kinetic",
+        "tags": [
+          "editorial",
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
+      "knTiltKick": {
+        "name": "語で傾く",
+        "pack": "kinetic",
+        "tags": [
+          "emotional",
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
+      "knCardFlip": {
+        "name": "カード返し",
+        "pack": "kinetic",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
+      "knShearKick": {
+        "name": "シアーキック",
+        "pack": "kinetic",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
+      "knJumpCut": {
+        "name": "ジャンプカット",
+        "pack": "kinetic",
+        "tags": [
+          "editorial",
+          "glitch",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
+      "knRushIn": {
+        "name": "奥から突進",
+        "pack": "kinetic",
+        "tags": [
+          "emotional",
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
       },
       "pullOut": {
         "name": "引き",
@@ -6053,6 +7446,34 @@
         ],
         "extra": true
       },
+      "hrSubliminal": {
+        "name": "サブリミナル",
+        "pack": "horror",
+        "tags": [
+          "glitch",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "hrSignalLoss": {
+        "name": "映像の途切れ",
+        "pack": "horror",
+        "tags": [
+          "editorial",
+          "glitch",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "hrPassingShadow": {
+        "name": "横切る影",
+        "pack": "horror",
+        "tags": [
+          "emotional",
+          "horror"
+        ],
+        "set": "horror"
+      },
       "panelWipe": {
         "name": "パネルワイプ",
         "pack": "looks",
@@ -6254,6 +7675,52 @@
       }
     },
     "trans": {
+      "hrStaticCut": {
+        "name": "砂嵐カット",
+        "pack": "horror",
+        "tags": [
+          "glitch",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "hrBlink": {
+        "name": "まばたき",
+        "pack": "horror",
+        "tags": [
+          "emotional",
+          "horror"
+        ],
+        "set": "horror"
+      },
+      "knCornerSwing": {
+        "name": "コーナースイング",
+        "pack": "kinetic",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
+      "knStutterCut": {
+        "name": "刻みカット",
+        "pack": "kinetic",
+        "tags": [
+          "glitch",
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
+      "knStripSlam": {
+        "name": "短冊スラム",
+        "pack": "kinetic",
+        "tags": [
+          "graphic",
+          "pop"
+        ],
+        "set": "kinetic"
+      },
       "wipe": {
         "name": "エッジワイプ",
         "pack": "treattrans",
@@ -6447,6 +7914,25 @@
           "pop"
         ],
         "extra": true
+      },
+      "tyRuleWipe": {
+        "name": "罫線ワイプ",
+        "pack": "typo",
+        "tags": [
+          "calm",
+          "editorial",
+          "graphic"
+        ],
+        "set": "typo"
+      },
+      "tyGridCells": {
+        "name": "升目送り",
+        "pack": "typo",
+        "tags": [
+          "editorial",
+          "graphic"
+        ],
+        "set": "typo"
       }
     }
   },
@@ -6486,6 +7972,27 @@
     },
     "mono": {
       "name": "モノ・RGB"
+    },
+    "hrRuin": {
+      "name": "廃墟",
+      "moods": [
+        "horror"
+      ],
+      "set": "horror"
+    },
+    "hrNightRec": {
+      "name": "深夜の録画",
+      "moods": [
+        "horror"
+      ],
+      "set": "horror"
+    },
+    "hrCurse": {
+      "name": "呪いの手紙",
+      "moods": [
+        "horror"
+      ],
+      "set": "horror"
     },
     "sakura": {
       "name": "サクラ",
@@ -6610,8 +8117,26 @@
     "emotional": {
       "name": "エモーショナル"
     },
+    "horror": {
+      "name": "ホラー",
+      "set": "horror"
+    },
     "chaos": {
       "name": "全部入り"
+    }
+  },
+  "sets": {
+    "horror": {
+      "name": "ホラー",
+      "on": false
+    },
+    "typo": {
+      "name": "文字PV系",
+      "on": true
+    },
+    "kinetic": {
+      "name": "キネティック",
+      "on": true
     }
   },
   "fonts": {

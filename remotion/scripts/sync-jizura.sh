@@ -11,7 +11,8 @@
 #   5. dist/jizura.js を作り直し、部品カタログも出し直す
 #
 # 取り込んだソースは**無改変**で置く（差分は upstream に投げる）。実行後は
-# `cd remotion && npm run typecheck` と LyricMotion の試し焼きまで確認すること。
+# `cd remotion && npm run typecheck` と LyricMotion の試し焼き、UPSTREAM.md の
+# 「手元パッチ」の節にある確認（位置ずらし・透過時のトランジション）まで済ませること。
 set -euo pipefail
 
 REPO_URL="https://github.com/852wa/JIZURA"
@@ -66,4 +67,4 @@ PY
 
 node "$HERE/build-jizura-bundle.mjs"
 node "$HERE/export-jizura-catalog.mjs"
-echo '完了。`cd remotion && npm run typecheck` と LyricMotion の試し焼きで確認してください。'
+echo '完了。`cd remotion && npm run typecheck` と LyricMotion の試し焼き、UPSTREAM.md の「手元パッチ」の確認をしてください。'

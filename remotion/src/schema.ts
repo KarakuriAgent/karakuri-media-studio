@@ -206,6 +206,41 @@ export const lyricFxSchema = z.object({
   hud: z.enum(['auto', 'on', 'off']).optional(),
 });
 
+/**
+ * 行の中の 1 カットだけに掛ける指名（`cutTech` の値）。本家 `08_planner.js` が読む形のまま。
+ * そのカットだけ別の乱数で引き直すので、ほかのカットの絵は動かない。
+ */
+export const lyricCutTechSchema = z.object({
+  layout: z.string().optional(),
+  enter: z.string().optional(),
+  exit: z.string().optional(),
+  hold: z.string().optional(),
+  /** 装飾は 1 つだけ。`"none"`（または null）で装飾なし */
+  decor: z.string().nullable().optional(),
+  treat: z.string().optional(),
+  bg: z.string().optional(),
+  cam: z.string().optional(),
+  /** 前のカットからのつなぎ。`"none"` でつながない */
+  trans: z.string().optional(),
+});
+
+/**
+ * 位置ずらし（手元パッチ。JIZURA 本体には無い）。単位は画面比で、x = 0.25 なら
+ * 画面幅の 1/4 右、y = -0.2 なら画面の高さの 1/5 上。`centerFree` のときは
+ * そのカットが組まれる**帯**に対する比になる。
+ */
+export const lyricOffsetSchema = z.object({
+  x: z.number().min(-1).max(1).default(0),
+  y: z.number().min(-1).max(1).default(0),
+});
+
+/** 1 カットだけの位置ずらし（`cutOffsets` の値）。書いた項目だけが行の指定を上書きする。 */
+export const lyricCutOffsetSchema = z.object({
+  x: z.number().min(-1).max(1).optional(),
+  y: z.number().min(-1).max(1).optional(),
+  scale: z.number().min(0.3).max(2).optional(),
+});
+
 /** 1 行だけ部品を指名する上書き（`overrides` の値）。 */
 export const lyricOverrideSchema = z.object({
   /** レイアウト（例 "center" / "vcols" / "huge"） */
@@ -230,9 +265,23 @@ export const lyricOverrideSchema = z.object({
   single: z.boolean().optional(),
   /** この行だけの乱数の種 */
   seed: z.number().int().optional(),
+  /** この行のカット数（1〜12）。行が短ければ文字の途中でも割る */
+  cuts: z.number().int().min(1).max(12).optional(),
+  /** カット番号（0 始まりの文字列キー）→ そのカットのレイアウト */
+  cutLayouts: z.record(z.string(), z.string()).optional(),
+  /** カット番号（0 始まりの文字列キー）→ そのカットだけの指名 */
+  cutTech: z.record(z.string(), lyricCutTechSchema).optional(),
   /** おまかせを掛け直しても保つ */
   lock: z.boolean().optional(),
   lockedSeed: z.number().int().optional(),
+  /** ロックした行の中身（本家エディタが書く形のまま持ち回る） */
+  lockedCuts: z.array(z.record(z.string(), z.unknown())).optional(),
+  /** この行の位置ずらし（画面比。手元パッチ） */
+  offset: lyricOffsetSchema.optional(),
+  /** この行の拡大率（0.3〜2、既定 1。手元パッチ） */
+  scale: z.number().min(0.3).max(2).optional(),
+  /** カット番号（0 始まりの文字列キー）→ そのカットだけの位置ずらし（手元パッチ） */
+  cutOffsets: z.record(z.string(), lyricCutOffsetSchema).optional(),
 });
 
 /** 行の出る時刻（JIZURA の `project.timing`）。 */
@@ -294,7 +343,7 @@ export const lyricMotionSchema = z.object({
   style: z.string().default(''),
   /**
    * 雰囲気。`glitch` / `calm` / `pop` / `graphic` / `editorial` / `emotional` /
-   * `chaos` のどれかを書くと、**その雰囲気に合う部品とスライダーを自動で選ぶ**
+   * `horror` / `chaos` のどれかを書くと、**その雰囲気に合う部品とスライダーを自動で選ぶ**
    * （= おまかせ）。`style` / `fx` / `enabled` / `fonts` / `colors` に自分で書いた
    * 値のほうが強い。null なら何もしない。
    */
@@ -310,6 +359,28 @@ export const lyricMotionSchema = z.object({
   extra: z.boolean().default(false),
   /** 和風モチーフ（提灯・障子・家紋…）をランダムに選ぶ。 */
   wa: z.boolean().default(true),
+  /**
+   * 部品セット。`typo`（文字PV系）と `kinetic`（キネティック）は既定 ON、
+   * `horror`（ホラー）は既定 OFF。OFF のセットの部品はランダムには選ばれない
+   * （行・カットで指名すれば使える）。`mood: "horror"` は horror を ON にする。
+   */
+  typo: z.boolean().default(true),
+  kinetic: z.boolean().default(true),
+  horror: z.boolean().default(false),
+  /**
+   * 統一感。空行で区切ったパートごとに部品を揃え、繰り返す行（サビ）を初回と
+   * 同じ絵で出し、`!` の行をキメにし、カットの間をモーフでつなぐ。
+   */
+  unify: z.boolean().default(false),
+  /** 文字整列。カナの詰め・助詞を小さく・0.2 秒先出し・装飾と演出を控えめに。 */
+  typeset: z.boolean().default(false),
+  /**
+   * 中央を空ける（キャラクター用）。各カットの歌詞を 2 つに割り、左右（縦長なら
+   * `centerDir` の向き）の帯に分けて組む。中央には背景と画面効果だけが残る。
+   */
+  centerFree: z.boolean().default(false),
+  /** 中央を空けるときの縦長画面での向き。`tb` = 上下、`lr` = 左右。横長は常に左右。 */
+  centerDir: z.enum(['tb', 'lr']).default('tb'),
   /** 歌詞の言語（書体の選び方が変わる）。auto は自動判定。 */
   lang: z.enum(['auto', 'ja', 'zh-Hant', 'zh-Hans', 'ko', 'en']).default('auto'),
   /** 演出の強さ。**書いたところだけ**が既定（や mood の選択）を上書きする。 */
@@ -322,7 +393,11 @@ export const lyricMotionSchema = z.object({
   enabled: z
     .record(z.string(), z.record(z.string(), z.boolean()))
     .default({}),
-  /** 行番号（0 始まりの文字列キー）→ その行だけの指名。 */
+  /**
+   * 行番号（0 始まりの文字列キー）→ その行だけの指名。`cutTech` / `cutLayouts` で
+   * 行の中の 1 カットだけを指名でき、`offset` / `scale` / `cutOffsets` で位置を
+   * ずらせる（位置ずらしは手元パッチ。`remotion/src/lib/jizuraOffset.ts`）。
+   */
   overrides: z.record(z.string(), lyricOverrideSchema).default({}),
   /**
    * 配色の上書き。`{enabled: true, bg, fg, accent, …}`。
@@ -344,6 +419,9 @@ export type LyricAspect = z.infer<typeof lyricAspectSchema>;
 export type LyricKeyBg = z.infer<typeof lyricKeyBgSchema>;
 export type LyricFx = z.infer<typeof lyricFxSchema>;
 export type LyricOverride = z.infer<typeof lyricOverrideSchema>;
+export type LyricCutTech = z.infer<typeof lyricCutTechSchema>;
+export type LyricOffset = z.infer<typeof lyricOffsetSchema>;
+export type LyricCutOffset = z.infer<typeof lyricCutOffsetSchema>;
 export type LyricTiming = z.infer<typeof lyricTimingSchema>;
 export type LyricAudio = z.infer<typeof lyricAudioSchema>;
 export type LyricMotionProps = z.infer<typeof lyricMotionSchema>;

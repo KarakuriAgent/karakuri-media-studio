@@ -6,9 +6,10 @@
  *     [出力先.json]   # 既定: workspace/.agents/skills/karakuri-remotion/jizura-catalog.json
  *
  * 中身:
- *   groups  … `J.order(group)` の順で `{key: {name, tags, pack, extra, wa}}`
+ *   groups  … `J.order(group)` の順で `{key: {name, tags, pack, extra, wa, set}}`
  *   styles  … `J.STYLE_ORDER` の順
  *   moods   … `J.MOODS`（おまかせの雰囲気）
+ *   sets    … 部品セット（`J.SETS`。`typo` / `kinetic` / `horror` と既定の ON / OFF）
  *   fonts   … `J.FONTS`（`project.fonts` に指定できるフォントキー）
  *   aspects … `J.designSize()` が知っているアスペクト比とデザインサイズ
  *
@@ -63,6 +64,7 @@ function groupCatalog(J, group) {
     if (def.tags && def.tags.length) entry.tags = [...def.tags].sort();
     if (def.extra) entry.extra = true;   // 追加分（project.extra=true のときだけランダムに選ばれる）
     if (def.wa) entry.wa = true;         // 和風（project.wa=false でランダムから外れる）
+    if (def.set) entry.set = def.set;    // 部品セット（project[set]=false でランダムから外れる）
     if (def.special) entry.special = true;
     out[key] = entry;
   }
@@ -85,10 +87,21 @@ async function main() {
     if (style.moods && style.moods.length) styles[key].moods = [...style.moods];
     if (style.extra) styles[key].extra = true;
     if (style.wa) styles[key].wa = true;
+    if (style.set) styles[key].set = style.set;
   }
 
   const moods = {};
-  for (const [key, mood] of Object.entries(J.MOODS)) moods[key] = { name: mood.name };
+  for (const [key, mood] of Object.entries(J.MOODS)) {
+    moods[key] = { name: mood.name };
+    if (mood.set) moods[key].set = mood.set;   // そのセットの部品を使う雰囲気（ホラー）
+  }
+
+  // 部品セットと既定の ON / OFF（本家の UI ラベルは 12_ui.js にあるので、ここで名前を添える）
+  const SET_NAMES = { typo: '文字PV系', kinetic: 'キネティック', horror: 'ホラー' };
+  const sets = {};
+  for (const key of J.SET_ORDER || Object.keys(J.SETS || {})) {
+    sets[key] = { name: SET_NAMES[key] || key, on: !!(J.SETS[key] && J.SETS[key].on) };
+  }
 
   const fonts = {};
   for (const [key, font] of Object.entries(J.FONTS)) {
@@ -109,7 +122,7 @@ async function main() {
       + ' 書けるキーの一覧。手で編集しないこと。',
     generatedFrom: 'remotion/vendor/jizura (UPSTREAM.md にコミット SHA)',
     counts: { parts: total, styles: Object.keys(styles).length, fonts: Object.keys(fonts).length },
-    groups, styles, moods, fonts, aspects,
+    groups, styles, moods, sets, fonts, aspects,
     sampleLyrics: J.SAMPLE_LYRICS,
   };
 
