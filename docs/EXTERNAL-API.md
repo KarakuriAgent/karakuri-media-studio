@@ -57,6 +57,15 @@
 外に出さないため `comfy_url` を空にして返し、ComfyUI が落ちていても `comfy_error` を
 入れた 200 になる。
 
+`options` の `loras` の各要素には **`description`**（その LoRA の使い方の説明。登録した
+人が設定画面の「LoRA 管理」で書く複数行のテキスト / Markdown。無ければ空文字）が入る。
+入力画像の順番・プロンプトのテンプレート・対象人物の指定方法などが書かれているので、
+**LoRA をジョブ（`loras` / `video_loras`）に入れる前に `description` を読み、そこに書かれた
+入力の順番とプロンプトの書き方に従うこと**。`description` は生成時にプロンプトへ
+**自動では混ざらない**（アプリが自動で足すのはトリガーワードだけ）ので、テンプレートを
+本文へ反映し、入力を指定の順に並べるのはエージェントの責任になる。同じ指示は
+`GET /api/v1/prompt-guide` の §6 にもある。
+
 `POST /api/v1/shots/{id}/render` は**任意の JSON ボディ**を取る（内部 API の
 `POST /api/studio/shots/{id}/render` と同じ `StudioRenderRequest`）。送った項目だけが
 **その 1 回の投入にだけ**効き、カットもプロジェクトも書き換えない:

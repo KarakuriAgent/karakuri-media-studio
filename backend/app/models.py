@@ -401,6 +401,11 @@ class ModelSource(BaseModel):
 LoraTarget = Literal["image", "video"]
 
 
+#: LoRA の説明（:attr:`Lora.description`）の上限文字数。数千文字の使い方メモを
+#: 想定した上で、桁違いの貼り付けミスで ``/api/v1/options`` が膨らまないための蓋。
+LORA_DESCRIPTION_MAX = 20000
+
+
 class Lora(BaseModel):
     id: int
     display_name: str
@@ -418,6 +423,18 @@ class Lora(BaseModel):
     # で、接続先を分ける前に登録された行がこれになる。生成フォームには
     # 「現在の接続先のもの + 共通（None）」だけが出る。
     comfy_target: ComfyTarget | None = None
+    # この LoRA の使い方の説明（複数行のプレーンテキスト / Markdown、数千文字まで
+    # 想定）。入力画像の順番・プロンプトのテンプレート・対象人物の指定方法など、
+    # 外部エージェントが ``GET /api/v1/options`` の ``loras`` で読むためのメモ。
+    # 生成時にプロンプトへ自動で混ぜることはしない（読んで従うのはエージェント側）。
+    description: str = Field(
+        default="",
+        description=(
+            "この LoRA の使い方の説明（入力画像の順番・プロンプトのテンプレート・"
+            "対象人物の指定方法など）。LoRA を使う前に読み、書かれた書き方に従うこと。"
+            "生成時にプロンプトへ自動で混ぜられることはない。"
+        ),
+    )
     # サンプル画像の URL（/assets/lora_samples/<id>/<file>）。登録・削除は
     # 専用エンドポイント経由のみで、Create / Update では触れない。
     sample_images: list[str] = Field(default_factory=list)
@@ -434,6 +451,8 @@ class LoraCreate(BaseModel):
     family: str = DEFAULT_FAMILY
     #: 置いてある接続先環境（``None`` = 全環境で出す）
     comfy_target: ComfyTarget | None = None
+    #: 使い方の説明（:attr:`Lora.description`）
+    description: str = Field(default="", max_length=LORA_DESCRIPTION_MAX)
 
 
 class LoraUpdate(BaseModel):
@@ -446,6 +465,7 @@ class LoraUpdate(BaseModel):
     target: LoraTarget | None = None
     family: str | None = None
     comfy_target: ComfyTarget | None = None
+    description: str | None = Field(default=None, max_length=LORA_DESCRIPTION_MAX)
 
 
 # フォームの既定のネガティブ。空の negative は「選んだテンプレートの値をその

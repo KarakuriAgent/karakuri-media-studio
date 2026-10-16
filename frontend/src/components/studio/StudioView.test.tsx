@@ -104,6 +104,7 @@ const REGISTERED_LORAS = [
     target: 'video',
     family: '',
     sample_images: [],
+    description: '',
   },
   {
     id: 2,
@@ -116,6 +117,7 @@ const REGISTERED_LORAS = [
     target: 'video',
     family: '',
     sample_images: [],
+    description: '',
   },
   {
     id: 3,
@@ -128,6 +130,7 @@ const REGISTERED_LORAS = [
     target: 'image',
     family: 'krea2',
     sample_images: [],
+    description: '',
   },
 ]
 

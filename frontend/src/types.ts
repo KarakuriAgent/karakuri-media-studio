@@ -239,6 +239,12 @@ export interface Lora {
    * 分ける前に登録された行がこれになる。
    */
   comfy_target?: ComfyTarget | null
+  /**
+   * 使い方の説明（複数行のプレーンテキスト / Markdown）。入力画像の順番・
+   * プロンプトのテンプレートなど、外部エージェントが `/api/v1/options` で読む
+   * メモ。生成時にプロンプトへ自動では混ざらない。
+   */
+  description: string
 }
 
 export type LoraPayload = Omit<Lora, 'id' | 'sample_images'>

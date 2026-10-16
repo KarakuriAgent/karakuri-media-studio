@@ -1459,6 +1459,36 @@ def test_options_are_readable_without_leaking_the_backend_url(env):
     assert env.client.get("/api/options").json()["comfy_url"]
 
 
+def test_options_expose_the_lora_description_to_external_agents(env):
+    """外部エージェントは /api/v1/options の loras で LoRA の使い方を読める。"""
+    enable(env)
+    description = "入力画像は 1 枚目が元画像、2 枚目が差し替える人物。\n2 行目"
+    response = env.client.post(
+        "/api/loras",
+        json={
+            "display_name": "差し替え",
+            "lora_name": "swap.safetensors",
+            "trigger_word": "",
+            "description": description,
+        },
+    )
+    assert response.status_code == 201, response.text
+
+    loras = call(env, "GET", "/api/v1/options").json()["loras"]
+    assert [lora["description"] for lora in loras] == [description]
+    # OpenAPI の schema にも項目として出る（何の欄かの説明つき）
+    schema = call(env, "GET", "/api/v1/openapi.json").json()
+    field = schema["components"]["schemas"]["Lora"]["properties"]["description"]
+    assert field["description"]
+
+
+def test_the_guide_tells_agents_to_read_the_lora_description(env):
+    enable(env)
+    markdown = call(env, "GET", "/api/v1/prompt-guide").json()["markdown"]
+    assert "`description`" in markdown
+    assert "GET /api/v1/options" in markdown
+
+
 def test_the_openapi_subset_only_has_the_external_api(env):
     enable(env)
     response = call(env, "GET", "/api/v1/openapi.json")

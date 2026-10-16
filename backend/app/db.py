@@ -51,7 +51,8 @@ CREATE TABLE IF NOT EXISTS loras (
   sample_images TEXT NOT NULL DEFAULT '[]',
   target        TEXT NOT NULL DEFAULT 'image',
   family        TEXT NOT NULL DEFAULT 'krea2',
-  comfy_target  TEXT                        -- 置いてある接続先（NULL = 全環境共通）
+  comfy_target  TEXT,                       -- 置いてある接続先（NULL = 全環境共通）
+  description   TEXT NOT NULL DEFAULT ''    -- 使い方の説明（外部エージェント向けのメモ）
 );
 
 CREATE TABLE IF NOT EXISTS chat_sessions (
@@ -507,6 +508,9 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         # ものか分からないので、勝手に 1 環境へ寄せず今までどおり全部で見せる
         # （環境を絞りたければ設定ページで選び直せる）。
         ("comfy_target", "TEXT"),
+        # 使い方の説明（入力画像の順番・プロンプトのテンプレートなど）。外部
+        # エージェントが /api/v1/options の loras で読む。既存行は空文字＝説明なし。
+        ("description", "TEXT NOT NULL DEFAULT ''"),
     ],
     # ドラマスタジオ（studio_* は先に作られている DB があるので ALTER が要る）
     "studio_projects": [

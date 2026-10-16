@@ -49,6 +49,7 @@ function lora(
     target,
     family,
     sample_images: [],
+    description: '',
   }
 }
 

@@ -6,6 +6,7 @@ import {
   ChevronRight,
   Download,
   DownloadCloud,
+  FileText,
   Image as ImageIcon,
   Pencil,
   Plus,
@@ -60,6 +61,7 @@ import {
 import { Separator } from './ui/separator'
 import { Switch } from './ui/switch'
 import { Tabs, TabsList, TabsTrigger } from './ui/tabs'
+import { Textarea } from './ui/textarea'
 
 /**
  * 「（なし）」を表す番兵。Radix Select は空文字を選択肢の値にできないので、
@@ -190,6 +192,19 @@ const EMPTY_LORA: LoraPayload = {
   sort_order: 0,
   target: 'image',
   family: DEFAULT_FAMILY,
+  description: '',
+}
+
+/**
+ * LoRA の説明（`Lora.description`）の上限文字数。バックエンドの
+ * `models.LORA_DESCRIPTION_MAX` と揃える（超えると 422 になる）。
+ */
+export const LORA_DESCRIPTION_MAX = 20000
+
+/** 一覧に出す説明の抜粋（空白を詰めて先頭だけ）。 */
+export function loraDescriptionExcerpt(description: string, length = 120): string {
+  const flat = description.replace(/\s+/g, ' ').trim()
+  return flat.length > length ? `${flat.slice(0, length)}…` : flat
 }
 
 const LORA_TARGET_LABELS: Record<LoraTarget, string> = {
@@ -1742,6 +1757,16 @@ export default function SettingsPage({
                                     URL
                                   </span>
                                 )}
+                                {lora.description?.trim() && (
+                                  <span
+                                    data-testid={`lora-has-description-${lora.id}`}
+                                    className="flex shrink-0 items-center gap-0.5 text-accent-400"
+                                    title={loraDescriptionExcerpt(lora.description, 300)}
+                                  >
+                                    <FileText className="size-3" />
+                                    説明
+                                  </span>
+                                )}
                               </p>
                             </div>
                             <Button
@@ -1769,6 +1794,7 @@ export default function SettingsPage({
                                   sort_order: lora.sort_order,
                                   target: lora.target ?? 'image',
                                   family: lora.family ?? DEFAULT_FAMILY,
+                                  description: lora.description ?? '',
                                 })
                               }}
                             >
@@ -1796,6 +1822,11 @@ export default function SettingsPage({
                                 {lora.default_strength}
                                 {lora.default_audio ? ` / audio: ${lora.default_audio}` : ''}
                               </p>
+                              {lora.description?.trim() && (
+                                <p className="mt-1 line-clamp-3 whitespace-pre-wrap break-words">
+                                  説明: {loraDescriptionExcerpt(lora.description, 300)}
+                                </p>
+                              )}
                               <div className="mt-2 flex flex-wrap items-center gap-1.5">
                                 {lora.sample_images.map((url) => (
                                   <div key={url} className="group relative">
@@ -2001,6 +2032,37 @@ export default function SettingsPage({
                         placeholder="ダウンロード URL（Hugging Face / Civitai など）"
                         value={draftUrl}
                         onChange={(event) => setDraftUrl(event.target.value)}
+                      />
+                    </Field>
+                    {/* 使い方の説明: 外部エージェントが /api/v1/options の loras で
+                        読む。生成時にプロンプトへ自動で混ぜることはしない。 */}
+                    <Field
+                      className="col-span-2"
+                      label="使い方の説明（任意）"
+                      htmlFor="lora-description"
+                      hint={
+                        <>
+                          入力画像の順番・プロンプトのテンプレート・対象人物の指定方法など
+                          （Markdown 可）。外部エージェントが API で読みます。生成時に
+                          プロンプトへ自動では混ざりません。
+                          <span className="tnum">
+                            {' '}
+                            {draft.description.length.toLocaleString()} /{' '}
+                            {LORA_DESCRIPTION_MAX.toLocaleString()} 文字
+                          </span>
+                        </>
+                      }
+                    >
+                      <Textarea
+                        id="lora-description"
+                        rows={8}
+                        maxLength={LORA_DESCRIPTION_MAX}
+                        className="max-h-[60vh] min-h-[8rem] resize-y font-mono text-xs md:text-xs"
+                        placeholder={'例:\n- Image 1 = 元の画像、Image 2 = 差し替える人物\n- プロンプト: Replace the person in Image 1 with …'}
+                        value={draft.description}
+                        onChange={(event) =>
+                          setDraft({ ...draft, description: event.target.value })
+                        }
                       />
                     </Field>
                   </div>

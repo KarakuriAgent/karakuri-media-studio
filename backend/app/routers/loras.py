@@ -50,10 +50,10 @@ async def create_lora(payload: LoraCreate) -> Lora:
         cur = await conn.execute(
             "INSERT INTO loras (display_name, lora_name, trigger_word,"
             " default_strength, default_audio, sort_order, target, family,"
-            " comfy_target)"
+            " comfy_target, description)"
             " VALUES (:display_name, :lora_name, :trigger_word,"
             " :default_strength, :default_audio, :sort_order, :target, :family,"
-            " :comfy_target)",
+            " :comfy_target, :description)",
             payload.model_dump(),
         )
         await conn.commit()
@@ -64,6 +64,9 @@ async def create_lora(payload: LoraCreate) -> Lora:
 @router.put("/{lora_id}", response_model=Lora)
 async def update_lora(lora_id: int, payload: LoraUpdate) -> Lora:
     fields = payload.model_dump(exclude_unset=True)
+    # 説明の ``null`` は「消す」とみなす（列は NOT NULL で、空文字＝説明なし）
+    if "description" in fields and fields["description"] is None:
+        fields["description"] = ""
     if not fields:
         return await get_lora(lora_id)
     assignments = ", ".join(f"{k} = :{k}" for k in fields)

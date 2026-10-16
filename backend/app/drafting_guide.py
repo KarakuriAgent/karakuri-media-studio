@@ -41,7 +41,7 @@ from .workflows import (
 )
 
 #: ガイド本文の版。中身を変えたら上げる（受け取り側がキャッシュの判定に使う）。
-GUIDE_VERSION = "2026-09-07"
+GUIDE_VERSION = "2026-10-16"
 
 #: 実用上の下限（秒）。:data:`~app.studio.SHOT_DURATION_MIN` は API が受け付ける
 #: 範囲で、H3 は 4 秒を切ると芝居が入りきらない（``MINIMAX_H3_GUIDE_BODY`` の
@@ -291,6 +291,19 @@ LLM を呼ぶのはプロンプト作成チャットとヘルスチェックだ�
 - 各カットには `title` / `purpose` / `action` / `prompt` / `dialogue` / `camera` /
   `soundscape` / `bgm` / `duration_seconds` / `status` を指定できる。`soundscape` と
   `bgm` はカットごとの音の指定で、書いておくと上の公式フィールドになる。
+
+## 6. LoRA を使うとき（`description` を先に読む）
+
+- 登録済みの LoRA は `GET /api/v1/options` の `loras` に並ぶ。各 LoRA の
+  **`description` はその LoRA の使い方の説明**（入力画像の順番・プロンプトの
+  テンプレート・対象人物の指定方法など）で、登録した人が書いた複数行の
+  テキスト / Markdown。
+- **LoRA をジョブ（`loras` / `video_loras`）に入れる前に `description` を読み、
+  そこに書かれた入力の順番とプロンプトの書き方に従うこと。** 空なら説明は無い
+  （`trigger_word` と `target` / `family` だけで判断する）。
+- `description` は**生成時にプロンプトへ自動では混ざらない**。アプリが自動で
+  足すのはトリガーワード（`trigger_word`）だけなので、テンプレートや入力の
+  並べ方は**あなたが本文と入力に反映する**。
 """
     return DraftingGuide(
         guide_version=GUIDE_VERSION,

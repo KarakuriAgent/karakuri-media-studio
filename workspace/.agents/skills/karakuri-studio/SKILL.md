@@ -50,7 +50,7 @@ cwd として書いてある。
 | `GET /api/v1/openapi.json` | 全エンドポイントとリクエスト/レスポンス schema |
 | `GET /api/v1/prompt-guide` | 脚本・プロンプトの書き方。`guide_version` が同じならキャッシュを使い回してよい |
 | `GET /api/v1/capabilities` | この接続先でラテント連続性 / ラテントアップスケールが使えるか。`blocking` に構図リファレンス動画（ブロッキング）の可否と上限・使える形状・カメラプリセットの一覧 |
-| `GET /api/v1/options` | `aspect_ratio` の正しい表記、ワークフロー一覧と制約、LoRA、ライブラリ |
+| `GET /api/v1/options` | `aspect_ratio` の正しい表記、ワークフロー一覧と制約、LoRA（`loras[].description` に使い方の説明）、ライブラリ |
 
 補助: `GET /api/v1/prompt-examples`（MiniMax H3 の実例。`mode` / `category` /
 `id` で絞ると本文まで返る）。`GET /api/v1/assets`（どのプロジェクトにどんな素材が
@@ -183,6 +183,11 @@ cwd として書いてある。
   `video_loras` で上書きし、`[]` を送ればその回は LoRA なし。`lora_name` は
   `GET /options` の `loras`（`target: "video"`）から選ぶ。何が付くかは
   `prompt-preview` の `video_loras` / `video_trigger_text` で確かめられる。
+- **LoRA を使う前に、`GET /options` の `loras[].description` を読む**。登録した人が書いた
+  その LoRA の使い方（入力画像の順番・プロンプトのテンプレート・対象人物の指定方法など）で、
+  書かれていれば**入力をその順番で渡し、プロンプトもその書き方に従う**。`description` は
+  生成時にプロンプトへ自動では混ざらない（自動で付くのはトリガーワードだけ）ので、反映するのは
+  あなたの仕事。空なら説明なし（`trigger_word` / `target` / `family` だけで判断する）。
 - `megapixels` / `image_megapixels` は未設定ならビルド既定。ローカル GPU の VRAM が
   小さいなら `0.4` あたりに落とす（大きいほど遅く、落ちやすい）。
   `aspect_ratio` の表記は `GET /options` のものをそのまま使う。

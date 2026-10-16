@@ -100,6 +100,88 @@ async def test_a_registry_with_target_but_no_family_is_backfilled(tmp_path, monk
     assert lora_samples.row_to_lora(rows[0]).family == "krea2"
 
 
+async def test_an_existing_registry_gets_an_empty_description(tmp_path, monkeypatch):
+    """説明の列を足す前の DB も、既存行は空文字（説明なし）で引き継がれる。"""
+    import aiosqlite
+
+    path = tmp_path / "old.db"
+    monkeypatch.setattr(db, "DB_PATH", path)
+    async with aiosqlite.connect(path) as conn:
+        await conn.execute(
+            "CREATE TABLE loras (id INTEGER PRIMARY KEY, display_name TEXT NOT NULL,"
+            " lora_name TEXT NOT NULL, trigger_word TEXT NOT NULL,"
+            " default_strength REAL DEFAULT 1.0, default_audio TEXT,"
+            " sort_order INTEGER DEFAULT 0,"
+            " sample_images TEXT NOT NULL DEFAULT '[]',"
+            " target TEXT NOT NULL DEFAULT 'image',"
+            " family TEXT NOT NULL DEFAULT 'krea2', comfy_target TEXT)"
+        )
+        await conn.execute(
+            "INSERT INTO loras (display_name, lora_name, trigger_word)"
+            " VALUES ('サクラ', 'sakura.safetensors', 'sakura')"
+        )
+        await conn.commit()
+
+    await db.init_db()
+
+    async with db.get_db() as conn:
+        async with conn.execute("SELECT * FROM loras") as cur:
+            rows = [dict(row) for row in await cur.fetchall()]
+    assert [row["description"] for row in rows] == [""]
+    assert lora_samples.row_to_lora(rows[0]).description == ""
+
+
+def test_a_new_lora_has_an_empty_description(env):
+    assert create_lora(env)["description"] == ""
+
+
+DESCRIPTION = """\
+## 使い方
+- 入力画像は 1 枚目が元画像、2 枚目が差し替える人物
+- プロンプト: `Replace the person in Image 1 with the person in Image 2.`
+""" + "長文の説明。" * 1000
+
+
+def test_the_description_is_stored_and_updated(env):
+    response = env.client.post(
+        "/api/loras", json={**PAYLOAD, "description": DESCRIPTION}
+    )
+    assert response.status_code == 201, response.text
+    lora = response.json()
+    # 複数行・数千文字でもそのまま往復する
+    assert lora["description"] == DESCRIPTION
+    assert env.client.get(f"/api/loras/{lora['id']}").json()["description"] == DESCRIPTION
+
+    # 説明に触れない更新は説明を保つ
+    kept = env.client.put(f"/api/loras/{lora['id']}", json={"trigger_word": "x"})
+    assert kept.json()["description"] == DESCRIPTION
+
+    updated = env.client.put(f"/api/loras/{lora['id']}", json={"description": "短い説明"})
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["description"] == "短い説明"
+
+    # null は「消す」（列は NOT NULL なので空文字になる）
+    cleared = env.client.put(f"/api/loras/{lora['id']}", json={"description": None})
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["description"] == ""
+
+
+def test_a_huge_description_is_rejected(env):
+    from app.models import LORA_DESCRIPTION_MAX
+
+    response = env.client.post(
+        "/api/loras",
+        json={**PAYLOAD, "description": "x" * (LORA_DESCRIPTION_MAX + 1)},
+    )
+    assert response.status_code == 422
+
+
+def test_options_expose_the_description(env):
+    env.client.post("/api/loras", json={**PAYLOAD, "description": DESCRIPTION})
+    loras = env.client.get("/api/options").json()["loras"]
+    assert [lora["description"] for lora in loras] == [DESCRIPTION]
+
+
 def test_a_lora_is_registered_for_the_image_stage_by_default(env):
     created = create_lora(env)
     assert created["target"] == "image"

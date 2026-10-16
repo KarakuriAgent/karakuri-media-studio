@@ -1031,6 +1031,7 @@ describe('動画 LoRA の変換', () => {
       target: 'video',
       family: '',
       sample_images: [],
+      description: '',
     },
   ]
 

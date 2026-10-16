@@ -232,6 +232,7 @@ describe('lorasForTarget', () => {
     target: target as Lora['target'],
     family,
     sample_images: [],
+    description: '',
   })
 
   const all = [lora(1, 'image'), lora(2, 'video'), lora(3, 'image')]
@@ -310,6 +311,7 @@ describe('image LoRA families', () => {
     target: 'image',
     family,
     sample_images: [],
+    description: '',
   })
 
   const all = [
@@ -1480,6 +1482,7 @@ function registered(overrides: Partial<Lora> = {}): Lora {
     target: 'image',
     family: 'krea2',
     sample_images: [],
+    description: '',
     ...overrides,
   }
 }

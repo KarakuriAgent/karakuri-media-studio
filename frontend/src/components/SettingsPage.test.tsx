@@ -119,6 +119,7 @@ function loraRow(): Lora {
     target: 'image',
     family: 'krea2',
     sample_images: [],
+    description: '',
   }
 }
 
@@ -1162,5 +1163,65 @@ describe('SettingsPage: Grok Build CLI（Grok Imagine のバックエンド、SP
     expect(putSettings.mock.calls[0][0]).toMatchObject({
       agent_grok_timeout: 900,
     })
+  })
+})
+
+describe('SettingsPage: LoRA の使い方の説明', () => {
+  const DESCRIPTION = '## 使い方\n- Image 1 = 元画像\n- Image 2 = 差し替える人物'
+
+  beforeEach(() => {
+    vi.stubGlobal('WebSocket', FakeSocket)
+    getSettings.mockResolvedValue(settings())
+    listModels.mockResolvedValue([modelRow()])
+    listModelDownloads.mockResolvedValue([])
+    putSettings.mockReset()
+    createLora.mockReset()
+    updateLora.mockReset()
+    modelsDirStatus.mockResolvedValue(dirStatus())
+  })
+
+  async function openLorasTab() {
+    await openSettings()
+    openTab('LoRA 管理')
+    await waitFor(() => screen.getByText('かおり'))
+  }
+
+  it('追加時に入れた複数行の説明が LoRA 作成に載る', async () => {
+    listLoras.mockResolvedValue([loraRow()])
+    await openLorasTab()
+
+    fireEvent.change(screen.getByLabelText('表示名'), { target: { value: 'みずき' } })
+    fireEvent.change(screen.getByPlaceholderText('例: my_lora.safetensors'), {
+      target: { value: 'mizuki.safetensors' },
+    })
+    fireEvent.change(screen.getByLabelText('使い方の説明（任意）'), {
+      target: { value: DESCRIPTION },
+    })
+    screen.getByRole('button', { name: '追加' }).click()
+
+    await waitFor(() => expect(createLora).toHaveBeenCalled())
+    expect(createLora.mock.calls[0][0].description).toBe(DESCRIPTION)
+  })
+
+  it('説明のある LoRA は一覧に印が出て、編集フォームにプリフィルされる', async () => {
+    listLoras.mockResolvedValue([{ ...loraRow(), description: DESCRIPTION }])
+    await openLorasTab()
+
+    expect(screen.getByTestId('lora-has-description-1')).toBeTruthy()
+    screen.getByRole('button', { name: '編集' }).click()
+    await waitFor(() => screen.getByText(/LoRA を編集/))
+    const textarea = screen.getByLabelText('使い方の説明（任意）') as HTMLTextAreaElement
+    expect(textarea.value).toBe(DESCRIPTION)
+
+    fireEvent.change(textarea, { target: { value: '短い説明' } })
+    screen.getByRole('button', { name: '更新' }).click()
+    await waitFor(() => expect(updateLora).toHaveBeenCalled())
+    expect(updateLora.mock.calls[0][1].description).toBe('短い説明')
+  })
+
+  it('説明が空の LoRA には印を出さない', async () => {
+    listLoras.mockResolvedValue([loraRow()])
+    await openLorasTab()
+    expect(screen.queryByTestId('lora-has-description-1')).toBeNull()
   })
 })
