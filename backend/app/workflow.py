@@ -539,20 +539,31 @@ def _find_node(wf: Workflow, class_type: str) -> tuple[str, dict[str, Any]] | No
 
 
 def _hires_carry_over_nodes(
-    wf: Workflow, up: Any, context_latent_hires: str
+    wf: Workflow,
+    up: Any,
+    context_latent_hires: str,
+    conditioning: list[Any] | None = None,
 ) -> dict[str, dict[str, Any]]:
     """**2 段引き継ぎ**（``latent_upscale`` = on）で足すノード（SPEC §3.1）。
 
     * ラテントを保存するテンプレート（``*_save*`` / ``*_context*``）には、
       2 パス目のラテントを保存する 2 個目の ``…SaveLatent`` と、そのパスを
       持ち帰る 2 個目の ``PreviewAny`` を足す。
-    * さらに Motion Context を持つテンプレート（``*_context*``）で、直前カットの
-      **高解像度**ラテント（``context_latent_hires``）が渡っていれば、それを読む
-      2 個目の ``…LoadLatent`` と、2 パス目の形（``LTXVConcatAVLatent`` の出力）
-      を参照する 2 個目の ``MiniMaxH3MotionContext``、その CONDITIONING を受ける
-      2 個目の ``BasicGuider`` を足す。渡っていなければ**足さない** = 2 パス目は
-      1 パス目と同じ guider を共有する 1 段引き継ぎにフォールバックする
-      （``off`` で作った過去テイクから続けてもエラーにしないため）。
+    * さらに Motion Context を持つテンプレート（``*_context*``）には、2 パス目の
+      形（``LTXVConcatAVLatent`` の出力）を参照する 2 個目の
+      ``MiniMaxH3MotionContext`` を足す。CONDITIONING は ``conditioning``
+      （最終解像度で作り直した条件付けノード。``None`` なら 1 個目と同じ）。
+      直前カットの**高解像度**ラテント（``context_latent_hires``）が渡って
+      いれば、それを読む 2 個目の ``…LoadLatent`` も足して ``context_latent``
+      に繋ぐ。渡っていなければ（``off`` で作った過去テイクなど）
+      ``context_latent`` を外し、直前カットの mp4 のフレーム
+      （``context_frames``、あれば音声も）を最終解像度でエンコードして
+      ピン留めさせる = 1 段引き継ぎ（エラーにはしない）。
+
+    Motion Context のピン留めは生成するクリップと同じ格子に並ぶので、
+    1 個目（0.2MP のキーフレーム）を 2 パス目と共有すると行数が合わずに
+    落ちる。だから 2 パス目には必ず 2 個目を組む。2 個目を受ける
+    ``BasicGuider`` は :func:`splice_latent_upscale` が足す。
     """
     found = _find_node(wf, SAVE_LATENT_CLASS)
     if found is None:
@@ -578,55 +589,90 @@ def _hires_carry_over_nodes(
     }
 
     context = _find_node(wf, MOTION_CONTEXT_CLASS)
-    hires_path = (context_latent_hires or "").strip()
-    if context is None or not hires_path:
+    if context is None:
         return nodes
-    context_id, context_node = context
-    # 1 個目の Motion Context を受けている BasicGuider（1 パス目のもの）
-    guider = next(
-        (
-            (node_id, node)
-            for node_id, node in sorted(wf.items())
-            if isinstance(node, dict)
-            and node.get("class_type") == "BasicGuider"
-            and (node.get("inputs") or {}).get("conditioning") == [context_id, 0]
-        ),
-        None,
-    )
-    if guider is None:  # pragma: no cover - テンプレートは必ず持っている
-        return nodes
-    _, guider_node = guider
-
-    load = _find_node(wf, LOAD_LATENT_CLASS)
-    clip_index = int(((load[1].get("inputs") or {}) if load else {}).get(
-        "clip_index", 0
-    ) or 0)
-    nodes[up.hires_load_node] = {
-        "inputs": {"latent_path": hires_path, "clip_index": clip_index},
-        "class_type": LOAD_LATENT_CLASS,
-        "_meta": {"title": "MiniMaxH3MotionContextLoadLatent (upscale pass)"},
+    _, context_node = context
+    # vae / context_frames / context_length などは 1 個目と同じ。違うのは
+    # CONDITIONING（最終解像度で作り直したもの）と、形の参照先（2 パス目の
+    # 解像度・フレーム数を持つ Concat の出力）と、読む context_latent。
+    inputs: dict[str, Any] = {
+        **(context_node.get("inputs") or {}),
+        "latent": [up.concat_node, 0],
     }
-    # conditioning / vae / context_frames / context_length などは 1 個目と同じ。
-    # 違うのは形の参照先（2 パス目の解像度・フレーム数を持つ Concat の出力）と、
-    # 読む context_latent（高解像度のほう）だけ。
+    if conditioning is not None:
+        inputs["conditioning"] = conditioning
+    hires_path = (context_latent_hires or "").strip()
+    if hires_path:
+        load = _find_node(wf, LOAD_LATENT_CLASS)
+        clip_index = int(((load[1].get("inputs") or {}) if load else {}).get(
+            "clip_index", 0
+        ) or 0)
+        nodes[up.hires_load_node] = {
+            "inputs": {"latent_path": hires_path, "clip_index": clip_index},
+            "class_type": LOAD_LATENT_CLASS,
+            "_meta": {"title": "MiniMaxH3MotionContextLoadLatent (upscale pass)"},
+        }
+        inputs["context_latent"] = [up.hires_load_node, 0]
+    else:
+        # 0.2MP のラテントは最終解像度のクリップには使えない（Motion Context が
+        # 解像度不一致で止まる）ので外し、mp4 のフレームから組ませる
+        inputs.pop("context_latent", None)
+        inputs.update(_context_audio_inputs(wf, inputs.get("context_frames")))
     nodes[up.hires_context_node] = {
-        "inputs": {
-            **(context_node.get("inputs") or {}),
-            "latent": [up.concat_node, 0],
-            "context_latent": [up.hires_load_node, 0],
-        },
+        "inputs": inputs,
         "class_type": MOTION_CONTEXT_CLASS,
         "_meta": {"title": "MiniMaxH3MotionContext (upscale pass)"},
     }
-    nodes[up.hires_guider_node] = {
-        "inputs": {
-            **(guider_node.get("inputs") or {}),
-            "conditioning": [up.hires_context_node, 0],
-        },
-        "class_type": "BasicGuider",
-        "_meta": {"title": "BasicGuider (upscale pass)"},
-    }
     return nodes
+
+
+def _context_audio_inputs(wf: Workflow, frames: Any) -> dict[str, Any]:
+    """mp4 から組む Motion Context に、同じ mp4 の音声も渡す入力。
+
+    ``context_frames`` が ``GetVideoComponents`` の映像（出力 0）なら、その
+    音声（出力 1）を ``context_audio`` に、音声をデコードしている VAE を
+    ``audio_vae`` に繋ぐ（継ぎ目の音もピン留めされる）。辿れなければ空 =
+    映像だけピン留めする。
+    """
+    if not (_is_link(frames) and frames[1] == 0):
+        return {}
+    source = wf.get(frames[0])
+    if not isinstance(source, dict) or source.get("class_type") != "GetVideoComponents":
+        return {}
+    found = _find_node(wf, "VAEDecodeAudio")
+    audio_vae = ((found[1].get("inputs") or {}) if found else {}).get("vae")
+    if not _is_link(audio_vae):
+        return {}
+    return {"context_audio": [frames[0], 1], "audio_vae": audio_vae}
+
+
+def _hires_conditioning_node(
+    wf: Workflow, spec: WorkflowSpec, width: int, height: int
+) -> dict[str, Any] | None:
+    """:attr:`UpscaleSpec.conditioning` を最終解像度で写したノード（無ければ None）。
+
+    入力（clip / vae / プロンプト / 開始・最終フレーム / 参照素材 / 尺）は
+    1 個目と同じものを読み、``width`` / ``height`` の注入先にだけ
+    **最終解像度**を書く。
+    """
+    up = spec.upscale
+    if up is None or up.conditioning is None:
+        return None
+    node = wf.get(up.conditioning)
+    if not isinstance(node, dict):
+        raise WorkflowError(
+            f"latent upscale: conditioning '{up.conditioning}' is missing"
+        )
+    inputs = copy.deepcopy(node.get("inputs") or {})
+    for name, size in (("width", width), ("height", height)):
+        target = spec.inject.get(name)
+        inputs[target.field if target is not None else name] = int(size)
+    class_type = node.get("class_type") or ""
+    return {
+        "inputs": inputs,
+        "class_type": class_type,
+        "_meta": {"title": f"{class_type} (upscale pass)"},
+    }
 
 
 def splice_latent_upscale(
@@ -645,6 +691,18 @@ def splice_latent_upscale(
     Context は ``latent`` という別の入力名で読んでいるので、**1 パス目に付いた
     まま**になる。
 
+    2 パス目の guider: :attr:`UpscaleSpec.conditioning` を宣言した版（i2v /
+    r2v）と Motion Context を持つ版では、条件付けノード（と Motion Context）を
+    最終解像度で作り直し、それを受ける 2 個目の ``BasicGuider``（``model`` は
+    1 パス目の guider と同じ連鎖）で回す。開始フレームや Motion Context の
+    ピン留めは生成するクリップと同じ格子に並ぶので、1 パス目の CONDITIONING
+    のままでは 2 パス目のサンプリングで行数が合わずに落ちる。それ以外（t2v）は
+    1 パス目の guider を共有する。
+
+    作り直した条件付けノードの入力（プロンプト・素材のローダー）はこのあとの
+    注入で決まるので、組み立ての最後に :func:`finish_latent_upscale` で
+    写し直す。
+
     ``context_latent_hires`` は直前カットの**高解像度**ラテントのパス
     （:func:`_hires_carry_over_nodes` の 2 段引き継ぎ）。空なら 1 段引き継ぎ。
     """
@@ -661,7 +719,7 @@ def splice_latent_upscale(
         )
 
     nodes = upscale_nodes(spec, width, height)
-    # ノイズ・ガイダー・サンプラーは 1 パス目と同じものを共有する
+    # ノイズ・サンプラーは 1 パス目と同じものを共有する（guider は下で決める）
     first_inputs = first.get("inputs") or {}
     nodes[up.second_sampler_node]["inputs"].update(
         {key: first_inputs[key] for key in ("noise", "guider", "sampler")}
@@ -672,12 +730,55 @@ def splice_latent_upscale(
         inputs = node.get("inputs") if isinstance(node, dict) else None
         if isinstance(inputs, dict) and inputs.get("samples") == link:
             inputs["samples"] = [up.second_sampler_node, 0]
+
+    # 2 パス目用の CONDITIONING（i2v / r2v は最終解像度で作り直す）
+    conditioning: list[Any] | None = None
+    hires_conditioning = _hires_conditioning_node(wf, spec, width, height)
+    if hires_conditioning is not None:
+        nodes[up.hires_conditioning_node] = hires_conditioning
+        conditioning = [up.hires_conditioning_node, 0]
     # 2 段引き継ぎ（ラテント連続性のバリアントだけ）
-    nodes.update(_hires_carry_over_nodes(wf, up, context_latent_hires))
-    if up.hires_guider_node in nodes:
+    carried = _hires_carry_over_nodes(wf, up, context_latent_hires, conditioning)
+    nodes.update(carried)
+    if up.hires_context_node in carried:
         # 2 パス目は 2 個目の Motion Context を通した guider で回す
+        conditioning = [up.hires_context_node, 0]
+    if conditioning is not None:
+        guider_link = first_inputs.get("guider")
+        guider = wf.get(guider_link[0]) if _is_link(guider_link) else None
+        if not isinstance(guider, dict) or guider.get("class_type") != "BasicGuider":
+            raise WorkflowError(
+                f"latent upscale: the guider of '{up.sampler}' is not a BasicGuider"
+            )
+        nodes[up.hires_guider_node] = {
+            "inputs": {
+                **(guider.get("inputs") or {}),
+                "conditioning": conditioning,
+            },
+            "class_type": "BasicGuider",
+            "_meta": {"title": "BasicGuider (upscale pass)"},
+        }
         nodes[up.second_sampler_node]["inputs"]["guider"] = [up.hires_guider_node, 0]
     wf.update(nodes)
+
+
+def finish_latent_upscale(
+    wf: Workflow, spec: WorkflowSpec, width: int, height: int
+) -> None:
+    """2 パス目用の条件付けノードを、注入を終えた 1 個目から写し直す。
+
+    :func:`splice_latent_upscale` はプロンプト・開始フレーム・参照素材の注入
+    **前**に組むので、そのとき写した条件付けノードはテンプレートのまま。
+    組み立ての最後（参照素材のローダーを生やし、渡されなかった任意の
+    ローダーを外したあと）に呼び、同じ入力を読ませ直す。組み替えていない
+    グラフ（``off``・宣言なし）では何もしない。
+    """
+    up = spec.upscale
+    if up is None or up.hires_conditioning_node not in wf:
+        return
+    node = _hires_conditioning_node(wf, spec, width, height)
+    if node is not None:
+        wf[up.hires_conditioning_node] = node
 
 
 def hires_latent_prefix(spec: WorkflowSpec, prefix: str) -> str:
@@ -1309,7 +1410,7 @@ def build_video_workflow(
     )
 
     # 動画 LoRA のチェーン（SPEC §3.4.2）は**ラテントアップスケールの組み替えより
-    # 前**に組む。2 段引き継ぎで足す 2 個目の BasicGuider は 1 パス目の guider の
+    # 前**に組む。2 パス目用に足す 2 個目の BasicGuider は 1 パス目の guider の
     # 入力（model を含む）を写して作るので、先にチェーンを通しておかないと
     # 2 パス目だけユーザー LoRA を素通りしてしまう。
     _build_lora_chain(
@@ -1395,6 +1496,9 @@ def build_video_workflow(
     for name, value in resolved.constants.items():
         _inject(wf, resolved, name, value)
     _inject(wf, resolved, "save_prefix", params.video_filename_prefix)
+    # 2 パス目用に作り直した条件付けノード（i2v / r2v）に、注入を終えた
+    # 1 個目の入力（プロンプト・開始フレーム・参照素材）を写し直す
+    finish_latent_upscale(wf, resolved, width, height)
 
     validate_workflow(wf)
     return wf

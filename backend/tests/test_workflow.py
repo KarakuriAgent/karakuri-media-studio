@@ -2173,15 +2173,21 @@ def test_latent_upscale_on_wires_the_second_pass(workflow_id):
     assert wf[up.sigmas_node]["class_type"] == "ManualSigmas"
     assert wf[up.sigmas_node]["inputs"]["sigmas"] == UPSCALE_SIGMAS
 
-    # 2 パス目は 1 パス目と noise / guider / sampler を共有する
+    # 2 パス目は 1 パス目と noise / sampler を共有する。guider は、CONDITIONING
+    # を作り直す版（i2v / r2v）だけ 2 個目の BasicGuider、t2v は共有
     first_inputs = wf[up.sampler]["inputs"]
     second = wf[up.second_sampler_node]
     assert second["class_type"] == "SamplerCustomAdvanced"
+    guider = (
+        first_inputs["guider"]
+        if up.conditioning is None
+        else [up.hires_guider_node, 0]
+    )
     assert second["inputs"] == {
         "sigmas": [up.sigmas_node, 0],
         "latent_image": [up.concat_node, 0],
         "noise": first_inputs["noise"],
-        "guider": first_inputs["guider"],
+        "guider": guider,
         "sampler": first_inputs["sampler"],
     }
 
@@ -2319,9 +2325,12 @@ def test_latent_upscale_wires_a_second_motion_context(workflow_id):
 
     context = wf[up.hires_context_node]
     assert context["class_type"] == "MiniMaxH3MotionContext"
-    # conditioning / vae / つまみは 1 個目と同じ
-    assert context["inputs"]["conditioning"] == first_context["inputs"]["conditioning"]
+    # CONDITIONING は最終解像度で作り直した ReferenceToVideo、vae / つまみは
+    # 1 個目と同じ
+    assert first_context["inputs"]["conditioning"] == [up.conditioning, 0]
+    assert context["inputs"]["conditioning"] == [up.hires_conditioning_node, 0]
     assert context["inputs"]["vae"] == first_context["inputs"]["vae"]
+    assert context["inputs"]["context_frames"] == first_context["inputs"]["context_frames"]
     assert context["inputs"]["context_length"] == "22"
     assert context["inputs"]["audio_context_length"] == 0
     # 形の参照先は 2 パス目のラテント（Concat の出力）、読むのは高解像度のほう
@@ -2355,7 +2364,14 @@ def test_latent_upscale_wires_a_second_motion_context(workflow_id):
 
 @pytest.mark.parametrize("workflow_id", LATENT_CONTEXT_IDS)
 def test_latent_upscale_falls_back_to_one_stage_without_a_hires_latent(workflow_id):
-    """前カットに 2 本目が無ければ 2 個目は組まず、1 段引き継ぎで通す。"""
+    """前カットに 2 本目が無ければ、2 個目の Motion Context は mp4 から組む。
+
+    1 パス目の guider（0.2MP のピン留め）を 2 パス目と共有すると、ピン留めの
+    行が拡大後の格子と合わずに ComfyUI のサンプリングで落ちる。だから
+    2 パス目にも 2 個目を組むが、0.2MP のラテントは最終解像度には使えない
+    ので ``context_latent`` を外し、直前カットの mp4 のフレームと音声を
+    最終解像度でエンコードさせる。
+    """
     spec = get_spec(workflow_id, "video")
     up = spec.upscale
     wf = build_video_workflow(
@@ -2367,14 +2383,41 @@ def test_latent_upscale_falls_back_to_one_stage_without_a_hires_latent(workflow_
         )
     )
     validate_workflow(wf)
-    for node_id in (up.hires_load_node, up.hires_context_node, up.hires_guider_node):
-        assert node_id not in wf
-    # 2 パス目は 1 パス目と同じ guider を共有したまま
-    assert (
-        wf[up.second_sampler_node]["inputs"]["guider"]
-        == wf[up.sampler]["inputs"]["guider"]
+    # 高解像度ラテントを読むノードは足さない
+    assert up.hires_load_node not in wf
+
+    first_context_id, first_context = next(
+        (key, node)
+        for key, node in wf.items()
+        if node["class_type"] == "MiniMaxH3MotionContext"
     )
-    # 2 パス目のラテントの保存だけは付く（次のカットが 2 段で続けられる）
+    context = wf[up.hires_context_node]
+    assert context["class_type"] == "MiniMaxH3MotionContext"
+    assert "context_latent" not in context["inputs"]
+    frames = first_context["inputs"]["context_frames"]
+    assert context["inputs"]["context_frames"] == frames
+    # 同じ mp4 の音声と、音声をデコードしている VAE も渡す
+    assert wf[frames[0]]["class_type"] == "GetVideoComponents"
+    assert context["inputs"]["context_audio"] == [frames[0], 1]
+    audio_decoder = next(
+        node for node in wf.values() if node["class_type"] == "VAEDecodeAudio"
+    )
+    assert context["inputs"]["audio_vae"] == audio_decoder["inputs"]["vae"]
+    assert context["inputs"]["conditioning"] == [up.hires_conditioning_node, 0]
+    assert context["inputs"]["latent"] == [up.concat_node, 0]
+
+    # 2 パス目は 2 個目の Motion Context を通した guider で回す
+    guider = wf[up.hires_guider_node]
+    assert guider["inputs"]["conditioning"] == [up.hires_context_node, 0]
+    assert wf[up.second_sampler_node]["inputs"]["guider"] == [up.hires_guider_node, 0]
+    # 1 パス目は 0.2MP のラテントを読んだまま
+    assert first_context["inputs"]["context_latent"] == [
+        spec.inject["context_latent"].node_id,
+        0,
+    ]
+    assert wf[up.sampler]["inputs"]["guider"] != [up.hires_guider_node, 0]
+    assert first_context_id != up.hires_context_node
+    # 2 パス目のラテントの保存も付く（次のカットが 2 段で続けられる）
     assert len(saves(wf)) == 2
 
 
@@ -2391,8 +2434,13 @@ def test_latent_upscale_adds_no_second_context_without_motion_context():
     )
     validate_workflow(wf)
     assert up.hires_save_node in wf
-    for node_id in (up.hires_load_node, up.hires_context_node, up.hires_guider_node):
+    for node_id in (up.hires_load_node, up.hires_context_node):
         assert node_id not in wf
+    # 2 個目の Guider は作り直した ReferenceToVideo を直接読む
+    assert wf[up.hires_guider_node]["inputs"]["conditioning"] == [
+        up.hires_conditioning_node,
+        0,
+    ]
 
 
 def test_latent_upscale_adds_no_hires_save_without_a_save_node():
@@ -2411,6 +2459,134 @@ def test_latent_upscale_adds_no_hires_save_without_a_save_node():
         up.hires_guider_node,
     ):
         assert node_id not in wf
+
+
+# --- 2 パス目の CONDITIONING（i2v / r2v は最終解像度で作り直す）-------------
+
+#: 開始・最終フレーム（i2v）や参照素材（r2v）を CONDITIONING に持つ版
+RECONDITION_IDS = [
+    wid for wid in MINIMAX_H3_VIDEO_IDS if "_i2v" in wid or "_r2v" in wid
+]
+
+
+def test_i2v_and_r2v_declare_a_conditioning_to_remake_and_t2v_does_not():
+    for workflow_id in MINIMAX_H3_VIDEO_IDS:
+        spec = get_spec(workflow_id, "video")
+        if workflow_id in RECONDITION_IDS:
+            # width / height の注入先 = 作り直すノード
+            assert spec.upscale.conditioning == spec.inject["width"].node_id
+        else:
+            assert spec.upscale.conditioning is None, workflow_id
+
+
+@pytest.mark.parametrize("workflow_id", RECONDITION_IDS)
+def test_latent_upscale_remakes_the_conditioning_at_the_final_resolution(
+    workflow_id,
+):
+    """2 パス目の guider は最終解像度で作り直した CONDITIONING を読む。
+
+    開始フレームや Motion Context のピン留めは生成するクリップと同じ格子に
+    並ぶので、0.2MP の CONDITIONING のまま拡大後のラテントを回すと
+    ComfyUI のサンプリングが行数不一致（shape mismatch）で落ちる。
+    """
+    spec = get_spec(workflow_id, "video")
+    up = spec.upscale
+    job = params(
+        video_workflow=workflow_id,
+        selects={LATENT_UPSCALE_NAME: "on"},
+        reference_image_names=["ref0.png", "ref1.png"] if spec.multi_inputs else [],
+        reference_video_names=["clip0.mp4"] if spec.multi_inputs else [],
+        context_latent_path=PREV_LATENT,
+        context_latent_hires_path=PREV_LATENT_HIRES,
+    )
+    wf = build_video_workflow(job)
+    validate_workflow(wf)
+    final = resolution(
+        job.aspect_ratio, job.megapixels, multiple=spec.resolution_multiple
+    )
+
+    first = wf[up.conditioning]
+    hires = wf[up.hires_conditioning_node]
+    assert hires["class_type"] == first["class_type"]
+    # 1 個目は 1 パス目の解像度のまま、2 個目は最終解像度
+    assert (first["inputs"]["width"], first["inputs"]["height"]) != final
+    assert (hires["inputs"]["width"], hires["inputs"]["height"]) == final
+    # それ以外の入力（clip / vae / プロンプト / 開始フレーム / 参照素材 / 尺）は
+    # **注入を終えた** 1 個目と同じ
+    rest = lambda node: {  # noqa: E731
+        key: val
+        for key, val in node["inputs"].items()
+        if key not in ("width", "height")
+    }
+    assert rest(hires) == rest(first)
+    if spec.multi_inputs:
+        assert hires["inputs"]["ref_images.ref_image_1"] == first["inputs"][
+            "ref_images.ref_image_1"
+        ]
+        assert "ref_videos.ref_video_0" in hires["inputs"]
+
+    # 2 パス目の guider: Motion Context があれば 2 個目越し、無ければ直接
+    second_guider = wf[up.second_sampler_node]["inputs"]["guider"]
+    assert second_guider == [up.hires_guider_node, 0]
+    guider = wf[up.hires_guider_node]
+    assert guider["class_type"] == "BasicGuider"
+    link = guider["inputs"]["conditioning"]
+    if "_context" in workflow_id:
+        assert link == [up.hires_context_node, 0]
+        link = wf[up.hires_context_node]["inputs"]["conditioning"]
+    assert link == [up.hires_conditioning_node, 0]
+    # モデル連鎖は 1 パス目の guider と同じ
+    first_guider = wf[wf[up.sampler]["inputs"]["guider"][0]]
+    assert guider["inputs"]["model"] == first_guider["inputs"]["model"]
+    # 1 パス目は 1 個目の CONDITIONING を読んだまま
+    link = first_guider["inputs"]["conditioning"]
+    if wf[link[0]]["class_type"] == "MiniMaxH3MotionContext":
+        link = wf[link[0]]["inputs"]["conditioning"]
+    assert link == [up.conditioning, 0]
+
+
+def test_latent_upscale_remade_i2v_conditioning_follows_the_pruned_end_image():
+    """最終フレームを渡さなければ、作り直した側にも ``last_frame`` は残らない。"""
+    spec = get_spec("minimax_h3_i2v", "video")
+    up = spec.upscale
+    wf = build_video_workflow(
+        upscale_params(spec.id, "on", start_image_name="first.png", end_image_name="")
+    )
+    validate_workflow(wf)
+    hires = wf[up.hires_conditioning_node]["inputs"]
+    assert hires["first_frame"] == wf[up.conditioning]["inputs"]["first_frame"]
+    assert "last_frame" not in hires
+    # プロンプトも注入後の文面を写している
+    assert hires["prompt"] == wf[up.conditioning]["inputs"]["prompt"]
+    assert "VIDEO PROMPT" in hires["prompt"]
+
+
+@pytest.mark.parametrize(
+    "workflow_id",
+    [wid for wid in MINIMAX_H3_VIDEO_IDS if wid not in RECONDITION_IDS],
+)
+def test_latent_upscale_t2v_shares_the_first_pass_guider(workflow_id):
+    """t2v の CONDITIONING は解像度に依存しないので作り直さない。"""
+    spec = get_spec(workflow_id, "video")
+    up = spec.upscale
+    wf = build_video_workflow(upscale_params(workflow_id, "on"))
+    assert up.hires_conditioning_node not in wf
+    assert up.hires_guider_node not in wf
+    assert (
+        wf[up.second_sampler_node]["inputs"]["guider"]
+        == wf[up.sampler]["inputs"]["guider"]
+    )
+
+
+def test_upscale_conditioning_must_be_the_node_the_guider_reads():
+    """宣言した条件付けノードが guider の読む先と違えば検査で止まる。"""
+    spec = get_spec("minimax_h3_r2v", "video")
+    wrong = replace(spec, upscale=replace(spec.upscale, conditioning="138"))
+    problems = validate_spec(wrong)
+    assert any("upscale.conditioning" in p for p in problems)
+    missing = replace(spec, upscale=replace(spec.upscale, conditioning="999"))
+    assert any("is missing" in p for p in validate_spec(missing))
+    assert validate_spec(spec) == []
 
 
 def test_latent_upscale_is_pinned_off_on_comfy_cloud():

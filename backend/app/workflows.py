@@ -446,8 +446,13 @@ class UpscaleSpec:
        分け、映像だけ ``MinimaxH3LatentUpscaler3D`` で**最終解像度**に拡大して
        ``LTXVConcatAVLatent`` で戻す。
     3. ``ManualSigmas``（:attr:`sigmas`）で 2 パス目の
-       ``SamplerCustomAdvanced`` を回す。noise / guider / sampler は 1 パス目と
-       同じものを共有する。
+       ``SamplerCustomAdvanced`` を回す。noise / sampler は 1 パス目と同じものを
+       共有する。guider も、CONDITIONING が解像度に依存しない版（t2v）は共有
+       する。**開始・最終フレーム（i2v）や参照素材（r2v）を CONDITIONING に
+       持つ版**は :attr:`conditioning` を宣言し、その条件付けノードを
+       **最終解像度でもう 1 個**（:attr:`hires_conditioning_node`）作って、
+       2 個目の ``BasicGuider``（:attr:`hires_guider_node`）で 2 パス目を回す
+       （:func:`app.workflow.finish_latent_upscale`）。
     4. 1 パス目を読んでいた ``VAEDecode`` / ``VAEDecodeAudio`` の ``samples``
        だけを 2 パス目に付け替える。1 パス目のラテントの保存
        （``MiniMaxH3MotionContextSaveLatent``）と 1 個目の Motion Context は
@@ -458,10 +463,22 @@ class UpscaleSpec:
        高解像度ラテントを 2 個目の ``…LoadLatent`` で読んで 2 個目の
        ``MiniMaxH3MotionContext`` + ``BasicGuider`` を組み、2 パス目の
        サンプラーの ``guider`` をそちらへ付け替える。直前カットに高解像度
-       ラテントが無ければ（``off`` で作った過去テイクなど）この 3 ノードは
-       足さず、2 パス目は 1 パス目と同じ guider を共有する = 1 段引き継ぎ。
+       ラテントが無ければ（``off`` で作った過去テイクなど）``…LoadLatent`` は
+       足さず、2 個目の Motion Context は直前カットの mp4 のフレーム
+       （``context_frames``）を最終解像度で VAE に通して継ぎ目を合わせる
+       = 1 段引き継ぎ（ラテントで引き継ぐのは 1 パス目だけ）。
 
     ``off`` のときは何もしないので、グラフはテンプレートそのままになる。
+
+    **2 パス目に 1 パス目の CONDITIONING をそのまま使えない理由**: MiniMax H3 の
+    DiT は開始・最終フレームや Motion Context のピン留め（``minimax_keyframes``）
+    を**生成するクリップと同じ格子**の行として並べる
+    （``comfy.ldm.minimax.model.PackedLayout``）。0.2MP でエンコードした
+    キーフレームのまま拡大後のラテントを回すと、行数が合わずにサンプリングで
+    落ちる（``_embed_and_pack`` の shape mismatch）。参照画像・参照動画
+    （``minimax_refs``）は自分の格子を持つので落ちはしないが、``ref_image_size``
+    = ``match`` は参照画像を 1 パス目の画素数まで縮めるので、2 パス目は最終
+    解像度で作り直した参照で回す。
 
     **チェーンの途中で解像度や ``latent_upscale`` を変えられない**:
     ``MiniMaxH3MotionContext`` の ``context_latent`` は生成するクリップと同じ
@@ -472,6 +489,13 @@ class UpscaleSpec:
     #: 1 パス目の ``SamplerCustomAdvanced`` のノード ID。素の t2v / i2v は
     #: サブグラフを展開した ``105:14``、それ以外のテンプレートは ``125``。
     sampler: str
+    #: 2 パス目用に**最終解像度で作り直す**条件付けノード（出力 0 が
+    #: CONDITIONING の ``MiniMaxH3ImageToVideo`` / ``MiniMaxH3ReferenceToVideo``）
+    #: の ID。``None`` は作り直さない = 2 パス目も 1 パス目の guider を共有する
+    #: （CONDITIONING が解像度に依存しない t2v）。宣言するノードは ``width`` /
+    #: ``height`` の注入先で、1 パス目のサンプラーの guider（``BasicGuider``）が
+    #: その CONDITIONING を直接か Motion Context 越しに読んでいること。
+    conditioning: str | None = None
     #: 1 パス目を回す解像度（メガピクセル）。縦横比はジョブの指定のまま。
     first_pass_megapixels: float = 0.2
     #: ``MinimaxH3LatentUpscaler3D`` のモデルファイル（設定ページで差し替え可）
@@ -507,6 +531,10 @@ class UpscaleSpec:
     #: ``SamplerCustomAdvanced`` はこちらの guider を使う）
     hires_context_node: str = "908"
     hires_guider_node: str = "909"
+    #: :attr:`conditioning` を最終解像度で作り直した 2 個目の条件付けノード。
+    #: 2 個目の ``BasicGuider``（:attr:`hires_guider_node`）は、Motion Context
+    #: が無ければこれを直接、あれば 2 個目の Motion Context 越しに読む。
+    hires_conditioning_node: str = "910"
     #: 2 パス目のラテントの保存先に付ける接尾辞（1 本目と別ファイルにする）
     hires_suffix: str = "_hires"
 
@@ -523,6 +551,7 @@ class UpscaleSpec:
             self.hires_load_node,
             self.hires_context_node,
             self.hires_guider_node,
+            self.hires_conditioning_node,
         )
 
 
@@ -1867,7 +1896,10 @@ _MINIMAX_H3_UPSCALE_NOTES = (
     "音声に分けてから `MinimaxH3LatentUpscaler3D`（mode=target dimensions・"
     "align 32・bf16）で**指定解像度**に拡大 → `LTXVConcatAVLatent` で戻して"
     "`ManualSigmas`（0.9035 / 0.6316 / 0.3158 / 0.0000）の 3 ステップで仕上げる"
-    "2 パス構成になる（noise / guider / sampler は 1 パス目と共有。組み替えは"
+    "2 パス構成になる（noise / sampler は 1 パス目と共有。i2v / r2v は開始・"
+    "最終フレームや参照素材の CONDITIONING を最終解像度で作り直した 2 個目の"
+    "`MiniMaxH3ImageToVideo` / `…ReferenceToVideo` + `BasicGuider` で"
+    " 2 パス目を回し、t2v は guider も共有する。組み替えは"
     "ジョブの組み立て時なのでテンプレート自体は 1 パスのまま）/ off は"
     "テンプレートそのままで指定解像度を 1 パス / on には"
     "`MinimaxH3LatentUpscaler3D`（Comfyui_Minimax_h3_latent_Upscaler）と"
@@ -1877,7 +1909,9 @@ _MINIMAX_H3_UPSCALE_NOTES = (
     "1 パス目（0.2MP）と 2 パス目（最終解像度）のラテントを両方保存し"
     "（2 本目は保存先の末尾に `_hires`）、連続カット版は 2 本目を読む"
     "2 個目の `MiniMaxH3MotionContext` + `BasicGuider` を組んで 2 パス目の"
-    "guider に据える。直前カットに 2 本目が無ければ 1 段引き継ぎに戻る /"
+    "guider に据える。直前カットに 2 本目が無ければ 1 段引き継ぎに戻る"
+    "（2 個目の Motion Context は直前カットの mp4 のフレームを最終解像度で"
+    "エンコードしてピン留めする）/"
     " **チェーンの途中で解像度や `latent_upscale` を変えると"
     "`MiniMaxH3MotionContext` が解像度不一致で止まる**"
     "（`context_latent` は生成するクリップと同じ解像度でなければならない）"
@@ -2085,6 +2119,14 @@ _MINIMAX_H3_VIDEO_SELECTS: dict[str, SelectSpec] = {
 #: r2v と turbo / opt の全テンプレートは連番に振り直してあるので ``125``。
 _MINIMAX_H3_UPSCALE = UpscaleSpec(sampler="125")
 _MINIMAX_H3_UPSCALE_SUBGRAPH = UpscaleSpec(sampler="105:14")
+#: i2v（開始・最終フレーム）と r2v（参照素材）は CONDITIONING が 1 パス目の
+#: 解像度でエンコードされるので、2 パス目用に条件付けノードを最終解像度で
+#: 作り直す（:attr:`UpscaleSpec.conditioning`）。ノードは ``width`` /
+#: ``height`` の注入先と同じ ``MiniMaxH3ImageToVideo`` / ``…ReferenceToVideo``。
+_MINIMAX_H3_UPSCALE_RECONDITION = replace(_MINIMAX_H3_UPSCALE, conditioning="136")
+_MINIMAX_H3_UPSCALE_SUBGRAPH_RECONDITION = replace(
+    _MINIMAX_H3_UPSCALE_SUBGRAPH, conditioning="105:104"
+)
 
 #: ユーザーの動画 LoRA（``video_loras``）を挿す場所（:class:`LoraChain`、SPEC §3.4.2）。
 #: どのテンプレートも **UNETLoader から始まる MODEL の 1 本道**なので、そこを 1 か所
@@ -2282,7 +2324,7 @@ MINIMAX_H3_I2V = WorkflowSpec(
     optional_loaders=("end_image",),
     seeds=(T("105:15", "noise_seed", "RandomNoise"),),
     selects=dict(_MINIMAX_H3_VIDEO_SELECTS),
-    upscale=_MINIMAX_H3_UPSCALE_SUBGRAPH,
+    upscale=_MINIMAX_H3_UPSCALE_SUBGRAPH_RECONDITION,
     notes=(
         _MINIMAX_H3_NOTES
         + _MINIMAX_H3_I2V_NOTES
@@ -2366,7 +2408,7 @@ MINIMAX_H3_R2V = WorkflowSpec(
     ),
     seeds=(T("129", "noise_seed", "RandomNoise"),),
     selects=dict(_MINIMAX_H3_VIDEO_SELECTS),
-    upscale=_MINIMAX_H3_UPSCALE,
+    upscale=_MINIMAX_H3_UPSCALE_RECONDITION,
     notes=(
         _MINIMAX_H3_NOTES
         + _MINIMAX_H3_R2V_NOTES
@@ -2564,7 +2606,7 @@ MINIMAX_H3_I2V_TURBO = replace(
     },
     seeds=(T("129", "noise_seed", "RandomNoise"),),
     selects=dict(_MINIMAX_H3_VIDEO_SELECTS),
-    upscale=_MINIMAX_H3_UPSCALE,
+    upscale=_MINIMAX_H3_UPSCALE_RECONDITION,
     notes=(
         _MINIMAX_H3_NOTES
         + _MINIMAX_H3_I2V_NOTES
@@ -2652,7 +2694,7 @@ MINIMAX_H3_I2V_OPT = replace(
     # テンプレートのノード ID は turbo と同じ連番なので、turbo と同じ宣言を使う
     inject=dict(MINIMAX_H3_I2V_TURBO.inject),
     seeds=MINIMAX_H3_I2V_TURBO.seeds,
-    upscale=_MINIMAX_H3_UPSCALE,
+    upscale=_MINIMAX_H3_UPSCALE_RECONDITION,
     notes=(
         _MINIMAX_H3_NOTES
         + _MINIMAX_H3_I2V_NOTES
@@ -3682,6 +3724,46 @@ def _validate_upscale(spec: WorkflowSpec, tpl: Workflow) -> list[str]:
             )
     if len(set(upscale.node_ids())) != len(upscale.node_ids()):
         problems.append(f"{spec.id}.upscale: duplicate node ids")
+    if upscale.conditioning is not None:
+        problems += _validate_upscale_conditioning(spec, tpl)
+    return problems
+
+
+def _validate_upscale_conditioning(spec: WorkflowSpec, tpl: Workflow) -> list[str]:
+    """:attr:`UpscaleSpec.conditioning` を作り直せる形か（SPEC §3.1）。
+
+    作り直すノードは ``width`` / ``height`` の注入先そのもので（最終解像度を
+    書く先）、1 パス目のサンプラーの guider が ``BasicGuider`` としてその
+    CONDITIONING を直接か ``MiniMaxH3MotionContext`` 越しに読んでいること。
+    """
+    upscale = spec.upscale
+    if upscale is None or upscale.conditioning is None:  # pragma: no cover
+        return []
+    origin = f"{spec.id}.upscale.conditioning"
+    problems: list[str] = []
+    node_id = upscale.conditioning
+    if not isinstance(tpl.get(node_id), dict):
+        return [f"{origin}: node {node_id!r} is missing"]
+    for name in ("width", "height"):
+        target = spec.inject.get(name)
+        if target is not None and target.node_id != node_id:
+            problems.append(
+                f"{origin}: {name!r} is injected into {target.node_id!r},"
+                f" not {node_id!r}"
+            )
+    sampler = tpl.get(upscale.sampler)
+    guider_link = ((sampler or {}).get("inputs") or {}).get("guider")
+    guider = tpl.get(guider_link[0]) if isinstance(guider_link, list) else None
+    if not isinstance(guider, dict) or guider.get("class_type") != "BasicGuider":
+        return problems + [f"{origin}: the first pass guider is not a BasicGuider"]
+    link = (guider.get("inputs") or {}).get("conditioning")
+    source = tpl.get(link[0]) if isinstance(link, list) else None
+    if isinstance(source, dict) and source.get("class_type") == "MiniMaxH3MotionContext":
+        link = (source.get("inputs") or {}).get("conditioning")
+    if link != [node_id, 0]:
+        problems.append(
+            f"{origin}: the first pass guider does not read {node_id!r}"
+        )
     return problems
 
 

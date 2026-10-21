@@ -564,7 +564,26 @@ UNET 直後に挟み（`UNETLoader → 143 → 144 → PathchSageAttentionKJ →
      `device` `cuda`・`precision` `bf16`。
   4. `LTXVConcatAVLatent` で音声と戻し、`ManualSigmas`
      （**`0.9035, 0.6316, 0.3158, 0.0000` 固定・全バリアント共通**）で 2 パス目の
-     `SamplerCustomAdvanced` を回す。`noise` / `guider` / `sampler` は 1 パス目と同じものを共有する。
+     `SamplerCustomAdvanced` を回す。`noise` / `sampler` は 1 パス目と同じものを共有する。
+     `guider` は版で分かれる:
+     - **t2v**（CONDITIONING が解像度に依存しない）: 1 パス目の guider をそのまま共有する。
+     - **i2v / r2v**（`UpscaleSpec.conditioning` を宣言、`*_save*` / `*_context*` / opt / turbo を
+       含む全バリアント）: `width` / `height` の注入先の条件付けノード（`MiniMaxH3ImageToVideo` /
+       `MiniMaxH3ReferenceToVideo`、ノード `136`・素の i2v は `105:104`）を、**入力（clip / vae /
+       プロンプト / 開始・最終フレーム / 参照素材 / 尺）は同じまま `width` / `height` だけ最終解像度に
+       した 2 個目**（ノード `910`）として足し、その CONDITIONING を受ける **2 個目の `BasicGuider`**
+       （ノード `909`、`model` は 1 パス目の guider と同じ連鎖）で 2 パス目を回す。Motion Context を
+       持つ版は 2 個目の Motion Context 越しに読む（下記）。2 個目の条件付けノードは注入
+       （プロンプト・参照素材のローダーの生成・渡されなかった `end_image` の除去）を終えたあとに
+       1 個目から写し直す（`workflow.finish_latent_upscale`）。
+     - 理由: MiniMax H3 の DiT は開始・最終フレームや Motion Context のピン留め
+       （`minimax_keyframes`）を**生成するクリップと同じ格子**の行として並べる
+       （`comfy/ldm/minimax/model.py` の `PackedLayout`）。0.2MP でエンコードしたキーフレームの
+       CONDITIONING のまま拡大後のラテントを回すと、`_embed_and_pack` が
+       `shape mismatch: value tensor of shape [209, 96] cannot be broadcast to indexing result of
+       shape [405, 96]` のように行数不一致で落ちる（22×38 → 30×54 の例）。参照画像・参照動画
+       （`minimax_refs`）は自分の格子を持つので落ちはしないが、`ref_image_size` = `match` は参照画像を
+       生成の画素数まで縮めるので、2 パス目は最終解像度で作り直した参照で回す。
   5. 1 パス目を `samples` で読んでいた `VAEDecode` / `VAEDecodeAudio` だけを 2 パス目に
      付け替える。**テンプレートの `MiniMaxH3MotionContextSaveLatent` と 1 個目の Motion Context は
      入力名が `latent` なので 1 パス目に付いたまま**。
@@ -583,16 +602,19 @@ UNET 直後に挟み（`UNETLoader → 143 → 144 → PathchSageAttentionKJ →
   `latent_hires_path` に控える（`off` のジョブでは NULL のまま）。
 - **読み込み側**（`*_context*` のみ）: 直前カットに 2 本目があれば、
   **2 個目の `…LoadLatent`**（`latent_path` = 前カットの `latent_hires_path`）と
-  **2 個目の `MiniMaxH3MotionContext`**（`conditioning` / `vae` / `context_frames` / つまみは
-  1 個目と同じ、`latent` = `LTXVConcatAVLatent` の出力（＝2 パス目の解像度・フレーム数の形状参照）、
+  **2 個目の `MiniMaxH3MotionContext`**（`conditioning` は最終解像度で作り直した
+  `MiniMaxH3ReferenceToVideo`（ノード `910`）、`vae` / `context_frames` / つまみは 1 個目と同じ、`latent` = `LTXVConcatAVLatent` の出力（＝2 パス目の解像度・フレーム数の形状参照）、
   `context_latent` = 2 個目の `…LoadLatent`）と、**2 個目の `BasicGuider`**（`model` は 1 個目と
   同じモデル連鎖、`conditioning` は 2 個目の Motion Context）を足し、**2 パス目の
   `SamplerCustomAdvanced` の `guider` をこちらへ付け替える**（1 パス目の guider 共有をやめる）。
   `MiniMaxH3MotionContextTrim` の `trim_frames` は 1 個目の Motion Context のまま（値は同じ）。
 - **フォールバック**: 直前カットに 2 本目が無い（`off` で作った過去テイクなど）ときは、
-  読み込み側の 3 ノードを**足さない** = 2 パス目は 1 パス目と同じ guider を共有する
-  従来の 1 段引き継ぎになる（エラーにはしない）。保存側の 2 本目は付くので、次のカットからは
-  2 段になる。
+  2 個目の `…LoadLatent` を**足さない**。2 個目の Motion Context は `context_latent` を外し、
+  直前カットの mp4 のフレーム（`context_frames`）と音声（同じ `GetVideoComponents` の出力 1 を
+  `context_audio`、音声デコーダの VAE を `audio_vae`）を最終解像度でエンコードしてピン留めする
+  = ラテントで引き継ぐのは 1 パス目だけの 1 段引き継ぎ（エラーにはしない）。1 パス目の guider
+  （0.2MP のピン留め）を 2 パス目と共有すると行数不一致で落ちるので、共有はしない。保存側の
+  2 本目は付くので、次のカットからは 2 段になる。
 - **`off` のとき**は完全に従来どおり（1 本保存・1 段引き継ぎ）。
 - **制約**: `MiniMaxH3MotionContext` の `context_latent` は生成するクリップと同じ解像度である
   必要があるので、**連鎖の途中で解像度（`megapixels` / `aspect_ratio`）や `latent_upscale` の
@@ -871,8 +893,8 @@ LoRA は**登録時に対象（`target`）を選ぶ**: `image` なら画像ワ�
 | `minimax_h3_r2v_opt` / `_turbo` と、その `_save*` / `_context*` | `144`（参照 LoRA。turbo はその前に蒸留 LoRA `143`） | `151` PathchSageAttentionKJ.model |
 
 opt / turbo の Guider / Scheduler は高速化パッチの出力を読んでいるので付け替えない（パッチ越しに
-チェーンの結果を読む）。チェーンは**ラテントアップスケールの組み替えより前**に組む: 2 段引き継ぎ
-（§3.1）で足す 2 個目の BasicGuider は 1 パス目の guider の入力を写して作るので、先に通して
+チェーンの結果を読む）。チェーンは**ラテントアップスケールの組み替えより前**に組む: 2 パス目用
+（§3.1、i2v / r2v と 2 段引き継ぎ）に足す 2 個目の BasicGuider は 1 パス目の guider の入力を写して作るので、先に通して
 おかないと 2 パス目だけユーザー LoRA を素通りする。
 
 - ノード ID は `app_video_lora_0`, `app_video_lora_1`, … と採番する
