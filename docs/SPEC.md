@@ -317,7 +317,7 @@
   **r2i の `_opt` / `_turbo` だけは土台が違い**、動画の r2v と同じく ref2va の量子化ウェイトではなく
   `minimax_h3_fl2va_pruned_w4a8_mixed` に参照 LoRA `minimax_h3_ref_lora_rank_256_bf16` を
   `LoraLoaderModelOnly`（ノード 144・strength 1.0）で重ねて参照モードにする。`_turbo` はさらに
-  4step 蒸留 LoRA `minimax_h3_fl2v_turbo_4step_v1.2_768p_comfyui_bf16` を UNET 直後（ノード 143）に
+  4step 蒸留 LoRA `minimax_h3_fl2v_turbo_4step_v1.3_768p_comfyui_bf16` を UNET 直後（ノード 143）に
   挟む（`UNETLoader → 143 → 144 → PathchSageAttentionKJ → …`）。t2i / i2i の `_turbo` は
   蒸留 LoRA 1 段だけ（ノード 150）
 - `minimax_h3_r2i` は**画像ステージが参照素材（`reference_images`）を受け取る**唯一の
@@ -500,7 +500,7 @@ ComfyUI が「テンプレートにしか無いファイル」を探して落ち
 | UNET | `minimax_h3_{fl2va,ref2va}_pruned_w4a8_mixed` | 同左（r2v だけ fl2va + 参照 LoRA。下記） |
 | CLIP | `qwen3vl_32b_heretic_minimax_h3_nvfp4` | 同左 |
 | 動画 VAE | `minimax_h3_video_vae_fp16` | `minimax_h3_video_vae_int8_convrot` |
-| 蒸留 LoRA | なし | `minimax_h3_fl2v_turbo_4step_v1.2_768p_comfyui_bf16` |
+| 蒸留 LoRA | なし | `minimax_h3_fl2v_turbo_4step_v1.3_768p_comfyui_bf16` |
 | `BasicScheduler.steps` | 20 | **4** |
 | `KSamplerSelect.sampler_name` | `res_multistep` | **`euler`**（turbo は全部） |
 
@@ -512,7 +512,7 @@ UNETLoader と BasicGuider の間には、高速化ノードが**テンプレー
 
 ```
 UNETLoader
- → LoraLoaderModelOnly     (minimax_h3_fl2v_turbo_4step_v1.2_768p_comfyui_bf16.safetensors, strength_model 1.0)
+ → LoraLoaderModelOnly     (minimax_h3_fl2v_turbo_4step_v1.3_768p_comfyui_bf16.safetensors, strength_model 1.0)
  → PathchSageAttentionKJ   (sage_attention=auto)
  → MiniMaxH3MemoryEfficientSageAttentionPatch     (入力は model のみ)
  → BlockSparseAttention    (Sol-Attn tau 1.5 / 0.2〜0.9) ──→ BasicScheduler.model
@@ -538,7 +538,7 @@ UNETLoader
 なく `minimax_h3_fl2va_pruned_w4a8_mixed` で、そこへ参照 LoRA
 `minimax_h3_ref_lora_rank_256_bf16` を `LoraLoaderModelOnly`（ノード 144・strength 1.0）で
 重ねてから `PathchSageAttentionKJ` 以降の連鎖に流す。turbo はさらに 4step 蒸留 LoRA
-`minimax_h3_fl2v_turbo_4step_v1.2_768p_comfyui_bf16` を `LoraLoaderModelOnly`（ノード 143）で
+`minimax_h3_fl2v_turbo_4step_v1.3_768p_comfyui_bf16` を `LoraLoaderModelOnly`（ノード 143）で
 UNET 直後に挟み（`UNETLoader → 143 → 144 → PathchSageAttentionKJ → …`）、
 `BasicScheduler.steps` を **4**・`KSamplerSelect.sampler_name` を **`euler`** にする。
 つまり **turbo と opt のテンプレートの差はノード 143 と steps / sampler だけ**。

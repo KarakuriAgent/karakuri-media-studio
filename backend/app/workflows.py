@@ -1473,7 +1473,7 @@ _MINIMAX_H3_IMAGE_REF_LORA_NOTES = (
 #: turbo 版だけの注記（opt との差分）
 _MINIMAX_H3_IMAGE_TURBO_NOTES = (
     " / **turbo**: opt に**公式の 4step 蒸留 LoRA**"
-    "（`minimax_h3_fl2v_turbo_4step_v1.2_768p_comfyui_bf16`。"
+    "（`minimax_h3_fl2v_turbo_4step_v1.3_768p_comfyui_bf16`。"
     "`LoraLoaderModelOnly` で読むので設定画面から差し替え可）を足した高速版で、"
     "サンプリングは **4 ステップ**（t2i・i2i は res_multistep・simple、"
     "r2i は euler・simple）。r2i は蒸留 LoRA（ノード 143）→ 参照 LoRA"
@@ -1712,7 +1712,7 @@ MINIMAX_H3_I2I_TURBO = replace(
         + _MINIMAX_H3_IMAGE_TURBO_NOTES
         + " /"
         + _MINIMAX_H3_IMAGE_FAST_MODELS.format(unet="fl2va")
-        + " + minimax_h3_fl2v_turbo_4step_v1.2_768p_comfyui_bf16（loras）/"
+        + " + minimax_h3_fl2v_turbo_4step_v1.3_768p_comfyui_bf16（loras）/"
         " サンプリングは res_multistep・simple・4 ステップ"
     ),
 )
@@ -1748,7 +1748,7 @@ MINIMAX_H3_R2I_TURBO = replace(
         + _MINIMAX_H3_IMAGE_TURBO_NOTES
         + " /"
         + _MINIMAX_H3_IMAGE_FAST_MODELS.format(unet="fl2va")
-        + " + minimax_h3_fl2v_turbo_4step_v1.2_768p_comfyui_bf16 +"
+        + " + minimax_h3_fl2v_turbo_4step_v1.3_768p_comfyui_bf16 +"
         " minimax_h3_ref_lora_rank_256_bf16（loras）/"
         " サンプリングは euler・simple・4 ステップ"
     ),
@@ -1922,7 +1922,7 @@ _MINIMAX_H3_NOTES = _MINIMAX_H3_BASE_NOTES + _MINIMAX_H3_UPSCALE_NOTES
 
 #: turbo 版だけの注意書き（素のものとの差分）
 _MINIMAX_H3_TURBO_NOTES = (
-    " / **turbo**: 4step 蒸留 LoRA（`minimax_h3_fl2v_turbo_4step_v1.2_768p_comfyui_bf16`）と"
+    " / **turbo**: 4step 蒸留 LoRA（`minimax_h3_fl2v_turbo_4step_v1.3_768p_comfyui_bf16`）と"
     " Sage Attention / Mem Eff Sage Attention / Sol-Attn / SigmaShift /"
     " Spectrum をテンプレートに"
     "直列で焼き込んだ高速版で、サンプリングは **4 ステップ / euler** 固定"
@@ -1951,7 +1951,7 @@ _MINIMAX_H3_R2V_REF_LORA_NOTES = (
 #: テンプレートは他の版と同じ 1 パス（アップスケールは `latent_upscale` 側）。
 _MINIMAX_H3_R2V_TURBO_NOTES = (
     " / **turbo**: opt の構成（fl2va + 参照 LoRA）にさらに 4step 蒸留 LoRA"
-    "（`minimax_h3_fl2v_turbo_4step_v1.2_768p_comfyui_bf16`）を"
+    "（`minimax_h3_fl2v_turbo_4step_v1.3_768p_comfyui_bf16`）を"
     "`LoraLoaderModelOnly` で重ね、サンプリングを **4 ステップ / euler** に"
     "したもの。"
     "Sage Attention / Mem Eff Sage Attention / Sol-Attn / SigmaShift /"
@@ -2055,7 +2055,7 @@ _MINIMAX_H3_TURBO_MODELS = (
     " モデル: minimax_h3_{unet}_pruned_w4a8_mixed（diffusion_models）+"
     " minimax_h3_video_vae_int8_convrot + minimax_h3_audio_vae_fp32 +"
     " qwen3vl_32b_heretic_minimax_h3_nvfp4（text_encoders）+"
-    " minimax_h3_fl2v_turbo_4step_v1.2_768p_comfyui_bf16（loras）"
+    " minimax_h3_fl2v_turbo_4step_v1.3_768p_comfyui_bf16（loras）"
 )
 
 #: r2v opt 版のモデルファイル（fl2va ウェイト + 参照 LoRA）
@@ -2071,7 +2071,7 @@ _MINIMAX_H3_R2V_TURBO_MODELS = (
     " モデル: minimax_h3_fl2va_pruned_w4a8_mixed（diffusion_models）+"
     " minimax_h3_video_vae_int8_convrot + minimax_h3_audio_vae_fp32 +"
     " qwen3vl_32b_heretic_minimax_h3_nvfp4（text_encoders）+"
-    " minimax_h3_fl2v_turbo_4step_v1.2_768p_comfyui_bf16 +"
+    " minimax_h3_fl2v_turbo_4step_v1.3_768p_comfyui_bf16 +"
     " minimax_h3_ref_lora_rank_256_bf16（loras）"
 )
 

@@ -1458,7 +1458,7 @@ _H3_FL2VA = "minimax_h3_fl2va_pruned_w4a8_mixed.safetensors"
 _H3_REF2VA = "minimax_h3_ref2va_pruned_w4a8_mixed.safetensors"
 _H3_VAE_FP16 = "minimax_h3_video_vae_fp16.safetensors"
 _H3_VAE_INT8 = "minimax_h3_video_vae_int8_convrot.safetensors"
-_H3_TURBO_LORA = "minimax_h3_fl2v_turbo_4step_v1.2_768p_comfyui_bf16.safetensors"
+_H3_TURBO_LORA = "minimax_h3_fl2v_turbo_4step_v1.3_768p_comfyui_bf16.safetensors"
 _H3_REF_LORA = "minimax_h3_ref_lora_rank_256_bf16.safetensors"
 
 H3_IMAGE_MODELS = {
@@ -1924,7 +1924,7 @@ def test_the_turbo_templates_have_plain_numeric_node_ids():
 
 #: r2v の opt / turbo が使う 2 本の LoRA
 REF_LORA = "minimax_h3_ref_lora_rank_256_bf16.safetensors"
-TURBO_LORA = "minimax_h3_fl2v_turbo_4step_v1.2_768p_comfyui_bf16.safetensors"
+TURBO_LORA = "minimax_h3_fl2v_turbo_4step_v1.3_768p_comfyui_bf16.safetensors"
 
 #: opt テンプレートから r2v turbo を作るときの差分（これ以外は完全に同じ）
 _R2V_TURBO_TWEAKS = {
