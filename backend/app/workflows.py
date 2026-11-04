@@ -2,8 +2,8 @@
 
 The app ships a folder of independent ComfyUI API-format graphs under
 ``workflow/``: the plain image workflows (Krea 2 turbo, Anima, Z-Image turbo and
-Qwen-Image 2.1 t2i / edit × base / turbo) plus MiniMax H3 Image (t2i / i2i / r2i
-× base / opt / turbo), the MiniMax H3 video workflows and two audio workflows
+Qwen-Image 2.1 t2i / edit × base / turbo) plus P-H3-Image (t2i / i2i / r2i),
+the MiniMax H3 video workflows and two audio workflows
 (MiniMax Music 3 and Stable Audio 3 Medium).  Each one is described here by a
 :class:`WorkflowSpec` whose ``inject`` map names every node/field the app writes
 to.
@@ -268,14 +268,21 @@ class RefMediaFan:
     #: 参照画像の可変入力の接頭辞。後ろに 0 始まりの番号が付く
     image_prefix: str = "ref_images.ref_image_"
     #: **1 枚目の参照画像だけ**を受ける固定の入力名（空 = 番号つきの入力に入れる）。
-    #: MiniMax H3 Image の ``H3ReferenceEditPrepare`` は 1 枚目を必須の
-    #: ``source_image``（``<Picture 1>``）として受け、2 枚目以降だけが任意の
-    #: ``reference_image_2`` … になっているので、その形を宣言できるようにしてある。
+    #: 1 枚目を必須の別入力（``source_image`` など）で受け、2 枚目以降だけが
+    #: 番号つきの任意入力になっているノードのための宣言（いまはどのワークフローも
+    #: 使っていない）。
     primary_image_field: str = ""
-    #: 番号つきの入力に足すオフセット（``reference_image_2`` から始まる並びなら 1）。
-    #: :attr:`primary_image_field` がある宣言では 1 枚目がそちらへ行くので、
-    #: 2 枚目（``index`` 1）が ``reference_image_2`` になる。
+    #: 番号つきの入力に足すオフセット（``images.image_1`` から始まる 1 始まりの
+    #: 並びなら 1）。:attr:`primary_image_field` がある宣言では 1 枚目がそちらへ
+    #: 行くので、2 枚目（``index`` 1）が ``offset + 1`` 番になる。
     image_offset: int = 0
+    #: 1 枚目の参照画像を**前処理ノード経由**で受け側へ入れるときの、その前処理の
+    #: 入力（空 = 1 枚目もローダーから直接繋ぐ）。P-H3-Image r2i は 1 枚目（編集
+    #: 対象の ``<Picture 1>``）を ``ImageScaleToTotalPixels`` で 4MP に揃えてから
+    #: ``images.image_1`` に入れ、アップサンプラ用にも 1MP に縮めるので、1 枚目の
+    #: ローダーはここに並べた入力（どちらも ``image``）へ繋ぐ。受け側の番号つき
+    #: 入力（:attr:`image_offset` 番）は**先頭の前処理ノードの出力 0** を読む。
+    primary_image_via: tuple[Target, ...] = ()
     #: 雛形の ``LoadVideo``（``None`` = 参照動画は受け取らない）
     video_loader: Target | None = None
     #: 雛形の ``GetVideoComponents``（``field`` は VIDEO を受ける入力名）
@@ -327,7 +334,7 @@ class RefMediaFan:
 #: trained for exactly one family, so the family decides which image workflow a
 #: LoRA may be used with (SPEC §3.4).
 ImageFamily = Literal[
-    "krea2", "anima", "z-image", "qwen-image", "minimax-h3-image"
+    "krea2", "anima", "z-image", "qwen-image", "p-h3-image"
 ]
 
 #: 日本語ラベル（設定画面の LoRA フォームと一覧バッジ）
@@ -336,7 +343,7 @@ FAMILY_LABELS: dict[str, str] = {
     "anima": "Anima",
     "z-image": "Z-Image",
     "qwen-image": "Qwen-Image 2.1",
-    "minimax-h3-image": "MiniMax H3 Image",
+    "p-h3-image": "P-H3-Image",
     "minimax-h3": "MiniMax H3",
     "minimax-music": "MiniMax Music 3",
     "stable-audio": "Stable Audio 3",
@@ -649,6 +656,50 @@ class GrokImagineTask:
     max_references: int = 0
 
 
+#: P-H3-Image のプロンプトアップサンプラの選択式の論理名（ジョブの ``selects`` のキー）
+PROMPT_UPSAMPLER_NAME = "prompt_upsampler"
+
+#: P-H3-Image の LoRA（``LoraLoaderBypassModelOnly``）を当てるかの選択式の論理名
+P_H3_LORA_NAME = "p_h3_lora"
+
+#: Qwen3.5 の vision ブロック（アップサンプラの入力で画像 1 枚ぶんの席）
+UPSAMPLER_VISION_BLOCK = "<|vision_start|><|image_pad|><|vision_end|>"
+
+
+@dataclass(frozen=True)
+class PromptUpsamplerSpec:
+    """P-H3-Image のプロンプトアップサンプラへの入力をアプリが組む宣言（SPEC §3.1）。
+
+    アップサンプラ（``TextGenerateV2``）への入力は ``StringFormat`` の ``f_string``
+    （:attr:`format_target`）で、依頼文（``prompt`` の注入先）が ``{a}`` に入る。
+    書式は Pruna 公式のワークフローどおり 2 通り:
+
+    * ``t2i`` … ``Aspect ratio: <W:H>\nRequest: {a}``。比はジョブの
+      ``aspect_ratio`` から書くので、キャンバス（width / height）と必ず一致する。
+    * ``edit`` … Qwen3.5 のチャット書式そのままで、画像 1 枚ごとに
+      ``<Picture N>: <|vision_start|><|image_pad|><|vision_end|>`` を並べてから
+      ``Edit <Picture 1>. {a}`` を続ける。画像は :attr:`batch` に同じ順で並ぶ
+      （1 枚目は 1MP、2 枚目以降は :attr:`pad_template` で 1 枚目の大きさに
+      余白を足して揃える）。
+
+    組み立ては :func:`app.workflow._build_prompt_upsampler`。アップサンプラを
+    切っている（``prompt_upsampler`` = off）ときも書式は書くが、スイッチが
+    依頼文をそのまま ``PH3ImageConditioning`` へ流すので使われない
+    （``TextGenerateV2`` は ``ComfySwitchNode`` の遅延入力なので実行もされない）。
+    """
+
+    #: ``StringFormat.f_string``
+    format_target: Target
+    mode: Literal["t2i", "edit"] = "t2i"
+    #: edit: アップサンプラに画像を渡す ``BatchImagesNode``（``field`` は空）
+    batch: Target | None = None
+    #: ``BatchImagesNode`` の可変入力の接頭辞（0 始まり）
+    batch_prefix: str = "images.image"
+    #: r2i: 参照画像（2 枚目以降）を 1 枚目の大きさに揃える ``ResizeAndPadImage``
+    #: の雛形（``field`` は画像を受ける入力名）。参照の枚数ぶん複製し、雛形は消す
+    pad_template: Target | None = None
+
+
 @dataclass(frozen=True)
 class WorkflowSpec:
     id: str
@@ -786,6 +837,15 @@ class WorkflowSpec:
     #: ``video_prompt`` が必須か。プロンプトをコンボから組み立てるワークフロー
     #: は False で、書かれた場合だけ注入する。
     prompt_required: bool = True
+    #: プロンプトアップサンプラへの入力の組み立て方（:class:`PromptUpsamplerSpec`、
+    #: ``None`` = アップサンプラを持たない）
+    upsampler: PromptUpsamplerSpec | None = None
+    #: **選択式が off のときグラフから外す**ノード（選択式の名前 -> ノード ID）。
+    #: ``MODEL`` を 1 本受けて 1 本返すノード（``LoraLoaderBypassModelOnly`` など）
+    #: だけが対象で、外すとそのノードを読んでいた入力は ``model`` の繋ぎ元を直接
+    #: 読む（:func:`app.workflow._apply_bypass_selects`）。選択式は
+    #: ``rewrites_graph`` で ``on`` / ``off`` を持つこと。
+    bypass_nodes: dict[str, str] = field(default_factory=dict)
 
     @property
     def path(self):
@@ -1117,664 +1177,312 @@ QWEN_IMAGE_21_T2I_TURBO = replace(
 
 
 # --------------------------------------------------------------------------
-# image: workflow/image/minimax-h3-image/*.json
+# image: workflow/image/p-h3-image/*.json
 # --------------------------------------------------------------------------
 #
-# MiniMax H3 を**静止画 1 枚のために**回すワークフロー（カスタムノード
-# ComfyUI-MiniMax-H3-Image-Studio）。H3 は音声つき動画のモデルなので、内部では
-# 短いフレームパケット（``quality_profile`` の選択式で 5 / 9 / 13 / 20 フレーム。
-# 既定は 5）を作ってデコードし、その中から 1 枚を選んで出す。枚数を上げるほど
-# 時間方向の文脈が増えて仕上がりが良くなり、そのぶん遅く VRAM も要る。動画側と
-# 同じウェイトを使うが、音声 VAE は要らない。
+# P-H3-Image（PrunaAI、https://huggingface.co/PrunaAI/P-H3-Image）。MiniMax H3 を
+# 静止画の生成と編集に仕立て直した 8 steps・CFG 無しの蒸留モデルで、8MP を直接
+# 描く。ComfyUI 本体（v0.44.0 以降）の ``PH3ImageConditioning`` と汎用ノードだけで
+# 動くので、外部のカスタムノードは要らない（Comfy Cloud でも選べる）。
+# テンプレートは Pruna 公式の LoRA 版ワークフロー（PrunaAI/P-H3-Image-Comfy の
+# ``workflows/p-h3-image_lora_*.json``）を API 形式にしたもの:
 #
-# 3 つのモードがあり、ノードとウェイトが対応する:
+# * 拡散モデルは**動画の turbo と同じ** ``minimax_h3_fl2va_pruned_w4a8_mixed`` を
+#   読み、``LoraLoaderBypassModelOnly``（``p-h3-image_lora_bf16``・強度 1.0）で
+#   P-H3-Image にする（大きな重みを動画と共有できる）。LoRA を焼き込んだ専用重み
+#   （``p-h3-image_w4a8`` など）を設定ページで UNET に選んだときは、選択式
+#   ``p_h3_lora`` を off にして LoRA をグラフから外す。
+# * MiniMaxH3SigmaShift（1.0 / 1.0）→ BasicGuider、KSamplerSelect = euler +
+#   ManualSigmas の 8 ステップ固定（``steps`` は受け取らない）。
+# * プロンプトアップサンプラ（Qwen3.5-9B ベース）を ``TextGenerateV2`` で回し
+#   （公式は非推奨になった ``TextGenerate``。V2 は ``images.image1`` に渡した
+#   バッチを 1 枚ずつに分けて読むので、``BatchImagesNode`` の出力をそのまま繋ぐ）、
+#   ``ComfySwitchNode``「Use prompt upsampler」で on / off（選択式
+#   ``prompt_upsampler``・既定 on）。off なら依頼文がそのまま条件付けに入る。
+# * t2i … ``StringFormat`` が ``Aspect ratio: <比>\nRequest: {a}`` を組む。比は
+#   アプリが ``aspect_ratio`` から書くので、キャンバスと必ず一致する
+#   （:class:`PromptUpsamplerSpec`）。
+# * i2i … LoadImage → ``ImageScaleToTotalPixels``（``megapixels``・既定 4MP・
+#   32 の倍数）→ ``images.image_1``。編集はこの大きさで描かれる（width /
+#   height = 0）。アップサンプラには 1MP に縮めたものを ``BatchImagesNode`` 経由で
+#   見せる。
+# * r2i … 参照画像 1〜8 枚（1 枚目が編集対象の ``<Picture 1>``、2 枚目以降が
+#   参照）。1 枚目は i2i と同じ前処理、2 枚目以降は ``PH3ImageConditioning`` に
+#   そのまま繋ぎ、アップサンプラ側には ``ResizeAndPadImage`` で 1 枚目の大きさに
+#   揃えて並べる。アップサンプラ入力の ``<Picture N>`` ブロックも枚数ぶん
+#   アプリが書く。
 #
-# * t2i … ``H3TextToImagePrepare``（fl2va）。プロンプトだけ
-# * i2i … ``H3ImageToImagePrepare``（fl2va）。編集元画像をフレーム 0 に置く
-# * r2i … ``H3ReferenceEditPrepare``（ref2va）。参照画像 1〜9 枚を順番に受け、
-#   プロンプトからは ``<Picture 1>`` … で呼ぶ
-#
-# **fl2va と ref2va のアダプタは混ぜられない**（turbo の Pika H3 Flex LoRA も
-# fl2va 用と ref2va 用で別物）。
-#
-# examples/api の JSON からの主な差分:
-#
-# * ``H3ImageResolutionPreset`` は使わない。アプリは縦横比とメガピクセルから
-#   幅・高さを自分で計算して持っている（§3.1）ので、``H3*Prepare`` の
-#   ``width`` / ``height`` に整数を直接入れる（z-image と同じ形）。
-# * ``H3ImageSamplingPreset``（プリセットのコンボ）ではなく
-#   ``H3SamplingSettings``（Advanced Sampling）を使う。sampler / scheduler /
-#   steps が素の widget になるので、フォームのサンプリング回数がそのまま効く
-#   （turbo だけは例外で、サンプラー / シグマを新設の ``KSamplerSelect`` と
-#   ``ManualSigmas`` に付け替えて 6 ステップ固定にしてある）。
-# * r2i の参照画像は雛形の ``LoadImage`` 1 つだけを繋いだ状態で持ち、ビルダー
-#   （:func:`app.workflow._build_ref_media`）が渡された枚数ぶんに組み直す
-#   （:class:`RefMediaFan`）。1 枚目は必須の ``source_image``、2 枚目以降が
-#   ``reference_image_2`` … なので、:attr:`RefMediaFan.primary_image_field` と
-#   :attr:`RefMediaFan.image_offset` でその形を宣言している。
-#
-# CFG を使わない（``BasicGuider``）ので **negative prompt は無い**。
+# CFG を使わない（``BasicGuider``）ので **negative prompt は無い**。ユーザー LoRA
+# のチェーンは持たない。
 
-#: H3 の native canvas（約 1344x768 = 0.98MP。README の "native detail" と同値）。
-#: 動画側（0.4MP）より広いのは、静止画は既定で 5 フレームしか作らないため
-#: （``quality_profile`` を 20 フレームに上げるなら解像度は控えめに）。
-MINIMAX_H3_IMAGE_MEGAPIXELS = 0.98
+#: t2i の既定の画素数（モデルカード推奨の 8MP。32 の倍数に丸めると 1:1 が
+#: 2912x2912、4:3 が 3360x2496、16:9 が 3872x2176 になり、推奨表と一致する）
+P_H3_IMAGE_MEGAPIXELS = 8.0
 
-#: r2i が受け取れる参照画像の枚数（``H3ReferenceEditPrepare`` の
-#: ``source_image`` + ``reference_image_2..9`` = ``MAX_REFERENCE_IMAGES``）
-MINIMAX_H3_IMAGE_REFERENCES = 9
+#: 編集（i2i / r2i）で 1 枚目を揃える画素数（モデルカードは「編集は 4MP か 8MP」）
+P_H3_EDIT_MEGAPIXELS = 4.0
+
+#: r2i が受け取れる画像の枚数（編集対象 1 + 参照 7。モデルカードの上限）
+P_H3_IMAGE_REFERENCES = 8
 
 #: 3 つのモードで共通の注記（素性と要件）
-_MINIMAX_H3_IMAGE_NOTES = (
-    "MiniMax H3（音声つき動画モデル）で静止画 1 枚を作るカスタムノード"
-    "（ComfyUI-MiniMax-H3-Image-Studio）/ 内部でフレームのパケットを作って"
-    "デコードし、`Single Image Output` が 1 枚を選ぶ。**枚数（`quality_profile`）を"
-    "上げるほど H3 が使える時間方向の文脈が増えて品質が上がるが、その分だけ"
-    "遅く・VRAM を食う**（既定 5 / 9 / 13 / 20 フレーム）/"
-    " 解像度は 32px グリッドに丸め、native canvas は約 1344x768（0.98MP）/"
-    " negative prompt は無い（CFG 無しの BasicGuider）/"
-    " ユーザー LoRA を挿すチェーンは持たない /"
-    " 音声 VAE は使わない"
+_P_H3_IMAGE_NOTES = (
+    "P-H3-Image（PrunaAI。MiniMax H3 ベースの画像生成・編集モデル）/ ComfyUI 本体"
+    " v0.44.0 以降のノードだけで動く（外部のカスタムノード不要・Comfy Cloud でも可）/"
+    " 8 steps 固定（ManualSigmas + euler・`steps` は受け取らない）・CFG 無しの"
+    " BasicGuider（negative prompt は無い）/ プロンプトアップサンプラ"
+    "（`TextGenerateV2`・Qwen3.5-9B ベース）は `prompt_upsampler` で on / off（既定 on）/"
+    " ユーザー LoRA のチェーンは持たない /"
+    " モデル: minimax_h3_fl2va_pruned_w4a8_mixed（diffusion_models・動画の turbo と共有）+"
+    " p-h3-image_lora_bf16（loras・`LoraLoaderBypassModelOnly` 強度 1.0）+"
+    " p-h3-image_text_encoder_w4a8 / p-h3-image_prompt_upsampler_w4a8（text_encoders）+"
+    " p-h3-image_vae_int8_convrot（vae）。LoRA を焼き込んだ専用重み"
+    "（p-h3-image_w4a8 など）を UNET に選んだときは `p_h3_lora` を off にする /"
+    " MiniMax H3 Community License（\"Powered by MiniMax H3\" の表示義務・EU / 英国 /"
+    " 韓国 / 米国は別途許諾が要る）"
 )
 
-# --- 選択式のつまみ（SPEC §3.1）--------------------------------------------
-#
-# ノード側の widget をそのままフォームに出す。どれも ``CustomCombo`` ではないので
-# 番号を書く先は無く（``index_field=""``）、値は文字列のまま注入する。真偽値の
-# ``optimize_for_still`` と実数の ``source_fidelity`` だけは
-# :func:`app.workflow._coerce` が型を合わせてから書き込む
-# （:data:`app.workflow._BOOL_INPUTS` / :data:`app.workflow._FLOAT_SELECT_INPUTS`）。
-
-#: 論理名（= ジョブの ``selects`` のキー）
-MINIMAX_H3_IMAGE_QUALITY_NAME = "quality_profile"
-MINIMAX_H3_IMAGE_STRATEGY_NAME = "frame_strategy"
-MINIMAX_H3_IMAGE_STILL_NAME = "optimize_for_still"
-MINIMAX_H3_IMAGE_FIDELITY_NAME = "source_fidelity"
-MINIMAX_H3_IMAGE_FIT_NAME = "source_fit"
-MINIMAX_H3_IMAGE_REF_DETAIL_NAME = "reference_detail"
-
-#: ``H3*Prepare.quality_profile`` の選択肢（ノードの ``FRAME_PRESETS`` そのまま）
-MINIMAX_H3_IMAGE_QUALITY_CHOICES: tuple[str, ...] = (
-    "recommended | 5 frames",
-    "extended quality | 9 frames",
-    "high quality | 13 frames",
-    "maximum quality | 20 frames (slow)",
-)
-
-#: 画面に出すときの日本語（送る値はノードの enum のまま。:attr:`SelectSpec.choice_labels`）
-MINIMAX_H3_IMAGE_QUALITY_LABELS: dict[str, str] = {
-    "recommended | 5 frames": "標準（5 フレーム）",
-    "extended quality | 9 frames": "高品質（9 フレーム）",
-    "high quality | 13 frames": "最高品質（13 フレーム）",
-    "maximum quality | 20 frames (slow)": "最大品質（20 フレーム・低速）",
-}
-
-#: ``H3ImageFrameSelector.strategy`` のうち、このアプリで意味のあるもの。
-#: ``manual_index`` は番号のつまみ（``manual_index``）を出していないので
-#: ``first`` と同じ動きになるだけなので載せない。``most_similar_to_source`` /
-#: ``balanced_edit`` は選択ノードに ``source_image`` が繋がっている
-#: モード（i2i / r2i）だけ。
-_MINIMAX_H3_IMAGE_STRATEGIES: tuple[str, ...] = (
-    "decode_recommended",
-    "stable_quality",
-    "best_quality",
-    "sharpest",
-    "first",
-    "middle",
-    "last",
-)
-_MINIMAX_H3_IMAGE_EDIT_STRATEGIES: tuple[str, ...] = (
-    *_MINIMAX_H3_IMAGE_STRATEGIES,
-    "balanced_edit",
-    "most_similar_to_source",
-)
-
-#: 画面に出すときの日本語（送る値はノードの enum のまま）
-MINIMAX_H3_IMAGE_STRATEGY_LABELS: dict[str, str] = {
-    "decode_recommended": "おまかせ（推奨フレーム）",
-    "stable_quality": "安定重視",
-    "best_quality": "品質重視",
-    "sharpest": "最も鮮明",
-    "first": "最初のフレーム",
-    "middle": "中間のフレーム",
-    "last": "最後のフレーム",
-    "balanced_edit": "編集と再現のバランス",
-    "most_similar_to_source": "元画像に最も近い",
-}
-
-
-def _minimax_h3_image_quality_select(prepare_class: str) -> SelectSpec:
-    """フレームパケットの枚数（品質と速度のつまみ）。"""
-    return SelectSpec(
-        label="フレーム枚数（品質）",
-        choices=MINIMAX_H3_IMAGE_QUALITY_CHOICES,
-        default=MINIMAX_H3_IMAGE_QUALITY_CHOICES[0],
-        target=T("5", "quality_profile", prepare_class),
-        index_field="",
-        choice_labels=MINIMAX_H3_IMAGE_QUALITY_LABELS,
-        hint=(
-            "H3 は 1 枚出すときも複数フレームを作る。枚数を増やすと時間方向の"
-            "文脈が増えて仕上がりが良くなるが、そのぶん遅く・VRAM も要る"
-            "（既定は 5 フレーム。20 フレームは目に見えて遅い）"
-        ),
-    )
-
-
-def _minimax_h3_image_strategy_select(choices: tuple[str, ...]) -> SelectSpec:
-    """デコードしたパケットから 1 枚を選ぶやり方。"""
-    return SelectSpec(
-        label="出力フレームの選び方",
-        choices=choices,
-        default="decode_recommended",
-        target=T("12", "strategy", "H3ImageFrameSelector"),
-        index_field="",
-        # 宣言に無い選び方は生の値が出るだけなので、全部の enum を並べておく
-        choice_labels={
-            value: label
-            for value, label in MINIMAX_H3_IMAGE_STRATEGY_LABELS.items()
-            if value in choices
-        },
-        hint=(
-            "既定の decode_recommended はノードの推奨フレームをそのまま使う。"
-            "枚数を増やしたときは stable_quality / best_quality / sharpest で"
-            "選び直せる（`balanced_edit` と `most_similar_to_source` は元画像・"
-            "参照画像との近さを見るので、編集系のモードだけ）"
-        ),
-    )
-
-
-def _minimax_h3_image_still_select(prepare_class: str) -> SelectSpec:
-    """静止画向けのプロンプト包み（ノードの ``optimize_for_still``）。"""
-    return SelectSpec(
-        label="静止画プロンプト補正",
-        choices=("on", "off"),
-        default="on",
-        target=T("5", "optimize_for_still", prepare_class),
-        index_field="",
-        choice_labels={"on": "する", "off": "しない"},
-        hint=(
-            "on はノードが「カメラ固定の 1 枚絵」を要求する文をプロンプトに"
-            "足す（既定。フレーム数・解像度・サンプリングは変わらない）。"
-            "off にすると書いた文がそのまま入るので、動画寄りの出力になりやすい"
-        ),
-    )
-
-
-def _minimax_h3_image_fidelity_select(prepare_class: str) -> SelectSpec:
-    """元画像・参照画像をどれだけ保てとプロンプトに書き足すか。"""
-    return SelectSpec(
-        label="元画像の保持強度",
-        # ノードは 0.00〜1.00・刻み 0.05 の FLOAT。全刻みを並べても選べないので、
-        # 実用的な段階だけを出す（値はそのまま float として注入される）。
-        choices=("0.00", "0.25", "0.50", "0.75", "0.90", "1.00"),
-        default="0.75",
-        target=T("5", "source_fidelity", prepare_class),
-        index_field="",
-        choice_labels={
-            "0.00": "0.00（保持を求めない）",
-            "0.25": "0.25（弱め）",
-            "0.50": "0.50",
-            "0.75": "0.75（推奨）",
-            "0.90": "0.90（強め）",
-            "1.00": "1.00（できる限り保持）",
-        },
-        hint=(
-            "**denoise 強度ではない**: 同一性・ポーズ・構図をどれだけ保てと"
-            "プロンプトに書き足すかの強さ（既定 0.75）。大きく作り替えたいときは"
-            "下げ、人物や構図を動かしたくないときは上げる"
-        ),
-    )
-
-
-def _minimax_h3_image_fit_select(prepare_class: str) -> SelectSpec:
-    """元画像を生成キャンバスに合わせるやり方。"""
-    return SelectSpec(
-        label="元画像の合わせ方",
-        choices=("crop_center", "contain_pad", "stretch"),
-        default="crop_center",
-        target=T("5", "source_fit", prepare_class),
-        index_field="",
-        choice_labels={
-            "crop_center": "中央でトリミング",
-            "contain_pad": "全体を収める・余白あり",
-            "stretch": "引き伸ばし",
-        },
-        hint=(
-            "生成キャンバスに元画像を合わせるやり方（VAE に通す前）。"
-            "crop_center は中央を切り抜き、contain_pad は余白を足して全体を残し、"
-            "stretch は縦横比を無視して引き伸ばす"
-        ),
-    )
-
-#: r2i の参照画像をどの解像度で VAE に通すか（``reference_detail``）
-_MINIMAX_H3_IMAGE_REF_DETAIL_SELECT = SelectSpec(
-    label="参照画像の解像度",
-    choices=("match_generation_area", "max_identity_2048"),
-    default="match_generation_area",
-    target=T("5", "reference_detail", "H3ReferenceEditPrepare"),
+#: プロンプトアップサンプラの on / off（``ComfySwitchNode.switch``、BOOLEAN）
+_P_H3_UPSAMPLER_SELECT = SelectSpec(
+    label="プロンプトアップサンプラ",
+    choices=("on", "off"),
+    default="on",
+    target=T("9", "switch", "ComfySwitchNode"),
     index_field="",
     choice_labels={
-        "match_generation_area": "生成サイズに合わせる",
-        "max_identity_2048": "顔・細部優先／短辺 2048px・低速",
+        "on": "使う（依頼を P-H3 向けの完全なプロンプトに書き直す）",
+        "off": "使わない（書いたプロンプトをそのまま使う）",
     },
     hint=(
-        "match_generation_area は生成解像度に合わせて縮小（既定・速い）。"
-        "max_identity_2048 は短辺 2048px まで残すので顔などの同一性は上がるが、"
-        "メモリと時間を数倍使う"
+        "on は Qwen3.5-9B ベースのアップサンプラが依頼文を P-H3-Image 向けの"
+        "詳しいプロンプト（編集なら残すもの・変えるものを書いた編集指示）に"
+        "書き直してから描く（既定・公式推奨）。off は書いた文をそのまま使うので、"
+        "モデルカードの書き方どおりに書いたプロンプト向け"
     ),
 )
 
-#: t2i の選択式（元画像を取らないので保持強度・合わせ方は無い）
-_MINIMAX_H3_T2I_SELECTS: dict[str, SelectSpec] = {
-    MINIMAX_H3_IMAGE_QUALITY_NAME: _minimax_h3_image_quality_select(
-        "H3TextToImagePrepare"
+#: P-H3-Image の LoRA を当てるか（専用重みを UNET に選んだときに外す）
+_P_H3_LORA_SELECT = SelectSpec(
+    label="P-H3-Image LoRA",
+    choices=("on", "off"),
+    default="on",
+    rewrites_graph=True,
+    index_field="",
+    choice_labels={
+        "on": "当てる（MiniMax H3 本体 + P-H3-Image LoRA）",
+        "off": "当てない（P-H3-Image 専用重みを UNET に選んだとき）",
+    },
+    hint=(
+        "既定の UNET は動画と共有の MiniMax H3（fl2va）で、P-H3-Image LoRA を"
+        "当てて画像モデルにする。設定ページで UNET を LoRA 焼き込み済みの"
+        "専用重み（p-h3-image_w4a8 / int8_convrot / bf16）に差し替えたときだけ off"
     ),
-    MINIMAX_H3_IMAGE_STRATEGY_NAME: _minimax_h3_image_strategy_select(
-        _MINIMAX_H3_IMAGE_STRATEGIES
-    ),
-    MINIMAX_H3_IMAGE_STILL_NAME: _minimax_h3_image_still_select(
-        "H3TextToImagePrepare"
-    ),
+)
+
+#: 3 つのモードで共通の選択式
+_P_H3_SELECTS: dict[str, SelectSpec] = {
+    PROMPT_UPSAMPLER_NAME: _P_H3_UPSAMPLER_SELECT,
+    P_H3_LORA_NAME: _P_H3_LORA_SELECT,
 }
 
-#: i2i の選択式（元画像を取るので保持強度・合わせ方と編集系の選び方が増える）
-_MINIMAX_H3_I2I_SELECTS: dict[str, SelectSpec] = {
-    MINIMAX_H3_IMAGE_QUALITY_NAME: _minimax_h3_image_quality_select(
-        "H3ImageToImagePrepare"
-    ),
-    MINIMAX_H3_IMAGE_STRATEGY_NAME: _minimax_h3_image_strategy_select(
-        _MINIMAX_H3_IMAGE_EDIT_STRATEGIES
-    ),
-    MINIMAX_H3_IMAGE_STILL_NAME: _minimax_h3_image_still_select(
-        "H3ImageToImagePrepare"
-    ),
-    MINIMAX_H3_IMAGE_FIDELITY_NAME: _minimax_h3_image_fidelity_select(
-        "H3ImageToImagePrepare"
-    ),
-    MINIMAX_H3_IMAGE_FIT_NAME: _minimax_h3_image_fit_select(
-        "H3ImageToImagePrepare"
-    ),
+#: off で外す LoRA ノード（3 つのテンプレートで共通の ID）
+_P_H3_BYPASS = {P_H3_LORA_NAME: "19"}
+
+#: 3 つのモードで共通の注入先（ノード ID は 3 つのテンプレートで揃えてある）
+_P_H3_COMMON_INJECT: dict[str, Target] = {
+    # 依頼文は「Request」のプリミティブへ。アップサンプラ入力（StringFormat）と
+    # off のときの条件付けの両方がここを読む
+    "prompt": T("6", "value", "PrimitiveStringMultiline"),
+    "seed": T("14", "noise_seed", "RandomNoise"),
+    "save_prefix": T("18", "filename_prefix", "SaveImage"),
 }
 
-#: r2i の選択式（i2i のぶん + 参照画像の解像度）
-_MINIMAX_H3_R2I_SELECTS: dict[str, SelectSpec] = {
-    MINIMAX_H3_IMAGE_QUALITY_NAME: _minimax_h3_image_quality_select(
-        "H3ReferenceEditPrepare"
-    ),
-    MINIMAX_H3_IMAGE_STRATEGY_NAME: _minimax_h3_image_strategy_select(
-        _MINIMAX_H3_IMAGE_EDIT_STRATEGIES
-    ),
-    MINIMAX_H3_IMAGE_STILL_NAME: _minimax_h3_image_still_select(
-        "H3ReferenceEditPrepare"
-    ),
-    MINIMAX_H3_IMAGE_FIDELITY_NAME: _minimax_h3_image_fidelity_select(
-        "H3ReferenceEditPrepare"
-    ),
-    MINIMAX_H3_IMAGE_FIT_NAME: _minimax_h3_image_fit_select(
-        "H3ReferenceEditPrepare"
-    ),
-    MINIMAX_H3_IMAGE_REF_DETAIL_NAME: _MINIMAX_H3_IMAGE_REF_DETAIL_SELECT,
-}
-
-#: 全モード共通の選択式の注記
-_MINIMAX_H3_IMAGE_SELECT_NOTES = (
-    " / つまみ（`selects`）: `quality_profile`（フレーム枚数 5 / 9 / 13 / 20。"
-    "上げるほど品質が上がり、そのぶん遅く VRAM も要る）・`frame_strategy`"
-    "（デコードしたパケットから 1 枚を選ぶやり方）・`optimize_for_still`"
-    "（静止画向けのプロンプト包み。既定 on）"
+_P_H3_PROMPT_HINT_T2I = (
+    "English. Open with one sentence that says what the image IS (\"a photograph"
+    " by an experienced street photographer\", \"a frame from a Japanese anime TV"
+    " series\", \"a two-color risograph print\"), then ONE scene: a viewpoint, one"
+    " main subject caught in a moment, a few supporting elements, and the light"
+    " with its source and direction. Put every piece of visible text in quotes,"
+    " keep each string short, say where it sits and end with \"no other text\";"
+    " if no text is wanted, do not mention signs or labels at all. No hype words"
+    " (stunning, epic, cinematic, vibrant, hyper-detailed, 8k, masterpiece) and"
+    " no very long prompts. Never write an aspect ratio or a resolution (the app"
+    " adds the `Aspect ratio:` line itself). There is no negative prompt."
 )
 
-#: i2i / r2i だけの選択式の注記
-_MINIMAX_H3_IMAGE_EDIT_SELECT_NOTES = (
-    "・`source_fidelity`（元画像の保持強度 0.00〜1.00・既定 0.75）・`source_fit`"
-    "（元画像の合わせ方）"
+_P_H3_PROMPT_HINT_EDIT = (
+    "English, in the edit form: `Edit <Picture 1>. <the change, described as the"
+    " finished result>. Keep <everything that must stay> exactly as it is.` Point"
+    " to the exact thing (\"the old man's faded blue cap\", not \"his hat\"),"
+    " describe the result rather than the action, give new things a size next to"
+    " something already there, list what must not change (faces, poses,"
+    " background, light) and quote new text exactly. Refer to the other pictures"
+    " as `<Picture 2>`, `<Picture 3>`, … in the order they were given. No hype"
+    " words. There is no negative prompt."
 )
 
-#: r2i だけの選択式の注記
-_MINIMAX_H3_IMAGE_REF_SELECT_NOTES = (
-    "・`reference_detail`（参照画像を生成解像度に合わせるか短辺 2048px まで残すか）"
-)
-
-#: t2i の注記のうち**モデルファイル以外**（素の版・opt・turbo で共通）
-_MINIMAX_H3_T2I_COMMON_NOTES = (
-    _MINIMAX_H3_IMAGE_NOTES + _MINIMAX_H3_IMAGE_SELECT_NOTES
-)
-
-#: 素の版のモデルファイル（t2i / i2i は fl2va、r2i は ref2va）。動画側の素の版と
-#: 同じく量子化ウェイト（w4a8_mixed）と heretic の text encoder を使い、VAE だけ
-#: fp16（int8_convrot は opt / turbo だけ）。
-_MINIMAX_H3_IMAGE_MODELS = (
-    " モデル: minimax_h3_{unet}_pruned_w4a8_mixed（diffusion_models）+"
-    " minimax_h3_video_vae_fp16（vae）+"
-    " qwen3vl_32b_heretic_minimax_h3_nvfp4（text_encoders）/"
-    " サンプリングは res_multistep・simple・20 ステップ"
-)
-
-#: opt / turbo 版が使う量子化ウェイト（UNET と text encoder は動画側の turbo / opt と
-#: 同じファイル）。VAE は動画側と違って Sol-H3-VAE にせず、従来の int8_convrot の
-#: まま: Sol-H3-VAE のデコーダは 5 ラテント単位の非因果デコードに蒸留されていて、
-#: 短いフレームパケットから 1 枚を選ぶ ``H3ImageDecode`` / ``H3ImageFrameSelector``
-#: （外部のカスタムノード）での振る舞いが確かめられていないため。
-_MINIMAX_H3_IMAGE_FAST_MODELS = (
-    " モデル: minimax_h3_{unet}_pruned_w4a8_mixed（diffusion_models）+"
-    " minimax_h3_video_vae_int8_convrot（vae）+"
-    " qwen3vl_32b_heretic_minimax_h3_nvfp4（text_encoders）"
-)
-
-#: opt 版だけの注記（素の版との差分）
-_MINIMAX_H3_IMAGE_OPT_NOTES = (
-    " / **opt**: サンプリングは素の版と同じ 20 ステップのまま、量子化ウェイトと"
-    " Comfy Kitchen attention（`ModelAttentionBackend`）/ Sol-Attn / Spectrum を"
-    "テンプレートに直列で焼き込んだ最適化版（品質は素の版相当で実行だけ速い）。"
-    "`ModelAttentionBackend` と `BlockSparseAttention` は ComfyUI 本体"
-    " v0.44.0 以降に同梱で、外部のカスタムノードは素の版と同じ H3 Image Studio と"
-    "`SpectrumApplyMiniMaxH3`。それと量子化ウェイト一式が入った環境でのみ動く"
-    "（`MiniMaxH3SigmaShift` は"
-    "使わない: sigma shift は Advanced Sampling 側が持っている）"
-)
-
-#: turbo 版だけの注記（opt との差分）。動画の turbo と同じく Pika H3 Flex LoRA を
-#: 1 本だけ重ね、サンプリングは lcm + ManualSigmas の 6 ステップ固定。
-#: ``H3SamplingSettings``（ノード 8）は sigma shift を掛けた model 出力のためだけに
-#: 残し、sampler / sigmas 出力は使わない（SamplerCustomAdvanced は新設の
-#: ``KSamplerSelect``（123）と ``ManualSigmas``（124）を読む）。
-_MINIMAX_H3_IMAGE_TURBO_NOTES = (
-    " / **turbo**: opt から Spectrum を外し（`SpectrumApplyMiniMaxH3` は不要）、"
-    "**Pika H3 Flex LoRA**"
-    "（i2i は `pika_h3_flex_fl2va_comfy_bf16`・ノード 150、r2i は"
-    " `pika_h3_flex_ref2va_comfy_bf16`・ノード 143。`LoraLoaderModelOnly`"
-    "・strength 1.0 で 1 本だけ重ねる。設定画面から差し替え可。2 本目の加速"
-    " LoRA は出力を壊すので他の高速化 LoRA とは重ねない）を足した高速版で、"
-    "サンプリングは **lcm + `ManualSigmas` の 6 ステップ固定**（1.0 /"
-    " 0.972973 / 0.923077 / 0.8 / 0.571429 / 0.333333 / 0.0。`steps` は"
-    "受け取らない）。`H3SamplingSettings` は sigma shift（video 12 / audio 3）を"
-    "掛けた model を出すためだけに使う"
-)
-
-#: i2i / r2i の共通の注記（source_fidelity はプロンプトの言い回しを変えるだけ）
-_MINIMAX_H3_IMAGE_EDIT_NOTES = (
-    " / `source_fidelity`（既定 0.75・`selects` で変更可）は**denoise 強度では"
-    "なく**、元の同一性・ポーズ・構図をどれだけ保てとプロンプトに書き足すかの強さ /"
-    " 元画像は生成キャンバスに合わせてから VAE に通す（既定 crop_center・"
-    "`source_fit` で変更可）"
-)
-
-#: i2i の注記のうち**モデルファイル以外**（素の版・opt・turbo で共通）
-_MINIMAX_H3_I2I_COMMON_NOTES = (
-    _MINIMAX_H3_IMAGE_NOTES
-    + _MINIMAX_H3_IMAGE_EDIT_NOTES
-    + _MINIMAX_H3_IMAGE_SELECT_NOTES
-    + _MINIMAX_H3_IMAGE_EDIT_SELECT_NOTES
-)
-
-#: r2i の注記のうち**モデルファイル以外**（素の版・opt・turbo で共通）
-_MINIMAX_H3_R2I_COMMON_NOTES = (
-    _MINIMAX_H3_IMAGE_NOTES
-    + _MINIMAX_H3_IMAGE_EDIT_NOTES
-    + f" / 参照画像は 1〜{MINIMAX_H3_IMAGE_REFERENCES} 枚必須"
-    "（1 枚目が `source_image` = `<Picture 1>`、2 枚目以降が"
-    " `reference_image_2` …）/ 参照画像は既定では生成キャンバスに合わせて縮小"
-    "（`reference_detail` で短辺 2048px まで残せる）/ 開始フレームは受け取らない"
-    + _MINIMAX_H3_IMAGE_SELECT_NOTES
-    + _MINIMAX_H3_IMAGE_EDIT_SELECT_NOTES
-    + _MINIMAX_H3_IMAGE_REF_SELECT_NOTES
-)
-
-MINIMAX_H3_T2I = WorkflowSpec(
-    id="minimax_h3_t2i",
-    label="テキスト→画像 (MiniMax H3 Image t2i)",
+P_H3_T2I = WorkflowSpec(
+    id="p_h3_t2i",
+    label="テキスト→画像 (P-H3-Image t2i)",
     mode_label="テキスト→画像 (t2i)",
     kind="image",
-    family="minimax-h3-image",
-    relpath="image/minimax-h3-image/minimax_h3_t2i.json",
-    output_node="13",
+    family="p-h3-image",
+    relpath="image/p-h3-image/p_h3_t2i.json",
+    output_node="18",
     description=(
-        "Text-to-image with the MiniMax H3 omni-modal model (fl2va weights):"
-        " it samples a short 5-frame packet and returns the one still frame its"
-        " own selector recommends. `image_prompt` only; the resolution comes"
-        " from `aspect_ratio` + `megapixels`, rounded to a 32px grid, and the"
-        " native canvas is about 1344x768 (0.98 MP). Usable for"
-        ' `mode: "image_only"` and as the first stage of `mode: "full"`.'
+        "Text-to-image with P-H3-Image (PrunaAI's 8-step, no-CFG image model"
+        " built on MiniMax H3). `image_prompt` only; the canvas comes from"
+        " `aspect_ratio` + `megapixels` on a 32px grid and defaults to 8 MP"
+        " (1:1 2912x2912, 4:3 3360x2496, 3:2 3552x2368, 16:9 3872x2176 and the"
+        " portrait mirrors), which is where the model is best — lower sizes show"
+        " more artifacts in faces and hands. A prompt upsampler (on by default,"
+        " `selects.prompt_upsampler`) rewrites the request into the full prompt"
+        " the model renders best; the app adds the matching `Aspect ratio:` line"
+        ' itself. Usable for `mode: "image_only"` and as the first stage of'
+        ' `mode: "full"`.'
     ),
-    prompt_hint=(
-        "One English paragraph describing the **finished still**: subject,"
-        " wardrobe, pose, set, lighting, lens and framing. Never write video"
-        " language (no shot lists, no camera moves, no timestamps, no audio"
-        " fields) — the node adds its own locked-camera still wrapper. There is"
-        " no negative prompt."
-    ),
+    prompt_hint=_P_H3_PROMPT_HINT_T2I,
     resolution_multiple=32,
-    default_megapixels=MINIMAX_H3_IMAGE_MEGAPIXELS,
+    default_megapixels=P_H3_IMAGE_MEGAPIXELS,
     inject={
-        # ``H3ImageResolutionPreset`` は使わず、整数を直接入れる（z-image と同じ）
-        "width": T("5", "width", "H3TextToImagePrepare"),
-        "height": T("5", "height", "H3TextToImagePrepare"),
-        "prompt": T("5", "prompt", "H3TextToImagePrepare"),
-        "seed": T("6", "noise_seed", "RandomNoise"),
-        "steps": T("8", "steps", "H3SamplingSettings"),
-        "save_prefix": T("13", "filename_prefix", "SaveImage"),
+        **_P_H3_COMMON_INJECT,
+        "width": T("11", "width", "PH3ImageConditioning"),
+        "height": T("11", "height", "PH3ImageConditioning"),
     },
-    selects=_MINIMAX_H3_T2I_SELECTS,
-    notes=(
-        _MINIMAX_H3_T2I_COMMON_NOTES
-        + " /"
-        + _MINIMAX_H3_IMAGE_MODELS.format(unet="fl2va")
+    upsampler=PromptUpsamplerSpec(
+        format_target=T("7", "f_string", "StringFormat"), mode="t2i"
     ),
+    selects=_P_H3_SELECTS,
+    bypass_nodes=_P_H3_BYPASS,
+    notes=_P_H3_IMAGE_NOTES + " / 既定 8MP（32 の倍数。1:1 なら 2912x2912）",
 )
 
-MINIMAX_H3_I2I = WorkflowSpec(
-    id="minimax_h3_i2i",
-    label="画像→画像 (MiniMax H3 Image i2i)",
+P_H3_I2I = WorkflowSpec(
+    id="p_h3_i2i",
+    label="画像→画像 (P-H3-Image i2i)",
     mode_label="画像→画像・編集 (i2i)",
     kind="image",
-    family="minimax-h3-image",
-    relpath="image/minimax-h3-image/minimax_h3_i2i.json",
-    output_node="13",
+    family="p-h3-image",
+    relpath="image/p-h3-image/p_h3_i2i.json",
+    output_node="18",
     requires=("image",),
     image_label="編集元画像",
     description=(
-        "Image **editing** with MiniMax H3 (fl2va): the picture given in"
-        " `source_image` is encoded as frame 0 and `image_prompt` says what to"
-        " change, so `source_image` is REQUIRED in every mode that runs the"
-        ' image stage (including `mode: "full"`, where the edited still then'
-        " becomes the video's start frame). The output canvas comes from"
-        " `aspect_ratio` + `megapixels` (32px grid) and the source is fitted to"
-        " it by centre crop. Write `image_prompt` as an edit instruction"
-        ' ("change X to Y, keep everything else unchanged"), never as a full'
-        " scene description."
+        "Image **editing** with P-H3-Image: the picture in `source_image` is"
+        " `<Picture 1>` and `image_prompt` says what to change, so"
+        " `source_image` is REQUIRED in every mode that runs the image stage"
+        ' (including `mode: "full"`, where the edited still then becomes the'
+        " video's start frame). The edit keeps the shape of the source:"
+        " `megapixels` (default 4 MP) only scales it, and `aspect_ratio` is"
+        " ignored. With the prompt upsampler on (default) a short request is"
+        " enough; written by hand, use the edit form `Edit <Picture 1>. … Keep …"
+        " exactly as it is.`"
     ),
-    prompt_hint=(
-        "An English EDIT instruction for `source_image`, not a scene"
-        " description: name the change, then say explicitly what must stay"
-        " (identity, pose, wardrobe, composition, background). No video"
-        " language. There is no negative prompt."
-    ),
-    resolution_multiple=32,
-    default_megapixels=MINIMAX_H3_IMAGE_MEGAPIXELS,
+    prompt_hint=_P_H3_PROMPT_HINT_EDIT,
+    default_megapixels=P_H3_EDIT_MEGAPIXELS,
     inject={
-        "width": T("5", "width", "H3ImageToImagePrepare"),
-        "height": T("5", "height", "H3ImageToImagePrepare"),
-        "prompt": T("5", "edit_instruction", "H3ImageToImagePrepare"),
+        **_P_H3_COMMON_INJECT,
         "image": T("0", "image", "LoadImage"),
-        "seed": T("6", "noise_seed", "RandomNoise"),
-        "steps": T("8", "steps", "H3SamplingSettings"),
-        "save_prefix": T("13", "filename_prefix", "SaveImage"),
+        # 1 枚目を揃える画素数（編集のキャンバスの大きさになる）
+        "megapixels": T("20", "megapixels", "ImageScaleToTotalPixels"),
     },
-    selects=_MINIMAX_H3_I2I_SELECTS,
+    upsampler=PromptUpsamplerSpec(
+        format_target=T("7", "f_string", "StringFormat"),
+        mode="edit",
+        batch=T("22", "", "BatchImagesNode"),
+    ),
+    selects=_P_H3_SELECTS,
+    bypass_nodes=_P_H3_BYPASS,
     notes=(
-        _MINIMAX_H3_I2I_COMMON_NOTES
-        + " /"
-        + _MINIMAX_H3_IMAGE_MODELS.format(unet="fl2va")
+        _P_H3_IMAGE_NOTES
+        + " / 編集元画像は `ImageScaleToTotalPixels` で `megapixels`（既定 4MP・"
+        "32 の倍数）に揃え、その大きさ・縦横比で描く（`aspect_ratio` は使わない）"
     ),
 )
 
-MINIMAX_H3_R2I = WorkflowSpec(
-    id="minimax_h3_r2i",
-    label="参照画像→画像 (MiniMax H3 Image r2i)",
+P_H3_R2I = WorkflowSpec(
+    id="p_h3_r2i",
+    label="参照画像→画像 (P-H3-Image r2i)",
     mode_label="参照画像→画像・参照編集 (r2i)",
     kind="image",
-    family="minimax-h3-image",
-    relpath="image/minimax-h3-image/minimax_h3_r2i.json",
-    output_node="13",
+    family="p-h3-image",
+    relpath="image/p-h3-image/p_h3_r2i.json",
+    output_node="18",
     description=(
-        f"Reference editing with MiniMax H3 ref2va: 1〜"
-        f"{MINIMAX_H3_IMAGE_REFERENCES} 枚の参照画像（`reference_images`）の"
-        "見た目を保ったまま、1 枚の静止画を作り直す。参照画像は「編集元」1 枚では"
-        "なく**順番のあるリスト**で、プロンプトからは渡した順に `<Picture 1>`・"
-        "`<Picture 2>` … と呼ぶ（1 枚目が主体・2 枚目以降が差し替える要素、という"
-        "使い方が公式の例）。開始フレームは受け取らないので、`source_image` の"
-        "代わりに `reference_images` に並べる。解像度は `aspect_ratio` +"
-        " `megapixels`（32px グリッド）。"
+        f"Reference editing with P-H3-Image: 1〜{P_H3_IMAGE_REFERENCES} pictures"
+        " in `reference_images`, an **ordered list**. Picture 1 is the image"
+        " being edited (its composition and size survive) and the others are"
+        " references; the prompt names them `<Picture 1>`, `<Picture 2>`, … in"
+        " the order they were given. There is no `source_image`: put the"
+        " picture to edit first in `reference_images`. The output follows the"
+        " shape of Picture 1 scaled to `megapixels` (default 4 MP);"
+        " `aspect_ratio` is ignored. The prompt upsampler (on by default) sees"
+        " every picture and names each one in the edit brief."
     ),
-    prompt_hint=(
-        "REF2VA reference editing. Refer to every reference **by number, in the"
-        " order it was given** — `<Picture 1>`, `<Picture 2>`, … — and say what"
-        " each one contributes: e.g. `Keep the subject, pose, framing and"
-        " background from <Picture 1>. Replace only the jacket with the one"
-        " from <Picture 2>.` Never use a tag with nothing behind it. No video"
-        " language, no negative prompt."
-    ),
-    resolution_multiple=32,
-    default_megapixels=MINIMAX_H3_IMAGE_MEGAPIXELS,
-    multi_inputs={REF_IMAGES_NAME: MINIMAX_H3_IMAGE_REFERENCES},
+    prompt_hint=_P_H3_PROMPT_HINT_EDIT,
+    default_megapixels=P_H3_EDIT_MEGAPIXELS,
+    multi_inputs={REF_IMAGES_NAME: P_H3_IMAGE_REFERENCES},
     inject={
-        "width": T("5", "width", "H3ReferenceEditPrepare"),
-        "height": T("5", "height", "H3ReferenceEditPrepare"),
-        "prompt": T("5", "edit_instruction", "H3ReferenceEditPrepare"),
-        "seed": T("6", "noise_seed", "RandomNoise"),
-        "steps": T("8", "steps", "H3SamplingSettings"),
-        "save_prefix": T("13", "filename_prefix", "SaveImage"),
+        **_P_H3_COMMON_INJECT,
+        "megapixels": T("20", "megapixels", "ImageScaleToTotalPixels"),
     },
-    # 1 枚目は必須の ``source_image``（``<Picture 1>``）、2 枚目以降が任意の
-    # ``reference_image_2`` … なので、番号つきの入力は 1 つずらす。テンプレートの
-    # 雛形（LoadImage 0）は両方に繋いであり、組み立てのときに置き換わる。
+    # 1 枚目は 4MP（キャンバス）と 1MP（アップサンプラ）の 2 つの前処理を通し、
+    # 2 枚目以降は ``images.image_2`` … にローダーから直接繋ぐ
     ref_media=RefMediaFan(
-        node=T("5", "", "H3ReferenceEditPrepare"),
+        node=T("11", "", "PH3ImageConditioning"),
         image_loader=T("0", "image", "LoadImage"),
-        image_prefix="reference_image_",
-        primary_image_field="source_image",
+        image_prefix="images.image_",
         image_offset=1,
+        primary_image_via=(
+            T("20", "image", "ImageScaleToTotalPixels"),
+            T("21", "image", "ImageScaleToTotalPixels"),
+        ),
+        tag_format="<Picture {n}>",
+        min_refs=1,
     ),
-    selects=_MINIMAX_H3_R2I_SELECTS,
+    upsampler=PromptUpsamplerSpec(
+        format_target=T("7", "f_string", "StringFormat"),
+        mode="edit",
+        batch=T("22", "", "BatchImagesNode"),
+        pad_template=T("24", "image", "ResizeAndPadImage"),
+    ),
+    selects=_P_H3_SELECTS,
+    bypass_nodes=_P_H3_BYPASS,
     notes=(
-        _MINIMAX_H3_R2I_COMMON_NOTES
-        + " /"
-        + _MINIMAX_H3_IMAGE_MODELS.format(unet="ref2va")
+        _P_H3_IMAGE_NOTES
+        + f" / 画像は 1〜{P_H3_IMAGE_REFERENCES} 枚必須（1 枚目が編集対象の"
+        " `<Picture 1>`、2 枚目以降が参照）/ 1 枚目は `megapixels`（既定 4MP）に"
+        "揃えてその大きさで描く / 開始フレームは受け取らない"
     ),
 )
 
-#: opt / turbo は素の版と**入力の形が完全に同じ**（ノード ID も揃えてあるので
-#: ``inject`` / ``seeds`` / ``ref_media`` はそのまま使い回せる）ので、宣言は
-#: :func:`dataclasses.replace` で差分だけを書く。turbo だけはサンプリングが
-#: 6 ステップ固定なので ``steps`` の注入先を外す（:func:`_without_steps`）。
-_MINIMAX_H3_IMAGE_OPT_DESCRIPTION = (
-    " Optimised build: same 20 sampling steps and same inputs as the plain"
-    " workflow, but with quantised weights and the Comfy Kitchen attention /"
-    " Sol-Attn / Spectrum patches baked into the template. It needs ComfyUI"
-    " v0.44.0 or later plus the Spectrum custom node and those weights."
-)
+#: 廃止したワークフロー id -> いまの id（SPEC §3.1）。保存済みのジョブ・Take・
+#: UI 状態・スタジオ設定・エージェントのメモに旧 id が残っていても、
+#: :func:`get_spec` がここで読み替えるので壊れない。MiniMax H3 Image（外部の
+#: カスタムノード ComfyUI-MiniMax-H3-Image-Studio 頼み）は P-H3-Image に置き換えた。
+#: P-H3-Image には opt / turbo が無い（8 steps 蒸留）ので、旧 ``_opt`` /
+#: ``_turbo`` もすべて同じモードへ寄せる。
+WORKFLOW_ALIASES: dict[str, str] = {
+    "minimax_h3_t2i": P_H3_T2I.id,
+    "minimax_h3_t2i_opt": P_H3_T2I.id,
+    "minimax_h3_t2i_turbo": P_H3_T2I.id,
+    "minimax_h3_i2i": P_H3_I2I.id,
+    "minimax_h3_i2i_opt": P_H3_I2I.id,
+    "minimax_h3_i2i_turbo": P_H3_I2I.id,
+    "minimax_h3_r2i": P_H3_R2I.id,
+    "minimax_h3_r2i_opt": P_H3_R2I.id,
+    "minimax_h3_r2i_turbo": P_H3_R2I.id,
+}
 
-_MINIMAX_H3_IMAGE_TURBO_DESCRIPTION = (
-    " Turbo build: the optimised graph (without Spectrum) plus the Pika H3 Flex"
-    " LoRA, sampled with lcm over a fixed 6-step ManualSigmas schedule, so it"
-    " finishes much faster. Same inputs as the plain workflow except `steps`"
-    " (fixed), but it only runs on ComfyUI v0.44.0 or later with the H3 Image"
-    " Studio custom nodes, the quantised weights and the Pika H3 Flex LoRA."
-)
 
+def canonical_workflow_id(workflow_id: str | None) -> str | None:
+    """旧 id（:data:`WORKFLOW_ALIASES`）をいまの id に読み替える。
 
-def _without_steps(inject: dict[str, Target]) -> dict[str, Target]:
-    """``inject`` から ``steps`` の注入先だけを外した写し。
-
-    MiniMax H3 の turbo（動画・画像とも）はサンプリングが ``ManualSigmas`` の
-    6 ステップ固定なので ``steps`` を受け取らない。宣言しなければ
-    ``supports("steps")`` が偽になり、フォームの欄も出ず、ジョブに載った値も
-    注入されない（:func:`app.workflow._inject_steps`）。
+    知らない id・空・``None`` はそのまま返す（存在の検証は :func:`get_spec`）。
     """
-    return {name: target for name, target in inject.items() if name != "steps"}
-
-MINIMAX_H3_T2I_OPT = replace(
-    MINIMAX_H3_T2I,
-    id="minimax_h3_t2i_opt",
-    label="テキスト→画像 (MiniMax H3 Image t2i Optimized)",
-    mode_label="テキスト→画像 (t2i Optimized)",
-    relpath="image/minimax-h3-image/minimax_h3_t2i_opt.json",
-    description=MINIMAX_H3_T2I.description + _MINIMAX_H3_IMAGE_OPT_DESCRIPTION,
-    notes=(
-        _MINIMAX_H3_T2I_COMMON_NOTES
-        + _MINIMAX_H3_IMAGE_OPT_NOTES
-        + " /"
-        + _MINIMAX_H3_IMAGE_FAST_MODELS.format(unet="fl2va")
-    ),
-)
-
-MINIMAX_H3_I2I_OPT = replace(
-    MINIMAX_H3_I2I,
-    id="minimax_h3_i2i_opt",
-    label="画像→画像 (MiniMax H3 Image i2i Optimized)",
-    mode_label="画像→画像・編集 (i2i Optimized)",
-    relpath="image/minimax-h3-image/minimax_h3_i2i_opt.json",
-    description=MINIMAX_H3_I2I.description + _MINIMAX_H3_IMAGE_OPT_DESCRIPTION,
-    notes=(
-        _MINIMAX_H3_I2I_COMMON_NOTES
-        + _MINIMAX_H3_IMAGE_OPT_NOTES
-        + " /"
-        + _MINIMAX_H3_IMAGE_FAST_MODELS.format(unet="fl2va")
-    ),
-)
-
-MINIMAX_H3_I2I_TURBO = replace(
-    MINIMAX_H3_I2I,
-    id="minimax_h3_i2i_turbo",
-    label="画像→画像 (MiniMax H3 Image i2i Turbo)",
-    mode_label="画像→画像・編集 (i2i Turbo)",
-    relpath="image/minimax-h3-image/minimax_h3_i2i_turbo.json",
-    description=MINIMAX_H3_I2I.description + _MINIMAX_H3_IMAGE_TURBO_DESCRIPTION,
-    inject=_without_steps(MINIMAX_H3_I2I.inject),
-    notes=(
-        _MINIMAX_H3_I2I_COMMON_NOTES
-        + _MINIMAX_H3_IMAGE_OPT_NOTES
-        + _MINIMAX_H3_IMAGE_TURBO_NOTES
-        + " /"
-        + _MINIMAX_H3_IMAGE_FAST_MODELS.format(unet="fl2va")
-        + " + pika_h3_flex_fl2va_comfy_bf16（loras）/"
-        " サンプリングは lcm・ManualSigmas・6 ステップ固定"
-    ),
-)
-
-MINIMAX_H3_R2I_OPT = replace(
-    MINIMAX_H3_R2I,
-    id="minimax_h3_r2i_opt",
-    label="参照画像→画像 (MiniMax H3 Image r2i Optimized)",
-    mode_label="参照画像→画像・参照編集 (r2i Optimized)",
-    relpath="image/minimax-h3-image/minimax_h3_r2i_opt.json",
-    description=MINIMAX_H3_R2I.description + _MINIMAX_H3_IMAGE_OPT_DESCRIPTION,
-    notes=(
-        _MINIMAX_H3_R2I_COMMON_NOTES
-        + _MINIMAX_H3_IMAGE_OPT_NOTES
-        + " /"
-        + _MINIMAX_H3_IMAGE_FAST_MODELS.format(unet="ref2va")
-    ),
-)
-
-MINIMAX_H3_R2I_TURBO = replace(
-    MINIMAX_H3_R2I,
-    id="minimax_h3_r2i_turbo",
-    label="参照画像→画像 (MiniMax H3 Image r2i Turbo)",
-    mode_label="参照画像→画像・参照編集 (r2i Turbo)",
-    relpath="image/minimax-h3-image/minimax_h3_r2i_turbo.json",
-    description=MINIMAX_H3_R2I.description + _MINIMAX_H3_IMAGE_TURBO_DESCRIPTION,
-    inject=_without_steps(MINIMAX_H3_R2I.inject),
-    notes=(
-        _MINIMAX_H3_R2I_COMMON_NOTES
-        + _MINIMAX_H3_IMAGE_OPT_NOTES
-        + _MINIMAX_H3_IMAGE_TURBO_NOTES
-        + " /"
-        + _MINIMAX_H3_IMAGE_FAST_MODELS.format(unet="ref2va")
-        + " + pika_h3_flex_ref2va_comfy_bf16（loras）/"
-        " サンプリングは lcm・ManualSigmas・6 ステップ固定"
-    ),
-)
+    if not workflow_id:
+        return workflow_id
+    return WORKFLOW_ALIASES.get(workflow_id, workflow_id)
 
 
 # --------------------------------------------------------------------------
@@ -1849,6 +1557,17 @@ GROK_IMAGINE_EDIT = WorkflowSpec(
     ),
     notes=_GROK_IMAGINE_NOTES + " / 編集元画像が必須・解像度は入力画像から決まる",
 )
+
+
+def _without_steps(inject: dict[str, Target]) -> dict[str, Target]:
+    """``inject`` から ``steps`` の注入先だけを外した写し。
+
+    MiniMax H3 の turbo（動画）はサンプリングが ``ManualSigmas`` の
+    6 ステップ固定なので ``steps`` を受け取らない。宣言しなければ
+    ``supports("steps")`` が偽になり、フォームの欄も出ず、ジョブに載った値も
+    注入されない（:func:`app.workflow._inject_steps`）。
+    """
+    return {name: target for name, target in inject.items() if name != "steps"}
 
 
 # --------------------------------------------------------------------------
@@ -2024,26 +1743,17 @@ _MINIMAX_H3_MODELS = (
 #:
 #: turbo / opt の高速化ノードのうち ``ModelAttentionBackend`` /
 #: ``BlockSparseAttention`` / ``MiniMaxH3SigmaShift`` と、ラテントアップスケールの
-#: ``LatentUpscaleModelLoader`` / ``MiniMaxH3LatentUpscaleWithModel`` は ComfyUI
-#: 本体 **v0.44.0 以降**に同梱なのでここには並べない（本体がそれより古ければ
-#: ヘルスチェックが不足として知らせる）。外部のまま残るのは opt の
-#: ``SpectrumApplyMiniMaxH3``、MiniMax H3 Image の ``H3*``
-#: （ComfyUI-MiniMax-H3-Image-Studio、``deploy/runpod/custom_nodes.txt`` 参照）、
-#: ラテント連続性の Motion Context 系。:func:`app.workflow.supported_on_target` は
-#: これを 1 つでも使うワークフローを Comfy Cloud の選択肢から落とすので、Spectrum を
-#: 持つ動画の opt、``H3*`` を使う画像の MiniMax H3 Image（base / opt / turbo とも）、
-#: ラテント連続性のバリアント（``*_save*`` / ``*_context*``）は Comfy Cloud では
-#: 出ない。本体ノードだけで組んである動画の turbo（i2v / r2v）は Comfy Cloud でも
-#: 出る（w4a8 の UNET・Pika H3 Flex LoRA・Sol-H3-VAE は Cloud 側に入れておく前提）。
+#: ``LatentUpscaleModelLoader`` / ``MiniMaxH3LatentUpscaleWithModel``、P-H3-Image の
+#: ``PH3ImageConditioning`` は ComfyUI 本体 **v0.44.0 以降**に同梱なのでここには
+#: 並べない（本体がそれより古ければヘルスチェックが不足として知らせる）。外部のまま
+#: 残るのは opt の ``SpectrumApplyMiniMaxH3`` とラテント連続性の Motion Context 系。
+#: :func:`app.workflow.supported_on_target` はこれを 1 つでも使うワークフローを
+#: Comfy Cloud の選択肢から落とすので、Spectrum を持つ動画の opt とラテント連続性の
+#: バリアント（``*_save*`` / ``*_context*``）は Comfy Cloud では出ない。本体ノード
+#: だけで組んである動画の turbo（i2v / r2v）と P-H3-Image は Comfy Cloud でも出る
+#: （モデルファイルは Cloud 側に入れておく前提）。
 OPTIONAL_CLASS_TYPES: frozenset[str] = frozenset(
     {
-        # ComfyUI-MiniMax-H3-Image-Studio（画像 t2i / i2i / r2i の全バリアント）
-        "H3TextToImagePrepare",
-        "H3ImageToImagePrepare",
-        "H3ReferenceEditPrepare",
-        "H3SamplingSettings",
-        "H3ImageDecode",
-        "H3ImageFrameSelector",
         # opt の Spectrum（本体に代替が無い外部のカスタムノード）
         "SpectrumApplyMiniMaxH3",
         # ラテント連続性（ComfyUI-H3-Motion-Context /
@@ -3047,14 +2757,9 @@ SPECS: tuple[WorkflowSpec, ...] = (
     QWEN_IMAGE_21_T2I_TURBO,
     QWEN_IMAGE_21_EDIT,
     QWEN_IMAGE_21_EDIT_TURBO,
-    MINIMAX_H3_T2I,
-    MINIMAX_H3_T2I_OPT,
-    MINIMAX_H3_I2I,
-    MINIMAX_H3_I2I_OPT,
-    MINIMAX_H3_I2I_TURBO,
-    MINIMAX_H3_R2I,
-    MINIMAX_H3_R2I_OPT,
-    MINIMAX_H3_R2I_TURBO,
+    P_H3_T2I,
+    P_H3_I2I,
+    P_H3_R2I,
     GROK_IMAGINE_T2I,
     GROK_IMAGINE_EDIT,
     MINIMAX_H3_T2V,
@@ -3190,7 +2895,8 @@ def audio_specs() -> list[WorkflowSpec]:
 
 
 def get_spec(workflow_id: str, kind: WorkflowKind | None = None) -> WorkflowSpec:
-    spec = BY_ID.get(workflow_id)
+    # 廃止した id（:data:`WORKFLOW_ALIASES`）はいまの id に読み替える
+    spec = BY_ID.get(workflow_id) or BY_ID.get(WORKFLOW_ALIASES.get(workflow_id, ""))
     if spec is None:
         raise WorkflowSpecError(f"unknown workflow: {workflow_id!r}")
     if kind is not None and spec.kind != kind:
@@ -3581,12 +3287,21 @@ def _ref_media_problems(
                 f"{spec.id}.ref_media: {fan.node.node_id} has no {prefix}* input"
             )
         for key, link in wired.items():
-            if not isinstance(link, list) or len(link) != 2 or link[0] != loader.node_id:
+            # 1 枚目を前処理ノード経由で受ける宣言では、その番号の入力は
+            # ローダーではなく先頭の前処理ノードを読む
+            source = loader.node_id
+            if (
+                name == REF_IMAGES_NAME
+                and fan.primary_image_via
+                and key == f"{prefix}{fan.image_offset}"
+            ):
+                source = fan.primary_image_via[0].node_id
+            if not isinstance(link, list) or len(link) != 2 or link[0] != source:
                 problems.append(
                     f"{spec.id}.ref_media: {fan.node.node_id}.{key} does not read"
-                    f" the loader {loader.node_id!r}"
+                    f" {source!r}"
                 )
-    # 1 枚目だけを受ける固定の入力（``H3ReferenceEditPrepare.source_image``）も
+    # 1 枚目だけを受ける固定の入力（:attr:`RefMediaFan.primary_image_field`）も
     # 雛形のローダーから引かれていなければならない: 組み立てのときにここへ
     # 1 枚目を繋ぎ直すので、テンプレート側で別のノードを読んでいると、
     # そのノードが宙に浮いたまま残ってしまう。
@@ -3597,6 +3312,21 @@ def _ref_media_problems(
                 f"{spec.id}.ref_media: {fan.node.node_id}.{fan.primary_image_field}"
                 f" does not read the loader {fan.image_loader.node_id!r}"
             )
+    # 1 枚目の前処理（:attr:`RefMediaFan.primary_image_via`）: どの入力も雛形の
+    # ローダーを読んでいること（組み立てのときに 1 枚目のローダーへ繋ぎ直す）
+    for index, via in enumerate(fan.primary_image_via):
+        check(via, f"ref_media.primary_image_via[{index}]")
+        via_node = tpl.get(via.node_id)
+        link = (via_node.get("inputs") or {}).get(via.field) if isinstance(via_node, dict) else None
+        if not isinstance(link, list) or len(link) != 2 or link[0] != fan.image_loader.node_id:
+            problems.append(
+                f"{spec.id}.ref_media: {via.key} does not read the loader"
+                f" {fan.image_loader.node_id!r}"
+            )
+    if fan.primary_image_via and fan.primary_image_field:
+        problems.append(
+            f"{spec.id}.ref_media: primary_image_via and primary_image_field are exclusive"
+        )
     if fan.image_offset < 0:
         problems.append(f"{spec.id}.ref_media: image_offset must be >= 0")
     if not 0 <= fan.min_refs <= total:
@@ -3764,6 +3494,59 @@ def _validate_upscale_conditioning(spec: WorkflowSpec, tpl: Workflow) -> list[st
     return problems
 
 
+def _upsampler_problems(spec: WorkflowSpec, tpl: Workflow, check: Any) -> list[str]:
+    """:class:`PromptUpsamplerSpec` の宣言がテンプレートと合っているか（SPEC §3.1）。"""
+    up = spec.upsampler
+    assert up is not None
+    origin = f"{spec.id}.upsampler"
+    problems: list[str] = []
+    check(up.format_target, "upsampler.format_target")
+    # 依頼文は StringFormat の ``values.a`` に入る（``{a}`` の差し込み先）
+    fmt = tpl.get(up.format_target.node_id)
+    fmt_inputs = (fmt.get("inputs") or {}) if isinstance(fmt, dict) else {}
+    prompt = spec.inject.get("prompt")
+    if prompt is None:
+        problems.append(f"{origin}: no 'prompt' injection target")
+    elif fmt_inputs.get("values.a") != [prompt.node_id, 0]:
+        problems.append(f"{origin}: {up.format_target.node_id}.values.a does not read the prompt")
+    if up.mode == "edit":
+        if up.batch is None:
+            problems.append(f"{origin}: an edit upsampler needs a batch node")
+        else:
+            check(up.batch, "upsampler.batch")
+            batch = tpl.get(up.batch.node_id)
+            inputs = (batch.get("inputs") or {}) if isinstance(batch, dict) else {}
+            if f"{up.batch_prefix}0" not in inputs:
+                problems.append(f"{origin}: {up.batch.node_id} has no {up.batch_prefix}0 input")
+        if up.pad_template is not None:
+            check(up.pad_template, "upsampler.pad_template")
+            if spec.ref_media is None:
+                problems.append(f"{origin}: pad_template needs ref_media")
+    elif up.batch is not None or up.pad_template is not None:
+        problems.append(f"{origin}: a t2i upsampler takes no images")
+    return problems
+
+
+def _bypass_problems(spec: WorkflowSpec, tpl: Workflow) -> list[str]:
+    """:attr:`WorkflowSpec.bypass_nodes` の宣言が筋の通ったものか（SPEC §3.1）。"""
+    problems: list[str] = []
+    for name, node_id in spec.bypass_nodes.items():
+        origin = f"{spec.id}.bypass_nodes[{name}]"
+        select = spec.select(name)
+        if select is None:
+            problems.append(f"{origin}: no select of that name")
+        elif not select.rewrites_graph or "off" not in select.choices:
+            problems.append(f"{origin}: the select must rewrite the graph and offer 'off'")
+        node = tpl.get(node_id)
+        if not isinstance(node, dict):
+            problems.append(f"{origin}: node {node_id!r} is missing")
+            continue
+        link = (node.get("inputs") or {}).get("model")
+        if not isinstance(link, list) or len(link) != 2:
+            problems.append(f"{origin}: node {node_id!r} has no linked 'model' input")
+    return problems
+
+
 def validate_spec(spec: WorkflowSpec, template: Workflow | None = None) -> list[str]:
     """Problems found in ``spec`` against its template (empty list == fine)."""
     problems: list[str] = []
@@ -3913,6 +3696,10 @@ def validate_spec(spec: WorkflowSpec, template: Workflow | None = None) -> list[
             problems.append(
                 f"{spec.id}.optional_loaders: node {target.node_id!r} is missing"
             )
+
+    if spec.upsampler is not None:
+        problems += _upsampler_problems(spec, tpl, check)
+    problems += _bypass_problems(spec, tpl)
 
     if spec.output_node not in tpl:
         problems.append(f"{spec.id}.output_node: node {spec.output_node!r} is missing")

@@ -790,6 +790,19 @@ function asStringMap(value: unknown): Record<string, string> | undefined {
  * しても 422 になるだけなので、その場合は復元せず初期値のままにする（選択肢が
  * まだ来ていない = 空配列なら、判断できないので素通しする）。
  */
+/**
+ * 廃止したワークフロー id をいまの id に寄せる（`Options.workflow_aliases`）。
+ * 旧 MiniMax H3 Image（`minimax_h3_t2i` / `_i2i` / `_r2i` と `_opt` / `_turbo`）は
+ * P-H3-Image（`p_h3_t2i` / `_i2i` / `_r2i`）に置き換えた。知らない id はそのまま返す。
+ */
+export function resolveWorkflowAlias(
+  id: string | undefined,
+  options: Pick<Options, 'workflow_aliases'> | null | undefined,
+): string | undefined {
+  if (id === undefined) return
+  return options?.workflow_aliases?.[id] ?? id
+}
+
 function knownId(id: string | undefined, choices: string[] | undefined): string | undefined {
   if (id === undefined) return
   if (!choices || choices.length === 0) return id
@@ -863,7 +876,7 @@ export function formStateFromParams(
   // --- ワークフロー / 解像度 ------------------------------------------------
   const ids = (workflows?: WorkflowOption[]) => workflows?.map((item) => item.id)
   const imageWorkflow = knownId(
-    asString(params.image_workflow),
+    resolveWorkflowAlias(asString(params.image_workflow), options),
     ids(options?.image_workflows),
   )
   if (imageWorkflow) changes.imageWorkflow = imageWorkflow
@@ -994,7 +1007,7 @@ export function formStateFromParams(
  * declares no audio input hides the audio picker, one that needs a closing
  * frame or a reference clip shows the matching picker, t2v needs no start frame
  * at all — and an image workflow that edits a single input picture
- * (`minimax_h3_i2i`) needs one of its own while ignoring the aspect ratio /
+ * (`p_h3_i2i`) needs one of its own while ignoring the aspect ratio /
  * megapixel target。編集元を参照画像のリストで受けるもの（`qwen_image_21_edit`
  * / `_turbo`）は代わりに参照素材の欄が出る。
  *
@@ -1051,7 +1064,7 @@ export function hiddenFields(
     referenceVideo: !requires('video'),
     // マルチモーダル参照は宣言のあるステージが走る mode でだけ出す。動画側の
     // 参照は「開始フレームの代わり」なので i2v だけ（full は画像ステージが開始
-    // フレームを作る）、画像側の参照（MiniMax H3 Image r2i）は画像ステージが
+    // フレームを作る）、画像側の参照（P-H3-Image r2i など）は画像ステージが
     // 走る mode（full / image_only）で出る。
     references:
       referenceFieldsForMode(mode, workflow, imageWorkflow).length === 0,
@@ -1060,8 +1073,12 @@ export function hiddenFields(
     multiShots: !(video && multiShotLimits(workflow) !== null),
     elements: !(video && elementsLimits(workflow) !== null),
     // an editing workflow derives the size from its input picture; with no video
-    // stage to size, the aspect ratio / megapixels then do nothing at all
-    resolution: mode === 'audio' || (mode === 'image_only' && imageNeedsSource),
+    // stage to size, the aspect ratio / megapixels then do nothing at all —
+    // unless it scales the picture to a megapixel budget itself (P-H3-Image i2i
+    // は編集元を `megapixels` に揃えてから描くので、欄を残す)
+    resolution:
+      mode === 'audio' ||
+      (mode === 'image_only' && imageNeedsSource && !imageSupports('megapixels')),
   }
 }
 

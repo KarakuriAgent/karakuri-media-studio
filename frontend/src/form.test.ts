@@ -8,6 +8,7 @@ import {
   audioSupports,
   clampToWorkflow,
   formStateFromParams,
+  resolveWorkflowAlias,
   hiddenFields,
   durationRange,
   imageWorkflowNeedsSource,
@@ -286,11 +287,12 @@ const ANIMA = workflow({
   family: 'anima',
   supports: ['aspect_ratio', 'megapixels', 'prompt', 'seed'],
 })
+// 単数の編集元を取り、解像度を入力画像から決める編集系（Grok Imagine の編集と同じ形）
 const H3_EDIT = workflow({
-  id: 'minimax_h3_i2i',
-  label: 'MiniMax H3 Image i2i',
+  id: 'single_source_edit',
+  label: '単数の編集元を取る編集',
   kind: 'image',
-  family: 'minimax-h3-image',
+  family: 'grok-imagine',
   requires: ['image'],
   supports: ['image', 'prompt', 'seed'],
   image_label: '編集元画像',
@@ -363,6 +365,9 @@ describe('editing image workflows', () => {
     // in full mode the video stage still needs the aspect ratio
     expect(hiddenFields('full', I2V, H3_EDIT).resolution).toBe(false)
     expect(hiddenFields('image_only', ID_LORA, KREA2).resolution).toBe(false)
+    // 編集元を `megapixels` に揃えてから描く編集系（P-H3-Image i2i）は欄を残す
+    const P_H3_EDIT = { ...H3_EDIT, id: 'p_h3_i2i', supports: [...H3_EDIT.supports, 'megapixels'] }
+    expect(hiddenFields('image_only', ID_LORA, P_H3_EDIT).resolution).toBe(false)
   })
 
   it('hides the image LoRA chain for a workflow that cannot take one', () => {
@@ -479,12 +484,12 @@ describe('マルチモーダル参照', () => {
     expect(validateForm(overInImage, KREA2, null, SEEDANCE)).toEqual({})
   })
 
-  // 画像ステージも参照素材を受け取る（MiniMax H3 Image r2i、SPEC §3.1）
+  // 画像ステージも参照素材を受け取る（P-H3-Image r2i、SPEC §3.1）
   const H3_R2I = workflow({
-    id: 'minimax_h3_r2i',
-    label: 'MiniMax H3 Image r2i',
+    id: 'p_h3_r2i',
+    label: 'P-H3-Image r2i',
     kind: 'image',
-    family: 'minimax-h3-image',
+    family: 'p-h3-image',
     requires: [],
     accepts_start_image: false,
     supports: ['prompt', 'seed', 'steps', 'width', 'height', 'reference_images'],
@@ -586,6 +591,33 @@ describe('マルチモーダル参照', () => {
     ])
     expect(patch.referenceVideos).toEqual([])
     expect(patch.referenceAudios).toBeUndefined()
+  })
+
+  it('廃止した画像ワークフローの id は後継へ寄せて復元する', () => {
+    const aliases = {
+      workflow_aliases: {
+        minimax_h3_i2i_turbo: 'p_h3_i2i',
+        minimax_h3_t2i: 'p_h3_t2i',
+      },
+    }
+    expect(resolveWorkflowAlias('minimax_h3_i2i_turbo', aliases)).toBe('p_h3_i2i')
+    expect(resolveWorkflowAlias('krea2_turbo', aliases)).toBe('krea2_turbo')
+    // 古いサーバ（エイリアスを返さない）でもそのまま返す
+    expect(resolveWorkflowAlias('minimax_h3_t2i', null)).toBe('minimax_h3_t2i')
+    expect(resolveWorkflowAlias(undefined, aliases)).toBeUndefined()
+
+    const options = {
+      ...aliases,
+      image_workflows: [
+        workflow({ id: 'krea2_turbo', kind: 'image' }),
+        workflow({ id: 'p_h3_t2i', kind: 'image' }),
+      ],
+    } as unknown as Options
+    const { patch } = formStateFromParams(
+      { image_workflow: 'minimax_h3_t2i' },
+      options,
+    )
+    expect(patch.imageWorkflow).toBe('p_h3_t2i')
   })
 })
 
@@ -1410,43 +1442,38 @@ describe('jobSelects', () => {
     expect(jobSelects(form, null, GPT_IMAGE)).toEqual({ size: '1536x1024' })
   })
 
-  it('MiniMax H3 Image のつまみは選択肢に無い値を送らない', () => {
-    const H3_R2I = workflow({
-      id: 'minimax_h3_r2i',
+  it('P-H3-Image のつまみは選択肢に無い値を送らない', () => {
+    const P_H3_R2I = workflow({
+      id: 'p_h3_r2i',
       kind: 'image',
-      family: 'minimax-h3-image',
+      family: 'p-h3-image',
       selects: [
         select({
-          name: 'quality_profile',
-          label: 'フレーム枚数（品質）',
-          choices: [
-            'recommended | 5 frames',
-            'extended quality | 9 frames',
-            'high quality | 13 frames',
-            'maximum quality | 20 frames (slow)',
-          ],
-          default: 'recommended | 5 frames',
+          name: 'prompt_upsampler',
+          label: 'プロンプトアップサンプラ',
+          choices: ['on', 'off'],
+          default: 'on',
         }),
         select({
-          name: 'source_fidelity',
-          label: '元画像の保持強度',
-          choices: ['0.00', '0.50', '0.75', '1.00'],
-          default: '0.75',
+          name: 'p_h3_lora',
+          label: 'P-H3-Image LoRA',
+          choices: ['on', 'off'],
+          default: 'on',
         }),
       ],
     })
     const form = {
       ...initialForm,
       selects: {
+        prompt_upsampler: 'off',
+        p_h3_lora: 'off',
+        // 旧 MiniMax H3 Image から持ち越した値（宣言が無いので送らない）
         quality_profile: 'high quality | 13 frames',
-        source_fidelity: '0.50',
-        // 別のワークフローから持ち越した値（選択肢に無いので送らない）
-        low_vram: 'on',
       },
     }
-    expect(jobSelects(form, null, H3_R2I)).toEqual({
-      quality_profile: 'high quality | 13 frames',
-      source_fidelity: '0.50',
+    expect(jobSelects(form, null, P_H3_R2I)).toEqual({
+      prompt_upsampler: 'off',
+      p_h3_lora: 'off',
     })
     // 画像ステージを走らせない mode では 1 つも送らない
     expect(jobSelects(form, null, null)).toEqual({})

@@ -184,6 +184,9 @@ in CONTEXT (see the rules there).
 #              official prompt-rewriter system prompts shipped with it
 #              (https://github.com/QwenLM/Qwen-Image): the edit enhancer and the
 #              text-to-image rewriting expert
+# * p-h3-image — https://huggingface.co/PrunaAI/P-H3-Image (model card
+#              "Recommended resolutions" / "Prompting" / "Editing" /
+#              "Limitations") and PrunaAI/P-H3-Image-Comfy
 
 ANIMA_SPEC = """\
 # IMAGE PROMPT SPEC — Anima (anime base, TE: Qwen3 0.6B)
@@ -389,48 +392,77 @@ The image is a vertical realistic photograph of an adult Japanese woman standing
 ```
 """
 
-MINIMAX_H3_IMAGE_SPEC = """\
-# IMAGE PROMPT SPEC — MiniMax H3 Image (t2i / i2i / r2i, TE: Qwen3-VL)
+P_H3_IMAGE_SPEC = """\
+# IMAGE PROMPT SPEC — P-H3-Image (t2i / i2i / r2i, 8 steps, no CFG)
 
-MiniMax H3 is the audio-video model driven as a still-image generator: it samples
-a short frame packet (5 frames by default, up to 20 through the
-`quality_profile` knob) and returns the one frame its own selector picks. The
-prompt is therefore a **still-image** prompt, and the node already adds its own
-locked-camera still wrapper. A larger packet gives the model more temporal
-context and a better still, at the cost of time and VRAM — but it does **not**
-change how the prompt is written: never describe motion to "fill" the extra
-frames.
+P-H3-Image (PrunaAI, built on MiniMax H3) renders stills at 8 MP in 8 steps and
+edits with up to 8 input pictures. It is **sensitive to prompting**: full,
+specific prompts render much better than short requests. A **prompt upsampler**
+(`selects.prompt_upsampler`, on by default) rewrites the request into that full
+prompt — for t2i it receives `Aspect ratio: <ratio>` + `Request: <your text>`
+(the app writes the ratio line from `aspect_ratio`; never write it yourself), for
+edits it sees every picture and writes an edit brief. With the upsampler on a
+one-line request works, but **when you write the prompt, write it in the form
+below anyway** — it is what the upsampler would produce, and it is the only form
+that works when the upsampler is off. Always write in English.
 
-1. **English prose, one still.** Describe the finished photograph: subject,
-   wardrobe, pose and expression, set, lighting, lens, shot scale and mood.
-2. **Never write video language.** No shot lists, no `[0s-1.5s]` stamps, no
-   camera moves, no `overall_soundscape:` / `non_diegetic_music:` fields — those
-   belong to the H3 *video* workflows and push this one back toward motion.
-3. **No negative prompt exists** (the graph has no CFG). Say what should be
-   there; do not list what must not.
-4. The native canvas is about 1344x768 (0.98 MP) on a 32-pixel grid; do not ask
-   for a framing the chosen aspect ratio cannot hold.
-5. **`minimax_h3_i2i` is editing**, not generation: write an instruction for the
-   picture in `source_image` and say explicitly what has to stay (identity,
-   pose, wardrobe, composition, background geometry).
-6. **`minimax_h3_r2i` is reference editing**: refer to every entry of
-   `reference_images` by number, in the order it was given — `<Picture 1>`,
-   `<Picture 2>`, … — and say what each one contributes. Never write a tag with
-   no reference behind it.
-7. Keep it under roughly 200 words for the editing modes and 250 for t2i;
-   beyond that the instruction starts to contradict itself.
-8. **Adults only**: every depicted person is an adult (early twenties or older)
-   with an unambiguously adult body and face; never wording that reads as a
-   minor. Explicit anatomy may be described plainly when the user asks for it.
+Text-to-image (`p_h3_t2i`):
+
+1. **Say what the image is.** Open with one sentence naming the real object the
+   image is: "a photograph by an experienced street photographer", "a frame from
+   a Japanese anime TV series", "a two-color risograph print", "a flat scan of a
+   handwritten recipe card". This sets the look more reliably than any style word.
+2. **Describe one scene.** A viewpoint, one main subject caught in a moment, a
+   few supporting elements, and light with a source and a direction.
+3. **Spell out every word.** Put each piece of visible text in double quotes,
+   keep each string short, say where it sits, and end with "no other text".
+   Text without its exact words turns into pseudo-text. If you want no text,
+   do not mention signs, labels or captions at all.
+4. **Leave out hype words**: stunning, epic, cinematic, vibrant, hyper-detailed,
+   8k, masterpiece push it toward a glossy, oversaturated, airbrushed look.
+   Very long prompts make images worse too — a few clear sentences beat a page.
+5. There is **no negative prompt and no CFG**: say what should be there, not
+   what must not.
+
+Editing (`p_h3_i2i`: the picture is `source_image`; `p_h3_r2i`: an ordered
+`reference_images` list whose first entry is the picture being edited):
+
+```
+Edit <Picture 1>. <The change, described as the finished result>. Keep <everything that must stay> exactly as it is.
+```
+
+- **Point to the exact thing**: name the object, person or text and where it
+  is ("the old man's faded blue cap", not "his hat").
+- **Describe the result, not the action**, and give new things a size next to
+  something already there ("about the size of the cat's head").
+- **Say what stays**: list faces, poses, the background and the light that must
+  not change. Without that list the model tends to redraw the whole image.
+- **Quote new text exactly** and name the text around it that must stay.
+- In `p_h3_r2i`, name the other pictures by number in the order given —
+  `<Picture 2>`, `<Picture 3>`, … — and say what to take from each.
+
+Size: t2i defaults to 8 MP (1:1 2912x2912, 4:3 3360x2496, 3:4 2496x3360, 3:2
+3552x2368, 2:3 2368x3552, 16:9 3872x2176, 9:16 2176x3872). Edits keep the shape
+of Picture 1 at 4 MP by default. Lower sizes show more artifacts in faces,
+hands and small details.
+
+Strong at: documentary and editorial photography, portraits with real skin
+texture, film frames, TV-frame anime, ink and charcoal drawings, screen-printed
+posters, flat graphic design with short quoted text. Weak at: hands, small
+people in the background (they come out distorted), long or dense text (body
+copy turns into pseudo-text), and anything rendered at low resolution.
+
+**Adults only**: every depicted person is an adult (early twenties or older)
+with an unambiguously adult body and face; never wording that reads as a minor.
 
 Example (t2i):
 ```
-A finished cinematic editorial portrait of an adult Japanese woman seated on a low studio stool, turned three-quarters to camera, wearing a structured charcoal blazer over a cream silk blouse. Controlled Rembrandt key light from the upper left with a soft fill, sharp catchlights in the eyes, natural skin texture and fine fabric weave, clean dark grey background. Shot on an 85mm lens at eye level, medium close-up, shallow depth of field, muted warm palette.
+A photograph by an experienced documentary photographer of a ramen shop counter in Osaka late at night. From a stool at the end of the counter, the view runs along the worn wooden bar to an adult cook in a white headband lifting noodles from a steaming pot, mid-motion, steam rising past his face. Two customers sit hunched over bowls in the middle distance, and a row of chipped ceramic cups lines the shelf behind him. A single bare bulb above the pot lights the steam from above and leaves the far end of the room in warm shadow. A small paper sign on the wall behind him reads "替え玉 100円", and there is no other text.
 ```
 
 Example (r2i):
 ```
-Keep the subject, pose, framing, lighting and background from <Picture 1>. Replace only her jacket with the structured black high-fashion jacket and silver hardware from <Picture 2>, matching its drape and material to the existing light. The result is one sharp finished fashion photograph.
+Edit <Picture 1>. The woman standing on the left now wears the wide-brimmed straw hat from <Picture 2>, sitting level on her head with its black ribbon facing the camera. Keep her face, her pose, her clothes, the street behind her and the afternoon light exactly as they are.
 ```
 """
 
@@ -440,7 +472,7 @@ IMAGE_SPECS: dict[str, str] = {
     "anima": ANIMA_SPEC,
     "z-image": Z_IMAGE_SPEC,
     "qwen-image": QWEN_IMAGE_SPEC,
-    "minimax-h3-image": MINIMAX_H3_IMAGE_SPEC,
+    "p-h3-image": P_H3_IMAGE_SPEC,
 }
 
 #: family -> the one-line reminder that goes into the IMAGE WORKFLOWS catalog
@@ -471,13 +503,19 @@ IMAGE_PROMPT_HINTS: dict[str, str] = {
         " image 1). Neither has a negative prompt. The `_turbo` builds"
         " (8-step distilled) take exactly the same prompt as the plain ones."
     ),
-    "minimax-h3-image": (
-        "A **still-image** prompt in English prose (subject, wardrobe, pose,"
-        " set, lighting, lens, framing) — never video language: no shot lists,"
-        " no timestamps, no camera moves, no soundscape fields. No negative"
-        " prompt. `minimax_h3_i2i` takes an edit instruction for"
-        " `source_image`; `minimax_h3_r2i` refers to `reference_images` by"
-        " number as `<Picture 1>`, `<Picture 2>`, … in the order given."
+    "p-h3-image": (
+        "English. t2i (`p_h3_t2i`): open with one sentence saying what the image"
+        " IS (\"a photograph by …\", \"a frame from a Japanese anime TV series\"),"
+        " then one scene — viewpoint, one main subject in a moment, a few"
+        " supporting elements, light with source and direction; quote every"
+        " visible word, short, with its position, and end with \"no other text\""
+        " (no text wanted → never mention signs or labels); no hype words"
+        " (stunning, epic, cinematic, vibrant, 8k, masterpiece) and no very long"
+        " prompts; never write the aspect ratio. Edits (`p_h3_i2i` /"
+        " `p_h3_r2i`): `Edit <Picture 1>. <finished result>. Keep <what stays>"
+        " exactly as it is.`, other pictures as `<Picture 2>`, … in the order"
+        " given. No negative prompt. The prompt upsampler (on by default)"
+        " also accepts a short request, but writing the full form is safer."
     ),
 }
 
@@ -771,12 +809,14 @@ def _target_preference_lines(comfy_target: str) -> list[str]:
         "ただし**ユーザーがワークフローを名指ししたとき、あるいは turbo /"
         " opt を明示的に指定したときは、その指定が最優先**でこの既定より優先"
         "される。",
-        "また、**スタジオプロジェクトの素材画像**（MiniMax H3 Image の"
-        " `minimax_h3_{t2i,i2i,r2i}`、Qwen-Image 2.1 の"
+        "また、**スタジオプロジェクトの素材画像**（P-H3-Image の"
+        " `p_h3_{t2i,i2i,r2i}`、Qwen-Image 2.1 の"
         " `qwen_image_21_{t2i,edit}`）を焼くときは、ここの既定より"
         "**プロジェクトの `image_quality` が優先**される"
-        "（動画の `quality` は画像には流用しない。Qwen-Image 2.1 には"
-        " `_opt` が無く、`turbo` のときだけ `_turbo` 版になる）。",
+        "（動画の `quality` は画像には流用しない。P-H3-Image は 8 steps の"
+        "蒸留モデルで版違いが無いので、どの品質でも同じワークフロー。"
+        "Qwen-Image 2.1 には `_opt` が無く、`turbo` のときだけ `_turbo` 版になる）。"
+        "P-H3-Image は ComfyUI 本体のノードだけで動くので、Comfy Cloud でも選べる。",
     ]
     return lines
 
@@ -832,7 +872,7 @@ def _image_catalog_entry_lines(entry: CatalogEntry) -> list[str]:
         "  - 必要入力: "
         + _inputs_text(entry.required_inputs, "なし（image_prompt だけで生成できる）"),
     ]
-    # 参照素材を主入力にする画像ワークフロー（MiniMax H3 Image r2i）だけに出る。
+    # 参照素材を主入力にする画像ワークフロー（P-H3-Image r2i・Qwen-Image 2.1 編集）だけに出る。
     # VIDEO WORKFLOWS 側と同じ書きぶりで、こちらは開始フレームの代わりに
     # `reference_images` を並べる（`source_image` は受け取らない）。
     if entry.reference_inputs:
@@ -2142,7 +2182,7 @@ def _context_section(
             "user's description without mentioning the file."
         )
         if ctx.mode == "image_only" and _edits_its_input(ctx.image_workflow):
-            # 編集系の画像ワークフロー（minimax_h3_i2i / qwen_image_21_edit
+            # 編集系の画像ワークフロー（p_h3_i2i / qwen_image_21_edit
             # / その _turbo など）。生成ではなく「この画像をどう変えるか」を
             # 書かせる。
             # t2i のワークフローに絵を添えただけのとき（参考画像）は、編集指示に

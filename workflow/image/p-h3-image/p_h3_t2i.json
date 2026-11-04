@@ -1,0 +1,261 @@
+{
+  "1": {
+    "inputs": {
+      "unet_name": "minimax_h3_fl2va_pruned_w4a8_mixed.safetensors",
+      "weight_dtype": "default"
+    },
+    "class_type": "UNETLoader",
+    "_meta": {
+      "title": "拡散モデルを読み込む"
+    }
+  },
+  "2": {
+    "inputs": {
+      "clip_name": "p-h3-image_text_encoder_w4a8.safetensors",
+      "type": "minimax",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "p-h3-image テキストエンコーダ"
+    }
+  },
+  "3": {
+    "inputs": {
+      "vae_name": "p-h3-image_vae_int8_convrot.safetensors"
+    },
+    "class_type": "VAELoader",
+    "_meta": {
+      "title": "VAE を読み込む"
+    }
+  },
+  "4": {
+    "inputs": {
+      "clip_name": "p-h3-image_prompt_upsampler_w4a8.safetensors",
+      "type": "minimax",
+      "device": "default"
+    },
+    "class_type": "CLIPLoader",
+    "_meta": {
+      "title": "p-h3-image プロンプトアップサンプラ"
+    }
+  },
+  "5": {
+    "inputs": {
+      "model": [
+        "19",
+        0
+      ],
+      "shift_video": 1.0,
+      "shift_audio": 1.0
+    },
+    "class_type": "MiniMaxH3SigmaShift",
+    "_meta": {
+      "title": "ModelSamplingMiniMaxH3（1.0 のまま）"
+    }
+  },
+  "6": {
+    "inputs": {
+      "value": ""
+    },
+    "class_type": "PrimitiveStringMultiline",
+    "_meta": {
+      "title": "Request"
+    }
+  },
+  "7": {
+    "inputs": {
+      "values.a": [
+        "6",
+        0
+      ],
+      "f_string": "Aspect ratio: 1:1\nRequest: {a}"
+    },
+    "class_type": "StringFormat",
+    "_meta": {
+      "title": "Upsampler input"
+    }
+  },
+  "8": {
+    "inputs": {
+      "clip": [
+        "4",
+        0
+      ],
+      "prompt": [
+        "7",
+        0
+      ],
+      "max_length": 2048,
+      "sampling_mode": "off",
+      "thinking": true,
+      "use_default_template": true,
+      "mtp": "auto"
+    },
+    "class_type": "TextGenerateV2",
+    "_meta": {
+      "title": "Prompt upsampler（Generate Text）"
+    }
+  },
+  "9": {
+    "inputs": {
+      "switch": true,
+      "on_false": [
+        "6",
+        0
+      ],
+      "on_true": [
+        "8",
+        0
+      ]
+    },
+    "class_type": "ComfySwitchNode",
+    "_meta": {
+      "title": "Use prompt upsampler"
+    }
+  },
+  "10": {
+    "inputs": {
+      "source": [
+        "9",
+        0
+      ]
+    },
+    "class_type": "PreviewAny",
+    "_meta": {
+      "title": "Upsampled prompt"
+    }
+  },
+  "11": {
+    "inputs": {
+      "clip": [
+        "2",
+        0
+      ],
+      "prompt": [
+        "9",
+        0
+      ],
+      "width": 2912,
+      "height": 2912
+    },
+    "class_type": "PH3ImageConditioning",
+    "_meta": {
+      "title": "p-h3-image Conditioning"
+    }
+  },
+  "12": {
+    "inputs": {
+      "model": [
+        "5",
+        0
+      ],
+      "conditioning": [
+        "11",
+        0
+      ]
+    },
+    "class_type": "BasicGuider",
+    "_meta": {
+      "title": "ガイダンス"
+    }
+  },
+  "13": {
+    "inputs": {
+      "sampler_name": "euler"
+    },
+    "class_type": "KSamplerSelect",
+    "_meta": {
+      "title": "サンプラー選択"
+    }
+  },
+  "14": {
+    "inputs": {
+      "noise_seed": 0
+    },
+    "class_type": "RandomNoise",
+    "_meta": {
+      "title": "ノイズ"
+    }
+  },
+  "15": {
+    "inputs": {
+      "sigmas": "1.0, 0.984753, 0.967905, 0.951688, 0.925372, 0.881923, 0.810083, 0.528718, 0.0"
+    },
+    "class_type": "ManualSigmas",
+    "_meta": {
+      "title": "8 ステップの固定スケジュール"
+    }
+  },
+  "16": {
+    "inputs": {
+      "noise": [
+        "14",
+        0
+      ],
+      "guider": [
+        "12",
+        0
+      ],
+      "sampler": [
+        "13",
+        0
+      ],
+      "sigmas": [
+        "15",
+        0
+      ],
+      "latent_image": [
+        "11",
+        1
+      ]
+    },
+    "class_type": "SamplerCustomAdvanced",
+    "_meta": {
+      "title": "サンプラー"
+    }
+  },
+  "17": {
+    "inputs": {
+      "samples": [
+        "16",
+        0
+      ],
+      "vae": [
+        "3",
+        0
+      ]
+    },
+    "class_type": "VAEDecode",
+    "_meta": {
+      "title": "VAE デコード"
+    }
+  },
+  "18": {
+    "inputs": {
+      "images": [
+        "17",
+        0
+      ],
+      "filename_prefix": "P-H3-Image"
+    },
+    "class_type": "SaveImage",
+    "_meta": {
+      "title": "画像を保存"
+    }
+  },
+  "19": {
+    "inputs": {
+      "model": [
+        "1",
+        0
+      ],
+      "lora_name": "p-h3-image_lora_bf16.safetensors",
+      "strength_model": 1.0
+    },
+    "class_type": "LoraLoaderBypassModelOnly",
+    "_meta": {
+      "title": "P-H3-Image LoRA（Bypass・Model Only）"
+    }
+  }
+}

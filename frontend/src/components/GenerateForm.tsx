@@ -606,8 +606,8 @@ export default function GenerateForm({
 
   // モデルによって想定している画角が違うので、ワークフローを切り替えたら
   // 「メガピクセル」もそのモデルの既定に戻す（MiniMax H3 の動画は 0.4MP 前提で
-  // 1.0MP のままだと VRAM が足りず、MiniMax H3 Image は逆に native canvas が
-  // 0.98MP なので 0.4MP だと解像度を捨てることになる。SPEC §3.1）。
+  // 1.0MP のままだと VRAM が足りず、P-H3-Image は逆に 8MP（編集は 4MP）が
+  // 推奨なので 0.4MP だと破綻が増える。SPEC §3.1）。
   // 見るのは**そのモードで実際に走るステージ**の宣言で、両方走る `full` では
   // 2 段が同じ値を共有するので**きつい側（小さいほう）**に合わせる。
   // 切り替えたあとに手で変えた値はそのまま（次に切り替えるまで維持される）。
@@ -1239,7 +1239,9 @@ export default function GenerateForm({
               >
                 {imageEdits && (
                   <p className="mb-2 text-[11px] text-amber-300">
-                    選択中の画像ワークフローは入力画像から解像度を決めます。ここの設定は動画側にのみ効きます。
+                    {imageWorkflow?.supports.includes('megapixels')
+                      ? '選択中の画像ワークフローは入力画像の縦横比で描きます（メガピクセルは入力画像を揃える大きさとして効き、アスペクト比は動画側にのみ効きます）。'
+                      : '選択中の画像ワークフローは入力画像から解像度を決めます。ここの設定は動画側にのみ効きます。'}
                   </p>
                 )}
                 <div className="grid grid-cols-2 gap-2">

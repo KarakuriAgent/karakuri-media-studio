@@ -95,7 +95,7 @@ CREATE TABLE IF NOT EXISTS studio_projects (
   latent_upscale INTEGER NOT NULL DEFAULT 1, -- 1 パス目を低解像度で回してラテントのまま拡大する
   video_loras TEXT NOT NULL DEFAULT '[]',   -- 作品共通の動画 LoRA（LoraRef の JSON 配列。[] = 使わない）
   quality     TEXT NOT NULL DEFAULT 'normal', -- 動画生成の品質（normal / opt / turbo）
-  image_quality TEXT NOT NULL DEFAULT 'normal', -- 素材画像（MiniMax H3 Image）の品質（normal / opt / turbo）
+  image_quality TEXT NOT NULL DEFAULT 'normal', -- 素材画像（P-H3-Image / Qwen-Image 2.1）の品質（normal / opt / turbo）
   megapixels  REAL,                        -- 動画生成のメガピクセル（NULL = ワークフローの既定）
   aspect_ratio TEXT,                       -- 動画生成のアスペクト比（NULL = 既定）
   steps       INTEGER NOT NULL DEFAULT 0,  -- サンプリング回数（0 = テンプレートの既定のまま）
@@ -528,8 +528,8 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         # 'normal' = 今までどおり素の MiniMax H3（20 steps）。
         ("quality", "TEXT NOT NULL DEFAULT 'normal'"),
         # 画像生成の品質（normal / opt / turbo）。動画の `quality` とは独立した
-        # つまみで、素材の静止画を MiniMax H3 Image で焼くときにだけ効く。
-        # 既存のプロジェクトは 'normal' = 素の minimax_h3_{t2i,i2i,r2i}。
+        # つまみで、素材の静止画を焼くときにだけ効く（P-H3-Image は版違いが
+        # 無いのでどの値でも同じ。効くのは Qwen-Image 2.1 の turbo だけ）。
         ("image_quality", "TEXT NOT NULL DEFAULT 'normal'"),
         # 画質（メガピクセル）と画面比。生成フォームと同じ 2 項目を作品単位の
         # 既定として持つ。既存のプロジェクトは NULL = 今までどおりワークフロー
@@ -549,8 +549,8 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         # 素材画像の画質（メガピクセル）・画面比・サンプリング回数。動画側の
         # megapixels / aspect_ratio / steps と同じ 3 項目を、素材の静止画用に
         # 別で持つ（動画の値を静止画に流用しないため）。既存のプロジェクトは
-        # NULL / 0 = 指定しない＝テンプレートの既定（MiniMax H3 Image は
-        # 約 0.98MP）のまま。
+        # NULL / 0 = 指定しない＝テンプレートの既定（P-H3-Image は t2i 8MP・
+        # 編集 4MP）のまま。
         ("image_megapixels", "REAL"),
         ("image_aspect_ratio", "TEXT"),
         ("image_steps", "INTEGER NOT NULL DEFAULT 0"),

@@ -942,6 +942,11 @@ export interface Options {
   default_video_workflow: string
   default_image_workflow: string
   default_audio_workflow: string
+  /**
+   * 廃止したワークフロー id → いまの id（旧 MiniMax H3 Image → P-H3-Image など）。
+   * 保存済みのフォーム状態や過去ジョブの復元で旧 id を寄せるのに使う。古いサーバは返さない。
+   */
+  workflow_aliases?: Record<string, string>
   /** Stable Audio の COMBO 選択肢（音声フォーム用）。 */
   audio_categories: string[]
   aspect_ratios: string[]
@@ -1133,12 +1138,11 @@ export type StudioVideoQuality = 'normal' | 'opt' | 'turbo'
 
 /**
  * 画像生成の品質（プロジェクト単位の設定）。動画の `StudioVideoQuality` と同じ
- * 3 段だが**独立したつまみ**で、素材の静止画を MiniMax H3 Image
- * （`minimax_h3_t2i` / `_i2i` / `_r2i` の素 / `_opt` / `_turbo`）や
+ * 3 段だが**独立したつまみ**で、素材の静止画を P-H3-Image
+ * （`p_h3_t2i` / `_i2i` / `_r2i`。8 steps 蒸留で版違いが無く、どの値でも同じ）や
  * Qwen-Image 2.1（`qwen_image_21_t2i` / `_edit` の素 / `_turbo`）で焼くときに
- * だけ効く。動画を turbo で回していても素材の絵は素で焼ける。動画側と同じく
- * MiniMax H3 の `turbo` は t2i には無く、t2i は `opt` へ落ちる（Qwen-Image 2.1
- * は t2i にも `turbo` があり、`opt` は無いので素のまま）。
+ * だけ効く。動画を turbo で回していても素材の絵は素で焼ける（Qwen-Image 2.1 は
+ * `turbo` のときだけ `_turbo`、`opt` は無いので素のまま）。
  */
 export type StudioImageQuality = 'normal' | 'opt' | 'turbo'
 
@@ -1195,7 +1199,7 @@ export interface StudioProject {
   steps: number
   /**
    * 素材画像の画質（メガピクセル）の作品既定。`null` = 指定しない＝テンプレートの
-   * 既定のまま（MiniMax H3 Image は約 0.98MP）。動画の `megapixels` とは独立で、
+   * 既定のまま（P-H3-Image は t2i 8MP・編集 4MP）。動画の `megapixels` とは独立で、
    * 静止画に動画用の値は流用しない。
    */
   image_megapixels: number | null

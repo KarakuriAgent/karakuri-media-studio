@@ -189,7 +189,7 @@ def test_audio_mode_ignores_the_image_and_video_requirements():
             "audio",
             **_EMPTY,
             audio_prompt="a song",
-            image_workflow="minimax_h3_i2i",
+            image_workflow="p_h3_i2i",
             video_workflow="minimax_h3_i2v",
         )
         == []

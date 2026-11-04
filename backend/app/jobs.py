@@ -109,6 +109,7 @@ from .workflows import (
     MULTI_INPUT_FIELDS,
     WorkflowSpec,
     WorkflowSpecError,
+    canonical_workflow_id,
     get_audio_spec,
     get_image_spec,
     get_video_spec,
@@ -1201,6 +1202,36 @@ def _refit_video_params(params: dict[str, Any], workflow_id: str) -> None:
     params["selects"] = _carried_selects(workflow_id, params.get("selects"))
 
 
+def _refit_image_params(params: dict[str, Any]) -> None:
+    """廃止した画像ワークフローの id を持つジョブを、いまの id へ寄せる（§3.1）。
+
+    旧 MiniMax H3 Image（``minimax_h3_t2i`` とその ``_opt`` / ``_turbo``）は
+    P-H3-Image に置き換えた（:data:`app.workflows.WORKFLOW_ALIASES`）。id は
+    :func:`get_spec` が読み替えるが、旧版にしか無い選択項目
+    （``quality_profile`` など）が ``selects`` に残っていると 422 になるので、
+    寄せたときだけ、走るステージのどれも宣言していない項目を落とす。
+    """
+    stored = params.get("image_workflow")
+    canonical = canonical_workflow_id(stored)
+    if not stored or canonical == stored:
+        return
+    params["image_workflow"] = canonical
+    selects = params.get("selects")
+    if not isinstance(selects, dict):
+        return
+    specs: list[WorkflowSpec] = []
+    for getter, key in ((get_image_spec, "image_workflow"), (get_video_spec, "video_workflow")):
+        try:
+            specs.append(getter(params.get(key)))
+        except WorkflowSpecError:
+            continue
+    params["selects"] = {
+        name: value
+        for name, value in selects.items()
+        if any(spec.select(str(name)) is not None for spec in specs)
+    }
+
+
 async def rerun_job(job_id: str, payload: JobRerun, *, inherit_nsfw: bool = False) -> Job:
     """New job from the stored *params* (rebuilt, not replayed from workflow_json).
 
@@ -1221,6 +1252,8 @@ async def rerun_job(job_id: str, payload: JobRerun, *, inherit_nsfw: bool = Fals
         workflow_id = _rerun_video_workflow(params)
         if workflow_id != params.get("video_workflow"):
             _refit_video_params(params, workflow_id)
+    if params.get("mode", source.mode) in ("full", "image_only"):
+        _refit_image_params(params)
     if payload.seed is not None:
         params.update(_seeds(payload.seed))
     elif payload.randomize_seed:
@@ -1853,7 +1886,7 @@ async def _prepare_comfy(job: Job) -> tuple[GenerationParams, dict[str, str]]:
 def _comfy_reference_materials(job: Job) -> dict[str, list[str]]:
     """ComfyUI のグラフに展開する参照素材のパス（並び順そのまま、SPEC §3.1）。
 
-    参照素材を受け取れるのは宣言のあるワークフローだけ（MiniMax H3 Image r2i の
+    参照素材を受け取れるのは宣言のあるワークフローだけ（P-H3-Image r2i の
     参照画像 / MiniMax H3 r2v の参照画像・動画・音声、どちらも
     :class:`app.workflows.RefMediaFan`）で、その中でも宣言している種類だけ。
     **画像ステージと動画ステージのどちらも受け取り口になりうる**ので、その mode

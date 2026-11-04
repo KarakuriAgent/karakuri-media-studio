@@ -35,6 +35,7 @@ from .workflows import (
     REF_AUDIOS_NAME,
     REF_IMAGES_NAME,
     REF_VIDEOS_NAME,
+    UPSAMPLER_VISION_BLOCK,
     LoraChain,
     Target,
     Workflow,
@@ -59,6 +60,8 @@ REF_IMAGE_NODE_PREFIX = "app_ref_image_"
 REF_VIDEO_NODE_PREFIX = "app_ref_video_"
 REF_VIDEO_PARTS_NODE_PREFIX = "app_ref_video_parts_"
 REF_AUDIO_NODE_PREFIX = "app_ref_audio_"
+#: P-H3-Image r2i で、参照画像をアップサンプラ用に 1 枚目の大きさへ揃えるノード
+REF_IMAGE_PAD_NODE_PREFIX = "app_ref_image_pad_"
 
 #: ``GetVideoComponents`` の出力（images / audio / fps / bit_depth の 0 と 1）
 REF_VIDEO_IMAGES_SLOT = 0
@@ -90,6 +93,7 @@ MODEL_FIELDS: set[tuple[str, str]] = {
     ("LatentUpscaleModelLoader", "model_name"),
     ("LoadMoGeModel", "model_name"),
     ("LoraLoaderModelOnly", "lora_name"),
+    ("LoraLoaderBypassModelOnly", "lora_name"),
     ("LoraLoader", "lora_name"),
 }
 
@@ -110,6 +114,7 @@ MODEL_SUBFOLDERS: dict[tuple[str, str], str] = {
     ("VAELoader", "vae_name"): "vae",
     ("LoraLoader", "lora_name"): "loras",
     ("LoraLoaderModelOnly", "lora_name"): "loras",
+    ("LoraLoaderBypassModelOnly", "lora_name"): "loras",
     # ラテントアップスケーラ（MiniMax H3 用も含む）と MoGe は専用フォルダ
     # （nodes_hunyuan.py / nodes_moge.py）
     ("LatentUpscaleModelLoader", "model_name"): "latent_upscale_models",
@@ -158,14 +163,13 @@ _INT_INPUTS: set[tuple[str, str]] = {
     # サンプリング回数（SPEC §3.1）。UI が空欄なら注入しない = テンプレート既定。
     ("KSampler", "steps"),
     ("BasicScheduler", "steps"),
-    # MiniMax H3 Image の Advanced Sampling（サンプラー・スケジューラ・ステップ数を
-    # 素の widget で持つので、`steps` の注入先はここになる）
-    ("H3SamplingSettings", "steps"),
 }
 _FLOAT_INPUTS: set[tuple[str, str]] = {
     ("Video Slice", "duration"),
     ("MiniMaxMusic3TextEncode", "max_duration"),
     ("EmptyMiniMaxMusic3LatentAudio", "seconds"),
+    # P-H3-Image の編集で 1 枚目を揃える画素数（`megapixels` の注入先）
+    ("ImageScaleToTotalPixels", "megapixels"),
 }
 
 #: BOOLEAN を宣言している入力。選択式フィールド（:class:`app.workflows.SelectSpec`）
@@ -173,20 +177,17 @@ _FLOAT_INPUTS: set[tuple[str, str]] = {
 #: （``"on"`` -> ``True`` / それ以外 -> ``False``）。ComfyUI は BOOLEAN の widget に
 #: 文字列を入れると型検証で prompt ごと落ちる。
 _BOOL_INPUTS: set[tuple[str, str]] = {
-    # MiniMax H3 Image: 静止画向けのプロンプト包み（選択式は "on" / "off"）
-    ("H3TextToImagePrepare", "optimize_for_still"),
-    ("H3ImageToImagePrepare", "optimize_for_still"),
-    ("H3ReferenceEditPrepare", "optimize_for_still"),
+    # P-H3-Image: プロンプトアップサンプラの切り替え（選択式は "on" / "off"）。
+    # krea2 の `trigger_switch` も同じ入力だが、そちらは真偽値のまま来るので
+    # 変わらない
+    ("ComfySwitchNode", "switch"),
 }
 
 #: FLOAT を宣言していて、**選択式フィールドが文字列で値を持つ**入力。
 #: :data:`_BOOL_INPUTS` の実数版で、``"0.75"`` -> ``0.75`` に直してから書き込む
 #: （ComfyUI は FLOAT の widget に文字列を入れると型検証で prompt ごと落ちる）。
 #: 数値のまま渡ってくる入力は :data:`_FLOAT_INPUTS` のほうで面倒を見る。
-_FLOAT_SELECT_INPUTS: set[tuple[str, str]] = {
-    ("H3ImageToImagePrepare", "source_fidelity"),
-    ("H3ReferenceEditPrepare", "source_fidelity"),
-}
+_FLOAT_SELECT_INPUTS: set[tuple[str, str]] = set()
 
 #: :data:`_BOOL_INPUTS` で「ON」とみなす文字列（大文字小文字は問わない）
 _TRUE_WORDS = frozenset({"on", "true", "yes", "1"})
@@ -389,9 +390,8 @@ def resolution_for_image(
 def image_megapixels(spec: WorkflowSpec, params: GenerationParams) -> float:
     """画像ステージの解像度予算（メガピクセル、SPEC §3.1）。
 
-    モデルによって想定している画角は違う（MiniMax H3 Image の native canvas は
-    約 0.98MP で、フォームのグローバル既定 0.4MP のままだと解像度を捨てることに
-    なる）。フォームはワークフローを選んだ時点で
+    モデルによって想定している画角は違う（P-H3-Image は 8MP〈編集は 4MP〉が
+    推奨で、フォームのグローバル既定 0.4MP のままだと破綻が増える）。フォームはワークフローを選んだ時点で
     :attr:`app.workflows.WorkflowSpec.default_megapixels` に合わせるが、**その値を
     そもそも送ってこない経路**（外部 API・エージェント・古いジョブの再実行）では
     ``megapixels`` がグローバル既定のまま届く。
@@ -1099,7 +1099,7 @@ def _build_ref_media(
     inputs = node.setdefault("inputs", {})
     for key in [key for key in inputs if key.startswith(fan.prefixes())]:
         del inputs[key]
-    # 1 枚目だけを受ける固定の入力（``H3ReferenceEditPrepare.source_image``）も
+    # 1 枚目だけを受ける固定の入力（:attr:`RefMediaFan.primary_image_field`）も
     # 雛形のローダーを読んでいるので、番号つきの入力と一緒に落としてから繋ぎ直す
     if fan.primary_image_field:
         inputs.pop(fan.primary_image_field, None)
@@ -1119,13 +1119,30 @@ def _build_ref_media(
         wf[node_id] = _loader_node(
             fan.image_loader, image, f"参照画像 {index + 1}（{tag}）"
         )
-        # 1 枚目に専用の入力を持つノード（``H3ReferenceEditPrepare`` の
-        # ``source_image``）ではそちらへ。2 枚目以降は番号つきの入力で、
-        # 並びが ``reference_image_2`` から始まるぶんだけ番号をずらす。
+        # 1 枚目に専用の入力を持つノードではそちらへ。1 枚目を前処理ノード
+        # 経由で受ける宣言（P-H3-Image r2i の 4MP / 1MP の縮尺）では、前処理の
+        # 入力に繋ぎ、受け側の番号つき入力は先頭の前処理ノードを読ませる。
+        # それ以外は番号つきの入力で、``image_offset`` ぶん番号をずらす。
         if index == 0 and fan.primary_image_field:
             inputs[fan.primary_image_field] = [node_id, 0]
+        elif index == 0 and fan.primary_image_via:
+            for via in fan.primary_image_via:
+                _set(wf, via.node_id, via.field, [node_id, 0])
+            inputs[f"{fan.image_prefix}{fan.image_offset}"] = [
+                fan.primary_image_via[0].node_id,
+                0,
+            ]
         else:
             inputs[f"{fan.image_prefix}{index + fan.image_offset}"] = [node_id, 0]
+
+    # 1 枚も無いときは、前処理ノードが消した雛形を指したまま残らないよう
+    # その入力も外す（参照 0 件のジョブは投入前に断られるので、ここは
+    # 「宙に浮いたリンクを作らない」ための後始末）
+    if not wired[REF_IMAGES_NAME]:
+        for via in fan.primary_image_via:
+            via_node = _node(wf, via)
+            if via_node is not None:
+                via_node.setdefault("inputs", {}).pop(via.field, None)
 
     if REF_VIDEOS_NAME in fan.names():
         assert fan.video_loader is not None and fan.video_decoder is not None
@@ -1186,6 +1203,153 @@ def _prune_optional_loaders(
                 if _is_link(value) and value[0] == target.node_id
             ]:
                 del inputs[field]
+
+
+# --- prompt upsampler (P-H3-Image, SPEC §3.1) --------------------------------
+
+#: 編集の依頼文の頭に付いた ``Edit <Picture 1>.``（アップサンプラ入力の書式と
+#: ``PH3ImageConditioning`` の双方が自分で付けるので、二重にならないよう外す）
+_EDIT_PREFIX_RE = re.compile(r"^\s*Edit\s*<Picture 1>\s*[.:]?\s*", re.IGNORECASE)
+
+
+def upsampler_request(spec: WorkflowSpec, prompt: str) -> str:
+    """``prompt`` の注入先（アップサンプラの ``Request``）に書く依頼文。
+
+    編集のアップサンプラ入力は ``Edit <Picture 1>. {a}`` の形で、アップサンプラを
+    切ったときも ``PH3ImageConditioning`` が ``Edit <Picture 1>. `` を前に付ける
+    （``Edit <Picture`` で始まる文はそのまま使う）。エージェントがモデルカードの
+    書式どおり ``Edit <Picture 1>. …`` で書いてきたときに頭が二重にならないよう、
+    編集のワークフローではその前置きだけを外す（off のときはノードが付け直すので
+    結果は書いたとおりになる）。それ以外のワークフローは何もしない。
+    """
+    up = spec.upsampler
+    if up is None or up.mode != "edit":
+        return prompt
+    return _EDIT_PREFIX_RE.sub("", prompt or "", count=1)
+
+
+def upsampler_aspect_ratio(aspect_ratio: str) -> str:
+    """``"16:9 (Widescreen)"`` -> ``"16:9"``（アップサンプラの ``Aspect ratio:`` 行）。
+
+    比はキャンバスの幅・高さを決めたのと同じ :func:`parse_aspect_ratio` で読む
+    ので、行とキャンバスが食い違うことはない。
+    """
+    width, height = parse_aspect_ratio(aspect_ratio)
+    return f"{width}:{height}"
+
+
+def upsampler_format(spec: WorkflowSpec, aspect_ratio: str, images: int) -> str:
+    """アップサンプラ入力（``StringFormat.f_string``）の書式。``{a}`` に依頼文が入る。
+
+    * t2i … ``Aspect ratio: <W:H>`` と ``Request: {a}`` の 2 行（Pruna 公式の
+      text-to-image ワークフローと同じ）
+    * 編集 … Qwen3.5 のチャット書式で、画像 1 枚ごとに ``<Picture N>: <vision>``
+      を並べ、``Edit <Picture 1>. {a}`` を続けて思考ブロックを開く（Pruna 公式の
+      edit ワークフローと同じ。``<|im_start|>`` で始まる文は ``TextGenerateV2`` が
+      チャットテンプレートを被せずにそのまま使う）
+    """
+    up = spec.upsampler
+    if up is None:  # pragma: no cover - 呼ぶ側が確かめている
+        return "{a}"
+    if up.mode == "t2i":
+        return f"Aspect ratio: {upsampler_aspect_ratio(aspect_ratio)}\nRequest: {{a}}"
+    blocks = "".join(
+        f"<Picture {n}>: {UPSAMPLER_VISION_BLOCK}" for n in range(1, max(1, images) + 1)
+    )
+    return (
+        "<|im_start|>user\n"
+        + blocks
+        + "Edit <Picture 1>. {a}<|im_end|>\n<|im_start|>assistant\n<think>\n"
+    )
+
+
+def _build_prompt_upsampler(
+    wf: Workflow,
+    spec: WorkflowSpec,
+    params: GenerationParams,
+    wired: dict[str, list[str]],
+) -> None:
+    """アップサンプラの入力を組む（:class:`app.workflows.PromptUpsamplerSpec`）。
+
+    書式（:func:`upsampler_format`）を ``StringFormat`` に書き、参照画像を取る
+    宣言（``pad_template``）では 2 枚目以降をアップサンプラにも見せる: 1 枚目の
+    大きさ（1MP に縮めたもの）に ``ResizeAndPadImage`` で揃え、
+    ``BatchImagesNode`` の ``image1`` … に渡した順で並べる。雛形の
+    ``ResizeAndPadImage`` と、それを読んでいた ``BatchImagesNode`` の入力は
+    いったん全部落とす（1 枚だけなら何も足さない）。
+    """
+    up = spec.upsampler
+    if up is None:
+        return
+    if spec.ref_media is not None:
+        images = len(wired.get(REF_IMAGES_NAME) or [])
+    else:
+        images = 1 if up.mode == "edit" else 0
+    try:
+        f_string = upsampler_format(spec, params.aspect_ratio, images)
+    except WorkflowError:
+        # 読めない縦横比は解像度の計算で先に落ちる。ここは最後の砦として
+        # テンプレートの書式を残す
+        f_string = ""
+    if f_string:
+        _set(wf, up.format_target.node_id, up.format_target.field, f_string)
+    if up.pad_template is None or up.batch is None:
+        return
+    template = wf.pop(up.pad_template.node_id, None)
+    batch = _node(wf, up.batch)
+    if batch is None or not isinstance(template, dict):
+        return
+    inputs = batch.setdefault("inputs", {})
+    first = f"{up.batch_prefix}0"
+    for key in [key for key in inputs if key.startswith(up.batch_prefix) and key != first]:
+        del inputs[key]
+    for index in range(1, images):
+        pad_id = f"{REF_IMAGE_PAD_NODE_PREFIX}{index}"
+        node = copy.deepcopy(template)
+        node.setdefault("inputs", {})[up.pad_template.field] = [
+            f"{REF_IMAGE_NODE_PREFIX}{index}",
+            0,
+        ]
+        node["_meta"] = {
+            "title": f"参照画像 {index + 1}（<Picture {index + 1}>）を image_1 に合わせて余白"
+        }
+        wf[pad_id] = node
+        inputs[f"{up.batch_prefix}{index}"] = [pad_id, 0]
+
+
+def _apply_bypass_selects(
+    wf: Workflow, spec: WorkflowSpec, params: GenerationParams
+) -> None:
+    """選択式が ``off`` のノードをグラフから外して素通しにする（SPEC §3.1）。
+
+    対象は :attr:`app.workflows.WorkflowSpec.bypass_nodes` に宣言した、``MODEL``
+    を 1 本受けて 1 本返すノード（P-H3-Image の ``LoraLoaderBypassModelOnly``）。
+    外したノードを読んでいた入力は、そのノードの ``model`` の繋ぎ元を直接読む。
+    LoRA のファイル名もグラフから消えるので、専用重みだけを置いた環境で
+    「LoRA が無い」で落ちることもない。
+    """
+    for name, node_id in spec.bypass_nodes.items():
+        select = spec.select(name)
+        if select is None:
+            continue
+        choice = (params.selects.get(name) or "").strip()
+        if choice not in select.choices:
+            choice = select.fallback
+        if choice != "off":
+            continue
+        node = wf.pop(node_id, None)
+        if not isinstance(node, dict):
+            continue
+        source = (node.get("inputs") or {}).get("model")
+        if not _is_link(source):
+            continue
+        for other in wf.values():
+            inputs = other.get("inputs") if isinstance(other, dict) else None
+            if not isinstance(inputs, dict):
+                continue
+            for field, value in list(inputs.items()):
+                if _is_link(value) and value[0] == node_id:
+                    inputs[field] = list(source)
 
 
 # --------------------------------------------------------------------------
@@ -1255,8 +1419,7 @@ def uses_optional_class_types(spec: WorkflowSpec) -> bool:
     """``spec`` のテンプレートが任意のカスタムノードを 1 つでも使うか。
 
     :data:`app.workflows.OPTIONAL_CLASS_TYPES` は ComfyUI 本体に無い外部の
-    カスタムノード（opt の Spectrum・MiniMax H3 Image の ``H3*``・ラテント連続性の
-    Motion Context 系）なので、ここが真になるワークフローは「カスタムノードが
+    カスタムノード（opt の Spectrum・ラテント連続性の Motion Context 系）なので、ここが真になるワークフローは「カスタムノードが
     入っていない環境では動かない」ことを意味する。ComfyUI のテンプレートを
     持たないバックエンド（Grok Build CLI など）は常に偽。
     """
@@ -1276,10 +1439,9 @@ def supported_on_target(spec: WorkflowSpec, comfy_target: str) -> bool:
     """接続先 ``comfy_target`` でそのワークフローを選ばせてよいか。
 
     Comfy Cloud には任意のカスタムノードを入れられないので、それを使う
-    ワークフロー（Spectrum を持つ MiniMax H3 opt・MiniMax H3 Image・ラテント
-    連続性のバリアント）はフォームの選択肢からもエージェントのカタログからも
-    落とす。本体ノードだけで組んである turbo（i2v / r2v）は Comfy Cloud でも
-    出す（専用のウェイトは Cloud 側に入れておく前提）。local / runpod は自前の
+    ワークフロー（Spectrum を持つ MiniMax H3 opt・ラテント連続性のバリアント）は
+    フォームの選択肢からもエージェントのカタログからも落とす。本体ノードだけで
+    組んである turbo（i2v / r2v）と P-H3-Image は Comfy Cloud でも出す（専用のウェイトは Cloud 側に入れておく前提）。local / runpod は自前の
     ComfyUI なので従来どおり全件出す（入っていなければ実行時に ComfyUI 側で
     エラーになる）。
     """
@@ -1338,7 +1500,7 @@ def build_image_workflow(
         if resolved.megapixels_edge_multiple
         else megapixels,
     )
-    # Templates without a ResolutionSelector (z-image, MiniMax H3 Image) take
+    # Templates without a ResolutionSelector (z-image, P-H3-Image t2i) take
     # plain integers, so the same computation ComfyUI's node does is done here
     # (SPEC §3.1).  The grid is the workflow's own: MiniMax H3 wants multiples
     # of 32, everything else the image-side default of 8.
@@ -1350,21 +1512,21 @@ def build_image_workflow(
         )
         _inject(wf, resolved, "width", width)
         _inject(wf, resolved, "height", height)
-    # Editing workflows that take a single input picture (MiniMax H3 Image i2i)
+    # Editing workflows that take a single input picture (P-H3-Image i2i)
     # read the one the job supplies in `source_image`; the job runner uploads it
     # under `start_image_name` before the image stage runs, exactly like the
     # video stage's start frame.  Qwen-Image 2.1 の編集は代わりに参照画像の
     # リスト（`reference_images`）を取るので、ここではなく `_build_ref_media`
     # のほうで繋がる。
     _inject(wf, resolved, "image", params.start_image_name)
-    _inject(wf, resolved, "prompt", params.image_prompt)
+    _inject(wf, resolved, "prompt", upsampler_request(resolved, params.image_prompt))
     _inject(wf, resolved, "seed", params.image_seed)
     _inject_steps(wf, resolved, params)
     # 渡されなかった任意の入力は、雛形のローダーごとグラフから外す（§3.1）
     _prune_optional_loaders(wf, resolved, params)
-    # 参照素材（MiniMax H3 Image r2i の参照画像）は 1 つの注入点では表せない:
-    # 渡された件数ぶんノードを生やす（§3.1・動画ステージと同じ仕組み）
-    _build_ref_media(
+    # 参照素材（P-H3-Image r2i・Qwen-Image 2.1 編集の参照画像）は 1 つの注入点では
+    # 表せない: 渡された件数ぶんノードを生やす（§3.1・動画ステージと同じ仕組み）
+    wired = _build_ref_media(
         wf,
         resolved,
         {
@@ -1373,7 +1535,11 @@ def build_image_workflow(
             REF_AUDIOS_NAME: list(params.reference_audio_names),
         },
     )
+    # プロンプトアップサンプラの入力（P-H3-Image）。t2i は縦横比の行、編集は
+    # 画像の枚数ぶんの <Picture N> ブロックをアプリが書く（§3.1）
+    _build_prompt_upsampler(wf, resolved, params, wired)
     _inject_selects(wf, resolved, params)
+    _apply_bypass_selects(wf, resolved, params)
     for name, value in resolved.constants.items():
         _inject(wf, resolved, name, value)
     _inject_triggers(wf, resolved, params)

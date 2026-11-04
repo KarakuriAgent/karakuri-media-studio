@@ -170,15 +170,28 @@ cwd として書いてある。
 
 - `quality`（動画）と `image_quality`（静止画）は**独立**。動画を turbo で回して
   いても、素材の静止画は `image_quality` に従う。逆も同じ。
-- MiniMax H3 の `turbo`（Pika H3 Flex LoRA・lcm・6 steps 固定。`steps` / `image_steps` は効かない）は
-  **t2v / t2i には無い**（テンプレートを置いていない）。`quality: "turbo"` でも
+- MiniMax H3 の `turbo`（Pika H3 Flex LoRA・lcm・6 steps 固定。`steps` は効かない）は
+  **t2v には無い**（テンプレートを置いていない）。`quality: "turbo"` でも
   t2v になるカットは `minimax_h3_t2v_opt` で投入され、理由が `prompt-preview` の
-  `workflow_reason` に出る。`image_quality: "turbo"` の t2i も同じく `_opt` に落ちる。
+  `workflow_reason` に出る。
   Turbo をそのまま効かせたいなら、引き継ぎ（i2v）か `@素材`（r2v）のあるカットにする。
+- 素材の静止画の P-H3-Image（`p_h3_t2i` / `p_h3_i2i` / `p_h3_r2i`）は 8 steps 固定の蒸留
+  モデルで版違いが無く、`image_quality` がどれでも同じワークフロー（`image_steps` も
+  効かない）。旧 MiniMax H3 Image の id（`minimax_h3_t2i` など）を送っても P-H3-Image に
+  読み替わる。既定は t2i 8MP・編集 4MP。本体ノードだけなので Comfy Cloud でも使える。
 - 接続先が Comfy Cloud でも turbo（i2v / r2v）と `latent_upscale` は使える（ノードは
   ComfyUI 本体同梱）。ただし Cloud 側に該当モデル（w4a8 UNET・turbo LoRA・Sol-H3-VAE・
   ラテントアップスケーラ）が入っている必要がある。`opt` は Spectrum のカスタムノードが
   要るので Comfy Cloud では通常品質に落ちる（理由は `workflow_reason`）。
+- **P-H3-Image のプロンプト**（英語。詳しくは `GET /prompt-guide` の IMAGE PROMPT SPEC —
+  P-H3-Image）: 冒頭 1 文で「その画像が何であるか」（`a photograph by …` /
+  `a frame from a Japanese anime TV series` / `a two-color risograph print`）→ 視点・その瞬間の
+  主役 1 つ・少数の脇役・光源と向きの 1 シーン。画像に出す文字は全部引用符で短く、位置を
+  書いて最後に `no other text`（文字が要らないなら看板・ラベルに触れない）。誇張語
+  （stunning / epic / cinematic / 8k / masterpiece）と長すぎるプロンプトは悪化する。
+  編集は `Edit <Picture 1>. <完成した結果>. Keep <残すもの> exactly as it is.`、参照は
+  `<Picture 2>` … で名指し。アップサンプラ（`selects.prompt_upsampler`、既定 on）は短い依頼でも
+  補うが、**書くときはこの形で書くのが安全**。比（`Aspect ratio:`）はアプリが付けるので書かない。
 - Qwen-Image 2.1 は t2i・編集とも公式の 8 steps 蒸留版があり、`image_quality: "turbo"` なら
   `qwen_image_21_t2i_turbo` / `qwen_image_21_edit_turbo` を使う（入力とプロンプトの書き方は
   素の版と同じ。`_opt` は無いので `"opt"` なら素の版）。
@@ -398,8 +411,10 @@ POST /jobs {"mode":"audio_analysis",
 
 1. **画像生成 → 抜く**（いちばん多い）
    - プロンプトの定型: **黒背景・被写体は単体・中央・影なし**（英語で
-     `on a pure black background, single subject, centered, no shadow, no text` を
-     足す）。キャラの見た目を合わせたいときは World Bible の素材を参照に渡して r2i
+     `on a pure black background, single subject, centered, no shadow` を
+     足す。P-H3-Image では文字に触れないのが「文字なし」の書き方なので `no text` は
+     足さない。他のモデルでは `no text` も足す）。キャラの見た目を合わせたいときは
+     World Bible の素材を参照に渡して r2i（`p_h3_r2i` の 1 枚目が編集される側）
    - `POST /jobs {"mode":"image_only", …}` → `wait-job` →
      `POST /library/key-from-job {"job_id":"…","source":"image","method":"black"}`
 2. **フォント画像**（下記）をそのまま使う

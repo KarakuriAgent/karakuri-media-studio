@@ -1617,9 +1617,10 @@ def test_a_forced_workflow_still_gets_the_quality(env, monkeypatch):
 # 画像生成の品質（プロジェクトの image_quality）
 # --------------------------------------------------------------------------
 #
-# 動画の quality とは独立したつまみで、素材の静止画（MiniMax H3 Image /
+# 動画の quality とは独立したつまみで、素材の静止画（P-H3-Image /
 # Qwen-Image 2.1）にだけ効く。ここで押さえるのは、保存と正規化・動画の品質を巻き込まないこと・
-# 「素 / _opt / _turbo」の解決（studio.image_quality_workflow）。
+# 「素 / _turbo」の解決（studio.image_quality_workflow）。P-H3-Image は版違いが
+# 無いので、どの品質でも同じワークフローに解決する。
 
 def test_image_quality_is_normal_by_default(env):
     project = make_project(env)
@@ -1680,16 +1681,20 @@ def test_image_quality_and_video_quality_are_independent(env, monkeypatch):
 @pytest.mark.parametrize(
     ("workflow", "image_quality", "expected"),
     [
-        ("minimax_h3_t2i", "normal", "minimax_h3_t2i"),
-        ("minimax_h3_t2i", "opt", "minimax_h3_t2i_opt"),
-        # t2i に turbo は無いので opt に落ちる（動画の t2v と同じ理由）
-        ("minimax_h3_t2i", "turbo", "minimax_h3_t2i_opt"),
-        ("minimax_h3_i2i", "opt", "minimax_h3_i2i_opt"),
-        ("minimax_h3_i2i", "turbo", "minimax_h3_i2i_turbo"),
-        ("minimax_h3_r2i", "opt", "minimax_h3_r2i_opt"),
-        ("minimax_h3_r2i", "turbo", "minimax_h3_r2i_turbo"),
-        # Qwen-Image 2.1 は t2i にも turbo（8 steps 蒸留の重み）がある。
-        # MiniMax H3 の t2i -> opt フォールバックは効かない
+        # P-H3-Image は 8 steps 蒸留で opt / turbo が無いので、どれでも同じ
+        ("p_h3_t2i", "normal", "p_h3_t2i"),
+        ("p_h3_t2i", "opt", "p_h3_t2i"),
+        ("p_h3_t2i", "turbo", "p_h3_t2i"),
+        ("p_h3_i2i", "opt", "p_h3_i2i"),
+        ("p_h3_i2i", "turbo", "p_h3_i2i"),
+        ("p_h3_r2i", "opt", "p_h3_r2i"),
+        ("p_h3_r2i", "turbo", "p_h3_r2i"),
+        # 旧 MiniMax H3 Image の id（とその版違い）は P-H3-Image に寄せる
+        ("minimax_h3_t2i", "normal", "p_h3_t2i"),
+        ("minimax_h3_t2i_opt", "opt", "p_h3_t2i"),
+        ("minimax_h3_i2i_turbo", "turbo", "p_h3_i2i"),
+        ("minimax_h3_r2i", "turbo", "p_h3_r2i"),
+        # Qwen-Image 2.1 は t2i にも turbo（8 steps 蒸留の重み）がある
         ("qwen_image_21_t2i", "normal", "qwen_image_21_t2i"),
         ("qwen_image_21_t2i", "turbo", "qwen_image_21_t2i_turbo"),
         ("qwen_image_21_edit", "normal", "qwen_image_21_edit"),
@@ -1715,15 +1720,12 @@ def test_image_quality_falls_back_without_a_variant(monkeypatch, image_quality):
 
 
 @pytest.mark.parametrize("image_quality", ["opt", "turbo"])
-def test_image_quality_falls_back_on_a_target_without_the_custom_nodes(
+def test_p_h3_image_quality_is_the_same_on_comfy_cloud(
     monkeypatch, image_quality
 ):
-    """Comfy Cloud には任意のカスタムノードを入れられないので素へ落とす。"""
+    """P-H3-Image は本体ノードだけなので Comfy Cloud でも同じ id のまま。"""
     _use_target(monkeypatch, "comfy_cloud")
-    assert (
-        studio.image_quality_workflow("minimax_h3_t2i", image_quality)
-        == "minimax_h3_t2i"
-    )
+    assert studio.image_quality_workflow("p_h3_t2i", image_quality) == "p_h3_t2i"
 
 
 @pytest.mark.parametrize(
@@ -1743,9 +1745,7 @@ def test_qwen_image_turbo_stays_on_a_target_without_the_custom_nodes(
 
 def test_a_broken_image_quality_is_read_as_normal(monkeypatch):
     _use_target(monkeypatch, "local")
-    assert (
-        studio.image_quality_workflow("minimax_h3_t2i", "ultra") == "minimax_h3_t2i"
-    )
+    assert studio.image_quality_workflow("p_h3_t2i", "ultra") == "p_h3_t2i"
 
 
 def test_every_image_quality_variant_is_a_registered_workflow():
@@ -1765,7 +1765,7 @@ def test_every_image_quality_variant_is_a_registered_workflow():
 #
 # 動画側の megapixels / aspect_ratio / steps と同じ 3 項目を、素材の静止画用に
 # 別で持つ（静止画に動画用の値を流用しないため）。null / 0 = 指定しない＝
-# テンプレートの既定（MiniMax H3 Image は約 0.98MP）。
+# テンプレートの既定（P-H3-Image は t2i 8MP・編集 4MP）。
 
 def test_the_image_render_settings_are_unset_by_default(env):
     project = make_project(env)

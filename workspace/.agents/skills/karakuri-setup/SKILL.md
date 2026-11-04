@@ -102,10 +102,17 @@ setup.sh reset                             # 状態ファイルを消す（確�
 - 人: 不足ノードの導入（ComfyUI Manager か git clone）。どのノードが要るかは
   detail に列挙されるので、そのまま伝える。ComfyUI 本体は **v0.44.0 以降**が前提で、
   `MiniMaxH3SigmaShift` / `ModelAttentionBackend` / `BlockSparseAttention` /
-  `LatentUpscaleModelLoader` / `MiniMaxH3LatentUpscaleWithModel` / `TextGenerateV2` が
-  不足に出たら custom node ではなく**本体の更新**で直す。
-  外部の custom node が要るのは MiniMax H3 Image（ComfyUI-MiniMax-H3-Image-Studio）、
-  opt の `SpectrumApplyMiniMaxH3`、ラテント連続性（Motion Context 系）だけ。
+  `LatentUpscaleModelLoader` / `MiniMaxH3LatentUpscaleWithModel` / `TextGenerateV2` /
+  `PH3ImageConditioning` が不足に出たら custom node ではなく**本体の更新**で直す。
+  外部の custom node が要るのは opt の `SpectrumApplyMiniMaxH3` とラテント連続性
+  （Motion Context 系）だけ（画像の P-H3-Image は本体ノードだけで動く）。
+- P-H3-Image（画像の `p_h3_*`）を使うなら、モデルは動画 turbo と共有の
+  `minimax_h3_fl2va_pruned_w4a8_mixed` に加えて PrunaAI/P-H3-Image-Comfy の
+  `p-h3-image_lora_bf16`（loras）・`p-h3-image_text_encoder_w4a8` /
+  `p-h3-image_prompt_upsampler_w4a8`（text_encoders）・`p-h3-image_vae_int8_convrot`（vae）。
+  **MiniMax H3 Community License**（EU・英国・韓国・米国は MiniMax の別途許諾が要る・
+  "Powered by MiniMax H3" の表示義務）なので、使う前に人に確認してもらう
+  （`../docs/SETUP.md` の「モデル（P-H3-Image）」）。
 - モデルは**使うワークフローのぶんだけ**でよい（全部は要らない。既定ファイル名は
   `../docs/SPEC.md` §3.3）。`.env` に `COMFY_MODELS_DIR=/path/to/ComfyUI/models` を書いて再起動すると、
   設定ページの「モデル」タブから未検出のファイルをダウンロードできる（任意）。

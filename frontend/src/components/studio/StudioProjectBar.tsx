@@ -338,7 +338,7 @@ function ProjectSettingsFields({
       value={imageQuality}
       disabled={busy}
       title={[
-        '素材の静止画（MiniMax H3 Image / Qwen-Image 2.1）の品質。動画の品質とは独立です。',
+        '素材の静止画（P-H3-Image / Qwen-Image 2.1）の品質。動画の品質とは独立です。',
         ...IMAGE_QUALITIES.map((value) => IMAGE_QUALITY_HINT[value]),
       ].join('\n')}
       onChange={(event) =>
@@ -451,7 +451,7 @@ function ProjectSettingsFields({
       placeholder="既定"
       title={
         '素材の静止画のメガピクセルの既定（空欄でテンプレートの既定。' +
-        'MiniMax H3 Image は約 0.98MP）'
+        'P-H3-Image は t2i 8MP・編集 4MP）'
       }
       onChange={(event) => onImageMegapixelsDraftChange(event.target.value)}
       onBlur={onCommitImageMegapixels}

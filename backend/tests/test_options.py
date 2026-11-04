@@ -43,14 +43,9 @@ def test_workflow_catalogue_is_exposed(client):
         "qwen_image_21_t2i_turbo",
         "qwen_image_21_edit",
         "qwen_image_21_edit_turbo",
-        "minimax_h3_t2i",
-        "minimax_h3_t2i_opt",
-        "minimax_h3_i2i",
-        "minimax_h3_i2i_opt",
-        "minimax_h3_i2i_turbo",
-        "minimax_h3_r2i",
-        "minimax_h3_r2i_opt",
-        "minimax_h3_r2i_turbo",
+        "p_h3_t2i",
+        "p_h3_i2i",
+        "p_h3_r2i",
         "grok_imagine_t2i",
         "grok_imagine_edit",
     ]
@@ -59,7 +54,7 @@ def test_workflow_catalogue_is_exposed(client):
         "anima",
         "z-image",
         *["qwen-image"] * 4,
-        *["minimax-h3-image"] * 8,
+        *["p-h3-image"] * 3,
         "grok-imagine",
         "grok-imagine",
     ]
@@ -255,12 +250,11 @@ def test_comfy_cloud_hides_the_custom_node_workflows(client, monkeypatch):
         for select in workflow.get("selects") or []:
             if select["name"] == "latent_upscale":
                 assert select["choices"] == ["on", "off"], workflow["id"]
-    # 画像側も同じ判定を通る: MiniMax H3 Image は素の版もカスタムノード
-    # （ComfyUI-MiniMax-H3-Image-Studio）が要るので、base / opt / turbo とも
-    # 丸ごと落ち、他のモデルは残る。
+    # 画像側も同じ判定を通る: P-H3-Image は ComfyUI 本体のノードだけで
+    # 組んであるので、Comfy Cloud でも 3 モードとも残る。
     image_ids = [w["id"] for w in options["image_workflows"]]
-    for workflow_id in ("minimax_h3_t2i", "minimax_h3_t2i_opt", "minimax_h3_r2i_turbo"):
-        assert workflow_id not in image_ids
+    for workflow_id in ("p_h3_t2i", "p_h3_i2i", "p_h3_r2i"):
+        assert workflow_id in image_ids
     assert "krea2_turbo" in image_ids
     # Qwen-Image 2.1 は turbo も ComfyUI 本体のノードだけで組んであるので、
     # 素の版と同じく Comfy Cloud でも残る
@@ -466,12 +460,14 @@ def test_steps_are_advertised_only_where_the_template_has_a_sampler_knob(client)
         "stable_audio_3_medium_base",
     ):
         assert "steps" in supports[workflow_id], workflow_id
-    # MiniMax H3 の turbo は ManualSigmas の 6 ステップ固定なので出さない
+    # MiniMax H3 の turbo（6 ステップ固定）と P-H3-Image（8 ステップ固定）は
+    # ManualSigmas の固定スケジュールなので出さない
     for workflow_id in (
         "minimax_h3_i2v_turbo",
         "minimax_h3_r2v_turbo",
-        "minimax_h3_i2i_turbo",
-        "minimax_h3_r2i_turbo",
+        "p_h3_t2i",
+        "p_h3_i2i",
+        "p_h3_r2i",
     ):
         assert "steps" not in supports[workflow_id], workflow_id
     # テンプレートを持たない外部バックエンド（Grok CLI）は steps を持たない

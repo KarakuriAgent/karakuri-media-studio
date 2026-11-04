@@ -808,17 +808,16 @@ GET /api/v1/jobs?q=かおり&kind=video&nsfw=false&limit=48&offset=0
 - プロジェクトの `image_quality`（`POST /api/v1/projects` と
   `PATCH /api/v1/projects/{id}` で読み書きできます。`"normal"` / `"opt"` /
   `"turbo"`。既定 `"normal"`）は **画像生成の品質**で、上の `quality` とは
-  **完全に独立**したつまみです。作品の素材となる静止画を MiniMax H3 Image で
-  作るときに、`minimax_h3_{t2i,i2i,r2i}` の素 / `_opt` / `_turbo` のどれを使うかを
-  決めます（動画の t2v と同じ理由で **t2i に `_turbo` はなく**、`"turbo"` のときは
-  `minimax_h3_t2i_opt` になります）。Qwen-Image 2.1 で作るときも同じつまみで、
+  **完全に独立**したつまみです。作品の素材となる静止画を Qwen-Image 2.1 で作るとき、
   `"turbo"` なら `qwen_image_21_t2i_turbo` / `qwen_image_21_edit_turbo`（公式の
   8 steps 蒸留版。t2i にもあります）を使います。Qwen-Image 2.1 に `_opt` は無いので、
-  `"opt"` のときは素の版のままです。**動画の `quality` を静止画に流用しないでください** — 動画を
+  `"opt"` のときは素の版のままです。P-H3-Image（`p_h3_{t2i,i2i,r2i}`）は 8 steps の
+  蒸留モデルで版違いが無いので、どの値でも同じワークフローです（旧 MiniMax H3 Image の
+  `minimax_h3_{t2i,i2i,r2i}` とその `_opt` / `_turbo` を指定しても、対応する P-H3-Image に
+  読み替えます）。**動画の `quality` を静止画に流用しないでください** — 動画を
   `turbo` で回している作品でも、素材の絵は `image_quality` に従います
-  （その逆も同じ）。MiniMax H3 Image は素の版も含めて ComfyUI-MiniMax-H3-Image-Studio
-  （カスタムノード）頼みなので、Comfy Cloud では `_opt` / `_turbo` に読み替えません（Qwen-Image 2.1 の
-  `_turbo` は ComfyUI 本体のノードだけなので、どの接続先でも使えます）。いまのところ静止画を
+  （その逆も同じ）。P-H3-Image と Qwen-Image 2.1 はどちらも ComfyUI 本体のノードだけで
+  動くので、Comfy Cloud でも使えます（モデルファイルが Cloud 側にあるかは別）。いまのところ静止画を
   焼く経路はアプリ側に無く、素材画像を作るのは**外部エージェント**（この API 経由の
   Claude Code / Codex / Cursor CLI など）なので、この設定は**外部エージェントへの
   指示値**として効きます。
@@ -838,8 +837,8 @@ GET /api/v1/jobs?q=かおり&kind=video&nsfw=false&limit=48&offset=0
   サンプリング回数**です。動画側の `megapixels` / `aspect_ratio` / `steps` と
   同じ 3 項目を静止画用に別で持つもので、素材の静止画ジョブ
   （`mode: "image_only"`）にはこちらを使い、**動画用の値は流用しません**。
-  `null` / `0` は「指定しない」＝テンプレートの既定のまま（MiniMax H3 Image は
-  約 0.98MP）で、`PATCH` に `null` を明示すると既定へ戻ります（送らなければ
+  `null` / `0` は「指定しない」＝テンプレートの既定のまま（P-H3-Image は
+  t2i 8MP・編集 4MP）で、`PATCH` に `null` を明示すると既定へ戻ります（送らなければ
   今の値のまま）。`image_steps` の上限は動画側の `steps` と同じ 150 で、
   外れた値は 400 です。
 - プロジェクトの `megapixels` と `aspect_ratio`（`POST /api/v1/projects` と

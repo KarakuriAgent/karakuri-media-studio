@@ -281,10 +281,10 @@ const IMAGE_WORKFLOWS: Options['image_workflows'] = [
     default_duration: 0,
   },
   {
-    id: 'minimax_h3_i2i',
-    label: 'MiniMax H3 Image i2i',
+    id: 'p_h3_i2i',
+    label: 'P-H3-Image i2i',
     kind: 'image',
-    family: 'minimax-h3-image',
+    family: 'p-h3-image',
     notes: '',
     requires: ['image'],
     supports: ['image', 'prompt', 'seed'],
@@ -351,7 +351,7 @@ function showImages(form: Partial<FormState> = {}) {
         image_workflows: IMAGE_WORKFLOWS,
         loras: [
           lora(1, 'サクラ', 'image', 'krea2'),
-          lora(3, 'ハナ', 'image', 'minimax-h3-image'),
+          lora(3, 'ハナ', 'image', 'p-h3-image'),
           lora(2, 'スローモ', 'video'),
         ],
       }}
@@ -386,14 +386,14 @@ describe('GenerateForm の画像ワークフロー', () => {
     expect(screen.queryByRole('button', { name: 'ハナ' })).toBeNull()
 
     cleanup()
-    showImages({ imageWorkflow: 'minimax_h3_i2i' })
+    showImages({ imageWorkflow: 'p_h3_i2i' })
     openLoraPicker('LoRA（画像）')
     expect(screen.getByRole('button', { name: 'ハナ' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'サクラ' })).toBeNull()
   })
 
   it('編集系を選ぶと参照画像ピッカーが必須表示になる', () => {
-    showImages({ imageWorkflow: 'minimax_h3_i2i', mode: 'image_only' })
+    showImages({ imageWorkflow: 'p_h3_i2i', mode: 'image_only' })
     expect(section('編集元画像')).toBeTruthy()
     expect(
       screen.getAllByText(/入力画像を編集するワークフロー/).length,
@@ -609,14 +609,14 @@ describe('GenerateForm のワークフロー選択（モデル → モード）'
     expect(patch).not.toHaveBeenCalledWith({ megapixels: expect.anything() })
   })
 
-  // 画像ステージにもモデルごとの想定画角がある（MiniMax H3 Image は native
-  // canvas が 0.98MP。0.4MP のままだと解像度を捨てることになる）。
+  // 画像ステージにもモデルごとの想定画角がある（P-H3-Image は 8MP が推奨。
+  // 0.4MP のままだと破綻が増える）。
   const H3_IMAGE: Options['image_workflows'][number] = {
     ...IMAGE_WORKFLOWS[0],
-    id: 'minimax_h3_t2i',
-    label: 'MiniMax H3 Image t2i',
-    family: 'minimax-h3-image',
-    default_megapixels: 0.98,
+    id: 'p_h3_t2i',
+    label: 'P-H3-Image t2i',
+    family: 'p-h3-image',
+    default_megapixels: 8,
   }
 
   function showBothStages(form: Partial<FormState> = {}) {
@@ -648,10 +648,10 @@ describe('GenerateForm のワークフロー選択（モデル → モード）'
   it('画像モードでは画像ワークフローの想定解像度に合わせる', () => {
     const { patch } = showBothStages({
       mode: 'image_only',
-      imageWorkflow: 'minimax_h3_t2i',
+      imageWorkflow: 'p_h3_t2i',
       megapixels: DEFAULT_MEGAPIXELS,
     })
-    expect(patch).toHaveBeenCalledWith({ megapixels: 0.98 })
+    expect(patch).toHaveBeenCalledWith({ megapixels: 8 })
   })
 
   it('宣言の無い画像ワークフローではグローバル既定に戻す', () => {
@@ -664,10 +664,10 @@ describe('GenerateForm のワークフロー選択（モデル → モード）'
   })
 
   it('画像＋動画では 2 段のうちきつい側（小さいほう）に合わせる', () => {
-    // 画像 0.98MP / 動画 0.4MP。値は 1 つしか無いので、動画側で OOM しない側を取る
+    // 画像 8MP / 動画 0.4MP。値は 1 つしか無いので、動画側で OOM しない側を取る
     const { patch } = showBothStages({
       mode: 'full',
-      imageWorkflow: 'minimax_h3_t2i',
+      imageWorkflow: 'p_h3_t2i',
       videoWorkflow: 'minimax_h3_i2v',
       megapixels: 1,
     })
@@ -677,7 +677,7 @@ describe('GenerateForm のワークフロー選択（モデル → モード）'
   it('音声モードでは触らない', () => {
     const { patch } = showBothStages({
       mode: 'audio',
-      imageWorkflow: 'minimax_h3_t2i',
+      imageWorkflow: 'p_h3_t2i',
       megapixels: 1,
     })
     expect(patch).not.toHaveBeenCalledWith({ megapixels: expect.anything() })
@@ -927,11 +927,11 @@ describe('GenerateForm は使わない項目を出さない', () => {
   })
 
   it('編集系ワークフロー + 画像のみでは解像度セクションを消す', () => {
-    showImages({ mode: 'image_only', imageWorkflow: 'minimax_h3_i2i' })
+    showImages({ mode: 'image_only', imageWorkflow: 'p_h3_i2i' })
     expect(screen.queryByText('解像度')).toBeNull()
     // 画像＋動画なら動画側に効くので残る
     cleanup()
-    showImages({ mode: 'full', imageWorkflow: 'minimax_h3_i2i' })
+    showImages({ mode: 'full', imageWorkflow: 'p_h3_i2i' })
     expect(screen.getByText('解像度')).toBeTruthy()
   })
 
@@ -1560,56 +1560,35 @@ describe('GenerateForm のマルチモーダル参照', () => {
     expect(screen.queryByText(TITLE)).toBeNull()
   })
 
-  // 画像ステージも参照素材を受け取る（MiniMax H3 Image r2i、SPEC §3.1）
+  // 画像ステージも参照素材を受け取る（P-H3-Image r2i、SPEC §3.1）
   const H3_R2I: Options['image_workflows'][number] = {
     ...IMAGE_WORKFLOWS[0],
-    id: 'minimax_h3_r2i',
-    label: 'MiniMax H3 Image r2i',
-    family: 'minimax-h3-image',
-    supports: ['prompt', 'seed', 'steps', 'width', 'height', 'reference_images'],
-    multi_inputs: { reference_images: 9 },
-    // ノードの widget をそのまま出す選択式（フレーム枚数・保持強度、SPEC §3.1）
+    id: 'p_h3_r2i',
+    label: 'P-H3-Image r2i',
+    family: 'p-h3-image',
+    supports: ['prompt', 'seed', 'megapixels', 'reference_images'],
+    multi_inputs: { reference_images: 8 },
+    // 選択式（プロンプトアップサンプラ・LoRA、SPEC §3.1）
     selects: [
       {
-        name: 'quality_profile',
-        label: 'フレーム枚数（品質）',
-        choices: [
-          'recommended | 5 frames',
-          'extended quality | 9 frames',
-          'high quality | 13 frames',
-          'maximum quality | 20 frames (slow)',
-        ],
-        default: 'recommended | 5 frames',
+        name: 'prompt_upsampler',
+        label: 'プロンプトアップサンプラ',
+        choices: ['on', 'off'],
+        default: 'on',
         auto: false,
         hint: '',
-        // 表示だけ日本語にする（送る値はノードの enum のまま、SPEC §3.1）
-        choice_labels: {
-          'recommended | 5 frames': '標準（5 フレーム）',
-          'extended quality | 9 frames': '高品質（9 フレーム）',
-          'high quality | 13 frames': '最高品質（13 フレーム）',
-          'maximum quality | 20 frames (slow)': '最大品質（20 フレーム・低速）',
-        },
+        // 表示だけ日本語にする（送る値は生の値のまま、SPEC §3.1）
+        choice_labels: { on: '使う', off: '使わない' },
       },
       {
-        name: 'frame_strategy',
-        label: '出力フレームの選び方',
-        choices: ['decode_recommended', 'stable_quality', 'most_similar_to_source'],
-        default: 'decode_recommended',
+        name: 'p_h3_lora',
+        label: 'P-H3-Image LoRA',
+        choices: ['on', 'off'],
+        default: 'on',
         auto: false,
         hint: '',
         // 一部だけ宣言（残りは生の値のまま出るフォールバック）
-        choice_labels: {
-          decode_recommended: 'おまかせ（推奨フレーム）',
-          most_similar_to_source: '元画像に最も近い',
-        },
-      },
-      {
-        name: 'source_fidelity',
-        label: '元画像の保持強度',
-        choices: ['0.00', '0.25', '0.50', '0.75', '0.90', '1.00'],
-        default: '0.75',
-        auto: false,
-        hint: '',
+        choice_labels: { off: '当てない' },
       },
     ],
   }
@@ -1628,7 +1607,7 @@ describe('GenerateForm のマルチモーダル参照', () => {
         form={{
           ...initialForm,
           mode: 'image_only',
-          imageWorkflow: 'minimax_h3_r2i',
+          imageWorkflow: 'p_h3_r2i',
           ...form,
         }}
         patch={patch}
@@ -1652,7 +1631,7 @@ describe('GenerateForm のマルチモーダル参照', () => {
     showImageReferenceForm()
     const panel = section(TITLE)
     expect(within(panel).getByText('参照画像')).toBeTruthy()
-    expect(within(panel).getByText('0 / 9 件')).toBeTruthy()
+    expect(within(panel).getByText('0 / 8 件')).toBeTruthy()
     // 宣言しているのは参照画像だけなので、動画・音声の欄は出ない
     expect(within(panel).queryByText('参照音声')).toBeNull()
 
@@ -1661,78 +1640,53 @@ describe('GenerateForm のマルチモーダル参照', () => {
     expect(screen.queryByText(TITLE)).toBeNull()
   })
 
-  it('H3 のつまみ（フレーム枚数・保持強度）を画像ワークフロー欄に出す', () => {
+  it('P-H3-Image のつまみ（アップサンプラ・LoRA）を画像ワークフロー欄に出す', () => {
     const { patch } = showImageReferenceForm()
-    const frames = screen.getByLabelText(
-      'フレーム枚数（品質）',
+    const upsampler = screen.getByLabelText(
+      'プロンプトアップサンプラ',
     ) as HTMLSelectElement
-    // 先頭は「既定（…）」で、そのあとにノードの enum がそのまま並ぶ
-    expect([...frames.options].map((option) => option.value)).toEqual([
+    // 先頭は「既定（…）」で、そのあとに選択肢がそのまま並ぶ
+    expect([...upsampler.options].map((option) => option.value)).toEqual([
       '',
-      'recommended | 5 frames',
-      'extended quality | 9 frames',
-      'high quality | 13 frames',
-      'maximum quality | 20 frames (slow)',
+      'on',
+      'off',
     ])
-    fireEvent.change(frames, {
-      target: { value: 'high quality | 13 frames' },
-    })
+    fireEvent.change(upsampler, { target: { value: 'off' } })
     expect(patch).toHaveBeenCalledWith({
-      selects: { quality_profile: 'high quality | 13 frames' },
+      selects: { prompt_upsampler: 'off' },
     })
-    expect(screen.getByLabelText('元画像の保持強度')).toBeTruthy()
+    expect(screen.getByLabelText('P-H3-Image LoRA')).toBeTruthy()
 
     // 宣言のない画像ワークフローには何も出ない
     cleanup()
     showImageReferenceForm({ imageWorkflow: 'krea2_turbo' })
-    expect(screen.queryByLabelText('フレーム枚数（品質）')).toBeNull()
+    expect(screen.queryByLabelText('プロンプトアップサンプラ')).toBeNull()
   })
 
-  it('選択肢の表示だけ日本語にし、送る値は生の enum のまま（SPEC §3.1）', () => {
+  it('選択肢の表示だけ日本語にし、送る値は生の値のまま（SPEC §3.1）', () => {
     showImageReferenceForm()
-    const frames = screen.getByLabelText(
-      'フレーム枚数（品質）',
+    const upsampler = screen.getByLabelText(
+      'プロンプトアップサンプラ',
     ) as HTMLSelectElement
     // 見えているのは日本語（先頭の「既定（…）」もラベル側で書く）
-    expect([...frames.options].map((option) => option.text)).toEqual([
-      '既定（標準（5 フレーム））',
-      '標準（5 フレーム）',
-      '高品質（9 フレーム）',
-      '最高品質（13 フレーム）',
-      '最大品質（20 フレーム・低速）',
+    expect([...upsampler.options].map((option) => option.text)).toEqual([
+      '既定（使う）',
+      '使う',
+      '使わない',
     ])
-    // 送る値は enum のまま
-    expect([...frames.options].map((option) => option.value)).toEqual([
+    // 送る値は生の値のまま
+    expect([...upsampler.options].map((option) => option.value)).toEqual([
       '',
-      'recommended | 5 frames',
-      'extended quality | 9 frames',
-      'high quality | 13 frames',
-      'maximum quality | 20 frames (slow)',
+      'on',
+      'off',
     ])
 
     // 宣言の無い選択肢は生の値のまま出る（フォールバック）
-    const strategy = screen.getByLabelText(
-      '出力フレームの選び方',
-    ) as HTMLSelectElement
-    expect([...strategy.options].map((option) => option.text)).toEqual([
-      '既定（おまかせ（推奨フレーム））',
-      'おまかせ（推奨フレーム）',
-      'stable_quality',
-      '元画像に最も近い',
-    ])
-
-    // ラベルを持たない選択式（保持強度）は今までどおり値をそのまま出す
-    const fidelity = screen.getByLabelText(
-      '元画像の保持強度',
-    ) as HTMLSelectElement
-    expect([...fidelity.options].map((option) => option.text)).toEqual([
-      '既定（0.75）',
-      '0.00',
-      '0.25',
-      '0.50',
-      '0.75',
-      '0.90',
-      '1.00',
+    const lora = screen.getByLabelText('P-H3-Image LoRA') as HTMLSelectElement
+    expect([...lora.options].map((option) => option.text)).toEqual([
+      '既定（on）',
+      'on',
+      '当てない',
     ])
   })
 

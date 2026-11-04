@@ -943,6 +943,27 @@ def test_a_qwen_turbo_session_gets_the_same_qwen_guide(workflow_id):
     assert "model family `qwen-image`" in system
 
 
+@pytest.mark.parametrize(
+    "workflow_id", ["p_h3_t2i", "p_h3_i2i", "p_h3_r2i", "minimax_h3_r2i_turbo"]
+)
+def test_a_p_h3_session_gets_the_model_card_guide(workflow_id):
+    """P-H3-Image はモデルカードの書き方（旧 H3 Image の id もエイリアスで同じ）。"""
+    system = build_system_prompt(
+        ChatSessionCreate(mode="image_only", image_workflow=workflow_id)
+    )
+    assert "IMAGE PROMPT SPEC — P-H3-Image" in system
+    assert "Say what the image is." in system
+    assert "no other text" in system
+    assert "Edit <Picture 1>. <The change, described as the finished result>." in system
+    # 誇張語を入れないこと・比はアプリが書くこと
+    assert "Leave out hype words" in system
+    assert "the app writes the ratio line" in system
+    assert "model family `p-h3-image`" in system
+    # 旧 MiniMax H3 Image の「動画語を書くな」系の注意は残っていない
+    assert "quality_profile" not in system
+    assert "MiniMax H3 Image" not in system
+
+
 def test_the_selected_image_workflow_is_named_in_the_context():
     system = build_system_prompt(
         ChatSessionCreate(mode="image_only", image_workflow="qwen_image_21_edit")
@@ -1195,7 +1216,7 @@ def test_an_editing_image_workflow_gets_its_input_picture(env):
     session = start(
         env,
         mode="image_only",
-        image_workflow="minimax_h3_i2i",
+        image_workflow="p_h3_i2i",
         start_image_path=str(env.start_image),
     )
     system = session["messages"][0]["content"]

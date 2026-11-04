@@ -754,6 +754,26 @@ def test_rerun_keeps_a_workflow_that_still_exists(env):
     assert params["megapixels"] == 1.0
 
 
+def test_rerun_moves_a_retired_h3_image_job_to_p_h3(env):
+    """旧 MiniMax H3 Image の id と旧つまみを持つジョブも再実行できる。"""
+    created = env.client.post(
+        "/api/jobs",
+        json={"mode": "image_only", "image_workflow": "p_h3_t2i", "image_prompt": "x"},
+    ).json()
+    assert wait_for(env.client, created["id"])["status"] == "done"
+    _rewrite_params(
+        created["id"],
+        image_workflow="minimax_h3_t2i_opt",
+        selects={"quality_profile": "recommended | 5 frames", "prompt_upsampler": "off"},
+    )
+    response = env.client.post(f"/api/jobs/{created['id']}/rerun", json={})
+    assert response.status_code == 201, response.text
+    params = response.json()["params"]
+    assert params["image_workflow"] == "p_h3_t2i"
+    # 旧版にしか無いつまみは落ち、新しい id が宣言するものは残る
+    assert params["selects"] == {"prompt_upsampler": "off"}
+
+
 @needs_ffmpeg
 def test_continue_refits_the_params_of_a_retired_workflow(env):
     response = env.client.post(f"/api/jobs/{_retire(env)}/continue", json={})
@@ -1193,7 +1213,7 @@ def test_an_unknown_image_workflow_is_rejected(env):
 
 
 def test_the_editing_workflow_requires_a_source_image(env):
-    """単数の編集元を取るワークフロー（h3 i2i）は source_image が要る。"""
+    """単数の編集元を取るワークフロー（P-H3-Image i2i・旧 id のままでも）は source_image が要る。"""
     for mode, extra in (("image_only", {}), ("full", {"video_prompt": "a video"})):
         response = env.client.post(
             "/api/jobs",
@@ -1696,10 +1716,10 @@ def test_too_many_reference_images_are_422(env):
 
 
 # --------------------------------------------------------------------------
-# 参照画像を取る**画像**ワークフロー（SPEC §3.1、MiniMax H3 Image r2i）
+# 参照画像を取る**画像**ワークフロー（SPEC §3.1、P-H3-Image r2i）
 # --------------------------------------------------------------------------
 
-IMAGE_REF_WORKFLOW = "minimax_h3_r2i"
+IMAGE_REF_WORKFLOW = "p_h3_r2i"
 
 
 def image_ref_body(env, count: int, **overrides) -> dict:
@@ -1723,15 +1743,23 @@ def test_image_reference_images_are_uploaded_and_wired(env, count):
     uploaded = [Path(path).name for path in env.comfy.uploads]
     assert [f"ref{index}.png" for index in range(count)] == uploaded
 
-    graph = graph_with(env, "5")
-    loaders = sorted(key for key in graph if key.startswith("app_ref_image_"))
+    graph = graph_with(env, "11")
+    loaders = sorted(
+        key
+        for key in graph
+        if key.startswith("app_ref_image_") and not key.startswith("app_ref_image_pad_")
+    )
     assert len(loaders) == count
-    # 1 枚目は必須の source_image（<Picture 1>）、2 枚目以降が reference_image_N+1
-    assert graph["5"]["inputs"]["source_image"] == ["app_ref_image_0", 0]
+    # 1 枚目（<Picture 1>）は 4MP に揃えてから images.image_1、2 枚目以降は
+    # images.image_N+1 にそのまま
+    assert graph["20"]["inputs"]["image"] == ["app_ref_image_0", 0]
+    assert graph["11"]["inputs"]["images.image_1"] == ["20", 0]
     for index in range(1, count):
         node_id = f"app_ref_image_{index}"
         assert graph[node_id]["inputs"]["image"] == f"ref{index}.png"
-        assert graph["5"]["inputs"][f"reference_image_{index + 1}"] == [node_id, 0]
+        assert graph["11"]["inputs"][f"images.image_{index + 1}"] == [node_id, 0]
+    # アップサンプラ入力の <Picture N> ブロックも枚数ぶん
+    assert graph["7"]["inputs"]["f_string"].count("<|image_pad|>") == count
     # 雛形の LoadImage はグラフに残らない
     assert "0" not in graph
 
@@ -1743,50 +1771,53 @@ def test_the_image_reference_workflow_needs_at_least_one_reference(env):
 
 
 def test_too_many_image_reference_images_are_422(env):
-    answer = env.client.post("/api/jobs", json=image_ref_body(env, 10))
+    answer = env.client.post("/api/jobs", json=image_ref_body(env, 9))
     assert answer.status_code == 422
-    assert "9 件" in answer.text
+    assert "8 件" in answer.text
 
 
-def test_the_h3_image_selects_reach_comfyui(env):
-    """フレーム枚数などのつまみは `selects` として渡り、グラフに焼き込まれる。"""
+def test_the_p_h3_selects_reach_comfyui(env):
+    """アップサンプラ・LoRA のつまみは `selects` として渡り、グラフに焼き込まれる。"""
     created = env.client.post(
         "/api/jobs",
         json=image_ref_body(
-            env,
-            2,
-            selects={
-                "quality_profile": "high quality | 13 frames",
-                "frame_strategy": "balanced_edit",
-                "optimize_for_still": "off",
-                "source_fidelity": "0.90",
-                "source_fit": "contain_pad",
-                "reference_detail": "max_identity_2048",
-            },
+            env, 2, selects={"prompt_upsampler": "off", "p_h3_lora": "off"}
         ),
     )
     assert created.status_code == 201, created.text
     job = wait_for(env.client, created.json()["id"])
     assert job["status"] == "done", job["error"]
 
-    graph = graph_with(env, "5")
-    prepare = graph["5"]["inputs"]
-    assert prepare["quality_profile"] == "high quality | 13 frames"
-    # BOOLEAN / FLOAT の widget には型を合わせて入る（文字列だと prompt ごと落ちる）
-    assert prepare["optimize_for_still"] is False
-    assert prepare["source_fidelity"] == 0.9
-    assert prepare["source_fit"] == "contain_pad"
-    assert prepare["reference_detail"] == "max_identity_2048"
-    assert graph["12"]["inputs"]["strategy"] == "balanced_edit"
+    graph = graph_with(env, "11")
+    # BOOLEAN の widget には真偽値で入る（文字列だと prompt ごと落ちる）
+    assert graph["9"]["inputs"]["switch"] is False
+    # LoRA は外れて、SigmaShift が UNET を直接読む
+    assert "19" not in graph
+    assert graph["5"]["inputs"]["model"] == ["1", 0]
 
 
-def test_an_unknown_h3_image_select_is_422(env):
+def test_an_unknown_p_h3_select_is_422(env):
     answer = env.client.post(
         "/api/jobs",
-        json=image_ref_body(env, 1, selects={"quality_profile": "99 frames"}),
+        json=image_ref_body(env, 1, selects={"prompt_upsampler": "maybe"}),
     )
     assert answer.status_code == 422
-    assert "99 frames" in answer.text
+    assert "maybe" in answer.text
+
+
+def test_a_retired_h3_image_select_is_422(env):
+    """旧 MiniMax H3 Image のつまみ（quality_profile など）は新しい id には無い。"""
+    answer = env.client.post(
+        "/api/jobs",
+        json=image_ref_body(
+            env,
+            1,
+            image_workflow="minimax_h3_r2i_turbo",
+            selects={"quality_profile": "recommended | 5 frames"},
+        ),
+    )
+    assert answer.status_code == 422
+    assert "quality_profile" in answer.text
 
 
 def test_an_image_workflow_without_a_declaration_refuses_reference_images(env):

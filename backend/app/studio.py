@@ -85,6 +85,7 @@ from .workflow import WorkflowError, supported_on_target
 from .workflows import (
     LATENT_UPSCALE_NAME,
     WorkflowSpecError,
+    canonical_workflow_id,
     get_image_spec,
     get_video_spec,
 )
@@ -286,10 +287,14 @@ def _quality_workflow(workflow: str, quality: str) -> tuple[str, str]:
 # --------------------------------------------------------------------------
 #
 # 動画の ``quality`` とは**独立したつまみ**。素材の静止画（World Bible の
-# キャラ・場所・小道具）を MiniMax H3 Image / Qwen-Image 2.1 で焼くときにだけ
-# 効き、動画の品質は一切見ない（動画を turbo で回していても素材の絵は素で
-# 焼きたい、という使い分けのため）。値の並びと正規化は動画側と同じ
+# キャラ・場所・小道具）を P-H3-Image / Qwen-Image 2.1 で焼くときにだけ効き、
+# 動画の品質は一切見ない（動画を turbo で回していても素材の絵は素で焼きたい、
+# という使い分けのため）。値の並びと正規化は動画側と同じ
 # （:func:`normalize_quality`）。
+#
+# P-H3-Image は 8 steps の蒸留モデルで opt / turbo の版を持たないので、
+# normal / opt / turbo のどれでも同じワークフローに解決する（つまみが効くのは
+# Qwen-Image 2.1 の turbo だけ）。
 #
 # いまのところプロジェクトから静止画を焼く経路はサーバ側に無く、素材画像を
 # 作るのは**エージェント**（エージェントモード / 外部 API 経由の Claude Code・
@@ -298,10 +303,10 @@ def _quality_workflow(workflow: str, quality: str) -> tuple[str, str]:
 # :func:`image_quality_workflow` に置いてあるので、UI から静止画を焼く経路が
 # できたらそのまま使える。
 
-#: 素材の静止画に使う MiniMax H3 Image のワークフロー
-WORKFLOW_T2I = "minimax_h3_t2i"
-WORKFLOW_I2I = "minimax_h3_i2i"
-WORKFLOW_R2I = "minimax_h3_r2i"
+#: 素材の静止画に使う P-H3-Image のワークフロー
+WORKFLOW_T2I = "p_h3_t2i"
+WORKFLOW_I2I = "p_h3_i2i"
+WORKFLOW_R2I = "p_h3_r2i"
 
 #: 既定の画像品質（列が無い / 値が壊れている既存プロジェクトもこれとして扱う）
 DEFAULT_IMAGE_QUALITY = "normal"
@@ -311,33 +316,19 @@ WORKFLOW_QWEN_T2I = "qwen_image_21_t2i"
 WORKFLOW_QWEN_EDIT = "qwen_image_21_edit"
 
 #: 画像品質 -> （論理ワークフロー -> そのバリアント id）。動画側の
-#: :data:`QUALITY_WORKFLOWS` と同じ形。MiniMax H3 Image は ``_opt`` が
-#: t2i / i2i / r2i の 3 つに揃っているが、``_turbo`` は t2i だけ無い（動画の
-#: t2v と同じ理由）。Qwen-Image 2.1 は公式の 8 steps 蒸留版があるので
-#: ``_turbo`` は t2i / 編集の両方にあり、``_opt`` は無い（opt では素のまま）。
+#: :data:`QUALITY_WORKFLOWS` と同じ形。P-H3-Image はどの品質でも素の版のまま
+#: （8 steps 蒸留なので opt / turbo が無い）なので載せない。Qwen-Image 2.1 は
+#: 公式の 8 steps 蒸留版があるので ``_turbo`` は t2i / 編集の両方にあり、
+#: ``_opt`` は無い（opt では素のまま）。
 IMAGE_QUALITY_WORKFLOWS: dict[str, dict[str, str]] = {
     "turbo": {
-        # MiniMax H3 の t2i に turbo は無い（動画の t2v と同じ理由）。
-        # :data:`IMAGE_TURBO_FALLBACK_QUALITY` で opt に落とす
-        WORKFLOW_I2I: "minimax_h3_i2i_turbo",
-        WORKFLOW_R2I: "minimax_h3_r2i_turbo",
         # Qwen-Image 2.1 Turbo は蒸留 LoRA ではなく蒸留済みの重みなので、
-        # テキストだけの生成にもそのまま効く（フォールバックしない）
+        # テキストだけの生成にもそのまま効く
         WORKFLOW_QWEN_T2I: "qwen_image_21_t2i_turbo",
         WORKFLOW_QWEN_EDIT: "qwen_image_21_edit_turbo",
     },
-    "opt": {
-        WORKFLOW_T2I: "minimax_h3_t2i_opt",
-        WORKFLOW_I2I: "minimax_h3_i2i_opt",
-        WORKFLOW_R2I: "minimax_h3_r2i_opt",
-    },
+    "opt": {},
 }
-
-
-#: 画像側の turbo -> opt フォールバック（動画の :data:`TURBO_FALLBACK_QUALITY`
-#: と同じ理由: MiniMax H3 Image の turbo は i2i / r2i だけで、t2i には置いていない）。
-#: MiniMax H3 の t2i だけの話で、Qwen-Image 2.1 の t2i は turbo のまま焼く。
-IMAGE_TURBO_FALLBACK_QUALITY: dict[str, str] = {WORKFLOW_T2I: "opt"}
 
 
 def _image_quality_supported_on_target(workflow: str) -> bool:
@@ -359,19 +350,18 @@ def _image_quality_supported_on_target(workflow: str) -> bool:
 def image_quality_workflow(workflow_id: str, image_quality: str) -> str:
     """素材の静止画を焼くワークフロー id を ``image_quality`` で読み替える。
 
-    ``workflow_id`` は素の ``minimax_h3_t2i`` / ``_i2i`` / ``_r2i`` か
-    ``qwen_image_21_t2i`` / ``_edit``。
-    ``image_quality`` が ``normal`` のとき、バリアントが無いとき（Qwen-Image
-    2.1 の opt など）、いまの接続先がそのバリアントのカスタムノードに対応しない
-    （Comfy Cloud。MiniMax H3 Image は全バリアントがカスタムノード頼み）ときは、渡された id をそのまま返す。``turbo`` × MiniMax H3 の
-    t2i だけは opt へ読み替える（:data:`IMAGE_TURBO_FALLBACK_QUALITY`）。
-    **動画の ``quality`` は見ない。**
+    ``workflow_id`` は ``p_h3_t2i`` / ``_i2i`` / ``_r2i`` か
+    ``qwen_image_21_t2i`` / ``_edit``。廃止した MiniMax H3 Image の id
+    （``minimax_h3_t2i`` とその ``_opt`` / ``_turbo``）は先に P-H3-Image へ寄せる
+    （:data:`app.workflows.WORKFLOW_ALIASES`）。
+    ``image_quality`` が ``normal`` のとき、バリアントが無いとき（P-H3-Image の
+    全品質・Qwen-Image 2.1 の opt）、いまの接続先がそのバリアントに対応しない
+    ときは、（寄せたあとの）id をそのまま返す。**動画の ``quality`` は見ない。**
     """
+    workflow_id = canonical_workflow_id(workflow_id) or workflow_id
     quality = normalize_quality(image_quality)
     if quality == DEFAULT_IMAGE_QUALITY:
         return workflow_id
-    if quality == "turbo":
-        quality = IMAGE_TURBO_FALLBACK_QUALITY.get(workflow_id, quality)
     variant = IMAGE_QUALITY_WORKFLOWS[quality].get(workflow_id)
     if variant is None or not _image_quality_supported_on_target(variant):
         return workflow_id

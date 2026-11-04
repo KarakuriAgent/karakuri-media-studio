@@ -15,6 +15,7 @@ from ..workflows import (
     DEFAULT_AUDIO_WORKFLOW,
     DEFAULT_IMAGE_WORKFLOW,
     DEFAULT_VIDEO_WORKFLOW,
+    WORKFLOW_ALIASES,
     WorkflowSpec,
     audio_specs,
     family_label,
@@ -109,7 +110,7 @@ async def get_options() -> Options:
     settings = load_settings()
     # 接続先で動かないワークフローは選択肢に出さない: Comfy Cloud には任意の
     # カスタムノードを入れられないので、それを使うワークフロー（Spectrum を持つ
-    # MiniMax H3 opt・MiniMax H3 Image・ラテント連続性）が消える
+    # MiniMax H3 opt・ラテント連続性）が消える
     # （local / runpod は従来どおり全件）。
     target = settings.comfy_target
     options = Options(
@@ -134,6 +135,7 @@ async def get_options() -> Options:
         default_video_workflow=DEFAULT_VIDEO_WORKFLOW,
         default_image_workflow=DEFAULT_IMAGE_WORKFLOW,
         default_audio_workflow=DEFAULT_AUDIO_WORKFLOW,
+        workflow_aliases=dict(WORKFLOW_ALIASES),
         # 実行時に選べるモデル（候補が 2 件以上あるスロットだけ、SPEC §3.3）
         model_slots=selectable_model_slots(
             settings.overrides_for(), settings.choices_for()

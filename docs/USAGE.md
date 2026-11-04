@@ -15,7 +15,7 @@ WebSocket で右ペインにリアルタイム表示され、完了すると生�
 | 音声 | 音声ワークフローを単発実行（画像・動画とは連結しない） |
 
 **画像**は Krea 2 turbo（既定）/ Anima / Z-Image turbo / Qwen-Image 2.1（テキスト→画像と
-参照編集の 2 本 × 素 / Turbo）/ MiniMax H3 Image（t2i は 2 バリアント、i2i / r2i は各 3 バリアント）/
+参照編集の 2 本 × 素 / Turbo）/ P-H3-Image（テキスト→画像・画像編集・参照編集の 3 本）/
 Grok Imagine（テキスト→画像・画像編集）から選びます。
 
 **Qwen-Image 2.1** は生成と編集が 1 つに統合されたモデルで、`qwen_image_21_t2i`
@@ -36,32 +36,44 @@ Grok Imagine（テキスト→画像・画像編集）から選びます。
 Qwen-Image 2.1 の素材画像は t2i・編集とも Turbo 版で焼かれます（Qwen-Image 2.1 に
 Optimized は無いので、Optimized のときは素の版のままです）。
 
-**MiniMax H3 Image** は音声つき動画モデルの MiniMax H3 で**静止画 1 枚**を作るワークフローです
-（複数フレームのパケットを作って 1 枚を選ぶ）。テキスト→画像 (t2i)・画像編集 (i2i)・参照編集
-(r2i、参照画像 1〜9 枚を `<Picture 1>` … として渡す) の 3 モードがあり、それぞれ素の版 /
-**Optimized**（20 ステップのまま実行だけ速い）/ **Turbo**（Pika H3 Flex LoRA つき・lcm・
-6 ステップ固定。ステップ数は変えられません）のバリアントがあります。ただし **t2i に Turbo は
-ありません**（Turbo のテンプレートを置いていないため）。
-プロジェクトの画像品質を Turbo にしていても、t2i は Optimized で焼かれます。実行には
-[ComfyUI-MiniMax-H3-Image-Studio](https://github.com/astropuzzo/ComfyUI-MiniMax-H3-Image-Studio)
-が必要で（`deploy/runpod/custom_nodes.txt` に固定済み）、Optimized / Turbo はさらに動画側と
-同じ量子化ウェイトが必要です（高速化ノードは ComfyUI 本体同梱。Optimized だけは
-`SpectrumApplyMiniMaxH3` の custom node も要ります。動画 VAE は動画側と違い、従来の
-`minimax_h3_video_vae_int8_convrot` のままです）。Turbo の Pika H3 Flex LoRA は
-設定ページのモデルスロットから差し替えられます。
+**P-H3-Image**（PrunaAI）は MiniMax H3 をベースにした画像生成・編集モデルで、**8 ステップ・
+CFG 無しで 8MP** を描きます。テキスト→画像（`p_h3_t2i`）・画像編集（`p_h3_i2i`。編集元画像が
+`<Picture 1>`）・参照編集（`p_h3_r2i`。参照画像 1〜8 枚を渡した順に `<Picture 1>` `<Picture 2>` …
+と呼び、1 枚目が編集される側）の 3 本です。版違い（Optimized / Turbo）は無く、プロジェクトの
+画像品質をどれにしても同じワークフローで焼かれます。ステップ数も変えられません。ComfyUI 本体
+（v0.44.0 以降）のノードだけで動くので custom node は不要で、Comfy Cloud でも選べます
+（モデルファイルが Cloud 側にあるかは別です）。
 
-生成フォームの「画像ワークフロー」セクションには、H3 のつまみがプルダウンで並びます
-（選択肢は「標準（5 フレーム）」「安定重視」のような日本語で表示されます。ComfyUI に送る値は
-ノード側の英語のまま変わりません）。
+- **解像度**: テキスト→画像は既定 8MP で、アスペクト比ごとにモデルカードの推奨サイズ
+  （1:1 2912×2912、4:3 3360×2496、16:9 3872×2176 など）になります。メガピクセルを下げれば
+  4MP なども選べますが、低いほど顔・手・細部が崩れやすくなります。編集（i2i / r2i）は
+  `<Picture 1>` を既定 4MP に揃え、**その縦横比のまま**描きます（アスペクト比は効きません）。
+- **プロンプトアップサンプラ**（既定 on）: Qwen3.5-9B ベースの書き直しモデルが、短い依頼を
+  P-H3-Image 向けの詳しいプロンプト（編集なら「何を変えて何を残すか」の編集指示）にして
+  から描きます。テキスト→画像ではアスペクト比の行（`Aspect ratio: 16:9` など）をアプリが
+  自動で付けるので、プロンプトに比を書く必要はありません。off にすると書いた文がそのまま
+  使われるので、モデルカードの書き方（下記）で書いたプロンプト向けです。
+- **P-H3-Image LoRA**（既定 on）: 既定の構成は、動画の Turbo と同じ拡散モデル
+  `minimax_h3_fl2va_pruned_w4a8_mixed` に P-H3-Image の LoRA（`p-h3-image_lora_bf16`）を重ねて
+  画像モデルにするものです（大きな重みを動画と共有できます）。設定ページで UNET を LoRA
+  焼き込み済みの専用重み（`p-h3-image_w4a8` など）に差し替えたときだけ off にします。
+- **プロンプトの書き方**（英語）: 冒頭の 1 文で「その画像が何であるか」（"a photograph by an
+  experienced street photographer"、"a frame from a Japanese anime TV series" など）を言い、
+  視点・その瞬間の主役 1 つ・少数の脇役・光源と向きで 1 シーンを書きます。画像に出す文字は
+  全部引用符で短く書き、位置を添えて最後に "no other text"。stunning / epic / cinematic /
+  8k / masterpiece のような誇張語は入れず、長すぎるプロンプトも避けます。編集は
+  `Edit <Picture 1>. <完成した結果>. Keep <残すもの> exactly as it is.` の形です。
 
-| つまみ | 対象 | 内容 |
-|---|---|---|
-| フレーム枚数（品質） | 全モード | 5（既定）/ 9 / 13 / 20 フレーム。**上げるほど H3 が使える時間方向の文脈が増えて仕上がりが良くなり、そのぶん遅く VRAM も要ります** |
-| 出力フレームの選び方 | 全モード | デコードしたパケットから 1 枚を選ぶやり方（既定はノードの推奨フレーム）。枚数を増やしたときに効きます |
-| 静止画プロンプト補正 | 全モード | ノードが「カメラ固定の 1 枚絵」を要求する文をプロンプトに足すか（既定 on） |
-| 元画像の保持強度 | i2i / r2i | 0.00〜1.00（既定 0.75）。**denoise ではなく**「元をどれだけ保て」とプロンプトに書き足す強さです |
-| 元画像の合わせ方 | i2i / r2i | 生成キャンバスへの合わせ方（中央切り抜き / 余白を足す / 引き伸ばす） |
-| 参照画像の解像度 | r2i | 生成解像度に合わせて縮小（既定・速い）か、短辺 2048px まで残して同一性を上げるか |
+モデルは `minimax_h3_fl2va_pruned_w4a8_mixed`（diffusion_models・動画と共有）+
+`p-h3-image_lora_bf16`（loras）+ `p-h3-image_text_encoder_w4a8` / `p-h3-image_prompt_upsampler_w4a8`
+（text_encoders）+ `p-h3-image_vae_int8_convrot`（vae）。どれも設定ページで bf16 / int8_convrot
+版に差し替えられます（取得元と VRAM の目安は SETUP.md）。**MiniMax H3 Community License**
+なので、EU・英国・韓国・米国では MiniMax の別途許諾が要り、使った製品には
+"Powered by MiniMax H3" の表示が必要です。
+
+以前の **MiniMax H3 Image**（`minimax_h3_t2i` / `_i2i` / `_r2i` とその Optimized / Turbo。
+外部の custom node 頼み）は P-H3-Image に置き換えました。履歴やスタジオの設定に古い id が
+残っていても、自動で対応する P-H3-Image に読み替えます。
 
 **Grok Imagine** は ComfyUI ではなく **grok CLI のサブスクリプション枠**で走る外部生成です
 （GPU もモデルファイルも不要）。テキスト→画像と画像編集の 2 種があり、生成物は他の

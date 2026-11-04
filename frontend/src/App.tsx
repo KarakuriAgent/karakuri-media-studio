@@ -28,6 +28,7 @@ import {
   jobSteps,
   jobWorkflowIds,
   referenceFieldsForMode,
+  resolveWorkflowAlias,
   validateForm,
   type FormState,
 } from './form'
@@ -256,8 +257,12 @@ export default function App() {
           next.image_workflows.length > 0 &&
           !next.image_workflows.some((item) => item.id === previous.imageWorkflow)
         ) {
+          // 廃止した id（旧 MiniMax H3 Image など）は後継へ寄せ、それも無ければ既定へ
+          const alias = resolveWorkflowAlias(previous.imageWorkflow, next)
           changes.imageWorkflow =
-            next.default_image_workflow || next.image_workflows[0].id
+            alias && next.image_workflows.some((item) => item.id === alias)
+              ? alias
+              : next.default_image_workflow || next.image_workflows[0].id
         }
         if (
           next.audio_workflows.length > 0 &&

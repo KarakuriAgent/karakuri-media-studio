@@ -133,13 +133,13 @@
   理由は投入プレビューの `workflow_reason` に出る。
 - **画像生成品質**（`image_quality` = `normal` / `opt` / `turbo`、既定 `normal`）は、上の
   「動画生成品質」と**同じ 3 段だが独立したプロジェクト設定**。効くのは作品の素材となる
-  静止画を MiniMax H3 Image / Qwen-Image 2.1 で焼くときだけで、`minimax_h3_{t2i,i2i,r2i}`
-  の素 / `_opt` / `_turbo`、`qwen_image_21_{t2i,edit}` の素 / `_turbo` を選ぶ
-  （`app.studio.image_quality_workflow`。接続先が対応しなければ素へ落とす）。
-  動画の t2v と同じ理由で **`minimax_h3_t2i_turbo` は無い**ので、`turbo` の作品でも t2i は
-  `_opt` へ落ちる（`app.studio.IMAGE_TURBO_FALLBACK_QUALITY`）。Qwen-Image 2.1 の turbo は
-  蒸留 LoRA ではなく公式の 8 steps 蒸留済みの重みなので **t2i にもあり**（フォールバック
-  しない）、ComfyUI 本体のノードだけで組んであるので Comfy Cloud でも素へ落とさない。
+  静止画を P-H3-Image / Qwen-Image 2.1 で焼くときだけで、`qwen_image_21_{t2i,edit}` の
+  素 / `_turbo` を選ぶ（`app.studio.image_quality_workflow`。接続先が対応しなければ素へ
+  落とす）。**P-H3-Image（`p_h3_{t2i,i2i,r2i}`）は 8 steps の蒸留モデルで版違いが無い**ので、
+  `normal` / `opt` / `turbo` のどれでも同じワークフローになる（旧 MiniMax H3 Image の
+  `minimax_h3_{t2i,i2i,r2i}` とその `_opt` / `_turbo` を渡されたときも P-H3-Image へ寄せる。
+  §2.3）。Qwen-Image 2.1 の turbo は蒸留 LoRA ではなく公式の 8 steps 蒸留済みの重みなので
+  **t2i にもあり**、ComfyUI 本体のノードだけで組んであるので Comfy Cloud でも素へ落とさない。
   Qwen-Image 2.1 に `_opt` は無く、`opt` の作品では素の版のまま焼く。
   動画の `quality` は静止画には流用しない（動画を turbo で回していても素材の絵は素で焼く、
   という使い分けのために分けてある）。いまのところアプリ側に静止画を焼く経路は無く、
@@ -150,7 +150,7 @@
   既定は `NULL` / `NULL` / `0`）は、下の動画側の `megapixels` / `aspect_ratio` / `steps` と
   同じ 3 項目を**素材の静止画用に別で持つ**もの。素材の静止画ジョブ（`mode: "image_only"`）には
   こちらを使い、**動画用の値は流用しない**。`NULL` / `0` = 指定しない＝テンプレートの既定のまま
-  （MiniMax H3 Image は約 0.98MP）で、`image_steps` の上限は動画側と同じ `MAX_STEPS`（150）。
+  （P-H3-Image は t2i 8MP・編集 4MP）で、`image_steps` の上限は動画側と同じ `MAX_STEPS`（150）。
   「設定されているものだけを渡す」形にまとめるのは `app.studio.image_render_defaults`。
 - 画質のほうはワークフローを選ばず、プロジェクトの **`megapixels` / `aspect_ratio`**
   （生成フォームと同じ 2 項目を作品単位の既定として持つ）が投入時の値を決める。
@@ -268,9 +268,9 @@
 | `qwen_image_21_t2i_turbo` | Qwen-Image 2.1 生成 Turbo | `qwen-image` | なし | `qwen_image_21_t2i` の **8 steps 蒸留版**（公式の Qwen-Image 2.1 Turbo の重み）。入力・プロンプトの書き方は素の版と完全に同じ |
 | `qwen_image_21_edit` | Qwen-Image 2.1 編集 | `qwen-image` | 参照画像 1〜10 枚 | **参照編集系**。`source_image` ではなく `reference_images` を渡した順に `images.image_1` … へ繋ぎ、プロンプトからは 2 枚以上なら `<image1>` `<image2>` … で呼ぶ（1 枚なら**タグを使わない**）。1 枚目が編集キャンバスで、出力の縦横比はそれに追従（`aspect_ratio` は無視。`megapixels` は「1 辺の長さ」に直して `TextEncodeQwenImage21.resolution` へ入る） |
 | `qwen_image_21_edit_turbo` | Qwen-Image 2.1 編集 Turbo | `qwen-image` | 参照画像 1〜10 枚 | `qwen_image_21_edit` の **8 steps 蒸留版**。参照画像の繋ぎ方・枚数・プロンプトの書き方は素の版と完全に同じ |
-| `minimax_h3_t2i` / `_opt` | MiniMax H3 Image t2i | `minimax-h3-image` | なし | text-to-image。H3（音声つき動画モデル）でフレームのパケットを作り 1 枚を選ぶ（枚数は `selects` の `quality_profile` で 5 / 9 / 13 / 20）。`ResolutionSelector` は無く、アプリが幅・高さを **32 の倍数**で計算して注入（既定 0.98MP）。**`_turbo` は無い**（当初の 4step 蒸留 LoRA が fl2v 用でテキストだけの生成に効かなかったため置いていない。品質 `turbo` でも `_opt` に落ちる） |
-| `minimax_h3_i2i` / `_opt` / `_turbo` | MiniMax H3 Image i2i | `minimax-h3-image` | 画像（編集元画像） | **編集系**。`source_image` を fl2va のフレーム 0 に置く。解像度は `aspect_ratio` + `megapixels`（合わせ方は `selects` の `source_fit`・既定 crop_center） |
-| `minimax_h3_r2i` / `_opt` / `_turbo` | MiniMax H3 Image r2i | `minimax-h3-image` | 参照画像 1〜9 枚 | **参照編集系**（base / `_opt` / `_turbo` とも ref2va。`_turbo` は Pika H3 Flex ref2va LoRA を 1 本重ねる）。`reference_images` を渡した順に `<Picture 1>` … で参照。開始フレーム（`source_image`）は受け取らない |
+| `p_h3_t2i` | P-H3-Image t2i | `p-h3-image` | なし | text-to-image（PrunaAI の P-H3-Image。MiniMax H3 ベース・8 steps・CFG 無し）。`ResolutionSelector` は無く、アプリが幅・高さを **32 の倍数**で計算して `PH3ImageConditioning` に注入（既定 **8MP**＝モデルカードの推奨表: 1:1 2912x2912 / 4:3 3360x2496 / 3:4 2496x3360 / 3:2 3552x2368 / 2:3 2368x3552 / 16:9 3872x2176 / 9:16 2176x3872）。プロンプトアップサンプラの入力の `Aspect ratio:` 行はアプリが `aspect_ratio` から書く |
+| `p_h3_i2i` | P-H3-Image i2i | `p-h3-image` | 画像（編集元画像） | **編集系**。`source_image` が `<Picture 1>`。`ImageScaleToTotalPixels` で `megapixels`（既定 **4MP**・32 の倍数）に揃え、その大きさ・縦横比で描く（`width` / `height` = 0。`aspect_ratio` は無視） |
+| `p_h3_r2i` | P-H3-Image r2i | `p-h3-image` | 参照画像 1〜8 枚 | **参照編集系**。`reference_images` の 1 枚目が編集対象の `<Picture 1>`（i2i と同じ前処理）、2 枚目以降が参照の `<Picture 2>` …（`PH3ImageConditioning.images.image_N` にそのまま）。開始フレーム（`source_image`）は受け取らない |
 | `grok_imagine_t2i` | Grok Imagine 画像生成（サブスク CLI） | `grok-imagine` | なし | **ComfyUI 非依存**（`backend: "grok_cli"`、§5.2）。text-to-image |
 | `grok_imagine_edit` | Grok Imagine 画像編集（サブスク CLI） | `grok-imagine` | 画像（編集元画像） | **ComfyUI 非依存**の編集系。`source_image` 必須で、出力解像度は入力画像から決まる |
 
@@ -299,50 +299,58 @@
   Grok のシステムプロンプトにはファミリー別のガイドが埋め込まれる（§4.2）。
   `grok-imagine` はグラフを持たず LoRA も差せないので、`image_families()`（LoRA 登録の
   選択肢とプロンプトガイドの単位）には**並ばない**
-- `minimax-h3-image` は外部のカスタムノード（ComfyUI-MiniMax-H3-Image-Studio、
-  `deploy/runpod/custom_nodes.txt` に固定）が要る。`H3*` の 6 クラスを
-  `OPTIONAL_CLASS_TYPES` に載せてあるので、カスタムノードが無い接続先
-  （Comfy Cloud を含む）では base / `_opt` / `_turbo` とも丸ごと選択肢から落ちる
-  （§3.2。`_opt` / `_turbo` は動画側と同じ高速化ノードも焼き込んである。
-  動画の turbo と違い、H3 Image Studio を Comfy Cloud に入れられないので、どのバリアントも Comfy Cloud には出ない）。
-  `_turbo` の Pika H3 Flex LoRA は `LoraLoaderModelOnly` で読むので設定画面から
-  差し替えできる（§3.3）
-- `minimax-h3-image` のモデル構成は**動画側（`minimax-h3`）とそろえてある**:
+- `p-h3-image`（P-H3-Image、https://huggingface.co/PrunaAI/P-H3-Image）は ComfyUI 本体
+  （v0.44.0 以降）の `PH3ImageConditioning` と汎用ノードだけで動くので、**外部のカスタムノードは
+  要らず Comfy Cloud でも選べる**（モデルファイルが Cloud 側にあるかは別）。テンプレートは
+  Pruna 公式の LoRA 版ワークフロー（PrunaAI/P-H3-Image-Comfy の
+  `workflows/p-h3-image_lora_{text_to_image,edit}.json`）を API 形式にしたもの:
 
-  | | base | `_opt` | `_turbo` |
-  |---|---|---|---|
-  | UNET（t2i / i2i） | `minimax_h3_fl2va_pruned_w4a8_mixed` | 同左 | 同左 |
-  | UNET（r2i） | `minimax_h3_ref2va_pruned_w4a8_mixed` | 同左 | 同左 |
-  | CLIP | `qwen3vl_32b_heretic_minimax_h3_nvfp4` | 同左 | 同左 |
-  | 動画 VAE | `minimax_h3_video_vae_fp16` | `minimax_h3_video_vae_int8_convrot` | 同左 |
-  | LoRA | なし | なし | Pika H3 Flex LoRA 1 本（i2i は `pika_h3_flex_fl2va_comfy_bf16`・ノード 150、r2i は `pika_h3_flex_ref2va_comfy_bf16`・ノード 143） |
-  | Spectrum | なし | あり | なし（6 ステップでは一度も予測しない） |
-  | サンプラー / シグマ | `H3SamplingSettings`（res_multistep / simple / 20） | 同左 | `KSamplerSelect`（**lcm**・ノード 123）+ `ManualSigmas`（**7 点 = 6 ステップ固定**・ノード 124） |
+  | 役割 | ノード（ID） | 既定 |
+  |---|---|---|
+  | 拡散モデル | `UNETLoader`（1） | `minimax_h3_fl2va_pruned_w4a8_mixed`（**動画の turbo と共有**） |
+  | P-H3-Image LoRA | `LoraLoaderBypassModelOnly`（19） | `p-h3-image_lora_bf16`・強度 1.0 |
+  | sigma shift | `MiniMaxH3SigmaShift`（5） | video 1.0 / audio 1.0 |
+  | テキストエンコーダ | `CLIPLoader`（2・type `minimax`） | `p-h3-image_text_encoder_w4a8` |
+  | アップサンプラ | `CLIPLoader`（4・type `minimax`）+ `TextGenerateV2`（8） | `p-h3-image_prompt_upsampler_w4a8` |
+  | VAE | `VAELoader`（3） | `p-h3-image_vae_int8_convrot` |
+  | サンプリング | `KSamplerSelect`（13）+ `ManualSigmas`（15）+ `BasicGuider` | **euler・8 ステップ固定**（`1.0, 0.984753, 0.967905, 0.951688, 0.925372, 0.881923, 0.810083, 0.528718, 0.0`。`steps` は受け取らない） |
 
-  動画 VAE は動画側の opt / turbo（Sol-H3-VAE）と違い、従来の `minimax_h3_video_vae_int8_convrot` の
-  まま。Sol-H3-VAE のデコーダは 5 ラテント単位の非因果デコードに蒸留されたもので、短いフレーム
-  パケットを `H3ImageDecode` / `H3ImageFrameSelector`（外部のカスタムノード）でデコードして 1 枚を選ぶ
-  静止画側での振る舞いを確かめていないため。
-
-  `_turbo` の `H3SamplingSettings`（ノード 8）は sigma shift（video 12 / audio 3）を掛けた
-  model 出力のためだけに残してあり、sampler / sigmas 出力はどこにも繋がない（`SamplerCustomAdvanced`
-  は 123 / 124 を読む）。ノードの実装上、sampler / sigmas の出力に副作用は無い
-  （model の clone に `model_sampling` と `transformer_options` の shift を載せるのは model 出力側だけ）。
-  `_turbo` は `steps` を宣言しないので、`image_steps` を設定していても効かない
-- `minimax_h3_r2i` は**画像ステージが参照素材（`reference_images`）を受け取る**唯一の
-  ワークフロー。`RefMediaFan` の宣言で、渡された枚数ぶん `LoadImage` を生やして
-  1 枚目を `source_image`（= `<Picture 1>`）、2 枚目以降を `reference_image_2` … に
-  繋ぎ直す。1 枚以上必須（`min_refs`）
-- `minimax-h3-image` の 9 本はノードの widget を**選択式フィールド**（`selects`、§3.1）として
-  公開してある。共通が `quality_profile`（フレーム枚数 `recommended | 5 frames` /
-  `extended quality | 9 frames` / `high quality | 13 frames` /
-  `maximum quality | 20 frames (slow)`。**上げるほど H3 が使える時間方向の文脈が増えて
-  品質が上がり、そのぶん遅く VRAM も要る**）・`frame_strategy`（`H3ImageFrameSelector.strategy`。
-  デコードしたパケットから 1 枚を選ぶやり方）・`optimize_for_still`（静止画向けの
-  プロンプト包み・既定 `on`）。i2i / r2i はさらに `source_fidelity`（0.00〜1.00 の段階。
-  **denoise ではなくプロンプトに足す保持要求の強さ**）と `source_fit`、r2i は
-  `reference_detail` を持つ。`H3ImageDecode` はフレーム枚数を latent のメタデータから
-  読むので注入点を持たず、`quality_profile` 1 つで枚数もデコードも決まる
+  どのファイルも設定ページのモデル上書き（§3.3）で bf16 / int8_convrot 版に差し替えられる
+  （精度の違うファイルは自由に組み合わせ可）。LoRA を焼き込んだ専用重み
+  （`p-h3-image_w4a8` など）を UNET に選んだときは、選択式 `p_h3_lora` を `off` にすると
+  ビルダーが LoRA ノードを外して素通しにする（`WorkflowSpec.bypass_nodes`、
+  `app.workflow._apply_bypass_selects`）。公式は非推奨の `TextGenerate` を使っているが、
+  ここでは `TextGenerateV2`（`images.image1` に渡したバッチを 1 枚ずつに分けて読む）にしてある
+- P-H3-Image の**プロンプトアップサンプラ**（Qwen3.5-9B ベース）は選択式 `prompt_upsampler`
+  （`on` / `off`、既定 `on`）で切り替える。値は `ComfySwitchNode`（9）の `switch` に真偽値で
+  入り、`off` のときは依頼文（`PrimitiveStringMultiline`「Request」・ノード 6 = `prompt` の
+  注入先）がそのまま `PH3ImageConditioning.prompt` に流れる（`TextGenerateV2` はスイッチの
+  遅延入力なので実行もされない）。アップサンプラへの入力は `StringFormat`（7）の `f_string` を
+  アプリが組む（`WorkflowSpec.upsampler` = `PromptUpsamplerSpec`、`app.workflow._build_prompt_upsampler`）:
+  - t2i … `Aspect ratio: <W:H>\nRequest: {a}`。比は幅・高さを決めたのと同じ
+    `parse_aspect_ratio` で `aspect_ratio` から書くので、**キャンバスと必ず一致する**
+  - i2i / r2i … Qwen3.5 のチャット書式そのままで、画像 1 枚ごとに
+    `<Picture N>: <|vision_start|><|image_pad|><|vision_end|>` を並べ、`Edit <Picture 1>. {a}` を
+    続けて思考ブロックを開く。画像は `BatchImagesNode`（22）に同じ順で並ぶ（1 枚目は
+    `ImageScaleToTotalPixels` で 1MP、r2i の 2 枚目以降は `ResizeAndPadImage` で 1 枚目の大きさに
+    白で余白を足して揃える。雛形の `ResizeAndPadImage`（24）は参照の枚数ぶん複製して消す）
+  - 編集の依頼文の頭に `Edit <Picture 1>.` があれば外してから注入する（アップサンプラ書式と、
+    off のときの `PH3ImageConditioning` が自分で付けるので二重にしない）
+- `p_h3_r2i` は `RefMediaFan` の `primary_image_via` で、1 枚目のローダーを前処理ノード
+  （`ImageScaleToTotalPixels` の 4MP（20）と 1MP（21））の入力へ繋ぎ、
+  `images.image_1` は 4MP 側の出力を読む。2 枚目以降は `images.image_2` … にローダーから直接
+  繋ぐ。1 枚以上必須（`min_refs`）・上限 8 枚（編集対象 1 + 参照 7。モデルの上限）
+- **廃止した id のエイリアス**: 旧 MiniMax H3 Image（外部の ComfyUI-MiniMax-H3-Image-Studio
+  頼みだった `minimax_h3_{t2i,i2i,r2i}` とその `_opt` / `_turbo`）は P-H3-Image に置き換えた。
+  `app.workflows.WORKFLOW_ALIASES` が旧 id → 新 id を持ち、`get_spec` が読み替えるので、
+  DB・保存済み Take・UI 状態・スタジオ設定・エージェントのメモに旧 id が残っていても壊れない。
+  `JobCreate` / `GenerationParams` / `ChatSessionCreate` の `image_workflow` も検証前に新 id へ
+  寄せる。再実行（`rerun`）では寄せたときだけ、旧版にしか無い選択項目（`quality_profile` など）を
+  `selects` から落とす。`GET /api/options` の `workflow_aliases` で同じ表を返し、フロントエンドは
+  保存済みのフォーム状態・過去ジョブの復元で使う。エイリアスは選択肢・カタログには出さない
+- **ライセンス**: P-H3-Image の重みは MiniMax H3 Community License。EU・英国・韓国・米国では
+  MiniMax から別途許諾を受けない限り使えず、これを使った製品には "Powered by MiniMax H3" の
+  表示が要る（テキストエンコーダの Qwen3-VL-4B 部分とアップサンプラは Apache 2.0）
 
 ### 2.4 音声ワークフロー（`workflow/audio/`）
 
@@ -425,7 +433,7 @@ LoRA チェーンも持たない（テンプレートに LoRA ノードが無い
 
 1 つの入力欄が**複数のファイル**を持つ論理入力の仕組み（MiniMax H3 r2v の参照素材、§2.2）。
 **参照モードと先頭フレームモードは排他**なので、宣言を持つのは**参照専用のワークフロー**
-（動画の `minimax_h3_r2v` 系と画像の `minimax_h3_r2i` 系）だけで、そちらは
+（動画の `minimax_h3_r2v` 系と画像の `p_h3_r2i`・`qwen_image_21_edit` 系）だけで、そちらは
 `accepts_start_image=False` かつ `image` / `end_image` の受け取り口を持たない
 （マニフェストの検証がこの同居を弾く）。参照素材は**画像ステージと動画ステージのどちらの
 入力にもなる**ので、検証（`models.reference_problem`）とアップロード
@@ -477,11 +485,13 @@ video_decoder=…, audio_loader=…, min_refs=1)` を宣言すると、`workflow
 マニフェストの検証は「受け側と雛形が実在し、雛形の class_type が種類と合っていて、本当に `ref_*` に
 繋がっているか」まで見る。
 
-画像ステージ（`minimax_h3_r2i`）も同じ宣言を使う。ただし `H3ReferenceEditPrepare` は
-1 枚目を**必須の `source_image`**（= `<Picture 1>`）で受け、2 枚目以降だけが任意の
-`reference_image_2` … になっている。この形は `RefMediaFan(primary_image_field="source_image",
-image_prefix="reference_image_", image_offset=1)` で宣言し、`_build_ref_media` が 1 枚目を
-`source_image` に、`index` 番目（1 以上）を `reference_image_<index + 1>` に繋ぐ。
+画像ステージ（`p_h3_r2i` / `qwen_image_21_edit`）も同じ宣言を使う。どちらも 1 始まりの
+`images.image_1` … なので `image_offset=1`。P-H3-Image は 1 枚目（編集対象の `<Picture 1>`）を
+前処理（`ImageScaleToTotalPixels` の 4MP / 1MP）に通してから受け側へ入れるので、
+`RefMediaFan(primary_image_via=(…))` で前処理の入力を宣言し、`_build_ref_media` が 1 枚目の
+ローダーをそこへ繋いで、`images.image_1` は先頭の前処理ノードの出力を読ませる（2 枚目以降は
+`images.image_<index + 1>` に直接）。1 枚目を専用の別入力で受けるノード向けの
+`primary_image_field` も残してある（いまはどのワークフローも使っていない）。
 画像ステージのビルダー（`workflow.build_image_workflow`）も動画側と同じ
 `_prune_optional_loaders` / `_build_ref_media` / `_inject_selects` を通る。
 
@@ -502,8 +512,7 @@ ComfyUI が「テンプレートにしか無いファイル」を探して落ち
 当てた turbo（`minimax_h3_{i2v,r2v}_save_turbo` / `minimax_h3_r2v_context_turbo`）がある。
 **t2v に turbo は無い**: 当初の 4step 蒸留 LoRA が fl2v（フレーム条件つき）用で、
 テキストだけの生成には効かなかったため。t2v は素と `opt`（と、そのラテント保存版）だけで、
-品質 `turbo` の作品でも t2v になるカットは `opt` へ落として投入する（画像側の t2i も同じで、
-`minimax_h3_t2i_turbo` は無い）。
+品質 `turbo` の作品でも t2v になるカットは `opt` へ落として投入する。
 受け取る論理入力・プロンプトの書き方・`multi_inputs` は素の版と**同じ**（`steps` だけは
 受け取らない。下記）で、違うのは中身だけ:
 
@@ -687,14 +696,16 @@ r2v の opt / turbo も素の r2v と同じ **ref2va 本体**（`minimax_h3_ref2
 品質は素の版相当のまま実行だけが速い。
 ドラマスタジオからはプロジェクトの「動画生成品質」（`quality`）として選ぶ（§2.2）。
 
-**接続先が `comfy_cloud` のときは opt（Spectrum）・ラテント連続性のバリアント・MiniMax H3 Image の
-全バリアントを選択肢に出さない**。Comfy Cloud には任意のカスタムノードを入れられないためで、判定は id の
+**接続先が `comfy_cloud` のときは opt（Spectrum）・ラテント連続性のバリアントを選択肢に
+出さない**。Comfy Cloud には任意のカスタムノードを入れられないためで、判定は id の
 ハードコードではなく「テンプレートが `workflows.OPTIONAL_CLASS_TYPES`（本体に無い外部の
-カスタムノード: `SpectrumApplyMiniMaxH3`・H3 Image Studio の `H3*`・Motion Context 系）を 1 つでも使うか」
+カスタムノード: `SpectrumApplyMiniMaxH3`・Motion Context 系）を 1 つでも使うか」
 （`workflow.uses_optional_class_types` / `workflow.supported_on_target`。spec ごとにプロセス内
 キャッシュ）。本体ノードだけで組んである **turbo（`minimax_h3_i2v_turbo` / `minimax_h3_r2v_turbo`）は
 Comfy Cloud でも出る**。そのときは w4a8 の UNET・Pika H3 Flex LoRA・Sol-H3-VAE（とラテント
-アップスケールを使うならアップスケーラ）を Cloud 側に入れておく必要がある。`GET /api/options` の `image_workflows` / `video_workflows` / `audio_workflows` が
+アップスケールを使うならアップスケーラ）を Cloud 側に入れておく必要がある。画像の
+P-H3-Image（`p_h3_{t2i,i2i,r2i}`）も本体ノードだけなので Comfy Cloud でも出る（モデルは同様に
+Cloud 側に要る）。`GET /api/options` の `image_workflows` / `video_workflows` / `audio_workflows` が
 同じ規則で絞られ、フォームの 2 段プルダウンも外部 API の `GET /api/v1/options` もそれに従う。
 `local` / `runpod` は自前の ComfyUI なので従来どおり全件出す（入っていなければ実行時に ComfyUI 側で
 エラーになる）。保存済みの選択が消えた場合、フロントは `default_video_workflow`（または先頭）へ
@@ -717,12 +728,13 @@ Comfy Cloud でも出る**。そのときは w4a8 の UNET・Pika H3 Flex LoRA�
   両方に入れないと映像だけ伸びてしまう項目のため）
 - 書き込み先が **BOOLEAN の widget**（`workflow._BOOL_INPUTS`）なら、選んだ文字列を
   `on` → `true` / それ以外 → `false` に直してから入れる。ComfyUI は BOOLEAN に文字列を入れると
-  型検証で prompt ごと落ちるため。MiniMax H3 Image の `optimize_for_still`
-  （静止画向けのプロンプト包み・既定 `on`）がこの形
+  型検証で prompt ごと落ちるため。P-H3-Image の `prompt_upsampler`
+  （`ComfySwitchNode.switch`・既定 `on`）がこの形
 - 書き込み先が **FLOAT の widget** で選択肢が数字の文字列のとき（`workflow._FLOAT_SELECT_INPUTS`）は
-  `float()` に直してから入れる（BOOLEAN と同じ理由）。MiniMax H3 Image の `source_fidelity`
-  （`H3ImageToImagePrepare` / `H3ReferenceEditPrepare`）がこの形で、ノードの 0.00〜1.00・刻み 0.05 の
-  うち実用的な段階（0.00 / 0.25 / 0.50 / 0.75 / 0.90 / 1.00）だけを選択肢にしてある
+  `float()` に直してから入れる（BOOLEAN と同じ理由。いまは該当する選択式が無いので空）
+- `rewrites_graph` の選択式で `WorkflowSpec.bypass_nodes` に名前があるもの（P-H3-Image の
+  `p_h3_lora`）は、`off` のときそのノード（`MODEL` を 1 本受けて 1 本返すもの）をグラフから外し、
+  読んでいた入力を `model` の繋ぎ元へ付け替える（`workflow._apply_bypass_selects`）
 - `auto: "audio_duration"` の項目は、**未指定なら入力音声の実長**（`jobs.probe_media_duration`、
   ffprobe）を選択肢に切り上げて決める（上限は最大の選択肢）。決めた値は params に残るので
   再実行でも同じ尺になる。ffprobe が無い・読めない場合は宣言した既定値に落ちる（登録は止めない）
@@ -764,9 +776,10 @@ height = round(h_ratio * scale / 8) * 8
 VRAM が足りずに CUDA OOM で落ちる。そこで `WorkflowSpec.default_megapixels`（0.0 = 宣言なし）を
 宣言でき、値は `GET /api/options` の `video_workflows[].default_megapixels` に出る。
 宣言を持つのは **MiniMax H3 の動画 7 つ（t2v / i2v / i2v turbo / i2v opt / r2v / r2v turbo / r2v opt）
-= 0.4MP**（短辺 768px・最大 768x1344 の画角）と、**MiniMax H3 Image の 9 つ（t2i / i2i / r2i ×
-base / opt / turbo）= 0.98MP**（native canvas 1344x768。こちらは逆に、グローバル既定の 0.4MP の
-ままだとネイティブの 4 割の解像度で生成してしまう）。宣言は動画・画像の両方の
+= 0.4MP**（短辺 768px・最大 768x1344 の画角）と、**P-H3-Image の t2i = 8MP・i2i / r2i = 4MP**
+（モデルカードの推奨。こちらは逆に、グローバル既定の 0.4MP のままだと顔や手が破綻しやすい
+低解像度で生成してしまう。t2i は 32 の倍数に丸めると推奨表のサイズにちょうど一致し、
+編集は `ImageScaleToTotalPixels.megapixels` に入って `<Picture 1>` を揃える大きさになる）。宣言は動画・画像の両方の
 `GET /api/options` に出る（`video_workflows[].default_megapixels` /
 `image_workflows[].default_megapixels`）。
 
@@ -780,7 +793,7 @@ base / opt / turbo）= 0.98MP**（native canvas 1344x768。こちらは逆に、
 `megapixelsFor(...)` の値を入れる（宣言が無ければグローバル既定へ戻す）: 画像ステージ
 （`full` / `image_only`）は `image_workflow`、動画ステージ（`full` / `i2v`）は `video_workflow`。
 **両方走る `full` では 1 つの値を 2 段が共有するので、きつい側（小さいほう）に合わせる**
-（画像 0.98MP + 動画 0.4MP なら 0.4MP。動画側で CUDA OOM にしないほうを取る）。
+（画像 8MP + 動画 0.4MP なら 0.4MP。動画側で CUDA OOM にしないほうを取る）。
 切り替えたあとに手で変えた値はそのまま残り、次に切り替えるまで維持される（音声の
 `clampToWorkflow` と同じ「切り替え時にだけ追随させる」形）。
 
@@ -836,10 +849,10 @@ Stable Audio の `reprompt`（内蔵 LLM でのプロンプト展開）だけは
 
 ### 3.3 固定（触らない）ノード
 
-- 画像側: 各ファミリーの UNET / CLIP / VAE（krea2 = `krea2_turbo_fp8_scaled` + `qwen3vl_4b_fp8_scaled` + `qwen_image_vae`、anima = `anima-base-v1.0`、z-image = `z_image_turbo_bf16`、qwen-image = `qwen_image_2.1_int8_convrot`（turbo は `qwen_image_2.1_turbo_int8_convrot`）+ `qwen3vl_8b_int8_convrot` + `qwen_image_2.1_vae_bf16`）と KSampler 設定
+- 画像側: 各ファミリーの UNET / CLIP / VAE（krea2 = `krea2_turbo_fp8_scaled` + `qwen3vl_4b_fp8_scaled` + `qwen_image_vae`、anima = `anima-base-v1.0`、z-image = `z_image_turbo_bf16`、qwen-image = `qwen_image_2.1_int8_convrot`（turbo は `qwen_image_2.1_turbo_int8_convrot`）+ `qwen3vl_8b_int8_convrot` + `qwen_image_2.1_vae_bf16`、p-h3-image = `minimax_h3_fl2va_pruned_w4a8_mixed`（動画の turbo と共有）+ `p-h3-image_lora_bf16`（`LoraLoaderBypassModelOnly`）+ `p-h3-image_text_encoder_w4a8` + `p-h3-image_prompt_upsampler_w4a8` + `p-h3-image_vae_int8_convrot`。どれも bf16 / int8_convrot 版や LoRA 焼き込み済みの専用重み `p-h3-image_{w4a8,int8_convrot,bf16}` に差し替え可、専用重みのときは `p_h3_lora` を off）と KSampler 設定（P-H3-Image は euler + ManualSigmas の 8 ステップ固定）
 - 音声側: MiniMax Music 3 `minimax_music3_dit_fp16` + `minimax_music3_text_encoder_pruned_int8_convrot` + `minimax_music3_dav`、Stable Audio `stable_audio_3_medium_base` + `t5gemma_b_b_ul2` / `qwen3.5_2b_bf16`、およびサンプラー設定
 - 動画側: MiniMax H3 の UNET / CLIP / 映像 VAE / 音声 VAE（`minimax_h3_*` 系。素の版から w4a8 量子化ウェイトで、opt / turbo はさらに Sol-H3-VAE（`minimax_h3_sol_vae_int8_convrot`）の映像 VAE + Comfy Kitchen attention / Sol-Attn / SigmaShift（opt は Spectrum も）、turbo は Pika H3 Flex LoRA と lcm・ManualSigmas 6 ステップも）とサンプラー設定
-- **モデルファイル名は利用者の ComfyUI 環境依存**のため、設定ページ（`GET/PUT /api/models`）で上書き可能。既定値は各テンプレートの値。対象は UNETLoader.unet_name / CLIPLoader.clip_name / CLIPVisionLoader.clip_name / VAELoader.vae_name / CheckpointLoaderSimple.ckpt_name / LatentUpscaleModelLoader.model_name / LoadMoGeModel.model_name / LoraLoaderModelOnly.lora_name / LoraLoader.lora_name（§3.4 で削除される画像テンプレートのプレースホルダは除く。テンプレートが持つ固定 LoRA ノード（MiniMax H3 turbo の Pika H3 Flex LoRA）はユーザー LoRA と共存するので上書き対象のまま）
+- **モデルファイル名は利用者の ComfyUI 環境依存**のため、設定ページ（`GET/PUT /api/models`）で上書き可能。既定値は各テンプレートの値。対象は UNETLoader.unet_name / CLIPLoader.clip_name / CLIPVisionLoader.clip_name / VAELoader.vae_name / CheckpointLoaderSimple.ckpt_name / LatentUpscaleModelLoader.model_name / LoadMoGeModel.model_name / LoraLoaderModelOnly.lora_name / LoraLoaderBypassModelOnly.lora_name / LoraLoader.lora_name（§3.4 で削除される画像テンプレートのプレースホルダは除く。テンプレートが持つ固定 LoRA ノード（MiniMax H3 turbo の Pika H3 Flex LoRA）はユーザー LoRA と共存するので上書き対象のまま）
 - **モデルの指定は接続先ごと**（SPEC §5）: `Settings.model_overrides` / `model_choices` は `{"<comfy_target>": {"<スロットキー>": …}}` の 2 段で持つ。どのファイルが在るかは ComfyUI の環境ごとに違うため。`GET/PUT /api/models` は `?target=`（PUT はボディの `target`）で対象環境を選び、省略すると現在の接続先。**書き込みは選んだ環境だけ**で他の環境の指定は残る。ジョブ実行・`/api/options` の `model_slots`・投入時の検証はすべて「現在の接続先」の値（`Settings.overrides_for()` / `choices_for()`）を使う。接続先を分ける前の設定（1 組だけ）は読み込み時に**3 環境すべてへ複製**される（`config._per_target`）: 分けた瞬間に指定が消えて既定モデルで走り出すのを避けるため
 - 上書きキーは**ワークフロー ID でスコープ**する: `"<workflow_id>/<node_id>.<field>": "<ファイル名>"`。テンプレート間で同じノード ID（例: `340:317` が ia2v と id_lora の両方にある）が衝突しないため。旧レイアウトの非スコープキーは無視される（マイグレーション不要）
 - **実行ごとのモデル切り替え**: 同じキー形式で「そのスロットで選べるファイル名」を設定に持てる（`Settings.model_choices`、`GET/PUT /api/models` で読み書き）。既定値（`model_overrides` → 無ければテンプレート値）と合わせて **2 件以上**になったスロットは *switchable* とみなし、`GET /api/options` の `model_slots`（キー・ラベル・既定値・候補一覧）に出す。ジョブは `model_overrides`（`JobCreate` / `JobContinue` のフィールド）で 1 回ぶんだけ差し替えられ、実行時に設定の既定値の上へマージされる（`jobs.run_job`）。検証（`models.model_override_problem`、Web UI と API で共通）は「キーが `model_fields()` に存在」「そのジョブが走らせるワークフロー（`models.job_workflow_ids`）に属する」「値が候補（既定値を含む）に入っている」を満たさないものを 422 で拒否する。再実行は params ごと引き継ぎ、続き生成は動画ワークフローぶんのキーだけを引き継ぐ（`workflow.scoped_model_overrides`）
@@ -2149,7 +2162,7 @@ SPA 1 画面 + 履歴。ダークテーマの生成系ツールらしい見た�
 - **モードとワークフローに応じた項目の非表示**（`form.hiddenFields`）: 使わない項目はグレーアウトではなく**その欄ごと表示しない**。ただし値は `FormState` に残るので、その項目を使うモード / ワークフローへ戻せば入力内容が復元される
   - 動画生成モードでは画像ワークフロー・画像プロンプト・LoRA（画像）・トリガーワードを出さない（LoRA（動画）は出す）。画像のみモードでは動画ワークフロー・動画プロンプト・ネガティブ・リファレンス音声・秒数・fps・LoRA（動画）を出さない
   - **選択した動画ワークフローのマニフェスト**に従い、音声入力を持たないワークフローでは音声欄を出さず、必要な入力（最終フレーム / 参照動画）の欄だけを出す。**必須ではないが受け取れる入力**（任意の開始フレーム・最終フレーム画像）も欄は出す（`requires` だけでなく `supports` を見る）。渡すかどうかはユーザー次第で、空なら送らない
-  - **画像ワークフロー**も同様で、単数の編集元を取る編集系（`minimax_h3_i2i`）では編集元画像の欄が出る代わりにアスペクト比 / メガピクセルが消える。`qwen_image_21_edit`（と `_turbo`）は編集元を参照画像のリストで受けるので、参照素材の欄が出る（メガピクセルは効くので残る）
+  - **画像ワークフロー**も同様で、単数の編集元を取る編集系（`grok_imagine_edit`）では編集元画像の欄が出る代わりにアスペクト比 / メガピクセルが消える（`megapixels` を受け取る `p_h3_i2i` は編集元を揃える大きさとして効くので解像度の欄を残す）。`qwen_image_21_edit`（と `_turbo`）は編集元を参照画像のリストで受けるので、参照素材の欄が出る（メガピクセルは効くので残る）
   - 音声モードでは画像・動画のセクション一式を出さず、音声ワークフローと、そのワークフローが露出しているつまみだけを出す
 - **ワークフローの選択は「モデル → モード」の 2 段プルダウン**（動画 / 画像 / 音声のどのセクションでも同じ `WorkflowPicker`）: 1 段目がモデル（= ファミリー。表示名は `/api/options` の `family_label` で、外部 API・サブスク CLI といった供給元の注記もここに付く）、2 段目がそのモデルのモード（t2v / i2v / 素材参照 …。表示名は `mode_label` で、1 段目と重複するモデル名は入らない）。フォームが持つ状態は今までどおりワークフロー id 1 つだけで、1 段目はそこから引く（前回選択の復元・ライブラリからの連鎖・外部 API からの下書き反映は id を入れるだけで両方のセレクトが揃う）。モデルを変えるとそのモデルの先頭モードへ切り替わるので、存在しない id のまま送信されることはない。モードが 1 つしかないモデルでも 2 段目は消さず無効化して出す。選択肢そのものが取れないとき（ComfyUI に繋がらない）は従来どおり id の手入力欄になる
 - 「画像＋動画」モードのプルダウンには開始フレームを受け取れる動画ワークフローのみを出す（選択中のものが対象外になったら自動で切り替える。モードが 1 つも残らないモデルは 1 段目からも消える）
@@ -2306,7 +2319,7 @@ SPA 1 画面 + 履歴。ダークテーマの生成系ツールらしい見た�
 
 ```
 GET  /api/health                 … ComfyUI/Grok 疎通チェック
-GET  /api/options                … 画像/動画/音声ワークフロー一覧（必要入力・露出しているつまみ・秒数レンジつき）・アスペクト比・LoRA一覧・アセット一覧・ライブラリ一覧（library, §7.2）・実行時に選べるモデルスロット（model_slots）と ComfyUI のモデルファイル一覧（model_files）
+GET  /api/options                … 画像/動画/音声ワークフロー一覧（必要入力・露出しているつまみ・秒数レンジつき）・アスペクト比・LoRA一覧・アセット一覧・ライブラリ一覧（library, §7.2）・実行時に選べるモデルスロット（model_slots）と ComfyUI のモデルファイル一覧（model_files）・廃止したワークフロー id の読み替え表（workflow_aliases、§2.3）
 GET/POST/PUT/DELETE /api/loras   … アプリ内 LoRA 登録リストの CRUD（GET は `?target=` でその接続先のもの + 共通行、POST は `comfy_target` で紐づけ先を指定、§5）
 GET  /api/library                … ライブラリ検索（kind / category / q / tag / limit / offset → items + total + tags、§7.2）
 POST /api/library/{kind}         … ファイルをアップロードして登録

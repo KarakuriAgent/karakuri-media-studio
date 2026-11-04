@@ -1,7 +1,7 @@
 import re
 from typing import Any, ClassVar, Literal, get_args
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .workflows import (
     AUDIO_CATEGORIES,
@@ -16,6 +16,7 @@ from .workflows import (
     MULTI_INPUT_LABELS,
     WorkflowSpec,
     WorkflowSpecError,
+    canonical_workflow_id,
     get_audio_spec,
     get_image_spec,
     get_video_spec,
@@ -524,6 +525,14 @@ class GenerationParams(BaseModel):
 
     # which templates to run (see app/workflows.py)
     image_workflow: str = DEFAULT_IMAGE_WORKFLOW
+
+    @field_validator("image_workflow", mode="before")
+    @classmethod
+    def _canonical_image_workflow(cls, value: Any) -> Any:
+        # 廃止した id（旧 MiniMax H3 Image など）はいまの id に読み替える
+        # （:data:`app.workflows.WORKFLOW_ALIASES`）
+        return canonical_workflow_id(value) if isinstance(value, str) else value
+
     video_workflow: str = DEFAULT_VIDEO_WORKFLOW
     audio_workflow: str = DEFAULT_AUDIO_WORKFLOW
 
@@ -719,7 +728,7 @@ def missing_job_fields(
     t2v needs no start frame while i2v needs one.  In ``full`` mode the
     *video* start frame is produced by the image stage and therefore not
     required as an input — but an image workflow that edits **one input
-    picture** (``minimax_h3_i2i``) still needs its own ``source_image`` in every
+    picture** (``p_h3_i2i``) still needs its own ``source_image`` in every
     mode that runs the image stage.  編集を参照画像のリストで受けるワークフロー
     （``qwen_image_21_edit`` / ``_turbo``）はここではなく
     :func:`reference_problem` の「参照は合計 1 件以上」で足りているかを見る。
@@ -1182,7 +1191,7 @@ def reference_materials(params: Any) -> dict[str, list[str]]:
 
 
 #: 参照素材を受け取りうるステージ 1 つ ``(ジョブのフィールド名, ステージの日本語名,
-#: マニフェスト)``。参照素材は画像ステージ（MiniMax H3 Image r2i）と動画ステージ
+#: マニフェスト)``。参照素材は画像ステージ（P-H3-Image r2i など）と動画ステージ
 #: （MiniMax H3 r2v）の**どちらの**入力にもなりうるので、検証はステージの一覧に
 #: 対して回す（``full`` では両方が並ぶ）。
 _ReferenceStage = tuple[str, str, "WorkflowSpec"]
@@ -1595,6 +1604,14 @@ class JobCreate(BaseModel):
     # ids of the templates to run (see app/workflows.py)
     video_workflow: str = DEFAULT_VIDEO_WORKFLOW
     image_workflow: str = DEFAULT_IMAGE_WORKFLOW
+
+    @field_validator("image_workflow", mode="before")
+    @classmethod
+    def _canonical_image_workflow(cls, value: Any) -> Any:
+        # 廃止した id（旧 MiniMax H3 Image など）はいまの id に読み替える
+        # （:data:`app.workflows.WORKFLOW_ALIASES`）
+        return canonical_workflow_id(value) if isinstance(value, str) else value
+
     #: only used by `mode: "audio"`, ignored everywhere else
     audio_workflow: str = DEFAULT_AUDIO_WORKFLOW
 
@@ -1924,6 +1941,14 @@ class ChatSessionCreate(BaseModel):
     # picks which IMAGE PROMPT SPEC the system prompt embeds.
     video_workflow: str = DEFAULT_VIDEO_WORKFLOW
     image_workflow: str = DEFAULT_IMAGE_WORKFLOW
+
+    @field_validator("image_workflow", mode="before")
+    @classmethod
+    def _canonical_image_workflow(cls, value: Any) -> Any:
+        # 廃止した id（旧 MiniMax H3 Image など）はいまの id に読み替える
+        # （:data:`app.workflows.WORKFLOW_ALIASES`）
+        return canonical_workflow_id(value) if isinstance(value, str) else value
+
     #: mode 'audio' のセッションで使う音声ワークフロー（そのモデルのプロンプト
     #: ガイドが system prompt に埋め込まれる）
     audio_workflow: str = DEFAULT_AUDIO_WORKFLOW
@@ -2719,6 +2744,9 @@ class Options(BaseModel):
     default_video_workflow: str = DEFAULT_VIDEO_WORKFLOW
     default_image_workflow: str = DEFAULT_IMAGE_WORKFLOW
     default_audio_workflow: str = DEFAULT_AUDIO_WORKFLOW
+    #: 廃止したワークフロー id -> いまの id（:data:`app.workflows.WORKFLOW_ALIASES`）。
+    #: 保存済みのフォーム状態や過去ジョブの復元で、旧 id をいまの選択肢へ寄せるのに使う
+    workflow_aliases: dict[str, str] = Field(default_factory=dict)
     #: the Stable Audio COMBO choices, for the 音声 form
     audio_categories: list[str] = Field(default_factory=lambda: list(AUDIO_CATEGORIES))
     aspect_ratios: list[str] = Field(default_factory=list)
@@ -2800,13 +2828,13 @@ StudioWorkflowOverride = Literal[
 StudioVideoQuality = Literal["normal", "opt", "turbo"]
 
 #: 画像生成の品質（プロジェクト単位の設定）。動画の :data:`StudioVideoQuality` と
-#: **同じ 3 段だが独立したつまみ**で、素材の静止画を MiniMax H3 Image
-#: （``minimax_h3_t2i`` / ``_i2i`` / ``_r2i``）や Qwen-Image 2.1
+#: **同じ 3 段だが独立したつまみ**で、素材の静止画を P-H3-Image
+#: （``p_h3_t2i`` / ``_i2i`` / ``_r2i``）や Qwen-Image 2.1
 #: （``qwen_image_21_t2i`` / ``_edit``）で焼くときにだけ効く
 #: （:func:`app.studio.image_quality_workflow`）。動画を turbo で回していても
-#: 素材の絵は素で焼きたい、という使い分けのために分けてある。動画側と同じく
-#: MiniMax H3 の ``turbo`` は t2i には無く、t2i は ``opt`` へ落ちる
-#: （Qwen-Image 2.1 は t2i にも ``turbo`` があり、``opt`` は無いので素のまま）。
+#: 素材の絵は素で焼きたい、という使い分けのために分けてある。P-H3-Image は
+#: 8 steps の蒸留モデルで版違いが無いので、どの値でも同じワークフローになる
+#: （Qwen-Image 2.1 は ``turbo`` のときだけ ``_turbo``、``opt`` は無いので素のまま）。
 StudioImageQuality = Literal["normal", "opt", "turbo"]
 
 #: リビジョンを作った主体。``user`` = UI からの操作、``external`` = 外部 API
@@ -2865,8 +2893,9 @@ class StudioProject(BaseModel):
     #: 論理モードと掛け合わせてワークフローのバリアントへ解決される。
     quality: StudioVideoQuality = "normal"
     #: 画像生成の品質（:data:`StudioImageQuality`）。動画の ``quality`` とは独立で、
-    #: 素材の静止画を MiniMax H3 Image / Qwen-Image 2.1 で焼くときの版
-    #: （素 / ``_opt`` / ``_turbo``）を決める。
+    #: 素材の静止画を P-H3-Image / Qwen-Image 2.1 で焼くときの版を決める
+    #: （P-H3-Image は版違いが無いのでどの値でも同じ。Qwen-Image 2.1 は
+    #: ``turbo`` のときだけ ``_turbo``）。
     image_quality: StudioImageQuality = "normal"
     #: 動画生成の画質＝メガピクセル（作品単位の既定）。``None`` = 指定しない
     #: ＝ワークフロー宣言の ``default_megapixels`` / グローバル既定のまま。
@@ -2880,7 +2909,7 @@ class StudioProject(BaseModel):
     #: ``steps`` を宣言しているワークフローだけが読む（SPEC §3.1）。
     steps: int = 0
     #: 素材画像の画質＝メガピクセル（作品単位の既定）。``None`` = 指定しない
-    #: ＝テンプレートの既定のまま（MiniMax H3 Image は約 0.98MP）。動画の
+    #: ＝テンプレートの既定のまま（P-H3-Image は t2i 8MP・編集 4MP）。動画の
     #: ``megapixels`` とは独立で、静止画に動画側の値は流用しない。
     image_megapixels: float | None = None
     #: 素材画像のアスペクト比（``None`` = 指定しない＝既定のまま）
