@@ -140,8 +140,8 @@ export const VIDEO_QUALITY_HINT: Record<StudioVideoQuality, string> = {
   normal: '通常 = 素の MiniMax H3（20 steps）。どの接続先でも動く標準の品質。',
   opt: 'Opt = 20 steps のまま量子化と高速化だけを入れた版（品質は通常のまま速い）。',
   turbo:
-    'Turbo = 4 steps の蒸留 LoRA 版（いちばん速いが粗い）。' +
-    '蒸留 LoRA は fl2v 用なので t2v には効かず、t2v になるカットは Opt で投入する。',
+    'Turbo = Pika H3 Flex LoRA で 6 steps 固定の版（いちばん速いが粗い）。' +
+    't2v には Turbo が無いので、t2v になるカットは Opt で投入する。',
 }
 
 /**
@@ -164,7 +164,7 @@ export const IMAGE_QUALITY_HINT: Record<StudioImageQuality, string> = {
     'Qwen-Image 2.1 には無いので通常で焼く。',
   turbo:
     'Turbo = 蒸留版（いちばん速いが粗い）。' +
-    'MiniMax H3 は蒸留 LoRA が fl2v 用なので t2i には効かず、t2i は Opt で焼く。' +
+    'MiniMax H3 は t2i に Turbo が無いので、t2i は Opt で焼く。' +
     'Qwen-Image 2.1 は t2i・編集とも 8 steps の公式 Turbo。',
 }
 

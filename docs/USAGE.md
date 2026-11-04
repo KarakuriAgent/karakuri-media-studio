@@ -39,14 +39,14 @@ Optimized は無いので、Optimized のときは素の版のままです）。
 **MiniMax H3 Image** は音声つき動画モデルの MiniMax H3 で**静止画 1 枚**を作るワークフローです
 （複数フレームのパケットを作って 1 枚を選ぶ）。テキスト→画像 (t2i)・画像編集 (i2i)・参照編集
 (r2i、参照画像 1〜9 枚を `<Picture 1>` … として渡す) の 3 モードがあり、それぞれ素の版 /
-**Optimized**（20 ステップのまま実行だけ速い）/ **Turbo**（公式 Turbo アダプタつき。i2i は
-8 ステップ、r2i は 4 ステップ）のバリアントがあります。ただし **t2i に Turbo はありません**
-（Turbo アダプタは fl2v（フレーム条件つき）用で、テキストだけの生成には効かないため）。
+**Optimized**（20 ステップのまま実行だけ速い）/ **Turbo**（Pika H3 Flex LoRA つき・lcm・
+6 ステップ固定。ステップ数は変えられません）のバリアントがあります。ただし **t2i に Turbo は
+ありません**（Turbo のテンプレートを置いていないため）。
 プロジェクトの画像品質を Turbo にしていても、t2i は Optimized で焼かれます。実行には
 [ComfyUI-MiniMax-H3-Image-Studio](https://github.com/astropuzzo/ComfyUI-MiniMax-H3-Image-Studio)
 が必要で（`deploy/runpod/custom_nodes.txt` に固定済み）、Optimized / Turbo はさらに動画側の
-Turbo と同じ custom node 一式と量子化ウェイトが必要です。Turbo アダプタは設定ページの
-モデルスロットから差し替えられます。
+Turbo と同じ custom node 一式と量子化ウェイトが必要です。Turbo の Pika H3 Flex LoRA は
+設定ページのモデルスロットから差し替えられます。
 
 生成フォームの「画像ワークフロー」セクションには、H3 のつまみがプルダウンで並びます
 （選択肢は「標準（5 フレーム）」「安定重視」のような日本語で表示されます。ComfyUI に送る値は
@@ -74,23 +74,25 @@ Turbo と同じ custom node 一式と量子化ウェイトが必要です。Turb
 | ワークフロー | 必要な入力 |
 |---|---|
 | テキスト→動画・音声つき (MiniMax H3 t2v) | なし |
-| テキスト→動画・音声つき (MiniMax H3 t2v Optimized) | なし（蒸留 LoRA なし・20 ステップのまま実行だけ速い版） |
+| テキスト→動画・音声つき (MiniMax H3 t2v Optimized) | なし（LoRA なし・20 ステップのまま実行だけ速い版） |
 | 画像→動画・音声つき (MiniMax H3 i2v)（既定） | 開始フレーム（最後のフレームは任意） |
-| 画像→動画・音声つき (MiniMax H3 i2v Turbo) | 同上（4 ステップの高速版） |
-| 画像→動画・音声つき (MiniMax H3 i2v Optimized) | 同上（蒸留 LoRA なし・20 ステップのまま実行だけ速い版） |
+| 画像→動画・音声つき (MiniMax H3 i2v Turbo) | 同上（6 ステップ固定の高速版） |
+| 画像→動画・音声つき (MiniMax H3 i2v Optimized) | 同上（LoRA なし・20 ステップのまま実行だけ速い版） |
 | 参照素材→動画・音声つき (MiniMax H3 r2v) | 参照画像 9 枚 / 参照動画 3 本 / 参照音声 3 本まで（合計 1 件以上） |
-| 参照素材→動画・音声つき (MiniMax H3 r2v Turbo) | 同上（4 ステップの高速版） |
-| 参照素材→動画・音声つき (MiniMax H3 r2v Optimized) | 同上（蒸留 LoRA なし・20 ステップのまま実行だけ速い版） |
+| 参照素材→動画・音声つき (MiniMax H3 r2v Turbo) | 同上（6 ステップ固定の高速版） |
+| 参照素材→動画・音声つき (MiniMax H3 r2v Optimized) | 同上（LoRA なし・20 ステップのまま実行だけ速い版） |
 
 MiniMax H3 の 8 種は映像とステレオ音声（台詞・効果音・音楽）を同時生成します。
 実行には MiniMaxH3 ノードを含む新しめの ComfyUI 本体が必要です（SPEC §2.2）。
-**Turbo**（i2v / r2v）は 4 ステップ蒸留 LoRA と Sage Attention / Sol-Attn / Spectrum を
-ワークフローに焼き込んだ高速版で、入力の指定は素の版とまったく同じです。**t2v に Turbo は
-ありません**（蒸留 LoRA が fl2v（フレーム条件つき）用で、テキストだけの生成には効かないため）。
+**Turbo**（i2v / r2v）は Pika H3 Flex LoRA（i2v は fl2va 用、r2v は ref2va 用）・lcm・
+6 ステップ固定のシグマと Sage Attention / Sol-Attn をワークフローに焼き込んだ高速版で、
+入力の指定は素の版と同じです（ステップ数だけは固定で、指定しても効きません）。
+**t2v に Turbo はありません**（Turbo のテンプレートを置いていないため）。
 プロジェクトの動画品質を Turbo にしていても、t2v になるカットは Optimized で投入されます。専用の量子化ウェイト
 （`*_pruned_w4a8_mixed` / `qwen3vl_32b_heretic_minimax_h3_nvfp4` / `minimax_h3_video_vae_int8_convrot`）と
-上記 custom node 一式が入った環境でのみ動きます（4 ステップ蒸留 LoRA は ComfyUI 標準の
-`LoraLoaderModelOnly` で当てるので、Turbo 専用の custom node はありません）。
+上記 custom node 一式が入った環境でのみ動きます（Pika H3 Flex LoRA は ComfyUI 標準の
+`LoraLoaderModelOnly`、シグマは標準の `ManualSigmas` なので、Turbo 専用の custom node は
+ありません）。
 
 **音声**は MiniMax Music 3（歌もの・インスト。キャプションと歌詞を指定）と
 Stable Audio 3 Medium（効果音・環境音・単一楽器）の 2 種です。

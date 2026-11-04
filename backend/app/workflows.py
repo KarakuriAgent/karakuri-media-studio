@@ -1127,7 +1127,8 @@ QWEN_IMAGE_21_T2I_TURBO = replace(
 # * r2i … ``H3ReferenceEditPrepare``（ref2va）。参照画像 1〜9 枚を順番に受け、
 #   プロンプトからは ``<Picture 1>`` … で呼ぶ
 #
-# **fl2va と ref2va のアダプタは混ぜられない**（Turbo LoRA も別物）。
+# **fl2va と ref2va のアダプタは混ぜられない**（turbo の Pika H3 Flex LoRA も
+# fl2va 用と ref2va 用で別物）。
 #
 # examples/api の JSON からの主な差分:
 #
@@ -1136,7 +1137,9 @@ QWEN_IMAGE_21_T2I_TURBO = replace(
 #   ``width`` / ``height`` に整数を直接入れる（z-image と同じ形）。
 # * ``H3ImageSamplingPreset``（プリセットのコンボ）ではなく
 #   ``H3SamplingSettings``（Advanced Sampling）を使う。sampler / scheduler /
-#   steps が素の widget になるので、フォームのサンプリング回数がそのまま効く。
+#   steps が素の widget になるので、フォームのサンプリング回数がそのまま効く
+#   （turbo だけは例外で、サンプラー / シグマを新設の ``KSamplerSelect`` と
+#   ``ManualSigmas`` に付け替えて 6 ステップ固定にしてある）。
 # * r2i の参照画像は雛形の ``LoadImage`` 1 つだけを繋いだ状態で持ち、ビルダー
 #   （:func:`app.workflow._build_ref_media`）が渡された枚数ぶんに組み直す
 #   （:class:`RefMediaFan`）。1 枚目は必須の ``source_image``、2 枚目以降が
@@ -1460,24 +1463,22 @@ _MINIMAX_H3_IMAGE_OPT_NOTES = (
     " Advanced Sampling 側が持っている）"
 )
 
-#: r2i の opt / turbo だけの注記。動画の r2v opt / turbo と同じで、ref2va の
-#: 量子化ウェイトではなく **fl2va + 参照 LoRA** で参照モードにする。
-_MINIMAX_H3_IMAGE_REF_LORA_NOTES = (
-    " / r2i の opt / turbo だけは素の版と土台が違い、"
-    "`minimax_h3_fl2va_pruned_w4a8_mixed` に参照 LoRA"
-    "（`minimax_h3_ref_lora_rank_256_bf16`）を `LoraLoaderModelOnly`（ノード 144）で"
-    "重ねてから `PathchSageAttentionKJ` 以降の連鎖に流す"
-    "（ref2va の量子化ウェイトは使わない）"
-)
-
-#: turbo 版だけの注記（opt との差分）
+#: turbo 版だけの注記（opt との差分）。動画の turbo と同じく Pika H3 Flex LoRA を
+#: 1 本だけ重ね、サンプリングは lcm + ManualSigmas の 6 ステップ固定。
+#: ``H3SamplingSettings``（ノード 8）は sigma shift を掛けた model 出力のためだけに
+#: 残し、sampler / sigmas 出力は使わない（SamplerCustomAdvanced は新設の
+#: ``KSamplerSelect``（123）と ``ManualSigmas``（124）を読む）。
 _MINIMAX_H3_IMAGE_TURBO_NOTES = (
-    " / **turbo**: opt に**公式の 4step 蒸留 LoRA**"
-    "（`minimax_h3_fl2v_turbo_4step_v1.3_768p_comfyui_bf16`。"
-    "`LoraLoaderModelOnly` で読むので設定画面から差し替え可）を足した高速版で、"
-    "サンプリングは **4 ステップ**（t2i・i2i は res_multistep・simple、"
-    "r2i は euler・simple）。r2i は蒸留 LoRA（ノード 143）→ 参照 LoRA"
-    "（ノード 144）の順で 2 段重ねる"
+    " / **turbo**: opt から Spectrum を外し（`SpectrumApplyMiniMaxH3` は不要）、"
+    "**Pika H3 Flex LoRA**"
+    "（i2i は `pika_h3_flex_fl2va_comfy_bf16`・ノード 150、r2i は"
+    " `pika_h3_flex_ref2va_comfy_bf16`・ノード 143。`LoraLoaderModelOnly`"
+    "・strength 1.0 で 1 本だけ重ねる。設定画面から差し替え可。2 本目の加速"
+    " LoRA は出力を壊すので他の高速化 LoRA とは重ねない）を足した高速版で、"
+    "サンプリングは **lcm + `ManualSigmas` の 6 ステップ固定**（1.0 /"
+    " 0.972973 / 0.923077 / 0.8 / 0.571429 / 0.333333 / 0.0。`steps` は"
+    "受け取らない）。`H3SamplingSettings` は sigma shift（video 12 / audio 3）を"
+    "掛けた model を出すためだけに使う"
 )
 
 #: i2i / r2i の共通の注記（source_fidelity はプロンプトの言い回しを変えるだけ）
@@ -1654,7 +1655,8 @@ MINIMAX_H3_R2I = WorkflowSpec(
 
 #: opt / turbo は素の版と**入力の形が完全に同じ**（ノード ID も揃えてあるので
 #: ``inject`` / ``seeds`` / ``ref_media`` はそのまま使い回せる）ので、宣言は
-#: :func:`dataclasses.replace` で差分だけを書く。
+#: :func:`dataclasses.replace` で差分だけを書く。turbo だけはサンプリングが
+#: 6 ステップ固定なので ``steps`` の注入先を外す（:func:`_without_steps`）。
 _MINIMAX_H3_IMAGE_OPT_DESCRIPTION = (
     " Optimised build: same 20 sampling steps and same inputs as the plain"
     " workflow, but with quantised weights and the Sage Attention / Sol-Attn /"
@@ -1663,11 +1665,23 @@ _MINIMAX_H3_IMAGE_OPT_DESCRIPTION = (
 )
 
 _MINIMAX_H3_IMAGE_TURBO_DESCRIPTION = (
-    " Turbo build: the optimised graph plus the official 4-step distilled H3"
-    " Turbo LoRA (4 sampling steps), so it finishes much faster. Same inputs as"
-    " the plain workflow, but it only runs on a ComfyUI that has the H3 custom"
-    " nodes, the quantised weights and the Turbo LoRA."
+    " Turbo build: the optimised graph (without Spectrum) plus the Pika H3 Flex"
+    " LoRA, sampled with lcm over a fixed 6-step ManualSigmas schedule, so it"
+    " finishes much faster. Same inputs as the plain workflow except `steps`"
+    " (fixed), but it only runs on a ComfyUI that has the H3 custom nodes, the"
+    " quantised weights and the Pika H3 Flex LoRA."
 )
+
+
+def _without_steps(inject: dict[str, Target]) -> dict[str, Target]:
+    """``inject`` から ``steps`` の注入先だけを外した写し。
+
+    MiniMax H3 の turbo（動画・画像とも）はサンプリングが ``ManualSigmas`` の
+    6 ステップ固定なので ``steps`` を受け取らない。宣言しなければ
+    ``supports("steps")`` が偽になり、フォームの欄も出ず、ジョブに載った値も
+    注入されない（:func:`app.workflow._inject_steps`）。
+    """
+    return {name: target for name, target in inject.items() if name != "steps"}
 
 MINIMAX_H3_T2I_OPT = replace(
     MINIMAX_H3_T2I,
@@ -1706,14 +1720,15 @@ MINIMAX_H3_I2I_TURBO = replace(
     mode_label="画像→画像・編集 (i2i Turbo)",
     relpath="image/minimax-h3-image/minimax_h3_i2i_turbo.json",
     description=MINIMAX_H3_I2I.description + _MINIMAX_H3_IMAGE_TURBO_DESCRIPTION,
+    inject=_without_steps(MINIMAX_H3_I2I.inject),
     notes=(
         _MINIMAX_H3_I2I_COMMON_NOTES
         + _MINIMAX_H3_IMAGE_OPT_NOTES
         + _MINIMAX_H3_IMAGE_TURBO_NOTES
         + " /"
         + _MINIMAX_H3_IMAGE_FAST_MODELS.format(unet="fl2va")
-        + " + minimax_h3_fl2v_turbo_4step_v1.3_768p_comfyui_bf16（loras）/"
-        " サンプリングは res_multistep・simple・4 ステップ"
+        + " + pika_h3_flex_fl2va_comfy_bf16（loras）/"
+        " サンプリングは lcm・ManualSigmas・6 ステップ固定"
     ),
 )
 
@@ -1727,10 +1742,8 @@ MINIMAX_H3_R2I_OPT = replace(
     notes=(
         _MINIMAX_H3_R2I_COMMON_NOTES
         + _MINIMAX_H3_IMAGE_OPT_NOTES
-        + _MINIMAX_H3_IMAGE_REF_LORA_NOTES
         + " /"
-        + _MINIMAX_H3_IMAGE_FAST_MODELS.format(unet="fl2va")
-        + " + minimax_h3_ref_lora_rank_256_bf16（loras）"
+        + _MINIMAX_H3_IMAGE_FAST_MODELS.format(unet="ref2va")
     ),
 )
 
@@ -1741,16 +1754,15 @@ MINIMAX_H3_R2I_TURBO = replace(
     mode_label="参照画像→画像・参照編集 (r2i Turbo)",
     relpath="image/minimax-h3-image/minimax_h3_r2i_turbo.json",
     description=MINIMAX_H3_R2I.description + _MINIMAX_H3_IMAGE_TURBO_DESCRIPTION,
+    inject=_without_steps(MINIMAX_H3_R2I.inject),
     notes=(
         _MINIMAX_H3_R2I_COMMON_NOTES
         + _MINIMAX_H3_IMAGE_OPT_NOTES
-        + _MINIMAX_H3_IMAGE_REF_LORA_NOTES
         + _MINIMAX_H3_IMAGE_TURBO_NOTES
         + " /"
-        + _MINIMAX_H3_IMAGE_FAST_MODELS.format(unet="fl2va")
-        + " + minimax_h3_fl2v_turbo_4step_v1.3_768p_comfyui_bf16 +"
-        " minimax_h3_ref_lora_rank_256_bf16（loras）/"
-        " サンプリングは euler・simple・4 ステップ"
+        + _MINIMAX_H3_IMAGE_FAST_MODELS.format(unet="ref2va")
+        + " + pika_h3_flex_ref2va_comfy_bf16（loras）/"
+        " サンプリングは lcm・ManualSigmas・6 ステップ固定"
     ),
 )
 
@@ -1848,21 +1860,30 @@ GROK_IMAGINE_EDIT = WorkflowSpec(
 # これに加えて **turbo**（i2v / r2v）が 2 つある。入力の形は素の i2v / r2v と
 # まったく同じで、違うのは中身だけ:
 #
-# * UNET は w4a8 mixed の量子化ウェイト、CLIP は heretic nvfp4、動画 VAE は
-#   int8_convrot（音声 VAE だけ据え置き）。
-# * ``BasicScheduler`` の steps が 20 → **4**。
+# * UNET は w4a8 mixed の量子化ウェイト（素の版と同じく i2v は fl2va、r2v は
+#   ref2va）、CLIP は heretic nvfp4、動画 VAE は int8_convrot（音声 VAE だけ
+#   据え置き）。
 # * UNETLoader と BasicGuider の間に高速化のノードが**テンプレートに直接**
-#   直列で入っている: ``LoraLoaderModelOnly``（4step 蒸留 LoRA・本体標準）→
+#   直列で入っている: ``LoraLoaderModelOnly``（Pika H3 Flex LoRA・本体標準）→
 #   ``PathchSageAttentionKJ`` → ``MiniMaxH3MemoryEfficientSageAttentionPatch`` →
-#   ``BlockSparseAttention`` → ``MiniMaxH3SigmaShift`` →
-#   ``SpectrumApplyMiniMaxH3``。``BasicScheduler`` は sigma を作るだけなので
-#   ``BlockSparseAttention`` の出力（SigmaShift の**手前**）から model を取る。
+#   ``BlockSparseAttention`` → ``MiniMaxH3SigmaShift``。
+# * サンプリングは Pika 公式テンプレート（``video_pika_h3_flex_*``）どおり
+#   ``KSamplerSelect`` = **lcm** + ``ManualSigmas``（ノード 124）の **7 点 =
+#   6 ステップ固定**（``1.0, 0.972973, 0.923077, 0.8, 0.571429, 0.333333,
+#   0.0``。knots 1000/750/500/250/100/40/0 に video shift 12 を掛けた値）。
+#   点を減らすと壊れ、増やしても意味が無いので ``steps`` は受け取らない。
+# * LoRA は i2v が ``pika_h3_flex_fl2va``（ノード 150）、r2v が
+#   ``pika_h3_flex_ref2va``（ノード 143）の 1 本だけ。公式に「2 本目の加速
+#   LoRA で出力が壊れる」とあるので、他の高速化 LoRA とは重ねない。
+# * ``SpectrumApplyMiniMaxH3`` は持たない（warmup 5 + tail 1 なので 6 ステップ
+#   では一度も予測せず、載せても無駄）。``MiniMaxH3SigmaShift`` は残す
+#   （音声側のシグマ導出のため DiT にも shift が渡る）。
 #
-# さらに **opt**（i2v / r2v）が 2 つ。turbo から蒸留 LoRA だけを抜いたもので、
-# 蒸留 LoRA の ``LoraLoaderModelOnly`` が無く（``PathchSageAttentionKJ`` が
-# UNETLoader 直結）、
-# ``BasicScheduler`` の steps は素の版と同じ **20**。量子化ウェイトと
-# アテンション系パッチはそのままなので、品質は素の版相当のまま実行だけ速い。
+# さらに **opt**（t2v / i2v / r2v）が 3 つ。蒸留・加速 LoRA を持たず
+# （``PathchSageAttentionKJ`` が UNETLoader 直結）、``BasicScheduler`` の
+# steps は素の版と同じ **20**。量子化ウェイトとアテンション系パッチ・
+# SigmaShift・Spectrum を焼き込んであるので、品質は素の版相当のまま実行だけ
+# 速い。UNET は素の版と同じ（t2v / i2v は fl2va、r2v は ref2va）。
 #
 # グラフの都合で入れ替えた点:
 #
@@ -1884,8 +1905,8 @@ _MINIMAX_H3_BASE_NOTES = (
     "24fps 固定・尺は 17k+5 フレームの格子に切り上げ（5 秒 = 124 フレーム、"
     "学習範囲は約 1〜15 秒）/ 短辺 768px・最大 768x1344 が既定の画角"
     "（幅高さは 32 の倍数）/ negative prompt は無い（CFG 無しの BasicGuider）/"
-    " ユーザーの動画 LoRA（`video_loras`）は UNETLoader の直後（固定の蒸留 LoRA・"
-    "参照 LoRA があればその後ろ、高速化パッチの手前）に `LoraLoaderModelOnly` を"
+    " ユーザーの動画 LoRA（`video_loras`）は UNETLoader の直後（turbo の固定の"
+    " Pika H3 Flex LoRA があればその後ろ、高速化パッチの手前）に `LoraLoaderModelOnly` を"
     "直列に挿す。トリガーワードはプロンプトの先頭に付く"
 )
 
@@ -1920,53 +1941,32 @@ _MINIMAX_H3_UPSCALE_NOTES = (
 #: 全 MiniMax H3 動画スペックが共通で持つ注意書き
 _MINIMAX_H3_NOTES = _MINIMAX_H3_BASE_NOTES + _MINIMAX_H3_UPSCALE_NOTES
 
-#: turbo 版だけの注意書き（素のものとの差分）
+#: turbo 版だけの注意書き（素のものとの差分）。i2v / r2v で共通。
 _MINIMAX_H3_TURBO_NOTES = (
-    " / **turbo**: 4step 蒸留 LoRA（`minimax_h3_fl2v_turbo_4step_v1.3_768p_comfyui_bf16`）と"
-    " Sage Attention / Mem Eff Sage Attention / Sol-Attn / SigmaShift /"
-    " Spectrum をテンプレートに"
-    "直列で焼き込んだ高速版で、サンプリングは **4 ステップ / euler** 固定"
-    "（蒸留 LoRA は本体標準の `LoraLoaderModelOnly` で重ねる。"
-    "入力の形は素の版とまったく同じ）。`PathchSageAttentionKJ`"
+    " / **turbo**: Pika H3 Flex LoRA（i2v は"
+    " `pika_h3_flex_fl2va_comfy_bf16`、r2v は `pika_h3_flex_ref2va_comfy_bf16`。"
+    "本体標準の `LoraLoaderModelOnly`・strength 1.0 で 1 本だけ重ねる。"
+    "2 本目の加速 LoRA は出力を壊すので他の高速化 LoRA とは重ねない）と"
+    " Sage Attention / Mem Eff Sage Attention / Sol-Attn / SigmaShift を"
+    "テンプレートに直列で焼き込んだ高速版。サンプリングは **lcm +"
+    " `ManualSigmas` の 6 ステップ固定**（1.0 / 0.972973 / 0.923077 / 0.8 /"
+    " 0.571429 / 0.333333 / 0.0。点を減らすと壊れ、増やしても意味が無いので"
+    " `steps` は受け取らない）。Spectrum は使わない（6 ステップでは一度も"
+    "予測しない）。UNET は素の版と同じ（i2v は fl2va、r2v は ref2va）で、"
+    "入力の形も素の版とまったく同じ。`PathchSageAttentionKJ`"
     "（ComfyUI-KJNodes + SageAttention）・"
     "`MiniMaxH3MemoryEfficientSageAttentionPatch`・"
-    "`MiniMaxH3SigmaShift`・`SpectrumApplyMiniMaxH3` の**カスタムノードと"
+    "`MiniMaxH3SigmaShift` の**カスタムノードと"
     "量子化ウェイト一式が入った環境でのみ**動く"
     "（`BlockSparseAttention` は ComfyUI 本体 v0.34.5 以降に同梱）"
 )
 
-#: opt 版だけの注意書き（turbo からの差分）
-#: r2v の opt / turbo は素の r2v と土台が違う: ref2va の量子化ウェイトではなく
-#: **fl2va + 参照 LoRA** の組み合わせで、``LoraLoaderModelOnly`` で重ねる。
-_MINIMAX_H3_R2V_REF_LORA_NOTES = (
-    " / r2v の opt / turbo だけは素の版と土台が違い、"
-    "`minimax_h3_fl2va_pruned_w4a8_mixed` に参照 LoRA"
-    "（`minimax_h3_ref_lora_rank_256_bf16`）を `LoraLoaderModelOnly` で重ねて"
-    "参照モードにする（ref2va の量子化ウェイトは使わない）"
-)
-
-#: r2v turbo だけの注意書き。4step 蒸留 LoRA を ``LoraLoaderModelOnly`` で
-#: 重ねるのは他の turbo と同じで、r2v はその手前に参照 LoRA が 1 段入る。
-#: **opt との差は「蒸留 LoRA を 1 段足して steps 4 / euler にする」だけ**で、
-#: テンプレートは他の版と同じ 1 パス（アップスケールは `latent_upscale` 側）。
-_MINIMAX_H3_R2V_TURBO_NOTES = (
-    " / **turbo**: opt の構成（fl2va + 参照 LoRA）にさらに 4step 蒸留 LoRA"
-    "（`minimax_h3_fl2v_turbo_4step_v1.3_768p_comfyui_bf16`）を"
-    "`LoraLoaderModelOnly` で重ね、サンプリングを **4 ステップ / euler** に"
-    "したもの。"
-    "Sage Attention / Mem Eff Sage Attention / Sol-Attn / SigmaShift /"
-    " Spectrum は opt と同じく焼き込み済みで、入力の形は素の版とまったく同じ。"
-    "`PathchSageAttentionKJ`（ComfyUI-KJNodes + SageAttention）・"
-    "`MiniMaxH3MemoryEfficientSageAttentionPatch`・"
-    "`MiniMaxH3SigmaShift`・`SpectrumApplyMiniMaxH3` の"
-    "**カスタムノードと量子化ウェイト一式が入った環境でのみ**動く"
-    "（`BlockSparseAttention` は ComfyUI 本体 v0.34.5 以降に同梱）"
-)
+#: opt 版だけの注意書き（素のものとの差分）
 _MINIMAX_H3_OPT_NOTES = (
-    " / **opt**: turbo から 4step 蒸留 LoRA だけを抜いた最適化版で、"
+    " / **opt**: 蒸留・加速 LoRA を使わない最適化版で、"
     "サンプリングは素の版と同じ **20 ステップ**（品質は素の版相当のまま）。"
     "量子化ウェイトと Sage Attention / Mem Eff Sage Attention / Sol-Attn /"
-    " SigmaShift / Spectrum は turbo と同じくテンプレートに直列で焼き込み済みで、"
+    " SigmaShift / Spectrum をテンプレートに直列で焼き込み済みで、"
     "実行だけが速い（入力の形は素の版とまったく同じ）。"
     "`PathchSageAttentionKJ`（ComfyUI-KJNodes + SageAttention）・"
     "`MiniMaxH3MemoryEfficientSageAttentionPatch`・"
@@ -2050,32 +2050,16 @@ LATENT_CONTEXT_CLASS_TYPES: tuple[str, ...] = (
     "MiniMaxH3MotionContextTrim",
 )
 
-#: turbo 版のモデルファイル（量子化ウェイト + 4step 蒸留 LoRA）
+#: turbo 版のモデルファイル（量子化ウェイト + Pika H3 Flex LoRA）。LoRA は
+#: UNET と同じ系統（i2v は fl2va、r2v は ref2va）なので ``{unet}`` を 2 か所に入れる。
 _MINIMAX_H3_TURBO_MODELS = (
     " モデル: minimax_h3_{unet}_pruned_w4a8_mixed（diffusion_models）+"
     " minimax_h3_video_vae_int8_convrot + minimax_h3_audio_vae_fp32 +"
     " qwen3vl_32b_heretic_minimax_h3_nvfp4（text_encoders）+"
-    " minimax_h3_fl2v_turbo_4step_v1.3_768p_comfyui_bf16（loras）"
+    " pika_h3_flex_{unet}_comfy_bf16（loras）"
 )
 
-#: r2v opt 版のモデルファイル（fl2va ウェイト + 参照 LoRA）
-_MINIMAX_H3_R2V_OPT_MODELS = (
-    " モデル: minimax_h3_fl2va_pruned_w4a8_mixed（diffusion_models）+"
-    " minimax_h3_video_vae_int8_convrot + minimax_h3_audio_vae_fp32 +"
-    " qwen3vl_32b_heretic_minimax_h3_nvfp4（text_encoders）+"
-    " minimax_h3_ref_lora_rank_256_bf16（loras）"
-)
-
-#: r2v turbo 版のモデルファイル（opt に 4step 蒸留 LoRA を足しただけ）
-_MINIMAX_H3_R2V_TURBO_MODELS = (
-    " モデル: minimax_h3_fl2va_pruned_w4a8_mixed（diffusion_models）+"
-    " minimax_h3_video_vae_int8_convrot + minimax_h3_audio_vae_fp32 +"
-    " qwen3vl_32b_heretic_minimax_h3_nvfp4（text_encoders）+"
-    " minimax_h3_fl2v_turbo_4step_v1.3_768p_comfyui_bf16 +"
-    " minimax_h3_ref_lora_rank_256_bf16（loras）"
-)
-
-#: opt 版のモデルファイル（量子化ウェイトのみ・蒸留 LoRA は使わない）
+#: opt 版のモデルファイル（量子化ウェイトのみ・LoRA は使わない）
 _MINIMAX_H3_OPT_MODELS = (
     " モデル: minimax_h3_{unet}_pruned_w4a8_mixed（diffusion_models）+"
     " minimax_h3_video_vae_int8_convrot + minimax_h3_audio_vae_fp32 +"
@@ -2131,7 +2115,7 @@ _MINIMAX_H3_UPSCALE_SUBGRAPH_RECONDITION = replace(
 #: ユーザーの動画 LoRA（``video_loras``）を挿す場所（:class:`LoraChain`、SPEC §3.4.2）。
 #: どのテンプレートも **UNETLoader から始まる MODEL の 1 本道**なので、そこを 1 か所
 #: 切り開いてチェーンを挟む。テンプレートが持つ固定の ``LoraLoaderModelOnly``
-#: （4step 蒸留 LoRA・参照 LoRA）は外せないので、ユーザー LoRA は**その後ろ**に挿し、
+#: （turbo の Pika H3 Flex LoRA）は外せないので、ユーザー LoRA は**その後ろ**に挿し、
 #: 高速化パッチ（``PathchSageAttentionKJ`` 以降の直列）は**チェーンの後ろ**に残す
 #: （パッチは最後に載ったモデル全体に掛かる）。LoRA を選ばなければ consumers が head を
 #: 直接指すので、グラフはテンプレートと同一になる。
@@ -2153,23 +2137,22 @@ _MINIMAX_H3_R2V_LORA_CHAIN = LoraChain(
         T("124", "model", "BasicScheduler"),
     ),
 )
-#: t2v / i2v の opt: 固定 LoRA が無いので UNETLoader（127）の直後、高速化パッチの
-#: 先頭（151）の手前に挿す。Guider / Scheduler はパッチの出力を読んでいるので
+#: opt（t2v / i2v / r2v）: 固定 LoRA が無いので UNETLoader（127）の直後、高速化
+#: パッチの先頭（151）の手前に挿す。Guider / Scheduler はパッチの出力を読んでいるので
 #: 付け替えない（パッチ越しにチェーンの結果を読む）。
 _MINIMAX_H3_OPT_LORA_CHAIN = LoraChain(
     head="127",
     consumers=(T("151", "model", "PathchSageAttentionKJ"),),
 )
-#: i2v の turbo: 4step 蒸留 LoRA（150）の後ろ、高速化パッチの手前
+#: i2v の turbo: Pika H3 Flex LoRA（fl2va 用・150）の後ろ、高速化パッチの手前。
+#: ManualSigmas（124）は model を読まないので consumers は 151 だけ。
 _MINIMAX_H3_TURBO_LORA_CHAIN = LoraChain(
     head="150",
     consumers=(T("151", "model", "PathchSageAttentionKJ"),),
 )
-#: r2v の opt / turbo: 参照 LoRA（144。turbo はその手前に蒸留 LoRA 143）の後ろ、
-#: 高速化パッチの手前。fl2va を参照モードにする参照 LoRA より前に挿すと、
-#: ユーザー LoRA の効きが参照 LoRA に上書きされうるので必ず後ろに置く。
-_MINIMAX_H3_REF_LORA_CHAIN = LoraChain(
-    head="144",
+#: r2v の turbo: Pika H3 Flex LoRA（ref2va 用・143）の後ろ、高速化パッチの手前
+_MINIMAX_H3_R2V_TURBO_LORA_CHAIN = LoraChain(
+    head="143",
     consumers=(T("151", "model", "PathchSageAttentionKJ"),),
 )
 
@@ -2577,13 +2560,28 @@ MINIMAX_H3_R2V_SAVE = replace(
 #: プロンプトの書き方も変わらない）ので、宣言は :func:`dataclasses.replace` で
 #: 差分だけを書く。テンプレート側でノード ID を素の連番に振り直してあるので、
 #: i2v turbo だけは ``inject`` / ``seeds`` も宣言し直す（r2v は元から連番なので
-#: そのまま使い回せる）。
+#: そのまま使い回せる）。ただし turbo のサンプリングは ``ManualSigmas`` の
+#: 6 ステップ固定なので、``steps`` の注入先だけは持たない（:func:`_without_steps`）。
 _MINIMAX_H3_TURBO_DESCRIPTION = (
-    "サンプリングは 4 ステップ固定で、素の版よりずっと速く上がる（4step 蒸留 "
-    "LoRA と Sage Attention / Sol-Attn / Spectrum を焼き込んだ高速版）。"
+    "サンプリングは 6 ステップ固定で、素の版よりずっと速く上がる（Pika H3 Flex "
+    "LoRA・lcm・ManualSigmas と Sage Attention / Sol-Attn を焼き込んだ高速版）。"
     "入力の指定は素の版とまったく同じだが、専用の量子化ウェイトと "
     "MiniMax H3 系のカスタムノード一式が入った環境でのみ動く。"
 )
+
+#: 連番に振り直した i2v テンプレート（turbo / opt）の注入先。opt は ``steps`` を
+#: 含めたまま使い、turbo は :func:`_without_steps` で ``steps`` を外して使う。
+_MINIMAX_H3_I2V_QUALITY_INJECT: dict[str, Target] = {
+    "prompt": T("136", "prompt", "MiniMaxH3ImageToVideo"),
+    "width": T("136", "width", "MiniMaxH3ImageToVideo"),
+    "height": T("136", "height", "MiniMaxH3ImageToVideo"),
+    "duration": T("132", "value", "PrimitiveFloat"),
+    "frames_expr": T("131", "", "ComfyMathExpression"),
+    "steps": T("124", "steps", "BasicScheduler"),
+    "image": T("114", "image", "LoadImage"),
+    "end_image": T("116", "image", "LoadImage"),
+    "save_prefix": T("92", "filename_prefix", "SaveVideo"),
+}
 
 MINIMAX_H3_I2V_TURBO = replace(
     MINIMAX_H3_I2V,
@@ -2593,17 +2591,8 @@ MINIMAX_H3_I2V_TURBO = replace(
     relpath="video/minimax-h3/minimax_h3_i2v_turbo.json",
     lora_chain=_MINIMAX_H3_TURBO_LORA_CHAIN,
     description=MINIMAX_H3_I2V.description + _MINIMAX_H3_TURBO_DESCRIPTION,
-    inject={
-        "prompt": T("136", "prompt", "MiniMaxH3ImageToVideo"),
-        "width": T("136", "width", "MiniMaxH3ImageToVideo"),
-        "height": T("136", "height", "MiniMaxH3ImageToVideo"),
-        "duration": T("132", "value", "PrimitiveFloat"),
-        "frames_expr": T("131", "", "ComfyMathExpression"),
-        "steps": T("124", "steps", "BasicScheduler"),
-        "image": T("114", "image", "LoadImage"),
-        "end_image": T("116", "image", "LoadImage"),
-        "save_prefix": T("92", "filename_prefix", "SaveVideo"),
-    },
+    # サンプリングは ManualSigmas の 6 ステップ固定なので ``steps`` は受け取らない
+    inject=_without_steps(_MINIMAX_H3_I2V_QUALITY_INJECT),
     seeds=(T("129", "noise_seed", "RandomNoise"),),
     selects=dict(_MINIMAX_H3_VIDEO_SELECTS),
     upscale=_MINIMAX_H3_UPSCALE_RECONDITION,
@@ -2616,39 +2605,32 @@ MINIMAX_H3_I2V_TURBO = replace(
     ),
 )
 
-#: r2v turbo は他の turbo と土台が違う。ウェイトは fl2va で、参照 LoRA と
-#: 4step 蒸留 LoRA を ``LoraLoaderModelOnly`` で 2 段重ねてから高速化パッチの
-#: 連鎖に流す（蒸留 LoRA を 1 段だけ重ねる他の turbo に対して 1 段多い）。
-_MINIMAX_H3_R2V_TURBO_DESCRIPTION = (
-    "サンプリングは 4 ステップ固定で、素の版よりずっと速く上がる"
-    "（fl2va ウェイトに参照 LoRA と 4step 蒸留 LoRA を重ね、Sage Attention /"
-    " Sol-Attn / Spectrum を焼き込んだ高速版）。入力の指定は素の版と"
-    "まったく同じだが、専用の量子化ウェイトと MiniMax H3 系のカスタムノード"
-    "一式が入った環境でのみ動く。"
-)
-
+#: r2v turbo は i2v turbo と同じ作りで、UNET が ref2va・Pika H3 Flex LoRA が
+#: ref2va 用（ノード 143）になるだけ。
 MINIMAX_H3_R2V_TURBO = replace(
     MINIMAX_H3_R2V,
     id="minimax_h3_r2v_turbo",
     label="参照素材→動画・音声つき (MiniMax H3 r2v Turbo)",
     mode_label="参照素材→動画・音声つき (r2v Turbo)",
     relpath="video/minimax-h3/minimax_h3_r2v_turbo.json",
-    lora_chain=_MINIMAX_H3_REF_LORA_CHAIN,
-    description=MINIMAX_H3_R2V.description + _MINIMAX_H3_R2V_TURBO_DESCRIPTION,
+    lora_chain=_MINIMAX_H3_R2V_TURBO_LORA_CHAIN,
+    description=MINIMAX_H3_R2V.description + _MINIMAX_H3_TURBO_DESCRIPTION,
+    # サンプリングは ManualSigmas の 6 ステップ固定なので ``steps`` は受け取らない
+    inject=_without_steps(MINIMAX_H3_R2V.inject),
     notes=(
         _MINIMAX_H3_NOTES
         + _MINIMAX_H3_R2V_NOTES
-        + _MINIMAX_H3_R2V_TURBO_NOTES
+        + _MINIMAX_H3_TURBO_NOTES
         + " /"
-        + _MINIMAX_H3_R2V_TURBO_MODELS
+        + _MINIMAX_H3_TURBO_MODELS.format(unet="ref2va")
     ),
 )
 
-#: opt 版は turbo から 4step 蒸留 LoRA（``LoraLoaderModelOnly``）を抜いただけの
-#: テンプレートなので、宣言も turbo と同じ形。
+#: opt 版は LoRA を持たず、素の版と同じ 20 ステップ（BasicScheduler）で回す
+#: 最適化版。ノード ID は turbo と同じ連番なので、宣言も turbo と同じ形。
 _MINIMAX_H3_OPT_DESCRIPTION = (
     "サンプリングは素の版と同じ 20 ステップで、品質は素の版相当のまま実行だけ"
-    "速い最適化版（4step 蒸留 LoRA は使わず、量子化ウェイトと Sage Attention /"
+    "速い最適化版（高速化 LoRA は使わず、量子化ウェイトと Sage Attention /"
     " Mem Eff Patch / Sol-Attn / SigmaShift / Spectrum だけを焼き込んである）。"
     "入力の指定は素の版とまったく同じだが、専用の量子化ウェイトと "
     "MiniMax H3 系のカスタムノード一式が入った環境でのみ動く。"
@@ -2691,8 +2673,9 @@ MINIMAX_H3_I2V_OPT = replace(
     relpath="video/minimax-h3/minimax_h3_i2v_opt.json",
     lora_chain=_MINIMAX_H3_OPT_LORA_CHAIN,
     description=MINIMAX_H3_I2V.description + _MINIMAX_H3_OPT_DESCRIPTION,
-    # テンプレートのノード ID は turbo と同じ連番なので、turbo と同じ宣言を使う
-    inject=dict(MINIMAX_H3_I2V_TURBO.inject),
+    # テンプレートのノード ID は turbo と同じ連番。opt は BasicScheduler の
+    # 20 ステップなので ``steps`` も受け取る
+    inject=dict(_MINIMAX_H3_I2V_QUALITY_INJECT),
     seeds=MINIMAX_H3_I2V_TURBO.seeds,
     upscale=_MINIMAX_H3_UPSCALE_RECONDITION,
     notes=(
@@ -2710,15 +2693,14 @@ MINIMAX_H3_R2V_OPT = replace(
     label="参照素材→動画・音声つき (MiniMax H3 r2v Optimized)",
     mode_label="参照素材→動画・音声つき (r2v Optimized)",
     relpath="video/minimax-h3/minimax_h3_r2v_opt.json",
-    lora_chain=_MINIMAX_H3_REF_LORA_CHAIN,
+    lora_chain=_MINIMAX_H3_OPT_LORA_CHAIN,
     description=MINIMAX_H3_R2V.description + _MINIMAX_H3_OPT_DESCRIPTION,
     notes=(
         _MINIMAX_H3_NOTES
         + _MINIMAX_H3_R2V_NOTES
         + _MINIMAX_H3_OPT_NOTES
-        + _MINIMAX_H3_R2V_REF_LORA_NOTES
         + " /"
-        + _MINIMAX_H3_R2V_OPT_MODELS
+        + _MINIMAX_H3_OPT_MODELS.format(unet="ref2va")
     ),
 )
 
@@ -2834,9 +2816,9 @@ MINIMAX_H3_R2V_SAVE_TURBO = replace(
         _MINIMAX_H3_NOTES
         + _MINIMAX_H3_R2V_NOTES
         + _MINIMAX_H3_SAVE_NOTES
-        + _MINIMAX_H3_R2V_TURBO_NOTES
+        + _MINIMAX_H3_TURBO_NOTES
         + " /"
-        + _MINIMAX_H3_R2V_TURBO_MODELS
+        + _MINIMAX_H3_TURBO_MODELS.format(unet="ref2va")
     ),
 )
 
@@ -2861,9 +2843,8 @@ MINIMAX_H3_R2V_SAVE_OPT = replace(
         + _MINIMAX_H3_R2V_NOTES
         + _MINIMAX_H3_SAVE_NOTES
         + _MINIMAX_H3_OPT_NOTES
-        + _MINIMAX_H3_R2V_REF_LORA_NOTES
         + " /"
-        + _MINIMAX_H3_R2V_OPT_MODELS
+        + _MINIMAX_H3_OPT_MODELS.format(unet="ref2va")
     ),
 )
 
@@ -2888,7 +2869,7 @@ MINIMAX_H3_R2V_CONTEXT_TURBO = replace(
     mode_label="参照素材→動画・音声つき・連続カット (r2v Turbo context)",
     relpath="video/minimax-h3/minimax_h3_r2v_context_turbo.json",
     description=(
-        MINIMAX_H3_R2V_CONTEXT.description + _MINIMAX_H3_R2V_TURBO_DESCRIPTION
+        MINIMAX_H3_R2V_CONTEXT.description + _MINIMAX_H3_TURBO_DESCRIPTION
     ),
     requires=("video",),
     inject={
@@ -2900,9 +2881,9 @@ MINIMAX_H3_R2V_CONTEXT_TURBO = replace(
         _MINIMAX_H3_NOTES
         + _MINIMAX_H3_R2V_NOTES
         + _MINIMAX_H3_CONTEXT_NOTES
-        + _MINIMAX_H3_R2V_TURBO_NOTES
+        + _MINIMAX_H3_TURBO_NOTES
         + " /"
-        + _MINIMAX_H3_R2V_TURBO_MODELS
+        + _MINIMAX_H3_TURBO_MODELS.format(unet="ref2va")
     ),
 )
 
@@ -2930,9 +2911,8 @@ MINIMAX_H3_R2V_CONTEXT_OPT = replace(
         + _MINIMAX_H3_R2V_NOTES
         + _MINIMAX_H3_CONTEXT_NOTES
         + _MINIMAX_H3_OPT_NOTES
-        + _MINIMAX_H3_R2V_REF_LORA_NOTES
         + " /"
-        + _MINIMAX_H3_R2V_OPT_MODELS
+        + _MINIMAX_H3_OPT_MODELS.format(unet="ref2va")
     ),
 )
 

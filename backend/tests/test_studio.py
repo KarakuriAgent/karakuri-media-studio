@@ -1457,7 +1457,7 @@ def test_quality_picks_the_t2v_variant(env, monkeypatch, quality, expected):
 
 
 def test_turbo_falls_back_to_opt_on_a_t2v_shot(env, monkeypatch):
-    """蒸留 LoRA は fl2v 用なので、t2v になるカットは Turbo でも opt で投入する。"""
+    """t2v の turbo テンプレートは無いので、t2v になるカットは Turbo でも opt で投入する。"""
     _use_target(monkeypatch, "local")
     project = make_project(env, quality="turbo")
     shot = make_shot(env, project["id"], prompt="A cat walks in.")

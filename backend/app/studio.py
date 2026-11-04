@@ -182,11 +182,11 @@ QUALITY_WORKFLOWS: dict[str, dict[str, str]] = {
 }
 
 #: turbo のテンプレートを持たない論理ワークフロー -> 代わりに使う品質。
-#: MiniMax H3 の 4step 蒸留 LoRA（``minimax_h3_fl2v_turbo_*``）は fl2v
-#: （フレーム条件つき）用で、テキストだけの生成には効かない。なので t2v には
-#: turbo のテンプレートを置いていない（i2v / r2v は開始フレームや参照素材が
-#: あるのでそのまま効く）。品質「Turbo」の作品でも、t2v になるカットだけは
-#: opt（蒸留 LoRA を使わない最適化版）へ落として投入する。
+#: MiniMax H3 の turbo は i2v / r2v だけで、t2v には turbo のテンプレートを
+#: 置いていない（当初の 4step 蒸留 LoRA が fl2v（フレーム条件つき）用で、
+#: テキストだけの生成には効かなかったため。いまの turbo は Pika H3 Flex LoRA）。
+#: 品質「Turbo」の作品でも、t2v になるカットだけは opt（LoRA を使わない
+#: 最適化版）へ落として投入する。
 TURBO_FALLBACK_QUALITY: dict[str, str] = {
     WORKFLOW_T2V: "opt",
     "minimax_h3_t2v_save": "opt",
@@ -194,7 +194,7 @@ TURBO_FALLBACK_QUALITY: dict[str, str] = {
 
 #: 上のフォールバックが効いたときに ``workflow_reason`` へ足す一文
 TURBO_FALLBACK_REASON = (
-    "t2v は Turbo 非対応（蒸留 LoRA が fl2v 用）なので Optimized で投入します"
+    "t2v は Turbo 非対応（Turbo のテンプレートが無い）なので Optimized で投入します"
 )
 
 #: スタジオが投げうる turbo / opt のワークフロー id（接続先の対応判定用）
@@ -256,8 +256,7 @@ def _quality_workflow(workflow: str, quality: str) -> tuple[str, str]:
     2. いまの接続先が turbo / opt のカスタムノードに対応しない（Comfy Cloud）
 
     ``turbo`` × t2v だけは 1 に落ちる前に **opt へ読み替える**
-    （:data:`TURBO_FALLBACK_QUALITY`。蒸留 LoRA が fl2v 用でテキストだけの
-    生成に効かないので、t2v の turbo は用意していない）。
+    （:data:`TURBO_FALLBACK_QUALITY`。t2v の turbo は用意していない）。
 
     黙って落とすのではなく、必ず ``workflow_reason`` に理由を出す。
     """
@@ -335,7 +334,7 @@ IMAGE_QUALITY_WORKFLOWS: dict[str, dict[str, str]] = {
 
 
 #: 画像側の turbo -> opt フォールバック（動画の :data:`TURBO_FALLBACK_QUALITY`
-#: と同じ理由: 蒸留 LoRA が fl2v 用なので、参照画像を取らない t2i には効かない）。
+#: と同じ理由: MiniMax H3 Image の turbo は i2i / r2i だけで、t2i には置いていない）。
 #: MiniMax H3 の t2i だけの話で、Qwen-Image 2.1 の t2i は turbo のまま焼く。
 IMAGE_TURBO_FALLBACK_QUALITY: dict[str, str] = {WORKFLOW_T2I: "opt"}
 

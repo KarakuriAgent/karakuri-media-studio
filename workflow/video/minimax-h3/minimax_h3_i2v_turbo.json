@@ -122,7 +122,7 @@
   "126": {
     "inputs": {
       "model": [
-        "154",
+        "153",
         0
       ],
       "conditioning": [
@@ -137,7 +137,7 @@
   },
   "123": {
     "inputs": {
-      "sampler_name": "euler"
+      "sampler_name": "lcm"
     },
     "class_type": "KSamplerSelect",
     "_meta": {
@@ -146,17 +146,11 @@
   },
   "124": {
     "inputs": {
-      "scheduler": "simple",
-      "steps": 4,
-      "denoise": 1,
-      "model": [
-        "152",
-        0
-      ]
+      "sigmas": "1.0, 0.972973, 0.923077, 0.8, 0.571429, 0.333333, 0.0"
     },
-    "class_type": "BasicScheduler",
+    "class_type": "ManualSigmas",
     "_meta": {
-      "title": "BasicScheduler"
+      "title": "Pika H3 Flex 6 step Sigmas"
     }
   },
   "136": {
@@ -270,7 +264,7 @@
   },
   "150": {
     "inputs": {
-      "lora_name": "minimax_h3_fl2v_turbo_4step_v1.3_768p_comfyui_bf16.safetensors",
+      "lora_name": "pika_h3_flex_fl2va_comfy_bf16.safetensors",
       "strength_model": 1.0,
       "model": [
         "127",
@@ -279,7 +273,7 @@
     },
     "class_type": "LoraLoaderModelOnly",
     "_meta": {
-      "title": "LoraLoaderModelOnly"
+      "title": "Pika H3 Flex LoRA"
     }
   },
   "151": {
@@ -341,30 +335,6 @@
     "class_type": "MiniMaxH3SigmaShift",
     "_meta": {
       "title": "MiniMaxH3SigmaShift"
-    }
-  },
-  "154": {
-    "inputs": {
-      "enabled": true,
-      "blend_weight": 0.75,
-      "degree": 4,
-      "ridge_lambda": 0.1,
-      "window_size": 2,
-      "flex_window": 3,
-      "warmup_steps": 5,
-      "tail_actual_steps": 1,
-      "max_history": 8,
-      "debug": false,
-      "history_storage": "system_ram",
-      "bootstrap_first_forecast": true,
-      "model": [
-        "153",
-        0
-      ]
-    },
-    "class_type": "SpectrumApplyMiniMaxH3",
-    "_meta": {
-      "title": "SpectrumApplyMiniMaxH3"
     }
   }
 }

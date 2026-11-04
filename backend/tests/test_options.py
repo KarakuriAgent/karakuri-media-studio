@@ -168,14 +168,19 @@ def test_every_minimax_video_workflow_accepts_video_loras(client):
 
 
 def test_the_minimax_turbo_workflows_are_offered(client):
-    """turbo（4 ステップ版）も一覧に出て、素の版と同じ入力を受け取る。"""
+    """turbo（6 ステップ固定版）も一覧に出て、素の版と同じ入力を受け取る。
+
+    ただし `steps` だけは受け取らない（ManualSigmas の 6 ステップ固定）。
+    """
     videos = {w["id"]: w for w in client.get("/api/options").json()["video_workflows"]}
     for turbo_id, plain_id in (
         ("minimax_h3_i2v_turbo", "minimax_h3_i2v"),
         ("minimax_h3_r2v_turbo", "minimax_h3_r2v"),
     ):
         turbo, plain = videos[turbo_id], videos[plain_id]
-        assert sorted(turbo["supports"]) == sorted(plain["supports"])
+        assert sorted(turbo["supports"]) == sorted(
+            set(plain["supports"]) - {"steps"}
+        )
         assert turbo["family_label"] == "MiniMax H3"
         assert "Turbo" in turbo["mode_label"]
         assert turbo["accepts_start_image"] == plain["accepts_start_image"]
@@ -196,8 +201,8 @@ PLAIN_WORKFLOWS = ("minimax_h3_t2v", "minimax_h3_i2v", "minimax_h3_r2v")
 #: ドラマスタジオが内部で解決するだけのバリアント（`WorkflowSpec.studio_only`）。
 #: プロジェクトの「ラテント連続性」×「動画生成品質」から `app.studio._plan_render`
 #: が id を組み立てるもので、手動の生成フォームには出さない（SPEC §2.2）。
-#: t2v だけは `_turbo` が無い（蒸留 LoRA が fl2v 用なので t2v の turbo は
-#: そもそも用意していない。品質 turbo の t2v は `_opt` に落ちる）。
+#: t2v だけは `_turbo` が無い（t2v の turbo テンプレートは置いていない。
+#: 品質 turbo の t2v は `_opt` に落ちる）。
 STUDIO_ONLY_WORKFLOWS = tuple(
     f"minimax_h3_{mode}_save{suffix}"
     for mode in ("t2v", "i2v", "r2v")
@@ -446,12 +451,20 @@ def test_steps_are_advertised_only_where_the_template_has_a_sampler_knob(client)
         "minimax_h3_t2v",
         "minimax_h3_i2v",
         "minimax_h3_r2v",
-        "minimax_h3_i2v_turbo",
-        "minimax_h3_r2v_turbo",
+        "minimax_h3_i2v_opt",
+        "minimax_h3_r2v_opt",
         "minimax_music_3",
         "stable_audio_3_medium_base",
     ):
         assert "steps" in supports[workflow_id], workflow_id
+    # MiniMax H3 の turbo は ManualSigmas の 6 ステップ固定なので出さない
+    for workflow_id in (
+        "minimax_h3_i2v_turbo",
+        "minimax_h3_r2v_turbo",
+        "minimax_h3_i2i_turbo",
+        "minimax_h3_r2i_turbo",
+    ):
+        assert "steps" not in supports[workflow_id], workflow_id
     # テンプレートを持たない外部バックエンド（Grok CLI）は steps を持たない
     for workflow_id in ("grok_imagine_t2i", "grok_imagine_edit"):
         assert "steps" not in supports[workflow_id], workflow_id

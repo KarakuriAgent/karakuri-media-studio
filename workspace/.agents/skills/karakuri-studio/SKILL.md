@@ -170,7 +170,8 @@ cwd として書いてある。
 
 - `quality`（動画）と `image_quality`（静止画）は**独立**。動画を turbo で回して
   いても、素材の静止画は `image_quality` に従う。逆も同じ。
-- MiniMax H3 の `turbo` は **t2v / t2i には効かない**（蒸留 LoRA が fl2v 用）。`quality: "turbo"` でも
+- MiniMax H3 の `turbo`（Pika H3 Flex LoRA・lcm・6 steps 固定。`steps` / `image_steps` は効かない）は
+  **t2v / t2i には無い**（テンプレートを置いていない）。`quality: "turbo"` でも
   t2v になるカットは `minimax_h3_t2v_opt` で投入され、理由が `prompt-preview` の
   `workflow_reason` に出る。`image_quality: "turbo"` の t2i も同じく `_opt` に落ちる。
   Turbo をそのまま効かせたいなら、引き継ぎ（i2v）か `@素材`（r2v）のあるカットにする。

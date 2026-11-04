@@ -765,7 +765,8 @@ EXPECTED_VIDEO_LORA_CHAINS = {
             "minimax_h3_r2v_context",
         )
     },
-    # opt（固定 LoRA なし）: UNETLoader(127) -> 高速化パッチの先頭(151)
+    # opt（固定 LoRA なし。r2v も ref2va 本体を直接読む）:
+    # UNETLoader(127) -> 高速化パッチの先頭(151)
     **{
         workflow_id: ("127", {"151.model"})
         for workflow_id in (
@@ -773,23 +774,23 @@ EXPECTED_VIDEO_LORA_CHAINS = {
             "minimax_h3_t2v_save_opt",
             "minimax_h3_i2v_opt",
             "minimax_h3_i2v_save_opt",
+            "minimax_h3_r2v_opt",
+            "minimax_h3_r2v_save_opt",
+            "minimax_h3_r2v_context_opt",
         )
     },
-    # i2v turbo: 4step 蒸留 LoRA(150) の後ろ
+    # i2v turbo: Pika H3 Flex LoRA（fl2va 用・150）の後ろ
     **{
         workflow_id: ("150", {"151.model"})
         for workflow_id in ("minimax_h3_i2v_turbo", "minimax_h3_i2v_save_turbo")
     },
-    # r2v opt / turbo: 参照 LoRA(144) の後ろ
+    # r2v turbo: Pika H3 Flex LoRA（ref2va 用・143）の後ろ
     **{
-        workflow_id: ("144", {"151.model"})
+        workflow_id: ("143", {"151.model"})
         for workflow_id in (
             "minimax_h3_r2v_turbo",
             "minimax_h3_r2v_save_turbo",
             "minimax_h3_r2v_context_turbo",
-            "minimax_h3_r2v_opt",
-            "minimax_h3_r2v_save_opt",
-            "minimax_h3_r2v_context_opt",
         )
     },
 }
@@ -1332,8 +1333,8 @@ def test_image_workflows_without_a_declaration_ignore_reference_images():
 
 # --- MiniMax H3 Image の選択式つまみ（SPEC §3.1）-----------------------------
 
-#: t2i に `_turbo` は無い（蒸留 LoRA が fl2v 用で、参照画像を取らない t2i には
-#: 効かないので廃止した。品質 turbo のときは `_opt` に落ちる）。
+#: t2i に `_turbo` は無い（t2i の turbo テンプレートは置いていない。
+#: 品質 turbo のときは `_opt` に落ちる）。
 H3_IMAGE_IDS = [
     f"minimax_h3_{mode}{suffix}"
     for mode in ("t2i", "i2i", "r2i")
@@ -1452,42 +1453,31 @@ def test_source_fit_and_reference_detail_are_injected(workflow_id):
 
 
 #: 画像テンプレートのモデル構成（UNET / 動画 VAE / UNETLoader から直列に重なる
-#: LoRA / ステップ数 / sampler）。動画側の t2v・r2v とそろえてあり、r2i の
-#: opt / turbo だけは ref2va ではなく **fl2va + 参照 LoRA**（SPEC §2.3）。
+#: LoRA / ``H3SamplingSettings`` のステップ数 / sampler）。動画側の t2v・r2v と
+#: そろえてあり、r2i は opt / turbo も素の版と同じ ref2va 本体を読む（SPEC §2.3）。
+#: turbo の ``H3SamplingSettings`` は model 出力（sigma shift）しか使わないが、
+#: 値は実際の構成（lcm・6 ステップ）に揃えてある。
 _H3_FL2VA = "minimax_h3_fl2va_pruned_w4a8_mixed.safetensors"
 _H3_REF2VA = "minimax_h3_ref2va_pruned_w4a8_mixed.safetensors"
 _H3_VAE_FP16 = "minimax_h3_video_vae_fp16.safetensors"
 _H3_VAE_INT8 = "minimax_h3_video_vae_int8_convrot.safetensors"
-_H3_TURBO_LORA = "minimax_h3_fl2v_turbo_4step_v1.3_768p_comfyui_bf16.safetensors"
-_H3_REF_LORA = "minimax_h3_ref_lora_rank_256_bf16.safetensors"
+_H3_PIKA_FL2VA = "pika_h3_flex_fl2va_comfy_bf16.safetensors"
+_H3_PIKA_REF2VA = "pika_h3_flex_ref2va_comfy_bf16.safetensors"
 
 H3_IMAGE_MODELS = {
     "minimax_h3_t2i": (_H3_FL2VA, _H3_VAE_FP16, [], 20, "res_multistep"),
     "minimax_h3_t2i_opt": (_H3_FL2VA, _H3_VAE_INT8, [], 20, "res_multistep"),
     "minimax_h3_i2i": (_H3_FL2VA, _H3_VAE_FP16, [], 20, "res_multistep"),
     "minimax_h3_i2i_opt": (_H3_FL2VA, _H3_VAE_INT8, [], 20, "res_multistep"),
-    "minimax_h3_i2i_turbo": (
-        _H3_FL2VA,
-        _H3_VAE_INT8,
-        [_H3_TURBO_LORA],
-        4,
-        "res_multistep",
-    ),
+    "minimax_h3_i2i_turbo": (_H3_FL2VA, _H3_VAE_INT8, [_H3_PIKA_FL2VA], 6, "lcm"),
     "minimax_h3_r2i": (_H3_REF2VA, _H3_VAE_FP16, [], 20, "res_multistep"),
-    "minimax_h3_r2i_opt": (
-        _H3_FL2VA,
-        _H3_VAE_INT8,
-        [_H3_REF_LORA],
-        20,
-        "res_multistep",
-    ),
-    # turbo は蒸留 LoRA -> 参照 LoRA の順で 2 段
+    "minimax_h3_r2i_opt": (_H3_REF2VA, _H3_VAE_INT8, [], 20, "res_multistep"),
     "minimax_h3_r2i_turbo": (
-        _H3_FL2VA,
+        _H3_REF2VA,
         _H3_VAE_INT8,
-        [_H3_TURBO_LORA, _H3_REF_LORA],
-        4,
-        "euler",
+        [_H3_PIKA_REF2VA],
+        6,
+        "lcm",
     ),
 }
 
@@ -1530,6 +1520,67 @@ def test_the_h3_image_templates_load_the_expected_weights(workflow_id):
     assert sampling["steps"] == steps
     assert sampling["sampler_name"] == sampler
     assert sampling["scheduler"] == "simple"
+
+
+#: Pika H3 Flex LoRA の公式テンプレートのシグマ（7 点 = 6 ステップ固定）
+PIKA_SIGMAS = "1.0, 0.972973, 0.923077, 0.8, 0.571429, 0.333333, 0.0"
+
+H3_IMAGE_TURBO_IDS = [i for i in H3_IMAGE_IDS if i.endswith("_turbo")]
+
+
+def test_the_h3_image_turbo_ids_are_i2i_and_r2i():
+    assert sorted(H3_IMAGE_TURBO_IDS) == ["minimax_h3_i2i_turbo", "minimax_h3_r2i_turbo"]
+
+
+@pytest.mark.parametrize("workflow_id", H3_IMAGE_TURBO_IDS)
+def test_the_h3_image_turbo_samples_with_lcm_and_six_manual_sigmas(workflow_id):
+    """サンプラーは新設の KSamplerSelect（lcm）、シグマは ManualSigmas の 7 点。
+
+    ``H3SamplingSettings``（8）は sigma shift を掛けた model だけを出し、
+    sampler / sigmas 出力はどこにも繋がない。Spectrum も持たない。
+    """
+    wf = _h3_image_wf(workflow_id)
+    validate_workflow(wf)
+    classes = {node["class_type"] for node in wf.values()}
+    assert "SpectrumApplyMiniMaxH3" not in classes
+    assert "BasicScheduler" not in classes
+    sampler = wf["10"]["inputs"]
+    assert sampler["sampler"] == ["123", 0]
+    assert sampler["sigmas"] == ["124", 0]
+    assert wf["123"]["class_type"] == "KSamplerSelect"
+    assert wf["123"]["inputs"] == {"sampler_name": "lcm"}
+    assert wf["124"]["class_type"] == "ManualSigmas"
+    assert wf["124"]["inputs"] == {"sigmas": PIKA_SIGMAS}
+    # guider は H3SamplingSettings の model 出力（sigma shift 済み）を直接読む
+    assert wf["7"]["inputs"]["model"] == ["8", 0]
+    # H3SamplingSettings の sampler(1) / sigmas(2) 出力は誰も読まない
+    for node in wf.values():
+        for value in node["inputs"].values():
+            assert value not in (["8", 1], ["8", 2])
+    # 公式どおり LoRA は 1 本だけ
+    loras = [n for n in wf.values() if n["class_type"] == "LoraLoaderModelOnly"]
+    assert len(loras) == 1
+    assert loras[0]["inputs"]["strength_model"] == 1.0
+
+
+@pytest.mark.parametrize("workflow_id", H3_IMAGE_TURBO_IDS)
+def test_the_h3_image_turbo_ignores_steps(workflow_id):
+    """6 ステップ固定なので `steps` を宣言せず、渡しても何も変わらない。"""
+    spec = get_spec(workflow_id, "image")
+    assert not spec.supports("steps")
+    plain = get_spec(workflow_id.removesuffix("_turbo"), "image")
+    assert set(spec.supported_names()) == set(plain.supported_names()) - {"steps"}
+    def build(steps: int) -> dict:
+        return build_image_workflow(
+            params(
+                mode="image_only",
+                image_workflow=workflow_id,
+                reference_image_names=["ref0.png"],
+                steps=steps,
+            )
+        )
+
+    assert build(0) == build(12)
 
 
 def test_the_h3_image_selects_survive_a_rerun():
@@ -1779,31 +1830,50 @@ TURBO_PAIRS = [
     ("minimax_h3_r2v_turbo", "minimax_h3_r2v"),
 ]
 
-#: 蒸留 LoRA を ``LoraLoaderModelOnly`` 1 段で重ねる turbo。r2v turbo だけは
-#: ``LoraLoaderModelOnly`` 2 段（蒸留 LoRA + 参照 LoRA）なので外す
-#: （そちらは下の r2v turbo 専用のテストで見る）。
-TURBO_LORA_PAIRS = [
-    ("minimax_h3_i2v_turbo", "minimax_h3_i2v"),
-]
+#: Pika H3 Flex LoRA（i2v 系は fl2va 用、r2v 系は ref2va 用）
+PIKA_FL2VA_LORA = "pika_h3_flex_fl2va_comfy_bf16.safetensors"
+PIKA_REF2VA_LORA = "pika_h3_flex_ref2va_comfy_bf16.safetensors"
+#: 以前の構成で使っていた LoRA（もうどのテンプレートにも残っていないこと）
+OLD_TURBO_LORA = "minimax_h3_fl2v_turbo_4step_v1.3_768p_comfyui_bf16.safetensors"
+OLD_REF_LORA = "minimax_h3_ref_lora_rank_256_bf16.safetensors"
 
-#: UNETLoader から BasicGuider までに直列で入っている高速化ノード
+_H3_FL2VA_UNET = "minimax_h3_fl2va_pruned_w4a8_mixed.safetensors"
+_H3_REF2VA_UNET = "minimax_h3_ref2va_pruned_w4a8_mixed.safetensors"
+
+#: turbo テンプレート（保存・連続カット版も）-> (UNET, Pika LoRA のノード ID, LoRA)
+TURBO_TEMPLATES = {
+    "minimax_h3_i2v_turbo": (_H3_FL2VA_UNET, "150", PIKA_FL2VA_LORA),
+    "minimax_h3_i2v_save_turbo": (_H3_FL2VA_UNET, "150", PIKA_FL2VA_LORA),
+    "minimax_h3_r2v_turbo": (_H3_REF2VA_UNET, "143", PIKA_REF2VA_LORA),
+    "minimax_h3_r2v_save_turbo": (_H3_REF2VA_UNET, "143", PIKA_REF2VA_LORA),
+    "minimax_h3_r2v_context_turbo": (_H3_REF2VA_UNET, "143", PIKA_REF2VA_LORA),
+}
+TURBO_IDS = list(TURBO_TEMPLATES)
+
+#: UNETLoader から BasicGuider までに直列で入っている高速化ノード（turbo）。
+#: Spectrum は 6 ステップでは一度も予測しないので持たない。
 TURBO_CHAIN = [
     "LoraLoaderModelOnly",
     "PathchSageAttentionKJ",
     "MiniMaxH3MemoryEfficientSageAttentionPatch",
     "BlockSparseAttention",
     "MiniMaxH3SigmaShift",
-    "SpectrumApplyMiniMaxH3",
 ]
+
+
+def test_the_turbo_table_covers_every_turbo_workflow():
+    turbo_ids = [s.id for s in specs_of_kind("video") if s.id.endswith("_turbo")]
+    assert sorted(turbo_ids) == sorted(TURBO_IDS)
 
 
 @pytest.mark.parametrize(("turbo_id", "plain_id"), TURBO_PAIRS)
 def test_the_turbo_workflows_take_the_same_inputs_as_the_plain_ones(
     turbo_id, plain_id
 ):
+    """`steps` 以外は素の版と同じ入力（turbo は 6 ステップ固定）。"""
     turbo = get_spec(turbo_id, "video")
     plain = get_spec(plain_id, "video")
-    assert turbo.supported_names() == plain.supported_names()
+    assert set(turbo.supported_names()) == set(plain.supported_names()) - {"steps"}
     assert turbo.requires == plain.requires
     assert turbo.multi_inputs == plain.multi_inputs
     assert turbo.optional_loaders == plain.optional_loaders
@@ -1812,27 +1882,48 @@ def test_the_turbo_workflows_take_the_same_inputs_as_the_plain_ones(
     assert "Turbo" in turbo.label and "Turbo" in turbo.mode_label
 
 
-@pytest.mark.parametrize(("turbo_id", "plain_id"), TURBO_LORA_PAIRS)
-def test_the_turbo_templates_chain_the_speedup_nodes_in_series(turbo_id, plain_id):
-    """UNETLoader -> 蒸留 LoRA -> Sage -> MemEffSage -> BlockSparse -> SigmaShift
-    -> Spectrum."""
-    wf = build_video_workflow(params(video_workflow=turbo_id))
+@pytest.mark.parametrize("turbo_id", TURBO_IDS)
+def test_the_turbo_templates_chain_the_speedup_nodes_in_series(turbo_id):
+    """UNETLoader -> Pika LoRA -> Sage -> MemEffSage -> BlockSparse -> SigmaShift
+    -> BasicGuider（Spectrum は無い）。"""
+    unet, lora_id, lora_name = TURBO_TEMPLATES[turbo_id]
+    wf = build_video_workflow(
+        upscale_params(turbo_id, "off", context_latent=PREV_LATENT)
+    )
     validate_workflow(wf)
     by_class = {node["class_type"]: key for key, node in wf.items()}
+    assert wf[by_class["UNETLoader"]]["inputs"]["unet_name"] == unet
+    assert by_class["LoraLoaderModelOnly"] == lora_id
+    assert wf[lora_id]["inputs"]["lora_name"] == lora_name
+    assert wf[lora_id]["inputs"]["strength_model"] == 1.0
     upstream = [by_class["UNETLoader"], 0]
     for class_type in TURBO_CHAIN:
         node_id = by_class[class_type]
         assert wf[node_id]["inputs"]["model"] == upstream, class_type
         upstream = [node_id, 0]
-    # guider は末尾（Spectrum）、scheduler は SigmaShift の手前（BlockSparse）
+    # guider は SigmaShift の出力を直接読む
     assert wf[by_class["BasicGuider"]]["inputs"]["model"] == [
-        by_class["SpectrumApplyMiniMaxH3"],
+        by_class["MiniMaxH3SigmaShift"],
         0,
     ]
-    assert wf[by_class["BasicScheduler"]]["inputs"]["model"] == [
-        by_class["BlockSparseAttention"],
-        0,
-    ]
+    assert "SpectrumApplyMiniMaxH3" not in by_class
+    assert "BasicScheduler" not in by_class
+
+
+@pytest.mark.parametrize("turbo_id", TURBO_IDS)
+def test_the_turbo_templates_stack_exactly_one_lora(turbo_id):
+    """公式に「2 本目の加速 LoRA で出力が壊れる」ので Pika LoRA 1 本だけ。"""
+    _unet, lora_id, lora_name = TURBO_TEMPLATES[turbo_id]
+    template = load_template(turbo_id)
+    loras = {
+        key: node["inputs"]["lora_name"]
+        for key, node in template.items()
+        if node["class_type"] == "LoraLoaderModelOnly"
+    }
+    assert loras == {lora_id: lora_name}
+    names = {node["inputs"].get("lora_name") for node in template.values()}
+    assert OLD_TURBO_LORA not in names
+    assert OLD_REF_LORA not in names
 
 
 @pytest.mark.parametrize(("turbo_id", "plain_id"), TURBO_PAIRS)
@@ -1844,31 +1935,46 @@ def test_the_turbo_workflows_share_the_prompt_guide_of_the_plain_ones(
     assert turbo_id in prompts.MULTI_CUT_WORKFLOWS
 
 
-@pytest.mark.parametrize(("turbo_id", "plain_id"), TURBO_PAIRS)
-def test_the_turbo_templates_sample_in_four_steps(turbo_id, plain_id):
-    wf = build_video_workflow(params(video_workflow=turbo_id))
-    scheduler = next(
-        node for node in wf.values() if node["class_type"] == "BasicScheduler"
+@pytest.mark.parametrize("turbo_id", TURBO_IDS)
+def test_the_turbo_templates_sample_with_lcm_and_six_manual_sigmas(turbo_id):
+    """KSamplerSelect = lcm、シグマは ManualSigmas（124）の 7 点 = 6 ステップ。"""
+    template = load_template(turbo_id)
+    assert template["123"]["class_type"] == "KSamplerSelect"
+    assert template["123"]["inputs"] == {"sampler_name": "lcm"}
+    assert template["124"]["class_type"] == "ManualSigmas"
+    assert template["124"]["inputs"] == {"sigmas": PIKA_SIGMAS}
+    assert len(PIKA_SIGMAS.split(",")) == 7
+    sampler = template["125"]["inputs"]
+    assert sampler["sampler"] == ["123", 0]
+    assert sampler["sigmas"] == ["124", 0]
+    assert sampler["guider"] == ["126", 0]
+
+
+@pytest.mark.parametrize("turbo_id", TURBO_IDS)
+def test_the_turbo_workflows_ignore_steps(turbo_id):
+    """`steps` を宣言しないので、渡しても組み上がるグラフは変わらない。"""
+    spec = get_spec(turbo_id, "video")
+    assert not spec.supports("steps")
+    unset = build_video_workflow(
+        upscale_params(turbo_id, "off", context_latent=PREV_LATENT, steps=0)
     )
-    assert scheduler["inputs"]["steps"] == 4
-    assert scheduler["inputs"]["scheduler"] == "simple"
-    assert scheduler["inputs"]["denoise"] == 1
-    sampler = next(
-        node for node in wf.values() if node["class_type"] == "KSamplerSelect"
+    with_steps = build_video_workflow(
+        upscale_params(turbo_id, "off", context_latent=PREV_LATENT, steps=12)
     )
-    assert sampler["inputs"]["sampler_name"] == "euler"
+    assert unset == with_steps
+    assert unset["124"]["inputs"] == {"sigmas": PIKA_SIGMAS}
 
 
 @pytest.mark.parametrize(
     ("turbo_id", "unet"),
     [
-        ("minimax_h3_i2v_turbo", "minimax_h3_fl2va_pruned_w4a8_mixed.safetensors"),
-        # r2v turbo は参照 LoRA を重ねるので、ウェイトは ref2va ではなく fl2va
-        ("minimax_h3_r2v_turbo", "minimax_h3_fl2va_pruned_w4a8_mixed.safetensors"),
+        ("minimax_h3_i2v_turbo", _H3_FL2VA_UNET),
+        # r2v turbo も素の r2v と同じ ref2va 本体を直接読む
+        ("minimax_h3_r2v_turbo", _H3_REF2VA_UNET),
     ],
 )
 def test_the_turbo_templates_load_the_quantised_weights(turbo_id, unet):
-    wf = build_video_workflow(params(video_workflow=turbo_id))
+    wf = build_video_workflow(upscale_params(turbo_id, "off"))
     by_class = {}
     for key, node in wf.items():
         by_class.setdefault(node["class_type"], []).append(key)
@@ -1888,14 +1994,15 @@ def test_the_optional_custom_nodes_are_not_required_by_the_health_check():
     """任意のカスタムノードなので、入れていない環境でも赤にしない（SPEC §3.1）。"""
     required = all_required_class_types()
     assert not (required & OPTIONAL_CLASS_TYPES)
-    # 実際に組み上がるグラフには載っている（動画は turbo と連続カット、
-    # 画像は t2i / i2i / r2i の 3 モードで全部そろう）。
+    # 実際に組み上がるグラフには載っている（動画は turbo / opt と連続カット、
+    # 画像は t2i / i2i / r2i の 3 モードで全部そろう。Spectrum は opt だけ）。
     # ``MinimaxH3LatentUpscaler3D`` だけはテンプレートに書いておらず、
     # `latent_upscale` が on のときに組み替えで足される。
     used: set[str] = set()
     for workflow_id in (
         "minimax_h3_i2v_turbo",
         "minimax_h3_r2v_turbo",
+        "minimax_h3_r2v_opt",
         "minimax_h3_r2v_context",
         "minimax_h3_t2i",
         "minimax_h3_i2i",
@@ -1916,22 +2023,11 @@ def test_the_optional_custom_nodes_are_not_required_by_the_health_check():
 
 
 def test_the_turbo_templates_have_plain_numeric_node_ids():
-    for turbo_id, _ in TURBO_PAIRS:
+    for turbo_id in TURBO_IDS:
         assert all(key.isdigit() for key in load_template(turbo_id))
 
 
-# --- MiniMax H3 r2v の opt / turbo（fl2va + 参照 LoRA）----------------------
-
-#: r2v の opt / turbo が使う 2 本の LoRA
-REF_LORA = "minimax_h3_ref_lora_rank_256_bf16.safetensors"
-TURBO_LORA = "minimax_h3_fl2v_turbo_4step_v1.3_768p_comfyui_bf16.safetensors"
-
-#: opt テンプレートから r2v turbo を作るときの差分（これ以外は完全に同じ）
-_R2V_TURBO_TWEAKS = {
-    ("144", "model"): ["143", 0],
-    ("124", "steps"): 4,
-    ("123", "sampler_name"): "euler",
-}
+# --- MiniMax H3 r2v の opt / turbo（ref2va 本体を直接読む）--------------------
 
 #: r2v の opt / turbo / save / context の組（テンプレートは全部 1 パス）
 R2V_QUALITY_PAIRS = [
@@ -1941,42 +2037,31 @@ R2V_QUALITY_PAIRS = [
 ]
 
 
-@pytest.mark.parametrize(("opt_id", "turbo_id"), R2V_QUALITY_PAIRS)
-def test_the_r2v_turbo_template_is_the_opt_one_plus_the_distilled_lora(
-    opt_id, turbo_id
-):
-    """turbo との差はノード 143（蒸留 LoRA）と steps / sampler だけ。"""
-    opt = load_template(opt_id)
-    turbo = copy.deepcopy(load_template(turbo_id))
-    assert set(turbo) - set(opt) == {"143"}
-    assert turbo["143"]["class_type"] == "LoraLoaderModelOnly"
-    assert turbo["143"]["inputs"] == {
-        "lora_name": TURBO_LORA,
-        "strength_model": 1.0,
-        "model": ["127", 0],
-    }
-    del turbo["143"]
-    for (node_id, field), value_ in _R2V_TURBO_TWEAKS.items():
-        assert turbo[node_id]["inputs"][field] == value_
-        turbo[node_id]["inputs"][field] = opt[node_id]["inputs"][field]
-    assert opt == turbo
-
-
 @pytest.mark.parametrize(
     "workflow_id",
     [pair[index] for pair in R2V_QUALITY_PAIRS for index in (0, 1)],
 )
-def test_the_r2v_quality_templates_load_fl2va_with_the_ref_lora(workflow_id):
-    """ref2va の量子化ウェイトではなく fl2va + 参照 LoRA を使う。"""
+def test_the_r2v_quality_templates_load_ref2va_without_the_ref_lora(workflow_id):
+    """素の r2v と同じ ref2va 本体を読み、参照 LoRA は重ねない。"""
     template = load_template(workflow_id)
-    assert template["127"]["inputs"]["unet_name"] == (
-        "minimax_h3_fl2va_pruned_w4a8_mixed.safetensors"
-    )
-    assert template["144"]["class_type"] == "LoraLoaderModelOnly"
-    assert template["144"]["inputs"]["lora_name"] == REF_LORA
-    assert template["144"]["inputs"]["strength_model"] == 1.0
-    # 高速化チェーンの頭は必ず参照 LoRA
-    assert template["151"]["inputs"]["model"] == ["144", 0]
+    assert template["127"]["inputs"]["unet_name"] == _H3_REF2VA_UNET
+    assert "144" not in template
+    assert OLD_REF_LORA not in {
+        node["inputs"].get("lora_name") for node in template.values()
+    }
+    loras = [
+        key for key, node in template.items()
+        if node["class_type"] == "LoraLoaderModelOnly"
+    ]
+    if workflow_id.endswith("_opt"):
+        # opt は LoRA を持たず、高速化チェーンの頭が UNETLoader 直結
+        assert loras == []
+        assert template["151"]["inputs"]["model"] == ["127", 0]
+    else:
+        assert loras == ["143"]
+        assert template["143"]["inputs"]["lora_name"] == PIKA_REF2VA_LORA
+        assert template["143"]["inputs"]["model"] == ["127", 0]
+        assert template["151"]["inputs"]["model"] == ["143", 0]
 
 
 @pytest.mark.parametrize(
@@ -1993,9 +2078,13 @@ def test_the_r2v_quality_templates_are_a_single_pass(workflow_id):
             LATENT_UPSCALER_CLASS,
             "LTXVSeparateAVLatent",
             "LTXVConcatAVLatent",
-            "ManualSigmas",
         }
     )
+    # ManualSigmas は turbo の 1 パス目（124）だけ
+    manual = [
+        key for key, node in template.items() if node["class_type"] == "ManualSigmas"
+    ]
+    assert manual == ([] if workflow_id.endswith("_opt") else ["124"])
     samplers = [
         key for key, node in template.items()
         if node["class_type"] == "SamplerCustomAdvanced"
@@ -2006,24 +2095,60 @@ def test_the_r2v_quality_templates_are_a_single_pass(workflow_id):
     assert template["121"]["inputs"]["samples"] == ["125", 0]
 
 
-def test_the_r2v_turbo_stacks_the_two_loras_before_the_speedup_chain():
-    """UNETLoader -> Turbo LoRA -> Ref LoRA -> Sage -> …（opt と同じ連鎖）。"""
+def _turbo_from_opt(opt: dict, lora_id: str, lora_name: str) -> dict:
+    """opt テンプレートから「あるべき turbo」を組み立てる（差分の仕様そのもの）。"""
+    turbo = copy.deepcopy(opt)
+    turbo[lora_id] = {
+        "inputs": {
+            "lora_name": lora_name,
+            "strength_model": 1.0,
+            "model": ["127", 0],
+        },
+        "class_type": "LoraLoaderModelOnly",
+        "_meta": {"title": "Pika H3 Flex LoRA"},
+    }
+    turbo["151"]["inputs"]["model"] = [lora_id, 0]
+    turbo["123"]["inputs"]["sampler_name"] = "lcm"
+    turbo["124"] = {
+        "inputs": {"sigmas": PIKA_SIGMAS},
+        "class_type": "ManualSigmas",
+        "_meta": {"title": "Pika H3 Flex 6 step Sigmas"},
+    }
+    del turbo["154"]
+    turbo["126"]["inputs"]["model"] = ["153", 0]
+    return turbo
+
+
+#: opt -> turbo の組（i2v / r2v と、その保存・連続カット版）
+OPT_TURBO_DIFF_PAIRS = [
+    ("minimax_h3_i2v_opt", "minimax_h3_i2v_turbo"),
+    ("minimax_h3_i2v_save_opt", "minimax_h3_i2v_save_turbo"),
+    *R2V_QUALITY_PAIRS,
+]
+
+
+@pytest.mark.parametrize(("opt_id", "turbo_id"), OPT_TURBO_DIFF_PAIRS)
+def test_the_turbo_template_is_the_opt_one_with_the_pika_recipe(opt_id, turbo_id):
+    """turbo と opt の差は Pika LoRA の追加・lcm・ManualSigmas・Spectrum 抜きだけ。"""
+    _unet, lora_id, lora_name = TURBO_TEMPLATES[turbo_id]
+    opt = load_template(opt_id)
+    assert opt["124"]["class_type"] == "BasicScheduler"
+    assert opt["154"]["class_type"] == "SpectrumApplyMiniMaxH3"
+    assert _turbo_from_opt(opt, lora_id, lora_name) == load_template(turbo_id)
+
+
+def test_the_r2v_turbo_puts_the_pika_lora_before_the_speedup_chain():
+    """UNETLoader(ref2va) -> Pika LoRA(143) -> Sage -> …（ユーザー LoRA なし）。"""
     wf = build_video_workflow(
-        params(
-            video_workflow="minimax_h3_r2v_turbo",
-            selects={LATENT_UPSCALE_NAME: "off"},
-        )
+        upscale_params("minimax_h3_r2v_turbo", "off")
     )
     validate_workflow(wf)
-    assert wf["127"]["inputs"]["unet_name"] == (
-        "minimax_h3_fl2va_pruned_w4a8_mixed.safetensors"
-    )
-    assert wf["143"]["inputs"]["lora_name"] == TURBO_LORA
+    assert wf["127"]["inputs"]["unet_name"] == _H3_REF2VA_UNET
+    assert wf["143"]["inputs"]["lora_name"] == PIKA_REF2VA_LORA
     assert wf["143"]["inputs"]["model"] == ["127", 0]
-    assert wf["144"]["inputs"]["lora_name"] == REF_LORA
-    assert wf["144"]["inputs"]["model"] == ["143", 0]
-    upstream = ["144", 0]
-    for class_type in OPT_CHAIN:
+    assert "144" not in wf
+    upstream = ["143", 0]
+    for class_type in TURBO_CHAIN[1:]:
         node_id = next(
             key for key, node in wf.items() if node["class_type"] == class_type
         )
@@ -2031,17 +2156,10 @@ def test_the_r2v_turbo_stacks_the_two_loras_before_the_speedup_chain():
         upstream = [node_id, 0]
 
 
-@pytest.mark.parametrize(("_opt_id", "turbo_id"), R2V_QUALITY_PAIRS)
-def test_the_r2v_turbo_samples_in_four_euler_steps(_opt_id, turbo_id):
-    template = load_template(turbo_id)
-    assert template["124"]["inputs"]["steps"] == 4
-    assert template["123"]["inputs"]["sampler_name"] == "euler"
-
-
 def test_the_r2v_turbo_takes_the_same_inputs_as_the_plain_r2v():
     turbo = get_spec("minimax_h3_r2v_turbo", "video")
     plain = get_spec("minimax_h3_r2v", "video")
-    assert turbo.supported_names() == plain.supported_names()
+    assert set(turbo.supported_names()) == set(plain.supported_names()) - {"steps"}
     assert turbo.requires == plain.requires
     assert turbo.multi_inputs == plain.multi_inputs
 
@@ -2200,6 +2318,38 @@ def test_latent_upscale_on_wires_the_second_pass(workflow_id):
     assert decoders
     for key in decoders:
         assert wf[key]["inputs"]["samples"] == [up.second_sampler_node, 0]
+
+
+@pytest.mark.parametrize("turbo_id", TURBO_IDS)
+def test_latent_upscale_on_turbo_shares_lcm_and_uses_its_own_sigmas(turbo_id):
+    """turbo の 2 パス目: sampler は 1 パス目の lcm（123）を共有し、シグマは
+    アップスケール用の固定値（903）。1 パス目は ManualSigmas（124）のまま。
+
+    組み替えは BasicScheduler や Spectrum の存在を前提にしていないので、
+    どちらも持たない turbo でも組める。2 個目の BasicGuider の model は
+    1 パス目と同じく SigmaShift（153）の出力。
+    """
+    spec = get_spec(turbo_id, "video")
+    up = spec.upscale
+    wf = build_video_workflow(upscale_params(turbo_id, "on"))
+    validate_workflow(wf)
+    first = wf[up.sampler]["inputs"]
+    second = wf[up.second_sampler_node]["inputs"]
+    assert first["sampler"] == second["sampler"] == ["123", 0]
+    assert wf["123"]["inputs"] == {"sampler_name": "lcm"}
+    assert first["sigmas"] == ["124", 0]
+    assert wf["124"]["inputs"] == {"sigmas": PIKA_SIGMAS}
+    assert second["sigmas"] == [up.sigmas_node, 0]
+    assert wf[up.sigmas_node]["inputs"] == {"sigmas": UPSCALE_SIGMAS}
+    # i2v / r2v は CONDITIONING を作り直すので 2 個目の guider で回す
+    assert up.conditioning is not None
+    hires_guider = wf[second["guider"][0]]
+    assert hires_guider["class_type"] == "BasicGuider"
+    assert hires_guider["inputs"]["model"] == ["153", 0]
+    assert wf[first["guider"][0]]["inputs"]["model"] == ["153", 0]
+    classes = {node["class_type"] for node in wf.values()}
+    assert "BasicScheduler" not in classes
+    assert "SpectrumApplyMiniMaxH3" not in classes
 
 
 @pytest.mark.parametrize(
@@ -2634,7 +2784,7 @@ def test_the_upscaler_model_file_is_a_settings_slot():
 
 
 def test_the_i2v_turbo_only_offers_latent_upscale():
-    """蒸留 LoRA が本体標準の `LoraLoaderModelOnly` になり、選択式はこれだけ。"""
+    """Pika LoRA は本体標準の `LoraLoaderModelOnly` で読むので、選択式はこれだけ。"""
     spec = get_spec("minimax_h3_i2v_turbo", "video")
     assert set(spec.selects) == {LATENT_UPSCALE_NAME}
 
@@ -2644,12 +2794,11 @@ def test_the_i2v_turbo_only_offers_latent_upscale():
     ["minimax_h3_t2v_turbo", "minimax_h3_t2v_save_turbo", "minimax_h3_t2i_turbo"],
 )
 def test_the_t2v_t2i_turbo_variants_do_not_exist(workflow_id):
-    """t2v / t2i に turbo は無い（蒸留 LoRA が fl2v 用で、テキストだけの生成には
-    効かないので廃止した。品質 turbo のときは opt に落ちる）。"""
+    """t2v / t2i に turbo は無い（品質 turbo のときは opt に落ちる）。"""
     assert workflow_id not in BY_ID
 
 
-# --- MiniMax H3 opt（turbo から蒸留 LoRA を抜いた 20 ステップ版）------------
+# --- MiniMax H3 opt（LoRA なし・20 ステップの最適化版）----------------------
 
 #: opt テンプレート -> 素の対応版 / 派生元の turbo
 OPT_PAIRS = [
@@ -2657,9 +2806,13 @@ OPT_PAIRS = [
     ("minimax_h3_r2v_opt", "minimax_h3_r2v", "minimax_h3_r2v_turbo"),
 ]
 
-#: opt の高速化ノード（turbo から蒸留 LoRA の ``LoraLoaderModelOnly`` を抜いたもの）
+#: opt の高速化ノード（LoRA は持たず、turbo には無い Spectrum が末尾に付く）
 OPT_CHAIN = [
-    class_type for class_type in TURBO_CHAIN if class_type != "LoraLoaderModelOnly"
+    "PathchSageAttentionKJ",
+    "MiniMaxH3MemoryEfficientSageAttentionPatch",
+    "BlockSparseAttention",
+    "MiniMaxH3SigmaShift",
+    "SpectrumApplyMiniMaxH3",
 ]
 
 
@@ -2679,27 +2832,21 @@ def test_the_opt_workflows_take_the_same_inputs_as_the_plain_ones(
 
 
 @pytest.mark.parametrize(("opt_id", "_plain_id", "_turbo_id"), OPT_PAIRS)
-def test_the_opt_templates_drop_the_distilled_lora(opt_id, _plain_id, _turbo_id):
+def test_the_opt_templates_have_no_lora(opt_id, _plain_id, _turbo_id):
     """UNETLoader -> Sage -> MemEffSage -> BlockSparse -> SigmaShift -> Spectrum。"""
     template = load_template(opt_id)
-    assert TURBO_LORA not in {
-        node["inputs"].get("lora_name") for node in template.values()
-    }
-    wf = build_video_workflow(params(video_workflow=opt_id))
+    assert not any(
+        node["class_type"] == "LoraLoaderModelOnly" for node in template.values()
+    )
+    wf = build_video_workflow(upscale_params(opt_id, "off"))
     validate_workflow(wf)
     by_class = {node["class_type"]: key for key, node in wf.items()}
     upstream = [by_class["UNETLoader"], 0]
-    # r2v の opt は fl2va + 参照 LoRA なので、連鎖の頭に LoRA が 1 段入る
-    if "LoraLoaderModelOnly" in by_class:
-        ref_lora = by_class["LoraLoaderModelOnly"]
-        assert wf[ref_lora]["inputs"]["lora_name"] == REF_LORA
-        assert wf[ref_lora]["inputs"]["model"] == upstream
-        upstream = [ref_lora, 0]
     for class_type in OPT_CHAIN:
         node_id = by_class[class_type]
         assert wf[node_id]["inputs"]["model"] == upstream, class_type
         upstream = [node_id, 0]
-    # turbo と同じく guider は末尾、scheduler は SigmaShift の手前
+    # guider は末尾（Spectrum）、scheduler は SigmaShift の手前（BlockSparse）
     assert wf[by_class["BasicGuider"]]["inputs"]["model"] == [
         by_class["SpectrumApplyMiniMaxH3"],
         0,
@@ -2712,7 +2859,7 @@ def test_the_opt_templates_drop_the_distilled_lora(opt_id, _plain_id, _turbo_id)
 
 @pytest.mark.parametrize(("opt_id", "_plain_id", "_turbo_id"), OPT_PAIRS)
 def test_the_opt_templates_sample_in_twenty_steps(opt_id, _plain_id, _turbo_id):
-    """蒸留 LoRA が無いので、素の版と同じ 20 ステップ。"""
+    """高速化 LoRA が無いので、素の版と同じ 20 ステップ。"""
     wf = build_video_workflow(params(video_workflow=opt_id))
     scheduler = next(
         node for node in wf.values() if node["class_type"] == "BasicScheduler"
@@ -2726,8 +2873,8 @@ def test_the_opt_templates_sample_in_twenty_steps(opt_id, _plain_id, _turbo_id):
     ("opt_id", "unet"),
     [
         ("minimax_h3_i2v_opt", "minimax_h3_fl2va_pruned_w4a8_mixed.safetensors"),
-        # r2v の opt も参照 LoRA を重ねるので、ウェイトは ref2va ではなく fl2va
-        ("minimax_h3_r2v_opt", "minimax_h3_fl2va_pruned_w4a8_mixed.safetensors"),
+        # r2v の opt は素の r2v と同じ ref2va 本体を直接読む
+        ("minimax_h3_r2v_opt", "minimax_h3_ref2va_pruned_w4a8_mixed.safetensors"),
     ],
 )
 def test_the_opt_templates_keep_the_quantised_weights(opt_id, unet):
@@ -2753,33 +2900,6 @@ def test_the_opt_workflows_share_the_prompt_guide_of_the_plain_ones(
 ):
     assert prompts.video_guide_for(opt_id) == prompts.video_guide_for(plain_id) != ""
     assert opt_id in prompts.MULTI_CUT_WORKFLOWS
-
-
-#: opt が「turbo から蒸留 LoRA を抜いただけ」になっている組。r2v は turbo 側が
-#: 2 パス構成に変わったので、逆に opt を土台にした差分を別テストで見る。
-OPT_TURBO_DIFF_PAIRS = [
-    ("minimax_h3_i2v_opt", "minimax_h3_i2v", "minimax_h3_i2v_turbo"),
-]
-
-
-@pytest.mark.parametrize(("opt_id", "_plain_id", "turbo_id"), OPT_TURBO_DIFF_PAIRS)
-def test_the_opt_templates_differ_from_turbo_only_in_the_lora_and_the_steps(
-    opt_id, _plain_id, turbo_id
-):
-    """差分はノード 150 の削除・151 の付け替え・steps・サンプラーだけ。
-
-    turbo は 4 ステップ蒸留 LoRA に合わせて `euler` を使うが、20 ステップに
-    戻る opt は素の版と同じ `res_multistep` のまま。
-    """
-    opt = load_template(opt_id)
-    turbo = copy.deepcopy(load_template(turbo_id))
-    assert "150" in turbo and "150" not in opt
-    del turbo["150"]
-    turbo["151"]["inputs"]["model"] = ["127", 0]
-    turbo["124"]["inputs"]["steps"] = 20
-    assert turbo["123"]["inputs"]["sampler_name"] == "euler"
-    turbo["123"]["inputs"]["sampler_name"] = "res_multistep"
-    assert opt == turbo
 
 
 def test_the_opt_templates_have_plain_numeric_node_ids():
@@ -3413,7 +3533,7 @@ def test_a_workflow_without_a_steps_target_ignores_the_value():
 
 
 def test_the_minimax_turbo_lora_is_a_switchable_model_field():
-    """4step 蒸留 LoRA も設定・実行時に差し替えられる（SPEC §3.3）。"""
+    """turbo の Pika H3 Flex LoRA も設定・実行時に差し替えられる（SPEC §3.3）。"""
     fields = {f.key: f for f in model_fields()}
     key = "minimax_h3_i2v_turbo/150.lora_name"
     assert key in fields

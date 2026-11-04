@@ -793,9 +793,10 @@ GET /api/v1/jobs?q=かおり&kind=video&nsfw=false&limit=48&offset=0
   直交しています。モードが決まり、`latent_continuity` によるラテント保存版への
   読み替えが済んだあとに掛け合わせて、`minimax_h3_{t2v,i2v,r2v}_{turbo,opt}` /
   `minimax_h3_{t2v,i2v,r2v}_save_{turbo,opt}` / `minimax_h3_r2v_context_{turbo,opt}`
-  へ解決されます。`turbo` は 4step 蒸留 LoRA 版（速いが粗い）、`opt` は 20 steps の
+  へ解決されます。`turbo` は Pika H3 Flex LoRA・lcm・6 steps 固定の版（速いが粗い。
+  `steps` は受け取らず、指定しても無視されます）、`opt` は 20 steps の
   まま量子化と高速化だけを入れた版です。ただし **t2v に `turbo` はありません**
-  （蒸留 LoRA が fl2v（フレーム条件つき）用で、テキストだけの生成には効かないため）。
+  （turbo のテンプレートを置いていないため）。
   `quality` が `"turbo"` でも、t2v になるカット（開始フレームの引き継ぎも参照素材も
   無いカット）は `minimax_h3_t2v_opt`（ラテント連続性が ON なら
   `minimax_h3_t2v_save_opt`）で投入され、その旨が `workflow_reason` に出ます。

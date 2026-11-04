@@ -1122,11 +1122,11 @@ export type StudioRevisionEntity =
  *
  * - `normal`: 素の MiniMax H3（20 steps）。どの接続先でも動く。
  * - `opt`: 20 steps のまま、量子化と高速化パッチだけを焼き込んだ最適化版。
- * - `turbo`: 4 steps の蒸留 LoRA 版（いちばん速いが粗い）。
+ * - `turbo`: Pika H3 Flex LoRA・6 steps 固定の版（いちばん速いが粗い）。
  *
  * `opt` / `turbo` はカスタムノード頼みなので、接続先が対応しなければ素へ
  * フォールバックする（理由は `workflow_reason`）。`turbo` は **t2v には無い**
- * （蒸留 LoRA が fl2v 用）ので、t2v になるカットは `opt` へ落ちる。
+ * （テンプレートを置いていない）ので、t2v になるカットは `opt` へ落ちる。
  */
 export type StudioVideoQuality = 'normal' | 'opt' | 'turbo'
 

@@ -2791,11 +2791,11 @@ StudioWorkflowOverride = Literal[
 #: - ``normal``: 素の MiniMax H3（20 steps）。どの接続先でも動く。
 #: - ``opt``: 素と同じ 20 steps のまま、量子化ウェイトと高速化パッチだけを
 #:   焼き込んだ最適化版（品質は素相当で実行が速い）。
-#: - ``turbo``: 4 steps の蒸留 LoRA 版（いちばん速いが粗い）。
+#: - ``turbo``: Pika H3 Flex LoRA・lcm・6 steps 固定の版（いちばん速いが粗い）。
 #:
 #: ``opt`` / ``turbo`` はカスタムノード頼みなので、接続先が対応しなければ素へ
-#: フォールバックする。``turbo`` は **t2v には無い**（蒸留 LoRA が fl2v 用で
-#: テキストだけの生成に効かない）ので、t2v になるカットは ``opt`` へ落ちる。
+#: フォールバックする。``turbo`` は **t2v には無い**（テンプレートを置いて
+#: いない）ので、t2v になるカットは ``opt`` へ落ちる。
 StudioVideoQuality = Literal["normal", "opt", "turbo"]
 
 #: 画像生成の品質（プロジェクト単位の設定）。動画の :data:`StudioVideoQuality` と
