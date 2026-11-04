@@ -800,7 +800,7 @@ GET /api/v1/jobs?q=かおり&kind=video&nsfw=false&limit=48&offset=0
   `quality` が `"turbo"` でも、t2v になるカット（開始フレームの引き継ぎも参照素材も
   無いカット）は `minimax_h3_t2v_opt`（ラテント連続性が ON なら
   `minimax_h3_t2v_save_opt`）で投入され、その旨が `workflow_reason` に出ます。
-  カスタムノードの無い接続先
+  turbo / opt の専用ウェイト・ノードに対応しない接続先
   （Comfy Cloud）では**品質だけを落として**読み替え済みの版で投入します
   （400 にはしません）。どれに当たったかは
   `GET /api/v1/shots/{id}/prompt-preview` の `workflow_reason` に出ます。
@@ -815,8 +815,8 @@ GET /api/v1/jobs?q=かおり&kind=video&nsfw=false&limit=48&offset=0
   8 steps 蒸留版。t2i にもあります）を使います。Qwen-Image 2.1 に `_opt` は無いので、
   `"opt"` のときは素の版のままです。**動画の `quality` を静止画に流用しないでください** — 動画を
   `turbo` で回している作品でも、素材の絵は `image_quality` に従います
-  （その逆も同じ）。MiniMax H3 の `_opt` / `_turbo` は動画側と同じカスタムノード頼み
-  なので、入っていない接続先（Comfy Cloud）では素の版を使います（Qwen-Image 2.1 の
+  （その逆も同じ）。MiniMax H3 の `_opt` / `_turbo` は動画側と同じく専用ウェイトと
+  高速化ノード（とカスタムノード）頼みなので、Comfy Cloud では素の版を使います（Qwen-Image 2.1 の
   `_turbo` は ComfyUI 本体のノードだけなので、どの接続先でも使えます）。いまのところ静止画を
   焼く経路はアプリ側に無く、素材画像を作るのは**外部エージェント**（この API 経由の
   Claude Code / Codex / Cursor CLI など）なので、この設定は**外部エージェントへの

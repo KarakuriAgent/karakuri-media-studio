@@ -187,7 +187,8 @@ def test_the_minimax_turbo_workflows_are_offered(client):
         assert turbo["multi_inputs"] == plain["multi_inputs"]
 
 
-#: カスタムノード（`app.workflows.OPTIONAL_CLASS_TYPES`）を使うワークフロー
+#: Comfy Cloud では出さないワークフロー（`app.workflows.COMFY_CLOUD_EXCLUDED_CLASS_TYPES`。
+#: turbo / opt は専用ウェイトと高速化ノードが前提）
 CUSTOM_NODE_WORKFLOWS = (
     "minimax_h3_i2v_turbo",
     "minimax_h3_r2v_turbo",
@@ -235,7 +236,7 @@ def _set_target(monkeypatch, target: str) -> None:
 
 
 def test_comfy_cloud_hides_the_custom_node_workflows(client, monkeypatch):
-    """Comfy Cloud には任意のカスタムノードを入れられないので turbo / opt は出さない。"""
+    """Comfy Cloud では turbo / opt（専用ウェイト・高速化ノード頼み）は出さない。"""
     _set_target(monkeypatch, "comfy_cloud")
     options = client.get("/api/options").json()
     assert options["comfy_target"] == "comfy_cloud"

@@ -521,7 +521,7 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         # プロジェクトは既定 OFF = 今までどおりラストフレームの引き継ぎ。
         ("latent_continuity", "INTEGER NOT NULL DEFAULT 0"),
         # ラテントアップスケール（1 パス目を 0.2MP で回してから
-        # `MinimaxH3LatentUpscaler3D` で指定解像度に拡大する）。既存の
+        # `MiniMaxH3LatentUpscaleWithModel` で指定解像度に拡大する）。既存の
         # プロジェクトも既定 ON（ジョブ側の `latent_upscale` の既定と揃える）。
         ("latent_upscale", "INTEGER NOT NULL DEFAULT 1"),
         # 動画生成の品質（normal / opt / turbo）。既存のプロジェクトは

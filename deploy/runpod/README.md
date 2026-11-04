@@ -84,8 +84,13 @@ ComfyUI のバージョンは既定で `master`（起動のたびに最新へ追
 固定したいときは、ビルド引数にタグやコミットハッシュを渡します。
 
 ```bash
-docker build --build-arg COMFYUI_REF=v0.27.0 -t <user>/karakuri-comfyui:latest .
+docker build --build-arg COMFYUI_REF=v0.44.0 -t <user>/karakuri-comfyui:latest .
 ```
+
+固定するなら **v0.44.0 以降**にしてください。MiniMax H3 のラテントアップスケール
+（`LatentUpscaleModelLoader` / `MiniMaxH3LatentUpscaleWithModel`）、turbo / opt の高速化ノード
+（`ModelAttentionBackend` / `BlockSparseAttention` / `MiniMaxH3SigmaShift`）、Sol-H3-VAE の
+読み込み、`TextGenerateV2` が本体に入ったのがこのバージョンです。
 
 > `custom_nodes.txt` はイメージに入るので、内容を変えたら**ビルドし直して push**
 > してください。モデルを足すだけならビルドは不要です（設定ページの [DL] / [全DL]）。

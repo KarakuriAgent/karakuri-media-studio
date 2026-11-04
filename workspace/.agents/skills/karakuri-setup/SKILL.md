@@ -100,7 +100,12 @@ setup.sh reset                             # 状態ファイルを消す（確�
   ComfyUI: …` は**不足ノード**、`workflow template: …` はテンプレートとマニフェストの
   **ノード ID ズレ**。
 - 人: 不足ノードの導入（ComfyUI Manager か git clone）。どのノードが要るかは
-  detail に列挙されるので、そのまま伝える。
+  detail に列挙されるので、そのまま伝える。ComfyUI 本体は **v0.44.0 以降**が前提で、
+  `MiniMaxH3SigmaShift` / `ModelAttentionBackend` / `BlockSparseAttention` /
+  `LatentUpscaleModelLoader` / `MiniMaxH3LatentUpscaleWithModel` / `TextGenerateV2` が
+  不足に出たら custom node ではなく**本体の更新**で直す。
+  外部の custom node が要るのは MiniMax H3 Image（ComfyUI-MiniMax-H3-Image-Studio）、
+  opt の `SpectrumApplyMiniMaxH3`、ラテント連続性（Motion Context 系）だけ。
 - モデルは**使うワークフローのぶんだけ**でよい（全部は要らない。既定ファイル名は
   `../docs/SPEC.md` §3.3）。`.env` に `COMFY_MODELS_DIR=/path/to/ComfyUI/models` を書いて再起動すると、
   設定ページの「モデル」タブから未検出のファイルをダウンロードできる（任意）。

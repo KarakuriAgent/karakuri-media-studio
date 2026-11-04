@@ -1157,7 +1157,7 @@ export interface StudioProject {
   latent_continuity: boolean
   /**
    * ラテントアップスケール（作品既定）。ON = 1 パス目を 0.2MP で回してから
-   * `MinimaxH3LatentUpscaler3D` で指定解像度に拡大する 2 パス。テイク生成の
+   * `MiniMaxH3LatentUpscaleWithModel` で指定解像度に拡大する 2 パス。テイク生成の
    * たびにジョブの `selects.latent_upscale` へ解決される（1 回ぶんの上書きは
    * `StudioRenderRequest`）。入れられない接続先では OFF に落ちる。
    */
@@ -1736,7 +1736,7 @@ export interface StudioShotPreview {
 export interface StudioCapabilities {
   /** ラテント連続性（MiniMaxH3MotionContext 系のカスタムノードが揃っている）。 */
   latent_continuity: boolean
-  /** ラテントアップスケール（MinimaxH3LatentUpscaler3D を入れられる接続先か）。 */
+  /** ラテントアップスケール（アップスケーラのモデルを使える接続先か）。 */
   latent_upscale: boolean
   /** 確かめられなかった理由（日本語。空なら判定できている）。 */
   error: string

@@ -2849,10 +2849,11 @@ class StudioProject(BaseModel):
     #: カスタムノードが要るので、入っていない接続先では投入時に断られる。
     latent_continuity: bool = False
     #: ラテントアップスケール（作品単位の既定。ON = 1 パス目を 0.2MP で回して
-    #: から ``MinimaxH3LatentUpscaler3D`` で指定解像度に拡大する 2 パス）。
+    #: から ``MiniMaxH3LatentUpscaleWithModel`` で指定解像度に拡大する 2 パス）。
     #: テイク生成のたびにジョブの ``selects[latent_upscale]`` へ解決される
-    #: （1 回ぶんの上書きは :class:`StudioRenderRequest`）。カスタムノードが
-    #: 要るので、入れられない接続先（Comfy Cloud）では OFF に落ちる。
+    #: （1 回ぶんの上書きは :class:`StudioRenderRequest`）。ノードは ComfyUI 本体
+    #: 同梱だが、アップスケーラのモデルが無い前提の接続先（Comfy Cloud）では
+    #: OFF に落ちる。
     latent_upscale: bool = True
     #: 作品共通の動画 LoRA（SPEC §3.4.2）。テイク生成のたびにジョブの
     #: ``video_loras`` とトリガーワードに載る（1 回ぶんの上書きは
@@ -3635,7 +3636,7 @@ class StudioCapabilities(BaseModel):
 
     #: ラテント連続性（``MiniMaxH3MotionContext`` 系のカスタムノードが揃っている）
     latent_continuity: bool = False
-    #: ラテントアップスケール（``MinimaxH3LatentUpscaler3D`` を入れられる接続先か）。
+    #: ラテントアップスケール（アップスケーラのモデルを使える接続先か）。
     #: 接続先の種類だけで決まる（``/object_info`` は聞かない）ので、``error`` が
     #: 立っていても値は当てになる。
     latent_upscale: bool = True

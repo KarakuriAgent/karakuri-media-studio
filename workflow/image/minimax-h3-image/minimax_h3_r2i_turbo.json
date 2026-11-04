@@ -45,34 +45,21 @@
   },
   "151": {
     "inputs": {
-      "sage_attention": "auto",
-      "allow_compile": false,
+      "attention": "comfy kitchen attention",
       "model": [
         "143",
         0
       ]
     },
-    "class_type": "PathchSageAttentionKJ",
+    "class_type": "ModelAttentionBackend",
     "_meta": {
-      "title": "Sage Attention"
-    }
-  },
-  "155": {
-    "inputs": {
-      "model": [
-        "151",
-        0
-      ]
-    },
-    "class_type": "MiniMaxH3MemoryEfficientSageAttentionPatch",
-    "_meta": {
-      "title": "Mem Eff Sage Attention"
+      "title": "Model Attention Backend"
     }
   },
   "152": {
     "inputs": {
       "model": [
-        "155",
+        "151",
         0
       ],
       "selection": "sol-attn",

@@ -44,8 +44,10 @@ Optimized は無いので、Optimized のときは素の版のままです）。
 ありません**（Turbo のテンプレートを置いていないため）。
 プロジェクトの画像品質を Turbo にしていても、t2i は Optimized で焼かれます。実行には
 [ComfyUI-MiniMax-H3-Image-Studio](https://github.com/astropuzzo/ComfyUI-MiniMax-H3-Image-Studio)
-が必要で（`deploy/runpod/custom_nodes.txt` に固定済み）、Optimized / Turbo はさらに動画側の
-Turbo と同じ custom node 一式と量子化ウェイトが必要です。Turbo の Pika H3 Flex LoRA は
+が必要で（`deploy/runpod/custom_nodes.txt` に固定済み）、Optimized / Turbo はさらに動画側と
+同じ量子化ウェイトが必要です（高速化ノードは ComfyUI 本体同梱。Optimized だけは
+`SpectrumApplyMiniMaxH3` の custom node も要ります。動画 VAE は動画側と違い、従来の
+`minimax_h3_video_vae_int8_convrot` のままです）。Turbo の Pika H3 Flex LoRA は
 設定ページのモデルスロットから差し替えられます。
 
 生成フォームの「画像ワークフロー」セクションには、H3 のつまみがプルダウンで並びます
@@ -83,16 +85,21 @@ Turbo と同じ custom node 一式と量子化ウェイトが必要です。Turb
 | 参照素材→動画・音声つき (MiniMax H3 r2v Optimized) | 同上（LoRA なし・20 ステップのまま実行だけ速い版） |
 
 MiniMax H3 の 8 種は映像とステレオ音声（台詞・効果音・音楽）を同時生成します。
-実行には MiniMaxH3 ノードを含む新しめの ComfyUI 本体が必要です（SPEC §2.2）。
+実行には ComfyUI 本体 **v0.44.0 以降**が必要です（SPEC §2.2。ラテントアップスケールや
+Turbo / Optimized の高速化ノードもこのバージョンの本体に入っています）。
 **Turbo**（i2v / r2v）は Pika H3 Flex LoRA（i2v は fl2va 用、r2v は ref2va 用）・lcm・
-6 ステップ固定のシグマと Sage Attention / Sol-Attn をワークフローに焼き込んだ高速版で、
+6 ステップ固定のシグマと Comfy Kitchen attention / Sol-Attn をワークフローに焼き込んだ高速版で、
 入力の指定は素の版と同じです（ステップ数だけは固定で、指定しても効きません）。
 **t2v に Turbo はありません**（Turbo のテンプレートを置いていないため）。
 プロジェクトの動画品質を Turbo にしていても、t2v になるカットは Optimized で投入されます。専用の量子化ウェイト
-（`*_pruned_w4a8_mixed` / `qwen3vl_32b_heretic_minimax_h3_nvfp4` / `minimax_h3_video_vae_int8_convrot`）と
-上記 custom node 一式が入った環境でのみ動きます（Pika H3 Flex LoRA は ComfyUI 標準の
-`LoraLoaderModelOnly`、シグマは標準の `ManualSigmas` なので、Turbo 専用の custom node は
-ありません）。
+（`*_pruned_w4a8_mixed` / `qwen3vl_32b_heretic_minimax_h3_nvfp4`）と動画 VAE の Sol-H3-VAE
+（`minimax_h3_sol_vae_int8_convrot`）が入った環境でのみ動きます。Turbo の高速化ノード
+（`ModelAttentionBackend` / `BlockSparseAttention` / `MiniMaxH3SigmaShift`）も Pika H3 Flex LoRA の
+`LoraLoaderModelOnly` もシグマの `ManualSigmas` も ComfyUI 本体のノードなので、Turbo に
+custom node は要りません（Optimized は `SpectrumApplyMiniMaxH3` の custom node だけ要ります）。
+Sol-H3-VAE はデコードが速い代わりにタイル分割ができず、クリップ全体を一度にデコードするので、
+長尺・高解像度ほど VRAM を多く使います（足りなければ設定ページで動画 VAE を
+`minimax_h3_video_vae_int8_convrot` に戻せます）。
 
 **音声**は MiniMax Music 3（歌もの・インスト。キャプションと歌詞を指定）と
 Stable Audio 3 Medium（効果音・環境音・単一楽器）の 2 種です。

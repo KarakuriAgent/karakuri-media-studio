@@ -13,11 +13,18 @@
 # 既定では空。
 #
 # workflow/ のテンプレートが使うノード（ResolutionSelector / CustomCombo /
-# ComfySwitchNode / MiniMaxH3 系 / MoGe 系 / LatentUpscaleModelLoader /
-# ResizeImagesByLongerEdge / WanDancer 系 / Video Slice など）は、Dockerfile で
-# 固定している ComfyUI のバージョンに **本体同梱（comfy_extras）として入っている**
-# ことを前提にしている。COMFYUI_REF を古いタグに下げる場合や、自分で足した
-# ワークフローが外部のノードを要求する場合だけここに書き足す。
+# ComfySwitchNode / MiniMaxH3 系（MiniMaxH3SigmaShift・MiniMaxH3LatentUpscaleWithModel
+# を含む）/ MoGe 系 / LatentUpscaleModelLoader / ModelAttentionBackend /
+# BlockSparseAttention / TextGenerateV2 / ResizeImagesByLongerEdge / WanDancer 系 /
+# Video Slice など）は、ComfyUI 本体 **v0.44.0 以降**に**本体同梱（comfy_extras）として
+# 入っている**ことを前提にしている（Dockerfile の COMFYUI_REF の既定は master）。
+# COMFYUI_REF を v0.44.0 より古いタグに下げると足りなくなるので、そのときは本体の
+# 更新を優先すること。自分で足したワークフローが外部のノードを要求する場合だけ
+# ここに書き足す。
+#
+# 本体に代替が無く、ここに書いていない外部ノード（使う場合だけ自分で足す）:
+#   - SpectrumApplyMiniMaxH3（MiniMax H3 の opt）
+#   - ComfyUI-H3-Motion-Context / ComfyUI-MiniMaxH3-Contex-Loop（ラテント連続性）
 #
 # 足りないノードがあるかどうかは、アプリのヘッダーの接続インジケーター
 # （GET /api/health）が「missing custom nodes on ComfyUI: …」として教えてくれる。

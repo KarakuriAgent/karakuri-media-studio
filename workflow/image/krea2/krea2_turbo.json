@@ -166,9 +166,9 @@
         0
       ]
     },
-    "class_type": "TextGenerate",
+    "class_type": "TextGenerateV2",
     "_meta": {
-      "title": "TextGenerate"
+      "title": "TextGenerateV2"
     }
   },
   "30:17": {

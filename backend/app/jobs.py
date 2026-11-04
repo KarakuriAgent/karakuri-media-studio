@@ -869,8 +869,8 @@ async def _resolve_auto_selects(params: dict[str, Any]) -> None:
 def _pin_target_selects(params: dict[str, Any]) -> None:
     """接続先で使えない選択肢を弾き、既定を接続先に合わせて固定する（§3.1 / §5.1）。
 
-    ``latent_upscale`` の既定は on だが、Comfy Cloud には
-    ``MinimaxH3LatentUpscaler3D`` を入れられない。生成フォームは選択肢そのものを
+    ``latent_upscale`` の既定は on だが、Comfy Cloud ではラテントアップスケーラの
+    モデルを使えない前提にしている。生成フォームは選択肢そのものを
     off だけにして出す（:func:`app.routers.options._workflow_option`）が、外部
     API・エージェント・古いジョブの再実行は値を送ってこないことがある。そこで
     ここで params に書き込んでおく（保存されるので再実行しても同じ値で走る）。

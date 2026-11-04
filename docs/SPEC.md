@@ -169,7 +169,7 @@
   こちらはワークフロー id を変えず、投入するジョブの選択式
   （`selects.latent_upscale` = `on` / `off`。§3.1 の「ラテントアップスケール」）に落ちる。
   効き方は**テイク 1 回ぶんの上書き → プロジェクト → 既定（ON）**で、Shot 単位の設定は持たない。
-  接続先が `MinimaxH3LatentUpscaler3D` を入れられない（`comfy_cloud`）ときは
+  接続先がアップスケーラのモデルを使えない前提の `comfy_cloud` のときは
   ON を頼んでも **黙って `off` に落とし**（投入そのものは通す）、理由を投入プレビューの
   `workflow_reason` に足す（`app.studio._resolve_selects`）。宣言を持たないワークフローには
   `selects` を載せない。**連鎖の途中で on / off を切り替えるとラテント連続性が合わなくなる**
@@ -301,7 +301,8 @@
   `deploy/runpod/custom_nodes.txt` に固定）が要る。`H3*` の 6 クラスを
   `OPTIONAL_CLASS_TYPES` に載せてあるので、カスタムノードが無い接続先
   （Comfy Cloud を含む）では base / `_opt` / `_turbo` とも丸ごと選択肢から落ちる
-  （§3.2。`_opt` / `_turbo` は動画側と同じ高速化ノードも焼き込んである）。
+  （§3.2。`_opt` / `_turbo` は動画側と同じ高速化ノードも焼き込んである。`_opt` / `_turbo` は
+  `ModelAttentionBackend` を持つので、H3 Image Studio を入れたとしても Comfy Cloud には出ない）。
   `_turbo` の Pika H3 Flex LoRA は `LoraLoaderModelOnly` で読むので設定画面から
   差し替えできる（§3.3）
 - `minimax-h3-image` のモデル構成は**動画側（`minimax-h3`）とそろえてある**:
@@ -315,6 +316,11 @@
   | LoRA | なし | なし | Pika H3 Flex LoRA 1 本（i2i は `pika_h3_flex_fl2va_comfy_bf16`・ノード 150、r2i は `pika_h3_flex_ref2va_comfy_bf16`・ノード 143） |
   | Spectrum | なし | あり | なし（6 ステップでは一度も予測しない） |
   | サンプラー / シグマ | `H3SamplingSettings`（res_multistep / simple / 20） | 同左 | `KSamplerSelect`（**lcm**・ノード 123）+ `ManualSigmas`（**7 点 = 6 ステップ固定**・ノード 124） |
+
+  動画 VAE は動画側の opt / turbo（Sol-H3-VAE）と違い、従来の `minimax_h3_video_vae_int8_convrot` の
+  まま。Sol-H3-VAE のデコーダは 5 ラテント単位の非因果デコードに蒸留されたもので、短いフレーム
+  パケットを `H3ImageDecode` / `H3ImageFrameSelector`（外部のカスタムノード）でデコードして 1 枚を選ぶ
+  静止画側での振る舞いを確かめていないため。
 
   `_turbo` の `H3SamplingSettings`（ノード 8）は sigma shift（video 12 / audio 3）を掛けた
   model 出力のためだけに残してあり、sampler / sigmas 出力はどこにも繋がない（`SamplerCustomAdvanced`
@@ -503,7 +509,7 @@ ComfyUI が「テンプレートにしか無いファイル」を探して落ち
 |---|---|---|
 | UNET | `minimax_h3_{fl2va,ref2va}_pruned_w4a8_mixed` | 同左（i2v は fl2va、r2v は ref2va） |
 | CLIP | `qwen3vl_32b_heretic_minimax_h3_nvfp4` | 同左 |
-| 動画 VAE | `minimax_h3_video_vae_fp16` | `minimax_h3_video_vae_int8_convrot` |
+| 動画 VAE | `minimax_h3_video_vae_fp16` | `minimax_h3_sol_vae_int8_convrot`（Sol-H3-VAE、下記） |
 | LoRA | なし | Pika H3 Flex LoRA 1 本（i2v は `pika_h3_flex_fl2va_comfy_bf16`・ノード 150、r2v は `pika_h3_flex_ref2va_comfy_bf16`・ノード 143。strength 1.0） |
 | シグマ（ノード 124） | `BasicScheduler`（simple・steps 20） | **`ManualSigmas`**（`1.0, 0.972973, 0.923077, 0.8, 0.571429, 0.333333, 0.0` = 6 ステップ固定） |
 | `KSamplerSelect.sampler_name` | `res_multistep` | **`lcm`** |
@@ -518,33 +524,47 @@ ComfyUI が「テンプレートにしか無いファイル」を探して落ち
 
 素の版も**量子化ウェイトと heretic の text encoder**を使うので、素の版と turbo の
 モデルファイルの差は**動画 VAE と Pika LoRA だけ**（`opt` は LoRA を持たず、
-`BasicScheduler` の 20 ステップ + Spectrum で回す）。
+`BasicScheduler` の 20 ステップ + Spectrum で回す）。turbo / opt の動画 VAE は Sol-H3-VAE（下記）。
 
 UNETLoader と BasicGuider の間には、高速化ノードが**テンプレートに直接**直列で入っている:
 
 ```
 UNETLoader
  → LoraLoaderModelOnly     (pika_h3_flex_{fl2va,ref2va}_comfy_bf16.safetensors, strength_model 1.0)
- → PathchSageAttentionKJ   (sage_attention=auto)
- → MiniMaxH3MemoryEfficientSageAttentionPatch     (入力は model のみ)
+ → ModelAttentionBackend   (backend = comfy kitchen attention。API の入力名は attention)
  → BlockSparseAttention    (Sol-Attn tau 1.5 / 0.2〜0.9)
  → MiniMaxH3SigmaShift     (video 12 / audio 3)   ──→ BasicGuider.model
 ```
 
 `ManualSigmas` は model を読まない。`SpectrumApplyMiniMaxH3`（warmup 5 + tail 1）は
 6 ステップでは一度も予測しないので turbo には入れない。`MiniMaxH3SigmaShift` は
-音声側のシグマ導出のため DiT にも shift が渡るので残す。`BlockSparseAttention` は ComfyUI 本体
-（v0.34.5 以降 / comfy-kitchen 0.2.33 以降）同梱で、それ以外は**任意のカスタム
-ノード**。入れていない環境でヘルスチェックが赤くならないよう、turbo / opt を選ばないかぎり
-グラフには現れない。
+音声側のシグマ導出のため DiT にも shift が渡るので残す。`ModelAttentionBackend`（密な
+アテンションを Comfy Kitchen の INT8 アテンションに切り替える。`BlockSparseAttention` が
+効いていない区間もこれで回るので、その手前に置く）・`BlockSparseAttention`・`MiniMaxH3SigmaShift`
+はどれも ComfyUI 本体 **v0.44.0 以降**に同梱で、turbo に外部のカスタムノードは要らない
+（ヘルスチェックも必須ノードとして見る）。Comfy Kitchen attention は Nvidia / AMD の GPU でしか
+使えず、使えない環境では本体が警告を出して PyTorch のアテンションに戻す。opt の
+`SpectrumApplyMiniMaxH3` だけは本体に代替が無い**任意のカスタムノード**で、入れていない環境で
+ヘルスチェックが赤くならないよう `OPTIONAL_CLASS_TYPES` に載せてある。
+
+**動画 VAE（Sol-H3-VAE）**: turbo / opt の動画 VAE は Comfy-Org/MiniMax-H3 の
+`vae/minimax_h3_sol_vae_int8_convrot.safetensors`。Sol-H3-VAE（Efficient-Large-Model/Sol-H3-VAE）の
+蒸留した 24 層の非因果デコーダに、H3 VAE のエンコーダを足して 1 ファイルにした int8_convrot 版で、
+本体の `comfy/sd.py` が `decoder.blocks.*`（Sol のデコーダ）と `encoder.*` の両方を読む。
+Efficient-Large-Model の `sol_h3_vae.safetensors` は**デコーダだけ**なので、開始フレーム・参照素材・
+Motion Context のフレームをエンコードする i2v / r2v / 連続カットには使えない（エンコードの段で
+落ちる）。デコードは速いが、**タイル分割も時間方向の分割もせずクリップ全体を一度にデコードする**
+ので、長尺・高解像度ほど VRAM を多く使う（配布元の目安で 5 秒 720p 約 24 GiB）。足りなければ
+設定ページで動画 VAE を従来の `minimax_h3_video_vae_int8_convrot` に戻せる（同じエンコーダなので
+入出力の形は変わらない）。
 
 ワークフローの宣言は `dataclasses.replace` で素の版との差分だけを書く（`workflows.py` の
 `MINIMAX_H3_I2V_TURBO` / `MINIMAX_H3_R2V_TURBO`、およびそれらを
 さらに `replace` した `…_SAVE_TURBO` / `MINIMAX_H3_R2V_CONTEXT_TURBO`）。family は素の版と同じ
 `minimax-h3` なので、2 段プルダウン（モデル → モード）の 2 段目に「… (i2v Turbo)」
 「… (r2v Turbo)」として並ぶ。
-Pika LoRA は本体標準の `LoraLoaderModelOnly`、シグマは本体標準の `ManualSigmas` なので、
-turbo 専用の custom node は要らない。
+Pika LoRA は本体標準の `LoraLoaderModelOnly`、シグマは本体標準の `ManualSigmas`、高速化ノードも
+本体同梱なので、turbo 専用の custom node は要らない。
 
 r2v の opt / turbo も素の r2v と同じ **ref2va 本体**（`minimax_h3_ref2va_pruned_w4a8_mixed`）を
 直接読む（`_save` / `_context` 版も同じ。参照 LoRA は使わない）。
@@ -567,14 +587,17 @@ r2v の opt / turbo も素の r2v と同じ **ref2va 本体**（`minimax_h3_ref2
 - `on`:
   1. `width` / `height` の注入先には **0.2MP** で計算した値を書く（縦横比の決め方は従来どおり。
      開始フレームがあればその比、無ければプリセット。32 の倍数に丸める）。
-  2. 1 パス目の `SamplerCustomAdvanced` の **denoised_output（出力 1）**を
-     `LTXVSeparateAVLatent` で映像／音声に分ける。
-  3. 映像側だけ `MinimaxH3LatentUpscaler3D` に通す。`model_name` は
-     `minimax_h3_latent_upscaler_3d_bf16.safetensors`（`latent_upscale_models`）、
-     `mode` は **`target dimensions`**（`megapixels` モードではない）で、DynamicCombo の
-     入力名どおり `mode.width` / `mode.height` に**最終解像度**を書く。`align` 32・
-     `device` `cuda`・`precision` `bf16`。
-  4. `LTXVConcatAVLatent` で音声と戻し、`ManualSigmas`
+  2. 1 パス目の `SamplerCustomAdvanced` の **denoised_output（出力 1）**を、ComfyUI 本体
+     （v0.44.0 以降）の `MiniMaxH3LatentUpscaleWithModel` に AV ラテントのまま通す
+     （入力は `model` / `samples` / `width` / `height`。`width` / `height` に**最終解像度**を書く）。
+     拡大するのは映像だけで、音声ラテントはそのまま通る（映像と音声を分けて戻す
+     ノードは要らない）。`model` は本体の `LatentUpscaleModelLoader`（`model_name` =
+     `minimax_h3_latent_upscaler_3d_bf16.safetensors`、`latent_upscale_models`）の出力。本体は
+     state dict の形（`in_blocks.*` / `conv_in` / `in_blocks.1.dwconv`）で H3 用アップスケーラと
+     判別する。このファイルは HF の LBH-123-AI/Minimax_h3_latent_Upscaler で現在
+     `minimax_h3_latent_upscaler_3d_conv_v1/minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors`
+     として置かれているもの（SHA-256 が同じ。旧名で保存するか、設定ページで新名に差し替える）。
+  3. `ManualSigmas`
      （**`0.9035, 0.6316, 0.3158, 0.0000` 固定・全バリアント共通**）で 2 パス目の
      `SamplerCustomAdvanced` を回す。`noise` / `sampler` は 1 パス目と同じものを共有する。
      `guider` は版で分かれる:
@@ -596,11 +619,11 @@ r2v の opt / turbo も素の r2v と同じ **ref2va 本体**（`minimax_h3_ref2
        shape [405, 96]` のように行数不一致で落ちる（22×38 → 30×54 の例）。参照画像・参照動画
        （`minimax_refs`）は自分の格子を持つので落ちはしないが、`ref_image_size` = `match` は参照画像を
        生成の画素数まで縮めるので、2 パス目は最終解像度で作り直した参照で回す。
-  5. 1 パス目を `samples` で読んでいた `VAEDecode` / `VAEDecodeAudio` だけを 2 パス目に
+  4. 1 パス目を `samples` で読んでいた `VAEDecode` / `VAEDecodeAudio` だけを 2 パス目に
      付け替える。**テンプレートの `MiniMaxH3MotionContextSaveLatent` と 1 個目の Motion Context は
      入力名が `latent` なので 1 パス目に付いたまま**。
      `MiniMaxH3MotionContextTrim` はデコード後（＝2 パス目のデコード後）に掛かる既存の配線のまま。
-  6. **2 段引き継ぎ**（ラテント連続性のバリアント、下記）。
+  5. **2 段引き継ぎ**（ラテント連続性のバリアント、下記）。
 
 ##### 2 段引き継ぎ（ラテント連続性 × `latent_upscale` = `on`）
 
@@ -615,7 +638,7 @@ r2v の opt / turbo も素の r2v と同じ **ref2va 本体**（`minimax_h3_ref2
 - **読み込み側**（`*_context*` のみ）: 直前カットに 2 本目があれば、
   **2 個目の `…LoadLatent`**（`latent_path` = 前カットの `latent_hires_path`）と
   **2 個目の `MiniMaxH3MotionContext`**（`conditioning` は最終解像度で作り直した
-  `MiniMaxH3ReferenceToVideo`（ノード `910`）、`vae` / `context_frames` / つまみは 1 個目と同じ、`latent` = `LTXVConcatAVLatent` の出力（＝2 パス目の解像度・フレーム数の形状参照）、
+  `MiniMaxH3ReferenceToVideo`（ノード `910`）、`vae` / `context_frames` / つまみは 1 個目と同じ、`latent` = `MiniMaxH3LatentUpscaleWithModel` の出力（＝2 パス目の解像度・フレーム数の形状参照）、
   `context_latent` = 2 個目の `…LoadLatent`）と、**2 個目の `BasicGuider`**（`model` は 1 個目と
   同じモデル連鎖、`conditioning` は 2 個目の Motion Context）を足し、**2 パス目の
   `SamplerCustomAdvanced` の `guider` をこちらへ付け替える**（1 パス目の guider 共有をやめる）。
@@ -632,7 +655,10 @@ r2v の opt / turbo も素の r2v と同じ **ref2va 本体**（`minimax_h3_ref2
   必要があるので、**連鎖の途中で解像度（`megapixels` / `aspect_ratio`）や `latent_upscale` の
   on / off を変えると、次のカットは解像度不一致で ComfyUI 側が止まる**。変えるなら連鎖の切れ目で。
 
-足すノードの id は `UpscaleSpec` が持つ（2 パスぶんが `900`〜`904`、2 段引き継ぎぶんが
+足すノードの id は `UpscaleSpec` が持つ（2 パスぶんが `901`（`LatentUpscaleModelLoader`）/
+`902`（`MiniMaxH3LatentUpscaleWithModel`）/ `903`（`ManualSigmas`）/ `904`（2 パス目の
+`SamplerCustomAdvanced`）で `900` は欠番。ローダーを `901` に置くのは、以前のアップスケーラの
+上書きキー `<workflow>/901.model_name` をそのまま使えるようにするため。2 段引き継ぎぶんが
 `905`（hires SaveLatent）/ `906`（hires PreviewAny）/ `907`（hires LoadLatent）/
 `908`（hires MotionContext）/ `909`（hires BasicGuider）。テンプレートの最大 166 とも、
 素の t2v / i2v のサブグラフ由来の `105:xx` とも衝突しない）。1 パス目のサンプラーの id も
@@ -641,9 +667,9 @@ r2v の opt / turbo も素の r2v と同じ **ref2va 本体**（`minimax_h3_ref2
 アップスケーラの `model_name` も設定ページのスロットとして出るし（`workflow.model_fields` が
 テンプレートに `UpscaleSpec` 由来のノードを重ねて見る）、ジョブごとの `model_overrides` も効く。
 
-`MinimaxH3LatentUpscaler3D`（カスタムノード Comfyui_Minimax_h3_latent_Upscaler）は
-**テンプレートに現れない**ので、テンプレート由来の接続先判定
-（`uses_optional_class_types` / `supported_on_target`）では拾えない。代わりに選択式そのものが
+ラテントアップスケールのノードは本体同梱だが、アップスケーラのモデル（`latent_upscale_models`）は
+Comfy Cloud には無い前提にしている。ノードは**テンプレートに現れない**ので、テンプレート由来の
+接続先判定（`excluded_on_comfy_cloud` / `supported_on_target`）では拾えない。代わりに選択式そのものが
 `SelectSpec.requires_class_types` / `restricted_choice` を宣言し、
 `SelectSpec.choices_for_target(comfy_target)` が **`comfy_cloud` では選択肢を `off` だけに絞る**
 （`GET /api/options` の `selects` が接続先に合わせて絞られる）。値を送ってこない
@@ -652,7 +678,7 @@ r2v の opt / turbo も素の r2v と同じ **ref2va 本体**（`minimax_h3_ref2
 
 さらに LoRA を持たない **opt**（`minimax_h3_t2v_opt` / `minimax_h3_i2v_opt` /
 `minimax_h3_r2v_opt` と、その `_save` / `_context` 版）がある。
-`LoraLoaderModelOnly` を持たず（`PathchSageAttentionKJ` が UNETLoader 直結。UNET は素の版と
+`LoraLoaderModelOnly` を持たず（`ModelAttentionBackend` が UNETLoader 直結。UNET は素の版と
 同じで、r2v も ref2va 本体）、`BasicScheduler.steps` は素の版と同じ **20**・
 `KSamplerSelect.sampler_name` も素の版と同じ `res_multistep`。量子化ウェイトとアテンション系
 パッチ・SigmaShift・Spectrum を焼き込んであるので、
@@ -660,10 +686,12 @@ r2v の opt / turbo も素の r2v と同じ **ref2va 本体**（`minimax_h3_ref2
 ドラマスタジオからはプロジェクトの「動画生成品質」（`quality`）として選ぶ（§2.2）。
 
 **接続先が `comfy_cloud` のときは turbo / opt（と MiniMax H3 Image の全バリアント）を
-選択肢に出さない**。Comfy Cloud には任意のカスタムノードを入れられないためで、判定は id の
-ハードコードではなく「テンプレートが `workflows.OPTIONAL_CLASS_TYPES`（turbo / opt と
-MiniMax H3 Image だけが使う任意のカスタムノード）を 1 つでも使うか」
-（`workflow.uses_optional_class_types` / `workflow.supported_on_target`。spec ごとにプロセス内
+選択肢に出さない**。Comfy Cloud には任意のカスタムノードを入れられず、turbo / opt の専用ウェイト
+（量子化 UNET・Pika H3 Flex LoRA・Sol-H3-VAE）も揃う前提にできないためで、判定は id の
+ハードコードではなく「テンプレートが `workflows.COMFY_CLOUD_EXCLUDED_CLASS_TYPES`
+（任意のカスタムノード `OPTIONAL_CLASS_TYPES` に、turbo / opt が必ず持つ本体ノード
+`ModelAttentionBackend` を目印として足したもの）を 1 つでも使うか」
+（`workflow.excluded_on_comfy_cloud` / `workflow.supported_on_target`。spec ごとにプロセス内
 キャッシュ）。`GET /api/options` の `image_workflows` / `video_workflows` / `audio_workflows` が
 同じ規則で絞られ、フォームの 2 段プルダウンも外部 API の `GET /api/v1/options` もそれに従う。
 `local` / `runpod` は自前の ComfyUI なので従来どおり全件出す（入っていなければ実行時に ComfyUI 側で
@@ -798,7 +826,7 @@ base / opt / turbo）= 0.98MP**（native canvas 1344x768。こちらは逆に、
 | 音声 seed | `seed`（MiniMax Music 3 は `37:38` の `SeedNode`、Stable Audio は `KSampler.seed`） | 同上（`params` には `audio_seed` として保存） |
 | 音声の長さ | `duration` / `latent_seconds` | どちらのワークフローも空ラテントがテキストエンコード側の出力（MiniMax Music 3）や同じ `PrimitiveFloat`（Stable Audio）を読むので注入は 1 か所。2 か所に入れるテンプレート用に `latent_seconds` の口は残してある |
 | 出力プレフィックス | `save_prefix` | 画像 `images/{job_id}` / 動画 `video/{job_id}` / 音声 `audio/{job_id}` にして成果物とジョブを紐付け |
-| ローカル LLM リファイン | `refine_enable` → `30:24`（krea2 のみ） | **false 固定**（プロンプト整形は Grok が担う）。`ComfySwitchNode` は遅延評価（`check_lazy_status`）なので `30:16` (TextGenerate) は実行されない |
+| ローカル LLM リファイン | `refine_enable` → `30:24`（krea2 のみ） | **false 固定**（プロンプト整形は Grok が担う）。`ComfySwitchNode` は遅延評価（`check_lazy_status`）なので `30:16` (TextGenerateV2) は実行されない |
 | プロンプト拡張 | `prompt_enhance` → 各テンプレートの `Boolean (Enable Prompt Enhance)` | **false 固定**（同上）。IC-LoRA 系は false なのでスイッチのリテラル側 `on_false` にプロンプトを注入する |
 
 Stable Audio の `reprompt`（内蔵 LLM でのプロンプト展開）だけは例外で、**ユーザーが選ぶ**
@@ -808,7 +836,7 @@ Stable Audio の `reprompt`（内蔵 LLM でのプロンプト展開）だけは
 
 - 画像側: 各ファミリーの UNET / CLIP / VAE（krea2 = `krea2_turbo_fp8_scaled` + `qwen3vl_4b_fp8_scaled` + `qwen_image_vae`、anima = `anima-base-v1.0`、z-image = `z_image_turbo_bf16`、qwen-image = `qwen_image_2.1_int8_convrot`（turbo は `qwen_image_2.1_turbo_int8_convrot`）+ `qwen3vl_8b_int8_convrot` + `qwen_image_2.1_vae_bf16`）と KSampler 設定
 - 音声側: MiniMax Music 3 `minimax_music3_dit_fp16` + `minimax_music3_text_encoder_pruned_int8_convrot` + `minimax_music3_dav`、Stable Audio `stable_audio_3_medium_base` + `t5gemma_b_b_ul2` / `qwen3.5_2b_bf16`、およびサンプラー設定
-- 動画側: MiniMax H3 の UNET / CLIP / 映像 VAE / 音声 VAE（`minimax_h3_*` 系。素の版から w4a8 量子化ウェイトで、opt / turbo はさらに int8_convrot の映像 VAE + Sage Attention / Sol-Attn / SigmaShift（opt は Spectrum も）、turbo は Pika H3 Flex LoRA と lcm・ManualSigmas 6 ステップも）とサンプラー設定
+- 動画側: MiniMax H3 の UNET / CLIP / 映像 VAE / 音声 VAE（`minimax_h3_*` 系。素の版から w4a8 量子化ウェイトで、opt / turbo はさらに Sol-H3-VAE（`minimax_h3_sol_vae_int8_convrot`）の映像 VAE + Comfy Kitchen attention / Sol-Attn / SigmaShift（opt は Spectrum も）、turbo は Pika H3 Flex LoRA と lcm・ManualSigmas 6 ステップも）とサンプラー設定
 - **モデルファイル名は利用者の ComfyUI 環境依存**のため、設定ページ（`GET/PUT /api/models`）で上書き可能。既定値は各テンプレートの値。対象は UNETLoader.unet_name / CLIPLoader.clip_name / CLIPVisionLoader.clip_name / VAELoader.vae_name / CheckpointLoaderSimple.ckpt_name / LatentUpscaleModelLoader.model_name / LoadMoGeModel.model_name / LoraLoaderModelOnly.lora_name / LoraLoader.lora_name（§3.4 で削除される画像テンプレートのプレースホルダは除く。テンプレートが持つ固定 LoRA ノード（MiniMax H3 turbo の Pika H3 Flex LoRA）はユーザー LoRA と共存するので上書き対象のまま）
 - **モデルの指定は接続先ごと**（SPEC §5）: `Settings.model_overrides` / `model_choices` は `{"<comfy_target>": {"<スロットキー>": …}}` の 2 段で持つ。どのファイルが在るかは ComfyUI の環境ごとに違うため。`GET/PUT /api/models` は `?target=`（PUT はボディの `target`）で対象環境を選び、省略すると現在の接続先。**書き込みは選んだ環境だけ**で他の環境の指定は残る。ジョブ実行・`/api/options` の `model_slots`・投入時の検証はすべて「現在の接続先」の値（`Settings.overrides_for()` / `choices_for()`）を使う。接続先を分ける前の設定（1 組だけ）は読み込み時に**3 環境すべてへ複製**される（`config._per_target`）: 分けた瞬間に指定が消えて既定モデルで走り出すのを避けるため
 - 上書きキーは**ワークフロー ID でスコープ**する: `"<workflow_id>/<node_id>.<field>": "<ファイル名>"`。テンプレート間で同じノード ID（例: `340:317` が ia2v と id_lora の両方にある）が衝突しないため。旧レイアウトの非スコープキーは無視される（マイグレーション不要）
@@ -894,7 +922,7 @@ LoRA は**登録時に対象（`target`）を選ぶ**: `image` なら画像ワ�
 `accepts_video_loras` は true になり、生成フォームに「LoRA（動画）」欄が出る。
 テンプレートはどれも UNETLoader から始まる MODEL の 1 本道なので、そこを 1 か所
 切り開いて挿す。固定の `LoraLoaderModelOnly`（turbo の Pika H3 Flex LoRA）は外せないので
-**その後ろ**に、高速化パッチ（`PathchSageAttentionKJ` → … → `MiniMaxH3SigmaShift`、opt は
+**その後ろ**に、高速化パッチ（`ModelAttentionBackend` → … → `MiniMaxH3SigmaShift`、opt は
 さらに `SpectrumApplyMiniMaxH3`）は
 **チェーンの後ろ**に残す:
 
@@ -902,9 +930,9 @@ LoRA は**登録時に対象（`target`）を選ぶ**: `image` なら画像ワ�
 | --- | --- | --- |
 | `minimax_h3_t2v` / `_t2v_save` / `_i2v` / `_i2v_save`（サブグラフ展開後の ID） | `105:6`（UNETLoader） | `105:16` BasicGuider.model、`105:9` BasicScheduler.model |
 | `minimax_h3_r2v` / `_r2v_save` / `_r2v_context` | `127`（UNETLoader） | `126` BasicGuider.model、`124` BasicScheduler.model |
-| `minimax_h3_{t2v,i2v,r2v}_opt` と、その `_save_opt` / `_r2v_context_opt` | `127`（UNETLoader。固定 LoRA なし） | `151` PathchSageAttentionKJ.model |
-| `minimax_h3_i2v_turbo` / `_i2v_save_turbo` | `150`（Pika H3 Flex fl2va LoRA） | `151` PathchSageAttentionKJ.model |
-| `minimax_h3_r2v_turbo` / `_r2v_save_turbo` / `_r2v_context_turbo` | `143`（Pika H3 Flex ref2va LoRA） | `151` PathchSageAttentionKJ.model |
+| `minimax_h3_{t2v,i2v,r2v}_opt` と、その `_save_opt` / `_r2v_context_opt` | `127`（UNETLoader。固定 LoRA なし） | `151` ModelAttentionBackend.model |
+| `minimax_h3_i2v_turbo` / `_i2v_save_turbo` | `150`（Pika H3 Flex fl2va LoRA） | `151` ModelAttentionBackend.model |
+| `minimax_h3_r2v_turbo` / `_r2v_save_turbo` / `_r2v_context_turbo` | `143`（Pika H3 Flex ref2va LoRA） | `151` ModelAttentionBackend.model |
 
 opt の Guider / Scheduler と turbo の Guider は高速化パッチの出力を読んでいるので付け替えない
 （turbo の `ManualSigmas` は model を読まない。パッチ越しに

@@ -28,8 +28,10 @@ from typing import Any
 from .models import GenerationParams, LoraRef, ModelField, ModelSlot
 from .workflows import (
     DEFAULT_MEGAPIXELS,
+    LATENT_UPSCALE_LOADER_CLASS,
     LATENT_UPSCALE_NAME,
     LATENT_UPSCALER_CLASS,
+    COMFY_CLOUD_EXCLUDED_CLASS_TYPES,
     OPTIONAL_CLASS_TYPES,
     REF_AUDIOS_NAME,
     REF_IMAGES_NAME,
@@ -87,8 +89,6 @@ MODEL_FIELDS: set[tuple[str, str]] = {
     ("CheckpointLoaderSimple", "ckpt_name"),
     ("CLIPVisionLoader", "clip_name"),
     ("LatentUpscaleModelLoader", "model_name"),
-    # MiniMax H3 のラテントアップスケーラ（Comfyui_Minimax_h3_latent_Upscaler）
-    ("MinimaxH3LatentUpscaler3D", "model_name"),
     ("LoadMoGeModel", "model_name"),
     ("LoraLoaderModelOnly", "lora_name"),
     ("LoraLoader", "lora_name"),
@@ -111,9 +111,9 @@ MODEL_SUBFOLDERS: dict[tuple[str, str], str] = {
     ("VAELoader", "vae_name"): "vae",
     ("LoraLoader", "lora_name"): "loras",
     ("LoraLoaderModelOnly", "lora_name"): "loras",
-    # 空間アップスケーラと MoGe は専用フォルダ（nodes_hunyuan.py / nodes_moge.py）
+    # ラテントアップスケーラ（MiniMax H3 用も含む）と MoGe は専用フォルダ
+    # （nodes_hunyuan.py / nodes_moge.py）
     ("LatentUpscaleModelLoader", "model_name"): "latent_upscale_models",
-    ("MinimaxH3LatentUpscaler3D", "model_name"): "latent_upscale_models",
     ("LoadMoGeModel", "model_name"): "geometry_estimation",
 }
 
@@ -475,33 +475,21 @@ def upscale_nodes(
     if up is None:  # pragma: no cover - 呼ぶ側が確かめている
         return {}
     return {
-        up.separate_node: {
-            "inputs": {"av_latent": [up.sampler, 1]},
-            "class_type": "LTXVSeparateAVLatent",
-            "_meta": {"title": "LTXVSeparateAVLatent"},
+        up.loader_node: {
+            "inputs": {"model_name": up.model_name},
+            "class_type": LATENT_UPSCALE_LOADER_CLASS,
+            "_meta": {"title": "Load Latent Upscale Model"},
         },
+        # 映像だけを拡大し、音声ラテントはそのまま通す（本体の MiniMax H3 ノード）
         up.upscaler_node: {
             "inputs": {
-                "model_name": up.model_name,
-                # ComfyUI の DynamicCombo: 選んだモードの入力は ``mode.<名前>``
-                "mode": "target dimensions",
-                "mode.width": int(width),
-                "mode.height": int(height),
-                "align": up.align,
-                "device": up.device,
-                "precision": up.precision,
-                "latent": [up.separate_node, 0],
+                "model": [up.loader_node, 0],
+                "samples": [up.sampler, 1],
+                "width": int(width),
+                "height": int(height),
             },
             "class_type": LATENT_UPSCALER_CLASS,
-            "_meta": {"title": "Minimax H3 Latent Upscaler (3D)"},
-        },
-        up.concat_node: {
-            "inputs": {
-                "video_latent": [up.upscaler_node, 0],
-                "audio_latent": [up.separate_node, 1],
-            },
-            "class_type": "LTXVConcatAVLatent",
-            "_meta": {"title": "LTXVConcatAVLatent"},
+            "_meta": {"title": "MiniMax H3 Latent Upscale With Model"},
         },
         up.sigmas_node: {
             "inputs": {"sigmas": up.sigmas},
@@ -511,7 +499,7 @@ def upscale_nodes(
         up.second_sampler_node: {
             "inputs": {
                 "sigmas": [up.sigmas_node, 0],
-                "latent_image": [up.concat_node, 0],
+                "latent_image": [up.upscaler_node, 0],
             },
             "class_type": "SamplerCustomAdvanced",
             "_meta": {"title": "SamplerCustomAdvanced (upscale pass)"},
@@ -550,7 +538,7 @@ def _hires_carry_over_nodes(
       2 パス目のラテントを保存する 2 個目の ``…SaveLatent`` と、そのパスを
       持ち帰る 2 個目の ``PreviewAny`` を足す。
     * さらに Motion Context を持つテンプレート（``*_context*``）には、2 パス目の
-      形（``LTXVConcatAVLatent`` の出力）を参照する 2 個目の
+      形（``MiniMaxH3LatentUpscaleWithModel`` の出力）を参照する 2 個目の
       ``MiniMaxH3MotionContext`` を足す。CONDITIONING は ``conditioning``
       （最終解像度で作り直した条件付けノード。``None`` なら 1 個目と同じ）。
       直前カットの**高解像度**ラテント（``context_latent_hires``）が渡って
@@ -594,10 +582,10 @@ def _hires_carry_over_nodes(
     _, context_node = context
     # vae / context_frames / context_length などは 1 個目と同じ。違うのは
     # CONDITIONING（最終解像度で作り直したもの）と、形の参照先（2 パス目の
-    # 解像度・フレーム数を持つ Concat の出力）と、読む context_latent。
+    # 解像度・フレーム数を持つアップスケーラの出力）と、読む context_latent。
     inputs: dict[str, Any] = {
         **(context_node.get("inputs") or {}),
-        "latent": [up.concat_node, 0],
+        "latent": [up.upscaler_node, 0],
     }
     if conditioning is not None:
         inputs["conditioning"] = conditioning
@@ -817,7 +805,7 @@ def model_fields(specs: tuple[WorkflowSpec, ...] | None = None) -> list[ModelFie
 
     ラテントアップスケール（``latent_upscale``）が足すアップスケーラは
     テンプレートに書いていないので、その宣言（:class:`app.workflows.UpscaleSpec`）
-    から作ったノードも一緒に見る。こうしないと ``MinimaxH3LatentUpscaler3D`` の
+    から作ったノードも一緒に見る。こうしないと ``LatentUpscaleModelLoader`` の
     ``model_name`` が設定ページのスロットにも取得元一覧にも出てこない。
     """
     found: list[ModelField] = []
@@ -1245,57 +1233,59 @@ def all_required_class_types() -> set[str]:
     ``LoraLoaderModelOnly`` is listed explicitly because the dynamic image-LoRA
     chain introduces it even though the template placeholders are removed.
 
-    :data:`app.workflows.OPTIONAL_CLASS_TYPES`（MiniMax H3 turbo だけが使う任意の
+    :data:`app.workflows.OPTIONAL_CLASS_TYPES`（一部のテンプレートだけが使う任意の
     カスタムノード）は**除く**: 入れていない環境で接続インジケーターが赤くなって
     しまうため、そのワークフローを実際に選んだときだけ ComfyUI 側で失敗させる。
     """
     types: set[str] = {"LoraLoaderModelOnly"}
     for spec in comfy_specs():
         # ラテントアップスケール（`latent_upscale` = on）が足すノードもテンプレート
-        # と同じように数える。アップスケーラ本体だけは任意のカスタムノードなので、
-        # 最後の差し引きで落ちる。
+        # と同じように数える（どれも ComfyUI 本体 v0.44.0 以降に同梱）。
         types |= required_class_types(load_template(spec))
         types |= required_class_types(upscale_nodes(spec, 0, 0))
     return types - OPTIONAL_CLASS_TYPES
 
 
-#: spec id -> テンプレートが :data:`app.workflows.OPTIONAL_CLASS_TYPES` を使うか。
-#: テンプレートは読み取り専用なので、プロセス内で 1 回読めば十分（毎リクエストの
-#: ``/api/options`` でファイルを開き直さないためのキャッシュ）。
-_optional_nodes_cache: dict[str, bool] = {}
+#: spec id -> テンプレートが :data:`app.workflows.COMFY_CLOUD_EXCLUDED_CLASS_TYPES`
+#: を使うか。テンプレートは読み取り専用なので、プロセス内で 1 回読めば十分
+#: （毎リクエストの ``/api/options`` でファイルを開き直さないためのキャッシュ）。
+_cloud_excluded_cache: dict[str, bool] = {}
 
 
-def uses_optional_class_types(spec: WorkflowSpec) -> bool:
-    """``spec`` のテンプレートが任意のカスタムノードを 1 つでも使うか。
+def excluded_on_comfy_cloud(spec: WorkflowSpec) -> bool:
+    """``spec`` を Comfy Cloud の選択肢から落とすか。
 
-    :data:`app.workflows.OPTIONAL_CLASS_TYPES` は MiniMax H3 の turbo / opt だけが
-    使うノード群なので、ここが真になるワークフローは「カスタムノードが入って
-    いない環境では動かない」ことを意味する。ComfyUI のテンプレートを持たない
-    バックエンド（Grok Build CLI など）は常に偽。
+    テンプレートが :data:`app.workflows.COMFY_CLOUD_EXCLUDED_CLASS_TYPES`
+    （任意のカスタムノードと、MiniMax H3 turbo / opt の目印の
+    ``ModelAttentionBackend``）を 1 つでも使えば真。ComfyUI のテンプレートを
+    持たないバックエンド（Grok Build CLI など）は常に偽。
     """
-    cached = _optional_nodes_cache.get(spec.id)
+    cached = _cloud_excluded_cache.get(spec.id)
     if cached is None:
         if spec.backend != "comfyui":
             cached = False
         else:
             cached = bool(
-                required_class_types(load_template(spec)) & OPTIONAL_CLASS_TYPES
+                required_class_types(load_template(spec))
+                & COMFY_CLOUD_EXCLUDED_CLASS_TYPES
             )
-        _optional_nodes_cache[spec.id] = cached
+        _cloud_excluded_cache[spec.id] = cached
     return cached
 
 
 def supported_on_target(spec: WorkflowSpec, comfy_target: str) -> bool:
     """接続先 ``comfy_target`` でそのワークフローを選ばせてよいか。
 
-    Comfy Cloud には任意のカスタムノードを入れられないので、それを使う
-    ワークフロー（MiniMax H3 turbo / opt）はフォームの選択肢からもエージェントの
-    カタログからも落とす。local / runpod は自前の ComfyUI なので従来どおり全件出す
-    （入っていなければ実行時に ComfyUI 側でエラーになる）。
+    Comfy Cloud には任意のカスタムノードを入れられず、MiniMax H3 turbo / opt の
+    専用ウェイト（量子化 UNET・Pika H3 Flex LoRA・Sol-H3-VAE）も揃う前提に
+    できないので、それを使うワークフローはフォームの選択肢からもエージェントの
+    カタログからも落とす（:func:`excluded_on_comfy_cloud`）。local / runpod は
+    自前の ComfyUI なので従来どおり全件出す（入っていなければ実行時に ComfyUI
+    側でエラーになる）。
     """
     if comfy_target != "comfy_cloud":
         return True
-    return not uses_optional_class_types(spec)
+    return not excluded_on_comfy_cloud(spec)
 
 
 def specs_for_target(

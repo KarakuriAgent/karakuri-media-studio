@@ -290,7 +290,7 @@ def test_image_injection():
     assert value(wf, spec, "megapixels") == 1.5
     assert value(wf, spec, "prompt") == "IMAGE PROMPT"
     assert value(wf, spec, "seed") == 1234
-    # the local TextGenerate refine stays off: Grok writes the final prompt
+    # the local TextGenerateV2 refine stays off: Grok writes the final prompt
     assert value(wf, spec, "refine_enable") is False
     assert value(wf, spec, "save_prefix") == "images/01JOBID"
     validate_workflow(wf)
@@ -1461,6 +1461,8 @@ _H3_FL2VA = "minimax_h3_fl2va_pruned_w4a8_mixed.safetensors"
 _H3_REF2VA = "minimax_h3_ref2va_pruned_w4a8_mixed.safetensors"
 _H3_VAE_FP16 = "minimax_h3_video_vae_fp16.safetensors"
 _H3_VAE_INT8 = "minimax_h3_video_vae_int8_convrot.safetensors"
+#: 動画の turbo / opt の VAE（Sol-H3-VAE のデコーダ + H3 のエンコーダ・int8_convrot）
+_H3_SOL_VAE = "minimax_h3_sol_vae_int8_convrot.safetensors"
 _H3_PIKA_FL2VA = "pika_h3_flex_fl2va_comfy_bf16.safetensors"
 _H3_PIKA_REF2VA = "pika_h3_flex_ref2va_comfy_bf16.safetensors"
 
@@ -1514,8 +1516,9 @@ def test_the_h3_image_templates_load_the_expected_weights(workflow_id):
     assert len(by_class.get("LoraLoaderModelOnly", [])) == len(loras)
     # 高速化ノードの連鎖（opt / turbo）は LoRA の下流から始まる
     if "_opt" in workflow_id or "_turbo" in workflow_id:
-        sage = by_class["PathchSageAttentionKJ"][0]
-        assert wf[sage]["inputs"]["model"] == [upstream, 0]
+        attention = by_class["ModelAttentionBackend"][0]
+        assert wf[attention]["inputs"]["model"] == [upstream, 0]
+        assert wf[attention]["inputs"]["attention"] == "comfy kitchen attention"
     sampling = wf[by_class["H3SamplingSettings"][0]]["inputs"]
     assert sampling["steps"] == steps
     assert sampling["sampler_name"] == sampler
@@ -1854,8 +1857,7 @@ TURBO_IDS = list(TURBO_TEMPLATES)
 #: Spectrum は 6 ステップでは一度も予測しないので持たない。
 TURBO_CHAIN = [
     "LoraLoaderModelOnly",
-    "PathchSageAttentionKJ",
-    "MiniMaxH3MemoryEfficientSageAttentionPatch",
+    "ModelAttentionBackend",
     "BlockSparseAttention",
     "MiniMaxH3SigmaShift",
 ]
@@ -1884,8 +1886,8 @@ def test_the_turbo_workflows_take_the_same_inputs_as_the_plain_ones(
 
 @pytest.mark.parametrize("turbo_id", TURBO_IDS)
 def test_the_turbo_templates_chain_the_speedup_nodes_in_series(turbo_id):
-    """UNETLoader -> Pika LoRA -> Sage -> MemEffSage -> BlockSparse -> SigmaShift
-    -> BasicGuider（Spectrum は無い）。"""
+    """UNETLoader -> Pika LoRA -> ModelAttentionBackend -> BlockSparse ->
+    SigmaShift -> BasicGuider（Spectrum は無い）。"""
     unet, lora_id, lora_name = TURBO_TEMPLATES[turbo_id]
     wf = build_video_workflow(
         upscale_params(turbo_id, "off", context_latent=PREV_LATENT)
@@ -1908,6 +1910,8 @@ def test_the_turbo_templates_chain_the_speedup_nodes_in_series(turbo_id):
     ]
     assert "SpectrumApplyMiniMaxH3" not in by_class
     assert "BasicScheduler" not in by_class
+    attention = wf[by_class["ModelAttentionBackend"]]["inputs"]
+    assert attention["attention"] == "comfy kitchen attention"
 
 
 @pytest.mark.parametrize("turbo_id", TURBO_IDS)
@@ -1985,7 +1989,7 @@ def test_the_turbo_templates_load_the_quantised_weights(turbo_id, unet):
     )
     vaes = {wf[key]["inputs"]["vae_name"] for key in by_class["VAELoader"]}
     assert vaes == {
-        "minimax_h3_video_vae_int8_convrot.safetensors",
+        _H3_SOL_VAE,
         "minimax_h3_audio_vae_fp32.safetensors",
     }
 
@@ -1996,8 +2000,9 @@ def test_the_optional_custom_nodes_are_not_required_by_the_health_check():
     assert not (required & OPTIONAL_CLASS_TYPES)
     # 実際に組み上がるグラフには載っている（動画は turbo / opt と連続カット、
     # 画像は t2i / i2i / r2i の 3 モードで全部そろう。Spectrum は opt だけ）。
-    # ``MinimaxH3LatentUpscaler3D`` だけはテンプレートに書いておらず、
-    # `latent_upscale` が on のときに組み替えで足される。
+    # ラテントアップスケーラはテンプレートに書いておらず、
+    # `latent_upscale` が on のときに組み替えで足される（本体同梱なので任意扱い
+    # ではなく、ヘルスチェックの必須に入る）。
     used: set[str] = set()
     for workflow_id in (
         "minimax_h3_i2v_turbo",
@@ -2020,6 +2025,18 @@ def test_the_optional_custom_nodes_are_not_required_by_the_health_check():
         ).values()
     }
     assert OPTIONAL_CLASS_TYPES <= used
+    # 本体 v0.44.0 同梱のノードは任意扱いにせず、ヘルスチェックで必須として見る
+    for class_type in (
+        "ModelAttentionBackend",
+        "BlockSparseAttention",
+        "MiniMaxH3SigmaShift",
+        LATENT_UPSCALER_CLASS,
+        "LatentUpscaleModelLoader",
+    ):
+        assert class_type in required, class_type
+        assert class_type not in OPTIONAL_CLASS_TYPES, class_type
+    # 非推奨になった旧 TextGenerate は使わない（TextGenerateV2 に移行済み）
+    assert "TextGenerate" not in required
 
 
 def test_the_turbo_templates_have_plain_numeric_node_ids():
@@ -2076,8 +2093,7 @@ def test_the_r2v_quality_templates_are_a_single_pass(workflow_id):
         classes
         & {
             LATENT_UPSCALER_CLASS,
-            "LTXVSeparateAVLatent",
-            "LTXVConcatAVLatent",
+            "LatentUpscaleModelLoader",
         }
     )
     # ManualSigmas は turbo の 1 パス目（124）だけ
@@ -2138,7 +2154,7 @@ def test_the_turbo_template_is_the_opt_one_with_the_pika_recipe(opt_id, turbo_id
 
 
 def test_the_r2v_turbo_puts_the_pika_lora_before_the_speedup_chain():
-    """UNETLoader(ref2va) -> Pika LoRA(143) -> Sage -> …（ユーザー LoRA なし）。"""
+    """UNETLoader(ref2va) -> Pika LoRA(143) -> ModelAttentionBackend -> …（ユーザー LoRA なし）。"""
     wf = build_video_workflow(
         upscale_params("minimax_h3_r2v_turbo", "off")
     )
@@ -2255,38 +2271,39 @@ def test_latent_upscale_on_runs_the_first_pass_at_a_fifth_of_a_megapixel(
     assert (value(wf, spec, "width"), value(wf, spec, "height")) == first
     # 最終解像度はアップスケーラが受け取る
     upscaler = wf[spec.upscale.upscaler_node]["inputs"]
-    assert (upscaler["mode.width"], upscaler["mode.height"]) == final
+    assert (upscaler["width"], upscaler["height"]) == final
 
 
 @pytest.mark.parametrize("workflow_id", MINIMAX_H3_VIDEO_IDS)
 def test_latent_upscale_on_wires_the_second_pass(workflow_id):
-    """1 パス目 -> Separate -> Upscaler -> Concat -> 2 パス目 -> デコーダ。"""
+    """1 パス目 -> Upscaler（映像だけ拡大・音声は素通し）-> 2 パス目 -> デコーダ。"""
     spec = get_spec(workflow_id, "video")
     up = spec.upscale
-    wf = build_video_workflow(upscale_params(workflow_id, "on"))
+    job = upscale_params(workflow_id, "on")
+    wf = build_video_workflow(job)
     validate_workflow(wf)
 
-    assert wf[up.separate_node]["class_type"] == "LTXVSeparateAVLatent"
-    # 分けるのは 1 パス目の denoised_output（出力 1）
-    assert wf[up.separate_node]["inputs"]["av_latent"] == [up.sampler, 1]
+    loader = wf[up.loader_node]
+    assert loader["class_type"] == "LatentUpscaleModelLoader"
+    assert loader["inputs"] == {
+        "model_name": "minimax_h3_latent_upscaler_3d_bf16.safetensors"
+    }
 
     upscaler = wf[up.upscaler_node]
-    assert upscaler["class_type"] == LATENT_UPSCALER_CLASS
-    assert upscaler["inputs"]["model_name"] == (
-        "minimax_h3_latent_upscaler_3d_bf16.safetensors"
+    assert upscaler["class_type"] == LATENT_UPSCALER_CLASS == (
+        "MiniMaxH3LatentUpscaleWithModel"
     )
-    # megapixels モードではなく target dimensions（DynamicCombo の入力名）
-    assert upscaler["inputs"]["mode"] == "target dimensions"
-    assert "mode.megapixels" not in upscaler["inputs"]
-    assert upscaler["inputs"]["align"] == 32
-    assert upscaler["inputs"]["device"] == "cuda"
-    assert upscaler["inputs"]["precision"] == "bf16"
-    assert upscaler["inputs"]["latent"] == [up.separate_node, 0]
-
-    concat = wf[up.concat_node]
-    assert concat["class_type"] == "LTXVConcatAVLatent"
-    assert concat["inputs"]["video_latent"] == [up.upscaler_node, 0]
-    assert concat["inputs"]["audio_latent"] == [up.separate_node, 1]
+    # 本体ノードの入力は model / samples / width / height だけ。拡大するのは
+    # 1 パス目の denoised_output（出力 1）で、音声と映像を分けずに渡す
+    final = resolution(
+        job.aspect_ratio, job.megapixels, multiple=spec.resolution_multiple
+    )
+    assert upscaler["inputs"] == {
+        "model": [up.loader_node, 0],
+        "samples": [up.sampler, 1],
+        "width": final[0],
+        "height": final[1],
+    }
 
     assert wf[up.sigmas_node]["class_type"] == "ManualSigmas"
     assert wf[up.sigmas_node]["inputs"]["sigmas"] == UPSCALE_SIGMAS
@@ -2303,7 +2320,7 @@ def test_latent_upscale_on_wires_the_second_pass(workflow_id):
     )
     assert second["inputs"] == {
         "sigmas": [up.sigmas_node, 0],
-        "latent_image": [up.concat_node, 0],
+        "latent_image": [up.upscaler_node, 0],
         "noise": first_inputs["noise"],
         "guider": guider,
         "sampler": first_inputs["sampler"],
@@ -2484,7 +2501,7 @@ def test_latent_upscale_wires_a_second_motion_context(workflow_id):
     assert context["inputs"]["context_length"] == "22"
     assert context["inputs"]["audio_context_length"] == 0
     # 形の参照先は 2 パス目のラテント（Concat の出力）、読むのは高解像度のほう
-    assert context["inputs"]["latent"] == [up.concat_node, 0]
+    assert context["inputs"]["latent"] == [up.upscaler_node, 0]
     assert context["inputs"]["context_latent"] == [up.hires_load_node, 0]
 
     # 2 個目の Guider はモデル連鎖を 1 個目と共有し、CONDITIONING だけ差し替え
@@ -2554,7 +2571,7 @@ def test_latent_upscale_falls_back_to_one_stage_without_a_hires_latent(workflow_
     )
     assert context["inputs"]["audio_vae"] == audio_decoder["inputs"]["vae"]
     assert context["inputs"]["conditioning"] == [up.hires_conditioning_node, 0]
-    assert context["inputs"]["latent"] == [up.concat_node, 0]
+    assert context["inputs"]["latent"] == [up.upscaler_node, 0]
 
     # 2 パス目は 2 個目の Motion Context を通した guider で回す
     guider = wf[up.hires_guider_node]
@@ -2769,7 +2786,10 @@ def test_latent_upscale_choice_falls_back_to_the_default():
 def test_the_upscaler_model_file_is_a_settings_slot():
     """テンプレートに無いノードでも設定ページから差し替えられる（SPEC §3.3）。"""
     spec = get_spec("minimax_h3_r2v_turbo", "video")
-    key = f"{spec.id}/{spec.upscale.upscaler_node}.model_name"
+    # ``LatentUpscaleModelLoader`` は以前のアップスケーラと同じ 901 に置くので、
+    # 設定ページの上書きキー（``<id>/901.model_name``）はそのまま引き継がれる
+    assert spec.upscale.loader_node == "901"
+    key = f"{spec.id}/{spec.upscale.loader_node}.model_name"
     fields = {f.key: f for f in model_fields()}
     assert key in fields
     assert fields[key].subfolder == "latent_upscale_models"
@@ -2778,7 +2798,7 @@ def test_the_upscaler_model_file_is_a_settings_slot():
         upscale_params("minimax_h3_r2v_turbo", "on"),
         {key: "other_upscaler.safetensors"},
     )
-    assert wf[spec.upscale.upscaler_node]["inputs"]["model_name"] == (
+    assert wf[spec.upscale.loader_node]["inputs"]["model_name"] == (
         "other_upscaler.safetensors"
     )
 
@@ -2808,8 +2828,7 @@ OPT_PAIRS = [
 
 #: opt の高速化ノード（LoRA は持たず、turbo には無い Spectrum が末尾に付く）
 OPT_CHAIN = [
-    "PathchSageAttentionKJ",
-    "MiniMaxH3MemoryEfficientSageAttentionPatch",
+    "ModelAttentionBackend",
     "BlockSparseAttention",
     "MiniMaxH3SigmaShift",
     "SpectrumApplyMiniMaxH3",
@@ -2833,7 +2852,7 @@ def test_the_opt_workflows_take_the_same_inputs_as_the_plain_ones(
 
 @pytest.mark.parametrize(("opt_id", "_plain_id", "_turbo_id"), OPT_PAIRS)
 def test_the_opt_templates_have_no_lora(opt_id, _plain_id, _turbo_id):
-    """UNETLoader -> Sage -> MemEffSage -> BlockSparse -> SigmaShift -> Spectrum。"""
+    """UNETLoader -> ModelAttentionBackend -> BlockSparse -> SigmaShift -> Spectrum。"""
     template = load_template(opt_id)
     assert not any(
         node["class_type"] == "LoraLoaderModelOnly" for node in template.values()
@@ -2889,7 +2908,7 @@ def test_the_opt_templates_keep_the_quantised_weights(opt_id, unet):
     )
     vaes = {wf[key]["inputs"]["vae_name"] for key in by_class["VAELoader"]}
     assert vaes == {
-        "minimax_h3_video_vae_int8_convrot.safetensors",
+        _H3_SOL_VAE,
         "minimax_h3_audio_vae_fp32.safetensors",
     }
 
@@ -3309,7 +3328,7 @@ def test_required_class_types_cover_every_built_workflow():
             node["class_type"]
             for node in build_video_workflow(params(video_workflow=workflow_id)).values()
         }
-    # 任意のカスタムノード（turbo / opt と MiniMax H3 Image）は意図的に
+    # 任意のカスタムノード（opt の Spectrum・MiniMax H3 Image・ラテント連続性）は意図的に
     # 外れている（SPEC §3.1）
     assert built - types == OPTIONAL_CLASS_TYPES
 

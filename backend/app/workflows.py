@@ -138,10 +138,12 @@ class SelectSpec:
     #: :attr:`target` を ``None`` のままにしてこちらを立てる
     #: （:func:`validate_spec` の「注入先が無い」検査を通す印にもなる）。
     rewrites_graph: bool = False
-    #: **既定以外を選んだときだけ**必要になるカスタムノードの ``class_type``。
-    #: テンプレートには出てこない（組み替えで足す）ので、テンプレート由来の
-    #: 接続先判定（:func:`app.workflow.uses_optional_class_types`）では拾えない。
-    #: 宣言があると Comfy Cloud では :attr:`restricted_choice` に固定する。
+    #: :attr:`restricted_choice` 以外を選んだときだけグラフに足すノードの
+    #: ``class_type``。テンプレートには出てこない（組み替えで足す）ので、テンプレート
+    #: 由来の接続先判定（:func:`app.workflow.excluded_on_comfy_cloud`）では拾えない。
+    #: 宣言があると Comfy Cloud では :attr:`restricted_choice` に固定する
+    #: （``latent_upscale`` のノードは本体同梱だが、アップスケーラのモデルが
+    #: Comfy Cloud には無い前提のため）。
     requires_class_types: tuple[str, ...] = ()
     #: :attr:`requires_class_types` を入れられない接続先で唯一許す値
     restricted_choice: str = ""
@@ -149,8 +151,8 @@ class SelectSpec:
     def choices_for_target(self, comfy_target: str) -> tuple[str, ...]:
         """接続先 ``comfy_target`` で実際に選べる値（SPEC §3.1 / §5.1）。
 
-        :func:`app.workflow.supported_on_target` の選択式版。Comfy Cloud には
-        任意のカスタムノードを入れられないので、それを要求する選択式は
+        :func:`app.workflow.supported_on_target` の選択式版。Comfy Cloud では
+        :attr:`requires_class_types` を宣言した選択式を
         :attr:`restricted_choice` の 1 つだけに絞る。
         """
         if comfy_target != "comfy_cloud" or not self.requires_class_types:
@@ -442,9 +444,10 @@ class UpscaleSpec:
 
     1. 1 パス目は :attr:`first_pass_megapixels` の解像度で回す（``width`` /
        ``height`` の注入先に低い値を書く）。
-    2. 1 パス目の denoised_output を ``LTXVSeparateAVLatent`` で映像と音声に
-       分け、映像だけ ``MinimaxH3LatentUpscaler3D`` で**最終解像度**に拡大して
-       ``LTXVConcatAVLatent`` で戻す。
+    2. 1 パス目の denoised_output を ComfyUI 本体（v0.44.0 以降）の
+       ``MiniMaxH3LatentUpscaleWithModel`` に通し、映像だけ**最終解像度**に
+       拡大する（音声ラテントはそのまま通る）。アップスケーラのモデルは
+       本体の ``LatentUpscaleModelLoader`` で読む。
     3. ``ManualSigmas``（:attr:`sigmas`）で 2 パス目の
        ``SamplerCustomAdvanced`` を回す。noise / sampler は 1 パス目と同じものを
        共有する。guider も、CONDITIONING が解像度に依存しない版（t2v）は共有
@@ -498,19 +501,22 @@ class UpscaleSpec:
     conditioning: str | None = None
     #: 1 パス目を回す解像度（メガピクセル）。縦横比はジョブの指定のまま。
     first_pass_megapixels: float = 0.2
-    #: ``MinimaxH3LatentUpscaler3D`` のモデルファイル（設定ページで差し替え可）
+    #: ``LatentUpscaleModelLoader`` で読むアップスケーラのモデルファイル
+    #: （``latent_upscale_models``・設定ページで差し替え可）。本体の判別
+    #: （``in_blocks.*`` / ``conv_in`` / ``in_blocks.1.dwconv`` を持つ 3D 畳み込みの
+    #: H3 用アップスケーラ）に掛かる形式であること。HF の
+    #: ``LBH-123-AI/Minimax_h3_latent_Upscaler`` では現在
+    #: ``minimax_h3_latent_upscaler_3d_conv_v1/…_conv_v1_bf16.safetensors`` という
+    #: 名前で置かれている（中身は同じファイル）。
     model_name: str = "minimax_h3_latent_upscaler_3d_bf16.safetensors"
     #: 2 パス目の ``ManualSigmas``（全バリアント共通の固定値）
     sigmas: str = "0.9035, 0.6316, 0.3158, 0.0000"
-    #: アップスケーラの画素グリッド（32 未満だと下端に光の帯が出る）
-    align: int = 32
-    device: str = "cuda"
-    precision: str = "bf16"
     #: 足すノードの ID。既存のテンプレート（最大 166）とも、サブグラフ由来の
-    #: ``105:xx`` とも衝突しない数字文字列にしてある。
-    separate_node: str = "900"
-    upscaler_node: str = "901"
-    concat_node: str = "902"
+    #: ``105:xx`` とも衝突しない数字文字列にしてある。モデル名の上書きキー
+    #: （``<workflow>/901.model_name``）を以前の構成から引き継ぐため、
+    #: ``model_name`` を持つローダーを 901 に置く（900 は欠番）。
+    loader_node: str = "901"
+    upscaler_node: str = "902"
     sigmas_node: str = "903"
     second_sampler_node: str = "904"
 
@@ -541,9 +547,8 @@ class UpscaleSpec:
     def node_ids(self) -> tuple[str, ...]:
         """組み替えで足すノードの ID（衝突検査用）。"""
         return (
-            self.separate_node,
+            self.loader_node,
             self.upscaler_node,
-            self.concat_node,
             self.sigmas_node,
             self.second_sampler_node,
             self.hires_save_node,
@@ -558,8 +563,10 @@ class UpscaleSpec:
 #: ラテントアップスケールの選択式の論理名（ジョブの ``selects`` のキー）
 LATENT_UPSCALE_NAME = "latent_upscale"
 
-#: ラテントアップスケーラのカスタムノード（Comfyui_Minimax_h3_latent_Upscaler）
-LATENT_UPSCALER_CLASS = "MinimaxH3LatentUpscaler3D"
+#: ラテントアップスケーラ（ComfyUI 本体 v0.44.0 以降の ``comfy_extras/nodes_minimax_h3.py``）。
+#: モデルは同じく本体の ``LatentUpscaleModelLoader`` で読む。
+LATENT_UPSCALER_CLASS = "MiniMaxH3LatentUpscaleWithModel"
+LATENT_UPSCALE_LOADER_CLASS = "LatentUpscaleModelLoader"
 
 
 @dataclass(frozen=True)
@@ -846,7 +853,7 @@ KREA2_TURBO = WorkflowSpec(
         "prompt": T("30:19", "value", "PrimitiveStringMultiline"),
         "seed": T("30:3", "seed", "KSampler"),
         "steps": T("30:3", "steps", "KSampler"),
-        # local TextGenerate refine is off: Grok already writes the final prompt
+        # local TextGenerateV2 refine is off: Grok already writes the final prompt
         "refine_enable": T("30:24", "value", "PrimitiveBoolean"),
         # StringConcatenate that prepends the LoRA trigger words
         "trigger_concat": T("30:27", "", "StringConcatenate"),
@@ -1443,7 +1450,11 @@ _MINIMAX_H3_IMAGE_MODELS = (
     " サンプリングは res_multistep・simple・20 ステップ"
 )
 
-#: opt / turbo 版が使う量子化ウェイト（動画側の turbo / opt と同じファイル）
+#: opt / turbo 版が使う量子化ウェイト（UNET と text encoder は動画側の turbo / opt と
+#: 同じファイル）。VAE は動画側と違って Sol-H3-VAE にせず、従来の int8_convrot の
+#: まま: Sol-H3-VAE のデコーダは 5 ラテント単位の非因果デコードに蒸留されていて、
+#: 短いフレームパケットから 1 枚を選ぶ ``H3ImageDecode`` / ``H3ImageFrameSelector``
+#: （外部のカスタムノード）での振る舞いが確かめられていないため。
 _MINIMAX_H3_IMAGE_FAST_MODELS = (
     " モデル: minimax_h3_{unet}_pruned_w4a8_mixed（diffusion_models）+"
     " minimax_h3_video_vae_int8_convrot（vae）+"
@@ -1453,14 +1464,13 @@ _MINIMAX_H3_IMAGE_FAST_MODELS = (
 #: opt 版だけの注記（素の版との差分）
 _MINIMAX_H3_IMAGE_OPT_NOTES = (
     " / **opt**: サンプリングは素の版と同じ 20 ステップのまま、量子化ウェイトと"
-    " Sage Attention / Mem Eff Sage Attention / Sol-Attn / Spectrum を"
+    " Comfy Kitchen attention（`ModelAttentionBackend`）/ Sol-Attn / Spectrum を"
     "テンプレートに直列で焼き込んだ最適化版（品質は素の版相当で実行だけ速い）。"
-    "`PathchSageAttentionKJ`（ComfyUI-KJNodes + SageAttention）・"
-    "`MiniMaxH3MemoryEfficientSageAttentionPatch`・"
-    "`SpectrumApplyMiniMaxH3` の**カスタムノードと量子化ウェイト一式が入った"
-    "環境でのみ**動く（`BlockSparseAttention` は ComfyUI 本体 v0.34.5 以降に同梱。"
-    "`MiniMaxH3SigmaShift` は使わない: sigma shift は"
-    " Advanced Sampling 側が持っている）"
+    "`ModelAttentionBackend` と `BlockSparseAttention` は ComfyUI 本体"
+    " v0.44.0 以降に同梱で、外部のカスタムノードは素の版と同じ H3 Image Studio と"
+    "`SpectrumApplyMiniMaxH3`。それと量子化ウェイト一式が入った環境でのみ動く"
+    "（`MiniMaxH3SigmaShift` は"
+    "使わない: sigma shift は Advanced Sampling 側が持っている）"
 )
 
 #: turbo 版だけの注記（opt との差分）。動画の turbo と同じく Pika H3 Flex LoRA を
@@ -1659,17 +1669,17 @@ MINIMAX_H3_R2I = WorkflowSpec(
 #: 6 ステップ固定なので ``steps`` の注入先を外す（:func:`_without_steps`）。
 _MINIMAX_H3_IMAGE_OPT_DESCRIPTION = (
     " Optimised build: same 20 sampling steps and same inputs as the plain"
-    " workflow, but with quantised weights and the Sage Attention / Sol-Attn /"
-    " Spectrum patches baked into the template. It only runs on a ComfyUI that"
-    " has those custom nodes and weights."
+    " workflow, but with quantised weights and the Comfy Kitchen attention /"
+    " Sol-Attn / Spectrum patches baked into the template. It needs ComfyUI"
+    " v0.44.0 or later plus the Spectrum custom node and those weights."
 )
 
 _MINIMAX_H3_IMAGE_TURBO_DESCRIPTION = (
     " Turbo build: the optimised graph (without Spectrum) plus the Pika H3 Flex"
     " LoRA, sampled with lcm over a fixed 6-step ManualSigmas schedule, so it"
     " finishes much faster. Same inputs as the plain workflow except `steps`"
-    " (fixed), but it only runs on a ComfyUI that has the H3 custom nodes, the"
-    " quantised weights and the Pika H3 Flex LoRA."
+    " (fixed), but it only runs on ComfyUI v0.44.0 or later with the H3 Image"
+    " Studio custom nodes, the quantised weights and the Pika H3 Flex LoRA."
 )
 
 
@@ -1861,12 +1871,14 @@ GROK_IMAGINE_EDIT = WorkflowSpec(
 # まったく同じで、違うのは中身だけ:
 #
 # * UNET は w4a8 mixed の量子化ウェイト（素の版と同じく i2v は fl2va、r2v は
-#   ref2va）、CLIP は heretic nvfp4、動画 VAE は int8_convrot（音声 VAE だけ
+#   ref2va）、CLIP は heretic nvfp4、動画 VAE は Sol-H3-VAE（デコーダを蒸留版に
+#   差し替え、H3 のエンコーダと 1 ファイルに統合した int8_convrot。音声 VAE は
 #   据え置き）。
 # * UNETLoader と BasicGuider の間に高速化のノードが**テンプレートに直接**
-#   直列で入っている: ``LoraLoaderModelOnly``（Pika H3 Flex LoRA・本体標準）→
-#   ``PathchSageAttentionKJ`` → ``MiniMaxH3MemoryEfficientSageAttentionPatch`` →
-#   ``BlockSparseAttention`` → ``MiniMaxH3SigmaShift``。
+#   直列で入っている: ``LoraLoaderModelOnly``（Pika H3 Flex LoRA）→
+#   ``ModelAttentionBackend``（comfy kitchen attention）→
+#   ``BlockSparseAttention`` → ``MiniMaxH3SigmaShift``。どれも ComfyUI 本体
+#   v0.44.0 以降に同梱。
 # * サンプリングは Pika 公式テンプレート（``video_pika_h3_flex_*``）どおり
 #   ``KSamplerSelect`` = **lcm** + ``ManualSigmas``（ノード 124）の **7 点 =
 #   6 ステップ固定**（``1.0, 0.972973, 0.923077, 0.8, 0.571429, 0.333333,
@@ -1880,7 +1892,7 @@ GROK_IMAGINE_EDIT = WorkflowSpec(
 #   （音声側のシグマ導出のため DiT にも shift が渡る）。
 #
 # さらに **opt**（t2v / i2v / r2v）が 3 つ。蒸留・加速 LoRA を持たず
-# （``PathchSageAttentionKJ`` が UNETLoader 直結）、``BasicScheduler`` の
+# （``ModelAttentionBackend`` が UNETLoader 直結）、``BasicScheduler`` の
 # steps は素の版と同じ **20**。量子化ウェイトとアテンション系パッチ・
 # SigmaShift・Spectrum を焼き込んであるので、品質は素の版相当のまま実行だけ
 # 速い。UNET は素の版と同じ（t2v / i2v は fl2va、r2v は ref2va）。
@@ -1913,19 +1925,19 @@ _MINIMAX_H3_BASE_NOTES = (
 #: latent_upscale の注意書き（全 MiniMax H3 動画スペック共通）
 _MINIMAX_H3_UPSCALE_NOTES = (
     " / `latent_upscale`（既定 **on**）: on だと 1 パス目を **0.2MP**"
-    "（縦横比は指定のまま・32 の倍数）で回し、`LTXVSeparateAVLatent` で映像と"
-    "音声に分けてから `MinimaxH3LatentUpscaler3D`（mode=target dimensions・"
-    "align 32・bf16）で**指定解像度**に拡大 → `LTXVConcatAVLatent` で戻して"
+    "（縦横比は指定のまま・32 の倍数）で回し、`MiniMaxH3LatentUpscaleWithModel`"
+    "（`LatentUpscaleModelLoader` で読んだアップスケーラ。映像だけ拡大し、"
+    "音声ラテントはそのまま通す）で**指定解像度**に拡大して"
     "`ManualSigmas`（0.9035 / 0.6316 / 0.3158 / 0.0000）の 3 ステップで仕上げる"
     "2 パス構成になる（noise / sampler は 1 パス目と共有。i2v / r2v は開始・"
     "最終フレームや参照素材の CONDITIONING を最終解像度で作り直した 2 個目の"
     "`MiniMaxH3ImageToVideo` / `…ReferenceToVideo` + `BasicGuider` で"
     " 2 パス目を回し、t2v は guider も共有する。組み替えは"
     "ジョブの組み立て時なのでテンプレート自体は 1 パスのまま）/ off は"
-    "テンプレートそのままで指定解像度を 1 パス / on には"
-    "`MinimaxH3LatentUpscaler3D`（Comfyui_Minimax_h3_latent_Upscaler）と"
+    "テンプレートそのままで指定解像度を 1 パス / on には ComfyUI 本体"
+    " v0.44.0 以降（ノードは本体同梱）と"
     "`minimax_h3_latent_upscaler_3d_bf16`（latent_upscale_models）が要る。"
-    "入れられない接続先（Comfy Cloud）では off しか選べない /"
+    "アップスケーラのモデルが無い前提の接続先（Comfy Cloud）では off しか選べない /"
     " ラテント連続性のバリアントで on にすると**2 段引き継ぎ**になる:"
     "1 パス目（0.2MP）と 2 パス目（最終解像度）のラテントを両方保存し"
     "（2 本目は保存先の末尾に `_hires`）、連続カット版は 2 本目を読む"
@@ -1941,38 +1953,44 @@ _MINIMAX_H3_UPSCALE_NOTES = (
 #: 全 MiniMax H3 動画スペックが共通で持つ注意書き
 _MINIMAX_H3_NOTES = _MINIMAX_H3_BASE_NOTES + _MINIMAX_H3_UPSCALE_NOTES
 
+#: turbo / opt の動画 VAE（Sol-H3-VAE）の注意書き
+_MINIMAX_H3_SOL_VAE_NOTE = (
+    "。動画 VAE は Sol-H3-VAE（`minimax_h3_sol_vae_int8_convrot`。H3 の"
+    "エンコーダと蒸留した非因果デコーダを 1 ファイルにまとめたもので、開始"
+    "フレームや参照素材のエンコードもこれで行う）。デコードが速い代わりに"
+    "タイル分割・時間方向の分割ができず、クリップ全体を一度にデコードするので"
+    "**長尺・高解像度ほど VRAM を多く使う**"
+)
+
 #: turbo 版だけの注意書き（素のものとの差分）。i2v / r2v で共通。
 _MINIMAX_H3_TURBO_NOTES = (
     " / **turbo**: Pika H3 Flex LoRA（i2v は"
     " `pika_h3_flex_fl2va_comfy_bf16`、r2v は `pika_h3_flex_ref2va_comfy_bf16`。"
     "本体標準の `LoraLoaderModelOnly`・strength 1.0 で 1 本だけ重ねる。"
     "2 本目の加速 LoRA は出力を壊すので他の高速化 LoRA とは重ねない）と"
-    " Sage Attention / Mem Eff Sage Attention / Sol-Attn / SigmaShift を"
+    " Comfy Kitchen attention / Sol-Attn / SigmaShift を"
     "テンプレートに直列で焼き込んだ高速版。サンプリングは **lcm +"
     " `ManualSigmas` の 6 ステップ固定**（1.0 / 0.972973 / 0.923077 / 0.8 /"
     " 0.571429 / 0.333333 / 0.0。点を減らすと壊れ、増やしても意味が無いので"
     " `steps` は受け取らない）。Spectrum は使わない（6 ステップでは一度も"
     "予測しない）。UNET は素の版と同じ（i2v は fl2va、r2v は ref2va）で、"
-    "入力の形も素の版とまったく同じ。`PathchSageAttentionKJ`"
-    "（ComfyUI-KJNodes + SageAttention）・"
-    "`MiniMaxH3MemoryEfficientSageAttentionPatch`・"
-    "`MiniMaxH3SigmaShift` の**カスタムノードと"
-    "量子化ウェイト一式が入った環境でのみ**動く"
-    "（`BlockSparseAttention` は ComfyUI 本体 v0.34.5 以降に同梱）"
+    "入力の形も素の版とまったく同じ。焼き込みのノード（`ModelAttentionBackend`・"
+    "`BlockSparseAttention`・`MiniMaxH3SigmaShift`）はどれも ComfyUI 本体"
+    " v0.44.0 以降に同梱で、外部のカスタムノードは要らない。"
+    "量子化ウェイト一式と Sol-H3-VAE が入った環境でのみ動く" + _MINIMAX_H3_SOL_VAE_NOTE
 )
 
 #: opt 版だけの注意書き（素のものとの差分）
 _MINIMAX_H3_OPT_NOTES = (
     " / **opt**: 蒸留・加速 LoRA を使わない最適化版で、"
     "サンプリングは素の版と同じ **20 ステップ**（品質は素の版相当のまま）。"
-    "量子化ウェイトと Sage Attention / Mem Eff Sage Attention / Sol-Attn /"
+    "量子化ウェイトと Comfy Kitchen attention / Sol-Attn /"
     " SigmaShift / Spectrum をテンプレートに直列で焼き込み済みで、"
     "実行だけが速い（入力の形は素の版とまったく同じ）。"
-    "`PathchSageAttentionKJ`（ComfyUI-KJNodes + SageAttention）・"
-    "`MiniMaxH3MemoryEfficientSageAttentionPatch`・"
-    "`MiniMaxH3SigmaShift`・`SpectrumApplyMiniMaxH3` の**カスタムノードと"
-    "量子化ウェイト一式が入った環境でのみ**動く"
-    "（`BlockSparseAttention` は ComfyUI 本体 v0.34.5 以降に同梱）"
+    "`ModelAttentionBackend`・`BlockSparseAttention`・`MiniMaxH3SigmaShift` は"
+    " ComfyUI 本体 v0.44.0 以降に同梱で、外部のカスタムノードは"
+    "`SpectrumApplyMiniMaxH3` だけ。それと量子化ウェイト一式・Sol-H3-VAE が"
+    "入った環境でのみ動く" + _MINIMAX_H3_SOL_VAE_NOTE
 )
 
 #: MiniMax H3 が想定している解像度（短辺 768px・最大 768x1344 なので約 0.4MP）。
@@ -1988,27 +2006,31 @@ MINIMAX_H3_REFERENCE_AUDIOS = 3
 
 #: モデルファイル（t2v / i2v は fl2va、r2v は ref2va。他は共通）。
 #: 素の版も量子化ウェイト（w4a8_mixed）と heretic の text encoder を使い、
-#: opt / turbo との差は動画 VAE（fp16 か int8_convrot か）と焼き込みノードだけ。
+#: opt / turbo との差は動画 VAE（fp16 か Sol-H3-VAE の int8_convrot か）と焼き込みノードだけ。
 _MINIMAX_H3_MODELS = (
     " モデル: minimax_h3_{unet}_pruned_w4a8_mixed（diffusion_models）+"
     " minimax_h3_video_vae_fp16 + minimax_h3_audio_vae_fp32 +"
     " qwen3vl_32b_heretic_minimax_h3_nvfp4（text_encoders）"
 )
 
-#: turbo / opt / 連続カットのテンプレートだけが使う**任意のカスタムノード**の
+#: 一部のテンプレートだけが使う**任意のカスタムノード**（ComfyUI 本体に無いもの）の
 #: ``class_type``。入れていない環境で接続インジケーターが赤くならないよう、
 #: ヘルスチェックの「必ず在るべきノード」からは外す
 #: （:func:`app.workflow.all_required_class_types`）。そのワークフローを選んで
 #: 実行したときだけ ComfyUI 側でエラーになる。
 #:
-#: 画像側の MiniMax H3 Image（``minimax_h3_*_opt`` / ``*_turbo``）も**同じノード**を
-#: 使うので、こちらの一覧をそのまま共有している（``MiniMaxH3SigmaShift`` だけは
-#: 画像テンプレートでは使わない: sigma shift は ``H3SamplingSettings`` が持つ）。
-#: そのため :func:`app.workflow.supported_on_target` が Comfy Cloud では画像の
-#: opt / turbo も選択肢から落とす。素の版が使う ``H3*`` のノード
-#: （ComfyUI-MiniMax-H3-Image-Studio、``deploy/runpod/custom_nodes.txt`` 参照）も
-#: 並べてあり、カスタムノード未導入の接続先では base も含めて画像の
-#: MiniMax H3 Image が丸ごと選択肢から消える。
+#: turbo / opt の高速化ノードのうち ``ModelAttentionBackend`` /
+#: ``BlockSparseAttention`` / ``MiniMaxH3SigmaShift`` と、ラテントアップスケールの
+#: ``LatentUpscaleModelLoader`` / ``MiniMaxH3LatentUpscaleWithModel`` は ComfyUI
+#: 本体 **v0.44.0 以降**に同梱なのでここには並べない（本体がそれより古ければ
+#: ヘルスチェックが不足として知らせる）。外部のまま残るのは opt の
+#: ``SpectrumApplyMiniMaxH3``、MiniMax H3 Image の ``H3*``
+#: （ComfyUI-MiniMax-H3-Image-Studio、``deploy/runpod/custom_nodes.txt`` 参照）、
+#: ラテント連続性の Motion Context 系。:func:`app.workflow.supported_on_target` は
+#: これ（と :data:`COMFY_CLOUD_EXCLUDED_CLASS_TYPES` の目印）を 1 つでも使う
+#: ワークフローを Comfy Cloud の選択肢から落とすので、turbo / opt、``H3*`` を使う
+#: 画像の MiniMax H3 Image（base も含む）、ラテント連続性のバリアントは
+#: Comfy Cloud では出ない。
 OPTIONAL_CLASS_TYPES: frozenset[str] = frozenset(
     {
         # ComfyUI-MiniMax-H3-Image-Studio（画像 t2i / i2i / r2i の全バリアント）
@@ -2018,19 +2040,8 @@ OPTIONAL_CLASS_TYPES: frozenset[str] = frozenset(
         "H3SamplingSettings",
         "H3ImageDecode",
         "H3ImageFrameSelector",
-        "PathchSageAttentionKJ",
-        "MiniMaxH3MemoryEfficientSageAttentionPatch",
-        # ComfyUI 本体 v0.34.5 以降（comfy-kitchen 0.2.33 以降）に同梱。それより
-        # 古い本体では無いので、ここに並べて任意扱いにしておく。
-        "BlockSparseAttention",
-        "MiniMaxH3SigmaShift",
+        # opt の Spectrum（本体に代替が無い外部のカスタムノード）
         "SpectrumApplyMiniMaxH3",
-        # ラテントアップスケーラ（Comfyui_Minimax_h3_latent_Upscaler）。
-        # テンプレートには出てこない: 選択式 ``latent_upscale`` が on のときだけ
-        # ジョブの組み立てがグラフに足す（:class:`UpscaleSpec`）ので、接続先ごとの
-        # 対応判定は :meth:`SelectSpec.choices_for_target` のほうで行う。
-        # ここに並べてあるのはヘルスチェックの「必ず在るべきノード」から外すため。
-        LATENT_UPSCALER_CLASS,
         # ラテント連続性（ComfyUI-H3-Motion-Context /
         # ComfyUI-MiniMaxH3-Contex-Loop）。:data:`LATENT_CONTEXT_CLASS_TYPES`
         # にも同じものを並べてあり、そちらは接続先ごとの対応判定に使う。
@@ -2040,6 +2051,17 @@ OPTIONAL_CLASS_TYPES: frozenset[str] = frozenset(
         "MiniMaxH3MotionContextTrim",
     }
 )
+
+#: Comfy Cloud の選択肢から落とすワークフローの目印（:func:`app.workflow.supported_on_target`）。
+#: :data:`OPTIONAL_CLASS_TYPES` に加えて、MiniMax H3 turbo / opt（動画・画像）が
+#: 必ず持つ ``ModelAttentionBackend`` を並べる。ノード自体は ComfyUI 本体
+#: v0.44.0 以降に同梱だが、turbo / opt は専用の量子化 UNET・Pika H3 Flex LoRA・
+#: Sol-H3-VAE（どれもこのアプリの既定のファイル名）を前提にしていて、Comfy Cloud
+#: ではそれが揃う保証が無い。高速化ノードを外部のカスタムノードで組んでいた頃と
+#: 同じく、Comfy Cloud では turbo / opt を出さない。
+COMFY_CLOUD_EXCLUDED_CLASS_TYPES: frozenset[str] = OPTIONAL_CLASS_TYPES | {
+    "ModelAttentionBackend"
+}
 
 #: ラテント連続性が要求するカスタムノード（:func:`app.comfy.latent_context_support`
 #: が ``/object_info`` に居るかどうかを見る）。1 つでも欠けたら「使えない」。
@@ -2054,7 +2076,7 @@ LATENT_CONTEXT_CLASS_TYPES: tuple[str, ...] = (
 #: UNET と同じ系統（i2v は fl2va、r2v は ref2va）なので ``{unet}`` を 2 か所に入れる。
 _MINIMAX_H3_TURBO_MODELS = (
     " モデル: minimax_h3_{unet}_pruned_w4a8_mixed（diffusion_models）+"
-    " minimax_h3_video_vae_int8_convrot + minimax_h3_audio_vae_fp32 +"
+    " minimax_h3_sol_vae_int8_convrot + minimax_h3_audio_vae_fp32 +"
     " qwen3vl_32b_heretic_minimax_h3_nvfp4（text_encoders）+"
     " pika_h3_flex_{unet}_comfy_bf16（loras）"
 )
@@ -2062,7 +2084,7 @@ _MINIMAX_H3_TURBO_MODELS = (
 #: opt 版のモデルファイル（量子化ウェイトのみ・LoRA は使わない）
 _MINIMAX_H3_OPT_MODELS = (
     " モデル: minimax_h3_{unet}_pruned_w4a8_mixed（diffusion_models）+"
-    " minimax_h3_video_vae_int8_convrot + minimax_h3_audio_vae_fp32 +"
+    " minimax_h3_sol_vae_int8_convrot + minimax_h3_audio_vae_fp32 +"
     " qwen3vl_32b_heretic_minimax_h3_nvfp4（text_encoders）"
 )
 
@@ -2070,7 +2092,9 @@ _MINIMAX_H3_OPT_MODELS = (
 #: ワークフロー共通**で、既定は ``on``。テンプレートは常に 1 パスのままで、
 #: ``on`` のときだけジョブの組み立てがグラフを 2 パスに組み替える
 #: （:class:`UpscaleSpec` / :func:`app.workflow.splice_latent_upscale`）。
-#: ``MinimaxH3LatentUpscaler3D`` は任意のカスタムノードなので、Comfy Cloud では
+#: ノード（``LatentUpscaleModelLoader`` / ``MiniMaxH3LatentUpscaleWithModel``）は
+#: ComfyUI 本体 v0.44.0 以降に同梱だが、アップスケーラのモデルファイル
+#: （``latent_upscale_models``）は Comfy Cloud には無い前提にしているので、そこでは
 #: 選択肢が ``off`` だけになる（:meth:`SelectSpec.choices_for_target`）。
 _MINIMAX_H3_LATENT_UPSCALE_SELECT = SelectSpec(
     label="ラテントアップスケール（2 パス）",
@@ -2087,7 +2111,7 @@ _MINIMAX_H3_LATENT_UPSCALE_SELECT = SelectSpec(
     },
     hint=(
         "on にすると 1 パス目を 0.2MP（縦横比はそのまま）で回してから"
-        "`MinimaxH3LatentUpscaler3D` でラテントのまま指定解像度に拡大し、"
+        "`MiniMaxH3LatentUpscaleWithModel` でラテントのまま指定解像度に拡大し、"
         "3 ステップ（ManualSigmas 固定）で仕上げる。同じ解像度を 1 パスで"
         "回すより速くて破綻しにくい。off はテンプレートそのままの 1 パス"
     ),
@@ -2116,7 +2140,7 @@ _MINIMAX_H3_UPSCALE_SUBGRAPH_RECONDITION = replace(
 #: どのテンプレートも **UNETLoader から始まる MODEL の 1 本道**なので、そこを 1 か所
 #: 切り開いてチェーンを挟む。テンプレートが持つ固定の ``LoraLoaderModelOnly``
 #: （turbo の Pika H3 Flex LoRA）は外せないので、ユーザー LoRA は**その後ろ**に挿し、
-#: 高速化パッチ（``PathchSageAttentionKJ`` 以降の直列）は**チェーンの後ろ**に残す
+#: 高速化パッチ（``ModelAttentionBackend`` 以降の直列）は**チェーンの後ろ**に残す
 #: （パッチは最後に載ったモデル全体に掛かる）。LoRA を選ばなければ consumers が head を
 #: 直接指すので、グラフはテンプレートと同一になる。
 #:
@@ -2142,18 +2166,18 @@ _MINIMAX_H3_R2V_LORA_CHAIN = LoraChain(
 #: 付け替えない（パッチ越しにチェーンの結果を読む）。
 _MINIMAX_H3_OPT_LORA_CHAIN = LoraChain(
     head="127",
-    consumers=(T("151", "model", "PathchSageAttentionKJ"),),
+    consumers=(T("151", "model", "ModelAttentionBackend"),),
 )
 #: i2v の turbo: Pika H3 Flex LoRA（fl2va 用・150）の後ろ、高速化パッチの手前。
 #: ManualSigmas（124）は model を読まないので consumers は 151 だけ。
 _MINIMAX_H3_TURBO_LORA_CHAIN = LoraChain(
     head="150",
-    consumers=(T("151", "model", "PathchSageAttentionKJ"),),
+    consumers=(T("151", "model", "ModelAttentionBackend"),),
 )
 #: r2v の turbo: Pika H3 Flex LoRA（ref2va 用・143）の後ろ、高速化パッチの手前
 _MINIMAX_H3_R2V_TURBO_LORA_CHAIN = LoraChain(
     head="143",
-    consumers=(T("151", "model", "PathchSageAttentionKJ"),),
+    consumers=(T("151", "model", "ModelAttentionBackend"),),
 )
 
 #: i2v だけの注意書き（任意の最終フレーム）
@@ -2564,9 +2588,9 @@ MINIMAX_H3_R2V_SAVE = replace(
 #: 6 ステップ固定なので、``steps`` の注入先だけは持たない（:func:`_without_steps`）。
 _MINIMAX_H3_TURBO_DESCRIPTION = (
     "サンプリングは 6 ステップ固定で、素の版よりずっと速く上がる（Pika H3 Flex "
-    "LoRA・lcm・ManualSigmas と Sage Attention / Sol-Attn を焼き込んだ高速版）。"
-    "入力の指定は素の版とまったく同じだが、専用の量子化ウェイトと "
-    "MiniMax H3 系のカスタムノード一式が入った環境でのみ動く。"
+    "LoRA・lcm・ManualSigmas と Comfy Kitchen attention / Sol-Attn を焼き込んだ"
+    "高速版）。入力の指定は素の版とまったく同じだが、ComfyUI 本体 v0.44.0 以降と"
+    "専用の量子化ウェイト・Sol-H3-VAE が入った環境でのみ動く。"
 )
 
 #: 連番に振り直した i2v テンプレート（turbo / opt）の注入先。opt は ``steps`` を
@@ -2630,10 +2654,11 @@ MINIMAX_H3_R2V_TURBO = replace(
 #: 最適化版。ノード ID は turbo と同じ連番なので、宣言も turbo と同じ形。
 _MINIMAX_H3_OPT_DESCRIPTION = (
     "サンプリングは素の版と同じ 20 ステップで、品質は素の版相当のまま実行だけ"
-    "速い最適化版（高速化 LoRA は使わず、量子化ウェイトと Sage Attention /"
-    " Mem Eff Patch / Sol-Attn / SigmaShift / Spectrum だけを焼き込んである）。"
-    "入力の指定は素の版とまったく同じだが、専用の量子化ウェイトと "
-    "MiniMax H3 系のカスタムノード一式が入った環境でのみ動く。"
+    "速い最適化版（高速化 LoRA は使わず、量子化ウェイトと Comfy Kitchen"
+    " attention / Sol-Attn / SigmaShift / Spectrum だけを焼き込んである）。"
+    "入力の指定は素の版とまったく同じだが、ComfyUI 本体 v0.44.0 以降と"
+    "専用の量子化ウェイト・Sol-H3-VAE、Spectrum のカスタムノードが入った環境で"
+    "のみ動く。"
 )
 
 MINIMAX_H3_T2V_OPT = replace(
@@ -3261,7 +3286,7 @@ def catalog_entry(spec: WorkflowSpec, comfy_target: str = "") -> CatalogEntry:
     """Describe one workflow for the system prompts.
 
     ``comfy_target`` を渡すと、その接続先で選べない選択肢を落とす
-    （Comfy Cloud には ``MinimaxH3LatentUpscaler3D`` を入れられないので
+    （Comfy Cloud ではラテントアップスケーラのモデルを使えない前提なので
     ``latent_upscale`` が ``off`` だけになる。:meth:`SelectSpec.choices_for_target`）。
     """
     optional = tuple(
