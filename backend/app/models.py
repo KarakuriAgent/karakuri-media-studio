@@ -2793,8 +2793,9 @@ StudioWorkflowOverride = Literal[
 #:   焼き込んだ最適化版（品質は素相当で実行が速い）。
 #: - ``turbo``: Pika H3 Flex LoRA・lcm・6 steps 固定の版（いちばん速いが粗い）。
 #:
-#: ``opt`` / ``turbo`` はカスタムノード頼みなので、接続先が対応しなければ素へ
-#: フォールバックする。``turbo`` は **t2v には無い**（テンプレートを置いて
+#: ``opt`` は Spectrum のカスタムノード頼みなので、接続先（Comfy Cloud）が対応しなければ
+#: 素へフォールバックする（``turbo`` は本体ノードだけなので Comfy Cloud でも動く。
+#: 専用のモデルは Cloud 側に入れておく）。``turbo`` は **t2v には無い**（テンプレートを置いて
 #: いない）ので、t2v になるカットは ``opt`` へ落ちる。
 StudioVideoQuality = Literal["normal", "opt", "turbo"]
 
@@ -2852,8 +2853,8 @@ class StudioProject(BaseModel):
     #: から ``MiniMaxH3LatentUpscaleWithModel`` で指定解像度に拡大する 2 パス）。
     #: テイク生成のたびにジョブの ``selects[latent_upscale]`` へ解決される
     #: （1 回ぶんの上書きは :class:`StudioRenderRequest`）。ノードは ComfyUI 本体
-    #: 同梱だが、アップスケーラのモデルが無い前提の接続先（Comfy Cloud）では
-    #: OFF に落ちる。
+    #: 同梱なのでどの接続先でも効く（Comfy Cloud ではアップスケーラのモデルを
+    #: Cloud 側に入れておく必要がある）。
     latent_upscale: bool = True
     #: 作品共通の動画 LoRA（SPEC §3.4.2）。テイク生成のたびにジョブの
     #: ``video_loras`` とトリガーワードに載る（1 回ぶんの上書きは
@@ -3483,8 +3484,8 @@ class StudioRenderRequest(BaseModel):
     #: 乱数の種（未指定 = Shot の設定、それも無ければ毎回ランダム）
     seed: int | None = None
     #: ラテントアップスケール（未指定 = プロジェクトの ``latent_upscale``）。
-    #: カスタムノードを入れられない接続先では ON を頼んでも OFF に落ちる
-    #: （理由は Take の ``warning`` ではなく投入プレビューの ``workflow_reason``）。
+    #: 接続先が ON を許さない場合は OFF に落ちる（いまはどの接続先も許す。
+    #: 理由は Take の ``warning`` ではなく投入プレビューの ``workflow_reason``）。
     latent_upscale: bool | None = None
     #: 動画 LoRA（``None`` = プロジェクトの ``video_loras``、``[]`` = この回は
     #: LoRA なしを明示）。決まったワークフローが LoRA チェーンを持たなければ
@@ -3636,7 +3637,8 @@ class StudioCapabilities(BaseModel):
 
     #: ラテント連続性（``MiniMaxH3MotionContext`` 系のカスタムノードが揃っている）
     latent_continuity: bool = False
-    #: ラテントアップスケール（アップスケーラのモデルを使える接続先か）。
+    #: ラテントアップスケール（ON にできる接続先か。ノードは本体同梱なので、
+    #: いまはどの接続先でも真）。
     #: 接続先の種類だけで決まる（``/object_info`` は聞かない）ので、``error`` が
     #: 立っていても値は当てになる。
     latent_upscale: bool = True

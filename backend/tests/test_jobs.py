@@ -2045,16 +2045,12 @@ def test_latent_upscale_is_left_alone_on_a_local_target(monkeypatch):
     assert params["selects"] == {"latent_upscale": "on"}
 
 
-def test_latent_upscale_is_pinned_off_on_comfy_cloud(monkeypatch):
-    """アップスケーラを入れられない接続先では、既定を off に固定する。"""
+def test_latent_upscale_is_left_alone_on_comfy_cloud(monkeypatch):
+    """ノードは本体同梱なので、Comfy Cloud でも既定（on）のまま・on も通す。"""
     _with_target(monkeypatch, "comfy_cloud")
     params = _video_params()
     jobs._pin_target_selects(params)
-    assert params["selects"] == {"latent_upscale": "off"}
-
-
-def test_latent_upscale_on_is_rejected_on_comfy_cloud(monkeypatch):
-    _with_target(monkeypatch, "comfy_cloud")
-    with pytest.raises(jobs.JobValidationError) as excinfo:
-        jobs._pin_target_selects(_video_params(selects={"latent_upscale": "on"}))
-    assert "latent_upscale" in str(excinfo.value)
+    assert "selects" not in params
+    params = _video_params(selects={"latent_upscale": "on"})
+    jobs._pin_target_selects(params)
+    assert params["selects"] == {"latent_upscale": "on"}

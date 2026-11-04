@@ -187,14 +187,15 @@ def test_the_minimax_turbo_workflows_are_offered(client):
         assert turbo["multi_inputs"] == plain["multi_inputs"]
 
 
-#: Comfy Cloud では出さないワークフロー（`app.workflows.COMFY_CLOUD_EXCLUDED_CLASS_TYPES`。
-#: turbo / opt は専用ウェイトと高速化ノードが前提）
+#: カスタムノード（`app.workflows.OPTIONAL_CLASS_TYPES`）を使うワークフロー
+#: （opt は Spectrum のカスタムノードを使う）
 CUSTOM_NODE_WORKFLOWS = (
-    "minimax_h3_i2v_turbo",
-    "minimax_h3_r2v_turbo",
+    "minimax_h3_t2v_opt",
     "minimax_h3_i2v_opt",
     "minimax_h3_r2v_opt",
 )
+#: 本体ノードだけで組んであるので Comfy Cloud でも出る turbo
+CORE_NODE_TURBO_WORKFLOWS = ("minimax_h3_i2v_turbo", "minimax_h3_r2v_turbo")
 #: それらを外しても残る MiniMax H3 の素の版
 PLAIN_WORKFLOWS = ("minimax_h3_t2v", "minimax_h3_i2v", "minimax_h3_r2v")
 
@@ -236,7 +237,9 @@ def _set_target(monkeypatch, target: str) -> None:
 
 
 def test_comfy_cloud_hides_the_custom_node_workflows(client, monkeypatch):
-    """Comfy Cloud では turbo / opt（専用ウェイト・高速化ノード頼み）は出さない。"""
+    """Comfy Cloud には任意のカスタムノードを入れられないので opt などは出さない。
+
+    本体ノードだけの turbo（i2v / r2v）とラテントアップスケールの on は出る。"""
     _set_target(monkeypatch, "comfy_cloud")
     options = client.get("/api/options").json()
     assert options["comfy_target"] == "comfy_cloud"
@@ -244,9 +247,14 @@ def test_comfy_cloud_hides_the_custom_node_workflows(client, monkeypatch):
     for workflow_id in CUSTOM_NODE_WORKFLOWS:
         assert workflow_id not in ids
     # 素の版（と他のモデル）はそのまま残る
-    for workflow_id in PLAIN_WORKFLOWS:
+    for workflow_id in PLAIN_WORKFLOWS + CORE_NODE_TURBO_WORKFLOWS:
         assert workflow_id in ids
     assert options["default_video_workflow"] in ids
+    # ラテントアップスケールは Comfy Cloud でも on / off とも選べる
+    for workflow in options["video_workflows"]:
+        for select in workflow.get("selects") or []:
+            if select["name"] == "latent_upscale":
+                assert select["choices"] == ["on", "off"], workflow["id"]
     # 画像側も同じ判定を通る: MiniMax H3 Image は素の版もカスタムノード
     # （ComfyUI-MiniMax-H3-Image-Studio）が要るので、base / opt / turbo とも
     # 丸ごと落ち、他のモデルは残る。

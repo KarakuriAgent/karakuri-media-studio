@@ -1575,13 +1575,10 @@ def test_every_quality_variant_is_a_registered_workflow():
             assert get_video_spec(variant).id == variant
 
 
-@pytest.mark.parametrize("quality", ["opt", "turbo"])
-def test_quality_falls_back_on_a_target_without_the_custom_nodes(
-    env, monkeypatch, quality
-):
-    """Comfy Cloud には任意のカスタムノードを入れられないので素へ落とす。"""
+def test_quality_falls_back_on_a_target_without_the_custom_nodes(env, monkeypatch):
+    """Comfy Cloud には Spectrum（opt のカスタムノード）を入れられないので素へ落とす。"""
     _use_target(monkeypatch, "comfy_cloud")
-    _project, shot = _quality_pair(env, quality)
+    _project, shot = _quality_pair(env, "opt")
     assert render(env, shot["id"]).status_code == 201
     assert env.created[-1].video_workflow == "minimax_h3_r2v"
 
@@ -1999,19 +1996,29 @@ def test_the_render_body_overrides_the_latent_upscale(
     assert detail(env, project["id"])["latent_upscale"] is project_setting
 
 
-def test_latent_upscale_falls_back_on_a_target_without_the_custom_nodes(
-    env, monkeypatch
-):
-    """Comfy Cloud にはアップスケーラを入れられないので off に落として断らない。"""
+def test_turbo_runs_on_comfy_cloud(env, monkeypatch):
+    """turbo（r2v）は本体ノードだけなので Comfy Cloud でも素へ落とさない。"""
+    _use_target(monkeypatch, "comfy_cloud")
+    _project, shot = _quality_pair(env, "turbo")
+    assert render(env, shot["id"]).status_code == 201
+    assert env.created[-1].video_workflow == "minimax_h3_r2v_turbo"
+
+    preview = env.client.get(f"/api/studio/shots/{shot['id']}/prompt-preview").json()
+    assert preview["quality_applied"] is True
+    assert "接続先" not in preview["workflow_reason"]
+
+
+def test_latent_upscale_stays_on_on_comfy_cloud(env, monkeypatch):
+    """ノードは本体同梱なので、Comfy Cloud でも作品設定どおり on で投入する。"""
     _use_target(monkeypatch, "comfy_cloud")
     project = make_project(env)  # latent_upscale は既定の True
     shot = make_shot(env, project["id"], prompt="A cat walks in.")
     assert render(env, shot["id"]).status_code == 201
-    assert env.created[-1].selects == {"latent_upscale": "off"}
+    assert env.created[-1].selects == {"latent_upscale": "on"}
 
     preview = env.client.get(f"/api/studio/shots/{shot['id']}/prompt-preview").json()
-    assert preview["latent_upscale"] is False
-    assert "接続先" in preview["workflow_reason"]
+    assert preview["latent_upscale"] is True
+    assert "接続先" not in preview["workflow_reason"]
 
 
 def test_the_preview_shows_the_resolved_latent_upscale(env, monkeypatch):

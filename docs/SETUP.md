@@ -274,7 +274,11 @@ Pod 自身の watchdog がアイドル 10 分で terminate するので、消し
 Pod 側の models ディレクトリです（RunPod は Pod のダウンロード API を使うので、
 `deploy/runpod` のイメージを作り直す必要があります。Pod 起動時の一括ダウンロードは
 行いません）。ComfyCloud はモデルが Comfy Cloud 側の
-管理なのでダウンロードできません。
+管理なのでダウンロードできません。Comfy Cloud で MiniMax H3 の Turbo（i2v / r2v）や
+ラテントアップスケールを使う場合は、該当モデル（`*_pruned_w4a8_mixed` の UNET・
+`pika_h3_flex_*_comfy_bf16` の turbo LoRA・`minimax_h3_sol_vae_int8_convrot` の Sol-H3-VAE・
+`minimax_h3_latent_upscaler_3d_bf16` のラテントアップスケーラ）を Cloud 側に入れておく
+必要があります（Optimized は Spectrum の custom node が要るので Comfy Cloud では選べません）。
 
 **接続先**は ComfyCloud / RunPod / ローカルの 3 プロファイルを設定に持ち、「接続 / Grok」
 タブの「ComfyUI 接続先」でそれぞれの URL・API キーを登録します。実際にどれを使うかは

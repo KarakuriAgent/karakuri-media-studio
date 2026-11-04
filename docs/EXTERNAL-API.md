@@ -77,7 +77,7 @@
 | `duration` | カットの `duration_seconds`（1〜15 秒） |
 | `steps` | プロジェクトの `steps` → テンプレートの既定（0〜150。`0` を送れば「既定のまま」の明示で、プロジェクトの設定より優先） |
 | `seed` | カットの `seed` → 毎回ランダム |
-| `latent_upscale` | プロジェクトの `latent_upscale`（既定 ON。接続先が対応しなければ黙って `off`） |
+| `latent_upscale` | プロジェクトの `latent_upscale`（既定 ON。Comfy Cloud でも ON のまま効く。Cloud 側にアップスケーラのモデル `minimax_h3_latent_upscaler_3d_bf16` を入れておくこと） |
 | `video_loras` | プロジェクトの `video_loras`（`LoraRef` の配列。`[]` を送ると「この回は LoRA なし」の明示）。挿せないワークフローに決まったときは 422 にせず外して投入し、Take の `warning` に理由が出る |
 
 ボディごと省けば従来どおりの投入。範囲外の値は 400（`StudioError`）で、実際に使われた
@@ -800,9 +800,10 @@ GET /api/v1/jobs?q=かおり&kind=video&nsfw=false&limit=48&offset=0
   `quality` が `"turbo"` でも、t2v になるカット（開始フレームの引き継ぎも参照素材も
   無いカット）は `minimax_h3_t2v_opt`（ラテント連続性が ON なら
   `minimax_h3_t2v_save_opt`）で投入され、その旨が `workflow_reason` に出ます。
-  turbo / opt の専用ウェイト・ノードに対応しない接続先
-  （Comfy Cloud）では**品質だけを落として**読み替え済みの版で投入します
-  （400 にはしません）。どれに当たったかは
+  カスタムノードに対応しない接続先（Comfy Cloud）では、Spectrum のカスタムノードを
+  使う `opt` だけ**品質を落として**読み替え済みの版で投入します（400 にはしません）。
+  `turbo`（i2v / r2v）は本体ノードだけなので Comfy Cloud でもそのまま投入します
+  （w4a8 の UNET・Pika H3 Flex LoRA・Sol-H3-VAE を Cloud 側に入れておくこと）。どれに当たったかは
   `GET /api/v1/shots/{id}/prompt-preview` の `workflow_reason` に出ます。
 - プロジェクトの `image_quality`（`POST /api/v1/projects` と
   `PATCH /api/v1/projects/{id}` で読み書きできます。`"normal"` / `"opt"` /
@@ -815,8 +816,8 @@ GET /api/v1/jobs?q=かおり&kind=video&nsfw=false&limit=48&offset=0
   8 steps 蒸留版。t2i にもあります）を使います。Qwen-Image 2.1 に `_opt` は無いので、
   `"opt"` のときは素の版のままです。**動画の `quality` を静止画に流用しないでください** — 動画を
   `turbo` で回している作品でも、素材の絵は `image_quality` に従います
-  （その逆も同じ）。MiniMax H3 の `_opt` / `_turbo` は動画側と同じく専用ウェイトと
-  高速化ノード（とカスタムノード）頼みなので、Comfy Cloud では素の版を使います（Qwen-Image 2.1 の
+  （その逆も同じ）。MiniMax H3 Image は素の版も含めて ComfyUI-MiniMax-H3-Image-Studio
+  （カスタムノード）頼みなので、Comfy Cloud では `_opt` / `_turbo` に読み替えません（Qwen-Image 2.1 の
   `_turbo` は ComfyUI 本体のノードだけなので、どの接続先でも使えます）。いまのところ静止画を
   焼く経路はアプリ側に無く、素材画像を作るのは**外部エージェント**（この API 経由の
   Claude Code / Codex / Cursor CLI など）なので、この設定は**外部エージェントへの

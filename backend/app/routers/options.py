@@ -41,7 +41,7 @@ NEGATIVE_PRESETS = {
 
 def _workflow_option(spec: WorkflowSpec, comfy_target: str = "") -> WorkflowOption:
     """フォームに出す 1 件。``comfy_target`` はその接続先で選べない選択肢を
-    落とすのに使う（Comfy Cloud では `latent_upscale` が off だけになる）。"""
+    落とすのに使う（:meth:`app.workflows.SelectSpec.choices_for_target`）。"""
     return WorkflowOption(
         id=spec.id,
         label=spec.label,
@@ -108,7 +108,8 @@ async def get_options() -> Options:
     """Form choices. ComfyUI being down is reported inline, never as an HTTP error."""
     settings = load_settings()
     # 接続先で動かないワークフローは選択肢に出さない: Comfy Cloud には任意の
-    # カスタムノードを入れられないので、それを使う MiniMax H3 turbo / opt が消える
+    # カスタムノードを入れられないので、それを使うワークフロー（Spectrum を持つ
+    # MiniMax H3 opt・MiniMax H3 Image・ラテント連続性）が消える
     # （local / runpod は従来どおり全件）。
     target = settings.comfy_target
     options = Options(

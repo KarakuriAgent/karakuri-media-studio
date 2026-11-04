@@ -100,6 +100,10 @@ custom node は要りません（Optimized は `SpectrumApplyMiniMaxH3` の cust
 Sol-H3-VAE はデコードが速い代わりにタイル分割ができず、クリップ全体を一度にデコードするので、
 長尺・高解像度ほど VRAM を多く使います（足りなければ設定ページで動画 VAE を
 `minimax_h3_video_vae_int8_convrot` に戻せます）。
+接続先が Comfy Cloud でも Turbo（i2v / r2v）とラテントアップスケールは選べます。その場合は
+該当モデル（w4a8 の UNET・Pika H3 Flex LoRA・Sol-H3-VAE・ラテントアップスケーラ
+`minimax_h3_latent_upscaler_3d_bf16`）を Cloud 側に入れておいてください。Optimized は
+Spectrum の custom node が要るので Comfy Cloud では選べません。
 
 **音声**は MiniMax Music 3（歌もの・インスト。キャプションと歌詞を指定）と
 Stable Audio 3 Medium（効果音・環境音・単一楽器）の 2 種です。

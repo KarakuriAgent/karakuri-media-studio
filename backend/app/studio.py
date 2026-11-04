@@ -230,9 +230,9 @@ def normalize_quality(value: Any) -> str:
 def _quality_supported_on_target(workflow: str) -> bool:
     """いまの接続先で turbo / opt のバリアントを投げてよいか。
 
-    turbo / opt は専用のウェイトとノード頼み
-    （:data:`app.workflows.COMFY_CLOUD_EXCLUDED_CLASS_TYPES`）なので、Comfy Cloud
-    では動かない前提にしている。判定は生成
+    Spectrum を持つ opt など、任意のカスタムノード
+    （:data:`app.workflows.OPTIONAL_CLASS_TYPES`）を使うバリアントは Comfy Cloud
+    では動かない（本体ノードだけの turbo は Comfy Cloud でも投げる）。判定は生成
     フォームの選択肢を絞るのと同じ :func:`app.workflow.supported_on_target` に
     任せる（対応の定義を 2 か所に散らさない）。
     """
@@ -254,7 +254,7 @@ def _quality_workflow(workflow: str, quality: str) -> tuple[str, str]:
     次のどちらかに当てはまれば**その論理ワークフローのまま**投げ、理由を返す:
 
     1. そのワークフローに turbo / opt のバリアントが無い（:data:`QUALITY_WORKFLOWS`）
-    2. いまの接続先が turbo / opt の専用ウェイト・ノードに対応しない（Comfy Cloud）
+    2. いまの接続先がそのバリアントのカスタムノードに対応しない（Comfy Cloud の opt）
 
     ``turbo`` × t2v だけは 1 に落ちる前に **opt へ読み替える**
     （:data:`TURBO_FALLBACK_QUALITY`。t2v の turbo は用意していない）。
@@ -273,7 +273,7 @@ def _quality_workflow(workflow: str, quality: str) -> tuple[str, str]:
         )
     if not _quality_supported_on_target(variant):
         return workflow, (
-            f"いまの接続先は品質「{label}」の専用ウェイト・ノードに対応しないので、"
+            f"いまの接続先は品質「{label}」のカスタムノードに対応しないので、"
             "通常品質で投入します"
         )
     if fallback:
@@ -362,8 +362,8 @@ def image_quality_workflow(workflow_id: str, image_quality: str) -> str:
     ``workflow_id`` は素の ``minimax_h3_t2i`` / ``_i2i`` / ``_r2i`` か
     ``qwen_image_21_t2i`` / ``_edit``。
     ``image_quality`` が ``normal`` のとき、バリアントが無いとき（Qwen-Image
-    2.1 の opt など）、いまの接続先が turbo / opt の専用ウェイト・ノードに対応しない
-    （Comfy Cloud）ときは、渡された id をそのまま返す。``turbo`` × MiniMax H3 の
+    2.1 の opt など）、いまの接続先がそのバリアントのカスタムノードに対応しない
+    （Comfy Cloud。MiniMax H3 Image は全バリアントがカスタムノード頼み）ときは、渡された id をそのまま返す。``turbo`` × MiniMax H3 の
     t2i だけは opt へ読み替える（:data:`IMAGE_TURBO_FALLBACK_QUALITY`）。
     **動画の ``quality`` は見ない。**
     """
@@ -409,11 +409,12 @@ def image_render_defaults(project: StudioProject) -> dict[str, Any]:
 # 落ちる（ワークフロー id は変わらない）。効き方は
 # **この 1 回ぶんの上書き > プロジェクト > 既定（ON）** の順。
 #
-# ON にできるかは接続先次第で、ノード（``MiniMaxH3LatentUpscaleWithModel``）は
-# ComfyUI 本体同梱だが、アップスケーラのモデルが無い前提の Comfy Cloud では
-# 選択肢が ``off`` だけになる。そこへ ``on`` を
-# 送るとジョブ側（:func:`app.jobs._pin_target_selects`）が 422 にするので、
-# スタジオは投入前に off へ落とし、その理由を ``workflow_reason`` に足す。
+# ノード（``LatentUpscaleModelLoader`` / ``MiniMaxH3LatentUpscaleWithModel``）は
+# ComfyUI 本体同梱なので、どの接続先でも ON にできる（Comfy Cloud ではアップスケーラの
+# モデルを Cloud 側に入れておく必要がある）。接続先が選択肢を絞る選択式
+# （:meth:`app.workflows.SelectSpec.choices_for_target`）になった場合に備えて、
+# 許されない値はジョブ側（:func:`app.jobs._pin_target_selects`）が 422 にするので、
+# スタジオは投入前に許される値へ落とし、その理由を ``workflow_reason`` に足す。
 
 #: 作品設定を持たない（＝プロジェクトが引けない）ときの既定
 DEFAULT_LATENT_UPSCALE = True
@@ -458,8 +459,8 @@ def _resolve_selects(
         if wanted in choices:
             selects[LATENT_UPSCALE_NAME] = wanted
         else:
-            # 接続先が許すのは 1 つだけ（Comfy Cloud の "off"）。黙って落とす
-            # のではなく、プレビューに理由を出す。
+            # 接続先が許す値に落とす（いまの宣言ではどの接続先でも起きない）。
+            # 黙って落とすのではなく、プレビューに理由を出す。
             selects[LATENT_UPSCALE_NAME] = choices[0]
             reasons.append(
                 "いまの接続先はラテントアップスケール（アップスケーラのモデル）に"

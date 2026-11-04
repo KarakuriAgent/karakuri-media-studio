@@ -701,7 +701,7 @@ def _select_lines(entry: CatalogEntry) -> list[str]:
 
 
 # 接続先ごとの「MiniMax H3 のどの版を選ぶか」。turbo / opt は専用の量子化
-# ウェイトと MiniMax H3 系カスタムノードが要るので、それが入っている前提の
+# ウェイト（と opt は Spectrum のカスタムノード）が要るので、それが入っている前提の
 # local だけで勧める（runpod / comfy_cloud は素の版が既定）。
 def _catalog_entries(
     entries: Iterable[CatalogEntry],
@@ -712,7 +712,8 @@ def _catalog_entries(
 
     ``only`` は ``GET /api/options`` が返したワークフロー id の集合（フォームに
     出ていないものはエージェントにも出さない）。``comfy_target`` を渡すと、その
-    接続先で動かないワークフロー（Comfy Cloud の MiniMax H3 turbo / opt）も落ちる
+    接続先で動かないワークフロー（Comfy Cloud の MiniMax H3 opt など、カスタム
+    ノードを使うもの）も落ちる
     ので、``only`` を持たない直接の呼び出しでも同じ一覧になる。
     """
     kept: list[CatalogEntry] = []
@@ -735,16 +736,19 @@ def _target_preference_lines(comfy_target: str) -> list[str]:
         "",
     ]
     if comfy_target == "comfy_cloud":
-        # Comfy Cloud には任意のカスタムノードを入れられないので、turbo / opt は
-        # 上のカタログからも消えている（:func:`_catalog_entries`）。
+        # Comfy Cloud には任意のカスタムノードを入れられないので、Spectrum を
+        # 使う opt は上のカタログからも消えている（:func:`_catalog_entries`）。
+        # 本体ノードだけの turbo（i2v / r2v）はカタログに残る。
         lines += [
-            "Comfy Cloud には MiniMax H3 系のカスタムノードと量子化ウェイトを"
-            "入れられないので、MiniMax H3 の `_turbo` / `_opt` は選ばないこと"
-            "（上のカタログにも載せていない）。MiniMax H3 は **素の版"
-            "（`minimax_h3_i2v` / `minimax_h3_r2v` / `minimax_h3_t2v`）だけ**を"
-            "使う。",
-            "ユーザーが turbo / opt を名指ししてきたときも、**この接続先では"
-            "動かない**ことを伝えて素の版を提案すること。",
+            "Comfy Cloud では MiniMax H3 の `_opt` は使えない（Spectrum の"
+            "カスタムノードを入れられないので、上のカタログにも載せていない）。"
+            "MiniMax H3 は **素の版（`minimax_h3_i2v` / `minimax_h3_r2v` /"
+            " `minimax_h3_t2v`）を優先**し、`_turbo`（`minimax_h3_i2v_turbo` /"
+            " `minimax_h3_r2v_turbo`）はユーザーが指定したときだけ使う"
+            "（w4a8 の UNET・Pika H3 Flex LoRA・Sol-H3-VAE を Cloud 側に"
+            "入れてある前提）。",
+            "ユーザーが opt を名指ししてきたときは、**この接続先では"
+            "動かない**ことを伝えて素の版か turbo を提案すること。",
         ]
         return lines
     if comfy_target == "local":

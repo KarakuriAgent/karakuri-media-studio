@@ -31,7 +31,6 @@ from .workflows import (
     LATENT_UPSCALE_LOADER_CLASS,
     LATENT_UPSCALE_NAME,
     LATENT_UPSCALER_CLASS,
-    COMFY_CLOUD_EXCLUDED_CLASS_TYPES,
     OPTIONAL_CLASS_TYPES,
     REF_AUDIOS_NAME,
     REF_IMAGES_NAME,
@@ -1246,46 +1245,47 @@ def all_required_class_types() -> set[str]:
     return types - OPTIONAL_CLASS_TYPES
 
 
-#: spec id -> テンプレートが :data:`app.workflows.COMFY_CLOUD_EXCLUDED_CLASS_TYPES`
-#: を使うか。テンプレートは読み取り専用なので、プロセス内で 1 回読めば十分
-#: （毎リクエストの ``/api/options`` でファイルを開き直さないためのキャッシュ）。
-_cloud_excluded_cache: dict[str, bool] = {}
+#: spec id -> テンプレートが :data:`app.workflows.OPTIONAL_CLASS_TYPES` を使うか。
+#: テンプレートは読み取り専用なので、プロセス内で 1 回読めば十分（毎リクエストの
+#: ``/api/options`` でファイルを開き直さないためのキャッシュ）。
+_optional_nodes_cache: dict[str, bool] = {}
 
 
-def excluded_on_comfy_cloud(spec: WorkflowSpec) -> bool:
-    """``spec`` を Comfy Cloud の選択肢から落とすか。
+def uses_optional_class_types(spec: WorkflowSpec) -> bool:
+    """``spec`` のテンプレートが任意のカスタムノードを 1 つでも使うか。
 
-    テンプレートが :data:`app.workflows.COMFY_CLOUD_EXCLUDED_CLASS_TYPES`
-    （任意のカスタムノードと、MiniMax H3 turbo / opt の目印の
-    ``ModelAttentionBackend``）を 1 つでも使えば真。ComfyUI のテンプレートを
+    :data:`app.workflows.OPTIONAL_CLASS_TYPES` は ComfyUI 本体に無い外部の
+    カスタムノード（opt の Spectrum・MiniMax H3 Image の ``H3*``・ラテント連続性の
+    Motion Context 系）なので、ここが真になるワークフローは「カスタムノードが
+    入っていない環境では動かない」ことを意味する。ComfyUI のテンプレートを
     持たないバックエンド（Grok Build CLI など）は常に偽。
     """
-    cached = _cloud_excluded_cache.get(spec.id)
+    cached = _optional_nodes_cache.get(spec.id)
     if cached is None:
         if spec.backend != "comfyui":
             cached = False
         else:
             cached = bool(
-                required_class_types(load_template(spec))
-                & COMFY_CLOUD_EXCLUDED_CLASS_TYPES
+                required_class_types(load_template(spec)) & OPTIONAL_CLASS_TYPES
             )
-        _cloud_excluded_cache[spec.id] = cached
+        _optional_nodes_cache[spec.id] = cached
     return cached
 
 
 def supported_on_target(spec: WorkflowSpec, comfy_target: str) -> bool:
     """接続先 ``comfy_target`` でそのワークフローを選ばせてよいか。
 
-    Comfy Cloud には任意のカスタムノードを入れられず、MiniMax H3 turbo / opt の
-    専用ウェイト（量子化 UNET・Pika H3 Flex LoRA・Sol-H3-VAE）も揃う前提に
-    できないので、それを使うワークフローはフォームの選択肢からもエージェントの
-    カタログからも落とす（:func:`excluded_on_comfy_cloud`）。local / runpod は
-    自前の ComfyUI なので従来どおり全件出す（入っていなければ実行時に ComfyUI
-    側でエラーになる）。
+    Comfy Cloud には任意のカスタムノードを入れられないので、それを使う
+    ワークフロー（Spectrum を持つ MiniMax H3 opt・MiniMax H3 Image・ラテント
+    連続性のバリアント）はフォームの選択肢からもエージェントのカタログからも
+    落とす。本体ノードだけで組んである turbo（i2v / r2v）は Comfy Cloud でも
+    出す（専用のウェイトは Cloud 側に入れておく前提）。local / runpod は自前の
+    ComfyUI なので従来どおり全件出す（入っていなければ実行時に ComfyUI 側で
+    エラーになる）。
     """
     if comfy_target != "comfy_cloud":
         return True
-    return not excluded_on_comfy_cloud(spec)
+    return not uses_optional_class_types(spec)
 
 
 def specs_for_target(

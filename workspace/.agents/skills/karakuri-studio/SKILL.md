@@ -175,6 +175,10 @@ cwd として書いてある。
   t2v になるカットは `minimax_h3_t2v_opt` で投入され、理由が `prompt-preview` の
   `workflow_reason` に出る。`image_quality: "turbo"` の t2i も同じく `_opt` に落ちる。
   Turbo をそのまま効かせたいなら、引き継ぎ（i2v）か `@素材`（r2v）のあるカットにする。
+- 接続先が Comfy Cloud でも turbo（i2v / r2v）と `latent_upscale` は使える（ノードは
+  ComfyUI 本体同梱）。ただし Cloud 側に該当モデル（w4a8 UNET・turbo LoRA・Sol-H3-VAE・
+  ラテントアップスケーラ）が入っている必要がある。`opt` は Spectrum のカスタムノードが
+  要るので Comfy Cloud では通常品質に落ちる（理由は `workflow_reason`）。
 - Qwen-Image 2.1 は t2i・編集とも公式の 8 steps 蒸留版があり、`image_quality: "turbo"` なら
   `qwen_image_21_t2i_turbo` / `qwen_image_21_edit_turbo` を使う（入力とプロンプトの書き方は
   素の版と同じ。`_opt` は無いので `"opt"` なら素の版）。

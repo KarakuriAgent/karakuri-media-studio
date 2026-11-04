@@ -110,7 +110,7 @@
   **id 直指定（`get_spec`）は従来どおり通る**: スタジオの解決（`_plan_render`）・
   ジョブの実行・マニフェスト検証（`validate_specs`）・外部 API の `video_workflow`
   直指定はどれも 19 件すべてを見る
-- `_turbo` / `_opt` / `_context` / `_save` はカスタムノード前提なので、**接続先が `comfy_cloud` のときは選択肢に出ない**（§3.1）
+- `_opt`（Spectrum）/ `_context` / `_save`（Motion Context 系）はカスタムノード前提なので、**接続先が `comfy_cloud` のときは選択肢に出ない**（§3.1）。本体ノードだけで組んである `_turbo`（i2v / r2v）は Comfy Cloud でも出る（w4a8 の UNET・Pika H3 Flex LoRA・Sol-H3-VAE を Cloud 側に入れておく必要がある）
 - **`_turbo` / `_opt`** はドラマスタジオからは直接選ばず、プロジェクトの
   **「動画生成品質」**（`quality` = `normal` / `opt` / `turbo`）として持つ。品質は論理モード
   （t2v / i2v / r2v / r2v_context）ともラテント連続性とも直交していて、ワークフロー id は
@@ -169,9 +169,11 @@
   こちらはワークフロー id を変えず、投入するジョブの選択式
   （`selects.latent_upscale` = `on` / `off`。§3.1 の「ラテントアップスケール」）に落ちる。
   効き方は**テイク 1 回ぶんの上書き → プロジェクト → 既定（ON）**で、Shot 単位の設定は持たない。
-  接続先がアップスケーラのモデルを使えない前提の `comfy_cloud` のときは
-  ON を頼んでも **黙って `off` に落とし**（投入そのものは通す）、理由を投入プレビューの
-  `workflow_reason` に足す（`app.studio._resolve_selects`）。宣言を持たないワークフローには
+  ノードは ComfyUI 本体同梱なので **`comfy_cloud` でも ON のまま投入する**（Cloud 側に
+  アップスケーラのモデル `minimax_h3_latent_upscaler_3d_bf16` を入れておく必要がある）。
+  接続先が選択肢を絞る選択式（`SelectSpec.requires_class_types`）だった場合は、ON を頼んでも
+  黙って許される値に落とし（投入そのものは通す）、理由を投入プレビューの
+  `workflow_reason` に足す（`app.studio._resolve_selects`。いまの宣言では起きない）。宣言を持たないワークフローには
   `selects` を載せない。**連鎖の途中で on / off を切り替えるとラテント連続性が合わなくなる**
   （→ §3.1「2 段引き継ぎ」の制約）。
 - **動画 LoRA**（`video_loras`、`LoraRef` の配列・既定 `[]`）もプロジェクトの設定として持つ
@@ -301,8 +303,8 @@
   `deploy/runpod/custom_nodes.txt` に固定）が要る。`H3*` の 6 クラスを
   `OPTIONAL_CLASS_TYPES` に載せてあるので、カスタムノードが無い接続先
   （Comfy Cloud を含む）では base / `_opt` / `_turbo` とも丸ごと選択肢から落ちる
-  （§3.2。`_opt` / `_turbo` は動画側と同じ高速化ノードも焼き込んである。`_opt` / `_turbo` は
-  `ModelAttentionBackend` を持つので、H3 Image Studio を入れたとしても Comfy Cloud には出ない）。
+  （§3.2。`_opt` / `_turbo` は動画側と同じ高速化ノードも焼き込んである。
+  動画の turbo と違い、H3 Image Studio を Comfy Cloud に入れられないので、どのバリアントも Comfy Cloud には出ない）。
   `_turbo` の Pika H3 Flex LoRA は `LoraLoaderModelOnly` で読むので設定画面から
   差し替えできる（§3.3）
 - `minimax-h3-image` のモデル構成は**動画側（`minimax-h3`）とそろえてある**:
@@ -667,14 +669,14 @@ r2v の opt / turbo も素の r2v と同じ **ref2va 本体**（`minimax_h3_ref2
 アップスケーラの `model_name` も設定ページのスロットとして出るし（`workflow.model_fields` が
 テンプレートに `UpscaleSpec` 由来のノードを重ねて見る）、ジョブごとの `model_overrides` も効く。
 
-ラテントアップスケールのノードは本体同梱だが、アップスケーラのモデル（`latent_upscale_models`）は
-Comfy Cloud には無い前提にしている。ノードは**テンプレートに現れない**ので、テンプレート由来の
-接続先判定（`excluded_on_comfy_cloud` / `supported_on_target`）では拾えない。代わりに選択式そのものが
-`SelectSpec.requires_class_types` / `restricted_choice` を宣言し、
-`SelectSpec.choices_for_target(comfy_target)` が **`comfy_cloud` では選択肢を `off` だけに絞る**
-（`GET /api/options` の `selects` が接続先に合わせて絞られる）。値を送ってこない
-経路（外部 API・再実行）のために、ジョブ投入時に `jobs._pin_target_selects` が
-既定を接続先に合わせて params へ固定し、使えない値が明示されていれば 422 で弾く。
+ラテントアップスケールのノード（`LatentUpscaleModelLoader` / `MiniMaxH3LatentUpscaleWithModel`）は
+本体同梱なので、**どの接続先でも `on` / `off` を選べる**。Comfy Cloud で `on` を使うときは、
+アップスケーラのモデル（`latent_upscale_models` の `minimax_h3_latent_upscaler_3d_bf16`）を Cloud 側に
+入れておく必要がある。選択式には、組み替えで足すノードが外部のカスタムノードだった場合のための
+仕組み（`SelectSpec.requires_class_types` / `restricted_choice` を宣言すると
+`SelectSpec.choices_for_target(comfy_target)` が `comfy_cloud` で選択肢を 1 つに絞り、値を送ってこない
+経路のためにジョブ投入時の `jobs._pin_target_selects` が既定を params へ固定し、使えない値は
+422 で弾く）が残っているが、`latent_upscale` は宣言していない。
 
 さらに LoRA を持たない **opt**（`minimax_h3_t2v_opt` / `minimax_h3_i2v_opt` /
 `minimax_h3_r2v_opt` と、その `_save` / `_context` 版）がある。
@@ -685,14 +687,14 @@ Comfy Cloud には無い前提にしている。ノードは**テンプレート
 品質は素の版相当のまま実行だけが速い。
 ドラマスタジオからはプロジェクトの「動画生成品質」（`quality`）として選ぶ（§2.2）。
 
-**接続先が `comfy_cloud` のときは turbo / opt（と MiniMax H3 Image の全バリアント）を
-選択肢に出さない**。Comfy Cloud には任意のカスタムノードを入れられず、turbo / opt の専用ウェイト
-（量子化 UNET・Pika H3 Flex LoRA・Sol-H3-VAE）も揃う前提にできないためで、判定は id の
-ハードコードではなく「テンプレートが `workflows.COMFY_CLOUD_EXCLUDED_CLASS_TYPES`
-（任意のカスタムノード `OPTIONAL_CLASS_TYPES` に、turbo / opt が必ず持つ本体ノード
-`ModelAttentionBackend` を目印として足したもの）を 1 つでも使うか」
-（`workflow.excluded_on_comfy_cloud` / `workflow.supported_on_target`。spec ごとにプロセス内
-キャッシュ）。`GET /api/options` の `image_workflows` / `video_workflows` / `audio_workflows` が
+**接続先が `comfy_cloud` のときは opt（Spectrum）・ラテント連続性のバリアント・MiniMax H3 Image の
+全バリアントを選択肢に出さない**。Comfy Cloud には任意のカスタムノードを入れられないためで、判定は id の
+ハードコードではなく「テンプレートが `workflows.OPTIONAL_CLASS_TYPES`（本体に無い外部の
+カスタムノード: `SpectrumApplyMiniMaxH3`・H3 Image Studio の `H3*`・Motion Context 系）を 1 つでも使うか」
+（`workflow.uses_optional_class_types` / `workflow.supported_on_target`。spec ごとにプロセス内
+キャッシュ）。本体ノードだけで組んである **turbo（`minimax_h3_i2v_turbo` / `minimax_h3_r2v_turbo`）は
+Comfy Cloud でも出る**。そのときは w4a8 の UNET・Pika H3 Flex LoRA・Sol-H3-VAE（とラテント
+アップスケールを使うならアップスケーラ）を Cloud 側に入れておく必要がある。`GET /api/options` の `image_workflows` / `video_workflows` / `audio_workflows` が
 同じ規則で絞られ、フォームの 2 段プルダウンも外部 API の `GET /api/v1/options` もそれに従う。
 `local` / `runpod` は自前の ComfyUI なので従来どおり全件出す（入っていなければ実行時に ComfyUI 側で
 エラーになる）。保存済みの選択が消えた場合、フロントは `default_video_workflow`（または先頭）へ

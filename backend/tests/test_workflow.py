@@ -80,6 +80,7 @@ from app.workflows import (
     image_catalog,
     image_families,
     image_specs,
+    get_image_spec,
     get_video_spec,
     load_template,
     validate_external_spec,
@@ -2756,20 +2757,31 @@ def test_upscale_conditioning_must_be_the_node_the_guider_reads():
     assert validate_spec(spec) == []
 
 
-def test_latent_upscale_is_pinned_off_on_comfy_cloud():
-    """アップスケーラを入れられない接続先では on を選ばせない（SPEC §5.1）。"""
+def test_latent_upscale_is_offered_on_every_target():
+    """ノードは本体同梱なので Comfy Cloud でも on を選べる（SPEC §5.1）。"""
     select = get_spec("minimax_h3_t2v", "video").select(LATENT_UPSCALE_NAME)
-    assert select.choices_for_target("comfy_cloud") == ("off",)
-    assert select.fallback_for_target("comfy_cloud") == "off"
-    for target in ("local", "runpod", ""):
+    assert select.requires_class_types == ()
+    for target in ("comfy_cloud", "local", "runpod", ""):
         assert select.choices_for_target(target) == ("on", "off")
         assert select.fallback_for_target(target) == "on"
     # カタログ（エージェント向け）も同じ一覧になる
     entry = catalog_entry(get_spec("minimax_h3_t2v", "video"), "comfy_cloud")
-    assert (LATENT_UPSCALE_NAME, ("off",), "off") in {
+    assert (LATENT_UPSCALE_NAME, ("on", "off"), "on") in {
         (name, choices, default)
         for name, _l, choices, default, _a, _h, _labels in entry.selects
     }
+
+
+def test_a_select_that_needs_extra_nodes_is_pinned_on_comfy_cloud():
+    """``requires_class_types`` を宣言した選択式は Comfy Cloud で 1 つに絞る（仕組みの確認）。"""
+    select = replace(
+        get_spec("minimax_h3_t2v", "video").select(LATENT_UPSCALE_NAME),
+        requires_class_types=("SomeCustomNode",),
+        restricted_choice="off",
+    )
+    assert select.choices_for_target("comfy_cloud") == ("off",)
+    assert select.fallback_for_target("comfy_cloud") == "off"
+    assert select.choices_for_target("local") == ("on", "off")
 
 
 def test_latent_upscale_choice_falls_back_to_the_default():
@@ -3775,3 +3787,38 @@ def test_workflows_without_a_declaration_keep_the_global_default():
         )
     )
     assert wf["49"]["inputs"]["megapixels"] == pytest.approx(DEFAULT_MEGAPIXELS)
+
+
+# --- Comfy Cloud で選べるワークフロー ---------------------------------------
+
+@pytest.mark.parametrize(
+    ("workflow_id", "on_cloud"),
+    [
+        # 本体ノードだけ（turbo の高速化ノードは ComfyUI v0.44.0 同梱）
+        ("minimax_h3_i2v_turbo", True),
+        ("minimax_h3_r2v_turbo", True),
+        # Spectrum（外部のカスタムノード）を持つ opt
+        ("minimax_h3_t2v_opt", False),
+        ("minimax_h3_i2v_opt", False),
+        ("minimax_h3_r2v_opt", False),
+        # ラテント連続性（Motion Context 系）
+        ("minimax_h3_i2v_save_turbo", False),
+        ("minimax_h3_r2v_save_turbo", False),
+        ("minimax_h3_r2v_context_turbo", False),
+    ],
+)
+def test_comfy_cloud_offers_only_the_workflows_without_custom_nodes(
+    workflow_id, on_cloud
+):
+    spec = get_video_spec(workflow_id)
+    assert supported_on_target(spec, "comfy_cloud") is on_cloud
+    assert supported_on_target(spec, "local")
+
+
+@pytest.mark.parametrize(
+    "workflow_id",
+    ["minimax_h3_t2i", "minimax_h3_i2i_opt", "minimax_h3_i2i_turbo", "minimax_h3_r2i_turbo"],
+)
+def test_comfy_cloud_still_hides_the_h3_image_workflows(workflow_id):
+    """MiniMax H3 Image は H3 Image Studio（外部のカスタムノード）頼みなので全バリアント出ない。"""
+    assert not supported_on_target(get_image_spec(workflow_id), "comfy_cloud")

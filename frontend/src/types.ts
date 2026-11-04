@@ -1124,8 +1124,9 @@ export type StudioRevisionEntity =
  * - `opt`: 20 steps のまま、量子化と高速化パッチだけを焼き込んだ最適化版。
  * - `turbo`: Pika H3 Flex LoRA・6 steps 固定の版（いちばん速いが粗い）。
  *
- * `opt` / `turbo` はカスタムノード頼みなので、接続先が対応しなければ素へ
- * フォールバックする（理由は `workflow_reason`）。`turbo` は **t2v には無い**
+ * `opt` は Spectrum のカスタムノード頼みなので、接続先（Comfy Cloud）が対応しなければ素へ
+ * フォールバックする（理由は `workflow_reason`）。`turbo` は本体ノードだけなので
+ * Comfy Cloud でも動く（専用のモデルは Cloud 側に入れておく）。`turbo` は **t2v には無い**
  * （テンプレートを置いていない）ので、t2v になるカットは `opt` へ落ちる。
  */
 export type StudioVideoQuality = 'normal' | 'opt' | 'turbo'
@@ -1159,7 +1160,8 @@ export interface StudioProject {
    * ラテントアップスケール（作品既定）。ON = 1 パス目を 0.2MP で回してから
    * `MiniMaxH3LatentUpscaleWithModel` で指定解像度に拡大する 2 パス。テイク生成の
    * たびにジョブの `selects.latent_upscale` へ解決される（1 回ぶんの上書きは
-   * `StudioRenderRequest`）。入れられない接続先では OFF に落ちる。
+   * `StudioRenderRequest`）。ノードは ComfyUI 本体同梱なので Comfy Cloud でも効く
+   * （Cloud 側にアップスケーラのモデルを入れておく必要がある）。
    */
   latent_upscale: boolean
   /**
@@ -1736,7 +1738,7 @@ export interface StudioShotPreview {
 export interface StudioCapabilities {
   /** ラテント連続性（MiniMaxH3MotionContext 系のカスタムノードが揃っている）。 */
   latent_continuity: boolean
-  /** ラテントアップスケール（アップスケーラのモデルを使える接続先か）。 */
+  /** ラテントアップスケール（ON にできる接続先か。いまはどの接続先でも true）。 */
   latent_upscale: boolean
   /** 確かめられなかった理由（日本語。空なら判定できている）。 */
   error: string

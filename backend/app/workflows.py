@@ -140,10 +140,10 @@ class SelectSpec:
     rewrites_graph: bool = False
     #: :attr:`restricted_choice` 以外を選んだときだけグラフに足すノードの
     #: ``class_type``。テンプレートには出てこない（組み替えで足す）ので、テンプレート
-    #: 由来の接続先判定（:func:`app.workflow.excluded_on_comfy_cloud`）では拾えない。
+    #: 由来の接続先判定（:func:`app.workflow.uses_optional_class_types`）では拾えない。
     #: 宣言があると Comfy Cloud では :attr:`restricted_choice` に固定する
-    #: （``latent_upscale`` のノードは本体同梱だが、アップスケーラのモデルが
-    #: Comfy Cloud には無い前提のため）。
+    #: （いまはどの選択式も宣言していない。``latent_upscale`` のノードは本体同梱
+    #: なので Comfy Cloud でも ``on`` を選べる）。
     requires_class_types: tuple[str, ...] = ()
     #: :attr:`requires_class_types` を入れられない接続先で唯一許す値
     restricted_choice: str = ""
@@ -1937,7 +1937,8 @@ _MINIMAX_H3_UPSCALE_NOTES = (
     "テンプレートそのままで指定解像度を 1 パス / on には ComfyUI 本体"
     " v0.44.0 以降（ノードは本体同梱）と"
     "`minimax_h3_latent_upscaler_3d_bf16`（latent_upscale_models）が要る。"
-    "アップスケーラのモデルが無い前提の接続先（Comfy Cloud）では off しか選べない /"
+    "Comfy Cloud で on を使うときは、アップスケーラのモデルを Cloud 側に"
+    "入れておくこと /"
     " ラテント連続性のバリアントで on にすると**2 段引き継ぎ**になる:"
     "1 パス目（0.2MP）と 2 パス目（最終解像度）のラテントを両方保存し"
     "（2 本目は保存先の末尾に `_hires`）、連続カット版は 2 本目を読む"
@@ -1977,7 +1978,9 @@ _MINIMAX_H3_TURBO_NOTES = (
     "入力の形も素の版とまったく同じ。焼き込みのノード（`ModelAttentionBackend`・"
     "`BlockSparseAttention`・`MiniMaxH3SigmaShift`）はどれも ComfyUI 本体"
     " v0.44.0 以降に同梱で、外部のカスタムノードは要らない。"
-    "量子化ウェイト一式と Sol-H3-VAE が入った環境でのみ動く" + _MINIMAX_H3_SOL_VAE_NOTE
+    "量子化ウェイト一式と Sol-H3-VAE が入った環境でのみ動く（Comfy Cloud でも"
+    "選べるが、w4a8 の UNET・Pika H3 Flex LoRA・Sol-H3-VAE を Cloud 側に入れて"
+    "おく必要がある）" + _MINIMAX_H3_SOL_VAE_NOTE
 )
 
 #: opt 版だけの注意書き（素のものとの差分）
@@ -2027,10 +2030,11 @@ _MINIMAX_H3_MODELS = (
 #: ``SpectrumApplyMiniMaxH3``、MiniMax H3 Image の ``H3*``
 #: （ComfyUI-MiniMax-H3-Image-Studio、``deploy/runpod/custom_nodes.txt`` 参照）、
 #: ラテント連続性の Motion Context 系。:func:`app.workflow.supported_on_target` は
-#: これ（と :data:`COMFY_CLOUD_EXCLUDED_CLASS_TYPES` の目印）を 1 つでも使う
-#: ワークフローを Comfy Cloud の選択肢から落とすので、turbo / opt、``H3*`` を使う
-#: 画像の MiniMax H3 Image（base も含む）、ラテント連続性のバリアントは
-#: Comfy Cloud では出ない。
+#: これを 1 つでも使うワークフローを Comfy Cloud の選択肢から落とすので、Spectrum を
+#: 持つ動画の opt、``H3*`` を使う画像の MiniMax H3 Image（base / opt / turbo とも）、
+#: ラテント連続性のバリアント（``*_save*`` / ``*_context*``）は Comfy Cloud では
+#: 出ない。本体ノードだけで組んである動画の turbo（i2v / r2v）は Comfy Cloud でも
+#: 出る（w4a8 の UNET・Pika H3 Flex LoRA・Sol-H3-VAE は Cloud 側に入れておく前提）。
 OPTIONAL_CLASS_TYPES: frozenset[str] = frozenset(
     {
         # ComfyUI-MiniMax-H3-Image-Studio（画像 t2i / i2i / r2i の全バリアント）
@@ -2051,17 +2055,6 @@ OPTIONAL_CLASS_TYPES: frozenset[str] = frozenset(
         "MiniMaxH3MotionContextTrim",
     }
 )
-
-#: Comfy Cloud の選択肢から落とすワークフローの目印（:func:`app.workflow.supported_on_target`）。
-#: :data:`OPTIONAL_CLASS_TYPES` に加えて、MiniMax H3 turbo / opt（動画・画像）が
-#: 必ず持つ ``ModelAttentionBackend`` を並べる。ノード自体は ComfyUI 本体
-#: v0.44.0 以降に同梱だが、turbo / opt は専用の量子化 UNET・Pika H3 Flex LoRA・
-#: Sol-H3-VAE（どれもこのアプリの既定のファイル名）を前提にしていて、Comfy Cloud
-#: ではそれが揃う保証が無い。高速化ノードを外部のカスタムノードで組んでいた頃と
-#: 同じく、Comfy Cloud では turbo / opt を出さない。
-COMFY_CLOUD_EXCLUDED_CLASS_TYPES: frozenset[str] = OPTIONAL_CLASS_TYPES | {
-    "ModelAttentionBackend"
-}
 
 #: ラテント連続性が要求するカスタムノード（:func:`app.comfy.latent_context_support`
 #: が ``/object_info`` に居るかどうかを見る）。1 つでも欠けたら「使えない」。
@@ -2093,9 +2086,9 @@ _MINIMAX_H3_OPT_MODELS = (
 #: ``on`` のときだけジョブの組み立てがグラフを 2 パスに組み替える
 #: （:class:`UpscaleSpec` / :func:`app.workflow.splice_latent_upscale`）。
 #: ノード（``LatentUpscaleModelLoader`` / ``MiniMaxH3LatentUpscaleWithModel``）は
-#: ComfyUI 本体 v0.44.0 以降に同梱だが、アップスケーラのモデルファイル
-#: （``latent_upscale_models``）は Comfy Cloud には無い前提にしているので、そこでは
-#: 選択肢が ``off`` だけになる（:meth:`SelectSpec.choices_for_target`）。
+#: ComfyUI 本体 v0.44.0 以降に同梱なので、どの接続先でも ``on`` / ``off`` を選べる。
+#: Comfy Cloud で ``on`` を使うには、アップスケーラのモデルファイル
+#: （``latent_upscale_models``）を Cloud 側に入れておく必要がある。
 _MINIMAX_H3_LATENT_UPSCALE_SELECT = SelectSpec(
     label="ラテントアップスケール（2 パス）",
     choices=("on", "off"),
@@ -2103,8 +2096,6 @@ _MINIMAX_H3_LATENT_UPSCALE_SELECT = SelectSpec(
     # 1 つの注入先では表せない（ノードを足して配線を変える）ので Target は持たない
     rewrites_graph=True,
     index_field="",
-    requires_class_types=(LATENT_UPSCALER_CLASS,),
-    restricted_choice="off",
     choice_labels={
         "on": "する（0.2MP で下描き → 指定解像度に拡大）",
         "off": "しない（指定解像度で 1 パス）",
@@ -2590,7 +2581,8 @@ _MINIMAX_H3_TURBO_DESCRIPTION = (
     "サンプリングは 6 ステップ固定で、素の版よりずっと速く上がる（Pika H3 Flex "
     "LoRA・lcm・ManualSigmas と Comfy Kitchen attention / Sol-Attn を焼き込んだ"
     "高速版）。入力の指定は素の版とまったく同じだが、ComfyUI 本体 v0.44.0 以降と"
-    "専用の量子化ウェイト・Sol-H3-VAE が入った環境でのみ動く。"
+    "専用の量子化ウェイト・Pika H3 Flex LoRA・Sol-H3-VAE が入った環境でのみ動く"
+    "（Comfy Cloud で使うときはそれらを Cloud 側に入れておくこと）。"
 )
 
 #: 連番に振り直した i2v テンプレート（turbo / opt）の注入先。opt は ``steps`` を
@@ -3286,8 +3278,8 @@ def catalog_entry(spec: WorkflowSpec, comfy_target: str = "") -> CatalogEntry:
     """Describe one workflow for the system prompts.
 
     ``comfy_target`` を渡すと、その接続先で選べない選択肢を落とす
-    （Comfy Cloud ではラテントアップスケーラのモデルを使えない前提なので
-    ``latent_upscale`` が ``off`` だけになる。:meth:`SelectSpec.choices_for_target`）。
+    （:attr:`SelectSpec.requires_class_types` を宣言した選択式は Comfy Cloud で
+    :attr:`SelectSpec.restricted_choice` だけになる。:meth:`SelectSpec.choices_for_target`）。
     """
     optional = tuple(
         name for name in INPUT_FIELDS if spec.supports(name) and name not in spec.requires
