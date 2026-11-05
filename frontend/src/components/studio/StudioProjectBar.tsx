@@ -7,6 +7,7 @@ import type {
   Lora,
   LoraRef,
   StudioImageQuality,
+  StudioRefineName,
   StudioVideoQuality,
 } from '../../types'
 import { Modal } from '../ui'
@@ -22,6 +23,9 @@ import {
   IMAGE_QUALITY_HINT,
   IMAGE_QUALITY_LABEL,
   MAX_STEPS,
+  REFINE_HINT,
+  REFINE_LABEL,
+  REFINE_NAMES,
   VIDEO_QUALITIES,
   VIDEO_QUALITY_HINT,
   VIDEO_QUALITY_LABEL,
@@ -68,6 +72,10 @@ export default function StudioProjectBar({
   imageSteps,
   latentUpscale,
   onLatentUpscaleChange,
+  refine,
+  onRefineChange,
+  refineAvailable = true,
+  refineReason = '',
   videoLoras = [],
   registeredVideoLoras = [],
   onVideoLorasChange,
@@ -108,6 +116,15 @@ export default function StudioProjectBar({
   /** ラテントアップスケール（作品既定。テイク生成のたびに上書きできる）。 */
   latentUpscale: boolean
   onLatentUpscaleChange: (value: boolean) => void
+  /**
+   * 補正（作品既定。テイク生成のたびに上書きできる）。省略すると補正の欄を出さない。
+   */
+  refine?: Record<StudioRefineName, boolean>
+  onRefineChange?: (name: StudioRefineName, value: boolean) => void
+  /** いまの接続先で補正を ON にできるか（Comfy Cloud では false）。 */
+  refineAvailable?: boolean
+  /** `refineAvailable` が false のときに出す理由。 */
+  refineReason?: string
   /** 作品共通の動画 LoRA（テイク生成のたびに上書きできる）。 */
   videoLoras?: LoraRef[]
   /** 動画用に登録された LoRA（いまの接続先のぶん）。 */
@@ -129,6 +146,8 @@ export default function StudioProjectBar({
     imageSteps,
     latentUpscale,
     videoLoraCount: onVideoLorasChange ? videoLoras.length : 0,
+    // 使えない接続先では投入時に OFF へ落ちるので、要約にも出さない
+    refine: refineAvailable ? refine : undefined,
   })
 
   const fields = (
@@ -159,6 +178,10 @@ export default function StudioProjectBar({
       onCommitImageSteps={onCommitImageSteps}
       latentUpscale={latentUpscale}
       onLatentUpscaleChange={onLatentUpscaleChange}
+      refine={refine}
+      onRefineChange={onRefineChange}
+      refineAvailable={refineAvailable}
+      refineReason={refineReason}
       videoLoras={videoLoras}
       registeredVideoLoras={registeredVideoLoras}
       onVideoLorasChange={onVideoLorasChange}
@@ -263,6 +286,10 @@ function ProjectSettingsFields({
   onCommitImageSteps,
   latentUpscale,
   onLatentUpscaleChange,
+  refine,
+  onRefineChange,
+  refineAvailable,
+  refineReason,
   videoLoras,
   registeredVideoLoras,
   onVideoLorasChange,
@@ -296,6 +323,10 @@ function ProjectSettingsFields({
   onCommitImageSteps: () => void
   latentUpscale: boolean
   onLatentUpscaleChange: (value: boolean) => void
+  refine?: Record<StudioRefineName, boolean>
+  onRefineChange?: (name: StudioRefineName, value: boolean) => void
+  refineAvailable: boolean
+  refineReason: string
   videoLoras: LoraRef[]
   registeredVideoLoras: Lora[]
   onVideoLorasChange?: (loras: LoraRef[]) => void
@@ -506,6 +537,58 @@ function ProjectSettingsFields({
     </div>
   )
 
+  // 補正（FastDerope / FaceDetail / AnimeCadence）。カスタムノードが要るので、
+  // 入れられない接続先（Comfy Cloud）ではトグルを無効にして理由を出す。チェックは
+  // 作品設定のまま見せる（接続先を戻せばまた効く）。
+  const refineToggles =
+    refine && onRefineChange ? (
+      <div
+        className={
+          stacked
+            ? 'flex flex-col gap-2'
+            : 'flex shrink-0 flex-nowrap items-center gap-3'
+        }
+      >
+        {REFINE_NAMES.map((name) => (
+          <div key={name} className="flex shrink-0 items-center gap-2">
+            <Checkbox
+              id={`studio-refine-${name}`}
+              checked={refine[name]}
+              disabled={busy || !refineAvailable}
+              onCheckedChange={(checked) => onRefineChange(name, checked === true)}
+            />
+            <Label
+              htmlFor={`studio-refine-${name}`}
+              className={
+                refineAvailable
+                  ? 'cursor-pointer text-foreground/85'
+                  : 'text-muted-foreground'
+              }
+              title={
+                refineAvailable
+                  ? REFINE_HINT[name]
+                  : `${REFINE_HINT[name]}\n${refineReason}`
+              }
+            >
+              {REFINE_LABEL[name]}
+            </Label>
+          </div>
+        ))}
+        {!refineAvailable && refineReason && (
+          <p
+            role="note"
+            className={
+              stacked
+                ? 'text-[11px] text-muted-foreground'
+                : 'max-w-56 text-[11px] leading-tight text-muted-foreground'
+            }
+          >
+            {refineReason}
+          </p>
+        )}
+      </div>
+    ) : null
+
   const videoLoraButton = onVideoLorasChange ? (
     <Button
       variant="outline"
@@ -590,6 +673,12 @@ function ProjectSettingsFields({
             {videoLoraButton && <div className="col-span-2">{videoLoraButton}</div>}
           </div>
         </fieldset>
+        {refineToggles && (
+          <fieldset className="rounded-md border border-border px-3 pb-3">
+            <legend className="px-1 text-[11px] text-muted-foreground">補正</legend>
+            {refineToggles}
+          </fieldset>
+        )}
         <fieldset className="rounded-md border border-border px-3 pb-3">
           <legend className="px-1 text-[11px] text-muted-foreground">画像</legend>
           <div className="grid grid-cols-2 gap-2">
@@ -645,6 +734,12 @@ function ProjectSettingsFields({
         {latentUpscaleToggle}
         {videoLoraButton}
       </fieldset>
+      {refineToggles && (
+        <fieldset className="flex shrink-0 flex-nowrap items-center gap-2 rounded-md border border-border px-2 py-1">
+          <legend className="px-1 text-[11px] text-muted-foreground">補正</legend>
+          {refineToggles}
+        </fieldset>
+      )}
       <fieldset className="flex shrink-0 flex-nowrap items-center gap-2 rounded-md border border-border px-2 py-1">
         <legend className="px-1 text-[11px] text-muted-foreground">画像</legend>
         <Label className="shrink-0" htmlFor="studio-image-quality">

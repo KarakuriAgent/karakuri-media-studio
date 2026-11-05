@@ -142,8 +142,9 @@ class SelectSpec:
     #: ``class_type``。テンプレートには出てこない（組み替えで足す）ので、テンプレート
     #: 由来の接続先判定（:func:`app.workflow.uses_optional_class_types`）では拾えない。
     #: 宣言があると Comfy Cloud では :attr:`restricted_choice` に固定する
-    #: （いまはどの選択式も宣言していない。``latent_upscale`` のノードは本体同梱
-    #: なので Comfy Cloud でも ``on`` を選べる）。
+    #: （MiniMax H3 動画の補正 ``fast_derope`` / ``face_detail`` / ``anime_cadence``
+    #: がこれを宣言する。``latent_upscale`` のノードは本体同梱なので宣言せず、
+    #: Comfy Cloud でも ``on`` を選べる）。
     requires_class_types: tuple[str, ...] = ()
     #: :attr:`requires_class_types` を入れられない接続先で唯一許す値
     restricted_choice: str = ""
@@ -576,6 +577,106 @@ LATENT_UPSCALER_CLASS = "MiniMaxH3LatentUpscaleWithModel"
 LATENT_UPSCALE_LOADER_CLASS = "LatentUpscaleModelLoader"
 
 
+# --------------------------------------------------------------------------
+# MiniMax H3 動画の補正（fast_derope / face_detail / anime_cadence、SPEC §3.1）
+# --------------------------------------------------------------------------
+#
+# どれも tazmannner 作の ComfyUI custom node（MIT）を**別途インストールしたもの**を
+# 呼ぶだけで、コードは同梱しない。FastDerope と FaceDetail は matlowai の
+# ComfyUI-MAINodes（GPL-3.0）のノード（H3V2VInit など）も使う。同じく同梱はせず、
+# ComfyUI 側に入れてあるものをグラフから呼ぶだけ。テンプレートは増やさず、
+# 選択式が ``on`` のときだけビルダー（:func:`app.workflow.splice_refine`）が
+# 最終デコードの後ろにノードを足す。
+
+#: 補正の選択式の論理名（ジョブの ``selects`` のキー）。並びがグラフに掛かる順
+FAST_DEROPE_NAME = "fast_derope"
+FACE_DETAIL_NAME = "face_detail"
+ANIME_CADENCE_NAME = "anime_cadence"
+REFINE_SELECT_NAMES: tuple[str, ...] = (
+    FAST_DEROPE_NAME,
+    FACE_DETAIL_NAME,
+    ANIME_CADENCE_NAME,
+)
+
+#: ComfyUI-MAINodes（matlowai、GPL-3.0）のうち補正が使うノード
+MAINODES_CLASS_TYPES: tuple[str, ...] = (
+    "H3JerkOracle",
+    "H3TimeSmear",
+    "H3ExactRecover",
+    "H3V2VInit",
+)
+
+#: ``fast_derope`` = on で足すノードのうち、ComfyUI 本体に無いもの
+#: （ComfyUI-H3-FastDerope + ComfyUI-MAINodes）
+FAST_DEROPE_CLASS_TYPES: tuple[str, ...] = (
+    "FastDeropeTAELoader",
+    "FastDeropeMotionGate",
+    "FastDeropeFreezeMask",
+    "FastDeropeRetimePrompt",
+    "FastDeropeWindowAttention",
+    "FastDeropeSegmentSplice",
+    *MAINODES_CLASS_TYPES,
+)
+#: ``face_detail`` = on で足すノードのうち、ComfyUI 本体に無いもの
+#: （ComfyUI-H3-FaceDetail + ComfyUI-MAINodes の H3V2VInit）
+FACE_DETAIL_CLASS_TYPES: tuple[str, ...] = (
+    "H3FaceAtlas",
+    "H3FaceAtlasSigmas",
+    "H3FaceAtlasStitch",
+    "H3V2VInit",
+)
+#: ``anime_cadence`` = on で足すノード（ComfyUI-H3-AnimeCadence。追加の依存は無い）
+ANIME_CADENCE_CLASS_TYPES: tuple[str, ...] = ("AnimeCadence",)
+
+
+@dataclass(frozen=True)
+class RefineSpec:
+    """MiniMax H3 動画の**補正**（``fast_derope`` / ``face_detail`` /
+    ``anime_cadence``）にグラフを組み替える宣言（SPEC §3.1）。
+
+    テンプレートは補正を持たないままで、選択式が ``on`` のものだけ
+    :func:`app.workflow.splice_refine` が**最終デコード**（``latent_upscale`` =
+    on なら 2 パス目のデコード）の後ろに足す。順序は
+    FastDerope → FaceDetail → AnimeCadence で、最後の出力をデコード結果を
+    読んでいた ``CreateVideo``（連続カット版は ``MiniMaxH3MotionContextTrim``）の
+    ``images`` に繋ぎ直す。音声はデコード済みの 1 パス目（＝最終の
+    サンプラー）のものをそのまま使う（作者の設計どおり pinned）。
+
+    2 つの描き直しパス（FastDerope の pass 2・FaceDetail の顔パス）は作者の
+    例どおり **DMAD 4step LoRA**（:attr:`dmad_lora`、強さ :attr:`dmad_strength`）
+    → ``MiniMaxH3SigmaShift``（:attr:`dmad_shift_video` / :attr:`dmad_shift_audio`）
+    の順で組んだモデルで回す。LoRA の土台は**ベースモデル + ユーザーの動画 LoRA**
+    で、turbo の Pika H3 Flex LoRA（テンプレート固定の高速化 LoRA）と
+    高速化パッチ（Sol-Attn・Spectrum）は通さない（2 本目の高速化 LoRA は出力を
+    壊すため、DMAD はベースモデルから分岐させる）。
+
+    ``model_name`` 系はどれも設定ページのスロットになる
+    （:func:`app.workflow.model_fields` が :func:`app.workflow.refine_model_nodes`
+    を重ねて見る）。
+    """
+
+    #: 描き直しパスの DMAD 4step LoRA（``loras``）。配布元は Hugging Face の
+    #: ``Kijai/MiniMax-H3-experimental`` の ``loras/``
+    dmad_lora: str = "minimax_h3_DMAD_4step_full_lora_avg_rank_39_bf16.safetensors"
+    #: 作者の例の強さ（FastDerope / FaceDetail とも 0.8）
+    dmad_strength: float = 0.8
+    #: DMAD 側の ``MiniMaxH3SigmaShift``（作者の例: video 12 / audio 2。
+    #: README にも「DMAD likes shift_audio 2」とある）
+    dmad_shift_video: float = 12.0
+    dmad_shift_audio: float = 2.0
+    #: FastDerope の使い捨てデコード / エンコード用の taeh3（``vae_approx``）。
+    #: madebyollin/taehv の**エンコーダ + デコーダ**版（約 22.7MB）を、ComfyUI の
+    #: プレビュー用デコーダ（``taeh3.safetensors``、約 10MB）と衝突しない名前で置く
+    #: （作者の推奨名）。
+    tae_name: str = "taeh3_full.safetensors"
+
+
+#: 補正で足すノードの ID の接頭辞（テンプレートの数字 ID・``105:xx``・
+#: ラテントアップスケールの 901〜910・LoRA チェーンの ``app_video_lora_`` と
+#: 衝突しない）
+REFINE_NODE_PREFIX = "app_refine_"
+
+
 @dataclass(frozen=True)
 class ElementsSpec:
     """**Elements**（参照画像を名前つきの要素にまとめる）の宣言（§3.1）。
@@ -834,6 +935,11 @@ class WorkflowSpec:
     #: ``None`` = 非対応）。宣言があるワークフローだけが選択式 ``latent_upscale``
     #: を持てる（:func:`validate_spec` が対で宣言されているか見る）。
     upscale: "UpscaleSpec | None" = None
+    #: 補正（``fast_derope`` / ``face_detail`` / ``anime_cadence``）への組み替え方
+    #: （:class:`RefineSpec`、``None`` = 非対応）。補正の選択式を宣言する
+    #: ワークフローは :attr:`upscale` も持つこと（最終のサンプラーを
+    #: :attr:`UpscaleSpec.sampler` から引くため。:func:`validate_spec` が見る）。
+    refine: "RefineSpec | None" = None
     #: ``video_prompt`` が必須か。プロンプトをコンボから組み立てるワークフロー
     #: は False で、書かれた場合だけ注入する。
     prompt_required: bool = True
@@ -1670,8 +1776,33 @@ _MINIMAX_H3_UPSCALE_NOTES = (
     "（`context_latent` は生成するクリップと同じ解像度でなければならない）"
 )
 
+#: 補正（fast_derope / face_detail / anime_cadence）の注意書き（全 MiniMax H3
+#: 動画スペック共通）
+_MINIMAX_H3_REFINE_NOTES = (
+    " / 補正の選択式 `fast_derope` / `face_detail` / `anime_cadence`（どれも既定"
+    " **off**・独立に on にできる）: on のものだけ、最終デコード（latent_upscale が"
+    " on なら 2 パス目の最終解像度）の後ろに FastDerope → FaceDetail →"
+    " AnimeCadence の順で足し、`CreateVideo`（連続カット版は"
+    " `MiniMaxH3MotionContextTrim`）の映像入力を付け替える。音声は元の生成のまま。"
+    " FastDerope は速い動きの区間だけスローにして描き直し（速い動きが無ければ"
+    "描き直しは走らない）、FaceDetail は引きの画の小さい顔だけを拡大して描き直す。"
+    "描き直しは DMAD 4step LoRA（0.8）→ MiniMaxH3SigmaShift（12 / 2）のモデルで"
+    "回し、turbo の Pika LoRA は通さない。AnimeCadence はデコード後のフレームを"
+    " 2 コマ / 3 コマ打ちに直す後処理 / 要: ComfyUI-H3-FastDerope・"
+    "ComfyUI-H3-FaceDetail・ComfyUI-H3-AnimeCadence（MIT）と ComfyUI-MAINodes"
+    "（GPL-3.0。どれも別途インストールしたものを呼ぶだけ）+"
+    " `minimax_h3_DMAD_4step_full_lora_avg_rank_39_bf16`（loras）+"
+    " `taeh3_full`（vae_approx）+ 顔検出の ONNX。カスタムノードなので"
+    " **Comfy Cloud では off に固定**（on を送ると断られる）/ 描き直しのぶん"
+    "生成時間が延びる（作者の計測・RTX 5090 で、FastDerope は描き直す区間の"
+    "長さしだいで +12 秒〜+4 分程度（速い動きが無ければほぼ増えない）、"
+    "FaceDetail は +45〜72 秒程度）"
+)
+
 #: 全 MiniMax H3 動画スペックが共通で持つ注意書き
-_MINIMAX_H3_NOTES = _MINIMAX_H3_BASE_NOTES + _MINIMAX_H3_UPSCALE_NOTES
+_MINIMAX_H3_NOTES = (
+    _MINIMAX_H3_BASE_NOTES + _MINIMAX_H3_UPSCALE_NOTES + _MINIMAX_H3_REFINE_NOTES
+)
 
 #: turbo / opt の動画 VAE（Sol-H3-VAE）の注意書き
 _MINIMAX_H3_SOL_VAE_NOTE = (
@@ -1818,11 +1949,84 @@ _MINIMAX_H3_LATENT_UPSCALE_SELECT = SelectSpec(
     ),
 )
 
+#: 補正の選択式（:class:`RefineSpec`）。**全 MiniMax H3 動画ワークフロー共通**で、
+#: どれも既定は ``off``。足すノードが外部のカスタムノード（ComfyUI-H3-* と
+#: ComfyUI-MAINodes）なので ``requires_class_types`` を宣言し、Comfy Cloud では
+#: ``off`` だけになる（:meth:`SelectSpec.choices_for_target`。値を送ってこない
+#: 経路は :func:`app.jobs._pin_target_selects` が ``off`` に固定し、``on`` は断る）。
+_MINIMAX_H3_FAST_DEROPE_SELECT = SelectSpec(
+    label="速い動きの滲み補正（FastDerope）",
+    choices=("off", "on"),
+    default="off",
+    rewrites_graph=True,
+    index_field="",
+    choice_labels={
+        "off": "しない",
+        "on": "する（速い動きの区間だけ描き直す）",
+    },
+    hint=(
+        "on にすると、仕上がり（latent_upscale が on なら 2 パス目）の動きを"
+        "Motion Gate が測り、速すぎて滲む・溶ける区間だけをスローにして"
+        "DMAD 4step LoRA で描き直し、元の尺に戻して差し込む"
+        "（ComfyUI-H3-FastDerope + ComfyUI-MAINodes）。速い動きが無いクリップでは"
+        "描き直しは走らない。音声は元の生成のまま。"
+        "要: DMAD LoRA（loras）と taeh3_full（vae_approx）。Comfy Cloud では使えない"
+    ),
+    requires_class_types=FAST_DEROPE_CLASS_TYPES,
+    restricted_choice="off",
+)
+_MINIMAX_H3_FACE_DETAIL_SELECT = SelectSpec(
+    label="引きの画の顔の描き直し（FaceDetail）",
+    choices=("off", "on"),
+    default="off",
+    rewrites_graph=True,
+    index_field="",
+    choice_labels={
+        "off": "しない",
+        "on": "する（小さい顔だけを拡大して描き直す）",
+    },
+    hint=(
+        "on にすると、引きの画で小さく写った顔を検出して 1 枚のキャンバスに"
+        "拡大して並べ、DMAD 4step LoRA の 4 ステップで描き直して元の位置に"
+        "貼り戻す（ComfyUI-H3-FaceDetail + ComfyUI-MAINodes の H3V2VInit）。"
+        "大きく写った顔は触らない。音声は元の生成をピン留めするので口の動きは"
+        "台詞に合ったまま。要: DMAD LoRA（loras）と顔検出の ONNX"
+        "（custom node の models/ に置く）。Comfy Cloud では使えない"
+    ),
+    requires_class_types=FACE_DETAIL_CLASS_TYPES,
+    restricted_choice="off",
+)
+_MINIMAX_H3_ANIME_CADENCE_SELECT = SelectSpec(
+    label="アニメの 2 コマ / 3 コマ打ち（AnimeCadence）",
+    choices=("off", "on"),
+    default="off",
+    rewrites_graph=True,
+    index_field="",
+    choice_labels={
+        "off": "しない（毎フレーム新しい絵）",
+        "on": "する（2 コマ / 3 コマを自動判定）",
+    },
+    hint=(
+        "on にすると、デコード後のフレームを 2 コマ / 3 コマ打ちに直す後処理を"
+        "掛ける（ComfyUI-H3-AnimeCadence の AnimeCadence。mode auto・pick"
+        " sharpest）。アニメ調の映像向け。モデルは要らない。Comfy Cloud では"
+        "使えない"
+    ),
+    requires_class_types=ANIME_CADENCE_CLASS_TYPES,
+    restricted_choice="off",
+)
+
 #: MiniMax H3 動画ワークフローが共通で持つ選択式（品質バリアント固有のものは
 #: それぞれの宣言で足す）
 _MINIMAX_H3_VIDEO_SELECTS: dict[str, SelectSpec] = {
     LATENT_UPSCALE_NAME: _MINIMAX_H3_LATENT_UPSCALE_SELECT,
+    FAST_DEROPE_NAME: _MINIMAX_H3_FAST_DEROPE_SELECT,
+    FACE_DETAIL_NAME: _MINIMAX_H3_FACE_DETAIL_SELECT,
+    ANIME_CADENCE_NAME: _MINIMAX_H3_ANIME_CADENCE_SELECT,
 }
+
+#: 補正の組み替え方（全 MiniMax H3 動画ワークフロー共通）
+_MINIMAX_H3_REFINE = RefineSpec()
 
 #: 1 パス目のサンプラーは、素の t2v / i2v だけサブグラフ由来の ``105:14``。
 #: r2v と turbo / opt の全テンプレートは連番に振り直してあるので ``125``。
@@ -1977,6 +2181,7 @@ MINIMAX_H3_T2V = WorkflowSpec(
     seeds=(T("105:15", "noise_seed", "RandomNoise"),),
     selects=dict(_MINIMAX_H3_VIDEO_SELECTS),
     upscale=_MINIMAX_H3_UPSCALE_SUBGRAPH,
+    refine=_MINIMAX_H3_REFINE,
     notes=_MINIMAX_H3_NOTES + " /" + _MINIMAX_H3_MODELS.format(unet="fl2va"),
 )
 
@@ -2033,6 +2238,7 @@ MINIMAX_H3_I2V = WorkflowSpec(
     seeds=(T("105:15", "noise_seed", "RandomNoise"),),
     selects=dict(_MINIMAX_H3_VIDEO_SELECTS),
     upscale=_MINIMAX_H3_UPSCALE_SUBGRAPH_RECONDITION,
+    refine=_MINIMAX_H3_REFINE,
     notes=(
         _MINIMAX_H3_NOTES
         + _MINIMAX_H3_I2V_NOTES
@@ -2117,6 +2323,7 @@ MINIMAX_H3_R2V = WorkflowSpec(
     seeds=(T("129", "noise_seed", "RandomNoise"),),
     selects=dict(_MINIMAX_H3_VIDEO_SELECTS),
     upscale=_MINIMAX_H3_UPSCALE_RECONDITION,
+    refine=_MINIMAX_H3_REFINE,
     notes=(
         _MINIMAX_H3_NOTES
         + _MINIMAX_H3_R2V_NOTES
@@ -3456,6 +3663,73 @@ def _validate_upscale(spec: WorkflowSpec, tpl: Workflow) -> list[str]:
     return problems
 
 
+#: 補正の描き直しパスで写す条件付けノード（``width`` / ``height`` の注入先）
+REFINE_CONDITIONING_CLASSES: frozenset[str] = frozenset(
+    {"MiniMaxH3ImageToVideo", "MiniMaxH3ReferenceToVideo"}
+)
+
+
+def _validate_refine(spec: WorkflowSpec, tpl: Workflow) -> list[str]:
+    """:attr:`WorkflowSpec.refine` の宣言がテンプレートと噛み合うか（SPEC §3.1）。
+
+    補正の選択式を 1 つでも宣言したワークフローは、組み替えの足場
+    （:class:`RefineSpec`・最終のサンプラーを引く :class:`UpscaleSpec`・
+    条件付けノード・映像と音声のデコーダ・ユーザー LoRA の挿し口）を
+    持っていること。補正のノードは Comfy Cloud に入れられないので、
+    選択式が ``requires_class_types`` と ``restricted_choice`` = ``off`` を
+    宣言しているかも見る。
+    """
+    declared = [name for name in REFINE_SELECT_NAMES if name in spec.selects]
+    if not declared:
+        if spec.refine is not None:
+            return [f"{spec.id}.refine: declared without any refine select"]
+        return []
+    problems: list[str] = []
+    for name in declared:
+        select = spec.selects[name]
+        if not select.rewrites_graph or set(select.choices) != {"on", "off"}:
+            problems.append(
+                f"{spec.id}.selects[{name}]: must rewrite the graph and offer on / off"
+            )
+        if not select.requires_class_types or select.restricted_choice != "off":
+            problems.append(
+                f"{spec.id}.selects[{name}]: must declare requires_class_types and"
+                " restricted_choice 'off' (custom nodes)"
+            )
+    if spec.refine is None:
+        problems.append(f"{spec.id}.selects: refine selects without a `refine` spec")
+    if spec.upscale is None:
+        problems.append(f"{spec.id}.refine: needs an `upscale` spec (the sampler id)")
+        return problems
+    if spec.lora_chain is None:
+        problems.append(f"{spec.id}.refine: needs a `lora_chain` (the model to branch)")
+    target = spec.inject.get("width")
+    node = tpl.get(target.node_id) if target is not None else None
+    if not isinstance(node, dict) or node.get("class_type") not in REFINE_CONDITIONING_CLASSES:
+        problems.append(
+            f"{spec.id}.refine: the `width` target is not a MiniMax H3 conditioning node"
+        )
+    elif not isinstance((node.get("inputs") or {}).get("clip"), list):
+        problems.append(f"{spec.id}.refine: the conditioning node has no linked clip")
+    link = [spec.upscale.sampler, 0]
+    for class_type in ("VAEDecode", "VAEDecodeAudio"):
+        if not any(
+            isinstance(other, dict)
+            and other.get("class_type") == class_type
+            and (other.get("inputs") or {}).get("samples") == link
+            for other in tpl.values()
+        ):
+            problems.append(
+                f"{spec.id}.refine: no {class_type} reads {spec.upscale.sampler!r}"
+            )
+    taken = [node_id for node_id in tpl if node_id.startswith(REFINE_NODE_PREFIX)]
+    if taken:
+        problems.append(
+            f"{spec.id}.refine: node ids already taken: {', '.join(sorted(taken))}"
+        )
+    return problems
+
+
 def _validate_upscale_conditioning(spec: WorkflowSpec, tpl: Workflow) -> list[str]:
     """:attr:`UpscaleSpec.conditioning` を作り直せる形か（SPEC §3.1）。
 
@@ -3578,6 +3852,7 @@ def validate_spec(spec: WorkflowSpec, template: Workflow | None = None) -> list[
         check(target, f"seeds[{index}]")
 
     problems += _validate_upscale(spec, tpl)
+    problems += _validate_refine(spec, tpl)
 
     for name, select in spec.selects.items():
         if select.rewrites_graph:

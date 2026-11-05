@@ -2884,6 +2884,17 @@ class StudioProject(BaseModel):
     #: 同梱なのでどの接続先でも効く（Comfy Cloud ではアップスケーラのモデルを
     #: Cloud 側に入れておく必要がある）。
     latent_upscale: bool = True
+    #: 補正（作品単位の既定。SPEC §3.1）。テイク生成のたびにジョブの
+    #: ``selects[fast_derope]`` / ``selects[face_detail]`` / ``selects[anime_cadence]``
+    #: へ解決される（1 回ぶんの上書きは :class:`StudioRenderRequest`）。どれも外部の
+    #: カスタムノードが要るので、Comfy Cloud では ON にしても OFF で投入される
+    #: （理由は投入プレビューの ``workflow_reason``）。
+    #: 速い動きの滲み・溶けを、その区間だけ描き直す（ComfyUI-H3-FastDerope）
+    fast_derope: bool = False
+    #: 引きの画で小さく写った顔だけを描き直す（ComfyUI-H3-FaceDetail）
+    face_detail: bool = False
+    #: デコード後のフレームを 2 コマ / 3 コマ打ちに直す（ComfyUI-H3-AnimeCadence）
+    anime_cadence: bool = False
     #: 作品共通の動画 LoRA（SPEC §3.4.2）。テイク生成のたびにジョブの
     #: ``video_loras`` とトリガーワードに載る（1 回ぶんの上書きは
     #: :class:`StudioRenderRequest`）。決まったワークフローが LoRA チェーンを
@@ -2948,6 +2959,10 @@ class StudioProjectCreate(BaseModel):
     latent_continuity: bool = False
     #: ラテントアップスケール（ON = 0.2MP の 1 パス目 → 指定解像度へ拡大）
     latent_upscale: bool = True
+    #: 補正（:class:`StudioProject` と同じ。既定はどれも OFF）
+    fast_derope: bool = False
+    face_detail: bool = False
+    anime_cadence: bool = False
     #: 作品共通の動画 LoRA（``[]`` = 使わない）
     video_loras: list[LoraRef] = Field(default_factory=list)
     #: 動画生成の品質（:data:`StudioVideoQuality`。既定は素の 20 steps）
@@ -3016,6 +3031,10 @@ class StudioProjectUpdate(_StudioUpdate):
     latent_continuity: bool | None = None
     #: ラテントアップスケール（ON = 0.2MP の 1 パス目 → 指定解像度へ拡大）
     latent_upscale: bool | None = None
+    #: 補正（:class:`StudioProject` と同じ）
+    fast_derope: bool | None = None
+    face_detail: bool | None = None
+    anime_cadence: bool | None = None
     #: 作品共通の動画 LoRA（**丸ごと置き換え**。``[]`` を送ると外れる）
     video_loras: list[LoraRef] | None = None
     #: 動画生成の品質（:data:`StudioVideoQuality`）
@@ -3496,6 +3515,8 @@ class StudioRenderRequest(BaseModel):
     - ``steps``: ここ → プロジェクトの ``steps`` → テンプレートの既定
     - ``seed``: ここ → Shot の ``seed`` → 毎回ランダム
     - ``latent_upscale``: ここ → プロジェクトの ``latent_upscale``
+    - ``fast_derope`` / ``face_detail`` / ``anime_cadence``: ここ → プロジェクトの
+      同名の設定（接続先が許さなければ OFF）
     - ``video_loras``: ここ → プロジェクトの ``video_loras``（``[]`` は「この回は
       LoRA なし」の明示で、プロジェクトの設定より優先）
 
@@ -3516,6 +3537,11 @@ class StudioRenderRequest(BaseModel):
     #: 接続先が ON を許さない場合は OFF に落ちる（いまはどの接続先も許す。
     #: 理由は Take の ``warning`` ではなく投入プレビューの ``workflow_reason``）。
     latent_upscale: bool | None = None
+    #: 補正（未指定 = プロジェクトの同名の設定）。Comfy Cloud では OFF に落ちる
+    #: （外部のカスタムノードが要るため）。
+    fast_derope: bool | None = None
+    face_detail: bool | None = None
+    anime_cadence: bool | None = None
     #: 動画 LoRA（``None`` = プロジェクトの ``video_loras``、``[]`` = この回は
     #: LoRA なしを明示）。決まったワークフローが LoRA チェーンを持たなければ
     #: 422 にはせず、LoRA を落として Take の ``warning`` で知らせる。
@@ -3613,6 +3639,11 @@ class StudioShotPreview(BaseModel):
     #: 実際に投入される ``selects[latent_upscale]``（プロジェクトの設定を接続先と
     #: ワークフローの宣言で解決したあとの値。宣言の無いワークフローでは False）
     latent_upscale: bool = False
+    #: 実際に投入される補正の選択式（``latent_upscale`` と同じく、接続先と
+    #: ワークフローの宣言で解決したあとの値。Comfy Cloud ではどれも False）
+    fast_derope: bool = False
+    face_detail: bool = False
+    anime_cadence: bool = False
     #: 実際に挿される動画 LoRA（プロジェクトの ``video_loras`` をワークフローの
     #: 宣言で解決したあと。挿せないワークフローなら空で、理由は
     #: ``video_lora_warning``）。1 回ぶんの上書きはプレビューには反映しない
@@ -3671,6 +3702,14 @@ class StudioCapabilities(BaseModel):
     #: 接続先の種類だけで決まる（``/object_info`` は聞かない）ので、``error`` が
     #: 立っていても値は当てになる。
     latent_upscale: bool = True
+    #: 補正（``fast_derope`` / ``face_detail`` / ``anime_cadence``）を ON にできる
+    #: 接続先か。外部のカスタムノードが要るので Comfy Cloud では偽。
+    #: ``latent_upscale`` と同じく接続先の種類だけで決まり、``/object_info`` は
+    #: 聞かない（local / runpod でノードが入っていなければ実行時に ComfyUI 側で
+    #: 落ちる。足りないノードはヘルスチェックが知らせる）。
+    refine: bool = True
+    #: ``refine`` が偽のときの理由（日本語。真なら空）
+    refine_reason: str = ""
     #: 確かめられなかった理由（日本語。空なら判定できている）
     error: str = ""
     #: 構図リファレンス動画（ブロッキング、SPEC §7.2）の可否と上限。

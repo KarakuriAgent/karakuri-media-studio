@@ -10,7 +10,9 @@
 # （＝ 2 回目以降の起動では何もしない）。requirements.txt があれば pip install する。
 #
 # --------------------------------------------------------------------------
-# 既定では空。
+# 既定で入れるのは、MiniMax H3 動画の補正（SPEC §3.1 の fast_derope /
+# face_detail / anime_cadence。どれも既定 off）が使う 4 パックだけ。補正を使わない
+# なら消してもよい（アプリは off のままなら呼ばない）。
 #
 # workflow/ のテンプレートが使うノード（ResolutionSelector / CustomCombo /
 # ComfySwitchNode / MiniMaxH3 系（MiniMaxH3SigmaShift・MiniMaxH3LatentUpscaleWithModel
@@ -32,3 +34,22 @@
 #
 # 例:
 #   https://github.com/ltdrdata/ComfyUI-Manager.git  3a1b2c4d5e6f7a8b9c0d1e2f3a4b5c6d7e8f9a0b
+
+# --------------------------------------------------------------------------
+# MiniMax H3 動画の補正（SPEC §3.1）。コミットは 2026-11 時点の HEAD に固定。
+#
+# - ComfyUI-H3-FastDerope / FaceDetail / AnimeCadence は tazmannner 作・MIT。
+# - ComfyUI-MAINodes は matlowai 作・**GPL-3.0**（FastDerope の Jerk Oracle / Time Smear /
+#   Exact Recover と、FastDerope・FaceDetail の H3 V2V Init）。
+#   アプリはどれのコードも同梱せず、ここで clone したノードをグラフから呼ぶだけ。
+# - どれも requirements.txt を持たない。Motion Gate が使う OpenCV と、FaceDetail の
+#   顔検出が使う onnxruntime は Dockerfile で入れてある。
+# - FaceDetail の顔検出モデル（deepghs/anime_face_detection の
+#   face_detect_v1.4_s/model.onnx）は ComfyUI の models ではなく
+#   custom_nodes/ComfyUI-H3-FaceDetail/models/anime_face_detect_v1.4_s/ に置く
+#   （アプリの [DL] では置けない。手順は README の「補正を使う」）。
+# - DMAD LoRA（loras）と taeh3_full（vae_approx）は設定ページの [DL] で落とせる。
+https://github.com/matlowai/ComfyUI-MAINodes.git  1880dfcc231c15179507d2b4d78b9a59bea229b1
+https://github.com/tazmannner/ComfyUI-H3-FastDerope.git  c0f789585013805c723598915ac206e38afaca6f
+https://github.com/tazmannner/ComfyUI-H3-FaceDetail.git  af8e79ce80dc225b0930d1d7c2e0cdeab4b463a6
+https://github.com/tazmannner/ComfyUI-H3-AnimeCadence.git  bfc249ed2e356c7354869d1a8a23885345f6794f

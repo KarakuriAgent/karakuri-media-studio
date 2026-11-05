@@ -14,6 +14,7 @@ import type {
   StudioEpisode,
   StudioImageQuality,
   StudioProjectDetail,
+  StudioRefineName,
   StudioRenderRequest,
   StudioRevisionActor,
   StudioRevisionEntity,
@@ -169,6 +170,62 @@ export const IMAGE_QUALITY_HINT: Record<StudioImageQuality, string> = {
     'P-H3-Image は元から 8 steps なので変わらない。',
 }
 
+// --------------------------------------------------------------------------
+// 補正（fast_derope / face_detail / anime_cadence、SPEC §3.1）
+// --------------------------------------------------------------------------
+//
+// MiniMax H3 動画の仕上げに掛ける 3 つの補正。どれも作品単位のつまみ（既定 OFF）で、
+// テイク生成のたびにジョブの選択式へ解決される。外部のカスタムノードが要るので、
+// Comfy Cloud ではトグルを無効にして理由を出す（GET /api/studio/capabilities の
+// `refine` / `refine_reason`）。
+
+/** 補正の並び（グラフに掛かる順）。 */
+export const REFINE_NAMES: StudioRefineName[] = [
+  'fast_derope',
+  'face_detail',
+  'anime_cadence',
+]
+
+/** トグルの見出し。 */
+export const REFINE_LABEL: Record<StudioRefineName, string> = {
+  fast_derope: '速い動きの滲み補正',
+  face_detail: '引きの画の顔補正',
+  anime_cadence: '2 コマ / 3 コマ打ち',
+}
+
+/** 狭い画面の要約に出す短い名前。 */
+export const REFINE_SHORT_LABEL: Record<StudioRefineName, string> = {
+  fast_derope: '滲み補正',
+  face_detail: '顔補正',
+  anime_cadence: 'コマ打ち',
+}
+
+/** トグルの説明（title）。 */
+export const REFINE_HINT: Record<StudioRefineName, string> = {
+  fast_derope:
+    'FastDerope: 速い動きで滲む・溶ける区間だけをスローにして描き直し、' +
+    '元の尺に戻して差し込む。速い動きが無ければ描き直しは走らない。音声は元のまま。' +
+    '要: ComfyUI-H3-FastDerope・ComfyUI-MAINodes・DMAD LoRA・taeh3',
+  face_detail:
+    'FaceDetail: 引きの画で小さく写った顔だけを拡大して描き直し、元の位置に貼り戻す。' +
+    '大きく写った顔は触らない。音声はピン留めするので口の動きはそのまま。' +
+    '要: ComfyUI-H3-FaceDetail・ComfyUI-MAINodes・DMAD LoRA・顔検出 ONNX',
+  anime_cadence:
+    'AnimeCadence: デコード後のフレームを 2 コマ / 3 コマ打ちに直す（アニメ調向け）。' +
+    '要: ComfyUI-H3-AnimeCadence',
+}
+
+/** 作品（または生成ダイアログの既定）の補正の値。未設定は OFF。 */
+export function refineOf(
+  source: Partial<Record<StudioRefineName, boolean | undefined>>,
+): Record<StudioRefineName, boolean> {
+  return {
+    fast_derope: source.fast_derope === true,
+    face_detail: source.face_detail === true,
+    anime_cadence: source.anime_cadence === true,
+  }
+}
+
 /** 狭い画面のヘッダーに出す、プロジェクト生成設定の 1 行要約。 */
 export function formatProjectSettingsSummary(input: {
   target?: ComfyTarget | null
@@ -188,6 +245,8 @@ export function formatProjectSettingsSummary(input: {
   latentUpscale?: boolean
   /** 作品共通の動画 LoRA の件数（0 のときは出さない）。 */
   videoLoraCount?: number
+  /** ON にしてある補正（既定の OFF は出さない）。 */
+  refine?: Partial<Record<StudioRefineName, boolean>>
 }): string {
   const parts: string[] = []
   if (input.target) parts.push(COMFY_TARGET_LABELS[input.target])
@@ -219,6 +278,10 @@ export function formatProjectSettingsSummary(input: {
   if (input.latentUpscale === false) parts.push('拡大なし')
   // 動画 LoRA は付けているときだけ件数を出す。
   if (input.videoLoraCount) parts.push(`LoRA ${input.videoLoraCount}`)
+  // 補正は既定（OFF）を書かず、ON にしてあるものだけ短い名前で足す。
+  for (const name of REFINE_NAMES) {
+    if (input.refine?.[name]) parts.push(REFINE_SHORT_LABEL[name])
+  }
   return parts.join(' · ')
 }
 
@@ -759,6 +822,8 @@ export interface RenderFormState {
   seed: string
   /** ラテントアップスケール（初期値はプロジェクトの設定）。 */
   latent_upscale: boolean
+  /** 補正（初期値はプロジェクトの設定。Comfy Cloud では送っても OFF で投入される）。 */
+  refine: Record<StudioRefineName, boolean>
   /**
    * 動画 LoRA の決め方。`project` = 作品の既定を使う（何も送らない）、
    * `custom` = この回だけ `video_loras` を使う（空なら「LoRA なし」を明示）。
@@ -776,6 +841,17 @@ export interface RenderDefaults {
   latent_upscale: boolean
   /** 作品共通の動画 LoRA（省略 = なし）。 */
   video_loras?: LoraRef[]
+  /** 補正の作品設定（省略 = OFF）。 */
+  fast_derope?: boolean
+  face_detail?: boolean
+  anime_cadence?: boolean
+  /**
+   * いまの接続先で補正を ON にできるか（プロジェクト設定ではなく
+   * GET /api/studio/capabilities の `refine`。省略 = 使える）。
+   */
+  refine_available?: boolean
+  /** `refine_available` が false のときの理由。 */
+  refine_reason?: string
 }
 
 /**
@@ -796,6 +872,7 @@ export function renderFormFromShot(
     fixed_seed: shot.seed != null,
     seed: shot.seed == null ? '' : String(shot.seed),
     latent_upscale: project.latent_upscale,
+    refine: refineOf(project),
     video_lora_mode: 'project',
     video_loras: (project.video_loras ?? []).map((lora) => ({ ...lora })),
   }
@@ -833,7 +910,7 @@ export function validateRenderForm(form: RenderFormState): Record<string, string
  * ステップ数だけは空欄でも `0` を送る: 0 は「テンプレートの既定のまま」を
  * **明示する**値で、プロジェクトの設定より優先されるため。
  *
- * ラテントアップスケールも同じ考えで、**作品設定から変えたときだけ**送る。
+ * ラテントアップスケールと補正も同じ考えで、**作品設定から変えたときだけ**送る。
  * 動画 LoRA は「この回だけ指定」を選んだときだけ送る（空の配列も「この回は
  * LoRA なし」の明示として送る）。
  */
@@ -851,6 +928,11 @@ export function renderRequestFromForm(
   // 作品設定と同じなら送らない（サーバー側のいつもの解決に落とす）。
   if (form.latent_upscale !== project.latent_upscale) {
     body.latent_upscale = form.latent_upscale
+  }
+  // 補正も同じく、作品設定から変えたものだけ送る。
+  const projectRefine = refineOf(project)
+  for (const name of REFINE_NAMES) {
+    if (form.refine[name] !== projectRefine[name]) body[name] = form.refine[name]
   }
   if (form.video_lora_mode === 'custom') {
     body.video_loras = form.video_loras.map((lora) => ({ ...lora }))

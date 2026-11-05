@@ -2076,12 +2076,20 @@ def test_latent_upscale_is_left_alone_on_a_local_target(monkeypatch):
     assert params["selects"] == {"latent_upscale": "on"}
 
 
+#: Comfy Cloud で off に固定される補正（カスタムノードが要る選択式）
+_REFINE_OFF = {"fast_derope": "off", "face_detail": "off", "anime_cadence": "off"}
+
+
 def test_latent_upscale_is_left_alone_on_comfy_cloud(monkeypatch):
-    """ノードは本体同梱なので、Comfy Cloud でも既定（on）のまま・on も通す。"""
+    """ノードは本体同梱なので、Comfy Cloud でも既定（on）のまま・on も通す。
+
+    params に足されるのは Comfy Cloud で off に固定される補正だけ。
+    """
     _with_target(monkeypatch, "comfy_cloud")
     params = _video_params()
     jobs._pin_target_selects(params)
-    assert "selects" not in params
+    assert params["selects"] == _REFINE_OFF
+    assert "latent_upscale" not in params["selects"]
     params = _video_params(selects={"latent_upscale": "on"})
     jobs._pin_target_selects(params)
-    assert params["selects"] == {"latent_upscale": "on"}
+    assert params["selects"] == {"latent_upscale": "on", **_REFINE_OFF}

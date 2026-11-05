@@ -27,7 +27,7 @@ Karakuri Media Studio のバックエンド（ComfyUI）を **RunPod の Pod（G
 |---|---|
 | `Dockerfile` | CUDA 12.8 + PyTorch cu128 + caddy + cloudflared のランタイム |
 | `entrypoint.sh` | 冪等な起動処理（clone → custom nodes → 各プロセス起動） |
-| `custom_nodes.txt` | 追加で入れる custom node（`<git-url> <commit>`）。既定は空 |
+| `custom_nodes.txt` | 追加で入れる custom node（`<git-url> <commit>`）。既定は MiniMax H3 動画の補正が使う 4 パック（ComfyUI-MAINodes / ComfyUI-H3-FastDerope / FaceDetail / AnimeCadence） |
 | `download_models.py` | 1 ファイルを落とす処理（`model_api.py` が使う。レジューム・再試行つき） |
 | `Caddyfile` | `:8189` の認証つきリバースプロキシ（`/studio/models/*` だけ DL API へ） |
 | `watchdog.py` | アイドルが続いたら自分の Pod を terminate |
@@ -66,6 +66,28 @@ runpodctl send my_lora.safetensors
 # Pod の web ターミナル / Jupyter
 runpodctl receive <コード>        # /workspace/ComfyUI/models/loras に置く
 ```
+
+### 補正（fast_derope / face_detail / anime_cadence）を使う
+
+MiniMax H3 動画の補正（SPEC §3.1、どれも既定 off）を RunPod で on にするには、次を Pod に
+用意します。カスタムノードは `custom_nodes.txt` の 4 パックが初回起動時に入り、その依存
+（OpenCV・onnxruntime）はイメージに入っています。
+
+| 用意するもの | 置き場所 | 入れ方 |
+|---|---|---|
+| DMAD 4step LoRA `minimax_h3_DMAD_4step_full_lora_avg_rank_39_bf16.safetensors` | `models/loras/` | 設定ページで取得元 URL `https://huggingface.co/Kijai/MiniMax-H3-experimental/resolve/main/loras/minimax_h3_DMAD_4step_full_lora_avg_rank_39_bf16.safetensors` を登録して [DL] |
+| taeh3（エンコーダ + デコーダ版、約 22.7MB）を `taeh3_full.safetensors` の名前で | `models/vae_approx/` | 取得元 URL `https://github.com/madebyollin/taehv/raw/main/safetensors/taeh3.safetensors` を登録して [DL]（ファイル名は `taeh3_full.safetensors` のまま。ComfyUI のプレビュー用 `taeh3.safetensors` を上書きしない） |
+| 顔検出（face_detail のみ）`model.onnx` | `custom_nodes/ComfyUI-H3-FaceDetail/models/anime_face_detect_v1.4_s/` | models の外なので [DL] では置けない。Pod の web ターミナルで下のコマンド |
+
+```bash
+# Pod の web ターミナル / Jupyter（Network Volume に残るので 1 回だけ）
+curl -fL -o /workspace/ComfyUI/custom_nodes/ComfyUI-H3-FaceDetail/models/anime_face_detect_v1.4_s/model.onnx \
+  https://huggingface.co/deepghs/anime_face_detection/resolve/main/face_detect_v1.4_s/model.onnx
+```
+
+ComfyUI-MAINodes は **GPL-3.0**、3 つの H3 パックは MIT です（どれもアプリには同梱せず、
+Pod に clone したものを呼ぶだけ）。足りないものはアプリのヘッダーの接続インジケーター
+（`GET /api/health`）の末尾に「optional (needed only when switched on): …」として出ます。
 
 ---
 

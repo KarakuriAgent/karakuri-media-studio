@@ -1318,6 +1318,9 @@ def test_the_capabilities_endpoint_reports_the_target(env, monkeypatch):
         "latent_continuity": True,
         # ローカル ComfyUI ならアップスケーラのカスタムノードも入れられる
         "latent_upscale": True,
+        # 補正（fast_derope / face_detail / anime_cadence）も選べる
+        "refine": True,
+        "refine_reason": "",
         "error": "",
     }
     assert blocking["fps"] == 24 and blocking["max_objects"] > 0
@@ -1958,19 +1961,23 @@ def test_a_wrong_typed_latent_upscale_is_refused(env):
     assert response.status_code == 422
 
 
+#: 補正（既定 OFF）。MiniMax H3 動画のジョブには常にこの値で載る
+_REFINE_OFF = {"fast_derope": "off", "face_detail": "off", "anime_cadence": "off"}
+
+
 def test_the_project_latent_upscale_reaches_the_job(env, monkeypatch):
     """作品設定がそのままジョブの selects に載る（既定 ON / 明示 OFF）。"""
     _use_target(monkeypatch, "local")
     on = make_shot(env, make_project(env)["id"], prompt="A cat walks in.")
     assert render(env, on["id"]).status_code == 201
-    assert env.created[-1].selects == {"latent_upscale": "on"}
+    assert env.created[-1].selects == {"latent_upscale": "on", **_REFINE_OFF}
 
     off = make_shot(
         env, make_project(env, code="OFF", latent_upscale=False)["id"],
         prompt="A cat walks in.",
     )
     assert render(env, off["id"]).status_code == 201
-    assert env.created[-1].selects == {"latent_upscale": "off"}
+    assert env.created[-1].selects == {"latent_upscale": "off", **_REFINE_OFF}
 
 
 @pytest.mark.parametrize(
@@ -1991,7 +1998,7 @@ def test_the_render_body_overrides_the_latent_upscale(
     shot = make_shot(env, project["id"], prompt="A cat walks in.")
     body = {} if override is None else {"latent_upscale": override}
     assert render(env, shot["id"], body).status_code == 201
-    assert env.created[-1].selects == {"latent_upscale": expected}
+    assert env.created[-1].selects == {"latent_upscale": expected, **_REFINE_OFF}
     # 作品設定は据え置き
     assert detail(env, project["id"])["latent_upscale"] is project_setting
 
@@ -2014,7 +2021,7 @@ def test_latent_upscale_stays_on_on_comfy_cloud(env, monkeypatch):
     project = make_project(env)  # latent_upscale は既定の True
     shot = make_shot(env, project["id"], prompt="A cat walks in.")
     assert render(env, shot["id"]).status_code == 201
-    assert env.created[-1].selects == {"latent_upscale": "on"}
+    assert env.created[-1].selects == {"latent_upscale": "on", **_REFINE_OFF}
 
     preview = env.client.get(f"/api/studio/shots/{shot['id']}/prompt-preview").json()
     assert preview["latent_upscale"] is True
@@ -2035,6 +2042,135 @@ def test_a_wrong_typed_latent_upscale_in_the_render_body_is_refused(env):
     shot = make_shot(env, project["id"])
     assert render(env, shot["id"], {"latent_upscale": "うん"}).status_code == 422
     assert env.created == []
+
+
+# --------------------------------------------------------------------------
+# 補正（プロジェクトの fast_derope / face_detail / anime_cadence、SPEC §3.1）
+# --------------------------------------------------------------------------
+#
+# latent_upscale と同じく作品単位のつまみで、テイク生成のたびにジョブの
+# selects へ解決される。既定はどれも OFF。カスタムノードが要るので、Comfy Cloud
+# では ON にしても OFF で投入し、理由をプレビューに出す。
+
+_REFINE_NAMES = ("fast_derope", "face_detail", "anime_cadence")
+
+
+def test_the_refine_settings_are_off_by_default(env):
+    project = make_project(env)
+    listed = env.client.get("/api/studio/projects").json()[0]
+    for name in _REFINE_NAMES:
+        assert project[name] is False
+        assert listed[name] is False
+
+
+def test_the_refine_settings_are_saved_as_project_settings(env):
+    project = make_project(env, face_detail=True)
+    assert project["face_detail"] is True
+    assert project["fast_derope"] is False
+    updated = env.client.patch(
+        f"/api/studio/projects/{project['id']}",
+        json={"fast_derope": True, "anime_cadence": True, "face_detail": False},
+    )
+    assert updated.status_code == 200
+    saved = detail(env, project["id"])
+    assert (saved["fast_derope"], saved["face_detail"], saved["anime_cadence"]) == (
+        True,
+        False,
+        True,
+    )
+
+
+def test_a_wrong_typed_refine_setting_is_refused(env):
+    project = make_project(env)
+    response = env.client.patch(
+        f"/api/studio/projects/{project['id']}", json={"anime_cadence": "うん"}
+    )
+    assert response.status_code == 422
+
+
+def test_the_project_refine_settings_reach_the_job(env, monkeypatch):
+    _use_target(monkeypatch, "local")
+    project = make_project(env, fast_derope=True, anime_cadence=True)
+    shot = make_shot(env, project["id"], prompt="A cat walks in.")
+    assert render(env, shot["id"]).status_code == 201
+    assert env.created[-1].selects == {
+        "latent_upscale": "on",
+        "fast_derope": "on",
+        "face_detail": "off",
+        "anime_cadence": "on",
+    }
+    preview = env.client.get(f"/api/studio/shots/{shot['id']}/prompt-preview").json()
+    assert preview["fast_derope"] is True
+    assert preview["face_detail"] is False
+    assert preview["anime_cadence"] is True
+    assert "カスタムノード" not in preview["workflow_reason"]
+
+
+@pytest.mark.parametrize(
+    ("project_setting", "override", "expected"),
+    [
+        (True, False, "off"),
+        (False, True, "on"),
+        (True, None, "on"),
+        (False, None, "off"),
+    ],
+)
+def test_the_render_body_overrides_a_refine_setting(
+    env, monkeypatch, project_setting, override, expected
+):
+    """1 回ぶんの上書き > 作品設定。未指定（None）なら作品設定のまま。"""
+    _use_target(monkeypatch, "local")
+    project = make_project(env, face_detail=project_setting)
+    shot = make_shot(env, project["id"], prompt="A cat walks in.")
+    body = {} if override is None else {"face_detail": override}
+    assert render(env, shot["id"], body).status_code == 201
+    assert env.created[-1].selects["face_detail"] == expected
+    assert detail(env, project["id"])["face_detail"] is project_setting
+
+
+def test_the_refine_settings_fall_back_to_off_on_comfy_cloud(env, monkeypatch):
+    """Comfy Cloud ではカスタムノードを入れられないので OFF で投入し、理由を出す。"""
+    _use_target(monkeypatch, "comfy_cloud")
+    project = make_project(env, fast_derope=True, face_detail=True, anime_cadence=True)
+    shot = make_shot(env, project["id"], prompt="A cat walks in.")
+    assert render(env, shot["id"]).status_code == 201
+    selects = env.created[-1].selects
+    for name in _REFINE_NAMES:
+        assert selects[name] == "off"
+    # latent_upscale は本体同梱なので Comfy Cloud でもそのまま
+    assert selects["latent_upscale"] == "on"
+    # 1 回ぶんの上書きで ON を頼んでも同じ（422 にはしない）
+    assert render(env, shot["id"], {"anime_cadence": True}).status_code == 201
+    assert env.created[-1].selects["anime_cadence"] == "off"
+
+    preview = env.client.get(f"/api/studio/shots/{shot['id']}/prompt-preview").json()
+    for name in _REFINE_NAMES:
+        assert preview[name] is False
+    assert "カスタムノード" in preview["workflow_reason"]
+    assert "FastDerope" in preview["workflow_reason"]
+    # 作品設定は据え置き（接続先を戻せばまた効く）
+    assert detail(env, project["id"])["fast_derope"] is True
+
+
+def test_comfy_cloud_without_refine_settings_says_nothing(env, monkeypatch):
+    _use_target(monkeypatch, "comfy_cloud")
+    shot = make_shot(env, make_project(env)["id"], prompt="A cat walks in.")
+    preview = env.client.get(f"/api/studio/shots/{shot['id']}/prompt-preview").json()
+    assert "カスタムノード" not in preview["workflow_reason"]
+
+
+def test_the_capabilities_turn_the_refine_off_on_comfy_cloud(env, monkeypatch):
+    _use_target(monkeypatch, "comfy_cloud")
+    capabilities = env.client.get("/api/studio/capabilities").json()
+    assert capabilities["refine"] is False
+    assert "Comfy Cloud" in capabilities["refine_reason"]
+    # ラテントアップスケールは本体同梱なので Comfy Cloud でも使える
+    assert capabilities["latent_upscale"] is True
+
+    _use_target(monkeypatch, "runpod")
+    capabilities = env.client.get("/api/studio/capabilities").json()
+    assert capabilities["refine"] is True
+    assert capabilities["refine_reason"] == ""
 
 
 # --------------------------------------------------------------------------

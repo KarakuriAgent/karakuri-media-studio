@@ -93,6 +93,9 @@ CREATE TABLE IF NOT EXISTS studio_projects (
   auto_translate INTEGER NOT NULL DEFAULT 1, -- 旧・アプリ内英訳の名残で未使用
   latent_continuity INTEGER NOT NULL DEFAULT 0, -- 引き継ぎを Motion Context（ラテント連続性）で行う
   latent_upscale INTEGER NOT NULL DEFAULT 1, -- 1 パス目を低解像度で回してラテントのまま拡大する
+  fast_derope INTEGER NOT NULL DEFAULT 0,   -- 補正: 速い動きの滲みを描き直す（ComfyUI-H3-FastDerope）
+  face_detail INTEGER NOT NULL DEFAULT 0,   -- 補正: 引きの画の小さい顔を描き直す（ComfyUI-H3-FaceDetail）
+  anime_cadence INTEGER NOT NULL DEFAULT 0, -- 補正: 2 コマ / 3 コマ打ちに直す（ComfyUI-H3-AnimeCadence）
   video_loras TEXT NOT NULL DEFAULT '[]',   -- 作品共通の動画 LoRA（LoraRef の JSON 配列。[] = 使わない）
   quality     TEXT NOT NULL DEFAULT 'normal', -- 動画生成の品質（normal / opt / turbo）
   image_quality TEXT NOT NULL DEFAULT 'normal', -- 素材画像（P-H3-Image / Qwen-Image 2.1）の品質（normal / opt / turbo）
@@ -524,6 +527,11 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         # `MiniMaxH3LatentUpscaleWithModel` で指定解像度に拡大する）。既存の
         # プロジェクトも既定 ON（ジョブ側の `latent_upscale` の既定と揃える）。
         ("latent_upscale", "INTEGER NOT NULL DEFAULT 1"),
+        # MiniMax H3 動画の補正（SPEC §3.1）。どれも外部のカスタムノードが要る
+        # ので、既存のプロジェクトも既定 OFF（ジョブ側の既定 off と揃える）。
+        ("fast_derope", "INTEGER NOT NULL DEFAULT 0"),
+        ("face_detail", "INTEGER NOT NULL DEFAULT 0"),
+        ("anime_cadence", "INTEGER NOT NULL DEFAULT 0"),
         # 動画生成の品質（normal / opt / turbo）。既存のプロジェクトは
         # 'normal' = 今までどおり素の MiniMax H3（20 steps）。
         ("quality", "TEXT NOT NULL DEFAULT 'normal'"),

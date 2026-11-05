@@ -42,6 +42,7 @@ import {
   firstShotId,
   moveId,
   moveShot,
+  refineOf,
   renderingJobIds,
 } from './studio'
 
@@ -154,6 +155,31 @@ export default function StudioView({
       })
       .catch(() => {
         if (alive) setVideoLoraRegistry([])
+      })
+    return () => {
+      alive = false
+    }
+  }, [comfyTarget])
+  // 補正（FastDerope / FaceDetail / AnimeCadence）を ON にできる接続先か。
+  // Comfy Cloud ではカスタムノードを入れられないので、トグルを無効にして理由を出す。
+  // 取れなければ使える扱い（使えない接続先なら投入時に OFF へ落ちて理由が出る）。
+  const [refineCapability, setRefineCapability] = useState<{
+    available: boolean
+    reason: string
+  }>({ available: true, reason: '' })
+  useEffect(() => {
+    let alive = true
+    Promise.resolve()
+      .then(() => api.getStudioCapabilities())
+      .then((value) => {
+        if (!alive) return
+        setRefineCapability({
+          available: value?.refine !== false,
+          reason: value?.refine_reason ?? '',
+        })
+      })
+      .catch(() => {
+        if (alive) setRefineCapability({ available: true, reason: '' })
       })
     return () => {
       alive = false
@@ -920,6 +946,10 @@ export default function StudioView({
       onCommitImageSteps={commitImageSteps}
       latentUpscale={detail.latent_upscale}
       onLatentUpscaleChange={(value) => saveProject({ latent_upscale: value })}
+      refine={refineOf(detail)}
+      onRefineChange={(name, value) => saveProject({ [name]: value })}
+      refineAvailable={refineCapability.available}
+      refineReason={refineCapability.reason}
       videoLoras={detail.video_loras ?? []}
       registeredVideoLoras={videoLoraRegistry}
       onVideoLorasChange={(value) => saveProject({ video_loras: value })}
@@ -1048,6 +1078,9 @@ export default function StudioView({
                   steps: detail.steps,
                   latent_upscale: detail.latent_upscale,
                   video_loras: detail.video_loras ?? [],
+                  ...refineOf(detail),
+                  refine_available: refineCapability.available,
+                  refine_reason: refineCapability.reason,
                 }}
                 registeredVideoLoras={videoLoraRegistry}
                 aspectRatios={aspectRatios}

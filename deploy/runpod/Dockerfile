@@ -83,6 +83,12 @@ RUN python3.12 -m venv /opt/venv \
 # （frontend_management 経由）ため、無いと起動直後に落ちる。
 RUN pip install --no-cache-dir httpx requests
 
+# MiniMax H3 動画の補正（custom_nodes.txt の ComfyUI-H3-FastDerope / FaceDetail）が
+# 使う依存。どちらのパックも requirements.txt を持たない（pyproject.toml だけ）ので
+# entrypoint の pip install では入らない。Motion Gate が OpenCV、顔検出が
+# onnxruntime（CPU 実行）を import する。
+RUN pip install --no-cache-dir opencv-python-headless onnxruntime
+
 WORKDIR /opt/runpod
 COPY entrypoint.sh download_models.py watchdog.py model_api.py ./
 COPY Caddyfile custom_nodes.txt ./

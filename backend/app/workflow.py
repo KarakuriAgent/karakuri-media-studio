@@ -27,7 +27,10 @@ from typing import Any
 
 from .models import GenerationParams, LoraRef, ModelField, ModelSlot
 from .workflows import (
+    ANIME_CADENCE_NAME,
     DEFAULT_MEGAPIXELS,
+    FACE_DETAIL_NAME,
+    FAST_DEROPE_NAME,
     LATENT_UPSCALE_LOADER_CLASS,
     LATENT_UPSCALE_NAME,
     LATENT_UPSCALER_CLASS,
@@ -35,6 +38,8 @@ from .workflows import (
     REF_AUDIOS_NAME,
     REF_IMAGES_NAME,
     REF_VIDEOS_NAME,
+    REFINE_NODE_PREFIX,
+    REFINE_SELECT_NAMES,
     UPSAMPLER_VISION_BLOCK,
     LoraChain,
     Target,
@@ -92,6 +97,8 @@ MODEL_FIELDS: set[tuple[str, str]] = {
     ("CLIPVisionLoader", "clip_name"),
     ("LatentUpscaleModelLoader", "model_name"),
     ("LoadMoGeModel", "model_name"),
+    # MiniMax H3 動画の補正 fast_derope（ComfyUI-H3-FastDerope）の taeh3
+    ("FastDeropeTAELoader", "tae_name"),
     ("LoraLoaderModelOnly", "lora_name"),
     ("LoraLoaderBypassModelOnly", "lora_name"),
     ("LoraLoader", "lora_name"),
@@ -119,6 +126,9 @@ MODEL_SUBFOLDERS: dict[tuple[str, str], str] = {
     # （nodes_hunyuan.py / nodes_moge.py）
     ("LatentUpscaleModelLoader", "model_name"): "latent_upscale_models",
     ("LoadMoGeModel", "model_name"): "geometry_estimation",
+    # MiniMax H3 動画の補正 fast_derope の taeh3（エンコーダ + デコーダ版）。
+    # ComfyUI-H3-FastDerope の FastDeropeTAELoader が `vae_approx` から読む
+    ("FastDeropeTAELoader", "tae_name"): "vae_approx",
 }
 
 # ResolutionSelector rounds the computed edges to a multiple of 8
@@ -774,6 +784,667 @@ def hires_latent_prefix(spec: WorkflowSpec, prefix: str) -> str:
     return f"{prefix}{suffix}"
 
 
+# --- 補正: fast_derope / face_detail / anime_cadence (SPEC §3.1) -----------
+# 選択式が on のものだけ、**最終デコードの後ろ**にノードを足す。宣言は
+# :class:`app.workflows.RefineSpec` 側にあり、ここはそれを読んで組むだけ。
+# どれも off ならグラフは何も変わらない。ノードの入力名・既定値は作者の
+# example workflow（ComfyUI-H3-FastDerope の 01_fast_derope、ComfyUI-H3-FaceDetail
+# の h3_wide_face_fix / h3_fast_derope_face、ComfyUI-H3-AnimeCadence の 02）と
+# 各ノードの INPUT_TYPES に合わせてある。
+
+#: 描き直しパス共通のモデル（DMAD LoRA → SigmaShift）とサンプラー
+REFINE_DMAD_LORA_NODE = f"{REFINE_NODE_PREFIX}dmad_lora"
+REFINE_DMAD_SHIFT_NODE = f"{REFINE_NODE_PREFIX}dmad_shift"
+REFINE_SAMPLER_SELECT_NODE = f"{REFINE_NODE_PREFIX}sampler_select"
+#: turbo で Pika LoRA を飛ばしてユーザー LoRA を組み直すときの接頭辞
+REFINE_BASE_LORA_PREFIX = f"{REFINE_NODE_PREFIX}base_lora_"
+#: fast_derope の taeh3 ローダー（設定ページの上書きキーになるので固定）
+REFINE_TAE_NODE = f"{REFINE_NODE_PREFIX}derope_tae"
+
+#: FastDerope（作者の 01_fast_derope の値）。``length`` / ``samples`` などの
+#: 配線はビルダーが足す
+_JERK_ORACLE_INPUTS: dict[str, Any] = {
+    "q": 0.75,
+    "d_max": 4,
+    "ramp": True,
+    "preset": "balanced (default)",
+    "bridge": 8,
+    "profile_mode": "value |d3| (default)",
+    "abstain_below": 0.0,
+    "fps": 24,
+    "s_per_step": 0.0,
+    "est_steps": 18,
+    "overhead_s": 6.7,
+    "model_profile": "minimax-h3",
+    "protect_tail": 0,
+}
+_MOTION_GATE_INPUTS: dict[str, Any] = {
+    "threshold": 0.09,
+    "min_windows": 5,
+    "margin": 4,
+    "d_max": 4,
+    "handle_frames": 12,
+    "static_threshold": 0.03,
+    "freeze_frames": 8,
+    "min_calm_gap": 12,
+}
+_TIME_SMEAR_INPUTS: dict[str, Any] = {
+    "dilation": 4,
+    "expand_to_end": False,
+    "fps": 24,
+    "s_per_step": 0.0,
+    "est_steps": 18,
+    "overhead_s": 6.7,
+}
+_WINDOW_ATTENTION_INPUTS: dict[str, Any] = {
+    "window": 4,
+    "chunk": 4,
+    "anchor_stride": 8,
+    "min_frames": 24,
+    "start_percent": 0.0,
+    "end_percent": 1.0,
+}
+#: pass 2 のシグマ（DMAD 4 steps を 0.8 から）。作者の 2026-11-03 のベンチで
+#: H3InjectSchedule（simple / 8 steps / inject 0.5）から切り替えたもので、
+#: 同じ時間で pass 1 のポーズ・フレーミング・人物の位置が保たれる
+#: （ComfyUI-H3-RelayHires の 2_relay_hires_derope と同じ）
+_FAST_DEROPE_SIGMAS = "0.8, 0.6, 0.4, 0.2, 0.0"
+_SEGMENT_SPLICE_INPUTS: dict[str, Any] = {
+    "feather_frames": 6,
+    "frozen": True,
+    "restore_static": 0.03,
+}
+#: H3V2VInit の共通部分（time_varying on で mask を毎フレーム効かせる）
+_V2V_INIT_INPUTS: dict[str, Any] = {
+    "length": 0,
+    "freeze_threshold": 0.0,
+    "freeze_grow": 2,
+    "mask_feather": 0,
+    "invert_mask": False,
+    "time_varying": True,
+    "audio_strength": 1.0,
+    "audio_prefix_ticks": 0,
+    "audio_prefix_release_ticks": 0,
+}
+#: FaceDetail（作者の h3_wide_face_fix の値。context は作者推奨の on）
+_FACE_ATLAS_INPUTS: dict[str, Any] = {
+    "tile": 512,
+    "crop_factor": 2.6,
+    "context": True,
+    "min_magnification": 1.4,
+    "max_faces": 4,
+    "confidence": 0.2,
+    "detect_size": 1024,
+    "context_scale": 0.5,
+    "flatten": 0.0,
+    "presmooth": 0.0,
+    "sharpen": 0.0,
+}
+_FACE_SIGMAS_INPUTS: dict[str, Any] = {
+    "steps": 4,
+    "sigma_at_3x": 0.70,
+    "sigma_at_5x": 0.80,
+    "sigma_at_10x": 0.95,
+    "shift": 12.0,
+}
+_FACE_STITCH_INPUTS: dict[str, Any] = {
+    "mask_scale": 1.0,
+    "feather": 3.0,
+    "color_match": 1.0,
+    "blend": 1.0,
+    "geometry_lock": True,
+    "fidelity_gate": True,
+}
+#: AnimeCadence（作者推奨の auto + sharpest。min/max_hold 等は adaptive 用で既定のまま）
+_ANIME_CADENCE_INPUTS: dict[str, Any] = {
+    "mode": "auto",
+    "pick": "sharpest",
+    "min_hold": 2,
+    "max_hold": 4,
+    "sensitivity": 1.0,
+    "offset": 0,
+}
+
+
+def refine_choices(spec: WorkflowSpec, params: GenerationParams) -> dict[str, bool]:
+    """このジョブで on になっている補正（論理名 -> on か）。宣言が無ければ空。"""
+    if spec.refine is None:
+        return {}
+    picked: dict[str, bool] = {}
+    for name in REFINE_SELECT_NAMES:
+        select = spec.select(name)
+        if select is None:
+            continue
+        choice = (params.selects.get(name) or "").strip()
+        if choice not in select.choices:
+            choice = select.fallback
+        picked[name] = choice == "on"
+    return picked
+
+
+def refine_model_nodes(spec: WorkflowSpec) -> dict[str, dict[str, Any]]:
+    """補正が足すノードのうち、モデルファイルを読むもの（設定ページのスロット用）。
+
+    :func:`model_fields` が :func:`upscale_nodes` と同じようにテンプレートへ
+    重ねて見る。``model`` の配線は :func:`splice_refine` が足すので、ここでは
+    ファイル名と強さだけ。
+    """
+    refine = spec.refine
+    if refine is None:
+        return {}
+    return {
+        REFINE_DMAD_LORA_NODE: {
+            "inputs": {
+                "lora_name": refine.dmad_lora,
+                "strength_model": refine.dmad_strength,
+            },
+            "class_type": "LoraLoaderModelOnly",
+            "_meta": {"title": "DMAD 4step LoRA (refine passes)"},
+        },
+        REFINE_TAE_NODE: {
+            "inputs": {"tae_name": refine.tae_name},
+            "class_type": "FastDeropeTAELoader",
+            "_meta": {"title": "Load TAE as VAE (taeh3, fast_derope)"},
+        },
+    }
+
+
+def _links_to(wf: Workflow, link: list[Any]) -> list[tuple[str, str]]:
+    """``link`` を読んでいる入力（``(node_id, field)``）の一覧。"""
+    found: list[tuple[str, str]] = []
+    for node_id, node in wf.items():
+        inputs = node.get("inputs") if isinstance(node, dict) else None
+        if not isinstance(inputs, dict):
+            continue
+        for field, value in inputs.items():
+            if value == link:
+                found.append((node_id, field))
+    return found
+
+
+def _decoder_of(wf: Workflow, class_type: str, sampler: str) -> str:
+    """``sampler`` の出力 0 を ``samples`` で読む ``class_type`` のノード ID。"""
+    link = [sampler, 0]
+    for node_id in sorted(wf):
+        node = wf[node_id]
+        if (
+            isinstance(node, dict)
+            and node.get("class_type") == class_type
+            and (node.get("inputs") or {}).get("samples") == link
+        ):
+            return node_id
+    raise WorkflowError(f"refine: no {class_type} decodes {sampler!r}")
+
+
+def _refine_base_model(
+    wf: Workflow, spec: WorkflowSpec
+) -> tuple[list[Any], dict[str, dict[str, Any]]]:
+    """DMAD LoRA を載せる土台（ベースモデル + ユーザーの動画 LoRA）。
+
+    ``(土台の MODEL へのリンク, 足すノード)``。ユーザー LoRA のチェーン
+    （:func:`_build_lora_chain`）を組み終えたグラフで呼ぶ。
+
+    * 素の版・opt: チェーンの頭は UNETLoader なので、チェーンの末尾
+      （``consumers`` が読んでいるもの）をそのまま使う。opt の高速化パッチ
+      （Sol-Attn・Spectrum）はその**後ろ**にあるので通らない。
+    * turbo: チェーンの頭はテンプレート固定の Pika H3 Flex LoRA。DMAD も
+      高速化（蒸留）LoRA で、2 本目の高速化 LoRA は出力を壊すので、Pika を
+      飛ばした UNETLoader からユーザー LoRA を同じ順・同じ強さで組み直す。
+    """
+    chain = spec.lora_chain
+    if chain is None or not chain.consumers:
+        raise WorkflowError(f"refine: {spec.id} has no lora chain")
+    consumer = chain.consumers[0]
+    tail = ((wf.get(consumer.node_id) or {}).get("inputs") or {}).get(consumer.field)
+    if not _is_link(tail):
+        raise WorkflowError(f"refine: {consumer.node_id}.{consumer.field} is not linked")
+    head = wf.get(chain.head)
+    if not isinstance(head, dict) or head.get("class_type") != "LoraLoaderModelOnly":
+        return list(tail), {}
+    root = (head.get("inputs") or {}).get("model")
+    if not _is_link(root):
+        raise WorkflowError(f"refine: {chain.head}.model is not linked")
+    users: list[dict[str, Any]] = []
+    link = tail
+    while _is_link(link) and link[0] != chain.head:
+        node = wf.get(link[0])
+        if not isinstance(node, dict) or node.get("class_type") != "LoraLoaderModelOnly":
+            raise WorkflowError(
+                f"refine: unexpected node {link[0]!r} in the user LoRA chain"
+            )
+        users.append(node)
+        link = (node.get("inputs") or {}).get("model")
+    nodes: dict[str, dict[str, Any]] = {}
+    upstream: list[Any] = list(root)
+    for index, node in enumerate(reversed(users)):
+        node_id = f"{REFINE_BASE_LORA_PREFIX}{index}"
+        nodes[node_id] = {
+            "inputs": {**copy.deepcopy(node.get("inputs") or {}), "model": upstream},
+            "class_type": "LoraLoaderModelOnly",
+            "_meta": {"title": f"{(node.get('_meta') or {}).get('title', 'LoRA')} (refine)"},
+        }
+        upstream = [node_id, 0]
+    return upstream, nodes
+
+
+def _refine_conditioning(
+    cond: dict[str, Any],
+    *,
+    prompt: Any,
+    width: Any,
+    height: Any,
+    length: Any,
+    vae: Any = None,
+    first_frame: Any = None,
+    title: str,
+) -> dict[str, Any]:
+    """描き直しパス用に条件付けノードを写す。
+
+    clip / 参照素材（r2v）はそのまま読み、プロンプト・解像度・尺だけを
+    差し替える。``MiniMaxH3ImageToVideo``（t2v / i2v）は 1 パス目の開始・
+    最終フレームを外し（描き直すのはクリップの途中の区間や顔のキャンバスなので、
+    元のキーフレームは当てはまらない）、渡されれば ``first_frame`` と ``vae`` を
+    差し替える。``MiniMaxH3ReferenceToVideo``（r2v）は先頭フレームを取らない
+    ので、参照素材を持ったまま作り直す（本体は ref2va のまま）。
+    """
+    class_type = cond.get("class_type") or ""
+    inputs = copy.deepcopy(cond.get("inputs") or {})
+    inputs.update({"prompt": prompt, "width": width, "height": height, "length": length})
+    if class_type == "MiniMaxH3ImageToVideo":
+        inputs.pop("first_frame", None)
+        inputs.pop("last_frame", None)
+        if vae is not None:
+            inputs["vae"] = vae
+        if first_frame is not None:
+            inputs["first_frame"] = first_frame
+    return {"inputs": inputs, "class_type": class_type, "_meta": {"title": title}}
+
+
+def _fast_derope_nodes(
+    *,
+    images: list[Any],
+    latent: list[Any],
+    cond: dict[str, Any],
+    video_vae: Any,
+    noise: Any,
+    model: list[Any],
+    width: int,
+    height: int,
+) -> tuple[dict[str, dict[str, Any]], list[Any]]:
+    """FastDerope（作者の 01_fast_derope）のノード一式と、その出力の IMAGE。
+
+    ``images`` は最終デコード（Segment Splice の土台・静止背景の判定・
+    pass 2 の先頭フレーム）、``latent`` はそのデコード元の AV ラテント
+    （Jerk Oracle が動きを測る。taeh3 で安くデコードして Motion Gate にも渡す）。
+    速い動きが無ければ Segment Splice が pass 2 を要求しない（lazy 入力）ので、
+    描き直しは走らない。
+    """
+    p = REFINE_NODE_PREFIX + "derope_"
+    cond_inputs = cond.get("inputs") or {}
+    length = cond_inputs.get("length")
+    tae = [REFINE_TAE_NODE, 0]
+    nodes: dict[str, dict[str, Any]] = {
+        # Jerk Oracle（MAINodes）: どこの動きが速すぎるか
+        f"{p}oracle": {
+            "inputs": {"samples": latent, "length": length, **_JERK_ORACLE_INPUTS},
+            "class_type": "H3JerkOracle",
+            "_meta": {"title": "MAINodes: where is motion too fast"},
+        },
+        # 使い捨てのデコード（Motion Gate のオプティカルフロー用）は taeh3
+        f"{p}preview": {
+            "inputs": {"samples": latent, "vae": tae},
+            "class_type": "VAEDecode",
+            "_meta": {"title": "VAEDecode (taeh3, motion gate)"},
+        },
+        f"{p}gate": {
+            "inputs": {
+                "images": [f"{p}preview", 0],
+                "oracle_hold_map": [f"{p}oracle", 0],
+                "static_images": images,
+                **_MOTION_GATE_INPUTS,
+            },
+            "class_type": "FastDeropeMotionGate",
+            "_meta": {"title": "Motion Gate (de-rope only extreme motion)"},
+        },
+        f"{p}smear": {
+            "inputs": {
+                "images": [f"{p}gate", 0],
+                "hold_map": [f"{p}gate", 1],
+                **_TIME_SMEAR_INPUTS,
+            },
+            "class_type": "H3TimeSmear",
+            "_meta": {"title": "MAINodes: slow the fast spans"},
+        },
+        f"{p}first_frame": {
+            "inputs": {"image": images, "batch_index": [f"{p}gate", 3], "length": 1},
+            "class_type": "ImageFromBatch",
+            "_meta": {"title": "ImageFromBatch (pass 2 first frame)"},
+        },
+        f"{p}encode": {
+            "inputs": {"pixels": [f"{p}smear", 0], "vae": tae},
+            "class_type": "VAEEncode",
+            "_meta": {"title": "VAEEncode (taeh3, slowed clip)"},
+        },
+        f"{p}prompt": {
+            "inputs": {
+                "prompt": cond_inputs.get("prompt", ""),
+                "seg_map": [f"{p}smear", 1],
+                "segment_start": [f"{p}gate", 3],
+                "fps": 24.0,
+            },
+            "class_type": "FastDeropeRetimePrompt",
+            "_meta": {"title": "Retime Prompt (shot timestamps for pass 2)"},
+        },
+        # 先頭フレームのピン留めも taeh3 でエンコードする（作者 v0.3.1: 全 VAE と
+        # 混ぜると筋状のノイズが出る）
+        f"{p}cond": _refine_conditioning(
+            cond,
+            prompt=[f"{p}prompt", 0],
+            width=int(width),
+            height=int(height),
+            length=[f"{p}smear", 2],
+            vae=tae,
+            first_frame=[f"{p}first_frame", 0],
+            title="MiniMax H3 conditioning (fast_derope pass 2)",
+        ),
+        f"{p}freeze": {
+            "inputs": {
+                "images": [f"{p}smear", 0],
+                "map": [f"{p}smear", 1],
+                "segment_images": [f"{p}gate", 0],
+                "static_threshold": _MOTION_GATE_INPUTS["static_threshold"],
+            },
+            "class_type": "FastDeropeFreezeMask",
+            "_meta": {"title": "Freeze Mask (lock splice handles to pass 1)"},
+        },
+        f"{p}v2v": {
+            "inputs": {
+                "samples": [f"{p}encode", 0],
+                "mask": [f"{p}freeze", 0],
+                **_V2V_INIT_INPUTS,
+                "audio_mode": "custom (use audio_strength)",
+            },
+            "class_type": "H3V2VInit",
+            "_meta": {"title": "H3 V2V Init (fast_derope pass 2)"},
+        },
+        f"{p}window": {
+            "inputs": {"model": model, **_WINDOW_ATTENTION_INPUTS},
+            "class_type": "FastDeropeWindowAttention",
+            "_meta": {"title": "H3 Window Attention (fast de-rope pass)"},
+        },
+        # 本体の ManualSigmas（model は読まない）。inject 0.5 の 8 steps だと
+        # 描き直しでポーズや立ち位置まで変わるため、作者の 11/3 の推奨に合わせる
+        f"{p}sigmas": {
+            "inputs": {"sigmas": _FAST_DEROPE_SIGMAS},
+            "class_type": "ManualSigmas",
+            "_meta": {"title": "ManualSigmas (fast_derope pass 2, DMAD 4 steps from 0.8)"},
+        },
+        f"{p}guider": {
+            "inputs": {"model": [f"{p}window", 0], "conditioning": [f"{p}cond", 0]},
+            "class_type": "BasicGuider",
+            "_meta": {"title": "BasicGuider (fast_derope pass 2)"},
+        },
+        f"{p}sampler": {
+            "inputs": {
+                "noise": noise,
+                "guider": [f"{p}guider", 0],
+                "sampler": [REFINE_SAMPLER_SELECT_NODE, 0],
+                "sigmas": [f"{p}sigmas", 0],
+                "latent_image": [f"{p}v2v", 0],
+            },
+            "class_type": "SamplerCustomAdvanced",
+            "_meta": {"title": "SamplerCustomAdvanced (fast_derope pass 2)"},
+        },
+        # 仕上げのデコードは最終デコードと同じ VAE
+        f"{p}decode": {
+            "inputs": {"samples": [f"{p}sampler", 0], "vae": video_vae},
+            "class_type": "VAEDecode",
+            "_meta": {"title": "VAEDecode (fast_derope pass 2)"},
+        },
+        f"{p}recover": {
+            "inputs": {"images": [f"{p}decode", 0], "hold_map": [f"{p}smear", 1]},
+            "class_type": "H3ExactRecover",
+            "_meta": {"title": "MAINodes: back to real time"},
+        },
+        f"{p}splice": {
+            "inputs": {
+                "baseline": images,
+                "splice_map": [f"{p}gate", 2],
+                "segment": [f"{p}recover", 0],
+                **_SEGMENT_SPLICE_INPUTS,
+            },
+            "class_type": "FastDeropeSegmentSplice",
+            "_meta": {"title": "Segment Splice (skip pass 2 if calm)"},
+        },
+    }
+    return nodes, [f"{p}splice", 0]
+
+
+def _face_detail_nodes(
+    *,
+    images: list[Any],
+    cond: dict[str, Any],
+    video_vae: Any,
+    audio: list[Any],
+    audio_vae: Any,
+    noise: Any,
+    model: list[Any],
+) -> tuple[dict[str, dict[str, Any]], list[Any]]:
+    """FaceDetail（作者の h3_wide_face_fix）のノード一式と、その出力の IMAGE。
+
+    顔のキャンバスは全 VAE でエンコードする（作者: taeh3 だと顔に筋が出る）。
+    音声は元の生成（``audio``）をエンコードしてピン留めし、口の動きを台詞に
+    合わせたままにする。条件付けはキャンバスの幅・高さと元の尺で作り直す。
+    """
+    p = REFINE_NODE_PREFIX + "face_"
+    length = (cond.get("inputs") or {}).get("length")
+    nodes: dict[str, dict[str, Any]] = {
+        f"{p}atlas": {
+            "inputs": {"images": images, **_FACE_ATLAS_INPUTS},
+            "class_type": "H3FaceAtlas",
+            "_meta": {"title": "H3 Face Atlas (wide-shot faces)"},
+        },
+        f"{p}encode": {
+            "inputs": {"pixels": [f"{p}atlas", 0], "vae": video_vae},
+            "class_type": "VAEEncode",
+            "_meta": {"title": "VAEEncode (face canvas)"},
+        },
+        f"{p}audio_encode": {
+            "inputs": {"audio": audio, "vae": audio_vae},
+            "class_type": "VAEEncodeAudio",
+            "_meta": {"title": "VAEEncodeAudio (pin the render's audio)"},
+        },
+        f"{p}cond": _refine_conditioning(
+            cond,
+            prompt=(cond.get("inputs") or {}).get("prompt", ""),
+            width=[f"{p}atlas", 4],
+            height=[f"{p}atlas", 5],
+            length=length,
+            title="MiniMax H3 conditioning (face_detail pass)",
+        ),
+        f"{p}sigmas": {
+            "inputs": {"atlas": [f"{p}atlas", 2], **_FACE_SIGMAS_INPUTS},
+            "class_type": "H3FaceAtlasSigmas",
+            "_meta": {"title": "H3 Face Atlas Sigmas (by face size)"},
+        },
+        f"{p}v2v": {
+            "inputs": {
+                "samples": [f"{p}encode", 0],
+                "mask": [f"{p}atlas", 1],
+                "audio_latent": [f"{p}audio_encode", 0],
+                **_V2V_INIT_INPUTS,
+                "audio_mode": "pin the original outright (0.0)",
+            },
+            "class_type": "H3V2VInit",
+            "_meta": {"title": "H3 V2V Init (face tiles only, audio pinned)"},
+        },
+        f"{p}guider": {
+            "inputs": {"model": model, "conditioning": [f"{p}cond", 0]},
+            "class_type": "BasicGuider",
+            "_meta": {"title": "BasicGuider (face_detail pass)"},
+        },
+        f"{p}sampler": {
+            "inputs": {
+                "noise": noise,
+                "guider": [f"{p}guider", 0],
+                "sampler": [REFINE_SAMPLER_SELECT_NODE, 0],
+                "sigmas": [f"{p}sigmas", 0],
+                "latent_image": [f"{p}v2v", 0],
+            },
+            "class_type": "SamplerCustomAdvanced",
+            "_meta": {"title": "SamplerCustomAdvanced (face_detail pass)"},
+        },
+        f"{p}decode": {
+            "inputs": {"samples": [f"{p}sampler", 0], "vae": video_vae},
+            "class_type": "VAEDecode",
+            "_meta": {"title": "VAEDecode (face_detail pass)"},
+        },
+        f"{p}stitch": {
+            "inputs": {
+                "images": images,
+                "refined": [f"{p}decode", 0],
+                "atlas": [f"{p}atlas", 2],
+                **_FACE_STITCH_INPUTS,
+            },
+            "class_type": "H3FaceAtlasStitch",
+            "_meta": {"title": "H3 Face Atlas Stitch"},
+        },
+    }
+    return nodes, [f"{p}stitch", 0]
+
+
+def splice_refine(
+    wf: Workflow,
+    spec: WorkflowSpec,
+    params: GenerationParams,
+    width: int,
+    height: int,
+) -> None:
+    """on になっている補正を ``wf`` の最終デコードの後ろに足す（SPEC §3.1）。
+
+    ``width`` / ``height`` は**最終解像度**（FastDerope の pass 2 をその解像度で
+    回す）。注入とラテントアップスケールの組み替え（:func:`finish_latent_upscale`
+    まで）を終えたグラフで呼ぶ: 条件付けノードのプロンプト・参照素材をそのまま
+    写すため。
+
+    1. 最終のサンプラー（``latent_upscale`` = on なら 2 パス目）を読む
+       ``VAEDecode`` / ``VAEDecodeAudio`` を探す。
+    2. FastDerope → FaceDetail → AnimeCadence の順に、on のものだけ
+       デコード結果（IMAGE）をつないでいく。
+    3. デコード結果を読んでいた入力（``CreateVideo.images``、連続カット版は
+       ``MiniMaxH3MotionContextTrim.images``）を最後の出力へ付け替える。
+       音声（``VAEDecodeAudio``）には触らない。
+
+    どれも off なら何もしない。
+    """
+    picked = refine_choices(spec, params)
+    if not any(picked.values()):
+        return
+    refine = spec.refine
+    up = spec.upscale
+    if refine is None or up is None:  # pragma: no cover - validate_spec が弾く
+        raise WorkflowError(f"refine: {spec.id} declares no refine / upscale spec")
+    taken = [node_id for node_id in wf if node_id.startswith(REFINE_NODE_PREFIX)]
+    if taken:
+        raise WorkflowError(
+            "refine: node ids already taken: " + ", ".join(sorted(taken))
+        )
+    sampler = up.second_sampler_node if up.second_sampler_node in wf else up.sampler
+    sampler_inputs = (wf.get(sampler) or {}).get("inputs") or {}
+    decode_id = _decoder_of(wf, "VAEDecode", sampler)
+    audio_id = _decoder_of(wf, "VAEDecodeAudio", sampler)
+    video_vae = (wf[decode_id].get("inputs") or {}).get("vae")
+    audio_vae = (wf[audio_id].get("inputs") or {}).get("vae")
+    width_target = spec.inject.get("width")
+    cond = wf.get(width_target.node_id) if width_target is not None else None
+    if not isinstance(cond, dict):
+        raise WorkflowError(f"refine: {spec.id} has no conditioning node")
+    decoded = [decode_id, 0]
+    consumers = _links_to(wf, decoded)
+    noise = sampler_inputs.get("noise")
+
+    nodes: dict[str, dict[str, Any]] = {}
+    images: list[Any] = list(decoded)
+    if picked.get(FAST_DEROPE_NAME) or picked.get(FACE_DETAIL_NAME):
+        base, base_nodes = _refine_base_model(wf, spec)
+        nodes.update(base_nodes)
+        models = refine_model_nodes(spec)
+        lora = models[REFINE_DMAD_LORA_NODE]
+        lora["inputs"]["model"] = base
+        nodes[REFINE_DMAD_LORA_NODE] = lora
+        # DMAD LoRA → SigmaShift の順（作者の例: LoRA を当てたモデルに shift を掛ける）
+        nodes[REFINE_DMAD_SHIFT_NODE] = {
+            "inputs": {
+                "model": [REFINE_DMAD_LORA_NODE, 0],
+                "shift_video": refine.dmad_shift_video,
+                "shift_audio": refine.dmad_shift_audio,
+            },
+            "class_type": "MiniMaxH3SigmaShift",
+            "_meta": {"title": "MiniMaxH3SigmaShift (DMAD, refine passes)"},
+        }
+        nodes[REFINE_SAMPLER_SELECT_NODE] = {
+            "inputs": {"sampler_name": "euler"},
+            "class_type": "KSamplerSelect",
+            "_meta": {"title": "KSamplerSelect (refine passes)"},
+        }
+        model = [REFINE_DMAD_SHIFT_NODE, 0]
+        if picked.get(FAST_DEROPE_NAME):
+            nodes[REFINE_TAE_NODE] = models[REFINE_TAE_NODE]
+            derope, images = _fast_derope_nodes(
+                images=images,
+                latent=[sampler, 0],
+                cond=cond,
+                video_vae=video_vae,
+                noise=noise,
+                model=model,
+                width=width,
+                height=height,
+            )
+            nodes.update(derope)
+        if picked.get(FACE_DETAIL_NAME):
+            face, images = _face_detail_nodes(
+                images=images,
+                cond=cond,
+                video_vae=video_vae,
+                audio=[audio_id, 0],
+                audio_vae=audio_vae,
+                noise=noise,
+                model=model,
+            )
+            nodes.update(face)
+    if picked.get(ANIME_CADENCE_NAME):
+        cadence = f"{REFINE_NODE_PREFIX}cadence"
+        nodes[cadence] = {
+            "inputs": {"images": images, **_ANIME_CADENCE_INPUTS},
+            "class_type": "AnimeCadence",
+            "_meta": {"title": "Anime Cadence: Hold on 2s/3s"},
+        }
+        images = [cadence, 0]
+    wf.update(nodes)
+    for node_id, field in consumers:
+        wf[node_id]["inputs"][field] = list(images)
+
+
+def apply_refine_model_overrides(
+    wf: Workflow, overrides: dict[str, str] | None, workflow_id: str
+) -> None:
+    """補正で足したノードにだけ、設定ページのモデル指定を当てる。
+
+    補正は注入を終えたあと（組み立ての最後）に足すので、テンプレートぶんの
+    :func:`apply_model_overrides` には間に合わない。ここで補正のノード
+    （:data:`app.workflows.REFINE_NODE_PREFIX`）の分だけ当て直す。
+    """
+    apply_model_overrides(
+        wf,
+        {
+            key: value
+            for key, value in (overrides or {}).items()
+            if split_override_key(key)[1].startswith(REFINE_NODE_PREFIX)
+        },
+        workflow_id,
+    )
+
+
 # --- model file names (SPEC §3.3) ------------------------------------------
 
 def _scoped(workflow_id: str, node_id: str, field: str) -> str:
@@ -806,10 +1477,16 @@ def model_fields(specs: tuple[WorkflowSpec, ...] | None = None) -> list[ModelFie
     テンプレートに書いていないので、その宣言（:class:`app.workflows.UpscaleSpec`）
     から作ったノードも一緒に見る。こうしないと ``LatentUpscaleModelLoader`` の
     ``model_name`` が設定ページのスロットにも取得元一覧にも出てこない。
+    補正（``fast_derope`` / ``face_detail``）が足す DMAD LoRA と taeh3 も同じ
+    理由で :func:`refine_model_nodes` を重ねて見る。
     """
     found: list[ModelField] = []
     for spec in specs if specs is not None else comfy_specs():
-        template = {**load_template(spec), **upscale_nodes(spec, 0, 0)}
+        template = {
+            **load_template(spec),
+            **upscale_nodes(spec, 0, 0),
+            **refine_model_nodes(spec),
+        }
         # the dynamic LoRA chain replaces these, so their names never ship
         excluded = set(spec.lora_chain.placeholders) if spec.lora_chain else set()
         for node_id, node in template.items():
@@ -1409,6 +2086,22 @@ def all_required_class_types() -> set[str]:
     return types - OPTIONAL_CLASS_TYPES
 
 
+def optional_select_class_types() -> dict[str, tuple[str, ...]]:
+    """on にしたときだけカスタムノードが要る選択式（論理名 -> class_type）。
+
+    :attr:`app.workflows.SelectSpec.requires_class_types` を宣言した選択式
+    （MiniMax H3 動画の補正 ``fast_derope`` / ``face_detail`` / ``anime_cadence``）を
+    全テンプレートから集める。既定 off なので :func:`all_required_class_types` には
+    入れず、ヘルスチェックが「on にするなら足りないノード」として別に知らせる。
+    """
+    found: dict[str, tuple[str, ...]] = {}
+    for spec in comfy_specs():
+        for name, select in spec.selects.items():
+            if select.requires_class_types and name not in found:
+                found[name] = tuple(select.requires_class_types)
+    return found
+
+
 #: spec id -> テンプレートが :data:`app.workflows.OPTIONAL_CLASS_TYPES` を使うか。
 #: テンプレートは読み取り専用なので、プロセス内で 1 回読めば十分（毎リクエストの
 #: ``/api/options`` でファイルを開き直さないためのキャッシュ）。
@@ -1655,6 +2348,13 @@ def build_video_workflow(
     # 2 パス目用に作り直した条件付けノード（i2v / r2v）に、注入を終えた
     # 1 個目の入力（プロンプト・開始フレーム・参照素材）を写し直す
     finish_latent_upscale(wf, resolved, width, height)
+    # 補正（`fast_derope` / `face_detail` / `anime_cadence`、既定 off / SPEC §3.1）。
+    # 最終デコード（latent_upscale = on なら 2 パス目）の後ろに足すので、
+    # 注入とアップスケールの組み替えを終えたここで組む。描き直しパスの条件付けは
+    # 注入済みのプロンプト・参照素材を写す。足したノードのモデル名（DMAD LoRA・
+    # taeh3）は設定ページの指定をここで当てる。
+    splice_refine(wf, resolved, params, width, height)
+    apply_refine_model_overrides(wf, overrides, resolved.id)
 
     validate_workflow(wf)
     return wf

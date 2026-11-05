@@ -176,6 +176,17 @@
   `workflow_reason` に足す（`app.studio._resolve_selects`。いまの宣言では起きない）。宣言を持たないワークフローには
   `selects` を載せない。**連鎖の途中で on / off を切り替えるとラテント連続性が合わなくなる**
   （→ §3.1「2 段引き継ぎ」の制約）。
+- **補正**（`fast_derope` / `face_detail` / `anime_cadence`、どれも既定 **OFF**・独立）も
+  プロジェクトの設定として持つ（`studio_projects` の同名の INTEGER 列、既存の行も 0）。
+  `latent_upscale` と同じくワークフロー id は変えず、投入するジョブの選択式
+  （`selects.fast_derope` などに `on` / `off`。§3.1「MiniMax H3 動画の補正」）に落ちる。効き方は
+  **テイク 1 回ぶんの上書き → プロジェクト → 既定（OFF）**。足すノードが外部のカスタムノード
+  なので、**`comfy_cloud` では ON にしても OFF で投入し**（ジョブ側に `on` を送ると 422 になるため）、
+  理由を投入プレビューの `workflow_reason` に足す（`app.studio._resolve_selects`）。作品設定は
+  書き換えないので、接続先を戻せばまた効く。投入プレビューは解決後の値を `fast_derope` /
+  `face_detail` / `anime_cadence` で返し、`GET /api/studio/capabilities` の `refine`（Comfy Cloud
+  では false）/ `refine_reason` を見て、画面はプロジェクトバーの「補正」欄と生成ダイアログの
+  トグルを無効にして理由を出す。
 - **動画 LoRA**（`video_loras`、`LoraRef` の配列・既定 `[]`）もプロジェクトの設定として持つ
   （`studio_projects.video_loras` に JSON で保存。作成・更新・一覧・リビジョンの復元・外部 API の
   `/api/v1/projects` で読み書きでき、更新は**丸ごと置き換え**で `[]` を送ると外れる）。
@@ -190,7 +201,7 @@
   「作品の既定を使う / この回だけ指定」を選ぶ。
 - テイク 1 回ぶんの上書きは `POST /api/studio/shots/{id}/render` の**任意のボディ**
   （`app.models.StudioRenderRequest`。`megapixels` / `aspect_ratio` / `duration` / `steps` /
-  `seed` / `latent_upscale` / `video_loras`、すべて任意）。送った項目だけがその 1 回の投入に効き、**Shot もプロジェクトも
+  `seed` / `latent_upscale` / `fast_derope` / `face_detail` / `anime_cadence` / `video_loras`、すべて任意）。送った項目だけがその 1 回の投入に効き、**Shot もプロジェクトも
   書き換えない**（何を使ったかは Take の元ジョブの `params` に残る）。ボディを省けば
   今までどおり。`steps` だけは `0` も「テンプレートの既定のまま」の**明示**として扱い、
   プロジェクトの設定より優先される。範囲外の `steps`（0〜150 の外）と `duration`
@@ -685,7 +696,8 @@ r2v の opt / turbo も素の r2v と同じ **ref2va 本体**（`minimax_h3_ref2
 仕組み（`SelectSpec.requires_class_types` / `restricted_choice` を宣言すると
 `SelectSpec.choices_for_target(comfy_target)` が `comfy_cloud` で選択肢を 1 つに絞り、値を送ってこない
 経路のためにジョブ投入時の `jobs._pin_target_selects` が既定を params へ固定し、使えない値は
-422 で弾く）が残っているが、`latent_upscale` は宣言していない。
+422 で弾く）があり、これを使うのは補正の選択式（下記「MiniMax H3 動画の補正」）。
+`latent_upscale` は宣言していない。
 
 さらに LoRA を持たない **opt**（`minimax_h3_t2v_opt` / `minimax_h3_i2v_opt` /
 `minimax_h3_r2v_opt` と、その `_save` / `_context` 版）がある。
@@ -752,6 +764,113 @@ Cloud 側に要る）。`GET /api/options` の `image_workflows` / `video_workfl
   422 で断る（`models.select_requires_problem`。
   既定のままなら無視されても困らないので何も言わない）。検証は Web UI（`form.selectRequiresErrors`）と
   API の 2 経路で同じ理由になり、フォームはその選択式の直下にエラーを出す
+
+#### MiniMax H3 動画の補正（`fast_derope` / `face_detail` / `anime_cadence`）
+
+**MiniMax H3 の動画ワークフロー全部**（t2v / i2v / r2v × base / opt / turbo、`_save` / `_context`
+版を含む）が、仕上げに掛ける 3 つの選択式を持つ。どれも `on` / `off`・**既定 `off`**・互いに独立。
+テンプレートは増やさず、`on` のものだけ**ジョブの組み立ての最後**（注入と
+`finish_latent_upscale` のあと）に `workflow.splice_refine` がノードを足す
+（宣言は `workflows.RefineSpec`、足すノードの id は `app_refine_` で始まる）。
+
+| 選択式 | やること | 使うカスタムノード |
+|---|---|---|
+| `fast_derope` | 速い動きで滲む・溶ける区間だけを、スローにして描き直して差し戻す | [ComfyUI-H3-FastDerope](https://github.com/tazmannner/ComfyUI-H3-FastDerope)（MIT）+ ComfyUI-MAINodes |
+| `face_detail` | 引きの画で小さく写った顔だけを、拡大して描き直して貼り戻す | [ComfyUI-H3-FaceDetail](https://github.com/tazmannner/ComfyUI-H3-FaceDetail)（MIT）+ ComfyUI-MAINodes の `H3V2VInit` |
+| `anime_cadence` | デコード後のフレームを 2 コマ / 3 コマ打ちに直す後処理 | [ComfyUI-H3-AnimeCadence](https://github.com/tazmannner/ComfyUI-H3-AnimeCadence)（MIT） |
+
+3 パックはどれも tazmannner 作で MIT。FastDerope / FaceDetail が呼ぶ
+[ComfyUI-MAINodes](https://github.com/matlowai/ComfyUI-MAINodes)（matlowai）は **GPL-3.0**。
+アプリはどれのコードも同梱せず、ComfyUI 側に**別途インストールしたノードをグラフから呼ぶだけ**。
+
+**掛ける場所と順序**: 最終のサンプラー（`latent_upscale` = `on` なら 2 パス目 `904`、`off` なら
+`UpscaleSpec.sampler`）を `samples` で読む `VAEDecode` の出力（＝最終解像度のフレーム）に、
+**FastDerope → FaceDetail → AnimeCadence** の順に `on` のものだけを直列に掛け、デコード結果を
+読んでいた入力（`CreateVideo.images`、連続カット版は `MiniMaxH3MotionContextTrim.images`）を最後の
+出力へ付け替える。連続カット版は **Trim の手前**で掛ける（Motion Gate / 顔パスはラテントと同じ
+フレーム数・17k+5 の格子を前提にするため）。**音声（`VAEDecodeAudio`）には触らない**: 仕上がりの
+音声は元の生成のまま（作者の設計どおり、描き直しパスは音声を作らないかピン留めする）。
+
+**描き直しパスのモデル**（FastDerope の pass 2 と FaceDetail の顔パスで共有）: 作者の例どおり
+**DMAD 4step LoRA**（`minimax_h3_DMAD_4step_full_lora_avg_rank_39_bf16.safetensors`、
+`LoraLoaderModelOnly`、強さ **0.8**）→ `MiniMaxH3SigmaShift`（video **12** / audio **2**。作者の README に
+「DMAD likes shift_audio 2」）の順に組み、サンプラーは `KSamplerSelect` = `euler`、ノイズは元の生成と
+同じ `RandomNoise` を共有する。LoRA の土台は**ベースモデル + ユーザーの動画 LoRA**（§3.4.2 の
+チェーン）で、
+
+- 素の版・opt: チェーンの末尾（`LoraChain.consumers[0]` が読んでいるもの）にそのまま載せる。opt の
+  高速化パッチ（`ModelAttentionBackend` 以降の Sol-Attn・Spectrum）はその後ろなので通らない。
+- **turbo**: チェーンの頭がテンプレート固定の Pika H3 Flex LoRA。DMAD も 4 ステップの蒸留 LoRA で、
+  Pika 公式の「2 本目の加速 LoRA で出力が壊れる」に当たるので、**Pika を飛ばした UNETLoader から**
+  ユーザー LoRA を同じ順・同じ強さで組み直し（`app_refine_base_lora_<n>`）、その上に DMAD を載せる。
+  作者の README も「スタイル LoRA はベースモデル直後に挿し、pass 1 と turbo LoRA の両方に流す」形。
+
+**FastDerope**（作者の `01_fast_derope.json`。Drawing De-rope の 03 は使わない）:
+
+```
+最終サンプラーの AV ラテント ─┬─ H3JerkOracle (length = 条件付けノードの尺, q 0.75, d_max 4, balanced)
+                              └─ VAEDecode (taeh3) ─ FastDeropeMotionGate (0.09 / 5 windows / margin 4 / d_max 4 /
+                                                       handle 12 / static 0.03 / freeze 8 / calm gap 12,
+                                                       static_images = 最終デコード)
+  → H3TimeSmear (dilation 4, expand_to_end off) → VAEEncode (taeh3) ─┐
+  → FastDeropeFreezeMask (static 0.03) ─────────────────────────────┴→ H3V2VInit (mask, time_varying on)
+  条件付け: 1 パス目の条件付けノードの写し（prompt = FastDeropeRetimePrompt、幅・高さ = 最終解像度、
+            尺 = Time Smear の length。i2v / t2v の MiniMaxH3ImageToVideo は first_frame =
+            ImageFromBatch(最終デコード, segment_start)・vae = taeh3・last_frame は外す。
+            r2v の MiniMaxH3ReferenceToVideo は参照素材を持ったまま作り直す）
+  モデル: DMAD → SigmaShift → FastDeropeWindowAttention (window 4 / chunk 4 / anchor 8 / min 24)
+  シグマ: ManualSigmas (0.8, 0.6, 0.4, 0.2, 0.0 = DMAD 4 steps を 0.8 から)
+        ※ 作者の 2026-11-03 の推奨（RelayHires の 2_relay_hires_derope と同じ）。旧来の H3InjectSchedule
+          (simple / 8 / inject 0.5) だと描き直しでポーズ・立ち位置まで変わるため。時間は同じ
+  → SamplerCustomAdvanced → VAEDecode (最終デコードと同じ VAE) → H3ExactRecover
+  → FastDeropeSegmentSplice (baseline = 最終デコード, feather 6, frozen on, restore_static 0.03)
+```
+
+taeh3（`FastDeropeTAELoader`、`vae_approx` の **`taeh3_full.safetensors`**）は Motion Gate 用の
+使い捨てデコードとスローにしたクリップのエンコードにだけ使う。Segment Splice の `segment` は
+lazy 入力なので、**速い動きが無いクリップでは pass 2 が丸ごと走らない**。
+
+**FaceDetail**（作者の `h3_wide_face_fix.json`）: 入力フレーム（FastDerope が on ならその出力）→
+`H3FaceAtlas`（tile 512 / crop 2.6 / **context on**・scale 0.5 / min_mag 1.4 / max_faces 4 /
+confidence 0.2 / detect 1024）→ キャンバスを `VAEEncode`（最終デコードと同じ**全 VAE**。作者: taeh3 だと
+顔に筋が出る）→ `H3V2VInit`（mask = `regen_mask`、time_varying on、`audio_latent` =
+`VAEEncodeAudio(元の音声)`、audio_mode = **pin the original outright**。口の動きを台詞に合わせたまま）
+→ 条件付けは 1 パス目の条件付けノードを写して幅・高さ = アトラスの `width` / `height`、尺は元のまま
+（開始・最終フレームは外す。r2v は参照素材を持ったまま）→ `H3FaceAtlasSigmas`（4 steps / 0.70 /
+0.80 / 0.95 / shift 12）で DMAD のモデル（Window Attention なし）を回す → `VAEDecode` →
+`H3FaceAtlasStitch`（mask_scale 1.0 / feather 3 / color_match 1.0 / blend 1.0 / geometry_lock・
+fidelity_gate on）。大きく写った顔はアトラスに載らず、そのまま通る。
+
+**AnimeCadence**: `AnimeCadence`（mode **auto** / pick **sharpest** / min_hold 2 / max_hold 4 /
+sensitivity 1.0 / offset 0。auto 以外の値は adaptive 用で効かない）。
+
+**接続先**: 3 つの選択式は `SelectSpec.requires_class_types`（FastDerope は
+`FastDeropeTAELoader` / `…MotionGate` / `…FreezeMask` / `…RetimePrompt` / `…WindowAttention` /
+`…SegmentSplice` + MAINodes の `H3JerkOracle` / `H3TimeSmear` / `H3ExactRecover` /
+`H3V2VInit`、FaceDetail は `H3FaceAtlas` / `…Sigmas` / `…Stitch` / `H3V2VInit`、AnimeCadence は
+`AnimeCadence`）と `restricted_choice = "off"` を宣言する。**Comfy Cloud では `off` だけ**
+（`GET /api/options` の選択肢・エージェントのカタログとも `["off"]`。値を送らない経路は
+`jobs._pin_target_selects` が `off` を params に書き、`on` を送ると 422）。`local` / `runpod` は
+両方選べる（入っていなければ実行時に ComfyUI 側で落ちる）。既定 off なので
+`all_required_class_types` には入れず、ヘルスチェック（`GET /api/health`）は状態を赤くせずに
+`detail` の末尾へ「optional (needed only when switched on): fast_derope: …」と**足りないものだけ**を
+足す（`workflow.optional_select_class_types`。Comfy Cloud では出さない）。
+
+**モデルファイル**: DMAD LoRA（`loras`）と taeh3（`vae_approx`）は `workflow.refine_model_nodes` が
+`model_fields` に重ねるので、設定ページのスロット（`<workflow>/app_refine_dmad_lora.lora_name` /
+`<workflow>/app_refine_derope_tae.tae_name`）になる。補正は注入のあとに足すので、モデル指定は
+`apply_refine_model_overrides` が補正のノードにだけ当て直す。顔検出の ONNX
+（deepghs/anime_face_detection の `face_detect_v1.4_s/model.onnx`）は ComfyUI の models ではなく
+**custom node のフォルダ**（`custom_nodes/ComfyUI-H3-FaceDetail/models/anime_face_detect_v1.4_s/`）に
+置くので、スロットにはならない（入手先は SETUP.md）。
+
+**作者の推奨から外したところ**: Motion Gate の `d_max` は作者の既定 4 のまま（15 秒・1MP で
+VRAM が足りなければ作者は 3 を勧める）。pass 2 の仕上げのデコードは作者の例（int8 の動画 VAE）
+ではなく**テンプレートの最終デコードと同じ VAE**（turbo / opt は Sol-H3-VAE。タイル分割しないので、
+スローにして伸びたクリップのデコードは VRAM を多く使う）。FastDerope の pass 2 のノイズは作者の例の
+別シードではなく元の生成と同じ `RandomNoise`。r2v の pass 2 は先頭フレームのピン留めを持たない
+（`MiniMaxH3ReferenceToVideo` は `first_frame` を取らない。端のフレームは Freeze Mask が 1 パス目に
+固定する）。
 
 #### 解像度の計算
 
@@ -861,7 +980,7 @@ Stable Audio の `reprompt`（内蔵 LLM でのプロンプト展開）だけは
   - `runpod` … Pod の中で動く小さな API（`deploy/runpod/model_api.py`、`127.0.0.1:8190`。caddy が ComfyUI と同じ認証で `/studio/models/*` だけを通す）に `POST /download` で依頼し、`GET /downloads` を 2 秒ごとにポーリングして**ローカルと同じ WS フレーム**に変換して流す。アプリを再起動しても Pod 側は走り続けるので、`GET /api/models/downloads?target=runpod` は Pod の一覧を取り込んで見張りを再開する。Pod が古いイメージ（この API を持たない）なら 404 を「イメージを作り直してください」という 400 にして返す
   - `comfy_cloud` … ファイルシステムに触れないので 400（モデルは Comfy Cloud 側の管理）
   - **一括ダウンロード**（[全DL]、`POST /api/models/download-all`）: 選んだ環境の `/object_info` と比べて未検出、かつ `model_download_urls` に URL があるものをまとめて開始する。対象はワークフローの各スロットの実効値・候補リストと、その環境の LoRA 登録。URL が無いものは `missing_urls` として返して UI が知らせる。ComfyUI に繋がらないときは 400（何が足りないか判定できないため）
-  - 置き場所は `class_type`＋入力フィールドから決める（`workflow.MODEL_SUBFOLDERS` → `ModelField.subfolder`）: checkpoints = CheckpointLoaderSimple.ckpt_name、diffusion_models = UNETLoader.unet_name、text_encoders = CLIPLoader.clip_name / DualCLIPLoader.clip_name1・clip_name2、clip_vision = CLIPVisionLoader.clip_name、vae = VAELoader.vae_name、loras = LoraLoader.lora_name / LoraLoaderModelOnly.lora_name、latent_upscale_models = LatentUpscaleModelLoader.model_name、geometry_estimation = LoadMoGeModel.model_name。未知のローダーは空（＝ UI で入力させる。当てずっぽうに置いても ComfyUI からは見えない）
+  - 置き場所は `class_type`＋入力フィールドから決める（`workflow.MODEL_SUBFOLDERS` → `ModelField.subfolder`）: checkpoints = CheckpointLoaderSimple.ckpt_name、diffusion_models = UNETLoader.unet_name、text_encoders = CLIPLoader.clip_name / DualCLIPLoader.clip_name1・clip_name2、clip_vision = CLIPVisionLoader.clip_name、vae = VAELoader.vae_name、loras = LoraLoader.lora_name / LoraLoaderModelOnly.lora_name、latent_upscale_models = LatentUpscaleModelLoader.model_name、geometry_estimation = LoadMoGeModel.model_name、vae_approx = FastDeropeTAELoader.tae_name（補正 `fast_derope` の taeh3）。未知のローダーは空（＝ UI で入力させる。当てずっぽうに置いても ComfyUI からは見えない）
   - `POST /api/models/download` は保存先を検証（`..` / 絶対パス / パス区切りを拒否し、`resolve()` 後に models ディレクトリ配下であることを確認）してからバックグラウンドタスクを起こす。httpx のストリームをチャンクで `<ファイル名>.part` に書き、完走したときだけ本来の名前に `rename` する（失敗・中断時は `.part` を削除）。進捗は WS `/api/ws` に `type: "model_download"` として流れる。同じファイル名の同時ダウンロードは 409
   - 認証は URL のホストで出し分ける: huggingface.co / hf.co（サブドメイン含む）は `Settings.hf_token`、civitai.com は `Settings.civitai_api_key` を `Authorization: Bearer …` として付ける（未設定なら付けない）。**リダイレクトは httpx に任せず自分で追う**（最大 10 ホップ、相対 `Location` は urljoin で解決、301/302/303/307/308 を GET のまま追う）: クライアント既定ヘッダに認証を載せると転送先の別ホストにトークンが漏れるため、ホップごとに URL を再検証して認証ヘッダを計算し直し、そのリクエストにだけ渡す（HF → `*.hf.co` の CDN には付き、無関係なホストには付かない）。URL はファイル名ごとに `Settings.model_download_urls` へ保存する（同じファイルが複数スロットに出るため、キーはスロットではなくファイル名）
   - 保存先は**環境変数 `COMFY_MODELS_DIR` だけ**が決める（設定 `runtime/config.json` には持たない）。UI からパスを入れられても、Docker で同じ絶対パスをマウントしていなければ書けないため。`.env` に書けば `run.sh`（ホスト実行、`.env` を読んで `export`）と `docker compose`（同一パスのマウント＋`environment:` で受け渡し）の双方に効く。設定に残すのは `hf_token` / `civitai_api_key` / `model_download_urls` だけで、旧バージョンが書いた `comfy_models_dir` キーは読み込み時に捨てる
@@ -1151,6 +1270,11 @@ ComfyUI を **RunPod の Pod（GPU 時間貸し）**に置く構成では、使�
 
 Pod 側のイメージ（Dockerfile / entrypoint / 認証つき Caddy プロキシ / モデル
 マニフェスト / watchdog）と手順書は [`deploy/runpod/`](../deploy/runpod/README.md)。
+`custom_nodes.txt` には MiniMax H3 動画の補正（§3.1）が使う 4 パック（ComfyUI-MAINodes・
+ComfyUI-H3-FastDerope / FaceDetail / AnimeCadence）をコミット固定で載せ、それらが
+requirements.txt を持たないぶんの依存（OpenCV・onnxruntime）は Dockerfile で入れる。
+FaceDetail の顔検出の ONNX だけは models の外（custom node のフォルダ）に置くので、
+アプリの [DL] ではなく手で置く。
 モデルの取得は §3.3 と同じ流儀（`.part` に書いて完走時のみ rename、リダイレクトを
 自分で追い、ホストごとに `HF_TOKEN` / `CIVITAI_API_KEY` を出し分け）で実装してある。
 

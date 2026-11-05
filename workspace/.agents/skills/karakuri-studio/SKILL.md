@@ -49,7 +49,7 @@ cwd として書いてある。
 |---|---|
 | `GET /api/v1/openapi.json` | 全エンドポイントとリクエスト/レスポンス schema |
 | `GET /api/v1/prompt-guide` | 脚本・プロンプトの書き方。`guide_version` が同じならキャッシュを使い回してよい |
-| `GET /api/v1/capabilities` | この接続先でラテント連続性 / ラテントアップスケールが使えるか。`blocking` に構図リファレンス動画（ブロッキング）の可否と上限・使える形状・カメラプリセットの一覧 |
+| `GET /api/v1/capabilities` | この接続先でラテント連続性 / ラテントアップスケール / 補正（`refine`）が使えるか。`blocking` に構図リファレンス動画（ブロッキング）の可否と上限・使える形状・カメラプリセットの一覧 |
 | `GET /api/v1/options` | `aspect_ratio` の正しい表記、ワークフロー一覧と制約、LoRA（`loras[].description` に使い方の説明）、ライブラリ |
 
 補助: `GET /api/v1/prompt-examples`（MiniMax H3 の実例。`mode` / `category` /
@@ -183,6 +183,16 @@ cwd として書いてある。
   ComfyUI 本体同梱）。ただし Cloud 側に該当モデル（w4a8 UNET・turbo LoRA・Sol-H3-VAE・
   ラテントアップスケーラ）が入っている必要がある。`opt` は Spectrum のカスタムノードが
   要るので Comfy Cloud では通常品質に落ちる（理由は `workflow_reason`）。
+- MiniMax H3 動画の**補正**はプロジェクトの `fast_derope`（速い動きの滲み・溶けを、その
+  区間だけ描き直す）/ `face_detail`（引きの画の小さい顔だけを描き直す）/ `anime_cadence`
+  （2 コマ / 3 コマ打ちに直す）。どれも既定 `false`・互いに独立で、テイクごとの上書きは
+  `POST /shots/{id}/render` の同名の項目。最終解像度の出力にこの順で掛かり、音声は元のまま。
+  描き直しのぶん生成時間が延びるので、**頼まれたとき・必要なカットだけ**に使う
+  （速い動きのアクション → `fast_derope`、引きの画で顔が潰れる → `face_detail`、アニメ調で
+  動きをコマ打ちにしたい → `anime_cadence`）。外部のカスタムノードが要るので **Comfy Cloud では
+  効かない**（ON でも OFF で投入され、理由が `workflow_reason` に出る。`capabilities.refine` が
+  false）。`POST /jobs` で直接作るなら `selects` に `"fast_derope": "on"` などを入れる
+  （Comfy Cloud では 422）。
 - **P-H3-Image のプロンプト**（英語。詳しくは `GET /prompt-guide` の IMAGE PROMPT SPEC —
   P-H3-Image）: 冒頭 1 文で「その画像が何であるか」（`a photograph by …` /
   `a frame from a Japanese anime TV series` / `a two-color risograph print`）→ 視点・その瞬間の

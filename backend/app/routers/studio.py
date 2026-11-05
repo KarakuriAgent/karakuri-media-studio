@@ -83,16 +83,23 @@ async def get_capabilities() -> StudioCapabilities:
     「使えない」＋理由を返す（設定していないだけのこともあるため）。
     """
     latent_upscale = service.latent_upscale_available()
+    # 補正（fast_derope / face_detail / anime_cadence）も接続先の種類だけで決まる
+    refine = service.refine_available()
+    refine_reason = "" if refine else service.REFINE_UNAVAILABLE_REASON
     try:
         return StudioCapabilities(
             latent_continuity=await comfy.latent_context_support(),
             latent_upscale=latent_upscale,
+            refine=refine,
+            refine_reason=refine_reason,
             blocking=blocking_capabilities(),
         )
     except comfy.ComfyError as exc:
         return StudioCapabilities(
             latent_continuity=False,
             latent_upscale=latent_upscale,
+            refine=refine,
+            refine_reason=refine_reason,
             error=comfy.display_error(exc),
             blocking=blocking_capabilities(),
         )

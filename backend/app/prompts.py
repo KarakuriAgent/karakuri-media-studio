@@ -787,6 +787,11 @@ def _target_preference_lines(comfy_target: str) -> list[str]:
             "入れてある前提）。",
             "ユーザーが opt を名指ししてきたときは、**この接続先では"
             "動かない**ことを伝えて素の版か turbo を提案すること。",
+            # 補正（SPEC §3.1）もカスタムノード頼みなので Comfy Cloud では off 固定
+            "MiniMax H3 動画の補正（`selects` の `fast_derope` / `face_detail` /"
+            " `anime_cadence`）もカスタムノードが要るので**この接続先では使えない**"
+            "（選べるのは `off` だけで、`on` を書くとジョブが断られる）。"
+            "頼まれたときは、local / RunPod の ComfyUI でしか効かないことを伝えること。",
         ]
         return lines
     if comfy_target == "local":
@@ -817,6 +822,12 @@ def _target_preference_lines(comfy_target: str) -> list[str]:
         "蒸留モデルで版違いが無いので、どの品質でも同じワークフロー。"
         "Qwen-Image 2.1 には `_opt` が無く、`turbo` のときだけ `_turbo` 版になる）。"
         "P-H3-Image は ComfyUI 本体のノードだけで動くので、Comfy Cloud でも選べる。",
+        # 補正（SPEC §3.1）。既定 off で、描き直しのぶん時間が延びるので勝手に入れない
+        "MiniMax H3 動画の補正（`selects` の `fast_derope`＝速い動きの滲み・溶けの"
+        "描き直し / `face_detail`＝引きの画の小さい顔の描き直し / `anime_cadence`＝"
+        "2 コマ / 3 コマ打ち）は既定 `off`。生成時間が延び、ComfyUI 側に専用の"
+        "カスタムノードとモデルが要るので、**ユーザーが頼んだとき・その症状が"
+        "出ているときだけ** `on` にすること。",
     ]
     return lines
 

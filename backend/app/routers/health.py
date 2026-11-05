@@ -3,7 +3,12 @@ from fastapi import APIRouter
 from .. import comfy, grok, llm_cli
 from ..config import load_settings
 from ..models import Health, HealthStatus
-from ..workflow import WorkflowError, all_required_class_types, validate_manifests
+from ..workflow import (
+    WorkflowError,
+    all_required_class_types,
+    optional_select_class_types,
+    validate_manifests,
+)
 
 router = APIRouter(prefix="/api", tags=["health"])
 
@@ -32,15 +37,36 @@ async def check_comfyui() -> HealthStatus:
         return HealthStatus(status="error", detail=f"workflow template: {exc}")
 
     missing = sorted(required - set(info))
+    optional = _optional_note(set(info), settings.comfy_target)
     if missing:
         return HealthStatus(
             status="error",
-            detail="missing custom nodes on ComfyUI: " + ", ".join(missing),
+            detail="missing custom nodes on ComfyUI: " + ", ".join(missing) + optional,
         )
     return HealthStatus(
         status="ok",
-        detail=f"{url} ({len(required)} node classes verified)",
+        detail=f"{url} ({len(required)} node classes verified){optional}",
     )
+
+
+def _optional_note(available: set[str], comfy_target: str) -> str:
+    """on にしたときだけ要るカスタムノードのうち、足りないもの（無ければ空）。
+
+    MiniMax H3 動画の補正（``fast_derope`` / ``face_detail`` / ``anime_cadence``）は
+    既定 off なので、足りなくてもインジケーターは赤くしない（``status`` は変えない）。
+    on にする前に入れるべきものを ``detail`` の末尾で知らせるだけ。Comfy Cloud では
+    そもそも選べない（off に固定）ので何も言わない。
+    """
+    if comfy_target == "comfy_cloud":
+        return ""
+    parts = []
+    for name, class_types in optional_select_class_types().items():
+        lacking = [class_type for class_type in class_types if class_type not in available]
+        if lacking:
+            parts.append(f"{name}: " + ", ".join(lacking))
+    if not parts:
+        return ""
+    return " / optional (needed only when switched on): " + "; ".join(parts)
 
 
 @router.get("/health", response_model=Health)

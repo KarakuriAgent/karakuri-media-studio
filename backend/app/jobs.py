@@ -872,8 +872,9 @@ def _pin_target_selects(params: dict[str, Any]) -> None:
 
     :attr:`app.workflows.SelectSpec.requires_class_types` を宣言した選択式は
     Comfy Cloud では :attr:`~app.workflows.SelectSpec.restricted_choice` だけになる
-    （いまはどの選択式も宣言していない。``latent_upscale`` はノードが本体同梱なので
-    Comfy Cloud でも on / off を選べる）。生成フォームは選択肢そのものを絞って出す
+    （MiniMax H3 動画の補正 ``fast_derope`` / ``face_detail`` / ``anime_cadence`` は
+    カスタムノードが要るので Comfy Cloud では ``off`` だけ。``latent_upscale`` は
+    ノードが本体同梱なので Comfy Cloud でも on / off を選べる）。生成フォームは選択肢そのものを絞って出す
     （:func:`app.routers.options._workflow_option`）が、外部 API・エージェント・
     古いジョブの再実行は値を送ってこないことがある。そこでここで params に書き込んで
     おく（保存されるので再実行しても同じ値で走る）。

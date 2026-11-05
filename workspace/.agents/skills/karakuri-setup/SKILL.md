@@ -105,7 +105,10 @@ setup.sh reset                             # 状態ファイルを消す（確�
   `LatentUpscaleModelLoader` / `MiniMaxH3LatentUpscaleWithModel` / `TextGenerateV2` /
   `PH3ImageConditioning` が不足に出たら custom node ではなく**本体の更新**で直す。
   外部の custom node が要るのは opt の `SpectrumApplyMiniMaxH3` とラテント連続性
-  （Motion Context 系）だけ（画像の P-H3-Image は本体ノードだけで動く）。
+  （Motion Context 系）と、任意の補正（下の S7）だけ（画像の P-H3-Image は本体ノードだけで動く）。
+- detail の末尾の `optional (needed only when switched on): fast_derope: …` は
+  **不足ではない**（補正は既定 off。状態は `ok` のまま）。補正を使うと人が決めたときだけ
+  S7 で入れる。
 - P-H3-Image（画像の `p_h3_*`）を使うなら、モデルは動画 turbo と共有の
   `minimax_h3_fl2va_pruned_w4a8_mixed` に加えて PrunaAI/P-H3-Image-Comfy の
   `p-h3-image_lora_bf16`（loras）・`p-h3-image_text_encoder_w4a8` /
@@ -168,6 +171,7 @@ setup.sh reset                             # 状態ファイルを消す（確�
 | Remotion（MV・演出） | **ライセンス確認は人**。Remotion は独自ライセンス（個人・従業員 3 名以下は無償、それ以上は会社ライセンスが有償）。<https://www.remotion.dev/license> を確認して**同意を得てから** `PUT /api/settings {"remotion_enabled": true}` | `remotion_enabled` が `yes` で、composition 一覧が引ける |
 | 音源解析（歌詞つき MV） | リポジトリ直下に `.venv-audio` を作り `backend/requirements-optional.txt` を入れ、`PUT /api/settings {"audio_analysis_python": "<実体の絶対パス>/.venv-audio/bin/python"}`。**Docker ならコンテナの中の python で作る**（`docker exec <container> bash -c "cd <実体パス> && python3.12 -m venv .venv-audio && .venv-audio/bin/pip install -r backend/requirements-optional.txt"`。ホストの python で作った venv は中で動かない。パスはシンボリックリンクでなく実体 `pwd -P`）。数 GB 落ちるので先に伝える。GPU は compose の `deploy.resources` で渡してある。GPU で書き起こしするには `nvidia-cublas-cu12` / `nvidia-cudnn-cu12` も入る（requirements-optional に含めた）。無ければ CPU に落ちる | `setup.sh status` の `audio_analysis_python` が実在 `yes` |
 | RunPod 自動起動 | [`docs/RUNPOD-QUICKSTART.md`](../../../../docs/RUNPOD-QUICKSTART.md) の手順。Network Volume・テンプレート・Cloudflare Tunnel は**人の作業**、設定の保存は自動でよい | 接続先 RunPod で `comfyui` が `ok` |
+| MiniMax H3 動画の補正（`fast_derope` / `face_detail` / `anime_cadence`） | **ライセンス確認は人**（3 つの H3 パックは MIT、FastDerope / FaceDetail が使う ComfyUI-MAINodes は **GPL-3.0**。アプリは同梱せず呼ぶだけ）。同意を得てから ComfyUI の `custom_nodes/` に ComfyUI-MAINodes / ComfyUI-H3-FastDerope / ComfyUI-H3-FaceDetail / ComfyUI-H3-AnimeCadence を git clone し、`pip install opencv-python-headless onnxruntime`。モデルは DMAD LoRA（`loras`）・`taeh3_full.safetensors`（`vae_approx`。エンコーダ + デコーダ版）・顔検出の `model.onnx`（`custom_nodes/ComfyUI-H3-FaceDetail/models/anime_face_detect_v1.4_s/`）。入手元は `../docs/SETUP.md` の「MiniMax H3 動画の補正」。使う補正のぶんだけでよい。Comfy Cloud では使えない | `GET /api/health` の detail に `optional (…)` が出ない（全部入れた場合）。一部だけなら、出ている名前が使わない補正だけになっている |
 | 不足モデルの自動 DL | `.env` に `COMFY_MODELS_DIR` を書いて再起動。gated なら設定に HF トークン / Civitai キー（**人が用意**） | 設定ページの「モデル」タブに一覧が出る |
 
 - 記録: `setup.sh mark S7 done`（一部だけ入れたなら note に何を入れたか書く）

@@ -2580,10 +2580,16 @@ def test_the_upscaler_model_file_is_a_settings_slot():
     )
 
 
-def test_the_i2v_turbo_only_offers_latent_upscale():
-    """Pika LoRA は本体標準の `LoraLoaderModelOnly` で読むので、選択式はこれだけ。"""
+def test_the_i2v_turbo_only_offers_latent_upscale_and_the_refine_selects():
+    """Pika LoRA は本体標準の `LoraLoaderModelOnly` で読むので、選択式は
+    ラテントアップスケールと全 MiniMax H3 動画共通の補正 3 つだけ。"""
     spec = get_spec("minimax_h3_i2v_turbo", "video")
-    assert set(spec.selects) == {LATENT_UPSCALE_NAME}
+    assert set(spec.selects) == {
+        LATENT_UPSCALE_NAME,
+        "fast_derope",
+        "face_detail",
+        "anime_cadence",
+    }
 
 
 @pytest.mark.parametrize(

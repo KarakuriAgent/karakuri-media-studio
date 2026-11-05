@@ -51,8 +51,8 @@
 | 参照系 | `GET /openapi.json`・`capabilities`・`options`・`prompt-guide`・`prompt-examples` |
 | 一括投入 | `POST /stories`（§2） |
 
-`GET /api/v1/capabilities` は「いまの接続先でラテント連続性 / ラテントアップスケールが
-使えるか」を、`GET /api/v1/options` は生成フォームと同じ選択肢（アスペクト比の表記・
+`GET /api/v1/capabilities` は「いまの接続先でラテント連続性 / ラテントアップスケール /
+補正（`refine`。Comfy Cloud では false で、理由は `refine_reason`）が使えるか」を、`GET /api/v1/options` は生成フォームと同じ選択肢（アスペクト比の表記・
 ワークフローの一覧と制約・LoRA・ライブラリ）を返す。`options` は ComfyUI の所在を
 外に出さないため `comfy_url` を空にして返し、ComfyUI が落ちていても `comfy_error` を
 入れた 200 になる。
@@ -78,6 +78,7 @@
 | `steps` | プロジェクトの `steps` → テンプレートの既定（0〜150。`0` を送れば「既定のまま」の明示で、プロジェクトの設定より優先） |
 | `seed` | カットの `seed` → 毎回ランダム |
 | `latent_upscale` | プロジェクトの `latent_upscale`（既定 ON。Comfy Cloud でも ON のまま効く。Cloud 側にアップスケーラのモデル `minimax_h3_latent_upscaler_3d_bf16` を入れておくこと） |
+| `fast_derope` / `face_detail` / `anime_cadence` | プロジェクトの同名の設定（MiniMax H3 動画の補正。既定はどれも OFF）。**Comfy Cloud では ON を送っても OFF で投入**し（カスタムノードが要るため）、理由は投入プレビューの `workflow_reason` に出る |
 | `video_loras` | プロジェクトの `video_loras`（`LoraRef` の配列。`[]` を送ると「この回は LoRA なし」の明示）。挿せないワークフローに決まったときは 422 にせず外して投入し、Take の `warning` に理由が出る |
 
 ボディごと省けば従来どおりの投入。範囲外の値は 400（`StudioError`）で、実際に使われた
@@ -831,6 +832,21 @@ GET /api/v1/jobs?q=かおり&kind=video&nsfw=false&limit=48&offset=0
   決まったワークフローが LoRA を挿せないときは外して投入され、Take の `warning` に
   理由が出ます。何が付くかは `GET /shots/{id}/prompt-preview` の `video_loras` /
   `video_trigger_text` / `video_lora_warning` で確かめられます。
+- プロジェクトの `fast_derope` / `face_detail` / `anime_cadence`（`POST /api/v1/projects` と
+  `PATCH /api/v1/projects/{id}` で読み書きできます。どれも既定 `false`・互いに独立）は
+  **MiniMax H3 動画の補正**です。カットを焼くたびにジョブの選択式
+  `selects.fast_derope` / `selects.face_detail` / `selects.anime_cadence`（`"on"` / `"off"`）に
+  なり、最終解像度の出力（`latent_upscale` が ON なら 2 パス目）に FastDerope（速い動きの
+  滲み・溶けを、その区間だけ描き直す）→ FaceDetail（引きの画の小さい顔だけを描き直す）→
+  AnimeCadence（2 コマ / 3 コマ打ちに直す）の順で掛かります。音声は元の生成のまま。
+  外部のカスタムノード（ComfyUI-H3-FastDerope / FaceDetail / AnimeCadence と
+  ComfyUI-MAINodes）が要るので、**Comfy Cloud では ON にしても OFF で投入**し、
+  理由を `prompt-preview` の `workflow_reason` に出します（400 にはしません）。実際に
+  効く値は `prompt-preview` の `fast_derope` / `face_detail` / `anime_cadence`、接続先が
+  使えるかは `GET /api/v1/capabilities` の `refine` で確かめられます。1 回だけ変えるなら
+  `POST /shots/{id}/render` の同名の項目（上の表）。描き直しのぶん生成時間が延びます。
+  ジョブを直接作る（`POST /api/v1/jobs`）場合は `selects` に同じ名前で `"on"` を入れますが、
+  Comfy Cloud では `"on"` が 422 になります（`GET /api/v1/options` の選択肢も `["off"]` だけ）。
 - プロジェクトの `image_megapixels` / `image_aspect_ratio` / `image_steps`
   （`POST /api/v1/projects` と `PATCH /api/v1/projects/{id}` で読み書きできます。
   既定はそれぞれ `null` / `null` / `0`）は、**素材の静止画の画質・画面比・

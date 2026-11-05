@@ -15,6 +15,7 @@
 | custom nodes | ResolutionSelector / ComfySwitchNode / CustomCombo / MiniMaxH3 系 / ComfyMath / ResizeImage 系 / ResizeAndPadImage / MoGe 系 / LoadVideo など、`workflow/` 配下のワークフローが使うノード一式 |
 | custom nodes（任意） | MiniMax H3 の Optimized ワークフロー（動画の t2v / i2v / r2v）を使う場合のみ `SpectrumApplyMiniMaxH3` を提供する custom node（ComfyUI 本体に代替が無い）。Turbo（動画の i2v / r2v。t2v に Turbo は無く、品質 Turbo でも Optimized に落ちる）と Optimized の残りの高速化ノード（`ModelAttentionBackend` = Comfy Kitchen attention・`BlockSparseAttention`・`MiniMaxH3SigmaShift`）と、Turbo の Pika H3 Flex LoRA を当てる `LoraLoaderModelOnly` は ComfyUI 本体同梱なので custom node は不要です。Comfy Kitchen attention は Nvidia / AMD の GPU でのみ有効で、それ以外では PyTorch のアテンションに戻ります |
 | custom nodes（任意） | ドラマスタジオの「ラテント連続性」（連続カット・`minimax_h3_r2v_context` と、起点になる通常カットの `minimax_h3_*_save`）を使う場合のみ、`MiniMaxH3MotionContext` / `MiniMaxH3MotionContextLoadLatent` / `MiniMaxH3MotionContextSaveLatent` を提供する [ComfyUI-H3-Motion-Context](https://github.com/NikoDemon80/ComfyUI-H3-Motion-Context) と、`MiniMaxH3MotionContextTrim` を提供する ComfyUI-MiniMaxH3-Contex-Loop。Comfy Cloud には入れられないので、その接続先ではこの機能が使えません |
+| custom nodes（任意） | MiniMax H3 動画の**補正**（`fast_derope` / `face_detail` / `anime_cadence`、どれも既定 off）を使う場合のみ。[ComfyUI-H3-FastDerope](https://github.com/tazmannner/ComfyUI-H3-FastDerope) / [ComfyUI-H3-FaceDetail](https://github.com/tazmannner/ComfyUI-H3-FaceDetail) / [ComfyUI-H3-AnimeCadence](https://github.com/tazmannner/ComfyUI-H3-AnimeCadence)（tazmannner 作・MIT）と、FastDerope / FaceDetail が使う [ComfyUI-MAINodes](https://github.com/matlowai/ComfyUI-MAINodes)（matlowai 作・**GPL-3.0**）。使う補正のぶんだけで足ります（下の「MiniMax H3 動画の補正」）。Comfy Cloud には入れられないので、その接続先では off に固定されます |
 | モデル | **使うワークフローのぶんだけ**あれば十分です（各テンプレートの既定ファイル名は SPEC §3.3）。足りないものは後述の「不足モデルの自動ダウンロード」で取得できます |
 | モデル（MiniMax H3） | 動画の Turbo / Optimized の動画 VAE は **Sol-H3-VAE** の `minimax_h3_sol_vae_int8_convrot.safetensors`（`vae`。[Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3) の `vae/` にある、Sol-H3-VAE のデコーダと H3 のエンコーダを 1 つにしたもの。Efficient-Large-Model/Sol-H3-VAE の `sol_h3_vae.safetensors` はデコーダだけなので、エンコードが要る i2v / r2v では使えません）。デコードは速い代わりにタイル分割ができず、長尺・高解像度ほど VRAM を多く使います（足りなければ設定ページで `minimax_h3_video_vae_int8_convrot` に戻せます）。ラテントアップスケール（既定 on）は `minimax_h3_latent_upscaler_3d_bf16.safetensors`（`latent_upscale_models`。[LBH-123-AI/Minimax_h3_latent_Upscaler](https://huggingface.co/LBH-123-AI/Minimax_h3_latent_Upscaler) の `minimax_h3_latent_upscaler_3d_conv_v1/minimax_h3_latent_upscaler_3d_conv_v1_bf16.safetensors` と同じファイル）を ComfyUI 本体の `LatentUpscaleModelLoader` で読みます |
 | モデル（P-H3-Image） | 画像の P-H3-Image（`p_h3_t2i` / `p_h3_i2i` / `p_h3_r2i`）は ComfyUI 本体のノードだけで動きます（custom node 不要）。既定の構成は、拡散モデルを**動画の Turbo と共有**して P-H3-Image の LoRA を重ねる形です: `minimax_h3_fl2va_pruned_w4a8_mixed.safetensors`（`diffusion_models`。[Comfy-Org/MiniMax-H3](https://huggingface.co/Comfy-Org/MiniMax-H3/resolve/main/diffusion_models/minimax_h3_fl2va_pruned_w4a8_mixed.safetensors)）+ `p-h3-image_lora_bf16.safetensors`（`loras`。`LoraLoaderBypassModelOnly`・強度 1.0）+ `p-h3-image_text_encoder_w4a8.safetensors` と `p-h3-image_prompt_upsampler_w4a8.safetensors`（どちらも `text_encoders`。CLIPLoader の type は `minimax`）+ `p-h3-image_vae_int8_convrot.safetensors`（`vae`。VAE に w4a8 版はありません）。P-H3-Image 側の 4 ファイルの URL は `https://huggingface.co/PrunaAI/P-H3-Image-Comfy/resolve/main/<フォルダ>/<ファイル名>`（例: `…/loras/p-h3-image_lora_bf16.safetensors`）で、設定ページの [取得元 URL] に登録すると [DL] で落とせます。**どのファイルも設定ページのモデル上書き（`model_overrides` / `model_choices`）で bf16 / int8_convrot 版に差し替えられます**（同じ行の候補リストに足せば実行ごとに切り替え可。精度の違うファイルは自由に組み合わせられ、Pruna の目安ではピーク VRAM＠8MP が w4a8 一式で約 21GB・int8 一式で約 31GB）。LoRA を焼き込んだ**専用の重み**（`p-h3-image_w4a8` / `_int8_convrot` / `_bf16`。PrunaAI/P-H3-Image-Comfy の `diffusion_models/`）を UNET に選ぶこともでき、その場合は生成フォームの選択式 **P-H3-Image LoRA（`p_h3_lora`）を off** にして LoRA を外してください（LoRA ファイルが無くても動きます）。**ライセンス**: P-H3-Image の重みは MiniMax H3 Community License で、EU・英国・韓国・米国では MiniMax から別途許諾を受けない限り使えず、これを使った製品には "Powered by MiniMax H3" の表示が必要です（テキストエンコーダの Qwen3-VL-4B 部分とアップサンプラは Apache 2.0）。使う前に [ライセンス本文](https://huggingface.co/PrunaAI/P-H3-Image/blob/main/LICENSE) を確認してください |
@@ -194,6 +195,64 @@ Docker で動かす場合、`docker-compose.yml` が `KARAKURI_DATA_DIR` を**�
 コンテナにマウントします（ホストと同じパスで見えている必要があるため）。NAS は先に
 ホスト側でマウントしておき、コンテナのユーザー（`UID:GID`）で書き込めることを
 確かめてください。
+
+---
+
+## MiniMax H3 動画の補正（任意・既定 off）
+
+MiniMax H3 の動画ワークフロー全部（t2v / i2v / r2v、通常 / Optimized / Turbo）に、仕上がりの
+フレームへ掛ける 3 つの補正を**独立にオン / オフ**できます。生成フォームでは選択式
+（`fast_derope` / `face_detail` / `anime_cadence`）、ドラマスタジオではプロジェクトバーの
+「補正」欄（と生成ダイアログ）です。どれも外部のカスタムノードを呼ぶので、**Comfy Cloud では
+選べません**（off に固定され、スタジオのトグルは理由つきで無効になります）。
+
+| 補正 | やること | 要るもの |
+|---|---|---|
+| `fast_derope`（速い動きの滲み補正） | 速い動きで滲む・溶ける区間だけをスローにして描き直し、元の尺に戻して差し込む。速い動きが無ければ描き直しは走らない | ComfyUI-H3-FastDerope + ComfyUI-MAINodes、DMAD LoRA、taeh3、OpenCV |
+| `face_detail`（引きの画の顔補正） | 引きの画で小さく写った顔だけを拡大して描き直し、元の位置に貼り戻す。音声はピン留めするので口の動きは台詞のまま | ComfyUI-H3-FaceDetail + ComfyUI-MAINodes、DMAD LoRA、顔検出の ONNX、onnxruntime・OpenCV |
+| `anime_cadence`（2 コマ / 3 コマ打ち） | デコード後のフレームを 2 コマ / 3 コマ打ちに直す後処理（アニメ調向け） | ComfyUI-H3-AnimeCadence だけ |
+
+**custom node**（ComfyUI の `custom_nodes/` で）:
+
+```bash
+cd ComfyUI/custom_nodes
+git clone https://github.com/matlowai/ComfyUI-MAINodes              # fast_derope / face_detail（GPL-3.0）
+git clone https://github.com/tazmannner/ComfyUI-H3-FastDerope       # fast_derope（MIT）
+git clone https://github.com/tazmannner/ComfyUI-H3-FaceDetail       # face_detail（MIT）
+git clone https://github.com/tazmannner/ComfyUI-H3-AnimeCadence     # anime_cadence（MIT）
+# どのパックも requirements.txt を持たない。FastDerope の Motion Gate は OpenCV、
+# FaceDetail の顔検出は onnxruntime を使う（多くの ComfyUI 環境には入っている）
+pip install opencv-python-headless onnxruntime
+```
+
+ComfyUI-MAINodes は **GPL-3.0**、3 つの H3 パックは **MIT** です。このアプリはどれのコードも
+同梱せず、ComfyUI に別途インストールしたノードをワークフローから呼ぶだけです。
+
+**モデル**:
+
+| ファイル | 置き場所 | 入手元 |
+|---|---|---|
+| `minimax_h3_DMAD_4step_full_lora_avg_rank_39_bf16.safetensors`（約 367MB。fast_derope / face_detail の描き直しパスに強さ 0.8 で当てる DMAD 4step LoRA） | `models/loras/` | [Kijai/MiniMax-H3-experimental](https://huggingface.co/Kijai/MiniMax-H3-experimental) の `loras/`（直リンク `https://huggingface.co/Kijai/MiniMax-H3-experimental/resolve/main/loras/minimax_h3_DMAD_4step_full_lora_avg_rank_39_bf16.safetensors`） |
+| `taeh3_full.safetensors`（約 22.7MB。fast_derope の使い捨てデコード / エンコード用の tiny VAE） | `models/vae_approx/` | [madebyollin/taehv](https://github.com/madebyollin/taehv) の `safetensors/taeh3.safetensors`（直リンク `https://github.com/madebyollin/taehv/raw/main/safetensors/taeh3.safetensors`）を **`taeh3_full.safetensors` という名前で**保存する。**エンコーダ + デコーダ版**であること。ComfyUI のライブプレビュー用の `taeh3.safetensors`（約 10MB・デコーダだけ。Kijai/MiniMax-H3-TAE などにあるもの）では「has no encoder」で落ちるので、上書きしないよう名前を変えて置く |
+| `model.onnx`（約 44.6MB。face_detail の顔検出） | **`custom_nodes/ComfyUI-H3-FaceDetail/models/anime_face_detect_v1.4_s/`**（ComfyUI の models ではない） | [deepghs/anime_face_detection](https://huggingface.co/deepghs/anime_face_detection) の `face_detect_v1.4_s/model.onnx` |
+
+DMAD LoRA と taeh3 は設定ページの「モデル」タブにスロット（`…/app_refine_dmad_lora.lora_name` /
+`…/app_refine_derope_tae.tae_name`）として出るので、取得元 URL を入れて [DL] で落とせます
+（taeh3 は URL のファイル名ではなくスロットのファイル名 `taeh3_full.safetensors` で保存されます）。
+別名で置いた場合はスロットを上書きしてください。顔検出の ONNX は models の外なので手で置きます:
+
+```bash
+curl -fL -o ComfyUI/custom_nodes/ComfyUI-H3-FaceDetail/models/anime_face_detect_v1.4_s/model.onnx \
+  https://huggingface.co/deepghs/anime_face_detection/resolve/main/face_detect_v1.4_s/model.onnx
+```
+
+足りないノードはヘッダーの接続インジケーター（`GET /api/health`）の末尾に
+「optional (needed only when switched on): fast_derope: …」として出ます（補正は既定 off なので、
+足りなくてもインジケーターは赤くなりません）。補正を on にするとそのぶん生成が延びます
+（作者の計測・RTX 5090 で、FastDerope は描き直す区間の長さしだいで +12 秒〜+4 分程度。速い動きが
+無いクリップではほぼ増えない。FaceDetail は +45〜72 秒程度）。RunPod では `deploy/runpod/custom_nodes.txt` に 4 パックが入っています
+（[`deploy/runpod/README.md`](../deploy/runpod/README.md) の「補正を使う」）。グラフの組み方は SPEC §3.1
+「MiniMax H3 動画の補正」。
 
 ---
 

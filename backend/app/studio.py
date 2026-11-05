@@ -83,7 +83,11 @@ from .config import load_settings
 from .paths import rebase_stored_path
 from .workflow import WorkflowError, supported_on_target
 from .workflows import (
+    ANIME_CADENCE_NAME,
+    FACE_DETAIL_NAME,
+    FAST_DEROPE_NAME,
     LATENT_UPSCALE_NAME,
+    REFINE_SELECT_NAMES,
     WorkflowSpecError,
     canonical_workflow_id,
     get_image_spec,
@@ -431,14 +435,73 @@ def latent_upscale_available() -> bool:
     return "on" in _latent_upscale_choices(WORKFLOW_T2V)
 
 
+# --------------------------------------------------------------------------
+# 補正（プロジェクトの ``fast_derope`` / ``face_detail`` / ``anime_cadence``）
+# --------------------------------------------------------------------------
+#
+# ラテントアップスケールと同じく、決まったワークフローの **選択式**に落ちる
+# 作品単位のつまみ（既定 OFF）。効き方は **この 1 回ぶんの上書き > プロジェクト >
+# 既定（OFF）** の順。足すノードが外部のカスタムノード（ComfyUI-H3-* と
+# ComfyUI-MAINodes）なので、Comfy Cloud では選択式が ``off`` しか許さない
+# （:meth:`app.workflows.SelectSpec.choices_for_target`）。そのときは OFF で投入し、
+# 理由を ``workflow_reason`` に足す（ジョブ側に ``on`` を送ると 422 になるため）。
+
+#: 補正の論理名 -> 画面・理由に出す名前
+REFINE_LABELS: dict[str, str] = {
+    FAST_DEROPE_NAME: "速い動きの滲み補正（FastDerope）",
+    FACE_DETAIL_NAME: "顔の描き直し（FaceDetail）",
+    ANIME_CADENCE_NAME: "2 コマ / 3 コマ打ち（AnimeCadence）",
+}
+
+
+def _select_choices(workflow: str, name: str) -> tuple[str, ...]:
+    """``workflow`` の選択式 ``name`` で、いまの接続先が選べる値（宣言が無ければ空）。"""
+    try:
+        select = get_video_spec(workflow).select(name)
+        if select is None:
+            return ()
+        return select.choices_for_target(load_settings().comfy_target)
+    except (WorkflowSpecError, WorkflowError, OSError):
+        return ()
+
+
+def refine_available() -> bool:
+    """いまの接続先で補正を ON にできるか（UI の出し分け用）。
+
+    3 つとも同じ理由（外部のカスタムノード）で Comfy Cloud では使えないので、
+    代表して t2v の宣言を見る。
+    """
+    return all(
+        "on" in _select_choices(WORKFLOW_T2V, name) for name in REFINE_SELECT_NAMES
+    )
+
+
+#: :func:`refine_available` が偽のときに画面に出す理由
+REFINE_UNAVAILABLE_REASON = (
+    "Comfy Cloud では使えません（ComfyUI-H3-FastDerope / FaceDetail / AnimeCadence と"
+    " ComfyUI-MAINodes のカスタムノードが要るため）。local / RunPod の ComfyUI に"
+    "入れて使ってください"
+)
+
+
+def project_refine(project: StudioProject | None) -> dict[str, bool]:
+    """プロジェクトの補正の設定（論理名 -> ON か。プロジェクトが無ければ全部 OFF）。"""
+    return {
+        name: bool(getattr(project, name, False)) if project is not None else False
+        for name in REFINE_SELECT_NAMES
+    }
+
+
 def _resolve_selects(
-    workflow: str, latent_upscale: bool
+    workflow: str,
+    latent_upscale: bool,
+    refine: dict[str, bool] | None = None,
 ) -> tuple[dict[str, str], str]:
     """``(ジョブに載せる selects, 理由に足す一文)``。
 
-    いまのところ中身は ``latent_upscale`` だけだが、選択式が増えても
-    「ワークフローが宣言していて、接続先が許す値だけを載せる」というこの形の
-    まま足せるようにしてある。宣言の無いワークフローには何も載せない
+    中身は ``latent_upscale`` と補正（``fast_derope`` / ``face_detail`` /
+    ``anime_cadence``。``refine`` に論理名 -> ON か）。「ワークフローが宣言していて、
+    接続先が許す値だけを載せる」。宣言の無いワークフローには何も載せない
     （送っても効かないうえ、ジョブ側の検証を無駄に通すことになる）。
     """
     selects: dict[str, str] = {}
@@ -456,6 +519,24 @@ def _resolve_selects(
                 "いまの接続先はラテントアップスケール（アップスケーラのモデル）に"
                 "対応しないので、アップスケールなしで投入します"
             )
+    dropped: list[str] = []
+    for name in REFINE_SELECT_NAMES:
+        allowed = _select_choices(workflow, name)
+        if not allowed:
+            continue
+        wanted = "on" if (refine or {}).get(name) else "off"
+        if wanted in allowed:
+            selects[name] = wanted
+        else:
+            # Comfy Cloud では off だけ。黙って落とさず理由を出す。
+            selects[name] = "off" if "off" in allowed else allowed[0]
+            dropped.append(REFINE_LABELS.get(name, name))
+    if dropped:
+        reasons.append(
+            "いまの接続先はカスタムノードを入れられないので、"
+            + "・".join(dropped)
+            + "なしで投入します"
+        )
     return selects, " / ".join(reasons)
 
 
@@ -646,6 +727,8 @@ def _row_to_project(row: aiosqlite.Row) -> StudioProject:
     data = dict(row)
     data["latent_continuity"] = bool(data.get("latent_continuity", 0))
     data["latent_upscale"] = bool(data.get("latent_upscale", 1))
+    for name in REFINE_SELECT_NAMES:
+        data[name] = bool(data.get(name, 0))
     data["video_loras"] = _load_video_loras(data.get("video_loras"))
     data["quality"] = normalize_quality(data.get("quality"))
     data["image_quality"] = normalize_quality(data.get("image_quality"))
@@ -799,6 +882,8 @@ async def list_projects() -> list[StudioProjectSummary]:
         data = dict(row)
         data["latent_continuity"] = bool(data.get("latent_continuity", 0))
         data["latent_upscale"] = bool(data.get("latent_upscale", 1))
+        for name in REFINE_SELECT_NAMES:
+            data[name] = bool(data.get(name, 0))
         data["video_loras"] = _load_video_loras(data.get("video_loras"))
         data["quality"] = normalize_quality(data.get("quality"))
         data["image_quality"] = normalize_quality(data.get("image_quality"))
@@ -856,8 +941,9 @@ async def _insert_project(
             "  latent_continuity, quality, megapixels, aspect_ratio, steps,"
             "  nsfw, latent_upscale, image_quality, image_megapixels,"
             "  image_aspect_ratio, image_steps, video_loras, created_at,"
-            "  updated_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "  updated_at, fast_derope, face_detail, anime_cadence)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,"
+            "  ?, ?, ?)",
             (
                 project_id,
                 (payload.name or "").strip(),
@@ -878,6 +964,9 @@ async def _insert_project(
                 _dump_video_loras(payload.video_loras),
                 now,
                 now,
+                1 if payload.fast_derope else 0,
+                1 if payload.face_detail else 0,
+                1 if payload.anime_cadence else 0,
             ),
         )
     except aiosqlite.IntegrityError as exc:
@@ -931,6 +1020,9 @@ async def update_project(
         changes["latent_continuity"] = 1 if changes["latent_continuity"] else 0
     if "latent_upscale" in changes:
         changes["latent_upscale"] = 1 if changes["latent_upscale"] else 0
+    for name in REFINE_SELECT_NAMES:
+        if name in changes:
+            changes[name] = 1 if changes[name] else 0
     if "quality" in changes:
         changes["quality"] = normalize_quality(changes["quality"])
     if "image_quality" in changes:
@@ -3564,7 +3656,7 @@ class _Plan(NamedTuple):
     #: プロジェクトの ``quality`` が実際にバリアントとして効いたか
     #: （False = ``normal`` だった、または素へフォールバックした）
     quality_applied: bool = False
-    #: ジョブに載せる選択式（いまは ``latent_upscale`` だけ。宣言を持たない
+    #: ジョブに載せる選択式（``latent_upscale`` と補正の 3 つ。宣言を持たない
     #: ワークフローや読めない環境では空 = 何も載せない）
     selects: dict[str, str] = {}
     #: 組み立てはできたが投入はできない理由（日本語。``require_context`` を
@@ -3621,6 +3713,7 @@ async def _plan_render(
     project: StudioProject | None = None,
     latent_upscale: bool | None = None,
     *,
+    refine: dict[str, bool | None] | None = None,
     require_context: bool = True,
 ) -> _Plan:
     """モードを決めて ``@素材名`` を解決し、最終プロンプトまで組み立てる。
@@ -3643,7 +3736,9 @@ async def _plan_render(
     ワークフローが決まったら、その宣言と接続先に合わせて選択式
     （``latent_upscale``）を解決する（:func:`_resolve_selects`）。
     ``latent_upscale`` はその 1 回ぶんの上書きで、``None`` ならプロジェクトの
-    設定（それも無ければ :data:`DEFAULT_LATENT_UPSCALE`）に従う。
+    設定（それも無ければ :data:`DEFAULT_LATENT_UPSCALE`）に従う。``refine`` は
+    補正（``fast_derope`` / ``face_detail`` / ``anime_cadence``）の 1 回ぶんの上書きで、
+    値が ``None`` の項目はプロジェクトの設定（無ければ OFF）に従う。
 
     ``require_context`` を False にすると、連続カット（ラテント連続性）の
     引き継ぎ元が無くても断らず、本文だけ同じ形で組み立てて、投入できない理由を
@@ -3671,7 +3766,11 @@ async def _plan_render(
         latent_upscale = (
             project.latent_upscale if project is not None else DEFAULT_LATENT_UPSCALE
         )
-    selects, selects_reason = _resolve_selects(workflow, latent_upscale)
+    wanted_refine = project_refine(project)
+    for name, value in (refine or {}).items():
+        if value is not None and name in wanted_refine:
+            wanted_refine[name] = bool(value)
+    selects, selects_reason = _resolve_selects(workflow, latent_upscale, wanted_refine)
     if selects_reason:
         reason = f"{reason} / {selects_reason}"
     resolved = resolve_mentions(shot.prompt, assets, attach=mode.attach)
@@ -3756,6 +3855,7 @@ async def preview_shot(shot_id: str) -> StudioShotPreview | None:
                     if project is not None
                     else DEFAULT_LATENT_UPSCALE
                 ),
+                **project_refine(project),
                 english_prompt=shot.english_prompt,
                 english_stale=bool(shot.english_prompt),
                 error=str(exc),
@@ -3781,6 +3881,7 @@ async def preview_shot(shot_id: str) -> StudioShotPreview | None:
         quality=quality,
         quality_applied=plan.quality_applied,
         latent_upscale=plan.selects.get(LATENT_UPSCALE_NAME) == "on",
+        **{name: plan.selects.get(name) == "on" for name in REFINE_SELECT_NAMES},
         video_loras=video_loras,
         video_trigger_text=_joined_triggers(video_loras),
         video_lora_warning=lora_warning,
@@ -4087,7 +4188,14 @@ async def render_shot(
             raise StudioError("shot not found")
         project = await _fetch_project(conn, shot.project_id)
         assets = await _fetch_assets(conn, shot.project_id)
-        plan = await _plan_render(conn, shot, assets, project, over.latent_upscale)
+        plan = await _plan_render(
+            conn,
+            shot,
+            assets,
+            project,
+            over.latent_upscale,
+            refine={name: getattr(over, name) for name in REFINE_SELECT_NAMES},
+        )
         workflow = plan.workflow
         prompt = plan.prompt
 
@@ -4104,8 +4212,9 @@ async def render_shot(
             "duration": duration,
             "user_input": shot.title or None,
         }
-        # 選択式（いまは `latent_upscale` だけ）。**この 1 回ぶんの上書き >
-        # プロジェクト > 既定 ON** で決まった値を :func:`_plan_render` が
+        # 選択式（`latent_upscale` と補正 `fast_derope` / `face_detail` /
+        # `anime_cadence`）。**この 1 回ぶんの上書き > プロジェクト > 既定
+        # （latent_upscale は ON、補正は OFF）** で決まった値を :func:`_plan_render` が
         # 接続先に合わせて解決済み。宣言の無いワークフローには載らない。
         if plan.selects:
             fields["selects"] = dict(plan.selects)

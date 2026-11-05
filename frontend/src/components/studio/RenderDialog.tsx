@@ -10,6 +10,9 @@ import { Input } from '../ui/input'
 import { Label } from '../ui/label'
 import {
   MAX_STEPS,
+  REFINE_HINT,
+  REFINE_LABEL,
+  REFINE_NAMES,
   SHOT_DURATION_MAX,
   SHOT_DURATION_MIN,
   formatLoraList,
@@ -25,7 +28,7 @@ import VideoLoraEditor from './VideoLoraEditor'
  * 「生成」ボタンのダイアログ: そのテイク 1 回ぶんの設定。
  *
  * 初期値はいまの解決結果（解像度はカット → プロジェクト、尺はカット、
- * ステップ数・ラテントアップスケール・動画 LoRA はプロジェクト、シードはカットの設定）なので、**何も触らずに
+ * ステップ数・ラテントアップスケール・補正・動画 LoRA はプロジェクト、シードはカットの設定）なので、**何も触らずに
  * 「この設定で生成」を押せば今までどおりの投入**になる。ここで変えた値は
  * その 1 回にだけ効き、カットもプロジェクトも書き換えない。
  */
@@ -66,6 +69,8 @@ export default function RenderDialog({
     onRender(renderRequestFromForm(form, project))
   }
   const errorOf = (name: string) => (showErrors ? errors[name] : undefined)
+  // 補正はカスタムノードが要るので、使えない接続先（Comfy Cloud）では触らせない
+  const refineAvailable = project.refine_available !== false
 
   // 保存済みの候補に無い比（作品側で自由入力したもの）も選択肢に残す。
   const ratios = form.aspect_ratio && !aspectRatios.includes(form.aspect_ratio)
@@ -193,6 +198,38 @@ export default function RenderDialog({
             </div>
           )}
         </div>
+
+        <fieldset className="space-y-2 rounded-md border border-border bg-surface-sunken p-2">
+          <legend className="px-1 text-[11px] text-muted-foreground">補正</legend>
+          {REFINE_NAMES.map((name) => (
+            <div key={name} className="flex items-center gap-2">
+              <Checkbox
+                id={`studio-render-refine-${name}`}
+                checked={form.refine[name]}
+                disabled={!refineAvailable}
+                onCheckedChange={(checked) =>
+                  patch({ refine: { ...form.refine, [name]: checked === true } })
+                }
+              />
+              <Label
+                htmlFor={`studio-render-refine-${name}`}
+                className={
+                  refineAvailable
+                    ? 'cursor-pointer text-foreground/85'
+                    : 'text-muted-foreground'
+                }
+                title={REFINE_HINT[name]}
+              >
+                {REFINE_LABEL[name]}
+              </Label>
+            </div>
+          ))}
+          {!refineAvailable && project.refine_reason && (
+            <p role="note" className="text-[11px] text-muted-foreground">
+              {project.refine_reason}
+            </p>
+          )}
+        </fieldset>
 
         <div className="space-y-2 rounded-md border border-border bg-surface-sunken p-2">
           <div className="flex flex-wrap items-center gap-2">

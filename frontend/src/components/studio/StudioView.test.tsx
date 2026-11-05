@@ -690,6 +690,104 @@ describe('StudioView', () => {
     expect(mocked.updateStudioProject).not.toHaveBeenCalled()
   })
 
+  it('作品設定の補正トグルは独立に PATCH で保存される', async () => {
+    await openProject(detail({ face_detail: true }))
+    mocked.updateStudioProject.mockResolvedValue({})
+    const derope = screen.getByLabelText('速い動きの滲み補正')
+    const face = screen.getByLabelText('引きの画の顔補正')
+    const cadence = screen.getByLabelText('2 コマ / 3 コマ打ち')
+    // 既定は OFF、作品設定で ON にしてあるものだけチェックが入る
+    expect(derope.getAttribute('data-state')).toBe('unchecked')
+    expect(face.getAttribute('data-state')).toBe('checked')
+    expect(cadence.getAttribute('data-state')).toBe('unchecked')
+    expect((derope as HTMLButtonElement).disabled).toBe(false)
+
+    fireEvent.click(cadence)
+    await waitFor(() =>
+      expect(mocked.updateStudioProject).toHaveBeenCalledWith('p1', {
+        anime_cadence: true,
+      }),
+    )
+    fireEvent.click(face)
+    await waitFor(() =>
+      expect(mocked.updateStudioProject).toHaveBeenCalledWith('p1', {
+        face_detail: false,
+      }),
+    )
+  })
+
+  it('Comfy Cloud では補正トグルを無効にして理由を出す', async () => {
+    mocked.getStudioCapabilities.mockResolvedValue({
+      latent_continuity: false,
+      latent_upscale: true,
+      refine: false,
+      refine_reason: 'Comfy Cloud では使えません（カスタムノードが要るため）',
+      error: '',
+    })
+    await openProject(detail({ fast_derope: true }), { comfyTarget: 'comfy_cloud' })
+    const derope = screen.getByLabelText('速い動きの滲み補正') as HTMLButtonElement
+    await waitFor(() => expect(derope.disabled).toBe(true))
+    expect((screen.getByLabelText('引きの画の顔補正') as HTMLButtonElement).disabled).toBe(
+      true,
+    )
+    expect(
+      (screen.getByLabelText('2 コマ / 3 コマ打ち') as HTMLButtonElement).disabled,
+    ).toBe(true)
+    // 作品設定のチェックはそのまま見せる（接続先を戻せばまた効く）
+    expect(derope.getAttribute('data-state')).toBe('checked')
+    expect(
+      screen.getByText('Comfy Cloud では使えません（カスタムノードが要るため）'),
+    ).toBeTruthy()
+    fireEvent.click(derope)
+    expect(mocked.updateStudioProject).not.toHaveBeenCalled()
+  })
+
+  it('生成ダイアログの補正は作品設定から変えたときだけ送る', async () => {
+    await openProject()
+    clickTab('制作')
+    fireEvent.click(rail().getByRole('button', { name: 'カット1' }))
+    mocked.renderStudioShot.mockResolvedValue({})
+    fireEvent.click(await screen.findByRole('button', { name: '生成' }))
+    const dialog = within(await screen.findByRole('dialog'))
+    const derope = dialog.getByLabelText('速い動きの滲み補正')
+    expect(derope.getAttribute('data-state')).toBe('unchecked')
+    fireEvent.click(derope)
+    fireEvent.click(screen.getByRole('button', { name: 'この設定で生成' }))
+    await waitFor(() =>
+      expect(mocked.renderStudioShot).toHaveBeenCalledWith('カット1', {
+        duration: 5,
+        steps: 0,
+        fast_derope: true,
+      }),
+    )
+    expect(mocked.updateStudioProject).not.toHaveBeenCalled()
+  })
+
+  it('Comfy Cloud では生成ダイアログの補正も触れない', async () => {
+    mocked.getStudioCapabilities.mockResolvedValue({
+      latent_continuity: false,
+      latent_upscale: true,
+      refine: false,
+      refine_reason: 'Comfy Cloud では使えません',
+      error: '',
+    })
+    await openProject(detail(), { comfyTarget: 'comfy_cloud' })
+    clickTab('制作')
+    fireEvent.click(rail().getByRole('button', { name: 'カット1' }))
+    // ケーパビリティが返ってから開く
+    await waitFor(() =>
+      expect(
+        (screen.getByLabelText('速い動きの滲み補正') as HTMLButtonElement).disabled,
+      ).toBe(true),
+    )
+    fireEvent.click(await screen.findByRole('button', { name: '生成' }))
+    const dialog = within(await screen.findByRole('dialog'))
+    for (const label of ['速い動きの滲み補正', '引きの画の顔補正', '2 コマ / 3 コマ打ち']) {
+      expect((dialog.getByLabelText(label) as HTMLButtonElement).disabled).toBe(true)
+    }
+    expect(dialog.getByText('Comfy Cloud では使えません')).toBeTruthy()
+  })
+
   it('作品設定のラテントアップスケールを切ると PATCH で保存される', async () => {
     await openProject()
     mocked.updateStudioProject.mockResolvedValue({})
@@ -1196,7 +1294,8 @@ describe('StudioView の接続先プルダウン', () => {
     )
     fireEvent.click(await screen.findByText(current.name))
     await screen.findByRole('tab', { name: '概要' })
-    await waitFor(() => expect(mocked.getStudioCapabilities).toHaveBeenCalledTimes(1))
+    // 画面本体（補正のトグル）と概要タブ（ラテント連続性のトグル）がそれぞれ聞く
+    await waitFor(() => expect(mocked.getStudioCapabilities).toHaveBeenCalledTimes(2))
 
     view.rerender(
       <StudioView
@@ -1205,7 +1304,7 @@ describe('StudioView の接続先プルダウン', () => {
         onComfyTarget={vi.fn()}
       />,
     )
-    await waitFor(() => expect(mocked.getStudioCapabilities).toHaveBeenCalledTimes(2))
+    await waitFor(() => expect(mocked.getStudioCapabilities).toHaveBeenCalledTimes(4))
   })
 })
 

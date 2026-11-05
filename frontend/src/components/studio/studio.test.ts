@@ -26,6 +26,7 @@ import {
   moveId,
   moveShot,
   projectSummary,
+  refineOf,
   renderingJobIds,
   sceneOptions,
   selectedTakeOf,
@@ -618,6 +619,7 @@ describe('renderFormFromShot / renderRequestFromForm', () => {
       fixed_seed: false,
       seed: '',
       latent_upscale: true,
+      refine: { fast_derope: false, face_detail: false, anime_cadence: false },
       video_lora_mode: 'project',
       video_loras: [],
     })
@@ -1075,5 +1077,71 @@ describe('動画 LoRA の変換', () => {
     const base = { quality: 'normal' as const, aspectRatio: null, megapixels: null, steps: 0 }
     expect(formatProjectSettingsSummary({ ...base, videoLoraCount: 2 })).toContain('LoRA 2')
     expect(formatProjectSettingsSummary({ ...base, videoLoraCount: 0 })).not.toContain('LoRA')
+  })
+})
+
+describe('補正（fast_derope / face_detail / anime_cadence）', () => {
+  const unset = {
+    megapixels: null,
+    aspect_ratio: null,
+    steps: 0,
+    latent_upscale: true,
+  }
+
+  it('未設定（古いサーバーの応答）は OFF として読む', () => {
+    expect(refineOf({})).toEqual({
+      fast_derope: false,
+      face_detail: false,
+      anime_cadence: false,
+    })
+    expect(refineOf({ face_detail: true })).toEqual({
+      fast_derope: false,
+      face_detail: true,
+      anime_cadence: false,
+    })
+  })
+
+  it('生成ダイアログの初期値は作品設定で、変えたものだけ送る', () => {
+    const project = { ...unset, fast_derope: true }
+    const form = renderFormFromShot(shot('s1', { duration_seconds: 5 }), project)
+    expect(form.refine).toEqual({
+      fast_derope: true,
+      face_detail: false,
+      anime_cadence: false,
+    })
+    // 触らなければ何も送らない
+    expect(renderRequestFromForm(form, project)).toEqual({ duration: 5, steps: 0 })
+    // 切ったもの・入れたものだけ送る
+    const changed = {
+      ...form,
+      refine: { fast_derope: false, face_detail: false, anime_cadence: true },
+    }
+    expect(renderRequestFromForm(changed, project)).toEqual({
+      duration: 5,
+      steps: 0,
+      fast_derope: false,
+      anime_cadence: true,
+    })
+  })
+
+  it('要約には ON にしてある補正だけ短い名前で出す', () => {
+    const base = {
+      quality: 'normal' as const,
+      aspectRatio: null,
+      megapixels: null,
+      steps: 0,
+    }
+    expect(
+      formatProjectSettingsSummary({
+        ...base,
+        refine: { fast_derope: false, face_detail: false, anime_cadence: false },
+      }),
+    ).toBe('通常 · 既定 · 既定 · おまかせ')
+    expect(
+      formatProjectSettingsSummary({
+        ...base,
+        refine: { fast_derope: true, face_detail: false, anime_cadence: true },
+      }),
+    ).toBe('通常 · 既定 · 既定 · おまかせ · 滲み補正 · コマ打ち')
   })
 })
