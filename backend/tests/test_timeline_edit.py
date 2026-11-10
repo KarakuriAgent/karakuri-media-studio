@@ -145,6 +145,20 @@ def test_zoom_step_colour_and_noise_sit_around_the_tail_hold():
     assert spec.total_frames == 60
 
 
+@pytest.mark.parametrize("zoom", [1.22, 1.37, 1.05, 2.71])
+def test_zoom_resets_the_sample_aspect_after_the_crop(zoom):
+    # 幅と高さを別々に偶数へ丸めると縦横の倍率がずれて SAR が 1 から外れる。
+    # 切り出しのあとで setsar=1 に戻さないと、隣のクリップと concat できない。
+    spec = ExportSpec(
+        width=1080, height=1920, fps=30,
+        clips=[_clip(), _clip(effects=ClipEffects(zoom=zoom))],
+    )
+    graph = _graph(spec)
+    assert "crop=1080:1920:" in graph
+    crop = graph[graph.index("crop=1080:1920:"):]
+    assert crop.split(",")[1] == "setsar=1"
+
+
 def test_image_clips_take_the_zoom_and_colour_too():
     spec = ExportSpec(
         width=640,
@@ -583,6 +597,45 @@ def test_effects_and_ducking_render_the_planned_frames(tmp_path, mode):
         capture_output=True, text=True, check=True,
     ).stdout.strip()
     assert int(frames) == spec.total_frames == 86
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg が無い")
+@pytest.mark.parametrize(
+    ("zoom", "size"),
+    [
+        (1.22, (1080, 1920)),
+        (1.37, (1080, 1920)),
+        (1.22, (1920, 1080)),
+        (1.37, (1280, 720)),
+        (1.13, (720, 1280)),
+    ],
+)
+def test_odd_zoom_factors_render_next_to_plain_clips(tmp_path, zoom, size):
+    # 1.2 なら通り 1.22 で落ちた（拡大後の幅と高さの比が崩れて SAR がずれた）。
+    source, _bgm, _voice = _make_media(tmp_path)
+
+    def clip(**kwargs):
+        return ExportClip(path=str(source), has_audio=True,
+                          source_duration_ms=3000, **kwargs)
+
+    width, height = size
+    spec = ExportSpec(
+        width=width, height=height, fps=24,
+        clips=[
+            clip(in_ms=0, out_ms=500, duration_ms=500),
+            clip(in_ms=500, out_ms=1000, duration_ms=500,
+                 effects=ClipEffects(zoom=zoom, zoom_x=0.3, zoom_y=0.7)),
+            clip(in_ms=1000, out_ms=1500, duration_ms=500),
+        ],
+    )
+    output = tmp_path / "zoom.mp4"
+    asyncio.run(timeline_export.run_export(spec, output))
+    frames = subprocess.run(
+        ["ffprobe", "-v", "error", "-count_frames", "-select_streams", "v",
+         "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0", str(output)],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert int(frames) == spec.total_frames == 36
 
 
 @pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg が無い")

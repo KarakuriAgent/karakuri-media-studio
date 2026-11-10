@@ -573,7 +573,14 @@ def effect_filters(
         scaled_w, scaled_h = _even(width * zoom), _even(height * zoom)
         x = int(round((scaled_w - width) * _clamp(effects.zoom_x, 0.0, 1.0)))
         y = int(round((scaled_h - height) * _clamp(effects.zoom_y, 0.0, 1.0)))
-        before.append(f"scale={scaled_w}:{scaled_h},crop={width}:{height}:{x}:{y}")
+        # 拡大した幅と高さはそれぞれ偶数へ丸めるので、縦横の倍率がわずかに
+        # ずれる（1080x1920 の 1.22 倍は 1318x2342 = 横 1.2204・縦 1.2198）。
+        # ``scale`` は表示の比を保とうとして SAR を 1 からずらすので、切り出した
+        # あとで SAR を 1 に戻す（戻さないと、隣のクリップと ``concat`` で
+        # 「Input link parameters do not match」になって書き出しが落ちる）。
+        before.append(
+            f"scale={scaled_w}:{scaled_h},crop={width}:{height}:{x}:{y},setsar=1"
+        )
     step = int(_clamp(effects.step, STEP_MIN, STEP_MAX))
     if step > 1:
         # n コマに 1 枚だけ残してから出力の fps に戻す（同じ画が n 枚続く）。

@@ -2058,7 +2058,9 @@ EDL → ffmpeg コマンドの**組み立ては純関数**（`build_command`）�
   - **逆再生**（`reverse`）… 切り出した区間を `reverse` / `areverse` してから速度を掛ける
     （`speed` と併用できる）
   - **寄り**（`zoom: {scale, x, y}`）… 規格の大きさを `scale` 倍に拡大し、画面比の位置
-    `x` / `y`（0.5 = 真ん中）を中心に規格の大きさで `crop`
+    `x` / `y`（0.5 = 真ん中）を中心に規格の大きさで `crop` し、`setsar=1` に戻す
+    （拡大した幅と高さを別々に偶数へ丸めると縦横の倍率がわずかにずれて SAR が 1 から
+    外れ、隣のクリップと `concat` できずに落ちる。1080x1920 の 1.22 倍などで起きていた）
   - **コマ打ち**（`step` = 2〜4）… `fps=<fps/n>,fps=<fps>`（出力の fps のまま n コマごとに
     同じ画）
   - **色**（`color: {saturation, contrast, brightness, gamma}`）… `eq`。**ノイズ**（`noise`
