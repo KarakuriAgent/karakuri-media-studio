@@ -510,7 +510,13 @@ export function splitClipAt(
 
 /** リタイムの範囲（サーバーの検証と同じ値）。 */
 export const SPEED_MIN = 0.25
-export const SPEED_MAX = 4
+export const SPEED_MAX = 30
+
+/** 書き出しで音を鳴らす速さの上限（これより速いクリップは無音。サーバーと同じ値）。 */
+export const AUDIO_SPEED_MAX = 4
+
+/** ブラウザの `playbackRate` が受けられる上限（Chrome は 16 を超えると例外）。 */
+export const PREVIEW_RATE_MAX = 16
 
 /** インスペクタに出す速度のプリセット。 */
 export const SPEED_PRESETS = [0.5, 1, 1.5, 2]

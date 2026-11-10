@@ -16,6 +16,7 @@ from app.models import (
     StudioTimeline,
     StudioTimelineDetail,
     TimelineClip,
+    TimelineClipEffects,
     TimelineClipInput,
     TimelineTrack,
 )
@@ -1751,6 +1752,29 @@ def test_build_command_retimes_video_and_audio():
     assert graph.count("atempo=2") == 2
 
 
+def test_build_command_silences_audio_above_the_audio_speed_limit():
+    spec = ExportSpec(
+        width=640,
+        height=360,
+        fps=24,
+        clips=[
+            ExportClip(
+                path="/x/fast.mp4", in_ms=0, out_ms=30000, duration_ms=1000,
+                speed=30.0,
+            )
+        ],
+    )
+    command = build_command(spec, "/o.mp4")
+    graph = command[command.index("-filter_complex") + 1]
+    assert "setpts=(PTS-STARTPTS)/30" in graph
+    # 30 倍の音は鳴らさない（atempo を重ねず、無音を充てる）
+    assert "atempo" not in graph
+    assert "[0:a]" not in graph
+    assert "anullsrc" in " ".join(command)
+    # 映像は 24 枚 + 余分 1 枚ぶんを素材から取る（30 倍なので 31.25 秒まで）
+    assert "trim=start=0.000000:end=31.250000" in graph
+
+
 def test_build_command_loops_a_still_image_into_a_clip():
     spec = ExportSpec(
         width=1280,
@@ -2010,10 +2034,22 @@ def test_validate_clips_accepts_a_retimed_clip():
     service.validate_clips([_input(duration_ms=2000, in_ms=0, out_ms=4000, speed=2.0)])
 
 
+def test_validate_clips_accepts_a_fast_rewind():
+    # 30 秒ぶんを 30 倍速 = 1 秒（逆再生と組み合わせて一瞬で巻き戻す）
+    service.validate_clips(
+        [
+            _input(
+                duration_ms=1000, in_ms=0, out_ms=30000, speed=30.0,
+                effects=TimelineClipEffects(reverse=True),
+            )
+        ]
+    )
+
+
 def test_validate_clips_rejects_a_speed_outside_the_range():
     with pytest.raises(service.TimelineError, match="速度は"):
         service.validate_clips(
-            [_input(duration_ms=125, in_ms=0, out_ms=1000, speed=8.0)]
+            [_input(duration_ms=25, in_ms=0, out_ms=1000, speed=40.0)]
         )
 
 

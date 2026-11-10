@@ -639,6 +639,42 @@ def test_odd_zoom_factors_render_next_to_plain_clips(tmp_path, zoom, size):
 
 
 @pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg が無い")
+@pytest.mark.parametrize("reverse", [False, True])
+def test_fast_rewind_renders_the_planned_frames(tmp_path, reverse):
+    # 12 秒ぶんを 30 倍 = 0.4 秒。映像は間引き、音は無音（AUDIO_SPEED_MAX 超え）。
+    source = tmp_path / "long.mp4"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+         "testsrc2=s=320x180:r=30:d=13", "-f", "lavfi", "-i", "sine=f=440:d=13",
+         "-shortest", "-c:v", "libx264", "-pix_fmt", "yuv420p", "-c:a", "aac",
+         str(source)],
+        check=True,
+    )
+
+    def clip(**kwargs):
+        return ExportClip(path=str(source), has_audio=True,
+                          source_duration_ms=13000, **kwargs)
+
+    spec = ExportSpec(
+        width=320, height=180, fps=30, loudnorm=False,
+        clips=[
+            clip(in_ms=0, out_ms=1000, duration_ms=1000),
+            clip(in_ms=500, out_ms=12500, duration_ms=400, speed=30.0,
+                 effects=ClipEffects(reverse=reverse)),
+            clip(in_ms=0, out_ms=1000, duration_ms=1000),
+        ],
+    )
+    output = tmp_path / "rewind.mp4"
+    asyncio.run(timeline_export.run_export(spec, output))
+    frames = subprocess.run(
+        ["ffprobe", "-v", "error", "-count_frames", "-select_streams", "v",
+         "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0", str(output)],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert int(frames) == spec.total_frames == 72
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg が無い")
 def test_clip_ducking_lowers_by_exactly_the_amount(tmp_path):
     _source, bgm, _voice = _make_media(tmp_path)
     expression = duck_expression([(1000, 2000)], 10, 100, 300)

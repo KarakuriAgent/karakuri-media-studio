@@ -675,7 +675,7 @@ GET /api/v1/jobs?q=かおり&kind=video&nsfw=false&limit=48&offset=0
 ```json
 {"track_id": "<V1>", "start_ms": 0, "duration_ms": 1500,
  "source_kind": "library", "source_id": "<動画>", "in_ms": 2000, "out_ms": 3500,
- "speed": 1.0,
+ "speed": 1.0,               // 0.25〜30（映像クリップだけ。4 倍を超えると音は無音）
  "effects": {
    "freeze": false,            // in_ms の 1 コマを duration_ms のあいだ止める（音は無音）
    "reverse": false,           // in_ms〜out_ms を逆再生（音も。speed と併用可）
@@ -691,6 +691,9 @@ GET /api/v1/jobs?q=かおり&kind=video&nsfw=false&limit=48&offset=0
 - **止め絵は尺だけを持つ**: `duration_ms` がそのまま尺で、`out_ms` と速度のつじつまは
   見ない（`speed` は 1 のみ）。`in_ms` が素材の外なら最後のコマで止め、書き出しの
   `warnings` に `FREEZE …` が出る
+- 速度（`speed`）は 0.25〜30。4 倍を超えるクリップは書き出しの音を鳴らさない（映像は
+  間引き）。`{"reverse": true}` と `speed: 30` で 30 秒ぶんを 1 秒で巻き戻せる
+  （`duration_ms = (out_ms - in_ms) / speed`）
 - 範囲: 寄り 1〜4・中心 0〜1・コマ打ち 1〜4・彩度 / コントラスト 0〜3・明るさ -1〜1・
   ガンマ 0.1〜4・ノイズ 0〜1（外れたら 400）
 - どの加工も書き出しのフレーム数は変えない（`frames` と `warnings` の検算はそのまま効く）

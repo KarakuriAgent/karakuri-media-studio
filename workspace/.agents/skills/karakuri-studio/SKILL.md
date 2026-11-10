@@ -315,7 +315,7 @@ cwd として書いてある。
 ```
 PUT /timelines/{id}/clips   … 各クリップに "effects":
   {"freeze": true}                                  # in_ms の 1 コマを duration_ms 止める（速度 1・音は無音）
-  {"reverse": true}                                 # 逆再生（speed と併用可）
+  {"reverse": true}                                 # 逆再生（speed と併用可。speed は 0.25〜30）
   {"zoom": {"scale": 1.2, "x": 0.5, "y": 0.3}}      # 1.2 倍・上寄り
   {"step": 2}                                       # 2 コマ打ち
   {"color": {"saturation": 0.6, "contrast": 1.15}, "noise": 0.5}   # 巻き戻し風
@@ -326,6 +326,9 @@ PATCH /timelines/{id}/tracks/{BGM のトラック}
 
 - 加工もダッキングも**書き出しでだけ効く**（プレビューには出ない）。書き出した mp4 を
   `inspect.sh` かコンタクトシートで見て確かめる
+- 一瞬の巻き戻しは 1 本のクリップで書ける: `"speed": 30` + `{"reverse": true}`
+  （30 秒ぶんが 1 秒。`duration_ms = (out_ms - in_ms) / speed`）。4 倍を超えると
+  そのクリップの音は無音になるので、巻き戻しの効果音は音声トラックに置く
 - 止め絵は `duration_ms` がそのまま尺（`out_ms` は見ない）。素材の外を指すと
   `warnings` に `FREEZE …` が出る
 - 声は 1 行ずつクリップにして別トラック（A2 など）に置き、BGM のトラックに

@@ -2046,8 +2046,13 @@ EDL → ffmpeg コマンドの**組み立ては純関数**（`build_command`）�
   （`offset = ここまでの全長 - 重なり`）。種別は `TRANSITIONS` が xfade 名へマップする
   （crossfade → `fade` / fadeblack / fadewhite / wipeleft / wiperight / slideleft /
   slideright / circleopen / pixelize）
-- **リタイム**は `setpts=(PTS-STARTPTS)/speed` と `atempo`。`atempo` は 0.5〜2.0 しか
-  取れないので、積が `speed` になる並びへ割る（純関数 `atempo_chain`）
+- **リタイム**（`speed` = 0.25〜30。映像クリップだけ）は `setpts=(PTS-STARTPTS)/speed` と
+  `atempo`。`atempo` は 0.5〜2.0 しか取れないので、積が `speed` になる並びへ割る（純関数
+  `atempo_chain`）。映像は出力の `fps` で間引かれる（30 倍なら素材の 30 秒が 1 秒）。
+  **音は 4 倍（`AUDIO_SPEED_MAX`）まで**で、それより速いクリップの音は鳴らさず無音を充てる
+  （`atempo` を何段も重ねた早回しは聞き取れず、短いクリップではぶつ切りになる）。逆再生と
+  組み合わせると「長い区間を一瞬で巻き戻す」を 1 本のクリップで書ける。フレーム数の計画と
+  検算は速度に関わらずそのまま効く。プレビューはブラウザの上限（`playbackRate` 16）で頭打ち
 - **静止画クリップ**は `-loop 1 -t` で尺ぶんの映像にしてから同じ規格へ（音は無音）
 - **映像クリップの加工**（`timeline_clips.effects`。**書き出しにだけ効き、プレビューには
   出ない**）。どれも規格へ揃えたあと・最後の `trim=end_frame` の前に挟むので、フレーム数の

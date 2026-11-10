@@ -11,6 +11,8 @@ import type {
 import { Section } from '../ui'
 import { Button } from '../ui/button'
 import {
+  AUDIO_SPEED_MAX,
+  PREVIEW_RATE_MAX,
   SPEED_MAX,
   SPEED_MIN,
   SPEED_PRESETS,
@@ -171,7 +173,8 @@ export default function ClipInspector({
             </div>
             <p className="text-[10px] text-muted-foreground">
               切り出しはそのままで、タイムライン上の長さだけが変わります
-              （{SPEED_MIN}〜{SPEED_MAX} 倍）。
+              （{SPEED_MIN}〜{SPEED_MAX} 倍）。{AUDIO_SPEED_MAX} 倍を超えると書き出しの音は
+              無音になります（映像は間引き。プレビューは {PREVIEW_RATE_MAX} 倍まで）。
             </p>
           </div>
         )}

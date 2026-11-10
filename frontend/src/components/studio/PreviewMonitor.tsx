@@ -9,6 +9,7 @@ import {
   clipAt,
   clipsOfTrack,
   formatTimecode,
+  PREVIEW_RATE_MAX,
   speedOf,
   subtitleStyle,
   subtitleText,
@@ -113,7 +114,9 @@ export default function PreviewMonitor({
     if (!current) return
     const element = videos.current.get(current.clip.id)
     if (!element) return
-    element.playbackRate = speedOf(current.clip)
+    // ブラウザの再生速度には上限がある（超えると例外）。プレビューはそこで頭打ちにして、
+    // 遅れたぶんは下のシークで追いつかせる（書き出しは指定どおりの速さで焼く）。
+    element.playbackRate = Math.min(speedOf(current.clip), PREVIEW_RATE_MAX)
     const wanted =
       (current.clip.in_ms + current.offsetMs * speedOf(current.clip)) / 1000
     if (Math.abs(element.currentTime - wanted) > 0.25) {

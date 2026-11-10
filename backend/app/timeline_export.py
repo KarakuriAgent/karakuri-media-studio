@@ -8,7 +8,8 @@
 - **映像トラック（V1）** … クリップごとに ``trim`` + ``setpts`` で切り出し、
   ``scale`` + ``pad``（または ``crop``）+ ``setsar`` + ``fps`` でタイムラインの
   規格へ正規化する。音声も ``atrim`` + ``asetpts`` + ``aresample`` + ``aformat``
-  で揃える。速度を変えたクリップは ``setpts`` / ``atempo`` が入る。
+  で揃える。速度を変えたクリップは ``setpts`` / ``atempo`` が入る（映像は出力の
+  ``fps`` で間引かれる。:data:`AUDIO_SPEED_MAX` を超える速さの音は無音にする）。
 - **静止画クリップ** … ``-loop 1 -t`` で尺ぶんの映像にしてから同じ規格へ。
 - **繋ぎ（トランジション）** … **オーバーラップ方式**。繋ぎのないところは
   ``concat`` のまま繋ぎ、繋ぎのあるところで ``xfade`` / ``acrossfade`` に切り替える
@@ -89,9 +90,16 @@ TRANSITIONS: dict[str, str] = {
 TRANSITION_MIN_MS = 200
 TRANSITION_MAX_MS = 2000
 
-#: リタイムの範囲（``timeline_clips.speed``）
+#: リタイムの範囲（``timeline_clips.speed``）。上は「長い区間を一瞬で巻き戻す」
+#: ような演出を 1 本のクリップで書けるよう 30 倍まで取る（映像は ``fps`` で間引く）
 SPEED_MIN = 0.25
-SPEED_MAX = 4.0
+SPEED_MAX = 30.0
+
+#: 音を ``atempo`` で速めて鳴らす上限。これより速いクリップの音は鳴らさない
+#: （無音を充てる）。``atempo`` を何段も重ねると声も音楽も聞き取れない早回しに
+#: なるうえ、尺の短いクリップでは数十ミリ秒のぶつ切りになるため。早回しの音が
+#: 要るなら音声トラックに効果音を置く
+AUDIO_SPEED_MAX = 4.0
 
 #: ``atempo`` が 1 段で受けられる範囲（外れる速度は掛け算に分解する）
 ATEMPO_MIN = 0.5
@@ -809,7 +817,7 @@ def _add_clip(
         + f"[{video_label}]"
     )
 
-    if clip.has_audio:
+    if clip.has_audio and speed <= AUDIO_SPEED_MAX + 1e-9:
         # 音は素材の尺ぶんだけ切り出し、足りなければ無音で埋めてから映像と
         # 同じ長さに切る（映像と音の長さが違うまま concat に渡さない）。
         audio_end = _frame_seconds(start_frame + frames * speed, fps_value)
@@ -832,7 +840,8 @@ def _add_clip(
         chain += f",apad=whole_dur={duration},atrim=end={duration},asetpts=PTS-STARTPTS"
         graph.filters.append(f"{chain}[{audio_label}]")
     else:
-        # 音声を持たないソース。繋ぎ方に関わらず全クリップに同じ本数の
+        # 音声を持たないソース（と、音を鳴らさない速さ :data:`AUDIO_SPEED_MAX`
+        # を超えたクリップ）。繋ぎ方に関わらず全クリップに同じ本数の
         # ストリームが要るので、尺ぶんの無音を足して形を揃える。
         graph.silence(duration, audio_label)
 
