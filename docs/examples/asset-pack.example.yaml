@@ -77,6 +77,13 @@ items:
     category: effect-line
     download_url: https://sfx.example.com/packs/effect_lines.zip
 
+  # SVG は透過を保ったまま PNG にして入る（長辺は svg_size px。省略すると 2048）
+  - member: effects/marks/sweat_drop.svg
+    source: example-sfx
+    category: manga-mark
+    svg_size: 1024
+    download_url: https://sfx.example.com/packs/effect_lines.zip
+
   # 手で置く入手元の ZIP（受け取り口に calm_pack.zip を置く）
   - member: loops/calm_loop_short.mp3
     archive: calm_pack.zip

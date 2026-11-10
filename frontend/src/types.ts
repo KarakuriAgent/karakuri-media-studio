@@ -522,6 +522,10 @@ export interface LibraryMediaInfo {
   height: number | null
   has_alpha: boolean | null
   has_audio: boolean | null
+  /** 取り込むときに変換したなら元の形式（`svg` など）と、元のファイル（古い記録には無い）。 */
+  converted_from?: string | null
+  original_url?: string | null
+  original_path?: string | null
 }
 
 export interface LibraryItem {

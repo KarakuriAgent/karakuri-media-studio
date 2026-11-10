@@ -352,6 +352,9 @@ GET  /library/packs/imports/{id}                          # status: done まで�
   何件でも取れ、ZIP は 1 回の取り込みで 1 度だけ取る。`member` は
   `POST /library/packs/archive {"url": "<ZIP の URL>"}` の `entries[].path` から写す
   （`usable: false` の物は取り込めない）。中身を見るために ZIP を別の方法で落とさない
+- **SVG はそのまま目録・アップロードに書いてよい**: 透過を保った PNG にして入る（長辺は
+  素材ごとの `svg_size`、アップロードはフォームの `svg_size`。既定 2048px）。元の SVG は
+  `media_info.original_url` に残る。自分で PNG に変換しに行かない
 - 目録と素材のファイルはリポジトリにも `workspace/` の共有物にも入れない（利用者の手元）。
   Docker のアプリにはホストのパスが見えないので、目録は `manifest_text` で渡す
 - 結果の `blocked`（robots.txt で禁止）・`missing`・`failed`・`changed` は人に伝える。

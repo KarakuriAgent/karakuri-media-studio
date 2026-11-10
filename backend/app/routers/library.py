@@ -224,10 +224,12 @@ async def upload_to_library(
     category: str = "",
     nsfw: bool = False,
     license: str = "",
+    svg_size: int = 0,
 ) -> LibraryItem:
     """multipart で送られたファイルを ``library/{kind}/`` に入れる。
 
     ``license`` はライセンス情報の JSON（:class:`app.models.LibraryLicense`。空なら付けない）。
+    SVG は PNG にして入れる（長辺 ``svg_size`` px。0 なら既定の 2048）。
     """
     try:
         return await service.add_upload(
@@ -239,6 +241,7 @@ async def upload_to_library(
             name=name,
             nsfw=nsfw,
             license=license,
+            svg_size=svg_size,
         )
     except service.LibraryError as exc:
         raise _bad_request(exc) from exc
@@ -252,14 +255,16 @@ async def upload_detecting_kind(
     category: str = "",
     nsfw: bool = False,
     license: str = "",
+    svg_size: int = 0,
 ) -> LibraryItem:
     """種別を書かずに送られたファイルを、拡張子 / MIME で振り分けて入れる。"""
     try:
-        kind = service.detect_kind(file.filename or "", file.content_type)
+        kind = service.detect_source_kind(file.filename or "", file.content_type)
     except service.LibraryError as exc:
         raise _bad_request(exc) from exc
     return await upload_to_library(
-        kind, file, name=name, tags=tags, category=category, nsfw=nsfw, license=license
+        kind, file, name=name, tags=tags, category=category, nsfw=nsfw, license=license,
+        svg_size=svg_size,
     )
 
 
@@ -325,13 +330,16 @@ async def upload_any(
     nsfw: bool = Form(False),
     #: ライセンス情報の JSON（LibraryLicense。空なら付けない）
     license: str = Form(""),
+    #: SVG を PNG にするときの長辺（px。0 なら既定の 2048）
+    svg_size: int = Form(0),
 ) -> LibraryItem:
     """種別を指定せずに 1 ファイル入れる（拡張子 / MIME で image / video / audio）。
 
     ``/{kind}`` より先に定義しておく（後ろだと `kind='upload'` として食われる）。
     """
     return await upload_detecting_kind(
-        file, name=name, tags=tags, category=category, nsfw=nsfw, license=license
+        file, name=name, tags=tags, category=category, nsfw=nsfw, license=license,
+        svg_size=svg_size,
     )
 
 
@@ -477,10 +485,13 @@ async def upload(
     nsfw: bool = Form(False),
     #: ライセンス情報の JSON（LibraryLicense。空なら付けない）
     license: str = Form(""),
+    #: SVG を PNG にするときの長辺（px。0 なら既定の 2048）
+    svg_size: int = Form(0),
 ) -> LibraryItem:
-    """手元のファイルをライブラリに追加する（種別ごとの拡張子のみ）。"""
+    """手元のファイルをライブラリに追加する（種別ごとの拡張子のみ。SVG は PNG にする）。"""
     return await upload_to_library(
-        kind, file, name=name, tags=tags, category=category, nsfw=nsfw, license=license
+        kind, file, name=name, tags=tags, category=category, nsfw=nsfw, license=license,
+        svg_size=svg_size,
     )
 
 

@@ -732,7 +732,7 @@ GET /api/v1/jobs?q=かおり&kind=video&nsfw=false&limit=48&offset=0
 | `pack` | パックの id（英数字と `. _ -`、64 文字まで。取り込んだ素材の識別と受け取り口のフォルダ名） |
 | `name` / `description` | 表示用 |
 | `sources[]` | 入手元ごと: `id`・`name`（入手元の名前）・`url`・`terms_url`・`terms_summary`（規約の要点）・`checked_at`（規約を確かめた日）・`credit_required`・`credit_text`・`content_id`（Content ID の扱いのメモ）・`notes`・`acquire`（`auto` = 取得元の URL から取る〈既定〉/ `manual` = 人が受け取り口に置く）・`interval_seconds`（`auto` の間隔。2 秒より短くはしない） |
-| `items[]` | 素材ごと: `file`（ファイル名。`member` を書けば省略でき、そのパスの最後の名前になる）・`source`（入手元の `id`）・`kind`（`image` / `video` / `audio`。省略すると拡張子から）・`category`（自由な分類。タグにも入る。`character` / `background` / `prop` ならライブラリの分類にもなる）・`tags`・`name`・`description`・`download_url`（取得元。`auto` で使う）・`page_url`（素材のページ）・`credit_text`・`sha256`（任意。YAML では引用符で囲む。`member` のときは ZIP の中のそのファイルの sha256）・`member`（ZIP の中のパス。下の「アーカイブ」）・`archive`（`manual` で `member` を取り出す受け取り口の ZIP のファイル名） |
+| `items[]` | 素材ごと: `file`（ファイル名。`member` を書けば省略でき、そのパスの最後の名前になる）・`source`（入手元の `id`）・`kind`（`image` / `video` / `audio`。省略すると拡張子から）・`category`（自由な分類。タグにも入る。`character` / `background` / `prop` ならライブラリの分類にもなる）・`tags`・`name`・`description`・`download_url`（取得元。`auto` で使う）・`page_url`（素材のページ）・`credit_text`・`sha256`（任意。YAML では引用符で囲む。`member` のときは ZIP の中のそのファイルの sha256）・`member`（ZIP の中のパス。下の「アーカイブ」）・`archive`（`manual` で `member` を取り出す受け取り口の ZIP のファイル名）・`svg_size`（SVG を PNG にするときの長辺 px。16〜8192、既定 2048。下の「SVG」） |
 
 ```
 POST /api/v1/library/packs/import                       → 202 {id, status: "queued", …}
@@ -765,6 +765,12 @@ POST /api/v1/library/packs/archive                      → 200 ZIP の中身の
   超える ZIP、展開後 500MB を超えるファイル、圧縮率が 200 倍を超える 16MB 以上のファイル
   （ZIP 爆弾のおそれ）、1 回の取り込みで合計 4GB を超える取り出しは断る（`failed`）。
   ZIP でない物が返ったら、その ZIP の素材はすべて `failed`
+- **SVG**: `file`（か `member`）が `.svg` の素材は画像として受け付け、**透過を保ったまま PNG に
+  して**登録する（長辺は素材ごとの `svg_size`、既定 2048px。縦横比は `viewBox` か
+  `width` / `height` から）。元の SVG は `library/originals/` に残し、`media_info` の
+  `converted_from: "svg"`・`original_url`・`original_path` から辿れる（棚の項目を消すと一緒に
+  消える）。`sha256` は元の SVG（ZIP の中なら取り出した SVG）について確かめる。ラスタライズは
+  ffmpeg の librsvg で、SVG は外のファイル・URL を参照しない（読めない SVG は `failed`）
 - **ZIP の中身の一覧**（`POST /library/packs/archive`）: 目録の `member` を書く助け。
   `url` は自動の入手元と同じ決まりで取り（取った物は上の置き場に取っておく）、`path` は
   アプリから見える ZIP（受け取り口に置いた物など）を読む。返すのは
@@ -785,6 +791,9 @@ POST /api/v1/library/packs/archive                      → 200 ZIP の中身の
 
 - アップロード（`POST /library/image` / `audio` / `upload`）のフォームに `license`
   （JSON の文字列）を添える
+- アップロード（`POST /library/image` / `upload`）も **SVG を PNG にして**入れる（フォームの
+  `svg_size` で長辺 px。省略か 0 で 2048）。変換した項目には `media_info`（大きさ・透過と
+  `converted_from`・`original_url`）が付く
 - `PATCH /library/{id}` の `license`: 送れば丸ごと置き換え、`null` で外す、送らなければそのまま
 - 項目: `provider`・`provider_url`・`page_url`・`download_url`・`terms_url`・`terms_summary`・
   `credit_required`・`credit_text`・`checked_at`・`content_id`・`notes`（と、パックが入れる

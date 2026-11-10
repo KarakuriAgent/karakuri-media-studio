@@ -38,7 +38,6 @@ import hashlib
 import json
 import logging
 import re
-import shutil
 import time
 import urllib.parse
 import urllib.robotparser
@@ -48,7 +47,7 @@ from typing import Any
 
 from . import archives
 from . import library as library_service
-from . import media_measure
+from . import media_convert, media_measure
 from .db import get_db
 from .ids import new_id
 from .models import (
@@ -189,6 +188,11 @@ def check_manifest(manifest: AssetPackManifest) -> AssetPackManifest:
             library_service.check_source_extension(kind, Path(item.file).suffix)
         except library_service.LibraryError as exc:
             raise AssetPackError(f"{where}: {exc}") from exc
+        if item.svg_size is not None:
+            try:
+                media_convert.check_svg_size(item.svg_size)
+            except media_convert.ConvertError as exc:
+                raise AssetPackError(f"{where}: {exc}") from exc
         if item.sha256 and not re.fullmatch(r"[0-9a-fA-F]{64}", item.sha256):
             raise AssetPackError(f"{where}: sha256 は 16 進 64 文字で書いてください")
     return manifest
@@ -530,16 +534,13 @@ async def _register(
     kind = library_service.check_kind(
         item.kind or library_service.detect_source_kind(item.file)
     )
-    ext = library_service.check_extension(kind, Path(item.file).suffix)
-    dest = (
-        library_service.kind_dir(kind)
-        / f"{library_service.safe_stem(Path(item.file).stem)}_{new_id()}{ext}"
+    # SVG は PNG にして置く（元の SVG は library/originals/ に残る）
+    dest, converted = await library_service.store_source(
+        kind, item.file, data=data, origin=origin, svg_size=item.svg_size
     )
-    if origin is not None:
-        shutil.copy2(origin, dest)
-    else:
-        dest.write_bytes(data or b"")
-    media_info = await media_measure.measure(dest, kind)
+    media_info = library_service.merge_conversion(
+        await media_measure.measure(dest, kind), converted
+    )
     category = item.category.strip()
     tags = [*item.tags, *([category] if category else []), manifest.pack]
     return await library_service._insert(

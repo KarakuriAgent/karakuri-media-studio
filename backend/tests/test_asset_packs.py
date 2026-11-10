@@ -121,8 +121,9 @@ def test_the_example_manifest_parses():
     parsed = asset_packs.parse_manifest(EXAMPLE.read_text(encoding="utf-8"))
     assert parsed.pack == "example-sfx-pack"
     assert [source.acquire for source in parsed.sources] == ["auto", "manual"]
-    assert len(parsed.items) == 6
+    assert len(parsed.items) == 7
     assert [item.member for item in parsed.items][3] == "effects/lines/speed_lines_01.png"
+    assert parsed.items[5].svg_size == 1024
     assert parsed.items[3].file == "speed_lines_01.png"
 
 

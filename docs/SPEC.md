@@ -1614,6 +1614,11 @@ CREATE TABLE library_pack_imports (
   だけをメモリへ読み出す（`app/archives.py`。危ないパス・暗号化・数と大きさの上限・極端な圧縮率を
   断る）。同じ ZIP は 1 回の取り込みで 1 度だけ取り、`<DATA_DIR>/packs/_archives/` に 24 時間
   取っておく。中身の一覧は `POST /api/v1/library/packs/archive`（`url` か `path`）。
+  SVG は透過を保ったまま PNG にして登録する（`app/media_convert.py`。ffmpeg の librsvg で長辺
+  `svg_size`〈既定 2048px〉にラスタライズし、乗算済みのアルファを Pillow で外す）。元の SVG は
+  `library/originals/` に残し、`media_info.converted_from` / `original_url` / `original_path` に
+  記録する（項目を消すと一緒に消す）。アップロード（`/library/image`・`/library/upload`）も同じ
+  変換を通る（`library.store_source`）
   タグ・分類・`license`・`media_info`（`app/media_measure.py`。ffprobe・loudnorm・Pillow）付きで
   登録し、登録済みは飛ばす（手で置いた素材の中身が変わっていれば `changed` で知らせる）。
   取り込みは裏で 1 本ずつ走り、状態は `library_pack_imports`

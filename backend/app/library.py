@@ -25,6 +25,7 @@ from pathlib import Path
 
 from . import blocking as blocking_render
 from . import contact_sheet as contact_sheets
+from . import media_convert, media_measure
 from . import sheets, sprites, textimage
 from .db import get_db
 from .ids import new_id
@@ -50,6 +51,17 @@ ALLOWED_EXT: dict[str, set[str]] = {
 }
 
 KINDS: tuple[str, ...] = ("image", "video", "audio")
+
+#: 取り込みの入り口（アップロード・素材パック）だけが受け付け、変換してから棚へ置く
+#: 拡張子（:mod:`app.media_convert`。SVG は PNG にする）
+CONVERTIBLE_EXT: dict[str, set[str]] = {
+    "image": {media_convert.SVG_EXT},
+    "video": set(),
+    "audio": set(),
+}
+
+#: 変換する前の元のファイルの置き場（``library/originals/``）
+ORIGINALS = "originals"
 
 #: 素材の分類（棚の仕切り。1 件に 1 つだけ持つ）。これ以外は未分類（DB は NULL）
 CATEGORIES: tuple[str, ...] = ("character", "background", "prop")
@@ -161,8 +173,13 @@ def detect_kind(filename: str, content_type: str | None = None) -> str:
 def detect_source_kind(filename: str, content_type: str | None = None) -> str:
     """取り込みの入り口（アップロード・素材パック）で受け付けるファイルの種別。
 
-    棚にそのまま置ける拡張子（:data:`ALLOWED_EXT`）は :func:`detect_kind` と同じ。
+    棚にそのまま置ける拡張子（:data:`ALLOWED_EXT`）は :func:`detect_kind` と同じで、
+    それに変換して取り込む拡張子（:data:`CONVERTIBLE_EXT`。SVG など）が加わる。
     """
+    ext = Path(filename or "").suffix.lower()
+    for kind in KINDS:
+        if ext in CONVERTIBLE_EXT[kind]:
+            return kind
     return detect_kind(filename, content_type)
 
 
@@ -178,7 +195,63 @@ def check_extension(kind: str, suffix: str) -> str:
 
 def check_source_extension(kind: str, suffix: str) -> str:
     """取り込みの入り口で受け付ける拡張子か（:func:`detect_source_kind` と対）。"""
+    if suffix.lower() in CONVERTIBLE_EXT.get(kind, set()):
+        return suffix.lower()
     return check_extension(kind, suffix)
+
+
+async def store_source(
+    kind: str,
+    filename: str,
+    *,
+    data: bytes | None = None,
+    origin: Path | None = None,
+    svg_size: object = None,
+) -> tuple[Path, LibraryMediaInfo | None]:
+    """取り込むファイルを ``library/<kind>/`` に置く（要れば変換する）。
+
+    ``data`` か ``origin``（コピー元のパス）のどちらかを渡す。返すのは置いた先と、
+    変換したときの記録（:attr:`LibraryMediaInfo.converted_from` と元のファイル。
+    変換しなければ None）。変換した元のファイルは ``library/originals/`` に残す。
+    変換できなければ :class:`LibraryError`。
+    """
+    original = Path(filename or "upload")
+    ext = check_source_extension(kind, original.suffix)
+    stem = f"{safe_stem(original.stem)}_{new_id()}"
+    if ext == media_convert.SVG_EXT:
+        source = data if data is not None else (origin.read_bytes() if origin else b"")
+        try:
+            png = await media_convert.svg_to_png(source, media_convert.check_svg_size(svg_size))
+        except media_convert.ConvertError as exc:
+            raise LibraryError(str(exc)) from exc
+        dest = kind_dir(kind) / f"{stem}.png"
+        dest.write_bytes(png)
+        kept = kind_dir(ORIGINALS) / f"{stem}{ext}"
+        kept.write_bytes(source)
+        return dest, LibraryMediaInfo(
+            converted_from="svg",
+            original_url=item_url(ORIGINALS, kept.name),
+            original_path=str(kept),
+        )
+    dest = kind_dir(kind) / f"{stem}{ext}"
+    if origin is not None:
+        shutil.copy2(origin, dest)
+    else:
+        dest.write_bytes(data or b"")
+    return dest, None
+
+
+def merge_conversion(
+    measured: LibraryMediaInfo | None, converted: LibraryMediaInfo | None
+) -> LibraryMediaInfo | None:
+    """測った値に、変換の記録（:func:`store_source` の 2 つ目）を重ねる。"""
+    if converted is None:
+        return measured
+    merged = measured.model_copy() if measured is not None else LibraryMediaInfo()
+    merged.converted_from = converted.converted_from
+    merged.original_url = converted.original_url
+    merged.original_path = converted.original_path
+    return merged
 
 
 def normalize_tags(raw: object) -> list[str]:
@@ -442,6 +515,7 @@ async def add_upload(
     name: str = "",
     nsfw: bool = False,
     license: object = None,
+    svg_size: object = None,
 ) -> LibraryItem:
     """アップロードされたファイルを ``library/{kind}/`` に保存して登録する。
 
@@ -449,14 +523,20 @@ async def add_upload(
     省くと元のファイル名が表示名になる。``nsfw`` は手で立てるものなので
     ``nsfw_source`` は ``manual``。``license`` は任意のライセンス情報
     （:class:`LibraryLicense` か、その JSON の文字列）。
+
+    SVG は PNG にして入れる（長辺 ``svg_size`` px。:func:`store_source`）。
+    変換したときは ``media_info`` に測った値と変換の記録を付ける。
     """
     resolved = check_kind(kind)
     resolved_category = check_category(category)
     resolved_license = parse_license(license)
     original = Path(filename or "upload")
-    ext = check_extension(resolved, original.suffix)
-    dest = kind_dir(resolved) / f"{safe_stem(original.stem)}_{new_id()}{ext}"
-    dest.write_bytes(data)
+    dest, converted = await store_source(
+        resolved, original.name, data=data, svg_size=svg_size
+    )
+    media_info = None
+    if converted is not None:
+        media_info = merge_conversion(await media_measure.measure(dest, resolved), converted)
     return await _insert(
         kind=resolved,
         name=(name or "").strip() or original.name,
@@ -468,6 +548,7 @@ async def add_upload(
         tags=normalize_tags(tags),
         category=resolved_category,
         license=resolved_license,
+        media_info=media_info,
     )
 
 
@@ -1121,4 +1202,10 @@ async def delete_item(item_id: str) -> bool:
         await conn.execute("DELETE FROM library WHERE id = ?", (item_id,))
         await conn.commit()
     rebase_stored_path(item.path).unlink(missing_ok=True)
+    original = item.media_info.original_path if item.media_info else None
+    if original:
+        # 変換する前の元のファイル（library/originals/）も一緒に消す
+        kept = rebase_stored_path(original)
+        if kept.parent.name == ORIGINALS:
+            kept.unlink(missing_ok=True)
     return True

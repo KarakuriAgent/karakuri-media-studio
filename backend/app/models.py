@@ -2276,6 +2276,11 @@ class LibraryMediaInfo(BaseModel):
     has_alpha: bool | None = None
     #: 音声を持つか（動画）
     has_audio: bool | None = None
+    #: 取り込むときに変換したなら、元の形式（``svg`` など。:mod:`app.media_convert`）
+    converted_from: str | None = None
+    #: 変換する前の元のファイル（``library/originals/``）の配信 URL と絶対パス
+    original_url: str | None = None
+    original_path: str | None = None
 
 
 class LibraryItem(BaseModel):
@@ -2775,6 +2780,8 @@ class AssetPackItem(BaseModel):
     member: str = ""
     #: manual の入手元で ``member`` を取り出す ZIP の、受け取り口でのファイル名
     archive: str = ""
+    #: SVG を PNG にするときの長辺（px。省略すると 2048）
+    svg_size: int | None = None
 
 
 class AssetPackManifest(BaseModel):

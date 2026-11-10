@@ -1189,15 +1189,19 @@ async def upload_library_image(
     nsfw: bool = Form(False),
     #: ライセンス情報の JSON（LibraryLicense。空なら付けない）
     license: str = Form(""),
+    #: SVG を PNG にするときの長辺（px。0 なら既定の 2048）
+    svg_size: int = Form(0),
 ) -> LibraryItem:
     """手元の画像をライブラリへ入れる（multipart。``/library/{item_id}`` より先）。
 
     Docker で動かしているときは、ホストの絶対パスはアプリから見えないので
     **こちらを使う**（JSON の ``path`` はコンテナの中のパスとして解釈される）。
     入れた項目の ``id`` をそのまま ``POST /library/{id}/key`` に渡せる。
+    SVG は透過を保ったまま PNG にして入れる（元の SVG は ``media_info.original_url``）。
     """
     return await upload_to_library(
-        "image", file, name=name, tags=tags, category=category, nsfw=nsfw, license=license
+        "image", file, name=name, tags=tags, category=category, nsfw=nsfw, license=license,
+        svg_size=svg_size,
     )
 
 
@@ -1235,14 +1239,17 @@ async def upload_library_any(
     nsfw: bool = Form(False),
     #: ライセンス情報の JSON（LibraryLicense。空なら付けない）
     license: str = Form(""),
+    #: SVG を PNG にするときの長辺（px。0 なら既定の 2048）
+    svg_size: int = Form(0),
 ) -> LibraryItem:
     """種別を書かずに 1 ファイル入れる（拡張子 / MIME で image / video / audio）。
 
     ``/library/image`` と ``/library/audio`` の汎用版（``/library/{item_id}``
-    より先に定義しておく）。
+    より先に定義しておく）。SVG は PNG にして入れる。
     """
     return await upload_detecting_kind(
-        file, name=name, tags=tags, category=category, nsfw=nsfw, license=license
+        file, name=name, tags=tags, category=category, nsfw=nsfw, license=license,
+        svg_size=svg_size
     )
 
 
