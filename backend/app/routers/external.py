@@ -76,6 +76,7 @@ from ..models import (
     LibraryBlockingRerender,
     LibraryBlockingResult,
     LibraryFromJob,
+    LibraryInUseError,
     LibraryItem,
     LibraryKey,
     LibraryKeyFromJob,
@@ -1015,7 +1016,7 @@ async def create_story(payload: StoryCreate) -> StoryResult:
 
 
 # --------------------------------------------------------------------------
-# ライブラリ（履歴とは別に取っておく素材の棚。削除は公開しない）
+# ライブラリ（履歴とは別に取っておく素材の棚。削除は参照を確かめてから）
 # --------------------------------------------------------------------------
 
 @router.get("/library", response_model=LibraryPage)
@@ -1127,6 +1128,48 @@ async def update_library_item(item_id: str, payload: LibraryUpdate) -> LibraryIt
     if item is None:
         raise HTTPException(status_code=404, detail="library item not found")
     return item
+
+
+@router.delete(
+    "/library/{item_id}",
+    status_code=204,
+    responses={409: {"model": LibraryInUseError}},
+)
+async def delete_library_item(
+    item_id: str,
+    #: 参照されていても消す（クリップは欠落になり、FX の URL は切れる）
+    force: bool = Query(False),
+) -> None:
+    """棚の項目を消す（登録を外し、``library/<kind>/`` のファイルも消す）。
+
+    中身は内部 API の削除（``DELETE /api/library/{id}``）と同じ。消す前に、作品の
+    素材（``library_id`` で取り込んだもの）・タイムラインのクリップ・FX のイベントと
+    全体設定から指されていないかを確かめ、指されていれば 409（``detail.references``
+    に指している先）。``force=true`` なら確かめずに消す。取り込んだ作品の素材は
+    コピーなので残る（``refresh-from-library`` ができなくなるだけ）。
+
+    素材パックで取り込んだ項目を消すと、次の取り込みでは「未登録」と見なして
+    もう一度取りに行く（受け取り口に置いた物ならもう一度取り込む）。要らない
+    素材は目録から外しておく。
+    """
+    item = await library.get_item(item_id)
+    if item is None:
+        raise HTTPException(status_code=404, detail="library item not found")
+    if not force:
+        references = await library.find_references(item)
+        if references:
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "message": (
+                        f"この項目は {len(references)} か所から参照されています"
+                        "（force=true で消せます）"
+                    ),
+                    "references": [ref.model_dump(mode="json") for ref in references],
+                },
+            )
+    if not await library.delete_item(item_id):
+        raise HTTPException(status_code=404, detail="library item not found")
 
 
 @router.post("/library/image", response_model=LibraryItem, status_code=201)

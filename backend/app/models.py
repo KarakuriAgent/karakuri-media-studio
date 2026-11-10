@@ -2652,6 +2652,43 @@ class LibraryProgress(BaseModel):
     tags: list[str] = Field(default_factory=list)
 
 
+class LibraryReference(BaseModel):
+    """ライブラリの項目を指しているもの 1 つ（``DELETE /api/v1/library/{id}`` の 409）。
+
+    ``kind``:
+
+    - ``asset`` … ``library_id`` で取り込んだ作品の素材（実体はコピーなので、元を
+      消しても素材は残る。``refresh-from-library`` で取り直せなくなるだけ）
+    - ``clip`` … タイムラインのクリップ（``source_kind: "library"`` か、
+      ``"image"`` で ``library:<id>``）。消すとクリップは欠落（``missing``）になる
+    - ``fx_event`` … タイムラインの FX のイベント（中に項目の URL を書いたもの）
+    - ``fx_settings`` … タイムラインの FX の全体設定・歌詞モーション
+    """
+
+    kind: Literal["asset", "clip", "fx_event", "fx_settings"]
+    #: 素材の id / クリップの id / FX のイベントの id / タイムラインの id（fx_settings）
+    id: str
+    project_id: str
+    project_name: str = ""
+    #: タイムラインの id（asset では null）
+    timeline_id: str | None = None
+    #: 素材の名前 / クリップのトラック名（それ以外は空）
+    name: str = ""
+
+
+class LibraryInUse(BaseModel):
+    """参照されている項目を消そうとしたときの 409 の中身（``detail``）。"""
+
+    message: str
+    references: list[LibraryReference] = Field(default_factory=list)
+
+
+class LibraryInUseError(BaseModel):
+    """``DELETE /api/v1/library/{id}`` の 409 の本文（``force=true`` で押し切れる）。"""
+
+    detail: LibraryInUse
+
+
 class LibraryPage(BaseModel):
     """GET /api/library のレスポンス（絞り込み結果の 1 ページ）。
 

@@ -1681,7 +1681,8 @@ CREATE TABLE library_pack_imports (
   外部 API（`app/routers/external.py`）のルーターが共用する
 - **外部エージェントからも同じ棚を使える**: `GET /api/v1/library`（`kind` / `category` /
   `q` / `tag` で絞り込み）・`POST /api/v1/library/from-job`・`POST /api/v1/library/sheet`・
-  `PATCH /api/v1/library/{id}` を公開している（**削除は公開しない**）。シートを作って
+  `PATCH /api/v1/library/{id}`・`DELETE /api/v1/library/{id}`（参照されていれば 409、
+  `force=true` で消す。中身は内部 API の削除と同じ）を公開している。シートを作って
   そのパスをジョブの `source_image` に渡す、という流れまで外から回せる
 
 #### 素材の下ごしらえ（スプライト / フォント画像 / コンタクトシート）

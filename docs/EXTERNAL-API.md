@@ -39,7 +39,7 @@
 | 素材（World Bible） | `GET /assets`（**全作品横断**の素材検索。`project_id` / `kind` / `q` / `limit` / `offset`）・`POST /projects/{id}/assets`（JSON / multipart。`library_id` でライブラリから取り込み）・`assets/from-job`・`PATCH/DELETE /assets/{id}`・`POST /assets/{id}/refresh-from-library`（取り込み元の今の版で取り直す）・素材のリファレンス（`/assets/{id}/files`・`DELETE /asset-files/{id}`） |
 | 生成と Take | `POST /shots/{id}/render`・`GET /shots/{id}/takes`・`POST /takes/{id}/select`・`reject`・`cancel`・`DELETE /takes/{id}` |
 | 汎用ジョブ | `GET/POST /jobs`（一覧は `q` / `kind` / `project_id` / `nsfw` / `limit` / `offset` で絞れる。§3.6）・`GET /jobs/{id}`・`POST /jobs/{id}/cancel`・`rerun`・`continue` |
-| ライブラリ | `GET /library`・`POST /library/image` / `POST /library/audio` / `POST /library/upload`（multipart。`license` も添えられる）・**`POST /library/packs/import`・`GET /library/packs/imports[/{id}]`（素材パック、§3.8）**・`POST /library/from-job`・`POST /library/sheet`・`POST /library/{id}/key`・`POST /library/key`・`POST /library/key-from-job`・`POST /library/blocking`・`POST /library/{id}/blocking`・`POST /library/blocking/preview`・`POST /library/blocking/location-map`・`PATCH /library/{id}`（**削除は非公開**） |
+| ライブラリ | `GET /library`・`POST /library/image` / `POST /library/audio` / `POST /library/upload`（multipart。`license` も添えられる）・**`POST /library/packs/import`・`GET /library/packs/imports[/{id}]`（素材パック、§3.8）**・`POST /library/from-job`・`POST /library/sheet`・`POST /library/{id}/key`・`POST /library/key`・`POST /library/key-from-job`・`POST /library/blocking`・`POST /library/{id}/blocking`・`POST /library/blocking/preview`・`POST /library/blocking/location-map`・`PATCH /library/{id}`・`DELETE /library/{id}`（参照されていれば 409、`force=true` で押し切る。§3.8） |
 | 素材の下ごしらえ | `POST /images/text`・`GET /images/text/fonts`・`POST /videos/contact-sheet`（§3.4） |
 | 編集（タイムライン） | `POST /projects/{id}/timelines`・`GET/PATCH/DELETE /timelines/{id}`・`PUT /timelines/{id}/clips`（クリップの加工 `effects`、§3.7）・`POST /timelines/{id}/clips/insert`・トラック CRUD（音声トラックのダッキング `ducking`、§3.7）・`generate-subtitles`・`sync-preview` / `sync`・`missing` / `missing/resolve`・`GET /projects/{id}/media` |
 | 演出（FX トラック） | `GET/PUT /timelines/{id}/fx`・`PUT /timelines/{id}/fx/lyric`（歌詞モーション）・`POST /timelines/{id}/fx/events`・`PATCH/DELETE /timelines/{id}/fx/events/{event_id}`（§3.3） |
@@ -85,7 +85,7 @@
 値は Take の元ジョブの `params`（`GET /api/v1/jobs/{id}`）に残る。
 
 **公開しないもの**: **プロジェクトの削除**（リビジョンごとカスケードで消えて復元できない
-ので、外には出さず人に頼む運用にする）、ライブラリ素材の削除、設定（`/api/settings`）、
+ので、外には出さず人に頼む運用にする）、設定（`/api/settings`）、
 モデルのダウンロード、プロンプト作成チャット（`/api/chat`）。必要になった時点で個別に
 追加を検討する。
 
@@ -780,6 +780,32 @@ GET  /api/v1/library/packs/imports?limit=20              → 最近の取り込�
 `licensed: false` で `source_job_id` も無いものは、出どころが記録されていない素材。
 クレジットの文や `credits.txt` は作らない（出どころの記録を確かめるための一覧）。
 
+**棚の項目を消す**（取り込んだ素材の選別など）:
+
+```
+DELETE /api/v1/library/{id}             → 204（ファイルも消す）/ 404
+DELETE /api/v1/library/{id}?force=true  → 参照を確かめずに消す
+409 {"detail": {"message": "…", "references": [
+      {"kind": "clip", "id": "<クリップ>", "project_id": "…", "project_name": "…",
+       "timeline_id": "…", "name": "A1"}, …]}}
+```
+
+- 中身は内部 API の `DELETE /api/library/{id}` と同じ（登録を外し、`library/<kind>/` の
+  ファイルも消す。戻せない）。内部 API（人の UI）は参照を確かめずに消す
+- 外部 API は消す前に参照を確かめ、指されていれば 409 で断る。`references[].kind` は
+  `asset`（`library_id` で取り込んだ作品の素材）・`clip`（タイムラインのクリップ。
+  `source_kind: "library"` か静止画の `library:<id>`）・`fx_event`（FX のイベントの中の
+  項目の URL）・`fx_settings`（FX の全体設定・歌詞モーションの中の URL）。リビジョンの
+  履歴の中は見ない
+- `force=true` で消すと、クリップは欠落（`missing`）になり、FX の URL は切れる。作品の
+  素材は**コピーなので残る**（`refresh-from-library` ができなくなるだけ）
+- **素材パックとの関係**: 取り込み済みかどうかは棚の項目（`license` の `pack`・
+  `source_id`・`file`）で見ている。消した素材は次の取り込みで「未登録」になり、自動の
+  入手元ならもう一度取りに行き、手で置く入手元なら受け取り口にあればもう一度取り込む。
+  選別で不採用にした素材は、消す前（か同時）に**目録から外しておく**（目録に無い物は
+  取りに行かない）。取り込みの記録（`GET /library/packs/imports/{id}`）の `library_id` は
+  消した後もそのまま残る（記録なので書き換えない）
+
 ## 4. ファイルの受け渡し
 
 - **読み**: API レスポンスの `url` 欄（`/outputs/...` / `/assets/...` /
@@ -1010,5 +1036,5 @@ GET  /api/v1/library/packs/imports?limit=20              → 最近の取り込�
 - 静的配信の**アプリ内**認証（ネット越しは §5 の Cloudflare Access で守るため、
   Cloudflare を使わない公開形態が必要になったときだけ）
 - 複数 API キー / スコープ付きキー
-- プロジェクトの削除とライブラリ素材の削除（どちらも取り返しがつかないので保留）
+- プロジェクトの削除（取り返しがつかないので保留）
 - リクエスト回数のレート制限（投入キュー上限は §3 の暴走ガードとして v1 に含む）

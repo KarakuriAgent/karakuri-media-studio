@@ -37,6 +37,7 @@ from .models import (
     LibraryLicense,
     LibraryMediaInfo,
     LibraryOrigin,
+    LibraryReference,
     LibrarySource,
 )
 from .paths import LIBRARY_DIR, rebase_stored_path
@@ -1008,6 +1009,94 @@ async def update_item(
         if cur.rowcount == 0:
             return None
     return await get_item(item_id)
+
+
+async def find_references(item: LibraryItem) -> list[LibraryReference]:
+    """その項目を指している作品の素材・タイムラインのクリップ・FX を集める。
+
+    消す前の確かめ（``DELETE /api/v1/library/{id}``）に使う。辿るのは今の中身だけで、
+    リビジョンの履歴（スナップショット）の中は見ない。FX はイベントと全体設定の
+    JSON の中の項目の URL（``/library/<kind>/<ファイル名>``）で探す。
+    """
+    found: list[LibraryReference] = []
+    url = re.compile(
+        re.escape(item_url(item.kind, Path(item.path).name)) + r"(?![^/?#\s\"'])"
+    )
+    async with get_db() as conn:
+        async with conn.execute(
+            "SELECT a.id, a.name, a.project_id, p.name AS project_name"
+            "  FROM studio_assets a JOIN studio_projects p ON p.id = a.project_id"
+            " WHERE a.source_library_id = ?"
+            " ORDER BY p.name, a.sort_order, a.id",
+            (item.id,),
+        ) as cur:
+            for row in await cur.fetchall():
+                found.append(
+                    LibraryReference(
+                        kind="asset",
+                        id=row["id"],
+                        project_id=row["project_id"],
+                        project_name=row["project_name"],
+                        name=row["name"],
+                    )
+                )
+        async with conn.execute(
+            "SELECT c.id, c.timeline_id, c.project_id, p.name AS project_name,"
+            "       t.name AS track_name"
+            "  FROM timeline_clips c"
+            "  JOIN studio_projects p ON p.id = c.project_id"
+            "  LEFT JOIN timeline_tracks t ON t.id = c.track_id"
+            " WHERE (c.source_kind = 'library' AND c.source_id = ?)"
+            "    OR (c.source_kind = 'image' AND c.source_id IN (?, ?))"
+            " ORDER BY p.name, c.timeline_id, c.start_ms, c.id",
+            (item.id, item.id, f"library:{item.id}"),
+        ) as cur:
+            for row in await cur.fetchall():
+                found.append(
+                    LibraryReference(
+                        kind="clip",
+                        id=row["id"],
+                        project_id=row["project_id"],
+                        project_name=row["project_name"],
+                        timeline_id=row["timeline_id"],
+                        name=row["track_name"] or "",
+                    )
+                )
+        async with conn.execute(
+            "SELECT e.id, e.timeline_id, e.project_id, p.name AS project_name, e.event"
+            "  FROM timeline_fx_events e JOIN studio_projects p ON p.id = e.project_id"
+            " WHERE e.event LIKE '%/library/%'"
+            " ORDER BY p.name, e.timeline_id, e.sort_order, e.id",
+        ) as cur:
+            for row in await cur.fetchall():
+                if url.search(str(row["event"])):
+                    found.append(
+                        LibraryReference(
+                            kind="fx_event",
+                            id=row["id"],
+                            project_id=row["project_id"],
+                            project_name=row["project_name"],
+                            timeline_id=row["timeline_id"],
+                        )
+                    )
+        async with conn.execute(
+            "SELECT f.timeline_id, f.project_id, p.name AS project_name, f.settings"
+            "  FROM timeline_fx f JOIN studio_projects p ON p.id = f.project_id"
+            " WHERE f.settings LIKE '%/library/%'"
+            " ORDER BY p.name, f.timeline_id",
+        ) as cur:
+            for row in await cur.fetchall():
+                if url.search(str(row["settings"])):
+                    found.append(
+                        LibraryReference(
+                            kind="fx_settings",
+                            id=row["timeline_id"],
+                            project_id=row["project_id"],
+                            project_name=row["project_name"],
+                            timeline_id=row["timeline_id"],
+                        )
+                    )
+    return found
 
 
 async def delete_item(item_id: str) -> bool:

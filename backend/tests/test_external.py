@@ -7,6 +7,7 @@
 """
 
 import asyncio
+import json
 import sqlite3
 import time
 from pathlib import Path
@@ -1407,15 +1408,113 @@ def test_reorder_reports_a_missing_parent_and_a_partial_list(env):
 # ライブラリ
 # --------------------------------------------------------------------------
 
-def test_the_library_can_be_searched_but_not_deleted(env):
+def test_the_library_can_be_searched(env):
     enable(env)
     page = call(env, "GET", "/api/v1/library?kind=image&limit=5")
     assert page.status_code == 200, page.text
     assert page.json() == {
         "items": [], "total": 0, "limit": 5, "offset": 0, "tags": []
     }
-    # 削除は公開しない（棚から消す操作は人の手で）
-    assert call(env, "DELETE", "/api/v1/library/nope").status_code == 405
+    assert call(env, "DELETE", "/api/v1/library/nope").status_code == 404
+
+
+def _library_image(lib: Path, name: str = "logo.png"):
+    path = lib / "image" / name
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(b"PNG")
+    item = asyncio.run(
+        library._insert(
+            kind="image", name="ロゴ", path=path, nsfw=False, nsfw_source="",
+            source_job_id=None, source=None, tags=[],
+        )
+    )
+    return item, path
+
+
+def test_an_unused_library_item_can_be_deleted(env, tmp_path, monkeypatch):
+    lib = tmp_path / "library"
+    monkeypatch.setattr(library, "LIBRARY_DIR", lib)
+    enable(env)
+    item, path = _library_image(lib)
+
+    assert call(env, "DELETE", f"/api/v1/library/{item.id}").status_code == 204
+    assert not path.exists()
+    assert asyncio.run(library.get_item(item.id)) is None
+    assert call(env, "DELETE", f"/api/v1/library/{item.id}").status_code == 404
+
+
+def test_a_referenced_library_item_needs_force(env, tmp_path, monkeypatch):
+    """素材・クリップ・FX から指されていれば 409（指している先を返す）、force で消す。"""
+    lib = tmp_path / "library"
+    monkeypatch.setattr(library, "LIBRARY_DIR", lib)
+    enable(env)
+    project = make_project(env)
+    item, path = _library_image(lib)
+    other, _ = _library_image(lib, "logo2.png")
+
+    asset = call(
+        env, "POST", f"/api/v1/projects/{project['id']}/assets",
+        json={"name": "Logo", "library_id": item.id},
+    )
+    assert asset.status_code == 201, asset.text
+
+    pid = project["id"]
+    with sqlite3.connect(env.db_path) as conn:
+        conn.execute(
+            "INSERT INTO timeline_tracks (id, timeline_id, project_id, kind, name)"
+            " VALUES ('tr1', 'tl1', ?, 'video', 'V1')", (pid,),
+        )
+        conn.executemany(
+            "INSERT INTO timeline_clips (id, track_id, timeline_id, project_id,"
+            " source_kind, source_id) VALUES (?, 'tr1', 'tl1', ?, ?, ?)",
+            [
+                ("c1", pid, "image", f"library:{item.id}"),
+                ("c2", pid, "library", item.id),
+                ("c3", pid, "library", other.id),
+            ],
+        )
+        conn.executemany(
+            "INSERT INTO timeline_fx_events (id, timeline_id, project_id, event)"
+            " VALUES (?, 'tl1', ?, ?)",
+            [
+                ("e1", pid, json.dumps({"type": "sprite", "src": item.url})),
+                # 名前の頭が同じ別のファイルは拾わない
+                ("e2", pid, json.dumps({"type": "sprite", "src": item.url + "x.png"})),
+            ],
+        )
+        conn.execute(
+            "INSERT INTO timeline_fx (timeline_id, project_id, settings, updated_at)"
+            " VALUES ('tl1', ?, ?, '2026-01-01')",
+            (pid, json.dumps({"lyric": {"background": f"{item.url}?v=1"}})),
+        )
+
+    refused = call(env, "DELETE", f"/api/v1/library/{item.id}")
+    assert refused.status_code == 409, refused.text
+    references = refused.json()["detail"]["references"]
+    assert sorted((ref["kind"], ref["id"]) for ref in references) == [
+        ("asset", asset.json()["id"]),
+        ("clip", "c1"),
+        ("clip", "c2"),
+        ("fx_event", "e1"),
+        ("fx_settings", "tl1"),
+    ]
+    clip = next(ref for ref in references if ref["id"] == "c2")
+    assert clip["timeline_id"] == "tl1"
+    assert clip["name"] == "V1"
+    assert clip["project_name"] == project["name"]
+    assert path.exists()
+
+    forced = call(env, "DELETE", f"/api/v1/library/{item.id}?force=true")
+    assert forced.status_code == 204, forced.text
+    assert not path.exists()
+    # 取り込んだ作品の素材はコピーなので残る
+    kept = call(env, "GET", f"/api/v1/projects/{pid}").json()["assets"]
+    assert [a["id"] for a in kept] == [asset.json()["id"]]
+
+    # 409 の本文は OpenAPI にも載る
+    schema = call(env, "GET", "/api/v1/openapi.json").json()
+    responses = schema["paths"]["/api/v1/library/{item_id}"]["delete"]["responses"]
+    assert "409" in responses
 
 
 def test_library_writes_report_missing_material(env):

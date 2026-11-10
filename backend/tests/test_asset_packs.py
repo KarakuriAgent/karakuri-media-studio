@@ -215,6 +215,38 @@ def test_running_twice_skips_what_is_registered_and_reports_changes(env, monkeyp
     assert len(call(env, "GET", "/api/v1/library?limit=50").json()["items"]) == 2
 
 
+def test_a_deleted_pack_item_is_fetched_again_unless_dropped_from_the_manifest(
+    env, monkeypatch
+):
+    """消した素材は「未登録」に戻る: 目録に残せば取り直し、外せば取りに行かない。"""
+    seen = fake_http(monkeypatch, {
+        "https://auto.example.com/robots.txt": ROBOTS,
+        "https://auto.example.com/files/hit.wav": (200, "audio/wav", b"RIFFhit"),
+    })
+    body = {"manifest": manifest(items=manifest()["items"][:1]),
+            "accept_sources": ["auto-site"]}
+    first = wait_import(env, call(env, "POST", "/api/v1/library/packs/import", json=body).json()["id"])
+    item_id = first["imported"][0]["library_id"]
+
+    assert call(env, "DELETE", f"/api/v1/library/{item_id}").status_code == 204
+    fetched = len(seen)
+    again = wait_import(env, call(env, "POST", "/api/v1/library/packs/import", json=body).json()["id"])
+    assert [entry["file"] for entry in again["imported"]] == ["hit.wav"]
+    assert len(seen) > fetched
+    # 取り込みの記録は書き換えない（消した項目の id のまま）
+    old = call(env, "GET", f"/api/v1/library/packs/imports/{first['id']}").json()
+    assert old["imported"][0]["library_id"] == item_id
+
+    # 不採用にするなら目録から外す: もう取りに行かない
+    new_id_ = again["imported"][0]["library_id"]
+    assert call(env, "DELETE", f"/api/v1/library/{new_id_}").status_code == 204
+    fetched = len(seen)
+    dropped = {"manifest": manifest(items=manifest()["items"][1:2]),
+               "accept_sources": ["auto-site"]}
+    wait_import(env, call(env, "POST", "/api/v1/library/packs/import", json=dropped).json()["id"])
+    assert "https://auto.example.com/files/hit.wav" not in seen[fetched:]
+
+
 def test_sources_without_consent_are_not_touched(env, monkeypatch):
     seen = fake_http(monkeypatch, {})
     result = wait_import(env, call(env, "POST", "/api/v1/library/packs/import", json={
