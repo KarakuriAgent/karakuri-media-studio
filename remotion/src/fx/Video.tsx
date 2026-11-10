@@ -4,7 +4,8 @@
 // - 透過: アルファ付きの WebM は OffthreadVideo の transparent でそのまま重なる
 // - クロマキー: chromaKey を書くと、動画を隠して 1 コマずつ canvas に描き、色を抜く
 //   (onVideoFrame。書き出しでもプレビューでも同じ)
-// - loop: 素材の 1 周(loopSeconds か素材の尺)ごとに頭から繰り返す(<Loop>)
+// - loop: 素材の 1 周(loopSeconds か素材の尺)ごとに頭から繰り返す(<Loop>)。尺を読む
+//   あいだは動画を置かず、読めてから 1 度だけ置く(置き直すと待ちが残って落ちる)
 
 import React from 'react';
 import {
@@ -25,15 +26,39 @@ import type { FxChromaKey, FxEventOf } from '../schema';
 
 type VideoEvent = FxEventOf<'video'>;
 
-/** 1 周の長さ(コンポジションのフレーム)。繰り返さないなら null。 */
-const useLoopFrames = (ev: VideoEvent, url: string, fps: number): number | null => {
+/**
+ * 1 周の長さ(コンポジションのフレーム)。繰り返さないなら null。
+ *
+ * 素材の尺を読む必要があるあいだは `ready: false` で、そのあいだは動画を**まだ
+ * 置かない**。尺が分かってから `<Loop>` で包むかどうかを決めて 1 度だけ置く。
+ *
+ * (以前は先に動画を置き、尺が分かった時点で `<Loop>` で包み直していた。包み直すと
+ * OffthreadVideo が外されて置き直され、ちょうどそのとき前の OffthreadVideo の
+ * フレームの取得が終わっていると、その delayRender が解かれないまま残って
+ * 「Fetching … from server was called but not cleared after 28000ms」で書き出しが
+ * 落ちた。素材を初めて読むコマ(取り寄せと切り出しが遅い)で起きやすく、同じ
+ * 素材でもタイムラインやタブの並びによって起きたり起きなかったりした。)
+ */
+const useLoopFrames = (
+  ev: VideoEvent,
+  url: string,
+  fps: number,
+): { ready: boolean; frames: number | null } => {
   const needsProbe = ev.loop && ev.loopSeconds === undefined;
   const [seconds, setSeconds] = React.useState<number | null>(
     ev.loopSeconds !== undefined ? ev.loopSeconds : null,
   );
+  const [probed, setProbed] = React.useState(!needsProbe);
   const [handle] = React.useState(() =>
     needsProbe ? delayRender(`video の尺を読む: ${url}`) : null,
   );
+  const released = React.useRef(false);
+  const release = React.useCallback(() => {
+    if (handle !== null && !released.current) {
+      released.current = true;
+      continueRender(handle);
+    }
+  }, [handle]);
   React.useEffect(() => {
     if (handle === null) {
       return;
@@ -49,15 +74,32 @@ const useLoopFrames = (ev: VideoEvent, url: string, fps: number): number | null 
         // 尺が読めなければ繰り返さない(最後のコマのまま)。描画は止めない。
         console.warn(`video: 素材の尺を読めませんでした(繰り返しません): ${url}`, err);
       })
-      .finally(() => continueRender(handle));
+      .finally(() => {
+        if (alive) {
+          setProbed(true);
+        }
+      });
     return () => {
       alive = false;
+      // 尺を読み終える前に外された(Sequence を抜けた)ときも、待ちを残さない。
+      release();
     };
-  }, [handle, url, ev.in]);
-  if (!ev.loop || seconds === null || seconds <= 0) {
-    return null;
+  }, [handle, url, ev.in, release]);
+  // 尺を読み終えたら、動画を置いた描画が確定したあとで待ちを解く(子の
+  // OffthreadVideo は layout effect で自分の待ちを先に足しているので、コマが
+  // 動画の無いまま撮られることはない)。
+  React.useEffect(() => {
+    if (probed) {
+      release();
+    }
+  }, [probed, release]);
+  if (!probed) {
+    return { ready: false, frames: null };
   }
-  return Math.max(1, Math.round((seconds / ev.playbackRate) * fps));
+  if (!ev.loop || seconds === null || seconds <= 0) {
+    return { ready: true, frames: null };
+  }
+  return { ready: true, frames: Math.max(1, Math.round((seconds / ev.playbackRate) * fps)) };
 };
 
 /** 1 コマの元の大きさ(要素の種類ごとに読み方が違う)。 */
@@ -152,7 +194,7 @@ export const FxVideoEvent: React.FC<{ ev: VideoEvent; seed: number }> = ({ ev, s
   const { fps, durationInFrames } = useVideoConfig();
   const ctx = useFxCtx();
   const url = resolveMediaUrl(ev.src);
-  const loopFrames = useLoopFrames(ev, url, fps);
+  const loop = useLoopFrames(ev, url, fps);
 
   const anchored = anchorCenter(ev.anchor, ev.w, ev.maxH, ev.margin);
   const cx = (ev.cx ?? anchored.cx) * ctx.width;
@@ -221,8 +263,8 @@ export const FxVideoEvent: React.FC<{ ev: VideoEvent; seed: number }> = ({ ev, s
           opacity,
         }}
       >
-        {loopFrames !== null ? (
-          <Loop durationInFrames={loopFrames} layout="none">
+        {!loop.ready ? null : loop.frames !== null ? (
+          <Loop durationInFrames={loop.frames} layout="none">
             {media}
           </Loop>
         ) : (

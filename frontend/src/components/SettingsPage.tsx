@@ -792,6 +792,7 @@ export default function SettingsPage({
           grok_media_workdir: settings.grok_media_workdir,
           grok_media_timeout: settings.grok_media_timeout,
           remotion_enabled: settings.remotion_enabled,
+          remotion_timeout_seconds: settings.remotion_timeout_seconds,
           audio_analysis_python: settings.audio_analysis_python,
           // 空白区切りの入力欄をフラグの配列に戻す（空 = ツール無効）
           agent_grok_args: splitGrokArgs(grokArgsDraft),
@@ -1331,6 +1332,27 @@ export default function SettingsPage({
                       が初回に入れます（Docker ではホストで{' '}
                       <code>npm --prefix remotion install</code>）。
                     </p>
+                    <Field
+                      label="1 コマの待ちの上限（秒）"
+                      htmlFor="remotion-timeout"
+                      hint="素材の読み込みやフレームの切り出しを待つ長さです。過ぎるとレンダリングが「… was called but not cleared after …ms」で止まります。重い素材や遅い置き場で足りなければ延ばしてください（5〜3600、既定 30）。"
+                    >
+                      <Input
+                        id="remotion-timeout"
+                        className="tnum"
+                        type="number"
+                        min="5"
+                        max="3600"
+                        step="5"
+                        value={settings.remotion_timeout_seconds ?? 30}
+                        onChange={(event) =>
+                          update({
+                            remotion_timeout_seconds:
+                              Math.min(3600, Math.max(5, Number(event.target.value) || 30)),
+                          })
+                        }
+                      />
+                    </Field>
                   </SettingsCard>
                   {/* 音源解析（SPEC §5.2）。歌詞アライン・onset に要る依存は
                       数 GB あるのでアプリの環境には入れず、外で作った venv の

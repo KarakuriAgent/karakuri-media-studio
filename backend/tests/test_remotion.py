@@ -336,11 +336,42 @@ def test_output_suffix_follows_the_codec():
 
 
 def test_render_flags_only_carries_what_was_written():
-    assert remotion.render_flags(None) == []
-    assert remotion.render_flags({"codec": None, "image_format": ""}) == []
+    # --timeout（1 コマの待ちの上限）はいつも付く（既定 30 秒）
+    assert remotion.render_flags(None) == ["--timeout=30000"]
+    assert remotion.render_flags({"codec": None, "image_format": ""}) == [
+        "--timeout=30000"
+    ]
     assert remotion.render_flags(
         {"codec": "prores", "prores_profile": "4444", "image_format": "png"}
-    ) == ["--codec=prores", "--image-format=png", "--prores-profile=4444"]
+    ) == [
+        "--codec=prores", "--image-format=png", "--prores-profile=4444",
+        "--timeout=30000",
+    ]
+
+
+def test_the_timeout_comes_from_the_job_then_the_settings():
+    assert remotion.render_flags(None, 90) == ["--timeout=90000"]
+    # ジョブの指定が設定より先
+    assert remotion.render_flags({"timeout_seconds": 120}, 90) == ["--timeout=120000"]
+    # 範囲（5〜3600 秒）に収める
+    assert remotion.timeout_ms(None, 1) == 5000
+    assert remotion.timeout_ms({"timeout_seconds": 99999}) == 3600000
+
+
+async def test_render_passes_the_timeout_from_the_settings(tmp_path, monkeypatch):
+    use_project(make_project(tmp_path))
+    monkeypatch.setattr(remotion, "REMOTION_TMP_DIR", tmp_path / "runtime")
+    output = tmp_path / "out.mp4"
+    fake = FakeRun(writes=output)
+    monkeypatch.setattr(remotion, "_run", fake)
+    settings = remotion.load_settings().model_copy(
+        update={"remotion_timeout_seconds": 75.0}
+    )
+    monkeypatch.setattr(remotion, "load_settings", lambda: settings)
+
+    await remotion.render("job-1", "Intro", {}, output)
+    argv, _ = fake.calls[0]
+    assert "--timeout=75000" in argv
 
 
 async def test_render_passes_the_options_as_cli_flags(tmp_path, monkeypatch):

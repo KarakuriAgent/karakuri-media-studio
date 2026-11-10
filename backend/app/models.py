@@ -90,6 +90,12 @@ class Settings(BaseModel):
     # 利用者がライセンス条件を確かめたうえで設定ページから有効にする。
     #: Remotion 連携を使うか（false なら一覧も投入も 400）
     remotion_enabled: bool = False
+    #: 1 コマの待ち（素材の読み込み・フレームの切り出しなど、delayRender）に許す秒数。
+    #: 過ぎるとレンダリングが「… was called but not cleared after …ms」で落ちる。
+    #: ``npx remotion render --timeout`` に渡す（Remotion の既定と同じ 30 秒）。
+    #: 重い素材・遅い置き場で足りなければ延ばす（ジョブごとには
+    #: ``remotion_render_options.timeout_seconds``）
+    remotion_timeout_seconds: float = 30.0
     # 音源解析（``mode: "audio_analysis"``、SPEC §5.2）。歌詞アラインと onset に要る
     # 依存（torch / faster-whisper / stable-ts / librosa）は数 GB になるので**アプリの
     # 環境には入れない**: 外で作った venv の python を指しておき、解析ワーカー
@@ -204,6 +210,7 @@ class SettingsUpdate(BaseModel):
     grok_media_workdir: str | None = None
     grok_media_timeout: float | None = None
     remotion_enabled: bool | None = None
+    remotion_timeout_seconds: float | None = Field(default=None, ge=5, le=3600)
     audio_analysis_python: str | None = None
     model_overrides: dict[ComfyTarget, dict[str, str]] | None = None
     model_choices: dict[ComfyTarget, dict[str, list[str]]] | None = None
@@ -1856,6 +1863,9 @@ class RemotionRenderOptions(BaseModel):
     prores_profile: (
         Literal["4444", "4444-xq", "hq", "light", "proxy", "standard"] | None
     ) = None
+    #: 1 コマの待ち（delayRender）に許す秒数。未指定なら設定の
+    #: ``remotion_timeout_seconds``（既定 30 秒）
+    timeout_seconds: float | None = Field(default=None, ge=5, le=3600)
 
 
 class RemotionCompositions(BaseModel):

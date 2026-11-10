@@ -318,6 +318,12 @@ BAN!BAN!BAN!(過去に作った MV)で確立したもの。**書かなければ�
   抑える強さ。既定 0.6)。近さは明るさを除いた色みの距離(純色の緑と灰色で 0.53)。抜け残りが
   あれば `similarity` を上げ、輪郭が欠けたら下げる
 - 素材の音は鳴らさない(効果音はタイムラインの音声トラックへ)
+- `loop: true` で `loopSeconds` を書かないと、素材の尺を読んでから動画を置く(読めるまで
+  そのコマを待つ)。尺が分かっているなら `loopSeconds` を書くと読みに行かない
+- 書き出しが「Fetching … from server was called but not cleared after …ms」で落ちたら、
+  まずもう一度焼く(取り寄せの間合いの問題のことがある)。重い素材・遅い置き場で毎回
+  落ちるなら、ジョブの `remotion_render_options.timeout_seconds`(設定の
+  `remotion_timeout_seconds`。既定 30)を延ばす。props を削って回避しない
 - 既定の層は 3(`sprite` と同じ)。`screen` の上に出すなら `z` を書く
 - 編集画面のプレビューも同じコードで描く(ブラウザで再生できる WebM・MP4 だけ映る)
 

@@ -1376,7 +1376,18 @@ ComfyUI と並ぶもう 1 つの生成経路。Remotion プロジェクト（Nod
   書き出しに要る最小限で、未指定なら Remotion プロジェクトの既定（h264 / mp4）のまま。
   `--codec` と入れ物が合っていないと Remotion が走らないので、**成果物の拡張子は
   コーデックから決める**（`remotion.output_suffix`。prores → `video.mov`、
-  vp8 / vp9 → `video.webm`）
+  vp8 / vp9 → `video.webm`）。`timeout_seconds`（5〜3600）で 1 コマの待ちの上限も変えられる
+- **1 コマの待ちの上限**（素材の取り寄せ・フレームの切り出しなどの `delayRender`）は
+  設定 `remotion_timeout_seconds`（既定 30 秒。設定ページの「Remotion 連携」）を
+  `npx remotion render --timeout=<ms>` で渡す（ジョブの `remotion_render_options.timeout_seconds`
+  が先）。過ぎると「… was called but not cleared after …ms」で落ちる
+- **`FxOverlay` の `video` イベントの `loop`**: 素材の尺（`loopSeconds` が無ければ
+  `getVideoMetadata` で読む）が分かるまで動画を置かず、分かってから `<Loop>` で包むかを
+  決めて 1 度だけ置く。以前は先に置いてから尺が分かった時点で `<Loop>` で包み直しており、
+  外された `OffthreadVideo` のフレームの取得がちょうど終わっていると、その `delayRender` が
+  解かれずに残って「Fetching http://localhost:3000/proxy?src=…&time=0… from server was called
+  but not cleared after 28000ms」で書き出しが落ちた（素材を初めて読むコマで起きやすく、
+  取得の間合いしだいなので同じ素材でもタイムラインによって起きたり起きなかったりした）
 - 依存（`remotion/node_modules/`）は `run.sh` が初回に入れる（Docker で動かす場合は
   ホスト側で `npm --prefix remotion install`）。入っていなければその旨のエラーで
   400 になる

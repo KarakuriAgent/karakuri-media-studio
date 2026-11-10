@@ -134,14 +134,39 @@ def output_suffix(options: dict[str, Any] | None) -> str:
     return CODEC_SUFFIXES.get(codec, DEFAULT_SUFFIX)
 
 
-def render_flags(options: dict[str, Any] | None) -> list[str]:
-    """``remotion_render_options`` を CLI のフラグに並べ替える（未指定は落とす）。"""
+#: 1 コマの待ち（delayRender）に許す秒数の既定と範囲（設定
+#: ``remotion_timeout_seconds`` / ジョブの ``timeout_seconds``）
+DEFAULT_TIMEOUT_SECONDS = 30.0
+TIMEOUT_RANGE = (5.0, 3600.0)
+
+
+def timeout_ms(options: dict[str, Any] | None, default: float | None = None) -> int:
+    """``--timeout`` に渡すミリ秒（ジョブの指定 → 設定 → 既定 30 秒の順）。"""
+    for value in ((options or {}).get("timeout_seconds"), default):
+        try:
+            seconds = float(value)  # type: ignore[arg-type]
+        except (TypeError, ValueError):
+            continue
+        if seconds > 0:
+            low, high = TIMEOUT_RANGE
+            return int(round(max(low, min(high, seconds)) * 1000))
+    return int(DEFAULT_TIMEOUT_SECONDS * 1000)
+
+
+def render_flags(
+    options: dict[str, Any] | None, timeout_seconds: float | None = None
+) -> list[str]:
+    """``remotion_render_options`` を CLI のフラグに並べ替える（未指定は落とす）。
+
+    ``--timeout``（1 コマの待ちの上限。ミリ秒）はいつも付ける（:func:`timeout_ms`）。
+    """
     argv: list[str] = []
     for key, flag in RENDER_FLAGS.items():
         value = (options or {}).get(key)
         if value is None or str(value).strip() == "":
             continue
         argv.append(f"{flag}={value}")
+    argv.append(f"--timeout={timeout_ms(options, timeout_seconds)}")
     return argv
 
 
@@ -521,7 +546,7 @@ async def render(
                 f"--props={props_file}",
                 f"--output={output}",
                 "--overwrite",
-                *render_flags(options),
+                *render_flags(options, load_settings().remotion_timeout_seconds),
             ],
             directory,
             on_line=on_line,

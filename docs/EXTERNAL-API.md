@@ -326,7 +326,8 @@ POST /api/v1/jobs  {"mode": "remotion", "remotion_composition": "LyricMotion",
   `MusicVideo` / `FxOverlay` / `LyricMotion`（歌詞だけで文字PV を組む）/ `Slate`。
 - `remotion_render_options` は**任意**で、`codec`（`h264` `h265` `h264-mkv` `prores`
   `vp8` `vp9` `gif`）・`image_format`（`jpeg` `png`）・`pixel_format`・`prores_profile`
-  だけを取る（知らない値は 422）。未指定なら h264 / mp4。**指定すると成果物の拡張子が
+  と `timeout_seconds`（1 コマの待ちの上限。5〜3600 秒。未指定なら設定の
+  `remotion_timeout_seconds`、既定 30）だけを取る（知らない値は 422）。未指定なら h264 / mp4。**指定すると成果物の拡張子が
   変わる**ので注意（prores → `/outputs/{job_id}/video.mov`、vp8 / vp9 → `video.webm`）。
   アルファを残すには `keyBg: "transparent"`（`LyricMotion`）や
   `backgroundColor: "transparent"`（`FxOverlay`）と組み合わせる。

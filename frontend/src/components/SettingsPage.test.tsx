@@ -486,6 +486,19 @@ describe('SettingsPage: ComfyUI 接続先（3 プロファイル）', () => {
     expect(putSettings.mock.calls[0][0].remotion_enabled).toBe(true)
   })
 
+  it('Remotion の 1 コマの待ちの上限を変えて保存できる', async () => {
+    putSettings.mockResolvedValue(settings())
+    await openSettings()
+
+    fireEvent.change(screen.getByLabelText('1 コマの待ちの上限（秒）'), {
+      target: { value: '90' },
+    })
+    screen.getByRole('button', { name: '保存' }).click()
+
+    await waitFor(() => expect(putSettings).toHaveBeenCalled())
+    expect(putSettings.mock.calls[0][0].remotion_timeout_seconds).toBe(90)
+  })
+
   it('Remotion 連携にライセンスの注意書きを出す', async () => {
     await openSettings()
 

@@ -67,6 +67,11 @@ export interface Settings {
    */
   remotion_enabled: boolean
   /**
+   * Remotion の 1 コマの待ち（素材の読み込み・フレームの切り出し）に許す秒数
+   * （`npx remotion render --timeout`。既定 30）。
+   */
+  remotion_timeout_seconds?: number
+  /**
    * 音源解析（`mode: "audio_analysis"`、SPEC §5.2）を回す python の絶対パス。
    * 重い依存（torch / faster-whisper / stable-ts / librosa）はアプリの環境には
    * 入れず、外で作った venv をここで指す。空 = アプリ自身の interpreter。

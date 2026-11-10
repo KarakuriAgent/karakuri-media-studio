@@ -85,7 +85,9 @@ export default defineConfig({
     },
     // remotion/node_modules と frontend/node_modules の両方に React が
     // 入っているので、束ねるときは 1 つに寄せる（2 つ載ると hooks が壊れる）。
-    dedupe: ['react', 'react-dom', 'remotion'],
+    // `@remotion/media-utils` も同じ（`@fx/…` から読むと remotion/ 側の物になり、
+    // テストの差し替えも効かなくなる）。
+    dedupe: ['react', 'react-dom', 'remotion', '@remotion/media-utils'],
   },
   // 上の alias で外（frontend/ の外）のファイルを読むので、dev サーバーにも許す。
   optimizeDeps: {
