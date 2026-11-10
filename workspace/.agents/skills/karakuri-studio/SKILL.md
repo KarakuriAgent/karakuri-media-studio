@@ -339,9 +339,44 @@ PATCH /timelines/{id}/tracks/{BGM のトラック}
 
 ### 素材パック（効果音・BGM・画像を出どころごと入れる）
 
-第三者の効果音・BGM・画像は、`POST /library/audio` で 1 つずつ上げずに**素材パックの目録**から
-取り込む（`docs/EXTERNAL-API.md` §3.8。目録の例は `docs/examples/asset-pack.example.yaml`）。
-出どころ（入手元・素材のページ・規約の URL・確かめた日）がライブラリの `license` に残る。
+第三者の効果音・BGM・漫画記号は、`POST /library/audio` で 1 つずつ上げずに**スタジオの同梱の
+素材パック**から入れて、棚で探して使う（`docs/EXTERNAL-API.md` §3.8。パックと入手元の一覧は
+`asset-packs/README.md`）。出どころ（入手元・素材のページ・規約の URL・確かめた日）がライブラリの
+`license` に残る。
+
+```
+GET  /library/packs/bundled                       # 1. 使えるパック（id・件数・入れ済み・入手元の規約の要点・確かめた日）
+POST /library/packs/bundled/{id}/install          # 2. 要るのに入っていなければ入れる → 202 {id}
+     {"accept_sources": ["<そのパックの入手元の id を全部>"]}
+GET  /library/packs/imports/{id}                  #    status: done まで待つ
+GET  /library?category=効果音&q=ドア              # 3. 棚を目録の分類・タグ・名前で探して使う
+```
+
+- **同梱パックは、エージェントが入手元の規約に同意して入れてよい**（人に確かめなくてよい。
+  規約の要点と確かめた日は一覧の `sources[]` で見られる）。`accept_sources` が空なら 400
+- 入れ済み（`installed == total`）なら入れ直さない。入れても入れ済みの素材は取りに行かない
+- **取り込んだ素材は目録の分類で絞れる**: `GET /library?category=効果音&q=ドア`（目録の
+  `category` が各項目の `pack_category` に入る。使える語は応答の `pack_categories`）。
+  棚の分類（`character` / `background` / `prop` / `none`）でない語はこちらで絞る。タグ（`tag`）・
+  名前（`q`）とも組み合わせられる
+- 結果の `blocked`（robots.txt で禁止）・`missing`（入手元から消えた）・`failed`・`changed` は
+  人に伝える。`blocked` を別の方法で取りに行かない
+- **透過の動画（動く漫符・エフェクト）**はアルファ付きの WebM（VP9）で棚に入っている
+  （`media_info.converted_from`・`has_alpha`）。`url` を `FxOverlay` の `video` イベントの `src`
+  に書く（`karakuri-remotion` スキル）。グリーンバックの物はタグ「グリーンバック」で、
+  `POST /library/{id}/key` で抜ける
+- 書き出しの `GET /exports/{id}` の `materials.items` に、使ったライブラリの素材と `license`
+  が並ぶ（監査用。クレジットの文は作らない）。`licensed: false` で `source_job_id` も無い素材は
+  出どころが記録されていないので、人に確かめる
+- 棚から要らない素材を消すときは `DELETE /library/{id}`（参照されていて 409 なら、`references`
+  を人に見せて決めてもらう）。同梱パックの素材は、もう一度入れると取りに行く（ずっと要らない
+  物は同梱の目録から外す。下の手順）
+
+#### 同梱パックを足す・直すとき（試し用の目録）
+
+同梱パックに無い素材が要るときは、手元で書いた目録を `manifest_text` で渡して試し、選別して
+**採用した物を同梱の目録（`asset-packs/<id>.yaml`）に足してコミットする**。手順（規約の確認・
+選別・不採用の扱い・テスト）は `asset-packs/README.md`「目録を足す・直す」。
 
 ```
 POST /library/packs/import {"manifest_text": "<目録の YAML / JSON>",
@@ -351,10 +386,11 @@ POST /library/packs/import {…, "dry_run": false}        → 202 {id}
 GET  /library/packs/imports/{id}                          # status: done まで待つ
 ```
 
-- **`accept_sources` には、人が規約を確かめて同意した入手元だけを入れる**（勝手に足さない）
-- **取り込んだ素材は目録の分類で絞れる**: `GET /library?category=効果音&q=ドア`（目録の
-  `category` が各項目の `pack_category` に入る。使える語は応答の `pack_categories`）。
-  棚の分類（`character` / `background` / `prop` / `none`）でない語はこちらで絞る
+- **同梱パックでない目録の `accept_sources` には、規約（映像での利用・クレジット・再配布・
+  自動取得の禁止）と robots.txt を確かめた入手元だけを入れる**。迷ったら人に確かめる
+- 目録の書き方は `docs/examples/asset-pack.example.yaml`。試しの目録と素材のファイルは
+  リポジトリに入れない（同梱するのは採用した物の目録だけ）。Docker のアプリにはホストの
+  パスが見えないので、目録は `manifest_text` で渡す
 - **配布が ZIP だけの入手元**は、素材ごとに `member`（ZIP の中のパス）を書き、`download_url` に
   ZIP の URL を書く（`manual` なら `archive` に受け取り口の ZIP のファイル名）。同じ ZIP から
   何件でも取れ、ZIP は 1 回の取り込みで 1 度だけ取る。`member` は
@@ -363,21 +399,12 @@ GET  /library/packs/imports/{id}                          # status: done まで�
 - **SVG はそのまま目録・アップロードに書いてよい**: 透過を保った PNG にして入る（長辺は
   素材ごとの `svg_size`、アップロードはフォームの `svg_size`。既定 2048px）。元の SVG は
   `media_info.original_url` に残る。自分で PNG に変換しに行かない
-- **透過の動画（動く漫符・エフェクト）**も目録・アップロードにそのまま書く: アルファ付きの
-  WebM はそのまま、ProRes 4444 の .mov などはアルファ付きの WebM（VP9）にして入る
-  （`media_info.converted_from`・`has_alpha`）。入った `url` を `FxOverlay` の `video` イベントの
-  `src` に書く（`karakuri-remotion` スキル）
-- 目録と素材のファイルはリポジトリにも `workspace/` の共有物にも入れない（利用者の手元）。
-  Docker のアプリにはホストのパスが見えないので、目録は `manifest_text` で渡す
-- 結果の `blocked`（robots.txt で禁止）・`missing`・`failed`・`changed` は人に伝える。
-  `blocked` を別の方法で取りに行かない
-- 書き出しの `GET /exports/{id}` の `materials.items` に、使ったライブラリの素材と `license`
-  が並ぶ（監査用。クレジットの文は作らない）。`licensed: false` で `source_job_id` も無い素材は
-  出どころが記録されていないので、人に確かめる
+- 透過の動画（ProRes 4444 の .mov など）もそのまま書く（アルファ付きの WebM にして入る）
 - **選別で使わない素材を消す**: 先に**目録からその素材を外し**、それから
   `DELETE /library/{id}`。取り込み済みかどうかは棚の項目で見ているので、目録に残したまま
-  消すと、次の取り込みで「未登録」としてもう一度取りに行く（手で置く入手元なら受け取り口に
-  あればもう一度入る）。参照されていて 409 なら、`references` を人に見せて決めてもらう
+  消すと、次の取り込みで「未登録」としてもう一度取りに行く
+- パックの id を変えるときは、前の id を目録の `aliases` に書く（前の id で入っている素材も
+  入れ済みと見なし、記録を今の id に揃える）
 
 ### 演出はタイムラインに保存する（FX トラック。MV のときだけ）
 

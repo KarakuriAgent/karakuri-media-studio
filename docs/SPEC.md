@@ -1638,6 +1638,19 @@ CREATE TABLE library_pack_imports (
   タグ・分類・`license`・`media_info`（`app/media_measure.py`。ffprobe・loudnorm・Pillow）付きで
   登録し、登録済みは飛ばす（手で置いた素材の中身が変わっていれば `changed` で知らせる）。
   取り込みは裏で 1 本ずつ走り、状態は `library_pack_imports`
+- **同梱の素材パック**（`app/bundled_packs.py`、外部 API §3.8）: リポジトリの `asset-packs/`
+  （`paths.ROOT / "asset-packs"`。受け取り口の `packs/` とは別で、git で管理する）に**目録だけ**を
+  同梱する（素材のファイルは入れない。入手元と規約の要点・確かめた日は `asset-packs/README.md`）。
+  `GET /api/library/packs/bundled`（と `/api/v1/…`）が一覧（入手元ごとの規約の要点・確かめた日・
+  件数・棚にある件数）、`POST …/packs/bundled/{id}/install {accept_sources, dry_run}` が上の取り込みを
+  1 回受け付ける（同意した入手元が 1 つも無い・パックに無い入手元は 400）。目録の `aliases`（前の
+  id）で取り込んだ素材も入れ済みと見なし（`asset_packs.registered`）、起動時（`main.lifespan`）と
+  取り込みのとき（`dry_run` でないとき）に `license.pack` とタグを今の id に揃える
+  （`asset_packs.adopt_aliases`）。画面はファイルタブの [素材パック]（`BundledPacksModal`）:
+  パックごとに件数・入れ済み、入手元ごとの規約の要点・確かめた日・規約のページのリンクと同意の
+  チェックを出し、チェックを付けた入手元だけを [入れる]（[予定だけ見る] は `dry_run`）。進み具合は
+  `GET /api/library/packs/imports/{id}` を 1 秒ごとに読んで、取り込んだ・飛ばした・取れなかった
+  （理由つき）を出す
 
 - ファイル実体は **`library/{kind}/`**（`paths.LIBRARY_DIR`）に置き、`/library` の静的マウントで配信する。
   受け付ける拡張子は `assets/` と同じホワイトリスト（`library.ALLOWED_EXT`）

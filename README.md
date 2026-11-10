@@ -53,6 +53,7 @@ cd karakuri-media-studio/workspace && claude   # Codex / Cursor CLI などでも
 | [`docs/EXTERNAL-API.md`](docs/EXTERNAL-API.md) | 外部公開 API（`/api/v1`・`X-API-Key`）の設計とデプロイ |
 | [`docs/RUNPOD-QUICKSTART.md`](docs/RUNPOD-QUICKSTART.md) | ComfyUI を RunPod の Pod で動かす手順 |
 | [`docs/prompt-samples.md`](docs/prompt-samples.md) | プロンプトの実例 |
+| [`asset-packs/README.md`](asset-packs/README.md) | 同梱の素材パック（効果音・BGM・漫画記号の目録）と入手元・規約の要点・確かめた日、目録の足し方 |
 | [`workspace/.agents/skills/karakuri-setup/SKILL.md`](workspace/.agents/skills/karakuri-setup/SKILL.md) | エージェント向け: 導入・再開・点検 |
 | [`workspace/.agents/skills/karakuri-studio/SKILL.md`](workspace/.agents/skills/karakuri-studio/SKILL.md) | エージェント向け: 外部 API で映像を作る |
 | [`workspace/.agents/skills/karakuri-remotion/SKILL.md`](workspace/.agents/skills/karakuri-remotion/SKILL.md) | エージェント向け: Remotion の props を書く |
@@ -68,3 +69,6 @@ cd karakuri-media-studio/workspace && claude   # Codex / Cursor CLI などでも
 - 本アプリは成人向けコンテンツをローカル生成する個人利用ツールです。生成物・プロンプトは
   すべてローカルにのみ保存され、ComfyUI と LLM CLI 以外へは送信されません
 - LoRA で実在人物を無断利用しないでください（利用者責任）
+- 同梱の素材パック（[`asset-packs/`](asset-packs/README.md)）は**目録だけ**で、素材のファイルは
+  含みません。入れるとスタジオが各入手元のサイトから取りに行きます。各入手元の規約（確かめた日を
+  一覧に載せています）は変わることがあるので、入れる前に規約のページを確かめてください

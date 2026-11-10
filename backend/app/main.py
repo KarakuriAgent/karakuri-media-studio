@@ -8,7 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 
-from . import chat_agent, db, ws
+from . import bundled_packs, chat_agent, db, ws
 from .config import load_settings
 from .db import init_db
 from .jobs import recover_interrupted_jobs, runner
@@ -50,6 +50,11 @@ async def lifespan(app: FastAPI):
     # 撤去した機能の作業ディレクトリの引っ越し。実ファイルを触るので、DB だけを
     # 初期化するテストには走らせない（起動時のここでだけ呼ぶ）。
     db._move_chat_workdirs()
+    # 同梱の素材パックを改名したとき、前の id で入っている素材の記録を揃える。
+    try:
+        await bundled_packs.adopt_all_aliases()
+    except Exception:  # noqa: BLE001 - 揃えられなくても起動は続ける
+        log.exception("同梱の素材パックの前の id を揃えられませんでした")
     load_settings()
     # A hand-edited workflow/*.json that no longer matches its manifest would
     # otherwise only surface as a failed job (SPEC §3); surface it at startup

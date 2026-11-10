@@ -1,0 +1,545 @@
+# 同梱の素材パック: 場面別 BGM（甘茶の音楽工房）
+# 入手元は甘茶の音楽工房だけ。場面ごとに候補を取り込み、声の下に敷きやすいもの（歌・声が入らない、
+# 起伏とラウドネスが穏やか）を選んだ 37 曲。
+#
+# この目録は Karakuri Media Studio に同梱している（asset-packs/README.md）。目録だけで、素材のファイルは入れていない
+# （どの入手元も素材の再配布を禁止している）。入れると、スタジオが各素材を download_url から 1 件ずつ取りに行く
+# （robots.txt を守り、interval_seconds 秒の間隔をあける）。
+# 入れる前に、sources の terms_url（規約のページ）を開いて、terms_summary と checked_at（確かめた日）から
+# 変わっていないかを確かめる。規約に同意した入手元だけを accept_sources に入れる。
+# 入れ方: ライブラリの画面の「素材パック」か POST /api/v1/library/packs/bundled/{id}/install
+# （docs/EXTERNAL-API.md §3.8）。aliases は前の id（その id で入れた素材も入れ済みと見なす）。
+pack: shorts-bgm-amacha
+aliases:
+- amacha-shorts-bgm
+name: 場面別 BGM（甘茶の音楽工房）
+description: 短い動画の声の下に敷く、歌なしの BGM を場面ごとに選んだもの（37 曲）。ファイル名は「<場面>.mp3」と「<場面>_2.mp3」で、表示名の括弧の中が原題。入手元は甘茶の音楽工房。クレジットは規約上不要で、出どころの記録のために入手元の情報を残す
+sources:
+- id: amacha
+  name: 甘茶の音楽工房（Music Atelier Amacha）
+  url: https://amachamusic.chagasi.com/
+  terms_url: https://amachamusic.chagasi.com/terms.html
+  terms_summary: '商用・個人利用とも可。ウェブ・映像・ゲームなどの BGM として使う。著作権は放棄されていない（作曲 甘茶）。クレジットは不要（入れるならサイト名・作曲者名・URL のどれか）。使用報告は不要。加工（テンポ・キー・フェード等）は可。禁止: 音楽だけの販売・2 次配布、作曲者を偽る行為、直リンクでの使用（ダウンロードして使う）、楽曲を使った作品の JASRAC など著作権管理団体への登録、音楽配信サイトでの配信、YouTube の Content ID への登録。形式は MP3（128kbps）のみ。素材は予告なく変更・削除されることがある。'
+  checked_at: '2026-11-10'
+  credit_required: false
+  credit_text: 甘茶の音楽工房
+  content_id: 作品を Content ID に登録してはいけない。YouTube 上の管理は TRACKS Inc. に委託しており、音楽が中心の動画（作業用 BGM 動画など）やポリシー違反の動画には TRACKS Inc. 経由で著作権表記が入り、広告が出ることがある（ステータスへの影響は無いとのこと）。「第三者のコンテンツと一致」の申し立てが来たら手順に従って異議を申し立てる（却下される例もあるので判断は利用者）。
+  notes: robots.txt は無い（404）。曲のページ music_<名前>.html のダウンロードのリンク mp3/<名前>.mp3 を取得元にしている
+  acquire: auto
+  interval_seconds: 5
+items:
+- file: 失敗してドタバタの時.mp3
+  source: amacha
+  kind: audio
+  category: BGM
+  tags:
+  - 失敗してドタバタの時
+  - コミカル
+  - ドタバタ
+  - 普通
+  name: 失敗してドタバタの時（ドジっ子マーチ）
+  description: 原題「ドジっ子マーチ」。木管とブラスがよろけるように進む、ドジな行進曲。テンポ普通。甘茶の分類 コミカル／アンサンブル、楽器 木管／ブラス／パーカッション、1分27秒。
+  download_url: https://amachamusic.chagasi.com/mp3/dozikkomarch.mp3
+  page_url: https://amachamusic.chagasi.com/music_dozikkomarch.html
+- file: 失敗してドタバタの時_2.mp3
+  source: amacha
+  kind: audio
+  category: BGM
+  tags:
+  - 失敗してドタバタの時
+  - 怪しい
+  - ドタバタ
+  - 騒がしい
+  - 速い
+  name: 失敗してドタバタの時（のら猫の暴動）
+  description: 原題「のら猫の暴動」。木管・ブラス・弦が入り乱れて暴れる、騒がしいどたばた劇。テンポ速い。甘茶の分類 怪しい／サウンドトラック、楽器 木管／ブラス／ストリングス／パーカッション、1分00秒。
+  download_url: https://amachamusic.chagasi.com/mp3/noranekonoboudou.mp3
+  page_url: https://amachamusic.chagasi.com/music_noranekonoboudou.html
+- file: 発明を自慢するドヤ顔の時.mp3
+  source: amacha
+  kind: audio
+  category: BGM
+  tags:
+  - 発明を自慢するドヤ顔の時
+  - 怪しい
+  - ドヤ顔
+  - 得意げ
+  - 普通
+  name: 発明を自慢するドヤ顔の時（ボス猫の登場）
+  description: 原題「ボス猫の登場」。低音のブラスと弦でもったいぶって登場する、親分の貫禄の曲。テンポ普通。甘茶の分類 怪しい／オーケストラ、楽器 ストリングス／木管／ブラス／パーカッション、1分30秒。
+  download_url: https://amachamusic.chagasi.com/mp3/bossnekonotoujou.mp3
+  page_url: https://amachamusic.chagasi.com/music_bossnekonotoujou.html
+- file: 発明を自慢するドヤ顔の時_2.mp3
+  source: amacha
+  kind: audio
+  category: BGM
+  tags:
+  - 発明を自慢するドヤ顔の時
+  - 明るい
+  - ドヤ顔
+  - ファンファーレ
+  - 普通
+  name: 発明を自慢するドヤ顔の時（6人のラッパ吹き）
+  description: 原題「6人のラッパ吹き」。金管 6 本の明るく堂々としたファンファーレ風の合奏。テンポ普通。甘茶の分類 明るい／アンサンブル、楽器 トランペット／ホルン×2／トロンボーン×2／チューバ、2分01秒。
+  download_url: https://amachamusic.chagasi.com/mp3/rokuninnorappafuki.mp3
+  page_url: https://amachamusic.chagasi.com/music_rokuninnorappafuki.html
+- file: 中二病で壮大に決める時_2.mp3
+  source: amacha
+  kind: audio
+  category: BGM
+  tags:
+  - 中二病で壮大に決める時
+  - 雄大
+  - 壮大
+  - 中二病
+  - 宇宙
+  - 普通
+  name: 中二病で壮大に決める時（ベテルギウス）
+  description: 原題「ベテルギウス」。弦とブラスが宇宙的に広がる壮大な映画風の曲。テンポ普通。甘茶の分類 雄大／シネマティック、楽器 ストリングス／木管／ブラス／パーカッション、2分33秒。
+  download_url: https://amachamusic.chagasi.com/mp3/betelgeuse.mp3
+  page_url: https://amachamusic.chagasi.com/music_betelgeuse.html
+- file: 夜景を見てしんみりする時.mp3
+  source: amacha
+  kind: audio
+  category: BGM
+  tags:
+  - 夜景を見てしんみりする時
+  - 悲しい
+  - しんみり
+  - 夜景
+  - 夜
+  - ゆっくり
+  name: 夜景を見てしんみりする時（遠い港の夜景）
+  description: 原題「遠い港の夜景」。ピアノ独奏で夜の港の灯りを眺めるような切ない曲。テンポゆっくり。甘茶の分類 悲しい／ピアノ、楽器 ピアノ、2分21秒。
+  download_url: https://amachamusic.chagasi.com/mp3/toiminatonoyakei.mp3
+  page_url: https://amachamusic.chagasi.com/music_toiminatonoyakei.html
+- file: 夜景を見てしんみりする時_2.mp3
+  source: amacha
+  kind: audio
+  category: BGM
+  tags:
+  - 夜景を見てしんみりする時
+  - 癒し
+  - しんみり
+  - 夜
+  - ゆっくり
+  name: 夜景を見てしんみりする時（最終電車）
+  description: 原題「最終電車」。ヴァイオリンとチェロに淡いコーラスとドラムが重なる、夜の帰りの静かな曲（コーラスの声が入る）。テンポゆっくり。甘茶の分類 癒し／ヒーリング、楽器 ヴァイオリン／チェロ／コーラス／ドラム、2分46秒。
+  download_url: https://amachamusic.chagasi.com/mp3/saishudensha.mp3
+  page_url: https://amachamusic.chagasi.com/music_saishudensha.html
+- file: 日常でほのぼのする時.mp3
+  source: amacha
+  kind: audio
+  category: BGM
+  tags:
+  - 日常でほのぼのする時
+  - ほのぼの
+  - 日常
+  - 普通
+  name: 日常でほのぼのする時（陽だまり）
+  description: 原題「陽だまり」。フルートとギターに手拍子が入る、のどかな日だまりの曲。テンポ普通。甘茶の分類 ほのぼの／イージーリスニング、楽器 フルート／ギター／シンセパッド／手拍子／パーカッション、1分44秒。
+  download_url: https://amachamusic.chagasi.com/mp3/hidamari.mp3
+  page_url: https://amachamusic.chagasi.com/music_hidamari.html
+- file: 日常でほのぼのする時_2.mp3
+  source: amacha
+  kind: audio
+  category: BGM
+  tags:
+  - 日常でほのぼのする時
+  - ほのぼの
+  - 日常
+  - 普通
+  name: 日常でほのぼのする時（午後のお散歩）
+  description: 原題「午後のお散歩」。弦と木管の軽やかな午後の散歩の曲。テンポ普通。甘茶の分類 ほのぼの／オーケストラ、楽器 ストリングス／木管／パーカッション、1分43秒。
+  download_url: https://amachamusic.chagasi.com/mp3/gogonoosanpo.mp3
+  page_url: https://amachamusic.chagasi.com/music_gogonoosanpo.html
+- file: 急いで全力疾走する時.mp3
+  source: amacha
+  kind: audio
+  category: BGM
+  tags:
+  - 急いで全力疾走する時
+  - 疾走感
+  - 疾走
+  - 急ぐ
+  - 速い
+  name: 急いで全力疾走する時（エナジー）
+  description: 原題「エナジー」。エレピとシンセ・ドラムで前へ突き進む疾走感のあるテクノ。テンポ速い。甘茶の分類 疾走感／テクノ・エレクトロ、楽器 エレクトリックピアノ／シンセサイザー／ベース／ドラム、1分51秒。
+  download_url: https://amachamusic.chagasi.com/mp3/energy.mp3
+  page_url: https://amachamusic.chagasi.com/music_energy.html
+- file: 急いで全力疾走する時_2.mp3
+  source: amacha
+  kind: audio
+  category: BGM
+  tags:
+  - 急いで全力疾走する時
+  - コミカル
+  - 疾走
+  - 急ぐ
+  - 速い
+  name: 急いで全力疾走する時（ひよこの駆けっこ）
+  description: 原題「ひよこの駆けっこ」。スチールドラムとギターの軽快でちょこまかした駆けっこの曲。テンポ速い。甘茶の分類 コミカル／ポップ、楽器 スチールドラム／ギター／ベース／パーカッション、1分20秒。
+  download_url: https://amachamusic.chagasi.com/mp3/hiyokonokakekko.mp3
+  page_url: https://amachamusic.chagasi.com/music_hiyokonokakekko.html
+- file: カウントダウンで緊迫する時.mp3
+  source: amacha
+  kind: audio
+  category: BGM
+  tags:
+  - カウントダウンで緊迫する時
+  - 疾走感
+  - 緊迫
+  - カウントダウン
+  - 速い
+  name: カウントダウンで緊迫する時（チェス）
+  description: 原題「チェス」。ピアノとヴィブラフォンの反復にドラムが刻む、張りつめた頭脳戦のテクノ。テンポ速い。甘茶の分類 疾走感／テクノ・エレクトロ、楽器 ピアノ／ヴィブラフォン／シンセサイザー／ベース／ドラム、2分15秒。
+  download_url: https://amachamusic.chagasi.com/mp3/chess.mp3
+  page_url: https://amachamusic.chagasi.com/music_chess.html
+- file: カウントダウンで緊迫する時_2.mp3
+  source: amacha
+  kind: audio
+  category: BGM
+  tags:
+  - カウントダウンで緊迫する時
+  - シリアス
+  - 緊迫
+  - カウントダウン
+  - 普通
+  name: カウントダウンで緊迫する時（広がる雷雲）
+  description: 原題「広がる雷雲」。ブラスと打楽器が迫ってくる、嵐の前のような緊迫した曲。テンポ普通。甘茶の分類 シリアス／シネマティック、楽器 ブラス／パーカッション、2分01秒。
+  download_url: https://amachamusic.chagasi.com/mp3/hirogaruraiun.mp3
+  page_url: https://amachamusic.chagasi.com/music_hirogaruraiun.html
+- file: オチで脱力する時.mp3
+  source: amacha
+  kind: audio
+  category: BGM
+  tags:
+  - オチで脱力する時
+  - 怪しい
+  - 脱力
+  - とぼけ
+  - ゆっくり
+  name: オチで脱力する時（夕日と子ブタ）
+  description: 原題「夕日と子ブタ」。マリンバとアコーディオンがのんきに揺れる、間の抜けた曲。テンポゆっくり。甘茶の分類 怪しい／イージーリスニング、楽器 マリンバ／アコーディオン／ブラス／ヴァイオリン／パーカッション、2分10秒。
+  download_url: https://amachamusic.chagasi.com/mp3/yuuhitokobuta.mp3
+  page_url: https://amachamusic.chagasi.com/music_yuuhitokobuta.html
+- file: オチで脱力する時_2.mp3
+  source: amacha
+  kind: audio
+  category: BGM
+  tags:
+  - オチで脱力する時
+  - 怪しい
+  - 脱力
+  - とぼけ
+  - ゆっくり
+  name: オチで脱力する時（のら猫の口笛）
+  description: 原題「のら猫の口笛」。口笛とチェロがとぼけた調子で流れる、ゆるい曲。テンポゆっくり。甘茶の分類 怪しい／サウンドトラック、楽器 口笛／シンセサイザー／チェロ／パーカッション、2分09秒。
+  download_url: https://amachamusic.chagasi.com/mp3/noranekonokuchibue.mp3
+  page_url: https://amachamusic.chagasi.com/music_noranekonokuchibue.html
+- file: 何かを作っていてワクワクする時.mp3
+  source: amacha
+  kind: audio
+  category: BGM
+  tags:
+  - 何かを作っていてワクワクする時
+  - コミカル
+  - ワクワク
+  - 作業
+  - ものづくり
+  - 普通
+  name: 何かを作っていてワクワクする時（はじめてのお菓子作り）
+  description: 原題「はじめてのお菓子作り」。弦と木管が忙しく動く、楽しい作業中の曲。テンポ普通。甘茶の分類 コミカル／オーケストラ、楽器 ストリングス／木管／ブラス／パーカッション、2分04秒。
+  download_url: https://amachamusic.chagasi.com/mp3/hajimetenookashidukuri.mp3
+  page_url: https://amachamusic.chagasi.com/music_hajimetenookashidukuri.html
+- file: 謎めいたミステリーの時.mp3
+  source: amacha
+  kind: audio
+  category: BGM
+  tags:
+  - 謎めいたミステリーの時
+  - 怪しい
+  - ミステリー
+  - 忍び足
+  - 普通
+  name: 謎めいたミステリーの時（月夜の泥棒）
+  description: 原題「月夜の泥棒」。弦のピチカートと木管で忍び足をするような怪しい曲。テンポ普通。甘茶の分類 怪しい／オーケストラ、楽器 ストリングス／木管／ブラス／パーカッション、1分18秒。
+  download_url: https://amachamusic.chagasi.com/mp3/tsukiyonodorobou.mp3
+  page_url: https://amachamusic.chagasi.com/music_tsukiyonodorobou.html
+- file: 謎めいたミステリーの時_2.mp3
+  source: amacha
+  kind: audio
+  category: BGM
+  tags:
+  - 謎めいたミステリーの時
+  - 大人な雰囲気
+  - ミステリー
+  - 大人
+  - ゆっくり
+  name: 謎めいたミステリーの時（ミスト）
+  description: 原題「ミスト」。ヴァイオリンとクラリネットにシンセが霧のように漂う、謎めいた曲。テンポゆっくり。甘茶の分類 大人な雰囲気／テクノ・エレクトロ、楽器 ヴァイオリン／クラリネット／シンセサイザー／パーカッション、2分43秒。
+  download_url: https://amachamusic.chagasi.com/mp3/mist.mp3
+  page_url: https://amachamusic.chagasi.com/music_mist.html
+- file: きれいな物を見て感動する時_2.mp3
+  source: amacha
+  kind: audio
+  category: BGM
+  tags:
+  - きれいな物を見て感動する時
+  - 幻想的
+  - 感動
+  - 普通
+  name: きれいな物を見て感動する時（月の都）
+  description: 原題「月の都」。弦楽とピアノが幻想的に広がるきれいな曲。テンポ普通。甘茶の分類 幻想的／ニューエイジ、楽器 ヴァイオリン／ヴィオラ／チェロ／コントラバス／ピアノ／ドラム、2分51秒。
+  download_url: https://amachamusic.chagasi.com/mp3/tsukinomiyako.mp3
+  page_url: https://amachamusic.chagasi.com/music_tsukinomiyako.html
+- file: かわいい物を見る時.mp3
+  source: amacha
+  kind: audio
+  category: BGM
+  tags:
+  - かわいい物を見る時
+  - ほのぼの
+  - かわいい
+  - 動物
+  - 普通
+  name: かわいい物を見る時（子猫のお散歩）
+  description: 原題「子猫のお散歩」。マリンバとグロッケンが跳ねる、子猫の散歩のかわいい曲。テンポ普通。甘茶の分類 ほのぼの／イージーリスニング、楽器 ストリングス／木管／マリンバ／グロッケンシュピール／パーカッション、2分01秒。
+  download_url: https://amachamusic.chagasi.com/mp3/konekonoosanpo.mp3
+  page_url: https://amachamusic.chagasi.com/music_konekonoosanpo.html
+- file: かわいい物を見る時_2.mp3
+  source: amacha
+  kind: audio
+  category: BGM
+  tags:
+  - かわいい物を見る時
+  - 明るい
+  - かわいい
+  - 動物
+  - ワルツ
+  - 普通
+  name: かわいい物を見る時（三毛猫のワルツ）
+  description: 原題「三毛猫のワルツ」。弦・木管・ハープの軽やかでかわいいワルツ。テンポ普通。甘茶の分類 明るい／オーケストラ、楽器 ストリングス／木管／ブラス／ハープ、2分15秒。
+  download_url: https://amachamusic.chagasi.com/mp3/mikenekonowaltz.mp3
+  page_url: https://amachamusic.chagasi.com/music_mikenekonowaltz.html
+- file: コミカルにとぼける時.mp3
+  source: amacha
+  kind: audio
+  category: BGM
+  tags:
+  - コミカルにとぼける時
+  - コミカル
+  - とぼけ
+  - 普通
+  name: コミカルにとぼける時（コミカル・ピチカート）
+  description: 原題「コミカル・ピチカート」。弦のピチカートでとぼけた足取りを描く曲。テンポ普通。甘茶の分類 コミカル／イージーリスニング、楽器 ストリングス／パーカッション、1分08秒。
+  download_url: https://amachamusic.chagasi.com/mp3/comicalpizzicato.mp3
+  page_url: https://amachamusic.chagasi.com/music_comicalpizzicato.html
+- file: コミカルにとぼける時_2.mp3
+  source: amacha
+  kind: audio
+  category: BGM
+  tags:
+  - コミカルにとぼける時
+  - コミカル
+  - とぼけ
+  - 動物
+  - 普通
+  name: コミカルにとぼける時（パグとお散歩）
+  description: 原題「パグとお散歩」。ギターとブラスのとぼけたお散歩の曲。テンポ普通。甘茶の分類 コミカル／イージーリスニング、楽器 ギター／ブラス／パーカッション、1分49秒。
+  download_url: https://amachamusic.chagasi.com/mp3/pugtoosanpo.mp3
+  page_url: https://amachamusic.chagasi.com/music_pugtoosanpo.html
+- file: 朝の目覚めの時.mp3
+  source: amacha
+  kind: audio
+  category: BGM
+  tags:
+  - 朝の目覚めの時
+  - ほのぼの
+  - 朝
+  - 目覚め
+  - ゆっくり
+  name: 朝の目覚めの時（ゆるやかな朝焼け）
+  description: 原題「ゆるやかな朝焼け」。木管とグロッケンで静かに明けていく朝の曲。テンポゆっくり。甘茶の分類 ほのぼの／イージーリスニング、楽器 木管／コントラバス／グロッケンシュピール、2分00秒。
+  download_url: https://amachamusic.chagasi.com/mp3/yuruyakanaasayake.mp3
+  page_url: https://amachamusic.chagasi.com/music_yuruyakanaasayake.html
+- file: 朝の目覚めの時_2.mp3
+  source: amacha
+  kind: audio
+  category: BGM
+  tags:
+  - 朝の目覚めの時
+  - 明るい
+  - 朝
+  - 目覚め
+  - 普通
+  name: 朝の目覚めの時（お日様とお散歩）
+  description: 原題「お日様とお散歩」。弦とブラスの明るく元気な朝の曲。テンポ普通。甘茶の分類 明るい／オーケストラ、楽器 ストリングス／ブラス／パーカッション、1分25秒。
+  download_url: https://amachamusic.chagasi.com/mp3/ohisamatoosanpo.mp3
+  page_url: https://amachamusic.chagasi.com/music_ohisamatoosanpo.html
+- file: カフェでくつろぐ時.mp3
+  source: amacha
+  kind: audio
+  category: BGM
+  tags:
+  - カフェでくつろぐ時
+  - ほのぼの
+  - カフェ
+  - くつろぎ
+  - ゆっくり
+  name: カフェでくつろぐ時（のほほん喫茶）
+  description: 原題「のほほん喫茶」。リコーダー 3 本とギターの素朴でのんびりした喫茶店の曲。テンポゆっくり。甘茶の分類 ほのぼの／イージーリスニング、楽器 リコーダー×3本／ギター／パーカッション、1分36秒。
+  download_url: https://amachamusic.chagasi.com/mp3/nohohonkissa.mp3
+  page_url: https://amachamusic.chagasi.com/music_nohohonkissa.html
+- file: カフェでくつろぐ時_2.mp3
+  source: amacha
+  kind: audio
+  category: BGM
+  tags:
+  - カフェでくつろぐ時
+  - ほのぼの
+  - カフェ
+  - くつろぎ
+  - おしゃれ
+  - 普通
+  name: カフェでくつろぐ時（紅茶の時間）
+  description: 原題「紅茶の時間」。ヴィブラフォンとオーボエ・ギターの小粋なティータイムの曲。テンポ普通。甘茶の分類 ほのぼの／ポップ、楽器 ヴィブラフォン／オーボエ／ギター／ピアノ／ベース／パーカッション、2分48秒。
+  download_url: https://amachamusic.chagasi.com/mp3/kouchanojikan.mp3
+  page_url: https://amachamusic.chagasi.com/music_kouchanojikan.html
+- file: 電子的でサイバーな時.mp3
+  source: amacha
+  kind: audio
+  category: BGM
+  tags:
+  - 電子的でサイバーな時
+  - おしゃれ
+  - 電子
+  - サイバー
+  - 普通
+  name: 電子的でサイバーな時（テクノミクスⅠ）
+  description: 原題「テクノミクスⅠ」。シンセとベース・ドラムのクールなテクノ。テンポ普通。甘茶の分類 おしゃれ／テクノ・エレクトロ、楽器 シンセイサザー／ベース／ドラム、2分02秒。
+  download_url: https://amachamusic.chagasi.com/mp3/technomics1.mp3
+  page_url: https://amachamusic.chagasi.com/music_technomics1.html
+- file: 電子的でサイバーな時_2.mp3
+  source: amacha
+  kind: audio
+  category: BGM
+  tags:
+  - 電子的でサイバーな時
+  - おしゃれ
+  - 電子
+  - サイバー
+  - 夜
+  - 普通
+  name: 電子的でサイバーな時（ブルーネオンⅠ）
+  description: 原題「ブルーネオンⅠ」。シンセにピアノとヴァイオリンが重なる、ネオンの街のような都会的なテクノ。テンポ普通。甘茶の分類 おしゃれ／テクノ・エレクトロ、楽器 ピアノ／ヴァイオリン／シンセサイザー／ベース／パーカッション、2分22秒。
+  download_url: https://amachamusic.chagasi.com/mp3/blueneon1.mp3
+  page_url: https://amachamusic.chagasi.com/music_blueneon1.html
+- file: お祭りでにぎやかな時.mp3
+  source: amacha
+  kind: audio
+  category: BGM
+  tags:
+  - お祭りでにぎやかな時
+  - 雄大
+  - お祭り
+  - 和風
+  - にぎやか
+  - 速い
+  name: お祭りでにぎやかな時（花祭り）
+  description: 原題「花祭り」。篠笛・和太鼓・お囃子に掛け声が入る、にぎやかな和風の祭りの曲（掛け声が入る）。テンポ速い。甘茶の分類 雄大／和風・アジア、楽器 篠笛／尺八／胡弓／琴／ストリングス／ピアノ／掛け声／和太鼓／お囃子、2分18秒。
+  download_url: https://amachamusic.chagasi.com/mp3/hanamatsuri.mp3
+  page_url: https://amachamusic.chagasi.com/music_hanamatsuri.html
+- file: お祭りでにぎやかな時_2.mp3
+  source: amacha
+  kind: audio
+  category: BGM
+  tags:
+  - お祭りでにぎやかな時
+  - コミカル
+  - お祭り
+  - にぎやか
+  - 普通
+  name: お祭りでにぎやかな時（遊園地）
+  description: 原題「遊園地」。リコーダー 5 本の楽しい遊園地の曲。テンポ普通。甘茶の分類 コミカル／アンサンブル、楽器 リコーダー×5、1分56秒。
+  download_url: https://amachamusic.chagasi.com/mp3/yuuenchi.mp3
+  page_url: https://amachamusic.chagasi.com/music_yuuenchi.html
+- file: 冒険に出かける時.mp3
+  source: amacha
+  kind: audio
+  category: BGM
+  tags:
+  - 冒険に出かける時
+  - 明るい
+  - 冒険
+  - 普通
+  name: 冒険に出かける時（楽しい冒険）
+  description: 原題「楽しい冒険」。弦・木管・ブラスで元気に出発する冒険の曲。テンポ普通。甘茶の分類 明るい／オーケストラ、楽器 ストリングス／木管／ブラス／パーカッション、1分48秒。
+  download_url: https://amachamusic.chagasi.com/mp3/tanoshiibouken.mp3
+  page_url: https://amachamusic.chagasi.com/music_tanoshiibouken.html
+- file: 冒険に出かける時_2.mp3
+  source: amacha
+  kind: audio
+  category: BGM
+  tags:
+  - 冒険に出かける時
+  - 明るい
+  - 冒険
+  - 普通
+  name: 冒険に出かける時（夏休みの探検）
+  description: 原題「夏休みの探検」。マリンバと弦・木管のわくわくする探検の曲。テンポ普通。甘茶の分類 明るい／ファンタジー、楽器 ストリングス／木管／マリンバ／パーカッション、1分31秒。
+  download_url: https://amachamusic.chagasi.com/mp3/natsuyasuminotanken.mp3
+  page_url: https://amachamusic.chagasi.com/music_natsuyasuminotanken.html
+- file: 落ち込んでしょんぼりする時.mp3
+  source: amacha
+  kind: audio
+  category: BGM
+  tags:
+  - 落ち込んでしょんぼりする時
+  - 悲しい
+  - しょんぼり
+  - ゆっくり
+  name: 落ち込んでしょんぼりする時（夕暮れピエロ）
+  description: 原題「夕暮れピエロ」。アコーディオンとヴァイオリンの物悲しいピエロの曲。テンポゆっくり。甘茶の分類 悲しい／ファンタジー、楽器 アコーディオン／ヴァイオリン／オルガン／マリンバ／タンバリン、1分45秒。
+  download_url: https://amachamusic.chagasi.com/mp3/yuugurepierrot.mp3
+  page_url: https://amachamusic.chagasi.com/music_yuugurepierrot.html
+- file: 落ち込んでしょんぼりする時_2.mp3
+  source: amacha
+  kind: audio
+  category: BGM
+  tags:
+  - 落ち込んでしょんぼりする時
+  - 悲しい
+  - しょんぼり
+  - ゆっくり
+  name: 落ち込んでしょんぼりする時（小さな夜の悲しみ）
+  description: 原題「小さな夜の悲しみ」。弦と木管・グロッケンの小さくしょんぼりした曲。テンポゆっくり。甘茶の分類 悲しい／アンサンブル、楽器 ストリングス／木管／グロッケンシュピール、1分30秒。
+  download_url: https://amachamusic.chagasi.com/mp3/chiisanayorunokanashimi.mp3
+  page_url: https://amachamusic.chagasi.com/music_chiisanayorunokanashimi.html
+- file: 締めのエンディングの時.mp3
+  source: amacha
+  kind: audio
+  category: BGM
+  tags:
+  - 締めのエンディングの時
+  - ほのぼの
+  - エンディング
+  - 前向き
+  - 普通
+  name: 締めのエンディングの時（明日へ続く空）
+  description: 原題「明日へ続く空」。ピアノとギター・弦のさわやかで前向きな締めの曲。テンポ普通。甘茶の分類 ほのぼの／イージーリスニング、楽器 ピアノ／ギター／ストリングス、2分45秒。
+  download_url: https://amachamusic.chagasi.com/mp3/ashitaetudukusora.mp3
+  page_url: https://amachamusic.chagasi.com/music_ashitaetudukusora.html
+- file: 締めのエンディングの時_2.mp3
+  source: amacha
+  kind: audio
+  category: BGM
+  tags:
+  - 締めのエンディングの時
+  - しみじみ
+  - エンディング
+  - ゆっくり
+  name: 締めのエンディングの時（帰り道）
+  description: 原題「帰り道」。ギターとピアノの温かい帰り道の曲。テンポゆっくり。甘茶の分類 しみじみ／イージーリスニング、楽器 ギター／ピアノ／ストリング／ドラム、2分48秒。
+  download_url: https://amachamusic.chagasi.com/mp3/kaerimichi.mp3
+  page_url: https://amachamusic.chagasi.com/music_kaerimichi.html

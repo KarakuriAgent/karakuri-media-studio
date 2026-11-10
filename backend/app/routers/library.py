@@ -9,7 +9,7 @@ from io import BytesIO
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Response, UploadFile
 
-from .. import asset_packs
+from .. import asset_packs, bundled_packs
 from .. import blocking as blocking_render
 from .. import jobs as job_service
 from .. import library as service
@@ -19,6 +19,8 @@ from ..models import (
     AssetPackArchiveRequest,
     AssetPackImport,
     AssetPackImportRequest,
+    BundledAssetPack,
+    BundledAssetPackInstallRequest,
     LibraryBlockingCreate,
     LibraryBlockingMap,
     LibraryBlockingMapResult,
@@ -304,6 +306,46 @@ async def list_pack_archive(payload: AssetPackArchiveRequest) -> AssetPackArchiv
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+async def list_bundled_packs() -> list[BundledAssetPack]:
+    """同梱の素材パック（目録だけ。入手元の規約の要点・確かめた日・入れ済みの件数）。"""
+    return await bundled_packs.list_bundled()
+
+
+async def get_bundled_pack(pack_id: str) -> BundledAssetPack:
+    """同梱の素材パック 1 つ（前の id でも引ける）。"""
+    try:
+        return await bundled_packs.get_bundled(pack_id)
+    except bundled_packs.BundledPackNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+
+async def install_bundled_pack(
+    pack_id: str, payload: BundledAssetPackInstallRequest
+) -> AssetPackImport:
+    """同梱の素材パックを入れる（**202 即受付**。同意した入手元が無ければ 400）。
+
+    進み具合と結果は ``/packs/imports/{id}``（``dry_run`` はその場で終わった結果）。
+    """
+    try:
+        return await bundled_packs.install(pack_id, payload)
+    except bundled_packs.BundledPackNotFound as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except asset_packs.AssetPackError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+router.add_api_route(
+    "/packs/bundled", list_bundled_packs, methods=["GET"],
+    response_model=list[BundledAssetPack],
+)
+router.add_api_route(
+    "/packs/bundled/{pack_id}", get_bundled_pack, methods=["GET"],
+    response_model=BundledAssetPack,
+)
+router.add_api_route(
+    "/packs/bundled/{pack_id}/install", install_bundled_pack, methods=["POST"],
+    response_model=AssetPackImport, status_code=202,
+)
 router.add_api_route(
     "/packs/import", import_pack, methods=["POST"],
     response_model=AssetPackImport, status_code=202,

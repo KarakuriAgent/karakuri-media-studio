@@ -60,6 +60,7 @@ from ..h3_examples import (
 from ..models import (
     AssetPackArchiveListing,
     AssetPackImport,
+    BundledAssetPack,
     ASSET_FILE_ROLE_KINDS,
     ContactSheet,
     ContactSheetResult,
@@ -160,6 +161,7 @@ from .library import (
 from .library import key_job_output, key_library_item, key_media_source
 from .library import upload_detecting_kind, upload_to_library
 from .library import get_pack_import, import_pack, list_pack_archive, list_pack_imports
+from .library import get_bundled_pack, install_bundled_pack, list_bundled_packs
 from .media import create_contact_sheet, create_text_image, font_list
 from .options import get_options
 from .studio import _kind_of, get_capabilities
@@ -1051,6 +1053,18 @@ async def list_library(
 
 # 素材パック（効果音・BGM・画像を入手元とライセンス情報ごと取り込む。§3.8）。
 # ``/library/{item_id}`` より先に置く。
+router.add_api_route(
+    "/library/packs/bundled", list_bundled_packs, methods=["GET"],
+    response_model=list[BundledAssetPack],
+)
+router.add_api_route(
+    "/library/packs/bundled/{pack_id}", get_bundled_pack, methods=["GET"],
+    response_model=BundledAssetPack,
+)
+router.add_api_route(
+    "/library/packs/bundled/{pack_id}/install", install_bundled_pack, methods=["POST"],
+    response_model=AssetPackImport, status_code=202,
+)
 router.add_api_route(
     "/library/packs/import", import_pack, methods=["POST"],
     response_model=AssetPackImport, status_code=202,

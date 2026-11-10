@@ -29,6 +29,11 @@
 - **何度実行しても同じ結果**: 登録済みの素材（同じパック・入手元・ファイル名）は
   飛ばす。手で置いた素材は sha256 を比べ、変わっていれば ``changed`` に返す
   （上書きはしない）
+- **改名したパック**: 目録の ``aliases``（前の id）で取り込んだ素材も登録済みと見なし、
+  取り込むとき（``dry_run`` でないとき）に出どころの記録（``license.pack``）とタグを
+  今の id に揃える（:func:`adopt_aliases`）
+
+同梱の素材パック（リポジトリの ``asset-packs/``）の一覧と入れ方は :mod:`app.bundled_packs`。
 """
 
 from __future__ import annotations
@@ -148,6 +153,16 @@ def check_manifest(manifest: AssetPackManifest) -> AssetPackManifest:
         raise AssetPackError(
             "pack は英数字と . _ - で 64 文字まで（受け取り口のフォルダ名になります）"
         )
+    aliases: list[str] = []
+    for alias in manifest.aliases:
+        alias = alias.strip()
+        if not _PACK_ID.match(alias):
+            raise AssetPackError(
+                f"aliases の {alias!r} は pack と同じく英数字と . _ - で 64 文字まで"
+            )
+        if alias != manifest.pack and alias not in aliases:
+            aliases.append(alias)
+    manifest.aliases = aliases
     ids = [source.id for source in manifest.sources]
     if len(ids) != len(set(ids)):
         raise AssetPackError("sources の id が重複しています")
@@ -478,20 +493,60 @@ async def list_archive(request: AssetPackArchiveRequest) -> AssetPackArchiveList
 # 登録
 # --------------------------------------------------------------------------
 
-async def registered(pack: str) -> dict[tuple[str, str], LibraryItem]:
-    """このパックから取り込み済みの素材（``(入手元, ファイル名)`` -> 項目）。"""
-    found: dict[tuple[str, str], LibraryItem] = {}
+async def _items_of_pack(pack: str) -> list[LibraryItem]:
+    """出どころの記録（``license.pack``）がこのパックの棚の項目。"""
     async with get_db() as conn:
         async with conn.execute(
             "SELECT * FROM library WHERE license IS NOT NULL AND license LIKE ?",
             (f'%"pack":{json.dumps(pack)}%',),
         ) as cur:
             rows = await cur.fetchall()
-    for row in rows:
-        item = library_service.row_to_item(row)
-        if item.license is not None and item.license.pack == pack:
+    items = [library_service.row_to_item(row) for row in rows]
+    return [item for item in items if item.license is not None and item.license.pack == pack]
+
+
+async def registered(
+    pack: str, aliases: list[str] | tuple[str, ...] = ()
+) -> dict[tuple[str, str], LibraryItem]:
+    """このパックから取り込み済みの素材（``(入手元, ファイル名)`` -> 項目）。
+
+    ``aliases``（前の id）で取り込んだ素材も含める（今の id の物が勝つ）。
+    """
+    found: dict[tuple[str, str], LibraryItem] = {}
+    for name in [*reversed([a for a in aliases if a != pack]), pack]:
+        for item in await _items_of_pack(name):
+            assert item.license is not None
             found[(item.license.source_id, item.license.file)] = item
     return found
+
+
+async def adopt_aliases(manifest: AssetPackManifest) -> int:
+    """前の id（``aliases``）で取り込んだ素材の記録を、今の id に揃える。
+
+    ``license.pack`` を書き換え、タグの前の id を今の id に置き換える。揃えた件数を
+    返す（何度呼んでも同じ結果）。
+    """
+    changed = 0
+    for alias in manifest.aliases:
+        if alias == manifest.pack:
+            continue
+        for item in await _items_of_pack(alias):
+            assert item.license is not None
+            license = item.license.model_copy(update={"pack": manifest.pack})
+            folded = alias.casefold()
+            tags = library_service.normalize_tags(
+                [manifest.pack if tag.casefold() == folded else tag for tag in item.tags]
+            )
+            async with get_db() as conn:
+                await conn.execute(
+                    "UPDATE library SET license = ?, tags = ? WHERE id = ?",
+                    (license.model_dump_json(), json.dumps(tags, ensure_ascii=False), item.id),
+                )
+                await conn.commit()
+            changed += 1
+    if changed:
+        log.info("素材パック %s: 前の id の素材 %d 件の記録を揃えました", manifest.pack, changed)
+    return changed
 
 
 def _license(
@@ -614,7 +669,9 @@ async def run_import(
     folder = inbox_dir(manifest, request.inbox_dir)
     result.inbox_dir = str(folder)
     inbox = _Inbox(folder)
-    known = await registered(manifest.pack)
+    if not request.dry_run:
+        await adopt_aliases(manifest)
+    known = await registered(manifest.pack, manifest.aliases)
     fetcher = _Fetcher()
     store = _Archives(fetcher)
     if not request.dry_run:

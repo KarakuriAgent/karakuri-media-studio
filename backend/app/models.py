@@ -2808,6 +2808,9 @@ class AssetPackManifest(BaseModel):
 
     #: パックの id（取り込んだ素材の識別と、受け取り口のフォルダ名に使う）
     pack: str
+    #: 前の id（改名したパック）。その id で取り込んだ素材も「取り込み済み」と見なし、
+    #: 取り込むときに出どころの記録（``license.pack``）とタグを今の id に揃える
+    aliases: list[str] = Field(default_factory=list)
     name: str = ""
     description: str = ""
     sources: list[AssetPackSource] = Field(default_factory=list)
@@ -2923,6 +2926,62 @@ class AssetPackImport(BaseModel):
     error: str | None = None
     created_at: str
     finished_at: str | None = None
+
+
+class BundledAssetPackSource(BaseModel):
+    """同梱の素材パックの入手元 1 つ（入れる前に見せて同意を取るための情報）。"""
+
+    id: str
+    name: str
+    url: str = ""
+    terms_url: str = ""
+    terms_summary: str = ""
+    #: 規約を確かめた日（規約は変わることがあるので、入れる前に見せる）
+    checked_at: str = ""
+    credit_required: bool | None = None
+    credit_text: str = ""
+    content_id: str = ""
+    notes: str = ""
+    acquire: AssetPackAcquire = "auto"
+    interval_seconds: float | None = None
+    #: この入手元の素材の件数と、そのうち棚にある件数
+    total: int = 0
+    installed: int = 0
+
+
+class BundledAssetPack(BaseModel):
+    """同梱の素材パック（``GET /api/v1/library/packs/bundled``）。
+
+    リポジトリの ``asset-packs/`` にある目録（素材のファイルは同梱しない）。
+    入れると、入手元から取りに行って棚に組み込む。
+    """
+
+    id: str
+    #: 前の id（この id で入っている素材も入れ済みと見なす）
+    aliases: list[str] = Field(default_factory=list)
+    name: str = ""
+    description: str = ""
+    #: 目録の分類（``category``）の一覧
+    categories: list[str] = Field(default_factory=list)
+    #: 種類ごとの件数（``{"audio": 80}`` など）
+    kinds: dict[str, int] = Field(default_factory=dict)
+    #: 素材の件数と、そのうち棚にある件数（旧 id で入っている物も数える）
+    total: int = 0
+    installed: int = 0
+    sources: list[BundledAssetPackSource] = Field(default_factory=list)
+    #: 目録のファイル（リポジトリのルートからのパス）
+    file: str = ""
+    #: 入れる前の注意（規約のページを確かめること）
+    notice: str = ""
+
+
+class BundledAssetPackInstallRequest(BaseModel):
+    """POST /api/v1/library/packs/bundled/{id}/install body。"""
+
+    #: 規約を読んで同意した入手元の id（パックの入手元を 1 つ以上。無ければ 400）
+    accept_sources: list[str] = Field(default_factory=list)
+    #: 何も取らず・登録せずに、何が起きるかだけを返す
+    dry_run: bool = False
 
 
 class HealthStatus(BaseModel):

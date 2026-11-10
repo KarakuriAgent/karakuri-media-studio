@@ -586,6 +586,77 @@ export interface LibraryPage {
   pack_categories?: string[]
 }
 
+/** 同梱の素材パックの入手元 1 つ（入れる前に見せて同意を取る）。 */
+export interface BundledAssetPackSource {
+  id: string
+  name: string
+  url: string
+  terms_url: string
+  /** 規約の要点 */
+  terms_summary: string
+  /** 規約を確かめた日 */
+  checked_at: string
+  credit_required: boolean | null
+  credit_text: string
+  content_id: string
+  notes: string
+  acquire: 'auto' | 'manual'
+  interval_seconds: number | null
+  /** この入手元の素材の件数と、そのうち棚にある件数 */
+  total: number
+  installed: number
+}
+
+/** GET /api/library/packs/bundled の 1 件（同梱の素材パック。目録だけを同梱）。 */
+export interface BundledAssetPack {
+  id: string
+  /** 前の id（この id で入っている素材も入れ済みと見なす） */
+  aliases: string[]
+  name: string
+  description: string
+  categories: string[]
+  kinds: Record<string, number>
+  total: number
+  /** 棚にある件数 */
+  installed: number
+  sources: BundledAssetPackSource[]
+  file: string
+  /** 入れる前の注意 */
+  notice: string
+}
+
+/** 素材パックの取り込みの結果の 1 件。 */
+export interface AssetPackImportEntry {
+  file: string
+  source: string
+  member: string
+  library_id: string | null
+  name: string
+  url: string
+  reason: string
+}
+
+/** 素材パックの取り込み 1 回（GET /api/library/packs/imports/{id}）。 */
+export interface AssetPackImport {
+  id: string
+  status: 'queued' | 'running' | 'done' | 'failed'
+  pack: string
+  dry_run: boolean
+  total: number
+  processed: number
+  imported: AssetPackImportEntry[]
+  skipped: AssetPackImportEntry[]
+  changed: AssetPackImportEntry[]
+  missing: AssetPackImportEntry[]
+  blocked: AssetPackImportEntry[]
+  failed: AssetPackImportEntry[]
+  unaccepted_sources: string[]
+  inbox_dir: string
+  error: string | null
+  created_at: string
+  finished_at: string | null
+}
+
 /** POST /api/library/sheet の body（リファレンスシートの合成、SPEC §7.2）。 */
 export interface LibrarySheetRequest {
   /** 載せる素材の id（すべて image。**並び順に意味がある**）。 */

@@ -39,7 +39,7 @@
 | 素材（World Bible） | `GET /assets`（**全作品横断**の素材検索。`project_id` / `kind` / `q` / `limit` / `offset`）・`POST /projects/{id}/assets`（JSON / multipart。`library_id` でライブラリから取り込み）・`assets/from-job`・`PATCH/DELETE /assets/{id}`・`POST /assets/{id}/refresh-from-library`（取り込み元の今の版で取り直す）・素材のリファレンス（`/assets/{id}/files`・`DELETE /asset-files/{id}`） |
 | 生成と Take | `POST /shots/{id}/render`・`GET /shots/{id}/takes`・`POST /takes/{id}/select`・`reject`・`cancel`・`DELETE /takes/{id}` |
 | 汎用ジョブ | `GET/POST /jobs`（一覧は `q` / `kind` / `project_id` / `nsfw` / `limit` / `offset` で絞れる。§3.6）・`GET /jobs/{id}`・`POST /jobs/{id}/cancel`・`rerun`・`continue` |
-| ライブラリ | `GET /library`（`kind` / `category`〈棚の分類か素材パックの目録の分類〉/ `q` / `tag`）・`POST /library/image` / `POST /library/audio` / `POST /library/upload`（multipart。`license` も添えられる）・**`POST /library/packs/import`・`GET /library/packs/imports[/{id}]`・`POST /library/packs/archive`（素材パック・ZIP の中身の一覧、§3.8）**・`POST /library/from-job`・`POST /library/sheet`・`POST /library/{id}/key`・`POST /library/key`・`POST /library/key-from-job`・`POST /library/blocking`・`POST /library/{id}/blocking`・`POST /library/blocking/preview`・`POST /library/blocking/location-map`・`PATCH /library/{id}`・`DELETE /library/{id}`（参照されていれば 409、`force=true` で押し切る。§3.8） |
+| ライブラリ | `GET /library`（`kind` / `category`〈棚の分類か素材パックの目録の分類〉/ `q` / `tag`）・`POST /library/image` / `POST /library/audio` / `POST /library/upload`（multipart。`license` も添えられる）・**`GET /library/packs/bundled[/{id}]`・`POST /library/packs/bundled/{id}/install`（同梱の素材パック）**・**`POST /library/packs/import`・`GET /library/packs/imports[/{id}]`・`POST /library/packs/archive`（素材パック・ZIP の中身の一覧、§3.8）**・`POST /library/from-job`・`POST /library/sheet`・`POST /library/{id}/key`・`POST /library/key`・`POST /library/key-from-job`・`POST /library/blocking`・`POST /library/{id}/blocking`・`POST /library/blocking/preview`・`POST /library/blocking/location-map`・`PATCH /library/{id}`・`DELETE /library/{id}`（参照されていれば 409、`force=true` で押し切る。§3.8） |
 | 素材の下ごしらえ | `POST /images/text`・`GET /images/text/fonts`・`POST /videos/contact-sheet`（§3.4） |
 | 編集（タイムライン） | `POST /projects/{id}/timelines`・`GET/PATCH/DELETE /timelines/{id}`・`PUT /timelines/{id}/clips`（クリップの加工 `effects`、§3.7）・`POST /timelines/{id}/clips/insert`・トラック CRUD（音声トラックのダッキング `ducking`、§3.7）・`generate-subtitles`・`sync-preview` / `sync`・`missing` / `missing/resolve`・`GET /projects/{id}/media` |
 | 演出（FX トラック） | `GET/PUT /timelines/{id}/fx`・`PUT /timelines/{id}/fx/lyric`（歌詞モーション）・`POST /timelines/{id}/fx/events`・`PATCH/DELETE /timelines/{id}/fx/events/{event_id}`（§3.3） |
@@ -738,13 +738,53 @@ GET /api/v1/jobs?q=かおり&kind=video&nsfw=false&limit=48&offset=0
 書いてから棚（ライブラリ）へ取り込む。取り込んだ素材には出どころ（`license`）と測った値
 （`media_info`）が付き、タイムラインの書き出しは使った素材を一覧にして返す（監査用）。
 
-**目録と素材のファイルはリポジトリに入れない**（利用者の手元に置く）。書き方の例は
+**使うときは、まず同梱の素材パック**（下の「同梱の素材パック」）**の一覧を見て、要る物を入れる。**
+目録を直接渡す取り込み（`POST /library/packs/import`）は、同梱の目録を足す・直すときの試し用
+（新しい入手元の規約・robots.txt を確かめ、取り込んで選別し、採用した物を同梱の目録に足す。
+手順は [`asset-packs/README.md`](../asset-packs/README.md)「目録を足す・直す」）。
+
+#### 同梱の素材パック
+
+リポジトリの [`asset-packs/`](../asset-packs/README.md) に**目録だけ**を同梱している（素材の
+ファイルは入れない。どの入手元も再配布を禁止している）。入れると、下の取り込みと同じ仕組み
+（robots.txt・間隔・同意・ZIP・SVG・動画の変換・`license` の記録）で入手元から取りに行く。
+
+```
+GET  /api/v1/library/packs/bundled                → [{id, aliases, name, description, categories,
+                                                       kinds, total, installed, file, notice,
+                                                       sources: [{id, name, url, terms_url,
+                                                         terms_summary, checked_at, credit_required,
+                                                         credit_text, content_id, notes, acquire,
+                                                         interval_seconds, total, installed}]}]
+GET  /api/v1/library/packs/bundled/{id}           → 1 件（前の id でも引ける）/ 404
+POST /api/v1/library/packs/bundled/{id}/install   → 202 {id, status: "queued", …}（取り込みの記録）
+  {"accept_sources": ["taira-komori"],   # 同意した入手元（パックの入手元を 1 つ以上）
+   "dry_run": false}
+GET  /api/v1/library/packs/imports/{id}           → 進み具合と結果（下と同じ）
+```
+
+- `installed` は棚にある件数（前の id `aliases` で入っている物も数える）。入手元ごとの
+  `installed` / `total` もある
+- `accept_sources` が空・パックに無い入手元の id を含むときは **400**（同意の無い取り込みは
+  しない）。一部の入手元だけに同意したときは、残りの入手元の素材を `skipped` に返す
+- `dry_run: true` はその場で終わった記録を返す（何も取らず登録しない）
+- 規約は変わることがあるので、一覧の `checked_at`（規約を確かめた日）と `notice` を見せ、
+  入れる前に `terms_url` を確かめる（画面は同意のチェックを付けた入手元だけを入れる）
+- **改名したパック**: 目録の `aliases` に前の id を書く。前の id で取り込んだ素材も入れ済みと
+  見なして取りに行かない。アプリの起動時と入れるとき（`dry_run` でないとき）に、その素材の
+  `license.pack` とタグの前の id を今の id に揃える。内部 API（`/api/library/packs/bundled…`）も
+  同じ形
+
+#### 目録の書き方
+
+利用者が手元で書く目録（試し用）と素材のファイルはリポジトリに入れない。書き方の例は
 [`docs/examples/asset-pack.example.yaml`](examples/asset-pack.example.yaml)（架空の入手元・
 ファイル無し）。JSON か YAML で、スキーマは次のとおり:
 
 | 項目 | 意味 |
 |---|---|
 | `pack` | パックの id（英数字と `. _ -`、64 文字まで。取り込んだ素材の識別と受け取り口のフォルダ名） |
+| `aliases` | 前の id（改名したパック。その id で取り込んだ素材も取り込み済みと見なし、取り込むときに記録を今の id に揃える） |
 | `name` / `description` | 表示用 |
 | `sources[]` | 入手元ごと: `id`・`name`（入手元の名前）・`url`・`terms_url`・`terms_summary`（規約の要点）・`checked_at`（規約を確かめた日）・`credit_required`・`credit_text`・`content_id`（Content ID の扱いのメモ）・`notes`・`acquire`（`auto` = 取得元の URL から取る〈既定〉/ `manual` = 人が受け取り口に置く）・`interval_seconds`（`auto` の間隔。2 秒より短くはしない） |
 | `items[]` | 素材ごと: `file`（ファイル名。`member` を書けば省略でき、そのパスの最後の名前になる）・`source`（入手元の `id`）・`kind`（`image` / `video` / `audio`。省略すると拡張子から）・`category`（自由な分類。タグにも入る。`character` / `background` / `prop` ならライブラリの分類にもなる）・`tags`・`name`・`description`・`download_url`（取得元。`auto` で使う）・`page_url`（素材のページ）・`credit_text`・`sha256`（任意。YAML では引用符で囲む。`member` のときは ZIP の中のそのファイルの sha256）・`member`（ZIP の中のパス。下の「アーカイブ」）・`archive`（`manual` で `member` を取り出す受け取り口の ZIP のファイル名）・`svg_size`（SVG を PNG にするときの長辺 px。16〜8192、既定 2048。下の「SVG」） |

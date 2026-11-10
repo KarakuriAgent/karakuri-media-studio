@@ -1,0 +1,1006 @@
+# 同梱の素材パック: 効果音（無料効果音で遊ぼう！）
+# 入手元は無料効果音で遊ぼう！（小森平）だけ。候補を取り込み、長さ・ラウドネス・波形で選んだ 80 件
+# （耳で聞いて選んだのではないので、使う前に聞いて確かめる）。
+#
+# この目録は Karakuri Media Studio に同梱している（asset-packs/README.md）。目録だけで、素材のファイルは入れていない
+# （どの入手元も素材の再配布を禁止している）。入れると、スタジオが各素材を download_url から 1 件ずつ取りに行く
+# （robots.txt を守り、interval_seconds 秒の間隔をあける）。
+# 入れる前に、sources の terms_url（規約のページ）を開いて、terms_summary と checked_at（確かめた日）から
+# 変わっていないかを確かめる。規約に同意した入手元だけを accept_sources に入れる。
+# 入れ方: ライブラリの画面の「素材パック」か POST /api/v1/library/packs/bundled/{id}/install
+# （docs/EXTERNAL-API.md §3.8）。aliases は前の id（その id で入れた素材も入れ済みと見なす）。
+pack: shorts-sfx-komori
+aliases:
+- kanon-shorts-sfx
+name: 効果音（無料効果音で遊ぼう！）
+description: 短い動画（ショートのコメディなど）向けの効果音 80 件。衝撃・動き・ギャグ・決め・場の空気などの定番の音を、長さとラウドネスで選んだもの。入手元は無料効果音で遊ぼう！（小森平）。クレジットは規約上任意で、出どころの記録のために入手元の情報を残す
+sources:
+- id: taira-komori
+  name: 無料効果音で遊ぼう！（小森平）
+  url: https://taira-komori.net/
+  terms_url: https://taira-komori.net/welcome.html
+  terms_summary: '動画・YouTube・ネット配信・CM・企業活動など、あらゆる目的の使用OK。加工・変換OK／商用利用OK／作品内容の制限なし／事前事後の連絡不要。リンク表示は「可能であれば」（任意）。数の制限の記載なし。禁止: 自分の作った音と主張すること、効果音素材そのものの無断の再配布・販売、現実の犯罪行為への使用、Scratch での利用。直リンク・自動取得・ボットの禁止の記載なし（2026-11-10 に確認）'
+  checked_at: '2026-11-10'
+  credit_required: false
+  content_id: 規約に記載なし。素材そのものの販売・自作の主張が禁止なので、効果音を含む動画を Content ID に登録しない（他者の利用を妨げないため）
+  notes: クレジットは規約上任意。2025-08-10 に URL が taira-komori.jpn.org から taira-komori.net へ移った。robots.txt は無い（taira-komori.net/robots.txt は 404 で、制限なし）。2026-11-10 に mp3 1 件を User-Agent KarakuriMediaStudio の普通の GET で取り、200・audio/mpeg を確かめた。mp3 は 160〜190kbps。各カテゴリーのページ（page_url）の DL リンクの物
+  acquire: auto
+  interval_seconds: 4
+items:
+- file: 衝撃_落下してドスン_1.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - 衝撃
+  - ドスン
+  - 落下
+  - オチ
+  name: 衝撃_落下してドスン_1
+  description: 物が落ちてドスンと当たる。転ぶ・落ちるオチに（落下と衝撃１）。無料効果音で遊ぼう！の「ギャグ・アニメ調（変な音）」
+  download_url: https://taira-komori.net/sound/anime01/drop_impact1.mp3
+  page_url: https://taira-komori.net/anime01.html
+- file: 衝撃_叩きつけるバン_強.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - 衝撃
+  - バン
+  - 強い
+  - 決め
+  name: 衝撃_叩きつけるバン_強
+  description: 叩きつける強いバン。勢いのあるツッコミ・テロップの出に（叩きつける）。無料効果音で遊ぼう！の「その他」
+  download_url: https://taira-komori.net/sound/attack01/crash.mp3
+  page_url: https://taira-komori.net/attack01.html
+- file: 衝撃_机をドン_短.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - 衝撃
+  - ドン
+  - 机
+  - 短い
+  name: 衝撃_机をドン_短
+  description: 机を叩くドン。机ドン・決意の一撃に（机叩く１）。無料効果音で遊ぼう！の「ドア・ふすま」
+  download_url: https://taira-komori.net/sound/knocking01/hit_desk1.mp3
+  page_url: https://taira-komori.net/knocking01.html
+- file: 衝撃_重い箱をドスン_中.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - 衝撃
+  - ドスン
+  - 重い
+  - 置く
+  name: 衝撃_重い箱をドスン_中
+  description: 重いダンボールを置くドスン。重い物が出てくる場面に（重いダンボール置く）。無料効果音で遊ぼう！の「雑貨類」
+  download_url: https://taira-komori.net/sound/putting01/put_heavy_box.mp3
+  page_url: https://taira-komori.net/putting01.html
+- file: 衝撃_大太鼓ドン_重い.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - 衝撃
+  - ドン
+  - 太鼓
+  - 重い
+  - 決め
+  name: 衝撃_大太鼓ドン_重い
+  description: 大太鼓のドン。決めの一撃・タイトルの出に（大太鼓1）。無料効果音で遊ぼう！の「楽器」
+  download_url: https://taira-komori.net/sound/playing01/large_drum1.mp3
+  page_url: https://taira-komori.net/playing01.html
+- file: 衝撃_和太鼓ドン_重い.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - 衝撃
+  - ドン
+  - 和太鼓
+  - 重い
+  - 決め
+  name: 衝撃_和太鼓ドン_重い
+  description: 和太鼓風のドン（和太鼓風１）。無料効果音で遊ぼう！の「楽器」
+  download_url: https://taira-komori.net/sound/playing01/Jpn_L_drum1.mp3
+  page_url: https://taira-komori.net/playing01.html
+- file: 衝撃_壁ドン_中.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - 衝撃
+  - ドン
+  - 壁
+  name: 衝撃_壁ドン_中
+  description: 壁を叩く。壁ドンのネタに（壁を叩く）。無料効果音で遊ぼう！の「その他」
+  download_url: https://taira-komori.net/sound/attack01/knock_on_wall.mp3
+  page_url: https://taira-komori.net/attack01.html
+- file: 衝撃_ロボの一撃ドゴン_重い.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - 衝撃
+  - ドゴン
+  - ロボット
+  - 重い
+  name: 衝撃_ロボの一撃ドゴン_重い
+  description: 大型ロボットの一撃。重い衝撃・巨大な物の着地に（ロボットの一撃１）。無料効果音で遊ぼう！の「ロボット・大型機械」
+  download_url: https://taira-komori.net/sound/sf01/g_robot_punch1.mp3
+  page_url: https://taira-komori.net/sf01.html
+- file: パンチ_軽打_軽い.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - パンチ
+  - 打撃
+  - 軽い
+  name: パンチ_軽打_軽い
+  description: 軽いパンチ。軽いツッコミに（軽打１）。無料効果音で遊ぼう！の「殴る・蹴る」
+  download_url: https://taira-komori.net/sound/attack01/light_punch1.mp3
+  page_url: https://taira-komori.net/attack01.html
+- file: パンチ_中打_中.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - パンチ
+  - 打撃
+  - 中
+  name: パンチ_中打_中
+  description: 中くらいのパンチ（中打）。無料効果音で遊ぼう！の「殴る・蹴る」
+  download_url: https://taira-komori.net/sound/attack01/medium_punch1.mp3
+  page_url: https://taira-komori.net/attack01.html
+- file: パンチ_重打_強1.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - パンチ
+  - 打撃
+  - 強い
+  name: パンチ_重打_強1
+  description: 重いパンチ（重打１）。無料効果音で遊ぼう！の「殴る・蹴る」
+  download_url: https://taira-komori.net/sound/attack01/heavy_punch1.mp3
+  page_url: https://taira-komori.net/attack01.html
+- file: パンチ_ストレート_強.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - パンチ
+  - 打撃
+  - 強い
+  name: パンチ_ストレート_強
+  description: ストレートパンチ（ストレートパンチ）。無料効果音で遊ぼう！の「殴る・蹴る」
+  download_url: https://taira-komori.net/sound/attack01/straight_punch.mp3
+  page_url: https://taira-komori.net/attack01.html
+- file: パンチ_蹴り_重い.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - パンチ
+  - 蹴り
+  - 打撃
+  - 重い
+  name: パンチ_蹴り_重い
+  description: 重い蹴り（蹴り）。無料効果音で遊ぼう！の「殴る・蹴る」
+  download_url: https://taira-komori.net/sound/attack01/kick1.mp3
+  page_url: https://taira-komori.net/attack01.html
+- file: パンチ_一発KO_倒れる.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - パンチ
+  - KO
+  - 倒れる
+  - オチ
+  name: パンチ_一発KO_倒れる
+  description: ワンパンチで倒れる。やられオチに（ワンパンチで倒れる）。無料効果音で遊ぼう！の「殴る・蹴る」
+  download_url: https://taira-komori.net/sound/attack01/knock_out.mp3
+  page_url: https://taira-komori.net/attack01.html
+- file: パンチ_ダメージ_1.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - パンチ
+  - ダメージ
+  - やられ
+  name: パンチ_ダメージ_1
+  description: ダメージを受ける音（ダメージ１）。無料効果音で遊ぼう！の「ダメージ」
+  download_url: https://taira-komori.net/sound/attack01/damaged1.mp3
+  page_url: https://taira-komori.net/attack01.html
+- file: パンチ_ビンタ_短.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - パンチ
+  - ビンタ
+  - ツッコミ
+  name: パンチ_ビンタ_短
+  description: 平手打ち。ツッコミに（平手打ち/ビンタ１）。無料効果音で遊ぼう！の「人の身体」
+  download_url: https://taira-komori.net/sound/human01/snap1.mp3
+  page_url: https://taira-komori.net/human01.html
+- file: パンチ_ビンタ_エコー.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - パンチ
+  - ビンタ
+  - エコー
+  - ツッコミ
+  name: パンチ_ビンタ_エコー
+  description: エコー付きの平手打ち。大げさなツッコミに（平手打ち/エコー３）。無料効果音で遊ぼう！の「人の身体」
+  download_url: https://taira-komori.net/sound/human01/snap3.mp3
+  page_url: https://taira-komori.net/human01.html
+- file: パンチ_フライパンでゴン_コミカル.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - パンチ
+  - フライパン
+  - コミカル
+  - ツッコミ
+  name: パンチ_フライパンでゴン_コミカル
+  description: フライパンで叩くゴン。コメディのツッコミに（フライパンで叩く）。無料効果音で遊ぼう！の「ギャグ・アニメ調（変な音）」
+  download_url: https://taira-komori.net/sound/anime01/flying_pan.mp3
+  page_url: https://taira-komori.net/anime01.html
+- file: パンチ_ポカ_コミカル.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - パンチ
+  - ポカ
+  - コミカル
+  - ツッコミ
+  name: パンチ_ポカ_コミカル
+  description: 軽く頭をポカ（ポカ！）。無料効果音で遊ぼう！の「ギャグ・アニメ調（変な音）」
+  download_url: https://taira-komori.net/sound/anime01/poka.mp3
+  page_url: https://taira-komori.net/anime01.html
+- file: ズーム_シュッ_短1.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - ズーム
+  - シュッ
+  - 風切り
+  - 転換
+  name: ズーム_シュッ_短1
+  description: 短い風切りのシュッ。ズーム・カットの切り替えに（風切り１-１）。無料効果音で遊ぼう！の「風切り・素振り」
+  download_url: https://taira-komori.net/sound/attack01/swish1_1.mp3
+  page_url: https://taira-komori.net/attack01.html
+- file: ズーム_ヒュッ_短3.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - ズーム
+  - シュッ
+  - 風切り
+  - 転換
+  name: ズーム_ヒュッ_短3
+  description: 鋭い風切り（風切り２-１）。無料効果音で遊ぼう！の「風切り・素振り」
+  download_url: https://taira-komori.net/sound/attack01/swish2_1.mp3
+  page_url: https://taira-komori.net/attack01.html
+- file: 風切り_ビュン_素振り.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - 風切り
+  - ビュン
+  - 素振り
+  name: 風切り_ビュン_素振り
+  description: 素振りのビュン。テロップが飛んでくる場面に（素振り１）。無料効果音で遊ぼう！の「風切り・素振り」
+  download_url: https://taira-komori.net/sound/attack01/swing1.mp3
+  page_url: https://taira-komori.net/attack01.html
+- file: 転換_ワープ_シュワン.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - 転換
+  - ワープ
+  - 巻き戻し代わり
+  name: 転換_ワープ_シュワン
+  description: ワープの場面転換。巻き戻し・時間が飛ぶ演出の代わりに（場面転換18/ワープ）。無料効果音で遊ぼう！の「場面転換・オープニング・エンディング」
+  download_url: https://taira-komori.net/sound/anime01/scene_change18.mp3
+  page_url: https://taira-komori.net/anime01.html
+- file: 上昇_パワーアップ_2.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - 上昇
+  - ため
+  - パワーアップ
+  - ゲーム
+  name: 上昇_パワーアップ_2
+  description: パワーアップ音の別版（powerup05）。無料効果音で遊ぼう！の「パワーアップ・ダウン」
+  download_url: https://taira-komori.net/sound/game01/powerup05.mp3
+  page_url: https://taira-komori.net/game01.html
+- file: ジャーン_ジャン_驚き.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - ジャーン
+  - 驚き
+  - 決め
+  name: ジャーン_ジャン_驚き
+  description: ジャン！という驚き・発表の音（ジャン！・驚き）。無料効果音で遊ぼう！の「ギャグ・アニメ調（変な音）」
+  download_url: https://taira-komori.net/sound/anime01/surprise.mp3
+  page_url: https://taira-komori.net/anime01.html
+- file: キラーン_閃きピーン_1.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - キラーン
+  - 閃き
+  - ピーン
+  name: キラーン_閃きピーン_1
+  description: 閃きのピーン。思いついた瞬間に（ピーン！/閃き１）。無料効果音で遊ぼう！の「ギャグ・アニメ調（変な音）」
+  download_url: https://taira-komori.net/sound/anime01/pop_into_head1.mp3
+  page_url: https://taira-komori.net/anime01.html
+- file: キラーン_閃きピーン_3.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - キラーン
+  - 閃き
+  - ピーン
+  name: キラーン_閃きピーン_3
+  description: 閃きの別版（ピーン！/閃き３）。無料効果音で遊ぼう！の「ギャグ・アニメ調（変な音）」
+  download_url: https://taira-komori.net/sound/anime01/pop_into_head3.mp3
+  page_url: https://taira-komori.net/anime01.html
+- file: キラーン_変身_派手.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - キラーン
+  - 変身
+  - 決め
+  name: キラーン_変身_派手
+  description: 変身！の音（変身！！）。無料効果音で遊ぼう！の「ギャグ・アニメ調（変な音）」
+  download_url: https://taira-komori.net/sound/anime01/transform.mp3
+  page_url: https://taira-komori.net/anime01.html
+- file: きらめき_キラキラ階段_上昇.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - きらめき
+  - キラキラ
+  - 上昇
+  name: きらめき_キラキラ階段_上昇
+  description: キラキラと上がる音。登場・きれいになる演出に（キラキラ階段）。無料効果音で遊ぼう！の「場面転換・オープニング・エンディング」
+  download_url: https://taira-komori.net/sound/anime01/marimba.mp3
+  page_url: https://taira-komori.net/anime01.html
+- file: きらめき_魔法_コミカル.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - きらめき
+  - 魔法
+  - コミカル
+  name: きらめき_魔法_コミカル
+  description: コミカルな魔法の音（魔法５/コミカル）。無料効果音で遊ぼう！の「魔法」
+  download_url: https://taira-komori.net/sound/magic01/8bit_magic5.mp3
+  page_url: https://taira-komori.net/magic01.html
+- file: ポップ_ポヨッ_かわいい.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - ポップ
+  - ポヨッ
+  - かわいい
+  name: ポップ_ポヨッ_かわいい
+  description: ポヨッ。かわいい登場・弾む物に（ポヨッ）。無料効果音で遊ぼう！の「ギャグ・アニメ調（変な音）」
+  download_url: https://taira-komori.net/sound/anime01/poyo.mp3
+  page_url: https://taira-komori.net/anime01.html
+- file: ポップ_ひょっこり_登場.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - ポップ
+  - ひょっこり
+  - 登場
+  name: ポップ_ひょっこり_登場
+  description: ひょっこり顔を出す（ひょっこり）。無料効果音で遊ぼう！の「ギャグ・アニメ調（変な音）」
+  download_url: https://taira-komori.net/sound/anime01/by_chance.mp3
+  page_url: https://taira-komori.net/anime01.html
+- file: ポップ_クエスチョン_はてな.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - ポップ
+  - はてな
+  - 疑問
+  name: ポップ_クエスチョン_はてな
+  description: クエスチョン。はてな？の場面に（クエスチョン）。無料効果音で遊ぼう！の「ギャグ・アニメ調（変な音）」
+  download_url: https://taira-komori.net/sound/anime01/question.mp3
+  page_url: https://taira-komori.net/anime01.html
+- file: ピコン_ボタン_1.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - ピコン
+  - ボタン
+  - UI
+  name: ピコン_ボタン_1
+  description: ゲームのボタン音（button01a）。無料効果音で遊ぼう！の「ボタン」
+  download_url: https://taira-komori.net/sound/game01/button01a.mp3
+  page_url: https://taira-komori.net/game01.html
+- file: ピコン_正解_1.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - ピコン
+  - 正解
+  - ピンポン
+  name: ピコン_正解_1
+  description: 正解の音（correct_answer1）。無料効果音で遊ぼう！の「正解・キャンセル」
+  download_url: https://taira-komori.net/sound/game01/correct_answer1.mp3
+  page_url: https://taira-komori.net/game01.html
+- file: ピコン_キャンセル_ブブッ.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - ピコン
+  - 不正解
+  - キャンセル
+  name: ピコン_キャンセル_ブブッ
+  description: キャンセル・不正解（blip01）。無料効果音で遊ぼう！の「正解・キャンセル」
+  download_url: https://taira-komori.net/sound/game01/blip01.mp3
+  page_url: https://taira-komori.net/game01.html
+- file: ピコン_コイン_取得.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - ピコン
+  - コイン
+  - 取得
+  name: ピコン_コイン_取得
+  description: コインを拾う（coin01）。無料効果音で遊ぼう！の「コインを拾う」
+  download_url: https://taira-komori.net/sound/game01/coin01.mp3
+  page_url: https://taira-komori.net/game01.html
+- file: ピコン_猫っぽいボタン_かわいい.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - ピコン
+  - かわいい
+  - ボタン
+  name: ピコン_猫っぽいボタン_かわいい
+  description: 猫っぽいかわいいボタン（cat_like1a）。無料効果音で遊ぼう！の「猫っぽいボタン」
+  download_url: https://taira-komori.net/sound/game01/cat_like1a.mp3
+  page_url: https://taira-komori.net/game01.html
+- file: カウントダウン_ピッ_一定音.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - カウントダウン
+  - ピッ
+  - 電子音
+  name: カウントダウン_ピッ_一定音
+  description: ピッという一定音。カウントダウンに切って使う（ピッ・一定音）。無料効果音で遊ぼう！の「SF・空想機械」
+  download_url: https://taira-komori.net/sound/sf01/sinus_rhythm.mp3
+  page_url: https://taira-komori.net/sf01.html
+- file: カウントダウン_ストップウォッチ_カチ.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - カウントダウン
+  - ストップウォッチ
+  - 時間
+  name: カウントダウン_ストップウォッチ_カチ
+  description: ストップウォッチ（ストップウォッチ１）。無料効果音で遊ぼう！の「スポーツいろいろ」
+  download_url: https://taira-komori.net/sound/sports01/stopwatch1.mp3
+  page_url: https://taira-komori.net/sports01.html
+- file: カウントダウン_ブザー_終了.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - カウントダウン
+  - ブザー
+  - 終了
+  name: カウントダウン_ブザー_終了
+  description: 試合のブザー。時間切れに（ブザー１）。無料効果音で遊ぼう！の「バスケットボール」
+  download_url: https://taira-komori.net/sound/sports01/basketball_buzzer1.mp3
+  page_url: https://taira-komori.net/sports01.html
+- file: ベル_ゴング_開始.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - ベル
+  - ゴング
+  - 開始
+  - 対決
+  name: ベル_ゴング_開始
+  description: ラウンド開始のゴング。対決の始まりに（ラウンド開始ゴング）。無料効果音で遊ぼう！の「ボクシング・格闘技」
+  download_url: https://taira-komori.net/sound/sports01/starting_bell.mp3
+  page_url: https://taira-komori.net/sports01.html
+- file: ベル_ゴング_終了.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - ベル
+  - ゴング
+  - 終了
+  name: ベル_ゴング_終了
+  description: 試合終了のゴング（試合終了ゴング）。無料効果音で遊ぼう！の「ボクシング・格闘技」
+  download_url: https://taira-komori.net/sound/sports01/finishing_bell.mp3
+  page_url: https://taira-komori.net/sports01.html
+- file: 失敗_ズッコケ落ち_間抜け.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - 失敗
+  - ズッコケ
+  - 間抜け
+  - オチ
+  name: 失敗_ズッコケ落ち_間抜け
+  description: ズッコケのオチ（ズッコケ落ち）。無料効果音で遊ぼう！の「場面転換・オープニング・エンディング」
+  download_url: https://taira-komori.net/sound/anime01/idiot.mp3
+  page_url: https://taira-komori.net/anime01.html
+- file: 失敗_残念_チーン.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - 失敗
+  - 残念
+  - チーン
+  - オチ
+  name: 失敗_残念_チーン
+  description: 残念な結果（残念）。無料効果音で遊ぼう！の「ギャグ・アニメ調（変な音）」
+  download_url: https://taira-komori.net/sound/anime01/loser.mp3
+  page_url: https://taira-komori.net/anime01.html
+- file: 失敗_ぐにゃぐにゃ_脱力.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - 失敗
+  - ぐにゃぐにゃ
+  - 脱力
+  name: 失敗_ぐにゃぐにゃ_脱力
+  description: ぐにゃぐにゃ〜ん（ぐにゃぐにゃ〜ん）。無料効果音で遊ぼう！の「ギャグ・アニメ調（変な音）」
+  download_url: https://taira-komori.net/sound/anime01/limp.mp3
+  page_url: https://taira-komori.net/anime01.html
+- file: 失敗_ビョビョーン_バネ.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - 失敗
+  - ビョーン
+  - バネ
+  - コミカル
+  name: 失敗_ビョビョーン_バネ
+  description: ビョビョーン！（ビョビョーン！）。無料効果音で遊ぼう！の「ギャグ・アニメ調（変な音）」
+  download_url: https://taira-komori.net/sound/anime01/spring.mp3
+  page_url: https://taira-komori.net/anime01.html
+- file: 落ち込み_パワーダウン_下降.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - 落ち込み
+  - 下降
+  - パワーダウン
+  name: 落ち込み_パワーダウン_下降
+  description: 下がっていく音。しょんぼりに（powerdown01）。無料効果音で遊ぼう！の「パワーアップ・ダウン」
+  download_url: https://taira-komori.net/sound/game01/powerdown01.mp3
+  page_url: https://taira-komori.net/game01.html
+- file: 驚き_虫の知らせ_不穏.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - 驚き
+  - 不穏
+  - ハッ
+  name: 驚き_虫の知らせ_不穏
+  description: 虫の知らせ。嫌な予感に（虫の知らせ１）。無料効果音で遊ぼう！の「ギャグ・アニメ調（変な音）」
+  download_url: https://taira-komori.net/sound/anime01/foreboding1.mp3
+  page_url: https://taira-komori.net/anime01.html
+- file: 驚き_鼓動_ドキドキ.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - 驚き
+  - ドキドキ
+  - 緊張
+  - 照れ
+  name: 驚き_鼓動_ドキドキ
+  description: 心臓の鼓動。緊張・照れのドキドキに（鼓動/心臓の音）。無料効果音で遊ぼう！の「人の身体」
+  download_url: https://taira-komori.net/sound/human01/heartbeats.mp3
+  page_url: https://taira-komori.net/human01.html
+- file: 怒り_悔しい_ぐぬぬ.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - 怒り
+  - 悔しい
+  name: 怒り_悔しい_ぐぬぬ
+  description: 悔しい感じの音（悔しい感じ）。無料効果音で遊ぼう！の「人の身体」
+  download_url: https://taira-komori.net/sound/human01/gnash.mp3
+  page_url: https://taira-komori.net/human01.html
+- file: 照れ_口笛ひやかし_ヒュー.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - 照れ
+  - 口笛
+  - ひやかし
+  name: 照れ_口笛ひやかし_ヒュー
+  description: ひやかしの口笛。照れる場面に（口笛1/ひやかし）。無料効果音で遊ぼう！の「人の身体」
+  download_url: https://taira-komori.net/sound/human01/whistle1.mp3
+  page_url: https://taira-komori.net/human01.html
+- file: ポップ_指パッチン_短.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - ポップ
+  - 指パッチン
+  - 合図
+  name: ポップ_指パッチン_短
+  description: 指ぱっちん（指ぱっちん）。無料効果音で遊ぼう！の「人の身体」
+  download_url: https://taira-komori.net/sound/human01/finger_snap.mp3
+  page_url: https://taira-komori.net/human01.html
+- file: 拍手_短め_2.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - 拍手
+  - 短い
+  - 称賛
+  name: 拍手_短め_2
+  description: 短い拍手の別版（拍手短め２）。無料効果音で遊ぼう！の「演奏会」
+  download_url: https://taira-komori.net/sound/event01/short_clap2.mp3
+  page_url: https://taira-komori.net/event01.html
+- file: 拍手_まばら_寒い.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - 拍手
+  - まばら
+  - スベり
+  name: 拍手_まばら_寒い
+  description: まばらな拍手。スベった場面に（まばらな拍手３）。無料効果音で遊ぼう！の「演奏会」
+  download_url: https://taira-komori.net/sound/event01/short_clap3.mp3
+  page_url: https://taira-komori.net/event01.html
+- file: 歓声_イベント_ワー.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - 歓声
+  - 盛り上がり
+  name: 歓声_イベント_ワー
+  description: イベントの歓声（イベント歓声１）。無料効果音で遊ぼう！の「プロ野球」
+  download_url: https://taira-komori.net/sound/event01/cheers1.mp3
+  page_url: https://taira-komori.net/event01.html
+- file: 花火_クラッカー_パン.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - 花火
+  - クラッカー
+  - お祝い
+  name: 花火_クラッカー_パン
+  description: クラッカー（クラッカー１）。無料効果音で遊ぼう！の「宴会」
+  download_url: https://taira-komori.net/sound/event01/party_popper1.mp3
+  page_url: https://taira-komori.net/event01.html
+- file: 衝撃_風船パン_破裂.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - 衝撃
+  - パン
+  - 破裂
+  name: 衝撃_風船パン_破裂
+  description: 風船が破裂（風船破裂１）。無料効果音で遊ぼう！の「宴会」
+  download_url: https://taira-komori.net/sound/event01/balloon_burst1.mp3
+  page_url: https://taira-komori.net/event01.html
+- file: 花火_打ち上げ_ドーン.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - 花火
+  - 打ち上げ
+  - お祝い
+  name: 花火_打ち上げ_ドーン
+  description: 打ち上げ花火（打ち上げ花火１）。無料効果音で遊ぼう！の「花火」
+  download_url: https://taira-komori.net/sound/event01/firework1.mp3
+  page_url: https://taira-komori.net/event01.html
+- file: グリッチ_解析不能_電子.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - グリッチ
+  - 電子
+  - エラー
+  name: グリッチ_解析不能_電子
+  description: 解析不能（解析不能）。無料効果音で遊ぼう！の「SF・空想機械」
+  download_url: https://taira-komori.net/sound/sf01/unanalyzable.mp3
+  page_url: https://taira-komori.net/sf01.html
+- file: グリッチ_プツプツ_電気ノイズ.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - グリッチ
+  - ノイズ
+  - 電気
+  name: グリッチ_プツプツ_電気ノイズ
+  description: プツプツした電気ノイズ（プツプツ１）。無料効果音で遊ぼう！の「効果音検索」
+  download_url: https://taira-komori.net/sound/sample_noise/electrical_noise1.mp3
+  page_url: https://taira-komori.net/noise01.html
+- file: グリッチ_テレビ砂嵐_ザー.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - グリッチ
+  - 砂嵐
+  - ノイズ
+  name: グリッチ_テレビ砂嵐_ザー
+  description: テレビの砂嵐（テレビ１）。無料効果音で遊ぼう！の「効果音検索」
+  download_url: https://taira-komori.net/sound/sample_noise/tv_noise1.mp3
+  page_url: https://taira-komori.net/noise01.html
+- file: 電源_ブレーカー落ち_停電.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - 電源
+  - 停電
+  - オフ
+  name: 電源_ブレーカー落ち_停電
+  description: ブレーカーが落ちる。停電のオチに（ブレーカー落ちる）。無料効果音で遊ぼう！の「電化製品・電灯・スイッチ」
+  download_url: https://taira-komori.net/sound/electric01/turn_off_breaker.mp3
+  page_url: https://taira-komori.net/electric01.html
+- file: 電源_蛍光灯オン_チカッ.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - 電源
+  - オン
+  - 照明
+  name: 電源_蛍光灯オン_チカッ
+  description: 蛍光灯をつける（蛍光灯つける１）。無料効果音で遊ぼう！の「電化製品・電灯・スイッチ」
+  download_url: https://taira-komori.net/sound/electric01/t_on_fluorescent1.mp3
+  page_url: https://taira-komori.net/electric01.html
+- file: 電源_スイッチ_カチッ.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - 電源
+  - スイッチ
+  - オンオフ
+  name: 電源_スイッチ_カチッ
+  description: 壁のスイッチ（壁スイッチ１）。無料効果音で遊ぼう！の「電化製品・電灯・スイッチ」
+  download_url: https://taira-komori.net/sound/electric01/wall_switch1.mp3
+  page_url: https://taira-komori.net/electric01.html
+- file: 警告_機械の非常信号.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - 警告
+  - アラーム
+  - 電子
+  name: 警告_機械の非常信号
+  description: 機械の非常信号（機械の非常信号）。無料効果音で遊ぼう！の「SF・空想機械」
+  download_url: https://taira-komori.net/sound/sf01/alarm_signal.mp3
+  page_url: https://taira-komori.net/sf01.html
+- file: 警告_サイレン_工場.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - 警告
+  - サイレン
+  name: 警告_サイレン_工場
+  description: 工場のサイレン（工場サイレン）。無料効果音で遊ぼう！の「SF・空想機械」
+  download_url: https://taira-komori.net/sound/sf01/factory_siren1.mp3
+  page_url: https://taira-komori.net/sf01.html
+- file: ロボ_8bitコンピューター_電子音.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - ロボ
+  - 電子音
+  - コンピューター
+  name: ロボ_8bitコンピューター_電子音
+  description: 8bit コンピューターの電子音（8bitコンピューター）。無料効果音で遊ぼう！の「SF・空想機械」
+  download_url: https://taira-komori.net/sound/sf01/8bit_computer.mp3
+  page_url: https://taira-komori.net/sf01.html
+- file: ロボ_ボタン操作_ピポパ.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - ロボ
+  - 電子音
+  - ボタン
+  name: ロボ_ボタン操作_ピポパ
+  description: ボタン操作の電子音（ボタン操作）。無料効果音で遊ぼう！の「SF・空想機械」
+  download_url: https://taira-komori.net/sound/sf01/control_buttons.mp3
+  page_url: https://taira-komori.net/sf01.html
+- file: 金属_鉄扉ギー_ゆっくり.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - 金属
+  - ギシッ
+  - 扉
+  name: 金属_鉄扉ギー_ゆっくり
+  description: 鉄の扉がゆっくり開くギー（鉄扉ゆっくり開１）。無料効果音で遊ぼう！の「ドア・部屋・押入れ」
+  download_url: https://taira-komori.net/sound/openclose01/open_metal_door1.mp3
+  page_url: https://taira-komori.net/openclose01.html
+- file: 金属_鉄の箱ガチャン_閉.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - 金属
+  - ガチャン
+  - 箱
+  name: 金属_鉄の箱ガチャン_閉
+  description: 鉄製の箱を閉める（鉄製の箱閉める）。無料効果音で遊ぼう！の「道具・雑貨など」
+  download_url: https://taira-komori.net/sound/openclose01/cl_metal_tool_box.mp3
+  page_url: https://taira-komori.net/openclose01.html
+- file: 金属_鉄棒カーン_短.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - 金属
+  - カーン
+  - 叩く
+  name: 金属_鉄棒カーン_短
+  description: 鉄棒を叩くカーン（鉄棒を叩く１）。無料効果音で遊ぼう！の「壁・柱・床・鉄棒」
+  download_url: https://taira-komori.net/sound/knocking01/knock_on_iron_tube1.mp3
+  page_url: https://taira-komori.net/knocking01.html
+- file: 金属_折り畳み椅子ガタン.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - 金属
+  - ガタン
+  - 椅子
+  name: 金属_折り畳み椅子ガタン
+  description: 折り畳み椅子を立て掛けるガタン（折畳椅子を立掛１）。無料効果音で遊ぼう！の「部屋の中のいろいろ」
+  download_url: https://taira-komori.net/sound/daily02/chair_on_wall1.mp3
+  page_url: https://taira-komori.net/daily02.html
+- file: 着地_落下_1.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - 着地
+  - 落下
+  name: 着地_落下_1
+  description: 落下（落下１）。無料効果音で遊ぼう！の「ギャグ・アニメ調（変な音）」
+  download_url: https://taira-komori.net/sound/anime01/drop1.mp3
+  page_url: https://taira-komori.net/anime01.html
+- file: 着地_踏んづける_ドン.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - 着地
+  - 踏む
+  - コミカル
+  name: 着地_踏んづける_ドン
+  description: 踏んづける（踏んづける）。無料効果音で遊ぼう！の「ギャグ・アニメ調（変な音）」
+  download_url: https://taira-komori.net/sound/anime01/stamp.mp3
+  page_url: https://taira-komori.net/anime01.html
+- file: ジャンプ_ゲーム_1.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - ジャンプ
+  - ゲーム
+  name: ジャンプ_ゲーム_1
+  description: ジャンプ（jump01）。無料効果音で遊ぼう！の「ジャンプ」
+  download_url: https://taira-komori.net/sound/game01/jump01.mp3
+  page_url: https://taira-komori.net/game01.html
+- file: ジャンプ_ゲーム_2.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - ジャンプ
+  - ゲーム
+  name: ジャンプ_ゲーム_2
+  description: ジャンプの別版（jump05）。無料効果音で遊ぼう！の「ジャンプ」
+  download_url: https://taira-komori.net/sound/game01/jump05.mp3
+  page_url: https://taira-komori.net/game01.html
+- file: ベル_ピンポーン_チャイム.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - ベル
+  - チャイム
+  - 来客
+  name: ベル_ピンポーン_チャイム
+  description: ドアチャイムのピンポーン（ピンポーン１）。無料効果音で遊ぼう！の「扉・玄関・ベランダなど」
+  download_url: https://taira-komori.net/sound/daily01/door_chime1.mp3
+  page_url: https://taira-komori.net/daily01.html
+- file: ベル_ピンポンパンポン_放送.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - ベル
+  - チャイム
+  - 放送
+  name: ベル_ピンポンパンポン_放送
+  description: 館内放送のピンポンパンポン（ピンポンパンポン）。無料効果音で遊ぼう！の「学校」
+  download_url: https://taira-komori.net/sound/sports01/dinner_chime.mp3
+  page_url: https://taira-komori.net/sports01.html
+- file: 秒針_時計カチカチ_1.mp3
+  source: taira-komori
+  kind: audio
+  category: 効果音
+  tags:
+  - 秒針
+  - 時計
+  - カチカチ
+  - 待つ
+  name: 秒針_時計カチカチ_1
+  description: 時計のカチカチ（時計カチカチ１）。無料効果音で遊ぼう！の「電化製品・電灯・スイッチ」
+  download_url: https://taira-komori.net/sound/electric01/clock_ticking.mp3
+  page_url: https://taira-komori.net/electric01.html

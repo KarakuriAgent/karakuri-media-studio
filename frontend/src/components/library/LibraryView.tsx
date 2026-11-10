@@ -9,6 +9,7 @@ import {
   ImageIcon,
   Loader2,
   Music,
+  PackageOpen,
   RefreshCw,
   Upload,
   X,
@@ -34,6 +35,7 @@ import { CATEGORY_LABELS, UNCATEGORIZED } from '../LibraryPickerModal'
 import { Banner, Modal, NsfwBadge } from '../ui'
 import { useIsWide } from '../ui/resizable-panel'
 import BlockingBuilderModal from './BlockingBuilderModal'
+import BundledPacksModal from './BundledPacksModal'
 import ExportDetail from './ExportDetail'
 import JobOutputDetail from './JobOutputDetail'
 import LibraryDetail, { type LibraryPatch } from './LibraryDetail'
@@ -139,6 +141,8 @@ export default function LibraryView({
   // 構図リファレンス（ブロッキング、SPEC §7.2）のモーダル。
   // `{item: null}` は新規、項目つきはその項目の焼き直し。
   const [builder, setBuilder] = useState<{ item: LibraryItem | null } | null>(null)
+  // 同梱の素材パック（目録だけを同梱。選んで入れる）のモーダル。
+  const [packsOpen, setPacksOpen] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
   const isWide = useIsWide()
   // 無限スクロール（一覧の末尾に置いた番兵と、それを見張るスクロール枠）。
@@ -771,6 +775,17 @@ export default function LibraryView({
             variant="outline"
             size="sm"
             className="shrink-0"
+            aria-label="素材パック"
+            title="素材パック（同梱の目録から効果音・BGM・漫画記号などを入れる）"
+            onClick={() => setPacksOpen(true)}
+          >
+            <PackageOpen />
+            <span className="hidden sm:inline">素材パック</span>
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            className="shrink-0"
             aria-label="生成履歴から登録"
             title="生成履歴から登録"
             onClick={() =>
@@ -1063,6 +1078,16 @@ export default function LibraryView({
         <Modal title={selected.name} onClose={() => setSelectedKey(null)} closeOnBackdrop>
           {detail}
         </Modal>
+      )}
+
+      {packsOpen && (
+        <BundledPacksModal
+          onClose={() => setPacksOpen(false)}
+          onInstalled={() => {
+            onChanged?.()
+            void load()
+          }}
+        />
       )}
 
       {builder && (

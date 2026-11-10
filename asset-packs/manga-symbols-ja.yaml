@@ -1,0 +1,2151 @@
+# 同梱の素材パック: 漫画記号（集中線・漫符・吹き出し）
+# 候補を取り込み、目で見て選んだ 137 件。動く漫符の file は配布元の拡張子（.mov・.mp4）のまま
+# （.mov の ProRes 4444 は取り込みでアルファ付きの .webm になる）。グリーンバックの物はタグ「グリーンバック」と
+# 説明に抜く色を書いてある（POST /library/{id}/key で抜ける）。ZIP でしか配っていない物は member に中のパス。
+#
+# この目録は Karakuri Media Studio に同梱している（asset-packs/README.md）。目録だけで、素材のファイルは入れていない
+# （どの入手元も素材の再配布を禁止している）。入れると、スタジオが各素材を download_url から 1 件ずつ取りに行く
+# （robots.txt を守り、interval_seconds 秒の間隔をあける）。
+# 入れる前に、sources の terms_url（規約のページ）を開いて、terms_summary と checked_at（確かめた日）から
+# 変わっていないかを確かめる。規約に同意した入手元だけを accept_sources に入れる。
+# 入れ方: ライブラリの画面の「素材パック」か POST /api/v1/library/packs/bundled/{id}/install
+# （docs/EXTERNAL-API.md §3.8）。aliases は前の id（その id で入れた素材も入れ済みと見なす）。
+pack: manga-symbols-ja
+aliases:
+- kanon-shorts-manga-symbols
+name: 漫画記号（集中線・漫符・吹き出し）
+description: 映像の上に重ねる漫画記号 137 件（集中線・スピード線・漫符・吹き出し・動く漫符）。透過 PNG と、アルファ付きの動画（ProRes 4444 はアルファ付き WebM にして入る）・グリーンバックの動画。Remotion の FxOverlay の sprite / imageSlam / video に使える。クレジットはどの入手元も不要か任意で、出どころの記録のために入手元の情報を残す
+sources:
+- id: otarunet
+  name: 小樽総合デザイン事務局（漫画風フリー素材）
+  url: https://otarunet.com/it/webdesign/comic-material-fukidashi/
+  terms_url: https://otarunet.com/it/webdesign/comic-material-fukidashi/
+  terms_summary: '商用・非商用とも無料。著作権表記は不要。著作権は小樽総合デザイン事務局。禁止: 素材が主役になる用途（商品デザインのメイン等）、素材データ自体の二次配布（改変含む）・販売'
+  checked_at: '2026-11-10'
+  credit_required: false
+  notes: 規約は各素材ページの「利用規約」の節（集中線・効果線・擬音のページも同じ文面）。吹き出しは個別の PNG、集中線・効果線は ZIP（download_url に ZIP、member に中のパス）。擬音は PNG が文字を並べた見本の一覧で、単語ごとの画像は Ai（ZIP）だけ
+  acquire: auto
+  interval_seconds: 4
+- id: ai-catcher
+  name: アイキャッチャー
+  url: https://ai-catcher.com/
+  terms_url: https://ai-catcher.com/%e5%95%86%e7%94%a8%e5%88%a9%e7%94%a8%e3%81%ab%e3%81%a4%e3%81%84%e3%81%a6/
+  terms_summary: '基本すべて無料で商用利用可。出典表記は任意（協力のお願い）。禁止: アダルト・コンプレックス商材・金融などキャラクターのイメージを損なう媒体での利用、素材の二次配布、キャラクターそのものの商品化（LINE スタンプ・グッズ等）'
+  checked_at: '2026-11-10'
+  credit_required: false
+  notes: 漫符カテゴリの各ページの「ダウンロード」の PNG
+  acquire: auto
+  interval_seconds: 4
+- id: miirriin-illust
+  name: みりんのイラスト素材
+  url: https://miirriin.com/illustration/
+  terms_url: https://miirriin.com/illustration/terms-conditions/
+  terms_summary: '個人・商用とも無料（YouTube の収益化も可）。加工可・報告不要・クレジットは可能ならお願い（任意）。著作権は放棄していない。禁止: 素材自体（加工済み含む）の再配布・販売、素材をメインにした制作物の配布・販売、自作と偽る行為、AI 学習目的、公序良俗に反する・攻撃的な利用'
+  checked_at: '2026-11-10'
+  credit_required: false
+  notes: みりんの動画素材（https://miirriin.com/tos/ 同趣旨）のイラスト版。PNG はページの Download（Simple Download Monitor）から直接取れる
+  acquire: auto
+  interval_seconds: 4
+- id: frame-illust
+  name: フレームイラスト（Frame illust）
+  url: https://frame-illust.com/
+  terms_url: https://frame-illust.com/?page_id=57
+  terms_summary: '個人・法人とも無料・登録不要・事前連絡やクレジット表記は不要。映像メディアにも利用可。禁止: 素材そのもの（加工・トレース含む）の転売・再配布、配信サイトのスタンプ等として提供。素材を使った物品の販売は有料の許可が要る'
+  checked_at: '2026-11-10'
+  credit_required: false
+  acquire: auto
+  interval_seconds: 4
+- id: free-materials
+  name: フリー素材ドットコム
+  url: https://www.free-materials.com/
+  terms_url: https://www.free-materials.com/guidelines/
+  terms_summary: '個人・商用とも無料・クレジット表記不要・加工自由。番組・動画素材にも利用可。禁止: 素材そのものの再配布・販売、公序良俗に反する利用など（規約ページ参照）'
+  checked_at: '2026-11-10'
+  credit_required: false
+  notes: download_url は配布ページの「ダウンロード」ボタン（/download/<id>/。4500×3500 の透過 PNG）
+  acquire: auto
+  interval_seconds: 4
+- id: openclipart
+  name: Openclipart
+  url: https://openclipart.org/
+  terms_url: https://openclipart.org/share
+  terms_summary: すべて CC0（パブリックドメイン）。商用可・改変可・クレジット不要
+  checked_at: '2026-11-10'
+  credit_required: false
+  notes: 各素材の PNG 書き出し（/image/2000px/<id>。800px にリダイレクトされる）を取る
+  acquire: auto
+  interval_seconds: 4
+- id: miirriin-video
+  name: みりんの動画素材
+  url: https://miirriin.com/
+  terms_url: https://miirriin.com/tos/
+  terms_summary: '個人・商用とも無料（YouTube の収益化も可）。加工可・利用報告不要・クレジットは可能ならお願い（任意）。著作権は放棄していない。禁止: 公序良俗に反する・著作権を侵害する動画での使用、攻撃的・差別的・性的・過激な利用、素材自体（加工済み含む）の再配布・販売、素材をメインコンテンツにした制作物の配布・販売、自作と偽る行為'
+  checked_at: '2026-11-10'
+  credit_required: false
+  credit_text: 動画素材：みりんの動画素材 https://miirriin.com/
+  notes: 各素材ページの Download（Simple Download Monitor）は ZIP（中に .mov か .mp4 が 1 本と __MACOSX）。アルファチャンネル(mov) は ProRes 4444 で、取り込みでアルファ付き WebM になる。グリーンバック(mp4) だけの素材もある
+  acquire: auto
+  interval_seconds: 4
+items:
+- file: ガーン_縦線_青_上帯.png
+  source: miirriin-illust
+  kind: image
+  category: 漫画記号
+  tags:
+  - ガーン
+  - 縦線
+  - 青
+  - ショック
+  - 青ざめ
+  name: ガーン_縦線_青_上帯
+  description: 画面の上に掛かる青紫の細い縦線の帯（16:9）。縦画面では上端に横幅いっぱいで置く
+  download_url: https://miirriin.com/illustration/?sdm_process_download=1&download_id=599
+  page_url: https://miirriin.com/illustration/disappointed01/
+- file: ガーン_縦線_黒_上帯.png
+  source: miirriin-illust
+  kind: image
+  category: 漫画記号
+  tags:
+  - ガーン
+  - 縦線
+  - 黒
+  - ショック
+  name: ガーン_縦線_黒_上帯
+  description: 画面の上に掛かる黒の細い縦線の帯（16:9）。縦画面では上端に横幅いっぱいで置く
+  download_url: https://miirriin.com/illustration/?sdm_process_download=1&download_id=598
+  page_url: https://miirriin.com/illustration/disappointed01/
+- file: キラキラ_黄_3つ.png
+  source: miirriin-illust
+  kind: image
+  category: 漫画記号
+  tags:
+  - キラキラ
+  - 黄
+  - 星
+  - 喜び
+  - 決め
+  name: キラキラ_黄_3つ
+  description: 黄と白のきらめき 3 つ
+  download_url: https://miirriin.com/illustration/?sdm_process_download=1&download_id=382
+  page_url: https://miirriin.com/illustration/sparkle01/
+- file: 吹き出し_ぎざぎざ_白_弱.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - 吹き出し
+  - ギザギザ
+  - 白
+  name: 吹き出し_ぎざぎざ_白_弱
+  description: 白地・黒縁の控えめなぎざぎざ。しっぽ無し
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/01/fukidashi_ogdo-06.png
+  page_url: https://otarunet.com/it/webdesign/comic-material-fukidashi/
+- file: 吹き出し_もこもこ_白.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - 吹き出し
+  - もこもこ
+  - 白
+  name: 吹き出し_もこもこ_白
+  description: 白地・黒縁のもこもこ。しっぽ無し
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/01/fukidashi_ogdo-14.png
+  page_url: https://otarunet.com/it/webdesign/comic-material-fukidashi/
+- file: 吹き出し_もやもや_雲_白.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - 吹き出し
+  - もやもや
+  - 考え事
+  - 白
+  name: 吹き出し_もやもや_雲_白
+  description: 白地・黒縁の横長の雲。考え事・もやもやに。しっぽ無し
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/01/fukidashi_ogdo-16.png
+  page_url: https://otarunet.com/it/webdesign/comic-material-fukidashi/
+- file: 吹き出し_ウニフラッシュ_白.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - 吹き出し
+  - ウニフラッシュ
+  - 白
+  - 驚き
+  - 決め
+  name: 吹き出し_ウニフラッシュ_白
+  description: 白いウニフラッシュ（暗い背景向き）
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/01/fukidashi_ogdo-20.png
+  page_url: https://otarunet.com/it/webdesign/comic-material-fukidashi/
+- file: 吹き出し_ウニフラッシュ_白地黒線.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - 吹き出し
+  - ウニフラッシュ
+  - 白
+  - 黒
+  - 驚き
+  - 決め
+  name: 吹き出し_ウニフラッシュ_白地黒線
+  description: 白地に黒い細線が放射するウニフラッシュ
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/01/fukidashi_ogdo-19.png
+  page_url: https://otarunet.com/it/webdesign/comic-material-fukidashi/
+- file: 吹き出し_ウニフラッシュ_黒.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - 吹き出し
+  - ウニフラッシュ
+  - 黒
+  - 驚き
+  name: 吹き出し_ウニフラッシュ_黒
+  description: 黒いウニフラッシュ
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/01/fukidashi_ogdo_BK-20.png
+  page_url: https://otarunet.com/it/webdesign/comic-material-fukidashi/
+- file: 吹き出し_ウニフラッシュ_黒地白線.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - 吹き出し
+  - ウニフラッシュ
+  - 黒
+  - 白
+  - 驚き
+  name: 吹き出し_ウニフラッシュ_黒地白線
+  description: 黒地に白い細線が放射するウニフラッシュ
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/01/fukidashi_ogdo_BK-19.png
+  page_url: https://otarunet.com/it/webdesign/comic-material-fukidashi/
+- file: 吹き出し_叫び_ぎざぎざ_白_中.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - 吹き出し
+  - 叫び
+  - ギザギザ
+  - 白
+  name: 吹き出し_叫び_ぎざぎざ_白_中
+  description: 白地・黒縁の叫びのぎざぎざ（中くらい）。しっぽ無し
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/01/fukidashi_ogdo-03.png
+  page_url: https://otarunet.com/it/webdesign/comic-material-fukidashi/
+- file: 吹き出し_叫び_ぎざぎざ_白_強.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - 吹き出し
+  - 叫び
+  - ギザギザ
+  - 白
+  name: 吹き出し_叫び_ぎざぎざ_白_強
+  description: 白地・黒縁の叫びのぎざぎざ（強め）。しっぽ無し
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/01/fukidashi_ogdo-01.png
+  page_url: https://otarunet.com/it/webdesign/comic-material-fukidashi/
+- file: 吹き出し_叫び_ぎざぎざ_黒_強.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - 吹き出し
+  - 叫び
+  - ギザギザ
+  - 黒
+  name: 吹き出し_叫び_ぎざぎざ_黒_強
+  description: 黒地・白縁の叫びのぎざぎざ。白文字を乗せる
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/01/fukidashi_ogdo_BK-01.png
+  page_url: https://otarunet.com/it/webdesign/comic-material-fukidashi/
+- file: 吹き出し_叫び_とげ_白.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - 吹き出し
+  - 叫び
+  - ギザギザ
+  - 白
+  - 驚き
+  name: 吹き出し_叫び_とげ_白
+  description: 白地・黒縁のとげとげの叫び。しっぽ無し
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/01/fukidashi_ogdo-05.png
+  page_url: https://otarunet.com/it/webdesign/comic-material-fukidashi/
+- file: 吹き出し_叫び_とげ_黒.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - 吹き出し
+  - 叫び
+  - ギザギザ
+  - 黒
+  - 驚き
+  name: 吹き出し_叫び_とげ_黒
+  description: 黒地・白縁のとげとげ。白文字を乗せる
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/01/fukidashi_ogdo_BK-05.png
+  page_url: https://otarunet.com/it/webdesign/comic-material-fukidashi/
+- file: 吹き出し_普通_多角形_白.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - 吹き出し
+  - 普通
+  - 白
+  - ナレーション
+  name: 吹き出し_普通_多角形_白
+  description: 白地・黒縁の多角形。ナレーション・説明に
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/01/fukidashi_ogdo-17.png
+  page_url: https://otarunet.com/it/webdesign/comic-material-fukidashi/
+- file: 吹き出し_普通_手描き_白.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - 吹き出し
+  - 普通
+  - 白
+  name: 吹き出し_普通_手描き_白
+  description: 白地・黒縁の手描き風の四角い吹き出し。しっぽ無し
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/01/fukidashi_ogdo-07.png
+  page_url: https://otarunet.com/it/webdesign/comic-material-fukidashi/
+- file: 吹き出し_普通_楕円_白.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - 吹き出し
+  - 普通
+  - 白
+  name: 吹き出し_普通_楕円_白
+  description: 白地・黒縁の楕円。しっぽ無し
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/01/fukidashi_ogdo-10.png
+  page_url: https://otarunet.com/it/webdesign/comic-material-fukidashi/
+- file: 吹き出し_爆発_ぎざぎざ_黒線.png
+  source: frame-illust
+  kind: image
+  category: 漫画記号
+  tags:
+  - 吹き出し
+  - 爆発
+  - ギザギザ
+  - 黒
+  - 叫び
+  - 驚き
+  name: 吹き出し_爆発_ぎざぎざ_黒線
+  description: 太い黒線の爆発の囲み（中は透明）
+  download_url: https://frame-illust.com/fi/wp-content/uploads/2015/03/d458ef86fa3d4033cf04ed9314908e94.png
+  page_url: https://frame-illust.com/?p=3293
+- file: 吹き出し_考え事_白_中.png
+  source: miirriin-illust
+  kind: image
+  category: 漫画記号
+  tags:
+  - 吹き出し
+  - 考え事
+  - もやもや
+  - 白
+  name: 吹き出し_考え事_白_中
+  description: 白い考え事の吹き出し（小さな丸のしっぽ付き）
+  download_url: https://miirriin.com/illustration/?sdm_process_download=1&download_id=727
+  page_url: https://miirriin.com/illustration/speech-bubble01/
+- file: 吹き出し_考え事_白_横長.png
+  source: miirriin-illust
+  kind: image
+  category: 漫画記号
+  tags:
+  - 吹き出し
+  - 考え事
+  - もやもや
+  - 白
+  name: 吹き出し_考え事_白_横長
+  description: 白い考え事の吹き出しの横長版。長めの文に
+  download_url: https://miirriin.com/illustration/?sdm_process_download=1&download_id=728
+  page_url: https://miirriin.com/illustration/speech-bubble01/
+- file: 星_流れ星_黄.png
+  source: miirriin-illust
+  kind: image
+  category: 漫画記号
+  tags:
+  - 星
+  - 流れ星
+  - 黄
+  - キラキラ
+  - 決め
+  name: 星_流れ星_黄
+  description: 黄色い流れ星
+  download_url: https://miirriin.com/illustration/?sdm_process_download=1&download_id=788
+  page_url: https://miirriin.com/illustration/shooting-star01/
+- file: 漫符_Zzz_黒.png
+  source: ai-catcher
+  kind: image
+  category: 漫画記号
+  tags:
+  - 漫符
+  - Zzz
+  - 黒
+  - 眠い
+  - 退屈
+  name: 漫符_Zzz_黒
+  description: Zzz の文字。居眠り・退屈なボケに
+  download_url: https://ai-catcher.com/wp-content/uploads/2016/11/131.png
+  page_url: https://ai-catcher.com/blog/2016/10/06/%e3%81%90%e3%83%bc%e3%81%90%e3%83%bc/
+- file: 漫符_ため息_白.png
+  source: miirriin-illust
+  kind: image
+  category: 漫画記号
+  tags:
+  - 漫符
+  - ため息
+  - 白
+  - 疲れ
+  - 落胆
+  name: 漫符_ため息_白
+  description: 黒縁の白いため息のもくもく
+  download_url: https://miirriin.com/illustration/?sdm_process_download=1&download_id=841
+  page_url: https://miirriin.com/illustration/sigh01/
+- file: 漫符_ひらめき_電球_黄線.png
+  source: miirriin-illust
+  kind: image
+  category: 漫画記号
+  tags:
+  - 漫符
+  - ひらめき
+  - 電球
+  - 黄
+  - 気づき
+  name: 漫符_ひらめき_電球_黄線
+  description: 黄色い電球と黄の光線。ひらめきに
+  download_url: https://miirriin.com/illustration/?sdm_process_download=1&download_id=897
+  page_url: https://miirriin.com/illustration/inspiration01/
+- file: 漫符_ひらめき_電球_黒線.png
+  source: miirriin-illust
+  kind: image
+  category: 漫画記号
+  tags:
+  - 漫符
+  - ひらめき
+  - 電球
+  - 黄
+  - 黒
+  - 気づき
+  name: 漫符_ひらめき_電球_黒線
+  description: 黄色い電球と黒の光線
+  download_url: https://miirriin.com/illustration/?sdm_process_download=1&download_id=896
+  page_url: https://miirriin.com/illustration/inspiration01/
+- file: 漫符_もやもや_渦_白ふち.png
+  source: miirriin-illust
+  kind: image
+  category: 漫画記号
+  tags:
+  - 漫符
+  - もやもや
+  - 白
+  - 黒
+  - 混乱
+  - 悩み
+  name: 漫符_もやもや_渦_白ふち
+  description: 白ふちの黒い渦巻き。混乱・目が回るに
+  download_url: https://miirriin.com/illustration/?sdm_process_download=1&download_id=776
+  page_url: https://miirriin.com/illustration/confused01/
+- file: 漫符_もやもや_黒い渦巻き線.png
+  source: ai-catcher
+  kind: image
+  category: 漫画記号
+  tags:
+  - 漫符
+  - もやもや
+  - 黒
+  - 悩み
+  - 混乱
+  name: 漫符_もやもや_黒い渦巻き線
+  description: 頭の上のぐしゃぐしゃ線。悩み・混乱に
+  download_url: https://ai-catcher.com/wp-content/uploads/2016/11/115.png
+  page_url: https://ai-catcher.com/blog/2016/10/06/%e3%82%82%e3%82%84%e3%82%82%e3%82%84/
+- file: 漫符_イライラ_稲妻_赤.png
+  source: miirriin-illust
+  kind: image
+  category: 漫画記号
+  tags:
+  - 漫符
+  - イライラ
+  - 稲妻
+  - 赤
+  - 痛い
+  - 怒り
+  name: 漫符_イライラ_稲妻_赤
+  description: 白ふちの赤い稲妻。イライラ・痛い・大声に
+  download_url: https://miirriin.com/illustration/?sdm_process_download=1&download_id=839
+  page_url: https://miirriin.com/illustration/pain01/
+- file: 漫符_イライラ_稲妻_黄.png
+  source: miirriin-illust
+  kind: image
+  category: 漫画記号
+  tags:
+  - 漫符
+  - イライラ
+  - 稲妻
+  - 黄
+  - 衝撃
+  name: 漫符_イライラ_稲妻_黄
+  description: 白ふちの黄色い稲妻。衝撃・大声に
+  download_url: https://miirriin.com/illustration/?sdm_process_download=1&download_id=840
+  page_url: https://miirriin.com/illustration/pain01/
+- file: 漫符_ガーン_縦線_黒_太.png
+  source: ai-catcher
+  kind: image
+  category: 漫画記号
+  tags:
+  - 漫符
+  - ガーン
+  - 縦線
+  - 黒
+  - ショック
+  - 青ざめ
+  name: 漫符_ガーン_縦線_黒_太
+  description: 太い黒の縦線 5 本。ガーン・ショックに
+  download_url: https://ai-catcher.com/wp-content/uploads/2016/11/112.png
+  page_url: https://ai-catcher.com/blog/2016/10/06/%e3%82%ac%e3%83%bc%e3%83%b3/
+- file: 漫符_キラキラ_金_4つ.png
+  source: ai-catcher
+  kind: image
+  category: 漫画記号
+  tags:
+  - 漫符
+  - キラキラ
+  - 金
+  - 喜び
+  - 決め
+  name: 漫符_キラキラ_金_4つ
+  description: 金色のきらめき 4 つ。嬉しい・輝きに
+  download_url: https://ai-catcher.com/wp-content/uploads/2016/11/110.png
+  page_url: https://ai-catcher.com/blog/2016/10/06/%e3%82%ad%e3%83%a9%e3%82%ad%e3%83%a9/
+- file: 漫符_ズーン_陰り線_黒.png
+  source: ai-catcher
+  kind: image
+  category: 漫画記号
+  tags:
+  - 漫符
+  - ズーン
+  - 陰り線
+  - 黒
+  - 落ち込み
+  - 陰り
+  name: 漫符_ズーン_陰り線_黒
+  description: 黒の横線を重ねた陰り。ズーン・落ち込みに
+  download_url: https://ai-catcher.com/wp-content/uploads/2016/11/126.png
+  page_url: https://ai-catcher.com/blog/2016/10/06/%e9%99%b0%e3%82%8a/
+- file: 漫符_ドクロ.png
+  source: ai-catcher
+  kind: image
+  category: 漫画記号
+  tags:
+  - 漫符
+  - ドクロ
+  - 白
+  - 絶望
+  - 毒
+  name: 漫符_ドクロ
+  description: ドクロと骨。絶望・やらかしに
+  download_url: https://ai-catcher.com/wp-content/uploads/2016/11/132.png
+  page_url: https://ai-catcher.com/blog/2016/10/06/%e3%83%89%e3%82%af%e3%83%ad/
+- file: 漫符_ハート_ピンク.png
+  source: ai-catcher
+  kind: image
+  category: 漫画記号
+  tags:
+  - 漫符
+  - ハート
+  - ピンク
+  - 好き
+  - 喜び
+  name: 漫符_ハート_ピンク
+  description: ピンクのハート。好き・うっとりに
+  download_url: https://ai-catcher.com/wp-content/uploads/2016/11/106.png
+  page_url: https://ai-catcher.com/blog/2016/10/06/%e3%83%8f%e3%83%bc%e3%83%88/
+- file: 漫符_土煙_もくもく.png
+  source: ai-catcher
+  kind: image
+  category: 漫画記号
+  tags:
+  - 漫符
+  - 土煙
+  - 爆発
+  - 茶
+  - ダッシュ
+  - 退場
+  name: 漫符_土煙_もくもく
+  description: もくもくの土煙。ダッシュ・ドタバタ・小爆発に
+  download_url: https://ai-catcher.com/wp-content/uploads/2016/11/120.png
+  page_url: https://ai-catcher.com/blog/2016/10/06/%e5%9c%9f%e7%85%99/
+- file: 漫符_怒りマーク_赤.png
+  source: miirriin-illust
+  kind: image
+  category: 漫画記号
+  tags:
+  - 漫符
+  - 怒りマーク
+  - 赤
+  - 怒り
+  name: 漫符_怒りマーク_赤
+  description: 白ふちの赤い怒りマーク
+  download_url: https://miirriin.com/illustration/?sdm_process_download=1&download_id=723
+  page_url: https://miirriin.com/illustration/anger01/
+- file: 漫符_怒りマーク_黒線.png
+  source: ai-catcher
+  kind: image
+  category: 漫画記号
+  tags:
+  - 漫符
+  - 怒りマーク
+  - 黒
+  - 怒り
+  name: 漫符_怒りマーク_黒線
+  description: 黒線の怒りマーク（ムカッ）
+  download_url: https://ai-catcher.com/wp-content/uploads/2016/11/101.png
+  page_url: https://ai-catcher.com/blog/2016/10/05/%e3%83%a0%e3%82%ab%e3%83%83/
+- file: 漫符_感嘆疑問符_黒.png
+  source: ai-catcher
+  kind: image
+  category: 漫画記号
+  tags:
+  - 漫符
+  - 感嘆符
+  - 疑問符
+  - 黒
+  - 驚き
+  name: 漫符_感嘆疑問符_黒
+  description: 黒の「！？」。驚き・混乱に
+  download_url: https://ai-catcher.com/wp-content/uploads/2016/11/130.png
+  page_url: https://ai-catcher.com/blog/2016/10/06/%ef%bc%81%ef%bc%9f/
+- file: 漫符_感嘆符_赤.png
+  source: ai-catcher
+  kind: image
+  category: 漫画記号
+  tags:
+  - 漫符
+  - 感嘆符
+  - 赤
+  - 驚き
+  - 気づき
+  name: 漫符_感嘆符_赤
+  description: 赤い「！」。驚き・気づきに
+  download_url: https://ai-catcher.com/wp-content/uploads/2016/11/109.png
+  page_url: https://ai-catcher.com/blog/2016/10/06/%e3%83%93%e3%83%83%e3%82%af%e3%83%aa%e3%83%9e%e3%83%bc%e3%82%af/
+- file: 漫符_星_黄_2つ.png
+  source: ai-catcher
+  kind: image
+  category: 漫画記号
+  tags:
+  - 漫符
+  - 星
+  - 黄
+  - キラキラ
+  - 決め
+  name: 漫符_星_黄_2つ
+  description: 黄色い星 2 つ。決め・ドヤに
+  download_url: https://ai-catcher.com/wp-content/uploads/2016/11/128.png
+  page_url: https://ai-catcher.com/blog/2016/10/06/%e3%82%ad%e3%83%a9%e3%82%ad%e3%83%a9-2/
+- file: 漫符_気づき_3本線_白.png
+  source: miirriin-illust
+  kind: image
+  category: 漫画記号
+  tags:
+  - 漫符
+  - 気づき
+  - 強調
+  - 白
+  name: 漫符_気づき_3本線_白
+  description: 白い 3 本線。はっ・気づきに（暗い背景向き）
+  download_url: https://miirriin.com/illustration/?sdm_process_download=1&download_id=663
+  page_url: https://miirriin.com/illustration/emphasis-mark01/
+- file: 漫符_気づき_3本線_赤.png
+  source: miirriin-illust
+  kind: image
+  category: 漫画記号
+  tags:
+  - 漫符
+  - 気づき
+  - 強調
+  - 赤
+  name: 漫符_気づき_3本線_赤
+  description: 赤い 3 本線。はっ・気づきに
+  download_url: https://miirriin.com/illustration/?sdm_process_download=1&download_id=664
+  page_url: https://miirriin.com/illustration/emphasis-mark01/
+- file: 漫符_気づき_黄_太線.png
+  source: miirriin-illust
+  kind: image
+  category: 漫画記号
+  tags:
+  - 漫符
+  - 気づき
+  - 驚き
+  - 黄
+  name: 漫符_気づき_黄_太線
+  description: 白ふちの黄色い太線 3 本。ピコーン・驚きに
+  download_url: https://miirriin.com/illustration/?sdm_process_download=1&download_id=787
+  page_url: https://miirriin.com/illustration/realization01/
+- file: 漫符_汗_水色_しぶき.png
+  source: ai-catcher
+  kind: image
+  category: 漫画記号
+  tags:
+  - 漫符
+  - 汗
+  - 水色
+  - 焦り
+  - 驚き
+  name: 漫符_汗_水色_しぶき
+  description: 水色の汗のしぶき 3 つ。焦り・あせあせに
+  download_url: https://ai-catcher.com/wp-content/uploads/2016/11/103.png
+  page_url: https://ai-catcher.com/blog/2016/10/06/%e6%b1%97/
+- file: 漫符_汗_白_2つ.png
+  source: miirriin-illust
+  kind: image
+  category: 漫画記号
+  tags:
+  - 漫符
+  - 汗
+  - 白
+  - 焦り
+  name: 漫符_汗_白_2つ
+  description: 白い汗 2 つ（暗い背景向き）
+  download_url: https://miirriin.com/illustration/?sdm_process_download=1&download_id=730
+  page_url: https://miirriin.com/illustration/sweat02/
+- file: 漫符_汗_青_1つ.png
+  source: ai-catcher
+  kind: image
+  category: 漫画記号
+  tags:
+  - 漫符
+  - 汗
+  - 青
+  - 焦り
+  - 気まずい
+  name: 漫符_汗_青_1つ
+  description: 大きな青い汗 1 つ。気まずい・焦りに
+  download_url: https://ai-catcher.com/wp-content/uploads/2016/11/104.png
+  page_url: https://ai-catcher.com/blog/2016/10/06/%e6%b6%99/
+- file: 漫符_汗_青_2つ.png
+  source: miirriin-illust
+  kind: image
+  category: 漫画記号
+  tags:
+  - 漫符
+  - 汗
+  - 青
+  - 焦り
+  name: 漫符_汗_青_2つ
+  description: 青い汗 2 つ
+  download_url: https://miirriin.com/illustration/?sdm_process_download=1&download_id=729
+  page_url: https://miirriin.com/illustration/sweat02/
+- file: 漫符_湯気_灰.png
+  source: ai-catcher
+  kind: image
+  category: 漫画記号
+  tags:
+  - 漫符
+  - 湯気
+  - 灰
+  - 怒り
+  - ぷんぷん
+  name: 漫符_湯気_灰
+  description: 頭から出る湯気。ぷんぷん怒りに
+  download_url: https://ai-catcher.com/wp-content/uploads/2016/11/123.png
+  page_url: https://ai-catcher.com/blog/2016/10/06/%e6%b9%af%e6%b0%97/
+- file: 漫符_焦り線_灰.png
+  source: ai-catcher
+  kind: image
+  category: 漫画記号
+  tags:
+  - 漫符
+  - 焦り
+  - 灰
+  - 汗
+  name: 漫符_焦り線_灰
+  description: 灰色の焦り線。あたふたに
+  download_url: https://ai-catcher.com/wp-content/uploads/2016/11/113.png
+  page_url: https://ai-catcher.com/blog/2016/10/06/%e7%84%a6%e3%82%8a/
+- file: 漫符_照れ線_赤.png
+  source: ai-catcher
+  kind: image
+  category: 漫画記号
+  tags:
+  - 漫符
+  - 照れ
+  - 赤
+  - 恥ずかしい
+  name: 漫符_照れ線_赤
+  description: 頬の赤い斜線。照れ・恥ずかしいに
+  download_url: https://ai-catcher.com/wp-content/uploads/2016/11/124.png
+  page_url: https://ai-catcher.com/blog/2016/10/06/%e7%85%a7%e3%82%8c%e7%b7%9a/
+- file: 漫符_疑問符_黒.png
+  source: ai-catcher
+  kind: image
+  category: 漫画記号
+  tags:
+  - 漫符
+  - 疑問符
+  - 黒
+  - 疑問
+  - きょとん
+  name: 漫符_疑問符_黒
+  description: 太い黒の「？」。きょとん・疑問に
+  download_url: https://ai-catcher.com/wp-content/uploads/2016/11/102.png
+  page_url: https://ai-catcher.com/blog/2016/10/06/%e3%81%af%e3%81%a6%e3%81%aa/
+- file: 漫符_落ち葉_寂しい.png
+  source: ai-catcher
+  kind: image
+  category: 漫画記号
+  tags:
+  - 漫符
+  - 落ち葉
+  - 茶
+  - 寂しい
+  - しーん
+  name: 漫符_落ち葉_寂しい
+  description: ひゅるる…の落ち葉。滑ったギャグ・しーんに
+  download_url: https://ai-catcher.com/wp-content/uploads/2016/11/116.png
+  page_url: https://ai-catcher.com/blog/2016/10/06/%e3%81%b2%e3%82%85%e3%82%8b%e3%82%8b/
+- file: 漫符_衝撃_ギザギザ_赤.png
+  source: miirriin-illust
+  kind: image
+  category: 漫画記号
+  tags:
+  - 漫符
+  - 衝撃
+  - 驚き
+  - ギザギザ
+  - 赤
+  name: 漫符_衝撃_ギザギザ_赤
+  description: 赤いギザギザのとげ。衝撃・ガーンに
+  download_url: https://miirriin.com/illustration/?sdm_process_download=1&download_id=876
+  page_url: https://miirriin.com/illustration/surprise02/
+- file: 漫符_衝撃_ギザギザ_黄.png
+  source: miirriin-illust
+  kind: image
+  category: 漫画記号
+  tags:
+  - 漫符
+  - 衝撃
+  - 驚き
+  - ギザギザ
+  - 黄
+  name: 漫符_衝撃_ギザギザ_黄
+  description: 黄色いギザギザのとげ。衝撃に
+  download_url: https://miirriin.com/illustration/?sdm_process_download=1&download_id=877
+  page_url: https://miirriin.com/illustration/surprise02/
+- file: 漫符_震え_白.png
+  source: miirriin-illust
+  kind: image
+  category: 漫画記号
+  tags:
+  - 漫符
+  - 震え
+  - 白
+  - 怖い
+  - 寒い
+  name: 漫符_震え_白
+  description: 白い波線。ぶるぶる・怖いに（暗い背景向き）
+  download_url: https://miirriin.com/illustration/?sdm_process_download=1&download_id=875
+  page_url: https://miirriin.com/illustration/tremble01/
+- file: 漫符_震え_黒.png
+  source: miirriin-illust
+  kind: image
+  category: 漫画記号
+  tags:
+  - 漫符
+  - 震え
+  - 黒
+  - 怖い
+  - 寒い
+  name: 漫符_震え_黒
+  description: 黒い波線。ぶるぶる・怖いに
+  download_url: https://miirriin.com/illustration/?sdm_process_download=1&download_id=874
+  page_url: https://miirriin.com/illustration/tremble01/
+- file: 漫符_青ざめ_縦線_紺.png
+  source: miirriin-illust
+  kind: image
+  category: 漫画記号
+  tags:
+  - 漫符
+  - 青ざめ
+  - 縦線
+  - 紺
+  - ショック
+  - ガーン
+  name: 漫符_青ざめ_縦線_紺
+  description: 白ふちの紺の縦線。青ざめ・顔面蒼白に
+  download_url: https://miirriin.com/illustration/?sdm_process_download=1&download_id=785
+  page_url: https://miirriin.com/illustration/pale01/
+- file: 漫符_音符_黒.png
+  source: miirriin-illust
+  kind: image
+  category: 漫画記号
+  tags:
+  - 漫符
+  - 音符
+  - 黒
+  - 喜び
+  - ご機嫌
+  name: 漫符_音符_黒
+  description: 黒い八分音符。ご機嫌・鼻歌に
+  download_url: https://miirriin.com/illustration/?sdm_process_download=1&download_id=120
+  page_url: https://miirriin.com/illustration/musical-note01/
+- file: 漫符_驚き_ギザ線_赤.png
+  source: miirriin-illust
+  kind: image
+  category: 漫画記号
+  tags:
+  - 漫符
+  - 驚き
+  - ギザギザ
+  - 赤
+  name: 漫符_驚き_ギザ線_赤
+  description: 白ふちの赤いギザギザ線。びっくりに
+  download_url: https://miirriin.com/illustration/?sdm_process_download=1&download_id=395
+  page_url: https://miirriin.com/illustration/surprise01/
+- file: 漫符_驚き_ギザ線_黄.png
+  source: miirriin-illust
+  kind: image
+  category: 漫画記号
+  tags:
+  - 漫符
+  - 驚き
+  - ギザギザ
+  - 黄
+  name: 漫符_驚き_ギザ線_黄
+  description: 白ふちの黄色いギザギザ線。びっくりに
+  download_url: https://miirriin.com/illustration/?sdm_process_download=1&download_id=396
+  page_url: https://miirriin.com/illustration/surprise01/
+- file: 漫符_驚き_ギザ線_黒.png
+  source: ai-catcher
+  kind: image
+  category: 漫画記号
+  tags:
+  - 漫符
+  - 驚き
+  - ギザギザ
+  - 黒
+  - 気づき
+  name: 漫符_驚き_ギザ線_黒
+  description: 頭の上のギザギザの驚き線
+  download_url: https://ai-catcher.com/wp-content/uploads/2016/11/108.png
+  page_url: https://ai-catcher.com/blog/2016/10/06/%e9%a9%9a%e3%81%8d/
+- file: 漫符_魂_抜ける.png
+  source: ai-catcher
+  kind: image
+  category: 漫画記号
+  tags:
+  - 漫符
+  - 魂
+  - 水色
+  - 気絶
+  - 放心
+  name: 漫符_魂_抜ける
+  description: 口から抜ける魂。放心・気絶に
+  download_url: https://ai-catcher.com/wp-content/uploads/2016/11/121.png
+  page_url: https://ai-catcher.com/blog/2016/10/06/%e9%ad%82/
+- file: 漫符_鼻血_赤.png
+  source: ai-catcher
+  kind: image
+  category: 漫画記号
+  tags:
+  - 漫符
+  - 鼻血
+  - 赤
+  - 興奮
+  name: 漫符_鼻血_赤
+  description: 赤い鼻血。興奮のギャグに
+  download_url: https://ai-catcher.com/wp-content/uploads/2016/11/118.png
+  page_url: https://ai-catcher.com/blog/2016/10/06/%e9%bc%bb%e8%a1%80/
+- file: 爆発_ギザギザ_黄.png
+  source: openclipart
+  kind: image
+  category: 漫画記号
+  tags:
+  - 爆発
+  - ギザギザ
+  - 黄
+  - 衝撃
+  - ドーン
+  name: 爆発_ギザギザ_黄
+  description: 黒縁の黄色い爆発の囲み。擬音の文字の土台に
+  download_url: https://openclipart.org/image/2000px/170774
+  page_url: https://openclipart.org/detail/170774/comic-burst-explosion-abstract-005
+- file: 爆発_ギザギザ_黒_とげ.png
+  source: openclipart
+  kind: image
+  category: 漫画記号
+  tags:
+  - 爆発
+  - ギザギザ
+  - 黒
+  - 衝撃
+  - ドーン
+  name: 爆発_ギザギザ_黒_とげ
+  description: 黒いとげの多い爆発のシルエット
+  download_url: https://openclipart.org/image/2000px/323182
+  page_url: https://openclipart.org/detail/323182/burst
+- file: 爆発_ギザギザ_黒_横長.png
+  source: openclipart
+  kind: image
+  category: 漫画記号
+  tags:
+  - 爆発
+  - ギザギザ
+  - 黒
+  - 衝撃
+  - ドーン
+  name: 爆発_ギザギザ_黒_横長
+  description: 黒い横長の爆発のシルエット。文字を白で重ねる
+  download_url: https://openclipart.org/image/2000px/322455
+  page_url: https://openclipart.org/detail/322455/burst
+- file: 集中線_白_密_放射_中央.png
+  source: free-materials
+  kind: image
+  category: 漫画記号
+  tags:
+  - 集中線
+  - 白
+  - 密
+  - 驚き
+  - 決め
+  name: 集中線_白_密_放射_中央
+  description: 白い集中線（4500×3500・中心に向かう）
+  download_url: https://www.free-materials.com/download/55576/
+  page_url: https://www.free-materials.com/%E9%9B%86%E4%B8%AD%E7%B7%9A%E3%83%BB%E7%99%BD04%E4%B8%AD%E5%A4%AE/
+- file: 集中線_白_密_放射_隅上.png
+  source: free-materials
+  kind: image
+  category: 漫画記号
+  tags:
+  - 集中線
+  - 白
+  - 密
+  - 驚き
+  - 決め
+  name: 集中線_白_密_放射_隅上
+  description: 白い集中線（中心が上寄り）
+  download_url: https://www.free-materials.com/download/55571/
+  page_url: https://www.free-materials.com/%E9%9B%86%E4%B8%AD%E7%B7%9A%E3%83%BB%E7%99%BD03%E9%9A%85%E3%83%BB%E4%B8%8A/
+- file: 集中線_白_密_放射_隅下.png
+  source: free-materials
+  kind: image
+  category: 漫画記号
+  tags:
+  - 集中線
+  - 白
+  - 密
+  - 驚き
+  - 決め
+  name: 集中線_白_密_放射_隅下
+  description: 白い集中線（中心が下寄り）
+  download_url: https://www.free-materials.com/download/55560/
+  page_url: https://www.free-materials.com/%E9%9B%86%E4%B8%AD%E7%B7%9A%E3%83%BB%E7%99%BD01%E9%9A%85%E3%83%BB%E4%B8%8B/
+- file: 集中線_白_漫画_横長枠.png
+  source: miirriin-illust
+  kind: image
+  category: 漫画記号
+  tags:
+  - 集中線
+  - 白
+  - 驚き
+  - 決め
+  name: 集中線_白_漫画_横長枠
+  description: 白いくっきりした集中線（16:9 の外周だけ）。縦画面では横幅いっぱいでも上下は覆わない
+  download_url: https://miirriin.com/illustration/?sdm_process_download=1&download_id=427
+  page_url: https://miirriin.com/illustration/concentration-line03/
+- file: 集中線_黒_密_放射_中央.png
+  source: free-materials
+  kind: image
+  category: 漫画記号
+  tags:
+  - 集中線
+  - 黒
+  - 密
+  - 驚き
+  - 決め
+  name: 集中線_黒_密_放射_中央
+  description: 黒い集中線（4500×3500・中心に向かう）
+  download_url: https://www.free-materials.com/download/55596/
+  page_url: https://www.free-materials.com/%E9%9B%86%E4%B8%AD%E7%B7%9A%E3%83%BB%E9%BB%9204%E4%B8%AD%E5%A4%AE/
+- file: 集中線_黒_密_放射_隅上.png
+  source: free-materials
+  kind: image
+  category: 漫画記号
+  tags:
+  - 集中線
+  - 黒
+  - 密
+  - 驚き
+  - 決め
+  name: 集中線_黒_密_放射_隅上
+  description: 黒い集中線（中心が上寄り）
+  download_url: https://www.free-materials.com/download/55591/
+  page_url: https://www.free-materials.com/%E9%9B%86%E4%B8%AD%E7%B7%9A%E3%83%BB%E9%BB%9203%E9%9A%85%E3%83%BB%E4%B8%8A/
+- file: 集中線_黒_密_放射_隅下.png
+  source: free-materials
+  kind: image
+  category: 漫画記号
+  tags:
+  - 集中線
+  - 黒
+  - 密
+  - 驚き
+  - 決め
+  name: 集中線_黒_密_放射_隅下
+  description: 黒い集中線（中心が下寄り）
+  download_url: https://www.free-materials.com/download/55582/
+  page_url: https://www.free-materials.com/%E9%9B%86%E4%B8%AD%E7%B7%9A%E3%83%BB%E9%BB%9201%E9%9A%85%E3%83%BB%E4%B8%8B/
+- file: 集中線_黒_漫画_横長枠.png
+  source: miirriin-illust
+  kind: image
+  category: 漫画記号
+  tags:
+  - 集中線
+  - 黒
+  - 驚き
+  - 決め
+  name: 集中線_黒_漫画_横長枠
+  description: 黒いくっきりした集中線（16:9 の外周だけ）。縦画面では横幅いっぱいでも上下は覆わない
+  download_url: https://miirriin.com/illustration/?sdm_process_download=1&download_id=426
+  page_url: https://miirriin.com/illustration/concentration-line03/
+- file: 集中線_黒_中央_太.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - 集中線
+  - 黒
+  - 中央
+  - 強調
+  - 驚き
+  name: 集中線_黒_中央_太
+  description: 黒の集中線（中心が中央）。太い線。1500x1500 の正方形なので縦の画面では高さに合わせて拡大する（左右は切れる）
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/02/black_line01.zip
+  page_url: https://otarunet.com/it/webdesign/comic-material-effect01/
+  member: black_line01/shuchu-sen01_黒線-太.png
+- file: 集中線_黒_中央_太_ランダム.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - 集中線
+  - 黒
+  - 中央
+  - 強調
+  - 驚き
+  name: 集中線_黒_中央_太_ランダム
+  description: 黒の集中線（中心が中央）。太い線（長さばらばら）。1500x1500 の正方形なので縦の画面では高さに合わせて拡大する（左右は切れる）
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/02/black_line01.zip
+  page_url: https://otarunet.com/it/webdesign/comic-material-effect01/
+  member: black_line01/shuchu-sen01_黒線-太ランダム.png
+- file: 集中線_黒_中央_密.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - 集中線
+  - 黒
+  - 中央
+  - 強調
+  - 驚き
+  name: 集中線_黒_中央_密
+  description: 黒の集中線（中心が中央）。細い線を密に。1500x1500 の正方形なので縦の画面では高さに合わせて拡大する（左右は切れる）
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/02/black_line01.zip
+  page_url: https://otarunet.com/it/webdesign/comic-material-effect01/
+  member: black_line01/shuchu-sen01_黒線-密度高.png
+- file: 集中線_白_中央_太.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - 集中線
+  - 白
+  - 中央
+  - 強調
+  - 驚き
+  name: 集中線_白_中央_太
+  description: 白の集中線（中心が中央）。太い線。1500x1500 の正方形なので縦の画面では高さに合わせて拡大する（左右は切れる）
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/02/white_line01.zip
+  page_url: https://otarunet.com/it/webdesign/comic-material-effect01/
+  member: white_line01/shuchu-sen01_白線-太.png
+- file: 集中線_白_中央_太_ランダム.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - 集中線
+  - 白
+  - 中央
+  - 強調
+  - 驚き
+  name: 集中線_白_中央_太_ランダム
+  description: 白の集中線（中心が中央）。太い線（長さばらばら）。1500x1500 の正方形なので縦の画面では高さに合わせて拡大する（左右は切れる）
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/02/white_line01.zip
+  page_url: https://otarunet.com/it/webdesign/comic-material-effect01/
+  member: white_line01/shuchu-sen01_白線-太ランダム.png
+- file: 集中線_白_中央_密.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - 集中線
+  - 白
+  - 中央
+  - 強調
+  - 驚き
+  name: 集中線_白_中央_密
+  description: 白の集中線（中心が中央）。細い線を密に。1500x1500 の正方形なので縦の画面では高さに合わせて拡大する（左右は切れる）
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/02/white_line01.zip
+  page_url: https://otarunet.com/it/webdesign/comic-material-effect01/
+  member: white_line01/shuchu-sen01_白線-密度高.png
+- file: 集中線_黒_右寄り_太.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - 集中線
+  - 黒
+  - 右寄り
+  - 強調
+  - 驚き
+  name: 集中線_黒_右寄り_太
+  description: 黒の集中線（中心が右寄り）。太い線。1500x1500 の正方形なので縦の画面では高さに合わせて拡大する（左右は切れる）
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/02/black_line02.zip
+  page_url: https://otarunet.com/it/webdesign/comic-material-effect01/
+  member: black_line02/shuchu-sen02_黒線-太.png
+- file: 集中線_黒_右寄り_太_ランダム.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - 集中線
+  - 黒
+  - 右寄り
+  - 強調
+  - 驚き
+  name: 集中線_黒_右寄り_太_ランダム
+  description: 黒の集中線（中心が右寄り）。太い線（長さばらばら）。1500x1500 の正方形なので縦の画面では高さに合わせて拡大する（左右は切れる）
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/02/black_line02.zip
+  page_url: https://otarunet.com/it/webdesign/comic-material-effect01/
+  member: black_line02/shuchu-sen02_黒線-太ランダム.png
+- file: 集中線_黒_右寄り_密.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - 集中線
+  - 黒
+  - 右寄り
+  - 強調
+  - 驚き
+  name: 集中線_黒_右寄り_密
+  description: 黒の集中線（中心が右寄り）。細い線を密に。1500x1500 の正方形なので縦の画面では高さに合わせて拡大する（左右は切れる）
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/02/black_line02.zip
+  page_url: https://otarunet.com/it/webdesign/comic-material-effect01/
+  member: black_line02/shuchu-sen02_黒線-密度高.png
+- file: 集中線_白_右寄り_太.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - 集中線
+  - 白
+  - 右寄り
+  - 強調
+  - 驚き
+  name: 集中線_白_右寄り_太
+  description: 白の集中線（中心が右寄り）。太い線。1500x1500 の正方形なので縦の画面では高さに合わせて拡大する（左右は切れる）
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/02/white_line02.zip
+  page_url: https://otarunet.com/it/webdesign/comic-material-effect01/
+  member: white_line02/shuchu-sen02_白線-太.png
+- file: 集中線_白_右寄り_太_ランダム.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - 集中線
+  - 白
+  - 右寄り
+  - 強調
+  - 驚き
+  name: 集中線_白_右寄り_太_ランダム
+  description: 白の集中線（中心が右寄り）。太い線（長さばらばら）。1500x1500 の正方形なので縦の画面では高さに合わせて拡大する（左右は切れる）
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/02/white_line02.zip
+  page_url: https://otarunet.com/it/webdesign/comic-material-effect01/
+  member: white_line02/shuchu-sen02_白線-太ランダム.png
+- file: 集中線_白_右寄り_密.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - 集中線
+  - 白
+  - 右寄り
+  - 強調
+  - 驚き
+  name: 集中線_白_右寄り_密
+  description: 白の集中線（中心が右寄り）。細い線を密に。1500x1500 の正方形なので縦の画面では高さに合わせて拡大する（左右は切れる）
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/02/white_line02.zip
+  page_url: https://otarunet.com/it/webdesign/comic-material-effect01/
+  member: white_line02/shuchu-sen02_白線-密度高.png
+- file: 効果線_渦_黒_太.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - 効果線
+  - 渦
+  - ぐるぐる
+  - 黒
+  - 混乱
+  - 落ち込み
+  name: 効果線_渦_黒_太
+  description: 黒のぐるぐるした効果線（渦）。太い線。
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/03/kokasen01.zip
+  page_url: https://otarunet.com/it/webdesign/comic-material-effect02/
+  member: kokasen01/koka-sen01_黒線-太.png
+- file: 効果線_渦_黒_密.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - 効果線
+  - 渦
+  - ぐるぐる
+  - 黒
+  - 混乱
+  - 落ち込み
+  name: 効果線_渦_黒_密
+  description: 黒のぐるぐるした効果線（渦）。細い線を密に。
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/03/kokasen01.zip
+  page_url: https://otarunet.com/it/webdesign/comic-material-effect02/
+  member: kokasen01/koka-sen01_黒線-密度高.png
+- file: 効果線_渦_白_太.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - 効果線
+  - 渦
+  - ぐるぐる
+  - 白
+  - 混乱
+  - 落ち込み
+  name: 効果線_渦_白_太
+  description: 白のぐるぐるした効果線（渦）。太い線。
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/03/kokasen02.zip
+  page_url: https://otarunet.com/it/webdesign/comic-material-effect02/
+  member: kokasen02/koka-sen02_白線-太.png
+- file: 効果線_渦_白_密.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - 効果線
+  - 渦
+  - ぐるぐる
+  - 白
+  - 混乱
+  - 落ち込み
+  name: 効果線_渦_白_密
+  description: 白のぐるぐるした効果線（渦）。細い線を密に。
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/03/kokasen02.zip
+  page_url: https://otarunet.com/it/webdesign/comic-material-effect02/
+  member: kokasen02/koka-sen02_白線-密度高.png
+- file: スピード線_横_片側_白_疎.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - スピード線
+  - 効果線
+  - 横
+  - 白
+  - 動き
+  - 勢い
+  - 片側
+  name: スピード線_横_片側_白_疎
+  description: 白の横向きのスピード線。左端から出て右へ消えていく（右半分は空く）。まばら。1500x1500
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/03/kokasen03.zip
+  page_url: https://otarunet.com/it/webdesign/comic-material-effect02/
+  member: kokasen03/koka-sen03_白線横1-密度低.png
+- file: スピード線_横_片側_白_密.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - スピード線
+  - 効果線
+  - 横
+  - 白
+  - 動き
+  - 勢い
+  - 片側
+  name: スピード線_横_片側_白_密
+  description: 白の横向きのスピード線。左端から出て右へ消えていく（右半分は空く）。密。1500x1500
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/03/kokasen03.zip
+  page_url: https://otarunet.com/it/webdesign/comic-material-effect02/
+  member: kokasen03/koka-sen03_白線横1-密度高.png
+- file: スピード線_横_全面_白_疎.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - スピード線
+  - 効果線
+  - 横
+  - 白
+  - 動き
+  - 勢い
+  - 全面
+  name: スピード線_横_全面_白_疎
+  description: 白の横向きのスピード線。画面いっぱい。まばら。1500x1500。斜めにするなら回して使う
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/03/kokasen03.zip
+  page_url: https://otarunet.com/it/webdesign/comic-material-effect02/
+  member: kokasen03/koka-sen03_白線横2-密度低.png
+- file: スピード線_横_全面_白_密.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - スピード線
+  - 効果線
+  - 横
+  - 白
+  - 動き
+  - 勢い
+  - 全面
+  name: スピード線_横_全面_白_密
+  description: 白の横向きのスピード線。画面いっぱい。密。1500x1500。斜めにするなら回して使う
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/03/kokasen03.zip
+  page_url: https://otarunet.com/it/webdesign/comic-material-effect02/
+  member: kokasen03/koka-sen03_白線横2-密度高.png
+- file: スピード線_縦_上から_白_疎.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - スピード線
+  - 効果線
+  - 縦
+  - 白
+  - 動き
+  - 勢い
+  - 上から
+  name: スピード線_縦_上から_白_疎
+  description: 白の縦向きの線。上から下りて下半分で消える（落下・ガーン・落ち込み）。まばら。1500x1500
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/03/kokasen03.zip
+  page_url: https://otarunet.com/it/webdesign/comic-material-effect02/
+  member: kokasen03/koka-sen03_白線縦1-密度低.png
+- file: スピード線_縦_上から_白_密.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - スピード線
+  - 効果線
+  - 縦
+  - 白
+  - 動き
+  - 勢い
+  - 上から
+  name: スピード線_縦_上から_白_密
+  description: 白の縦向きの線。上から下りて下半分で消える（落下・ガーン・落ち込み）。密。1500x1500
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/03/kokasen03.zip
+  page_url: https://otarunet.com/it/webdesign/comic-material-effect02/
+  member: kokasen03/koka-sen03_白線縦1-密度高.png
+- file: スピード線_縦_全面_白_密.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - スピード線
+  - 効果線
+  - 縦
+  - 白
+  - 動き
+  - 勢い
+  - 全面
+  name: スピード線_縦_全面_白_密
+  description: 白の縦向きの線。画面いっぱい（落下・上昇の勢い）。1500x1500
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/03/kokasen03.zip
+  page_url: https://otarunet.com/it/webdesign/comic-material-effect02/
+  member: kokasen03/koka-sen03_白線縦2-密度高.png
+- file: スピード線_横_片側_黒_疎.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - スピード線
+  - 効果線
+  - 横
+  - 黒
+  - 動き
+  - 勢い
+  - 片側
+  name: スピード線_横_片側_黒_疎
+  description: 黒の横向きのスピード線。左端から出て右へ消えていく（右半分は空く）。まばら。1500x1500
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/03/kokasen03.zip
+  page_url: https://otarunet.com/it/webdesign/comic-material-effect02/
+  member: kokasen03/koka-sen03_黒線横1-密度低.png
+- file: スピード線_横_片側_黒_密.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - スピード線
+  - 効果線
+  - 横
+  - 黒
+  - 動き
+  - 勢い
+  - 片側
+  name: スピード線_横_片側_黒_密
+  description: 黒の横向きのスピード線。左端から出て右へ消えていく（右半分は空く）。密。1500x1500
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/03/kokasen03.zip
+  page_url: https://otarunet.com/it/webdesign/comic-material-effect02/
+  member: kokasen03/koka-sen03_黒線横1-密度高.png
+- file: スピード線_横_全面_黒_疎.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - スピード線
+  - 効果線
+  - 横
+  - 黒
+  - 動き
+  - 勢い
+  - 全面
+  name: スピード線_横_全面_黒_疎
+  description: 黒の横向きのスピード線。画面いっぱい。まばら。1500x1500。斜めにするなら回して使う
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/03/kokasen03.zip
+  page_url: https://otarunet.com/it/webdesign/comic-material-effect02/
+  member: kokasen03/koka-sen03_黒線横2-密度低.png
+- file: スピード線_横_全面_黒_密.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - スピード線
+  - 効果線
+  - 横
+  - 黒
+  - 動き
+  - 勢い
+  - 全面
+  name: スピード線_横_全面_黒_密
+  description: 黒の横向きのスピード線。画面いっぱい。密。1500x1500。斜めにするなら回して使う
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/03/kokasen03.zip
+  page_url: https://otarunet.com/it/webdesign/comic-material-effect02/
+  member: kokasen03/koka-sen03_黒線横2-密度高.png
+- file: スピード線_縦_上から_黒_疎.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - スピード線
+  - 効果線
+  - 縦
+  - 黒
+  - 動き
+  - 勢い
+  - 上から
+  name: スピード線_縦_上から_黒_疎
+  description: 黒の縦向きの線。上から下りて下半分で消える（落下・ガーン・落ち込み）。まばら。1500x1500
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/03/kokasen03.zip
+  page_url: https://otarunet.com/it/webdesign/comic-material-effect02/
+  member: kokasen03/koka-sen03_黒線縦1-密度低.png
+- file: スピード線_縦_上から_黒_密.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - スピード線
+  - 効果線
+  - 縦
+  - 黒
+  - 動き
+  - 勢い
+  - 上から
+  name: スピード線_縦_上から_黒_密
+  description: 黒の縦向きの線。上から下りて下半分で消える（落下・ガーン・落ち込み）。密。1500x1500
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/03/kokasen03.zip
+  page_url: https://otarunet.com/it/webdesign/comic-material-effect02/
+  member: kokasen03/koka-sen03_黒線縦1-密度高.png
+- file: スピード線_縦_全面_黒_密.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - スピード線
+  - 効果線
+  - 縦
+  - 黒
+  - 動き
+  - 勢い
+  - 全面
+  name: スピード線_縦_全面_黒_密
+  description: 黒の縦向きの線。画面いっぱい（落下・上昇の勢い）。1500x1500
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/03/kokasen03.zip
+  page_url: https://otarunet.com/it/webdesign/comic-material-effect02/
+  member: kokasen03/koka-sen03_黒線縦2-密度高.png
+- file: 集中線_黒_写真向け_細_中央.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - 集中線
+  - 黒
+  - 写真向け
+  - 強調
+  - 細
+  - 中央
+  name: 集中線_黒_写真向け_細_中央
+  description: 黒の集中線（写真・カラー向けの第 2 弾。細めの線・中心は真ん中）。中心が抜けていて顔を隠さない。1500x1500 の正方形なので縦の画面では高さに合わせて拡大する
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/08/shuchu-sen03_png.zip
+  page_url: https://otarunet.com/it/webdesign/comic-material-shuchusen02/
+  member: shuchu-sen03_black/shuchu-sen03_01.png
+- file: 集中線_黒_写真向け_太_中央.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - 集中線
+  - 黒
+  - 写真向け
+  - 強調
+  - 太
+  - 中央
+  name: 集中線_黒_写真向け_太_中央
+  description: 黒の集中線（写真・カラー向けの第 2 弾。太い線・中心は真ん中）。中心が抜けていて顔を隠さない。1500x1500 の正方形なので縦の画面では高さに合わせて拡大する
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/08/shuchu-sen03_png.zip
+  page_url: https://otarunet.com/it/webdesign/comic-material-shuchusen02/
+  member: shuchu-sen03_black/shuchu-sen03_03.png
+- file: 集中線_黒_写真向け_細_左下寄り.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - 集中線
+  - 黒
+  - 写真向け
+  - 強調
+  - 細
+  - 左下寄り
+  name: 集中線_黒_写真向け_細_左下寄り
+  description: 黒の集中線（写真・カラー向けの第 2 弾。細めの線・中心は左下寄り）。中心が抜けていて顔を隠さない。1500x1500 の正方形なので縦の画面では高さに合わせて拡大する
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/08/shuchu-sen03_png.zip
+  page_url: https://otarunet.com/it/webdesign/comic-material-shuchusen02/
+  member: shuchu-sen03_black/shuchu-sen03_04.png
+- file: 集中線_黒_写真向け_太_左下寄り.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - 集中線
+  - 黒
+  - 写真向け
+  - 強調
+  - 太
+  - 左下寄り
+  name: 集中線_黒_写真向け_太_左下寄り
+  description: 黒の集中線（写真・カラー向けの第 2 弾。太い線・中心は左下寄り）。中心が抜けていて顔を隠さない。1500x1500 の正方形なので縦の画面では高さに合わせて拡大する
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/08/shuchu-sen03_png.zip
+  page_url: https://otarunet.com/it/webdesign/comic-material-shuchusen02/
+  member: shuchu-sen03_black/shuchu-sen03_06.png
+- file: 集中線_白_写真向け_細_中央.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - 集中線
+  - 白
+  - 写真向け
+  - 強調
+  - 細
+  - 中央
+  name: 集中線_白_写真向け_細_中央
+  description: 白の集中線（写真・カラー向けの第 2 弾。細めの線・中心は真ん中）。中心が抜けていて顔を隠さない。1500x1500 の正方形なので縦の画面では高さに合わせて拡大する
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/08/shuchu-sen04_png.zip
+  page_url: https://otarunet.com/it/webdesign/comic-material-shuchusen02/
+  member: shuchu-sen04_white/shuchu-sen04_01.png
+- file: 集中線_白_写真向け_太_中央.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - 集中線
+  - 白
+  - 写真向け
+  - 強調
+  - 太
+  - 中央
+  name: 集中線_白_写真向け_太_中央
+  description: 白の集中線（写真・カラー向けの第 2 弾。太い線・中心は真ん中）。中心が抜けていて顔を隠さない。1500x1500 の正方形なので縦の画面では高さに合わせて拡大する
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/08/shuchu-sen04_png.zip
+  page_url: https://otarunet.com/it/webdesign/comic-material-shuchusen02/
+  member: shuchu-sen04_white/shuchu-sen04_03.png
+- file: 集中線_白_写真向け_細_左下寄り.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - 集中線
+  - 白
+  - 写真向け
+  - 強調
+  - 細
+  - 左下寄り
+  name: 集中線_白_写真向け_細_左下寄り
+  description: 白の集中線（写真・カラー向けの第 2 弾。細めの線・中心は左下寄り）。中心が抜けていて顔を隠さない。1500x1500 の正方形なので縦の画面では高さに合わせて拡大する
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/08/shuchu-sen04_png.zip
+  page_url: https://otarunet.com/it/webdesign/comic-material-shuchusen02/
+  member: shuchu-sen04_white/shuchu-sen04_04.png
+- file: 集中線_白_写真向け_太_左下寄り.png
+  source: otarunet
+  kind: image
+  category: 漫画記号
+  tags:
+  - 集中線
+  - 白
+  - 写真向け
+  - 強調
+  - 太
+  - 左下寄り
+  name: 集中線_白_写真向け_太_左下寄り
+  description: 白の集中線（写真・カラー向けの第 2 弾。太い線・中心は左下寄り）。中心が抜けていて顔を隠さない。1500x1500 の正方形なので縦の画面では高さに合わせて拡大する
+  download_url: https://otarunet.com/wordpress/wp-content/uploads/2015/08/shuchu-sen04_png.zip
+  page_url: https://otarunet.com/it/webdesign/comic-material-shuchusen02/
+  member: shuchu-sen04_white/shuchu-sen04_06.png
+- file: 動く漫符_青ざめ_青線5本.mp4
+  source: miirriin-video
+  kind: video
+  category: 漫画記号
+  tags:
+  - 動く漫符
+  - 漫符
+  - アニメーション
+  - 青ざめ
+  - がっかり
+  - グリーンバック
+  name: 動く漫符_青ざめ_青線5本
+  description: '5 本の青い線が次々と出る青ざめ。グリーンバック。抜く色は #00FF01（純緑）。FxOverlay の video イベントで chromaKey {"color": "#00ff01", "similarity": 0.25, "smoothness": 0.1} で抜ける（細い線の縁にだけ緑がわずかに残る）'
+  download_url: https://miirriin.com/?sdm_process_download=1&download_id=6109
+  page_url: https://miirriin.com/pale02/
+  member: pale02.mp4
+- file: 動く漫符_怒り_赤_ループ.mov
+  source: miirriin-video
+  kind: video
+  category: 漫画記号
+  tags:
+  - 動く漫符
+  - 漫符
+  - アニメーション
+  - 怒り
+  - イライラ
+  - 赤
+  - 透過
+  - ループ
+  name: 動く漫符_怒り_赤_ループ
+  description: 赤い怒りマーク。アルファ付き（ProRes 4444 の .mov を WebM にして入れる）
+  download_url: https://miirriin.com/?sdm_process_download=1&download_id=1757
+  page_url: https://miirriin.com/anger01/
+  member: anger01.mov
+- file: 動く漫符_怒り_震え_赤_ループ.mp4
+  source: miirriin-video
+  kind: video
+  category: 漫画記号
+  tags:
+  - 動く漫符
+  - 漫符
+  - アニメーション
+  - 怒り
+  - イライラ
+  - 赤
+  - グリーンバック
+  - ループ
+  name: 動く漫符_怒り_震え_赤_ループ
+  description: '震えながら動く怒りマーク。グリーンバック。抜く色は #00FF01（純緑）。FxOverlay の video イベントで chromaKey {"color": "#00ff01", "similarity": 0.25, "smoothness": 0.1} で抜ける（細い線の縁にだけ緑がわずかに残る）'
+  download_url: https://miirriin.com/?sdm_process_download=1&download_id=5916
+  page_url: https://miirriin.com/anger02/
+  member: anger02.mp4
+- file: 動く漫符_疑問符_黄_1つ.mov
+  source: miirriin-video
+  kind: video
+  category: 漫画記号
+  tags:
+  - 動く漫符
+  - 漫符
+  - アニメーション
+  - 疑問符
+  - はてな
+  - 黄
+  - 透過
+  name: 動く漫符_疑問符_黄_1つ
+  description: 黄色のはてなマーク 1 つ。アルファ付き（ProRes 4444 の .mov を WebM にして入れる）
+  download_url: https://miirriin.com/?sdm_process_download=1&download_id=3364
+  page_url: https://miirriin.com/question-mark02/
+  member: question-mark02-y.mov
+- file: 動く漫符_疑問符_赤_1つ.mov
+  source: miirriin-video
+  kind: video
+  category: 漫画記号
+  tags:
+  - 動く漫符
+  - 漫符
+  - アニメーション
+  - 疑問符
+  - はてな
+  - 赤
+  - 透過
+  name: 動く漫符_疑問符_赤_1つ
+  description: 赤のはてなマーク 1 つ。アルファ付き（ProRes 4444 の .mov を WebM にして入れる）
+  download_url: https://miirriin.com/?sdm_process_download=1&download_id=3366
+  page_url: https://miirriin.com/question-mark02/
+  member: question-mark02-r.mov
+- file: 動く漫符_疑問符_赤_3つ.mp4
+  source: miirriin-video
+  kind: video
+  category: 漫画記号
+  tags:
+  - 動く漫符
+  - 漫符
+  - アニメーション
+  - 疑問符
+  - はてな
+  - 赤
+  - グリーンバック
+  name: 動く漫符_疑問符_赤_3つ
+  description: '左から次々と出る赤いはてなマーク 3 つ。グリーンバック。抜く色は #00FF01（純緑）。FxOverlay の video イベントで chromaKey {"color": "#00ff01", "similarity": 0.25, "smoothness": 0.1} で抜ける（細い線の縁にだけ緑がわずかに残る）'
+  download_url: https://miirriin.com/?sdm_process_download=1&download_id=6128
+  page_url: https://miirriin.com/question-mark03/
+  member: question-mark03.mp4
+- file: 動く漫符_感嘆符_黄_1つ.mov
+  source: miirriin-video
+  kind: video
+  category: 漫画記号
+  tags:
+  - 動く漫符
+  - 漫符
+  - アニメーション
+  - 感嘆符
+  - びっくり
+  - 驚き
+  - 黄
+  - 透過
+  name: 動く漫符_感嘆符_黄_1つ
+  description: 黄色のびっくりマーク 1 つ。アルファ付き（ProRes 4444 の .mov を WebM にして入れる）
+  download_url: https://miirriin.com/?sdm_process_download=1&download_id=3360
+  page_url: https://miirriin.com/exclamation-mark02/
+  member: exclamation-mark02-y.mov
+- file: 動く漫符_感嘆符_赤_1つ.mov
+  source: miirriin-video
+  kind: video
+  category: 漫画記号
+  tags:
+  - 動く漫符
+  - 漫符
+  - アニメーション
+  - 感嘆符
+  - びっくり
+  - 驚き
+  - 赤
+  - 透過
+  name: 動く漫符_感嘆符_赤_1つ
+  description: 赤のびっくりマーク 1 つ。アルファ付き（ProRes 4444 の .mov を WebM にして入れる）
+  download_url: https://miirriin.com/?sdm_process_download=1&download_id=3362
+  page_url: https://miirriin.com/exclamation-mark02/
+  member: exclamation-mark02-r.mov
+- file: 動く漫符_感嘆疑問符_黄.mov
+  source: miirriin-video
+  kind: video
+  category: 漫画記号
+  tags:
+  - 動く漫符
+  - 漫符
+  - アニメーション
+  - 感嘆疑問符
+  - びっくり
+  - はてな
+  - 黄
+  - 透過
+  name: 動く漫符_感嘆疑問符_黄
+  description: 黄色の !?。アルファ付き（ProRes 4444 の .mov を WebM にして入れる）
+  download_url: https://miirriin.com/?sdm_process_download=1&download_id=3428
+  page_url: https://miirriin.com/exclamation-question-mark01/
+  member: exclamation-question-mark01-y.mov
+- file: 動く漫符_感嘆疑問符_赤.mov
+  source: miirriin-video
+  kind: video
+  category: 漫画記号
+  tags:
+  - 動く漫符
+  - 漫符
+  - アニメーション
+  - 感嘆疑問符
+  - びっくり
+  - はてな
+  - 赤
+  - 透過
+  name: 動く漫符_感嘆疑問符_赤
+  description: 赤の !?。アルファ付き（ProRes 4444 の .mov を WebM にして入れる）
+  download_url: https://miirriin.com/?sdm_process_download=1&download_id=3430
+  page_url: https://miirriin.com/exclamation-question-mark01/
+  member: exclamation-question-mark01-r.mov
+- file: 動く漫符_音符_黒_ループ.mov
+  source: miirriin-video
+  kind: video
+  category: 漫画記号
+  tags:
+  - 動く漫符
+  - 漫符
+  - アニメーション
+  - 音符
+  - 鼻歌
+  - いい気分
+  - 黒
+  - 透過
+  - ループ
+  name: 動く漫符_音符_黒_ループ
+  description: 黒の音符マーク。アルファ付き（ProRes 4444 の .mov を WebM にして入れる）
+  download_url: https://miirriin.com/?sdm_process_download=1&download_id=2267
+  page_url: https://miirriin.com/musical-note01/
+  member: musical-note01-b.mov
+- file: 動く漫符_音符_白_ループ.mov
+  source: miirriin-video
+  kind: video
+  category: 漫画記号
+  tags:
+  - 動く漫符
+  - 漫符
+  - アニメーション
+  - 音符
+  - 鼻歌
+  - いい気分
+  - 白
+  - 透過
+  - ループ
+  name: 動く漫符_音符_白_ループ
+  description: 白の音符マーク。アルファ付き（ProRes 4444 の .mov を WebM にして入れる）
+  download_url: https://miirriin.com/?sdm_process_download=1&download_id=2271
+  page_url: https://miirriin.com/musical-note01/
+  member: musical-note01-w.mov
+- file: 動く漫符_音符_5つ_アーチ_ループ.mp4
+  source: miirriin-video
+  kind: video
+  category: 漫画記号
+  tags:
+  - 動く漫符
+  - 漫符
+  - アニメーション
+  - 音符
+  - 楽しい
+  - いい気分
+  - グリーンバック
+  - ループ
+  name: 動く漫符_音符_5つ_アーチ_ループ
+  description: 'アーチ状に並んで跳ねる音符 5 つ。グリーンバック。抜く色は #00FF01（純緑）。FxOverlay の video イベントで chromaKey {"color": "#00ff01", "similarity": 0.25, "smoothness": 0.1} で抜ける（細い線の縁にだけ緑がわずかに残る）'
+  download_url: https://miirriin.com/?sdm_process_download=1&download_id=6101
+  page_url: https://miirriin.com/musical-note02/
+  member: musical-note02.mp4
+- file: 動く漫符_ひらめき_電球_黄.mp4
+  source: miirriin-video
+  kind: video
+  category: 漫画記号
+  tags:
+  - 動く漫符
+  - 漫符
+  - アニメーション
+  - ひらめき
+  - 電球
+  - 黄
+  - グリーンバック
+  name: 動く漫符_ひらめき_電球_黄
+  description: '黄色の電球のひらめき。グリーンバック。抜く色は #00FF01（純緑）。FxOverlay の video イベントで chromaKey {"color": "#00ff01", "similarity": 0.25, "smoothness": 0.1} で抜ける（細い線の縁にだけ緑がわずかに残る）'
+  download_url: https://miirriin.com/?sdm_process_download=1&download_id=4951
+  page_url: https://miirriin.com/inspiration01/
+  member: inspiration01-y.mp4
+- file: 動く漫符_気づき_線_ループ.mov
+  source: miirriin-video
+  kind: video
+  category: 漫画記号
+  tags:
+  - 動く漫符
+  - 漫符
+  - アニメーション
+  - 気づき
+  - 発見
+  - 驚き
+  - 透過
+  - ループ
+  name: 動く漫符_気づき_線_ループ
+  description: 気づきの線。アルファ付き（ProRes 4444 の .mov を WebM にして入れる）
+  download_url: https://miirriin.com/?sdm_process_download=1&download_id=2007
+  page_url: https://miirriin.com/realization01/
+  member: realization01.mov
+- file: 動く漫符_キラキラ_黄_ループ.mov
+  source: miirriin-video
+  kind: video
+  category: 漫画記号
+  tags:
+  - 動く漫符
+  - 漫符
+  - アニメーション
+  - キラキラ
+  - 星
+  - 決め
+  - 透過
+  - ループ
+  name: 動く漫符_キラキラ_黄_ループ
+  description: キラキラ光る星。アルファ付き（ProRes 4444 の .mov を WebM にして入れる）
+  download_url: https://miirriin.com/?sdm_process_download=1&download_id=1972
+  page_url: https://miirriin.com/sparkle01/
+  member: sparkle01.mov
+- file: 動く漫符_キラキラ_白_ループ.mp4
+  source: miirriin-video
+  kind: video
+  category: 漫画記号
+  tags:
+  - 動く漫符
+  - 漫符
+  - アニメーション
+  - キラキラ
+  - 星
+  - 白
+  - グリーンバック
+  - ループ
+  name: 動く漫符_キラキラ_白_ループ
+  description: '白いキラキラ。グリーンバック。抜く色は #00FF01（純緑）。FxOverlay の video イベントで chromaKey {"color": "#00ff01", "similarity": 0.25, "smoothness": 0.1} で抜ける（細い線の縁にだけ緑がわずかに残る）'
+  download_url: https://miirriin.com/?sdm_process_download=1&download_id=5652
+  page_url: https://miirriin.com/sparkle03/
+  member: sparkle03.mp4
+- file: 動く漫符_汗_跳ねる_青_ループ.mov
+  source: miirriin-video
+  kind: video
+  category: 漫画記号
+  tags:
+  - 動く漫符
+  - 漫符
+  - アニメーション
+  - 汗
+  - 焦り
+  - 青
+  - 透過
+  - ループ
+  name: 動く漫符_汗_跳ねる_青_ループ
+  description: 水滴が 3 回飛び跳ねる（青）。アルファ付き（ProRes 4444 の .mov を WebM にして入れる）
+  download_url: https://miirriin.com/?sdm_process_download=1&download_id=2387
+  page_url: https://miirriin.com/sweat02/
+  member: sweat02-b.mov
+- file: 動く漫符_涙_大泣き.mp4
+  source: miirriin-video
+  kind: video
+  category: 漫画記号
+  tags:
+  - 動く漫符
+  - 漫符
+  - アニメーション
+  - 涙
+  - 大泣き
+  - 悲しい
+  - グリーンバック
+  name: 動く漫符_涙_大泣き
+  description: 'アニメのような大泣きの涙（目の近くに置く）。グリーンバック。抜く色は #00FF01（純緑）。FxOverlay の video イベントで chromaKey {"color": "#00ff01", "similarity": 0.25, "smoothness": 0.1} で抜ける（細い線の縁にだけ緑がわずかに残る）'
+  download_url: https://miirriin.com/?sdm_process_download=1&download_id=5142
+  page_url: https://miirriin.com/tears01/
+  member: tears01.mp4
+- file: 動く漫符_うずまき_目が回る_ループ.mp4
+  source: miirriin-video
+  kind: video
+  category: 漫画記号
+  tags:
+  - 動く漫符
+  - 漫符
+  - アニメーション
+  - うずまき
+  - 目が回る
+  - 混乱
+  - グリーンバック
+  - ループ
+  name: 動く漫符_うずまき_目が回る_ループ
+  description: '回るうずまき。グリーンバック。抜く色は #00FF01（純緑）。FxOverlay の video イベントで chromaKey {"color": "#00ff01", "similarity": 0.25, "smoothness": 0.1} で抜ける（細い線の縁にだけ緑がわずかに残る）'
+  download_url: https://miirriin.com/?sdm_process_download=1&download_id=5158
+  page_url: https://miirriin.com/dizzy01/
+  member: dizzy01.mp4
+- file: 動く漫符_驚き_赤.mov
+  source: miirriin-video
+  kind: video
+  category: 漫画記号
+  tags:
+  - 動く漫符
+  - 漫符
+  - アニメーション
+  - 驚き
+  - びっくり
+  - 衝撃
+  - 赤
+  - 透過
+  name: 動く漫符_驚き_赤
+  description: 赤の驚きマーク。アルファ付き（ProRes 4444 の .mov を WebM にして入れる）
+  download_url: https://miirriin.com/?sdm_process_download=1&download_id=2391
+  page_url: https://miirriin.com/surprise01/
+  member: surprise01-r.mov
+- file: 動く漫符_驚き_衝撃_赤.mov
+  source: miirriin-video
+  kind: video
+  category: 漫画記号
+  tags:
+  - 動く漫符
+  - 漫符
+  - アニメーション
+  - 驚き
+  - 衝撃
+  - 赤
+  - 透過
+  name: 動く漫符_驚き_衝撃_赤
+  description: 赤の衝撃マーク（短い）。アルファ付き（ProRes 4444 の .mov を WebM にして入れる）
+  download_url: https://miirriin.com/?sdm_process_download=1&download_id=4897
+  page_url: https://miirriin.com/surprise02/
+  member: surprise02-r.mov
+- file: 動く漫符_もやもや_混乱.mov
+  source: miirriin-video
+  kind: video
+  category: 漫画記号
+  tags:
+  - 動く漫符
+  - 漫符
+  - アニメーション
+  - もやもや
+  - 混乱
+  - 透過
+  name: 動く漫符_もやもや_混乱
+  description: 頭のもやもや。アルファ付き（ProRes 4444 の .mov を WebM にして入れる）
+  download_url: https://miirriin.com/?sdm_process_download=1&download_id=1772
+  page_url: https://miirriin.com/confused01/
+  member: confused01.mov
+- file: 動く漫符_Zzz_睡眠_ループ.mov
+  source: miirriin-video
+  kind: video
+  category: 漫画記号
+  tags:
+  - 動く漫符
+  - 漫符
+  - アニメーション
+  - 睡眠
+  - Zzz
+  - 居眠り
+  - 透過
+  - ループ
+  name: 動く漫符_Zzz_睡眠_ループ
+  description: 居眠りの Zzz。アルファ付き（ProRes 4444 の .mov を WebM にして入れる）
+  download_url: https://miirriin.com/?sdm_process_download=1&download_id=1877
+  page_url: https://miirriin.com/sleep01/
+  member: sleep01.mov

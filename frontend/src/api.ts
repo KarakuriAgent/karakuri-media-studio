@@ -1,5 +1,7 @@
 import type {
   Asset,
+  AssetPackImport,
+  BundledAssetPack,
   AudioJobCreate,
   BlockingCreateRequest,
   BlockingMapResult,
@@ -373,6 +375,23 @@ export const api = {
     const search = params.toString()
     return request<LibraryPage>(`/api/library${search ? `?${search}` : ''}`)
   },
+  /** 同梱の素材パック（目録だけ。入手元の規約の要点・確かめた日・入れ済みの件数）。 */
+  listBundledPacks: () => request<BundledAssetPack[]>('/api/library/packs/bundled'),
+  /**
+   * 同梱の素材パックを入れる（202 即受付。同意した入手元が無ければ 400）。
+   * 進み具合と結果は {@link api.getPackImport} で追う。
+   */
+  installBundledPack: (
+    id: string,
+    body: { accept_sources: string[]; dry_run?: boolean },
+  ) =>
+    json<AssetPackImport>(
+      'POST',
+      `/api/library/packs/bundled/${encodeURIComponent(id)}/install`,
+      body,
+    ),
+  getPackImport: (id: string) =>
+    request<AssetPackImport>(`/api/library/packs/imports/${encodeURIComponent(id)}`),
   /** `category` を省くと未分類で登録される。 */
   uploadToLibrary: (
     kind: LibraryKind,
