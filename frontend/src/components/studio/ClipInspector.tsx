@@ -4,6 +4,7 @@ import type {
   TimelineClip,
   TimelineClipColor,
   TimelineClipEffects,
+  TimelineClipSharpen,
   TimelineClipZoom,
   TimelineDucking,
   TimelineTrack,
@@ -37,7 +38,7 @@ import {
  * トラックによって出るものが違う:
  *
  * - **映像** … 位置・切り出し・繋ぎの読み取りに加えて、**速度**（リタイム）と
- *   **加工**（止め絵・逆再生・寄り・コマ打ち・色・ノイズ。書き出しにだけ効く）。
+ *   **加工**（止め絵・逆再生・寄り・コマ打ち・色・ノイズ・シャープ。書き出しにだけ効く）。
  * - **音声** … **音量**（dB）と**フェードイン / アウト**、そのトラックの
  *   **ダッキング**（書き出しにだけ効く）。
  * - **字幕** … **本文**と見た目（位置・大きさ・色）。
@@ -387,6 +388,7 @@ const COLOR_DEFAULT: TimelineClipColor = {
   brightness: 0,
   gamma: 1,
 }
+const SHARPEN_DEFAULT: TimelineClipSharpen = { amount: 0, radius: 2 }
 
 function EffectsEditor({
   effects,
@@ -401,6 +403,7 @@ function EffectsEditor({
   const current: TimelineClipEffects = effects ?? {}
   const zoom = { ...ZOOM_DEFAULT, ...(current.zoom ?? {}) }
   const color = { ...COLOR_DEFAULT, ...(current.color ?? {}) }
+  const sharpen = { ...SHARPEN_DEFAULT, ...(current.sharpen ?? {}) }
   const update = (patch: Partial<TimelineClipEffects>) =>
     onChange({ ...current, ...patch })
 
@@ -514,6 +517,26 @@ function EffectsEditor({
           max={4}
           step={0.05}
           onChange={(value) => update({ color: { ...color, gamma: value } })}
+        />
+      </div>
+      <div className="grid grid-cols-2 gap-2">
+        <Decimal
+          label="シャープ（0〜3）"
+          value={sharpen.amount}
+          min={0}
+          max={3}
+          step={0.05}
+          onChange={(value) => update({ sharpen: { ...sharpen, amount: value } })}
+        />
+        <Decimal
+          label="シャープの半径（px）"
+          value={sharpen.radius}
+          min={1}
+          max={5}
+          step={1}
+          onChange={(value) =>
+            update({ sharpen: { ...sharpen, radius: Math.round(value) } })
+          }
         />
       </div>
       {effects && (

@@ -2068,9 +2068,11 @@ EDL → ffmpeg コマンドの**組み立ては純関数**（`build_command`）�
     外れ、隣のクリップと `concat` できずに落ちる。1080x1920 の 1.22 倍などで起きていた）
   - **コマ打ち**（`step` = 2〜4）… `fps=<fps/n>,fps=<fps>`（出力の fps のまま n コマごとに
     同じ画）
-  - **色**（`color: {saturation, contrast, brightness, gamma}`）… `eq`。**ノイズ**（`noise`
-    0〜1）… `noise=alls=<0〜64>:allf=t`。色とノイズは末尾静止の**後**に置く（止め絵の上でも
-    粒が動く）
+  - **色**（`color: {saturation, contrast, brightness, gamma}`）… `eq`。**シャープ**
+    （`sharpen: {amount, radius}`。強さ 0〜3・半径 1〜5px）… `unsharp=<n>:<n>:<強さ>:<n>:<n>:0`
+    （`n = 2 * 半径 + 1`。明るさの輪郭だけを立て、色差はそのまま）。**ノイズ**（`noise`
+    0〜1）… `noise=alls=<0〜64>:allf=t`。色・シャープ・ノイズはこの順に末尾静止の**後**に
+    置く（止め絵の上でも粒が動く。シャープをノイズの後にすると粒まで尖る）
 - **音声トラック**は `atrim` + `volume` + `afade` + `adelay` で置き場所へずらし、映像側の音と
   `amix=duration=first`（＝タイムライン全長で切る。`apad` はしない）
 - **ダッキング**（`timeline_tracks.ducking`。音声トラックだけ）… 「きっかけのトラック

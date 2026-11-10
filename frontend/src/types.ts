@@ -2040,6 +2040,14 @@ export interface TimelineClipColor {
   gamma: number
 }
 
+/** 映像クリップのシャープ（アンシャープマスク。明るさの輪郭だけを立てる）。 */
+export interface TimelineClipSharpen {
+  /** 強さ（0 = しない 〜 3）。 */
+  amount: number
+  /** 半径（ピクセル。1〜5）。 */
+  radius: number
+}
+
 /**
  * 映像クリップの加工（書き出しの ffmpeg で効く。**プレビューには効かない**）。
  */
@@ -2054,6 +2062,7 @@ export interface TimelineClipEffects {
   color?: TimelineClipColor | null
   /** ノイズ（巻き戻し風の荒れ。0〜1）。 */
   noise?: number
+  sharpen?: TimelineClipSharpen | null
 }
 
 /** ダッキングの効かせ方。 */

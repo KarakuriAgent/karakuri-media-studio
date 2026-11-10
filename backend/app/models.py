@@ -4264,6 +4264,15 @@ class TimelineClipColor(BaseModel):
     gamma: float = 1.0
 
 
+class TimelineClipSharpen(BaseModel):
+    """映像クリップのシャープ（アンシャープマスク。ffmpeg の ``unsharp``）。"""
+
+    #: 強さ（0 = しない 〜 3）。明るさの輪郭だけを立てる（色はにじませない）
+    amount: float = 0.0
+    #: 半径（ピクセル。1 〜 5）。``unsharp`` の行列は ``2 * 半径 + 1`` 四方
+    radius: int = 2
+
+
 class TimelineClipEffects(BaseModel):
     """映像クリップの加工（``timeline_clips.effects``。書き出しの ffmpeg で効く）。
 
@@ -4286,6 +4295,8 @@ class TimelineClipEffects(BaseModel):
     color: TimelineClipColor | None = None
     #: ノイズ（巻き戻し風の荒れ。0 = なし 〜 1）
     noise: float = 0.0
+    #: シャープ（None = しない）
+    sharpen: TimelineClipSharpen | None = None
 
 
 class TimelineClip(BaseModel):
@@ -4315,7 +4326,7 @@ class TimelineClip(BaseModel):
     text_payload: dict[str, Any] | None = None
     #: 再生速度（1.0 = 等速。映像クリップだけ 1 以外を取れる）
     speed: float = 1.0
-    #: 映像クリップの加工（止め絵・逆再生・寄り・コマ打ち・色・ノイズ。None = なし）
+    #: 映像クリップの加工（止め絵・逆再生・寄り・コマ打ち・色・ノイズ・シャープ。None = なし）
     effects: TimelineClipEffects | None = None
     sort_order: int = 0
     # --- ここから下は読み取りのたびに解決する（DB には持たない） -------------

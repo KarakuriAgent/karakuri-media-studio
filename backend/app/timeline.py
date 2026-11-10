@@ -51,6 +51,7 @@ from .models import (
     TimelineClip,
     TimelineClipInput,
     TimelineClipColor,
+    TimelineClipSharpen,
     TimelineClipEffects,
     TimelineClipInsert,
     TimelineClipZoom,
@@ -337,6 +338,8 @@ def normalize_effects(
         current.zoom = None
     if current.color is not None and current.color == TimelineClipColor():
         current.color = None
+    if current.sharpen is not None and current.sharpen.amount == 0:
+        current.sharpen = None
     if current == TimelineClipEffects():
         return None
     return current
@@ -416,6 +419,15 @@ def validate_effects(
         _check_range(where, "明るさ", effects.color.brightness, *export_service.BRIGHTNESS_RANGE)
         _check_range(where, "ガンマ", effects.color.gamma, *export_service.GAMMA_RANGE)
     _check_range(where, "ノイズ", effects.noise, *export_service.NOISE_RANGE)
+    if effects.sharpen is not None:
+        _check_range(
+            where, "シャープの強さ", effects.sharpen.amount,
+            *export_service.SHARPEN_AMOUNT_RANGE,
+        )
+        _check_range(
+            where, "シャープの半径", effects.sharpen.radius,
+            *export_service.SHARPEN_RADIUS_RANGE,
+        )
 
 
 def export_effects(effects: TimelineClipEffects | None) -> ClipEffects | None:
@@ -425,6 +437,7 @@ def export_effects(effects: TimelineClipEffects | None) -> ClipEffects | None:
         return None
     zoom = normalized.zoom or TimelineClipZoom()
     color = normalized.color or TimelineClipColor()
+    sharpen = normalized.sharpen or TimelineClipSharpen()
     return ClipEffects(
         freeze=normalized.freeze,
         reverse=normalized.reverse,
@@ -437,6 +450,8 @@ def export_effects(effects: TimelineClipEffects | None) -> ClipEffects | None:
         brightness=color.brightness,
         gamma=color.gamma,
         noise=normalized.noise,
+        sharpen=sharpen.amount,
+        sharpen_radius=int(sharpen.radius),
     )
 
 

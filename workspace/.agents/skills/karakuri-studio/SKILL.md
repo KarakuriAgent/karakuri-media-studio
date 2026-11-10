@@ -309,7 +309,7 @@ cwd として書いてある。
 
 ### カットの加工とダッキング（ショートの編集をタイムラインでやる）
 
-止め絵・逆再生・寄り・コマ打ち・色・ノイズ、声の間だけ BGM を下げる、を**手元の ffmpeg で
+止め絵・逆再生・寄り・コマ打ち・色・ノイズ・シャープ、声の間だけ BGM を下げる、を**手元の ffmpeg で
 焼かずにタイムラインへ保存する**（人が画面で値を直せる。詳細は `docs/EXTERNAL-API.md` §3.7）。
 
 ```
@@ -319,6 +319,7 @@ PUT /timelines/{id}/clips   … 各クリップに "effects":
   {"zoom": {"scale": 1.2, "x": 0.5, "y": 0.3}}      # 1.2 倍・上寄り
   {"step": 2}                                       # 2 コマ打ち
   {"color": {"saturation": 0.6, "contrast": 1.15}, "noise": 0.5}   # 巻き戻し風
+  {"sharpen": {"amount": 1.0, "radius": 2}}         # シャープ（強さ 0〜3・半径 1〜5px）
 PATCH /timelines/{id}/tracks/{BGM のトラック}
   {"ducking": {"trigger_track_id": "<声のトラック>", "amount_db": 8,
                "attack_ms": 100, "release_ms": 300}}   # null で外す

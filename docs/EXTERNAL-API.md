@@ -682,7 +682,8 @@ GET /api/v1/jobs?q=かおり&kind=video&nsfw=false&limit=48&offset=0
    "zoom": {"scale": 1.2, "x": 0.5, "y": 0.3},  // 1〜4 倍・切り出す中心（画面比）
    "step": 2,                  // コマ打ち 1〜4（出力 fps のまま n コマごとに同じ画）
    "color": {"saturation": 0.6, "contrast": 1.15, "brightness": 0.0, "gamma": 1.0},
-   "noise": 0.4                // 巻き戻し風の荒れ 0〜1
+   "noise": 0.4,               // 巻き戻し風の荒れ 0〜1
+   "sharpen": {"amount": 1.0, "radius": 2}  // シャープ（アンシャープ）強さ 0〜3・半径 1〜5px
  }}
 ```
 
@@ -695,7 +696,8 @@ GET /api/v1/jobs?q=かおり&kind=video&nsfw=false&limit=48&offset=0
   間引き）。`{"reverse": true}` と `speed: 30` で 30 秒ぶんを 1 秒で巻き戻せる
   （`duration_ms = (out_ms - in_ms) / speed`）
 - 範囲: 寄り 1〜4・中心 0〜1・コマ打ち 1〜4・彩度 / コントラスト 0〜3・明るさ -1〜1・
-  ガンマ 0.1〜4・ノイズ 0〜1（外れたら 400）
+  ガンマ 0.1〜4・ノイズ 0〜1・シャープの強さ 0〜3・半径 1〜5（外れたら 400。強さ 0 の
+  シャープは `null` に畳む）
 - どの加工も書き出しのフレーム数は変えない（`frames` と `warnings` の検算はそのまま効く）
 - 差し込み（`clips/insert`）で下のクリップを割ると、逆再生は「前半 = 素材の後ろ側」に、
   止め絵は同じ 1 コマのまま割れる

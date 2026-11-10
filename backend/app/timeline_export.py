@@ -22,7 +22,7 @@
 - **映像クリップの加工**（:class:`ClipEffects`）… 止め絵（``in_ms`` の 1 コマを
   ``tpad`` の末尾静止で尺いっぱいに伸ばす）・逆再生（``reverse`` / ``areverse``）・
   寄り（``scale`` + ``crop``）・コマ打ち（``fps`` で間引いてから出力の fps へ戻す）・
-  色（``eq``）・ノイズ（``noise``）。どれも規格へ揃えたあと・``trim=end_frame``
+  色（``eq``）・シャープ（``unsharp``）・ノイズ（``noise``）。どれも規格へ揃えたあと・``trim=end_frame``
   の前に挟むので、書き出しの枚数は加工の有無で変わらない。
 - **ダッキング**（:class:`ExportDucking`）… 音声トラックごとに「別の音声トラックが
   鳴っている間だけ下げる」。``clips`` はきっかけのトラックのクリップの区間から
@@ -133,6 +133,9 @@ CONTRAST_RANGE = (0.0, 3.0)
 BRIGHTNESS_RANGE = (-1.0, 1.0)
 GAMMA_RANGE = (0.1, 4.0)
 NOISE_RANGE = (0.0, 1.0)
+#: シャープ（``unsharp``）の強さと半径（ピクセル。行列は ``2 * 半径 + 1`` 四方）
+SHARPEN_AMOUNT_RANGE = (0.0, 3.0)
+SHARPEN_RADIUS_RANGE = (1, 5)
 
 #: ノイズ 1.0 のときの ``noise=alls``（0〜100）。巻き戻し風の荒れがはっきり出る強さ
 NOISE_MAX_STRENGTH = 64
@@ -184,10 +187,15 @@ class ClipEffects:
     gamma: float = 1.0
     #: ノイズ（0〜1）
     noise: float = 0.0
+    #: シャープ（アンシャープマスク）の強さ（0 = しない）と半径（ピクセル）
+    sharpen: float = 0.0
+    sharpen_radius: int = 2
 
     @property
     def active(self) -> bool:
-        return self != ClipEffects()
+        # 強さ 0 のシャープは半径が何であっても「何もしない」。
+        plain = ClipEffects(sharpen_radius=self.sharpen_radius)
+        return self != plain
 
 
 @dataclass
@@ -568,7 +576,7 @@ def effect_filters(
     """加工を ``(末尾静止の前に挟むもの, 後に挟むもの)`` のフィルタにする（純関数）。
 
     寄りとコマ打ちは画の並びそのものを変えるので末尾静止（``tpad``）の**前**、
-    色とノイズは末尾静止で伸ばしたコマにも掛けたいので**後**に置く（止め絵に
+    色・シャープ・ノイズは末尾静止で伸ばしたコマにも掛けたいので**後**に置く（止め絵に
     ノイズを掛けると、止まった画の上で粒だけが動く）。どちらもフレームの枚数は
     変えない（最後の ``trim=end_frame`` がちょうどの枚数に切る）。
     """
@@ -604,6 +612,12 @@ def effect_filters(
         eq.append(f"gamma={_number(_clamp(effects.gamma, *GAMMA_RANGE))}")
     if eq:
         after.append("eq=" + ":".join(eq))
+    amount = _clamp(effects.sharpen, *SHARPEN_AMOUNT_RANGE)
+    if amount > 1e-9:
+        # 明るさの輪郭だけを立てる（色差は 0 = そのまま）。ノイズより前に置く
+        # （あとに置くと粒まで尖る）。
+        size = 2 * int(_clamp(effects.sharpen_radius, *SHARPEN_RADIUS_RANGE)) + 1
+        after.append(f"unsharp={size}:{size}:{_number(round(amount, 3))}:{size}:{size}:0")
     strength = int(round(_clamp(effects.noise, *NOISE_RANGE) * NOISE_MAX_STRENGTH))
     if strength > 0:
         after.append(f"noise=alls={strength}:allf=t")

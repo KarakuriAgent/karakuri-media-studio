@@ -159,6 +159,28 @@ def test_zoom_resets_the_sample_aspect_after_the_crop(zoom):
     assert crop.split(",")[1] == "setsar=1"
 
 
+def test_sharpen_sits_between_the_colour_and_the_noise():
+    spec = ExportSpec(
+        width=640, height=360, fps=24,
+        clips=[_clip(effects=ClipEffects(
+            saturation=0.8, sharpen=1.25, sharpen_radius=3, noise=0.25,
+        ))],
+    )
+    graph = _graph(spec)
+    # 7x7 の行列で明るさだけ（色差は 0）
+    assert "unsharp=7:7:1.25:7:7:0" in graph
+    assert graph.index("tpad=") < graph.index("eq=") < graph.index("unsharp=") < graph.index("noise=")
+
+
+def test_sharpen_off_leaves_the_command_untouched():
+    plain = ExportSpec(width=640, height=360, fps=24, clips=[_clip()])
+    zero = ExportSpec(
+        width=640, height=360, fps=24,
+        clips=[_clip(effects=ClipEffects(sharpen=0.0, sharpen_radius=5))],
+    )
+    assert build_command(plain, "/o.mp4") == build_command(zero, "/o.mp4")
+
+
 def test_image_clips_take_the_zoom_and_colour_too():
     spec = ExportSpec(
         width=640,
@@ -268,6 +290,8 @@ def test_validate_clips_accepts_a_freeze_whatever_the_trim():
         ({"step": 6}, "コマ打ち"),
         ({"color": {"saturation": 4}}, "彩度"),
         ({"noise": 2}, "ノイズ"),
+        ({"sharpen": {"amount": 4}}, "シャープの強さ"),
+        ({"sharpen": {"amount": 1, "radius": 9}}, "シャープの半径"),
     ],
 )
 def test_validate_clips_rejects_effects_out_of_range(effects, message):
@@ -302,6 +326,18 @@ def test_default_effects_are_stored_as_none():
     ) is None
     kept = service.normalize_effects(TimelineClipEffects(step=2))
     assert kept is not None and kept.step == 2
+    # 強さ 0 のシャープは「しない」に畳む
+    assert service.normalize_effects(
+        TimelineClipEffects.model_validate({"sharpen": {"amount": 0, "radius": 4}})
+    ) is None
+
+
+def test_export_effects_carries_the_sharpen():
+    effects = service.export_effects(
+        TimelineClipEffects.model_validate({"sharpen": {"amount": 1.2, "radius": 3}})
+    )
+    assert effects is not None
+    assert (effects.sharpen, effects.sharpen_radius) == (1.2, 3)
 
 
 def test_insert_into_splits_a_reversed_clip_from_the_far_end():
@@ -580,7 +616,8 @@ def test_effects_and_ducking_render_the_planned_frames(tmp_path, mode):
             clip(in_ms=1000, out_ms=2000, duration_ms=500, speed=2.0,
                  effects=ClipEffects(reverse=True, saturation=0.6)),
             clip(in_ms=1500, out_ms=2900, duration_ms=1400,
-                 effects=ClipEffects(zoom=1.2, zoom_y=0.3, step=3, gamma=1.2)),
+                 effects=ClipEffects(zoom=1.2, zoom_y=0.3, step=3, gamma=1.2,
+                                     sharpen=1.5, sharpen_radius=2)),
         ],
         audio_clips=[
             ExportAudioClip(path=str(bgm), start_ms=0, in_ms=0, out_ms=4000, track="A1"),
