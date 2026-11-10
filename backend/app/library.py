@@ -34,6 +34,8 @@ from .models import (
     LibraryCategory,
     LibraryItem,
     LibraryKind,
+    LibraryLicense,
+    LibraryMediaInfo,
     LibraryOrigin,
     LibrarySource,
 )
@@ -216,7 +218,40 @@ def row_to_item(row) -> LibraryItem:
         category=data.get("category") or None,
         blocking=_load_blocking(data.get("blocking")),
         blocking_version=int(data.get("blocking_version") or 0),
+        license=_load_json_model(LibraryLicense, data.get("license")),
+        media_info=_load_json_model(LibraryMediaInfo, data.get("media_info")),
     )
+
+
+def _load_json_model(model, raw: object):
+    """JSON の列を読む（列が無い・壊れていれば None）。"""
+    if not raw:
+        return None
+    try:
+        return model.model_validate_json(raw)  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_license(raw: object) -> LibraryLicense | None:
+    """multipart のフォームや目録から来たライセンス情報を読む（空なら None）。
+
+    文字列なら JSON として読む。読めなければ :class:`LibraryError`（400）。
+    """
+    if raw is None or raw == "":
+        return None
+    if isinstance(raw, LibraryLicense):
+        return raw
+    try:
+        if isinstance(raw, str):
+            return LibraryLicense.model_validate_json(raw)
+        return LibraryLicense.model_validate(raw)
+    except ValueError as exc:
+        raise LibraryError(f"license を読めません: {exc}") from exc
+
+
+def _dump_model(value) -> str | None:
+    return None if value is None else value.model_dump_json()
 
 
 def _load_blocking(raw: object) -> BlockingScene | None:
@@ -343,14 +378,17 @@ async def _insert(
     #: ブロッキング動画のシーン定義（ふつうの素材は None）と、その版番号
     blocking: BlockingScene | None = None,
     blocking_version: int = 0,
+    #: ライセンス情報と測った値（どちらも省略可）
+    license: LibraryLicense | None = None,
+    media_info: LibraryMediaInfo | None = None,
 ) -> LibraryItem:
     item_id = new_id()
     async with get_db() as conn:
         await conn.execute(
             "INSERT INTO library (id, created_at, kind, name, path, nsfw,"
             " nsfw_source, source_job_id, source, tags, category,"
-            " blocking, blocking_version)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " blocking, blocking_version, license, media_info)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 item_id,
                 _now(),
@@ -365,6 +403,8 @@ async def _insert(
                 category,
                 _dump_blocking(blocking),
                 blocking_version,
+                _dump_model(license),
+                _dump_model(media_info),
             ),
         )
         await conn.commit()
@@ -387,15 +427,18 @@ async def add_upload(
     *,
     name: str = "",
     nsfw: bool = False,
+    license: object = None,
 ) -> LibraryItem:
     """アップロードされたファイルを ``library/{kind}/`` に保存して登録する。
 
     ``category`` を省く（または空 / ``"none"``）と未分類になる。``name`` を
     省くと元のファイル名が表示名になる。``nsfw`` は手で立てるものなので
-    ``nsfw_source`` は ``manual``。
+    ``nsfw_source`` は ``manual``。``license`` は任意のライセンス情報
+    （:class:`LibraryLicense` か、その JSON の文字列）。
     """
     resolved = check_kind(kind)
     resolved_category = check_category(category)
+    resolved_license = parse_license(license)
     original = Path(filename or "upload")
     ext = check_extension(resolved, original.suffix)
     dest = kind_dir(resolved) / f"{safe_stem(original.stem)}_{new_id()}{ext}"
@@ -410,6 +453,7 @@ async def add_upload(
         source=None,
         tags=normalize_tags(tags),
         category=resolved_category,
+        license=resolved_license,
     )
 
 
@@ -916,6 +960,10 @@ async def rerender_blocking(
         return updated, result
 
 
+#: :func:`update_item` の ``license`` の「変えない」（None は「外す」に使う）
+KEEP = object()
+
+
 async def update_item(
     item_id: str,
     *,
@@ -923,14 +971,18 @@ async def update_item(
     nsfw: bool | None = None,
     tags: list[str] | None = None,
     category: str | None = None,
+    license: object = KEEP,
 ) -> LibraryItem | None:
-    """表示名 / NSFW フラグ / タグ / 分類を変える（None の項目はそのまま）。
+    """表示名 / NSFW フラグ / タグ / 分類 / ライセンス情報を変える。
 
-    ``category`` だけは「未分類に戻す」も指定できる必要があるので、値なし（None）
-    ではなく :data:`UNCATEGORIZED`（``"none"``）や空文字で伝える。None はほかの
-    項目と同じく「変更しない」。
+    None の項目はそのまま。``category`` だけは「未分類に戻す」も指定できる必要が
+    あるので、値なし（None）ではなく :data:`UNCATEGORIZED`（``"none"``）や空文字で
+    伝える。``license`` は省略（:data:`KEEP`）でそのまま、None で外し、値を渡すと
+    丸ごと置き換える。
     """
     fields: dict[str, object] = {}
+    if license is not KEEP:
+        fields["license"] = _dump_model(parse_license(license))
     if name is not None:
         cleaned = name.strip()
         if cleaned:

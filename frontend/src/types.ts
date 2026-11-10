@@ -491,6 +491,37 @@ export interface BlockingCapabilities {
   camera_moves: string[]
 }
 
+/** ライブラリの素材のライセンス情報（出どころの記録。どの項目も空でよい）。 */
+export interface LibraryLicense {
+  provider: string
+  provider_url: string
+  page_url: string
+  download_url: string
+  terms_url: string
+  terms_summary: string
+  credit_required: boolean | null
+  credit_text: string
+  checked_at: string
+  content_id: string
+  notes: string
+  /** 素材パックから取り込んだときのパック・入手元・ファイル名。 */
+  pack: string
+  source_id: string
+  file: string
+  sha256: string
+}
+
+/** 素材を測った値（素材パックの取り込みが測る）。 */
+export interface LibraryMediaInfo {
+  duration_ms: number | null
+  loudness_lufs: number | null
+  true_peak_db: number | null
+  width: number | null
+  height: number | null
+  has_alpha: boolean | null
+  has_audio: boolean | null
+}
+
 export interface LibraryItem {
   id: string
   created_at: string
@@ -523,6 +554,10 @@ export interface LibraryItem {
   blocking?: BlockingScene | null
   /** 構図リファレンスの版（1 始まり。作り直すたびに上がる）。 */
   blocking_version?: number
+  /** ライセンス情報（付いていなければ null）。 */
+  license?: LibraryLicense | null
+  /** 測った値（素材パックから取り込んだものに付く）。 */
+  media_info?: LibraryMediaInfo | null
 }
 
 /** GET /api/library のレスポンス（絞り込み結果の 1 ページ）。 */
@@ -2119,6 +2154,18 @@ export interface TimelineClipInput {
   effects?: TimelineClipEffects | null
 }
 
+/** 書き出しに使ったライブラリの素材 1 件と、その出どころ（監査用）。 */
+export interface ExportMaterial {
+  library_id: string
+  name: string
+  kind: string
+  licensed: boolean
+  source_job_id: string | null
+  license: LibraryLicense | null
+  /** どこで使ったか（トラック名・`FX`）。 */
+  used_in: string[]
+}
+
 /** 書き出し 1 回（`outputs/exports/{id}/final.mp4`）。 */
 export interface TimelineExport {
   id: string
@@ -2149,6 +2196,8 @@ export interface TimelineExport {
   fx_status: TimelineExportStatus | null
   /** 演出まで載った mp4 の配信 URL（まだ焼けていなければ null）。 */
   fx_video_url: string | null
+  /** 使ったライブラリの素材とライセンス情報（監査用。古い書き出しは null）。 */
+  materials?: { items: ExportMaterial[] } | null
   created_at: string
   finished_at: string | null
 }

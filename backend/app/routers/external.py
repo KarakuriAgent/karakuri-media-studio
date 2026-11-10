@@ -58,6 +58,7 @@ from ..h3_examples import (
     select_examples,
 )
 from ..models import (
+    AssetPackImport,
     ASSET_FILE_ROLE_KINDS,
     ContactSheet,
     ContactSheetResult,
@@ -156,6 +157,7 @@ from .library import (
 )
 from .library import key_job_output, key_library_item, key_media_source
 from .library import upload_detecting_kind, upload_to_library
+from .library import get_pack_import, import_pack, list_pack_imports
 from .media import create_contact_sheet, create_text_image, font_list
 from .options import get_options
 from .studio import _kind_of, get_capabilities
@@ -1044,6 +1046,22 @@ async def list_library(
     )
 
 
+# 素材パック（効果音・BGM・画像を入手元とライセンス情報ごと取り込む。§3.8）。
+# ``/library/{item_id}`` より先に置く。
+router.add_api_route(
+    "/library/packs/import", import_pack, methods=["POST"],
+    response_model=AssetPackImport, status_code=202,
+)
+router.add_api_route(
+    "/library/packs/imports", list_pack_imports, methods=["GET"],
+    response_model=list[AssetPackImport],
+)
+router.add_api_route(
+    "/library/packs/imports/{import_id}", get_pack_import, methods=["GET"],
+    response_model=AssetPackImport,
+)
+
+
 @router.post("/library/from-job", response_model=LibraryItem, status_code=201)
 async def add_library_from_job(payload: LibraryFromJob) -> LibraryItem:
     """ジョブの出力をライブラリへ登録する（NSFW フラグは元ジョブを引き継ぐ）。
@@ -1098,6 +1116,11 @@ async def update_library_item(item_id: str, payload: LibraryUpdate) -> LibraryIt
             nsfw=payload.nsfw,
             tags=payload.tags,
             category=payload.category,
+            **(
+                {"license": payload.license}
+                if "license" in payload.model_fields_set
+                else {}
+            ),
         )
     except library.LibraryError as exc:
         raise _library_bad_request(exc) from exc
@@ -1116,6 +1139,8 @@ async def upload_library_image(
     #: 分類（空なら未分類）
     category: str = Form(""),
     nsfw: bool = Form(False),
+    #: ライセンス情報の JSON（LibraryLicense。空なら付けない）
+    license: str = Form(""),
 ) -> LibraryItem:
     """手元の画像をライブラリへ入れる（multipart。``/library/{item_id}`` より先）。
 
@@ -1124,7 +1149,7 @@ async def upload_library_image(
     入れた項目の ``id`` をそのまま ``POST /library/{id}/key`` に渡せる。
     """
     return await upload_to_library(
-        "image", file, name=name, tags=tags, category=category, nsfw=nsfw
+        "image", file, name=name, tags=tags, category=category, nsfw=nsfw, license=license
     )
 
 
@@ -1138,6 +1163,8 @@ async def upload_library_audio(
     #: 分類（空なら未分類）
     category: str = Form(""),
     nsfw: bool = Form(False),
+    #: ライセンス情報の JSON（LibraryLicense。空なら付けない）
+    license: str = Form(""),
 ) -> LibraryItem:
     """手元の音源をライブラリへ入れる（multipart。``/library/{item_id}`` より先）。
 
@@ -1147,7 +1174,7 @@ async def upload_library_audio(
     ``source_id`` に渡して A1 へ置く。
     """
     return await upload_to_library(
-        "audio", file, name=name, tags=tags, category=category, nsfw=nsfw
+        "audio", file, name=name, tags=tags, category=category, nsfw=nsfw, license=license
     )
 
 
@@ -1158,6 +1185,8 @@ async def upload_library_any(
     tags: str = Form(""),
     category: str = Form(""),
     nsfw: bool = Form(False),
+    #: ライセンス情報の JSON（LibraryLicense。空なら付けない）
+    license: str = Form(""),
 ) -> LibraryItem:
     """種別を書かずに 1 ファイル入れる（拡張子 / MIME で image / video / audio）。
 
@@ -1165,7 +1194,7 @@ async def upload_library_any(
     より先に定義しておく）。
     """
     return await upload_detecting_kind(
-        file, name=name, tags=tags, category=category, nsfw=nsfw
+        file, name=name, tags=tags, category=category, nsfw=nsfw, license=license
     )
 
 

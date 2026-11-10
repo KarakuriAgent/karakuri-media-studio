@@ -327,6 +327,29 @@ PATCH /timelines/{id}/tracks/{BGM のトラック}
   `mode: "clips"`（既定。クリップの区間でちょうど N dB 下げる）を付けるのが基本。
   1 本の長い声なら `mode: "signal"`（実際の音に反応。下げ幅は目安）
 
+### 素材パック（効果音・BGM・画像を出どころごと入れる）
+
+第三者の効果音・BGM・画像は、`POST /library/audio` で 1 つずつ上げずに**素材パックの目録**から
+取り込む（`docs/EXTERNAL-API.md` §3.8。目録の例は `docs/examples/asset-pack.example.yaml`）。
+出どころ（入手元・素材のページ・規約の URL・確かめた日）がライブラリの `license` に残る。
+
+```
+POST /library/packs/import {"manifest_text": "<目録の YAML / JSON>",
+                            "accept_sources": ["<規約を確かめた入手元の id>"],
+                            "dry_run": true}             # まず予定を見る
+POST /library/packs/import {…, "dry_run": false}        → 202 {id}
+GET  /library/packs/imports/{id}                          # status: done まで待つ
+```
+
+- **`accept_sources` には、人が規約を確かめて同意した入手元だけを入れる**（勝手に足さない）
+- 目録と素材のファイルはリポジトリにも `workspace/` の共有物にも入れない（利用者の手元）。
+  Docker のアプリにはホストのパスが見えないので、目録は `manifest_text` で渡す
+- 結果の `blocked`（robots.txt で禁止）・`missing`・`failed`・`changed` は人に伝える。
+  `blocked` を別の方法で取りに行かない
+- 書き出しの `GET /exports/{id}` の `materials.items` に、使ったライブラリの素材と `license`
+  が並ぶ（監査用。クレジットの文は作らない）。`licensed: false` で `source_job_id` も無い素材は
+  出どころが記録されていないので、人に確かめる
+
 ### 演出はタイムラインに保存する（FX トラック。MV のときだけ）
 
 **鉄則: `FxOverlay` の演出はタイムラインに保存する。ジョブに props を直接投げるのは

@@ -2218,6 +2218,63 @@ class BlockingPositions(BaseModel):
     objects: list[BlockingObjectScreen] = Field(default_factory=list)
 
 
+class LibraryLicense(BaseModel):
+    """ライブラリの素材のライセンス情報（``library.license``。SPEC §7.2）。
+
+    第三者の素材（効果音・BGM・画像）を使うときに、どこから・どの規約で入れたかを
+    出どころの記録として残しておく。タイムラインの書き出しは、使った素材のこれを
+    集めて結果に載せる（監査用。:func:`app.timeline.collect_materials`）。どの項目も
+    省略できる。
+    """
+
+    #: 入手元の名前（サイト名・作者名）
+    provider: str = ""
+    #: 入手元のサイトの URL
+    provider_url: str = ""
+    #: 素材のページの URL
+    page_url: str = ""
+    #: 取得元（ファイルそのもの）の URL
+    download_url: str = ""
+    #: 規約の URL
+    terms_url: str = ""
+    #: 規約の要点（商用可・改変可・再配布不可 など）
+    terms_summary: str = ""
+    #: クレジット（表記）が必要か（None = 確かめていない）
+    credit_required: bool | None = None
+    #: クレジットの文（記録として持つだけ。書き出しは表記を作らない）
+    credit_text: str = ""
+    #: 規約を確かめた日（``2026-11-10`` など）
+    checked_at: str = ""
+    #: Content ID（動画サイトの著作権の自動照合）の扱いなどのメモ
+    content_id: str = ""
+    #: そのほかのメモ
+    notes: str = ""
+    #: 素材パックから取り込んだときの、パック・入手元・ファイル名（手で付けたものは空）
+    pack: str = ""
+    source_id: str = ""
+    file: str = ""
+    #: 取り込んだファイルの sha256（素材パックの取り込みが測る）
+    sha256: str = ""
+
+
+class LibraryMediaInfo(BaseModel):
+    """ライブラリの素材を測った値（素材パックの取り込みが測る。測れなければ None）。"""
+
+    #: 長さ（ミリ秒。音・動画）
+    duration_ms: int | None = None
+    #: 積分ラウドネス（LUFS。音）
+    loudness_lufs: float | None = None
+    #: 真のピーク（dBTP。音）
+    true_peak_db: float | None = None
+    #: 大きさ（画像・動画）
+    width: int | None = None
+    height: int | None = None
+    #: 透過している画素があるか（画像）
+    has_alpha: bool | None = None
+    #: 音声を持つか（動画）
+    has_audio: bool | None = None
+
+
 class LibraryItem(BaseModel):
     """ライブラリの 1 件（履歴とは独立に取っておく素材）。"""
 
@@ -2247,6 +2304,10 @@ class LibraryItem(BaseModel):
     blocking: BlockingScene | None = None
     #: 再レンダの版番号（1 = 作ったまま。ブロッキングでない項目は 0）
     blocking_version: int = 0
+    #: ライセンス情報（None = 付いていない）
+    license: LibraryLicense | None = None
+    #: 測った値（素材パックから取り込んだものに付く。None = 測っていない）
+    media_info: LibraryMediaInfo | None = None
 
 
 class LibraryFromJob(BaseModel):
@@ -2271,6 +2332,9 @@ class LibraryUpdate(BaseModel):
     #: それ以外は :data:`LibraryCategory` の値（不正なら 400）。他の項目と同じく
     #: 「None = 変更なし」を守るため、未分類は値なしではなく明示の 'none' で送る
     category: str | None = None
+    #: ライセンス情報。送れば丸ごと置き換え、**``null`` を送ると外す**
+    #: （送らなければそのまま）
+    license: LibraryLicense | None = None
 
 
 class LibrarySheet(BaseModel):
@@ -2602,6 +2666,143 @@ class LibraryPage(BaseModel):
     offset: int = 0
     #: ライブラリに登録されている全タグ（絞り込み UI の補完用）
     tags: list[str] = Field(default_factory=list)
+
+
+# --------------------------------------------------------------------------
+# 素材パック（効果音・BGM・画像をまとめて取り込む目録。SPEC §7.2）
+# --------------------------------------------------------------------------
+
+#: 入手元からの取り方: auto = 取得元の URL から取る / manual = 人が受け取り口に置く
+AssetPackAcquire = Literal["auto", "manual"]
+
+
+class AssetPackSource(BaseModel):
+    """素材パックの目録の入手元 1 つ（サイト・作者ごと）。"""
+
+    #: 目録の中での呼び名（素材の ``source`` と ``accept_sources`` で指す）
+    id: str
+    #: 入手元の名前（クレジットに出る）
+    name: str
+    #: 入手元のサイト
+    url: str = ""
+    #: 規約の URL と要点・確かめた日
+    terms_url: str = ""
+    terms_summary: str = ""
+    checked_at: str = ""
+    #: クレジットが必要か（None = 確かめていない）
+    credit_required: bool | None = None
+    #: この入手元の素材の既定のクレジットの文（記録として持つだけ。素材ごとの
+    #: ``credit_text`` が勝つ）
+    credit_text: str = ""
+    #: Content ID の扱いなどのメモ
+    content_id: str = ""
+    notes: str = ""
+    #: 取り方（auto = 取得元の URL から〈既定〉/ manual = 人が受け取り口に置く）
+    acquire: AssetPackAcquire = "auto"
+    #: auto のとき、1 件ごとにあける間隔（秒。2 秒より短くはしない）
+    interval_seconds: float | None = None
+
+
+class AssetPackItem(BaseModel):
+    """素材パックの目録の素材 1 つ。"""
+
+    #: ファイル名（受け取り口で突き合わせる名前。取り込んだ素材の識別にも使う）
+    file: str
+    #: どの入手元か（:attr:`AssetPackSource.id`）
+    source: str
+    #: 種類（image / video / audio。省略すると拡張子から）
+    kind: str | None = None
+    #: 分類（自由な文字列。タグにも入る。ライブラリの分類 character / background /
+    #: prop のどれかなら、その分類にもする）
+    category: str = ""
+    tags: list[str] = Field(default_factory=list)
+    #: 表示名（省略するとファイル名）
+    name: str = ""
+    description: str = ""
+    #: 取得元（ファイルそのもの）の URL（auto の入手元で使う）
+    download_url: str = ""
+    #: 素材のページ
+    page_url: str = ""
+    #: クレジットの文（省略すると入手元の ``credit_text``）
+    credit_text: str = ""
+    #: ファイルの sha256（書けば取り込むときに確かめる。手で置く入手元の突き合わせにも使う）
+    sha256: str = ""
+
+
+class AssetPackManifest(BaseModel):
+    """素材パックの目録（JSON か YAML。スキーマは docs/EXTERNAL-API.md §3.8）。"""
+
+    #: パックの id（取り込んだ素材の識別と、受け取り口のフォルダ名に使う）
+    pack: str
+    name: str = ""
+    description: str = ""
+    sources: list[AssetPackSource] = Field(default_factory=list)
+    items: list[AssetPackItem] = Field(default_factory=list)
+
+
+class AssetPackImportRequest(BaseModel):
+    """POST /api/v1/library/packs/import body。
+
+    目録は ``manifest``（オブジェクト）・``manifest_text``（JSON / YAML の文字列）・
+    ``manifest_path``（**アプリから見える**パス）のどれか 1 つで渡す。
+    """
+
+    manifest: AssetPackManifest | None = None
+    manifest_text: str = ""
+    manifest_path: str = ""
+    #: 取り込みに同意した入手元の id（ここに無い入手元の素材は取り込まない）
+    accept_sources: list[str] = Field(default_factory=list)
+    #: 手で置く入手元の受け取り口（省略すると ``<データの置き場>/packs/<pack>/inbox``）
+    inbox_dir: str = ""
+    #: 何も取らず・登録せずに、何が起きるかだけを返す
+    dry_run: bool = False
+
+
+class AssetPackImportEntry(BaseModel):
+    """取り込みの結果の 1 件。"""
+
+    file: str
+    source: str = ""
+    #: 登録した・登録済みのライブラリの id
+    library_id: str | None = None
+    name: str = ""
+    url: str = ""
+    #: なぜその結果になったか
+    reason: str = ""
+
+
+AssetPackImportStatus = Literal["queued", "running", "done", "failed"]
+
+
+class AssetPackImport(BaseModel):
+    """素材パックの取り込み 1 回（``GET /api/v1/library/packs/imports/{id}``）。"""
+
+    id: str
+    status: AssetPackImportStatus = "queued"
+    pack: str = ""
+    dry_run: bool = False
+    #: 素材の件数と、そのうち処理し終えた件数
+    total: int = 0
+    processed: int = 0
+    #: 取り込んだ（dry_run では「取り込む予定」）
+    imported: list[AssetPackImportEntry] = Field(default_factory=list)
+    #: 登録済みで飛ばした・同意の無い入手元で飛ばした
+    skipped: list[AssetPackImportEntry] = Field(default_factory=list)
+    #: 登録済みだがファイルが変わっていた（取り込み直しはしない）
+    changed: list[AssetPackImportEntry] = Field(default_factory=list)
+    #: 足りない（受け取り口に無い・取得元が見つからない）
+    missing: list[AssetPackImportEntry] = Field(default_factory=list)
+    #: robots.txt で禁止されていて取らなかった
+    blocked: list[AssetPackImportEntry] = Field(default_factory=list)
+    #: 取れたが登録できなかった（sha256 の不一致・知らない拡張子 など）
+    failed: list[AssetPackImportEntry] = Field(default_factory=list)
+    #: 同意（accept_sources）が無かった入手元の id
+    unaccepted_sources: list[str] = Field(default_factory=list)
+    #: 手で置く入手元の受け取り口
+    inbox_dir: str = ""
+    error: str | None = None
+    created_at: str
+    finished_at: str | None = None
 
 
 class HealthStatus(BaseModel):
@@ -4135,6 +4336,28 @@ class TimelineClipInsert(BaseModel):
     base_revision: int | None = None
 
 
+class ExportMaterial(BaseModel):
+    """書き出しに使ったライブラリの素材 1 件と、その出どころ（監査用）。"""
+
+    library_id: str
+    name: str = ""
+    kind: str = ""
+    #: ライセンス情報が付いているか
+    licensed: bool = False
+    #: 生成物から登録した素材の元ジョブ（自前で作ったもの。第三者の素材ではない）
+    source_job_id: str | None = None
+    #: ライセンス情報（付いていなければ None）
+    license: LibraryLicense | None = None
+    #: どこで使ったか（トラック名・``FX``）
+    used_in: list[str] = Field(default_factory=list)
+
+
+class ExportMaterials(BaseModel):
+    """書き出しに使ったライブラリの素材の一覧（出どころの監査用）。"""
+
+    items: list[ExportMaterial] = Field(default_factory=list)
+
+
 class TimelineExport(BaseModel):
     """書き出し 1 回（``outputs/exports/{id}/final.mp4``）。"""
 
@@ -4168,6 +4391,9 @@ class TimelineExport(BaseModel):
     fx_status: TimelineExportStatus | None = None
     #: 演出まで載った mp4 の配信 URL（まだ焼けていなければ None）
     fx_video_url: str | None = None
+    #: 使ったライブラリの素材とライセンス情報（焼き上がると入る。監査用。
+    #: この項目を足す前の書き出しは None）
+    materials: ExportMaterials | None = None
     created_at: str
     finished_at: str | None = None
 

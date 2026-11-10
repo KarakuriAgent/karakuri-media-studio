@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, NamedTuple
@@ -54,6 +55,8 @@ from .models import (
     TimelineClipInsert,
     TimelineClipZoom,
     TimelineDucking,
+    ExportMaterial,
+    ExportMaterials,
     TimelineExport,
     TimelineExportItem,
     TimelineFx,
@@ -1662,6 +1665,13 @@ def _row_to_export(row: aiosqlite.Row) -> TimelineExport:
         data["warnings"] = []
     data["output_url"] = _output_url(data.get("output_path"))
     data["fx_video_url"] = _output_url(data.get("fx_video_path"))
+    raw_materials = data.pop("materials", None)
+    data["materials"] = None
+    if raw_materials:
+        try:
+            data["materials"] = ExportMaterials.model_validate_json(raw_materials)
+        except ValueError:  # pragma: no cover - 自分で書いた JSON なので通らない
+            data["materials"] = None
     return TimelineExport(**data)
 
 
@@ -1979,6 +1989,118 @@ async def build_spec(
     )
 
 
+#: FX のイベントの中の文字列から、ライブラリの配信 URL のファイル名を拾う
+_LIBRARY_URL = re.compile(r"/library/(?:image|video|audio)/([^/?#\s\"']+)")
+
+
+def _strings(value: Any) -> list[str]:
+    """JSON の値の中の文字列をすべて拾う（FX のイベントの ``src`` など）。"""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [text for item in value.values() for text in _strings(item)]
+    if isinstance(value, list):
+        return [text for item in value for text in _strings(item)]
+    return []
+
+
+async def collect_materials(
+    detail: StudioTimelineDetail, *, fx: TimelineFx | None = None
+) -> ExportMaterials:
+    """書き出しに使ったライブラリの素材と、そのライセンス情報（監査用）。
+
+    たどるのは、焼く V1 と、ミュートしていない音声トラックのクリップ（ライブラリの
+    素材・ライブラリの静止画・ライブラリから取り込んだ作品の素材）と、``fx`` を
+    渡したときは有効な FX のイベントと歌詞モーションの中のライブラリの URL。
+    同じ素材は 1 件にまとめ、どこで使ったか（トラック名・``FX``）を並べる。
+    """
+    used: dict[str, list[str]] = {}
+    asset_files: dict[str, list[str]] = {}
+
+    def note(target: dict[str, list[str]], key: str, where: str) -> None:
+        places = target.setdefault(key, [])
+        if where not in places:
+            places.append(where)
+
+    video_seen = False
+    for track in detail.tracks:
+        if track.kind == "video":
+            if video_seen:
+                continue  # 焼くのは一番上の V1 だけ
+            video_seen = True
+        elif track.kind != "audio" or track.muted:
+            continue
+        for clip in track.clips:
+            if not clip.source_id:
+                continue
+            if clip.source_kind == "library":
+                note(used, clip.source_id, track.name)
+            elif clip.source_kind == "asset_file":
+                note(asset_files, clip.source_id, track.name)
+            elif clip.source_kind == "image":
+                provider, real_id = split_image_source(clip.source_id)
+                if provider == "library":
+                    note(used, real_id, track.name)
+                elif provider == "asset_file":
+                    note(asset_files, real_id, track.name)
+
+    filenames: dict[str, list[str]] = {}
+    if fx is not None:
+        payloads: list[Any] = [item.event for item in fx.events if item.enabled]
+        if fx.lyric_enabled and fx.lyric:
+            payloads.append(fx.lyric)
+        for text in _strings(payloads):
+            for match in _LIBRARY_URL.finditer(text):
+                note(filenames, match.group(1), "FX")
+
+    async with get_db() as conn:
+        if asset_files:
+            placeholders = ", ".join("?" * len(asset_files))
+            async with conn.execute(
+                "SELECT f.id AS id, a.source_library_id AS library_id"
+                "  FROM studio_asset_files f"
+                "  JOIN studio_assets a ON a.id = f.asset_id"
+                f" WHERE f.id IN ({placeholders})",
+                tuple(asset_files),
+            ) as cur:
+                for row in await cur.fetchall():
+                    if row["library_id"]:
+                        for where in asset_files[str(row["id"])]:
+                            note(used, str(row["library_id"]), where)
+        rows: list[Any] = []
+        if used:
+            placeholders = ", ".join("?" * len(used))
+            async with conn.execute(
+                f"SELECT * FROM library WHERE id IN ({placeholders})", tuple(used)
+            ) as cur:
+                rows.extend(await cur.fetchall())
+        if filenames:
+            async with conn.execute("SELECT * FROM library") as cur:
+                for row in await cur.fetchall():
+                    name = Path(str(row["path"])).name
+                    if name in filenames:
+                        for where in filenames[name]:
+                            note(used, str(row["id"]), where)
+                        rows.append(row)
+
+    items: dict[str, ExportMaterial] = {}
+    for row in rows:
+        item = library_service.row_to_item(row)
+        if item.id in items:
+            continue
+        items[item.id] = ExportMaterial(
+            library_id=item.id,
+            name=item.name,
+            kind=item.kind,
+            licensed=item.license is not None,
+            source_job_id=item.source_job_id,
+            license=item.license,
+            used_in=used.get(item.id, []),
+        )
+    ordered = [items[key] for key in used if key in items]
+    return ExportMaterials(items=ordered)
+
+
 async def start_export(
     timeline_id: str, params: dict[str, Any], *, base_url: str = ""
 ) -> TimelineExport:
@@ -2077,8 +2199,19 @@ async def _run(export_id: str, timeline_id: str, params: dict[str, Any]) -> None
             export_id, timeline_id, "running", progress=value
         )
 
+    materials: ExportMaterials | None = None
     try:
         work_dir = export_dir(export_id)
+        detail = await timeline_detail(timeline_id)
+        if detail is not None:
+            # 焼く直前の中身で、使ったライブラリの素材を集めておく（監査用）。
+            try:
+                materials = await collect_materials(
+                    detail,
+                    fx=await get_fx(timeline_id) if params.get("fx") else None,
+                )
+            except Exception:  # noqa: BLE001 - 一覧が作れなくても書き出しは止めない
+                log.exception("使った素材の一覧を作れませんでした: %s", export_id)
         spec = await build_spec(timeline_id, params, work_dir)
         output = work_dir / EXPORT_FILENAME
         await run_export(spec, output, on_progress=on_progress)
@@ -2116,6 +2249,7 @@ async def _run(export_id: str, timeline_id: str, params: dict[str, Any]) -> None
             frames=total,
             duration_ms=int(round(total / spec.fps * 1000)) if spec.fps > 0 else 0,
             warnings=json.dumps(warnings, ensure_ascii=False),
+            materials=materials.model_dump_json() if materials is not None else None,
             finished_at=_now(),
         )
     finished = await get_export(export_id)

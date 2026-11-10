@@ -1587,9 +1587,31 @@ CREATE TABLE library (
   nsfw_source   TEXT NOT NULL DEFAULT '',  -- '' / 'auto'（元ジョブから継承） / 'manual'
   source_job_id TEXT,                      -- 生成物から登録した場合の元ジョブ（アップロードは NULL）
   tags          TEXT NOT NULL DEFAULT '[]',-- 分類タグの JSON 配列（後から足したカラム）
-  category      TEXT                       -- 分類（'character'|'background'|'prop'。NULL = 未分類）
+  category      TEXT,                      -- 分類（'character'|'background'|'prop'。NULL = 未分類）
+  license       TEXT,                      -- ライセンス情報 JSON（出どころの記録。NULL = 付いていない）
+  media_info    TEXT                       -- 測った値 JSON（長さ・ラウドネス・透過など。NULL = 測っていない）
+);
+
+-- 素材パックの取り込み 1 回（app/asset_packs.py）
+CREATE TABLE library_pack_imports (
+  id TEXT PRIMARY KEY, status TEXT, pack TEXT, dry_run INTEGER,
+  result TEXT,                             -- AssetPackImport の JSON（件数と、取り込んだ・飛ばした… の一覧）
+  error TEXT, created_at TEXT, finished_at TEXT
 );
 ```
+
+- **ライセンス情報**（`license`。`LibraryLicense`）: 入手元の名前と URL・素材のページ・取得元・
+  規約の URL と要点・クレジットの要否と文・規約を確かめた日・Content ID の扱いのメモ。
+  出どころの記録として持つ（書き出しはクレジットの表記を作らない）。アップロードのフォームの
+  `license`（JSON）と `PATCH` の `license`（`null` で外す）で人も付けられる
+- **素材パック**（`app/asset_packs.py`、外部 API §3.8）: 目録（JSON / YAML。例は
+  `docs/examples/asset-pack.example.yaml`。実際の目録と素材はリポジトリに入れない）を渡すと、
+  `accept_sources` で同意した入手元の素材だけを取り込む。`acquire: auto` は取得元の URL から
+  robots.txt を確かめて間隔（既定 2.5 秒）をあけて取り、`manual` は受け取り口
+  （`<DATA_DIR>/packs/<pack>/inbox`）に人が置いたファイルをファイル名か sha256 で突き合わせる。
+  タグ・分類・`license`・`media_info`（`app/media_measure.py`。ffprobe・loudnorm・Pillow）付きで
+  登録し、登録済みは飛ばす（手で置いた素材の中身が変わっていれば `changed` で知らせる）。
+  取り込みは裏で 1 本ずつ走り、状態は `library_pack_imports`
 
 - ファイル実体は **`library/{kind}/`**（`paths.LIBRARY_DIR`）に置き、`/library` の静的マウントで配信する。
   受け付ける拡張子は `assets/` と同じホワイトリスト（`library.ALLOWED_EXT`）
@@ -1864,6 +1886,7 @@ CREATE TABLE timeline_exports (
   fx_job_id   TEXT,                            -- 演出付き書き出し（fx: true）の Remotion ジョブ
   fx_status   TEXT,                            -- queued | running | done | failed
   fx_video_path TEXT,                          -- 演出まで載った mp4
+  materials   TEXT,                            -- 使ったライブラリの素材とライセンス情報（JSON。監査用）
   created_at  TEXT NOT NULL,
   finished_at TEXT
 );
@@ -2165,6 +2188,15 @@ ffmpeg の書き出し（上）が終わったあと、その mp4 を**下地**�
 - ジョブ id と状態と成果物は `timeline_exports.fx_job_id` / `fx_status` / `fx_video_path`
   に残り、書き出し履歴に「演出付き」として並ぶ（`GET .../exports` の `fx_video_url`）
 - 演出のレンダで失敗しても**mp4 そのものは残る**（`fx_status` が `failed` になるだけ）
+
+#### 使った素材の一覧（`timeline_exports.materials`。監査用）
+
+書き出しの直前の中身から、焼くクリップ（V1 とミュートしていない音声トラック）が指すライブラリの
+素材（`library` / 静止画の `library:` / ライブラリから取り込んだ作品の素材）と、`fx: true` なら
+有効な FX のイベントと歌詞モーションの中の `/library/…` の URL を辿り、素材ごとに 1 件
+（`library_id`・名前・種類・`licensed`・`source_job_id`・`license`・`used_in`）を並べて
+`GET /exports/{id}` の `materials` に返す（`app.timeline.collect_materials`）。出どころの記録を
+確かめるためのもので、クレジットの文や `credits.txt` は作らない
 - Remotion 連携が OFF なら **400**
 
 #### 既知の制限

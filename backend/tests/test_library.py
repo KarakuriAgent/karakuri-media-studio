@@ -400,8 +400,13 @@ def test_json_payload_shape_is_stable(env):
         # 構図リファレンス動画（SPEC §7.2）。ふつうの素材は null / 0
         "blocking",
         "blocking_version",
+        # 出どころの記録（素材パック・手で付けたライセンス情報）と測った値。
+        # 付けていない素材は null
+        "license",
+        "media_info",
     }
     assert item["blocking"] is None and item["blocking_version"] == 0
+    assert item["license"] is None and item["media_info"] is None
     assert json.loads(json.dumps(item)) == item
 
 

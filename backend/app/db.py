@@ -79,7 +79,21 @@ CREATE TABLE IF NOT EXISTS library (
   tags          TEXT NOT NULL DEFAULT '[]',
   category      TEXT,                       -- 分類（character/background/prop。NULL = 未分類）
   blocking      TEXT,                       -- 構図リファレンス動画のシーン定義 JSON（通常の項目は NULL）
-  blocking_version INTEGER NOT NULL DEFAULT 0  -- 再レンダの版番号（0 = ブロッキングではない）
+  blocking_version INTEGER NOT NULL DEFAULT 0, -- 再レンダの版番号（0 = ブロッキングではない）
+  license       TEXT,                       -- ライセンス情報 JSON（NULL = 付いていない）
+  media_info    TEXT                        -- 測った値 JSON（長さ・ラウドネス・透過など。NULL = 測っていない）
+);
+
+-- 素材パックの取り込み（app/asset_packs.py）。1 回の取り込みの状態と結果。
+CREATE TABLE IF NOT EXISTS library_pack_imports (
+  id          TEXT PRIMARY KEY,
+  status      TEXT NOT NULL DEFAULT 'queued',  -- queued / running / done / failed
+  pack        TEXT NOT NULL DEFAULT '',
+  dry_run     INTEGER NOT NULL DEFAULT 0,
+  result      TEXT NOT NULL DEFAULT '{}',      -- AssetPackImport の結果の JSON
+  error       TEXT,
+  created_at  TEXT NOT NULL,
+  finished_at TEXT
 );
 
 -- ドラマスタジオ: プロジェクト（1 本の作品）。脚本（studio_shots）と素材
@@ -384,6 +398,7 @@ CREATE TABLE IF NOT EXISTS timeline_exports (
   fx_job_id   TEXT,
   fx_status   TEXT,                            -- queued / running / done / failed
   fx_video_path TEXT,
+  materials   TEXT,                            -- 使ったライブラリの素材とライセンス情報（JSON。監査用）
   created_at  TEXT NOT NULL,
   finished_at TEXT
 );
@@ -499,6 +514,9 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         # 入っている項目だけが「同じ id のまま mp4 を作り直せる」）。
         ("blocking", "TEXT"),
         ("blocking_version", "INTEGER NOT NULL DEFAULT 0"),
+        # ライセンス情報と測った値（JSON）。既存行は NULL = 付いていない / 測っていない。
+        ("license", "TEXT"),
+        ("media_info", "TEXT"),
     ],
     "loras": [
         ("sample_images", "TEXT NOT NULL DEFAULT '[]'"),
@@ -643,6 +661,9 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         ("fx_job_id", "TEXT"),
         ("fx_status", "TEXT"),
         ("fx_video_path", "TEXT"),
+        # 使ったライブラリの素材とライセンス情報（JSON。監査用）。この列を足す
+        # 前の書き出しは NULL のまま。
+        ("materials", "TEXT"),
     ],
     "studio_revisions": [
         # 触ったエンティティ（「このカットの履歴」の絞り込み用）。この列を足す

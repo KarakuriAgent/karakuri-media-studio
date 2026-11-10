@@ -39,11 +39,11 @@
 | 素材（World Bible） | `GET /assets`（**全作品横断**の素材検索。`project_id` / `kind` / `q` / `limit` / `offset`）・`POST /projects/{id}/assets`（JSON / multipart。`library_id` でライブラリから取り込み）・`assets/from-job`・`PATCH/DELETE /assets/{id}`・`POST /assets/{id}/refresh-from-library`（取り込み元の今の版で取り直す）・素材のリファレンス（`/assets/{id}/files`・`DELETE /asset-files/{id}`） |
 | 生成と Take | `POST /shots/{id}/render`・`GET /shots/{id}/takes`・`POST /takes/{id}/select`・`reject`・`cancel`・`DELETE /takes/{id}` |
 | 汎用ジョブ | `GET/POST /jobs`（一覧は `q` / `kind` / `project_id` / `nsfw` / `limit` / `offset` で絞れる。§3.6）・`GET /jobs/{id}`・`POST /jobs/{id}/cancel`・`rerun`・`continue` |
-| ライブラリ | `GET /library`・`POST /library/image` / `POST /library/audio` / `POST /library/upload`（multipart）・`POST /library/from-job`・`POST /library/sheet`・`POST /library/{id}/key`・`POST /library/key`・`POST /library/key-from-job`・`POST /library/blocking`・`POST /library/{id}/blocking`・`POST /library/blocking/preview`・`POST /library/blocking/location-map`・`PATCH /library/{id}`（**削除は非公開**） |
+| ライブラリ | `GET /library`・`POST /library/image` / `POST /library/audio` / `POST /library/upload`（multipart。`license` も添えられる）・**`POST /library/packs/import`・`GET /library/packs/imports[/{id}]`（素材パック、§3.8）**・`POST /library/from-job`・`POST /library/sheet`・`POST /library/{id}/key`・`POST /library/key`・`POST /library/key-from-job`・`POST /library/blocking`・`POST /library/{id}/blocking`・`POST /library/blocking/preview`・`POST /library/blocking/location-map`・`PATCH /library/{id}`（**削除は非公開**） |
 | 素材の下ごしらえ | `POST /images/text`・`GET /images/text/fonts`・`POST /videos/contact-sheet`（§3.4） |
 | 編集（タイムライン） | `POST /projects/{id}/timelines`・`GET/PATCH/DELETE /timelines/{id}`・`PUT /timelines/{id}/clips`（クリップの加工 `effects`、§3.7）・`POST /timelines/{id}/clips/insert`・トラック CRUD（音声トラックのダッキング `ducking`、§3.7）・`generate-subtitles`・`sync-preview` / `sync`・`missing` / `missing/resolve`・`GET /projects/{id}/media` |
 | 演出（FX トラック） | `GET/PUT /timelines/{id}/fx`・`PUT /timelines/{id}/fx/lyric`（歌詞モーション）・`POST /timelines/{id}/fx/events`・`PATCH/DELETE /timelines/{id}/fx/events/{event_id}`（§3.3） |
-| 書き出し | `POST /timelines/{id}/export`（202。`fx: true` で演出付き）・`GET /timelines/{id}/exports`・**`GET /exports`（タイムライン横断の一覧）**・`GET /exports/{id}`・`POST /exports/{id}/save-to-library` |
+| 書き出し | `POST /timelines/{id}/export`（202。`fx: true` で演出付き。結果に使った素材の一覧 `materials`、§3.8）・`GET /timelines/{id}/exports`・**`GET /exports`（タイムライン横断の一覧）**・`GET /exports/{id}`・`POST /exports/{id}/save-to-library` |
 | 編集履歴 | `GET /projects/{id}/revisions`・`GET .../{seq}/diff`・`POST .../{seq}/restore`（§3.1） |
 | 画面 | `GET/PATCH /ui/generate-form`・`POST /ui/navigate`（§3.2） |
 | Remotion | `GET /remotion/compositions`（§3.3） |
@@ -716,6 +716,69 @@ GET /api/v1/jobs?q=かおり&kind=video&nsfw=false&limit=48&offset=0
 - `{"ducking": null}` で外す。送らなければそのまま。きっかけのトラックを消すと外れる。
   ミュートしたトラックはきっかけにならない
 - 返る EDL の各トラックに `ducking` が載る（`GET /timelines/{id}`）
+
+### 3.8 素材パック（効果音・BGM・画像を出どころごと取り込む）
+
+効果音・BGM・画像のような第三者の素材は、**目録（素材パック）**に入手元と規約の情報を
+書いてから棚（ライブラリ）へ取り込む。取り込んだ素材には出どころ（`license`）と測った値
+（`media_info`）が付き、タイムラインの書き出しは使った素材を一覧にして返す（監査用）。
+
+**目録と素材のファイルはリポジトリに入れない**（利用者の手元に置く）。書き方の例は
+[`docs/examples/asset-pack.example.yaml`](examples/asset-pack.example.yaml)（架空の入手元・
+ファイル無し）。JSON か YAML で、スキーマは次のとおり:
+
+| 項目 | 意味 |
+|---|---|
+| `pack` | パックの id（英数字と `. _ -`、64 文字まで。取り込んだ素材の識別と受け取り口のフォルダ名） |
+| `name` / `description` | 表示用 |
+| `sources[]` | 入手元ごと: `id`・`name`（入手元の名前）・`url`・`terms_url`・`terms_summary`（規約の要点）・`checked_at`（規約を確かめた日）・`credit_required`・`credit_text`・`content_id`（Content ID の扱いのメモ）・`notes`・`acquire`（`auto` = 取得元の URL から取る〈既定〉/ `manual` = 人が受け取り口に置く）・`interval_seconds`（`auto` の間隔。2 秒より短くはしない） |
+| `items[]` | 素材ごと: `file`（ファイル名）・`source`（入手元の `id`）・`kind`（`image` / `video` / `audio`。省略すると拡張子から）・`category`（自由な分類。タグにも入る。`character` / `background` / `prop` ならライブラリの分類にもなる）・`tags`・`name`・`description`・`download_url`（取得元。`auto` で使う）・`page_url`（素材のページ）・`credit_text`・`sha256`（任意。YAML では引用符で囲む） |
+
+```
+POST /api/v1/library/packs/import                       → 202 {id, status: "queued", …}
+  {"manifest": {…} | "manifest_text": "<JSON か YAML>" | "manifest_path": "<アプリから見えるパス>",
+   "accept_sources": ["example-sfx"],      # 規約を読んで同意した入手元だけ
+   "inbox_dir": "",                         # 手で置く入手元の受け取り口（省略で既定）
+   "dry_run": false}                        # true = 何も取らず登録せず、予定だけ返す
+GET  /api/v1/library/packs/imports/{id}                  → 状態と結果（ポーリング）
+GET  /api/v1/library/packs/imports?limit=20              → 最近の取り込み
+```
+
+- **同意**: `accept_sources` に無い入手元の素材は取り込まない（`skipped` に理由付きで並び、
+  入手元の id は `unaccepted_sources` に出る）
+- **自動の入手元**（`acquire: auto`）: `download_url` から 1 件ずつ取る。先に入手元の
+  `robots.txt` を確かめ（`KarakuriMediaStudio` を名乗る。読めない・5xx・401/403 は取らない）、
+  禁止されていれば取らずに `blocked` へ。同じサーバーへは間隔（既定 2.5 秒・`Crawl-delay`
+  があればそれ以上）をあける。HTML が返ったら（素材のページの URL を書いた）`failed`
+- **手で置く入手元**（`acquire: manual`）: 受け取り口（既定 `<データの置き場>/packs/<pack>/inbox`。
+  `KARAKURI_DATA_DIR` を使っていなければリポジトリ直下の `packs/`）に人が置いたファイルを、
+  ファイル名か `sha256` で目録と突き合わせる
+- 取り込んだ素材は `library/<kind>/` にコピーし、タグ（目録のタグ・分類・パック id）・
+  分類・`license`・`media_info`（音は長さとラウドネス・真のピーク、画像は大きさと透過の有無、
+  動画は長さ・大きさ・音の有無）付きで登録する
+- **何度実行しても同じ結果**: 登録済み（同じパック・入手元・ファイル名）は飛ばし、自動の
+  入手元には取りに行かない。手で置いた素材は sha256 を比べ、変わっていれば `changed` に
+  返す（上書きはしない。差し替えるなら棚の項目を消してからもう一度）
+- 結果: `imported`（`dry_run` では「予定」）・`skipped`・`changed`・`missing`（受け取り口に
+  無い・取得元が 404）・`blocked`（robots.txt）・`failed`（sha256 の不一致・HTML など）。
+  どれも `{file, source, library_id, name, url, reason}`。取り込みは 1 本ずつ順に走る
+
+**ライブラリのライセンス情報**（`license`）は、パックを使わず手で上げた素材にも付けられる:
+
+- アップロード（`POST /library/image` / `audio` / `upload`）のフォームに `license`
+  （JSON の文字列）を添える
+- `PATCH /library/{id}` の `license`: 送れば丸ごと置き換え、`null` で外す、送らなければそのまま
+- 項目: `provider`・`provider_url`・`page_url`・`download_url`・`terms_url`・`terms_summary`・
+  `credit_required`・`credit_text`・`checked_at`・`content_id`・`notes`（と、パックが入れる
+  `pack`・`source_id`・`file`・`sha256`）。どれも省略できる
+
+**書き出しの素材一覧（監査用）**: タイムラインの書き出しが終わると、`GET /exports/{id}` の
+`materials.items` に、焼いたクリップ（V1 とミュートしていない音声トラック。ライブラリの素材・
+ライブラリの静止画・ライブラリから取り込んだ作品の素材）と、`fx: true` なら有効な FX の
+イベントと歌詞モーションの中のライブラリの URL から辿った素材が並ぶ:
+`{library_id, name, kind, licensed, source_job_id, license, used_in: ["V1", "A2", "FX"]}`。
+`licensed: false` で `source_job_id` も無いものは、出どころが記録されていない素材。
+クレジットの文や `credits.txt` は作らない（出どころの記録を確かめるための一覧）。
 
 ## 4. ファイルの受け渡し
 

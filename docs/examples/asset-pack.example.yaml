@@ -1,0 +1,61 @@
+# 素材パックの目録の例（架空の入手元・架空の素材。ファイルは付いていない）。
+#
+# 実際の目録と素材のファイルはリポジトリに入れず、利用者の手元（任意の場所）に置く。
+# 取り込みは POST /api/v1/library/packs/import（docs/EXTERNAL-API.md §3.8）。
+#
+#   - 入手元（sources）ごとに、規約を人が読んで確かめ、checked_at に日付を書く
+#   - 取り込むときは accept_sources にその入手元の id を入れる（同意の明示）
+#   - acquire: auto は download_url から自動で取る（robots.txt を確かめ、間隔をあける）
+#   - acquire: manual は受け取り口（<データの置き場>/packs/<pack>/inbox）に人が置く
+pack: example-sfx-pack
+name: 例の効果音パック
+description: 動作確認用の架空のパック
+
+sources:
+  - id: example-sfx
+    name: Example SFX Library
+    url: https://sfx.example.com/
+    terms_url: https://sfx.example.com/terms
+    terms_summary: 商用可・改変可・クレジット不要・素材そのものの再配布は不可
+    checked_at: "2026-11-10"
+    credit_required: false
+    content_id: 動画サイトの Content ID には登録していない（規約に明記）
+    acquire: auto
+    interval_seconds: 2.5
+
+  - id: example-bgm
+    name: Example BGM Studio
+    url: https://bgm.example.org/
+    terms_url: https://bgm.example.org/license
+    terms_summary: 商用可・クレジット不要・ダウンロードはログインが要る
+    checked_at: "2026-11-10"
+    credit_required: false
+    acquire: manual
+
+items:
+  - file: hit_small_01.wav
+    source: example-sfx
+    kind: audio
+    category: impact
+    tags: [打撃, 短い]
+    name: 小さな打撃 1
+    description: 軽い打撃。テロップの出に合わせる
+    download_url: https://sfx.example.com/files/hit_small_01.wav
+    page_url: https://sfx.example.com/sounds/hit_small_01
+
+  - file: whoosh_02.wav
+    source: example-sfx
+    category: transition
+    tags: [風切り]
+    download_url: https://sfx.example.com/files/whoosh_02.wav
+    page_url: https://sfx.example.com/sounds/whoosh_02
+    # sha256 を書くと取り込むときに確かめる（YAML では必ず引用符で囲む）
+    sha256: "5f1c7a8e4b2d9c3e6a0f1b7d8c2e4a6b9d0f3c5e7a1b2c4d6e8f0a1b3c5d7e9f"
+
+  - file: calm_loop.mp3
+    source: example-bgm
+    kind: audio
+    category: bgm
+    tags: [穏やか, ループ]
+    name: 穏やかなループ
+    page_url: https://bgm.example.org/tracks/calm-loop

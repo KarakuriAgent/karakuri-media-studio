@@ -9,11 +9,14 @@ from io import BytesIO
 
 from fastapi import APIRouter, File, Form, HTTPException, Query, Response, UploadFile
 
+from .. import asset_packs
 from .. import blocking as blocking_render
 from .. import jobs as job_service
 from .. import library as service
 from .. import media_ref, sheets
 from ..models import (
+    AssetPackImport,
+    AssetPackImportRequest,
     LibraryBlockingCreate,
     LibraryBlockingMap,
     LibraryBlockingMapResult,
@@ -218,8 +221,12 @@ async def upload_to_library(
     tags: str = "",
     category: str = "",
     nsfw: bool = False,
+    license: str = "",
 ) -> LibraryItem:
-    """multipart で送られたファイルを ``library/{kind}/`` に入れる。"""
+    """multipart で送られたファイルを ``library/{kind}/`` に入れる。
+
+    ``license`` はライセンス情報の JSON（:class:`app.models.LibraryLicense`。空なら付けない）。
+    """
     try:
         return await service.add_upload(
             kind,
@@ -229,6 +236,7 @@ async def upload_to_library(
             category,
             name=name,
             nsfw=nsfw,
+            license=license,
         )
     except service.LibraryError as exc:
         raise _bad_request(exc) from exc
@@ -241,6 +249,7 @@ async def upload_detecting_kind(
     tags: str = "",
     category: str = "",
     nsfw: bool = False,
+    license: str = "",
 ) -> LibraryItem:
     """種別を書かずに送られたファイルを、拡張子 / MIME で振り分けて入れる。"""
     try:
@@ -248,8 +257,47 @@ async def upload_detecting_kind(
     except service.LibraryError as exc:
         raise _bad_request(exc) from exc
     return await upload_to_library(
-        kind, file, name=name, tags=tags, category=category, nsfw=nsfw
+        kind, file, name=name, tags=tags, category=category, nsfw=nsfw, license=license
     )
+
+
+# --------------------------------------------------------------------------
+# 素材パック（:mod:`app.asset_packs`）。``/{kind}`` などより先に置く
+# --------------------------------------------------------------------------
+
+async def import_pack(payload: AssetPackImportRequest) -> AssetPackImport:
+    """素材パックを取り込む（**202 即受付**。``dry_run`` はその場で終わった結果）。"""
+    try:
+        return await asset_packs.start_import(payload)
+    except asset_packs.AssetPackError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+async def get_pack_import(import_id: str) -> AssetPackImport:
+    """取り込みの状態と結果（終わるまでポーリングする）。"""
+    try:
+        return await asset_packs.get_import(import_id)
+    except asset_packs.AssetPackNotFound as exc:
+        raise HTTPException(status_code=404, detail="import not found") from exc
+
+
+async def list_pack_imports(limit: int = 20) -> list[AssetPackImport]:
+    """最近の取り込み（新しい順）。"""
+    return await asset_packs.list_imports(limit)
+
+
+router.add_api_route(
+    "/packs/import", import_pack, methods=["POST"],
+    response_model=AssetPackImport, status_code=202,
+)
+router.add_api_route(
+    "/packs/imports", list_pack_imports, methods=["GET"],
+    response_model=list[AssetPackImport],
+)
+router.add_api_route(
+    "/packs/imports/{import_id}", get_pack_import, methods=["GET"],
+    response_model=AssetPackImport,
+)
 
 
 @router.post("/upload", response_model=LibraryItem, status_code=201)
@@ -259,13 +307,15 @@ async def upload_any(
     category: str = Form(""),
     name: str = Form(""),
     nsfw: bool = Form(False),
+    #: ライセンス情報の JSON（LibraryLicense。空なら付けない）
+    license: str = Form(""),
 ) -> LibraryItem:
     """種別を指定せずに 1 ファイル入れる（拡張子 / MIME で image / video / audio）。
 
     ``/{kind}`` より先に定義しておく（後ろだと `kind='upload'` として食われる）。
     """
     return await upload_detecting_kind(
-        file, name=name, tags=tags, category=category, nsfw=nsfw
+        file, name=name, tags=tags, category=category, nsfw=nsfw, license=license
     )
 
 
@@ -409,10 +459,12 @@ async def upload(
     #: 表示名（空なら元のファイル名）
     name: str = Form(""),
     nsfw: bool = Form(False),
+    #: ライセンス情報の JSON（LibraryLicense。空なら付けない）
+    license: str = Form(""),
 ) -> LibraryItem:
     """手元のファイルをライブラリに追加する（種別ごとの拡張子のみ）。"""
     return await upload_to_library(
-        kind, file, name=name, tags=tags, category=category, nsfw=nsfw
+        kind, file, name=name, tags=tags, category=category, nsfw=nsfw, license=license
     )
 
 
@@ -429,6 +481,11 @@ async def update(item_id: str, payload: LibraryUpdate) -> LibraryItem:
             nsfw=payload.nsfw,
             tags=payload.tags,
             category=payload.category,
+            **(
+                {"license": payload.license}
+                if "license" in payload.model_fields_set
+                else {}
+            ),
         )
     except service.LibraryError as exc:
         raise _bad_request(exc) from exc
