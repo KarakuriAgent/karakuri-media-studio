@@ -1674,10 +1674,18 @@ CREATE TABLE library_pack_imports (
   `ResizeAndPadImage` が黒でパディングするので、比が合っていれば余白が出ない）。プロンプトは
   `Reference sheet: … / Generated video: …` の 2 部構成で書く（`WorkflowSpec.prompt_hint`、§3.1）
 - **検索とページング**: `GET /api/library` は `kind`（種別）/ `category`（分類。未指定なら全件、
-  `none` で未分類のみ）/ `q`（表示名とタグへの部分一致、大文字小文字無視）/ `tag`（完全一致）/
-  `limit`（既定 50、最大 200）/ `offset` を取り、
-  `{items, total, limit, offset, tags}` を返す。`total` は**絞り込み後の総件数**なので
-  「まだ何件あるか」が分かり、`tags` は補完用の全タグ一覧。`kind` と `category` だけ SQL で絞り、
+  `none` で未分類のみ。棚の分類〈`character` / `background` / `prop`〉でない語は素材パックの
+  目録の分類 `pack_category`〈`効果音` / `BGM` など自由な語。大文字小文字は見ない〉で絞り、
+  棚の分類の語は棚の分類か目録の分類のどちらかで拾う）/ `q`（表示名とタグへの部分一致、
+  大文字小文字無視）/ `tag`（完全一致）/ `limit`（既定 50、最大 200）/ `offset` を取り、
+  `{items, total, limit, offset, tags, pack_categories}` を返す。`total` は**絞り込み後の総件数**なので
+  「まだ何件あるか」が分かり、`tags` は補完用の全タグ一覧、`pack_categories` は目録の分類の一覧
+  （`LibraryPickerModal` の分類のプルダウンに「素材パックの分類」として並ぶ）。
+- **素材パックの目録の分類**（`library.pack_category`）は棚の分類（`category`）とは別の列。
+  取り込みが目録の `category` を入れ（`license.category` にも残る）、取り込み直しでは目録を
+  正本に書き直す。列を足す前に取り込んだ行は、起動時に `license.category`、無ければタグ
+  （取り込みは「目録のタグ・分類・パック名」の順に並べるので、パック名のひとつ前）から埋め、
+  埋められなければ `''` にする（`db._backfill_pack_categories`。NULL の行だけを見るので冪等）。`kind` と `category` だけ SQL で絞り、
   `q` / `tag` は Python 側で判定する（タグは 1 カラムに JSON 配列で持っており、LIKE では誤検出
   しやすいため。個人利用の規模なら読み切ってから絞るほうが確実）
 - フォーム用に `GET /api/options` の `library` には全件が入る。表示名・NSFW・タグ・

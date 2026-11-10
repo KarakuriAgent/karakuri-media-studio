@@ -351,6 +351,9 @@ GET  /library/packs/imports/{id}                          # status: done まで�
 ```
 
 - **`accept_sources` には、人が規約を確かめて同意した入手元だけを入れる**（勝手に足さない）
+- **取り込んだ素材は目録の分類で絞れる**: `GET /library?category=効果音&q=ドア`（目録の
+  `category` が各項目の `pack_category` に入る。使える語は応答の `pack_categories`）。
+  棚の分類（`character` / `background` / `prop` / `none`）でない語はこちらで絞る
 - **配布が ZIP だけの入手元**は、素材ごとに `member`（ZIP の中のパス）を書き、`download_url` に
   ZIP の URL を書く（`manual` なら `archive` に受け取り口の ZIP のファイル名）。同じ ZIP から
   何件でも取れ、ZIP は 1 回の取り込みで 1 度だけ取る。`member` は

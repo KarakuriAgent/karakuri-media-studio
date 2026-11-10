@@ -1023,7 +1023,7 @@ async def create_story(payload: StoryCreate) -> StoryResult:
 @router.get("/library", response_model=LibraryPage)
 async def list_library(
     kind: str | None = Query(None, pattern="^(image|video|audio)$"),
-    #: 分類（未指定 = 全件 / 'none' = 未分類のみ）
+    #: 分類（未指定 = 全件 / 'none' = 未分類のみ / 棚の分類でない語 = 素材パックの目録の分類）
     category: str | None = Query(None),
     #: 表示名とタグへの部分一致（大文字小文字は無視）
     q: str = Query(""),
@@ -1045,6 +1045,7 @@ async def list_library(
         limit=limit,
         offset=offset,
         tags=await library.all_tags(),
+        pack_categories=await library.pack_categories(),
     )
 
 

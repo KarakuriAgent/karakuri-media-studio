@@ -1,3 +1,4 @@
+import json
 import logging
 import shutil
 from collections.abc import AsyncIterator
@@ -81,7 +82,8 @@ CREATE TABLE IF NOT EXISTS library (
   blocking      TEXT,                       -- 構図リファレンス動画のシーン定義 JSON（通常の項目は NULL）
   blocking_version INTEGER NOT NULL DEFAULT 0, -- 再レンダの版番号（0 = ブロッキングではない）
   license       TEXT,                       -- ライセンス情報 JSON（NULL = 付いていない）
-  media_info    TEXT                        -- 測った値 JSON（長さ・ラウドネス・透過など。NULL = 測っていない）
+  media_info    TEXT,                       -- 測った値 JSON（長さ・ラウドネス・透過など。NULL = 測っていない）
+  pack_category TEXT                        -- 素材パックの目録の分類（効果音・BGM など。NULL / '' = 持たない）
 );
 
 -- 素材パックの取り込み（app/asset_packs.py）。1 回の取り込みの状態と結果。
@@ -517,6 +519,10 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         # ライセンス情報と測った値（JSON）。既存行は NULL = 付いていない / 測っていない。
         ("license", "TEXT"),
         ("media_info", "TEXT"),
+        # 素材パックの目録の分類（効果音・BGM など自由な語。棚の仕切りの category
+        # とは別）。既存行は NULL で、起動時に出どころの記録から埋め直す
+        # （:func:`_backfill_pack_categories`）。埋められなかった行は '' にする。
+        ("pack_category", "TEXT"),
     ],
     "loras": [
         ("sample_images", "TEXT NOT NULL DEFAULT '[]'"),
@@ -756,6 +762,50 @@ async def _migrate(conn: aiosqlite.Connection) -> None:
 
     await _widen_timeline_clip_sources(conn)
     await _renumber_shots(conn)
+    await _backfill_pack_categories(conn)
+
+
+async def _backfill_pack_categories(conn: aiosqlite.Connection) -> None:
+    """素材パックから取り込んだ行の ``pack_category`` を、出どころの記録から埋める。
+
+    ``pack_category`` を足す前に取り込んだ行は NULL のまま。分類は次の順で探す:
+
+    1. ライセンス情報（``license``）の ``category``（足したあとの取り込みは持っている）
+    2. タグ: 取り込みはタグを「目録のタグ・分類・パック名」の順に並べるので、
+       パック名のタグの**ひとつ前**が分類（分類の無い素材では目録の最後のタグを拾って
+       しまうが、その素材パックをもう一度取り込めば目録の分類で書き直される）
+
+    見つからなければ ''（もう探さない印）。NULL の行だけを見るので冪等。
+    """
+    async with conn.execute(
+        "SELECT id, tags, license FROM library"
+        " WHERE pack_category IS NULL AND license IS NOT NULL AND license != ''"
+    ) as cur:
+        rows = await cur.fetchall()
+    for row in rows:
+        try:
+            license = json.loads(row["license"] or "{}")
+        except ValueError:
+            license = {}
+        if not isinstance(license, dict):
+            license = {}
+        pack = str(license.get("pack") or "").strip()
+        if not pack:
+            continue
+        category = str(license.get("category") or "").strip()
+        if not category:
+            try:
+                tags = [str(tag) for tag in json.loads(row["tags"] or "[]")]
+            except (TypeError, ValueError):
+                tags = []
+            folded = pack.casefold()
+            positions = [i for i, tag in enumerate(tags) if tag.casefold() == folded]
+            if positions and positions[-1] >= 1:
+                category = tags[positions[-1] - 1].strip()
+        await conn.execute(
+            "UPDATE library SET pack_category = ? WHERE id = ?",
+            (category, row["id"]),
+        )
 
 
 #: 静止画クリップ（フェーズ 3）を足したあとの ``timeline_clips`` の列。

@@ -404,6 +404,8 @@ def test_json_payload_shape_is_stable(env):
         # 付けていない素材は null
         "license",
         "media_info",
+        # 素材パックの目録の分類（効果音・BGM など）。素材パックの外は null
+        "pack_category",
     }
     assert item["blocking"] is None and item["blocking_version"] == 0
     assert item["license"] is None and item["media_info"] is None
@@ -743,8 +745,13 @@ def test_category_filter_combines_with_kind_and_query(env):
     ]
 
 
-def test_category_filter_rejects_an_unknown_value(env):
-    assert env.client.get("/api/library", params={"category": "monster"}).status_code == 400
+def test_category_filter_reads_other_words_as_pack_categories(env):
+    # 棚の分類でない語は素材パックの目録の分類（効果音・BGM など）として絞る。
+    # 素材パックから取り込んだものが無ければ空になる（400 にはしない）
+    upload(env, "image", "ref.png", category="prop")
+    response = env.client.get("/api/library", params={"category": "monster"})
+    assert response.status_code == 200
+    assert response.json()["items"] == []
 
 
 def test_old_rows_without_a_category_are_uncategorized(env):

@@ -325,6 +325,7 @@ def row_to_item(row) -> LibraryItem:
         source=data.get("source") or None,
         tags=_load_tags(data.get("tags")),
         category=data.get("category") or None,
+        pack_category=data.get("pack_category") or None,
         blocking=_load_blocking(data.get("blocking")),
         blocking_version=int(data.get("blocking_version") or 0),
         license=_load_json_model(LibraryLicense, data.get("license")),
@@ -395,7 +396,10 @@ async def list_items(
 
     ``category`` も同じく絞り込み条件で、None なら分類で絞らない。未分類だけ見たい
     ときは :data:`UNCATEGORIZED`（``"none"``）を渡す（DB では NULL だが、None は
-    「絞り込まない」に使ってしまっているため）。
+    「絞り込まない」に使ってしまっているため）。棚の分類（:data:`CATEGORIES`）でない
+    語は、素材パックの目録の分類（``pack_category``。``効果音`` / ``BGM`` など）で
+    絞る（大文字小文字は見ない）。棚の分類の語は、棚の分類か目録の分類のどちらかが
+    その語の項目を拾う。
     """
     query = "SELECT * FROM library"
     conditions: list[str] = []
@@ -404,13 +408,21 @@ async def list_items(
         conditions.append("kind = ?")
         params.append(check_kind(kind))
     if category is not None:
-        resolved = check_category(category)
-        if resolved is None:
-            # 未分類。カラムを足す前の行は NULL、フォームの空送信は '' になりうる
-            conditions.append("(category IS NULL OR category = '')")
+        text = str(category).strip()
+        if text and text != UNCATEGORIZED and text not in CATEGORIES:
+            # 素材パックの目録の分類（自由な語）
+            conditions.append("pack_category = ? COLLATE NOCASE")
+            params.append(text)
         else:
-            conditions.append("category = ?")
-            params.append(resolved)
+            resolved = check_category(text)
+            if resolved is None:
+                # 未分類。カラムを足す前の行は NULL、フォームの空送信は '' になりうる
+                conditions.append("(category IS NULL OR category = '')")
+            else:
+                conditions.append(
+                    "(category = ? OR pack_category = ? COLLATE NOCASE)"
+                )
+                params += [resolved, resolved]
     if conditions:
         query += " WHERE " + " AND ".join(conditions)
     query += " ORDER BY created_at DESC, id DESC"
@@ -454,6 +466,31 @@ async def search_items(
     return page, total
 
 
+async def pack_categories() -> list[str]:
+    """素材パックの目録の分類（``pack_category``）の一覧（名前順・重複なし）。"""
+    async with get_db() as conn:
+        async with conn.execute(
+            "SELECT DISTINCT pack_category FROM library"
+            " WHERE pack_category IS NOT NULL AND pack_category != ''"
+        ) as cur:
+            rows = await cur.fetchall()
+    found: dict[str, str] = {}
+    for row in rows:
+        text = str(row[0])
+        found.setdefault(text.casefold(), text)
+    return [found[key] for key in sorted(found)]
+
+
+async def set_pack_category(item_id: str, category: str) -> None:
+    """素材パックの目録の分類を書き直す（取り込み直しで目録が正本になる）。"""
+    async with get_db() as conn:
+        await conn.execute(
+            "UPDATE library SET pack_category = ? WHERE id = ?",
+            (category, item_id),
+        )
+        await conn.commit()
+
+
 async def all_tags() -> list[str]:
     """登録されている全タグ（表記ゆれは最初に見たものへ寄せ、名前順に並べる）。"""
     found: dict[str, str] = {}
@@ -490,14 +527,16 @@ async def _insert(
     #: ライセンス情報と測った値（どちらも省略可）
     license: LibraryLicense | None = None,
     media_info: LibraryMediaInfo | None = None,
+    #: 素材パックの目録の分類（素材パックの取り込みだけが渡す）
+    pack_category: str | None = None,
 ) -> LibraryItem:
     item_id = new_id()
     async with get_db() as conn:
         await conn.execute(
             "INSERT INTO library (id, created_at, kind, name, path, nsfw,"
             " nsfw_source, source_job_id, source, tags, category,"
-            " blocking, blocking_version, license, media_info)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            " blocking, blocking_version, license, media_info, pack_category)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 item_id,
                 _now(),
@@ -514,6 +553,7 @@ async def _insert(
                 blocking_version,
                 _dump_model(license),
                 _dump_model(media_info),
+                pack_category,
             ),
         )
         await conn.commit()

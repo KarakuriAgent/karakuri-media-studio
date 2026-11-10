@@ -564,6 +564,8 @@ export interface LibraryItem {
   license?: LibraryLicense | null
   /** 測った値（素材パックから取り込んだものに付く）。 */
   media_info?: LibraryMediaInfo | null
+  /** 素材パックの目録の分類（効果音・BGM など。素材パックの外は null）。 */
+  pack_category?: string | null
 }
 
 /** GET /api/library のレスポンス（絞り込み結果の 1 ページ）。 */
@@ -575,6 +577,8 @@ export interface LibraryPage {
   offset: number
   /** ライブラリに登録されている全タグ（絞り込みの補完用）。 */
   tags: string[]
+  /** 素材パックの目録の分類の一覧（`category` に渡すと絞れる）。 */
+  pack_categories?: string[]
 }
 
 /** POST /api/library/sheet の body（リファレンスシートの合成、SPEC §7.2）。 */
@@ -591,8 +595,11 @@ export interface LibrarySheetRequest {
 /** GET /api/library のクエリ。 */
 export interface LibraryQuery {
   kind?: LibraryKind
-  /** 分類（省略 = 全件 / `'none'` = 未分類のみ）。 */
-  category?: LibraryCategoryValue
+  /**
+   * 分類（省略 = 全件 / `'none'` = 未分類のみ）。棚の分類でない語は素材パックの
+   * 目録の分類（効果音・BGM など）で絞る。
+   */
+  category?: LibraryCategoryValue | (string & {})
   /** 名前・タグへの部分一致。 */
   q?: string
   /** タグの完全一致。 */

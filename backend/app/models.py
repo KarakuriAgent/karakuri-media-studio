@@ -2258,6 +2258,8 @@ class LibraryLicense(BaseModel):
     sha256: str = ""
     #: アーカイブ（ZIP）から取り出したときの、その中のパス（``download_url`` は ZIP の URL）
     member: str = ""
+    #: 素材パックの目録の分類（``効果音`` / ``BGM`` など。手で付けたものは空）
+    category: str = ""
 
 
 class LibraryMediaInfo(BaseModel):
@@ -2308,6 +2310,10 @@ class LibraryItem(BaseModel):
     tags: list[str] = Field(default_factory=list)
     #: 素材の分類（None = 未分類。アップロード時に指定しなければ未分類）
     category: LibraryCategory | None = None
+    #: 素材パックの目録の分類（``効果音`` / ``BGM`` / ``漫画記号`` など自由な語。
+    #: 素材パックから取り込んだものだけが持つ。None = 持たない）。
+    #: ``GET /library?category=`` で :attr:`category` と同じように絞れる
+    pack_category: str | None = None
     #: 構図リファレンス動画（ブロッキング）のシーン定義。ふつうの素材は None で、
     #: これを持つ項目だけが同じ id のまま再レンダできる（SPEC §7.2）
     blocking: BlockingScene | None = None
@@ -2712,6 +2718,8 @@ class LibraryPage(BaseModel):
     offset: int = 0
     #: ライブラリに登録されている全タグ（絞り込み UI の補完用）
     tags: list[str] = Field(default_factory=list)
+    #: 素材パックの目録の分類の一覧（``category`` に渡せる語。``効果音`` / ``BGM`` など）
+    pack_categories: list[str] = Field(default_factory=list)
 
 
 # --------------------------------------------------------------------------

@@ -106,8 +106,10 @@ export default function LibraryPickerModal({
 }) {
   const [nsfw, setNsfw] = useState(showNsfw)
   const [query, setQuery] = useState('')
-  // '' = すべて（分類で絞らない）。'none' は未分類だけ。
-  const [category, setCategory] = useState<LibraryCategoryValue | ''>('')
+  // '' = すべて（分類で絞らない）。'none' は未分類だけ。棚の分類でない語は
+  // 素材パックの目録の分類（効果音・BGM など）。
+  const [category, setCategory] = useState<string>('')
+  const [packCategories, setPackCategories] = useState<string[]>([])
   const [tag, setTag] = useState<string | null>(null)
   const [items, setItems] = useState<LibraryItem[]>([])
   const [knownTags, setKnownTags] = useState<string[]>([])
@@ -135,6 +137,7 @@ export default function LibraryPickerModal({
         )
         setTotal(page.total)
         setKnownTags(page.tags)
+        setPackCategories(page.pack_categories ?? [])
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : String(caught))
       } finally {
@@ -222,9 +225,7 @@ export default function LibraryPickerModal({
           className="w-auto"
           aria-label="カテゴリで絞り込み"
           value={category}
-          onChange={(event) =>
-            setCategory(event.target.value as LibraryCategoryValue | '')
-          }
+          onChange={(event) => setCategory(event.target.value)}
         >
           <option value="">すべてのカテゴリ</option>
           {(Object.keys(CATEGORY_LABELS) as LibraryCategory[]).map((value) => (
@@ -233,6 +234,17 @@ export default function LibraryPickerModal({
             </option>
           ))}
           <option value={UNCATEGORIZED}>未分類</option>
+          {packCategories.length > 0 && (
+            <optgroup label="素材パックの分類">
+              {packCategories
+                .filter((value) => !(value in CATEGORY_LABELS))
+                .map((value) => (
+                  <option key={`pack:${value}`} value={value}>
+                    {value}
+                  </option>
+                ))}
+            </optgroup>
+          )}
         </NativeSelect>
         <input
           ref={input}
@@ -243,11 +255,14 @@ export default function LibraryPickerModal({
             const file = event.target.files?.[0]
             event.target.value = ''
             // 絞り込み中のカテゴリをそのまま付ける（「キャラクター」を見ながら
-            // 足したものはキャラクター。すべて / 未分類のときは未分類）。
+            // 足したものはキャラクター。すべて / 未分類 / 素材パックの分類の
+            // ときは未分類）。
             if (file) {
-              void mutate(() =>
-                api.uploadToLibrary(kind, file, [], category || UNCATEGORIZED),
-              )
+              const shelf: LibraryCategoryValue =
+                category in CATEGORY_LABELS
+                  ? (category as LibraryCategory)
+                  : UNCATEGORIZED
+              void mutate(() => api.uploadToLibrary(kind, file, [], shelf))
             }
           }}
         />

@@ -1413,7 +1413,7 @@ def test_the_library_can_be_searched(env):
     page = call(env, "GET", "/api/v1/library?kind=image&limit=5")
     assert page.status_code == 200, page.text
     assert page.json() == {
-        "items": [], "total": 0, "limit": 5, "offset": 0, "tags": []
+        "items": [], "total": 0, "limit": 5, "offset": 0, "tags": [], "pack_categories": [],
     }
     assert call(env, "DELETE", "/api/v1/library/nope").status_code == 404
 

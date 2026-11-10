@@ -24,7 +24,7 @@
   1 度だけ取り、``<データの置き場>/packs/_archives/`` に :data:`ARCHIVE_CACHE_SECONDS`
   のあいだ取っておく（中身の一覧 :func:`list_archive` と取り込みで使い回す）
 - 取り込んだ素材は ``library/<kind>/`` にコピーし、タグ（目録のタグ・分類・パック名）・
-  分類・ライセンス情報（:class:`app.models.LibraryLicense`）・測った値
+  分類（目録の分類は ``pack_category`` に。棚の分類の語ならその仕切りにも）・ライセンス情報（:class:`app.models.LibraryLicense`）・測った値
   （:mod:`app.media_measure`）付きでライブラリに登録する
 - **何度実行しても同じ結果**: 登録済みの素材（同じパック・入手元・ファイル名）は
   飛ばす。手で置いた素材は sha256 を比べ、変わっていれば ``changed`` に返す
@@ -518,6 +518,7 @@ def _license(
         file=item.file,
         sha256=sha256,
         member=item.member,
+        category=item.category.strip(),
     )
 
 
@@ -553,6 +554,7 @@ async def _register(
         source=None,
         tags=library_service.normalize_tags(tags),
         category=category if category in library_service.CATEGORIES else None,
+        pack_category=category,
         license=_license(manifest, source, item, sha256),
         media_info=media_info,
     )
@@ -621,6 +623,12 @@ async def run_import(
     for item in manifest.items:
         source = sources[item.source]
         existing = known.get((item.source, item.file))
+        if existing is not None and not request.dry_run:
+            # 登録済みの素材の目録の分類は、目録を正本にして書き直す（分類を
+            # 足す前に取り込んだ素材・タグから推し量った分類もここで正される）。
+            wanted = item.category.strip()
+            if (existing.pack_category or "") != wanted:
+                await library_service.set_pack_category(existing.id, wanted)
         try:
             await _one(
                 manifest, source, item, existing, accepted, inbox, store,

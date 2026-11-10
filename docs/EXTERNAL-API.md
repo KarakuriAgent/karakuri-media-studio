@@ -39,7 +39,7 @@
 | 素材（World Bible） | `GET /assets`（**全作品横断**の素材検索。`project_id` / `kind` / `q` / `limit` / `offset`）・`POST /projects/{id}/assets`（JSON / multipart。`library_id` でライブラリから取り込み）・`assets/from-job`・`PATCH/DELETE /assets/{id}`・`POST /assets/{id}/refresh-from-library`（取り込み元の今の版で取り直す）・素材のリファレンス（`/assets/{id}/files`・`DELETE /asset-files/{id}`） |
 | 生成と Take | `POST /shots/{id}/render`・`GET /shots/{id}/takes`・`POST /takes/{id}/select`・`reject`・`cancel`・`DELETE /takes/{id}` |
 | 汎用ジョブ | `GET/POST /jobs`（一覧は `q` / `kind` / `project_id` / `nsfw` / `limit` / `offset` で絞れる。§3.6）・`GET /jobs/{id}`・`POST /jobs/{id}/cancel`・`rerun`・`continue` |
-| ライブラリ | `GET /library`・`POST /library/image` / `POST /library/audio` / `POST /library/upload`（multipart。`license` も添えられる）・**`POST /library/packs/import`・`GET /library/packs/imports[/{id}]`・`POST /library/packs/archive`（素材パック・ZIP の中身の一覧、§3.8）**・`POST /library/from-job`・`POST /library/sheet`・`POST /library/{id}/key`・`POST /library/key`・`POST /library/key-from-job`・`POST /library/blocking`・`POST /library/{id}/blocking`・`POST /library/blocking/preview`・`POST /library/blocking/location-map`・`PATCH /library/{id}`・`DELETE /library/{id}`（参照されていれば 409、`force=true` で押し切る。§3.8） |
+| ライブラリ | `GET /library`（`kind` / `category`〈棚の分類か素材パックの目録の分類〉/ `q` / `tag`）・`POST /library/image` / `POST /library/audio` / `POST /library/upload`（multipart。`license` も添えられる）・**`POST /library/packs/import`・`GET /library/packs/imports[/{id}]`・`POST /library/packs/archive`（素材パック・ZIP の中身の一覧、§3.8）**・`POST /library/from-job`・`POST /library/sheet`・`POST /library/{id}/key`・`POST /library/key`・`POST /library/key-from-job`・`POST /library/blocking`・`POST /library/{id}/blocking`・`POST /library/blocking/preview`・`POST /library/blocking/location-map`・`PATCH /library/{id}`・`DELETE /library/{id}`（参照されていれば 409、`force=true` で押し切る。§3.8） |
 | 素材の下ごしらえ | `POST /images/text`・`GET /images/text/fonts`・`POST /videos/contact-sheet`（§3.4） |
 | 編集（タイムライン） | `POST /projects/{id}/timelines`・`GET/PATCH/DELETE /timelines/{id}`・`PUT /timelines/{id}/clips`（クリップの加工 `effects`、§3.7）・`POST /timelines/{id}/clips/insert`・トラック CRUD（音声トラックのダッキング `ducking`、§3.7）・`generate-subtitles`・`sync-preview` / `sync`・`missing` / `missing/resolve`・`GET /projects/{id}/media` |
 | 演出（FX トラック） | `GET/PUT /timelines/{id}/fx`・`PUT /timelines/{id}/fx/lyric`（歌詞モーション）・`POST /timelines/{id}/fx/events`・`PATCH/DELETE /timelines/{id}/fx/events/{event_id}`（§3.3） |
@@ -783,10 +783,18 @@ POST /api/v1/library/packs/archive                      → 200 ZIP の中身の
   usable, reason}]}`。`usable: false` は取り込めない物（危ないパス・暗号化・大きすぎ・
   知らない拡張子）で、`reason` に理由。取り込みが走っている間は 409
 - 取り込んだ素材は `library/<kind>/` にコピーし、タグ（目録のタグ・分類・パック id）・
-  分類・`license`・`media_info`（音は長さとラウドネス・真のピーク、画像は大きさと透過の有無、
+  分類（目録の `category` は `pack_category` と `license.category` に入り、`character` /
+  `background` / `prop` なら棚の分類 `category` にもなる）・`license`・`media_info`（音は長さとラウドネス・真のピーク、画像は大きさと透過の有無、
   動画は長さ・大きさ・音の有無）付きで登録する
+- **分類で絞る**: `GET /api/v1/library?category=効果音` のように、棚の分類（`character` /
+  `background` / `prop` / `none`）でない語を渡すと目録の分類（`pack_category`。大文字小文字は
+  見ない）で絞る（棚の分類の語は、棚の分類か目録の分類がその語の項目を拾う）。知らない語は
+  空の一覧（400 にはしない）。使える語は一覧の応答の `pack_categories` に並ぶ。`kind` / `q` /
+  `tag` と組み合わせられる
 - **何度実行しても同じ結果**: 登録済み（同じパック・入手元・ファイル名）は飛ばし、自動の
-  入手元には取りに行かない。手で置いた素材は sha256 を比べ、変わっていれば `changed` に
+  入手元には取りに行かない。ただし目録の分類（`pack_category`）は目録を正本に書き直す
+  （分類の列を足す前に取り込んだ素材は、起動時に出どころの記録とタグから埋め直してあるが、
+  同じ目録でもう一度取り込めば確実に目録どおりになる）。手で置いた素材は sha256 を比べ、変わっていれば `changed` に
   返す（上書きはしない。差し替えるなら棚の項目を消してからもう一度）
 - 結果: `imported`（`dry_run` では「予定」）・`skipped`・`changed`・`missing`（受け取り口に
   無い・取得元が 404）・`blocked`（robots.txt）・`failed`（sha256 の不一致・HTML など）。

@@ -192,6 +192,118 @@ def test_import_fetches_politely_and_places_by_hand(env, monkeypatch):
     assert Path(loop["path"]).read_bytes() == b"ID3loop"
 
 
+def _import_two(env, monkeypatch, items=None) -> list[dict]:
+    """hit.wav（分類 impact）と loop.mp3（分類 bgm）を取り込んで、棚の全件を返す。"""
+    fake_http(monkeypatch, {
+        "https://auto.example.com/robots.txt": ROBOTS,
+        "https://auto.example.com/files/hit.wav": (200, "audio/wav", b"RIFFhit"),
+    })
+    inbox = env.tmp / "packs" / "test-pack" / "inbox"
+    inbox.mkdir(parents=True, exist_ok=True)
+    (inbox / "loop.mp3").write_bytes(b"ID3loop")
+    body = {
+        "manifest": manifest(
+            items=items or (manifest()["items"][:1] + manifest()["items"][4:5])
+        ),
+        "accept_sources": ["auto-site", "hand-site"],
+    }
+    result = wait_import(
+        env, call(env, "POST", "/api/v1/library/packs/import", json=body).json()["id"]
+    )
+    assert result["status"] == "done", result
+    return call(env, "GET", "/api/v1/library?limit=50").json()["items"]
+
+
+def test_pack_categories_can_filter_the_library(env, monkeypatch):
+    items = _import_two(env, monkeypatch)
+    by_name = {item["name"]: item for item in items}
+    assert by_name["hit.wav"]["pack_category"] == "impact"
+    assert by_name["hit.wav"]["license"]["category"] == "impact"
+    # 棚の分類（character など）には入らない
+    assert by_name["hit.wav"]["category"] is None
+    upload = call(
+        env, "POST", "/api/v1/library/audio",
+        files={"file": ("mine.wav", b"RIFFmine", "audio/wav")},
+    )
+    assert upload.status_code == 201, upload.text
+
+    def names(category: str) -> list[str]:
+        response = call(env, "GET", "/api/v1/library", params={"category": category})
+        assert response.status_code == 200, response.text
+        return sorted(item["name"] for item in response.json()["items"])
+
+    assert names("impact") == ["hit.wav"]
+    # 大文字小文字は見ない
+    assert names("BGM") == ["ループ"]
+    assert names("漫画記号") == []
+    # 未分類（棚の分類）はこれまでどおり
+    assert names("none") == ["hit.wav", "mine.wav", "ループ"]
+    page = call(env, "GET", "/api/v1/library").json()
+    assert page["pack_categories"] == ["bgm", "impact"]
+
+
+def test_a_pack_category_that_is_a_shelf_category_fills_both(env, monkeypatch):
+    items = manifest()["items"]
+    items = [{**items[0], "category": "prop"}]
+    found = _import_two(env, monkeypatch, items=items)
+    assert found[0]["category"] == "prop"
+    assert found[0]["pack_category"] == "prop"
+    response = call(env, "GET", "/api/v1/library", params={"category": "prop"})
+    assert [item["name"] for item in response.json()["items"]] == ["hit.wav"]
+
+
+def test_importing_again_rewrites_the_pack_category_from_the_manifest(env, monkeypatch):
+    _import_two(env, monkeypatch)
+
+    async def forget():
+        async with db.get_db() as conn:
+            await conn.execute("UPDATE library SET pack_category = 'wrong'")
+            await conn.commit()
+
+    asyncio.run(forget())
+    items = manifest()["items"]
+    again = _import_two(
+        env, monkeypatch,
+        items=[{**items[0], "category": "効果音"}, items[4]],
+    )
+    by_name = {item["name"]: item for item in again}
+    assert by_name["hit.wav"]["pack_category"] == "効果音"
+    assert by_name["ループ"]["pack_category"] == "bgm"
+
+
+def test_startup_backfills_pack_categories_from_the_records(env, monkeypatch):
+    _import_two(env, monkeypatch)
+
+    async def age_rows():
+        # 分類の列を足す前に取り込んだ行: 列は NULL、ライセンス情報にも分類が無い
+        async with db.get_db() as conn:
+            async with conn.execute("SELECT id, license FROM library") as cur:
+                rows = await cur.fetchall()
+            for row in rows:
+                data = json.loads(row["license"])
+                data.pop("category", None)
+                await conn.execute(
+                    "UPDATE library SET pack_category = NULL, license = ? WHERE id = ?",
+                    (json.dumps(data), row["id"]),
+                )
+            # 手で付けたライセンス（パックではない）は触らない
+            await conn.execute(
+                "INSERT INTO library (id, created_at, kind, name, path, tags, license)"
+                " VALUES ('hand', '2026-01-01', 'audio', 'hand.wav', '/x/hand.wav',"
+                " '[\"a\", \"b\"]', '{\"provider\": \"me\"}')"
+            )
+            await conn.commit()
+        await db.init_db()
+
+    asyncio.run(age_rows())
+    items = call(env, "GET", "/api/v1/library?limit=50").json()["items"]
+    by_name = {item["name"]: item for item in items}
+    # タグは「目録のタグ・分類・パック名」の順なので、パック名のひとつ前が分類
+    assert by_name["hit.wav"]["pack_category"] == "impact"
+    assert by_name["ループ"]["pack_category"] == "bgm"
+    assert by_name["hand.wav"]["pack_category"] is None
+
+
 def test_running_twice_skips_what_is_registered_and_reports_changes(env, monkeypatch):
     seen = fake_http(monkeypatch, {
         "https://auto.example.com/robots.txt": ROBOTS,
