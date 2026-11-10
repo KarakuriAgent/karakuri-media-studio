@@ -389,7 +389,8 @@ DELETE /api/v1/timelines/{id}/fx/events/{event_id}?base_revision=12
 - **演出付き書き出し**: `POST /api/v1/timelines/{id}/export` に `{"fx": true}`。ffmpeg の
   mp4 が焼き上がったあと、それを下地に `FxOverlay` の Remotion ジョブが続けて走る。
   音は**その mp4 の音**（ffmpeg が全部の音声トラックを混ぜた音。音量・フェード・速度・
-  ダッキング・loudnorm 込み）がそのまま使われる。
+  ダッキング・loudnorm 込み）がそのまま使われる（AAC をかけ直さずに写すので、ラウドネスも
+  ffmpeg の書き出しと同じ）。
   結果は書き出しの `fx_job_id` / `fx_status` / `fx_video_url` に出る（`GET /exports/{id}`
   をポーリングする）。Remotion 連携が無効なら 400
 
@@ -444,7 +445,9 @@ GET   /api/v1/exports?project_id=&q=&limit=&offset=
    `fps` / `width` / `height` / `frames` / `duration_ms` が返るので、そのまま Remotion の
    `FxOverlay` の `base`（`{"src": "<output_url>", …}`）と props の規格に使う。
    素材が足りずに末尾静止で埋めたところは `warnings` に `PAD <カット> <不足秒>s`、
-   総フレーム数が計画とずれたときもここに出る
+   総フレーム数が計画とずれたときもここに出る。音は `loudnorm`（既定 ON）で 2 パスの
+   正規化を通り、-14 LUFS（±0.5 LU）・真のピーク -1.5 dBTP 以下に揃う（収まらなかった
+   ときは `warnings` に `LOUDNESS …`）
 
 ### 3.3.2 音源解析（MV のときだけ・指示があったときだけ）
 

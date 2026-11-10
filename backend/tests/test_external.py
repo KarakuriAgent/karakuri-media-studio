@@ -1874,7 +1874,7 @@ def held_export(monkeypatch):
     """
     released = {"go": False}
 
-    async def waits(spec, output, *, on_progress=None):
+    async def waits(spec, output, *, on_progress=None, **_kwargs):
         while not released["go"]:
             await asyncio.sleep(0.01)
         output.parent.mkdir(parents=True, exist_ok=True)
@@ -2006,7 +2006,7 @@ def test_an_export_runs_in_the_background_and_can_be_polled(
 
     seen: dict = {}
 
-    async def fake_run(spec, output, *, on_progress=None):
+    async def fake_run(spec, output, *, on_progress=None, **_kwargs):
         seen["spec"] = spec
         if on_progress is not None:
             await on_progress(0.5)
@@ -2055,7 +2055,7 @@ def test_finished_exports_can_be_listed_across_timelines(timeline_env, monkeypat
         json={"clips": [gap_clip(video_track_id(detail))]},
     )
 
-    async def fake_run(spec, output, *, on_progress=None):
+    async def fake_run(spec, output, *, on_progress=None, **_kwargs):
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_bytes(b"final")
         return output

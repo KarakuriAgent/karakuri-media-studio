@@ -401,6 +401,8 @@ POST   /timelines/{id}/export      {"fx": true}       # 演出付きで焼く
 - `base` / `audio` / `fps` / `width` / `height` / `durationInSeconds` は**送らなくてよい**
   （タイムラインが持っているので無視される）。下地は書き出した mp4、音も**その mp4 の音**
   （全部の音声トラックを音量・フェード・ダッキング・loudnorm 込みで混ぜたもの）が自動で入る
+  （loudnorm は 2 パスで -14 LUFS ±0.5・真のピーク -1.5 dBTP 以下。外れたら書き出しの
+  `warnings` に `LOUDNESS …`。手元で測り直して上げ下げしない）
 - `fx: true` の書き出しは、ffmpeg の mp4 のあとに Remotion が続けて走る。結果は
   `GET /exports/{id}` の `fx_status` / `fx_video_url`（レンダは数分〜十数分かかる）
 - 検証は `type` と `t` だけ。中身の正本は `../remotion/src/schema.ts`（zod）で、

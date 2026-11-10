@@ -506,7 +506,7 @@ def test_fx_export_queues_a_remotion_job_with_the_timelines_events(
         json={"enabled": False},
     )
 
-    async def fake_export(spec, output, *, on_progress=None):
+    async def fake_export(spec, output, *, on_progress=None, **_kwargs):
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_bytes(b"final")
         return output

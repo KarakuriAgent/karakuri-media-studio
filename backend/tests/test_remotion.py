@@ -963,6 +963,44 @@ async def test_the_remuxed_audio_matches_the_video_length(tmp_path, monkeypatch)
     assert abs(audio_length - video_length) < 1 / 24
 
 
+def test_remux_command_can_copy_the_audio_as_it_is():
+    argv = remotion.build_remux_command("v.mp4", "final.mp4", "out.mp4", copy_audio=True)
+    assert argv[argv.index("-c:a") + 1] == "copy"
+    assert "-af" not in argv and "-b:a" not in argv
+
+
+@has_ffmpeg
+async def test_a_normalised_export_keeps_its_audio_untouched(tmp_path, monkeypatch):
+    """演出付きの書き出し: 音源が書き出しの mp4（AAC）なら音は写すだけ。
+
+    正規化したラウドネスと真のピークを AAC のかけ直しで動かさないため。
+    """
+    outputs = tmp_path / "outputs"
+    outputs.mkdir()
+    monkeypatch.setattr(remotion, "AUDIO_ROOTS", {"/outputs/": outputs})
+    export = outputs / "final.mp4"
+    await _lavfi(["-f", "lavfi", "-i", "testsrc=size=160x90:rate=24:duration=3",
+                  "-f", "lavfi", "-i", "sine=frequency=440:duration=3",
+                  "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest"], export)
+    rendered = outputs / "video.mp4"
+    await _lavfi(["-f", "lavfi", "-i", "testsrc=size=160x90:rate=24:duration=3",
+                  "-f", "lavfi", "-i", "sine=frequency=220:duration=3",
+                  "-pix_fmt", "yuv420p", "-c:a", "aac", "-shortest"], rendered)
+
+    assert await remotion.remux_audio(rendered, {"audio": {"src": str(export)}}) is True
+    assert await _audio_md5(rendered) == await _audio_md5(export)
+
+
+async def _audio_md5(path: Path) -> str:
+    process = await asyncio.create_subprocess_exec(
+        "ffmpeg", "-v", "error", "-i", str(path), "-map", "0:a:0", "-c", "copy",
+        "-f", "md5", "-",
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+    )
+    stdout, _ = await process.communicate()
+    return stdout.decode().strip()
+
+
 async def _lavfi(arguments: list[str], dest: Path) -> None:
     process = await asyncio.create_subprocess_exec(
         "ffmpeg", "-v", "error", "-y", *arguments, str(dest),

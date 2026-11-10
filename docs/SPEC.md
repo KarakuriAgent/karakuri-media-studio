@@ -1409,7 +1409,10 @@ ComfyUI と並ぶもう 1 つの生成経路。Remotion プロジェクト（Nod
   （音源側の入力の直前に `-ss`）・`volume`・`fadeOut`（`afade`。映像の尺が読めるとき
   だけ）も再現する。`MusicVideo` / `FxOverlay` で props の形（`audioSchema`）は同じ
   なので composition では分けない。**失敗してもジョブは失敗させない**（mp4 自体は
-  出来ているので、元のまま残してログにだけ書く）
+  出来ているので、元のまま残してログにだけ書く）。音源が AAC で映像の尺に足りていて、
+  `startFrom` / `volume` / `fadeOut` を使わないとき（タイムラインの演出付き書き出しは
+  これ。音源は正規化した書き出しの mp4）は、**音も `-c:a copy` で写すだけ**にする
+  （AAC のかけ直しでラウドネスと真のピークが動かない）
 - **演出はタイムラインに保存する**（§7.3 の FX トラック）。`FxOverlay` の props を
   ジョブへ直接投げるのは、手元で 1 本だけ確かめたいときの近道で、制作の本筋は
   `PUT /timelines/{id}/fx` に入れてから `POST /timelines/{id}/export` の `fx: true`
@@ -2098,7 +2101,20 @@ EDL → ffmpeg コマンドの**組み立ては純関数**（`build_command`）�
 - **テロップ**は ASS（`app/timeline_subtitles.build_ass`）を書き出して `subtitles` フィルタで
   焼き込む。スタイルは 1 つだけ置き、位置・大きさ・色は行ごとの上書きタグ
   （`{\an8\fs48\c&H0000FFFF}`）。文字サイズは出力の高さに対する比なので解像度に依らない
-- **ラウドネス正規化**（既定 ON）は最後に `loudnorm=I=-14:TP=-1.5:LRA=11`（1 パス）
+- **ラウドネス正規化**（既定 ON）は **2 パス**（`run_export` / `plan_loudness`）。目標は
+  積分ラウドネス -14 LUFS（±0.5 LU）・真のピーク -1.5 dBTP 以下:
+  1. 1 パス目（`build_command(..., audio_output=…)`）で映像だけの mp4 と、正規化する前の
+     混ぜた音（WAV・32bit 浮動小数。0dBFS を超えても割れない）を別々に書く
+  2. 混ぜた音を `loudnorm=print_format=json` で測り（積分ラウドネスと 192kHz で測る真の
+     ピーク）、目標との差だけ `volume` を掛ける。上げると真のピークが天井（上限 - 1.0dB）を
+     超えるなら、192kHz にオーバーサンプルした `alimiter`（自動の音量合わせは切り、先読みの
+     遅れは `latency` で戻す）を足し、掛けたあとを測り直して差を詰める（最大 10 回。
+     積分ラウドネスはゲートのせいで音量に対して単調でないので、目標を挟んだら二分する）
+  3. 2 パス目で映像は `-c:v copy`、音だけ AAC にしてまとめ、焼き上がりを測り直す。AAC で
+     ラウドネスが下がった・山が立った分だけ狙いと天井をずらして最大 3 回まで焼き直し、
+     いちばん近いものを残す。それでも外れれば `warnings` に `LOUDNESS …` を出す
+  1 パスの `loudnorm`（動的モード）では -14 の指定で -14.3〜-15.6 LUFS になっていた。
+  途中のファイル（`final.video.mp4` / `final.mix.wav` / `final.try<n>.mp4`）は消す
 - **書き出しプリセット**（`preset`）は `timeline`（規格のまま）/ `1080p` / `vertical`
   (1080x1920) / `720p`。fps はタイムラインの値のまま。縦横比が変わるときの収め方は
   `fit`: `pad`（レターボックス）/ `crop`（中央クロップ）。どちらも `timeline_exports.params` に残る
@@ -2224,7 +2240,8 @@ ffmpeg の書き出し（上）が終わったあと、その mp4 を**下地**�
 
 - props は `base.src` = 焼き上がった mp4 の配信 URL・`audio.src` = **同じ mp4**（ffmpeg が
   全部の音声トラックを混ぜた音。クリップの音量・フェード・速度・ダッキング・loudnorm が
-  そのまま入る。下地はシェイクで何枚も貼られるので `muted` のまま、音は `audio` で 1 本だけ
+  そのまま入る。音の焼き直しは写すだけ〈`-c:a copy`〉なので、演出付きの mp4 のラウドネスと
+  真のピークも ffmpeg の書き出しと同じ。下地はシェイクで何枚も貼られるので `muted` のまま、音は `audio` で 1 本だけ
   鳴らす）・`fps` / `width` / `height` / `durationInSeconds` =
   その書き出しの実測値・`events` = `enabled` のものだけ・`lyric` = `lyric_enabled` なら
   歌詞モーション（`keyBg` は `transparent`）・残りは `timeline_fx` の全体設定

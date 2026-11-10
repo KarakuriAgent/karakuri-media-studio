@@ -1404,7 +1404,7 @@ def test_export_runs_in_the_background_and_lands_in_the_history(
 
     seen: dict = {}
 
-    async def fake_run(spec, output, *, on_progress=None):
+    async def fake_run(spec, output, *, on_progress=None, **_kwargs):
         seen["spec"] = spec
         if on_progress is not None:
             await on_progress(0.5)
@@ -1452,7 +1452,7 @@ def test_a_failed_export_keeps_the_reason(client, tmp_path, monkeypatch):
         json={"episode_id": episode_id},
     ).json()
 
-    async def boom(spec, output, *, on_progress=None):
+    async def boom(spec, output, *, on_progress=None, **_kwargs):
         raise TimelineExportError("ffmpeg が失敗しました: bad filter")
 
     monkeypatch.setattr(service, "run_export", boom)
@@ -1494,7 +1494,7 @@ def test_save_to_library_copies_the_finished_mp4(client, tmp_path, monkeypatch):
         json={"episode_id": episode_id},
     ).json()
 
-    async def fake_run(spec, output, *, on_progress=None):
+    async def fake_run(spec, output, *, on_progress=None, **_kwargs):
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_bytes(b"final")
         return output
@@ -2631,7 +2631,7 @@ def test_export_carries_the_preset_fit_and_loudnorm_into_the_spec(
 
     seen: dict = {}
 
-    async def fake_run(spec, output, *, on_progress=None):
+    async def fake_run(spec, output, *, on_progress=None, **_kwargs):
         seen["spec"] = spec
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_bytes(b"final")
@@ -2672,7 +2672,7 @@ def test_export_writes_an_ass_file_for_the_subtitle_track(
 
     seen: dict = {}
 
-    async def fake_run(spec, output, *, on_progress=None):
+    async def fake_run(spec, output, *, on_progress=None, **_kwargs):
         seen["spec"] = spec
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_bytes(b"final")

@@ -738,7 +738,7 @@ def test_export_lists_the_library_materials_it_used(env, monkeypatch):
                     "chromaKey": {"color": "#00ff00"}}],
     })
 
-    async def fake_run(spec, output, *, on_progress=None):
+    async def fake_run(spec, output, *, on_progress=None, **_kwargs):
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_bytes(b"final")
         return output

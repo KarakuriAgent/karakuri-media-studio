@@ -615,7 +615,7 @@ def test_export_carries_effects_and_ducking_into_the_spec(client, tmp_path, monk
     )
     seen: dict = {}
 
-    async def fake_run(spec, output, *, on_progress=None):
+    async def fake_run(spec, output, *, on_progress=None, **_kwargs):
         seen["spec"] = spec
         output.parent.mkdir(parents=True, exist_ok=True)
         output.write_bytes(b"final")
@@ -767,6 +767,112 @@ def test_fast_rewind_renders_the_planned_frames(tmp_path, reverse):
         capture_output=True, text=True, check=True,
     ).stdout.strip()
     assert int(frames) == spec.total_frames == 72
+
+
+# --------------------------------------------------------------------------
+# ラウドネス正規化（2 パス）
+# --------------------------------------------------------------------------
+
+def test_the_first_pass_writes_video_and_the_raw_mix_separately():
+    spec = ExportSpec(width=320, height=180, fps=24, loudnorm=True, clips=[_clip()],
+                      audio_clips=[ExportAudioClip(path="/x/bgm.wav", start_ms=0,
+                                                   in_ms=0, out_ms=2000, track="A1")])
+    command = build_command(spec, "/o/final.video.mp4", audio_output="/o/final.mix.wav")
+    graph = command[command.index("-filter_complex") + 1]
+    # 1 パス目は正規化しない（混ぜた音をそのまま WAV へ）
+    assert "loudnorm" not in graph
+    video_part = command[: command.index("/o/final.video.mp4")]
+    audio_part = command[command.index("/o/final.video.mp4") + 1 :]
+    assert "-an" in video_part and "[outv]" in video_part
+    assert audio_part[:2] == ["-map", "[outa]"]
+    assert audio_part[audio_part.index("-t") + 1] == "2.000000"
+    assert audio_part[audio_part.index("-c:a") + 1] == "pcm_f32le"
+    assert audio_part[-1] == "/o/final.mix.wav"
+
+
+def test_loudness_filters_add_an_oversampled_limiter_only_when_asked():
+    assert timeline_export.loudness_filters(3.25, limit=False) == ["volume=3.250dB"]
+    assert timeline_export.loudness_filters(0.0, limit=False) == []
+    limited = timeline_export.loudness_filters(6.0, limit=True, ceiling_db=-2.5)
+    assert limited[0] == "volume=6.000dB"
+    assert limited[1] == "aresample=192000"
+    assert limited[2].startswith("alimiter=limit=0.749894:")
+    assert "level=0" in limited[2] and "latency=1" in limited[2]
+    assert limited[3] == "aresample=48000"
+
+
+def test_loudness_warning_reports_misses_and_peaks():
+    assert timeline_export.loudness_warning(-14.3, -2.0) is None
+    assert timeline_export.loudness_warning(None, None) is None
+    assert "ラウドネス -15.6" in timeline_export.loudness_warning(-15.6, -2.0)
+    assert "真のピーク -1.0" in timeline_export.loudness_warning(-14.0, -1.0)
+
+
+def test_parse_loudness_reads_the_last_json():
+    stderr = 'noise {"a": 1}\n[Parsed_loudnorm_0]\n{"input_i" : "-20.31", "input_tp" : "-3.10"}'
+    assert timeline_export.parse_loudness(stderr) == (-20.31, -3.1)
+    assert timeline_export.parse_loudness('{"input_i": "-inf", "input_tp": "-inf"}') == (
+        None, None,
+    )
+
+
+#: 正規化を確かめる音（lavfi）。素直な音・山の鋭い音（リミッターが要る）・
+#: 声のように切れ切れの音・ノイズ（AAC で高い音が削れて下がる）
+LOUDNESS_SOURCES = {
+    "quiet-tone": "sine=f=440:d=6,volume=-30dB",
+    "kick-and-pad": (
+        "aevalsrc='0.95*exp(-30*mod(t\\,0.5))*sin(2*PI*55*t)"
+        "+0.03*sin(2*PI*330*t)':d=6"
+    ),
+    "bursts": (
+        "aevalsrc='0.95*between(mod(t\\,1)\\,0\\,0.02)*sin(2*PI*1000*t)"
+        "+0.03*sin(2*PI*300*t)':d=6"
+    ),
+    "speech-like": "aevalsrc='0.3*sin(2*PI*220*t)*between(mod(t\\,2)\\,0\\,1.2)':d=6",
+    "pink-noise": "anoisesrc=d=6:c=pink:a=0.9",
+}
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg が無い")
+@pytest.mark.parametrize("name", sorted(LOUDNESS_SOURCES))
+def test_two_pass_loudnorm_lands_on_the_target(tmp_path, name):
+    still = tmp_path / "black.mp4"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+         "color=c=black:s=160x90:r=24:d=6", "-c:v", "libx264",
+         "-pix_fmt", "yuv420p", str(still)],
+        check=True,
+    )
+    sound = tmp_path / f"{name}.wav"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", LOUDNESS_SOURCES[name],
+         "-ac", "2", str(sound)],
+        check=True,
+    )
+    spec = ExportSpec(
+        width=160, height=90, fps=24, loudnorm=True,
+        clips=[ExportClip(path=str(still), in_ms=0, out_ms=6000, duration_ms=6000,
+                          has_audio=False, source_duration_ms=6000)],
+        audio_clips=[ExportAudioClip(path=str(sound), start_ms=0, in_ms=0,
+                                     out_ms=6000, track="A1")],
+    )
+    folder = tmp_path / "export"
+    output = folder / "final.mp4"
+    notes: list[str] = []
+    asyncio.run(timeline_export.run_export(spec, output, notes=notes))
+    loudness, peak = asyncio.run(timeline_export.measure_loudness(output))
+    assert loudness is not None and peak is not None
+    assert abs(loudness - timeline_export.LOUDNORM_TARGET_LUFS) <= 0.5, loudness
+    assert peak <= timeline_export.LOUDNORM_TRUE_PEAK_DB, peak
+    assert notes == []
+    # 途中のファイル（映像だけの mp4・混ぜた音・試しに焼いたもの）は残さない
+    assert [path.name for path in folder.iterdir()] == ["final.mp4"]
+    frames = subprocess.run(
+        ["ffprobe", "-v", "error", "-count_frames", "-select_streams", "v",
+         "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0", str(output)],
+        capture_output=True, text=True, check=True,
+    ).stdout.strip()
+    assert int(frames) == spec.total_frames == 144
 
 
 def _rms_at(path: Path, start: float, length: float = 0.2) -> float:

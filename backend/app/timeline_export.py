@@ -18,7 +18,12 @@
   置き場所へずらし、映像の音と ``amix`` する。長さは映像側に合わせて切る。
 - **テロップ（T1）** … ASS ファイル（:mod:`app.timeline_subtitles`）を
   ``subtitles`` フィルタで焼き込む。
-- **ラウドネス正規化** … 最後に ``loudnorm``（1 パス）。
+- **ラウドネス正規化** … **2 パス**（:func:`run_export`）。1 パス目で映像と混ぜた音
+  （WAV・32bit 浮動小数）を別々に書き、混ぜた音の積分ラウドネスと真のピークを測って
+  から、目標との差だけ音量を掛ける（真のピークが上限を超えるなら、4 倍に
+  オーバーサンプルしたリミッターで抑えて測り直す）。2 パス目で映像はそのまま写し、
+  音だけ AAC にして 1 本にまとめる。焼き上がりを測り直し、目標から
+  :data:`LOUDNORM_TOLERANCE_LU` を超えてずれた・真のピークが上限を超えたら警告にする。
 - **映像クリップの加工**（:class:`ClipEffects`）… 止め絵（``in_ms`` の 1 コマを
   ``tpad`` の末尾静止で尺いっぱいに伸ばす）・逆再生（``reverse`` / ``areverse``）・
   寄り（``scale`` + ``crop``）・コマ打ち（``fps`` で間引いてから出力の fps へ戻す）・
@@ -53,7 +58,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
+import math
+import os
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -109,6 +117,20 @@ ATEMPO_MAX = 2.0
 LOUDNORM_TARGET_LUFS = -14.0
 LOUDNORM_TRUE_PEAK_DB = -1.5
 LOUDNORM_RANGE = 11.0
+#: 焼き上がりが目標からこれ以上ずれたら警告にする（LU）
+LOUDNORM_TOLERANCE_LU = 0.5
+#: 正規化で狙う精度（LU）。これより大きくずれていたら音量を掛け直す
+LOUDNORM_STEP_LU = 0.1
+#: リミッターの天井の余裕（dB）。AAC にすると真のピークが少し上がるので、上限より
+#: これだけ下で抑える
+LOUDNORM_PEAK_MARGIN_DB = 1.0
+#: リミッターを掛けたときに音量を掛け直す最多の回数（測るのは混ぜた音の WAV
+#: だけなので 1 回は軽い）
+LOUDNORM_MAX_PASSES = 10
+#: 焼き上がり（AAC）を測って、外れていたら焼き直す最多の回数（1 回目を含む）
+LOUDNORM_ENCODE_ATTEMPTS = 3
+#: 真のピークを測る・抑えるときのオーバーサンプルの周波数
+TRUE_PEAK_RATE = 192000
 
 #: 末尾静止（``tpad``）に持たせる余裕（秒）。素材がちょうど足りている場合でも、
 #: 丸めで最後の 1 フレームが出ないことがあるので必ずこれだけは伸ばしておく
@@ -944,11 +966,22 @@ def _sidechain_duck(
     return result
 
 
-def build_command(spec: ExportSpec, output: str | Path) -> list[str]:
+def build_command(
+    spec: ExportSpec,
+    output: str | Path,
+    *,
+    audio_output: str | Path | None = None,
+) -> list[str]:
     """``spec`` を 1 本の mp4 に焼く ffmpeg のコマンドライン。
 
     純関数（ファイルも ffmpeg も触らない）なのでテストで固定できる。クリップが
     1 つも無い（または尺が全部 0）なら :class:`TimelineExportError`。
+
+    ``audio_output`` を渡すと 2 パスの正規化の 1 パス目になる: ``output`` には映像
+    だけを書き、混ぜた音は正規化せずに ``audio_output``（WAV・32bit 浮動小数。
+    混ぜた直後は 0dBFS を超えうるので整数にしない）へ書く。渡さなければ
+    ``spec.loudnorm`` のとき ``loudnorm`` の 1 パスで済ませる（2 パスを使わない
+    呼び出しのための残し）。
 
     **1 フレームに満たないクリップは落とす**（自動配置や差し込みが作る数ミリ秒の
     隙間がこれになる）。``concat`` に尺 0 のセグメントを渡すと ffmpeg が
@@ -996,7 +1029,8 @@ def build_command(spec: ExportSpec, output: str | Path) -> list[str]:
     # ``[outv]`` / ``[outa]`` にする（余計な通過フィルタを挟まない）。
     single = len(runs) == 1
     video_ends_here = single and not spec.subtitles_path
-    audio_ends_here = single and not spec.audio_clips and not spec.loudnorm
+    one_pass_loudnorm = spec.loudnorm and audio_output is None
+    audio_ends_here = single and not spec.audio_clips and not one_pass_loudnorm
 
     run_labels = [
         _join_run(
@@ -1112,15 +1146,16 @@ def build_command(spec: ExportSpec, output: str | Path) -> list[str]:
 
     if len(mixed) > 1:
         joined = "".join(f"[{label}]" for label in mixed)
-        target = "mixa" if spec.loudnorm else "outa"
+        target = "mixa" if one_pass_loudnorm else "outa"
         graph.filters.append(
             f"{joined}amix=inputs={len(mixed)}:duration=first"
             f":dropout_transition=0:normalize=0[{target}]"
         )
         audio_label = target
 
-    # 6) ラウドネス正規化（1 パス）。音声側の最後の段。
-    if spec.loudnorm:
+    # 6) ラウドネス正規化（1 パス）。音声側の最後の段。2 パス（audio_output）の
+    #    ときはここで掛けず、混ぜた音をそのまま書き出して :func:`run_export` が測る。
+    if one_pass_loudnorm:
         graph.filters.append(
             f"[{audio_label}]loudnorm=I={LOUDNORM_TARGET_LUFS:g}"
             f":TP={LOUDNORM_TRUE_PEAK_DB:g}:LRA={LOUDNORM_RANGE:g}[outa]"
@@ -1136,8 +1171,14 @@ def build_command(spec: ExportSpec, output: str | Path) -> list[str]:
     # 出力そのものもフレーム数で締める（フィルタ側で 1 枚多く出ても、
     # ここで計画どおりの枚数に落ちる）。
     total_frames = spec.total_frames
-
-    return [
+    video_args = [
+        "-c:v", VIDEO_CODEC[0],
+        *VIDEO_CODEC[1:],
+        "-pix_fmt", "yuv420p",
+        "-r", fps,
+        *(("-frames:v", str(total_frames)) if total_frames > 0 else ()),
+    ]
+    head = [
         FFMPEG,
         "-hide_banner",
         "-nostdin",
@@ -1146,13 +1187,30 @@ def build_command(spec: ExportSpec, output: str | Path) -> list[str]:
         "-progress", "pipe:1",
         *graph.inputs,
         "-filter_complex", ";".join(graph.filters),
+    ]
+    if audio_output is not None:
+        # 2 パスの 1 パス目: 映像だけの mp4 と、正規化する前の混ぜた音（WAV）。
+        # 音は映像の尺ちょうどに切る（混ぜた段は duration=first なので揃っている）。
+        duration = _frame_seconds(total_frames, spec.fps) if total_frames > 0 else None
+        return [
+            *head,
+            "-map", "[outv]",
+            *video_args,
+            "-an",
+            "-movflags", "+faststart",
+            str(output),
+            "-map", "[outa]",
+            *(("-t", duration) if duration else ()),
+            "-c:a", "pcm_f32le",
+            "-ar", str(AUDIO_RATE),
+            "-f", "wav",
+            str(audio_output),
+        ]
+    return [
+        *head,
         "-map", "[outv]",
         "-map", "[outa]",
-        "-c:v", VIDEO_CODEC[0],
-        *VIDEO_CODEC[1:],
-        "-pix_fmt", "yuv420p",
-        "-r", fps,
-        *(("-frames:v", str(total_frames)) if total_frames > 0 else ()),
+        *video_args,
         "-c:a", "aac",
         "-b:a", AUDIO_BITRATE,
         "-movflags", "+faststart",
@@ -1178,18 +1236,291 @@ def parse_progress_line(line: str) -> float | None:
     return max(0.0, micros / 1_000_000)
 
 
+# --------------------------------------------------------------------------
+# ラウドネス正規化（2 パス）
+# --------------------------------------------------------------------------
+
+def _db_to_linear(value: float) -> float:
+    return 10 ** (value / 20)
+
+
+def loudness_filters(
+    gain_db: float,
+    limit: bool,
+    ceiling_db: float = LOUDNORM_TRUE_PEAK_DB - LOUDNORM_PEAK_MARGIN_DB,
+) -> list[str]:
+    """混ぜた音に掛ける音量（とリミッター）のフィルタ（純関数）。
+
+    リミッターは真のピーク（サンプルの間の山）を抑えるため、:data:`TRUE_PEAK_RATE`
+    へオーバーサンプルしてから ``alimiter`` に通し、元の周波数へ戻す。天井は
+    真のピークの上限から :data:`LOUDNORM_PEAK_MARGIN_DB` 下げたところ。自動の
+    音量合わせ（``level``）は切り、先読みの遅れは ``latency`` で埋め戻す（音が
+    映像からずれない）。天井は ``ceiling_db``（dBTP）。
+    """
+    filters: list[str] = []
+    if abs(gain_db) >= 0.005:
+        filters.append(f"volume={gain_db:.3f}dB")
+    if limit:
+        ceiling = _db_to_linear(max(-24.0, min(0.0, ceiling_db)))
+        filters += [
+            f"aresample={TRUE_PEAK_RATE}",
+            f"alimiter=limit={ceiling:.6f}:attack=1:release=50:level=0:latency=1",
+            f"aresample={AUDIO_RATE}",
+        ]
+    return filters
+
+
+def parse_loudness(stderr: str) -> tuple[float | None, float | None]:
+    """``loudnorm=print_format=json`` の出力から ``(積分ラウドネス, 真のピーク)``。
+
+    JSON は stderr の最後の ``{ … }`` に出る。無音は ``-inf`` になるので None。
+    """
+    start = stderr.rfind("{")
+    end = stderr.rfind("}")
+    if start < 0 or end <= start:
+        return None, None
+    try:
+        data = json.loads(stderr[start : end + 1])
+    except ValueError:
+        return None, None
+
+    def number(key: str) -> float | None:
+        try:
+            value = float(data.get(key))
+        except (TypeError, ValueError):
+            return None
+        return value if math.isfinite(value) else None
+
+    return number("input_i"), number("input_tp")
+
+
+async def _run_ffmpeg(command: list[str]) -> tuple[int, str]:
+    """ffmpeg を走らせて ``(終了コード, stderr)``。起動できなければ例外にする。"""
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *command,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except FileNotFoundError as exc:
+        raise TimelineExportError(
+            f"書き出しには ffmpeg が要りますが見つかりませんでした（{exc}）"
+        ) from exc
+    except (OSError, ValueError) as exc:
+        raise TimelineExportError(f"ffmpeg を起動できませんでした: {exc}") from exc
+    _, stderr = await process.communicate()
+    return process.returncode or 0, (stderr or b"").decode("utf-8", "replace")
+
+
+async def measure_loudness(
+    path: str | Path, filters: list[str] | None = None
+) -> tuple[float | None, float | None]:
+    """音（と、``filters`` を掛けたあとの音）の積分ラウドネスと真のピーク。
+
+    ``loudnorm`` の測るだけの使い方（``print_format=json``。真のピークは
+    192kHz にオーバーサンプルして測る）。測れなければ ``(None, None)``。
+    """
+    chain = ",".join([*(filters or []), "loudnorm=print_format=json"])
+    code, stderr = await _run_ffmpeg([
+        FFMPEG, "-hide_banner", "-nostdin", "-nostats", "-i", str(path),
+        "-map", "0:a:0", "-af", chain, "-f", "null", "-",
+    ])
+    if code != 0:
+        log.warning("ラウドネスを測れませんでした（%s）: %s", path, stderr.strip()[-300:])
+        return None, None
+    return parse_loudness(stderr)
+
+
+async def plan_loudness(
+    mix: Path,
+    target: float = LOUDNORM_TARGET_LUFS,
+    ceiling: float = LOUDNORM_TRUE_PEAK_DB - LOUDNORM_PEAK_MARGIN_DB,
+) -> list[str]:
+    """混ぜた音を ``target``（LUFS）へ、真のピークを ``ceiling``（dBTP）以下に合わせる
+    フィルタを決める（測りながら）。
+
+    1. 混ぜた音を測り、目標との差（``gain``）を出す
+    2. 差だけ上げても真のピークが天井（上限 - 余裕）に収まるなら、音量だけ
+       （直線。目標にちょうど合う）
+    3. 収まらなければリミッターを足し、掛けたあとの音を測り直して、残った差を
+       ``gain`` に足す（リミッターが山を削るとラウドネスが下がるため）。
+       :data:`LOUDNORM_STEP_LU` 以内に入るか :data:`LOUDNORM_MAX_PASSES` 回まで。
+       積分ラウドネスはゲート（ブロックの -10 LU 下を捨てる）のせいで ``gain`` に
+       対して単調でない（山を削ると静かなブロックがゲートを跨いで数 LU 跳ぶ）ので、
+       目標を挟む 2 点が見つかったらその間を二分する
+
+    無音・測れない音は何も掛けない（空の並び）。
+    """
+    loudness, peak = await measure_loudness(mix)
+    if loudness is None:
+        return []
+    gain = target - loudness
+    if peak is not None and peak + gain <= ceiling:
+        return loudness_filters(gain, limit=False)
+    filters = loudness_filters(gain, limit=True, ceiling_db=ceiling)
+    best: tuple[float, list[str]] | None = None
+    low: float | None = None  # 目標に届かなかった gain の最大
+    high: float | None = None  # 目標を超えた gain の最小
+    for _ in range(LOUDNORM_MAX_PASSES):
+        reached, _peak = await measure_loudness(mix, filters)
+        if reached is None:
+            break
+        miss = target - reached
+        if best is None or abs(miss) < best[0]:
+            best = (abs(miss), filters)
+        if abs(miss) <= LOUDNORM_STEP_LU:
+            break
+        if miss > 0:
+            low = gain if low is None else max(low, gain)
+        else:
+            high = gain if high is None else min(high, gain)
+        step = gain + miss
+        if low is not None and high is not None and not (low < step < high):
+            step = (low + high) / 2
+        gain = step
+        filters = loudness_filters(gain, limit=True, ceiling_db=ceiling)
+    return best[1] if best is not None else filters
+
+
+def finish_command(
+    video: str | Path, mix: str | Path, output: str | Path, filters: list[str]
+) -> list[str]:
+    """2 パス目: 映像はそのまま写し、混ぜた音に ``filters`` を掛けて AAC にまとめる。"""
+    chain = [
+        *filters,
+        f"aformat=sample_fmts=fltp:sample_rates={AUDIO_RATE}"
+        f":channel_layouts={AUDIO_LAYOUT}",
+    ]
+    return [
+        FFMPEG, "-hide_banner", "-nostdin", "-y", "-loglevel", "error",
+        "-i", str(video),
+        "-i", str(mix),
+        "-map", "0:v:0",
+        "-map", "1:a:0",
+        "-c:v", "copy",
+        "-af", ",".join(chain),
+        "-c:a", "aac",
+        "-b:a", AUDIO_BITRATE,
+        "-movflags", "+faststart",
+        str(output),
+    ]
+
+
+def loudness_warning(
+    loudness: float | None, peak: float | None
+) -> str | None:
+    """焼き上がりのラウドネスが目標から外れていたときの警告（収まっていれば None）。"""
+    if loudness is None:
+        return None
+    problems: list[str] = []
+    if abs(loudness - LOUDNORM_TARGET_LUFS) > LOUDNORM_TOLERANCE_LU:
+        problems.append(
+            f"ラウドネス {loudness:.1f} LUFS（目標 {LOUDNORM_TARGET_LUFS:g}"
+            f" ±{LOUDNORM_TOLERANCE_LU:g}）"
+        )
+    if peak is not None and peak > LOUDNORM_TRUE_PEAK_DB + 0.05:
+        problems.append(
+            f"真のピーク {peak:.1f} dBTP（上限 {LOUDNORM_TRUE_PEAK_DB:g}）"
+        )
+    if not problems:
+        return None
+    return "LOUDNESS " + "・".join(problems)
+
+
 async def run_export(
     spec: ExportSpec,
     output: Path,
     *,
     on_progress: Callable[[float], Awaitable[None]] | None = None,
+    notes: list[str] | None = None,
 ) -> Path:
     """``spec`` を ``output`` に焼く（進捗があれば ``on_progress(0.0〜1.0)``）。
 
+    ``spec.loudnorm`` なら 2 パスで正規化する（:func:`plan_loudness`）: 映像だけの
+    mp4 と混ぜた音（WAV）を書き、音を測って音量を決め、映像を写しながら音だけ
+    AAC にしてまとめる。焼き上がりを測り直し、目標から外れていれば ``notes`` に
+    警告（``LOUDNESS …``）を足す。途中のファイルは消す。
+
     失敗したら :class:`TimelineExportError`（メッセージに stderr の末尾）。
     """
-    command = build_command(spec, output)
     output.parent.mkdir(parents=True, exist_ok=True)
+    if not spec.loudnorm:
+        await _run_main(build_command(spec, output), spec, output, on_progress, 0.99)
+        return output
+
+    video = output.with_name(f"{output.stem}.video.mp4")
+    mix = output.with_name(f"{output.stem}.mix.wav")
+    attempts: list[Path] = []
+    try:
+        await _run_main(
+            build_command(spec, video, audio_output=mix), spec, video, on_progress, 0.9
+        )
+        if not mix.is_file() or mix.stat().st_size == 0:
+            raise TimelineExportError("混ぜた音を書き出せませんでした")
+        target = LOUDNORM_TARGET_LUFS
+        ceiling = LOUDNORM_TRUE_PEAK_DB - LOUDNORM_PEAK_MARGIN_DB
+        best: tuple[float, Path, float | None, float | None] | None = None
+        for attempt in range(LOUDNORM_ENCODE_ATTEMPTS):
+            trial = output.with_name(f"{output.stem}.try{attempt}{output.suffix}")
+            attempts.append(trial)
+            filters = await plan_loudness(mix, target, ceiling)
+            code, stderr = await _run_ffmpeg(finish_command(video, mix, trial, filters))
+            if code != 0:
+                raise TimelineExportError(
+                    f"ffmpeg が失敗しました（音の正規化）: {stderr.strip()[-800:]}"
+                )
+            if not trial.is_file() or trial.stat().st_size == 0:
+                raise TimelineExportError("ffmpeg は終了しましたが出力が空でした")
+            loudness, peak = await measure_loudness(trial)
+            if loudness is None:
+                best = (0.0, trial, loudness, peak)
+                break
+            miss = LOUDNORM_TARGET_LUFS - loudness
+            over = (peak if peak is not None else -99.0) - LOUDNORM_TRUE_PEAK_DB
+            score = max(0.0, abs(miss) - LOUDNORM_STEP_LU) + max(0.0, over)
+            if best is None or score < best[0]:
+                best = (score, trial, loudness, peak)
+            if score <= 0:
+                break
+            # AAC にすると高い音が削れてラウドネスが少し下がり（ノイズの多い音で
+            # 0.3 LU ほど）、リミッターで潰した山がサンプルの間でまた立つ（強く
+            # 潰した音で 1 dB ほど）。ずれたぶんだけ狙いと天井をずらして焼き直し、
+            # いちばん目標に近いものを残す。
+            target += miss
+            if over > 0:
+                ceiling -= over + 0.2
+        assert best is not None
+        _score, chosen, loudness, peak = best
+        os.replace(chosen, output)
+    finally:
+        for leftover in (video, mix, *attempts):
+            try:
+                leftover.unlink(missing_ok=True)
+            except OSError:
+                log.debug("途中のファイルを消せませんでした: %s", leftover, exc_info=True)
+
+    log.info(
+        "書き出しのラウドネス %s: %s LUFS / %s dBTP", output, loudness, peak
+    )
+    warning = loudness_warning(loudness, peak)
+    if warning and notes is not None:
+        notes.append(warning)
+    if on_progress is not None:
+        try:
+            await on_progress(0.99)
+        except Exception:  # noqa: BLE001 - 進捗の通知で書き出しを壊さない
+            log.debug("書き出しの進捗通知に失敗しました", exc_info=True)
+    return output
+
+
+async def _run_main(
+    command: list[str],
+    spec: ExportSpec,
+    output: Path,
+    on_progress: Callable[[float], Awaitable[None]] | None,
+    ceiling: float,
+) -> None:
+    """組み立てた書き出しのコマンドを走らせる（進捗は ``0〜ceiling`` に収める）。"""
     total = spec.duration_ms / 1000
 
     try:
@@ -1221,7 +1552,7 @@ async def run_export(
             if seconds is None or on_progress is None or total <= 0:
                 continue
             try:
-                await on_progress(min(0.99, seconds / total))
+                await on_progress(min(ceiling, seconds / total * ceiling))
             except Exception:  # noqa: BLE001 - 進捗の通知で書き出しを壊さない
                 log.debug("書き出しの進捗通知に失敗しました", exc_info=True)
 
@@ -1237,4 +1568,3 @@ async def run_export(
         raise TimelineExportError(f"ffmpeg が失敗しました: {detail}")
     if not output.is_file() or output.stat().st_size == 0:
         raise TimelineExportError("ffmpeg は終了しましたが出力が空でした")
-    return output

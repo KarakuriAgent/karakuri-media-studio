@@ -2220,6 +2220,8 @@ async def _run(export_id: str, timeline_id: str, params: dict[str, Any]) -> None
         )
 
     materials: ExportMaterials | None = None
+    #: 書き出しが残した警告（ラウドネスが目標から外れた など）
+    notes: list[str] = []
     try:
         work_dir = export_dir(export_id)
         detail = await timeline_detail(timeline_id)
@@ -2234,7 +2236,7 @@ async def _run(export_id: str, timeline_id: str, params: dict[str, Any]) -> None
                 log.exception("使った素材の一覧を作れませんでした: %s", export_id)
         spec = await build_spec(timeline_id, params, work_dir)
         output = work_dir / EXPORT_FILENAME
-        await run_export(spec, output, on_progress=on_progress)
+        await run_export(spec, output, on_progress=on_progress, notes=notes)
     except (TimelineError, TimelineExportError) as exc:
         await _update_export(
             export_id, status="failed", error=str(exc), finished_at=_now()
@@ -2249,7 +2251,7 @@ async def _run(export_id: str, timeline_id: str, params: dict[str, Any]) -> None
         # 素材が足りずに末尾静止で埋めたところも警告として残す。
         planned = spec.total_frames
         frames = await probe_frames(output)
-        warnings = pad_warnings(spec)
+        warnings = pad_warnings(spec) + notes
         mismatch = frame_warning(planned, frames)
         if mismatch:
             log.warning("書き出し %s: %s", export_id, mismatch)

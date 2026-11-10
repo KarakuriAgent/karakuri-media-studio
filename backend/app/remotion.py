@@ -637,12 +637,24 @@ def build_remux_command(
     volume: float = 1.0,
     fade_out: float = 0.0,
     duration: float | None = None,
+    copy_audio: bool = False,
 ) -> list[str]:
     """音声だけ焼き直す ffmpeg のコマンドライン（純関数。テストで固定できる）。
 
     映像は ``-c:v copy``（再エンコードしない）。``start_from`` は**音源側の入力の
     前**に ``-ss`` として置くので、その入力だけの頭出しになる。
+
+    ``copy_audio`` なら音も写すだけ（フィルタを掛けない・AAC にし直さない）。
+    タイムラインの書き出し（音を正規化した mp4）を音源にした演出付きの書き出しで、
+    正規化したラウドネスと真のピークをそのまま残すため（:func:`remux_audio`）。
     """
+    if copy_audio:
+        return [
+            FFMPEG, "-v", "error", "-y", "-i", str(video), "-i", str(audio),
+            "-map", "0:v:0", "-map", "1:a:0",
+            "-c:v", "copy", "-c:a", "copy",
+            "-shortest", "-movflags", "+faststart", str(dest),
+        ]
     argv = [FFMPEG, "-v", "error", "-y", "-i", str(video)]
     if start_from > 0:
         argv += ["-ss", f"{start_from:.3f}"]
@@ -663,6 +675,37 @@ def build_remux_command(
         str(dest),
     ]
     return argv
+
+
+#: 音を写すだけにしてよい、音源が映像より短い量の上限（秒。AAC のフレーム境界ぶん）
+COPY_AUDIO_SLACK_SECONDS = 0.05
+
+
+async def probe_audio(path: str | Path) -> tuple[str | None, float | None]:
+    """最初の音声ストリームのコーデック名と、メディアの長さ（秒）。読めなければ None。"""
+    try:
+        process = await asyncio.create_subprocess_exec(
+            FFPROBE, "-v", "error", "-select_streams", "a:0",
+            "-show_entries", "stream=codec_name:format=duration",
+            "-of", "json", str(path),
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+    except (OSError, ValueError) as exc:
+        log.info("ffprobe を実行できませんでした（%s）: %s", path, exc)
+        return None, None
+    stdout, _ = await process.communicate()
+    try:
+        data = json.loads(stdout.decode("utf-8", "replace") or "{}")
+    except ValueError:
+        return None, None
+    streams = data.get("streams") or []
+    codec = (str(streams[0].get("codec_name") or "") or None) if streams else None
+    try:
+        length = float((data.get("format") or {}).get("duration"))
+    except (TypeError, ValueError):
+        length = None
+    return codec, length
 
 
 async def probe_duration(path: str | Path) -> float | None:
@@ -708,10 +751,23 @@ async def remux_audio(output: Path, props: dict[str, Any]) -> bool:
         return False
 
     duration = await probe_duration(output) if fade_out > 0 else None
+    copy_audio = False
+    if volume == 1.0 and fade_out <= 0 and start_from <= 0:
+        # 音源がそのまま使える AAC で、映像の尺に足りているなら写すだけにする
+        # （AAC のかけ直しで、正規化したラウドネス・真のピークが動かない）。
+        codec, source_length = await probe_audio(source)
+        video_length = await probe_duration(output)
+        copy_audio = (
+            codec == "aac"
+            and source_length is not None
+            and video_length is not None
+            and source_length >= video_length - COPY_AUDIO_SLACK_SECONDS
+        )
     temporary = output.with_suffix(output.suffix + ".remux.mp4")
     argv = build_remux_command(
         output, source, temporary,
         start_from=start_from, volume=volume, fade_out=fade_out, duration=duration,
+        copy_audio=copy_audio,
     )
     try:
         process = await asyncio.create_subprocess_exec(
