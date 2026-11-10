@@ -187,3 +187,97 @@ def test_a_pack_svg_size_out_of_range_is_refused():
     }
     with pytest.raises(asset_packs.AssetPackError, match="svg_size"):
         asset_packs.parse_manifest(json.dumps(body))
+
+
+# --------------------------------------------------------------------------
+# 動画（ProRes 4444 -> アルファ付きの WebM）
+# --------------------------------------------------------------------------
+
+def _has_encoders(*names: str) -> bool:
+    if shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None:
+        return False
+    found = subprocess.run(["ffmpeg", "-hide_banner", "-encoders"],
+                           capture_output=True, text=True, check=False).stdout
+    return all(name in found for name in names)
+
+
+needs_vp9 = pytest.mark.skipif(
+    not _has_encoders("libvpx-vp9", "prores_ks"), reason="ffmpeg の libvpx-vp9 / prores_ks が無い"
+)
+
+
+def _prores_4444(path: Path) -> bytes:
+    subprocess.run([
+        "ffmpeg", "-v", "error", "-y", "-f", "lavfi",
+        "-i", "color=c=red@0.5:s=64x48:d=0.5:r=12,format=yuva444p10le",
+        "-c:v", "prores_ks", "-profile:v", "4444", "-pix_fmt", "yuva444p10le", str(path),
+    ], check=True)
+    return path.read_bytes()
+
+
+def test_the_webm_command_keeps_alpha():
+    command = media_convert.webm_command(Path("a.mov"), Path("b.webm"), alpha=True, audio=False)
+    assert "libvpx-vp9" in command and "yuva420p" in command
+    assert command[command.index("-auto-alt-ref") + 1] == "0" and "-an" in command
+    plain = media_convert.webm_command(Path("a.mov"), Path("b.webm"), alpha=False, audio=True)
+    assert "yuv420p" in plain and "libopus" in plain and "-auto-alt-ref" not in plain
+
+
+@needs_vp9
+def test_an_uploaded_prores_4444_becomes_an_alpha_webm(env, tmp_path):
+    data = _prores_4444(tmp_path / "mark.mov")
+    response = call(env, "POST", "/api/v1/library/upload",
+                    files={"file": ("mark.mov", data, "video/quicktime")})
+    assert response.status_code == 201, response.text
+    item = response.json()
+    assert item["kind"] == "video" and item["url"].endswith(".webm")
+    info = item["media_info"]
+    assert info["converted_from"] == "prores"
+    assert info["has_alpha"] is True and (info["width"], info["height"]) == (64, 48)
+    assert Path(info["original_path"]).read_bytes() == data
+    probed = json.loads(subprocess.run(
+        ["ffprobe", "-v", "error", "-print_format", "json", "-show_streams", item["path"]],
+        capture_output=True, text=True, check=True,
+    ).stdout)
+    stream = probed["streams"][0]
+    assert stream["codec_name"] == "vp9" and stream["tags"].get("alpha_mode") == "1"
+
+
+@needs_vp9
+def test_a_playable_video_is_stored_as_it_is(env, tmp_path):
+    webm = tmp_path / "ok.webm"
+    subprocess.run([
+        "ffmpeg", "-v", "error", "-y", "-f", "lavfi",
+        "-i", "color=c=blue:s=32x32:d=0.3:r=12", "-c:v", "libvpx-vp9", str(webm),
+    ], check=True)
+    item = call(env, "POST", "/api/v1/library/upload",
+                files={"file": ("ok.webm", webm.read_bytes(), "video/webm")}).json()
+    assert item["url"].endswith(".webm") and item["media_info"] is None
+
+
+@needs_vp9
+def test_a_pack_prores_is_converted_and_keeps_its_provenance(env, tmp_path):
+    inbox = env.tmp / "packs" / "fx-pack" / "inbox"
+    inbox.mkdir(parents=True)
+    data = _prores_4444(inbox / "sparkle.mov")
+    manifest = {
+        "pack": "fx-pack",
+        "sources": [{"id": "hand", "name": "Hand", "acquire": "manual"}],
+        "items": [{"file": "sparkle.mov", "source": "hand", "category": "manga-mark"}],
+    }
+    import time
+
+    response = call(env, "POST", "/api/v1/library/packs/import",
+                    json={"manifest": manifest, "accept_sources": ["hand"]})
+    deadline = time.time() + 60
+    while time.time() < deadline:
+        result = call(env, "GET", f"/api/v1/library/packs/imports/{response.json()['id']}").json()
+        if result["status"] in ("done", "failed"):
+            break
+        time.sleep(0.1)
+    assert [entry["file"] for entry in result["imported"]] == ["sparkle.mov"], result
+    item = call(env, "GET", "/api/v1/library?kind=video").json()["items"][0]
+    assert item["url"].endswith(".webm")
+    assert item["media_info"]["converted_from"] == "prores"
+    assert item["media_info"]["has_alpha"] is True
+    assert item["license"]["sha256"] == __import__("hashlib").sha256(data).hexdigest()

@@ -2272,11 +2272,12 @@ class LibraryMediaInfo(BaseModel):
     #: 大きさ（画像・動画）
     width: int | None = None
     height: int | None = None
-    #: 透過している画素があるか（画像）
+    #: 透過している画素があるか（画像）・アルファを持つか（動画）
     has_alpha: bool | None = None
     #: 音声を持つか（動画）
     has_audio: bool | None = None
-    #: 取り込むときに変換したなら、元の形式（``svg`` など。:mod:`app.media_convert`）
+    #: 取り込むときに変換したなら、元の形式（``svg``、動画は元のコーデック ``prores`` など。
+    #: :mod:`app.media_convert`）
     converted_from: str | None = None
     #: 変換する前の元のファイル（``library/originals/``）の配信 URL と絶対パス
     original_url: str | None = None

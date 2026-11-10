@@ -6,6 +6,11 @@
   アルファを**乗算済み**で返すので、Pillow で乗算を外してから保存する（外さないと
   半透明の縁が黒ずむ）
 
+- **動画 → WebM（VP9）**（:func:`video_to_webm`）: Chromium（Remotion のレンダラーと
+  画面のプレビュー）で再生できない中間コーデック（ProRes 4444 の .mov など。
+  :data:`CONVERT_VIDEO_CODECS`）は、アルファを保ったまま（``yuva420p``）WebM の VP9 にする。
+  アルファ付きの WebM（VP8 / VP9）や H.264 はそのまま置く
+
 素材パックの取り込み（:mod:`app.asset_packs`）とアップロード（:func:`app.library.add_upload`）
 が :func:`app.library.store_source` を通して使う。元のファイルは
 ``library/originals/`` に残し、:class:`app.models.LibraryMediaInfo` の
@@ -33,8 +38,19 @@ MAX_SVG_BYTES = 20 * 1024 * 1024
 #: 1 回の変換に待つ最長の時間（秒）
 SVG_TIMEOUT_SECONDS = 60.0
 
-#: 変換して取り込む拡張子 -> 変換後の拡張子
+#: 変換して取り込む拡張子（PNG にする）
 SVG_EXT = ".svg"
+
+#: 取り込むときに WebM（VP9）にする動画のコーデック（Chromium で再生できない中間コーデック）
+CONVERT_VIDEO_CODECS = frozenset({
+    "prores", "qtrle", "png", "rawvideo", "ffv1", "utvideo", "hap", "cfhd",
+    "dnxhd", "huffyuv", "ffvhuff", "magicyuv", "r210", "v210", "v410", "targa",
+    "tiff", "dpx", "mjpeg", "jpeg2000", "cinepak", "svq1", "svq3",
+})
+#: 動画の変換に待つ最長の時間（秒）
+VIDEO_TIMEOUT_SECONDS = 30 * 60.0
+#: VP9 の画質（crf。小さいほど高画質）
+VP9_CRF = 24
 
 _LENGTH = re.compile(r"^\s*([0-9]*\.?[0-9]+(?:[eE][-+]?[0-9]+)?)\s*(px|pt|pc|mm|cm|in)?\s*$")
 _UNIT = {None: 1.0, "px": 1.0, "pt": 4 / 3, "pc": 16.0, "mm": 96 / 25.4, "cm": 96 / 2.54, "in": 96.0}
@@ -158,3 +174,65 @@ async def svg_to_png(data: bytes, long_side: int = DEFAULT_SVG_SIZE) -> bytes:
             raise ConvertError(f"SVG を PNG にできませんでした（{detail}）")
         png = target.read_bytes()
     return await asyncio.to_thread(_unpremultiply, png)
+
+
+# --------------------------------------------------------------------------
+# 動画
+# --------------------------------------------------------------------------
+
+async def video_plan(path: Path) -> tuple[str, bool, bool] | None:
+    """WebM にするなら ``(元のコーデック, アルファがあるか, 音があるか)``。そのままでよければ None。
+
+    ffprobe で読めない（ffprobe が無い・壊れている）ときもそのまま置く（None）。
+    """
+    from . import media_measure
+
+    data = await media_measure.probe(path)
+    streams = data.get("streams") or []
+    video = next(
+        (
+            s for s in streams
+            if s.get("codec_type") == "video"
+            and not (s.get("disposition") or {}).get("attached_pic")
+        ),
+        None,
+    )
+    if video is None:
+        return None
+    codec = str(video.get("codec_name") or "").lower()
+    if codec not in CONVERT_VIDEO_CODECS:
+        return None
+    has_audio = any(s.get("codec_type") == "audio" for s in streams)
+    return codec, media_measure.stream_has_alpha(video), has_audio
+
+
+def webm_command(source: Path, target: Path, *, alpha: bool, audio: bool) -> list[str]:
+    """WebM（VP9）にする ffmpeg のコマンド。アルファがあれば ``yuva420p`` で保つ。"""
+    command = [
+        FFMPEG, "-nostdin", "-v", "error", "-y", "-i", str(source),
+        "-map", "0:v:0", "-c:v", "libvpx-vp9",
+        "-pix_fmt", "yuva420p" if alpha else "yuv420p",
+        "-b:v", "0", "-crf", str(VP9_CRF), "-row-mt", "1",
+        "-deadline", "good", "-cpu-used", "2",
+    ]
+    if alpha:
+        # libvpx はアルファ付きのとき alt-ref を使えない
+        command += ["-auto-alt-ref", "0"]
+    if audio:
+        command += ["-map", "0:a:0", "-c:a", "libopus", "-b:a", "160k"]
+    else:
+        command += ["-an"]
+    command += ["-f", "webm", str(target)]
+    return command
+
+
+async def video_to_webm(source: Path, target: Path, *, alpha: bool, audio: bool) -> None:
+    """``source`` を WebM（VP9。アルファを保つ）にして ``target`` に書く。"""
+    code, err = await _run(
+        *webm_command(source, target, alpha=alpha, audio=audio),
+        timeout=VIDEO_TIMEOUT_SECONDS,
+    )
+    if code != 0 or not target.is_file() or target.stat().st_size == 0:
+        target.unlink(missing_ok=True)
+        detail = err.strip().splitlines()[-1] if err.strip() else f"終了コード {code}"
+        raise ConvertError(f"動画を WebM にできませんでした（{detail}）")

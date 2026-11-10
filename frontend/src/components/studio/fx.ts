@@ -31,6 +31,7 @@ export const FX_DEFAULT_SECONDS: Record<string, number> = {
   collapse: 1.2,
   crtOff: 0.5,
   sprite: 2.0,
+  video: 3.0,
   stickerStack: 2.0,
   credits: 3.0,
   lyric: 2.0,
@@ -47,6 +48,7 @@ export const FX_TONE: Record<string, string> = {
   card: 'border-amber-800 bg-amber-950/70 text-amber-100',
   endCard: 'border-amber-700 bg-amber-900/70 text-amber-100',
   sprite: 'border-cyan-800 bg-cyan-950/70 text-cyan-100',
+  video: 'border-sky-800 bg-sky-950/70 text-sky-100',
   stickerStack: 'border-teal-800 bg-teal-950/70 text-teal-100',
   imageSlam: 'border-orange-800 bg-orange-950/70 text-orange-100',
   shape: 'border-indigo-800 bg-indigo-950/70 text-indigo-100',
@@ -124,6 +126,25 @@ function basename(src: string | null): string | null {
   return tail || src
 }
 
+/**
+ * プロパティパネルに添える注意（型ごと。無ければ null）。
+ *
+ * `video` はプレビューもブラウザが再生するので、ブラウザで再生できない素材は
+ * プレビューに映らない（書き出しは映る）。
+ */
+export function fxNote(item: TimelineFxEvent): string | null {
+  if (fxType(item) !== 'video') return null
+  const notes = [
+    'プレビューはブラウザで再生できる素材（WebM・MP4）だけ映ります。ProRes などはスタジオに取り込むと WebM になります。',
+  ]
+  if (item.event.chromaKey) {
+    notes.push(
+      '色抜き（chromaKey）は、素材が別のサーバーにあるとプレビューで抜けないことがあります（書き出しでは抜けます）。',
+    )
+  }
+  return notes.join(' ')
+}
+
 /** プロパティパネルが 1 つずつ出す項目。 */
 export interface FxField {
   name: string
@@ -152,6 +173,7 @@ export const FX_MAIN_FIELDS: FxField[] = [
   { name: 'cx', label: '中心 X（0〜1）', kind: 'number' },
   { name: 'cy', label: '中心 Y（0〜1）', kind: 'number' },
   { name: 'w', label: '幅（画面比）', kind: 'number' },
+  { name: 'maxH', label: '高さの上限（画面比）', kind: 'number' },
   { name: 'color', label: '色', kind: 'text' },
 ]
 

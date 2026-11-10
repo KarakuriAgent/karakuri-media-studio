@@ -1350,7 +1350,7 @@ ComfyUI と並ぶもう 1 つの生成経路。Remotion プロジェクト（Nod
   足す・直すときは `remotion/src/` を編集する
 - 同梱の composition は 4 つ: `MusicVideo`（カット割り・トランジション・歌詞・BGM）/
   `FxOverlay`（出来上がった mp4 の上にイベント駆動で文字演出・エフェクトを載せる。
-  `card` / `imageSlam` / `glitchCut` / `lyric` など 15 種のイベント）/ `LyricMotion`
+  `card` / `imageSlam` / `glitchCut` / `lyric` / 透過の動画を重ねる `video` など 16 種のイベント）/ `LyricMotion`
   （歌詞だけから文字PV を自動構成。後述）/ `Slate`（疎通確認）。
   props の正本は `remotion/src/schema.ts`（zod）
 - **`LyricMotion`（文字PV）**: 素材を 1 枚も使わず、歌詞テキストだけで 1 本組む
@@ -2139,6 +2139,18 @@ EDL → ffmpeg コマンドの**組み立ては純関数**（`build_command`）�
     `events` は生のイベントでも `{id, enabled, event}` の形でも受ける）
   - `POST /timelines/{id}/fx/events` / `PATCH …/fx/events/{event_id}`（`event` は浅い
     マージ。`null` を送るとその項目が消える）/ `DELETE …/fx/events/{event_id}`
+- **動画を重ねる `video` イベント**（`remotion/src/fx/Video.tsx`）: 位置と大きさは `sprite` と
+  同じ書き方（`anchor` か `cx` / `cy`、`w` × `maxH` の箱に `fit`）で、`rot`・`opacity`・`fade`・
+  `motion`・素材の頭出し `in`・速さ `playbackRate`・繰り返し `loop`（1 周は `loopSeconds` か
+  素材の尺）・既定の層 3（`sprite` と同じ）。アルファ付きの WebM（VP8 / VP9）は
+  `OffthreadVideo` の `transparent` でそのまま重なり、グリーンバック・ブルーバックの素材は
+  `chromaKey`（`color`・`similarity`・`smoothness`・`spill`）で色を抜く（隠した動画の 1 コマずつを
+  canvas に描き、YCbCr の色差の距離で抜く。`remotion/src/lib/chroma.ts`）。素材の音は鳴らさない。
+  プレビューも同じコードで描くので、ブラウザで再生できない素材は映らない。そのため取り込み
+  （素材パック・アップロード）で ProRes などの中間コーデックは WebM（VP9。アルファを保つ
+  `yuva420p`）にしてから棚に置く（`app/media_convert.py`。元のファイルは `library/originals/`、
+  `media_info.converted_from` に元のコーデック）。書き出しの素材一覧（`materials`）には、
+  `video` の `src` のライブラリの URL も入る
 
 #### 歌詞モーション（`timeline_fx.lyric`。JIZURA の層）
 

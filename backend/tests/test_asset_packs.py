@@ -121,7 +121,7 @@ def test_the_example_manifest_parses():
     parsed = asset_packs.parse_manifest(EXAMPLE.read_text(encoding="utf-8"))
     assert parsed.pack == "example-sfx-pack"
     assert [source.acquire for source in parsed.sources] == ["auto", "manual"]
-    assert len(parsed.items) == 7
+    assert len(parsed.items) == 8
     assert [item.member for item in parsed.items][3] == "effects/lines/speed_lines_01.png"
     assert parsed.items[5].svg_size == 1024
     assert parsed.items[3].file == "speed_lines_01.png"
@@ -594,6 +594,9 @@ def test_export_lists_the_library_materials_it_used(env, monkeypatch):
     sprite = call(env, "POST", "/api/v1/library/image",
                   files={"file": ("star.png", b"png", "image/png")},
                   data={"license": json.dumps({"provider": "Icon Site"})}).json()
+    overlay = call(env, "POST", "/api/v1/library/upload",
+                   files={"file": ("mark.webm", b"webm", "video/webm")},
+                   data={"license": json.dumps({"provider": "Mark Site"})}).json()
     unused = call(env, "POST", "/api/v1/library/audio",
                   files={"file": ("unused.wav", b"RIFF", "audio/wav")},
                   data={"license": json.dumps({"provider": "Nobody"})}).json()
@@ -617,7 +620,10 @@ def test_export_lists_the_library_materials_it_used(env, monkeypatch):
     assert response.status_code == 200, response.text
     client.put(f"/api/studio/timelines/{timeline['id']}/fx", json={
         "events": [{"type": "imageSlam", "t": 0.5,
-                    "src": f"http://127.0.0.1:8000{sprite['url']}"}],
+                    "src": f"http://127.0.0.1:8000{sprite['url']}"},
+                   {"type": "video", "t": 0.2, "until": 1.5, "loop": True,
+                    "src": f"http://127.0.0.1:8000{overlay['url']}",
+                    "chromaKey": {"color": "#00ff00"}}],
     })
 
     async def fake_run(spec, output, *, on_progress=None):
@@ -656,6 +662,9 @@ def test_export_lists_the_library_materials_it_used(env, monkeypatch):
     collected = asyncio.run(timeline_service.collect_materials(current, fx=fx))
     found = {item.library_id: item.used_in for item in collected.items}
     assert found[sprite["id"]] == ["FX"]
+    # 動画のイベント（video）の素材も一覧に入る
+    assert found[overlay["id"]] == ["FX"]
+    assert {item.library_id: item for item in collected.items}[overlay["id"]].license.provider == "Mark Site"
 
 
 # --------------------------------------------------------------------------

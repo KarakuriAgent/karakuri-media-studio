@@ -223,8 +223,8 @@ props スキーマの正本は **`remotion/src/schema.ts`(zod)**。迷ったら�
 ```
 
 - `events[]` は `type` で形が変わる。共通は `t`(開始秒・必須)と `until` / `duration`(省略可)と `seed`。
-- 型は 15 種: `card` / `invertShake` / `imageSlam` / `terminalText` / `screen` / `glitchCut` /
-  `collapse` / `crtOff` / `sprite` / `stickerStack` / `credits` / `lyric` / `endCard` /
+- 型は 16 種: `card` / `invertShake` / `imageSlam` / `terminalText` / `screen` / `glitchCut` /
+  `collapse` / `crtOff` / `sprite` / `video` / `stickerStack` / `credits` / `lyric` / `endCard` /
   `beatMarker` / `shape`。**各型のフィールドと既定値は `remotion/src/schema.ts` を読む**
   (ここには写さない。増減する)。
 - `sprite` / `imageSlam` / `stickerStack` の `src` に渡す**透過 PNG は、スタジオの
@@ -241,7 +241,7 @@ props スキーマの正本は **`remotion/src/schema.ts`(zod)**。迷ったら�
 ### 重なり(`z`)
 
 イベントの重なりは**型ごとの既定層**で決まる(下から `invertShake`/`collapse` → `glitchCut` →
-`beatMarker` → `sprite`/`stickerStack`/`shape` → `imageSlam` →
+`beatMarker` → `sprite`/`video`/`stickerStack`/`shape` → `imageSlam` →
 `lyric`/`terminalText`/`credits` → `screen` → `card` → `endCard` → `crtOff`。
 同じ層なら `events` に書いた順)。ふつうはこれで足りるので **`z` は書かない**。
 
@@ -287,6 +287,39 @@ BAN!BAN!BAN!(過去に作った MV)で確立したもの。**書かなければ�
 - `stickerStack` の キーフレームの `visible: false` で、その秒から消える
   (次に `visible: true` のキーフレームが来たらそこでまた貼り直す)。「途中で消して再登場」用。
   再登場で跳ねさせたくないときは、そのキーフレームに `pop: false` を書く。
+
+### `video`: 動画を重ねる(動く漫符・エフェクト素材)
+
+透過の動画・グリーンバックの動画を 1 本重ねる。位置と大きさは `sprite` と同じ書き方
+(`anchor` か `cx` / `cy`、幅 `w` × 高さ `maxH` の箱に `fit` で収める。既定 `contain`)。
+
+```jsonc
+// アルファ付きの WebM(棚の動画の url)。汗の漫符を 2 秒、繰り返して出す
+{ "t": 12.0, "until": 14.0, "type": "video",
+  "src": "http://…/library/video/sweat_xxxx.webm",
+  "cx": 0.62, "cy": 0.28, "w": 0.12, "maxH": 0.2, "loop": true },
+// グリーンバックの素材は chromaKey で色を抜く
+{ "t": 20.0, "until": 21.5, "type": "video",
+  "src": "http://…/library/video/impact_gb_xxxx.mp4",
+  "anchor": "center", "w": 0.6, "maxH": 0.6, "in": 0.2, "playbackRate": 1.25,
+  "chromaKey": { "color": "#00ff00", "similarity": 0.25, "smoothness": 0.1, "spill": 0.6 } }
+```
+
+- **尺は `until`(か `duration`)で書く**。書かなければ 3 秒。素材が尽きたら `loop: true` なら
+  頭(`in`)から、そうでなければ最後のコマのまま。1 周の長さは素材の尺を読む(`loopSeconds` を
+  書けばその秒で切って繰り返す)
+- `in` は素材側の頭出し秒、`playbackRate` は速さ。`rot`・`opacity`・`fade`(出入りの秒)・
+  `motion`(既定 `none`)は `sprite` と同じ
+- **透過**: アルファ付きの WebM(VP8 / VP9)はそのまま重なる。ProRes 4444 などはスタジオの
+  棚に入れる(アップロード・素材パック)とアルファ付きの WebM になる。自分で変換しない。
+  アルファの無い素材は `transparent: false` にするとレンダが速い
+- **クロマキー**: `chromaKey.color`(抜く色。既定 `#00ff00`)・`similarity`(この近さまで完全に抜く。
+  既定 0.25)・`smoothness`(縁をなめらかに戻す幅。既定 0.1)・`spill`(縁の緑かぶり・青かぶりを
+  抑える強さ。既定 0.6)。近さは明るさを除いた色みの距離(純色の緑と灰色で 0.53)。抜け残りが
+  あれば `similarity` を上げ、輪郭が欠けたら下げる
+- 素材の音は鳴らさない(効果音はタイムラインの音声トラックへ)
+- 既定の層は 3(`sprite` と同じ)。`screen` の上に出すなら `z` を書く
+- 編集画面のプレビューも同じコードで描く(ブラウザで再生できる WebM・MP4 だけ映る)
 
 ### 単位・座標・書き分けの落とし穴
 

@@ -213,6 +213,8 @@ async def store_source(
     ``data`` か ``origin``（コピー元のパス）のどちらかを渡す。返すのは置いた先と、
     変換したときの記録（:attr:`LibraryMediaInfo.converted_from` と元のファイル。
     変換しなければ None）。変換した元のファイルは ``library/originals/`` に残す。
+    変換するのは SVG（PNG にする）と、Chromium で再生できない中間コーデックの動画
+    （ProRes など。アルファを保って WebM の VP9 にする）。
     変換できなければ :class:`LibraryError`。
     """
     original = Path(filename or "upload")
@@ -238,6 +240,26 @@ async def store_source(
         shutil.copy2(origin, dest)
     else:
         dest.write_bytes(data or b"")
+    if kind == "video":
+        # Chromium で再生できない中間コーデック（ProRes など）は WebM（VP9）にする
+        plan = await media_convert.video_plan(dest)
+        if plan is not None:
+            codec, alpha, audio = plan
+            webm = kind_dir(kind) / f"{stem}.webm"
+            if webm == dest:
+                webm = kind_dir(kind) / f"{stem}_vp9.webm"
+            try:
+                await media_convert.video_to_webm(dest, webm, alpha=alpha, audio=audio)
+            except media_convert.ConvertError as exc:
+                dest.unlink(missing_ok=True)
+                raise LibraryError(str(exc)) from exc
+            kept = kind_dir(ORIGINALS) / dest.name
+            shutil.move(str(dest), kept)
+            return webm, LibraryMediaInfo(
+                converted_from=codec,
+                original_url=item_url(ORIGINALS, kept.name),
+                original_path=str(kept),
+            )
     return dest, None
 
 
@@ -524,7 +546,8 @@ async def add_upload(
     ``nsfw_source`` は ``manual``。``license`` は任意のライセンス情報
     （:class:`LibraryLicense` か、その JSON の文字列）。
 
-    SVG は PNG にして入れる（長辺 ``svg_size`` px。:func:`store_source`）。
+    SVG は PNG に、ProRes などの動画は WebM（VP9。アルファを保つ）にして入れる
+    （SVG の長辺は ``svg_size`` px。:func:`store_source`）。
     変換したときは ``media_info`` に測った値と変換の記録を付ける。
     """
     resolved = check_kind(kind)

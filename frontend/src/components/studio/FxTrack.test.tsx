@@ -218,6 +218,39 @@ it('削除ボタンでその演出だけ消える', async () => {
   )
 })
 
+it('動画のイベント（video）も帯になり、秒と位置を直せる', async () => {
+  const video = fxEvent('E3', {
+    type: 'video',
+    t: 3,
+    until: 5.5,
+    src: 'http://127.0.0.1:8000/library/video/sweat_01.webm',
+    cx: 0.7,
+    cy: 0.3,
+    w: 0.2,
+    loop: true,
+    chromaKey: { color: '#00ff00' },
+  })
+  mocked.getStudioTimelineFx.mockResolvedValue({ ...FX, events: [...FX.events, video] })
+  mocked.updateStudioTimelineFxEvent.mockResolvedValue(FX)
+  open()
+  fireEvent.mouseDown(await screen.findByTitle(/video: sweat_01\.webm/))
+
+  const start = (await screen.findByLabelText('開始（秒）')) as HTMLInputElement
+  expect(start.value).toBe('3')
+  expect(screen.getByText(/プレビューはブラウザで再生できる素材/)).toBeTruthy()
+  expect(screen.getByText(/色抜き（chromaKey）/)).toBeTruthy()
+
+  const cx = screen.getByLabelText('中心 X（0〜1）') as HTMLInputElement
+  fireEvent.change(cx, { target: { value: '0.5' } })
+  fireEvent.blur(cx)
+  await waitFor(() =>
+    expect(mocked.updateStudioTimelineFxEvent).toHaveBeenCalledWith('TL1', 'E3', {
+      event: { cx: 0.5 },
+      base_revision: 12,
+    }),
+  )
+})
+
 // --------------------------------------------------------------------------
 // 歌詞モーション（FX トラックに相乗りする JIZURA の層）
 // --------------------------------------------------------------------------

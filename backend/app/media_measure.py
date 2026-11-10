@@ -52,6 +52,22 @@ async def _run(*command: str) -> tuple[int, str, str]:
     )
 
 
+def pix_fmt_has_alpha(pix_fmt: object) -> bool:
+    """ffmpeg の画素形式の名前がアルファを持つか（``yuva444p10le``・``rgba``・``gbrap`` など）。"""
+    name = str(pix_fmt or "").lower()
+    if not name:
+        return False
+    if name.startswith(("yuva", "gbrap", "ya")):
+        return True
+    return any(part in name for part in ("rgba", "bgra", "argb", "abgr"))
+
+
+def stream_has_alpha(stream: dict) -> bool:
+    """動画のストリームがアルファを持つか（WebM の VP8 / VP9 は ``alpha_mode`` のタグで分かる）。"""
+    tags = {str(key).lower(): str(value) for key, value in (stream.get("tags") or {}).items()}
+    return pix_fmt_has_alpha(stream.get("pix_fmt")) or tags.get("alpha_mode") == "1"
+
+
 def _float(value: object) -> float | None:
     try:
         number = float(value)  # type: ignore[arg-type]
@@ -135,6 +151,7 @@ async def measure(path: str | Path, kind: str) -> LibraryMediaInfo:
         if video is not None:
             info.width = int(video.get("width") or 0) or None
             info.height = int(video.get("height") or 0) or None
+            info.has_alpha = stream_has_alpha(video)
         info.has_audio = any(s.get("codec_type") == "audio" for s in streams) if data else None
     if kind == "audio":
         info.loudness_lufs, info.true_peak_db = await loudness(target)

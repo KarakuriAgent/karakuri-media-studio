@@ -29,6 +29,7 @@ import { FxShape } from './fx/Shape';
 import { FxSpriteEvent } from './fx/Sprite';
 import { FxStickerStack } from './fx/StickerStack';
 import { FxTerminalText } from './fx/TerminalText';
+import { FxVideoEvent } from './fx/Video';
 import {
   FxCtxProvider,
   chromaPixels,
@@ -108,6 +109,7 @@ const EVENT_LAYER: Record<FxEvent['type'], number> = {
   glitchCut: 1,
   beatMarker: 2,
   sprite: 3,
+  video: 3,
   stickerStack: 3,
   shape: 3,
   imageSlam: 4,
@@ -178,6 +180,8 @@ const FxEventView: React.FC<{ prepared: Prepared }> = ({ prepared }) => {
           <FxSpriteEvent ev={ev} seed={seed} />
         </FxOutGlitch>
       );
+    case 'video':
+      return <FxVideoEvent ev={ev} seed={seed} />;
     case 'stickerStack':
       return <FxStickerStack ev={ev} seed={seed} />;
     case 'credits':

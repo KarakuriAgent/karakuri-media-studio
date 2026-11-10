@@ -558,7 +558,7 @@ const fxEventCommon = {
   /**
    * 重なりの順(小さいほど下)。省略時は型ごとの既定層。
    * 型の既定は invertShake/collapse=0, glitchCut=1, beatMarker=2,
-   * sprite/stickerStack/shape=3, imageSlam=4, lyric/terminalText/credits=5,
+   * sprite/video/stickerStack/shape=3, imageSlam=4, lyric/terminalText/credits=5,
    * screen=6, card=7, endCard=8, crtOff=9。
    * 同じ層なら events に書いた順。小数も書ける(例: screen の上なら 6.5)。
    */
@@ -834,6 +834,73 @@ export const fxSpriteEventSchema = z.object({
   ...fxOutGlitchField,
 });
 
+/**
+ * 色を抜く(クロマキー)。グリーンバック・ブルーバックの素材のための設定。
+ * 色の近さは YCbCr の色差(明るさを除いた色み)の距離で測る(0..1 ほど。純色の緑と灰色で 0.53)。
+ */
+export const fxChromaKeySchema = z.object({
+  /** 抜く色(CSS の色。"#00ff00" / "#0000ff" など)。 */
+  color: z.string().default('#00ff00'),
+  /** この距離より近い色を完全に抜く(許容量)。大きいほど広く抜ける。 */
+  similarity: z.number().min(0).max(1).default(0.25),
+  /** similarity から先、この幅で徐々に不透明へ戻す(縁のなめらかさ)。 */
+  smoothness: z.number().min(0).max(1).default(0.1),
+  /** 残った縁の「抜く色」のにじみを抑える強さ(0 で抑えない、1 で抜く色の成分を消す)。 */
+  spill: z.number().min(0).max(1).default(0.6),
+});
+
+/**
+ * 動画を 1 本重ねる。動く漫符・エフェクト素材など。位置と大きさは sprite と同じ書き方
+ * (anchor か cx / cy、幅 w と高さの上限 maxH の箱に contain で収める)。
+ *
+ * - 透過: アルファ付きの WebM(VP8 / VP9)はそのまま重なる(transparent: true)。
+ *   ProRes 4444 などはスタジオに取り込むときに WebM(VP9)へ変換される。
+ * - グリーンバック・ブルーバックの素材は chromaKey で色を抜く。
+ * - 素材の音は鳴らさない(音は audio・タイムラインの音声トラックで足す)。
+ * - 尺は until / duration で決める(書かなければ 3 秒)。素材が尽きたら、loop なら頭から、
+ *   そうでなければ最後のコマのまま。
+ */
+export const fxVideoEventSchema = z.object({
+  ...fxEventCommon,
+  type: z.literal('video'),
+  src: z.string(),
+  /** anchor を書くと隅・辺に寄せる。cx / cy を書けばそちらが優先。 */
+  anchor: fxAnchorSchema.default('center'),
+  cx: z.number().optional(),
+  cy: z.number().optional(),
+  /** anchor で寄せるときの余白(画面幅に対する比)。 */
+  margin: z.number().min(0).default(0.05),
+  /** 箱の幅(画面幅に対する比)。 */
+  w: z.number().min(0.01).max(4).default(0.3),
+  /** 箱の高さ(画面高に対する比)。動画はこの箱に収まる大きさで出る。 */
+  maxH: z.number().min(0.01).max(4).default(0.5),
+  /** 箱への収め方。contain=比を保って収める / cover=比を保って埋める / fill=引き伸ばす。 */
+  fit: z.enum(['contain', 'cover', 'fill']).default('contain'),
+  rot: z.number().default(0),
+  opacity: z.number().min(0).max(1).default(1),
+  motion: fxMotionSchema.default('none'),
+  /** 出入りのフェード秒(0 で瞬間)。 */
+  fade: z.number().min(0).default(0),
+  /** 素材側の頭出し秒。 */
+  in: z.number().min(0).default(0),
+  /** 再生の速さ。 */
+  playbackRate: z.number().min(0.1).max(4).default(1),
+  /** 素材が尽きたら頭(in)から繰り返す。 */
+  loop: z.boolean().default(false),
+  /**
+   * 繰り返す 1 周の長さ(素材の秒。in から数える)。省略すると素材の尺を読む
+   * (読めなければ繰り返さない)。素材の途中で切って繰り返したいときにも書く。
+   */
+  loopSeconds: z.number().min(0.05).optional(),
+  /**
+   * アルファを保って読む(既定 true)。アルファの無い素材なら false にするとレンダが速い。
+   * chromaKey を書いたときは使わない(色を抜くので)。
+   */
+  transparent: z.boolean().default(true),
+  /** 色を抜く(グリーンバック・ブルーバック)。書かなければ抜かない。 */
+  chromaKey: fxChromaKeySchema.optional(),
+});
+
 /** 同じ画像を、キーフレームで指定した位置へ次々に貼って積む。 */
 export const fxStickerStackEventSchema = z.object({
   ...fxEventCommon,
@@ -1004,6 +1071,7 @@ export const fxEventSchema = z.discriminatedUnion('type', [
   fxCollapseEventSchema,
   fxCrtOffEventSchema,
   fxSpriteEventSchema,
+  fxVideoEventSchema,
   fxStickerStackEventSchema,
   fxCreditsEventSchema,
   fxLyricEventSchema,
@@ -1080,6 +1148,7 @@ export type FxEvent = z.infer<typeof fxEventSchema>;
 export type FxEventOf<T extends FxEvent['type']> = Extract<FxEvent, { type: T }>;
 export type FxHalftone = z.infer<typeof fxHalftoneSchema>;
 export type FxOutGlitch = z.infer<typeof fxOutGlitchSchema>;
+export type FxChromaKey = z.infer<typeof fxChromaKeySchema>;
 export type FxTheme = z.infer<typeof fxThemeSchema>;
 export type FxAmbient = z.infer<typeof fxAmbientSchema>;
 export type FxBase = z.infer<typeof fxBaseSchema>;

@@ -115,6 +115,8 @@ export const defaultEventSeconds = (ev: FxEvent, fps: number): number => {
       return ev.frames / fps;
     case 'sprite':
       return 2.0;
+    case 'video':
+      return 3.0;
     case 'stickerStack': {
       const last = ev.target.keyframes.reduce((max, k) => Math.max(max, k.t), ev.t);
       const blow = ev.blowOutAt !== undefined ? ev.blowOutAt + ev.blowOutSeconds : 0;

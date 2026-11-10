@@ -355,6 +355,10 @@ GET  /library/packs/imports/{id}                          # status: done まで�
 - **SVG はそのまま目録・アップロードに書いてよい**: 透過を保った PNG にして入る（長辺は
   素材ごとの `svg_size`、アップロードはフォームの `svg_size`。既定 2048px）。元の SVG は
   `media_info.original_url` に残る。自分で PNG に変換しに行かない
+- **透過の動画（動く漫符・エフェクト）**も目録・アップロードにそのまま書く: アルファ付きの
+  WebM はそのまま、ProRes 4444 の .mov などはアルファ付きの WebM（VP9）にして入る
+  （`media_info.converted_from`・`has_alpha`）。入った `url` を `FxOverlay` の `video` イベントの
+  `src` に書く（`karakuri-remotion` スキル）
 - 目録と素材のファイルはリポジトリにも `workspace/` の共有物にも入れない（利用者の手元）。
   Docker のアプリにはホストのパスが見えないので、目録は `manifest_text` で渡す
 - 結果の `blocked`（robots.txt で禁止）・`missing`・`failed`・`changed` は人に伝える。

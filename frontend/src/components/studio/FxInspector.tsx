@@ -10,6 +10,7 @@ import {
   fxDurationMs,
   fxLabel,
   fxMainFields,
+  fxNote,
   fxRest,
   fxStartMs,
   fxType,
@@ -126,6 +127,11 @@ function FxFields({
         <p className="text-[11px] text-muted-foreground">
           {formatTimecode(fxStartMs(item))} から {formatSeconds(fxDurationMs(item))}
         </p>
+        {fxNote(item) && (
+          <p className="rounded border border-sky-900/70 bg-sky-950/40 px-2 py-1 text-[11px] text-sky-100">
+            {fxNote(item)}
+          </p>
+        )}
 
         <label className="flex cursor-pointer items-center gap-2 text-[11px]">
           <Checkbox

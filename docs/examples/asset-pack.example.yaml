@@ -84,6 +84,14 @@ items:
     svg_size: 1024
     download_url: https://sfx.example.com/packs/effect_lines.zip
 
+  # 透過の動画（動く漫符）。アルファ付きの WebM はそのまま、ProRes 4444 の .mov は
+  # アルファ付きの WebM（VP9）にして入る。FxOverlay の video イベントの src に使う
+  - member: effects/motion/sweat_loop.mov
+    source: example-sfx
+    category: manga-mark
+    tags: [漫符, 動く]
+    download_url: https://sfx.example.com/packs/effect_lines.zip
+
   # 手で置く入手元の ZIP（受け取り口に calm_pack.zip を置く）
   - member: loops/calm_loop_short.mp3
     archive: calm_pack.zip

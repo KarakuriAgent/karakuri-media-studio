@@ -794,6 +794,12 @@ POST /api/v1/library/packs/archive                      → 200 ZIP の中身の
 - アップロード（`POST /library/image` / `upload`）も **SVG を PNG にして**入れる（フォームの
   `svg_size` で長辺 px。省略か 0 で 2048）。変換した項目には `media_info`（大きさ・透過と
   `converted_from`・`original_url`）が付く
+- **透過の動画**: アルファ付きの WebM（VP8 / VP9）はそのまま、Chromium で再生できない
+  中間コーデック（ProRes 4444 の .mov・QuickTime Animation・PNG in MOV など）は、取り込み
+  （素材パック・`POST /library/upload`・`/library/{kind}`）のときに ffmpeg で **アルファを保った
+  WebM（VP9、`yuva420p`）**にして入れる（元のファイルは `library/originals/`、`media_info` の
+  `converted_from` に元のコーデック、`has_alpha` にアルファの有無）。Remotion の `FxOverlay` の
+  `video` イベント（`karakuri-remotion` スキル）の `src` にそのまま書ける
 - `PATCH /library/{id}` の `license`: 送れば丸ごと置き換え、`null` で外す、送らなければそのまま
 - 項目: `provider`・`provider_url`・`page_url`・`download_url`・`terms_url`・`terms_summary`・
   `credit_required`・`credit_text`・`checked_at`・`content_id`・`notes`（と、パックが入れる
