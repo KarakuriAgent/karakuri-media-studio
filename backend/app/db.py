@@ -298,7 +298,9 @@ CREATE TABLE IF NOT EXISTS timeline_tracks (
   name        TEXT NOT NULL DEFAULT '',
   sort_order  INTEGER NOT NULL DEFAULT 0,
   muted       INTEGER NOT NULL DEFAULT 0,
-  locked      INTEGER NOT NULL DEFAULT 0
+  locked      INTEGER NOT NULL DEFAULT 0,
+  -- ダッキング（音声トラックだけ。JSON。NULL = しない）
+  ducking     TEXT
 );
 
 -- timeline_id は track から辿れるが**非正規で持つ**: 1 本のタイムラインの
@@ -327,7 +329,9 @@ CREATE TABLE IF NOT EXISTS timeline_clips (
   text_payload TEXT,                        -- text クリップの中身（JSON。他は NULL）
   -- 再生速度（1.0 = 等速）。duration_ms = (out_ms - in_ms) / speed になる
   speed       REAL NOT NULL DEFAULT 1,
-  sort_order  INTEGER NOT NULL DEFAULT 0
+  sort_order  INTEGER NOT NULL DEFAULT 0,
+  -- 映像クリップの加工（止め絵・逆再生・寄り・コマ打ち・色・ノイズ。JSON。NULL = なし）
+  effects     TEXT
 );
 
 -- タイムラインに載せる演出（Remotion の `FxOverlay` の props、SPEC §7.3）。
@@ -618,6 +622,12 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
     "timeline_clips": [
         # リタイム（フェーズ 3）。既存のクリップは 1.0 = 等速のまま。
         ("speed", "REAL NOT NULL DEFAULT 1"),
+        # 映像クリップの加工（JSON）。既存のクリップは NULL = 加工なし。
+        ("effects", "TEXT"),
+    ],
+    "timeline_tracks": [
+        # 音声トラックのダッキング（JSON）。既存のトラックは NULL = しない。
+        ("ducking", "TEXT"),
     ],
     "timeline_exports": [
         # 焼き上がりの規格と検算。この列を足す前に走った書き出しは NULL のまま
@@ -733,7 +743,7 @@ _TIMELINE_CLIP_COLUMNS = (
     "id", "track_id", "timeline_id", "project_id", "start_ms", "duration_ms",
     "source_kind", "source_id", "in_ms", "out_ms", "gain_db", "fade_in_ms",
     "fade_out_ms", "transition_kind", "transition_ms", "text_payload", "speed",
-    "sort_order",
+    "sort_order", "effects",
 )
 
 
@@ -778,7 +788,8 @@ async def _widen_timeline_clip_sources(conn: aiosqlite.Connection) -> None:
           transition_ms INTEGER NOT NULL DEFAULT 0,
           text_payload TEXT,
           speed       REAL NOT NULL DEFAULT 1,
-          sort_order  INTEGER NOT NULL DEFAULT 0
+          sort_order  INTEGER NOT NULL DEFAULT 0,
+          effects     TEXT
         )
     """)
     await conn.execute(

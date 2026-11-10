@@ -550,7 +550,8 @@ def test_fx_export_queues_a_remotion_job_with_the_timelines_events(
     assert export["fx_job_id"]
     assert export["fx_video_url"].endswith("/video.mp4")
 
-    # 投入した props: 下地は焼いた mp4、音は A1 の 1 本目、events は有効なものだけ
+    # 投入した props: 下地は焼いた mp4、音も同じ mp4（ffmpeg が全部の音声
+    # トラックを混ぜた音）、events は有効なものだけ
     assert rendered["composition"] == "FxOverlay"
     props = rendered["props"]
     assert props["events"] == [LYRIC]
@@ -560,7 +561,7 @@ def test_fx_export_queues_a_remotion_job_with_the_timelines_events(
         f"http://127.0.0.1:80/outputs/exports/{export_id}/final.mp4"
     )
     assert props["base"]["muted"] is True
-    assert props["audio"]["src"] == "http://127.0.0.1:80/library/audio/song.wav"
+    assert props["audio"] == {"src": props["base"]["src"]}
     assert (props["fps"], props["width"], props["height"]) == (24.0, 1280, 720)
     assert props["durationInSeconds"] == 2.0
     assert props["seed"] == 7 and props["theme"] == {"palette": ["#dc1428"]}

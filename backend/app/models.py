@@ -3938,6 +3938,53 @@ class StudioTimelineUpdate(BaseModel):
     planned_end_seconds: float | None = None
 
 
+class TimelineClipZoom(BaseModel):
+    """映像クリップの寄り（拡大して切り出す）。"""
+
+    #: 拡大率（1.0 = そのまま 〜 4.0）
+    scale: float = 1.0
+    #: 切り出す中心の位置（画面比。0 = 左端・上端、0.5 = 真ん中、1 = 右端・下端）
+    x: float = 0.5
+    y: float = 0.5
+
+
+class TimelineClipColor(BaseModel):
+    """映像クリップの色の調整（ffmpeg の ``eq``）。既定値はどれも「変えない」。"""
+
+    #: 彩度（0 = 白黒 〜 3。1 = そのまま）
+    saturation: float = 1.0
+    #: コントラスト（0 〜 3。1 = そのまま）
+    contrast: float = 1.0
+    #: 明るさ（-1 〜 1。0 = そのまま）
+    brightness: float = 0.0
+    #: ガンマ（0.1 〜 4。1 = そのまま）
+    gamma: float = 1.0
+
+
+class TimelineClipEffects(BaseModel):
+    """映像クリップの加工（``timeline_clips.effects``。書き出しの ffmpeg で効く）。
+
+    どれも省略でき、既定値は「何もしない」。**編集画面のプレビューには効かない**
+    （書き出した mp4 で確かめる）。範囲の検証は :func:`app.timeline.validate_clips`
+    が行い、外れていれば 400。
+    """
+
+    #: 止め絵: ``in_ms`` の 1 コマをクリップの尺のあいだ止める（音は無音）。
+    #: 尺は ``duration_ms`` がそのまま決める（``out_ms`` は見ない。速度は 1 のみ）
+    freeze: bool = False
+    #: 逆再生: ``in_ms``〜``out_ms`` を逆に再生する（音も逆再生。速度と併用可）
+    reverse: bool = False
+    #: 寄り・切り出し（None = しない）
+    zoom: TimelineClipZoom | None = None
+    #: コマ打ち（1 = しない、2 = 2 コマ打ち、3 = 3 コマ打ち、4 まで）。出力の fps の
+    #: まま、n コマごとに同じ画を繰り返す
+    step: int = 1
+    #: 色の調整（None = しない）
+    color: TimelineClipColor | None = None
+    #: ノイズ（巻き戻し風の荒れ。0 = なし 〜 1）
+    noise: float = 0.0
+
+
 class TimelineClip(BaseModel):
     """トラックに置かれたクリップ 1 つ（ソース解決済み）。"""
 
@@ -3965,6 +4012,8 @@ class TimelineClip(BaseModel):
     text_payload: dict[str, Any] | None = None
     #: 再生速度（1.0 = 等速。映像クリップだけ 1 以外を取れる）
     speed: float = 1.0
+    #: 映像クリップの加工（止め絵・逆再生・寄り・コマ打ち・色・ノイズ。None = なし）
+    effects: TimelineClipEffects | None = None
     sort_order: int = 0
     # --- ここから下は読み取りのたびに解決する（DB には持たない） -------------
     #: 再生できる URL（``/outputs/…`` / ``/library/…`` / ``/assets/…``）。
@@ -3978,6 +4027,35 @@ class TimelineClip(BaseModel):
     label: str = ""
 
 
+#: ダッキングの効かせ方（:mod:`app.timeline_export`）
+TimelineDuckingMode = Literal["clips", "signal"]
+
+
+class TimelineDucking(BaseModel):
+    """音声トラックのダッキング（``timeline_tracks.ducking``）。
+
+    ``trigger_track_id`` のトラック（声など）が鳴っている間、このトラックを
+    ``amount_db`` だけ下げる。書き出しの ffmpeg で効く（プレビューには効かない）。
+    """
+
+    #: きっかけにする音声トラック（同じタイムラインの、自分以外の音声トラック）
+    trigger_track_id: str
+    #: 下げる量（dB。0 〜 40）
+    amount_db: float = 8.0
+    #: 下げ始めてから下げ切るまで（ミリ秒。``clips`` ではきっかけの始まりの
+    #: この長さ前から下げ始める）
+    attack_ms: int = 100
+    #: きっかけが止んでから戻り切るまで（ミリ秒）
+    release_ms: int = 300
+    #: ``clips`` = きっかけのトラックの**クリップがある区間**で下げる（ちょうど
+    #: ``amount_db``。声を 1 行ずつ置くとき向き）/ ``signal`` = きっかけの**実際の
+    #: 音の大きさ**に反応する（``sidechaincompress``。1 本の長い声のとき向き。
+    #: 下げ幅は目安）
+    mode: TimelineDuckingMode = "clips"
+    #: ``signal`` のとき、きっかけがこれより大きいと下げ始める（dBFS。-60 〜 0）
+    threshold_db: float = -30.0
+
+
 class TimelineTrack(BaseModel):
     """トラック 1 本（クリップ込み）。"""
 
@@ -3988,6 +4066,8 @@ class TimelineTrack(BaseModel):
     sort_order: int = 0
     muted: bool = False
     locked: bool = False
+    #: ダッキング（音声トラックだけ。None = しない）
+    ducking: TimelineDucking | None = None
     clips: list[TimelineClip] = Field(default_factory=list)
 
 
@@ -4021,6 +4101,8 @@ class TimelineClipInput(BaseModel):
     transition_ms: int = 0
     text_payload: dict[str, Any] | None = None
     speed: float = 1.0
+    #: 映像クリップの加工（省略・null = なし）
+    effects: TimelineClipEffects | None = None
 
 
 class TimelineClipsUpdate(BaseModel):
@@ -4047,6 +4129,8 @@ class TimelineClipInsert(BaseModel):
     #: ソースの中の切り出し開始位置（``out_ms`` は ``in_ms + duration_ms``）
     in_ms: int = 0
     text_payload: dict[str, Any] | None = None
+    #: 映像クリップの加工（省略・null = なし）
+    effects: TimelineClipEffects | None = None
     #: 楽観ロック（:data:`BASE_REVISION_DOC`）
     base_revision: int | None = None
 
@@ -4266,11 +4350,16 @@ class TimelineTrackCreate(BaseModel):
 
 
 class TimelineTrackUpdate(BaseModel):
-    """PATCH /api/studio/timelines/{id}/tracks/{track_id} body。"""
+    """PATCH /api/studio/timelines/{id}/tracks/{track_id} body。
+
+    ``ducking`` は送れば丸ごと置き換え、**``null`` を送ると外す**（送らなければ
+    そのまま）。音声トラックにだけ付けられる。
+    """
 
     name: str | None = None
     muted: bool | None = None
     locked: bool | None = None
+    ducking: TimelineDucking | None = None
 
 
 # --------------------------------------------------------------------------

@@ -302,6 +302,31 @@ cwd として書いてある。
   タイムラインに置けるのは棚の音だけで、作品の素材（`assets`）に上げた音は
   素材ビンに出てこない（`.agents/skills/karakuri-studio/scripts/studio.sh upload /library/audio file=@ban.wav`）
 
+### カットの加工とダッキング（ショートの編集をタイムラインでやる）
+
+止め絵・逆再生・寄り・コマ打ち・色・ノイズ、声の間だけ BGM を下げる、を**手元の ffmpeg で
+焼かずにタイムラインへ保存する**（人が画面で値を直せる。詳細は `docs/EXTERNAL-API.md` §3.7）。
+
+```
+PUT /timelines/{id}/clips   … 各クリップに "effects":
+  {"freeze": true}                                  # in_ms の 1 コマを duration_ms 止める（速度 1・音は無音）
+  {"reverse": true}                                 # 逆再生（speed と併用可）
+  {"zoom": {"scale": 1.2, "x": 0.5, "y": 0.3}}      # 1.2 倍・上寄り
+  {"step": 2}                                       # 2 コマ打ち
+  {"color": {"saturation": 0.6, "contrast": 1.15}, "noise": 0.5}   # 巻き戻し風
+PATCH /timelines/{id}/tracks/{BGM のトラック}
+  {"ducking": {"trigger_track_id": "<声のトラック>", "amount_db": 8,
+               "attack_ms": 100, "release_ms": 300}}   # null で外す
+```
+
+- 加工もダッキングも**書き出しでだけ効く**（プレビューには出ない）。書き出した mp4 を
+  `inspect.sh` かコンタクトシートで見て確かめる
+- 止め絵は `duration_ms` がそのまま尺（`out_ms` は見ない）。素材の外を指すと
+  `warnings` に `FREEZE …` が出る
+- 声は 1 行ずつクリップにして別トラック（A2 など）に置き、BGM のトラックに
+  `mode: "clips"`（既定。クリップの区間でちょうど N dB 下げる）を付けるのが基本。
+  1 本の長い声なら `mode: "signal"`（実際の音に反応。下げ幅は目安）
+
 ### 演出はタイムラインに保存する（FX トラック。MV のときだけ）
 
 **鉄則: `FxOverlay` の演出はタイムラインに保存する。ジョブに props を直接投げるのは
@@ -322,8 +347,8 @@ POST   /timelines/{id}/export      {"fx": true}       # 演出付きで焼く
 ```
 
 - `base` / `audio` / `fps` / `width` / `height` / `durationInSeconds` は**送らなくてよい**
-  （タイムラインが持っているので無視される）。下地は書き出した mp4、音は A1 の
-  最初の音声クリップが自動で入る
+  （タイムラインが持っているので無視される）。下地は書き出した mp4、音も**その mp4 の音**
+  （全部の音声トラックを音量・フェード・ダッキング・loudnorm 込みで混ぜたもの）が自動で入る
 - `fx: true` の書き出しは、ffmpeg の mp4 のあとに Remotion が続けて走る。結果は
   `GET /exports/{id}` の `fx_status` / `fx_video_url`（レンダは数分〜十数分かかる）
 - 検証は `type` と `t` だけ。中身の正本は `../remotion/src/schema.ts`（zod）で、

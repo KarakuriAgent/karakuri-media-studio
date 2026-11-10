@@ -49,7 +49,11 @@ from .models import (
     StudioTimelineDetail,
     TimelineClip,
     TimelineClipInput,
+    TimelineClipColor,
+    TimelineClipEffects,
     TimelineClipInsert,
+    TimelineClipZoom,
+    TimelineDucking,
     TimelineExport,
     TimelineExportItem,
     TimelineFx,
@@ -75,6 +79,7 @@ from .models import (
 )
 from .paths import ASSETS_DIR, LIBRARY_DIR, OUTPUTS_DIR, rebase_stored_path
 from . import timeline_subtitles as subtitles
+from . import timeline_export as export_service
 from .timeline_export import (
     FIT_CROP,
     FIT_PAD,
@@ -83,8 +88,10 @@ from .timeline_export import (
     TRANSITION_MAX_MS,
     TRANSITION_MIN_MS,
     TRANSITIONS,
+    ClipEffects,
     ExportAudioClip,
     ExportClip,
+    ExportDucking,
     ExportSpec,
     TimelineExportError,
     frame_warning,
@@ -316,6 +323,120 @@ DURATION_TOLERANCE_MS = 2
 _SPANLESS_SOURCES = ("gap", "text", "image")
 
 
+def normalize_effects(
+    effects: TimelineClipEffects | None,
+) -> TimelineClipEffects | None:
+    """既定値だけの加工を None に畳む（「加工なし」の表し方を 1 つにする）。"""
+    if effects is None:
+        return None
+    current = effects.model_copy()
+    if current.zoom is not None and current.zoom == TimelineClipZoom():
+        current.zoom = None
+    if current.color is not None and current.color == TimelineClipColor():
+        current.color = None
+    if current == TimelineClipEffects():
+        return None
+    return current
+
+
+def _dump_effects(effects: TimelineClipEffects | None) -> str | None:
+    normalized = normalize_effects(effects)
+    return normalized.model_dump_json() if normalized is not None else None
+
+
+def _load_effects(raw: Any) -> TimelineClipEffects | None:
+    """``effects`` 列（JSON）を読む（壊れていれば None = 加工なし）。"""
+    if not raw:
+        return None
+    try:
+        return normalize_effects(TimelineClipEffects.model_validate_json(raw))
+    except ValueError:
+        return None
+
+
+def _load_ducking(raw: Any) -> TimelineDucking | None:
+    """``ducking`` 列（JSON）を読む（壊れていれば None = しない）。"""
+    if not raw:
+        return None
+    try:
+        return TimelineDucking.model_validate_json(raw)
+    except ValueError:
+        return None
+
+
+def is_freeze(clip: TimelineClipInput | TimelineClip) -> bool:
+    """止め絵のクリップか（尺だけを持ち、切り出しの範囲は見ない）。"""
+    return bool(clip.effects is not None and clip.effects.freeze)
+
+
+def is_spanless(clip: TimelineClipInput | TimelineClip) -> bool:
+    """切り出し位置を持たない（``duration_ms`` がそのまま尺の）クリップか。"""
+    return clip.source_kind in _SPANLESS_SOURCES or is_freeze(clip)
+
+
+def _check_range(where: str, label: str, value: float, low: float, high: float) -> None:
+    if not (low - 1e-9 <= float(value) <= high + 1e-9):
+        raise TimelineError(f"{where}: {label}は {low:g}〜{high:g} の範囲です（{value:g}）")
+
+
+def validate_effects(
+    clip: TimelineClipInput, kind: str, where: str
+) -> None:
+    """映像クリップの加工の約束（破れていたら :class:`TimelineError`）。"""
+    effects = normalize_effects(clip.effects)
+    if effects is None:
+        return
+    if kind != "video":
+        raise TimelineError(f"{where}: 加工を付けられるのは映像クリップだけです")
+    if clip.source_kind in ("gap", "text"):
+        raise TimelineError(f"{where}: 隙間・テロップには加工を付けられません")
+    if effects.freeze and effects.reverse:
+        raise TimelineError(f"{where}: 止め絵と逆再生は同時に使えません")
+    if clip.source_kind == "image" and (effects.freeze or effects.reverse):
+        raise TimelineError(f"{where}: 静止画には止め絵・逆再生を付けられません")
+    if effects.freeze and abs(float(clip.speed or 1.0) - 1.0) >= 1e-9:
+        raise TimelineError(f"{where}: 止め絵の速度は 1 のままにしてください")
+    if effects.zoom is not None:
+        _check_range(
+            where, "寄りの拡大率", effects.zoom.scale,
+            export_service.ZOOM_MIN, export_service.ZOOM_MAX,
+        )
+        _check_range(where, "寄りの位置（横）", effects.zoom.x, 0.0, 1.0)
+        _check_range(where, "寄りの位置（縦）", effects.zoom.y, 0.0, 1.0)
+    _check_range(
+        where, "コマ打ち", effects.step,
+        export_service.STEP_MIN, export_service.STEP_MAX,
+    )
+    if effects.color is not None:
+        _check_range(where, "彩度", effects.color.saturation, *export_service.SATURATION_RANGE)
+        _check_range(where, "コントラスト", effects.color.contrast, *export_service.CONTRAST_RANGE)
+        _check_range(where, "明るさ", effects.color.brightness, *export_service.BRIGHTNESS_RANGE)
+        _check_range(where, "ガンマ", effects.color.gamma, *export_service.GAMMA_RANGE)
+    _check_range(where, "ノイズ", effects.noise, *export_service.NOISE_RANGE)
+
+
+def export_effects(effects: TimelineClipEffects | None) -> ClipEffects | None:
+    """保存した加工を書き出し用（:class:`app.timeline_export.ClipEffects`）にする。"""
+    normalized = normalize_effects(effects)
+    if normalized is None:
+        return None
+    zoom = normalized.zoom or TimelineClipZoom()
+    color = normalized.color or TimelineClipColor()
+    return ClipEffects(
+        freeze=normalized.freeze,
+        reverse=normalized.reverse,
+        zoom=zoom.scale,
+        zoom_x=zoom.x,
+        zoom_y=zoom.y,
+        step=int(normalized.step),
+        saturation=color.saturation,
+        contrast=color.contrast,
+        brightness=color.brightness,
+        gamma=color.gamma,
+        noise=normalized.noise,
+    )
+
+
 def expected_duration_ms(in_ms: int, out_ms: int, speed: float) -> int:
     """切り出しと速度から決まるタイムライン上の尺。"""
     if speed <= 0:
@@ -341,6 +462,8 @@ def validate_clips(
     - ``duration_ms == (out_ms - in_ms) / speed``（リタイム込みのつじつま）
     - ``speed`` は :data:`app.timeline_export.SPEED_MIN` 〜 ``SPEED_MAX``。
       音声・字幕のクリップは等速のみ
+    - 加工（``effects``）は映像クリップだけで、範囲は :func:`validate_effects`。
+      止め絵は切り出しの範囲を見ない（``in_ms`` の 1 コマを尺のあいだ止める）
     - ``start_ms >= 0``
     - ``text`` クリップは本文を持つ
 
@@ -381,7 +504,12 @@ def validate_clips(
         if clip.source_kind in ("image", "asset_file", "library", "job", "take"):
             if not (clip.source_id or "").strip():
                 raise TimelineError(f"{where}: ソースが指定されていません")
+        validate_effects(clip, kind, where)
         if clip.source_kind in _SPANLESS_SOURCES:
+            continue
+        if is_freeze(clip):
+            if clip.in_ms < 0:
+                raise TimelineError(f"{where}: 止める位置が負です")
             continue
 
         if clip.in_ms < 0:
@@ -749,6 +877,7 @@ async def timeline_detail(timeline_id: str) -> StudioTimelineDetail | None:
         data = dict(row)
         data.pop("project_id", None)
         data["text_payload"] = json.loads(data["text_payload"] or "null") or None
+        data["effects"] = _load_effects(data.get("effects"))
         source_kind = str(data["source_kind"])
         key = (source_kind, str(data.get("source_id") or ""))
         info = sources.get(key) if source_kind not in ("gap", "text") else None
@@ -767,8 +896,9 @@ async def timeline_detail(timeline_id: str) -> StudioTimelineDetail | None:
             **{
                 key: value
                 for key, value in dict(row).items()
-                if key not in ("project_id",)
+                if key not in ("project_id", "ducking")
             },
+            ducking=_load_ducking(dict(row).get("ducking")),
             clips=clips_by_track.get(str(row["id"]), []),
         )
         for row in track_rows
@@ -1074,8 +1204,8 @@ async def _write_clips(
             " (id, track_id, timeline_id, project_id, start_ms, duration_ms,"
             "  source_kind, source_id, in_ms, out_ms, gain_db, fade_in_ms,"
             "  fade_out_ms, transition_kind, transition_ms, text_payload, speed,"
-            "  sort_order)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            "  sort_order, effects)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (
                 clip.id or new_id(),
                 clip.track_id,
@@ -1097,6 +1227,7 @@ async def _write_clips(
                 else None,
                 float(clip.speed or 1.0),
                 order,
+                _dump_effects(clip.effects),
             ),
         )
     await conn.execute(
@@ -1781,14 +1912,32 @@ async def build_spec(
                 transition_ms=overlap,
                 source_duration_ms=source_duration_ms,
                 name=clip.label or clip.source_id or "",
+                effects=export_effects(clip.effects) if path else None,
             )
         )
         cursor = clip.start_ms + clip.duration_ms
 
     audio_clips: list[ExportAudioClip] = []
+    ducking: list[ExportDucking] = []
+    live_audio = {
+        track.id for track in detail.tracks if track.kind == "audio" and not track.muted
+    }
     for track in detail.tracks:
         if track.kind != "audio" or track.muted:
             continue
+        # ミュートしたトラックはきっかけにならない（鳴らないものに反応しない）。
+        if track.ducking is not None and track.ducking.trigger_track_id in live_audio:
+            ducking.append(
+                ExportDucking(
+                    target=track.id,
+                    trigger=track.ducking.trigger_track_id,
+                    amount_db=track.ducking.amount_db,
+                    attack_ms=track.ducking.attack_ms,
+                    release_ms=track.ducking.release_ms,
+                    mode=track.ducking.mode,
+                    threshold_db=track.ducking.threshold_db,
+                )
+            )
         for clip in sorted(track.clips, key=lambda item: item.start_ms):
             path = paths.get((clip.source_kind, clip.source_id or ""))
             if path is None or clip.out_ms <= clip.in_ms:
@@ -1802,6 +1951,7 @@ async def build_spec(
                     gain_db=clip.gain_db,
                     fade_in_ms=clip.fade_in_ms,
                     fade_out_ms=clip.fade_out_ms,
+                    track=track.id,
                 )
             )
 
@@ -1825,6 +1975,7 @@ async def build_spec(
         subtitles_path=subtitles_path,
         fit=fit if fit in (FIT_PAD, FIT_CROP) else FIT_PAD,
         loudnorm=bool(params.get("loudnorm", False)),
+        ducking=ducking,
     )
 
 
@@ -2016,8 +2167,8 @@ def _serve_url(path: str | None, base_url: str) -> str | None:
 async def fx_props(timeline_id: str, export: TimelineExport) -> dict[str, Any]:
     """``FxOverlay`` に渡す props を組み立てる。
 
-    下地（``base``）は焼き上がった mp4、音（``audio``）は A1 の最初の音声
-    クリップ、規格（``fps`` / ``width`` / ``height`` / ``durationInSeconds``）は
+    下地（``base``）は焼き上がった mp4、音（``audio``）も同じ mp4（ffmpeg が
+    全部の音声トラックを混ぜた音）、規格（``fps`` / ``width`` / ``height`` / ``durationInSeconds``）は
     その書き出しの実測値（無ければタイムラインの規格）。イベントは FX トラック
     の ``enabled`` なものだけを並び順に並べる。
     """
@@ -2052,24 +2203,11 @@ async def fx_props(timeline_id: str, export: TimelineExport) -> dict[str, Any]:
     # 下地の音は鳴らさない（音は audio で別に足す。FxOverlay の既定と同じ）。
     props["base"] = {"src": base, "fit": "fill", "muted": True}
 
-    # A1（最初の音声トラック）の最初のクリップを音として渡す（無ければ省略）。
-    paths = await _resolve_clip_paths(detail)
-    for track in detail.tracks:
-        if track.kind != "audio" or track.muted:
-            continue
-        clips = sorted(track.clips, key=lambda clip: clip.start_ms)
-        if not clips:
-            continue
-        src = _serve_url(
-            paths.get((clips[0].source_kind, clips[0].source_id or "")), base_url
-        )
-        if src is None:
-            continue
-        audio: dict[str, Any] = {"src": src}
-        if clips[0].in_ms:
-            audio["startFrom"] = round(clips[0].in_ms / 1000, 3)
-        props["audio"] = audio
-        break
+    # 音は ffmpeg が混ぜた書き出しの音そのもの（全部の音声トラック・クリップの
+    # 音量・フェード・速度・ダッキング・loudnorm を反映したもの）を渡す。下地の
+    # 動画はシェイクで何枚も貼られるので鳴らさず、同じ mp4 を audio で 1 本だけ
+    # 鳴らす（下地と同じファイルなので、映像とずれない）。
+    props["audio"] = {"src": base}
     return props
 
 
@@ -2260,10 +2398,62 @@ async def add_track(
     return detail
 
 
+def validate_ducking(
+    ducking: TimelineDucking,
+    track_id: str,
+    kinds: dict[str, str],
+    duckings: dict[str, TimelineDucking | None],
+) -> None:
+    """ダッキングの約束（破れていたら :class:`TimelineError`）。
+
+    - 付けられるのは音声トラックだけ。きっかけも同じタイムラインの音声トラックで、
+      自分自身は選べない
+    - 量・時間・しきい値は :mod:`app.timeline_export` の範囲
+    - ``signal`` どうしは鎖にできない（きっかけのトラックが ``signal`` で下げられる
+      側だと、まとめる順が決まらない）
+    """
+    if kinds.get(track_id) != "audio":
+        raise TimelineError("ダッキングを付けられるのは音声トラックだけです")
+    trigger = (ducking.trigger_track_id or "").strip()
+    if not trigger or trigger not in kinds:
+        raise TimelineError("ダッキングのきっかけのトラックがこのタイムラインにありません")
+    if trigger == track_id:
+        raise TimelineError("ダッキングのきっかけに自分自身は選べません")
+    if kinds.get(trigger) != "audio":
+        raise TimelineError("ダッキングのきっかけは音声トラックを選んでください")
+    _check_range("ダッキング", "下げる量", ducking.amount_db, *export_service.DUCK_AMOUNT_RANGE)
+    _check_range("ダッキング", "立ち上がり", ducking.attack_ms, *export_service.DUCK_ATTACK_RANGE)
+    _check_range("ダッキング", "戻り", ducking.release_ms, *export_service.DUCK_RELEASE_RANGE)
+    _check_range(
+        "ダッキング", "しきい値", ducking.threshold_db, *export_service.DUCK_THRESHOLD_RANGE
+    )
+    if ducking.mode == "signal":
+        other = duckings.get(trigger)
+        if other is not None and other.mode == "signal":
+            raise TimelineError(
+                "ダッキング（signal）のきっかけのトラックが、別のトラックで"
+                " signal のダッキングをされています（鎖にはできません）"
+            )
+        for owner, item in duckings.items():
+            if (
+                owner != track_id
+                and item is not None
+                and item.mode == "signal"
+                and item.trigger_track_id == track_id
+            ):
+                raise TimelineError(
+                    "このトラックは別のトラックの signal のダッキングのきっかけです"
+                    "（鎖にはできません）"
+                )
+
+
 async def update_track(
     timeline_id: str, track_id: str, payload: TimelineTrackUpdate
 ) -> StudioTimelineDetail:
-    """名前・ミュート・ロックを変える（送らなかった項目はそのまま）。"""
+    """名前・ミュート・ロック・ダッキングを変える（送らなかった項目はそのまま）。
+
+    ``ducking`` は送れば丸ごと置き換え、``null`` を送ると外す。
+    """
     fields: dict[str, Any] = {}
     if payload.name is not None:
         fields["name"] = payload.name.strip()
@@ -2276,11 +2466,25 @@ async def update_track(
         if timeline is None:
             raise TimelineNotFound("timeline not found")
         async with conn.execute(
-            "SELECT id FROM timeline_tracks WHERE id = ? AND timeline_id = ?",
-            (track_id, timeline_id),
+            "SELECT id, kind, ducking FROM timeline_tracks WHERE timeline_id = ?",
+            (timeline_id,),
         ) as cur:
-            if await cur.fetchone() is None:
-                raise TimelineNotFound("track not found")
+            rows = [dict(row) for row in await cur.fetchall()]
+        if not any(str(row["id"]) == track_id for row in rows):
+            raise TimelineNotFound("track not found")
+        if "ducking" in payload.model_fields_set:
+            if payload.ducking is None:
+                fields["ducking"] = None
+            else:
+                kinds = {str(row["id"]): str(row["kind"]) for row in rows}
+                duckings = {
+                    str(row["id"]): _load_ducking(row.get("ducking")) for row in rows
+                }
+                ducking = payload.ducking.model_copy(
+                    update={"trigger_track_id": payload.ducking.trigger_track_id.strip()}
+                )
+                validate_ducking(ducking, track_id, kinds, duckings)
+                fields["ducking"] = ducking.model_dump_json()
         if fields:
             assignments = ", ".join(f"{name} = ?" for name in fields)
             await conn.execute(
@@ -2315,6 +2519,20 @@ async def delete_track(timeline_id: str, track_id: str) -> StudioTimelineDetail:
             raise TimelineError("映像トラック（V1）は消せません")
         await conn.execute("DELETE FROM timeline_clips WHERE track_id = ?", (track_id,))
         await conn.execute("DELETE FROM timeline_tracks WHERE id = ?", (track_id,))
+        # 消したトラックをきっかけにしていたダッキングは外す（相手がいない）。
+        async with conn.execute(
+            "SELECT id, ducking FROM timeline_tracks"
+            " WHERE timeline_id = ? AND ducking IS NOT NULL",
+            (timeline_id,),
+        ) as cur:
+            ducked = [dict(item) for item in await cur.fetchall()]
+        for item in ducked:
+            current = _load_ducking(item["ducking"])
+            if current is None or current.trigger_track_id == track_id:
+                await conn.execute(
+                    "UPDATE timeline_tracks SET ducking = NULL WHERE id = ?",
+                    (item["id"],),
+                )
         await conn.execute(
             "UPDATE studio_timelines SET updated_at = ? WHERE id = ?",
             (_now(), timeline_id),
@@ -2559,6 +2777,7 @@ def to_clip_input(clip: TimelineClip) -> TimelineClipInput:
         transition_ms=clip.transition_ms,
         text_payload=clip.text_payload,
         speed=clip.speed,
+        effects=clip.effects,
     )
 
 
@@ -2766,12 +2985,20 @@ def insert_into(
             kept.append(clip.model_copy())
             continue
         speed = float(clip.speed or 1.0)
-        spanless = clip.source_kind in _SPANLESS_SOURCES
+        # 止め絵は尺だけを割る（どちらも同じ 1 コマを止める）。
+        spanless = is_spanless(clip)
+        # 逆再生はタイムラインの前半がソースの後ろ側にあたる。
+        reverse = bool(clip.effects is not None and clip.effects.reverse)
         head_ms = start - clip.start_ms
         if head_ms >= MIN_CLIP_MS:
             head = clip.model_copy()
             head.duration_ms = head_ms
-            if not spanless:
+            if not spanless and reverse:
+                head.in_ms = quantize_ms(
+                    clip.out_ms - int(round(head_ms * speed)), fps
+                )
+                head.out_ms = head.in_ms + int(round(head_ms * speed))
+            elif not spanless:
                 head.out_ms = clip.in_ms + int(round(head_ms * speed))
             kept.append(head)
         tail_ms = finish - end
@@ -2781,7 +3008,9 @@ def insert_into(
             tail.id = None
             tail.start_ms = end
             tail.duration_ms = tail_ms
-            if not spanless:
+            if not spanless and reverse:
+                tail.out_ms = clip.in_ms + int(round(tail_ms * speed))
+            elif not spanless:
                 tail.in_ms = quantize_ms(
                     clip.out_ms - int(round(tail_ms * speed)), fps
                 )
@@ -2892,6 +3121,7 @@ async def insert_clip(
         in_ms=payload.in_ms,
         out_ms=payload.in_ms + payload.duration_ms,
         text_payload=payload.text_payload,
+        effects=payload.effects,
     )
     updated = insert_into(
         [to_clip_input(clip) for clip in track.clips],

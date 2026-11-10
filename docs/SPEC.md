@@ -1820,7 +1820,8 @@ CREATE TABLE timeline_tracks (
   name        TEXT NOT NULL DEFAULT '',    -- 'V1' など
   sort_order  INTEGER NOT NULL DEFAULT 0,
   muted       INTEGER NOT NULL DEFAULT 0,
-  locked      INTEGER NOT NULL DEFAULT 0
+  locked      INTEGER NOT NULL DEFAULT 0,
+  ducking     TEXT                         -- 音声トラックのダッキング（JSON。NULL = しない）
 );
 
 CREATE TABLE timeline_clips (
@@ -1842,7 +1843,8 @@ CREATE TABLE timeline_clips (
   transition_ms INTEGER NOT NULL DEFAULT 0,
   text_payload TEXT,                       -- text クリップの中身（JSON）
   speed       REAL NOT NULL DEFAULT 1,     -- 再生速度（duration_ms = (out-in)/speed）
-  sort_order  INTEGER NOT NULL DEFAULT 0
+  sort_order  INTEGER NOT NULL DEFAULT 0,
+  effects     TEXT                         -- 映像クリップの加工（JSON。NULL = なし）
 );
 
 CREATE TABLE timeline_exports (
@@ -2013,8 +2015,32 @@ EDL → ffmpeg コマンドの**組み立ては純関数**（`build_command`）�
 - **リタイム**は `setpts=(PTS-STARTPTS)/speed` と `atempo`。`atempo` は 0.5〜2.0 しか
   取れないので、積が `speed` になる並びへ割る（純関数 `atempo_chain`）
 - **静止画クリップ**は `-loop 1 -t` で尺ぶんの映像にしてから同じ規格へ（音は無音）
+- **映像クリップの加工**（`timeline_clips.effects`。**書き出しにだけ効き、プレビューには
+  出ない**）。どれも規格へ揃えたあと・最後の `trim=end_frame` の前に挟むので、フレーム数の
+  計画と検算（`warnings`）はそのまま効く:
+  - **止め絵**（`freeze`）… `in_ms` の 1 コマ（素材の外なら最後のコマ。`FREEZE …` の警告）
+    を取り出し、`tpad=stop_mode=clone` で尺いっぱいに伸ばす。音は無音。尺は `duration_ms`
+    がそのまま決め、`out_ms` は見ない（速度は 1 のみ）
+  - **逆再生**（`reverse`）… 切り出した区間を `reverse` / `areverse` してから速度を掛ける
+    （`speed` と併用できる）
+  - **寄り**（`zoom: {scale, x, y}`）… 規格の大きさを `scale` 倍に拡大し、画面比の位置
+    `x` / `y`（0.5 = 真ん中）を中心に規格の大きさで `crop`
+  - **コマ打ち**（`step` = 2〜4）… `fps=<fps/n>,fps=<fps>`（出力の fps のまま n コマごとに
+    同じ画）
+  - **色**（`color: {saturation, contrast, brightness, gamma}`）… `eq`。**ノイズ**（`noise`
+    0〜1）… `noise=alls=<0〜64>:allf=t`。色とノイズは末尾静止の**後**に置く（止め絵の上でも
+    粒が動く）
 - **音声トラック**は `atrim` + `volume` + `afade` + `adelay` で置き場所へずらし、映像側の音と
   `amix=duration=first`（＝タイムライン全長で切る。`apad` はしない）
+- **ダッキング**（`timeline_tracks.ducking`。音声トラックだけ）… 「きっかけのトラック
+  （声）が鳴っている間、このトラックを `amount_db` 下げる」。`mode`:
+  - `clips`（既定）… きっかけのトラックの**クリップの区間**から `volume=<式>:eval=frame`
+    を組む（`attack_ms` 前から下げ始めて区間の始まりで下げ切り、終わりから `release_ms`
+    で戻る。戻りと次の下げが重なる区間は 1 つにまとめる）。下げ幅はちょうど `amount_db`
+  - `signal` … 下げる側ときっかけ側をそれぞれ 1 本にまとめ、`sidechaincompress`
+    （`ratio=20`・`threshold_db`）で**実際の音**に反応させる。下げ幅は `mix` で
+    `amount_db` に抑える目安。`signal` どうしは鎖にできない
+  - ミュートしたトラックはきっかけにならない。きっかけのトラックを消すとダッキングも外れる
 - **テロップ**は ASS（`app/timeline_subtitles.build_ass`）を書き出して `subtitles` フィルタで
   焼き込む。スタイルは 1 つだけ置き、位置・大きさ・色は行ごとの上書きタグ
   （`{\an8\fs48\c&H0000FFFF}`）。文字サイズは出力の高さに対する比なので解像度に依らない
@@ -2130,9 +2156,10 @@ EDL → ffmpeg コマンドの**組み立ては純関数**（`build_command`）�
 ffmpeg の書き出し（上）が終わったあと、その mp4 を**下地**にして `FxOverlay` の Remotion
 ジョブ（`mode: "remotion"`、§5.2）を続けて投入する。
 
-- props は `base.src` = 焼き上がった mp4 の絶対パス（`remotion/src/media.ts` が先頭 `/` を
-  `file://` に読み替えるので、レンダに HTTP サーバーを挟まない）・`audio.src` = **A1 の
-  最初の音声クリップ**（無ければ省略）・`fps` / `width` / `height` / `durationInSeconds` =
+- props は `base.src` = 焼き上がった mp4 の配信 URL・`audio.src` = **同じ mp4**（ffmpeg が
+  全部の音声トラックを混ぜた音。クリップの音量・フェード・速度・ダッキング・loudnorm が
+  そのまま入る。下地はシェイクで何枚も貼られるので `muted` のまま、音は `audio` で 1 本だけ
+  鳴らす）・`fps` / `width` / `height` / `durationInSeconds` =
   その書き出しの実測値・`events` = `enabled` のものだけ・`lyric` = `lyric_enabled` なら
   歌詞モーション（`keyBg` は `transparent`）・残りは `timeline_fx` の全体設定
 - ジョブ id と状態と成果物は `timeline_exports.fx_job_id` / `fx_status` / `fx_video_path`
@@ -2149,6 +2176,8 @@ ffmpeg の書き出し（上）が終わったあと、その mp4 を**下地**�
   縁取りが焼き込みとは違う。BGM は Web Audio（`AudioBufferSourceNode` + `GainNode`）で
   再生ヘッドに合わせて鳴らすので、フェードは gain のスケジュールによる近似
 - 映像トラックは **V1 の 1 本きり**（重ね合成・ピクチャインピクチャはスコープ外）
+- **加工とダッキングはプレビューに出ない**（書き出しの ffmpeg でだけ効く）。止め絵・逆再生・
+  寄り・コマ打ち・色・ノイズは書き出した mp4 で確かめる。インスペクタにもその旨を出す
 
 #### 画面の持ち方（`frontend/src/components/studio/`）
 

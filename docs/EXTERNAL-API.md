@@ -41,7 +41,7 @@
 | 汎用ジョブ | `GET/POST /jobs`（一覧は `q` / `kind` / `project_id` / `nsfw` / `limit` / `offset` で絞れる。§3.6）・`GET /jobs/{id}`・`POST /jobs/{id}/cancel`・`rerun`・`continue` |
 | ライブラリ | `GET /library`・`POST /library/image` / `POST /library/audio` / `POST /library/upload`（multipart）・`POST /library/from-job`・`POST /library/sheet`・`POST /library/{id}/key`・`POST /library/key`・`POST /library/key-from-job`・`POST /library/blocking`・`POST /library/{id}/blocking`・`POST /library/blocking/preview`・`POST /library/blocking/location-map`・`PATCH /library/{id}`（**削除は非公開**） |
 | 素材の下ごしらえ | `POST /images/text`・`GET /images/text/fonts`・`POST /videos/contact-sheet`（§3.4） |
-| 編集（タイムライン） | `POST /projects/{id}/timelines`・`GET/PATCH/DELETE /timelines/{id}`・`PUT /timelines/{id}/clips`・`POST /timelines/{id}/clips/insert`・トラック CRUD・`generate-subtitles`・`sync-preview` / `sync`・`missing` / `missing/resolve`・`GET /projects/{id}/media` |
+| 編集（タイムライン） | `POST /projects/{id}/timelines`・`GET/PATCH/DELETE /timelines/{id}`・`PUT /timelines/{id}/clips`（クリップの加工 `effects`、§3.7）・`POST /timelines/{id}/clips/insert`・トラック CRUD（音声トラックのダッキング `ducking`、§3.7）・`generate-subtitles`・`sync-preview` / `sync`・`missing` / `missing/resolve`・`GET /projects/{id}/media` |
 | 演出（FX トラック） | `GET/PUT /timelines/{id}/fx`・`PUT /timelines/{id}/fx/lyric`（歌詞モーション）・`POST /timelines/{id}/fx/events`・`PATCH/DELETE /timelines/{id}/fx/events/{event_id}`（§3.3） |
 | 書き出し | `POST /timelines/{id}/export`（202。`fx: true` で演出付き）・`GET /timelines/{id}/exports`・**`GET /exports`（タイムライン横断の一覧）**・`GET /exports/{id}`・`POST /exports/{id}/save-to-library` |
 | 編集履歴 | `GET /projects/{id}/revisions`・`GET .../{seq}/diff`・`POST .../{seq}/restore`（§3.1） |
@@ -388,6 +388,8 @@ DELETE /api/v1/timelines/{id}/fx/events/{event_id}?base_revision=12
   `workspace/.agents/skills/karakuri-remotion/jizura-catalog.json`
 - **演出付き書き出し**: `POST /api/v1/timelines/{id}/export` に `{"fx": true}`。ffmpeg の
   mp4 が焼き上がったあと、それを下地に `FxOverlay` の Remotion ジョブが続けて走る。
+  音は**その mp4 の音**（ffmpeg が全部の音声トラックを混ぜた音。音量・フェード・速度・
+  ダッキング・loudnorm 込み）がそのまま使われる。
   結果は書き出しの `fx_job_id` / `fx_status` / `fx_video_url` に出る（`GET /exports/{id}`
   をポーリングする）。Remotion 連携が無効なら 400
 
@@ -660,6 +662,60 @@ GET /api/v1/jobs?q=かおり&kind=video&nsfw=false&limit=48&offset=0
 - Take 由来のジョブには `project_id` / `project_name` / `shot_id` / `shot_title` が付く
   （スタジオを通していないジョブと、`GET /jobs/{id}` では null）。英語プロンプトしか
   持たないジョブを**日本語の作品名で**引けるのはこの JOIN のおかげ。
+
+### 3.7 クリップの加工とダッキング（タイムラインで編集する）
+
+ショート動画のように「カットごとに止める・戻す・寄る・荒らす」「声の間だけ BGM を下げる」
+編集を、手元の ffmpeg ではなく**タイムラインに保存して**書き出しで焼く。人が画面で値を
+直せる（インスペクタ）。**どちらも書き出しの ffmpeg でだけ効き、プレビューには出ない**。
+
+**映像クリップの加工**は `PUT /timelines/{id}/clips`（と `clips/insert`）の各クリップに
+`effects` を足す（省略・`null` = なし。既定値だけの加工は `null` に畳んで返す）:
+
+```json
+{"track_id": "<V1>", "start_ms": 0, "duration_ms": 1500,
+ "source_kind": "library", "source_id": "<動画>", "in_ms": 2000, "out_ms": 3500,
+ "speed": 1.0,
+ "effects": {
+   "freeze": false,            // in_ms の 1 コマを duration_ms のあいだ止める（音は無音）
+   "reverse": false,           // in_ms〜out_ms を逆再生（音も。speed と併用可）
+   "zoom": {"scale": 1.2, "x": 0.5, "y": 0.3},  // 1〜4 倍・切り出す中心（画面比）
+   "step": 2,                  // コマ打ち 1〜4（出力 fps のまま n コマごとに同じ画）
+   "color": {"saturation": 0.6, "contrast": 1.15, "brightness": 0.0, "gamma": 1.0},
+   "noise": 0.4                // 巻き戻し風の荒れ 0〜1
+ }}
+```
+
+- 置けるのは**映像トラックの動画・静止画クリップ**だけ（隙間・テロップ・音声には付けられず
+  400）。静止画には止め絵・逆再生を付けられない。止め絵と逆再生は同時に使えない
+- **止め絵は尺だけを持つ**: `duration_ms` がそのまま尺で、`out_ms` と速度のつじつまは
+  見ない（`speed` は 1 のみ）。`in_ms` が素材の外なら最後のコマで止め、書き出しの
+  `warnings` に `FREEZE …` が出る
+- 範囲: 寄り 1〜4・中心 0〜1・コマ打ち 1〜4・彩度 / コントラスト 0〜3・明るさ -1〜1・
+  ガンマ 0.1〜4・ノイズ 0〜1（外れたら 400）
+- どの加工も書き出しのフレーム数は変えない（`frames` と `warnings` の検算はそのまま効く）
+- 差し込み（`clips/insert`）で下のクリップを割ると、逆再生は「前半 = 素材の後ろ側」に、
+  止め絵は同じ 1 コマのまま割れる
+
+**ダッキング**は音声トラックの設定（`PATCH /timelines/{id}/tracks/{track_id}`）:
+
+```json
+{"ducking": {"trigger_track_id": "<声のトラック>", "amount_db": 8,
+             "attack_ms": 100, "release_ms": 300, "mode": "clips",
+             "threshold_db": -30}}
+```
+
+- `trigger_track_id` のトラックが鳴っている間、このトラックを `amount_db`（0〜40）下げる。
+  付けられるのは音声トラックだけで、きっかけも自分以外の音声トラック
+- `mode: "clips"`（既定）… きっかけの**クリップがある区間**で下げる（ちょうど `amount_db`。
+  `attack_ms` 前から下げ始め、終わりから `release_ms` で戻る）。声を 1 行ずつクリップに
+  するとき向き
+- `mode: "signal"` … きっかけの**実際の音の大きさ**に反応する（`sidechaincompress`。
+  `threshold_db` より大きいと下げる。下げ幅は目安）。1 本の長い声のとき向き。`signal`
+  どうしを鎖にはできない（400）
+- `{"ducking": null}` で外す。送らなければそのまま。きっかけのトラックを消すと外れる。
+  ミュートしたトラックはきっかけにならない
+- 返る EDL の各トラックに `ducking` が載る（`GET /timelines/{id}`）
 
 ## 4. ファイルの受け渡し
 

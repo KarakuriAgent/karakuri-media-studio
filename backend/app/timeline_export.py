@@ -18,6 +18,16 @@
 - **テロップ（T1）** … ASS ファイル（:mod:`app.timeline_subtitles`）を
   ``subtitles`` フィルタで焼き込む。
 - **ラウドネス正規化** … 最後に ``loudnorm``（1 パス）。
+- **映像クリップの加工**（:class:`ClipEffects`）… 止め絵（``in_ms`` の 1 コマを
+  ``tpad`` の末尾静止で尺いっぱいに伸ばす）・逆再生（``reverse`` / ``areverse``）・
+  寄り（``scale`` + ``crop``）・コマ打ち（``fps`` で間引いてから出力の fps へ戻す）・
+  色（``eq``）・ノイズ（``noise``）。どれも規格へ揃えたあと・``trim=end_frame``
+  の前に挟むので、書き出しの枚数は加工の有無で変わらない。
+- **ダッキング**（:class:`ExportDucking`）… 音声トラックごとに「別の音声トラックが
+  鳴っている間だけ下げる」。``clips`` はきっかけのトラックのクリップの区間から
+  ``volume`` の式（ちょうど N dB・立ち上がりと戻りは直線）を組み、``signal`` は
+  ``sidechaincompress`` で実際の音の大きさに反応させる（下げ幅は ``mix`` で N dB に
+  抑える目安）。
 
 音声を持たないソースと ``gap``（隙間）のクリップには、その尺ぶんの黒
 （``color``）と無音（``anullsrc``）を ``lavfi`` から作って充てる。全クリップが
@@ -101,6 +111,33 @@ PAD_MARGIN_SECONDS = 0.25
 FIT_PAD = "pad"
 FIT_CROP = "crop"
 
+#: 止め絵の 1 コマを探す窓（秒）。素材の fps がタイムラインより低いと 1 コマぶんの
+#: 窓にフレームが入らないことがあるので、広めに取ってから先頭の 1 枚だけ使う
+FREEZE_WINDOW_SECONDS = 0.5
+
+#: 寄り（拡大率）・コマ打ち・色・ノイズの範囲。検証（:mod:`app.timeline`）と共有する
+ZOOM_MIN = 1.0
+ZOOM_MAX = 4.0
+STEP_MIN = 1
+STEP_MAX = 4
+SATURATION_RANGE = (0.0, 3.0)
+CONTRAST_RANGE = (0.0, 3.0)
+BRIGHTNESS_RANGE = (-1.0, 1.0)
+GAMMA_RANGE = (0.1, 4.0)
+NOISE_RANGE = (0.0, 1.0)
+
+#: ノイズ 1.0 のときの ``noise=alls``（0〜100）。巻き戻し風の荒れがはっきり出る強さ
+NOISE_MAX_STRENGTH = 64
+
+#: ダッキングの種類と範囲（検証と共有する）
+DUCKING_MODES = ("clips", "signal")
+DUCK_AMOUNT_RANGE = (0.0, 40.0)
+DUCK_ATTACK_RANGE = (1, 5000)
+DUCK_RELEASE_RANGE = (1, 10000)
+DUCK_THRESHOLD_RANGE = (-60.0, 0.0)
+#: ``signal`` のときの圧縮比（下げ幅そのものは ``mix`` で抑える）
+DUCK_RATIO = 20
+
 #: 書き出しプリセット -> ``(幅, 高さ)``。``timeline`` はタイムラインの規格のまま
 PRESETS: dict[str, tuple[int, int] | None] = {
     "timeline": None,
@@ -112,6 +149,37 @@ PRESETS: dict[str, tuple[int, int] | None] = {
 
 class TimelineExportError(Exception):
     """書き出しの失敗（``timeline_exports.error`` に入る）。"""
+
+
+@dataclass
+class ClipEffects:
+    """映像クリップの加工（``timeline_clips.effects`` を解決したもの）。
+
+    既定値はどれも「何もしない」。:attr:`active` が False なら、コマンドは加工を
+    足す前と 1 文字も変わらない。
+    """
+
+    #: ``in_ms`` の 1 コマをクリップの尺のあいだ止める（音は無音）
+    freeze: bool = False
+    #: 切り出した区間を逆に再生する（音も逆再生）
+    reverse: bool = False
+    #: 寄り（拡大率。1.0 = そのまま）と、切り出す中心（画面比。0.5 = 真ん中）
+    zoom: float = 1.0
+    zoom_x: float = 0.5
+    zoom_y: float = 0.5
+    #: コマ打ち（1 = そのまま、2 = 2 コマ打ち …）
+    step: int = 1
+    #: 色（``eq``）。既定値なら挟まない
+    saturation: float = 1.0
+    contrast: float = 1.0
+    brightness: float = 0.0
+    gamma: float = 1.0
+    #: ノイズ（0〜1）
+    noise: float = 0.0
+
+    @property
+    def active(self) -> bool:
+        return self != ClipEffects()
 
 
 @dataclass
@@ -144,6 +212,8 @@ class ExportClip:
     source_duration_ms: int | None = None
     #: 警告に出すときの呼び名（カットの見出し。空なら通し番号で呼ぶ）
     name: str = ""
+    #: 加工（None = 加工なし）
+    effects: ClipEffects | None = None
 
     @property
     def overlap_ms(self) -> int:
@@ -170,10 +240,30 @@ class ExportAudioClip:
     gain_db: float = 0.0
     fade_in_ms: int = 0
     fade_out_ms: int = 0
+    #: 置かれているトラック（ダッキングの相手を探すのに使う。空 = どれでもない）
+    track: str = ""
 
     @property
     def duration_ms(self) -> int:
         return max(0, self.out_ms - self.in_ms)
+
+
+@dataclass
+class ExportDucking:
+    """音声トラック 1 本ぶんのダッキング（``timeline_tracks.ducking``）。
+
+    ``target`` のトラックを、``trigger`` のトラックが鳴っている間 ``amount_db``
+    だけ下げる。``clips`` はきっかけのクリップの区間から式を組み（ちょうど N dB）、
+    ``signal`` は ``sidechaincompress`` で実際の音に反応させる。
+    """
+
+    target: str
+    trigger: str
+    amount_db: float = 8.0
+    attack_ms: int = 100
+    release_ms: int = 300
+    mode: str = "clips"
+    threshold_db: float = -30.0
 
 
 @dataclass
@@ -192,6 +282,8 @@ class ExportSpec:
     fit: str = FIT_PAD
     #: ラウドネス正規化を掛けるか
     loudnorm: bool = False
+    #: 音声トラックのダッキング
+    ducking: list[ExportDucking] = field(default_factory=list)
 
     @property
     def frames(self) -> list[ClipFrames]:
@@ -312,9 +404,12 @@ def _frame_seconds(frames: float, fps: float) -> str:
 def shortfall_ms(clip: ExportClip) -> int:
     """素材の実尺が「切り出し位置 + 尺」にどれだけ届いていないか（足りていれば 0）。
 
-    測れていない（``source_duration_ms`` が None）・隙間・静止画は 0。
+    測れていない（``source_duration_ms`` が None）・隙間・静止画・止め絵は 0
+    （止め絵は 1 コマしか使わない。``in_ms`` が素材の外なら最後のコマを使う）。
     """
     if clip.path is None or clip.kind == "image" or clip.source_duration_ms is None:
+        return 0
+    if clip.effects is not None and clip.effects.freeze:
         return 0
     return max(0, int(clip.out_ms) - int(clip.source_duration_ms))
 
@@ -323,12 +418,28 @@ def pad_warnings(spec: ExportSpec) -> list[str]:
     """末尾静止で埋めたクリップの警告（``PAD カット名 0.42s``）を並べる。
 
     1 フレームぶんの不足は丸めの範囲なので黙って埋める（警告にしない）。
+    止め絵の ``in_ms`` が素材の外にあるときは ``FREEZE カット名 …`` を出す
+    （最後のコマで止める）。
     """
     if spec.fps <= 0:
         return []
     frame_ms = 1000 / spec.fps
     warnings: list[str] = []
     for index, clip in enumerate(spec.clips):
+        if (
+            clip.effects is not None
+            and clip.effects.freeze
+            and clip.path is not None
+            and clip.kind != "image"
+            and clip.source_duration_ms is not None
+            and clip.in_ms >= clip.source_duration_ms
+        ):
+            name = clip.name or f"クリップ {index + 1}"
+            warnings.append(
+                f"FREEZE {name} の止める位置 {clip.in_ms / 1000:.2f}s が素材"
+                f"（{clip.source_duration_ms / 1000:.2f}s）の外です。最後のコマで止めました"
+            )
+            continue
         short = shortfall_ms(clip)
         if short <= frame_ms:
             continue
@@ -433,6 +544,106 @@ def _scale_chain(width: int, height: int, fit: str) -> str:
     )
 
 
+def _even(value: float) -> int:
+    """偶数へ切り上げる（yuv420p は幅・高さが偶数でないと通らない）。"""
+    number = int(round(value))
+    return number + (number % 2)
+
+
+def _clamp(value: float, low: float, high: float) -> float:
+    return max(low, min(high, float(value)))
+
+
+def effect_filters(
+    effects: ClipEffects | None, width: int, height: int, fps_value: float
+) -> tuple[list[str], list[str]]:
+    """加工を ``(末尾静止の前に挟むもの, 後に挟むもの)`` のフィルタにする（純関数）。
+
+    寄りとコマ打ちは画の並びそのものを変えるので末尾静止（``tpad``）の**前**、
+    色とノイズは末尾静止で伸ばしたコマにも掛けたいので**後**に置く（止め絵に
+    ノイズを掛けると、止まった画の上で粒だけが動く）。どちらもフレームの枚数は
+    変えない（最後の ``trim=end_frame`` がちょうどの枚数に切る）。
+    """
+    before: list[str] = []
+    after: list[str] = []
+    if effects is None:
+        return before, after
+    zoom = _clamp(effects.zoom, ZOOM_MIN, ZOOM_MAX)
+    if zoom > 1.0 + 1e-9:
+        scaled_w, scaled_h = _even(width * zoom), _even(height * zoom)
+        x = int(round((scaled_w - width) * _clamp(effects.zoom_x, 0.0, 1.0)))
+        y = int(round((scaled_h - height) * _clamp(effects.zoom_y, 0.0, 1.0)))
+        before.append(f"scale={scaled_w}:{scaled_h},crop={width}:{height}:{x}:{y}")
+    step = int(_clamp(effects.step, STEP_MIN, STEP_MAX))
+    if step > 1:
+        # n コマに 1 枚だけ残してから出力の fps に戻す（同じ画が n 枚続く）。
+        before.append(f"fps={_fps(fps_value / step)},fps={_fps(fps_value)}")
+    eq: list[str] = []
+    if abs(effects.saturation - 1.0) >= 1e-9:
+        eq.append(f"saturation={_number(_clamp(effects.saturation, *SATURATION_RANGE))}")
+    if abs(effects.contrast - 1.0) >= 1e-9:
+        eq.append(f"contrast={_number(_clamp(effects.contrast, *CONTRAST_RANGE))}")
+    if abs(effects.brightness) >= 1e-9:
+        eq.append(f"brightness={_number(_clamp(effects.brightness, *BRIGHTNESS_RANGE))}")
+    if abs(effects.gamma - 1.0) >= 1e-9:
+        eq.append(f"gamma={_number(_clamp(effects.gamma, *GAMMA_RANGE))}")
+    if eq:
+        after.append("eq=" + ":".join(eq))
+    strength = int(round(_clamp(effects.noise, *NOISE_RANGE) * NOISE_MAX_STRENGTH))
+    if strength > 0:
+        after.append(f"noise=alls={strength}:allf=t")
+    return before, after
+
+
+def _chain(*parts: str) -> str:
+    """空でないフィルタだけを ``,`` で繋ぐ。"""
+    return ",".join(part for part in parts if part)
+
+
+def duck_intervals(
+    spans: list[tuple[int, int]], attack_ms: int, release_ms: int
+) -> list[tuple[int, int]]:
+    """きっかけの区間（ミリ秒）を、下げたままにする**まとまり**へ寄せる（純関数）。
+
+    戻り始め（終わり + 戻り）が次の下げ始め（始まり - 立ち上がり）に届く区間は
+    1 つにまとめる（声の切れ目ごとに細かく上下させない）。まとまりどうしの
+    台形は重ならないので、足し合わせても 1 を超えない。
+    """
+    ordered = sorted((max(0, a), max(0, b)) for a, b in spans if b > a)
+    merged: list[list[int]] = []
+    for start, end in ordered:
+        if merged and start - attack_ms <= merged[-1][1] + release_ms:
+            merged[-1][1] = max(merged[-1][1], end)
+        else:
+            merged.append([start, end])
+    return [(start, end) for start, end in merged]
+
+
+def duck_expression(
+    spans: list[tuple[int, int]], amount_db: float, attack_ms: int, release_ms: int
+) -> str | None:
+    """``volume`` の式（``eval=frame``）: きっかけの区間で ``amount_db`` 下げる。
+
+    まとまりごとに台形（始まりの ``attack_ms`` 前から下げ始めて始まりで下げ切り、
+    終わりから ``release_ms`` かけて戻る）を作って足し、``10^(-N*S/20)`` にする。
+    区間が無い・下げ幅が 0 なら None（フィルタを挟まない）。
+    """
+    if amount_db <= 0:
+        return None
+    attack = max(1, int(attack_ms)) / 1000
+    release = max(1, int(release_ms)) / 1000
+    terms = []
+    for start, end in duck_intervals(spans, attack_ms, release_ms):
+        begin = start / 1000 - attack
+        finish = end / 1000 + release
+        terms.append(
+            f"clip(min((t-{begin:.3f})/{attack:.3f}\\,({finish:.3f}-t)/{release:.3f})\\,0\\,1)"
+        )
+    if not terms:
+        return None
+    return f"pow(10\\,-{amount_db:g}*({'+'.join(terms)})/20)"
+
+
 # --------------------------------------------------------------------------
 # コマンドの組み立て
 # --------------------------------------------------------------------------
@@ -478,6 +689,9 @@ def _add_clip(
     （ここで尺を量子化し直すと丸めが累積する）。**1 フレームぶん余分に取ってから
     ``trim=end_frame`` でちょうどその枚数に切る**ので、端数フレームが捨てられて
     連結後に先走ることがない。音も同じ長さへ ``apad`` + ``atrim`` で揃える。
+
+    加工（:class:`ClipEffects`）は規格へ揃えたあと、最後の ``trim=end_frame`` の
+    前に挟む（:func:`effect_filters`）。
     """
     fps = _fps(fps_value)
     duration = _frame_seconds(frames, fps_value)
@@ -486,6 +700,8 @@ def _add_clip(
     video_label = f"v{position}"
     audio_label = f"a{position}"
     scale = _scale_chain(width, height, fit)
+    effects = clip.effects if clip.effects is not None and clip.effects.active else None
+    before, after = effect_filters(effects, width, height, fps_value)
 
     if clip.path is None:
         # 隙間: 黒 + 無音をその尺ぶん作る（ソースが無いので切り出しは要らない）。
@@ -505,7 +721,9 @@ def _add_clip(
             "-i", str(clip.path),
         )
         graph.filters.append(
-            f"[{index}:v]{scale},setsar=1,fps={fps},{exact}[{video_label}]"
+            f"[{index}:v]"
+            + _chain(scale, "setsar=1", f"fps={fps}", *before, *after, exact)
+            + f"[{video_label}]"
         )
         graph.silence(duration, audio_label)
         return video_label, audio_label
@@ -515,10 +733,44 @@ def _add_clip(
     # 切り出し位置もタイムラインと同じ規則でフレーム番号にする（秒のまま渡すと
     # フレームの途中から切り出されて、境界基準で数えた枚数と噛み合わない）。
     start_frame = frame_count(clip.in_ms, fps_value)
+
+    if effects is not None and effects.freeze:
+        # 止め絵: in_ms の 1 コマだけを取り出し、末尾静止で尺いっぱいに伸ばす。
+        # 素材の外を指していたら最後のコマで止める（pad_warnings が知らせる）。
+        if clip.source_duration_ms is not None:
+            last = max(0, frame_count(clip.source_duration_ms, fps_value) - 1)
+            start_frame = min(start_frame, last)
+        start = _frame_seconds(start_frame, fps_value)
+        window = f"{start_frame / fps_value + FREEZE_WINDOW_SECONDS:.6f}"
+        hold = frames / fps_value + PAD_MARGIN_SECONDS
+        graph.filters.append(
+            f"[{source_index}:v]"
+            + _chain(
+                f"trim=start={start}:end={window}",
+                "setpts=PTS-STARTPTS",
+                scale,
+                "setsar=1",
+                f"fps={fps}",
+                "trim=end_frame=1",
+                *before,
+                f"tpad=stop_mode=clone:stop_duration={hold:.3f}",
+                *after,
+                exact,
+            )
+            + f"[{video_label}]"
+        )
+        # 止めているあいだの音は鳴らさない（同じ瞬間の音を伸ばす手段が無い）。
+        graph.silence(duration, audio_label)
+        return video_label, audio_label
+
+    reverse = effects is not None and effects.reverse
     start = _frame_seconds(start_frame, fps_value)
     # 出口は ``out_ms`` ではなくフレーム数から逆算する（丸めた尺をそのまま渡すと
     # 最後の 1 フレームが落ちる）。素材側は速度ぶん伸びるので掛け戻す。
-    end = _frame_seconds(start_frame + (frames + 1) * speed, fps_value)
+    # 逆再生は余分の 1 フレームを取らない（反転すると余分が先頭に来てしまう。
+    # 足りないぶんは末尾静止が埋める）。
+    extra = 0 if reverse else 1
+    end = _frame_seconds(start_frame + (frames + extra) * speed, fps_value)
     # 素材が足りないぶんは末尾フレームの静止（tpad）で埋める。足りていても
     # 丸めのぶんだけは伸ばしておく（余りは exact が切り落とす）。
     stop = shortfall_ms(clip) / 1000 + PAD_MARGIN_SECONDS
@@ -528,13 +780,26 @@ def _add_clip(
     setpts = "PTS-STARTPTS" if abs(speed - 1.0) < 1e-9 else (
         f"(PTS-STARTPTS)/{_number(speed)}"
     )
+    if reverse:
+        # 切り出した区間を反転してから速度を掛ける（反転はタイムスタンプを
+        # 並べ直すので、反転のあとにもう一度頭を 0 に揃える）。
+        retime = f"setpts=PTS-STARTPTS,reverse,setpts={setpts}"
+    else:
+        retime = f"setpts={setpts}"
     graph.filters.append(
-        f"[{source_index}:v]trim=start={start}:end={end},"
-        f"setpts={setpts},"
-        f"{scale},"
-        f"setsar=1,fps={fps},"
-        f"tpad=stop_mode=clone:stop_duration={stop:.3f},"
-        f"{exact}[{video_label}]"
+        f"[{source_index}:v]"
+        + _chain(
+            f"trim=start={start}:end={end}",
+            retime,
+            scale,
+            "setsar=1",
+            f"fps={fps}",
+            *before,
+            f"tpad=stop_mode=clone:stop_duration={stop:.3f}",
+            *after,
+            exact,
+        )
+        + f"[{video_label}]"
     )
 
     if clip.has_audio:
@@ -544,6 +809,10 @@ def _add_clip(
         chain = (
             f"[{source_index}:a]atrim=start={start}:end={audio_end},"
             f"asetpts=PTS-STARTPTS,"
+        )
+        if reverse:
+            chain += "areverse,asetpts=PTS-STARTPTS,"
+        chain += (
             f"aresample={AUDIO_RATE},"
             f"aformat=sample_fmts=fltp:channel_layouts={AUDIO_LAYOUT}"
         )
@@ -579,6 +848,70 @@ def _join_run(
         f"{joined}concat=n={len(labels)}:v=1:a=1[{video_label}][{audio_label}]"
     )
     return video_label, audio_label
+
+
+def _sidechain_duck(
+    graph: _Graph,
+    ducks: list[ExportDucking],
+    track_labels: dict[str, list[str]],
+    mixed: list[str],
+) -> list[str]:
+    """``signal`` のダッキングを ``sidechaincompress`` で組み、混ぜる並びを返す。
+
+    下げるトラックとそのきっかけのトラックをそれぞれ 1 本にまとめ、きっかけは
+    ``asplit`` で「混ぜる側」と「横から聞かせる側」に分ける。圧縮比は強めにして、
+    下げ幅は ``mix``（圧縮した音と元の音の混ぜ具合）で ``amount_db`` に抑える
+    （きっかけが大きいほど ``amount_db`` に近づく目安）。
+    """
+    def bus(track: str, name: str) -> str:
+        labels = track_labels[track]
+        if len(labels) == 1:
+            return labels[0]
+        joined = "".join(f"[{label}]" for label in labels)
+        graph.filters.append(
+            f"{joined}amix=inputs={len(labels)}:duration=longest"
+            f":dropout_transition=0:normalize=0[{name}]"
+        )
+        return name
+
+    targets = {duck.target for duck in ducks}
+    # きっかけ自身が下げられる側でもあると順序が決まらないので、そこは飛ばす
+    # （検証で断っているが、念のため）。
+    usable = [duck for duck in ducks if duck.trigger not in targets]
+    replaced: dict[str, str] = {}
+    triggers: dict[str, list[ExportDucking]] = {}
+    for duck in usable:
+        triggers.setdefault(duck.trigger, []).append(duck)
+    for t_index, (trigger, group) in enumerate(triggers.items()):
+        source = bus(trigger, f"dk{t_index}s")
+        outs = [f"dk{t_index}m"] + [f"dk{t_index}c{n}" for n in range(len(group))]
+        graph.filters.append(
+            f"[{source}]asplit={len(outs)}" + "".join(f"[{out}]" for out in outs)
+        )
+        replaced[trigger] = outs[0]
+        for n, duck in enumerate(group):
+            target = bus(duck.target, f"dk{t_index}t{n}")
+            threshold = 10 ** (_clamp(duck.threshold_db, *DUCK_THRESHOLD_RANGE) / 20)
+            mix = 1 - 10 ** (-_clamp(duck.amount_db, *DUCK_AMOUNT_RANGE) / 20)
+            ducked = f"dk{t_index}d{n}"
+            graph.filters.append(
+                f"[{target}][{outs[n + 1]}]sidechaincompress="
+                f"threshold={max(threshold, 0.000977):.6f}:ratio={DUCK_RATIO}"
+                f":attack={max(0.01, float(duck.attack_ms)):g}"
+                f":release={max(0.01, float(duck.release_ms)):g}"
+                f":mix={mix:.4f}[{ducked}]"
+            )
+            replaced[duck.target] = ducked
+    result = [mixed[0]]
+    seen: set[str] = set()
+    for track, labels in track_labels.items():
+        if track in replaced:
+            if track not in seen:
+                result.append(replaced[track])
+                seen.add(track)
+        else:
+            result.extend(labels)
+    return result
 
 
 def build_command(spec: ExportSpec, output: str | Path) -> list[str]:
@@ -683,6 +1016,21 @@ def build_command(spec: ExportSpec, output: str | Path) -> list[str]:
 
     # 5) 音声トラック（BGM / SE）を重ねる。長さは映像側に合わせて切る
     #    （duration=first。ループはしないので、足りなければそこで終わる）。
+    #    ダッキング（``clips``）はクリップごとに volume の式を足すだけ、
+    #    ``signal`` はトラックをまとめてから sidechaincompress を通す。
+    ducks = {
+        duck.target: duck
+        for duck in spec.ducking
+        if duck.target and duck.trigger and duck.target != duck.trigger
+        and duck.amount_db > 0
+    }
+    spans_by_track: dict[str, list[tuple[int, int]]] = {}
+    for audio in spec.audio_clips:
+        if audio.duration_ms > 0 and audio.track:
+            spans_by_track.setdefault(audio.track, []).append(
+                (audio.start_ms, audio.start_ms + audio.duration_ms)
+            )
+    track_labels: dict[str, list[str]] = {}
     mixed = [audio_label]
     for number, audio in enumerate(spec.audio_clips):
         if audio.duration_ms <= 0:
@@ -707,9 +1055,30 @@ def build_command(spec: ExportSpec, output: str | Path) -> list[str]:
             )
         if audio.start_ms > 0:
             chain += f",adelay={int(audio.start_ms)}:all=1"
+        duck = ducks.get(audio.track)
+        if duck is not None and duck.mode != "signal":
+            # adelay のあとなので t はタイムライン上の秒になる。
+            expression = duck_expression(
+                spans_by_track.get(duck.trigger, []),
+                duck.amount_db,
+                duck.attack_ms,
+                duck.release_ms,
+            )
+            if expression:
+                chain += f",volume={expression}:eval=frame"
         label = f"m{number}"
         graph.filters.append(f"{chain}[{label}]")
         mixed.append(label)
+        track_labels.setdefault(audio.track, []).append(label)
+
+    signal = [
+        duck for duck in ducks.values()
+        if duck.mode == "signal"
+        and track_labels.get(duck.target)
+        and track_labels.get(duck.trigger)
+    ]
+    if signal:
+        mixed = _sidechain_duck(graph, signal, track_labels, mixed)
 
     if len(mixed) > 1:
         joined = "".join(f"[{label}]" for label in mixed)

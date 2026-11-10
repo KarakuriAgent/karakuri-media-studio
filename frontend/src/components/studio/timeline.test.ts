@@ -43,6 +43,7 @@ import {
   ripple,
   rulerStepMs,
   sameClips,
+  setEffects,
   setSpeed,
   setSubtitle,
   setTransition,
@@ -728,5 +729,38 @@ describe('保存の比較', () => {
   it('保存の body には速度も載る', () => {
     const [body] = toClipInputs([clip('a', { speed: 1.5 })])
     expect(body.speed).toBe(1.5)
+  })
+})
+
+// --------------------------------------------------------------------------
+// 映像クリップの加工
+// --------------------------------------------------------------------------
+
+describe('setEffects', () => {
+  it('止め絵は尺だけを持つクリップになり、速度は 1 に戻る', () => {
+    const base = [clip('a', { speed: 2, duration_ms: 1000 })]
+    const [frozen] = setEffects(base, 'a', { freeze: true })
+    expect(frozen.effects).toEqual({ freeze: true })
+    expect(frozen.speed).toBe(1)
+    expect(isSpanless(frozen)).toBe(true)
+  })
+
+  it('止め絵を外すと out_ms を尺から決め直す', () => {
+    const base = [
+      clip('a', { in_ms: 500, out_ms: 500, duration_ms: 3000, effects: { freeze: true } }),
+    ]
+    const [plain] = setEffects(base, 'a', null)
+    expect(plain.effects).toBeNull()
+    expect(plain.out_ms).toBe(3500)
+    expect(isSpanless(plain)).toBe(false)
+  })
+
+  it('加工は保存に載り、変えれば自動保存が走る', () => {
+    const base = [clip('a')]
+    const changed = setEffects(base, 'a', { reverse: true, step: 2 })
+    expect(sameClips(base, changed)).toBe(false)
+    const [input] = toClipInputs(changed)
+    expect(input.effects).toEqual({ reverse: true, step: 2 })
+    expect(toClipInputs(base)[0].effects).toBeNull()
   })
 })

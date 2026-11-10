@@ -1978,6 +1978,62 @@ export interface StudioTimelineUpdate {
 }
 
 /** トラックに置かれたクリップ 1 つ（ソース解決済み）。 */
+/** 映像クリップの寄り（拡大して切り出す）。 */
+export interface TimelineClipZoom {
+  /** 拡大率（1.0 = そのまま 〜 4.0）。 */
+  scale: number
+  /** 切り出す中心（画面比。0 = 左端・上端、0.5 = 真ん中、1 = 右端・下端）。 */
+  x: number
+  y: number
+}
+
+/** 映像クリップの色の調整（ffmpeg の `eq`）。 */
+export interface TimelineClipColor {
+  /** 彩度（0〜3。1 = そのまま）。 */
+  saturation: number
+  /** コントラスト（0〜3。1 = そのまま）。 */
+  contrast: number
+  /** 明るさ（-1〜1。0 = そのまま）。 */
+  brightness: number
+  /** ガンマ（0.1〜4。1 = そのまま）。 */
+  gamma: number
+}
+
+/**
+ * 映像クリップの加工（書き出しの ffmpeg で効く。**プレビューには効かない**）。
+ */
+export interface TimelineClipEffects {
+  /** `in_ms` の 1 コマを尺のあいだ止める（音は無音。速度は 1 のみ）。 */
+  freeze?: boolean
+  /** 切り出した区間を逆に再生する（音も逆再生）。 */
+  reverse?: boolean
+  zoom?: TimelineClipZoom | null
+  /** コマ打ち（1 = しない 〜 4）。 */
+  step?: number
+  color?: TimelineClipColor | null
+  /** ノイズ（巻き戻し風の荒れ。0〜1）。 */
+  noise?: number
+}
+
+/** ダッキングの効かせ方。 */
+export type TimelineDuckingMode = 'clips' | 'signal'
+
+/** 音声トラックのダッキング（書き出しの ffmpeg で効く）。 */
+export interface TimelineDucking {
+  /** きっかけにする音声トラック（声など）。 */
+  trigger_track_id: string
+  /** 下げる量（dB。0〜40）。 */
+  amount_db?: number
+  /** 下げ始めてから下げ切るまで（ミリ秒）。 */
+  attack_ms?: number
+  /** 止んでから戻り切るまで（ミリ秒）。 */
+  release_ms?: number
+  /** clips = クリップの区間で下げる / signal = 実際の音の大きさに反応する。 */
+  mode?: TimelineDuckingMode
+  /** signal のときのしきい値（dBFS）。 */
+  threshold_db?: number
+}
+
 export interface TimelineClip {
   id: string
   track_id: string
@@ -2004,6 +2060,8 @@ export interface TimelineClip {
   text_payload: Record<string, unknown> | null
   /** 再生速度（1.0 = 等速。映像クリップだけ 1 以外を取れる）。 */
   speed: number
+  /** 映像クリップの加工（null = なし）。 */
+  effects?: TimelineClipEffects | null
   sort_order: number
   // --- サーバーが読み取りのたびに解決するぶん -------------------------------
   /** 再生できる URL（`/outputs/…` / `/library/…` / `/assets/…`）。 */
@@ -2025,6 +2083,8 @@ export interface TimelineTrack {
   sort_order: number
   muted: boolean
   locked: boolean
+  /** ダッキング（音声トラックだけ。null = しない）。 */
+  ducking?: TimelineDucking | null
   clips: TimelineClip[]
 }
 
@@ -2056,6 +2116,7 @@ export interface TimelineClipInput {
   transition_ms?: number
   text_payload?: Record<string, unknown> | null
   speed?: number
+  effects?: TimelineClipEffects | null
 }
 
 /** 書き出し 1 回（`outputs/exports/{id}/final.mp4`）。 */
@@ -2223,6 +2284,8 @@ export interface TimelineTrackUpdate {
   name?: string
   muted?: boolean
   locked?: boolean
+  /** 送れば丸ごと置き換え、null で外す（送らなければそのまま）。 */
+  ducking?: TimelineDucking | null
 }
 
 // --- 素材ビン ----------------------------------------------------------------

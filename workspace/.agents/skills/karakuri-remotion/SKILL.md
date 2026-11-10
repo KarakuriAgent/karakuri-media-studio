@@ -207,7 +207,8 @@ props スキーマの正本は **`remotion/src/schema.ts`(zod)**。迷ったら�
 **制作の本筋では `base` / `audio` / `fps` / `width` / `height` / `durationInSeconds` を
 自分で書かない**: `events` と `theme` / `seed` / `ambient` を
 `PUT /api/v1/timelines/{id}/fx` に入れておけば、`{"fx": true}` の書き出しが
-「焼いた mp4 を下地に・A1 の音を乗せて・タイムラインの規格で」レンダリングする。
+「焼いた mp4 を下地に・その mp4 の音（全部の音声トラックを混ぜたもの）を乗せて・
+タイムラインの規格で」レンダリングする。
 下の JSON は**手元で 1 本だけ確かめるとき**の形。
 
 ```jsonc

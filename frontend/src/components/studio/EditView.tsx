@@ -7,6 +7,7 @@ import type {
   StudioTimeline,
   StudioTimelineDetail,
   TimelineClip,
+  TimelineDucking,
   TimelineExport,
   TimelineExportProgress,
   TimelineExportRequest,
@@ -60,6 +61,7 @@ import {
   removeClipFree,
   ripple,
   sameClips,
+  setEffects,
   setSpeed,
   setSubtitle,
   setTransition,
@@ -496,6 +498,14 @@ export default function EditView({
       if (!timelineId) return
       await withFlush(() =>
         api.updateStudioTimelineTrack(timelineId, trackId, { muted }),
+      )
+    })
+
+  const setDucking = (trackId: string, ducking: TimelineDucking | null) =>
+    guard(async () => {
+      if (!timelineId) return
+      await withFlush(() =>
+        api.updateStudioTimelineTrack(timelineId, trackId, { ducking }),
       )
     })
 
@@ -990,6 +1000,16 @@ export default function EditView({
                 applySelectedTrack((current) =>
                   setSubtitle(current, selectedId, patch),
                 )
+              }}
+              audioTracks={audioTracks}
+              onEffects={(effects) => {
+                if (!selectedId) return
+                applySelectedTrack((current) =>
+                  setEffects(current, selectedId, effects),
+                )
+              }}
+              onDucking={(ducking) => {
+                if (selectedTrack) setDucking(selectedTrack.id, ducking)
               }}
             />
             <MediaBin

@@ -19,6 +19,7 @@ import type {
   StudioTimelineDetail,
   TimelineClip,
   TimelineClipInput,
+  TimelineClipEffects,
   TimelineExportFit,
   TimelineExportPreset,
   TimelineMediaItem,
@@ -420,12 +421,13 @@ export function trimClip(
   return ripple(next)
 }
 
-/** 切り出し位置を持たないクリップ（尺がそのまま長さ）。 */
+/** 切り出し位置を持たないクリップ（尺がそのまま長さ）。止め絵もここに入る。 */
 export function isSpanless(clip: TimelineClip): boolean {
   return (
     clip.source_kind === 'text' ||
     clip.source_kind === 'image' ||
-    clip.source_kind === 'gap'
+    clip.source_kind === 'gap' ||
+    Boolean(clip.effects?.freeze)
   )
 }
 
@@ -542,6 +544,31 @@ export function setSpeed(
   const next = [...clips]
   next[index] = { ...clip, speed: wanted, duration_ms: duration }
   return ripple(next)
+}
+
+/**
+ * 加工を差し替える（`null` で外す）。止め絵は切り出しを見ないので、入れるときは
+ * 速度を 1 に戻し、外すときは `out_ms` を尺から決め直す（等速のつじつま）。
+ */
+export function setEffects(
+  clips: TimelineClip[],
+  id: string,
+  effects: TimelineClipEffects | null,
+): TimelineClip[] {
+  const index = clips.findIndex((clip) => clip.id === id)
+  if (index < 0) return clips
+  const clip = clips[index]
+  const wasFreeze = Boolean(clip.effects?.freeze)
+  const freeze = Boolean(effects?.freeze)
+  const next = [...clips]
+  let updated: TimelineClip = { ...clip, effects }
+  if (freeze && !wasFreeze) {
+    updated = { ...updated, speed: 1 }
+  } else if (!freeze && wasFreeze) {
+    updated = { ...updated, speed: 1, out_ms: clip.in_ms + clip.duration_ms }
+  }
+  next[index] = updated
+  return next
 }
 
 /** 音量・フェードなど、並びに影響しない項目を差し替える。 */
@@ -795,6 +822,7 @@ export function toClipInputs(clips: TimelineClip[]): TimelineClipInput[] {
     transition_ms: clip.transition_ms,
     text_payload: clip.text_payload,
     speed: clip.speed,
+    effects: clip.effects ?? null,
   }))
 }
 
@@ -825,7 +853,9 @@ export function sameClips(a: TimelineClip[], b: TimelineClip[]): boolean {
       clip.transition_ms === other.transition_ms &&
       speedOf(clip) === speedOf(other) &&
       JSON.stringify(clip.text_payload ?? null) ===
-        JSON.stringify(other.text_payload ?? null)
+        JSON.stringify(other.text_payload ?? null) &&
+      JSON.stringify(clip.effects ?? null) ===
+        JSON.stringify(other.effects ?? null)
     )
   })
 }

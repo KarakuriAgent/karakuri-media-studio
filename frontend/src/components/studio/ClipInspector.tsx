@@ -1,6 +1,13 @@
 import { AlertTriangle, Scissors, Trash2 } from 'lucide-react'
 
-import type { TimelineClip, TimelineTrack } from '../../types'
+import type {
+  TimelineClip,
+  TimelineClipColor,
+  TimelineClipEffects,
+  TimelineClipZoom,
+  TimelineDucking,
+  TimelineTrack,
+} from '../../types'
 import { Section } from '../ui'
 import { Button } from '../ui/button'
 import {
@@ -27,8 +34,10 @@ import {
  *
  * トラックによって出るものが違う:
  *
- * - **映像** … 位置・切り出し・繋ぎの読み取りに加えて、**速度**（リタイム）。
- * - **音声** … **音量**（dB）と**フェードイン / アウト**。
+ * - **映像** … 位置・切り出し・繋ぎの読み取りに加えて、**速度**（リタイム）と
+ *   **加工**（止め絵・逆再生・寄り・コマ打ち・色・ノイズ。書き出しにだけ効く）。
+ * - **音声** … **音量**（dB）と**フェードイン / アウト**、そのトラックの
+ *   **ダッキング**（書き出しにだけ効く）。
  * - **字幕** … **本文**と見た目（位置・大きさ・色）。
  *
  * トリムと並べ替えはタイムライン上のドラッグで行う（ここは数値では触らせない）。
@@ -43,6 +52,9 @@ export default function ClipInspector({
   onSpeed,
   onPatch,
   onSubtitle,
+  audioTracks = [],
+  onEffects,
+  onDucking,
 }: {
   clip: TimelineClip | null
   /** そのクリップが載っているトラック（種別で出す項目が変わる）。 */
@@ -59,6 +71,12 @@ export default function ClipInspector({
   onPatch: (patch: Partial<TimelineClip>) => void
   /** テロップの本文・見た目を変える。 */
   onSubtitle: (patch: { text?: string; style?: Partial<SubtitleStyle> }) => void
+  /** タイムラインの音声トラック（ダッキングのきっかけの候補）。 */
+  audioTracks?: TimelineTrack[]
+  /** 映像クリップの加工を変える（null で外す）。 */
+  onEffects?: (effects: TimelineClipEffects | null) => void
+  /** このクリップのトラックのダッキングを変える（null で外す）。 */
+  onDucking?: (ducking: TimelineDucking | null) => void
 }) {
   if (!clip) {
     return (
@@ -158,6 +176,18 @@ export default function ClipInspector({
           </div>
         )}
 
+        {/* ------------------------------------------------ 映像: 加工 */}
+        {kind === 'video' &&
+          clip.source_kind !== 'gap' &&
+          clip.source_kind !== 'text' &&
+          onEffects && (
+            <EffectsEditor
+              effects={clip.effects ?? null}
+              still={clip.source_kind === 'image'}
+              onChange={onEffects}
+            />
+          )}
+
         {/* ------------------------------------------- 音声: 音量とフェード */}
         {kind === 'audio' && (
           <div className="flex flex-col gap-2 border-t border-border pt-2">
@@ -195,6 +225,13 @@ export default function ClipInspector({
               尺より長い BGM は端をドラッグして切ってください（ループ再生は
               できません）。
             </p>
+            {track && onDucking && (
+              <DuckingEditor
+                track={track}
+                candidates={audioTracks.filter((item) => item.id !== track.id)}
+                onChange={onDucking}
+              />
+            )}
           </div>
         )}
 
@@ -332,6 +369,293 @@ function Choice({
           </option>
         ))}
       </select>
+    </label>
+  )
+}
+
+// --------------------------------------------------------------------------
+// 映像クリップの加工
+// --------------------------------------------------------------------------
+
+const ZOOM_DEFAULT: TimelineClipZoom = { scale: 1, x: 0.5, y: 0.5 }
+const COLOR_DEFAULT: TimelineClipColor = {
+  saturation: 1,
+  contrast: 1,
+  brightness: 0,
+  gamma: 1,
+}
+
+function EffectsEditor({
+  effects,
+  still,
+  onChange,
+}: {
+  effects: TimelineClipEffects | null
+  /** 静止画（止め絵・逆再生は使えない）。 */
+  still: boolean
+  onChange: (effects: TimelineClipEffects | null) => void
+}) {
+  const current: TimelineClipEffects = effects ?? {}
+  const zoom = { ...ZOOM_DEFAULT, ...(current.zoom ?? {}) }
+  const color = { ...COLOR_DEFAULT, ...(current.color ?? {}) }
+  const update = (patch: Partial<TimelineClipEffects>) =>
+    onChange({ ...current, ...patch })
+
+  return (
+    <div className="flex flex-col gap-2 border-t border-border pt-2">
+      <span className="text-[11px] text-muted-foreground">
+        加工（書き出しにだけ効きます。プレビューには出ません）
+      </span>
+      {!still && (
+        <div className="flex flex-wrap gap-3 text-[11px]">
+          <label className="flex items-center gap-1">
+            <input
+              type="checkbox"
+              checked={Boolean(current.freeze)}
+              onChange={(event) =>
+                update({ freeze: event.target.checked, reverse: false })
+              }
+            />
+            止め絵（切り出しの頭の 1 コマ）
+          </label>
+          <label className="flex items-center gap-1">
+            <input
+              type="checkbox"
+              checked={Boolean(current.reverse)}
+              onChange={(event) =>
+                update({ reverse: event.target.checked, freeze: false })
+              }
+            />
+            逆再生
+          </label>
+        </div>
+      )}
+      <div className="grid grid-cols-3 gap-2">
+        <Decimal
+          label="寄り（倍）"
+          value={zoom.scale}
+          min={1}
+          max={4}
+          step={0.05}
+          onChange={(value) => update({ zoom: { ...zoom, scale: value } })}
+        />
+        <Decimal
+          label="中心 横"
+          value={zoom.x}
+          min={0}
+          max={1}
+          step={0.05}
+          onChange={(value) => update({ zoom: { ...zoom, x: value } })}
+        />
+        <Decimal
+          label="中心 縦"
+          value={zoom.y}
+          min={0}
+          max={1}
+          step={0.05}
+          onChange={(value) => update({ zoom: { ...zoom, y: value } })}
+        />
+      </div>
+      <div className="grid grid-cols-2 gap-2 text-[11px]">
+        <label className="flex flex-col gap-1">
+          <span className="text-muted-foreground">コマ打ち</span>
+          <select
+            className="h-7 rounded-md border border-border bg-background px-1 text-[11px]"
+            value={current.step ?? 1}
+            onChange={(event) => update({ step: Number(event.target.value) })}
+          >
+            <option value={1}>なし</option>
+            <option value={2}>2 コマ打ち</option>
+            <option value={3}>3 コマ打ち</option>
+            <option value={4}>4 コマ打ち</option>
+          </select>
+        </label>
+        <Decimal
+          label="ノイズ（0〜1）"
+          value={current.noise ?? 0}
+          min={0}
+          max={1}
+          step={0.05}
+          onChange={(value) => update({ noise: value })}
+        />
+      </div>
+      <div className="grid grid-cols-4 gap-2">
+        <Decimal
+          label="彩度"
+          value={color.saturation}
+          min={0}
+          max={3}
+          step={0.05}
+          onChange={(value) => update({ color: { ...color, saturation: value } })}
+        />
+        <Decimal
+          label="コントラスト"
+          value={color.contrast}
+          min={0}
+          max={3}
+          step={0.05}
+          onChange={(value) => update({ color: { ...color, contrast: value } })}
+        />
+        <Decimal
+          label="明るさ"
+          value={color.brightness}
+          min={-1}
+          max={1}
+          step={0.05}
+          onChange={(value) => update({ color: { ...color, brightness: value } })}
+        />
+        <Decimal
+          label="ガンマ"
+          value={color.gamma}
+          min={0.1}
+          max={4}
+          step={0.05}
+          onChange={(value) => update({ color: { ...color, gamma: value } })}
+        />
+      </div>
+      {effects && (
+        <div>
+          <Button type="button" size="sm" variant="ghost" onClick={() => onChange(null)}>
+            加工を外す
+          </Button>
+        </div>
+      )}
+    </div>
+  )
+}
+
+// --------------------------------------------------------------------------
+// 音声トラックのダッキング
+// --------------------------------------------------------------------------
+
+function DuckingEditor({
+  track,
+  candidates,
+  onChange,
+}: {
+  track: TimelineTrack
+  /** きっかけに選べるトラック（自分以外の音声トラック）。 */
+  candidates: TimelineTrack[]
+  onChange: (ducking: TimelineDucking | null) => void
+}) {
+  const ducking = track.ducking ?? null
+  const update = (patch: Partial<TimelineDucking>) => {
+    if (!ducking) return
+    onChange({ ...ducking, ...patch })
+  }
+  return (
+    <div className="flex flex-col gap-2 border-t border-border pt-2 text-[11px]">
+      <span className="text-muted-foreground">
+        {track.name} のダッキング（書き出しにだけ効きます）
+      </span>
+      <label className="flex flex-col gap-1">
+        <span className="text-muted-foreground">きっかけのトラック（声など）</span>
+        <select
+          className="h-7 rounded-md border border-border bg-background px-1 text-[11px]"
+          value={ducking?.trigger_track_id ?? ''}
+          onChange={(event) => {
+            const value = event.target.value
+            if (!value) {
+              onChange(null)
+              return
+            }
+            onChange({
+              amount_db: 8,
+              attack_ms: 100,
+              release_ms: 300,
+              mode: 'clips',
+              ...(ducking ?? {}),
+              trigger_track_id: value,
+            })
+          }}
+        >
+          <option value="">しない</option>
+          {candidates.map((item) => (
+            <option key={item.id} value={item.id}>
+              {item.name}
+            </option>
+          ))}
+        </select>
+      </label>
+      {ducking && (
+        <>
+          <div className="grid grid-cols-3 gap-2">
+            <Decimal
+              label="下げる量 (dB)"
+              value={ducking.amount_db ?? 8}
+              min={0}
+              max={40}
+              step={1}
+              onChange={(value) => update({ amount_db: value })}
+            />
+            <Decimal
+              label="立ち上がり (ms)"
+              value={ducking.attack_ms ?? 100}
+              min={1}
+              max={5000}
+              step={10}
+              onChange={(value) => update({ attack_ms: Math.round(value) })}
+            />
+            <Decimal
+              label="戻り (ms)"
+              value={ducking.release_ms ?? 300}
+              min={1}
+              max={10000}
+              step={10}
+              onChange={(value) => update({ release_ms: Math.round(value) })}
+            />
+          </div>
+          <label className="flex flex-col gap-1">
+            <span className="text-muted-foreground">反応のしかた</span>
+            <select
+              className="h-7 rounded-md border border-border bg-background px-1 text-[11px]"
+              value={ducking.mode ?? 'clips'}
+              onChange={(event) =>
+                update({ mode: event.target.value as TimelineDucking['mode'] })
+              }
+            >
+              <option value="clips">クリップのある区間（ちょうどの dB）</option>
+              <option value="signal">実際の音の大きさ（目安の dB）</option>
+            </select>
+          </label>
+        </>
+      )}
+    </div>
+  )
+}
+
+function Decimal({
+  label,
+  value,
+  min,
+  max,
+  step,
+  onChange,
+}: {
+  label: string
+  value: number
+  min: number
+  max: number
+  step: number
+  onChange: (value: number) => void
+}) {
+  return (
+    <label className="flex flex-col gap-1 text-[11px]">
+      <span className="text-muted-foreground">{label}</span>
+      <input
+        type="number"
+        className="h-7 rounded-md border border-border bg-background px-2 text-[11px]"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        aria-label={label}
+        onChange={(event) => {
+          const raw = Number(event.target.value)
+          if (!Number.isFinite(raw)) return
+          onChange(Math.max(min, Math.min(max, raw)))
+        }}
+      />
     </label>
   )
 }
