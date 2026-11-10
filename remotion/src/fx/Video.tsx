@@ -1,5 +1,6 @@
 // video: 動画を 1 本重ねる。動く漫符・エフェクト素材など。
 // 位置と大きさは sprite と同じ(anchor か cx / cy、幅 w × 高さ maxH の箱に fit で収める)。
+// cover: true なら sprite と同じく、画面の四隅まで覆う大きさにする(素材の縦横比は尺と一緒に読む)。
 //
 // - 透過: アルファ付きの WebM は OffthreadVideo の transparent でそのまま重なる
 // - クロマキー: chromaKey を書くと、動画を隠して 1 コマずつ canvas に描き、色を抜く
@@ -19,7 +20,9 @@ import {
 } from 'remotion';
 import { getVideoMetadata } from '@remotion/media-utils';
 import { cssColorToRgb, keyPixels } from '../lib/chroma';
+import { coverBox } from '../lib/fit';
 import { anchorCenter, motionTransform, toFrames, useFxCtx } from '../lib/fx';
+import { useMediaAspect } from '../lib/mediaAspect';
 import { rng } from '../lib/rng';
 import { resolveMediaUrl } from '../media';
 import type { FxChromaKey, FxEventOf } from '../schema';
@@ -197,10 +200,23 @@ export const FxVideoEvent: React.FC<{ ev: VideoEvent; seed: number }> = ({ ev, s
   const loop = useLoopFrames(ev, url, fps);
 
   const anchored = anchorCenter(ev.anchor, ev.w, ev.maxH, ev.margin);
-  const cx = (ev.cx ?? anchored.cx) * ctx.width;
-  const cy = (ev.cy ?? anchored.cy) * ctx.height;
-  const boxW = ctx.width * ev.w;
-  const boxH = ctx.height * ev.maxH;
+  const aspect = useMediaAspect(ev.cover ? url : null, 'video');
+  const covered = ev.cover
+    ? coverBox({
+        screenW: ctx.width,
+        screenH: ctx.height,
+        x: (ev.cx ?? 0.5) * ctx.width,
+        y: (ev.cy ?? 0.5) * ctx.height,
+        aspect: aspect ?? 1,
+        origin: ev.coverOrigin,
+        rot: ev.rot,
+        margin: ev.coverMargin,
+      })
+    : null;
+  const cx = covered ? covered.cx : (ev.cx ?? anchored.cx) * ctx.width;
+  const cy = covered ? covered.cy : (ev.cy ?? anchored.cy) * ctx.height;
+  const boxW = covered ? covered.width : ctx.width * ev.w;
+  const boxH = covered ? covered.height : ctx.height * ev.maxH;
 
   const r = rng(seed + frame * 97);
   const motion = motionTransform(ev.motion, frame, fps, ctx.fs(10), r.next);
@@ -222,8 +238,10 @@ export const FxVideoEvent: React.FC<{ ev: VideoEvent; seed: number }> = ({ ev, s
     // CSS の rotate は時計回りが正なので符号を反転する(sprite と同じ)。
     transforms.push(`rotate(${-ev.rot}deg)`);
   }
-  if (motion.scale !== 1) {
-    transforms.push(`scale(${motion.scale})`);
+  // 覆っているときは縮まない(揺れで 1 倍を割ると端が見える)
+  const scale = covered ? Math.max(1, motion.scale) : motion.scale;
+  if (scale !== 1) {
+    transforms.push(`scale(${scale})`);
   }
 
   const trimBefore = toFrames(ev.in, fps);

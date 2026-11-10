@@ -149,7 +149,12 @@ export function fxNote(item: TimelineFxEvent): string | null {
 export interface FxField {
   name: string
   label: string
-  kind: 'number' | 'text'
+  kind: 'number' | 'text' | 'boolean'
+  /**
+   * 書いていなくても出す型（無ければ、値を持っているときだけ出す）。
+   * 既定が「無効」のオプションを、人が画面で入れられるようにするため。
+   */
+  types?: string[]
 }
 
 /** すべての型に共通の項目（`enabled` はチェックボックスで別に出す）。 */
@@ -175,11 +180,19 @@ export const FX_MAIN_FIELDS: FxField[] = [
   { name: 'w', label: '幅（画面比）', kind: 'number' },
   { name: 'maxH', label: '高さの上限（画面比）', kind: 'number' },
   { name: 'color', label: '色', kind: 'text' },
+  // 画面を覆う置き方（集中線・効果線。w / maxH の代わりに四隅まで覆う大きさにする）
+  { name: 'cover', label: '画面を覆う（cover）', kind: 'boolean', types: ['sprite', 'video'] },
+  { name: 'coverMargin', label: '覆う余裕（倍率。既定 1.06）', kind: 'number', types: ['sprite', 'video'] },
+  // 叩き込みはじめの倍率を画面に収める
+  { name: 'fitStart', label: '叩き込みを画面に収める（fitStart）', kind: 'boolean', types: ['imageSlam'] },
 ]
 
-/** そのイベントで実際に出す主要項目（値を持っているものだけ）。 */
+/** そのイベントで実際に出す主要項目（値を持っているもの、と型ごとに必ず出すもの）。 */
 export function fxMainFields(item: TimelineFxEvent): FxField[] {
-  return FX_MAIN_FIELDS.filter((field) => field.name in item.event)
+  const type = fxType(item)
+  return FX_MAIN_FIELDS.filter(
+    (field) => field.name in item.event || (field.types?.includes(type) ?? false),
+  )
 }
 
 /** 主要項目にも共通項目にも出ない残り（JSON のテキスト欄で触る）。 */

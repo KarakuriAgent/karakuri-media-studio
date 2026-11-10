@@ -743,6 +743,11 @@ GET /api/v1/jobs?q=かおり&kind=video&nsfw=false&limit=48&offset=0
 （新しい入手元の規約・robots.txt を確かめ、取り込んで選別し、採用した物を同梱の目録に足す。
 手順は [`asset-packs/README.md`](../asset-packs/README.md)「目録を足す・直す」）。
 
+**入れた素材の使い方のコツ**（効果音・BGM の当て方とダッキング、書き出しの確かめ方、漫画記号の
+置き方。集中線は `sprite` / `video` の `cover`、叩きつけは `imageSlam` の `fitStart`）は、スキル
+`workspace/.agents/skills/karakuri-studio/SKILL.md`（「効果音を当てる」「BGM を選ぶ・当てる」
+「書き出しを確かめる」）と `workspace/.agents/skills/karakuri-remotion/SKILL.md`（「漫画記号を置く」）。
+
 #### 同梱の素材パック
 
 リポジトリの [`asset-packs/`](../asset-packs/README.md) に**目録だけ**を同梱している（素材の

@@ -3,11 +3,16 @@
 // 配置は画面比(cx / cy / w / maxH)。BAN!BAN!BAN! で決まった作法は
 // 「顔と楽器の手元を避けて画面下 1/3、できるだけ大きく(幅 45% 以上、cx は 0.28〜0.72)」。
 // はみ出しはレンダリング後には気づけないので、コンソールに警告を出す。
+// fitStart: true なら、叩き込みはじめの倍率(snap[0])を画面に収まる所まで自動で抑える
+// (勢いのため fitStartMin までは残す。計算は lib/fit.ts の fitSlamStart)。
 
 import React from 'react';
 import { spring, useCurrentFrame, useVideoConfig } from 'remotion';
 import { FxSprite } from '../components/FxSprite';
+import { containSize, fitSlamStart } from '../lib/fit';
 import { useFxCtx } from '../lib/fx';
+import { useMediaAspect } from '../lib/mediaAspect';
+import { resolveSource } from '../media';
 import type { FxEventOf } from '../schema';
 
 /** 同じイベントで毎フレーム警告を出さないための記録。 */
@@ -42,7 +47,27 @@ export const FxImageSlam: React.FC<{ ev: FxEventOf<'imageSlam'> }> = ({ ev }) =>
   const ctx = useFxCtx();
   warnIfOutOfScreen(ev);
 
-  const [snapFrom, snapTo] = ev.snap;
+  const boxW = ctx.width * ev.w;
+  const boxH = ctx.height * ev.maxH;
+  // fitStart のときだけ素材の縦横比を読む(箱の中で実際に見える大きさで測る)
+  const source = resolveSource(ev.src);
+  const aspect = useMediaAspect(ev.fitStart && source.kind === 'image' ? source.url : null, 'image');
+  const [, snapTo] = ev.snap;
+  let snapFrom = ev.snap[0];
+  if (ev.fitStart) {
+    const drawn = containSize(boxW, boxH, aspect);
+    snapFrom = fitSlamStart({
+      screenW: ctx.width,
+      screenH: ctx.height,
+      cx: ctx.width * ev.cx,
+      cy: ctx.height * ev.cy,
+      drawnW: drawn.width,
+      drawnH: drawn.height,
+      rot: ev.rot,
+      snap: ev.snap,
+      min: ev.fitStartMin,
+    });
+  }
   const scale = ev.spring
     ? // spring は 1 を越えて振れるので、行き過ぎて数フレーム揺れて着地する
       snapFrom + (snapTo - snapFrom) * spring({ frame, fps, config: { damping: 12, mass: 0.6 } })
@@ -58,8 +83,8 @@ export const FxImageSlam: React.FC<{ ev: FxEventOf<'imageSlam'> }> = ({ ev }) =>
       src={ev.src}
       cx={ctx.width * ev.cx}
       cy={ctx.height * ev.cy}
-      width={ctx.width * ev.w}
-      maxHeight={ctx.height * ev.maxH}
+      width={boxW}
+      maxHeight={boxH}
       rot={ev.rot}
       scale={scale * outScale}
       whiten={frame === 0 ? ev.flash : 0}

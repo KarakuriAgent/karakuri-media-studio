@@ -2213,6 +2213,18 @@ EDL → ffmpeg コマンドの**組み立ては純関数**（`build_command`）�
   `yuva420p`）にしてから棚に置く（`app/media_convert.py`。元のファイルは `library/originals/`、
   `media_info.converted_from` に元のコーデック）。書き出しの素材一覧（`materials`）には、
   `video` の `src` のライブラリの URL も入る
+- **画面に合わせて大きさを決める指定**（`remotion/src/lib/fit.ts`。どれも既定は無効で、書かなければ前のまま）:
+  - `sprite` / `video` の `cover: true` … 素材の中の点 `coverOrigin`（既定 `[0.5, 0.5]`）を画面の
+    `cx` / `cy` に合わせたまま、画面の四隅まで必ず覆う大きさ（× `coverMargin`、既定 1.06）にする。
+    `w` / `maxH` / `anchor` は使わない。素材の縦横比は読み込んだ実寸から（画像は `Image`、動画は
+    `getVideoMetadata`。読むまで `delayRender` で待つ）、`rot` を書けば回した分も覆う。集中線・
+    効果線の中心を顔に寄せても端が切れないため。`motion` の縮む揺れは 1 倍で止める
+  - `imageSlam` の `fitStart: true` … 叩き込みはじめの倍率 `snap[0]` を、絵（実寸の縦横比で箱に
+    収めた大きさを `rot` で回した外接の箱）が画面の端から 1% 内側に収まる所まで抑える。
+    勢いのため `fitStartMin`（既定 1.12）までは残し、着地の倍率より小さくはしない
+  - 使い方のコツ（漫画記号は同梱パックから・集中線は `cover`・叩きつけは `fitStart` など）は
+    `workspace/.agents/skills/karakuri-remotion/SKILL.md`「漫画記号を置く」、効果音・BGM の当て方は
+    `workspace/.agents/skills/karakuri-studio/SKILL.md`「効果音を当てる」「BGM を選ぶ・当てる」
 
 #### 歌詞モーション（`timeline_fx.lyric`。JIZURA の層）
 

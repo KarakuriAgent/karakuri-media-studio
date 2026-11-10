@@ -626,6 +626,23 @@ const fxSpriteLookCommon = {
     .optional(),
 };
 
+/**
+ * 画面を覆う置き方(sprite / video。集中線・効果線のため)。`cover: true` のとき、
+ * 素材の中の点 `coverOrigin`(既定は中心)を画面の `cx` / `cy`(書かなければ 0.5)に合わせたまま、
+ * 画面の四隅まで必ず覆う大きさに自動で広げる(`w` / `maxH` / `anchor` は使わない)。
+ * 大きさは素材の実寸の縦横比から決め、`rot` を書けば回した分も覆う。中心を顔へ寄せても端が切れない。
+ * `motion` は `none` か、拡大だけの `pop` / `stamp` にする(縮む揺れは 1 倍で止める)。
+ */
+const fxCoverFields = {
+  cover: z.boolean().default(false),
+  /** 覆う大きさに掛ける余裕の倍率(1 でちょうど四隅に届く)。 */
+  coverMargin: z.number().min(1).max(4).default(1.06),
+  /** 画面の cx / cy に合わせる素材の中の点(素材の幅・高さに対する比)。集中線の集まる所。 */
+  coverOrigin: z
+    .tuple([z.number().min(0.05).max(0.95), z.number().min(0.05).max(0.95)])
+    .default([0.5, 0.5]),
+};
+
 /** 不透明部分をこの色 1 色で塗る(白抜きロゴを配色に合わせるとき)。 */
 const fxTintField = fxColorSchema.optional();
 
@@ -720,6 +737,14 @@ export const fxImageSlamEventSchema = z.object({
   rot: z.number().default(0),
   /** 引きぎわに少しだけ縮める倍率。 */
   outScale: z.number().min(0.1).default(1.0),
+  /**
+   * 叩き込みはじめの倍率(snap[0])を、絵が画面の左右・上下からはみ出さない所まで自動で抑える
+   * (素材の実寸の縦横比と rot から測る。既定 false = 書いたとおり)。幅の広い文字を大きな倍率で
+   * 叩き込むと、出た瞬間の数コマで端が切れるのを防ぐ。
+   */
+  fitStart: z.boolean().default(false),
+  /** fitStart で抑えるときも残す最低の倍率(勢いのため。snap[0] がこれより小さければそのまま)。 */
+  fitStartMin: z.number().min(1).default(1.12),
   ...fxOutGlitchField,
   tint: fxTintField,
 });
@@ -829,6 +854,7 @@ export const fxSpriteEventSchema = z.object({
   motion: fxMotionSchema.default('stamp'),
   /** 出入りのフェード秒(0 で瞬間)。決めでは 0 のまま。 */
   fade: z.number().min(0).default(0),
+  ...fxCoverFields,
   ...fxSpriteLookCommon,
   tint: fxTintField,
   ...fxOutGlitchField,
@@ -899,6 +925,7 @@ export const fxVideoEventSchema = z.object({
   transparent: z.boolean().default(true),
   /** 色を抜く(グリーンバック・ブルーバック)。書かなければ抜かない。 */
   chromaKey: fxChromaKeySchema.optional(),
+  ...fxCoverFields,
 });
 
 /** 同じ画像を、キーフレームで指定した位置へ次々に貼って積む。 */

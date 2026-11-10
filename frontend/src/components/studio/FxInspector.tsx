@@ -157,16 +157,34 @@ function FxFields({
 
         {fxMainFields(item).length > 0 && (
           <div className="flex flex-col gap-2 border-t border-border pt-2">
-            {fxMainFields(item).map((field) => (
-              <ValueField
-                key={field.name}
-                label={field.label}
-                value={item.event[field.name]}
-                kind={field.kind}
-                disabled={busy}
-                onCommit={(value) => onPatch({ [field.name]: value })}
-              />
-            ))}
+            {fxMainFields(item).map((field) =>
+              field.kind === 'boolean' ? (
+                <label
+                  key={field.name}
+                  className="flex cursor-pointer items-center gap-2 text-[11px]"
+                >
+                  <Checkbox
+                    checked={item.event[field.name] === true}
+                    disabled={busy}
+                    aria-label={field.label}
+                    // 外すときは項目ごと消す（既定の false に戻る）
+                    onCheckedChange={(value) =>
+                      onPatch({ [field.name]: value === true ? true : null })
+                    }
+                  />
+                  <span>{field.label}</span>
+                </label>
+              ) : (
+                <ValueField
+                  key={field.name}
+                  label={field.label}
+                  value={item.event[field.name]}
+                  kind={field.kind}
+                  disabled={busy}
+                  onCommit={(value) => onPatch({ [field.name]: value })}
+                />
+              ),
+            )}
           </div>
         )}
 
@@ -207,7 +225,7 @@ function ValueField({
 }: {
   label: string
   value: unknown
-  kind: 'number' | 'text'
+  kind: 'number' | 'text' | 'boolean'
   disabled: boolean
   onCommit: (value: unknown) => void
 }) {

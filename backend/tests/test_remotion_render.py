@@ -110,3 +110,71 @@ async def test_a_looping_video_event_renders_without_timing_out(
         capture_output=True, text=True, check=True,
     ).stdout.strip()
     assert int(frames) == 600
+
+
+def _frame_rgb(path: Path, frame: int, width: int, height: int) -> bytes:
+    """``path`` の ``frame`` 番目のコマを RGB の生のバイト列で取り出す。"""
+    return subprocess.run(
+        ["ffmpeg", "-v", "error", "-i", str(path),
+         "-vf", f"select=eq(n\\,{frame})", "-vframes", "1",
+         "-f", "rawvideo", "-pix_fmt", "rgb24", "-"],
+        capture_output=True, check=True,
+    ).stdout[: width * height * 3]
+
+
+def _pixel(raw: bytes, width: int, x: int, y: int) -> tuple[int, int, int]:
+    i = (y * width + x) * 3
+    return raw[i], raw[i + 1], raw[i + 2]
+
+
+async def test_cover_fills_the_corners_and_fit_start_keeps_the_slam_inside(
+    tmp_path, served, monkeypatch
+):
+    """``sprite`` / ``video`` の ``cover`` は中心を上に寄せても四隅まで覆い、
+    ``imageSlam`` の ``fitStart`` は叩き込みはじめのコマでも画面の左右に収まる。"""
+    monkeypatch.setattr(remotion, "REMOTION_TMP_DIR", tmp_path / "runtime")
+    settings = remotion.load_settings().model_copy(update={"remotion_enabled": True})
+    monkeypatch.setattr(remotion, "load_settings", lambda: settings)
+    # 縦長でない（正方形・横長の）素材。集中線・幅の広い文字の代わり
+    _ffmpeg("-f", "lavfi", "-i", "color=c=red:s=300x300", "-frames:v", "1",
+            str(tmp_path / "square.png"))
+    _ffmpeg("-f", "lavfi", "-i", "color=c=lime:s=900x150", "-frames:v", "1",
+            str(tmp_path / "wide.png"))
+    _ffmpeg("-f", "lavfi", "-i", "color=c=blue:s=400x300:r=30:d=1",
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", str(tmp_path / "blue.mp4"))
+    width, height = 270, 480
+    props = {
+        "fps": 30, "width": width, "height": height, "durationInSeconds": 1,
+        "base": {"src": "color:#000000"},
+        "events": [
+            # 0〜0.3 秒: 集中線の代わりの赤（中心は上寄り。前の固定の大きさなら下が切れる）
+            {"type": "sprite", "t": 0, "until": 0.3, "src": f"{served}/square.png",
+             "cx": 0.5, "cy": 0.25, "w": 0.3, "maxH": 0.2, "motion": "none",
+             "cover": True},
+            # 0.3〜0.6 秒: 同じことを動画で（横長の素材・少し回す）
+            {"type": "video", "t": 0.3, "until": 0.6, "src": f"{served}/blue.mp4",
+             "cx": 0.4, "cy": 0.3, "rot": 10, "transparent": False, "cover": True},
+            # 0.6 秒〜: 幅の広い文字を 1.6 倍で叩き込む（fitStart で左右に収める）
+            {"type": "imageSlam", "t": 0.6, "until": 1, "src": f"{served}/wide.png",
+             "cx": 0.5, "cy": 0.5, "w": 0.75, "maxH": 0.3, "snap": [1.6, 1.0],
+             "spring": False, "flash": 0, "fitStart": True},
+        ],
+    }
+    output = tmp_path / "out.mp4"
+    await remotion.render("e2e", "FxOverlay", props, output)
+
+    corners = [(1, 1), (width - 2, 1), (1, height - 2), (width - 2, height - 2)]
+    red = _frame_rgb(output, 3, width, height)
+    for x, y in corners:
+        r, g, b = _pixel(red, width, x, y)
+        assert r > 120 and g < 80 and b < 80, (x, y, (r, g, b))
+    blue = _frame_rgb(output, 12, width, height)
+    for x, y in corners:
+        r, g, b = _pixel(blue, width, x, y)
+        assert b > 120 and r < 80, (x, y, (r, g, b))
+    # 叩き込みはじめのコマ（0.6 秒 = 18 コマ目）: 左右の端は下地の黒のまま、内側は緑
+    slam = _frame_rgb(output, 18, width, height)
+    assert max(_pixel(slam, width, 0, height // 2)) < 60
+    assert max(_pixel(slam, width, width - 1, height // 2)) < 60
+    r, g, b = _pixel(slam, width, 8, height // 2)
+    assert g > 120 and r < 80, (r, g, b)
