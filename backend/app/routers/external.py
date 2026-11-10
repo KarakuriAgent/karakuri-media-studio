@@ -58,6 +58,7 @@ from ..h3_examples import (
     select_examples,
 )
 from ..models import (
+    AssetPackArchiveListing,
     AssetPackImport,
     ASSET_FILE_ROLE_KINDS,
     ContactSheet,
@@ -158,7 +159,7 @@ from .library import (
 )
 from .library import key_job_output, key_library_item, key_media_source
 from .library import upload_detecting_kind, upload_to_library
-from .library import get_pack_import, import_pack, list_pack_imports
+from .library import get_pack_import, import_pack, list_pack_archive, list_pack_imports
 from .media import create_contact_sheet, create_text_image, font_list
 from .options import get_options
 from .studio import _kind_of, get_capabilities
@@ -1052,6 +1053,10 @@ async def list_library(
 router.add_api_route(
     "/library/packs/import", import_pack, methods=["POST"],
     response_model=AssetPackImport, status_code=202,
+)
+router.add_api_route(
+    "/library/packs/archive", list_pack_archive, methods=["POST"],
+    response_model=AssetPackArchiveListing,
 )
 router.add_api_route(
     "/library/packs/imports", list_pack_imports, methods=["GET"],

@@ -15,6 +15,8 @@ from .. import jobs as job_service
 from .. import library as service
 from .. import media_ref, sheets
 from ..models import (
+    AssetPackArchiveListing,
+    AssetPackArchiveRequest,
     AssetPackImport,
     AssetPackImportRequest,
     LibraryBlockingCreate,
@@ -286,9 +288,23 @@ async def list_pack_imports(limit: int = 20) -> list[AssetPackImport]:
     return await asset_packs.list_imports(limit)
 
 
+async def list_pack_archive(payload: AssetPackArchiveRequest) -> AssetPackArchiveListing:
+    """ZIP の中身の一覧（目録の ``member`` を書く助け。取り込み中は 409）。"""
+    try:
+        return await asset_packs.list_archive(payload)
+    except asset_packs.AssetPackBusy as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except asset_packs.AssetPackError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
 router.add_api_route(
     "/packs/import", import_pack, methods=["POST"],
     response_model=AssetPackImport, status_code=202,
+)
+router.add_api_route(
+    "/packs/archive", list_pack_archive, methods=["POST"],
+    response_model=AssetPackArchiveListing,
 )
 router.add_api_route(
     "/packs/imports", list_pack_imports, methods=["GET"],

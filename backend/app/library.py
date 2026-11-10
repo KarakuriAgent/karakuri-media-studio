@@ -158,6 +158,14 @@ def detect_kind(filename: str, content_type: str | None = None) -> str:
     )
 
 
+def detect_source_kind(filename: str, content_type: str | None = None) -> str:
+    """取り込みの入り口（アップロード・素材パック）で受け付けるファイルの種別。
+
+    棚にそのまま置ける拡張子（:data:`ALLOWED_EXT`）は :func:`detect_kind` と同じ。
+    """
+    return detect_kind(filename, content_type)
+
+
 def check_extension(kind: str, suffix: str) -> str:
     ext = suffix.lower()
     if ext not in ALLOWED_EXT[kind]:
@@ -166,6 +174,11 @@ def check_extension(kind: str, suffix: str) -> str:
             f" (allowed: {sorted(ALLOWED_EXT[kind])})"
         )
     return ext
+
+
+def check_source_extension(kind: str, suffix: str) -> str:
+    """取り込みの入り口で受け付ける拡張子か（:func:`detect_source_kind` と対）。"""
+    return check_extension(kind, suffix)
 
 
 def normalize_tags(raw: object) -> list[str]:

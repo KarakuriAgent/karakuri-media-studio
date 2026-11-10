@@ -509,6 +509,8 @@ export interface LibraryLicense {
   source_id: string
   file: string
   sha256: string
+  /** ZIP から取り出したときの、その中のパス（無ければ空。古い記録には無い）。 */
+  member?: string
 }
 
 /** 素材を測った値（素材パックの取り込みが測る）。 */

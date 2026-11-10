@@ -39,7 +39,7 @@
 | 素材（World Bible） | `GET /assets`（**全作品横断**の素材検索。`project_id` / `kind` / `q` / `limit` / `offset`）・`POST /projects/{id}/assets`（JSON / multipart。`library_id` でライブラリから取り込み）・`assets/from-job`・`PATCH/DELETE /assets/{id}`・`POST /assets/{id}/refresh-from-library`（取り込み元の今の版で取り直す）・素材のリファレンス（`/assets/{id}/files`・`DELETE /asset-files/{id}`） |
 | 生成と Take | `POST /shots/{id}/render`・`GET /shots/{id}/takes`・`POST /takes/{id}/select`・`reject`・`cancel`・`DELETE /takes/{id}` |
 | 汎用ジョブ | `GET/POST /jobs`（一覧は `q` / `kind` / `project_id` / `nsfw` / `limit` / `offset` で絞れる。§3.6）・`GET /jobs/{id}`・`POST /jobs/{id}/cancel`・`rerun`・`continue` |
-| ライブラリ | `GET /library`・`POST /library/image` / `POST /library/audio` / `POST /library/upload`（multipart。`license` も添えられる）・**`POST /library/packs/import`・`GET /library/packs/imports[/{id}]`（素材パック、§3.8）**・`POST /library/from-job`・`POST /library/sheet`・`POST /library/{id}/key`・`POST /library/key`・`POST /library/key-from-job`・`POST /library/blocking`・`POST /library/{id}/blocking`・`POST /library/blocking/preview`・`POST /library/blocking/location-map`・`PATCH /library/{id}`・`DELETE /library/{id}`（参照されていれば 409、`force=true` で押し切る。§3.8） |
+| ライブラリ | `GET /library`・`POST /library/image` / `POST /library/audio` / `POST /library/upload`（multipart。`license` も添えられる）・**`POST /library/packs/import`・`GET /library/packs/imports[/{id}]`・`POST /library/packs/archive`（素材パック・ZIP の中身の一覧、§3.8）**・`POST /library/from-job`・`POST /library/sheet`・`POST /library/{id}/key`・`POST /library/key`・`POST /library/key-from-job`・`POST /library/blocking`・`POST /library/{id}/blocking`・`POST /library/blocking/preview`・`POST /library/blocking/location-map`・`PATCH /library/{id}`・`DELETE /library/{id}`（参照されていれば 409、`force=true` で押し切る。§3.8） |
 | 素材の下ごしらえ | `POST /images/text`・`GET /images/text/fonts`・`POST /videos/contact-sheet`（§3.4） |
 | 編集（タイムライン） | `POST /projects/{id}/timelines`・`GET/PATCH/DELETE /timelines/{id}`・`PUT /timelines/{id}/clips`（クリップの加工 `effects`、§3.7）・`POST /timelines/{id}/clips/insert`・トラック CRUD（音声トラックのダッキング `ducking`、§3.7）・`generate-subtitles`・`sync-preview` / `sync`・`missing` / `missing/resolve`・`GET /projects/{id}/media` |
 | 演出（FX トラック） | `GET/PUT /timelines/{id}/fx`・`PUT /timelines/{id}/fx/lyric`（歌詞モーション）・`POST /timelines/{id}/fx/events`・`PATCH/DELETE /timelines/{id}/fx/events/{event_id}`（§3.3） |
@@ -732,7 +732,7 @@ GET /api/v1/jobs?q=かおり&kind=video&nsfw=false&limit=48&offset=0
 | `pack` | パックの id（英数字と `. _ -`、64 文字まで。取り込んだ素材の識別と受け取り口のフォルダ名） |
 | `name` / `description` | 表示用 |
 | `sources[]` | 入手元ごと: `id`・`name`（入手元の名前）・`url`・`terms_url`・`terms_summary`（規約の要点）・`checked_at`（規約を確かめた日）・`credit_required`・`credit_text`・`content_id`（Content ID の扱いのメモ）・`notes`・`acquire`（`auto` = 取得元の URL から取る〈既定〉/ `manual` = 人が受け取り口に置く）・`interval_seconds`（`auto` の間隔。2 秒より短くはしない） |
-| `items[]` | 素材ごと: `file`（ファイル名）・`source`（入手元の `id`）・`kind`（`image` / `video` / `audio`。省略すると拡張子から）・`category`（自由な分類。タグにも入る。`character` / `background` / `prop` ならライブラリの分類にもなる）・`tags`・`name`・`description`・`download_url`（取得元。`auto` で使う）・`page_url`（素材のページ）・`credit_text`・`sha256`（任意。YAML では引用符で囲む） |
+| `items[]` | 素材ごと: `file`（ファイル名。`member` を書けば省略でき、そのパスの最後の名前になる）・`source`（入手元の `id`）・`kind`（`image` / `video` / `audio`。省略すると拡張子から）・`category`（自由な分類。タグにも入る。`character` / `background` / `prop` ならライブラリの分類にもなる）・`tags`・`name`・`description`・`download_url`（取得元。`auto` で使う）・`page_url`（素材のページ）・`credit_text`・`sha256`（任意。YAML では引用符で囲む。`member` のときは ZIP の中のそのファイルの sha256）・`member`（ZIP の中のパス。下の「アーカイブ」）・`archive`（`manual` で `member` を取り出す受け取り口の ZIP のファイル名） |
 
 ```
 POST /api/v1/library/packs/import                       → 202 {id, status: "queued", …}
@@ -742,6 +742,8 @@ POST /api/v1/library/packs/import                       → 202 {id, status: "qu
    "dry_run": false}                        # true = 何も取らず登録せず、予定だけ返す
 GET  /api/v1/library/packs/imports/{id}                  → 状態と結果（ポーリング）
 GET  /api/v1/library/packs/imports?limit=20              → 最近の取り込み
+POST /api/v1/library/packs/archive                      → 200 ZIP の中身の一覧（下の「アーカイブ」）
+  {"url": "<ZIP の URL>"} | {"path": "<アプリから見える ZIP のパス>"}
 ```
 
 - **同意**: `accept_sources` に無い入手元の素材は取り込まない（`skipped` に理由付きで並び、
@@ -753,6 +755,22 @@ GET  /api/v1/library/packs/imports?limit=20              → 最近の取り込�
 - **手で置く入手元**（`acquire: manual`）: 受け取り口（既定 `<データの置き場>/packs/<pack>/inbox`。
   `KARAKURI_DATA_DIR` を使っていなければリポジトリ直下の `packs/`）に人が置いたファイルを、
   ファイル名か `sha256` で目録と突き合わせる
+- **アーカイブ（ZIP）**: 配布が ZIP だけの入手元は、素材ごとに `member`（ZIP の中のパス。
+  `/` 区切り）を書く。`auto` なら `download_url` に ZIP の URL を、`manual` なら `archive` に
+  受け取り口に置いた ZIP のファイル名を書く。同じ ZIP から何件でも取れ、ZIP は 1 回の取り込みで
+  **1 度だけ**取る（robots.txt・間隔・User-Agent の決まりはそのまま）。取った ZIP は
+  `<データの置き場>/packs/_archives/` に 24 時間取っておき、中身の一覧とそのあとの取り込みは
+  取り直さない。中身はディスクに展開せず、`member` のファイルだけを読み出す。安全のため、
+  `..`・絶対パス・バックスラッシュ・ドライブ名を含むパス、暗号化されたファイル、2 万件を
+  超える ZIP、展開後 500MB を超えるファイル、圧縮率が 200 倍を超える 16MB 以上のファイル
+  （ZIP 爆弾のおそれ）、1 回の取り込みで合計 4GB を超える取り出しは断る（`failed`）。
+  ZIP でない物が返ったら、その ZIP の素材はすべて `failed`
+- **ZIP の中身の一覧**（`POST /library/packs/archive`）: 目録の `member` を書く助け。
+  `url` は自動の入手元と同じ決まりで取り（取った物は上の置き場に取っておく）、`path` は
+  アプリから見える ZIP（受け取り口に置いた物など）を読む。返すのは
+  `{url, path, size, sha256, cached, total, entries: [{path, size, compressed_size, kind,
+  usable, reason}]}`。`usable: false` は取り込めない物（危ないパス・暗号化・大きすぎ・
+  知らない拡張子）で、`reason` に理由。取り込みが走っている間は 409
 - 取り込んだ素材は `library/<kind>/` にコピーし、タグ（目録のタグ・分類・パック id）・
   分類・`license`・`media_info`（音は長さとラウドネス・真のピーク、画像は大きさと透過の有無、
   動画は長さ・大きさ・音の有無）付きで登録する
@@ -761,7 +779,7 @@ GET  /api/v1/library/packs/imports?limit=20              → 最近の取り込�
   返す（上書きはしない。差し替えるなら棚の項目を消してからもう一度）
 - 結果: `imported`（`dry_run` では「予定」）・`skipped`・`changed`・`missing`（受け取り口に
   無い・取得元が 404）・`blocked`（robots.txt）・`failed`（sha256 の不一致・HTML など）。
-  どれも `{file, source, library_id, name, url, reason}`。取り込みは 1 本ずつ順に走る
+  どれも `{file, source, member, library_id, name, url, reason}`。取り込みは 1 本ずつ順に走る
 
 **ライブラリのライセンス情報**（`license`）は、パックを使わず手で上げた素材にも付けられる:
 
@@ -770,7 +788,7 @@ GET  /api/v1/library/packs/imports?limit=20              → 最近の取り込�
 - `PATCH /library/{id}` の `license`: 送れば丸ごと置き換え、`null` で外す、送らなければそのまま
 - 項目: `provider`・`provider_url`・`page_url`・`download_url`・`terms_url`・`terms_summary`・
   `credit_required`・`credit_text`・`checked_at`・`content_id`・`notes`（と、パックが入れる
-  `pack`・`source_id`・`file`・`sha256`）。どれも省略できる
+  `pack`・`source_id`・`file`・`sha256`、ZIP から取り出したときの `member`）。どれも省略できる
 
 **書き出しの素材一覧（監査用）**: タイムラインの書き出しが終わると、`GET /exports/{id}` の
 `materials.items` に、焼いたクリップ（V1 とミュートしていない音声トラック。ライブラリの素材・

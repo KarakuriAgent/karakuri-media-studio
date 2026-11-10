@@ -18,6 +18,11 @@
 - **手で置く入手元**（``acquire: manual``）: 受け取り口（既定
   ``<データの置き場>/packs/<pack>/inbox``）に人が置いたファイルを、ファイル名か
   sha256 で目録と突き合わせる
+- **アーカイブ（ZIP）**: 素材に ``member``（ZIP の中のパス）を書くと、取得元
+  （auto は ``download_url``、manual は受け取り口の ``archive``）を ZIP として扱い、
+  その中のファイルだけを取り出す（:mod:`app.archives`）。同じ ZIP は 1 回の取り込みで
+  1 度だけ取り、``<データの置き場>/packs/_archives/`` に :data:`ARCHIVE_CACHE_SECONDS`
+  のあいだ取っておく（中身の一覧 :func:`list_archive` と取り込みで使い回す）
 - 取り込んだ素材は ``library/<kind>/`` にコピーし、タグ（目録のタグ・分類・パック名）・
   分類・ライセンス情報（:class:`app.models.LibraryLicense`）・測った値
   （:mod:`app.media_measure`）付きでライブラリに登録する
@@ -41,11 +46,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from . import archives
 from . import library as library_service
 from . import media_measure
 from .db import get_db
 from .ids import new_id
 from .models import (
+    AssetPackArchiveListing,
+    AssetPackArchiveRequest,
     AssetPackImport,
     AssetPackImportEntry,
     AssetPackImportRequest,
@@ -78,6 +86,9 @@ MIN_INTERVAL_SECONDS = 2.0
 MAX_DOWNLOAD_BYTES = 500 * 1024 * 1024
 HTTP_TIMEOUT_SECONDS = 60.0
 
+#: 取得した ZIP を取っておく長さ（秒）。中身の一覧と取り込みで同じ ZIP を取り直さない
+ARCHIVE_CACHE_SECONDS = 24 * 60 * 60
+
 #: パックの id に使える文字（受け取り口のフォルダ名になる）
 _PACK_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$")
 
@@ -93,6 +104,10 @@ class AssetPackError(Exception):
 
 class AssetPackNotFound(AssetPackError):
     """取り込みの記録が無い（404）。"""
+
+
+class AssetPackBusy(AssetPackError):
+    """取り込みが走っていて、いまは受け付けられない（409）。"""
 
 
 def _now() -> str:
@@ -139,20 +154,39 @@ def check_manifest(manifest: AssetPackManifest) -> AssetPackManifest:
         raise AssetPackError("sources の id が重複しています")
     known = set(ids)
     seen: set[tuple[str, str]] = set()
+    acquire = {source.id: source.acquire for source in manifest.sources}
     for index, item in enumerate(manifest.items):
+        item.member = item.member.strip()
+        item.archive = item.archive.strip()
+        if item.member:
+            try:
+                archives.check_member(item.member)
+            except archives.ArchiveError as exc:
+                raise AssetPackError(f"items[{index}]: {exc}") from exc
+            if not item.file.strip():
+                item.file = item.member.rsplit("/", 1)[-1]
         where = f"items[{index}]（{item.file}）"
         if not item.file or Path(item.file).name != item.file or item.file in (".", ".."):
             raise AssetPackError(f"{where}: file はファイル名だけを書いてください")
         if item.source not in known:
             raise AssetPackError(f"{where}: 知らない入手元です（{item.source}）")
+        if item.archive and not item.member:
+            raise AssetPackError(f"{where}: archive を書くなら member（ZIP の中のパス）も書いてください")
+        if item.archive and (Path(item.archive).name != item.archive or item.archive in (".", "..")):
+            raise AssetPackError(f"{where}: archive は受け取り口のファイル名だけを書いてください")
+        if item.member and acquire[item.source] == "manual" and not item.archive:
+            raise AssetPackError(
+                f"{where}: 手で置く入手元で member を使うなら、受け取り口の ZIP のファイル名を"
+                " archive に書いてください"
+            )
         key = (item.source, item.file)
         if key in seen:
             raise AssetPackError(f"{where}: 同じ入手元に同じファイル名が 2 つあります")
         seen.add(key)
         try:
-            kind = item.kind or library_service.detect_kind(item.file)
+            kind = item.kind or library_service.detect_source_kind(item.file)
             library_service.check_kind(kind)
-            library_service.check_extension(kind, Path(item.file).suffix)
+            library_service.check_source_extension(kind, Path(item.file).suffix)
         except library_service.LibraryError as exc:
             raise AssetPackError(f"{where}: {exc}") from exc
         if item.sha256 and not re.fullmatch(r"[0-9a-fA-F]{64}", item.sha256):
@@ -317,6 +351,126 @@ class _Fetcher:
 
 
 # --------------------------------------------------------------------------
+# アーカイブ（ZIP）
+# --------------------------------------------------------------------------
+
+def archive_cache_dir() -> Path:
+    return PACKS_DIR / "_archives"
+
+
+def _archive_cache_path(url: str) -> Path:
+    return archive_cache_dir() / f"{hashlib.sha256(url.encode('utf-8')).hexdigest()[:40]}.zip"
+
+
+def _cached_archive(url: str) -> Path | None:
+    """取っておいた ZIP（古い・無ければ None）。古いものはここで消す。"""
+    path = _archive_cache_path(url)
+    try:
+        age = time.time() - path.stat().st_mtime
+    except OSError:
+        return None
+    if age > ARCHIVE_CACHE_SECONDS:
+        path.unlink(missing_ok=True)
+        return None
+    return path
+
+
+def _prune_archive_cache() -> None:
+    folder = archive_cache_dir()
+    if not folder.is_dir():
+        return
+    now = time.time()
+    for path in folder.glob("*.zip"):
+        try:
+            if now - path.stat().st_mtime > ARCHIVE_CACHE_SECONDS:
+                path.unlink(missing_ok=True)
+        except OSError:
+            continue
+
+
+class _Archives:
+    """1 回の取り込みで使う ZIP（同じ URL は 1 度だけ取りに行く。失敗も覚える）。"""
+
+    def __init__(self, fetcher: _Fetcher) -> None:
+        self.fetcher = fetcher
+        self.fetched: dict[str, tuple[str, Path | None, str]] = {}
+        #: この取り込みで取り出してよい残り（:data:`app.archives.MAX_TOTAL_BYTES`）
+        self.budget = archives.MAX_TOTAL_BYTES
+
+    async def get(self, url: str, interval: float) -> tuple[str, Path | None, str]:
+        """``(結果, ZIP のパス, 理由)``。結果は :meth:`_Fetcher.fetch` と同じ。"""
+        if url in self.fetched:
+            return self.fetched[url]
+        cached = _cached_archive(url)
+        if cached is not None:
+            outcome: tuple[str, Path | None, str] = ("ok", cached, "")
+        else:
+            status, body, reason = await self.fetcher.fetch(url, interval)
+            if status != "ok" or body is None:
+                outcome = (status, None, reason)
+            else:
+                path = _archive_cache_path(url)
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(body)
+                outcome = ("ok", path, "")
+        self.fetched[url] = outcome
+        return outcome
+
+    async def read(self, path: Path, member: str) -> bytes:
+        data = await asyncio.to_thread(
+            archives.read_member, path, member, budget=self.budget
+        )
+        self.budget -= len(data)
+        return data
+
+
+async def list_archive(request: AssetPackArchiveRequest) -> AssetPackArchiveListing:
+    """ZIP の中身の一覧（目録の ``member`` を書く助け）。
+
+    ``url`` は自動の入手元と同じ決まり（robots.txt・間隔・User-Agent）で取り、
+    取り込みと同じ置き場に取っておく（そのあとの取り込みは取り直さない）。
+    取り込みが走っている間は :class:`AssetPackBusy`（同じサーバーへ並行に
+    取りに行かないため）。
+    """
+    url = request.url.strip()
+    given = request.path.strip()
+    if bool(url) == bool(given):
+        raise AssetPackError("url と path のどちらか 1 つを書いてください")
+    listing = AssetPackArchiveListing(url=url, path=given)
+    if given:
+        path = Path(given).expanduser()
+        if not path.is_file():
+            raise AssetPackError(
+                f"ZIP が見つかりません: {path}（アプリから見えるパスで書いてください）"
+            )
+    else:
+        if _LOCK.locked():
+            raise AssetPackBusy("取り込みが走っています。終わってからもう一度どうぞ")
+        async with _LOCK:
+            cached = _cached_archive(url)
+            if cached is not None:
+                path = cached
+                listing.cached = True
+            else:
+                interval = max(
+                    MIN_INTERVAL_SECONDS,
+                    float(request.interval_seconds or DEFAULT_INTERVAL_SECONDS),
+                )
+                status, found, reason = await _Archives(_Fetcher()).get(url, interval)
+                if status != "ok" or found is None:
+                    raise AssetPackError(f"ZIP を取れませんでした（{status}: {reason}）")
+                path = found
+    try:
+        listing.entries = await asyncio.to_thread(archives.list_entries, path)
+    except archives.ArchiveError as exc:
+        raise AssetPackError(str(exc)) from exc
+    listing.size = path.stat().st_size
+    listing.sha256 = sha256_of(path)
+    listing.total = len(listing.entries)
+    return listing
+
+
+# --------------------------------------------------------------------------
 # 登録
 # --------------------------------------------------------------------------
 
@@ -359,6 +513,7 @@ def _license(
         source_id=source.id,
         file=item.file,
         sha256=sha256,
+        member=item.member,
     )
 
 
@@ -372,7 +527,9 @@ async def _register(
     sha256: str,
 ) -> LibraryItem:
     """ファイルを ``library/<kind>/`` へ置いて、ライセンス情報と測った値付きで登録する。"""
-    kind = library_service.check_kind(item.kind or library_service.detect_kind(item.file))
+    kind = library_service.check_kind(
+        item.kind or library_service.detect_source_kind(item.file)
+    )
     ext = library_service.check_extension(kind, Path(item.file).suffix)
     dest = (
         library_service.kind_dir(kind)
@@ -406,8 +563,8 @@ async def _register(
 
 def _entry(item: AssetPackItem, reason: str, **kwargs: Any) -> AssetPackImportEntry:
     return AssetPackImportEntry(
-        file=item.file, source=item.source, name=item.name or item.file,
-        reason=reason, **kwargs,
+        file=item.file, source=item.source, member=item.member,
+        name=item.name or item.file, reason=reason, **kwargs,
     )
 
 
@@ -419,6 +576,10 @@ class _Inbox:
         self._hashes: dict[str, Path] | None = None
 
     def find(self, item: AssetPackItem) -> Path | None:
+        if item.member:
+            # ZIP の中の素材: 受け取り口の ZIP（名前で引く）
+            archive = self.folder / item.archive
+            return archive if archive.is_file() else None
         candidate = self.folder / item.file
         if candidate.is_file():
             return candidate
@@ -452,13 +613,16 @@ async def run_import(
     inbox = _Inbox(folder)
     known = await registered(manifest.pack)
     fetcher = _Fetcher()
+    store = _Archives(fetcher)
+    if not request.dry_run:
+        _prune_archive_cache()
 
     for item in manifest.items:
         source = sources[item.source]
         existing = known.get((item.source, item.file))
         try:
             await _one(
-                manifest, source, item, existing, accepted, inbox, fetcher,
+                manifest, source, item, existing, accepted, inbox, store,
                 result, dry_run=request.dry_run,
             )
         except Exception as exc:  # noqa: BLE001 - 1 件の失敗で全体を止めない
@@ -477,7 +641,7 @@ async def _one(
     existing: LibraryItem | None,
     accepted: set[str],
     inbox: _Inbox,
-    fetcher: _Fetcher,
+    store: _Archives,
     result: AssetPackImport,
     *,
     dry_run: bool,
@@ -494,11 +658,21 @@ async def _one(
             if existing is not None:
                 result.skipped.append(_entry(item, "登録済み", library_id=existing.id))
             else:
+                where = f"{item.archive} が " if item.member else ""
                 result.missing.append(
-                    _entry(item, f"受け取り口にありません（{inbox.folder}）")
+                    _entry(item, f"{where}受け取り口にありません（{inbox.folder}）")
                 )
             return
-        digest = sha256_of(found)
+        data: bytes | None = None
+        if item.member:
+            try:
+                data = await store.read(found, item.member)
+            except archives.ArchiveError as exc:
+                result.failed.append(_entry(item, str(exc)))
+                return
+            digest = hashlib.sha256(data).hexdigest()
+        else:
+            digest = sha256_of(found)
         if existing is not None:
             if existing.license is not None and existing.license.sha256 == digest:
                 result.skipped.append(_entry(item, "登録済み", library_id=existing.id))
@@ -518,7 +692,10 @@ async def _one(
         if dry_run:
             result.imported.append(_entry(item, f"取り込む予定（{found.name}）"))
             return
-        added = await _register(manifest, source, item, origin=found, sha256=digest)
+        if data is not None:
+            added = await _register(manifest, source, item, data=data, sha256=digest)
+        else:
+            added = await _register(manifest, source, item, origin=found, sha256=digest)
         result.imported.append(_entry(item, "取り込みました", library_id=added.id))
         return
 
@@ -531,15 +708,26 @@ async def _one(
         result.missing.append(_entry(item, "取得元の URL（download_url）がありません"))
         return
     if dry_run:
+        inside = f"。ZIP の中の {item.member}" if item.member else ""
         result.imported.append(
-            _entry(item, "取得する予定（robots.txt は本番で確かめます）", url=url)
+            _entry(item, f"取得する予定（robots.txt は本番で確かめます{inside}）", url=url)
         )
         return
     interval = max(
         MIN_INTERVAL_SECONDS,
         float(source.interval_seconds or DEFAULT_INTERVAL_SECONDS),
     )
-    outcome, body, reason = await fetcher.fetch(url, interval)
+    body: bytes | None
+    if item.member:
+        outcome, archive, reason = await store.get(url, interval)
+        body = None
+        if outcome == "ok" and archive is not None:
+            try:
+                body = await store.read(archive, item.member)
+            except archives.ArchiveError as exc:
+                outcome, reason = "failed", str(exc)
+    else:
+        outcome, body, reason = await store.fetcher.fetch(url, interval)
     if outcome == "blocked":
         result.blocked.append(_entry(item, reason, url=url))
         return

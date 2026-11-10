@@ -7,6 +7,9 @@
 #   - 取り込むときは accept_sources にその入手元の id を入れる（同意の明示）
 #   - acquire: auto は download_url から自動で取る（robots.txt を確かめ、間隔をあける）
 #   - acquire: manual は受け取り口（<データの置き場>/packs/<pack>/inbox）に人が置く
+#   - 配布が ZIP だけなら member に ZIP の中のパスを書く（auto は download_url に ZIP の URL、
+#     manual は archive に受け取り口の ZIP のファイル名）。中のパスは
+#     POST /api/v1/library/packs/archive で一覧できる
 pack: example-sfx-pack
 name: 例の効果音パック
 description: 動作確認用の架空のパック
@@ -59,3 +62,23 @@ items:
     tags: [穏やか, ループ]
     name: 穏やかなループ
     page_url: https://bgm.example.org/tracks/calm-loop
+
+  # ZIP の中のファイル（同じ ZIP から何件でも取れる。ZIP は 1 回の取り込みで 1 度だけ取る）
+  - member: effects/lines/speed_lines_01.png
+    source: example-sfx
+    category: effect-line
+    tags: [効果線]
+    download_url: https://sfx.example.com/packs/effect_lines.zip
+    page_url: https://sfx.example.com/packs/effect-lines
+
+  - member: effects/lines/focus_lines_01.png
+    file: focus_lines_01.png    # 省略すると member の最後の名前
+    source: example-sfx
+    category: effect-line
+    download_url: https://sfx.example.com/packs/effect_lines.zip
+
+  # 手で置く入手元の ZIP（受け取り口に calm_pack.zip を置く）
+  - member: loops/calm_loop_short.mp3
+    archive: calm_pack.zip
+    source: example-bgm
+    category: bgm

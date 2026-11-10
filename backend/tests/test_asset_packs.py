@@ -11,12 +11,14 @@ import json
 import shutil
 import subprocess
 import time
+import zipfile
+from io import BytesIO
 from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
 
-from app import asset_packs, db, jobs, library, media_measure
+from app import archives, asset_packs, db, jobs, library, media_measure
 from app import timeline as timeline_service
 from app.main import app
 from app.models import LibraryMediaInfo
@@ -119,7 +121,9 @@ def test_the_example_manifest_parses():
     parsed = asset_packs.parse_manifest(EXAMPLE.read_text(encoding="utf-8"))
     assert parsed.pack == "example-sfx-pack"
     assert [source.acquire for source in parsed.sources] == ["auto", "manual"]
-    assert len(parsed.items) == 3
+    assert len(parsed.items) == 6
+    assert [item.member for item in parsed.items][3] == "effects/lines/speed_lines_01.png"
+    assert parsed.items[3].file == "speed_lines_01.png"
 
 
 @pytest.mark.parametrize(
@@ -333,6 +337,208 @@ def test_manifest_path_reads_yaml(env, monkeypatch):
     assert response.json()["pack"] == "example-sfx-pack"
     listed = call(env, "GET", "/api/v1/library/packs/imports").json()
     assert listed[0]["id"] == response.json()["id"]
+
+
+# --------------------------------------------------------------------------
+# アーカイブ（ZIP）の中の素材
+# --------------------------------------------------------------------------
+
+def make_zip(files: dict[str, bytes]) -> bytes:
+    buffer = BytesIO()
+    with zipfile.ZipFile(buffer, "w", zipfile.ZIP_DEFLATED) as archive:
+        for name, data in files.items():
+            archive.writestr(name, data)
+    return buffer.getvalue()
+
+
+ZIP_URL = "https://auto.example.com/packs/marks.zip"
+ZIP_FILES = {
+    "marks/lines/speed.png": b"PNG-speed",
+    "marks/lines/focus.png": b"PNG-focus",
+    "marks/sfx/pop.wav": b"RIFFpop",
+    "readme.txt": b"hello",
+}
+
+
+def zip_manifest(**overrides) -> dict:
+    items = [
+        {"member": "marks/lines/speed.png", "source": "auto-site",
+         "download_url": ZIP_URL, "category": "manga",
+         "sha256": hashlib.sha256(ZIP_FILES["marks/lines/speed.png"]).hexdigest()},
+        {"member": "marks/lines/focus.png", "file": "focus-lines.png",
+         "source": "auto-site", "download_url": ZIP_URL},
+        {"member": "marks/sfx/pop.wav", "source": "auto-site", "download_url": ZIP_URL},
+        {"member": "marks/nothing.png", "source": "auto-site", "download_url": ZIP_URL},
+    ]
+    return manifest(items=overrides.pop("items", items), **overrides)
+
+
+def test_items_inside_one_zip_are_fetched_once(env, monkeypatch):
+    seen = fake_http(monkeypatch, {
+        "https://auto.example.com/robots.txt": ROBOTS,
+        ZIP_URL: (200, "application/zip", make_zip(ZIP_FILES)),
+    })
+    result = wait_import(env, call(env, "POST", "/api/v1/library/packs/import", json={
+        "manifest": zip_manifest(), "accept_sources": ["auto-site"],
+    }).json()["id"])
+    assert result["status"] == "done", result
+    assert sorted(entry["file"] for entry in result["imported"]) == [
+        "focus-lines.png", "pop.wav", "speed.png",
+    ]
+    assert [entry["member"] for entry in result["failed"]] == ["marks/nothing.png"]
+    assert "ZIP の中にありません" in result["failed"][0]["reason"]
+    # 同じ ZIP は 1 回の取り込みで 1 度だけ
+    assert seen.count(ZIP_URL) == 1
+    assert seen.count("https://auto.example.com/robots.txt") == 1
+
+    items = call(env, "GET", "/api/v1/library?limit=50").json()["items"]
+    speed = next(item for item in items if item["name"] == "speed.png")
+    assert speed["kind"] == "image"
+    assert Path(speed["path"]).read_bytes() == b"PNG-speed"
+    assert speed["license"]["download_url"] == ZIP_URL
+    assert speed["license"]["member"] == "marks/lines/speed.png"
+    assert speed["license"]["sha256"] == hashlib.sha256(b"PNG-speed").hexdigest()
+    pop = next(item for item in items if item["name"] == "pop.wav")
+    assert pop["kind"] == "audio"
+
+    # もう一度: 登録済みは飛ばし、ZIP も取りに行かない
+    again = wait_import(env, call(env, "POST", "/api/v1/library/packs/import", json={
+        "manifest": zip_manifest(items=zip_manifest()["items"][:3]),
+        "accept_sources": ["auto-site"],
+    }).json()["id"])
+    assert again["imported"] == [] and len(again["skipped"]) == 3
+    assert seen.count(ZIP_URL) == 1
+
+
+def test_a_member_sha256_mismatch_is_not_registered(env, monkeypatch):
+    fake_http(monkeypatch, {
+        "https://auto.example.com/robots.txt": ROBOTS,
+        ZIP_URL: (200, "application/zip", make_zip(ZIP_FILES)),
+    })
+    items = [dict(zip_manifest()["items"][0], sha256="0" * 64)]
+    result = wait_import(env, call(env, "POST", "/api/v1/library/packs/import", json={
+        "manifest": zip_manifest(items=items), "accept_sources": ["auto-site"],
+    }).json()["id"])
+    assert [entry["reason"] for entry in result["failed"]] == ["sha256 が目録と違います"]
+
+
+def test_a_non_zip_download_fails_every_member(env, monkeypatch):
+    seen = fake_http(monkeypatch, {
+        "https://auto.example.com/robots.txt": ROBOTS,
+        ZIP_URL: (200, "application/octet-stream", b"not a zip at all"),
+    })
+    result = wait_import(env, call(env, "POST", "/api/v1/library/packs/import", json={
+        "manifest": zip_manifest(), "accept_sources": ["auto-site"],
+    }).json()["id"])
+    assert len(result["failed"]) == 4
+    assert all("ZIP ではありません" in entry["reason"] for entry in result["failed"])
+    assert seen.count(ZIP_URL) == 1
+
+
+def test_a_zip_placed_in_the_inbox_is_opened(env, monkeypatch):
+    fake_http(monkeypatch, {})
+    inbox = env.tmp / "packs" / "test-pack" / "inbox"
+    inbox.mkdir(parents=True)
+    (inbox / "marks.zip").write_bytes(make_zip(ZIP_FILES))
+    items = [
+        {"member": "marks/lines/speed.png", "archive": "marks.zip", "source": "hand-site"},
+        {"member": "marks/sfx/pop.wav", "archive": "other.zip", "source": "hand-site"},
+    ]
+    result = wait_import(env, call(env, "POST", "/api/v1/library/packs/import", json={
+        "manifest": manifest(items=items), "accept_sources": ["hand-site"],
+    }).json()["id"])
+    assert [entry["file"] for entry in result["imported"]] == ["speed.png"]
+    assert [entry["file"] for entry in result["missing"]] == ["pop.wav"]
+    assert "other.zip" in result["missing"][0]["reason"]
+
+    # 中身が変わっていれば changed（取り込み直さない）
+    (inbox / "marks.zip").write_bytes(make_zip({**ZIP_FILES, "marks/lines/speed.png": b"v2"}))
+    again = wait_import(env, call(env, "POST", "/api/v1/library/packs/import", json={
+        "manifest": manifest(items=items[:1]), "accept_sources": ["hand-site"],
+    }).json()["id"])
+    assert [entry["file"] for entry in again["changed"]] == ["speed.png"]
+
+
+@pytest.mark.parametrize(
+    ("item", "message"),
+    [
+        ({"member": "../evil.png", "source": "auto-site"}, "member が使えません"),
+        ({"member": "/etc/evil.png", "source": "auto-site"}, "絶対パス"),
+        ({"member": "a\\b.png", "source": "auto-site"}, "バックスラッシュ"),
+        ({"member": "C:/x.png", "source": "auto-site"}, "絶対パス"),
+        ({"member": "dir/", "source": "auto-site"}, ""),
+        ({"member": "a.png", "source": "hand-site"}, "archive"),
+        ({"file": "a.png", "archive": "x.zip", "source": "hand-site"}, "member"),
+        ({"member": "a.png", "archive": "../x.zip", "source": "hand-site"}, "archive"),
+    ],
+)
+def test_a_broken_archive_item_is_refused(item, message):
+    with pytest.raises(asset_packs.AssetPackError, match=message):
+        asset_packs.parse_manifest(json.dumps(manifest(items=[item])))
+
+
+def test_list_archive_obeys_robots_and_feeds_the_import(env, monkeypatch):
+    unsafe = make_zip({**ZIP_FILES, "../escape.png": b"x", "big.bin": b"1"})
+    seen = fake_http(monkeypatch, {
+        "https://auto.example.com/robots.txt": ROBOTS,
+        ZIP_URL: (200, "application/zip", unsafe),
+    })
+    response = call(env, "POST", "/api/v1/library/packs/archive", json={"url": ZIP_URL})
+    assert response.status_code == 200, response.text
+    listing = response.json()
+    assert listing["cached"] is False and listing["total"] == 6
+    entries = {entry["path"]: entry for entry in listing["entries"]}
+    assert entries["marks/lines/speed.png"]["kind"] == "image"
+    assert entries["marks/lines/speed.png"]["usable"] is True
+    assert entries["marks/lines/speed.png"]["size"] == len(b"PNG-speed")
+    assert entries["../escape.png"]["usable"] is False
+    assert entries["readme.txt"]["usable"] is False and entries["readme.txt"]["kind"] is None
+    assert listing["sha256"] == hashlib.sha256(unsafe).hexdigest()
+
+    # 2 回目と、そのあとの取り込みは取っておいた ZIP を使う
+    again = call(env, "POST", "/api/v1/library/packs/archive", json={"url": ZIP_URL}).json()
+    assert again["cached"] is True
+    result = wait_import(env, call(env, "POST", "/api/v1/library/packs/import", json={
+        "manifest": zip_manifest(items=zip_manifest()["items"][:1]),
+        "accept_sources": ["auto-site"],
+    }).json()["id"])
+    assert [entry["file"] for entry in result["imported"]] == ["speed.png"]
+    assert seen.count(ZIP_URL) == 1
+
+    # robots.txt で禁止された ZIP は取りに行かない
+    blocked = call(env, "POST", "/api/v1/library/packs/archive",
+                   json={"url": "https://auto.example.com/private/x.zip"})
+    assert blocked.status_code == 400 and "blocked" in blocked.json()["detail"]
+    assert "https://auto.example.com/private/x.zip" not in seen
+
+    # 受け取り口の ZIP（アプリから見えるパス）
+    local = env.tmp / "local.zip"
+    local.write_bytes(make_zip({"a/b.wav": b"RIFF"}))
+    by_path = call(env, "POST", "/api/v1/library/packs/archive", json={"path": str(local)})
+    assert [entry["path"] for entry in by_path.json()["entries"]] == ["a/b.wav"]
+    both = call(env, "POST", "/api/v1/library/packs/archive",
+                json={"url": ZIP_URL, "path": str(local)})
+    assert both.status_code == 400
+
+
+def test_archive_guards_against_bombs_and_too_many_entries(tmp_path, monkeypatch):
+    bomb = tmp_path / "bomb.zip"
+    with zipfile.ZipFile(bomb, "w", zipfile.ZIP_DEFLATED) as archive:
+        archive.writestr("zeros.wav", b"\0" * (20 * 1024 * 1024))
+    with pytest.raises(archives.ArchiveError, match="圧縮率"):
+        archives.read_member(bomb, "zeros.wav")
+    listed = archives.list_entries(bomb)
+    assert listed[0].usable is False
+
+    small = tmp_path / "small.zip"
+    small.write_bytes(make_zip({"a.wav": b"RIFF", "b.wav": b"RIFF"}))
+    with pytest.raises(archives.ArchiveError, match="合計"):
+        archives.read_member(small, "a.wav", budget=1)
+    monkeypatch.setattr(archives, "MAX_ENTRIES", 1)
+    with pytest.raises(archives.ArchiveError, match="多すぎ"):
+        archives.list_entries(small)
+    with pytest.raises(archives.ArchiveError, match="member が使えません"):
+        archives.read_member(small, "../a.wav")
 
 
 # --------------------------------------------------------------------------

@@ -2253,8 +2253,11 @@ class LibraryLicense(BaseModel):
     pack: str = ""
     source_id: str = ""
     file: str = ""
-    #: 取り込んだファイルの sha256（素材パックの取り込みが測る）
+    #: 取り込んだファイルの sha256（素材パックの取り込みが測る。アーカイブから
+    #: 取り出したものは、取り出したファイルの sha256）
     sha256: str = ""
+    #: アーカイブ（ZIP）から取り出したときの、その中のパス（``download_url`` は ZIP の URL）
+    member: str = ""
 
 
 class LibraryMediaInfo(BaseModel):
@@ -2743,8 +2746,9 @@ class AssetPackSource(BaseModel):
 class AssetPackItem(BaseModel):
     """素材パックの目録の素材 1 つ。"""
 
-    #: ファイル名（受け取り口で突き合わせる名前。取り込んだ素材の識別にも使う）
-    file: str
+    #: ファイル名（受け取り口で突き合わせる名前。取り込んだ素材の識別にも使う）。
+    #: ``member`` を書いたときは省略でき、そのパスの最後の名前になる
+    file: str = ""
     #: どの入手元か（:attr:`AssetPackSource.id`）
     source: str
     #: 種類（image / video / audio。省略すると拡張子から）
@@ -2762,8 +2766,15 @@ class AssetPackItem(BaseModel):
     page_url: str = ""
     #: クレジットの文（省略すると入手元の ``credit_text``）
     credit_text: str = ""
-    #: ファイルの sha256（書けば取り込むときに確かめる。手で置く入手元の突き合わせにも使う）
+    #: ファイルの sha256（書けば取り込むときに確かめる。手で置く入手元の突き合わせにも使う）。
+    #: ``member`` を書いたときは、アーカイブの中のそのファイルの sha256
     sha256: str = ""
+    #: アーカイブ（ZIP）の中のファイルのパス（``sounds/hit.wav`` のように ``/`` 区切り）。
+    #: 書くと、取得元（auto は ``download_url``、manual は受け取り口の ``archive``）を
+    #: ZIP として扱い、その中からこのファイルを取り出す。同じ ZIP から何件でも取れる
+    member: str = ""
+    #: manual の入手元で ``member`` を取り出す ZIP の、受け取り口でのファイル名
+    archive: str = ""
 
 
 class AssetPackManifest(BaseModel):
@@ -2800,12 +2811,58 @@ class AssetPackImportEntry(BaseModel):
 
     file: str
     source: str = ""
+    #: アーカイブ（ZIP）から取り出す素材なら、その中のパス
+    member: str = ""
     #: 登録した・登録済みのライブラリの id
     library_id: str | None = None
     name: str = ""
     url: str = ""
     #: なぜその結果になったか
     reason: str = ""
+
+
+class AssetPackArchiveRequest(BaseModel):
+    """POST /api/v1/library/packs/archive body（アーカイブの中身の一覧）。
+
+    ``url``（取得元の ZIP。robots.txt と間隔の決まりを守って取る）か ``path``
+    （**アプリから見える** ZIP のパス。受け取り口に置いたものなど）のどちらか 1 つ。
+    """
+
+    url: str = ""
+    path: str = ""
+    #: ``url`` のとき、同じサーバーへの間隔（秒。2 秒より短くはしない）
+    interval_seconds: float | None = None
+
+
+class AssetPackArchiveEntry(BaseModel):
+    """アーカイブの中のファイル 1 つ。"""
+
+    #: 中のパス（目録の ``member`` にそのまま書ける）
+    path: str
+    #: 展開した大きさと、圧縮した大きさ（バイト）
+    size: int = 0
+    compressed_size: int = 0
+    #: 拡張子から当てた種類（image / video / audio。取り込めない拡張子は None）
+    kind: str | None = None
+    #: 取り込めるか（パスが危ない・暗号化・大きすぎる・知らない拡張子なら False）
+    usable: bool = True
+    #: 取り込めない理由
+    reason: str = ""
+
+
+class AssetPackArchiveListing(BaseModel):
+    """アーカイブの中身の一覧（``POST /api/v1/library/packs/archive``）。"""
+
+    url: str = ""
+    path: str = ""
+    #: ZIP そのものの大きさ（バイト）と sha256
+    size: int = 0
+    sha256: str = ""
+    #: 前に取ったもの（キャッシュ）を使ったか
+    cached: bool = False
+    #: ファイルの数（フォルダは数えない）
+    total: int = 0
+    entries: list[AssetPackArchiveEntry] = Field(default_factory=list)
 
 
 AssetPackImportStatus = Literal["queued", "running", "done", "failed"]

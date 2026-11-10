@@ -1609,6 +1609,11 @@ CREATE TABLE library_pack_imports (
   `accept_sources` で同意した入手元の素材だけを取り込む。`acquire: auto` は取得元の URL から
   robots.txt を確かめて間隔（既定 2.5 秒）をあけて取り、`manual` は受け取り口
   （`<DATA_DIR>/packs/<pack>/inbox`）に人が置いたファイルをファイル名か sha256 で突き合わせる。
+  配布が ZIP だけの入手元は、素材ごとに `member`（ZIP の中のパス）を書くと、取得元
+  （`auto` は `download_url`、`manual` は受け取り口の `archive`）を ZIP として扱い、そのファイル
+  だけをメモリへ読み出す（`app/archives.py`。危ないパス・暗号化・数と大きさの上限・極端な圧縮率を
+  断る）。同じ ZIP は 1 回の取り込みで 1 度だけ取り、`<DATA_DIR>/packs/_archives/` に 24 時間
+  取っておく。中身の一覧は `POST /api/v1/library/packs/archive`（`url` か `path`）。
   タグ・分類・`license`・`media_info`（`app/media_measure.py`。ffprobe・loudnorm・Pillow）付きで
   登録し、登録済みは飛ばす（手で置いた素材の中身が変わっていれば `changed` で知らせる）。
   取り込みは裏で 1 本ずつ走り、状態は `library_pack_imports`

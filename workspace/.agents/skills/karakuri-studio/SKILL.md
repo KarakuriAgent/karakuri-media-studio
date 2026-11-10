@@ -347,6 +347,11 @@ GET  /library/packs/imports/{id}                          # status: done まで�
 ```
 
 - **`accept_sources` には、人が規約を確かめて同意した入手元だけを入れる**（勝手に足さない）
+- **配布が ZIP だけの入手元**は、素材ごとに `member`（ZIP の中のパス）を書き、`download_url` に
+  ZIP の URL を書く（`manual` なら `archive` に受け取り口の ZIP のファイル名）。同じ ZIP から
+  何件でも取れ、ZIP は 1 回の取り込みで 1 度だけ取る。`member` は
+  `POST /library/packs/archive {"url": "<ZIP の URL>"}` の `entries[].path` から写す
+  （`usable: false` の物は取り込めない）。中身を見るために ZIP を別の方法で落とさない
 - 目録と素材のファイルはリポジトリにも `workspace/` の共有物にも入れない（利用者の手元）。
   Docker のアプリにはホストのパスが見えないので、目録は `manifest_text` で渡す
 - 結果の `blocked`（robots.txt で禁止）・`missing`・`failed`・`changed` は人に伝える。
