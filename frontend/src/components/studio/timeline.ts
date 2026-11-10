@@ -11,8 +11,8 @@
  *   順番で、`start_ms` はそこから導ける値になる。ただし繋ぎ（トランジション）を
  *   持つクリップは前へ `transition_ms` だけ食い込み、全長はその分だけ縮む
  *   （**オーバーラップ方式**）。
- * - **A1…（音声）** … 自由配置。隙間も空けられるが、同じトラックの中で重なる
- *   ことはできない。
+ * - **A1…（音声）** … 自由配置。隙間も空けられ、同じトラックの中で重ねてもよい
+ *   （書き出しで混ぜる。重なったクリップは段をずらして描く: `stackRows`）。
  * - **T1（字幕）** … 音声と同じ自由配置。中身は `text_payload`。
  */
 import type {
@@ -375,6 +375,7 @@ export function trimClip(
   id: string,
   edge: 'in' | 'out',
   deltaMs: number,
+  free = false,
 ): TimelineClip[] {
   const index = clips.findIndex((clip) => clip.id === id)
   if (index < 0) return clips
@@ -411,14 +412,21 @@ export function trimClip(
   }
   if (inMs === clip.in_ms && outMs === clip.out_ms) return clips
 
+  const duration = Math.round((outMs - inMs) / speed)
   const next = [...clips]
   next[index] = {
     ...clip,
     in_ms: inMs,
     out_ms: outMs,
-    duration_ms: Math.round((outMs - inMs) / speed),
+    duration_ms: duration,
+    // 自由配置のトラックは頭を詰めた分だけ開始位置をずらす（終わりは動かさない）
+    ...(free && edge === 'in'
+      ? { start_ms: Math.max(0, clip.start_ms + clip.duration_ms - duration) }
+      : {}),
   }
-  return ripple(next)
+  // 映像トラックは詰め直す。自由配置（音声・字幕）は他のクリップを動かさない
+  // （詰め直すと、途中に置いた BGM・重ねた SE が先頭へ寄ってしまう）。
+  return free ? next : ripple(next)
 }
 
 /** 切り出し位置を持たないクリップ（尺がそのまま長さ）。止め絵もここに入る。 */
@@ -669,14 +677,20 @@ export function setSubtitle(
 // 自由配置のトラック（音声 A1… と字幕 T1）
 // --------------------------------------------------------------------------
 //
-// 映像と違って隙間も空けられる（BGM を途中から鳴らす）。ただし同じトラックの
-// 中で重ねることはできない（ffmpeg 側で 1 本ずつ切り出すため）。
+// 映像と違って隙間も空けられる（BGM を途中から鳴らす）。音声トラックは重ねても
+// よい（書き出しで混ぜる）が、字幕トラックは重ねられない（同じ瞬間に 2 枚出せない）。
 
-/** 自由配置のクリップを `startMs` へ動かす（重なるところへは置けない）。 */
+/**
+ * 自由配置のクリップを `startMs` へ動かす。
+ *
+ * `allowOverlap`（音声トラック）でなければ、重なるところへは置けない
+ * （元の配列をそのまま返す）。
+ */
 export function moveClipTo(
   clips: TimelineClip[],
   id: string,
   startMs: number,
+  allowOverlap = false,
 ): TimelineClip[] {
   const index = clips.findIndex((clip) => clip.id === id)
   if (index < 0) return clips
@@ -684,7 +698,7 @@ export function moveClipTo(
   const wanted = Math.max(0, Math.round(startMs))
   if (wanted === clip.start_ms) return clips
   const others = clips.filter((item) => item.id !== id)
-  if (overlapsAny(others, wanted, clip.duration_ms)) return clips
+  if (!allowOverlap && overlapsAny(others, wanted, clip.duration_ms)) return clips
   const next = [...clips]
   next[index] = { ...clip, start_ms: wanted }
   return next.sort((a, b) => a.start_ms - b.start_ms)
@@ -716,6 +730,33 @@ export function firstFreeSlot(
     cursor = end
   }
   return cursor
+}
+
+/**
+ * 重なったクリップを描く段（0 始まり）と段の数（純関数）。
+ *
+ * 開始位置の順に、空いている一番上の段へ置く（区間グラフの彩色）。重なりの
+ * 無いトラックは全部 0 段・段の数 1 なので、描き方は今までと変わらない。
+ */
+export function stackRows(clips: TimelineClip[]): {
+  rows: Map<string, number>
+  count: number
+} {
+  const rows = new Map<string, number>()
+  const ends: number[] = []
+  const ordered = [...clips].sort(
+    (a, b) => a.start_ms - b.start_ms || b.duration_ms - a.duration_ms,
+  )
+  for (const clip of ordered) {
+    let row = ends.findIndex((end) => end <= clip.start_ms)
+    if (row < 0) {
+      row = ends.length
+      ends.push(0)
+    }
+    ends[row] = clip.start_ms + Math.max(0, clip.duration_ms)
+    rows.set(clip.id, row)
+  }
+  return { rows, count: Math.max(1, ends.length) }
 }
 
 /** 自由配置のクリップを 1 つ消す（後ろは詰めない）。 */

@@ -521,6 +521,64 @@ def _seed_library(rows: list[tuple[str, str, str]]) -> None:
     asyncio.run(seed())
 
 
+def test_overlapping_audio_clips_are_saved_and_exported(client, tmp_path, monkeypatch):
+    bgm = tmp_path / "bgm.wav"
+    bgm.write_bytes(b"x")
+    se = tmp_path / "se.wav"
+    se.write_bytes(b"x")
+
+    async def fake_probe(path):
+        return 4000, True
+
+    monkeypatch.setattr(service, "probe_media", fake_probe)
+    video = tmp_path / "v.mp4"
+    video.write_bytes(b"x")
+    _seed_library([("lv", str(video), "video"), ("lb", str(bgm), "audio"),
+                   ("ls", str(se), "audio")])
+    detail = _timeline_with_audio(client, 2)
+    timeline_id = detail["id"]
+    v1, a1, a2 = (track["id"] for track in detail["tracks"])
+    clips = [
+        {"track_id": v1, "start_ms": 0, "duration_ms": 4000, "source_kind": "library",
+         "source_id": "lv", "in_ms": 0, "out_ms": 4000},
+        # A1 に BGM を 2 本、つなぎ目で 30ms 食い込ませる
+        {"track_id": a1, "start_ms": 0, "duration_ms": 2000, "source_kind": "library",
+         "source_id": "lb", "in_ms": 0, "out_ms": 2000, "fade_out_ms": 30},
+        {"track_id": a1, "start_ms": 1970, "duration_ms": 2000, "source_kind": "library",
+         "source_id": "lb", "in_ms": 0, "out_ms": 2000, "fade_in_ms": 30},
+        # A2 に SE を 2 つ重ねる（どちらもダッキングのきっかけ）
+        {"track_id": a2, "start_ms": 500, "duration_ms": 800, "source_kind": "library",
+         "source_id": "ls", "in_ms": 0, "out_ms": 800},
+        {"track_id": a2, "start_ms": 900, "duration_ms": 800, "source_kind": "library",
+         "source_id": "ls", "in_ms": 0, "out_ms": 800},
+    ]
+    response = client.put(
+        f"/api/studio/timelines/{timeline_id}/clips", json={"clips": clips}
+    )
+    assert response.status_code == 200, response.text
+    saved = {t["id"]: t["clips"] for t in response.json()["tracks"]}
+    assert [c["start_ms"] for c in saved[a1]] == [0, 1970]
+    assert [c["start_ms"] for c in saved[a2]] == [500, 900]
+    client.patch(
+        f"/api/studio/timelines/{timeline_id}/tracks/{a1}",
+        json={"ducking": {"trigger_track_id": a2, "amount_db": 6}},
+    )
+    spec = asyncio.run(service.build_spec(timeline_id, {}, tmp_path / "work"))
+    by_track: dict[str, list] = {}
+    for audio in spec.audio_clips:
+        by_track.setdefault(audio.track, []).append(audio)
+    assert [a.start_ms for a in by_track[a1]] == [0, 1970]
+    assert [a.start_ms for a in by_track[a2]] == [500, 900]
+    assert [a.fade_out_ms for a in by_track[a1]] == [30, 0]
+    graph = _graph(spec)
+    # 重なった SE の区間は 1 つのまとまりで下げる（500〜1700ms）
+    assert graph.count("clip(min((t-0.400)/0.100") == 2  # A1 の 2 本それぞれに
+    assert graph.count("clip(min(") == 2
+    assert "(2.000-t)/0.300" in graph
+    # 4 本とも混ぜる
+    assert "amix=inputs=5" in graph
+
+
 def test_export_carries_effects_and_ducking_into_the_spec(client, tmp_path, monkeypatch):
     video = tmp_path / "v.mp4"
     video.write_bytes(b"x")
@@ -709,6 +767,47 @@ def test_fast_rewind_renders_the_planned_frames(tmp_path, reverse):
         capture_output=True, text=True, check=True,
     ).stdout.strip()
     assert int(frames) == spec.total_frames == 72
+
+
+def _rms_at(path: Path, start: float, length: float = 0.2) -> float:
+    result = subprocess.run(
+        ["ffmpeg", "-hide_banner", "-i", str(path), "-filter_complex",
+         f"[0:a]atrim=start={start}:duration={length},astats=reset=0[o]",
+         "-map", "[o]", "-f", "null", "-"],
+        capture_output=True, text=True, check=True,
+    )
+    lines = [line for line in result.stderr.splitlines() if "RMS level dB" in line]
+    return float(lines[-1].rsplit(":", 1)[1])
+
+
+@pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg が無い")
+def test_overlapping_audio_clips_on_one_track_are_mixed(tmp_path):
+    source, bgm, _voice = _make_media(tmp_path)
+    silent = tmp_path / "silent.mp4"
+    subprocess.run(
+        ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i",
+         "color=c=black:s=320x180:r=24:d=3", "-c:v", "libx264",
+         "-pix_fmt", "yuv420p", str(silent)],
+        check=True,
+    )
+    spec = ExportSpec(
+        width=320, height=180, fps=24,
+        clips=[ExportClip(path=str(silent), in_ms=0, out_ms=3000, duration_ms=3000,
+                          has_audio=False, source_duration_ms=3000)],
+        audio_clips=[
+            ExportAudioClip(path=str(bgm), start_ms=0, in_ms=0, out_ms=2000, track="A1"),
+            ExportAudioClip(path=str(bgm), start_ms=1000, in_ms=0, out_ms=1500,
+                            track="A1"),
+        ],
+    )
+    output = tmp_path / "mixed.mp4"
+    asyncio.run(timeline_export.run_export(spec, output))
+    single = _rms_at(output, 0.3)
+    both = _rms_at(output, 1.4)
+    # 同じ位相の同じ音が 2 本重なると +6dB（混ぜている）
+    assert 5.0 < both - single < 7.0
+    # 2 本目だけが鳴っている所は 1 本ぶん
+    assert abs(_rms_at(output, 2.2) - single) < 1.0
 
 
 @pytest.mark.skipif(not HAS_FFMPEG, reason="ffmpeg が無い")

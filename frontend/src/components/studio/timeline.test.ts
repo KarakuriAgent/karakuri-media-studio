@@ -33,6 +33,7 @@ import {
   maxTransitionMs,
   moveClip,
   moveClipTo,
+  stackRows,
   msToPx,
   orderedClips,
   pushHistory,
@@ -594,6 +595,61 @@ describe('トラックごとの操作', () => {
     expect(moved.find((item) => item.id === 'b')?.start_ms).toBe(3000)
     // 前のクリップに掛かる位置は断る（元の配列がそのまま返る）
     expect(moveClipTo(lane, 'b', 1000)).toBe(lane)
+  })
+
+  it('音声トラックは重なるところへも動かせる', () => {
+    const lane = [
+      clip('a', { track_id: 'A1', start_ms: 0, duration_ms: 2000 }),
+      clip('b', { track_id: 'A1', start_ms: 5000, duration_ms: 2000 }),
+    ]
+    const moved = moveClipTo(lane, 'b', 1990, true)
+    expect(moved.map((item) => [item.id, item.start_ms])).toEqual([
+      ['a', 0],
+      ['b', 1990],
+    ])
+  })
+
+  it('stackRows は重なったクリップを別の段に置く', () => {
+    const lane = [
+      clip('a', { track_id: 'A1', start_ms: 0, duration_ms: 2000 }),
+      clip('b', { track_id: 'A1', start_ms: 1990, duration_ms: 2000 }),
+      clip('c', { track_id: 'A1', start_ms: 2500, duration_ms: 500 }),
+      clip('d', { track_id: 'A1', start_ms: 5000, duration_ms: 500 }),
+    ]
+    const { rows, count } = stackRows(lane)
+    expect(count).toBe(2)
+    expect([...'abcd'].map((id) => rows.get(id))).toEqual([0, 1, 0, 0])
+    // 重なりが無ければ 1 段
+    expect(stackRows([lane[0], lane[3]]).count).toBe(1)
+  })
+
+  it('自由配置のトリムは他のクリップを動かさず、頭を詰めたら開始位置がずれる', () => {
+    const lane = [
+      clip('a', {
+        track_id: 'A1',
+        start_ms: 3000,
+        duration_ms: 2000,
+        in_ms: 0,
+        out_ms: 2000,
+        source_duration_ms: 5000,
+      }),
+      clip('b', {
+        track_id: 'A1',
+        start_ms: 4000,
+        duration_ms: 2000,
+        in_ms: 0,
+        out_ms: 2000,
+        source_duration_ms: 5000,
+      }),
+    ]
+    const tail = trimClip(lane, 'a', 'out', 1000, true)
+    expect(tail.map((item) => [item.start_ms, item.duration_ms])).toEqual([
+      [3000, 3000],
+      [4000, 2000],
+    ])
+    const head = trimClip(lane, 'b', 'in', 500, true)
+    expect(head[1]).toMatchObject({ start_ms: 4500, duration_ms: 1500, in_ms: 500 })
+    expect(head[0].start_ms).toBe(3000)
   })
 
   it('firstFreeSlot は塞がっているところを飛ばす', () => {

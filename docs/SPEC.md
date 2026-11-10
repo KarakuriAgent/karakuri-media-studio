@@ -1963,8 +1963,10 @@ CREATE TABLE timeline_fx_events (
 - **V1（映像）** … 並べ替えの正本。1 本きり（増やせず・消せない）。ここだけがリップル方式
   （常に先頭から詰まる）で、繋ぎの重なりぶんだけ縮む
 - **A1…（音声）** … `POST /tracks` で何本でも足せる（ミュート・削除・改名は
-  `PATCH` / `DELETE`）。クリップは**自由配置**（隙間は空けられるが、同じトラックの中では
-  重ねられない）。`gain_db` / `fade_in_ms` / `fade_out_ms` が効く
+  `PATCH` / `DELETE`）。クリップは**自由配置**（隙間を空けられ、**同じトラックの中で重ねても
+  よい**。書き出しでは重なった所を足して混ぜる。画面は重なったクリップを段に分けて描く
+  〈`stackRows`〉）。`gain_db` / `fade_in_ms` / `fade_out_ms` が効く。トリムは他のクリップを
+  動かさない（頭を詰めると開始位置がずれ、終わりは動かない）
 - **T1（字幕）** … `text` クリップ（`text_payload` = `{text, style}`）。`style` は
   位置（bottom / top）・大きさ（S / M / L）・色（white / yellow）の 3 つだけ
 - **素材ビン**（`GET /projects/{id}/media?kind=video|audio|image`）はテイク・ライブラリ・
@@ -2082,7 +2084,8 @@ EDL → ffmpeg コマンドの**組み立ては純関数**（`build_command`）�
     0〜1）… `noise=alls=<0〜64>:allf=t`。色・シャープ・ノイズはこの順に末尾静止の**後**に
     置く（止め絵の上でも粒が動く。シャープをノイズの後にすると粒まで尖る）
 - **音声トラック**は `atrim` + `volume` + `afade` + `adelay` で置き場所へずらし、映像側の音と
-  `amix=duration=first`（＝タイムライン全長で切る。`apad` はしない）
+  `amix=duration=first:normalize=0`（＝タイムライン全長で切る。`apad` はしない）。クリップごとに
+  別の入力なので、同じトラックで重ねたクリップも重なった所でそのまま足し合わさる
 - **ダッキング**（`timeline_tracks.ducking`。音声トラックだけ）… 「きっかけのトラック
   （声）が鳴っている間、このトラックを `amount_db` 下げる」。`mode`:
   - `clips`（既定）… きっかけのトラックの**クリップの区間**から `volume=<式>:eval=frame`
@@ -2594,7 +2597,7 @@ GET  /api/studio/projects/{id}/timelines … 一覧（中身は含めない）
 GET  /api/studio/timelines/{id}  … トラック・クリップ込みのフル EDL（`video_url` / `source_duration_ms` / `missing` 解決済み）
 PATCH  /api/studio/timelines/{id} … 名前・規格（fps / width / height）の変更
 DELETE /api/studio/timelines/{id} … トラック・クリップ・書き出しの記録ごと削除（mp4 は残る）
-PUT  /api/studio/timelines/{id}/clips  … クリップ全置換（自動保存の受け口。重なり / in>=out / 尺と速度の不整合 / 繋ぎの置けない境界は 400）
+PUT  /api/studio/timelines/{id}/clips  … クリップ全置換（自動保存の受け口。重なり〈音声トラックは許す〉/ in>=out / 尺と速度の不整合 / 繋ぎの置けない境界は 400）
 POST /api/studio/timelines/{id}/tracks … トラック追加（音声 A1… / 字幕 T1。映像は 400）
 PATCH  /api/studio/timelines/{id}/tracks/{track_id} … 名前・ミュート・ロック
 DELETE /api/studio/timelines/{id}/tracks/{track_id} … トラック削除（中のクリップごと。V1 は 400）

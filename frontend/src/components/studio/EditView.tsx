@@ -910,18 +910,23 @@ export default function EditView({
               onMoveTo={(id, startMs) => {
                 const clip = clips.find((item) => item.id === id)
                 if (!clip) return
+                // 音声トラックは重ねてよい（書き出しで混ぜる）。字幕は重ねられない。
+                const audio =
+                  tracks.find((track) => track.id === clip.track_id)?.kind === 'audio'
                 apply((current) =>
                   applyToTrack(current, clip.track_id, (lane) =>
-                    moveClipTo(lane, id, startMs),
+                    moveClipTo(lane, id, startMs, audio),
                   ),
                 )
               }}
               onTrim={(id, edge, deltaMs) => {
                 const clip = clips.find((item) => item.id === id)
                 if (!clip) return
+                // 映像トラック以外は詰め直さない（途中に置いた音を動かさない）
+                const free = clip.track_id !== videoTrackId
                 apply((current) =>
                   applyToTrack(current, clip.track_id, (lane) =>
-                    trimClip(lane, id, edge, deltaMs),
+                    trimClip(lane, id, edge, deltaMs, free),
                   ),
                 )
               }}

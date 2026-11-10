@@ -43,6 +43,7 @@ import {
   rulerStepMs,
   spanOf,
   speedOf,
+  stackRows,
   subtitleText,
   zoomBy,
 } from './timeline'
@@ -490,6 +491,10 @@ export default function TimelinePane({
             {tracks.map((track) => {
               const laneClips = clipsOfTrack(clips, track.id)
               const isVideo = track.kind === 'video'
+              // 音声トラックは重ねられるので、重なったクリップは段をずらして描く
+              const stack =
+                track.kind === 'audio' ? stackRows(laneClips) : null
+              const rowHeight = (LANE_HEIGHT[track.kind] - 8) / (stack?.count ?? 1)
               return (
                 <div
                   key={track.id}
@@ -506,7 +511,9 @@ export default function TimelinePane({
                       index={index}
                       kind={track.kind}
                       zoom={zoom}
-                      height={LANE_HEIGHT[track.kind] - 8}
+                      height={rowHeight}
+                      top={4 + (stack?.rows.get(clip.id) ?? 0) * rowHeight}
+                      stacked={(stack?.count ?? 1) > 1}
                       selected={clip.id === selectedId}
                       dragging={drag?.clipId === clip.id && drag.moved}
                       onBody={(event) =>
@@ -633,6 +640,8 @@ function ClipRect({
   kind,
   zoom,
   height,
+  top = 4,
+  stacked = false,
   selected,
   dragging,
   onBody,
@@ -644,6 +653,10 @@ function ClipRect({
   kind: TimelineTrack['kind']
   zoom: number
   height: number
+  /** 上端（px）。重なった音声クリップは段ごとにずらす。 */
+  top?: number
+  /** 同じトラックに重なったクリップがあって段に分けて描いている。 */
+  stacked?: boolean
   selected: boolean
   dragging: boolean
   onBody: (event: React.MouseEvent) => void
@@ -670,10 +683,11 @@ function ClipRect({
 
   return (
     <div
-      className={`absolute top-1 flex items-stretch overflow-hidden rounded border ${tone} ${
+      className={`absolute flex items-stretch overflow-hidden rounded border ${tone} ${
         dragging ? 'opacity-60' : ''
       }`}
-      style={{ left, width, height }}
+      style={{ left, width, height, top }}
+      data-stacked={stacked ? 'true' : undefined}
       title={title}
       onMouseDown={onBody}
     >
@@ -684,7 +698,9 @@ function ClipRect({
         aria-label={`クリップ ${index + 1} の始まりをトリム`}
         onMouseDown={onIn}
       />
-      <div className="min-w-0 flex-1 cursor-grab px-1.5 py-1">
+      <div
+        className={`min-w-0 flex-1 cursor-grab px-1.5 ${stacked ? 'py-0.5' : 'py-1'}`}
+      >
         <div className="flex items-center gap-1 text-[11px] font-medium">
           <ClipIcon clip={clip} kind={kind} />
           <span className="truncate">
@@ -695,7 +711,11 @@ function ClipRect({
                 : clip.label || `クリップ ${index + 1}`}
           </span>
         </div>
-        <p className="truncate text-[10px] text-muted-foreground">
+        <p
+          className={`truncate text-[10px] text-muted-foreground ${
+            stacked ? 'hidden' : ''
+          }`}
+        >
           {formatSeconds(clip.duration_ms)}
           {speed !== 1 && ` / ${speed}x`}
           {kind === 'audio' && clip.gain_db !== 0 && ` / ${clip.gain_db}dB`}

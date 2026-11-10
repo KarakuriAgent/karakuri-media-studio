@@ -277,7 +277,8 @@ cwd として書いてある。
 1. `POST /projects/{id}/timelines`（`episode_id` を送るとその話の採用 Take を
    V1 に自動配置）
 2. 素材を探す: `GET /projects/{id}/media?kind=video|audio|image`
-3. `PUT /timelines/{id}/clips` で EDL を丸ごと置き換え（重なり・尺の矛盾は 400）
+3. `PUT /timelines/{id}/clips` で EDL を丸ごと置き換え（重なり・尺の矛盾は 400。
+   ただし音声トラックは重ねてよく、書き出しで混ぜる。BGM のつなぎ目の食い込み・SE の重ね）
 4. テロップ: `POST /timelines/{id}/generate-subtitles`（字幕トラックは置き換え）
 5. 脚本の変更を取り込む: `GET /timelines/{id}/sync-preview` →
    `POST /timelines/{id}/sync`

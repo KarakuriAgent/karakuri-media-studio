@@ -181,6 +181,27 @@ def test_validate_clips_rejects_overlap_in_one_track():
         service.validate_clips([_input(start_ms=0), _input(start_ms=999)])
 
 
+def test_validate_clips_allows_overlap_on_an_audio_track():
+    # 音声トラックは重ねてよい（数 ms の食い込みも、まるごと重ねるのも）
+    service.validate_clips(
+        [
+            _input(track_id="A1", start_ms=0, duration_ms=1000, in_ms=0, out_ms=1000),
+            _input(track_id="A1", start_ms=995, duration_ms=1000, in_ms=0, out_ms=1000),
+            _input(track_id="A1", start_ms=200, duration_ms=500, in_ms=0, out_ms=500),
+        ],
+        {"A1": "audio"},
+    )
+
+
+def test_validate_clips_still_rejects_overlap_on_video_and_subtitles():
+    for kind in ("video", "subtitle"):
+        with pytest.raises(service.TimelineError, match="重なって"):
+            service.validate_clips(
+                [_input(track_id="X", start_ms=0), _input(track_id="X", start_ms=995)],
+                {"X": kind},
+            )
+
+
 def test_validate_clips_allows_the_same_span_on_another_track():
     service.validate_clips(
         [_input(track_id="T1", start_ms=0), _input(track_id="T2", start_ms=0)]

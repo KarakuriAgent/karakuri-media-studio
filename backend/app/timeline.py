@@ -487,8 +487,10 @@ def validate_clips(
 
     トラックの中の並び:
 
-    - 同じトラックの中でクリップが重ならない（隙間は空けてよい）
-    - ただし**繋ぎ（トランジション）を持つクリップだけは前へ食い込む**
+    - 同じトラックの中でクリップが重ならない（隙間は空けてよい）。ただし
+      **音声トラックは重ねてよい**（書き出しでは重なった所を混ぜる。BGM の
+      つなぎ目を数 ms 食い込ませる・SE を声に重ねる）
+    - **繋ぎ（トランジション）を持つクリップだけは前へ食い込む**
       （オーバーラップ方式）。食い込む量はちょうど ``transition_ms`` で、
       隣り合う 2 つの短いほうの 1/2 まで
     - 繋ぎを置けるのは映像トラックだけで、トラックの先頭には置けない
@@ -582,6 +584,9 @@ def validate_clips(
                         f"トラック {track_id}: 繋ぎのぶんの重なりが合いません"
                         f"（{wanted}ms から始まるはずが {current.start_ms}ms）"
                     )
+                continue
+            if kind == "audio":
+                # 音声トラックは重ねてよい（書き出しで混ぜる。:func:`build_spec`）
                 continue
             if current.start_ms < previous.start_ms + previous.duration_ms:
                 raise TimelineError(
