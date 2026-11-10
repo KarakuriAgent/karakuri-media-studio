@@ -672,13 +672,21 @@ def build_remux_command(
     ``copy_audio`` なら音も写すだけ（フィルタを掛けない・AAC にし直さない）。
     タイムラインの書き出し（音を正規化した mp4）を音源にした演出付きの書き出しで、
     正規化したラウドネスと真のピークをそのまま残すため（:func:`remux_audio`）。
+    このときは ``-shortest`` を使わない: 写すだけの音は映像よりわずかに短い
+    （AAC のフレーム境界で 1ms 足らず）ことがあり、``-shortest`` はそこで映像の
+    最後の数コマまで切ってしまう（演出付きの mp4 が 1〜4 コマ欠けた）。映像は
+    丸ごと残し、音は ``duration``（映像の尺）があれば音源の入力側の ``-t`` で
+    その長さまでに切る（短ければ短いまま。末尾の 1ms 足らずが無音になるだけ）。
     """
     if copy_audio:
+        argv = [FFMPEG, "-v", "error", "-y", "-i", str(video)]
+        if duration and duration > 0:
+            argv += ["-t", f"{duration:.6f}"]
         return [
-            FFMPEG, "-v", "error", "-y", "-i", str(video), "-i", str(audio),
+            *argv, "-i", str(audio),
             "-map", "0:v:0", "-map", "1:a:0",
             "-c:v", "copy", "-c:a", "copy",
-            "-shortest", "-movflags", "+faststart", str(dest),
+            "-movflags", "+faststart", str(dest),
         ]
     argv = [FFMPEG, "-v", "error", "-y", "-i", str(video)]
     if start_from > 0:
@@ -777,6 +785,7 @@ async def remux_audio(output: Path, props: dict[str, Any]) -> bool:
 
     duration = await probe_duration(output) if fade_out > 0 else None
     copy_audio = False
+    video_length: float | None = None
     if volume == 1.0 and fade_out <= 0 and start_from <= 0:
         # 音源がそのまま使える AAC で、映像の尺に足りているなら写すだけにする
         # （AAC のかけ直しで、正規化したラウドネス・真のピークが動かない）。
@@ -791,7 +800,8 @@ async def remux_audio(output: Path, props: dict[str, Any]) -> bool:
     temporary = output.with_suffix(output.suffix + ".remux.mp4")
     argv = build_remux_command(
         output, source, temporary,
-        start_from=start_from, volume=volume, fade_out=fade_out, duration=duration,
+        start_from=start_from, volume=volume, fade_out=fade_out,
+        duration=video_length if copy_audio else duration,
         copy_audio=copy_audio,
     )
     try:

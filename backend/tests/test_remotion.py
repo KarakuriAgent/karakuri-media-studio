@@ -995,9 +995,15 @@ async def test_the_remuxed_audio_matches_the_video_length(tmp_path, monkeypatch)
 
 
 def test_remux_command_can_copy_the_audio_as_it_is():
-    argv = remotion.build_remux_command("v.mp4", "final.mp4", "out.mp4", copy_audio=True)
+    argv = remotion.build_remux_command(
+        "v.mp4", "final.mp4", "out.mp4", copy_audio=True, duration=13.9666667
+    )
     assert argv[argv.index("-c:a") + 1] == "copy"
     assert "-af" not in argv and "-b:a" not in argv
+    # 映像を切らない（-shortest は使わず、音を入力側の -t で映像の尺までに切る）
+    assert "-shortest" not in argv
+    assert argv[argv.index("-t") + 1] == "13.966667"
+    assert argv.index("v.mp4") < argv.index("-t") < argv.index("final.mp4")
 
 
 @has_ffmpeg
@@ -1020,6 +1026,52 @@ async def test_a_normalised_export_keeps_its_audio_untouched(tmp_path, monkeypat
 
     assert await remotion.remux_audio(rendered, {"audio": {"src": str(export)}}) is True
     assert await _audio_md5(rendered) == await _audio_md5(export)
+
+
+@has_ffmpeg
+async def test_copying_a_slightly_short_audio_keeps_every_video_frame(
+    tmp_path, monkeypatch
+):
+    """写すだけの音が映像よりわずかに短くても、映像のコマを 1 枚も落とさない。
+
+    以前は -shortest で、正規化した書き出しの音（AAC。映像より 1ms 足らず短い）に
+    合わせて演出付きの mp4 の最後が 1〜4 コマ欠けた（419 コマが 415 コマに）。
+    """
+    outputs = tmp_path / "outputs"
+    outputs.mkdir()
+    monkeypatch.setattr(remotion, "AUDIO_ROOTS", {"/outputs/": outputs})
+    # 書き出し: 419 コマ（30fps で 13.9667 秒）と、それより 1 フレーム足らず短い AAC
+    export = outputs / "final.mp4"
+    await _lavfi(["-f", "lavfi", "-i", "testsrc=size=160x90:rate=30",
+                  "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000",
+                  "-frames:v", "419", "-t", "13.966", "-pix_fmt", "yuv420p",
+                  "-c:a", "aac"], export)
+    # Remotion の出力: 同じ 419 コマ
+    rendered = outputs / "video.mp4"
+    await _lavfi(["-f", "lavfi", "-i", "testsrc2=size=160x90:rate=30",
+                  "-f", "lavfi", "-i", "sine=frequency=220:sample_rate=48000",
+                  "-frames:v", "419", "-t", "14", "-pix_fmt", "yuv420p",
+                  "-c:a", "aac"], rendered)
+
+    assert await remotion.remux_audio(rendered, {"audio": {"src": str(export)}}) is True
+    assert await _audio_md5(rendered) != ""
+    assert await _count_frames(rendered) == 419
+    audio_length = await _stream_duration(rendered, "a")
+    video_length = await _stream_duration(rendered, "v")
+    assert audio_length is not None and video_length is not None
+    # 音は映像より長くならない（足りない分は 1 フレーム未満）
+    assert audio_length <= video_length + 0.03
+    assert video_length - audio_length < 1 / 30
+
+
+async def _count_frames(path: Path) -> int:
+    process = await asyncio.create_subprocess_exec(
+        "ffprobe", "-v", "error", "-count_frames", "-select_streams", "v",
+        "-show_entries", "stream=nb_read_frames", "-of", "csv=p=0", str(path),
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+    )
+    stdout, _ = await process.communicate()
+    return int(stdout.decode().strip())
 
 
 async def _audio_md5(path: Path) -> str:
