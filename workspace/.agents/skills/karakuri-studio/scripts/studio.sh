@@ -27,24 +27,14 @@ set -euo pipefail
 die() { printf 'studio.sh: %s\n' "$*" >&2; exit 2; }
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# shellcheck source=_common.sh
+source "$SCRIPT_DIR/_common.sh"
 WORKSPACE="${KARAKURI_WORKSPACE:-$(cd "$SCRIPT_DIR/../../../.." && pwd -P)}"
-REPO="${KARAKURI_STUDIO_REPO:-$(cd "$SCRIPT_DIR/../../../../.." && pwd -P)}"
+REPO="$(karakuri_repo_dir "$SCRIPT_DIR")"
 
 # --- BASE ----------------------------------------------------------------
-BASE="${KARAKURI_STUDIO_URL:-}"
-if [[ -z "$BASE" ]]; then
-  host=""; port=""
-  if [[ -f "$REPO/.env" ]]; then
-    host="$(sed -n 's/^HOST=//p' "$REPO/.env" | tail -n 1 | tr -d '"'\''[:space:]')"
-    port="$(sed -n 's/^PORT=//p' "$REPO/.env" | tail -n 1 | tr -d '"'\''[:space:]')"
-  fi
-  [[ -n "$host" ]] || host="127.0.0.1"
-  [[ -n "$port" ]] || port="8000"
-  # 0.0.0.0 は「全インターフェイスで待受」の意味なので、宛先には使えない
-  [[ "$host" == "0.0.0.0" || "$host" == "::" ]] && host="127.0.0.1"
-  BASE="http://$host:$port"
-fi
-BASE="${BASE%/}"
+# 解決のしかたは _common.sh（inspect.sh と共通）
+BASE="$(karakuri_base_url "$REPO")"
 
 # --- KEY -----------------------------------------------------------------
 KEY="${KARAKURI_STUDIO_API_KEY:-}"
