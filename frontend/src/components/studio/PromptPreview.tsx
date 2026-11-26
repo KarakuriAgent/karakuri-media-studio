@@ -206,6 +206,13 @@ export default function PromptPreview({ shot }: { shot: StudioShot }) {
               開始フレーム: {fileName(preview.start_frame)}
             </p>
           )}
+          {/* 実際に投入される解像度とステップ数（作品の既定 > ワークフローの既定） */}
+          {(preview.megapixels ?? 0) > 0 && (
+            <p className="text-[11px] text-muted-foreground">
+              解像度: {preview.megapixels}MP
+              {(preview.steps ?? 0) > 0 ? ` / ステップ数: ${preview.steps}` : ''}
+            </p>
+          )}
           {/* 作品の動画 LoRA（生成ダイアログで 1 回だけ変えたぶんは反映しない） */}
           {(preview.video_loras ?? []).length > 0 && (
             <p className="text-[11px] text-muted-foreground">

@@ -810,7 +810,7 @@ def test_a_shot_without_material_renders_as_t2v(env):
     assert payload.reference_images == []
     # 台詞・SE・BGM・カメラが公式 H3 フィールドで本文に足される
     assert payload.video_prompt.startswith("integrated_multimodal_description:")
-    assert "The camera handheld, low angle." in payload.video_prompt
+    assert "The camera is handheld, with a low angle." in payload.video_prompt
     assert "<d>[Japanese] いらっしゃい</d>" in payload.video_prompt
     assert "overall_soundscape: rain on the awning" in payload.video_prompt
     assert "non_diegetic_music: slow jazz" in payload.video_prompt
@@ -1715,6 +1715,36 @@ def test_eros_max_picks_the_t2v_workflow(env, monkeypatch):
     assert preview["video_model"] == "10eros-max"
     assert "10Eros Max" in preview["workflow_reason"]
     assert preview["render_blocker"] == ""
+
+
+def test_eros_max_defaults_to_its_own_megapixels(env, monkeypatch):
+    """作品・カットが解像度を決めていなければ、10Eros Max の既定（0.8MP）で焼く。"""
+    from app import jobs as job_service
+
+    _use_target(monkeypatch, "local")
+    project = make_project(env, video_model="10eros-max")
+    shot = make_shot(env, project["id"], prompt="A cat walks in.")
+    assert render(env, shot["id"]).status_code == 201
+    payload = env.created[-1]
+    # スタジオは送らず、ジョブ側がワークフローの宣言で埋める
+    assert "megapixels" not in payload.model_fields_set
+    assert (
+        job_service.default_job_megapixels(
+            payload.mode, video_workflow=payload.video_workflow
+        )
+        == 0.8
+    )
+    body = _eros_preview(env, shot["id"])
+    assert body["megapixels"] == 0.8
+    assert body["steps"] == 8
+
+    # 作品に明示した値はそのまま尊重する
+    env.client.patch(
+        f"/api/studio/projects/{project['id']}", json={"megapixels": 0.4}
+    )
+    assert render(env, shot["id"]).status_code == 201
+    assert env.created[-1].megapixels == 0.4
+    assert _eros_preview(env, shot["id"])["megapixels"] == 0.4
 
 
 def test_eros_max_picks_the_r2v_workflow_with_reference_tags(env, monkeypatch):
@@ -4394,13 +4424,50 @@ def test_the_preview_shows_the_whole_assembled_prompt(env):
     assert body["start_frame"] is None
     prompt = body["prompt"]
     assert prompt.startswith("integrated_multimodal_description: A cat walks in.")
-    assert "The camera slow dolly in." in prompt
+    assert "The camera slowly dollies in." in prompt
     assert "<d>[English] Good evening.</d>" in prompt
     assert "overall_soundscape: rain on the roof" in prompt
     assert "non_diegetic_music: lonely piano" in prompt
     assert "Camera:" not in prompt
     assert "Audio:" not in prompt
     assert prompt.endswith(studio.EXCLUSION_SENTENCE)
+    # 英語だけの脚本は組み立てた本文がそのまま投入される
+    assert body["submitted_prompt"] == prompt
+
+
+def test_the_preview_shows_the_english_prompt_as_the_submitted_one(env):
+    project = make_project(env)
+    shot = make_shot(env, project["id"], prompt="猫が歩いてくる。")
+    before = preview(env, shot["id"])
+    assert before["needs_translation"] is True
+    # 日本語のままでは投入できないので、投入される本文は無い
+    assert before["submitted_prompt"] == ""
+
+    english = "integrated_multimodal_description: A cat walks in."
+    assert env.client.patch(
+        f"/api/studio/shots/{shot['id']}", json={"english_prompt": english}
+    ).status_code == 200
+    after = preview(env, shot["id"])
+    # ``prompt`` は英訳の元（日本語の組み立て）のまま、投入されるのは英語
+    assert after["prompt"] == before["prompt"]
+    assert after["submitted_prompt"] == english
+    assert render(env, shot["id"]).status_code == 201
+    assert env.created[-1].video_prompt == after["submitted_prompt"]
+
+
+def test_the_preview_shows_the_effective_megapixels_and_steps(env):
+    project = make_project(env)
+    shot = make_shot(env, project["id"])
+    body = preview(env, shot["id"])
+    assert body["megapixels"] == 0.4
+    assert body["steps"] == 20  # minimax_h3_t2v のテンプレートの既定
+
+    env.client.patch(
+        f"/api/studio/projects/{project['id']}", json={"megapixels": 0.6, "steps": 12}
+    )
+    body = preview(env, shot["id"])
+    assert body["megapixels"] == 0.6
+    assert body["steps"] == 12
 
 
 def test_the_preview_lists_the_attached_references(env):
@@ -4685,7 +4752,7 @@ def test_compose_prompt_wraps_a_bare_t2v_body():
         shot, "A cat walks into a ramen shop.", workflow="minimax_h3_t2v"
     )
     assert text.startswith("integrated_multimodal_description:")
-    assert "The camera handheld, low angle." in text
+    assert "The camera is handheld, with a low angle." in text
     assert "(S1) says: <d>[Japanese] いらっしゃい</d>" in text
     assert "overall_soundscape: rain on the awning" in text
     assert "non_diegetic_music: slow jazz" in text
@@ -4747,6 +4814,7 @@ def test_compose_prompt_strips_wrapping_quotes_and_skips_existing_camera():
     )
     text = studio.compose_prompt(shot, body, workflow="minimax_h3_t2v")
     assert "The camera Push In" not in text
+    assert "The camera pushes in" not in text
     assert "<d>[Japanese] いらっしゃい</d>" in text
     assert '"いらっしゃい"' not in text
 
@@ -4759,7 +4827,74 @@ def test_compose_prompt_keeps_camera_when_body_only_cuts():
         "cuts to a close-up of the counter."
     )
     text = studio.compose_prompt(shot, body, workflow="minimax_h3_t2v")
-    assert "The camera Push In at slow speed." in text
+    assert "The camera pushes in at slow speed." in text
+
+
+@pytest.mark.parametrize(
+    ("camera", "sentence"),
+    [
+        # 公式語彙の名詞句は動詞に直して自然な英文にする
+        ("static shot", "The camera holds a static shot."),
+        ("Static Shot", "The camera holds a static shot."),
+        ("Push In", "The camera pushes in."),
+        ("Push In with small amplitude at slow speed",
+         "The camera pushes in with small amplitude at slow speed."),
+        ("Pan Left, Shake Slightly", "The camera pans left and shakes slightly."),
+        ("POV", "The camera holds a POV shot."),
+        ("slow dolly in", "The camera slowly dollies in."),
+        # 語彙に無い名詞句は holds / with で受ける
+        ("close-up", "The camera holds a close-up."),
+        ("handheld, low angle", "The camera is handheld, with a low angle."),
+        # 動詞で始まる書き方は従来どおり
+        ("pushes in slowly", "The camera pushes in slowly."),
+        ("slowly pans left", "The camera slowly pans left."),
+        ("holds a static shot", "The camera holds a static shot."),
+        # 「The camera」「Camera:」を欄に書かれても二重にしない
+        ("The camera tilts up.", "The camera tilts up."),
+        ("Camera: Tilt Up", "The camera tilts up."),
+        ("", ""),
+    ],
+)
+def test_camera_sentence_reads_as_english(camera, sentence):
+    assert studio.camera_sentence(camera) == sentence
+
+
+def test_compose_prompt_turns_a_camera_noun_phrase_into_a_clause():
+    shot = _compose_shot(camera="Static Shot")
+    text = studio.compose_prompt(shot, "A cat sits.", workflow="minimax_h3_t2v")
+    assert "The camera holds a static shot." in text
+    assert "The camera static shot" not in text
+    assert "The camera Static Shot" not in text
+
+
+def test_compose_prompt_puts_a_blank_line_before_the_exclusion():
+    shot = _compose_shot(soundscape="rain on the awning")
+    text = studio.compose_prompt(shot, "A cat sits.", workflow="minimax_h3_t2v")
+    assert text.endswith(f"non_diegetic_music: N/A\n\n{studio.EXCLUSION_SENTENCE}")
+    bare = studio.compose_prompt(
+        _compose_shot(), "A cat sits.", workflow="minimax_h3_t2v"
+    )
+    assert bare == (
+        f"integrated_multimodal_description: A cat sits.\n\n{studio.EXCLUSION_SENTENCE}"
+    )
+
+
+def test_an_english_cache_survives_a_change_in_blank_lines_only():
+    """組み立ての改行の入れ方だけが変わっても、保存済みの英語は古くならない。"""
+    shot = _compose_shot(
+        english_prompt="ENGLISH",
+        english_source=(
+            "integrated_multimodal_description: 猫が座る。\n"
+            f"{studio.EXCLUSION_SENTENCE}"
+        ),
+    )
+    assembled = (
+        f"integrated_multimodal_description: 猫が座る。\n\n{studio.EXCLUSION_SENTENCE}"
+    )
+    assert studio._english_cache_usable(shot, assembled)
+    assert not studio._english_cache_usable(
+        shot, assembled.replace("猫が座る。", "犬が座る。")
+    )
 
 
 # --------------------------------------------------------------------------

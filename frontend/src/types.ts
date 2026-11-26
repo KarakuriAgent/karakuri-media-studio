@@ -815,6 +815,12 @@ export interface WorkflowOption {
    * まま（SPEC §3.1）。
    */
   default_megapixels?: number
+  /**
+   * `steps` を送らない（0）ときに実際に回るサンプリング回数（テンプレートの
+   * 既定。`steps` を受け取らない turbo などは焼き込みの固定値）。0 / 未定義 =
+   * 分からない。
+   */
+  default_steps?: number
 }
 
 export interface Job {
@@ -1866,8 +1872,20 @@ export interface StudioShotPreview {
   workflow: string | null
   /** そのワークフローになる理由（日本語）。 */
   workflow_reason: string
-  /** 実際に投入される本文（公式フィールドと除外文まで込み）。 */
+  /**
+   * 脚本から組み立てた本文（公式フィールドと除外文まで込み。日本語のまま）。
+   * 英訳の元で、実際にモデルへ送られるのは `submitted_prompt`。
+   */
   prompt: string
+  /**
+   * 実際にモデルへ投入される本文（使える `english_prompt` があればそれ、無ければ
+   * `prompt`。投入できないときは空）。古いサーバーの応答には無い。
+   */
+  submitted_prompt?: string
+  /** 実際に投入される解像度（メガピクセル）。古いサーバーの応答には無い。 */
+  megapixels?: number
+  /** 実際に回るサンプリング回数（0 = 分からない）。古いサーバーの応答には無い。 */
+  steps?: number
   references: StudioPromptReference[]
   /** 開始フレームに使われるファイル（i2v のときだけ）。 */
   start_frame: string | null

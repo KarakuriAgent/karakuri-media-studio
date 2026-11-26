@@ -95,6 +95,7 @@ from .workflows import (
     canonical_workflow_id,
     get_image_spec,
     get_video_spec,
+    template_steps,
 )
 
 log = logging.getLogger(__name__)
@@ -3702,6 +3703,177 @@ _CAMERA_CUT = re.compile(
 )
 
 
+#: 公式のカメラ語彙（``Static Shot`` / ``Push In`` などの名詞句。
+#: :data:`app.prompts.MINIMAX_H3_GUIDE_BODY` の Vocabulary）を ``The camera …``
+#: に続く動詞句へ直す表。先頭一致で、続きの ``with small amplitude`` などは
+#: そのまま後ろへ付ける。``\1`` は方向（left / up / clockwise …）。
+_CAMERA_VOCABULARY: tuple[tuple[re.Pattern[str], str], ...] = tuple(
+    (re.compile(rf"^(?:{pattern})(?![\w-])", re.I), verb)
+    for pattern, verb in (
+        (r"static(?:\s+shot)?", "holds a static shot"),
+        (r"(?:fixed|locked[-\s]?off)(?:\s+shot)?", "holds a locked-off shot"),
+        (r"hand-?held(?:\s+shot)?", "is handheld"),
+        (r"zoom\s+(in|out)", r"zooms \1"),
+        (r"push\s+in", "pushes in"),
+        (r"pull\s+out", "pulls out"),
+        (r"pull\s+back", "pulls back"),
+        (r"dolly\s+(in|out)", r"dollies \1"),
+        (r"pan\s+(left|right)", r"pans \1"),
+        (r"truck\s+(left|right)", r"trucks \1"),
+        (r"tilt\s+(up|down)", r"tilts \1"),
+        (r"pedestal\s+(up|down)", r"pedestals \1"),
+        (r"crane\s+(up|down)", r"cranes \1"),
+        (r"arc(?:\s+shot)?", "arcs around the subject"),
+        (r"orbit(?:\s+shot)?", "orbits the subject"),
+        (r"tracking(?:\s+shot)?", "tracks the subject"),
+        (r"follow(?:\s+shot)?", "follows the subject"),
+        (r"shake\s+(slightly|strongly)", r"shakes \1"),
+        (r"pov(?:\s+shot)?", "holds a POV shot"),
+        (r"roll\s+(clockwise|counter-?clockwise)", r"rolls \1"),
+    )
+)
+
+#: 語彙の前に付いた形容詞（``slow push in``）を副詞へ直す表
+_CAMERA_MANNER = {
+    "slow": "slowly",
+    "slowly": "slowly",
+    "gentle": "gently",
+    "gently": "gently",
+    "quick": "quickly",
+    "quickly": "quickly",
+    "fast": "quickly",
+    "rapid": "rapidly",
+    "rapidly": "rapidly",
+    "subtle": "subtly",
+    "subtly": "subtly",
+    "smooth": "smoothly",
+    "smoothly": "smoothly",
+    "steady": "steadily",
+    "steadily": "steadily",
+}
+
+#: ``-s`` で終わるが動詞ではない（名詞の）語。動詞始まりかの判定で除く
+_CAMERA_NOUNS_IN_S = frozenset(
+    {"lens", "focus", "close-ups", "closeups", "shots", "angles", "eyes", "its"}
+)
+
+#: 区切りのあとでこれで始まる片は、前の指示の続き（``, at slow speed``）
+_CAMERA_PREPOSITIONS = frozenset(
+    {
+        "at", "with", "from", "to", "toward", "towards", "into", "onto", "over",
+        "around", "across", "through", "along", "behind", "past", "until",
+        "while", "as", "for", "on", "in",
+    }
+)
+
+#: :func:`camera_sentence` の中だけで使う「前の指示の続き」の目印
+_CONTINUATION = "\0"
+
+#: ``The camera`` に続けてよい（3 人称単数の）動詞。``-s`` 終わりの推定で
+#: 拾えない不規則なものだけを書く
+_CAMERA_VERBS = frozenset({"is", "stays", "remains", "has", "does", "goes"})
+
+
+def _camera_verb_phrase(piece: str) -> str | None:
+    """カメラ指示の 1 片を ``The camera`` に続く動詞句にする（できなければ None）。
+
+    公式語彙の名詞句（``Static Shot`` / ``Push In at slow speed``）は表で動詞に
+    直し、すでに動詞で始まっている書き方（``pushes in slowly`` /
+    ``slowly pans left``）はそのまま返す。
+    """
+    words = piece.split()
+    if not words:
+        return None
+    manner = ""
+    head, rest = words[0], piece
+    if head.lower() in _CAMERA_MANNER and len(words) > 1:
+        manner = _CAMERA_MANNER[head.lower()] + " "
+        rest = piece[len(head):].lstrip()
+    for pattern, verb in _CAMERA_VOCABULARY:
+        match = pattern.match(rest)
+        if match is not None:
+            tail = rest[match.end():].strip()
+            phrase = match.expand(verb).lower().replace("pov", "POV")
+            return f"{manner}{phrase}{' ' + tail if tail else ''}"
+    # 語彙に無い書き方: 先頭（副詞を飛ばした最初の語）が動詞なら書かれたまま使う
+    first = next(
+        (word for word in words if not word.lower().endswith("ly")), words[0]
+    ).lower()
+    if first in _CAMERA_VERBS or (
+        len(first) > 3
+        and first.endswith("s")
+        and not first.endswith("ss")
+        and first not in _CAMERA_NOUNS_IN_S
+    ):
+        return piece
+    return None
+
+
+def _camera_noun_phrase(piece: str) -> str:
+    """名詞句（``low angle`` / ``a wide shot``）に冠詞を付ける。"""
+    words = [
+        # 見出し風の大文字（``Low Angle``）だけ小文字に戻す（``POV`` などは残す）
+        word.lower() if word[:1].isupper() and word[1:].islower() else word
+        for word in piece.split()
+    ]
+    text = " ".join(words)
+    if words[0].lower() in {"a", "an", "the", "this", "that", "its", "one"}:
+        return text
+    article = "an" if text[:1].lower() in "aeiou" else "a"
+    return f"{article} {text}"
+
+
+def camera_sentence(camera: str) -> str:
+    """Shot の ``camera`` 欄を本文に足す 1 文にする（空なら空文字）。
+
+    公式の書き方は「カメラの動きはショットの中の自然な英文」なので、名詞句の
+    公式語彙（``Static Shot``）を書かれても ``The camera holds a static shot.``
+    のような文にする。動詞で始まる書き方（``pushes in slowly``）は従来どおり
+    ``The camera pushes in slowly.``。``,`` / ``and`` / ``then`` で区切った
+    複数の指示は片ごとに直してつなぐ（``Push In, Shake Slightly`` →
+    ``The camera pushes in and shakes slightly.``）。動詞にできない名詞句は
+    ``holds a …`` / ``with a …`` で受ける（``handheld, low angle`` →
+    ``The camera is handheld, with a low angle.``）。日本語はそのまま
+    ``The camera …`` に入れる（英訳はエージェントの仕事）。
+    """
+    text = camera.strip().rstrip(".").strip()
+    if not text:
+        return ""
+    # 欄に「The camera …」「Camera: …」と書かれていても二重にしない
+    text = re.sub(r"^(?:the\s+camera\s+|camera\s*:\s*)", "", text, flags=re.I).strip()
+    if not text:
+        return ""
+    if has_japanese(text):
+        return f"The camera {text}."
+    pieces = [
+        piece.strip()
+        for piece in re.split(r"\s*(?:[,;]|\band then\b|\bthen\b|\band\b)\s*", text)
+        if piece.strip()
+    ]
+    clauses: list[str] = []
+    for index, piece in enumerate(pieces):
+        verb = _camera_verb_phrase(piece)
+        if index > 0 and piece.split()[0].lower() in _CAMERA_PREPOSITIONS:
+            # 「, at slow speed」のような前の指示の続きは、そのまま後ろに付ける
+            clauses.append(f"{_CONTINUATION}{piece}")
+        elif verb is not None:
+            clauses.append(verb)
+        elif index == 0:
+            clauses.append(f"holds {_camera_noun_phrase(piece)}")
+        else:
+            clauses.append(f"with {_camera_noun_phrase(piece)}")
+    sentence = clauses[0]
+    for index, clause in enumerate(clauses[1:], start=1):
+        last = index == len(clauses) - 1
+        if clause.startswith(_CONTINUATION):
+            sentence += f", {clause[len(_CONTINUATION):]}"
+        elif clause.startswith("with ") or not last:
+            sentence += f", {clause}"
+        else:
+            sentence += f" and {clause}"
+    return f"The camera {sentence}."
+
+
 def _strip_wrapping_quotes(text: str) -> str:
     text = text.strip()
     for left, right in _WRAPPED_QUOTES:
@@ -3835,7 +4007,7 @@ def compose_prompt(
         and "camera:" not in lowered
         and "the camera " not in camera_prose.lower()
     ):
-        extras.append(f"The camera {shot.camera.strip()}.")
+        extras.append(camera_sentence(shot.camera))
     dialogue = shot.dialogue.strip()
     if dialogue and "<d>" not in lowered:
         spoken = _strip_wrapping_quotes(dialogue)
@@ -3865,7 +4037,8 @@ def compose_prompt(
 
     assembled_lowered = assembled.lower()
     if "subtitle" not in assembled_lowered and "watermark" not in assembled_lowered:
-        assembled = f"{assembled}\n{EXCLUSION_SENTENCE}"
+        # 公式フィールドと同じく空行で区切る（直前の節の続きに読まれないように）
+        assembled = f"{assembled}\n\n{EXCLUSION_SENTENCE}"
     return assembled
 
 
@@ -4108,9 +4281,48 @@ def _blocking_notes(resolved: Resolved) -> list[str]:
     return notes
 
 
+def _source_key(text: str) -> str:
+    """``english_source`` と組み立て文を比べるための形（改行の数だけを均す）。
+
+    組み立ての改行の入れ方（除外文の前を空行にした等）を変えても、中身が
+    同じなら保存済みの英語を古い扱いにしない。
+    """
+    return re.sub(r"\n[ \t]*(?:\n[ \t]*)+", "\n", text.strip())
+
+
 def _english_cache_usable(shot: StudioShot, assembled: str) -> bool:
     """組み立て済み本文に対して、保存してある英語がそのまま使えるか。"""
-    return bool(shot.english_prompt) and shot.english_source == assembled
+    return bool(shot.english_prompt) and _source_key(
+        shot.english_source
+    ) == _source_key(assembled)
+
+
+def _preview_megapixels(
+    shot: StudioShot, project: StudioProject | None, workflow: str
+) -> float:
+    """プレビューに出す解像度（:func:`render_shot` と同じ決め方）。
+
+    Shot > 作品 > ワークフローの宣言（:func:`app.jobs.default_job_megapixels`）。
+    1 回ぶんの上書きはプレビューには無いので見ない。
+    """
+    megapixels = shot.megapixels
+    if megapixels is None and project is not None:
+        megapixels = project.megapixels
+    if megapixels is not None:
+        return float(megapixels)
+    return job_service.default_job_megapixels("i2v", video_workflow=workflow)
+
+
+def _preview_steps(project: StudioProject | None, workflow: str) -> int:
+    """プレビューに出すサンプリング回数（:func:`render_shot` と同じ決め方）。
+
+    作品の ``steps`` が正で、ワークフローが ``steps`` を受け取るならその値。
+    そうでなければテンプレートの既定（:func:`app.workflows.template_steps`）。
+    """
+    steps = project.steps if project is not None else 0
+    if steps > 0 and _workflow_supports_steps(workflow):
+        return int(steps)
+    return template_steps(workflow)
 
 
 async def preview_shot(shot_id: str) -> StudioShotPreview | None:
@@ -4156,12 +4368,24 @@ async def preview_shot(shot_id: str) -> StudioShotPreview | None:
                 error=str(exc),
             )
     usable = _english_cache_usable(shot, plan.prompt)
+    needs_translation = not usable and has_japanese(plan.prompt)
+    # 投入（:func:`render_shot`）と同じ選び方: 使える英語があればそれ、無ければ
+    # 組み立てた本文。日本語が混ざっていて英語が無ければ投入できないので空。
+    if usable:
+        submitted = shot.english_prompt
+    elif needs_translation:
+        submitted = ""
+    else:
+        submitted = plan.prompt
     video_loras, lora_warning = _resolve_video_loras(plan.workflow, project)
     return StudioShotPreview(
         shot_id=shot.id,
         workflow=plan.workflow,
         workflow_reason=plan.reason,
         prompt=plan.prompt,
+        submitted_prompt=submitted,
+        megapixels=_preview_megapixels(shot, project, plan.workflow),
+        steps=_preview_steps(project, plan.workflow),
         references=[
             StudioPromptReference(
                 name=asset.name, kind=asset.kind, tag=tag, path=asset.path
@@ -4169,7 +4393,7 @@ async def preview_shot(shot_id: str) -> StudioShotPreview | None:
             for asset, tag in zip(plan.references, plan.tags)
         ],
         start_frame=plan.start_image,
-        needs_translation=not usable and has_japanese(plan.prompt),
+        needs_translation=needs_translation,
         english_prompt=shot.english_prompt,
         english_stale=bool(shot.english_prompt) and not usable,
         latent_continuity=latent_continuity,
