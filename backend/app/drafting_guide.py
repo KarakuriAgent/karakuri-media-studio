@@ -34,7 +34,7 @@ from .h3_examples import (
     select_examples,
 )
 from .models import DraftingGuide, DraftingGuideLimits
-from .prompts import EROS_MAX_ADDENDUM_BODY, MINIMAX_H3_GUIDE_BODY
+from .prompts import EROS_MAX_ADDENDUM_BODY, MINIMAX_H3_GUIDE_BODY, P_H3_IMAGE_SPEC
 from .studio import (
     DEFAULT_VIDEO_MODEL,
     EXCLUSION_SENTENCE,
@@ -48,7 +48,7 @@ from .workflows import (
 )
 
 #: ガイド本文の版。中身を変えたら上げる（受け取り側がキャッシュの判定に使う）。
-GUIDE_VERSION = "2026-11-26"
+GUIDE_VERSION = "2026-11-27"
 
 #: 実用上の下限（秒）。:data:`~app.studio.SHOT_DURATION_MIN` は API が受け付ける
 #: 範囲で、H3 は 4 秒を切ると芝居が入りきらない（``MINIMAX_H3_GUIDE_BODY`` の
@@ -169,6 +169,24 @@ def _video_model_section(video_model: str) -> str:
 取り直すこと。H3 の規約は同じで、10Eros Max 向けの追補が §3.3 に載る。"""
 
 
+def _model_name(video_model: str) -> str:
+    """本文に埋める動画モデルの呼び名（10Eros Max でも正しい言い回しにする）。"""
+    if video_model == EROS_MAX_VIDEO_MODEL:
+        return "10Eros Max（MiniMax H3 の派生チェックポイント）"
+    return "MiniMax H3"
+
+
+def _image_prompt_section() -> str:
+    """§7 素材の静止画のプロンプト（P-H3-Image の IMAGE PROMPT SPEC をそのまま引く）。
+
+    見出しだけ 1 段（``#`` → ``###``）下げて、このガイドの節の下に収める。
+    """
+    spec = P_H3_IMAGE_SPEC.strip()
+    if spec.startswith("# "):
+        spec = "###" + spec[1:]
+    return spec
+
+
 def build_drafting_guide(video_model: str = DEFAULT_VIDEO_MODEL) -> DraftingGuide:
     """``GET /api/v1/prompt-guide`` のレスポンスを組み立てる。
 
@@ -178,11 +196,12 @@ def build_drafting_guide(video_model: str = DEFAULT_VIDEO_MODEL) -> DraftingGuid
     duration_range = (
         f"{_seconds(SHOT_DURATION_MIN)}〜{_seconds(SHOT_DURATION_MAX)} 秒"
     )
+    model_name = _model_name(video_model)
     markdown = f"""\
 # 脚本ドラフト作成ガイド（`POST /api/v1/stories` 投入用）
 
-このスタジオは 1 カット = MiniMax H3 の 1 クリップ（{duration_range}、映像と音声を
-同時に生成）で作る。**実際に映像化できる脚本**を書くための契約を以下にまとめる。
+このスタジオは 1 カット = 動画モデル {model_name} の 1 クリップ（{duration_range}、
+映像と音声を同時に生成）で作る。**実際に映像化できる脚本**を書くための契約を以下にまとめる。
 構造は **作品 (project) → 話 (episode) → 場 (scene) → カット (shot)**。
 
 ## 1. フィールド契約（どれがモデルに届くか）
@@ -198,13 +217,18 @@ def build_drafting_guide(video_model: str = DEFAULT_VIDEO_MODEL) -> DraftingGuid
   無ければ自動で `(S1) says: <d>[Japanese] …</d>` に包まれるので、**単一話者
   専用**。複数の話者がしゃべるカットは `prompt` の中に `(S1)` / `(S2)` を自分で
   書き、`dialogue` は空にする。
-- `camera` は**短いカメラ指示 1 文**（下の公式語彙を推奨）。本文がカメラに
-  触れていなければ `The camera …` の一文として織り込まれる。
+- **2 人以上がしゃべるカットで `dialogue` を使わない**（全部 `(S1)` の台詞に
+  なる）。台詞は `prompt` の本文に `(S1)` / `(S2)` 付きの `<d>…</d>` で書く。
+- `camera` は**短いカメラ指示 1 文**（英語。下の公式語彙を推奨）。本文がカメラに
+  触れていなければ `The camera …` の一文として織り込まれる。公式語彙の名詞句
+  （`Static Shot` / `Push In at slow speed`）はそのまま書いてよく、
+  `The camera holds a static shot.` / `The camera pushes in at slow speed.` の
+  ような文に直される。動詞から書いてもよい（`pushes in slowly`）。
 - `soundscape` → `overall_soundscape:`、`bgm` → `non_diegetic_music:` になる。
   無音なら `bgm` は空でよい（必要なら自動で `N/A` が入る）。`prompt` の中で
   同じ内容を繰り返さない。
 - 字幕・ロゴの禁止文（`{EXCLUSION_SENTENCE}`）は
-  自動で付くので書かなくてよい。
+  自動で付く（空行を挟んで末尾に置かれる）ので書かなくてよい。
 - **ネガティブプロンプトは存在しない。** 「〜を写さない」は指定できないので、
   写したいものを本文で描写して表現する。
 - 日本語で書いてよい。ただし**投入されるのは英語だけ**で、アプリは英訳を
@@ -261,19 +285,22 @@ def build_drafting_guide(video_model: str = DEFAULT_VIDEO_MODEL) -> DraftingGuid
 
 ### 3.2 日本語で書いた場合の英訳手順
 
-MiniMax H3 は英語プロンプト前提のモデルで、**アプリは英訳をしない**（アプリ内で
+{model_name} は英語プロンプト前提のモデルで、**アプリは英訳をしない**（アプリ内で
 LLM を呼ぶのはプロンプト作成チャットとヘルスチェックだけ）。脚本は日本語で
 書いてよいが、生成の前に**あなたが英語版を書いて保存する**。
 
-1. `GET /api/v1/shots/{{id}}/prompt-preview` を見る。`prompt` が実際に組み立て
-   られた本文（公式フィールド・`@名前` の展開・除外文まで込み）で、
-   `needs_translation` が `true` なら**このままでは投入できない**（本文に日本語が
-   あり、使える英語キャッシュが無い）。
+1. `GET /api/v1/shots/{{id}}/prompt-preview` を見る。`prompt` が脚本から組み立て
+   られた本文（公式フィールド・`@名前` の展開・除外文まで込み。日本語のまま）で、
+   英訳の元になる。`needs_translation` が `true` なら**このままでは投入できない**
+   （本文に日本語があり、使える英語キャッシュが無い）。**実際にモデルへ送られる
+   本文は `submitted_prompt`**（使える英語があればそれ、無ければ `prompt`。投入
+   できないときは空）。
 2. その `prompt` を**英語の公式 H3 文書として書き直す**（下の鉄則）。
 3. `PATCH /api/v1/shots/{{id}}` の `english_prompt` に保存する（`base_revision` を
    忘れずに）。元になった本文は `english_source` としてサーバー側が控える。
 4. もう一度 `prompt-preview` を見て `needs_translation` が `false`、
-   `english_stale` が `false` になっていることを確かめてから
+   `english_stale` が `false` になり、`submitted_prompt` が保存した英語に
+   なっていることを確かめてから
    `POST /api/v1/shots/{{id}}/render`。
 5. 脚本を直すと本文が変わるので `english_stale` が `true` に戻る。そのときは
    1 からやり直す（`english_prompt` に空文字を PATCH すればキャッシュを消せる）。
@@ -345,6 +372,16 @@ LLM を呼ぶのはプロンプト作成チャットとヘルスチェックだ�
 - `description` は**生成時にプロンプトへ自動では混ざらない**。アプリが自動で
   足すのはトリガーワード（`trigger_word`）だけなので、テンプレートや入力の
   並べ方は**あなたが本文と入力に反映する**。
+
+## 7. 素材の静止画（P-H3-Image）のプロンプト
+
+作品の素材（キャラクター・場所・小道具の絵）を `POST /api/v1/jobs`
+（`mode: "image_only"`、`image_workflow` は `p_h3_t2i` / `p_h3_i2i` / `p_h3_r2i`）で
+焼くときの書き方。英語で書く。`megapixels` を送らなければ t2i は 8MP、編集は 4MP で
+焼かれる（ワークフローの既定。`GET /api/v1/options` の `default_megapixels`）。
+サンプリングは 8 ステップ固定（`steps` は効かない）。
+
+{_image_prompt_section()}
 """
     return DraftingGuide(
         guide_version=GUIDE_VERSION,
