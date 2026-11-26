@@ -896,8 +896,18 @@ class WorkflowSpec:
     #: テンプレートの ``ResolutionSelector`` が前提にしている画角と、フォームの
     #: グローバル既定（``DEFAULT_MEGAPIXELS``）がずれるモデル用（SPEC §3.1）。宣言があると、
     #: そのワークフローを選んだ時点でフォームの ``megapixels`` がこの値になる。
-    #: MiniMax H3 は 0.4（1.0MP のまま回すと 8GB 級の GPU で CUDA OOM になる）。
+    #: MiniMax H3 は 0.4（1.0MP のまま回すと 8GB 級の GPU で CUDA OOM になる）、
+    #: 10Eros Max は 0.8（1 パス目 0.4MP をラテントアップスケールで拡大する前提）。
+    #: ジョブが ``megapixels`` を**送らなかった**ときもこの値が使われる
+    #: （:func:`app.jobs.default_job_megapixels`）。
     default_megapixels: float = 0.0
+    #: ``steps`` を受け取らない（サンプリング回数がグラフに焼き込まれている）
+    #: ワークフローの、実際のステップ数（0 = 宣言なし）。``ManualSigmas`` 固定の
+    #: MiniMax H3 turbo（6）と P-H3-Image（8）がこれ。``steps`` を受け取る
+    #: ワークフローの既定はテンプレートから読む（:func:`template_steps`）ので
+    #: ここには書かない。表示（``GET /options`` の ``default_steps`` など）専用で、
+    #: グラフには何も注入しない。
+    fixed_steps: int = 0
     #: can this workflow be the second stage of a full (image -> video) job?
     accepts_start_image: bool = False
     #: UI label of the primary image input
@@ -1436,6 +1446,7 @@ _P_H3_PROMPT_HINT_EDIT = (
 )
 
 P_H3_T2I = WorkflowSpec(
+    fixed_steps=8,
     id="p_h3_t2i",
     label="テキスト→画像 (P-H3-Image t2i)",
     mode_label="テキスト→画像 (t2i)",
@@ -1472,6 +1483,7 @@ P_H3_T2I = WorkflowSpec(
 )
 
 P_H3_I2I = WorkflowSpec(
+    fixed_steps=8,
     id="p_h3_i2i",
     label="画像→画像 (P-H3-Image i2i)",
     mode_label="画像→画像・編集 (i2i)",
@@ -1515,6 +1527,7 @@ P_H3_I2I = WorkflowSpec(
 )
 
 P_H3_R2I = WorkflowSpec(
+    fixed_steps=8,
     id="p_h3_r2i",
     label="参照画像→画像 (P-H3-Image r2i)",
     mode_label="参照画像→画像・参照編集 (r2i)",
@@ -2526,6 +2539,7 @@ _MINIMAX_H3_I2V_QUALITY_INJECT: dict[str, Target] = {
 
 MINIMAX_H3_I2V_TURBO = replace(
     MINIMAX_H3_I2V,
+    fixed_steps=6,
     id="minimax_h3_i2v_turbo",
     label="画像→動画・音声つき (MiniMax H3 i2v Turbo)",
     mode_label="画像→動画・音声つき (i2v Turbo)",
@@ -2550,6 +2564,7 @@ MINIMAX_H3_I2V_TURBO = replace(
 #: ref2va 用（ノード 143）になるだけ。
 MINIMAX_H3_R2V_TURBO = replace(
     MINIMAX_H3_R2V,
+    fixed_steps=6,
     id="minimax_h3_r2v_turbo",
     label="参照素材→動画・音声つき (MiniMax H3 r2v Turbo)",
     mode_label="参照素材→動画・音声つき (r2v Turbo)",
@@ -2914,6 +2929,13 @@ EROS_MAX_UNET = (
 #: H3 と同じ 3D のもの（サンプルは LBH の 2D 版だが、外部のカスタムノードになる
 #: ので本体同梱の ``MiniMaxH3LatentUpscaleWithModel`` を流用する）。
 EROS_MAX_FIRST_PASS_MEGAPIXELS = 0.4
+
+#: 10Eros Max の既定の**最終**解像度（メガピクセル）。作者の推奨は「1 パス目
+#: 0.4〜0.6MP + アップスケールパス」なので、``latent_upscale`` = on（既定）で
+#: 1 パス目 0.4MP → 最終 0.8MP に拡大するのを既定にする。H3（0.4MP）のまま
+#: だと 1 パス目と同じ解像度になり、拡大されずに仕上げのパスだけが回る。
+#: 作品・カット・ジョブで明示した値はそちらが優先（SPEC §3.1）。
+EROS_MAX_MEGAPIXELS = 0.8
 EROS_MAX_UPSCALE_SIGMAS = "0.8130, 0.6180, 0.3470, 0.0000"
 _EROS_MAX_UPSCALE = replace(
     _MINIMAX_H3_UPSCALE,
@@ -2927,7 +2949,7 @@ _EROS_MAX_UPSCALE_RECONDITION = replace(_EROS_MAX_UPSCALE, conditioning="136")
 _EROS_MAX_LATENT_UPSCALE_SELECT = replace(
     _MINIMAX_H3_LATENT_UPSCALE_SELECT,
     choice_labels={
-        "on": "する（0.4MP で下描き → 指定解像度に拡大）",
+        "on": "する（0.4MP で下描き → 指定解像度〈既定 0.8MP〉に拡大）",
         "off": "しない（指定解像度で 1 パス）",
     },
     hint=(
@@ -2935,9 +2957,9 @@ _EROS_MAX_LATENT_UPSCALE_SELECT = replace(
         "`MiniMaxH3LatentUpscaleWithModel` でラテントのまま指定解像度に拡大し、"
         "3 ステップ（配布元のサンプルの linear_quadratic・denoise 0.3 相当の"
         " ManualSigmas）で仕上げる。作者いわく 2 パスのほうが背景のちらつきが"
-        "消えて仕上がりが良い。拡大させるには `megapixels` を 0.4 より大きく"
-        "（0.8〜1.0MP など）すること（0.4 以下なら拡大はせず、同じ解像度で"
-        "仕上げのパスだけを回す）。off はテンプレートそのままの 1 パス"
+        "消えて仕上がりが良い。`megapixels` の既定は 0.8MP（0.4MP → 0.8MP に"
+        "拡大）。0.4 以下を指定すると拡大はせず、同じ解像度で仕上げのパスだけを"
+        "回す。off はテンプレートそのままの 1 パス"
     ),
 )
 
@@ -2976,9 +2998,10 @@ _EROS_MAX_NOTES = (
     "（作者推奨の 0.4〜0.6MP の下限）で回し、`MiniMaxH3LatentUpscaleWithModel`"
     "（H3 と同じ 3D アップスケーラ）で**指定解像度**に拡大して"
     "`ManualSigmas`（0.8130 / 0.6180 / 0.3470 / 0.0000 = 配布元のサンプルの"
-    " linear_quadratic 3 ステップ・denoise 0.3）で仕上げる。拡大させるには"
-    "`megapixels` を 0.4 より大きくする（0.8〜1.0MP など。0.4 以下なら同じ解像度で"
-    "仕上げのパスだけを回す）。i2v / r2v は CONDITIONING を最終解像度で作り直した"
+    " linear_quadratic 3 ステップ・denoise 0.3）で仕上げる。`megapixels` の"
+    "**既定は 0.8MP**（H3 の 0.4MP ではない。未指定なら 0.4MP → 0.8MP に拡大）で、"
+    "0.8〜1.0MP を推奨。0.4 以下を指定すると同じ解像度で仕上げのパスだけを回す。"
+    "i2v / r2v は CONDITIONING を最終解像度で作り直した"
     " 2 個目の条件付けノード + `BasicGuider` で 2 パス目を回す / off はテンプレート"
     "そのままで指定解像度を 1 パス（作者いわく 1 パスでも使えるが、2 パスのほうが"
     "背景のちらつきが消える）/ **Comfy Cloud では選べない**（ウェイトが無い）"
@@ -3009,6 +3032,7 @@ def _eros_description(h3_description: str) -> str:
 
 EROS_MAX_T2V = replace(
     MINIMAX_H3_T2V_OPT,
+    default_megapixels=EROS_MAX_MEGAPIXELS,
     id="10eros_max_t2v",
     label="テキスト→動画・音声つき (10Eros Max t2v)",
     mode_label="テキスト→動画・音声つき (t2v)",
@@ -3024,6 +3048,7 @@ EROS_MAX_T2V = replace(
 
 EROS_MAX_I2V = replace(
     MINIMAX_H3_I2V_OPT,
+    default_megapixels=EROS_MAX_MEGAPIXELS,
     id="10eros_max_i2v",
     label="画像→動画・音声つき (10Eros Max i2v)",
     mode_label="画像→動画・音声つき (i2v)",
@@ -3039,6 +3064,7 @@ EROS_MAX_I2V = replace(
 
 EROS_MAX_R2V = replace(
     MINIMAX_H3_R2V_OPT,
+    default_megapixels=EROS_MAX_MEGAPIXELS,
     id="10eros_max_r2v",
     label="参照素材→動画・音声つき (10Eros Max r2v)",
     mode_label="参照素材→動画・音声つき (r2v)",
@@ -3594,6 +3620,36 @@ def load_template(spec: WorkflowSpec | str, *, use_cache: bool = True) -> Workfl
     if use_cache:
         _cache[resolved.id] = template
     return template
+
+
+def template_steps(spec: WorkflowSpec | str) -> int:
+    """``steps`` を指定しないジョブが実際に回るサンプリング回数（SPEC §3.1）。
+
+    ``steps`` は「0 = テンプレートの既定のまま」のつまみなので、その既定値は
+    テンプレートの注入先（``inject["steps"]``）に書かれている値そのもの。
+    フォームや外部 API で「既定だと何ステップか」を見せるために読む。
+    ``steps`` を受け取らない（ManualSigmas 固定の turbo など）ワークフローは
+    宣言した :attr:`WorkflowSpec.fixed_steps`。どちらも無い・テンプレートが
+    読めない・値が整数でないときは 0（= 分からない）。
+    """
+    try:
+        resolved = spec if isinstance(spec, WorkflowSpec) else get_spec(spec)
+    except WorkflowSpecError:
+        return 0
+    target = resolved.target("steps")
+    if target is None or not target.field or resolved.backend != "comfyui":
+        return resolved.fixed_steps
+    try:
+        template = load_template(resolved)
+    except (OSError, ValueError, WorkflowSpecError):
+        return 0
+    node = template.get(target.node_id)
+    if not isinstance(node, dict):
+        return 0
+    value = (node.get("inputs") or {}).get(target.field)
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return 0
+    return int(value)
 
 
 def clear_cache() -> None:

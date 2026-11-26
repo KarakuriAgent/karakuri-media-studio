@@ -22,7 +22,7 @@ import {
   elementsLimits,
   joinTriggers,
   lorasForTarget,
-  megapixelsFor,
+  stagesMegapixels,
   multiShotLimits,
   needsReferenceSheet,
   newElement,
@@ -609,21 +609,22 @@ export default function GenerateForm({
   // 1.0MP のままだと VRAM が足りず、P-H3-Image は逆に 8MP（編集は 4MP）が
   // 推奨なので 0.4MP だと破綻が増える。SPEC §3.1）。
   // 見るのは**そのモードで実際に走るステージ**の宣言で、両方走る `full` では
-  // 2 段が同じ値を共有するので**きつい側（小さいほう）**に合わせる。
+  // 2 段が同じ値を共有するので**宣言のある側のうちきつい側（小さいほう）**に
+  // 合わせる（`stagesMegapixels`）。
   // 切り替えたあとに手で変えた値はそのまま（次に切り替えるまで維持される）。
   useEffect(() => {
     if (form.mode === 'audio') return
     // 見るのは「そのステージが走る」かつ「選択中のワークフローが引けている」
     // ものだけ（options がまだ来ていない間に値を触らない）。
-    const declared: number[] = []
+    const stages: WorkflowOption[] = []
     if ((form.mode === 'full' || form.mode === 'i2v') && workflow) {
-      declared.push(megapixelsFor(workflow))
+      stages.push(workflow)
     }
     if ((form.mode === 'full' || form.mode === 'image_only') && imageWorkflow) {
-      declared.push(megapixelsFor(imageWorkflow))
+      stages.push(imageWorkflow)
     }
-    if (declared.length === 0) return
-    const next = Math.min(...declared)
+    if (stages.length === 0) return
+    const next = stagesMegapixels(stages)
     if (next !== form.megapixels) patch({ megapixels: next })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [

@@ -912,6 +912,47 @@ def test_the_guide_covers_the_field_contract_and_the_h3_rules(env):
     assert studio.EXCLUSION_SENTENCE in markdown
 
 
+def test_the_guide_carries_the_p_h3_image_prompt_spec(env):
+    """SKILL.md が指す「IMAGE PROMPT SPEC — P-H3-Image」がガイドに実在する。"""
+    enable(env)
+    markdown = call(env, "GET", "/api/v1/prompt-guide").json()["markdown"]
+    assert "## 7. 素材の静止画（P-H3-Image）のプロンプト" in markdown
+    assert "### IMAGE PROMPT SPEC — P-H3-Image" in markdown
+    assert "Edit <Picture 1>." in markdown
+
+
+def test_the_guide_names_the_video_model_it_is_written_for(env):
+    """冒頭の「1 カット = …の 1 クリップ」は動画モデルに合わせる。"""
+    enable(env)
+    h3 = call(env, "GET", "/api/v1/prompt-guide").json()["markdown"]
+    assert "1 カット = 動画モデル MiniMax H3 の 1 クリップ" in h3
+    eros = call(env, "GET", "/api/v1/prompt-guide?video_model=10eros-max").json()
+    assert "1 カット = 動画モデル 10Eros Max" in eros["markdown"]
+    assert "10Eros Max（MiniMax H3 の派生チェックポイント） は英語プロンプト前提" in (
+        eros["markdown"]
+    )
+    # 複数話者のカットで dialogue を使わない注意が目につく形で載る
+    assert "**2 人以上がしゃべるカットで `dialogue` を使わない**" in h3
+
+
+def test_the_guide_resolution_rules_agree_for_10eros(env):
+    """H3 の Hard rules（0.4）と 10Eros 追補（0.8）が食い違わない。"""
+    from app.workflows import EROS_MAX_MEGAPIXELS, MINIMAX_H3_MEGAPIXELS, get_spec
+
+    enable(env)
+    eros = call(env, "GET", "/api/v1/prompt-guide?video_model=10eros-max").json()
+    markdown = eros["markdown"]
+    assert "10Eros Max\n  is different: see its addendum (default 0.8)" in markdown
+    assert 'this replaces the H3 "around 0.4" rule' in markdown
+    assert "default for this model is **0.8**" in markdown
+    # 本文の数値とワークフローの宣言が一致している
+    assert EROS_MAX_MEGAPIXELS == 0.8 == get_spec("10eros_max_t2v").default_megapixels
+    assert MINIMAX_H3_MEGAPIXELS == 0.4 == get_spec("minimax_h3_t2v").default_megapixels
+    assert "既定は 0.8MP" in get_spec("10eros_max_i2v").notes or (
+        "**既定は 0.8MP**" in get_spec("10eros_max_i2v").notes
+    )
+
+
 def test_the_guide_lists_the_real_example_modes_and_categories(env):
     enable(env)
     markdown = call(env, "GET", "/api/v1/prompt-guide").json()["markdown"]

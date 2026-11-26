@@ -15,6 +15,7 @@ from PIL import Image
 
 from app import comfy, config, db, jobs, nsfw
 from app.main import app
+from app.models import JobCreate
 from app.workflow import resolution, resolution_for_image
 from app.workflows import DEFAULT_MEGAPIXELS, get_video_spec
 
@@ -2093,3 +2094,75 @@ def test_latent_upscale_is_left_alone_on_comfy_cloud(monkeypatch):
     params = _video_params(selects={"latent_upscale": "on"})
     jobs._pin_target_selects(params)
     assert params["selects"] == {"latent_upscale": "on", **_REFINE_OFF}
+
+
+# --------------------------------------------------------------------------
+# megapixels を送らないジョブ（ワークフローの宣言で決まる、SPEC §3.1）
+# --------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    ("body", "expected"),
+    [
+        # 動画だけのジョブはその動画ワークフローの宣言
+        ({"mode": "i2v", "video_workflow": "minimax_h3_t2v"}, 0.4),
+        ({"mode": "i2v", "video_workflow": "10eros_max_t2v"}, 0.8),
+        ({"mode": "i2v", "video_workflow": "10eros_max_r2v"}, 0.8),
+        # 静止画だけのジョブはその画像ワークフローの宣言
+        ({"mode": "image_only", "image_workflow": "p_h3_t2i"}, 8.0),
+        ({"mode": "image_only", "image_workflow": "p_h3_i2i"}, 4.0),
+        # 宣言の無いワークフローはグローバル既定
+        ({"mode": "image_only", "image_workflow": "krea2_turbo"}, 0.4),
+        # 2 段は宣言のあるステージのうち小さいほう
+        (
+            {"mode": "full", "image_workflow": "krea2_turbo",
+             "video_workflow": "10eros_max_i2v"},
+            0.8,
+        ),
+        (
+            {"mode": "full", "image_workflow": "p_h3_t2i",
+             "video_workflow": "minimax_h3_i2v"},
+            0.4,
+        ),
+    ],
+)
+def test_omitted_megapixels_follow_the_workflow_declaration(body, expected):
+    # 入力の検証（プロンプト・参照素材が要る等）はここでは見ないので省く。
+    # model_construct でも「送られた項目」（model_fields_set）は body のキーになる
+    params = jobs._params_from_create(JobCreate.model_construct(**body))
+    assert params["megapixels"] == expected
+
+
+def test_sent_megapixels_are_kept_even_when_they_equal_the_global_default():
+    params = jobs._params_from_create(
+        JobCreate.model_construct(
+            mode="i2v", video_workflow="10eros_max_t2v", megapixels=0.4
+        )
+    )
+    assert params["megapixels"] == 0.4
+
+
+def test_post_jobs_without_megapixels_records_the_eros_default(env):
+    """HTTP 経由でも「送らなかった」が伝わり、10Eros Max の 0.8MP がジョブに残る。"""
+    response = env.client.post(
+        "/api/jobs",
+        json={
+            "mode": "i2v",
+            "video_workflow": "10eros_max_t2v",
+            "video_prompt": "a cat walks in",
+            "duration": 2,
+        },
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["params"]["megapixels"] == 0.8
+    sent = env.client.post(
+        "/api/jobs",
+        json={
+            "mode": "i2v",
+            "video_workflow": "10eros_max_t2v",
+            "video_prompt": "a cat walks in",
+            "duration": 2,
+            "megapixels": 0.4,
+        },
+    )
+    assert sent.status_code == 201, sent.text
+    assert sent.json()["params"]["megapixels"] == 0.4

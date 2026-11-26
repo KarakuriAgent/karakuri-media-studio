@@ -3,6 +3,11 @@
 #
 #   inspect.sh <video_url_or_path> [interval_sec]
 #
+# <video_url_or_path> はジョブ / Take の video_url（`/outputs/<job_id>/video.mp4` の
+# ような相対 URL のままでよい）、http(s) の URL、ローカルのファイルのどれか。
+# 相対 URL の接続先は studio.sh と同じく $KARAKURI_STUDIO_URL、無ければ
+# <repo>/.env の HOST/PORT（0.0.0.0 は 127.0.0.1 に読み替え。_common.sh）。
+#
 # URL なら作業用ディレクトリへ落とし、ffprobe で尺・解像度・音声トラックの有無を
 # 出し、ffmpeg で interval_sec 秒ごと (既定 1 秒) のフレームを PNG に切り出す。
 # 出力先のパスを最後に表示するので、その PNG を Read で見て絵柄を確かめる。
@@ -22,23 +27,25 @@ INTERVAL="${2:-1}"
 command -v ffmpeg >/dev/null 2>&1 || die "ffmpeg が見つかりません"
 command -v ffprobe >/dev/null 2>&1 || die "ffprobe が見つかりません"
 
-IS_URL=no
-if [[ "$SRC" == http://* || "$SRC" == https://* ]]; then
-  IS_URL=yes
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
+# shellcheck source=_common.sh
+source "$SCRIPT_DIR/_common.sh"
+
+URL="$(karakuri_resolve_url "$SRC" "$(karakuri_base_url "$(karakuri_repo_dir "$SCRIPT_DIR")")")"
+if [[ -n "$URL" ]]; then
   command -v curl >/dev/null 2>&1 || die "curl が見つかりません"
 else
   [[ -f "$SRC" ]] || die "ファイルがありません: $SRC"
 fi
 
 # 出力先は workspace/tmp/inspect-XXXXXX（作業ファイルは workspace の中に置く）
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 WORKSPACE="${KARAKURI_WORKSPACE:-$(cd "$SCRIPT_DIR/../../../.." && pwd -P)}"
 mkdir -p "$WORKSPACE/tmp"
 OUT="$(mktemp -d "$WORKSPACE/tmp/inspect-XXXXXX")"
 
-if [[ "$IS_URL" == yes ]]; then
+if [[ -n "$URL" ]]; then
   VIDEO="$OUT/source.mp4"
-  curl -sSfL "$SRC" -o "$VIDEO" || die "ダウンロードに失敗しました: $SRC"
+  curl -sSfL "$URL" -o "$VIDEO" || die "ダウンロードに失敗しました: $URL"
 else
   VIDEO="$SRC"
 fi

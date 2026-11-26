@@ -624,6 +624,23 @@ export function megapixelsFor(
   return workflow?.default_megapixels || DEFAULT_MEGAPIXELS
 }
 
+/**
+ * 走るステージ（`full` なら画像と動画の 2 段）が共有するメガピクセル（SPEC §3.1）。
+ *
+ * **宣言のあるステージのうち小さいほう**（VRAM のきつい側）で、どれも宣言して
+ * いなければグローバル既定。宣言の無いステージ（Krea 2 など）を既定値として
+ * 数えると、10Eros Max（0.8MP）と組んだ `full` が 0.4MP に引きずられるので数えない。
+ * バックエンドの `default_job_megapixels` と同じ決め方。
+ */
+export function stagesMegapixels(
+  workflows: (WorkflowOption | null | undefined)[],
+): number {
+  const declared = workflows
+    .map((workflow) => workflow?.default_megapixels ?? 0)
+    .filter((value) => value > 0)
+  return declared.length > 0 ? Math.min(...declared) : DEFAULT_MEGAPIXELS
+}
+
 /** 音声ワークフローを切り替えたときに追随させる値（秒数を範囲内へ寄せる）。 */
 export function clampToWorkflow(
   form: FormState,

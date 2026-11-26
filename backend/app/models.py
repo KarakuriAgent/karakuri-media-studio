@@ -1638,7 +1638,18 @@ class JobCreate(BaseModel):
     reprompt: bool = False
 
     aspect_ratio: str = "4:3 (Standard)"
-    megapixels: float = DEFAULT_MEGAPIXELS
+    #: 解像度（メガピクセル）。**省くと**走るワークフローの ``default_megapixels``
+    #: で回る（:func:`app.jobs.default_job_megapixels`）。スキーマ上の既定 0.4 は
+    #: どのワークフローも宣言していないときの値
+    megapixels: float = Field(
+        default=DEFAULT_MEGAPIXELS,
+        description=(
+            "解像度（メガピクセル）。省くと走るワークフローの default_megapixels"
+            "（GET /options。MiniMax H3 0.4・10Eros Max 0.8・P-H3-Image t2i 8 / 編集 4。"
+            "full は宣言のある側の小さいほう）で回り、決まった値は params.megapixels に"
+            "残る。どれも宣言が無ければ 0.4。送った値はそのまま使う"
+        ),
+    )
 
     # 画像ワークフロー用 LoRA（target='image' で登録したもの）
     loras: list[LoraRef] = Field(default_factory=list)
@@ -1648,10 +1659,24 @@ class JobCreate(BaseModel):
     video_trigger_text: str = ""
 
     duration: float = 10.0
-    fps: int = 25
+    fps: int = Field(
+        default=25,
+        description=(
+            "フレームレート。グラフの fps が固定のモデル（MiniMax H3 / 10Eros Max は"
+            " 24fps）では使われない"
+        ),
+    )
     #: サンプリング回数（SPEC §3.1）。`steps` を宣言しているワークフローだけが
     #: 読み、`0`（既定）は「未指定」= テンプレートの既定値のまま。
-    steps: int = Field(default=0, ge=0, le=MAX_STEPS)
+    steps: int = Field(
+        default=0,
+        ge=0,
+        le=MAX_STEPS,
+        description=(
+            "サンプリング回数。0 = テンプレートの既定（GET /options の default_steps。"
+            "10Eros Max 8・MiniMax H3 20・turbo 6 固定）"
+        ),
+    )
 
     # absolute path inside assets/ or the "/assets/..." URL returned by the
     # asset upload endpoints.
@@ -3105,7 +3130,12 @@ class WorkflowOption(BaseModel):
     #: そのモデルが想定している解像度（メガピクセル、0.0 = 宣言なし）。宣言が
     #: あるワークフローを選ぶと、フォームの「メガピクセル」がこの値になる
     #: （SPEC §3.1）。無ければフォームのグローバル既定（``DEFAULT_MEGAPIXELS``）のまま。
+    #: ジョブが ``megapixels`` を送らなかったときもこの値になる。
     default_megapixels: float = 0.0
+    #: ``steps`` を送らない（0 = 未指定）ジョブが実際に回るサンプリング回数
+    #: （テンプレートの既定値。``steps`` を受け取らないワークフローは焼き込みの
+    #: 固定値）。0 = 分からない（:func:`app.workflows.template_steps`）。
+    default_steps: int = 0
 
 
 class Options(BaseModel):
@@ -4037,8 +4067,16 @@ class StudioShotPreview(BaseModel):
     workflow: str | None = None
     #: そのワークフローになる理由（日本語）
     workflow_reason: str = ""
-    #: 実際に投入される本文（公式フィールドと除外文まで込み）
+    #: 脚本から組み立てた本文（公式フィールドと除外文まで込み。**日本語のまま**）。
+    #: 英訳の元になる文で、保存した ``english_prompt`` が最新かどうか
+    #: （``english_stale``）もこの文と比べて決まる。実際にモデルへ送られる本文は
+    #: ``submitted_prompt`` を見ること
     prompt: str = ""
+    #: **実際にモデルへ投入される本文**。使える ``english_prompt`` があればそれ、
+    #: 無ければ ``prompt``（英語だけで書かれた脚本）。``needs_translation`` が
+    #: True のとき（日本語が混ざっていて投入できない）は空文字。動画 LoRA の
+    #: トリガーワード（``video_trigger_text``）は投入時に先頭へ付くので含まない
+    submitted_prompt: str = ""
     #: 参照として添付される素材（r2v のときだけ）
     references: list[StudioPromptReference] = Field(default_factory=list)
     #: 開始フレームに使われるファイル（i2v のときだけ）
@@ -4077,6 +4115,14 @@ class StudioShotPreview(BaseModel):
     video_trigger_text: str = ""
     #: 作品の動画 LoRA を落とす理由（日本語。空なら落とさない）
     video_lora_warning: str = ""
+    #: 実際に投入される解像度（メガピクセル）。Shot > 作品 > ワークフローの宣言
+    #: （:attr:`app.workflows.WorkflowSpec.default_megapixels`。10Eros Max は 0.8、
+    #: H3 は 0.4）の順で決まった値。1 回ぶんの上書きはプレビューには反映しない
+    megapixels: float = 0.0
+    #: 実際に回るサンプリング回数。作品の ``steps``（0 = 未指定）が効く
+    #: ワークフローならその値、そうでなければテンプレートの既定（10Eros Max は 8、
+    #: H3 は 20、turbo は 6 固定）。0 = 分からない
+    steps: int = 0
     #: ラテント連続性で引き継ぐ直前カットの動画（使わないときは None）
     context_video: str | None = None
     #: 同じく、引き継ぎ元の AV ラテント（ComfyUI 側のパス）

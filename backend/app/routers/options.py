@@ -20,6 +20,7 @@ from ..workflows import (
     audio_specs,
     family_label,
     image_specs,
+    template_steps,
     video_specs,
 )
 from .assets import AUDIO_EXT, IMAGE_EXT, VIDEO_EXT, list_assets
@@ -86,6 +87,7 @@ def _workflow_option(spec: WorkflowSpec, comfy_target: str = "") -> WorkflowOpti
         max_duration=spec.max_duration,
         default_duration=spec.default_duration,
         default_megapixels=spec.default_megapixels,
+        default_steps=template_steps(spec),
         selects=[
             WorkflowSelect(
                 name=name,
