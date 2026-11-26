@@ -18,6 +18,7 @@ import type {
   StudioRevisionRestore,
   StudioEvent,
   StudioShotUpdate,
+  StudioVideoModelChoice,
   TimelineExportProgress,
 } from '../../types'
 import { Banner } from '../ui'
@@ -167,6 +168,11 @@ export default function StudioView({
     available: boolean
     reason: string
   }>({ available: true, reason: '' })
+  // 動画モデルの選択肢（10Eros Max は Comfy Cloud では選べない）。取れなければ
+  // 空 = どれも選べる扱い（使えない接続先なら投入時に理由つきで断られる）。
+  const [videoModelChoices, setVideoModelChoices] = useState<
+    StudioVideoModelChoice[]
+  >([])
   useEffect(() => {
     let alive = true
     Promise.resolve()
@@ -177,9 +183,12 @@ export default function StudioView({
           available: value?.refine !== false,
           reason: value?.refine_reason ?? '',
         })
+        setVideoModelChoices(value?.video_models ?? [])
       })
       .catch(() => {
-        if (alive) setRefineCapability({ available: true, reason: '' })
+        if (!alive) return
+        setRefineCapability({ available: true, reason: '' })
+        setVideoModelChoices([])
       })
     return () => {
       alive = false
@@ -917,6 +926,9 @@ export default function StudioView({
       onBack={() => openProject(null)}
       comfyTarget={comfyTarget}
       onComfyTarget={onComfyTarget}
+      videoModel={detail.video_model ?? 'minimax-h3'}
+      onVideoModelChange={(value) => saveProject({ video_model: value })}
+      videoModelChoices={videoModelChoices}
       quality={detail.quality}
       onQualityChange={(value) => saveProject({ quality: value })}
       imageQuality={detail.image_quality}
@@ -1037,6 +1049,7 @@ export default function StudioView({
                 episodes={detail.episodes}
                 scenes={detail.scenes}
                 aspectRatios={aspectRatios}
+                projectVideoModel={detail.video_model ?? 'minimax-h3'}
                 selectedShot={selectedShot}
                 busy={busy}
                 onSelectShot={setShotId}

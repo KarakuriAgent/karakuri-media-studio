@@ -864,6 +864,29 @@ describe('shotFormFromShot / shotUpdateFromForm', () => {
   })
 })
 
+describe('動画モデルのカット単位の上書き', () => {
+  it('未設定は空文字で持ち、空欄なら null を明示して作品の設定へ戻す', () => {
+    const form = shotFormFromShot(shot('s1', { prompt: 'x' }))
+    expect(form.video_model_override).toBe('')
+    expect(shotUpdateFromForm(form).video_model_override).toBeNull()
+  })
+
+  it('選んだモデルはそのまま送る（モードの強制指定とは独立）', () => {
+    const form = shotFormFromShot(
+      shot('s1', {
+        prompt: 'x',
+        workflow_override: 'minimax_h3_r2v',
+        video_model_override: '10eros-max',
+      }),
+    )
+    expect(form.video_model_override).toBe('10eros-max')
+    expect(shotUpdateFromForm(form)).toMatchObject({
+      workflow_override: 'minimax_h3_r2v',
+      video_model_override: '10eros-max',
+    })
+  })
+})
+
 describe('splitMentions', () => {
   const assets = [asset('アキ'), asset('Aki'), asset('Akira'), asset('路地 裏')]
 
@@ -927,6 +950,27 @@ describe('assetKindFromFile / assetNameFromFile', () => {
 })
 
 describe('formatProjectSettingsSummary', () => {
+  it('10Eros Max の作品は品質の代わりにモデル名を出す', () => {
+    expect(
+      formatProjectSettingsSummary({
+        quality: 'turbo',
+        videoModel: '10eros-max',
+        aspectRatio: null,
+        megapixels: null,
+        steps: 0,
+      }),
+    ).toBe('10Eros Max · 既定 · 既定 · おまかせ')
+    expect(
+      formatProjectSettingsSummary({
+        quality: 'turbo',
+        videoModel: 'minimax-h3',
+        aspectRatio: null,
+        megapixels: null,
+        steps: 0,
+      }),
+    ).toBe('Turbo · 既定 · 既定 · おまかせ')
+  })
+
   it('接続先・短縮アスペクト・MP・おまかせを中黒でつなぐ', () => {
     expect(
       formatProjectSettingsSummary({
@@ -1143,5 +1187,16 @@ describe('補正（fast_derope / face_detail / anime_cadence）', () => {
         refine: { fast_derope: true, face_detail: false, anime_cadence: true },
       }),
     ).toBe('通常 · 既定 · 既定 · おまかせ · 滲み補正 · コマ打ち')
+  })
+})
+
+describe('workflowLabel（投入プレビューのワークフロー名）', () => {
+  it('10Eros の id は H3 のモード名にモデル名を足す', async () => {
+    const { workflowLabel } = await import('./PromptPreview')
+    expect(workflowLabel('10eros_max_r2v')).toBe('r2v（参照素材から）・10Eros Max')
+    expect(workflowLabel('10eros_max_r2v_context')).toBe(
+      'r2v + 連続カット（直前カットの続き）・10Eros Max',
+    )
+    expect(workflowLabel('minimax_h3_r2v_opt')).toBe('r2v（参照素材から）・Opt')
   })
 })

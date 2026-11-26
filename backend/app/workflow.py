@@ -34,6 +34,7 @@ from .workflows import (
     LATENT_UPSCALE_LOADER_CLASS,
     LATENT_UPSCALE_NAME,
     LATENT_UPSCALER_CLASS,
+    LOCAL_ONLY_FAMILIES,
     OPTIONAL_CLASS_TYPES,
     REF_AUDIOS_NAME,
     REF_IMAGES_NAME,
@@ -2137,9 +2138,15 @@ def supported_on_target(spec: WorkflowSpec, comfy_target: str) -> bool:
     組んである turbo（i2v / r2v）と P-H3-Image は Comfy Cloud でも出す（専用のウェイトは Cloud 側に入れておく前提）。local / runpod は自前の
     ComfyUI なので従来どおり全件出す（入っていなければ実行時に ComfyUI 側で
     エラーになる）。
+
+    ノードに関係なく、Comfy Cloud にウェイトが無いファミリー
+    （:data:`app.workflows.LOCAL_ONLY_FAMILIES`・10Eros Max）も Comfy Cloud では
+    落とす。
     """
     if comfy_target != "comfy_cloud":
         return True
+    if spec.family in LOCAL_ONLY_FAMILIES:
+        return False
     return not uses_optional_class_types(spec)
 
 
@@ -2273,8 +2280,13 @@ def build_video_workflow(
     width, height = video_resolution(resolved, params)
     first_width, first_height = width, height
     if latent_upscale_choice(resolved, params) == "on" and resolved.upscale is not None:
+        # 1 パス目は最終解像度を超えない（10Eros Max は 1 パス目が 0.4MP なので、
+        # それ以下の解像度を指定されたら同じ解像度で回して仕上げのパスだけを足す。
+        # アップスケーラは同じ大きさならラテントをそのまま返す）
         first_width, first_height = video_resolution(
-            resolved, params, resolved.upscale.first_pass_megapixels
+            resolved,
+            params,
+            min(resolved.upscale.first_pass_megapixels, params.megapixels),
         )
         splice_latent_upscale(
             wf,

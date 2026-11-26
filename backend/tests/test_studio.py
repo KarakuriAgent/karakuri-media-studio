@@ -1314,6 +1314,8 @@ def test_the_capabilities_endpoint_reports_the_target(env, monkeypatch):
     capabilities = env.client.get("/api/studio/capabilities").json()
     # ブロッキング（SPEC §7.2）は接続先と無関係なので、ここでは切り離して見る
     blocking = capabilities.pop("blocking")
+    video_models = capabilities.pop("video_models")
+    assert [model["id"] for model in video_models] == ["minimax-h3", "10eros-max"]
     assert capabilities == {
         "latent_continuity": True,
         # ローカル ComfyUI ならアップスケーラのカスタムノードも入れられる
@@ -1614,6 +1616,435 @@ def test_a_forced_workflow_still_gets_the_quality(env, monkeypatch):
     )
     assert render(env, shot["id"]).status_code == 201
     assert env.created[-1].video_workflow == "minimax_h3_r2v_opt"
+
+
+# --------------------------------------------------------------------------
+# 動画モデル（プロジェクトの video_model / Shot の video_model_override）
+# --------------------------------------------------------------------------
+#
+# 品質とは別のつまみ。モードとラテント連続性の読み替えまでは H3 の id で決め、
+# モデルが 10Eros Max なら最後に対応 id へ写す（studio._model_workflow）。
+# 10Eros は品質の版も補正も持たないので、どちらも理由つきで効かない。
+
+
+def _eros_preview(env, shot_id: str) -> dict:
+    response = env.client.get(f"/api/studio/shots/{shot_id}/prompt-preview")
+    assert response.status_code == 200, response.text
+    return response.json()
+
+
+def test_video_model_is_minimax_h3_by_default(env):
+    project = make_project(env)
+    assert project["video_model"] == "minimax-h3"
+    assert env.client.get("/api/studio/projects").json()[0]["video_model"] == (
+        "minimax-h3"
+    )
+    shot = make_shot(env, project["id"])
+    assert shot["video_model_override"] is None
+
+
+def test_video_model_is_saved_as_a_project_setting(env):
+    project = make_project(env, video_model="10eros-max")
+    assert project["video_model"] == "10eros-max"
+    updated = env.client.patch(
+        f"/api/studio/projects/{project['id']}", json={"video_model": "minimax-h3"}
+    )
+    assert updated.status_code == 200, updated.text
+    assert updated.json()["video_model"] == "minimax-h3"
+    assert detail(env, project["id"])["video_model"] == "minimax-h3"
+    # quality は別の項目なので巻き込まない
+    assert detail(env, project["id"])["quality"] == "normal"
+
+
+def test_an_unknown_video_model_is_refused(env):
+    project = make_project(env)
+    response = env.client.patch(
+        f"/api/studio/projects/{project['id']}", json={"video_model": "wan"}
+    )
+    assert response.status_code == 422
+    shot = make_shot(env, project["id"])
+    response = env.client.patch(
+        f"/api/studio/shots/{shot['id']}", json={"video_model_override": "wan"}
+    )
+    assert response.status_code == 422
+
+
+def test_the_migration_fills_existing_rows_with_minimax_h3(env):
+    """列を足す前の DB は、作品が minimax-h3・カットが NULL（作品に従う）で埋まる。"""
+    import sqlite3
+
+    project = make_project(env)
+    shot = make_shot(env, project["id"])
+    with sqlite3.connect(db.DB_PATH) as conn:
+        conn.execute("ALTER TABLE studio_projects DROP COLUMN video_model")
+        conn.execute("ALTER TABLE studio_shots DROP COLUMN video_model_override")
+    asyncio.run(db.init_db())
+    with sqlite3.connect(db.DB_PATH) as conn:
+        stored = conn.execute(
+            "SELECT video_model FROM studio_projects WHERE id = ?", (project["id"],)
+        ).fetchone()[0]
+        override = conn.execute(
+            "SELECT video_model_override FROM studio_shots WHERE id = ?",
+            (shot["id"],),
+        ).fetchone()[0]
+    assert stored == "minimax-h3"
+    assert override is None
+    assert detail(env, project["id"])["video_model"] == "minimax-h3"
+
+
+def test_a_broken_video_model_reads_as_minimax_h3(env):
+    import sqlite3
+
+    project = make_project(env, video_model="10eros-max")
+    with sqlite3.connect(db.DB_PATH) as conn:
+        conn.execute(
+            "UPDATE studio_projects SET video_model = '' WHERE id = ?",
+            (project["id"],),
+        )
+    assert detail(env, project["id"])["video_model"] == "minimax-h3"
+
+
+def test_eros_max_picks_the_t2v_workflow(env, monkeypatch):
+    _use_target(monkeypatch, "local")
+    project = make_project(env, video_model="10eros-max")
+    shot = make_shot(env, project["id"], prompt="A cat walks in.")
+    assert render(env, shot["id"]).status_code == 201
+    assert env.created[-1].video_workflow == "10eros_max_t2v"
+    preview = _eros_preview(env, shot["id"])
+    assert preview["workflow"] == "10eros_max_t2v"
+    assert preview["video_model"] == "10eros-max"
+    assert "10Eros Max" in preview["workflow_reason"]
+    assert preview["render_blocker"] == ""
+
+
+def test_eros_max_picks_the_r2v_workflow_with_reference_tags(env, monkeypatch):
+    _use_target(monkeypatch, "local")
+    project, shot = _quality_pair(env, "normal")
+    env.client.patch(
+        f"/api/studio/projects/{project['id']}", json={"video_model": "10eros-max"}
+    )
+    assert render(env, shot["id"]).status_code == 201
+    payload = env.created[-1]
+    assert payload.video_workflow == "10eros_max_r2v"
+    assert payload.reference_images
+    # r2v のフィールド名（detailed_description）はモデルに依らない
+    assert payload.video_prompt.startswith("detailed_description: <Picture 1>")
+
+
+def test_eros_max_picks_the_i2v_workflow_with_the_alignment(env, monkeypatch):
+    _use_target(monkeypatch, "local")
+    project = make_project(env, video_model="10eros-max")
+    first = make_shot(env, project["id"], prompt="A cat walks in.")
+    second = make_shot(
+        env, project["id"], prompt="The cat sits.", carry_over_end_frame=True
+    )
+    take = render(env, first["id"]).json()
+    last_frame = env.outputs / f"last_{take['id']}.png"
+    last_frame.write_bytes(b"PNG")
+    _finish_job(env, take["job_id"], last_frame)
+    env.client.post(f"/api/studio/takes/{take['id']}/select")
+
+    assert render(env, second["id"]).status_code == 201
+    payload = env.created[-1]
+    assert payload.video_workflow == "10eros_max_i2v"
+    # i2v の整合文（H3 の i2v と同じ）が 10Eros の i2v にも付く
+    assert studio._has_alignment(payload.video_prompt)
+
+
+@pytest.mark.parametrize("quality", ["opt", "turbo"])
+def test_eros_max_ignores_the_quality(env, monkeypatch, quality):
+    """10Eros は turbo / opt の版を持たないので、品質は効かず理由が出る。"""
+    _use_target(monkeypatch, "local")
+    project, shot = _quality_pair(env, quality)
+    env.client.patch(
+        f"/api/studio/projects/{project['id']}", json={"video_model": "10eros-max"}
+    )
+    assert render(env, shot["id"]).status_code == 201
+    assert env.created[-1].video_workflow == "10eros_max_r2v"
+    preview = _eros_preview(env, shot["id"])
+    assert preview["quality"] == quality
+    assert preview["quality_applied"] is False
+    assert "品質の版を持たない" in preview["workflow_reason"]
+
+
+def test_eros_max_reports_the_refine_it_does_not_have(env, monkeypatch):
+    """補正を頼んでいても 10Eros には無いので、載せずに理由を出す。"""
+    _use_target(monkeypatch, "local")
+    project = make_project(env, video_model="10eros-max", face_detail=True)
+    shot = make_shot(env, project["id"], prompt="A cat walks in.")
+    assert render(env, shot["id"]).status_code == 201
+    selects = env.created[-1].selects or {}
+    assert "face_detail" not in selects
+    preview = _eros_preview(env, shot["id"])
+    assert preview["face_detail"] is False
+    assert "補正を持たない" in preview["workflow_reason"]
+    assert "FaceDetail" in preview["workflow_reason"]
+
+
+def test_the_shot_override_beats_the_project_model(env, monkeypatch):
+    _use_target(monkeypatch, "local")
+    project = make_project(env, video_model="10eros-max", quality="opt")
+    shot = make_shot(env, project["id"], video_model_override="minimax-h3")
+    assert render(env, shot["id"]).status_code == 201
+    # H3 に戻したカットには品質がまた効く
+    assert env.created[-1].video_workflow == "minimax_h3_t2v_opt"
+
+    other = make_shot(env, project["id"])
+    patched = env.client.patch(
+        f"/api/studio/shots/{other['id']}", json={"video_model_override": "10eros-max"}
+    )
+    assert patched.status_code == 200
+    assert patched.json()["video_model_override"] == "10eros-max"
+    project_h3 = env.client.patch(
+        f"/api/studio/projects/{project['id']}", json={"video_model": "minimax-h3"}
+    )
+    assert project_h3.status_code == 200
+    assert render(env, other["id"]).status_code == 201
+    assert env.created[-1].video_workflow == "10eros_max_t2v"
+    assert "カット単位の指定" in _eros_preview(env, other["id"])["workflow_reason"]
+
+    # null を明示すると作品の設定へ戻る
+    cleared = env.client.patch(
+        f"/api/studio/shots/{other['id']}", json={"video_model_override": None}
+    )
+    assert cleared.json()["video_model_override"] is None
+    assert render(env, other["id"]).status_code == 201
+    assert env.created[-1].video_workflow == "minimax_h3_t2v_opt"
+
+
+def test_a_forced_mode_is_mapped_onto_the_chosen_model(env, monkeypatch):
+    """workflow_override は H3 のモード id のままで、モデルの対応 id に写る。"""
+    _use_target(monkeypatch, "local")
+    project = make_project(env, video_model="10eros-max")
+    make_asset(env, project["id"], "Neko", kind="image", prompt_caption="a calico cat")
+    shot = make_shot(
+        env, project["id"], prompt="@Neko walks in.", workflow_override="minimax_h3_t2v"
+    )
+    assert render(env, shot["id"]).status_code == 201
+    payload = env.created[-1]
+    assert payload.video_workflow == "10eros_max_t2v"
+    # t2v なので参照は添付せず説明文になる
+    assert not payload.reference_images
+    assert "a calico cat" in payload.video_prompt
+
+
+def test_an_eros_workflow_override_is_stored_as_mode_and_model(env, monkeypatch):
+    """10Eros の id を直に書いても、H3 の id + video_model_override で保存する。"""
+    _use_target(monkeypatch, "local")
+    project = make_project(env)
+    shot = make_shot(env, project["id"], workflow_override="10eros_max_t2v")
+    assert shot["workflow_override"] == "minimax_h3_t2v"
+    assert shot["video_model_override"] == "10eros-max"
+    assert render(env, shot["id"]).status_code == 201
+    assert env.created[-1].video_workflow == "10eros_max_t2v"
+
+    other = make_shot(env, project["id"])
+    patched = env.client.patch(
+        f"/api/studio/shots/{other['id']}", json={"workflow_override": "10eros_max_t2v"}
+    )
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["workflow_override"] == "minimax_h3_t2v"
+    assert patched.json()["video_model_override"] == "10eros-max"
+
+    # モードを H3 の id で書き換えても、モデルの上書きは残る（独立した項目）
+    again = env.client.patch(
+        f"/api/studio/shots/{other['id']}", json={"workflow_override": None}
+    )
+    assert again.json()["workflow_override"] is None
+    assert again.json()["video_model_override"] == "10eros-max"
+
+
+def test_a_contradicting_override_pair_is_refused(env):
+    project = make_project(env)
+    response = env.client.post(
+        f"/api/studio/projects/{project['id']}/shots",
+        json={
+            "prompt": "A cat walks in.",
+            "workflow_override": "10eros_max_t2v",
+            "video_model_override": "minimax-h3",
+        },
+    )
+    assert response.status_code == 400
+    assert "video_model_override" in response.json()["detail"]
+    shot = make_shot(env, project["id"])
+    response = env.client.patch(
+        f"/api/studio/shots/{shot['id']}",
+        json={
+            "workflow_override": "10eros_max_r2v",
+            "video_model_override": "minimax-h3",
+        },
+    )
+    assert response.status_code == 400
+
+
+def test_an_eros_workflow_override_left_in_the_db_still_works(env, monkeypatch):
+    """保存時に読み替えるが、DB に 10Eros の id が残っていても同じ扱いにする。"""
+    import sqlite3
+
+    _use_target(monkeypatch, "local")
+    project = make_project(env)
+    shot = make_shot(env, project["id"])
+    with sqlite3.connect(db.DB_PATH) as conn:
+        conn.execute(
+            "UPDATE studio_shots SET workflow_override = '10eros_max_t2v'"
+            " WHERE id = ?",
+            (shot["id"],),
+        )
+    assert render(env, shot["id"]).status_code == 201
+    assert env.created[-1].video_workflow == "10eros_max_t2v"
+
+
+def test_eros_max_saves_the_latent_when_continuity_is_on(env, monkeypatch):
+    _allow_latent_context(monkeypatch)
+    _use_target(monkeypatch, "local")
+    project = make_project(env, video_model="10eros-max", latent_continuity=True)
+    make_asset(env, project["id"], "Neko", kind="image", prompt_caption="a calico cat")
+    plain = make_shot(env, project["id"], prompt="A cat walks in.")
+    ref = make_shot(env, project["id"], prompt="@Neko walks in.")
+    assert render(env, plain["id"]).status_code == 201
+    assert env.created[-1].video_workflow == "10eros_max_t2v_save"
+    assert render(env, ref["id"]).status_code == 201
+    assert env.created[-1].video_workflow == "10eros_max_r2v_save"
+
+
+def test_eros_max_saving_variants_need_the_custom_nodes(env, monkeypatch):
+    """10Eros の保存版も Motion Context のノード頼みなので、無ければ断る。"""
+    _allow_latent_context(monkeypatch, available=False)
+    _use_target(monkeypatch, "local")
+    project = make_project(env, video_model="10eros-max", latent_continuity=True)
+    shot = make_shot(env, project["id"], prompt="A cat walks in.")
+    response = render(env, shot["id"])
+    assert response.status_code == 400
+    assert "ラテント連続性" in response.json()["detail"]
+
+
+def _eros_continuity_pair(env, *, first_model: str, second_model: str):
+    """前カット（first_model で生成・採用済み）と、second_model の続きのカット。"""
+    project = make_project(env, latent_continuity=True, video_model=first_model)
+    make_asset(env, project["id"], "Neko", kind="image", prompt_caption="a calico cat")
+    first = make_shot(env, project["id"], prompt="@Neko walks in.")
+    second = make_shot(
+        env,
+        project["id"],
+        prompt="@Neko sits down.",
+        carry_over_end_frame=True,
+        video_model_override=second_model,
+    )
+    take = render(env, first["id"]).json()
+    _finish_context_job(
+        env, take, latent="/comfy/output/h3_context/a_00001_.safetensors"
+    )
+    assert env.client.post(f"/api/studio/takes/{take['id']}/select").status_code == 200
+    return project, second
+
+
+def test_eros_max_continues_a_cut_made_with_eros_max(env, monkeypatch):
+    _allow_latent_context(monkeypatch)
+    _use_target(monkeypatch, "local")
+    _project, second = _eros_continuity_pair(
+        env, first_model="10eros-max", second_model="10eros-max"
+    )
+    assert env.created[-1].video_workflow == "10eros_max_r2v_save"
+    assert render(env, second["id"]).status_code == 201
+    payload = env.created[-1]
+    assert payload.video_workflow == "10eros_max_r2v_context"
+    assert payload.context_latent_path
+
+
+@pytest.mark.parametrize(
+    ("first_model", "second_model"),
+    [("minimax-h3", "10eros-max"), ("10eros-max", "minimax-h3")],
+)
+def test_continuity_across_video_models_is_refused(
+    env, monkeypatch, first_model, second_model
+):
+    """別モデルの採用 Take からはラテントを引き継げないので、断って理由を見せる。"""
+    _allow_latent_context(monkeypatch)
+    _use_target(monkeypatch, "local")
+    _project, second = _eros_continuity_pair(
+        env, first_model=first_model, second_model=second_model
+    )
+    submitted = len(env.created)
+    response = render(env, second["id"])
+    assert response.status_code == 400
+    assert "別の動画モデル" in response.json()["detail"]
+    assert len(env.created) == submitted
+
+    preview = _eros_preview(env, second["id"])
+    assert preview["error"] == ""
+    assert "別の動画モデル" in preview["render_blocker"]
+
+
+def test_eros_max_is_refused_on_comfy_cloud(env, monkeypatch):
+    _use_target(monkeypatch, "comfy_cloud")
+    project = make_project(env, video_model="10eros-max")
+    shot = make_shot(env, project["id"], prompt="A cat walks in.")
+    response = render(env, shot["id"])
+    assert response.status_code == 400
+    assert "Comfy Cloud" in response.json()["detail"]
+    assert env.created == []
+
+    preview = _eros_preview(env, shot["id"])
+    assert preview["workflow"] == "10eros_max_t2v"
+    assert preview["error"] == ""
+    assert "Comfy Cloud" in preview["render_blocker"]
+
+    # H3 に戻したカットは Comfy Cloud でもそのまま投入できる
+    h3 = make_shot(env, project["id"], video_model_override="minimax-h3")
+    assert _eros_preview(env, h3["id"])["render_blocker"] == ""
+    assert render(env, h3["id"]).status_code == 201
+
+
+def test_the_capabilities_list_the_video_models(env, monkeypatch):
+    _use_target(monkeypatch, "local")
+    models = {
+        model["id"]: model
+        for model in env.client.get("/api/studio/capabilities").json()["video_models"]
+    }
+    assert models["minimax-h3"]["available"] is True
+    assert models["10eros-max"]["available"] is True
+    assert models["10eros-max"]["label"] == "10Eros Max"
+    assert models["10eros-max"]["quality"] is False
+
+    _use_target(monkeypatch, "comfy_cloud")
+    models = {
+        model["id"]: model
+        for model in env.client.get("/api/studio/capabilities").json()["video_models"]
+    }
+    assert models["minimax-h3"]["available"] is True
+    assert models["10eros-max"]["available"] is False
+    assert "Comfy Cloud" in models["10eros-max"]["reason"]
+
+
+def test_every_model_workflow_is_a_registered_workflow():
+    """モデルの表が実在しないテンプレートを指していたら投入で落ちる。"""
+    from app.workflows import EROS_MAX_FAMILY, get_video_spec
+
+    for model, table in studio.MODEL_WORKFLOWS.items():
+        for base, variant in table.items():
+            assert get_video_spec(base).family == "minimax-h3"
+            spec = get_video_spec(variant)
+            assert spec.id == variant
+            assert spec.family == model == EROS_MAX_FAMILY
+            assert studio.workflow_mode(base) == studio.workflow_mode(variant)
+    # 連続カット系の 10Eros も、投入前にカスタムノードを確かめる対象に入る
+    assert "10eros_max_r2v_context" in studio.LATENT_CONTEXT_WORKFLOWS
+    assert "10eros_max_t2v_save" in studio.LATENT_CONTEXT_WORKFLOWS
+
+
+@pytest.mark.parametrize(
+    ("workflow", "mode"),
+    [
+        ("minimax_h3_r2v_context_opt", "r2v"),
+        ("10eros_max_r2v_context", "r2v"),
+        ("10eros_max_i2v_save", "i2v"),
+        ("minimax_h3_t2v", "t2v"),
+        ("p_h3_t2i", ""),
+        ("", ""),
+    ],
+)
+def test_the_mode_is_read_the_same_way_for_both_models(workflow, mode):
+    assert studio.workflow_mode(workflow) == mode
 
 
 # --------------------------------------------------------------------------

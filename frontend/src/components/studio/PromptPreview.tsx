@@ -33,8 +33,22 @@ const QUALITY_SUFFIX_LABEL: Record<string, string> = {
   _opt: 'Opt',
 }
 
-/** ワークフロー ID を「モード（・品質）」の日本語にする（未知の id はそのまま）。 */
+/**
+ * 動画モデルの接頭辞 -> 画面に出す名前（`app.studio.MODEL_WORKFLOWS`）。
+ * 10Eros の id は H3 の id と接頭辞だけが違う（`10eros_max_r2v_save` など）ので、
+ * H3 の id に戻してモードの名前を引き、後ろにモデル名を足す。
+ */
+const MODEL_PREFIX_LABEL: Record<string, string> = {
+  '10eros_max_': '10Eros Max',
+}
+
+/** ワークフロー ID を「モード（・品質 / ・モデル）」の日本語にする（未知の id はそのまま）。 */
 export function workflowLabel(workflow: string): string {
+  for (const [prefix, model] of Object.entries(MODEL_PREFIX_LABEL)) {
+    if (!workflow.startsWith(prefix)) continue
+    const base = `minimax_h3_${workflow.slice(prefix.length)}`
+    if (WORKFLOW_LABEL[base]) return `${WORKFLOW_LABEL[base]}・${model}`
+  }
   for (const [suffix, quality] of Object.entries(QUALITY_SUFFIX_LABEL)) {
     if (!workflow.endsWith(suffix)) continue
     const base = WORKFLOW_LABEL[workflow.slice(0, -suffix.length)]

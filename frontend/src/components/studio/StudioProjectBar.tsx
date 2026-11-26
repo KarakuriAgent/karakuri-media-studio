@@ -8,6 +8,8 @@ import type {
   LoraRef,
   StudioImageQuality,
   StudioRefineName,
+  StudioVideoModel,
+  StudioVideoModelChoice,
   StudioVideoQuality,
 } from '../../types'
 import { Modal } from '../ui'
@@ -26,10 +28,15 @@ import {
   REFINE_HINT,
   REFINE_LABEL,
   REFINE_NAMES,
+  VIDEO_MODELS,
+  VIDEO_MODEL_HINT,
+  VIDEO_MODEL_LABEL,
+  VIDEO_MODEL_QUALITY_NOTE,
   VIDEO_QUALITIES,
   VIDEO_QUALITY_HINT,
   VIDEO_QUALITY_LABEL,
   formatLoraList,
+  videoModelIgnoresQuality,
   formatProjectSettingsSummary,
 } from './studio'
 
@@ -45,6 +52,9 @@ export default function StudioProjectBar({
   onBack,
   comfyTarget = null,
   onComfyTarget,
+  videoModel = 'minimax-h3',
+  onVideoModelChange,
+  videoModelChoices = [],
   quality,
   onQualityChange,
   imageQuality,
@@ -86,6 +96,12 @@ export default function StudioProjectBar({
   onBack: () => void
   comfyTarget?: ComfyTarget | null
   onComfyTarget?: (target: ComfyTarget) => void
+  /** 動画モデル（作品既定。カット単位で上書きできる）。 */
+  videoModel?: StudioVideoModel
+  /** 省略すると動画モデルの欄を出さない。 */
+  onVideoModelChange?: (model: StudioVideoModel) => void
+  /** いまの接続先で選べるか（GET /api/studio/capabilities の `video_models`）。 */
+  videoModelChoices?: StudioVideoModelChoice[]
   quality: StudioVideoQuality
   onQualityChange: (quality: StudioVideoQuality) => void
   /** 画像生成の品質（素材の静止画にだけ効く。動画の品質とは独立）。 */
@@ -137,6 +153,7 @@ export default function StudioProjectBar({
   const summary = formatProjectSettingsSummary({
     target: onComfyTarget ? comfyTarget : undefined,
     quality,
+    videoModel: onVideoModelChange ? videoModel : undefined,
     imageQuality,
     aspectRatio,
     megapixels,
@@ -155,6 +172,9 @@ export default function StudioProjectBar({
       stacked={!isWide}
       comfyTarget={comfyTarget}
       onComfyTarget={onComfyTarget}
+      videoModel={videoModel}
+      onVideoModelChange={onVideoModelChange}
+      videoModelChoices={videoModelChoices}
       quality={quality}
       onQualityChange={onQualityChange}
       imageQuality={imageQuality}
@@ -263,6 +283,9 @@ function ProjectSettingsFields({
   stacked,
   comfyTarget,
   onComfyTarget,
+  videoModel,
+  onVideoModelChange,
+  videoModelChoices,
   quality,
   onQualityChange,
   imageQuality,
@@ -298,6 +321,9 @@ function ProjectSettingsFields({
   stacked: boolean
   comfyTarget?: ComfyTarget | null
   onComfyTarget?: (target: ComfyTarget) => void
+  videoModel: StudioVideoModel
+  onVideoModelChange?: (model: StudioVideoModel) => void
+  videoModelChoices: StudioVideoModelChoice[]
   quality: StudioVideoQuality
   onQualityChange: (quality: StudioVideoQuality) => void
   /** 画像生成の品質（素材の静止画にだけ効く。動画の品質とは独立）。 */
@@ -347,12 +373,68 @@ function ProjectSettingsFields({
       />
     ) : null
 
+  // 動画モデル。いまの接続先で使えないもの（Comfy Cloud の 10Eros Max）は選べなく
+  // するが、すでに選んである値はそのまま見せる（投入時に理由つきで断られる）。
+  const choiceOf = (model: StudioVideoModel) =>
+    videoModelChoices.find((choice) => choice.id === model)
+  const currentChoice = choiceOf(videoModel)
+  const videoModelUnavailable =
+    currentChoice !== undefined && !currentChoice.available
+  const videoModelSelect = onVideoModelChange ? (
+    <NativeSelect
+      id="studio-video-model"
+      value={videoModel}
+      disabled={busy}
+      title={[
+        'この作品のカットを焼く動画モデル（カット単位で上書きできる）。',
+        ...VIDEO_MODELS.map((value) => VIDEO_MODEL_HINT[value]),
+        ...(videoModelUnavailable && currentChoice ? [currentChoice.reason] : []),
+      ].join('\n')}
+      onChange={(event) => onVideoModelChange(event.target.value as StudioVideoModel)}
+    >
+      {VIDEO_MODELS.map((value) => {
+        const choice = choiceOf(value)
+        const unavailable = choice !== undefined && !choice.available
+        return (
+          <option
+            key={value}
+            value={value}
+            disabled={unavailable && value !== videoModel}
+          >
+            {VIDEO_MODEL_LABEL[value]}
+            {unavailable ? '（この接続先では不可）' : ''}
+          </option>
+        )
+      })}
+    </NativeSelect>
+  ) : null
+  const videoModelNote =
+    videoModelUnavailable && currentChoice ? (
+      <p
+        role="note"
+        className={
+          stacked
+            ? 'text-[11px] text-amber-300'
+            : 'max-w-56 text-[11px] leading-tight text-amber-300'
+        }
+      >
+        {currentChoice.reason}
+      </p>
+    ) : null
+  // 10Eros Max は品質の版も補正も持たない。H3 に戻したカットには効くので、
+  // 欄は触れるままにして「効かない」ことだけを添える。
+  const qualityIgnored = onVideoModelChange !== undefined && videoModelIgnoresQuality(videoModel)
+
   const qualitySelect = (
     <NativeSelect
       id="studio-quality"
       value={quality}
       disabled={busy}
-      title={VIDEO_QUALITIES.map((value) => VIDEO_QUALITY_HINT[value]).join('\n')}
+      className={qualityIgnored ? 'opacity-60' : undefined}
+      title={[
+        ...(qualityIgnored ? [`品質は${VIDEO_MODEL_QUALITY_NOTE}`] : []),
+        ...VIDEO_QUALITIES.map((value) => VIDEO_QUALITY_HINT[value]),
+      ].join('\n')}
       onChange={(event) => onQualityChange(event.target.value as StudioVideoQuality)}
     >
       {VIDEO_QUALITIES.map((value) => (
@@ -586,6 +668,18 @@ function ProjectSettingsFields({
             {refineReason}
           </p>
         )}
+        {refineAvailable && qualityIgnored && (
+          <p
+            role="note"
+            className={
+              stacked
+                ? 'text-[11px] text-muted-foreground'
+                : 'max-w-56 text-[11px] leading-tight text-muted-foreground'
+            }
+          >
+            補正は{VIDEO_MODEL_QUALITY_NOTE}
+          </p>
+        )}
       </div>
     ) : null
 
@@ -647,11 +741,25 @@ function ProjectSettingsFields({
         <fieldset className="rounded-md border border-border px-3 pb-3">
           <legend className="px-1 text-[11px] text-muted-foreground">動画</legend>
           <div className="grid grid-cols-2 gap-2">
+            {videoModelSelect && (
+              <div className="col-span-2 flex flex-col items-stretch gap-1">
+                <Label htmlFor="studio-video-model">
+                  <span className="sr-only">動画</span>モデル
+                </Label>
+                {videoModelSelect}
+                {videoModelNote}
+              </div>
+            )}
             <div className="flex flex-col items-stretch gap-1">
               <Label htmlFor="studio-quality">
                 <span className="sr-only">動画</span>品質
               </Label>
               {qualitySelect}
+              {qualityIgnored && (
+                <p role="note" className="text-[11px] text-muted-foreground">
+                  {VIDEO_MODEL_QUALITY_NOTE}
+                </p>
+              )}
             </div>
             <div className="flex flex-col items-stretch gap-1">
               <Label htmlFor="studio-aspect-ratio">
@@ -717,6 +825,15 @@ function ProjectSettingsFields({
     <>
       <fieldset className="flex shrink-0 flex-nowrap items-center gap-2 rounded-md border border-border px-2 py-1">
         <legend className="px-1 text-[11px] text-muted-foreground">動画</legend>
+        {videoModelSelect && (
+          <>
+            <Label className="shrink-0" htmlFor="studio-video-model">
+              <span className="sr-only">動画</span>モデル
+            </Label>
+            <div className="w-32">{videoModelSelect}</div>
+            {videoModelNote}
+          </>
+        )}
         <Label className="shrink-0" htmlFor="studio-quality">
           <span className="sr-only">動画</span>品質
         </Label>

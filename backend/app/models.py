@@ -3187,10 +3187,29 @@ StudioTimelineRole = Literal["auto", "insert_only", "skip"]
 #: 人が決めた 'selected' / 'rejected' だけ（:mod:`app.studio`）。
 StudioTakeStatus = Literal["rendering", "candidate", "selected", "rejected", "failed"]
 
-#: Shot が使う動画ワークフローの強制指定（None = 素材と引き継ぎから自動で決める）
+#: Shot が使う動画ワークフローの強制指定（None = 素材と引き継ぎから自動で決める）。
+#: 指定するのは**モード**（t2v / i2v / r2v）で、どのモデルで焼くかは動画モデル
+#: （:data:`StudioVideoModel`。Shot の ``video_model_override`` > 作品の
+#: ``video_model``）が決める。正規の書き方は MiniMax H3 の素の id で、10Eros Max の
+#: id（``10eros_max_*``）も受け付けるが、保存するときに「H3 の id + Shot の
+#: ``video_model_override`` = ``10eros-max``」へ読み替える
+#: （:func:`app.studio.split_workflow_override`）。
 StudioWorkflowOverride = Literal[
-    "minimax_h3_t2v", "minimax_h3_i2v", "minimax_h3_r2v"
+    "minimax_h3_t2v", "minimax_h3_i2v", "minimax_h3_r2v",
+    "10eros_max_t2v", "10eros_max_i2v", "10eros_max_r2v",
 ]
+
+#: スタジオのカットを焼く動画モデル（作品単位の ``video_model`` と、カット単位の
+#: 上書き ``video_model_override``）。モード（t2v / i2v / r2v / 連続カット）と
+#: ラテント連続性の読み替えが済んだ論理ワークフローを、選んだモデルの対応 id に
+#: 写す（:func:`app.studio._model_workflow`）:
+#:
+#: - ``minimax-h3``: MiniMax H3（既定）。品質（``quality``）と補正が効く。
+#: - ``10eros-max``: 10Eros Max（H3 の派生チェックポイント。8step turbo 焼き込み）。
+#:   turbo / opt の版も補正も持たないので、``quality`` と補正は効かない（理由は
+#:   投入プレビューの ``workflow_reason``）。Comfy Cloud にはウェイトが無いので、
+#:   接続先が Comfy Cloud のときは投入できない（プレビューの ``render_blocker``）。
+StudioVideoModel = Literal["minimax-h3", "10eros-max"]
 
 #: 動画生成の品質（プロジェクト単位の設定）。論理モード（t2v / i2v / r2v）とは
 #: 直交していて、モードが決まったあとに「モード × 品質 -> バリアント id」で
@@ -3283,6 +3302,9 @@ class StudioProject(BaseModel):
     #: 動画生成の品質（:data:`StudioVideoQuality`）。テイク生成のたびに、決まった
     #: 論理モードと掛け合わせてワークフローのバリアントへ解決される。
     quality: StudioVideoQuality = "normal"
+    #: 動画モデル（:data:`StudioVideoModel`）。カットの ``video_model_override`` が
+    #: あればそちらが勝つ。``10eros-max`` では ``quality`` は効かない。
+    video_model: StudioVideoModel = "minimax-h3"
     #: 画像生成の品質（:data:`StudioImageQuality`）。動画の ``quality`` とは独立で、
     #: 素材の静止画を P-H3-Image / Qwen-Image 2.1 で焼くときの版を決める
     #: （P-H3-Image は版違いが無いのでどの値でも同じ。Qwen-Image 2.1 は
@@ -3347,6 +3369,8 @@ class StudioProjectCreate(BaseModel):
     video_loras: list[LoraRef] = Field(default_factory=list)
     #: 動画生成の品質（:data:`StudioVideoQuality`。既定は素の 20 steps）
     quality: StudioVideoQuality = "normal"
+    #: 動画モデル（:data:`StudioVideoModel`。既定は MiniMax H3）
+    video_model: StudioVideoModel = "minimax-h3"
     #: 画像生成の品質（:data:`StudioImageQuality`。素材の静止画にだけ効く）
     image_quality: StudioImageQuality = "normal"
     #: 動画生成の画質＝メガピクセル（``None`` = ワークフローの既定のまま）
@@ -3419,6 +3443,8 @@ class StudioProjectUpdate(_StudioUpdate):
     video_loras: list[LoraRef] | None = None
     #: 動画生成の品質（:data:`StudioVideoQuality`）
     quality: StudioVideoQuality | None = None
+    #: 動画モデル（:data:`StudioVideoModel`）
+    video_model: StudioVideoModel | None = None
     #: 画像生成の品質（:data:`StudioImageQuality`。素材の静止画にだけ効く）
     image_quality: StudioImageQuality | None = None
     #: 動画生成の画質＝メガピクセル（null を送ると既定へ戻る）
@@ -3788,8 +3814,12 @@ class StudioShot(BaseModel):
     megapixels: float | None = None
     #: 乱数の種（None = 毎回ランダム）
     seed: int | None = None
-    #: ワークフローの強制指定（None = t2v / i2v / r2v を自動で決める）
+    #: ワークフローの強制指定（None = t2v / i2v / r2v を自動で決める）。
+    #: 保存されるのは MiniMax H3 の素のモード id だけ（10Eros の id は
+    #: ``video_model_override`` へ読み替えて保存する）
     workflow_override: StudioWorkflowOverride | None = None
+    #: 動画モデルのカット単位の上書き（None = 作品の ``video_model`` に従う）
+    video_model_override: StudioVideoModel | None = None
     #: 外部エージェント（または人）が書いた英語。公式フィールド込みの完成文
     english_prompt: str = ""
     #: その英語の元になった組み立て済み日本語（``preview.prompt`` と同じもの）
@@ -3822,7 +3852,11 @@ class StudioShotCreate(BaseModel):
     aspect_ratio: str | None = None
     megapixels: float | None = None
     seed: int | None = None
+    #: ワークフロー（モード）の強制指定。10Eros の id を書くと
+    #: ``video_model_override`` = ``10eros-max`` として保存される
     workflow_override: StudioWorkflowOverride | None = None
+    #: 動画モデルのカット単位の上書き（None = 作品の ``video_model`` に従う）
+    video_model_override: StudioVideoModel | None = None
     #: 場の中での並び順（省略すると入る場の末尾に足す。未分類なら未分類の末尾）
     sort_order: int | None = None
 
@@ -3855,7 +3889,12 @@ class StudioShotUpdate(_StudioUpdate):
     aspect_ratio: str | None = None
     megapixels: float | None = None
     seed: int | None = None
+    #: ワークフロー（モード）の強制指定。10Eros の id を書くと
+    #: ``video_model_override`` = ``10eros-max`` として保存される（同じ body で
+    #: ``video_model_override`` に別のモデルを書くと 400）
     workflow_override: StudioWorkflowOverride | None = None
+    #: 動画モデルのカット単位の上書き（**null を明示すると外れる** = 作品の設定へ）
+    video_model_override: StudioVideoModel | None = None
     #: 英語キャッシュ。空文字または null 明示で消す（``english_source`` は書けない）
     english_prompt: str | None = None
 
@@ -3866,6 +3905,7 @@ class StudioShotUpdate(_StudioUpdate):
         "megapixels",
         "seed",
         "workflow_override",
+        "video_model_override",
         "english_prompt",
         "planned_start_seconds",
     )
@@ -4013,9 +4053,13 @@ class StudioShotPreview(BaseModel):
     latent_continuity: bool = False
     #: プロジェクトの設定（動画生成の品質）
     quality: StudioVideoQuality = "normal"
-    #: ``quality`` が実際に効いたか（False = 素へフォールバックした。理由は
+    #: ``quality`` が実際に効いたか（False = 素へフォールバックした、または
+    #: 動画モデルが品質の版を持たない 10Eros Max だった。理由は
     #: ``workflow_reason`` の末尾に入る）
     quality_applied: bool = False
+    #: 実際に使う動画モデル（Shot の ``video_model_override`` > 作品の
+    #: ``video_model``）
+    video_model: StudioVideoModel = "minimax-h3"
     #: 実際に投入される ``selects[latent_upscale]``（プロジェクトの設定を接続先と
     #: ワークフローの宣言で解決したあとの値。宣言の無いワークフローでは False）
     latent_upscale: bool = False
@@ -4042,7 +4086,9 @@ class StudioShotPreview(BaseModel):
     #: 組み立てられなかった理由（日本語。空なら問題なし）
     error: str = ""
     #: 組み立てはできたが**投入だけができない**理由（日本語。空なら投入できる）。
-    #: いまは連続カット（ラテント連続性）で前 Shot の採用 Take がまだ無いとき。
+    #: 連続カット（ラテント連続性）で前 Shot の採用 Take がまだ無いとき、その
+    #: 採用 Take が別の動画モデルで作られているとき、動画モデルがいまの接続先で
+    #: 使えないとき（Comfy Cloud の 10Eros Max）。複数あれば `` / `` でつなぐ。
     render_blocker: str = ""
 
 
@@ -4069,6 +4115,22 @@ class BlockingCapabilities(BaseModel):
     camera_moves: list[str] = Field(default_factory=list)
 
 
+class StudioVideoModelChoice(BaseModel):
+    """:class:`StudioCapabilities` の動画モデル 1 件。"""
+
+    id: StudioVideoModel
+    #: 画面に出す名前（``MiniMax H3`` / ``10Eros Max``）
+    label: str
+    #: いまの接続先で投入できるか
+    available: bool = True
+    #: 使えないときの理由（日本語。使えるなら空）
+    reason: str = ""
+    #: 動画の品質（``quality``）が効くか（10Eros Max は版を持たないので偽）
+    quality: bool = True
+    #: 補正（``fast_derope`` / ``face_detail`` / ``anime_cadence``）を持つか
+    refine: bool = True
+
+
 class StudioCapabilities(BaseModel):
     """GET /api/studio/capabilities: いまの接続先でスタジオの追加機能が使えるか。
 
@@ -4090,6 +4152,10 @@ class StudioCapabilities(BaseModel):
     refine: bool = True
     #: ``refine`` が偽のときの理由（日本語。真なら空）
     refine_reason: str = ""
+    #: 動画モデル（作品の ``video_model`` / カットの ``video_model_override``）の
+    #: 選択肢と、いまの接続先で使えるか。接続先の種類だけで決まる
+    #: （10Eros Max は Comfy Cloud では偽）
+    video_models: list[StudioVideoModelChoice] = Field(default_factory=list)
     #: 確かめられなかった理由（日本語。空なら判定できている）
     error: str = ""
     #: 構図リファレンス動画（ブロッキング、SPEC §7.2）の可否と上限。
@@ -5029,6 +5095,8 @@ class DraftingGuide(BaseModel):
 
     #: 中身を変えたら上がる日付ベースの版（受け取り側のキャッシュ判定用）
     guide_version: str
+    #: どの動画モデル向けのガイドか（``10eros-max`` なら §3.3 に追補が載る）
+    video_model: StudioVideoModel = "minimax-h3"
     #: LLM のプロンプトへそのまま貼れる日本語 Markdown
     markdown: str
     limits: DraftingGuideLimits

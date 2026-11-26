@@ -45,6 +45,7 @@ from ..models import (
     StudioShotReorder,
     StudioShotUpdate,
     StudioTake,
+    StudioVideoModelChoice,
 )
 from .assets import ALLOWED_EXT, save_upload
 
@@ -86,12 +87,15 @@ async def get_capabilities() -> StudioCapabilities:
     # 補正（fast_derope / face_detail / anime_cadence）も接続先の種類だけで決まる
     refine = service.refine_available()
     refine_reason = "" if refine else service.REFINE_UNAVAILABLE_REASON
+    # 動画モデルの可否も接続先の種類だけで決まる（10Eros Max は Comfy Cloud で不可）
+    video_models = video_model_choices()
     try:
         return StudioCapabilities(
             latent_continuity=await comfy.latent_context_support(),
             latent_upscale=latent_upscale,
             refine=refine,
             refine_reason=refine_reason,
+            video_models=video_models,
             blocking=blocking_capabilities(),
         )
     except comfy.ComfyError as exc:
@@ -100,9 +104,25 @@ async def get_capabilities() -> StudioCapabilities:
             latent_upscale=latent_upscale,
             refine=refine,
             refine_reason=refine_reason,
+            video_models=video_models,
             error=comfy.display_error(exc),
             blocking=blocking_capabilities(),
         )
+
+
+def video_model_choices() -> list[StudioVideoModelChoice]:
+    """動画モデルの選択肢と、いまの接続先で使えるか（作品・カットのセレクタ用）。"""
+    return [
+        StudioVideoModelChoice(
+            id=model,
+            label=label,
+            available=service.video_model_available(model),
+            reason=service.video_model_unavailable_reason(model),
+            quality=model not in service.QUALITY_LESS_VIDEO_MODELS,
+            refine=model not in service.QUALITY_LESS_VIDEO_MODELS,
+        )
+        for model, label in service.VIDEO_MODEL_LABELS.items()
+    ]
 
 
 def blocking_capabilities() -> BlockingCapabilities:
@@ -551,8 +571,11 @@ async def restore_revision(
 async def create_shot(project_id: str, payload: StudioShotCreate) -> StudioShot:
     try:
         return await service.create_shot(project_id, payload)
-    except service.StudioError as exc:
+    except service.StudioNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except service.StudioError as exc:
+        # 項目の食い違い（workflow_override と video_model_override など）は 400
+        raise _bad_request(exc) from exc
 
 
 @router.post("/projects/{project_id}/shots/reorder",

@@ -99,6 +99,13 @@
 | `minimax_h3_r2v_opt` | 参照素材→動画・音声つき (MiniMax H3 r2v Optimized) | minimax_h3 ref2va w4a8（LoRA なし・20 steps） | 同 `minimax_h3_r2v` | ✕ |
 | `minimax_h3_r2v_save_opt` | 参照素材→動画・音声つき・ラテント保存 (MiniMax H3 r2v Optimized + Save Latent) | 同 `minimax_h3_r2v_opt` | 同 `minimax_h3_r2v` | ✕ |
 | `minimax_h3_r2v_context_opt` | 参照素材→動画・音声つき・連続カット (MiniMax H3 r2v Optimized + Motion Context) | 同 `minimax_h3_r2v_opt` | 同 `minimax_h3_r2v_context` | ✕ |
+| `10eros_max_t2v` | テキスト→動画・音声つき (10Eros Max t2v) | 10Eros Max hybrid w4w6int8（8step turbo 焼き込み・lcm 8 steps・VSA） | 同 `minimax_h3_t2v` | ✕ |
+| `10eros_max_t2v_save` | テキスト→動画・音声つき・ラテント保存 (10Eros Max t2v + Save Latent) | 同 `10eros_max_t2v` | 同 `minimax_h3_t2v` | ✕ |
+| `10eros_max_i2v` | 画像→動画・音声つき (10Eros Max i2v) | 同 `10eros_max_t2v`（hybrid なので i2v / r2v も同じ UNET） | 同 `minimax_h3_i2v` | ○ |
+| `10eros_max_i2v_save` | 画像→動画・音声つき・ラテント保存 (10Eros Max i2v + Save Latent) | 同 `10eros_max_t2v` | 同 `minimax_h3_i2v` | ○ |
+| `10eros_max_r2v` | 参照素材→動画・音声つき (10Eros Max r2v) | 同 `10eros_max_t2v` | 同 `minimax_h3_r2v` | ✕ |
+| `10eros_max_r2v_save` | 参照素材→動画・音声つき・ラテント保存 (10Eros Max r2v + Save Latent) | 同 `10eros_max_t2v` | 同 `minimax_h3_r2v` | ✕ |
+| `10eros_max_r2v_context` | 参照素材→動画・音声つき・連続カット (10Eros Max r2v + Motion Context) | 同 `10eros_max_t2v` | 同 `minimax_h3_r2v_context` | ✕ |
 
 - id はファイル名（拡張子なし）
 - **`_save` / `_context` は手動の生成フォームにもプロンプト用のカタログにも出ない**
@@ -118,6 +125,9 @@
   1. 論理モード（`_pick_workflow`。t2v / i2v / r2v / r2v_context）
   2. `latent_continuity` が ON なら保存付き（`_save`）への読み替え（`_latent_save_workflow`）
   3. そこまでで決まった論理ワークフロー × 品質 → バリアント（`_quality_workflow`）
+
+  動画モデル（後述）が 10Eros Max のときは、2 のあとで 10Eros の対応 id に写して
+  **3 段目（品質）は飛ばす**。
 
   3 段目の表（`app.studio.QUALITY_WORKFLOWS`）は 7 つの論理ワークフロー
   （`minimax_h3_{t2v,i2v,r2v}` / `minimax_h3_{t2v,i2v,r2v}_save` / `minimax_h3_r2v_context`）
@@ -262,6 +272,68 @@
   （`video_loras`）は全バリアントで挿せる（§3.4.2）。
   MiniMaxH3 系ノードは新しめの ComfyUI master にしか無いので、ヘルスチェックが「custom node なし」と出たら
   ComfyUI を更新する
+- **`10eros_max_*`（`workflow/video/10eros-max/`、family `10eros-max`・表示名「10Eros Max」）** は
+  MiniMax H3 の派生チェックポイント（TenStrip/10Eros-Max の `10Eros_Max_8stepTurbo_v1.0_hybrid`、
+  LokkenJP の量子化版 `…_compact_w4w6int8_14.50gb`）。アーキテクチャ・ノード・CLIP・VAE は H3 と
+  同じで、**入力の形もプロンプトの書き方も H3 と同じ**（プロンプトガイド・実例・マルチショットの扱いを
+  共有する。`app.prompts._minimax_h3_ids` / `app.h3_examples._WORKFLOW_DEFAULTS`）。違いは:
+  - fl2va と reference を 1 本で兼ねる **hybrid**。t2v / i2v（`MiniMaxH3ImageToVideo`）/ r2v
+    （`MiniMaxH3ReferenceToVideo`）が同じ UNET を読む
+  - **8step turbo を焼き込み済み**。高速化 LoRA（Pika H3 Flex など）は二重の turbo で壊れるので
+    テンプレートに持たず、`_turbo` / `_opt` の版も無い。サンプリングは作者 README と配布元の
+    サンプル（LokkenJP/TenEros_Max_optimized_learned の `H3_Turbo_2Pass_ErosMax_v1_simple_v4b`）
+    どおり `KSamplerSelect` = lcm + `BasicScheduler` = simple・**8 steps**（`steps` で変えられる。
+    推奨 6〜12）・denoise 1
+  - 高速化パッチは `ModelAttentionBackend`（comfy kitchen attention）→ `BlockSparseAttention`
+    （`selection` = `vsa`・`selection.keep_percent` 10・`start_percent` 0.2・`end_percent` 1.0・
+    `dense_blocks` `0,1`・`sink_conditioning` `exact_kv_and_rows`）→ `MiniMaxH3SigmaShift`（12 / 3）。
+    `SpectrumApplyMiniMaxH3` とキャッシュ系は参照の精度が落ちるので使わない。BasicGuider と
+    BasicScheduler はどちらも SigmaShift の出力を読む
+  - テンプレートは H3 の opt（`minimax_h3_*_opt` / `*_save_opt` / `r2v_context_opt`）を写して、UNET・
+    sampler / steps・Sol-Attn → VSA・Spectrum の削除だけを変えたもの。ノード ID・注入先・LoRA の
+    挿し口（§3.4.2）は opt と同じ
+  - `latent_upscale`（既定 on）は 1 パス目を **0.4MP**（作者推奨 0.4〜0.6MP の下限）で回し、
+    2 パス目の `ManualSigmas` は配布元のサンプルの 2 パス目（linear_quadratic・3 steps・denoise 0.3）を
+    展開した `0.8130, 0.6180, 0.3470, 0.0000`。1 パス目は最終解像度を超えない（`megapixels` が
+    0.4 以下なら同じ解像度で仕上げのパスだけを回す。アップスケーラは同じ大きさならラテントを
+    そのまま返す）。アップスケーラは H3 と同じ 3D のもの（サンプルの LBH 2D 版は外部のカスタム
+    ノードなので使わない）
+  - 補正（`fast_derope` / `face_detail` / `anime_cadence`）は持たない（描き直しが DMAD 4step LoRA を
+    重ねるので turbo と二重になる）
+  - ユーザーの動画 LoRA は H3 と同じ位置に挿せるが、既存の H3 用 LoRA は高 rank だと強すぎて劣化する
+    （notes に明記）
+  - **Comfy Cloud では選択肢に出さない**（ウェイトが無い）。ノード単位の除外
+    （`OPTIONAL_CLASS_TYPES`）とは別に、ファミリー単位の `workflows.LOCAL_ONLY_FAMILIES` を
+    `workflow.supported_on_target` が見る
+  - `_save` / `_context` も H3 と同じ手順で用意してある（`studio_only`）。ドラマスタジオでは
+    プロジェクトの **「動画モデル」**（`video_model` = `minimax-h3`（既定）/ `10eros-max`）か、
+    Shot の `video_model_override` で選ぶ（下記）
+- **ドラマスタジオの動画モデル**: プロジェクトの `video_model`（`minimax-h3` 既定 / `10eros-max`。
+  DB 列 `studio_projects.video_model`、既存行は `minimax-h3`）と、Shot 単位の上書き
+  `video_model_override`（NULL = 作品の設定に従う。DB 列 `studio_shots.video_model_override`）。
+  効き方は **Shot の上書き > 作品 > 既定**。品質（`quality`）とは別の項目で、モード（t2v / i2v / r2v /
+  r2v_context）とラテント連続性の読み替え（`_save`）までは H3 の id のまま決め、そのあと
+  `app.studio.MODEL_WORKFLOWS` で 10Eros の対応 id（`10eros_max_{t2v,i2v,r2v}` /
+  `_{t2v,i2v,r2v}_save` / `_r2v_context`）に写す。
+  - **モードとモデルは独立**: Shot の `workflow_override` は H3 の素のモード id（`minimax_h3_t2v` など）
+    が正規の書き方で、選ばれたモデルの対応 id に写る。10Eros の id（`10eros_max_t2v` など）を直に
+    書かれた場合も受け付け、保存のときに「H3 の id + `video_model_override` = `10eros-max`」へ
+    読み替える（`app.studio.split_workflow_override`）。同じ body で `video_model_override` に別の
+    モデル（null 含む）を書くと 400
+  - 10Eros は品質の版を持たないので `quality` は効かない（`prompt-preview` の
+    `quality_applied` = false、理由は `workflow_reason`）。補正も持たないので、ON にしてあっても
+    載せずに理由を `workflow_reason` に出す（ワークフローが宣言していない補正を頼まれたときの共通の扱い）
+  - 接続先が Comfy Cloud のときに 10Eros が選ばれていたら投入できない（生成は 400、
+    `prompt-preview` は `render_blocker`）。`GET /api/studio/capabilities` の `video_models` に
+    モデルごとの可否と理由が載る
+  - **ラテント連続性の連鎖でモデルが変わる**とき（直前カットの採用 Take を作ったモデルと、このカットの
+    モデルが違う）は、連続カット（`r2v_context`）を断る（生成は 400、`prompt-preview` は
+    `render_blocker`）。AV ラテントは作ったモデルの 1 パス目の解像度に紐づき（`latent_upscale` = on の
+    1 パス目は H3 が 0.2MP・10Eros が 0.4MP）、Motion Context は同じ解像度のラテントしか受けないため。
+    黙って素の r2v に落とすと「つながっていない」ことに気づけないので落とさない。引き継ぎ元のモデルは
+    採用 Take の元ジョブの `video_workflow` の family で判定する
+  - プロンプトの組み立て（r2v の `detailed_description`、i2v の整合文）はモードで決まり、モデルに
+    依らない（`app.studio.workflow_mode`）
 - 既定は `minimax_h3_i2v`（開始フレームを受け取れて `full` の 2 段目になれる、いちばん素直な構成）
 - ラストフレーム連鎖: 履歴の動画から「ラストフレームを開始フレームにして続きを生成」できる。元ジョブの動画ワークフローが開始フレームを受け取れない場合は既定ワークフローにフォールバックする
 
@@ -1065,6 +1137,7 @@ LoRA は**登録時に対象（`target`）を選ぶ**: `image` なら画像ワ�
 | `minimax_h3_t2v` / `_t2v_save` / `_i2v` / `_i2v_save`（サブグラフ展開後の ID） | `105:6`（UNETLoader） | `105:16` BasicGuider.model、`105:9` BasicScheduler.model |
 | `minimax_h3_r2v` / `_r2v_save` / `_r2v_context` | `127`（UNETLoader） | `126` BasicGuider.model、`124` BasicScheduler.model |
 | `minimax_h3_{t2v,i2v,r2v}_opt` と、その `_save_opt` / `_r2v_context_opt` | `127`（UNETLoader。固定 LoRA なし） | `151` ModelAttentionBackend.model |
+| `10eros_max_{t2v,i2v,r2v}` と、その `_save` / `_r2v_context` | `127`（UNETLoader。turbo は焼き込み済みで固定 LoRA なし） | `151` ModelAttentionBackend.model |
 | `minimax_h3_i2v_turbo` / `_i2v_save_turbo` | `150`（Pika H3 Flex fl2va LoRA） | `151` ModelAttentionBackend.model |
 | `minimax_h3_r2v_turbo` / `_r2v_save_turbo` / `_r2v_context_turbo` | `143`（Pika H3 Flex ref2va LoRA） | `151` ModelAttentionBackend.model |
 
@@ -2718,7 +2791,10 @@ UI には影響しない。設計・公開範囲の詳細・Cloudflare 越しの
   尺は `app.studio.SHOT_DURATION_MIN/MAX`、参照素材の上限は
   `app.workflows.MINIMAX_H3_REFERENCE_*`、H3 の書き方は `app.prompts.MINIMAX_H3_GUIDE_BODY`、
   実例は `app.h3_examples` から代表を選抜。フィールドがモデルにどう届くかの
-  正本は `app.studio.compose_prompt`（変えたらガイドも直す）
+  正本は `app.studio.compose_prompt`（変えたらガイドも直す）。動画モデルが 10Eros Max
+  （`?video_model=10eros-max`、または `?project_id=` / `?shot_id=` で解決した結果）のときだけ
+  §3.3 に H3 の規約への追補（`app.prompts.EROS_MAX_ADDENDUM_BODY`）が載る。生成フォームの
+  相談チャットも、`10eros_max_*` を選んでいれば H3 のガイドの後ろに同じ追補が付く
 
 ラッパーでない独自のエンドポイントは `POST /api/v1/stories`（話 1 本＝話 → 場 → Shot の
 一括投入。1 トランザクションで全部作れたか・全く作らなかったかの二択）。
@@ -2783,6 +2859,8 @@ workflow/           ComfyUI ワークフロー（API フォーマット）テン
                     minimax_h3_t2v_save / _i2v_save / _r2v_save（AV ラテント保存つき）
                     …_turbo（Pika H3 Flex LoRA・6 ステップ固定版）/ …_opt（LoRA なしの 20 ステップ最適化版）
                     ※ turbo / opt は上の 7 通り（素 3 / _save 3 / _r2v_context）すべてに揃えてある
+  video/10eros-max/ 10eros_max_t2v / _i2v / _r2v と _save 3 / _r2v_context（MiniMax H3 の派生
+                    10Eros Max。H3 の opt を写して UNET・lcm 8 steps・VSA に替えたもの）
   audio/            minimax_music_3.json / stable_audio_3_medium_base.json
 app.db              SQLite（jobs / loras / library / chat_sessions / studio_*（脚本・Take・
                     編集履歴）/ timeline_* / ui_state）

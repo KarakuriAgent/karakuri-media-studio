@@ -672,6 +672,10 @@ _WORKFLOW_DEFAULTS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("minimax_h3_t2v", ("H3-E2", "H3-E8")),
     ("minimax_h3_i2v", ("H3-E1", "H3-E4")),
     ("minimax_h3_r2v", ("H3-E3", "H3-E7")),
+    # 10Eros Max は H3 の派生チェックポイントで、プロンプトの書き方も同じ
+    ("10eros_max_t2v", ("H3-E2", "H3-E8")),
+    ("10eros_max_i2v", ("H3-E1", "H3-E4")),
+    ("10eros_max_r2v", ("H3-E3", "H3-E7")),
 )
 
 #: ワークフローが分からない経路で使う代表例（従来の `FEW_SHOT_H3` と同じ 3 本）
@@ -682,7 +686,8 @@ def default_examples_for_workflow(workflow_name: str) -> list[H3Example]:
     """ワークフロー名から既定で埋め込む例を選ぶ。
 
     ``minimax_h3_i2v_turbo`` のような版違い（``_save`` / ``_context`` /
-    ``_turbo`` / ``_opt``）は接頭辞で同じ扱いになる。対応が無い名前（H3 以外の
+    ``_turbo`` / ``_opt``）は接頭辞で同じ扱いになる。10Eros Max
+    （``10eros_max_*``）も H3 と同じ例を使う。対応が無い名前（H3 以外の
     動画ワークフローや空文字）は :data:`DEFAULT_IDS` の代表 3 本に落ちる。
     """
     name = (workflow_name or "").strip().lower()

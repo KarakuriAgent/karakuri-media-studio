@@ -311,6 +311,54 @@ def test_shots_can_be_created_updated_and_deleted(env):
     assert call(env, "DELETE", f"/api/v1/shots/{shot['id']}").status_code == 404
 
 
+def test_the_video_model_goes_through_the_external_api(env):
+    """作品の video_model とカットの video_model_override も外部 API から書ける。"""
+    enable(env)
+    project = make_project(env, video_model="10eros-max")
+    assert project["video_model"] == "10eros-max"
+    patched = call(
+        env, "PATCH", f"/api/v1/projects/{project['id']}",
+        json={"video_model": "minimax-h3"},
+    )
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["video_model"] == "minimax-h3"
+
+    created = call(
+        env,
+        "POST",
+        f"/api/v1/projects/{project['id']}/shots",
+        json={"prompt": "A cat walks in.", "workflow_override": "10eros_max_t2v"},
+    )
+    assert created.status_code == 201, created.text
+    shot = created.json()
+    # 10Eros の id は「H3 のモード id + video_model_override」に読み替えて保存する
+    assert shot["workflow_override"] == "minimax_h3_t2v"
+    assert shot["video_model_override"] == "10eros-max"
+
+    cleared = call(
+        env, "PATCH", f"/api/v1/shots/{shot['id']}",
+        json={"video_model_override": None},
+    )
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["video_model_override"] is None
+
+    refused = call(
+        env,
+        "POST",
+        f"/api/v1/projects/{project['id']}/shots",
+        json={
+            "prompt": "A cat walks in.",
+            "workflow_override": "10eros_max_t2v",
+            "video_model_override": "minimax-h3",
+        },
+    )
+    assert refused.status_code == 400
+
+    preview = call(env, "GET", f"/api/v1/shots/{shot['id']}/prompt-preview")
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["video_model"] == "minimax-h3"
+
+
 def test_shot_creation_needs_an_existing_project(env):
     enable(env)
     response = call(env, "POST", "/api/v1/projects/nope/shots", json={"prompt": "x"})
@@ -875,6 +923,82 @@ def test_the_guide_lists_the_real_example_modes_and_categories(env):
         assert f"`{category}`" in markdown, category
     for example in h3_examples.select_examples(tier="canonical"):
         assert example.id in markdown, example.id
+
+
+def test_the_guide_carries_the_10eros_addendum_only_for_10eros(env):
+    """動画モデルが 10Eros Max のときだけ §3.3 に追補が載る（H3 には載らない）。"""
+    from app.prompts import EROS_MAX_ADDENDUM_BODY
+
+    enable(env)
+    addendum = EROS_MAX_ADDENDUM_BODY.strip()
+
+    default = call(env, "GET", "/api/v1/prompt-guide").json()
+    assert default["video_model"] == "minimax-h3"
+    assert addendum not in default["markdown"]
+    # 取り直し方の案内だけは載る
+    assert "?video_model=10eros-max" in default["markdown"]
+
+    h3 = call(env, "GET", "/api/v1/prompt-guide?video_model=minimax-h3").json()
+    assert addendum not in h3["markdown"]
+
+    eros = call(env, "GET", "/api/v1/prompt-guide?video_model=10eros-max").json()
+    assert eros["video_model"] == "10eros-max"
+    assert eros["guide_version"] == drafting_guide.GUIDE_VERSION
+    markdown = eros["markdown"]
+    assert addendum in markdown
+    # H3 の規約はそのまま（追補はその後ろ）
+    assert markdown.index("## 3. H3 プロンプト規約") < markdown.index(addendum)
+    assert markdown.index(addendum) < markdown.index("## 4. 実例")
+
+    bad = call(env, "GET", "/api/v1/prompt-guide?video_model=nope")
+    assert bad.status_code == 422
+
+
+def test_the_guide_resolves_the_video_model_of_a_project_and_a_shot(env):
+    """作品の video_model とカットの video_model_override から追補の有無が決まる。"""
+    from app.prompts import EROS_MAX_ADDENDUM_BODY
+
+    enable(env)
+    addendum = EROS_MAX_ADDENDUM_BODY.strip()
+
+    def guide(query: str) -> dict:
+        response = call(env, "GET", f"/api/v1/prompt-guide?{query}")
+        assert response.status_code == 200, response.text
+        return response.json()
+
+    eros_project = make_project(env, video_model="10eros-max")
+    h3_project = make_project(env, name="別作品", code="KX")
+    assert addendum in guide(f"project_id={eros_project['id']}")["markdown"]
+    assert addendum not in guide(f"project_id={h3_project['id']}")["markdown"]
+    # 作品が優先（video_model の指定より強い）
+    assert (
+        guide(f"project_id={h3_project['id']}&video_model=10eros-max")["video_model"]
+        == "minimax-h3"
+    )
+
+    def make_shot(project: dict, **fields) -> dict:
+        response = call(
+            env, "POST", f"/api/v1/projects/{project['id']}/shots",
+            json={"prompt": "A cat walks in.", **fields},
+        )
+        assert response.status_code == 201, response.text
+        return response.json()
+
+    # 作品の設定を継ぐカット / カット単位で上書きしたカット
+    inherits = make_shot(eros_project)
+    overridden = make_shot(h3_project, video_model_override="10eros-max")
+    back_to_h3 = make_shot(eros_project, video_model_override="minimax-h3")
+    by_workflow = make_shot(h3_project, workflow_override="10eros_max_i2v")
+    for shot in (inherits, overridden, by_workflow):
+        payload = guide(f"shot_id={shot['id']}")
+        assert payload["video_model"] == "10eros-max", shot
+        assert addendum in payload["markdown"]
+    payload = guide(f"shot_id={back_to_h3['id']}")
+    assert payload["video_model"] == "minimax-h3"
+    assert addendum not in payload["markdown"]
+
+    assert call(env, "GET", "/api/v1/prompt-guide?shot_id=nope").status_code == 404
+    assert call(env, "GET", "/api/v1/prompt-guide?project_id=nope").status_code == 404
 
 
 # --------------------------------------------------------------------------

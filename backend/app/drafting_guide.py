@@ -9,6 +9,8 @@
 - 尺の範囲は :data:`app.studio.SHOT_DURATION_MIN` / :data:`~app.studio.SHOT_DURATION_MAX`
 - 参照素材の上限は :data:`app.workflows.MINIMAX_H3_REFERENCE_IMAGES` ほか
 - H3 の書き方そのものは :data:`app.prompts.MINIMAX_H3_GUIDE_BODY`
+- 10Eros Max の追補は :data:`app.prompts.EROS_MAX_ADDENDUM_BODY`（動画モデルが
+  ``10eros-max`` のときだけ載せる）
 - 実例は :mod:`app.h3_examples`（``GET /api/v1/prompt-examples`` と同じデータ）
 
 を**そのまま引いて**組み立て、ここには「stories 投入に要る分だけ」の編成と、
@@ -32,8 +34,13 @@ from .h3_examples import (
     select_examples,
 )
 from .models import DraftingGuide, DraftingGuideLimits
-from .prompts import MINIMAX_H3_GUIDE_BODY
-from .studio import EXCLUSION_SENTENCE, SHOT_DURATION_MAX, SHOT_DURATION_MIN
+from .prompts import EROS_MAX_ADDENDUM_BODY, MINIMAX_H3_GUIDE_BODY
+from .studio import (
+    DEFAULT_VIDEO_MODEL,
+    EXCLUSION_SENTENCE,
+    SHOT_DURATION_MAX,
+    SHOT_DURATION_MIN,
+)
 from .workflows import (
     MINIMAX_H3_REFERENCE_AUDIOS,
     MINIMAX_H3_REFERENCE_IMAGES,
@@ -41,7 +48,7 @@ from .workflows import (
 )
 
 #: ガイド本文の版。中身を変えたら上げる（受け取り側がキャッシュの判定に使う）。
-GUIDE_VERSION = "2026-10-16"
+GUIDE_VERSION = "2026-11-26"
 
 #: 実用上の下限（秒）。:data:`~app.studio.SHOT_DURATION_MIN` は API が受け付ける
 #: 範囲で、H3 は 4 秒を切ると芝居が入りきらない（``MINIMAX_H3_GUIDE_BODY`` の
@@ -134,8 +141,40 @@ _MENTION_EXAMPLE = """\
 情報は上のように **`prompt` の中に書き直してある**。"""
 
 
-def build_drafting_guide() -> DraftingGuide:
-    """``GET /api/v1/prompt-guide`` のレスポンスを組み立てる。"""
+#: 追補を持つ動画モデル（``video_model`` の値）
+EROS_MAX_VIDEO_MODEL = "10eros-max"
+
+
+def _video_model_section(video_model: str) -> str:
+    """§3 の末尾に置く、動画モデルごとの節。
+
+    10Eros Max なら H3 の規約への追補を載せる。H3（既定）なら追補は載せず、
+    10Eros Max の作品・カットを書くときの取り直し方だけを 1 段落で示す。
+    """
+    if video_model == EROS_MAX_VIDEO_MODEL:
+        return f"""\
+### 3.3 10Eros Max の追補（このガイドは `video_model` = `10eros-max` 向け）
+
+10Eros Max は MiniMax H3 の派生チェックポイントで、`prompt` の書式は上の H3 の
+規約のまま。違いは次の追補だけ（追補は英語のまま載せる。`prompt` にも、英訳した
+`english_prompt` にも効かせる）:
+
+{EROS_MAX_ADDENDUM_BODY.rstrip()}"""
+    return """\
+### 3.3 10Eros Max で焼く作品・カット
+
+作品の `video_model`（カット単位なら `video_model_override`）が `10eros-max` の
+カットを書くときは、このガイドを `?video_model=10eros-max`（または
+`?project_id=…` / `?shot_id=…`。そのカットを焼く動画モデルを解決して選ぶ）付きで
+取り直すこと。H3 の規約は同じで、10Eros Max 向けの追補が §3.3 に載る。"""
+
+
+def build_drafting_guide(video_model: str = DEFAULT_VIDEO_MODEL) -> DraftingGuide:
+    """``GET /api/v1/prompt-guide`` のレスポンスを組み立てる。
+
+    ``video_model`` はカットを焼く動画モデル（``minimax-h3`` / ``10eros-max``）。
+    ``10eros-max`` のときだけ §3.3 に 10Eros Max の追補が載る。
+    """
     duration_range = (
         f"{_seconds(SHOT_DURATION_MIN)}〜{_seconds(SHOT_DURATION_MAX)} 秒"
     )
@@ -260,6 +299,8 @@ LLM を呼ぶのはプロンプト作成チャットとヘルスチェックだ�
   `detailed_description` を**最小限**書く（被写体を勝手に増やさない）。
 - `[Shot N]` と `At MM:SS.mmm` はそのまま。`Camera:` / `Audio:` 行に変換しない。
 
+{_video_model_section(video_model)}
+
 ## 4. 実例
 
 ### 4.1 素材メンション入りのカット（このアプリの脚本の形）
@@ -307,6 +348,7 @@ LLM を呼ぶのはプロンプト作成チャットとヘルスチェックだ�
 """
     return DraftingGuide(
         guide_version=GUIDE_VERSION,
+        video_model=video_model,
         markdown=markdown,
         limits=DraftingGuideLimits(
             shot_duration_min_seconds=SHOT_DURATION_MIN,

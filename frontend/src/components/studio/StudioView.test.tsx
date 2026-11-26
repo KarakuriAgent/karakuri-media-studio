@@ -788,6 +788,77 @@ describe('StudioView', () => {
     expect(dialog.getByText('Comfy Cloud では使えません')).toBeTruthy()
   })
 
+  it('作品の動画モデルを選ぶと video_model を PATCH し、品質とは別に持つ', async () => {
+    await openProject()
+    mocked.updateStudioProject.mockResolvedValue({})
+    fireEvent.change(screen.getByLabelText('動画モデル'), {
+      target: { value: '10eros-max' },
+    })
+    await waitFor(() =>
+      expect(mocked.updateStudioProject).toHaveBeenCalledWith('p1', {
+        video_model: '10eros-max',
+      }),
+    )
+  })
+
+  it('10Eros Max の作品では品質と補正に「効かない」注記を出す', async () => {
+    await openProject(detail({ video_model: '10eros-max' }))
+    const quality = screen.getByLabelText('動画品質') as HTMLSelectElement
+    expect(quality.title).toContain('10Eros Max では効きません')
+    expect(screen.getByText(/補正は10Eros Max では効きません/)).toBeTruthy()
+  })
+
+  it('Comfy Cloud では 10Eros Max を選べず、選んである作品には理由を出す', async () => {
+    mocked.getStudioCapabilities.mockResolvedValue({
+      latent_continuity: false,
+      latent_upscale: true,
+      refine: false,
+      refine_reason: '',
+      video_models: [
+        {
+          id: 'minimax-h3',
+          label: 'MiniMax H3',
+          available: true,
+          reason: '',
+          quality: true,
+          refine: true,
+        },
+        {
+          id: '10eros-max',
+          label: '10Eros Max',
+          available: false,
+          reason: '動画モデル「10Eros Max」は Comfy Cloud では使えません',
+          quality: false,
+          refine: false,
+        },
+      ],
+      error: '',
+    })
+    await openProject(detail({ video_model: '10eros-max' }), {
+      comfyTarget: 'comfy_cloud',
+    })
+    expect(
+      await screen.findByText('動画モデル「10Eros Max」は Comfy Cloud では使えません'),
+    ).toBeTruthy()
+  })
+
+  it('脚本タブでカットの動画モデルを上書きできる', async () => {
+    await openProject()
+    clickTab('脚本')
+    fireEvent.click(rail().getByRole('button', { name: 'カット1' }))
+    fireEvent.change(await screen.findByLabelText('動画モデル', { selector: '#studio-shot-video-model' }), {
+      target: { value: '10eros-max' },
+    })
+    mocked.updateStudioShot.mockResolvedValue({})
+    fireEvent.click(screen.getByRole('button', { name: '保存' }))
+    await waitFor(() =>
+      expect(mocked.updateStudioShot).toHaveBeenCalledWith(
+        'カット1',
+        expect.objectContaining({ video_model_override: '10eros-max' }),
+      ),
+    )
+  })
+
   it('作品設定のラテントアップスケールを切ると PATCH で保存される', async () => {
     await openProject()
     mocked.updateStudioProject.mockResolvedValue({})

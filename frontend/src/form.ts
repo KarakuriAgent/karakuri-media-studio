@@ -68,6 +68,7 @@ export const FAMILY_LABELS: Record<string, string> = {
   'z-image': 'Z-Image',
   'qwen-image': 'Qwen-Image 2.1',
   'minimax-h3': 'MiniMax H3',
+  '10eros-max': '10Eros Max',
 }
 
 /** Families an image LoRA can be registered for (mirrors image_families()). */

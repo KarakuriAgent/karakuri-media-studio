@@ -792,6 +792,9 @@ def _target_preference_lines(comfy_target: str) -> list[str]:
             " `anime_cadence`）もカスタムノードが要るので**この接続先では使えない**"
             "（選べるのは `off` だけで、`on` を書くとジョブが断られる）。"
             "頼まれたときは、local / RunPod の ComfyUI でしか効かないことを伝えること。",
+            # 10Eros Max はウェイトが Comfy Cloud に無い（LOCAL_ONLY_FAMILIES）
+            "10Eros Max（`10eros_max_*`）も Comfy Cloud にはウェイトが無いので"
+            "**この接続先では使えない**（上のカタログにも載せていない）。",
         ]
         return lines
     if comfy_target == "local":
@@ -823,6 +826,16 @@ def _target_preference_lines(comfy_target: str) -> list[str]:
         "Qwen-Image 2.1 には `_opt` が無く、`turbo` のときだけ `_turbo` 版になる）。"
         "P-H3-Image は ComfyUI 本体のノードだけで動くので、Comfy Cloud でも選べる。",
         # 補正（SPEC §3.1）。既定 off で、描き直しのぶん時間が延びるので勝手に入れない
+        # 10Eros Max（MiniMax H3 の派生チェックポイント）は勝手に選ばない
+        "10Eros Max（`10eros_max_t2v` / `10eros_max_i2v` / `10eros_max_r2v`）は"
+        "MiniMax H3 の派生チェックポイント（8step turbo 焼き込み・lcm 8 ステップ）で、"
+        "入力の形もプロンプトの書き方も MiniMax H3 と同じ。**ユーザーが名指し"
+        "したときだけ**使い、それ以外は上の MiniMax H3 の既定に従うこと。",
+        # スタジオのカットは workflow_override ではなく動画モデルの設定で切り替える
+        "スタジオのカットを 10Eros Max で焼くときは、プロジェクトの `video_model`"
+        "（カット単位なら Shot の `video_model_override`）を `10eros-max` にする"
+        "（`workflow_override` はモードの指定で、H3 の id のまま対応する 10Eros の id"
+        "に写される）。10Eros Max では作品の `quality` と補正は効かない。",
         "MiniMax H3 動画の補正（`selects` の `fast_derope`＝速い動きの滲み・溶けの"
         "描き直し / `face_detail`＝引きの画の小さい顔の描き直し / `anime_cadence`＝"
         "2 コマ / 3 コマ打ち）は既定 `off`。生成時間が延び、ComfyUI 側に専用の"
@@ -1113,7 +1126,10 @@ can hold several cuts inside a single clip. This is the only video contract
 for this job. Write **one English document** in the official rewrite fields —
 never a `Camera:` / `Audio:` footer.
 
-Base modes (`minimax_h3_t2v*`, `minimax_h3_i2v*`): this order.
+Base modes (`minimax_h3_t2v*`, `minimax_h3_i2v*`): this order. 10Eros Max
+(`10eros_max_t2v*` / `10eros_max_i2v*`) is a MiniMax H3 derivative and takes
+exactly the same document; read `minimax_h3_t2v` / `_i2v` below as the matching
+`10eros_max_*` mode.
 
 1. Optional **alignment first line** (then a blank line). T2VA has none.
    - I2VA (start frame only):
@@ -1162,7 +1178,8 @@ This workflow runs **Ref2VA** (`minimax_h3_r2v`, including `_context` / `_save`
 3 `reference_videos` and 3 `reference_audios` are references for identity,
 look, motion and sound. At least one is required. This is the only video
 contract for this job. Motion Context (`minimax_h3_r2v_context`) uses the
-same writing rules.
+same writing rules. 10Eros Max (`10eros_max_r2v*`, a MiniMax H3 derivative)
+takes exactly the same document.
 
 Six English sections, this order:
 
@@ -1262,6 +1279,65 @@ Sparse piano at a slow tempo.
     + MINIMAX_H3_GUIDE_BODY
 )
 
+# 10Eros Max の追補。出典（どれも配布元・作者のもの）:
+#
+# * TenStrip の README（10Eros Max の配布ページ）: Sulphur 由来で入力画像と
+#   ポーズへの適応が強い / 複数画像の参照と開始・終了フレームの入力が主な用途 /
+#   一般知識は H3 より狭いことがある / 混ぜ込んだデータは「正しいプロンプト」で
+#   引き出す / turbo 焼き込みの音声は非 turbo に劣る / 声質は参照音声で取れる /
+#   H3 用の高 rank LoRA は強すぎて画が劣化する（rank を落とした LoRA 集がある）。
+# * 配布元のプロンプト補助（"System prompt - Simple" = H3 / FastH3 / TenEros /
+#   ErosMax 向け）: 最初のフレームを固めてから動きを時系列で書く / 体の動き・
+#   接触・姿勢と表情の変化・カメラを具体的に / 尺に動きの量を合わせる /
+#   強調された動きは因果で展開し言い換えで繰り返さない / 依頼のトーンに合わせ、
+#   日常的な依頼に性的な語を足さない。
+#
+# 書式（公式 rewrite のフィールド・alignment 行・参照タグ）は H3 と共通なので
+# ここには書かない（H3 のガイドの後ろに足すだけ）。「露骨な依頼を和らげるな」
+# 系の指示は採らない（扱いは ROLE と出力規約の側に任せる）。サンプリングの話は
+# ワークフローの notes にある。中身を変えたら
+# :data:`app.drafting_guide.GUIDE_VERSION` を上げること。
+EROS_MAX_ADDENDUM_BODY = """\
+10Eros Max is a MiniMax H3 derivative with the same text encoder, so the H3
+guide above applies unchanged: the same fields, alignment line, `<Picture k>` /
+`<Subject k>` / `<Audio k>` tags, shot syntax and speech syntax. Only these
+differences matter:
+
+- It adapts strongly to input images and poses and is built mainly for
+  multi-image references and first/last-frame inputs. With a start frame or
+  references, anchor briefly on what makes the subject and framing
+  distinctive (identity, wardrobe details, composition), state that they stay
+  unchanged, and spend the words on what moves.
+- Lock the opening state first (i2v: exactly what `<Picture 1>` shows; t2v: a
+  concrete opening composition), then write the motion in playback order: how
+  it begins, how body, contact, posture and expression change while it
+  continues, and the resulting state or reaction. Name concrete movements,
+  gestures, contact and camera behaviour; do not stack static appearance
+  details.
+- When the user stresses one movement, develop it through cause and effect
+  instead of restating it in other words or adding unrelated events.
+- Fit the amount of action to the `duration`: a short clip gets one coherent
+  progression, not a list of actions.
+- Its general knowledge can be narrower than base H3: describe uncommon
+  subjects, props and styles by what they look like rather than relying on a
+  name.
+- Match the tone and intensity of the request. Do not add sexual or
+  suggestive wording to an everyday or non-sexual request.
+- Audio comes from a baked-in turbo and is weaker than non-turbo H3: keep the
+  sound plan to a few clearly caused sounds and short lines rather than dense
+  layered audio. For a consistent voice in reference mode, a reference audio
+  used for timbre only (`<Audio N>: reference`) is the intended route.
+- `video_loras`: high-rank MiniMax H3 LoRAs are too strong on this model and
+  degrade the picture. Use them at reduced strength, or prefer LoRAs
+  down-ranked for it (TenStrip/MMH3_Sulphur3Eros_Loras-MLP-energy-patches).
+"""
+
+EROS_MAX_ADDENDUM = (
+    "# VIDEO PROMPT SPEC ADDENDUM — 10Eros Max (`10eros_max_*` only)\n\n"
+    + EROS_MAX_ADDENDUM_BODY
+)
+
+
 #: 1 本のクリップの中でカットを割れるワークフロー（CONTEXT の一文を切り替える）。
 #: 汎用の VIDEO PROMPT SPEC は「1 クリップ 1 ショット」を前提にしているが、
 #: MiniMax H3 は公式の `[Shot N]` タイムラインを書けば複数ショットを 1 本に収められる。
@@ -1271,14 +1347,32 @@ Sparse piano at a slow tempo.
 #: ``t2v`` / ``i2v`` / ``r2v`` の論理モードごとの、素・ラテント保存（``_save``）・
 #: 連続カット（``_context``）× 品質（``_turbo`` / ``_opt``）の全 id。どれも入力の形も
 #: プロンプトの書き方も素の版と同じなので、ガイドの登録は素の版と共有する。
+#:
+#: 10Eros Max（MiniMax H3 の派生チェックポイント）もアーキテクチャ・ノード・
+#: プロンプトの書き方が H3 と同じなので、同じガイドを共有する。版違いは
+#: ラテント保存（``_save``）と連続カット（``_context``）だけで、turbo / opt は無い。
 def _minimax_h3_ids(mode: str) -> tuple[str, ...]:
     bases = [f"minimax_h3_{mode}", f"minimax_h3_{mode}_save"]
     if mode == "r2v":
         bases.append("minimax_h3_r2v_context")
-    return tuple(
+    h3 = tuple(
         f"{base}{suffix}" for base in bases for suffix in ("", "_turbo", "_opt")
     )
+    return h3 + _eros_max_ids(mode)
 
+
+def _eros_max_ids(mode: str) -> tuple[str, ...]:
+    """10Eros Max の ``mode`` の全 id（素・ラテント保存・連続カット）。"""
+    ids = [f"10eros_max_{mode}", f"10eros_max_{mode}_save"]
+    if mode == "r2v":
+        ids.append("10eros_max_r2v_context")
+    return tuple(ids)
+
+
+#: 10Eros Max の全 id（H3 のガイドの後ろに :data:`EROS_MAX_ADDENDUM` が付く）
+EROS_MAX_WORKFLOWS: frozenset[str] = frozenset(
+    workflow_id for mode in ("t2v", "i2v", "r2v") for workflow_id in _eros_max_ids(mode)
+)
 
 MULTI_CUT_WORKFLOWS: frozenset[str] = frozenset(
     workflow_id
@@ -1293,6 +1387,7 @@ MOTION_CONTEXT_WORKFLOWS: frozenset[str] = frozenset(
         "minimax_h3_r2v_context",
         "minimax_h3_r2v_context_turbo",
         "minimax_h3_r2v_context_opt",
+        "10eros_max_r2v_context",
     }
 )
 
@@ -1312,9 +1407,23 @@ VIDEO_SPECS: dict[str, str] = {
 }
 
 
+def _video_guide_parts(workflow_id: str) -> tuple[str, ...]:
+    """ガイドの部品（H3 のガイド、10Eros ならその後ろに追補）。無ければ空。"""
+    guide = VIDEO_SPECS.get(workflow_id, "")
+    if not guide:
+        return ()
+    if workflow_id in EROS_MAX_WORKFLOWS:
+        return (guide, EROS_MAX_ADDENDUM)
+    return (guide,)
+
+
 def video_guide_for(workflow_id: str) -> str:
-    """選んだ動画ワークフロー専用のガイド（無ければ空文字）。"""
-    return VIDEO_SPECS.get(workflow_id, "")
+    """選んだ動画ワークフロー専用のガイド（無ければ空文字）。
+
+    10Eros Max（``10eros_max_*``）は H3 と同じガイドの後ろに
+    :data:`EROS_MAX_ADDENDUM` を付けたもの。
+    """
+    return "\n\n".join(part.strip() for part in _video_guide_parts(workflow_id))
 
 
 def video_prompt_guides_section() -> str:
@@ -1325,9 +1434,10 @@ def video_prompt_guides_section() -> str:
     """
     guides: list[str] = []
     for entry in video_catalog():
-        guide = video_guide_for(entry.id)
-        if guide and guide not in guides:
-            guides.append(guide)
+        # 部品ごとに重複を落とす（10Eros の追補は H3 のガイドの写しを伴わない）
+        for part in _video_guide_parts(entry.id):
+            if part not in guides:
+                guides.append(part)
     if not guides:
         return ""
     header = (

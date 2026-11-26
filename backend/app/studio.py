@@ -84,9 +84,12 @@ from .paths import rebase_stored_path
 from .workflow import WorkflowError, supported_on_target
 from .workflows import (
     ANIME_CADENCE_NAME,
+    EROS_MAX_FAMILY,
     FACE_DETAIL_NAME,
+    FAMILY_LABELS,
     FAST_DEROPE_NAME,
     LATENT_UPSCALE_NAME,
+    LOCAL_ONLY_FAMILIES,
     REFINE_SELECT_NAMES,
     WorkflowSpecError,
     canonical_workflow_id,
@@ -96,7 +99,9 @@ from .workflows import (
 
 log = logging.getLogger(__name__)
 
-#: Shot が使う動画ワークフロー（すべて MiniMax H3。音声も同じパスで出る）
+#: Shot が使う動画ワークフロー（MiniMax H3 の素のモード。音声も同じパスで出る）。
+#: モードを決める段（:func:`_pick_workflow`）はいつもこの H3 の id で考え、
+#: 動画モデルが 10Eros Max のときだけ最後に対応 id へ写す（:func:`_model_workflow`）。
 WORKFLOW_T2V = "minimax_h3_t2v"
 WORKFLOW_I2V = "minimax_h3_i2v"
 WORKFLOW_R2V = "minimax_h3_r2v"
@@ -134,6 +139,225 @@ def _latent_save_workflow(workflow: str, latent_continuity: bool) -> str:
     if not latent_continuity:
         return workflow
     return LATENT_SAVE_WORKFLOWS.get(workflow, workflow)
+
+
+# --------------------------------------------------------------------------
+# 動画モデル（プロジェクトの ``video_model`` / Shot の ``video_model_override``）
+# --------------------------------------------------------------------------
+#
+# 品質（``quality``）とは**別のつまみ**で、「どのチェックポイントで焼くか」を
+# 決める。効き方は **Shot の ``video_model_override`` > プロジェクトの
+# ``video_model`` > 既定（MiniMax H3）**。モデルの id はワークフローの family
+# （``workflow/video/<family>``）と同じ文字列にしてある。
+#
+# モード（t2v / i2v / r2v / 連続カット）とラテント連続性の読み替えまでは
+# MiniMax H3 の id のまま決め（:func:`_pick_workflow` / :func:`_latent_save_workflow`）、
+# そのあと動画モデルが 10Eros Max なら、決まった論理ワークフローを 10Eros の
+# 対応 id に写す（:data:`MODEL_WORKFLOWS`）。10Eros は 8step turbo を焼き込んだ
+# 1 系統だけで turbo / opt の版も補正も持たないので、品質は掛けない
+# （理由は ``workflow_reason`` に出す）。
+#
+# Shot の ``workflow_override`` は従来どおり H3 の素のモード id を正規の書き方に
+# する（モデルとモードを独立に持つ）。10Eros の id を直に書かれた場合は、保存の
+# ときに「H3 の id + ``video_model_override`` = 10eros-max」へ読み替える
+# （:func:`split_workflow_override`）。
+
+#: 既定の動画モデル（列が無い / 値が壊れている既存プロジェクトもこれとして扱う）
+DEFAULT_VIDEO_MODEL = "minimax-h3"
+
+#: 動画モデル -> 画面に出す名前（ワークフローの family の表示名と同じ）
+VIDEO_MODEL_LABELS: dict[str, str] = {
+    DEFAULT_VIDEO_MODEL: FAMILY_LABELS[DEFAULT_VIDEO_MODEL],
+    EROS_MAX_FAMILY: FAMILY_LABELS[EROS_MAX_FAMILY],
+}
+
+#: 動画モデル -> （H3 の論理ワークフロー -> そのモデルの対応 id）。H3 自身は
+#: 写さない（表に無い = そのまま）。10Eros は素・ラテント保存版・連続カット版の
+#: 7 通りがそろっている（テンプレートは H3 の opt を写したもの）。
+MODEL_WORKFLOWS: dict[str, dict[str, str]] = {
+    EROS_MAX_FAMILY: {
+        WORKFLOW_T2V: "10eros_max_t2v",
+        WORKFLOW_I2V: "10eros_max_i2v",
+        WORKFLOW_R2V: "10eros_max_r2v",
+        "minimax_h3_t2v_save": "10eros_max_t2v_save",
+        "minimax_h3_i2v_save": "10eros_max_i2v_save",
+        "minimax_h3_r2v_save": "10eros_max_r2v_save",
+        WORKFLOW_R2V_CONTEXT: "10eros_max_r2v_context",
+    },
+}
+
+#: 品質（turbo / opt）の版を持たない動画モデル。``quality`` は無視して素の版で投げる
+QUALITY_LESS_VIDEO_MODELS: frozenset[str] = frozenset({EROS_MAX_FAMILY})
+
+#: ワークフロー id のモデル部分（:func:`workflow_mode` が外す接頭辞）
+_MODEL_PREFIXES: tuple[str, ...] = ("minimax_h3_", "10eros_max_")
+
+#: Shot の ``workflow_override`` に書ける 10Eros の id -> H3 の素のモード id
+_OVERRIDE_TO_H3: dict[str, str] = {
+    MODEL_WORKFLOWS[EROS_MAX_FAMILY][mode]: mode
+    for mode in (WORKFLOW_T2V, WORKFLOW_I2V, WORKFLOW_R2V)
+}
+
+
+def normalize_video_model(value: Any) -> str:
+    """DB や API から来た値を ``minimax-h3`` / ``10eros-max`` に均す（知らない値は既定）。"""
+    text = str(value or "").strip().lower()
+    return text if text in VIDEO_MODEL_LABELS else DEFAULT_VIDEO_MODEL
+
+
+def _normalize_video_model_override(value: Any) -> str | None:
+    """Shot の上書き。空や知らない値は ``None``（＝作品の設定に従う）に倒す。"""
+    text = str(value or "").strip().lower()
+    return text if text in VIDEO_MODEL_LABELS else None
+
+
+def workflow_mode(workflow: str | None) -> str:
+    """ワークフロー id のモード部分（``t2v`` / ``i2v`` / ``r2v``。知らない id は空）。
+
+    品質やラテント連続性のバリアント（``minimax_h3_r2v_context_opt`` や
+    ``10eros_max_i2v_save``）でも、モデルに依らず同じモードとして扱うための判定。
+    """
+    text = workflow or ""
+    for prefix in _MODEL_PREFIXES:
+        if text.startswith(prefix):
+            return text[len(prefix):].split("_", 1)[0]
+    return ""
+
+
+def split_workflow_override(value: str | None) -> tuple[str | None, str | None]:
+    """``workflow_override`` を ``(H3 の素のモード id, それが含意する動画モデル)`` に分ける。
+
+    10Eros の id（``10eros_max_t2v`` など）なら ``(minimax_h3_t2v, "10eros-max")``、
+    H3 の id や ``None`` ならモデルは ``None``（＝含意しない）。
+    """
+    if value in _OVERRIDE_TO_H3:
+        return _OVERRIDE_TO_H3[value], EROS_MAX_FAMILY
+    return value, None
+
+
+def _normalize_shot_model_fields(
+    changes: dict[str, Any], *, model_given: bool
+) -> None:
+    """Shot の ``workflow_override`` に 10Eros の id が来たら、H3 の id と
+    ``video_model_override`` に読み替える（``changes`` をその場で書き換える）。
+
+    ``model_given`` は同じ body が ``video_model_override`` を（null も含めて）
+    明示しているか。明示した値が含意するモデルと食い違えば :class:`StudioError`
+    （どちらに従うべきか決められないため）。
+    """
+    if "workflow_override" not in changes:
+        return
+    override, implied = split_workflow_override(changes["workflow_override"])
+    changes["workflow_override"] = override
+    if implied is None:
+        return
+    if model_given and changes.get("video_model_override") != implied:
+        raise StudioError(
+            f"workflow_override（{MODEL_WORKFLOWS[implied][override]}）は動画モデル"
+            f" {implied} を指していますが、video_model_override が"
+            f" {changes.get('video_model_override')} です。どちらかに揃えてください"
+        )
+    changes["video_model_override"] = implied
+
+
+def shot_video_model(
+    shot: StudioShot, project: StudioProject | None
+) -> tuple[str, str]:
+    """``(このカットを焼く動画モデル, どこで決まったか)``。
+
+    決まり方は **Shot の ``video_model_override`` > 作品の ``video_model`` > 既定**。
+    ``workflow_override`` に 10Eros の id が残っていれば（保存時に読み替えるので
+    ふつうは無い）それを最優先にする。
+    """
+    _mode, implied = split_workflow_override(shot.workflow_override)
+    if implied is not None:
+        return implied, "カットの workflow_override"
+    override = _normalize_video_model_override(shot.video_model_override)
+    if override is not None:
+        return override, "カット単位の指定"
+    if project is not None:
+        return normalize_video_model(project.video_model), "作品の設定"
+    return DEFAULT_VIDEO_MODEL, "既定"
+
+
+def _model_workflow(workflow: str, model: str) -> str:
+    """H3 の論理ワークフロー ``workflow`` を動画モデル ``model`` の対応 id に写す。
+
+    H3（と表に無い id）はそのまま返す。
+    """
+    return MODEL_WORKFLOWS.get(model, {}).get(workflow, workflow)
+
+
+def workflow_family(workflow: str | None) -> str:
+    """ワークフロー id のファミリー（＝動画モデル）。引けなければ空文字。"""
+    if not workflow:
+        return ""
+    try:
+        return get_video_spec(workflow).family
+    except (WorkflowSpecError, WorkflowError, OSError):
+        return ""
+
+
+def video_model_available(model: str) -> bool:
+    """いまの接続先でその動画モデルを投入できるか。
+
+    Comfy Cloud にはウェイトが無いファミリー
+    （:data:`app.workflows.LOCAL_ONLY_FAMILIES`・10Eros Max）は Comfy Cloud では偽。
+    判定は :func:`app.workflow.supported_on_target` と同じ線引き。
+    """
+    if model not in LOCAL_ONLY_FAMILIES:
+        return True
+    return load_settings().comfy_target != "comfy_cloud"
+
+
+def video_model_unavailable_reason(model: str) -> str:
+    """:func:`video_model_available` が偽のときに見せる理由（使えるなら空）。"""
+    if video_model_available(model):
+        return ""
+    label = VIDEO_MODEL_LABELS.get(model, model)
+    return (
+        f"動画モデル「{label}」は Comfy Cloud では使えません（ウェイトが Comfy Cloud に"
+        "無いため）。接続先を local / RunPod の ComfyUI にするか、作品またはカットの"
+        f"動画モデルを {VIDEO_MODEL_LABELS[DEFAULT_VIDEO_MODEL]} に戻してください"
+    )
+
+
+def _model_reason(model: str, source: str, quality: str) -> str:
+    """動画モデルについて ``workflow_reason`` に足す一文（H3 の既定なら空）。"""
+    if model == DEFAULT_VIDEO_MODEL and source in ("作品の設定", "既定"):
+        return ""
+    label = VIDEO_MODEL_LABELS.get(model, model)
+    text = f"動画モデル「{label}」で投入します（{source}）"
+    quality = normalize_quality(quality)
+    if model in QUALITY_LESS_VIDEO_MODELS and quality != DEFAULT_QUALITY:
+        text += (
+            f" / {label} は 8step turbo を焼き込んだ 1 系統だけで品質の版を"
+            f"持たないので、品質「{QUALITY_LABELS[quality]}」は効きません"
+            "（素の版で投入します）"
+        )
+    return text
+
+
+def _context_model_mismatch(previous_workflow: str | None, model: str) -> str:
+    """連続カットの引き継ぎ元が別の動画モデルで作られていれば、断る理由。
+
+    AV ラテントは作ったモデルの 1 パス目の解像度・ラテントの中身に紐づく
+    （``latent_upscale`` = on の 1 パス目は H3 が 0.2MP・10Eros が 0.4MP で、
+    Motion Context は生成するクリップと同じ解像度のラテントしか受けない）ので、
+    モデルをまたいで引き継ぐと壊れる。黙って素の r2v に落とすと「つながって
+    いない」ことに気づけないので、断って選び直してもらう。引き継ぎ元のモデルが
+    引けない（ジョブが消えた）ときは断らない。
+    """
+    family = workflow_family(previous_workflow)
+    if not family or family == model:
+        return ""
+    before = VIDEO_MODEL_LABELS.get(family, family)
+    after = VIDEO_MODEL_LABELS.get(model, model)
+    return (
+        f"直前カットの採用 Take は別の動画モデル（{before}）で作られているので、"
+        f"{after} の連続カットとしてラテントを引き継げません。このカットの"
+        f"動画モデルを {before} に揃えるか、carry_over_end_frame をオフにしてください"
+    )
 
 
 # --------------------------------------------------------------------------
@@ -209,13 +433,13 @@ QUALITY_VARIANT_WORKFLOWS: frozenset[str] = frozenset(
 
 #: ラテント連続性が ON のときにスタジオが投げうる、カスタムノード頼みの
 #: ワークフロー（投入前に接続先の対応を確かめる: :func:`_require_latent_context`）。
-#: 論理ワークフローだけでなく、その turbo / opt のバリアントも同じ
-#: `MiniMaxH3MotionContext*` を使うので同じ扱いにする。
+#: 論理ワークフローだけでなく、その turbo / opt のバリアントと 10Eros の対応 id
+#: も同じ `MiniMaxH3MotionContext*` を使うので同じ扱いにする。
 LATENT_CONTEXT_WORKFLOWS: frozenset[str] = frozenset(
     LATENT_CONTEXT_BASE_WORKFLOWS
     | {
         variant
-        for table in QUALITY_WORKFLOWS.values()
+        for table in (*QUALITY_WORKFLOWS.values(), *MODEL_WORKFLOWS.values())
         for base, variant in table.items()
         if base in LATENT_CONTEXT_BASE_WORKFLOWS
     }
@@ -520,9 +744,14 @@ def _resolve_selects(
                 "対応しないので、アップスケールなしで投入します"
             )
     dropped: list[str] = []
+    missing: list[str] = []
     for name in REFINE_SELECT_NAMES:
         allowed = _select_choices(workflow, name)
         if not allowed:
+            # ワークフローが補正を持たない（10Eros Max など）。ON を頼まれて
+            # いたら、黙って落とさず理由を出す（選択式は載せない）。
+            if (refine or {}).get(name):
+                missing.append(REFINE_LABELS.get(name, name))
             continue
         wanted = "on" if (refine or {}).get(name) else "off"
         if wanted in allowed:
@@ -535,6 +764,14 @@ def _resolve_selects(
         reasons.append(
             "いまの接続先はカスタムノードを入れられないので、"
             + "・".join(dropped)
+            + "なしで投入します"
+        )
+    if missing:
+        family = workflow_family(workflow)
+        owner = FAMILY_LABELS.get(family, workflow) if family else workflow
+        reasons.append(
+            f"{owner} のワークフローは補正を持たないので、"
+            + "・".join(missing)
             + "なしで投入します"
         )
     return selects, " / ".join(reasons)
@@ -653,7 +890,7 @@ REVISION_LIMIT = 1000
 PROMPT_FIELDS = frozenset({
     "prompt", "dialogue", "soundscape", "bgm", "camera", "duration_seconds",
     "aspect_ratio", "megapixels", "seed", "workflow_override",
-    "english_prompt",
+    "video_model_override", "english_prompt",
 })
 
 #: 素材のうち、書き換えるとプロンプト（または参照そのもの）が変わる項目。
@@ -731,6 +968,7 @@ def _row_to_project(row: aiosqlite.Row) -> StudioProject:
         data[name] = bool(data.get(name, 0))
     data["video_loras"] = _load_video_loras(data.get("video_loras"))
     data["quality"] = normalize_quality(data.get("quality"))
+    data["video_model"] = normalize_video_model(data.get("video_model"))
     data["image_quality"] = normalize_quality(data.get("image_quality"))
     data["megapixels"] = normalize_megapixels(data.get("megapixels"))
     data["aspect_ratio"] = normalize_aspect_ratio(data.get("aspect_ratio"))
@@ -849,6 +1087,9 @@ def _row_to_shot(row: aiosqlite.Row) -> StudioShot:
     data["prompt_updated_at"] = data.get("prompt_updated_at") or data["updated_at"]
     data["english_prompt"] = data.get("english_prompt") or ""
     data["english_source"] = data.get("english_source") or ""
+    data["video_model_override"] = _normalize_video_model_override(
+        data.get("video_model_override")
+    )
     return StudioShot(**data)
 
 
@@ -886,6 +1127,7 @@ async def list_projects() -> list[StudioProjectSummary]:
             data[name] = bool(data.get(name, 0))
         data["video_loras"] = _load_video_loras(data.get("video_loras"))
         data["quality"] = normalize_quality(data.get("quality"))
+        data["video_model"] = normalize_video_model(data.get("video_model"))
         data["image_quality"] = normalize_quality(data.get("image_quality"))
         data["megapixels"] = normalize_megapixels(data.get("megapixels"))
         data["aspect_ratio"] = normalize_aspect_ratio(data.get("aspect_ratio"))
@@ -941,9 +1183,9 @@ async def _insert_project(
             "  latent_continuity, quality, megapixels, aspect_ratio, steps,"
             "  nsfw, latent_upscale, image_quality, image_megapixels,"
             "  image_aspect_ratio, image_steps, video_loras, created_at,"
-            "  updated_at, fast_derope, face_detail, anime_cadence)"
+            "  updated_at, fast_derope, face_detail, anime_cadence, video_model)"
             " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,"
-            "  ?, ?, ?)",
+            "  ?, ?, ?, ?)",
             (
                 project_id,
                 (payload.name or "").strip(),
@@ -967,6 +1209,7 @@ async def _insert_project(
                 1 if payload.fast_derope else 0,
                 1 if payload.face_detail else 0,
                 1 if payload.anime_cadence else 0,
+                normalize_video_model(payload.video_model),
             ),
         )
     except aiosqlite.IntegrityError as exc:
@@ -1025,6 +1268,8 @@ async def update_project(
             changes[name] = 1 if changes[name] else 0
     if "quality" in changes:
         changes["quality"] = normalize_quality(changes["quality"])
+    if "video_model" in changes:
+        changes["video_model"] = normalize_video_model(changes["video_model"])
     if "image_quality" in changes:
         changes["image_quality"] = normalize_quality(changes["image_quality"])
     if "megapixels" in changes:
@@ -3026,7 +3271,9 @@ _SHOT_TEXT_FIELDS = (
 
 
 #: Shot のうち、生成設定の欄（NULL 可。JobCreate へは値があるものだけ渡す）
-_SHOT_SETTING_FIELDS = ("aspect_ratio", "megapixels", "seed", "workflow_override")
+_SHOT_SETTING_FIELDS = (
+    "aspect_ratio", "megapixels", "seed", "workflow_override", "video_model_override",
+)
 
 
 async def _insert_shot(
@@ -3042,13 +3289,13 @@ async def _insert_shot(
     入れ子の位置で所属が決まるため）。
     """
     if await _fetch_project(conn, project_id) is None:
-        raise StudioError("project not found")
+        raise StudioNotFound("project not found")
     if scene_id is None:
         scene_id = getattr(payload, "scene_id", None)
     if scene_id is not None:
         scene = await _fetch_scene(conn, scene_id)
         if scene is None or scene.project_id != project_id:
-            raise StudioError("scene not found")
+            raise StudioNotFound("scene not found")
     sort_order = payload.sort_order
     if sort_order is None:
         # 並び順は場の中のものなので、入る場（未分類なら未分類グループ）の末尾。
@@ -3063,6 +3310,11 @@ async def _insert_shot(
     planned = getattr(payload, "planned_start_seconds", None)
     if planned is not None and float(planned) < 0:
         raise StudioError("計画開始秒は 0 以上で指定してください")
+    settings = {name: getattr(payload, name, None) for name in _SHOT_SETTING_FIELDS}
+    # 10Eros の id で書かれた workflow_override は「H3 の id + 動画モデル」に分ける
+    _normalize_shot_model_fields(
+        settings, model_given=settings["video_model_override"] is not None
+    )
     values = (
         shot_id,
         project_id,
@@ -3073,7 +3325,7 @@ async def _insert_shot(
         None if planned is None else float(planned),
         getattr(payload, "timeline_role", None) or "auto",
         1 if payload.carry_over_end_frame else 0,
-        *(getattr(payload, name, None) for name in _SHOT_SETTING_FIELDS),
+        *(settings[name] for name in _SHOT_SETTING_FIELDS),
         now,
         now,
         now,
@@ -3132,6 +3384,10 @@ async def update_shot(
     if "english_prompt" in changes and not changes.get("english_prompt"):
         changes["english_prompt"] = ""
         changes["english_source"] = ""
+    # 10Eros の id で書かれた workflow_override は「H3 の id + 動画モデル」に分ける
+    _normalize_shot_model_fields(
+        changes, model_given="video_model_override" in changes
+    )
     async with get_db() as conn:
         shot = await _fetch_shot(conn, shot_id)
         if shot is None:
@@ -3566,7 +3822,7 @@ def compose_prompt(
     if not _has_h3_description(text):
         field = (
             "detailed_description"
-            if workflow.startswith("minimax_h3_r2v")
+            if workflow_mode(workflow) == "r2v"
             else "integrated_multimodal_description"
         )
         text = f"{field}: {text}"
@@ -3604,7 +3860,7 @@ def compose_prompt(
             parts.append("non_diegetic_music: N/A")
     assembled = "\n\n".join(parts)
 
-    if workflow.startswith("minimax_h3_i2v") and not _has_alignment(assembled):
+    if workflow_mode(workflow) == "i2v" and not _has_alignment(assembled):
         assembled = f"{_I2VA_ALIGNMENT}\n\n{assembled}"
 
     assembled_lowered = assembled.lower()
@@ -3722,16 +3978,24 @@ async def _plan_render(
     **同じものを見る**ための唯一の経路。組み立てられなければ
     :class:`StudioError`（生成は 400、プレビューは理由として見せる）。
 
-    ``project`` は引き継ぎのやり方（``latent_continuity``）と品質（``quality``）を
-    見るために渡す。ワークフロー id は 3 段で決まる:
+    ``project`` は引き継ぎのやり方（``latent_continuity``）・品質（``quality``）・
+    動画モデル（``video_model``）を見るために渡す。ワークフロー id は 4 段で決まる:
 
     1. 論理モード（:func:`_pick_workflow`。t2v / i2v / r2v / r2v_context）
     2. ラテント連続性が ON なら保存付きバリアントへの読み替え
        （:func:`_latent_save_workflow`。連鎖の起点になる通常カットも AV ラテントを
        残せるようにするため）
-    3. そこまでで決まった論理ワークフロー × 品質 -> バリアント
+    3. 動画モデル（:func:`shot_video_model`。Shot の上書き > 作品の設定）が
+       10Eros Max なら、その対応 id へ写す（:func:`_model_workflow`）。10Eros は
+       品質の版を持たないので、ここで決まり（4 は飛ばす）
+    4. MiniMax H3 なら、そこまでで決まった論理ワークフロー × 品質 -> バリアント
        （:func:`_quality_workflow`。接続先が対応しなければ 2 の結果のまま投げ、
        その理由を ``reason`` に足す）
+
+    動画モデルがいまの接続先で使えない（Comfy Cloud の 10Eros Max）ときと、
+    連続カットの引き継ぎ元が別の動画モデルで作られているときは投入できない
+    （:func:`_context_model_mismatch`）。どちらも生成では :class:`StudioError`、
+    ``require_context`` を落としたプレビューでは ``render_blocker`` になる。
 
     ワークフローが決まったら、その宣言と接続先に合わせて選択式
     （``latent_upscale``）を解決する（:func:`_resolve_selects`）。
@@ -3756,12 +4020,41 @@ async def _plan_render(
     )
     latent_continuity = project is not None and project.latent_continuity
     quality = normalize_quality(project.quality if project is not None else None)
+    model, model_source = shot_video_model(shot, project)
     # 品質のバリアントは同じ論理ワークフローの別テンプレートなので、先に
     # ラテント連続性の読み替えを済ませてから、その id で品質を引く。
     logical = _latent_save_workflow(mode.workflow, latent_continuity)
-    workflow, quality_reason = _quality_workflow(logical, quality)
-    quality_applied = workflow != logical
-    reason = f"{mode.reason} / {quality_reason}" if quality_reason else mode.reason
+    reasons = [mode.reason]
+    model_reason = _model_reason(model, model_source, quality)
+    if model_reason:
+        reasons.append(model_reason)
+    if model in QUALITY_LESS_VIDEO_MODELS:
+        # 10Eros は品質の版を持たない（理由は _model_reason が書いた）
+        workflow = _model_workflow(logical, model)
+        quality_applied = False
+    else:
+        workflow, quality_reason = _quality_workflow(
+            _model_workflow(logical, model), quality
+        )
+        quality_applied = workflow != _model_workflow(logical, model)
+        if quality_reason:
+            reasons.append(quality_reason)
+    reason = " / ".join(reasons)
+
+    # 投入できない理由（生成なら断る。プレビューなら render_blocker で見せる）
+    blockers = [mode.blocker] if mode.blocker else []
+    unavailable = video_model_unavailable_reason(model)
+    if unavailable:
+        blockers.append(unavailable)
+    if mode.workflow == WORKFLOW_R2V_CONTEXT and mode.context_latent is not None:
+        previous = await _previous_selected_take(conn, shot)
+        mismatch = _context_model_mismatch(
+            previous.video_workflow if previous is not None else None, model
+        )
+        if mismatch:
+            blockers.append(mismatch)
+    if blockers and require_context:
+        raise StudioError(" / ".join(blockers))
     if latent_upscale is None:
         latent_upscale = (
             project.latent_upscale if project is not None else DEFAULT_LATENT_UPSCALE
@@ -3791,7 +4084,7 @@ async def _plan_render(
         mode.context_latent_hires,
         quality_applied,
         selects,
-        mode.blocker,
+        " / ".join(blockers),
     )
 
 
@@ -3840,6 +4133,7 @@ async def preview_shot(shot_id: str) -> StudioShotPreview | None:
         assets = await _fetch_assets(conn, shot.project_id)
         latent_continuity = project is not None and project.latent_continuity
         quality = normalize_quality(project.quality if project is not None else None)
+        video_model, _source = shot_video_model(shot, project)
         try:
             plan = await _plan_render(
                 conn, shot, assets, project, require_context=False
@@ -3850,6 +4144,7 @@ async def preview_shot(shot_id: str) -> StudioShotPreview | None:
                 workflow=shot.workflow_override,
                 latent_continuity=latent_continuity,
                 quality=quality,
+                video_model=video_model,
                 latent_upscale=(
                     project.latent_upscale
                     if project is not None
@@ -3880,6 +4175,7 @@ async def preview_shot(shot_id: str) -> StudioShotPreview | None:
         latent_continuity=latent_continuity,
         quality=quality,
         quality_applied=plan.quality_applied,
+        video_model=video_model,
         latent_upscale=plan.selects.get(LATENT_UPSCALE_NAME) == "on",
         **{name: plan.selects.get(name) == "on" for name in REFINE_SELECT_NAMES},
         video_loras=video_loras,
@@ -4402,7 +4698,9 @@ async def _pick_workflow(
     返すのは**論理モードのまま**の id で、ラテント連続性が ON のときの保存付き
     バリアントへの読み替えは呼び出し側（:func:`_plan_render`）がやる。
     """
-    override = shot.workflow_override
+    # 10Eros の id が残っていても（保存時に読み替えるのでふつうは無い）、
+    # モードは H3 の id で考える（モデルへの写しは :func:`_plan_render`）。
+    override, _model = split_workflow_override(shot.workflow_override)
     if override == WORKFLOW_T2V:
         return _Mode(WORKFLOW_T2V, None, False, "t2v を強制指定しています")
     if override == WORKFLOW_I2V:
