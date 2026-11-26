@@ -170,6 +170,13 @@ cwd として書いてある。
 
 - `quality`（動画）と `image_quality`（静止画）は**独立**。動画を turbo で回して
   いても、素材の静止画は `image_quality` に従う。逆も同じ。
+- `video_model`（`minimax-h3` 既定 / `10eros-max`）は**焼くモデル**で、`quality` とは別。
+  カット単位は Shot の `video_model_override`（null = 作品に従う）。モード固定の
+  `workflow_override` は H3 の id（`minimax_h3_t2v` など）のまま書けば、選んだモデルの版に
+  写る（`10eros_max_*` を書いても `video_model_override` に読み替えて保存される）。
+  10Eros Max は `quality` と補正が効かず、**Comfy Cloud では投入できない**。連続カット
+  （ラテント連続性）は直前カットの採用 Take と同じモデルでないと断られる。どれも
+  `prompt-preview` の `workflow_reason` / `render_blocker` / `video_model` で確かめる。
 - MiniMax H3 の `turbo`（Pika H3 Flex LoRA・lcm・6 steps 固定。`steps` は効かない）は
   **t2v には無い**（テンプレートを置いていない）。`quality: "turbo"` でも
   t2v になるカットは `minimax_h3_t2v_opt` で投入され、理由が `prompt-preview` の

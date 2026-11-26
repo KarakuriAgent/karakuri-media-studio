@@ -346,6 +346,7 @@ FAMILY_LABELS: dict[str, str] = {
     "qwen-image": "Qwen-Image 2.1",
     "p-h3-image": "P-H3-Image",
     "minimax-h3": "MiniMax H3",
+    "10eros-max": "10Eros Max",
     "minimax-music": "MiniMax Music 3",
     "stable-audio": "Stable Audio 3",
     "grok-imagine": "Grok Imagine",
@@ -356,6 +357,13 @@ FAMILY_LABELS: dict[str, str] = {
 #: ここへ注記を書く。モードごとに変わるものではないので**モデル側**に出す
 #: （各ワークフローの :attr:`WorkflowSpec.mode_label` には書かない）。
 FAMILY_NOTES: dict[str, str] = {"grok-imagine": "サブスク CLI"}
+
+#: **Comfy Cloud にウェイトが無い**ファミリー（SPEC §3.1 / §5.1）。
+#: :data:`OPTIONAL_CLASS_TYPES` がノード単位の除外なのに対し、こちらはモデル単位で、
+#: 本体ノードだけで組んであっても Comfy Cloud では選択肢に出さない
+#: （:func:`app.workflow.supported_on_target`）。10Eros Max は個人配布の派生
+#: チェックポイントで、Comfy Cloud のモデル一覧に無いのでここに入る。
+LOCAL_ONLY_FAMILIES: frozenset[str] = frozenset({"10eros-max"})
 
 #: LoRA registrations default to this family (the only image workflow that
 #: existed before the selector), so the DB migration can backfill with it.
@@ -831,7 +839,7 @@ class WorkflowSpec:
     #: True のものは :func:`selectable_specs` が落とすので、生成フォームの
     #: 動画モードにもエージェントのカタログにも出ない。ラテント保存版
     #: （``*_save``）と連続カット版（``*_context``）がこれで、どちらも
-    #: プロジェクトの「ラテント連続性」＋「動画生成品質」から
+    #: プロジェクトの「ラテント連続性」＋「動画生成品質」＋「動画モデル」から
     #: :func:`app.studio._plan_render` が id を組み立てて使う
     #: （素の版と入力の形も仕上がりも同じで、人が手で選ぶ意味が無い）。
     #: **id を直に指定する経路（:func:`get_spec`）はそのまま通る**ので、
@@ -2852,6 +2860,282 @@ MINIMAX_H3_R2V_CONTEXT_OPT = replace(
 
 
 # --------------------------------------------------------------------------
+# video: workflow/video/10eros-max/*.json
+# --------------------------------------------------------------------------
+#
+# 10Eros Max v1（TenStrip/10Eros-Max の ``10Eros_Max_8stepTurbo_v1.0_hybrid``）は
+# MiniMax H3 の派生チェックポイント。アーキテクチャは H3 そのもので、ノードも
+# CLIP / VAE も H3 と同じものを使う。ウェイトは LokkenJP の量子化版（Compact、
+# w4w6int8・約 14.5GB）。H3 との違いは次のとおり:
+#
+# * **fl2va と reference を 1 本で兼ねる hybrid**。i2v（``MiniMaxH3ImageToVideo``
+#   の first / last frame）も r2v（``MiniMaxH3ReferenceToVideo``）も同じ UNET を
+#   読む（H3 は t2v / i2v が fl2va、r2v が ref2va の別ウェイト）。
+# * **8step turbo を焼き込み済み**。Pika H3 Flex LoRA などの高速化 LoRA を重ねると
+#   二重の turbo で壊れるので、テンプレートに LoRA は持たず、turbo / opt の別版も
+#   作らない（このファミリーは t2v / i2v / r2v の 1 系統だけ）。
+# * サンプリングは作者 README と配布元のサンプルワークフロー
+#   （LokkenJP/TenEros_Max_optimized_learned の
+#   ``H3_Turbo_2Pass_ErosMax_v1_simple_v4b``）どおり、``KSamplerSelect`` = lcm +
+#   ``BasicScheduler`` = simple・**8 ステップ**（作者の推奨範囲は 6〜12）・
+#   denoise 1。
+# * 高速化パッチは ``ModelAttentionBackend``（comfy kitchen attention）→
+#   ``BlockSparseAttention``（**VSA**・keep 10%・start 0.2。README の
+#   「10% VSA sparsity … start at 0.2」。dense_blocks ``0,1`` と
+#   sink_conditioning ``exact_kv_and_rows`` はサンプルの値）→
+#   ``MiniMaxH3SigmaShift``（12 / 3）の直列。どれも ComfyUI 本体 v0.44.0 以降に同梱。
+# * ``SpectrumApplyMiniMaxH3`` は**使わない**（README:「No cache or spectrum if
+#   doing reference, they cause accuracy loss」）。キャッシュ系のノードも入れない。
+#
+# テンプレートは MiniMax H3 の opt（``minimax_h3_*_opt``・``*_save_opt``・
+# ``r2v_context_opt``）を写して、UNET の差し替え・sampler / steps の変更・
+# Sol-Attn → VSA・Spectrum の削除だけをしたもの。ノード ID も opt と同じ連番なので、
+# 注入先・LoRA の挿し口・ラテントアップスケールの宣言は opt と同じ形になる
+# （BasicGuider / BasicScheduler は Spectrum の代わりに SigmaShift（153）を読む）。
+# 動画 VAE は opt と同じ Sol-H3-VAE、音声 VAE と CLIP も H3 と共通。
+#
+# Comfy Cloud にはこのウェイトが無いので、どのバリアントも Comfy Cloud では選択肢に
+# 出さない（:data:`LOCAL_ONLY_FAMILIES`）。
+
+#: 10Eros Max のファミリー名（= ``workflow/video/10eros-max``）
+EROS_MAX_FAMILY = "10eros-max"
+
+#: 量子化済みの UNET（diffusion_models）。全バリアント共通（hybrid なので 1 本）
+EROS_MAX_UNET = (
+    "10Eros_Max_8stepTurbo_v1.0_hybrid_activation_learned_compact_w4w6int8_14.50gb"
+    ".safetensors"
+)
+
+#: ``latent_upscale`` = on の 2 パス目。配布元のサンプルは 2 パス目を
+#: ``BasicScheduler`` linear_quadratic・3 ステップ・denoise 0.3 で回しているので、
+#: それを ComfyUI の ``calculate_sigmas`` で展開した値を ``ManualSigmas`` に書く
+#: （linear_quadratic はモデルの shift に依らない）。1 パス目は作者の推奨
+#: 「First pass MP resolution around 0.4-0.6」の下限 0.4MP で回す。アップスケーラは
+#: H3 と同じ 3D のもの（サンプルは LBH の 2D 版だが、外部のカスタムノードになる
+#: ので本体同梱の ``MiniMaxH3LatentUpscaleWithModel`` を流用する）。
+EROS_MAX_FIRST_PASS_MEGAPIXELS = 0.4
+EROS_MAX_UPSCALE_SIGMAS = "0.8130, 0.6180, 0.3470, 0.0000"
+_EROS_MAX_UPSCALE = replace(
+    _MINIMAX_H3_UPSCALE,
+    first_pass_megapixels=EROS_MAX_FIRST_PASS_MEGAPIXELS,
+    sigmas=EROS_MAX_UPSCALE_SIGMAS,
+)
+#: i2v / r2v は H3 と同じく、2 パス目用に条件付けノード（136）を作り直す
+_EROS_MAX_UPSCALE_RECONDITION = replace(_EROS_MAX_UPSCALE, conditioning="136")
+
+#: ``latent_upscale`` の選択式（H3 と同じつまみで、値と説明だけ 10Eros 用）
+_EROS_MAX_LATENT_UPSCALE_SELECT = replace(
+    _MINIMAX_H3_LATENT_UPSCALE_SELECT,
+    choice_labels={
+        "on": "する（0.4MP で下描き → 指定解像度に拡大）",
+        "off": "しない（指定解像度で 1 パス）",
+    },
+    hint=(
+        "on にすると 1 パス目を 0.4MP（縦横比はそのまま）で回してから"
+        "`MiniMaxH3LatentUpscaleWithModel` でラテントのまま指定解像度に拡大し、"
+        "3 ステップ（配布元のサンプルの linear_quadratic・denoise 0.3 相当の"
+        " ManualSigmas）で仕上げる。作者いわく 2 パスのほうが背景のちらつきが"
+        "消えて仕上がりが良い。拡大させるには `megapixels` を 0.4 より大きく"
+        "（0.8〜1.0MP など）すること（0.4 以下なら拡大はせず、同じ解像度で"
+        "仕上げのパスだけを回す）。off はテンプレートそのままの 1 パス"
+    ),
+)
+
+#: 10Eros の選択式。補正（fast_derope / face_detail / anime_cadence）は持たない:
+#: FastDerope / FaceDetail の描き直しは DMAD 4step LoRA（高速化 LoRA）を重ねるので、
+#: turbo を焼き込んだこのモデルでは二重の turbo になって壊れる。AnimeCadence だけを
+#: 残すと DMAD・taeh3 のスロットまで設定ページに出てしまうので、補正は丸ごと外す。
+_EROS_MAX_VIDEO_SELECTS: dict[str, SelectSpec] = {
+    LATENT_UPSCALE_NAME: _EROS_MAX_LATENT_UPSCALE_SELECT,
+}
+
+#: ユーザーの動画 LoRA の挿し口（opt と同じ: UNETLoader（127）の直後、高速化
+#: パッチの先頭（151）の手前）
+_EROS_MAX_LORA_CHAIN = _MINIMAX_H3_OPT_LORA_CHAIN
+
+#: 全 10Eros 動画スペックが共通で持つ注意書き
+_EROS_MAX_NOTES = (
+    "10Eros Max（MiniMax H3 の派生チェックポイント。fl2va と reference を 1 本で"
+    "兼ねる hybrid で、t2v / i2v / r2v とも同じ UNET）/ 24fps 固定・尺は 17k+5"
+    " フレームの格子に切り上げ / 幅高さは 32 の倍数 / negative prompt は無い"
+    "（CFG 無しの BasicGuider）/ **8step turbo を焼き込み済み**: サンプリングは"
+    " lcm + simple・**8 ステップ**（`steps` で変えられる。作者の推奨は 6〜12）・"
+    "denoise 1。Pika H3 Flex LoRA などの高速化 LoRA は重ねない（二重の turbo で"
+    "壊れる）ので、turbo / opt の別版は無い / 高速化パッチは"
+    " `ModelAttentionBackend`（comfy kitchen attention）→ `BlockSparseAttention`"
+    "（**VSA**・keep 10%・start 0.2）→ `MiniMaxH3SigmaShift`（12 / 3）の直列で、"
+    "どれも ComfyUI 本体 v0.44.0 以降に同梱 / `SpectrumApplyMiniMaxH3` と"
+    "キャッシュ系は参照の精度が落ちるので使わない / ユーザーの動画 LoRA"
+    "（`video_loras`）は UNETLoader の直後（高速化パッチの手前）に挿す。"
+    "**既存の MiniMax H3 用 LoRA は高 rank だと強すぎて画が劣化する**ので、"
+    "強さを下げるか、作者が rank を落として調整した LoRA"
+    "（TenStrip/MMH3_Sulphur3Eros_Loras-MLP-energy-patches）を使うこと /"
+    " 補正（`fast_derope` / `face_detail` / `anime_cadence`）は無い"
+    "（描き直しが DMAD 4step LoRA を重ねるため）/"
+    " `latent_upscale`（既定 **on**）: on だと 1 パス目を **0.4MP**"
+    "（作者推奨の 0.4〜0.6MP の下限）で回し、`MiniMaxH3LatentUpscaleWithModel`"
+    "（H3 と同じ 3D アップスケーラ）で**指定解像度**に拡大して"
+    "`ManualSigmas`（0.8130 / 0.6180 / 0.3470 / 0.0000 = 配布元のサンプルの"
+    " linear_quadratic 3 ステップ・denoise 0.3）で仕上げる。拡大させるには"
+    "`megapixels` を 0.4 より大きくする（0.8〜1.0MP など。0.4 以下なら同じ解像度で"
+    "仕上げのパスだけを回す）。i2v / r2v は CONDITIONING を最終解像度で作り直した"
+    " 2 個目の条件付けノード + `BasicGuider` で 2 パス目を回す / off はテンプレート"
+    "そのままで指定解像度を 1 パス（作者いわく 1 パスでも使えるが、2 パスのほうが"
+    "背景のちらつきが消える）/ **Comfy Cloud では選べない**（ウェイトが無い）"
+)
+
+#: 10Eros のモデルファイル（全バリアント共通）
+_EROS_MAX_MODELS = (
+    f" モデル: {EROS_MAX_UNET.removesuffix('.safetensors')}（diffusion_models）+"
+    " minimax_h3_sol_vae_int8_convrot + minimax_h3_audio_vae_fp32 +"
+    " qwen3vl_32b_heretic_minimax_h3_nvfp4（text_encoders）"
+)
+
+#: 説明文に足す一文（H3 の説明文を流用するので、モデル固有の違いをここで書く）
+_EROS_MAX_DESCRIPTION = (
+    "こちらは MiniMax H3 の派生チェックポイント 10Eros Max で回す版で、"
+    "8step turbo を焼き込んだ 1 本の hybrid ウェイトが t2v / i2v / r2v を兼ねる"
+    "（lcm・8 ステップ・VSA）。入力の指定とプロンプトの書き方は MiniMax H3 と"
+    "同じ。ローカル / RunPod の ComfyUI 専用（Comfy Cloud では選べない）。"
+)
+
+#: H3 の説明文の「（MiniMax H3 fl2va）」などを 10Eros の名前に差し替える
+def _eros_description(h3_description: str) -> str:
+    text = h3_description
+    for old in ("MiniMax H3 fl2va", "MiniMax H3 ref2va"):
+        text = text.replace(old, "10Eros Max")
+    return text + _EROS_MAX_DESCRIPTION
+
+
+EROS_MAX_T2V = replace(
+    MINIMAX_H3_T2V_OPT,
+    id="10eros_max_t2v",
+    label="テキスト→動画・音声つき (10Eros Max t2v)",
+    mode_label="テキスト→動画・音声つき (t2v)",
+    family=EROS_MAX_FAMILY,
+    relpath="video/10eros-max/10eros_max_t2v.json",
+    lora_chain=_EROS_MAX_LORA_CHAIN,
+    description=_eros_description(MINIMAX_H3_T2V.description),
+    selects=dict(_EROS_MAX_VIDEO_SELECTS),
+    upscale=_EROS_MAX_UPSCALE,
+    refine=None,
+    notes=_EROS_MAX_NOTES + " /" + _EROS_MAX_MODELS,
+)
+
+EROS_MAX_I2V = replace(
+    MINIMAX_H3_I2V_OPT,
+    id="10eros_max_i2v",
+    label="画像→動画・音声つき (10Eros Max i2v)",
+    mode_label="画像→動画・音声つき (i2v)",
+    family=EROS_MAX_FAMILY,
+    relpath="video/10eros-max/10eros_max_i2v.json",
+    lora_chain=_EROS_MAX_LORA_CHAIN,
+    description=_eros_description(MINIMAX_H3_I2V.description),
+    selects=dict(_EROS_MAX_VIDEO_SELECTS),
+    upscale=_EROS_MAX_UPSCALE_RECONDITION,
+    refine=None,
+    notes=_EROS_MAX_NOTES + _MINIMAX_H3_I2V_NOTES + " /" + _EROS_MAX_MODELS,
+)
+
+EROS_MAX_R2V = replace(
+    MINIMAX_H3_R2V_OPT,
+    id="10eros_max_r2v",
+    label="参照素材→動画・音声つき (10Eros Max r2v)",
+    mode_label="参照素材→動画・音声つき (r2v)",
+    family=EROS_MAX_FAMILY,
+    relpath="video/10eros-max/10eros_max_r2v.json",
+    lora_chain=_EROS_MAX_LORA_CHAIN,
+    description=_eros_description(MINIMAX_H3_R2V.description),
+    selects=dict(_EROS_MAX_VIDEO_SELECTS),
+    upscale=_EROS_MAX_UPSCALE_RECONDITION,
+    refine=None,
+    notes=_EROS_MAX_NOTES + _MINIMAX_H3_R2V_NOTES + " /" + _EROS_MAX_MODELS,
+)
+
+#: ラテント連続性のバリアント（``*_save`` / ``*_context``）。テンプレートは H3 の
+#: ``*_save_opt`` / ``r2v_context_opt`` を同じ手順で写したもので、保存の 2 ノード
+#: （165 / 166）と Motion Context 一式（160〜164）の ID も H3 の品質バリアントと同じ。
+#: スタジオの自動解決（:func:`app.studio._plan_render`）は、作品の ``video_model``
+#: （またはカットの ``video_model_override``）が ``10eros-max`` のとき、H3 で決めた
+#: 論理ワークフローをここへ写して使う（:data:`app.studio.MODEL_WORKFLOWS`）。
+#: :attr:`WorkflowSpec.studio_only` なので選択肢・カタログには出ない。
+EROS_MAX_T2V_SAVE = replace(
+    EROS_MAX_T2V,
+    id="10eros_max_t2v_save",
+    studio_only=True,
+    label="テキスト→動画・音声つき・ラテント保存 (10Eros Max t2v + Save Latent)",
+    mode_label="テキスト→動画・音声つき・ラテント保存 (t2v save)",
+    relpath="video/10eros-max/10eros_max_t2v_save.json",
+    description=EROS_MAX_T2V.description + _MINIMAX_H3_SAVE_DESCRIPTION,
+    inject={**EROS_MAX_T2V.inject, **_MINIMAX_H3_QUALITY_SAVE_LATENT_INJECT},
+    latent_output_node=_MINIMAX_H3_QUALITY_LATENT_OUTPUT,
+    notes=_EROS_MAX_NOTES + _MINIMAX_H3_SAVE_NOTES + " /" + _EROS_MAX_MODELS,
+)
+
+EROS_MAX_I2V_SAVE = replace(
+    EROS_MAX_I2V,
+    id="10eros_max_i2v_save",
+    studio_only=True,
+    label="画像→動画・音声つき・ラテント保存 (10Eros Max i2v + Save Latent)",
+    mode_label="画像→動画・音声つき・ラテント保存 (i2v save)",
+    relpath="video/10eros-max/10eros_max_i2v_save.json",
+    description=EROS_MAX_I2V.description + _MINIMAX_H3_SAVE_DESCRIPTION,
+    inject={**EROS_MAX_I2V.inject, **_MINIMAX_H3_QUALITY_SAVE_LATENT_INJECT},
+    latent_output_node=_MINIMAX_H3_QUALITY_LATENT_OUTPUT,
+    notes=(
+        _EROS_MAX_NOTES
+        + _MINIMAX_H3_I2V_NOTES
+        + _MINIMAX_H3_SAVE_NOTES
+        + " /"
+        + _EROS_MAX_MODELS
+    ),
+)
+
+EROS_MAX_R2V_SAVE = replace(
+    EROS_MAX_R2V,
+    id="10eros_max_r2v_save",
+    studio_only=True,
+    label="参照素材→動画・音声つき・ラテント保存 (10Eros Max r2v + Save Latent)",
+    mode_label="参照素材→動画・音声つき・ラテント保存 (r2v save)",
+    relpath="video/10eros-max/10eros_max_r2v_save.json",
+    description=EROS_MAX_R2V.description + _MINIMAX_H3_SAVE_DESCRIPTION,
+    inject={**EROS_MAX_R2V.inject, **_MINIMAX_H3_QUALITY_SAVE_LATENT_INJECT},
+    latent_output_node=_MINIMAX_H3_QUALITY_LATENT_OUTPUT,
+    notes=(
+        _EROS_MAX_NOTES
+        + _MINIMAX_H3_R2V_NOTES
+        + _MINIMAX_H3_SAVE_NOTES
+        + " /"
+        + _EROS_MAX_MODELS
+    ),
+)
+
+EROS_MAX_R2V_CONTEXT = replace(
+    EROS_MAX_R2V,
+    id="10eros_max_r2v_context",
+    studio_only=True,
+    label=(
+        "参照素材→動画・音声つき・連続カット (10Eros Max r2v + Motion Context)"
+    ),
+    mode_label="参照素材→動画・音声つき・連続カット (r2v context)",
+    relpath="video/10eros-max/10eros_max_r2v_context.json",
+    description=(
+        _eros_description(MINIMAX_H3_R2V_CONTEXT.description)
+    ),
+    requires=("video",),
+    inject={**EROS_MAX_R2V.inject, **_MINIMAX_H3_QUALITY_CONTEXT_INJECT},
+    latent_output_node=_MINIMAX_H3_QUALITY_LATENT_OUTPUT,
+    notes=(
+        _EROS_MAX_NOTES
+        + _MINIMAX_H3_R2V_NOTES
+        + _MINIMAX_H3_CONTEXT_NOTES
+        + " /"
+        + _EROS_MAX_MODELS
+    ),
+)
+
+
+# --------------------------------------------------------------------------
 # audio: workflow/audio/*.json
 # --------------------------------------------------------------------------
 #
@@ -2988,6 +3272,13 @@ SPECS: tuple[WorkflowSpec, ...] = (
     MINIMAX_H3_R2V_OPT,
     MINIMAX_H3_R2V_SAVE_OPT,
     MINIMAX_H3_R2V_CONTEXT_OPT,
+    EROS_MAX_T2V,
+    EROS_MAX_T2V_SAVE,
+    EROS_MAX_I2V,
+    EROS_MAX_I2V_SAVE,
+    EROS_MAX_R2V,
+    EROS_MAX_R2V_SAVE,
+    EROS_MAX_R2V_CONTEXT,
     MINIMAX_MUSIC_3,
     STABLE_AUDIO_3,
 )

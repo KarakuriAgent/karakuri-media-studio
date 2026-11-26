@@ -57,6 +57,15 @@
 外に出さないため `comfy_url` を空にして返し、ComfyUI が落ちていても `comfy_error` を
 入れた 200 になる。
 
+動画のワークフロー一覧には MiniMax H3（family `minimax-h3`）のほかに、その派生
+チェックポイントの **10Eros Max**（family `10eros-max`、`10eros_max_t2v` /
+`10eros_max_i2v` / `10eros_max_r2v`）が並ぶ。入力の形もプロンプトの書き方も MiniMax H3 と
+同じ（`prompt-guide` のガイドと `prompt-examples` の実例をそのまま使う）で、違いは中身
+（8step turbo 焼き込み・lcm 8 steps・VSA・補正なし）だけ。ユーザーが名指ししたときだけ
+使うこと。ウェイトが Comfy Cloud に無いので、接続先が Comfy Cloud のときは一覧に出ない。
+スタジオのカットで使うときは `video_workflow` ではなく、プロジェクトの `video_model`
+（カット単位なら Shot の `video_model_override`）を `"10eros-max"` にする（後述）。
+
 `options` の `loras` の各要素には **`description`**（その LoRA の使い方の説明。登録した
 人が設定画面の「LoRA 管理」で書く複数行のテキスト / Markdown。無ければ空文字）が入る。
 入力画像の順番・プロンプトのテンプレート・対象人物の指定方法などが書かれているので、
@@ -1052,6 +1061,24 @@ DELETE /api/v1/library/{id}?force=true  → 参照を確かめずに消す
   `turbo`（i2v / r2v）は本体ノードだけなので Comfy Cloud でもそのまま投入します
   （w4a8 の UNET・Pika H3 Flex LoRA・Sol-H3-VAE を Cloud 側に入れておくこと）。どれに当たったかは
   `GET /api/v1/shots/{id}/prompt-preview` の `workflow_reason` に出ます。
+- プロジェクトの `video_model`（`POST /api/v1/projects` と `PATCH /api/v1/projects/{id}`
+  で読み書きできます。`"minimax-h3"` / `"10eros-max"`。既定 `"minimax-h3"`）は
+  **カットを焼く動画モデル**で、`quality` とは別の項目です。カット単位では Shot の
+  `video_model_override`（同じ値か `null` = 作品の設定に従う。`PATCH /api/v1/shots/{id}` で
+  `null` を明示すると外れる）が勝ちます。モード（t2v / i2v / r2v）と `latent_continuity` の
+  読み替えまでは同じで、最後に 10Eros の対応 id（`10eros_max_{t2v,i2v,r2v}` / `_save` /
+  `10eros_max_r2v_context`）へ写します。`workflow_override` は H3 の素のモード id
+  （`minimax_h3_t2v` など）で書くのが正規で、選ばれたモデルの版に写ります。10Eros の id
+  （`10eros_max_t2v` / `_i2v` / `_r2v`）を書いても受け付けますが、保存のときに
+  「H3 の id + `video_model_override: "10eros-max"`」へ読み替えます（同じ body で
+  `video_model_override` に別の値を書くと 400）。10Eros Max は品質の版も補正も持たないので、
+  `quality` と補正は効きません（`prompt-preview` の `quality_applied` は false、理由は
+  `workflow_reason`）。接続先が Comfy Cloud のときは投入できず（`render` は 400、
+  `prompt-preview` は `render_blocker`）、`GET /api/v1/capabilities` の `video_models` に
+  モデルごとの可否が出ます。ラテント連続性の連続カットは、直前カットの採用 Take と**同じ
+  動画モデル**でないと投入できません（AV ラテントの解像度がモデルで違うため。`render` は 400、
+  `prompt-preview` は `render_blocker`）。実際に使うモデルは `prompt-preview` の `video_model` に
+  出ます。
 - プロジェクトの `image_quality`（`POST /api/v1/projects` と
   `PATCH /api/v1/projects/{id}` で読み書きできます。`"normal"` / `"opt"` /
   `"turbo"`。既定 `"normal"`）は **画像生成の品質**で、上の `quality` とは

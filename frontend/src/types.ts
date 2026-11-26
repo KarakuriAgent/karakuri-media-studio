@@ -1270,6 +1270,14 @@ export type StudioVideoQuality = 'normal' | 'opt' | 'turbo'
  */
 export type StudioImageQuality = 'normal' | 'opt' | 'turbo'
 
+/**
+ * スタジオのカットを焼く動画モデル（作品の `video_model`・カットの
+ * `video_model_override`）。モードと引き継ぎで決まった H3 の論理ワークフローを、
+ * 選んだモデルの対応 id（`10eros_max_*`）へ写す。`10eros-max` は品質の版も補正も
+ * 持たないので `quality` と補正は効かず、Comfy Cloud では投入できない。
+ */
+export type StudioVideoModel = 'minimax-h3' | '10eros-max'
+
 export interface StudioProject {
   id: string
   name: string
@@ -1310,6 +1318,11 @@ export interface StudioProject {
   video_loras?: LoraRef[]
   /** 動画生成の品質（テイク生成のたびにモードと掛け合わせて解決される）。 */
   quality: StudioVideoQuality
+  /**
+   * 動画モデル（既定 `minimax-h3`）。カットの `video_model_override` があれば
+   * そちらが勝つ。`10eros-max` では `quality` は効かない。古いサーバーの応答には無い。
+   */
+  video_model?: StudioVideoModel
   /**
    * 画像生成の品質（動画の `quality` とは独立）。素材の静止画を MiniMax H3
    * Image / Qwen-Image 2.1 で焼くときの版（素 / `_opt` / `_turbo`）を決める。
@@ -1382,6 +1395,8 @@ export interface StudioProjectCreate {
   video_loras?: LoraRef[]
   /** 動画生成の品質（既定は素の 20 steps = `normal`）。 */
   quality?: StudioVideoQuality
+  /** 動画モデル（既定 `minimax-h3`）。 */
+  video_model?: StudioVideoModel
   /** 画像生成の品質（素材の静止画にだけ効く。既定 `normal`）。 */
   image_quality?: StudioImageQuality
   /** 素材画像の画質（メガピクセル）の作品既定（`null` = テンプレートの既定）。 */
@@ -1433,6 +1448,8 @@ export interface StudioProjectUpdate extends StudioUpdateBase {
   video_loras?: LoraRef[]
   /** 動画生成の品質。 */
   quality?: StudioVideoQuality
+  /** 動画モデル。 */
+  video_model?: StudioVideoModel
   /** 画像生成の品質（素材の静止画にだけ効く）。 */
   image_quality?: StudioImageQuality
   /** 素材画像の画質（メガピクセル）の作品既定（`null` を送ると既定へ戻る）。 */
@@ -1666,8 +1683,14 @@ export interface StudioShot {
   megapixels: number | null
   /** 乱数の種（null = 毎回ランダム）。 */
   seed: number | null
-  /** ワークフローの強制指定（null = t2v / i2v / r2v を自動で決める）。 */
+  /**
+   * ワークフロー（モード）の強制指定（null = t2v / i2v / r2v を自動で決める）。
+   * 保存されるのは H3 の素のモード id だけ（10Eros の id を送ると
+   * `video_model_override` = `10eros-max` に読み替えて保存される）。
+   */
   workflow_override: StudioWorkflowOverride | null
+  /** 動画モデルのカット単位の上書き（null = 作品の `video_model` に従う）。 */
+  video_model_override?: StudioVideoModel | null
   /** 外部エージェント（または人）が書いた英語。公式フィールド込みの完成文。 */
   english_prompt?: string
   /** その英語の元になった組み立て済み日本語。 */
@@ -1699,6 +1722,8 @@ export interface StudioShotCreate {
   megapixels?: number | null
   seed?: number | null
   workflow_override?: StudioWorkflowOverride | null
+  /** 動画モデルのカット単位の上書き（null = 作品の設定に従う）。 */
+  video_model_override?: StudioVideoModel | null
   /** 並び順（省略すると末尾に足す）。 */
   sort_order?: number | null
 }
@@ -1731,6 +1756,8 @@ export interface StudioShotUpdate extends StudioUpdateBase {
   megapixels?: number | null
   seed?: number | null
   workflow_override?: StudioWorkflowOverride | null
+  /** 動画モデルのカット単位の上書き（**null を明示すると外れる**＝作品の設定へ）。 */
+  video_model_override?: StudioVideoModel | null
   /** 英語キャッシュ。空文字または null で消す。 */
   english_prompt?: string | null
 }
@@ -1855,10 +1882,12 @@ export interface StudioShotPreview {
   /** プロジェクトの設定（動画生成の品質）。 */
   quality: StudioVideoQuality
   /**
-   * `quality` が実際に効いたか（false = 素へフォールバックした。
-   * 理由は `workflow_reason` の末尾に入る）。
+   * `quality` が実際に効いたか（false = 素へフォールバックした、または動画モデルが
+   * 品質の版を持たない 10Eros Max だった。理由は `workflow_reason` の末尾に入る）。
    */
   quality_applied: boolean
+  /** 実際に使う動画モデル（カットの上書き > 作品の設定）。古いサーバーの応答には無い。 */
+  video_model?: StudioVideoModel
   /** 実際に投入される `selects.latent_upscale`（接続先とワークフローで解決済み）。 */
   latent_upscale: boolean
   /**
@@ -1887,7 +1916,9 @@ export interface StudioShotPreview {
   error: string
   /**
    * 組み立てはできたが**投入だけができない**理由（日本語。空なら投入できる）。
-   * いまは連続カットで前 Shot の採用 Take がまだ無いとき（英語版の保存はできる）。
+   * 連続カットで前 Shot の採用 Take がまだ無い / 別の動画モデルで作られている
+   * とき、動画モデルが接続先で使えないとき（Comfy Cloud の 10Eros Max）。
+   * 英語版の保存はできる。
    */
   render_blocker?: string
 }
@@ -1897,6 +1928,21 @@ export interface StudioShotPreview {
  * （FastDerope → FaceDetail → AnimeCadence）。
  */
 export type StudioRefineName = 'fast_derope' | 'face_detail' | 'anime_cadence'
+
+/** `StudioCapabilities.video_models` の 1 件。 */
+export interface StudioVideoModelChoice {
+  id: StudioVideoModel
+  /** 画面に出す名前（`MiniMax H3` / `10Eros Max`）。 */
+  label: string
+  /** いまの接続先で投入できるか。 */
+  available: boolean
+  /** 使えないときの理由（日本語。使えるなら空）。 */
+  reason: string
+  /** 動画の品質（`quality`）が効くか（10Eros Max は false）。 */
+  quality: boolean
+  /** 補正を持つか（10Eros Max は false）。 */
+  refine: boolean
+}
 
 /** GET /api/studio/capabilities: いまの接続先でスタジオの追加機能が使えるか。 */
 export interface StudioCapabilities {
@@ -1912,6 +1958,11 @@ export interface StudioCapabilities {
   refine?: boolean
   /** `refine` が false のときの理由（日本語）。 */
   refine_reason?: string
+  /**
+   * 動画モデルの選択肢と、いまの接続先で使えるか（10Eros Max は Comfy Cloud で
+   * false）。古いサーバーの応答には無い。
+   */
+  video_models?: StudioVideoModelChoice[]
   /** 確かめられなかった理由（日本語。空なら判定できている）。 */
   error: string
   /**

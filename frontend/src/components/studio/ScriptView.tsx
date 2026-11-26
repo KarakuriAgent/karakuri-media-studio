@@ -8,6 +8,7 @@ import type {
   StudioShotStatus,
   StudioShotUpdate,
   StudioTimelineRole,
+  StudioVideoModel,
 } from '../../types'
 import { FieldError, Section } from '../ui'
 import { NativeSelect } from '../NativeSelect'
@@ -22,6 +23,8 @@ import {
   SHOT_STATUS_LABEL,
   TIMELINE_ROLES,
   TIMELINE_ROLE_LABEL,
+  VIDEO_MODELS,
+  VIDEO_MODEL_LABEL,
   WORKFLOW_OVERRIDES,
   WORKFLOW_OVERRIDE_LABEL,
   countShots,
@@ -177,6 +180,7 @@ export default function ScriptView({
   episodes,
   scenes,
   aspectRatios,
+  projectVideoModel = 'minimax-h3',
   selectedShot,
   onSelectShot,
   onSave,
@@ -190,6 +194,8 @@ export default function ScriptView({
   scenes: StudioScene[]
   /** 生成フォームと同じアスペクト比の候補（空なら自由入力に落ちる）。 */
   aspectRatios: string[]
+  /** 作品の動画モデル（カットで上書きしないときに使われるもの）。 */
+  projectVideoModel?: StudioVideoModel
   selectedShot: StudioShot | null
   onSelectShot: (id: string) => void
   onSave: (id: string, patch: StudioShotUpdate) => void
@@ -623,6 +629,29 @@ export default function ScriptView({
                       {WORKFLOW_OVERRIDES.map((value) => (
                         <option key={value} value={value}>
                           {WORKFLOW_OVERRIDE_LABEL[value]}
+                        </option>
+                      ))}
+                    </NativeSelect>
+                  </div>
+                  <div className="space-y-1">
+                    <Label htmlFor="studio-shot-video-model">動画モデル</Label>
+                    <NativeSelect
+                      id="studio-shot-video-model"
+                      value={form.video_model_override}
+                      title={
+                        'このカットだけ動画モデルを替える（モードの強制指定とは独立）。' +
+                        '10Eros Max では作品の品質と補正は効かない'
+                      }
+                      onChange={(event) =>
+                        patch({ video_model_override: event.target.value })
+                      }
+                    >
+                      <option value="">
+                        作品の設定に従う（{VIDEO_MODEL_LABEL[projectVideoModel]}）
+                      </option>
+                      {VIDEO_MODELS.map((value) => (
+                        <option key={value} value={value}>
+                          {VIDEO_MODEL_LABEL[value]}
                         </option>
                       ))}
                     </NativeSelect>

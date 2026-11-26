@@ -738,9 +738,13 @@ LORA_VIDEO_IDS = [
 
 
 def test_every_minimax_video_workflow_declares_a_lora_chain():
-    """MiniMax H3 の動画は全バリアントがユーザー LoRA を挿せる（SPEC §3.4.2）。"""
+    """MiniMax H3（と派生の 10Eros Max）の動画は全バリアントがユーザー LoRA を
+    挿せる（SPEC §3.4.2）。"""
     assert LORA_VIDEO_IDS == VIDEO_IDS
-    assert all(workflow_id.startswith("minimax_h3_") for workflow_id in VIDEO_IDS)
+    assert all(
+        workflow_id.startswith(("minimax_h3_", "10eros_max_"))
+        for workflow_id in VIDEO_IDS
+    )
 
 
 #: 各スペックが「どこに挿すか」の決定（テンプレートを読んで決めたもの）。
@@ -778,6 +782,14 @@ EXPECTED_VIDEO_LORA_CHAINS = {
             "minimax_h3_r2v_opt",
             "minimax_h3_r2v_save_opt",
             "minimax_h3_r2v_context_opt",
+            # 10Eros Max（opt を写したテンプレート。turbo は焼き込み済みで固定 LoRA なし）
+            "10eros_max_t2v",
+            "10eros_max_t2v_save",
+            "10eros_max_i2v",
+            "10eros_max_i2v_save",
+            "10eros_max_r2v",
+            "10eros_max_r2v_save",
+            "10eros_max_r2v_context",
         )
     },
     # i2v turbo: Pika H3 Flex LoRA（fl2va 用・150）の後ろ
@@ -1991,8 +2003,12 @@ def test_every_minimax_h3_video_workflow_offers_latent_upscale_on_by_default(
 
 
 def test_only_minimax_h3_video_workflows_declare_latent_upscale():
+    """MiniMax H3 と、その派生の 10Eros Max（1 パス目と 2 パス目の sigmas だけ違う。
+    tests/test_eros_max.py）の動画だけが持つ。"""
     declared = {spec.id for spec in SPECS if spec.select(LATENT_UPSCALE_NAME)}
-    assert declared == set(MINIMAX_H3_VIDEO_IDS)
+    eros = {spec.id for spec in specs_of_kind("video") if spec.family == "10eros-max"}
+    assert eros
+    assert declared == set(MINIMAX_H3_VIDEO_IDS) | eros
 
 
 @pytest.mark.parametrize("workflow_id", MINIMAX_H3_VIDEO_IDS)

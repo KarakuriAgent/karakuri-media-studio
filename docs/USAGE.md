@@ -117,6 +117,35 @@ Sol-H3-VAE はデコードが速い代わりにタイル分割ができず、ク
 `minimax_h3_latent_upscaler_3d_bf16`）を Cloud 側に入れておいてください。Optimized は
 Spectrum の custom node が要るので Comfy Cloud では選べません。
 
+モデルの 1 段目で **10Eros Max** を選ぶと、MiniMax H3 の派生チェックポイント
+（TenStrip/10Eros-Max の `10Eros_Max_8stepTurbo_v1.0_hybrid`。LokkenJP の量子化版）で
+t2v / i2v / r2v を回せます。入力の欄とプロンプトの書き方は MiniMax H3 とまったく同じです
+（ガイドも実例も共有）。違いは中身だけで、
+
+- **1 本の hybrid ウェイト**（`10Eros_Max_8stepTurbo_v1.0_hybrid_activation_learned_compact_w4w6int8_14.50gb`、
+  `diffusion_models`）が t2v / i2v / r2v を兼ねます。CLIP・動画 VAE（Sol-H3-VAE）・音声 VAE は
+  MiniMax H3 と共通です。
+- **8step turbo が焼き込み済み**で、サンプリングは lcm + simple・8 ステップ（`steps` で 6〜12 程度に
+  変えられます）。Pika H3 Flex LoRA などの高速化 LoRA は重ねません（二重の turbo で壊れるため）。
+  Turbo / Optimized の別版もありません。
+- 高速化パッチは Comfy Kitchen attention → BlockSparseAttention（**VSA**・keep 10%・start 0.2）→
+  SigmaShift（12 / 3）。Spectrum とキャッシュ系は参照の精度が落ちるので使いません。
+- ラテントアップスケール（既定 on）は 1 パス目を **0.4MP** で回し、2 パス目は配布元のサンプル
+  （linear_quadratic 3 ステップ・denoise 0.3）相当のシグマで仕上げます。実際に拡大させるには
+  メガピクセルを 0.4 より大きく（0.8〜1.0MP など）してください（0.4 以下なら同じ解像度で
+  仕上げのパスだけを回します）。補正（`fast_derope` / `face_detail` / `anime_cadence`）はありません。
+- 動画 LoRA は MiniMax H3 と同じ位置に挿せますが、**既存の MiniMax H3 用 LoRA は高 rank だと
+  強すぎて画が劣化する**ので、強さを下げるか作者が rank を落とした LoRA
+  （TenStrip/MMH3_Sulphur3Eros_Loras-MLP-energy-patches）を使ってください。
+- ドラマスタジオでは、プロジェクトバーの「動画」欄の**モデル**で作品全体を 10Eros Max に
+  切り替えられます。カットごとに替えたいときは、脚本タブのカット設定の「動画モデル」で上書きします
+  （空欄 = 作品の設定に従う）。「ワークフローの強制指定」（t2v / i2v / r2v）とは独立で、
+  モードを決めたあとに選んだモデルの版へ読み替えます。10Eros Max では品質（通常 / Opt / Turbo）と
+  補正は効きません（投入プレビューの理由に出ます）。ラテント連続性の連続カットは、直前カットの
+  採用 Take と同じモデルでないと投入できません。
+- **Comfy Cloud では選べません**（ウェイトが無いため。スタジオでは投入プレビューに理由が出て、
+  生成は断られます）。
+
 MiniMax H3 の動画には、仕上がりのフレームに掛ける**補正**を 3 つ、独立にオン / オフで
 付けられます（どれも既定はオフ。生成フォームではワークフローの下の選択式、ドラマスタジオでは
 プロジェクトバーの「補正」欄と生成ダイアログ）:

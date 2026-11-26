@@ -468,8 +468,11 @@ async def reorder_scenes(episode_id: str, payload: StudioReorder) -> list[Studio
 async def create_shot(project_id: str, payload: StudioShotCreate) -> StudioShot:
     try:
         return await service.create_shot(project_id, payload, actor=ACTOR)
-    except service.StudioError as exc:
+    except service.StudioNotFound as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
+    except service.StudioError as exc:
+        # 項目の食い違い（workflow_override と video_model_override など）は 400
+        raise _bad_request(exc) from exc
 
 
 @router.patch("/shots/{shot_id}", response_model=StudioShot)

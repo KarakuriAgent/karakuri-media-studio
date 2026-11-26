@@ -25,6 +25,7 @@ import type {
   StudioTake,
   StudioTakeStatus,
   StudioTimelineRole,
+  StudioVideoModel,
   StudioVideoQuality,
   StudioWorkflowOverride,
   Lora,
@@ -128,6 +129,35 @@ export const WORKFLOW_OVERRIDE_LABEL: Record<StudioWorkflowOverride, string> = {
   minimax_h3_r2v: 'r2v（参照素材から）',
 }
 
+/**
+ * 動画モデル（作品の `video_model`・カットの `video_model_override`）。品質とは
+ * 別のつまみで、モード（t2v / i2v / r2v）は変えずに焼くチェックポイントだけを
+ * 替える。10Eros Max は品質の版も補正も持たず、Comfy Cloud では使えない。
+ */
+export const VIDEO_MODELS: StudioVideoModel[] = ['minimax-h3', '10eros-max']
+
+export const VIDEO_MODEL_LABEL: Record<StudioVideoModel, string> = {
+  'minimax-h3': 'MiniMax H3',
+  '10eros-max': '10Eros Max',
+}
+
+export const VIDEO_MODEL_HINT: Record<StudioVideoModel, string> = {
+  'minimax-h3':
+    'MiniMax H3 = 標準の動画モデル。品質（通常 / Opt / Turbo）と補正が効く。',
+  '10eros-max':
+    '10Eros Max = MiniMax H3 の派生チェックポイント（8step turbo 焼き込み）。' +
+    '品質の版も補正も持たないので、品質と補正は効かない。Comfy Cloud では使えない。',
+}
+
+/** 動画の品質が効かない動画モデル（品質の版を持たない）。 */
+export function videoModelIgnoresQuality(model: StudioVideoModel | undefined): boolean {
+  return model === '10eros-max'
+}
+
+/** 10Eros Max の作品で、品質・補正の欄に添える注記。 */
+export const VIDEO_MODEL_QUALITY_NOTE =
+  '10Eros Max では効きません（MiniMax H3 を指定したカットにだけ効きます）'
+
 /** 動画生成の品質（プロジェクト設定。速い順ではなく「素からの寄り道」の順）。 */
 export const VIDEO_QUALITIES: StudioVideoQuality[] = ['normal', 'opt', 'turbo']
 
@@ -230,6 +260,8 @@ export function refineOf(
 export function formatProjectSettingsSummary(input: {
   target?: ComfyTarget | null
   quality: StudioVideoQuality
+  /** 動画モデル（既定の MiniMax H3 は出さない。10Eros Max なら品質の代わりに出す）。 */
+  videoModel?: StudioVideoModel
   /** 画像生成の品質（既定の `normal` は出さず、変えてあるときだけ足す）。 */
   imageQuality?: StudioImageQuality
   aspectRatio: string | null
@@ -250,7 +282,12 @@ export function formatProjectSettingsSummary(input: {
 }): string {
   const parts: string[] = []
   if (input.target) parts.push(COMFY_TARGET_LABELS[input.target])
-  parts.push(VIDEO_QUALITY_LABEL[input.quality])
+  // 10Eros Max は品質の版を持たないので、品質の代わりにモデル名を出す
+  parts.push(
+    videoModelIgnoresQuality(input.videoModel)
+      ? VIDEO_MODEL_LABEL['10eros-max']
+      : VIDEO_QUALITY_LABEL[input.quality],
+  )
   // 画像品質は既定（通常）を書かない。動画と違う設定にしてあるときだけ、
   // 狭い画面でも気づけるように「画像 Turbo」の形で足す。
   if (input.imageQuality && input.imageQuality !== 'normal') {
@@ -707,8 +744,10 @@ export interface ShotFormState {
   aspect_ratio: string
   megapixels: string
   seed: string
-  /** ワークフローの強制指定（空 = 自動）。 */
+  /** ワークフロー（モード）の強制指定（空 = 自動）。 */
   workflow_override: string
+  /** 動画モデルのカット単位の上書き（空 = 作品の設定に従う）。 */
+  video_model_override: string
 }
 
 export function shotFormFromShot(shot: StudioShot): ShotFormState {
@@ -732,6 +771,7 @@ export function shotFormFromShot(shot: StudioShot): ShotFormState {
     megapixels: shot.megapixels == null ? '' : String(shot.megapixels),
     seed: shot.seed == null ? '' : String(shot.seed),
     workflow_override: shot.workflow_override ?? '',
+    video_model_override: shot.video_model_override ?? '',
   }
 }
 
@@ -794,6 +834,8 @@ export function shotUpdateFromForm(form: ShotFormState): StudioShotUpdate {
     seed: form.seed.trim() === '' ? null : Number(form.seed),
     workflow_override:
       (form.workflow_override as StudioWorkflowOverride) || null,
+    video_model_override:
+      (form.video_model_override as StudioVideoModel) || null,
   }
 }
 

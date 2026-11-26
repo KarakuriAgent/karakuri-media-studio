@@ -311,6 +311,54 @@ def test_shots_can_be_created_updated_and_deleted(env):
     assert call(env, "DELETE", f"/api/v1/shots/{shot['id']}").status_code == 404
 
 
+def test_the_video_model_goes_through_the_external_api(env):
+    """作品の video_model とカットの video_model_override も外部 API から書ける。"""
+    enable(env)
+    project = make_project(env, video_model="10eros-max")
+    assert project["video_model"] == "10eros-max"
+    patched = call(
+        env, "PATCH", f"/api/v1/projects/{project['id']}",
+        json={"video_model": "minimax-h3"},
+    )
+    assert patched.status_code == 200, patched.text
+    assert patched.json()["video_model"] == "minimax-h3"
+
+    created = call(
+        env,
+        "POST",
+        f"/api/v1/projects/{project['id']}/shots",
+        json={"prompt": "A cat walks in.", "workflow_override": "10eros_max_t2v"},
+    )
+    assert created.status_code == 201, created.text
+    shot = created.json()
+    # 10Eros の id は「H3 のモード id + video_model_override」に読み替えて保存する
+    assert shot["workflow_override"] == "minimax_h3_t2v"
+    assert shot["video_model_override"] == "10eros-max"
+
+    cleared = call(
+        env, "PATCH", f"/api/v1/shots/{shot['id']}",
+        json={"video_model_override": None},
+    )
+    assert cleared.status_code == 200, cleared.text
+    assert cleared.json()["video_model_override"] is None
+
+    refused = call(
+        env,
+        "POST",
+        f"/api/v1/projects/{project['id']}/shots",
+        json={
+            "prompt": "A cat walks in.",
+            "workflow_override": "10eros_max_t2v",
+            "video_model_override": "minimax-h3",
+        },
+    )
+    assert refused.status_code == 400
+
+    preview = call(env, "GET", f"/api/v1/shots/{shot['id']}/prompt-preview")
+    assert preview.status_code == 200, preview.text
+    assert preview.json()["video_model"] == "minimax-h3"
+
+
 def test_shot_creation_needs_an_existing_project(env):
     enable(env)
     response = call(env, "POST", "/api/v1/projects/nope/shots", json={"prompt": "x"})

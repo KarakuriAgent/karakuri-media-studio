@@ -114,6 +114,7 @@ CREATE TABLE IF NOT EXISTS studio_projects (
   anime_cadence INTEGER NOT NULL DEFAULT 0, -- 補正: 2 コマ / 3 コマ打ちに直す（ComfyUI-H3-AnimeCadence）
   video_loras TEXT NOT NULL DEFAULT '[]',   -- 作品共通の動画 LoRA（LoraRef の JSON 配列。[] = 使わない）
   quality     TEXT NOT NULL DEFAULT 'normal', -- 動画生成の品質（normal / opt / turbo）
+  video_model TEXT NOT NULL DEFAULT 'minimax-h3', -- 動画モデル（minimax-h3 / 10eros-max）
   image_quality TEXT NOT NULL DEFAULT 'normal', -- 素材画像（P-H3-Image / Qwen-Image 2.1）の品質（normal / opt / turbo）
   megapixels  REAL,                        -- 動画生成のメガピクセル（NULL = ワークフローの既定）
   aspect_ratio TEXT,                       -- 動画生成のアスペクト比（NULL = 既定）
@@ -248,7 +249,8 @@ CREATE TABLE IF NOT EXISTS studio_shots (
   aspect_ratio         TEXT,                       -- 例 '16:9 (Widescreen)'
   megapixels           REAL,                       -- 解像度の目安（比と合わせて幅×高さになる）
   seed                 INTEGER,                    -- NULL = 毎回ランダム
-  workflow_override    TEXT,                       -- NULL = t2v/i2v/r2v を自動選択
+  workflow_override    TEXT,                       -- NULL = t2v/i2v/r2v を自動選択（H3 の素のモード id）
+  video_model_override TEXT,                       -- NULL = 作品の video_model に従う（minimax-h3 / 10eros-max）
   english_prompt       TEXT NOT NULL DEFAULT '',   -- 外部エージェント（または人）が書いた英語。公式フィールド込みの完成文
   english_source       TEXT NOT NULL DEFAULT '',   -- その英語の元になった組み立て済み日本語
   english_status       TEXT NOT NULL DEFAULT '',   -- 旧・アプリ内英訳の名残で未使用
@@ -563,6 +565,9 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         # 動画生成の品質（normal / opt / turbo）。既存のプロジェクトは
         # 'normal' = 今までどおり素の MiniMax H3（20 steps）。
         ("quality", "TEXT NOT NULL DEFAULT 'normal'"),
+        # 動画モデル（minimax-h3 / 10eros-max）。品質とは別のつまみで、
+        # 既存のプロジェクトは 'minimax-h3' = 今までどおり MiniMax H3。
+        ("video_model", "TEXT NOT NULL DEFAULT 'minimax-h3'"),
         # 画像生成の品質（normal / opt / turbo）。動画の `quality` とは独立した
         # つまみで、素材の静止画を焼くときにだけ効く（P-H3-Image は版違いが
         # 無いのでどの値でも同じ。効くのは Qwen-Image 2.1 の turbo だけ）。
@@ -624,6 +629,8 @@ MIGRATIONS: dict[str, list[tuple[str, str]]] = {
         ("megapixels", "REAL"),
         ("seed", "INTEGER"),
         ("workflow_override", "TEXT"),
+        # 動画モデルのカット単位の上書き。既存行は NULL = 作品の video_model に従う。
+        ("video_model_override", "TEXT"),
         # NSFW はプロジェクト単位に移した（studio_projects.nsfw）。一度でも
         # 起動した DB には Shot 側の nsfw 列が残るが、読み書きしないので放置する
         # （SQLite では列を落とせず、落とす価値もない）。
