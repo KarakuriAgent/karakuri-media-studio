@@ -1103,10 +1103,11 @@ Hard rules (this app):
 
 - Duration 4–15s; the app snaps the length up to the model's 17k+5 frame grid
   at 24fps. Do not write frame counts or fps in the text.
-- The native canvas is a **768px short edge (max 768x1344)**: keep `megapixels`
-  around 0.4. Larger costs time and drifts. (That is this local install's
-  working size, not the model's ceiling — never write resolution claims into
-  the prompt text.)
+- MiniMax H3's native canvas is a **768px short edge (max 768x1344)**: keep
+  `megapixels` around 0.4 (the default when you omit it). Larger costs time
+  and drifts. (That is this local install's working size, not the model's
+  ceiling — never write resolution claims into the prompt text.) 10Eros Max
+  is different: see its addendum (default 0.8).
 - `duration`, `megapixels` and `aspect_ratio` are job fields, never sentences.
 - There is **no negative prompt** (no CFG). If the body does not already
   mention subtitles/watermarks, finish with
@@ -1330,6 +1331,12 @@ differences matter:
 - `video_loras`: high-rank MiniMax H3 LoRAs are too strong on this model and
   degrade the picture. Use them at reduced strength, or prefer LoRAs
   down-ranked for it (TenStrip/MMH3_Sulphur3Eros_Loras-MLP-energy-patches).
+- Resolution (this replaces the H3 "around 0.4" rule): keep
+  `latent_upscale` on (the default). The first pass always runs at 0.4 MP and
+  is upscaled to `megapixels`, whose default for this model is **0.8**
+  (recommended 0.8–1.0). At 0.4 or below nothing is upscaled — the clip stays
+  at the first-pass size. Leave `megapixels` unset (or 0.8) unless the user
+  asks for another size.
 """
 
 EROS_MAX_ADDENDUM = (

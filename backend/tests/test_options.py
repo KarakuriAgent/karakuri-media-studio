@@ -473,3 +473,30 @@ def test_steps_are_advertised_only_where_the_template_has_a_sampler_knob(client)
     # テンプレートを持たない外部バックエンド（Grok CLI）は steps を持たない
     for workflow_id in ("grok_imagine_t2i", "grok_imagine_edit"):
         assert "steps" not in supports[workflow_id], workflow_id
+
+
+def test_eros_max_declares_a_larger_default_megapixels(client, monkeypatch):
+    """10Eros Max は 1 パス目 0.4MP をラテントアップスケールで 0.8MP に拡大する前提。"""
+    _set_target(monkeypatch, "local")
+    videos = {w["id"]: w for w in client.get("/api/options").json()["video_workflows"]}
+    for workflow_id in ("10eros_max_t2v", "10eros_max_i2v", "10eros_max_r2v"):
+        assert videos[workflow_id]["default_megapixels"] == 0.8
+
+
+def test_workflows_advertise_the_steps_they_actually_run(client, monkeypatch):
+    """`steps` を送らない（0）ときに実際に回るステップ数が `default_steps` に出る。"""
+    _set_target(monkeypatch, "local")
+    options = client.get("/api/options").json()
+    steps = {
+        w["id"]: w["default_steps"]
+        for key in ("image_workflows", "video_workflows", "audio_workflows")
+        for w in options[key]
+    }
+    assert steps["minimax_h3_t2v"] == 20
+    assert steps["10eros_max_t2v"] == 8
+    assert steps["10eros_max_r2v"] == 8
+    # steps を受け取らない固定スケジュールは、焼き込まれた回数
+    assert steps["minimax_h3_i2v_turbo"] == 6
+    assert steps["p_h3_t2i"] == 8
+    assert steps["krea2_turbo"] == 8
+    assert steps["minimax_music_3"] == 30

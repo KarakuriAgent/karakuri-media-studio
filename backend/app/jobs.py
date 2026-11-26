@@ -103,6 +103,7 @@ from .workflow import (
 from .workflows import (
     DEFAULT_AUDIO_WORKFLOW,
     DEFAULT_IMAGE_WORKFLOW,
+    DEFAULT_MEGAPIXELS,
     DEFAULT_T2V_WORKFLOW,
     DEFAULT_VIDEO_WORKFLOW,
     INPUT_FIELDS,
@@ -1022,14 +1023,50 @@ async def _insert_job(
     return job
 
 
+def default_job_megapixels(
+    mode: str,
+    *,
+    video_workflow: str | None = None,
+    image_workflow: str | None = None,
+) -> float:
+    """``megapixels`` を送らなかったジョブの解像度（メガピクセル、SPEC §3.1）。
+
+    走るステージのワークフローが宣言している
+    :attr:`app.workflows.WorkflowSpec.default_megapixels` を使う（MiniMax H3 は
+    0.4、10Eros Max は 0.8、P-H3-Image は 8 / 編集 4）。画像 → 動画の 2 段
+    （``full``）は 1 つの値を共有するので、**宣言のあるステージのうち小さいほう**
+    （VRAM のきつい側。生成フォームと同じ決め方）。どのステージも宣言して
+    いなければグローバル既定（:data:`DEFAULT_MEGAPIXELS`）。
+    """
+    params = {"video_workflow": video_workflow, "image_workflow": image_workflow}
+    try:
+        stages = stage_specs(mode, params)
+    except WorkflowSpecError:
+        # 引けないワークフローは投入の検証が 422 にするので、ここでは既定に倒す
+        return DEFAULT_MEGAPIXELS
+    declared = [spec.default_megapixels for _name, spec in stages if spec.default_megapixels]
+    return float(min(declared)) if declared else DEFAULT_MEGAPIXELS
+
+
 def _params_from_create(payload: JobCreate) -> dict[str, Any]:
+    # ``megapixels`` を送ってこなかったジョブは、走るワークフローの宣言する
+    # 解像度で回す（10Eros Max の 0.8MP など）。送られた値はそのまま尊重する。
+    megapixels = (
+        payload.megapixels
+        if "megapixels" in payload.model_fields_set
+        else default_job_megapixels(
+            payload.mode,
+            video_workflow=payload.video_workflow,
+            image_workflow=payload.image_workflow,
+        )
+    )
     params: dict[str, Any] = {
         "mode": payload.mode,
         "image_workflow": payload.image_workflow,
         "video_workflow": payload.video_workflow,
         "audio_workflow": payload.audio_workflow,
         "aspect_ratio": payload.aspect_ratio,
-        "megapixels": payload.megapixels,
+        "megapixels": megapixels,
         "loras": [lora.model_dump() for lora in payload.loras],
         "trigger_text": payload.trigger_text,
         "video_loras": [lora.model_dump() for lora in payload.video_loras],

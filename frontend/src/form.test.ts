@@ -21,6 +21,7 @@ import {
   lorasForTarget,
   matchesLoraQuery,
   megapixelsFor,
+  stagesMegapixels,
   modelSlotsForJob,
   elementsLimits,
   multiShotLimits,
@@ -1004,6 +1005,24 @@ describe('megapixelsFor', () => {
       DEFAULT_MEGAPIXELS,
     )
     expect(megapixelsFor(null)).toBe(DEFAULT_MEGAPIXELS)
+  })
+})
+
+describe('stagesMegapixels', () => {
+  it('ignores stages without a declaration (10Eros Max + Krea 2 = 0.8MP)', () => {
+    const eros = workflow({ id: '10eros_max_i2v', default_megapixels: 0.8 })
+    const krea = workflow({ id: 'krea2_turbo', default_megapixels: 0 })
+    expect(stagesMegapixels([eros, krea])).toBe(0.8)
+  })
+
+  it('takes the tighter of two declarations', () => {
+    const h3 = workflow({ id: 'minimax_h3_i2v', default_megapixels: 0.4 })
+    const ph3 = workflow({ id: 'p_h3_t2i', default_megapixels: 8 })
+    expect(stagesMegapixels([h3, ph3])).toBe(0.4)
+  })
+
+  it('falls back to the global default when nothing is declared', () => {
+    expect(stagesMegapixels([T2V])).toBe(DEFAULT_MEGAPIXELS)
   })
 })
 
