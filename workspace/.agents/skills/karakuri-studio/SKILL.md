@@ -119,6 +119,10 @@ cwd として書いてある。
    - `error` … 組み立てられない（直してから焼く）
    - `render_blocker` … 組み立てはできるが投入できない（引き継ぎ元の Take がまだ無い等）
    - `workflow_reason` … どのモード・品質になったか、フォールバックしたか
+   - `submitted_prompt` … **実際にモデルへ送られる本文**（使える `english_prompt`
+     があればそれ。`prompt` は脚本から組み立てた日本語のままの本文で、英訳の元）
+   - `megapixels` / `steps` … 実際に回る解像度とステップ数（作品の設定 >
+     ワークフローの既定。10Eros Max は 0.8MP・8 ステップ、H3 は 0.4MP・20 ステップ）
    - `needs_translation` / `english_stale` … 英語版が要る / 保存済みの英語が
      古い（どちらかが `true` なら **7 の英訳**を先に済ませる。日本語のまま
      焼こうとすると 400）
@@ -135,7 +139,8 @@ cwd として書いてある。
    - 末尾の除外文はそのまま残す。足りない公式フィールド・`[Shot 1]`・カメラ節・
      `overall_soundscape` / `non_diegetic_music` は補う。
    - 保存したらもう一度 `prompt-preview` を見て、`needs_translation` と
-     `english_stale` が両方 `false` になったことを確かめる。
+     `english_stale` が両方 `false` になり、`submitted_prompt` が保存した英語に
+     なったことを確かめる。
    - 脚本を直すと `english_stale` が `true` に戻る = 書き直し。
      （`english_prompt` に `""` を PATCH すれば消せる）
 8. **焼く**: `POST /shots/{id}/render`（ボディで解像度・尺・steps・seed・動画 LoRA を上書き可）。
@@ -147,6 +152,9 @@ cwd として書いてある。
    ```bash
    .agents/skills/karakuri-studio/scripts/inspect.sh <video_url> 1     # 尺・音声の有無 + 1 秒ごとのフレーム PNG
    ```
+
+   `<video_url>` はジョブ / Take の `video_url`（`/outputs/…` の相対 URL）をそのまま
+   渡してよい（接続先は studio.sh と同じ解決）。
 
    出た PNG を読んで、指示どおりの人物・動き・カメラになっているか、音声が
    入っているかを確かめる。焼きっぱなしで採用しない。
@@ -203,8 +211,8 @@ cwd として書いてある。
   効かない**（ON でも OFF で投入され、理由が `workflow_reason` に出る。`capabilities.refine` が
   false）。`POST /jobs` で直接作るなら `selects` に `"fast_derope": "on"` などを入れる
   （Comfy Cloud では 422）。
-- **P-H3-Image のプロンプト**（英語。詳しくは `GET /prompt-guide` の IMAGE PROMPT SPEC —
-  P-H3-Image）: 冒頭 1 文で「その画像が何であるか」（`a photograph by …` /
+- **P-H3-Image のプロンプト**（英語。詳しくは `GET /prompt-guide` の §7
+  「IMAGE PROMPT SPEC — P-H3-Image」）: 冒頭 1 文で「その画像が何であるか」（`a photograph by …` /
   `a frame from a Japanese anime TV series` / `a two-color risograph print`）→ 視点・その瞬間の
   主役 1 つ・少数の脇役・光源と向きの 1 シーン。画像に出す文字は全部引用符で短く、位置を
   書いて最後に `no other text`（文字が要らないなら看板・ラベルに触れない）。誇張語
@@ -226,8 +234,13 @@ cwd として書いてある。
   書かれていれば**入力をその順番で渡し、プロンプトもその書き方に従う**。`description` は
   生成時にプロンプトへ自動では混ざらない（自動で付くのはトリガーワードだけ）ので、反映するのは
   あなたの仕事。空なら説明なし（`trigger_word` / `target` / `family` だけで判断する）。
-- `megapixels` / `image_megapixels` は未設定ならビルド既定。ローカル GPU の VRAM が
-  小さいなら `0.4` あたりに落とす（大きいほど遅く、落ちやすい）。
+- `megapixels` / `image_megapixels` は未設定ならワークフローの既定（`GET /options` の
+  `default_megapixels`）: MiniMax H3 は 0.4、**10Eros Max は 0.8**（1 パス目 0.4MP を
+  `latent_upscale` で 0.8MP に拡大する。10Eros で 0.4 を明示すると拡大されない）、
+  P-H3-Image は t2i 8 / 編集 4。`POST /jobs` で `megapixels` を省いたときも同じ値に
+  なる。ローカル GPU の VRAM が小さいなら H3 は `0.4` あたりに落とす（大きいほど遅く、
+  落ちやすい）。`steps` を省いた（0）ときに実際に回るステップ数は `GET /options` の
+  `default_steps`（10Eros Max 8・H3 20・turbo 6 固定）。
   `aspect_ratio` の表記は `GET /options` のものをそのまま使う。
 - `latent_continuity`（ラテント連続性）の前提: 前カットの採用 Take があること、
   本文に**ファイル実体のある `@素材`** があること、途中で解像度・アスペクトを
@@ -236,9 +249,14 @@ cwd として書いてある。
 - **英訳はアプリではなくあなたがやる**（3 章の 7）。脚本（`prompt` / `dialogue`
   など）は日本語で書いてよいが、焼く前に `english_prompt` を保存する。
   `@名前` を英語の説明文に置き換えない（参照が外れる）。
-- Shot の `camera` は `The camera <camera>.` という**英文の一部として本文に
+- Shot の `camera` は `The camera …` という**英文の一部として本文に
   合成される**ので、**camera は英語で書く**
-  （`pushes in with small amplitude at slow speed` のように動詞から書く）。
+  （`pushes in with small amplitude at slow speed` のように動詞から書くか、公式語彙の
+  `Static Shot` / `Push In at slow speed` をそのまま書く。後者は
+  `The camera holds a static shot.` のような文に直される）。
+- Shot の `dialogue` は**単一話者専用**（自動で `(S1) says: <d>…</d>` が付く）。
+  **2 人以上がしゃべるカットは `dialogue` を空にし、`prompt` の本文に `(S1)` / `(S2)`
+  付きで台詞を書く**。
 
 ## 6. 鉄則
 

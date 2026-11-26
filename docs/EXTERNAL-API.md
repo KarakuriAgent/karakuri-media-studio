@@ -35,7 +35,7 @@
 |---|---|
 | プロジェクト | `GET/POST /projects`・`GET/PATCH /projects/{id}` |
 | 話 / 場 / カット | `POST /projects/{id}/episodes`・`POST /episodes/{id}/scenes`・`POST /projects/{id}/shots` と各 `PATCH` / `DELETE`、`POST .../reorder`（並べ替え） |
-| 投入前の確認 | `GET /shots/{id}/prompt-preview`（実際に投入されるプロンプト・ワークフロー・その理由・`needs_translation`・`render_blocker`）。英語版の保存は `PATCH /shots/{id}` の `english_prompt` |
+| 投入前の確認 | `GET /shots/{id}/prompt-preview`（脚本から組み立てた本文 `prompt`・**実際に投入される本文 `submitted_prompt`**・ワークフロー・その理由・解像度 `megapixels`・ステップ数 `steps`・`needs_translation`・`render_blocker`）。英語版の保存は `PATCH /shots/{id}` の `english_prompt` |
 | 素材（World Bible） | `GET /assets`（**全作品横断**の素材検索。`project_id` / `kind` / `q` / `limit` / `offset`）・`POST /projects/{id}/assets`（JSON / multipart。`library_id` でライブラリから取り込み）・`assets/from-job`・`PATCH/DELETE /assets/{id}`・`POST /assets/{id}/refresh-from-library`（取り込み元の今の版で取り直す）・素材のリファレンス（`/assets/{id}/files`・`DELETE /asset-files/{id}`） |
 | 生成と Take | `POST /shots/{id}/render`・`GET /shots/{id}/takes`・`POST /takes/{id}/select`・`reject`・`cancel`・`DELETE /takes/{id}` |
 | 汎用ジョブ | `GET/POST /jobs`（一覧は `q` / `kind` / `project_id` / `nsfw` / `limit` / `offset` で絞れる。§3.6）・`GET /jobs/{id}`・`POST /jobs/{id}/cancel`・`rerun`・`continue` |
@@ -81,10 +81,10 @@
 
 | 項目 | 省いたときの解決 |
 | --- | --- |
-| `megapixels` | カット → プロジェクト → ワークフローの既定（0.4MP） |
+| `megapixels` | カット → プロジェクト → ワークフローの既定（`GET /options` の `default_megapixels`。MiniMax H3 は 0.4MP、10Eros Max は 0.8MP） |
 | `aspect_ratio` | カット → プロジェクト → `4:3 (Standard)` |
 | `duration` | カットの `duration_seconds`（1〜15 秒） |
-| `steps` | プロジェクトの `steps` → テンプレートの既定（0〜150。`0` を送れば「既定のまま」の明示で、プロジェクトの設定より優先） |
+| `steps` | プロジェクトの `steps` → テンプレートの既定（`GET /options` の `default_steps`。10Eros Max 8・H3 20・turbo 6 固定）（0〜150。`0` を送れば「既定のまま」の明示で、プロジェクトの設定より優先） |
 | `seed` | カットの `seed` → 毎回ランダム |
 | `latent_upscale` | プロジェクトの `latent_upscale`（既定 ON。Comfy Cloud でも ON のまま効く。Cloud 側にアップスケーラのモデル `minimax_h3_latent_upscaler_3d_bf16` を入れておくこと） |
 | `fast_derope` / `face_detail` / `anime_cadence` | プロジェクトの同名の設定（MiniMax H3 動画の補正。既定はどれも OFF）。**Comfy Cloud では ON を送っても OFF で投入**し（カスタムノードが要るため）、理由は投入プレビューの `workflow_reason` に出る |
@@ -1018,8 +1018,10 @@ DELETE /api/v1/library/{id}?force=true  → 参照を確かめずに消す
   呼ぶのはプロンプト作成チャットとヘルスチェックだけ）。脚本は日本語で書いて
   かまいませんが、**日本語のまま `render` すると 400 で断られます**。手順は
   `GET /api/v1/prompt-guide` の §3.2 が正本で、要点は次のとおりです。
-  1. `GET /api/v1/shots/{id}/prompt-preview` の `prompt` が組み立て済みの本文。
-     `needs_translation` が `true` なら英語版が要ります。
+  1. `GET /api/v1/shots/{id}/prompt-preview` の `prompt` が組み立て済みの本文
+     （日本語のまま。英訳の元）。`needs_translation` が `true` なら英語版が要ります。
+     実際にモデルへ送られる本文は `submitted_prompt`（使える英語があればそれ、
+     無ければ `prompt`。投入できないときは空）です。
   2. その本文を**公式 H3 文書として英語で書き直す**（直訳ではありません。参照タグ
      `<Picture 1>` などは一字一句そのまま、二重引用符の中の台詞と `<d>…</d>` の
      中身は原語のまま、事実は足さない）。
@@ -1027,7 +1029,7 @@ DELETE /api/v1/library/{id}?force=true  → 参照を確かめずに消す
      を忘れずに）。サーバーは「どの本文に対する英語か」を `english_source` に
      控えます。
   4. `prompt-preview` の `needs_translation` と `english_stale` が両方 `false` に
-     なったら `render`。脚本を直すと `english_stale` が `true` に戻るので、
+     なり、`submitted_prompt` が保存した英語になったら `render`。脚本を直すと `english_stale` が `true` に戻るので、
      そのときは書き直します（`english_prompt` に空文字を PATCH すれば消せます）。
   投入されるのは英語版（`english_prompt`）で、元の日本語は Take の
   `source_prompt` に残ります。
@@ -1141,7 +1143,9 @@ DELETE /api/v1/library/{id}?force=true  → 参照を確かめずに消す
   `PATCH /api/v1/projects/{id}` で読み書きできます。どちらも既定 `null`）は
   **その作品の画質・画面比の既定値**で、生成フォームと同じ 2 項目です。
   ワークフローの選択には効かず、投入時にそのまま渡ります。`null` は
-  **明示しない**（＝ワークフロー宣言 / バックエンドの既定 0.4MP）で、
+  **明示しない**（＝ワークフロー宣言の `default_megapixels`。MiniMax H3 は 0.4MP、
+  10Eros Max は 0.8MP〈1 パス目 0.4MP をラテントアップスケールで拡大〉。宣言が無ければ
+  バックエンドの既定 0.4MP）で、
   `megapixels` を上げるほど遅くなり、VRAM の小さい GPU では CUDA OOM に
   なることがあります。効き方は**カットの値 → プロジェクトの値 → 既定**の順で、
   2 つはそれぞれ独立に解決されます。PATCH で `null` を明示すると既定へ戻ります
@@ -1160,8 +1164,15 @@ DELETE /api/v1/library/{id}?force=true  → 参照を確かめずに消す
 - **ワークフロー JSON はプロセス内キャッシュ**です。`workflow/` 配下を編集したら
   サーバーを再起動しないと反映されません。
 - **カットの `megapixels` 未指定はプロジェクトの `megapixels`、それも未指定なら
-  バックエンドの既定値**にフォールバックします。VRAM 8GB 級の GPU では 1.0MP で
-  CUDA OOM になるため、0.4MP 程度が安全です。
+  ワークフローの既定値**（H3 0.4MP・10Eros Max 0.8MP）にフォールバックします。VRAM 8GB 級の
+  GPU では H3 を 1.0MP で回すと CUDA OOM になるため、0.4MP 程度が安全です。10Eros Max で
+  0.4 を明示すると 1 パス目と同じ解像度になり、拡大されません。
+- `POST /api/v1/jobs` で `megapixels` を**省く**と、走るワークフローの `default_megapixels`
+  で回ります（動画だけのジョブは動画ワークフロー、`image_only` は画像ワークフロー
+  〈P-H3-Image の t2i は 8MP・編集は 4MP〉、`full` は宣言のある側の小さいほう。どれも
+  宣言が無ければ 0.4MP）。決まった値はジョブの `params.megapixels` に残ります。送った値は
+  0.4 でもそのまま使います。`fps`（既定 25）はグラフの fps が固定のモデルでは使われません
+  （MiniMax H3 / 10Eros Max は 24fps 固定）。`steps` を省く（0）と各ワークフローの `default_steps` で回ります。
 - 素材の `kind` は `image` / `video` / `audio` のみです（メモだけの素材は登録
   できません）。素材名に `@` は使えません（`@素材名` 参照と衝突するため）。
 

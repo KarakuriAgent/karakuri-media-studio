@@ -165,7 +165,7 @@
 - 画質のほうはワークフローを選ばず、プロジェクトの **`megapixels` / `aspect_ratio`**
   （生成フォームと同じ 2 項目を作品単位の既定として持つ）が投入時の値を決める。
   どちらも `NULL` = **明示しない**（＝これまでどおりワークフロー宣言の
-  `default_megapixels` / グローバル既定 0.4MP、画面比は既定のまま）。効き方は
+  `default_megapixels`〈H3 0.4MP・10Eros Max 0.8MP〉/ グローバル既定 0.4MP、画面比は既定のまま）。効き方は
   **テイク 1 回ぶんの上書き → Shot 個別 → プロジェクト → グローバル既定**の順で、2 つは
   それぞれ独立に解決する。
   品質（`quality`）とも直交していて、どちらのバリアントに落ちても同じ画素数で焼く。
@@ -174,7 +174,11 @@
   `steps` を宣言しているワークフロー（MiniMax H3 は全バリアントが `BasicScheduler.steps` を
   宣言している）にだけ注入される。効き方は**テイク 1 回ぶんの上書き → プロジェクト →
   テンプレートの既定**で、Shot 単位の設定は持たない（品質を変えずに刻みだけ増減したい、
-  という使い方のための作品共通のつまみ）。
+  という使い方のための作品共通のつまみ）。`0` のとき実際に何ステップで回るかは
+  `GET /api/options` の `{video,image,audio}_workflows[].default_steps`（テンプレートの既定値。
+  `steps` を受け取らない turbo・P-H3-Image は焼き込みの固定値を `WorkflowSpec.fixed_steps` に
+  宣言してある。`app.workflows.template_steps`）と、`prompt-preview` の `steps` で分かる
+  （10Eros Max 8・H3 20・turbo 6）。
 - **ラテントアップスケール**（`latent_upscale`、既定 **ON**）もプロジェクトの設定として持つ。
   こちらはワークフロー id を変えず、投入するジョブの選択式
   （`selects.latent_upscale` = `on` / `off`。§3.1 の「ラテントアップスケール」）に落ちる。
@@ -296,7 +300,8 @@
     2 パス目の `ManualSigmas` は配布元のサンプルの 2 パス目（linear_quadratic・3 steps・denoise 0.3）を
     展開した `0.8130, 0.6180, 0.3470, 0.0000`。1 パス目は最終解像度を超えない（`megapixels` が
     0.4 以下なら同じ解像度で仕上げのパスだけを回す。アップスケーラは同じ大きさならラテントを
-    そのまま返す）。アップスケーラは H3 と同じ 3D のもの（サンプルの LBH 2D 版は外部のカスタム
+    そのまま返す）。そのため 10Eros の `default_megapixels` は **0.8MP**（未指定なら 0.4MP → 0.8MP に
+    拡大）。アップスケーラは H3 と同じ 3D のもの（サンプルの LBH 2D 版は外部のカスタム
     ノードなので使わない）
   - 補正（`fast_derope` / `face_detail` / `anime_cadence`）は持たない（描き直しが DMAD 4step LoRA を
     重ねるので turbo と二重になる）
@@ -967,37 +972,48 @@ height = round(h_ratio * scale / 8) * 8
 VRAM が足りずに CUDA OOM で落ちる。そこで `WorkflowSpec.default_megapixels`（0.0 = 宣言なし）を
 宣言でき、値は `GET /api/options` の `video_workflows[].default_megapixels` に出る。
 宣言を持つのは **MiniMax H3 の動画 7 つ（t2v / i2v / i2v turbo / i2v opt / r2v / r2v turbo / r2v opt）
-= 0.4MP**（短辺 768px・最大 768x1344 の画角）と、**P-H3-Image の t2i = 8MP・i2i / r2i = 4MP**
+= 0.4MP**（短辺 768px・最大 768x1344 の画角）、**10Eros Max の動画（t2v / i2v / r2v と
+ラテント保存・連続カットの版）= 0.8MP**（作者推奨の「1 パス目 0.4〜0.6MP + アップスケールパス」に
+合わせ、`latent_upscale` = on で 1 パス目 0.4MP → 最終 0.8MP に拡大する。0.4MP のままだと
+拡大されずに仕上げのパスだけが回る）と、**P-H3-Image の t2i = 8MP・i2i / r2i = 4MP**
 （モデルカードの推奨。こちらは逆に、グローバル既定の 0.4MP のままだと顔や手が破綻しやすい
 低解像度で生成してしまう。t2i は 32 の倍数に丸めると推奨表のサイズにちょうど一致し、
 編集は `ImageScaleToTotalPixels.megapixels` に入って `<Picture 1>` を揃える大きさになる）。宣言は動画・画像の両方の
 `GET /api/options` に出る（`video_workflows[].default_megapixels` /
 `image_workflows[].default_megapixels`）。
 
-バックエンド側（`POST /api/jobs` の `megapixels` を省いたとき、および Studio の
-カットもプロジェクトも `megapixels` 未設定のとき）の既定は
-**0.4MP**（`workflows.py` の `DEFAULT_MEGAPIXELS`）。既定の動画ワークフローが MiniMax H3 で、1.0MP のままだと
-8GB 級のローカル GPU で CUDA OOM になるため、フォームが明示的に値を送らない
-経路でも安全側に倒している。
+バックエンド側（`POST /api/jobs` の `megapixels` を**省いた**とき、および Studio の
+カットもプロジェクトも `megapixels` 未設定のとき）は、**走るステージのワークフローの宣言**を
+使う（`app.jobs.default_job_megapixels`。省いたかどうかは `JobCreate.model_fields_set` で見る）:
+動画だけのジョブ（`i2v`）は動画ワークフロー、`image_only` は画像ワークフローの
+`default_megapixels`、2 段の `full` は**宣言のあるステージのうち小さいほう**。どのステージも
+宣言していなければ **0.4MP**（`workflows.py` の `DEFAULT_MEGAPIXELS`。既定の動画ワークフローが
+MiniMax H3 で、1.0MP のままだと 8GB 級のローカル GPU で CUDA OOM になるため）。決まった値は
+ジョブの `params.megapixels` に記録される（10Eros Max なら 0.8、P-H3-Image の t2i なら 8）。
+**送られた値はグローバル既定と同じ 0.4 でもそのまま尊重する**（10Eros Max で 0.4 を明示すれば
+拡大しない）。
 
 フォーム側は**そのモードで実際に走るステージ**のワークフローを切り替えたタイミングに
 `megapixelsFor(...)` の値を入れる（宣言が無ければグローバル既定へ戻す）: 画像ステージ
 （`full` / `image_only`）は `image_workflow`、動画ステージ（`full` / `i2v`）は `video_workflow`。
-**両方走る `full` では 1 つの値を 2 段が共有するので、きつい側（小さいほう）に合わせる**
-（画像 8MP + 動画 0.4MP なら 0.4MP。動画側で CUDA OOM にしないほうを取る）。
+**両方走る `full` では 1 つの値を 2 段が共有するので、宣言のある側のうちきつい側（小さいほう）に
+合わせる**（`stagesMegapixels`。画像 8MP + 動画 0.4MP なら 0.4MP。動画側で CUDA OOM にしないほうを
+取る。宣言の無い Krea 2 + 10Eros Max なら 10Eros の 0.8MP。バックエンドと同じ決め方）。
 切り替えたあとに手で変えた値はそのまま残り、次に切り替えるまで維持される（音声の
 `clampToWorkflow` と同じ「切り替え時にだけ追随させる」形）。
 
-`megapixels` を**そもそも送ってこない経路**（外部 API・古いジョブの再実行）では
-グローバル既定のまま届くので、画像ステージのビルダーが `app.workflow.image_megapixels` で
-「グローバル既定そのまま = 明示していない」とみなして宣言の値に読み替える。**明示された値は
+古いジョブの再実行など、params にグローバル既定の 0.4 が記録されている経路のために、
+画像ステージのビルダーは `app.workflow.image_megapixels` で
+「グローバル既定そのまま = 明示していない」とみなして宣言の値に読み替える（従来からの安全網。
+動画ステージはこの読み替えをしない）。**明示された値は
 そのまま尊重する**（0.4MP を意図して選んだジョブを勝手に上げない）ので、宣言を持たない
 ワークフロー（krea2 など）の挙動は変わらない。
 
 ドラマスタジオは生成フォームを通さないので、`megapixels` と `aspect_ratio` はカット投入時に
 `app.studio.render_shot` が組み立てる: **テイク 1 回ぶんの上書き（render のボディ）
 → Shot 個別 → プロジェクト（どちらも `NULL` = 載せない）
-→ `JobCreate` の既定（0.4MP / `4:3 (Standard)`）**。
+→ 載せない = ワークフローの宣言（上の `default_job_megapixels`。10Eros Max は 0.8MP）/
+`4:3 (Standard)`**。
 同じ関数が `duration`（**上書き → Shot の `duration_seconds`**）・`steps`（**上書き →
 プロジェクトの `steps` → 載せない = テンプレートの既定**）・`seed`（**上書き → Shot の
 `seed` → 載せない = 毎回ランダム**）も同じ流儀で解決する。
@@ -2769,7 +2785,9 @@ UI には影響しない。設計・公開範囲の詳細・Cloudflare 越しの
 公開しているのは、人が UI でできることのほぼ全部:
 
 - 脚本（プロジェクト / 話 / 場 / カット / 素材）の CRUD と並べ替え、投入前の
-  `GET /api/v1/shots/{id}/prompt-preview`（実際に投入されるプロンプトとワークフロー）
+  `GET /api/v1/shots/{id}/prompt-preview`（脚本から組み立てた本文 `prompt`・実際に投入される
+  本文 `submitted_prompt`〈使える英語があればそれ〉・ワークフロー・解像度 `megapixels`・
+  ステップ数 `steps`）
 - 生成（`POST /api/v1/shots/{id}/render` と Take の採否／汎用ジョブの
   `POST /api/v1/jobs`・`cancel`・`rerun`・`continue`）、ライブラリ、
   編集タブ一式（タイムライン / トラック / クリップ / 書き出し）
@@ -2791,7 +2809,11 @@ UI には影響しない。設計・公開範囲の詳細・Cloudflare 越しの
   尺は `app.studio.SHOT_DURATION_MIN/MAX`、参照素材の上限は
   `app.workflows.MINIMAX_H3_REFERENCE_*`、H3 の書き方は `app.prompts.MINIMAX_H3_GUIDE_BODY`、
   実例は `app.h3_examples` から代表を選抜。フィールドがモデルにどう届くかの
-  正本は `app.studio.compose_prompt`（変えたらガイドも直す）。動画モデルが 10Eros Max
+  正本は `app.studio.compose_prompt`（変えたらガイドも直す。`camera` 欄は
+  `app.studio.camera_sentence` が公式語彙の名詞句〈`Static Shot`〉も `The camera holds a static
+  shot.` のような英文にし、除外文は空行を挟んで末尾に付く。`english_source` との比較は改行の数を
+  均してから行うので、改行の入れ方だけの変更では英語が古くならない）。§7 に素材の静止画用の
+  P-H3-Image の IMAGE PROMPT SPEC（`app.prompts.P_H3_IMAGE_SPEC`）も載る。動画モデルが 10Eros Max
   （`?video_model=10eros-max`、または `?project_id=` / `?shot_id=` で解決した結果）のときだけ
   §3.3 に H3 の規約への追補（`app.prompts.EROS_MAX_ADDENDUM_BODY`）が載る。生成フォームの
   相談チャットも、`10eros_max_*` を選んでいれば H3 のガイドの後ろに同じ追補が付く

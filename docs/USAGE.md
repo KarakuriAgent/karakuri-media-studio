@@ -131,9 +131,10 @@ t2v / i2v / r2v を回せます。入力の欄とプロンプトの書き方は 
 - 高速化パッチは Comfy Kitchen attention → BlockSparseAttention（**VSA**・keep 10%・start 0.2）→
   SigmaShift（12 / 3）。Spectrum とキャッシュ系は参照の精度が落ちるので使いません。
 - ラテントアップスケール（既定 on）は 1 パス目を **0.4MP** で回し、2 パス目は配布元のサンプル
-  （linear_quadratic 3 ステップ・denoise 0.3）相当のシグマで仕上げます。実際に拡大させるには
-  メガピクセルを 0.4 より大きく（0.8〜1.0MP など）してください（0.4 以下なら同じ解像度で
-  仕上げのパスだけを回します）。補正（`fast_derope` / `face_detail` / `anime_cadence`）はありません。
+  （linear_quadratic 3 ステップ・denoise 0.3）相当のシグマで仕上げます。10Eros Max を選ぶと
+  メガピクセルの既定は **0.8MP**（0.4MP → 0.8MP に拡大）になります。作品やカットでメガピクセルを
+  決めていなければこの既定で焼かれます。0.8〜1.0MP を推奨し、0.4 以下にすると拡大はせず同じ
+  解像度で仕上げのパスだけを回します。補正（`fast_derope` / `face_detail` / `anime_cadence`）はありません。
 - 動画 LoRA は MiniMax H3 と同じ位置に挿せますが、**既存の MiniMax H3 用 LoRA は高 rank だと
   強すぎて画が劣化する**ので、強さを下げるか作者が rank を落とした LoRA
   （TenStrip/MMH3_Sulphur3Eros_Loras-MLP-energy-patches）を使ってください。
@@ -263,7 +264,8 @@ OpenAPI で、エージェントにはこれを読ませます）。おおまか
 ほぼ全部が入っています:
 
 - 脚本（プロジェクト / 話 / 場 / カット / 素材）の作成・更新・並べ替えと、投入前の
-  `GET /api/v1/shots/{id}/prompt-preview`
+  `GET /api/v1/shots/{id}/prompt-preview`（実際に投入される本文は `submitted_prompt`、
+  解像度とステップ数は `megapixels` / `steps`）
 - 生成（`POST /api/v1/shots/{id}/render` と Take の採否 / 汎用ジョブの `POST /api/v1/jobs`・
   キャンセル・再実行・続き生成）、ライブラリ、タイムラインの編集と mp4 書き出し
 - 編集履歴（一覧 / 差分 / 復元）、生成フォームの下書き（`ui/generate-form`）と画面移動
