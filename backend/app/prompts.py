@@ -1279,6 +1279,65 @@ Sparse piano at a slow tempo.
     + MINIMAX_H3_GUIDE_BODY
 )
 
+# 10Eros Max の追補。出典（どれも配布元・作者のもの）:
+#
+# * TenStrip の README（10Eros Max の配布ページ）: Sulphur 由来で入力画像と
+#   ポーズへの適応が強い / 複数画像の参照と開始・終了フレームの入力が主な用途 /
+#   一般知識は H3 より狭いことがある / 混ぜ込んだデータは「正しいプロンプト」で
+#   引き出す / turbo 焼き込みの音声は非 turbo に劣る / 声質は参照音声で取れる /
+#   H3 用の高 rank LoRA は強すぎて画が劣化する（rank を落とした LoRA 集がある）。
+# * 配布元のプロンプト補助（"System prompt - Simple" = H3 / FastH3 / TenEros /
+#   ErosMax 向け）: 最初のフレームを固めてから動きを時系列で書く / 体の動き・
+#   接触・姿勢と表情の変化・カメラを具体的に / 尺に動きの量を合わせる /
+#   強調された動きは因果で展開し言い換えで繰り返さない / 依頼のトーンに合わせ、
+#   日常的な依頼に性的な語を足さない。
+#
+# 書式（公式 rewrite のフィールド・alignment 行・参照タグ）は H3 と共通なので
+# ここには書かない（H3 のガイドの後ろに足すだけ）。「露骨な依頼を和らげるな」
+# 系の指示は採らない（扱いは ROLE と出力規約の側に任せる）。サンプリングの話は
+# ワークフローの notes にある。中身を変えたら
+# :data:`app.drafting_guide.GUIDE_VERSION` を上げること。
+EROS_MAX_ADDENDUM_BODY = """\
+10Eros Max is a MiniMax H3 derivative with the same text encoder, so the H3
+guide above applies unchanged: the same fields, alignment line, `<Picture k>` /
+`<Subject k>` / `<Audio k>` tags, shot syntax and speech syntax. Only these
+differences matter:
+
+- It adapts strongly to input images and poses and is built mainly for
+  multi-image references and first/last-frame inputs. With a start frame or
+  references, anchor briefly on what makes the subject and framing
+  distinctive (identity, wardrobe details, composition), state that they stay
+  unchanged, and spend the words on what moves.
+- Lock the opening state first (i2v: exactly what `<Picture 1>` shows; t2v: a
+  concrete opening composition), then write the motion in playback order: how
+  it begins, how body, contact, posture and expression change while it
+  continues, and the resulting state or reaction. Name concrete movements,
+  gestures, contact and camera behaviour; do not stack static appearance
+  details.
+- When the user stresses one movement, develop it through cause and effect
+  instead of restating it in other words or adding unrelated events.
+- Fit the amount of action to the `duration`: a short clip gets one coherent
+  progression, not a list of actions.
+- Its general knowledge can be narrower than base H3: describe uncommon
+  subjects, props and styles by what they look like rather than relying on a
+  name.
+- Match the tone and intensity of the request. Do not add sexual or
+  suggestive wording to an everyday or non-sexual request.
+- Audio comes from a baked-in turbo and is weaker than non-turbo H3: keep the
+  sound plan to a few clearly caused sounds and short lines rather than dense
+  layered audio. For a consistent voice in reference mode, a reference audio
+  used for timbre only (`<Audio N>: reference`) is the intended route.
+- `video_loras`: high-rank MiniMax H3 LoRAs are too strong on this model and
+  degrade the picture. Use them at reduced strength, or prefer LoRAs
+  down-ranked for it (TenStrip/MMH3_Sulphur3Eros_Loras-MLP-energy-patches).
+"""
+
+EROS_MAX_ADDENDUM = (
+    "# VIDEO PROMPT SPEC ADDENDUM — 10Eros Max (`10eros_max_*` only)\n\n"
+    + EROS_MAX_ADDENDUM_BODY
+)
+
+
 #: 1 本のクリップの中でカットを割れるワークフロー（CONTEXT の一文を切り替える）。
 #: 汎用の VIDEO PROMPT SPEC は「1 クリップ 1 ショット」を前提にしているが、
 #: MiniMax H3 は公式の `[Shot N]` タイムラインを書けば複数ショットを 1 本に収められる。
@@ -1309,6 +1368,11 @@ def _eros_max_ids(mode: str) -> tuple[str, ...]:
         ids.append("10eros_max_r2v_context")
     return tuple(ids)
 
+
+#: 10Eros Max の全 id（H3 のガイドの後ろに :data:`EROS_MAX_ADDENDUM` が付く）
+EROS_MAX_WORKFLOWS: frozenset[str] = frozenset(
+    workflow_id for mode in ("t2v", "i2v", "r2v") for workflow_id in _eros_max_ids(mode)
+)
 
 MULTI_CUT_WORKFLOWS: frozenset[str] = frozenset(
     workflow_id
@@ -1343,9 +1407,23 @@ VIDEO_SPECS: dict[str, str] = {
 }
 
 
+def _video_guide_parts(workflow_id: str) -> tuple[str, ...]:
+    """ガイドの部品（H3 のガイド、10Eros ならその後ろに追補）。無ければ空。"""
+    guide = VIDEO_SPECS.get(workflow_id, "")
+    if not guide:
+        return ()
+    if workflow_id in EROS_MAX_WORKFLOWS:
+        return (guide, EROS_MAX_ADDENDUM)
+    return (guide,)
+
+
 def video_guide_for(workflow_id: str) -> str:
-    """選んだ動画ワークフロー専用のガイド（無ければ空文字）。"""
-    return VIDEO_SPECS.get(workflow_id, "")
+    """選んだ動画ワークフロー専用のガイド（無ければ空文字）。
+
+    10Eros Max（``10eros_max_*``）は H3 と同じガイドの後ろに
+    :data:`EROS_MAX_ADDENDUM` を付けたもの。
+    """
+    return "\n\n".join(part.strip() for part in _video_guide_parts(workflow_id))
 
 
 def video_prompt_guides_section() -> str:
@@ -1356,9 +1434,10 @@ def video_prompt_guides_section() -> str:
     """
     guides: list[str] = []
     for entry in video_catalog():
-        guide = video_guide_for(entry.id)
-        if guide and guide not in guides:
-            guides.append(guide)
+        # 部品ごとに重複を落とす（10Eros の追補は H3 のガイドの写しを伴わない）
+        for part in _video_guide_parts(entry.id):
+            if part not in guides:
+                guides.append(part)
     if not guides:
         return ""
     header = (

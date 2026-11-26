@@ -125,6 +125,7 @@ from ..models import (
     StudioTimelineCreate,
     StudioTimelineDetail,
     StudioTimelineUpdate,
+    StudioVideoModel,
     TextImage,
     TimelineClipInsert,
     TimelineClipsUpdate,
@@ -1535,14 +1536,41 @@ async def openapi_subset(request: Request) -> dict[str, Any]:
 # --------------------------------------------------------------------------
 
 @router.get("/prompt-guide", response_model=DraftingGuide)
-async def prompt_guide() -> DraftingGuide:
+async def prompt_guide(
+    video_model: StudioVideoModel | None = Query(
+        None, description="minimax-h3 / 10eros-max（10eros-max なら追補が載る）"
+    ),
+    project_id: str | None = Query(
+        None, description="この作品の video_model で選ぶ（video_model より優先）"
+    ),
+    shot_id: str | None = Query(
+        None, description="このカットを焼く動画モデルで選ぶ（いちばん優先）"
+    ),
+) -> DraftingGuide:
     """脚本ドラフトの書き方（上の一括投入に渡す脚本を書くための手引き）。
 
     外部のエージェントがそのままプロンプトに貼れる日本語 Markdown を返す。
     本文はアプリ内の定数から組み立てるので（:mod:`app.drafting_guide`）、
     尺の範囲や H3 の規約が変われば、この応答も一緒に変わる。
+
+    動画モデルが 10Eros Max のときだけ、H3 の規約への追補が §3.3 に載る。
+    動画モデルは ``shot_id``（Shot の ``video_model_override`` > 作品の
+    ``video_model``。生成と同じ :func:`app.studio.shot_video_model`）>
+    ``project_id``（作品の ``video_model``）> ``video_model`` > 既定（H3）の順で決まる。
     """
-    return build_drafting_guide()
+    model = video_model or service.DEFAULT_VIDEO_MODEL
+    if shot_id:
+        shot = await service.get_shot(shot_id)
+        if shot is None:
+            raise HTTPException(status_code=404, detail="shot not found")
+        project = await service.get_project(shot.project_id)
+        model, _source = service.shot_video_model(shot, project)
+    elif project_id:
+        project = await service.get_project(project_id)
+        if project is None:
+            raise HTTPException(status_code=404, detail="project not found")
+        model = service.normalize_video_model(project.video_model)
+    return build_drafting_guide(model)
 
 
 @router.get("/prompt-examples", response_model=PromptExamples)

@@ -177,6 +177,9 @@ cwd として書いてある。
   10Eros Max は `quality` と補正が効かず、**Comfy Cloud では投入できない**。連続カット
   （ラテント連続性）は直前カットの採用 Take と同じモデルでないと断られる。どれも
   `prompt-preview` の `workflow_reason` / `render_blocker` / `video_model` で確かめる。
+  10Eros Max で焼くカットの `prompt` / `english_prompt` を書くときは、ガイドを
+  `GET /prompt-guide?shot_id=…`（作品単位なら `?project_id=…`）で取り直し、§3.3 の
+  10Eros Max の追補にも従う（書式は H3 のまま）。
 - MiniMax H3 の `turbo`（Pika H3 Flex LoRA・lcm・6 steps 固定。`steps` は効かない）は
   **t2v には無い**（テンプレートを置いていない）。`quality: "turbo"` でも
   t2v になるカットは `minimax_h3_t2v_opt` で投入され、理由が `prompt-preview` の

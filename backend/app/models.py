@@ -5095,6 +5095,8 @@ class DraftingGuide(BaseModel):
 
     #: 中身を変えたら上がる日付ベースの版（受け取り側のキャッシュ判定用）
     guide_version: str
+    #: どの動画モデル向けのガイドか（``10eros-max`` なら §3.3 に追補が載る）
+    video_model: StudioVideoModel = "minimax-h3"
     #: LLM のプロンプトへそのまま貼れる日本語 Markdown
     markdown: str
     limits: DraftingGuideLimits

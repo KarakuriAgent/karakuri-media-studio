@@ -289,7 +289,14 @@ def test_the_agent_catalog_drops_the_family_on_comfy_cloud():
 
 @pytest.mark.parametrize(("eros_id", "h3_id"), sorted(H3_COUNTERPARTS.items()))
 def test_the_prompt_guide_is_shared_with_minimax_h3(eros_id, h3_id):
-    assert prompts.video_guide_for(eros_id) == prompts.video_guide_for(h3_id) != ""
+    """書式は H3 のガイドそのままで、後ろに 10Eros の追補が付くだけ。"""
+    h3_guide = prompts.video_guide_for(h3_id)
+    eros_guide = prompts.video_guide_for(eros_id)
+    assert h3_guide != ""
+    assert eros_guide == h3_guide + "\n\n" + prompts.EROS_MAX_ADDENDUM.strip()
+    # H3 には追補が付かない
+    assert prompts.EROS_MAX_ADDENDUM_BODY.strip() not in h3_guide
+    assert "10Eros Max (`10eros_max_*` only)" not in h3_guide
     assert eros_id in prompts.MULTI_CUT_WORKFLOWS
     assert (eros_id in prompts.MOTION_CONTEXT_WORKFLOWS) == (
         h3_id in prompts.MOTION_CONTEXT_WORKFLOWS
@@ -316,3 +323,55 @@ def test_the_unet_is_a_configurable_model_slot():
         if field.family == EROS_MAX_FAMILY and field.class_type == "UNETLoader"
     ]
     assert slots and all(field.default == EROS_MAX_UNET for field in slots)
+
+
+def test_the_addendum_is_only_the_difference_from_h3():
+    """追補は差分だけ（H3 の書式やサンプリングの話を複製しない）。"""
+    body = prompts.EROS_MAX_ADDENDUM_BODY
+    assert "integrated_multimodal_description" not in body
+    assert "lcm" not in body.lower() and "steps" not in body.lower()
+    assert len(body.splitlines()) <= 40
+    # 日常的な依頼に性的な語を足さない（Simple 版の指示）
+    assert "Do not add sexual or" in body
+
+
+def test_the_agent_guides_carry_the_addendum_once_without_duplicating_h3():
+    section = prompts.video_prompt_guides_section()
+    assert section.count(prompts.EROS_MAX_ADDENDUM.strip()) == 1
+    assert section.count(prompts.MINIMAX_H3_VIDEO_GUIDE.strip()) == 1
+    assert section.count(prompts.MINIMAX_H3_REFERENCE_VIDEO_GUIDE.strip()) == 1
+
+
+@pytest.mark.parametrize(
+    ("workflow_id", "mode"),
+    [
+        ("10eros_max_t2v", "full"),
+        ("10eros_max_i2v", "i2v"),
+        ("10eros_max_r2v", "i2v"),
+        ("10eros_max_r2v_context", "i2v"),
+    ],
+)
+def test_the_chat_system_prompt_carries_the_addendum_for_10eros(workflow_id, mode):
+    from app.models import ChatSessionCreate
+
+    system = prompts.build_system_prompt(
+        ChatSessionCreate(mode=mode, video_workflow=workflow_id)
+    )
+    assert prompts.EROS_MAX_ADDENDUM.strip() in system
+    # H3 のガイド本体も一緒に入っている（追補は H3 の後ろ）
+    assert system.index(prompts.MINIMAX_H3_GUIDE_BODY.strip()) < system.index(
+        prompts.EROS_MAX_ADDENDUM.strip()
+    )
+
+
+@pytest.mark.parametrize(
+    "workflow_id", ["minimax_h3_t2v", "minimax_h3_i2v_opt", "minimax_h3_r2v"]
+)
+def test_the_chat_system_prompt_has_no_addendum_for_h3(workflow_id):
+    from app.models import ChatSessionCreate
+
+    system = prompts.build_system_prompt(
+        ChatSessionCreate(mode="i2v", video_workflow=workflow_id)
+    )
+    assert prompts.MINIMAX_H3_GUIDE_BODY.strip() in system
+    assert prompts.EROS_MAX_ADDENDUM_BODY.strip() not in system

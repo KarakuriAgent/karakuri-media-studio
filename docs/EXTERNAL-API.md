@@ -140,9 +140,10 @@ POST /api/v1/stories
 外部の LLM エージェントがそのままプロンプトに貼れる日本語 Markdown を返す。
 
 ```
-GET /api/v1/prompt-guide
+GET /api/v1/prompt-guide[?video_model=10eros-max | ?project_id=… | ?shot_id=…]
 {
-  "guide_version": "2026-08-18",     // 中身を変えたら上がる（キャッシュ判定用）
+  "guide_version": "2026-11-26",     // 中身を変えたら上がる（キャッシュ判定用）
+  "video_model": "minimax-h3",       // どの動画モデル向けか（10eros-max なら §3.3 に追補）
   "markdown": "# 脚本ドラフト作成ガイド…",
   "limits": {                        // 本文と同じ数値の機械可読版
     "shot_duration_min_seconds": 1.0, "shot_duration_max_seconds": 15.0,
@@ -161,6 +162,12 @@ GET /api/v1/prompt-guide
   `purpose` はメモ）」「素材メンション `@名前`」「H3 プロンプト規約」「実例
   （代表 2 件 + §2.2 の取得方法）」「stories 投入の注意」の 5 節。フィールドの届き方の正本は
   `app.studio.compose_prompt`（変えたらガイドも直す）。
+- 動画モデルが 10Eros Max（`10eros-max`）のときだけ、§3.3 に H3 の規約への**追補**
+  （`app.prompts.EROS_MAX_ADDENDUM_BODY`。H3 との差分だけで、書式は H3 のまま）が載る。
+  動画モデルは `shot_id`（そのカットを焼くモデル = Shot の `video_model_override` >
+  作品の `video_model`）> `project_id`（作品の `video_model`）> `video_model` > 既定
+  （`minimax-h3`）の順で決まる。存在しない作品・カットは 404。クエリ無しの応答には
+  追補は載らず、§3.3 に取り直し方の案内だけが載る。
 - 段取りそのもの（何から読み、どういう順で作り、どこで人に確認するか）はガイドではなく
   SKILL（`workspace/.agents/skills/karakuri-studio/SKILL.md`）が持つ。ここで配るのは
   **脚本とプロンプトの書き方**だけ。

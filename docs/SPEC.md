@@ -2791,7 +2791,10 @@ UI には影響しない。設計・公開範囲の詳細・Cloudflare 越しの
   尺は `app.studio.SHOT_DURATION_MIN/MAX`、参照素材の上限は
   `app.workflows.MINIMAX_H3_REFERENCE_*`、H3 の書き方は `app.prompts.MINIMAX_H3_GUIDE_BODY`、
   実例は `app.h3_examples` から代表を選抜。フィールドがモデルにどう届くかの
-  正本は `app.studio.compose_prompt`（変えたらガイドも直す）
+  正本は `app.studio.compose_prompt`（変えたらガイドも直す）。動画モデルが 10Eros Max
+  （`?video_model=10eros-max`、または `?project_id=` / `?shot_id=` で解決した結果）のときだけ
+  §3.3 に H3 の規約への追補（`app.prompts.EROS_MAX_ADDENDUM_BODY`）が載る。生成フォームの
+  相談チャットも、`10eros_max_*` を選んでいれば H3 のガイドの後ろに同じ追補が付く
 
 ラッパーでない独自のエンドポイントは `POST /api/v1/stories`（話 1 本＝話 → 場 → Shot の
 一括投入。1 トランザクションで全部作れたか・全く作らなかったかの二択）。
